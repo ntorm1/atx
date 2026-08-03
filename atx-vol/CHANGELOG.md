@@ -231,26 +231,44 @@ exists for.
   numeric contents. The default (`false`) path is unchanged and still costs
   nothing, so no shipped caller's numbers move.
 
-### NEW — the last two Black-76 batch kernels are bound for numpy
+### NEW — every public batch kernel is now reachable from Python
 
-`black76_greeks_batch(F, K, T, sigma, r, df, side)` returns a dict of SoA numpy
-columns (`delta`/`gamma`/`vega`/`theta`/`rho`/`vanna`/`volga`/`charm`/`price`),
-and `black76_value_and_vega_batch(F, K, T, sigma, df, side, sqrt_t=-1.0)`
-returns `(value, vega)` for one expiry slice (`T` and `sqrt_t` shared, as in the
-C++ signature). Binding-only: no kernel changed, and both go through the
-validated `batch.hpp` entry points rather than the raw `simd::` kernels. With
-these, every public batch kernel is reachable from Python.
+Three `batch.hpp` entries were bound, which completes the set — verified by
+enumerating `batch.hpp`'s six entries against the module rather than by
+inspection, because an earlier draft of this section claimed completeness while
+`black76_price_from_lnfk_batch` was still unbound:
 
-Two notes for callers:
+* `black76_greeks_batch(F, K, T, sigma, r, df, side)` — a dict of SoA numpy
+  columns (`delta`/`gamma`/`vega`/`theta`/`rho`/`vanna`/`volga`/`charm`/`price`).
+* `black76_value_and_vega_batch(F, K, T, sigma, df, side, sqrt_t=-1.0)` —
+  `(value, vega)` for one expiry slice (`T` and `sqrt_t` shared, as in the C++
+  signature).
+* `black76_price_from_lnfk_batch(F, K, T, sqrt_t, sigma, df, ln_fk, side)` — the
+  bind-step shortcut for a caller that already holds `ln(F/K)` and `sqrt(T)`.
+  `sqrt_t` is **required and has no sentinel** here: the scalar kernel consumes
+  it verbatim, so there is no negative value meaning "recompute". Its scalar
+  companion `black76_price_from_lnfk` is bound alongside it, so the batch's
+  bit-exactness is checkable from the same interpreter.
 
-* **Neither returns a per-lane `status` column, and that is the NaN + per-lane
+Binding-only: no kernel changed, and all three go through the validated
+`batch.hpp` entry points rather than the raw `simd::` kernels.
+
+Three notes for callers:
+
+* **None returns a per-lane `status` column, and that is the NaN + per-lane
   convention rather than a departure from it.** A parallel status exists where
   the kernel HAS a per-lane failure channel a binding must not erase
   (`implied_vol_batch`'s `span<Status>`; the American batch's `LaneStatus`).
-  These two have none — `black76_greeks` and `black76_value_and_vega` are
-  `noexcept` total functions whose degenerate lanes collapse to the documented
-  intrinsic result — so an all-`STATUS_OK` column would advertise a diagnostic
-  carrying no information. Only a malformed *call* raises.
+  These three have none — `black76_greeks`, `black76_value_and_vega` and
+  `black76_price_from_lnfk` are `noexcept` total functions whose degenerate lanes
+  collapse to the documented intrinsic result — so an all-`STATUS_OK` column
+  would advertise a diagnostic carrying no information. Only a malformed *call*
+  raises.
+* **Greeks and value+vega agree with their scalars to the SIMD gate, not
+  bit-for-bit; from-lnFK is bit-identical.** The first two dispatch to AVX2 at
+  `n >= 4`; from-lnFK has no vector kernel. The gate is per output column —
+  ~1e-6 absolute + 1e-7 relative on prices and Greeks, ~1e-5 absolute on the
+  fused batch's `vega`.
 * **`side` now also accepts a single `Side`, broadcast across the batch**, on
   every binding that takes a `side` column (the American batches included). Pure
   widening: a per-lane integer column behaves exactly as before, and a float

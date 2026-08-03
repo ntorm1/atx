@@ -236,6 +236,15 @@ def test_american_implied_vol_batch_matches_the_scalar_inverter():
 # path returns, so every gate here compares against the bound scalar kernel.
 
 
+# The C++ gate, per OUTPUT COLUMN, not one blanket number: `batch_test.cpp`
+# checks the fused batch's `value` at 1e-6 absolute and its `vega` at **1e-5**
+# absolute (vega is the larger quantity, so the same relative error is a looser
+# absolute one). A python test that asserted vega at 1e-6 would be TIGHTER than
+# the suite the library conforms to, and would fail on a host the library
+# considers correct — a latent flake dressed as rigour. Track the C++ number.
+_VEGA_ABS = 1e-5
+
+
 def _slice(n: int = 40):
     """One expiry slice, mixed sides — the shape `value_and_vega` keys on."""
     rng = np.random.default_rng(20260802)
@@ -340,7 +349,7 @@ def test_black76_value_and_vega_batch_matches_the_scalar_loop():
         s = av.Side.CALL if side[i] == int(av.Side.CALL) else av.Side.PUT
         ref = av.black76_value_and_vega(f[i], k[i], t, sigma[i], df[i], s)
         assert value[i] == pytest.approx(ref.price, abs=1e-6, rel=1e-7)
-        assert vega[i] == pytest.approx(ref.vega, abs=1e-6, rel=1e-7)
+        assert vega[i] == pytest.approx(ref.vega, abs=_VEGA_ABS, rel=1e-7)
     # The premium must also agree with the plain pricer — same kernel, fused.
     prices = av.black76_price_batch(f, k, np.full(len(k), t), sigma, df, av.Side.CALL)
     calls = side == int(av.Side.CALL)
@@ -372,7 +381,7 @@ def test_black76_value_and_vega_batch_degenerate_lane_does_not_poison_the_batch(
         s = av.Side.CALL if side[i] == int(av.Side.CALL) else av.Side.PUT
         ref = av.black76_value_and_vega(f[i], k[i], t, sigma[i], df[i], s)
         assert value[i] == pytest.approx(ref.price, abs=1e-6, rel=1e-7)
-        assert vega[i] == pytest.approx(ref.vega, abs=1e-6, rel=1e-7)
+        assert vega[i] == pytest.approx(ref.vega, abs=_VEGA_ABS, rel=1e-7)
     assert vega[6] == 0.0
     assert np.all(np.isfinite(value))
 
@@ -385,6 +394,68 @@ def test_black76_value_and_vega_batch_rejects_a_shape_error():
         av.black76_value_and_vega_batch(f, k, t, sigma, df, side[:4])
     with pytest.raises(av.AtxError):
         av.black76_value_and_vega_batch(f, k, t, sigma, df, np.full(len(k), 7, dtype=np.int32))
+
+
+def test_black76_price_from_lnfk_batch_is_bit_identical_to_the_scalar_loop():
+    # This kernel has NO vector implementation (`batch.hpp:72-84`), so unlike the
+    # Greeks and value+vega batches it is genuinely bit-exact against its scalar
+    # — assert bytes, not a tolerance, because that is the contract it actually
+    # has and a tolerance here would hide a real divergence.
+    f, k, t, sigma, r, df_col, side = _slice(40)
+    df, sqrt_t = float(df_col[0]), math.sqrt(t)
+    ln_fk = np.log(f / k)
+
+    got = av.black76_price_from_lnfk_batch(f, k, t, sqrt_t, sigma, df, ln_fk, side)
+
+    expected = np.array([
+        av.black76_price_from_lnfk(
+            f[i], k[i], t, sigma[i], df, ln_fk[i], sqrt_t,
+            av.Side.CALL if side[i] == int(av.Side.CALL) else av.Side.PUT)
+        for i in range(len(k))
+    ])
+    assert got.tobytes() == expected.tobytes()
+
+
+def test_black76_price_from_lnfk_batch_agrees_with_the_plain_pricer():
+    # The header's stated relationship: "numerically identical to black76_price
+    # when ln_fk == ln(F/K) and sqrt_t == sqrt(T)". Pin it — a from-lnFK entry
+    # whose answer drifted from the pricer it shortcuts would be silently wrong
+    # everywhere the portfolio engine uses it.
+    f, k, t, sigma, r, df_col, side = _slice(24)
+    df, sqrt_t = float(df_col[0]), math.sqrt(t)
+    got = av.black76_price_from_lnfk_batch(f, k, t, sqrt_t, sigma, df,
+                                           np.log(f / k), side)
+    # `black76_price_batch` takes one Side, so compare the call lanes.
+    plain = av.black76_price_batch(f, k, np.full(len(k), t), sigma, df_col, av.Side.CALL)
+    calls = side == int(av.Side.CALL)
+    np.testing.assert_allclose(got[calls], plain[calls], atol=1e-6, rtol=1e-7)
+
+
+def test_black76_price_from_lnfk_batch_uses_sqrt_t_as_given():
+    # No sentinel: `sqrt_t` is consumed verbatim by the scalar kernel, so a wrong
+    # root must change the answer rather than being quietly recomputed.
+    f, k, t, sigma, r, df_col, side = _slice(12)
+    df, ln_fk = float(df_col[0]), np.log(f / k)
+    right = av.black76_price_from_lnfk_batch(f, k, t, math.sqrt(t), sigma, df, ln_fk, side)
+    wrong = av.black76_price_from_lnfk_batch(f, k, t, math.sqrt(2.0 * t), sigma, df, ln_fk, side)
+    assert right.tobytes() != wrong.tobytes()
+
+
+def test_black76_price_from_lnfk_batch_rejects_a_shape_error():
+    f, k, t, sigma, r, df_col, side = _slice(8)
+    df, sqrt_t, ln_fk = float(df_col[0]), math.sqrt(t), np.log(f / k)
+    with pytest.raises(ValueError):
+        av.black76_price_from_lnfk_batch(f, k[:4], t, sqrt_t, sigma, df, ln_fk, side)
+    with pytest.raises(ValueError):
+        av.black76_price_from_lnfk_batch(f, k, t, sqrt_t, sigma, df, ln_fk[:4], side)
+    with pytest.raises(ValueError):
+        av.black76_price_from_lnfk_batch(f, k, t, sqrt_t, sigma, df, ln_fk, side[:4])
+    with pytest.raises(ValueError):
+        av.black76_price_from_lnfk_batch(f.reshape(2, 4), k, t, sqrt_t, sigma, df, ln_fk, side)
+    with pytest.raises(av.AtxError) as excinfo:
+        av.black76_price_from_lnfk_batch(f, k, t, sqrt_t, sigma, df, ln_fk,
+                                         np.full(len(k), 0.5))
+    assert excinfo.value.code == av.ErrorCode.INVALID_ARGUMENT
 
 
 def test_b76_batch_entry_points_release_the_gil():

@@ -259,6 +259,47 @@ b76_value_and_vega_batch(const DoubleArray &f_array, const DoubleArray &k_array,
   return {std::move(value), std::move(vega)};
 }
 
+// FIX (review IMPORTANT-1): the third and last unbound entry in `batch.hpp`.
+// The CHANGELOG claimed "every public batch kernel is reachable from Python"
+// while this one was reachable from nowhere — the exact class of doc overclaim
+// 5.2 exists to catch, so it is bound rather than written around.
+//
+// `T`, `sqrt_t` and `df` are SHARED per-slice scalars; `F`, `K`, `sigma`,
+// `ln_fk` and `side` are per-lane. `sqrt_t` carries NO negative sentinel here —
+// the scalar `black76_price_from_lnfk` uses it exactly as given
+// (`src/black76.cpp:39-53`), because the whole point of this entry is that the
+// caller ALREADY holds the precomputed `ln(F/K)` and `sqrt(T)` from its own bind
+// step. It is therefore a REQUIRED argument: defaulting it to the value+vega
+// batch's `-1.0` would invent a contract this kernel does not have.
+//
+// This one really is scalar-backed and therefore BIT-EXACT against a loop over
+// the scalar kernel — it has no vector implementation (`batch.hpp:72-84`), which
+// is why its test asserts `tobytes()` equality where the AVX2-dispatched Greeks
+// and value+vega batches can only assert the SIMD gate's tolerance.
+py::array_t<double> b76_price_from_lnfk_batch(const DoubleArray &f_array,
+                                              const DoubleArray &k_array, double t, double sqrt_t,
+                                              const DoubleArray &sigma_array, double df,
+                                              const DoubleArray &ln_fk_array,
+                                              const py::object &side_array) {
+  const auto f = as_span(f_array, "F");
+  const auto k = as_span(k_array, "K");
+  const auto sigma = as_span(sigma_array, "sigma");
+  const auto ln_fk = as_span(ln_fk_array, "ln_fk");
+  require_same_size(f.size(), k, "K");
+  require_same_size(f.size(), sigma, "sigma");
+  require_same_size(f.size(), ln_fk, "ln_fk");
+  const std::vector<Side> sides = as_sides(side_array, f.size(), "F");
+
+  py::array_t<double> output(static_cast<py::ssize_t>(f.size()));
+  const std::span<double> out{output.mutable_data(), f.size()};
+  {
+    py::gil_scoped_release release;
+    static_cast<void>(atxvol::python::unwrap(
+        black76_price_from_lnfk_batch(f, k, t, sqrt_t, sigma, df, ln_fk, sides, out)));
+  }
+  return output;
+}
+
 py::array_t<double> american_slice(const DoubleArray &strikes_array, double spot, double t,
                                    double sigma, double r, double q, Side side,
                                    const std::optional<AlOpts> &opts) {
@@ -618,6 +659,17 @@ void bind_pricing(py::module_ &m) {
   m.def("black76_greeks", &black76_greeks, py::arg("F"), py::arg("K"), py::arg("T"),
         py::arg("sigma"), py::arg("r"), py::arg("df"), py::arg("side"),
         py::call_guard<py::gil_scoped_release>());
+  // Bound alongside its batch below: without the scalar there is nothing in
+  // Python to assert the batch's bit-exactness AGAINST, and a parity claim you
+  // cannot check from the same interpreter is the shape of claim 5.2 removes.
+  m.def("black76_price_from_lnfk", &black76_price_from_lnfk, py::arg("F"), py::arg("K"),
+        py::arg("T"), py::arg("sigma"), py::arg("df"), py::arg("ln_fk"), py::arg("sqrt_t"),
+        py::arg("side"), py::call_guard<py::gil_scoped_release>(),
+        "Black-76 premium from a PRECOMPUTED ``ln(F/K)`` and ``sqrt(T)``.\n\n"
+        "Both are used exactly as given — there is no recompute and no sentinel.\n"
+        "Numerically identical to ``black76_price`` when ``ln_fk == log(F/K)``\n"
+        "and ``sqrt_t == sqrt(T)``; the point of the entry is that a caller who\n"
+        "already holds both from its own bind step does not pay for them again.");
   m.def(
       "implied_vol",
       [](double price, double f, double k, double t, double df, Side side) {
@@ -661,7 +713,25 @@ void bind_pricing(py::module_ &m) {
         "sqrt(T) internally'.\n\n"
         "Returns ``(value, vega)``. No ``status`` column, for the same reason as\n"
         "``black76_greeks_batch``: the kernel is total. Only a malformed call\n"
-        "raises.");
+        "raises.\n\n"
+        "Agrees with a loop over ``black76_value_and_vega`` to the SIMD gate, not\n"
+        "bit-for-bit: this dispatches to 4-lane AVX2 at ``n >= 4``. The C++ gate\n"
+        "is ~1e-6 absolute + 1e-7 relative on ``value`` and ~1e-5 absolute +\n"
+        "1e-7 relative on ``vega`` (``tests/batch_test.cpp``).");
+
+  m.def("black76_price_from_lnfk_batch", &b76_price_from_lnfk_batch, py::arg("F"), py::arg("K"),
+        py::arg("T"), py::arg("sqrt_t"), py::arg("sigma"), py::arg("df"), py::arg("ln_fk"),
+        py::arg("side"),
+        "Vectorized Black-76 pricing from PRECOMPUTED log-moneyness, one slice.\n\n"
+        "``T``, ``sqrt_t`` and ``df`` are shared scalars (the kernel keys on one\n"
+        "expiry slice); ``F``, ``K``, ``sigma``, ``ln_fk`` are per-lane columns\n"
+        "and ``side`` is a per-lane column or one broadcast ``Side``. ``sqrt_t``\n"
+        "is REQUIRED and used exactly as given — unlike\n"
+        "``black76_value_and_vega_batch`` this kernel has no negative sentinel,\n"
+        "because a caller reaching for it already holds both precomputed terms.\n\n"
+        "Unlike the other Black-76 batches this one has no vector kernel, so it\n"
+        "is **bit-identical** to a loop over ``black76_price_from_lnfk``. No\n"
+        "``status`` column (the kernel is total); only a malformed call raises.");
 
   m.def(
       "andersen_lake",

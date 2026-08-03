@@ -53,7 +53,7 @@ faithfully and mirror the upstream test tolerances.
 | Contract projection | `contract_projection.hpp` | Relative maturity/strike definitions to absolute-expiry American contracts, marks, and Greeks; prepared deterministic batch API |
 | Surface archive | `surface_archive.hpp` | ATXVSA2 (magic `ATXVSA20`) binary format writer/reader, CRC-32C, schema-hash guard, symbol lookup, concurrent-read-safe |
 | Data ingestion | `data.hpp` | SpiderRock quote-frame model, install-into-universe path, ISO/year-fraction kernels |
-| Batch kernels | `batch.hpp` | SoA batch B76 price/value+vega/from-lnfk, IV, Greeks, eSSVI-w. Price, value+vega, Greeks and eSSVI-w **runtime-dispatch to 4-lane AVX2** on an AVX2 host (`n ≥ 4`; eSSVI-w `n ≥ 16`), so they agree with the scalar kernel to the SIMD gate (~1e-6 abs + 1e-7 rel; eSSVI ~1e-12), **not bit-for-bit**; from-lnFK and IV have no vector route and stay scalar-backed and bit-exact |
+| Batch kernels | `batch.hpp` | SoA batch B76 price/value+vega/from-lnfk, IV, Greeks, eSSVI-w. Price, value+vega, Greeks and eSSVI-w **runtime-dispatch to 4-lane AVX2** on an AVX2 host (`n ≥ 4`; eSSVI-w `n ≥ 16`), so they agree with the scalar kernel to the SIMD gate (~1e-6 abs + 1e-7 rel; ~1e-5 abs on the fused `vega` column; eSSVI ~1e-12), **not bit-for-bit**; from-lnFK and IV have no vector route and stay scalar-backed and bit-exact |
 | American IV | `american_iv.hpp` | Invert an American premium → implied vol (safeguarded Newton on the American pricer); the de-Americanization primitive |
 | Dividends / borrow | `dividend.hpp` | Hybrid dividend forward (escrowed cash → proportional blend, `S=S̃+D`), European put-call-parity borrow solver |
 | De-Americanization | `deamer.hpp` | Chain → European-equivalent IVs + per-term implied borrow (OTM-leg selection, fixed-point American-PCP borrow, q_eff bridge) |
@@ -462,9 +462,12 @@ which change the numerical results of the shipped paths:
   (`src/batch.cpp`) — at `n ≥ 4`, or `n ≥ 16` for eSSVI-w, whose per-lane cost is
   small enough that the setup only pays on large grids — patching only
   degenerate / deep-wing / tail lanes through the scalar kernel. Their agreement
-  with the scalar source of truth is the SIMD gate, ~1e-6 absolute + 1e-7
-  relative (~1e-12 for eSSVI) — which is what `batch_test.cpp` actually asserts,
-  an `expect_close` and never an equality.
+  with the scalar source of truth is the SIMD gate — which is what
+  `batch_test.cpp` actually asserts, an `expect_close` and never an equality —
+  and that gate is **per output column, not one blanket number**: ~1e-6 absolute
+  + 1e-7 relative on prices and Greeks, **~1e-5 absolute** on the fused batch's
+  `vega` column (`batch_test.cpp:291,311`; vega is the larger quantity, so the
+  same relative error is a looser absolute one), and ~1e-12 for eSSVI.
   `black76_price_from_lnfk_batch` and `implied_vol_batch` are the two
   that really are scalar-backed and therefore bit-exact: neither has a vector
   kernel (IV's measured AVX2 route was slower on the reference host).

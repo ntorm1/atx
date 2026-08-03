@@ -200,13 +200,15 @@ genuine early-exercise lanes into a single pack. The magnitude of that win is
 hardware- and load-dependent — measure it on your own quiet host rather than
 trusting a number quoted here.
 
-### Black-76 Greeks and fused value+vega
+### Black-76 Greeks, fused value+vega, and pricing from precomputed log-moneyness
 
-The two remaining public batch kernels, on the same one-call shape:
+The three remaining public batch kernels, on the same one-call shape. With these
+every entry in `batch.hpp` is reachable from Python:
 
 ```python
 g = av.black76_greeks_batch(F, K, T, sigma, r, df, side)   # dict of SoA columns
 value, vega = av.black76_value_and_vega_batch(F, K, T_scalar, sigma, df, side)
+px = av.black76_price_from_lnfk_batch(F, K, T_scalar, sqrt_t, sigma, df_scalar, ln_fk, side)
 ```
 
 `black76_greeks_batch` returns `delta`/`gamma`/`vega`/`theta`/`rho`/`vanna`/
@@ -214,27 +216,40 @@ value, vega = av.black76_value_and_vega_batch(F, K, T_scalar, sigma, df, side)
 `black76_value_and_vega_batch` keys on **one expiry slice**: `T` and `sqrt_t` are
 shared scalars while `F`, `K`, `sigma`, `df` are per-lane columns. `sqrt_t >= 0`
 is used as given; the default `-1.0` is the kernel's own "compute `sqrt(T)`"
-sentinel. `side` on either is a per-lane integer column *or* a single `Side`
+sentinel. `side` on any of them is a per-lane integer column *or* a single `Side`
 broadcast across the batch.
 
-**Neither returns a `status` column, and that is the convention rather than an
-exception to it.** A parallel status exists where a kernel has a per-lane failure
-channel that the binding must not erase. These two kernels have none:
-`black76_greeks` and `black76_value_and_vega` are total functions, so a
-degenerate lane (`T <= 0` or `sigma <= 0`) collapses to the documented degenerate
-result — intrinsic-step delta, other Greeks zero — instead of failing. A
-column of `STATUS_OK` would advertise a diagnostic that carries no information.
-Only a malformed *call* raises: a shape or rank mismatch (`ValueError`), or a
-float / unrecognised `side` code (`AtxError` with
+`black76_price_from_lnfk_batch` is the bind-step shortcut: a caller that already
+holds `ln(F/K)` and `sqrt(T)` for a slice — as the portfolio engine does — passes
+both instead of paying for them again. `T`, `sqrt_t` and `df` are shared scalars;
+`F`, `K`, `sigma`, `ln_fk` are per-lane. **`sqrt_t` is required and has no
+sentinel** — unlike the fused batch, this kernel consumes it verbatim, so there
+is no negative value that means "recompute". The scalar companion
+`black76_price_from_lnfk` is bound too.
+
+**None of the three returns a `status` column, and that is the convention rather
+than an exception to it.** A parallel status exists where a kernel has a per-lane
+failure channel that the binding must not erase. These kernels have none:
+`black76_greeks`, `black76_value_and_vega` and `black76_price_from_lnfk` are
+total functions, so a degenerate lane (`T <= 0` or `sigma <= 0`) collapses to the
+documented degenerate result — intrinsic-step delta, other Greeks zero — instead
+of failing. A column of `STATUS_OK` would advertise a diagnostic that carries no
+information. Only a malformed *call* raises: a shape or rank mismatch
+(`ValueError`), or a float / unrecognised `side` code (`AtxError` with
 `ErrorCode.INVALID_ARGUMENT`).
 
-**These agree with the scalar kernels to a tolerance, not bit-for-bit.** Both
-dispatch to the 4-lane AVX2 route at `n >= 4` on an AVX2 host, whose interior
-lanes use deterministic vector transcendentals; the C++ gate is ~1e-6 absolute
-plus 1e-7 relative, and `tests/test_batch.py` pins the Python side to the same
-envelope. That is a genuine difference from the American batch entry points
-above, whose bit-identity claims hold as stated there — `american_price_batch`
-on the `SimdIsa.FORCE_SCALAR` route, `american_greeks_batch(analytic=False)` and
+**Greeks and value+vega agree with their scalar kernels to a tolerance, not
+bit-for-bit; from-lnFK is bit-identical.** The first two dispatch to the 4-lane
+AVX2 route at `n >= 4` on an AVX2 host, whose interior lanes use deterministic
+vector transcendentals. The C++ gate is **per output column**: ~1e-6 absolute +
+1e-7 relative on prices and Greeks, and ~1e-5 absolute on the fused batch's
+`vega` (vega is the larger quantity, so the same relative error is a looser
+absolute one). `tests/test_batch.py` tracks those exact numbers rather than
+asserting anything tighter than the library conforms to.
+`black76_price_from_lnfk_batch` has no vector kernel at all, so it is pinned with
+`tobytes()` against a scalar loop. The American batch entry points above keep
+their own bit-identity claims as stated there — `american_price_batch` on the
+`SimdIsa.FORCE_SCALAR` route, `american_greeks_batch(analytic=False)` and
 `american_implied_vol_batch` outright.
 
 ## Fitting a surface from quotes
@@ -541,11 +556,11 @@ misbehaved.
 Three batch-specific details:
 
 - **A batch function with no per-lane failure mode returns no `status` column.**
-  `black76_price_batch`, `black76_greeks_batch` and
-  `black76_value_and_vega_batch` wrap total kernels — a degenerate lane collapses
-  to the documented degenerate result rather than failing — so there is nothing
-  for a status column to say. The convention above is about not *erasing* a
-  channel the kernel has; it is not a requirement to invent one.
+  `black76_price_batch`, `black76_greeks_batch`, `black76_value_and_vega_batch`
+  and `black76_price_from_lnfk_batch` wrap total kernels — a degenerate lane
+  collapses to the documented degenerate result rather than failing — so there is
+  nothing for a status column to say. The convention above is about not *erasing*
+  a channel the kernel has; it is not a requirement to invent one.
 
 - **`PricedSurface.grid` has lossless per-family channels.** Read
   `iv_status`/`iv_valid`, `total_variance_status`/`total_variance_valid`,
