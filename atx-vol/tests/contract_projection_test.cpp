@@ -196,6 +196,42 @@ TEST(ContractProjection, FastDeltaScreenIsAlwaysColdConfirmed) {
   EXPECT_GT(projected->delta_evaluations, 0u);
 }
 
+TEST(ContractProjection, CrossSectionalPolicyResolvesLikeFastScreenInScalarEntryPoint) {
+  PricedSurface source = make_surface(2u, 120.0, timestamp(2026, 7, 10));
+  auto prepared = std::move(source).with_query_pricing(QueryPricingTier::RepresentativeFast);
+  ASSERT_TRUE(prepared) << (prepared ? std::string{} : prepared.error().to_string());
+  const PricedSurface fast = std::move(*prepared);
+
+  OptionProjectionConfig fast_screen_config;
+  // FullGreeks (not DefinitionOnly): DefinitionOnly leaves model_mark as NaN,
+  // and NaN != NaN under the defaulted operator== used by EXPECT_EQ below.
+  fast_screen_config.output = OptionProjectionOutput::FullGreeks;
+  fast_screen_config.delta_tolerance = 1.0e-7;
+  fast_screen_config.query_execution = QueryExecution::ColdReference;
+  fast_screen_config.delta_solve_policy = OptionDeltaSolvePolicy::FastScreenColdConfirm;
+
+  OptionProjectionConfig cross_sectional_config = fast_screen_config;
+  cross_sectional_config.delta_solve_policy = OptionDeltaSolvePolicy::CrossSectionalColdConfirm;
+
+  const auto request =
+      spec(2u, Side::Call, ProjectedMaturitySpec::days(45), ProjectedStrikeSpec::delta(0.40));
+  const auto fast_screen_projected = project_option_contract(fast, request, fast_screen_config);
+  const auto cross_sectional_projected =
+      project_option_contract(fast, request, cross_sectional_config);
+  ASSERT_TRUE(fast_screen_projected)
+      << (fast_screen_projected ? std::string{} : fast_screen_projected.error().to_string());
+  ASSERT_TRUE(cross_sectional_projected)
+      << (cross_sectional_projected ? std::string{}
+                                    : cross_sectional_projected.error().to_string());
+  EXPECT_EQ(*fast_screen_projected, *cross_sectional_projected);
+
+  const auto cold_delta = fast.delta(cross_sectional_projected->definition.contract.K,
+                                     cross_sectional_projected->definition.contract.T, Side::Call,
+                                     QueryExecution::ColdReference);
+  ASSERT_TRUE(cold_delta) << (cold_delta ? std::string{} : cold_delta.error().to_string());
+  EXPECT_NEAR(std::fabs(*cold_delta), 0.40, cross_sectional_config.delta_tolerance);
+}
+
 TEST(ContractProjection, PreparedBatchIsInputOrderedAndThreadInvariant) {
   const std::int64_t now = timestamp(2026, 7, 10);
   std::vector<PricedSurface> surfaces;
@@ -248,6 +284,42 @@ TEST(ContractProjection, InvalidSpecsFailWithoutInventingContracts) {
       project_option_contract(surface, spec(2u, Side::Call, ProjectedMaturitySpec::months(3),
                                             ProjectedStrikeSpec::delta(0.40))));
   EXPECT_FALSE(PreparedOptionProjection::create({}));
+}
+
+TEST(ContractProjection, ResolveProjectedExpiryMatchesProjectedDefinitionExpiry) {
+  const std::int64_t now = timestamp(2026, 7, 10);
+  const PricedSurface surface = make_surface(4u, 100.0, now);
+  for (const ProjectedMaturitySpec &maturity :
+       {ProjectedMaturitySpec::months(3), ProjectedMaturitySpec::days(30),
+        ProjectedMaturitySpec::years(0.25)}) {
+    auto resolved = resolve_projected_expiry(now, maturity);
+    ASSERT_TRUE(resolved) << (resolved ? std::string{} : resolved.error().to_string());
+    auto projected = project_option_contract(
+        surface, spec(4u, Side::Call, maturity, ProjectedStrikeSpec::atm_forward()),
+        OptionProjectionConfig{OptionProjectionOutput::DefinitionOnly});
+    ASSERT_TRUE(projected) << (projected ? std::string{} : projected.error().to_string());
+    EXPECT_EQ(*resolved, projected->definition.expiry_ts_ns);
+  }
+
+  EXPECT_FALSE(resolve_projected_expiry(now, ProjectedMaturitySpec::months(0)));
+  EXPECT_FALSE(resolve_projected_expiry(0, ProjectedMaturitySpec::days(30)));
+  EXPECT_FALSE(resolve_projected_expiry(now, ProjectedMaturitySpec::absolute(now)));
+}
+
+TEST(ContractProjection, ProjectedDefinitionFingerprintHelperMatchesProjection) {
+  const PricedSurface surface = make_surface(5u, 100.0, timestamp(2026, 7, 10));
+  auto projected = project_option_contract(
+      surface,
+      spec(5u, Side::Call, ProjectedMaturitySpec::days(30), ProjectedStrikeSpec::atm_forward()),
+      OptionProjectionConfig{OptionProjectionOutput::DefinitionOnly});
+  ASSERT_TRUE(projected) << (projected ? std::string{} : projected.error().to_string());
+  const std::uint64_t fingerprint = projected_definition_fingerprint(projected->definition);
+  EXPECT_NE(fingerprint, 0u);
+  EXPECT_EQ(fingerprint, projected->definition.fingerprint);
+
+  ProjectedOptionDefinition changed = projected->definition;
+  changed.contract.K += 1.0;
+  EXPECT_NE(projected_definition_fingerprint(changed), fingerprint);
 }
 
 } // namespace

@@ -79,6 +79,11 @@ enum class OptionProjectionOutput : std::uint8_t {
 enum class OptionDeltaSolvePolicy : std::uint8_t {
   Direct = 0,
   FastScreenColdConfirm = 1,
+  // Cross-sectional inverse-delta with cold confirm. In the scalar
+  // project_option_contract entry point this behaves exactly as
+  // FastScreenColdConfirm (a batch of one gains nothing); batch consumers
+  // (PreparedVarPortfolio) select the cross-sectional group solver.
+  CrossSectionalColdConfirm = 2,
 };
 
 enum class OptionProjectionStatus : std::uint8_t {
@@ -131,6 +136,16 @@ struct ProjectedOption {
 
   [[nodiscard]] bool operator==(const ProjectedOption &) const = default;
 };
+
+// Absolute expiry timestamp for `spec` anchored at `valuation_ts_ns`. Public
+// form of the maturity resolver used internally by project_option_contract.
+[[nodiscard]] Result<std::int64_t> resolve_projected_expiry(std::int64_t valuation_ts_ns,
+                                                            const ProjectedMaturitySpec &spec);
+
+// Nonzero identity fingerprint for a resolved `definition`. Public form of the
+// fingerprint helper used internally by project_option_contract.
+[[nodiscard]] std::uint64_t
+projected_definition_fingerprint(const ProjectedOptionDefinition &definition);
 
 // Resolve one template directly against one surface. On success the output is a
 // concrete absolute-expiry definition plus the requested mark/risk materialization.

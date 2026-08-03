@@ -61,68 +61,6 @@ constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
          ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1.0);
 }
 
-[[nodiscard]] Result<std::int64_t> resolve_expiry(std::int64_t valuation_ts_ns,
-                                                  const ProjectedMaturitySpec &spec) {
-  if (valuation_ts_ns <= 0) {
-    return Err(ErrorCode::InvalidArgument, "contract projection: invalid valuation timestamp");
-  }
-  switch (spec.kind) {
-  case ProjectedMaturityKind::YearFraction: {
-    if (!finite_positive(spec.year_fraction)) {
-      return Err(ErrorCode::InvalidArgument, "contract projection: year fraction must be positive");
-    }
-    const long double offset =
-        static_cast<long double>(spec.year_fraction) * static_cast<long double>(kNsPerYear);
-    const long double available =
-        static_cast<long double>(std::numeric_limits<std::int64_t>::max() - valuation_ts_ns);
-    if (!(offset >= 1.0L && offset <= available)) {
-      return Err(ErrorCode::OutOfRange, "contract projection: maturity overflows timestamp");
-    }
-    return Ok(valuation_ts_ns + static_cast<std::int64_t>(std::llround(offset)));
-  }
-  case ProjectedMaturityKind::CalendarDays: {
-    if (spec.calendar_count <= 0) {
-      return Err(ErrorCode::InvalidArgument, "contract projection: calendar days must be positive");
-    }
-    constexpr std::int64_t day_ns = 86'400'000'000'000LL;
-    if (spec.calendar_count >
-        (std::numeric_limits<std::int64_t>::max() - valuation_ts_ns) / day_ns) {
-      return Err(ErrorCode::OutOfRange, "contract projection: day maturity overflows");
-    }
-    return Ok(valuation_ts_ns + static_cast<std::int64_t>(spec.calendar_count) * day_ns);
-  }
-  case ProjectedMaturityKind::CalendarMonths: {
-    if (spec.calendar_count <= 0 || spec.calendar_count > 1200) {
-      return Err(ErrorCode::InvalidArgument,
-                 "contract projection: calendar months outside (0,1200]");
-    }
-    const time::CivilTime civil =
-        time::to_civil_utc(time::Timestamp::from_unix_nanos(valuation_ts_ns));
-    const std::int64_t month_index = static_cast<std::int64_t>(civil.date.year) * 12 +
-                                     static_cast<std::int64_t>(civil.date.month - 1u) +
-                                     spec.calendar_count;
-    const auto year = static_cast<std::int32_t>(month_index / 12);
-    const auto month = static_cast<std::uint32_t>(month_index % 12 + 1);
-    if (year < 1678 || year > 2261) {
-      return Err(ErrorCode::OutOfRange, "contract projection: calendar maturity overflows");
-    }
-    const std::uint32_t day = std::min(civil.date.day, time::days_in_month(year, month));
-    const std::int64_t expiry = time::timestamp_from_utc(year, month, day, civil.hour, civil.minute,
-                                                         civil.second, civil.nano)
-                                    .unix_nanos();
-    return expiry > valuation_ts_ns
-               ? Ok(expiry)
-               : Err(ErrorCode::OutOfRange, "contract projection: nonpositive calendar tenor");
-  }
-  case ProjectedMaturityKind::AbsoluteExpiry:
-    return spec.expiry_ts_ns > valuation_ts_ns
-               ? Ok(spec.expiry_ts_ns)
-               : Err(ErrorCode::InvalidArgument,
-                     "contract projection: absolute expiry is not after valuation");
-  }
-  return Err(ErrorCode::InvalidArgument, "contract projection: unknown maturity kind");
-}
-
 struct DeltaSolution {
   double strike{0.0};
   double achieved_delta{0.0};
@@ -375,21 +313,8 @@ struct DeltaSolution {
 
 [[nodiscard]] bool valid_delta_solve_policy(OptionDeltaSolvePolicy policy) noexcept {
   return policy == OptionDeltaSolvePolicy::Direct ||
-         policy == OptionDeltaSolvePolicy::FastScreenColdConfirm;
-}
-
-[[nodiscard]] std::uint64_t definition_fingerprint(const ProjectedOptionDefinition &definition) {
-  std::uint64_t words[] = {
-      definition.contract.uid,
-      std::bit_cast<std::uint64_t>(definition.contract.K),
-      std::bit_cast<std::uint64_t>(definition.contract.T),
-      static_cast<std::uint64_t>(definition.contract.side),
-      static_cast<std::uint64_t>(definition.valuation_ts_ns),
-      static_cast<std::uint64_t>(definition.expiry_ts_ns),
-      std::bit_cast<std::uint64_t>(definition.multiplier),
-  };
-  const std::uint64_t hash = atx::core::hash_bytes(words, sizeof words);
-  return hash == 0u ? 1u : hash;
+         policy == OptionDeltaSolvePolicy::FastScreenColdConfirm ||
+         policy == OptionDeltaSolvePolicy::CrossSectionalColdConfirm;
 }
 
 [[nodiscard]] OptionProjectionStatus status_from_error(const Error &error) noexcept {
@@ -410,6 +335,82 @@ struct DeltaSolution {
 }
 
 } // namespace
+
+Result<std::int64_t> resolve_projected_expiry(std::int64_t valuation_ts_ns,
+                                              const ProjectedMaturitySpec &spec) {
+  if (valuation_ts_ns <= 0) {
+    return Err(ErrorCode::InvalidArgument, "contract projection: invalid valuation timestamp");
+  }
+  switch (spec.kind) {
+  case ProjectedMaturityKind::YearFraction: {
+    if (!finite_positive(spec.year_fraction)) {
+      return Err(ErrorCode::InvalidArgument, "contract projection: year fraction must be positive");
+    }
+    const long double offset =
+        static_cast<long double>(spec.year_fraction) * static_cast<long double>(kNsPerYear);
+    const long double available =
+        static_cast<long double>(std::numeric_limits<std::int64_t>::max() - valuation_ts_ns);
+    if (!(offset >= 1.0L && offset <= available)) {
+      return Err(ErrorCode::OutOfRange, "contract projection: maturity overflows timestamp");
+    }
+    return Ok(valuation_ts_ns + static_cast<std::int64_t>(std::llround(offset)));
+  }
+  case ProjectedMaturityKind::CalendarDays: {
+    if (spec.calendar_count <= 0) {
+      return Err(ErrorCode::InvalidArgument, "contract projection: calendar days must be positive");
+    }
+    constexpr std::int64_t day_ns = 86'400'000'000'000LL;
+    if (spec.calendar_count >
+        (std::numeric_limits<std::int64_t>::max() - valuation_ts_ns) / day_ns) {
+      return Err(ErrorCode::OutOfRange, "contract projection: day maturity overflows");
+    }
+    return Ok(valuation_ts_ns + static_cast<std::int64_t>(spec.calendar_count) * day_ns);
+  }
+  case ProjectedMaturityKind::CalendarMonths: {
+    if (spec.calendar_count <= 0 || spec.calendar_count > 1200) {
+      return Err(ErrorCode::InvalidArgument,
+                 "contract projection: calendar months outside (0,1200]");
+    }
+    const time::CivilTime civil =
+        time::to_civil_utc(time::Timestamp::from_unix_nanos(valuation_ts_ns));
+    const std::int64_t month_index = static_cast<std::int64_t>(civil.date.year) * 12 +
+                                     static_cast<std::int64_t>(civil.date.month - 1u) +
+                                     spec.calendar_count;
+    const auto year = static_cast<std::int32_t>(month_index / 12);
+    const auto month = static_cast<std::uint32_t>(month_index % 12 + 1);
+    if (year < 1678 || year > 2261) {
+      return Err(ErrorCode::OutOfRange, "contract projection: calendar maturity overflows");
+    }
+    const std::uint32_t day = std::min(civil.date.day, time::days_in_month(year, month));
+    const std::int64_t expiry = time::timestamp_from_utc(year, month, day, civil.hour, civil.minute,
+                                                         civil.second, civil.nano)
+                                    .unix_nanos();
+    return expiry > valuation_ts_ns
+               ? Ok(expiry)
+               : Err(ErrorCode::OutOfRange, "contract projection: nonpositive calendar tenor");
+  }
+  case ProjectedMaturityKind::AbsoluteExpiry:
+    return spec.expiry_ts_ns > valuation_ts_ns
+               ? Ok(spec.expiry_ts_ns)
+               : Err(ErrorCode::InvalidArgument,
+                     "contract projection: absolute expiry is not after valuation");
+  }
+  return Err(ErrorCode::InvalidArgument, "contract projection: unknown maturity kind");
+}
+
+std::uint64_t projected_definition_fingerprint(const ProjectedOptionDefinition &definition) {
+  std::uint64_t words[] = {
+      definition.contract.uid,
+      std::bit_cast<std::uint64_t>(definition.contract.K),
+      std::bit_cast<std::uint64_t>(definition.contract.T),
+      static_cast<std::uint64_t>(definition.contract.side),
+      static_cast<std::uint64_t>(definition.valuation_ts_ns),
+      static_cast<std::uint64_t>(definition.expiry_ts_ns),
+      std::bit_cast<std::uint64_t>(definition.multiplier),
+  };
+  const std::uint64_t hash = atx::core::hash_bytes(words, sizeof words);
+  return hash == 0u ? 1u : hash;
+}
 
 ProjectedMaturitySpec ProjectedMaturitySpec::years(double value) noexcept {
   ProjectedMaturitySpec spec;
@@ -481,7 +482,7 @@ Result<ProjectedOption> project_option_contract(const SurfaceRef &surface,
     return Err(ErrorCode::InvalidArgument, "contract projection: invalid spec/config/surface uid");
   }
   const std::int64_t valuation = surface.pricing().now_ts_ns;
-  ATX_TRY(const std::int64_t expiry, resolve_expiry(valuation, spec.maturity));
+  ATX_TRY(const std::int64_t expiry, resolve_projected_expiry(valuation, spec.maturity));
   const double residual_t = static_cast<double>(expiry - valuation) / kNsPerYear;
   if (!finite_positive(residual_t)) {
     return Err(ErrorCode::OutOfRange, "contract projection: nonpositive residual maturity");
@@ -499,8 +500,11 @@ Result<ProjectedOption> project_option_contract(const SurfaceRef &surface,
     strike = forward;
     break;
   case ProjectedStrikeKind::Delta: {
+    const bool use_screened_solver =
+        config.delta_solve_policy == OptionDeltaSolvePolicy::FastScreenColdConfirm ||
+        config.delta_solve_policy == OptionDeltaSolvePolicy::CrossSectionalColdConfirm;
     Result<DeltaSolution> solved =
-        config.delta_solve_policy == OptionDeltaSolvePolicy::FastScreenColdConfirm
+        use_screened_solver
             ? solve_american_delta_screened(surface, residual_t, spec.side, spec.strike.value,
                                             config.delta_tolerance)
             : solve_american_delta(surface, residual_t, spec.side, spec.strike.value,
@@ -534,7 +538,7 @@ Result<ProjectedOption> project_option_contract(const SurfaceRef &surface,
   out.definition.valuation_ts_ns = valuation;
   out.definition.expiry_ts_ns = expiry;
   out.definition.multiplier = spec.multiplier;
-  out.definition.fingerprint = definition_fingerprint(out.definition);
+  out.definition.fingerprint = projected_definition_fingerprint(out.definition);
   out.forward = forward;
   out.implied_vol = point.sigma;
   out.requested_abs_delta =
