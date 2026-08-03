@@ -318,24 +318,45 @@ struct DeltaSolution {
 // evaluation), pass 1 (Newton), passes 2.. (secant refinement).
 constexpr std::size_t kMaxBatchDeltaPasses = 6;
 
-// TASK-4 SEAM: the scalar-fallback tail of solve_american_delta_batch. Rows
-// land here when a pass errored, produced a non-finite delta, hit a degenerate
-// Newton/secant update, or exhausted the batch pass budget. Task 4 replaces
-// this placeholder with the robust per-row cold scalar solver
-// (solve_american_delta at QueryExecution::ColdReference) plus the per-row
-// failure taxonomy; until then every routed row keeps the status recorded at
-// routing time (the propagated pass error or a placeholder Unavailable) and
-// NaN strike/achieved-delta outputs.
-void solve_batch_fallback_tail([[maybe_unused]] const SurfaceRef &surface,
-                               [[maybe_unused]] std::span<const double> T,
-                               [[maybe_unused]] std::span<const Side> side,
-                               [[maybe_unused]] std::span<const double> target_abs_delta,
-                               [[maybe_unused]] double tolerance,
-                               [[maybe_unused]] std::span<const std::uint32_t> fallback_rows,
-                               [[maybe_unused]] std::span<double> strike_out,
-                               [[maybe_unused]] std::span<double> achieved_delta_out,
-                               [[maybe_unused]] std::span<std::uint16_t> evaluations_out,
-                               [[maybe_unused]] std::span<Status> row_status_out) {}
+// The scalar-fallback tail of solve_american_delta_batch. Rows land here when
+// a pass errored, produced a non-finite delta, hit a degenerate Newton/secant
+// update, or exhausted the batch pass budget -- the rare tail. `fallback_rows`
+// is already sorted ascending by the caller (determinism, no cross-row
+// state: each row is solved fully independently). Every row is re-solved by
+// the robust bracketing/bisection scalar solver at QueryExecution::
+// ColdReference -- the SAME oracle CORRECTNESS GATE 1 holds every batch-
+// accepted strike to -- so a row that succeeds here satisfies the full
+// `tolerance`, not the batch's internal tolerance/2 margin. On success the
+// scalar solve's own DeltaSolution::evaluations is folded into
+// evaluations_out[row] via the saturating add_evaluations (on top of however
+// many batch passes the row already participated in before being routed);
+// on failure row_status_out[row] becomes the scalar solver's own propagated
+// error (InvalidArgument for an out-of-range target, Unavailable for
+// missing/unreachable surface data, NotFound for a target the scalar solver
+// could not bracket) and strike_out[row]/achieved_delta_out[row] are (re)set
+// to NaN -- never a stale or partially-converged candidate.
+void solve_batch_fallback_tail(const SurfaceRef &surface, std::span<const double> T,
+                               std::span<const Side> side, std::span<const double> target_abs_delta,
+                               double tolerance, std::span<const std::uint32_t> fallback_rows,
+                               std::span<double> strike_out, std::span<double> achieved_delta_out,
+                               std::span<std::uint16_t> evaluations_out,
+                               std::span<Status> row_status_out) {
+  for (const std::uint32_t row : fallback_rows) {
+    Result<DeltaSolution> solved =
+        solve_american_delta(surface, T[row], side[row], target_abs_delta[row], tolerance,
+                             QueryExecution::ColdReference);
+    if (!solved) {
+      row_status_out[row] = Err(solved.error());
+      strike_out[row] = kNaN;
+      achieved_delta_out[row] = kNaN;
+      continue;
+    }
+    strike_out[row] = solved->strike;
+    achieved_delta_out[row] = solved->achieved_delta;
+    evaluations_out[row] = add_evaluations(evaluations_out[row], solved->evaluations);
+    row_status_out[row] = Ok();
+  }
+}
 
 [[nodiscard]] bool valid_delta_solve_policy(OptionDeltaSolvePolicy policy) noexcept {
   return policy == OptionDeltaSolvePolicy::Direct ||
@@ -459,6 +480,8 @@ void AmericanDeltaBatchScratch::resize(std::size_t n) {
   active_t.reserve(n);
   active_side.clear();
   active_side.reserve(n);
+  fallback_rows.clear();
+  fallback_rows.reserve(n);
 }
 
 Status solve_american_delta_batch(const SurfaceRef &surface, std::span<const double> T,
@@ -480,14 +503,14 @@ Status solve_american_delta_batch(const SurfaceRef &surface, std::span<const dou
   }
 
   scratch.resize(n);
-  // TASK-4 SEAM input: stable-ordered ids of rows the batch passes could not
-  // finish; empty (never allocates) on the happy path.
-  std::vector<std::uint32_t> fallback_rows;
+  // Rows the batch passes could not finish; owned by the scratch (not a
+  // solver-local vector) so the rare fallback path allocates nothing beyond
+  // resize(n); empty on the happy path.
   const auto route_to_fallback = [&](std::uint32_t row, Status status) {
     strike_out[row] = kNaN;
     achieved_delta_out[row] = kNaN;
     row_status_out[row] = std::move(status);
-    fallback_rows.push_back(row);
+    scratch.fallback_rows.push_back(row);
   };
 
   // Seed (curve reads only, no boundary solves): the Black-style inverse-delta
@@ -675,13 +698,18 @@ Status solve_american_delta_batch(const SurfaceRef &surface, std::span<const dou
     }
   }
 
-  // Rows still active after the pass budget go to the Task-4 scalar tail.
+  // Rows still active after the pass budget go to the scalar fallback tail.
   for (const std::uint32_t row : scratch.active) {
     route_to_fallback(row, Err(ErrorCode::Unavailable,
                                "contract projection: batch delta solve did not converge"));
   }
   scratch.active.clear();
-  solve_batch_fallback_tail(surface, T, side, target_abs_delta, tolerance, fallback_rows,
+  // Ascending row order for the fallback tail (determinism); an in-place sort
+  // (no allocation) since routing order across passes need not itself be
+  // ascending (a row routed by an earlier pass can have a higher id than one
+  // routed by a later pass).
+  std::sort(scratch.fallback_rows.begin(), scratch.fallback_rows.end());
+  solve_batch_fallback_tail(surface, T, side, target_abs_delta, tolerance, scratch.fallback_rows,
                             strike_out, achieved_delta_out, evaluations_out, row_status_out);
   return Ok();
 }

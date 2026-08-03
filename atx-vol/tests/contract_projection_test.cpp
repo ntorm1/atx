@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <span>
 #include <string>
@@ -355,6 +356,22 @@ struct BatchDeltaOutputs {
       : strike(n, 0.0), achieved(n, 0.0), evaluations(n, 0u), row_status(n) {}
 };
 
+// Mirrors the private `kMaxBatchDeltaPasses` pass budget declared in the
+// anonymous namespace of contract_projection.cpp; not exposed via the public
+// header, so the Task-4 fallback tests re-declare the same value here purely
+// as a loose upper bound distinguishing "stayed inside the batch passes" rows
+// from "fell through to the scalar fallback tail" rows.
+constexpr std::uint16_t kMirroredMaxBatchDeltaPasses = 6u;
+
+double median_of(std::vector<std::uint16_t> values) {
+  std::sort(values.begin(), values.end());
+  const std::size_t mid = values.size() / 2;
+  if (values.size() % 2 == 1) {
+    return static_cast<double>(values[mid]);
+  }
+  return 0.5 * (static_cast<double>(values[mid - 1]) + static_cast<double>(values[mid]));
+}
+
 TEST(ContractProjection, BatchDeltaSolveIsColdConfirmedAgainstScalarDeltaOracle) {
   const std::int64_t now = timestamp(2026, 7, 10);
   const PricedSurface surface = make_surface(2u, 120.0, now);
@@ -456,7 +473,8 @@ TEST(ContractProjection, BatchDeltaSolveRowsAreCompositionInvariantAndRepeatable
                                                scratch.active.capacity(),
                                                scratch.active_strike.capacity(),
                                                scratch.active_t.capacity(),
-                                               scratch.active_side.capacity()};
+                                               scratch.active_side.capacity(),
+                                               scratch.fallback_rows.capacity()};
 
   BatchDeltaOutputs second(n);
   const Status second_solved = solve_american_delta_batch(
@@ -478,7 +496,8 @@ TEST(ContractProjection, BatchDeltaSolveRowsAreCompositionInvariantAndRepeatable
                                                       scratch.active.capacity(),
                                                       scratch.active_strike.capacity(),
                                                       scratch.active_t.capacity(),
-                                                      scratch.active_side.capacity()};
+                                                      scratch.active_side.capacity(),
+                                                      scratch.fallback_rows.capacity()};
   EXPECT_EQ(capacities, reused_capacities);
 
   for (std::size_t i = 0; i < n; ++i) {
@@ -496,6 +515,7 @@ TEST(ContractProjection, BatchDeltaSolveRowsAreCompositionInvariantAndRepeatable
   // Any contiguous sub-span solved as its own batch reproduces the full-batch
   // per-row strikes bit for bit (pack-composition invariance of the laned
   // kernels, pinned by PricedSurface.EvaluateBatchLanedGreeksPackCompositionInvariant).
+  ASSERT_GE(n, 22u); // guards the hard-coded sub-span indices below.
   for (const auto &[begin, end] :
        {std::pair<std::size_t, std::size_t>{0u, 10u}, std::pair<std::size_t, std::size_t>{10u, 22u},
         std::pair<std::size_t, std::size_t>{7u, 8u}, std::pair<std::size_t, std::size_t>{0u, n}}) {
@@ -556,6 +576,230 @@ TEST(ContractProjection, BatchDeltaSolveRejectsStructurallyInvalidSpans) {
   EXPECT_FALSE(solve_american_delta_batch(surface, T, side, target, 2.0e-3, scratch, strike,
                                           achieved, evaluations, row_status));
   EXPECT_TRUE(untouched());
+}
+
+TEST(ContractProjection, BatchDeltaSolveRoutesHardRowsThroughScalarFallbackAndStillConfirms) {
+  const std::int64_t now = timestamp(2026, 7, 10);
+  const PricedSurface surface = make_surface(2u, 120.0, now);
+  const BatchDeltaGrid grid = make_batch_delta_grid(now);
+  const std::size_t n_easy = grid.T.size();
+  ASSERT_GE(n_easy, 24u);
+
+  // Hard rows appended after the easy grid: boundary-adjacent targets and a
+  // very short (days(3), T ~= 0.008) maturity per the brief, PLUS deep-wing
+  // targets (0.999) at the 3-month and 2-year maturities that are empirically
+  // confirmed (via direct single-row probing) to defeat the vectorized
+  // Newton/secant passes -- the 3-month/0.999 rows exhaust the full batch
+  // pass budget ("did not converge"), the 2-year/0.999 rows hit the secant
+  // degenerate-gap guard -- so at least one row is genuinely difficult and
+  // must fall through to the Task-4 scalar fallback tail to still confirm.
+  const auto short_expiry = resolve_projected_expiry(now, ProjectedMaturitySpec::days(3));
+  ASSERT_TRUE(short_expiry) << short_expiry.error().to_string();
+  const double short_t = static_cast<double>(*short_expiry - now) / kNsPerYear;
+  const auto month_expiry = resolve_projected_expiry(now, ProjectedMaturitySpec::months(3));
+  ASSERT_TRUE(month_expiry) << month_expiry.error().to_string();
+  const double month_t = static_cast<double>(*month_expiry - now) / kNsPerYear;
+  const auto year_expiry = resolve_projected_expiry(now, ProjectedMaturitySpec::years(2.0));
+  ASSERT_TRUE(year_expiry) << year_expiry.error().to_string();
+  const double year_t = static_cast<double>(*year_expiry - now) / kNsPerYear;
+
+  struct HardRow {
+    double t;
+    Side side;
+    double target;
+  };
+  const std::vector<HardRow> hard_rows = {
+      {short_t, Side::Call, 0.40},  {short_t, Side::Put, 0.40},  {month_t, Side::Call, 0.02},
+      {month_t, Side::Put, 0.02},   {month_t, Side::Call, 0.95}, {month_t, Side::Put, 0.95},
+      {month_t, Side::Call, 0.999}, {month_t, Side::Put, 0.999}, {year_t, Side::Call, 0.999},
+      {year_t, Side::Put, 0.999},
+  };
+
+  std::vector<double> T = grid.T;
+  std::vector<Side> side = grid.side;
+  std::vector<double> target = grid.target;
+  for (const HardRow &row : hard_rows) {
+    T.push_back(row.t);
+    side.push_back(row.side);
+    target.push_back(row.target);
+  }
+  const std::size_t n = T.size();
+
+  constexpr double tolerance = 1.0e-7;
+  AmericanDeltaBatchScratch scratch;
+  BatchDeltaOutputs out(n);
+  const Status solved =
+      solve_american_delta_batch(surface, T, side, target, tolerance, scratch, out.strike,
+                                 out.achieved, out.evaluations, out.row_status);
+  ASSERT_TRUE(solved) << (solved ? std::string{} : solved.error().to_string());
+
+  std::vector<std::uint16_t> all_evaluations;
+  bool any_fallback_exercised = false;
+  for (std::size_t i = 0; i < n; ++i) {
+    ASSERT_TRUE(out.row_status[i]) << "row " << i << ": " << out.row_status[i].error().to_string();
+    ASSERT_TRUE(std::isfinite(out.strike[i])) << "row " << i;
+    EXPECT_GT(out.strike[i], 0.0) << "row " << i;
+    const auto oracle = surface.delta(out.strike[i], T[i], side[i], QueryExecution::ColdReference);
+    ASSERT_TRUE(oracle) << "row " << i << ": " << oracle.error().to_string();
+    EXPECT_LE(std::fabs(std::fabs(*oracle) - target[i]), tolerance) << "row " << i;
+    all_evaluations.push_back(out.evaluations[i]);
+    if (i < n_easy) {
+      // Easy rows must converge WITHIN the batch pass budget; a regression
+      // that silently routed everything through scalar fallback would blow
+      // this bound.
+      EXPECT_LE(out.evaluations[i], static_cast<std::uint16_t>(kMirroredMaxBatchDeltaPasses + 1u))
+          << "row " << i;
+    } else if (out.evaluations[i] > kMirroredMaxBatchDeltaPasses) {
+      any_fallback_exercised = true;
+    }
+  }
+  EXPECT_TRUE(any_fallback_exercised)
+      << "expected at least one hard row's evaluations_out to exceed the batch pass budget, "
+         "proving the scalar fallback tail actually ran";
+  EXPECT_LE(median_of(all_evaluations), 4.0);
+}
+
+TEST(ContractProjection, BatchDeltaSolveReportsRowFailuresWithoutInventingStrikes) {
+  const std::int64_t now = timestamp(2026, 7, 10);
+  const PricedSurface surface = make_surface(2u, 120.0, now);
+  const BatchDeltaGrid grid = make_batch_delta_grid(now);
+  ASSERT_GE(grid.T.size(), 6u);
+  const double normal_t = grid.T[0];
+
+  // Bad rows interleaved with good ones: an out-of-range target on each side
+  // of (0,1), plus a T so far beyond the last fitted slice that the
+  // extrapolated forward overflows to +inf (surface data genuinely
+  // unavailable at that T in this surface's flat-extrapolation model, unlike
+  // a merely-large-but-still-finite T; verified empirically -- this surface
+  // holds forward/iv flat, never NaN, for any FINITE T out to roughly 3.5e4
+  // years given its rate/dividend parameters).
+  constexpr double kFarBeyondFittedT = 50000.0;
+  std::vector<double> T;
+  std::vector<Side> side;
+  std::vector<double> target;
+  std::vector<bool> is_bad;
+  std::vector<atx::core::ErrorCode> expected_code;
+  const auto push_good = [&](std::size_t grid_index) {
+    T.push_back(grid.T[grid_index]);
+    side.push_back(grid.side[grid_index]);
+    target.push_back(grid.target[grid_index]);
+    is_bad.push_back(false);
+    expected_code.push_back(ErrorCode::Unknown); // unused: only read for bad rows
+  };
+  const auto push_bad = [&](double t, Side s, double bad_target, ErrorCode code) {
+    T.push_back(t);
+    side.push_back(s);
+    target.push_back(bad_target);
+    is_bad.push_back(true);
+    expected_code.push_back(code);
+  };
+
+  push_good(0);
+  push_bad(normal_t, Side::Call, 1.5, ErrorCode::InvalidArgument);
+  push_good(1);
+  push_bad(normal_t, Side::Put, -0.1, ErrorCode::InvalidArgument);
+  push_good(2);
+  push_bad(kFarBeyondFittedT, Side::Call, 0.40, ErrorCode::Unavailable);
+  push_good(3);
+
+  const std::size_t n = T.size();
+  constexpr double tolerance = 1.0e-7;
+  AmericanDeltaBatchScratch scratch;
+  BatchDeltaOutputs mixed(n);
+  const Status solved =
+      solve_american_delta_batch(surface, T, side, target, tolerance, scratch, mixed.strike,
+                                 mixed.achieved, mixed.evaluations, mixed.row_status);
+  ASSERT_TRUE(solved) << (solved ? std::string{} : solved.error().to_string());
+
+  std::vector<double> good_T, good_target;
+  std::vector<Side> good_side;
+  std::vector<std::size_t> good_rows;
+  for (std::size_t i = 0; i < n; ++i) {
+    if (is_bad[i]) {
+      EXPECT_FALSE(mixed.row_status[i]) << "row " << i << " expected to fail";
+      if (!mixed.row_status[i]) {
+        EXPECT_EQ(mixed.row_status[i].error().code(), expected_code[i]) << "row " << i;
+      }
+      EXPECT_TRUE(std::isnan(mixed.strike[i])) << "row " << i;
+      EXPECT_TRUE(std::isnan(mixed.achieved[i])) << "row " << i;
+    } else {
+      ASSERT_TRUE(mixed.row_status[i])
+          << "row " << i << ": " << mixed.row_status[i].error().to_string();
+      EXPECT_TRUE(std::isfinite(mixed.strike[i])) << "row " << i;
+      good_T.push_back(T[i]);
+      good_side.push_back(side[i]);
+      good_target.push_back(target[i]);
+      good_rows.push_back(i);
+    }
+  }
+
+  // Neighboring valid rows are unaffected by the interleaved failures: solved
+  // alone (their own batch, same scratch discipline) they reproduce
+  // bit-identical strikes/deltas.
+  AmericanDeltaBatchScratch alone_scratch;
+  BatchDeltaOutputs alone(good_T.size());
+  const Status alone_solved =
+      solve_american_delta_batch(surface, good_T, good_side, good_target, tolerance, alone_scratch,
+                                 alone.strike, alone.achieved, alone.evaluations, alone.row_status);
+  ASSERT_TRUE(alone_solved) << (alone_solved ? std::string{} : alone_solved.error().to_string());
+  for (std::size_t j = 0; j < good_rows.size(); ++j) {
+    ASSERT_TRUE(alone.row_status[j]) << "alone row " << j;
+    const std::size_t mixed_row = good_rows[j];
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(alone.strike[j]),
+              std::bit_cast<std::uint64_t>(mixed.strike[mixed_row]))
+        << "good row " << mixed_row;
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(alone.achieved[j]),
+              std::bit_cast<std::uint64_t>(mixed.achieved[mixed_row]))
+        << "good row " << mixed_row;
+  }
+}
+
+TEST(ContractProjection, BatchDeltaSolveEvaluationCountsSaturate) {
+  const std::int64_t now = timestamp(2026, 7, 10);
+  const PricedSurface surface = make_surface(2u, 120.0, now);
+  const BatchDeltaGrid grid = make_batch_delta_grid(now);
+  const std::size_t n_easy = grid.T.size();
+  ASSERT_GE(n_easy, 24u);
+
+  // One row hard enough to require the scalar fallback tail (empirically
+  // confirmed by direct single-row probing to exhaust the batch pass budget
+  // with "did not converge"), so its evaluations_out demonstrably includes
+  // the fallback's own DeltaSolution evaluations added on top of the
+  // batch-pass count via the saturating add_evaluations helper (the helper
+  // itself is already unit-exercised transitively, per the brief; this only
+  // pins the batch-solver's use of it).
+  const auto month_expiry = resolve_projected_expiry(now, ProjectedMaturitySpec::months(3));
+  ASSERT_TRUE(month_expiry) << month_expiry.error().to_string();
+  const double month_t = static_cast<double>(*month_expiry - now) / kNsPerYear;
+
+  std::vector<double> T = grid.T;
+  std::vector<Side> side = grid.side;
+  std::vector<double> target = grid.target;
+  T.push_back(month_t);
+  side.push_back(Side::Put);
+  target.push_back(0.999);
+  const std::size_t n = T.size();
+  const std::size_t hard_row = n - 1u;
+
+  constexpr double tolerance = 1.0e-7;
+  AmericanDeltaBatchScratch scratch;
+  BatchDeltaOutputs out(n);
+  const Status solved =
+      solve_american_delta_batch(surface, T, side, target, tolerance, scratch, out.strike,
+                                 out.achieved, out.evaluations, out.row_status);
+  ASSERT_TRUE(solved) << (solved ? std::string{} : solved.error().to_string());
+
+  // Monotone-nonzero: every successful row's evaluation count is at least
+  // one (the counter only ever grows from zero via add_evaluations, never
+  // resets), and finite/bounded (no wraparound).
+  for (std::size_t i = 0; i < n; ++i) {
+    ASSERT_TRUE(out.row_status[i]) << "row " << i << ": " << out.row_status[i].error().to_string();
+    EXPECT_GE(out.evaluations[i], 1u) << "row " << i;
+    EXPECT_LT(out.evaluations[i], std::numeric_limits<std::uint16_t>::max()) << "row " << i;
+  }
+  // The hard row's count must exceed the batch-only budget: proof the
+  // fallback's evaluations were folded in via add_evaluations, not dropped.
+  EXPECT_GT(out.evaluations[hard_row], kMirroredMaxBatchDeltaPasses) << "hard row " << hard_row;
 }
 
 TEST(ContractProjection, ProjectedDefinitionFingerprintHelperMatchesProjection) {

@@ -165,6 +165,12 @@ struct AmericanDeltaBatchScratch {
   std::vector<std::uint32_t> active{};             // stable-ordered unconverged row ids
   std::vector<double> active_strike{}, active_t{}; // compacted pass inputs
   std::vector<Side> active_side{};
+  // Rows the batch passes could not finish, handed to the scalar fallback
+  // tail in ascending row-id order (sorted in place before the tail runs, an
+  // allocation-free step). Owned here rather than as a solver-local vector so
+  // even the rare fallback path allocates nothing once resize(n) has run;
+  // empty on the (steady-state) happy path.
+  std::vector<std::uint32_t> fallback_rows{};
   void resize(std::size_t n);
 };
 
@@ -176,10 +182,15 @@ struct AmericanDeltaBatchScratch {
 // unconverged tail (Task 4). Internal batch acceptance uses tolerance/2 so the
 // scalar cold oracle holds at the full tolerance despite the documented
 // laned-vs-scalar kernel gap. Spans all length n; structural violations
-// (length mismatch, invalid tolerance, empty batch) fail the call; per-row
-// market/convergence failures land in row_status_out and never invent strikes.
-// Deterministic: fixed row order, batch-composition-invariant kernels, no
-// cross-call state. Thread-safe for concurrent calls on distinct scratch.
+// (length mismatch, invalid tolerance, empty batch) fail the call and leave
+// every output span untouched -- that guarantee holds only for these
+// pre-flight validation failures, checked before any row is processed; a
+// structural failure surfaced mid-run (e.g. evaluate_batch itself erroring
+// inside a pass) still returns Err but rows already frozen by an earlier
+// pass keep their written outputs. Per-row market/convergence failures land
+// in row_status_out and never invent strikes. Deterministic: fixed row
+// order, batch-composition-invariant kernels, no cross-call state.
+// Thread-safe for concurrent calls on distinct scratch.
 [[nodiscard]] Status solve_american_delta_batch(
     const SurfaceRef &surface, std::span<const double> T, std::span<const Side> side,
     std::span<const double> target_abs_delta, double tolerance, AmericanDeltaBatchScratch &scratch,
