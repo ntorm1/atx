@@ -121,19 +121,25 @@ std::string cache_dir_from_env() {
 
 // Snapshot look-ahead depth for the projected replay, overridable by
 // ATX_VOL_PREFETCH_DEPTH for host-specific tuning and for reproducing a prior
-// run's pipeline shape. The DEFAULT is the tuned value, not 1: the projected
-// replay's per-step economics are cheap next to deserializing that step's
-// archive, so at depth 1 the run is load-bound and the loads serialize behind
-// the economics one at a time. Depth is a scheduling knob ONLY — the output is
-// bit-identical at every depth (see RunConfig::prefetch_depth), so an override
-// can cost throughput but can never change a number.
+// run's pipeline shape. The DEFAULT is 2, not 1: the projected replay's
+// per-step economics are cheap next to deserializing that step's archive, so at
+// depth 1 the run is load-bound and the loads serialize behind the economics
+// one at a time. Measured through this tool on the 135-session corpus (v1
+// closeout sprint Task 4.8, plan item 6.7): 1->2 is +15.2% median wall, 11/12
+// rounds won; 2->4 and 4->8 are statistical washes (+1.9% 7/12, +1.6% 7/12)
+// that also raise resident whole-board snapshots for no reliable win (depth 8
+// holds 10 against depth 2's 4 — private_snapshot_cache_capacity, backtest.cpp),
+// so the default stops at 2 rather than climbing further. Depth is a
+// scheduling knob ONLY — the output is bit-identical at every depth (see
+// RunConfig::prefetch_depth), so an override can cost throughput but can never
+// change a number.
 //
 // An unparseable or out-of-range value falls back to the default rather than
 // failing the run: this is a performance hint, and a typo in an env var must not
 // break a production replay. Capped so a fat-fingered value cannot try to hold
 // the entire clock's snapshots in memory at once.
 std::size_t projected_prefetch_depth() {
-  constexpr std::size_t kDefaultDepth = 8u;
+  constexpr std::size_t kDefaultDepth = 2u;
   constexpr std::size_t kMaxDepth = 64u;
   std::string raw;
 #if defined(_WIN32)

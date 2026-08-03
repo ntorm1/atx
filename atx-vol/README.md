@@ -624,8 +624,8 @@ demonstrations stay behind `ATX_BUILD_EXAMPLES` (OFF by default).
 
 ## Configuration registry: the `ATX_*` environment variables
 
-atx-vol reads **ten** `ATX_*` environment variables in shipped code — nine from
-the library, one from a tool. None is required, and **none of them changes a
+atx-vol reads **eleven** `ATX_*` environment variables in shipped code — nine
+from the library, two from tools. None is required, and **none of them changes a
 fitted, priced or archived value.** The ones that touch parallelism select how
 much of the machine is used, and every atx-vol fan-out is documented
 bit-identical for any worker count; the rest decide only whether a diagnostic is
@@ -644,6 +644,7 @@ the property that makes this table short.
 | `ATX_VOL_ZC_BORROW` | `0` forces the owned-reconstruct archive path instead of the zero-copy borrow. Read once per process, so it cannot make a run non-deterministic | unset = borrow allowed | library — `src/backtest.cpp` | **keep**, deprecation candidate |
 | `ATX_VOL_ZC_BACKING` | `map` or `copy` overrides the caller-declared `ArchiveBacking` on the borrow path. Read once per process | unset = the caller's choice stands | library — `src/backtest.cpp` | **keep**, deprecation candidate |
 | `ATX_VOL_CACHE` | Default for the dispersion CLI's `--cache DIR`; an explicit `--cache` overrides it. Empty means disabled, which is the default behaviour | unset = disabled | tool — `tools/spy_dispersion_backtest.cpp` | **keep** |
+| `ATX_VOL_PREFETCH_DEPTH` | Overrides the projected replay's snapshot look-ahead depth (`projected_prefetch_depth()`). Malformed or out-of-range (cap `64`) falls back to the default rather than failing the run. Scheduling only — output is bit-identical at any depth | `2`, cap `64` | tool — `tools/spy_dispersion_backtest.cpp` | **keep** |
 
 **Nothing is deleted at v1, because nothing here is dead.** Every row has a live
 read site and a live effect; the two knobs with real *consumers* outside their
