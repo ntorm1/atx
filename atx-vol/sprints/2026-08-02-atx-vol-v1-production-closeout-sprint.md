@@ -63,7 +63,9 @@ correctness debt in Tasks 0-1, (b) perf items 6.3-6.7, (c) two bounded feature g
   the corrected gate inventory).
 - **Pre-merge NAV anchors are stale by construction** (rel `123243.11724603444`, rel-avx2
   `123243.11724602008` at `8e6f27a`): main's SPX-Wilmott/European-semantics and derivatives work
-  may legitimately move NAV. Task 0 re-pins.
+  may legitimately move NAV. Task 0 re-pins. **[Outcome: Task 0 measured both anchors exact; no
+  re-pin was needed; the anchors stand — rel `123243.11724603444`, rel-avx2
+  `123243.11724602008`.]**
 - **v1.0.0 tag NOT created.** Task 7 owns it.
 
 ## Task 0 — Post-merge re-baseline + merge-decision audit (correctness; mandatory first)

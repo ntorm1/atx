@@ -614,6 +614,11 @@ TEST(PreparedPortfolio, GroupedPriceEqualsIndependentOracleAndPinnedFingerprint)
   //     rel      (Release, SSE2) -> 17305682487856730537
   //     rel-avx2 (Release, FMA)  -> 8754310291975640041
   //
+  // LTO NOTE: this provenance predates the LTO flip. `rel`/`rel-avx2` gained
+  // CMAKE_INTERPROCEDURAL_OPTIMIZATION=ON at `63f6f29` (v1 closeout sprint Task 2),
+  // which verified the SSE2 pin above (`17305682487856730537`) bit-identical
+  // LTO-on vs LTO-off on `rel`, so it did not need re-measuring.
+  //
   // The FMA branch carries ONE value deliberately: `rel-avx2` is the only preset that
   // injects /arch:AVX2 (CMakePresets.json:84-85) and it inherits `rel`, so __FMA__
   // implies NDEBUG in the shipped preset set and a Debug+FMA cell is unreachable. If a

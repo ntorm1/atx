@@ -383,8 +383,8 @@ site.
 
 ### The two run-control knobs Python does not get
 
-`RunConfig` has **sixteen** fields in the engine (`backtest.hpp` pins the count
-with a `static_assert`). The binding hand-lists **fourteen**. The two it leaves
+`RunConfig` has **seventeen** fields in the engine (`backtest.hpp` pins the count
+with a `static_assert`). The binding hand-lists **fifteen**. The two it leaves
 out are the per-step run-control pair, and each omission is a decision recorded
 at the C++ declaration rather than an oversight:
 

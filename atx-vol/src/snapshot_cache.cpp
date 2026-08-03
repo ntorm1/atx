@@ -234,9 +234,13 @@ struct SnapshotCache::Impl {
 
   // 6.6: the identity probe, memoized when — and ONLY when — the backing says it may
   // be. `current_identity` is a file open + 256-byte read on EVERY load and EVERY
-  // prefetch, so a forward-only replay pays it twice per archive and the surface-db
-  // route pays it once more per step; it is also the reason `prefetch_window` may not
-  // rescan its window (see backtest.cpp).
+  // prefetch — that was true under Sealed too before this memo existed, so a
+  // forward-only replay paid it twice per archive and the surface-db route paid it
+  // once more per step, which was the reason `prefetch_window` (backtest.cpp) does
+  // not rescan its window. On the Mutable path below that cost is unchanged today;
+  // under Sealed the probe is now this memo, so `prefetch_window`'s one-call-per-ref
+  // discipline there buys probe-count parity with the single-step look-ahead rather
+  // than avoiding probe cost.
   //
   // Under `Sealed` the caller has DECLARED the corpus read-only for this cache's
   // lifetime (that declaration is what licenses handing out mappings into those files
@@ -256,8 +260,10 @@ struct SnapshotCache::Impl {
   // alongside `entries` would re-probe exactly the archives a forward-only walk is
   // about to consume, which is the cost being removed. The bound is the clock length
   // (one entry per session for `run_backtest`'s private cache, which is the only
-  // Sealed cache the engine builds and it dies with the run), and the memo holds no
-  // snapshot alive: an evicted entry frees its deserialized surfaces regardless.
+  // Sealed cache the engine itself builds — the constructor is public, and a test or
+  // other caller may build its own caller-owned Sealed cache — and it dies with the
+  // run), and the memo holds no snapshot alive: an evicted entry frees its
+  // deserialized surfaces regardless.
   [[nodiscard]] ArchiveContentIdentity identity_for(const std::string &path) {
     if (backing != ArchiveBacking::Sealed) {
       return current_identity(path);

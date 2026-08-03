@@ -239,7 +239,7 @@ Defaults are `DispersionBacktestConfig` / `StrikePolicy` / `FrictionModel` /
 | `half_spread_bps` | double | `0` | → `run.frictions.half_spread_bps`; see the spread-lane note below |
 | `per_contract_cost` | double | `0` | → `run.frictions.per_contract_cost`; `$` per contract traded, charged in every lane |
 | `n_threads` | unsigned | `0` | → `run.price.n_threads`; `0` = all hardware cores. Output is bit-identical at any thread count |
-| `prefetch_depth` | size_t | `2` | → `run.prefetch_depth`; snapshot look-ahead depth. Output is bit-identical at any depth (§7). `2` since S6-T32 measured `1 → 2` at +15.2 % (11/12 interleaved rounds) on the 135-session replay and every deeper step as a wash; set `1` for the old single-step shape |
+| `prefetch_depth` | size_t | `2` | → `run.prefetch_depth`; snapshot look-ahead depth. Output is bit-identical at any depth (§7). `2` since v1 closeout sprint Task 4.8 (plan item 6.7) measured `1 → 2` at +15.2 % (11/12 interleaved rounds) on the 135-session replay and every deeper step as a wash; set `1` for the old single-step shape |
 | `unpriced` | enum | `error` | → `run.unpriced`; \| `exclude_and_report`. **Read §6 before changing this** |
 
 Numbers must parse **whole**: `45x` is rejected, never read as `45`, and a
@@ -602,7 +602,7 @@ shape (`hedge_kind none`) and is a single observation.
   turns `economics + total_load` into roughly `max(economics, total_load / D)`.
   **It changes only *when* a snapshot is deserialized, never which bytes**, so
   output is unaffected at any depth. The private cache is sized **`depth + 2`**
-  (`private_snapshot_cache_capacity`, `atx-vol/src/backtest.cpp:67-69`), so
+  (`private_snapshot_cache_capacity`, `atx-vol/src/backtest.cpp:72-74`), so
   raising the depth raises resident whole-board snapshots too — **10** at depth
   8 against **4** at the shipped depth 2. **The memory cost of depth 8 was not
   measured**, which is why the shipped config stays at 2.

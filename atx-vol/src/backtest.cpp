@@ -86,8 +86,12 @@ std::atomic<std::uint64_t> g_deserialized_bytes{0};
 // whole window — `SnapshotCache::prefetch` reads the candidate archive's identity
 // header on every call (a small file open + read) to fail closed on an archive
 // rewritten in place, so rescanning would multiply that probe by the depth for no
-// added look-ahead. One call per ref per run keeps the probe count exactly what
-// the single-step look-ahead already paid.
+// added look-ahead. That per-call probe is now memoized under `Sealed` backing
+// (`SnapshotCache::identity_for`, snapshot_cache.cpp), which is what `run_backtest`'s
+// private cache uses, so on the default Sealed replay path this cost argument no
+// longer applies — it holds only for a caller-supplied `Mutable` cache, and on
+// Sealed the reason to keep one call per ref per run is instead probe-count parity
+// with the single-step look-ahead already paid.
 //
 // A prefetch error is propagated, not swallowed: it means the cache could not be
 // asked (an invalid build policy), which is a programming error, and the load that

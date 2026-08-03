@@ -131,11 +131,11 @@ convention prescribes for a new knob. Two notes a caller may care about:
   bit-identity, and the SPY-dispersion NAV determinism legs reproduce their
   anchors bit-exactly across the merge that introduced it.
 * **The default is `2`, not the historical single-step `1`.** It arrived from
-  `main` at `1` and was moved to `2` in this release (S6-T32, plan 6.7) on a
-  paired measurement: one binary with the depth alternated inside a single
-  session, 12 interleaved rounds on the 135-session SPY-dispersion replay,
-  medians and win-counts only — `1 → 2` **+15.2 % (11/12 rounds)**, then
-  `1 → 4` +19.8 % (10/12) and `1 → 8` +19.6 % (10/12), while `2 → 4` (+1.9 %,
+  `main` at `1` and was moved to `2` in this release (v1 closeout sprint Task
+  4.8, plan item 6.7) on a paired measurement: one binary with the depth
+  alternated inside a single session, 12 interleaved rounds on the 135-session
+  SPY-dispersion replay, medians and win-counts only — `1 → 2` **+15.2 % (11/12
+  rounds)**, then `1 → 4` +19.8 % (10/12) and `1 → 8` +19.6 % (10/12), while `2 → 4` (+1.9 %,
   7/12) and `4 → 8` (+1.6 %, 7/12) are washes. The curve is a step, not a ramp:
   overlapping the first load is the whole win, so `2` is the cheapest default
   that takes it. **A run that wants the old shape sets `1` explicitly and gets

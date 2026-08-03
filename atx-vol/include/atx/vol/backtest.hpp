@@ -834,9 +834,10 @@ struct RunConfig {
   // size, and an undersized one costs throughput but never correctness.
   // 0 is normalized to 1 (no look-ahead is expressed by prefetch_snapshots=false).
   //
-  // WHY THE DEFAULT IS 2 AND NOT 1 (S6-T32, plan 6.7). Measured on the 135-session
-  // projected replay, one binary with the depth alternated inside a single session,
-  // 12 interleaved rounds over depths {1,2,4,8}, medians and win-counts only (this
+  // WHY THE DEFAULT IS 2 AND NOT 1 (v1 closeout sprint Task 4.8, plan item 6.7).
+  // Measured on the 135-session projected replay, one binary with the depth
+  // alternated inside a single session, 12 interleaved rounds over depths
+  // {1,2,4,8}, medians and win-counts only (this
   // host has no frequency pinning and per-pair spreads reach ±40 %):
   //
   //     1 -> 2 : +15.2 % median, 11/12 rounds won
