@@ -38,10 +38,47 @@ std::span<const double> as_span(const DoubleArray &array, const char *name) {
   return {array.data(), static_cast<std::size_t>(array.size())};
 }
 
-void require_same_size(std::size_t expected, std::span<const double> value, const char *name) {
+// `ref` names the column whose length is the batch length, so the message points
+// at the array the caller must actually match. The American book keys on S, the
+// Black-76 batches on F; before 5.1 this said "F" unconditionally and therefore
+// misdirected every American shape error.
+void require_same_size(std::size_t expected, std::span<const double> value, const char *name,
+                       const char *ref = "F") {
   if (value.size() != expected) {
-    throw py::value_error(std::string{name} + " must have the same length as F");
+    throw py::value_error(std::string{name} + " must have the same length as " + ref);
   }
+}
+
+// FIX-5 (final-review Minor): the array arrives UNTYPED so the caller's dtype is
+// still visible; `as_side_codes` rejects a float kind before any cast (see
+// sides.hpp) and returns the int32 view. int64 columns keep working.
+//
+// 5.1: a bare `Side` broadcasts, and this decoder moved up here from the
+// American section because the Black-76 batches below take a `side` column too.
+// The C++ kernels all take `span<const Side>` — side is genuinely per-lane, and a
+// real chain is mixed — so the per-lane column is the contract. But the older
+// `black76_price_batch` / `implied_vol_batch` bindings take ONE `Side` for the
+// whole batch, so accepting both here means the vectorized surface has a single
+// spelling of `side` rather than two. Pure widening: an array behaves as before.
+std::vector<Side> as_sides(const py::object &raw, std::size_t expected, const char *ref = "S") {
+  if (py::isinstance<Side>(raw)) {
+    return std::vector<Side>(expected, raw.cast<Side>());
+  }
+  const atxvol::python::SideCodes array = atxvol::python::as_side_codes(raw);
+  if (array.ndim() != 1) {
+    throw py::value_error("side must be a one-dimensional array");
+  }
+  if (static_cast<std::size_t>(array.size()) != expected) {
+    throw py::value_error(std::string{"side must have the same length as "} + ref);
+  }
+  std::vector<Side> out(expected);
+  const auto *data = array.data();
+  for (std::size_t i = 0; i < expected; ++i) {
+    // One shared decoder (I2): an unrecognised code is rejected, never folded
+    // onto Call. See sides.hpp.
+    out[i] = atxvol::python::decode_side(data[i], i);
+  }
+  return out;
 }
 
 py::array_t<double> price_batch(const DoubleArray &f_array, const DoubleArray &k_array,
@@ -101,6 +138,127 @@ iv_batch(const DoubleArray &price_array, const DoubleArray &f_array, const Doubl
   return {std::move(output), atxvol::python::to_status_array(statuses)};
 }
 
+// ── 5.1: numpy-native Black-76 Greeks and fused value+vega ──────────────────
+//
+// `black76_greeks_batch` and `black76_value_and_vega_batch` (batch.hpp:98,139)
+// were the last unbound public batch kernels: from Python the only way to get a
+// chain's Greeks out of Black-76 was a `for` loop over the scalar `black76_greeks`,
+// paying ~1-2 us of pybind dispatch per contract against a kernel that runs four
+// lanes of AVX2 per iteration. Both entry points below hand the whole slice to
+// C++ in ONE call under ONE GIL release.
+//
+// NO STATUS ARRAY, deliberately. Every other vectorized binding here returns a
+// parallel `status` because its kernel HAS a per-lane failure channel
+// (`implied_vol_batch`'s `span<Status>`; the American batch's `LaneStatus`).
+// These two do not: `black76_greeks` and `black76_value_and_vega` are `noexcept`
+// TOTAL functions — a degenerate lane (T <= 0 or sigma <= 0) collapses to the
+// documented intrinsic-step result rather than failing (greeks.hpp:40-42,
+// black76.hpp:30-35) — so the only failure a call can have is a malformed CALL,
+// which raises. Manufacturing an all-`STATUS_OK` column would advertise a
+// diagnostic channel that carries no information, which is the opposite of what
+// the NaN + per-lane convention exists for. `black76_price_batch` above already
+// returns a bare array for the same reason.
+//
+// GIL: released. Both kernels are pure functions over caller-owned spans with no
+// static state and no Python API contact; the only allocation is the C++-side
+// `Greeks` staging vector below. Every `mutable_data()` is hoisted above the
+// release (M3), matching `price_batch`. This is the case PY-5 contrasts itself
+// against — `AloPricer::price` keeps the GIL because it MUTATES cached state.
+
+// The kernel writes AoS `Greeks`; Python wants SoA columns. The transpose is one
+// pass over n*8 doubles and happens inside the same GIL release. Binding to the
+// validated public entry point (which checks span lengths and output aliasing,
+// and falls back to the scalar loop off AVX2) is worth that pass — the SoA-native
+// `simd::black76_greeks_batch_soa` is the raw kernel with neither.
+py::dict b76_greeks_batch(const DoubleArray &f_array, const DoubleArray &k_array,
+                          const DoubleArray &t_array, const DoubleArray &sigma_array,
+                          const DoubleArray &r_array, const DoubleArray &df_array,
+                          const py::object &side_array) {
+  const auto f = as_span(f_array, "F");
+  const auto k = as_span(k_array, "K");
+  const auto t = as_span(t_array, "T");
+  const auto sigma = as_span(sigma_array, "sigma");
+  const auto r = as_span(r_array, "r");
+  const auto df = as_span(df_array, "df");
+  require_same_size(f.size(), k, "K");
+  require_same_size(f.size(), t, "T");
+  require_same_size(f.size(), sigma, "sigma");
+  require_same_size(f.size(), r, "r");
+  require_same_size(f.size(), df, "df");
+  const std::vector<Side> sides = as_sides(side_array, f.size(), "F");
+
+  const auto n = static_cast<py::ssize_t>(f.size());
+  py::array_t<double> delta(n), gamma(n), vega(n), theta(n), rho(n), vanna(n), volga(n), charm(n),
+      price(n);
+  auto *delta_p = delta.mutable_data();
+  auto *gamma_p = gamma.mutable_data();
+  auto *vega_p = vega.mutable_data();
+  auto *theta_p = theta.mutable_data();
+  auto *rho_p = rho.mutable_data();
+  auto *vanna_p = vanna.mutable_data();
+  auto *volga_p = volga.mutable_data();
+  auto *charm_p = charm.mutable_data();
+  auto *price_p = price.mutable_data();
+  {
+    py::gil_scoped_release release;
+    std::vector<Greeks> staged(f.size());
+    static_cast<void>(atxvol::python::unwrap(
+        black76_greeks_batch(f, k, t, sigma, r, df, sides, std::span<Greeks>{staged},
+                             std::span<double>{price_p, f.size()})));
+    for (std::size_t i = 0; i < staged.size(); ++i) {
+      delta_p[i] = staged[i].delta;
+      gamma_p[i] = staged[i].gamma;
+      vega_p[i] = staged[i].vega;
+      theta_p[i] = staged[i].theta;
+      rho_p[i] = staged[i].rho;
+      vanna_p[i] = staged[i].vanna;
+      volga_p[i] = staged[i].volga;
+      charm_p[i] = staged[i].charm;
+    }
+  }
+  py::dict out;
+  out["delta"] = std::move(delta);
+  out["gamma"] = std::move(gamma);
+  out["vega"] = std::move(vega);
+  out["theta"] = std::move(theta);
+  out["rho"] = std::move(rho);
+  out["vanna"] = std::move(vanna);
+  out["volga"] = std::move(volga);
+  out["charm"] = std::move(charm);
+  out["price"] = std::move(price);
+  return out;
+}
+
+// `T` and `sqrt_t` are SHARED scalars, not columns: this kernel keys on a single
+// expiry slice, which is exactly the shape an IV solve over one chain slice
+// wants. That is the C++ signature (batch.hpp:98-102), not a simplification —
+// `sqrt_t < 0` is the scalar kernel's own "compute sqrt(T) internally" sentinel
+// and is passed straight through.
+std::pair<py::array_t<double>, py::array_t<double>>
+b76_value_and_vega_batch(const DoubleArray &f_array, const DoubleArray &k_array, double t,
+                         const DoubleArray &sigma_array, const DoubleArray &df_array,
+                         const py::object &side_array, double sqrt_t) {
+  const auto f = as_span(f_array, "F");
+  const auto k = as_span(k_array, "K");
+  const auto sigma = as_span(sigma_array, "sigma");
+  const auto df = as_span(df_array, "df");
+  require_same_size(f.size(), k, "K");
+  require_same_size(f.size(), sigma, "sigma");
+  require_same_size(f.size(), df, "df");
+  const std::vector<Side> sides = as_sides(side_array, f.size(), "F");
+
+  const auto n = static_cast<py::ssize_t>(f.size());
+  py::array_t<double> value(n), vega(n);
+  const std::span<double> value_out{value.mutable_data(), f.size()};
+  const std::span<double> vega_out{vega.mutable_data(), f.size()};
+  {
+    py::gil_scoped_release release;
+    static_cast<void>(atxvol::python::unwrap(black76_value_and_vega_batch(
+        f, k, t, sigma, df, sides, value_out, vega_out, sqrt_t)));
+  }
+  return {std::move(value), std::move(vega)};
+}
+
 py::array_t<double> american_slice(const DoubleArray &strikes_array, double spot, double t,
                                    double sigma, double r, double q, Side side,
                                    const std::optional<AlOpts> &opts) {
@@ -126,27 +284,6 @@ py::array_t<double> american_slice(const DoubleArray &strikes_array, double spot
 // on the same NaN + per-lane status convention Y1(c) established
 // (`batch_status.hpp`).
 
-
-// FIX-5 (final-review Minor): the array arrives UNTYPED so the caller's dtype is
-// still visible; `as_side_codes` rejects a float kind before any cast (see
-// sides.hpp) and returns the int32 view. int64 columns keep working.
-std::vector<Side> as_sides(const py::object &raw, std::size_t expected) {
-  const atxvol::python::SideCodes array = atxvol::python::as_side_codes(raw);
-  if (array.ndim() != 1) {
-    throw py::value_error("side must be a one-dimensional array");
-  }
-  if (static_cast<std::size_t>(array.size()) != expected) {
-    throw py::value_error("side must have the same length as S");
-  }
-  std::vector<Side> out(expected);
-  const auto *data = array.data();
-  for (std::size_t i = 0; i < expected; ++i) {
-    // One shared decoder (I2): an unrecognised code is rejected, never folded
-    // onto Call. See sides.hpp.
-    out[i] = atxvol::python::decode_side(data[i], i);
-  }
-  return out;
-}
 
 // LaneStatus is a two-state Ok/Unsupported BATCH-REGIME flag, not an
 // `atx::core::Status`. F-5: do not collapse Unsupported into
@@ -184,12 +321,12 @@ BookSpans as_book(const DoubleArray &s_array, const DoubleArray &k_array,
   book.sigma = as_span(sigma_array, "sigma");
   book.r = as_span(r_array, "r");
   book.q = as_span(q_array, "q");
-  require_same_size(book.n, book.k, "K");
-  require_same_size(book.n, book.t, "T");
-  require_same_size(book.n, book.sigma, "sigma");
-  require_same_size(book.n, book.r, "r");
-  require_same_size(book.n, book.q, "q");
-  book.side = as_sides(side_array, book.n);
+  require_same_size(book.n, book.k, "K", "S");
+  require_same_size(book.n, book.t, "T", "S");
+  require_same_size(book.n, book.sigma, "sigma", "S");
+  require_same_size(book.n, book.r, "r", "S");
+  require_same_size(book.n, book.q, "q", "S");
+  book.side = as_sides(side_array, book.n, "S");
   return book;
 }
 
@@ -498,6 +635,33 @@ void bind_pricing(py::module_ &m) {
         "Returns ``(vols, status)``. A lane that cannot be inverted yields NaN in\n"
         "``vols`` and ``int(ErrorCode)`` in ``status``; a converged lane yields\n"
         "``STATUS_OK``. Only a malformed call (shape mismatch, wrong rank) raises.");
+
+  // 5.1: the last two unbound public batch kernels (batch.hpp:98,139).
+  m.def("black76_greeks_batch", &b76_greeks_batch, py::arg("F"), py::arg("K"), py::arg("T"),
+        py::arg("sigma"), py::arg("r"), py::arg("df"), py::arg("side"),
+        "Vectorized analytic Black-76 Greeks over equal-length 1-D arrays.\n\n"
+        "Returns a dict of numpy columns: delta/gamma/vega/theta/rho/vanna/volga/\n"
+        "charm plus `price` (computed in the same pass, sharing d1/d2). `side` is\n"
+        "either a per-lane integer column (`int(Side.CALL)` / `int(Side.PUT)`) or\n"
+        "one `Side`, broadcast across the batch.\n\n"
+        "There is NO `status` column: `black76_greeks` is total, so a degenerate\n"
+        "lane (T <= 0 or sigma <= 0) yields the documented degenerate result\n"
+        "(intrinsic-step delta, other Greeks 0) rather than failing. Only a\n"
+        "malformed call (shape mismatch, wrong rank, unrecognised side code)\n"
+        "raises.");
+
+  m.def("black76_value_and_vega_batch", &b76_value_and_vega_batch, py::arg("F"), py::arg("K"),
+        py::arg("T"), py::arg("sigma"), py::arg("df"), py::arg("side"),
+        py::arg("sqrt_t") = -1.0,
+        "Vectorized fused Black-76 premium + vega for ONE expiry slice.\n\n"
+        "``T`` and ``sqrt_t`` are shared scalars (the kernel keys on a single\n"
+        "slice); ``F``, ``K``, ``sigma``, ``df`` are per-lane columns and ``side``\n"
+        "is a per-lane column or one broadcast ``Side``. ``sqrt_t >= 0`` is used\n"
+        "as-is; the default ``-1.0`` is the scalar kernel's sentinel for 'compute\n"
+        "sqrt(T) internally'.\n\n"
+        "Returns ``(value, vega)``. No ``status`` column, for the same reason as\n"
+        "``black76_greeks_batch``: the kernel is total. Only a malformed call\n"
+        "raises.");
 
   m.def(
       "andersen_lake",
