@@ -2058,8 +2058,17 @@ Result<MarketSnapshot> MarketSnapshot::load(std::string_view archive_path,
   // whole directory. The order is not observable anywhere else — `syms_` has exactly
   // one reader (`uid_of`) — and sorting is paid once per archive load against a
   // lookup that a strategy runs per leg per step.
-  std::sort(syms.begin(), syms.end(),
-            [](const auto &a, const auto &b) { return a.first < b.first; });
+  //
+  // STABLE, and that is load-bearing rather than a default-grade choice.
+  // `canonical_symbol` TRUNCATES (and upper-cases), so two distinct archived names can
+  // collapse to the same canonical bytes while carrying different uids. `uid_of`'s
+  // `lower_bound` then resolves to whichever of them sorted first, and only a stable
+  // sort makes that the one that appeared first in the DIRECTORY — which is exactly
+  // what the linear scan this replaces returned. Under `std::sort` the winner among
+  // equal keys is unspecified, i.e. this optimization would silently gain the ability
+  // to move a resolved uid on a malformed archive.
+  std::stable_sort(syms.begin(), syms.end(),
+                   [](const auto &a, const auto &b) { return a.first < b.first; });
 
   // The snapshot co-owns `archive` — the Mapping every borrowed view reads — so the
   // mapping outlives the views, which outlive nothing else. See MarketSnapshot's
@@ -2088,10 +2097,12 @@ std::optional<std::uint32_t> MarketSnapshot::uid_of(std::string_view symbol) con
   // universe authored in lower case would fail to resolve. `canonical_symbol` is
   // the single source of truth shared with `uid_for_symbol` (the write side).
   const std::string query = canonical_symbol(symbol);
-  // `syms_` is sorted by symbol at load (see MarketSnapshot::load), so this is a
-  // binary search. A duplicate symbol in the directory would make `lower_bound` pick
-  // the FIRST of the run; the scan this replaces picked the first too, so a
-  // (malformed) archive with a repeated symbol still resolves to the same uid.
+  // `syms_` is STABLE-sorted by symbol at load (see MarketSnapshot::load), so this is
+  // a binary search. When two directory entries share canonical bytes, `lower_bound`
+  // picks the first of the equal run, and stability makes that the first such entry in
+  // the directory — which is the one the linear scan this replaces returned. So a
+  // (malformed) archive with a repeated symbol still resolves to the same uid it did
+  // before; see the stability note at the sort itself for why that is not free.
   const auto it = std::lower_bound(
       syms_.begin(), syms_.end(), query,
       [](const std::pair<std::string, std::uint32_t> &a, const std::string &q) {
