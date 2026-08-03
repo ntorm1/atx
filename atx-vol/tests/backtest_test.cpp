@@ -244,13 +244,30 @@ struct TruncatedCorpus {
 // mark, so the entry books no fill slippage and `reconcile_nav` starts closed —
 // and then never touches the book again. The lots outlive the clock, so nothing
 // settles and the whole run is pure mark-to-market.
+//
+// `close_step` (default: never) makes it flatten the book on that step instead —
+// or ROLL it (close + reopen the same legs under fresh lot ids) when `reopen`.
+// The MarkDomain roll-close gate aims that at the session whose surface cannot
+// serve the maturity, so the close crystallizes a CARRIED mark. The two shapes
+// hit the executor differently and both matter: a flatten prices no risk frame,
+// so the row phase runs AFTER the close loop, while a roll opens a lot and
+// therefore resolves the row phase BEFORE it.
 class HoldStrangleStrategy final : public IStrategy {
 public:
-  explicit HoldStrangleStrategy(std::int64_t expiry) noexcept : expiry_{expiry} {}
+  static constexpr std::size_t kNeverClose = static_cast<std::size_t>(-1);
+
+  explicit HoldStrangleStrategy(std::int64_t expiry, std::size_t close_step = kNeverClose,
+                                bool reopen = false) noexcept
+      : expiry_{expiry}, close_step_{close_step}, reopen_{reopen} {}
 
   Status on_step(const MarketSnapshot &base, std::size_t step_index, PortfolioState &book,
                  std::uint64_t &next_lot_id) override {
-    if (step_index != 0u) {
+    if (step_index == close_step_) {
+      book.lots.clear();
+      if (!reopen_) {
+        return atx::core::Ok();
+      }
+    } else if (step_index != 0u) {
       return atx::core::Ok();
     }
     const SurfaceRef s = base.find(kUid);
@@ -285,6 +302,8 @@ public:
 
 private:
   std::int64_t expiry_{0};
+  std::size_t close_step_{kNeverClose};
+  bool reopen_{false};
 };
 
 // A two-lot book (long call, short put) that survives past `expiry`.
@@ -3717,6 +3736,24 @@ TEST(MarkDomain, ExtrapolateCountsButMatchesLegacy) {
     ASSERT_TRUE(static_cast<bool>(std::getline(in, row)));
   }
   EXPECT_NE(row.find("\t2\t0"), std::string::npos) << row; // the truncated row's counters
+
+  // RIGHTMOST means rightmost even when the run carried signals: the shared
+  // writer emits the pair AFTER the per-signal columns, in both emitters.
+  BacktestResult with_signal = *counted;
+  with_signal.signals.emplace_back("sig", std::vector<double>(with_signal.size(), 1.0));
+  const std::string sig_path = (dir / "series-signals.tsv").string();
+  ASSERT_TRUE(write_backtest_tsv(with_signal, sig_path).has_value());
+  std::ifstream sig_in(sig_path, std::ios::binary);
+  ASSERT_TRUE(sig_in.good());
+  std::string sig_header;
+  ASSERT_TRUE(static_cast<bool>(std::getline(sig_in, sig_header)));
+  if (!sig_header.empty() && sig_header.back() == '\r') {
+    sig_header.pop_back();
+  }
+  const std::string tail = "\tsig\tn_extrapolated_marks\tn_carried_marks";
+  ASSERT_GE(sig_header.size(), tail.size()) << sig_header;
+  EXPECT_EQ(sig_header.compare(sig_header.size() - tail.size(), tail.size(), tail), 0)
+      << sig_header;
 }
 
 // CarryLastMark holds the lot's last in-domain mark across the truncated session
@@ -3797,6 +3834,181 @@ TEST(MarkDomain, CarryHoldsAndCatchesUp) {
   ASSERT_TRUE(naive.has_value()) << naive.error().to_string();
   EXPECT_NE(naive->pnl_total[kFrozen], 0.0)
       << "fixture did not actually exercise the extrapolated mark";
+}
+
+// The FIXED-BOOK overload's carry route (book_greeks drives the row phase; the
+// loop resolves the carry before the NAV increment) is a separate code path from
+// the strategy overload's, and it has no cash ledger to reconcile against — so
+// NAV continuity is asserted on the published series directly.
+TEST(MarkDomain, FixedBookCarryHoldsAndCatchesUp) {
+  const fs::path dir = fresh_dir("markdomain-carry-fixed");
+  const TruncatedCorpus corpus = make_truncated_corpus(
+      dir, "SPY", kMarkDomainDates, kMarkDomainTruncatedDate, kMarkDomainTruncatedSlices);
+  auto clock = Clock::from_manifest(corpus.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  auto control_clock = Clock::from_manifest(corpus.without_truncated);
+  ASSERT_TRUE(control_clock.has_value()) << control_clock.error().to_string();
+  const std::int64_t expiry = kBaseNow + kMarkDomainExpiryDays * kDayNs;
+
+  RunConfig cfg;
+  cfg.mark_domain = MarkDomainPolicy::CarryLastMark;
+  auto carried = run_backtest(*clock, survivor_book(expiry), cfg);
+  ASSERT_TRUE(carried.has_value()) << carried.error().to_string();
+  ASSERT_EQ(carried->size(), static_cast<std::size_t>(kMarkDomainDates));
+
+  // (a) The counters fire on the hole and on the catch-up step.
+  constexpr std::size_t kFrozen = kMarkDomainTruncatedDate;
+  EXPECT_DOUBLE_EQ(carried->n_extrapolated_marks[kFrozen], 2.0);
+  EXPECT_DOUBLE_EQ(carried->n_extrapolated_marks[kFrozen + 1], 2.0);
+  EXPECT_DOUBLE_EQ(carried->n_carried_marks[kFrozen], 2.0);
+  EXPECT_DOUBLE_EQ(carried->n_carried_marks[kFrozen + 1], 0.0);
+
+  // (b) The frozen row books nothing on any axis — the whole book is carried.
+  EXPECT_DOUBLE_EQ(carried->pnl_total[kFrozen], 0.0);
+  EXPECT_DOUBLE_EQ(carried->pnl_delta[kFrozen], 0.0);
+  EXPECT_DOUBLE_EQ(carried->pnl_vega[kFrozen], 0.0);
+  EXPECT_DOUBLE_EQ(carried->pnl_theta[kFrozen], 0.0);
+  EXPECT_DOUBLE_EQ(carried->pnl_unexplained[kFrozen], 0.0);
+  // The row's Greeks come from the carry, so they are the previous row's exactly.
+  EXPECT_DOUBLE_EQ(carried->gross_vega[kFrozen], carried->gross_vega[kFrozen - 1]);
+  EXPECT_DOUBLE_EQ(carried->gross_delta[kFrozen], carried->gross_delta[kFrozen - 1]);
+
+  // (c) NAV continuity across the hole: flat over the frozen step, and the whole
+  // gap lands on the catch-up row, in the residual.
+  EXPECT_DOUBLE_EQ(carried->nav[kFrozen], carried->nav[kFrozen - 1]);
+  EXPECT_NE(carried->pnl_total[kFrozen + 1], 0.0);
+  EXPECT_DOUBLE_EQ(carried->pnl_unexplained[kFrozen + 1], carried->pnl_total[kFrozen + 1]);
+  // Carrying across a date and deleting it from the clock are the same economics.
+  auto control = run_backtest(*control_clock, survivor_book(expiry), RunConfig{});
+  ASSERT_TRUE(control.has_value()) << control.error().to_string();
+  EXPECT_NEAR(carried->nav.back(), control->nav.back(),
+              1.0e-6 * (std::fabs(control->nav.back()) + 1.0));
+
+  // Not vacuous: the default policy marks that session by extrapolation instead.
+  auto naive = run_backtest(*clock, survivor_book(expiry), RunConfig{});
+  ASSERT_TRUE(naive.has_value()) << naive.error().to_string();
+  EXPECT_NE(naive->pnl_total[kFrozen], 0.0)
+      << "fixture did not actually exercise the extrapolated mark";
+}
+
+// A strategy CLOSE of a lot the step is carrying books its cash at the CARRIED
+// mark, because that is the value the row published for it: liquidation gives up
+// `w * carried` and cash takes in the same number, so the NAV/liquidation identity
+// closes exactly and NAV does not move on the close. Booking a fresh extrapolated
+// mark instead would drift NAV by `w * (extrapolated - carried)` — silently, since
+// `reconcile_nav` is off by default.
+TEST(MarkDomain, CarryRollCloseBooksAtTheCarriedMark) {
+  const fs::path dir = fresh_dir("markdomain-carry-close");
+  const TruncatedCorpus corpus = make_truncated_corpus(
+      dir, "SPY", kMarkDomainDates, kMarkDomainTruncatedDate, kMarkDomainTruncatedSlices);
+  auto clock = Clock::from_manifest(corpus.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  const std::int64_t expiry = kBaseNow + kMarkDomainExpiryDays * kDayNs;
+  // The close lands on the step whose TARGET date is the truncated one, i.e. the
+  // step that deferred both lots — so the lots are carried when they are closed.
+  constexpr std::size_t kClose = kMarkDomainTruncatedDate;
+
+  RunConfig cfg;
+  cfg.mark_domain = MarkDomainPolicy::CarryLastMark;
+  cfg.reconcile_nav = true;
+  HoldStrangleStrategy strat{expiry, kClose};
+  auto carried = run_backtest(*clock, strat, cfg);
+  ASSERT_TRUE(carried.has_value()) << carried.error().to_string();
+  ASSERT_EQ(carried->size(), static_cast<std::size_t>(kMarkDomainDates));
+
+  // The fixture really did close a CARRIED book: the step saw two out-of-domain
+  // lots, and the book is flat afterwards.
+  EXPECT_DOUBLE_EQ(carried->n_extrapolated_marks[kClose], 2.0);
+  EXPECT_DOUBLE_EQ(carried->n_open_lots[kClose], 0.0);
+  // Nothing is reported as carried ON this row: both lots left the book, so the
+  // row publishes no valuation for them (their close did, at the carried mark).
+  EXPECT_DOUBLE_EQ(carried->n_carried_marks[kClose], 0.0);
+
+  // The close is a pure transfer at the published value: frictionless, so the
+  // step's P&L and NAV are EXACTLY unchanged, and stay unchanged afterwards.
+  EXPECT_DOUBLE_EQ(carried->pnl_total[kClose], 0.0);
+  EXPECT_DOUBLE_EQ(carried->nav[kClose], carried->nav[kClose - 1]);
+  for (std::size_t i = kClose; i < carried->size(); ++i) {
+    EXPECT_DOUBLE_EQ(carried->nav[i], carried->nav[kClose - 1]) << "row " << i;
+  }
+  // reconcile_nav is on, so the run only returned Ok because the independently
+  // recomputed liquidation value agreed with NAV on every row — including the one
+  // where the cash for a carried lot was crystallized. Assert the series too.
+  ASSERT_EQ(carried->nav_liquidation.size(), carried->size());
+  for (std::size_t i = 0; i < carried->size(); ++i) {
+    EXPECT_NEAR(carried->nav_liquidation[i], carried->nav[i], 1.0e-9)
+        << "row " << i << " (" << carried->date[i] << ")";
+  }
+
+  // Not vacuous: the same close under the default policy books at the fabricated
+  // extrapolated mark and moves NAV.
+  HoldStrangleStrategy naive_strat{expiry, kClose};
+  RunConfig naive_cfg;
+  naive_cfg.reconcile_nav = true;
+  auto naive = run_backtest(*clock, naive_strat, naive_cfg);
+  ASSERT_TRUE(naive.has_value()) << naive.error().to_string();
+  EXPECT_NE(naive->nav[kClose], naive->nav[kClose - 1]);
+
+  // A genuine ROLL — close + reopen on the same step — is the shape that matters
+  // most: it makes `execute` price a risk frame, which resolves the row phase
+  // (completing and PRUNING the closed lots' carry entries) BEFORE the close loop
+  // runs. The close must still find its carried mark there, or cash books the
+  // extrapolated one and the identity drifts.
+  HoldStrangleStrategy roll_strat{expiry, kClose, /*reopen=*/true};
+  auto rolled = run_backtest(*clock, roll_strat, cfg);
+  ASSERT_TRUE(rolled.has_value()) << rolled.error().to_string();
+  ASSERT_EQ(rolled->size(), static_cast<std::size_t>(kMarkDomainDates));
+  EXPECT_DOUBLE_EQ(rolled->n_open_lots[kClose], 2.0); // reopened, not flat
+  // Closing at the carried mark and reopening at the row's own mark is a pure
+  // transfer both ways, so the frictionless roll moves neither P&L nor NAV.
+  EXPECT_DOUBLE_EQ(rolled->pnl_total[kClose], 0.0);
+  EXPECT_DOUBLE_EQ(rolled->nav[kClose], rolled->nav[kClose - 1]);
+  ASSERT_EQ(rolled->nav_liquidation.size(), rolled->size());
+  for (std::size_t i = 0; i < rolled->size(); ++i) {
+    EXPECT_NEAR(rolled->nav_liquidation[i], rolled->nav[i], 1.0e-9)
+        << "row " << i << " (" << rolled->date[i] << ")";
+  }
+}
+
+// Brief semantics item 5, as DOCUMENTED (not enforced by refusal): a lot born
+// into an extrapolated domain has no in-domain mark to carry, so under
+// CarryLastMark it prices normally — by extrapolation — and is counted in
+// `n_extrapolated_marks` on its birth row. `Error` is the mode that refuses.
+TEST(MarkDomain, EntryBornOutOfDomainIsPricedAndCounted) {
+  const fs::path dir = fresh_dir("markdomain-born-out");
+  // Truncate the INCEPTION date, so the strategy's own entry is out of domain.
+  const TruncatedCorpus corpus =
+      make_truncated_corpus(dir, "SPY", 3, /*truncated_date=*/0, kMarkDomainTruncatedSlices);
+  auto clock = Clock::from_manifest(corpus.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  const std::int64_t expiry = kBaseNow + kMarkDomainExpiryDays * kDayNs;
+
+  RunConfig cfg;
+  cfg.mark_domain = MarkDomainPolicy::CarryLastMark;
+  cfg.reconcile_nav = true;
+  HoldStrangleStrategy strat{expiry};
+  auto r = run_backtest(*clock, strat, cfg);
+  ASSERT_TRUE(r.has_value()) << r.error().to_string();
+  ASSERT_EQ(r->size(), 3u);
+
+  // Row 0 is the birth row: both entries are out of domain and counted there.
+  EXPECT_DOUBLE_EQ(r->n_extrapolated_marks[0], 2.0);
+  // Nothing is carried — there is no in-domain mark yet to carry.
+  EXPECT_DOUBLE_EQ(r->n_carried_marks[0], 0.0);
+  EXPECT_DOUBLE_EQ(r->n_carried_marks[1], 0.0);
+  // And the lots really were priced (not frozen): the step off the truncated base
+  // books real P&L, which is exactly the fiction `Error` exists to refuse.
+  EXPECT_DOUBLE_EQ(r->n_extrapolated_marks[1], 2.0);
+  EXPECT_NE(r->pnl_total[1], 0.0);
+  EXPECT_DOUBLE_EQ(r->n_extrapolated_marks[2], 0.0);
+
+  RunConfig strict;
+  strict.mark_domain = MarkDomainPolicy::Error;
+  HoldStrangleStrategy strict_strat{expiry};
+  auto refused = run_backtest(*clock, strict_strat, strict);
+  ASSERT_FALSE(refused.has_value()) << "an out-of-domain entry reached a P&L number";
+  EXPECT_NE(refused.error().to_string().find("2026-08-01"), std::string::npos)
+      << refused.error().to_string(); // the inception date
 }
 
 // Error refuses to produce the number at all, naming the step date, the offending

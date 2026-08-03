@@ -1178,7 +1178,9 @@ struct MarkCarryRow {
 // `Σ (value_row - value_prev_row)` by construction, which is precisely the
 // identity `reconcile_nav` checks, so a carried lot cannot open a drift.
 //
-// Two phases per step, in this order:
+// Three phases per step, in this order:
+//   * `begin_step` — once, before the deferral partition. Opens this step's
+//     deferral record (see `deferred_close`).
 //   * `defer_step` — during `compute_step`'s partition, once per alive lot. It
 //     answers "keep this lot out of the batch?" and, when it does, RELEASES the
 //     lot's previous value into the pending adjustment.
@@ -1191,6 +1193,22 @@ struct MarkCarryRow {
 // insertion order or on any unordered-container layout.
 class MarkCarryBook {
 public:
+  // The valuation a lot the step DEFERRED must be closed at, should the strategy
+  // close it this step. `price` is per-share and `vega` position-scaled, exactly
+  // as `PriceFrame` carries them.
+  struct CarriedClose {
+    double price{0.0};
+    double vega{0.0};
+  };
+
+  // STEP PHASE (first). Opens the step's deferral record. It is kept SEPARATE from
+  // the per-lot entries because the two have different lifetimes: `apply_row`
+  // completes and PRUNES the entry of a lot that left the book, and the roll-close
+  // booking that needs the lot's carried mark runs after that (a roll opens a lot,
+  // so `execute` prices its risk frame — and resolves the row phase — before it
+  // walks the closes). Only a step boundary may clear this.
+  void begin_step() noexcept { deferred_.clear(); }
+
   // STEP PHASE. True when the lot must be excluded from this step's pricer batch:
   // one of the two surfaces would have to extrapolate its maturity AND the lot has
   // a last in-domain valuation to hold instead. A lot with NO such valuation (born
@@ -1209,16 +1227,28 @@ public:
       entry->pending = true;
       pending_ -= entry->value;
     }
+    record_deferred(lot.id, *entry);
     return true;
   }
 
-  // True while a lot's previous value is released but not yet completed, i.e. this
-  // step took it out of the batch. The strategy executor refuses to roll-close such
-  // a lot: the close moves real cash, and crystallizing it at a stale mark would
-  // break the NAV/liquidation identity this class exists to keep.
-  [[nodiscard]] bool is_pending(std::uint64_t lot_id) const noexcept {
-    const Entry *entry = find(lot_id);
-    return entry != nullptr && entry->pending;
+  // The mark a lot THIS STEP took out of the pricer batch must be closed at, or
+  // `std::nullopt` for every other lot. The value the row publishes for a deferred
+  // lot IS its carried mark (the class invariant above), so a close must move cash
+  // by exactly that number: liquidation loses `w * carried` while cash gains
+  // `w * close`, and the identity holds iff the two agree. Booking a fresh
+  // (extrapolated) mark instead would reopen precisely the drift this policy
+  // exists to close.
+  //
+  // Survives `apply_row`, which completes and prunes the closed lot's entry before
+  // the executor reaches its roll-close loop.
+  [[nodiscard]] std::optional<CarriedClose> deferred_close(std::uint64_t lot_id) const noexcept {
+    const auto at =
+        std::lower_bound(deferred_.begin(), deferred_.end(), lot_id,
+                         [](const Deferred &d, std::uint64_t key) { return d.id < key; });
+    if (at == deferred_.end() || at->id != lot_id) {
+      return std::nullopt;
+    }
+    return CarriedClose{at->price, at->vega};
   }
 
   // The mark an expiring lot must explain against when its LAST row was served
@@ -1279,9 +1309,11 @@ public:
       complete(entry);
     }
     // A lot that LEFT the book before this row (a strategy close) never reaches the
-    // loop above. Cancel its release so a stale pending can never leak into a later
-    // row's P&L. Closing a deferred lot is refused upstream, so this is defence in
-    // depth rather than an economic path.
+    // loop above. Completing its release at the UNCHANGED value nets its two halves
+    // to exactly 0.0, which is the whole of its NAV contribution this step: the
+    // book gave up a position it had recognized at `value` and cash took in the
+    // same number (`deferred_close` is what makes the executor pay it). Leaving the
+    // release pending instead would leak a stale `-value` into a later row's P&L.
     for (Entry &entry : entries_) {
       complete(entry);
     }
@@ -1315,6 +1347,25 @@ private:
     double volga{0.0};
     double charm{0.0};
   };
+
+  // One lot this STEP kept out of the pricer batch, with the valuation its row
+  // publishes. Step-scoped (cleared by `begin_step`) and sorted by lot id, so the
+  // lookup is a binary search and nothing depends on partition order.
+  struct Deferred {
+    std::uint64_t id{0};
+    double price{0.0};
+    double vega{0.0};
+  };
+
+  void record_deferred(std::uint64_t id, const Entry &entry) {
+    const auto at =
+        std::lower_bound(deferred_.begin(), deferred_.end(), id,
+                         [](const Deferred &d, std::uint64_t key) { return d.id < key; });
+    if (at != deferred_.end() && at->id == id) {
+      return; // one record per lot per step
+    }
+    deferred_.insert(at, Deferred{id, entry.price, entry.vega});
+  }
 
   void complete(Entry &entry) noexcept {
     if (entry.pending) {
@@ -1400,6 +1451,7 @@ private:
   }
 
   std::vector<Entry> entries_;
+  std::vector<Deferred> deferred_;
   std::vector<std::uint64_t> live_ids_;
   double pending_{0.0};
 };
@@ -1875,8 +1927,23 @@ compute_step(const MarketSnapshot &base, const MarketSnapshot &shifted,
     }
   }
 
-  // Mark-domain accounting over the SURVIVING lots (an expiring lot is settled at
-  // intrinsic, not marked off a curve). Pure reads under every policy.
+  // Mark-domain accounting over the SURVIVING lots. Pure reads under every policy.
+  //
+  // SCOPE (deliberate): an EXPIRING lot is out. Its cash is intrinsic off the
+  // observed settlement spot, but the base-side mark it explains against above IS
+  // a curve query — at a residual T of roughly one session, i.e. below `min_T` on
+  // essentially any fitted surface, so it is short-end extrapolated on nearly every
+  // settlement. Counting that (or aborting on it under `Error`) would make the
+  // counters noise and the policy unusable, while the failure this policy exists
+  // for is LONG-end truncation — and an expiring lot's T is ~0, never long-end.
+  // Short-end settlement extrapolation at one session is intrinsic-dominated and
+  // bounded; it is excluded here by design, and `MarkDomainPolicy` says so.
+  if (carry != nullptr) {
+    // Open the step's deferral record BEFORE the partition below. The roll-close
+    // booking reads it AFTER the row phase has completed and pruned this step's
+    // entries, so only a step boundary may clear it.
+    carry->begin_step();
+  }
   const MarkDomainScan domain = scan_mark_domain(base, &shifted, alive);
   if (carry != nullptr && domain.n_extrapolated > 0) {
     // CarryLastMark: keep the lots neither side of the step can serve in-domain OUT
@@ -3289,19 +3356,17 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
       if (after_lot_index.find(book.lots, lot.id).has_value()) {
         continue;
       }
-      // CarryLastMark: a close moves REAL CASH, and this step took the lot out of
-      // the pricer batch precisely because its maturity is outside the fitted
-      // domain on one side of the step. Crystallizing that cash at either the
-      // stale carried mark or a fabricated extrapolated one would silently break
-      // the NAV/liquidation identity, so it fails closed — exactly the rule
-      // `UnpricedLotPolicy` already states for a close with no mark.
-      if (carry_book_ptr != nullptr && carry_book_ptr->is_pending(lot.id)) {
-        return Err(ErrorCode::NotFound,
-                   "run_backtest: cannot roll-close lot id=" + std::to_string(lot.id) +
-                       " uid=" + std::to_string(lot.contract.uid) +
-                       " whose maturity is outside the surface's fitted tenor domain this step "
-                       "(MarkDomainPolicy::CarryLastMark)");
-      }
+      // CarryLastMark: this step took the lot OUT of the pricer batch because one
+      // side of the step is outside the fitted tenor domain, so the value the book
+      // published for it this row IS its carried mark — and a close must move cash
+      // by exactly that number. Liquidation loses `w * carried` while cash gains
+      // `w * close`, and the step books no repricing for a deferred lot, so the
+      // NAV/liquidation identity closes EXACTLY iff `close == carried`; a fresh
+      // (extrapolated) mark would drift it by `w * (extrapolated - carried)`.
+      // The economic caveat — the fill crystallizes at a STALE model mark, as old
+      // as the hole is long — is documented on `MarkDomainPolicy::CarryLastMark`.
+      const std::optional<MarkCarryBook::CarriedClose> carried =
+          carry_book_ptr != nullptr ? carry_book_ptr->deferred_close(lot.id) : std::nullopt;
       const double T_res = residual_T(lot.expiry_ts_ns, base_snap.ts_ns());
       const SurfaceRef s = base_snap.find(lot.contract.uid);
       const std::optional<ReusableTargetMarkFrame::Match> exact_mark =
@@ -3312,7 +3377,16 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
       // only; it never enters friction, cash, or NAV. VolTicks replaces it below
       // with exact configured target-date vega.
       double vega = exact_mark.has_value() ? exact_mark->base_vega_proxy : 0.0;
-      if (cfg.frictions.spread_kind == FrictionModel::SpreadKind::VolTicks) {
+      if (carried.has_value()) {
+        // One mark source per lot per row, frictions included: the half-spread uses
+        // the carried (last in-domain) vega rather than an extrapolated solve the
+        // rest of the row is built to avoid. `CarriedClose::vega` is position-scaled
+        // exactly as PriceFrame carries it, so undo the weight for the per-share
+        // vega `half_spread` expects — the same conversion the entry loop above does.
+        mark = carried->price;
+        const double weight = lot.qty * lot.multiplier;
+        vega = (weight != 0.0) ? carried->vega / weight : 0.0;
+      } else if (cfg.frictions.spread_kind == FrictionModel::SpreadKind::VolTicks) {
         if (s == nullptr) {
           return Err(ErrorCode::NotFound,
                      "run_backtest: no surface for roll-close lot id=" + std::to_string(lot.id) +

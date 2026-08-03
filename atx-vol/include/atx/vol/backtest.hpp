@@ -710,22 +710,35 @@ enum class MarkDomainPolicy : std::uint8_t {
   //     are that day's own observed dvol/dS/dt, so the carried-over move lands in
   //     `pnl_unexplained` by construction;
   //   * an expiry settlement of a carried lot explains against the CARRIED mark
-  //     (not a fresh extrapolated one), so its cash and its P&L agree.
+  //     (not a fresh extrapolated one), so its cash and its P&L agree;
+  //   * a strategy ROLL-CLOSE of a carried lot likewise books its cash at the
+  //     CARRIED mark. That is the value the row published for it, so liquidation
+  //     gives up exactly what cash takes in and the identity closes exactly; a
+  //     fresh extrapolated mark would drift NAV by the difference. The ECONOMIC
+  //     CAVEAT is real and is the price of the policy: the fill crystallizes at a
+  //     model mark as stale as the hole is long, so a strategy that rolls across a
+  //     long gap realizes a P&L the market never offered. `Error` is the mode that
+  //     refuses to trade on such a mark at all.
   //
-  // TWO DELIBERATE LIMITS. (1) A lot BORN into an extrapolated domain has no
-  // in-domain mark to carry; it is marked by extrapolation (and counted in
+  // ONE DELIBERATE LIMIT: a lot BORN into an extrapolated domain has no in-domain
+  // mark to carry; it is marked by extrapolation (and counted in
   // `n_extrapolated_marks`) until its first in-domain row. Entries are expected
-  // to be taken in-domain; use `Error` to enforce that. (2) A strategy-driven
-  // ROLL-CLOSE of a lot that is currently carried is a hard error, on the same
-  // reasoning `UnpricedLotPolicy` states for a close with no mark: the close moves
-  // real cash, and crystallizing it at a stale mark would silently break the
-  // NAV/liquidation identity. Requires `record_every_n == 1` (the carry is
-  // resolved on each recorded row) and is not supported by
-  // `run_backtest_incremental` (a checkpoint has no slot for the carry state).
+  // to be taken in-domain; use `Error` to enforce that. Requires
+  // `record_every_n == 1` (the carry is resolved on each recorded row) and is not
+  // supported by `run_backtest_incremental` (a checkpoint has no slot for the
+  // carry state).
   CarryLastMark = 1,
   // Abort the run naming the step date, the lot's uid/K/T and the surface's
-  // fitted `max_T`. The mode a production QIS run uses so an out-of-domain mark
-  // can never reach a P&L number.
+  // fitted `max_T`. The mode a production QIS run uses so no SURVIVING lot's mark
+  // can reach a P&L number from outside the fitted domain.
+  //
+  // SCOPED, and the scope is deliberate: this governs the marks of lots the step
+  // carries FORWARD. An EXPIRING lot's base-side explain mark (residual T of about
+  // one session, hence typically below the surface's fitted `min_T`) is excluded —
+  // short-end extrapolation at one session is intrinsic-dominated and bounded, it
+  // happens on nearly every settlement, and aborting on it would make this mode
+  // unusable while catching none of the LONG-end truncation the policy exists for.
+  // The same exclusion applies to `n_extrapolated_marks` / `n_carried_marks`.
   Error = 2,
 };
 
@@ -1077,18 +1090,26 @@ struct BacktestResult {
   // could not. That is the honest reading of "this step's P&L touched an
   // extrapolated mark".
   //
+  // EXPIRING lots are excluded, by design: their base-side explain mark sits at a
+  // residual T of about one session, hence below `min_T` on essentially any fitted
+  // surface, so counting it would fire on nearly every settlement and drown the
+  // long-end truncation this column exists to expose (see `MarkDomainPolicy`).
+  //
   // `n_carried_marks`: lots whose row valuation was served from the carried
   // last-in-domain mark instead of the surface (`MarkDomainPolicy::CarryLastMark`
   // only; exactly 0.0 on every row under the other two policies). A STATE column
   // in spirit — it counts the lots frozen AT this row — but it is block-summed
   // like the flow counters, which is moot because CarryLastMark requires
-  // `record_every_n == 1`.
+  // `record_every_n == 1`. A lot the step deferred and the strategy then CLOSED is
+  // not counted: it has no valuation on this row (it left the book), even though
+  // its close booked at the carried mark.
   //
   // Both are DELIBERATELY NOT part of the frozen `kBacktestSeriesColumns` /
   // RunArchive registry (the `swap_pv`/`swap_pnl` precedent), so
   // `ra_schema_hash()` and every golden are untouched; both TSV emitters append
-  // them after the frozen block. Empty-or-row-parallel, and therefore EMPTY on a
-  // hand-built result, a TSV read, or an archive decode.
+  // them as the RIGHTMOST columns, after the frozen block and after the per-signal
+  // columns. Empty-or-row-parallel, and therefore EMPTY on a hand-built result, a
+  // TSV read, or an archive decode.
   std::vector<double> n_extrapolated_marks, n_carried_marks;
   // FULL-RESOLUTION per-step total PnL: one entry per priced step (steps 1..N-1),
   // retained regardless of `record_every_n`. This is the TRUE per-step return

@@ -50,12 +50,18 @@ class BacktestExtras(dict[str, _T], Generic[_T]):
 # (extra signal columns) is returned in the side dict rather than dropped. There
 # is deliberately no `step_pnl_total`: it was a phantom the reader looked for but
 # the C++ writer never emitted (append_backtest_series_tsv has no such column).
+#
+# The last two are the mark-domain accounting pair (`MarkDomainPolicy`). They sit
+# OUTSIDE the frozen RunArchive registry — the writer appends them as the
+# rightmost columns, after the per-signal ones — but they are still columns the
+# writer emits, so they belong here rather than in the `extra` side dict.
 _SERIES = (
     "pnl_total", "pnl_delta", "pnl_gamma", "pnl_vega", "pnl_vanna", "pnl_volga",
     "pnl_theta", "pnl_rho", "pnl_charm", "pnl_unexplained", "pnl_settlement",
     "pnl_shares", "financing", "cost", "nav", "cash", "gross_delta", "gross_gamma",
     "gross_vega", "gross_theta", "turnover_notional", "turnover_vega",
     "n_open_lots", "n_unpriced_lots", "n_unpriced_greeks",
+    "n_extrapolated_marks", "n_carried_marks",
 )
 
 

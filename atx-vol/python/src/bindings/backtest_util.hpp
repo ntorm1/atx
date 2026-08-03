@@ -72,6 +72,14 @@ inline void require_consistent(const atx::vol::BacktestResult &r, const char *wh
   if (!r.gross_vega_abs.empty()) {
     check(r.gross_vega_abs.size(), "gross_vega_abs");
   }
+  // Mark-domain accounting (MarkDomainPolicy): outside the frozen registry and
+  // empty on a result that never carried them, row-parallel whenever present.
+  if (!r.n_extrapolated_marks.empty()) {
+    check(r.n_extrapolated_marks.size(), "n_extrapolated_marks");
+  }
+  if (!r.n_carried_marks.empty()) {
+    check(r.n_carried_marks.size(), "n_carried_marks");
+  }
   for (const auto &[name, series] : r.signals) {
     if (series.size() != n) {
       throw pybind11::value_error(std::string{what} + ": signal '" + name + "' has " +

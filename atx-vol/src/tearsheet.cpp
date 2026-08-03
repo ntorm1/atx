@@ -324,7 +324,9 @@ void append_backtest_series_tsv(std::string& out, const BacktestResult& r) {
   // below; per-signal series are appended after the fixed columns.
   const auto dbl_cols = backtest_series_columns();
 
-  // Mark-domain accounting (MarkDomainPolicy), appended AFTER the frozen block.
+  // Mark-domain accounting (MarkDomainPolicy), appended LAST — after the frozen
+  // block AND after the per-signal columns, so they are literally the rightmost
+  // columns of both emitters whether or not the run carried signals.
   // Deliberately not in `backtest_series_columns` — that table is pinned to the
   // RunArchive registry whose fold is `ra_schema_hash()`, and these two columns
   // are report-only (the `gross_vega_abs` / swap-lane precedent). They are
@@ -354,13 +356,13 @@ void append_backtest_series_tsv(std::string& out, const BacktestResult& r) {
     out += '\t';
     out += col.name;
   }
-  for (const auto& col : extra_cols) {
-    out += '\t';
-    out += col.name;
-  }
   for (const auto& sig : r.signals) {
     out += '\t';
     out += sig.first;
+  }
+  for (const auto& col : extra_cols) {
+    out += '\t';
+    out += col.name;
   }
   out += '\n';
 
@@ -374,13 +376,13 @@ void append_backtest_series_tsv(std::string& out, const BacktestResult& r) {
       out += '\t';
       put_double((r.*col.member)[i]);
     }
-    for (const auto& col : extra_cols) {
-      out += '\t';
-      put_double(col.col->size() == rows ? (*col.col)[i] : 0.0);
-    }
     for (const auto& sig : r.signals) {
       out += '\t';
       put_double(sig.second[i]);
+    }
+    for (const auto& col : extra_cols) {
+      out += '\t';
+      put_double(col.col->size() == rows ? (*col.col)[i] : 0.0);
     }
     out += '\n';
   }
