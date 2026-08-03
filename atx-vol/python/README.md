@@ -4,7 +4,8 @@
 
 - Black-76 price, Greeks, and implied-volatility inversion
 - Andersen-Lake and BAW American pricing, Greeks, and implied vol
-- NumPy batch pricing/inversion and cross-strike American pricing
+- NumPy batch pricing, Greeks, fused value+vega, and inversion for both Black-76
+  and American, plus cross-strike American pricing
 - lightweight SVI/eSSVI slices and interpolated surfaces
 - calibration-grade `VolSurface` parameters and evaluators
 - priced surfaces (`CurveSurface` -> `PricedSurface`) and the on-disk `SurfaceDb`
@@ -198,6 +199,43 @@ the whole book instead of one per contract, with the kernel free to group the
 genuine early-exercise lanes into a single pack. The magnitude of that win is
 hardware- and load-dependent — measure it on your own quiet host rather than
 trusting a number quoted here.
+
+### Black-76 Greeks and fused value+vega
+
+The two remaining public batch kernels, on the same one-call shape:
+
+```python
+g = av.black76_greeks_batch(F, K, T, sigma, r, df, side)   # dict of SoA columns
+value, vega = av.black76_value_and_vega_batch(F, K, T_scalar, sigma, df, side)
+```
+
+`black76_greeks_batch` returns `delta`/`gamma`/`vega`/`theta`/`rho`/`vanna`/
+`volga`/`charm` plus `price`, all computed in one pass off shared `d1`/`d2`.
+`black76_value_and_vega_batch` keys on **one expiry slice**: `T` and `sqrt_t` are
+shared scalars while `F`, `K`, `sigma`, `df` are per-lane columns. `sqrt_t >= 0`
+is used as given; the default `-1.0` is the kernel's own "compute `sqrt(T)`"
+sentinel. `side` on either is a per-lane integer column *or* a single `Side`
+broadcast across the batch.
+
+**Neither returns a `status` column, and that is the convention rather than an
+exception to it.** A parallel status exists where a kernel has a per-lane failure
+channel that the binding must not erase. These two kernels have none:
+`black76_greeks` and `black76_value_and_vega` are total functions, so a
+degenerate lane (`T <= 0` or `sigma <= 0`) collapses to the documented degenerate
+result — intrinsic-step delta, other Greeks zero — instead of failing. A
+column of `STATUS_OK` would advertise a diagnostic that carries no information.
+Only a malformed *call* raises: a shape or rank mismatch (`ValueError`), or a
+float / unrecognised `side` code (`AtxError` with
+`ErrorCode.INVALID_ARGUMENT`).
+
+**These agree with the scalar kernels to a tolerance, not bit-for-bit.** Both
+dispatch to the 4-lane AVX2 route at `n >= 4` on an AVX2 host, whose interior
+lanes use deterministic vector transcendentals; the C++ gate is ~1e-6 absolute
+plus 1e-7 relative, and `tests/test_batch.py` pins the Python side to the same
+envelope. That is a genuine difference from the American batch entry points
+above, whose bit-identity claims hold as stated there — `american_price_batch`
+on the `SimdIsa.FORCE_SCALAR` route, `american_greeks_batch(analytic=False)` and
+`american_implied_vol_batch` outright.
 
 ## Fitting a surface from quotes
 
@@ -500,7 +538,14 @@ A raised exception from a batch function always means the *call* was malformed
 (shape mismatch, wrong rank, or an unrecognised `side` code), never that one lane
 misbehaved.
 
-Two batch-specific details:
+Three batch-specific details:
+
+- **A batch function with no per-lane failure mode returns no `status` column.**
+  `black76_price_batch`, `black76_greeks_batch` and
+  `black76_value_and_vega_batch` wrap total kernels — a degenerate lane collapses
+  to the documented degenerate result rather than failing — so there is nothing
+  for a status column to say. The convention above is about not *erasing* a
+  channel the kernel has; it is not a requirement to invent one.
 
 - **`PricedSurface.grid` has lossless per-family channels.** Read
   `iv_status`/`iv_valid`, `total_variance_status`/`total_variance_valid`,

@@ -9,9 +9,11 @@ The first release with a stability promise. Everything below happened during the
 production-v1 release sprint, on the way from an internal library to one that
 installs into a prefix and can be depended on.
 
-**What 1.0.0 actually promises** is a *tier*, not the tree: the 56 headers
+**What 1.0.0 actually promises** is a *tier*, not the tree: the 57 headers
 `atx/vol/vol.hpp` includes are frozen for 1.x, and the manifest that says which
 those are is machine-checked (`kTierA` in `atx-vol/tests/vol_umbrella_test.cpp`).
+(The *set* is machine-checked; this count is prose, and it said 56 until the
+release audit re-derived it — re-derive rather than trust it.)
 Everything else — Tier-B, `detail/`, `tools/`, `research/` — is public-but-
 unfrozen or internal. The full policy, with the counts and the tests that
 enforce it, is the *API stability policy* section of `README.md`. Read it before
@@ -228,6 +230,32 @@ exists for.
   a report, never a rejection — the handle is still returned, with the same
   numeric contents. The default (`false`) path is unchanged and still costs
   nothing, so no shipped caller's numbers move.
+
+### NEW — the last two Black-76 batch kernels are bound for numpy
+
+`black76_greeks_batch(F, K, T, sigma, r, df, side)` returns a dict of SoA numpy
+columns (`delta`/`gamma`/`vega`/`theta`/`rho`/`vanna`/`volga`/`charm`/`price`),
+and `black76_value_and_vega_batch(F, K, T, sigma, df, side, sqrt_t=-1.0)`
+returns `(value, vega)` for one expiry slice (`T` and `sqrt_t` shared, as in the
+C++ signature). Binding-only: no kernel changed, and both go through the
+validated `batch.hpp` entry points rather than the raw `simd::` kernels. With
+these, every public batch kernel is reachable from Python.
+
+Two notes for callers:
+
+* **Neither returns a per-lane `status` column, and that is the NaN + per-lane
+  convention rather than a departure from it.** A parallel status exists where
+  the kernel HAS a per-lane failure channel a binding must not erase
+  (`implied_vol_batch`'s `span<Status>`; the American batch's `LaneStatus`).
+  These two have none — `black76_greeks` and `black76_value_and_vega` are
+  `noexcept` total functions whose degenerate lanes collapse to the documented
+  intrinsic result — so an all-`STATUS_OK` column would advertise a diagnostic
+  carrying no information. Only a malformed *call* raises.
+* **`side` now also accepts a single `Side`, broadcast across the batch**, on
+  every binding that takes a `side` column (the American batches included). Pure
+  widening: a per-lane integer column behaves exactly as before, and a float
+  column is still refused with `ErrorCode::InvalidArgument` rather than
+  truncated onto `Side::Call`.
 
 ### NEW — embedding: a diagnostic sink and cooperative cancellation
 
