@@ -624,8 +624,8 @@ demonstrations stay behind `ATX_BUILD_EXAMPLES` (OFF by default).
 
 ## Configuration registry: the `ATX_*` environment variables
 
-atx-vol reads **eleven** `ATX_*` environment variables in shipped code — nine
-from the library, two from tools. None is required, and **none of them changes a
+atx-vol reads **fourteen** `ATX_*` environment variables in shipped code —
+eleven from the library, three from tools. None is required, and **none of them changes a
 fitted, priced or archived value.** The ones that touch parallelism select how
 much of the machine is used, and every atx-vol fan-out is documented
 bit-identical for any worker count; the rest decide only whether a diagnostic is
@@ -643,8 +643,11 @@ the property that makes this table short.
 | `ATX_SLICE_DEBUG` | Prints `curve_fit`'s per-slice fit-preparation outcome (why a chain did or did not become a fittable slice) | unset = off | library — `src/curve_fit.cpp` | **keep** |
 | `ATX_VOL_ZC_BORROW` | `0` forces the owned-reconstruct archive path instead of the zero-copy borrow. Read once per process, so it cannot make a run non-deterministic | unset = borrow allowed | library — `src/backtest.cpp` | **keep**, deprecation candidate |
 | `ATX_VOL_ZC_BACKING` | `map` or `copy` overrides the caller-declared `ArchiveBacking` on the borrow path. Read once per process | unset = the caller's choice stands | library — `src/backtest.cpp` | **keep**, deprecation candidate |
+| `ATX_VOL_AL_PROBE` | Arms the Andersen-Lake zone cycle-attribution probe, read once into `g_mode` at process load. Any non-empty value turns it on; a value containing `s`/`S` additionally records each cold boundary solve's normalized query state. Attribution only — the priced values it counts around are unaffected | unset = off | library — `src/al_probe.cpp` | **keep** |
+| `ATX_VOL_AL_PROBE_OUT` | File path for the per-state binary trace `ATX_VOL_AL_PROBE`'s `s`/`S` flag records; the human-readable `alprobe.*` summary itself always goes to the stream `dump()` was called with, not this path. Unset just skips writing the trace file. Meaningless unless `ATX_VOL_AL_PROBE` is set | unset = trace not written | library — `src/al_probe.cpp` | **keep** |
 | `ATX_VOL_CACHE` | Default for the dispersion CLI's `--cache DIR`; an explicit `--cache` overrides it. Empty means disabled, which is the default behaviour | unset = disabled | tool — `tools/spy_dispersion_backtest.cpp` | **keep** |
 | `ATX_VOL_PREFETCH_DEPTH` | Overrides the projected replay's snapshot look-ahead depth (`projected_prefetch_depth()`). Malformed or out-of-range (cap `64`) falls back to the default rather than failing the run. Scheduling only — output is bit-identical at any depth | `2`, cap `64` | tool — `tools/spy_dispersion_backtest.cpp` | **keep** |
+| `ATX_VOL_SOLVE_LEDGER` | Same env-gated shape as `ATX_VOL_PROFILE`: any non-empty value dumps the always-on solve ledger (AL boundary solves / premium evals / IV Newton iterations) as `ledger.<name> <count>` lines to stderr; the stdout build report shape is untouched | unset = off | tool — `tools/surface_db_build_main.cpp` | **keep** |
 
 **Nothing is deleted at v1, because nothing here is dead.** Every row has a live
 read site and a live effect; the two knobs with real *consumers* outside their
@@ -661,7 +664,7 @@ own source are load-bearing:
   it exists to solve. This is the case where an environment variable is the right
   mechanism rather than a shortcut.
 
-The remaining seven library knobs are diagnostics and measurement levers whose
+The remaining nine library knobs are diagnostics and measurement levers whose
 only documented users are sprint/bench recipes. They are proposed **keep** for
 v1 on the narrow grounds that each is off by default, each is read once, and none
 can change a result — but two follow-ups are worth naming rather than leaving
