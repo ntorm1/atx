@@ -21,6 +21,38 @@ import pytest
 import atxvol as av
 
 
+# ── Batch kernel binding completeness (T5-a) ────────────────────────────────
+#
+# Task 5's audit that every intended batch kernel actually reached the pybind11
+# module -- not merely that the bound ones behave correctly, which is what the
+# parity tests below already cover -- lived only in a throwaway script. Promote
+# it to a committed regression: enumerate every batch entry point
+# `python/src/bindings/pricing.cpp` registers via `m.def(...)` and assert each
+# one exists and is callable on `atxvol._core`. Existence/callability only.
+_EXPECTED_BATCH_BINDINGS = (
+    "black76_price_batch",
+    "implied_vol_batch",
+    "black76_greeks_batch",
+    "black76_value_and_vega_batch",
+    "black76_price_from_lnfk_batch",
+    "american_price_batch",
+    "american_greeks_batch",
+    "american_implied_vol_batch",
+)
+
+
+def test_every_expected_batch_kernel_binding_exists_and_is_callable():
+    core = av._core
+
+    missing = [name for name in _EXPECTED_BATCH_BINDINGS if not hasattr(core, name)]
+    assert not missing, f"batch kernel binding(s) missing from atxvol._core: {missing}"
+
+    not_callable = [
+        name for name in _EXPECTED_BATCH_BINDINGS if not callable(getattr(core, name))
+    ]
+    assert not not_callable, f"batch kernel binding(s) not callable: {not_callable}"
+
+
 # ── American price batch ────────────────────────────────────────────────────
 
 def _book(n: int = 64):

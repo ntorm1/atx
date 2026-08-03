@@ -496,6 +496,10 @@ Result<InsertedSliceHandle> surface_insert_vol_slice(
   }
   const std::uint32_t status = inserted_slice_no_arb_status(surface, *handle);
   handle->no_arb_status = status;
+  // `status != 0u` also covers kNoArbStatusNotEvaluated (sweep couldn't run,
+  // e.g. non-finite ATM w), so kFlagNoArbWarning does NOT by itself imply a
+  // confirmed density/calendar violation -- callers must inspect
+  // `no_arb_status` to tell "violated" from "not evaluated".
   if (status != 0u) {
     handle->flags |= kFlagNoArbWarning;
   }

@@ -76,6 +76,10 @@ inline constexpr std::uint32_t kFlagExtrapolatedK = 1u << 3;   // k outside fitt
 inline constexpr std::uint32_t kFlagDeltaNotBracketed = 1u << 4;
 inline constexpr std::uint32_t kFlagForwardInterp = 1u << 5;   // forward from non-pillar interp
 inline constexpr std::uint32_t kFlagOutsideCore = 1u << 6;
+// Set whenever the opt-in inserted-slice no-arb sweep leaves `no_arb_status`
+// non-zero, which INCLUDES `kNoArbStatusNotEvaluated` (sweep couldn't run).
+// The bit alone does NOT imply a confirmed density/calendar violation --
+// inspect `no_arb_status` to tell "violated" from "not evaluated".
 inline constexpr std::uint32_t kFlagNoArbWarning = 1u << 7;
 inline constexpr std::uint32_t kFlagPriorDominated = 1u << 8;
 inline constexpr std::uint32_t kFlagVolTimeConverted = 1u << 9;
@@ -298,8 +302,11 @@ struct InsertedSliceHandle {
 // `with_no_arb_check == true` additionally runs a dense static-arbitrage sweep
 // over the RESOLVED handle and reports the outcome in
 // `InsertedSliceHandle::no_arb_status` (`kNoArbStatus*` above), OR-ing
-// `kFlagNoArbWarning` into `flags` when any bit is set. The sweep is a report,
-// not a gate: a violating handle is still returned, with the same numeric
+// `kFlagNoArbWarning` into `flags` when any bit is set -- INCLUDING
+// `kNoArbStatusNotEvaluated`, so the flag by itself does not imply a
+// confirmed violation; check `no_arb_status` to distinguish "violated" from
+// "sweep could not run". The sweep is a report, not a gate: a violating
+// handle is still returned, with the same numeric
 // contents it would have had at `with_no_arb_check == false` (the sweep is
 // side-effect free apart from `no_arb_status` / that one flag bit). Sweep
 // convention, fixed and deliberately not caller-tunable at this seam: 128

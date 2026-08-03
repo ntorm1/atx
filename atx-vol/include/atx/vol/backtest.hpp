@@ -130,6 +130,9 @@ private:
 //     an immutable, read-only corpus: a historical replay, where nothing rewrites or
 //     deletes a partition mid-run. This is where the WS-ZC1 win actually lives
 //     (~9x on snapshot_load); it is opt-in precisely because it pins the file.
+//     Loaded through `SnapshotCache`, the same declaration is trusted further: the
+//     cache memoizes each archive's content-identity check for the CACHE's whole
+//     lifetime, not just one snapshot's (see `SnapshotCache::archive_backing`).
 //
 // Choosing Sealed for a partition the store may mutate does not corrupt data — the
 // mapped bytes stay coherent — but it WILL make the store's rewrite/delete fail. Ask
@@ -882,6 +885,23 @@ struct RunConfig {
 // Output is bit-identical at any depth
 // (`Backtest.PrefetchDepthIsBitIdenticalToSingleStepLookAhead` pins it), so the
 // addition moves no number a caller already depends on.
+//
+// BLIND SPOT: this probe pins the field COUNT, nothing else. It cannot see a
+// REORDER that leaves the count at 17 -- `aggregate_arity_is_v` (see
+// detail/aggregate_arity.hpp) only checks how many brace-initializer slots
+// `RunConfig{...}` accepts, with no notion of field NAMES or TYPES, so swapping
+// two existing fields (e.g. two `bool`s, or two `std::size_t`s) still compiles
+// green here. What actually protects against that is the "designated
+// initializers only" contract above (a named initializer binds by field, so a
+// reorder cannot mis-target it) -- this assert only proves the contract is not
+// being silently defeated by an APPEND, and a reorder still needs the contract
+// upheld EVERYWHERE to be safe. UPDATE DISCIPLINE for a reorder: before
+// landing one, confirm every construction site still names its fields --
+// `git grep -n "RunConfig{"` across src/, tests/, bench/ and the python
+// bindings should turn up only empty `RunConfig{}` (or none) with no
+// multi-argument positional brace list; `git grep -n "RunConfig cfg"` sites
+// build via `RunConfig cfg;` plus `cfg.field = ...` assignment, which is
+// order-independent by construction.
 static_assert(detail::aggregate_arity_is_v<RunConfig, 17>,
               "RunConfig field count changed: update this pin, and confirm every "
               "construction site still initializes by field name.");

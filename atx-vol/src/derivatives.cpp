@@ -1093,6 +1093,12 @@ struct VolShiftView {
 [[nodiscard]] CurveSet respot_curves(const CurveSet& base, double scale) {
   CurveSet out = base;
   out.spot = base.spot * scale;
+  // `out` is a fresh copy from the line above (ForwardCurve has no shared
+  // storage -- Rule of Zero over its own std::vector), so this exclusively-
+  // owned instance is the only reference in play: the non-const `points()`
+  // in-place write handle (see its doc in rates_curve.hpp) cannot alias
+  // `base` or any concurrent reader, satisfying the many-readers-or-one-
+  // writer contract trivially.
   for (ForwardPoint& p : out.forward.points()) {
     p.F *= scale;
   }
