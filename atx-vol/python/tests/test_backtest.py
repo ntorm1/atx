@@ -264,7 +264,13 @@ def test_run_config_defaults_mirror_the_engine_header():
 
 def test_run_config_prefetch_depth_round_trips():
     cfg = av.RunConfig()
-    assert cfg.prefetch_depth == 1
+    # 2 since S6-T32 measured the depth ladder on the 135-session projected replay
+    # (1 -> 2 was +15.2% median and won 11/12 interleaved rounds; 2 -> 4 and 4 -> 8 are
+    # washes). `prefetch_depth` is not a constructor kwarg, so this reads the C++
+    # default straight through the `def_readwrite` binding — which is why the assertion
+    # is worth keeping: it is the one place a silent drift in that default is caught on
+    # the Python side. Output is bit-identical at any depth, so no other test moves.
+    assert cfg.prefetch_depth == 2
     cfg.prefetch_depth = 7
     assert cfg.prefetch_depth == 7
 

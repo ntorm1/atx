@@ -239,7 +239,7 @@ Defaults are `DispersionBacktestConfig` / `StrikePolicy` / `FrictionModel` /
 | `half_spread_bps` | double | `0` | → `run.frictions.half_spread_bps`; see the spread-lane note below |
 | `per_contract_cost` | double | `0` | → `run.frictions.per_contract_cost`; `$` per contract traded, charged in every lane |
 | `n_threads` | unsigned | `0` | → `run.price.n_threads`; `0` = all hardware cores. Output is bit-identical at any thread count |
-| `prefetch_depth` | size_t | `1` | → `run.prefetch_depth`; snapshot look-ahead depth. Output is bit-identical at any depth (§7) |
+| `prefetch_depth` | size_t | `2` | → `run.prefetch_depth`; snapshot look-ahead depth. Output is bit-identical at any depth (§7). `2` since S6-T32 measured `1 → 2` at +15.2 % (11/12 interleaved rounds) on the 135-session replay and every deeper step as a wash; set `1` for the old single-step shape |
 | `unpriced` | enum | `error` | → `run.unpriced`; \| `exclude_and_report`. **Read §6 before changing this** |
 
 Numbers must parse **whole**: `45x` is rejected, never read as `45`, and a

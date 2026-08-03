@@ -840,8 +840,16 @@ struct RunConfig {
   // host has no frequency pinning and per-pair spreads reach ±40 %):
   //
   //     1 -> 2 : +15.2 % median, 11/12 rounds won
+  //     1 -> 4 : +19.8 % median, 10/12
+  //     1 -> 8 : +19.6 % median, 10/12
   //     2 -> 4 :  +1.9 % median,  7/12   (a wash)
   //     4 -> 8 :  +1.6 % median,  7/12   (a wash)
+  //
+  // The rungs FROM depth 1 and the rungs BETWEEN the deeper depths have to be read
+  // together, which is why all five are here: every transition off 1 pays about the
+  // same 15-20 %, and every transition among 2, 4 and 8 pays nothing, at win-counts
+  // no better than chance. A table showing only 1 -> 2 could not distinguish that
+  // from a ramp that simply had not been sampled far enough.
   //
   // The curve is a step, not a ramp: overlapping the FIRST load is where all of the
   // win is, and nothing past depth 2 is distinguishable from noise. Depth 2 is

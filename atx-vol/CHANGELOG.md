@@ -119,7 +119,7 @@ a positional one would have rebound, which is why none is allowed to exist.
 
 It then moved **16 → 17** when the release branch merged `main` (2026-08-02),
 which brought the backtest-replay work's `RunConfig::prefetch_depth`
-(`std::size_t`, default `1`). This one is **appended at the end**, the form the
+(`std::size_t`, default `2`). This one is **appended at the end**, the form the
 convention prescribes for a new knob. Two notes a caller may care about:
 
 * **It changes no output at any value.** `prefetch_depth` is purely an I/O
@@ -128,17 +128,32 @@ convention prescribes for a new knob. Two notes a caller may care about:
   `Backtest.PrefetchDepthIsBitIdenticalToSingleStepLookAhead` pins that
   bit-identity, and the SPY-dispersion NAV determinism legs reproduce their
   anchors bit-exactly across the merge that introduced it.
-* **The default is `1`, i.e. the historical single-step look-ahead.** A run that
-  wants the deeper pipeline must ask for it. `0` is normalised to `1` — "no
-  look-ahead" is expressed by `prefetch_snapshots = false`, not by a zero depth.
-  A caller-supplied `snapshot_cache` must retain at least `depth + 2` entries or
-  the LRU drops a completed prefetch before its step reaches it (costing
-  throughput, never correctness); `run_backtest`'s private cache is sized from
-  the field automatically.
+* **The default is `2`, not the historical single-step `1`.** It arrived from
+  `main` at `1` and was moved to `2` in this release (S6-T32, plan 6.7) on a
+  paired measurement: one binary with the depth alternated inside a single
+  session, 12 interleaved rounds on the 135-session SPY-dispersion replay,
+  medians and win-counts only — `1 → 2` **+15.2 % (11/12 rounds)**, then
+  `1 → 4` +19.8 % (10/12) and `1 → 8` +19.6 % (10/12), while `2 → 4` (+1.9 %,
+  7/12) and `4 → 8` (+1.6 %, 7/12) are washes. The curve is a step, not a ramp:
+  overlapping the first load is the whole win, so `2` is the cheapest default
+  that takes it. **A run that wants the old shape sets `1` explicitly and gets
+  it bit-for-bit** — by the note above, no value of this field moves a number.
+  The cost of the new default is one extra in-flight snapshot and a private
+  cache of `4` slots instead of `3`.
+  `0` is still normalised to `1` — "no look-ahead" is expressed by
+  `prefetch_snapshots = false`, not by a zero depth. A caller-supplied
+  `snapshot_cache` must retain at least `depth + 2` entries or the LRU drops a
+  completed prefetch before its step reaches it (costing throughput, never
+  correctness); `run_backtest`'s private cache is sized from the field
+  automatically.
 
-Python is unaffected by both moves: the binding is a hand-kept `def_readwrite`
-list, so arity and keyword names are unchanged and `prefetch_depth` is simply not
-exposed yet.
+Python's ARITY and keyword names are unaffected by both moves — the binding is a
+hand-kept `def_readwrite` list, and `prefetch_depth` is exposed through it
+(`python/src/bindings/backtest.cpp`) as an attribute, not as a constructor
+keyword. A Python caller who never touches the attribute therefore picks up the
+new default exactly as a C++ caller does;
+`python/tests/test_backtest.py::test_run_config_prefetch_depth_round_trips`
+asserts it.
 
 ### REMOVED
 
