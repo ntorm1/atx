@@ -393,9 +393,8 @@ TEST(Var, YearFractionReplayMatchesDirectContractProjection) {
 
   // The engine (CrossSectionalColdConfirm) and expected_base/expected_shifted
   // (scalar Direct oracle, see OptionProjectionConfig::delta_solve_policy
-  // default) are independent solves; compare at the cross-route gate rather
-  // than requiring a bit-identical root, whose fingerprint therefore also
-  // legitimately differs.
+  // default) are independent solves; compare strike/mark/delta at the
+  // cross-route gate rather than requiring a bit-identical root.
   EXPECT_TRUE(close_cross_route(legs[0].strike, expected_base->definition.contract.K));
   EXPECT_DOUBLE_EQ(legs[0].base_time_to_expiry, expected_base->definition.contract.T);
   EXPECT_DOUBLE_EQ(legs[0].shifted_time_to_expiry, expected_shifted->definition.contract.T);
@@ -403,7 +402,26 @@ TEST(Var, YearFractionReplayMatchesDirectContractProjection) {
   EXPECT_TRUE(close_cross_route(legs[0].shifted_mark, expected_shifted->model_mark));
   EXPECT_LE(std::fabs(legs[0].base_delta - expected_base->greeks.delta),
             2.0 * config.delta_tolerance);
-  EXPECT_NE(legs[0].definition_fingerprint, 0u);
+
+  // The fingerprint is a pure hash of (uid, K, T, side, valuation_ts_ns,
+  // expiry_ts_ns, multiplier) -- see projected_definition_fingerprint
+  // (contract_projection.cpp:448-460). It is legitimately route-dependent
+  // through K and T (the solved strike/tenor), so it cannot match
+  // expected_base's own fingerprint; but it must still be a bit-exact,
+  // deterministic function of the engine's OWN resolved values. Reconstruct
+  // the definition from the engine's leg output (K, T) plus the
+  // route-independent inputs -- uid/side/multiplier/valuation_ts_ns from the
+  // fixture, expiry_ts_ns from expected_base (expiry resolution depends only
+  // on valuation_ts_ns and the maturity spec, not on which route solved the
+  // strike) -- and assert bit-exact equality instead of a near-tautological
+  // nonzero check.
+  ProjectedOptionDefinition reconstructed;
+  reconstructed.contract =
+      OptionContract{uid, legs[0].strike, legs[0].base_time_to_expiry, Side::Put};
+  reconstructed.valuation_ts_ns = base.surface().pricing().now_ts_ns;
+  reconstructed.expiry_ts_ns = expected_base->definition.expiry_ts_ns;
+  reconstructed.multiplier = 100.0;
+  EXPECT_EQ(legs[0].definition_fingerprint, projected_definition_fingerprint(reconstructed));
 }
 
 TEST(Var, StockHedgeResizesAtBaseAndProducesNonzeroHeldPeriodPnl) {
