@@ -80,7 +80,7 @@
 //                   --r, where every value is a claim about the market and a
 //                   coerced 0.0 is a WRONG claim. A missing value is still a
 //                   usage error, like every other value-taking flag here.
-//   --report        also write the five-section CSV report to this path. A write
+//   --report        also write the six-section CSV report to this path. A write
 //                   failure is named on stderr and exits 1 -- but it never
 //                   preempts exit 3 or 5; see `build_exit_code` in
 //                   atx/vol/tools/surface_db_build.hpp for the whole precedence.
@@ -104,7 +104,7 @@
 //                   left untouched, the run continues with the other dates, and
 //                   the exit code is 5. Pass this flag only for a run that INTENDS
 //                   retirement; the destroyed cells are still counted and named,
-//                   on stderr and in the --report CSV's section 5.
+//                   on stderr and in the --report CSV's section 6.
 //   --strict        make "scheduled work, fitted nothing" a NON-ZERO exit (3)
 //                   even when the run CARRIED stored surfaces. Off by default,
 //                   and deliberately so: the flagship database holds cells that

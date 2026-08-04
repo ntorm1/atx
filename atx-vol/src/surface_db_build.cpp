@@ -19,6 +19,7 @@
 #include "atx/vol/fit_policy.hpp"     // select_fit_policy, FitDecision
 #include "atx/vol/opra_batch.hpp"     // corpus_board_from_opra, OpraBatchEntry/Result
 #include "atx/vol/opra_hive.hpp"      // load_opra_hive, OpraHiveSpec
+#include "atx/vol/pricer_fitter.hpp"  // ExpiryBuildOutcome (Task 3 slice_drop rows)
 #include "atx/vol/session.hpp"        // make_session_inputs, SessionInputs
 #include "atx/vol/tools/surface_db_populate.hpp" // populate_universe_streaming, UniversePopulateSpec
 #include "atx/vol/surface_parity.hpp" // SurfaceParityInputs
@@ -399,6 +400,36 @@ namespace {
   return std::string(buf, static_cast<std::size_t>(len > 0 ? len : 0));
 }
 
+// Task 3: a year-fraction tenor. %.6f (per the ambiguity resolution this task
+// was scoped under) is plenty of precision for anything derived from a
+// calendar expiry, and unlike %g it never switches to exponential notation on
+// a small value, which would be an odd shape for a `key,value` scalar.
+[[nodiscard]] std::string fmt_t(double v) {
+  char buf[48];
+  const int len = std::snprintf(buf, sizeof buf, "%.6f", v);
+  return std::string(buf, static_cast<std::size_t>(len > 0 ? len : 0));
+}
+
+// Task 3: the admission layer's own per-expiry outcome spelling
+// (`ExpiryBuildOutcome`, pricer_fitter.hpp), verbatim as the enum name so a
+// reader can grep the report for the same word the fitter's own diagnostics
+// use (spy_fit_rca.cpp). `Fitted` is unreachable through
+// `SliceDropCell::outcome` (FitSlot::slice_drops filters it out before it
+// leaves corpus_board_fit.cpp) but is spelled anyway so a hand-built report in
+// a test does not fall through to "Unknown" for the one outcome that is not,
+// in fact, unknown.
+[[nodiscard]] const char *slice_drop_outcome_name(ExpiryBuildOutcome outcome) noexcept {
+  switch (outcome) {
+  case ExpiryBuildOutcome::Fitted:
+    return "Fitted";
+  case ExpiryBuildOutcome::Missing:
+    return "Missing";
+  case ExpiryBuildOutcome::DuplicateMaturity:
+    return "DuplicateMaturity";
+  }
+  return "Unknown"; // unreachable for a valid enumerator
+}
+
 } // namespace
 
 ReportedFailedCells reported_failed_cells(const SurfaceDbBuildReport &r,
@@ -697,6 +728,16 @@ Status write_build_report_csv(const SurfaceDbBuildReport &r, std::string_view pa
      fmt_u32(r.coverage.dates_refused_partition_unlisted));
   kv("coverage.dates_dropped_coverage_regression",
      fmt_u32(r.coverage.dates_dropped_coverage_regression));
+  // Task 3 (mark-domain-robustness observability). `dates_with_slice_drops`
+  // counts WRITTEN dates that carry at least one section-5 row below;
+  // `max_T_min` is the worst written date's own longest fitted pillar (min
+  // over dates of that date's own max, %.6f is plenty of precision for a
+  // year-fraction tenor). Both are 0 on a run with nothing to report, and both
+  // are emitted always so a scripted diff of two report CSVs sees a
+  // regression APPEAR rather than a line materialise (same discipline REV-R3
+  // uses for the coverage-regression counters just above).
+  kv("coverage.dates_with_slice_drops", fmt_u32(r.coverage.n_dates_with_slice_drops));
+  kv("coverage.max_T_min", fmt_t(r.coverage.max_T_min));
   kv("n_dates_loaded", fmt_usize(r.n_dates_loaded));
   kv("n_dates_missing", fmt_usize(r.n_dates_missing));
   kv("n_load_errors", fmt_usize(r.n_load_errors));
@@ -767,11 +808,41 @@ Status write_build_report_csv(const SurfaceDbBuildReport &r, std::string_view pa
     out += '\n';
   }
 
-  // Section 5 (REV-R3): WHICH stored surfaces the write path refused to destroy —
-  // or, under `--allow-coverage-regression`, did destroy. Uncapped for the same
-  // reason section 4 is: this file is the artifact, and on the destructive path
-  // it is the ONLY durable record of what was removed (the archive format keeps
-  // no tombstone, which is why the 95-surface incident left no trace). Column
+  // Section 5 (Task 3, mark-domain-robustness): every non-Fitted expiry of a
+  // WRITTEN date's fresh fits — the per-slice counterpart to section 4's
+  // per-CELL failures. A `FailedCell` (section 4) is a whole (date, symbol)
+  // that never produced a surface; a `SliceDropCell` here is a slice missing
+  // from a surface that WAS produced and IS served, which is exactly the
+  // silent-extrapolation shape this task exists to surface. Uncapped, for the
+  // same reason section 4 is uncapped: this file is where an operator
+  // root-causes a dropped tenor, not a terminal that would elide most of a
+  // whole-universe stressed-day event. The header's own spelling
+  // (`slice_drop.date`, not `date`) matches the `key,value` section's
+  // `coverage.*` naming convention rather than section 4's bare `date` — a
+  // deliberate difference, same reasoning as section 4 vs section 6's
+  // deliberately different column names below: a naive parser must not be
+  // able to splice sections that carry different things. Header emitted even
+  // when empty — constant shape, same as every other section here.
+  out += "slice_drop.date,symbol,T,outcome,n_used\n";
+  for (const SliceDropCell &d : r.coverage.slice_drops) {
+    out += d.date;
+    out += ',';
+    out += d.symbol;
+    out += ',';
+    out += fmt_t(d.T);
+    out += ',';
+    out += slice_drop_outcome_name(d.outcome);
+    out += ',';
+    out += fmt_usize(d.n_used);
+    out += '\n';
+  }
+
+  // Section 6 (REV-R3, renumbered from 5 by Task 3's section 5 insertion above):
+  // WHICH stored surfaces the write path refused to destroy — or, under
+  // `--allow-coverage-regression`, did destroy. Uncapped for the same reason
+  // section 4 is: this file is the artifact, and on the destructive path it is
+  // the ONLY durable record of what was removed (the archive format keeps no
+  // tombstone, which is why the 95-surface incident left no trace). Column
   // names deliberately differ from section 4's so a naive parser cannot splice
   // the two sections together. Header emitted even when empty — constant shape.
   out += "regression_date,regression_symbol\n";

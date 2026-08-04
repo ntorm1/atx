@@ -694,6 +694,58 @@ TEST(BuildSurfaceDb, ReportCsvRoundTrips) {
   EXPECT_NE(body.find("date,symbol,code,detail"), std::string::npos);
 }
 
+// ── Task 3 (mark-domain-robustness observability): slice_drop.* report rows ──
+//
+// A board whose short-dated expiry fits fine but whose long-dated expiry is
+// starved below the usable-row floor (`min_obs_per_slice`, default 4) still
+// WRITES a partition -- the admitted surface just does not reach as far in
+// tenor as its raw quotes suggested. This is the "stressed day silently drops
+// a long-dated expiry" shape Task 3 exists to surface: the cell counts as
+// `cells_ok`, not `cells_failed`, so nothing in the report said so before this
+// task, and a backtest reading the surface only discovers the gap when it
+// prices past the shortened tenor and gets an extrapolated mark.
+TEST(BuildSurfaceDb, SliceDropRowsNameTheDroppedExpiry) {
+  tsupport::SyntheticHiveSpec fx;
+  fx.symbols = {"AAA"};
+  fx.dates = {"2026-07-01"};
+  // The fixture writes the 28d expiry's 18 rows (9 strikes x {C,P}) first,
+  // then the 56d expiry's 18 rows (synthetic_opra_hive.hpp's dte-major loop
+  // order). Truncating to 20 total rows keeps the 28d expiry WHOLE and leaves
+  // only 2 rows (1 strike x {C,P}) of the 56d expiry -- well below the
+  // usable-row floor, so the 56d slice starves while the 28d slice fits fine.
+  // Do NOT touch tolerances; this is the board's raw QUOTES being thin.
+  fx.max_rows_per_cell = 20;
+  const BuildFixture f = make_build_fixture("slice_drop", fx);
+
+  const auto rep = build_surface_db(build_spec(f, fx));
+  ASSERT_TRUE(rep.has_value()) << (rep ? "" : rep.error().to_string());
+  ASSERT_EQ(rep->coverage.cells_ok, 1u)
+      << "the board must still FIT (partial), not fail outright -- a whole-cell "
+         "failure belongs in failed_cells, not slice_drops";
+  ASSERT_EQ(rep->coverage.dates_written, 1u);
+  ASSERT_GE(rep->coverage.slice_drops.size(), 1u);
+  EXPECT_EQ(rep->coverage.slice_drops.front().date, "2026-07-01");
+  EXPECT_EQ(rep->coverage.slice_drops.front().symbol, "AAA");
+  EXPECT_EQ(rep->coverage.n_dates_with_slice_drops, 1u);
+  EXPECT_GT(rep->coverage.max_T_min, 0.0);
+
+  const fs::path csv = f.root / "report.csv";
+  const Status w = write_build_report_csv(*rep, csv.string());
+  ASSERT_TRUE(w.has_value()) << (w ? "" : w.error().to_string());
+  std::ifstream is(csv.string(), std::ios::binary);
+  const std::string body((std::istreambuf_iterator<char>(is)), std::istreambuf_iterator<char>());
+
+  EXPECT_NE(body.find("slice_drop.date,symbol,T,outcome,n_used\n"), std::string::npos) << body;
+  EXPECT_NE(body.find("2026-07-01,AAA,"), std::string::npos) << body;
+  // outcome is the admission layer's own taxonomy (ExpiryBuildOutcome), read
+  // off `PricerFitter::last_attempt_report()`; `Missing` is what it spells a
+  // slice that starved out of `session.expiries()`, one of the two outcomes
+  // the task brief accepts here (PrepStarved/Missing).
+  EXPECT_NE(body.find(",Missing,"), std::string::npos) << body;
+  EXPECT_NE(body.find("coverage.dates_with_slice_drops,1\n"), std::string::npos) << body;
+  EXPECT_NE(body.find("coverage.max_T_min,"), std::string::npos) << body;
+}
+
 // ── FIX-A: the fit stage names its failures, like the config stage always has ──
 //
 // `config.failed_symbols` has always named the symbols CONFIG SELECTION refused.

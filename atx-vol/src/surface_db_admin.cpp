@@ -3,11 +3,14 @@
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
+#include <iterator> // make_move_iterator (tenor_audit's per-symbol group append)
+#include <limits>   // quiet_NaN (tenor_audit's no-neighbors sentinel)
 #include <optional>
 #include <string>
 #include <system_error>
 #include <utility>
 
+#include "atx/vol/priced_surface.hpp"      // PricedSurface::tenor_domain (tenor_audit, Task 1/3)
 #include "atx/vol/priced_surface_view.hpp" // PricedSurfaceView (LoadedSurface::view)
 
 namespace atx::vol {
@@ -482,6 +485,107 @@ Result<SymbolEnableChange> set_symbol_enabled(SurfaceDb &db, std::string_view sy
     return Err(up.error());
   }
   out.generation = db.generation();
+  return Ok(std::move(out));
+}
+
+// ── tenor_audit ──────────────────────────────────────────────────────────────
+
+namespace {
+
+// The rolling-median comparison value for row `i` of a symbol's date-ordered
+// `max_Ts` series: median of up to 5 OTHER rows nearest `i` by index
+// distance, ties broken toward the earlier (smaller-index) row — see
+// `tenor_audit`'s doc comment in the header for why this is the "2 before + 2
+// after + 1 more from whichever side has slack" rule stated as one sort.
+// NaN when `max_Ts.size() <= 1` (no OTHER row exists to compare against).
+[[nodiscard]] double rolling_median_max_T(const std::vector<double> &max_Ts, std::size_t i) {
+  std::vector<std::pair<std::size_t, std::size_t>> by_distance; // (distance, index)
+  by_distance.reserve(max_Ts.size() > 0 ? max_Ts.size() - 1 : 0);
+  for (std::size_t j = 0; j < max_Ts.size(); ++j) {
+    if (j == i) {
+      continue;
+    }
+    const std::size_t dist = j > i ? j - i : i - j;
+    by_distance.emplace_back(dist, j);
+  }
+  std::sort(by_distance.begin(), by_distance.end());
+  const std::size_t take = std::min<std::size_t>(5, by_distance.size());
+  if (take == 0) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  std::vector<double> neighbors;
+  neighbors.reserve(take);
+  for (std::size_t k = 0; k < take; ++k) {
+    neighbors.push_back(max_Ts[by_distance[k].second]);
+  }
+  std::sort(neighbors.begin(), neighbors.end());
+  const std::size_t m = neighbors.size();
+  return (m % 2 == 1) ? neighbors[m / 2] : 0.5 * (neighbors[m / 2 - 1] + neighbors[m / 2]);
+}
+
+// How far below the rolling median a row's max_T must fall to be flagged.
+// Not exposed as a spec knob (the ambiguity resolution this task was scoped
+// under pins the literal value); kept as a named constant rather than a bare
+// literal at the compare site.
+inline constexpr double kTenorAuditTruncationSlackYears = 0.25;
+
+} // namespace
+
+Result<TenorAuditReport> tenor_audit(const SurfaceDb &db, const TenorAuditSpec &spec) {
+  std::vector<std::string> symbols;
+  if (!spec.symbols.empty()) {
+    symbols.reserve(spec.symbols.size());
+    for (const std::string &s : spec.symbols) {
+      symbols.push_back(canonical_ascii(s));
+    }
+  } else {
+    symbols = db.symbols(); // canonical, sorted; every manifest symbol, disabled included
+  }
+
+  std::vector<std::string> dates;
+  {
+    const std::vector<DbPartitionInfo> parts = db.partitions(); // sorted by canonical key
+    dates.reserve(parts.size());
+    for (const DbPartitionInfo &p : parts) {
+      dates.push_back(p.key);
+    }
+  }
+
+  TenorAuditReport out;
+  for (const std::string &symbol : symbols) {
+    std::vector<TenorAuditRow> group;
+    group.reserve(dates.size());
+    for (const std::string &date : dates) {
+      const Result<PricedSurface> surf = db.load_surface(date, symbol);
+      if (!surf) {
+        out.skip_notes.push_back(date + " " + symbol + ": " + surf.error().to_string());
+        continue;
+      }
+      const PricedSurface::TenorDomain dom = surf->tenor_domain();
+      TenorAuditRow row;
+      row.date = date;
+      row.symbol = symbol;
+      row.n_slices = surf->n_slices();
+      row.min_T = dom.min_T;
+      row.max_T = dom.max_T;
+      group.push_back(std::move(row));
+    }
+
+    std::vector<double> max_Ts;
+    max_Ts.reserve(group.size());
+    for (const TenorAuditRow &row : group) {
+      max_Ts.push_back(row.max_T);
+    }
+    for (std::size_t i = 0; i < group.size(); ++i) {
+      const double median = rolling_median_max_T(max_Ts, i);
+      if (std::isfinite(median) && group[i].max_T < median - kTenorAuditTruncationSlackYears) {
+        group[i].truncated = true;
+        ++out.n_truncated;
+      }
+    }
+    out.rows.insert(out.rows.end(), std::make_move_iterator(group.begin()),
+                    std::make_move_iterator(group.end()));
+  }
   return Ok(std::move(out));
 }
 

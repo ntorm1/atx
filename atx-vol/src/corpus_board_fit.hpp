@@ -17,11 +17,12 @@
 #include <functional>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "atx/vol/correction.hpp"      // CorrectionCache (C2 cross-date cache export)
 #include "atx/vol/corpus.hpp"          // CorpusBoard, CorpusFitStatus, CorpusAdmissionPolicy, ...
 #include "atx/vol/priced_surface.hpp"  // PricedSurface
-#include "atx/vol/pricer_fitter.hpp"   // PricerConfig
+#include "atx/vol/pricer_fitter.hpp"   // PricerConfig, ExpiryBuildReport (slice-drop capture)
 #include "atx/vol/session.hpp"         // SessionInputs
 #include "atx/vol/surface_archive.hpp" // SurfaceProvenance
 #include "atx/vol/types.hpp"           // ErrorCode
@@ -69,6 +70,17 @@ struct FitSlot {
   CorpusAdmissionDecision admission{CorpusDisposition::Admitted, CorpusAdmissionReason::None, 0u};
   std::optional<PricedSurface> surface{};        // present iff status == Ok
   std::optional<SurfaceProvenance> provenance{}; // the fitter's own health for `surface`
+  // Task 3 (mark-domain-robustness observability, surface_db_populate.hpp).
+  // Every NON-Fitted expiry from the PUBLISHED attempt's per-expiry outcome
+  // list (`PricerFitter::last_attempt_report()->attempts.back().expiries`,
+  // read when `report.published` -- the admission layer's own taxonomy,
+  // `ExpiryBuildOutcome`: Missing / Fitted / DuplicateMaturity). Filtered to
+  // non-Fitted HERE so the overwhelming common case -- a fully-fitted board --
+  // carries an empty vector: bounding the cost of a diagnostic almost nothing
+  // needs is the point (populate_surface_db's `slice_drop.*` report rows).
+  // Empty on a failed fit (status != Ok) or when the fitter produced no
+  // report at all.
+  std::vector<ExpiryBuildReport> slice_drops{};
 };
 
 [[nodiscard]] std::uint32_t saturated_u32(std::size_t value) noexcept;
