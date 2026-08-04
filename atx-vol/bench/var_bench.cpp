@@ -762,7 +762,8 @@ void register_all() {
   const bool single_shot = environment_value("ATX_VAR_BENCH_SINGLE_SHOT") == "1";
   for (const auto &[route, solve_policy] :
        {std::pair{"direct_cold", OptionDeltaSolvePolicy::Direct},
-        std::pair{"screened_cold", OptionDeltaSolvePolicy::FastScreenColdConfirm}}) {
+        std::pair{"screened_cold", OptionDeltaSolvePolicy::FastScreenColdConfirm},
+        std::pair{"cross_cold", OptionDeltaSolvePolicy::CrossSectionalColdConfirm}}) {
     for (const unsigned threads : {1u, 4u, 8u, 16u}) {
       const std::string name = "var/prepared/sp100_dispersion_terminal/ytd/thousands/" +
                                std::string{route} + "/t" + std::to_string(threads);
