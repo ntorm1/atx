@@ -755,7 +755,8 @@ With `--report`, the same data is written as CSV in **six** sections: a
 `date,symbol,code,detail` row per failed cell (`detail` is RFC4180-quoted — it is
 free text from the fitter and may contain a comma), a
 `slice_drop.date,symbol,T,outcome,n_used` row per non-Fitted expiry of a
-**written** date (Task 3, mark-domain-robustness — see [Slice drops and tenor
+**written** date's **fresh** (not carried or retained-old) fits (Task 3,
+mark-domain-robustness — see [Slice drops and tenor
 coverage](#slice-drops-and-tenor-coverage) below), then a
 `regression_date,regression_symbol` row per coverage-regression cell. Every section
 header is emitted even when its list is empty, so the file's shape is constant.
@@ -770,10 +771,19 @@ above) rather than failing the cell outright. On a stressed day this is exactly
 how a long-dated expiry can silently vanish from an otherwise-served
 surface — the cell reports `Ok`, the partition is written, and a backtest
 reading the surface only discovers the gap when it queries past the shortened
-tenor and gets an extrapolated mark instead of a fitted one. `outcome` is the
-admission layer's own per-expiry taxonomy (`ExpiryBuildOutcome`) spelled
-verbatim (`Missing` / `DuplicateMaturity`; `Fitted` never appears here — a row
-exists only for the expiries that are NOT).
+tenor and gets an extrapolated mark instead of a fitted one.
+
+`outcome` prefers the FIT DRIVER's own, finer-grained reason
+(`ExpiryFitOutcome`) when the session retained one: `CarryFailed` (carry/forward
+resolution failed), `PrepStarved` (below the usable-row floor — thin), `PrepFailed`
+(a hard preparation defect), `FitFailed` (the slice fit itself failed), or
+`Skipped` (a degenerate maturity, never attempted). It falls back to the
+coarser admission-layer taxonomy (`ExpiryBuildOutcome`) — `Missing` — when no
+rich reason was retained. `DuplicateMaturity` is the one admission-layer value
+that appears here verbatim regardless: the fit driver never classifies a
+duplicate maturity at all (input validation catches it before any per-chain
+fit is attempted), so there is never a rich reason to prefer over it. `Fitted`
+never appears — a row exists only for the expiries that are NOT.
 
 Two `key,value` scalars summarize this per run: `coverage.dates_with_slice_drops`
 (how many written dates carry at least one `slice_drop.*` row) and

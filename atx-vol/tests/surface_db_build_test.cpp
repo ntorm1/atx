@@ -726,6 +726,12 @@ TEST(BuildSurfaceDb, SliceDropRowsNameTheDroppedExpiry) {
   ASSERT_GE(rep->coverage.slice_drops.size(), 1u);
   EXPECT_EQ(rep->coverage.slice_drops.front().date, "2026-07-01");
   EXPECT_EQ(rep->coverage.slice_drops.front().symbol, "AAA");
+  // Pin WHICH expiry dropped, not merely that something did: 56 days out
+  // (minus the snapshot's ~19:55 UTC intraday offset from the expiry's
+  // midnight-UTC pricing instant, synthetic_opra_hive.hpp's convention) is
+  // ~0.151y, comfortably outside a 0.01y band around the 28d survivor's own
+  // ~0.074y -- so this also rules out the fitted slice being misreported here.
+  EXPECT_NEAR(rep->coverage.slice_drops.front().T, 56.0 / 365.0, 0.01);
   EXPECT_EQ(rep->coverage.n_dates_with_slice_drops, 1u);
   EXPECT_GT(rep->coverage.max_T_min, 0.0);
 
@@ -737,11 +743,13 @@ TEST(BuildSurfaceDb, SliceDropRowsNameTheDroppedExpiry) {
 
   EXPECT_NE(body.find("slice_drop.date,symbol,T,outcome,n_used\n"), std::string::npos) << body;
   EXPECT_NE(body.find("2026-07-01,AAA,"), std::string::npos) << body;
-  // outcome is the admission layer's own taxonomy (ExpiryBuildOutcome), read
-  // off `PricerFitter::last_attempt_report()`; `Missing` is what it spells a
-  // slice that starved out of `session.expiries()`, one of the two outcomes
-  // the task brief accepts here (PrepStarved/Missing).
-  EXPECT_NE(body.find(",Missing,"), std::string::npos) << body;
+  // Fix Round 1 (spec gap): the outcome column now spells the fit driver's
+  // OWN reason (ExpiryFitOutcome, via ExpiryBuildReport::fit_outcome) when one
+  // is available, falling back to the coarse admission-layer `Missing` only
+  // when it is not. A slice starved below `min_obs_per_slice` is exactly
+  // `PrepStarved` (surface_parity.hpp's own taxonomy) -- not merely
+  // "PrepStarved or Missing", now that the plumbing exists to say which.
+  EXPECT_NE(body.find(",PrepStarved,"), std::string::npos) << body;
   EXPECT_NE(body.find("coverage.dates_with_slice_drops,1\n"), std::string::npos) << body;
   EXPECT_NE(body.find("coverage.max_T_min,"), std::string::npos) << body;
 }

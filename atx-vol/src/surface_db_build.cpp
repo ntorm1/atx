@@ -418,7 +418,7 @@ namespace {
 // leaves corpus_board_fit.cpp) but is spelled anyway so a hand-built report in
 // a test does not fall through to "Unknown" for the one outcome that is not,
 // in fact, unknown.
-[[nodiscard]] const char *slice_drop_outcome_name(ExpiryBuildOutcome outcome) noexcept {
+[[nodiscard]] const char *coarse_outcome_name(ExpiryBuildOutcome outcome) noexcept {
   switch (outcome) {
   case ExpiryBuildOutcome::Fitted:
     return "Fitted";
@@ -428,6 +428,54 @@ namespace {
     return "DuplicateMaturity";
   }
   return "Unknown"; // unreachable for a valid enumerator
+}
+
+// Fix Round 1 (spec gap). The fit driver's own reason a `Missing` expiry
+// never reached `expiries()`/`parity()` -- ONLY the five values the task
+// brief's outcome vocabulary actually names
+// (`Missing`/`CarryFailed`/`PrepStarved`/`PrepFailed`/`Skipped`/`FitFailed`).
+// The three `Fitted*` family values (`Fitted`, `FittedFallbackCurve`,
+// `FittedLegacyPrep`) are deliberately NOT drop reasons -- a chain reported
+// `Fitted` by the fit driver cannot also be admission-`Missing` by
+// construction (both come from the same `context`/`expiry_reports` the
+// session retains, see `ExpiryBuildReport::fit_outcome`'s doc) -- so seeing
+// one here means the rich report was not usefully aligned (or is the
+// `ExpiryFitOutcome::Fitted` default sentinel meaning "no rich reason is
+// available") and the caller must fall back to the coarse spelling. Returns
+// nullptr for exactly that "fall back" case.
+[[nodiscard]] const char *rich_drop_reason_name(ExpiryFitOutcome outcome) noexcept {
+  switch (outcome) {
+  case ExpiryFitOutcome::CarryFailed:
+    return "CarryFailed";
+  case ExpiryFitOutcome::PrepStarved:
+    return "PrepStarved";
+  case ExpiryFitOutcome::PrepFailed:
+    return "PrepFailed";
+  case ExpiryFitOutcome::FitFailed:
+    return "FitFailed";
+  case ExpiryFitOutcome::Skipped:
+    return "Skipped";
+  case ExpiryFitOutcome::Fitted:
+  case ExpiryFitOutcome::FittedFallbackCurve:
+  case ExpiryFitOutcome::FittedLegacyPrep:
+    return nullptr; // not a drop reason -- fall back to the coarse spelling
+  }
+  return nullptr; // unreachable for a valid enumerator
+}
+
+// The CSV's `outcome` column, exactly as the header comment above the row
+// loop promises: the rich fit-driver reason when one is genuinely available
+// (`outcome == Missing` and `rich_drop_reason_name` names it), the coarse
+// admission-layer spelling otherwise (`Missing` with no rich reason on
+// record, or `DuplicateMaturity`, which the fit driver never classifies at
+// all -- it is caught at input validation, before any per-chain fit runs).
+[[nodiscard]] std::string slice_drop_outcome_name(const SliceDropCell &d) {
+  if (d.outcome == ExpiryBuildOutcome::Missing) {
+    if (const char *rich = rich_drop_reason_name(d.fit_outcome); rich != nullptr) {
+      return rich;
+    }
+  }
+  return coarse_outcome_name(d.outcome);
 }
 
 } // namespace
@@ -831,7 +879,7 @@ Status write_build_report_csv(const SurfaceDbBuildReport &r, std::string_view pa
     out += ',';
     out += fmt_t(d.T);
     out += ',';
-    out += slice_drop_outcome_name(d.outcome);
+    out += slice_drop_outcome_name(d);
     out += ',';
     out += fmt_usize(d.n_used);
     out += '\n';

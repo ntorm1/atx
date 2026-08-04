@@ -742,7 +742,28 @@ struct TenorAuditSpec {
   // surfaces (nothing on the read path gates on `enabled`, `surface_db_admin
   // .hpp`'s standing rule), and those surfaces are exactly as auditable as an
   // enabled symbol's.
+  //
+  // An EXPLICIT (non-empty) list, unlike `DbVerifySpec::symbols`, MUST name
+  // only symbols the manifest currently configures (Fix Round 1, Important
+  // 2): `tenor_audit` rejects an unconfigured name with `NotFound` rather
+  // than silently auditing zero rows for it. This is narrower than
+  // `verify_db`'s "an unconfigured name is a legitimate thing to assert
+  // about" stance, deliberately: an EMPTY tenor-audit walk and a FULLY
+  // TRUNCATION-FREE one are otherwise indistinguishable by `n_truncated`
+  // alone, which is exactly the shape that made `--fail-on-truncated`
+  // silently pass on a typo'd `--symbol`.
   std::vector<std::string> symbols{};
+
+  // Cap on `TenorAuditReport::skip_notes`, same discipline as `DbVerifySpec
+  // ::max_reported_failures` (Fix Round 1, Important 3): a sparse production
+  // universe can have O(10^5-10^6) (date, symbol) cells a symbol was never
+  // written into, and every one of those is a skip note under the doc above.
+  // Uncapped, that is a multi-hundred-MB vector of heap strings for a walk
+  // whose per-cell TRUNCATED verdict never depended on the note text at all.
+  // Extra notes are counted in `n_skip_notes_elided`, never dropped silently
+  // — the same "bounded, not rationed, and never silently clean" shape as
+  // `max_reported_failures`, on its OWN budget (nothing else competes for it).
+  std::size_t max_skip_notes{kSurfaceDbVerifyMaxFailures};
 };
 
 struct TenorAuditReport {
@@ -758,7 +779,15 @@ struct TenorAuditReport {
   // for its own load failures ("ABSENCE IS NOT A FAULT" at the top of this
   // header) — except an audit has no directory-vs-map distinction to make, so
   // every load failure, whatever its cause, is a skip here.
+  //
+  // Capped at `TenorAuditSpec::max_skip_notes` (Fix Round 1, Important 3);
+  // notes beyond the cap are counted in `n_skip_notes_elided`, not dropped
+  // silently. The SKIP ITSELF is never capped — every (date, symbol) cell
+  // that fails to load is still excluded from `rows` and still absent from
+  // the rolling-median comparison, whether or not it got a note. The cap
+  // bounds the TEXT, not the accounting.
   std::vector<std::string> skip_notes{};
+  std::size_t n_skip_notes_elided{0};
 };
 
 // Walk every partition (`SurfaceDb::partitions()`, already sorted ascending by
@@ -789,13 +818,14 @@ struct TenorAuditReport {
 // definition on an even neighbor count); a row is TRUNCATED when its own
 // `max_T` is more than 0.25 below that median.
 //
-// Err only when the manifest itself cannot be read (a `db.symbols()` /
-// `db.partitions()` failure never happens for an already-open `SurfaceDb` —
-// this mirrors `verify_db`'s "Err is reserved for a spec that cannot be
-// honored" contract, and today there is no such spec shape here, so this
-// always succeeds; declared `Result` for symmetry with the rest of this
-// header and so a future spec restriction has somewhere to put an
-// InvalidArgument without changing the signature).
+// Err: `NotFound` when `spec.symbols` names a symbol the manifest does not
+// currently configure (Fix Round 1, Important 2 — see `TenorAuditSpec
+// ::symbols`'s doc for why this is checked up front rather than left to
+// silently audit zero rows for that name). No other Err is reachable today —
+// `db.symbols()`/`db.partitions()` cannot fail for an already-open
+// `SurfaceDb` — but the empty-`spec.symbols` walk stays `Result` for symmetry
+// with the rest of this header and so a future spec restriction has
+// somewhere to put an error without changing the signature.
 [[nodiscard]] Result<TenorAuditReport> tenor_audit(const SurfaceDb &db,
                                                     const TenorAuditSpec &spec = {});
 

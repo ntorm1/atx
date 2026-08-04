@@ -534,9 +534,25 @@ inline constexpr double kTenorAuditTruncationSlackYears = 0.25;
 Result<TenorAuditReport> tenor_audit(const SurfaceDb &db, const TenorAuditSpec &spec) {
   std::vector<std::string> symbols;
   if (!spec.symbols.empty()) {
+    // Fix Round 1 (Important 2, review of df09222). An unconfigured symbol
+    // name used to reach the walk unchanged and simply audit ZERO rows -- and
+    // an empty walk has `n_truncated == 0`, which the CLI's
+    // `--fail-on-truncated` (surface_db_main.cpp) cannot tell apart from a
+    // healthy database with nothing truncated: `tenor-audit --symbol SPYY
+    // --fail-on-truncated` (a typo for SPY) exited 0 while auditing nothing.
+    // Reject an unconfigured name up front instead -- the same NotFound
+    // `set_symbol_enabled` already gives an unconfigured `--symbol` on the
+    // `enable`/`disable` subcommands -- so the failure is loud at the source
+    // rather than indistinguishable from success three calls downstream.
+    const std::vector<std::string> configured = db.symbols(); // canonical, sorted
     symbols.reserve(spec.symbols.size());
     for (const std::string &s : spec.symbols) {
-      symbols.push_back(canonical_ascii(s));
+      const std::string canon = canonical_ascii(s);
+      if (std::find(configured.begin(), configured.end(), canon) == configured.end()) {
+        return Err(ErrorCode::NotFound,
+                   "tenor_audit: symbol '" + canon + "' is not configured in this database");
+      }
+      symbols.push_back(canon);
     }
   } else {
     symbols = db.symbols(); // canonical, sorted; every manifest symbol, disabled included
@@ -558,7 +574,16 @@ Result<TenorAuditReport> tenor_audit(const SurfaceDb &db, const TenorAuditSpec &
     for (const std::string &date : dates) {
       const Result<PricedSurface> surf = db.load_surface(date, symbol);
       if (!surf) {
-        out.skip_notes.push_back(date + " " + symbol + ": " + surf.error().to_string());
+        // Fix Round 1 (Important 3): capped, same discipline as `verify_db`'s
+        // `record`/`record_absent`/`record_index_fault` above — the skip
+        // itself (excluding this cell from `group`/the median comparison)
+        // happens unconditionally via `continue`; only the note TEXT is
+        // bounded.
+        if (out.skip_notes.size() < spec.max_skip_notes) {
+          out.skip_notes.push_back(date + " " + symbol + ": " + surf.error().to_string());
+        } else {
+          ++out.n_skip_notes_elided;
+        }
         continue;
       }
       const PricedSurface::TenorDomain dom = surf->tenor_domain();

@@ -683,6 +683,19 @@ public:
   // Per-expiry re-Americanized parity, ascending T (parallel to `expiries()`).
   [[nodiscard]] std::span<const ParityReport> parity() const noexcept { return parity_; }
 
+  // Per-expiry FIT-driver outcome for EVERY chain walked (‖ under.chains, in
+  // CHAIN order -- NOT the fitted-slice order of expiries()/parity() above;
+  // same alignment contract as `ExpiryFitReport` itself, surface_parity.hpp).
+  // Task 3 (mark-domain-robustness): retained past the fit so the admission
+  // layer's build report can spell WHY a chain is missing from the served
+  // surface (CarryFailed/PrepStarved/PrepFailed/FitFailed/Skipped) instead of
+  // collapsing every non-fit reason into one coarse outcome. Empty when this
+  // session was NOT built through `run_surface_parity`/`fit_curve_surface`
+  // (e.g. a session assembled by some other construction path never sets it).
+  [[nodiscard]] std::span<const ExpiryFitReport> expiry_fit_reports() const noexcept {
+    return expiry_fit_reports_;
+  }
+
   [[nodiscard]] const SessionDiagnostics &diagnostics() const noexcept { return diag_; }
 
   [[nodiscard]] std::span<const SessionSliceDiagnostics> slice_diagnostics() const noexcept {
@@ -830,6 +843,10 @@ private:
   VolSurface surface_;
   std::vector<SliceContext> ctx_;    // ascending T
   std::vector<ParityReport> parity_; // ascending T (‖ ctx_)
+  // Task 3 (mark-domain-robustness): ‖ under.chains, in CHAIN order (NOT ‖
+  // ctx_/parity_ above -- see `expiry_fit_reports()`'s doc). Empty unless the
+  // build path that produced this session set it.
+  std::vector<ExpiryFitReport> expiry_fit_reports_;
   SessionInputs in_;
   SessionDiagnostics diag_;
   std::vector<SessionSliceDiagnostics> slice_diag_; // compact, ascending T

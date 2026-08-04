@@ -398,7 +398,23 @@ duplicate_maturity_report(const Underlying &under, const CurveConfig &curve) {
       ++consecutive_gaps;
       attempt.evidence.max_consecutive_expiry_gaps =
           std::max(attempt.evidence.max_consecutive_expiry_gaps, consecutive_gaps);
-      attempt.expiries.push_back(ExpiryBuildReport{i, chain.T, ExpiryBuildOutcome::Missing, 0u});
+      ExpiryBuildReport missing{i, chain.T, ExpiryBuildOutcome::Missing, 0u};
+      // Task 3 (mark-domain-robustness observability). The fit driver's own,
+      // finer-grained reason this chain is missing -- `session
+      // .expiry_fit_reports()` is ‖ under.chains in chain order (curve_fit
+      // .hpp:99-101 / surface_parity.hpp's matching contract), which is
+      // exactly this loop's own indexing, so `i` locates the same chain.
+      // Bounds- and identity-checked rather than trusted blind: a session NOT
+      // built through run_surface_parity/fit_curve_surface leaves the vector
+      // empty, and `chain_index` is cross-checked so a future change to
+      // either loop's iteration order fails closed (stays at the
+      // ExpiryFitOutcome::Fitted default, which the CSV path reads as "no
+      // rich reason available" and spells the coarse `Missing` instead).
+      const std::span<const ExpiryFitReport> rich = session.expiry_fit_reports();
+      if (i < rich.size() && rich[i].chain_index == i) {
+        missing.fit_outcome = rich[i].outcome;
+      }
+      attempt.expiries.push_back(missing);
       continue;
     }
     if (attempt.expiries.empty()) {

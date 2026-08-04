@@ -361,6 +361,14 @@ void print_report(const SurfaceDbBuildReport &r, std::size_t max_failed_cells) {
               r.coverage.dates_refused_partition_unlisted);
   std::printf("coverage.dates_dropped_coverage_regression %u\n",
               r.coverage.dates_dropped_coverage_regression);
+  // Task 3 (mark-domain-robustness), Fix Round 1: these two were added to the
+  // --report CSV's key,value section but not mirrored here, breaking the
+  // "every scalar report field prints one-per-line to stdout" invariant
+  // (docs/surface-db-build.md's Output section). Same position as the CSV
+  // writer's (surface_db_build.cpp), right after the coverage-regression
+  // trio above.
+  std::printf("coverage.dates_with_slice_drops %u\n", r.coverage.n_dates_with_slice_drops);
+  std::printf("coverage.max_T_min %.6f\n", r.coverage.max_T_min);
   std::printf("n_dates_loaded %zu\n", r.n_dates_loaded);
   std::printf("n_dates_missing %zu\n", r.n_dates_missing);
   std::printf("n_load_errors %zu\n", r.n_load_errors);

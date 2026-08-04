@@ -908,8 +908,8 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
           // drop. Bounded the same way `failed_cells` is bounded: a fully
           // fitted board (nearly every board) contributes nothing.
           for (const ExpiryBuildReport &er : slot.slice_drops) {
-            date_slice_drops.push_back(
-                SliceDropCell{board.date, board.symbol, er.maturity, er.outcome, er.n_used});
+            date_slice_drops.push_back(SliceDropCell{board.date, board.symbol, er.maturity,
+                                                      er.outcome, er.n_used, er.fit_outcome});
           }
         } else {
           ++acc.stats.n_failed;

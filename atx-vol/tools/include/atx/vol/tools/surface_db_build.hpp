@@ -806,11 +806,21 @@ coverage_regression_display_cap(const SurfaceDbBuildReport &r,
 // `coverage.failed_cells` entry — the WHOLE list, never the printed cap, because
 // this file is where an operator goes to root-cause the lost cells; section 5
 // (Task 3, mark-domain-robustness) is a `slice_drop.date,symbol,T,outcome,n_used`
-// row per `coverage.slice_drops` entry, likewise uncapped — the fitter's own
-// per-expiry taxonomy (`ExpiryBuildOutcome`: never `Fitted`, by construction) for
-// every non-Fitted expiry of a WRITTEN date, so a stressed day that silently
+// row per `coverage.slice_drops` entry, likewise uncapped — one row per
+// non-Fitted expiry of a WRITTEN date's FRESH fits (never a carried or
+// retained-old cell — those were not re-fit this run, so there is no fresh
+// per-expiry outcome to report for them), so a stressed day that silently
 // dropped a long-dated expiry from an otherwise-served surface is named here
-// instead of only showing up downstream as an extrapolated backtest mark;
+// instead of only showing up downstream as an extrapolated backtest mark.
+// `outcome` spells the fit DRIVER's own reason (`ExpiryFitOutcome`:
+// `CarryFailed`/`PrepStarved`/`PrepFailed`/`FitFailed`/`Skipped`) when one was
+// retained on the session (Fix Round 1, `ExpiryBuildReport::fit_outcome`),
+// falling back to the coarser admission-layer `Missing` (`ExpiryBuildOutcome`)
+// when it was not — see `slice_drop_outcome_name` (surface_db_build.cpp) for
+// the exact fallback rule. `DuplicateMaturity` is the one admission-layer
+// value that can ALSO appear here verbatim: the fit driver never classifies a
+// duplicate maturity at all (it is caught at input validation, before any
+// per-chain fit is attempted), so there is no rich reason to prefer over it;
 // section 6 is a `regression_date,regression_symbol` row per
 // `coverage.coverage_regression_cells` entry, likewise uncapped. The first line
 // is always the pinned header `key,value`.

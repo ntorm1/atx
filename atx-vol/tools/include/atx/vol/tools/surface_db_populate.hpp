@@ -52,7 +52,7 @@
 #include <vector>
 
 #include "atx/vol/corpus.hpp"     // CorpusBoard
-#include "atx/vol/pricer_fitter.hpp" // ExpiryBuildOutcome (SliceDropCell, Task 3)
+#include "atx/vol/pricer_fitter.hpp" // ExpiryBuildOutcome, ExpiryFitOutcome (SliceDropCell, Task 3)
 #include "atx/vol/tools/run_report.hpp" // MetaKv
 #include "atx/vol/surface_db.hpp" // SurfaceDb, SymbolFitConfig
 #include "atx/vol/types.hpp"      // Result, Status
@@ -223,6 +223,14 @@ struct FailedCell {
 // (see corpus_board_fit.cpp) -- NEVER `Fitted`, by construction, since that
 // value is filtered out before it reaches here.
 //
+// `fit_outcome` is the FIT DRIVER's own, finer-grained reason (Fix Round 1):
+// `ExpiryBuildReport::fit_outcome` (pricer_fitter.hpp), populated by
+// `completed_attempt_report` from `VolaSession::expiry_fit_reports()` when
+// `outcome == Missing`. Meaningful ONLY then -- see that field's own doc for
+// exactly which of the fit driver's `ExpiryFitOutcome` values can appear and
+// which default (`Fitted`, the enum's 0 value) means "no rich reason is
+// available", the same convention this field inherits.
+//
 // Distinct from `FailedCell`: a `FailedCell` is a WHOLE (date, symbol) cell
 // whose fit failed outright and produced no surface at all; a `SliceDropCell`
 // is a PARTIAL drop inside an otherwise successfully fitted, WRITTEN board --
@@ -234,6 +242,7 @@ struct SliceDropCell {
   double T{0.0};
   ExpiryBuildOutcome outcome{ExpiryBuildOutcome::Missing};
   std::size_t n_used{0u};
+  ExpiryFitOutcome fit_outcome{ExpiryFitOutcome::Fitted};
 };
 
 // REV-R3. One (date, symbol) surface that IS stored in a date's existing

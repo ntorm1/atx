@@ -826,6 +826,17 @@ int run_tenor_audit(const SurfaceDb &db, const std::string &symbol, bool fail_on
   for (const std::string &note : rep->skip_notes) {
     std::fprintf(stderr, "atx-vol-surface-db: tenor-audit: skipped %s\n", note.c_str());
   }
+  if (rep->n_skip_notes_elided > 0) {
+    // Fix Round 1 (Important 3): `skip_notes` is capped
+    // (`TenorAuditSpec::max_skip_notes`, no CLI flag yet -- same as
+    // `reported_failed_cells`'s cap in surface_db_build.hpp, which has none
+    // either); say so on a sparse universe instead of letting the printed
+    // list read as complete.
+    std::fprintf(stderr,
+                 "atx-vol-surface-db: tenor-audit: %zu additional skip note(s) elided "
+                 "(TenorAuditSpec::max_skip_notes cap).\n",
+                 rep->n_skip_notes_elided);
+  }
   std::printf("date\tn_slices\tmin_T\tmax_T\tflag\n");
   for (const TenorAuditRow &row : rep->rows) {
     std::printf("%s\t%zu\t%.6f\t%.6f\t%s\n", row.date.c_str(), row.n_slices, row.min_T, row.max_T,

@@ -1370,6 +1370,10 @@ Result<VolaSession> VolaSession::build(const Underlying &under, const SessionInp
             std::move(incremental_chain_mids), std::move(incremental_chain_flags),
             std::move(incremental_chain_bids), std::move(incremental_chain_asks),
             std::move(incremental_chain_ts)});
+    // Task 3 (mark-domain-robustness): retain the fit driver's own per-expiry
+    // outcome (‖ under.chains, chain order) past the fit so the admission
+    // layer can spell WHY a chain never reached expiries()/parity().
+    session.expiry_fit_reports_ = std::move(crep.expiry_reports);
     session.build_fast_query_cache_bank(under);
     if (time_build) {
       session.diag_.fit_timings.total_wall_ms =
@@ -1548,6 +1552,10 @@ Result<VolaSession> VolaSession::build(const Underlying &under, const SessionInp
           std::move(incremental_chain_mids), std::move(incremental_chain_flags),
           std::move(incremental_chain_bids), std::move(incremental_chain_asks),
           std::move(incremental_chain_ts)});
+  // Task 3 (mark-domain-robustness): retain the fit driver's own per-expiry
+  // outcome (‖ under.chains, chain order) past the fit so the admission layer
+  // can spell WHY a chain never reached expiries()/parity().
+  session.expiry_fit_reports_ = std::move(rep.expiry_reports);
   session.build_fast_query_cache_bank(under);
   if (time_build) {
     session.diag_.fit_timings.total_wall_ms =
@@ -1594,6 +1602,7 @@ VolaSession VolaSession::clone() const {
                    std::optional<CorrectionCache>{corr_put_},
                    std::move(curve_copy)};
   copy.incremental_observations_ = incremental_observations_;
+  copy.expiry_fit_reports_ = expiry_fit_reports_;
   copy.query_cache_bank_ = query_cache_bank_;
   return copy;
 }
@@ -2171,6 +2180,7 @@ VolaSession VolaSession::clone_for_refit() const {
                    std::move(put_cache),
                    std::move(curve_override)};
   copy.incremental_observations_ = incremental_observations_;
+  copy.expiry_fit_reports_ = expiry_fit_reports_;
   copy.query_cache_bank_ = query_cache_bank_;
   return copy;
 }
