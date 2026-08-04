@@ -779,11 +779,12 @@ resolution failed), `PrepStarved` (below the usable-row floor — thin), `PrepFa
 (a hard preparation defect), `FitFailed` (the slice fit itself failed), or
 `Skipped` (a degenerate maturity, never attempted). It falls back to the
 coarser admission-layer taxonomy (`ExpiryBuildOutcome`) — `Missing` — when no
-rich reason was retained. `DuplicateMaturity` is the one admission-layer value
-that appears here verbatim regardless: the fit driver never classifies a
-duplicate maturity at all (input validation catches it before any per-chain
-fit is attempted), so there is never a rich reason to prefer over it. `Fitted`
-never appears — a row exists only for the expiries that are NOT.
+rich reason was retained. `DuplicateMaturity` is spelled by the fallback for
+completeness but is unreachable in this section today: it is only produced by
+`PricerFitter::fit`'s up-front input validation, which fails the whole attempt
+before anything is published — and `slice_drop.*` rows exist only for written
+(published) dates. `Fitted` never appears — a row exists only for the expiries
+that are NOT.
 
 Two `key,value` scalars summarize this per run: `coverage.dates_with_slice_drops`
 (how many written dates carry at least one `slice_drop.*` row) and

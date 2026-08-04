@@ -817,10 +817,11 @@ coverage_regression_display_cap(const SurfaceDbBuildReport &r,
 // retained on the session (Fix Round 1, `ExpiryBuildReport::fit_outcome`),
 // falling back to the coarser admission-layer `Missing` (`ExpiryBuildOutcome`)
 // when it was not — see `slice_drop_outcome_name` (surface_db_build.cpp) for
-// the exact fallback rule. `DuplicateMaturity` is the one admission-layer
-// value that can ALSO appear here verbatim: the fit driver never classifies a
-// duplicate maturity at all (it is caught at input validation, before any
-// per-chain fit is attempted), so there is no rich reason to prefer over it;
+// the exact fallback rule. `DuplicateMaturity` is spelled by the fallback for
+// completeness but is UNREACHABLE here today: it is only produced by the
+// failed-attempt builder (`PricerFitter::fit`'s up-front input validation,
+// which returns an error before `published` is ever set), and `slice_drops`
+// capture is gated on `published` — so no written date can carry it;
 // section 6 is a `regression_date,regression_symbol` row per
 // `coverage.coverage_regression_cells` entry, likewise uncapped. The first line
 // is always the pinned header `key,value`.
