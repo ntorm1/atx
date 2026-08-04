@@ -1054,6 +1054,131 @@ TEST(Var, CrossSectionalRetainedLegFallbackHandlesMarketUnavailable) {
   EXPECT_EQ(legs[0].status, VarLegStatus::SurfaceUnavailable);
 }
 
+// Mirrors the SP100 bench fixture's replay-exclusion flow at unit scale
+// (var_bench.cpp prepare_replayable_portfolio): replay a book whose short-dated
+// leg expires inside one scenario's base->shifted window, exclude the failed
+// position, rebuild the portfolio, and require the aggregate (no-legs) route to
+// match a FRESH retained-leg replay of the SAME rebuilt book at the bench's
+// structural + 1e-9 same-route gate. The excluded row's presence flips the
+// whole-scenario CrossSectionalColdConfirm fallback decision for every other
+// leg in that scenario, so retained frames replayed on the SUPERSET book are
+// not a valid oracle for the filtered book -- only a fresh same-book replay is.
+TEST(Var, CrossSectionalAggregateMatchesRetainedAfterExclusionRebuild) {
+  const std::uint32_t spy_uid = uid_for_symbol("SPY");
+  const std::uint32_t aapl_uid = uid_for_symbol("AAPL");
+
+  class TwoSurfaceSnapshot {
+  public:
+    TwoSurfaceSnapshot(std::uint32_t spy_uid, std::uint32_t aapl_uid, double spy_spot,
+                       double aapl_spot, std::int64_t ts, double variance_scale = 1.0)
+        : spy_(make_surface(spy_uid, spy_spot, ts, variance_scale)),
+          aapl_(make_surface(aapl_uid, aapl_spot, ts, variance_scale)), pointers_{&spy_, &aapl_},
+          set_(SurfaceSet::create(pointers_)) {}
+    [[nodiscard]] bool valid() const noexcept { return set_.has_value(); }
+    [[nodiscard]] const SurfaceSet &set() const noexcept { return *set_; }
+    [[nodiscard]] std::int64_t ts() const noexcept { return spy_.pricing().now_ts_ns; }
+
+  private:
+    PricedSurface spy_;
+    PricedSurface aapl_;
+    std::array<const PricedSurface *, 2> pointers_{};
+    Result<SurfaceSet> set_;
+  };
+
+  const TwoSurfaceSnapshot reference(spy_uid, aapl_uid, 100.0, 190.0, timestamp(2026, 1, 2));
+  const TwoSurfaceSnapshot t0(spy_uid, aapl_uid, 99.0, 188.0, timestamp(2026, 1, 5), 1.10);
+  const TwoSurfaceSnapshot t1(spy_uid, aapl_uid, 101.0, 191.0, timestamp(2026, 1, 6), 0.95);
+  const TwoSurfaceSnapshot t2(spy_uid, aapl_uid, 103.0, 195.0, timestamp(2026, 2, 2), 1.05);
+  const TwoSurfaceSnapshot t3(spy_uid, aapl_uid, 102.0, 193.0, timestamp(2026, 2, 3), 1.00);
+  ASSERT_TRUE(reference.valid() && t0.valid() && t1.valid() && t2.valid() && t3.valid());
+
+  // Poison row: ~20 calendar days to expiry at the reference anchor. Scenario 1
+  // spans Jan 6 -> Feb 2 (27 days), so its replayed expiry (base + offset)
+  // falls strictly inside the window and the SPY group's cross-sectional
+  // resolution fails there, downgrading the WHOLE scenario (both groups) to
+  // the scalar FastScreenColdConfirm fallback. Scenarios 0/2 span one day and
+  // keep the row alive.
+  std::vector<VarPosition> positions = {
+      option("SPY", Side::Call, 1.25, 0.25),
+      option("SPY", Side::Put, -0.75, 0.40),
+      option("SPY", Side::Call, 2.0, 0.55),
+      option("SPY", Side::Call, 3.0, 0.25), // duplicate anchor of position 0
+      VarOptionPosition{"SPY", ProjectedMaturitySpec::years(20.0 / 365.25), 0.40, Side::Call, 1.0,
+                        100.0},
+      stock("SPY", 7.0),
+      option("AAPL", Side::Call, 1.0, 0.30),
+      option("AAPL", Side::Put, -1.0, 0.60),
+  };
+  const std::size_t poison_index = 4u;
+
+  const VarEvaluationConfig config = evaluation_config(1);
+  ASSERT_EQ(config.projection_solve_policy, OptionDeltaSolvePolicy::CrossSectionalColdConfirm);
+  auto full = PreparedVarPortfolio::create(positions, reference.set(), config);
+  ASSERT_TRUE(full) << (full ? std::string{} : full.error().to_string());
+
+  const std::vector<VarScenario> scenarios = {
+      {t0.ts(), &t0.set(), t1.ts(), &t1.set()},
+      {t1.ts(), &t1.set(), t2.ts(), &t2.set()},
+      {t2.ts(), &t2.set(), t3.ts(), &t3.set()},
+  };
+  std::vector<VarScenarioFrame> full_frames(scenarios.size());
+  std::vector<VarLegFrame> full_legs(scenarios.size() * positions.size());
+  ASSERT_TRUE(full->replay_into(scenarios, full_frames, full_legs, config));
+
+  // The poison row must fail exactly scenario 1 (expired before the shifted
+  // date) and every other leg must succeed on every scenario, so exclusion
+  // removes exactly one position and scenario 1's fallback decision flips.
+  EXPECT_EQ(full_frames[1].status, VarScenarioStatus::LegFailure);
+  EXPECT_EQ(full_frames[1].n_failed, 1u);
+  for (std::size_t scenario = 0u; scenario < scenarios.size(); ++scenario) {
+    for (std::size_t position = 0u; position < positions.size(); ++position) {
+      const VarLegFrame &leg = full_legs[scenario * positions.size() + position];
+      if (scenario == 1u && position == poison_index) {
+        EXPECT_EQ(leg.status, VarLegStatus::ExpiredBeforeShift);
+      } else {
+        ASSERT_EQ(leg.status, VarLegStatus::Ok)
+            << "scenario " << scenario << " position " << position << ": " << to_string(leg.status);
+      }
+    }
+  }
+
+  positions.erase(positions.begin() + static_cast<std::ptrdiff_t>(poison_index));
+  auto filtered = PreparedVarPortfolio::create(positions, reference.set(), config);
+  ASSERT_TRUE(filtered) << (filtered ? std::string{} : filtered.error().to_string());
+
+  std::vector<VarScenarioFrame> retained_frames(scenarios.size());
+  std::vector<VarLegFrame> retained_legs(scenarios.size() * positions.size());
+  ASSERT_TRUE(filtered->replay_into(scenarios, retained_frames, retained_legs, config));
+  for (const VarLegFrame &leg : retained_legs) {
+    ASSERT_EQ(leg.status, VarLegStatus::Ok) << to_string(leg.status);
+  }
+
+  std::vector<VarScenarioFrame> aggregate_frames(scenarios.size());
+  ASSERT_TRUE(filtered->replay_into(scenarios, aggregate_frames, {}, config));
+
+  for (std::size_t scenario = 0u; scenario < scenarios.size(); ++scenario) {
+    const VarScenarioFrame &oracle = retained_frames[scenario];
+    const VarScenarioFrame &aggregate = aggregate_frames[scenario];
+    ASSERT_EQ(oracle.status, VarScenarioStatus::Ok);
+    EXPECT_EQ(aggregate.status, oracle.status) << "scenario " << scenario;
+    EXPECT_EQ(aggregate.n_ok, oracle.n_ok) << "scenario " << scenario;
+    EXPECT_EQ(aggregate.n_failed, oracle.n_failed) << "scenario " << scenario;
+    EXPECT_EQ(aggregate.definition_fingerprint, oracle.definition_fingerprint)
+        << "scenario " << scenario;
+    const double value_scale =
+        std::max({1.0, std::fabs(oracle.base_value), std::fabs(oracle.shifted_value)});
+    EXPECT_LE(std::fabs(aggregate.base_value - oracle.base_value), 1.0e-9 * value_scale)
+        << "scenario " << scenario;
+    EXPECT_LE(std::fabs(aggregate.shifted_value - oracle.shifted_value), 1.0e-9 * value_scale)
+        << "scenario " << scenario;
+    EXPECT_LE(std::fabs(aggregate.pnl - oracle.pnl), 1.0e-9 * value_scale)
+        << "scenario " << scenario;
+    EXPECT_LE(std::fabs(aggregate.dollar_delta - oracle.dollar_delta),
+              1.0e-9 * std::max(1.0, std::fabs(oracle.dollar_delta)))
+        << "scenario " << scenario;
+  }
+}
+
 TEST(Var, HistoricalStatisticsUseNearestRankLossAndInclusiveExpectedShortfall) {
   const std::array<double, 5> pnl{10.0, 5.0, 0.0, -5.0, -10.0};
   std::vector<VarScenarioFrame> frames(pnl.size());

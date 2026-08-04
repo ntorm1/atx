@@ -35,7 +35,6 @@
 
 #include <benchmark/benchmark.h>
 
-#include "atx/core/hash.hpp"
 #include "atx/vol/backtest.hpp"
 #include "atx/vol/corpus.hpp"
 #include "atx/vol/dispersion.hpp"
@@ -272,44 +271,6 @@ void add_symbol(std::unordered_map<std::uint32_t, std::string> &symbols, std::st
   return true;
 }
 
-[[nodiscard]] bool aggregate_retained_legs(const TerminalVarFixture &fixture,
-                                           const PreparedVarPortfolio &prepared,
-                                           std::span<const VarLegFrame> legs,
-                                           std::span<VarScenarioFrame> frames, std::string &error) {
-  if (frames.size() != fixture.scenarios.size() ||
-      fixture.scenarios.size() > std::numeric_limits<std::size_t>::max() / prepared.size() ||
-      legs.size() != fixture.scenarios.size() * prepared.size()) {
-    error = "YTD SP100 retained-leg aggregation cardinality mismatch";
-    return false;
-  }
-  for (std::size_t scenario = 0u; scenario < fixture.scenarios.size(); ++scenario) {
-    VarScenarioFrame frame;
-    frame.base_ts_ns = fixture.scenarios[scenario].base_ts_ns;
-    frame.shifted_ts_ns = fixture.scenarios[scenario].shifted_ts_ns;
-    std::size_t fingerprint = static_cast<std::size_t>(prepared.fingerprint());
-    const std::span<const VarLegFrame> scenario_legs =
-        legs.subspan(scenario * prepared.size(), prepared.size());
-    for (const VarLegFrame &leg : scenario_legs) {
-      if (leg.status != atx::vol::VarLegStatus::Ok) {
-        error = "YTD SP100 retained-leg aggregation received a failed leg";
-        return false;
-      }
-      frame.base_value += leg.base_value;
-      frame.shifted_value += leg.shifted_value;
-      frame.pnl += leg.pnl;
-      frame.dollar_delta += leg.dollar_delta;
-      ++frame.n_ok;
-      fingerprint = atx::core::hash_combine(fingerprint, leg.definition_fingerprint);
-    }
-    frame.definition_fingerprint = static_cast<std::uint64_t>(fingerprint);
-    if (frame.definition_fingerprint == 0u) {
-      frame.definition_fingerprint = 1u;
-    }
-    frames[scenario] = frame;
-  }
-  return true;
-}
-
 [[nodiscard]] IndexCompleteTimeline index_complete_timeline(const Clock &history,
                                                             std::uint32_t index_uid) {
   IndexCompleteTimeline result;
@@ -468,12 +429,9 @@ append_option_position(const Lot &lot, const MarketSnapshot &reference,
   if (std::find(failed.begin(), failed.end(), std::uint8_t{1}) != failed.end()) {
     std::vector<VarPosition> filtered;
     filtered.reserve(fixture.positions.size());
-    std::vector<std::size_t> retained_indices;
-    retained_indices.reserve(fixture.positions.size());
     for (std::size_t position = 0u; position < fixture.positions.size(); ++position) {
       if (failed[position] == 0u) {
         filtered.push_back(std::move(fixture.positions[position]));
-        retained_indices.push_back(position);
       } else if (std::holds_alternative<VarOptionPosition>(fixture.positions[position])) {
         ++fixture.excluded_replay_option_lots;
       }
@@ -489,17 +447,21 @@ append_option_position(const Lot &lot, const MarketSnapshot &reference,
       set_error(fixture, candidate.error().to_string());
       return false;
     }
-    std::vector<VarLegFrame> filtered_legs(fixture.scenarios.size() * retained_indices.size());
-    for (std::size_t scenario = 0u; scenario < fixture.scenarios.size(); ++scenario) {
-      const std::size_t source_offset = scenario * failed.size();
-      const std::size_t output_offset = scenario * retained_indices.size();
-      for (std::size_t output = 0u; output < retained_indices.size(); ++output) {
-        filtered_legs[output_offset + output] = legs[source_offset + retained_indices[output]];
-      }
-    }
-    legs = std::move(filtered_legs);
+    // The retained-leg oracle must be replayed on the REBUILT book, not
+    // recombined from the superset book's leg frames: under the
+    // CrossSectionalColdConfirm default, any row failing group resolution
+    // downgrades the WHOLE scenario (every leg, every group) to the scalar
+    // FastScreenColdConfirm route, so the per-leg strikes/fingerprints depend
+    // on which rows share the book. Excluding the failed rows flips those
+    // scenarios back onto the cross-sectional route; stale superset frames
+    // would disagree with the same-book aggregate replay by admitted
+    // strike-corridor slack (structurally, on definition_fingerprint).
+    legs.assign(fixture.scenarios.size() * candidate->size(), VarLegFrame{});
     frames.assign(fixture.scenarios.size(), VarScenarioFrame{});
-    if (!aggregate_retained_legs(fixture, *candidate, legs, frames, fixture.error)) {
+    const auto filtered_replay =
+        candidate->replay_into(fixture.scenarios, frames, legs, evaluation);
+    if (!filtered_replay) {
+      set_error(fixture, filtered_replay.error().to_string());
       return false;
     }
   }
