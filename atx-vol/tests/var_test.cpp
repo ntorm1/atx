@@ -148,6 +148,16 @@ void expect_economically_equal(const VarScenarioFrame &actual, const VarScenario
   EXPECT_TRUE(close(actual.dollar_delta, expected.dollar_delta));
 }
 
+// Cross-route economic parity gate (CORRECTNESS GATE 2): independent Newton
+// solves -- the engine's cross-sectional batch solver and the scalar
+// project_option_contract oracle (OptionDeltaSolvePolicy::Direct) -- each
+// land on a different, individually cold-confirmed root inside the
+// delta_tolerance corridor (CORRECTNESS GATE 1). They are not required to be
+// bit-identical; only economically equal at this relative gate.
+bool close_cross_route(double actual, double expected) {
+  return std::fabs(actual - expected) <= 1.0e-5 * std::max(1.0, std::fabs(expected));
+}
+
 void expect_bit_identical(const VarLegFrame &actual, const VarLegFrame &expected) {
   EXPECT_EQ(actual.kind, expected.kind);
   EXPECT_EQ(actual.status, expected.status);
@@ -193,6 +203,11 @@ public:
 private:
   std::filesystem::path path_{};
 };
+
+TEST(Var, DefaultSolvePolicyIsCrossSectionalColdConfirm) {
+  EXPECT_EQ(VarEvaluationConfig{}.projection_solve_policy,
+            OptionDeltaSolvePolicy::CrossSectionalColdConfirm);
+}
 
 TEST(Var, ReferenceDeltaStrikeAnchorsForwardMoneynessAndDollarDelta) {
   const std::uint32_t uid = uid_for_symbol("SPY");
@@ -302,20 +317,29 @@ TEST(Var, ReplayPreservesDeltaMoneynessTteAndDollarDeltaThenHoldsConcreteContrac
 
   const double expected_units = reference_leg.target_dollar_delta /
                                 (base.surface().pricing().S * expected_base->greeks.delta * 100.0);
-  EXPECT_DOUBLE_EQ(legs[0].units, expected_units);
-  EXPECT_DOUBLE_EQ(legs[0].strike, expected_base->definition.contract.K);
+  // The engine (CrossSectionalColdConfirm) and expected_base/expected_shifted
+  // (scalar Direct oracle, see OptionProjectionConfig::delta_solve_policy
+  // default) are independent solves; compare at the cross-route gate rather
+  // than requiring a bit-identical root.
+  EXPECT_TRUE(close_cross_route(legs[0].units, expected_units));
+  EXPECT_TRUE(close_cross_route(legs[0].strike, expected_base->definition.contract.K));
   EXPECT_NE(std::log(legs[0].strike / expected_base->forward), reference_leg.log_moneyness);
   EXPECT_DOUBLE_EQ(legs[0].base_time_to_expiry, expected_base->definition.contract.T);
   EXPECT_DOUBLE_EQ(legs[0].shifted_time_to_expiry, expected_shifted->definition.contract.T);
   EXPECT_LT(legs[0].shifted_time_to_expiry, legs[0].base_time_to_expiry);
-  EXPECT_DOUBLE_EQ(legs[0].base_mark, expected_base->model_mark);
-  EXPECT_DOUBLE_EQ(legs[0].shifted_mark, expected_shifted->model_mark);
-  EXPECT_DOUBLE_EQ(legs[0].base_delta, expected_base->greeks.delta);
+  EXPECT_TRUE(close_cross_route(legs[0].base_mark, expected_base->model_mark));
+  EXPECT_TRUE(close_cross_route(legs[0].shifted_mark, expected_shifted->model_mark));
+  // Both roots are independently cold-confirmed to delta_tolerance of the
+  // same target, so their deltas cannot diverge by more than 2*delta_tolerance.
+  EXPECT_LE(std::fabs(legs[0].base_delta - expected_base->greeks.delta),
+            2.0 * config.delta_tolerance);
   EXPECT_NEAR(std::fabs(legs[0].base_delta), 0.40, config.delta_tolerance);
   EXPECT_NEAR(legs[0].dollar_delta, reference_leg.target_dollar_delta,
               std::fabs(reference_leg.target_dollar_delta) * 1.0e-13);
-  EXPECT_DOUBLE_EQ(legs[0].base_value, expected_units * 100.0 * expected_base->model_mark);
-  EXPECT_DOUBLE_EQ(legs[0].shifted_value, expected_units * 100.0 * expected_shifted->model_mark);
+  EXPECT_TRUE(
+      close_cross_route(legs[0].base_value, expected_units * 100.0 * expected_base->model_mark));
+  EXPECT_TRUE(close_cross_route(legs[0].shifted_value,
+                                expected_units * 100.0 * expected_shifted->model_mark));
   EXPECT_DOUBLE_EQ(legs[0].pnl, legs[0].shifted_value - legs[0].base_value);
   EXPECT_DOUBLE_EQ(frames[0].base_value, legs[0].base_value);
   EXPECT_DOUBLE_EQ(frames[0].shifted_value, legs[0].shifted_value);
@@ -367,13 +391,19 @@ TEST(Var, YearFractionReplayMatchesDirectContractProjection) {
       projection_config);
   ASSERT_TRUE(expected_shifted);
 
-  EXPECT_DOUBLE_EQ(legs[0].strike, expected_base->definition.contract.K);
+  // The engine (CrossSectionalColdConfirm) and expected_base/expected_shifted
+  // (scalar Direct oracle, see OptionProjectionConfig::delta_solve_policy
+  // default) are independent solves; compare at the cross-route gate rather
+  // than requiring a bit-identical root, whose fingerprint therefore also
+  // legitimately differs.
+  EXPECT_TRUE(close_cross_route(legs[0].strike, expected_base->definition.contract.K));
   EXPECT_DOUBLE_EQ(legs[0].base_time_to_expiry, expected_base->definition.contract.T);
   EXPECT_DOUBLE_EQ(legs[0].shifted_time_to_expiry, expected_shifted->definition.contract.T);
-  EXPECT_DOUBLE_EQ(legs[0].base_mark, expected_base->model_mark);
-  EXPECT_DOUBLE_EQ(legs[0].shifted_mark, expected_shifted->model_mark);
-  EXPECT_DOUBLE_EQ(legs[0].base_delta, expected_base->greeks.delta);
-  EXPECT_EQ(legs[0].definition_fingerprint, expected_base->definition.fingerprint);
+  EXPECT_TRUE(close_cross_route(legs[0].base_mark, expected_base->model_mark));
+  EXPECT_TRUE(close_cross_route(legs[0].shifted_mark, expected_shifted->model_mark));
+  EXPECT_LE(std::fabs(legs[0].base_delta - expected_base->greeks.delta),
+            2.0 * config.delta_tolerance);
+  EXPECT_NE(legs[0].definition_fingerprint, 0u);
 }
 
 TEST(Var, StockHedgeResizesAtBaseAndProducesNonzeroHeldPeriodPnl) {
@@ -1092,6 +1122,48 @@ TEST(Var, SurfaceDbRunSortsThreeDatesAndProducesAdjacentScenariosEndToEnd) {
   auto independently_computed = historical_var_statistics(result->frames, config.confidence);
   ASSERT_TRUE(independently_computed);
   EXPECT_EQ(result->risk, *independently_computed);
+
+  // Explicit-policy variant: run the full SurfaceDb pipeline (reference AND
+  // every scenario) once under the cross-sectional default and once under
+  // the scalar Direct oracle. This is a genuine cross-route comparison per
+  // CORRECTNESS GATE 2 -- not merely two solve paths sharing one prepared
+  // portfolio -- exercised end to end through run_historical_var.
+  VarRunConfig cross_run_config = config;
+  cross_run_config.retain_leg_frames = false;
+  cross_run_config.evaluation.projection_solve_policy =
+      OptionDeltaSolvePolicy::CrossSectionalColdConfirm;
+  auto cross_result = run_historical_var(*db, positions, cross_run_config);
+  ASSERT_TRUE(cross_result) << (cross_result ? std::string{} : cross_result.error().to_string());
+
+  VarRunConfig direct_run_config = config;
+  direct_run_config.retain_leg_frames = false;
+  direct_run_config.evaluation.projection_solve_policy = OptionDeltaSolvePolicy::Direct;
+  auto direct_result = run_historical_var(*db, positions, direct_run_config);
+  ASSERT_TRUE(direct_result) << (direct_result ? std::string{} : direct_result.error().to_string());
+
+  ASSERT_EQ(cross_result->frames.size(), direct_result->frames.size());
+  for (std::size_t index = 0u; index < cross_result->frames.size(); ++index) {
+    const VarScenarioFrame &cross_frame = cross_result->frames[index];
+    const VarScenarioFrame &direct_frame = direct_result->frames[index];
+    EXPECT_EQ(cross_frame.status, direct_frame.status);
+    EXPECT_EQ(cross_frame.n_ok, direct_frame.n_ok);
+    EXPECT_EQ(cross_frame.n_failed, direct_frame.n_failed);
+    ASSERT_EQ(cross_frame.status, VarScenarioStatus::Ok);
+    const double value_scale =
+        std::max({1.0, std::fabs(direct_frame.base_value), std::fabs(direct_frame.shifted_value)});
+    EXPECT_LE(std::fabs(cross_frame.base_value - direct_frame.base_value), 1.0e-5 * value_scale);
+    EXPECT_LE(std::fabs(cross_frame.shifted_value - direct_frame.shifted_value),
+              1.0e-5 * value_scale);
+    EXPECT_LE(std::fabs(cross_frame.pnl - direct_frame.pnl), 1.0e-5 * value_scale);
+  }
+
+  const double var_scale = std::max(1.0, std::fabs(direct_result->risk.value_at_risk));
+  EXPECT_LE(std::fabs(cross_result->risk.value_at_risk - direct_result->risk.value_at_risk),
+            1.0e-5 * var_scale);
+  const double es_scale = std::max(1.0, std::fabs(direct_result->risk.expected_shortfall));
+  EXPECT_LE(
+      std::fabs(cross_result->risk.expected_shortfall - direct_result->risk.expected_shortfall),
+      1.0e-5 * es_scale);
 
   config.retain_leg_frames = false;
   auto aggregate_only = run_historical_var(*db, positions, config);

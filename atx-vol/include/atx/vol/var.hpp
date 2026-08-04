@@ -105,9 +105,11 @@ struct VarEvaluationConfig {
   // the projected strike, but callers own its economic parity validation.
   QueryExecution projection_execution{QueryExecution::ColdReference};
   QueryExecution valuation_execution{QueryExecution::ColdReference};
-  // Prepared query tiers may seed the delta root, but successful projections
-  // are always cold-confirmed to delta_tolerance and robustly fall back cold.
-  OptionDeltaSolvePolicy projection_solve_policy{OptionDeltaSolvePolicy::FastScreenColdConfirm};
+  // Prepared query tiers are no longer consulted for the root: the
+  // cross-sectional cold route is the default, and every successful
+  // projection remains cold-confirmed to delta_tolerance with a robust cold
+  // fallback.
+  OptionDeltaSolvePolicy projection_solve_policy{OptionDeltaSolvePolicy::CrossSectionalColdConfirm};
 };
 
 // A single independent historical return observation. The base and shifted
