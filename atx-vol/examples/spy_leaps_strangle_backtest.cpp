@@ -65,6 +65,7 @@ struct Args {
   double roll_months{1.0};
   double contracts{1.0};
   double sign{+1.0};
+  std::string mark_domain{"extrapolate"};
 };
 
 void usage() {
@@ -72,7 +73,8 @@ void usage() {
       stderr,
       "usage: atx-vol-spy-leaps-strangle --out DIR [--db-prefix P] [--year-lo Y] "
       "[--year-hi Y]\n    [--from D] [--to D] [--delta X] [--tenor-years X] "
-      "[--roll-months X] [--contracts X] [--sign +1|-1]\n");
+      "[--roll-months X] [--contracts X] [--sign +1|-1]\n    "
+      "[--mark-domain extrapolate|carry|error]\n");
 }
 
 bool parse_args(int argc, char **argv, Args &args) {
@@ -106,6 +108,8 @@ bool parse_args(int argc, char **argv, Args &args) {
       args.contracts = std::atof(v.c_str());
     } else if (flag == "--sign" && next(v)) {
       args.sign = std::atof(v.c_str());
+    } else if (flag == "--mark-domain" && next(v)) {
+      args.mark_domain = v;
     } else {
       std::fprintf(stderr, "unknown/incomplete flag: %.*s\n", static_cast<int>(flag.size()),
                    flag.data());
@@ -121,6 +125,11 @@ bool parse_args(int argc, char **argv, Args &args) {
       args.roll_months / 12.0 >= args.tenor_years || args.contracts <= 0.0 ||
       (args.sign != 1.0 && args.sign != -1.0)) {
     std::fprintf(stderr, "invalid argument values\n");
+    return false;
+  }
+  if (args.mark_domain != "extrapolate" && args.mark_domain != "carry" &&
+      args.mark_domain != "error") {
+    std::fprintf(stderr, "--mark-domain must be extrapolate|carry|error\n");
     return false;
   }
   return true;
@@ -228,6 +237,9 @@ int main(int argc, char **argv) {
   // Frictionless by construction: FrictionModel/FinancingConfig defaults are
   // all-zero. NAV is audited against the cash/share/book ledgers every row.
   rc.reconcile_nav = true;
+  rc.mark_domain = args.mark_domain == "carry"  ? MarkDomainPolicy::CarryLastMark
+                   : args.mark_domain == "error" ? MarkDomainPolicy::Error
+                                                 : MarkDomainPolicy::Extrapolate;
 
   auto run = run_backtest(*clock, strat, rc);
   if (!run) {
