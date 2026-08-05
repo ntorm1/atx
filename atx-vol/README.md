@@ -10,7 +10,7 @@ The upstream `ats-vol` (~65k LOC of C across ~90 translation units) has been
 ported in full to idiomatic, tested C++20, and then extended with a
 Vola-Dynamics American-equity parity layer (see below), a composable
 `VolaSession` handle, and a cached high-performance pricing hot path. It passes
-**2,847 GoogleTest cases across 421 suites** under `/W4 /permissive- /WX`
+**2,848 GoogleTest cases across 422 suites** under `/W4 /permissive- /WX`
 (clang-cl). That number is *measured*, not maintained — re-derive it with
 `build/bin/atx-vol-tests.exe --gtest_list_tests` rather than trusting the prose,
 which is how a count in a README stops rotting silently (see *Build & test* for
@@ -545,13 +545,25 @@ same population and a single hand-written number would hide that:
 
 | Count | Command | What it counts |
 |---|---|---|
-| **2,847** cases / **421** suites | `build/bin/atx-vol-tests.exe --gtest_list_tests` | GoogleTest cases in the atx-vol test binary, including the 7 `DISABLED_` ones |
-| **2,855** registered tests | `ctest --test-dir build -N -L atx_vol` | the 2,847 above, discovered by `gtest_discover_tests`, **plus 8** lanes that are not GoogleTest cases: `SpxWilmottReproUnit`, `atx-vol-reference-spy-dispersion`, `atx-vol-download-occ-ess`, `atx-vol-build-spy-top50-universe`, `Mag7DispersionReport`, `SpyDispersionPnlReport`, `atx-vol-python`, `atx-vol-pricing-forcescalar` (`tests/CMakeLists.txt`) |
+| **2,848** cases / **422** suites | `build/bin/atx-vol-tests.exe --gtest_list_tests` | GoogleTest cases in the atx-vol test binary, including the 7 `DISABLED_` ones |
+| **2,856** registered tests | `ctest --test-dir build -N -L atx_vol` | the 2,848 above, discovered by `gtest_discover_tests`, **plus 8** lanes that are not GoogleTest cases: `SpxWilmottReproUnit`, `atx-vol-reference-spy-dispersion`, `atx-vol-download-occ-ess`, `atx-vol-build-spy-top50-universe`, `Mag7DispersionReport`, `SpyDispersionPnlReport`, `atx-vol-python`, `atx-vol-pricing-forcescalar` (`tests/CMakeLists.txt`) |
 
-The two reconcile exactly: 2,847 + 8 = 2,855. Both were measured against `cmake
---preset dev` and **re-derived unchanged at the 1.0.0 release commit** by running
-exactly the two commands in the table — unlike the tier counts further down,
-three of which had rotted. Every count in the section below comes from the same
+The two reconcile exactly: 2,848 + 8 = 2,856. Both were re-measured at the 1.0.0
+release commit by running exactly the two commands in the table, and both had
+moved by one since the last pass: the case count because the release gate's
+own tier-count guard (`VolUmbrella.TierCountsMatchTheReadmeTable`) landed, the
+suite count because the 421 beside it had never been re-derived at all. The
+digits are the measurement, not a maintained invariant — which is the whole
+reason the command sits next to each one.
+
+Both figures are `cmake --preset dev`. **The `rel` and `rel-avx2` presets
+register 2,858**, not 2,856: they are configured with `-DATX_BUILD_EXAMPLES=ON`,
+which adds the two `accuracy_panel` determinism lanes (`AccuracyPanelDeterminism`,
+`AccuracyPanelFailureDeterminism`, `atx-vol/CMakeLists.txt`). The GoogleTest
+population is identical on all three presets — only the script lanes differ — so
+a gate log quoting 2,858 is not a drift.
+
+Every count in the section below comes from the same
 measurement, quoted once; the *skip* inventory needs a full matrix run to
 re-derive, so it carries the release-sprint measurement rather than a fresh one.
 Re-run the commands rather than trusting the digits: nothing regenerates them,
@@ -563,7 +575,7 @@ Green means **every lane that can run, ran and passed**. It does not mean every
 registered lane ran, and the difference is stable, deliberate and enumerated
 below rather than being a backlog.
 
-Of the **2,855** registered above, ctest starts **2,848** — the other 7 are the
+Of the **2,856** registered above, ctest starts **2,849** — the other 7 are the
 `DISABLED_` cases — and **63** of those report `SKIPPED` on an AVX2 host with
 `cmake --preset dev` and no market-data cache present. Every skip carries a
 reason string naming exactly what would let it run; the six classes below
@@ -720,16 +732,27 @@ frozen?" is answered by where the header lives, not by judgement:
 | `tools/` | `tools/include/atx/vol/tools/` — target `atx::vol::tools` | 6 | CLI support. Not part of the shipped library surface |
 | `research/` | `research/include/atx/vol/research/` — target `atx::vol::research` | 9 | Run orchestration. Not part of the shipped library surface |
 
-**Every digit above is prose, and three of the five had rotted by v1.** The
-Tier-A *set* is machine-checked (below), but its **count is not** — the manifest
-test compares two lists, and nothing compares either to this table. All five
-rows were re-derived at the release commit: Tier-A 56 → **57**, Tier-B 23 →
-**31**, `detail/` 25 → **28**, while `simd/` 9, `tools/` 6 and `research/` 9
-held. The earlier note here said the table was "one short" because `log.hpp` and
-`detail/log_emit.hpp` had landed; that was true when written, and the gap then
-widened to 8 on Tier-B and 3 on `detail/` as the surface kept moving — which is
-the point it was making. **Do not trust the digits — re-derive them.** The
-commands are one line each:
+**Three of the five digits above had rotted by v1, and the first three no longer
+can.** All five rows were re-derived at the release commit: Tier-A 56 → **57**,
+Tier-B 23 → **31**, `detail/` 25 → **28**, while `simd/` 9, `tools/` 6 and
+`research/` 9 held. The earlier note here said the table was "one short" because
+`log.hpp` and `detail/log_emit.hpp` had landed; that was true when written, and
+the gap then widened to 8 on Tier-B and 3 on `detail/` as the surface kept
+moving — which is the point it was making.
+
+That drift is now caught by a test rather than by a reader.
+`VolUmbrella.TierCountsMatchTheReadmeTable` (`tests/vol_umbrella_test.cpp`)
+asserts all three of **57 / 31 / 28** against the live header tree — Tier-A from
+the umbrella manifest, Tier-B and `detail/` by counting `.hpp` files in the
+directories this table names — and each failure message says to update this
+table. Previously the Tier-A *set* was machine-checked but no **count** was, and
+nothing compared any of them to this table at all, which is how three rows rotted
+undetected. `simd/` 9, `tools/` 6 and `research/` 9 remain prose: they are
+outside `include/atx/vol/` and are not covered by that test, so re-derive those
+three by hand. The `+1 generated` on `detail/` is likewise uncovered — it does
+not exist in the source tree the test walks.
+
+**Re-derive rather than trust any digit here.** The commands are one line each:
 `grep -c '^#include "atx/vol/' include/atx/vol/vol.hpp` is Tier-A; each remaining
 row is `ls` over the directory the row names, minus (for Tier-B) Tier-A and
 `vol.hpp` itself. The `+1 generated` on `detail/` is

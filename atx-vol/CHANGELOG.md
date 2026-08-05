@@ -12,8 +12,11 @@ installs into a prefix and can be depended on.
 **What 1.0.0 actually promises** is a *tier*, not the tree: the 57 headers
 `atx/vol/vol.hpp` includes are frozen for 1.x, and the manifest that says which
 those are is machine-checked (`kTierA` in `atx-vol/tests/vol_umbrella_test.cpp`).
-(The *set* is machine-checked; this count is prose, and it said 56 until the
-release audit re-derived it — re-derive rather than trust it.)
+(The set said 56 until the release audit re-derived it. Since the release gate's
+pre-flight, the *count* is machine-checked too —
+`VolUmbrella.TierCountsMatchTheReadmeTable` asserts 57 against the live manifest,
+alongside Tier-B 31 and `detail/` 28 — so this digit can no longer rot silently
+the way it did.)
 Everything else — Tier-B, `detail/`, `tools/`, `research/` — is public-but-
 unfrozen or internal. The full policy, with the counts and the tests that
 enforce it, is the *API stability policy* section of `README.md`. Read it before
