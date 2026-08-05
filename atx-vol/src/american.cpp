@@ -1335,15 +1335,37 @@ template <unsigned NB, unsigned NQ>
   for (unsigned i = 0; i < n; ++i) {
     b.y[i] = ws.next_y[i];
   }
-  // A sweep frozen at EVERY movable node is unsolvable — except in the
-  // rate==0 / negative-yield regime, where the put boundary IS the flat
-  // analytic asymptote al_xmax_put(K, 0, q<0) == K the seed already encodes:
-  // the underflowing fixed-point denominators mean "nothing to move", not
-  // "nothing to solve". Report it as converged (max_dy underflows to 0) so the
-  // negative-carry corner main certified against the FD oracle
-  // (NegRateDomainMap.ZeroRateNegativeYield_IsSingleBoundaryAmerican) is
-  // served, while every strictly-negative-rate and heavy-carry freeze keeps
-  // the fail-closed NotConverged refusal.
+  // A sweep frozen at EVERY movable node is unsolvable — EXCEPT at rate 0 with a
+  // negative yield, the one non-positive-rate cell `classify_regime` still calls
+  // American (american.hpp:736-738). There the early-exercise premium integral is
+  //     -q * S * integral exp(-q u) N(-d_plus) du
+  // (the r*K term vanishes with r), so as q -> 0- the premium vanishes with it and
+  // the American price IS the European price: a frozen boundary cannot bias a
+  // premium that is not there. Report converged — max_dy is 0 by construction here,
+  // since every frozen node skips the |dy| update — so the production corner
+  // survives. That corner is real: the surface-db build's `--r` defaults to 0 and
+  // the PCP borrow fixed point evaluates q_eff a rounding error either side of 0;
+  // refusing it killed whole boards ("no expiry produced a usable eSSVI slice").
+  //
+  // TWO THINGS THIS DELIBERATELY DOES NOT CLAIM.
+  //  * NOT "the frozen boundary is already correct". What the sweep freezes on is
+  //    the BAW seed (al_seed_boundary), solved per node and merely CLAMPED at
+  //    al_xmax_put(K, 0, q<0) == K — it is not a flat K by construction.
+  //  * The predicate is WIDER than the regime it is safe in: at r == 0 every
+  //    q < 0 is exempted, heavy carry included. What makes that tolerable is
+  //    measured, not structural (closeout Task 0, FD oracle over 2304 cells:
+  //    K=100, |q| in [1e-12, 3], T in [1/252, 3], sigma in [0.04, 1.2]) — the
+  //    sweep only ever freezes here at |q| ~ 1e-12, where the served price equals
+  //    the European price and the true premium is bounded by |q|*S*T <= 5e-10.
+  //    At |q| >= 1e-6 the sweep converges normally and this branch is dead code.
+  //    Strictly negative rates never reach it at all: they classify European or
+  //    Unsupported before any sweep runs, so the "fail-closed refusal is kept for
+  //    negative rates" reading is vacuous, not a preserved guard.
+  //
+  // Gate: NegRateDomainMap.ZeroRateNegativeYield_IsSingleBoundaryAmerican — its
+  // §(3) q_eff = -1e-12 rows depend on this exemption, its §(2) q = -0.03 rows do
+  // not. Narrowing the predicate to the provably-negligible-premium regime is the
+  // open follow-up; it is a behaviour change and wants its own ruling.
   const bool benign_flat_corner = (r == 0.0 && q < 0.0);
   return AlSweepResult{max_dy, !benign_flat_corner && n_movable > 0 && n_frozen == n_movable};
 }
@@ -1411,15 +1433,9 @@ template <unsigned NB, unsigned NQ>
   for (unsigned i = 0; i < n; ++i) {
     b.y[i] = ws.next_y[i];
   }
-  // A sweep frozen at EVERY movable node is unsolvable — except in the
-  // rate==0 / negative-yield regime, where the put boundary IS the flat
-  // analytic asymptote al_xmax_put(K, 0, q<0) == K the seed already encodes:
-  // the underflowing fixed-point denominators mean "nothing to move", not
-  // "nothing to solve". Report it as converged (max_dy underflows to 0) so the
-  // negative-carry corner main certified against the FD oracle
-  // (NegRateDomainMap.ZeroRateNegativeYield_IsSingleBoundaryAmerican) is
-  // served, while every strictly-negative-rate and heavy-carry freeze keeps
-  // the fail-closed NotConverged refusal.
+  // Same all-frozen rule and same rate-0/negative-yield exemption as
+  // al_jn_sweep_impl above; the full rationale, the two things it does NOT claim,
+  // and the measured width of the exempted corner are documented there once.
   const bool benign_flat_corner = (r == 0.0 && q < 0.0);
   return AlSweepResult{max_dy, !benign_flat_corner && n_movable > 0 && n_frozen == n_movable};
 }

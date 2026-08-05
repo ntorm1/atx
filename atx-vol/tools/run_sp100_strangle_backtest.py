@@ -352,6 +352,8 @@ def strangle_config(names: Sequence[str], args) -> av.DispersionStrangleConfig:
     return cfg
 
 
+# Pinned at 1, not the library default 2 — a recorded track-header value two
+# tests assert (test_run_sp100_strangle_backtest.py:276,510); post-v1 alignment candidate.
 def run_config(prefetch_depth: int = 1) -> av.RunConfig:
     cfg = av.RunConfig()
     # See the module note (1): required, not a preference.
@@ -569,6 +571,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="daily theta budget per constituent name")
     parser.add_argument("--hedge-band", type=float, default=0.0,
                         help="delta band below which the daily hedge does nothing")
+    # Pinned at 1, not the library default 2 — a recorded track-header value two
+    # tests assert (test_run_sp100_strangle_backtest.py:276,510); post-v1 alignment candidate.
     parser.add_argument("--prefetch-depth", type=int, default=1,
                         help="number of future snapshots allowed in flight (default: 1)")
     parser.add_argument("--label", default="sp100-projection-strangle",

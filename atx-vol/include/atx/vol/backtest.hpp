@@ -130,6 +130,9 @@ private:
 //     an immutable, read-only corpus: a historical replay, where nothing rewrites or
 //     deletes a partition mid-run. This is where the WS-ZC1 win actually lives
 //     (~9x on snapshot_load); it is opt-in precisely because it pins the file.
+//     Loaded through `SnapshotCache`, the same declaration is trusted further: the
+//     cache memoizes each archive's content-identity check for the CACHE's whole
+//     lifetime, not just one snapshot's (see `SnapshotCache::archive_backing`).
 //
 // Choosing Sealed for a partition the store may mutate does not corrupt data — the
 // mapped bytes stay coherent — but it WILL make the store's rewrite/delete fail. Ask
@@ -823,8 +826,9 @@ struct RunConfig {
   // OUTPUT IS UNAFFECTED AT ANY DEPTH. Depth changes only WHEN a snapshot is
   // deserialized, never which bytes it deserializes from nor the order the
   // economics consume them: the loop still loads refs[i] at step i, and every
-  // load is a pure function of one archive's bytes. `BacktestPrefetchDepth`
-  // pins that bit-identity.
+  // load is a pure function of one archive's bytes.
+  // `Backtest.PrefetchDepthIsBitIdenticalToSingleStepLookAhead` pins that
+  // bit-identity.
   //
   // A depth of D needs a snapshot cache retaining at least D+2 entries (base +
   // shifted + D in flight) or the LRU drops a completed prefetch before its step
@@ -832,10 +836,38 @@ struct RunConfig {
   // cache is sized from this field; a CALLER-SUPPLIED cache is the caller's to
   // size, and an undersized one costs throughput but never correctness.
   // 0 is normalized to 1 (no look-ahead is expressed by prefetch_snapshots=false).
-  std::size_t prefetch_depth{1};
+  //
+  // WHY THE DEFAULT IS 2 AND NOT 1 (v1 closeout sprint Task 4.8, plan item 6.7).
+  // Measured on the 135-session projected replay, one binary with the depth
+  // alternated inside a single session, 12 interleaved rounds over depths
+  // {1,2,4,8}, medians and win-counts only (this
+  // host has no frequency pinning and per-pair spreads reach ±40 %):
+  //
+  //     1 -> 2 : +15.2 % median, 11/12 rounds won
+  //     1 -> 4 : +19.8 % median, 10/12
+  //     1 -> 8 : +19.6 % median, 10/12
+  //     2 -> 4 :  +1.9 % median,  7/12   (a wash)
+  //     4 -> 8 :  +1.6 % median,  7/12   (a wash)
+  //
+  // The rungs FROM depth 1 and the rungs BETWEEN the deeper depths have to be read
+  // together, which is why all five are here: every transition off 1 pays about the
+  // same 15-20 %, and every transition among 2, 4 and 8 pays nothing, at win-counts
+  // no better than chance. A table showing only 1 -> 2 could not distinguish that
+  // from a ramp that simply had not been sampled far enough.
+  //
+  // The curve is a step, not a ramp: overlapping the FIRST load is where all of the
+  // win is, and nothing past depth 2 is distinguishable from noise. Depth 2 is
+  // therefore the cheapest default that takes it — one extra in-flight snapshot and
+  // one extra cache slot (`private_snapshot_cache_capacity` = depth + 2, so 4
+  // instead of 3), against a fifth of the replay's wall clock.
+  //
+  // A caller who cannot afford the extra resident snapshot sets 1 explicitly and
+  // gets exactly the old behavior; the OUTPUT does not move either way, which is
+  // what makes this a default worth changing inside a release.
+  std::size_t prefetch_depth{2};
 };
 
-// Drift pin (plan item 4.2). RunConfig has exactly SIXTEEN fields. Adding,
+// Drift pin (plan item 4.2). RunConfig has exactly SEVENTEEN fields. Adding,
 // removing or splitting one breaks this line, which is the point: it forces
 // whoever changes the struct to read the construction contract above instead of
 // appending a knob "for compatibility" with positional initializers that are no
@@ -846,9 +878,30 @@ struct RunConfig {
 // convention forbade and this one requires — and it is safe only because there
 // are no positional initializers left in-tree to rebind.
 //
-// 16 -> 17 (main merge): `prefetch_depth` appended — the pipelined snapshot
-// look-ahead depth main's backtest-replay work introduced; output is
-// bit-identical at any depth (`BacktestPrefetchDepth` pins it).
+// 16 -> 17 (main merge): `prefetch_depth` APPENDED at the end — the pipelined
+// snapshot look-ahead depth main's backtest-replay work introduced. Appending is
+// the form this convention prescribes for a new knob, and it is what supersedes
+// the branch's earlier `kPrefetchLookahead` file-scope constant in backtest.cpp.
+// Output is bit-identical at any depth
+// (`Backtest.PrefetchDepthIsBitIdenticalToSingleStepLookAhead` pins it), so the
+// addition moves no number a caller already depends on.
+//
+// BLIND SPOT: this probe pins the field COUNT, nothing else. It cannot see a
+// REORDER that leaves the count at 17 -- `aggregate_arity_is_v` (see
+// detail/aggregate_arity.hpp) only checks how many brace-initializer slots
+// `RunConfig{...}` accepts, with no notion of field NAMES or TYPES, so swapping
+// two existing fields (e.g. two `bool`s, or two `std::size_t`s) still compiles
+// green here. What actually protects against that is the "designated
+// initializers only" contract above (a named initializer binds by field, so a
+// reorder cannot mis-target it) -- this assert only proves the contract is not
+// being silently defeated by an APPEND, and a reorder still needs the contract
+// upheld EVERYWHERE to be safe. UPDATE DISCIPLINE for a reorder: before
+// landing one, confirm every construction site still names its fields --
+// `git grep -n "RunConfig{"` across src/, tests/, bench/ and the python
+// bindings should turn up only empty `RunConfig{}` (or none) with no
+// multi-argument positional brace list; `git grep -n "RunConfig cfg"` sites
+// build via `RunConfig cfg;` plus `cfg.field = ...` assignment, which is
+// order-independent by construction.
 static_assert(detail::aggregate_arity_is_v<RunConfig, 17>,
               "RunConfig field count changed: update this pin, and confirm every "
               "construction site still initializes by field name.");

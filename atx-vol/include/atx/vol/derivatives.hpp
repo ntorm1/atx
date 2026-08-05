@@ -540,12 +540,19 @@ deriv_price(const SurfaceT& surface, const CurveSet& curves,
             const DerivContract& contract, const DerivConfig& cfg = DerivConfig{});
 
 // The three templates above have NO definition in this header — the bodies live
-// in derivatives.cpp, which explicitly instantiates them for the two legacy
-// per-family surface containers demoted to `detail/legacy_surface.hpp` by S4-T21
-// (plan 4.4). A caller that names one of those containers therefore links today
-// exactly as it did before; a caller that supplies a NEW `SurfaceT` needs an
-// instantiation added alongside them. New code should not do that — it should
-// use the PricedSurface-native overloads below.
+// in derivatives.cpp, which explicitly instantiates them for a fixed supported
+// set. `VolSurface` is the Tier-A member of that set, and the one to reach for:
+// it is the calibration-grade surface container this library's own arbitrage
+// validators, projection spine and archive are written against, and it answers
+// `iv(k_log, T)`, which is this template's entire requirement. The set also
+// carries the two per-family containers demoted to `detail/` by S4-T21, for
+// source compatibility with callers that predate the demotion — being reachable
+// through a Tier-A template does not promote them, and Tier-A code should not
+// name them.
+//
+// A caller supplying a NEW `SurfaceT` needs an instantiation added beside those.
+// New code should not need one: the modern fitted pipeline produces a
+// `PricedSurface`, whose entry points are the non-templated overloads below.
 
 // ── Finite-difference greeks ─────────────────────────────────────────────
 
@@ -657,19 +664,16 @@ deriv_greeks(const SurfaceT& surface, const CurveSet& curves,
              const DerivContract& contract, const DerivConfig& cfg = DerivConfig{},
              const DerivGreekBumps& bumps = DerivGreekBumps{});
 
-// Instantiated in derivatives.cpp for the demoted calibration-grade surface
-// containers (S4-T21, `detail/legacy_surface.hpp`), alongside the sibling
-// var_swap_fair_strike / vol_swap_fair_strike / deriv_price instantiations.
-// Internal callers include the detail header for the container types; this
-// public header deliberately does not name them.
+// Instantiated in derivatives.cpp over the same supported set as its siblings
+// (see the note above `deriv_price`): `VolSurface` plus the two demoted
+// containers this public header deliberately does not name.
 
 // ── E6 / AN-W: PricedSurface-native entry points ────────────────────────────
 //
-// The templates above are stranded on the LEGACY calibration-grade surface
-// containers (now `detail/legacy_surface.hpp`). The modern fitted pipeline
-// produces a `PricedSurface`, so reaching `var_swap_fair_strike` from it meant
-// hand-converting slices — which is why this whole module was reachable only
-// from its own unit test.
+// The modern fitted pipeline produces a `PricedSurface`, not one of the
+// containers the templates above are instantiated for, so reaching
+// `var_swap_fair_strike` from it meant hand-converting slices — which is why
+// this whole module was once reachable only from its own unit test.
 //
 // These overloads take a `PricedSurface` and NO `CurveSet`: the surface already
 // carries its own per-expiry forwards and discount factors, and using them is

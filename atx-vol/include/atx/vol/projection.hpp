@@ -34,9 +34,11 @@
 //   - PORT NOTE: `eval_ex` drops the C `AtsVolProfile` argument (atx has no
 //     profile registry); the American route folds the correction cache
 //     directly (american_price_cached).
-//   - PORT NOTE: the optional dense no-arb butterfly/calendar sweep inside
-//     `surface_insert_vol_slice` is deferred; `with_no_arb_check` is accepted
-//     for API parity but always leaves `no_arb_status == 0`.
+//   - The optional dense no-arb butterfly/calendar sweep inside
+//     `surface_insert_vol_slice` is WIRED (opt-in, `with_no_arb_check`): it
+//     reports through `InsertedSliceHandle::no_arb_status` + the
+//     `kFlagNoArbWarning` provenance bit. It is a REPORT, never a rejection —
+//     the handle is returned either way. See `kNoArbStatus*` below.
 //   - The AVX2 batch4 inserted-slice IV kernel is deferred (scalar only).
 //
 // Thread-safety: every entry is a pure function of its surface / curve inputs
@@ -74,6 +76,10 @@ inline constexpr std::uint32_t kFlagExtrapolatedK = 1u << 3;   // k outside fitt
 inline constexpr std::uint32_t kFlagDeltaNotBracketed = 1u << 4;
 inline constexpr std::uint32_t kFlagForwardInterp = 1u << 5;   // forward from non-pillar interp
 inline constexpr std::uint32_t kFlagOutsideCore = 1u << 6;
+// Set whenever the opt-in inserted-slice no-arb sweep leaves `no_arb_status`
+// non-zero, which INCLUDES `kNoArbStatusNotEvaluated` (sweep couldn't run).
+// The bit alone does NOT imply a confirmed density/calendar violation --
+// inspect `no_arb_status` to tell "violated" from "not evaluated".
 inline constexpr std::uint32_t kFlagNoArbWarning = 1u << 7;
 inline constexpr std::uint32_t kFlagPriorDominated = 1u << 8;
 inline constexpr std::uint32_t kFlagVolTimeConverted = 1u << 9;
@@ -244,6 +250,27 @@ struct ForwardLookup {
 
 // ── Inserted constant-maturity slice ─────────────────────────────────────
 
+// `InsertedSliceHandle::no_arb_status` bits, populated ONLY when
+// `surface_insert_vol_slice` is called with `with_no_arb_check == true`
+// (it stays 0 otherwise — "not requested", indistinguishable from "clean" by
+// design, exactly as the flag word behaves elsewhere).
+//
+// Butterfly: Lee/Roper density positivity of the DERIVED slice's own w(k),
+// scanned with `arb_check_butterfly_slice`'s finite-difference scheme so an
+// inserted slice and a fitted one are judged by identical math.
+inline constexpr std::uint32_t kNoArbStatusButterfly = 1u << 0;
+// Calendar: the derived slice's total variance leaves the band spanned by its
+// two parent slices at some sampled k (w outside [min(w_lo,w_hi),
+// max(w_lo,w_hi)] beyond tolerance). Only meaningful for a genuine two-parent
+// blend; an exact-pillar or clamped handle IS one fitted slice, so cross-slice
+// calendar arbitrage there is `arb_check_calendar`'s job on the surface, not
+// this handle's, and this bit is never set for it.
+inline constexpr std::uint32_t kNoArbStatusCalendar = 1u << 1;
+// The sweep could not run: the derived slice's ATM total variance is
+// non-finite / non-positive, so there is no scale to build the k-grid from.
+// Reported rather than silently skipped.
+inline constexpr std::uint32_t kNoArbStatusNotEvaluated = 1u << 2;
+
 // A derived view over a `VolSurface` that exposes it as if a fitted slice
 // existed at `T_clock`. Never mutates the underlying surface. For
 // PIECEWISE_TOTAL_VARIANCE: w(k) = w_lo(k) + alpha_T * (w_hi(k) - w_lo(k)).
@@ -271,7 +298,22 @@ struct InsertedSliceHandle {
 
 // Build a derived inserted-slice handle. `curves == nullptr` skips the
 // forward/discount cache (handle still usable for IV-only evaluation).
-// `with_no_arb_check` is accepted for API parity but deferred (see PORT NOTE).
+//
+// `with_no_arb_check == true` additionally runs a dense static-arbitrage sweep
+// over the RESOLVED handle and reports the outcome in
+// `InsertedSliceHandle::no_arb_status` (`kNoArbStatus*` above), OR-ing
+// `kFlagNoArbWarning` into `flags` when any bit is set -- INCLUDING
+// `kNoArbStatusNotEvaluated`, so the flag by itself does not imply a
+// confirmed violation; check `no_arb_status` to distinguish "violated" from
+// "sweep could not run". The sweep is a report, not a gate: a violating
+// handle is still returned, with the same numeric
+// contents it would have had at `with_no_arb_check == false` (the sweep is
+// side-effect free apart from `no_arb_status` / that one flag bit). Sweep
+// convention, fixed and deliberately not caller-tunable at this seam: 128
+// intervals over k in [-h, +h], h = 4 * sqrt(w_atm) of the derived slice
+// clamped to [0.1, 1.5]; tolerances match `arb.cpp` (density > -1e-9, calendar
+// slack > 1e-7). Callers wanting a different domain/resolution call `arb.hpp`
+// directly against `w_on_inserted_slice`.
 //
 // @return InvalidArgument on null-usable surface; NotFound on a zero-slice
 //         surface; OutOfRange when Forbid + T outside the slice range;

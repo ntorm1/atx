@@ -131,6 +131,23 @@ struct EarningsReproConfig {
   // 3-arg `run_earnings_repro` overload still OVERRIDES this with
   // `sess.inputs().time`, so the historical calendar smoke path is bit-preserved;
   // only the config-driven (4-arg) default picks VolTime up.
+  //
+  // DATED CLIFF — ~2027-01, and it is fail-closed, not silent. The SR tenor
+  // grid's longest horizon is 504 trading days (~2 years), and under
+  // `VolTime` + `clock_days_per_year == 0` that horizon resolves through
+  // `VolTimeCalendar::us_default()`, whose coverage window is exactly
+  // 2024-01-01 .. 2028-12-31 (vol_time.hpp explains why it is not wider). A
+  // snapshot dated after roughly 2027-01 therefore pushes its 504-day tenor
+  // past 2028-12-31 and `run_earnings_repro` returns `OutOfRange` for the whole
+  // call. That is CORRECT behaviour — the alternative is crediting full
+  // sessions for days no table covers — but it is a hard date, and every
+  // shipped fixture (NVDA 2026-02-10) sits comfortably inside it, so nothing in
+  // the suite will start failing before the pipeline does.
+  //
+  // Two ways past it, in preference order: extend `VolTimeCalendar`'s closure
+  // table and its window beyond 2028 (a change to the table, not to any
+  // caller); or set `clock_days_per_year > 0`, which bypasses the
+  // calendar-aware path entirely at the cost of the convention Task 10 locked.
   TimeSpec time{TimeConvention::VolTime};     // -> tenor_years convention (Task 10 sweep: VolTime)
   double clock_days_per_year{0.0};            // >0: T = N_td / this; 0: calendar-aware
   bool censor_space{true};                    // censor-then-interp (true) vs interp-then-censor

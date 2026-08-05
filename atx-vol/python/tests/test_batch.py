@@ -21,6 +21,38 @@ import pytest
 import atxvol as av
 
 
+# ── Batch kernel binding completeness (T5-a) ────────────────────────────────
+#
+# Task 5's audit that every intended batch kernel actually reached the pybind11
+# module -- not merely that the bound ones behave correctly, which is what the
+# parity tests below already cover -- lived only in a throwaway script. Promote
+# it to a committed regression: enumerate every batch entry point
+# `python/src/bindings/pricing.cpp` registers via `m.def(...)` and assert each
+# one exists and is callable on `atxvol._core`. Existence/callability only.
+_EXPECTED_BATCH_BINDINGS = (
+    "black76_price_batch",
+    "implied_vol_batch",
+    "black76_greeks_batch",
+    "black76_value_and_vega_batch",
+    "black76_price_from_lnfk_batch",
+    "american_price_batch",
+    "american_greeks_batch",
+    "american_implied_vol_batch",
+)
+
+
+def test_every_expected_batch_kernel_binding_exists_and_is_callable():
+    core = av._core
+
+    missing = [name for name in _EXPECTED_BATCH_BINDINGS if not hasattr(core, name)]
+    assert not missing, f"batch kernel binding(s) missing from atxvol._core: {missing}"
+
+    not_callable = [
+        name for name in _EXPECTED_BATCH_BINDINGS if not callable(getattr(core, name))
+    ]
+    assert not not_callable, f"batch kernel binding(s) not callable: {not_callable}"
+
+
 # ── American price batch ────────────────────────────────────────────────────
 
 def _book(n: int = 64):
@@ -132,6 +164,35 @@ def test_american_batch_rejects_a_float_side_column():
                                 np.full(len(strike), -1.5))
 
 
+def test_american_batch_broadcasts_one_side():
+    # 5.1 widened the shared `side` decoder: a bare `Side` broadcasts across the
+    # batch on every binding that takes a side column, not only the new Black-76
+    # ones. Pure widening — the per-lane column must be unaffected — so pin both
+    # spellings against each other rather than only asserting the new one runs.
+    spot, strike, t, sigma, r, q, _ = _book(16)
+    column = np.full(len(strike), int(av.Side.PUT), dtype=np.int32)
+
+    broadcast_p, broadcast_s = av.american_price_batch(spot, strike, t, sigma, r, q, av.Side.PUT,
+                                                       isa=av.SimdIsa.FORCE_SCALAR)
+    column_p, column_s = av.american_price_batch(spot, strike, t, sigma, r, q, column,
+                                                  isa=av.SimdIsa.FORCE_SCALAR)
+    assert broadcast_p.tobytes() == column_p.tobytes()
+    assert broadcast_s.tobytes() == column_s.tobytes()
+
+    bg = av.american_greeks_batch(spot, strike, t, sigma, r, q, av.Side.PUT,
+                                  isa=av.SimdIsa.FORCE_SCALAR)
+    cg = av.american_greeks_batch(spot, strike, t, sigma, r, q, column,
+                                  isa=av.SimdIsa.FORCE_SCALAR)
+    for name in ("delta", "gamma", "vega", "theta", "price", "status"):
+        assert bg[name].tobytes() == cg[name].tobytes()
+
+    # A broadcast Side must not be confusable with the mixed book: the same call
+    # with the real mixed column has to differ.
+    mixed_p, _ = av.american_price_batch(spot, strike, t, sigma, r, q,
+                                         _book(16)[6], isa=av.SimdIsa.FORCE_SCALAR)
+    assert mixed_p.tobytes() != broadcast_p.tobytes()
+
+
 def test_american_greeks_batch_matches_the_scalar_fd_loop():
     spot, strike, t, sigma, r, q, side = _book(32)
     got = av.american_greeks_batch(spot, strike, t, sigma, r, q, side,
@@ -198,6 +259,270 @@ def test_american_implied_vol_batch_matches_the_scalar_inverter():
         for p, k in zip(prices, strikes)
     ])
     assert ivs.tobytes() == expected.tobytes()
+
+
+# ── Black-76 Greeks / value+vega batch (5.1) ────────────────────────────────
+#
+# The last two unbound public batch kernels. Same parity discipline as above: a
+# vectorized path only earns its place if it returns exactly what the scalar
+# path returns, so every gate here compares against the bound scalar kernel.
+
+
+# The C++ gate, per OUTPUT COLUMN, not one blanket number: `batch_test.cpp`
+# checks the fused batch's `value` at 1e-6 absolute and its `vega` at **1e-5**
+# absolute (vega is the larger quantity, so the same relative error is a looser
+# absolute one). A python test that asserted vega at 1e-6 would be TIGHTER than
+# the suite the library conforms to, and would fail on a host the library
+# considers correct — a latent flake dressed as rigour. Track the C++ number.
+_VEGA_ABS = 1e-5
+
+
+def _slice(n: int = 40):
+    """One expiry slice, mixed sides — the shape `value_and_vega` keys on."""
+    rng = np.random.default_rng(20260802)
+    f = np.full(n, 100.0)
+    k = np.linspace(75.0, 125.0, n)
+    sigma = 0.14 + 0.3 * rng.random(n)
+    t = 0.75
+    r = 0.041
+    df = np.full(n, math.exp(-r * t))
+    side = np.where(np.arange(n) % 2 == 0, int(av.Side.CALL), int(av.Side.PUT)).astype(np.int32)
+    return f, k, t, sigma, r, df, side
+
+
+def test_black76_greeks_batch_matches_the_scalar_loop():
+    f, k, t, sigma, r, df, side = _slice()
+    t_col = np.full(len(k), t)
+    got = av.black76_greeks_batch(f, k, t_col, sigma, np.full(len(k), r), df, side)
+
+    for i in range(len(k)):
+        s = av.Side.CALL if side[i] == int(av.Side.CALL) else av.Side.PUT
+        ref = av.black76_greeks(f[i], k[i], t_col[i], sigma[i], r, df[i], s)
+        # The batch dispatches to a 4-lane AVX2 kernel whose interior lanes use
+        # deterministic vector transcendentals, so this is the kernel gate's
+        # documented envelope (batch.hpp: ~1e-6 abs + 1e-7 rel), not bit-identity.
+        for name in ("delta", "gamma", "vega", "theta", "rho", "vanna", "volga", "charm"):
+            assert got[name][i] == pytest.approx(getattr(ref.greeks, name), abs=1e-6, rel=1e-7)
+        assert got["price"][i] == pytest.approx(ref.price, abs=1e-6, rel=1e-7)
+
+
+def test_black76_greeks_batch_broadcasts_one_side():
+    # `side` is a per-lane column OR one Side. The older `black76_price_batch`
+    # only takes one Side for the whole batch, so accepting both keeps a single
+    # spelling across the vectorized surface.
+    f, k, t, sigma, r, df, _ = _slice(16)
+    t_col, r_col = np.full(len(k), t), np.full(len(k), r)
+    broadcast = av.black76_greeks_batch(f, k, t_col, sigma, r_col, df, av.Side.PUT)
+    column = av.black76_greeks_batch(f, k, t_col, sigma, r_col, df,
+                                     np.full(len(k), int(av.Side.PUT), dtype=np.int32))
+    for name in ("delta", "gamma", "vega", "theta", "rho", "vanna", "volga", "charm", "price"):
+        assert broadcast[name].tobytes() == column[name].tobytes()
+
+
+def test_black76_greeks_batch_degenerate_lane_does_not_poison_the_batch():
+    # These kernels are TOTAL — `black76_greeks` is noexcept and a degenerate lane
+    # (T <= 0 or sigma <= 0) collapses to the documented degenerate result rather
+    # than failing — so there is no per-lane status column to surface. What must
+    # hold is the same property the status convention buys elsewhere: one bad lane
+    # neither raises nor corrupts its neighbours, and it agrees with the scalar.
+    f, k, t, sigma, r, df, side = _slice(16)
+    t_col, r_col = np.full(len(k), t), np.full(len(k), r)
+    t_col[3] = -1.0        # expired
+    sigma = sigma.copy()
+    sigma[9] = 0.0         # zero vol
+
+    got = av.black76_greeks_batch(f, k, t_col, sigma, r_col, df, side)
+
+    for i in range(len(k)):
+        s = av.Side.CALL if side[i] == int(av.Side.CALL) else av.Side.PUT
+        ref = av.black76_greeks(f[i], k[i], t_col[i], sigma[i], r, df[i], s)
+        assert got["delta"][i] == pytest.approx(ref.greeks.delta, abs=1e-6, rel=1e-7)
+        assert got["price"][i] == pytest.approx(ref.price, abs=1e-6, rel=1e-7)
+    # The degenerate lanes really are degenerate, not merely equal to a scalar
+    # that is itself wrong: no vega/gamma left on an expired or zero-vol lane.
+    for bad in (3, 9):
+        assert got["vega"][bad] == 0.0
+        assert got["gamma"][bad] == 0.0
+    assert np.all(np.isfinite(got["price"]))
+
+
+def test_black76_greeks_batch_rejects_a_shape_error():
+    f, k, t, sigma, r, df, side = _slice(8)
+    t_col, r_col = np.full(len(k), t), np.full(len(k), r)
+    with pytest.raises(ValueError):
+        av.black76_greeks_batch(f, k[:4], t_col, sigma, r_col, df, side)
+    with pytest.raises(ValueError):
+        av.black76_greeks_batch(f, k, t_col, sigma, r_col, df, side[:4])
+    with pytest.raises(ValueError):
+        # Rank, not length: a 2-D column is a malformed call.
+        av.black76_greeks_batch(f.reshape(2, 4), k, t_col, sigma, r_col, df, side)
+
+
+def test_black76_greeks_batch_rejects_a_float_side_column():
+    # I2/FIX-5: a float `side` is refused before any cast, with a dispatchable
+    # code — never truncated onto int(Side.CALL) == 0.
+    f, k, t, sigma, r, df, _ = _slice(8)
+    t_col, r_col = np.full(len(k), t), np.full(len(k), r)
+    with pytest.raises(av.AtxError) as excinfo:
+        av.black76_greeks_batch(f, k, t_col, sigma, r_col, df, np.full(len(k), 0.5))
+    assert excinfo.value.code == av.ErrorCode.INVALID_ARGUMENT
+
+    with pytest.raises(av.AtxError):
+        av.black76_greeks_batch(f, k, t_col, sigma, r_col, df,
+                                np.full(len(k), -1, dtype=np.int32))
+
+
+def test_black76_value_and_vega_batch_matches_the_scalar_loop():
+    f, k, t, sigma, r, df, side = _slice()
+    value, vega = av.black76_value_and_vega_batch(f, k, t, sigma, df, side)
+
+    assert len(value) == len(k) and len(vega) == len(k)
+    for i in range(len(k)):
+        s = av.Side.CALL if side[i] == int(av.Side.CALL) else av.Side.PUT
+        ref = av.black76_value_and_vega(f[i], k[i], t, sigma[i], df[i], s)
+        assert value[i] == pytest.approx(ref.price, abs=1e-6, rel=1e-7)
+        assert vega[i] == pytest.approx(ref.vega, abs=_VEGA_ABS, rel=1e-7)
+    # The premium must also agree with the plain pricer — same kernel, fused.
+    prices = av.black76_price_batch(f, k, np.full(len(k), t), sigma, df, av.Side.CALL)
+    calls = side == int(av.Side.CALL)
+    np.testing.assert_allclose(value[calls], prices[calls], atol=1e-6, rtol=1e-7)
+
+
+def test_black76_value_and_vega_batch_honours_the_sqrt_t_sentinel():
+    # `sqrt_t >= 0` is used AS GIVEN; the default -1 means "compute sqrt(T)".
+    # A knob that parses and is discarded is the exact failure class rev-ws-y C2
+    # names, so pin that a wrong sqrt_t actually changes the answer.
+    f, k, t, sigma, r, df, side = _slice(12)
+    default, _ = av.black76_value_and_vega_batch(f, k, t, sigma, df, side)
+    supplied, _ = av.black76_value_and_vega_batch(f, k, t, sigma, df, side,
+                                                  sqrt_t=math.sqrt(t))
+    assert default.tobytes() == supplied.tobytes()
+
+    wrong, _ = av.black76_value_and_vega_batch(f, k, t, sigma, df, side, sqrt_t=math.sqrt(2.0 * t))
+    assert wrong.tobytes() != default.tobytes()
+
+
+def test_black76_value_and_vega_batch_degenerate_lane_does_not_poison_the_batch():
+    f, k, t, sigma, r, df, side = _slice(16)
+    sigma = sigma.copy()
+    sigma[6] = -0.1        # degenerate: collapses to discounted intrinsic
+
+    value, vega = av.black76_value_and_vega_batch(f, k, t, sigma, df, side)
+
+    for i in range(len(k)):
+        s = av.Side.CALL if side[i] == int(av.Side.CALL) else av.Side.PUT
+        ref = av.black76_value_and_vega(f[i], k[i], t, sigma[i], df[i], s)
+        assert value[i] == pytest.approx(ref.price, abs=1e-6, rel=1e-7)
+        assert vega[i] == pytest.approx(ref.vega, abs=_VEGA_ABS, rel=1e-7)
+    assert vega[6] == 0.0
+    assert np.all(np.isfinite(value))
+
+
+def test_black76_value_and_vega_batch_rejects_a_shape_error():
+    f, k, t, sigma, r, df, side = _slice(8)
+    with pytest.raises(ValueError):
+        av.black76_value_and_vega_batch(f, k[:4], t, sigma, df, side)
+    with pytest.raises(ValueError):
+        av.black76_value_and_vega_batch(f, k, t, sigma, df, side[:4])
+    with pytest.raises(av.AtxError):
+        av.black76_value_and_vega_batch(f, k, t, sigma, df, np.full(len(k), 7, dtype=np.int32))
+
+
+def test_black76_price_from_lnfk_batch_is_bit_identical_to_the_scalar_loop():
+    # This kernel has NO vector implementation (`batch.hpp:72-84`), so unlike the
+    # Greeks and value+vega batches it is genuinely bit-exact against its scalar
+    # — assert bytes, not a tolerance, because that is the contract it actually
+    # has and a tolerance here would hide a real divergence.
+    f, k, t, sigma, r, df_col, side = _slice(40)
+    df, sqrt_t = float(df_col[0]), math.sqrt(t)
+    ln_fk = np.log(f / k)
+
+    got = av.black76_price_from_lnfk_batch(f, k, t, sqrt_t, sigma, df, ln_fk, side)
+
+    expected = np.array([
+        av.black76_price_from_lnfk(
+            f[i], k[i], t, sigma[i], df, ln_fk[i], sqrt_t,
+            av.Side.CALL if side[i] == int(av.Side.CALL) else av.Side.PUT)
+        for i in range(len(k))
+    ])
+    assert got.tobytes() == expected.tobytes()
+
+
+def test_black76_price_from_lnfk_batch_agrees_with_the_plain_pricer():
+    # The header's stated relationship: "numerically identical to black76_price
+    # when ln_fk == ln(F/K) and sqrt_t == sqrt(T)". Pin it — a from-lnFK entry
+    # whose answer drifted from the pricer it shortcuts would be silently wrong
+    # everywhere the portfolio engine uses it.
+    f, k, t, sigma, r, df_col, side = _slice(24)
+    df, sqrt_t = float(df_col[0]), math.sqrt(t)
+    got = av.black76_price_from_lnfk_batch(f, k, t, sqrt_t, sigma, df,
+                                           np.log(f / k), side)
+    # `black76_price_batch` takes one Side, so compare the call lanes.
+    plain = av.black76_price_batch(f, k, np.full(len(k), t), sigma, df_col, av.Side.CALL)
+    calls = side == int(av.Side.CALL)
+    np.testing.assert_allclose(got[calls], plain[calls], atol=1e-6, rtol=1e-7)
+
+
+def test_black76_price_from_lnfk_batch_uses_sqrt_t_as_given():
+    # No sentinel: `sqrt_t` is consumed verbatim by the scalar kernel, so a wrong
+    # root must change the answer rather than being quietly recomputed.
+    f, k, t, sigma, r, df_col, side = _slice(12)
+    df, ln_fk = float(df_col[0]), np.log(f / k)
+    right = av.black76_price_from_lnfk_batch(f, k, t, math.sqrt(t), sigma, df, ln_fk, side)
+    wrong = av.black76_price_from_lnfk_batch(f, k, t, math.sqrt(2.0 * t), sigma, df, ln_fk, side)
+    assert right.tobytes() != wrong.tobytes()
+
+
+def test_black76_price_from_lnfk_batch_rejects_a_shape_error():
+    f, k, t, sigma, r, df_col, side = _slice(8)
+    df, sqrt_t, ln_fk = float(df_col[0]), math.sqrt(t), np.log(f / k)
+    with pytest.raises(ValueError):
+        av.black76_price_from_lnfk_batch(f, k[:4], t, sqrt_t, sigma, df, ln_fk, side)
+    with pytest.raises(ValueError):
+        av.black76_price_from_lnfk_batch(f, k, t, sqrt_t, sigma, df, ln_fk[:4], side)
+    with pytest.raises(ValueError):
+        av.black76_price_from_lnfk_batch(f, k, t, sqrt_t, sigma, df, ln_fk, side[:4])
+    with pytest.raises(ValueError):
+        av.black76_price_from_lnfk_batch(f.reshape(2, 4), k, t, sqrt_t, sigma, df, ln_fk, side)
+    with pytest.raises(av.AtxError) as excinfo:
+        av.black76_price_from_lnfk_batch(f, k, t, sqrt_t, sigma, df, ln_fk,
+                                         np.full(len(k), 0.5))
+    assert excinfo.value.code == av.ErrorCode.INVALID_ARGUMENT
+
+
+def test_b76_batch_entry_points_release_the_gil():
+    # Same probe the PricedSurface grid uses: a spinner thread must make progress
+    # while the kernel runs. Both kernels are pure functions over caller-owned
+    # spans, which is what makes the release safe (contrast PY-5's AloPricer).
+    import threading
+
+    f, k, t, sigma, r, df, side = _slice(64)
+    f, k, sigma, df, side = (np.tile(x, 400) for x in (f, k, sigma, df, side))
+    t_col, r_col = np.full(len(k), t), np.full(len(k), r)
+
+    counter = 0
+    stop = threading.Event()
+
+    def spin() -> None:
+        nonlocal counter
+        while not stop.is_set():
+            counter += 1
+
+    spinner = threading.Thread(target=spin, daemon=True)
+    spinner.start()
+    try:
+        start = counter
+        while counter == start:
+            pass
+        before = counter
+        av.black76_greeks_batch(f, k, t_col, sigma, r_col, df, side)
+        av.black76_value_and_vega_batch(f, k, t, sigma, df, side)
+        advanced = counter - before
+    finally:
+        stop.set()
+        spinner.join(timeout=5.0)
+
+    assert advanced > 0
 
 
 # ── PricedSurface grid ──────────────────────────────────────────────────────

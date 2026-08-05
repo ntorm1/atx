@@ -1236,6 +1236,75 @@ TEST(SurfaceDbAdmin, VerifyDbFlagsNonFiniteAtmProbe) {
   EXPECT_TRUE(aaa.has_value()) << (aaa ? "" : aaa.error().to_string());
 }
 
+// ── the zero-spot ruling (closeout 1.4) ─────────────────────────────────────
+
+// RULING: reject-and-reflag, not map-with-quarantine. `cb7fe2e` (SE-P1-1) made
+// `PricedSurfaceView` refuse a non-positive spot, and that is the correctness
+// stance: a surface with S <= 0 has no forward, so every number served off it
+// is meaningless. A stored record carrying one must therefore be QUARANTINED by
+// `verify_db` — counted `Unmappable`, named in the failure list, and refused by
+// `query_surface` — never mapped and served with a warning.
+//
+// Nothing pinned that. The ATM-probe fixture above USED to be the zero-spot
+// case and was rewritten (correctly) to corrupt the smile instead, so it could
+// keep covering the ATM-probe branch; that left the zero-spot behaviour itself
+// asserted nowhere, and a regression that re-admitted S <= 0 at map time would
+// have been silent. This is the missing pin.
+TEST(SurfaceDbAdmin, VerifyDbQuarantinesZeroSpotRecord) {
+  const AdminFixture f = make_fixture("verify_zero_spot");
+  build_healthy_db(f);
+  edit_record(f, "2026-07-06", "BBB", [](std::span<std::byte> rec) {
+    ArchiveV2SurfaceHeader h{};
+    std::memcpy(&h, rec.data(), sizeof h);
+    ASSERT_GT(h.S, 0.0) << "the fixture must start from a healthy spot";
+    const double zero_spot = 0.0;
+    std::memcpy(rec.data() + offsetof(ArchiveV2SurfaceHeader, S), &zero_spot, sizeof zero_spot);
+    repair_record_crc(rec);
+  });
+  const SurfaceDb db = open_db(f);
+
+  // BYTE-VALID: the CRC is repaired, so this is not a corruption story and the
+  // checksum branch must stay silent about it.
+  const auto archive = db.open_partition("2026-07-06");
+  ASSERT_TRUE(archive.has_value()) << (archive ? "" : archive.error().to_string());
+  const Status crc = archive->validate_symbol("BBB");
+  EXPECT_TRUE(crc.has_value()) << (crc ? "" : crc.error().to_string());
+
+  // ...and REJECTED at map time. This is the ruling: the view refuses to exist,
+  // rather than existing and answering with a flag.
+  const auto mapped = db.map_surface("2026-07-06", "BBB");
+  EXPECT_FALSE(mapped.has_value()) << "S <= 0 must not map (cb7fe2e / SE-P1-1)";
+
+  const auto rep = verify_db(db, DbVerifySpec{});
+  ASSERT_TRUE(rep.has_value()) << (rep ? "" : rep.error().to_string());
+  EXPECT_FALSE(rep->ok());
+  EXPECT_EQ(rep->cells_checked, std::size_t{9});
+  EXPECT_EQ(rep->cells_ok, std::size_t{8});
+  EXPECT_EQ(rep->cells_unmappable, std::size_t{1});
+  EXPECT_EQ(rep->cells_non_finite, std::size_t{0}); // never reached the ATM probe
+  EXPECT_EQ(rep->cells_checksum, std::size_t{0});   // the bytes are fine
+  EXPECT_EQ(rep->cells_absent, std::size_t{0});     // it IS stored; it is unusable
+  ASSERT_EQ(rep->failures.size(), std::size_t{1});
+  EXPECT_EQ(rep->failures.front().key, "2026-07-06");
+  EXPECT_EQ(rep->failures.front().symbol, "BBB");
+  EXPECT_EQ(rep->failures.front().kind, DbCellFailure::Unmappable);
+  EXPECT_FALSE(rep->failures.front().detail.empty()); // carries the rejection text
+
+  // The spot check agrees with the walk.
+  const auto q = query_surface(db, "2026-07-06", "BBB", 100.0, kSurfaceDbVerifyProbeT);
+  EXPECT_FALSE(q.has_value()) << "query_surface must reject what verify_db quarantines";
+
+  // Every other cell is untouched, and the counters exhaust the walk.
+  const auto aaa = query_surface(db, "2026-07-06", "AAA",
+                                 db.map_surface("2026-07-06", "AAA")->view.forward_at(
+                                     kSurfaceDbVerifyProbeT),
+                                 kSurfaceDbVerifyProbeT);
+  EXPECT_TRUE(aaa.has_value()) << (aaa ? "" : aaa.error().to_string());
+  EXPECT_EQ(rep->cells_ok + rep->cells_absent + rep->cells_unmappable + rep->cells_non_finite +
+                rep->cells_checksum,
+            rep->cells_checked);
+}
+
 // The OTHER half of the same branch (surface_db_admin.cpp's
 // `!std::isfinite(forward) || forward <= 0.0 || !usable_iv(iv)`): a cell whose
 // EVALUATED forward itself is non-finite, not just its smile. Post-cb7fe2e every

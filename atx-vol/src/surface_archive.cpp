@@ -974,7 +974,8 @@ Result<SurfaceArchiveV2> SurfaceArchiveV2::open_mapped(std::string_view path) {
   // plan 6.1 — see the measured result in `open_copied` above). This open's
   // whole point is that a caller may materialize a SUBSET: the private snapshot
   // caches that declare `ArchiveBacking::Sealed` are constructed with the book's
-  // or strategy's referenced uids (`backtest.cpp` ~1739 and ~2249), and the
+  // or strategy's referenced uids (the two `run_backtest` overloads in
+  // `backtest.cpp`, ~2375 and ~2939), and the
   // replay case those exist for prices ~11 names out of a whole-board partition.
   // A whole-mapping WILLNEED would therefore fault in roughly an order of
   // magnitude more bytes than the load reads — the opposite of what this open

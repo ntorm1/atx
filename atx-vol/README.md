@@ -9,8 +9,8 @@ and layered above `atx-core`.
 The upstream `ats-vol` (~65k LOC of C across ~90 translation units) has been
 ported in full to idiomatic, tested C++20, and then extended with a
 Vola-Dynamics American-equity parity layer (see below), a composable
-`VolaSession` handle, and a cached high-performance pricing hot path. It passes
-**2,618 GoogleTest cases across 377 suites** under `/W4 /permissive- /WX`
+`VolaSession` handle, and a cached high-performance pricing hot path. It registers
+**2,848 GoogleTest cases across 422 suites** under `/W4 /permissive- /WX`
 (clang-cl). That number is *measured*, not maintained — re-derive it with
 `build/bin/atx-vol-tests.exe --gtest_list_tests` rather than trusting the prose,
 which is how a count in a README stops rotting silently (see *Build & test* for
@@ -28,7 +28,7 @@ faithfully and mirror the upstream test tolerances.
 | Black-76 | `black76.hpp` | European price, price+aux (d1/d2/Φ), fused price+vega, price-from-log-moneyness |
 | Greeks | `greeks.hpp` | Analytic B76 delta/gamma/vega/theta/rho/vanna/volga/charm |
 | Implied vol | `implied_vol.hpp` | Stefanica–Radoicic (2017) seed + Halley inversion → `Result<double>` |
-| American pricers | `american.hpp`, `correction.hpp` | Andersen–Lake (Gauss-Legendre + Chebyshev boundary), BAW, American Greeks, Chebyshev American-minus-European correction cache, Crank–Nicolson PDE oracle |
+| American pricers | `american.hpp`, `correction.hpp` | Andersen–Lake (Gauss-Legendre + Chebyshev boundary), BAW, American Greeks, Chebyshev American-minus-European correction cache, Crank–Nicolson PDE oracle. The strictly-negative-rate double-continuation corner is **refused**, not approximated — see *Stated limitations* below |
 | Surface eval | `surface.hpp` | Lightweight SVI / eSSVI per-slice closed-form evaluators |
 | Surface (calibration-grade) | `vol_surface.hpp` | `VolSurface` (tagged eSSVI/SVI + full slice params), backbone/residual/total eval, grad3/grad4, Mingone reparam, φ_max |
 | Rates curves | `rates_curve.hpp` | Yield (Fritsch–Carlson) / forward / dividend / borrow (HTB) curve set |
@@ -47,13 +47,14 @@ faithfully and mirror the upstream test tolerances.
 | Swap-leg toolkit | `swap_leg.hpp` | The reusable pieces every swap-carrying strategy shares: `swap_contract_for_lot` (the engine's `SwapLot`→`DerivContract` transcription), `solve_cycle_swap` (fixing-schedule count + bridge-priced fair strike + vega-targeted qty, fail-soft), and `SwapSignalProbe` (the engine-accrual mirror behind the per-row `swap_*` greek signal columns, NaN discipline included). With `LifecycleSpec::Holding::FixedExpiryRestrike` + `StrategySpec::swap_legs` (strategy.hpp) it expresses the whole strangle-vs-varswap comparison declaratively — `examples/varswap_compare_example.cpp` → `tools/render_strangle_vs_varswap.py` |
 | Profile registry | `profile.hpp` | Underlier classification, per-profile calib/filter knobs, optimization-level + refit cadence + tier priority |
 | Unified fit policy | `fit_policy.hpp` | Board/profile/session/event routing to an effective preset + curve; direct high-confidence routes and held-out ambiguity fallback |
-| Scenario risk | `scenario_grid.hpp` | 2-D (spot% × vol) second-order Taylor P&L matrix over a `PortfolioPricer` book — one deduped full-Greeks solve, every cell reconstructed analytically |
+| Scenario risk | `scenario_grid.hpp` | 2-D (spot% × vol) second-order Taylor P&L matrix over a `PortfolioPricer` book — one deduped full-Greeks solve, every cell reconstructed analytically, with cells outside the measured Taylor radius repriced exactly. **Sticky-strike: the smile is never rolled** — see *Stated limitations* below |
 | PnL attribution | `pnl_attribution.hpp` | Additive base→shifted decomposition into the Vola vocabulary (spot / ATF / skew / curvature / 2nd-order vol / rates / time / unexplained) |
+| Surface analytics | `analytics.hpp` | ATMF term structure, delta wings / RR / BF, skew & curvature, forward vol; Breeden–Litzenberger density, implied CDF/quantiles, BKM moments, and the OTM log-strip model-free implied vol (`var_swap_vol`) — **diagnostics read off a served surface, not the traded variance-swap product** (that is `derivatives.hpp`) |
 | Projection | `projection.hpp` | Projection spine: forward-T interp, coord conversion, inserted-slice eval, delta-solve, project-compare |
 | Contract projection | `contract_projection.hpp` | Relative maturity/strike definitions to absolute-expiry American contracts, marks, and Greeks; prepared deterministic batch API |
 | Surface archive | `surface_archive.hpp` | ATXVSA2 (magic `ATXVSA20`) binary format writer/reader, CRC-32C, schema-hash guard, symbol lookup, concurrent-read-safe |
 | Data ingestion | `data.hpp` | SpiderRock quote-frame model, install-into-universe path, ISO/year-fraction kernels |
-| Batch kernels | `batch.hpp` | Scalar-backed batch B76 price/vega/from-lnfk, IV, Greeks, eSSVI-w (batch == scalar, bit-exact) |
+| Batch kernels | `batch.hpp` | SoA batch B76 price/value+vega/from-lnfk, IV, Greeks, eSSVI-w. Price, value+vega, Greeks and eSSVI-w **runtime-dispatch to 4-lane AVX2** on an AVX2 host (`n ≥ 4`; eSSVI-w `n ≥ 16`), so they agree with the scalar kernel to the SIMD gate (~1e-6 abs + 1e-7 rel; ~1e-5 abs on the fused `vega` column; eSSVI ~1e-12), **not bit-for-bit**; from-lnFK and IV have no vector route and stay scalar-backed and bit-exact |
 | American IV | `american_iv.hpp` | Invert an American premium → implied vol (safeguarded Newton on the American pricer); the de-Americanization primitive |
 | Dividends / borrow | `dividend.hpp` | Hybrid dividend forward (escrowed cash → proportional blend, `S=S̃+D`), European put-call-parity borrow solver |
 | De-Americanization | `deamer.hpp` | Chain → European-equivalent IVs + per-term implied borrow (OTM-leg selection, fixed-point American-PCP borrow, q_eff bridge) |
@@ -66,6 +67,109 @@ faithfully and mirror the upstream test tolerances.
 | Unified library layer | `chain.hpp`, `pricer_fitter.hpp` | `OptionChain` (id-addressed board, tick-to-quote update) → `PricerFitter` (fit + owns `unique_ptr<FittedSurface>`) → deterministic multi-threaded `value_chain` with per-field output flags |
 | Real-data loader | `opra_panel.hpp` | Databento OPRA cbbo-1m (NBBO) Parquet → `QuoteFrame`, OSI/OCC symbol parser, front-PCP spot implication |
 | High-throughput portfolio | `portfolio_pricer.hpp` | Contract dedup, bounded build hints, parallel SoA scatter, price-only quote cadence or full American-Greeks risk cadence |
+
+## Stated limitations (v1)
+
+Four places where the library's behaviour is narrower than a module name
+suggests. Each is a deliberate design choice with a single source of truth in a
+header; they are collected here so a caller meets them before a production
+surprise does, not after.
+
+**1. American pricing REFUSES the strictly-negative-rate double-continuation
+corner.** Under the McDonald–Schroder map both sides reduce to an internal put
+characterized by its `(rate, yield)`, and `detail::classify_regime`
+(`american.hpp`) is the one place that classifies it. When `yield < rate < 0` —
+a *strictly* negative rate above the yield — a second exercise boundary appears
+(Battauz–De Donno–Sbuelz 2015; Andersen–Lake 2021) that the single-boundary
+Andersen–Lake scheme cannot represent, so **every American entry point returns
+`ErrorCode::NotImplemented` (or NaN in the batch/lane channels) rather than a
+silently-wrong single-boundary price**: `american_price`, `american_greeks_*`,
+`exercise_boundary`, `assignment_risk`, `american_implied_vol`, the SoA batches,
+and the correction-cache populator. `rate < 0 && rate <= yield` is a different
+cell — early exercise is never optimal there, so American *equals* European
+exactly and is served.
+
+*The served output is discontinuous in `rate` at 0 for `yield < 0`, and that is
+a property of what this library can compute, not of the option's value.* Hold
+`yield < 0` and raise `rate` through 0: the cell is Unsupported just below 0 and
+American (served) at exactly 0, because at `rate == 0` the exercise region stays
+downward-connected. So a **carry solve or root-find that walks `rate` across 0
+with a negative yield sees its objective undefined on one side and defined at
+the point**, and a sensitivity taken by bumping `rate` around 0 in that corner
+bumps into the refusal rather than a number. Do not assume a continuous
+objective there. Widening the served set needs a two-boundary scheme, not a
+predicate change. The full regime table and this note live at
+`american.hpp` (`detail::classify_regime`); the gate is
+`NegRateDomainMap.ZeroRateNegativeYield_IsSingleBoundaryAmerican`.
+
+**2. `scenario_grid` is STICKY-STRIKE: it does not roll the smile.** Both cell
+routes hold the base-resolved `sigma` and bump only the pricer inputs — the
+surface is **not** re-fit and the smile is **not** re-anchored to the shocked
+spot. An Exact cell answers "reprice *this* contract at base sigma + bump under
+the shocked market inputs"; a Taylor cell reconstructs the same question from
+one second-order Greek bundle. Carry (`q_eff`) is held for the same reason. A
+desk that marks sticky-delta, or that needs the surface re-fit at each shocked
+spot, will not get that number from this grid — the limitation is stated in full
+under *"Exact cell semantics — sticky-strike, NO smile roll"* in
+`scenario_grid.hpp`. The default Taylor radii (3% spot / 3 vol pts) are measured
+per-axis; a cell at the **double corner** combines both residuals plus the vanna
+cross-term and is gated at $0.0125 per share, not at the per-axis $0.005.
+
+**3. No error bars on FITTED PARAMETERS.** `fit_metrics.hpp` publishes
+**per-observation** error bars — a quote's price half-spread mapped through vega
+to a vol uncertainty, `σ_err ≈ ½·(ask − bid)/vega` — plus the reduced-χ² and
+"minimum edge" band built on them. That is a statement about the *data*, not
+about the fit: atx-vol publishes **no** covariance, standard error or confidence
+interval for a calibrated curve's parameters, and nothing here should be read as
+one. Vola's calendar-coupled joint mode with per-term parameter error bars is a
+post-v1 target, named in the calendar-arbitrage section below as a target and
+nowhere as a feature.
+
+**4. The VIX-style log-strip is an ANALYTIC, not the traded-product module.**
+`analytics.hpp`'s `var_swap_vol` computes model-free implied vol
+`sqrt(K_var(T))` by integrating the OTM log-strip over the **served** surface —
+a diagnostic read of a surface the library already fitted, in the same family as
+the Breeden–Litzenberger density, BKM moments and implied CDF beside it. It is
+**not** the variance-swap product: that is `derivatives.hpp` (`DerivKind`,
+`var_swap_fair_strike` / `vol_swap_fair_strike` / `deriv_price` / `deriv_greeks`,
+Carr–Lee, capped and mid-life kinds, realized-vol accrual and dated fixings) with
+`deriv_book.hpp` for a position book. A quoted log-strip number carries no
+contract, no accrual state, no cap and no fixing schedule; do not mark a swap
+position with it.
+
+## How to read the performance figures in this file
+
+Every timing, throughput and fit-quality number below is carried with its
+producing target, and none of them was re-measured for the 1.0.0 release. That
+is stated rather than implied, because most of them **cannot** be re-measured
+from a clean checkout of this repository:
+
+- **The real-data figures rest on licensed vendor market data that is not, and
+  will not be, in-repo.** The XOM and SPY tables, the `value_chain` inversion
+  rates, the cold-fit and cached-query timings and the calendar-repair quality
+  deltas all come from Databento OPRA `cbbo-1m` boards materialised offline
+  (`opra_dbn_to_parquet` → `opra_parity_bench` / `examples/spy_diag` /
+  `examples/chain_pricer_bench`). That fixture class is the same one the
+  *"What 'the matrix is green' covers"* table below marks **permanently
+  unprovisioned** — 30 registered tests skip on it. Provision the data as
+  described there and the numbers become reproducible; without it they are a
+  record of a past measurement, not a claim you can check.
+- **The synthetic-fixture figures are reproducible** — the known-truth SPY
+  oracle (`atx/vol/spy_fixture.hpp`), `examples/spy_surface_bench`,
+  `examples/american_iv_bench` and the benchmark targets in `bench/` need no
+  vendor data.
+- **Absolute numbers are pinned to one host** (i7-1260P / clang-cl 18; see
+  `bench/README.md` for the quiet-window protocol and the CV≤5% rule). Only
+  *ratios* are gated by `bench/compare_baseline.py`. Treat an absolute
+  microsecond or seconds figure here as an order of magnitude on unlike silicon.
+
+One figure **was** measured paired during the 1.0.0 release sprint and carries
+its method; it lives in the CHANGELOG rather than here, because it justifies a
+changed default: `RunConfig::prefetch_depth` `1 → 2`, **+15.2 % over 11 of 12
+interleaved rounds**, one binary alternating the depth inside a single session
+on the 135-session SPY-dispersion replay, medians and win-counts only. That is
+the shape a citable figure has — paired, interleaved, with its win-count — and
+it is the standard the pre-1.0 figures above were not held to.
 
 ## Unified auto policy (2026-07)
 
@@ -360,8 +464,27 @@ which change the numerical results of the shipped paths:
   default** on AVX2 hosts: the contract relaxes from bit-reproducible-by-default to
   reproducible-per-host. `ATX_SIMD_ISA=ForceScalar` restores the exact scalar
   boundary solve (run as a dedicated non-AVX2 test leg — `atx-vol-pricing-forcescalar`
-  in `tests/CMakeLists.txt`); `ForceAvx2` forces the pack on any host; the B76 span
-  batches (`batch.hpp`) stay scalar-backed.
+  in `tests/CMakeLists.txt`); `ForceAvx2` forces the pack on any host.
+  **The same relaxation applies to the B76 span batches** (`batch.hpp`), and this
+  sentence used to claim the opposite ("stay scalar-backed"). It was wrong:
+  `black76_price_batch`, `black76_value_and_vega_batch`, `black76_greeks_batch`
+  and `essvi_w_batch` all take the 4-lane AVX2 route under the default `Auto`
+  (`src/batch.cpp`) — at `n ≥ 4`, or `n ≥ 16` for eSSVI-w, whose per-lane cost is
+  small enough that the setup only pays on large grids — patching only
+  degenerate / deep-wing / tail lanes through the scalar kernel. Their agreement
+  with the scalar source of truth is the SIMD gate — which is what
+  `batch_test.cpp` actually asserts, an `expect_close` and never an equality —
+  and that gate is **per output column, not one blanket number**: ~1e-6 absolute
+  + 1e-7 relative on prices and Greeks, **~1e-5 absolute** on the fused batch's
+  `vega` column (`batch_test.cpp:291,311`; vega is the larger quantity, so the
+  same relative error is a looser absolute one), and ~1e-12 for eSSVI.
+  `black76_price_from_lnfk_batch` and `implied_vol_batch` are the two
+  that really are scalar-backed and therefore bit-exact: neither has a vector
+  kernel (IV's measured AVX2 route was slower on the reference host).
+  [`docs/simd_fastpath.md`](docs/simd_fastpath.md) has the kernel-by-kernel
+  detail; note that its parity column reports a *measured* max deviation on one
+  workload (0.0 on several), which is an observation, not the guarantee — the
+  guarantee is the tolerance above.
   What is **not** vectorized is the Andersen–Lake Gauss-Legendre quad loop *within a
   single boundary solve*: **in-solve vectorization was measured two ways and both
   reverted.** That inner kernel is transcendental-bound (per point: 2×√, log, 2×exp,
@@ -515,12 +638,57 @@ same population and a single hand-written number would hide that:
 
 | Count | Command | What it counts |
 |---|---|---|
-| **2,618** cases / **377** suites | `build/bin/atx-vol-tests.exe --gtest_list_tests` | GoogleTest cases in the atx-vol test binary |
-| **2,625** registered tests | `ctest --test-dir build -N -L atx_vol` | the 2,618 above, discovered by `gtest_discover_tests`, **plus 7** lanes that are not GoogleTest cases: six Python driver/report tests and the `atx-vol-pricing-forcescalar` scalar-ISA leg (`tests/CMakeLists.txt`) |
+| **2,848** cases / **422** suites | `build/bin/atx-vol-tests.exe --gtest_list_tests` | GoogleTest cases in the atx-vol test binary, including the 7 `DISABLED_` ones |
+| **2,856** registered tests | `ctest --test-dir build -N -L atx_vol` | the 2,848 above, discovered by `gtest_discover_tests`, **plus 8** lanes that are not GoogleTest cases: `SpxWilmottReproUnit`, `atx-vol-reference-spy-dispersion`, `atx-vol-download-occ-ess`, `atx-vol-build-spy-top50-universe`, `Mag7DispersionReport`, `SpyDispersionPnlReport`, `atx-vol-python`, `atx-vol-pricing-forcescalar` (`tests/CMakeLists.txt`) |
 
-Both were measured at the commit that wrote this section, against `cmake --preset
-dev`. Re-run the commands rather than trusting the digits: nothing regenerates
-them, so a stale number here is a documentation defect, not a test failure.
+The two reconcile exactly: 2,848 + 8 = 2,856. Both were re-measured at the 1.0.0
+release commit by running exactly the two commands in the table, and both had
+moved by one since the last pass: the case count because the release gate's
+own tier-count guard (`VolUmbrella.TierCountsMatchTheReadmeTable`) landed, the
+suite count because the 421 beside it had never been re-derived at all. The
+digits are the measurement, not a maintained invariant — which is the whole
+reason the command sits next to each one.
+
+Both figures are `cmake --preset dev`. **The `rel` and `rel-avx2` presets
+register 2,858**, not 2,856: they are configured with `-DATX_BUILD_EXAMPLES=ON`,
+which adds the two `accuracy_panel` determinism lanes (`AccuracyPanelDeterminism`,
+`AccuracyPanelFailureDeterminism`, `atx-vol/CMakeLists.txt`). The GoogleTest
+population is identical on all three presets — only the script lanes differ — so
+a gate log quoting 2,858 is not a drift.
+
+Every count in the section below comes from the same
+measurement, quoted once; the *skip* inventory needs a full matrix run to
+re-derive, so it carries the release-sprint measurement rather than a fresh one.
+Re-run the commands rather than trusting the digits: nothing regenerates them,
+so a stale number here is a documentation defect, not a test failure.
+
+### What "the matrix is green" covers
+
+Green means **every lane that can run, ran and passed**. It does not mean every
+registered lane ran, and the difference is stable, deliberate and enumerated
+below rather than being a backlog.
+
+Of the **2,856** registered above, ctest starts **2,849** — the other 7 are the
+`DISABLED_` cases — and **63** of those report `SKIPPED` on an AVX2 host with
+`cmake --preset dev` and no market-data cache present. Every skip carries a
+reason string naming exactly what would let it run; the six classes below
+account for all 63.
+
+| Gate class | What gates it | Skips | Provisioning status |
+|---|---|---|---|
+| Host CPU capability | `simd::has_avx2()` at test entry | **0** — this host has AVX2 | Nothing to provision. On a **non**-AVX2 host ~27 more sites skip (`american_batch_test.cpp` 16, `simd_isa_override_test.cpp` 10 + 1 env), so "green" there covers strictly less. The scalar path is separately gated by the `atx-vol-pricing-forcescalar` ctest lane, which runs the pricing suites with `ATX_SIMD_ISA=ForceScalar` and passes on every host. |
+| Opt-in instrumentation build | `counters::counters_enabled()` — `-DATX_VOL_COUNTERS=ON`, i.e. the `dev-counters` preset | **21** | By design. These assert exact algorithm-counter values (solve counts, Clenshaw traversals, allocation-once, lazy-materialisation-once); the code under test runs in the default build, only the assertion channel is compiled out. Run `cmake --preset dev-counters` to include them. |
+| Cached real-market fixtures | Presence of OPRA `cbbo-1m` parquet boards, the SPY fit corpus, and the shared board cache under `C:/atx-data/spy-dispersion/opra/` | **30** | Permanently unprovisioned in-repo: this is licensed vendor market data, too large to commit and not ours to redistribute. Materialise it with the Databento pull + `opra_dbn_to_parquet` (see the real-data section above) and the whole class runs. |
+| Named external data (env) | `ATX_T7_DEFINITIONS_TSV` (5), `ATX_SP100_SURFACE_DB` (1) | **6** | Same reason as the row above, pointed at by an environment variable instead of a search path. All six are measurement harnesses / a real-database baseline, not correctness gates. |
+| Opt-in long sweep | `ATX_VOL_LONG_CORPUS=1` | **1** | By design — a 250 + 10,000 synthetic-board property sweep, too slow for every run. Deterministic and runnable on any host. |
+| Structurally not a standalone lane | `ProcessScratchChild.*` (3) run only when their driver test re-invokes the binary as a child; `ScalarLegEnv.ForceScalarEnvSeedsScalarOverride` (1) runs inside the `atx-vol-pricing-forcescalar` lane; `atx-vol-python` (1) exits ctest's `SKIP_RETURN_CODE` unless the standalone `atx-vol/python` extension is built | **5** | Four of the five ARE covered — by the lane that drives them. Only `atx-vol-python` is genuinely uncovered by a default build; build the standalone Python project to run it. |
+
+So a green matrix asserts: **every pure-computation, synthetic-fixture and
+in-repo-fixture test passes, on the host's ISA, in the default build, plus the
+forced-scalar pricing leg.** It does not assert the real-market accuracy gates,
+the exact-counter gates, the long corpus sweep, or the Python binding suite —
+each of which is a documented opt-in with a named way to turn it on, not an
+unknown.
 
 The Vola-parity harness alone: `atx-vol-tests.exe --gtest_filter='SurfaceParity.*:VolaSession.*:OpraPanel.*:DeAmer.*:Parity.*:AmericanIv.*:HybridDiv.*:S3.*:FitMetrics.*:Panel.*'`.
 
@@ -561,8 +729,8 @@ demonstrations stay behind `ATX_BUILD_EXAMPLES` (OFF by default).
 
 ## Configuration registry: the `ATX_*` environment variables
 
-atx-vol reads **ten** `ATX_*` environment variables in shipped code — nine from
-the library, one from a tool. None is required, and **none of them changes a
+atx-vol reads **fourteen** `ATX_*` environment variables in shipped code —
+eleven from the library, three from tools. None is required, and **none of them changes a
 fitted, priced or archived value.** The ones that touch parallelism select how
 much of the machine is used, and every atx-vol fan-out is documented
 bit-identical for any worker count; the rest decide only whether a diagnostic is
@@ -580,7 +748,11 @@ the property that makes this table short.
 | `ATX_SLICE_DEBUG` | Prints `curve_fit`'s per-slice fit-preparation outcome (why a chain did or did not become a fittable slice) | unset = off | library — `src/curve_fit.cpp` | **keep** |
 | `ATX_VOL_ZC_BORROW` | `0` forces the owned-reconstruct archive path instead of the zero-copy borrow. Read once per process, so it cannot make a run non-deterministic | unset = borrow allowed | library — `src/backtest.cpp` | **keep**, deprecation candidate |
 | `ATX_VOL_ZC_BACKING` | `map` or `copy` overrides the caller-declared `ArchiveBacking` on the borrow path. Read once per process | unset = the caller's choice stands | library — `src/backtest.cpp` | **keep**, deprecation candidate |
+| `ATX_VOL_AL_PROBE` | Arms the Andersen-Lake zone cycle-attribution probe, read once into `g_mode` at process load. Any non-empty value turns it on; a value containing `s`/`S` additionally records each cold boundary solve's normalized query state. Attribution only — the priced values it counts around are unaffected | unset = off | library — `src/al_probe.cpp` | **keep** |
+| `ATX_VOL_AL_PROBE_OUT` | File path for the per-state binary trace `ATX_VOL_AL_PROBE`'s `s`/`S` flag records; the human-readable `alprobe.*` summary itself always goes to the stream `dump()` was called with, not this path. Unset just skips writing the trace file. Meaningless unless `ATX_VOL_AL_PROBE` is set | unset = trace not written | library — `src/al_probe.cpp` | **keep** |
 | `ATX_VOL_CACHE` | Default for the dispersion CLI's `--cache DIR`; an explicit `--cache` overrides it. Empty means disabled, which is the default behaviour | unset = disabled | tool — `tools/spy_dispersion_backtest.cpp` | **keep** |
+| `ATX_VOL_PREFETCH_DEPTH` | Overrides the projected replay's snapshot look-ahead depth (`projected_prefetch_depth()`). Malformed or out-of-range (cap `64`) falls back to the default rather than failing the run. Scheduling only — output is bit-identical at any depth | `2`, cap `64` | tool — `tools/spy_dispersion_backtest.cpp` | **keep** |
+| `ATX_VOL_SOLVE_LEDGER` | Same env-gated shape as `ATX_VOL_PROFILE`: any non-empty value dumps the always-on solve ledger (AL boundary solves / premium evals / IV Newton iterations) as `ledger.<name> <count>` lines to stderr; the stdout build report shape is untouched | unset = off | tool — `tools/surface_db_build_main.cpp` | **keep** |
 
 **Nothing is deleted at v1, because nothing here is dead.** Every row has a live
 read site and a live effect; the two knobs with real *consumers* outside their
@@ -597,7 +769,7 @@ own source are load-bearing:
   it exists to solve. This is the case where an environment variable is the right
   mechanism rather than a shortcut.
 
-The remaining seven library knobs are diagnostics and measurement levers whose
+The remaining nine library knobs are diagnostics and measurement levers whose
 only documented users are sprint/bench recipes. They are proposed **keep** for
 v1 on the narrow grounds that each is off by default, each is read once, and none
 can change a result — but two follow-ups are worth naming rather than leaving
@@ -647,21 +819,38 @@ frozen?" is answered by where the header lives, not by judgement:
 
 | Tier | Where | Count | Promise |
 |---|---|---|---|
-| **Tier-A** | exactly the headers `atx/vol/vol.hpp` includes | 56 | **Frozen for 1.x.** Closed under inclusion |
-| **Tier-B** | other headers directly under `include/atx/vol/`, plus `simd/` | 23 + 9 | Public and supported to include; **not** frozen |
-| `detail/` | `include/atx/vol/detail/` | 25 (+1 generated) | **No stability promise.** Installed because Tier-A reaches it |
+| **Tier-A** | exactly the headers `atx/vol/vol.hpp` includes | 57 | **Frozen for 1.x.** Closed under inclusion |
+| **Tier-B** | other headers directly under `include/atx/vol/`, plus `simd/` | 31 + 9 | Public and supported to include; **not** frozen |
+| `detail/` | `include/atx/vol/detail/` | 28 (+1 generated) | **No stability promise.** Installed because Tier-A reaches it |
 | `tools/` | `tools/include/atx/vol/tools/` — target `atx::vol::tools` | 6 | CLI support. Not part of the shipped library surface |
 | `research/` | `research/include/atx/vol/research/` — target `atx::vol::research` | 9 | Run orchestration. Not part of the shipped library surface |
 
-Only the Tier-A count is machine-checked (below). The other four are prose and
-therefore rot: Tier-B and `detail/` were each one short by the time this table was
-next read, because `log.hpp` and `detail/log_emit.hpp` landed after it was
-written. Re-derive them from the tree rather than editing a digit —
+**Three of the five digits above had rotted by v1, and the first three no longer
+can.** All five rows were re-derived at the release commit: Tier-A 56 → **57**,
+Tier-B 23 → **31**, `detail/` 25 → **28**, while `simd/` 9, `tools/` 6 and
+`research/` 9 held. The earlier note here said the table was "one short" because
+`log.hpp` and `detail/log_emit.hpp` had landed; that was true when written, and
+the gap then widened to 8 on Tier-B and 3 on `detail/` as the surface kept
+moving — which is the point it was making.
+
+That drift is now caught by a test rather than by a reader.
+`VolUmbrella.TierCountsMatchTheReadmeTable` (`tests/vol_umbrella_test.cpp`)
+asserts all three of **57 / 31 / 28** against the live header tree — Tier-A from
+the umbrella manifest, Tier-B and `detail/` by counting `.hpp` files in the
+directories this table names — and each failure message says to update this
+table. Previously the Tier-A *set* was machine-checked but no **count** was, and
+nothing compared any of them to this table at all, which is how three rows rotted
+undetected. `simd/` 9, `tools/` 6 and `research/` 9 remain prose: they are
+outside `include/atx/vol/` and are not covered by that test, so re-derive those
+three by hand. The `+1 generated` on `detail/` is likewise uncovered — it does
+not exist in the source tree the test walks.
+
+**Re-derive rather than trust any digit here.** The commands are one line each:
 `grep -c '^#include "atx/vol/' include/atx/vol/vol.hpp` is Tier-A; each remaining
 row is `ls` over the directory the row names, minus (for Tier-B) Tier-A and
 `vol.hpp` itself. The `+1 generated` on `detail/` is
 `detail/version_generated.hpp`, configure_file'd from `project(atx VERSION ...)`,
-so an install prefix carries 26 there and the source tree 25.
+so an install prefix carries 29 there and the source tree 28.
 
 *Closed under inclusion* is the load-bearing rule: a header named in a frozen
 signature is frozen whether or not callers reach for it directly, so if a Tier-A

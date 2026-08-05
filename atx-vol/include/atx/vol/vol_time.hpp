@@ -79,6 +79,15 @@
 // "no closures" answer would be wrong for early dates. Widening the window is
 // a change to the table, not to a caller.
 //
+// KNOWN DATED CLIFF from that upper bound. A long tenor measured off a recent
+// snapshot resolves past 2028-12-31 well before 2028 arrives, and the caller
+// then gets `OutOfRange` for the whole request rather than a partial answer.
+// The concrete one in-tree: the earnings-repro pipeline's 504-trading-day SR
+// tenor (~2 years), which under the default VolTime convention starts failing
+// for snapshots dated after roughly 2027-01 — see the DATED CLIFF note on
+// `EarningsReproConfig::time` (earnings_repro_config.hpp) for the two ways
+// past it. Extending the table before 2027 is the durable fix.
+//
 // ## Session window / DST
 //
 // The regular session is `[session_open_hour_et, session_open_hour_et +

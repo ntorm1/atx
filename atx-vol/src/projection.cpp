@@ -13,6 +13,7 @@
 
 #include "atx/core/math.hpp"    // norm_cdf
 #include "atx/vol/american.hpp" // american_price_cached
+#include "atx/vol/arb.hpp"      // arb_check_butterfly_slice (opt-in no-arb sweep)
 #include "atx/vol/black76.hpp"  // black76_price
 #include "atx/vol/event_vol.hpp"  // EventSchedule, count_events_at, event_aware_w
 #include "atx/vol/detail/strip_grid.hpp" // strip::forward_log_blend (E2 shared convention)
@@ -415,15 +416,94 @@ namespace {
   return out;
 }
 
+// Opt-in dense no-arb sweep over an already-resolved handle. Fixed convention
+// (documented on `surface_insert_vol_slice`): 128 intervals over
+// k in [-h, +h], h = kNoArbSigmaSpan * sqrt(w_atm) clamped to
+// [kNoArbSpanMin, kNoArbSpanMax]. Butterfly reuses `arb_check_butterfly_slice`
+// so an inserted slice is judged by the same finite-difference density scheme
+// as a fitted one. Calendar asks the narrower question this handle can
+// actually answer: does the DERIVED slice's total variance stay inside the
+// band its two parents span? PiecewiseTotalVariance satisfies that by
+// construction (it is a convex combination), so the bit fires there only when
+// the PARENTS themselves cross — which is precisely the calendar-arb region
+// the caller wants flagged — while ShapeBlend can genuinely leave the band
+// (see InterpMode::ShapeBlend's documented non-ATM calendar caveat).
+inline constexpr double kNoArbSigmaSpan = 4.0;
+inline constexpr double kNoArbSpanMin = 0.1;
+inline constexpr double kNoArbSpanMax = 1.5;
+inline constexpr std::uint32_t kNoArbGrid = 128u;
+inline constexpr double kNoArbCalendarTol = 1.0e-7;  // matches arb.cpp
+
+[[nodiscard]] std::uint32_t inserted_slice_no_arb_status(
+    const VolSurface& surface, const InsertedSliceHandle& h) {
+  const double w_atm = w_on_inserted_slice(surface, h, 0.0);
+  if (!(std::isfinite(w_atm) && w_atm > 0.0)) {
+    return kNoArbStatusNotEvaluated;
+  }
+  double span = kNoArbSigmaSpan * std::sqrt(w_atm);
+  span = std::clamp(span, kNoArbSpanMin, kNoArbSpanMax);
+
+  std::uint32_t status = 0u;
+
+  const auto bf = arb_check_butterfly_slice(
+      [&surface, &h](double k) { return w_on_inserted_slice(surface, h, k); },
+      h.T_clock, -span, span, kNoArbGrid);
+  if (!bf) {
+    // The only failure mode is k_max <= k_min, which the clamp above rules
+    // out; treat any surprise as "not evaluated" rather than "clean".
+    return status | kNoArbStatusNotEvaluated;
+  }
+  if (!bf->empty()) {
+    status |= kNoArbStatusButterfly;
+  }
+
+  if (h.exact_slice_idx < 0) {
+    const auto lo = static_cast<std::uint16_t>(h.parent_lo_idx);
+    const auto hi = static_cast<std::uint16_t>(h.parent_hi_idx);
+    const double dk = (2.0 * span) / static_cast<double>(kNoArbGrid);
+    for (std::uint32_t g = 0; g <= kNoArbGrid; ++g) {
+      const double k = -span + static_cast<double>(g) * dk;
+      const double w_lo = slice_w(surface, lo, k);
+      const double w_hi = slice_w(surface, hi, k);
+      const double w_q = w_on_inserted_slice(surface, h, k);
+      if (!std::isfinite(w_lo) || !std::isfinite(w_hi) ||
+          !std::isfinite(w_q)) {
+        continue;  // same skip rule the surface-level calendar check uses
+      }
+      const double band_lo = std::min(w_lo, w_hi);
+      const double band_hi = std::max(w_lo, w_hi);
+      if (w_q - band_hi > kNoArbCalendarTol ||
+          band_lo - w_q > kNoArbCalendarTol ||
+          w_lo - w_hi > kNoArbCalendarTol) {
+        status |= kNoArbStatusCalendar;
+        break;
+      }
+    }
+  }
+  return status;
+}
+
 }  // namespace
 
 Result<InsertedSliceHandle> surface_insert_vol_slice(
     const VolSurface& surface, const CurveSet* curves, const TimeModel& tm,
     double T_clock, InterpMode interp, ProjExtrapPolicy extrap,
     bool with_no_arb_check) {
-  (void)with_no_arb_check;  // PORT NOTE: dense no-arb sweep deferred.
-  return build_inserted_slice(surface, curves, tm, T_clock, interp, extrap,
-                              /*pre=*/nullptr);
+  auto handle = build_inserted_slice(surface, curves, tm, T_clock, interp,
+                                     extrap, /*pre=*/nullptr);
+  if (!handle || !with_no_arb_check) {
+    return handle;
+  }
+  const std::uint32_t status = inserted_slice_no_arb_status(surface, *handle);
+  handle->no_arb_status = status;
+  // `status != 0u` also covers kNoArbStatusNotEvaluated (sweep couldn't run,
+  // e.g. non-finite ATM w), so kFlagNoArbWarning does NOT by itself imply a
+  // confirmed density/calendar violation -- callers must inspect
+  // `no_arb_status` to tell "violated" from "not evaluated".
+  if (status != 0u) {
+    handle->flags |= kFlagNoArbWarning;
+  }
+  return handle;
 }
 
 double w_on_inserted_slice(const VolSurface& surface,

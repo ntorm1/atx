@@ -469,9 +469,13 @@ read_definitions_cache(std::string_view cache_path, const ListedDefinitionsCache
 // so `timer` receives no `definitions_cache` charge at all — "disabled" is not
 // a miss.
 //
-// Every call where `cache_dir` is non-empty logs exactly one HIT or MISS line
-// to stderr, with the rejecting guard's message on a miss. Without it a key
-// that stopped matching — the documented consequence of `hash_bytes` not being
+// Every call where `cache_dir` is non-empty logs exactly one HIT or MISS
+// record, with the rejecting guard's message on a miss. That record travels
+// through the diagnostic sink (`atx/vol/log.hpp`, same routing the file-header
+// comment above describes): a host that installs one captures it there, and
+// it lands on stderr only when none is installed — "logs a line" is the
+// contract, "to stderr" is only the default. Without this record a key that
+// stopped matching — the documented consequence of `hash_bytes` not being
 // stable across processes — would be a permanent 100% miss that still writes a
 // ~300 MB blob every run, and nothing but wall time would say so (review I6).
 //

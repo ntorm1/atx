@@ -9,9 +9,14 @@ The first release with a stability promise. Everything below happened during the
 production-v1 release sprint, on the way from an internal library to one that
 installs into a prefix and can be depended on.
 
-**What 1.0.0 actually promises** is a *tier*, not the tree: the 56 headers
+**What 1.0.0 actually promises** is a *tier*, not the tree: the 57 headers
 `atx/vol/vol.hpp` includes are frozen for 1.x, and the manifest that says which
 those are is machine-checked (`kTierA` in `atx-vol/tests/vol_umbrella_test.cpp`).
+(The set said 56 until the release audit re-derived it. Since the release gate's
+pre-flight, the *count* is machine-checked too —
+`VolUmbrella.TierCountsMatchTheReadmeTable` asserts 57 against the live manifest,
+alongside Tier-B 31 and `detail/` 28 — so this digit can no longer rot silently
+the way it did.)
 Everything else — Tier-B, `detail/`, `tools/`, `research/` — is public-but-
 unfrozen or internal. The full policy, with the counts and the tests that
 enforce it, is the *API stability policy* section of `README.md`. Read it before
@@ -67,6 +72,14 @@ Nothing was deleted in the tiering itself; every relocation is a `git mv`.
   pipeline is `CurveSurface` (fit) → `PricedSurface`/`PricedSurfaceView` (serve)
   → `SurfaceSet` (portfolio), and public headers may no longer name the demoted
   containers even in prose.
+* **The templated `derivatives.hpp` entries are now instantiated for
+  `VolSurface`.** `var_swap_fair_strike`, `vol_swap_fair_strike`, `deriv_price`
+  and `deriv_greeks` are templates on the surface type whose bodies live in
+  `derivatives.cpp`; every instantiation used to be on a demoted container, so
+  these Tier-A declarations could only be linked against by including a
+  `detail/` header. `VolSurface` — which answers `iv(k_log, T)`, the template's
+  whole requirement — joins the instantiation set, and the demoted pair stays
+  for source compatibility. Purely additive: no existing call changes.
 
 ### BREAKING — error model: batch entries report how many lanes they wrote
 
@@ -108,6 +121,44 @@ added (see *Embedding* below). It was INSERTED beside `step_observer`, its
 semantic group — not appended — which is precisely the freedom the new convention
 buys and the old one forbade. Named initialisation is unaffected by construction;
 a positional one would have rebound, which is why none is allowed to exist.
+
+It then moved **16 → 17** when the release branch merged `main` (2026-08-02),
+which brought the backtest-replay work's `RunConfig::prefetch_depth`
+(`std::size_t`, default `2`). This one is **appended at the end**, the form the
+convention prescribes for a new knob. Two notes a caller may care about:
+
+* **It changes no output at any value.** `prefetch_depth` is purely an I/O
+  schedule — how many future snapshots may be in flight — never which bytes are
+  deserialised nor the order the economics consume them.
+  `Backtest.PrefetchDepthIsBitIdenticalToSingleStepLookAhead` pins that
+  bit-identity, and the SPY-dispersion NAV determinism legs reproduce their
+  anchors bit-exactly across the merge that introduced it.
+* **The default is `2`, not the historical single-step `1`.** It arrived from
+  `main` at `1` and was moved to `2` in this release (v1 closeout sprint Task
+  4.8, plan item 6.7) on a paired measurement: one binary with the depth
+  alternated inside a single session, 12 interleaved rounds on the 135-session
+  SPY-dispersion replay, medians and win-counts only — `1 → 2` **+15.2 % (11/12
+  rounds)**, then `1 → 4` +19.8 % (10/12) and `1 → 8` +19.6 % (10/12), while `2 → 4` (+1.9 %,
+  7/12) and `4 → 8` (+1.6 %, 7/12) are washes. The curve is a step, not a ramp:
+  overlapping the first load is the whole win, so `2` is the cheapest default
+  that takes it. **A run that wants the old shape sets `1` explicitly and gets
+  it bit-for-bit** — by the note above, no value of this field moves a number.
+  The cost of the new default is one extra in-flight snapshot and a private
+  cache of `4` slots instead of `3`.
+  `0` is still normalised to `1` — "no look-ahead" is expressed by
+  `prefetch_snapshots = false`, not by a zero depth. A caller-supplied
+  `snapshot_cache` must retain at least `depth + 2` entries or the LRU drops a
+  completed prefetch before its step reaches it (costing throughput, never
+  correctness); `run_backtest`'s private cache is sized from the field
+  automatically.
+
+Python's ARITY and keyword names are unaffected by both moves — the binding is a
+hand-kept `def_readwrite` list, and `prefetch_depth` is exposed through it
+(`python/src/bindings/backtest.cpp`) as an attribute, not as a constructor
+keyword. A Python caller who never touches the attribute therefore picks up the
+new default exactly as a C++ caller does;
+`python/tests/test_backtest.py::test_run_config_prefetch_depth_round_trips`
+asserts it.
 
 ### REMOVED
 
@@ -173,6 +224,59 @@ exists for.
 * **Loose dispersion result TSVs are off by default**, behind
   `DispersionRunConfig::emit_tsv_diagnostics` (spec key of the same name,
   default `false`). Retained-input and evidence TSVs are unaffected.
+* **`surface_insert_vol_slice(..., with_no_arb_check = true)` now actually
+  checks.** The parameter used to be accepted and discarded, leaving
+  `InsertedSliceHandle::no_arb_status == 0` unconditionally. It now runs a dense
+  butterfly/calendar sweep over the resolved slice and reports through
+  `no_arb_status` (`kNoArbStatusButterfly` / `kNoArbStatusCalendar` /
+  `kNoArbStatusNotEvaluated`) plus the `kFlagNoArbWarning` provenance bit. It is
+  a report, never a rejection — the handle is still returned, with the same
+  numeric contents. The default (`false`) path is unchanged and still costs
+  nothing, so no shipped caller's numbers move.
+
+### NEW — every public batch kernel is now reachable from Python
+
+Three `batch.hpp` entries were bound, which completes the set — verified by
+enumerating `batch.hpp`'s six entries against the module rather than by
+inspection, because an earlier draft of this section claimed completeness while
+`black76_price_from_lnfk_batch` was still unbound:
+
+* `black76_greeks_batch(F, K, T, sigma, r, df, side)` — a dict of SoA numpy
+  columns (`delta`/`gamma`/`vega`/`theta`/`rho`/`vanna`/`volga`/`charm`/`price`).
+* `black76_value_and_vega_batch(F, K, T, sigma, df, side, sqrt_t=-1.0)` —
+  `(value, vega)` for one expiry slice (`T` and `sqrt_t` shared, as in the C++
+  signature).
+* `black76_price_from_lnfk_batch(F, K, T, sqrt_t, sigma, df, ln_fk, side)` — the
+  bind-step shortcut for a caller that already holds `ln(F/K)` and `sqrt(T)`.
+  `sqrt_t` is **required and has no sentinel** here: the scalar kernel consumes
+  it verbatim, so there is no negative value meaning "recompute". Its scalar
+  companion `black76_price_from_lnfk` is bound alongside it, so the batch's
+  bit-exactness is checkable from the same interpreter.
+
+Binding-only: no kernel changed, and all three go through the validated
+`batch.hpp` entry points rather than the raw `simd::` kernels.
+
+Three notes for callers:
+
+* **None returns a per-lane `status` column, and that is the NaN + per-lane
+  convention rather than a departure from it.** A parallel status exists where
+  the kernel HAS a per-lane failure channel a binding must not erase
+  (`implied_vol_batch`'s `span<Status>`; the American batch's `LaneStatus`).
+  These three have none — `black76_greeks`, `black76_value_and_vega` and
+  `black76_price_from_lnfk` are `noexcept` total functions whose degenerate lanes
+  collapse to the documented intrinsic result — so an all-`STATUS_OK` column
+  would advertise a diagnostic carrying no information. Only a malformed *call*
+  raises.
+* **Greeks and value+vega agree with their scalars to the SIMD gate, not
+  bit-for-bit; from-lnFK is bit-identical.** The first two dispatch to AVX2 at
+  `n >= 4`; from-lnFK has no vector kernel. The gate is per output column —
+  ~1e-6 absolute + 1e-7 relative on prices and Greeks, ~1e-5 absolute on the
+  fused batch's `vega`.
+* **`side` now also accepts a single `Side`, broadcast across the batch**, on
+  every binding that takes a `side` column (the American batches included). Pure
+  widening: a per-lane integer column behaves exactly as before, and a float
+  column is still refused with `ErrorCode::InvalidArgument` rather than
+  truncated onto `Side::Call`.
 
 ### NEW — embedding: a diagnostic sink and cooperative cancellation
 

@@ -1485,18 +1485,23 @@ TEST(SurfaceDbDispersionBacktest, PrivateCachePathIsUsed) {
   // which is where this test pins it.
   //
   // The observable that DOES see the private cache is `MarketSnapshot::open_count()`
-  // — the process-wide archive-open counter incremented once per archive open
-  // (backtest.cpp:1420-1421), and the same counter the engine's own prefetch-depth
-  // gate asserts against (backtest.cpp:64-66, `Backtest.PrefetchDepthIsBitIdentical
-  // ToSingleStepLookAhead`). ONE OPEN PER SESSION is the entire perf claim: the
-  // private cache is bounded at depth+2 entries (backtest.cpp:67-69) with
+  // — the process-wide archive-open counter (`g_open_count`, backtest.cpp:44)
+  // incremented once per archive open inside `MarketSnapshot::load` (backtest.cpp:1877),
+  // and the same counter the engine's own prefetch-depth gate asserts against,
+  // `Backtest.PrefetchDepthIsBitIdenticalToSingleStepLookAhead`. ONE OPEN PER SESSION
+  // is the entire perf claim: the private cache is bounded at depth+2 entries
+  // (`private_snapshot_cache_capacity`, backtest.cpp:72-74) with
   // INSERTION-ORDER eviction, so a completed look-ahead is never dropped before
   // the step that consumes it. A reload does not change the economics by one bit,
   // so nothing but this counter can catch it.
   SurfaceDbDispersionSpec base = run_spec(root, "2026-01-05", "2026-01-12");
   ASSERT_EQ(base.config.run.snapshot_cache, nullptr);
   ASSERT_TRUE(base.config.run.prefetch_snapshots);
-  ASSERT_EQ(base.config.run.prefetch_depth, 1u); // the RunConfig default this route inherits
+  // The RunConfig default this route inherits — 2 since v1 closeout sprint Task 4.8
+  // (plan item 6.7) measured the depth ladder on the 135-session replay (see
+  // RunConfig::prefetch_depth). The sweep below still drives 1 explicitly, so the
+  // depth-1 shape stays covered.
+  ASSERT_EQ(base.config.run.prefetch_depth, 2u);
 
   const auto run_at_depth = [&](std::size_t depth) -> Result<RunOutcome> {
     SurfaceDbDispersionSpec spec = base;
