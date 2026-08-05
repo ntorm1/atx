@@ -15,6 +15,7 @@
 // broken-database cases damage that real database on disk (unlink a partition
 // file; disable a symbol through the real fail-closed path); nothing is mocked.
 
+#include "support/analytics_fixture.hpp" // testkit::make_flat_surface (tenor_audit fixtures)
 #include "support/synthetic_opra_hive.hpp"
 
 #include <algorithm>
@@ -1724,6 +1725,222 @@ TEST(SurfaceDbAdmin, DisableEnableRoundTripRefitsTheSymbolWithNoDataLost) {
   EXPECT_TRUE(rep->ok());
   EXPECT_EQ(rep->cells_checked, std::size_t{9}); // 3 symbols x 3 dates, nothing missing
   fs::remove_all(f.root);
+}
+
+// ── tenor_audit — Task 3 (mark-domain-robustness) ────────────────────────────
+//
+// Hand-built surfaces (testkit::make_flat_surface), NOT the real fitter: this
+// suite is about the rolling-median/flag ARITHMETIC over `tenor_domain()`, and
+// pinning it against a real fit's exact max_T would make the test fragile for
+// no benefit -- `PricedSurface::tenor_domain()` (Task 1) is itself already
+// pinned against the real fitter elsewhere (priced_surface_test.cpp).
+[[nodiscard]] fs::path fresh_tenor_dir(std::string_view name) {
+  fs::path p = fs::temp_directory_path() / ("atx_surface_db_tenor_audit_" + std::string(name));
+  fs::remove_all(p);
+  return p;
+}
+
+// 3-partition fixture db, one symbol: the middle date's surface reaches only
+// 0.1y while its neighbors on both sides reach 2.0y -- the "stressed day
+// silently truncates the long-dated expiry" shape this command exists to
+// flag. The 5-nearest-neighbor rule with only 2 total neighbors available
+// (n=3) degrades to "compare against both", which is exactly what the
+// ambiguity resolution's "fewer at edges" / interior-row rule both reduce to
+// here.
+TEST(TenorAudit, FlagsATruncatedMiddleDateAgainstItsNeighbors) {
+  const fs::path root = fresh_tenor_dir("truncated_middle");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value()) << (db ? "" : db.error().to_string());
+  // Fix Round 1 (Important 2): an EXPLICIT spec.symbols entry must now be
+  // manifest-configured (tenor_audit rejects an unconfigured name outright),
+  // so every fixture below registers its symbol before auditing it.
+  ASSERT_TRUE(db->upsert_symbol("AAA", symbol_config_from_preset(FitPreset::Populate)).has_value());
+
+  const std::vector<double> reaches_long = {0.1, 0.5, 1.0, 2.0};
+  const std::vector<double> reaches_short = {0.05, 0.1};
+  PricedSurface d1 = testkit::make_flat_surface(1u, 100.0, 100.0, 0.2, testkit::kFixtureNow,
+                                                reaches_long);
+  PricedSurface d2 = testkit::make_flat_surface(1u, 100.0, 100.0, 0.2, testkit::kFixtureNow,
+                                                reaches_short);
+  PricedSurface d3 = testkit::make_flat_surface(1u, 100.0, 100.0, 0.2, testkit::kFixtureNow,
+                                                reaches_long);
+
+  const std::vector<SurfaceArchiveItem> items1{SurfaceArchiveItem{"AAA", &d1}};
+  ASSERT_TRUE(db->write_partition("2026-07-01", items1).has_value());
+  const std::vector<SurfaceArchiveItem> items2{SurfaceArchiveItem{"AAA", &d2}};
+  ASSERT_TRUE(db->write_partition("2026-07-02", items2).has_value());
+  const std::vector<SurfaceArchiveItem> items3{SurfaceArchiveItem{"AAA", &d3}};
+  ASSERT_TRUE(db->write_partition("2026-07-03", items3).has_value());
+
+  TenorAuditSpec spec;
+  spec.symbols = {"AAA"};
+  const auto rep = tenor_audit(*db, spec);
+  ASSERT_TRUE(rep.has_value()) << (rep ? "" : rep.error().to_string());
+  ASSERT_EQ(rep->rows.size(), std::size_t{3});
+  EXPECT_EQ(rep->rows[0].date, "2026-07-01");
+  EXPECT_EQ(rep->rows[1].date, "2026-07-02");
+  EXPECT_EQ(rep->rows[2].date, "2026-07-03");
+  EXPECT_DOUBLE_EQ(rep->rows[0].max_T, 2.0);
+  EXPECT_DOUBLE_EQ(rep->rows[1].max_T, 0.1);
+  EXPECT_DOUBLE_EQ(rep->rows[2].max_T, 2.0);
+  EXPECT_FALSE(rep->rows[0].truncated) << "a full-reach neighbor of a thin row is not itself thin";
+  EXPECT_TRUE(rep->rows[1].truncated) << "0.1y is far below the 2.0y median its two neighbors set";
+  EXPECT_FALSE(rep->rows[2].truncated);
+  EXPECT_EQ(rep->n_truncated, std::size_t{1});
+  EXPECT_TRUE(rep->skip_notes.empty());
+
+  // The library-level equivalent of the CLI's `--fail-on-truncated`, which
+  // exits 3 exactly when `n_truncated > 0` (run_tenor_audit,
+  // tools/surface_db_main.cpp: `if (fail_on_truncated && rep->n_truncated > 0)
+  // return 3;`). This suite does not spawn the compiled exe to check a
+  // process exit code -- surface_db_build_test.cpp's
+  // SnapshotSuffixAcceptsTheDocumentedFormat block records why no test in
+  // this tree does that for either surface-db CLI -- so this is the
+  // equivalent assertion at the seam the CLI itself branches on.
+  EXPECT_GT(rep->n_truncated, std::size_t{0});
+  fs::remove_all(root);
+}
+
+// A clean 3-date series (every date reaches the same 2.0y) never flags:
+// `median - 0.25` is a tolerance, not an exact-match requirement.
+TEST(TenorAudit, UniformReachIsNeverTruncated) {
+  const fs::path root = fresh_tenor_dir("uniform");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value()) << (db ? "" : db.error().to_string());
+  ASSERT_TRUE(db->upsert_symbol("AAA", symbol_config_from_preset(FitPreset::Populate)).has_value());
+
+  const std::vector<double> reaches = {0.1, 0.5, 1.0, 2.0};
+  PricedSurface d1 = testkit::make_flat_surface(1u, 100.0, 100.0, 0.2, testkit::kFixtureNow, reaches);
+  PricedSurface d2 = testkit::make_flat_surface(1u, 100.0, 100.0, 0.2, testkit::kFixtureNow, reaches);
+  PricedSurface d3 = testkit::make_flat_surface(1u, 100.0, 100.0, 0.2, testkit::kFixtureNow, reaches);
+  ASSERT_TRUE(
+      db->write_partition("2026-07-01", std::vector<SurfaceArchiveItem>{{"AAA", &d1}}).has_value());
+  ASSERT_TRUE(
+      db->write_partition("2026-07-02", std::vector<SurfaceArchiveItem>{{"AAA", &d2}}).has_value());
+  ASSERT_TRUE(
+      db->write_partition("2026-07-03", std::vector<SurfaceArchiveItem>{{"AAA", &d3}}).has_value());
+
+  TenorAuditSpec spec;
+  spec.symbols = {"AAA"};
+  const auto rep = tenor_audit(*db, spec);
+  ASSERT_TRUE(rep.has_value()) << (rep ? "" : rep.error().to_string());
+  ASSERT_EQ(rep->rows.size(), std::size_t{3});
+  for (const TenorAuditRow &row : rep->rows) {
+    EXPECT_FALSE(row.truncated) << row.date;
+  }
+  EXPECT_EQ(rep->n_truncated, std::size_t{0});
+  fs::remove_all(root);
+}
+
+// A single-partition symbol has NO neighbor to compare against, so it can
+// never be flagged -- there is nothing to be short RELATIVE TO. A
+// requested-but-NEVER-WRITTEN symbol (configured in the manifest, but no
+// partition holds a surface for it -- e.g. a symbol just added and not yet
+// fitted anywhere) is skipped per cell (with a note), not fatal.
+TEST(TenorAudit, LoneRowIsNeverTruncatedAndAnUnwrittenConfiguredSymbolIsSkippedNotFatal) {
+  const fs::path root = fresh_tenor_dir("lone_and_missing");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value()) << (db ? "" : db.error().to_string());
+  const SymbolFitConfig cfg = symbol_config_from_preset(FitPreset::Populate);
+  ASSERT_TRUE(db->upsert_symbol("AAA", cfg).has_value());
+  // ZZZ is CONFIGURED (Fix Round 1 requires this for an explicit spec.symbols
+  // entry) but never written into any partition -- the per-CELL skip this
+  // test is about, distinct from the whole-list rejection the next test pins.
+  ASSERT_TRUE(db->upsert_symbol("ZZZ", cfg).has_value());
+
+  const std::vector<double> reaches = {0.1};
+  PricedSurface d1 = testkit::make_flat_surface(1u, 100.0, 100.0, 0.2, testkit::kFixtureNow, reaches);
+  ASSERT_TRUE(
+      db->write_partition("2026-07-01", std::vector<SurfaceArchiveItem>{{"AAA", &d1}}).has_value());
+
+  TenorAuditSpec spec;
+  spec.symbols = {"AAA", "ZZZ"}; // ZZZ has no partition at all
+  const auto rep = tenor_audit(*db, spec);
+  ASSERT_TRUE(rep.has_value()) << (rep ? "" : rep.error().to_string());
+  ASSERT_EQ(rep->rows.size(), std::size_t{1});
+  EXPECT_FALSE(rep->rows[0].truncated);
+  EXPECT_EQ(rep->n_truncated, std::size_t{0});
+  EXPECT_EQ(rep->skip_notes.size(), std::size_t{1}) << "ZZZ's one (and only) date must be skipped";
+  fs::remove_all(root);
+}
+
+// Fix Round 1 (Important 2): the fail-open the review caught. Before this
+// fix, `tenor_audit` (and therefore `tenor-audit --fail-on-truncated`) simply
+// audited ZERO rows for an unconfigured `--symbol` and reported
+// `n_truncated == 0` -- indistinguishable, by exit code, from a healthy
+// database with nothing truncated. `SPYY` (a plausible typo for `SPY`) is
+// rejected outright instead, the same NotFound `set_symbol_enabled` gives an
+// unconfigured `enable`/`disable --symbol`.
+TEST(TenorAudit, UnconfiguredSymbolIsRejectedNotSilentlyAuditedAsZeroRows) {
+  const fs::path root = fresh_tenor_dir("unconfigured_symbol");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value()) << (db ? "" : db.error().to_string());
+  ASSERT_TRUE(db->upsert_symbol("SPY", symbol_config_from_preset(FitPreset::Populate)).has_value());
+  const std::vector<double> reaches = {0.1, 0.5};
+  PricedSurface d1 = testkit::make_flat_surface(1u, 100.0, 100.0, 0.2, testkit::kFixtureNow, reaches);
+  ASSERT_TRUE(
+      db->write_partition("2026-07-01", std::vector<SurfaceArchiveItem>{{"SPY", &d1}}).has_value());
+
+  TenorAuditSpec spec;
+  spec.symbols = {"SPYY"}; // typo for SPY -- never configured
+  const auto rep = tenor_audit(*db, spec);
+  ASSERT_FALSE(rep.has_value()) << "an unconfigured --symbol must fail the whole call, not audit "
+                                    "zero rows and report a spuriously clean n_truncated == 0";
+  EXPECT_EQ(rep.error().code(), ErrorCode::NotFound);
+
+  // The manifest's real symbol still audits fine on its own -- this is a
+  // rejection of the BAD name, not a database-wide failure.
+  TenorAuditSpec good_spec;
+  good_spec.symbols = {"SPY"};
+  const auto good = tenor_audit(*db, good_spec);
+  ASSERT_TRUE(good.has_value()) << (good ? "" : good.error().to_string());
+  EXPECT_EQ(good->rows.size(), std::size_t{1});
+  fs::remove_all(root);
+}
+
+// Fix Round 1 (Important 3): `skip_notes` used to grow one heap string per
+// (date, symbol) miss with no ceiling -- fine at fixture scale, but O(10^5-
+// 10^6) on a sparse production universe. "BBB" is configured but written into
+// NONE of 5 partitions ("AAA" alone occupies each one), so every date is a
+// skip for BBB; `max_skip_notes` set to 2 below must cap the TEXT at 2 while
+// still accounting for all 5 via `n_skip_notes_elided`, and must not affect
+// the per-cell SKIP itself (BBB's group stays empty, same as an uncapped run).
+TEST(TenorAudit, SkipNotesAreCappedWithAnElidedCount) {
+  const fs::path root = fresh_tenor_dir("capped_skip_notes");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value()) << (db ? "" : db.error().to_string());
+  const SymbolFitConfig cfg = symbol_config_from_preset(FitPreset::Populate);
+  ASSERT_TRUE(db->upsert_symbol("AAA", cfg).has_value());
+  ASSERT_TRUE(db->upsert_symbol("BBB", cfg).has_value()); // configured, never written
+
+  const std::vector<double> reaches = {0.1, 0.5};
+  constexpr int kDates = 5;
+  for (int i = 0; i < kDates; ++i) {
+    PricedSurface d = testkit::make_flat_surface(1u, 100.0, 100.0, 0.2, testkit::kFixtureNow, reaches);
+    const std::string date = "2026-07-0" + std::to_string(i + 1);
+    ASSERT_TRUE(
+        db->write_partition(date, std::vector<SurfaceArchiveItem>{{"AAA", &d}}).has_value());
+  }
+
+  TenorAuditSpec spec;
+  spec.symbols = {"AAA", "BBB"};
+  spec.max_skip_notes = 2;
+  const auto rep = tenor_audit(*db, spec);
+  ASSERT_TRUE(rep.has_value()) << (rep ? "" : rep.error().to_string());
+  EXPECT_EQ(rep->rows.size(), std::size_t{kDates}) << "AAA's own rows are unaffected by BBB's cap";
+  EXPECT_EQ(rep->skip_notes.size(), std::size_t{2}) << "text capped at max_skip_notes";
+  EXPECT_EQ(rep->n_skip_notes_elided, std::size_t{kDates - 2})
+      << "the 3 notes beyond the cap are COUNTED, not silently dropped";
+
+  // An uncapped run (the default) still gets every note and elides nothing --
+  // the cap is opt-in via a smaller `max_skip_notes`, not a new default limit.
+  TenorAuditSpec uncapped;
+  uncapped.symbols = {"AAA", "BBB"};
+  const auto full = tenor_audit(*db, uncapped);
+  ASSERT_TRUE(full.has_value()) << (full ? "" : full.error().to_string());
+  EXPECT_EQ(full->skip_notes.size(), std::size_t{kDates});
+  EXPECT_EQ(full->n_skip_notes_elided, std::size_t{0});
+  fs::remove_all(root);
 }
 
 } // namespace

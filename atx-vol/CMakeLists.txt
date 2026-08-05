@@ -60,7 +60,6 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/projection.cpp
     src/contract_projection.cpp
     src/historical_projection.cpp
-    src/var.cpp
     src/american_iv.cpp
     src/dividend.cpp
     src/s3.cpp
@@ -545,6 +544,23 @@ if(ATX_BUILD_EXAMPLES)
     # See examples/varswap_compare_example.cpp.
     add_executable(atx-vol-varswap-compare-example examples/varswap_compare_example.cpp)
     target_link_libraries(atx-vol-varswap-compare-example
+        PRIVATE atx::vol atx::core atx_warnings)
+
+    # Long-dated SPY strangle acceptance driver: a 40-delta ~2y strangle rolled
+    # every calendar month (RollAtHorizon at tenor minus one month), delta-hedged
+    # to zero every session, zero frictions, on ONE cross-year clock assembled
+    # from the per-year SPY SurfaceDb roots via CorpusManifest ->
+    # Clock::from_manifest. Emits track.tsv (self-describing PnL track) and
+    # series.tsv. See examples/spy_leaps_strangle_backtest.cpp.
+    add_executable(atx-vol-spy-leaps-strangle examples/spy_leaps_strangle_backtest.cpp)
+    target_link_libraries(atx-vol-spy-leaps-strangle
+        PRIVATE atx::vol atx::core atx_warnings)
+
+    # Day-over-day mark-continuity probe against SurfaceDb roots: fixed-strike
+    # vs fixed-moneyness iv, carry terms, and bracketing pillar ivs, one TSV
+    # row per (date, strike). See examples/spy_mark_continuity.cpp.
+    add_executable(atx-vol-spy-mark-continuity examples/spy_mark_continuity.cpp)
+    target_link_libraries(atx-vol-spy-mark-continuity
         PRIVATE atx::vol atx::core atx_warnings)
 
     # Variance-strip diagnostic: per-session K_var at a constant tenor under the

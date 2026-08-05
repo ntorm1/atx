@@ -681,6 +681,76 @@ enum class SurfaceProvenancePolicy : std::uint8_t {
   RequireAdmittedRisk = 1,
 };
 
+// What to do when a lot's residual maturity falls OUTSIDE the fitted tenor
+// domain of the surface asked to mark it (`PricedSurface::tenor_domain()`).
+//
+// A `CurveSurface` query past the last fitted pillar is served by the flat
+// total-variance long-end branch, and one below the first by the scaled short-end
+// branch — silently, with no error and no flag (see `vol_curve.hpp`). A LEAPS
+// book replayed against a corpus whose long slice is missing for a few sessions
+// therefore keeps producing plausible marks that are pure model fiction, and the
+// P&L that flows from them is indistinguishable from real risk.
+//
+// This policy governs ONLY tenor extrapolation of an OTHERWISE PRESENT surface.
+// A missing board is `UnpricedLotPolicy`'s lane and is unchanged here; the two
+// are orthogonal and both counts are reported per row.
+enum class MarkDomainPolicy : std::uint8_t {
+  // LEGACY (default): mark it anyway. Bit-for-bit the pre-policy engine — the
+  // only observable change is that `BacktestResult::n_extrapolated_marks` now
+  // counts the affected lots so the fiction is at least visible.
+  Extrapolate = 0,
+  // Hold the lot's last IN-DOMAIN mark and Greeks while the surface cannot serve
+  // its maturity, and book the whole accumulated gap on the first step that can
+  // serve it again. Concretely, per step:
+  //
+  //   * a lot whose base OR target query would extrapolate is EXCLUDED from that
+  //     step's pricer batch, so it contributes nothing to any Taylor axis;
+  //   * its row valuation (book P&L, `gross_*`, the delta hedge, the liquidation
+  //     value `reconcile_nav` checks) is the carried mark/Greeks, not the
+  //     extrapolated ones — there is exactly ONE mark source per lot per row;
+  //   * on the first later row the surface serves it in-domain again, the whole
+  //     move since the last in-domain mark books THAT day. The attribution axes
+  //     are that day's own observed dvol/dS/dt, so the carried-over move lands in
+  //     `pnl_unexplained` by construction;
+  //   * an expiry settlement of a carried lot explains against the CARRIED mark
+  //     (not a fresh extrapolated one), so its cash and its P&L agree;
+  //   * a strategy ROLL-CLOSE of a carried lot likewise books its cash at the
+  //     CARRIED mark. That is the value the row published for it, so liquidation
+  //     gives up exactly what cash takes in and the identity closes exactly; a
+  //     fresh extrapolated mark would drift NAV by the difference. The ECONOMIC
+  //     CAVEAT is real and is the price of the policy: the fill crystallizes at a
+  //     model mark as stale as the hole is long, so a strategy that rolls across a
+  //     long gap realizes a P&L the market never offered. `Error` is the mode that
+  //     refuses to trade on such a mark at all.
+  //
+  // ONE DELIBERATE LIMIT: a lot BORN into an extrapolated domain has no in-domain
+  // mark to carry; it is marked by extrapolation and counted in
+  // `n_extrapolated_marks` from the first row the domain scan sees it on, until
+  // its first in-domain row. The scan walks the book carried INTO the step, so a
+  // lot a strategy opens mid-run is first seen on the row AFTER its birth row
+  // (an inception-row entry is scanned on row 0 itself). Entries are expected
+  // to be taken in-domain; use `Error` to enforce that. Requires
+  // `record_every_n == 1` (the carry is resolved on each recorded row) and is not
+  // supported by `run_backtest_incremental` (a checkpoint has no slot for the
+  // carry state).
+  CarryLastMark = 1,
+  // Abort the run naming the step date, the lot's uid/K/T and the surface's
+  // fitted `max_T`. The mode a production QIS run uses so no SURVIVING lot's mark
+  // can reach a P&L number from outside the fitted domain — with the same scan
+  // timing as above: the guard checks the book carried INTO each step, so a lot
+  // born mid-run is first guarded on the row after its birth row; a birth-row
+  // extrapolated mark on the run's FINAL row is the one gap this mode cannot see.
+  //
+  // SCOPED, and the scope is deliberate: this governs the marks of lots the step
+  // carries FORWARD. An EXPIRING lot's base-side explain mark (residual T of about
+  // one session, hence typically below the surface's fitted `min_T`) is excluded —
+  // short-end extrapolation at one session is intrinsic-dominated and bounded, it
+  // happens on nearly every settlement, and aborting on it would make this mode
+  // unusable while catching none of the LONG-end truncation the policy exists for.
+  // The same exclusion applies to `n_extrapolated_marks` / `n_carried_marks`.
+  Error = 2,
+};
+
 // One observed engine step, handed to RunConfig::step_observer immediately after
 // IStrategy::on_step returns Ok and BEFORE the transition validation / hedge /
 // execute stage. Fires once per clock step INCLUDING inception (step_index 0), in
@@ -766,6 +836,11 @@ struct RunConfig {
   // The admission half of the same fail-closed story. Strict production backtests
   // opt in; the default deliberately preserves legacy archives.
   SurfaceProvenancePolicy surface_provenance_policy{SurfaceProvenancePolicy::Compatibility};
+  // What to do about a mark the surface can only produce by TENOR EXTRAPOLATION
+  // (see MarkDomainPolicy). Defaults to the legacy silent extrapolation so a
+  // default-constructed RunConfig is bit-for-bit the pre-policy engine; the two
+  // new report columns are populated under every setting.
+  MarkDomainPolicy mark_domain{MarkDomainPolicy::Extrapolate};
   // A null cache creates a private per-run cache. Supplying one permits archive
   // reuse across backtest and reconciliation passes. Private one-pass caches retain
   // at most the current/base/look-ahead working set. Look-ahead overlaps the next
@@ -886,8 +961,12 @@ struct RunConfig {
 // (`Backtest.PrefetchDepthIsBitIdenticalToSingleStepLookAhead` pins it), so the
 // addition moves no number a caller already depends on.
 //
+// 17 -> 18: `mark_domain` INSERTED beside `unpriced` / `surface_provenance_policy`,
+// its semantic group (the three fail-closed valuation policies), not appended at
+// the end. Its default keeps a default-constructed RunConfig bit-identical.
+//
 // BLIND SPOT: this probe pins the field COUNT, nothing else. It cannot see a
-// REORDER that leaves the count at 17 -- `aggregate_arity_is_v` (see
+// REORDER that leaves the count at 18 -- `aggregate_arity_is_v` (see
 // detail/aggregate_arity.hpp) only checks how many brace-initializer slots
 // `RunConfig{...}` accepts, with no notion of field NAMES or TYPES, so swapping
 // two existing fields (e.g. two `bool`s, or two `std::size_t`s) still compiles
@@ -902,7 +981,7 @@ struct RunConfig {
 // multi-argument positional brace list; `git grep -n "RunConfig cfg"` sites
 // build via `RunConfig cfg;` plus `cfg.field = ...` assignment, which is
 // order-independent by construction.
-static_assert(detail::aggregate_arity_is_v<RunConfig, 17>,
+static_assert(detail::aggregate_arity_is_v<RunConfig, 18>,
               "RunConfig field count changed: update this pin, and confirm every "
               "construction site still initializes by field name.");
 
@@ -1053,6 +1132,44 @@ struct BacktestResult {
   // `n_open_lots` above the greek-covered lot count with this column at 0. The
   // deferral is reported on the step side, in `n_unpriced_lots`.
   std::vector<double> n_unpriced_greeks;
+  // ── Mark-domain accounting (MarkDomainPolicy) ────────────────────────────
+  //
+  // `n_extrapolated_marks`: held lots whose BASE or TARGET tenor query fell
+  // outside the serving surface's fitted `tenor_domain()` over this step — i.e.
+  // lots whose mark on at least one side of the step came from the silent
+  // flat-TV long-end / scaled short-end branch rather than a fitted pillar. A
+  // FLOW column: block-summed like `n_unpriced_lots` at `record_every_n > 1`.
+  // Row 0 (inception) reports the same measurement taken against the inception
+  // date alone (there is no step yet), which is a real number, not 0 by
+  // convention. Populated under EVERY policy — under `Extrapolate` it is the
+  // whole feature, and it is the count `Error` aborts on.
+  //
+  // Note a one-session gap is normally counted on TWO rows: once as the step
+  // whose TARGET could not serve the maturity, and once as the step whose BASE
+  // could not. That is the honest reading of "this step's P&L touched an
+  // extrapolated mark".
+  //
+  // EXPIRING lots are excluded, by design: their base-side explain mark sits at a
+  // residual T of about one session, hence below `min_T` on essentially any fitted
+  // surface, so counting it would fire on nearly every settlement and drown the
+  // long-end truncation this column exists to expose (see `MarkDomainPolicy`).
+  //
+  // `n_carried_marks`: lots whose row valuation was served from the carried
+  // last-in-domain mark instead of the surface (`MarkDomainPolicy::CarryLastMark`
+  // only; exactly 0.0 on every row under the other two policies). A STATE column
+  // in spirit — it counts the lots frozen AT this row — but it is block-summed
+  // like the flow counters, which is moot because CarryLastMark requires
+  // `record_every_n == 1`. A lot the step deferred and the strategy then CLOSED is
+  // not counted: it has no valuation on this row (it left the book), even though
+  // its close booked at the carried mark.
+  //
+  // Both are DELIBERATELY NOT part of the frozen `kBacktestSeriesColumns` /
+  // RunArchive registry (the `swap_pv`/`swap_pnl` precedent), so
+  // `ra_schema_hash()` and every golden are untouched; both TSV emitters append
+  // them as the RIGHTMOST columns, after the frozen block and after the per-signal
+  // columns. Empty-or-row-parallel, and therefore EMPTY on a hand-built result, a
+  // TSV read, or an archive decode.
+  std::vector<double> n_extrapolated_marks, n_carried_marks;
   // FULL-RESOLUTION per-step total PnL: one entry per priced step (steps 1..N-1),
   // retained regardless of `record_every_n`. This is the TRUE per-step return
   // series the risk/return statistics (Sharpe, ann_return, ann_vol, hit_rate,

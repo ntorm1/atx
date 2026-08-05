@@ -25,6 +25,7 @@
 #include "atx/vol/dispersion.hpp"           // with_uid
 #include "atx/vol/detail/parallel_for.hpp"         // atx_auto_worker_count (fit_workers=0 auto)
 #include "atx/vol/pricer_fitter.hpp"        // PricerConfig
+#include "atx/vol/priced_surface.hpp"       // PricedSurface::tenor_domain (Task 3 max_T_min)
 #include "atx/vol/session.hpp"              // SessionInputs
 #include "atx/vol/universe.hpp"             // uid_for_symbol
 #include "corpus_board_fit.hpp"             // FitSlot, fit_board (shared blessed fit path)
@@ -194,6 +195,14 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
   SurfaceDbPopulateStats stats;
   stats.n_boards = static_cast<std::uint32_t>(n);
   std::map<std::string, SymbolAccum> per_symbol; // ordered by symbol -> free sort
+  // Task 3 (mark-domain-robustness observability): running fold of
+  // `stats.max_T_min` across WRITTEN dates only. `have_max_T_min` is needed
+  // because 0.0 cannot double as "no written date has produced a non-empty
+  // tenor domain yet" -- see the field's doc for why a real value is always
+  // > 0 (TenorDomain::empty()'s own convention), so the plain default already
+  // reads as "no data" and this flag exists only to seed the running MIN
+  // correctly on the first date that has one.
+  bool have_max_T_min = false;
 
   // Resolve resumability before launching any fit. Writes remain date-ordered
   // and serial, while every non-skipped board shares one dynamic queue.
@@ -780,6 +789,12 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
       // old record exactly once.
       std::set<std::string, std::less<>> emitted_symbols;
       bool retained_unreplaced = false;
+      // Task 3 (mark-domain-robustness observability). Staged per-date, like
+      // `items`/`names`/`stamped` above, and merged into `stats.slice_drops`
+      // only if this date's write actually lands (below) -- "WRITTEN date" is
+      // the report's own contract (surface_db_populate.hpp), and a date the
+      // coverage guard refuses commits nothing a reader could ever load.
+      std::vector<SliceDropCell> date_slice_drops;
 
       // ── FIX-D: read the carried cells back BEFORE the write ─────────────────
       // db.write_partition replaces the partition file (tmp+rename) and evicts
@@ -888,6 +903,14 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
           items.push_back(SurfaceArchiveItem{names.back(), &stamped.back(), slot.provenance});
           emitted_symbols.insert(
               detail::canonicalize_symbol(board.symbol, kArchiveSymbolMax));
+          // Task 3: `slot.slice_drops` is already filtered to non-Fitted
+          // outcomes (corpus_board_fit.cpp), so every entry here is a genuine
+          // drop. Bounded the same way `failed_cells` is bounded: a fully
+          // fitted board (nearly every board) contributes nothing.
+          for (const ExpiryBuildReport &er : slot.slice_drops) {
+            date_slice_drops.push_back(SliceDropCell{board.date, board.symbol, er.maturity,
+                                                      er.outcome, er.n_used, er.fit_outcome});
+          }
         } else {
           ++acc.stats.n_failed;
           ++stats.n_failed;
@@ -1173,6 +1196,31 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
           return Err(w.error());
         }
         ++stats.n_dates_written;
+        // Task 3 (mark-domain-robustness observability). Both folds run over
+        // the date that just landed on disk, so they describe exactly what a
+        // reader of THIS partition would see -- `items` is the date's
+        // complete written content (fresh fits, carries and retained-old
+        // records alike), not only this run's fresh fits.
+        if (!date_slice_drops.empty()) {
+          ++stats.n_dates_with_slice_drops;
+          stats.slice_drops.insert(stats.slice_drops.end(),
+                                   std::make_move_iterator(date_slice_drops.begin()),
+                                   std::make_move_iterator(date_slice_drops.end()));
+        }
+        double date_max_T = -1.0; // sentinel: no non-empty domain seen yet
+        for (const SurfaceArchiveItem &item : items) {
+          if (item.surface == nullptr) {
+            continue;
+          }
+          const PricedSurface::TenorDomain dom = item.surface->tenor_domain();
+          if (!dom.empty() && dom.max_T > date_max_T) {
+            date_max_T = dom.max_T;
+          }
+        }
+        if (date_max_T >= 0.0 && (!have_max_T_min || date_max_T < stats.max_T_min)) {
+          stats.max_T_min = date_max_T;
+          have_max_T_min = true;
+        }
         if (test_hooks != nullptr && test_hooks->after_partition_write) {
           test_hooks->after_partition_write(date);
         }
@@ -1554,6 +1602,11 @@ populate_universe_streaming(SurfaceDb &db, std::span<const CorpusBoard> boards,
     // The per-cell reasons ride along with the count they explain; the populate
     // already ordered them by (date, symbol), so nothing re-sorts here.
     cov.failed_cells = st->failed_cells;
+    // Task 3 (mark-domain-robustness observability). Straight through, same as
+    // the pair above -- already scoped to WRITTEN dates by the populate itself.
+    cov.slice_drops = std::move(st->slice_drops);
+    cov.n_dates_with_slice_drops = st->n_dates_with_slice_drops;
+    cov.max_T_min = st->max_T_min;
   }
 
   return Ok(std::move(cov));

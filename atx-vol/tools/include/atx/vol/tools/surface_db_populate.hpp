@@ -52,6 +52,7 @@
 #include <vector>
 
 #include "atx/vol/corpus.hpp"     // CorpusBoard
+#include "atx/vol/pricer_fitter.hpp" // ExpiryBuildOutcome, ExpiryFitOutcome (SliceDropCell, Task 3)
 #include "atx/vol/tools/run_report.hpp" // MetaKv
 #include "atx/vol/surface_db.hpp" // SurfaceDb, SymbolFitConfig
 #include "atx/vol/types.hpp"      // Result, Status
@@ -213,6 +214,37 @@ struct FailedCell {
   std::string detail;
 };
 
+// Task 3 (mark-domain-robustness observability, plan 2026-08-02). One
+// non-Fitted expiry from a WRITTEN cell's PUBLISHED attempt -- the surface-db
+// fitter silently drops long-dated expiries on stressed days, and this is the
+// per-slice record that makes a drop visible instead of only showing up as an
+// extrapolated backtest mark. `outcome` is the admission layer's own taxonomy
+// (`ExpiryBuildOutcome`, pricer_fitter.hpp) read off `FitSlot::slice_drops`
+// (see corpus_board_fit.cpp) -- NEVER `Fitted`, by construction, since that
+// value is filtered out before it reaches here.
+//
+// `fit_outcome` is the FIT DRIVER's own, finer-grained reason (Fix Round 1):
+// `ExpiryBuildReport::fit_outcome` (pricer_fitter.hpp), populated by
+// `completed_attempt_report` from `VolaSession::expiry_fit_reports()` when
+// `outcome == Missing`. Meaningful ONLY then -- see that field's own doc for
+// exactly which of the fit driver's `ExpiryFitOutcome` values can appear and
+// which default (`Fitted`, the enum's 0 value) means "no rich reason is
+// available", the same convention this field inherits.
+//
+// Distinct from `FailedCell`: a `FailedCell` is a WHOLE (date, symbol) cell
+// whose fit failed outright and produced no surface at all; a `SliceDropCell`
+// is a PARTIAL drop inside an otherwise successfully fitted, WRITTEN board --
+// the surface is real and served, it just does not reach as far in tenor as
+// its board's raw quotes suggested it should.
+struct SliceDropCell {
+  std::string date;
+  std::string symbol;
+  double T{0.0};
+  ExpiryBuildOutcome outcome{ExpiryBuildOutcome::Missing};
+  std::size_t n_used{0u};
+  ExpiryFitOutcome fit_outcome{ExpiryFitOutcome::Fitted};
+};
+
 // REV-R3. One (date, symbol) surface that IS stored in a date's existing
 // partition and is ABSENT from the candidate partition a rewrite would commit —
 // i.e. a surface the write would destroy. `symbol` is the CANONICAL archive key
@@ -283,6 +315,24 @@ struct SurfaceDbPopulateStats {
   // order — never by a fit worker. Completion order therefore cannot reach this
   // list, and it is byte-identical for any `SurfaceDbPopulateConfig::n_threads`.
   std::vector<FailedCell> failed_cells;
+  // Task 3 (mark-domain-robustness observability). Every non-Fitted expiry
+  // from a WRITTEN date's fresh (not carried) fits, ascending by (date,
+  // symbol, chain index) -- the same drain-thread ordering `failed_cells`
+  // uses, and gated the same way `n_dates_written` is: a date the coverage
+  // guard REFUSED contributes nothing here, because its slice_drops describe
+  // a partition that was never actually committed.
+  std::vector<SliceDropCell> slice_drops;
+  // Count of WRITTEN dates with at least one entry in `slice_drops` above.
+  std::uint32_t n_dates_with_slice_drops{0};
+  // The minimum, over WRITTEN dates, of that date's longest fitted pillar --
+  // i.e. min over dates of (max over that date's WRITTEN surfaces'
+  // `PricedSurface::tenor_domain().max_T`, surfaces with an empty domain
+  // excluded). 0.0 when no written date produced a single non-empty domain
+  // (mirrors `TenorDomain::empty()`'s own convention: a real max_T is always
+  // > 0). A day where even the best-reaching surface fell short is exactly
+  // the "stressed day drops long-dated expiries" signature this task exists
+  // to surface.
+  double max_T_min{0.0};
 };
 
 // Deterministic test seam for the streaming/per-date-release path. Production
@@ -629,6 +679,15 @@ struct UniversePopulateCoverage {
   // REFUSED date contributes to both while `dates_written` never counts it. Same
   // staleness the paragraph above was corrected for, eight lines away from it.
   std::vector<FailedCell> failed_cells;
+  // Task 3 (mark-domain-robustness observability). Carried straight through
+  // from the underlying populate's `SurfaceDbPopulateStats::slice_drops` /
+  // `n_dates_with_slice_drops` / `max_T_min` — see those fields for the exact
+  // contract. Unlike `per_symbol` / `failed_cells` above, these ARE scoped to
+  // dates this run actually WROTE (a refused date's partial fits are not on
+  // disk, so their slice drops describe nothing a reader could load).
+  std::vector<SliceDropCell> slice_drops;
+  std::uint32_t n_dates_with_slice_drops{0};
+  double max_T_min{0.0};
 };
 // NOTE: the cell counters do NOT reconcile against `cells_loaded`. A DISABLED cell
 // that is absent from its partition on a skipped-complete date is in none of

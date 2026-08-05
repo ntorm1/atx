@@ -1,11 +1,12 @@
 // surface_db_main — the production surface-database MANAGEMENT CLI: inspect,
 // verify and fence a database that `atx-vol-surface-db-build` produced, with no
-// Python in the loop. Eight subcommands (`info`, `partitions`, `symbols`,
-// `config`, `query`, `verify`, `enable`, `disable`), each a parse -> one library
-// call -> print shell over atx/vol/tools/surface_db_admin.hpp. All logic lives in that
-// library; nothing here decides anything about the database.
+// Python in the loop. Nine subcommands (`info`, `partitions`, `symbols`,
+// `config`, `query`, `verify`, `enable`, `disable`, `tenor-audit`), each a parse
+// -> one library call -> print shell over atx/vol/tools/surface_db_admin.hpp.
+// All logic lives in that library; nothing here decides anything about the
+// database.
 //
-// SIX OF THE EIGHT ARE READ-ONLY. `enable` / `disable` write the manifest, and
+// SEVEN OF THE NINE ARE READ-ONLY. `enable` / `disable` write the manifest, and
 // they are the only writes this tool has. See the WRITE PATH note below the
 // subcommand list.
 //
@@ -40,6 +41,21 @@
 //                              surfaces are kept, keep loading, and survive later
 //                              rewrites verbatim — `enabled = false` means stop
 //                              fitting, never delete.
+//   tenor-audit [--symbol SYM] [--fail-on-truncated]
+//                              AFTER-THE-FACT tenor-coverage inspector (Task 3,
+//                              mark-domain-robustness): for each requested
+//                              symbol (default: every manifest symbol), walk its
+//                              partitions in date order and flag a cell whose
+//                              fitted `max_T` (Task 1's `tenor_domain()`) falls
+//                              suspiciously short of its neighbors' — the shape
+//                              a stressed day produces when it silently drops a
+//                              long-dated expiry. Prints
+//                              `date  n_slices  min_T  max_T  flag` (TSV) per
+//                              cell; `flag` is `TRUNCATED` or empty. Always
+//                              exits `0` UNLESS `--fail-on-truncated` is given
+//                              and at least one row is `TRUNCATED`, in which
+//                              case it exits `3`. This is an AUDIT, not a gate:
+//                              nothing here refuses or quarantines a cell.
 //
 // ── WRITE PATH ───────────────────────────────────────────────────────────────
 //
@@ -88,12 +104,21 @@
 //      which `disable`'s `--yes` is one), a flag left WITHOUT a value, or a
 //      malformed numeric value. Every one of these is decided before the database
 //      is opened, so no usage error can ever have written anything.
+//   3  `tenor-audit` only, and only when `--fail-on-truncated` was passed AND
+//      at least one row came back `TRUNCATED`. Every OTHER subcommand skips 3
+//      deliberately (see below) because it is atx-vol-surface-db-build's
+//      total-failure code and the two tools otherwise share one exit
+//      vocabulary — `tenor-audit` is the one designed exception, pinned to the
+//      literal value this task's spec named; a script that already branches on
+//      "3 means atx-vol-surface-db-build found nothing" must special-case
+//      `tenor-audit` if it also calls this subcommand with the flag.
 //   4  `verify` only, and only when the operator asked for it: more cells are
 //      ABSENT than the `--max-absent N` ceiling allows. Nothing is corrupt — this
 //      is a COVERAGE answer, kept off code 1 so a script can tell "the database
 //      is missing more than I said to expect" from "the database is damaged".
-//      3 is skipped: it is atx-vol-surface-db-build's total-failure code and the
-//      two tools share one exit vocabulary.
+//      3 is otherwise skipped by every subcommand but `tenor-audit` above: it
+//      is atx-vol-surface-db-build's total-failure code and the two tools
+//      share one exit vocabulary.
 //
 // ── ABSENCE, and why it is not a failure (FIX-H) ─────────────────────────────
 //
@@ -178,7 +203,11 @@ void print_usage(std::FILE *out) {
       "  enable  --symbol SYM          resume fitting SYM on every date\n"
       "  disable --symbol SYM --yes    STOP fitting SYM on EVERY date (stored surfaces\n"
       "                                are kept and keep serving; --yes is required)\n"
+      "  tenor-audit [--symbol SYM] [--fail-on-truncated]\n"
+      "                                flag cells whose fitted max_T falls short of\n"
+      "                                neighboring dates' (default: every symbol)\n"
       "exit: 0 ok / 1 runtime failure or verify found failing cells / 2 usage /\n"
+      "      3 tenor-audit --fail-on-truncated found a TRUNCATED row /\n"
       "      4 verify found more absent cells than --max-absent allows\n");
 }
 
@@ -773,6 +802,56 @@ int run_set_enabled(SurfaceDb &db, const std::string &symbol, bool enabled) {
   return 0;
 }
 
+// Task 3 (mark-domain-robustness). An AUDIT, not a gate: every row prints
+// regardless of its flag, and the default exit is 0 whatever it finds — see
+// the top-of-file exit-code note for why `--fail-on-truncated` is the one
+// place this tool's vocabulary deliberately reuses 3.
+//
+// `symbol` empty => every manifest symbol (`TenorAuditSpec::symbols` empty);
+// the printed TSV then interleaves each symbol's own date-ordered block with
+// no separator or symbol column, matching the pinned 5-column format exactly
+// — an operator auditing more than one symbol at once is expected to `grep`
+// or pipe through something date-aware; the unambiguous, scriptable form is
+// one `--symbol` per invocation.
+int run_tenor_audit(const SurfaceDb &db, const std::string &symbol, bool fail_on_truncated) {
+  TenorAuditSpec spec;
+  if (!symbol.empty()) {
+    spec.symbols.push_back(symbol);
+  }
+  const Result<TenorAuditReport> rep = tenor_audit(db, spec);
+  if (!rep) {
+    std::fprintf(stderr, "atx-vol-surface-db: tenor_audit: %s\n", rep.error().to_string().c_str());
+    return 1;
+  }
+  for (const std::string &note : rep->skip_notes) {
+    std::fprintf(stderr, "atx-vol-surface-db: tenor-audit: skipped %s\n", note.c_str());
+  }
+  if (rep->n_skip_notes_elided > 0) {
+    // Fix Round 1 (Important 3): `skip_notes` is capped
+    // (`TenorAuditSpec::max_skip_notes`, no CLI flag yet -- same as
+    // `reported_failed_cells`'s cap in surface_db_build.hpp, which has none
+    // either); say so on a sparse universe instead of letting the printed
+    // list read as complete.
+    std::fprintf(stderr,
+                 "atx-vol-surface-db: tenor-audit: %zu additional skip note(s) elided "
+                 "(TenorAuditSpec::max_skip_notes cap).\n",
+                 rep->n_skip_notes_elided);
+  }
+  std::printf("date\tn_slices\tmin_T\tmax_T\tflag\n");
+  for (const TenorAuditRow &row : rep->rows) {
+    std::printf("%s\t%zu\t%.6f\t%.6f\t%s\n", row.date.c_str(), row.n_slices, row.min_T, row.max_T,
+                row.truncated ? "TRUNCATED" : "");
+  }
+  if (fail_on_truncated && rep->n_truncated > 0) {
+    std::fprintf(stderr,
+                 "atx-vol-surface-db: tenor-audit: %zu row(s) TRUNCATED; failing per "
+                 "--fail-on-truncated.\n",
+                 rep->n_truncated);
+    return 3; // see the top-of-file exit-code note: the one deliberate reuse of 3
+  }
+  return 0;
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -800,6 +879,7 @@ int main(int argc, char **argv) {
   std::size_t min_cells = 0;
   AbsentCeiling max_absent;
   bool confirmed = false; // --yes; required by `disable` and by nothing else
+  bool fail_on_truncated = false; // tenor-audit only
 
   for (int i = 2; i < argc; ++i) {
     const std::string_view a = argv[i];
@@ -853,6 +933,8 @@ int main(int argc, char **argv) {
       verify_spec.include_disabled = true;
     } else if (a == "--yes") {
       confirmed = true;
+    } else if (a == "--fail-on-truncated") {
+      fail_on_truncated = true;
     } else if (a == "--probe-tenor") {
       const std::string_view text = nv();
       if (!missing_value && !parse_positive_double(text, verify_spec.probe_T)) {
@@ -923,7 +1005,8 @@ int main(int argc, char **argv) {
   const bool known_subcommand = subcommand == "info" || subcommand == "partitions" ||
                                 subcommand == "symbols" || subcommand == "config" ||
                                 subcommand == "query" || subcommand == "verify" ||
-                                subcommand == "enable" || subcommand == "disable";
+                                subcommand == "enable" || subcommand == "disable" ||
+                                subcommand == "tenor-audit";
   if (!known_subcommand) {
     std::fprintf(stderr, "atx-vol-surface-db: unknown subcommand: %s\n", subcommand.c_str());
     print_usage(stderr);
@@ -1003,7 +1086,10 @@ int main(int argc, char **argv) {
   if (subcommand == "disable") {
     return run_set_enabled(*db, symbol, false);
   }
-  // `verify` is the last of the eight `known_subcommand` names, so this is the
+  if (subcommand == "tenor-audit") {
+    return run_tenor_audit(*db, symbol, fail_on_truncated);
+  }
+  // `verify` is the last of the nine `known_subcommand` names, so this is the
   // end of the dispatch — an unknown name already exited 2 above, before the open.
   return run_verify(*db, verify_spec, min_cells, max_absent);
 }

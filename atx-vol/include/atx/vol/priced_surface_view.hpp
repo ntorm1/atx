@@ -69,6 +69,7 @@ public:
   using EvaluationSoA = PricedSurface::EvaluationSoA;
   using FusedResult = PricedSurface::FusedResult;
   using ResolvedSurfacePoint = PricedSurface::ResolvedSurfacePoint;
+  using TenorDomain = PricedSurface::TenorDomain;
 
   ~PricedSurfaceView();
   PricedSurfaceView(PricedSurfaceView &&) noexcept;
@@ -137,6 +138,12 @@ public:
   [[nodiscard]] std::uint32_t uid() const noexcept { return pricing_.uid; }
   [[nodiscard]] std::uint64_t instance_id() const noexcept { return instance_id_; }
   [[nodiscard]] VolCurveKind kind_at(std::size_t i) const noexcept;
+  // The fitted domain, from `col_T_[0]` / `col_T_[n_slices_-1]`. Empty for a
+  // record with no slices or a moved-from view.
+  [[nodiscard]] TenorDomain tenor_domain() const noexcept;
+  // True when T falls outside the fitted domain (or the view is empty) — see
+  // `PricedSurface::extrapolates_tenor`.
+  [[nodiscard]] bool extrapolates_tenor(double T) const noexcept;
   // A view carries no accelerator, so it can only ever BE a cold tier. Both cache-free
   // tiers (LegacyCompatible, ColdReference) are served identically; this reports WHICH
   // of the two the loader asked for so a borrowed snapshot is indistinguishable from an

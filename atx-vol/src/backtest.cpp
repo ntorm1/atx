@@ -289,6 +289,17 @@ using detail::StepMarkMemo;
   }
 }
 
+[[nodiscard]] bool valid_mark_domain_policy(MarkDomainPolicy policy) noexcept {
+  switch (policy) {
+  case MarkDomainPolicy::Extrapolate:
+  case MarkDomainPolicy::CarryLastMark:
+  case MarkDomainPolicy::Error:
+    return true;
+  default:
+    return false;
+  }
+}
+
 [[nodiscard]] bool valid_provenance_policy(SurfaceProvenancePolicy policy) noexcept {
   switch (policy) {
   case SurfaceProvenancePolicy::Compatibility:
@@ -308,8 +319,16 @@ using detail::StepMarkMemo;
       !valid_query_execution(cfg.price.query_execution) ||
       !valid_resolved_price_isa(cfg.price.resolved_price_isa) ||
       !valid_spread_kind(cfg.frictions.spread_kind) || !valid_unpriced_policy(cfg.unpriced) ||
+      !valid_mark_domain_policy(cfg.mark_domain) ||
       !valid_provenance_policy(cfg.surface_provenance_policy)) {
     return Err(ErrorCode::InvalidArgument, "run_backtest: invalid RunConfig enum value");
+  }
+  if (cfg.mark_domain == MarkDomainPolicy::CarryLastMark && cfg.record_every_n != 1u) {
+    // The carry is resolved on each RECORDED row (that is where the book is
+    // repriced per lot), so a stride would leave the carried valuation stale for
+    // the steps it skips and the released P&L would land on the wrong step.
+    return Err(ErrorCode::InvalidArgument,
+               "run_backtest: MarkDomainPolicy::CarryLastMark requires record_every_n == 1");
   }
   if (cfg.price.prices_only) {
     return Err(ErrorCode::InvalidArgument,
@@ -1061,6 +1080,387 @@ struct SwapStepResult {
   return Ok(out);
 }
 
+// ── Mark-domain policy (MarkDomainPolicy) ───────────────────────────────────
+//
+// A `CurveSurface` query outside the fitted pillars is SERVED, silently, by the
+// flat-TV long end or the scaled short end. `PricedSurface::tenor_domain()` is
+// the only way to know it happened; everything below is built on that one O(1)
+// noexcept test, asked once per lot per step at the step/row boundary — never
+// inside a per-quote loop.
+
+// True when `surface` would serve `T` only by TENOR EXTRAPOLATION. A MISSING
+// board is deliberately NOT reported here: that is `UnpricedLotPolicy`'s lane,
+// and reporting it in both columns would double-count one session.
+[[nodiscard]] bool extrapolates_lot(const SurfaceRef &surface, double T) noexcept {
+  return surface != nullptr && surface->extrapolates_tenor(T);
+}
+
+// One step's (or one date's) out-of-domain tally over a set of lots, plus enough
+// detail about the FIRST offender to word the Error-policy abort — the same shape
+// as the `n_unpriced` / `first_unpriced_uid` pair `compute_step` already reports.
+struct MarkDomainScan {
+  std::uint32_t n_extrapolated{0};
+  std::uint32_t first_uid{0};
+  double first_K{0.0};
+  double first_T{0.0};
+  double first_max_T{0.0};
+};
+
+// Count the lots whose BASE or TARGET tenor query falls outside the serving
+// surface's fitted domain. `shifted == nullptr` scans the single date `base`
+// alone (the inception row, which has no step yet). One sorted-uid lookup per
+// side per lot, memoized on the last uid so a book concentrated in a few names
+// resolves once rather than per lot. PURE READS — nothing here can change a value
+// the run produces, which is what keeps the Extrapolate path byte-identical.
+[[nodiscard]] MarkDomainScan scan_mark_domain(const MarketSnapshot &base,
+                                              const MarketSnapshot *shifted,
+                                              std::span<const Lot> lots) {
+  MarkDomainScan scan;
+  std::uint32_t cached_uid = 0;
+  bool cached = false;
+  SurfaceRef bs{};
+  SurfaceRef ss{};
+  for (const Lot &lot : lots) {
+    if (!cached || cached_uid != lot.contract.uid) {
+      bs = base.find(lot.contract.uid);
+      ss = shifted != nullptr ? shifted->find(lot.contract.uid) : SurfaceRef{};
+      cached_uid = lot.contract.uid;
+      cached = true;
+    }
+    const double T_base = residual_T(lot.expiry_ts_ns, base.ts_ns());
+    const bool base_out = extrapolates_lot(bs, T_base);
+    const double T_target =
+        shifted != nullptr ? residual_T(lot.expiry_ts_ns, shifted->ts_ns()) : T_base;
+    const bool target_out = shifted != nullptr && extrapolates_lot(ss, T_target);
+    if (!base_out && !target_out) {
+      continue;
+    }
+    if (scan.n_extrapolated == 0u) {
+      const SurfaceRef offender = base_out ? bs : ss;
+      scan.first_uid = lot.contract.uid;
+      scan.first_K = lot.contract.K;
+      scan.first_T = base_out ? T_base : T_target;
+      scan.first_max_T = offender->tenor_domain().max_T;
+    }
+    ++scan.n_extrapolated;
+  }
+  return scan;
+}
+
+// The Error-policy message for a step (or the inception date) that would have
+// marked `n_extrapolated` lots outside the fitted tenor domain. Kept next to the
+// scan so both run_backtest overloads word it the same, mirroring
+// `unpriced_error_message`. Non-empty precondition: callers only build this when
+// n_extrapolated > 0.
+[[nodiscard]] std::string mark_domain_error_message(const MarkDomainScan &scan,
+                                                    const std::string &date) {
+  return "run_backtest: " + std::to_string(scan.n_extrapolated) +
+         " lot mark(s) outside the fitted tenor domain on " + date +
+         " (first uid=" + std::to_string(scan.first_uid) + " K=" + std::to_string(scan.first_K) +
+         " T=" + std::to_string(scan.first_T) + " max_T=" + std::to_string(scan.first_max_T) + ")";
+}
+
+// One recorded row's mark-carry outcome (`MarkDomainPolicy::CarryLastMark`).
+struct MarkCarryRow {
+  // The P&L this step must book ON TOP of the pricer's totals: over the lots the
+  // step kept OUT of the batch, the sum of (this row's recognized value) minus
+  // (their previous row's recognized value). Zero for a lot that is still frozen
+  // (NAV flat), and the WHOLE accumulated gap on the row the surface can serve it
+  // again. Exactly 0.0 when nothing was deferred, and never added under any other
+  // policy — so `Extrapolate` never even executes the `+= 0.0` that would map a
+  // -0.0 total to +0.0.
+  double pnl_adjustment{0.0};
+  // Lots whose valuation on this row came from the carry rather than the surface.
+  std::uint32_t n_carried{0};
+};
+
+// The per-lot carried-mark store, held ACROSS steps by each run loop.
+//
+// INVARIANT it exists to maintain: for every lot there is exactly ONE recognized
+// value per row — `value` below — and every consumer of that row (book P&L,
+// `gross_*`, the delta hedge, expiry settlement, and the liquidation value
+// `reconcile_nav` recomputes) reads THAT number. NAV then moves by
+// `Σ (value_row - value_prev_row)` by construction, which is precisely the
+// identity `reconcile_nav` checks, so a carried lot cannot open a drift.
+//
+// Three phases per step, in this order:
+//   * `begin_step` — once, before the deferral partition. Opens this step's
+//     deferral record (see `deferred_close`).
+//   * `defer_step` — during `compute_step`'s partition, once per alive lot. It
+//     answers "keep this lot out of the batch?" and, when it does, RELEASES the
+//     lot's previous value into the pending adjustment.
+//   * `apply_row`  — on the row's per-lot price frame. It splices the carried
+//     mark/Greeks into every carried lane, refreshes the carry from every
+//     in-domain lane, and COMPLETES each pending release with the new value.
+//
+// Entries are kept sorted by lot id, so every traversal — and therefore the
+// adjustment's summation order — depends only on lot identity, never on
+// insertion order or on any unordered-container layout.
+class MarkCarryBook {
+public:
+  // The valuation a lot the step DEFERRED must be closed at, should the strategy
+  // close it this step. `price` is per-share and `vega` position-scaled, exactly
+  // as `PriceFrame` carries them.
+  struct CarriedClose {
+    double price{0.0};
+    double vega{0.0};
+  };
+
+  // STEP PHASE (first). Opens the step's deferral record. It is kept SEPARATE from
+  // the per-lot entries because the two have different lifetimes: `apply_row`
+  // completes and PRUNES the entry of a lot that left the book, and the roll-close
+  // booking that needs the lot's carried mark runs after that (a roll opens a lot,
+  // so `execute` prices its risk frame — and resolves the row phase — before it
+  // walks the closes). Only a step boundary may clear this.
+  void begin_step() noexcept { deferred_.clear(); }
+
+  // STEP PHASE. True when the lot must be excluded from this step's pricer batch:
+  // one of the two surfaces would have to extrapolate its maturity AND the lot has
+  // a last in-domain valuation to hold instead. A lot with NO such valuation (born
+  // straight into an extrapolated domain) has nothing to carry, so it prices
+  // normally — see the MarkDomainPolicy comment in backtest.hpp.
+  [[nodiscard]] bool defer_step(const Lot &lot, const SurfaceRef &base_surface, double T_base,
+                                const SurfaceRef &target_surface, double T_target) {
+    if (!extrapolates_lot(base_surface, T_base) && !extrapolates_lot(target_surface, T_target)) {
+      return false;
+    }
+    Entry *entry = find(lot.id);
+    if (entry == nullptr || !entry->have_in_domain) {
+      return false;
+    }
+    if (!entry->pending) {
+      entry->pending = true;
+      pending_ -= entry->value;
+    }
+    record_deferred(lot.id, *entry);
+    return true;
+  }
+
+  // The mark a lot THIS STEP took out of the pricer batch must be closed at, or
+  // `std::nullopt` for every other lot. The value the row publishes for a deferred
+  // lot IS its carried mark (the class invariant above), so a close must move cash
+  // by exactly that number: liquidation loses `w * carried` while cash gains
+  // `w * close`, and the identity holds iff the two agree. Booking a fresh
+  // (extrapolated) mark instead would reopen precisely the drift this policy
+  // exists to close.
+  //
+  // Survives `apply_row`, which completes and prunes the closed lot's entry before
+  // the executor reaches its roll-close loop.
+  [[nodiscard]] std::optional<CarriedClose> deferred_close(std::uint64_t lot_id) const noexcept {
+    const auto at =
+        std::lower_bound(deferred_.begin(), deferred_.end(), lot_id,
+                         [](const Deferred &d, std::uint64_t key) { return d.id < key; });
+    if (at == deferred_.end() || at->id != lot_id) {
+      return std::nullopt;
+    }
+    return CarriedClose{at->price, at->vega};
+  }
+
+  // The mark an expiring lot must explain against when its LAST row was served
+  // from the carry: a fresh (extrapolated) base mark would disagree with the value
+  // the row published. `std::nullopt` for every lot the last row valued normally.
+  [[nodiscard]] std::optional<double> carried_price(std::uint64_t lot_id) const noexcept {
+    const Entry *entry = find(lot_id);
+    if (entry == nullptr || !entry->carried_last_row) {
+      return std::nullopt;
+    }
+    return entry->price;
+  }
+
+  // ROW PHASE. `frame` holds one FullGreeks row per lot in `lots` order.
+  [[nodiscard]] Result<MarkCarryRow> apply_row(PriceFrame &frame, const std::vector<Lot> &lots,
+                                               const MarketSnapshot &snap) {
+    MarkCarryRow row;
+    if (frame.size() != lots.size()) {
+      return Err(ErrorCode::Internal, "run_backtest: mark-carry frame is not aligned with the book");
+    }
+    if (!lots.empty() && !frame.greeks_materialized()) {
+      return Err(ErrorCode::Internal, "run_backtest: mark-carry needs a full-Greek price frame");
+    }
+    std::uint32_t cached_uid = 0;
+    bool cached = false;
+    SurfaceRef surface{};
+    for (std::size_t i = 0; i < lots.size(); ++i) {
+      const Lot &lot = lots[i];
+      if (frame.id[i] != lot.id) {
+        return Err(ErrorCode::Internal,
+                   "run_backtest: mark-carry frame is misaligned with lot id=" +
+                       std::to_string(lot.id));
+      }
+      if (!cached || cached_uid != lot.contract.uid) {
+        surface = snap.find(lot.contract.uid);
+        cached_uid = lot.contract.uid;
+        cached = true;
+      }
+      Entry &entry = find_or_insert(lot.id);
+      if (frame.status[i] != PriceStatus::Ok) {
+        // An unvaluable lane belongs to UnpricedLotPolicy, which reports and
+        // excludes it. Leave the lane and the carry untouched, and cancel any
+        // release so a NaN can never reach the adjustment.
+        entry.carried_last_row = false;
+        complete(entry);
+        continue;
+      }
+      const double T = residual_T(lot.expiry_ts_ns, snap.ts_ns());
+      const bool out_of_domain = extrapolates_lot(surface, T);
+      if (out_of_domain && entry.have_in_domain) {
+        splice(frame, i, entry);
+        entry.carried_last_row = true;
+        ++row.n_carried;
+      } else {
+        capture(frame, i, entry, /*in_domain=*/!out_of_domain);
+        entry.carried_last_row = false;
+      }
+      complete(entry);
+    }
+    // A lot that LEFT the book before this row (a strategy close) never reaches the
+    // loop above. Completing its release at the UNCHANGED value nets its two halves
+    // to exactly 0.0, which is the whole of its NAV contribution this step: the
+    // book gave up a position it had recognized at `value` and cash took in the
+    // same number (`deferred_close` is what makes the executor pay it). Leaving the
+    // release pending instead would leak a stale `-value` into a later row's P&L.
+    for (Entry &entry : entries_) {
+      complete(entry);
+    }
+    row.pnl_adjustment = pending_;
+    pending_ = 0.0;
+    prune(lots);
+    return Ok(row);
+  }
+
+private:
+  struct Entry {
+    std::uint64_t id{0};
+    // The value this lot's row published — carried or market. NAV moves by the
+    // change in this number; liquidation reports it. They are the same by design.
+    double value{0.0};
+    bool have_in_domain{false};
+    bool pending{false};
+    bool carried_last_row{false};
+    // The last IN-DOMAIN valuation (meaningful only once have_in_domain). `price`
+    // and `iv` are per-share; `pv` and the Greeks are position-scaled, exactly as
+    // PriceFrame carries them.
+    double price{0.0};
+    double pv{0.0};
+    double iv{0.0};
+    double delta{0.0};
+    double gamma{0.0};
+    double vega{0.0};
+    double theta{0.0};
+    double rho{0.0};
+    double vanna{0.0};
+    double volga{0.0};
+    double charm{0.0};
+  };
+
+  // One lot this STEP kept out of the pricer batch, with the valuation its row
+  // publishes. Step-scoped (cleared by `begin_step`) and sorted by lot id, so the
+  // lookup is a binary search and nothing depends on partition order.
+  struct Deferred {
+    std::uint64_t id{0};
+    double price{0.0};
+    double vega{0.0};
+  };
+
+  void record_deferred(std::uint64_t id, const Entry &entry) {
+    const auto at =
+        std::lower_bound(deferred_.begin(), deferred_.end(), id,
+                         [](const Deferred &d, std::uint64_t key) { return d.id < key; });
+    if (at != deferred_.end() && at->id == id) {
+      return; // one record per lot per step
+    }
+    deferred_.insert(at, Deferred{id, entry.price, entry.vega});
+  }
+
+  void complete(Entry &entry) noexcept {
+    if (entry.pending) {
+      pending_ += entry.value;
+      entry.pending = false;
+    }
+  }
+
+  static void capture(const PriceFrame &frame, std::size_t i, Entry &entry, bool in_domain) {
+    entry.value = frame.pv[i];
+    if (!in_domain) {
+      return; // an extrapolated mark is recognized, but never becomes the carry
+    }
+    entry.have_in_domain = true;
+    entry.price = frame.price[i];
+    entry.pv = frame.pv[i];
+    entry.iv = frame.iv[i];
+    entry.delta = frame.delta[i];
+    entry.gamma = frame.gamma[i];
+    entry.vega = frame.vega[i];
+    entry.theta = frame.theta[i];
+    entry.rho = frame.rho[i];
+    entry.vanna = frame.vanna[i];
+    entry.volga = frame.volga[i];
+    entry.charm = frame.charm[i];
+  }
+
+  // Replace one lane with its carried valuation and move the frame totals by
+  // exactly the same deltas, so `PriceTotals` stays the sum of the lanes it
+  // describes (the totals are what `gross_*` and the liquidation value read).
+  static void splice(PriceFrame &frame, std::size_t i, const Entry &entry) {
+    const auto swap_in = [](double &cell, double value, double &total) {
+      total += value - cell;
+      cell = value;
+    };
+    frame.total.abs_vega += std::fabs(entry.vega) - std::fabs(frame.vega[i]);
+    swap_in(frame.pv[i], entry.pv, frame.total.pv);
+    swap_in(frame.delta[i], entry.delta, frame.total.delta);
+    swap_in(frame.gamma[i], entry.gamma, frame.total.gamma);
+    swap_in(frame.vega[i], entry.vega, frame.total.vega);
+    swap_in(frame.theta[i], entry.theta, frame.total.theta);
+    swap_in(frame.rho[i], entry.rho, frame.total.rho);
+    swap_in(frame.vanna[i], entry.vanna, frame.total.vanna);
+    swap_in(frame.volga[i], entry.volga, frame.total.volga);
+    swap_in(frame.charm[i], entry.charm, frame.total.charm);
+    frame.price[i] = entry.price;
+    frame.iv[i] = entry.iv;
+  }
+
+  [[nodiscard]] const Entry *find(std::uint64_t id) const noexcept {
+    const auto at = std::lower_bound(entries_.begin(), entries_.end(), id,
+                                     [](const Entry &e, std::uint64_t key) { return e.id < key; });
+    return (at != entries_.end() && at->id == id) ? &*at : nullptr;
+  }
+
+  [[nodiscard]] Entry *find(std::uint64_t id) noexcept {
+    return const_cast<Entry *>(std::as_const(*this).find(id));
+  }
+
+  [[nodiscard]] Entry &find_or_insert(std::uint64_t id) {
+    const auto at = std::lower_bound(entries_.begin(), entries_.end(), id,
+                                     [](const Entry &e, std::uint64_t key) { return e.id < key; });
+    if (at != entries_.end() && at->id == id) {
+      return *at;
+    }
+    Entry fresh;
+    fresh.id = id;
+    return *entries_.insert(at, fresh);
+  }
+
+  // Drop the lots that have left the book, so a long run's store stays the size of
+  // its book rather than of its lifetime lot count.
+  void prune(const std::vector<Lot> &lots) {
+    live_ids_.clear();
+    live_ids_.reserve(lots.size());
+    for (const Lot &lot : lots) {
+      live_ids_.push_back(lot.id);
+    }
+    std::sort(live_ids_.begin(), live_ids_.end());
+    std::erase_if(entries_, [this](const Entry &e) {
+      return !std::binary_search(live_ids_.begin(), live_ids_.end(), e.id);
+    });
+  }
+
+  std::vector<Entry> entries_;
+  std::vector<Deferred> deferred_;
+  std::vector<std::uint64_t> live_ids_;
+  double pending_{0.0};
+};
+
 // Book greeks + the count of positions the pricer could not value on THIS
 // snapshot's date. `total`'s `gross_*` sum only the Ok lanes; `n_unpriced`
 // = n_pos - PriceTotals::n_ok is the number EXCLUDED from that sum (surface
@@ -1145,16 +1545,43 @@ struct ReusablePriceFrame {
   }
 };
 
+// CarryLastMark plumbing for `book_greeks`: the store, a caller-owned frame to
+// price into, and the row outcome the caller reads back. A NULL context keeps the
+// legacy totals-only route verbatim, which is every other policy.
+struct MarkCarryContext {
+  MarkCarryBook *book{nullptr};
+  ReusablePriceFrame *frame{nullptr};
+  MarkCarryRow row{};
+};
+
 // Price the current lots against `snap` at its residual T and report how many
 // could not be valued. An empty book yields zero totals and n_unpriced 0 (an
 // empty portfolio prices to an empty frame).
 [[nodiscard]] Result<BookGreeks> book_greeks(const MarketSnapshot &snap,
                                              const std::vector<Lot> &lots, const PriceOptions &opts,
                                              RetainedBookPricer &retained,
-                                             StepMarkMemo *mark_memo = nullptr) {
+                                             StepMarkMemo *mark_memo = nullptr,
+                                             MarkCarryContext *carry = nullptr) {
   ATX_VOL_PROFILE_SCOPE(BookGreeks);
   ATX_TRY(PortfolioPricer * pricer, retained.prepare(lots, snap.ts_ns()));
   PortfolioWorkspace &workspace = retained.workspace();
+  if (carry != nullptr) {
+    // CarryLastMark needs the PER-LOT lanes to splice the carried mark and Greeks
+    // in; the totals-only reduction never materializes them. Same mask, same
+    // solves — only the output shape differs.
+    carry->frame->resize(pricer->portfolio().n_positions());
+    ATX_TRY_VOID(pricer->price_into(snap.set(), PriceFieldMask::FullGreeks, carry->frame->view(),
+                                    workspace, opts));
+    if (mark_memo != nullptr) {
+      mark_memo->populate_from(*pricer, workspace, snap);
+    }
+    auto row = carry->book->apply_row(carry->frame->frame, lots, snap);
+    if (!row) {
+      return Err(row.error());
+    }
+    carry->row = *row;
+    return Ok(summarize_price_frame(carry->frame->frame));
+  }
   auto totals = pricer->price_totals(snap.set(), PriceFieldMask::FullGreeks, workspace, opts);
   if (!totals) {
     return Err(totals.error());
@@ -1211,6 +1638,10 @@ struct StepPnl {
   // Intrinsic proceeds of the deferred lots that settled THIS step, for the cash
   // ledger. The fixed-book overload has no cash ledger and ignores it.
   double deferred_settle_cash{0.0};
+  // Alive lots whose base or target tenor query fell outside the serving surface's
+  // fitted domain this step (`MarkDomainPolicy`), with the first offender's detail
+  // for the Error-policy abort. Measured under EVERY policy.
+  MarkDomainScan domain{};
 };
 
 // WS-F F1 tolerance extension (SP100 task 2). One lot whose EXACT expiry step had
@@ -1268,7 +1699,8 @@ compute_step(const MarketSnapshot &base, const MarketSnapshot &shifted,
              const std::vector<Lot> &lots, const PriceOptions &opts, RetainedBookPricer &retained,
              ReusableTargetMarkFrame *target_marks = nullptr, RetainedBookPricer *settle = nullptr,
              ReusablePriceFrame *settle_frame = nullptr, StepMarkMemo *mark_memo = nullptr,
-             bool memo_enabled = false, DeferredSettlementBook *deferrals = nullptr) {
+             bool memo_enabled = false, DeferredSettlementBook *deferrals = nullptr,
+             MarkCarryBook *carry = nullptr) {
   ATX_VOL_PROFILE_SCOPE(StepPnl);
   std::vector<Lot> &alive = retained.reset_alive_scratch(lots.size());
   // B2: batch the expiry-settlement base marks (bottleneck #3). When a settlement
@@ -1364,6 +1796,22 @@ compute_step(const MarketSnapshot &base, const MarketSnapshot &shifted,
         }
         deferrals->insert(lot, frozen_mark, frozen_known);
         continue;
+      }
+      // MarkDomainPolicy::CarryLastMark: a lot whose LAST row was served from its
+      // carried mark settles against THAT mark. Solving a fresh base mark here
+      // would explain the settlement against a number no row ever published, and
+      // the carried valuation the previous row put into NAV would never be
+      // released — `reconcile_nav` would break by exactly that gap.
+      if (carry != nullptr) {
+        if (const std::optional<double> carried = carry->carried_price(lot.id);
+            carried.has_value()) {
+          const double S = ss->pricing().S;
+          const double K = lot.contract.K;
+          const double intrinsic =
+              (lot.contract.side == Side::Call) ? std::max(0.0, S - K) : std::max(0.0, K - S);
+          settlement += lot.qty * lot.multiplier * (intrinsic - *carried);
+          continue;
+        }
       }
       if (expiring != nullptr) {
         expiring->push_back(lot); // base mark supplied by the batched pass below
@@ -1484,6 +1932,36 @@ compute_step(const MarketSnapshot &base, const MarketSnapshot &shifted,
     }
   }
 
+  // Mark-domain accounting over the SURVIVING lots. Pure reads under every policy.
+  //
+  // SCOPE (deliberate): an EXPIRING lot is out. Its cash is intrinsic off the
+  // observed settlement spot, but the base-side mark it explains against above IS
+  // a curve query — at a residual T of roughly one session, i.e. below `min_T` on
+  // essentially any fitted surface, so it is short-end extrapolated on nearly every
+  // settlement. Counting that (or aborting on it under `Error`) would make the
+  // counters noise and the policy unusable, while the failure this policy exists
+  // for is LONG-end truncation — and an expiring lot's T is ~0, never long-end.
+  // Short-end settlement extrapolation at one session is intrinsic-dominated and
+  // bounded; it is excluded here by design, and `MarkDomainPolicy` says so.
+  if (carry != nullptr) {
+    // Open the step's deferral record BEFORE the partition below. The roll-close
+    // booking reads it AFTER the row phase has completed and pruned this step's
+    // entries, so only a step boundary may clear it.
+    carry->begin_step();
+  }
+  const MarkDomainScan domain = scan_mark_domain(base, &shifted, alive);
+  if (carry != nullptr && domain.n_extrapolated > 0) {
+    // CarryLastMark: keep the lots neither side of the step can serve in-domain OUT
+    // of the pricer batch, so not one Taylor axis is attributed to an extrapolated
+    // mark. Their whole contribution is the carry release the row phase completes.
+    std::erase_if(alive, [&](const Lot &lot) {
+      return carry->defer_step(lot, base.find(lot.contract.uid),
+                               residual_T(lot.expiry_ts_ns, base.ts_ns()),
+                               shifted.find(lot.contract.uid),
+                               residual_T(lot.expiry_ts_ns, shifted.ts_ns()));
+    });
+  }
+
   PnlTotals t{};
   std::uint32_t n_unpriced = 0;
   std::uint32_t first_unpriced_uid = 0;
@@ -1542,7 +2020,8 @@ compute_step(const MarketSnapshot &base, const MarketSnapshot &shifted,
   if (target_marks != nullptr) {
     ATX_TRY_VOID(target_marks->seal());
   }
-  return Ok(StepPnl{t, settlement, n_unpriced, first_unpriced_uid, n_deferred, deferred_settle_cash});
+  return Ok(StepPnl{t, settlement, n_unpriced, first_unpriced_uid, n_deferred, deferred_settle_cash,
+                    domain});
 }
 
 // The Error-policy message for a step that has `n_unpriced` held lots with no
@@ -2234,10 +2713,12 @@ Status BacktestResult::validate() const {
     ATX_TRY_VOID(check_column(column.name, this->*column.member, rows));
   }
 
-  // The two documented empty-or-row-parallel extras, deliberately absent from
-  // the frozen wire registry (see their member comments).
+  // The documented empty-or-row-parallel extras, deliberately absent from the
+  // frozen wire registry (see their member comments).
   ATX_TRY_VOID(check_column("gross_vega_abs", gross_vega_abs, rows));
   ATX_TRY_VOID(check_column("nav_liquidation", nav_liquidation, rows));
+  ATX_TRY_VOID(check_column("n_extrapolated_marks", n_extrapolated_marks, rows));
+  ATX_TRY_VOID(check_column("n_carried_marks", n_carried_marks, rows));
 
   // `step_pnl_total` is EXEMPT: length == refs-1 by contract, not parallel to
   // the downsampled `date`.
@@ -2304,7 +2785,8 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
                                double p_delta, double p_gamma, double p_vega, double p_vanna,
                                double p_volga, double p_theta, double p_rho, double p_charm,
                                double p_unexpl, double p_settle, double nav_v, const PriceTotals &g,
-                               std::size_t n_lots, double n_unpriced, double n_unpriced_greeks) {
+                               std::size_t n_lots, double n_unpriced, double n_unpriced_greeks,
+                               double n_extrapolated, double n_carried) {
     out.date.push_back(date);
     out.ts_ns.push_back(ts);
     out.pnl_total.push_back(p_total);
@@ -2338,7 +2820,18 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
     out.n_open_lots.push_back(static_cast<double>(n_lots));
     out.n_unpriced_lots.push_back(n_unpriced);
     out.n_unpriced_greeks.push_back(n_unpriced_greeks);
+    out.n_extrapolated_marks.push_back(n_extrapolated);
+    out.n_carried_marks.push_back(n_carried);
   };
+
+  // MarkDomainPolicy::CarryLastMark state. Inactive under every other policy: the
+  // null context keeps `book_greeks` and `compute_step` on their legacy routes.
+  const bool carry_active = cfg.mark_domain == MarkDomainPolicy::CarryLastMark;
+  MarkCarryBook carry_book;
+  ReusablePriceFrame carry_frame;
+  MarkCarryContext carry_ctx{carry_active ? &carry_book : nullptr, &carry_frame, {}};
+  MarkCarryContext *const carry_ctx_ptr = carry_active ? &carry_ctx : nullptr;
+  MarkCarryBook *const carry_book_ptr = carry_active ? &carry_book : nullptr;
 
   // base = load(refs[0]) — the inception snapshot.
   // B1 subset-deserialize: a PRIVATE per-run cache deserializes only the fixed book's
@@ -2393,9 +2886,17 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
   // no step has run, book_greeks is a real measurement here — an inception book with
   // an unpriced held lot aborts under the Error policy (an empty book prices to 0).
   {
+    // Row 0 has no step, so the mark-domain measurement is taken against the
+    // inception date alone — a real number, not 0 by convention.
+    const MarkDomainScan domain = scan_mark_domain(*base, nullptr, book.lots);
+    if (cfg.mark_domain == MarkDomainPolicy::Error && domain.n_extrapolated > 0) {
+      return Err(ErrorCode::InvalidArgument, mark_domain_error_message(domain, refs[0].date));
+    }
     // L2: inception book-greeks seeds the mark memo for date 0, so a lot expiring on
-    // step 1 settles from the memo instead of re-solving.
-    auto g = book_greeks(*base, book.lots, cfg.price, retained_pricer, &mark_memo);
+    // step 1 settles from the memo instead of re-solving. It also seeds the carry
+    // store: every inception lot is new, so nothing is carried and the adjustment
+    // is exactly 0.0.
+    auto g = book_greeks(*base, book.lots, cfg.price, retained_pricer, &mark_memo, carry_ctx_ptr);
     if (!g) {
       return Err(g.error());
     }
@@ -2404,7 +2905,9 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
                  unpriced_greeks_error_message(g->n_unpriced, g->first_unpriced_uid, refs[0].date));
     }
     push_row(refs[0].date, base->ts_ns(), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-             0.0, g->total, book.lots.size(), 0.0, static_cast<double>(g->n_unpriced));
+             0.0, g->total, book.lots.size(), 0.0, static_cast<double>(g->n_unpriced),
+             static_cast<double>(domain.n_extrapolated),
+             static_cast<double>(carry_ctx.row.n_carried));
   }
 
   // Block accumulators for record_every_n>1: each non-recorded step's per-axis PnL
@@ -2415,6 +2918,7 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
   double b_total = 0.0, b_delta = 0.0, b_gamma = 0.0, b_vega = 0.0, b_vanna = 0.0, b_volga = 0.0;
   double b_theta = 0.0, b_rho = 0.0, b_charm = 0.0, b_unexpl = 0.0, b_settle = 0.0,
          b_nunpriced = 0.0;
+  double b_nextrap = 0.0, b_ncarried = 0.0;
 
   // Deferred expiry settlements (ExcludeAndReport only). A null pointer under
   // Error keeps `compute_step` on its pre-change fail-closed path verbatim.
@@ -2455,7 +2959,7 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
     // held lots the pricer could not value this step.
     auto step = compute_step(*base, *shifted, book.lots, cfg.price, retained_pricer,
                              /*target_marks=*/nullptr, &settle_pricer, &settle_frame, &mark_memo,
-                             cfg.settlement_mark_memo, deferrals_ptr);
+                             cfg.settlement_mark_memo, deferrals_ptr, carry_book_ptr);
     if (!step) {
       return Err(step.error());
     }
@@ -2463,10 +2967,44 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
       return Err(ErrorCode::NotFound,
                  unpriced_error_message(step->n_unpriced, step->first_unpriced_uid));
     }
+    if (cfg.mark_domain == MarkDomainPolicy::Error && step->domain.n_extrapolated > 0) {
+      return Err(ErrorCode::InvalidArgument, mark_domain_error_message(step->domain, refs[i].date));
+    }
     const PnlTotals &t = step->totals;
     const double settlement = step->settlement;
 
-    const double step_total = t.pnl_total + settlement;
+    // Adopt the shifted snapshot as the next base (no reload) and drop expiries.
+    base = std::move(shifted);
+    std::erase_if(book.lots, [&base](const Lot &l) { return l.expiry_ts_ns <= base->ts_ns(); });
+
+    const bool is_last = (i + 1 == refs.size());
+    const bool record = ((i % stride) == 0) || is_last;
+
+    // The row's book greeks are computed BEFORE the NAV increment: under
+    // CarryLastMark that pass is where the carried marks are resolved, and this
+    // step's P&L carries their release. Under every other policy this is the same
+    // call, on the same inputs, at the same point in the step — only its position
+    // relative to the (independent) NAV accumulation moved.
+    std::optional<BookGreeks> row_greeks;
+    if (record) {
+      // L2: repopulate the memo for the new base date so the NEXT step's settlement
+      // reads from it. (On a non-recorded step the memo is left stale; the surface-
+      // instance guard then forces settlement to solve — fail-closed.)
+      auto g = book_greeks(*base, book.lots, cfg.price, retained_pricer, &mark_memo, carry_ctx_ptr);
+      if (!g) {
+        return Err(g.error());
+      }
+      if (cfg.unpriced == UnpricedLotPolicy::Error && g->n_unpriced > 0) {
+        return Err(ErrorCode::NotFound, unpriced_greeks_error_message(
+                                            g->n_unpriced, g->first_unpriced_uid, refs[i].date));
+      }
+      row_greeks = *g;
+    }
+
+    double step_total = t.pnl_total + settlement;
+    if (carry_active) {
+      step_total += carry_ctx.row.pnl_adjustment;
+    }
     nav += step_total;                        // cumulative every step, regardless of recording
     out.step_pnl_total.push_back(step_total); // full-res per-step series (metrics)
 
@@ -2481,38 +3019,31 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
     b_rho += t.pnl_rho;
     b_charm += t.pnl_charm;
     b_unexpl += t.pnl_unexplained;
+    if (carry_active) {
+      // The released gap is a repricing move no Taylor axis of THIS step explains,
+      // so it lands in the residual — which keeps `Σ axes + unexplained ==
+      // pnl_total` exact.
+      b_unexpl += carry_ctx.row.pnl_adjustment;
+    }
     b_settle += settlement;
     // Deferred settlement events join the row's exclusion count (F1(b) precedent).
     b_nunpriced += static_cast<double>(step->n_unpriced) + static_cast<double>(step->n_deferred);
+    b_nextrap += static_cast<double>(step->domain.n_extrapolated);
+    b_ncarried += static_cast<double>(carry_ctx.row.n_carried);
 
-    // Adopt the shifted snapshot as the next base (no reload) and drop expiries.
-    base = std::move(shifted);
-    std::erase_if(book.lots, [&base](const Lot &l) { return l.expiry_ts_ns <= base->ts_ns(); });
-
-    const bool is_last = (i + 1 == refs.size());
-    const bool record = ((i % stride) == 0) || is_last;
     if (record) {
-      // L2: repopulate the memo for the new base date so the NEXT step's settlement
-      // reads from it. (On a non-recorded step the memo is left stale; the surface-
-      // instance guard then forces settlement to solve — fail-closed.)
-      auto g = book_greeks(*base, book.lots, cfg.price, retained_pricer, &mark_memo);
-      if (!g) {
-        return Err(g.error());
-      }
-      if (cfg.unpriced == UnpricedLotPolicy::Error && g->n_unpriced > 0) {
-        return Err(ErrorCode::NotFound, unpriced_greeks_error_message(
-                                            g->n_unpriced, g->first_unpriced_uid, refs[i].date));
-      }
       // A deferred lot is OPEN — it holds real exposure the run never settled — so
       // it counts toward n_open_lots even though it has left `book.lots` (it is
       // past its expiry, which every book-facing invariant and pricer forbids).
       push_row(refs[i].date, base->ts_ns(), b_total, b_delta, b_gamma, b_vega, b_vanna, b_volga,
-               b_theta, b_rho, b_charm, b_unexpl, b_settle, nav, g->total,
+               b_theta, b_rho, b_charm, b_unexpl, b_settle, nav, row_greeks->total,
                book.lots.size() + deferrals.size(), b_nunpriced,
-               static_cast<double>(g->n_unpriced));
+               static_cast<double>(row_greeks->n_unpriced), b_nextrap, b_ncarried);
       b_total = b_delta = b_gamma = b_vega = b_vanna = b_volga = 0.0;
       b_theta = b_rho = b_charm = b_unexpl = b_settle = b_nunpriced = 0.0;
+      b_nextrap = b_ncarried = 0.0;
     }
+    carry_ctx.row = {};
   }
 
   // Plan 4.6: the engine may not emit a skewed column set. Pure read, so this
@@ -2531,6 +3062,10 @@ struct ExecResult {
   // ExcludeAndReport only: hedge fills the overlay skipped because the uid has no
   // board on this base. Joins the row's exclusion tally (F1(b) precedent).
   std::uint32_t n_unpriced_hedges{0};
+  // CarryLastMark only: true when this execute() priced the row's risk frame and
+  // therefore already resolved the row's carried marks (the result is in the
+  // caller's MarkCarryContext). False means the caller must run the row phase.
+  bool carry_applied{false};
 };
 
 [[nodiscard]] static Result<BacktestContinuation>
@@ -2578,6 +3113,16 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
   std::vector<Lot> before_lots;
   std::vector<SwapLot> before_swap_lots;
 
+  // MarkDomainPolicy::CarryLastMark state; inactive (null) under every other
+  // policy, which keeps `execute`, `book_greeks` and `compute_step` on the routes
+  // they always took.
+  const bool carry_active = cfg.mark_domain == MarkDomainPolicy::CarryLastMark;
+  MarkCarryBook carry_book;
+  ReusablePriceFrame carry_frame;
+  MarkCarryContext carry_ctx{carry_active ? &carry_book : nullptr, &carry_frame, {}};
+  MarkCarryContext *const carry_ctx_ptr = carry_active ? &carry_ctx : nullptr;
+  MarkCarryBook *const carry_book_ptr = carry_active ? &carry_book : nullptr;
+
   // ── Engine-internal cash + per-uid share ledger (B2/B3) ────────────────────
   double cash = resume != nullptr ? resume->cash : cfg.financing.initial_cash;
   // B3: O(1) get/add/sum + allocation-free daily hedge pass (was a linear-scan
@@ -2622,7 +3167,8 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
              double p_rho, double p_charm, double p_unexpl, double p_settle, double p_shares,
              double p_fin, double p_cost, double nav_v, double cash_v, double g_delta,
              const PriceTotals &g, double turn_notl, double turn_vega, double swap_pv_v,
-             double swap_pnl_v, std::size_t n_lots, double n_unpriced, double n_unpriced_greeks) {
+             double swap_pnl_v, std::size_t n_lots, double n_unpriced, double n_unpriced_greeks,
+             double n_extrapolated, double n_carried) {
         out.date.push_back(date);
         out.ts_ns.push_back(ts);
         out.pnl_total.push_back(p_total);
@@ -2653,6 +3199,8 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
         out.n_open_lots.push_back(static_cast<double>(n_lots));
         out.n_unpriced_lots.push_back(n_unpriced);
         out.n_unpriced_greeks.push_back(n_unpriced_greeks);
+        out.n_extrapolated_marks.push_back(n_extrapolated);
+        out.n_carried_marks.push_back(n_carried);
       };
 
   // ── F1(d) NAV-vs-liquidation reconciliation (RunConfig::reconcile_nav) ──────
@@ -2767,6 +3315,17 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
       ATX_TRY_VOID(pricer->price_into(base_snap.set(), PriceFieldMask::FullGreeks,
                                       risk_frame.view(), retained_pricer.workspace(), cfg.price,
                                       entry_seeds));
+      // CarryLastMark: resolve the row's carried marks HERE, before the frame is
+      // summarized or read, so the entry vega, the row `gross_*` and the delta
+      // hedge below all see the carried Greeks — one mark source per lot per row.
+      if (carry_ctx_ptr != nullptr) {
+        auto carry_row = carry_ctx_ptr->book->apply_row(risk_frame.frame, book.lots, base_snap);
+        if (!carry_row) {
+          return Err(carry_row.error());
+        }
+        carry_ctx_ptr->row = *carry_row;
+        ex.carry_applied = true;
+      }
       ex.book_greeks = summarize_price_frame(risk_frame.frame);
       current_risk = &risk_frame.frame;
     }
@@ -2826,6 +3385,17 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
       if (after_lot_index.find(book.lots, lot.id).has_value()) {
         continue;
       }
+      // CarryLastMark: this step took the lot OUT of the pricer batch because one
+      // side of the step is outside the fitted tenor domain, so the value the book
+      // published for it this row IS its carried mark — and a close must move cash
+      // by exactly that number. Liquidation loses `w * carried` while cash gains
+      // `w * close`, and the step books no repricing for a deferred lot, so the
+      // NAV/liquidation identity closes EXACTLY iff `close == carried`; a fresh
+      // (extrapolated) mark would drift it by `w * (extrapolated - carried)`.
+      // The economic caveat — the fill crystallizes at a STALE model mark, as old
+      // as the hole is long — is documented on `MarkDomainPolicy::CarryLastMark`.
+      const std::optional<MarkCarryBook::CarriedClose> carried =
+          carry_book_ptr != nullptr ? carry_book_ptr->deferred_close(lot.id) : std::nullopt;
       const double T_res = residual_T(lot.expiry_ts_ns, base_snap.ts_ns());
       const SurfaceRef s = base_snap.find(lot.contract.uid);
       const std::optional<ReusableTargetMarkFrame::Match> exact_mark =
@@ -2836,7 +3406,16 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
       // only; it never enters friction, cash, or NAV. VolTicks replaces it below
       // with exact configured target-date vega.
       double vega = exact_mark.has_value() ? exact_mark->base_vega_proxy : 0.0;
-      if (cfg.frictions.spread_kind == FrictionModel::SpreadKind::VolTicks) {
+      if (carried.has_value()) {
+        // One mark source per lot per row, frictions included: the half-spread uses
+        // the carried (last in-domain) vega rather than an extrapolated solve the
+        // rest of the row is built to avoid. `CarriedClose::vega` is position-scaled
+        // exactly as PriceFrame carries it, so undo the weight for the per-share
+        // vega `half_spread` expects — the same conversion the entry loop above does.
+        mark = carried->price;
+        const double weight = lot.qty * lot.multiplier;
+        vega = (weight != 0.0) ? carried->vega / weight : 0.0;
+      } else if (cfg.frictions.spread_kind == FrictionModel::SpreadKind::VolTicks) {
         if (s == nullptr) {
           return Err(ErrorCode::NotFound,
                      "run_backtest: no surface for roll-close lot id=" + std::to_string(lot.id) +
@@ -2990,9 +3569,17 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
     if (!ex) {
       return Err(ex.error());
     }
-    Result<BookGreeks> g = ex->book_greeks.has_value() ? Ok(*ex->book_greeks)
-                                                       : book_greeks(*base, book.lots, cfg.price,
-                                                                     retained_pricer, &mark_memo);
+    // Row 0 has no step, so the mark-domain measurement is taken against the
+    // inception date alone. Every inception lot is new, so nothing can be carried
+    // and the carry adjustment is exactly 0.0 — the store is merely seeded.
+    const MarkDomainScan domain0 = scan_mark_domain(*base, nullptr, book.lots);
+    if (cfg.mark_domain == MarkDomainPolicy::Error && domain0.n_extrapolated > 0) {
+      return Err(ErrorCode::InvalidArgument, mark_domain_error_message(domain0, refs[0].date));
+    }
+    Result<BookGreeks> g =
+        ex->book_greeks.has_value()
+            ? Ok(*ex->book_greeks)
+            : book_greeks(*base, book.lots, cfg.price, retained_pricer, &mark_memo, carry_ctx_ptr);
     if (!g) {
       return Err(g.error());
     }
@@ -3015,7 +3602,8 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
     push_row(refs[0].date, base->ts_ns(), nav, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
              0.0, 0.0, ex->cost, nav, cash, g_delta, g->total, ex->turnover_notional,
              ex->turnover_vega, 0.0, 0.0, book.lots.size(), static_cast<double>(ex->n_unpriced_hedges),
-             static_cast<double>(g->n_unpriced));
+             static_cast<double>(g->n_unpriced), static_cast<double>(domain0.n_extrapolated),
+             static_cast<double>(carry_ctx.row.n_carried));
     ATX_TRY_VOID(reconcile_row(refs[0].date, nav, g->total, *base));
     record_signals(*base);
   }
@@ -3028,6 +3616,7 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
   double b_theta = 0.0, b_rho = 0.0, b_charm = 0.0, b_unexpl = 0.0, b_settle = 0.0;
   double b_shares = 0.0, b_fin = 0.0, b_cost = 0.0, b_turn_notl = 0.0, b_turn_vega = 0.0;
   double b_nunpriced = 0.0, b_swap_pnl = 0.0;
+  double b_nextrap = 0.0, b_ncarried = 0.0;
 
   // Deferred expiry settlements (ExcludeAndReport only); see the fixed-book loop.
   DeferredSettlementBook deferrals;
@@ -3068,13 +3657,16 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
     // 1. PnL of the current book (resolved on base) forward to shifted (unchanged B1).
     auto step = compute_step(*base, *shifted, book.lots, cfg.price, retained_pricer, &target_marks,
                              &settle_pricer, &settle_frame, &mark_memo, cfg.settlement_mark_memo,
-                             deferrals_ptr);
+                             deferrals_ptr, carry_book_ptr);
     if (!step) {
       return Err(step.error());
     }
     if (cfg.unpriced == UnpricedLotPolicy::Error && step->n_unpriced > 0) {
       return Err(ErrorCode::NotFound,
                  unpriced_error_message(step->n_unpriced, step->first_unpriced_uid));
+    }
+    if (cfg.mark_domain == MarkDomainPolicy::Error && step->domain.n_extrapolated > 0) {
+      return Err(ErrorCode::InvalidArgument, mark_domain_error_message(step->domain, refs[i].date));
     }
     const PnlTotals &t = step->totals;
     const double settlement = step->settlement;
@@ -3244,10 +3836,29 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
       return Err(ex.error());
     }
 
+    // 5b. CarryLastMark: the row's carried marks must be resolved BEFORE the NAV
+    //     increment, because this step's P&L carries their release. `execute` has
+    //     already done it whenever it priced the row's risk frame (an entry or a
+    //     hedge fired); otherwise price the row here and reuse it below. Under
+    //     every other policy this whole block is skipped and `row_greeks` is
+    //     exactly what step 7 always consumed.
+    std::optional<BookGreeks> row_greeks = ex->book_greeks;
+    if (carry_active && !ex->carry_applied) {
+      auto row_g =
+          book_greeks(*base, book.lots, cfg.price, retained_pricer, &mark_memo, carry_ctx_ptr);
+      if (!row_g) {
+        return Err(row_g.error());
+      }
+      row_greeks = *row_g;
+    }
+
     // 6. Running NAV increment — EXACT add order; collapses to B1's
     //    (pnl_total + settlement) bit-for-bit when features are off.
     double step_total = t.pnl_total;
     step_total += settlement;
+    if (carry_active) {
+      step_total += carry_ctx.row.pnl_adjustment;
+    }
     step_total += shares_pnl;
     step_total += swap_step.swap_pnl; // exactly 0.0 without a swap lane
     step_total += financing;
@@ -3266,6 +3877,12 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
     b_rho += t.pnl_rho;
     b_charm += t.pnl_charm;
     b_unexpl += t.pnl_unexplained;
+    if (carry_active) {
+      // The released gap is a repricing move no Taylor axis of THIS step explains,
+      // so it lands in the residual and `Σ axes + unexplained == pnl_total` stays
+      // exact.
+      b_unexpl += carry_ctx.row.pnl_adjustment;
+    }
     b_settle += settlement;
     b_shares += shares_pnl;
     b_swap_pnl += swap_step.swap_pnl;
@@ -3278,15 +3895,17 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
     b_nunpriced += static_cast<double>(step->n_unpriced) + static_cast<double>(n_unpriced_shares) +
                    static_cast<double>(step->n_deferred) +
                    static_cast<double>(ex->n_unpriced_hedges);
+    b_nextrap += static_cast<double>(step->domain.n_extrapolated);
+    b_ncarried += static_cast<double>(carry_ctx.row.n_carried);
     financing_noncash_total += financing_noncash_step;
 
     // 7. Record @ granularity: book greeks (net delta incl. shares) + B2 columns.
     const bool is_last = (i + 1 == refs.size());
     const bool record = ((i % stride) == 0) || is_last;
     if (record) {
-      Result<BookGreeks> g = ex->book_greeks.has_value() ? Ok(*ex->book_greeks)
-                                                         : book_greeks(*base, book.lots, cfg.price,
-                                                                       retained_pricer, &mark_memo);
+      Result<BookGreeks> g = row_greeks.has_value() ? Ok(*row_greeks)
+                                                    : book_greeks(*base, book.lots, cfg.price,
+                                                                  retained_pricer, &mark_memo);
       if (!g) {
         return Err(g.error());
       }
@@ -3305,14 +3924,16 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
                b_theta, b_rho, b_charm, b_unexpl, b_settle, b_shares, b_fin, b_cost, nav, cash,
                g_delta, g->total, b_turn_notl, b_turn_vega, swap_pv_state, b_swap_pnl,
                book.lots.size() + deferrals.size(), b_nunpriced,
-               static_cast<double>(g->n_unpriced));
+               static_cast<double>(g->n_unpriced), b_nextrap, b_ncarried);
       ATX_TRY_VOID(reconcile_row(refs[i].date, nav, g->total, *base));
       record_signals(*base);
       b_total = b_delta = b_gamma = b_vega = b_vanna = b_volga = 0.0;
       b_theta = b_rho = b_charm = b_unexpl = b_settle = 0.0;
       b_shares = b_fin = b_cost = b_turn_notl = b_turn_vega = b_nunpriced = 0.0;
       b_swap_pnl = 0.0;
+      b_nextrap = b_ncarried = 0.0;
     }
+    carry_ctx.row = {};
   }
 
   // Plan 4.6: the engine may not emit a skewed column set. Pure read, so this
@@ -3362,6 +3983,14 @@ Result<BacktestContinuation> run_backtest_incremental(const Clock &clock, IStrat
     return Err(ErrorCode::InvalidArgument,
                "run_backtest_incremental: record_every_n must be 1 because checkpoint state "
                "does not persist pending stride blocks");
+  }
+  if (cfg.mark_domain == MarkDomainPolicy::CarryLastMark) {
+    // `BacktestCheckpoint` has no slot for the per-lot carried marks, and a resume
+    // that silently forgot them would re-mark every carried lot by extrapolation on
+    // the first resumed row — the exact fiction the policy exists to suppress.
+    return Err(ErrorCode::NotImplemented,
+               "run_backtest_incremental: MarkDomainPolicy::CarryLastMark cannot cross a "
+               "checkpoint (BacktestCheckpoint carries no per-lot carried marks)");
   }
   return run_backtest_strategy_impl(clock, strat, cfg, resume, true);
 }

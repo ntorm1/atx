@@ -125,7 +125,7 @@ atx-vol-surface-db-build --db <root> --hive <root>
 | `--fit-workers N` | no | Outer fit fan-out. Default **`0`** = auto (honors `ATX_VOL_FIT_WORKERS`); `1` = serial. **Deliberately not strictly parsed:** an unparseable value coerces to `0`, and `0` is a legitimate, safe choice — unlike `--r`, where every value is a *claim about the market* and a coerced `0.0` is a wrong claim, which is why that one is strict. A *missing* value is still exit 2. Results are byte-identical for any value. |
 | `--allow-coverage-regression` | no | Permit a date's rewrite to **destroy** a stored surface. Off by default. A partition write is whole-file, so a present, *enabled* cell whose re-fit fails is simply not in the new file and the commit deletes it — [one production-shaped run at the wrong `--r` removed 95 stored surfaces this way](#a-wrong---r-destroys-surfaces-you-already-had). By default such a date is **refused**: the existing partition is left untouched, every other date is built normally, and the run exits **`5`**. Pass this only for a run that *intends* retirement. The destroyed cells are still counted and named either way — see [Refusing a rewrite that would destroy stored surfaces](#refusing-a-rewrite-that-would-destroy-stored-surfaces). |
 | `--strict` | no | Off by default. Make **"scheduled work, fitted nothing" a non-zero exit (`3`) even when the run CARRIED stored surfaces** — the reading the FIX-D carry exemption gave up. **Who should turn it on:** an *unattended scheduler* over a database whose failing-cell set is expected to be **empty** (a fresh build, a CI fixture, a universe with no known-bad names) — for that caller, "I scheduled 250 cells and fitted 0 beside 257k carried" must wake someone up, and nothing else in the tool will. **Who should not:** an *interactive operator* on a database with standing failures; they get the carry-masked **warning** instead, which names the failing cells and says the run is ambiguous rather than judging it. **Why it is opt-in and not the default** — see [Why `--strict` is not the default](#why---strict-is-not-the-default). It never turns a green run non-zero unless work was **scheduled**: a converged resume, a carried-everything rewrite and an empty window all schedule zero cells and stay `0` in strict mode. Its diagnostic deliberately **omits** the `--r` advice the unconditional exit `3` gives. |
-| `--report out.csv` | no | Also write the five-section CSV report to this path. A write failure is reported on stderr and makes the run exit `1` — but it never masks exit `3` or `5`; see the exit table. |
+| `--report out.csv` | no | Also write the six-section CSV report to this path. A write failure is reported on stderr and makes the run exit `1` — but it never masks exit `3` or `5`; see the exit table. |
 | `--help` / `-h` | no | Print usage to stdout and exit `0`. Ignores everything else on the line. |
 | `--max-failures N` | no | `32`. Cap on the printed `failed_cell` **and `coverage_regression_cell`** lines. Overflow is counted in `coverage.failed_cells_elided` / `coverage.coverage_regression_cells_elided`, never dropped silently, and the `--report` CSV always carries the **full** list of both. `0` prints no per-cell detail at all. **One exemption:** on the destructive `--allow-coverage-regression` branch the cap does *not* apply to the regression cells — every destroyed cell is printed, because there the list and the CSV are the only record those surfaces existed (see [Refusing a rewrite that would destroy stored surfaces](#refusing-a-rewrite-that-would-destroy-stored-surfaces)). Same flag name, parsing and semantics as `atx-vol-surface-db verify`. |
 
@@ -749,15 +749,53 @@ and one
 then one `coverage_regression_cell <date> <symbol>` line per stored surface a
 refused (or, under `--allow-coverage-regression`, an allowed) rewrite would have
 destroyed.
-With `--report`, the same data is written as CSV in **five** sections: a
+With `--report`, the same data is written as CSV in **six** sections: a
 `key,value` scalar section, a `config_disabled_symbol` row per disabled name, a
 `symbol,n_attempted,n_ok,n_failed,n_disabled,n_carried` row per symbol, a
 `date,symbol,code,detail` row per failed cell (`detail` is RFC4180-quoted — it is
-free text from the fitter and may contain a comma), then a
+free text from the fitter and may contain a comma), a
+`slice_drop.date,symbol,T,outcome,n_used` row per non-Fitted expiry of a
+**written** date's **fresh** (not carried or retained-old) fits (Task 3,
+mark-domain-robustness — see [Slice drops and tenor
+coverage](#slice-drops-and-tenor-coverage) below), then a
 `regression_date,regression_symbol` row per coverage-regression cell. Every section
 header is emitted even when its list is empty, so the file's shape is constant.
-Section 5's column names deliberately differ from section 4's so a naive parser
-cannot splice the two together.
+Sections 5 and 6's column names deliberately differ from section 4's so a naive
+parser cannot splice sections together.
+
+### Slice drops and tenor coverage
+
+A cell can fit and still be *incomplete*: the fitter admits a surface with one
+or more of the board's expiries missing from it (`slice_drop.*`, section 5
+above) rather than failing the cell outright. On a stressed day this is exactly
+how a long-dated expiry can silently vanish from an otherwise-served
+surface — the cell reports `Ok`, the partition is written, and a backtest
+reading the surface only discovers the gap when it queries past the shortened
+tenor and gets an extrapolated mark instead of a fitted one.
+
+`outcome` prefers the FIT DRIVER's own, finer-grained reason
+(`ExpiryFitOutcome`) when the session retained one: `CarryFailed` (carry/forward
+resolution failed), `PrepStarved` (below the usable-row floor — thin), `PrepFailed`
+(a hard preparation defect), `FitFailed` (the slice fit itself failed), or
+`Skipped` (a degenerate maturity, never attempted). It falls back to the
+coarser admission-layer taxonomy (`ExpiryBuildOutcome`) — `Missing` — when no
+rich reason was retained. `DuplicateMaturity` is spelled by the fallback for
+completeness but is unreachable in this section today: it is only produced by
+`PricerFitter::fit`'s up-front input validation, which fails the whole attempt
+before anything is published — and `slice_drop.*` rows exist only for written
+(published) dates. `Fitted` never appears — a row exists only for the expiries
+that are NOT.
+
+Two `key,value` scalars summarize this per run: `coverage.dates_with_slice_drops`
+(how many written dates carry at least one `slice_drop.*` row) and
+`coverage.max_T_min` (the worst written date's own longest fitted pillar — the
+minimum, over written dates, of `max(that date's surfaces' tenor_domain().max_T)`).
+A falling `coverage.max_T_min` across runs is the signature to watch for: it means
+even the best-reaching surface on the worst day is not reaching as far as it used
+to. `atx-vol-surface-db tenor-audit` (see its own `--help`) walks a built database
+after the fact and flags individual (date, symbol) cells whose `max_T` is
+suspiciously short next to their neighbors in the same symbol's date-ordered
+history.
 
 ### Why each cell failed — the `failed_cell` lines
 

@@ -349,6 +349,17 @@ public:
     ATX_VOL_SURFACE_REF_FWD(resolve(K, T));
   }
 
+  // Tenor-domain introspection. Both forms carry the SAME `TenorDomain` type (the
+  // view aliases `PricedSurface::TenorDomain`), so this forwards like any other
+  // accessor. O(1) and allocation-free on both, which is what lets a per-step
+  // caller (the backtest mark-domain policy) ask once per lot.
+  [[nodiscard]] PricedSurface::TenorDomain tenor_domain() const noexcept {
+    ATX_VOL_SURFACE_REF_FWD(tenor_domain());
+  }
+  [[nodiscard]] bool extrapolates_tenor(double T) const noexcept {
+    ATX_VOL_SURFACE_REF_FWD(extrapolates_tenor(T));
+  }
+
   [[nodiscard]] Result<double>
   fair_value(double K, double T, Side side,
              QueryExecution execution = QueryExecution::Configured) const {

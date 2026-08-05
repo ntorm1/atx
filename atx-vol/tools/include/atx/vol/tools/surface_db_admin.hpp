@@ -700,4 +700,133 @@ struct SymbolEnableChange {
 [[nodiscard]] Result<SymbolEnableChange> set_symbol_enabled(SurfaceDb &db, std::string_view symbol,
                                                             bool enabled);
 
+// ── tenor_audit — Task 3 (mark-domain-robustness) ────────────────────────────
+//
+// A built database's build report (`surface_db_build.hpp`'s `slice_drop.*`
+// section) names a drop AT BUILD TIME, over the one date being written. This is
+// the AFTER-THE-FACT counterpart: walk an already-built database, symbol by
+// symbol, and flag a (date, symbol) cell whose fitted tenor reach (Task 1's
+// `PricedSurface::tenor_domain().max_T`) is suspiciously SHORT next to its
+// neighbors in the SAME symbol's date-ordered history — the shape a stressed
+// day produces when it silently truncates a long-dated expiry that every
+// nearby day still reaches.
+//
+// AN AUDIT, NOT A GATE. Every row is reported regardless of its flag; nothing
+// here refuses or quarantines anything. The exit-code opt-in lives on the CLI
+// (`--fail-on-truncated`), not on this call.
+
+// Deliberately NOT year-aware, NOT symbol-aware beyond the grouping described
+// at `tenor_audit` below, and computed PER SYMBOL: mixing two symbols' max_T
+// series (an index vs. a single-name, say) into one rolling window would
+// compare tenors that were never comparable to begin with.
+struct TenorAuditRow {
+  std::string date{};   // canonical partition key
+  std::string symbol{}; // canonical, as audited
+  std::size_t n_slices{0};
+  double min_T{0.0};
+  double max_T{0.0};
+  // TRUNCATED iff this row's max_T is more than 0.25 (year-fraction) below the
+  // median max_T of its up to 5 nearest OTHER partitions in this SAME symbol's
+  // date-ordered series (see `tenor_audit` for the exact neighbor selection).
+  // Always false when there were no neighbors at all to compare against (a
+  // symbol with a single partition) — there is nothing to be short RELATIVE
+  // TO.
+  bool truncated{false};
+};
+
+struct TenorAuditSpec {
+  // Which symbols to audit, and in what order the report groups them. Empty
+  // (default) = every symbol the manifest currently configures
+  // (`SurfaceDb::symbols()` — canonical, sorted), REGARDLESS of its stored
+  // `enabled` bit: a symbol disabled after it fitted keeps its stored
+  // surfaces (nothing on the read path gates on `enabled`, `surface_db_admin
+  // .hpp`'s standing rule), and those surfaces are exactly as auditable as an
+  // enabled symbol's.
+  //
+  // An EXPLICIT (non-empty) list, unlike `DbVerifySpec::symbols`, MUST name
+  // only symbols the manifest currently configures (Fix Round 1, Important
+  // 2): `tenor_audit` rejects an unconfigured name with `NotFound` rather
+  // than silently auditing zero rows for it. This is narrower than
+  // `verify_db`'s "an unconfigured name is a legitimate thing to assert
+  // about" stance, deliberately: an EMPTY tenor-audit walk and a FULLY
+  // TRUNCATION-FREE one are otherwise indistinguishable by `n_truncated`
+  // alone, which is exactly the shape that made `--fail-on-truncated`
+  // silently pass on a typo'd `--symbol`.
+  std::vector<std::string> symbols{};
+
+  // Cap on `TenorAuditReport::skip_notes`, same discipline as `DbVerifySpec
+  // ::max_reported_failures` (Fix Round 1, Important 3): a sparse production
+  // universe can have O(10^5-10^6) (date, symbol) cells a symbol was never
+  // written into, and every one of those is a skip note under the doc above.
+  // Uncapped, that is a multi-hundred-MB vector of heap strings for a walk
+  // whose per-cell TRUNCATED verdict never depended on the note text at all.
+  // Extra notes are counted in `n_skip_notes_elided`, never dropped silently
+  // — the same "bounded, not rationed, and never silently clean" shape as
+  // `max_reported_failures`, on its OWN budget (nothing else competes for it).
+  std::size_t max_skip_notes{kSurfaceDbVerifyMaxFailures};
+};
+
+struct TenorAuditReport {
+  // Grouped by symbol in AUDIT order (the order `symbols` above resolved to);
+  // ascending by date WITHIN a group. The rolling median in `truncated` above
+  // is computed per group, never across a group boundary.
+  std::vector<TenorAuditRow> rows{};
+  std::size_t n_truncated{0}; // == count of `rows` with `truncated == true`
+  // One free-text note per (date, symbol) this walk could NOT load — a
+  // partition that does not carry the symbol, or a partition file that will
+  // not open at all. Never fatal (see `tenor_audit`'s contract): the audit
+  // skips the cell and keeps going, exactly the discipline `verify_db` uses
+  // for its own load failures ("ABSENCE IS NOT A FAULT" at the top of this
+  // header) — except an audit has no directory-vs-map distinction to make, so
+  // every load failure, whatever its cause, is a skip here.
+  //
+  // Capped at `TenorAuditSpec::max_skip_notes` (Fix Round 1, Important 3);
+  // notes beyond the cap are counted in `n_skip_notes_elided`, not dropped
+  // silently. The SKIP ITSELF is never capped — every (date, symbol) cell
+  // that fails to load is still excluded from `rows` and still absent from
+  // the rolling-median comparison, whether or not it got a note. The cap
+  // bounds the TEXT, not the accounting.
+  std::vector<std::string> skip_notes{};
+  std::size_t n_skip_notes_elided{0};
+};
+
+// Walk every partition (`SurfaceDb::partitions()`, already sorted ascending by
+// canonical key) for each symbol in `spec.symbols` (or every manifest symbol
+// when empty), loading each (date, symbol) cell with `SurfaceDb::load_surface`
+// and reading its `PricedSurface::tenor_domain()` (Task 1). A load failure —
+// the symbol absent from that date's partition, or the partition file itself
+// unreadable — is SKIPPED, not fatal: recorded in `skip_notes` and the walk
+// continues with the next cell. This is an inspector over a database that may
+// legitimately have per-symbol gaps (a symbol added mid-history has no
+// partitions before it existed), not a completeness check.
+//
+// ROLLING-MEDIAN NEIGHBOR SELECTION, exactly. For row `i` of a symbol's
+// date-ordered series (length `n`, `i` zero-based), take up to 5 OTHER rows,
+// nearest by INDEX DISTANCE, ties (a before-row and an after-row equidistant
+// from `i`) broken toward the EARLIER date. This is the "2 before + 2 after +
+// 1 more from whichever side has slack" rule stated as one sort: at an
+// INTERIOR row with at least 3 rows on each side, distance-1 before,
+// distance-1 after, distance-2 before, distance-2 after and distance-3 before
+// sort as the nearest 5 (the tie-break sends the wildcard 5th neighbor
+// earlier rather than later), giving 3 before + 2 after — one valid resolution
+// of the wildcard the brief did not pin further. FEWER AT EDGES falls out of
+// the same sort with no special-casing: a row near either end of the series
+// simply has fewer "other" rows to draw from, so it takes however many exist
+// (down to zero for a symbol with a single partition, which is never
+// flagged — see `TenorAuditRow::truncated`). The comparison value is the
+// MEDIAN of the selected neighbors' `max_T` (the ordinary two-middle-average
+// definition on an even neighbor count); a row is TRUNCATED when its own
+// `max_T` is more than 0.25 below that median.
+//
+// Err: `NotFound` when `spec.symbols` names a symbol the manifest does not
+// currently configure (Fix Round 1, Important 2 — see `TenorAuditSpec
+// ::symbols`'s doc for why this is checked up front rather than left to
+// silently audit zero rows for that name). No other Err is reachable today —
+// `db.symbols()`/`db.partitions()` cannot fail for an already-open
+// `SurfaceDb` — but the empty-`spec.symbols` walk stays `Result` for symmetry
+// with the rest of this header and so a future spec restriction has
+// somewhere to put an error without changing the signature.
+[[nodiscard]] Result<TenorAuditReport> tenor_audit(const SurfaceDb &db,
+                                                    const TenorAuditSpec &spec = {});
+
 } // namespace atx::vol

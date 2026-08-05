@@ -1168,4 +1168,15 @@ VolCurveKind PricedSurfaceView::kind_at(std::size_t i) const noexcept {
   return static_cast<VolCurveKind>(col_kind_[i]);
 }
 
+PricedSurfaceView::TenorDomain PricedSurfaceView::tenor_domain() const noexcept {
+  if (n_slices_ == 0) {
+    return TenorDomain{};
+  }
+  return TenorDomain{col_T_[0], col_T_[n_slices_ - 1]};
+}
+
+bool PricedSurfaceView::extrapolates_tenor(double T) const noexcept {
+  return !tenor_domain().contains(T);
+}
+
 } // namespace atx::vol

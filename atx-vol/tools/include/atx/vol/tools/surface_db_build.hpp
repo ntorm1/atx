@@ -795,7 +795,7 @@ coverage_regression_display_cap(const SurfaceDbBuildReport &r,
 // aborts the build (it is tallied and, for config, stored disabled).
 [[nodiscard]] Result<SurfaceDbBuildReport> build_surface_db(const SurfaceDbBuildSpec &spec);
 
-// Write `r` as a FIVE-section CSV (reuses `write_populate_stats_csv`'s formatting
+// Write `r` as a SIX-section CSV (reuses `write_populate_stats_csv`'s formatting
 // discipline: an owned buffer flushed to a binary/truncating stream, IoError on
 // open/write failure). Section 1 is a `key,value` table of every scalar counter
 // (config.*, coverage.*, and the ingest counters n_dates_loaded / n_dates_missing
@@ -804,19 +804,37 @@ coverage_regression_display_cap(const SurfaceDbBuildReport &r,
 // `symbol,n_attempted,n_ok,n_failed,n_disabled,n_carried` row per
 // `coverage.per_symbol` entry; section 4 is a `date,symbol,code,detail` row per
 // `coverage.failed_cells` entry — the WHOLE list, never the printed cap, because
-// this file is where an operator goes to root-cause the lost cells; section 5 is
-// a `regression_date,regression_symbol` row per `coverage.coverage_regression_
-// cells` entry, likewise uncapped. The first line is always the pinned header
-// `key,value`.
+// this file is where an operator goes to root-cause the lost cells; section 5
+// (Task 3, mark-domain-robustness) is a `slice_drop.date,symbol,T,outcome,n_used`
+// row per `coverage.slice_drops` entry, likewise uncapped — one row per
+// non-Fitted expiry of a WRITTEN date's FRESH fits (never a carried or
+// retained-old cell — those were not re-fit this run, so there is no fresh
+// per-expiry outcome to report for them), so a stressed day that silently
+// dropped a long-dated expiry from an otherwise-served surface is named here
+// instead of only showing up downstream as an extrapolated backtest mark.
+// `outcome` spells the fit DRIVER's own reason (`ExpiryFitOutcome`:
+// `CarryFailed`/`PrepStarved`/`PrepFailed`/`FitFailed`/`Skipped`) when one was
+// retained on the session (Fix Round 1, `ExpiryBuildReport::fit_outcome`),
+// falling back to the coarser admission-layer `Missing` (`ExpiryBuildOutcome`)
+// when it was not — see `slice_drop_outcome_name` (surface_db_build.cpp) for
+// the exact fallback rule. `DuplicateMaturity` is spelled by the fallback for
+// completeness but is UNREACHABLE here today: it is only produced by the
+// failed-attempt builder (`PricerFitter::fit`'s up-front input validation,
+// which returns an error before `published` is ever set), and `slice_drops`
+// capture is gated on `published` — so no written date can carry it;
+// section 6 is a `regression_date,regression_symbol` row per
+// `coverage.coverage_regression_cells` entry, likewise uncapped. The first line
+// is always the pinned header `key,value`.
 //
-// SECTION 5 IS REV-R3's AND THIS CONTRACT MISSED IT (REV-R5, review M-1). The
-// code has written five sections since REV-R3, the CLI's own `--report` help says
-// "five-section", the manual says five, and the destructive banner tells the
-// operator that section 5 is the ONLY durable record that the surfaces it just
-// destroyed ever existed — the archive format keeps no tombstone. A public
-// contract that stops one section short of the one an incident is reconstructed
-// from is the worst place for this class of staleness, so it is called out here:
-// a new section goes in this paragraph in the same commit that writes it.
+// SECTION 5 (THE ORIGINAL ONE) IS REV-R3's AND THIS CONTRACT MISSED IT (REV-R5,
+// review M-1). The code has written six sections since Task 3, the CLI's own
+// `--report` help says "six-section", the manual says six, and the destructive
+// banner tells the operator that the LAST section is the ONLY durable record
+// that the surfaces it just destroyed ever existed — the archive format keeps no
+// tombstone. A public contract that stops one section short of the one an
+// incident is reconstructed from is the worst place for this class of
+// staleness, so it is called out here: a new section goes in this paragraph in
+// the same commit that writes it.
 //
 // `coverage.cells_carried` (section 1) and `n_carried` (section 3) are FIX-D
 // fix-1's: with `is_total_fit_failure` widened for the carried-only resume, these

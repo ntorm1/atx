@@ -359,6 +359,23 @@ FitSlot fit_board(const CorpusBoard &board, const PricerConfig &tmpl,
     slot.provenance = provenance_from_health(fitted->purpose() == SurfacePurpose::Risk
                                                  ? bundle.risk_health
                                                  : bundle.market_mark_health);
+    // Task 3 (mark-domain-robustness observability). `last_attempt_report()`
+    // is still live here -- `fitter` is a stack local that has not gone out of
+    // scope -- so this is the one seam where the per-expiry outcome list can
+    // reach the report the same way `provenance` above does. The PUBLISHED
+    // attempt is always `attempts.back()` (every publish site in
+    // pricer_fitter.cpp sets `report.published = true` in the same statement
+    // that appends the published attempt), so this reads the outcome of the
+    // surface actually served, not a rejected earlier rung. Filtered to
+    // non-Fitted so a fully-fitted board -- the common case -- pays nothing.
+    if (const std::optional<SurfaceBuildReport> &rep = fitter.last_attempt_report();
+        rep.has_value() && rep->published && !rep->attempts.empty()) {
+      for (const ExpiryBuildReport &er : rep->attempts.back().expiries) {
+        if (er.outcome != ExpiryBuildOutcome::Fitted) {
+          slot.slice_drops.push_back(er);
+        }
+      }
+    }
     // C2 (perf): export the per-side correction caches this fit BUILT so the
     // cross-date chain can carry them forward. correction_caches() returns nulls
     // when the fit REUSED supplied caches (built nothing) — the export then stays

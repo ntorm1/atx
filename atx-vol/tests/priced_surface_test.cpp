@@ -27,6 +27,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -37,6 +38,7 @@
 #include "atx/vol/priced_surface.hpp"
 #include "atx/vol/detail/pricing_executor.hpp" // the bank build's dispatch seam (2.11)
 #include "atx/vol/simd/american_boundary_batch.hpp"
+#include "atx/vol/surface_archive.hpp" // archive-backed PricedSurfaceView fixture (tenor-domain mirror)
 #include "atx/vol/surface_parity.hpp"
 #include "atx/vol/vol_curve.hpp"
 #include "support/isa_golden_tol.hpp" // golden_close (per-ISA FMA band)
@@ -331,6 +333,18 @@ struct RefCarry {
   auto ps = PricedSurface::create(std::move(cs), std::move(ctx), make_pricing(uid));
   EXPECT_TRUE(ps.has_value());
   return std::move(*ps);
+}
+
+// Archive-backed `PricedSurfaceView` fixture (the same round-trip
+// surface_archive_v2_test.cpp's `build_v2` uses): serializes `ps` into an
+// in-memory ATXVSA2 blob so the view tests below exercise the SAME zero-copy
+// view the backtest replay path serves, not a hand-rolled stand-in.
+[[nodiscard]] std::vector<std::byte> build_tenor_view_archive(const PricedSurface &ps,
+                                                               std::string_view symbol) {
+  const std::array<SurfaceArchiveItem, 1> items{SurfaceArchiveItem{symbol, &ps, std::nullopt}};
+  auto built = write_surface_archive_v2(items);
+  EXPECT_TRUE(built.has_value()) << (built.has_value() ? "" : built.error().to_string());
+  return built.has_value() ? std::move(*built) : std::vector<std::byte>{};
 }
 
 // The (K, T, side) grid the method pins sweep.
@@ -1901,4 +1915,91 @@ TEST(PricedSurfaceQueryPricing, FastTierRejectsNonAndersenLakeSurface) {
   const auto prepared = std::move(source).with_query_pricing(QueryPricingTier::RepresentativeFast);
   ASSERT_FALSE(prepared.has_value());
   EXPECT_EQ(prepared.error().code(), atx::core::ErrorCode::InvalidArgument);
+}
+
+// ── TenorDomain / extrapolates_tenor ──────────────────────────────────────────
+
+TEST(PricedSurface, TenorDomainReflectsFittedPillarBounds) {
+  const PricedSurface s = make_essvi(960, 2);
+  const std::span<const SliceContext> ctx = s.context();
+  ASSERT_EQ(ctx.size(), 2u);
+  const double T1 = ctx[0].T;
+  const double T2 = ctx[1].T;
+  ASSERT_LT(T1, T2);
+
+  const auto dom = s.tenor_domain();
+  EXPECT_FALSE(dom.empty());
+  EXPECT_DOUBLE_EQ(dom.min_T, T1);
+  EXPECT_DOUBLE_EQ(dom.max_T, T2);
+
+  EXPECT_TRUE(dom.contains(T1));
+  EXPECT_TRUE(dom.contains((T1 + T2) / 2.0));
+  EXPECT_TRUE(dom.contains(T2));
+  EXPECT_FALSE(dom.contains(T2 * 1.5));
+  EXPECT_FALSE(dom.contains(T1 * 0.5));
+
+  EXPECT_TRUE(s.extrapolates_tenor(T2 * 1.5));
+  EXPECT_TRUE(s.extrapolates_tenor(T1 * 0.5));
+  EXPECT_FALSE(s.extrapolates_tenor((T1 + T2) / 2.0));
+  EXPECT_FALSE(s.extrapolates_tenor(T1));
+  EXPECT_FALSE(s.extrapolates_tenor(T2));
+}
+
+TEST(PricedSurface, TenorDomainEmptyForMovedFromSurface) {
+  PricedSurface s = make_essvi(961, 2);
+  const PricedSurface moved = std::move(s);
+
+  EXPECT_TRUE(s.tenor_domain().empty());
+  EXPECT_TRUE(s.extrapolates_tenor(0.1));
+  EXPECT_TRUE(s.extrapolates_tenor(kNaN));
+
+  // The destination is unaffected by the source's emptied state.
+  EXPECT_FALSE(moved.tenor_domain().empty());
+}
+
+TEST(PricedSurfaceView, TenorDomainReflectsFittedPillarBounds) {
+  const PricedSurface orig = make_essvi(962, 2);
+  auto arch = SurfaceArchiveV2::open(build_tenor_view_archive(orig, "tdv"));
+  ASSERT_TRUE(arch.has_value()) << arch.error().to_string();
+  auto v = arch->map_symbol("tdv");
+  ASSERT_TRUE(v.has_value()) << v.error().to_string();
+
+  const std::span<const SliceContext> ctx = orig.context();
+  ASSERT_EQ(ctx.size(), 2u);
+  const double T1 = ctx[0].T;
+  const double T2 = ctx[1].T;
+  ASSERT_LT(T1, T2);
+
+  const auto dom = v->tenor_domain();
+  EXPECT_FALSE(dom.empty());
+  EXPECT_DOUBLE_EQ(dom.min_T, T1);
+  EXPECT_DOUBLE_EQ(dom.max_T, T2);
+
+  EXPECT_TRUE(dom.contains(T1));
+  EXPECT_TRUE(dom.contains((T1 + T2) / 2.0));
+  EXPECT_TRUE(dom.contains(T2));
+  EXPECT_FALSE(dom.contains(T2 * 1.5));
+  EXPECT_FALSE(dom.contains(T1 * 0.5));
+
+  EXPECT_TRUE(v->extrapolates_tenor(T2 * 1.5));
+  EXPECT_TRUE(v->extrapolates_tenor(T1 * 0.5));
+  EXPECT_FALSE(v->extrapolates_tenor((T1 + T2) / 2.0));
+  EXPECT_FALSE(v->extrapolates_tenor(T1));
+  EXPECT_FALSE(v->extrapolates_tenor(T2));
+}
+
+TEST(PricedSurfaceView, TenorDomainEmptyForMovedFromView) {
+  const PricedSurface orig = make_essvi(963, 2);
+  auto arch = SurfaceArchiveV2::open(build_tenor_view_archive(orig, "tdv"));
+  ASSERT_TRUE(arch.has_value()) << arch.error().to_string();
+  auto v = arch->map_symbol("tdv");
+  ASSERT_TRUE(v.has_value()) << v.error().to_string();
+
+  PricedSurfaceView moved = std::move(*v);
+  EXPECT_TRUE(v->tenor_domain().empty());
+  EXPECT_TRUE(v->extrapolates_tenor(0.1));
+  EXPECT_TRUE(v->extrapolates_tenor(kNaN));
+
+  // The destination is unaffected by the source's emptied state.
+  EXPECT_FALSE(moved.tenor_domain().empty());
 }

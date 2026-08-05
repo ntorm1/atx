@@ -632,8 +632,9 @@ def parse_build_report_csv(path) -> dict[str, str]:
     as a ``dict``. The header row (``key,value``) is skipped; parsing STOPS
     at the first row that is not exactly 2 columns -- section 2's own
     one-column header, ``config_disabled_symbol`` -- so the later per-symbol
-    (section 3), per-cell (section 4), and regression (section 5) rows,
-    which have different shapes, are never misread as flat scalars."""
+    (section 3), per-cell (section 4), slice-drop (section 5, Task 3), and
+    regression (section 6) rows, which have different shapes, are never
+    misread as flat scalars."""
     path = pathlib.Path(path)
     out: dict[str, str] = {}
     with open(path, "r", newline="", encoding="utf-8") as f:

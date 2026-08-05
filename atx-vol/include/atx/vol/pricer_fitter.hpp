@@ -273,6 +273,22 @@ struct ExpiryBuildReport {
   double maturity{0.0};
   ExpiryBuildOutcome outcome{ExpiryBuildOutcome::Missing};
   std::size_t n_used{0u};
+  // Task 3 (mark-domain-robustness observability), ADDITIVE ONLY — never
+  // widen `ExpiryBuildOutcome` itself, it has live consumers that switch over
+  // its exact three values (e.g. spy_fit_rca.cpp). This is the FIT DRIVER's
+  // own, finer-grained reason a chain never reached `expiries()`/`parity()`
+  // (`ExpiryFitOutcome`: Fitted/FittedFallbackCurve/FittedLegacyPrep/
+  // CarryFailed/PrepStarved/PrepFailed/FitFailed/Skipped,
+  // surface_parity.hpp), read off `VolaSession::expiry_fit_reports()` and
+  // indexed by chain position -- see `completed_attempt_report`
+  // (pricer_fitter.cpp) for where this is populated. Meaningful only when
+  // `outcome == Missing`; left at its default (`Fitted`, the enum's own 0
+  // value) everywhere else, including on a `Fitted`/`DuplicateMaturity`
+  // `ExpiryBuildReport` and on any report built OUTSIDE
+  // `completed_attempt_report` (`failed_attempt_report`,
+  // `duplicate_maturity_report`) where no session -- and therefore no rich
+  // report -- exists at all.
+  ExpiryFitOutcome fit_outcome{ExpiryFitOutcome::Fitted};
 };
 
 struct SurfaceBuildAttemptReport {

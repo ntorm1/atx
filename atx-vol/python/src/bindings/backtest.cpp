@@ -304,6 +304,11 @@ void bind_backtest(py::module_ &m) {
             ATXVOL_RESIZE(n_open_lots);
             ATXVOL_RESIZE(n_unpriced_lots);
             ATXVOL_RESIZE(n_unpriced_greeks);
+            // Mark-domain accounting (MarkDomainPolicy). Outside the frozen
+            // RunArchive registry, but the TSV writer emits them and the reader
+            // classifies them, so a hand-built result must be able to hold them.
+            ATXVOL_RESIZE(n_extrapolated_marks);
+            ATXVOL_RESIZE(n_carried_marks);
 #undef ATXVOL_RESIZE
           },
           py::arg("n"),
@@ -361,6 +366,8 @@ void bind_backtest(py::module_ &m) {
             ATXVOL_COL(n_open_lots);
             ATXVOL_COL(n_unpriced_lots);
             ATXVOL_COL(n_unpriced_greeks);
+            ATXVOL_COL(n_extrapolated_marks);
+            ATXVOL_COL(n_carried_marks);
             ATXVOL_COL(step_pnl_total);
             ATXVOL_COL(nav_liquidation);
 #undef ATXVOL_COL
@@ -397,6 +404,8 @@ void bind_backtest(py::module_ &m) {
   ATXVOL_SERIES(result, n_open_lots);
   ATXVOL_SERIES(result, n_unpriced_lots);
   ATXVOL_SERIES(result, n_unpriced_greeks);
+  ATXVOL_SERIES(result, n_extrapolated_marks);
+  ATXVOL_SERIES(result, n_carried_marks);
   ATXVOL_SERIES(result, step_pnl_total);
   ATXVOL_SERIES(result, nav_liquidation);
 
