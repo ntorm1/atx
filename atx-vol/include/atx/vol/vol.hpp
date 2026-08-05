@@ -215,6 +215,7 @@
 #include "atx/vol/dispersion.hpp"          // dispersion book / basket vocabulary
 #include "atx/vol/dispersion_strangle.hpp" // strangle DSL over the dispersion book
 #include "atx/vol/strategy.hpp"            // StrategySpec, LifecycleSpec, resolve_strike_by_delta
+#include "atx/vol/swap_leg.hpp"            // swap_contract_for_lot, SwapSignalProbe
 
 // ── Surface analytics (E5 / AN-W) ───────────────────────────────────────────
 //

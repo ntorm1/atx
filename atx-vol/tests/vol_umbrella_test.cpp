@@ -107,6 +107,7 @@ constexpr std::string_view kTierA[] = {
     "atx/vol/surface_db.hpp",
     "atx/vol/surface_parity.hpp",
     "atx/vol/surface_policy.hpp",
+    "atx/vol/swap_leg.hpp",
     "atx/vol/types.hpp",
     "atx/vol/universe.hpp",
     "atx/vol/version.hpp",
@@ -318,7 +319,7 @@ TEST(VolUmbrella, TierAIsClosedUnderInclusion) {
 // in the same commit, and confirm `UmbrellaIsExactlyTierA` /
 // `TierAIsClosedUnderInclusion` still pass.
 TEST(VolUmbrella, TierCountsMatchTheReadmeTable) {
-  EXPECT_EQ(std::size(kTierA), std::size_t{57})
+  EXPECT_EQ(std::size(kTierA), std::size_t{58})
       << "Tier-A count drifted -- update the README table (## Versioning) "
          "alongside this literal";
 
@@ -339,7 +340,7 @@ TEST(VolUmbrella, TierCountsMatchTheReadmeTable) {
        fs::directory_iterator(include_root() / "atx" / "vol" / "detail")) {
     if (entry.is_regular_file() && entry.path().extension() == ".hpp") ++detail_headers;
   }
-  EXPECT_EQ(detail_headers, std::size_t{28})
+  EXPECT_EQ(detail_headers, std::size_t{29})
       << "detail/ count drifted -- update the README table (## Versioning) "
          "alongside this literal (the install-tree '+1 generated' header does "
          "not live under include_root() and is not counted here)";

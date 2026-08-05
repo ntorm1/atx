@@ -10,7 +10,7 @@ The upstream `ats-vol` (~65k LOC of C across ~90 translation units) has been
 ported in full to idiomatic, tested C++20, and then extended with a
 Vola-Dynamics American-equity parity layer (see below), a composable
 `VolaSession` handle, and a cached high-performance pricing hot path. It registers
-**2,848 GoogleTest cases across 422 suites** under `/W4 /permissive- /WX`
+**2,892 GoogleTest cases across 429 suites** under `/W4 /permissive- /WX`
 (clang-cl). That number is *measured*, not maintained — re-derive it with
 `build/bin/atx-vol-tests.exe --gtest_list_tests` rather than trusting the prose,
 which is how a count in a README stops rotting silently (see *Build & test* for
@@ -638,23 +638,23 @@ same population and a single hand-written number would hide that:
 
 | Count | Command | What it counts |
 |---|---|---|
-| **2,848** cases / **422** suites | `build/bin/atx-vol-tests.exe --gtest_list_tests` | GoogleTest cases in the atx-vol test binary, including the 7 `DISABLED_` ones |
-| **2,856** registered tests | `ctest --test-dir build -N -L atx_vol` | the 2,848 above, discovered by `gtest_discover_tests`, **plus 8** lanes that are not GoogleTest cases: `SpxWilmottReproUnit`, `atx-vol-reference-spy-dispersion`, `atx-vol-download-occ-ess`, `atx-vol-build-spy-top50-universe`, `Mag7DispersionReport`, `SpyDispersionPnlReport`, `atx-vol-python`, `atx-vol-pricing-forcescalar` (`tests/CMakeLists.txt`) |
+| **2,892** cases / **429** suites | `build/bin/atx-vol-tests.exe --gtest_list_tests` | GoogleTest cases in the atx-vol test binary, including the 8 `DISABLED_` ones |
+| **2,905** registered tests | `ctest --test-dir build -N -L atx_vol` | the 2,892 above, discovered by `gtest_discover_tests`, **plus 13** lanes that are not GoogleTest cases: `SpxWilmottReproUnit`, `atx-vol-reference-spy-dispersion`, `atx-vol-download-occ-ess`, `atx-vol-build-spy-top50-universe`, `Mag7DispersionReport`, `SpyDispersionPnlReport`, `atx-vol-python`, `atx-vol-pricing-forcescalar`, `atx-vol-e2e-benchmark-name-coverage`, `atx-vol-e2e-benchmark-name-checker-unit`, `atx-vol-american-shootout-name-coverage`, `atx-vol-compare-baseline-unit`, `atx-vol-pg-observability-name-coverage` (`tests/CMakeLists.txt`) |
 
-The two reconcile exactly: 2,848 + 8 = 2,856. Both were re-measured at the 1.0.0
-release commit by running exactly the two commands in the table, and both had
-moved by one since the last pass: the case count because the release gate's
-own tier-count guard (`VolUmbrella.TierCountsMatchTheReadmeTable`) landed, the
-suite count because the 421 beside it had never been re-derived at all. The
-digits are the measurement, not a maintained invariant — which is the whole
-reason the command sits next to each one.
+The two reconcile exactly: 2,892 + 13 = 2,905. Both were re-measured after the
+strategy-DSL merge landed on main (the first growth past the 1.0.0 numbers,
+which were 2,848 cases / 422 suites / 8 lanes): the DSL and convex-recovery
+suites added 44 cases across 7 suites, and the bench name-coverage guards added
+5 script lanes. The digits are the measurement, not a maintained invariant —
+which is the whole reason the command sits next to each one.
 
 Both figures are `cmake --preset dev`. **The `rel` and `rel-avx2` presets
-register 2,858**, not 2,856: they are configured with `-DATX_BUILD_EXAMPLES=ON`,
+register 2,907**, not 2,905: they are configured with `-DATX_BUILD_EXAMPLES=ON`,
 which adds the two `accuracy_panel` determinism lanes (`AccuracyPanelDeterminism`,
 `AccuracyPanelFailureDeterminism`, `atx-vol/CMakeLists.txt`). The GoogleTest
 population is identical on all three presets — only the script lanes differ — so
-a gate log quoting 2,858 is not a drift.
+a gate log quoting the rel-side number is not a drift (the v1.0.0 gate logs quote
+2,856/2,858, the same two-lane split under the pre-merge counts).
 
 Every count in the section below comes from the same
 measurement, quoted once; the *skip* inventory needs a full matrix run to
@@ -668,11 +668,12 @@ Green means **every lane that can run, ran and passed**. It does not mean every
 registered lane ran, and the difference is stable, deliberate and enumerated
 below rather than being a backlog.
 
-Of the **2,856** registered above, ctest starts **2,849** — the other 7 are the
-`DISABLED_` cases — and **63** of those report `SKIPPED` on an AVX2 host with
-`cmake --preset dev` and no market-data cache present. Every skip carries a
-reason string naming exactly what would let it run; the six classes below
-account for all 63.
+Of the **2,905** registered above, ctest starts **2,897** — the other 8 are the
+`DISABLED_` cases — and **63** of those reported `SKIPPED` at the v1.0.0
+release-sprint measurement on an AVX2 host with `cmake --preset dev` and no
+market-data cache present. Every skip carries a reason string naming exactly
+what would let it run; the six classes below account for all 63 as of that
+measurement (the post-merge tree has not had a fresh full-matrix skip census).
 
 | Gate class | What gates it | Skips | Provisioning status |
 |---|---|---|---|
@@ -819,9 +820,9 @@ frozen?" is answered by where the header lives, not by judgement:
 
 | Tier | Where | Count | Promise |
 |---|---|---|---|
-| **Tier-A** | exactly the headers `atx/vol/vol.hpp` includes | 57 | **Frozen for 1.x.** Closed under inclusion |
+| **Tier-A** | exactly the headers `atx/vol/vol.hpp` includes | 58 | **Frozen for 1.x.** Closed under inclusion |
 | **Tier-B** | other headers directly under `include/atx/vol/`, plus `simd/` | 31 + 9 | Public and supported to include; **not** frozen |
-| `detail/` | `include/atx/vol/detail/` | 28 (+1 generated) | **No stability promise.** Installed because Tier-A reaches it |
+| `detail/` | `include/atx/vol/detail/` | 29 (+1 generated) | **No stability promise.** Installed because Tier-A reaches it |
 | `tools/` | `tools/include/atx/vol/tools/` — target `atx::vol::tools` | 6 | CLI support. Not part of the shipped library surface |
 | `research/` | `research/include/atx/vol/research/` — target `atx::vol::research` | 9 | Run orchestration. Not part of the shipped library surface |
 
@@ -831,11 +832,15 @@ Tier-B 23 → **31**, `detail/` 25 → **28**, while `simd/` 9, `tools/` 6 and
 `research/` 9 held. The earlier note here said the table was "one short" because
 `log.hpp` and `detail/log_emit.hpp` had landed; that was true when written, and
 the gap then widened to 8 on Tier-B and 3 on `detail/` as the surface kept
-moving — which is the point it was making.
+moving — which is the point it was making. The first post-1.0.0 growth is
+already in the table: the strategy DSL made `strategy.hpp` include
+`swap_leg.hpp`, so closure-under-inclusion promoted it (Tier-A 57 → **58**),
+and `detail/convex_recovery.hpp` landed alongside it (`detail/` 28 → **29**).
+The v1.0.0 tag itself ships 57 / 31 / 28.
 
 That drift is now caught by a test rather than by a reader.
 `VolUmbrella.TierCountsMatchTheReadmeTable` (`tests/vol_umbrella_test.cpp`)
-asserts all three of **57 / 31 / 28** against the live header tree — Tier-A from
+asserts all three of **58 / 31 / 29** against the live header tree — Tier-A from
 the umbrella manifest, Tier-B and `detail/` by counting `.hpp` files in the
 directories this table names — and each failure message says to update this
 table. Previously the Tier-A *set* was machine-checked but no **count** was, and
