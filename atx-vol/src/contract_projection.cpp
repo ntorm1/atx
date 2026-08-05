@@ -315,8 +315,14 @@ struct DeltaSolution {
 }
 
 // Bounded batch-pass budget for solve_american_delta_batch: pass 0 (seed
-// evaluation), pass 1 (Newton), passes 2.. (secant refinement).
-constexpr std::size_t kMaxBatchDeltaPasses = 6;
+// evaluation), pass 1 (Newton), passes 2.. (secant refinement). Raised 6 -> 8
+// (Task 9, accelerant 4): the SP100 YTD profile measured the scalar fallback
+// tail firing on 2.21 % of rows at ~29x the cost of one laned pass
+// (~1.05 ms/row vs ~37 us/row); two extra secant passes convert most of that
+// tail into laned work (measured: fallback fraction 2.21 % -> 0.43 %).
+// Mirrored by kMirroredMaxBatchDeltaPasses in contract_projection_test.cpp --
+// update BOTH together.
+constexpr std::size_t kMaxBatchDeltaPasses = 8;
 
 // The scalar-fallback tail of solve_american_delta_batch. Rows land here when
 // a pass errored, produced a non-finite delta, hit a degenerate Newton/secant

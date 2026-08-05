@@ -360,8 +360,9 @@ struct BatchDeltaOutputs {
 // anonymous namespace of contract_projection.cpp; not exposed via the public
 // header, so the Task-4 fallback tests re-declare the same value here purely
 // as a loose upper bound distinguishing "stayed inside the batch passes" rows
-// from "fell through to the scalar fallback tail" rows.
-constexpr std::uint16_t kMirroredMaxBatchDeltaPasses = 6u;
+// from "fell through to the scalar fallback tail" rows. Raised 6 -> 8 with
+// the Task-9 accelerant-4 budget bump -- keep in lockstep with the solver.
+constexpr std::uint16_t kMirroredMaxBatchDeltaPasses = 8u;
 
 double median_of(std::vector<std::uint16_t> values) {
   std::sort(values.begin(), values.end());
