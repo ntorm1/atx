@@ -9,7 +9,7 @@ and layered above `atx-core`.
 The upstream `ats-vol` (~65k LOC of C across ~90 translation units) has been
 ported in full to idiomatic, tested C++20, and then extended with a
 Vola-Dynamics American-equity parity layer (see below), a composable
-`VolaSession` handle, and a cached high-performance pricing hot path. It passes
+`VolaSession` handle, and a cached high-performance pricing hot path. It registers
 **2,848 GoogleTest cases across 422 suites** under `/W4 /permissive- /WX`
 (clang-cl). That number is *measured*, not maintained — re-derive it with
 `build/bin/atx-vol-tests.exe --gtest_list_tests` rather than trusting the prose,

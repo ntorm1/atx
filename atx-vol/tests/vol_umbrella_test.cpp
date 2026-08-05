@@ -302,8 +302,8 @@ TEST(VolUmbrella, TierAIsClosedUnderInclusion) {
 }
 
 // The README's tier table (`## Versioning`) states the Tier-A/Tier-B/`detail/`
-// counts as prose, and says so itself: "Every digit above is prose, and three
-// of the five had rotted by v1 ... Do not trust the digits -- re-derive them."
+// counts as prose, and says so itself: "Three of the five digits above had
+// rotted by v1, and the first three no longer can."
 // `UmbrellaIsExactlyTierA` above pins the Tier-A *set* against `kTierA`, but
 // nothing pinned `kTierA`'s own SIZE, nor Tier-B's or `detail/`'s -- so a
 // fourth silent drift (after Tier-A 56->57, Tier-B 23->31, `detail/` 25->28)
