@@ -242,7 +242,7 @@ qp_active_set(const MatX &H, const VecX &q, const MatX &G, const VecX &h, VecX x
       continue;
     }
 
-    // Ratio test: largest α ∈ (0, 1] keeping G(x + αp) >= h for inactive rows.
+    // Ratio test: largest α ∈ [0, 1] keeping G(x + αp) >= h for inactive rows.
     double alpha = 1.0;
     Eigen::Index block = -1;
     for (Eigen::Index i = 0; i < nc; ++i) {
