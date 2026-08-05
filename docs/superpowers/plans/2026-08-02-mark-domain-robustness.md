@@ -138,6 +138,24 @@
 
 ### Task 4: Stop dropping long-dated expiries the carry fallback can serve
 
+> **EXECUTION ADDENDUM (post-hoc, binding record):** the Step-1 investigation
+> falsified this task's premise. Hypotheses (a)-(d) are all false — the dropped
+> expiries were CONFIDENT carry anchors (56-60 prepared rows) that never entered
+> the repair path. The real producer-side root cause was in the convex-slice QP:
+> `qp_active_set`'s ratio test computed an unclamped `-gix / gip`, so a
+> constraint row whose residual had drifted a few ulp negative produced a
+> negative step ratio that won the min-selection and walked the iterate
+> backwards out of the feasible region; the (unchanged) KKT certificate then
+> refused the solve and the expiry was dropped as `M0`. The shipped fix is the
+> one-line clamp `std::max(0.0, -gix/gip)` in `atx-vol/src/dense_slice.cpp`
+> (commit 0406ed8, test `ConvexSliceFit.DegenerateBoardIsCertifiedNotDiverged`),
+> NOT a carry-fallback change — `curve_fit.cpp`/`carry.*` are untouched and the
+> carry-fallback test/commit message mandated below were deliberately not
+> delivered (they would have passed before and after, proving nothing). All
+> acceptance criteria below were met: 2023-10-25 fits T=2.1521, 2025-04-09 goes
+> 14/34 -> 31/34, build wall-time -43%. Full evidence:
+> `.superpowers/sdd/2026-08-02-mark-domain-robustness/task-4-report.md`.
+
 **Files:**
 - Investigate/Modify: `atx-vol/src/curve_fit.cpp` (Phase 1.5 board-level fallback :541-613; prepass carry gating in `run_deam_prepass` and `prepare_fit_slice_into_slot`), `atx-vol/src/carry.cpp` / `atx-vol/include/atx/vol/carry.hpp` (`term_structure_fallback_borrow`, `CarryAnchor`, confidence gate `needs_carry_repair` producer), possibly `atx-vol/src/corpus_board_fit.cpp`.
 - Test: `atx-vol/tests/curve_fit_carry_fallback_test.cpp` (extend; existing patterns at :184-283 assert per-expiry `carry_source` / outcome).

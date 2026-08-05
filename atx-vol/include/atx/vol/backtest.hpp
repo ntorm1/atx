@@ -721,8 +721,11 @@ enum class MarkDomainPolicy : std::uint8_t {
   //     refuses to trade on such a mark at all.
   //
   // ONE DELIBERATE LIMIT: a lot BORN into an extrapolated domain has no in-domain
-  // mark to carry; it is marked by extrapolation (and counted in
-  // `n_extrapolated_marks`) until its first in-domain row. Entries are expected
+  // mark to carry; it is marked by extrapolation and counted in
+  // `n_extrapolated_marks` from the first row the domain scan sees it on, until
+  // its first in-domain row. The scan walks the book carried INTO the step, so a
+  // lot a strategy opens mid-run is first seen on the row AFTER its birth row
+  // (an inception-row entry is scanned on row 0 itself). Entries are expected
   // to be taken in-domain; use `Error` to enforce that. Requires
   // `record_every_n == 1` (the carry is resolved on each recorded row) and is not
   // supported by `run_backtest_incremental` (a checkpoint has no slot for the
@@ -730,7 +733,10 @@ enum class MarkDomainPolicy : std::uint8_t {
   CarryLastMark = 1,
   // Abort the run naming the step date, the lot's uid/K/T and the surface's
   // fitted `max_T`. The mode a production QIS run uses so no SURVIVING lot's mark
-  // can reach a P&L number from outside the fitted domain.
+  // can reach a P&L number from outside the fitted domain — with the same scan
+  // timing as above: the guard checks the book carried INTO each step, so a lot
+  // born mid-run is first guarded on the row after its birth row; a birth-row
+  // extrapolated mark on the run's FINAL row is the one gap this mode cannot see.
   //
   // SCOPED, and the scope is deliberate: this governs the marks of lots the step
   // carries FORWARD. An EXPIRING lot's base-side explain mark (residual T of about
