@@ -73,6 +73,19 @@ enum class OptionProjectionOutput : std::uint8_t {
   FullGreeks = 2,
 };
 
+// Delta-strike resolution policy. FastScreenColdConfirm may use a prepared
+// marks tier only to propose a strike; every successful result is validated by
+// the cold-reference American delta and falls back to the robust cold solver.
+enum class OptionDeltaSolvePolicy : std::uint8_t {
+  Direct = 0,
+  FastScreenColdConfirm = 1,
+  // Cross-sectional inverse-delta with cold confirm. In the scalar
+  // project_option_contract entry point this behaves exactly as
+  // FastScreenColdConfirm (a batch of one gains nothing); batch consumers
+  // (PreparedVarPortfolio) select the cross-sectional group solver.
+  CrossSectionalColdConfirm = 2,
+};
+
 enum class OptionProjectionStatus : std::uint8_t {
   Ok = 0,
   InvalidSpec = 1,
@@ -94,6 +107,7 @@ struct OptionProjectionConfig {
   // Route every American pricing query through the same execution policy used
   // by the surrounding backtest. Appended for aggregate-source compatibility.
   QueryExecution query_execution{QueryExecution::Configured};
+  OptionDeltaSolvePolicy delta_solve_policy{OptionDeltaSolvePolicy::Direct};
 };
 
 // Immutable economic identity resolved at one historical valuation. `contract.T`
@@ -122,6 +136,66 @@ struct ProjectedOption {
 
   [[nodiscard]] bool operator==(const ProjectedOption &) const = default;
 };
+
+// Absolute expiry timestamp for `spec` anchored at `valuation_ts_ns`. Public
+// form of the maturity resolver used internally by project_option_contract.
+[[nodiscard]] Result<std::int64_t> resolve_projected_expiry(std::int64_t valuation_ts_ns,
+                                                            const ProjectedMaturitySpec &spec);
+
+// Nonzero identity fingerprint for a resolved `definition`. Public form of the
+// fingerprint helper used internally by project_option_contract.
+[[nodiscard]] std::uint64_t
+projected_definition_fingerprint(const ProjectedOptionDefinition &definition);
+
+// Reusable, allocation-amortized workspace for solve_american_delta_batch.
+// resize(n) grows all columns; steady-state reuse allocates nothing.
+struct AmericanDeltaBatchScratch {
+  std::vector<double> k_log{};    // current candidate log-moneyness per row
+  std::vector<double> strike{};   // F(T) * exp(k_log)
+  std::vector<double> residual{}; // |delta| - target at current candidate
+  std::vector<double> prev_k{};   // previous point for the secant update
+  std::vector<double> prev_residual{};
+  std::vector<double> forward{};   // F(T) per row (seed-time resolution)
+  std::vector<double> sigma{};     // smile-refreshed seed vol per row
+  std::vector<double> signed_d1{}; // Black seed d1 (slope reuse, pass 1)
+  std::vector<double> iv{};        // evaluate_batch iv column
+  std::vector<double> price{};     // evaluate_batch price column
+  std::vector<AmericanGreeks> greeks{};
+  std::vector<Status> pass_status{};
+  std::vector<std::uint32_t> active{};             // stable-ordered unconverged row ids
+  std::vector<double> active_strike{}, active_t{}; // compacted pass inputs
+  std::vector<Side> active_side{};
+  // Rows the batch passes could not finish, handed to the scalar fallback
+  // tail in ascending row-id order (sorted in place before the tail runs, an
+  // allocation-free step). Owned here rather than as a solver-local vector so
+  // even the rare fallback path allocates nothing once resize(n) has run;
+  // empty on the (steady-state) happy path.
+  std::vector<std::uint32_t> fallback_rows{};
+  void resize(std::size_t n);
+};
+
+// Cross-sectional inverse-delta solve on ONE surface (owned or view). For each
+// row i: find strike_out[i] with | |cold American delta| - target_abs_delta[i] |
+// <= tolerance, achieved via a Black-style inverse-delta seed, laned cold
+// American delta passes (evaluate_batch FirstOrder + reduced GreekNeeds), a
+// vectorized Newton/secant correction, and a robust scalar fallback for the
+// unconverged tail (Task 4). Internal batch acceptance uses tolerance/2 so the
+// scalar cold oracle holds at the full tolerance despite the documented
+// laned-vs-scalar kernel gap. Spans all length n; structural violations
+// (length mismatch, invalid tolerance, empty batch) fail the call and leave
+// every output span untouched -- that guarantee holds only for these
+// pre-flight validation failures, checked before any row is processed; a
+// structural failure surfaced mid-run (e.g. evaluate_batch itself erroring
+// inside a pass) still returns Err but rows already frozen by an earlier
+// pass keep their written outputs. Per-row market/convergence failures land
+// in row_status_out and never invent strikes. Deterministic: fixed row
+// order, batch-composition-invariant kernels, no cross-call state.
+// Thread-safe for concurrent calls on distinct scratch.
+[[nodiscard]] Status solve_american_delta_batch(
+    const SurfaceRef &surface, std::span<const double> T, std::span<const Side> side,
+    std::span<const double> target_abs_delta, double tolerance, AmericanDeltaBatchScratch &scratch,
+    std::span<double> strike_out, std::span<double> achieved_delta_out,
+    std::span<std::uint16_t> evaluations_out, std::span<Status> row_status_out);
 
 // Resolve one template directly against one surface. On success the output is a
 // concrete absolute-expiry definition plus the requested mark/risk materialization.

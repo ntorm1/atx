@@ -6,14 +6,17 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <span>
 #include <string>
 #include <tuple>
 #include <utility>
+#include <vector>
 
 #include "atx/core/datetime.hpp"
 #include "atx/core/error.hpp"
 #include "atx/core/hash.hpp"
 #include "atx/vol/detail/parallel_for.hpp"
+#include "atx/vol/simd/cpu.hpp"
 
 namespace atx::vol {
 namespace {
@@ -59,68 +62,6 @@ constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
   const double q = std::sqrt(-2.0 * std::log(1.0 - probability));
   return -(((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) /
          ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1.0);
-}
-
-[[nodiscard]] Result<std::int64_t> resolve_expiry(std::int64_t valuation_ts_ns,
-                                                  const ProjectedMaturitySpec &spec) {
-  if (valuation_ts_ns <= 0) {
-    return Err(ErrorCode::InvalidArgument, "contract projection: invalid valuation timestamp");
-  }
-  switch (spec.kind) {
-  case ProjectedMaturityKind::YearFraction: {
-    if (!finite_positive(spec.year_fraction)) {
-      return Err(ErrorCode::InvalidArgument, "contract projection: year fraction must be positive");
-    }
-    const long double offset =
-        static_cast<long double>(spec.year_fraction) * static_cast<long double>(kNsPerYear);
-    const long double available =
-        static_cast<long double>(std::numeric_limits<std::int64_t>::max() - valuation_ts_ns);
-    if (!(offset >= 1.0L && offset <= available)) {
-      return Err(ErrorCode::OutOfRange, "contract projection: maturity overflows timestamp");
-    }
-    return Ok(valuation_ts_ns + static_cast<std::int64_t>(std::llround(offset)));
-  }
-  case ProjectedMaturityKind::CalendarDays: {
-    if (spec.calendar_count <= 0) {
-      return Err(ErrorCode::InvalidArgument, "contract projection: calendar days must be positive");
-    }
-    constexpr std::int64_t day_ns = 86'400'000'000'000LL;
-    if (spec.calendar_count >
-        (std::numeric_limits<std::int64_t>::max() - valuation_ts_ns) / day_ns) {
-      return Err(ErrorCode::OutOfRange, "contract projection: day maturity overflows");
-    }
-    return Ok(valuation_ts_ns + static_cast<std::int64_t>(spec.calendar_count) * day_ns);
-  }
-  case ProjectedMaturityKind::CalendarMonths: {
-    if (spec.calendar_count <= 0 || spec.calendar_count > 1200) {
-      return Err(ErrorCode::InvalidArgument,
-                 "contract projection: calendar months outside (0,1200]");
-    }
-    const time::CivilTime civil =
-        time::to_civil_utc(time::Timestamp::from_unix_nanos(valuation_ts_ns));
-    const std::int64_t month_index = static_cast<std::int64_t>(civil.date.year) * 12 +
-                                     static_cast<std::int64_t>(civil.date.month - 1u) +
-                                     spec.calendar_count;
-    const auto year = static_cast<std::int32_t>(month_index / 12);
-    const auto month = static_cast<std::uint32_t>(month_index % 12 + 1);
-    if (year < 1678 || year > 2261) {
-      return Err(ErrorCode::OutOfRange, "contract projection: calendar maturity overflows");
-    }
-    const std::uint32_t day = std::min(civil.date.day, time::days_in_month(year, month));
-    const std::int64_t expiry = time::timestamp_from_utc(year, month, day, civil.hour, civil.minute,
-                                                         civil.second, civil.nano)
-                                    .unix_nanos();
-    return expiry > valuation_ts_ns
-               ? Ok(expiry)
-               : Err(ErrorCode::OutOfRange, "contract projection: nonpositive calendar tenor");
-  }
-  case ProjectedMaturityKind::AbsoluteExpiry:
-    return spec.expiry_ts_ns > valuation_ts_ns
-               ? Ok(spec.expiry_ts_ns)
-               : Err(ErrorCode::InvalidArgument,
-                     "contract projection: absolute expiry is not after valuation");
-  }
-  return Err(ErrorCode::InvalidArgument, "contract projection: unknown maturity kind");
 }
 
 struct DeltaSolution {
@@ -269,18 +210,164 @@ struct DeltaSolution {
   return Ok(DeltaSolution{forward * std::exp(root), root_residual.delta, evaluations});
 }
 
-[[nodiscard]] std::uint64_t definition_fingerprint(const ProjectedOptionDefinition &definition) {
-  std::uint64_t words[] = {
-      definition.contract.uid,
-      std::bit_cast<std::uint64_t>(definition.contract.K),
-      std::bit_cast<std::uint64_t>(definition.contract.T),
-      static_cast<std::uint64_t>(definition.contract.side),
-      static_cast<std::uint64_t>(definition.valuation_ts_ns),
-      static_cast<std::uint64_t>(definition.expiry_ts_ns),
-      std::bit_cast<std::uint64_t>(definition.multiplier),
+[[nodiscard]] std::uint16_t add_evaluations(std::uint16_t left, std::uint16_t right) noexcept {
+  const unsigned sum = static_cast<unsigned>(left) + static_cast<unsigned>(right);
+  return static_cast<std::uint16_t>(
+      std::min(sum, static_cast<unsigned>(std::numeric_limits<std::uint16_t>::max())));
+}
+
+[[nodiscard]] Result<DeltaSolution> solve_american_delta_screened(const SurfaceRef &surface,
+                                                                  double T, Side side,
+                                                                  double target_abs_delta,
+                                                                  double tolerance) {
+  const auto cold_fallback = [&](std::uint16_t prior_evaluations) -> Result<DeltaSolution> {
+    Result<DeltaSolution> cold = solve_american_delta(surface, T, side, target_abs_delta, tolerance,
+                                                      QueryExecution::ColdReference);
+    if (cold) {
+      cold->evaluations = add_evaluations(cold->evaluations, prior_evaluations);
+    }
+    return cold;
   };
-  const std::uint64_t hash = atx::core::hash_bytes(words, sizeof words);
-  return hash == 0u ? 1u : hash;
+  const QueryPricingTier tier = surface.query_pricing_tier();
+  if (tier != QueryPricingTier::RepresentativeFast && tier != QueryPricingTier::CarryBank) {
+    return cold_fallback(0u);
+  }
+
+  // The prepared route is only a cheap proposal. Its own root need not meet the
+  // cold target; a loose screen tolerance avoids spending work polishing an
+  // approximation that is always cold-confirmed below.
+  constexpr double screen_tolerance = 1.0e-4;
+  Result<DeltaSolution> screen = solve_american_delta(surface, T, side, target_abs_delta,
+                                                      screen_tolerance, QueryExecution::Configured);
+  if (!screen) {
+    return cold_fallback(0u);
+  }
+
+  const double forward = surface.forward_at(T);
+  if (!finite_positive(forward) || !finite_positive(screen->strike)) {
+    return cold_fallback(screen->evaluations);
+  }
+  struct DeltaPoint {
+    double k{0.0};
+    double residual{0.0};
+    double delta{0.0};
+  };
+  std::uint16_t evaluations = screen->evaluations;
+  const auto point = [&](double k, QueryExecution execution) -> Result<DeltaPoint> {
+    evaluations = add_evaluations(evaluations, 1u);
+    const double strike = forward * std::exp(k);
+    if (!finite_positive(strike)) {
+      return Err(ErrorCode::OutOfRange, "contract projection: adaptive strike overflow");
+    }
+    ATX_TRY(const double delta, surface.delta(strike, T, side, execution));
+    if (!std::isfinite(delta)) {
+      return Err(ErrorCode::Unavailable, "contract projection: adaptive delta unavailable");
+    }
+    return Ok(DeltaPoint{k, std::fabs(delta) - target_abs_delta, delta});
+  };
+
+  const double screen_k = std::log(screen->strike / forward);
+  Result<DeltaPoint> current = point(screen_k, QueryExecution::ColdReference);
+  if (!current) {
+    return cold_fallback(evaluations);
+  }
+  if (std::fabs(current->residual) <= tolerance) {
+    return Ok(DeltaSolution{screen->strike, current->delta, evaluations});
+  }
+
+  DeltaPoint previous{};
+  bool have_previous = false;
+  constexpr double max_log_strike_step = 0.05;
+  constexpr unsigned max_refine_iterations = 8u;
+  for (unsigned iteration = 0u; iteration < max_refine_iterations; ++iteration) {
+    double slope = 0.0;
+    if (have_previous && current->k != previous.k) {
+      slope = (current->residual - previous.residual) / (current->k - previous.k);
+    } else {
+      constexpr double h = 1.0e-3;
+      const Result<DeltaPoint> left = point(current->k - h, QueryExecution::Configured);
+      const Result<DeltaPoint> right = point(current->k + h, QueryExecution::Configured);
+      if (!left || !right) {
+        break;
+      }
+      slope = (right->residual - left->residual) / (2.0 * h);
+    }
+    if (!(std::isfinite(slope) && std::fabs(slope) > 1.0e-12)) {
+      break;
+    }
+    const double step =
+        std::clamp(-current->residual / slope, -max_log_strike_step, max_log_strike_step);
+    if (!(std::isfinite(step) && std::fabs(step) > 1.0e-12)) {
+      break;
+    }
+    Result<DeltaPoint> next = point(current->k + step, QueryExecution::ColdReference);
+    if (!next) {
+      break;
+    }
+    if (std::fabs(next->residual) <= tolerance) {
+      return Ok(DeltaSolution{forward * std::exp(next->k), next->delta, evaluations});
+    }
+    previous = *current;
+    have_previous = true;
+    current = std::move(next);
+  }
+  return cold_fallback(evaluations);
+}
+
+// Bounded batch-pass budget for solve_american_delta_batch: pass 0 (seed
+// evaluation), pass 1 (Newton), passes 2.. (secant refinement). Raised 6 -> 8
+// (Task 9, accelerant 4): the SP100 YTD profile measured the scalar fallback
+// tail firing on 2.21 % of rows at ~29x the cost of one laned pass
+// (~1.05 ms/row vs ~37 us/row); two extra secant passes convert most of that
+// tail into laned work (measured: fallback fraction 2.21 % -> 0.43 %).
+// Mirrored by kMirroredMaxBatchDeltaPasses in contract_projection_test.cpp --
+// update BOTH together.
+constexpr std::size_t kMaxBatchDeltaPasses = 8;
+
+// The scalar-fallback tail of solve_american_delta_batch. Rows land here when
+// a pass errored, produced a non-finite delta, hit a degenerate Newton/secant
+// update, or exhausted the batch pass budget -- the rare tail. `fallback_rows`
+// is already sorted ascending by the caller (determinism, no cross-row
+// state: each row is solved fully independently). Every row is re-solved by
+// the robust bracketing/bisection scalar solver at QueryExecution::
+// ColdReference -- the SAME oracle CORRECTNESS GATE 1 holds every batch-
+// accepted strike to -- so a row that succeeds here satisfies the full
+// `tolerance`, not the batch's internal tolerance/2 margin. On success the
+// scalar solve's own DeltaSolution::evaluations is folded into
+// evaluations_out[row] via the saturating add_evaluations (on top of however
+// many batch passes the row already participated in before being routed);
+// on failure row_status_out[row] becomes the scalar solver's own propagated
+// error (InvalidArgument for an out-of-range target, Unavailable for
+// missing/unreachable surface data, NotFound for a target the scalar solver
+// could not bracket) and strike_out[row]/achieved_delta_out[row] are (re)set
+// to NaN -- never a stale or partially-converged candidate.
+void solve_batch_fallback_tail(const SurfaceRef &surface, std::span<const double> T,
+                               std::span<const Side> side, std::span<const double> target_abs_delta,
+                               double tolerance, std::span<const std::uint32_t> fallback_rows,
+                               std::span<double> strike_out, std::span<double> achieved_delta_out,
+                               std::span<std::uint16_t> evaluations_out,
+                               std::span<Status> row_status_out) {
+  for (const std::uint32_t row : fallback_rows) {
+    Result<DeltaSolution> solved =
+        solve_american_delta(surface, T[row], side[row], target_abs_delta[row], tolerance,
+                             QueryExecution::ColdReference);
+    if (!solved) {
+      row_status_out[row] = Err(solved.error());
+      strike_out[row] = kNaN;
+      achieved_delta_out[row] = kNaN;
+      continue;
+    }
+    strike_out[row] = solved->strike;
+    achieved_delta_out[row] = solved->achieved_delta;
+    evaluations_out[row] = add_evaluations(evaluations_out[row], solved->evaluations);
+    row_status_out[row] = Ok();
+  }
+}
+
+[[nodiscard]] bool valid_delta_solve_policy(OptionDeltaSolvePolicy policy) noexcept {
+  return policy == OptionDeltaSolvePolicy::Direct ||
+         policy == OptionDeltaSolvePolicy::FastScreenColdConfirm ||
+         policy == OptionDeltaSolvePolicy::CrossSectionalColdConfirm;
 }
 
 [[nodiscard]] OptionProjectionStatus status_from_error(const Error &error) noexcept {
@@ -301,6 +388,337 @@ struct DeltaSolution {
 }
 
 } // namespace
+
+Result<std::int64_t> resolve_projected_expiry(std::int64_t valuation_ts_ns,
+                                              const ProjectedMaturitySpec &spec) {
+  if (valuation_ts_ns <= 0) {
+    return Err(ErrorCode::InvalidArgument, "contract projection: invalid valuation timestamp");
+  }
+  switch (spec.kind) {
+  case ProjectedMaturityKind::YearFraction: {
+    if (!finite_positive(spec.year_fraction)) {
+      return Err(ErrorCode::InvalidArgument, "contract projection: year fraction must be positive");
+    }
+    const long double offset =
+        static_cast<long double>(spec.year_fraction) * static_cast<long double>(kNsPerYear);
+    const long double available =
+        static_cast<long double>(std::numeric_limits<std::int64_t>::max() - valuation_ts_ns);
+    if (!(offset >= 1.0L && offset <= available)) {
+      return Err(ErrorCode::OutOfRange, "contract projection: maturity overflows timestamp");
+    }
+    return Ok(valuation_ts_ns + static_cast<std::int64_t>(std::llround(offset)));
+  }
+  case ProjectedMaturityKind::CalendarDays: {
+    if (spec.calendar_count <= 0) {
+      return Err(ErrorCode::InvalidArgument, "contract projection: calendar days must be positive");
+    }
+    constexpr std::int64_t day_ns = 86'400'000'000'000LL;
+    if (spec.calendar_count >
+        (std::numeric_limits<std::int64_t>::max() - valuation_ts_ns) / day_ns) {
+      return Err(ErrorCode::OutOfRange, "contract projection: day maturity overflows");
+    }
+    return Ok(valuation_ts_ns + static_cast<std::int64_t>(spec.calendar_count) * day_ns);
+  }
+  case ProjectedMaturityKind::CalendarMonths: {
+    if (spec.calendar_count <= 0 || spec.calendar_count > 1200) {
+      return Err(ErrorCode::InvalidArgument,
+                 "contract projection: calendar months outside (0,1200]");
+    }
+    const time::CivilTime civil =
+        time::to_civil_utc(time::Timestamp::from_unix_nanos(valuation_ts_ns));
+    const std::int64_t month_index = static_cast<std::int64_t>(civil.date.year) * 12 +
+                                     static_cast<std::int64_t>(civil.date.month - 1u) +
+                                     spec.calendar_count;
+    const auto year = static_cast<std::int32_t>(month_index / 12);
+    const auto month = static_cast<std::uint32_t>(month_index % 12 + 1);
+    if (year < 1678 || year > 2261) {
+      return Err(ErrorCode::OutOfRange, "contract projection: calendar maturity overflows");
+    }
+    const std::uint32_t day = std::min(civil.date.day, time::days_in_month(year, month));
+    const std::int64_t expiry = time::timestamp_from_utc(year, month, day, civil.hour, civil.minute,
+                                                         civil.second, civil.nano)
+                                    .unix_nanos();
+    return expiry > valuation_ts_ns
+               ? Ok(expiry)
+               : Err(ErrorCode::OutOfRange, "contract projection: nonpositive calendar tenor");
+  }
+  case ProjectedMaturityKind::AbsoluteExpiry:
+    return spec.expiry_ts_ns > valuation_ts_ns
+               ? Ok(spec.expiry_ts_ns)
+               : Err(ErrorCode::InvalidArgument,
+                     "contract projection: absolute expiry is not after valuation");
+  }
+  return Err(ErrorCode::InvalidArgument, "contract projection: unknown maturity kind");
+}
+
+std::uint64_t projected_definition_fingerprint(const ProjectedOptionDefinition &definition) {
+  std::uint64_t words[] = {
+      definition.contract.uid,
+      std::bit_cast<std::uint64_t>(definition.contract.K),
+      std::bit_cast<std::uint64_t>(definition.contract.T),
+      static_cast<std::uint64_t>(definition.contract.side),
+      static_cast<std::uint64_t>(definition.valuation_ts_ns),
+      static_cast<std::uint64_t>(definition.expiry_ts_ns),
+      std::bit_cast<std::uint64_t>(definition.multiplier),
+  };
+  const std::uint64_t hash = atx::core::hash_bytes(words, sizeof words);
+  return hash == 0u ? 1u : hash;
+}
+
+void AmericanDeltaBatchScratch::resize(std::size_t n) {
+  k_log.resize(n);
+  strike.resize(n);
+  residual.resize(n);
+  prev_k.resize(n);
+  prev_residual.resize(n);
+  forward.resize(n);
+  sigma.resize(n);
+  signed_d1.resize(n);
+  iv.resize(n);
+  price.resize(n);
+  greeks.resize(n);
+  pass_status.resize(n);
+  active.clear();
+  active.reserve(n);
+  active_strike.clear();
+  active_strike.reserve(n);
+  active_t.clear();
+  active_t.reserve(n);
+  active_side.clear();
+  active_side.reserve(n);
+  fallback_rows.clear();
+  fallback_rows.reserve(n);
+}
+
+Status solve_american_delta_batch(const SurfaceRef &surface, std::span<const double> T,
+                                  std::span<const Side> side,
+                                  std::span<const double> target_abs_delta, double tolerance,
+                                  AmericanDeltaBatchScratch &scratch, std::span<double> strike_out,
+                                  std::span<double> achieved_delta_out,
+                                  std::span<std::uint16_t> evaluations_out,
+                                  std::span<Status> row_status_out) {
+  const std::size_t n = T.size();
+  if (surface == nullptr || n == 0u || side.size() != n || target_abs_delta.size() != n ||
+      strike_out.size() != n || achieved_delta_out.size() != n || evaluations_out.size() != n ||
+      row_status_out.size() != n) {
+    return Err(ErrorCode::InvalidArgument,
+               "contract projection: batch delta solve span/size mismatch");
+  }
+  if (!(std::isfinite(tolerance) && tolerance > 0.0 && tolerance <= 1.0e-3)) {
+    return Err(ErrorCode::InvalidArgument, "contract projection: invalid delta target/tolerance");
+  }
+
+  scratch.resize(n);
+  // Rows the batch passes could not finish; owned by the scratch (not a
+  // solver-local vector) so the rare fallback path allocates nothing beyond
+  // resize(n); empty on the happy path.
+  const auto route_to_fallback = [&](std::uint32_t row, Status status) {
+    strike_out[row] = kNaN;
+    achieved_delta_out[row] = kNaN;
+    row_status_out[row] = std::move(status);
+    scratch.fallback_rows.push_back(row);
+  };
+
+  // Seed (curve reads only, no boundary solves): the Black-style inverse-delta
+  // seed with two smile-refresh iterations, mirroring solve_american_delta.
+  for (std::uint32_t i = 0; i < static_cast<std::uint32_t>(n); ++i) {
+    strike_out[i] = kNaN;
+    achieved_delta_out[i] = kNaN;
+    evaluations_out[i] = 0u;
+    row_status_out[i] = Ok();
+    const double target = target_abs_delta[i];
+    if (!(target > 0.0 && target < 1.0)) {
+      row_status_out[i] =
+          Err(ErrorCode::InvalidArgument, "contract projection: invalid delta target/tolerance");
+      continue;
+    }
+    const double t = T[i];
+    const double forward = surface.forward_at(t);
+    double sigma = surface.iv(forward, t);
+    if (!finite_positive(forward) || !finite_positive(sigma)) {
+      row_status_out[i] =
+          Err(ErrorCode::Unavailable, "contract projection: no surface at maturity");
+      continue;
+    }
+    const double carry_discount = std::exp(-surface.q_eff_at(t) * t);
+    const double probability = std::clamp(target / carry_discount, 1.0e-8, 1.0 - 1.0e-8);
+    const double signed_d1 =
+        side[i] == Side::Call ? inverse_normal_cdf(probability) : -inverse_normal_cdf(probability);
+    const double sqrt_t = std::sqrt(t);
+    double seed_k = 0.0;
+    for (int iteration = 0; iteration < 2; ++iteration) {
+      seed_k = -signed_d1 * sigma * sqrt_t + 0.5 * sigma * sigma * t;
+      const double smile_sigma = surface.iv(forward * std::exp(seed_k), t);
+      if (finite_positive(smile_sigma)) {
+        sigma = smile_sigma;
+      }
+    }
+    const double seed_strike = forward * std::exp(seed_k);
+    if (!finite_positive(seed_strike)) {
+      route_to_fallback(
+          i, Err(ErrorCode::Unavailable, "contract projection: batch delta seed strike invalid"));
+      continue;
+    }
+    scratch.forward[i] = forward;
+    scratch.sigma[i] = sigma;
+    scratch.signed_d1[i] = signed_d1;
+    scratch.k_log[i] = seed_k;
+    scratch.strike[i] = seed_strike;
+    scratch.active.push_back(i);
+  }
+
+  // One laned cold pass over the active rows: stable compaction (ascending row
+  // ids, contiguous bit-identical-T runs preserved), one dense evaluate_batch
+  // on the FirstOrder bundle with the reduced GreekNeeds — the exact request
+  // shape detail::laned_greek_route_selected admits to the AVX2 laned Greek
+  // kernels (no selective Delta/Vega bits) — then freeze / route / retain.
+  const auto run_pass = [&]() -> Status {
+    const std::size_t m = scratch.active.size();
+    scratch.active_strike.clear();
+    scratch.active_t.clear();
+    scratch.active_side.clear();
+    for (const std::uint32_t row : scratch.active) {
+      scratch.active_strike.push_back(scratch.strike[row]);
+      scratch.active_t.push_back(T[row]);
+      scratch.active_side.push_back(side[row]);
+    }
+    const PricedSurface::EvaluationSoA out{
+        .iv = std::span<double>(scratch.iv.data(), m),
+        .price = std::span<double>(scratch.price.data(), m),
+        .greeks = std::span<AmericanGreeks>(scratch.greeks.data(), m),
+        .status = std::span<Status>(scratch.pass_status.data(), m)};
+    const Status evaluated = surface.evaluate_batch(
+        std::span<const double>(scratch.active_strike.data(), m),
+        std::span<const double>(scratch.active_t.data(), m),
+        std::span<const Side>(scratch.active_side.data(), m), PricedSurface::EvalField::FirstOrder,
+        /*analytic=*/true, out, simd::SimdIsa::Auto, QueryExecution::ColdReference,
+        GreekNeeds{.vega = false, .rho = false, .charm = false});
+    if (!evaluated) {
+      return evaluated;
+    }
+    std::size_t keep = 0;
+    for (std::size_t j = 0; j < m; ++j) {
+      const std::uint32_t row = scratch.active[j];
+      evaluations_out[row] = add_evaluations(evaluations_out[row], 1u);
+      if (!scratch.pass_status[j]) {
+        route_to_fallback(row, Err(scratch.pass_status[j].error()));
+        continue;
+      }
+      const double delta = scratch.greeks[j].delta;
+      if (!std::isfinite(delta)) {
+        route_to_fallback(
+            row, Err(ErrorCode::Unavailable, "contract projection: batch delta unavailable"));
+        continue;
+      }
+      const double residual = std::fabs(delta) - target_abs_delta[row];
+      // Half-tolerance internal acceptance: the margin absorbs the documented
+      // laned-vs-scalar kernel gap so the SCALAR cold oracle holds at the full
+      // tolerance. Load-bearing for Task 4's oracle guarantee — never relax.
+      if (std::fabs(residual) <= 0.5 * tolerance) {
+        strike_out[row] = scratch.strike[row];
+        achieved_delta_out[row] = delta;
+        row_status_out[row] = Ok();
+        continue;
+      }
+      scratch.residual[row] = residual;
+      scratch.active[keep++] = row;
+    }
+    scratch.active.resize(keep);
+    return Ok();
+  };
+
+  // Pass 0: evaluate every seeded row.
+  if (!scratch.active.empty()) {
+    const Status pass = run_pass();
+    if (!pass) {
+      return pass;
+    }
+  }
+
+  // Pass 1: one safeguarded Newton step per row off the closed-form Black
+  // delta slope (same formula as the scalar solver's bracketing step).
+  if (!scratch.active.empty()) {
+    constexpr double inv_sqrt_two_pi = 0.39894228040143267794;
+    std::size_t keep = 0;
+    for (const std::uint32_t row : scratch.active) {
+      const double t = T[row];
+      const double carry_discount = std::exp(-surface.q_eff_at(t) * t);
+      const double signed_d1 = scratch.signed_d1[row];
+      const double density = inv_sqrt_two_pi * std::exp(-0.5 * signed_d1 * signed_d1);
+      const double slope_magnitude = carry_discount * density / (scratch.sigma[row] * std::sqrt(t));
+      const double slope = side[row] == Side::Call ? -slope_magnitude : slope_magnitude;
+      const double step = std::clamp(-scratch.residual[row] / slope, -0.50, 0.50);
+      const double next_k = scratch.k_log[row] + step;
+      const double next_strike = scratch.forward[row] * std::exp(next_k);
+      if (!std::isfinite(step) || !finite_positive(next_strike)) {
+        route_to_fallback(row, Err(ErrorCode::Unavailable,
+                                   "contract projection: batch delta Newton step degenerate"));
+        continue;
+      }
+      scratch.prev_k[row] = scratch.k_log[row];
+      scratch.prev_residual[row] = scratch.residual[row];
+      scratch.k_log[row] = next_k;
+      scratch.strike[row] = next_strike;
+      scratch.active[keep++] = row;
+    }
+    scratch.active.resize(keep);
+    if (!scratch.active.empty()) {
+      const Status pass = run_pass();
+      if (!pass) {
+        return pass;
+      }
+    }
+  }
+
+  // Passes 2..kMaxBatchDeltaPasses: secant refinement from (prev_k,
+  // prev_residual) and the current point; the active set shrinks and stays
+  // stably ordered.
+  for (std::size_t pass_index = 2; pass_index < kMaxBatchDeltaPasses && !scratch.active.empty();
+       ++pass_index) {
+    std::size_t keep = 0;
+    for (const std::uint32_t row : scratch.active) {
+      const double residual_gap = scratch.residual[row] - scratch.prev_residual[row];
+      const double slope = residual_gap / (scratch.k_log[row] - scratch.prev_k[row]);
+      const double step = std::clamp(-scratch.residual[row] / slope, -0.25, 0.25);
+      const double next_k = scratch.k_log[row] + step;
+      const double next_strike = scratch.forward[row] * std::exp(next_k);
+      if (!std::isfinite(slope) || std::fabs(residual_gap) < 1.0e-14 || !std::isfinite(step) ||
+          !finite_positive(next_strike)) {
+        route_to_fallback(row, Err(ErrorCode::Unavailable,
+                                   "contract projection: batch delta secant step degenerate"));
+        continue;
+      }
+      scratch.prev_k[row] = scratch.k_log[row];
+      scratch.prev_residual[row] = scratch.residual[row];
+      scratch.k_log[row] = next_k;
+      scratch.strike[row] = next_strike;
+      scratch.active[keep++] = row;
+    }
+    scratch.active.resize(keep);
+    if (scratch.active.empty()) {
+      break;
+    }
+    const Status pass = run_pass();
+    if (!pass) {
+      return pass;
+    }
+  }
+
+  // Rows still active after the pass budget go to the scalar fallback tail.
+  for (const std::uint32_t row : scratch.active) {
+    route_to_fallback(row, Err(ErrorCode::Unavailable,
+                               "contract projection: batch delta solve did not converge"));
+  }
+  scratch.active.clear();
+  // Ascending row order for the fallback tail (determinism); an in-place sort
+  // (no allocation) since routing order across passes need not itself be
+  // ascending (a row routed by an earlier pass can have a higher id than one
+  // routed by a later pass).
+  std::sort(scratch.fallback_rows.begin(), scratch.fallback_rows.end());
+  solve_batch_fallback_tail(surface, T, side, target_abs_delta, tolerance, scratch.fallback_rows,
+                            strike_out, achieved_delta_out, evaluations_out, row_status_out);
+  return Ok();
+}
 
 ProjectedMaturitySpec ProjectedMaturitySpec::years(double value) noexcept {
   ProjectedMaturitySpec spec;
@@ -367,11 +785,12 @@ Result<ProjectedOption> project_option_contract(const SurfaceRef &surface,
                                                 const OptionProjectionConfig &config) {
   if (!valid_spec(spec) || surface.uid() != spec.uid ||
       !(std::isfinite(config.delta_tolerance) && config.delta_tolerance > 0.0 &&
-        config.delta_tolerance <= 1.0e-3)) {
+        config.delta_tolerance <= 1.0e-3) ||
+      !valid_delta_solve_policy(config.delta_solve_policy)) {
     return Err(ErrorCode::InvalidArgument, "contract projection: invalid spec/config/surface uid");
   }
   const std::int64_t valuation = surface.pricing().now_ts_ns;
-  ATX_TRY(const std::int64_t expiry, resolve_expiry(valuation, spec.maturity));
+  ATX_TRY(const std::int64_t expiry, resolve_projected_expiry(valuation, spec.maturity));
   const double residual_t = static_cast<double>(expiry - valuation) / kNsPerYear;
   if (!finite_positive(residual_t)) {
     return Err(ErrorCode::OutOfRange, "contract projection: nonpositive residual maturity");
@@ -389,9 +808,19 @@ Result<ProjectedOption> project_option_contract(const SurfaceRef &surface,
     strike = forward;
     break;
   case ProjectedStrikeKind::Delta: {
-    ATX_TRY(const DeltaSolution solution,
-            solve_american_delta(surface, residual_t, spec.side, spec.strike.value,
-                                 config.delta_tolerance, config.query_execution));
+    const bool use_screened_solver =
+        config.delta_solve_policy == OptionDeltaSolvePolicy::FastScreenColdConfirm ||
+        config.delta_solve_policy == OptionDeltaSolvePolicy::CrossSectionalColdConfirm;
+    Result<DeltaSolution> solved =
+        use_screened_solver
+            ? solve_american_delta_screened(surface, residual_t, spec.side, spec.strike.value,
+                                            config.delta_tolerance)
+            : solve_american_delta(surface, residual_t, spec.side, spec.strike.value,
+                                   config.delta_tolerance, config.query_execution);
+    if (!solved) {
+      return Err(solved.error());
+    }
+    const DeltaSolution &solution = *solved;
     strike = solution.strike;
     achieved_delta = solution.achieved_delta;
     delta_evaluations = solution.evaluations;
@@ -417,7 +846,7 @@ Result<ProjectedOption> project_option_contract(const SurfaceRef &surface,
   out.definition.valuation_ts_ns = valuation;
   out.definition.expiry_ts_ns = expiry;
   out.definition.multiplier = spec.multiplier;
-  out.definition.fingerprint = definition_fingerprint(out.definition);
+  out.definition.fingerprint = projected_definition_fingerprint(out.definition);
   out.forward = forward;
   out.implied_vol = point.sigma;
   out.requested_abs_delta =
@@ -506,7 +935,8 @@ Status PreparedOptionProjection::project_into(const SurfaceSet &surfaces,
                                               const OptionProjectionConfig &config) const {
   if (output.size() != specs_.size() ||
       !(std::isfinite(config.delta_tolerance) && config.delta_tolerance > 0.0 &&
-        config.delta_tolerance <= 1.0e-3)) {
+        config.delta_tolerance <= 1.0e-3) ||
+      !valid_delta_solve_policy(config.delta_solve_policy)) {
     return Err(ErrorCode::InvalidArgument, "contract projection: invalid output/config");
   }
   const auto project_index = [&](std::size_t execution_index) {

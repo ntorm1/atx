@@ -45,6 +45,7 @@ add_executable(atx-vol-tests
     projection_test.cpp
     contract_projection_test.cpp
     historical_projection_test.cpp
+    var_test.cpp
     american_iv_test.cpp
     dividend_test.cpp
     s3_test.cpp

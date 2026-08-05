@@ -12,7 +12,7 @@ Google Benchmark is **not** a hard atx-vol dependency):
 |---------------------------|---------------------------------|------------------|
 | `atx-vol-american-bench`  | `american_pricing_bench.cpp`    | route x side x API pricer matrix over a moneyness/maturity/vol grid, plus the call-slice batch path |
 | `atx-vol-portfolio-bench` | `portfolio_throughput_bench.cpp`| PricedSurface queries, `PortfolioPricer::price`/`pnl_explain`, position-scatter-only, kernel floor |
-| `atx-vol-projection-bench` | `contract_projection_bench.cpp` | scalar and prepared relative-contract projection, definition/mark/full-Greeks output, batch and thread-count scaling |
+| `atx-vol-projection-bench` | `contract_projection_bench.cpp`, `var_bench.cpp` | scalar and prepared relative-contract projection, plus prepared historical VaR replay of the terminal SP100 dispersion-strangle portfolio across thread counts |
 | `atx-vol-simd-bench` | `simd_*bench.cpp` | scalar-loop vs AVX2 SoA-batch throughput for the b76 value/vega, greeks, IV-invert, eSSVI backbone, and pnl-explain kernels |
 | `atx-vol-reloc-bench` | `backtest_throughput_bench.cpp`, `american_greeks_reuse_bench.cpp`, `strangle_solver_bench.cpp` | multi-underlier backtest steps/s, FD-vs-analytic American Greeks, and the SPY strangle solver's per-eval cost breakdown (relocated out of the test suite — they measure timing, not correctness) |
 | `atx-vol-fitting-bench` | `fitting_throughput_bench.cpp`, `corpus_build_bench.cpp` | whole-surface and single-slice eSSVI calibration cost (synthetic AND one real-OPRA SPY board), the 16.5k-anchor-comparable American-IV inversion rate, and 20-board corpus build throughput |
@@ -44,6 +44,39 @@ current SSE2 build; that is the whole point of pinning it.
 JSON is the deliverable format (`compare_baseline.py` reads it). Full-matrix wall
 time is ~9.5 min (american) and ~8.5 min (portfolio) on the baseline host.
 Filter while iterating, e.g. `--benchmark_filter='amer/american_price_cached/.*'`.
+
+The real-data VaR rows are opt-in. Set `ATX_SP100_SURFACE_DB` to the SP100
+surface database and filter on
+`var/prepared/sp100_dispersion_terminal/ytd/thousands`. Their one-time, untimed
+fixture runs the overlapping 3M/25-delta dispersion-strangle strategy through
+the last replayable session, retains its terminal checkpoint, converts every
+open lot to a delta/TTE `VarPosition`, and replays the resulting portfolio over
+the YTD history. Only original adjacent database partitions form return
+scenarios: dates without SPY are counted, and the surrounding multi-session gap
+is never bridged. Underliers without complete coverage and numerically
+unreplayable lots are reported separately.
+
+The timed path is aggregate-only and reuses a prepared portfolio; fixture
+construction, terminal-lot conversion, surface loading, and a retained-leg
+scalar oracle are excluded. Before timing, every aggregate scenario must match
+the oracle's status/count/fingerprint and remain within `1e-9` relative value
+and dollar-delta error. The `max_abs_pnl_error`, `max_relative_value_error`, and
+`max_relative_delta_error` counters publish the observed differences. Example:
+
+```powershell
+$env:ATX_SP100_SURFACE_DB='C:\atx-scratch\surface-db\sp100-2026'
+.\build-rel\bin\atx-vol-projection-bench.exe --benchmark_filter='^var/prepared/sp100_dispersion_terminal/ytd/thousands/t8/'
+```
+
+Set `ATX_VAR_PNL_TSV` to export the validated aggregate scenario trace while
+building the fixture. The bundled plotter turns that trace into a cumulative
+P&L PNG and leaves gaps where non-adjacent history was excluded:
+
+```powershell
+$env:ATX_VAR_PNL_TSV='artifacts\var\sp100_dispersion_ytd_pnl.tsv'
+.\build-rel\bin\atx-vol-projection-bench.exe --benchmark_filter='^var/prepared/sp100_dispersion_terminal/ytd/thousands/t8/'
+python atx-vol\bench\plot_var_cumulative_pnl.py $env:ATX_VAR_PNL_TSV artifacts\var\sp100_dispersion_ytd_cumulative_pnl.png
+```
 
 Every case carries `->MinWarmUpTime(0.5)` (>= 0.5 s warm-up), `->Repetitions(5)`,
 `->ReportAggregatesOnly(false)`, and two custom statistics on top of Google
