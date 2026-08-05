@@ -252,7 +252,23 @@ qp_active_set(const MatX &H, const VecX &q, const MatX &G, const VecX &h, VecX x
       const double gip = G.row(i).dot(p);
       if (gip < -1.0e-14) {
         const double gix = G.row(i).dot(x) - h(i); // residual to the RHS
-        const double ai = -gix / gip;              // >= 0 since gix >= 0
+        // The ratio MUST be clamped at zero. "gix >= 0, so ai >= 0" is the exact
+        // arithmetic invariant, and it does not survive finite precision: rows
+        // whose directional derivative falls INSIDE the -1.0e-14 dead zone above
+        // are excluded from the ratio test yet still decrease, so their residual
+        // can drift a few ulp negative over many iterations. Unclamped, such a
+        // row yields a NEGATIVE ai — and since the selection below takes the
+        // MINIMUM ratio, a negative value beats every legitimate positive one,
+        // with |ai| = |gix/gip| unbounded when |gip| sits just past the dead
+        // zone. `x += alpha * p` then steps BACKWARDS along p by an arbitrary
+        // multiple and leaves the feasible region entirely; qp_result refuses to
+        // certify the result (measured on real SPY boards: scaled primal
+        // violation saturating at 1.0) and the caller drops the whole slice.
+        // Clamping turns that step into the degenerate ZERO-length step an
+        // active-set method is supposed to take at a tied vertex — the blocking
+        // row simply joins the working set at the current iterate. Inert on any
+        // solve whose ratios are all non-negative.
+        const double ai = std::max(0.0, -gix / gip);
         if (ai < alpha) {
           alpha = ai;
           block = i;
