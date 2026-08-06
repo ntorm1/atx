@@ -623,6 +623,10 @@ TEST(MultinamePipeline, NoTradeOnRollDateLeavesBookIntact) {
   ASSERT_EQ(book.lots.size(), 2u * (1u + 3u));
   const std::vector<Lot> before = book.lots; // the held book, snapshotted
   const std::uint64_t next_id_before = next_id;
+  // A2 follow-up: DispersionStrategy's NO-TRADE CONTRACT (dispersion_strategy.cpp)
+  // mirrors DeclarativeStrategy's, and tracks the same counter (IStrategy::
+  // n_steps_entry_skipped) -- 0 before the no-trade step below.
+  EXPECT_EQ(strat.n_steps_entry_skipped(), 0u);
 
   // On date 2 the surviving basket is one name < min_names(2), so the book build is
   // Unavailable — a no-trade date. And the front cohort (residual 29d) is inside
@@ -652,6 +656,8 @@ TEST(MultinamePipeline, NoTradeOnRollDateLeavesBookIntact) {
   }
   // No lots opened on a no-trade step => the monotonic id counter did not advance.
   EXPECT_EQ(next_id, next_id_before);
+  // A2 follow-up: the no-trade step is counted, exactly once.
+  EXPECT_EQ(strat.n_steps_entry_skipped(), 1u);
 }
 
 // ── S1-3a: the plan's ACTUAL gate — a HELD name goes missing mid-run ──────────

@@ -564,7 +564,16 @@ public:
   // ever scheduled. The engine copies this verbatim into
   // `BacktestResult::n_steps_entry_skipped` after the run; it never increments
   // this itself, since only the strategy can distinguish "skipped" from
-  // "not due". Default 0 for a strategy that never skips or does not track it.
+  // "not due".
+  //
+  // The default returns 0 for a strategy with NO such no-trade concept at all
+  // (a fixed-book test double, a strategy whose every failure is fatal). It is
+  // NOT a license to leave a production strategy silently untracked: EVERY
+  // strategy that has a soft/DropRenormalize-style no-trade contract MUST
+  // override this, or the field misreports (reads a steady 0) for every run
+  // of that strategy instead of naming a real gap. Both shipped no-trade
+  // strategies — `DeclarativeStrategy` and `DispersionStrategy` — override it;
+  // a new one implementing the same contract should too.
   [[nodiscard]] virtual std::uint64_t n_steps_entry_skipped() const noexcept { return 0; }
 };
 
@@ -826,6 +835,15 @@ public:
   // Read it from the stepping thread, and copy the events out to keep them.
   [[nodiscard]] std::span<const RiskEvent> risk_events() const noexcept { return risk_events_; }
 
+  // A2 follow-up: CUMULATIVE across the run — one count per step that reached
+  // the NO-TRADE CONTRACT above (DropRenormalize + Unavailable). Overrides
+  // IStrategy::n_steps_entry_skipped(); see that declaration for the full
+  // contract. Does NOT count the separate X3 risk-halt no-trade step (a
+  // resolved book the risk gate declined, not a failed resolution).
+  [[nodiscard]] std::uint64_t n_steps_entry_skipped() const noexcept override {
+    return n_steps_entry_skipped_;
+  }
+
 private:
   // `price_options == nullptr` preserves the documented legacy 4-arg/build_book
   // construction exactly. A non-null route is the engine seed-producing path.
@@ -851,6 +869,8 @@ private:
   // Per-step telemetry mirrored into `signals()` (which does not see step_index).
   double last_risk_scale_{1.0};
   RiskBreachReason last_risk_reason_{RiskBreachReason::None};
+  // A2 follow-up: see the public accessor above.
+  std::uint64_t n_steps_entry_skipped_{0};
 };
 
 } // namespace atx::vol
