@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <limits>
 
 #include "atx/vol/arb.hpp" // arb_check_butterfly_slice
 #include "deriv_fixtures.hpp"
@@ -88,16 +89,47 @@ TEST(DerivFixtures, SkewSurface_ButterflyFreeAtEveryPillar) {
   }
 }
 
-TEST(DerivFixtures, SkewSurface_CalendarOrderedAtmLevel) {
-  // theta_i = atm_vol^2 * T_i is strictly increasing in T by construction;
-  // w(0, T) == theta_i, so the ATM level alone is trivially calendar-ordered.
-  const EssviSurface surf = make_skew_surface(0.20, -0.10, 0.03);
-  double prev_w = 0.0;
-  for (const double T : kFixturePillarsT) {
-    const double w = surf.w(0.0, T);
-    EXPECT_GT(w, prev_w);
-    prev_w = w;
+// Substantive calendar-arbitrage check: total variance w(k, T) must be
+// non-decreasing in T at EVERY k, not just k == 0. Checking only k == 0 (as
+// an earlier version of this test did) is trivially true for ANY (phi, rho)
+// -- theta_i = atm_vol^2 * T_i alone drives w(0, T_i), and w(0, T) == theta
+// regardless of the skew/curvature params (the identity `make_skew_surface`
+// itself exploits, see deriv_fixtures.hpp) -- so it can never catch an
+// off-ATM calendar crossing a future `skew_slope`/`convexity` choice might
+// introduce. This is the actual no-calendar-arbitrage condition for a
+// fixed-k surface (Gatheral 2006 sec 4.3 / the shared-k definition
+// `arb_check_calendar` uses for `CurveSurface`); `arb_check_calendar` has no
+// overload for the legacy `EssviSurface` container this fixture returns, so
+// this hand-walks the same definition directly against `EssviSurface::w`.
+//
+// Runs a dense k grid over [-0.5, 0.5] (41 points, 0.025 spacing) at every
+// pillar, for both the brief's worked example AND a second parameter set
+// (atm_vol=0.25, skew_slope=-0.08, convexity=0.15) chosen well inside the
+// Gatheral-Jacquier margin at every pillar (see deriv_fixtures.hpp's
+// derivation note on how much headroom the worked example already has) --
+// so this is not merely re-checking the one example the brief happened to
+// name.
+void expect_calendar_ordered_off_atm(const EssviSurface &surf) {
+  constexpr double kKMin = -0.5;
+  constexpr double kKMax = 0.5;
+  constexpr int kNGrid = 41;
+  for (int i = 0; i < kNGrid; ++i) {
+    const double k = kKMin + (kKMax - kKMin) * static_cast<double>(i) /
+                                 static_cast<double>(kNGrid - 1);
+    double prev_w = -std::numeric_limits<double>::infinity();
+    for (const double T : kFixturePillarsT) {
+      const double w = surf.w(k, T);
+      ASSERT_TRUE(std::isfinite(w)) << "non-finite w at k=" << k << " T=" << T;
+      EXPECT_GE(w, prev_w) << "calendar crossing at k=" << k << " T=" << T
+                            << " w=" << w << " prev_w=" << prev_w;
+      prev_w = w;
+    }
   }
+}
+
+TEST(DerivFixtures, SkewSurface_CalendarOrderedOffAtm) {
+  expect_calendar_ordered_off_atm(make_skew_surface(0.20, -0.10, 0.03));
+  expect_calendar_ordered_off_atm(make_skew_surface(0.25, -0.08, 0.15));
 }
 
 // ── make_curves ────────────────────────────────────────────────────────────
