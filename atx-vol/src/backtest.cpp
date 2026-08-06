@@ -31,6 +31,7 @@
 #include "atx/vol/surface_archive.hpp" // SurfaceArchive
 #include "atx/vol/surface_db.hpp"      // SurfaceDb, DbPartitionInfo, kSurfaceDbPartitionDir/Ext
 #include "atx/vol/universe.hpp"        // canonical_symbol
+#include "atx/vol/vol_time.hpp"        // is_weekend_day — swap fixing-cadence guard (Task A1)
 
 namespace atx::vol {
 
@@ -939,11 +940,67 @@ struct SwapStepResult {
   return accruals.back();
 }
 
+// Task A1 (backtest-lakehouse sprint, 2026-08): elapsed SESSION count between
+// two fixing instants, for the `SwapFixingCadence` guard below.
+//
+// "Session" here means a Mon-Fri WEEKDAY, not a full NYSE trading-calendar
+// day: `VolTimeCalendar::us_default()` (vol_time.hpp) is the in-tree NYSE
+// closure table, but its covered window is only 2024-2028, and this guard
+// must answer for a fixing pair on ANY corpus date, so it deliberately does
+// not consult the holiday table (no new calendar dependency, per the task
+// brief) -- it uses only the calendar-independent `is_weekend_day` primitive.
+//
+// HOLIDAY-BLIND CONSEQUENCE: a genuinely daily clock whose step happens to
+// span a single NYSE full closure (e.g. Thursday close -> Monday close over a
+// Friday holiday) reports 2 elapsed sessions for what is actually one
+// exchange session, and `RequireEverySession` refuses it. This is a
+// FAIL-CLOSED FALSE POSITIVE -- never silent corruption -- with two remedies:
+// opt into `SwapFixingCadence::AcceptClockAsSchedule` for that run, or (once
+// `VolTimeCalendar`'s covered window spans the corpus's dates) route this
+// through it for real holiday awareness. Both remedies are named in the error
+// text `observe_swap_fixing` raises below, not just in this comment.
+//
+// Counts weekdays strictly after `prev_ns`'s UTC calendar day, through and
+// including `ts_ns`'s. Bounded by construction: the loop runs exactly
+// `ts_day - prev_day` iterations, both finite civil-day indices computed from
+// two real corpus timestamps, and `ts_ns > prev_ns` is the caller's
+// precondition (`observe_swap_fixing`'s ordering check runs first).
+[[nodiscard]] std::uint32_t weekday_sessions_between(std::int64_t prev_ns,
+                                                     std::int64_t ts_ns) noexcept {
+  constexpr std::int64_t kNsPerDay = 24LL * 3600LL * 1'000'000'000LL;
+  const auto civil_day = [](std::int64_t ns) noexcept -> std::int64_t {
+    std::int64_t day = ns / kNsPerDay;
+    if (ns % kNsPerDay < 0) {
+      --day; // floor toward -inf so a pre-epoch instant lands on the correct civil day
+    }
+    return day;
+  };
+  const std::int64_t prev_day = civil_day(prev_ns);
+  const std::int64_t ts_day = civil_day(ts_ns);
+  std::uint32_t sessions = 0u;
+  for (std::int64_t day = prev_day + 1; day <= ts_day; ++day) {
+    if (!is_weekend_day(static_cast<std::int32_t>(day))) {
+      ++sessions;
+    }
+  }
+  return sessions;
+}
+
 // Take one dated fixing into `acc`. Ordering is validated FIRST and
 // unconditionally (a replayed or backdated snapshot mutates nothing); a fully
 // observed contract stops accruing AND stops advancing `prev_*`. See SwapAccrual
 // in backtest.hpp for why this transcribes RealizedTracker rather than using it.
-[[nodiscard]] Status observe_swap_fixing(SwapAccrual &acc, std::int64_t ts_ns, double spot) {
+//
+// Task A1: `cadence` governs how a fixing whose elapsed weekday-session count
+// (`weekday_sessions_between`, above) differs from 1 is handled.
+// `RequireEverySession` (default) fails closed on any count other than
+// exactly 1 (including 0 -- two fixings on the same UTC calendar day are not
+// one session apart either). `AcceptClockAsSchedule` books the one observed
+// squared return but advances `n_obs_done` by the elapsed count rather than
+// by 1, so `annualization * Sigma r^2 / n_done` is not overstated by a
+// clock coarser than the lot's implicitly-daily schedule.
+[[nodiscard]] Status observe_swap_fixing(SwapAccrual &acc, std::int64_t ts_ns, double spot,
+                                         SwapFixingCadence cadence) {
   if (acc.have_prev && ts_ns <= acc.prev_ts_ns) {
     return Err(ErrorCode::AlreadyExists,
                "run_backtest: duplicate/backdated swap fixing for lot id=" +
@@ -963,9 +1020,25 @@ struct SwapStepResult {
   if (acc.rv.n_obs_done >= acc.rv.n_obs_total) {
     return Ok(); // fully observed: the contract's fixing series is closed
   }
+  const std::uint32_t elapsed = weekday_sessions_between(acc.prev_ts_ns, ts_ns);
+  const bool schedule_ok =
+      elapsed == 1u || (cadence == SwapFixingCadence::AcceptClockAsSchedule && elapsed > 1u);
+  if (!schedule_ok) {
+    return Err(ErrorCode::SwapFixingScheduleViolation,
+               "run_backtest: swap lot id=" + std::to_string(acc.lot_id) +
+                   " fixing step at ts=" + std::to_string(ts_ns) + " (previous fixing ts=" +
+                   std::to_string(acc.prev_ts_ns) + ") spans " + std::to_string(elapsed) +
+                   " weekday session(s); SwapFixingCadence::RequireEverySession expected 1 "
+                   "session per step. Note this guard is weekday-only and holiday-blind, so a "
+                   "step spanning an exchange closure can trigger it too -- opt into "
+                   "SwapFixingCadence::AcceptClockAsSchedule to accept the clock's own cadence "
+                   "and scale the accrual instead of refusing it.");
+  }
   const double r = std::log(spot / acc.prev_spot);
   acc.rv.sum_sq_log_returns_done += r * r;
-  acc.rv.n_obs_done += 1u;
+  const std::uint32_t n_done_advance =
+      cadence == SwapFixingCadence::AcceptClockAsSchedule ? elapsed : 1u;
+  acc.rv.n_obs_done += n_done_advance;
   acc.prev_spot = spot;
   acc.prev_ts_ns = ts_ns;
   acc.rv.rv_done_dec = acc.rv.annualization * acc.rv.sum_sq_log_returns_done /
@@ -994,7 +1067,8 @@ struct SwapStepResult {
 [[nodiscard]] Result<SwapStepResult> step_swap_lots(const MarketSnapshot &shifted,
                                                     PortfolioState &book,
                                                     std::vector<SwapAccrual> &accruals,
-                                                    const DerivConfig &deriv_cfg) {
+                                                    const DerivConfig &deriv_cfg,
+                                                    SwapFixingCadence fixing_cadence) {
   SwapStepResult out;
   if (book.swap_lots.empty()) {
     return Ok(out); // zero-swap books never price, allocate, or touch NAV
@@ -1022,7 +1096,7 @@ struct SwapStepResult {
                      " swap lot id=" + std::to_string(lot.id) + " uid=" + std::to_string(lot.uid));
     }
     SwapAccrual &acc = accrual_for(accruals, lot);
-    ATX_TRY_VOID(observe_swap_fixing(acc, ts, surface->pricing().S));
+    ATX_TRY_VOID(observe_swap_fixing(acc, ts, surface->pricing().S, fixing_cadence));
     if (expiring) {
       // `rv_done_dec` is the Sigma r^2 / n_done estimator, so a SHORT fixing
       // series still settles on the returns actually observed — but a series
@@ -3184,7 +3258,7 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
     //     no-op — no pricing, no allocation, exactly 0.0 into every column — on
     //     a book with no swap lots.
     ATX_TRY(const SwapStepResult swap_step,
-            step_swap_lots(*shifted, book, swap_accruals, swap_price_cfg));
+            step_swap_lots(*shifted, book, swap_accruals, swap_price_cfg, cfg.swap_fixing_cadence));
     cash += swap_step.settlement_cash; // settled payoffs hit the ledger
     swap_pv_state = swap_step.swap_pv; // live marks after this pass
 

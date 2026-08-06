@@ -681,6 +681,33 @@ enum class SurfaceProvenancePolicy : std::uint8_t {
   RequireAdmittedRisk = 1,
 };
 
+// How the swap realized-variance lane reconciles a live lot's fixing schedule
+// (implicitly daily — `SwapLot::n_obs_total` is sized assuming one fixing per
+// NYSE session) against the clock's actual step cadence.
+//
+// A step's ACCRUAL WINDOW is `(base.ts_ns, shifted.ts_ns]`; the number of NYSE
+// trading sessions inside it ("elapsed sessions") is 1 for an ordinary daily
+// clock and >1 whenever the clock skips sessions the fixing schedule assumed
+// it would visit (a weekly clock, a corpus with gaps). The pre-fix engine
+// always booked `n_obs_done += 1` per step regardless, so a coarser-than-daily
+// clock silently overstated `annualization * Sigma r^2 / n_done` by roughly the
+// gap factor (a weekly clock ~5x).
+enum class SwapFixingCadence : std::uint8_t {
+  // FAIL CLOSED (default): every step of a live swap lot's fixing pass must
+  // observe EXACTLY 1 elapsed session. A step spanning 0 or >1 sessions is a
+  // schedule violation (`ErrorCode::SwapFixingScheduleViolation`) rather than
+  // a silently mispriced accrual.
+  RequireEverySession = 0,
+  // Opt-in: accept the clock's own step cadence AS the fixing schedule. One
+  // squared return is still booked per step (the gap's realized move is one
+  // observation, not `elapsed_sessions` of them), but `n_obs_done` advances by
+  // `elapsed_sessions` rather than by 1, so the daily-strike convention
+  // (`annualization * Sigma r^2 / n_done`) is not overstated by the gap. This
+  // is a conservative reading of a multi-session gap (one wide return spread
+  // over N accrual slots), not a reconstruction of the unobserved daily path.
+  AcceptClockAsSchedule = 1,
+};
+
 // One observed engine step, handed to RunConfig::step_observer immediately after
 // IStrategy::on_step returns Ok and BEFORE the transition validation / hedge /
 // execute stage. Fires once per clock step INCLUDING inception (step_index 0), in
@@ -865,9 +892,18 @@ struct RunConfig {
   // gets exactly the old behavior; the OUTPUT does not move either way, which is
   // what makes this a default worth changing inside a release.
   std::size_t prefetch_depth{2};
+  // Task A1 (2026-08 backtest-lakehouse sprint): whether a live swap lot's
+  // fixing pass requires the clock to visit exactly one NYSE session per step
+  // (`RequireEverySession`, fail closed) or accepts the clock's own cadence as
+  // the schedule, scaling `n_obs_done` by the elapsed-session count instead of
+  // always advancing it by one (`AcceptClockAsSchedule`). See
+  // `SwapFixingCadence` above. Sprint-owner-approved additive Tier-A exception
+  // (backtest.hpp's own "new knobs append at the end" convention); this is
+  // field 18, appended last per that convention.
+  SwapFixingCadence swap_fixing_cadence{SwapFixingCadence::RequireEverySession};
 };
 
-// Drift pin (plan item 4.2). RunConfig has exactly SEVENTEEN fields. Adding,
+// Drift pin (plan item 4.2). RunConfig has exactly EIGHTEEN fields. Adding,
 // removing or splitting one breaks this line, which is the point: it forces
 // whoever changes the struct to read the construction contract above instead of
 // appending a knob "for compatibility" with positional initializers that are no
@@ -886,8 +922,18 @@ struct RunConfig {
 // (`Backtest.PrefetchDepthIsBitIdenticalToSingleStepLookAhead` pins it), so the
 // addition moves no number a caller already depends on.
 //
+// 17 -> 18 (Task A1, backtest-lakehouse sprint): `swap_fixing_cadence` APPENDED
+// at the end. Sprint-owner-approved exception to the 1.x Tier-A freeze
+// (target: 1.1.0) for this ONE additive field; see the sprint's
+// global-constraints.md amendment. Output is bit-identical for every caller
+// that does not set it (`RequireEverySession` — the default — reduces to the
+// old book-a-fixing-per-step arithmetic on any clock that genuinely visits one
+// NYSE session per step; it changes behavior only when the clock and the
+// fixing schedule actually disagree, which used to compute a silently wrong
+// answer instead of an error).
+//
 // BLIND SPOT: this probe pins the field COUNT, nothing else. It cannot see a
-// REORDER that leaves the count at 17 -- `aggregate_arity_is_v` (see
+// REORDER that leaves the count at 18 -- `aggregate_arity_is_v` (see
 // detail/aggregate_arity.hpp) only checks how many brace-initializer slots
 // `RunConfig{...}` accepts, with no notion of field NAMES or TYPES, so swapping
 // two existing fields (e.g. two `bool`s, or two `std::size_t`s) still compiles
@@ -902,7 +948,7 @@ struct RunConfig {
 // multi-argument positional brace list; `git grep -n "RunConfig cfg"` sites
 // build via `RunConfig cfg;` plus `cfg.field = ...` assignment, which is
 // order-independent by construction.
-static_assert(detail::aggregate_arity_is_v<RunConfig, 17>,
+static_assert(detail::aggregate_arity_is_v<RunConfig, 18>,
               "RunConfig field count changed: update this pin, and confirm every "
               "construction site still initializes by field name.");
 
