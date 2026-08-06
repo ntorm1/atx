@@ -945,6 +945,30 @@ Result<DerivQuote> var_swap_fair_strike(const SurfaceT& surface,
     }
   }
 
+  // C-2 / PV-2: the MIRROR rule. The rescale above only widens the span for a
+  // high-vol/long-dated tenor; a short-tenor/low-vol quote can still resolve
+  // too coarsely even at (or below) the tier's own floor span, because the
+  // tier grids are sized for a roughly-1Y reference vol scale, not a 1-day
+  // one. Enforce dk <= sigma_atm*sqrt(T)/4 by raising the node count, same
+  // 4m+1 rounding as above (`strip::dk_floor_nodes`). `sigma_atm` is the same
+  // ATM vol read the span rescale above already resolved -- no second read.
+  // `cfg.strip_nodes` pinned is never overridden here, same as the span
+  // rescale: a pinned node count is a caller request and gets flagged
+  // (LowT) instead of silently changed.
+  const double dk_max = strip::dk_ceiling(sigma_atm, T);
+  bool low_t = false;
+  const double resolved_span = grid.k_max_log - grid.k_min_log;
+  if (cfg.strip_nodes == 0u) {
+    const std::size_t raised = strip::dk_floor_nodes(resolved_span, grid.n_nodes, dk_max);
+    if (raised != grid.n_nodes) {
+      grid.n_nodes = raised;
+      low_t = true;
+    }
+  } else if (dk_max > 0.0) {
+    const double dk = resolved_span / static_cast<double>(grid.n_nodes - 1);
+    low_t = dk > dk_max;
+  }
+
   const std::size_t n = grid.n_nodes;
   const double dx = (grid.k_max_log - grid.k_min_log) / static_cast<double>(n - 1);
 
@@ -1030,6 +1054,9 @@ Result<DerivQuote> var_swap_fair_strike(const SurfaceT& surface,
   }
   if (wing_clamped) {
     flags |= DerivFlags::WingClamped;
+  }
+  if (low_t) {
+    flags |= DerivFlags::LowT;
   }
 
   DerivQuote out{};

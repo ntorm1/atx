@@ -352,6 +352,95 @@ TEST(VarStrip, IntegrationErrorEstimate_FiniteAndBoundsFlatVolError) {
   EXPECT_LT(q->integration_error_est, 1.0e-6);
 }
 
+// ── PV-2 / C-2: short-tenor strip resolution floor ───────────────────────
+//
+// The adaptive-wing rescale above only WIDENS the span for a high-vol/long-
+// dated tenor; nothing rescaled the node count for the OPPOSITE regime, a
+// short-tenor/low-vol quote that sits comfortably inside the tier's own span
+// floor. The tier grids are sized for a roughly-1Y reference vol scale, so a
+// T = 1 trading day quote resolves far coarser than its own sigma*sqrt(T)
+// calls for -- the quadrature error this starves is dominated by the near-
+// ATM curvature the strip integrates through, not by truncated wings (the
+// coverage test above already covers that failure mode). Fast tier measured
+// +6.06e-2 relative error pre-fix (task-C-2-report.md).
+//
+// Truth for a flat-vol lognormal surface is K_var == sigma^2 exactly.
+TEST(StripResolution, OneDayTenorAccurateAtAllTiers) {
+  const double spot = 100.0;
+  const double sigma = 0.20;
+  const double T_test = 1.0 / 252.0;  // one trading day
+  // T_lo well below the 1-day tenor: T_test then sits strictly between the
+  // two pillars, so the flat-surface identity theta == sigma^2*T holds by
+  // exact linear interpolation rather than the surface's short-T
+  // extrapolation guard (Surface<Slice>::w, T < 0.5*T0 -> NaN).
+  const EssviSurface surf = make_flat_surface(sigma, T_test / 10.0, 1.00);
+  const CurveSet cs = make_flat_curves(spot, T_test / 10.0, 1.00);
+  ASSERT_LT(std::fabs(surf.iv(0.0, T_test) - sigma), 1.0e-9);
+
+  const double truth = sigma * sigma;  // 0.04
+  for (const DerivQuality q : {DerivQuality::Fast, DerivQuality::Standard,
+                               DerivQuality::High, DerivQuality::Audit}) {
+    DerivConfig cfg = deriv_default_config();
+    cfg.quality = q;
+    const auto quote = var_swap_fair_strike(surf, cs, T_test, cfg);
+    ASSERT_TRUE(quote.has_value()) << static_cast<int>(q);
+    const double rel_err = std::fabs(quote->fair_strike_dec - truth) / truth;
+    EXPECT_LT(rel_err, 1.0e-3)
+        << "quality=" << static_cast<int>(q) << " K_var=" << quote->fair_strike_dec
+        << " truth=" << truth << " rel_err=" << rel_err;
+    // The floor's node-count raise stays on the 4m+1 lattice, so the
+    // Richardson half-grid estimate must still be populated (not NaN).
+    EXPECT_TRUE(std::isfinite(quote->integration_error_est))
+        << "quality=" << static_cast<int>(q);
+  }
+}
+
+// LowT (PV-3): declared, previously never written. It now fires whenever (a)
+// the resolution floor above had to raise the node count, or (b) a caller-
+// pinned node count leaves the grid under-resolved and the floor could not
+// raise it -- pin semantics are load-bearing for deriv_greeks' grid pinning
+// (see DerivGreeks.HighVolRegimeGridPinKeepsSecondOrderSane), so a pinned
+// grid is flagged rather than silently overridden.
+TEST(StripResolution, LowTFlagFires) {
+  const double spot = 100.0;
+  const double sigma = 0.20;
+  const double T_1d = 1.0 / 252.0;
+  const EssviSurface surf = make_flat_surface(sigma, T_1d / 10.0, 1.00);
+  const CurveSet cs = make_flat_curves(spot, T_1d / 10.0, 1.00);
+
+  // (a) Caller pins exactly the Fast-tier default node count (97) at T = 1
+  // day: the floor cannot override a pinned count, so it flags instead.
+  {
+    DerivConfig cfg = deriv_default_config();
+    cfg.quality = DerivQuality::Fast;
+    cfg.strip_nodes = 97u;
+    const auto q = var_swap_fair_strike(surf, cs, T_1d, cfg);
+    ASSERT_TRUE(q.has_value());
+    EXPECT_EQ(q->strip_nodes_used, 97u) << "pin must hold exactly";
+    EXPECT_TRUE(has_flag(q->flags, DerivFlags::LowT));
+  }
+
+  // (b) Unpinned default Fast grid at the same tenor: the floor DOES engage
+  // (raises the node count past the tier default), which is itself flagged.
+  {
+    DerivConfig cfg = deriv_default_config();
+    cfg.quality = DerivQuality::Fast;
+    const auto q = var_swap_fair_strike(surf, cs, T_1d, cfg);
+    ASSERT_TRUE(q.has_value());
+    EXPECT_GT(q->strip_nodes_used, 97u) << "floor must have raised the node count";
+    EXPECT_TRUE(has_flag(q->flags, DerivFlags::LowT));
+  }
+
+  // (c) A 3-month Standard-tier quote is nowhere near the floor: no LowT.
+  {
+    DerivConfig cfg = deriv_default_config();
+    cfg.quality = DerivQuality::Standard;
+    const auto q = var_swap_fair_strike(surf, cs, 0.25, cfg);
+    ASSERT_TRUE(q.has_value());
+    EXPECT_FALSE(has_flag(q->flags, DerivFlags::LowT));
+  }
+}
+
 // ── Aged dispatch (test_vol_deriv_aged.c) ────────────────────────────────
 
 // Mid-life variance swap with rv_done == K_var_future: the linear blend must

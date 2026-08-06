@@ -113,6 +113,55 @@ struct WingCoverage {
   return n;
 }
 
+// ── C-2 / PV-2: resolution floor (the SPAN policy's mirror) ────────────────
+//
+// `adaptive_half_width` only WIDENS the span for a high-vol/long-dated tenor;
+// nothing rescales the node count for the OPPOSITE regime, a short-tenor/
+// low-vol quote that sits comfortably inside the tier's own span floor. The
+// tier grids are sized for a roughly-1Y reference vol scale, so a T = 1
+// trading day quote can resolve far coarser than its own sigma_atm*sqrt(T)
+// calls for -- e.g. Fast (97 nodes over +-1.0) resolves dk ~= 0.0208 at
+// T = 1/252, sigma = 20%, ~6.6x coarser than the dk_ceiling below, and the
+// quadrature error that starves is dominated by the near-ATM curvature the
+// strip integrates through (the price/(df*K) integrand's kink at k = 0), not
+// by truncated wings -- verified +6.06% on K_var at the Fast tier (PV-2).
+
+// Resolution ceiling in log-forward-moneyness the strip's own node spacing
+// must not exceed. Returns 0.0 ("no requirement expressible", the same
+// convention `required_half_width` uses) when sigma_atm or T is unusable.
+[[nodiscard]] inline double dk_ceiling(double sigma_atm, double T) noexcept {
+  if (!std::isfinite(sigma_atm) || sigma_atm <= 0.0 || !std::isfinite(T) || T <= 0.0) {
+    return 0.0;
+  }
+  return sigma_atm * std::sqrt(T) / 4.0;
+}
+
+// Minimum node count that keeps `span`'s own grid spacing at or under
+// `dk_max` (from `dk_ceiling`). Preserves the 4m+1 Richardson invariant the
+// same way the span-driven rescale (FIX-E M-7, derivatives.cpp) does: force
+// odd, then nudge +2 if that lands off 4m+1 -- odd counts alternate 1 mod 4 /
+// 3 mod 4 as they step by two, so a single +2 always suffices. Returns
+// `current_n` unchanged when `span`/`dk_max` is non-positive (no floor is
+// expressible) or the current spacing already satisfies it -- the caller
+// compares the result against `current_n` to learn whether the floor
+// actually engaged.
+[[nodiscard]] inline std::size_t dk_floor_nodes(double span, std::size_t current_n,
+                                                double dk_max) noexcept {
+  if (!(span > 0.0) || !(dk_max > 0.0) || current_n < 2u) {
+    return current_n;
+  }
+  const double dk = span / static_cast<double>(current_n - 1u);
+  if (dk <= dk_max) {
+    return current_n;
+  }
+  const double intervals = span / dk_max;
+  std::size_t n = odd_nodes(static_cast<std::size_t>(std::ceil(intervals)) + 1u, current_n);
+  if ((n % 4u) != 1u) {
+    n += 2u;
+  }
+  return n;
+}
+
 // Composite-Simpson weight for node i of n (n odd): end nodes 1, interior
 // alternating 4 / 2. The caller supplies the trailing Δk/3.
 [[nodiscard]] inline double simpson_weight(std::size_t i, std::size_t n) noexcept {

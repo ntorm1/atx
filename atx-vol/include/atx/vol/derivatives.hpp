@@ -197,6 +197,17 @@ enum class DerivFlags : std::uint32_t {
   StripTruncatedRight = 1u << 4,
   VolCarrLee = 1u << 5,
   DiscreteCorrApplied = 1u << 6,
+  // Set when the variance strip's grid spacing (dk) exceeds
+  // sigma_atm*sqrt(T)/4 -- the resolution floor `var_swap_fair_strike`
+  // enforces (C-2 / PV-2), mirroring the span policy's own vol-scaled
+  // widening but for RESOLUTION rather than COVERAGE. Fires in exactly two
+  // cases: (a) the floor had to raise the node count (an unpinned grid,
+  // typically a short-tenor/low-vol quote whose tier default is coarser than
+  // its own vol scale calls for), or (b) a caller-pinned `strip_nodes`
+  // leaves the grid under-resolved -- a pin is never overridden (pin
+  // semantics are load-bearing for deriv_greeks' grid pinning), so that case
+  // is flagged instead of silently corrected. Absent whenever dk already
+  // satisfies the floor, including every tier default at a long-enough tenor.
   LowT = 1u << 7,
   // Set when a discount factor could not be resolved at the contract maturity
   // and df = 1.0 was substituted (typical case: T == 0 at expiry). Callers

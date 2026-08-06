@@ -50,6 +50,50 @@ Not covered: the residual O(1/n) jump term (Broadie-Jain sec 4) — jump-
 diffusion discrete-monitoring bias needs the `FullMc` engine (reserved,
 LIT-3).
 
+### Fixed — short-tenor variance strip was under-resolved; `DerivFlags::LowT` now fires (PV-2, PV-3)
+
+The E2 adaptive-wing logic only WIDENED the strip's span for a high-vol/
+long-dated tenor (`kh = max(tier_span, width_sigmas*sigma_atm*sqrt(T))`) and
+rescaled the node count to match — it never checked the OPPOSITE direction.
+The tier grids are sized for a roughly-1Y reference vol scale, so a short-
+tenor quote (e.g. T = 1 trading day) sits comfortably inside the tier's span
+floor but resolves it far more coarsely than its own `sigma_atm*sqrt(T)`
+calls for. The quadrature error this starves is dominated by the near-ATM
+curvature the strip integrates through (the `price/(df*K)` integrand's kink
+at `k = 0`), not by truncated wings.
+
+`var_swap_fair_strike` now enforces the mirror rule after span resolution:
+`dk <= sigma_atm*sqrt(T) / 4`, raising the node count when it does not
+(rounded up to the next `4m+1` so the Richardson half-grid estimate stays
+populated). `sigma_atm` is the same ATM-vol read the span logic already
+resolves — no second surface read. A caller-pinned `strip_nodes` is never
+overridden (pin semantics are load-bearing for `deriv_greeks`' grid pinning);
+a pinned grid that violates the floor raises the now-live `DerivFlags::LowT`
+instead of being silently corrected. `LowT` was declared in 1.0.0 with no
+writer anywhere in the engine (PV-3); it now fires whenever the floor
+engaged, or a pinned grid could not be corrected to satisfy it.
+
+**Magnitude** (flat sigma=20%, T=1/252, truth K_var=0.04 exactly):
+
+| Tier     | Nodes (pre→post) | K_var (pre→post)         | Move                    |
+|----------|-------------------|----------------------------|-------------------------|
+| Fast     | 97 → 637          | 0.042423 → 0.040000        | -6.06% (~-24.2 var pts) |
+| Standard | 257 → 957         | 0.0400156 → 0.0400000      | -3.91bp (~-0.16 var pt) |
+| High     | 769 → 1273        | ~0.04000000 (both)         | ~0 (already accurate)   |
+| Audit    | 2049 → 2049       | 0.0400000002 (unchanged)   | none (floor unneeded)   |
+
+**Migration**: this moves the DEFAULT Fast-tier mark at short tenors — the
+old default was a verified quadrature bug (PV-2), not an intentional choice,
+so per the sprint's correctness-first rule it is corrected rather than kept
+for compatibility. A caller marking short-dated (sub-week) variance/vol
+swaps at `DerivQuality::Fast` was pricing them materially rich/cheap by
+roughly the magnitude above and should re-mark against the corrected engine.
+Standard/High/Audit move by ≤4bp at the same tenor and are unaffected at
+ordinary (multi-week+) tenors, where the floor was already satisfied. A
+caller that pins `strip_nodes` explicitly is unaffected numerically (the pin
+still holds exactly) but may now see `DerivFlags::LowT` where it previously
+never could.
+
 ## 1.0.0
 
 The first release with a stability promise. Everything below happened during the
