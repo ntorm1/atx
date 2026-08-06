@@ -777,6 +777,15 @@ Result<std::unique_ptr<IVolCurve>> refit_slice_curve(
         warm_k.push_back(std::log(K / F));
       }
     }
+    // Task 3 residual (compatibility-only path): no prev_data_k_range is
+    // threaded here — refit_slice_curve's signature has no parameter for it —
+    // so the calendar floor's support band defaults to (-inf, +inf) and the
+    // ratchet containment fit_slice_curve applies on the cold path does NOT
+    // protect this warm refit. Acceptable only because the safe incremental
+    // live-refit facade never routes ConvexDense through here (README.md:278
+    // documents VolaSession::refit_slice as compatibility-only/unsafe). Thread
+    // the previous slice's data-supported k-range through this arm BEFORE ever
+    // exposing ConvexDense via a live-refit facade.
     ATX_TRY(std::unique_ptr<IVolCurve> curve,
             fit_slice_curve(cfg, obs_eu, F, T, df, w_prev, warm_k));
     if (diag != nullptr) {

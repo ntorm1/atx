@@ -99,6 +99,12 @@ struct CurveSurfaceReport {
   // Task 3: slices refused because the previous slice's calendar floor bound
   // them only where that slice had no admitted data (the seed-ratchet shape;
   // kCalendarFloorUnsupportedMsg). Truncation follows; surfaced, never silent.
+  // Caveat: under the opt-in `CalibOpts::per_slice_linear_fallback` (off by
+  // default; the populate path never enables it), a refusal is first retried
+  // as a LinearVariance slice, and a successful recovery does NOT increment
+  // this counter — the refusal is absorbed, not surfaced. That fallback's
+  // union-grid floor also applies w_prev unconditionally (no floor_support_k
+  // analog), so "every refusal is counted" holds only with the flag off.
   std::size_t n_slice_calendar_unsupported{0};
   // Perf C1: per-slice input certification, ‖ context/per_expiry. Lets
   // `VolaSession::build` construct `SessionSliceDiagnostics` + the incremental
