@@ -943,24 +943,33 @@ struct SwapStepResult {
 // Task A1 (backtest-lakehouse sprint, 2026-08): elapsed SESSION count between
 // two fixing instants, for the `SwapFixingCadence` guard below.
 //
-// "Session" here means a Mon-Fri WEEKDAY, not a full NYSE trading-calendar
-// day: `VolTimeCalendar::us_default()` (vol_time.hpp) is the in-tree NYSE
-// closure table, but its covered window is only 2024-2028, and this guard
-// must answer for a fixing pair on ANY corpus date, so it deliberately does
-// not consult the holiday table (no new calendar dependency, per the task
-// brief) -- it uses only the calendar-independent `is_weekend_day` primitive.
+// HYBRID RULE (post-review fixup, same sprint): a "session" is a real NYSE
+// trading session -- Mon-Fri, minus `VolTimeCalendar::us_default()`'s listed
+// full closures (Thanksgiving, July 4th, Christmas, etc.) -- whenever BOTH
+// endpoints of the step fall inside that calendar's covered window
+// (2024-2028, vol_time.hpp). Outside the window (either endpoint), it falls
+// back to plain Mon-Fri weekday counting, exactly as a corpus with no
+// calendar coverage always has: `is_holiday` cannot distinguish "not a
+// listed closure" from "outside the populated range" (both read `false`), so
+// consulting it there would silently MISCOUNT instead of failing loudly.
+// `covers()` is what makes that distinction and is checked on BOTH endpoints
+// before trusting `is_holiday` for any day strictly between them -- the
+// covered window is a single contiguous range, so both endpoints covered
+// implies every day in between is too (no per-day `covers()` recheck needed
+// inside the loop).
 //
-// HOLIDAY-BLIND CONSEQUENCE: a genuinely daily clock whose step happens to
-// span a single NYSE full closure (e.g. Thursday close -> Monday close over a
-// Friday holiday) reports 2 elapsed sessions for what is actually one
-// exchange session, and `RequireEverySession` refuses it. This is a
-// FAIL-CLOSED FALSE POSITIVE -- never silent corruption -- with two remedies:
-// opt into `SwapFixingCadence::AcceptClockAsSchedule` for that run, or (once
-// `VolTimeCalendar`'s covered window spans the corpus's dates) route this
-// through it for real holiday awareness. Both remedies are named in the error
-// text `observe_swap_fixing` raises below, not just in this comment.
+// WHY THIS MATTERS: the original (holiday-BLIND) version of this guard
+// reported 2 elapsed sessions for an ordinary daily production clock whose
+// step happened to span a single NYSE full closure (e.g. Thursday close ->
+// Monday close over a Friday holiday), and `RequireEverySession` refused a
+// backtest that had honored its fixing schedule exactly -- a false positive
+// on the most common in-window production case. Within the covered window
+// this is now a non-issue; outside it (a pre-2024 or post-2028 corpus, like
+// this file's own 2023-dated test fixture), the same false-positive risk
+// still exists and the remedy is still `SwapFixingCadence::
+// AcceptClockAsSchedule`, named in the error text below.
 //
-// Counts weekdays strictly after `prev_ns`'s UTC calendar day, through and
+// Counts sessions strictly after `prev_ns`'s UTC calendar day, through and
 // including `ts_ns`'s. Bounded by construction: the loop runs exactly
 // `ts_day - prev_day` iterations, both finite civil-day indices computed from
 // two real corpus timestamps, and `ts_ns > prev_ns` is the caller's
@@ -977,11 +986,19 @@ struct SwapStepResult {
   };
   const std::int64_t prev_day = civil_day(prev_ns);
   const std::int64_t ts_day = civil_day(ts_ns);
+  const VolTimeCalendar &cal = VolTimeCalendar::us_default();
+  const bool holiday_aware = cal.covers(static_cast<std::int32_t>(prev_day)) &&
+                             cal.covers(static_cast<std::int32_t>(ts_day));
   std::uint32_t sessions = 0u;
   for (std::int64_t day = prev_day + 1; day <= ts_day; ++day) {
-    if (!is_weekend_day(static_cast<std::int32_t>(day))) {
-      ++sessions;
+    const auto day32 = static_cast<std::int32_t>(day);
+    if (is_weekend_day(day32)) {
+      continue; // a Saturday is a Saturday at any date, table or no table
     }
+    if (holiday_aware && cal.is_holiday(day32)) {
+      continue;
+    }
+    ++sessions;
   }
   return sessions;
 }
@@ -991,14 +1008,15 @@ struct SwapStepResult {
 // observed contract stops accruing AND stops advancing `prev_*`. See SwapAccrual
 // in backtest.hpp for why this transcribes RealizedTracker rather than using it.
 //
-// Task A1: `cadence` governs how a fixing whose elapsed weekday-session count
-// (`weekday_sessions_between`, above) differs from 1 is handled.
-// `RequireEverySession` (default) fails closed on any count other than
-// exactly 1 (including 0 -- two fixings on the same UTC calendar day are not
-// one session apart either). `AcceptClockAsSchedule` books the one observed
-// squared return but advances `n_obs_done` by the elapsed count rather than
-// by 1, so `annualization * Sigma r^2 / n_done` is not overstated by a
-// clock coarser than the lot's implicitly-daily schedule.
+// Task A1: `cadence` governs how a fixing whose elapsed session count
+// (`weekday_sessions_between`, above -- real NYSE sessions inside the
+// calendar's covered window, plain weekdays outside it) differs from 1 is
+// handled. `RequireEverySession` (default) fails closed on any count other
+// than exactly 1 (including 0 -- two fixings on the same UTC calendar day are
+// not one session apart either). `AcceptClockAsSchedule` books the one
+// observed squared return but advances `n_obs_done` by the elapsed count
+// rather than by 1, so `annualization * Sigma r^2 / n_done` is not overstated
+// by a clock coarser than the lot's implicitly-daily schedule.
 [[nodiscard]] Status observe_swap_fixing(SwapAccrual &acc, std::int64_t ts_ns, double spot,
                                          SwapFixingCadence cadence) {
   if (acc.have_prev && ts_ns <= acc.prev_ts_ns) {
@@ -1028,11 +1046,13 @@ struct SwapStepResult {
                "run_backtest: swap lot id=" + std::to_string(acc.lot_id) +
                    " fixing step at ts=" + std::to_string(ts_ns) + " (previous fixing ts=" +
                    std::to_string(acc.prev_ts_ns) + ") spans " + std::to_string(elapsed) +
-                   " weekday session(s); SwapFixingCadence::RequireEverySession expected 1 "
-                   "session per step. Note this guard is weekday-only and holiday-blind, so a "
-                   "step spanning an exchange closure can trigger it too -- opt into "
-                   "SwapFixingCadence::AcceptClockAsSchedule to accept the clock's own cadence "
-                   "and scale the accrual instead of refusing it.");
+                   " session(s); SwapFixingCadence::RequireEverySession expected 1 "
+                   "session per step. This guard counts real NYSE trading sessions when both "
+                   "step endpoints fall inside the built-in 2024-2028 closure table, and falls "
+                   "back to plain Mon-Fri weekdays outside that window (so a step spanning an "
+                   "exchange closure before 2024 or after 2028 can still trigger this) -- opt "
+                   "into SwapFixingCadence::AcceptClockAsSchedule to accept the clock's own "
+                   "cadence and scale the accrual instead of refusing it.");
   }
   const double r = std::log(spot / acc.prev_spot);
   acc.rv.sum_sq_log_returns_done += r * r;

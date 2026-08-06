@@ -50,6 +50,7 @@
 #include "atx/vol/types.hpp"                   // Side, Result, Status
 #include "atx/vol/vol_curve.hpp"               // CurveSurface, EssviCurve
 #include "atx/vol/vol_surface.hpp"             // EssviParams
+#include "atx/vol/vol_time.hpp"                // VolTimeCalendar -- elapsed_weekdays oracle (Task A1)
 
 using namespace atx::vol;
 using atx::core::ErrorCode;
@@ -87,23 +88,44 @@ constexpr std::uint32_t kMissingUid = 4242; // never written into any archive
 // AcceptClockAsSchedule` and recomputes its hand-derived expectations with
 // `elapsed_weekdays` below in place of the old "+1 fixing per step" count.
 
-// Independent day-count oracle (Task A1): weekday (Mon-Fri) sessions elapsed
+// Independent day-count oracle (Task A1, post-review fixup): sessions elapsed
 // in `(prev_ns, ts_ns]`. Mirrors what the engine's OWN `weekday_sessions_
-// between` (backtest.cpp, file-local) computes, but is written FRESH here
-// rather than calling into engine internals -- the same independent-oracle
-// discipline `reference_swap_mark` below documents (built from the
-// documented convention, never from the code under test). 1970-01-01 (epoch
+// between` (backtest.cpp, file-local) computes -- including its HYBRID rule
+// (real NYSE sessions, via `VolTimeCalendar::us_default()`'s listed closures,
+// whenever BOTH endpoints fall inside its 2024-2028 covered window; plain
+// Mon-Fri weekdays otherwise) -- but is written FRESH here rather than
+// calling into engine internals, the same independent-oracle discipline
+// `reference_swap_mark` below documents (built from the documented
+// convention, never from the code under test; `VolTimeCalendar` itself is
+// the shared, independently-tested data source, not the code under test, so
+// consulting its public API here does not defeat that independence -- exactly
+// how `reference_swap_mark` calls the real `detail::deriv_price_on_ref`
+// rather than re-deriving option pricing from scratch). 1970-01-01 (epoch
 // day 0) is a Thursday, so a day's Sun(0)..Sat(6) weekday index is
 // `(day + 4) mod 7`.
+//
+// This matters for THIS file's fixture even though it is nominally
+// "2023-dated" (`kBaseNow` = 2023-11-14): steps far enough into a test's
+// corpus land in 2024 (e.g. `VarSwapAccruesAndSettlesExactly`'s accrual #2,
+// 2024-01-13 -> 2024-02-12, both endpoints in-window) and DO cross a real
+// closure (2024 MLK Day, 2024-01-15) -- this oracle must agree with the
+// engine there too, not just in the purely-2023 cases.
 [[nodiscard]] std::uint32_t elapsed_weekdays(std::int64_t prev_ns, std::int64_t ts_ns) {
   const std::int64_t prev_day = prev_ns / kDayNs;
   const std::int64_t ts_day = ts_ns / kDayNs;
+  const VolTimeCalendar &cal = VolTimeCalendar::us_default();
+  const bool holiday_aware = cal.covers(static_cast<std::int32_t>(prev_day)) &&
+                             cal.covers(static_cast<std::int32_t>(ts_day));
   std::uint32_t sessions = 0;
   for (std::int64_t d = prev_day + 1; d <= ts_day; ++d) {
     const std::int64_t dow = ((d % 7) + 7 + 4) % 7; // 0=Sun .. 6=Sat
-    if (dow != 0 && dow != 6) {
-      ++sessions;
+    if (dow == 0 || dow == 6) {
+      continue;
     }
+    if (holiday_aware && cal.is_holiday(static_cast<std::int32_t>(d))) {
+      continue;
+    }
+    ++sessions;
   }
   return sessions;
 }
@@ -228,10 +250,20 @@ struct Corpus {
 // alignment, so that jump is EXACTLY 30 elapsed weekday sessions --
 // independently verifiable by hand, without re-deriving the guard's own
 // day-counting arithmetic (`weekday_sessions_between`, backtest.cpp).
-constexpr std::int64_t kGapD0 = 1767571200000000000LL;  // 2026-01-05 Monday    (inception)
-constexpr std::int64_t kGapD1 = 1767657600000000000LL;  // 2026-01-06 Tuesday   (+1 weekday, seed)
-constexpr std::int64_t kGapD2 = 1767744000000000000LL;  // 2026-01-07 Wednesday (+1 weekday)
-constexpr std::int64_t kGapD3 = kGapD2 + 42LL * kDayNs; // 2026-02-18 Wednesday (+30 weekdays)
+//
+// Deliberately dated in 2023, OUTSIDE `VolTimeCalendar::us_default()`'s
+// 2024-2028 covered window (see the "HYBRID RULE" comment on
+// `weekday_sessions_between`, backtest.cpp, added in the post-review
+// fixup): this fixture exercises the CADENCE GUARD mechanism generically,
+// via plain Mon-Fri weekday counting, independent of the holiday-aware path
+// -- which gets its own dedicated covering test below
+// (`HolidayAwareCoarseClockAcceptedUnderRequireEverySession`). Dates inside
+// the window would silently entangle this fixture's hand-computed 30-session
+// gap with whichever 2023-era-analogous holidays happen to fall in it.
+constexpr std::int64_t kGapD0 = 1696204800000000000LL;  // 2023-10-02 Monday    (inception)
+constexpr std::int64_t kGapD1 = 1696291200000000000LL;  // 2023-10-03 Tuesday   (+1 weekday, seed)
+constexpr std::int64_t kGapD2 = 1696377600000000000LL;  // 2023-10-04 Wednesday (+1 weekday)
+constexpr std::int64_t kGapD3 = kGapD2 + 42LL * kDayNs; // 2023-11-15 Wednesday (+30 weekdays)
 constexpr std::int64_t kGapFarExpiry = kGapD0 + 200LL * kDayNs; // far beyond the corpus
 
 struct DatedSpot {
@@ -934,10 +966,10 @@ TEST(BacktestSwap, AppendRefusesToLaunderSwapLaneAway) {
 TEST(BacktestSwap, CoarseClockRefusedUnderRequireEverySession) {
   const fs::path dir = fresh_dir("cadence-refuse");
   const std::vector<DatedSpot> points = {
-      {"2026-01-05", kGapD0, 100.0},
-      {"2026-01-06", kGapD1, 101.0},
-      {"2026-01-07", kGapD2, 99.0},
-      {"2026-02-18", kGapD3, 102.0}, // the 42-calendar-day / 30-weekday-session jump
+      {"2023-10-02", kGapD0, 100.0},
+      {"2023-10-03", kGapD1, 101.0},
+      {"2023-10-04", kGapD2, 99.0},
+      {"2023-11-15", kGapD3, 102.0}, // the 42-calendar-day / 30-weekday-session jump
   };
   const Corpus c = make_spot_corpus_at(dir, "SPX", points);
   auto clock = Clock::from_manifest(c.manifest);
@@ -951,10 +983,14 @@ TEST(BacktestSwap, CoarseClockRefusedUnderRequireEverySession) {
   auto result = run_backtest(*clock, strat, cfg);
   ASSERT_FALSE(result.has_value());
   EXPECT_EQ(result.error().code(), ErrorCode::SwapFixingScheduleViolation);
-  // Names the offending step (ts) and expected-vs-seen fixing count.
+  // Names the offending step (ts) and expected-vs-seen fixing count. This
+  // 2023-dated gap is outside VolTimeCalendar's covered window, so the count
+  // is plain weekdays (30), not holiday-adjusted -- see
+  // HolidayAwareCoarseClockAcceptedUnderRequireEverySession below for the
+  // in-window, holiday-aware path.
   EXPECT_NE(result.error().message().find(std::to_string(kGapD3)), std::string::npos)
       << result.error().to_string();
-  EXPECT_NE(result.error().message().find("spans 30 weekday session"), std::string::npos)
+  EXPECT_NE(result.error().message().find("spans 30 session"), std::string::npos)
       << result.error().to_string();
   EXPECT_NE(result.error().message().find("expected 1 session"), std::string::npos)
       << result.error().to_string();
@@ -974,10 +1010,10 @@ TEST(BacktestSwap, GapAcceptedUnderAcceptClockAsSchedule_ScalesAccrual) {
   const fs::path dir = fresh_dir("cadence-accept");
   const std::vector<double> spots = {100.0, 101.0, 99.0, 102.0};
   const std::vector<DatedSpot> points = {
-      {"2026-01-05", kGapD0, spots[0]},
-      {"2026-01-06", kGapD1, spots[1]},
-      {"2026-01-07", kGapD2, spots[2]},
-      {"2026-02-18", kGapD3, spots[3]},
+      {"2023-10-02", kGapD0, spots[0]},
+      {"2023-10-03", kGapD1, spots[1]},
+      {"2023-10-04", kGapD2, spots[2]},
+      {"2023-11-15", kGapD3, spots[3]},
   };
   const Corpus c = make_spot_corpus_at(dir, "SPX", points);
   auto clock = Clock::from_manifest(c.manifest);
@@ -1002,4 +1038,88 @@ TEST(BacktestSwap, GapAcceptedUnderAcceptClockAsSchedule_ScalesAccrual) {
 
   EXPECT_NEAR(r.cash.back(), payoff, 1.0e-9);
   EXPECT_NEAR(r.nav.back(), payoff, 1.0e-9);
+}
+
+// ── 9c. Post-review fixup: a real NYSE holiday does NOT trip the guard ──────
+//
+// Reviewer finding: the original `weekday_sessions_between` counted plain
+// Mon-Fri weekdays everywhere, so an ORDINARY daily production clock whose
+// step happened to span a single NYSE full closure (Thanksgiving, July 4th,
+// Christmas, ...) reported elapsed=2 and refused under the default
+// `RequireEverySession`, even though the contract's daily fixing schedule
+// was honored exactly -- a false positive on the most common in-window
+// production case. Fixed: within `VolTimeCalendar::us_default()`'s covered
+// window (2024-2028), `weekday_sessions_between` now subtracts the table's
+// listed full closures before counting.
+//
+// 2024-11-27 (Wed) -> 2024-11-29 (Fri) spans Thanksgiving (2024-11-28, a
+// listed closure in vol_time.cpp's table) and NO weekend day. Plain weekday
+// counting sees 2 elapsed days (Thu, Fri); holiday-aware counting correctly
+// sees 1 elapsed SESSION (Thu is not a trading day at all). Both endpoints
+// fall inside the covered window, so this run must succeed under the
+// DEFAULT cadence with elapsed == 1, not fail closed.
+TEST(BacktestSwap, HolidayAwareCoarseClockAcceptedUnderRequireEverySession) {
+  const fs::path dir = fresh_dir("cadence-holiday");
+  constexpr std::int64_t kDayBefore = 1732579200000000000LL;   // 2024-11-26 Tuesday
+  constexpr std::int64_t kPreHoliday = 1732665600000000000LL;  // 2024-11-27 Wednesday (seed)
+  constexpr std::int64_t kPostHoliday = 1732838400000000000LL; // 2024-11-29 Friday (accrual)
+  const std::vector<DatedSpot> points = {
+      {"2024-11-26", kDayBefore, 100.0},
+      {"2024-11-27", kPreHoliday, 101.0},
+      {"2024-11-29", kPostHoliday, 99.0}, // steps OVER 2024-11-28 (Thanksgiving)
+  };
+  const Corpus c = make_spot_corpus_at(dir, "SPX", points);
+  auto clock = Clock::from_manifest(c.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  // Expiry far beyond the corpus: this test only cares that the run SURVIVES
+  // the holiday-spanning step under the default cadence, not settlement.
+  const std::int64_t expiry = kDayBefore + 200LL * kDayNs; // 2025-06-14, far beyond
+  const SwapLot proto = var_swap_proto(kUid, expiry, /*n_obs_total=*/8u);
+  SwapOnlyStrategy strat{proto};
+
+  RunConfig cfg; // swap_fixing_cadence defaults to RequireEverySession
+  auto cont = run_backtest_incremental(*clock, strat, cfg, nullptr);
+  ASSERT_TRUE(cont.has_value()) << cont.error().to_string();
+  ASSERT_EQ(cont->checkpoint.swap_accruals.size(), 1u);
+  const SwapAccrual &acc = cont->checkpoint.swap_accruals.front();
+  EXPECT_TRUE(acc.have_prev);
+  EXPECT_EQ(acc.prev_ts_ns, kPostHoliday);
+  // The direct, numeric pin: ONE elapsed session over the holiday-spanning
+  // step, not two.
+  EXPECT_EQ(acc.rv.n_obs_done, 1u);
+  const double r1 = std::log(99.0 / 101.0);
+  EXPECT_LT(std::fabs(acc.rv.sum_sq_log_returns_done - r1 * r1), 1.0e-15);
+  EXPECT_LT(std::fabs(acc.rv.rv_done_dec - kAnnualization * r1 * r1), 1.0e-13);
+}
+
+// ── 9d. Out-of-window fallback still counts pure weekdays (regression pin) ──
+//
+// `CoarseClockRefusedUnderRequireEverySession` above already exercises the
+// out-of-window (2023) fallback for the GAPPED step (30 plain weekdays, no
+// holiday table consulted, since 2023 predates the 2024-2028 covered
+// window). This test pins the same fallback for the ORDINARY one-session
+// case, using the same 2023-dated `kGapD0`/`kGapD1`/`kGapD2` points (one
+// genuine weekday apart each) but stopping short of the gap, so the run
+// completes successfully rather than erroring -- confirming the fallback
+// reads a ROUTINE daily step correctly, not just a coarse one.
+TEST(BacktestSwap, OutOfWindowDailyClockStillAcceptedUnderRequireEverySession) {
+  const fs::path dir = fresh_dir("cadence-outofwindow");
+  const std::vector<DatedSpot> points = {
+      {"2023-10-02", kGapD0, 100.0},
+      {"2023-10-03", kGapD1, 101.0},
+      {"2023-10-04", kGapD2, 99.0},
+  };
+  const Corpus c = make_spot_corpus_at(dir, "SPX", points);
+  auto clock = Clock::from_manifest(c.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  const std::int64_t expiry = kGapFarExpiry; // far beyond this 3-entry corpus
+  SwapOnlyStrategy strat{var_swap_proto(kUid, expiry, /*n_obs_total=*/8u)};
+
+  RunConfig cfg; // swap_fixing_cadence defaults to RequireEverySession
+  auto cont = run_backtest_incremental(*clock, strat, cfg, nullptr);
+  ASSERT_TRUE(cont.has_value()) << cont.error().to_string();
+  ASSERT_EQ(cont->checkpoint.swap_accruals.size(), 1u);
+  EXPECT_EQ(cont->checkpoint.swap_accruals.front().rv.n_obs_done, 1u);
 }
