@@ -52,12 +52,32 @@
 #include <vector>
 
 #include "atx/vol/corpus.hpp"     // CorpusBoard
+#include "atx/vol/fit_policy.hpp" // FitAdmissionPolicy (Task 2: populate publish floor)
 #include "atx/vol/pricer_fitter.hpp" // ExpiryBuildOutcome, ExpiryFitOutcome (SliceDropCell, Task 3)
 #include "atx/vol/tools/run_report.hpp" // MetaKv
 #include "atx/vol/surface_db.hpp" // SurfaceDb, SymbolFitConfig
 #include "atx/vol/types.hpp"      // Result, Status
 
 namespace atx::vol {
+
+// ── Task 2: the populate publish floor ───────────────────────────────────────
+// The quote-fidelity publication gate for every populate fit. The evidence
+// (worst per-expiry frac_fv_within_bidask, scored against the fit's OWN
+// admitted rows — curve_fit.cpp:918) and the check (fit_policy.cpp:144-149,
+// QualityBelowFloor) both pre-exist; this floor is what arms them. 0.35:
+// blocks the demonstrated 2025-04-10 publish (worst long slices ~5% in-band;
+// any floor >= 0.3 refuses it) while sitting far under calm-day boards
+// (>= ~55% against the strictly harder full-chain population; ~94.65%
+// board-wide on the served SPY regression board). A refused board lands in
+// the pre-existing FailedCell lane; safe mode retains the previously stored
+// record. TIGHTENING ONLY — no oracle/QP tolerance moves.
+inline constexpr double kPopulateMinWorstFracInBand = 0.35;
+
+// WP12 Mark-serving defaults plus the floor above. Every other field is the
+// default on purpose: the strict Risk shape gates already run separately via
+// RiskAdmission::Required (the no-arb oracle), and structural coverage is the
+// mark_domain/tenor-truncation policies' job downstream.
+[[nodiscard]] FitAdmissionPolicy populate_admission_policy() noexcept;
 
 struct SurfaceDbPopulateConfig {
   // Base fit inputs (preset etc). Per-symbol SymbolFitConfig from the db
