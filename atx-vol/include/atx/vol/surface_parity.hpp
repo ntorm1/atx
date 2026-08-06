@@ -279,6 +279,8 @@ enum class ExpiryFitOutcome : std::uint8_t {
   PrepFailed,          // HARD preparation error (defect) — `error` is set
   FitFailed,           // slice fit failed — `error` is set
   Skipped,             // degenerate maturity (T<=0) — never attempted
+  PrepUncovered,       // admitted rows fail k-coverage (ATM straddle / central
+                       // gap) — refused before fitting, no slice (Task 1)
 };
 
 struct ExpiryFitReport {

@@ -72,6 +72,44 @@ using ObservationRejectionReason = ObsRejectionReason;
 
 inline constexpr std::size_t kMinPreparedFitRows = 5u;
 
+// ── k-coverage slice admission (stress-day starvation guard) ─────────────────
+// Count alone (kMinPreparedFitRows) admits two defective populations the
+// ConvexDense price-space fit then extrapolates:
+//   * 2020-03-18 SPY T=1.7496: 9 survivors straddling ATM around a 0.516-wide
+//     log-moneyness hole (k in (-0.155, +0.361)) — the convex chord across the
+//     hole served ATM 8-15 vol points high;
+//   * 2025-04-10 SPY T=0.0383: 11 survivors ALL below the forward
+//     (k in [-0.124, -0.069]) — ATM and the whole call wing were served
+//     data-free (ATM 105%, iv(+0.15) 177.5%) and then calendar-ratcheted.
+// The criterion: fit rows must STRADDLE the forward (>= 1 row at
+// k <= -kCoverageAtmEps AND >= 1 row at k >= +kCoverageAtmEps) and leave no
+// adjacent-row hole wider than kCoverageMaxCentralGap where the hole overlaps
+// (-kCoverageCentralBand, +kCoverageCentralBand). Measured bad-slice holes:
+// 0.511 / 0.516 / 0.539 (all refused with margin at 0.40); healthy 60-row
+// slices carry central gaps ~0.05. Deep-wing sparsity is deliberately exempt.
+//
+// Recalibration rule (Task 1 Step 12, protects Task 5): if a healthy-day
+// slice is ever refused, the ONLY permitted adjustments are narrowing
+// kCoverageCentralBand (e.g. 0.30 -> 0.25) or raising kCoverageMaxCentralGap
+// toward -- but never past -- 0.50 (the smallest measured bad-slice hole is
+// 0.511). kCoverageAtmEps (the straddle requirement) is not negotiable; it is
+// what kills the one-sided (Mode B) defect. Document any adjustment here.
+inline constexpr double kCoverageAtmEps = 0.01;
+inline constexpr double kCoverageCentralBand = 0.30;
+inline constexpr double kCoverageMaxCentralGap = 0.40;
+
+struct SliceKCoverage {
+  bool straddles_atm{false};
+  double max_central_gap{0.0};
+  [[nodiscard]] bool admissible() const noexcept {
+    return straddles_atm && max_central_gap <= kCoverageMaxCentralGap;
+  }
+};
+
+// Pure predicate over a prepared slice's fit rows (FitObs::k = ln(K/F)).
+// Non-finite k rows are ignored; an empty/all-non-finite set is inadmissible.
+[[nodiscard]] SliceKCoverage slice_k_coverage(std::span<const FitObs> rows);
+
 struct ObservationRejection {
   ObservationKey key{};
   ObservationRejectionReason reason{ObservationRejectionReason::None};

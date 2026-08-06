@@ -84,6 +84,7 @@ enum class SlicePrepOutcome : std::uint8_t {
   Prepared,             // the primary policy produced a fittable slice
   PreparedLegacyRescue, // recovered via the opt-in Legacy-prep rescue
   Starved,              // below the usable-row floor even after any rescue (thin)
+  Uncovered,            // admitted rows fail the k-coverage criterion (Task 1)
   CarryFailed,          // carry / forward resolution failed
   Failed,               // HARD preparation error (defect) — error retained
 };
@@ -281,7 +282,6 @@ struct CarryFallback {
 void prepare_fit_slice_into_slot(const Chain &chain, const SurfaceParityInputs &in,
                                  VolCurveKind kind, bool use_fit_cache, bool time_stages,
                                  std::size_t i, ChainPrepass &slot) {
-  (void)kind;
   const AmericanCorrectionCaches fit_caches =
       use_fit_cache ? in.deam.caches : AmericanCorrectionCaches{};
   PreparedSliceInputs prepare_inputs;
@@ -351,6 +351,19 @@ void prepare_fit_slice_into_slot(const Chain &chain, const SurfaceParityInputs &
     slot.prep_outcome = SlicePrepOutcome::PreparedLegacyRescue;
   } else {
     slot.prep_outcome = SlicePrepOutcome::Prepared;
+  }
+
+  // Task 1 (k-coverage): count alone (kMinPreparedFitRows) waves through
+  // stress-day husks whose belly the absolute spread filters evacuated
+  // (2020-03-18) and one-sided freshly-listed expiries (2025-04-10); the
+  // ConvexDense chord / power tails then serve the missing region
+  // extrapolated. Refuse such slices into the same truthful-drop lane as
+  // Starved. ConvexDense only: every other family's population and admission
+  // are byte-identical.
+  if (kind == VolCurveKind::ConvexDense &&
+      !slice_k_coverage(prepared->fit_observations()).admissible()) {
+    slot.prep_outcome = SlicePrepOutcome::Uncovered;
+    return;
   }
 
   slot.prepared.emplace(std::move(*prepared));
@@ -619,6 +632,9 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
     if (pre.prep_outcome == SlicePrepOutcome::Starved) {
       ++out.n_slices_starved; // W3.3: thin even after any rescue — surfaced, not hidden
     }
+    if (pre.prep_outcome == SlicePrepOutcome::Uncovered) {
+      ++out.n_slices_uncovered; // Task 1: coverage-refused — surfaced, not hidden
+    }
   }
 
   // Phase 2 (SEQUENTIAL): the fit is order-dependent — each fitted slice's w(k)
@@ -650,6 +666,9 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
         break;
       case SlicePrepOutcome::Starved:
         rep.outcome = ExpiryFitOutcome::PrepStarved;
+        break;
+      case SlicePrepOutcome::Uncovered:
+        rep.outcome = ExpiryFitOutcome::PrepUncovered;
         break;
       case SlicePrepOutcome::Failed:
         rep.outcome = ExpiryFitOutcome::PrepFailed;

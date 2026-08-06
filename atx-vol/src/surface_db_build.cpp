@@ -455,6 +455,8 @@ namespace {
     return "FitFailed";
   case ExpiryFitOutcome::Skipped:
     return "Skipped";
+  case ExpiryFitOutcome::PrepUncovered:
+    return "PrepUncovered";
   case ExpiryFitOutcome::Fitted:
   case ExpiryFitOutcome::FittedFallbackCurve:
   case ExpiryFitOutcome::FittedLegacyPrep:

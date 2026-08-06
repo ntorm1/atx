@@ -92,6 +92,10 @@ struct CurveSurfaceReport {
   // distinguish a genuinely sparse board from one starved by a preparation
   // funnel that a permissive policy would have kept.
   std::size_t n_slices_starved{0};
+  // Task 1 (k-coverage): expiries refused because their admitted fit rows do
+  // not straddle ATM or leave a central k-hole wider than the cap
+  // (ExpiryFitOutcome::PrepUncovered). Surfaced, never silent.
+  std::size_t n_slices_uncovered{0};
   // Perf C1: per-slice input certification, ‖ context/per_expiry. Lets
   // `VolaSession::build` construct `SessionSliceDiagnostics` + the incremental
   // observation cache directly, without a second serial de-Am pass.

@@ -66,6 +66,7 @@ add_executable(atx-vol-tests
     vol_curve_test.cpp
     curve_fit_parallel_test.cpp
     curve_fit_carry_fallback_test.cpp
+    curve_fit_coverage_test.cpp      # Task 1: k-coverage slice admission (PrepUncovered)
     parallel_for_test.cpp
     pricer_fitter_test.cpp
     spline_curve_test.cpp
