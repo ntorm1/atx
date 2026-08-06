@@ -632,6 +632,104 @@ void expect_result_bit_identical(const BacktestResult &a, const BacktestResult &
   }
 }
 
+// ── AccountingFixture (Task A3: entry-fill slippage default-on + NAV
+// reconciliation gate) ──────────────────────────────────────────────────────
+//
+// Opens exactly one lot on the corpus's single date, at a FILL PRICE
+// (`Lot::entry_price`) the caller sets directly -- no fill policy, no quote
+// side, just the literal dollar figure `on_step` hands the engine.
+class SingleFillEntryStrategy final : public IStrategy {
+public:
+  SingleFillEntryStrategy(std::uint32_t uid, double strike, std::int64_t expiry,
+                          double entry_price) noexcept
+      : uid_{uid}, strike_{strike}, expiry_{expiry}, entry_price_{entry_price} {}
+
+  Status on_step(const MarketSnapshot & /*base*/, std::size_t step_index, PortfolioState &book,
+                 std::uint64_t &next_lot_id) override {
+    if (step_index == 0u) {
+      book.lots.push_back(Lot{next_lot_id++, OptionContract{uid_, strike_, 0.0, Side::Call}, +1.0,
+                              100.0, expiry_, 0u, entry_price_});
+    }
+    return atx::core::Ok();
+  }
+
+private:
+  std::uint32_t uid_{0};
+  double strike_{0.0};
+  std::int64_t expiry_{0};
+  double entry_price_{0.0};
+};
+
+// A single-date, single-lot corpus whose lot enters a caller-chosen number of
+// bps away from the contract's own model mid -- the minimal repro for "a
+// strategy that fills away from mid must show that cost in NAV". The offset is
+// applied against an INDEPENDENTLY solved mid: the fixture prices the same
+// (uid, K, T, side) contract itself, through the convenience
+// `PortfolioPricer::price()` overload -- documented bit-identical to the
+// retained `price_into()` path `run_backtest`'s entry-risk pass uses
+// (portfolio_pricer.hpp:995-997) -- never by driving `run_backtest` and
+// reading a result back. `qty`/`multiplier` are pinned to the values the Lot
+// itself carries, so `expected_nav_with_slippage()` is pure test-local
+// arithmetic: -(qty * multiplier * (entry_price - model_mid)), worked out
+// independently of the F2 expression `run_backtest` charges.
+class AccountingFixture {
+public:
+  [[nodiscard]] static AccountingFixture single_lot_entry_at(double bps_from_mid) {
+    AccountingFixture fx;
+    fx.dir_ = fresh_dir("accounting-fixture-entry-slippage");
+    const std::int64_t expiry = kBaseNow + 30 * kDayNs;
+    const PricedSurface surf = make_surface(kUid, 100.0, 100.0, kBaseNow);
+
+    // Same residual-T convention `run_backtest` derives from (expiry_ts_ns,
+    // base_ts_ns) at entry-risk time (backtest.cpp `residual_T`) -- computed
+    // here from the same two timestamps, never read back from a run.
+    const double T = static_cast<double>(expiry - kBaseNow) / kNsPerYear;
+    const Position pos{1u, OptionContract{kUid, 100.0, T, Side::Call}, +1.0, 100.0};
+    auto portfolio = Portfolio::create(std::span<const Position>(&pos, 1));
+    EXPECT_TRUE(portfolio.has_value())
+        << (portfolio.has_value() ? std::string{} : portfolio.error().to_string());
+    PortfolioPricer pricer(std::move(*portfolio));
+    const PricedSurface *surf_ptr = &surf;
+    auto surfaces = SurfaceSet::create(std::span<const PricedSurface *const>(&surf_ptr, 1));
+    EXPECT_TRUE(surfaces.has_value())
+        << (surfaces.has_value() ? std::string{} : surfaces.error().to_string());
+    const RunConfig defaults{}; // the SAME PriceOptions the entry-risk pass prices with
+    auto frame = pricer.price(*surfaces, defaults.price);
+    EXPECT_TRUE(frame.has_value())
+        << (frame.has_value() ? std::string{} : frame.error().to_string());
+    EXPECT_EQ(frame->status.at(0), PriceStatus::Ok);
+    fx.model_mid_ = frame->price.at(0);
+    fx.qty_ = pos.qty;
+    fx.multiplier_ = pos.multiplier;
+    fx.entry_price_ = fx.model_mid_ * (1.0 + bps_from_mid / 1.0e4);
+
+    fx.strategy_.emplace(kUid, 100.0, expiry, fx.entry_price_);
+    const std::vector<std::pair<std::string, std::string>> dp = {
+        {"2026-09-01", write_one(fx.dir_, "2026-09-01", "SPY", surf)}};
+    auto clk = Clock::from_manifest(make_manifest(dp, "SPY"));
+    EXPECT_TRUE(clk.has_value()) << (clk.has_value() ? std::string{} : clk.error().to_string());
+    fx.clock_.emplace(std::move(*clk));
+    return fx;
+  }
+
+  [[nodiscard]] const Clock &corpus() const { return *clock_; }
+  [[nodiscard]] SingleFillEntryStrategy &strategy() { return *strategy_; }
+
+  // Test-local oracle -- never calls `run_backtest`.
+  [[nodiscard]] double expected_nav_with_slippage() const {
+    return -(qty_ * multiplier_ * (entry_price_ - model_mid_));
+  }
+
+private:
+  fs::path dir_;
+  std::optional<Clock> clock_;
+  std::optional<SingleFillEntryStrategy> strategy_;
+  double model_mid_{0.0};
+  double qty_{0.0};
+  double multiplier_{0.0};
+  double entry_price_{0.0};
+};
+
 } // namespace
 
 // ── 0. The RunConfig construction contract (S4-T19, plan item 4.2) ──────────
@@ -663,8 +761,11 @@ TEST(RunConfigContract, DesignatedInitBindsByName) {
   EXPECT_EQ(defaults.snapshot_cache, nullptr);
   EXPECT_TRUE(defaults.prefetch_snapshots);
   EXPECT_TRUE(defaults.settlement_mark_memo);
-  EXPECT_FALSE(defaults.reconcile_nav);
-  EXPECT_FALSE(defaults.book_entry_fill_slippage);
+  // Task A3 (BT-P1-2): default-on NAV reconciliation and entry-fill-slippage
+  // accounting -- see BacktestAccounting.ReconcileNavIsOnByDefault and
+  // BacktestAccounting.EntryAwayFromMidHitsNavByDefault for the economic gate.
+  EXPECT_TRUE(defaults.reconcile_nav);
+  EXPECT_TRUE(defaults.book_entry_fill_slippage);
   EXPECT_DOUBLE_EQ(defaults.reconcile_nav_tol, 1.0e-6);
 
   // Naming the three formerly-appended fields binds them, and only them.
@@ -690,6 +791,30 @@ TEST(RunConfigContract, DesignatedInitBindsByName) {
   EXPECT_FALSE(static_cast<bool>(with_cancel.step_observer));
   EXPECT_EQ(with_cancel.unpriced, UnpricedLotPolicy::Error);
   EXPECT_EQ(with_cancel.record_every_n, 1u);
+}
+
+// ── 0a. BacktestAccounting (Task A3: entry-fill slippage default-on + NAV
+// reconciliation gate) ──────────────────────────────────────────────────────
+//
+// WS-F F2/F1(d) shipped OFF by default: a strategy that fills away from the
+// model mid paid the fill price in cash, but the book carried the mark at
+// `entry_price` itself, so the (fill - mark) gap never reached NAV -- and the
+// detector that would have caught the gap (`reconcile_nav`) was also off by
+// default. A production QIS default must show that cost, not delete it.
+
+// GATE. A 5bps-away-from-mid entry must show that 5bps in NAV under a
+// DEFAULT-CONSTRUCTED RunConfig -- the whole point of flipping the default.
+TEST(BacktestAccounting, EntryAwayFromMidHitsNavByDefault) {
+  AccountingFixture fx = AccountingFixture::single_lot_entry_at(/*bps_from_mid=*/5.0);
+  RunConfig cfg; // DEFAULTS — the point of the test
+  auto r = run_backtest(fx.corpus(), fx.strategy(), cfg);
+  ASSERT_TRUE(r.has_value()) << r.error().to_string();
+  EXPECT_NEAR(fx.expected_nav_with_slippage(), r->nav.back(), 1e-9);
+}
+
+TEST(BacktestAccounting, ReconcileNavIsOnByDefault) {
+  RunConfig cfg;
+  EXPECT_TRUE(cfg.reconcile_nav);
 }
 
 // ── 0b. Cooperative cancellation (S5-T26, plan item 5.5) ───────────────────

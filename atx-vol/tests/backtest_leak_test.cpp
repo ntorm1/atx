@@ -224,6 +224,14 @@ TEST(BacktestLeak, HedgeAtMissingSurfaceSkipsInsteadOfFreeFlatten) {
 
   RunConfig cfg;
   cfg.unpriced = UnpricedLotPolicy::ExcludeAndReport;
+  // Task A3: this fixture's whole point is the surface gap (an INTENTIONAL
+  // unpriced hole under the lenient policy), so NAV-vs-liquidation legitimately
+  // drifts here — exactly the drift
+  // `NavLiquidationReconciliationObservesTheExcludeAndReportDrift` asserts
+  // reconciliation aborts on. That property is orthogonal to what THIS gate
+  // measures (skip vs. free-flatten), so it opts out rather than aborting
+  // before the skip can be observed.
+  cfg.reconcile_nav = false;
   const auto r = run_backtest(*clock, strat, cfg);
   ASSERT_TRUE(r.has_value()) << r.error().to_string();
   ASSERT_EQ(r->size(), static_cast<std::size_t>(kDates));
@@ -313,6 +321,11 @@ TEST(BacktestLeak, DefaultUnpricedPolicyIsErrorNotSilentTruncation) {
   // The old behavior stays reachable, explicitly.
   RunConfig lenient;
   lenient.unpriced = UnpricedLotPolicy::ExcludeAndReport;
+  // Task A3: same intentional-gap fixture as the hedge gate above — the
+  // resulting NAV-vs-liquidation drift is real, expected, and asserted
+  // separately (`NavLiquidationReconciliationObservesTheExcludeAndReportDrift`);
+  // this gate only cares that the exclusion path actually fired.
+  lenient.reconcile_nav = false;
   GapStrategy strat2{kUidB, 150.0, expiry, HedgeSpec{}, /*close_step=*/0};
   const auto ok = run_backtest(*clock, strat2, lenient);
   ASSERT_TRUE(ok.has_value()) << ok.error().to_string();

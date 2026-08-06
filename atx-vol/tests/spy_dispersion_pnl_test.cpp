@@ -716,6 +716,10 @@ TEST(SpyDispersionPnl, MissingIndexBoardSkipsEntryWhenOptedIn) {
     // The session-1 cohort's SPY legs are HELD across the gap, so the run needs
     // the held-lot tolerance regardless; this gate is about the ENTRY.
     rc.unpriced = UnpricedLotPolicy::ExcludeAndReport;
+    // Task A3: the held-lot tolerance above means NAV-vs-liquidation legitimately
+    // drifts across the gap session; reconciliation is orthogonal to what this
+    // gate measures (the entry-skip behavior), so it opts out.
+    rc.reconcile_nav = false;
     return run_backtest(*clock, strat, rc);
   };
 

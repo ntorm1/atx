@@ -817,9 +817,13 @@ struct RunConfig {
   //                 row's base) + hedge-share MTM + cumulative NON-CASH financing
   //
   // publishes it in `BacktestResult::nav_liquidation`, and aborts the run when it
-  // deviates from `nav` by more than `reconcile_nav_tol`. OFF by default: it is a
-  // debug/audit gate, and it costs nothing when off (one bool test per row).
-  bool reconcile_nav{false};
+  // deviates from `nav` by more than `reconcile_nav_tol`.
+  //
+  // ON by default (Task A3, BT-P1-2): NAV is production accounting, not a
+  // debug artifact, so the gate that proves it closes ships on too. A run that
+  // wants the pre-A3 bit-exact replay behavior opts out explicitly; it costs
+  // nothing when off either way (one bool test per row).
+  bool reconcile_nav{true};
   // WS-F F2 (BT-P1-1): book the ENTRY FILL SLIPPAGE — qty*multiplier*(fill -
   // model mark) — as a realized execution cost.
   //
@@ -831,13 +835,16 @@ struct RunConfig {
   // look free. With this on, the gap is charged into `cost` (hence into NAV and,
   // exactly once, into cash) and `reconcile_nav` closes.
   //
-  // OFF by default and BIT-IDENTICAL when off: the mark used is `entry_price`
-  // itself, so the booked slippage is exactly 0.0 and the cash expression is
-  // unchanged. On, an entry whose model mark cannot be solved is a hard error
-  // rather than a silent zero. Note the modeled `FrictionModel` half-spread is
-  // ADDITIVE to this; a run using real quote-side fills normally sets
-  // `half_spread_bps`/`vol_tick` to 0 so the spread is not paid twice.
-  bool book_entry_fill_slippage{false};
+  // ON by default (Task A3, BT-P1-2): a production QIS default must show a
+  // fill-vs-mark gap, not delete it. BIT-IDENTICAL to the pre-A3 default when
+  // turned OFF (the opt-out for bit-exact replay suites): the mark used is
+  // `entry_price` itself, so the booked slippage is exactly 0.0 and the cash
+  // expression is unchanged. On, an entry whose model mark cannot be solved is
+  // a hard error rather than a silent zero. Note the modeled `FrictionModel`
+  // half-spread is ADDITIVE to this; a run using real quote-side fills
+  // normally sets `half_spread_bps`/`vol_tick` to 0 so the spread is not paid
+  // twice.
+  bool book_entry_fill_slippage{true};
   // Absolute drift tolerance for `reconcile_nav`. The two quantities are the same
   // flows summed in different orders, so the honest floor is rounding
   // (~|cash|*eps per row), not zero. Must be finite and positive.

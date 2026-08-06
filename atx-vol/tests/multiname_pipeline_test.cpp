@@ -720,6 +720,10 @@ TEST(MultinamePipeline, HeldNameGoesMissingMidRunAndRunCompletes) {
   // lenient policy explicitly.
   RunConfig rc_lenient;
   rc_lenient.unpriced = UnpricedLotPolicy::ExcludeAndReport;
+  // Task A3: this gate is precisely about SURVIVING the mid-run surface gap
+  // (S1-3b, pinned below as a documented, pre-existing truncation) — NAV vs.
+  // liquidation legitimately drifts under it, so reconciliation opts out here.
+  rc_lenient.reconcile_nav = false;
   auto res = run_backtest(*clock, strat, rc_lenient);
   ASSERT_TRUE(res.has_value()) << res.error().to_string();
   ASSERT_EQ(res->size(), dates.size());
@@ -906,6 +910,9 @@ TEST(MultinamePipeline, HeldLotWithoutSurfaceIsCountedNotHidden) {
   // WS-F F1(c): ExcludeAndReport is now an explicit opt-in (the default is Error).
   RunConfig rc_lenient;
   rc_lenient.unpriced = UnpricedLotPolicy::ExcludeAndReport;
+  // Task A3: the S1-3b truncation this gate exists to COUNT is a documented,
+  // pre-existing gap, not something reconciliation should abort on here.
+  rc_lenient.reconcile_nav = false;
   auto res = run_backtest(*clock, strat, rc_lenient);
   ASSERT_TRUE(res.has_value()) << res.error().to_string();
   ASSERT_EQ(res->size(), dates.size());
@@ -1107,6 +1114,10 @@ TEST(MultinamePipeline, BookGreeksUnderCountIsReported) {
   // WS-F F1(c): ExcludeAndReport is now an explicit opt-in (the default is Error).
   RunConfig rc_lenient;
   rc_lenient.unpriced = UnpricedLotPolicy::ExcludeAndReport;
+  // Task A3: same documented S1-3b gap as the sibling gates above — the
+  // resulting NAV-vs-liquidation drift is expected, not a leak, so
+  // reconciliation opts out rather than aborting before the counts land.
+  rc_lenient.reconcile_nav = false;
   auto res = run_backtest(*clock, strat, rc_lenient);
   ASSERT_TRUE(res.has_value()) << res.error().to_string();
   ASSERT_EQ(res->size(), dates.size());
@@ -1176,6 +1187,9 @@ TEST(MultinamePipeline, GrossVegaIsUnderReportedWhenALegIsUnpriced) {
   // the whole point of this gate is the truncated (lenient) reading.
   RunConfig rc_lenient;
   rc_lenient.unpriced = UnpricedLotPolicy::ExcludeAndReport;
+  // Task A3: the whole point of this gate is the truncated (lenient) reading
+  // (S1-3b) — expected NAV-vs-liquidation drift, not a leak.
+  rc_lenient.reconcile_nav = false;
   auto res_m = run_backtest(*clock_m, strat_m, rc_lenient);
   ASSERT_TRUE(res_m.has_value()) << res_m.error().to_string();
 
