@@ -35,7 +35,9 @@
 
 #include <cstddef>
 #include <functional>
+#include <limits>
 #include <span>
+#include <utility>
 #include <vector>
 
 #include "atx/vol/calib.hpp" // FitObs
@@ -113,6 +115,12 @@ struct ConvexFitOpts {
 // Mid); 2048 rows comfortably covers any real board a node_cap-bounded fit sees.
 inline constexpr int kMaxIntervalSlackRows = 2048;
 
+// Task 3: margin (log-moneyness) added to the previous slice's observed
+// k-range when bounding calendar-floor authority. Wide enough that ordinary
+// edge extrapolation between two dense slices stays floored; narrow enough
+// that a 0.05-wide freshly-listed strip cannot pin the ±0.60 band.
+inline constexpr double kCalendarFloorSupportMargin = 0.10;
+
 // Per-build controls which are deliberately not persisted as user tuning knobs.
 // The observation/candidate set owns these values, rather than ConvexFitOpts:
 // required_k is used by the shared-k calendar admission loop and noise-aware
@@ -130,6 +138,16 @@ struct ConvexFitContext {
   // A one-vol-point error bar is neutral; noisier slices are smoothed more and
   // cleaner slices less. The scale is deterministically clamped to [0.25, 16].
   bool noise_aware_regularization{false};
+
+  // Task 3 (ratchet containment): the k-interval over which a supplied w_prev
+  // carries floor authority — the previous slice's data range widened by
+  // kCalendarFloorSupportMargin (set by fit_slice_curve). Nodes outside it
+  // get NO calendar-floor row: an earlier slice's data-free extrapolated wing
+  // must not pin this slice. Default (infinite) keeps every caller
+  // byte-identical.
+  std::pair<double, double> floor_support_k{
+      -std::numeric_limits<double>::infinity(),
+      std::numeric_limits<double>::infinity()};
 };
 
 // Fit an arbitrage-free convex call-price smile to one expiry's filtered

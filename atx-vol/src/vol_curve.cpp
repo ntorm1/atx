@@ -419,6 +419,12 @@ Result<std::unique_ptr<IVolCurve>> fit_slice_curve(const CurveConfig &cfg,
     }
     const double calendar_tol = repair != nullptr ? repair->tolerance : kCalendarTol;
 
+    // Task 3: floor/promotion authority is bounded by the previous slice's
+    // data-supported range (+margin). Infinite when the caller supplied no
+    // range — every existing caller is byte-identical.
+    const double floor_lo = prev_data_k_range.first - kCalendarFloorSupportMargin;
+    const double floor_hi = prev_data_k_range.second + kCalendarFloorSupportMargin;
+
     std::vector<double> required_k(calendar_floor_knots.begin(),
                                    calendar_floor_knots.end());
     if (repair != nullptr && !repair->extra_node_ks.empty()) {
@@ -437,6 +443,7 @@ Result<std::unique_ptr<IVolCurve>> fit_slice_curve(const CurveConfig &cfg,
       ConvexFitContext context;
       context.required_k = std::span<const double>{required_k};
       context.noise_aware_regularization = true;
+      context.floor_support_k = {floor_lo, floor_hi};
       ATX_TRY(ConvexSliceFit fit,
               fit_convex_slice(obs_eu, F, T, df, risk_opts, w_prev, context));
 
@@ -448,13 +455,18 @@ Result<std::unique_ptr<IVolCurve>> fit_slice_curve(const CurveConfig &cfg,
 
       std::vector<double> violations;
       violations.reserve(8);
+      bool unsupported_violation = false;
       const auto scan_k = [&](double k) {
         const double wp = w_prev(k);
         const double wc = fit.iv(k);
         const double w_curr = (std::isfinite(wc) && wc > 0.0) ? wc * wc * T : kNaN;
         if (std::isfinite(wp) && std::isfinite(w_curr) &&
             wp - w_curr > calendar_tol) {
-          violations.push_back(k);
+          if (k < floor_lo || k > floor_hi) {
+            unsupported_violation = true; // extrapolation-vs-extrapolation
+          } else {
+            violations.push_back(k);
+          }
         }
       };
       if (repair == nullptr) {
@@ -475,6 +487,13 @@ Result<std::unique_ptr<IVolCurve>> fit_slice_curve(const CurveConfig &cfg,
                                   static_cast<double>(repair->grid_points - 1u);
           scan_k(repair->k_min + fraction * (repair->k_max - repair->k_min));
         }
+      }
+      if (unsupported_violation) {
+        // Refuse, never ratchet: promoting an out-of-support k would stamp the
+        // previous slice's data-free wing onto this slice (the 2025-04-10
+        // w(+0.15)=0.1208 plateau). Publishing without the floor would break
+        // calendar order on the oracle lattice. Soft-drop => truncation.
+        return Err(ErrorCode::Unavailable, std::string(kCalendarFloorUnsupportedMsg));
       }
       if (violations.empty()) {
         std::unique_ptr<IVolCurve> curve =

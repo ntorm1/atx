@@ -803,6 +803,10 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
         // SOFT code (NotFound / Unavailable — a genuinely thin or butterfly-
         // inadmissible slice) is still dropped, preserving the Mark tolerance.
         const ErrorCode fit_code = slice_res.error().code();
+        if (fit_code == ErrorCode::Unavailable &&
+            slice_res.error().message() == kCalendarFloorUnsupportedMsg) {
+          ++out.n_slice_calendar_unsupported; // Task 3: refused, not ratcheted
+        }
         ExpiryFitReport rep{};
         rep.chain_index = ci;
         rep.maturity = T;

@@ -956,3 +956,81 @@ TEST(ConvexSliceFit, DegenerateBoardIsCertifiedNotDiverged) {
   expect_converged_qp_diagnostics(*fit);
   expect_arb_free(*fit);
 }
+
+// ── Task 3: calendar-floor ratchet containment ───────────────────────────────
+// A narrow front slice's DATA-FREE wing must not pin later slices (the
+// 2025-04-10 ratchet: seed w(+0.15)=0.1208 stamped onto all 10 later slices).
+// With containment, the pair REFUSES (soft Unavailable) instead of ratcheting;
+// the board fitter turns that into a loud truncation.
+TEST(ConvexSliceFit, DataFreeFrontWingRefusesInsteadOfRatcheting) {
+  using namespace atx::vol;
+  constexpr double F = 100.0, df = 0.99;
+  const double T0 = 0.04, T1 = 0.50;
+  std::vector<FitObs> front; // freshly-listed-daily: data only in |k| <= 0.09
+  for (double k = -0.09; k <= 0.091; k += 0.02) {
+    front.push_back(mk_obs(F, T0, df, F * std::exp(k), 0.68));
+  }
+  std::vector<FitObs> back; // calm dense slice across the full band
+  for (double k = -0.60; k <= 0.601; k += 0.05) {
+    back.push_back(mk_obs(F, T1, df, F * std::exp(k), 0.20));
+  }
+  CurveConfig cfg;
+  cfg.kind = VolCurveKind::ConvexDense;
+
+  const auto front_curve = fit_slice_curve(cfg, front, F, T0, df);
+  ASSERT_TRUE(front_curve.has_value()) << front_curve.error().to_string();
+  const IVolCurve *prev = front_curve->get();
+  // Fixture self-check, against the back's SERVED (floor-free) wing, not its
+  // quoted vol: the back's own low-vega wing drifts above 0.02 total variance
+  // on the checked lattice, and a weak front wing hides under that drift with
+  // nothing to contain (measured: front vol 0.60 loses to the drift; 0.80
+  // inverts the calendar IN-band, muddying the data-free-wing story; 0.68
+  // crosses only out-of-band, k in ~[0.24, 0.55]). k=0.39375 is an exact
+  // legacy-lattice point (-0.60 + 53*0.01875) outside the support band.
+  const auto bare = fit_slice_curve(cfg, back, F, T1, df);
+  ASSERT_TRUE(bare.has_value()) << bare.error().to_string();
+  ASSERT_GT(prev->w(0.39375), (*bare)->w(0.39375) + 1.0e-4)
+      << "front wing no longer exceeds the back's served wing: nothing to contain";
+  ASSERT_LT(prev->w(0.19), (*bare)->w(0.19))
+      << "front exceeds the back inside the support band: not a data-free-wing fixture";
+
+  const std::function<double(double)> w_prev = [prev](double k) { return prev->w(k); };
+  const auto contained =
+      fit_slice_curve(cfg, back, F, T1, df, w_prev,
+                      /*calendar_floor_knots=*/{},
+                      /*prev_data_k_range=*/{-0.09, 0.09});
+  ASSERT_FALSE(contained.has_value())
+      << "pair fitted: the data-free wing was ratcheted, not contained";
+  EXPECT_EQ(contained.error().code(), ErrorCode::Unavailable);
+  EXPECT_EQ(contained.error().message(), std::string(kCalendarFloorUnsupportedMsg));
+}
+
+// Containment must be INVISIBLE when the previous slice's data spans the
+// checked lattice: identical constraint rows => bit-identical served values.
+TEST(ConvexSliceFit, WideSupportRangeIsByteIdenticalToUnbounded) {
+  using namespace atx::vol;
+  constexpr double F = 100.0, df = 0.99;
+  const double T0 = 0.25, T1 = 0.50;
+  std::vector<FitObs> front;
+  std::vector<FitObs> back;
+  for (double k = -0.70; k <= 0.701; k += 0.05) {
+    front.push_back(mk_obs(F, T0, df, F * std::exp(k), 0.24));
+    back.push_back(mk_obs(F, T1, df, F * std::exp(k), 0.24));
+  }
+  CurveConfig cfg;
+  cfg.kind = VolCurveKind::ConvexDense;
+  const auto front_curve = fit_slice_curve(cfg, front, F, T0, df);
+  ASSERT_TRUE(front_curve.has_value()) << front_curve.error().to_string();
+  const IVolCurve *prev = front_curve->get();
+  const std::function<double(double)> w_prev = [prev](double k) { return prev->w(k); };
+
+  const auto unbounded = fit_slice_curve(cfg, back, F, T1, df, w_prev);
+  const auto ranged = fit_slice_curve(cfg, back, F, T1, df, w_prev,
+                                      /*calendar_floor_knots=*/{},
+                                      /*prev_data_k_range=*/{-0.70, 0.70});
+  ASSERT_TRUE(unbounded.has_value()) << unbounded.error().to_string();
+  ASSERT_TRUE(ranged.has_value()) << ranged.error().to_string();
+  for (double k = -0.60; k <= 0.601; k += 0.03) {
+    EXPECT_EQ((*unbounded)->iv(k), (*ranged)->iv(k)) << "diverged at k=" << k; // EXACT
+  }
+}

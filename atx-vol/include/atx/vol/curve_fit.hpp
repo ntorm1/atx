@@ -96,6 +96,10 @@ struct CurveSurfaceReport {
   // not straddle ATM or leave a central k-hole wider than the cap
   // (ExpiryFitOutcome::PrepUncovered). Surfaced, never silent.
   std::size_t n_slices_uncovered{0};
+  // Task 3: slices refused because the previous slice's calendar floor bound
+  // them only where that slice had no admitted data (the seed-ratchet shape;
+  // kCalendarFloorUnsupportedMsg). Truncation follows; surfaced, never silent.
+  std::size_t n_slice_calendar_unsupported{0};
   // Perf C1: per-slice input certification, ‖ context/per_expiry. Lets
   // `VolaSession::build` construct `SessionSliceDiagnostics` + the incremental
   // observation cache directly, without a second serial de-Am pass.
