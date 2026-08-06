@@ -15,6 +15,7 @@
 #include "atx/vol/rates_curve.hpp"
 #include "atx/vol/surface.hpp"
 #include "atx/vol/vol_surface.hpp" // Tier-A instantiation set (closeout 1.2)
+#include "deriv_fixtures.hpp" // Task 0: deriv_testkit::make_curves / MC oracle
 #include "support/analytics_fixture.hpp" // E6: testkit::make_flat_surface
 
 // Vol-derivatives coverage, ported from the C ats-vol Sprint-22 tests:
@@ -417,44 +418,171 @@ TEST(AgedDispatch, VarSwap_MidLifeHighRealized_PvPositive) {
   EXPECT_GT(q->pv, 0.0);
 }
 
-// DIFFUSION_1_OVER_N scales the future leg by (1 + 1/n_total) and stamps the
-// diagnostic flag; FULL_MC is reserved.
-TEST(AgedDispatch, DiscreteCorrection_OneOverN_ScalesFutureLeg) {
-  const EssviSurface surf = make_flat_surface(0.20, 0.01, 1.00);
-  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+// ── Discrete-monitoring correction (Task C-1: PV-1/PV-8/LIT-3) ───────────
+//
+// Broadie-Jain (2008) diffusion-drift correction for the future
+// implied-variance leg: each fixing has E[r_i^2] = K_var*dt + mu^2*dt^2 (mu =
+// r_bar - q_bar - K_var/2), so summing n_remaining fixings and annualizing
+// gives the discrete-monitoring fair strike K_var + (T_resid/n_remaining)*
+// mu^2 -- ADDITIVE, using the FUTURE leg's own remaining fixing count. Uses
+// Task 0's `deriv_testkit::make_curves` (nontrivial r - q carry) because the
+// correction needs a real rate/carry differential to be nonzero at all; this
+// file's own `make_flat_curves` above is zero-rate by design.
+
+TEST(DiscreteCorrection, MatchesBSExactDiscreteFairStrike) {
+  using atx::vol::deriv_testkit::make_curves;
+  using atx::vol::deriv_testkit::make_flat_surface;
+  using atx::vol::deriv_testkit::mc_realized_variance;
+  using atx::vol::deriv_testkit::McModelParams;
+
+  const double sigma = 0.20;
+  const double r = 0.06;
+  const double q = 0.01;
+  const double T = 1.0;  // 1Y fixture pillar -- ATM iv == sigma exactly there
+  const std::uint32_t n = 252u;
+
+  const EssviSurface surf = make_flat_surface(sigma);
+  const CurveSet cs = make_curves(100.0, r, q);
 
   DerivContract c{};
   c.kind = DerivKind::VarSwap;
-  c.maturity_t = 0.10;
+  c.maturity_t = T;
   c.notional = 1.0;
   c.strike_dec = 0.0;
   c.rv_spec.annualization = 252.0;
-  c.rv_spec.n_obs_total = 5u;  // short enough for the correction to bite
+  c.rv_spec.n_obs_total = n;
   c.rv_spec.n_obs_done = 0u;
   c.rv_spec.rv_done_dec = 0.0;
 
   DerivConfig cfg_off = deriv_default_config();
+  cfg_off.quality = DerivQuality::High;  // tighter strip quadrature error
   cfg_off.discrete_correction_mode = DerivDiscreteCorrection::None;
   const auto q_off = deriv_price(surf, cs, c, cfg_off);
   ASSERT_TRUE(q_off.has_value());
-  EXPECT_FALSE(has_flag(q_off->flags, DerivFlags::DiscreteCorrApplied));
 
-  DerivConfig cfg_on = deriv_default_config();
+  DerivConfig cfg_on = cfg_off;
   cfg_on.discrete_correction_mode = DerivDiscreteCorrection::Diffusion1OverN;
   const auto q_on = deriv_price(surf, cs, c, cfg_on);
   ASSERT_TRUE(q_on.has_value());
   EXPECT_TRUE(has_flag(q_on->flags, DerivFlags::DiscreteCorrApplied));
 
-  // Corrected = uncorrected * (1 + 1/5) = uncorrected * 1.2.
-  const double scale = 1.0 + 1.0 / 5.0;
-  EXPECT_LT(std::fabs(q_on->fair_strike_dec / q_off->fair_strike_dec - scale),
-            1.0e-12);
+  // Oracle #1 (analytic, exact): sigma^2 + (T/n)*mu^2, mu = r - q - sigma^2/2
+  // = 0.03 here -- the brief's own worked example: correction = (1/252)*9e-4
+  // = 3.571e-6 = 0.0357 var pts at T=1, n=252. High-quality strip quadrature
+  // error is < 1e-5 on a flat surface (see VarStrip.FlatVol_HighQuality...);
+  // the OLD multiplicative code overstates the correction by ~44x (~1.6e-4),
+  // well clear of that error floor.
+  const double mu = r - q - 0.5 * sigma * sigma;
+  const double truth = sigma * sigma + (T / static_cast<double>(n)) * mu * mu;
+  EXPECT_NEAR(q_on->fair_strike_dec, truth, 5.0e-5);
 
-  DerivConfig cfg_mc = deriv_default_config();
-  cfg_mc.discrete_correction_mode = DerivDiscreteCorrection::FullMc;
-  const auto q_mc = deriv_price(surf, cs, c, cfg_mc);
-  ASSERT_FALSE(q_mc.has_value());
-  EXPECT_EQ(q_mc.error().code(), ErrorCode::NotImplemented);
+  // Oracle #2 (independent): Task-0 seeded-MC harness, 3-SE band.
+  const McModelParams p{100.0, r, q, sigma, T};
+  const auto mc = mc_realized_variance(p, 200000, n, 7);
+  ASSERT_GT(mc.stderr_rv, 0.0);
+  EXPECT_NEAR(q_on->fair_strike_dec, mc.mean_rv, 3.0 * mc.stderr_rv)
+      << "fair_strike=" << q_on->fair_strike_dec << " mc_mean=" << mc.mean_rv
+      << " mc_stderr=" << mc.stderr_rv;
+}
+
+// Aged contract: T_resid = 0.5 (6M pillar) of an original 1Y/252-fixing
+// contract half elapsed (n_done = 126). The correction divisor must be
+// n_remaining = n_total - n_done = 126, NOT n_total = 252.
+TEST(DiscreteCorrection, MidLifeUsesRemainingFixings) {
+  using atx::vol::deriv_testkit::make_curves;
+  using atx::vol::deriv_testkit::make_flat_surface;
+
+  const double sigma = 0.20;
+  const double r = 0.06;
+  const double q = 0.01;
+  const double T_resid = 0.5;  // 6M fixture pillar
+  const std::uint32_t n_total = 252u;
+  const std::uint32_t n_done = 126u;  // n_remaining == 126
+
+  const EssviSurface surf = make_flat_surface(sigma);
+  const CurveSet cs = make_curves(100.0, r, q);
+
+  DerivContract c{};
+  c.kind = DerivKind::VarSwap;
+  c.maturity_t = T_resid;
+  c.notional = 1.0;
+  c.strike_dec = 0.0;
+  c.rv_spec.annualization = 252.0;
+  c.rv_spec.n_obs_total = n_total;
+  c.rv_spec.n_obs_done = n_done;
+  c.rv_spec.rv_done_dec = 0.0;
+
+  DerivConfig cfg_off = deriv_default_config();
+  cfg_off.quality = DerivQuality::High;
+  cfg_off.discrete_correction_mode = DerivDiscreteCorrection::None;
+  const auto q_off = deriv_price(surf, cs, c, cfg_off);
+  ASSERT_TRUE(q_off.has_value());
+
+  DerivConfig cfg_on = cfg_off;
+  cfg_on.discrete_correction_mode = DerivDiscreteCorrection::Diffusion1OverN;
+  const auto q_on = deriv_price(surf, cs, c, cfg_on);
+  ASSERT_TRUE(q_on.has_value());
+
+  // future_component_dec = w_future * K_var_future (corrected when the mode
+  // is on); w_future is identical for both calls (same aging), so dividing it
+  // back out isolates K_var_future itself and cancels the strip's own
+  // quadrature bias (both calls share the exact same strip evaluation).
+  const double w_future =
+      static_cast<double>(n_total - n_done) / static_cast<double>(n_total);
+  const double k_var_future_uncorrected = q_off->future_component_dec / w_future;
+  const double k_var_future_corrected = q_on->future_component_dec / w_future;
+  const double actual_addend = k_var_future_corrected - k_var_future_uncorrected;
+
+  // ln(F/S)/T_resid == r - q exactly by construction of `make_curves` (F =
+  // S*exp((r-q)*T) at every fixture pillar, and T_resid = 0.5 IS a pillar).
+  const double r_minus_q = r - q;
+  const double mu = r_minus_q - 0.5 * k_var_future_uncorrected;
+  const double addend_using_n_remaining = (T_resid / 126.0) * mu * mu;
+  const double addend_using_n_total = (T_resid / 252.0) * mu * mu;  // wrong divisor
+
+  EXPECT_NEAR(actual_addend, addend_using_n_remaining, 1.0e-11);
+  EXPECT_GT(std::fabs(actual_addend - addend_using_n_total), 1.0e-6);
+}
+
+// With the mode on, xi must be resolved against the UNCORRECTED strip mean
+// (PV-8) -- resolve_vol_of_vol's "reproduces Carr-Lee exactly" contract has
+// to survive the discrete-monitoring correction mode, so vol_of_vol_used must
+// be identical whether the correction is on or off.
+TEST(DiscreteCorrection, XiCalibratedPreCorrection) {
+  using atx::vol::deriv_testkit::make_curves;
+  using atx::vol::deriv_testkit::make_flat_surface;
+
+  const EssviSurface surf = make_flat_surface(0.20);
+  const CurveSet cs = make_curves(100.0, 0.06, 0.01);
+
+  DerivContract c{};
+  c.kind = DerivKind::VolSwap;
+  c.maturity_t = 0.5;  // 6M pillar
+  c.notional = 1.0;
+  c.strike_dec = 0.0;
+  c.rv_spec.annualization = 252.0;
+  c.rv_spec.n_obs_total = 252u;
+  c.rv_spec.n_obs_done = 126u;  // mid-life -> always the distribution model
+  c.rv_spec.rv_done_dec = 0.03;  // arbitrary accrued leg; does not affect xi
+
+  DerivConfig cfg_off = deriv_default_config();
+  cfg_off.discrete_correction_mode = DerivDiscreteCorrection::None;
+  const auto q_off = deriv_price(surf, cs, c, cfg_off);
+  ASSERT_TRUE(q_off.has_value());
+  EXPECT_TRUE(has_flag(q_off->flags, DerivFlags::VolOfVolCalibrated));
+
+  DerivConfig cfg_on = deriv_default_config();
+  cfg_on.discrete_correction_mode = DerivDiscreteCorrection::Diffusion1OverN;
+  const auto q_on = deriv_price(surf, cs, c, cfg_on);
+  ASSERT_TRUE(q_on.has_value());
+  EXPECT_TRUE(has_flag(q_on->flags, DerivFlags::VolOfVolCalibrated));
+  EXPECT_TRUE(has_flag(q_on->flags, DerivFlags::DiscreteCorrApplied));
+
+  EXPECT_NEAR(q_on->vol_of_vol_used, q_off->vol_of_vol_used, 1.0e-14);
+
+  // Sanity: the correction actually moved the priced quantity, so this is not
+  // vacuously passing a no-op correction.
+  EXPECT_NE(q_on->fair_strike_dec, q_off->fair_strike_dec);
 }
 
 // ── Marquee PnL identity (test_vol_deriv_marquee_pnl.c) ──────────────────

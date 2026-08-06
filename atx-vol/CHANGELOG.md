@@ -3,6 +3,53 @@
 Breaking behavioural changes are recorded here with their migration. Anything
 that silently changes a NUMBER a caller already depends on belongs in this file.
 
+## 1.1.0
+
+Vol-derivatives production sprint, Phase 1 (correctness). Grows only with
+changes that move a number a caller could already be marking with.
+
+### Fixed — `DerivDiscreteCorrection::Diffusion1OverN` was wrong (PV-1, PV-8)
+
+The discrete-monitoring correction for the future implied-variance leg
+multiplied `K_var_future` by `(1 + 1/n_obs_total)`: the wrong functional form
+(the Broadie-Jain (2008) leading-order diffusion-drift term is ADDITIVE, not
+multiplicative) applied with the wrong divisor (the contract's total
+observation count, not the future leg's own remaining fixings).
+
+Corrected formula, applied at all four call sites (`price_var_swap`,
+`price_vol_swap_distribution`, `price_capped_var_swap`,
+`price_capped_vol_swap`):
+
+```
+K_var_future += (T_resid / n_remaining) * (r_bar - q_bar - K_var_future/2)^2
+n_remaining = n_obs_total - n_obs_done
+r_bar - q_bar = ln(F/S) / T_resid   (read from the same CurveSet the strip
+                                     already resolves F from)
+```
+
+**Magnitude**: for a daily-monitored (n=252) index contract at sigma=20%,
+r-q=5%, T=1Y, the old code added ~1.6 variance points (`K_var/n`); the
+corrected addend is ~0.036 variance points — smaller by about two orders of
+magnitude. `DerivFlags::DiscreteCorrApplied` still marks whenever the
+correction ran.
+
+**Migration**: `discrete_correction_mode` defaults to `None`, so this changes
+nothing for a caller who left it there. Anyone who had already opted into
+`Diffusion1OverN` was marking discrete-monitored variance/vol swaps
+materially rich (by roughly the magnitude above) and should re-mark against
+the corrected engine.
+
+Also fixed (PV-8): xi (vol-of-vol) auto-calibration was resolving against the
+ALREADY-corrected strip mean whenever this mode was on, so
+`resolve_vol_of_vol`'s "reproduces Carr-Lee exactly" guarantee silently broke
+under the mode. xi is now always resolved against the UNCORRECTED strip mean;
+the correction applies only to the mean actually fed to the distribution
+model afterward.
+
+Not covered: the residual O(1/n) jump term (Broadie-Jain sec 4) — jump-
+diffusion discrete-monitoring bias needs the `FullMc` engine (reserved,
+LIT-3).
+
 ## 1.0.0
 
 The first release with a stability promise. Everything below happened during the

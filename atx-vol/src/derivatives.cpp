@@ -180,6 +180,41 @@ void carry_strip_grid(DerivQuote& out, const DerivQuote& strip) noexcept {
   out.strip_nodes_used = strip.strip_nodes_used;
 }
 
+// Broadie-Jain (2008) / Buhler discrete-monitoring diffusion-drift addend for
+// the future implied-variance leg. Per-fixing E[r_i^2] = kvar_fut*dt +
+// mu^2*dt^2 (mu = r_bar - q_bar - kvar_fut/2, dt = T_resid/n_remaining);
+// summing n_remaining fixings and annualizing leaves kvar_fut's own term
+// exactly recovered plus this ADDITIVE leading-order piece -- NOT the
+// multiplicative (1 + 1/n) the code applied before this task (~100x too
+// large at index vols, and keyed off the contract's n_obs_total instead of
+// the future leg's own n_remaining; see task-C-1-report.md). The residual
+// O(1/n) JUMP term (Broadie-Jain sec 4) is NOT covered here -- LIT-3: jumps
+// need the FullMc engine (reserved). Magnitude: a fraction of a variance
+// point for a daily-monitored (n ~ 252) contract at typical rate/carry
+// differentials.
+[[nodiscard]] double discrete_monitoring_addend(double kvar_fut, double T_resid,
+                                                std::uint32_t n_remaining,
+                                                double r_minus_q) noexcept {
+  assert(n_remaining >= 1u && "discrete_monitoring_addend: n_remaining must be >= 1");
+  const double mu = r_minus_q - 0.5 * kvar_fut;
+  return (T_resid / static_cast<double>(n_remaining)) * mu * mu;
+}
+
+// Continuously-compounded carry differential r_bar - q_bar at T: ln(F/S)/T,
+// read from the same CurveSet the strip already resolves F from. F itself is
+// guaranteed > 0 here -- every call site only reaches this after its own
+// var_swap_fair_strike call at the SAME T already validated
+// resolve_forward(curves, T) > 0 -- so only curves.spot needs a fresh check.
+//
+// @return InvalidArgument if curves.spot <= 0.
+[[nodiscard]] Result<double> resolve_carry_diff(const CurveSet& curves, double T) {
+  if (!(curves.spot > 0.0)) {
+    return Err(ErrorCode::InvalidArgument, "discrete correction needs curves.spot > 0");
+  }
+  const double f = resolve_forward(curves, T);
+  return Ok(std::log(f / curves.spot) / T);
+}
+
 // ── Dispatch helpers (templated on the surface parametrization) ────────────
 
 template <class SurfaceT>
@@ -211,11 +246,14 @@ template <class SurfaceT>
     k_var_future_dec = strip_quote.fair_strike_dec;
     strip_ran = true;
 
-    // Discrete-monitoring correction (Buhler 2006, leading order in 1/n_total):
-    // applies to the future implied-variance leg only.
+    // Discrete-monitoring correction (Broadie-Jain 2008 diffusion term,
+    // leading order in 1/n_remaining): applies to the future implied-variance
+    // leg only, keyed off the FUTURE leg's own remaining fixing count.
     if (cfg.discrete_correction_mode == DerivDiscreteCorrection::Diffusion1OverN &&
         rv.n_obs_total >= 1u) {
-      k_var_future_dec *= (1.0 + 1.0 / static_cast<double>(rv.n_obs_total));
+      ATX_TRY(const double r_minus_q, resolve_carry_diff(curves, T));
+      const std::uint32_t n_remaining = rv.n_obs_total - rv.n_obs_done;
+      k_var_future_dec += discrete_monitoring_addend(k_var_future_dec, T, n_remaining, r_minus_q);
       flags |= DerivFlags::DiscreteCorrApplied;
     }
   }
@@ -366,20 +404,29 @@ template <class SurfaceT>
     return Err(ErrorCode::InvalidArgument, "vol swap distribution model needs T > 0");
   }
   ATX_TRY(auto sq, var_swap_fair_strike(surface, curves, T, cfg));
+  const RealizedVarianceSpec& rv = contract.rv_spec;
+
+  // xi auto-calibration resolves against the UNCORRECTED strip mean (PV-8):
+  // resolve_vol_of_vol's "reproduces Carr-Lee exactly" contract must survive
+  // the discrete-monitoring correction mode, so xi is resolved BEFORE the
+  // correction below ever touches the mean.
+  const double m_uncorrected = sq.fair_strike_dec;
+  ATX_TRY(const VolOfVol vv, resolve_vol_of_vol(surface, curves, T, m_uncorrected, cfg));
 
   // Same Diffusion1OverN correction as price_var_swap / the capped pricers,
-  // applied before the blend and before resolve_vol_of_vol -- see
-  // price_capped_var_swap's comment for why this has to match exactly.
-  double m = sq.fair_strike_dec;
+  // applied to the mean actually fed to the distribution model below (never
+  // to xi's calibration input above) -- see price_capped_var_swap's comment
+  // for why this has to match exactly.
+  double m = m_uncorrected;
   DerivFlags flags = DerivFlags::None;
-  const RealizedVarianceSpec& rv = contract.rv_spec;
   if (cfg.discrete_correction_mode == DerivDiscreteCorrection::Diffusion1OverN &&
       rv.n_obs_total >= 1u) {
-    m *= (1.0 + 1.0 / static_cast<double>(rv.n_obs_total));
+    ATX_TRY(const double r_minus_q, resolve_carry_diff(curves, T));
+    const std::uint32_t n_remaining = rv.n_obs_total - rv.n_obs_done;
+    m += discrete_monitoring_addend(m, T, n_remaining, r_minus_q);
     flags |= DerivFlags::DiscreteCorrApplied;
   }
 
-  ATX_TRY(const VolOfVol vv, resolve_vol_of_vol(surface, curves, T, m, cfg));
   const double s = vv.xi * std::sqrt(T);
   const double e_sqrt_v =
       detail::lognormal_expect(m, s, [a, b](double w) { return std::sqrt(a + b * w); });
@@ -600,20 +647,28 @@ template <class SurfaceT>
   }
   ATX_TRY(auto sq, var_swap_fair_strike(surface, curves, T, cfg));
 
-  // Discrete-monitoring correction (Buhler 2006, leading order in 1/n_total) --
-  // same formula and flag as price_var_swap's, applied BEFORE the blend and
-  // BEFORE the lognormal model: the corrected mean is both the blend's future
-  // leg AND resolve_vol_of_vol's calibration target, so a plain VarSwap and a
-  // CappedVarSwap on the same underlying see the same future variance leg
-  // under this config (otherwise CapParityHolds silently breaks under it).
-  double m = sq.fair_strike_dec;
+  // xi auto-calibration resolves against the UNCORRECTED strip mean (PV-8):
+  // resolve_vol_of_vol's "reproduces Carr-Lee exactly" contract must survive
+  // the discrete-monitoring correction mode. The corrected mean below is
+  // still both the blend's future leg AND what the lognormal model actually
+  // integrates, so a plain VarSwap and a CappedVarSwap on the same underlying
+  // still see the same future variance leg under this config (CapParityHolds)
+  // -- it is only xi's calibration input that must stay uncorrected.
+  const double m_uncorrected = sq.fair_strike_dec;
+  ATX_TRY(const VolOfVol vv, resolve_vol_of_vol(surface, curves, T, m_uncorrected, cfg));
+
+  // Discrete-monitoring correction (Broadie-Jain 2008, leading order in
+  // 1/n_remaining) -- same formula and flag as price_var_swap's, applied to
+  // the mean fed to the blend and the lognormal model below.
+  double m = m_uncorrected;
   if (cfg.discrete_correction_mode == DerivDiscreteCorrection::Diffusion1OverN &&
       rv.n_obs_total >= 1u) {
-    m *= (1.0 + 1.0 / static_cast<double>(rv.n_obs_total));
+    ATX_TRY(const double r_minus_q, resolve_carry_diff(curves, T));
+    const std::uint32_t n_remaining = rv.n_obs_total - rv.n_obs_done;
+    m += discrete_monitoring_addend(m, T, n_remaining, r_minus_q);
     flags |= DerivFlags::DiscreteCorrApplied;
   }
 
-  ATX_TRY(const VolOfVol vv, resolve_vol_of_vol(surface, curves, T, m, cfg));
   const double s = vv.xi * std::sqrt(T);
   const double k_c = (cap - accrued) / w_future;  // w_future > 0: not fully aged (checked above)
   const double cap_option = w_future * detail::lognormal_call(m, s, k_c);
@@ -733,17 +788,21 @@ template <class SurfaceT>
   }
   ATX_TRY(auto sq, var_swap_fair_strike(surface, curves, T, cfg));
 
-  // Same Diffusion1OverN correction as price_var_swap / price_capped_var_swap,
-  // applied before the blend and before the lognormal model -- see
-  // price_capped_var_swap's comment for why this has to match exactly.
-  double m = sq.fair_strike_dec;
+  // Same xi-before-correction ordering (PV-8) and the same Diffusion1OverN
+  // correction as price_capped_var_swap / price_var_swap -- see
+  // price_capped_var_swap's comment for why both have to match exactly.
+  const double m_uncorrected = sq.fair_strike_dec;
+  ATX_TRY(const VolOfVol vv, resolve_vol_of_vol(surface, curves, T, m_uncorrected, cfg));
+
+  double m = m_uncorrected;
   if (cfg.discrete_correction_mode == DerivDiscreteCorrection::Diffusion1OverN &&
       rv.n_obs_total >= 1u) {
-    m *= (1.0 + 1.0 / static_cast<double>(rv.n_obs_total));
+    ATX_TRY(const double r_minus_q, resolve_carry_diff(curves, T));
+    const std::uint32_t n_remaining = rv.n_obs_total - rv.n_obs_done;
+    m += discrete_monitoring_addend(m, T, n_remaining, r_minus_q);
     flags |= DerivFlags::DiscreteCorrApplied;
   }
 
-  ATX_TRY(const VolOfVol vv, resolve_vol_of_vol(surface, curves, T, m, cfg));
   const double s = vv.xi * std::sqrt(T);
   const double b = w_future;  // > 0: not fully aged (checked above)
   const auto sqrt_v = [a, b](double w) noexcept { return std::sqrt(a + b * w); };

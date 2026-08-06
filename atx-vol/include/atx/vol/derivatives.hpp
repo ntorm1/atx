@@ -167,6 +167,15 @@ enum class DerivQuality : std::uint8_t {
 // Discrete-monitoring correction for the future implied-variance leg.
 enum class DerivDiscreteCorrection : std::uint8_t {
   None = 0,
+  // Broadie-Jain (2008) diffusion-drift term: K_var_future +=
+  // (T_resid/n_remaining) * (r_bar - q_bar - K_var_future/2)^2, additive and
+  // keyed off the FUTURE leg's own remaining fixing count (n_remaining =
+  // n_obs_total - n_obs_done), NOT the contract's total observation count.
+  // Magnitude is a fraction of a variance point for a daily-monitored
+  // (n ~ 252) contract at typical rate/carry differentials -- e.g. ~0.036 var
+  // pts at sigma=20%, r-q=5%, T=1Y, n=252 (task-C-1-report.md). Does NOT cover
+  // the residual O(1/n) JUMP term (Broadie-Jain sec 4); jump-diffusion
+  // discrete-monitoring bias needs the FullMc engine below (reserved).
   Diffusion1OverN = 1,
   FullMc = 2,  // reserved
 };
