@@ -94,6 +94,68 @@ caller that pins `strip_nodes` explicitly is unaffected numerically (the pin
 still holds exactly) but may now see `DerivFlags::LowT` where it previously
 never could.
 
+### Fixed — the variance strip's Simpson panels now straddle no C1 kink (LIT-10)
+
+The strip's OTM integrand `OTM(K)/(df*K)` is only PIECEWISE smooth. It kinks
+in C1 at `k = 0` — put-call parity makes the two branches agree in value at
+`K = F` but their `K`-derivatives differ by the discount factor, a slope jump
+of exactly 1, some 25x the integrand's own ATM value at a 3M 20-vol — and at
+`±wing_clamp_k` whenever the clamp binds, where `d(iv)/dk` drops to zero.
+
+Composite Simpson is O(h^4) on a smooth panel but only O(h^2) on one that
+STRADDLES such a kink, and the Richardson `|I_h - I_2h|/15` estimate assumes
+the h^4 law. Before this change `k = 0` landed on a panel boundary only
+because every DEFAULT grid happens to be symmetric with `4m+1` nodes — an
+accident of the defaults, never asserted, and broken by any caller-pinned
+asymmetric span. The clamp edges sat mid-panel even on the defaults.
+
+`var_swap_fair_strike` now splits the composite integration at every interior
+kink (`detail/strip_grid.hpp`'s `plan_strip_split`), apportioning the resolved
+node budget across the sub-intervals in proportion to length so the kinks are
+panel boundaries BY CONSTRUCTION on any grid. The total span and total node
+count are unchanged, so `strip_k_lo_used`/`strip_k_hi_used`/`strip_nodes_used`
+keep their meaning and `deriv_greeks`' grid pinning replays a quote exactly.
+The estimate is populated whenever every panel is `4m+1`, which every default
+budget is; a starved caller-pinned budget gives up the clamp edges first, the
+estimate next, and the `k = 0` alignment last.
+
+**Magnitude — default grids move by at most 2.8e-7 relative**, and toward
+truth (3M skew fixture, `make_skew_surface(0.20, -0.40, 0.35)`; flat fixture
+is truth `= 0.04` exactly):
+
+| Tier     | flat K_var move | skew K_var move | Accuracy         |
+|----------|-----------------|-----------------|------------------|
+| Fast     | 8.5e-16 rel     | 3.1e-16 rel     | unchanged grid   |
+| Standard | 2.4e-9 rel      | 2.8e-7 rel      | 8.5x more exact  |
+| High     | 1.1e-15 rel     | 0 (exact)       | unchanged grid   |
+| Audit    | 2.5e-12 rel     | 4.2e-9 rel      | ~unchanged       |
+
+Fast and High do not move at all: their proportional apportionment happens to
+reproduce the un-split uniform spacing exactly (96 intervals over four equal
+panels; 768 over 1.5/0.5/0.5/1.5).
+
+**Asymmetric-pin values are corrected, not merely nudged.** A pinned
+`k_min_log = -0.714, k_max_log = 0.686, strip_nodes = 101` on the flat
+sigma = 20%, T = 3M fixture returned `0.0402613` against a truth of `0.04` —
+off by 2.6e-4 (6.5e-3 relative), which is exactly the `J*h^2/6*(2/T)` straddle
+term. It now returns `0.0400000082`, matching the symmetric reference to
+1.4e-13. Across a 16-step sweep sliding a 257-node grid through one panel, the
+worst case improves from 1.8e-4 to 1.4e-9.
+
+**The error estimate is now an estimate.** Measured `integration_error_est`
+over the true error on the 3M skew fixture: the default Standard grid went
+0.689 → 1.000; a symmetric 101-node pin (whose `k = 0` is a full-grid boundary
+but an ODD HALF-grid index, so the /15 difference was measuring the half
+grid's own straddle) went 574 → 1.158; an asymmetric 101-node pin went
+0.133 → 1.161.
+
+**Migration**: nothing to do for a caller on default grids — the moves above
+are far below any mark's resolution. A caller that pins an ASYMMETRIC span was
+being served an O(h^2) quote and a meaningless error estimate; it should
+re-mark. `integration_error_est` was the one number that could previously be
+wrong by four orders of magnitude while looking plausible, and any consumer
+gating on it will now see a much smaller (and truthful) value.
+
 ## 1.0.0
 
 The first release with a stability promise. Everything below happened during the

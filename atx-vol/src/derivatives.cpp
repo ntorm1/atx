@@ -970,17 +970,6 @@ Result<DerivQuote> var_swap_fair_strike(const SurfaceT& surface,
   }
 
   const std::size_t n = grid.n_nodes;
-  const double dx = (grid.k_max_log - grid.k_min_log) / static_cast<double>(n - 1);
-
-  // Richardson half-grid quadrature error estimate. Valid only when n is
-  // 4m+1, so the half grid ((n+1)/2 nodes, every other node of the full grid)
-  // is itself an odd count and a valid composite-Simpson grid on its own. The
-  // FIX-E M-7 rounding above guarantees this for the adaptive path; the tier
-  // defaults are 4m+1 already; a caller-pinned `strip_nodes` is a request and
-  // is not rounded, so it may leave `halvable` false.
-  const bool halvable = (n % 4u) == 1u;
-  const std::size_t n_half = (n + 1) / 2;
-  double integral_half = 0.0;
 
   // Wing trust band for the surface READS (see DerivConfig::wing_clamp_k): a
   // node beyond the band prices at its true strike under the BAND-EDGE vol —
@@ -990,48 +979,103 @@ Result<DerivQuote> var_swap_fair_strike(const SurfaceT& surface,
   const bool wing_clamped =
       wing_band > 0.0 && (grid.k_min_log < -wing_band || grid.k_max_log > wing_band);
 
+  // C-3 / LIT-10: the integrand is piecewise smooth, not smooth — it kinks at
+  // k = 0 (put-call parity) and at ±wing_band when the clamp binds. Split the
+  // composite Simpson at every interior kink so each one is a PANEL BOUNDARY
+  // for any span, symmetric or not, and the O(h⁴) law (and with it the
+  // Richardson estimate below) holds on every panel. See `plan_strip_split`
+  // for the budget apportionment and its degradation ladder; the total node
+  // count and the reported span are unchanged by the split.
+  assert(n >= 3u && "composite Simpson needs at least one panel of 3 nodes");
+  const strip::StripSplit split =
+      strip::plan_strip_split(grid.k_min_log, grid.k_max_log, n, wing_band);
+
+  // Richardson half-grid quadrature error estimate. Valid only when EVERY
+  // panel is 4m+1, so each panel's half grid ((n+1)/2 nodes, every other node)
+  // is itself an odd count, a valid composite-Simpson grid, and — decisively —
+  // still has the kinks on its own boundaries. The FIX-E M-7 rounding, the C-2
+  // resolution floor and the tier defaults all keep n on the 4m+1 lattice, and
+  // the split keeps every panel there; a caller-pinned `strip_nodes` is a
+  // request and is not rounded, so it may leave `halvable` false.
+  const bool halvable = split.richardson_ok;
+
   // Composite Simpson on   integral OTM(K) / (df * F * e^x) dx
   //                      == integral OTM(K) / (df * K) dx   since K = F * e^x.
   // Nodes with a non-finite / non-positive surface IV contribute zero; a bad
   // node touching either integration boundary flips the truncation flag.
-  double integral = 0.0;
-  bool bad_first = false;
-  bool bad_last = false;
-  for (std::size_t i = 0; i < n; ++i) {
-    const double x = grid.k_min_log + dx * static_cast<double>(i);
+  //
+  // The strip's one surface read. Returns the normalized integrand at log-
+  // moneyness x, and whether the surface's IV there was unusable.
+  const auto integrand_at = [&](double x) {
     const double K = F * std::exp(x);
     const Side side = (x < 0.0) ? Side::Put : Side::Call;
     const double x_read = wing_band > 0.0 ? std::clamp(x, -wing_band, wing_band) : x;
     const double sigma = surface.iv(x_read, T);
     const bool bad = !std::isfinite(sigma) || sigma <= 0.0;
-    if (i == 0) {
-      bad_first = bad;
-    }
-    if (i == n - 1) {
-      bad_last = bad;
-    }
     const double price = bad ? 0.0 : black76_price(F, K, T, sigma, df, side);
-    const double integrand = price / (df * K);
-    integral += simpson_w(i, n) * integrand;
-    if (halvable && (i % 2u) == 0u) {
-      // Every other node of the full grid, quadratured on its own half-density
-      // grid (spacing 2*dx) with that grid's own Simpson weights.
-      integral_half += simpson_w(i / 2u, n_half) * integrand;
+    return std::pair<double, bool>{price / (df * K), bad};
+  };
+
+  double integral = 0.0;
+  double integral_half = 0.0;
+  bool bad_first = false;
+  bool bad_last = false;
+  double shared = 0.0;  // integrand at the node the previous panel ended on
+  for (std::size_t p = 0; p < split.count; ++p) {
+    const strip::StripPanel& panel = split.panels[p];
+    const std::size_t np = panel.n_nodes;
+    const std::size_t np_half = (np + 1) / 2;
+    const double dx = (panel.k_hi - panel.k_lo) / static_cast<double>(np - 1);
+    double sum = 0.0;
+    double sum_half = 0.0;
+    for (std::size_t i = 0; i < np; ++i) {
+      // A panel's first node IS the previous panel's last node, and carries
+      // the same value: reusing it is what keeps the split at exactly one
+      // iv() read per DISTINCT node, as the un-split single pass was.
+      double integrand = shared;
+      if (p == 0 || i != 0) {
+        // Panel ends are the kink abscissae verbatim rather than k_lo + i*dx,
+        // so no rounding step can drift a kink off the node it must sit on.
+        const double x = (i == 0)        ? panel.k_lo
+                         : (i + 1 == np) ? panel.k_hi
+                                         : panel.k_lo + dx * static_cast<double>(i);
+        const auto [value, bad] = integrand_at(x);
+        integrand = value;
+        if (p == 0 && i == 0) {
+          bad_first = bad;
+        }
+        if (p + 1 == split.count && i + 1 == np) {
+          bad_last = bad;
+        }
+      }
+      sum += simpson_w(i, np) * integrand;
+      if (halvable && (i % 2u) == 0u) {
+        // Every other node of this panel, quadratured on its own half-density
+        // grid (spacing 2*dx) with that grid's own Simpson weights. The panel
+        // boundaries — and so the kinks — are boundaries of THAT grid too,
+        // which is what makes the /15 difference an error estimate.
+        sum_half += simpson_w(i / 2u, np_half) * integrand;
+      }
+      if (i + 1 == np) {
+        shared = integrand;
+      }
     }
+    integral += sum * (dx / 3.0);
+    integral_half += sum_half * (2.0 * dx / 3.0);
   }
-  integral *= (dx / 3.0);
 
   const double k_var = (2.0 / T) * integral;
 
   // Composite-Simpson error is O(h^4): halving h (doubling the node density)
   // shrinks it ~16x, so the difference between the two estimates is ~15/16 of
   // the coarse grid's own error — a self-contained error bound with no
-  // external reference. Stays NaN (not 0) when the grid is not 4m+1: that is
-  // a caller-pinned exact node count, and NaN says "not estimated" rather
-  // than claiming a zero error the code never checked.
+  // external reference. Summing the SIGNED per-panel differences (rather than
+  // their magnitudes) keeps this exact: in the h⁴ limit the sum equals the
+  // total error, cancellation between panels included. Stays NaN (not 0) when
+  // a panel is not 4m+1: that is a caller-pinned exact node count, and NaN
+  // says "not estimated" rather than claiming a zero error nothing checked.
   double err_est = kNaN;
   if (halvable) {
-    integral_half *= (2.0 * dx / 3.0);
     err_est = std::fabs((2.0 / T) * (integral - integral_half)) / 15.0;
   }
 

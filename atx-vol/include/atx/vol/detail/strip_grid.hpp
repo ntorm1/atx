@@ -37,6 +37,7 @@
 // read for a projection agree by construction.
 
 #include <algorithm> // std::max (adaptive_half_width) — was only transitive
+#include <array>     // std::array (plan_strip_split's fixed panel storage)
 #include <cmath>
 #include <cstddef>
 
@@ -169,6 +170,213 @@ struct WingCoverage {
     return 1.0;
   }
   return (i % 2u != 0u) ? 4.0 : 2.0;
+}
+
+// ── C-3 / LIT-10: kink-aligned Simpson panels ──────────────────────────────
+//
+// The OTM integrand the variance strip quadratures is only PIECEWISE smooth.
+// It carries up to three interior C1 kinks:
+//
+//   k = 0           put-call parity. OTM switches from the put branch to the
+//                   call branch; the two agree in VALUE at K = F but their
+//                   K-derivatives differ by exactly the discount factor, so
+//                   the normalized integrand OTM/(df*K) has a slope jump of
+//                   exactly 1 there -- the largest kink in the strip, ~25x the
+//                   integrand's own ATM value at a 3M 20-vol.
+//   k = +-wing_band the wing clamp freezes the surface read at the band edge,
+//                   so d(iv)/dk drops to zero across it. Present only when the
+//                   clamp actually binds, i.e. the span reaches past the band.
+//
+// Composite Simpson is O(h^4) on a smooth panel but only O(h^2) on a panel that
+// STRADDLES such a kink -- the straddle term is J*h^2/6 at worst (J the slope
+// jump, worst case being a kink at the panel MIDPOINT), and it does not shrink
+// with the panel count the way the h^4 term does. The Richardson
+// |I_h - I_2h|/15 estimate, which assumes the h^4 law, then reports a number
+// unrelated to the true error in EITHER direction.
+//
+// Measured pre-C-3 on the 3M skew fixture (derivatives_test.cpp, StripQuadrature):
+//   - asymmetric 101-node pin: K_var off by 2.61e-4 on a 0.04 truth (6.5e-3
+//     rel), matching J*h^2/6*(2/T) with J = 1, h = 0.014 to three digits; its
+//     error estimate understated by 7.5x.
+//   - symmetric 101-node pin: k = 0 IS a full-grid boundary, but lands on an
+//     ODD index of the HALF grid, so the /15 difference measures the half
+//     grid's own straddle instead of the error -- 574x too LARGE on the skew
+//     fixture, 4.1e4x on the flat one.
+// Before C-3 the k = 0 kink landed on a panel boundary only because every
+// DEFAULT grid happens to be symmetric with 4m+1 nodes -- an accident of the
+// defaults, which any caller-pinned asymmetric span silently broke.
+//
+// `plan_strip_split` retires the accident: it cuts [k_lo, k_hi] at every
+// interior kink and apportions the resolved node budget across the resulting
+// sub-intervals in proportion to length, so the kinks are panel boundaries BY
+// CONSTRUCTION on any grid, symmetric or not. Total node count is preserved
+// exactly (the boundary node two panels share is counted once), so
+// `strip_nodes_used` and the span it reports keep their meaning.
+
+// [k_lo, -band], [-band, 0], [0, band], [band, k_hi] -- the widest split.
+inline constexpr std::size_t kMaxStripPanels = 4;
+
+// One sub-interval of the split. `n_nodes` is odd and counts BOTH ends, so the
+// node the next panel starts from is this panel's last node.
+struct StripPanel {
+  double k_lo{0.0};
+  double k_hi{0.0};
+  std::size_t n_nodes{0};
+};
+
+struct StripSplit {
+  std::array<StripPanel, kMaxStripPanels> panels{};
+  std::size_t count{0};
+  // Every panel is 4m+1, so every panel's half grid ((n+1)/2 nodes, spacing
+  // 2*dk) is itself a valid composite-Simpson grid WITH THE SAME BOUNDARIES --
+  // which is what makes the per-panel /15 estimate meaningful.
+  bool richardson_ok{false};
+};
+
+namespace detail {
+
+// Ascending panel boundaries for [k_lo, k_hi]: the two endpoints plus the
+// interior kinks. `with_clamp` selects whether the +-wing_band pair joins them.
+// Returns the boundary count, i.e. panel count + 1. Strict comparisons against
+// the previous boundary and the right endpoint keep the list ascending, keep
+// every panel non-degenerate, and dedup a band edge that coincides with an
+// endpoint or with k = 0. A non-finite `wing_band` fails both comparisons and
+// so degrades to the k = 0 split, which is the safe direction.
+[[nodiscard]] inline std::size_t strip_panel_bounds(
+    double k_lo, double k_hi, double wing_band, bool with_clamp,
+    std::array<double, kMaxStripPanels + 1>& bound) noexcept {
+  const std::array<double, 3> kink = {-wing_band, 0.0, wing_band};
+  std::size_t nb = 0;
+  bound[nb++] = k_lo;
+  for (std::size_t i = 0; i < kink.size(); ++i) {
+    const bool clamp_edge = (i != 1u);
+    if (clamp_edge && (!with_clamp || !(wing_band > 0.0))) {
+      continue;
+    }
+    if (kink[i] > bound[nb - 1] && kink[i] < k_hi) {
+      bound[nb++] = kink[i];
+    }
+  }
+  bound[nb++] = k_hi;
+  return nb;
+}
+
+// Hand out `spare` surplus units across `count` panels in proportion to
+// `len`, on top of the one unit every panel is owed. Largest-remainder
+// apportionment: floor each exact share, then give the leftovers to the
+// largest dropped fractions. Writes `count` entries of `share`; returns
+// nothing because the total is exactly `count + spare` by construction (the
+// leftovers are handed out, never dropped), which is what makes the split
+// node-count-preserving.
+//
+// Ties go to the longer panel, then to the lower index, so the plan is a
+// deterministic function of its inputs -- a pinned grid (deriv_greeks' bump
+// stencils, an archived quote) must replay it bit-identically.
+inline void apportion_units(const std::array<double, kMaxStripPanels>& len,
+                            std::size_t count, std::size_t spare,
+                            std::array<std::size_t, kMaxStripPanels>& share) noexcept {
+  double span = 0.0;
+  for (std::size_t i = 0; i < count; ++i) {
+    span += len[i];
+  }
+  std::array<double, kMaxStripPanels> frac{};
+  std::size_t handed = 0;
+  for (std::size_t i = 0; i < count; ++i) {
+    const double exact = static_cast<double>(spare) * len[i] / span;
+    const double whole = std::floor(exact);
+    share[i] = 1u + static_cast<std::size_t>(whole);
+    frac[i] = exact - whole;
+    handed += static_cast<std::size_t>(whole);
+  }
+  // Each dropped fraction is < 1 and there are `count` of them, so `spare -
+  // handed` is at most count - 1: the loop is bounded by the panel count and
+  // no panel can be picked twice (a winner's remainder is retired to -1).
+  for (std::size_t left = spare - handed; left > 0u; --left) {
+    std::size_t best = 0;
+    for (std::size_t i = 1; i < count; ++i) {
+      if (frac[i] > frac[best] || (frac[i] == frac[best] && len[i] > len[best])) {
+        best = i;
+      }
+    }
+    share[best] += 1u;
+    frac[best] = -1.0;
+  }
+}
+
+} // namespace detail
+
+// Plan the kink-aligned split of [k_lo, k_hi] over a budget of `n_nodes`
+// DISTINCT nodes (odd), with the strip's wing trust half-band `wing_band`
+// (<= 0 when the clamp is off).
+//
+// BUDGET APPORTIONMENT. The interval count n_nodes - 1 is handed out in UNITS
+// of 4 intervals whenever it divides by 4, which is what puts every panel on
+// the 4m+1 Richardson lattice; every default grid takes that path (the tier
+// defaults are 97/257/769/2049, and both the adaptive span rescale and the C-2
+// resolution floor round back onto 4m+1). Each panel gets one mandatory unit
+// and the spare units go out proportionally to length, so total intervals stay
+// exactly n_nodes - 1 and total distinct nodes exactly n_nodes.
+//
+// The panels' spacings therefore differ slightly from the un-split uniform
+// dk = span/(n_nodes-1) -- integer apportionment cannot divide a length
+// evenly. The bound is dk_i <= dk * intervals/(intervals - unit*count)
+// (share_i >= spare*len_i/span), i.e. under 7% at Standard's 256 intervals and
+// 1.6% in fact; C-2's dk <= sigma_atm*sqrt(T)/4 resolution floor keeps holding
+// with that much slack.
+//
+// DEGRADATION LADDER, in priority order -- a starved budget gives up the
+// smallest kink first, the error estimate next, and the split itself last:
+//   1. all kinks, units of 4        (every default grid; estimate populated)
+//   2. k = 0 only, units of 4       (the clamp edges' slope jump is smaller
+//                                    than k = 0's by orders of magnitude)
+//   3. as above but units of 2      (estimate goes NaN, kink stays aligned)
+//   4. no split                     (fewer than 2 intervals per panel)
+//
+// Pure function of its four arguments: same grid in, same panels out.
+[[nodiscard]] inline StripSplit plan_strip_split(double k_lo, double k_hi,
+                                                 std::size_t n_nodes,
+                                                 double wing_band) noexcept {
+  StripSplit out;
+  out.panels[0] = StripPanel{k_lo, k_hi, n_nodes};
+  out.count = 1;
+  out.richardson_ok = (n_nodes % 4u) == 1u && n_nodes >= 5u;
+  if (!std::isfinite(k_lo) || !std::isfinite(k_hi) || !(k_hi > k_lo) || n_nodes < 3u ||
+      (n_nodes % 2u) == 0u) {
+    return out; // not a composite-Simpson grid: quadrature it as one panel
+  }
+
+  const std::size_t intervals = n_nodes - 1u;
+  std::size_t unit = ((intervals % 4u) == 0u) ? 4u : 2u;
+
+  std::array<double, kMaxStripPanels + 1> bound{};
+  std::size_t nb = detail::strip_panel_bounds(k_lo, k_hi, wing_band, true, bound);
+  if (intervals / unit < nb - 1u) {
+    nb = detail::strip_panel_bounds(k_lo, k_hi, wing_band, false, bound);
+  }
+  if (unit == 4u && intervals / unit < nb - 1u) {
+    unit = 2u;
+  }
+  if (intervals / unit < nb - 1u) {
+    return out; // budget cannot give every panel even one Simpson pair
+  }
+
+  const std::size_t count = nb - 1u;
+  std::array<double, kMaxStripPanels> len{};
+  for (std::size_t i = 0; i < count; ++i) {
+    len[i] = bound[i + 1] - bound[i];
+  }
+  std::array<std::size_t, kMaxStripPanels> share{};
+  detail::apportion_units(len, count, intervals / unit - count, share);
+
+  out.count = count;
+  bool rich = true;
+  for (std::size_t i = 0; i < count; ++i) {
+    const std::size_t panel_intervals = share[i] * unit;
+    out.panels[i] = StripPanel{bound[i], bound[i + 1], panel_intervals + 1u};
+    rich = rich && ((panel_intervals % 4u) == 0u);
+  }
+  out.richardson_ok = rich;
+  return out;
 }
 
 // The ONE bracketing-pillar forward blend: LINEAR IN log(F).

@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -438,6 +439,340 @@ TEST(StripResolution, LowTFlagFires) {
     const auto q = var_swap_fair_strike(surf, cs, 0.25, cfg);
     ASSERT_TRUE(q.has_value());
     EXPECT_FALSE(has_flag(q->flags, DerivFlags::LowT));
+  }
+}
+
+// ── C-3 / LIT-10: kink-aligned composite Simpson panels ──────────────────
+//
+// The strip's OTM integrand is only PIECEWISE smooth: it kinks in C1 at k = 0
+// (put-call parity flips the branch and the K-derivative jumps by the discount
+// factor) and at +-wing_clamp_k when the clamp binds (d(iv)/dk drops to zero
+// across the band edge). Composite Simpson is O(h^4) on a smooth panel and only
+// O(h^2) on one that STRADDLES a kink, and the Richardson /15 estimate -- which
+// assumes the h^4 law -- then reports a number unrelated to the true error.
+// Pre-C-3 the k = 0 kink sat on a panel boundary only because every DEFAULT
+// grid is symmetric with 4m+1 nodes; any caller-pinned asymmetric span broke it
+// silently. These three tests pin the post-fix contract.
+
+// Shared skew fixture for the quadrature tests: ATM 20 vol with a steep but
+// butterfly-legal equity put skew (d(iv)/dk(0) == -0.40 at the 3M pillar)
+// whose curvature decays across the term structure. At T = 3M the default
+// wing-clamp band (|k| = 0.5) reads iv ~ 0.364 on the put side against 0.20
+// ATM, so the clamp really does bend the integrand there.
+constexpr double kQuadAtmVol = 0.20;
+constexpr double kQuadSkewSlope = -0.40;
+constexpr double kQuadConvexity = 0.35;
+constexpr double kQuadT = 0.25;  // the 3M fixture pillar
+
+[[nodiscard]] EssviSurface quad_flat_surface() {
+  return atx::vol::deriv_testkit::make_flat_surface(kQuadAtmVol);
+}
+
+[[nodiscard]] EssviSurface quad_skew_surface() {
+  return atx::vol::deriv_testkit::make_skew_surface(kQuadAtmVol, kQuadSkewSlope,
+                                                    kQuadConvexity);
+}
+
+[[nodiscard]] CurveSet quad_curves() {
+  return atx::vol::deriv_testkit::make_curves(100.0, 0.02, 0.01);
+}
+
+// The split's structural contract, checked directly on the pure planner rather
+// than inferred from a quote: on ANY grid the caller can ask for, every
+// interior kink is a panel BOUNDARY, the panels tile the span exactly, and the
+// total node budget is preserved to the node. This is what "by construction"
+// has to mean -- the quadrature tests below then show it buys the accuracy.
+TEST(StripQuadrature, PlanSplitKeepsKinksOnPanelBoundaries) {
+  using atx::vol::strip::plan_strip_split;
+  using atx::vol::strip::StripSplit;
+
+  // Spans: symmetric, both asymmetries, clamp-inside-span, span inside the
+  // clamp band (no clamp kink), one-sided (no k = 0 kink), and an endpoint
+  // sitting exactly on a kink (the dedup path).
+  const std::pair<double, double> spans[] = {
+      {-1.5, 1.5},   {-0.714, 0.686}, {-0.31, 0.29}, {-3.0, 0.4},
+      {-0.4, 0.4},   {-0.25, 2.0},    {0.1, 2.0},    {-2.0, -0.1},
+      {-0.5, 1.0},   {0.0, 1.5},      {-1.0, 0.0},   {-2.5, 0.5}};
+  const std::size_t counts[] = {3u,  5u,   9u,   13u,  17u,  33u,
+                                97u, 101u, 257u, 769u, 2049u, 4001u};
+  const double bands[] = {0.5, 0.0, 1.25};
+
+  for (const auto& [k_lo, k_hi] : spans) {
+    for (const std::size_t n : counts) {
+      for (const double band : bands) {
+        const StripSplit s = plan_strip_split(k_lo, k_hi, n, band);
+        const std::string where = "span=[" + std::to_string(k_lo) + "," +
+                                  std::to_string(k_hi) + "] n=" + std::to_string(n) +
+                                  " band=" + std::to_string(band);
+        ASSERT_GE(s.count, 1u) << where;
+        ASSERT_LE(s.count, atx::vol::strip::kMaxStripPanels) << where;
+
+        // Panels tile [k_lo, k_hi] exactly, left to right, none degenerate.
+        EXPECT_DOUBLE_EQ(s.panels[0].k_lo, k_lo) << where;
+        EXPECT_DOUBLE_EQ(s.panels[s.count - 1].k_hi, k_hi) << where;
+        std::size_t total_intervals = 0;
+        for (std::size_t p = 0; p < s.count; ++p) {
+          EXPECT_GT(s.panels[p].k_hi, s.panels[p].k_lo) << where << " p=" << p;
+          if (p > 0) {
+            EXPECT_DOUBLE_EQ(s.panels[p].k_lo, s.panels[p - 1].k_hi) << where;
+          }
+          EXPECT_GE(s.panels[p].n_nodes, 3u) << where << " p=" << p;
+          EXPECT_EQ(s.panels[p].n_nodes % 2u, 1u) << where << " p=" << p;
+          total_intervals += s.panels[p].n_nodes - 1u;
+        }
+        // Node budget preserved: adjacent panels share their boundary node.
+        EXPECT_EQ(total_intervals + 1u, n) << where;
+
+        // Which kinks the integrand actually carries on this span. Index 1 is
+        // the parity kink at k = 0, always present; the outer two are the
+        // clamp edges, present only when the clamp is on. Indexing rather than
+        // testing `kink == 0.0` matters: at band == 0 the outer entries are
+        // -0.0/+0.0, which compare EQUAL to the parity kink.
+        const double kinks[] = {-band, 0.0, band};
+        const auto carried = [&](std::size_t j) {
+          return (j == 1u || band > 0.0) && kinks[j] > k_lo && kinks[j] < k_hi;
+        };
+        std::size_t interior = 0;
+        for (std::size_t j = 0; j < 3u; ++j) {
+          interior += carried(j) ? 1u : 0u;
+        }
+        // Rung 1 of the degradation ladder, recomputed here from the budget
+        // alone rather than read back off the plan: 4m intervals with a whole
+        // 4-interval unit to spare per panel splits at EVERY kink.
+        const bool full_split_afforded =
+            ((n - 1u) % 4u) == 0u && (n - 1u) / 4u >= interior + 1u;
+        for (std::size_t j = 0; j < 3u; ++j) {
+          if (!carried(j)) {
+            continue;
+          }
+          bool on_boundary = false;
+          for (std::size_t p = 1; p < s.count; ++p) {
+            on_boundary = on_boundary || (s.panels[p].k_lo == kinks[j]);
+          }
+          // A starved budget gives up the CLAMP edges first (their slope jumps
+          // are orders below k = 0's) and the split itself last. k = 0 outlives
+          // both: 4 intervals always buy two panels of 2, because `unit`
+          // degrades from 4 to 2 before the split is abandoned.
+          if (j == 1u ? n >= 5u : full_split_afforded) {
+            EXPECT_TRUE(on_boundary)
+                << where << " kink=" << kinks[j] << " count=" << s.count;
+          }
+        }
+
+        // The estimate is claimed exactly when every panel can halve onto its
+        // own kink-aligned sub-grid.
+        bool all_4m1 = true;
+        for (std::size_t p = 0; p < s.count; ++p) {
+          all_4m1 = all_4m1 && ((s.panels[p].n_nodes % 4u) == 1u);
+        }
+        EXPECT_EQ(s.richardson_ok, all_4m1) << where;
+      }
+    }
+  }
+}
+
+// Every default tier budget must reach the top rung of the degradation ladder:
+// all kinks split AND the Richardson estimate populated. This is the invariant
+// the tier defaults quietly relied on before C-3 and now assert.
+TEST(StripQuadrature, PlanSplitPopulatesRichardsonOnDefaultBudgets) {
+  using atx::vol::strip::plan_strip_split;
+  // The four tier grids (97/257/769/2049 nodes over +-1/1.5/2/3).
+  const std::pair<double, std::size_t> tiers[] = {
+      {1.0, 97u}, {1.5, 257u}, {2.0, 769u}, {3.0, 2049u}};
+  for (const auto& [half, n] : tiers) {
+    const auto s = plan_strip_split(-half, half, n, 0.5);
+    EXPECT_EQ(s.count, 4u) << "n=" << n;  // [-h,-0.5] [-0.5,0] [0,0.5] [0.5,h]
+    EXPECT_TRUE(s.richardson_ok) << "n=" << n;
+  }
+}
+
+// The pinned asymmetric span the C-3 brief calls for, widened from the brief's
+// +-0.3 to +-0.7 so SPAN TRUNCATION (which at 3 sigma sqrt(T) costs ~6e-4 rel,
+// two orders above the quadrature effect under test) cannot mask the quadrature
+// signal: at 7 sigma sqrt(T) the truncated tail is ~1e-15 rel. The 0.014 offset
+// is exactly one node spacing, so k = 0 lands on node 51 -- an ODD index, i.e.
+// the MIDPOINT of a Simpson panel, which is the worst case for a straddled
+// C1 kink (the panel error is J*h^2/6 there, and 0 at a panel boundary).
+constexpr double kAsymKLo = -0.714;
+constexpr double kAsymKHi = 0.686;
+constexpr double kSymKLo = -0.700;
+constexpr double kSymKHi = 0.700;
+constexpr std::uint32_t kPinNodes = 101u;
+
+// MEASURED on this exact fixture (truth == 0.04):
+//                     PRE-C-3 (single panel)          POST-C-3 (split)
+//   symmetric pin     0.040000001707333969  +1.7e-9   0.040000008157407653  +8.2e-9
+//   asymmetric pin    0.040261330772305835  +2.6e-4   0.040000008157546028  +8.2e-9
+// The pre-fix asymmetric miss is the O(h^2) straddle term J*h^2/6*(2/T) with
+// J = 1 (the parity slope jump) and h = 0.014, which predicts 2.6133e-4 --
+// the measured 2.61331e-4 confirms the mechanism to five digits. Post-fix the
+// two pins agree to 1.4e-13 and both sit on the grid's O(h^4) floor.
+TEST(StripQuadrature, AsymmetricPinMatchesSymmetricReference) {
+  const EssviSurface flat = quad_flat_surface();
+  const CurveSet cs = quad_curves();
+  const double truth = kQuadAtmVol * kQuadAtmVol;  // flat lognormal: K_var == sigma^2
+
+  DerivConfig sym = deriv_default_config();
+  sym.k_min_log = kSymKLo;
+  sym.k_max_log = kSymKHi;
+  sym.strip_nodes = kPinNodes;
+  DerivConfig asym = sym;
+  asym.k_min_log = kAsymKLo;
+  asym.k_max_log = kAsymKHi;
+
+  const auto q_sym = var_swap_fair_strike(flat, cs, kQuadT, sym);
+  const auto q_asym = var_swap_fair_strike(flat, cs, kQuadT, asym);
+  ASSERT_TRUE(q_sym.has_value());
+  ASSERT_TRUE(q_asym.has_value());
+
+  // Both spans are ~7 sigma sqrt(T) wide, so the only error either quote can
+  // carry is quadrature. A 101-node grid's O(h^4) floor is ~8e-9 in K_var
+  // units; 1e-6 sits two orders above that floor and 260x BELOW the pre-fix
+  // asymmetric miss, so this bound separates the two regimes cleanly.
+  const double tol = 1.0e-6;
+  EXPECT_LT(std::fabs(q_sym->fair_strike_dec - truth), tol)
+      << "symmetric reference K=" << q_sym->fair_strike_dec;
+  EXPECT_LT(std::fabs(q_asym->fair_strike_dec - truth), tol)
+      << "asymmetric pin K=" << q_asym->fair_strike_dec
+      << " (pre-fix this missed by 2.61e-4 -- k = 0 straddled a panel)";
+  // Agreement is a much tighter claim than either bound above: both grids
+  // carry the same total budget over near-identical panels, so post-fix they
+  // land 1.4e-13 apart (measured) against 2.6e-4 pre-fix.
+  EXPECT_LT(std::fabs(q_asym->fair_strike_dec - q_sym->fair_strike_dec), 1.0e-9)
+      << "asymmetric pin must agree with the symmetric reference";
+
+  // The pins are honored verbatim (total span + total node count), which is
+  // what greeks pinning and archived quotes replay against.
+  EXPECT_EQ(q_asym->strip_nodes_used, kPinNodes);
+  EXPECT_DOUBLE_EQ(q_asym->strip_k_lo_used, kAsymKLo);
+  EXPECT_DOUBLE_EQ(q_asym->strip_k_hi_used, kAsymKHi);
+
+  // The default (symmetric, tier) grid is unaffected and still hits truth.
+  const auto q_default = var_swap_fair_strike(flat, cs, kQuadT, deriv_default_config());
+  ASSERT_TRUE(q_default.has_value());
+  EXPECT_LT(std::fabs(q_default->fair_strike_dec - truth), tol);
+}
+
+// Node count for the same-span truth proxy a pinned case is measured against:
+// 40x the pinned density, so its own O(h^4) error is ~2.6e6x smaller and the
+// distance from it IS the pinned grid's quadrature error, with the shared
+// span's truncation cancelling exactly.
+constexpr std::uint32_t kFineNodes = 4001u;
+
+// Assert `est` is an ESTIMATE of `err` -- same order of magnitude, both
+// directions. A bound that only caught overstatement would pass on an estimate
+// pinned at zero; one that only caught understatement would pass on noise.
+void expect_estimates(double est, double err, const char* what) {
+  ASSERT_TRUE(std::isfinite(est)) << what << ": estimate not populated";
+  EXPECT_GT(est, 0.1 * err) << what << ": estimate understates -- est=" << est
+                            << " true=" << err;
+  EXPECT_LT(est, 10.0 * err) << what << ": estimate overstates -- est=" << est
+                             << " true=" << err;
+}
+
+// The Richardson |I_h - I_2h|/15 estimate must behave like an ESTIMATE of the
+// true quadrature error, not like noise.
+//
+// MEASURED est / true-error ratio on this fixture (1.0 is a perfect estimate):
+//                            PRE-C-3   POST-C-3
+//   Standard default grid    0.689     1.000   -- the defaults' symmetry had
+//                                                 already rescued this one
+//   symmetric  +-0.7 pin     574       1.158   -- k = 0 is a full-grid
+//                                                 boundary but an ODD HALF-grid
+//                                                 index, so the /15 difference
+//                                                 measured the half grid's own
+//                                                 O(h^2) straddle, not the error
+//   asymmetric +-0.7 pin     0.133     1.161   -- k = 0 mid-panel on both grids
+// The symmetric-pin case is the sharp one: the estimate was 574x the error it
+// claimed to estimate (4.1e4x on the flat fixture).
+TEST(StripQuadrature, RichardsonBoundsTrueErrorOnSkew) {
+  const EssviSurface skew = quad_skew_surface();
+  const CurveSet cs = quad_curves();
+
+  // (a) the default Standard grid, against the Audit tier as truth proxy
+  // (2049 nodes over +-3.0: h is 4x finer, so ~256x more accurate under the
+  // h^4 law, and its wider span strictly contains Standard's).
+  DerivConfig audit = deriv_default_config();
+  audit.quality = DerivQuality::Audit;
+  const auto q_audit = var_swap_fair_strike(skew, cs, kQuadT, audit);
+  ASSERT_TRUE(q_audit.has_value());
+  DerivConfig std_cfg = deriv_default_config();
+  std_cfg.quality = DerivQuality::Standard;
+  const auto q_std = var_swap_fair_strike(skew, cs, kQuadT, std_cfg);
+  ASSERT_TRUE(q_std.has_value());
+  expect_estimates(q_std->integration_error_est,
+                   std::fabs(q_std->fair_strike_dec - q_audit->fair_strike_dec),
+                   "Standard default grid");
+
+  // (b), (c) the same claim on the two pinned spans, each against its OWN
+  // same-span fine reference (a pinned span is narrower than Audit's, so its
+  // distance from Audit carries a truncation term the estimate does not, and
+  // must not, model).
+  const std::pair<double, double> pins[] = {{kSymKLo, kSymKHi}, {kAsymKLo, kAsymKHi}};
+  for (const auto& [k_lo, k_hi] : pins) {
+    DerivConfig pinned = deriv_default_config();
+    pinned.k_min_log = k_lo;
+    pinned.k_max_log = k_hi;
+    pinned.strip_nodes = kPinNodes;
+    DerivConfig fine = pinned;
+    fine.strip_nodes = kFineNodes;
+    const auto q_pin = var_swap_fair_strike(skew, cs, kQuadT, pinned);
+    const auto q_fine = var_swap_fair_strike(skew, cs, kQuadT, fine);
+    ASSERT_TRUE(q_pin.has_value());
+    ASSERT_TRUE(q_fine.has_value());
+    expect_estimates(q_pin->integration_error_est,
+                     std::fabs(q_pin->fair_strike_dec - q_fine->fair_strike_dec),
+                     k_lo == kSymKLo ? "symmetric pin" : "asymmetric pin");
+  }
+}
+
+// Splitting at the clamp edges must not MOVE a default-grid mark: the split
+// only relocates nodes inside a span it does not change. The reference values
+// are the pre-C-3 single-panel quotes, measured on this exact fixture and
+// recorded here so the bound is checked against the number the release actually
+// shipped, not against a value this same code recomputes.
+//
+// MEASURED relative moves (post-C-3 vs the recorded pre-C-3 mark):
+//   Fast 3.1e-16, Standard 2.78e-7, High 0 (exact), Audit 4.2e-9.
+// Fast and High do not move at all because their proportional apportionment
+// happens to reproduce the un-split uniform spacing exactly (96 intervals over
+// four equal panels; 768 over 1.5/0.5/0.5/1.5). Standard's 2.78e-7 move is
+// toward truth, not away: |K - Audit| goes 1.14e-8 -> 1.34e-9, 8.5x better.
+struct ClampEdgeCase {
+  DerivQuality tier;
+  double k_var_pre_c3;
+};
+
+TEST(StripQuadrature, ClampEdgeSplit) {
+  const EssviSurface skew = quad_skew_surface();
+  const CurveSet cs = quad_curves();
+
+  // PRE-FIX MEASURED (single-panel composite Simpson), 17 significant digits.
+  const ClampEdgeCase cases[] = {
+      {DerivQuality::Fast, 0.045847674795002777},
+      {DerivQuality::Standard, 0.045847649986699476},
+      {DerivQuality::High, 0.045847661437682291},
+      {DerivQuality::Audit, 0.045847661198757744},
+  };
+
+  for (const ClampEdgeCase& c : cases) {
+    DerivConfig cfg = deriv_default_config();
+    cfg.quality = c.tier;
+    const auto q = var_swap_fair_strike(skew, cs, kQuadT, cfg);
+    ASSERT_TRUE(q.has_value()) << static_cast<int>(c.tier);
+    // Every tier's span reaches past the +-0.5 trust band, so the clamp binds
+    // and the split really does add the two band-edge boundaries.
+    EXPECT_TRUE(has_flag(q->flags, DerivFlags::WingClamped))
+        << "tier=" << static_cast<int>(c.tier);
+    const double rel = std::fabs(q->fair_strike_dec - c.k_var_pre_c3) / c.k_var_pre_c3;
+    EXPECT_LT(rel, 1.0e-6) << "tier=" << static_cast<int>(c.tier)
+                           << " K=" << q->fair_strike_dec
+                           << " pre-C-3=" << c.k_var_pre_c3;
+    // Default budgets keep every panel on the 4m+1 lattice, so the split must
+    // never cost the error estimate.
+    EXPECT_TRUE(std::isfinite(q->integration_error_est))
+        << "tier=" << static_cast<int>(c.tier);
+    EXPECT_GE(q->integration_error_est, 0.0);
   }
 }
 
@@ -946,27 +1281,37 @@ EssviSurface make_steep_wing_surface(double sigma, double T_lo, double T_hi) {
 
 // Hand Simpson replication of the strip with vol reads clamped to [-band, band]
 // on the exact grid the quote reports. Same quadrature convention on purpose:
-// the assertion is about WHICH vol each node reads, not about quadrature.
+// the assertion is about WHICH vol each node reads, not about quadrature -- so
+// this walks the same C-3 kink-aligned panels (`plan_strip_split`, itself
+// pinned by StripQuadrature.PlanSplitKeepsKinksOnPanelBoundaries) rather than
+// one uniform grid, and stays exact to the last bit.
 double clamped_strip_oracle(const EssviSurface& surf, const CurveSet& cs, double T,
                             const atx::vol::DerivQuote& grid_src, double band) {
   const double F = cs.spot;          // flat curves: F == spot at every pillar
   const double df = cs.yield.disc(T); // zero rates: 1.0
-  const std::size_t n = grid_src.strip_nodes_used;
-  const double k_lo = grid_src.strip_k_lo_used;
-  const double k_hi = grid_src.strip_k_hi_used;
-  const double dx = (k_hi - k_lo) / static_cast<double>(n - 1);
+  const auto split = atx::vol::strip::plan_strip_split(
+      grid_src.strip_k_lo_used, grid_src.strip_k_hi_used, grid_src.strip_nodes_used,
+      band);
   double integral = 0.0;
-  for (std::size_t i = 0; i < n; ++i) {
-    const double x = k_lo + dx * static_cast<double>(i);
-    const double K = F * std::exp(x);
-    const double x_read = std::clamp(x, -band, band);
-    const double sigma = surf.iv(x_read, T);
-    const double price = atx::vol::black76_price(F, K, T, sigma, df,
-                                                 x < 0.0 ? atx::vol::Side::Put
-                                                         : atx::vol::Side::Call);
-    integral += atx::vol::strip::simpson_weight(i, n) * price / (df * K);
+  for (std::size_t p = 0; p < split.count; ++p) {
+    const auto& panel = split.panels[p];
+    const std::size_t np = panel.n_nodes;
+    const double dx = (panel.k_hi - panel.k_lo) / static_cast<double>(np - 1);
+    double sum = 0.0;
+    for (std::size_t i = 0; i < np; ++i) {
+      const double x = (i == 0)        ? panel.k_lo
+                       : (i + 1 == np) ? panel.k_hi
+                                       : panel.k_lo + dx * static_cast<double>(i);
+      const double K = F * std::exp(x);
+      const double x_read = std::clamp(x, -band, band);
+      const double sigma = surf.iv(x_read, T);
+      const double price = atx::vol::black76_price(F, K, T, sigma, df,
+                                                   x < 0.0 ? atx::vol::Side::Put
+                                                           : atx::vol::Side::Call);
+      sum += atx::vol::strip::simpson_weight(i, np) * price / (df * K);
+    }
+    integral += sum * (dx / 3.0);
   }
-  integral *= dx / 3.0;
   return (2.0 / T) * integral;
 }
 
