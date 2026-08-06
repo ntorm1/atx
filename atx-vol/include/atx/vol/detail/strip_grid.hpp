@@ -137,25 +137,48 @@ struct WingCoverage {
   return sigma_atm * std::sqrt(T) / 4.0;
 }
 
-// Minimum node count that keeps `span`'s own grid spacing at or under
-// `dk_max` (from `dk_ceiling`). Preserves the 4m+1 Richardson invariant the
-// same way the span-driven rescale (FIX-E M-7, derivatives.cpp) does: force
-// odd, then nudge +2 if that lands off 4m+1 -- odd counts alternate 1 mod 4 /
-// 3 mod 4 as they step by two, so a single +2 always suffices. Returns
-// `current_n` unchanged when `span`/`dk_max` is non-positive (no floor is
-// expressible) or the current spacing already satisfies it -- the caller
-// compares the result against `current_n` to learn whether the floor
-// actually engaged.
+// Minimum node count that keeps EVERY PANEL of the kink-aligned split (C-3,
+// `plan_strip_split`) at or under `dk_max` (from `dk_ceiling`). `n_panels` is
+// that split's panel count (`strip_panel_count`); pass 1 for a genuinely
+// uniform grid.
+//
+// WHY THE PANEL COUNT ENTERS. The ceiling constrains the spacing the strip
+// actually integrates on, and after C-3 that is no longer one uniform lattice:
+// integer apportionment cannot divide a span evenly, so a panel's own spacing
+// runs ABOVE the nominal span/(n-1). Sizing against the nominal value would
+// make this floor approximate -- a tenor whose nominal dk sits just under
+// dk_max would clear the check while a panel breached the ceiling.
+//
+// The excess is bounded exactly. Apportionment hands out units of `unit`
+// intervals and gives panel i a share strictly greater than
+// spare*len_i/span, with spare = intervals/unit - n_panels, so
+//
+//     dk_i = len_i / (unit * share_i) < span / (intervals - unit * n_panels)
+//
+// Provisioning `intervals >= span/dk_max + unit*n_panels` therefore makes
+// dk_i < dk_max hold for EVERY panel. `unit` is 4 here: the 4m+1 rounding
+// below puts the budget on the lattice where `plan_strip_split` picks 4, and
+// every path it can instead take (unit 2, a degraded panel count, no split at
+// all) only shrinks `unit * n_panels`, so 4*n_panels is an upper bound on all
+// of them. The term costs at most 16 intervals (kMaxStripPanels == 4).
+//
+// Preserves the 4m+1 Richardson invariant the same way the span-driven rescale
+// (FIX-E M-7, derivatives.cpp) does: force odd, then nudge +2 if that lands
+// off 4m+1 -- odd counts alternate 1 mod 4 / 3 mod 4 as they step by two, so a
+// single +2 always suffices. Returns `current_n` unchanged when `span`/
+// `dk_max` is non-positive (no floor is expressible) or the current budget
+// already satisfies the requirement -- the caller compares the result against
+// `current_n` to learn whether the floor actually engaged.
 [[nodiscard]] inline std::size_t dk_floor_nodes(double span, std::size_t current_n,
-                                                double dk_max) noexcept {
+                                                double dk_max,
+                                                std::size_t n_panels) noexcept {
   if (!(span > 0.0) || !(dk_max > 0.0) || current_n < 2u) {
     return current_n;
   }
-  const double dk = span / static_cast<double>(current_n - 1u);
-  if (dk <= dk_max) {
+  const double intervals = span / dk_max + 4.0 * static_cast<double>(n_panels);
+  if (static_cast<double>(current_n - 1u) >= intervals) {
     return current_n;
   }
-  const double intervals = span / dk_max;
   std::size_t n = odd_nodes(static_cast<std::size_t>(std::ceil(intervals)) + 1u, current_n);
   if ((n % 4u) != 1u) {
     n += 2u;
@@ -319,10 +342,15 @@ inline void apportion_units(const std::array<double, kMaxStripPanels>& len,
 //
 // The panels' spacings therefore differ slightly from the un-split uniform
 // dk = span/(n_nodes-1) -- integer apportionment cannot divide a length
-// evenly. The bound is dk_i <= dk * intervals/(intervals - unit*count)
-// (share_i >= spare*len_i/span), i.e. under 7% at Standard's 256 intervals and
-// 1.6% in fact; C-2's dk <= sigma_atm*sqrt(T)/4 resolution floor keeps holding
-// with that much slack.
+// evenly. The excess is bounded exactly by
+//
+//     dk_i < span / (intervals - unit*count)
+//
+// (from share_i > spare*len_i/span), i.e. under 7% at Standard's 256 intervals
+// and 1.6% in fact. C-2's dk <= sigma_atm*sqrt(T)/4 resolution floor is sized
+// against THAT bound rather than against the nominal dk (`dk_floor_nodes`
+// takes the panel count for exactly this reason), so its guarantee stays
+// exact per-panel and not merely approximate.
 //
 // DEGRADATION LADDER, in priority order -- a starved budget gives up the
 // smallest kink first, the error estimate next, and the split itself last:
@@ -377,6 +405,31 @@ inline void apportion_units(const std::array<double, kMaxStripPanels>& len,
   }
   out.richardson_ok = rich;
   return out;
+}
+
+// Panel count of the FULL kink-aligned split of [k_lo, k_hi] -- every interior
+// kink cut -- independent of any node budget. `plan_strip_split` can end up
+// with FEWER panels when a starved budget walks the degradation ladder, never
+// with more, so this is the count the C-2 resolution floor provisions against.
+[[nodiscard]] inline std::size_t strip_panel_count(double k_lo, double k_hi,
+                                                   double wing_band) noexcept {
+  std::array<double, kMaxStripPanels + 1> bound{};
+  return detail::strip_panel_bounds(k_lo, k_hi, wing_band, true, bound) - 1u;
+}
+
+// Widest node spacing over the plan's panels. Once the grid is no longer one
+// uniform lattice this -- not span/(n-1) -- is the quantity C-2's resolution
+// ceiling constrains, so it is what the LowT flag must be decided on.
+[[nodiscard]] inline double max_panel_spacing(const StripSplit& split) noexcept {
+  double dk = 0.0;
+  for (std::size_t i = 0; i < split.count; ++i) {
+    const StripPanel& panel = split.panels[i];
+    if (panel.n_nodes > 1u) {
+      dk = std::max(dk, (panel.k_hi - panel.k_lo) /
+                            static_cast<double>(panel.n_nodes - 1u));
+    }
+  }
+  return dk;
 }
 
 // The ONE bracketing-pillar forward blend: LINEAR IN log(F).

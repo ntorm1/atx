@@ -82,6 +82,12 @@ engaged, or a pinned grid could not be corrected to satisfy it.
 | High     | 769 → 1273        | ~0.04000000 (both)         | ~0 (already accurate)   |
 | Audit    | 2049 → 2049       | 0.0400000002 (unchanged)   | none (floor unneeded)   |
 
+The node counts in that column are this fix's own arithmetic. The kink-split
+entry below provisions 16 further intervals of apportionment headroom, so the
+counts 1.1.0 actually ships at this tenor are **653 / 973 / 1289 / 2049**
+(pinned in `StripResolution.PanelSpacingRespectsCeilingAtTheFloorBoundary`).
+The K_var column is unaffected — both grids are far past convergence here.
+
 **Migration**: this moves the DEFAULT Fast-tier mark at short tenors — the
 old default was a verified quadrature bug (PV-2), not an intentional choice,
 so per the sprint's correctness-first rule it is corrected rather than kept
@@ -118,6 +124,27 @@ keep their meaning and `deriv_greeks`' grid pinning replays a quote exactly.
 The estimate is populated whenever every panel is `4m+1`, which every default
 budget is; a starved caller-pinned budget gives up the clamp edges first, the
 estimate next, and the `k = 0` alignment last.
+
+**C-2's resolution floor is enforced per panel, not per nominal `dk`.** The
+floor (`dk <= sigma_atm*sqrt(T)/4`) was sized against the spacing of one
+uniform lattice. The split retires that lattice — integer apportionment cannot
+divide a span evenly, so a panel's own spacing runs above the nominal
+`span/(n-1)` (1.6% at Standard's 256 intervals). Left alone that would have
+made the floor's guarantee approximate: a tenor whose nominal `dk` sat just
+under the ceiling cleared the check while a panel breached it. `dk_floor_nodes`
+now provisions the excess analytically — the apportionment bound is
+`dk_i < span/(intervals - 4*n_panels)`, so requiring
+`intervals >= span/dk_max + 4*n_panels` makes `dk_i < dk_max` hold for **every**
+panel, exactly. `DerivFlags::LowT` is likewise decided on the widest panel
+rather than the nominal `dk`, which is what makes it honest for a
+caller-pinned count (never overridden, so flagging is all it can do).
+
+Cost: at most 16 intervals (`kMaxStripPanels == 4`). At ordinary tenors it is
+inert — every tier still resolves exactly its default budget (97/257/769/2049),
+so **no default mark moves by even one ulp** on this account. Where the floor
+already engaged, node counts rise by 16 plus `4m+1` rounding (at `T = 1/252`,
+`sigma = 20%`: Fast 637→653, Standard 957→973, High 1273→1289, Audit unchanged),
+which only makes those quotes more accurate.
 
 **Magnitude — default grids move by at most 2.8e-7 relative**, and toward
 truth (3M skew fixture, `make_skew_surface(0.20, -0.40, 0.35)`; flat fixture

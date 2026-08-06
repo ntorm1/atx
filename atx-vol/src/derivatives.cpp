@@ -945,6 +945,16 @@ Result<DerivQuote> var_swap_fair_strike(const SurfaceT& surface,
     }
   }
 
+  // Wing trust band for the surface READS (see DerivConfig::wing_clamp_k): a
+  // node beyond the band prices at its true strike under the BAND-EDGE vol —
+  // flat-vol tails over the uncertified extrapolation region, never a
+  // truncated span. band <= 0 means the clamp is off. Resolved BEFORE the
+  // resolution floor below, which has to know how many panels the C-3 split
+  // will cut — and that depends on where this band falls inside the span.
+  const double wing_band = resolve_wing_clamp(cfg);
+  const bool wing_clamped =
+      wing_band > 0.0 && (grid.k_min_log < -wing_band || grid.k_max_log > wing_band);
+
   // C-2 / PV-2: the MIRROR rule. The rescale above only widens the span for a
   // high-vol/long-dated tenor; a short-tenor/low-vol quote can still resolve
   // too coarsely even at (or below) the tier's own floor span, because the
@@ -955,29 +965,24 @@ Result<DerivQuote> var_swap_fair_strike(const SurfaceT& surface,
   // `cfg.strip_nodes` pinned is never overridden here, same as the span
   // rescale: a pinned node count is a caller request and gets flagged
   // (LowT) instead of silently changed.
+  //
+  // The ceiling binds the spacing the strip ACTUALLY integrates on, which
+  // after C-3 is per-panel, not one uniform dk — hence the panel count.
   const double dk_max = strip::dk_ceiling(sigma_atm, T);
-  bool low_t = false;
   const double resolved_span = grid.k_max_log - grid.k_min_log;
+  const std::size_t n_panels =
+      strip::strip_panel_count(grid.k_min_log, grid.k_max_log, wing_band);
+  bool low_t = false;
   if (cfg.strip_nodes == 0u) {
-    const std::size_t raised = strip::dk_floor_nodes(resolved_span, grid.n_nodes, dk_max);
+    const std::size_t raised =
+        strip::dk_floor_nodes(resolved_span, grid.n_nodes, dk_max, n_panels);
     if (raised != grid.n_nodes) {
       grid.n_nodes = raised;
       low_t = true;
     }
-  } else if (dk_max > 0.0) {
-    const double dk = resolved_span / static_cast<double>(grid.n_nodes - 1);
-    low_t = dk > dk_max;
   }
 
   const std::size_t n = grid.n_nodes;
-
-  // Wing trust band for the surface READS (see DerivConfig::wing_clamp_k): a
-  // node beyond the band prices at its true strike under the BAND-EDGE vol —
-  // flat-vol tails over the uncertified extrapolation region, never a
-  // truncated span. band <= 0 means the clamp is off.
-  const double wing_band = resolve_wing_clamp(cfg);
-  const bool wing_clamped =
-      wing_band > 0.0 && (grid.k_min_log < -wing_band || grid.k_max_log > wing_band);
 
   // C-3 / LIT-10: the integrand is piecewise smooth, not smooth — it kinks at
   // k = 0 (put-call parity) and at ±wing_band when the clamp binds. Split the
@@ -989,6 +994,15 @@ Result<DerivQuote> var_swap_fair_strike(const SurfaceT& surface,
   assert(n >= 3u && "composite Simpson needs at least one panel of 3 nodes");
   const strip::StripSplit split =
       strip::plan_strip_split(grid.k_min_log, grid.k_max_log, n, wing_band);
+
+  // LowT, decided on the grid actually integrated. For the unpinned path the
+  // floor above has already provisioned every panel under the ceiling, so this
+  // only ever confirms it; for a caller-pinned node count — never overridden —
+  // it is the whole job of the flag, and checking the widest PANEL rather than
+  // the nominal span/(n-1) is what makes the verdict honest after C-3.
+  if (dk_max > 0.0 && strip::max_panel_spacing(split) > dk_max) {
+    low_t = true;
+  }
 
   // Richardson half-grid quadrature error estimate. Valid only when EVERY
   // panel is 4m+1, so each panel's half grid ((n+1)/2 nodes, every other node)

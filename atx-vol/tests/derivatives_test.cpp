@@ -442,6 +442,120 @@ TEST(StripResolution, LowTFlagFires) {
   }
 }
 
+// C-2's resolution floor sizes the node count against dk = span/(n-1) -- the
+// spacing of ONE UNIFORM lattice. C-3's kink-aligned split retires that
+// lattice: integer apportionment cannot divide a span evenly, so a panel's own
+// spacing runs above the nominal dk (1.6% at Standard's 256 intervals). A
+// tenor whose resolved dk sits just under dk_max therefore passed the
+// pre-split check while a panel actually breached the ceiling -- the floor's
+// guarantee went from exact to approximate. It must be exact: the floor now
+// provisions the apportionment headroom analytically (`dk_floor_nodes`'
+// n_panels term).
+//
+// The ceiling constrains the spacing the strip ACTUALLY integrates on, so that
+// is what this asserts: re-plan the split from the grid the quote reports and
+// check the widest panel, not the nominal dk.
+double worst_panel_dk(const atx::vol::DerivQuote& q, double band) {
+  return atx::vol::strip::max_panel_spacing(atx::vol::strip::plan_strip_split(
+      q.strip_k_lo_used, q.strip_k_hi_used, q.strip_nodes_used, band));
+}
+
+TEST(StripResolution, PanelSpacingRespectsCeilingAtTheFloorBoundary) {
+  const double sigma = 0.20;
+
+  // The reviewer's exact near-ceiling case, worked backwards from Standard's
+  // geometry: 257 nodes over +-1.5 give a uniform dk of 3.0/256 = 0.01171875,
+  // while the split's longest panel (1.0 wide, 84 intervals) spans
+  // 1.0/84 = 0.011904762. Any dk_max strictly between those two clears the
+  // pre-split check and is breached by a panel. dk_max = sigma*sqrt(T)/4, so
+  // sigma*sqrt(T) = 0.0472 sits squarely in the gap (0.046875, 0.047619).
+  {
+    const double s = 0.0472;  // sigma*sqrt(T)
+    const double T_test = (s / sigma) * (s / sigma);
+    const EssviSurface surf = make_flat_surface(sigma, T_test / 10.0, 1.00);
+    const CurveSet cs = make_flat_curves(100.0, T_test / 10.0, 1.00);
+    ASSERT_LT(std::fabs(surf.iv(0.0, T_test) - sigma), 1.0e-9);
+
+    DerivConfig cfg = deriv_default_config();
+    cfg.quality = DerivQuality::Standard;
+    const auto q = var_swap_fair_strike(surf, cs, T_test, cfg);
+    ASSERT_TRUE(q.has_value());
+    const double dk_max = atx::vol::strip::dk_ceiling(sigma, T_test);
+    EXPECT_LE(worst_panel_dk(*q, 0.5), dk_max)
+        << "a panel breached the ceiling the floor claimed to enforce; n="
+        << q->strip_nodes_used;
+  }
+
+  // ... and the guarantee must hold for ALL inputs, not just the one crossing
+  // above. Walk sigma*sqrt(T) across four decades so every tier's resolved dk
+  // crosses its own dk_max somewhere in the sweep.
+  for (const DerivQuality tier : {DerivQuality::Fast, DerivQuality::Standard,
+                                  DerivQuality::High, DerivQuality::Audit}) {
+    for (int j = 0; j < 160; ++j) {
+      const double s = 0.002 * std::pow(10.0, 2.0 * static_cast<double>(j) / 159.0);
+      const double T_test = (s / sigma) * (s / sigma);
+      const EssviSurface surf = make_flat_surface(sigma, T_test / 10.0, 1.00);
+      const CurveSet cs = make_flat_curves(100.0, T_test / 10.0, 1.00);
+      DerivConfig cfg = deriv_default_config();
+      cfg.quality = tier;
+      const auto q = var_swap_fair_strike(surf, cs, T_test, cfg);
+      ASSERT_TRUE(q.has_value()) << "tier=" << static_cast<int>(tier) << " s=" << s;
+      const double dk_max = atx::vol::strip::dk_ceiling(sigma, T_test);
+      EXPECT_LE(worst_panel_dk(*q, 0.5), dk_max)
+          << "tier=" << static_cast<int>(tier) << " s=" << s << " T=" << T_test
+          << " n=" << q->strip_nodes_used;
+      // Provisioning the headroom must not cost the Richardson estimate.
+      EXPECT_TRUE(std::isfinite(q->integration_error_est))
+          << "tier=" << static_cast<int>(tier) << " s=" << s;
+    }
+  }
+
+  // The headroom is provisioning, not a tax. At an ordinary tenor it is inert:
+  // every tier still resolves exactly its own default budget, so no default
+  // mark moves by even one ulp. (Fast is the tight one -- 96 intervals against
+  // a requirement of 80 + 4*4 = 96 exactly.)
+  {
+    const double T_test = 0.25;
+    const EssviSurface surf = make_flat_surface(sigma, T_test / 10.0, 1.00);
+    const CurveSet cs = make_flat_curves(100.0, T_test / 10.0, 1.00);
+    const std::pair<DerivQuality, std::uint32_t> defaults[] = {
+        {DerivQuality::Fast, 97u},
+        {DerivQuality::Standard, 257u},
+        {DerivQuality::High, 769u},
+        {DerivQuality::Audit, 2049u}};
+    for (const auto& [tier, n_default] : defaults) {
+      DerivConfig cfg = deriv_default_config();
+      cfg.quality = tier;
+      const auto q = var_swap_fair_strike(surf, cs, T_test, cfg);
+      ASSERT_TRUE(q.has_value());
+      EXPECT_EQ(q->strip_nodes_used, n_default) << "tier=" << static_cast<int>(tier);
+      EXPECT_FALSE(has_flag(q->flags, DerivFlags::LowT))
+          << "tier=" << static_cast<int>(tier);
+    }
+  }
+
+  // Where the floor DOES engage, the headroom costs exactly 4*n_panels == 16
+  // intervals plus the 4m+1 rounding. Pinned because C-2's CHANGELOG table
+  // quotes these counts, and they must not drift silently apart from it.
+  {
+    const double T_1d = 1.0 / 252.0;
+    const EssviSurface surf = make_flat_surface(sigma, T_1d / 10.0, 1.00);
+    const CurveSet cs = make_flat_curves(100.0, T_1d / 10.0, 1.00);
+    const std::pair<DerivQuality, std::uint32_t> raised[] = {
+        {DerivQuality::Fast, 653u},      // C-2 alone gave 637
+        {DerivQuality::Standard, 973u},  // 957
+        {DerivQuality::High, 1289u},     // 1273
+        {DerivQuality::Audit, 2049u}};   // floor never engaged; unchanged
+    for (const auto& [tier, n_raised] : raised) {
+      DerivConfig cfg = deriv_default_config();
+      cfg.quality = tier;
+      const auto q = var_swap_fair_strike(surf, cs, T_1d, cfg);
+      ASSERT_TRUE(q.has_value());
+      EXPECT_EQ(q->strip_nodes_used, n_raised) << "tier=" << static_cast<int>(tier);
+    }
+  }
+}
+
 // ── C-3 / LIT-10: kink-aligned composite Simpson panels ──────────────────
 //
 // The strip's OTM integrand is only PIECEWISE smooth: it kinks in C1 at k = 0
