@@ -3409,6 +3409,10 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
     }
   }
 
+  // A2: one scalar copy, once, at the end of the run — not a per-step column,
+  // so it does not belong in the `push_row`/`record_signals` loop above.
+  out.n_steps_entry_skipped = strat.n_steps_entry_skipped();
+
   // Plan 4.6: the engine may not emit a skewed column set. Pure read, so this
   // cannot change a value the run produced.
   ATX_TRY_VOID(out.validate());

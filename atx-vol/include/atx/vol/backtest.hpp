@@ -1121,6 +1121,18 @@ struct BacktestResult {
   // Empty for the fixed-book overload; populated by the IStrategy overload.
   std::vector<std::pair<std::string, std::vector<double>>> signals;
 
+  // A2 (backtest-production-lakehouse sprint, target 1.1.0): a RESULT SCALAR,
+  // not a row-parallel series — one count for the whole run, copied verbatim
+  // from `IStrategy::n_steps_entry_skipped()` after the strategy-aware
+  // `run_backtest` completes (see backtest.cpp). It is NOT part of the frozen
+  // 25-column wire series set: absent from `kBacktestSeriesColumns`
+  // (backtest_series_columns.hpp) and from BacktestDb/RunArchive serialization,
+  // so `ra_schema_hash()`, every TSV/CSV header and every golden are untouched.
+  // Sprint-owner-approved additive field on this Tier-A struct (append-only;
+  // existing fields keep their order). Always 0 for the fixed-book (B0)
+  // overload, which has no strategy to ask.
+  std::uint64_t n_steps_entry_skipped{0};
+
   [[nodiscard]] std::size_t size() const noexcept { return date.size(); }
 
   // ── Column-shape invariant (plan item 4.6) ────────────────────────────────

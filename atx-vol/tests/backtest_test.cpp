@@ -117,6 +117,46 @@ constexpr std::uint32_t kUid = 7;
   return std::move(*ps);
 }
 
+// Like `make_surface`, but the term structure reaches down to a 2-day tenor.
+// `make_surface`'s shortest slice (T=0.05, ~18 days) is fine for the existing
+// RollAtHorizon fixtures (they roll at ~29.5 DTE), but StrategyFixture (Task
+// A2) ages a cohort all the way down through a short roll horizon (e.g. 7
+// DTE), which needs the curve queryable well below 18 days without
+// extrapolating.
+[[nodiscard]] PricedSurface make_short_dated_surface(std::uint32_t uid, double S, double fwd,
+                                                     std::int64_t now_ts) {
+  CurveSurface cs;
+  std::vector<SliceContext> ctx;
+  const double Ts[] = {2.0 / 365.25, 5.0 / 365.25, 0.05, 0.10, 0.20, 0.35, 0.50, 0.75, 1.00};
+  int i = 0;
+  for (const double T : Ts) {
+    const double coherent_fwd = fwd * std::exp((kR - 0.02) * T);
+    EssviParams e{};
+    e.theta = 0.04 + 0.005 * static_cast<double>(i);
+    e.phi = 1.5 - 0.05 * static_cast<double>(i);
+    e.rho = -0.4 + 0.02 * static_cast<double>(i);
+    e.psi = 0.5;
+    e.p = 0.5;
+    e.lambda = 0.5;
+    e.T = T;
+    e.F = coherent_fwd;
+    e.expiry_id = static_cast<std::uint16_t>(i);
+    cs.push(std::make_unique<EssviCurve>(e, std::exp(-kR * T)));
+    ctx.push_back(SliceContext{T, coherent_fwd, 0.0, 0.02, 250, 7});
+    ++i;
+  }
+  PricingContext pc;
+  pc.S = S;
+  pc.r = kR;
+  pc.now_ts_ns = now_ts;
+  pc.method = AmericanMethod::AndersenLake;
+  pc.al_opts = al_fast_opts();
+  pc.uid = uid;
+  auto ps = PricedSurface::create(std::move(cs), std::move(ctx), pc);
+  EXPECT_TRUE(ps.has_value()) << (ps.has_value() ? std::string{} : ps.error().to_string());
+  return std::move(*ps);
+}
+
 // Write one surface as this date's archive; return its path (creating `dir`).
 [[nodiscard]] std::string write_one(const fs::path &dir, const std::string &date,
                                     const std::string &symbol, const PricedSurface &s,
@@ -420,6 +460,142 @@ public:
   spec.lifecycle.roll_at_T = 29.5 / 365.25;
   return spec;
 }
+
+// ── StrategyFixture (Task A2: RollAtHorizon closes on no-trade steps) ───────
+//
+// A single-leg, symbol-resolved RollAtHorizon corpus whose entry resolution
+// can be poisoned on ONE named date without touching the underlying board:
+// `poison_entry_resolution_on` re-files that date's surface under a decoy
+// symbol string. The leg is built with `symbol = "SPY"` and `uid` left at its
+// 0 default, so `expand_leg` resolves it by NAME (`MarketSnapshot::uid_of`);
+// on the poisoned date that lookup misses (NotFound -> droppable under
+// DropRenormalize), so the fresh entry is skipped. Crucially, the surface
+// itself is STILL archived that day (just under the decoy symbol), and
+// `MarketSnapshot::find(uid)` resolves by the surface's OWN embedded uid, not
+// by symbol -- so an already-open lot's uid is still findable and prices/
+// closes normally. Dropping the uid entirely (the technique
+// Strategy.CloseAtHorizonNoTradeStillClosesLotsAtTheHorizon uses) would ALSO
+// break that lot's own mark, which is the different, already-covered failure
+// in Strategy.CloseAtHorizonClosingALotWithNoSurfaceFailsClosedInTheEngine.
+class StrategyFixture {
+public:
+  // `horizon_dte`: `LifecycleSpec::roll_at_T`, in days. The fixture enters ONE
+  // `kEntryTenorDays`-DTE cohort at inception and ages it one calendar day per
+  // step; `horizon_date()` is the FIRST date its residual DTE drops strictly
+  // below `horizon_dte`.
+  [[nodiscard]] static StrategyFixture roll_at_horizon(int horizon_dte) {
+    StrategyFixture fx;
+    fx.horizon_day_ = kEntryTenorDays - horizon_dte + 1;
+    for (int d = 0; d < kNumDates; ++d) {
+      fx.dates_.push_back(fixture_date_string(d));
+    }
+    fx.dir_ = fresh_dir("strategy-fixture-roll-horizon");
+
+    LegSpec leg;
+    leg.symbol = "SPY"; // uid left 0: forces symbol-based resolution (see class doc)
+    leg.tenor.target_T = static_cast<double>(kEntryTenorDays) / 365.25;
+    leg.structure.kind = StructureSpec::Kind::Single;
+    leg.structure.single_side = Side::Call;
+    leg.strike = {StrikeSelector::Kind::AtmForward, 0.0};
+    leg.size = {SizeSpec::Kind::FixedContracts, 1.0, +1.0};
+    fx.spec_.legs.push_back(leg);
+    fx.spec_.lifecycle.holding = LifecycleSpec::Holding::RollAtHorizon;
+    fx.spec_.lifecycle.roll_at_T = static_cast<double>(horizon_dte) / 365.25;
+    // DropRenormalize + min_names=1 on a single leg: a symbol miss drops the
+    // sole leg, leaving 0 < 1 surviving names -- Unavailable, which
+    // `DeclarativeStrategy::prepare_cohort` reads as a soft no-trade.
+    fx.spec_.missing = MissingNameSpec{MissingNamePolicy::DropRenormalize, 1};
+    fx.strategy_.emplace(fx.spec_);
+    return fx;
+  }
+
+  void poison_entry_resolution_on(const std::string &date) { poisoned_.push_back(date); }
+
+  [[nodiscard]] std::string horizon_date() const {
+    return dates_.at(static_cast<std::size_t>(horizon_day_));
+  }
+
+  [[nodiscard]] const Clock &corpus() {
+    if (!clock_.has_value()) {
+      build_corpus();
+    }
+    return *clock_;
+  }
+
+  [[nodiscard]] DeclarativeStrategy &strategy() { return *strategy_; }
+
+  [[nodiscard]] static RunConfig config() { return RunConfig{}; }
+
+  // The recorded `n_open_lots` on `date`'s row (ASSERT-fails the test if
+  // `date` was never recorded).
+  [[nodiscard]] static std::size_t lots_alive_after(const std::string &date,
+                                                     const BacktestResult &r) {
+    for (std::size_t i = 0; i < r.date.size(); ++i) {
+      if (r.date[i] == date) {
+        return static_cast<std::size_t>(r.n_open_lots[i]);
+      }
+    }
+    ADD_FAILURE() << "StrategyFixture::lots_alive_after: date '" << date
+                 << "' is not a recorded row";
+    return static_cast<std::size_t>(-1);
+  }
+
+private:
+  static constexpr int kEntryTenorDays = 30;
+  static constexpr int kNumDates = 40;
+
+  // "2026-09-01" + `day_offset` days, rolling month/year forward as needed —
+  // `kNumDates` alone would overflow a single calendar month.
+  [[nodiscard]] static std::string fixture_date_string(int day_offset) {
+    constexpr int kDaysInMonth[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    int year = 2026;
+    int month = 9;
+    int day = 1 + day_offset;
+    for (;;) {
+      const bool leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+      const int dim = (month == 2 && leap) ? 29 : kDaysInMonth[month - 1];
+      if (day <= dim) {
+        break;
+      }
+      day -= dim;
+      ++month;
+      if (month > 12) {
+        month = 1;
+        ++year;
+      }
+    }
+    char buf[16];
+    std::snprintf(buf, sizeof buf, "%04d-%02d-%02d", year, month, day);
+    return buf;
+  }
+
+  void build_corpus() {
+    std::vector<std::pair<std::string, std::string>> dp;
+    dp.reserve(dates_.size());
+    for (int d = 0; d < kNumDates; ++d) {
+      const std::int64_t now = kBaseNow + static_cast<std::int64_t>(d) * kDayNs;
+      const PricedSurface s = make_short_dated_surface(kUid, 100.0, 100.0, now);
+      const std::string &date = dates_[static_cast<std::size_t>(d)];
+      const bool poisoned =
+          std::find(poisoned_.begin(), poisoned_.end(), date) != poisoned_.end();
+      // Same surface (same embedded uid=kUid), filed under a decoy symbol on a
+      // poisoned date: `uid_of("SPY")` misses that day, `find(kUid)` does not.
+      const std::string symbol = poisoned ? "SPY_DARK" : "SPY";
+      dp.emplace_back(date, write_one(dir_, date, symbol, s));
+    }
+    auto clk = Clock::from_manifest(make_manifest(dp, "SPY"));
+    ASSERT_TRUE(clk.has_value()) << clk.error().to_string();
+    clock_.emplace(std::move(*clk));
+  }
+
+  fs::path dir_;
+  std::vector<std::string> dates_;
+  std::vector<std::string> poisoned_;
+  StrategySpec spec_;
+  std::optional<DeclarativeStrategy> strategy_;
+  std::optional<Clock> clock_;
+  int horizon_day_{0};
+};
 
 void expect_result_bit_identical(const BacktestResult &a, const BacktestResult &b) {
   ASSERT_EQ(a.size(), b.size());
@@ -3533,4 +3709,23 @@ TEST(UnpricedTolerance, ErrorPolicyPathIsBitIdenticalOnCleanData) {
   EXPECT_NE(strict.pnl_settlement[2], 0.0);
   expect_result_bit_identical(strict, run(UnpricedLotPolicy::ExcludeAndReport, 1u));
   expect_result_bit_identical(strict, run(UnpricedLotPolicy::Error, 4u));
+}
+
+// ── Task A2: RollAtHorizon closes on no-trade steps ─────────────────────────
+//
+// Before this fix, RollAtHorizon's single-cohort close (`d.clear`) was only
+// ever committed alongside a successfully-resolved fresh entry. On a step
+// where the aged cohort was AT its roll horizon but entry resolution failed
+// soft (an unbuildable re-entry), the close was silently skipped and the aged
+// cohort rode on past its own horizon — precisely the ride-to-settlement
+// defect RollAtHorizon exists to avoid. The fix makes the close unconditional
+// at the horizon, exactly like CloseAtHorizon; only the re-entry stays
+// conditional on prepare_cohort succeeding.
+TEST(DeclarativeStrategy, RollAtHorizonClosesEvenWhenEntryUnbuildable) {
+  auto fx = StrategyFixture::roll_at_horizon(/*horizon_dte=*/7);
+  fx.poison_entry_resolution_on(fx.horizon_date());
+  auto r = run_backtest(fx.corpus(), fx.strategy(), fx.config());
+  ASSERT_TRUE(r.has_value()) << r.error().to_string();
+  EXPECT_EQ(0u, StrategyFixture::lots_alive_after(fx.horizon_date(), *r)); // old cohort closed
+  EXPECT_GT(r->n_steps_entry_skipped, 0u);                                // and the skip is counted
 }

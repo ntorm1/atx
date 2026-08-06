@@ -650,7 +650,15 @@ TEST(Strategy, RollAtHorizonFailureLeavesBookIdsAndLifecycleStateUnchanged) {
   EXPECT_EQ(book.lots.front().cohort, original.cohort + 1u);
 }
 
-TEST(Strategy, RollAtHorizonNoTradeLeavesBookIdsAndLifecycleStateUnchanged) {
+// Task A2: a no-trade step is NOT a no-close step for RollAtHorizon either. The
+// single live cohort is AT its horizon on step 1 (residual T == the T=0.25
+// entry leg's tenor, unchanged since `valid`/`missing` share `kBaseNow`, which
+// is < roll_at_T=0.30), so `lifecycle_decide` sets `d.clear`. Before the A2
+// fix, `d.clear` was only ever consumed on the success path, so the aged
+// cohort here rode on unchanged; the close is now unconditional at the
+// horizon, exactly like CloseAtHorizon's own no-trade close
+// (Strategy.CloseAtHorizonNoTradeStillClosesLotsAtTheHorizon).
+TEST(Strategy, RollAtHorizonNoTradeStillClosesTheAgedCohortAtItsHorizon) {
   const PricedSurface valid_surface = make_surface(kUid, 100.0, 100.0, kBaseNow);
   const PricedSurface unrelated_surface = make_surface(kUid + 1, 100.0, 100.0, kBaseNow);
   auto valid = snapshot_of({{"SPY", &valid_surface}}, "roll-no-trade-valid");
@@ -670,18 +678,20 @@ TEST(Strategy, RollAtHorizonNoTradeLeavesBookIdsAndLifecycleStateUnchanged) {
   ASSERT_EQ(book.lots.size(), 1u);
   const Lot original = book.lots.front();
   const std::uint64_t original_next_id = next_lot_id;
+  EXPECT_EQ(strategy.n_steps_entry_skipped(), 0u);
 
   const Status no_trade = strategy.on_step(*missing, 1, book, next_lot_id);
   ASSERT_TRUE(no_trade.has_value()) << no_trade.error().to_string();
-  ASSERT_EQ(book.lots.size(), 1u);
-  expect_lot_equal(book.lots.front(), original);
-  EXPECT_EQ(next_lot_id, original_next_id);
+  EXPECT_TRUE(book.lots.empty());               // A2: the horizon close must still commit
+  EXPECT_EQ(next_lot_id, original_next_id);      // no entry => no lot ids consumed
   EXPECT_TRUE(strategy.entry_risk_seeds().empty());
+  EXPECT_EQ(strategy.n_steps_entry_skipped(), 1u);
 
   ASSERT_TRUE(strategy.on_step(*valid, 1, book, next_lot_id).has_value());
   ASSERT_EQ(book.lots.size(), 1u);
   EXPECT_EQ(book.lots.front().id, original_next_id);
   EXPECT_EQ(book.lots.front().cohort, original.cohort + 1u);
+  EXPECT_EQ(strategy.n_steps_entry_skipped(), 1u); // the successful reopen does not move it
 }
 
 TEST(Strategy, CloseAtHorizonFailedReopenDoesNotCommitStagedCloses) {
