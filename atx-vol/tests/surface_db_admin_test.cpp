@@ -25,6 +25,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <optional>
 #include <span>
 #include <string>
@@ -1940,6 +1941,72 @@ TEST(TenorAudit, SkipNotesAreCappedWithAnElidedCount) {
   ASSERT_TRUE(full.has_value()) << (full ? "" : full.error().to_string());
   EXPECT_EQ(full->skip_notes.size(), std::size_t{kDates});
   EXPECT_EQ(full->n_skip_notes_elided, std::size_t{0});
+  fs::remove_all(root);
+}
+
+// ── band_audit — per-expiry scorer + spec validation ─────────────────────────
+
+TEST(BandAudit, ScoreExpiryBandCountsAndHalfSpreadStats) {
+  // Bands [9,11] [19,21] [29,31] [39,41] (mids 10/20/30/40, half-spread 1).
+  // Model: 10 (in-band), 22 (+2 half-spreads, above ask), 28.5 (-1.5, below
+  // bid), 40.5 (+0.5, in-band).
+  const double model[] = {10.0, 22.0, 28.5, 40.5};
+  const double bid[] = {9.0, 19.0, 29.0, 39.0};
+  const double ask[] = {11.0, 21.0, 31.0, 41.0};
+  const auto row = atx::vol::score_expiry_band(model, bid, ask, 0.30);
+  EXPECT_EQ(row.n, 4u);
+  EXPECT_DOUBLE_EQ(row.frac_in_band, 0.5);
+  EXPECT_DOUBLE_EQ(row.frac_above_ask, 0.25);
+  EXPECT_DOUBLE_EQ(row.avg_signed_err_half_spreads, (0.0 + 2.0 - 1.5 + 0.5) / 4.0);
+  EXPECT_DOUBLE_EQ(row.max_abs_err_half_spreads, 2.0);
+  EXPECT_FALSE(row.flagged); // 0.5 >= 0.30
+}
+
+TEST(BandAudit, ScoreExpiryBandSkipsUnscorableQuotesAndFlagsBelowFloor) {
+  // Zero-bid, crossed, and NaN-model quotes are skipped; the one scored quote
+  // sits above the ask, so the row flags at floor 0.30 — the 2020-03-18
+  // signature in miniature.
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const double model[] = {5.0, 5.0, nan, 33.0};
+  const double bid[] = {0.0, 6.0, 9.0, 29.0};
+  const double ask[] = {2.0, 5.5, 11.0, 31.0};
+  const auto row = atx::vol::score_expiry_band(model, bid, ask, 0.30);
+  EXPECT_EQ(row.n, 1u);
+  EXPECT_DOUBLE_EQ(row.frac_in_band, 0.0);
+  EXPECT_DOUBLE_EQ(row.frac_above_ask, 1.0);
+  EXPECT_TRUE(row.flagged);
+}
+
+TEST(BandAudit, EmptyExpiryIsAZeroRowNeverFlagged) {
+  const auto row = atx::vol::score_expiry_band({}, {}, {}, 0.30);
+  EXPECT_EQ(row.n, 0u);
+  EXPECT_FALSE(row.flagged);
+}
+
+TEST(BandAudit, RejectsAnUnconfiguredSymbolBeforeAnyHiveIo) {
+  // The tenor_audit stance (surface_db_admin.cpp:536-556): a typo'd --symbol
+  // must fail loud, not audit zero rows. The bogus hive_root proves no hive
+  // IO happens before the check.
+  const fs::path root = fresh_tenor_dir("band_audit_unconfigured");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value()) << (db ? "" : db.error().to_string());
+  ASSERT_TRUE(db->upsert_symbol("AAA", symbol_config_from_preset(FitPreset::Populate)).has_value());
+  atx::vol::BandAuditSpec spec;
+  spec.symbols = {"AAAX"};
+  spec.hive_root = (root / "no-such-hive").string();
+  const auto rep = atx::vol::band_audit(*db, spec);
+  ASSERT_FALSE(rep.has_value());
+  EXPECT_EQ(rep.error().code(), ErrorCode::NotFound);
+  fs::remove_all(root);
+}
+
+TEST(BandAudit, EmptyHiveRootIsInvalidArgument) {
+  const fs::path root = fresh_tenor_dir("band_audit_no_hive");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value()) << (db ? "" : db.error().to_string());
+  const auto rep = atx::vol::band_audit(*db, atx::vol::BandAuditSpec{});
+  ASSERT_FALSE(rep.has_value());
+  EXPECT_EQ(rep.error().code(), ErrorCode::InvalidArgument);
   fs::remove_all(root);
 }
 

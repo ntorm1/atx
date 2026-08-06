@@ -10,8 +10,14 @@
 #include <system_error>
 #include <utility>
 
+#include "atx/vol/chain.hpp"               // OptionChain::from_frame (band_audit)
+#include "atx/vol/corpus.hpp"              // CorpusBoard (band_audit)
+#include "atx/vol/fit_metrics.hpp"         // band_violation_stats (band_audit)
+#include "atx/vol/opra_batch.hpp"          // corpus_board_from_opra, OpraBatchEntry/Result
+#include "atx/vol/opra_hive.hpp"           // OpraHiveSpec, load_opra_hive (band_audit)
 #include "atx/vol/priced_surface.hpp"      // PricedSurface::tenor_domain (tenor_audit, Task 1/3)
 #include "atx/vol/priced_surface_view.hpp" // PricedSurfaceView (LoadedSurface::view)
+#include "atx/vol/universe.hpp"            // Chain, chain_index (band_audit)
 
 namespace atx::vol {
 
@@ -610,6 +616,157 @@ Result<TenorAuditReport> tenor_audit(const SurfaceDb &db, const TenorAuditSpec &
     }
     out.rows.insert(out.rows.end(), std::make_move_iterator(group.begin()),
                     std::make_move_iterator(group.end()));
+  }
+  return Ok(std::move(out));
+}
+
+// ── band_audit ───────────────────────────────────────────────────────────────
+
+BandAuditRow score_expiry_band(std::span<const double> model_price,
+                               std::span<const double> bid,
+                               std::span<const double> ask,
+                               double min_frac_in_band) {
+  BandAuditRow row;
+  const std::size_t n_in =
+      std::min({model_price.size(), bid.size(), ask.size()});
+  std::vector<double> m, b, a;
+  m.reserve(n_in);
+  b.reserve(n_in);
+  a.reserve(n_in);
+  double sum_signed = 0.0;
+  double max_abs = 0.0;
+  for (std::size_t i = 0; i < n_in; ++i) {
+    const double p = model_price[i];
+    if (!(bid[i] > 0.0) || !(ask[i] > bid[i]) || !std::isfinite(p)) {
+      continue; // one-sided / crossed / failed model — unscorable
+    }
+    const double mid = 0.5 * (bid[i] + ask[i]);
+    const double half = 0.5 * (ask[i] - bid[i]); // > 0 by the gate above
+    const double err_hs = (p - mid) / half;
+    sum_signed += err_hs;
+    max_abs = std::max(max_abs, std::fabs(err_hs));
+    m.push_back(p);
+    b.push_back(bid[i]);
+    a.push_back(ask[i]);
+  }
+  row.n = m.size();
+  if (row.n == 0) {
+    return row; // never flagged: nothing was measurable
+  }
+  // Counts via the shared scorer (its skip set is empty after the filter
+  // above, so `stats.n == row.n` by construction).
+  const auto stats = band_violation_stats(m, b, a);
+  if (stats.has_value() && stats->n > 0) {
+    const double n_d = static_cast<double>(stats->n);
+    row.frac_in_band =
+        static_cast<double>(stats->n - stats->n_bid_miss - stats->n_ask_miss) / n_d;
+    row.frac_above_ask = static_cast<double>(stats->n_ask_miss) / n_d;
+  }
+  row.avg_signed_err_half_spreads = sum_signed / static_cast<double>(row.n);
+  row.max_abs_err_half_spreads = max_abs;
+  row.flagged = row.frac_in_band < min_frac_in_band;
+  return row;
+}
+
+Result<BandAuditReport> band_audit(const SurfaceDb &db, const BandAuditSpec &spec) {
+  if (spec.hive_root.empty()) {
+    return Err(ErrorCode::InvalidArgument, "band_audit: hive_root is required");
+  }
+  // Symbol resolution — the tenor_audit stance, verbatim (loud NotFound on an
+  // unconfigured explicit name, BEFORE any hive IO).
+  std::vector<std::string> symbols;
+  if (!spec.symbols.empty()) {
+    const std::vector<std::string> configured = db.symbols();
+    symbols.reserve(spec.symbols.size());
+    for (const std::string &s : spec.symbols) {
+      const std::string canon = canonical_ascii(s);
+      if (std::find(configured.begin(), configured.end(), canon) == configured.end()) {
+        return Err(ErrorCode::NotFound,
+                   "band_audit: symbol '" + canon + "' is not configured in this database");
+      }
+      symbols.push_back(canon);
+    }
+  } else {
+    symbols = db.symbols();
+  }
+
+  std::vector<std::string> dates;
+  for (const DbPartitionInfo &p : db.partitions()) { // sorted ascending
+    if (!spec.date_lo.empty() && p.key < spec.date_lo) continue;
+    if (!spec.date_hi.empty() && p.key > spec.date_hi) continue;
+    dates.push_back(p.key);
+  }
+
+  BandAuditReport out;
+  const auto note = [&](std::string text) {
+    if (out.skip_notes.size() < spec.max_skip_notes) {
+      out.skip_notes.push_back(std::move(text));
+    } else {
+      ++out.n_skip_notes_elided;
+    }
+  };
+
+  for (const std::string &date : dates) {
+    OpraHiveSpec hs;
+    hs.root_dir = spec.hive_root;
+    hs.date_lo = date;
+    hs.date_hi = date;
+    hs.symbols = symbols;
+    hs.snapshot_suffix = spec.snapshot_suffix;
+    hs.r = spec.r;
+    Result<OpraBatchResult> loaded = load_opra_hive(hs);
+    if (!loaded) {
+      note(date + ": hive load failed: " + loaded.error().to_string());
+      continue;
+    }
+    for (OpraBatchEntry &entry : loaded->entries) {
+      if (!entry.panel.has_value()) {
+        note(date + " " + entry.symbol + ": " + entry.panel.error().to_string());
+        continue;
+      }
+      const Result<PricedSurface> surf = db.load_surface(date, entry.symbol);
+      if (!surf) {
+        note(date + " " + entry.symbol + ": surface: " + surf.error().to_string());
+        continue;
+      }
+      CorpusBoard board =
+          corpus_board_from_opra(date, entry.symbol, std::move(*entry.panel));
+      auto chain = OptionChain::from_frame(board.frame, board.env);
+      if (!chain) {
+        note(date + " " + entry.symbol + ": chain: " + chain.error().to_string());
+        continue;
+      }
+      for (const Chain &c : chain->underlying().chains) {
+        std::vector<double> model, cb, ca;
+        const std::size_t n_str = c.strikes.size();
+        model.reserve(2 * n_str);
+        cb.reserve(2 * n_str);
+        ca.reserve(2 * n_str);
+        for (std::size_t i = 0; i < n_str; ++i) {
+          for (const Side side : {Side::Call, Side::Put}) {
+            const std::size_t idx = chain_index(static_cast<std::uint16_t>(i), side);
+            const double qb = c.bids[idx];
+            const double qa = c.asks[idx];
+            if (!(qb > 0.0) || !(qa > qb)) {
+              continue; // unscorable quote — keep spans aligned by skipping here
+            }
+            const Result<double> fv = surf->fair_value(c.strikes[i], c.T, side);
+            model.push_back(fv.has_value() ? *fv
+                                           : std::numeric_limits<double>::quiet_NaN());
+            cb.push_back(qb);
+            ca.push_back(qa);
+          }
+        }
+        BandAuditRow row = score_expiry_band(model, cb, ca, spec.min_frac_in_band);
+        row.date = date;
+        row.symbol = entry.symbol;
+        row.T = c.T;
+        if (row.flagged) {
+          ++out.n_flagged;
+        }
+        out.rows.push_back(std::move(row));
+      }
+    }
   }
   return Ok(std::move(out));
 }

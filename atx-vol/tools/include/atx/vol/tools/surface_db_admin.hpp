@@ -148,6 +148,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -828,5 +829,64 @@ struct TenorAuditReport {
 // somewhere to put an error without changing the signature.
 [[nodiscard]] Result<TenorAuditReport> tenor_audit(const SurfaceDb &db,
                                                     const TenorAuditSpec &spec = {});
+
+// ── band_audit — full-chain quote-fidelity inspector ─────────────────────────
+// AFTER-THE-FACT counterpart of the fit's own parity diagnostics, measured
+// against the FULL LISTED CHAIN instead of the fit's admitted rows: for each
+// (date, symbol) cell, load the stored surface AND the OPRA hive chain at the
+// build snapshot, reprice every two-sided listed quote through
+// PricedSurface::fair_value, and report per-expiry band statistics. This is
+// the detector for the 2020-03-18 / 2025-04-10 defect class (model above the
+// ask of the whole listed belly/wing) and the before/after instrument for the
+// fix validation. AN AUDIT, NOT A GATE (same stance as tenor_audit): every
+// row prints; the exit-code opt-in lives on the CLI.
+
+struct BandAuditRow {
+  std::string date{};
+  std::string symbol{};
+  double T{0.0};                           // expiry year-fraction at the snapshot
+  std::size_t n{0};                        // scored quotes (two-sided, finite model)
+  double frac_in_band{0.0};                // bid <= model <= ask
+  double frac_above_ask{0.0};              // model > ask (the spike signature)
+  double avg_signed_err_half_spreads{0.0}; // mean (model - mid) / half-spread
+  double max_abs_err_half_spreads{0.0};    // max |model - mid| / half-spread
+  bool flagged{false};                     // n > 0 && frac_in_band < floor
+};
+
+struct BandAuditSpec {
+  std::vector<std::string> symbols{};      // empty = every manifest symbol
+  std::string hive_root{};                 // REQUIRED: OPRA hive v2 root
+  std::string date_lo{};                   // empty = first partition key
+  std::string date_hi{};                   // empty = last partition key
+  std::string snapshot_suffix{"T19:55:00Z"};
+  double r{0.0};                           // flat fallback rate for the chain env
+  double min_frac_in_band{0.30};           // per-expiry flag floor
+  std::size_t max_skip_notes{kSurfaceDbVerifyMaxFailures};
+};
+
+struct BandAuditReport {
+  // Date-major (the hive loads one file per date), symbol-major within a
+  // date, ascending T within a cell.
+  std::vector<BandAuditRow> rows{};
+  std::size_t n_flagged{0};
+  std::vector<std::string> skip_notes{};   // capped like TenorAuditReport
+  std::size_t n_skip_notes_elided{0};
+};
+
+// Pure per-expiry scorer (unit-tested): a quote is scored when bid > 0,
+// ask > bid and model_price is finite; counts via band_violation_stats
+// (fit_metrics.hpp:192-195, which skips the same rows), half-spread stats
+// over the same scored subset. date/symbol/T are left default for the caller.
+[[nodiscard]] BandAuditRow score_expiry_band(std::span<const double> model_price,
+                                             std::span<const double> bid,
+                                             std::span<const double> ask,
+                                             double min_frac_in_band);
+
+// Err: InvalidArgument for an empty hive_root; NotFound when spec.symbols
+// names an unconfigured symbol (the tenor_audit stance — checked BEFORE any
+// hive IO so a typo fails loud without a hive present). A cell that fails to
+// load (surface or chain) is a skip note, never fatal.
+[[nodiscard]] Result<BandAuditReport> band_audit(const SurfaceDb &db,
+                                                 const BandAuditSpec &spec);
 
 } // namespace atx::vol
