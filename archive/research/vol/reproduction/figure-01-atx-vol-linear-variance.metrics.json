@@ -1,0 +1,41 @@
+{
+  "fit": {
+    "n_curve_points": 666,
+    "n_quotes": 207,
+    "quote_max_abs_iv": 0.0,
+    "quote_rmse_iv": 0.0
+  },
+  "inputs": {
+    "repro_path": "C:\\atx-data\\spx-wilmott-2019-08-26\\fit_slice\\spx_wilmott_repro.csv",
+    "repro_sha256": "d045099be68f9ebda45b6630cb76d3050a5c04f2b181bb736d3e9bea3783a7f1",
+    "vendor_path": "atx-vol\\tests\\data\\spx_wilmott_2019\\figure1_fit.tsv",
+    "vendor_sha256": "f3daf32595086ac5a2232bc71ac06ebfd0b9166958489ee8b22e5627ba130ce2"
+  },
+  "meta": {
+    "F": "2869.5564483741",
+    "T": "0.0677618070",
+    "exercise": "European",
+    "expiry": "2019-09-20",
+    "observations": "207",
+    "pcp_mad": "0.0288124850",
+    "pcp_pairs": "13",
+    "r": "0.0209000000",
+    "settlement": "AM",
+    "sigma0": "0.1851000349",
+    "snapshot": "2019-08-26T19:30:00Z"
+  },
+  "schema_version": 1,
+  "selected_family": "linear-variance",
+  "vendor_comparison": {
+    "common_domain_ns": [
+      -10.002540215,
+      2.792705113
+    ],
+    "max_abs_iv": 0.03549425740000001,
+    "mean_signed_iv": -0.0021700671343462016,
+    "n_common": 1079,
+    "p50_abs_iv": 0.0005447731349153551,
+    "p95_abs_iv": 0.022816884630000013,
+    "rmse_iv": 0.008250886739105597
+  }
+}

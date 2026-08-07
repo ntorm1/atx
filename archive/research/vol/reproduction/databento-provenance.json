@@ -1,0 +1,161 @@
+{
+  "created_utc": "2026-08-01T19:25:49.0581701Z",
+  "purpose": "Reproduce Vola Dynamics Figure 1 (SPX, 2019-08-26 15:30:00 ET, first monthly expiry)",
+  "provider": "Databento",
+  "client": {
+    "library": "databento-python",
+    "version": "0.79.0",
+    "credential_source": "DATABENTO_API_KEY in C:\\atx\\.env",
+    "credential_value_recorded": false
+  },
+  "quote_request": {
+    "dataset": "OPRA.PILLAR",
+    "schema": "cbbo-1m",
+    "symbols": ["SPX.OPT"],
+    "stype_in": "parent",
+    "start_inclusive_utc": "2019-08-26T19:30:00Z",
+    "end_exclusive_utc": "2019-08-26T19:31:00Z",
+    "source_target_time": "2019-08-26T15:30:00-04:00",
+    "metadata_preflight": {
+      "reported_cost_usd": 0.005665421486,
+      "reported_record_count": 38020,
+      "reported_billable_bytes": 3041600,
+      "note": "Databento documents that sub-10-minute metadata queries can over-report. These values equal a 10-minute window."
+    },
+    "actual_stream": {
+      "cbbo_records": 3802,
+      "dbn_record_size_bytes": 80,
+      "uncompressed_schema_bytes": 304160,
+      "compressed_dbn_bytes": 110016,
+      "pro_rata_cost_usd": 0.0005665421486,
+      "cost_note": "Pro-rata from the account-specific 10-minute metadata estimate; not an invoice or posted-usage statement."
+    }
+  },
+  "definition_request": {
+    "dataset": "OPRA.PILLAR",
+    "schema": "definition",
+    "symbols": ["SPX.OPT"],
+    "stype_in": "parent",
+    "start_inclusive_utc": "2019-08-26T00:00:00Z",
+    "end_exclusive_utc": "2019-08-27T00:00:00Z",
+    "metadata_preflight": {
+      "reported_cost_usd": 0.0,
+      "reported_record_count": 3802,
+      "reported_billable_bytes": 1368720
+    },
+    "actual_stream": {
+      "definition_records": 3802,
+      "dbn_record_size_bytes": 360,
+      "uncompressed_schema_bytes": 1368720,
+      "compressed_dbn_bytes": 66297
+    }
+  },
+  "first_monthly_filter": {
+    "root": "SPX",
+    "expiry": "2019-09-20",
+    "quote_predicate": "symbol[0:6].strip() == 'SPX' and symbol[6:12] == '190920'",
+    "definition_predicate": "raw_symbol[0:6].strip() == 'SPX' and expiration UTC date == '2019-09-20'",
+    "quote_records": 592,
+    "definition_records": 592,
+    "unique_quote_instrument_ids": 592,
+    "unique_definition_instrument_ids": 592,
+    "joined_instrument_ids": 592,
+    "calls": 296,
+    "puts": 296,
+    "two_sided_quotes": 527,
+    "strike_min": 1000.0,
+    "strike_max": 4200.0,
+    "strike_fixed_point_scale": 1000000000
+  },
+  "definition_semantics_observed": {
+    "instrument_class_counts": {
+      "C": 296,
+      "P": 296
+    },
+    "security_type": "OPT",
+    "asset": "SPX",
+    "underlying": "SPX",
+    "exchange": "OPRA",
+    "cfi": "",
+    "expiration_raw_ns": 1568937600000000000,
+    "expiration_utc": "2019-09-20T00:00:00Z",
+    "expiration_precision": "date-only",
+    "settl_price_type": 255,
+    "contract_multiplier": 2147483647,
+    "original_contract_size": 2147483647,
+    "maturity_year": 65535,
+    "maturity_month": 255,
+    "maturity_day": 255,
+    "maturity_week": 255,
+    "conclusion": "This historical definition snapshot does not encode exercise style or AM/PM settlement. Apply an authoritative product/root policy: standard SPX monthly is European, cash-settled, AM-settled."
+  },
+  "independent_sanity_check": {
+    "valuation_time": "2019-08-26T15:30:00-04:00",
+    "settlement_time": "2019-09-20T09:30:00-04:00",
+    "act_365_25_year_fraction": 0.06776180698151951,
+    "figure_title_year_fraction_rounded": 0.0678,
+    "rate_source": "U.S. Treasury daily par yield curve for 2019-08-26",
+    "treasury_1m_percent": 2.09,
+    "treasury_2m_percent": 2.03,
+    "treasury_3m_percent": 2.01,
+    "continuous_rate_proxy": 0.0209,
+    "put_call_parity_forward": 2869.556448374121,
+    "put_call_parity_pair_count": 13,
+    "put_call_parity_pair_mad_dollars": 0.0288125,
+    "approx_atm_forward_vol": 0.1860302,
+    "normalized_strike_definition": "z = log(K/F) / (sigma0 * sqrt(T))",
+    "sample_otm_black76_midpoint_ivs": [
+      {"z": -7.98, "iv": 0.48846},
+      {"z": -5.96, "iv": 0.41354},
+      {"z": -3.99, "iv": 0.33592},
+      {"z": -2.00, "iv": 0.26049},
+      {"z": -0.99, "iv": 0.22975},
+      {"z": 0.00, "iv": 0.18490},
+      {"z": 0.50, "iv": 0.15179},
+      {"z": 0.99, "iv": 0.12777},
+      {"z": 1.49, "iv": 0.12721},
+      {"z": 1.99, "iv": 0.13850}
+    ],
+    "conclusion": "The real-data smile and AM-settled maturity clock independently reproduce the market points and T=0.0678 shown in Vola Dynamics Figure 1."
+  },
+  "authoritative_references": [
+    "https://databento.com/docs/schemas-and-data-formats/cbbo#instrument-definitions",
+    "https://databento.com/datasets/OPRA.PILLAR",
+    "https://www.cboe.com/tradable-products/sp-500/spx-options",
+    "https://www.cboe.com/tradable-products/sp-500/spx-options/spx-specifications/",
+    "https://home.treasury.gov/treasury-daily-interest-rate-xml-feed",
+    "https://voladynamics.com/pdf/options_CU_Apr2016_final.pdf"
+  ],
+  "files": [
+    {
+      "path": "opra/_dbn/2019-08-26_1930_chunk000_66ed2c18299a.dbn.zst",
+      "bytes": 110016,
+      "sha256": "f1be54c073df5012917a9a0a7395c4996b91aff61cb7e3f2ea093e18c998c024",
+      "role": "Raw paid CBBO-1m response, all SPX monthly expiries"
+    },
+    {
+      "path": "opra/SPX/2019-08-26.parquet",
+      "bytes": 90208,
+      "sha256": "cbea81eaed4dc2707f6c2e8df46d0c2d72eb13e6c7eebb344c5bbfa019da362d",
+      "role": "Repository puller output, all SPX monthly expiries"
+    },
+    {
+      "path": "definitions/OPRA.PILLAR_definition_SPX.OPT_2019-08-26.dbn.zst",
+      "bytes": 66297,
+      "sha256": "c61d43b157eb80fb3654d04a1dcd0204c432783d53d3f86cd3216b1492e2e40d",
+      "role": "Raw point-in-time definition response"
+    },
+    {
+      "path": "definitions/SPX_2019-09-20_definitions.parquet",
+      "bytes": 47316,
+      "sha256": "dc1ffb0f3c4eabbaa051b38e578a05fd96d78734b90d5869aefc3f7d27b0bbf8",
+      "role": "Filtered first-monthly definitions"
+    },
+    {
+      "path": "fit_slice/SPX_2019-08-26T1930Z_2019-09-20.parquet",
+      "bytes": 16182,
+      "sha256": "cdba6bd962faff5371d9d996d265e4ec3413b4953c053ec04a956701d9066574",
+      "role": "Strict-ID joined input slice for atx-vol"
+    }
+  ]
+}

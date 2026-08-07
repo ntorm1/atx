@@ -1,0 +1,162 @@
+{
+  "source_url": "https://voladynamics.com/pdf/VolaDynamics_WilmottProfile_Jan2020.pdf",
+  "source_file": "VolaDynamics_WilmottProfile_Jan2020.pdf",
+  "sha256": "91d109bd95a2107cb90131864854063dc0025e3bf61813752d75654d30b987e5",
+  "page_count": 4,
+  "text_file": "VolaDynamics_WilmottProfile_Jan2020_text.txt",
+  "page_renders": [
+    "images/pages/page-01.png",
+    "images/pages/page-02.png",
+    "images/pages/page-03.png",
+    "images/pages/page-04.png"
+  ],
+  "embedded_images": [
+    {
+      "file": "images/embedded/page-03-image-01-xref-24.png",
+      "page": 3,
+      "xref": 24,
+      "width": 1050,
+      "height": 892,
+      "colorspace": 4,
+      "bits_per_component": 8,
+      "extension": "png"
+    },
+    {
+      "file": "images/embedded/page-03-image-02-xref-25.png",
+      "page": 3,
+      "xref": 25,
+      "width": 133,
+      "height": 1019,
+      "colorspace": 4,
+      "bits_per_component": 8,
+      "extension": "png"
+    },
+    {
+      "file": "images/embedded/page-03-image-03-xref-26.png",
+      "page": 3,
+      "xref": 26,
+      "width": 1050,
+      "height": 129,
+      "colorspace": 4,
+      "bits_per_component": 8,
+      "extension": "png"
+    },
+    {
+      "file": "images/embedded/page-03-image-04-xref-27.png",
+      "page": 3,
+      "xref": 27,
+      "width": 960,
+      "height": 1021,
+      "colorspace": 4,
+      "bits_per_component": 8,
+      "extension": "png"
+    },
+    {
+      "file": "images/embedded/page-03-image-05-xref-28.png",
+      "page": 3,
+      "xref": 28,
+      "width": 242,
+      "height": 1021,
+      "colorspace": 4,
+      "bits_per_component": 8,
+      "extension": "png"
+    },
+    {
+      "file": "images/embedded/page-03-image-06-xref-29.png",
+      "page": 3,
+      "xref": 29,
+      "width": 13,
+      "height": 976,
+      "colorspace": 1,
+      "bits_per_component": 8,
+      "extension": "png"
+    },
+    {
+      "file": "images/embedded/page-03-image-07-xref-30.png",
+      "page": 3,
+      "xref": 30,
+      "width": 1070,
+      "height": 898,
+      "colorspace": 4,
+      "bits_per_component": 8,
+      "extension": "png"
+    },
+    {
+      "file": "images/embedded/page-03-image-08-xref-31.png",
+      "page": 3,
+      "xref": 31,
+      "width": 136,
+      "height": 1026,
+      "colorspace": 4,
+      "bits_per_component": 8,
+      "extension": "png"
+    },
+    {
+      "file": "images/embedded/page-03-image-09-xref-32.png",
+      "page": 3,
+      "xref": 32,
+      "width": 1070,
+      "height": 130,
+      "colorspace": 4,
+      "bits_per_component": 8,
+      "extension": "png"
+    },
+    {
+      "file": "images/embedded/page-04-image-01-xref-35.png",
+      "page": 4,
+      "xref": 35,
+      "width": 1170,
+      "height": 895,
+      "colorspace": 4,
+      "bits_per_component": 8,
+      "extension": "png"
+    },
+    {
+      "file": "images/embedded/page-04-image-02-xref-36.png",
+      "page": 4,
+      "xref": 36,
+      "width": 1170,
+      "height": 130,
+      "colorspace": 4,
+      "bits_per_component": 8,
+      "extension": "png"
+    }
+  ],
+  "logical_figures": [
+    {
+      "file": "images/figures/figure-01.png",
+      "page": 3,
+      "source_xrefs": [
+        24,
+        25,
+        26
+      ]
+    },
+    {
+      "file": "images/figures/figure-02.png",
+      "page": 3,
+      "source_xrefs": [
+        27,
+        28,
+        29
+      ]
+    },
+    {
+      "file": "images/figures/figure-03.png",
+      "page": 3,
+      "source_xrefs": [
+        30,
+        31,
+        32
+      ]
+    },
+    {
+      "file": "images/figures/figure-04.png",
+      "page": 4,
+      "source_xrefs": [
+        35,
+        36
+      ]
+    }
+  ]
+}

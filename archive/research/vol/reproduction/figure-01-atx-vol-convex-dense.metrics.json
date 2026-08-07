@@ -1,0 +1,61 @@
+{
+  "fit": {
+    "n_curve_points": 644,
+    "n_quotes": 237,
+    "quote_max_abs_iv": 0.0270623661,
+    "quote_rmse_iv": 0.0030823448204582923
+  },
+  "inputs": {
+    "repro_path": "C:\\atx\\archive\\research\\vol\\reproduction\\figure-01-atx-vol.csv",
+    "repro_sha256": "81f395474c4f72227cbfdfb4b50d6aab95545aec5ae32b6287587328b98bdcdf",
+    "vendor_path": "atx-vol\\tests\\data\\spx_wilmott_2019\\figure1_fit.tsv",
+    "vendor_sha256": "f3daf32595086ac5a2232bc71ac06ebfd0b9166958489ee8b22e5627ba130ce2"
+  },
+  "meta": {
+    "F": "2869.5564483741",
+    "T": "0.0677618070",
+    "exercise": "European",
+    "expiry": "2019-09-20",
+    "observations": "237",
+    "pcp_mad": "0.0288124850",
+    "pcp_pairs": "13",
+    "r": "0.0209000000",
+    "recommended_family": "convex-dense",
+    "settlement": "AM",
+    "sigma0": "0.1851000349",
+    "snapshot": "2019-08-26T19:30:00Z",
+    "strict_observations": "207",
+    "visual_observations": "237",
+    "visual_outside_domain": "59",
+    "visual_rejected": "0",
+    "visual_z_max": "2.1970859109",
+    "visual_z_min": "-9.6790418108",
+    "visual_zero_bid": "6"
+  },
+  "schema_version": 1,
+  "selected_family": "convex-dense",
+  "vendor_comparison": {
+    "common_domain_ns": [
+      -9.990670785,
+      2.852052262
+    ],
+    "max_abs_iv": 0.030886160194597,
+    "mean_signed_iv": 0.0015331993638047832,
+    "n_common": 1083,
+    "p50_abs_iv": 0.0006177161817016164,
+    "p95_abs_iv": 0.01799231310177213,
+    "rmse_iv": 0.006489095840977403,
+    "supported_domain": {
+      "common_domain_ns": [
+        -9.67019618,
+        2.187364193
+      ],
+      "max_abs_iv": 0.02406824953929909,
+      "mean_signed_iv": 0.001302020590899117,
+      "n_common": 1000,
+      "p50_abs_iv": 0.0005639845996899817,
+      "p95_abs_iv": 0.012826528450400823,
+      "rmse_iv": 0.004703262789130366
+    }
+  }
+}

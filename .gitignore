@@ -22,6 +22,10 @@ cmake-build-*/
 /.claire/
 # Worktree-pool lease marker (scripts/lease-worktree.ps1) — per-tree, never committed
 .atx-lease
+.ruff_cache/
+.superpowers/
+artifacts/
+
 
 # Downloaded market data (DBN/parquet dumps from examples) — root-level only,
 # so it never shadows source dirs like atx-engine/{include/atx/engine,src}/data/.
