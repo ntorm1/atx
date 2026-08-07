@@ -1140,6 +1140,18 @@ struct BacktestResult {
   // overload, which has no strategy to ask.
   std::uint64_t n_steps_entry_skipped{0};
 
+  // A4 (backtest-production-lakehouse sprint, target 1.1.0): a RESULT SCALAR,
+  // not a row-parallel series — a run-total count of deferred-lot settlements
+  // that could not use the expiry-date spot recorded at deferral time (see
+  // `DeferredSettlementBook` in backtest.cpp) and substituted a later,
+  // post-expiry spot instead. The substitution still books cash/explain at
+  // that stale spot — this counter only NAMES it rather than letting it drift
+  // silently. Same append-only, non-wire treatment as `n_steps_entry_skipped`
+  // above: absent from `kBacktestSeriesColumns` and RunArchive serialization,
+  // so `ra_schema_hash()` and every TSV/CSV header and golden are untouched.
+  // Always 0 under `UnpricedLotPolicy::Error`, which never defers.
+  std::uint64_t n_settlements_at_stale_spot{0};
+
   [[nodiscard]] std::size_t size() const noexcept { return date.size(); }
 
   // ── Column-shape invariant (plan item 4.6) ────────────────────────────────

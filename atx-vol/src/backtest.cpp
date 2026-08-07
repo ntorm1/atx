@@ -1305,6 +1305,10 @@ struct StepPnl {
   // Intrinsic proceeds of the deferred lots that settled THIS step, for the cash
   // ledger. The fixed-book overload has no cash ledger and ignores it.
   double deferred_settle_cash{0.0};
+  // A4: deferred settlements THIS STEP that had no recorded expiry-date spot
+  // (the truly-unobservable case) and substituted a later, post-expiry spot
+  // instead. Summed into `BacktestResult::n_settlements_at_stale_spot`.
+  std::uint32_t n_stale_spot_settlements{0};
 };
 
 // WS-F F1 tolerance extension (SP100 task 2). One lot whose EXACT expiry step had
@@ -1319,10 +1323,21 @@ struct StepPnl {
 // the eventual settlement contributes NOTHING to the P&L explain: that step's move
 // is the excluded, never-recovered P&L this policy already documents. The cash
 // ledger still books the intrinsic either way.
+// A4: the underlying spot recorded AT THE DEFERRAL STEP (`base`'s spot, when
+// the base board was present) -- the settlement economics this lot is owed,
+// as close to its own expiry date as the data permits. Used at resolution
+// INSTEAD OF whatever later step's board happens to reappear next, which may
+// have drifted arbitrarily far from the true expiry-date value. Absent
+// (`expiry_spot_known == false`) exactly when `base_mark_known` is false too
+// -- both come from the same `bs == nullptr` read -- which is the
+// truly-unobservable case: resolution then falls back to whatever spot IS
+// available and counts the substitution (`n_settlements_at_stale_spot`).
 struct DeferredSettlement {
   Lot lot{};
   double base_mark{0.0};
   bool base_mark_known{false};
+  double expiry_spot{0.0};
+  bool expiry_spot_known{false};
 };
 
 // The deferral book, held ACROSS steps by each run loop. Entries are kept sorted
@@ -1339,12 +1354,14 @@ public:
     return {entries_.data(), entries_.size()};
   }
 
-  void insert(const Lot &lot, double base_mark, bool base_mark_known) {
+  void insert(const Lot &lot, double base_mark, bool base_mark_known, double expiry_spot,
+             bool expiry_spot_known) {
     const auto at = std::lower_bound(entries_.begin(), entries_.end(), lot.id,
                                      [](const DeferredSettlement &d, std::uint64_t id) {
                                        return d.lot.id < id;
                                      });
-    entries_.insert(at, DeferredSettlement{lot, base_mark, base_mark_known});
+    entries_.insert(
+        at, DeferredSettlement{lot, base_mark, base_mark_known, expiry_spot, expiry_spot_known});
   }
 
   // Scratch for the survivors of one resolution pass; `commit` swaps it in, which
@@ -1378,13 +1395,14 @@ compute_step(const MarketSnapshot &base, const MarketSnapshot &shifted,
   double settlement = 0.0;
   std::uint32_t n_deferred = 0;
   double deferred_settle_cash = 0.0;
+  std::uint32_t n_stale_spot_settlements = 0;
 
   // Deferred settlements carried in from EARLIER steps, walked in LOT-ID order: a
-  // lot settles at intrinsic against THIS step's shifted spot the first time its
-  // board is back, and is otherwise counted and carried forward untouched. Runs
-  // BEFORE the partition loop so a lot deferred on this very step is counted once,
-  // here on the step it settles or waits — never twice on the step it deferred.
-  // On a clean step the book is empty and nothing below changes, bit-for-bit.
+  // lot settles at intrinsic the first time its board is back, and is otherwise
+  // counted and carried forward untouched. Runs BEFORE the partition loop so a
+  // lot deferred on this very step is counted once, here on the step it settles
+  // or waits — never twice on the step it deferred. On a clean step the book is
+  // empty and nothing below changes, bit-for-bit.
   if (deferrals != nullptr && !deferrals->empty()) {
     std::vector<DeferredSettlement> &kept = deferrals->retain_scratch();
     kept.clear();
@@ -1395,14 +1413,34 @@ compute_step(const MarketSnapshot &base, const MarketSnapshot &shifted,
         kept.push_back(pending); // still no board: stays open, counted, unchanged
         continue;
       }
-      const double S = ss->pricing().S;
+      // A4: settle against the spot recorded AT DEFERRAL TIME (the session
+      // immediately preceding the missing expiry board) rather than THIS
+      // (possibly much later, drifted) resolution step's own spot -- that
+      // recorded value is the true expiry-date economics this lot is owed.
+      // Only when no spot was ever recorded (the truly-unobservable case:
+      // the session before expiry was ALSO absent at deferral time) does
+      // resolution fall back to this step's spot, and the substitution is
+      // named rather than left to drift silently.
+      double S;
+      if (pending.expiry_spot_known) {
+        S = pending.expiry_spot;
+      } else {
+        S = ss->pricing().S;
+        ++n_stale_spot_settlements;
+      }
       const double K = pending.lot.contract.K;
       const double intrinsic =
           (pending.lot.contract.side == Side::Call) ? std::max(0.0, S - K) : std::max(0.0, K - S);
       const double weight = pending.lot.qty * pending.lot.multiplier;
-      if (pending.base_mark_known) {
-        settlement += weight * (intrinsic - pending.base_mark);
-      }
+      // A4: the lot's carried mark was already REMOVED from the explain lane at
+      // deferral time (see the partition loop below), matching the moment its
+      // PV left the priced book; the full intrinsic proceeds are recognized
+      // here, unconditionally, matching the moment cash receives them. The
+      // prior behavior left NAV silently short of the cash ledger's full
+      // intrinsic booking whenever base_mark_known was false (it recognized
+      // NEITHER the removal NOR the proceeds), a permanent NAV-vs-liquidation
+      // divergence.
+      settlement += weight * intrinsic;
       deferred_settle_cash += weight * intrinsic;
     }
     deferrals->commit();
@@ -1437,17 +1475,36 @@ compute_step(const MarketSnapshot &base, const MarketSnapshot &shifted,
           // ledger books the intrinsic off this same (present) board.
           continue;
         }
-        // No settlement spot at all. Freeze the base mark when the base board is
-        // there and carry the lot until some later step's board returns.
+        // No settlement spot at all. Freeze the base mark AND the base spot when
+        // the base board is there, and carry the lot until some later step's
+        // board returns. The frozen spot (A4) is this lot's expiry-date
+        // economics as far as the data permits — the session immediately
+        // preceding the missing expiry board — and is what resolution settles
+        // against instead of whatever later spot the board reappears at.
         double frozen_mark = 0.0;
         bool frozen_known = false;
+        double frozen_spot = 0.0;
+        bool spot_known = false;
         if (bs != nullptr) {
+          frozen_spot = bs->pricing().S;
+          spot_known = true;
           const double T_base = residual_T(lot.expiry_ts_ns, base.ts_ns());
           const Result<double> mark =
               bs->fair_value(lot.contract.K, T_base, lot.contract.side, opts.query_execution);
           if (mark) {
             frozen_mark = *mark;
             frozen_known = true;
+            // A4: this lot is about to leave `lots` (its expiry has arrived and
+            // its settlement board is absent) — the caller erases it from the
+            // book right after this step — so the book's priced PV is about to
+            // DROP this mark's worth. Remove it from the explain lane in the
+            // SAME step, at the SAME value book_greeks was already carrying for
+            // it on the prior row, so NAV sheds exactly what the book's PV just
+            // shed instead of silently staying too high relative to it. The
+            // full intrinsic proceeds are recognized separately, when the lot
+            // finally settles, in the deferred-resolution loop above — which is
+            // also where cash receives them.
+            settlement -= lot.qty * lot.multiplier * frozen_mark;
           }
           // A present board that fails to SOLVE is a numeric failure, not missing
           // market data, and the non-deferred settlement path returns that Err under
@@ -1456,7 +1513,7 @@ compute_step(const MarketSnapshot &base, const MarketSnapshot &shifted,
           // by a solve on a lot it can no longer value anyway. The two cases are
           // indistinguishable downstream — the count fires either way.
         }
-        deferrals->insert(lot, frozen_mark, frozen_known);
+        deferrals->insert(lot, frozen_mark, frozen_known, frozen_spot, spot_known);
         continue;
       }
       if (expiring != nullptr) {
@@ -1636,7 +1693,8 @@ compute_step(const MarketSnapshot &base, const MarketSnapshot &shifted,
   if (target_marks != nullptr) {
     ATX_TRY_VOID(target_marks->seal());
   }
-  return Ok(StepPnl{t, settlement, n_unpriced, first_unpriced_uid, n_deferred, deferred_settle_cash});
+  return Ok(StepPnl{t, settlement, n_unpriced, first_unpriced_uid, n_deferred, deferred_settle_cash,
+                    n_stale_spot_settlements});
 }
 
 // The Error-policy message for a step that has `n_unpriced` held lots with no
@@ -2515,6 +2573,9 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
   DeferredSettlementBook deferrals;
   DeferredSettlementBook *const deferrals_ptr =
       cfg.unpriced == UnpricedLotPolicy::ExcludeAndReport ? &deferrals : nullptr;
+  // A4: run-total of resolutions that substituted a stale (post-expiry) spot
+  // because no expiry-date spot was ever recorded at deferral time.
+  std::uint64_t n_stale_spot_total = 0;
 
   for (std::size_t i = 1; i < refs.size(); ++i) {
     // Plan 5.5 safe point: the TOP of the step, before this step's snapshot load
@@ -2559,6 +2620,7 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
     }
     const PnlTotals &t = step->totals;
     const double settlement = step->settlement;
+    n_stale_spot_total += step->n_stale_spot_settlements;
 
     const double step_total = t.pnl_total + settlement;
     nav += step_total;                        // cumulative every step, regardless of recording
@@ -2608,6 +2670,10 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
       b_theta = b_rho = b_charm = b_unexpl = b_settle = b_nunpriced = 0.0;
     }
   }
+
+  // A4: one scalar copy, once, at the end of the run — see the strategy
+  // overload's identical placement for `n_steps_entry_skipped`.
+  out.n_settlements_at_stale_spot = n_stale_spot_total;
 
   // Plan 4.6: the engine may not emit a skewed column set. Pure read, so this
   // cannot change a value the run produced.
@@ -3127,6 +3193,9 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
   DeferredSettlementBook deferrals;
   DeferredSettlementBook *const deferrals_ptr =
       cfg.unpriced == UnpricedLotPolicy::ExcludeAndReport ? &deferrals : nullptr;
+  // A4: run-total of resolutions that substituted a stale (post-expiry) spot
+  // because no expiry-date spot was ever recorded at deferral time.
+  std::uint64_t n_stale_spot_total = 0;
 
   for (std::size_t i = 1; i < refs.size(); ++i) {
     // Plan 5.5 safe point: the TOP of the step, before this step's snapshot load
@@ -3172,6 +3241,7 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
     }
     const PnlTotals &t = step->totals;
     const double settlement = step->settlement;
+    n_stale_spot_total += step->n_stale_spot_settlements;
 
     // 2. Shares PnL + financing over the step, from the ledger held over the step.
     const double dt =
@@ -3412,6 +3482,8 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
   // A2: one scalar copy, once, at the end of the run — not a per-step column,
   // so it does not belong in the `push_row`/`record_signals` loop above.
   out.n_steps_entry_skipped = strat.n_steps_entry_skipped();
+  // A4: same treatment for the deferred-settlement stale-spot run-total.
+  out.n_settlements_at_stale_spot = n_stale_spot_total;
 
   // Plan 4.6: the engine may not emit a skewed column set. Pure read, so this
   // cannot change a value the run produced.
