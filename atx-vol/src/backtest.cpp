@@ -300,6 +300,32 @@ using detail::StepMarkMemo;
   }
 }
 
+[[nodiscard]] bool valid_clock_gap_policy(ClockGapPolicy policy) noexcept {
+  switch (policy) {
+  case ClockGapPolicy::Accept:
+  case ClockGapPolicy::Error:
+    return true;
+  default:
+    return false;
+  }
+}
+
+// A6: the `ClockGapPolicy::Error` refusal message. Names every dropped date
+// (not just the count) so a caller does not have to re-derive which dates the
+// manifest failed to fit from a bare number.
+[[nodiscard]] std::string clock_gap_error_message(std::span<const std::string> dropped) {
+  std::string msg = "run_backtest: " + std::to_string(dropped.size()) +
+                     " clock date(s) had no Ok fit and were dropped by Clock::from_manifest (";
+  for (std::size_t i = 0; i < dropped.size(); ++i) {
+    if (i != 0) {
+      msg += ", ";
+    }
+    msg += dropped[i];
+  }
+  msg += "); refusing under RunConfig::clock_gaps == ClockGapPolicy::Error";
+  return msg;
+}
+
 [[nodiscard]] Status validate_run_config(const RunConfig &cfg) {
   if (cfg.record_every_n == 0u) {
     return Err(ErrorCode::InvalidArgument, "run_backtest: record_every_n must be positive");
@@ -309,7 +335,8 @@ using detail::StepMarkMemo;
       !valid_query_execution(cfg.price.query_execution) ||
       !valid_resolved_price_isa(cfg.price.resolved_price_isa) ||
       !valid_spread_kind(cfg.frictions.spread_kind) || !valid_unpriced_policy(cfg.unpriced) ||
-      !valid_provenance_policy(cfg.surface_provenance_policy)) {
+      !valid_provenance_policy(cfg.surface_provenance_policy) ||
+      !valid_clock_gap_policy(cfg.clock_gaps)) {
     return Err(ErrorCode::InvalidArgument, "run_backtest: invalid RunConfig enum value");
   }
   if (cfg.price.prices_only) {
@@ -1839,11 +1866,21 @@ Result<Clock> Clock::from_manifest(const CorpusManifest &manifest) {
   // `manifest.dates` are unique + ascending; `entries` are sorted (date asc,
   // symbol asc) so the first Ok entry per date is deterministic.
   for (const std::string &d : manifest.dates) {
+    bool placed = false;
     for (const CorpusEntry &e : manifest.entries) {
       if (e.date == d && e.status == CorpusFitStatus::Ok && !e.archive_path.empty()) {
         clock.refs_.push_back(SnapshotRef{d, e.archive_path});
+        placed = true;
         break;
       }
+    }
+    // A6: a date with no admitted (Ok) fit used to vanish here with no record
+    // at all -- the run spanned the gap as one ordinary step, silently, with
+    // no exclusion count (fit-survivorship). Record it instead; `refs_` stays
+    // exactly what it always was (Ok dates only), so the step sequence this
+    // produces is UNCHANGED -- only the gap's visibility is new.
+    if (!placed) {
+      clock.dropped_dates_.push_back(d);
     }
   }
   if (clock.refs_.empty()) {
@@ -1888,6 +1925,15 @@ Result<Clock> Clock::between(std::string_view date_lo, std::string_view date_hi)
     const std::string_view d{r.date};
     if (d >= date_lo && d <= date_hi) {
       out.refs_.push_back(r);
+    }
+  }
+  // A6: carry forward only the dropped dates that fall inside the requested
+  // window, so a sliced clock's own gap accounting describes exactly what IT
+  // spans -- a gap outside [date_lo, date_hi] is not this slice's business.
+  for (const std::string &d : dropped_dates_) {
+    const std::string_view dv{d};
+    if (dv >= date_lo && dv <= date_hi) {
+      out.dropped_dates_.push_back(d);
     }
   }
   if (out.refs_.empty()) {
@@ -2446,6 +2492,11 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
   if (refs.empty()) {
     return Err(ErrorCode::InvalidArgument, "run_backtest: empty clock");
   }
+  // A6: fail closed before running a single step when the caller opted into
+  // strict gap accounting and this clock actually carries a dropped date.
+  if (cfg.clock_gaps == ClockGapPolicy::Error && !clock.dropped_dates().empty()) {
+    return Err(ErrorCode::InvalidArgument, clock_gap_error_message(clock.dropped_dates()));
+  }
   const std::size_t stride = cfg.record_every_n;
 
   BacktestResult out;
@@ -2680,6 +2731,11 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
   // A4: one scalar copy, once, at the end of the run — see the strategy
   // overload's identical placement for `n_steps_entry_skipped`.
   out.n_settlements_at_stale_spot = n_stale_spot_total;
+  // A6: the clock's own gap accounting is static (known before the first step
+  // ran; see the `ClockGapPolicy::Error` guard above), so this copies
+  // straight from `clock`, not from any per-step accumulator.
+  out.n_clock_dates_dropped = static_cast<std::uint64_t>(clock.dropped_dates().size());
+  out.clock_dates_dropped.assign(clock.dropped_dates().begin(), clock.dropped_dates().end());
 
   // Plan 4.6: the engine may not emit a skewed column set. Pure read, so this
   // cannot change a value the run produced.
@@ -2708,6 +2764,11 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
   const std::span<const SnapshotRef> refs = clock.refs();
   if (refs.empty()) {
     return Err(ErrorCode::InvalidArgument, "run_backtest: empty clock");
+  }
+  // A6: fail closed before running a single step when the caller opted into
+  // strict gap accounting and this clock actually carries a dropped date.
+  if (cfg.clock_gaps == ClockGapPolicy::Error && !clock.dropped_dates().empty()) {
+    return Err(ErrorCode::InvalidArgument, clock_gap_error_message(clock.dropped_dates()));
   }
   if (resume != nullptr) {
     ATX_TRY_VOID(validate_checkpoint(*resume, refs.size()));
@@ -3535,6 +3596,11 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
   out.n_settlements_at_stale_spot = n_stale_spot_total;
   // A5: same treatment for the hedge-fill-skip run-total.
   out.n_hedge_steps_skipped = n_hedge_steps_skipped_total;
+  // A6: the clock's own gap accounting is static (known before the first step
+  // ran; see the `ClockGapPolicy::Error` guard above), so this copies
+  // straight from `clock`, not from any per-step accumulator.
+  out.n_clock_dates_dropped = static_cast<std::uint64_t>(clock.dropped_dates().size());
+  out.clock_dates_dropped.assign(clock.dropped_dates().begin(), clock.dropped_dates().end());
 
   // Plan 4.6: the engine may not emit a skewed column set. Pure read, so this
   // cannot change a value the run produced.

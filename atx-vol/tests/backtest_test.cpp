@@ -4320,3 +4320,129 @@ TEST(BacktestFinancing, SingleNameDefaultKeepsPriorBehaviorBitIdentical) {
   const double expected = kInitialCash * (std::exp(kR * dt) - 1.0); // kR: the single name's rate
   EXPECT_NEAR(expected, r->financing.back(), 1e-10);
 }
+
+// ── Task A6: Clock gap accounting ────────────────────────────────────────
+//
+// `Clock::from_manifest` used to drop a date with no admitted (Ok) fit with no
+// record at all -- the run spanned the resulting gap as one ordinary step,
+// with no exclusion count (2026-08-05 deep review, fit-survivorship).
+// `Clock::dropped_dates()` now always records those dates;
+// `BacktestResult::n_clock_dates_dropped` / `clock_dates_dropped` surface them
+// on every run; `RunConfig::clock_gaps == ClockGapPolicy::Error` opts into
+// refusing the run outright instead.
+
+namespace {
+
+// Corrupts two of a 5-date evolving corpus's dates (indices 1 and 3, i.e.
+// 2026-08-02 and 2026-08-04) to `CorpusFitStatus::Failed` with no archive
+// path -- the shape `Clock::from_manifest` cannot place a ref for, so both
+// dates are dropped. The archive files themselves are still written to disk
+// (by `make_evolving_corpus`); only the manifest stops pointing at them,
+// exactly as a real fit failure would leave no admitted archive behind.
+[[nodiscard]] CorpusManifest make_manifest_with_two_gaps(const fs::path &dir) {
+  CorpusManifest man = make_evolving_corpus(dir, "SPX", 5);
+  int corrupted = 0;
+  for (CorpusEntry &e : man.entries) {
+    if (e.date == man.dates.at(1) || e.date == man.dates.at(3)) {
+      e.status = CorpusFitStatus::Failed;
+      e.archive_path.clear();
+      ++corrupted;
+    }
+  }
+  EXPECT_EQ(corrupted, 2) << "fixture invariant: exactly two dates corrupted";
+  return man;
+}
+
+} // namespace
+
+TEST(BacktestClock, FromManifestCountsAndListsDroppedDates) {
+  const fs::path dir = fresh_dir("clock-gap-from-manifest");
+  const CorpusManifest man = make_manifest_with_two_gaps(dir);
+  const std::string expected_gap_1 = man.dates.at(1);
+  const std::string expected_gap_2 = man.dates.at(3);
+
+  auto clock = Clock::from_manifest(man);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  EXPECT_EQ(clock->size(), 3u); // 5 dates - 2 dropped
+  const std::span<const std::string> dropped = clock->dropped_dates();
+  ASSERT_EQ(dropped.size(), 2u);
+  EXPECT_EQ(dropped[0], expected_gap_1);
+  EXPECT_EQ(dropped[1], expected_gap_2);
+}
+
+TEST(BacktestClock, DefaultAcceptPolicySurfacesCountersOnBacktestResult) {
+  const fs::path dir = fresh_dir("clock-gap-default-accept");
+  const CorpusManifest man = make_manifest_with_two_gaps(dir);
+  const std::string expected_gap_1 = man.dates.at(1);
+  const std::string expected_gap_2 = man.dates.at(3);
+  auto clock = Clock::from_manifest(man);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  RunConfig cfg; // DEFAULTS -- clock_gaps == ClockGapPolicy::Accept, the point of the test
+  const auto r = run_backtest(*clock, PortfolioState{}, cfg);
+  ASSERT_TRUE(r.has_value()) << r.error().to_string();
+  EXPECT_EQ(r->n_clock_dates_dropped, 2u);
+  ASSERT_EQ(r->clock_dates_dropped.size(), 2u);
+  EXPECT_EQ(r->clock_dates_dropped[0], expected_gap_1);
+  EXPECT_EQ(r->clock_dates_dropped[1], expected_gap_2);
+}
+
+TEST(BacktestClock, StrictPolicyRefusesRunWithDroppedDates) {
+  const fs::path dir = fresh_dir("clock-gap-strict-refuses");
+  const CorpusManifest man = make_manifest_with_two_gaps(dir);
+  const std::string expected_gap_1 = man.dates.at(1);
+  const std::string expected_gap_2 = man.dates.at(3);
+  auto clock = Clock::from_manifest(man);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  RunConfig cfg;
+  cfg.clock_gaps = ClockGapPolicy::Error;
+  const auto r = run_backtest(*clock, PortfolioState{}, cfg);
+  ASSERT_FALSE(r.has_value());
+  EXPECT_EQ(r.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_NE(r.error().message().find(expected_gap_1), std::string::npos);
+  EXPECT_NE(r.error().message().find(expected_gap_2), std::string::npos);
+}
+
+TEST(BacktestClock, StrictPolicyRefusesInStrategyOverloadToo) {
+  const fs::path dir = fresh_dir("clock-gap-strict-strategy");
+  const CorpusManifest man = make_manifest_with_two_gaps(dir);
+  auto clock = Clock::from_manifest(man);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  NoTradeStrategy strat;
+  RunConfig cfg;
+  cfg.clock_gaps = ClockGapPolicy::Error;
+  const auto r = run_backtest(*clock, strat, cfg);
+  ASSERT_FALSE(r.has_value());
+  EXPECT_EQ(r.error().code(), ErrorCode::InvalidArgument);
+}
+
+TEST(BacktestClock, NoGapsLeaveCountersZeroAndStrictPolicyStillPasses) {
+  const fs::path dir = fresh_dir("clock-gap-none");
+  const CorpusManifest man = make_evolving_corpus(dir, "SPX", 3); // no gaps
+  auto clock = Clock::from_manifest(man);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  EXPECT_TRUE(clock->dropped_dates().empty());
+
+  RunConfig cfg;
+  cfg.clock_gaps = ClockGapPolicy::Error; // strict, but nothing to refuse
+  const auto r = run_backtest(*clock, PortfolioState{}, cfg);
+  ASSERT_TRUE(r.has_value()) << r.error().to_string();
+  EXPECT_EQ(r->n_clock_dates_dropped, 0u);
+  EXPECT_TRUE(r->clock_dates_dropped.empty());
+}
+
+TEST(BacktestClock, AllDatesDroppedStillFailsClosedAtConstruction) {
+  const fs::path dir = fresh_dir("clock-gap-all-dropped");
+  CorpusManifest man = make_evolving_corpus(dir, "SPX", 3);
+  for (CorpusEntry &e : man.entries) {
+    e.status = CorpusFitStatus::Failed;
+    e.archive_path.clear();
+  }
+  const auto clock = Clock::from_manifest(man);
+  ASSERT_FALSE(clock.has_value())
+      << "a manifest with zero Ok dates must still fail Clock construction, exactly as before "
+         "this task -- gap accounting must not turn a wholly-unfit corpus into a usable clock";
+  EXPECT_EQ(clock.error().code(), ErrorCode::InvalidArgument);
+}

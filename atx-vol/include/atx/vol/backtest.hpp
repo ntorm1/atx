@@ -106,8 +106,25 @@ public:
   [[nodiscard]] std::span<const SnapshotRef> refs() const noexcept { return refs_; }
   [[nodiscard]] std::size_t size() const noexcept { return refs_.size(); }
 
+  // Task A6 (backtest-lakehouse sprint): dates from the manifest's `dates` list
+  // that `from_manifest` could NOT place a ref for -- no entry on that date had
+  // `status == CorpusFitStatus::Ok` with a non-empty `archive_path`. Ascending,
+  // matching `dates`' own order. Before this task these dates were dropped with
+  // no record at all, so the run silently spanned the gap as one ordinary step
+  // (fit-survivorship); they are always recorded now, regardless of
+  // `RunConfig::clock_gaps`, which only governs whether a non-empty list here
+  // is tolerated or refused. Always EMPTY for a clock built by
+  // `from_surface_db` (a SurfaceDb partition list has no separate
+  // "planned but not admitted" notion to compare against). `between()` carries
+  // forward only the dropped dates that fall inside the requested window, so a
+  // sliced clock's own gap accounting describes exactly what IT spans.
+  [[nodiscard]] std::span<const std::string> dropped_dates() const noexcept {
+    return dropped_dates_;
+  }
+
 private:
   std::vector<SnapshotRef> refs_;
+  std::vector<std::string> dropped_dates_;
 };
 
 // ── Archive backing (WS-ZC1) ────────────────────────────────────────────────
@@ -727,6 +744,26 @@ enum class SwapFixingCadence : std::uint8_t {
   AcceptClockAsSchedule = 1,
 };
 
+// Task A6 (backtest-lakehouse sprint): how `run_backtest` / `run_backtest_incremental`
+// react to a `Clock` whose source manifest had dates with no admitted (Ok) fit
+// -- see `Clock::dropped_dates()`. Those dates are always COUNTED now; this
+// governs only whether a non-empty `clock.dropped_dates()` is tolerated (the
+// run spans the gap as one step, same as every engine version before this
+// task) or refused outright before a single step runs.
+enum class ClockGapPolicy : std::uint8_t {
+  // Preserve the historical step sequence: the run proceeds exactly as it
+  // always has, spanning every gap as one ordinary step between the
+  // surrounding Ok dates. `BacktestResult::n_clock_dates_dropped` and
+  // `clock_dates_dropped` report the exclusion instead of leaving it
+  // invisible, but no economics number moves -- BEHAVIOUR-PRESERVING DEFAULT.
+  Accept = 0,
+  // Fail closed: refuse (`ErrorCode::InvalidArgument`) before processing a
+  // single step whenever `clock.dropped_dates()` is non-empty, naming every
+  // dropped date in the error message. The production QIS mode for a corpus
+  // that must have no undocumented gap.
+  Error = 1,
+};
+
 // One observed engine step, handed to RunConfig::step_observer immediately after
 // IStrategy::on_step returns Ok and BEFORE the transition validation / hedge /
 // execute stage. Fires once per clock step INCLUDING inception (step_index 0), in
@@ -927,9 +964,16 @@ struct RunConfig {
   // (backtest.hpp's own "new knobs append at the end" convention); this is
   // field 18, appended last per that convention.
   SwapFixingCadence swap_fixing_cadence{SwapFixingCadence::RequireEverySession};
+  // Task A6 (2026-08 backtest-lakehouse sprint): whether a run tolerates a
+  // `Clock` carrying a non-empty `dropped_dates()` (`Accept`, spanning the gap
+  // as one step, same as always) or refuses to run at all (`Error`). See
+  // `ClockGapPolicy` above. Same sprint-owner-approved additive Tier-A
+  // exception as `swap_fixing_cadence`; this is field 19, appended last per
+  // that convention.
+  ClockGapPolicy clock_gaps{ClockGapPolicy::Accept};
 };
 
-// Drift pin (plan item 4.2). RunConfig has exactly EIGHTEEN fields. Adding,
+// Drift pin (plan item 4.2). RunConfig has exactly NINETEEN fields. Adding,
 // removing or splitting one breaks this line, which is the point: it forces
 // whoever changes the struct to read the construction contract above instead of
 // appending a knob "for compatibility" with positional initializers that are no
@@ -958,8 +1002,16 @@ struct RunConfig {
 // fixing schedule actually disagree, which used to compute a silently wrong
 // answer instead of an error).
 //
+// 18 -> 19 (Task A6, backtest-lakehouse sprint): `clock_gaps` APPENDED at the
+// end. Sprint-owner-approved exception to the 1.x Tier-A freeze for this ONE
+// additive field, same as `swap_fixing_cadence` before it. Output is
+// bit-identical for every caller that does not set it (`Accept` -- the
+// default -- reduces to the pre-A6 step sequence exactly; it changes
+// behavior only when the clock actually carries a dropped date AND the
+// caller opts into `Error`, which used to be unrepresentable).
+//
 // BLIND SPOT: this probe pins the field COUNT, nothing else. It cannot see a
-// REORDER that leaves the count at 18 -- `aggregate_arity_is_v` (see
+// REORDER that leaves the count at 19 -- `aggregate_arity_is_v` (see
 // detail/aggregate_arity.hpp) only checks how many brace-initializer slots
 // `RunConfig{...}` accepts, with no notion of field NAMES or TYPES, so swapping
 // two existing fields (e.g. two `bool`s, or two `std::size_t`s) still compiles
@@ -974,7 +1026,7 @@ struct RunConfig {
 // multi-argument positional brace list; `git grep -n "RunConfig cfg"` sites
 // build via `RunConfig cfg;` plus `cfg.field = ...` assignment, which is
 // order-independent by construction.
-static_assert(detail::aggregate_arity_is_v<RunConfig, 18>,
+static_assert(detail::aggregate_arity_is_v<RunConfig, 19>,
               "RunConfig field count changed: update this pin, and confirm every "
               "construction site still initializes by field name.");
 
@@ -1188,6 +1240,25 @@ struct BacktestResult {
   // which aborts the run instead of skipping, and always 0 for the fixed-book
   // (B0) overload, which has no strategy and therefore never hedges.
   std::uint64_t n_hedge_steps_skipped{0};
+
+  // A6 (backtest-lakehouse sprint, target 1.1.0): a RESULT SCALAR, not a
+  // row-parallel series — copied verbatim from `clock.dropped_dates().size()`
+  // (see `Clock::dropped_dates`) once, before the run processes its first
+  // step. Counts dates the source manifest listed with no admitted (Ok) fit,
+  // which `Clock::from_manifest` used to drop with no record at all — the run
+  // spanned the resulting gap as one ordinary step (fit-survivorship). Same
+  // append-only, non-wire treatment as `n_steps_entry_skipped` and its
+  // siblings above: absent from `kBacktestSeriesColumns` and RunArchive
+  // serialization, so `ra_schema_hash()` and every TSV/CSV header and golden
+  // are untouched. Always 0 for a clock built by `from_surface_db`, and
+  // always 0 under `RunConfig::clock_gaps == ClockGapPolicy::Error`, which
+  // refuses the run outright rather than let a nonzero count through.
+  std::uint64_t n_clock_dates_dropped{0};
+  // A6: the actual dropped dates behind `n_clock_dates_dropped` above, in the
+  // same ascending order as `Clock::dropped_dates()` — the diagnostic detail
+  // a bare count cannot carry ("which dates"). Same non-wire, append-only
+  // treatment; empty exactly when `n_clock_dates_dropped == 0`.
+  std::vector<std::string> clock_dates_dropped{};
 
   [[nodiscard]] std::size_t size() const noexcept { return date.size(); }
 
