@@ -39,6 +39,7 @@ using atx::vol::deriv_price;
 using atx::vol::DerivConfig;
 using atx::vol::DerivContract;
 using atx::vol::DerivDiscreteCorrection;
+using atx::vol::DerivEngine;
 using atx::vol::DerivFlags;
 using atx::vol::DerivKind;
 using atx::vol::DerivMarkingConvention;
@@ -50,6 +51,8 @@ using atx::vol::ForwardPoint;
 using atx::vol::has_flag;
 using atx::vol::RealizedTracker;
 using atx::vol::RealizedVarianceSpec;
+using atx::vol::SviSlice;
+using atx::vol::SviSurface;
 using atx::vol::var_swap_fair_strike;
 using atx::vol::vol_swap_fair_strike;
 
@@ -1530,6 +1533,115 @@ TEST(WingClamp, FlagPropagatesThroughDerivPrice) {
   const auto q = deriv_price(surf, cs, c, deriv_default_config());
   ASSERT_TRUE(q.has_value());
   EXPECT_TRUE(has_flag(q->flags, DerivFlags::WingClamped));
+}
+
+// ── Kind x engine dispatch matrix (PV-5) ──────────────────────────────────
+//
+// deriv_price now enforces the full matrix: VarSwap -> {Auto,
+// StripLogContract}; VolSwap -> {Auto, VolCarrLee (unaged only, as before),
+// RvDistributionProxy}; CappedVarSwap/CappedVolSwap -> {Auto,
+// RvDistributionProxy} (already covered by ReservedValidation/existing
+// capped-kind tests). The two combinations below used to fall through to a
+// DIFFERENT engine's math with no error and no flag -- price_var_swap never
+// read cfg.engine at all, and price_vol_swap's unaged branch only tested
+// `cfg.engine != RvDistributionProxy`, not which engine it actually was.
+
+TEST(Dispatch, EngineKindMatrixEnforced) {
+  const EssviSurface surf = make_flat_surface(0.20, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+
+  {
+    DerivConfig cfg = deriv_default_config();
+    cfg.engine = DerivEngine::VolCarrLee;
+
+    DerivContract c{};
+    c.kind = DerivKind::VarSwap;
+    c.maturity_t = 0.25;
+    c.strike_dec = 0.04;
+    c.notional = 1.0;
+
+    const auto q = deriv_price(surf, cs, c, cfg);
+    ASSERT_FALSE(q.has_value());
+    EXPECT_EQ(q.error().code(), ErrorCode::InvalidArgument);
+  }
+  {
+    DerivConfig cfg = deriv_default_config();
+    cfg.engine = DerivEngine::StripLogContract;
+
+    DerivContract c{};
+    c.kind = DerivKind::VolSwap;
+    c.maturity_t = 0.25;
+    c.strike_dec = 0.20;
+    c.notional = 1.0;
+
+    const auto q = deriv_price(surf, cs, c, cfg);
+    ASSERT_FALSE(q.has_value());
+    EXPECT_EQ(q.error().code(), ErrorCode::InvalidArgument);
+  }
+}
+
+// ── Interior bad-node accounting (PV-4) ───────────────────────────────────
+//
+// Before this task only the two grid ENDPOINTS were checked for a non-
+// finite/non-positive surface read (bad_first/bad_last -> StripTruncated
+// Left/Right); a node strictly inside the grid silently contributed 0 to the
+// integral with no trace anywhere in the returned quote.
+//
+// Raw SVI has no arb-free enforcement (svi_w's own doc: "no domain
+// restrictions ... are enforced here"), so a slice can be built directly
+// (bypassing the make_skew_surface-style butterfly-bound assert) with a
+// vertex value low enough that w(k) = a + b*(rho*(k-m) + sqrt((k-m)^2 +
+// sigma^2)) dips below zero in a band around k = m, while staying positive
+// at k = 0 (ATM) and at the grid's far wings -- the sqrt term dominates and
+// grows without bound away from m, so the dip is an isolated hole, not a
+// truncation. iv() (Surface<Slice>::iv) already turns any w <= 0 into NaN.
+//
+// Both tests pin an EXACT, symmetric grid ([-1, 1], wing clamp off, 401
+// nodes) so the split (plan_strip_split) cuts only at k = 0 into two equal
+// 201-node panels, dx = 1/200 = 0.005 per panel -- placing the vertex at
+// m = 0.5 exactly on a grid node and making the negative-w half-width
+// precisely controllable against that spacing.
+DerivConfig pinned_symmetric_strip_cfg() {
+  DerivConfig cfg = deriv_default_config();
+  cfg.k_min_log = -1.0;
+  cfg.k_max_log = 1.0;
+  cfg.strip_nodes = 401;   // 4*100 + 1: on the Richardson 4m+1 lattice
+  cfg.wing_clamp_k = -1.0; // clamp off: the only kink is k = 0
+  return cfg;
+}
+
+SviSurface make_interior_hole_surface(double a, double m, double sigma, double T) {
+  SviSurface surf(1);
+  const SviSlice slice{a, 1.0, 0.0, m, sigma, T};
+  EXPECT_TRUE(surf.set_slice(0, slice).has_value());
+  return surf;
+}
+
+TEST(Strip, InteriorNaNFlagged) {
+  const double T_test = 0.5;
+  // Half-width of the negative-w band around m = 0.5:
+  // sqrt(0.0035^2 - 0.001^2) ~= 0.00335, comfortably under the 0.005 node
+  // spacing -- only the node AT m itself falls inside; its neighbors one
+  // node either side (offset +-0.005) stay positive.
+  const SviSurface surf = make_interior_hole_surface(-0.0035, 0.5, 0.001, T_test);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+
+  const auto q = var_swap_fair_strike(surf, cs, T_test, pinned_symmetric_strip_cfg());
+  ASSERT_TRUE(q.has_value());
+  EXPECT_TRUE(has_flag(q->flags, DerivFlags::InteriorBadNodes));
+}
+
+TEST(Strip, InteriorNaNExceedsThreshold_ReturnsInternal) {
+  const double T_test = 0.5;
+  // Half-width sqrt(0.06^2 - 0.001^2) ~= 0.05999 -> the band covers offsets
+  // out to +-0.055 at the 0.005 node spacing, 23 nodes (~5.7% of the
+  // 401-node grid) -- comfortably past max(2, 401/100) == 4.
+  const SviSurface surf = make_interior_hole_surface(-0.06, 0.5, 0.001, T_test);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+
+  const auto q = var_swap_fair_strike(surf, cs, T_test, pinned_symmetric_strip_cfg());
+  ASSERT_FALSE(q.has_value());
+  EXPECT_EQ(q.error().code(), ErrorCode::Internal);
 }
 
 }  // namespace

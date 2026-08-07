@@ -238,6 +238,17 @@ enum class DerivFlags : std::uint32_t {
   // clamp is disabled (wing_clamp_k < 0) or the whole span fits inside the
   // band. atx extension: not mirrored in AtsVolDerivFlags.
   WingClamped = 1u << 12,
+  // Set when the variance strip's quadrature read a non-finite or non-
+  // positive surface IV at one or more nodes STRICTLY INSIDE the grid (PV-4)
+  // -- as opposed to `StripTruncatedLeft`/`Right`, which cover only the two
+  // ENDPOINT nodes of the whole span. An interior bad node still contributes
+  // 0 to the integral (unchanged); this flag is purely informational,
+  // recording that it happened. `var_swap_fair_strike` still returns a quote
+  // whenever the count is at or below `max(2, n_nodes/100)` -- past that
+  // threshold it returns `Internal` instead (see that function's doc): a
+  // surface with that many holes across its middle is broken, not sparse.
+  // atx extension: not mirrored in AtsVolDerivFlags.
+  InteriorBadNodes = 1u << 13,
 };
 
 [[nodiscard]] constexpr DerivFlags operator|(DerivFlags a, DerivFlags b) noexcept {
@@ -518,7 +529,11 @@ struct DerivQuote {
 //
 // @return InvalidArgument for T <= 0; NotImplemented if a reserved config
 //         field is non-zero; OutOfRange if the forward/discount cannot be
-//         resolved (F <= 0 or df <= 0).
+//         resolved (F <= 0 or df <= 0); Internal if more than
+//         max(2, n_nodes/100) nodes STRICTLY INSIDE the grid read a
+//         non-finite/non-positive surface IV (PV-4) -- a handful is recorded
+//         via DerivFlags::InteriorBadNodes and still priced, but a surface
+//         with a mid-grid hole that wide is broken, not sparse.
 template <class SurfaceT>
 [[nodiscard]] Result<DerivQuote>
 var_swap_fair_strike(const SurfaceT& surface, const CurveSet& curves, double T,

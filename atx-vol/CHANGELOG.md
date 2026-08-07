@@ -8,6 +8,65 @@ that silently changes a NUMBER a caller already depends on belongs in this file.
 Vol-derivatives production sprint, Phase 1 (correctness). Grows only with
 changes that move a number a caller could already be marking with.
 
+### Fixed — two silent kind x engine mismatches now fail loud (PV-5)
+
+`deriv_price` already rejected an engine that names no pricing formula for a
+capped kind (`StripLogContract`/`VolCarrLee` on `CappedVarSwap`/
+`CappedVolSwap`), but missed the same mismatch on the two uncapped kinds:
+
+- `DerivKind::VarSwap` + `DerivConfig::engine == VolCarrLee` silently ran the
+  variance strip anyway — `price_var_swap` never read `cfg.engine` at all, so
+  every engine choice on a `VarSwap` behaved exactly like `Auto`.
+- `DerivKind::VolSwap` + `DerivConfig::engine == StripLogContract` silently
+  fell into the same unaged Carr-Lee branch `Auto`/`VolCarrLee` take — that
+  branch only tested `cfg.engine != RvDistributionProxy`, not which engine it
+  actually was.
+
+Both combinations now return `InvalidArgument` ("engine cannot price a var
+swap" / "engine cannot price a vol swap") at dispatch, before any pricing
+runs. The full matrix `deriv_price` enforces: `VarSwap` -> {`Auto`,
+`StripLogContract`}; `VolSwap` -> {`Auto`, `VolCarrLee` (unaged only, as
+before), `RvDistributionProxy`}; `CappedVarSwap`/`CappedVolSwap` -> {`Auto`,
+`RvDistributionProxy`} (unchanged).
+
+**Migration**: `cfg.engine` defaults to `Auto`, so no default-config caller is
+affected — this changes zero prices. A caller who explicitly pinned
+`VolCarrLee` on a `VarSwap` contract, or `StripLogContract` on a `VolSwap`
+contract, was silently getting the SAME number `Auto` already returns for
+those inputs (a strip quote / an unaged Carr-Lee quote respectively) under an
+engine name that did not describe what ran; it should switch to `Auto` (or
+the matching valid engine) — no mark changes for anyone reading the number
+`Auto` already gave them.
+
+### Fixed — an interior bad node silently contributed 0 with no trace (PV-4)
+
+The variance strip's OTM integrand treats a non-finite or non-positive
+surface IV as 0 at that node. Only the two ENDPOINT nodes of the whole grid
+were ever checked (`bad_first`/`bad_last`, driving `StripTruncatedLeft`/
+`Right`) — a bad node strictly inside the grid, including the `k = 0`
+put-call-parity kink the C-3 panel split reads as its own node, contributed 0
+to the integral with no trace anywhere in the returned quote.
+
+`var_swap_fair_strike` now counts interior bad nodes. One or more sets the
+new `DerivFlags::InteriorBadNodes = 1u << 13` (still priced — a handful of
+gap quotes is business as usual on a real fitted surface). More than
+`max(2, n_nodes/100)` returns `Internal` instead of a quote: a surface with
+that many holes across its middle is broken, not sparse, and a number built
+mostly from zero-substitutions is worse than refusing to answer. Exempted
+when the surface cannot answer AT THE MONEY at all (e.g. a query T under the
+legacy short-T extrapolation guard) — that is the pre-existing, deliberately
+tolerated "surface has nothing to say at this T" corner (`deriv_greeks`
+relies on it to roll a theta/charm bump past expiry and get a NaN greek back,
+not a failed call), a different failure from PV-4's target of an otherwise-
+usable surface with a hole in it.
+
+**Migration**: nothing changes for a clean surface — a well-formed fitted
+surface was never producing interior bad nodes, so this is new accounting,
+not a new failure mode. A caller whose surface adapter has genuine mid-grid
+gaps will now see `InteriorBadNodes` (informational, same price as before) or,
+past the threshold, an `Internal` error where it previously got a quote
+computed mostly from zeros with no signal that anything was wrong.
+
 ### Fixed — `DerivDiscreteCorrection::Diffusion1OverN` was wrong (PV-1, PV-8)
 
 The discrete-monitoring correction for the future implied-variance leg

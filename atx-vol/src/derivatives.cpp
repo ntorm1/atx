@@ -915,6 +915,18 @@ Result<DerivQuote> var_swap_fair_strike(const SurfaceT& surface,
   const double width_sigmas =
       cfg.width_sigmas == 0.0 ? strip::kDefaultWidthSigmas : cfg.width_sigmas;
   const double sigma_atm = surface.iv(0.0, T);
+  // PV-4 interior-bad-node accounting (below) only makes sense once the
+  // surface can answer AT THE MONEY: when it cannot (e.g. a query T under
+  // the legacy_surface short-T extrapolation guard, `T < 0.5*T0`), EVERY
+  // node -- endpoints included -- reads non-finite, and that is already the
+  // pre-existing "surface unusable here" signal (bad_first/bad_last ->
+  // StripTruncatedLeft/Right, k_var settles near 0). Piling a hard Internal
+  // failure on top of an already-degenerate-by-design quote would turn a
+  // deliberately-tolerated corner (deriv_greeks rolls a theta/charm bump
+  // through exactly this regime and expects a NaN greek, not a failed call)
+  // into a break. The new accounting is reserved for the case PV-4 actually
+  // named: an otherwise-USABLE surface with a hole strictly inside it.
+  const bool atm_unusable = !std::isfinite(sigma_atm) || sigma_atm <= 0.0;
   const double required = strip::required_half_width(sigma_atm, T, width_sigmas);
   if (!span_pinned) {
     const double floor_half = std::fmax(-grid.k_min_log, grid.k_max_log);
@@ -1034,6 +1046,13 @@ Result<DerivQuote> var_swap_fair_strike(const SurfaceT& surface,
   double integral_half = 0.0;
   bool bad_first = false;
   bool bad_last = false;
+  // PV-4: nodes strictly inside the grid whose surface read was non-finite/
+  // non-positive. bad_first/bad_last (the two grid ENDPOINTS) are tracked
+  // separately, unchanged, below -- they drive StripTruncatedLeft/Right, a
+  // COVERAGE signal. An interior bad node is a different failure (a hole in
+  // the middle of an otherwise-usable surface), counted here and consumed
+  // after the loop.
+  std::size_t interior_bad_count = 0;
   double shared = 0.0;  // integrand at the node the previous panel ended on
   for (std::size_t p = 0; p < split.count; ++p) {
     const strip::StripPanel& panel = split.panels[p];
@@ -1055,11 +1074,18 @@ Result<DerivQuote> var_swap_fair_strike(const SurfaceT& surface,
                                          : panel.k_lo + dx * static_cast<double>(i);
         const auto [value, bad] = integrand_at(x);
         integrand = value;
-        if (p == 0 && i == 0) {
+        // A panel-boundary kink (e.g. k = 0) is a node strictly inside the
+        // WHOLE grid even though it sits at the edge of ITS panel -- only
+        // the true ends of the entire split (p == 0's first node, the last
+        // panel's last node) are the grid's own boundary.
+        const bool is_grid_first = (p == 0 && i == 0);
+        const bool is_grid_last = (p + 1 == split.count && i + 1 == np);
+        if (is_grid_first) {
           bad_first = bad;
-        }
-        if (p + 1 == split.count && i + 1 == np) {
+        } else if (is_grid_last) {
           bad_last = bad;
+        } else if (bad) {
+          ++interior_bad_count;
         }
       }
       sum += simpson_w(i, np) * integrand;
@@ -1076,6 +1102,18 @@ Result<DerivQuote> var_swap_fair_strike(const SurfaceT& surface,
     }
     integral += sum * (dx / 3.0);
     integral_half += sum_half * (2.0 * dx / 3.0);
+  }
+
+  // PV-4: a strip whose middle is mostly holes is broken, not merely sparse
+  // -- refuse before spending any more work computing a number that would be
+  // built mostly from the bad-node zero substitution. `max(2, n/100)` gives
+  // small grids a fixed floor (two isolated gaps stays a quote) and scales
+  // with node count on large ones, matching the brief's own budget. Skipped
+  // entirely when the surface cannot answer ATM (see `atm_unusable` above) --
+  // that is the pre-existing, deliberately-tolerated degenerate corner, not
+  // this task's target.
+  if (!atm_unusable && interior_bad_count > std::max<std::size_t>(2, n / 100u)) {
+    return Err(ErrorCode::Internal, "variance strip has too many interior bad nodes");
   }
 
   const double k_var = (2.0 / T) * integral;
@@ -1115,6 +1153,9 @@ Result<DerivQuote> var_swap_fair_strike(const SurfaceT& surface,
   }
   if (low_t) {
     flags |= DerivFlags::LowT;
+  }
+  if (!atm_unusable && interior_bad_count > 0u) {
+    flags |= DerivFlags::InteriorBadNodes;
   }
 
   DerivQuote out{};
@@ -1220,10 +1261,37 @@ Result<DerivQuote> deriv_price(const SurfaceT& surface, const CurveSet& curves,
     return Err(ErrorCode::InvalidArgument, "cap_dec is only valid on capped kinds");
   }
 
+  // Kind x engine dispatch matrix (PV-5), enforced in two stages: the
+  // reserved-engine switch above (RvDistributionAffine/McQe always
+  // NotImplemented; RvDistributionProxy NotImplemented except on the kinds
+  // it is wired up for) narrows cfg.engine to what each kind's own case below
+  // can still misuse, and each case rejects the one engine value that
+  // survives narrowing but still names no pricing formula for that kind.
+  // Full matrix: VarSwap -> {Auto, StripLogContract}; VolSwap -> {Auto,
+  // VolCarrLee (unaged only -- price_vol_swap itself checks that), Rv
+  // DistributionProxy}; CappedVarSwap/CappedVolSwap -> {Auto,
+  // RvDistributionProxy}. Everything else is InvalidArgument.
   switch (contract.kind) {
   case DerivKind::VarSwap:
+    // Kind x engine matrix (PV-5): VarSwap only ever runs the strip --
+    // price_var_swap never reads cfg.engine at all, so an explicit
+    // VolCarrLee here used to silently price the strip anyway (VolCarrLee
+    // has no variance-swap formula of its own to run instead). RvDistribution
+    // Proxy/RvDistributionAffine/McQe on VarSwap are already NotImplemented
+    // from the reserved-engine switch above; VolCarrLee is the one gap.
+    if (cfg.engine == DerivEngine::VolCarrLee) {
+      return Err(ErrorCode::InvalidArgument, "engine cannot price a var swap");
+    }
     return price_var_swap(surface, curves, contract, cfg);
   case DerivKind::VolSwap:
+    // Kind x engine matrix (PV-5): an explicit StripLogContract here used to
+    // silently fall through to price_vol_swap's unaged Carr-Lee branch --
+    // the same branch Auto/VolCarrLee take -- because that branch only tests
+    // `cfg.engine != RvDistributionProxy`, not which engine it actually is.
+    // StripLogContract has no vol-swap formula of its own to run instead.
+    if (cfg.engine == DerivEngine::StripLogContract) {
+      return Err(ErrorCode::InvalidArgument, "engine cannot price a vol swap");
+    }
     return price_vol_swap(surface, curves, contract, cfg);
   case DerivKind::CappedVarSwap:
     if (cfg.engine == DerivEngine::StripLogContract || cfg.engine == DerivEngine::VolCarrLee) {
