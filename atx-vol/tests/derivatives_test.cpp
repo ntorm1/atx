@@ -1203,6 +1203,79 @@ TEST(Marquee, VolSwap_PnlIdentity_HoldsAtExpiry) {
   EXPECT_LT(std::fabs(q_exp->fair_strike_dec - r1), 1.0e-12);
 }
 
+// ── Carr-Lee convexity refinement (Task C-5 / LIT-4) ──────────────────────
+//
+// LIT-4 (P1-class model bias): the naive ATMF-straddle K_vol ~= sqrt(2 pi /
+// T) * C_ATMF / (F * df) is the approximation Carr-Lee's rrvd.pdf explicitly
+// declines to endorse (Remark 6.5) -- it reads only the ATMF point and never
+// sees the rest of the smile, so under equity skew it is biased LOW relative
+// to the true VOL0 (>40 vol bp at 6M in the paper's own Heston BCC example,
+// Sec. 6.5). `DerivConfig::carr_lee_form == Refined` recovers part of that
+// gap via the Remark 6.4/6.5 refinement against the strip's own K_var --
+// task-C-5-report.md has the from-paper (re-)derivation, including the
+// annualization fix the paper's un-annualized statement needs.
+
+TEST(CarrLee, RefinementVanishesOnFlat) {
+  // Idealized "flat vol" case: K_var == K_vol_naive^2 exactly, so there is no
+  // convexity gap left to recover. The correction numerator
+  // T*(K_var - K_vol_naive^2) is then identically zero, so refined must
+  // equal naive to the bit -- for any tenor and any vol level, not just the
+  // one this task's other tests happen to exercise.
+  const double tenors[] = {1.0 / 12.0, 0.25, 0.5, 1.0, 3.0};
+  const double naive_vols[] = {0.05, 0.20, 0.45, 0.90};
+  for (const double T : tenors) {
+    for (const double k_vol_naive : naive_vols) {
+      const double k_var = k_vol_naive * k_vol_naive;
+      const double refined =
+          atx::vol::detail::refine_carr_lee_k_vol(k_vol_naive, k_var, T);
+      EXPECT_NEAR(refined, k_vol_naive, 1e-12)
+          << "T=" << T << " k_vol_naive=" << k_vol_naive;
+    }
+  }
+}
+
+// Skewed fixture (rho ~= -0.7, deriv_testkit::kSkewRho -- LIT-4's cited
+// correlation), evaluated at LIT-4's cited 6M tenor: the refinement must
+// recover PART of the naive-vs-sqrt(K_var) convexity gap -- naive < refined
+// < sqrt(K_var) -- never overshooting the Jensen bound VOL0 <= VAR0 (rrvd
+// Prop. 6.1(c)) in this regime. Reuses the StripQuadrature section's shared
+// skew fixture above (quad_skew_surface / quad_curves) -- same surface
+// family the C-3 quadrature tests already validated against Prop 6.1(c)'s
+// sibling bound.
+TEST(CarrLee, RefinementOrderedUnderSkew) {
+  const EssviSurface surf = quad_skew_surface();
+  const CurveSet cs = quad_curves();
+  const double T = 0.5;  // 6M pillar, LIT-4's cited tenor
+
+  DerivConfig naive_cfg = deriv_default_config();
+  naive_cfg.carr_lee_form = atx::vol::CarrLeeForm::Naive;
+  const auto naive_q = vol_swap_fair_strike(surf, cs, T, naive_cfg);
+  ASSERT_TRUE(naive_q.has_value());
+
+  DerivConfig refined_cfg = deriv_default_config();
+  refined_cfg.carr_lee_form = atx::vol::CarrLeeForm::Refined;
+  const auto refined_q = vol_swap_fair_strike(surf, cs, T, refined_cfg);
+  ASSERT_TRUE(refined_q.has_value());
+
+  const auto var_q = var_swap_fair_strike(surf, cs, T, deriv_default_config());
+  ASSERT_TRUE(var_q.has_value());
+  const double sqrt_k_var = std::sqrt(var_q->fair_strike_dec);
+
+  EXPECT_LT(naive_q->fair_strike_dec, refined_q->fair_strike_dec);
+  EXPECT_LT(refined_q->fair_strike_dec, sqrt_k_var);
+
+  // Refined mode ran the strip internally -- unlike Naive, its own
+  // diagnostics now reflect that (carry-forward of the fix documented on
+  // vol_swap_fair_strike's declaration): a real Richardson estimate, not
+  // NaN, and a nonzero uncapped_var_dec, not the struct default.
+  EXPECT_TRUE(std::isfinite(refined_q->integration_error_est));
+  EXPECT_GT(refined_q->uncapped_var_dec, 0.0);
+
+  // Naive's own contract is untouched by this task (v1.1 default path).
+  EXPECT_TRUE(std::isnan(naive_q->integration_error_est));
+  EXPECT_EQ(naive_q->uncapped_var_dec, 0.0);
+}
+
 // ── Realized tracker (test_realized_tracker.c) ───────────────────────────
 
 TEST(RealizedTracker, Create_RejectsBadInputs) {

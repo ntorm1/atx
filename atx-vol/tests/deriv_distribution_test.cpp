@@ -2,6 +2,7 @@
 #include <cmath>
 #include "atx/vol/derivatives.hpp"
 #include "atx/vol/detail/rv_lognormal.hpp"
+#include "deriv_fixtures.hpp" // Task 0: deriv_testkit::make_skew_surface (Task C-5's skewed fixture)
 #include "support/deriv_test_fixture.hpp"
 
 namespace {
@@ -18,6 +19,7 @@ using atx::vol::detail::norm_cdf;
 // namespace, Tasks 4-6's shared helper) with no public surface to unit-test
 // directly here -- these two tests exercise it through the public entries
 // that already exist (var_swap_fair_strike / vol_swap_fair_strike).
+using atx::vol::CarrLeeForm;
 using atx::vol::CurveSet;
 using atx::vol::deriv_default_config;
 using atx::vol::deriv_price;
@@ -141,6 +143,63 @@ TEST(VolOfVol, AutoCalibrationReproducesCarrLee) {
   ASSERT_GT(s2, 0.0);
   const double recon = std::sqrt(kv->fair_strike_dec) * std::exp(-s2 / 8.0);
   EXPECT_NEAR(recon, kl->fair_strike_dec, 1e-14);
+}
+
+// ── Task C-5: Carr-Lee convexity refinement feeds xi auto-calibration ─────
+//
+// DELIBERATE DEVIATION from the brief's literal "refined K_vol => larger xi
+// => richer caps" wording -- verified against resolve_vol_of_vol's own
+// (pre-existing, un-modified-by-this-task) closed form and confirmed by this
+// test's first failing run; task-C-5-report.md has the full derivation.
+// Summary: xi solves s^2 = -8*ln(k_vol_target / sqrt(K_var)), i.e.
+// xi = f(ratio) for a ratio = k_vol_target/sqrt(K_var) STRICTLY DECREASING
+// in k_vol_target (d(xi)/dk < 0 for every k_vol_target in (0, sqrt(K_var)) --
+// algebra in the report, not just this fixture). Refined k_vol is CLOSER to
+// sqrt(K_var) than naive (CarrLee.RefinementOrderedUnderSkew), so it needs
+// LESS lognormal dispersion to explain a SMALLER Jensen gap: refined xi is
+// strictly SMALLER, not larger, and (cap options being vega-positive) so is
+// the cap option value. Economically: the naive formula's own approximation
+// shortfall gets misattributed by the auto-calibrator as if it were real
+// vol-of-vol, inflating xi (and cap prices) above what the surface's actual
+// convexity supports; feeding it the refined K_vol corrects PART of that
+// inflation back down, same direction as the K_vol fix itself.
+//
+// A flat surface's convexity gap is real but tiny (~1e-5 vol, the
+// ATMF-straddle formula's own O(sigma^3*T) approximation bias -- see
+// CarrLee.RefinementVanishesOnFlat), too small to move vol_of_vol_used and
+// cap_option_value_dec outside quadrature noise; the skewed fixture
+// (rho ~= -0.7) gives LIT-4's cited magnitude instead.
+TEST(Distribution, XiRespondsToForm) {
+  const EssviSurface surf = atx::vol::deriv_testkit::make_skew_surface(0.20, -0.40, 0.35);
+  const CurveSet cs = atx::vol::deriv_testkit::make_curves(100.0, 0.02, 0.01);
+
+  DerivContract c{};
+  c.kind = DerivKind::CappedVarSwap;
+  c.maturity_t = 0.5;  // 6M, LIT-4's cited tenor
+  c.notional = 1e6;
+  c.cap_dec = 0.05;  // near-the-money cap: genuinely bites, never pins (unaged)
+  c.rv_spec.annualization = 252.0;
+  c.rv_spec.n_obs_total = 126u;  // unaged (n_obs_done defaults to 0)
+
+  DerivConfig naive_cfg = deriv_default_config();
+  naive_cfg.carr_lee_form = CarrLeeForm::Naive;
+  const auto naive_q = deriv_price(surf, cs, c, naive_cfg);
+  ASSERT_TRUE(naive_q.has_value());
+  ASSERT_TRUE(has_flag(naive_q->flags, DerivFlags::VolOfVolCalibrated));
+
+  DerivConfig refined_cfg = deriv_default_config();
+  refined_cfg.carr_lee_form = CarrLeeForm::Refined;
+  const auto refined_q = deriv_price(surf, cs, c, refined_cfg);
+  ASSERT_TRUE(refined_q.has_value());
+  ASSERT_TRUE(has_flag(refined_q->flags, DerivFlags::VolOfVolCalibrated));
+
+  ASSERT_TRUE(std::isfinite(naive_q->vol_of_vol_used));
+  ASSERT_TRUE(std::isfinite(refined_q->vol_of_vol_used));
+  // Refined K_vol sits closer to sqrt(K_var) than naive -- see the
+  // RefinementOrderedUnderSkew derivation above -- so it needs strictly LESS
+  // inferred dispersion to explain the (now smaller) Jensen gap.
+  EXPECT_LT(refined_q->vol_of_vol_used, naive_q->vol_of_vol_used);
+  EXPECT_LT(refined_q->cap_option_value_dec, naive_q->cap_option_value_dec);
 }
 
 // ── Task 4: capped variance swap ──────────────────────────────────────────

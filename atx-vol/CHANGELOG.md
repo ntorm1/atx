@@ -246,6 +246,84 @@ re-mark. `integration_error_est` was the one number that could previously be
 wrong by four orders of magnitude while looking plausible, and any consumer
 gating on it will now see a much smaller (and truthful) value.
 
+### Added — `DerivConfig::carr_lee_form`: opt-in Remark 6.4/6.5 convexity refinement (LIT-4, Task C-5)
+
+`vol_swap_fair_strike`'s naive Carr-Lee formula (`K_vol ~= sqrt(2 pi / T) *
+C_ATMF(T) / (F * df)`) reads only the ATMF point of the smile — it is Carr &
+Lee's own Prop. 6.1 bound (a) / Remark 6.3, the approximation their rrvd.pdf
+explicitly declines to endorse (Remark 6.5). Under equity skew it is biased
+LOW relative to the true fair vol-swap value (the paper's own Heston BCC
+example, Sec. 6.5, cites >40 vol bp at 6M for ρ ≈ −0.7). Because
+`resolve_vol_of_vol`'s xi auto-calibration inverts against this same naive
+number, the bias was propagating into every distribution-model consumer
+(capped var/vol swaps, mid-life vol swaps) too.
+
+New `enum class CarrLeeForm { Naive = 0, Refined = 1 }` and
+`DerivConfig::carr_lee_form` (appended field, arity pin raised 12 → 13)
+select between the naive formula (default) and the paper's Remark 6.4/6.5
+refinement evaluated against the variance strip's own `K_var`:
+
+```
+K_vol_refined = K_vol_naive *
+    (1 + T*(K_var - K_vol_naive^2) / (8 + 2*T*K_vol_naive^2))
+```
+
+**This is NOT the T-dropped paraphrase a from-summary read of Remark 6.4
+suggests.** The paper states `VOL0 ≈ IV0*(1 + (VAR0²−IV0²)/(8+2·IV0²))` for
+UN-annualized total-horizon quantities (IV0, VAR0 scale like σ√T); restating
+it directly against this codebase's ANNUALIZED `K_vol`/`K_var` without
+re-inserting `T` silently assumes `T == 1` always. The formula above is the
+annualization-consistent substitution (`IV0 = K_vol_naive·√T`,
+`VAR0² = K_var·T`, divided back through by `√T`); it collapses to the
+T-dropped paraphrase exactly at `T == 1` and to `K_vol_naive` exactly
+whenever `K_var == K_vol_naive²` (no convexity to recover). See
+`task-C-5-report.md` for the full re-derivation.
+
+**Wiring**: `resolve_vol_of_vol`'s three callers (mid-life vol swap, capped
+var swap, capped vol swap) already have the strip's `K_var` in hand, so
+`Refined` is free there. The standalone `vol_swap_fair_strike` entry does
+not run a strip under `Naive` — under `Refined` it now pays for one
+`var_swap_fair_strike` evaluation (propagating that call's own error
+contract) and, since a strip now genuinely ran, populates
+`uncapped_var_dec`/`integration_error_est`/the strip-grid fields instead of
+leaving them at "no strip ran" (0.0 / NaN).
+
+**Direction, verified against `resolve_vol_of_vol`'s own closed form (not
+assumed from the task brief's paraphrase, which has this backwards): larger
+K_vol_target (Refined, sitting closer to `sqrt(K_var)`) needs LESS inferred
+lognormal dispersion to explain a SMALLER Jensen gap, so `vol_of_vol_used`
+and every cap option value it drives move DOWN under Refined, not up** — the
+naive formula's own approximation shortfall was being misattributed by the
+auto-calibrator as real vol-of-vol, inflating `xi` (and cap prices) above
+what the surface's actual convexity supports; `Refined` corrects part of
+that inflation back down, same direction as the `K_vol` fix itself.
+
+**Magnitude** (skewed fixture, `atm_vol=0.20`, ATM skew slope −0.40 bp/Δk at
+the 3M pillar, ρ = −0.7, convexity 0.35, T = 0.5 = 6M, r=2%, q=1%):
+
+| Quantity                         | Naive         | Refined       | Move             |
+|-----------------------------------|---------------|---------------|------------------|
+| `K_vol` (vol-swap fair strike)    | 0.199833458   | 0.199924092   | +0.906 vol bp    |
+| `sqrt(K_var)` (Jensen bound)       | 0.217316377   | (unchanged)   | —                |
+| xi (`vol_of_vol_used`, CappedVarSwap, T=6M, cap=0.05) | 1.158412278 | 1.155276537 | −0.271% rel |
+| `cap_option_value_dec`            | 0.0141013933  | 0.0140619539  | −0.280% rel      |
+
+The refinement recovers ≈0.9 vol bp of the naive-vs-Jensen-bound gap here
+(≈174.8 vol bp total on this fixture) — a small, leading-order correction by
+design (the paper does not endorse either approximation as globally
+accurate; Remark 6.5), not a full close of LIT-4's cited >40bp bias. A
+`Refined` caller should expect single-digit-vol-bp-scale `K_vol` moves and
+sub-percent `vol_of_vol_used`/cap-value moves at ordinary skew, growing with
+`T` and with the size of the naive-vs-`sqrt(K_var)` gap.
+
+**Migration**: `carr_lee_form` defaults to `Naive`, so this changes zero
+prices for every existing caller — the v1.1 default is byte-compatible with
+every pre-C-5 quote. **Planned 2.0 default: `Refined`.** A caller who wants
+the closer (still not exact) approximation today can opt in explicitly; a
+2.0 upgrade will move every unaged-vol-swap and distribution-model mark by
+the small magnitude above, growing with skew and tenor, and should be
+re-marked against the new default at that time.
+
 ## 1.0.0
 
 The first release with a stability promise. Everything below happened during the

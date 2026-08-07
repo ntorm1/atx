@@ -33,7 +33,10 @@
 //     (strip_k_lo_used / strip_k_hi_used / strip_nodes_used) so a caller, or
 //     deriv_greeks' own bump pinning, can reproduce it exactly.
 //   - Volatility-swap fair strike via the Carr-Lee model-free straddle formula
-//     K_vol(T) ~= sqrt(2 pi / T) * C_ATMF(T) / (F * df).
+//     K_vol(T) ~= sqrt(2 pi / T) * C_ATMF(T) / (F * df) (DerivConfig::
+//     carr_lee_form == Naive, the v1.1 default), or the Remark 6.4/6.5
+//     convexity refinement against the strip's own K_var (Task C-5,
+//     carr_lee_form == Refined -- planned 2.0 default).
 //   - Aged-trade dispatch: the variance leg blends accrued realized variance
 //     with future implied variance under the standard
 //     (n_done/n_total)*RV_done + (n_future/n_total)*K_var_future convention;
@@ -120,6 +123,7 @@
 #include <limits>
 #include <span>
 
+#include "atx/vol/detail/aggregate_arity.hpp" // DerivConfig field-count drift pin
 #include "atx/vol/rates_curve.hpp"
 #include "atx/vol/types.hpp"
 
@@ -184,6 +188,35 @@ enum class DerivDiscreteCorrection : std::uint8_t {
 enum class DerivMarkingConvention : std::uint8_t {
   Otc = 1,
   CboeVarianceFuture = 2,  // reserved
+};
+
+// Which Carr-Lee K_vol approximation the ATMF-straddle formula (and the
+// vol-of-vol auto-calibration that inverts it, resolve_vol_of_vol) resolve
+// against. Task C-5; see task-C-5-report.md for the from-paper derivation.
+//
+//   Naive    -> K_vol ~= sqrt(2 pi / T) * C_ATMF(T) / (F * df) (Carr & Lee
+//               2009, "Robust Replication of Volatility Derivatives", Prop.
+//               6.1 bound (a) / Remark 6.3) -- the ATMF-straddle
+//               approximation the paper explicitly declines to endorse
+//               (Remark 6.5). Under equity skew it is biased LOW (LIT-4:
+//               >40 vol bp at 6M, Heston BCC calibration, the paper's Sec.
+//               6.5 numerical example) because it reads only the ATMF vol
+//               and never sees the rest of the smile. v1.1 DEFAULT, for
+//               behavior compatibility with every quote struck before this
+//               knob existed.
+//   Refined  -> the Remark 6.4/6.5 convexity refinement, evaluated against
+//               the variance strip's OWN K_var instead of a second naive
+//               proxy. Recovers PART of the naive-vs-sqrt(K_var) convexity
+//               gap without ever crossing the Jensen bound VOL0 <= VAR0
+//               (Prop. 6.1(c)) in the regime this task's tests cover. Costs
+//               one extra strip evaluation at the standalone Carr-Lee entry
+//               (vol_swap_fair_strike) -- the distribution-model callers
+//               (resolve_vol_of_vol's 3 call sites) already have the strip's
+//               K_var in hand, so refining there is free. Planned 2.0
+//               default; see CHANGELOG.md for the migration note.
+enum class CarrLeeForm : std::uint8_t {
+  Naive = 0,
+  Refined = 1,
 };
 
 // Provenance / diagnostic bitmask carried on DerivQuote::flags (mirrors
@@ -392,6 +425,11 @@ struct DerivConfig {
   //   > 0  -> used as-is; the caller's own calibration wins.
   //   < 0  -> InvalidArgument (a vol-of-vol cannot be negative).
   double vol_of_vol = 0.0;
+  // Which Carr-Lee K_vol approximation feeds the standalone vol-swap entry
+  // and the vol-of-vol auto-calibration above (see CarrLeeForm). Naive is
+  // the v1.1 default (behavior-compatible with every pre-C-5 quote);
+  // Refined pulls in the strip's own K_var for a smaller convexity bias.
+  CarrLeeForm carr_lee_form = CarrLeeForm::Naive;
   // Wing trust band for the variance strip's SURFACE READS, in absolute
   // log-forward-moneyness. The fit pipeline certifies a surface only on
   // |k| <= 0.5 (RiskSurfaceValidationConfig::k_min/k_max); beyond it a
@@ -418,6 +456,14 @@ struct DerivConfig {
   double rel_price_tol = 0.0;
   std::uint32_t flags_request = 0;
 };
+
+// Drift pin: DerivConfig has exactly THIRTEEN fields (v1.1 appended
+// carr_lee_form, task C-5). Adding, removing, or splitting one breaks this
+// line -- update the count, and confirm every construction site still uses
+// `DerivConfig{}` + designated field assignment (the only form used anywhere
+// in this codebase today; there is no positional brace-init to protect).
+static_assert(detail::aggregate_arity_is_v<DerivConfig, 13>,
+              "DerivConfig field count changed: update this pin.");
 
 // The default config: STANDARD quality, AUTO engine, no discrete correction,
 // OTC marking (ats_vol_deriv_default_config).
@@ -517,6 +563,50 @@ struct DerivQuote {
   DerivFlags flags = DerivFlags::None;
 };
 
+// ── Carr-Lee convexity refinement (detail) ─────────────────────────────────
+
+namespace detail {
+
+// Carr-Lee (Carr & Lee 2009, "Robust Replication of Volatility Derivatives",
+// https://math.uchicago.edu/~rl/rrvd.pdf, Remark 6.4/6.5) convexity
+// refinement of the naive ATMF-straddle K_vol approximation, adapted to this
+// codebase's ANNUALIZED decimal convention. task-C-5-report.md has the full
+// from-paper re-derivation; in short, the paper states Remark 6.4 for
+// UN-annualized total-horizon quantities (IV0, VAR0, VOL0, each scaling like
+// sigma*sqrt(T)) --
+//
+//   VOL0 ~= IV0 * (1 + (VAR0^2 - IV0^2) / (8 + 2*IV0^2))
+//
+// -- and naively dropping T when restating it for this codebase's annualized
+// K_vol/K_var (a "summary fidelity" transcription error, not a paper error)
+// silently assumes T == 1 always. Substituting IV0 = k_vol_naive*sqrt(T),
+// VAR0^2 = k_var*T and dividing back through by sqrt(T) gives the
+// annualization-consistent form actually implemented here:
+//
+//   K_vol_refined = k_vol_naive *
+//       (1 + T*(k_var - k_vol_naive^2) / (8 + 2*T*k_vol_naive^2))
+//
+// which collapses to the (T-dropped) paraphrase exactly at T == 1 and to
+// k_vol_naive exactly whenever k_var == k_vol_naive^2 (no convexity to
+// recover -- CarrLee.RefinementVanishesOnFlat pins this).
+//
+// This is a LOCAL/leading-order approximation (the paper does not endorse
+// it -- Remark 6.5), valid in the small-correction regime every intended
+// caller here operates in; it is not a globally bound-respecting formula; a
+// pathologically large T or skew could in principle push it past
+// sqrt(k_var). resolve_vol_of_vol's existing ratio-in-[0,1) guard already
+// absorbs that case (degrades to xi = 0, the same "no usable convexity"
+// outcome an untestable input already produces) rather than propagating a
+// bad value, so no additional clamp is added here.
+//
+// Precondition (caller-enforced, not checked -- an unconditionally noexcept
+// leaf like this file's other detail:: primitives): T > 0; k_vol_naive and
+// k_var finite and >= 0.
+[[nodiscard]] double refine_carr_lee_k_vol(double k_vol_naive, double k_var,
+                                           double T) noexcept;
+
+}  // namespace detail
+
 // ── Fair-strike resolvers ────────────────────────────────────────────────
 
 // Variance-swap fair strike via OTM option-strip integration (engine
@@ -542,6 +632,15 @@ var_swap_fair_strike(const SurfaceT& surface, const CurveSet& curves, double T,
 // Volatility-swap fair strike via the Carr-Lee model-free straddle formula
 // (engine VOL_CARR_LEE). Same error contract as var_swap_fair_strike; also
 // returns OutOfRange if the ATMF implied vol is non-finite or non-positive.
+//
+// `cfg.carr_lee_form` (Task C-5, default Naive) selects the naive formula
+// above or the Remark 6.4/6.5 convexity refinement (detail::
+// refine_carr_lee_k_vol). Naive runs NO strip (integration_error_est stays
+// NaN, uncapped_var_dec stays 0.0, matching every pre-C-5 caller exactly).
+// Refined needs the strip's own K_var, so it pays for one var_swap_fair_
+// strike evaluation and propagates that strip's error contract too (Internal
+// on an unusably holey surface, etc.) -- an opt-in cost, never paid unless
+// the caller asks for it.
 template <class SurfaceT>
 [[nodiscard]] Result<DerivQuote>
 vol_swap_fair_strike(const SurfaceT& surface, const CurveSet& curves, double T,

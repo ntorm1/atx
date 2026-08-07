@@ -28,6 +28,22 @@ using atx::core::Err;
 using atx::core::ErrorCode;
 using atx::core::Ok;
 
+namespace detail {
+
+// See the declaration (derivatives.hpp, "Carr-Lee convexity refinement") for
+// the from-paper derivation. Pure arithmetic -- no branches, no early exits,
+// so every input (including a degenerate k_vol_naive == 0) produces a
+// well-defined finite result: the denominator is >= 8 for any T > 0, so
+// there is no division-by-zero to guard.
+double refine_carr_lee_k_vol(double k_vol_naive, double k_var, double T) noexcept {
+  const double naive_sq = k_vol_naive * k_vol_naive;
+  const double numerator = T * (k_var - naive_sq);
+  const double denominator = 8.0 + 2.0 * T * naive_sq;
+  return k_vol_naive * (1.0 + numerator / denominator);
+}
+
+}  // namespace detail
+
 namespace {
 
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
@@ -367,8 +383,30 @@ template <class SurfaceT>
     return Ok(VolOfVol{0.0, true});  // degenerate input; auto path still "ran"
   }
 
+  // Task C-5: refined form calibrates against the Remark 6.4/6.5 convexity
+  // refinement instead of the naive ATMF-straddle number -- k_var_future is
+  // ALREADY the strip's own K_var (every caller of resolve_vol_of_vol runs
+  // the strip first), so this costs nothing extra here, unlike the
+  // standalone vol_swap_fair_strike entry.
+  //
+  // DIRECTION (verified against this function's own closed form below, NOT
+  // the task brief's paraphrase -- see task-C-5-report.md): xi solves
+  // s^2 = -8*ln(ratio), ratio = k_vol/sqrt(k_var_future), which is STRICTLY
+  // DECREASING in k_vol for fixed k_var_future. Refined k_vol >= naive k_vol
+  // under positive convexity (K_var > k_vol_naive^2), so ratio GROWS and xi
+  // SHRINKS under Refined -- less inferred dispersion is needed to explain a
+  // SMALLER Jensen gap once the K_vol input is less biased. Cap options are
+  // vega-positive, so cap_option_value_dec shrinks too. The brief's "richer
+  // caps" framing does not hold against this formula; a caller relying on
+  // Refined to CHEAPEN naive's caps (not enrich them) has the right mental
+  // model.
+  const double k_vol =
+      cfg.carr_lee_form == CarrLeeForm::Refined
+          ? detail::refine_carr_lee_k_vol(k_vol_cl, k_var_future, T)
+          : k_vol_cl;
+
   const double sqrt_k_var = std::sqrt(k_var_future);
-  const double ratio = k_vol_cl / sqrt_k_var;
+  const double ratio = k_vol / sqrt_k_var;
   // ratio >= 1 (written as !(ratio < 1.0) so a NaN ratio also lands here, not
   // in the log() below): no convexity, or an inverted/degenerate input. s^2
   // would be <= 0, not a valid lognormal log-stdev, so xi = 0 (RV collapses
@@ -1203,17 +1241,40 @@ Result<DerivQuote> vol_swap_fair_strike(const SurfaceT& surface,
 
   // K_vol ~= sqrt(2 pi / T) * C_ATMF / (F * df) — shared with
   // resolve_vol_of_vol's auto-calibration path so the two never drift.
-  ATX_TRY(const double k_vol, carr_lee_k_vol(surface, curves, T));
+  ATX_TRY(const double k_vol_naive, carr_lee_k_vol(surface, curves, T));
 
   DerivQuote out{};
-  out.fair_strike_dec = k_vol;
-  out.fair_strike_points = 1.0e2 * k_vol;
   out.pv = 0.0;
-  out.undiscounted_expectation_dec = k_vol;
+  out.flags = DerivFlags::VolCarrLee;
+
+  // Task C-5: Refined form needs the strip's own K_var (Remark 6.4/6.5), so
+  // unlike Naive this branch pays for one var_swap_fair_strike evaluation --
+  // an opt-in cost, never paid by a Naive (default) caller. A strip failure
+  // here propagates (ATX_TRY): the caller explicitly asked for the
+  // strip-dependent form, so a surface the strip cannot integrate is this
+  // call's failure too, not a silent fall-back to the naive number.
+  if (cfg.carr_lee_form == CarrLeeForm::Refined) {
+    ATX_TRY(auto strip, var_swap_fair_strike(surface, curves, T, cfg));
+    const double k_vol =
+        detail::refine_carr_lee_k_vol(k_vol_naive, strip.fair_strike_dec, T);
+    out.fair_strike_dec = k_vol;
+    out.fair_strike_points = 1.0e2 * k_vol;
+    out.undiscounted_expectation_dec = k_vol;
+    out.uncapped_var_dec = strip.uncapped_var_dec;
+    out.convexity_adjustment_dec =
+        std::sqrt(std::fmax(strip.uncapped_var_dec, 0.0)) - k_vol;
+    out.integration_error_est = strip.integration_error_est;
+    carry_strip_grid(out, strip);
+    out.flags |= strip.flags;
+    return Ok(out);
+  }
+
+  out.fair_strike_dec = k_vol_naive;
+  out.fair_strike_points = 1.0e2 * k_vol_naive;
+  out.undiscounted_expectation_dec = k_vol_naive;
   out.uncapped_var_dec = 0.0;  // not computed in this entry
   out.convexity_adjustment_dec = 0.0;
   out.integration_error_est = kNaN;  // no strip runs here; NaN = not estimated
-  out.flags = DerivFlags::VolCarrLee;
   return Ok(out);
 }
 
