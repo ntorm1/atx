@@ -1644,4 +1644,113 @@ TEST(Strip, InteriorNaNExceedsThreshold_ReturnsInternal) {
   EXPECT_EQ(q.error().code(), ErrorCode::Internal);
 }
 
+// ── Fix round 1: interior-bad-node accounting must not couple to the ATM
+//    read (review Critical finding) ────────────────────────────────────────
+//
+// `sigma_atm = surface.iv(0.0, T)` reads the IDENTICAL (k_log=0.0, T) point
+// the strip's own forced k = 0 panel-boundary kink node reads inside the
+// loop -- k = 0 is always a distinct grid node whenever k_lo < 0 < k_hi
+// (strip_grid.hpp's `strip_panel_bounds`), true of every symmetric-span
+// call including `pinned_symmetric_strip_cfg` above. A gate built on
+// `sigma_atm` alone therefore cannot tell "the surface is unusable
+// everywhere" (the short-T extrapolation corner the earlier fix round was
+// protecting) apart from "the ONE bad interior node happens to sit at ATM"
+// -- exactly the case PV-4's finding names explicitly ("including the k = 0
+// put-call-parity kink"). These two tests place the SVI vertex at m = 0
+// instead of m = 0.5 (the earlier pair's placement, which structurally
+// cannot reach k = 0) so ATM itself is the bad node while every other node,
+// including both true grid endpoints, stays clean.
+
+TEST(Strip, InteriorNaNAtAtmFlagged) {
+  const double T_test = 0.5;
+  // Same half-width margin as InteriorNaNFlagged (~0.00335 < the 0.005 node
+  // spacing), just recentered on m = 0 so the bad node IS k = 0 itself --
+  // the same point sigma_atm reads.
+  const SviSurface surf = make_interior_hole_surface(-0.0035, 0.0, 0.001, T_test);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+
+  const auto q = var_swap_fair_strike(surf, cs, T_test, pinned_symmetric_strip_cfg());
+  ASSERT_TRUE(q.has_value());
+  EXPECT_TRUE(has_flag(q->flags, DerivFlags::InteriorBadNodes));
+}
+
+TEST(Strip, InteriorNaNAtAtmExceedsThreshold_ReturnsInternal) {
+  const double T_test = 0.5;
+  // Same half-width margin as InteriorNaNExceedsThreshold_ReturnsInternal
+  // (~0.05999, 23 bad nodes), recentered on m = 0.
+  const SviSurface surf = make_interior_hole_surface(-0.06, 0.0, 0.001, T_test);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+
+  const auto q = var_swap_fair_strike(surf, cs, T_test, pinned_symmetric_strip_cfg());
+  ASSERT_FALSE(q.has_value());
+  EXPECT_EQ(q.error().code(), ErrorCode::Internal);
+}
+
+// ── Fix round 1: the shared panel-boundary node must count exactly once
+//    (review Important finding) ─────────────────────────────────────────
+//
+// C-3's panel split reuses the previous panel's LAST node as the next
+// panel's FIRST node (the `shared` variable in the loop) rather than
+// re-reading `iv()` -- one read per DISTINCT node. A bad value at that
+// shared boundary must be counted once, not twice (double-count: a clean
+// surface could spuriously cross the Internal threshold).
+//
+// NOTE on the wing clamp's read semantics: `integrand_at` clamps the READ
+// position, not just a validity check -- `x_read = clamp(x, -band, band)`.
+// So EVERY node beyond `+wing_band` reads `iv()` AT `wing_band` itself, the
+// SAME call the shared boundary node makes. Placing the bad vertex exactly
+// at `+wing_band` therefore does not isolate a single bad read: it also
+// poisons every node in the panel beyond the band (they clamp to the same
+// bad point), including the grid's own true right endpoint -- collateral,
+// not a counting bug, and accounted for below rather than avoided.
+//
+// Grid: symmetric [-1, 1], wing_clamp_k = 0.9 (band close to k_max = 1, so
+// the panel beyond it is as narrow as the apportionment allows), 15 nodes.
+// intervals = 14, 14 % 4 == 2 -> unit = 2 immediately (skips the 4-unit
+// path), 4 panels at {-1,-0.9}, {-0.9,0}, {0,0.9}, {0.9,1}
+// (`strip_panel_bounds`/`plan_strip_split`). intervals/unit = 7, spare =
+// 7 - 4 = 3; apportion_units gives share [1, 3, 2, 1] (len-proportional,
+// remainder to the longer/lower-index panel), i.e. panel_intervals
+// [2, 6, 4, 2] -- the two length-0.1 end panels get the apportionment
+// floor, 2 intervals (3 nodes) each. threshold = max(2, 15/100) == 2.
+//
+// The SVI vertex sits at m = +0.9, the shared node between panel [0,0.9]'s
+// last node (read once, at the end of that panel's loop) and panel
+// [0.9,1]'s first node (reused via `shared`, not reread). Half-width
+// h = sqrt(0.01^2 - 0.001^2) ~= 0.00995, comfortably under panel [0,0.9]'s
+// own spacing (0.9/4 = 0.225), so from the UNCLAMPED left side only the
+// vertex node itself is bad -- its neighbor at k = 0.675 stays clean.
+// From the clamped right side, panel [0.9,1] has exactly one more node
+// beyond the shared one at its OWN spacing (0.1/2 = 0.05): the midpoint
+// k = 0.95, which clamps to `wing_band` = 0.9 same as the shared node does,
+// so it reads the SAME bad value -- one more genuine, distinct bad read
+// (collateral of the clamp, not of the split). The panel's last node,
+// k = 1.0, is the grid's own true endpoint (`is_grid_last`) and is excluded
+// from interior accounting by construction, contributing to `bad_last`
+// instead (expected, not asserted against here).
+//
+// Correct interior count = 2 (shared node + the k = 0.95 collateral read),
+// exactly the threshold: Ok, flagged. If the shared node were counted
+// TWICE (the bug this test targets), the observed count would be 3 > 2 and
+// this would return Internal instead, catching it.
+TEST(Strip, InteriorNaNAtSharedWingBandNodeCountsOnce) {
+  const double T_test = 0.5;
+  const double wing_band = 0.9;
+  const double sigma = 0.001;
+  const double a = -0.01; // h = sqrt(0.01^2 - 0.001^2) ~= 0.00995
+
+  const SviSurface surf = make_interior_hole_surface(a, wing_band, sigma, T_test);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+
+  DerivConfig cfg = deriv_default_config();
+  cfg.k_min_log = -1.0;
+  cfg.k_max_log = 1.0;
+  cfg.strip_nodes = 15;
+  cfg.wing_clamp_k = wing_band;
+
+  const auto q = var_swap_fair_strike(surf, cs, T_test, cfg);
+  ASSERT_TRUE(q.has_value());
+  EXPECT_TRUE(has_flag(q->flags, DerivFlags::InteriorBadNodes));
+}
+
 }  // namespace

@@ -915,18 +915,6 @@ Result<DerivQuote> var_swap_fair_strike(const SurfaceT& surface,
   const double width_sigmas =
       cfg.width_sigmas == 0.0 ? strip::kDefaultWidthSigmas : cfg.width_sigmas;
   const double sigma_atm = surface.iv(0.0, T);
-  // PV-4 interior-bad-node accounting (below) only makes sense once the
-  // surface can answer AT THE MONEY: when it cannot (e.g. a query T under
-  // the legacy_surface short-T extrapolation guard, `T < 0.5*T0`), EVERY
-  // node -- endpoints included -- reads non-finite, and that is already the
-  // pre-existing "surface unusable here" signal (bad_first/bad_last ->
-  // StripTruncatedLeft/Right, k_var settles near 0). Piling a hard Internal
-  // failure on top of an already-degenerate-by-design quote would turn a
-  // deliberately-tolerated corner (deriv_greeks rolls a theta/charm bump
-  // through exactly this regime and expects a NaN greek, not a failed call)
-  // into a break. The new accounting is reserved for the case PV-4 actually
-  // named: an otherwise-USABLE surface with a hole strictly inside it.
-  const bool atm_unusable = !std::isfinite(sigma_atm) || sigma_atm <= 0.0;
   const double required = strip::required_half_width(sigma_atm, T, width_sigmas);
   if (!span_pinned) {
     const double floor_half = std::fmax(-grid.k_min_log, grid.k_max_log);
@@ -1104,15 +1092,32 @@ Result<DerivQuote> var_swap_fair_strike(const SurfaceT& surface,
     integral_half += sum_half * (2.0 * dx / 3.0);
   }
 
+  // Review fix round 1 (Critical): interior-bad-node accounting is gated on
+  // the strip's own ENDPOINTS, not on a fresh ATM read. `sigma_atm` above
+  // reads the SAME (k_log=0.0, T) point the k = 0 panel-boundary kink node
+  // reads inside the loop just run -- k = 0 is a forced, distinct grid node
+  // whenever k_lo < 0 < k_hi (`strip_panel_bounds`), true of virtually
+  // every real call. Gating on sigma_atm's finiteness could therefore never
+  // tell "the surface is unusable everywhere" (T under the legacy_surface
+  // short-T extrapolation guard, `T < 0.5*T0`, where EVERY node including
+  // both true endpoints reads non-finite) apart from "the one bad interior
+  // node happens to sit at ATM" -- exactly the case PV-4's finding names
+  // explicitly ("including the k = 0 put-call-parity kink"), silently
+  // reproducing the pre-fix bug for it. `bad_first`/`bad_last` (the two
+  // TRUE grid endpoints, already computed by the loop above) carry the
+  // right signal instead: both true only in the wholesale-unusable case --
+  // an interior node's badness, wherever it sits, cannot set either.
+  const bool strip_wholly_unusable = bad_first && bad_last;
+
   // PV-4: a strip whose middle is mostly holes is broken, not merely sparse
   // -- refuse before spending any more work computing a number that would be
   // built mostly from the bad-node zero substitution. `max(2, n/100)` gives
   // small grids a fixed floor (two isolated gaps stays a quote) and scales
   // with node count on large ones, matching the brief's own budget. Skipped
-  // entirely when the surface cannot answer ATM (see `atm_unusable` above) --
-  // that is the pre-existing, deliberately-tolerated degenerate corner, not
-  // this task's target.
-  if (!atm_unusable && interior_bad_count > std::max<std::size_t>(2, n / 100u)) {
+  // entirely when the strip is wholly unusable (see above) -- that is the
+  // pre-existing, deliberately-tolerated degenerate corner, not this task's
+  // target.
+  if (!strip_wholly_unusable && interior_bad_count > std::max<std::size_t>(2, n / 100u)) {
     return Err(ErrorCode::Internal, "variance strip has too many interior bad nodes");
   }
 
@@ -1154,7 +1159,7 @@ Result<DerivQuote> var_swap_fair_strike(const SurfaceT& surface,
   if (low_t) {
     flags |= DerivFlags::LowT;
   }
-  if (!atm_unusable && interior_bad_count > 0u) {
+  if (!strip_wholly_unusable && interior_bad_count > 0u) {
     flags |= DerivFlags::InteriorBadNodes;
   }
 

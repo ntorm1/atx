@@ -53,12 +53,16 @@ gap quotes is business as usual on a real fitted surface). More than
 `max(2, n_nodes/100)` returns `Internal` instead of a quote: a surface with
 that many holes across its middle is broken, not sparse, and a number built
 mostly from zero-substitutions is worse than refusing to answer. Exempted
-when the surface cannot answer AT THE MONEY at all (e.g. a query T under the
-legacy short-T extrapolation guard) — that is the pre-existing, deliberately
-tolerated "surface has nothing to say at this T" corner (`deriv_greeks`
-relies on it to roll a theta/charm bump past expiry and get a NaN greek back,
-not a failed call), a different failure from PV-4's target of an otherwise-
-usable surface with a hole in it.
+when the strip is wholly unusable — BOTH true grid endpoints (`bad_first`
+and `bad_last`) read non-finite, e.g. a query T under the legacy short-T
+extrapolation guard — that is the pre-existing, deliberately tolerated
+"surface has nothing to say at this T" corner (`deriv_greeks` relies on it
+to roll a theta/charm bump past expiry and get a NaN greek back, not a
+failed call), a different failure from PV-4's target of an otherwise-usable
+surface with a hole in it. (Review fix round 1: the exemption is decided on
+the strip's own two endpoints, not on a fresh ATM read — an ATM-coupled
+exemption would silently re-open PV-4's own named case, a single bad node
+that happens to sit at the k = 0 kink.)
 
 **Migration**: nothing changes for a clean surface — a well-formed fitted
 surface was never producing interior bad nodes, so this is new accounting,
