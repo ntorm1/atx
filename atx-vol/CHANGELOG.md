@@ -8,6 +8,51 @@ that silently changes a NUMBER a caller already depends on belongs in this file.
 Vol-derivatives production sprint, Phase 1 (correctness). Grows only with
 changes that move a number a caller could already be marking with.
 
+### Fixed — the wing clamp now trusts a Latency-mode surface's OWN certified band, not a wider one nobody certified (FIT-C7, Task C-6)
+
+`DerivConfig::wing_clamp_k == 0` (the default) resolved unconditionally to
+`strip::kCertifiedWingHalfBand` (0.5) — the band the fit pipeline's
+independent risk validator certifies for a **Balanced**-quality surface
+(`risk_validation_config`, `pricer_fitter.cpp`). A surface fit at
+**Latency** quality is certified only to `±0.35`; a default-config quote
+against it was reading `[0.35, 0.5]` as trusted when nothing in the fit
+pipeline ever validated that range — precisely the uncertified extrapolation
+the clamp exists to keep out.
+
+`atx::vol::certified_wing_half_band(FitQualityMode)` (new,
+`surface_policy.hpp`) is the canonical mode-keyed band (Latency 0.35,
+Balanced 0.50 — unchanged, Accuracy 0.60). The `PricedSurface`/`SurfaceRef`-
+native entry points (`var_swap_fair_strike`, `vol_swap_fair_strike`,
+`deriv_price`, `deriv_greeks`, `deriv_price_on_ref`, `deriv_greeks_on_ref`)
+each take a new trailing `surface_certified_wing_band` parameter (default
+`std::nullopt`): a caller that knows the surface's own build quality mode
+resolves it through `certified_wing_half_band` and passes it in, and
+`wing_clamp_k == 0` now resolves to THAT band instead of the mode-blind
+default. The templated legacy-surface entry points (`VolSurface`/
+`EssviSurface`/`SviSurface`) carry no such provenance and are unaffected —
+they keep reading `strip::kCertifiedWingHalfBand` exactly as before.
+`DerivQuote::resolved_wing_clamp` (new field, arity pin 15 -> 16) records
+the band a quote actually resolved, so a caller can inspect it directly
+instead of inferring it from `DerivFlags::WingClamped` alone. A bumped
+`deriv_greeks` evaluation prices through an adapter with no provenance of
+its own, so `pin_center_scheme` now also pins the CENTER's resolved band
+into every bump's config — without this, a Latency-certified center's
+vega/gamma/etc. would difference against bumps silently read at the wider
+mode-blind band.
+
+**Migration**: every existing call site is unaffected — `surface_certified_
+wing_band` defaults to `std::nullopt`, which resolves to the SAME `0.5` this
+code always used, bit for bit (also regression-tested). A caller pricing a
+`PricedSurface`/`SurfaceRef` it knows was fit at Latency or Accuracy quality
+should start passing `certified_wing_half_band(quality_mode)` explicitly;
+doing so for a Latency-mode surface **moves the mark** — a steepening wing
+between `±0.35` and `±0.5` was previously read as trusted smile and now
+reads flat at the `±0.35` band edge instead, which can only lower a
+variance-swap fair strike (never raise one, by the same monotonic-tightening
+identity an explicit `wing_clamp_k` override already has). Accuracy-mode
+surfaces widen from 0.5 to 0.6 and move the other direction. Balanced-mode
+surfaces are bit-identical either way (0.5 either way).
+
 ### Fixed — two silent kind x engine mismatches now fail loud (PV-5)
 
 `deriv_price` already rejected an engine that names no pricing formula for a

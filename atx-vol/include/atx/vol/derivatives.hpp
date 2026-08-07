@@ -121,9 +121,10 @@
 
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <span>
 
-#include "atx/vol/detail/aggregate_arity.hpp" // DerivConfig field-count drift pin
+#include "atx/vol/detail/aggregate_arity.hpp" // DerivConfig/DerivQuote field-count drift pins
 #include "atx/vol/rates_curve.hpp"
 #include "atx/vol/types.hpp"
 
@@ -560,8 +561,22 @@ struct DerivQuote {
   double strip_k_lo_used = kQuietNaN;
   double strip_k_hi_used = kQuietNaN;
   std::uint32_t strip_nodes_used = 0;
+  // The wing trust half-band `resolve_wing_clamp` (derivatives.cpp) actually
+  // used for this quote's strip -- DerivConfig::wing_clamp_k resolved against
+  // whatever certified band the surface itself carried, per FIT-C7 (Task C-6).
+  // 0.0 means the clamp resolved OFF (an explicit negative wing_clamp_k); NaN
+  // means no strip ran, same "not computed" convention as strip_k_lo_used
+  // beside it. Populated and carried alongside the grid fields above by every
+  // dispatch path that runs a strip.
+  double resolved_wing_clamp = kQuietNaN;
   DerivFlags flags = DerivFlags::None;
 };
+
+// Drift pin: DerivQuote has exactly SIXTEEN fields (v1.1 appended
+// resolved_wing_clamp, Task C-6). See the DerivConfig pin above for the
+// contract this protects.
+static_assert(detail::aggregate_arity_is_v<DerivQuote, 16>,
+              "DerivQuote field count changed: update this pin.");
 
 // ── Carr-Lee convexity refinement (detail) ─────────────────────────────────
 
@@ -853,18 +868,36 @@ deriv_greeks(const SurfaceT& surface, const CurveSet& curves,
 // Numeric behaviour is otherwise unchanged: identical grid, identical adaptive
 // span, identical Simpson quadrature, identical flags.
 //
+// `surface_certified_wing_band`: FIT-C7 (Task C-6). `DerivConfig::wing_clamp_k
+// == 0` (the default) ordinarily resolves to the strip's mode-blind certified
+// band (`strip::kCertifiedWingHalfBand`, = the BALANCED quality mode's own
+// certified band) -- correct for a Balanced-quality surface, but a surface
+// fit at a DIFFERENT quality mode certifies a DIFFERENT band (Latency ±0.35,
+// Accuracy ±0.60: `atx::vol::certified_wing_half_band`, surface_policy.hpp).
+// A caller who knows this PricedSurface's own build quality mode should
+// resolve that band and pass it here; the strip then trusts the surface
+// exactly where that mode's fit pipeline actually certified it instead of the
+// mode-blind default. `std::nullopt` (the default) preserves prior behaviour
+// exactly -- the mode-blind band, unless `cfg.wing_clamp_k` overrides it
+// explicitly (unchanged >0/<0 semantics either way).
+//
 // @return the same error contract as the templated overloads, plus
 //         InvalidArgument when the surface carries no usable fitted pillar and
 //         OutOfRange when `T` falls outside the fitted pillar range.
-[[nodiscard]] Result<DerivQuote> var_swap_fair_strike(const PricedSurface& surface, double T,
-                                                      const DerivConfig& cfg = DerivConfig{});
+[[nodiscard]] Result<DerivQuote>
+var_swap_fair_strike(const PricedSurface& surface, double T,
+                     const DerivConfig& cfg = DerivConfig{},
+                     std::optional<double> surface_certified_wing_band = std::nullopt);
 
-[[nodiscard]] Result<DerivQuote> vol_swap_fair_strike(const PricedSurface& surface, double T,
-                                                      const DerivConfig& cfg = DerivConfig{});
+[[nodiscard]] Result<DerivQuote>
+vol_swap_fair_strike(const PricedSurface& surface, double T,
+                     const DerivConfig& cfg = DerivConfig{},
+                     std::optional<double> surface_certified_wing_band = std::nullopt);
 
-[[nodiscard]] Result<DerivQuote> deriv_price(const PricedSurface& surface,
-                                             const DerivContract& contract,
-                                             const DerivConfig& cfg = DerivConfig{});
+[[nodiscard]] Result<DerivQuote>
+deriv_price(const PricedSurface& surface, const DerivContract& contract,
+           const DerivConfig& cfg = DerivConfig{},
+           std::optional<double> surface_certified_wing_band = std::nullopt);
 
 // Same contract as the templated `deriv_greeks` above, differentiating the
 // PricedSurface-native `deriv_price`. The fitted-range gate runs ONCE, on
@@ -881,9 +914,10 @@ deriv_greeks(const SurfaceT& surface, const CurveSet& curves,
 // divergence by ~365x. Theta on a front-pillar contract is therefore the one
 // output here to treat as indicative; price the roll against a surface whose
 // front pillar is genuinely shorter than the contract if it must be traded on.
-[[nodiscard]] Result<DerivGreeks> deriv_greeks(const PricedSurface& surface,
-                                               const DerivContract& contract,
-                                               const DerivConfig& cfg = DerivConfig{},
-                                               const DerivGreekBumps& bumps = DerivGreekBumps{});
+[[nodiscard]] Result<DerivGreeks>
+deriv_greeks(const PricedSurface& surface, const DerivContract& contract,
+            const DerivConfig& cfg = DerivConfig{},
+            const DerivGreekBumps& bumps = DerivGreekBumps{},
+            std::optional<double> surface_certified_wing_band = std::nullopt);
 
 }  // namespace atx::vol

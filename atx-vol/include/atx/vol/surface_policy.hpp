@@ -234,6 +234,36 @@ struct LegacyPresetMapping {
   }
 }
 
+// The half-band (absolute log-forward-moneyness) the independent risk
+// validation oracle actually certifies a candidate built at `mode` over --
+// the k_max a RiskSurfaceValidationConfig for that mode carries
+// (risk_validation_config, pricer_fitter.cpp). Latency trades a narrower
+// certified band for build speed; Balanced is the strip's own mode-blind
+// default (strip::kCertifiedWingHalfBand, detail/strip_grid.hpp); Accuracy
+// widens it. FIT-C7: a Latency-mode surface priced under the mode-blind
+// default read [0.35, 0.5] as certified when nothing certified it there --
+// a caller pricing a PricedSurface/SurfaceRef whose build quality mode it
+// knows should resolve the wing-trust band through THIS function and pass
+// the result as `var_swap_fair_strike`'s (etc.) `surface_certified_wing_band`
+// argument, rather than let the strip fall back to the mode-blind constant.
+//
+// NOT compile-time linked to `risk_validation_config`: pricer_fitter.cpp owns
+// the fit-time k_min/k_max literals, this owns the pricing-time copy of them,
+// and only the Balanced case is statically cross-checked (derivatives.cpp,
+// against `strip::kCertifiedWingHalfBand`). Update both switches together if
+// `risk_validation_config`'s per-mode k_max ever moves.
+[[nodiscard]] constexpr double certified_wing_half_band(FitQualityMode mode) noexcept {
+  switch (mode) {
+  case FitQualityMode::Latency:
+    return 0.35;
+  case FitQualityMode::Accuracy:
+    return 0.60;
+  case FitQualityMode::Balanced:
+  default:
+    return 0.50;
+  }
+}
+
 [[nodiscard]] constexpr std::string_view to_string(SurfaceState value) noexcept {
   switch (value) {
   case SurfaceState::Healthy:

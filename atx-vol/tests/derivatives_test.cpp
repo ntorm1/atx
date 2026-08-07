@@ -15,6 +15,8 @@
 #include "atx/vol/priced_surface.hpp"  // E6: PricedSurface-native overloads
 #include "atx/vol/rates_curve.hpp"
 #include "atx/vol/surface.hpp"
+#include "atx/vol/surface_policy.hpp" // FitQualityMode, certified_wing_half_band (Task C-6)
+#include "atx/vol/vol_curve.hpp"    // CurveSurface, EssviCurve (Task C-6 PricedSurface fixture)
 #include "atx/vol/vol_surface.hpp" // Tier-A instantiation set (closeout 1.2)
 #include "deriv_fixtures.hpp" // Task 0: deriv_testkit::make_curves / MC oracle
 #include "support/analytics_fixture.hpp" // E6: testkit::make_flat_surface
@@ -1469,6 +1471,45 @@ EssviSurface make_steep_wing_surface(double sigma, double T_lo, double T_hi) {
   return surf;
 }
 
+// The same steep-wing eSSVI shape as `make_steep_wing_surface` above (phi =
+// 4.0, rho = -0.7, theta = sigma^2*T so ATM iv == sigma at every pillar), but
+// carried through the modern CurveSurface/EssviCurve container so it reaches
+// the E6 PricedSurface-native overloads (Task C-6: those, not the legacy
+// EssviSurface path above, are what a surface-carried certified wing band
+// resolves through). Zero rate throughout, mirroring `make_flat_curves`'
+// simplicity for the legacy path.
+atx::vol::PricedSurface make_steep_wing_priced_surface(std::uint32_t uid, double spot,
+                                                        double sigma,
+                                                        const std::vector<double>& Ts) {
+  atx::vol::CurveSurface cs;
+  std::vector<atx::vol::SliceContext> ctx;
+  std::uint16_t i = 0;
+  for (const double T : Ts) {
+    atx::vol::EssviParams e{};
+    e.theta = sigma * sigma * T;
+    e.phi = 4.0;
+    e.rho = -0.7;
+    e.psi = 0.5;
+    e.p = 0.5;
+    e.lambda = 0.5;
+    e.T = T;
+    e.F = spot;
+    e.expiry_id = i;
+    cs.push(std::make_unique<atx::vol::EssviCurve>(e, 1.0)); // df = 1 (zero rate)
+    ctx.push_back(atx::vol::SliceContext{T, spot, 0.0, 0.0, 250, 7});
+    ++i;
+  }
+  atx::vol::PricingContext pc;
+  pc.S = spot;
+  pc.r = 0.0;
+  pc.now_ts_ns = atx::vol::testkit::kFixtureNow;
+  pc.method = atx::vol::AmericanMethod::AndersenLake;
+  pc.al_opts = atx::vol::al_fast_opts();
+  pc.uid = uid;
+  return atx::vol::testkit::unwrap_surface(
+      atx::vol::PricedSurface::create(std::move(cs), std::move(ctx), pc));
+}
+
 // Hand Simpson replication of the strip with vol reads clamped to [-band, band]
 // on the exact grid the quote reports. Same quadrature convention on purpose:
 // the assertion is about WHICH vol each node reads, not about quadrature -- so
@@ -1640,6 +1681,143 @@ TEST(CarrLee, RefinedPropagatesStripFlagsThroughDerivPrice) {
   const auto refined_q = deriv_price(surf, cs, c, refined_cfg);
   ASSERT_TRUE(refined_q.has_value());
   EXPECT_TRUE(has_flag(refined_q->flags, DerivFlags::WingClamped));
+}
+
+// ── FIT-C7 / Task C-6: surface-carried certified wing band ────────────────
+//
+// The strip's mode-blind default band (`strip::kCertifiedWingHalfBand`, 0.5)
+// is only what the FIT PIPELINE actually certifies for a BALANCED-quality
+// surface (`risk_validation_config`, pricer_fitter.cpp). A Latency-quality
+// surface certifies a NARROWER ±0.35, and a default-config quote against it
+// used to read the uncertified [0.35, 0.5] band as trusted — precisely what
+// the clamp exists to prevent. `var_swap_fair_strike` (etc.)'s PricedSurface-
+// native overloads now accept the surface's own certified band explicitly
+// (`atx::vol::certified_wing_half_band(quality_mode)`, surface_policy.hpp);
+// `wing_clamp_k == 0` resolves through it when supplied.
+
+TEST(WingClamp, SurfaceCertifiedBandOverridesModeBlindDefault) {
+  const double sigma = 0.30;
+  const double T_test = 0.35; // a fitted pillar of the fixture grid below
+  const std::vector<double> Ts = {0.10, T_test, 1.00};
+  const atx::vol::PricedSurface ps = make_steep_wing_priced_surface(9001, 100.0, sigma, Ts);
+
+  const double latency_band =
+      atx::vol::certified_wing_half_band(atx::vol::FitQualityMode::Latency);
+  ASSERT_DOUBLE_EQ(latency_band, 0.35);
+
+  // No surface-carried band: the mode-blind default wins, exactly as before
+  // this task -- the Balanced-mode regression-bit-identity case.
+  const auto q_default = atx::vol::var_swap_fair_strike(ps, T_test);
+  ASSERT_TRUE(q_default.has_value()) << q_default.error().to_string();
+  EXPECT_DOUBLE_EQ(q_default->resolved_wing_clamp, atx::vol::strip::kCertifiedWingHalfBand);
+  EXPECT_TRUE(has_flag(q_default->flags, DerivFlags::WingClamped));
+
+  // Same default config, but the caller now states the surface's own Latency
+  // build quality mode: the strip must trust ONLY the certified 0.35 band.
+  const auto q_latency =
+      atx::vol::var_swap_fair_strike(ps, T_test, deriv_default_config(), latency_band);
+  ASSERT_TRUE(q_latency.has_value()) << q_latency.error().to_string();
+  EXPECT_DOUBLE_EQ(q_latency->resolved_wing_clamp, latency_band);
+  EXPECT_TRUE(has_flag(q_latency->flags, DerivFlags::WingClamped));
+
+  // Same span and node count either way -- the certified band changes reads,
+  // never the grid (mirrors WingClamp.DefaultClampReadsFlatBeyondCertifiedBand).
+  EXPECT_EQ(q_default->strip_nodes_used, q_latency->strip_nodes_used);
+  EXPECT_EQ(q_default->strip_k_lo_used, q_latency->strip_k_lo_used);
+  EXPECT_EQ(q_default->strip_k_hi_used, q_latency->strip_k_hi_used);
+
+  // The mark actually moves: flattening more of a steepening wing under the
+  // tighter certified band can only lower the strike further (mirrors
+  // WingClamp.ExplicitBandTightensMonotonically) -- this IS the fix.
+  EXPECT_LT(q_latency->fair_strike_dec, q_default->fair_strike_dec);
+}
+
+TEST(WingClamp, BalancedSurfaceCertifiedBandBitIdenticalToModeBlindDefault) {
+  const double sigma = 0.30;
+  const double T_test = 0.35;
+  const std::vector<double> Ts = {0.10, T_test, 1.00};
+  const atx::vol::PricedSurface ps = make_steep_wing_priced_surface(9002, 100.0, sigma, Ts);
+
+  const double balanced_band =
+      atx::vol::certified_wing_half_band(atx::vol::FitQualityMode::Balanced);
+  ASSERT_DOUBLE_EQ(balanced_band, atx::vol::strip::kCertifiedWingHalfBand);
+
+  const auto q_default = atx::vol::var_swap_fair_strike(ps, T_test);
+  const auto q_balanced =
+      atx::vol::var_swap_fair_strike(ps, T_test, deriv_default_config(), balanced_band);
+  ASSERT_TRUE(q_default.has_value());
+  ASSERT_TRUE(q_balanced.has_value());
+
+  // A Balanced-quality surface's own certified band IS the mode-blind
+  // default -- stating it explicitly must move nothing, bit for bit.
+  EXPECT_EQ(q_default->resolved_wing_clamp, q_balanced->resolved_wing_clamp);
+  EXPECT_EQ(q_default->fair_strike_dec, q_balanced->fair_strike_dec);
+  EXPECT_EQ(q_default->strip_k_lo_used, q_balanced->strip_k_lo_used);
+  EXPECT_EQ(q_default->strip_k_hi_used, q_balanced->strip_k_hi_used);
+}
+
+TEST(WingClamp, SurfaceCertifiedBandHonorsExplicitOverride) {
+  const double sigma = 0.30;
+  const double T_test = 0.35;
+  const std::vector<double> Ts = {0.10, T_test, 1.00};
+  const atx::vol::PricedSurface ps = make_steep_wing_priced_surface(9003, 100.0, sigma, Ts);
+  const double latency_band =
+      atx::vol::certified_wing_half_band(atx::vol::FitQualityMode::Latency);
+
+  // An explicit caller override still wins over any surface-carried band --
+  // spec: "Explicit >0 and <0 semantics unchanged."
+  DerivConfig tight = deriv_default_config();
+  tight.wing_clamp_k = 0.15;
+  const auto q_tight = atx::vol::var_swap_fair_strike(ps, T_test, tight, latency_band);
+  ASSERT_TRUE(q_tight.has_value());
+  EXPECT_DOUBLE_EQ(q_tight->resolved_wing_clamp, 0.15);
+
+  DerivConfig off = deriv_default_config();
+  off.wing_clamp_k = -1.0;
+  const auto q_off = atx::vol::var_swap_fair_strike(ps, T_test, off, latency_band);
+  ASSERT_TRUE(q_off.has_value());
+  EXPECT_DOUBLE_EQ(q_off->resolved_wing_clamp, 0.0);
+  EXPECT_FALSE(has_flag(q_off->flags, DerivFlags::WingClamped));
+}
+
+// The surface-carried band must survive `deriv_greeks`' bump table: a bumped
+// evaluation prices through RespotView/VolShiftView, an adapter with no
+// provenance of its own, so `pin_center_scheme` has to pin the CENTER's
+// resolved band into every bump's config explicitly (derivatives.cpp) or the
+// stencils would difference a 0.35-clamped center against 0.5-clamped bumps.
+TEST(WingClamp, SurfaceCertifiedBandStaysPinnedAcrossGreekBumps) {
+  const double sigma = 0.30;
+  const double T_test = 0.35;
+  const std::vector<double> Ts = {0.10, T_test, 1.00};
+  const atx::vol::PricedSurface ps = make_steep_wing_priced_surface(9004, 100.0, sigma, Ts);
+  const double latency_band =
+      atx::vol::certified_wing_half_band(atx::vol::FitQualityMode::Latency);
+
+  DerivContract c{};
+  c.kind = DerivKind::VarSwap;
+  c.maturity_t = T_test;
+  c.strike_dec = sigma * sigma;
+  c.notional = 1.0e6;
+  c.rv_spec.n_obs_total = 63;
+
+  const auto g = atx::vol::deriv_greeks(ps, c, deriv_default_config(),
+                                        atx::vol::DerivGreekBumps{}, latency_band);
+  ASSERT_TRUE(g.has_value()) << g.error().to_string();
+  EXPECT_DOUBLE_EQ(g->quote.resolved_wing_clamp, latency_band);
+  EXPECT_TRUE(std::isfinite(g->vega));
+  EXPECT_TRUE(std::isfinite(g->delta));
+  EXPECT_TRUE(std::isfinite(g->gamma));
+}
+
+TEST(SurfacePolicy, CertifiedWingHalfBandMatchesEachQualityMode) {
+  using atx::vol::FitQualityMode;
+  EXPECT_DOUBLE_EQ(atx::vol::certified_wing_half_band(FitQualityMode::Latency), 0.35);
+  EXPECT_DOUBLE_EQ(atx::vol::certified_wing_half_band(FitQualityMode::Balanced), 0.50);
+  EXPECT_DOUBLE_EQ(atx::vol::certified_wing_half_band(FitQualityMode::Accuracy), 0.60);
+  // Balanced is the strip's own mode-blind default -- the identity this
+  // whole feature is built on (also static_asserted in derivatives.cpp).
+  EXPECT_DOUBLE_EQ(atx::vol::certified_wing_half_band(FitQualityMode::Balanced),
+                   atx::vol::strip::kCertifiedWingHalfBand);
 }
 
 // ── Kind x engine dispatch matrix (PV-5) ──────────────────────────────────

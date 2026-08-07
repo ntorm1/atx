@@ -3,8 +3,10 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <concepts>
 #include <limits>
 #include <numbers>
+#include <optional>
 #include <span>
 #include <utility>
 
@@ -20,6 +22,7 @@
 #include "atx/vol/priced_surface.hpp" // E6: PricedSurface-native entry points
 #include "atx/vol/detail/strip_grid.hpp"
 #include "atx/vol/surface_parity.hpp" // SliceContext (E6 carry extraction)
+#include "atx/vol/surface_policy.hpp" // certified_wing_half_band (FIT-C7 / Task C-6)
 #include "atx/vol/vol_surface.hpp" // Tier-A calibration-grade surface container
 
 namespace atx::vol {
@@ -152,14 +155,46 @@ struct StripGrid {
   return !std::isnan(cfg.wing_clamp_k);
 }
 
-// Resolve the wing trust half-band: 0 -> the certified validation band,
-// > 0 -> the caller's own band, < 0 -> 0.0 (clamp off). The <= 0 encoding of
-// "off" lets every consumer test one condition (`band > 0.0`).
-[[nodiscard]] double resolve_wing_clamp(const DerivConfig& cfg) noexcept {
+// FIT-C7 / Task C-6: structural (not inheritance-based) detection of a
+// surface adapter that carries its own certified wing band -- `PricedSurface`-
+// native and `SurfaceRef`-native callers thread one in via
+// `PricedSurfaceStripView`/`SurfaceRefStripView` (see the wrapper functions
+// below); the templated legacy containers (VolSurface/EssviSurface/
+// SviSurface) have no such member and fall through to `std::nullopt`, i.e.
+// "no provenance", with no per-type special-casing needed. A bumped-greek
+// adapter (RespotView/VolShiftView) also has no such member -- `deriv_greeks`
+// pins the CENTER's resolved band into `cfg.wing_clamp_k` for every bump
+// instead (`pin_center_scheme`), so those never need to consult this.
+template <class SurfaceT>
+[[nodiscard]] std::optional<double> surface_certified_wing_band(const SurfaceT& surface) noexcept {
+  if constexpr (requires {
+                  { surface.certified_wing_band } -> std::convertible_to<std::optional<double>>;
+                }) {
+    return surface.certified_wing_band;
+  } else {
+    return std::nullopt;
+  }
+}
+
+// Resolve the wing trust half-band: 0 -> the surface's own certified band
+// when it carries one, else the mode-blind certified validation band; > 0 ->
+// the caller's own band; < 0 -> 0.0 (clamp off). The <= 0 encoding of "off"
+// lets every consumer test one condition (`band > 0.0`).
+[[nodiscard]] double resolve_wing_clamp(const DerivConfig& cfg,
+                                        std::optional<double> surface_band) noexcept {
   static_assert(strip::kCertifiedWingHalfBand == RiskSurfaceValidationConfig{}.k_max,
                 "the strip's default wing trust band must equal the band the fit "
                 "pipeline actually validates (risk_surface_validation.hpp)");
+  static_assert(certified_wing_half_band(FitQualityMode::Balanced) == strip::kCertifiedWingHalfBand,
+                "surface_policy's mode-keyed certified band must agree with the strip's own "
+                "mode-blind default at Balanced quality");
   if (cfg.wing_clamp_k == 0.0) {
+    // FIT-C7: a Latency/Accuracy-mode surface certifies a NARROWER/WIDER band
+    // than this mode-blind default -- trusting 0.5 for a surface only
+    // certified to 0.35 is exactly the defect this branch exists to close.
+    if (surface_band.has_value() && *surface_band > 0.0) {
+      return *surface_band;
+    }
     return strip::kCertifiedWingHalfBand;
   }
   return cfg.wing_clamp_k > 0.0 ? cfg.wing_clamp_k : 0.0;
@@ -198,6 +233,7 @@ void carry_strip_grid(DerivQuote& out, const DerivQuote& strip) noexcept {
   out.strip_k_lo_used = strip.strip_k_lo_used;
   out.strip_k_hi_used = strip.strip_k_hi_used;
   out.strip_nodes_used = strip.strip_nodes_used;
+  out.resolved_wing_clamp = strip.resolved_wing_clamp;
 }
 
 // Broadie-Jain (2008) / Buhler discrete-monitoring diffusion-drift addend for
@@ -1003,7 +1039,7 @@ Result<DerivQuote> var_swap_fair_strike(const SurfaceT& surface,
   // truncated span. band <= 0 means the clamp is off. Resolved BEFORE the
   // resolution floor below, which has to know how many panels the C-3 split
   // will cut — and that depends on where this band falls inside the span.
-  const double wing_band = resolve_wing_clamp(cfg);
+  const double wing_band = resolve_wing_clamp(cfg, surface_certified_wing_band(surface));
   const bool wing_clamped =
       wing_band > 0.0 && (grid.k_min_log < -wing_band || grid.k_max_log > wing_band);
 
@@ -1230,6 +1266,10 @@ Result<DerivQuote> var_swap_fair_strike(const SurfaceT& surface,
   out.strip_k_lo_used = grid.k_min_log;
   out.strip_k_hi_used = grid.k_max_log;
   out.strip_nodes_used = static_cast<std::uint32_t>(n);
+  // The band actually resolved above (FIT-C7 / Task C-6) -- carried the same
+  // way as the grid fields it sits beside, so a caller can inspect exactly
+  // which trust band this quote's reads were clamped to.
+  out.resolved_wing_clamp = wing_band;
   out.flags = flags;
   return Ok(out);
 }
@@ -1552,10 +1592,11 @@ template <class SurfaceT>
 }
 
 // Pin everything about the center quote that a bumped evaluation would
-// otherwise re-derive for itself: the strip's grid and the vol-of-vol. Both are
-// resolved from the SURFACE, so both drift when the surface is bumped, and both
-// would then contaminate the differences with a change in the numerical scheme
-// rather than a change in the price.
+// otherwise re-derive for itself: the strip's grid, the resolved wing clamp,
+// and the vol-of-vol. All three are resolved from the SURFACE, so all three
+// drift when the surface is bumped, and would then contaminate the
+// differences with a change in the numerical scheme rather than a change in
+// the price.
 [[nodiscard]] DerivConfig pin_center_scheme(const DerivConfig& cfg, const DerivQuote& center) noexcept {
   DerivConfig out = cfg;
 
@@ -1568,6 +1609,21 @@ template <class SurfaceT>
     out.k_min_log = center.strip_k_lo_used;
     out.k_max_log = center.strip_k_hi_used;
     out.strip_nodes = center.strip_nodes_used;
+  }
+
+  // Wing clamp (FIT-C7 / Task C-6): a bumped evaluation prices through
+  // RespotView/VolShiftView, an adapter that carries no surface provenance of
+  // its own -- left alone, `resolve_wing_clamp` would silently fall back to
+  // the mode-blind default for every bump while the center resolved a
+  // surface-carried band, straddling a DIFFERENT clamp than the value it is
+  // differenced against. Only pin when the center itself consulted surface
+  // provenance (`cfg.wing_clamp_k == 0.0`, the default-resolution branch) and
+  // actually resolved a positive band (a strip ran); an explicit >0/<0
+  // override on `cfg` already resolves identically for every bump with no
+  // surface read at all, and pinning 0.0 here would wrongly turn "clamp
+  // resolved off" into "explicit request for the certified band".
+  if (cfg.wing_clamp_k == 0.0 && center.resolved_wing_clamp > 0.0) {
+    out.wing_clamp_k = center.resolved_wing_clamp;
   }
 
   // Vol-of-vol: pin the calibrated xi so vega measures the model's response to
@@ -1855,9 +1911,18 @@ struct PricedSurfaceStripView {
   const CurveSet* curves;
   double T_cached;
   double F_cached;
+  // FIT-C7 / Task C-6: the caller-supplied certified band, if any --
+  // `resolve_wing_clamp` reads this via `surface_certified_wing_band`'s
+  // structural detection. `std::nullopt` (no band supplied) is
+  // indistinguishable from "this adapter carries no provenance", which is
+  // exactly the mode-blind-default behaviour a caller who does not know (or
+  // does not care about) the surface's build quality mode should keep.
+  std::optional<double> certified_wing_band;
 
-  PricedSurfaceStripView(const PricedSurface* surface, const CurveSet* cs, double T) noexcept
-      : ps{surface}, curves{cs}, T_cached{T}, F_cached{resolve_forward(*cs, T)} {}
+  PricedSurfaceStripView(const PricedSurface* surface, const CurveSet* cs, double T,
+                         std::optional<double> band = std::nullopt) noexcept
+      : ps{surface}, curves{cs}, T_cached{T}, F_cached{resolve_forward(*cs, T)},
+        certified_wing_band{band} {}
 
   [[nodiscard]] double iv(double k_log, double T) const noexcept {
     const double F = (T == T_cached) ? F_cached : resolve_forward(*curves, T);
@@ -1871,33 +1936,39 @@ struct PricedSurfaceStripView {
 } // namespace
 
 Result<DerivQuote> var_swap_fair_strike(const PricedSurface& surface, double T,
-                                        const DerivConfig& cfg) {
+                                        const DerivConfig& cfg,
+                                        std::optional<double> surface_certified_wing_band) {
   ATX_TRY(const CurveSet curves, carry_from(surface, T));
-  const PricedSurfaceStripView view{&surface, &curves, T};
+  const PricedSurfaceStripView view{&surface, &curves, T, surface_certified_wing_band};
   return var_swap_fair_strike(view, curves, T, cfg);
 }
 
 Result<DerivQuote> vol_swap_fair_strike(const PricedSurface& surface, double T,
-                                        const DerivConfig& cfg) {
+                                        const DerivConfig& cfg,
+                                        std::optional<double> surface_certified_wing_band) {
   ATX_TRY(const CurveSet curves, carry_from(surface, T));
-  const PricedSurfaceStripView view{&surface, &curves, T};
+  const PricedSurfaceStripView view{&surface, &curves, T, surface_certified_wing_band};
   return vol_swap_fair_strike(view, curves, T, cfg);
 }
 
 Result<DerivQuote> deriv_price(const PricedSurface& surface, const DerivContract& contract,
-                               const DerivConfig& cfg) {
+                               const DerivConfig& cfg,
+                               std::optional<double> surface_certified_wing_band) {
   ATX_TRY(const CurveSet curves, carry_from(surface, contract.maturity_t));
-  const PricedSurfaceStripView view{&surface, &curves, contract.maturity_t};
+  const PricedSurfaceStripView view{&surface, &curves, contract.maturity_t,
+                                    surface_certified_wing_band};
   return deriv_price(view, curves, contract, cfg);
 }
 
 Result<DerivGreeks> deriv_greeks(const PricedSurface& surface, const DerivContract& contract,
-                                 const DerivConfig& cfg, const DerivGreekBumps& bumps) {
+                                 const DerivConfig& cfg, const DerivGreekBumps& bumps,
+                                 std::optional<double> surface_certified_wing_band) {
   // The fitted-range gate is paid ONCE here, on the contract's own maturity;
   // the theta roll below reuses this same carry with a shorter contract T (see
   // the header) rather than re-deriving it at T - dt.
   ATX_TRY(const CurveSet curves, carry_from(surface, contract.maturity_t));
-  const PricedSurfaceStripView view{&surface, &curves, contract.maturity_t};
+  const PricedSurfaceStripView view{&surface, &curves, contract.maturity_t,
+                                    surface_certified_wing_band};
   return deriv_greeks(view, curves, contract, cfg, bumps);
 }
 
@@ -2008,9 +2079,14 @@ struct SurfaceRefStripView {
   const CurveSet* curves;
   double T_cached;
   double F_cached;
+  // FIT-C7 / Task C-6: mirrors `PricedSurfaceStripView::certified_wing_band`
+  // above -- see that member's comment.
+  std::optional<double> certified_wing_band;
 
-  SurfaceRefStripView(const SurfaceRef* handle, const CurveSet* cs, double T) noexcept
-      : ref{handle}, curves{cs}, T_cached{T}, F_cached{resolve_forward(*cs, T)} {}
+  SurfaceRefStripView(const SurfaceRef* handle, const CurveSet* cs, double T,
+                      std::optional<double> band = std::nullopt) noexcept
+      : ref{handle}, curves{cs}, T_cached{T}, F_cached{resolve_forward(*cs, T)},
+        certified_wing_band{band} {}
 
   [[nodiscard]] double iv(double k_log, double T) const noexcept {
     const double F = (T == T_cached) ? F_cached : resolve_forward(*curves, T);
@@ -2024,18 +2100,20 @@ struct SurfaceRefStripView {
 }  // namespace
 
 Result<DerivQuote> deriv_price_on_ref(const SurfaceRef& ref, const DerivContract& contract,
-                                      const DerivConfig& cfg) {
+                                      const DerivConfig& cfg,
+                                      std::optional<double> surface_certified_wing_band) {
   if (!ref.valid()) {
     return Err(ErrorCode::InvalidArgument, "deriv: null surface handle");
   }
   // No roll happens in pricing, so the carry needs no rolled forward pillar.
   ATX_TRY(const CurveSet curves, carry_from_ref(ref, contract.maturity_t, 0.0));
-  const SurfaceRefStripView view{&ref, &curves, contract.maturity_t};
+  const SurfaceRefStripView view{&ref, &curves, contract.maturity_t, surface_certified_wing_band};
   return deriv_price(view, curves, contract, cfg);
 }
 
 Result<DerivGreeks> deriv_greeks_on_ref(const SurfaceRef& ref, const DerivContract& contract,
-                                        const DerivConfig& cfg, const DerivGreekBumps& bumps) {
+                                        const DerivConfig& cfg, const DerivGreekBumps& bumps,
+                                        std::optional<double> surface_certified_wing_band) {
   if (!ref.valid()) {
     return Err(ErrorCode::InvalidArgument, "deriv: null surface handle");
   }
@@ -2052,7 +2130,7 @@ Result<DerivGreeks> deriv_greeks_on_ref(const SurfaceRef& ref, const DerivContra
   // that ever reprices at both r + dr and T - dt must re-establish the second
   // pillar there.
   ATX_TRY(const CurveSet curves, carry_from_ref(ref, contract.maturity_t, bumps.time_years));
-  const SurfaceRefStripView view{&ref, &curves, contract.maturity_t};
+  const SurfaceRefStripView view{&ref, &curves, contract.maturity_t, surface_certified_wing_band};
   return deriv_greeks(view, curves, contract, cfg, bumps);
 }
 

@@ -49,12 +49,25 @@ namespace atx::vol::strip {
 inline constexpr double kDefaultWidthSigmas = 6.0;
 
 // Default wing trust half-band for the variance strip's surface READS
-// (`DerivConfig::wing_clamp_k == 0`), in absolute log-forward-moneyness. MUST
-// stay equal to the risk-validation band `RiskSurfaceValidationConfig{}.k_max`
-// (detail/risk_surface_validation.hpp) — the clamp's whole claim is "the strip
-// trusts the surface exactly where the pipeline certified it", and the claim
-// dissolves if the two constants drift apart. static_asserted against the
-// validation config at the use site in derivatives.cpp.
+// (`DerivConfig::wing_clamp_k == 0`), in absolute log-forward-moneyness. This
+// is the MODE-BLIND default — it equals the BALANCED-quality certified band
+// (`RiskSurfaceValidationConfig{}.k_max`, the default risk-validation config)
+// and is what every path without surface provenance (the templated legacy
+// VolSurface/eSSVI/SVI containers, or a PricedSurface/SurfaceRef a caller
+// prices without stating its build quality mode) resolves to. MUST stay equal
+// to that default risk-validation band — the clamp's whole claim is "the
+// strip trusts the surface exactly where the pipeline certified it", and the
+// claim dissolves if the two constants drift apart. static_asserted against
+// the validation config at the use site in derivatives.cpp.
+//
+// FIT-C7: a surface fit at a NON-Balanced quality mode certifies a DIFFERENT
+// band (Latency ±0.35, Accuracy ±0.60 — `risk_validation_config`,
+// pricer_fitter.cpp) — reading this mode-blind constant for such a surface
+// trusts a band nobody certified. A caller who knows the surface's own build
+// quality mode should resolve `atx::vol::certified_wing_half_band(mode)`
+// (surface_policy.hpp) instead and pass it as `var_swap_fair_strike`'s (etc.)
+// `surface_certified_wing_band` argument; `resolve_wing_clamp` (derivatives.cpp)
+// only falls back to this constant when the caller supplies no such band.
 inline constexpr double kCertifiedWingHalfBand = 0.5;
 
 // Half-width in log-forward-moneyness: the tier/config floor, widened to the

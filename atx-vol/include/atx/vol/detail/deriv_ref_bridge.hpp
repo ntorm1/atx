@@ -35,6 +35,8 @@
 // to call concurrently from any number of threads (the CurveSet they build is
 // function-local).
 
+#include <optional>
+
 #include "atx/vol/derivatives.hpp" // DerivContract/DerivConfig/DerivQuote/DerivGreeks/bumps
 #include "atx/vol/types.hpp"       // Result
 
@@ -49,20 +51,29 @@ namespace detail {
 
 // Mark a vol-derivative contract against a borrowed surface.
 //
+// `surface_certified_wing_band`: FIT-C7 (Task C-6) -- same contract as the
+// PricedSurface-native `var_swap_fair_strike`'s parameter of the same name
+// (derivatives.hpp): a caller who knows `ref`'s own build quality mode should
+// resolve `atx::vol::certified_wing_half_band(mode)` (surface_policy.hpp) and
+// pass it here so the strip trusts the surface exactly where that mode's fit
+// pipeline certified it, rather than the mode-blind default `std::nullopt`
+// preserves.
+//
 // @pre `ref.valid()` — a null handle returns InvalidArgument rather than
 //      dereferencing (the book layer resolves the uid first and reports a
 //      missing surface as ModelUnavailable, so this is defence in depth).
 // @return the same error contract as the templated `deriv_price`.
 [[nodiscard]] Result<DerivQuote>
-deriv_price_on_ref(const SurfaceRef &ref, const DerivContract &contract, const DerivConfig &cfg);
+deriv_price_on_ref(const SurfaceRef &ref, const DerivContract &contract, const DerivConfig &cfg,
+                   std::optional<double> surface_certified_wing_band = std::nullopt);
 
 // Finite-difference greeks for the same contract, differentiating exactly the
 // `deriv_price_on_ref` above. Same precondition and error contract as the
 // templated `deriv_greeks`.
-[[nodiscard]] Result<DerivGreeks> deriv_greeks_on_ref(const SurfaceRef &ref,
-                                                      const DerivContract &contract,
-                                                      const DerivConfig &cfg,
-                                                      const DerivGreekBumps &bumps);
+[[nodiscard]] Result<DerivGreeks>
+deriv_greeks_on_ref(const SurfaceRef &ref, const DerivContract &contract, const DerivConfig &cfg,
+                    const DerivGreekBumps &bumps,
+                    std::optional<double> surface_certified_wing_band = std::nullopt);
 
 } // namespace detail
 } // namespace atx::vol
