@@ -1511,3 +1511,318 @@ git commit -m "docs(vol): starvation/ratchet fix validation — known-bad window
 - Known open risks, flagged for the executor: (a) Task 1 gap-cap 0.40 vs the un-measured 2020-03-18 T=1.0021/T=1.5004 holes — if they pass Task 1, Task 2's floor and Task 3's containment are the backstops, and Task 5 Step 5's band-audit acceptance ("no row's frac_in_band decreases") is the net. (b) Task 3's refusal drops the LATER slice of an unsupported pair; the earlier-slice eviction alternative is documented in Task 3's design and deferred with rationale (Task 1 makes the case rare; revisit only on band-audit evidence). (c) Task 2's floor also arms the MARK arm's parity scoring (`fit_admission_consumes_parity` -> `score_parity=true`), a build-time cost, and fails closed on a manifest that pinned `score_parity=false` — loud, acceptable. (d) Task 3 Step 1's fixture carries a self-check ASSERT (`prev->w(0.5) > back natural w`) so a non-cooperating geometry fails loudly with an in-test adjustment instruction (raise front vol 0.60 -> 0.80).
 - Placeholder scan: no TBD/TODO/"handle edge cases"/"similar to Task N" anywhere; every code step carries the actual code; the two spots that depend on unverified runtime facts (test-exe location; TSV column spellings) each carry an explicit discovery command instead of a guess.
 - Type consistency: `slice_k_coverage(std::span<const FitObs>)` matches `PreparedSlice::fit_observations()`'s span; Task 3 consumes `fit_slice_curve`'s EXISTING `prev_data_k_range` parameter (vol_curve.hpp:505-511) rather than adding one; `populate_admission_policy()` returns `FitAdmissionPolicy` by value into `PricerConfig::admission` (pricer_fitter.hpp:175); `score_expiry_band`'s spans match `band_violation_stats`' vocabulary (fit_metrics.hpp:192-195); `SlicePrepOutcome::Uncovered` (TU-local) maps 1:1 to the public `ExpiryFitOutcome::PrepUncovered`, spelled `"PrepUncovered"` by `rich_drop_reason_name`.
+
+---
+
+## Amendment (2026-08-07): Task 6 — Task 3 redesign
+
+Task 5's bisect proved Task 3's unconditional support band destroys healthy-day
+fidelity (2020-03-19: 22/~33 slices refused, band-audit frac 0.92-1.00 →
+0.15-0.44; census 2022-10-04 audit 0→13 flagged). The dispatched investigation
+(`.superpowers/sdd/2026-08-05-stress-day-fit-fidelity/t3-redesign-investigation.md`
+— read §0, §5, §6 before implementing) established:
+
+1. Every measured refusal fired against a dense, coverage-ADMISSIBLE previous
+   slice — the gate never once fired on real poison, because Task 1 removes the
+   seeds at prep before the fitter sees them.
+2. No scalar magnitude threshold separates calm out-of-support floor pressure
+   (abs w lift ≤ 0.209, rel ≤ 4.16 on census) from poison (0.36-0.40, rel ≥ 5.7).
+3. The clean separator is BINARY: the previous committed slice's k-coverage
+   shape — Task 1's own `slice_k_coverage` predicate. 505/505 measured committed
+   slices pass it; both real seeds fail it.
+4. Restoring floor rows unconditionally is REQUIRED for byte-identity: blanket
+   row removal alone shifts w by up to 1.3e-3 on non-refused slices (measured),
+   and skip-not-refuse kills whole cells at oracle admission (34 lattice
+   crossings → total fit failure).
+5. The design below ("D1") was prototyped and measured bit-identical
+   (SHA256) to the pre-sprint binary on 11/11 buildable windows, and still
+   contains the 2025-04-24 seed chain even with Task 1 disabled (seed commits,
+   all 25 followers refused, truncation at the seed).
+
+### Task 6: Coverage-gated calendar-floor authority (Task 3 redesign)
+
+**Files:**
+- Modify: `atx-vol/src/curve_fit.cpp` (state ~:650, threading ~:705-723, refusal
+  taxonomy ~:806-816, commit ~:893-907)
+- Modify: `atx-vol/src/vol_curve.cpp:421-426` (comment refresh only — semantics
+  of `floor_support_k` now "armed only behind an uncovered prev")
+- Modify: `atx-vol/include/atx/vol/curve_fit.hpp:98-108` (counter docs refresh)
+- Modify: `atx-vol/include/atx/vol/surface_parity.hpp:273-284` (append
+  `FitRefusedCalendar` to `ExpiryFitOutcome`, LAST position)
+- Modify: `atx-vol/src/surface_db_build.cpp:446-466`
+  (`rich_drop_reason_name`: new case)
+- Modify: `atx-vol/include/atx/vol/pricer_fitter.hpp` (~:280 doc comment that
+  enumerates `ExpiryFitOutcome` values: add the missing `PrepUncovered` — closes
+  Task 1's deferred minor — and the new `FitRefusedCalendar`)
+- Modify: `atx-vol/tools/include/atx/vol/tools/surface_db_populate.hpp:246-252`
+  (`SliceDropCell::fit_outcome` vocabulary doc: add `FitRefusedCalendar`)
+- Test: `atx-vol/tests/curve_fit_coverage_test.cpp` (board-level regression)
+- Test: `atx-vol/tests/surface_db_build_test.cpp` (~:697 slice_drop section:
+  CSV spells the new outcome)
+- Keep VERBATIM: `atx-vol/tests/dense_slice_test.cpp` Task 3 fitter tests
+  (`DataFreeFrontWingRefusesInsteadOfRatcheting`,
+  `WideSupportRangeIsByteIdenticalToUnbounded`) — the fitter-side machinery
+  (band, refusal, message, counter) does not change.
+
+**Interfaces:**
+- Consumes: `detail::slice_k_coverage(std::span<const FitObs>) -> SliceKCoverage`
+  + `.admissible()` (`include/atx/vol/detail/prepared_fitting.hpp:101-111`,
+  Task 1 — already called at `curve_fit.cpp:364`); `fit_slice_curve`'s existing
+  8-arg `prev_data_k_range` parameter (Task 3);
+  `CurveSurfaceReport::n_slice_calendar_unsupported` (Task 3).
+- Produces: `ExpiryFitOutcome::FitRefusedCalendar` (new enumerator, appended
+  last; `: std::uint8_t` enum, never persisted to disk — CSV spells it by name).
+  Board-fitter behavior contract: a ConvexDense slice whose previous COMMITTED
+  slice is coverage-admissible is fitted with UNBOUNDED floor authority (exact
+  pre-Task-3 QP: floor rows at every lattice node, every scan violation
+  promotable, never refused). The Task 3 band + refusal arm ONLY when the
+  committed prev fails the coverage predicate — defense-in-depth for
+  Task-1-bypassing paths; unreachable through `fit_curve_surface` today because
+  Task 1's prep gate (curve_fit.cpp:363-367) refuses uncovered ConvexDense
+  slices before they can commit.
+
+**Why gate on `cfg.kind == ConvexDense`:** `prev_data_k_range` predates Task 3
+and also feeds `tradeable_pair_band` in the parametric arms (Essvi/Svi/
+LinearVariance — vol_curve.cpp). Those arms' behavior must not change. In the
+ConvexDense arm the ONLY consumer is the `floor_lo/floor_hi` derivation
+(vol_curve.cpp:425-426), so conditioning the widened range on the fit kind
+scopes the change exactly.
+
+- [ ] **Step 1: Write the failing board-level regression test**
+
+Append to `atx-vol/tests/curve_fit_coverage_test.cpp`. Two-sided COVERED narrow
+front chain whose steep skew makes its extrapolated wing overshoot the later
+slice's fit at out-of-support k (the calm-day shape the investigation measured
+on 22/35 healthy slices). Under HEAD this refuses the later slice; under D1 it
+commits with the wing floored.
+
+```cpp
+// Task 6 — D1: a coverage-admissible committed prev keeps FULL floor
+// authority. The calm-day shape (narrow covered front whose extrapolated wing
+// overshoots the next slice's bare fit at out-of-support k) must be FLOORED
+// (pre-Task-3 QP), not refused. Under the Task 3 gate this board truncates to
+// one slice with n_slice_calendar_unsupported == 1.
+namespace {
+// Narrow but coverage-admissible (straddles ATM, tiny central gap) with a
+// steep convex smile: the ConvexDense extrapolation beyond |k| ~ 0.09 climbs
+// well above the later slice's own wing. sigma is per-chain here, unlike
+// true_sigma() above, because the crossing must exist only OUT of the front's
+// data-supported band.
+[[nodiscard]] Chain make_steep_narrow_chain(double T, double sigma0, double skew) {
+  Chain c;
+  c.T = T;
+  c.expiry_ns = static_cast<std::int64_t>(T * kYearNs);
+  const std::vector<DividendEvent> no_divs;
+  const double borrow = borrow_of_T(T);
+  const double F = hybrid_forward(kSpot, kRate, borrow, T, no_divs, c.expiry_ns,
+                                  /*now_ts_ns=*/0, HybridDivParams{});
+  const double q_eff = kRate - std::log(F / kSpot) / T;
+  for (int i = 0; i < 13; ++i) {
+    const double k = -0.09 + 0.015 * static_cast<double>(i); // [-0.09, +0.09]
+    c.strikes.push_back(F * std::exp(k));
+  }
+  size_chain(c);
+  for (std::size_t i = 0; i < c.strikes.size(); ++i) {
+    const double k = std::log(c.strikes[i] / F);
+    const double sigma = sigma0 + skew * k * k; // convex smile, steep wings
+    for (const Side side : {Side::Call, Side::Put}) {
+      const auto px = american_price(kSpot, c.strikes[i], T, sigma, kRate,
+                                     q_eff, side, AmericanMethod::AndersenLake,
+                                     std::nullopt);
+      ASSERT_TRUE(px.has_value()) << "K=" << c.strikes[i];
+      const std::size_t idx = chain_index(static_cast<std::uint16_t>(i), side);
+      c.mids[idx] = *px;
+      c.bids[idx] = *px * 0.99;
+      c.asks[idx] = *px * 1.01;
+      c.bid_sizes[idx] = 1;
+      c.ask_sizes[idx] = 1;
+    }
+  }
+  return c;
+}
+} // namespace
+
+TEST(CurveFitCalendarAuthority, CoveredPrevKeepsFullFloorAuthority) {
+  Underlying under;
+  under.spot = kSpot;
+  // Front: covered, narrow, steep smile -> wing extrapolation overshoots.
+  under.chains.push_back(make_steep_narrow_chain(0.05, 0.55, 30.0));
+  // Back: ordinary smile over the full lattice width.
+  under.chains.push_back(make_two_sided_chain(0.25));
+
+  const auto rep = fit_curve_surface(under, coverage_inputs(), CurveConfig{});
+  ASSERT_TRUE(rep.has_value()) << rep.error().to_string();
+  // D1: BOTH slices commit; nothing is refused.
+  EXPECT_EQ(rep->n_slices, 2u);
+  EXPECT_EQ(rep->n_slice_calendar_unsupported, 0u);
+  ASSERT_EQ(rep->expiry_reports.size(), 2u);
+  EXPECT_EQ(rep->expiry_reports[0].outcome, ExpiryFitOutcome::Fitted);
+  EXPECT_EQ(rep->expiry_reports[1].outcome, ExpiryFitOutcome::Fitted);
+  // And the served surface is calendar-clean INCLUDING the wings: the floor
+  // rows exist everywhere (this is what a skip-not-refuse regression breaks).
+  const auto &front = *rep->surface.slices()[0];
+  const auto &back = *rep->surface.slices()[1];
+  for (int gi = 0; gi <= 64; ++gi) {
+    const double k = -0.60 + 0.01875 * static_cast<double>(gi);
+    EXPECT_GE(back.w(k), front.w(k) - 1.0e-7) << "calendar crossing at k=" << k;
+  }
+}
+```
+
+(Adjust member/API spellings — `rep->surface.slices()`, `n_slices` — to the
+real `CurveSurfaceReport` if they differ; `curve_fit.hpp` is the source of
+truth. NOTE the test file top's `using` list needs the additions this code
+implies.)
+
+Calibration contract (mirrors Task 3's fixture discipline): the test carries a
+PRECONDITION self-check — before the main assertions, fit the BACK chain alone
+(a one-chain board) and ASSERT its bare w at k=+0.60 sits BELOW the front
+slice's extrapolated w at +0.60 by more than 1e-7; if the geometry does not
+cooperate, adjust `sigma0`/`skew` (raise `skew` first) rather than the
+assertions. This is what makes Step 2's red a REAL demonstration.
+
+- [ ] **Step 2: Run the new test on HEAD, verify it fails with the Task 3 signature**
+
+Build (PowerShell): `cmd /c '"...vcvars64.bat" && cmake --build C:\atx\.claude\worktrees\strangle-backtest\build-rel --target atx-vol-tests'`
+then `build-rel\bin\atx-vol-tests.exe --gtest_filter=CurveFitCalendarAuthority.*`
+
+Expected: FAIL — `n_slices` is 1 (not 2) and `n_slice_calendar_unsupported` is
+1 (not 0): the covered prev's out-of-support crossing was REFUSED. Paste the
+failure output into the commit body. If instead the test PASSES on HEAD, the
+crossing precondition did not trigger — recalibrate the fixture per Step 1's
+contract; do not proceed with a test that cannot distinguish HEAD from D1.
+
+- [ ] **Step 3: Implement the gate in `fit_curve_surface`**
+
+`atx-vol/src/curve_fit.cpp`:
+
+(a) Next to `last_committed_obs_k` (~:650), add the coverage flag:
+
+```cpp
+  // D1 (Task 6): whether the most recently COMMITTED slice's admitted rows
+  // pass Task 1's k-coverage predicate. A covered prev earns FULL calendar
+  // floor authority (pre-Task-3 QP, floor rows everywhere); the Task 3
+  // band+refusal arms only behind an UNCOVERED prev — a shape Task 1 refuses
+  // at prep, so through this driver the armed branch is defense-in-depth for
+  // prep-bypassing callers, not a live lane.
+  bool last_committed_covered = true;
+```
+
+(b) After the existing `prev_data_k_range` assignment block (after the
+SplineVol override, ~:723), widen for ConvexDense when the prev is covered:
+
+```cpp
+    if (cfg.kind == VolCurveKind::ConvexDense && last_committed_covered) {
+      // D1 (Task 6): coverage-admissible prev => unbounded floor authority.
+      // ConvexDense only: prev_data_k_range also feeds the parametric arms'
+      // tradeable_pair_band, whose semantics must not change.
+      prev_data_k_range = {-std::numeric_limits<double>::infinity(),
+                           std::numeric_limits<double>::infinity()};
+    }
+```
+
+(c) In the commit block that records `last_committed_obs_k` (~:893-907), also
+record the coverage verdict:
+
+```cpp
+      last_committed_covered =
+          detail::slice_k_coverage(prepared.fit_observations()).admissible();
+```
+
+(use the same qualification `curve_fit.cpp:364` uses — if it calls the
+predicate unqualified under a `using`, do the same).
+
+- [ ] **Step 4: Distinct refusal taxonomy (`FitRefusedCalendar`)**
+
+(a) `surface_parity.hpp` `ExpiryFitOutcome`: append LAST:
+
+```cpp
+  FitRefusedCalendar,  // ConvexDense calendar-floor breach beyond an UNCOVERED
+                       // prev's data-supported band — refused, not ratcheted
+                       // (Task 6; counted in n_slice_calendar_unsupported)
+```
+
+(b) `curve_fit.cpp` FitFailed branch (~:806-816): where the counter increments
+on the `kCalendarFloorUnsupportedMsg` match, set
+`rep.outcome = ExpiryFitOutcome::FitRefusedCalendar;` instead of `FitFailed`
+(keep `rep.error = fit_code`). Every OTHER failure keeps `FitFailed`.
+
+(c) `surface_db_build.cpp` `rich_drop_reason_name`: add
+`case ExpiryFitOutcome::FitRefusedCalendar: return "FitRefusedCalendar";`
+
+(d) Grep for every other `switch` over `ExpiryFitOutcome`
+(`rg -n "ExpiryFitOutcome" atx-vol --type cpp`) and give each a deliberate
+case (most treat it like `FitFailed`). Compile with the project's warnings —
+`-Wswitch`/C4062 surfacing a missed enumerator is the point of appending one.
+
+(e) Update the two doc comments (pricer_fitter.hpp ~:280 — also adding the
+missing `PrepUncovered`, closing Task 1's deferred minor — and
+surface_db_populate.hpp:246-252).
+
+- [ ] **Step 5: Refresh the Task 3 comments to D1 semantics**
+
+`vol_curve.cpp:421-426` ("Task 3: floor/promotion authority…" — now "bounded
+only when the caller arms it; the board fitter arms it exclusively behind an
+uncovered committed prev, Task 6") and `curve_fit.hpp:98-108` (counter doc:
+refusals now surface as `FitRefusedCalendar`, expected ZERO on healthy boards;
+keep the existing per_slice_linear_fallback caveat sentence).
+
+- [ ] **Step 6: Rebuild + run the targeted filters, verify green**
+
+Build as in Step 2, then:
+`build-rel\bin\atx-vol-tests.exe --gtest_filter=CurveFitCalendarAuthority.*:CurveFitCoverage.*:DenseSlice*.*:SurfaceV2*.*`
+
+Expected: the new test PASSES; `DataFreeFrontWingRefusesInsteadOfRatcheting`
+and `WideSupportRangeIsByteIdenticalToUnbounded` still PASS (fitter machinery
+untouched); `CurveFitCoverage.*` still PASS.
+`SurfaceV2Provenance.ValidationFallbackAdmissionRecordsTheServedFamily` is a
+KNOWN pre-existing red (bisected to before this sprint) — unchanged status is
+acceptable; any NEW red is not.
+
+- [ ] **Step 7: CSV spells the new outcome**
+
+Extend the slice_drop section test in `surface_db_build_test.cpp` (~:697): a
+hand-built `SurfaceDbBuildReport` whose `coverage.slice_drops` carries one
+`SliceDropCell{.outcome = ExpiryBuildOutcome::Missing, .fit_outcome =
+ExpiryFitOutcome::FitRefusedCalendar}` must render a CSV row whose outcome
+column is exactly `FitRefusedCalendar` (follow the existing hand-built-report
+pattern in that file; `write_build_report_csv` to a temp path, read it back,
+EXPECT the substring in the slice_drop section). Run that suite's filter —
+green.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add -A
+git commit -m "feat(vol)!: gate ConvexDense calendar-floor authority on prev-slice k-coverage (Task 3 redesign)
+
+Task 5's bisect proved the unconditional support band refuses healthy
+slices wholesale (2020-03-19: 22/~33 refused, all against dense
+coverage-admissible prevs; band-audit frac 0.92-1.00 -> 0.15-0.44).
+Root cause (t3-redesign-investigation.md): out-of-support floor binding
+is routine and benign on calm days; the poison signature is not the
+crossing's location or magnitude but the PREV SLICE'S COVERAGE SHAPE.
+
+D1: a coverage-admissible committed prev (slice_k_coverage, Task 1's own
+predicate) earns unbounded floor authority - the exact pre-Task-3 QP,
+floor rows at every node, byte-identical by construction (prototype
+measured SHA256-equal to the pre-sprint binary on 11/11 windows). The
+Task 3 band+refusal now arms ONLY behind an uncovered committed prev -
+defense-in-depth for prep-bypassing paths (measured: contains the
+2025-04-24 seed chain even with the Task 1 prep gate disabled).
+
+Refusals also stop hiding as anonymous FitFailed: new
+ExpiryFitOutcome::FitRefusedCalendar flows through SliceDropCell into
+the populate report CSV (closes the Task 5 observability concern).
+
+Fitter-side machinery (band, refusal, message, counter) unchanged;
+oracle admission and QP certification tolerances untouched.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+```
+
+**Out of scope for Task 6** (ledgered residuals, final review adjudicates):
+`refit_slice_curve` stays range-blind (compat-only API, unreachable);
+`per_slice_linear_fallback` bypass unchanged (dormant, defaults false); the
+2020-03-20 Task-2-floor FailedCell is ACCEPTED as truthful (decision recorded
+in the ledger) and is validated behaviorally by the Task 5 rerun, not here.
