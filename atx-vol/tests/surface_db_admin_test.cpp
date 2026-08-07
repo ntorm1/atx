@@ -2010,5 +2010,164 @@ TEST(BandAudit, EmptyHiveRootIsInvalidArgument) {
   fs::remove_all(root);
 }
 
+// ── band_audit — full reprice loop + DST-aware snapshot fix round 1 ─────────
+//
+// Review of the initial submission flagged two Important findings: (1) the
+// orchestration loop (hive load -> corpus_board_from_opra ->
+// OptionChain::from_frame -> per-strike fair_value) had zero coverage beyond
+// the pure scorer and the two early-exit branches; (2) the hive snapshot
+// suffix was a hardcoded EDT constant ("T19:55:00Z"), which
+// run_surface_db_backfill.py's own DST addendum documents as WRONG for an
+// EST-season date ("T20:55:00Z"). The three tests below exercise the real
+// loop end to end via the existing AdminFixture/write_synthetic_hive_v2
+// machinery (no mocks) and cover both findings.
+
+// Finding 2: the full reprice loop, exercised against the Task 2 synthetic
+// fixture (3 symbols x 3 dates, EDT-season dates so this test is agnostic to
+// the fix round 1 snapshot-resolution change — it must pass whether the
+// snapshot comes from the surface's own timestamp or the old EDT default).
+// `min_frac_in_band` is the knob that manufactures a "designed to pass" vs
+// "designed to breach" case deterministically over the SAME fixture, rather
+// than hand-rolling a mis-fit surface: 0.0 is trivially satisfied by any
+// scored row, and a floor above 1.0 is trivially unsatisfiable by any of
+// them, so the two runs isolate the flag/count mechanics from numerical fit
+// quality entirely.
+TEST(BandAudit, EndToEndScoresTheFullRepricedChainAgainstTheStoredSurface) {
+  const AdminFixture f = make_fixture("band_audit_e2e");
+  build_healthy_db(f);
+  const SurfaceDb db = open_db(f);
+
+  atx::vol::BandAuditSpec pass_spec;
+  pass_spec.hive_root = f.hive.string();
+  pass_spec.r = f.fx.r;
+  pass_spec.min_frac_in_band = 0.0;
+  const auto pass_rep = atx::vol::band_audit(db, pass_spec);
+  ASSERT_TRUE(pass_rep.has_value()) << (pass_rep ? "" : pass_rep.error().to_string());
+  EXPECT_TRUE(pass_rep->skip_notes.empty())
+      << (pass_rep->skip_notes.empty() ? "" : pass_rep->skip_notes.front());
+  // 3 symbols x 3 dates x 2 expiries per (symbol, date) board (synthetic_opra_hive.hpp).
+  ASSERT_EQ(pass_rep->rows.size(), std::size_t{18});
+  for (const BandAuditRow &row : pass_rep->rows) {
+    EXPECT_GT(row.n, 0u) << row.date << " " << row.symbol << " T=" << row.T;
+    EXPECT_GE(row.frac_in_band, 0.0);
+    EXPECT_LE(row.frac_in_band, 1.0);
+    EXPECT_FALSE(row.flagged) << "min_frac_in_band=0 is trivially satisfied";
+  }
+  EXPECT_EQ(pass_rep->n_flagged, 0u);
+
+  atx::vol::BandAuditSpec breach_spec = pass_spec;
+  breach_spec.min_frac_in_band = 1.0 + 1e-9; // unsatisfiable by construction
+  const auto breach_rep = atx::vol::band_audit(db, breach_spec);
+  ASSERT_TRUE(breach_rep.has_value()) << (breach_rep ? "" : breach_rep.error().to_string());
+  ASSERT_EQ(breach_rep->rows.size(), pass_rep->rows.size());
+  for (const BandAuditRow &row : breach_rep->rows) {
+    EXPECT_TRUE(row.flagged);
+  }
+  EXPECT_EQ(breach_rep->n_flagged, breach_rep->rows.size());
+}
+
+// Finding 1 (primary path). `opra_panel.cpp`'s FIX-C-1 guard already refuses
+// a hive load whose requested snapshot stamp disagrees with the file's own
+// `ts` column, so the PRE-FIX bug here was never a silently WRONG price — it
+// was a silently EMPTY audit: every EST-season cell failed to load (recorded
+// as a skip note) and contributed zero rows, so `--fail-on-flagged` could
+// never fire over an EST month no matter what it held. `spec.snapshot_suffix`
+// below is left at its EDT-anchored DEFAULT ("T19:55:00Z", the WRONG value
+// for this fixture's EST-season date) DELIBERATELY: the fix means band_audit
+// must not need it to be right, because it derives the suffix from the
+// archived surface's own `pricing().now_ts_ns` instead. Before the fix this
+// test fails (`rep->rows` empty, a skip note explains why); after, it passes.
+TEST(BandAudit, EstSeasonDateResolvesToTheSurfacesOwnSnapshotInstant) {
+  const fs::path root = fresh_tenor_dir("band_audit_est_season");
+  const fs::path hive_dir = root / "hive";
+  const fs::path db_dir = root / "db";
+
+  tsupport::SyntheticHiveSpec fx;
+  fx.symbols = {"AAA"};
+  fx.dates = {"2022-12-19"}; // EST season (1st-Sun-Nov .. 2nd-Sun-Mar)
+  fx.snapshot_hour_utc = 20U;
+  fx.snapshot_minute_utc = 55U; // the EST-side 15:55 ET pre-close minute
+  tsupport::write_synthetic_hive_v2(hive_dir, fx);
+
+  SurfaceDbBuildSpec bspec;
+  bspec.db_root = db_dir.string();
+  bspec.hive.root_dir = hive_dir.string();
+  bspec.hive.date_lo = fx.dates.front();
+  bspec.hive.date_hi = fx.dates.front();
+  bspec.hive.symbols = fx.symbols;
+  bspec.hive.r = fx.r;
+  bspec.hive.snapshot_suffix = "T20:55:00Z"; // the BUILD itself must match the file's own ts too
+  const auto built = build_surface_db(bspec);
+  ASSERT_TRUE(built.has_value()) << (built ? "" : built.error().to_string());
+  ASSERT_EQ(built->coverage.cells_ok, 1u)
+      << "the EST-hive build must itself resolve against the file's own stamped ts";
+
+  auto db = SurfaceDb::open(db_dir.string());
+  ASSERT_TRUE(db.has_value()) << (db ? "" : db.error().to_string());
+
+  atx::vol::BandAuditSpec spec;
+  spec.hive_root = hive_dir.string();
+  spec.symbols = {"AAA"};
+  spec.date_lo = spec.date_hi = fx.dates.front();
+  spec.r = fx.r;
+  const auto rep = atx::vol::band_audit(*db, spec);
+  ASSERT_TRUE(rep.has_value()) << (rep ? "" : rep.error().to_string());
+  EXPECT_TRUE(rep->skip_notes.empty())
+      << (rep->skip_notes.empty() ? "" : rep->skip_notes.front());
+  ASSERT_FALSE(rep->rows.empty())
+      << "the surface's own now_ts_ns must resolve the EST snapshot, not the EDT default";
+  for (const BandAuditRow &row : rep->rows) {
+    EXPECT_GT(row.n, 0u) << row.date << " " << row.symbol << " T=" << row.T;
+  }
+  fs::remove_all(root);
+}
+
+// Finding 1 (fallback path + observability). A surface with no usable stored
+// valuation timestamp (`pricing().now_ts_ns <= 0` — an old/degenerate
+// archive) is hand-built with `now_ts=0` (TenorAudit's own technique,
+// bypassing the normal fit pipeline) and written directly into a partition,
+// paired with an EST-season hive fixture. band_audit must still resolve the
+// correct (EST) snapshot via the DST-aware fallback — not the same hardcoded
+// EDT assumption this whole fix round removes — and must SAY that it used
+// the fallback (the review's explicit observability constraint) via
+// `snapshot_fallback_notes`.
+TEST(BandAudit, MissingSurfaceTimestampFallsBackToADstAwareSuffixAndLogsIt) {
+  const fs::path root = fresh_tenor_dir("band_audit_fallback_dst");
+  const fs::path hive_dir = root / "hive";
+
+  tsupport::SyntheticHiveSpec fx;
+  fx.symbols = {"AAA"};
+  fx.dates = {"2022-12-19"};
+  fx.snapshot_hour_utc = 20U;
+  fx.snapshot_minute_utc = 55U;
+  tsupport::write_synthetic_hive_v2(hive_dir, fx);
+
+  auto db = SurfaceDb::create((root / "db").string());
+  ASSERT_TRUE(db.has_value()) << (db ? "" : db.error().to_string());
+  ASSERT_TRUE(db->upsert_symbol("AAA", symbol_config_from_preset(FitPreset::Populate)).has_value());
+  PricedSurface surf = testkit::make_flat_surface(1u, 100.0, 100.0, 0.25, /*now_ts=*/0);
+  ASSERT_TRUE(db->write_partition(fx.dates.front(),
+                                  std::vector<SurfaceArchiveItem>{{"AAA", &surf}})
+                  .has_value());
+
+  atx::vol::BandAuditSpec spec;
+  spec.hive_root = hive_dir.string();
+  spec.symbols = {"AAA"};
+  spec.date_lo = spec.date_hi = fx.dates.front();
+  spec.r = fx.r;
+  const auto rep = atx::vol::band_audit(*db, spec);
+  ASSERT_TRUE(rep.has_value()) << (rep ? "" : rep.error().to_string());
+  EXPECT_TRUE(rep->skip_notes.empty())
+      << (rep->skip_notes.empty() ? "" : rep->skip_notes.front());
+  ASSERT_EQ(rep->snapshot_fallback_notes.size(), std::size_t{1});
+  EXPECT_NE(rep->snapshot_fallback_notes.front().find("AAA"), std::string::npos);
+  EXPECT_EQ(rep->n_snapshot_fallback_notes_elided, std::size_t{0});
+  ASSERT_FALSE(rep->rows.empty());
+  for (const BandAuditRow &row : rep->rows) {
+    EXPECT_GT(row.n, 0u);
+  }
+  fs::remove_all(root);
+}
+
 } // namespace
 } // namespace atx::vol

@@ -928,6 +928,21 @@ int run_band_audit(const SurfaceDb &db, const std::string &symbol, const std::st
     std::fprintf(stderr, "atx-vol-surface-db: band-audit: %zu additional skip note(s) elided.\n",
                  rep->n_skip_notes_elided);
   }
+  // Fix round 1 (review Important 1's observability constraint): a cell whose
+  // surface carried no usable stored valuation timestamp fell back to a
+  // DST-aware reconstructed snapshot suffix instead of the surface's own
+  // exact instant. Never fatal (the cell is still scored above), but distinct
+  // from `skip_notes` — nothing here failed to load — so it gets its own,
+  // equally capped, stderr channel.
+  for (const std::string &note : rep->snapshot_fallback_notes) {
+    std::fprintf(stderr, "atx-vol-surface-db: band-audit: snapshot fallback: %s\n", note.c_str());
+  }
+  if (rep->n_snapshot_fallback_notes_elided > 0) {
+    std::fprintf(stderr,
+                 "atx-vol-surface-db: band-audit: %zu additional snapshot-fallback note(s) "
+                 "elided.\n",
+                 rep->n_snapshot_fallback_notes_elided);
+  }
   std::printf("date\tsymbol\tT\tn\tfrac_in_band\tfrac_above_ask\tavg_signed_hs\tmax_abs_hs\tflag\n");
   for (const BandAuditRow &row : rep->rows) {
     std::printf("%s\t%s\t%.6f\t%zu\t%.4f\t%.4f\t%.3f\t%.3f\t%s\n", row.date.c_str(),

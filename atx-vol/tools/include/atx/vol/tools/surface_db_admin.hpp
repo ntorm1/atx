@@ -840,6 +840,16 @@ struct TenorAuditReport {
 // ask of the whole listed belly/wing) and the before/after instrument for the
 // fix validation. AN AUDIT, NOT A GATE (same stance as tenor_audit): every
 // row prints; the exit-code opt-in lives on the CLI.
+//
+// Fix round 1 (review Important 1): "the build snapshot" above is the
+// ARCHIVED SURFACE's OWN stored valuation instant
+// (`PricedSurface::pricing().now_ts_ns`), not a hardcoded UTC hour. A hive is
+// ET-anchored (the production orchestrator's `--snap-et` pull), so the same
+// wall-clock pre-close minute lands at two different UTC hours depending on
+// DST; deriving the hive snapshot from the surface itself is DST-proof by
+// construction instead of assuming EDT year-round. A surface with no usable
+// stored timestamp falls back to a DST-aware RECONSTRUCTED suffix and says so
+// via `BandAuditReport::snapshot_fallback_notes`.
 
 struct BandAuditRow {
   std::string date{};
@@ -871,6 +881,17 @@ struct BandAuditReport {
   std::size_t n_flagged{0};
   std::vector<std::string> skip_notes{};   // capped like TenorAuditReport
   std::size_t n_skip_notes_elided{0};
+  // Fix round 1 (review Important 1): one note per (date, symbol) cell whose
+  // archived surface carried no usable stored valuation timestamp
+  // (`PricedSurface::pricing().now_ts_ns`), so the hive reprice fell back to a
+  // DST-aware RECONSTRUCTED snapshot suffix instead of the surface's own
+  // exact instant. Never fatal — the cell is still scored under `rows` — but
+  // worth surfacing (the observability constraint the fallback exists under):
+  // a fallback-scored row is only as precise as the DST rule's calendar-day
+  // granularity, not the surface's bit-exact fit instant. Capped the same way
+  // as `skip_notes`, on its own budget.
+  std::vector<std::string> snapshot_fallback_notes{};
+  std::size_t n_snapshot_fallback_notes_elided{0};
 };
 
 // Pure per-expiry scorer (unit-tested): a quote is scored when bid > 0,

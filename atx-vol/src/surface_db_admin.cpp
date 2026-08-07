@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <cstdio>   // std::snprintf (band_audit's ns -> "Thh:mm:ssZ" suffix formatting)
 #include <filesystem>
 #include <iterator> // make_move_iterator (tenor_audit's per-symbol group append)
 #include <limits>   // quiet_NaN (tenor_audit's no-neighbors sentinel)
@@ -18,6 +20,9 @@
 #include "atx/vol/priced_surface.hpp"      // PricedSurface::tenor_domain (tenor_audit, Task 1/3)
 #include "atx/vol/priced_surface_view.hpp" // PricedSurfaceView (LoadedSurface::view)
 #include "atx/vol/universe.hpp"            // Chain, chain_index (band_audit)
+#include "atx/vol/vol_time.hpp"            // settlement_instant_ns (band_audit's DST-aware fallback)
+
+#include "opra_batch_detail.hpp" // Civil, parse_civil, days_from_civil (band_audit snapshot math)
 
 namespace atx::vol {
 
@@ -668,6 +673,103 @@ BandAuditRow score_expiry_band(std::span<const double> model_price,
   return row;
 }
 
+// ── Fix round 1 (review Important 1): DST-correct hive snapshot resolution ──
+//
+// A hardcoded EDT suffix ("T19:55:00Z") silently produced ZERO scored rows
+// for an EST-season date rather than a wrong number: `opra_panel.cpp`'s
+// FIX-C-1 guard already refuses a hive load whose requested snapshot stamp
+// disagrees with the file's own `ts` column, so the wrong suffix surfaced as
+// a skip note, not a bad price. Either way the audit covered nothing for that
+// date and a `--fail-on-flagged` gate over it could never fire. The fix:
+// derive the hive snapshot suffix from the ARCHIVED SURFACE's OWN stored
+// valuation instant (`PricedSurface::pricing().now_ts_ns`) instead of
+// assuming a fixed UTC hour — DST-proof by construction, because the
+// surface's own timestamp already encodes whatever offset it was actually
+// fit under.
+
+inline constexpr std::int64_t kBandAuditNsPerSecond = 1'000'000'000LL;
+inline constexpr std::int64_t kBandAuditNsPerDay = 86'400LL * kBandAuditNsPerSecond;
+
+// The "Thh:mm:ssZ" hive snapshot suffix that reconstructs `surf_now_ts_ns`
+// exactly when combined with `date` (i.e. `iso_to_ns(date + out) ==
+// surf_now_ts_ns`), so a hive load using it reprices against the EXACT
+// instant the surface was fit to — independent of any EDT/EST assumption.
+//
+// Returns false (leaving `out` untouched) when `surf_now_ts_ns` is
+// non-positive (no stored valuation timestamp — an old/degenerate archive:
+// `PricingContext::now_ts_ns` default-constructs to 0 and no real fit ever
+// produces a non-positive epoch stamp) or does not fall within `date`'s own
+// UTC calendar day (a surface whose stamp disagrees with its own partition
+// key, closer to corruption than a DST question). Either case is the
+// caller's cue to fall back to `dst_aware_fallback_suffix` below.
+[[nodiscard]] bool snapshot_suffix_from_surface_ts(const std::string &date,
+                                                    std::int64_t surf_now_ts_ns,
+                                                    std::string &out) {
+  if (surf_now_ts_ns <= 0) {
+    return false;
+  }
+  opra_detail::Civil c;
+  if (!opra_detail::parse_civil(date, c)) {
+    return false;
+  }
+  const std::int64_t day_start_ns = opra_detail::days_from_civil(c.y, c.m, c.d) * kBandAuditNsPerDay;
+  const std::int64_t tod_ns = surf_now_ts_ns - day_start_ns;
+  if (tod_ns < 0 || tod_ns >= kBandAuditNsPerDay) {
+    return false; // the surface's own valuation instant falls outside `date`'s UTC day
+  }
+  const std::int64_t tod_s = tod_ns / kBandAuditNsPerSecond;
+  const int hh = static_cast<int>(tod_s / 3600);
+  const int mm = static_cast<int>((tod_s % 3600) / 60);
+  const int ss = static_cast<int>(tod_s % 60);
+  char buf[16];
+  std::snprintf(buf, sizeof(buf), "T%02d:%02d:%02dZ", hh, mm, ss);
+  out = buf;
+  return true;
+}
+
+// Is US-Eastern civil date `c` in daylight saving time (EDT)? Reuses the
+// already-public, already-DST-correct `settlement_instant_ns` (16:00 ET's UTC
+// instant is 20:00Z under EDT, 21:00Z under EST) rather than re-deriving the
+// "2nd Sunday of March .. 1st Sunday of November" rule a third time —
+// `opra_panel.cpp` and `vol_time.cpp` each already carry a private copy of it
+// for their own translation unit.
+[[nodiscard]] bool date_is_us_eastern_dst(const opra_detail::Civil &c) {
+  const std::int64_t day = opra_detail::days_from_civil(c.y, c.m, c.d);
+  const std::int64_t pm_close_utc_ns =
+      settlement_instant_ns(static_cast<std::int32_t>(day), SettlementSession::Pm);
+  const std::int64_t ns_of_day = pm_close_utc_ns - day * kBandAuditNsPerDay;
+  return ns_of_day / (3600LL * kBandAuditNsPerSecond) == 20; // 20:00Z=16:00 EDT; 21:00Z=16:00 EST
+}
+
+// DST-aware fallback for a cell whose surface carries no usable stored
+// valuation timestamp (`snapshot_suffix_from_surface_ts` above returned
+// false). `baseline`'s clock is EDT-anchored by construction
+// (`BandAuditSpec::snapshot_suffix`'s default "T19:55:00Z" == 15:55 ET on an
+// EDT date, the production orchestrator's `--snap-et 15:55` pre-close pull
+// minute — run_surface_db_backfill.py's DST addendum). On an EST-season
+// `date` the SAME 15:55 ET instant is one UTC hour later, so this shifts the
+// baseline's wall-clock hour by +1. Only recognizes the exact "Thh:mm:ssZ"
+// shape (10 bytes, fixed separators/terminator); anything else — a
+// caller-supplied offset stamp, fractional seconds, a bare date — is returned
+// unchanged rather than mis-parsed (the pre-fix passthrough behavior).
+[[nodiscard]] std::string dst_aware_fallback_suffix(const std::string &date,
+                                                    const std::string &baseline) {
+  opra_detail::Civil c;
+  if (!opra_detail::parse_civil(date, c) || baseline.size() != 10 || baseline.front() != 'T' ||
+      baseline[3] != ':' || baseline[6] != ':' || baseline.back() != 'Z') {
+    return baseline;
+  }
+  if (date_is_us_eastern_dst(c)) {
+    return baseline;
+  }
+  const int hh = (baseline[1] - '0') * 10 + (baseline[2] - '0');
+  const int shifted = (hh + 1) % 24;
+  std::string out = baseline;
+  out[1] = static_cast<char>('0' + shifted / 10);
+  out[2] = static_cast<char>('0' + shifted % 10);
+  return out;
+}
+
 Result<BandAuditReport> band_audit(const SurfaceDb &db, const BandAuditSpec &spec) {
   if (spec.hive_root.empty()) {
     return Err(ErrorCode::InvalidArgument, "band_audit: hive_root is required");
@@ -705,69 +807,91 @@ Result<BandAuditReport> band_audit(const SurfaceDb &db, const BandAuditSpec &spe
       ++out.n_skip_notes_elided;
     }
   };
+  const auto note_fallback = [&](std::string text) {
+    if (out.snapshot_fallback_notes.size() < spec.max_skip_notes) {
+      out.snapshot_fallback_notes.push_back(std::move(text));
+    } else {
+      ++out.n_snapshot_fallback_notes_elided;
+    }
+  };
 
   for (const std::string &date : dates) {
-    OpraHiveSpec hs;
-    hs.root_dir = spec.hive_root;
-    hs.date_lo = date;
-    hs.date_hi = date;
-    hs.symbols = symbols;
-    hs.snapshot_suffix = spec.snapshot_suffix;
-    hs.r = spec.r;
-    Result<OpraBatchResult> loaded = load_opra_hive(hs);
-    if (!loaded) {
-      note(date + ": hive load failed: " + loaded.error().to_string());
-      continue;
-    }
-    for (OpraBatchEntry &entry : loaded->entries) {
-      if (!entry.panel.has_value()) {
-        note(date + " " + entry.symbol + ": " + entry.panel.error().to_string());
-        continue;
-      }
-      const Result<PricedSurface> surf = db.load_surface(date, entry.symbol);
+    for (const std::string &symbol : symbols) {
+      // The surface is loaded FIRST (a local partition read, no hive IO) so
+      // its own stored valuation instant can pick the hive snapshot — see the
+      // fix-round-1 block above.
+      const Result<PricedSurface> surf = db.load_surface(date, symbol);
       if (!surf) {
-        note(date + " " + entry.symbol + ": surface: " + surf.error().to_string());
+        note(date + " " + symbol + ": surface: " + surf.error().to_string());
         continue;
       }
-      CorpusBoard board =
-          corpus_board_from_opra(date, entry.symbol, std::move(*entry.panel));
-      auto chain = OptionChain::from_frame(board.frame, board.env);
-      if (!chain) {
-        note(date + " " + entry.symbol + ": chain: " + chain.error().to_string());
+      std::string snapshot_suffix;
+      if (!snapshot_suffix_from_surface_ts(date, surf->pricing().now_ts_ns, snapshot_suffix)) {
+        snapshot_suffix = dst_aware_fallback_suffix(date, spec.snapshot_suffix);
+        note_fallback(date + " " + symbol +
+                      ": surface has no usable stored valuation timestamp "
+                      "(pricing().now_ts_ns=" +
+                      std::to_string(surf->pricing().now_ts_ns) +
+                      "); using DST-aware fallback snapshot suffix " + snapshot_suffix);
+      }
+
+      OpraHiveSpec hs;
+      hs.root_dir = spec.hive_root;
+      hs.date_lo = date;
+      hs.date_hi = date;
+      hs.symbols = {symbol};
+      hs.snapshot_suffix = snapshot_suffix;
+      hs.r = spec.r;
+      Result<OpraBatchResult> loaded = load_opra_hive(hs);
+      if (!loaded) {
+        note(date + " " + symbol + ": hive load failed: " + loaded.error().to_string());
         continue;
       }
-      for (const Chain &c : chain->underlying().chains) {
-        std::vector<double> model, cb, ca;
-        const std::size_t n_str = c.strikes.size();
-        model.reserve(2 * n_str);
-        cb.reserve(2 * n_str);
-        ca.reserve(2 * n_str);
-        for (std::size_t i = 0; i < n_str; ++i) {
-          for (const Side side : {Side::Call, Side::Put}) {
-            const std::size_t idx = chain_index(static_cast<std::uint16_t>(i), side);
-            const double qb = c.bids[idx];
-            const double qa = c.asks[idx];
-            if (!(qb > 0.0) || !(qa > qb)) {
-              continue; // unscorable quote — keep spans aligned by skipping here
+      for (OpraBatchEntry &entry : loaded->entries) {
+        if (!entry.panel.has_value()) {
+          note(date + " " + entry.symbol + ": " + entry.panel.error().to_string());
+          continue;
+        }
+        CorpusBoard board =
+            corpus_board_from_opra(date, entry.symbol, std::move(*entry.panel));
+        auto chain = OptionChain::from_frame(board.frame, board.env);
+        if (!chain) {
+          note(date + " " + entry.symbol + ": chain: " + chain.error().to_string());
+          continue;
+        }
+        for (const Chain &c : chain->underlying().chains) {
+          std::vector<double> model, cb, ca;
+          const std::size_t n_str = c.strikes.size();
+          model.reserve(2 * n_str);
+          cb.reserve(2 * n_str);
+          ca.reserve(2 * n_str);
+          for (std::size_t i = 0; i < n_str; ++i) {
+            for (const Side side : {Side::Call, Side::Put}) {
+              const std::size_t idx = chain_index(static_cast<std::uint16_t>(i), side);
+              const double qb = c.bids[idx];
+              const double qa = c.asks[idx];
+              if (!(qb > 0.0) || !(qa > qb)) {
+                continue; // unscorable quote — keep spans aligned by skipping here
+              }
+              const Result<double> fv = surf->fair_value(c.strikes[i], c.T, side);
+              model.push_back(fv.has_value() ? *fv
+                                             : std::numeric_limits<double>::quiet_NaN());
+              cb.push_back(qb);
+              ca.push_back(qa);
             }
-            const Result<double> fv = surf->fair_value(c.strikes[i], c.T, side);
-            model.push_back(fv.has_value() ? *fv
-                                           : std::numeric_limits<double>::quiet_NaN());
-            cb.push_back(qb);
-            ca.push_back(qa);
           }
-        }
-        BandAuditRow row = score_expiry_band(model, cb, ca, spec.min_frac_in_band);
-        row.date = date;
-        row.symbol = entry.symbol;
-        row.T = c.T;
-        if (row.flagged) {
-          ++out.n_flagged;
-        }
-        out.rows.push_back(std::move(row));
-      }
-    }
-  }
+          BandAuditRow row = score_expiry_band(model, cb, ca, spec.min_frac_in_band);
+          row.date = date;
+          row.symbol = entry.symbol;
+          row.T = c.T;
+          if (row.flagged) {
+            ++out.n_flagged;
+          }
+          out.rows.push_back(std::move(row));
+        } // for (Chain c : chain->underlying().chains)
+      }   // for (OpraBatchEntry &entry : loaded->entries)
+    }     // for (symbol : symbols)
+  }       // for (date : dates)
   return Ok(std::move(out));
 }
 
