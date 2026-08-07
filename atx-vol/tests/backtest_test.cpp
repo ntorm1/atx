@@ -4012,3 +4012,311 @@ TEST(DeclarativeStrategy, RollAtHorizonClosesEvenWhenEntryUnbuildable) {
   EXPECT_EQ(0u, StrategyFixture::lots_alive_after(fx.horizon_date(), *r)); // old cohort closed
   EXPECT_GT(r->n_steps_entry_skipped, 0u);                                // and the skip is counted
 }
+
+// ── Task A5: Fail-closed hedge spot + explicit financing reference ─────────
+//
+// (a) The daily delta-hedge's share FILL on a uid with no board this step was
+// already fail-closed before this task landed (WS-F F1(a) / SP100 task 2 --
+// see UnpricedTolerance.HedgeSkipsAbsentUidAndCountsUnderExcludeAndReport
+// above for the full gross_delta-based proof that a skip never flattens the
+// position "for free" at spot 0.0): Error aborts, ExcludeAndReport skips the
+// fill and leaves the ledger untouched. What was MISSING was a RUN-TOTAL
+// counter naming how many steps hit that skip; this section adds
+// `BacktestResult::n_hedge_steps_skipped`.
+//
+// (b) `FinancingConfig::finance_premium`'s cash-carry rate used to come from
+// `MarketSnapshot::surface_at(0)` -- the first surface in ARCHIVE order, an
+// arbitrary constituent on a multi-name corpus. This section adds
+// `FinancingConfig::reference_uid` / `flat_r` and proves the rate now comes
+// from the configured source, never archive order.
+
+namespace {
+
+// Opens ONE long call on BBB at step 0 and never trades again. AAA is present
+// in the corpus (`make_two_name_corpus` writes it every day) but this
+// strategy never opens a lot on it, so AAA never enters the hedge ledger and
+// cannot contribute any cash/delta noise on BBB's gap day -- the fixture's
+// hedge fill and cash-delta observations are therefore about BBB alone.
+class SingleNameOpenAndHoldStrategy final : public IStrategy {
+public:
+  SingleNameOpenAndHoldStrategy(std::int64_t expiry, HedgeSpec hedge) noexcept
+      : expiry_{expiry}, hedge_{hedge} {}
+
+  Status on_step(const MarketSnapshot & /*base*/, std::size_t step_index, PortfolioState &book,
+                 std::uint64_t &next_lot_id) override {
+    if (step_index == 0u) {
+      book.lots.push_back(Lot{next_lot_id++, OptionContract{kUidB, 200.0, 0.0, Side::Call}, +5.0,
+                              100.0, expiry_, 0u, 1.0});
+    }
+    return atx::core::Ok();
+  }
+
+  [[nodiscard]] HedgeSpec hedge_spec() const override { return hedge_; }
+
+private:
+  std::int64_t expiry_{0};
+  HedgeSpec hedge_{};
+};
+
+class HedgeFixture {
+public:
+  // BBB's board is present every day except index 2 (`make_two_name_corpus`'s
+  // `absent_b`); the strategy hedges BBB daily to a zero band, so the gap date
+  // is a step where the overlay wants to trade BBB and cannot.
+  [[nodiscard]] static HedgeFixture missing_surface_on_hedge_day() {
+    const fs::path dir = fresh_dir("hedge-fixture-missing-surface");
+    const CorpusManifest man = make_two_name_corpus(dir, 4, {2});
+    auto clock = Clock::from_manifest(man);
+    EXPECT_TRUE(clock.has_value())
+        << (clock.has_value() ? std::string{} : clock.error().to_string());
+    const std::int64_t far = kBaseNow + 120 * kDayNs; // never expires within the run
+    return HedgeFixture(std::move(*clock), far);
+  }
+
+  [[nodiscard]] const Clock &corpus() const noexcept { return clock_; }
+  [[nodiscard]] SingleNameOpenAndHoldStrategy &strategy() noexcept { return strat_; }
+
+  [[nodiscard]] static RunConfig config_with(UnpricedLotPolicy policy) noexcept {
+    RunConfig cfg;
+    cfg.unpriced = policy;
+    cfg.price.n_threads = 1u;
+    // BBB is a HELD lot whose board goes missing mid-life on the gap row --
+    // the same pre-existing, already-documented reconcile_nav gap as
+    // UnpricedTolerance.HedgeSkipsAbsentUidAndCountsUnderExcludeAndReport
+    // above (a held lot's PV and hedge-share MTM drop out of the independent
+    // liquidation recompute the moment its board is absent, while NAV
+    // correctly stays flat that step -- a real, separate, pre-A5 gap this
+    // task does not touch), never a tolerance change.
+    cfg.reconcile_nav = false;
+    return cfg;
+  }
+
+  [[nodiscard]] static std::string gap_date() { return "2026-08-03"; } // day index 2
+
+  // Test-local oracle: this fixture's book has exactly ONE possible
+  // cash-moving event on any given row -- BBB's daily hedge fill; there are
+  // no entries or rolls after inception, no dividends, no financing (both
+  // default off) and AAA never trades -- so the raw cash delta on a row IS
+  // that row's hedge fill's notional. A correctly SKIPPED fill leaves cash
+  // untouched (0.0 exactly here); paired with `n_hedge_steps_skipped >= 1`
+  // below, together they prove the skip was COUNTED rather than silently
+  // priced at spot 0.0. (See UnpricedTolerance.HedgeSkipsAbsentUidAndCounts-
+  // UnderExcludeAndReport for the complementary gross_delta-based proof that
+  // the position itself is not flattened.)
+  [[nodiscard]] static double hedge_shares_traded_on(const std::string &date,
+                                                     const BacktestResult &r) {
+    for (std::size_t i = 1; i < r.size(); ++i) {
+      if (r.date[i] == date) {
+        return r.cash[i] - r.cash[i - 1];
+      }
+    }
+    ADD_FAILURE() << "date " << date << " not found in result";
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+
+private:
+  HedgeFixture(Clock clock, std::int64_t expiry)
+      : clock_(std::move(clock)), strat_(expiry, daily_delta_to_zero()) {}
+
+  Clock clock_;
+  SingleNameOpenAndHoldStrategy strat_;
+};
+
+} // namespace
+
+TEST(BacktestHedge, MissingSurfaceHedgeIsSkippedAndCounted) {
+  auto fx = HedgeFixture::missing_surface_on_hedge_day();
+  auto r = run_backtest(fx.corpus(), fx.strategy(),
+                        HedgeFixture::config_with(UnpricedLotPolicy::ExcludeAndReport));
+  ASSERT_TRUE(r.has_value()) << r.error().to_string();
+  EXPECT_EQ(0.0, HedgeFixture::hedge_shares_traded_on(fx.gap_date(), *r)); // no free flatten at spot 0
+  EXPECT_GE(r->n_hedge_steps_skipped, 1u);
+}
+
+// Same fixture under the strict policy: the run must still abort. (As in
+// UnpricedTolerance.HedgeAbsentUidStillAbortsUnderError, the abort lands on
+// the earlier held-lot-unpriced guard -- BBB is both the held lot and the
+// hedge target here -- so the hedge overlay's own Error branch is
+// unreachable through this fixture; what matters is that Error stays fully
+// fail-closed end to end.)
+TEST(BacktestHedge, MissingSurfaceHedgeAbortsUnderError) {
+  auto fx = HedgeFixture::missing_surface_on_hedge_day();
+  auto r = run_backtest(fx.corpus(), fx.strategy(),
+                        HedgeFixture::config_with(UnpricedLotPolicy::Error));
+  ASSERT_FALSE(r.has_value()) << "Error must stay fully fail-closed on an absent board";
+  EXPECT_EQ(r.error().code(), ErrorCode::NotFound);
+}
+
+namespace {
+
+// Like `make_surface`, but `r` is a parameter instead of the file's `kR`
+// constant, so a corpus can carry two names with two genuinely different
+// financing rates.
+[[nodiscard]] PricedSurface make_surface_with_rate(std::uint32_t uid, double S, double fwd,
+                                                    std::int64_t now_ts, double r) {
+  CurveSurface cs;
+  std::vector<SliceContext> ctx;
+  const double Ts[] = {0.05, 0.10, 0.20, 0.35, 0.50, 0.75, 1.00};
+  int i = 0;
+  for (const double T : Ts) {
+    const double coherent_fwd = fwd * std::exp((r - 0.02) * T);
+    EssviParams e{};
+    e.theta = 0.04 + 0.005 * static_cast<double>(i);
+    e.phi = 1.5 - 0.05 * static_cast<double>(i);
+    e.rho = -0.4 + 0.02 * static_cast<double>(i);
+    e.psi = 0.5;
+    e.p = 0.5;
+    e.lambda = 0.5;
+    e.T = T;
+    e.F = coherent_fwd;
+    e.expiry_id = static_cast<std::uint16_t>(i);
+    cs.push(std::make_unique<EssviCurve>(e, std::exp(-r * T)));
+    ctx.push_back(SliceContext{T, coherent_fwd, 0.0, 0.02, 250, 7});
+    ++i;
+  }
+  PricingContext pc;
+  pc.S = S;
+  pc.r = r;
+  pc.now_ts_ns = now_ts;
+  pc.method = AmericanMethod::AndersenLake;
+  pc.al_opts = al_fast_opts();
+  pc.uid = uid;
+  auto ps = PricedSurface::create(std::move(cs), std::move(ctx), pc);
+  EXPECT_TRUE(ps.has_value()) << (ps.has_value() ? std::string{} : ps.error().to_string());
+  return std::move(*ps);
+}
+
+constexpr std::uint32_t kUidFinAaa = 31;
+constexpr double kFinAaaRate = 0.01;
+constexpr std::uint32_t kUidFinSpy = 32;
+constexpr double kFinSpyRate = 0.08;
+
+// A 2-date, 2-name corpus (AAA, SPY) with two DIFFERENT constant rates; a
+// single step is enough to exercise one financing accrual.
+[[nodiscard]] CorpusManifest make_two_rate_corpus(const fs::path &dir) {
+  std::error_code ec;
+  fs::create_directories(dir, ec);
+  std::vector<std::pair<std::string, std::string>> dp;
+  for (int d = 0; d < 2; ++d) {
+    const std::int64_t now = kBaseNow + static_cast<std::int64_t>(d) * kDayNs;
+    const PricedSurface a = make_surface_with_rate(kUidFinAaa, 100.0, 100.0, now, kFinAaaRate);
+    const PricedSurface b = make_surface_with_rate(kUidFinSpy, 200.0, 200.0, now, kFinSpyRate);
+    char buf[16];
+    std::snprintf(buf, sizeof buf, "2026-09-%02d", d + 1);
+    const std::string date = buf;
+    const std::string path = (dir / (date + ".atxvsa")).string();
+    std::vector<SurfaceArchiveItem> items;
+    // AAA first, SPY second: archive order deliberately disagrees with the
+    // configured reference below, so a run that (wrongly) fell back to
+    // archive order would read AAA's rate and this test would catch it.
+    items.push_back(SurfaceArchiveItem{"AAA", &a});
+    items.push_back(SurfaceArchiveItem{"SPY", &b});
+    const Status st = write_surface_archive_v2_file(path, items);
+    EXPECT_TRUE(st.has_value()) << (st.has_value() ? std::string{} : st.error().to_string());
+    dp.emplace_back(date, path);
+  }
+  return make_manifest(dp, "AAA");
+}
+
+class NoTradeStrategy final : public IStrategy {
+public:
+  Status on_step(const MarketSnapshot & /*base*/, std::size_t /*step_index*/,
+                 PortfolioState & /*book*/, std::uint64_t & /*next_lot_id*/) override {
+    return atx::core::Ok();
+  }
+};
+
+class FinancingFixture {
+public:
+  [[nodiscard]] static FinancingFixture two_names_with_different_r() {
+    const fs::path dir = fresh_dir("financing-fixture-two-rates");
+    const CorpusManifest man = make_two_rate_corpus(dir);
+    auto clock = Clock::from_manifest(man);
+    EXPECT_TRUE(clock.has_value())
+        << (clock.has_value() ? std::string{} : clock.error().to_string());
+    return FinancingFixture(std::move(*clock));
+  }
+
+  [[nodiscard]] const Clock &corpus() const noexcept { return clock_; }
+  [[nodiscard]] NoTradeStrategy &strategy() noexcept { return strat_; }
+
+  [[nodiscard]] static std::uint32_t uid(const std::string &symbol) noexcept {
+    return symbol == "SPY" ? kUidFinSpy : kUidFinAaa;
+  }
+
+  [[nodiscard]] static RunConfig config() noexcept {
+    RunConfig cfg;
+    cfg.price.n_threads = 1u;
+    cfg.financing.finance_premium = true;
+    cfg.financing.initial_cash = kInitialCash;
+    return cfg;
+  }
+
+  // Test-local oracle: a single step (day0 -> day1) over an UNTOUCHED book
+  // (`NoTradeStrategy` never trades, and `HedgeSpec{}`'s default Kind::None
+  // means nothing hedges either), so `cash` sits at exactly `initial_cash`
+  // for the whole step and the only financing flow is the cash-carry accrual
+  // at the CONFIGURED reference's rate -- computed here by hand from the
+  // fixture's own rate/date constants, never by calling engine pricing.
+  [[nodiscard]] static double expected_carry_at_spy_rate() noexcept {
+    const double dt = static_cast<double>(kDayNs) / kNsPerYear;
+    return kInitialCash * (std::exp(kFinSpyRate * dt) - 1.0);
+  }
+
+private:
+  explicit FinancingFixture(Clock clock) : clock_(std::move(clock)) {}
+
+  static constexpr double kInitialCash = 1'000'000.0;
+
+  Clock clock_;
+  NoTradeStrategy strat_;
+};
+
+} // namespace
+
+TEST(BacktestFinancing, RateComesFromConfiguredReference) {
+  auto fx = FinancingFixture::two_names_with_different_r();
+  RunConfig cfg = FinancingFixture::config();
+  cfg.financing.reference_uid = FinancingFixture::uid("SPY");
+  auto r = run_backtest(fx.corpus(), fx.strategy(), cfg);
+  ASSERT_TRUE(r.has_value()) << r.error().to_string();
+  EXPECT_NEAR(FinancingFixture::expected_carry_at_spy_rate(), r->financing.back(), 1e-10);
+}
+
+// The complementary negative: an AMBIGUOUS multi-name corpus (no
+// `reference_uid`, no `flat_r`) must fail closed rather than silently reading
+// whichever surface the archive happens to list first (AAA, here -- see the
+// corpus builder's comment).
+TEST(BacktestFinancing, MultiNameCorpusWithoutReferenceFailsClosed) {
+  auto fx = FinancingFixture::two_names_with_different_r();
+  const RunConfig cfg = FinancingFixture::config(); // reference_uid == 0, flat_r unset
+  auto r = run_backtest(fx.corpus(), fx.strategy(), cfg);
+  ASSERT_FALSE(r.has_value()) << "an ambiguous multi-name financing reference must not silently "
+                                 "pick an archive-order surface";
+  EXPECT_EQ(r.error().code(), ErrorCode::InvalidArgument);
+}
+
+// The default (`reference_uid == 0`, no `flat_r`) on a genuinely SINGLE-name
+// corpus must still behave exactly as the pre-A5 `surface_at(0)` read did:
+// there is only one surface, so "require a single name" and "archive order"
+// name the same thing.
+TEST(BacktestFinancing, SingleNameDefaultKeepsPriorBehaviorBitIdentical) {
+  const fs::path dir = fresh_dir("financing-fixture-single-name");
+  const CorpusManifest man = make_evolving_corpus(dir, "SPY", 2);
+  auto clock = Clock::from_manifest(man);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  NoTradeStrategy strat;
+  RunConfig cfg;
+  cfg.price.n_threads = 1u;
+  cfg.financing.finance_premium = true;
+  constexpr double kInitialCash = 500'000.0;
+  cfg.financing.initial_cash = kInitialCash;
+  // reference_uid left at its default (0); no flat_r.
+  auto r = run_backtest(*clock, strat, cfg);
+  ASSERT_TRUE(r.has_value()) << r.error().to_string();
+
+  const double dt = static_cast<double>(kDayNs) / kNsPerYear;
+  const double expected = kInitialCash * (std::exp(kR * dt) - 1.0); // kR: the single name's rate
+  EXPECT_NEAR(expected, r->financing.back(), 1e-10);
+}

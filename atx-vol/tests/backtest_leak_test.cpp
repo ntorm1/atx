@@ -362,6 +362,13 @@ TEST(BacktestLeak, NavLiquidationReconciliationHoldsOnACleanHedgedFinancedRun) {
   cfg.frictions.hedge_slippage_bps = 1.0;
   cfg.financing.initial_cash = 1.0e6;
   cfg.financing.finance_premium = true;
+  // A5: this corpus carries two names (AAA, BBB); an ambiguous multi-name
+  // financing reference now fails closed, so the source must be explicit.
+  // AAA is archive-index 0 (`make_gap_corpus` writes it first) -- pinning it
+  // here reproduces the pre-A5 `surface_at(0)` rate this test always used,
+  // bit-for-bit. Reconciliation itself does not depend on which valid
+  // reference is chosen; this is the same-value choice, not a requirement.
+  cfg.financing.reference_uid = kUidA;
   cfg.financing.borrow_rate = 0.005;
   cfg.financing.shares_carry = true;
 

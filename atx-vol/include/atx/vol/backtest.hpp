@@ -621,6 +621,25 @@ struct FinancingConfig {
   // charging both would double-count. uids with no schedule keep the proxy
   // exactly as before.
   std::vector<ShareDividend> share_dividends{};
+
+  // A5 (backtest-production-lakehouse sprint, target 1.1.0): which uid's `r`
+  // sources the cash-carry rate `finance_premium` accrues at. Before this field
+  // existed the rate always came from `MarketSnapshot::surface_at(0)` -- the
+  // first surface in ARCHIVE order, an arbitrary constituent on any multi-name
+  // corpus. 0 (the default) means "require a single-name corpus": on a base
+  // snapshot with at most one surface this reproduces the old `surface_at(0)`
+  // behaviour bit-for-bit (there is only one surface to pick), and on a
+  // multi-name corpus with no `flat_r` override it now FAILS CLOSED with an
+  // explicit config error instead of silently keying off archive order. Set an
+  // explicit uid to pin the rate source on a multi-name corpus. Ignored
+  // whenever `flat_r` is set. APPENDED (additive, Tier-A freeze amended for
+  // this sprint) -- existing fields keep their order.
+  std::uint32_t reference_uid{0};
+  // Explicit flat continuous rate for `finance_premium`, overriding any
+  // per-uid surface lookup (and therefore any board/corpus dependency)
+  // entirely. unset (the default) leaves `reference_uid` in force. APPENDED,
+  // same additive treatment as `reference_uid` above.
+  std::optional<double> flat_r{};
 };
 
 // ── Run config + result ─────────────────────────────────────────────────────
@@ -1151,6 +1170,24 @@ struct BacktestResult {
   // so `ra_schema_hash()` and every TSV/CSV header and golden are untouched.
   // Always 0 under `UnpricedLotPolicy::Error`, which never defers.
   std::uint64_t n_settlements_at_stale_spot{0};
+
+  // A5 (backtest-production-lakehouse sprint, target 1.1.0): a RESULT SCALAR,
+  // not a row-parallel series — a run-total count of STEPS (inception included)
+  // on which the daily delta-hedge overlay wanted to fill at least one uid's
+  // shares and could not, because that uid's base surface was absent
+  // (`ExcludeAndReport` only; see `ExecResult::n_unpriced_hedges` and
+  // `HedgeLedger::hedge_daily` in backtest.cpp). The skipped fill leaves that
+  // uid's hedge-share position exactly as it was — the whole point, since the
+  // pre-F1 bug flattened it "for free" at spot 0.0 instead — so this counter
+  // only NAMES the exclusion rather than letting it pass unremarked. Counts
+  // STEPS, not individual skipped fills: a step where two uids both skip still
+  // adds 1. Same append-only, non-wire treatment as `n_steps_entry_skipped` and
+  // `n_settlements_at_stale_spot` above: absent from `kBacktestSeriesColumns`
+  // and RunArchive serialization, so `ra_schema_hash()` and every TSV/CSV
+  // header and golden are untouched. Always 0 under `UnpricedLotPolicy::Error`,
+  // which aborts the run instead of skipping, and always 0 for the fixed-book
+  // (B0) overload, which has no strategy and therefore never hedges.
+  std::uint64_t n_hedge_steps_skipped{0};
 
   [[nodiscard]] std::size_t size() const noexcept { return date.size(); }
 

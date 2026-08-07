@@ -337,6 +337,12 @@ using detail::StepMarkMemo;
     return Err(ErrorCode::InvalidArgument,
                "run_backtest: borrow_rate must be finite and nonnegative");
   }
+  // A5: a rate override is only meaningful if it is an actual number -- unlike
+  // borrow_rate this may be negative (a real financing rate can be), so only
+  // finiteness is checked here.
+  if (cfg.financing.flat_r.has_value() && !std::isfinite(*cfg.financing.flat_r)) {
+    return Err(ErrorCode::InvalidArgument, "run_backtest: financing.flat_r must be finite");
+  }
   for (const ShareDividend &div : cfg.financing.share_dividends) {
     if (div.uid == 0u || div.ex_ts_ns <= 0 || !finite_nonnegative(div.amount)) {
       return Err(ErrorCode::InvalidArgument,
@@ -2748,6 +2754,11 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
       hedge_ledger.add(position.uid, position.shares);
     }
   }
+  // A5: run-total of STEPS (inception included) on which the hedge overlay
+  // skipped at least one uid's fill (`ExecResult::n_unpriced_hedges > 0` that
+  // step); copied into `BacktestResult::n_hedge_steps_skipped` once, at the
+  // end of the run -- same placement discipline as `n_stale_spot_total` below.
+  std::uint64_t n_hedge_steps_skipped_total = 0;
   // Swap-lane fixing/accrual state, one entry per seeded swap lot. Restored
   // verbatim on a resume so the first resumed mark reads the same running
   // variance and the same prior mark the uninterrupted run would have.
@@ -3150,6 +3161,9 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
     if (!ex) {
       return Err(ex.error());
     }
+    if (ex->n_unpriced_hedges > 0u) {
+      ++n_hedge_steps_skipped_total; // A5: inception can hedge too (Cadence::Daily)
+    }
     Result<BookGreeks> g = ex->book_greeks.has_value() ? Ok(*ex->book_greeks)
                                                        : book_greeks(*base, book.lots, cfg.price,
                                                                      retained_pricer, &mark_memo);
@@ -3256,28 +3270,60 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
     // surface absent with a non-zero position).
     std::uint32_t n_unpriced_shares = 0;
     if (cfg.financing.finance_premium) {
-      // Backing-agnostic (WS-ZC1): index 0 is the first archive-order surface whether
-      // this snapshot owns its surfaces or borrows mapped views.
-      //
-      // A subset-miss load legally yields a snapshot owning ZERO surfaces, so there
-      // may be no base-date rate to accrue at. Disposition follows the hedge-share
-      // ledger's rule immediately below: a FLAT slot carries no economics — with
-      // cash == 0.0 both `cash * (growth - 1.0)` and `cash *= growth` are exact
-      // no-ops for every finite r, so skipping is bit-identical — while a LIVE
-      // balance is a valuation failure. Silently skipping THAT would delete a step
-      // of financing from NAV permanently (the flow is never recovered when the
-      // board returns) and report it nowhere, so it fails closed.
-      const SurfaceRef base_rate_surface = base->surface_at(0);
-      if (base_rate_surface == nullptr) {
-        if (cash != 0.0) {
-          return Err(ErrorCode::NotFound,
-                     "run_backtest: no base surface on " + refs[i - 1].date +
-                         " to source the premium-financing rate (cash=" +
-                         std::to_string(cash) + ")");
-        }
+      // A5: the accrual rate is now an explicit, auditable source instead of
+      // "whichever surface the archive happened to list first" -- `flat_r`
+      // bypasses any board lookup entirely; otherwise `reference_uid` selects
+      // the surface (0 => require a single-name corpus, which reproduces the
+      // pre-A5 `surface_at(0)` read bit-for-bit whenever there really is only
+      // one name; a multi-name corpus with neither set now fails closed
+      // instead of silently keying off archive order).
+      std::optional<double> r;
+      if (cfg.financing.flat_r.has_value()) {
+        r = *cfg.financing.flat_r;
       } else {
-        const double r = base_rate_surface->pricing().r; // base-date rate
-        const double growth = std::exp(r * dt);
+        SurfaceRef base_rate_surface{};
+        if (cfg.financing.reference_uid == 0u) {
+          if (base->n_surfaces() > 1u) {
+            return Err(ErrorCode::InvalidArgument,
+                       "run_backtest: multi-name corpus (" + std::to_string(base->n_surfaces()) +
+                           " names) needs an explicit FinancingConfig::reference_uid or "
+                           "flat_r to source the premium-financing rate on " +
+                           refs[i - 1].date);
+          }
+          // Backing-agnostic (WS-ZC1): the base's only surface (or none, on a
+          // subset-miss load) whether this snapshot owns its surfaces or
+          // borrows mapped views -- never "the first of several" now that the
+          // multi-name case above is refused.
+          base_rate_surface = base->surface_at(0);
+        } else {
+          base_rate_surface = base->find(cfg.financing.reference_uid);
+        }
+        // A subset-miss load legally yields a snapshot owning ZERO surfaces, so
+        // there may be no base-date rate to accrue at. Disposition follows the
+        // hedge-share ledger's rule immediately below: a FLAT slot carries no
+        // economics — with cash == 0.0 both `cash * (growth - 1.0)` and
+        // `cash *= growth` are exact no-ops for every finite r, so skipping is
+        // bit-identical — while a LIVE balance is a valuation failure. Silently
+        // skipping THAT would delete a step of financing from NAV permanently
+        // (the flow is never recovered when the board returns) and report it
+        // nowhere, so it fails closed.
+        if (base_rate_surface == nullptr) {
+          if (cash != 0.0) {
+            const std::string who =
+                cfg.financing.reference_uid == 0u
+                    ? std::string{}
+                    : (" for reference_uid=" + std::to_string(cfg.financing.reference_uid));
+            return Err(ErrorCode::NotFound,
+                       "run_backtest: no base surface" + who + " on " + refs[i - 1].date +
+                           " to source the premium-financing rate (cash=" + std::to_string(cash) +
+                           ")");
+          }
+        } else {
+          r = base_rate_surface->pricing().r; // reference-uid rate
+        }
+      }
+      if (r.has_value()) {
+        const double growth = std::exp(*r * dt);
         financing += cash * (growth - 1.0); // cash carry on the pre-step balance
         cash *= growth;                     // apply to the ledger
       }
@@ -3407,6 +3453,9 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
     if (!ex) {
       return Err(ex.error());
     }
+    if (ex->n_unpriced_hedges > 0u) {
+      ++n_hedge_steps_skipped_total; // A5
+    }
 
     // 6. Running NAV increment — EXACT add order; collapses to B1's
     //    (pnl_total + settlement) bit-for-bit when features are off.
@@ -3484,6 +3533,8 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
   out.n_steps_entry_skipped = strat.n_steps_entry_skipped();
   // A4: same treatment for the deferred-settlement stale-spot run-total.
   out.n_settlements_at_stale_spot = n_stale_spot_total;
+  // A5: same treatment for the hedge-fill-skip run-total.
+  out.n_hedge_steps_skipped = n_hedge_steps_skipped_total;
 
   // Plan 4.6: the engine may not emit a skewed column set. Pure read, so this
   // cannot change a value the run produced.
