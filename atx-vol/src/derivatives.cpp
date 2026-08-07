@@ -31,10 +31,14 @@ using atx::core::Ok;
 namespace detail {
 
 // See the declaration (derivatives.hpp, "Carr-Lee convexity refinement") for
-// the from-paper derivation. Pure arithmetic -- no branches, no early exits,
-// so every input (including a degenerate k_vol_naive == 0) produces a
-// well-defined finite result: the denominator is >= 8 for any T > 0, so
-// there is no division-by-zero to guard.
+// the from-paper derivation -- INCLUDING review fix I-1's note that
+// `k_vol_naive` is a straddle PROXY for the paper's IV0 (ATM implied vol),
+// not IV0 itself, with its own ~sigma^3*T/24 un-corrected residual
+// (~1.667 vol bp on this task's fixture, larger than the +0.906 vol bp this
+// refinement adds). Pure arithmetic -- no branches, no early exits, so every
+// input (including a degenerate k_vol_naive == 0) produces a well-defined
+// finite result: the denominator is >= 8 for any T > 0, so there is no
+// division-by-zero to guard.
 double refine_carr_lee_k_vol(double k_vol_naive, double k_var, double T) noexcept {
   const double naive_sq = k_vol_naive * k_vol_naive;
   const double numerator = T * (k_var - naive_sq);
@@ -559,6 +563,16 @@ template <class SurfaceT>
 
     const double k_vol = vol_q.fair_strike_dec;
     DerivFlags flags = DerivFlags::VolCarrLee;
+    // Review fix I-2 (C-5): propagate the strip's own provenance flags
+    // (StripTruncatedLeft/Right, WingClamped, LowT, InteriorBadNodes) onto
+    // this public dispatch quote. Under Naive this is a no-op --
+    // vol_q.flags == VolCarrLee exactly, so the OR changes nothing -- but
+    // under Refined, vol_swap_fair_strike now runs a strip that FEEDS the
+    // price, and its provenance previously vanished at this boundary: a
+    // caller gating on StripTruncated*/WingClamped/LowT (the pattern this
+    // file establishes everywhere else a strip runs) would pass a quote
+    // built on a truncated or wing-clamped strip with no trace of it.
+    flags |= vol_q.flags;
     const double df = deriv_df_at_T(curves, T, flags);
     const double pv = df * contract.notional * (k_vol - contract.strike_dec);
 

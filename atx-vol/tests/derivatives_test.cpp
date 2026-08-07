@@ -1608,6 +1608,40 @@ TEST(WingClamp, FlagPropagatesThroughDerivPrice) {
   EXPECT_TRUE(has_flag(q->flags, DerivFlags::WingClamped));
 }
 
+// Review fix I-2 (C-5): price_vol_swap's unaged branch used to hardcode
+// `flags = DerivFlags::VolCarrLee` and never OR in the strip's own
+// provenance. Harmless before C-5 (that strip was a pure best-effort
+// diagnostic the price never depended on); under CarrLeeForm::Refined the
+// strip now FEEDS the price, so a caller gating on WingClamped/StripTruncated*
+// /LowT (the pattern this file establishes everywhere else a strip runs)
+// must see it here too. Same steep-wing fixture as WingClamp.
+// FlagPropagatesThroughDerivPrice, but VolSwap/unaged/Refined instead of
+// VarSwap: Naive never runs a strip on this path at all (no signal to
+// propagate, flag correctly absent), Refined must carry it through.
+TEST(CarrLee, RefinedPropagatesStripFlagsThroughDerivPrice) {
+  const EssviSurface surf = make_steep_wing_surface(0.30, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+
+  DerivContract c{};
+  c.kind = DerivKind::VolSwap;
+  c.maturity_t = 0.25;
+  c.strike_dec = 0.30;
+  c.notional = 1.0;
+  c.rv_spec.n_obs_total = 63;  // unaged (n_obs_done defaults to 0)
+
+  DerivConfig naive_cfg = deriv_default_config();
+  naive_cfg.carr_lee_form = atx::vol::CarrLeeForm::Naive;
+  const auto naive_q = deriv_price(surf, cs, c, naive_cfg);
+  ASSERT_TRUE(naive_q.has_value());
+  EXPECT_FALSE(has_flag(naive_q->flags, DerivFlags::WingClamped));
+
+  DerivConfig refined_cfg = deriv_default_config();
+  refined_cfg.carr_lee_form = atx::vol::CarrLeeForm::Refined;
+  const auto refined_q = deriv_price(surf, cs, c, refined_cfg);
+  ASSERT_TRUE(refined_q.has_value());
+  EXPECT_TRUE(has_flag(refined_q->flags, DerivFlags::WingClamped));
+}
+
 // ── Kind x engine dispatch matrix (PV-5) ──────────────────────────────────
 //
 // deriv_price now enforces the full matrix: VarSwap -> {Auto,

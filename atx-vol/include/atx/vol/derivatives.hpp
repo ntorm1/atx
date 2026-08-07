@@ -590,6 +590,32 @@ namespace detail {
 // k_vol_naive exactly whenever k_var == k_vol_naive^2 (no convexity to
 // recover -- CarrLee.RefinementVanishesOnFlat pins this).
 //
+// Review fix I-1 (C-5): k_vol_naive occupies Remark 6.5's IV0 slot, but the
+// paper's IV0 is the ATM IMPLIED VOL (sigma_atmf) itself -- "a simple
+// approximation using ATM implied volatility and the variance swap value."
+// k_vol_naive (carr_lee_k_vol's output) is a SEPARATE, already-approximate
+// stand-in for sigma_atmf: the ATMF-straddle closed form is
+// g_hat(sigma_atmf*sqrt(T)) = sigma_atmf*sqrt(T) -
+// (sigma_atmf*sqrt(T))^3/24 + O(sigma_atmf^5) (Taylor-expanding the erf-
+// based straddle formula), so annualized, k_vol_naive is biased LOW
+// relative to sigma_atmf by sigma_atmf^3*T/24 -- a SEPARATE, UN-corrected
+// approximation layer this refinement does not touch. On this task's own
+// T=0.5/sigma_atmf=0.20 fixture that residual is ~1.667 vol bp, ROUGHLY 1.8x
+// LARGER than the +0.906 vol bp the refinement itself adds
+// (task-C-5-report.md's measurement table): a Refined strike still lands
+// strictly below sigma_atmf, let alone the paper's true VOL0. "Recovers
+// part of the convexity gap" describes the K_var-vs-k_vol_naive^2 gap this
+// formula targets, not the total distance from k_vol_naive to fair value.
+//
+// The substitution is FORCED, not an oversight: CarrLee.RefinementVanishes
+// OnFlat pins refined == naive BIT-EXACT whenever k_var == k_vol_naive^2,
+// which only holds with k_vol_naive itself (not sigma_atmf) as the base
+// point -- substituting sigma_atmf would move Refined by ~1.7 vol bp even
+// on a perfectly flat surface and break that pin. Fixing the proxy itself
+// (feeding refine_carr_lee_k_vol a true ATM-implied-vol argument) is a
+// different, un-scoped change: it would move the Naive default too, which
+// the v1.1 behavior-compatibility contract forbids without a version bump.
+//
 // This is a LOCAL/leading-order approximation (the paper does not endorse
 // it -- Remark 6.5), valid in the small-correction regime every intended
 // caller here operates in; it is not a globally bound-respecting formula; a

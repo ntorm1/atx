@@ -316,6 +316,20 @@ accurate; Remark 6.5), not a full close of LIT-4's cited >40bp bias. A
 sub-percent `vol_of_vol_used`/cap-value moves at ordinary skew, growing with
 `T` and with the size of the naive-vs-`sqrt(K_var)` gap.
 
+**Known residual, undisturbed by this change (review finding I-1):** Remark
+6.5's `IV0` slot is the paper's ATM IMPLIED VOL (`sigma_atmf`) itself; this
+implementation feeds it `K_vol_naive` (`carr_lee_k_vol`'s own ATMF-straddle
+output), a SEPARATE, already-approximate stand-in for `sigma_atmf` biased low
+by `sigma_atmf^3*T/24` (annualized) — on the fixture above, ~1.667 vol bp,
+larger than the +0.906 vol bp this refinement adds. A `Refined` strike
+therefore still lands below `sigma_atmf`, not just below the paper's true
+`VOL0`. This is forced, not an oversight: `CarrLee.RefinementVanishesOnFlat`
+pins refined == naive bit-exact whenever `K_var == K_vol_naive^2`, which only
+holds with `K_vol_naive` (not `sigma_atmf`) as the refinement's base point —
+substituting `sigma_atmf` would move `Refined` even on a flat surface and
+break that pin. Fixing the underlying straddle-proxy bias is a separate,
+un-scoped change (it would move the `Naive` default too).
+
 **Migration**: `carr_lee_form` defaults to `Naive`, so this changes zero
 prices for every existing caller — the v1.1 default is byte-compatible with
 every pre-C-5 quote. **Planned 2.0 default: `Refined`.** A caller who wants
