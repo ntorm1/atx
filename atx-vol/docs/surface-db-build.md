@@ -776,7 +776,13 @@ tenor and gets an extrapolated mark instead of a fitted one.
 `outcome` prefers the FIT DRIVER's own, finer-grained reason
 (`ExpiryFitOutcome`) when the session retained one: `CarryFailed` (carry/forward
 resolution failed), `PrepStarved` (below the usable-row floor — thin), `PrepFailed`
-(a hard preparation defect), `FitFailed` (the slice fit itself failed), or
+(a hard preparation defect), `PrepUncovered` (the admitted rows do not straddle
+the forward, or leave a central log-moneyness hole wider than the cap — refused
+before fitting rather than fitted and extrapolated), `FitFailed` (the slice fit
+itself failed), `FitRefusedCalendar` (the previous committed slice's calendar
+floor bound this slice only where that slice had no admitted data — refused
+rather than ratcheting a data-free wing forward; expected to be zero on a
+healthy board, so a nonzero count is itself the signal), or
 `Skipped` (a degenerate maturity, never attempted). It falls back to the
 coarser admission-layer taxonomy (`ExpiryBuildOutcome`) — `Missing` — when no
 rich reason was retained. `DuplicateMaturity` is spelled by the fallback for

@@ -688,7 +688,8 @@ public:
   // same alignment contract as `ExpiryFitReport` itself, surface_parity.hpp).
   // Task 3 (mark-domain-robustness): retained past the fit so the admission
   // layer's build report can spell WHY a chain is missing from the served
-  // surface (CarryFailed/PrepStarved/PrepFailed/FitFailed/Skipped) instead of
+  // surface (CarryFailed/PrepStarved/PrepFailed/PrepUncovered (Task 1)/
+  // FitFailed/FitRefusedCalendar (Task 6)/Skipped) instead of
   // collapsing every non-fit reason into one coarse outcome. Empty when this
   // session was NOT built through `run_surface_parity`/`fit_curve_surface`
   // (e.g. a session assembled by some other construction path never sets it).
