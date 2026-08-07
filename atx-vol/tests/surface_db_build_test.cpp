@@ -754,6 +754,39 @@ TEST(BuildSurfaceDb, SliceDropRowsNameTheDroppedExpiry) {
   EXPECT_NE(body.find("coverage.max_T_min,"), std::string::npos) << body;
 }
 
+// Task 6: the calendar-floor refusal is a DISTINCT drop reason, not an
+// anonymous `FitFailed`. `ExpiryFitOutcome::FitRefusedCalendar` is the newest
+// enumerator, so it is exactly the one a stale `rich_drop_reason_name` switch
+// would drop through to nullptr on -- which would silently downgrade the CSV to
+// the coarse `Missing` and re-hide the very event Task 6 exists to surface.
+// Pinned on a hand-built report (the report_with_failed_cells technique) so it
+// holds without needing a board that actually trips the gate: through
+// `fit_curve_surface` the armed branch is unreachable behind Task 1's prep
+// refusal, and this row's whole job is to be legible if it ever IS reached.
+TEST(BuildSurfaceDb, SliceDropCsvSpellsTheCalendarRefusal) {
+  SurfaceDbBuildReport r;
+  r.coverage.slice_drops.push_back(SliceDropCell{"2026-07-02", "ZZZ", 0.5,
+                                                 ExpiryBuildOutcome::Missing, 41u,
+                                                 ExpiryFitOutcome::FitRefusedCalendar});
+  r.coverage.n_dates_with_slice_drops = 1u;
+
+  const fs::path root = fresh_dir("slice_drop_calendar");
+  fs::create_directories(root);
+  const fs::path csv = root / "report.csv";
+  const Status w = write_build_report_csv(r, csv.string());
+  ASSERT_TRUE(w.has_value()) << (w ? "" : w.error().to_string());
+  std::ifstream is(csv.string(), std::ios::binary);
+  ASSERT_TRUE(is.good());
+  const std::string body((std::istreambuf_iterator<char>(is)), std::istreambuf_iterator<char>());
+
+  EXPECT_NE(body.find("slice_drop.date,symbol,T,outcome,n_used\n"), std::string::npos) << body;
+  EXPECT_NE(body.find(",FitRefusedCalendar,41\n"), std::string::npos)
+      << "the outcome column must spell the fit driver's own reason, not fall "
+         "back to the coarse `Missing`:\n"
+      << body;
+  EXPECT_EQ(body.find(",Missing,41\n"), std::string::npos) << body;
+}
+
 // ── FIX-A: the fit stage names its failures, like the config stage always has ──
 //
 // `config.failed_symbols` has always named the symbols CONFIG SELECTION refused.

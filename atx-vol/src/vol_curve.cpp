@@ -419,9 +419,16 @@ Result<std::unique_ptr<IVolCurve>> fit_slice_curve(const CurveConfig &cfg,
     }
     const double calendar_tol = repair != nullptr ? repair->tolerance : kCalendarTol;
 
-    // Task 3: floor/promotion authority is bounded by the previous slice's
-    // data-supported range (+margin). Infinite when the caller supplied no
-    // range — every existing caller is byte-identical.
+    // Task 3 / Task 6 (D1): floor and promotion authority is bounded by the
+    // previous slice's data-supported range (+margin) ONLY when the caller arms
+    // it by supplying a finite range. Infinite (the default, and what a caller
+    // that supplies no range gets) restores the pre-Task-3 QP: floor rows at
+    // every lattice node, every scan violation promotable, never refused.
+    // `fit_curve_surface` arms the bound EXCLUSIVELY behind an UNCOVERED
+    // committed prev (Task 1's `slice_k_coverage` predicate) — the seed-ratchet
+    // shape — because out-of-support floor binding is routine and benign
+    // between two coverage-admissible dense slices (measured on 22/35 healthy
+    // 2020-03-19 slices; t3-redesign-investigation.md §3).
     const double floor_lo = prev_data_k_range.first - kCalendarFloorSupportMargin;
     const double floor_hi = prev_data_k_range.second + kCalendarFloorSupportMargin;
 

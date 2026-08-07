@@ -813,7 +813,8 @@ coverage_regression_display_cap(const SurfaceDbBuildReport &r,
 // dropped a long-dated expiry from an otherwise-served surface is named here
 // instead of only showing up downstream as an extrapolated backtest mark.
 // `outcome` spells the fit DRIVER's own reason (`ExpiryFitOutcome`:
-// `CarryFailed`/`PrepStarved`/`PrepFailed`/`FitFailed`/`Skipped`) when one was
+// `CarryFailed`/`PrepStarved`/`PrepFailed`/`FitFailed`/`Skipped`/
+// `PrepUncovered` (Task 1)/`FitRefusedCalendar` (Task 6)) when one was
 // retained on the session (Fix Round 1, `ExpiryBuildReport::fit_outcome`),
 // falling back to the coarser admission-layer `Missing` (`ExpiryBuildOutcome`)
 // when it was not — see `slice_drop_outcome_name` (surface_db_build.cpp) for

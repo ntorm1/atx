@@ -249,7 +249,12 @@ struct FailedCell {
 // `outcome == Missing`. Meaningful ONLY then -- see that field's own doc for
 // exactly which of the fit driver's `ExpiryFitOutcome` values can appear and
 // which default (`Fitted`, the enum's 0 value) means "no rich reason is
-// available", the same convention this field inherits.
+// available", the same convention this field inherits. The vocabulary includes
+// `PrepUncovered` (Task 1: admitted rows fail the k-coverage predicate) and
+// `FitRefusedCalendar` (Task 6: a ConvexDense slice refused because the
+// previous, UNCOVERED committed slice's calendar floor bound it only outside
+// that slice's own data range) -- both are truthful truncations of an
+// otherwise-served board, not defects.
 //
 // Distinct from `FailedCell`: a `FailedCell` is a WHOLE (date, symbol) cell
 // whose fit failed outright and produced no surface at all; a `SliceDropCell`

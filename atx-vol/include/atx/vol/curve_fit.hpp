@@ -96,9 +96,15 @@ struct CurveSurfaceReport {
   // not straddle ATM or leave a central k-hole wider than the cap
   // (ExpiryFitOutcome::PrepUncovered). Surfaced, never silent.
   std::size_t n_slices_uncovered{0};
-  // Task 3: slices refused because the previous slice's calendar floor bound
-  // them only where that slice had no admitted data (the seed-ratchet shape;
-  // kCalendarFloorUnsupportedMsg). Truncation follows; surfaced, never silent.
+  // Task 3, re-gated by Task 6 (D1): slices refused because the previous
+  // slice's calendar floor bound them only where that slice had no admitted
+  // data (the seed-ratchet shape; kCalendarFloorUnsupportedMsg), reported as
+  // `ExpiryFitOutcome::FitRefusedCalendar`. Truncation follows; surfaced, never
+  // silent. Expected ZERO on healthy boards: the support band is armed ONLY
+  // when the previous COMMITTED slice fails Task 1's k-coverage predicate, a
+  // shape Task 1 already refuses at prep — so through `fit_curve_surface` this
+  // counter is a defense-in-depth tripwire for prep-bypassing paths, and any
+  // nonzero value on a dense board is itself the signal.
   // Caveat: under the opt-in `CalibOpts::per_slice_linear_fallback` (off by
   // default; the populate path never enables it), a refusal is first retried
   // as a LinearVariance slice, and a successful recovery does NOT increment
