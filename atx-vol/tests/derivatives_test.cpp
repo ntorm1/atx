@@ -1649,33 +1649,47 @@ TEST(WingClamp, FlagPropagatesThroughDerivPrice) {
   EXPECT_TRUE(has_flag(q->flags, DerivFlags::WingClamped));
 }
 
-// Review fix I-2 (C-5): price_vol_swap's unaged branch used to hardcode
-// `flags = DerivFlags::VolCarrLee` and never OR in the strip's own
-// provenance. Harmless before C-5 (that strip was a pure best-effort
-// diagnostic the price never depended on); under CarrLeeForm::Refined the
-// strip now FEEDS the price, so a caller gating on WingClamped/StripTruncated*
-// /LowT (the pattern this file establishes everywhere else a strip runs)
-// must see it here too. Same steep-wing fixture as WingClamp.
-// FlagPropagatesThroughDerivPrice, but VolSwap/unaged/Refined instead of
-// VarSwap: Naive never runs a strip on this path at all (no signal to
-// propagate, flag correctly absent), Refined must carry it through.
-TEST(CarrLee, RefinedPropagatesStripFlagsThroughDerivPrice) {
+// Review fix I-2 (C-5) + aggregate review fix I-1 (C-R, Important #1):
+// price_vol_swap's unaged branch runs up to TWO separate strip evaluations --
+// the center's own (inside vol_swap_fair_strike, only under Refined) and the
+// best-effort diagnostic at :637 (UNCONDITIONAL: every unaged VolSwap price
+// pays it, Naive or Refined). Pre-I-2, neither one's provenance flags reached
+// the dispatch quote. I-2 wired the center's own flags in -- visible only
+// under Refined, since Naive's center never runs a strip at all
+// (carr_lee_k_vol is a closed-form ATMF-straddle read). I-1 wired the
+// diagnostic's flags in too, unconditionally -- so under Naive, a dispatch
+// quote can now carry WingClamped/StripTruncated*/LowT/InteriorBadNodes from
+// the diagnostic strip even though the CENTER price itself never ran one
+// (this was the "dead on this path for every default caller" gap I-1
+// closed). Same steep-wing fixture as WingClamp.FlagPropagatesThroughDerivPrice.
+TEST(CarrLee, StripFlagsPropagateThroughDerivPriceUnderBothForms) {
   const EssviSurface surf = make_steep_wing_surface(0.30, 0.01, 1.00);
   const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+  const double T_test = 0.25;
 
   DerivContract c{};
   c.kind = DerivKind::VolSwap;
-  c.maturity_t = 0.25;
+  c.maturity_t = T_test;
   c.strike_dec = 0.30;
   c.notional = 1.0;
   c.rv_spec.n_obs_total = 63;  // unaged (n_obs_done defaults to 0)
 
+  // Naive: independent oracle first -- call the SAME diagnostic strip
+  // directly, exactly as :637 does, and confirm it wing-clamps on this
+  // surface, so the propagation assertion below traces a real signal rather
+  // than a coincidence.
   DerivConfig naive_cfg = deriv_default_config();
   naive_cfg.carr_lee_form = atx::vol::CarrLeeForm::Naive;
+  const auto strip_direct = var_swap_fair_strike(surf, cs, T_test, naive_cfg);
+  ASSERT_TRUE(strip_direct.has_value());
+  ASSERT_TRUE(has_flag(strip_direct->flags, DerivFlags::WingClamped));
+
   const auto naive_q = deriv_price(surf, cs, c, naive_cfg);
   ASSERT_TRUE(naive_q.has_value());
-  EXPECT_FALSE(has_flag(naive_q->flags, DerivFlags::WingClamped));
+  EXPECT_TRUE(has_flag(naive_q->flags, DerivFlags::WingClamped));
 
+  // Refined: the center's OWN strip wing-clamps too (I-2) -- still true, now
+  // for two independent reasons (its own strip AND the diagnostic).
   DerivConfig refined_cfg = deriv_default_config();
   refined_cfg.carr_lee_form = atx::vol::CarrLeeForm::Refined;
   const auto refined_q = deriv_price(surf, cs, c, refined_cfg);
@@ -2151,6 +2165,30 @@ TEST(CarryTheta, UnagedVolSwapHoleySurfaceKeepsBlockAliveWithCarryFieldsNaN) {
   EXPECT_TRUE(std::isfinite(g->theta));
   EXPECT_TRUE(std::isfinite(g->rho));
   EXPECT_TRUE(std::isfinite(g->charm));
+}
+
+// ── MUST-FIX 6 (C-5 M-5) ────────────────────────────────────────────────────
+//
+// `vol_swap_fair_strike`'s header doc (above its declaration) and the
+// CHANGELOG both promise that CarrLeeForm::Refined "propagates that strip's
+// error contract too (Internal on an unusably holey surface, etc.)" -- but no
+// test exercised that promise before this fix, even though it is exactly the
+// propagation the aggregate review's Critical finding (C-1, above) turns on:
+// Refined's center price DEPENDS on the strip succeeding, unlike Naive or the
+// best-effort diagnostic. Reuses the same C-4 interior-bad-node fixture as
+// `InteriorNaNExceedsThreshold_ReturnsInternal` (23 bad nodes, past
+// max(2, 401/100) == 4) so the failure pinned here is the real gate.
+TEST(CarrLee, RefinedPropagatesStripFailure) {
+  const double T_test = 0.5;
+  const SviSurface surf = make_interior_hole_surface(-0.06, 0.5, 0.001, T_test);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+
+  DerivConfig cfg = pinned_symmetric_strip_cfg();
+  cfg.carr_lee_form = atx::vol::CarrLeeForm::Refined;
+
+  const auto q = vol_swap_fair_strike(surf, cs, T_test, cfg);
+  ASSERT_FALSE(q.has_value());
+  EXPECT_EQ(q.error().code(), ErrorCode::Internal);
 }
 
 }  // namespace

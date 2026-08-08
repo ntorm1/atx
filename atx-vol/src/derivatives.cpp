@@ -641,6 +641,17 @@ template <class SurfaceT>
           std::sqrt(std::fmax(strip->uncapped_var_dec, 0.0)) - k_vol;
       out.integration_error_est = strip->integration_error_est;
       carry_strip_grid(out, *strip);
+      // Aggregate review fix (I-1): this is the v1.1-default (Naive) path's
+      // ONLY strip -- C-5's I-2 fix ORs the Refined strip's flags in at :624
+      // above, but under Naive that strip never runs, so this one's
+      // provenance (StripTruncatedLeft/Right, WingClamped, LowT,
+      // InteriorBadNodes) was silently dropped even though its NUMBERS
+      // (uncapped_var_dec, integration_error_est, the grid fields just
+      // carried above, including resolved_wing_clamp) were served -- a quote
+      // that could contradict itself (e.g. a nonzero resolved_wing_clamp with
+      // WingClamped absent from flags). `out.flags = flags` below still wins,
+      // so OR it into `flags` here rather than `out.flags` directly.
+      flags |= strip->flags;
     }
     out.accrued_component_dec = 0.0;
     out.future_component_dec = k_vol;
