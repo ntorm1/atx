@@ -183,6 +183,10 @@ add_executable(atx-vol-tests
     realized_vol_test.cpp
     # THEO-2 — appended target: breakeven replay suite
     breakeven_test.cpp
+    # THEO-6 — appended target: label-factory driver gate (pulls
+    # examples/bev_label_factory.cpp in via #include, main() suppressed --
+    # see that test file's banner comment)
+    bev_label_factory_gate_test.cpp
 )
 # backtest_bench_test.cpp was relocated to bench/backtest_throughput_bench.cpp
 # (it is a throughput benchmark, not a correctness gate).
