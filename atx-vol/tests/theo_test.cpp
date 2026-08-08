@@ -30,14 +30,17 @@
 #include <gtest/gtest.h>
 
 #include "atx/vol/american.hpp" // al_fast_opts, AmericanMethod
-#include "atx/vol/panel.hpp"    // make_synthetic_american_panel, SynthPanelSpec
+#include "atx/vol/event_vol.hpp" // EventSchedule, censored_total_variance, event_recombined_vol, count_events_at
+#include "atx/vol/panel.hpp" // make_synthetic_american_panel, SynthPanelSpec
 #include "atx/vol/priced_surface.hpp"
 #include "atx/vol/query_pricing.hpp"  // QueryPricingTier
+#include "atx/vol/realized_vol.hpp"   // RvPanel
 #include "atx/vol/session.hpp"        // VolaSession, SessionInputs, FitPreset
 #include "atx/vol/spy_fixture.hpp"    // make_spy_synthetic_spec, make_spy_session_inputs
 #include "atx/vol/surface_parity.hpp" // SliceContext
 #include "atx/vol/types.hpp"          // Side
 #include "atx/vol/vol_curve.hpp"      // CurveSurface, EssviParams, EssviCurve
+#include "atx/vol/vol_time.hpp"       // ns_from_year_fraction
 
 namespace atx::vol {
 namespace {
@@ -151,6 +154,33 @@ private:
   double other_dvol_;
 };
 
+// Sets ModelMissing on one targeted query, zero flags elsewhere -- proves
+// OverlayAdjust::flags (Task 8) propagates into TheoValue::flags per-query,
+// the same isolation contract OverlayClamped already has (see
+// ClampedQueryFlagDoesNotLeakToNeighbors below).
+class FlagOnTargetedQueryOverlay final : public ITheoOverlay {
+public:
+  explicit FlagOnTargetedQueryOverlay(double target_strike) : target_strike_(target_strike) {}
+
+  [[nodiscard]] std::string_view name() const noexcept override {
+    return "test_flag_on_targeted_query_overlay";
+  }
+
+  [[nodiscard]] Status adjust(const TheoContext & /*ctx*/, std::span<const TheoQuery> queries,
+                              std::span<OverlayAdjust> out) const override {
+    for (std::size_t i = 0; i < queries.size(); ++i) {
+      const std::uint32_t flags = (queries[i].strike == target_strike_)
+                                      ? static_cast<std::uint32_t>(TheoFlagBits::ModelMissing)
+                                      : 0u;
+      out[i] = OverlayAdjust{.dvol = 0.0, .band = 0.0, .flags = flags};
+    }
+    return Ok();
+  }
+
+private:
+  double target_strike_;
+};
+
 // ── A cheap, directly-constructed fast-tier-prepared surface ────────────────
 //
 // Mirrors contract_projection_test.cpp's `make_surface`: a raw synthetic
@@ -194,6 +224,48 @@ private:
     return Err(surface.error());
   }
   return std::move(*surface).with_query_pricing(QueryPricingTier::RepresentativeFast);
+}
+
+// ── A minimal flat-ATM-vol surface (Task 8 RvBlend arithmetic tests) ────────
+//
+// One eSSVI slice per tenor in `tenors`, each tuned so its ATM (K == F ==
+// spot, i.e. log-moneyness k == 0) implied vol is exactly `sigma0`: eSSVI's
+// `theta` parameter IS the ATM total variance by construction
+// (`essvi_total_w(slice, 0) == theta` whenever `resid_scale <= 0`, the
+// default here and in `make_fast_tier_surface` above -- vol_surface.hpp), so
+// `theta = sigma0^2 * T` makes `iv(spot, T) == sigma0` regardless of the
+// wing shape (phi/rho/psi/p/lambda only matter away from k == 0). Lets the
+// RvBlend arithmetic/monotonicity tests control `market_vol` exactly instead
+// of reading whatever the SPY fixture's fitted term structure happens to
+// produce at a given tenor.
+[[nodiscard]] Result<PricedSurface> make_flat_vol_surface(double sigma0,
+                                                          std::span<const double> tenors) {
+  constexpr double kSpot = 100.0;
+  CurveSurface curves;
+  std::vector<SliceContext> context;
+  std::uint16_t expiry_id = 0;
+  for (const double term : tenors) {
+    EssviParams parameters{};
+    parameters.theta = sigma0 * sigma0 * term;
+    parameters.phi = 1.3;
+    parameters.rho = -0.3;
+    parameters.psi = 0.5;
+    parameters.p = 0.5;
+    parameters.lambda = 0.5;
+    parameters.T = term;
+    parameters.F = kSpot;
+    parameters.expiry_id = expiry_id++;
+    curves.push(std::make_unique<EssviCurve>(parameters, /*df=*/1.0));
+    context.push_back(SliceContext{term, kSpot, 0.0, 0.0, 50, 0});
+  }
+  PricingContext pricing;
+  pricing.S = kSpot;
+  pricing.r = 0.0;
+  pricing.now_ts_ns = 1'700'000'000'000'000'000LL;
+  pricing.method = AmericanMethod::AndersenLake;
+  pricing.al_opts = al_fast_opts();
+  pricing.uid = 101;
+  return PricedSurface::create(std::move(curves), std::move(context), pricing);
 }
 
 // ── SPY fixture: one PricedSurface, built once per suite ────────────────────
@@ -612,6 +684,261 @@ TEST_F(TheoEngineTest, FastTierRouteFlagNotSetOnFastTierSurfaceWithZeroDvol) {
   const auto v = engine->value(ctx, q);
   ASSERT_TRUE(v.has_value()) << v.error().to_string();
   EXPECT_EQ(v->flags & static_cast<std::uint32_t>(TheoFlagBits::FastTierRoute), 0u);
+}
+
+// ── Task 8: OverlayAdjust::flags propagates into TheoValue::flags ──────────
+
+TEST_F(TheoEngineTest, OverlayAdjustFlagsPropagateIntoTheoValueFlagsPerQuery) {
+  std::vector<std::unique_ptr<ITheoOverlay>> overlays;
+  overlays.push_back(std::make_unique<FlagOnTargetedQueryOverlay>(600.0));
+  auto engine = TheoEngine::create(std::move(overlays));
+  ASSERT_TRUE(engine.has_value()) << engine.error().to_string();
+  const TheoContext ctx{.surface = &*surface_};
+  const double T = surface_->context()[1].T;
+
+  const std::array<TheoQuery, 3> qs{
+      TheoQuery{.strike = 590.0, .tenor_years = T, .side = Side::Call},
+      TheoQuery{.strike = 600.0, .tenor_years = T, .side = Side::Call},
+      TheoQuery{.strike = 610.0, .tenor_years = T, .side = Side::Call},
+  };
+  std::array<TheoValue, 3> out{};
+  const Status st = engine->value_into(ctx, qs, out);
+  ASSERT_TRUE(st.has_value()) << st.error().to_string();
+
+  constexpr auto kModelMissing = static_cast<std::uint32_t>(TheoFlagBits::ModelMissing);
+  EXPECT_EQ(out[0].flags & kModelMissing, 0u);
+  EXPECT_NE(out[1].flags & kModelMissing, 0u); // exactly the targeted (600-strike) query
+  EXPECT_EQ(out[2].flags & kModelMissing, 0u);
+  // The overlay never touches dvol/band -- the identity path still holds.
+  EXPECT_DOUBLE_EQ(out[1].theo_vol, out[1].market_vol);
+}
+
+// ── Task 8a: RV-blend fair vol ──────────────────────────────────────────────
+
+// (a) weight == 0 is an identity transform, regardless of how far rv_anchor
+// sits from market_vol, and does NOT itself signal ModelMissing (ctx.rv is
+// present -- the zero dvol comes from the weight, not a degraded model).
+TEST_F(TheoEngineTest, RvBlendWeightZeroIsIdentity) {
+  const std::array<double, 1> tenors{0.10};
+  auto flat = make_flat_vol_surface(0.25, tenors);
+  ASSERT_TRUE(flat.has_value()) << flat.error().to_string();
+  RvPanel rv{};
+  rv.vol = {0.60, 0.60, 0.60, 0.60}; // deliberately far from market_vol
+  auto overlay = make_rv_blend_overlay(RvBlendConfig{.weight = 0.0});
+  ASSERT_TRUE(overlay.has_value()) << overlay.error().to_string();
+  std::vector<std::unique_ptr<ITheoOverlay>> overlays;
+  overlays.push_back(std::move(*overlay));
+  auto engine = TheoEngine::create(std::move(overlays));
+  ASSERT_TRUE(engine.has_value()) << engine.error().to_string();
+  const TheoContext ctx{.surface = &*flat, .rv = &rv};
+  const TheoQuery q{.strike = 100.0, .tenor_years = 0.10, .side = Side::Call};
+
+  const auto v = engine->value(ctx, q);
+  ASSERT_TRUE(v.has_value()) << v.error().to_string();
+  EXPECT_DOUBLE_EQ(v->theo_vol, v->market_vol);
+  EXPECT_DOUBLE_EQ(v->edge_vol, 0.0);
+  EXPECT_EQ(v->flags & static_cast<std::uint32_t>(TheoFlagBits::ModelMissing), 0u);
+}
+
+// (b) known arithmetic: market 0.30, rv anchor 0.20, weight 0.5, T -> 0
+// (negligible tenor damping) => dvol == -0.05. "T -> 0" is realized via a
+// `tenor_damp_years` so large that `T / tenor_damp_years` is below double
+// epsilon and `exp(...)` rounds to exactly 1.0 -- NOT via T == 0 itself,
+// which `PricedSurface::iv` rejects (non-positive T is outside its domain).
+TEST_F(TheoEngineTest, RvBlendKnownArithmeticAtNegligibleTenorDamping) {
+  const std::array<double, 1> tenors{0.05};
+  auto flat = make_flat_vol_surface(0.30, tenors);
+  ASSERT_TRUE(flat.has_value()) << flat.error().to_string();
+  RvPanel rv{};
+  rv.vol = {0.20, 0.20, 0.20, 0.20};
+  auto overlay = make_rv_blend_overlay(
+      RvBlendConfig{.weight = 0.5, .tenor_damp_years = 1e18, .rv_window_idx = 0});
+  ASSERT_TRUE(overlay.has_value()) << overlay.error().to_string();
+  std::vector<std::unique_ptr<ITheoOverlay>> overlays;
+  overlays.push_back(std::move(*overlay));
+  auto engine = TheoEngine::create(std::move(overlays));
+  ASSERT_TRUE(engine.has_value()) << engine.error().to_string();
+  const TheoContext ctx{.surface = &*flat, .rv = &rv};
+  const TheoQuery q{.strike = 100.0, .tenor_years = 0.05, .side = Side::Call};
+
+  const auto v = engine->value(ctx, q);
+  ASSERT_TRUE(v.has_value()) << v.error().to_string();
+  EXPECT_NEAR(v->market_vol, 0.30, 1e-12);
+  EXPECT_NEAR(v->theo_vol - v->market_vol, -0.05, 1e-12);
+}
+
+// (c) tenor damping monotone: |dvol| strictly decreasing in T, holding
+// market_vol/rv_anchor/weight fixed via the flat-vol surface (isolates the
+// exp(-T/tenor_damp_years) factor from any real term-structure drift in
+// market_vol itself).
+TEST_F(TheoEngineTest, RvBlendTenorDampingIsMonotoneDecreasingInAbsDvol) {
+  const std::array<double, 3> tenors{0.05, 0.25, 1.00};
+  auto flat = make_flat_vol_surface(0.25, tenors);
+  ASSERT_TRUE(flat.has_value()) << flat.error().to_string();
+  RvPanel rv{};
+  rv.vol = {0.15, 0.15, 0.15, 0.15}; // != market_vol -> nonzero diff at every T
+  auto overlay = make_rv_blend_overlay(
+      RvBlendConfig{.weight = 0.5, .tenor_damp_years = 1.0, .rv_window_idx = 0});
+  ASSERT_TRUE(overlay.has_value()) << overlay.error().to_string();
+  std::vector<std::unique_ptr<ITheoOverlay>> overlays;
+  overlays.push_back(std::move(*overlay));
+  auto engine = TheoEngine::create(std::move(overlays));
+  ASSERT_TRUE(engine.has_value()) << engine.error().to_string();
+  const TheoContext ctx{.surface = &*flat, .rv = &rv};
+
+  double prev_abs_dvol = std::numeric_limits<double>::infinity();
+  for (const double T : tenors) {
+    const TheoQuery q{.strike = 100.0, .tenor_years = T, .side = Side::Call};
+    const auto v = engine->value(ctx, q);
+    ASSERT_TRUE(v.has_value()) << v.error().to_string();
+    const double abs_dvol = std::abs(v->theo_vol - v->market_vol);
+    EXPECT_LT(abs_dvol, prev_abs_dvol) << "T=" << T;
+    prev_abs_dvol = abs_dvol;
+  }
+}
+
+// (d) missing ctx.rv sets ModelMissing, edge 0.
+TEST_F(TheoEngineTest, RvBlendMissingRvContextSetsModelMissingAndZeroEdge) {
+  auto overlay = make_rv_blend_overlay(RvBlendConfig{});
+  ASSERT_TRUE(overlay.has_value()) << overlay.error().to_string();
+  std::vector<std::unique_ptr<ITheoOverlay>> overlays;
+  overlays.push_back(std::move(*overlay));
+  auto engine = TheoEngine::create(std::move(overlays));
+  ASSERT_TRUE(engine.has_value()) << engine.error().to_string();
+  const TheoContext ctx{.surface = &*surface_}; // rv == nullptr
+  const TheoQuery q{.strike = 600.0, .tenor_years = surface_->context()[1].T, .side = Side::Call};
+
+  const auto v = engine->value(ctx, q);
+  ASSERT_TRUE(v.has_value()) << v.error().to_string();
+  EXPECT_DOUBLE_EQ(v->edge_vol, 0.0);
+  EXPECT_NE(v->flags & static_cast<std::uint32_t>(TheoFlagBits::ModelMissing), 0u);
+}
+
+// Bonus (not in the brief's Step 1 list, but explicitly called out in the
+// task's interface notes): an out-of-range rv_window_idx degrades the same
+// way as a missing panel rather than reading out of bounds.
+TEST_F(TheoEngineTest, RvBlendOutOfRangeWindowIdxSetsModelMissing) {
+  RvPanel rv{};
+  rv.vol = {0.10, 0.20, 0.30, 0.40};
+  auto overlay = make_rv_blend_overlay(RvBlendConfig{.rv_window_idx = 200});
+  ASSERT_TRUE(overlay.has_value()) << overlay.error().to_string();
+  std::vector<std::unique_ptr<ITheoOverlay>> overlays;
+  overlays.push_back(std::move(*overlay));
+  auto engine = TheoEngine::create(std::move(overlays));
+  ASSERT_TRUE(engine.has_value()) << engine.error().to_string();
+  const TheoContext ctx{.surface = &*surface_, .rv = &rv};
+  const TheoQuery q{.strike = 600.0, .tenor_years = surface_->context()[1].T, .side = Side::Call};
+
+  const auto v = engine->value(ctx, q);
+  ASSERT_TRUE(v.has_value()) << v.error().to_string();
+  EXPECT_DOUBLE_EQ(v->edge_vol, 0.0);
+  EXPECT_NE(v->flags & static_cast<std::uint32_t>(TheoFlagBits::ModelMissing), 0u);
+}
+
+TEST_F(TheoEngineTest, MakeRvBlendOverlayRejectsNonFiniteWeight) {
+  const auto overlay =
+      make_rv_blend_overlay(RvBlendConfig{.weight = std::numeric_limits<double>::quiet_NaN()});
+  ASSERT_FALSE(overlay.has_value());
+  EXPECT_EQ(overlay.error().code(), ErrorCode::InvalidArgument);
+}
+
+TEST_F(TheoEngineTest, MakeRvBlendOverlayRejectsNonPositiveTenorDampYears) {
+  const auto overlay = make_rv_blend_overlay(RvBlendConfig{.tenor_damp_years = 0.0});
+  ASSERT_FALSE(overlay.has_value());
+  EXPECT_EQ(overlay.error().code(), ErrorCode::InvalidArgument);
+}
+
+// ── Task 8b: event variance swap ────────────────────────────────────────────
+
+// (e) emove_forecast == emove_market is identity (within 1e-12): the strip
+// and the re-inject exactly cancel whenever the censoring floor isn't hit.
+TEST_F(TheoEngineTest, EventVarForecastEqualsMarketIsIdentity) {
+  const std::int64_t now_ns = surface_->pricing().now_ts_ns;
+  const double T_short = surface_->context()[1].T;
+  const double T_long = surface_->context()[3].T;
+  const std::int64_t event_ts = ns_from_year_fraction(now_ns, 0.5 * (T_short + T_long));
+  EventSchedule events(std::vector<std::int64_t>{event_ts});
+  ASSERT_GT(count_events_at(events, now_ns, T_long), std::size_t{0});
+
+  constexpr double kEmove = 0.03;
+  auto overlay =
+      make_event_var_overlay(EventVarConfig{.emove_forecast = kEmove, .emove_market = kEmove});
+  ASSERT_TRUE(overlay.has_value()) << overlay.error().to_string();
+  std::vector<std::unique_ptr<ITheoOverlay>> overlays;
+  overlays.push_back(std::move(*overlay));
+  auto engine = TheoEngine::create(std::move(overlays));
+  ASSERT_TRUE(engine.has_value()) << engine.error().to_string();
+  const TheoContext ctx{.surface = &*surface_, .events = &events};
+  const TheoQuery q{.strike = 600.0, .tenor_years = T_long, .side = Side::Call};
+
+  const auto v = engine->value(ctx, q);
+  ASSERT_TRUE(v.has_value()) << v.error().to_string();
+  EXPECT_NEAR(v->theo_vol, v->market_vol, 1e-12);
+}
+
+// (f) forecast < market lowers theo vol only for expiries containing the
+// event (count_between > 0); an expiry with no events before it is an exact
+// no-op regardless of emove_forecast/emove_market.
+TEST_F(TheoEngineTest, EventVarLowerForecastOnlyMovesEventBearingExpiries) {
+  const std::int64_t now_ns = surface_->pricing().now_ts_ns;
+  const double T_short = surface_->context()[1].T; // no event before this expiry
+  const double T_long = surface_->context()[3].T;  // one event before this expiry
+  const double T_mid = 0.5 * (T_short + T_long);
+  const std::int64_t event_ts = ns_from_year_fraction(now_ns, T_mid);
+  EventSchedule events(std::vector<std::int64_t>{event_ts});
+
+  ASSERT_EQ(count_events_at(events, now_ns, T_short), std::size_t{0});
+  ASSERT_EQ(count_events_at(events, now_ns, T_long), std::size_t{1});
+
+  auto overlay =
+      make_event_var_overlay(EventVarConfig{.emove_forecast = 0.01, .emove_market = 0.05});
+  ASSERT_TRUE(overlay.has_value()) << overlay.error().to_string();
+  std::vector<std::unique_ptr<ITheoOverlay>> overlays;
+  overlays.push_back(std::move(*overlay));
+  auto engine = TheoEngine::create(std::move(overlays));
+  ASSERT_TRUE(engine.has_value()) << engine.error().to_string();
+  const TheoContext ctx{.surface = &*surface_, .events = &events};
+
+  const TheoQuery q_short{.strike = 600.0, .tenor_years = T_short, .side = Side::Call};
+  const auto v_short = engine->value(ctx, q_short);
+  ASSERT_TRUE(v_short.has_value()) << v_short.error().to_string();
+  EXPECT_NEAR(v_short->theo_vol, v_short->market_vol, 1e-12); // n == 0 -> no-op
+
+  const TheoQuery q_long{.strike = 600.0, .tenor_years = T_long, .side = Side::Call};
+  const auto v_long = engine->value(ctx, q_long);
+  ASSERT_TRUE(v_long.has_value()) << v_long.error().to_string();
+  EXPECT_LT(v_long->theo_vol, v_long->market_vol); // forecast < market -> theo vol lowered
+}
+
+TEST_F(TheoEngineTest, EventVarMissingEventsContextSetsModelMissingAndZeroEdge) {
+  auto overlay =
+      make_event_var_overlay(EventVarConfig{.emove_forecast = 0.02, .emove_market = 0.03});
+  ASSERT_TRUE(overlay.has_value()) << overlay.error().to_string();
+  std::vector<std::unique_ptr<ITheoOverlay>> overlays;
+  overlays.push_back(std::move(*overlay));
+  auto engine = TheoEngine::create(std::move(overlays));
+  ASSERT_TRUE(engine.has_value()) << engine.error().to_string();
+  const TheoContext ctx{.surface = &*surface_}; // events == nullptr
+  const TheoQuery q{.strike = 600.0, .tenor_years = surface_->context()[1].T, .side = Side::Call};
+
+  const auto v = engine->value(ctx, q);
+  ASSERT_TRUE(v.has_value()) << v.error().to_string();
+  EXPECT_DOUBLE_EQ(v->edge_vol, 0.0);
+  EXPECT_NE(v->flags & static_cast<std::uint32_t>(TheoFlagBits::ModelMissing), 0u);
+}
+
+TEST_F(TheoEngineTest, MakeEventVarOverlayRejectsNegativeEmoveForecast) {
+  const auto overlay =
+      make_event_var_overlay(EventVarConfig{.emove_forecast = -0.01, .emove_market = 0.0});
+  ASSERT_FALSE(overlay.has_value());
+  EXPECT_EQ(overlay.error().code(), ErrorCode::InvalidArgument);
+}
+
+TEST_F(TheoEngineTest, MakeEventVarOverlayRejectsNegativeEmoveMarket) {
+  const auto overlay =
+      make_event_var_overlay(EventVarConfig{.emove_forecast = 0.0, .emove_market = -0.01});
+  ASSERT_FALSE(overlay.has_value());
+  EXPECT_EQ(overlay.error().code(), ErrorCode::InvalidArgument);
 }
 
 } // namespace

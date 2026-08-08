@@ -102,12 +102,14 @@ enum class TheoFlagBits : std::uint32_t {
   // Set when ANY engaged overlay's `dvol` for this query was clamped to
   // +/- `TheoConfig::max_abs_dvol` before being folded into `theo_vol`.
   OverlayClamped = 1u << 1,
-  // Reserved for overlays (Task 8-9): an overlay that degrades gracefully
-  // (missing model input, stale event data, ...) zeroes its `dvol` and is
-  // expected to signal that degradation here once `OverlayAdjust` grows a
-  // flags field of its own. `OverlayAdjust` carries no such field today, so
-  // Task 7's engine never sets this bit -- extending `OverlayAdjust` is that
-  // future task's documented change, not this one's.
+  // Set by an overlay (via `OverlayAdjust::flags`, OR'd into the query's
+  // `TheoValue::flags` by the engine) that degrades gracefully on missing or
+  // out-of-domain model input -- e.g. `RvBlendOverlay` with no `ctx.rv`, or
+  // `EventVarOverlay` with no `ctx.events` (Task 8+). The overlay zeroes its
+  // `dvol` for the affected queries and returns OK rather than failing the
+  // whole batch: a model that cannot speak to a query is a data condition,
+  // not a bug -- see the fail-loud contrast in `ITheoOverlay::adjust`'s doc,
+  // which IS a bug (non-finite dvol/band).
   ModelMissing = 1u << 2,
   // Set on a query when the net applied overlay `dvol` is nonzero AND the
   // surface serves its market mark through a fast-tier cached route
@@ -147,10 +149,16 @@ struct TheoContext {
 // One overlay's additive vol-space adjustment for one query: `dvol` shifts
 // `theo_vol` (clamped to +/- `TheoConfig::max_abs_dvol` by the engine before
 // accumulation); `band` contributes to `theo_vol`'s uncertainty band in
-// quadrature (`band_vol = max(band_floor_vol, sqrt(Sum band_i^2))`).
+// quadrature (`band_vol = max(band_floor_vol, sqrt(Sum band_i^2))`); `flags`
+// (`TheoFlagBits`, OR-combined) is OR'd by the engine into the query's
+// `TheoValue::flags` alongside whatever it sets itself (`OverlayClamped`,
+// `FastTierRoute`) -- an overlay degrading gracefully on missing/out-of-
+// domain input (Task 8+) sets `ModelMissing` here, leaving `dvol`/`band` at
+// their zero defaults, rather than failing the whole batch.
 struct OverlayAdjust {
   double dvol{0.0};
   double band{0.0};
+  std::uint32_t flags{0};
 };
 
 // One theo overlay: a pure function of `(ctx, query)` to a vol-space
@@ -170,6 +178,67 @@ public:
   [[nodiscard]] virtual Status adjust(const TheoContext &ctx, std::span<const TheoQuery> queries,
                                       std::span<OverlayAdjust> out) const = 0;
 };
+
+// ── First real overlays (Task 8) ───────────────────────────────────────────
+
+// theo vol level lean: pull ATM level toward an RV-anchored forecast, damped
+// in tenor. `dvol = w(T) * (rv_anchor - market_vol)`, `w(T) = weight *
+// exp(-T / tenor_damp_years)`, `rv_anchor = ctx.rv->vol[rv_window_idx]`.
+// Research doc S6.2: IV is the strongest single RV predictor but premium-
+// biased, so this is the standard desk fair-vol core, not a replacement of
+// the market level. DESIGNATED INITIALIZERS ONLY (see `TheoConfig`'s
+// construction contract above -- the same rationale applies to every
+// aggregate this module pins). Arity-pinned (3).
+struct RvBlendConfig {
+  double weight{0.35};           // 0 = identity; 1 = full RV anchor at the short end
+  double tenor_damp_years{1.0};  // weight *= exp(-tenor/tenor_damp_years)
+  std::uint8_t rv_window_idx{1}; // RvPanel window used as anchor (default 21d)
+};
+
+// Drift pin: RvBlendConfig has exactly THREE fields -- see TheoConfig's pin
+// above for why this exists.
+static_assert(detail::aggregate_arity_is_v<RvBlendConfig, 3>,
+              "RvBlendConfig field count changed: update this pin, and confirm every "
+              "construction site still uses designated initializers.");
+
+// Builds the RV-blend overlay. `Err(InvalidArgument)` if `cfg.weight` is not
+// finite, or `cfg.tenor_damp_years` is not finite and > 0 (it is a divisor).
+// A query missing `ctx.rv`, whose `rv_window_idx` is out of range for
+// `RvPanel::vol`, or whose selected RV slot is not finite (a window shorter
+// than 2 available bars -- see `RvPanel`'s doc), degrades to `dvol = 0` with
+// `ModelMissing` set rather than failing the batch.
+[[nodiscard]] Result<std::unique_ptr<ITheoOverlay>> make_rv_blend_overlay(RvBlendConfig cfg = {});
+
+// event variance swap: strip the market's implied event move, re-inject our
+// own forecast. Research doc S6.3, over the existing `event_vol.hpp` FLEX
+// censoring/recombination machinery: with `n = events->count_between(now,
+// expiry)` events between the surface's valuation instant and the query's
+// expiry, `dvol = event_recombined_vol(atm_cen, T, n, emove_forecast) -
+// market_vol`, where `atm_cen` is the market's censored ATM vol after
+// stripping `n` events' worth of `emove_market` out of its total variance
+// (`censored_total_variance(market_vol^2 * T, n, emove_market)`). A query
+// with no events before its expiry (`n == 0`) is a no-op by construction --
+// both the strip and the re-inject terms vanish. DESIGNATED INITIALIZERS
+// ONLY. Arity-pinned (2).
+struct EventVarConfig {
+  double emove_forecast{0.0}; // our per-event daily move forecast (0 disables)
+  double emove_market{0.0};   // market-implied move to strip (from implied_emove_joint)
+};
+
+// Drift pin: EventVarConfig has exactly TWO fields -- see TheoConfig's pin
+// above for why this exists.
+static_assert(detail::aggregate_arity_is_v<EventVarConfig, 2>,
+              "EventVarConfig field count changed: update this pin, and confirm every "
+              "construction site still uses designated initializers.");
+
+// Builds the event-variance overlay. `Err(InvalidArgument)` if
+// `cfg.emove_forecast` or `cfg.emove_market` is not finite or negative (an
+// eMove is a move-vol magnitude; never intentionally negative). A query
+// missing `ctx.events`, or whose `market_vol`/`tenor_years` are not finite
+// and > 0 (the surface extrapolates or the query is otherwise degenerate --
+// `event_recombined_vol` itself requires `T > 0`), degrades to `dvol = 0`
+// with `ModelMissing` set rather than failing the batch.
+[[nodiscard]] Result<std::unique_ptr<ITheoOverlay>> make_event_var_overlay(EventVarConfig cfg);
 
 // Engine knobs. DESIGNATED INITIALIZERS ONLY (mirrors `BevReplayConfig`'s
 // construction contract, breakeven.hpp): construct as

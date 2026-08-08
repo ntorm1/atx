@@ -13,9 +13,11 @@
 #include <utility>
 #include <vector>
 
-#include "atx/vol/american.hpp"       // american_price, AlOpts, AmericanMethod
+#include "atx/vol/american.hpp"  // american_price, AlOpts, AmericanMethod
+#include "atx/vol/event_vol.hpp" // censored_total_variance, event_recombined_vol, count_events_at
 #include "atx/vol/priced_surface.hpp" // PricedSurface
 #include "atx/vol/query_pricing.hpp"  // QueryPricingTier
+#include "atx/vol/realized_vol.hpp"   // RvPanel
 
 namespace atx::vol {
 
@@ -24,6 +26,7 @@ using atx::core::Ok;
 
 namespace {
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
+constexpr auto kModelMissing = static_cast<std::uint32_t>(TheoFlagBits::ModelMissing);
 } // namespace
 
 TheoEngine::TheoEngine(std::vector<std::unique_ptr<ITheoOverlay>> ovs, const TheoConfig &c)
@@ -115,6 +118,10 @@ Status TheoEngine::value_into(const TheoContext &ctx, std::span<const TheoQuery>
       for (std::size_t i = 0; i < n; ++i) {
         const double raw_dvol = scratch_span[i].dvol;
         const double band = scratch_span[i].band;
+        // Task 8: OR the overlay's own flags (e.g. ModelMissing on a
+        // gracefully-degraded query) into the query's TheoValue -- independent
+        // of the clamp check below, which only ever ADDS OverlayClamped.
+        chunk_out[i].flags |= scratch_span[i].flags;
         // M3: a broken overlay returning a non-finite adjustment is a BUG in
         // that overlay, not a data condition -- clamping would silently fold
         // the NaN/Inf into theo_vol (poisoning the downstream American
@@ -176,6 +183,157 @@ Status TheoEngine::value_into(const TheoContext &ctx, std::span<const TheoQuery>
     begin += n;
   }
   return Ok();
+}
+
+// ── RV-blend fair vol (Task 8) ──────────────────────────────────────────────
+
+namespace {
+
+// theo vol level lean: pull ATM level toward an RV-anchored forecast, damped
+// in tenor. See `RvBlendConfig`'s doc (theo.hpp) for the model. `market_vol`
+// and `tenor_years` are read straight from `ctx`/`query` here, never from a
+// caller-supplied `TheoValue` -- overlays run BEFORE the engine has a
+// `TheoValue` for this query, so `ctx.surface->iv` is the only source (and
+// the engine reads the identical value for its own baseline, by
+// construction bit-for-bit consistent).
+class RvBlendOverlay final : public ITheoOverlay {
+public:
+  explicit RvBlendOverlay(const RvBlendConfig &cfg) : cfg_(cfg) {}
+
+  [[nodiscard]] std::string_view name() const noexcept override { return "rv_blend"; }
+
+  [[nodiscard]] Status adjust(const TheoContext &ctx, std::span<const TheoQuery> queries,
+                              std::span<OverlayAdjust> out) const override {
+    for (std::size_t i = 0; i < queries.size(); ++i) {
+      out[i] = adjust_one(ctx, queries[i]);
+    }
+    return Ok();
+  }
+
+private:
+  // Degrades to a zeroed, ModelMissing-flagged adjustment (never non-finite
+  // math) when: `ctx.rv` is null; `rv_window_idx` is out of range for
+  // `RvPanel::vol`; the selected RV slot is not finite (a window shorter
+  // than 2 available bars -- `RvPanel`'s own doc); `market_vol` is not
+  // finite or not > 0 (surface extrapolation); `tenor_years` is not finite;
+  // or the computed `dvol` itself is somehow still not finite (defense in
+  // depth -- construction already rejects the one config combination,
+  // `tenor_damp_years <= 0`, that could otherwise divide-by-zero here).
+  [[nodiscard]] OverlayAdjust adjust_one(const TheoContext &ctx, const TheoQuery &q) const {
+    constexpr OverlayAdjust kMissing{.dvol = 0.0, .band = 0.0, .flags = kModelMissing};
+    if (ctx.rv == nullptr) {
+      return kMissing;
+    }
+    if (cfg_.rv_window_idx >= ctx.rv->vol.size()) {
+      return kMissing;
+    }
+    const double rv_anchor = ctx.rv->vol[cfg_.rv_window_idx];
+    if (!std::isfinite(rv_anchor)) {
+      return kMissing;
+    }
+    if (!std::isfinite(q.tenor_years)) {
+      return kMissing;
+    }
+    const double market_vol = ctx.surface->iv(q.strike, q.tenor_years);
+    if (!std::isfinite(market_vol) || !(market_vol > 0.0)) {
+      return kMissing;
+    }
+    const double w_t = cfg_.weight * std::exp(-q.tenor_years / cfg_.tenor_damp_years);
+    const double dvol = w_t * (rv_anchor - market_vol);
+    if (!std::isfinite(dvol)) {
+      return kMissing;
+    }
+    return OverlayAdjust{.dvol = dvol, .band = 0.0};
+  }
+
+  RvBlendConfig cfg_;
+};
+
+} // namespace
+
+Result<std::unique_ptr<ITheoOverlay>> make_rv_blend_overlay(RvBlendConfig cfg) {
+  if (!std::isfinite(cfg.weight)) {
+    return Err(ErrorCode::InvalidArgument, "make_rv_blend_overlay: weight must be finite");
+  }
+  if (!std::isfinite(cfg.tenor_damp_years) || !(cfg.tenor_damp_years > 0.0)) {
+    return Err(ErrorCode::InvalidArgument,
+               "make_rv_blend_overlay: tenor_damp_years must be finite and > 0");
+  }
+  std::unique_ptr<ITheoOverlay> overlay = std::make_unique<RvBlendOverlay>(cfg);
+  return Ok(std::move(overlay));
+}
+
+// ── Event variance swap (Task 8) ────────────────────────────────────────────
+
+namespace {
+
+// Strips the market's implied event move out of the served ATM level and
+// re-injects the caller's own forecast. See `EventVarConfig`'s doc (theo.hpp)
+// for the model; `censored_total_variance`/`event_recombined_vol` are
+// event_vol.hpp's existing FLEX censoring/recombination machinery, unchanged
+// here.
+class EventVarOverlay final : public ITheoOverlay {
+public:
+  explicit EventVarOverlay(const EventVarConfig &cfg) : cfg_(cfg) {}
+
+  [[nodiscard]] std::string_view name() const noexcept override { return "event_var"; }
+
+  [[nodiscard]] Status adjust(const TheoContext &ctx, std::span<const TheoQuery> queries,
+                              std::span<OverlayAdjust> out) const override {
+    for (std::size_t i = 0; i < queries.size(); ++i) {
+      out[i] = adjust_one(ctx, queries[i]);
+    }
+    return Ok();
+  }
+
+private:
+  // Degrades to a zeroed, ModelMissing-flagged adjustment (never non-finite
+  // math) when: `ctx.events` is null; `market_vol`/`tenor_years` are not
+  // finite and > 0 (event_recombined_vol's own domain requires `T > 0`, and a
+  // non-positive/non-finite market_vol has no physical total-variance
+  // reading to strip); or the computed `dvol` itself is somehow still not
+  // finite (defense in depth).
+  [[nodiscard]] OverlayAdjust adjust_one(const TheoContext &ctx, const TheoQuery &q) const {
+    constexpr OverlayAdjust kMissing{.dvol = 0.0, .band = 0.0, .flags = kModelMissing};
+    if (ctx.events == nullptr) {
+      return kMissing;
+    }
+    const double T = q.tenor_years;
+    if (!std::isfinite(T) || !(T > 0.0)) {
+      return kMissing;
+    }
+    const double market_vol = ctx.surface->iv(q.strike, T);
+    if (!std::isfinite(market_vol) || !(market_vol > 0.0)) {
+      return kMissing;
+    }
+    const std::size_t n = count_events_at(*ctx.events, ctx.surface->pricing().now_ts_ns, T);
+    const double w_total = market_vol * market_vol * T;
+    const double w_cen = censored_total_variance(w_total, n, cfg_.emove_market);
+    const double atm_cen = std::sqrt(w_cen / T);
+    const double recombined = event_recombined_vol(atm_cen, T, n, cfg_.emove_forecast);
+    const double dvol = recombined - market_vol;
+    if (!std::isfinite(dvol)) {
+      return kMissing;
+    }
+    return OverlayAdjust{.dvol = dvol, .band = 0.0};
+  }
+
+  EventVarConfig cfg_;
+};
+
+} // namespace
+
+Result<std::unique_ptr<ITheoOverlay>> make_event_var_overlay(EventVarConfig cfg) {
+  if (!std::isfinite(cfg.emove_forecast) || cfg.emove_forecast < 0.0) {
+    return Err(ErrorCode::InvalidArgument,
+               "make_event_var_overlay: emove_forecast must be finite and >= 0");
+  }
+  if (!std::isfinite(cfg.emove_market) || cfg.emove_market < 0.0) {
+    return Err(ErrorCode::InvalidArgument,
+               "make_event_var_overlay: emove_market must be finite and >= 0");
+  }
+  std::unique_ptr<ITheoOverlay> overlay = std::make_unique<EventVarOverlay>(cfg);
+  return Ok(std::move(overlay));
 }
 
 } // namespace atx::vol
