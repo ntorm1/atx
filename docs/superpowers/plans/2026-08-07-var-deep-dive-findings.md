@@ -15,6 +15,10 @@ The five review reports that motivate this plan live at
 `pnl-forensics.md`, `solver-correctness.md`, `projection-correctness.md`, `performance.md`, `feature-gaps.md`.
 Task briefs cite them as [pnl], [solver], [proj], [perf], [gaps]. Implementers should read the cited report section before coding.
 
+## North Star (user-confirmed methodology — do not "fix")
+
+The engine's characteristic-preserving semantics are the intended design, confirmed by the project owner on 2026-08-07: take today's portfolio defined by (underlier, call/put, delta moneyness, relative time to expiry), project each option onto every historical market environment's vol surface preserving dollar delta, and compute the P&L of each base→shifted adjacent transition. The per-scenario P&L series is the VaR input. Restriking every observation, shifted-TTE repricing (theta included per transition), and dollar-delta re-sizing are all by design. No task may alter these semantics; findings about them are presentation/disclosure issues only (Task 1), never engine defects.
+
 ## Global Constraints
 
 - Determinism invariants are inviolable: thread-count bit-invariance of replay frames, no cross-date warm starting, cold marks (`QueryExecution::ColdReference`) for all valuation in the VaR path.
