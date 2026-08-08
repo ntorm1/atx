@@ -157,23 +157,51 @@ constexpr std::uint8_t kDiagRestrikeNearBound = 0x4u;
              : static_cast<std::uint32_t>(value);
 }
 
+// Execution-context count a dispatch over `count` items at `requested_threads`
+// will actually use: 0 requests the full pool (executor.size() + 1, caller
+// included), any explicit request clamps DOWN to that capacity and to `count`
+// (never more contexts than items). Shared by run_balanced_ranges (the static
+// partition) and replay_into's PricingExecutor::run_dynamic dispatch (Task 8),
+// so both scheduling strategies agree on how many workers a given
+// (count, requested_threads) pair resolves to. It is also a safe UPPER BOUND
+// on run_dynamic's stable worker_id range even where the executor's own
+// inline/nested rules shrink the real dispatch further (that only ever
+// produces FEWER distinct worker_ids, all still < this count) -- so sizing a
+// per-worker scratch vector to this count is always safe.
+[[nodiscard]] unsigned resolved_worker_count(std::size_t count,
+                                             unsigned requested_threads) noexcept {
+  if (count == 0u) {
+    return 0u;
+  }
+  const unsigned capacity = pricing_executor().size() + 1u;
+  unsigned resolved = requested_threads == 0u ? capacity : std::min(requested_threads, capacity);
+  if (resolved == 0u) {
+    resolved = 1u;
+  }
+  if (static_cast<std::size_t>(resolved) > count) {
+    resolved = static_cast<unsigned>(count);
+  }
+  return resolved;
+}
+
+// The static contiguous-range scheduler. Splits [0, count) into
+// `resolved_worker_count` CONTIGUOUS blocks and hands each to a worker via
+// run_blocks, so a worker's range is always ascending and non-overlapping.
+// Two callers remain after Task 8: run_historical_var's loader loop (below)
+// -- its `base = std::move(shifted)` snapshot chaining requires contiguity
+// and the loop is IO-bound anyway, so it was deliberately left off
+// run_dynamic -- and replay_into_static_scheduling_for_test, which freezes
+// this scheduling strategy purely so the swap to run_dynamic in replay_into
+// (the production scenario-evaluation entry point) can be pinned against it.
 template <class F>
 void run_balanced_ranges(std::size_t count, unsigned requested_threads, F &&body) {
   if (count == 0u) {
     return;
   }
-  PricingExecutor &executor = pricing_executor();
-  const unsigned capacity = executor.size() + 1u;
-  unsigned ranges = requested_threads == 0u ? capacity : std::min(requested_threads, capacity);
-  if (ranges == 0u) {
-    ranges = 1u;
-  }
-  if (static_cast<std::size_t>(ranges) > count) {
-    ranges = static_cast<unsigned>(count);
-  }
+  const unsigned ranges = resolved_worker_count(count, requested_threads);
   const std::size_t quotient = count / static_cast<std::size_t>(ranges);
   const std::size_t remainder = count % static_cast<std::size_t>(ranges);
-  executor.run_blocks(ranges, ranges, [&](std::size_t range_index) {
+  pricing_executor().run_blocks(ranges, ranges, [&](std::size_t range_index) {
     const std::size_t lo = range_index * quotient + std::min(range_index, remainder);
     const std::size_t hi = lo + quotient + (range_index < remainder ? 1u : 0u);
     body(lo, hi);
@@ -1620,6 +1648,93 @@ Status PreparedVarPortfolio::replay_into(std::span<const VarScenario> scenarios,
                                          std::span<VarScenarioFrame> frames,
                                          std::span<VarLegFrame> leg_frames,
                                          const VarEvaluationConfig &config) const {
+  if (scenarios.empty() || frames.size() != scenarios.size() || !valid_evaluation_config(config) ||
+      impl_->legs.empty() ||
+      scenarios.size() > std::numeric_limits<std::size_t>::max() / impl_->legs.size() ||
+      (!leg_frames.empty() && leg_frames.size() != scenarios.size() * impl_->legs.size())) {
+    return Err(ErrorCode::InvalidArgument, "historical VaR: invalid replay input/output/config");
+  }
+  std::int64_t previous_base = 0;
+  for (const VarScenario &scenario : scenarios) {
+    if (scenario.base_ts_ns <= 0 || scenario.shifted_ts_ns <= scenario.base_ts_ns ||
+        scenario.base_surfaces == nullptr || scenario.shifted_surfaces == nullptr ||
+        (previous_base != 0 && scenario.base_ts_ns <= previous_base)) {
+      return Err(ErrorCode::InvalidArgument, "historical VaR: invalid/unsorted scenario");
+    }
+    previous_base = scenario.base_ts_ns;
+  }
+
+  const bool cross_sectional =
+      config.projection_solve_policy == OptionDeltaSolvePolicy::CrossSectionalColdConfirm;
+  try {
+    // F2 (perf review): scenarios are mathematically independent, and every
+    // scenario writes only its OWN frames[i] / leg_frames slot, so which
+    // worker claims which scenario can never move a single output byte -- only
+    // WHEN it finishes. This replay used the static contiguous-range
+    // scheduler (run_balanced_ranges, still used below by
+    // replay_into_static_scheduling_for_test and by run_historical_var's
+    // loader loop) until Task 8: a worker scheduled on a slow core -- or one
+    // that simply drew a harder block -- could stall the whole dispatch on
+    // its own fixed range. run_dynamic fixes that: workers claim scenario
+    // indices ONE AT A TIME from a shared counter, so a slow worker just
+    // claims fewer.
+    //
+    // Each participating execution context owns one STABLE worker_id in
+    // [0, resolved) for the dispatch's lifetime (PricingExecutor's contract),
+    // so per-worker VarBatchScratch indexed by worker_id is exactly as
+    // leak-proof as the old per-range scratch: every worker's scratch is
+    // EITHER freshly built once up front (leg_frames empty or cross_sectional)
+    // or never touched (the pure retained-leg, non-cross-sectional route never
+    // reads batch_scratch). The one thing that changes is that a worker's
+    // claimed scenarios are no longer a contiguous ascending run -- they can
+    // interleave arbitrarily with every other worker's. That is safe because
+    // VarBatchScratch carries no cross-scenario state: every field a scenario
+    // reads was written BY THAT SAME SCENARIO's own
+    // resolve_group_contracts_cross_sectional / resolve_group_window_* call
+    // (Task 7's harvested_base_price included -- it is overwritten by
+    // solve_american_delta_batch every group, every scenario, never merely
+    // reused from a prior one), so nothing depends on scenario adjacency. Pins:
+    // DynamicSchedulingMatchesStaticSchedulingBitExactly,
+    // ...WithDowngradedScenariosPresent (Task 6's interleave-onto-one-worker
+    // risk), ...UnderHarvestedBaseMarks (Task 7's scratch-bleed risk).
+    const unsigned resolved = resolved_worker_count(scenarios.size(), config.n_threads);
+    std::vector<VarBatchScratch> worker_scratch(resolved);
+    if (leg_frames.empty() || cross_sectional) {
+      for (VarBatchScratch &scratch : worker_scratch) {
+        scratch = make_var_batch_scratch(*impl_);
+      }
+    }
+    pricing_executor().run_dynamic(
+        scenarios.size(), config.n_threads, [&](std::size_t scenario_index, unsigned worker_id) {
+          VarBatchScratch &batch_scratch = worker_scratch[worker_id];
+          if (leg_frames.empty()) {
+            evaluate_scenario_batched(*impl_, scenarios[scenario_index], frames[scenario_index],
+                                      batch_scratch, config);
+          } else {
+            const std::span<VarLegFrame> output =
+                leg_frames.subspan(scenario_index * impl_->legs.size(), impl_->legs.size());
+            evaluate_scenario(*impl_, scenarios[scenario_index], frames[scenario_index], output,
+                              config, cross_sectional ? &batch_scratch : nullptr);
+          }
+        });
+  } catch (const std::bad_alloc &) {
+    return Err(ErrorCode::Unavailable, "historical VaR: worker allocation failed");
+  } catch (const std::exception &) {
+    return Err(ErrorCode::Internal, "historical VaR: worker failed");
+  }
+  return Ok();
+}
+
+// TEST-ONLY (Task 8): frozen copy of replay_into's pre-Task-8 body, unchanged
+// except for its name -- see the class declaration in var.hpp for why this
+// exists. Keep this in sync with replay_into's validation prologue (the two
+// are intentionally NOT sharing a helper for it: this method's whole point is
+// to be an inert, independently-reviewable fossil of "what the engine did
+// before run_dynamic," not a thin wrapper that could silently start
+// exercising the new code through a shared code path).
+Status PreparedVarPortfolio::replay_into_static_scheduling_for_test(
+    std::span<const VarScenario> scenarios, std::span<VarScenarioFrame> frames,
+    std::span<VarLegFrame> leg_frames, const VarEvaluationConfig &config) const {
   if (scenarios.empty() || frames.size() != scenarios.size() || !valid_evaluation_config(config) ||
       impl_->legs.empty() ||
       scenarios.size() > std::numeric_limits<std::size_t>::max() / impl_->legs.size() ||

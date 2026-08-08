@@ -38,6 +38,7 @@
 
 #include "atx/vol/backtest.hpp"
 #include "atx/vol/corpus.hpp"
+#include "atx/vol/detail/pricing_executor.hpp"
 #include "atx/vol/dispersion.hpp"
 #include "atx/vol/dispersion_surface_db.hpp"
 #include "atx/vol/research/dispersion_backtest.hpp"
@@ -70,6 +71,7 @@ using atx::vol::Lot;
 using atx::vol::MarketSnapshot;
 using atx::vol::OptionDeltaSolvePolicy;
 using atx::vol::PreparedVarPortfolio;
+using atx::vol::pricing_executor;
 using atx::vol::ProjectedMaturitySpec;
 using atx::vol::QueryExecution;
 using atx::vol::QueryPricingTier;
@@ -743,6 +745,32 @@ append_option_position(const Lot &lot, const MarketSnapshot &reference,
   return fixture;
 }
 
+// [perf] F4: the pool's Auto size honours the ATX_VOL_FIT_WORKERS env cap (a
+// knob shared with the fitter, `pricing_executor.hpp`'s file header), so a
+// "tN" row can silently run fewer than N workers with no trace in the JSON --
+// inflating any wall-clock-per-worker metric a reader derives from `threads`
+// (the REQUESTED count) without knowing the pool shrank. Mirrors var.cpp's
+// own resolved_worker_count exactly (same clamp: 0 requests the full pool,
+// an explicit request clamps down to pool capacity and to n_scenarios) so
+// this counter reports precisely what replay_into's run_dynamic dispatch
+// actually resolved `threads` to for this fixture. Any metric a reader
+// derives from this JSON that divides by worker count should divide by
+// THIS, not by `threads`.
+[[nodiscard]] unsigned resolved_worker_count(std::size_t n_scenarios, unsigned requested_threads) {
+  if (n_scenarios == 0u) {
+    return 0u;
+  }
+  const unsigned capacity = pricing_executor().size() + 1u;
+  unsigned resolved = requested_threads == 0u ? capacity : std::min(requested_threads, capacity);
+  if (resolved == 0u) {
+    resolved = 1u;
+  }
+  if (static_cast<std::size_t>(resolved) > n_scenarios) {
+    resolved = static_cast<unsigned>(n_scenarios);
+  }
+  return resolved;
+}
+
 void emit_throughput(benchmark::State &state, const TerminalVarFixture &fixture, unsigned threads) {
   const double iterations = static_cast<double>(state.iterations());
   const double scenarios = static_cast<double>(fixture.scenarios.size());
@@ -769,6 +797,13 @@ void emit_throughput(benchmark::State &state, const TerminalVarFixture &fixture,
   state.counters["max_relative_value_error"] = fixture.max_relative_value_error;
   state.counters["max_relative_delta_error"] = fixture.max_relative_delta_error;
   state.counters["threads"] = static_cast<double>(threads);
+  // Additive (F4): the actual pool size replay_into's dispatch resolved
+  // `threads` to. Equal to `threads` on a healthy run; a citable-table
+  // reader should treat resolved != threads rows as run under a shrunk pool
+  // (ATX_VOL_FIT_WORKERS or a low-core host), not as this fixture's true tN
+  // throughput.
+  state.counters["resolved_workers"] =
+      static_cast<double>(resolved_worker_count(fixture.scenarios.size(), threads));
 }
 
 void run_terminal_var(benchmark::State &state, unsigned threads,

@@ -1683,6 +1683,201 @@ TEST(Var, HarvestedReplayIsBitInvariantAcrossThreadCounts) {
   }
 }
 
+// ── Task 8: dynamic scenario scheduling ──────────────────────────────────────
+//
+// replay_into_static_scheduling_for_test freezes the pre-Task-8 scheduler
+// (contiguous static ranges via run_balanced_ranges) so the swap to
+// PricingExecutor::run_dynamic in replay_into (the production entry point) can
+// be pinned against it directly. Per-scenario evaluation is pure w.r.t. shared
+// state -- every worker's VarBatchScratch is fully rewritten by whichever
+// scenario it is currently processing, and frames[i]/leg_frames are written
+// only by scenario i's own body -- so which worker claims which scenario must
+// never move a single output byte. The three tests below assert exactly that,
+// dynamic against static at the SAME n_threads, across the fixtures most
+// likely to surface a scratch-isolation bug under dynamic's now-arbitrary
+// (rather than contiguous-ascending) per-worker scenario claims: the default
+// cross-sectional book, Task 6's mixed-downgrade book (interleaves a
+// downgraded scenario's partial/dead scratch write with a normal one on the
+// same worker), and Task 7's harvested-base-mark book (scratch carries a
+// solver-pass-dependent value that must be freshly overwritten every
+// scenario, never merely inherited from whichever scenario the worker
+// processed previously).
+TEST(Var, DynamicSchedulingMatchesStaticSchedulingBitExactly) {
+  const std::uint32_t uid = uid_for_symbol("SPY");
+  const OneSurfaceSnapshot reference(uid, 100.0, timestamp(2026, 1, 2));
+  ASSERT_TRUE(reference.valid());
+  const std::vector<VarPosition> positions = {
+      option("SPY", Side::Call, 1.25, 0.40),
+      option("SPY", Side::Put, -0.75, 0.30),
+      stock("SPY", 7.0),
+  };
+  auto prepared = PreparedVarPortfolio::create(positions, reference.set(), evaluation_config(1));
+  ASSERT_TRUE(prepared) << (prepared ? std::string{} : prepared.error().to_string());
+
+  std::vector<std::unique_ptr<OneSurfaceSnapshot>> bases;
+  std::vector<std::unique_ptr<OneSurfaceSnapshot>> shifts;
+  const std::array<double, 4> base_spots{96.0, 103.0, 89.0, 111.0};
+  const std::array<double, 4> shifted_spots{99.0, 101.0, 94.0, 107.0};
+  for (std::size_t i = 0; i < base_spots.size(); ++i) {
+    bases.push_back(std::make_unique<OneSurfaceSnapshot>(
+        uid, base_spots[i], timestamp(2026, 1, 5 + static_cast<unsigned>(i))));
+    shifts.push_back(std::make_unique<OneSurfaceSnapshot>(
+        uid, shifted_spots[i], timestamp(2026, 1, 6 + static_cast<unsigned>(i))));
+    ASSERT_TRUE(bases.back()->valid() && shifts.back()->valid());
+  }
+  std::vector<VarScenario> scenarios;
+  scenarios.reserve(base_spots.size());
+  for (std::size_t i = 0; i < base_spots.size(); ++i) {
+    scenarios.push_back(VarScenario{bases[i]->surface().pricing().now_ts_ns, &bases[i]->set(),
+                                    shifts[i]->surface().pricing().now_ts_ns, &shifts[i]->set()});
+  }
+
+  for (const unsigned n_threads : {1u, 2u, 4u}) {
+    SCOPED_TRACE(::testing::Message() << "n_threads " << n_threads);
+    const VarEvaluationConfig config = evaluation_config(n_threads);
+    std::vector<VarScenarioFrame> dynamic_frames(scenarios.size());
+    std::vector<VarScenarioFrame> static_frames(scenarios.size());
+    std::vector<VarLegFrame> dynamic_legs(scenarios.size() * positions.size());
+    std::vector<VarLegFrame> static_legs(scenarios.size() * positions.size());
+    ASSERT_TRUE(prepared->replay_into(scenarios, dynamic_frames, dynamic_legs, config));
+    ASSERT_TRUE(prepared->replay_into_static_scheduling_for_test(scenarios, static_frames,
+                                                                 static_legs, config));
+    for (std::size_t i = 0; i < scenarios.size(); ++i) {
+      SCOPED_TRACE(::testing::Message() << "scenario " << i);
+      expect_bit_identical(dynamic_frames[i], static_frames[i]);
+    }
+    for (std::size_t i = 0; i < dynamic_legs.size(); ++i) {
+      expect_bit_identical(dynamic_legs[i], static_legs[i]);
+    }
+
+    std::vector<VarScenarioFrame> dynamic_aggregate(scenarios.size());
+    std::vector<VarScenarioFrame> static_aggregate(scenarios.size());
+    ASSERT_TRUE(prepared->replay_into(scenarios, dynamic_aggregate, {}, config));
+    ASSERT_TRUE(
+        prepared->replay_into_static_scheduling_for_test(scenarios, static_aggregate, {}, config));
+    for (std::size_t i = 0; i < scenarios.size(); ++i) {
+      expect_bit_identical(dynamic_aggregate[i], static_aggregate[i]);
+    }
+  }
+}
+
+TEST(Var, DynamicSchedulingMatchesStaticSchedulingWithDowngradedScenariosPresent) {
+  const std::uint32_t uid = uid_for_symbol("SPY");
+  const OneSurfaceSnapshot reference(uid, 100.0, timestamp(2026, 1, 2),
+                                     kReachableReferenceVarianceScale);
+  ASSERT_TRUE(reference.valid());
+  const std::vector<VarPosition> positions = {
+      option("SPY", Side::Call, 1.25, 0.40),
+      option("SPY", Side::Put, -0.75, 0.30),
+      stock("SPY", 7.0),
+      unreachable_delta_target_position(),
+  };
+  const auto cross_config = [](unsigned n_threads) {
+    VarEvaluationConfig config = evaluation_config(n_threads);
+    config.projection_solve_policy = OptionDeltaSolvePolicy::CrossSectionalColdConfirm;
+    return config;
+  };
+  auto prepared = PreparedVarPortfolio::create(positions, reference.set(), cross_config(1));
+  ASSERT_TRUE(prepared) << (prepared ? std::string{} : prepared.error().to_string());
+
+  std::vector<std::unique_ptr<OneSurfaceSnapshot>> bases;
+  std::vector<std::unique_ptr<OneSurfaceSnapshot>> shifts;
+  const std::array<double, 4> base_spots{96.0, 103.0, 89.0, 111.0};
+  const std::array<double, 4> shifted_spots{99.0, 101.0, 94.0, 107.0};
+  const std::array<double, 4> base_variance_scale{1.0, kReachableReferenceVarianceScale, 1.0,
+                                                  kReachableReferenceVarianceScale};
+  for (std::size_t i = 0; i < base_spots.size(); ++i) {
+    bases.push_back(std::make_unique<OneSurfaceSnapshot>(
+        uid, base_spots[i], timestamp(2026, 1, 5 + static_cast<unsigned>(i)),
+        base_variance_scale[i]));
+    shifts.push_back(std::make_unique<OneSurfaceSnapshot>(
+        uid, shifted_spots[i], timestamp(2026, 1, 6 + static_cast<unsigned>(i))));
+    ASSERT_TRUE(bases.back()->valid() && shifts.back()->valid());
+  }
+  std::vector<VarScenario> scenarios;
+  scenarios.reserve(base_spots.size());
+  for (std::size_t i = 0; i < base_spots.size(); ++i) {
+    scenarios.push_back(VarScenario{bases[i]->surface().pricing().now_ts_ns, &bases[i]->set(),
+                                    shifts[i]->surface().pricing().now_ts_ns, &shifts[i]->set()});
+  }
+
+  for (const unsigned n_threads : {1u, 2u, 4u}) {
+    SCOPED_TRACE(::testing::Message() << "n_threads " << n_threads);
+    const VarEvaluationConfig config = cross_config(n_threads);
+    std::vector<VarScenarioFrame> dynamic_frames(scenarios.size());
+    std::vector<VarScenarioFrame> static_frames(scenarios.size());
+    std::vector<VarScenarioFrame> dynamic_aggregate(scenarios.size());
+    std::vector<VarScenarioFrame> static_aggregate(scenarios.size());
+    std::vector<VarLegFrame> dynamic_legs(scenarios.size() * positions.size());
+    std::vector<VarLegFrame> static_legs(scenarios.size() * positions.size());
+    ASSERT_TRUE(prepared->replay_into(scenarios, dynamic_frames, dynamic_legs, config));
+    ASSERT_TRUE(prepared->replay_into_static_scheduling_for_test(scenarios, static_frames,
+                                                                 static_legs, config));
+    ASSERT_TRUE(prepared->replay_into(scenarios, dynamic_aggregate, {}, config));
+    ASSERT_TRUE(
+        prepared->replay_into_static_scheduling_for_test(scenarios, static_aggregate, {}, config));
+    for (std::size_t i = 0; i < scenarios.size(); ++i) {
+      SCOPED_TRACE(::testing::Message() << "scenario " << i);
+      expect_bit_identical(dynamic_frames[i], static_frames[i]);
+      expect_bit_identical(dynamic_aggregate[i], static_aggregate[i]);
+    }
+    for (std::size_t i = 0; i < dynamic_legs.size(); ++i) {
+      expect_bit_identical(dynamic_legs[i], static_legs[i]);
+    }
+  }
+}
+
+TEST(Var, DynamicSchedulingMatchesStaticSchedulingUnderHarvestedBaseMarks) {
+  const std::uint32_t uid = uid_for_symbol("SPY");
+  const OneSurfaceSnapshot reference(uid, 100.0, timestamp(2026, 1, 2));
+  ASSERT_TRUE(reference.valid());
+  const std::vector<VarPosition> positions = {
+      option("SPY", Side::Call, 1.25, 0.40),
+      option("SPY", Side::Put, -0.75, 0.30),
+      stock("SPY", 7.0),
+  };
+  auto prepared = PreparedVarPortfolio::create(
+      positions, reference.set(), harvest_config(1, VarBaseMarkSource::HarvestedFromSolver));
+  ASSERT_TRUE(prepared) << (prepared ? std::string{} : prepared.error().to_string());
+
+  std::vector<std::unique_ptr<OneSurfaceSnapshot>> bases;
+  std::vector<std::unique_ptr<OneSurfaceSnapshot>> shifts;
+  const std::array<double, 4> base_spots{96.0, 103.0, 89.0, 111.0};
+  const std::array<double, 4> shifted_spots{99.0, 101.0, 94.0, 107.0};
+  for (std::size_t i = 0; i < base_spots.size(); ++i) {
+    bases.push_back(std::make_unique<OneSurfaceSnapshot>(
+        uid, base_spots[i], timestamp(2026, 1, 5 + static_cast<unsigned>(i))));
+    shifts.push_back(std::make_unique<OneSurfaceSnapshot>(
+        uid, shifted_spots[i], timestamp(2026, 1, 6 + static_cast<unsigned>(i))));
+    ASSERT_TRUE(bases.back()->valid() && shifts.back()->valid());
+  }
+  std::vector<VarScenario> scenarios;
+  scenarios.reserve(base_spots.size());
+  for (std::size_t i = 0; i < base_spots.size(); ++i) {
+    scenarios.push_back(VarScenario{bases[i]->surface().pricing().now_ts_ns, &bases[i]->set(),
+                                    shifts[i]->surface().pricing().now_ts_ns, &shifts[i]->set()});
+  }
+
+  for (const unsigned n_threads : {1u, 2u, 4u}) {
+    SCOPED_TRACE(::testing::Message() << "n_threads " << n_threads);
+    const VarEvaluationConfig config =
+        harvest_config(n_threads, VarBaseMarkSource::HarvestedFromSolver);
+    std::vector<VarScenarioFrame> dynamic_frames(scenarios.size());
+    std::vector<VarScenarioFrame> static_frames(scenarios.size());
+    std::vector<VarLegFrame> dynamic_legs(scenarios.size() * positions.size());
+    std::vector<VarLegFrame> static_legs(scenarios.size() * positions.size());
+    ASSERT_TRUE(prepared->replay_into(scenarios, dynamic_frames, dynamic_legs, config));
+    ASSERT_TRUE(prepared->replay_into_static_scheduling_for_test(scenarios, static_frames,
+                                                                 static_legs, config));
+    for (std::size_t i = 0; i < scenarios.size(); ++i) {
+      expect_bit_identical(dynamic_frames[i], static_frames[i]);
+    }
+    for (std::size_t i = 0; i < dynamic_legs.size(); ++i) {
+      expect_bit_identical(dynamic_legs[i], static_legs[i]);
+    }
+  }
+}
+
 TEST(Var, CrossSectionalRetainedLegsAreColdConfirmedPerLeg) {
   const std::uint32_t uid = uid_for_symbol("SPY");
   const OneSurfaceSnapshot reference(uid, 100.0, timestamp(2026, 1, 2));

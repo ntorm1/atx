@@ -321,6 +321,17 @@ public:
                                    std::span<VarLegFrame> leg_frames = {},
                                    const VarEvaluationConfig &config = {}) const;
 
+  // TEST-ONLY (Task 8, dynamic scenario scheduling). Same contract as
+  // replay_into, but dispatches scenarios across workers via the pre-Task-8
+  // static contiguous-range scheduler (PricingExecutor::run_blocks over
+  // balanced ranges) instead of replay_into's PricingExecutor::run_dynamic.
+  // Exists solely so the scheduling swap can be pinned bit-identical against
+  // its predecessor; no production call site uses it and no
+  // VarEvaluationConfig knob selects it.
+  [[nodiscard]] Status replay_into_static_scheduling_for_test(
+      std::span<const VarScenario> scenarios, std::span<VarScenarioFrame> frames,
+      std::span<VarLegFrame> leg_frames = {}, const VarEvaluationConfig &config = {}) const;
+
 private:
   PreparedVarPortfolio();
   struct Impl;
