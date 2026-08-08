@@ -202,11 +202,18 @@ public:
   // reconstructing the surface. IV and total variance are tier-independent.
 
   // European-equivalent implied vol at absolute strike K and year-fraction T. NaN
-  // outside the surface's no-extrapolation domain or for non-finite/non-positive
-  // K/T. Identical to `VolaSession::iv` on the override path.
+  // only for non-finite/non-positive K/T (or an empty surface) -- there is no
+  // fitted-range gate here. Outside the fitted tenor range this EXTRAPOLATES
+  // (`CurveSurface::w`: flat vol short of the front pillar; flat total variance,
+  // i.e. zero forward variance, at or past the last one). It does NOT return NaN
+  // the way `VolSurface` and the demoted per-family `Surface<Slice>` containers
+  // (EssviSurface/SviSurface) do outside THEIR fitted range; a caller that needs
+  // that stricter guarantee must check K/T against `context()` itself. Identical
+  // to `VolaSession::iv` on the override path.
   [[nodiscard]] double iv(double K, double T) const noexcept;
 
-  // Total variance w(k, T) = sigma^2 * T at (K, T). Same domain / NaN semantics.
+  // Total variance w(k, T) = sigma^2 * T at (K, T). Same domain / extrapolation
+  // semantics as `iv` above.
   [[nodiscard]] double total_variance(double K, double T) const noexcept;
 
   // Re-Americanized model fair value at (K, T, side). Cold tiers price the

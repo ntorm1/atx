@@ -334,12 +334,21 @@ private:
 // ── Unified surface container ───────────────────────────────────────────────
 //
 // An ascending-T stack of polymorphic slices with ONE linear-in-total-variance
-// time interpolation. A query at T locates T among the slice T's, interpolates
-// total variance linearly across the two bracketing slices (never in sigma), and
-// applies the same Sprint-26 no-extrapolation guards `VolSurface` and the demoted
-// per-family containers do: a query past the last slice, or more than 50% below
-// the first, returns NaN. Slices must be pushed in ascending T (the fit driver
-// guarantees it).
+// time interpolation. A query at T locates T among the slice T's and interpolates
+// total variance linearly across the two bracketing slices (never in sigma).
+//
+// OUTSIDE the fitted range this does NOT return NaN -- unlike `VolSurface` and
+// the demoted per-family `Surface<Slice>` containers (EssviSurface/SviSurface),
+// which DO apply the strict Sprint-26 no-extrapolation guard. Instead:
+//   - SHORT of the front slice: implied vol is held FLAT at the front slice's
+//     own iv, so total variance scales linearly in T (w = w_front * T/T_front)
+//     -- bounded and positive as T -> 0, which is what lets a hold-to-expiry
+//     backtest price a near-expiry option instead of hitting a NaN cliff.
+//   - AT OR PAST the last slice: total variance itself is held FLAT at the
+//     last slice's own w, so the FORWARD variance beyond that slice is ZERO --
+//     a query genuinely longer-dated than every fitted tenor is silently
+//     priced as if nothing moves after the last pillar.
+// Slices must be pushed in ascending T (the fit driver guarantees it).
 class CurveSurface {
 public:
   CurveSurface() = default;
