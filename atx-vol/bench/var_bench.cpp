@@ -44,6 +44,7 @@
 #include "atx/vol/surface_db.hpp"
 #include "atx/vol/universe.hpp"
 #include "atx/vol/var.hpp"
+#include "atx/vol/var_report.hpp"
 
 #include "bench_util.hpp"
 
@@ -59,6 +60,7 @@ using atx::vol::DispersionBacktestConfig;
 using atx::vol::DispersionStrategy;
 using atx::vol::DispersionUniverse;
 using atx::vol::HedgeSharePosition;
+using atx::vol::HistoricalVarResult;
 using atx::vol::Lot;
 using atx::vol::MarketSnapshot;
 using atx::vol::OptionDeltaSolvePolicy;
@@ -70,6 +72,7 @@ using atx::vol::StrikeRule;
 using atx::vol::SurfaceDb;
 using atx::vol::UnpricedLotPolicy;
 using atx::vol::VarEvaluationConfig;
+using atx::vol::VarExclusionSummary;
 using atx::vol::VarLegFrame;
 using atx::vol::VarOptionPosition;
 using atx::vol::VarPosition;
@@ -78,6 +81,7 @@ using atx::vol::VarScenario;
 using atx::vol::VarScenarioFrame;
 using atx::vol::VarScenarioStatus;
 using atx::vol::VarStockPosition;
+using atx::vol::write_var_scenario_tsv;
 using atx::vol::bench::apply_common;
 
 constexpr std::string_view kHistoryBegin = "2026-01-02";
@@ -182,38 +186,34 @@ void add_symbol(std::unordered_map<std::uint32_t, std::string> &symbols, std::st
     error = "cannot open YTD SP100 P&L trace output";
     return false;
   }
-  output << "base_date\tshifted_date\tbase_value\tshifted_value\tpnl\tcumulative_pnl\t"
-            "dollar_delta\tn_positions\tsource_option_lots\tcoverage_excluded_option_lots\t"
-            "delta_boundary_excluded_option_lots\treplay_excluded_option_lots\tstock_hedges\t"
-            "max_abs_leg_index\tmax_abs_leg_underlier\t"
-            "max_abs_leg_reference_units\tmax_abs_leg_reference_delta\t"
-            "max_abs_leg_target_dollar_delta\tmax_abs_leg_log_moneyness\t"
-            "max_abs_leg_scenario_units\tmax_abs_leg_base_delta\tmax_abs_leg_base_mark\t"
-            "max_abs_leg_shifted_mark\tmax_abs_leg_pnl\n";
-  output << std::setprecision(17);
-  double cumulative_pnl = 0.0;
-  for (std::size_t index = 0u; index < frames.size(); ++index) {
-    const VarScenarioFrame &frame = frames[index];
-    const std::span<const VarLegFrame> scenario_legs =
-        leg_frames.subspan(index * reference_legs.size(), reference_legs.size());
-    const auto largest = std::max_element(scenario_legs.begin(), scenario_legs.end(),
-                                          [](const VarLegFrame &left, const VarLegFrame &right) {
-                                            return std::fabs(left.pnl) < std::fabs(right.pnl);
-                                          });
-    const std::size_t largest_index = static_cast<std::size_t>(largest - scenario_legs.begin());
-    const VarReferenceLeg &largest_reference = reference_legs[largest_index];
-    cumulative_pnl += frame.pnl;
-    output << fixture.base_dates[index] << '\t' << fixture.shifted_dates[index] << '\t'
-           << frame.base_value << '\t' << frame.shifted_value << '\t' << frame.pnl << '\t'
-           << cumulative_pnl << '\t' << frame.dollar_delta << '\t' << frame.n_ok << '\t'
-           << fixture.terminal_option_lots << '\t' << fixture.excluded_option_lots << '\t'
-           << fixture.excluded_delta_boundary_lots << '\t' << fixture.excluded_replay_option_lots
-           << '\t' << fixture.hedge_positions << '\t' << largest_index << '\t'
-           << largest_reference.underlier << '\t' << largest_reference.reference_units << '\t'
-           << largest_reference.reference_delta << '\t' << largest_reference.target_dollar_delta
-           << '\t' << largest_reference.log_moneyness << '\t' << largest->units << '\t'
-           << largest->base_delta << '\t' << largest->base_mark << '\t' << largest->shifted_mark
-           << '\t' << largest->pnl << '\n';
+
+  // The scenario-level economics (frames) come from the fast/aggregate replay
+  // route; the per-leg breakdown (leg_frames) comes from the separately
+  // replayed retained-leg oracle -- this mixed provenance is deliberate and
+  // predates the var_report.hpp extraction (see the two replay_into calls in
+  // prepare_replayable_portfolio). HistoricalVarResult is just a plain
+  // struct, so assembling one from these two already-validated sources for
+  // the sole purpose of formatting is safe: it does not claim they came from
+  // a single run_historical_var call.
+  HistoricalVarResult result;
+  result.base_dates.assign(fixture.base_dates.begin(), fixture.base_dates.end());
+  result.shifted_dates.assign(fixture.shifted_dates.begin(), fixture.shifted_dates.end());
+  result.frames.assign(frames.begin(), frames.end());
+  result.leg_frames.assign(leg_frames.begin(), leg_frames.end());
+  result.n_legs = reference_legs.size();
+
+  VarExclusionSummary exclusions;
+  exclusions.source_option_lots = fixture.terminal_option_lots;
+  exclusions.coverage_excluded_option_lots = fixture.excluded_option_lots;
+  exclusions.delta_boundary_excluded_option_lots = fixture.excluded_delta_boundary_lots;
+  exclusions.replay_excluded_option_lots = fixture.excluded_replay_option_lots;
+  exclusions.stock_hedges = fixture.hedge_positions;
+
+  const atx::vol::Status status =
+      write_var_scenario_tsv(output, result, exclusions, reference_legs);
+  if (!status) {
+    error = status.error().to_string();
+    return false;
   }
   if (!output) {
     error = "cannot write YTD SP100 P&L trace output";
