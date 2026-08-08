@@ -2098,4 +2098,59 @@ TEST(Strip, InteriorNaNAtSharedWingBandNodeCountsOnce) {
   EXPECT_TRUE(has_flag(q->flags, DerivFlags::InteriorBadNodes));
 }
 
+// ── Aggregate review fix (C-R Critical #1) ─────────────────────────────────
+//
+// C-10's `carry_theta` (default true) resolves a fresh `var_swap_fair_strike`
+// inside `eval_bump_table` to price the injected fixing at K_var_future. C-4
+// gave that SAME strip routine a hard `Internal` failure past its
+// interior-bad-node threshold (see `InteriorNaNExceedsThreshold_ReturnsInternal`
+// above), and `price_vol_swap`'s own unaged branch treats this exact call as
+// best-effort (":635-637", never fails the price over it). Pre-fix,
+// `eval_bump_table` wrapped the call in a plain `ATX_TRY` and lost the WHOLE
+// `Result<DerivGreeks>` on a fixture like this one, under the DEFAULT config
+// (`carry_theta` true, `engine` Auto) -- a regression from "complete greek
+// block, diagnostic simply absent" to "no greeks at all" on an unaged VolSwap.
+//
+// Reuses the IDENTICAL holey-surface fixture as
+// `InteriorNaNExceedsThreshold_ReturnsInternal` (23 bad nodes, past
+// max(2, 401/100) == 4) so the strip failure exercised here is the real C-4
+// gate, not a simulated one. Naive Carr-Lee (the default `CarrLeeForm`) never
+// touches the strip for the CENTER price (`carr_lee_k_vol` is a closed-form
+// ATMF straddle read, see `vol_swap_fair_strike`'s Naive branch) -- only the
+// carry-theta diagnostic call and the best-effort convexity diagnostic in
+// `price_vol_swap` see the failure, so this fixture isolates the fix from any
+// change to the center's own fail-loud contract (C-4's stays untouched).
+TEST(CarryTheta, UnagedVolSwapHoleySurfaceKeepsBlockAliveWithCarryFieldsNaN) {
+  const double T_test = 0.5;
+  const SviSurface surf = make_interior_hole_surface(-0.06, 0.5, 0.001, T_test);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+
+  DerivContract c{};
+  c.kind = DerivKind::VolSwap;
+  c.maturity_t = T_test;
+  c.notional = 1e5;
+  c.strike_dec = 0.18;
+  c.rv_spec.annualization = 252.0;
+  c.rv_spec.n_obs_total = 63u;  // unaged: n_obs_done left at 0
+
+  // pinned_symmetric_strip_cfg(): the same exact grid the C-4 fixtures pin,
+  // so the carry-theta strip call hits the identical 23-bad-node failure the
+  // center's diagnostic strip (best-effort, already tolerant) also hits.
+  const auto g = atx::vol::deriv_greeks(surf, cs, c, pinned_symmetric_strip_cfg());
+  // default bumps: carry_theta == true
+  ASSERT_TRUE(g.has_value()) << g.error().to_string();
+
+  EXPECT_TRUE(std::isnan(g->theta_carry));
+  EXPECT_TRUE(std::isnan(g->theta_zero_fixing));
+  EXPECT_TRUE(std::isfinite(g->pv));
+  EXPECT_TRUE(std::isfinite(g->delta));
+  EXPECT_TRUE(std::isfinite(g->gamma));
+  EXPECT_TRUE(std::isfinite(g->vega));
+  EXPECT_TRUE(std::isfinite(g->volga));
+  EXPECT_TRUE(std::isfinite(g->vanna));
+  EXPECT_TRUE(std::isfinite(g->theta));
+  EXPECT_TRUE(std::isfinite(g->rho));
+  EXPECT_TRUE(std::isfinite(g->charm));
+}
+
 }  // namespace

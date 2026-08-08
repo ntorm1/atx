@@ -1705,17 +1705,43 @@ template <class SurfaceT>
         // its future leg against this same model-free variance process (see
         // the file header), so this does not need, and deliberately does not
         // read, any DerivKind-specific quote field.
-        ATX_TRY(const DerivQuote strip_q,
-                var_swap_fair_strike(surface, curves, contract.maturity_t, cfg));
-        const double k_var_future = strip_q.fair_strike_dec;
+        //
+        // Aggregate review fix (C-R Critical #1): this strip is the SAME
+        // `var_swap_fair_strike` call that `price_vol_swap`'s unaged branch
+        // (above, :635-637) already treats as best-effort -- and C-4 gave it
+        // a brand-new hard `Internal` failure past its interior-bad-node
+        // threshold. Left as a plain `ATX_TRY`, a holey-but-otherwise-
+        // servable surface would lose the WHOLE `Result<DerivGreeks>` over a
+        // diagnostic pair, under the DEFAULT config (`carry_theta` defaults
+        // true, engine defaults `Auto`), where pre-C-10 the block priced
+        // clean. Degrade both carry fields to NaN on any failure here --
+        // strip resolution or either reprice below, since a reprice of the
+        // fixing-injected contract can hit the same strip through the
+        // mid-life distribution branch -- mirroring the engine-boundary
+        // degrade immediately above. "Not computed" is the honest reading;
+        // the CENTER quote's fail-loud contract (C-4) is untouched, since
+        // this stencil pair never feeds it.
+        if (const Result<DerivQuote> strip_q =
+                var_swap_fair_strike(surface, curves, contract.maturity_t, cfg);
+            strip_q.has_value()) {
+          const double k_var_future = strip_q->fair_strike_dec;
 
-        DerivContract rolled_carry = rolled;
-        rolled_carry.rv_spec = inject_carry_fixing(rv, k_var_future);
-        ATX_TRY(pv.t_dn_carry, bumped_pv(surface, curves, rolled_carry, cfg, 0.0, 0.0));
+          DerivContract rolled_carry = rolled;
+          rolled_carry.rv_spec = inject_carry_fixing(rv, k_var_future);
+          const Result<double> carry_pv =
+              bumped_pv(surface, curves, rolled_carry, cfg, 0.0, 0.0);
 
-        DerivContract rolled_zero = rolled;
-        rolled_zero.rv_spec = inject_carry_fixing(rv, 0.0);
-        ATX_TRY(pv.t_dn_zero_fixing, bumped_pv(surface, curves, rolled_zero, cfg, 0.0, 0.0));
+          DerivContract rolled_zero = rolled;
+          rolled_zero.rv_spec = inject_carry_fixing(rv, 0.0);
+          const Result<double> zero_pv =
+              bumped_pv(surface, curves, rolled_zero, cfg, 0.0, 0.0);
+
+          pv.t_dn_carry = carry_pv.has_value() ? *carry_pv : kNaN;
+          pv.t_dn_zero_fixing = zero_pv.has_value() ? *zero_pv : kNaN;
+        } else {
+          pv.t_dn_carry = kNaN;
+          pv.t_dn_zero_fixing = kNaN;
+        }
       }
     }
   }
