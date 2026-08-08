@@ -160,7 +160,8 @@ struct QpSolveResult {
 // means dropping that constraint decreases the objective. Otherwise a ratio test
 // caps the step at the nearest inactive constraint and adds it to the set.
 [[nodiscard]] atx::core::Result<QpSolveResult>
-qp_active_set(const MatX &H, const VecX &q, const MatX &G, const VecX &h, VecX x, int max_iter) {
+qp_active_set(const MatX &H, const VecX &q, const MatX &G, const VecX &h, VecX x, int max_iter,
+              std::vector<Eigen::Index> *dropped_rows = nullptr) {
   const bool dimensions_ok = H.rows() == H.cols() && H.rows() == x.size() && q.size() == x.size() &&
                              G.cols() == x.size() && G.rows() == h.size();
   if (!dimensions_ok || !H.allFinite() || !q.allFinite() || !G.allFinite() || !h.allFinite() ||
@@ -251,6 +252,9 @@ qp_active_set(const MatX &H, const VecX &q, const MatX &G, const VecX &h, VecX x
         }
       }
       const Eigen::Index drop = wset[static_cast<std::size_t>(worst)];
+      if (dropped_rows != nullptr) {
+        dropped_rows->push_back(drop); // test-only trace: see qp_active_set_for_test
+      }
       in_w[static_cast<std::size_t>(drop)] = 0;
       wset.erase(wset.begin() + worst);
       continue;
@@ -339,11 +343,19 @@ struct Node {
 // tests in dense_slice_test.cpp need. Deliberately NOT declared in
 // dense_slice.hpp: this is QP-kernel test plumbing, not v1 public surface, so
 // the test file forward-declares this exact signature itself instead of
-// sharing a header.
+// sharing a header. `dropped_rows_out`, if non-null, receives the row index
+// dropped at each multiplier-drop event, in order -- the only way to observe
+// the drop-side lowest-index tie-break's outcome directly, since a genuinely
+// tied-negative-multiplier board can otherwise converge to the identical
+// final x regardless of which tied row is dropped first (both end up
+// dropped either way; only the ORDER, not the final point, reveals the
+// tie-break rule).
 Result<VecX> qp_active_set_for_test(const MatX &H, const VecX &q, const MatX &G, const VecX &h,
                                     VecX x0, int max_iter, bool *converged_out,
-                                    int *iterations_out) {
-  ATX_TRY(QpSolveResult solved, qp_active_set(H, q, G, h, std::move(x0), max_iter));
+                                    int *iterations_out,
+                                    std::vector<Eigen::Index> *dropped_rows_out = nullptr) {
+  ATX_TRY(QpSolveResult solved,
+          qp_active_set(H, q, G, h, std::move(x0), max_iter, dropped_rows_out));
   if (converged_out != nullptr) {
     *converged_out = solved.converged;
   }

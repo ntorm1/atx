@@ -19,12 +19,16 @@
 // entry point defined in src/dense_slice.cpp -- qp_active_set itself is
 // TU-local (anonymous namespace) to that file. Not part of any header; see
 // the definition site for why. The signature must match exactly for the
-// linker to resolve it.
+// linker to resolve it. `dropped_rows_out`, if non-null, receives the row
+// index dropped at each multiplier-drop event, in order -- see the
+// definition site for why this is the only way to observe the drop-side
+// tie-break's outcome on a genuinely tied board.
 namespace atx::vol {
 Result<atx::core::linalg::VecX> qp_active_set_for_test(
     const atx::core::linalg::MatX &H, const atx::core::linalg::VecX &q,
     const atx::core::linalg::MatX &G, const atx::core::linalg::VecX &h,
-    atx::core::linalg::VecX x0, int max_iter, bool *converged_out, int *iterations_out);
+    atx::core::linalg::VecX x0, int max_iter, bool *converged_out, int *iterations_out,
+    std::vector<Eigen::Index> *dropped_rows_out = nullptr);
 } // namespace atx::vol
 
 // Phase 1 of the arbitrage-constrained dense surface: the per-slice convex
@@ -301,6 +305,95 @@ TEST(DenseSliceQp, DegenerateVertexDuplicateFloorRowConvergesFast) {
   ASSERT_TRUE(res2.has_value()) << res2.error().to_string();
   EXPECT_EQ((x - *res2).lpNorm<Eigen::Infinity>(), 0.0)
       << "the tie-break is not deterministic across repeated calls";
+}
+
+// FIT-C4 drop-side coverage (review round 1): the ratio-test tie-break test
+// above never drives ANY multiplier negative, so it never enters the
+// worst>=0 branch this fix also touches (`dense_slice.cpp`'s drop-side
+// lowest-row-index re-scan). This board genuinely does: it was found by
+// temporary instrumentation (printing wset/lambda at each drop check),
+// since-removed, replaced here by the permanent `dropped_rows_out` seam on
+// `qp_active_set_for_test` -- the drop sequence it records IS the proof this
+// branch executes, not just an indirect final-value inference.
+//
+// Construction: two DECOUPLED (block-diagonal H, no shared rows) copies of a
+// 2-variable "wedge + far bound" board --
+//   copy 1 (x1,x2): rows (1,1)>=2 [A1], (1,-1)>=2 [B1], (1,0)>=10 [C1]
+//   copy 2 (x3,x4): rows (1,1)>=2 [A2], (1,-1)>=2 [B2], (1,0)>=10 [C2]
+// -- with q=0 throughout. Each copy's true optimum needs only its C row (the
+// far bound alone already implies both wedge rows with slack); its B row
+// gets falsely activated by the ratio-test's straight-line overshoot en
+// route, then must be dropped once both B and C are active and the KKT
+// solve reveals B's multiplier is negative. Because both copies share
+// IDENTICAL (G, h, q), whichever copy's B row is checked at the drop step
+// computes the IDENTICAL multiplier (-8) -- an exact tie, not a
+// floating-point coincidence.
+//
+// x0 = (15, 12.5, 15, 12.9): copy 2's x0 sits closer to its own B boundary
+// than copy 1's, so B2 (row index 4) is added to the working set BEFORE B1
+// (row index 1) via the ratio test (no tie there -- 0.048 < 0.2, a clean
+// ordering, not the ratio-test tie-break this construction is not testing).
+// By the time both B1 and B2 are active, `wset` is in INSERTION order
+// [4, 1, ...] -- B2 (position 0) before B1 (position 1) -- so the OLD
+// position-scanned drop rule and the FIXED row-index-scanned drop rule
+// disagree: position-order would drop row 4 first; lowest-row-index (the
+// spec) must drop row 1 first. Hand/instrumented trace confirms the fixed
+// code drops [1, 4] in that order; reverting just the drop-side re-scan
+// (dense_slice.cpp's `for (Eigen::Index i = 0; i < nw; ++i) { if (lambda(i)
+// == worst_val && ...` loop) reproduces [4, 1] instead -- so this assertion
+// is genuinely load-bearing on that code, not merely consistent with it.
+TEST(DenseSliceQp, DropTieBreakPrefersLowestRowIndex) {
+  MatX H = MatX::Identity(4, 4);
+  VecX q = VecX::Zero(4);
+  MatX G = MatX::Zero(6, 4);
+  VecX h(6);
+  G(0, 0) = 1.0;
+  G(0, 1) = 1.0;
+  h(0) = 2.0; // A1: x1+x2 >= 2
+  G(1, 0) = 1.0;
+  G(1, 1) = -1.0;
+  h(1) = 2.0; // B1: x1-x2 >= 2
+  G(2, 0) = 1.0;
+  h(2) = 10.0; // C1: x1 >= 10
+  G(3, 2) = 1.0;
+  G(3, 3) = 1.0;
+  h(3) = 2.0; // A2: x3+x4 >= 2
+  G(4, 2) = 1.0;
+  G(4, 3) = -1.0;
+  h(4) = 2.0; // B2: x3-x4 >= 2
+  G(5, 2) = 1.0;
+  h(5) = 10.0; // C2: x3 >= 10
+
+  VecX x0(4);
+  x0 << 15.0, 12.5, 15.0, 12.9; // both feasible; copy 2 closer to its B boundary
+
+  bool converged = false;
+  int iterations = 0;
+  std::vector<Eigen::Index> dropped_rows;
+  const auto res = qp_active_set_for_test(H, q, G, h, x0, /*max_iter=*/200, &converged,
+                                          &iterations, &dropped_rows);
+  ASSERT_TRUE(res.has_value()) << res.error().to_string();
+  EXPECT_TRUE(converged);
+  EXPECT_LT(iterations, 200);
+
+  ASSERT_FALSE(dropped_rows.empty())
+      << "board never reached the multiplier-drop branch -- construction regressed";
+  // The load-bearing assertion: at the tie, row 1 (lower actual constraint-row
+  // index) must be dropped, never row 4, regardless of which entered `wset`
+  // first. Pre-fix (position-scanned drop), this would be 4.
+  EXPECT_EQ(dropped_rows.front(), 1);
+  // Full expected sequence: B1 drops at the tie (lowest index wins), then B2
+  // drops on its own next (no longer tied with anything).
+  ASSERT_EQ(dropped_rows.size(), std::size_t{2});
+  EXPECT_EQ(dropped_rows[0], 1);
+  EXPECT_EQ(dropped_rows[1], 4);
+
+  // Certified solution: both copies converge to their C-only optimum.
+  const VecX &x = *res;
+  EXPECT_NEAR(x(0), 10.0, 1.0e-8);
+  EXPECT_NEAR(x(1), 0.0, 1.0e-8);
+  EXPECT_NEAR(x(2), 10.0, 1.0e-8);
+  EXPECT_NEAR(x(3), 0.0, 1.0e-8);
 }
 
 TEST(DenseSlice, FlatVolIsRecoveredAndArbFree) {
