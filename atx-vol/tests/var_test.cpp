@@ -130,6 +130,8 @@ void expect_bit_identical(const VarScenarioFrame &actual, const VarScenarioFrame
   EXPECT_EQ(actual.n_ok, expected.n_ok);
   EXPECT_EQ(actual.n_failed, expected.n_failed);
   EXPECT_EQ(actual.definition_fingerprint, expected.definition_fingerprint);
+  // A count, not a float -- exact equality in both comparators, no tolerance.
+  EXPECT_EQ(actual.n_tenor_extrapolated, expected.n_tenor_extrapolated);
 }
 
 void expect_economically_equal(const VarScenarioFrame &actual, const VarScenarioFrame &expected) {
@@ -139,6 +141,7 @@ void expect_economically_equal(const VarScenarioFrame &actual, const VarScenario
   EXPECT_EQ(actual.n_ok, expected.n_ok);
   EXPECT_EQ(actual.n_failed, expected.n_failed);
   EXPECT_EQ(actual.definition_fingerprint, expected.definition_fingerprint);
+  EXPECT_EQ(actual.n_tenor_extrapolated, expected.n_tenor_extrapolated);
   const auto close = [](double lhs, double rhs) {
     return std::fabs(lhs - rhs) <= 1.0e-10 * std::max(1.0, std::fabs(rhs));
   };
@@ -176,6 +179,14 @@ void expect_bit_identical(const VarLegFrame &actual, const VarLegFrame &expected
   EXPECT_EQ(bits(actual.base_time_to_expiry), bits(expected.base_time_to_expiry));
   EXPECT_EQ(bits(actual.shifted_time_to_expiry), bits(expected.shifted_time_to_expiry));
   EXPECT_EQ(actual.definition_fingerprint, expected.definition_fingerprint);
+  // Same class of gap the reviewer flagged on VarScenarioFrame's comparators
+  // (fix round 2): diagnostic_flags was added in the original round and this
+  // hand-rolled comparator was never extended for it, leaving
+  // ReplayIsBitInvariantAcrossThreadCountsAndLegOutputIsOptional and
+  // CrossSectionalReplayIsBitInvariantAcrossThreadCountsAndLegOutputIsOptional
+  // (both call this overload) blind to a diagnostic_flags thread-invariance
+  // regression. Exact equality -- it's a bitmask, not a float.
+  EXPECT_EQ(actual.diagnostic_flags, expected.diagnostic_flags);
 }
 
 class ScopedTempDirectory {
