@@ -4637,3 +4637,57 @@ TEST(BacktestExercise, DeepItmPutExercisableAdvisory) {
   ASSERT_FALSE(r->n_open_lots.empty());
   EXPECT_EQ(r->n_open_lots.back(), 1.0); // Advisory: the lot survives
 }
+
+// The fixed-book (B0) overload has no cash/share ledger to convert an
+// assigned or exercised lot into -- `Simulate` must fail closed there, the
+// same "no honest place to book it" refusal `PortfolioState::swap_lots` and
+// `RunConfig::step_observer` already use on this overload. Exercises the
+// validation branch added alongside those two.
+TEST(BacktestExercise, FixedBookSimulateFailsClosed) {
+  const fs::path dir = fresh_dir("exercise-fixed-book-simulate-refused");
+  const std::int64_t expiry = kBaseNow + 2 * kDayNs;
+  const CorpusManifest man = make_exercise_corpus(dir, kUid, kExerciseSpot, /*n_dates=*/2);
+  auto clock = Clock::from_manifest(man);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  PortfolioState book;
+  book.lots.push_back(Lot{1, OptionContract{kUid, kExerciseStrike, 0.0, Side::Call}, kExerciseQty,
+                          kExerciseMult, expiry, 0u, 0.0});
+  RunConfig cfg;
+  cfg.price.n_threads = 1u;
+  cfg.exercise_policy = ExercisePolicy::Simulate;
+
+  auto r = run_backtest(*clock, std::move(book), cfg);
+  ASSERT_FALSE(r.has_value()) << "Simulate has no cash/share ledger to convert into on B0";
+  EXPECT_EQ(r.error().code(), ErrorCode::InvalidArgument);
+}
+
+// The fixed-book (B0) overload's Advisory counting -- same
+// `apply_early_exercise` call as the strategy overload, just with a null
+// hedge ledger/cash (see `run_backtest`'s comment), so it can only ever
+// observe. Confirms the B0 wiring actually reaches the counters (not just
+// "compiles"): the lot is supplied directly via `PortfolioState`, never
+// through `IStrategy::on_step`.
+TEST(BacktestExercise, FixedBookAdvisoryCountsWithoutMutation) {
+  const fs::path dir = fresh_dir("exercise-fixed-book-advisory");
+  const std::int64_t expiry = kBaseNow + 2 * kDayNs;
+  const std::int64_t ex_ts = kBaseNow + kDayNs;
+  const CorpusManifest man = make_exercise_corpus(dir, kUid, kExerciseSpot, /*n_dates=*/2);
+  auto clock = Clock::from_manifest(man);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  PortfolioState book;
+  book.lots.push_back(Lot{1, OptionContract{kUid, kExerciseStrike, 0.0, Side::Call}, kExerciseQty,
+                          kExerciseMult, expiry, 0u, 0.0});
+  RunConfig cfg;
+  cfg.price.n_threads = 1u;
+  cfg.financing.share_dividends = {ShareDividend{kUid, ex_ts, kExerciseDiv}};
+  // exercise_policy left at its default (Advisory): B0 only ever observes.
+
+  auto r = run_backtest(*clock, std::move(book), cfg);
+  ASSERT_TRUE(r.has_value()) << r.error().to_string();
+  EXPECT_EQ(r->n_short_calls_assignable, 1u);
+  ASSERT_FALSE(r->n_open_lots.empty());
+  EXPECT_EQ(r->n_open_lots.back(), 1.0); // Advisory: never mutates, even on B0
+  EXPECT_EQ(r->cash.back(), 0.0);        // B0 has no cash ledger at all
+}
