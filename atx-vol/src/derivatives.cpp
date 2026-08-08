@@ -1587,6 +1587,39 @@ template <class SurfaceT>
   return out;
 }
 
+// Fix round 1, CRITICAL-1: does injecting one fixing move `contract` across a
+// DISPATCH-ENGINE boundary the CENTER was never in? Every bump above this one
+// holds `rv_spec` fixed, so it can only ever land on the same dispatch branch
+// the center already priced through; the carry-theta injection is the one
+// evaluation in this whole table that changes `n_obs_done`, so it is the one
+// that can cross such a boundary.
+//
+// Exactly one boundary exists in this file today: `price_vol_swap` accepts an
+// EXPLICIT `DerivEngine::VolCarrLee` both unaged (n_done == 0) and fully aged
+// (n_done >= n_total) -- both exact/closed-form -- but REJECTS it mid-life
+// (0 < n_done < n_total), because Carr-Lee has no way to blend an already-
+// accrued leg (see that function's own guard). An unaged VolSwap priced under
+// an explicit VolCarrLee engine is a documented, previously-working
+// configuration (this file's own vol-swap dispatch doc: "UNAGED (n_done ==
+// 0): Carr-Lee by default ... or explicit VolCarrLee -- Marquee pins this at
+// inception"); injecting one fixing moves it to n_done == 1, which is
+// mid-life whenever n_total > 1, and would otherwise fail the WHOLE greek
+// block (delta through charm, not just the two carry fields) over an
+// opt-in-by-default diagnostic every other bump in the table never triggers.
+//
+// Detected structurally, not by calling deriv_price and inspecting the error:
+// a genuine numeric failure on this same cell (e.g. the fresh
+// var_swap_fair_strike call below hitting an unpriceable surface) still
+// propagates via the ordinary ATX_TRY calls, exactly like every other
+// stencil evaluation -- this predicate only ever turns a would-be
+// CONFIGURATION failure into "not computed", never a numeric one.
+[[nodiscard]] bool carry_fixing_crosses_engine_boundary(const DerivContract& contract,
+                                                         const DerivConfig& cfg) noexcept {
+  const RealizedVarianceSpec& rv = contract.rv_spec;
+  return contract.kind == DerivKind::VolSwap && cfg.engine == DerivEngine::VolCarrLee &&
+         rv.n_obs_done == 0u && rv.n_obs_total > 1u;
+}
+
 // The repricings the stencils below difference. Members left at NaN are ones
 // this bump set did not evaluate, and NaN then propagates into exactly the
 // greeks that depend on them -- which is the "NaN = not computed" contract.
@@ -1654,6 +1687,16 @@ template <class SurfaceT>
         // plain theta reprice already computed above -- no extra cost.
         pv.t_dn_carry = pv.t_dn;
         pv.t_dn_zero_fixing = pv.t_dn;
+      } else if (carry_fixing_crosses_engine_boundary(contract, cfg)) {
+        // CRITICAL-1 (fix round 1): the injected fixing would move this
+        // unaged, explicit-VolCarrLee VolSwap into `price_vol_swap`'s
+        // mid-life branch, which rejects that engine outright -- see
+        // `carry_fixing_crosses_engine_boundary`. Left NaN: "not computed" is
+        // the honest reading for a diagnostic that cannot be priced under the
+        // caller's own explicit engine choice, not a value borrowed from a
+        // pricer the center never used.
+        pv.t_dn_carry = kNaN;
+        pv.t_dn_zero_fixing = kNaN;
       } else {
         // K_var_future resolved fresh, at the CENTER's own T and under the
         // SAME pinned grid (`cfg` here is already `cfg_pinned` -- see

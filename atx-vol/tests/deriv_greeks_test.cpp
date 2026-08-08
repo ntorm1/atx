@@ -20,7 +20,9 @@ using atx::vol::CurveSet;
 using atx::vol::deriv_default_config;
 using atx::vol::deriv_greeks;
 using atx::vol::deriv_price;
+using atx::vol::DerivConfig;
 using atx::vol::DerivContract;
+using atx::vol::DerivEngine;
 using atx::vol::DerivGreekBumps;
 using atx::vol::DerivKind;
 using atx::vol::ErrorCode;
@@ -613,6 +615,133 @@ TEST(CarryTheta, FullyAgedEqualsTheta) {
   ASSERT_TRUE(g.has_value()) << g.error().to_string();
   EXPECT_DOUBLE_EQ(g->theta_carry, g->theta);
   EXPECT_DOUBLE_EQ(g->theta_zero_fixing, g->theta);
+}
+
+// --- Fix round 1 (review findings) -----------------------------------------
+
+// CRITICAL-1: injecting the carry fixing turns an unaged VolSwap mid-life
+// (n_obs_done 0 -> 1), and `price_vol_swap` rejects an EXPLICIT VolCarrLee
+// engine mid-life (Carr-Lee cannot blend an accrued leg). Pre-fix, that
+// InvalidArgument propagated out of `eval_bump_table` via ATX_TRY and dropped
+// the ENTIRE greek block -- delta through charm, not just the two carry
+// fields -- for a documented, previously-working configuration (this file's
+// own vol-swap dispatch doc: unaged + explicit VolCarrLee is Marquee's own
+// inception convention). No existing `deriv_greeks` test set that engine,
+// which is why the suite stayed green pre-fix. Pins: the call still succeeds,
+// the two carry fields report NaN (honest "not computed" for a diagnostic
+// that cannot be priced under the caller's own explicit engine choice), and
+// every other greek is unaffected.
+TEST(CarryTheta, UnagedVolSwapExplicitCarrLeeKeepsBlockAliveWithCarryFieldsNaN) {
+  const EssviSurface surf = make_flat_surface(0.20, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+  DerivContract c{};
+  c.kind = DerivKind::VolSwap;
+  c.maturity_t = 0.25;
+  c.notional = 1e5;
+  c.strike_dec = 0.18;
+  c.rv_spec.annualization = 252.0;
+  c.rv_spec.n_obs_total = 63u;  // unaged: n_obs_done left at 0
+
+  DerivConfig cfg = deriv_default_config();
+  cfg.engine = DerivEngine::VolCarrLee;
+  const auto g = deriv_greeks(surf, cs, c, cfg);  // default bumps: carry_theta = true
+  ASSERT_TRUE(g.has_value()) << g.error().to_string();
+
+  EXPECT_TRUE(std::isnan(g->theta_carry));
+  EXPECT_TRUE(std::isnan(g->theta_zero_fixing));
+  EXPECT_TRUE(std::isfinite(g->pv));
+  EXPECT_TRUE(std::isfinite(g->delta));
+  EXPECT_TRUE(std::isfinite(g->gamma));
+  EXPECT_TRUE(std::isfinite(g->vega));
+  EXPECT_TRUE(std::isfinite(g->volga));
+  EXPECT_TRUE(std::isfinite(g->vanna));
+  EXPECT_TRUE(std::isfinite(g->theta));
+  EXPECT_TRUE(std::isfinite(g->rho));
+  EXPECT_TRUE(std::isfinite(g->charm));
+}
+
+// IMPORTANT-1: the fully-aged branch returns theta_carry == theta_zero_fixing
+// == theta UNCONDITIONALLY -- nothing is realized there, so there is no
+// fixing roll left for the knob to gate (the brief itself states "Fully-aged:
+// both = theta" with no carve-out). Pins that `carry_theta = false` does NOT
+// turn these NaN on that branch, matching the corrected doc on
+// `DerivGreeks::theta_carry`. Otherwise identical to `FullyAgedEqualsTheta`.
+TEST(CarryTheta, FullyAgedIgnoresCarryThetaOptOut) {
+  const double r = 0.043, T = 0.25;
+  const EssviSurface surf = make_flat_surface(0.20, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00, r);
+  DerivContract c{};
+  c.kind = DerivKind::VolSwap;
+  c.maturity_t = T;
+  c.notional = 1e5;
+  c.strike_dec = 0.18;
+  c.rv_spec.annualization = 252.0;
+  c.rv_spec.n_obs_total = 63u;
+  c.rv_spec.n_obs_done = 63u;
+  c.rv_spec.rv_done_dec = 0.0441;
+  DerivGreekBumps bumps{};
+  bumps.carry_theta = false;
+  const auto g = deriv_greeks(surf, cs, c, deriv_default_config(), bumps);
+  ASSERT_TRUE(g.has_value()) << g.error().to_string();
+  EXPECT_TRUE(std::isfinite(g->theta_carry));
+  EXPECT_DOUBLE_EQ(g->theta_carry, g->theta);
+  EXPECT_DOUBLE_EQ(g->theta_zero_fixing, g->theta);
+}
+
+// IMPORTANT-2: on an unaged VolSwap the center prices via Carr-Lee, but the
+// injected +1-fixing copy is mid-life and therefore prices via the lognormal
+// RV distribution model (`price_vol_swap_distribution`) -- the two carry
+// variants momentarily difference PVs from two DIFFERENT pricers, unlike
+// `theta` (which never touches `rv_spec` and so never leaves Carr-Lee).
+//
+// Reference derivation (also recorded on `DerivGreeks::theta_carry` and in
+// task-C-10-report.md's "Fix round 1" section): both variants inject the SAME
+// b = w_future and share the SAME lognormal W (same rolled T, same
+// auto-calibrated xi -- `resolve_vol_of_vol` depends only on the surface/T,
+// not on `a`), differing only in `a_carry = K_var_future/n_total` vs
+// `a_zero = 0`. Since a_carry is a SMALL perturbation (1/n_total of the
+// blend), a first-order Taylor expansion of sqrt(a+bW) around a = 0 gives
+//   theta_carry - theta_zero_fixing
+//       ~= df(T-dt)*N*K_var_future / (2*K_vol*n_total*bumps.time_years)
+// (the extra 1/(2*K_vol) next to VarSwap's exact SumIdentity is d/da[sqrt] at
+// a = 0). This reproduces the reviewer's own worked example almost exactly
+// (their "~5.8e4 carry signal" on a 1e5-notional, sigma=0.20, T=0.25 fixture
+// is precisely this formula), and the ~0.16% they separately quantify as the
+// Jensen-gap residual (E[sqrt] vs sqrt-of-mean, from replacing 1/n_total of
+// the lognormal leg with a deterministic one) is what the 1% tolerance below
+// leaves room for -- so this is a real tripwire on the model-switch artifact
+// staying second-order, not a restatement of the implementation.
+TEST(CarryTheta, UnagedVolSwapCarryTracksLinearBlendWithinModelSwitchTolerance) {
+  const double sigma = 0.20, T = 0.25, N = 1e6;
+  const EssviSurface surf = make_flat_surface(sigma, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00, 0.03);
+  DerivContract c{};
+  c.kind = DerivKind::VolSwap;
+  c.maturity_t = T;
+  c.notional = N;
+  c.strike_dec = 0.18;
+  c.rv_spec.annualization = 252.0;
+  c.rv_spec.n_obs_total = 63u;  // unaged: n_obs_done left at 0
+
+  const auto g = deriv_greeks(surf, cs, c);  // default config: Auto engine, auto-xi
+  ASSERT_TRUE(g.has_value()) << g.error().to_string();
+  ASSERT_TRUE(std::isfinite(g->theta_carry));
+  ASSERT_TRUE(std::isfinite(g->theta_zero_fixing));
+
+  // Best-effort strip diagnostic on the unaged Carr-Lee dispatch quote --
+  // populated whenever the strip succeeds (it does, on this flat surface);
+  // see price_vol_swap's own comment on `uncapped_var_dec`.
+  const double k_var = g->quote.uncapped_var_dec;
+  const double k_vol = g->quote.fair_strike_dec;  // Carr-Lee K_vol at the center
+  ASSERT_GT(k_var, 0.0);
+  ASSERT_GT(k_vol, 0.0);
+
+  const DerivGreekBumps bumps{};
+  const double df_rolled = cs.yield.disc(T - bumps.time_years);
+  const double expected = df_rolled * N * k_var /
+                          (2.0 * k_vol * c.rv_spec.n_obs_total * bumps.time_years);
+  EXPECT_GT(expected, 0.0);  // there is something to compare
+  EXPECT_NEAR(g->theta_carry - g->theta_zero_fixing, expected, 0.01 * expected);
 }
 
 }  // namespace

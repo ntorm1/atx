@@ -794,11 +794,40 @@ struct DerivGreeks {
   //     (nothing traded overnight) -- the deterministic "nothing happened"
   //     mark move, i.e. the number a desk actually calls carry and the one to
   //     put in a daily P&L predict.
-  // Both NaN when `theta` is (maturity_t <= bumps.time_years, or fully-aged
-  // handled below) or when `DerivGreekBumps::carry_theta` is false. Fully
-  // aged: both equal `theta` exactly -- the same PV = df*X identity theta/rho
+  // On the BUMPED path (not fully aged), both NaN when `theta` is
+  // (maturity_t <= bumps.time_years), when `DerivGreekBumps::carry_theta` is
+  // false, or when the injected fixing would cross a dispatch-ENGINE boundary
+  // the center was never in (Task C-10 fix round 1, CRITICAL-1) -- today that
+  // is exactly an unaged VolSwap priced under an explicit
+  // `DerivEngine::VolCarrLee`: injecting a fixing makes it mid-life, and
+  // `price_vol_swap` rejects VolCarrLee mid-life (Carr-Lee cannot blend an
+  // accrued leg). Every other greek in the block is unaffected and still
+  // computed -- only these two fields go NaN, never the whole
+  // `Result<DerivGreeks>`.
+  // FULLY AGED IGNORES `carry_theta`: both equal `theta` exactly on that
+  // branch REGARDLESS of the knob -- the same PV = df*X identity theta/rho
   // already share there, since nothing is left to realize and there is no
-  // fixing left to roll.
+  // fixing left to roll, so there is nothing for the knob to gate (the brief
+  // states "Fully-aged: both = theta" unconditionally). A caller who sets
+  // `carry_theta = false` specifically to suppress these two fields
+  // everywhere must also check `has_flag(quote.flags, DerivFlags::FullyAged)`.
+  //
+  // PRICER-BOUNDARY CAVEAT (unaged VolSwap only, any engine): the center of an
+  // unaged VolSwap prices via Carr-Lee, but the injected copy is mid-life and
+  // therefore prices via the lognormal RV distribution model
+  // (`price_vol_swap_distribution`) whenever that engine is legal for it --
+  // so these two fields momentarily difference PVs from two DIFFERENT
+  // pricers, unlike `theta` (which never changes `rv_spec` and so never
+  // leaves Carr-Lee).
+  // Under the DEFAULT auto-calibrated vol-of-vol this is a small, second-order
+  // Jensen-gap effect (`resolve_vol_of_vol` calibrates the model to reproduce
+  // Carr-Lee's K_vol exactly at the center, so the two engines agree at the
+  // degenerate point by construction: ~0.1-0.2% of the carry signal on a
+  // typical fixture). Under an EXPLICIT `cfg.vol_of_vol`, the distribution
+  // model no longer agrees with Carr-Lee at all and the effect becomes
+  // FIRST-ORDER, growing with the mismatch between the caller's xi and the
+  // auto-calibrated one -- a caller who pins `vol_of_vol` explicitly on an
+  // unaged VolSwap should treat these two fields as approximate, not exact.
   double theta_carry = kQuietNaN;
   double theta_zero_fixing = kQuietNaN;
   DerivQuote quote{};  // the center (unbumped) quote
@@ -909,8 +938,11 @@ static_assert(detail::aggregate_arity_is_v<DerivGreekBumps, 6>,
 // to price (the pricers return InvalidArgument for T <= 0). Reporting "not
 // computed" beats failing the whole greek block over one stencil that cannot
 // exist. theta_carry / theta_zero_fixing share this same gate (same roll, same
-// knob, `DerivGreekBumps::time_years`) plus their own: NaN whenever
-// `DerivGreekBumps::carry_theta` is false.
+// knob, `DerivGreekBumps::time_years`) on the bumped path -- see the field
+// doc on `DerivGreeks::theta_carry` for their two additional NaN cases
+// (`DerivGreekBumps::carry_theta` false; the injected fixing crossing a
+// dispatch-engine boundary the center was never in) and for why fully-aged
+// ignores all of this and always returns `theta`.
 //
 // @return the error of the first failing evaluation — the center quote's, or a
 //         bumped one's (a bumped failure is a real failure: the same contract
