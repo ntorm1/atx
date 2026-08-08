@@ -306,6 +306,26 @@ TearSheet tearsheet(const BacktestResult& r, double periods_per_year) {
   const double tv_sum = col_sum(r.turnover_vega);
   ts.pnl_per_vega_traded = tv_sum > 0.0 ? ts.total_return / tv_sum : 0.0;
 
+  // ── Margin (Task B2) ──
+  //
+  // `margin_required` is non-wire and empty on a hand-built/TSV-read/decoded
+  // result (see BacktestResult::margin_required's comment), so both stats
+  // stay at their guarded 0 default in that case -- there is no earlier
+  // series to fall back to, unlike `gross_vega_abs`'s |gross_vega| fallback.
+  if (r.margin_required.size() == n) {
+    double margin_sum = 0.0;
+    double margin_peak = 0.0;
+    for (std::size_t i = 0; i < n; ++i) {
+      margin_sum += r.margin_required[i];
+      if (r.margin_required[i] > margin_peak) {
+        margin_peak = r.margin_required[i];
+      }
+    }
+    const double mean_margin = margin_sum / static_cast<double>(n);
+    ts.return_on_margin = mean_margin > 0.0 ? ts.total_return / mean_margin : 0.0;
+    ts.margin_utilization_peak = margin_peak;
+  }
+
   return ts;
 }
 

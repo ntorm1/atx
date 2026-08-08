@@ -256,7 +256,8 @@ void expect_result_bit_identical(const BacktestResult &a, const BacktestResult &
           X(attr_volga) X(attr_theta) X(attr_rho) X(attr_charm) X(attr_unexplained)                \
               X(attr_settlement) X(attr_shares) X(attr_financing) X(attr_cost)                     \
                   X(return_on_gross_vega) X(vega_adj_sharpe) X(pnl_per_vega_traded)                \
-                      X(avg_gross_vega) X(avg_gross_gamma)
+                      X(avg_gross_vega) X(avg_gross_gamma) X(return_on_margin)                     \
+                          X(margin_utilization_peak)
 
 // The trunk's WS-X5 added a nested benchmark-relative block to TearSheet, which
 // this guard correctly caught at the main->pipeline-m merge (it fired as
@@ -268,10 +269,12 @@ void expect_result_bit_identical(const BacktestResult &a, const BacktestResult &
   X(benchmark.beta) X(benchmark.alpha) X(benchmark.active_return)                                  \
       X(benchmark.tracking_error) X(benchmark.information_ratio) X(benchmark.correlation)
 
-// 27 plain doubles (216 B) + BenchmarkStats (bool + pad + size_t + 6 doubles =
-// 64 B) = 280 B = 35 doubles. Update BOTH field lists, not just this number, or
-// the gate stops covering the whole struct.
-static_assert(sizeof(TearSheet) == 35 * sizeof(double),
+// Task B2 (backtest-lakehouse sprint) added `return_on_margin` and
+// `margin_utilization_peak`, so this grew 27 -> 29 plain doubles (232 B) +
+// BenchmarkStats (bool + pad + size_t + 6 doubles = 64 B) = 296 B = 37
+// doubles. Update BOTH field lists, not just this number, or the gate stops
+// covering the whole struct.
+static_assert(sizeof(TearSheet) == 37 * sizeof(double),
               "TearSheet gained/lost a field — update ATX_TEARSHEET_FIELDS / "
               "ATX_TEARSHEET_BENCHMARK_FIELDS or this gate stops covering the whole struct");
 static_assert(sizeof(BenchmarkStats) == 8 * sizeof(double),

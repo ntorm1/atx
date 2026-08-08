@@ -27,6 +27,7 @@
 #include "atx/vol/detail/counters.hpp"      // counters::ledger — V1 always-on solve ledger (per-step scrape)
 #include "atx/vol/detail/deriv_ref_bridge.hpp" // detail::deriv_price_on_ref — swap-lot marks
 #include "atx/vol/detail/phase_profile.hpp"
+#include "atx/vol/margin.hpp"          // Task B2: regt_short_option_margin
 #include "atx/vol/strategy.hpp"        // IStrategy
 #include "atx/vol/surface_archive.hpp" // SurfaceArchive
 #include "atx/vol/surface_db.hpp"      // SurfaceDb, DbPartitionInfo, kSurfaceDbPartitionDir/Ext
@@ -325,6 +326,17 @@ using detail::StepMarkMemo;
   }
 }
 
+// Task B2.
+[[nodiscard]] bool valid_margin_breach_policy(MarginBreachPolicy policy) noexcept {
+  switch (policy) {
+  case MarginBreachPolicy::Ignore:
+  case MarginBreachPolicy::Halt:
+    return true;
+  default:
+    return false;
+  }
+}
+
 // A6: the `ClockGapPolicy::Error` refusal message. Names every dropped date
 // (not just the count) so a caller does not have to re-derive which dates the
 // manifest failed to fit from a bare number.
@@ -351,7 +363,8 @@ using detail::StepMarkMemo;
       !valid_resolved_price_isa(cfg.price.resolved_price_isa) ||
       !valid_spread_kind(cfg.frictions.spread_kind) || !valid_unpriced_policy(cfg.unpriced) ||
       !valid_provenance_policy(cfg.surface_provenance_policy) ||
-      !valid_clock_gap_policy(cfg.clock_gaps)) {
+      !valid_clock_gap_policy(cfg.clock_gaps) ||
+      !valid_margin_breach_policy(cfg.margin_breach)) {
     return Err(ErrorCode::InvalidArgument, "run_backtest: invalid RunConfig enum value");
   }
   if (cfg.price.prices_only) {
@@ -1790,6 +1803,61 @@ compute_step(const MarketSnapshot &base, const MarketSnapshot &shifted,
          " (first uid=" + std::to_string(first_uid) + ")";
 }
 
+// Task B2 (backtest-lakehouse sprint): Reg-T margin required for the CURRENT
+// book against `snap`, summed over lots carrying SHORT exposure (qty < 0).
+// Long and flat lots need no maintenance collateral (the premium is paid up
+// front) and contribute 0. A short lot whose mark cannot be solved against
+// `snap` (absent surface, degenerate contract) also contributes 0 rather than
+// aborting the row -- this column is a best-effort diagnostic (see
+// `BacktestResult::margin_required`'s comment); only `RunConfig::
+// margin_breach` ever gates a run, never this function.
+//
+// Uses `SurfaceRef::fair_value` directly -- one extra per-SHORT-lot cold
+// solve -- rather than threading a per-position frame out of the FullGreeks
+// book solve this row's `book_greeks`/`execute` already paid for:
+// `margin_required` is a new, diagnostic-only column, and the existing book
+// solve exposes no per-position marks on its common totals-only fast path
+// (see `book_greeks`'s own comment on why it stays totals-only whenever every
+// lane is Ok). The extra cost scales with the SHORT-lot count, not the whole
+// book, and is exactly 0 extra solves on a book with none.
+[[nodiscard]] double book_margin_required(const MarketSnapshot &snap, const std::vector<Lot> &lots,
+                                          QueryExecution execution) {
+  double total = 0.0;
+  for (const Lot &lot : lots) {
+    if (lot.qty >= 0.0) {
+      continue; // long or flat: no Reg-T maintenance requirement
+    }
+    const SurfaceRef surf = snap.find(lot.contract.uid);
+    if (surf == nullptr) {
+      continue;
+    }
+    const double T = residual_T(lot.expiry_ts_ns, snap.ts_ns());
+    const Result<double> mark = surf->fair_value(lot.contract.K, T, lot.contract.side, execution);
+    if (!mark || !std::isfinite(*mark)) {
+      continue;
+    }
+    const double mult =
+        (std::isfinite(lot.multiplier) && lot.multiplier > 0.0) ? lot.multiplier : 100.0;
+    const double premium = *mark * mult; // dollar premium for ONE contract
+    const double per_contract = regt_short_option_margin(surf->pricing().S, lot.contract.K, premium,
+                                                          mult, lot.contract.side);
+    total += per_contract * (-lot.qty); // qty < 0 here; contracts held = |qty|
+  }
+  return total;
+}
+
+// Task B2: the `MarginBreachPolicy::Halt` refusal message. Names the row
+// (date) and the shortfall so a caller does not have to re-derive which row
+// breached from a bare error code -- the same "name the row, not just the
+// count" discipline `clock_gap_error_message` / `unpriced_greeks_error_message`
+// already use above.
+[[nodiscard]] std::string margin_breach_error_message(const std::string &date, double required,
+                                                       double available) {
+  return "run_backtest: margin required (" + std::to_string(required) +
+         ") exceeds available capital (" + std::to_string(available) + ") on " + date +
+         "; refusing under RunConfig::margin_breach == MarginBreachPolicy::Halt";
+}
+
 [[nodiscard]] constexpr std::string_view purpose_name(SurfacePurpose purpose) noexcept {
   switch (purpose) {
   case SurfacePurpose::MarketMark:
@@ -2482,6 +2550,7 @@ Status BacktestResult::validate() const {
   // the frozen wire registry (see their member comments).
   ATX_TRY_VOID(check_column("gross_vega_abs", gross_vega_abs, rows));
   ATX_TRY_VOID(check_column("nav_liquidation", nav_liquidation, rows));
+  ATX_TRY_VOID(check_column("margin_required", margin_required, rows));
 
   // `step_pnl_total` is EXEMPT: length == refs-1 by contract, not parallel to
   // the downsampled `date`.
@@ -2553,7 +2622,8 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
                                double p_delta, double p_gamma, double p_vega, double p_vanna,
                                double p_volga, double p_theta, double p_rho, double p_charm,
                                double p_unexpl, double p_settle, double nav_v, const PriceTotals &g,
-                               std::size_t n_lots, double n_unpriced, double n_unpriced_greeks) {
+                               std::size_t n_lots, double n_unpriced, double n_unpriced_greeks,
+                               double margin_req) {
     out.date.push_back(date);
     out.ts_ns.push_back(ts);
     out.pnl_total.push_back(p_total);
@@ -2587,6 +2657,7 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
     out.n_open_lots.push_back(static_cast<double>(n_lots));
     out.n_unpriced_lots.push_back(n_unpriced);
     out.n_unpriced_greeks.push_back(n_unpriced_greeks);
+    out.margin_required.push_back(margin_req); // Task B2
   };
 
   // base = load(refs[0]) — the inception snapshot.
@@ -2652,8 +2723,16 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
       return Err(ErrorCode::NotFound,
                  unpriced_greeks_error_message(g->n_unpriced, g->first_unpriced_uid, refs[0].date));
     }
+    // Task B2: Reg-T margin requirement for the inception book, against the
+    // same base snapshot book_greeks just priced. Available capital is 0.0 --
+    // this overload has no cash ledger at all; see `MarginBreachPolicy`.
+    const double margin_req = book_margin_required(*base, book.lots, cfg.price.query_execution);
+    if (cfg.margin_breach == MarginBreachPolicy::Halt && margin_req > 0.0) {
+      return Err(ErrorCode::InvalidArgument,
+                 margin_breach_error_message(refs[0].date, margin_req, /*available=*/0.0));
+    }
     push_row(refs[0].date, base->ts_ns(), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-             0.0, g->total, book.lots.size(), 0.0, static_cast<double>(g->n_unpriced));
+             0.0, g->total, book.lots.size(), 0.0, static_cast<double>(g->n_unpriced), margin_req);
   }
 
   // Block accumulators for record_every_n>1: each non-recorded step's per-axis PnL
@@ -2756,13 +2835,19 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
         return Err(ErrorCode::NotFound, unpriced_greeks_error_message(
                                             g->n_unpriced, g->first_unpriced_uid, refs[i].date));
       }
+      // Task B2: same margin computation as inception, against this row's base.
+      const double margin_req = book_margin_required(*base, book.lots, cfg.price.query_execution);
+      if (cfg.margin_breach == MarginBreachPolicy::Halt && margin_req > 0.0) {
+        return Err(ErrorCode::InvalidArgument,
+                   margin_breach_error_message(refs[i].date, margin_req, /*available=*/0.0));
+      }
       // A deferred lot is OPEN — it holds real exposure the run never settled — so
       // it counts toward n_open_lots even though it has left `book.lots` (it is
       // past its expiry, which every book-facing invariant and pricer forbids).
       push_row(refs[i].date, base->ts_ns(), b_total, b_delta, b_gamma, b_vega, b_vanna, b_volga,
                b_theta, b_rho, b_charm, b_unexpl, b_settle, nav, g->total,
                book.lots.size() + deferrals.size(), b_nunpriced,
-               static_cast<double>(g->n_unpriced));
+               static_cast<double>(g->n_unpriced), margin_req);
       b_total = b_delta = b_gamma = b_vega = b_vanna = b_volga = 0.0;
       b_theta = b_rho = b_charm = b_unexpl = b_settle = b_nunpriced = 0.0;
     }
@@ -2963,7 +3048,8 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
              double p_rho, double p_charm, double p_unexpl, double p_settle, double p_shares,
              double p_fin, double p_cost, double nav_v, double cash_v, double g_delta,
              const PriceTotals &g, double turn_notl, double turn_vega, double swap_pv_v,
-             double swap_pnl_v, std::size_t n_lots, double n_unpriced, double n_unpriced_greeks) {
+             double swap_pnl_v, std::size_t n_lots, double n_unpriced, double n_unpriced_greeks,
+             double margin_req) {
         out.date.push_back(date);
         out.ts_ns.push_back(ts);
         out.pnl_total.push_back(p_total);
@@ -2994,6 +3080,7 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
         out.n_open_lots.push_back(static_cast<double>(n_lots));
         out.n_unpriced_lots.push_back(n_unpriced);
         out.n_unpriced_greeks.push_back(n_unpriced_greeks);
+        out.margin_required.push_back(margin_req); // Task B2
       };
 
   // ── F1(d) NAV-vs-liquidation reconciliation (RunConfig::reconcile_nav) ──────
@@ -3389,10 +3476,18 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
     // Swap columns are 0.0 at inception: the swap pass lives in the step loop,
     // so a lot opened here has neither seeded a fixing nor taken a mark yet
     // (entry economics v1 — a swap opens at zero cost).
+    // Task B2: Reg-T margin requirement for the inception book, against the
+    // same base snapshot book_greeks just priced. Available capital is this
+    // row's post-trade cash balance.
+    const double margin_req = book_margin_required(*base, book.lots, cfg.price.query_execution);
+    if (cfg.margin_breach == MarginBreachPolicy::Halt && margin_req > cash) {
+      return Err(ErrorCode::InvalidArgument,
+                 margin_breach_error_message(refs[0].date, margin_req, cash));
+    }
     push_row(refs[0].date, base->ts_ns(), nav, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
              0.0, 0.0, ex->cost, nav, cash, g_delta, g->total, ex->turnover_notional,
              ex->turnover_vega, 0.0, 0.0, book.lots.size(), static_cast<double>(ex->n_unpriced_hedges),
-             static_cast<double>(g->n_unpriced));
+             static_cast<double>(g->n_unpriced), margin_req);
     ATX_TRY_VOID(reconcile_row(refs[0].date, nav, g->total, *base));
     record_signals(*base);
   }
@@ -3715,13 +3810,19 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
                                             g->n_unpriced, g->first_unpriced_uid, refs[i].date));
       }
       const double g_delta = g->total.delta + hedge_ledger.sum();
+      // Task B2: same margin computation as inception, against this row's base.
+      const double margin_req = book_margin_required(*base, book.lots, cfg.price.query_execution);
+      if (cfg.margin_breach == MarginBreachPolicy::Halt && margin_req > cash) {
+        return Err(ErrorCode::InvalidArgument,
+                   margin_breach_error_message(refs[i].date, margin_req, cash));
+      }
       // Deferred lots are open exposure the run never settled; see the fixed-book
       // loop's note on why they cannot live in `book.lots`.
       push_row(refs[i].date, base->ts_ns(), b_total, b_delta, b_gamma, b_vega, b_vanna, b_volga,
                b_theta, b_rho, b_charm, b_unexpl, b_settle, b_shares, b_fin, b_cost, nav, cash,
                g_delta, g->total, b_turn_notl, b_turn_vega, swap_pv_state, b_swap_pnl,
                book.lots.size() + deferrals.size(), b_nunpriced,
-               static_cast<double>(g->n_unpriced));
+               static_cast<double>(g->n_unpriced), margin_req);
       ATX_TRY_VOID(reconcile_row(refs[i].date, nav, g->total, *base));
       record_signals(*base);
       b_total = b_delta = b_gamma = b_vega = b_vanna = b_volga = 0.0;

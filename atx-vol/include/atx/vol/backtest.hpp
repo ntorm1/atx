@@ -827,6 +827,37 @@ enum class ClockGapPolicy : std::uint8_t {
   Error = 1,
 };
 
+// Task B2 (backtest-lakehouse sprint, target 1.1.0): what a recorded row whose
+// Reg-T margin requirement (`BacktestResult::margin_required`, computed every
+// row from `atx/vol/margin.hpp`'s `regt_short_option_margin` summed over the
+// book's short option lots -- see backtest.cpp's `book_margin_required`)
+// exceeds AVAILABLE CAPITAL should do. "Available capital" is that row's cash
+// balance: `BacktestResult::cash` for the strategy overload, always 0.0 for
+// the fixed-book (B0) overload, which carries no ledger at all -- so a short
+// book under `Halt` on B0 refuses unconditionally. That is an intentional
+// fail-closed reading, not an oversight: B0 represents no funded account, and
+// `Halt` says "represent only a book capital can actually cover".
+//
+// This enum lives in backtest.hpp (Tier-A) rather than margin.hpp (Tier-B)
+// deliberately: `RunConfig` is Tier-A and Tier-A is closed under inclusion
+// (`VolUmbrella.TierAIsClosedUnderInclusion`), so a Tier-A struct may not
+// reach into a Tier-B header for one of its field's types without promoting
+// that header too -- and margin.hpp is new surface this sprint deliberately
+// keeps OUT of the frozen umbrella. See margin.hpp's own file header for the
+// one-way "engine calls into margin, never the reverse" rule this mirrors at
+// the type level.
+enum class MarginBreachPolicy : std::uint8_t {
+  // BEHAVIOUR-PRESERVING DEFAULT: `margin_required` is still computed and
+  // recorded every row (see `BacktestResult::margin_required`), but a
+  // shortfall never halts the run -- bit-identical to the pre-B2 engine, with
+  // the new column carried as a diagnostic only.
+  Ignore = 0,
+  // Fail closed: the FIRST recorded row whose margin requirement exceeds
+  // available capital aborts the run (`ErrorCode::InvalidArgument`, naming
+  // the date and the shortfall) instead of being recorded.
+  Halt = 1,
+};
+
 // One observed engine step, handed to RunConfig::step_observer immediately after
 // IStrategy::on_step returns Ok and BEFORE the transition validation / hedge /
 // execute stage. Fires once per clock step INCLUDING inception (step_index 0), in
@@ -1034,9 +1065,18 @@ struct RunConfig {
   // exception as `swap_fixing_cadence`; this is field 19, appended last per
   // that convention.
   ClockGapPolicy clock_gaps{ClockGapPolicy::Accept};
+  // Task B2 (backtest-lakehouse sprint, target 1.1.0): see `MarginBreachPolicy`
+  // above. Same sprint-owner-approved additive Tier-A exception as
+  // `swap_fixing_cadence` / `clock_gaps` before it; this is field 20, appended
+  // last per that convention. Output is bit-identical for every caller that
+  // does not set it -- `Ignore` (the default) computes and records
+  // `BacktestResult::margin_required` on every row exactly as `Halt` would,
+  // it just never turns a shortfall into an aborted run, so NAV/cash/every
+  // other column a caller already depended on is untouched.
+  MarginBreachPolicy margin_breach{MarginBreachPolicy::Ignore};
 };
 
-// Drift pin (plan item 4.2). RunConfig has exactly NINETEEN fields. Adding,
+// Drift pin (plan item 4.2). RunConfig has exactly TWENTY fields. Adding,
 // removing or splitting one breaks this line, which is the point: it forces
 // whoever changes the struct to read the construction contract above instead of
 // appending a knob "for compatibility" with positional initializers that are no
@@ -1073,8 +1113,17 @@ struct RunConfig {
 // behavior only when the clock actually carries a dropped date AND the
 // caller opts into `Error`, which used to be unrepresentable).
 //
+// 19 -> 20 (Task B2, backtest-lakehouse sprint): `margin_breach` APPENDED at
+// the end. Same sprint-owner-approved exception to the 1.x Tier-A freeze as
+// `swap_fixing_cadence` / `clock_gaps` before it. Output is bit-identical for
+// every caller that does not set it (`Ignore` -- the default -- still
+// populates `BacktestResult::margin_required` every row, it just never turns
+// a shortfall into an aborted run, so it changes behavior only when a book's
+// margin requirement actually exceeds available capital AND the caller opts
+// into `Halt`, which used to be unrepresentable).
+//
 // BLIND SPOT: this probe pins the field COUNT, nothing else. It cannot see a
-// REORDER that leaves the count at 19 -- `aggregate_arity_is_v` (see
+// REORDER that leaves the count at 20 -- `aggregate_arity_is_v` (see
 // detail/aggregate_arity.hpp) only checks how many brace-initializer slots
 // `RunConfig{...}` accepts, with no notion of field NAMES or TYPES, so swapping
 // two existing fields (e.g. two `bool`s, or two `std::size_t`s) still compiles
@@ -1089,7 +1138,7 @@ struct RunConfig {
 // multi-argument positional brace list; `git grep -n "RunConfig cfg"` sites
 // build via `RunConfig cfg;` plus `cfg.field = ...` assignment, which is
 // order-independent by construction.
-static_assert(detail::aggregate_arity_is_v<RunConfig, 19>,
+static_assert(detail::aggregate_arity_is_v<RunConfig, 20>,
               "RunConfig field count changed: update this pin, and confirm every "
               "construction site still initializes by field name.");
 
@@ -1258,6 +1307,21 @@ struct BacktestResult {
   // parallel to `date`, and the run has already asserted
   // |nav_liquidation[i] - nav[i]| <= RunConfig::reconcile_nav_tol on every row.
   std::vector<double> nav_liquidation;
+  // Task B2 (backtest-lakehouse sprint, target 1.1.0): Reg-T margin required
+  // for this row's book -- `atx/vol/margin.hpp`'s `regt_short_option_margin`,
+  // summed over the SHORT option lots (long/flat lots need no maintenance
+  // collateral; see backtest.cpp's `book_margin_required`). Same non-wire,
+  // EMPTY-OR-ROW-PARALLEL convention as `gross_vega_abs` / `nav_liquidation`
+  // above: absent from `kBacktestSeriesColumns` and the frozen RunArchive
+  // registry, so `ra_schema_hash()`, every TSV/CSV header and every existing
+  // golden are untouched. ALWAYS COMPUTED -- unlike `nav_liquidation`, this
+  // column is not gated by a RunConfig on/off switch; `RunConfig::
+  // margin_breach` governs only whether a shortfall HALTS the run (see
+  // `MarginBreachPolicy`), never whether this column is populated, so
+  // `Ignore` (the default) still records it every row. Empty on a hand-built
+  // result, a TSV read or an archive decode, exactly like its two non-wire
+  // siblings.
+  std::vector<double> margin_required;
   // Strategy diagnostics: name -> per-recorded-row series (parallel to `date`).
   // Empty for the fixed-book overload; populated by the IStrategy overload.
   std::vector<std::pair<std::string, std::vector<double>>> signals;

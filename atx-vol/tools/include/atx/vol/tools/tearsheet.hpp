@@ -136,6 +136,15 @@ struct TearSheet {
   double avg_gross_vega{0};
   double avg_gross_gamma{0}; // mean(gross_gamma over all rows)
 
+  // ── Margin (Task B2, backtest-lakehouse sprint) ──
+  //
+  // `BacktestResult::margin_required` is EMPTY unless `run_backtest` populated
+  // it (non-wire, same convention as `gross_vega_abs` -- see that field's own
+  // comment), so a hand-built, TSV-read or archive-decoded result folds both
+  // statistics to 0 rather than divide by an absent series.
+  double return_on_margin{0};        // total_return / mean(margin_required)
+  double margin_utilization_peak{0}; // max(margin_required) over all rows
+
   // ── X5 benchmark-relative block. `has_benchmark` is false unless the sheet was
   // built by `tearsheet_with_benchmark`, so plain `tearsheet()` is unchanged. ──
   BenchmarkStats benchmark{};
