@@ -16,15 +16,21 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <limits>
 #include <memory>
 #include <optional>
 #include <span>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -939,6 +945,251 @@ TEST_F(TheoEngineTest, MakeEventVarOverlayRejectsNegativeEmoveMarket) {
       make_event_var_overlay(EventVarConfig{.emove_forecast = 0.0, .emove_market = -0.01});
   ASSERT_FALSE(overlay.has_value());
   EXPECT_EQ(overlay.error().code(), ErrorCode::InvalidArgument);
+}
+
+// ── Task 9: IFairVolModel seam -- linear v1 loader + model overlay ─────────
+
+namespace {
+
+// Writes `content` to a fresh temp file; removed when the guard goes out of
+// scope. Mirrors var_test.cpp's `ScopedTempDirectory` for a single-file
+// fixture instead of a directory tree (Task 5/6 loader tests write their
+// input fixtures the same way -- see bev_label_factory.cpp's dividends
+// loader test fixtures / earnings_forecast_loader_test.cpp's convention).
+// Deliberately immovable AND non-copyable (Rule of Five, explicit): every
+// use below is a single local variable whose file is consumed in place, so
+// there is no call site that needs to relocate ownership of the temp path.
+class ScopedTempFile {
+public:
+  ScopedTempFile(std::string_view label, std::string_view content) {
+    static std::atomic<std::uint64_t> sequence{0};
+    const auto tick = std::chrono::steady_clock::now().time_since_epoch().count();
+    path_ = std::filesystem::temp_directory_path() /
+            ("atx_theo_" + std::string(label) + "_" + std::to_string(tick) + "_" +
+             std::to_string(sequence.fetch_add(1, std::memory_order_relaxed)) + ".tsv");
+    std::ofstream out(path_, std::ios::binary | std::ios::trunc);
+    out.write(content.data(), static_cast<std::streamsize>(content.size()));
+  }
+
+  ~ScopedTempFile() {
+    std::error_code ec;
+    std::filesystem::remove(path_, ec);
+  }
+
+  ScopedTempFile(const ScopedTempFile &) = delete;
+  ScopedTempFile &operator=(const ScopedTempFile &) = delete;
+  ScopedTempFile(ScopedTempFile &&) = delete;
+  ScopedTempFile &operator=(ScopedTempFile &&) = delete;
+
+  [[nodiscard]] std::string path_string() const { return path_.string(); }
+
+private:
+  std::filesystem::path path_{};
+};
+
+// "%.17g" -- max_digits10, the minimum that round-trips a double bit-exactly
+// back through strtod/from_chars (mirrors bev_label_factory.cpp's
+// append_double) -- so the intercept-only arithmetic test below can assert
+// to 1e-10 without losing precision to std::to_string's fixed 6-digit default.
+[[nodiscard]] std::string fmt_double(double v) {
+  char buf[64];
+  const int len = std::snprintf(buf, sizeof buf, "%.17g", v);
+  return std::string(buf, static_cast<std::size_t>(len > 0 ? len : 0));
+}
+
+// Formats a linear-model coef TSV: a "# schema=<schema>" header line, then
+// the intercept and every coefficient whitespace-separated on one line.
+[[nodiscard]] std::string make_coef_tsv(std::uint32_t schema, double intercept,
+                                        std::span<const double> coefs) {
+  std::string out = "# schema=" + std::to_string(schema) + "\n";
+  out += fmt_double(intercept);
+  for (const double c : coefs) {
+    out += ' ';
+    out += fmt_double(c);
+  }
+  out += '\n';
+  return out;
+}
+
+// Builds a ready-to-use model-overlay engine from `intercept`/`coefs`, or
+// returns nullopt (callers ASSERT on the optional -- a free function can't
+// itself ASSERT and return a non-void type). The coef TSV's content is fully
+// consumed by `load_linear_fair_vol_model` before this returns, so the
+// `ScopedTempFile` (deliberately non-movable -- see its own declaration) only
+// needs to outlive that one call, not the returned fixture.
+struct FairVolModelFixture {
+  std::shared_ptr<const IFairVolModel> model;
+  TheoEngine engine;
+};
+
+[[nodiscard]] std::optional<FairVolModelFixture>
+make_fair_vol_model_fixture(double intercept, std::span<const double> coefs) {
+  const ScopedTempFile coef_file("fixture",
+                                 make_coef_tsv(kFairVolFeatureSchemaV1, intercept, coefs));
+  auto loaded = load_linear_fair_vol_model(coef_file.path_string());
+  if (!loaded.has_value()) {
+    return std::nullopt;
+  }
+  std::shared_ptr<const IFairVolModel> model = std::move(*loaded);
+  auto overlay = make_fair_vol_model_overlay(model);
+  if (!overlay.has_value()) {
+    return std::nullopt;
+  }
+  std::vector<std::unique_ptr<ITheoOverlay>> overlays;
+  overlays.push_back(std::move(*overlay));
+  auto engine = TheoEngine::create(std::move(overlays));
+  if (!engine.has_value()) {
+    return std::nullopt;
+  }
+  return FairVolModelFixture{std::move(model), std::move(*engine)};
+}
+
+} // namespace
+
+// (a) zero coefficients -> y == 0 for every row -> engine identity, and
+// ModelMissing is NOT set (ctx.rv/ctx.events are both present -- the zero
+// dvol comes from the model, not a degraded context).
+TEST_F(TheoEngineTest, FairVolModelZeroCoefficientsIsIdentity) {
+  const std::array<double, kFairVolFeatureCount> coefs{};
+  auto fixture = make_fair_vol_model_fixture(0.0, coefs);
+  ASSERT_TRUE(fixture.has_value());
+
+  RvPanel rv{};
+  rv.vol = {0.20, 0.22, 0.24, 0.26};
+  EventSchedule events(std::vector<std::int64_t>{});
+  const TheoContext ctx{.surface = &*surface_, .events = &events, .rv = &rv};
+  const TheoQuery q{.strike = 600.0, .tenor_years = surface_->context()[1].T, .side = Side::Call};
+
+  const auto v = fixture->engine.value(ctx, q);
+  ASSERT_TRUE(v.has_value()) << v.error().to_string();
+  EXPECT_DOUBLE_EQ(v->theo_vol, v->market_vol);
+  EXPECT_DOUBLE_EQ(v->edge_vol, 0.0);
+  EXPECT_EQ(v->flags & static_cast<std::uint32_t>(TheoFlagBits::ModelMissing), 0u);
+}
+
+// (b) intercept-only model, b0 = ln(0.9): every row's y == b0 regardless of
+// features, so dvol = market_vol * (0.9 - 1) => theo_vol == 0.9 * market_vol.
+TEST_F(TheoEngineTest, FairVolModelInterceptOnlyScalesTheoVolByExpB0) {
+  const std::array<double, kFairVolFeatureCount> coefs{};
+  const double b0 = std::log(0.9);
+  auto fixture = make_fair_vol_model_fixture(b0, coefs);
+  ASSERT_TRUE(fixture.has_value());
+
+  RvPanel rv{};
+  rv.vol = {0.20, 0.22, 0.24, 0.26};
+  EventSchedule events(std::vector<std::int64_t>{});
+  const TheoContext ctx{.surface = &*surface_, .events = &events, .rv = &rv};
+  const TheoQuery q{.strike = 600.0, .tenor_years = surface_->context()[1].T, .side = Side::Call};
+
+  const auto v = fixture->engine.value(ctx, q);
+  ASSERT_TRUE(v.has_value()) << v.error().to_string();
+  EXPECT_NEAR(v->theo_vol, 0.9 * v->market_vol, 1e-10);
+  EXPECT_EQ(v->flags & static_cast<std::uint32_t>(TheoFlagBits::ModelMissing), 0u);
+}
+
+// (c) a declared schema that isn't kFairVolFeatureSchemaV1 is refused at
+// load, ParseError family (matches this module's own schema-mismatch
+// precedent -- SurfaceArchiveV2::open, backtest_db.cpp).
+TEST_F(TheoEngineTest, LoadLinearFairVolModelRejectsSchemaMismatch) {
+  const std::array<double, kFairVolFeatureCount> coefs{};
+  const ScopedTempFile coef_file("schema_mismatch", make_coef_tsv(2, 0.0, coefs));
+  const auto model = load_linear_fair_vol_model(coef_file.path_string());
+  ASSERT_FALSE(model.has_value());
+  EXPECT_EQ(model.error().code(), ErrorCode::ParseError);
+}
+
+// (d) wrong value count (intercept + coefficients != kFairVolFeatureCount+1)
+// is refused, ParseError.
+TEST_F(TheoEngineTest, LoadLinearFairVolModelRejectsWrongCoefficientCount) {
+  const ScopedTempFile coef_file("wrong_count", "# schema=1\n0.0 0.0 0.0\n");
+  const auto model = load_linear_fair_vol_model(coef_file.path_string());
+  ASSERT_FALSE(model.has_value());
+  EXPECT_EQ(model.error().code(), ErrorCode::ParseError);
+}
+
+// (e) missing ctx.rv sets ModelMissing, edge 0 -- the overlay fails OPEN
+// exactly like RvBlendOverlay/EventVarOverlay (Task 8).
+TEST_F(TheoEngineTest, FairVolModelMissingRvContextSetsModelMissingAndZeroEdge) {
+  const std::array<double, kFairVolFeatureCount> coefs{};
+  auto fixture = make_fair_vol_model_fixture(0.0, coefs);
+  ASSERT_TRUE(fixture.has_value());
+
+  EventSchedule events(std::vector<std::int64_t>{});
+  const TheoContext ctx{.surface = &*surface_, .events = &events}; // rv == nullptr
+  const TheoQuery q{.strike = 600.0, .tenor_years = surface_->context()[1].T, .side = Side::Call};
+
+  const auto v = fixture->engine.value(ctx, q);
+  ASSERT_TRUE(v.has_value()) << v.error().to_string();
+  EXPECT_DOUBLE_EQ(v->edge_vol, 0.0);
+  EXPECT_NE(v->flags & static_cast<std::uint32_t>(TheoFlagBits::ModelMissing), 0u);
+}
+
+// Bonus (not in the brief's Step 1 list): missing ctx.events is the same
+// fail-open path as missing ctx.rv above -- both are required to assemble
+// the full feature row.
+TEST_F(TheoEngineTest, FairVolModelMissingEventsContextSetsModelMissingAndZeroEdge) {
+  const std::array<double, kFairVolFeatureCount> coefs{};
+  auto fixture = make_fair_vol_model_fixture(0.0, coefs);
+  ASSERT_TRUE(fixture.has_value());
+
+  RvPanel rv{};
+  rv.vol = {0.20, 0.22, 0.24, 0.26};
+  const TheoContext ctx{.surface = &*surface_, .rv = &rv}; // events == nullptr
+  const TheoQuery q{.strike = 600.0, .tenor_years = surface_->context()[1].T, .side = Side::Call};
+
+  const auto v = fixture->engine.value(ctx, q);
+  ASSERT_TRUE(v.has_value()) << v.error().to_string();
+  EXPECT_DOUBLE_EQ(v->edge_vol, 0.0);
+  EXPECT_NE(v->flags & static_cast<std::uint32_t>(TheoFlagBits::ModelMissing), 0u);
+}
+
+// Bonus: a file with no "# schema=<n>" line anywhere is refused, ParseError
+// (distinct from a present-but-wrong schema, which is (c) above).
+TEST_F(TheoEngineTest, LoadLinearFairVolModelRejectsMissingSchemaHeader) {
+  const ScopedTempFile coef_file("no_schema", "0 0 0 0 0 0 0 0 0\n");
+  const auto model = load_linear_fair_vol_model(coef_file.path_string());
+  ASSERT_FALSE(model.has_value());
+  EXPECT_EQ(model.error().code(), ErrorCode::ParseError);
+}
+
+// Bonus: an unparseable coefficient token is refused, ParseError.
+TEST_F(TheoEngineTest, LoadLinearFairVolModelRejectsUnparseableToken) {
+  const ScopedTempFile coef_file("bad_token", "# schema=1\n0 0 0 0 0 0 0 0 not_a_number\n");
+  const auto model = load_linear_fair_vol_model(coef_file.path_string());
+  ASSERT_FALSE(model.has_value());
+  EXPECT_EQ(model.error().code(), ErrorCode::ParseError);
+}
+
+// Bonus: a nonexistent path is IoError, not ParseError -- mirrors every
+// other TSV loader in this repo (load_dividends_tsv, load_earnings_events).
+TEST_F(TheoEngineTest, LoadLinearFairVolModelMissingFileIsIoError) {
+  const auto model = load_linear_fair_vol_model("this/path/does/not/exist.tsv");
+  ASSERT_FALSE(model.has_value());
+  EXPECT_EQ(model.error().code(), ErrorCode::IoError);
+}
+
+// Bonus: make_fair_vol_model_overlay rejects a null model at construction
+// (never deferred to first use).
+TEST_F(TheoEngineTest, MakeFairVolModelOverlayRejectsNullModel) {
+  const auto overlay = make_fair_vol_model_overlay(nullptr);
+  ASSERT_FALSE(overlay.has_value());
+  EXPECT_EQ(overlay.error().code(), ErrorCode::InvalidArgument);
+}
+
+// Bonus: IFairVolModel::predict itself validates span sizes (the caller's
+// bug, not a graceful-degrade data condition -- see the interface doc).
+TEST_F(TheoEngineTest, LinearFairVolModelPredictRejectsFeatureSpanSizeMismatch) {
+  const std::array<double, kFairVolFeatureCount> coefs{};
+  const ScopedTempFile coef_file("predict_mismatch",
+                                 make_coef_tsv(kFairVolFeatureSchemaV1, 0.0, coefs));
+  auto model = load_linear_fair_vol_model(coef_file.path_string());
+  ASSERT_TRUE(model.has_value()) << model.error().to_string();
+
+  std::array<double, kFairVolFeatureCount - 1> too_few_features{}; // one short of one row
+  std::array<double, 1> log_ratio_out{};
+  const Status st = (*model)->predict(too_few_features, 1, log_ratio_out);
+  ASSERT_FALSE(st.has_value());
+  EXPECT_EQ(st.error().code(), ErrorCode::InvalidArgument);
 }
 
 } // namespace

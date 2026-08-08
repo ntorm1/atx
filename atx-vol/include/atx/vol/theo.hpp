@@ -240,6 +240,95 @@ static_assert(detail::aggregate_arity_is_v<EventVarConfig, 2>,
 // with `ModelMissing` set rather than failing the batch.
 [[nodiscard]] Result<std::unique_ptr<ITheoOverlay>> make_event_var_overlay(EventVarConfig cfg);
 
+// ── ML seam: fair-vol model overlay (Task 9) ────────────────────────────────
+//
+// `IFairVolModel` is the interface an offline-trained fair-vol model
+// implements to plug into `TheoEngine` as an overlay. The feature vector it
+// consumes is a FIXED, VERSIONED layout -- the label factory (Task 6's TSV)
+// and any offline trainer must produce/consume this exact ordering, hence
+// `kFairVolFeatureSchemaV1` is threaded through both the model and its
+// loader rather than left implicit.
+
+// Feature vector contract for fair-vol models. Fixed order, versioned; the label
+// factory (Task 6 TSV) and any offline trainer must produce/consume this exact
+// layout.
+inline constexpr std::size_t kFairVolFeatureCount = 8;
+inline constexpr std::uint32_t kFairVolFeatureSchemaV1 = 1;
+// [0] log_moneyness = ln(K/F)      [1] tenor_years
+// [2] market_vol                   [3] rv_21d
+// [4] rv_63d                       [5] iv_minus_rv = market_vol - rv_21d
+// [6] n_events_to_expiry           [7] delta_abs (surface analytic |delta|)
+
+// A fair-vol model: any implementation, trained however, that maps the fixed
+// `kFairVolFeatureCount`-wide feature row to a log fair/market-vol ratio.
+// Batch-first (mirrors `ITheoOverlay::adjust`'s batch shape) so a heavier
+// model (e.g. a tree ensemble) can amortize per-call overhead; the shipped
+// v1 linear model's per-row cost is trivial either way.
+class IFairVolModel {
+public:
+  virtual ~IFairVolModel() = default;
+
+  // The feature schema this model was trained against (`kFairVolFeatureSchemaV1`
+  // for every model this module currently ships). A caller wiring a NEW model
+  // implementation in is responsible for checking this matches the feature
+  // block it assembles -- this interface has no way to enforce it centrally.
+  [[nodiscard]] virtual std::uint32_t feature_schema() const noexcept = 0;
+
+  // Predicts `y = ln(sigma_fair / market_vol)` per row, from `features_row_major`
+  // (row `i`'s features occupy `[i*kFairVolFeatureCount, (i+1)*kFairVolFeatureCount)`
+  // in the fixed order documented above). `Err(InvalidArgument)` if
+  // `features_row_major.size() != n_rows * kFairVolFeatureCount` or
+  // `log_ratio_out.size() != n_rows` -- a schema/size mismatch is the caller's
+  // bug, not a data condition, so this is NOT the graceful-degrade path (that
+  // lives in the overlay, per-row, on missing ctx.rv/ctx.events -- see
+  // `make_fair_vol_model_overlay`). A model MAY still return a non-finite `y`
+  // for an individual row (an out-of-domain feature combination); the overlay,
+  // not this interface, is responsible for turning that into `ModelMissing`
+  // rather than ever emitting NaN into `TheoValue`.
+  [[nodiscard]] virtual Status predict(std::span<const double> features_row_major,
+                                       std::size_t n_rows,
+                                       std::span<double> log_ratio_out) const = 0;
+};
+
+// v1 model: linear on the fixed schema above, `y = b0 + sum_i b_i * x_i`.
+// Coefficients loaded from a TSV: a `# schema=<n>` comment line (any leading
+// comment line, matched in file order) declaring the feature schema the file
+// was fit against, then `kFairVolFeatureCount + 1` whitespace-separated
+// values (intercept first, then one coefficient per feature in the fixed
+// order above) spread across the remaining non-comment, non-blank content.
+//
+// Errors (ParseError family, matching this module's own schema/coefficient-
+// file precedent -- `SurfaceArchiveV2::open`'s "schema hash mismatch",
+// `backtest_db.cpp`'s "schema mismatch"): `Err(IoError)` if the path can't be
+// opened; `Err(ParseError)` if no `# schema=<n>` line is found, the declared
+// schema isn't `kFairVolFeatureSchemaV1`, the coefficient value count isn't
+// exactly `kFairVolFeatureCount + 1`, or any coefficient token fails to parse
+// as a finite double.
+[[nodiscard]] Result<std::unique_ptr<IFairVolModel>>
+load_linear_fair_vol_model(std::string_view coef_tsv_path);
+
+// Builds the model-driven fair-vol overlay: assembles the
+// `kFairVolFeatureCount`-wide feature row from `ctx` (surface + rv + events)
+// and the query, calls `model->predict`, and converts the returned log-ratio
+// `y` to `dvol = market_vol * (exp(y) - 1)`. Band contribution is
+// `|dvol| * 0.5` -- a placeholder pending quantile heads on the model
+// interface (residual work, not this task's scope).
+//
+// `Err(InvalidArgument)` if `model` is null (checked HERE, at construction --
+// the overlay never re-checks it per call). At query time, this overlay
+// fails OPEN, never closed (theo must always serve): missing `ctx.rv` or
+// `ctx.events`, a per-row surface read that comes back non-finite/invalid
+// (out-of-domain K/T, a rejected `delta()` call), or a non-finite predicted
+// `y`/`dvol` for a row all degrade THAT row to `dvol = 0` with `ModelMissing`
+// set, exactly like `RvBlendOverlay`/`EventVarOverlay` (Task 8) -- never a
+// batch-wide `Err`. A non-OK `model->predict` return (a schema/size
+// mismatch -- the caller's bug, not a data condition, see `IFairVolModel::
+// predict`'s doc) DOES propagate and fail the whole `adjust()` call, mirroring
+// the engine's own fail-loud contrast between a broken component and a
+// degraded data condition.
+[[nodiscard]] Result<std::unique_ptr<ITheoOverlay>>
+make_fair_vol_model_overlay(std::shared_ptr<const IFairVolModel> model);
+
 // Engine knobs. DESIGNATED INITIALIZERS ONLY (mirrors `BevReplayConfig`'s
 // construction contract, breakeven.hpp): construct as
 // `TheoConfig{.max_abs_dvol = 0.10}`, never positionally -- a positional

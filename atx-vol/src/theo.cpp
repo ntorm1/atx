@@ -2,14 +2,17 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <fstream>
 #include <limits>
 #include <memory>
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -333,6 +336,328 @@ Result<std::unique_ptr<ITheoOverlay>> make_event_var_overlay(EventVarConfig cfg)
                "make_event_var_overlay: emove_market must be finite and >= 0");
   }
   std::unique_ptr<ITheoOverlay> overlay = std::make_unique<EventVarOverlay>(cfg);
+  return Ok(std::move(overlay));
+}
+
+// ── ML seam: linear v1 fair-vol model (Task 9) ──────────────────────────────
+
+namespace {
+
+// v1 model: y = b0 + sum_i b_i * x_i on the fixed kFairVolFeatureCount schema.
+class LinearFairVolModel final : public IFairVolModel {
+public:
+  LinearFairVolModel(double intercept, std::array<double, kFairVolFeatureCount> coefs)
+      : intercept_(intercept), coefs_(coefs) {}
+
+  [[nodiscard]] std::uint32_t feature_schema() const noexcept override {
+    return kFairVolFeatureSchemaV1;
+  }
+
+  [[nodiscard]] Status predict(std::span<const double> features_row_major, std::size_t n_rows,
+                               std::span<double> log_ratio_out) const override {
+    if (features_row_major.size() != n_rows * kFairVolFeatureCount) {
+      return Err(
+          ErrorCode::InvalidArgument,
+          "LinearFairVolModel::predict: features span size != n_rows * kFairVolFeatureCount");
+    }
+    if (log_ratio_out.size() != n_rows) {
+      return Err(ErrorCode::InvalidArgument,
+                 "LinearFairVolModel::predict: log_ratio_out span size != n_rows");
+    }
+    for (std::size_t row = 0; row < n_rows; ++row) {
+      log_ratio_out[row] =
+          dot(features_row_major.subspan(row * kFairVolFeatureCount, kFairVolFeatureCount));
+    }
+    return Ok();
+  }
+
+private:
+  // noexcept: pure arithmetic over a fixed-size, already-validated feature
+  // row -- the per-row hot loop `predict` drives, no error path to report.
+  [[nodiscard]] double dot(std::span<const double> features) const noexcept {
+    double y = intercept_;
+    for (std::size_t i = 0; i < kFairVolFeatureCount; ++i) {
+      y += coefs_[i] * features[i];
+    }
+    return y;
+  }
+
+  double intercept_{0.0};
+  std::array<double, kFairVolFeatureCount> coefs_{};
+};
+
+[[nodiscard]] std::string_view rstrip_cr(std::string_view v) noexcept {
+  if (!v.empty() && v.back() == '\r') {
+    v.remove_suffix(1);
+  }
+  return v;
+}
+
+[[nodiscard]] std::string_view trim(std::string_view v) noexcept {
+  const std::size_t start = v.find_first_not_of(" \t");
+  if (start == std::string_view::npos) {
+    return {};
+  }
+  const std::size_t end = v.find_last_not_of(" \t");
+  return v.substr(start, end - start + 1);
+}
+
+// Appends every whitespace-separated token in `line` to `tokens` (copied out
+// as owned strings -- `line` is a view into a getline buffer reused on the
+// next iteration by the caller). Bounded by line.size().
+void split_ws_append(std::string_view line, std::vector<std::string> &tokens) {
+  std::size_t i = 0;
+  while (i < line.size()) {
+    while (i < line.size() && (line[i] == ' ' || line[i] == '\t')) {
+      ++i;
+    }
+    const std::size_t start = i;
+    while (i < line.size() && line[i] != ' ' && line[i] != '\t') {
+      ++i;
+    }
+    if (i > start) {
+      tokens.emplace_back(line.substr(start, i - start));
+    }
+  }
+}
+
+// Parses "schema=<uint>" (already stripped of the leading '#' and any
+// whitespace). nullopt if `after_hash` doesn't match that shape -- the
+// caller keeps scanning subsequent comment lines rather than treating a
+// non-schema comment as a hard parse error.
+[[nodiscard]] std::optional<std::uint32_t> parse_schema_comment(std::string_view after_hash) {
+  constexpr std::string_view kPrefix = "schema=";
+  const std::string_view body = trim(after_hash);
+  if (body.size() <= kPrefix.size() || body.substr(0, kPrefix.size()) != kPrefix) {
+    return std::nullopt;
+  }
+  const std::string_view digits = body.substr(kPrefix.size());
+  std::uint32_t value = 0;
+  const auto r = std::from_chars(digits.data(), digits.data() + digits.size(), value);
+  if (r.ec != std::errc{} || r.ptr != digits.data() + digits.size()) {
+    return std::nullopt;
+  }
+  return value;
+}
+
+} // namespace
+
+Result<std::unique_ptr<IFairVolModel>> load_linear_fair_vol_model(std::string_view coef_tsv_path) {
+  std::ifstream in{std::string{coef_tsv_path}, std::ios::binary};
+  if (!in) {
+    return Err(ErrorCode::IoError,
+               "load_linear_fair_vol_model: cannot open '" + std::string{coef_tsv_path} + "'");
+  }
+
+  std::optional<std::uint32_t> schema;
+  std::vector<std::string> tokens;
+  std::string raw_line;
+  // Bounded by the file's own line count -- std::getline terminates at EOF.
+  while (std::getline(in, raw_line)) {
+    const std::string_view line = trim(rstrip_cr(raw_line));
+    if (line.empty()) {
+      continue;
+    }
+    if (line.front() == '#') {
+      if (!schema.has_value()) {
+        schema = parse_schema_comment(line.substr(1));
+      }
+      continue;
+    }
+    split_ws_append(line, tokens);
+  }
+
+  if (!schema.has_value()) {
+    return Err(ErrorCode::ParseError,
+               "load_linear_fair_vol_model: missing '# schema=<n>' header line");
+  }
+  if (*schema != kFairVolFeatureSchemaV1) {
+    return Err(ErrorCode::ParseError, "load_linear_fair_vol_model: unsupported feature schema " +
+                                          std::to_string(*schema) + " (expected " +
+                                          std::to_string(kFairVolFeatureSchemaV1) + ")");
+  }
+  constexpr std::size_t kExpectedValues = kFairVolFeatureCount + 1;
+  if (tokens.size() != kExpectedValues) {
+    return Err(ErrorCode::ParseError, "load_linear_fair_vol_model: expected " +
+                                          std::to_string(kExpectedValues) +
+                                          " whitespace-separated values (intercept + " +
+                                          std::to_string(kFairVolFeatureCount) +
+                                          " coefficients), got " + std::to_string(tokens.size()));
+  }
+
+  std::array<double, kExpectedValues> values{};
+  for (std::size_t i = 0; i < kExpectedValues; ++i) {
+    const std::string &tok = tokens[i];
+    double v = 0.0;
+    const auto r =
+        std::from_chars(tok.data(), tok.data() + tok.size(), v, std::chars_format::general);
+    if (r.ec != std::errc{} || r.ptr != tok.data() + tok.size() || !std::isfinite(v)) {
+      return Err(ErrorCode::ParseError,
+                 "load_linear_fair_vol_model: unparseable coefficient token '" + tok + "'");
+    }
+    values[i] = v;
+  }
+
+  std::array<double, kFairVolFeatureCount> coefs{};
+  std::copy(values.begin() + 1, values.end(), coefs.begin());
+  std::unique_ptr<IFairVolModel> model = std::make_unique<LinearFairVolModel>(values[0], coefs);
+  return Ok(std::move(model));
+}
+
+// ── ML seam: model-driven fair vol overlay (Task 9) ─────────────────────────
+
+namespace {
+
+// Assembles the fixed kFairVolFeatureCount feature row from `ctx` + `query`,
+// batches every eligible row in a chunk through one `model->predict` call,
+// and converts the returned log-ratio to a vol-space `dvol`. Mirrors
+// RvBlendOverlay/EventVarOverlay's per-row graceful degradation (Task 8): a
+// row whose required context/surface/model inputs are missing or non-finite
+// gets `dvol = 0` + `ModelMissing` rather than failing the whole batch.
+class FairVolModelOverlay final : public ITheoOverlay {
+public:
+  explicit FairVolModelOverlay(std::shared_ptr<const IFairVolModel> model)
+      : model_(std::move(model)) {}
+
+  [[nodiscard]] std::string_view name() const noexcept override { return "fair_vol_model"; }
+
+  [[nodiscard]] Status adjust(const TheoContext &ctx, std::span<const TheoQuery> queries,
+                              std::span<OverlayAdjust> out) const override {
+    // Sub-chunk on the same kTheoMaxBatch cap TheoEngine itself chunks on, so
+    // this overlay's own scratch stays fixed-capacity (no heap allocation)
+    // regardless of caller -- TheoEngine always calls with queries.size() <=
+    // kTheoMaxBatch already, but a direct caller (e.g. a test) is not assumed
+    // to uphold that, so this loop is a genuine bound, not decoration.
+    std::size_t begin = 0;
+    while (begin < queries.size()) {
+      const std::size_t n = std::min(kTheoMaxBatch, queries.size() - begin);
+      const Status st = adjust_chunk(ctx, queries.subspan(begin, n), out.subspan(begin, n));
+      if (!st.has_value()) {
+        return st;
+      }
+      begin += n;
+    }
+    return Ok();
+  }
+
+private:
+  [[nodiscard]] Status adjust_chunk(const TheoContext &ctx, std::span<const TheoQuery> queries,
+                                    std::span<OverlayAdjust> out) const {
+    constexpr OverlayAdjust kMissingAdjust{.dvol = 0.0, .band = 0.0, .flags = kModelMissing};
+
+    std::array<double, kTheoMaxBatch> market_vol{};
+    std::array<double, kTheoMaxBatch * kFairVolFeatureCount> feature_buf{};
+    std::array<std::size_t, kTheoMaxBatch> row_query_index{};
+    std::size_t n_eligible = 0;
+
+    for (std::size_t i = 0; i < queries.size(); ++i) {
+      out[i] = kMissingAdjust; // default; overwritten below iff this row predicts
+      double mv = 0.0;
+      std::array<double, kFairVolFeatureCount> feats{};
+      if (!build_features(ctx, queries[i], mv, feats)) {
+        continue;
+      }
+      market_vol[n_eligible] = mv;
+      row_query_index[n_eligible] = i;
+      std::copy(feats.begin(), feats.end(),
+                feature_buf.begin() + n_eligible * kFairVolFeatureCount);
+      ++n_eligible;
+    }
+
+    if (n_eligible == 0) {
+      return Ok(); // every row already defaulted to kMissingAdjust above
+    }
+
+    std::array<double, kTheoMaxBatch> log_ratio{};
+    const std::span<const double> features_span{feature_buf.data(),
+                                                n_eligible * kFairVolFeatureCount};
+    const std::span<double> log_ratio_span{log_ratio.data(), n_eligible};
+    const Status st = model_->predict(features_span, n_eligible, log_ratio_span);
+    if (!st.has_value()) {
+      return st; // a broken/mismatched model is a bug -- propagate, not a data condition
+    }
+
+    for (std::size_t r = 0; r < n_eligible; ++r) {
+      const std::size_t qi = row_query_index[r];
+      const double y = log_ratio[r];
+      if (!std::isfinite(y)) {
+        continue; // out[qi] already kMissingAdjust -- never emit NaN
+      }
+      const double dvol = market_vol[r] * (std::exp(y) - 1.0);
+      if (!std::isfinite(dvol)) {
+        continue; // out[qi] already kMissingAdjust
+      }
+      // Band contribution |dvol| * 0.5 -- a placeholder until the model ships
+      // quantile heads (residual work, not this task's scope).
+      out[qi] = OverlayAdjust{.dvol = dvol, .band = std::fabs(dvol) * 0.5, .flags = 0};
+    }
+    return Ok();
+  }
+
+  // Fills `market_vol_out`/`features_out` and returns true iff every input
+  // the feature row needs (ctx.rv, ctx.events, a finite surface read, a
+  // finite analytic delta) is present and valid. false -> the caller leaves
+  // this row at its already-written kMissingAdjust default.
+  [[nodiscard]] bool build_features(const TheoContext &ctx, const TheoQuery &q,
+                                    double &market_vol_out,
+                                    std::array<double, kFairVolFeatureCount> &features_out) const {
+    if (ctx.rv == nullptr || ctx.events == nullptr) {
+      return false;
+    }
+    if (!std::isfinite(q.tenor_years) || !(q.tenor_years > 0.0)) {
+      return false;
+    }
+    const double market_vol = ctx.surface->iv(q.strike, q.tenor_years);
+    if (!std::isfinite(market_vol) || !(market_vol > 0.0)) {
+      return false;
+    }
+    const double forward = ctx.surface->forward_at(q.tenor_years);
+    if (!std::isfinite(forward) || !(forward > 0.0)) {
+      return false;
+    }
+    const double log_moneyness = std::log(q.strike / forward);
+    if (!std::isfinite(log_moneyness)) {
+      return false;
+    }
+    const double rv_21d = ctx.rv->vol[1];
+    const double rv_63d = ctx.rv->vol[2];
+    if (!std::isfinite(rv_21d) || !std::isfinite(rv_63d)) {
+      return false;
+    }
+    const Result<double> delta_r = ctx.surface->delta(q.strike, q.tenor_years, q.side);
+    if (!delta_r.has_value()) {
+      return false;
+    }
+    const double delta_abs = std::fabs(*delta_r);
+    if (!std::isfinite(delta_abs)) {
+      return false;
+    }
+    const std::size_t n_events =
+        count_events_at(*ctx.events, ctx.surface->pricing().now_ts_ns, q.tenor_years);
+
+    market_vol_out = market_vol;
+    features_out = {log_moneyness,
+                    q.tenor_years,
+                    market_vol,
+                    rv_21d,
+                    rv_63d,
+                    market_vol - rv_21d,
+                    static_cast<double>(n_events),
+                    delta_abs};
+    return true;
+  }
+
+  std::shared_ptr<const IFairVolModel> model_;
+};
+
+} // namespace
+
+Result<std::unique_ptr<ITheoOverlay>>
+make_fair_vol_model_overlay(std::shared_ptr<const IFairVolModel> model) {
+  if (model == nullptr) {
+    return Err(ErrorCode::InvalidArgument, "make_fair_vol_model_overlay: model must not be null");
+  }
+  std::unique_ptr<ITheoOverlay> overlay = std::make_unique<FairVolModelOverlay>(std::move(model));
   return Ok(std::move(overlay));
 }
 
