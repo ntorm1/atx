@@ -145,15 +145,30 @@ struct DeAmOptions;
 //   - `opts.validate_no_arb` (default TRUE): honest post-fit AUDIT, run AFTER
 //     the opt-in repair above (so enabling both is repair-then-audit, not
 //     audit-before-repair). Scans the assembled surface with
-//     `arb_check_total_surface_all` for calendar + butterfly violations — the
-//     latter catches the optional wing-residual layer (HINGE_QUAD /
-//     C2Bspline), which is NOT projected onto the admissible cone (the
-//     per-slice Roper projector is out of port scope; see the PORT NOTE on
-//     `fit_wing_residual` in the source) — stamps the REAL counts into
-//     `out_diag` (`n_calendar_viol` / `n_butterfly_viol`; 0 when the audit did
-//     not run, which is NOT a "verified clean" claim), and — per the field's
-//     documented contract (calib.hpp) — BAILS (`Unavailable`) if either count
-//     is nonzero, refusing to serve an arbitrageable surface.
+//     `arb_check_total_surface_all` for calendar + butterfly violations over
+//     a FIXED `k ∈ [-0.5, 0.5]`, 64-point grid — NOT the board's own quoted
+//     range, and narrower than the `[-1.5, 1.5]` window the opt-in repair
+//     above uses (a per-slice-independent fit's φ/ρ are unconstrained past
+//     the data, so a wide window trips the check's tight 1e-12 calendar
+//     tolerance even on genuinely clean boards; `[-0.5, 0.5]` is the range
+//     the surface-recovery tests independently certify false-positive-free).
+//     The latter (butterfly) catches the optional wing-residual layer
+//     (HINGE_QUAD / C2Bspline), which is NOT projected onto the admissible
+//     cone (the per-slice Roper projector is out of port scope; see the PORT
+//     NOTE on `fit_wing_residual` in the source) — but ONLY inside the
+//     `[-0.5, 0.5]` band: a calendar or wing-residual butterfly violation
+//     that lives entirely past `|k| = 0.5` is NOT reported here and reads as
+//     `n_calendar_viol == 0` / `n_butterfly_viol == 0` regardless. The
+//     canonical per-slice serving path (`fit_slice_curve`, vol_curve.cpp) is
+//     the wing net for a residual-carrying SERVED slice: it scans the full
+//     quoted range ± 0.5 whenever `resid_scale > 0` — this driver's audit
+//     does not extend with the board's quoted range the way that one does.
+//     Stamps the REAL counts into `out_diag` (`n_calendar_viol` /
+//     `n_butterfly_viol`; 0 when the audit did not run OR when the audited
+//     band alone was clean — see the caveat on those fields, calib.hpp),
+//     and — per the field's documented contract (calib.hpp) — BAILS
+//     (`Unavailable`) if either count is nonzero, refusing to serve a
+//     surface arbitrageable INSIDE the audited band.
 //
 // @param prior  optional previously-fit surface (e.g. the prior snapshot's
 //              calibration) used to warm-start each slice's fit. For a slice
@@ -224,8 +239,10 @@ struct DeAmOptions;
 // `essvi_calib_surface`) still runs, and can still bail: the θ-floor alone
 // does not remove the (φ, ρ)-wing coupling a per-slice-independent fit can
 // leave behind (see the PORT NOTE in the source), so a calendar crossing
-// confined to the wings is a real, catchable audit failure even though the
-// ATM level itself is monotone.
+// confined to the wings WITHIN THE AUDITED BAND (`k ∈ [-0.5, 0.5]` — see
+// `essvi_calib_surface`'s docstring) is a real, catchable audit failure even
+// though the ATM level itself is monotone. A wing crossing entirely past
+// `|k| = 0.5` is invisible to this audit either way.
 //
 // @param prior  same warm-start contract as `essvi_calib_surface`'s `prior`.
 // @param deam   same opt-in de-Americanization contract as `essvi_calib_surface`'s

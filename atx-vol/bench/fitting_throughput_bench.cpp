@@ -152,7 +152,16 @@ void BM_SurfaceCold(benchmark::State &state) {
     return;
   }
   VolSurface surface = *surf_res;
-  const CalibOpts opts = calib_default_opts();
+  CalibOpts opts = calib_default_opts();
+  // C-8: this is the SAME synthetic SPY-like board essvi_deam_test.cpp's
+  // build_american_board() constructs (identical make_spy_synthetic_spec ->
+  // make_synthetic_american_panel -> MarketEnv::flat -> OptionChain::from_
+  // frame pipeline), whose raw (non-de-Am) route is documented there as
+  // "crossing-heavy" -- the raw route's own known American-mid-as-European
+  // bias, not something this throughput measurement should gate on (the
+  // audit's real 24-count would now SkipWithError this benchmark every run).
+  // Same rationale, same fix as fit_board() there.
+  opts.validate_no_arb = false;
 
   for (auto _ : state) {
     const Status st = essvi_calib_surface(surface, board->under, board->curves, opts);

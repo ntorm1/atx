@@ -667,8 +667,17 @@ void fit_dense_residual(std::span<const FitObs> obs, EssviParams& slice,
 // projection (`ats_vol_essvi_residual_arb_project`) that damps the coefficients
 // until g(k) >= 0. That per-slice projector is NOT exposed by the ported
 // arb.hpp (which surfaces only the surface-level `arb_repair_calendar_residual`
-// / total-surface projectors), so it is deferred here: the fitted residual is
-// left un-projected and its static-arb safety is a caller/surface-level check.
+// / total-surface projectors), so it is STILL deferred here (Task C-8 did not
+// port it either): the fitted residual is left un-projected. Task C-8 made
+// the "caller/surface-level check" this note promises concrete and FAIL-
+// CLOSED rather than aspirational: `essvi_calib_surface`'s `validate_no_arb`
+// audit (this file, `calib_surface_impl`) catches an un-projected butterfly
+// violation on the alternate-driver path, over its fixed `[-0.5, 0.5]`
+// band (essvi_calib.hpp); `validate_served_shape_over_quotes`
+// (vol_curve.cpp) catches one on the canonical `fit_slice_curve` serving
+// path, over the full quoted range +/- 0.5. Neither REPAIRS the residual —
+// both refuse to serve a slice/surface the deferred projection would have
+// fixed, which is the substitute this port takes for it.
 // The layer is off by default (`opts.residual_disable == true`).
 void fit_wing_residual(std::span<const FitObs> obs, EssviParams& slice,
                        const CalibOpts& opts) {

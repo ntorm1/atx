@@ -373,18 +373,22 @@ struct FitDiag {
   // grid-scan count over the assembled surface whenever `CalibOpts::
   // validate_no_arb` is set — the eSSVI backbone alone is butterfly-free by
   // construction, but the optional un-projected wing-residual layer is not, so
-  // this is NOT always 0 the way it was before C-8. 0 also means "the audit
-  // did not run" when validate_no_arb is false — NOT a "verified clean" claim
-  // in that case. DIAGNOSTIC-ONLY for callers that leave validate_no_arb off;
-  // the per-slice serving gates in `fit_slice_curve` do their own independent
-  // (always-on) rejecting regardless of this field.
+  // this is NOT always 0 the way it was before C-8. The eSSVI scan is a FIXED
+  // `k ∈ [-0.5, 0.5]` band (see `essvi_calib_surface`'s docstring, essvi_
+  // calib.hpp) — a violation confined entirely past `|k| = 0.5` reads 0 here
+  // regardless of validate_no_arb. 0 also means "the audit did not run" when
+  // validate_no_arb is false — NEITHER case is a "verified globally clean"
+  // claim. DIAGNOSTIC-ONLY for callers that leave validate_no_arb off; the
+  // per-slice serving gates in `fit_slice_curve` do their own independent
+  // (always-on, full-quoted-range-aware) rejecting regardless of this field.
   std::uint32_t n_butterfly_viol{0};
   // Calendar no-arb diagnostic (Task C-8): real post-fit surface-level
   // calendar-crossing count from the same eSSVI alternate-driver audit above
-  // (`arb_check_total_surface_all`, gated on `CalibOpts::validate_no_arb`). 0
-  // when the audit did not run — not a "verified clean" claim in that case.
-  // Unset (0) by every OTHER calibrator's driver (SVI, C8, CStar) — read only
-  // in the eSSVI alternate-driver context.
+  // (`arb_check_total_surface_all`, gated on `CalibOpts::validate_no_arb`,
+  // same fixed `[-0.5, 0.5]` band and same "0 is not a global clean bill"
+  // caveat as `n_butterfly_viol` above). Unset (0) by every OTHER
+  // calibrator's driver (SVI, C8, CStar) — read only in the eSSVI
+  // alternate-driver context.
   std::uint32_t n_calendar_viol{0};
 };
 
