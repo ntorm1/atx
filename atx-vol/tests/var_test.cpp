@@ -969,7 +969,10 @@ TEST(Var, GenuineSolverRowFailureDowngradesWholeScenarioToScalarRoute) {
   // too (FastScreenColdConfirm's scalar route for this surface tier collapses
   // to the SAME solve_american_delta(ColdReference) call the cross-sectional
   // route's own fallback tail uses) -- proving this is a real, both-routes
-  // solver failure, not an artifact of one route only.
+  // solver failure, not an artifact of one route only. If the sanity ASSERTs
+  // below ever fail, re-map unreachable_delta_target_position()'s
+  // target/maturity per task-6-report.md's fixture notes (the
+  // reachable/unreachable split is empirical, not derived in closed form).
   std::vector<VarScenarioFrame> forced_retained_frames(1u);
   std::vector<VarLegFrame> forced_retained_legs(positions.size());
   ASSERT_TRUE(forced_prepared->replay_into(scenarios, forced_retained_frames, forced_retained_legs,
@@ -1058,7 +1061,10 @@ TEST(Var, ScalarFallbackTailFiresThroughVarEngine) {
 
   // Fixture sanity: confirm the fallback tail is genuinely exercised (not
   // just a slow-but-in-budget row) by probing solve_american_delta_batch
-  // directly at the same (T, side, target) the VaR leg resolves to.
+  // directly at the same (T, side, target) the VaR leg resolves to. If this
+  // ASSERT ever fails, re-map fallback_leg's target/maturity per
+  // task-6-report.md's fixture notes (the pass-budget-exceeding threshold is
+  // empirical, not derived in closed form).
   {
     const auto expiry = resolve_projected_expiry(base.surface().pricing().now_ts_ns,
                                                  ProjectedMaturitySpec::years(1.0));
@@ -1193,15 +1199,30 @@ TEST(Var, CrossSectionalReplayIsBitInvariantAcrossThreadCountsAndLegOutputIsOpti
 // just above only ever exercises all-Ok scenarios; the one existing test that
 // DOES exercise a downgrade decision
 // (CrossSectionalAggregateMatchesRetainedAfterExclusionRebuild) runs its
-// downgraded scenario at n_threads=1 only. This test extends that thread-
-// invariance fixture's own book/scenario shape with the Test 2 poison leg
-// (unreachable_delta_target_position(), empirically confirmed unreachable at
-// every one of this fixture's own base spots {96,103,89,111}), so EVERY
-// scenario here downgrades to the scalar FastScreenColdConfirm route -- and
-// checks that a per-thread-range VarBatchScratch (Task 5's own worry:
-// "cannot leak state between scenarios") produces bit-identical frames/legs
-// whether the downgrade recursion for each scenario runs on a t1, t2, or t4
-// worker range.
+// downgraded scenario at n_threads=1 only.
+//
+// Review fix round 1 (Important finding): an all-downgraded book (every
+// scenario fails identically) never exercises a thread whose SERIAL range
+// mixes a downgraded scenario with a normal one on the SAME reused
+// VarBatchScratch -- the specific transition the "cannot leak state between
+// scenarios" design note worries about (a downgraded scenario writes
+// partial/dead scratch state via resolve_group_window_cross_sectional's
+// early bail, then the fallback() recursion re-derives everything from
+// scratch, then the NEXT scenario in that range must not read anything left
+// over). Fixed by making the poison leg's target
+// (unreachable_delta_target_position(), 0.999999) reachable on 2 of the 4
+// scenarios' BASE surface (variance_scale = kReachableReferenceVarianceScale
+// = 0.75, same island the reference surface already uses) and unreachable on
+// the other 2 (default variance_scale = 1.0) -- empirically confirmed at
+// every one of this fixture's own base spots {96,103,89,111} (0.75 ->
+// reachable at all four; 1.0 -> unreachable at all four; see
+// task-6-report.md's fix-round-1 section for the probe transcript) -- with
+// the two kinds INTERLEAVED (downgrade, normal, downgrade, normal) so every
+// t2/t4 thread partition gets a mix. Shifted surfaces stay at the default
+// variance_scale throughout: the delta solve that reachability depends on
+// only ever touches the BASE surface (resolve_group_contracts_cross_sectional
+// solves against `base`, never `shifted`), so the shifted side is
+// irrelevant to which scenarios downgrade.
 TEST(Var, ThreadCountBitInvarianceHoldsWithDowngradedScenariosPresent) {
   const std::uint32_t uid = uid_for_symbol("SPY");
   const OneSurfaceSnapshot reference(uid, 100.0, timestamp(2026, 1, 2),
@@ -1225,9 +1246,19 @@ TEST(Var, ThreadCountBitInvarianceHoldsWithDowngradedScenariosPresent) {
   std::vector<std::unique_ptr<OneSurfaceSnapshot>> shifts;
   const std::array<double, 4> base_spots{96.0, 103.0, 89.0, 111.0};
   const std::array<double, 4> shifted_spots{99.0, 101.0, 94.0, 107.0};
+  // Interleaved downgrade/normal by construction: even indices sit at the
+  // default variance_scale (poison target unreachable -> downgrade), odd
+  // indices at kReachableReferenceVarianceScale (poison target reachable ->
+  // normal). If the sanity ASSERTs below ever fail, re-map these thresholds
+  // per task-6-report.md's fixture notes (the reachable/unreachable split is
+  // empirical, not derived in closed form).
+  const std::array<bool, 4> downgraded{true, false, true, false};
+  const std::array<double, 4> base_variance_scale{1.0, kReachableReferenceVarianceScale, 1.0,
+                                                  kReachableReferenceVarianceScale};
   for (std::size_t i = 0; i < base_spots.size(); ++i) {
     bases.push_back(std::make_unique<OneSurfaceSnapshot>(
-        uid, base_spots[i], timestamp(2026, 1, 5 + static_cast<unsigned>(i))));
+        uid, base_spots[i], timestamp(2026, 1, 5 + static_cast<unsigned>(i)),
+        base_variance_scale[i]));
     shifts.push_back(std::make_unique<OneSurfaceSnapshot>(
         uid, shifted_spots[i], timestamp(2026, 1, 6 + static_cast<unsigned>(i))));
     ASSERT_TRUE(bases.back()->valid() && shifts.back()->valid());
@@ -1253,27 +1284,48 @@ TEST(Var, ThreadCountBitInvarianceHoldsWithDowngradedScenariosPresent) {
   ASSERT_TRUE(prepared->replay_into(scenarios, aggregate_t4_frames, std::span<VarLegFrame>{},
                                     cross_config(4)));
 
-  // Sanity: this fixture must actually exercise the downgrade path on every
-  // scenario -- otherwise this test would silently degrade into a duplicate
-  // of the all-Ok thread-invariance test above.
+  // Sanity: this fixture must exercise BOTH conditions -- downgrade on the
+  // even scenarios, a clean Ok resolve on the odd ones -- pinned loudly in
+  // both directions so fixture drift (a threshold that stops downgrading, or
+  // one that starts downgrading when it shouldn't) fails here first, not
+  // vacuously inside the comparison loop below.
   for (std::size_t i = 0; i < scenarios.size(); ++i) {
-    ASSERT_EQ(t1_frames[i].status, VarScenarioStatus::LegFailure) << "scenario " << i;
-    ASSERT_EQ(t1_frames[i].n_failed, 1u) << "scenario " << i;
+    if (downgraded[i]) {
+      ASSERT_EQ(t1_frames[i].status, VarScenarioStatus::LegFailure) << "scenario " << i;
+      ASSERT_EQ(t1_frames[i].n_failed, 1u) << "scenario " << i;
+    } else {
+      ASSERT_EQ(t1_frames[i].status, VarScenarioStatus::Ok) << "scenario " << i;
+      ASSERT_EQ(t1_frames[i].n_failed, 0u) << "scenario " << i;
+      ASSERT_EQ(t1_frames[i].n_ok, positions.size()) << "scenario " << i;
+    }
   }
 
   for (std::size_t i = 0; i < scenarios.size(); ++i) {
     SCOPED_TRACE(::testing::Message() << "scenario " << i);
+    // Retained-leg mode (evaluate_scenario) is the SAME code path regardless
+    // of downgrade status, so it stays bit-identical across thread counts
+    // either way.
     expect_bit_identical(t2_frames[i], t1_frames[i]);
     expect_bit_identical(t4_frames[i], t1_frames[i]);
-    // Every scenario here downgrades (asserted above), so its numeric fields
-    // are the shared kNaN sentinel rather than a meaningful economic value --
-    // expect_economically_equal's fabs-based `close()` is never true for NaN
-    // and does not apply here (it is for all-Ok frames, e.g. the thread-
-    // invariance test above). Both the aggregate and retained routes reach a
-    // downgraded scenario's frame through the SAME evaluate_scenario(...,
-    // FastScreenColdConfirm) call (Test 2's finding), so bit-identical is the
-    // correct, and stronger, comparison here.
-    expect_bit_identical(aggregate_t4_frames[i], t1_frames[i]);
+    if (downgraded[i]) {
+      // Every downgraded scenario's frame is produced by BOTH the aggregate
+      // route's fallback() and the retained route through the SAME
+      // evaluate_scenario(..., FastScreenColdConfirm) call (Test 2's
+      // finding), so bit-identical is the correct, and stronger, comparison.
+      // Its numeric fields are the shared kNaN sentinel rather than a
+      // meaningful economic value, so expect_economically_equal's fabs-based
+      // `close()` (never true for NaN) would not apply here regardless.
+      expect_bit_identical(aggregate_t4_frames[i], t1_frames[i]);
+    } else {
+      // A normal (non-downgraded) scenario's aggregate frame is priced via
+      // evaluate_scenario_batched's own batched evaluate_batch calls, while
+      // the retained frame is priced via evaluate_option_leg_resolved's
+      // scalar surface.evaluate -- different kernel routes, so only economic
+      // parity is guaranteed here (mirrors
+      // CrossSectionalReplayIsBitInvariantAcrossThreadCountsAndLegOutputIsOptional
+      // above, which uses the same comparator for its all-Ok scenarios).
+      expect_economically_equal(aggregate_t4_frames[i], t1_frames[i]);
+    }
   }
   for (std::size_t i = 0; i < t1_legs.size(); ++i) {
     SCOPED_TRACE(::testing::Message() << "leg " << i);

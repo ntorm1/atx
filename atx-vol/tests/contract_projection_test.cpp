@@ -546,17 +546,19 @@ TEST(ContractProjection, BatchDeltaSolveRowsAreCompositionInvariantAndRepeatable
 // (EvalField::FirstOrder, reduced GreekNeeds, ColdReference), when the SAME
 // rows are split into exactly two independent batch calls instead of one.
 // Distinct from BatchDeltaSolveRowsAreCompositionInvariantAndRepeatable just
-// above: every one of that test's hard-coded sub-span boundaries {0,10},
-// {10,22}, {7,8} lands on a maturity-block edge of the 3-maturity x 10-row
-// grid it builds, so it never actually cuts a contiguous same-T run
-// mid-stream -- the unit the laned kernel packs together in the first place
-// (priced_surface_test.cpp's dispatcher note: "packs form only inside
-// raw-bit-equal-T runs"). This test picks a split point at row 23, three rows
-// into the grid's third (10-row, same-T) maturity block, and appends
-// deep-wing/short-maturity hard rows (mirrors
-// BatchDeltaSolveRoutesHardRowsThroughScalarFallbackAndStillConfirms) so the
-// invariant is exercised through multi-pass active-set churn and the scalar
-// fallback tail, not only single-pass rows.
+// above in two ways it actually doesn't cover: that test's four sub-spans are
+// each compared, one at a time, against the FULL 30-row batch -- never
+// against each other as a complementary two-way partition covering every
+// row (the brief's literal "split into two packs") -- and none of its four
+// cases includes a single hard/fallback-routed row (it only ever solves the
+// easy 30-row grid). This test does both: cuts the full row set into exactly
+// two packs at row 23 (three rows into the grid's third, 10-row, same-T
+// maturity block -- a larger, differently-placed same-T fragment than
+// {10,22}'s existing 2-row one), and appends deep-wing/short-maturity hard
+// rows (mirrors BatchDeltaSolveRoutesHardRowsThroughScalarFallbackAndStillConfirms)
+// so the invariant is exercised through multi-pass active-set churn and the
+// scalar fallback tail straddling the pack boundary, not only single-pass
+// rows.
 TEST(ContractProjection, BatchSolveIsPackCompositionInvariantAtSolverRequestShape) {
   const std::int64_t now = timestamp(2026, 7, 10);
   const PricedSurface surface = make_surface(2u, 120.0, now);
