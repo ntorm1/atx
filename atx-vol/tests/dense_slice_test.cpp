@@ -7,12 +7,25 @@
 #include <utility>
 #include <vector>
 
+#include "atx/core/linalg/linalg.hpp" // MatX, VecX -- QP-kernel unit tests below
 #include "atx/vol/arb.hpp"          // arb_check_calendar
 #include "atx/vol/black76.hpp"      // black76_price, black76_value_and_vega
 #include "atx/vol/calib.hpp"        // FitObs
 #include "atx/vol/dense_slice.hpp"  // fit_convex_slice, ConvexSliceFit, kMaxIntervalSlackRows
 #include "atx/vol/types.hpp"        // Side
 #include "atx/vol/vol_curve.hpp"    // fit_slice_curve, CurveSurface
+
+// Task C-7 (FIT-C3/FIT-C4): forward declaration of the QP-kernel test-only
+// entry point defined in src/dense_slice.cpp -- qp_active_set itself is
+// TU-local (anonymous namespace) to that file. Not part of any header; see
+// the definition site for why. The signature must match exactly for the
+// linker to resolve it.
+namespace atx::vol {
+Result<atx::core::linalg::VecX> qp_active_set_for_test(
+    const atx::core::linalg::MatX &H, const atx::core::linalg::VecX &q,
+    const atx::core::linalg::MatX &G, const atx::core::linalg::VecX &h,
+    atx::core::linalg::VecX x0, int max_iter, bool *converged_out, int *iterations_out);
+} // namespace atx::vol
 
 // Phase 1 of the arbitrage-constrained dense surface: the per-slice convex
 // call-price QP. These tests pin the two properties the whole approach rests on:
@@ -24,12 +37,15 @@
 
 namespace {
 
+using atx::core::linalg::MatX;
+using atx::core::linalg::VecX;
 using atx::vol::black76_price;
 using atx::vol::black76_value_and_vega;
 using atx::vol::ConvexFitOpts;
 using atx::vol::ErrorCode;
 using atx::vol::fit_convex_slice;
 using atx::vol::FitObs;
+using atx::vol::qp_active_set_for_test;
 using atx::vol::Side;
 
 // One OTM observation at strike K under a given vol, with a Black-76 vega weight.
@@ -161,6 +177,131 @@ std::vector<FitObs> make_synthetic_slice_obs_wideband(double F, double T, double
 }
 
 } // namespace
+
+// ── QP kernel unit tests (Task C-7: FIT-C3 ratio-test clamp, FIT-C4 anti-cycling) ──
+//
+// fit_convex_slice enforces >= 3 distinct strikes, so neither pathology below is
+// reachable through the public API at the problem sizes that isolate it. Both
+// tests go straight at the QP kernel (qp_active_set_for_test) with small,
+// hand-built (H, q, G, h) systems -- no board, no Black-76, fully deterministic.
+
+// FIT-C3 (P2): the ratio test computed `ai = -gix / gip` unclamped. A row whose
+// directional derivative sits just past the -1e-14 dead zone (gip a hair more
+// negative than the cutoff) combined with a residual admitted as "a few ulp
+// negative" under kQpStartTol (1e-12, scaled) produces a NEGATIVE ai, unbounded
+// in magnitude as |gip| -> the cutoff edge -- and since the ratio test selects
+// the MINIMUM, that negative value beats every legitimate positive one. This
+// 2-variable board is engineered (not discovered) to hit exactly that case at
+// iteration 1 from an empty working set:
+//   * H = I, so the unconstrained Newton step solves p = -g exactly, and q is
+//     chosen to place p1 (the blocking row's directional derivative) at a
+//     specific value just past the dead zone;
+//   * the single constraint row is x1 >= h0, with x0_1 a few ulp below h0 --
+//     admitted by the start-feasibility check, never a real violation;
+//   * p2 carries a large, UNRELATED step. alpha is a single scalar shared by
+//     the whole step, so an unbounded blow-up driven entirely by row 1's
+//     near-zero gip corrupts x2 too -- that is what makes the bug's blast
+//     radius visible in a 2-variable board instead of a 1-variable one.
+TEST(DenseSliceQp, RatioTestClampsUnboundedBackwardStep) {
+  constexpr double h0 = 10.0;
+  constexpr double gix0 = -9.0e-13;         // a few ulp negative; admitted (kQpStartTol = 1e-12)
+  constexpr double x0_1 = h0 + gix0;        // sits just inside the row's bound
+  constexpr double target_gip = -1.05e-14;  // just past the -1.0e-14 ratio-test dead zone
+  constexpr double x0_2 = 0.0;
+  constexpr double p2_target = 5.0; // large, unrelated step -- exposes the blow-up
+
+  MatX H = MatX::Identity(2, 2);
+  // H = I => the unconstrained Newton step solves p = -g; pick q so g (hence
+  // p) lands exactly where this scenario needs it.
+  VecX q(2);
+  q(0) = -target_gip - x0_1;
+  q(1) = -p2_target - x0_2;
+  MatX G(1, 2);
+  G << 1.0, 0.0; // single row: x1 >= h0
+  VecX h(1);
+  h(0) = h0;
+  VecX x0(2);
+  x0 << x0_1, x0_2;
+
+  const auto res = qp_active_set_for_test(H, q, G, h, x0, /*max_iter=*/1, nullptr, nullptr);
+  ASSERT_TRUE(res.has_value()) << res.error().to_string();
+  const VecX &x1 = *res;
+
+  // Post-fix: the clamp turns the row's negative ratio into the degenerate
+  // zero-length step -- the row joins the working set and x is UNCHANGED at
+  // this iterate, so the objective cannot have increased.
+  const auto objective = [&](const VecX &x) { return 0.5 * x.dot(H * x) + q.dot(x); };
+  EXPECT_LE(objective(x1), objective(x0) + 1.0e-9)
+      << "unclamped ratio test stepped backward and increased the objective";
+  // Pin the concrete failure this guards against directly: an unclamped ai
+  // here is gix0/target_gip ~ -85.7, which would carry x2 to ~-428 instead of
+  // leaving it untouched.
+  EXPECT_NEAR(x1(1), x0_2, 1.0e-9) << "x2 moved despite carrying no blocking constraint";
+}
+
+// FIT-C4 (P3): no anti-cycling tie-break on the ratio test or the drop rule. A
+// degenerate vertex -- two constraint rows simultaneously binding -- is exactly
+// what happens in production when a calendar-floor row (w_prev's Black-76
+// price at a node) numerically duplicates that same node's intrinsic-bound row
+// (see fit_convex_slice's `g_j >= discounted intrinsic` and
+// `calendar floor: g_j >= cfloor_j` rows). This 3-variable board encodes that
+// pattern directly: row 0 is an "intrinsic bound"-style row (x1 >= 5), row 1 is
+// a bit-identical "calendar floor"-style row on the SAME node (x1 >= 5,
+// duplicated verbatim), and row 2 is an unrelated bound (x2 >= 3) so the board
+// is a genuine 2-constraint-active vertex, not a single-row trivial case.
+TEST(DenseSliceQp, DegenerateVertexDuplicateFloorRowConvergesFast) {
+  MatX H = MatX::Identity(3, 3);
+  VecX q = VecX::Zero(3); // unconstrained minimum at the origin -- infeasible for both bounds
+
+  MatX G(3, 3);
+  VecX h(3);
+  G.row(0) << 1.0, 0.0, 0.0;
+  h(0) = 5.0; // "intrinsic bound": x1 >= 5
+  G.row(1) << 1.0, 0.0, 0.0;
+  h(1) = 5.0; // "calendar floor": duplicate of row 0
+  G.row(2) << 0.0, 1.0, 0.0;
+  h(2) = 3.0; // unrelated: x2 >= 3
+
+  VecX x0(3);
+  x0 << 10.0, 10.0, 10.0; // comfortably feasible start
+
+  bool converged = false;
+  int iterations = 0;
+  const auto res =
+      qp_active_set_for_test(H, q, G, h, x0, /*max_iter=*/200, &converged, &iterations);
+  ASSERT_TRUE(res.has_value()) << res.error().to_string();
+  EXPECT_TRUE(converged);
+  EXPECT_LT(iterations, 200);
+
+  const VecX &x = *res;
+  // The certified optimum: both distinct bounds bind exactly (the unconstrained
+  // min at the origin is infeasible for x1 and x2); x3 is free and returns to 0.
+  EXPECT_NEAR(x(0), 5.0, 1.0e-8);
+  EXPECT_NEAR(x(1), 3.0, 1.0e-8);
+  EXPECT_NEAR(x(2), 0.0, 1.0e-8);
+
+  // Identical certified solution: the duplicate row is redundant by
+  // construction (same direction, same RHS as row 0), so removing it must not
+  // change the optimum at all.
+  MatX G2(2, 3);
+  VecX h2(2);
+  G2.row(0) = G.row(0);
+  G2.row(1) = G.row(2);
+  h2(0) = h(0);
+  h2(1) = h(2);
+  const auto ref = qp_active_set_for_test(H, q, G2, h2, x0, /*max_iter=*/200, nullptr, nullptr);
+  ASSERT_TRUE(ref.has_value()) << ref.error().to_string();
+  EXPECT_LT((x - *ref).lpNorm<Eigen::Infinity>(), 1.0e-10)
+      << "the redundant duplicate row changed the certified solution";
+
+  // Determinism: re-solving the SAME degenerate board twice must give a
+  // bit-identical result -- the tie-break is a pure function of (G, h, x, p),
+  // never of prior calls.
+  const auto res2 = qp_active_set_for_test(H, q, G, h, x0, /*max_iter=*/200, nullptr, nullptr);
+  ASSERT_TRUE(res2.has_value()) << res2.error().to_string();
+  EXPECT_EQ((x - *res2).lpNorm<Eigen::Infinity>(), 0.0)
+      << "the tie-break is not deterministic across repeated calls";
+}
 
 TEST(DenseSlice, FlatVolIsRecoveredAndArbFree) {
   constexpr double F = 100.0, T = 0.25, r = 0.03, vol = 0.22;

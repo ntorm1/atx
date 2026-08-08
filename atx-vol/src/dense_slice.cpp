@@ -236,6 +236,20 @@ qp_active_set(const MatX &H, const VecX &q, const MatX &G, const VecX &h, VecX x
       if (worst < 0) {
         return Ok(qp_result(H, q, G, h, std::move(x), wset, lambda, iter + 1, true)); // KKT-optimal
       }
+      // Anti-cycling (scoped Bland's rule): two rows can carry the EXACT same
+      // multiplier -- e.g. a calendar-floor row admitted as a numeric duplicate
+      // of an intrinsic-bound row, both constraining the same node identically.
+      // Position in `wset` is insertion order, not a fixed row identity, so
+      // breaking such a tie by "whichever the scan hit first" is itself hidden
+      // state that can flip between visits to the same vertex and cycle.
+      // Re-scan and keep the tied entry whose underlying constraint ROW index
+      // is lowest -- a pure function of (G, h, x), never of insertion history.
+      for (Eigen::Index i = 0; i < nw; ++i) {
+        if (lambda(i) == worst_val &&
+            wset[static_cast<std::size_t>(i)] < wset[static_cast<std::size_t>(worst)]) {
+          worst = i;
+        }
+      }
       const Eigen::Index drop = wset[static_cast<std::size_t>(worst)];
       in_w[static_cast<std::size_t>(drop)] = 0;
       wset.erase(wset.begin() + worst);
@@ -243,8 +257,19 @@ qp_active_set(const MatX &H, const VecX &q, const MatX &G, const VecX &h, VecX x
     }
 
     // Ratio test: largest α ∈ (0, 1] keeping G(x + αp) >= h for inactive rows.
+    // ai MUST be clamped at zero: "gix >= 0 => ai >= 0" is only an exact-
+    // arithmetic invariant. A row whose directional derivative sits inside the
+    // -1.0e-14 dead zone above is excluded from this test yet can still drift a
+    // few ulp past zero over many iterations, so gix can go a hair negative.
+    // Unclamped, that yields a NEGATIVE ai -- and since selection takes the
+    // MINIMUM, a negative value beats every legitimate positive one, with |ai|
+    // unbounded as |gip| shrinks toward the dead-zone edge. `x += alpha * p`
+    // would then step BACKWARD out of the feasible region by an arbitrary
+    // multiple; qp_result's certificate correctly refuses such a point and the
+    // caller drops the whole slice. Clamping turns that into the degenerate
+    // zero-length step an active-set method takes at a tied vertex: the row
+    // joins the working set at the current iterate and the walk continues.
     double alpha = 1.0;
-    Eigen::Index block = -1;
     for (Eigen::Index i = 0; i < nc; ++i) {
       if (in_w[static_cast<std::size_t>(i)]) {
         continue;
@@ -252,10 +277,33 @@ qp_active_set(const MatX &H, const VecX &q, const MatX &G, const VecX &h, VecX x
       const double gip = G.row(i).dot(p);
       if (gip < -1.0e-14) {
         const double gix = G.row(i).dot(x) - h(i); // residual to the RHS
-        const double ai = -gix / gip;              // >= 0 since gix >= 0
-        if (ai < alpha) {
-          alpha = ai;
-          block = i;
+        alpha = std::min(alpha, std::max(0.0, -gix / gip));
+      }
+    }
+    // Anti-cycling: a degenerate vertex can have two or more rows tie for the
+    // minimal α to within floating noise (e.g. two rows with the same
+    // direction and near-equal RHS, as a duplicated calendar-floor / intrinsic-
+    // bound pair). Selecting whichever one's rounding happens to compute
+    // smaller on a given pass makes the tie-break itself hidden, order-
+    // dependent state -- exactly what lets the working set oscillate between
+    // the tied rows and burn the iteration budget. Re-scan ascending and take
+    // the LOWEST-INDEX row within the tie band: which row blocks becomes a
+    // pure function of (G, h, x, p), never of prior iterations.
+    Eigen::Index block = -1;
+    if (alpha < 1.0) {
+      const double tie_tol = 1.0e-14 * (1.0 + x.lpNorm<Eigen::Infinity>());
+      for (Eigen::Index i = 0; i < nc; ++i) {
+        if (in_w[static_cast<std::size_t>(i)]) {
+          continue;
+        }
+        const double gip = G.row(i).dot(p);
+        if (gip < -1.0e-14) {
+          const double gix = G.row(i).dot(x) - h(i);
+          const double ai = std::max(0.0, -gix / gip);
+          if (ai <= alpha + tie_tol) {
+            block = i;
+            break;
+          }
         }
       }
     }
@@ -282,6 +330,28 @@ struct Node {
 };
 
 } // namespace
+
+// Test-only direct entry into the active-set QP kernel above. qp_active_set is
+// TU-local to this file (anonymous namespace), and fit_convex_slice's public
+// API always builds boards with >= 3 distinct strikes and never exposes
+// per-iteration state -- neither reaches the small hand-built problem sizes
+// (e.g. 2 variables) the ratio-test-clamp and anti-cycling characterization
+// tests in dense_slice_test.cpp need. Deliberately NOT declared in
+// dense_slice.hpp: this is QP-kernel test plumbing, not v1 public surface, so
+// the test file forward-declares this exact signature itself instead of
+// sharing a header.
+Result<VecX> qp_active_set_for_test(const MatX &H, const VecX &q, const MatX &G, const VecX &h,
+                                    VecX x0, int max_iter, bool *converged_out,
+                                    int *iterations_out) {
+  ATX_TRY(QpSolveResult solved, qp_active_set(H, q, G, h, std::move(x0), max_iter));
+  if (converged_out != nullptr) {
+    *converged_out = solved.converged;
+  }
+  if (iterations_out != nullptr) {
+    *iterations_out = solved.iterations;
+  }
+  return Ok(std::move(solved.x));
+}
 
 double ConvexSliceFit::call_price(double K) const noexcept {
   if (u.empty() || C.size() != u.size() || !(K > 0.0) || !(F > 0.0) || !(df > 0.0)) {
