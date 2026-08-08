@@ -92,6 +92,12 @@ enum class VarScenarioStatus : std::uint8_t {
   MarketUnavailable = 1,
   TimestampMismatch = 2,
   LegFailure = 3,
+  // Snapshot load failed for a reason other than a genuinely absent surface
+  // (corrupt/truncated archive, I/O error): a structural/infrastructure
+  // fault, not a market condition. Distinguished from MarketUnavailable so
+  // VarScenarioFailurePolicy::ExcludeFromDistribution cannot silently absorb
+  // it into a shrunken-but-unflagged loss distribution.
+  ArchiveError = 4,
 };
 
 [[nodiscard]] const char *to_string(VarScenarioStatus status) noexcept;

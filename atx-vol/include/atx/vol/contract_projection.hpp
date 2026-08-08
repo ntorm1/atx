@@ -174,6 +174,13 @@ struct AmericanDeltaBatchScratch {
   void resize(std::size_t n);
 };
 
+// Validate that a row count fits solve_american_delta_batch's row-id space:
+// active/fallback row ids and evaluate_batch pack indices are std::uint32_t
+// throughout. Exposed (rather than kept file-local) so the bound is directly
+// unit-testable -- constructing a >= 2^32-row span to exercise it through
+// solve_american_delta_batch itself is not practical.
+[[nodiscard]] Result<std::uint32_t> checked_row_count(std::size_t n) noexcept;
+
 // Cross-sectional inverse-delta solve on ONE surface (owned or view). For each
 // row i: find strike_out[i] with | |cold American delta| - target_abs_delta[i] |
 // <= tolerance, achieved via a Black-style inverse-delta seed, laned cold

@@ -203,6 +203,11 @@ required_uids(std::span<const VarPosition> positions) {
 struct SnapshotLoad {
   std::optional<MarketSnapshot> snapshot{};
   VarLegStatus failure{VarLegStatus::SurfaceUnavailable};
+  // Set when `failure` stems from a load error other than a genuinely absent
+  // surface (corrupt/truncated archive, I/O error) -- a structural fault the
+  // caller must classify as VarScenarioStatus::ArchiveError, not
+  // MarketUnavailable, regardless of VarScenarioFailurePolicy ([solver] F4).
+  bool archive_error{false};
 };
 
 struct NormalizedVarLeg {
@@ -268,7 +273,16 @@ struct OptionAnchorKeyHash {
   Result<MarketSnapshot> loaded = MarketSnapshot::load(ref.archive_path, config.query_pricing_tier,
                                                        uids, config.archive_backing);
   if (!loaded) {
-    return {};
+    // NotFound is the "archive genuinely has nothing at this uid" shape
+    // (matching validate_snapshot's own NotFound -> SurfaceUnavailable
+    // mapping below); anything else here (IoError, a corrupt/truncated
+    // archive's ParseError, ...) is an infrastructure fault, not an absent
+    // market -- classify it distinctly so ExcludeFromDistribution cannot
+    // silently absorb it.
+    SnapshotLoad result;
+    result.failure = VarLegStatus::SurfaceUnavailable;
+    result.archive_error = loaded.error().code() != ErrorCode::NotFound;
+    return result;
   }
   const Status validation = validate_snapshot(*loaded, uids, config.provenance_policy);
   if (!validation) {
@@ -1139,13 +1153,24 @@ void evaluate_scenario_batched(const PreparedState &impl, const VarScenario &sce
   }
 }
 
-void fill_loaded_failure(std::span<const VarReferenceLeg> reference_legs, VarScenarioFrame &frame,
-                         std::span<VarLegFrame> output, VarLegStatus status,
-                         std::int64_t base_ts_ns, std::int64_t shifted_ts_ns) noexcept {
+// `scenario_status_override`, when set, replaces the scenario status
+// scenario_status_for(status) would otherwise derive. Needed for
+// VarScenarioStatus::ArchiveError ([solver] F4): an archive load failure has
+// no dedicated VarLegStatus of its own (legs still poison as
+// SurfaceUnavailable, economically the closest existing leg status), but the
+// SCENARIO must be distinguishable from an ordinary MarketUnavailable so
+// VarScenarioFailurePolicy::ExcludeFromDistribution cannot silently absorb
+// it.
+void fill_loaded_failure(
+    std::span<const VarReferenceLeg> reference_legs, VarScenarioFrame &frame,
+    std::span<VarLegFrame> output, VarLegStatus status, std::int64_t base_ts_ns,
+    std::int64_t shifted_ts_ns,
+    std::optional<VarScenarioStatus> scenario_status_override = std::nullopt) noexcept {
   VarScenario scenario;
   scenario.base_ts_ns = base_ts_ns;
   scenario.shifted_ts_ns = shifted_ts_ns;
-  poison_scenario(frame, scenario, scenario_status_for(status), reference_legs.size());
+  poison_scenario(frame, scenario, scenario_status_override.value_or(scenario_status_for(status)),
+                  reference_legs.size());
   for (std::size_t index = 0; index < output.size(); ++index) {
     poison_leg(output[index], status, reference_legs[index].kind, reference_legs[index].uid);
   }
@@ -1203,6 +1228,8 @@ const char *to_string(VarScenarioStatus status) noexcept {
     return "TimestampMismatch";
   case VarScenarioStatus::LegFailure:
     return "LegFailure";
+  case VarScenarioStatus::ArchiveError:
+    return "ArchiveError";
   }
   return "Unknown";
 }
@@ -1527,14 +1554,23 @@ Result<HistoricalVarResult> run_historical_var(const SurfaceDb &db,
                                           : std::span<VarLegFrame>{result.leg_frames}.subspan(
                                                 scenario_index * prepared.size(), prepared.size());
             if (!base.snapshot.has_value() || !shifted.snapshot.has_value()) {
+              const bool archive_error =
+                  !base.snapshot.has_value() ? base.archive_error : shifted.archive_error;
               const VarLegStatus failure =
                   !base.snapshot.has_value() ? base.failure : shifted.failure;
               const std::int64_t base_ts =
                   base.snapshot.has_value() ? base.snapshot->ts_ns() : std::int64_t{0};
               const std::int64_t shifted_ts =
                   shifted.snapshot.has_value() ? shifted.snapshot->ts_ns() : std::int64_t{0};
-              fill_loaded_failure(prepared.reference_legs(), result.frames[scenario_index], output,
-                                  failure, base_ts, shifted_ts);
+              // [solver] F4: a corrupt/truncated archive or I/O failure is
+              // structural, not a market condition -- ArchiveError overrides
+              // the MarketUnavailable that scenario_status_for(failure)
+              // would otherwise derive from SurfaceUnavailable.
+              fill_loaded_failure(
+                  prepared.reference_legs(), result.frames[scenario_index], output, failure,
+                  base_ts, shifted_ts,
+                  archive_error ? std::optional<VarScenarioStatus>{VarScenarioStatus::ArchiveError}
+                                : std::nullopt);
             } else {
               const VarScenario scenario{base.snapshot->ts_ns(), &base.snapshot->set(),
                                          shifted.snapshot->ts_ns(), &shifted.snapshot->set()};
@@ -1544,9 +1580,15 @@ Result<HistoricalVarResult> run_historical_var(const SurfaceDb &db,
                   std::span<const VarScenario>{&scenario, 1u},
                   std::span<VarScenarioFrame>{&result.frames[scenario_index], 1u}, output, serial);
               if (!replay) {
+                // [solver] F5: replay_into's own pre-flight scenario check
+                // (shifted_ts_ns <= base_ts_ns) is the realistic reason this
+                // single-scenario replay fails -- a structural non-monotone-
+                // timestamp archive fault, not a generic invalid value.
+                const VarLegStatus failure = scenario.shifted_ts_ns <= scenario.base_ts_ns
+                                                 ? VarLegStatus::TimestampMismatch
+                                                 : VarLegStatus::InvalidValue;
                 fill_loaded_failure(prepared.reference_legs(), result.frames[scenario_index],
-                                    output, VarLegStatus::InvalidValue, scenario.base_ts_ns,
-                                    scenario.shifted_ts_ns);
+                                    output, failure, scenario.base_ts_ns, scenario.shifted_ts_ns);
               }
             }
             base = std::move(shifted);
@@ -1561,6 +1603,20 @@ Result<HistoricalVarResult> run_historical_var(const SurfaceDb &db,
   if (config.failure_policy == VarScenarioFailurePolicy::RejectRun) {
     for (std::size_t index = 0; index < result.frames.size(); ++index) {
       if (result.frames[index].status != VarScenarioStatus::Ok) {
+        return Err(ErrorCode::Unavailable, "historical VaR: scenario " + result.base_dates[index] +
+                                               " -> " + result.shifted_dates[index] + " failed (" +
+                                               to_string(result.frames[index].status) + ")");
+      }
+    }
+  } else {
+    // [solver] F4: ExcludeFromDistribution otherwise excludes any non-Ok
+    // scenario from the loss distribution silently (historical_var_statistics
+    // below only sums Ok frames). ArchiveError is structural -- a corrupt
+    // archive or I/O fault, not an ordinary missing-market day -- so it must
+    // still fail the run even under this policy; a systematically
+    // I/O-degraded run must not silently shrink the loss distribution.
+    for (std::size_t index = 0; index < result.frames.size(); ++index) {
+      if (result.frames[index].status == VarScenarioStatus::ArchiveError) {
         return Err(ErrorCode::Unavailable, "historical VaR: scenario " + result.base_dates[index] +
                                                " -> " + result.shifted_dates[index] + " failed (" +
                                                to_string(result.frames[index].status) + ")");

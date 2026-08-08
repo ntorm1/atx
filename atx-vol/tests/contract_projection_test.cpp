@@ -803,6 +803,122 @@ TEST(ContractProjection, BatchDeltaSolveEvaluationCountsSaturate) {
   EXPECT_GT(out.evaluations[hard_row], kMirroredMaxBatchDeltaPasses) << "hard row " << hard_row;
 }
 
+// [solver] F1: the batch solver's internal acceptance test
+// (contract_projection.cpp's run_pass, "Half-tolerance internal acceptance")
+// accepts a row at half the caller's tolerance and relies on an ASSUMED
+// |laned delta - scalar delta| <= tolerance/2 kernel gap so the independent
+// SCALAR cold oracle still holds at the full tolerance. Nothing pinned that
+// gap before this test: the only existing kernel-parity gate
+// (PricedSurface.EvaluateBatchGreeksForceAvx2MatchesScalarWithinGate,
+// priced_surface_test.cpp:848) tolerates up to ~1e-7 abs + 1e-5 rel (~4e-6 at
+// a 0.40 delta) -- two orders of magnitude looser than the 5e-8 headroom the
+// solver's half-tolerance margin assumes at the DEFAULT delta_tolerance
+// (1e-7). This test pins the bound directly, at the solver's EXACT request
+// shape: EvalField::FirstOrder (not the full Iv|Price|FirstOrder|SecondOrder
+// bundle run_pass never requests), the reduced
+// GreekNeeds{vega=false, rho=false, charm=false}, and
+// QueryExecution::ColdReference -- mirroring contract_projection.cpp's
+// run_pass call to evaluate_batch exactly (same EvalField, analytic flag,
+// SimdIsa::Auto, execution, and GreekNeeds).
+TEST(ContractProjection, BatchLanedDeltaMatchesScalarColdOracleAtSolverRequestShape) {
+  const std::int64_t now = timestamp(2026, 7, 10);
+  const PricedSurface surface = make_surface(2u, 120.0, now);
+
+  // >= 200 (strike, expiry, side) rows: a maturity ladder from very short to
+  // 2Y crossed with a wide moneyness sweep (deep-ITM through deep-OTM), the
+  // region the review flags as where laned/scalar boundary-solve divergence
+  // is documented to concentrate (deep-ITM, near-exercise-boundary lanes).
+  std::vector<double> K;
+  std::vector<double> T;
+  std::vector<Side> side;
+  for (const double t : {0.01, 0.02, 0.05, 0.10, 0.25, 0.50, 1.00, 2.00}) {
+    for (int i = 0; i < 30; ++i) {
+      const double moneyness = 0.50 + 1.40 * static_cast<double>(i) / 29.0; // 0.50x .. 1.90x
+      const double strike = 120.0 * moneyness;
+      for (const Side s : {Side::Call, Side::Put}) {
+        K.push_back(strike);
+        T.push_back(t);
+        side.push_back(s);
+      }
+    }
+  }
+  const std::size_t n = K.size();
+  ASSERT_GE(n, 200u);
+
+  std::vector<double> out_iv(n), out_price(n);
+  std::vector<AmericanGreeks> out_greeks(n);
+  std::vector<Status> out_status(n);
+  const PricedSurface::EvaluationSoA out{out_iv, out_price, out_greeks, out_status, {}, {}};
+  const Status evaluated = surface.evaluate_batch(
+      K, T, side, PricedSurface::EvalField::FirstOrder, /*analytic=*/true, out, simd::SimdIsa::Auto,
+      QueryExecution::ColdReference, GreekNeeds{.vega = false, .rho = false, .charm = false});
+  ASSERT_TRUE(evaluated) << (evaluated ? std::string{} : evaluated.error().to_string());
+
+  double max_gap = 0.0;
+  std::size_t max_gap_row = 0;
+  std::size_t compared = 0;
+  for (std::size_t i = 0; i < n; ++i) {
+    if (!out_status[i]) {
+      continue; // per-row market/domain error, not part of the parity claim
+    }
+    const auto scalar = surface.delta(K[i], T[i], side[i], QueryExecution::ColdReference);
+    ASSERT_TRUE(scalar) << "row " << i << ": " << scalar.error().to_string();
+    ASSERT_TRUE(std::isfinite(out_greeks[i].delta)) << "row " << i;
+    const double gap = std::fabs(out_greeks[i].delta - *scalar);
+    if (gap > max_gap) {
+      max_gap = gap;
+      max_gap_row = i;
+    }
+    ++compared;
+  }
+  ASSERT_GE(compared, 200u);
+  EXPECT_LE(max_gap, 5.0e-8) << "max laned-vs-scalar delta gap " << max_gap << " at row "
+                             << max_gap_row << " (K=" << K[max_gap_row] << ", T=" << T[max_gap_row]
+                             << ")";
+}
+
+// [solver] F2: solve_american_delta_batch's seed loop casts the caller's
+// std::size_t row count to std::uint32_t (active/fallback row ids and
+// evaluate_batch pack indices are uint32_t throughout); a count above
+// 2^32-1 silently truncates instead of erroring, leaving rows past the
+// truncation point untouched (caller garbage / default-Ok status) while the
+// call still returns Ok -- a silent partial result rather than a fail-loud
+// error. Constructing a >= 2^32-row span to exercise this through
+// solve_american_delta_batch itself is not practical (32+ GB of strikes), so
+// the fix (checked_row_count) is unit-tested directly.
+TEST(ContractProjection, CheckedRowCountRejectsCountsAboveUint32Max) {
+  constexpr std::size_t kUint32Max =
+      static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max());
+
+  const auto at_max = checked_row_count(kUint32Max);
+  ASSERT_TRUE(at_max) << (at_max ? std::string{} : at_max.error().to_string());
+  EXPECT_EQ(*at_max, std::numeric_limits<std::uint32_t>::max());
+
+  const auto zero = checked_row_count(std::size_t{0});
+  ASSERT_TRUE(zero);
+  EXPECT_EQ(*zero, 0u);
+
+  const auto typical = checked_row_count(std::size_t{4096});
+  ASSERT_TRUE(typical);
+  EXPECT_EQ(*typical, 4096u);
+
+  // Guard for a hypothetical 32-bit size_t build, where "kUint32Max + 1" and
+  // "1 << 32" are not representable and the bound is vacuously satisfied by
+  // every size_t value.
+  if constexpr (sizeof(std::size_t) > sizeof(std::uint32_t)) {
+    const auto one_over = checked_row_count(kUint32Max + std::size_t{1});
+    EXPECT_FALSE(one_over);
+    if (!one_over) {
+      EXPECT_EQ(one_over.error().code(), ErrorCode::OutOfRange);
+    }
+    const auto two_to_32 = checked_row_count(std::size_t{1} << 32);
+    EXPECT_FALSE(two_to_32);
+    if (!two_to_32) {
+      EXPECT_EQ(two_to_32.error().code(), ErrorCode::OutOfRange);
+    }
+  }
+}
+
 TEST(ContractProjection, ProjectedDefinitionFingerprintHelperMatchesProjection) {
   const PricedSurface surface = make_surface(5u, 100.0, timestamp(2026, 7, 10));
   auto projected = project_option_contract(

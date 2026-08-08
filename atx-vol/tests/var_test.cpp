@@ -1319,4 +1319,137 @@ TEST(Var, SurfaceDbRunSortsThreeDatesAndProducesAdjacentScenariosEndToEnd) {
   }
 }
 
+// [solver] F4: run_historical_var's load_snapshot (var.cpp) collapsed every
+// MarketSnapshot::load failure -- a genuinely absent surface, a corrupt or
+// truncated archive, or a plain I/O error -- into the same
+// VarLegStatus::SurfaceUnavailable / VarScenarioStatus::MarketUnavailable
+// pair, discarding the underlying error. Under
+// VarScenarioFailurePolicy::ExcludeFromDistribution that made a corrupt
+// archive economically indistinguishable from an ordinary missing-surface
+// day: the scenario is silently dropped from the loss distribution rather
+// than failing the run. This test corrupts one archive partition (truncated
+// below the ATXVSA header, the shape of a partial/interrupted write) that
+// sits strictly between two GOOD scenarios in the window, so that without
+// the new ArchiveError classification and its explicit
+// ExcludeFromDistribution override, historical_var_statistics would still
+// have one Ok scenario to compute from and run_historical_var would return
+// Ok -- silently masking the corruption.
+TEST(Var, CorruptArchiveReportsArchiveErrorAndFailsRunUnderExcludeFromDistribution) {
+  const ScopedTempDirectory root("corrupt_archive");
+  auto db = SurfaceDb::create(root.path().string());
+  ASSERT_TRUE(db) << (db ? std::string{} : db.error().to_string());
+  ASSERT_TRUE(db->upsert_symbol("SPY", SymbolFitConfig{}));
+
+  const std::uint32_t uid = uid_for_symbol("SPY");
+  const PricedSurface ref_surface = make_surface(uid, 100.0, timestamp(2026, 1, 2));
+  const PricedSurface d05 = make_surface(uid, 100.0, timestamp(2026, 1, 5));
+  const PricedSurface d06 = make_surface(uid, 100.0, timestamp(2026, 1, 6));
+  const PricedSurface d07 = make_surface(uid, 100.0, timestamp(2026, 1, 7));
+  const PricedSurface d08 = make_surface(uid, 100.0, timestamp(2026, 1, 8));
+
+  const std::array<SurfaceArchiveItem, 1> items_ref{{{"SPY", &ref_surface}}};
+  const std::array<SurfaceArchiveItem, 1> items_05{{{"SPY", &d05}}};
+  const std::array<SurfaceArchiveItem, 1> items_06{{{"SPY", &d06}}};
+  const std::array<SurfaceArchiveItem, 1> items_07{{{"SPY", &d07}}};
+  const std::array<SurfaceArchiveItem, 1> items_08{{{"SPY", &d08}}};
+  ASSERT_TRUE(db->write_partition("2026-01-02", items_ref));
+  ASSERT_TRUE(db->write_partition("2026-01-05", items_05));
+  ASSERT_TRUE(db->write_partition("2026-01-06", items_06));
+  ASSERT_TRUE(db->write_partition("2026-01-07", items_07));
+  ASSERT_TRUE(db->write_partition("2026-01-08", items_08));
+
+  auto clock = Clock::from_surface_db(*db);
+  ASSERT_TRUE(clock) << (clock ? std::string{} : clock.error().to_string());
+  const auto corrupt_ref =
+      std::find_if(clock->refs().begin(), clock->refs().end(),
+                   [](const SnapshotRef &ref) { return ref.date == "2026-01-06"; });
+  ASSERT_NE(corrupt_ref, clock->refs().end());
+  {
+    std::error_code ec;
+    std::filesystem::resize_file(corrupt_ref->archive_path, 8, ec);
+    ASSERT_FALSE(ec) << ec.message();
+  }
+
+  const std::vector<VarPosition> positions = {option("SPY", Side::Call, 1.0)};
+  VarRunConfig config;
+  config.reference_date = "2026-01-02";
+  config.date_begin = "2026-01-05";
+  config.date_end = "2026-01-08";
+  config.confidence = 0.50;
+  config.evaluation = evaluation_config(1);
+  config.failure_policy = VarScenarioFailurePolicy::ExcludeFromDistribution;
+  config.archive_backing = ArchiveBacking::Mutable;
+  config.query_pricing_tier = QueryPricingTier::ColdReference;
+  config.provenance_policy = SurfaceProvenancePolicy::Compatibility;
+
+  auto result = run_historical_var(*db, positions, config);
+  ASSERT_FALSE(result) << "corrupt-archive scenarios must fail the run even under "
+                          "ExcludeFromDistribution, not be silently excluded";
+  EXPECT_NE(result.error().to_string().find("ArchiveError"), std::string::npos)
+      << result.error().to_string();
+}
+
+// [solver] F5: run_historical_var's per-scenario retry (var.cpp, the block
+// that calls PreparedVarPortfolio::replay_into and, on failure, poisons the
+// scenario/leg frames) labeled EVERY replay_into failure
+// VarLegStatus::InvalidValue -- including the specific case of two adjacent
+// archive partitions whose embedded valuation timestamps are non-monotone
+// (shifted_ts_ns <= base_ts_ns), which fails replay_into's own scenario
+// validation. That is a structural TimestampMismatch, not a generic
+// InvalidValue. This test builds a partition "2026-01-06" whose surface
+// embeds an EARLIER now_ts_ns than "2026-01-05" -- e.g. a corrupted or
+// misattributed archive write -- so partition KEYS still sort correctly
+// while the embedded timestamps do not: the 05 -> 06 transition is
+// non-monotone even though the 06 -> 07 transition (embedded Jan-04 ->
+// Jan-07) is not, isolating the failure to exactly one scenario.
+TEST(Var, NonMonotoneArchiveTimestampsReportTimestampMismatch) {
+  const ScopedTempDirectory root("nonmonotone_ts");
+  auto db = SurfaceDb::create(root.path().string());
+  ASSERT_TRUE(db) << (db ? std::string{} : db.error().to_string());
+  ASSERT_TRUE(db->upsert_symbol("SPY", SymbolFitConfig{}));
+
+  const std::uint32_t uid = uid_for_symbol("SPY");
+  const PricedSurface ref_surface = make_surface(uid, 100.0, timestamp(2026, 1, 2));
+  const PricedSurface d05 = make_surface(uid, 100.0, timestamp(2026, 1, 5));
+  // Deliberately regressed: "2026-01-06"'s partition embeds Jan-04, earlier
+  // than "2026-01-05"'s own embedded timestamp.
+  const PricedSurface d06 = make_surface(uid, 100.0, timestamp(2026, 1, 4));
+  const PricedSurface d07 = make_surface(uid, 100.0, timestamp(2026, 1, 7));
+
+  const std::array<SurfaceArchiveItem, 1> items_ref{{{"SPY", &ref_surface}}};
+  const std::array<SurfaceArchiveItem, 1> items_05{{{"SPY", &d05}}};
+  const std::array<SurfaceArchiveItem, 1> items_06{{{"SPY", &d06}}};
+  const std::array<SurfaceArchiveItem, 1> items_07{{{"SPY", &d07}}};
+  ASSERT_TRUE(db->write_partition("2026-01-02", items_ref));
+  ASSERT_TRUE(db->write_partition("2026-01-05", items_05));
+  ASSERT_TRUE(db->write_partition("2026-01-06", items_06));
+  ASSERT_TRUE(db->write_partition("2026-01-07", items_07));
+
+  const std::vector<VarPosition> positions = {option("SPY", Side::Call, 1.0)};
+  VarRunConfig config;
+  config.reference_date = "2026-01-02";
+  config.date_begin = "2026-01-05";
+  config.date_end = "2026-01-07";
+  config.confidence = 0.50;
+  config.evaluation = evaluation_config(1);
+  config.failure_policy = VarScenarioFailurePolicy::ExcludeFromDistribution;
+  config.retain_leg_frames = true;
+  config.archive_backing = ArchiveBacking::Mutable;
+  config.query_pricing_tier = QueryPricingTier::ColdReference;
+  config.provenance_policy = SurfaceProvenancePolicy::Compatibility;
+
+  auto result = run_historical_var(*db, positions, config);
+  ASSERT_TRUE(result) << (result ? std::string{} : result.error().to_string());
+  ASSERT_EQ(result->frames.size(), 2u);
+  EXPECT_EQ(result->base_dates[0], "2026-01-05");
+  EXPECT_EQ(result->shifted_dates[0], "2026-01-06");
+  EXPECT_EQ(result->frames[0].status, VarScenarioStatus::TimestampMismatch);
+  EXPECT_EQ(result->frames[0].n_failed, positions.size());
+  ASSERT_EQ(result->leg_frames.size(), result->frames.size() * result->n_legs);
+  EXPECT_EQ(result->leg_frames[0].status, VarLegStatus::TimestampMismatch);
+  // The second (06 -> 07) transition (embedded Jan-04 -> Jan-07) is monotone
+  // and unaffected by the corrupted 05 -> 06 transition.
+  EXPECT_EQ(result->frames[1].status, VarScenarioStatus::Ok);
+}
+
 } // namespace

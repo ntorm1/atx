@@ -490,6 +490,20 @@ void AmericanDeltaBatchScratch::resize(std::size_t n) {
   fallback_rows.reserve(n);
 }
 
+Result<std::uint32_t> checked_row_count(std::size_t n) noexcept {
+  // std::size_t is not wider than std::uint32_t on every supported platform
+  // (e.g. a 32-bit build): the comparison would then be tautologically false
+  // and warn as such, so the bound is only meaningful -- and only compiled --
+  // where size_t can actually exceed uint32_t's range.
+  if constexpr (sizeof(std::size_t) > sizeof(std::uint32_t)) {
+    if (n > static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())) {
+      return Err(ErrorCode::OutOfRange,
+                 "contract projection: batch delta solve row count exceeds uint32_t range");
+    }
+  }
+  return Ok(static_cast<std::uint32_t>(n));
+}
+
 Status solve_american_delta_batch(const SurfaceRef &surface, std::span<const double> T,
                                   std::span<const Side> side,
                                   std::span<const double> target_abs_delta, double tolerance,
@@ -507,6 +521,10 @@ Status solve_american_delta_batch(const SurfaceRef &surface, std::span<const dou
   if (!(std::isfinite(tolerance) && tolerance > 0.0 && tolerance <= 1.0e-3)) {
     return Err(ErrorCode::InvalidArgument, "contract projection: invalid delta target/tolerance");
   }
+  const Result<std::uint32_t> row_count = checked_row_count(n);
+  if (!row_count) {
+    return Err(row_count.error());
+  }
 
   scratch.resize(n);
   // Rows the batch passes could not finish; owned by the scratch (not a
@@ -521,7 +539,7 @@ Status solve_american_delta_batch(const SurfaceRef &surface, std::span<const dou
 
   // Seed (curve reads only, no boundary solves): the Black-style inverse-delta
   // seed with two smile-refresh iterations, mirroring solve_american_delta.
-  for (std::uint32_t i = 0; i < static_cast<std::uint32_t>(n); ++i) {
+  for (std::uint32_t i = 0; i < *row_count; ++i) {
     strike_out[i] = kNaN;
     achieved_delta_out[i] = kNaN;
     evaluations_out[i] = 0u;
