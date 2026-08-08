@@ -821,7 +821,7 @@ frozen?" is answered by where the header lives, not by judgement:
 | Tier | Where | Count | Promise |
 |---|---|---|---|
 | **Tier-A** | exactly the headers `atx/vol/vol.hpp` includes | 58 | **Frozen for 1.x.** Closed under inclusion |
-| **Tier-B** | other headers directly under `include/atx/vol/`, plus `simd/` | 31 + 9 | Public and supported to include; **not** frozen |
+| **Tier-B** | other headers directly under `include/atx/vol/`, plus `simd/` | 34 + 9 | Public and supported to include; **not** frozen |
 | `detail/` | `include/atx/vol/detail/` | 29 (+1 generated) | **No stability promise.** Installed because Tier-A reaches it |
 | `tools/` | `tools/include/atx/vol/tools/` — target `atx::vol::tools` | 6 | CLI support. Not part of the shipped library surface |
 | `research/` | `research/include/atx/vol/research/` — target `atx::vol::research` | 9 | Run orchestration. Not part of the shipped library surface |
@@ -840,7 +840,7 @@ The v1.0.0 tag itself ships 57 / 31 / 28.
 
 That drift is now caught by a test rather than by a reader.
 `VolUmbrella.TierCountsMatchTheReadmeTable` (`tests/vol_umbrella_test.cpp`)
-asserts all three of **58 / 31 / 29** against the live header tree — Tier-A from
+asserts all three of **58 / 34 / 29** against the live header tree — Tier-A from
 the umbrella manifest, Tier-B and `detail/` by counting `.hpp` files in the
 directories this table names — and each failure message says to update this
 table. Previously the Tier-A *set* was machine-checked but no **count** was, and
@@ -849,6 +849,13 @@ undetected. `simd/` 9, `tools/` 6 and `research/` 9 remain prose: they are
 outside `include/atx/vol/` and are not covered by that test, so re-derive those
 three by hand. The `+1 generated` on `detail/` is likewise uncovered — it does
 not exist in the source tree the test walks.
+
+**2026-08-08 re-derivation:** Tier-B drifted again, 31 → **34**, across three
+headers that landed without updating this table: `var.hpp` (predates the
+theo-module sprint below — an untracked gap with no attributable task) and the
+theo-module sprint's own `realized_vol.hpp` (Task 1, THEO-1) and
+`breakeven.hpp` (Task 2, THEO-2), both genuine new Tier-B additions. Tier-A
+(58) and `detail/` (29) held.
 
 **Re-derive rather than trust any digit here.** The commands are one line each:
 `grep -c '^#include "atx/vol/' include/atx/vol/vol.hpp` is Tier-A; each remaining
