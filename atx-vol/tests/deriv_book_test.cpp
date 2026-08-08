@@ -425,6 +425,47 @@ TEST(DerivBook, BridgeThetaMatchesPricedSurfaceReference) {
   EXPECT_NEAR(f->rows[0].greeks.delta, reference->delta, 1e-6 * std::fabs(reference->delta) + 1e-9);
 }
 
+// Mirror of the above at the surface's FRONT fitted pillar (GK-C8). Before the
+// fix, `carry_from`'s single carry snapshot held every fitted pillar but only
+// ONE at T itself; a theta roll to T - dt landed BELOW every pillar, and both
+// `resolve_forward` (forward) and `YieldCurve` (discount) clamped flat at T
+// instead of reading the surface's own extrapolated forward/rate at T - dt --
+// mis-centering the strip on a SKEWED smile and dropping theta's discount-roll
+// term, both of which theta's own /dt then amplifies (see the now-deleted
+// header caveat). The bridge path (`carry_from_ref`) never had this bug: it
+// always carries a second forward + rate pillar at the rolled tenor, front or
+// not, so it remains a valid independent reference here too.
+TEST(DerivBook, BridgeThetaMatchesPricedSurfaceReferenceAtFrontPillar) {
+  const double T = atx::vol::testkit::fixture_tenors().front();  // 0.05, the front pillar
+  const PricedSurface ps = make_carry_skew_surface(7, 100.0, 0.30, 0.02);
+  const DerivContract c = var_swap_at(T);
+
+  const auto reference = atx::vol::deriv_greeks(ps, c);
+  ASSERT_TRUE(reference.has_value()) << reference.error().to_string();
+  ASSERT_TRUE(std::isfinite(reference->theta));
+
+  const PricedSurface *arr[] = {&ps};
+  auto ss = SurfaceSet::create(arr);
+  ASSERT_TRUE(ss.has_value());
+  DerivPosition p{};
+  p.id = 1;
+  p.uid = 7;
+  p.contract = c;
+  const DerivPosition book[] = {p};
+  const auto f = price_deriv_book(*ss, book);
+  ASSERT_TRUE(f.has_value()) << f.error().to_string();
+  ASSERT_EQ(f->rows[0].status, PriceStatus::Ok);
+
+  // The mark is the same pricer on the same carry: agree tightly.
+  EXPECT_NEAR(f->rows[0].pv, reference->pv, 1e-6 * std::fabs(reference->pv));
+  // Theta is what the second forward pillar buys, front pillar included now.
+  EXPECT_NEAR(f->rows[0].greeks.theta, reference->theta, 2e-2 * std::fabs(reference->theta) + 1e-6);
+  // The other market greeks ride the same carry and must match too.
+  EXPECT_NEAR(f->rows[0].greeks.vega, reference->vega, 1e-6 * std::fabs(reference->vega));
+  EXPECT_NEAR(f->rows[0].greeks.rho, reference->rho, 1e-6 * std::fabs(reference->rho));
+  EXPECT_NEAR(f->rows[0].greeks.delta, reference->delta, 1e-6 * std::fabs(reference->delta) + 1e-9);
+}
+
 // The NumericError branch of the status mapping: a reserved discrete-correction
 // mode is NotImplemented — a well-formed contract the engine will not price —
 // and must NOT be conflated with InvalidContract. Run as an A/B against the same

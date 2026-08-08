@@ -922,14 +922,14 @@ deriv_price(const PricedSurface& surface, const DerivContract& contract,
 // sitting exactly on the front pillar rolls into the curve's flat-extrapolated
 // tail instead of failing OutOfRange.
 //
-// CAVEAT on a contract at or very near the FRONT fitted pillar: below it the
-// carry CurveSet clamps the forward flat while `PricedSurface::forward_at`
-// would keep extrapolating economically — the very divergence `carry_from`'s
-// range gate exists to refuse. The gate cannot see the rolled T, and theta
-// divides the resulting PV difference by dt (~1/365), so it AMPLIFIES that
-// divergence by ~365x. Theta on a front-pillar contract is therefore the one
-// output here to treat as indicative; price the roll against a surface whose
-// front pillar is genuinely shorter than the contract if it must be traded on.
+// A contract at or very near the FRONT fitted pillar is handled correctly
+// (GK-C8): when the theta roll's T - dt would land below the front pillar,
+// the carry snapshot carries a second forward + rate pillar there too, read
+// off the surface's own economic extrapolation (`PricedSurface::forward_at` /
+// `rate_at`) rather than the flat clamps `resolve_forward` / `YieldCurve`
+// would otherwise apply outside the pillar range. This mirrors the
+// SurfaceRef bridge (`carry_from_ref`), which always carries that second
+// pillar.
 [[nodiscard]] Result<DerivGreeks>
 deriv_greeks(const PricedSurface& surface, const DerivContract& contract,
             const DerivConfig& cfg = DerivConfig{},

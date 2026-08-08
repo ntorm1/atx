@@ -1880,7 +1880,16 @@ namespace {
 // applies the shared log-F convention (strip_grid.hpp, E2) and `YieldCurve`
 // interpolates the per-expiry rates `rate_at` decodes from each slice's own
 // discount factor.
-[[nodiscard]] Result<CurveSet> carry_from(const PricedSurface& ps, double T) {
+//
+// `roll_dt` (GK-C8, 0.0 default for every caller but the greeks bridge below)
+// is the theta roll about to be taken against this SAME CurveSet, if any. When
+// the rolled tenor T - roll_dt lands below the front fitted pillar, one extra
+// forward + rate pillar is appended there (mirrors `carry_from_ref`'s rolled-
+// forward fix) so the roll interpolates on the surface's own economically-
+// extrapolated carry instead of clamping flat at T's -- see the call site in
+// the `deriv_greeks(PricedSurface, ...)` overload.
+[[nodiscard]] Result<CurveSet> carry_from(const PricedSurface& ps, double T,
+                                          double roll_dt = 0.0) {
   const std::span<const SliceContext> pillars = ps.context();
   if (pillars.empty()) {
     return Err(ErrorCode::InvalidArgument, "deriv: surface carries no fitted pillar");
@@ -1938,6 +1947,30 @@ namespace {
                "deriv: T is outside the surface's usable fitted pillar range; the "
                "PricedSurface overloads do not extrapolate carry");
   }
+
+  // FRONT-PILLAR ROLLED-FORWARD FIX (GK-C8). Both curves are extended: below
+  // the front pillar `resolve_forward` clamps the forward flat (mis-centering
+  // the strip's k=0, see the file comment above) and `YieldCurve` clamps
+  // log(df) flat -- a flat DISCOUNT, not a flat rate, dropping theta's own
+  // discount-roll term (same failure mode `carry_from_ref`'s kFlatYieldFloorFrac
+  // pillar exists to fix). `ps.rate_at(t_rolled)` and `ps.forward_at(t_rolled)`
+  // read the surface's OWN economic extrapolation below its front pillar
+  // (interp_forward: rate held flat at the front slice's own rate, forward
+  // grown off it) -- exactly what carry_from_ref fakes with two pillars
+  // carrying one rate, available here for real. Inserted at the front keeps
+  // both `ts`/`rates` and `fwd` ascending, which `resolve_forward` and
+  // `YieldCurve` require.
+  const double t_rolled = T - roll_dt;
+  if (roll_dt > 0.0 && t_rolled > 0.0 && t_rolled < ts.front()) {
+    ForwardPoint fp;
+    fp.T = t_rolled;
+    fp.F = ps.forward_at(t_rolled);
+    fp.q_eff = ps.q_eff_at(t_rolled);
+    fwd.insert(fwd.begin(), fp);
+    ts.insert(ts.begin(), t_rolled);
+    rates.insert(rates.begin(), ps.rate_at(t_rolled));
+  }
+
   ATX_TRY_VOID(cs.set_yield(ts, rates));
   cs.forward.set(fwd);
   return Ok(std::move(cs));
@@ -2016,8 +2049,12 @@ Result<DerivGreeks> deriv_greeks(const PricedSurface& surface, const DerivContra
                                  std::optional<double> surface_certified_wing_band) {
   // The fitted-range gate is paid ONCE here, on the contract's own maturity;
   // the theta roll below reuses this same carry with a shorter contract T (see
-  // the header) rather than re-deriving it at T - dt.
-  ATX_TRY(const CurveSet curves, carry_from(surface, contract.maturity_t));
+  // the header) rather than re-deriving it at T - dt. Passing bumps.time_years
+  // as the roll lets carry_from append its front-pillar rolled carry pillar
+  // (GK-C8) when this contract's T sits at or near the surface's own front
+  // pillar -- the one case the shared carry would otherwise clamp.
+  ATX_TRY(const CurveSet curves,
+          carry_from(surface, contract.maturity_t, bumps.time_years));
   const PricedSurfaceStripView view{&surface, &curves, contract.maturity_t,
                                     surface_certified_wing_band};
   return deriv_greeks(view, curves, contract, cfg, bumps);
