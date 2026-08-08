@@ -256,7 +256,8 @@ void carry_strip_grid(DerivQuote& out, const DerivQuote& strip) noexcept {
 // exactly recovered plus this ADDITIVE leading-order piece -- NOT the
 // multiplicative (1 + 1/n) the code applied before this task (~100x too
 // large at index vols, and keyed off the contract's n_obs_total instead of
-// the future leg's own n_remaining; see task-C-1-report.md). The residual
+// the future leg's own n_remaining; see CHANGELOG.md's PV-1/PV-8 entry for
+// the full magnitude comparison). The residual
 // O(1/n) JUMP term (Broadie-Jain sec 4) is NOT covered here -- LIT-3: jumps
 // need the FullMc engine (reserved). Magnitude: a fraction of a variance
 // point for a daily-monitored (n ~ 252) contract at typical rate/carry
@@ -443,7 +444,8 @@ template <class SurfaceT>
   // standalone vol_swap_fair_strike entry.
   //
   // DIRECTION (verified against this function's own closed form below, NOT
-  // the task brief's paraphrase -- see task-C-5-report.md): xi solves
+  // the task brief's paraphrase -- see CHANGELOG.md's C-5 entry for the full
+  // ruling): xi solves
   // s^2 = -8*ln(ratio), ratio = k_vol/sqrt(k_var_future), which is STRICTLY
   // DECREASING in k_vol for fixed k_var_future. Refined k_vol >= naive k_vol
   // under positive convexity (K_var > k_vol_naive^2), so ratio GROWS and xi
@@ -1578,7 +1580,7 @@ template <class SurfaceT>
 // `fixing_dec / annualization` (the tracker's own per-fixing conversion --
 // rv_done_dec = annualization*sum/n_done, inverted for one fixing) produces
 // when `rv.sum_sq_log_returns_done` is itself consistent with `rv.rv_done_dec`
-// -- see task-C-10-report.md for the derivation -- and, unlike accumulating
+// (the derivation is exactly the algebra above) -- and, unlike accumulating
 // forward from the raw sum, does not silently discard a caller-set
 // rv_done_dec when sum_sq_log_returns_done was never populated to match it
 // (every deriv_greeks test fixture in this file does exactly that: rv_done_dec

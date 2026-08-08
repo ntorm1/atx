@@ -392,8 +392,9 @@ re-inserting `T` silently assumes `T == 1` always. The formula above is the
 annualization-consistent substitution (`IV0 = K_vol_naive·√T`,
 `VAR0² = K_var·T`, divided back through by `√T`); it collapses to the
 T-dropped paraphrase exactly at `T == 1` and to `K_vol_naive` exactly
-whenever `K_var == K_vol_naive²` (no convexity to recover). See
-`task-C-5-report.md` for the full re-derivation.
+whenever `K_var == K_vol_naive²` (no convexity to recover). See Carr & Lee
+(2009), Remark 6.4/6.5, and `derivatives.hpp`'s `detail::refine_carr_lee_
+k_vol` doc for the full re-derivation.
 
 **Wiring**: `resolve_vol_of_vol`'s three callers (mid-life vol swap, capped
 var swap, capped vol swap) already have the strip's `K_var` in hand, so

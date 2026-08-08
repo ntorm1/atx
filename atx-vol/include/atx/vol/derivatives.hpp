@@ -178,7 +178,8 @@ enum class DerivDiscreteCorrection : std::uint8_t {
   // n_obs_total - n_obs_done), NOT the contract's total observation count.
   // Magnitude is a fraction of a variance point for a daily-monitored
   // (n ~ 252) contract at typical rate/carry differentials -- e.g. ~0.036 var
-  // pts at sigma=20%, r-q=5%, T=1Y, n=252 (task-C-1-report.md). Does NOT cover
+  // pts at sigma=20%, r-q=5%, T=1Y, n=252 (CHANGELOG's C-1 entry has the full
+  // worked comparison against the pre-fix formula). Does NOT cover
   // the residual O(1/n) JUMP term (Broadie-Jain sec 4); jump-diffusion
   // discrete-monitoring bias needs the FullMc engine below (reserved).
   Diffusion1OverN = 1,
@@ -193,7 +194,8 @@ enum class DerivMarkingConvention : std::uint8_t {
 
 // Which Carr-Lee K_vol approximation the ATMF-straddle formula (and the
 // vol-of-vol auto-calibration that inverts it, resolve_vol_of_vol) resolve
-// against. Task C-5; see task-C-5-report.md for the from-paper derivation.
+// against. Task C-5; see Carr & Lee (2009) Remarks 6.4/6.5, cited in full
+// below, for the from-paper derivation.
 //
 //   Naive    -> K_vol ~= sqrt(2 pi / T) * C_ATMF(T) / (F * df) (Carr & Lee
 //               2009, "Robust Replication of Volatility Derivatives", Prop.
@@ -615,8 +617,8 @@ namespace detail {
 // Carr-Lee (Carr & Lee 2009, "Robust Replication of Volatility Derivatives",
 // https://math.uchicago.edu/~rl/rrvd.pdf, Remark 6.4/6.5) convexity
 // refinement of the naive ATMF-straddle K_vol approximation, adapted to this
-// codebase's ANNUALIZED decimal convention. task-C-5-report.md has the full
-// from-paper re-derivation; in short, the paper states Remark 6.4 for
+// codebase's ANNUALIZED decimal convention. The from-paper re-derivation
+// follows in full below; in short, the paper states Remark 6.4 for
 // UN-annualized total-horizon quantities (IV0, VAR0, VOL0, each scaling like
 // sigma*sqrt(T)) --
 //
@@ -646,8 +648,8 @@ namespace detail {
 // relative to sigma_atmf by sigma_atmf^3*T/24 -- a SEPARATE, UN-corrected
 // approximation layer this refinement does not touch. On this task's own
 // T=0.5/sigma_atmf=0.20 fixture that residual is ~1.667 vol bp, ROUGHLY 1.8x
-// LARGER than the +0.906 vol bp the refinement itself adds
-// (task-C-5-report.md's measurement table): a Refined strike still lands
+// LARGER than the +0.906 vol bp the refinement itself adds (CHANGELOG.md's
+// measurement table for this task): a Refined strike still lands
 // strictly below sigma_atmf, let alone the paper's true VOL0. "Recovers
 // part of the convexity gap" describes the K_var-vs-k_vol_naive^2 gap this
 // formula targets, not the total distance from k_vol_naive to fair value.
