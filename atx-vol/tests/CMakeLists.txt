@@ -181,6 +181,16 @@ add_executable(atx-vol-tests
     # backtest-production-lakehouse sprint, Task D1 — appended target:
     track_key_test.cpp               # content-addressed TrackKey + economics-rev tripwire
 )
+
+# backtest-production-lakehouse sprint, Task D2 — appended conditionally: the
+# Parquet track store round-trip test includes Arrow/Parquet headers directly
+# (to verify row groups / codec / sorting-columns from real file metadata) and
+# needs TrackStore::write_staging/compact() actually compiled into atx-vol, so
+# it only joins the suite when ATX_VOL_LAKEHOUSE is ON (mirrors how
+# src/track_store.cpp itself is gated, atx-vol/CMakeLists.txt).
+if(ATX_VOL_LAKEHOUSE)
+    target_sources(atx-vol-tests PRIVATE track_store_test.cpp)
+endif()
 # backtest_bench_test.cpp was relocated to bench/backtest_throughput_bench.cpp
 # (it is a throughput benchmark, not a correctness gate).
 

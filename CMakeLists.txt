@@ -322,6 +322,28 @@ endif()
 option(ATX_VOL_COUNTERS "Instrument atx-vol pricing hot paths with opt-in algorithm counters" OFF)
 option(ATX_VOL_PROFILE "Instrument atx-vol phase wall times with compile-time opt-in timers" OFF)
 
+# ---- atx-vol research lakehouse (Task D2, backtest-production-lakehouse sprint) ----
+# Gates the Parquet track store (research/track_store.hpp, src/track_store.cpp)
+# and its `track_compact` CLI on Arrow + Parquet (vcpkg `arrow[parquet]`, which
+# already pulls in zstd as a mandatory port dependency -- ARROW_WITH_ZSTD is
+# compiled in; no separate "zstd feature" exists on the vcpkg arrow port to
+# request). ON by default (the bare-cmake / `dev` preset path: neither
+# overrides this option, so both get the lakehouse); a minimal-install
+# packager passes -DATX_VOL_LAKEHOUSE=OFF, which drops src/track_store.cpp
+# and the CLI executable from atx-vol/CMakeLists.txt entirely (see the
+# ATX_VOL_LAKEHOUSE guard there) -- OFF keeps every other atx-vol/atx-core
+# target as they already were, and adds no new library or link edge of its
+# own. NOTE: atx-core has depended on Arrow/Parquet UNCONDITIONALLY since the
+# Parquet loader (io/parquet.hpp, commit 23f6ea2) predates this option and is
+# out of D2's scope to regate -- so this flag's real, verifiable contract is
+# narrower than "no build under this repo ever links Arrow when OFF": it is
+# "the NEW D2 lakehouse code adds no Arrow/Parquet dependency of its own when
+# OFF." See the D2 report for the OFF-configuration link check that verifies
+# exactly that.
+option(ATX_VOL_LAKEHOUSE
+       "Build the research Parquet track store (write_staging/compact) + track_compact CLI"
+       ON)
+
 # ---- atx-vol operator CLIs (plan 5.6; ON by default) ------------------------
 # The three SHIPPED tools -- atx-vol-surface-db-build, atx-vol-surface-db and the
 # dispersion-backtest CLI -- live in atx-vol/tools/ and install into <prefix>/bin

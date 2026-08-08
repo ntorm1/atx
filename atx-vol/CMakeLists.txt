@@ -128,6 +128,9 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     # tripwire pairing. Same research/include placement and same-library
     # compilation as snapshot_pool.cpp immediately above.
     src/track_key.cpp
+    # D2's src/track_store.cpp joins conditionally below (ATX_VOL_LAKEHOUSE) --
+    # it is the one atx-vol source that needs Arrow/Parquet, so it is not
+    # listed unconditionally here the way track_key.cpp above is.
     src/strategy.cpp
     src/dispersion_strategy.cpp
     src/tearsheet.cpp
@@ -267,6 +270,26 @@ target_link_libraries(atx-vol
         atx::tsdb  # read-only mmap (tsdb::Mapping) for the S2 zero-read surface open
         atx_warnings
 )
+
+# ---- D2: research Parquet track store (backtest-production-lakehouse sprint) ----
+# ATX_VOL_LAKEHOUSE (root CMakeLists.txt) gates the ONE atx-vol translation
+# unit that touches Arrow/Parquet directly (src/track_store.cpp -- its header,
+# research/include/atx/vol/research/track_store.hpp, is Arrow-free and always
+# declared). Linked PRIVATE: track_store.cpp's own TU needs Arrow/Parquet
+# headers+libs, but nothing in track_store.hpp does, so no consumer of
+# atx::vol should see an extra Arrow include root propagate from THIS edge —
+# note atx::core already links Arrow::arrow_shared/Parquet::parquet_shared
+# PUBLIC unconditionally (io/parquet.hpp, predates this option, out of D2's
+# scope), so this PRIVATE edge is not what makes Arrow appear on atx-vol's
+# consumers; it is what makes track_store.cpp independently correct should
+# that unconditional atx-core edge ever change.
+if(ATX_VOL_LAKEHOUSE)
+    find_package(Arrow CONFIG REQUIRED)
+    find_package(Parquet CONFIG REQUIRED)
+    target_sources(atx-vol PRIVATE src/track_store.cpp)
+    target_link_libraries(atx-vol PRIVATE Arrow::arrow_shared Parquet::parquet_shared)
+    target_compile_definitions(atx-vol PRIVATE ATX_VOL_LAKEHOUSE)
+endif()
 
 # ---- Algorithm counters (P0.2) ----
 # PUBLIC so the library AND every consumer (bench/tests that include
@@ -653,4 +676,13 @@ if(ATX_BUILD_TOOLS)
     # (python/src/atxvol/report/dispersion.py) are written for.
     add_executable(atxvol_spy_dispersion_backtest tools/spy_dispersion_backtest.cpp)
     target_link_libraries(atxvol_spy_dispersion_backtest PRIVATE atx::vol atx::core atx_warnings)
+
+    # D2: track_compact -- folds staging/ into the hive-partitioned zstd
+    # Parquet tracks/ lakehouse (atx::vol::compact(), track_store.hpp). Only
+    # buildable when ATX_VOL_LAKEHOUSE actually compiled TrackStore/compact()
+    # into atx-vol above; ATX_BUILD_TOOLS alone is not enough.
+    if(ATX_VOL_LAKEHOUSE)
+        add_executable(track_compact tools/track_compact.cpp)
+        target_link_libraries(track_compact PRIVATE atx::vol atx::core atx_warnings)
+    endif()
 endif()
