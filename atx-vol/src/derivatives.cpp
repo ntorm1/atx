@@ -1700,7 +1700,12 @@ Result<DerivGreeks> deriv_greeks(const SurfaceT& surface, const CurveSet& curves
   // At T == 0 the discount is gone and both collapse to 0 (YieldCurve::zero
   // returns 0 for T <= 0, so theta lands there without a special case).
   if (has_flag(center.flags, DerivFlags::FullyAged)) {
-    g.rho = -contract.maturity_t * center.pv;
+    // Clamp T >= 0 before the analytic rho: a lot can be FullyAged (obs-count
+    // driven) while its own maturity_t has already gone negative (expired,
+    // not yet rolled off the book). Un-clamped, -T*PV sign-flips into a
+    // fabricated positive rho instead of the "nothing left to discount" 0.
+    const double t_nonneg = std::fmax(contract.maturity_t, 0.0);
+    g.rho = -t_nonneg * center.pv;
     g.theta = curves.yield.zero(contract.maturity_t) * center.pv;
     return Ok(g);
   }

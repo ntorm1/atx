@@ -234,6 +234,30 @@ TEST(DerivGreeks, FullyAgedWithRateAccretesAtTheCarry) {
   EXPECT_EQ(g->charm, 0.0);
 }
 
+// Fully aged AND past its own maturity marker (an expired lot not yet rolled
+// off the book). rho = -T*PV must not sign-flip on negative T: clamp T to 0
+// so an already-settled lot reports zero rate sensitivity instead of
+// -(-0.01)*PV, which would fabricate a small positive rho out of a lot that
+// has nothing left to discount. (PV-9)
+TEST(DerivGreeks, FullyAgedNegativeMaturityClampsRhoToZero) {
+  const double r = 0.043;
+  const EssviSurface surf = make_flat_surface(0.20, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00, r);
+  DerivContract c{};
+  c.kind = DerivKind::VolSwap;
+  c.maturity_t = -0.01;  // expired lot
+  c.notional = 1e5;
+  c.strike_dec = 0.18;
+  c.rv_spec.annualization = 252.0;
+  c.rv_spec.n_obs_total = 63u;
+  c.rv_spec.n_obs_done = 63u;
+  c.rv_spec.rv_done_dec = 0.0441;  // sqrt = 0.21, so pv != 0 -- a real claim
+  const auto g = deriv_greeks(surf, cs, c);
+  ASSERT_TRUE(g.has_value()) << g.error().to_string();
+  ASSERT_NE(g->pv, 0.0);
+  EXPECT_EQ(g->rho, 0.0);
+}
+
 // High-vol regime: sigma*sqrt(T) = 0.35 > 0.25, so the E2 adaptive-wing rescale
 // is ACTIVE and its node count is a ceil() of a vol-dependent quantity. Without
 // pinning the center's grid, a bumped evaluation can land on a different node
