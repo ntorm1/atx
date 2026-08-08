@@ -33,28 +33,47 @@ def _find_atxpy_redirect():
     return None, None
 
 
-# --- Workaround 1: stale scikit-build-core editable-install redirect -------
+# --- Workaround 1: stale/foreign scikit-build-core editable-install redirect
 #
 # `pip install -e ./python` bakes an *absolute* source path into a finder
 # registered on sys.meta_path (ahead of the normal PathFinder, so it wins
-# every `import atxpy` regardless of sys.path). On this machine that path
-# was baked from a previous repo location (`...\OneDrive\Desktop\atx\...`)
-# that no longer exists -- the repo has since moved to `C:\atx` /
-# `C:\atx-wt\<worktree>`. Confirmed pre-existing and machine-wide (reproduces
-# from `C:\atx` directly too, not specific to this worktree or to atxpy.pbo).
+# every `import atxpy` regardless of sys.path). That finder is machine-wide,
+# not worktree-scoped: only one `atxpy` editable install can be "active" on
+# this machine at a time, whichever worktree last ran `pip install -e`.
 #
-# This block engages the workaround ONLY when that redirect is actually
-# broken (its baked target path does not exist). In a correctly configured
-# environment (fresh clone, `pip install -e` re-run against the new path,
-# a CI image) the finder's target resolves fine and this block is a no-op:
-# sys.meta_path and sys.path are left completely untouched, so a real ABI
-# break in a freshly built `_core` extension still surfaces normally
-# instead of being silently masked by a stale, hand-copied fallback .pyd.
+# Two distinct ways that goes wrong for *this* worktree:
+#   1. The baked target doesn't exist at all -- e.g. it was baked from a
+#      previous repo location (`...\OneDrive\Desktop\atx\...`) that no
+#      longer exists (the repo moved to `C:\atx` / `C:\atx-wt\<worktree>`).
+#      Confirmed pre-existing and machine-wide (reproduces from `C:\atx`
+#      directly too, not specific to this worktree or to atxpy.pbo).
+#   2. The baked target exists but points at a *sibling* worktree's
+#      `atxpy/__init__.py` -- e.g. someone re-ran `pip install -e ./python`
+#      from `C:\atx` or another `pool-N` after this file's first version was
+#      written. A bare `.exists()` check reads that as "healthy" and leaves
+#      it alone, so `import atxpy` silently loads the wrong worktree's
+#      source *and compiled binary* with no error -- worse than case 1,
+#      which at least fails loudly.
 #
-# DELETE this block once the editable install is repaired for real, i.e.
-# once `python -c "import atxpy"` succeeds with no conftest involved.
+# So "healthy" here specifically means "resolves to THIS worktree's
+# atxpy/__init__.py", not merely "resolves to some file". The workaround
+# engages whenever the redirect is missing OR points elsewhere; only when
+# it resolves to this worktree's own `_ATXPY_SRC_DIR` is sys.meta_path left
+# completely untouched (true no-op), so a real ABI break in a freshly built
+# `_core` extension still surfaces normally instead of being silently
+# masked by a stale, hand-copied fallback .pyd.
+#
+# DELETE this block once every worktree gets its own correctly-scoped
+# editable install (or once this repo stops needing per-worktree pip
+# installs at all), i.e. once `python -c "import atxpy"` succeeds *from
+# this worktree* with no conftest involved and without disturbing any
+# other worktree's install.
 _finder, _target = _find_atxpy_redirect()
-if _finder is not None and not _target.exists():
+_this_worktree_init = (_ATXPY_SRC_DIR / "__init__.py").resolve()
+_redirect_is_broken = _finder is not None and (
+    not _target.exists() or _target.resolve() != _this_worktree_init
+)
+if _redirect_is_broken:
     sys.meta_path = [f for f in sys.meta_path if f is not _finder]
 
     src_str = str(_SRC)
@@ -63,21 +82,29 @@ if _finder is not None and not _target.exists():
 
     _core_present = any(_ATXPY_SRC_DIR.glob("_core*.pyd")) or any(_ATXPY_SRC_DIR.glob("_core*.so"))
     if not _core_present:
+        _reason = (
+            "does not exist"
+            if not _target.exists()
+            else f"points at a different worktree ({_target}, not {_this_worktree_init})"
+        )
         pytest.exit(
-            "atxpy's pip editable install is broken: its redirect target "
-            f"({_target}) does not exist (the repo moved), and no fallback "
-            f"compiled extension (_core*.pyd / _core*.so) was found in "
-            f"{_ATXPY_SRC_DIR} either, so `import atxpy` cannot succeed.\n"
-            "Fix: from the repo root run\n"
+            f"atxpy's pip editable install is broken for this worktree: its "
+            f"redirect target {_reason}, and no fallback compiled extension "
+            f"(_core*.pyd / _core*.so) was found in {_ATXPY_SRC_DIR} either, "
+            "so `import atxpy` cannot succeed.\n"
+            "Fix: from THIS worktree's root run\n"
             "    python -m pip install -e ./python --no-build-isolation\n"
-            "(see python/README.md) to rebuild/reinstall against the "
-            "current path. As a stopgap, a matching compiled _core*.pyd "
-            "copied from a working install into that directory will also "
-            "let this workaround proceed.",
+            "(see python/README.md) to rebuild/reinstall against this "
+            "worktree's path -- note this will also change which worktree "
+            "the machine-wide editable install points at for everyone else. "
+            "As a stopgap, a matching compiled _core*.pyd copied from a "
+            "working install into that directory will also let this "
+            "workaround proceed.",
             returncode=1,
         )
-# else: no editable-install finder found, or its target resolves fine --
-# nothing to do here; atxpy will import normally below.
+# else: no editable-install finder found, or its target resolves to this
+# worktree's own atxpy/__init__.py -- nothing to do here; atxpy will import
+# normally below.
 
 # --- Workaround 2: pandas-before-atxpy native load-order crash -------------
 #
