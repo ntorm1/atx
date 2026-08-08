@@ -286,7 +286,11 @@ std::vector<BevDayState> synth_gbm_path(double sigma, std::size_t n_days,
                                         double r = 0.0, double q = 0.0) {
   std::mt19937 rng(seed);
   std::normal_distribution<double> z(0.0, 1.0);
-  const double dt = 1.0 / 252.0, sq = sigma * std::sqrt(dt);
+  // dt MUST match the timestamp grid: nodes are 1 CALENDAR day apart and the replay
+  // prices with T = ns/(365.25*86400e9), so per-step variance uses 1/365.25. (1/252
+  // injects a real ~20% realized-vs-hedged vol gap — found in execution, confirmed by
+  // pure-BS replication. Tasks 3-5 reuse this corrected helper.)
+  const double dt = 1.0 / 365.25, sq = sigma * std::sqrt(dt);
   std::vector<BevDayState> p;
   p.reserve(n_days + 1);
   double s = s0;
@@ -294,7 +298,7 @@ std::vector<BevDayState> synth_gbm_path(double sigma, std::size_t n_days,
     p.push_back(BevDayState{static_cast<std::int64_t>(i) * kDayNs, s, r, q});
     s *= std::exp((r - q - 0.5 * sigma * sigma) * dt + sq * z(rng));
   }
-  // Timestamp grid is calendar==trading here; expiry is the last node.
+  // Calendar-day grid; expiry is the last node.
   return p;
 }
 
