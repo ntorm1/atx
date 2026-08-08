@@ -9,6 +9,7 @@
 #include <limits>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -453,6 +454,81 @@ duplicate_maturity_report(const Underlying &under, const CurveConfig &curve) {
   return attempt;
 }
 
+// ── Final-review I2: naming the publish gate's verdict in failure text ───────
+//
+// A FitAdmissionPolicy refusal folds into `ValidationFailure::InvalidDomain`
+// (`fit_risk`'s `admission_attempt`), and that fold DOES NOT MOVE: the mask is
+// byte-stream and digest state, and giving the policy its own bit would change
+// every persisted digest that carries one. The cost of the fold is that the
+// numeric mask cannot tell a QUALITY-FLOOR refusal from a genuine domain
+// defect — a populate `failed_cell` prints `mask=2049` for both. Task 2 armed
+// the 0.35 floor on every populate fit, so those two now arrive mixed together
+// in the same report. The reason enum already exists and the decision is
+// already computed; only the RENDERING was missing.
+[[nodiscard]] constexpr std::string_view
+admission_reason_name(SurfaceAdmissionReason reason) noexcept {
+  switch (reason) {
+  case SurfaceAdmissionReason::None: return "None";
+  case SurfaceAdmissionReason::BuildFailed: return "BuildFailed";
+  case SurfaceAdmissionReason::InsufficientFittedExpiries: return "InsufficientFittedExpiries";
+  case SurfaceAdmissionReason::InsufficientExpiryCoverage: return "InsufficientExpiryCoverage";
+  case SurfaceAdmissionReason::InsufficientQuoteCoverage: return "InsufficientQuoteCoverage";
+  case SurfaceAdmissionReason::FrontExpiryMissing: return "FrontExpiryMissing";
+  case SurfaceAdmissionReason::ConsecutiveExpiryGap: return "ConsecutiveExpiryGap";
+  case SurfaceAdmissionReason::NonFiniteDiagnostics: return "NonFiniteDiagnostics";
+  case SurfaceAdmissionReason::CalendarArbitrage: return "CalendarArbitrage";
+  case SurfaceAdmissionReason::QualityBelowFloor: return "QualityBelowFloor";
+  case SurfaceAdmissionReason::ImpossibleEvidence: return "ImpossibleEvidence";
+  case SurfaceAdmissionReason::DuplicateMaturity: return "DuplicateMaturity";
+  case SurfaceAdmissionReason::FiniteIvDomain: return "FiniteIvDomain";
+  case SurfaceAdmissionReason::EuropeanPriceBounds: return "EuropeanPriceBounds";
+  case SurfaceAdmissionReason::StrikeMonotonicity: return "StrikeMonotonicity";
+  case SurfaceAdmissionReason::StrikeConvexity: return "StrikeConvexity";
+  case SurfaceAdmissionReason::CalendarTotalVariance: return "CalendarTotalVariance";
+  case SurfaceAdmissionReason::ForwardVariance: return "ForwardVariance";
+  case SurfaceAdmissionReason::RequiredTenorBucket: return "RequiredTenorBucket";
+  case SurfaceAdmissionReason::DiagnosticsUnavailable: return "DiagnosticsUnavailable";
+  }
+  // No `default:` — the switch above is `-Wswitch`-exhaustive, so a new
+  // enumerator fails the BUILD here rather than printing a number. This line
+  // only catches a value cast in from outside the enumerator set (the failed
+  // -check bit walk below can, in principle, name one).
+  return "Unknown";
+}
+
+// The publish gate's verdict as greppable text, composed the way the neighboring
+// terms of the rejection string are (leading space, `key=value`, no commas):
+//   ` admission=QualityBelowFloor admission_failed=QualityBelowFloor`
+// `admission` is the PRIMARY (first-failing) reason and `admission_failed` the
+// COMPLETE set, because the primary is order-dependent — an operator greping for
+// floor refusals must not miss one that happened to trip a second gate that
+// `evaluate_surface_admission` checks earlier. `admission=ok` when the policy
+// admitted and the rejection came from the independent oracle alone; that
+// distinction is the whole point of printing it.
+[[nodiscard]] std::string admission_detail(const SurfaceAdmissionDecision &decision) {
+  if (decision.admitted) {
+    return " admission=ok admission_failed=none";
+  }
+  std::string out = " admission=";
+  out += admission_reason_name(decision.primary_reason);
+  out += " admission_failed=";
+  bool any = false;
+  for (unsigned bit = 0; bit < 32u; ++bit) {
+    if ((decision.failed_checks & (std::uint32_t{1u} << bit)) == 0u) {
+      continue;
+    }
+    if (any) {
+      out += "|";
+    }
+    out += admission_reason_name(static_cast<SurfaceAdmissionReason>(bit + 1u));
+    any = true;
+  }
+  if (!any) {
+    out += "none";
+  }
+  return out;
+}
+
 [[nodiscard]] SurfaceParityInputs refit_preparation_inputs(const VolaSession &session) {
   const SessionInputs &stored = session.inputs();
   SurfaceParityInputs inputs;
@@ -477,6 +553,7 @@ duplicate_maturity_report(const Underlying &under, const CurveConfig &curve) {
 
 } // namespace detail
 
+using detail::admission_detail;
 using detail::completed_attempt_report;
 using detail::duplicate_maturity_report;
 using detail::failed_attempt_report;
@@ -1385,6 +1462,13 @@ Status PricerFitter::fit(const OptionChain &chain,
 
   ValidationDigest digest = validate_candidate(sess);
   SurfaceBuildAttemptReport attempt = admission_attempt(sess, digest);
+  // Final-review I2. The publish-gate verdict for the candidate `digest`
+  // DESCRIBES, moved in lockstep with `digest` at both adoption sites below so
+  // the rejection detail can never name one candidate's policy verdict beside
+  // another's mask. (The rejection path only ever reads the PRIMARY's — a
+  // rejected ladder/strict rung never adopts — but pinning the pair is what
+  // keeps that true if a later rung ever does.)
+  SurfaceAdmissionDecision policy_verdict = attempt.admission;
   const std::uint64_t prior = risk_surface_ != nullptr ? risk_surface_->generation() : 0u;
   AdmissionDecision admission = decide_risk_surface_admission(
       digest, quality_mode, candidate_generation_, prior, cfg_.fallback);
@@ -1433,6 +1517,7 @@ Status PricerFitter::fit(const OptionChain &chain,
         continue;
       sess = std::move(*retry);
       digest = retry_digest;
+      policy_verdict = report.attempts.back().admission; // I2: stays paired with `digest`
       admission = retry_admission;
       if (decision_.has_value()) {
         // Served provenance must name the admitted family: the policy curve
@@ -1522,6 +1607,7 @@ Status PricerFitter::fit(const OptionChain &chain,
         // rejected primary of this fit stays authoritative.
         sess = std::move(*strict);
         digest = strict_digest;
+        policy_verdict = report.attempts.back().admission; // I2: stays paired with `digest`
         admission = strict_admission;
         if (decision_.has_value()) {
           if (!decision_->used_fallback) {
@@ -1560,6 +1646,14 @@ Status PricerFitter::fit(const OptionChain &chain,
     return Err(ErrorCode::Unavailable,
                "risk surface rejected: model=" + std::string(to_string(sess.inputs().curve.kind)) +
                    " mask=" + std::to_string(static_cast<std::uint32_t>(digest.failures)) +
+                   // Final-review I2. `mask` folds every FitAdmissionPolicy
+                   // refusal into InvalidDomain (bit 0) and stays that way, so
+                   // it cannot separate a publish-floor refusal from a domain
+                   // defect. These two terms can: `admission=QualityBelowFloor`
+                   // is the Task-2 0.35 floor refusing the board, and it greps
+                   // apart from `admission=ok` (the oracle rejected geometry the
+                   // policy was content with) in a failed_cell dump.
+                   admission_detail(policy_verdict) +
                    " butterfly=" + std::to_string(digest.n_butterfly_violations) +
                    " butterfly_slack=" + std::to_string(digest.max_butterfly_slack) +
                    " butterfly_k=" + std::to_string(digest.first_butterfly_k) +
