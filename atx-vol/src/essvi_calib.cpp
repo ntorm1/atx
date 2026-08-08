@@ -1281,14 +1281,23 @@ struct ChainFitResult {
   // PORT NOTE on `fit_wing_residual`) for real calendar + butterfly
   // violations. Runs AFTER the opt-in theta-project repair above, so a caller
   // enabling BOTH knobs gets repair-then-audit.
+  // MUST-FIX 8 (C-8 MINOR-2): the audit call used to sit behind a plain
+  // ATX_TRY, which early-returns PAST surface.set_diagnostics and the whole
+  // out_diag block below on a failing audit -- total diagnostic loss on the
+  // one path whose entire purpose is diagnostic honesty. Capture the Result
+  // without propagating yet, so RMSE/quote counts/iteration counts are
+  // always recorded before any return, then propagate the audit's own error
+  // (if any) AFTER diagnostics are populated.
   std::uint32_t n_calendar_viol = 0u;
   std::uint32_t n_butterfly_viol = 0u;
+  Result<TotalSurfaceArbCounts> arb_result = Ok(TotalSurfaceArbCounts{});
   if (n_fit_ok > 0 && opts.validate_no_arb) {
-    ATX_TRY(const TotalSurfaceArbCounts arb_counts,
-            arb_check_total_surface_all(surface, kNoArbAuditKMin, kNoArbAuditKMax,
-                                        kNoArbAuditGrid));
-    n_calendar_viol = arb_counts.n_calendar;
-    n_butterfly_viol = arb_counts.n_butterfly;
+    arb_result = arb_check_total_surface_all(surface, kNoArbAuditKMin, kNoArbAuditKMax,
+                                              kNoArbAuditGrid);
+    if (arb_result.has_value()) {
+      n_calendar_viol = arb_result->n_calendar;
+      n_butterfly_viol = arb_result->n_butterfly;
+    }
   }
 
   const double rmse_global = (sum_w > 0.0) ? std::sqrt(sum_sse / sum_w) : 0.0;
@@ -1308,9 +1317,14 @@ struct ChainFitResult {
         static_cast<std::uint16_t>(std::min<std::uint32_t>(agg_inner, 0xFFFFu));
     out_diag->n_quotes_used = total_used;
     // Real counts from the audit above (0 when opts.validate_no_arb left it
-    // un-run, which is not itself a "verified clean" claim — see FitDiag).
+    // un-run, or when the audit itself failed, neither of which is a
+    // "verified clean" claim — see FitDiag).
     out_diag->n_butterfly_viol = n_butterfly_viol;
     out_diag->n_calendar_viol = n_calendar_viol;
+  }
+
+  if (!arb_result.has_value()) {
+    return Err(arb_result.error());
   }
 
   if (n_fit_ok == 0) {
