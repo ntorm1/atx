@@ -2095,6 +2095,55 @@ TEST(Strip, InteriorNaNAtAtmExceedsThreshold_ReturnsInternal) {
   EXPECT_EQ(q.error().code(), ErrorCode::Internal);
 }
 
+// ── MUST-FIX 7 (C-4 deferred (a)) ──────────────────────────────────────────
+//
+// The gate is `interior_bad_count > max(2, n/100)`; at the pinned 401-node
+// grid, threshold == max(2, 401/100) == 4 exactly. Every existing fixture
+// (23 bad nodes) clears the gate by a wide margin and cannot tell `>` from
+// `>=` apart -- this pair pins the exact boundary, count == 4 (must stay Ok)
+// vs count == 5 (must return Internal).
+//
+// A dip centered ON a grid node (m a multiple of dx = 0.005, as the fixtures
+// above all use) only ever covers an ODD node count (symmetric +-K nodes
+// around the center, 2K+1) -- there is no way to land on the EVEN count 4
+// that way. Centering the dip exactly BETWEEN two adjacent grid nodes
+// (m = 0.5025, halfway between i=300 at k=0.5 and i=301 at k=0.505) makes the
+// coverage symmetric around the GAP instead, which only ever covers EVEN
+// counts: h in (0.0025, 0.0075) bad nodes are {300,301} (2), h in
+// (0.0075, 0.0125) bad nodes are {299,300,301,302} (4). h = 0.01 sits
+// centered in the second interval.
+TEST(Strip, InteriorNaNAtExactThreshold_StaysOk) {
+  const double T_test = 0.5;
+  // h = sqrt(a^2 - sigma^2) = 0.01 exactly, with sigma = 0.001:
+  // a = -sqrt(0.01^2 + 0.001^2) = -sqrt(0.000101).
+  const double sigma_svi = 0.001;
+  const double h = 0.01;
+  const double a = -std::sqrt(h * h + sigma_svi * sigma_svi);
+  const SviSurface surf = make_interior_hole_surface(a, 0.5025, sigma_svi, T_test);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+
+  const auto q = var_swap_fair_strike(surf, cs, T_test, pinned_symmetric_strip_cfg());
+  ASSERT_TRUE(q.has_value()) << "count == threshold (4) must stay Ok, not Internal";
+  EXPECT_TRUE(has_flag(q->flags, DerivFlags::InteriorBadNodes));
+}
+
+// Same construction, dip centered ON a grid node (m = 0.5, the fixtures
+// above's own placement) so coverage is the ODD count 2K+1: h in
+// (0.01, 0.015) covers {298,...,302}, K = 2, count 5 -- one past threshold.
+// h = 0.0125 sits centered in that interval.
+TEST(Strip, InteriorNaNOneNodePastThreshold_ReturnsInternal) {
+  const double T_test = 0.5;
+  const double sigma_svi = 0.001;
+  const double h = 0.0125;
+  const double a = -std::sqrt(h * h + sigma_svi * sigma_svi);
+  const SviSurface surf = make_interior_hole_surface(a, 0.5, sigma_svi, T_test);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+
+  const auto q = var_swap_fair_strike(surf, cs, T_test, pinned_symmetric_strip_cfg());
+  ASSERT_FALSE(q.has_value()) << "count == threshold+1 (5) must return Internal";
+  EXPECT_EQ(q.error().code(), ErrorCode::Internal);
+}
+
 // ── Fix round 1: the shared panel-boundary node must count exactly once
 //    (review Important finding) ─────────────────────────────────────────
 //
