@@ -328,7 +328,7 @@ struct FitObs {
   double mid{0.0};             // anchor-aware target price (bid / mid / ask)
   double spread{0.0};          // ask − bid (price units)
   double vega{0.0};            // B76 vega at sigma_mkt
-  double noise_sigma{0.0};     // spread / vega — σ-equivalent of the half-spread
+  double noise_sigma{0.0};     // spread / vega — σ-equivalent of the FULL spread
   Side side{Side::Call};
   // Stable source identity survives sorting, observation caps, and de-Am.
   std::uint32_t source_strike_index{0};
