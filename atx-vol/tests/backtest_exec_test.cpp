@@ -1972,10 +1972,34 @@ TEST(BacktestExec, L2StrategyCohortSettlementMemoBitIdentical) {
     }
   }
   EXPECT_GT(settle_rows, 0) << "no cohort settled — the strategy memo path is not exercised";
+  // C1 (backtest-lakehouse sprint): before C1, this strategy's memo was NEVER
+  // actually consulted -- `Entry::EveryStep` keeps `ExecResult::book_greeks` set on
+  // every step (entry_happened is always true), so the standalone `book_greeks()`
+  // call that was the ONLY pre-C1 memo-populate site never ran, and every
+  // settlement always re-solved regardless of `settlement_mark_memo`. That made
+  // "memo on == memo off" trivially bit-identical: both arms always solved.
+  //
+  // C1 populates the memo from execute()'s own FullGreeks pass, so a settlement
+  // here can now genuinely be SERVED from the memo for the first time. The served
+  // mark comes from a FullGreeks AVX2 batch over the WHOLE overlapping-cohort book
+  // (potentially dozens of lots); the solved mark comes from a Marks-only AVX2
+  // batch over just that day's few expiring lots -- a DIFFERENT SIMD lane
+  // composition for the identical contract. `L2MarkMemoCruxFullGreeksMarkEqualsMarks
+  // Mark` above already documents that FullGreeks and Marks marks are an ECONOMIC
+  // parity guarantee (<=1e-10 relative), not a bit-identity one; this is that same
+  // AVX2 reassociation residual, one order of magnitude smaller (~1e-16 relative,
+  // 1-2 ULP) because both routes are AVX2 here (vs. AVX2-vs-scalar in the crux
+  // test). Only `pnl_settlement`/`pnl_total`/`nav` can see it (they subtract the
+  // served/solved mark); `cash` does not (settlement credits CASH from the plain
+  // intrinsic, never the mark) and `gross_vega`/`n_open_lots` are untouched by
+  // settlement at all -- so those four stay bit-identical below.
+  constexpr double kSettlementMarkParityTol = 1e-9; // >>1-2 ULP, <<1 cent on this book
   for (std::size_t i = 0; i < r_on->size(); ++i) {
-    EXPECT_TRUE(bits_equal(r_on->nav[i], r_off->nav[i])) << "nav row " << i;
-    EXPECT_TRUE(bits_equal(r_on->pnl_total[i], r_off->pnl_total[i])) << "pnl_total row " << i;
-    EXPECT_TRUE(bits_equal(r_on->pnl_settlement[i], r_off->pnl_settlement[i])) << "settle row " << i;
+    EXPECT_NEAR(r_on->nav[i], r_off->nav[i], kSettlementMarkParityTol) << "nav row " << i;
+    EXPECT_NEAR(r_on->pnl_total[i], r_off->pnl_total[i], kSettlementMarkParityTol)
+        << "pnl_total row " << i;
+    EXPECT_NEAR(r_on->pnl_settlement[i], r_off->pnl_settlement[i], kSettlementMarkParityTol)
+        << "settle row " << i;
     EXPECT_TRUE(bits_equal(r_on->gross_vega[i], r_off->gross_vega[i])) << "gross_vega row " << i;
     EXPECT_TRUE(bits_equal(r_on->cash[i], r_off->cash[i])) << "cash row " << i;
     EXPECT_EQ(r_on->n_open_lots[i], r_off->n_open_lots[i]) << "n_open_lots row " << i;
@@ -1983,6 +2007,142 @@ TEST(BacktestExec, L2StrategyCohortSettlementMemoBitIdentical) {
   std::printf("[btexec] L2 strategy cohort settlement: memo on==off over %d settle rows, "
               "bit-identical\n",
               settle_rows);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// C1 (backtest-lakehouse sprint) — mark-memo repopulation on the execute() path.
+//
+// `L2StrategyCohortSettlementMemoBitIdentical` above already documents the defect:
+// its strategy re-enters EVERY step (`Entry::EveryStep`), so `ExecResult::book_greeks`
+// has a value on every step and the standalone `book_greeks()` call that is the ONLY
+// place the step-mark memo gets populated (pre-C1) never runs — the memo is
+// permanently cold, and every settlement re-solves.
+//
+// A DAILY-HEDGED strategy hits the identical starvation for a different reason:
+// `HedgeSpec::Cadence::Daily` makes `execute()`'s `hedge_fires` true on EVERY step
+// regardless of `entry_happened`, so `ExecResult::book_greeks` again always has a
+// value and the memo again never populates. C1 fixes this at the root — execute()'s
+// own FullGreeks `price_into` pass now populates the memo itself — so BOTH shapes
+// benefit; this fixture isolates the daily-hedge trigger with a single cohort held
+// to an EXACT expiry so the solve-ledger counts are unambiguous (`n_expiring_lots`
+// lots, one settlement event, nothing else).
+// ─────────────────────────────────────────────────────────────────────────────
+
+namespace {
+
+// A daily-hedged strangle (call+put, ONE cohort opened at inception via a huge
+// `entry_every_n`, `HoldToExpiry`) whose expiry lands EXACTLY on a later clock
+// date — `expiry_day < n_dates` settles it inside the run; `expiry_day >= n_dates`
+// leaves it open at run end (the bit-identity/no-expiry variant below). "ExecFixture
+// ::daily_hedged_strangle_over_expiry() or equivalent" from the C1 brief: kept as a
+// standalone fixture rather than folded into `ExecFixture` above (that class is
+// QuoteSide-specific — its `.corpus()`/`.config()` return QuoteSide-only types/
+// configs — so bolting an unrelated daily-hedge/expiry mode onto it would trade one
+// coupling for another).
+struct DailyHedgedExpiryFixture {
+  Clock clock;
+  StrategySpec spec;
+  std::size_t n_expiring_lots{0};
+
+  [[nodiscard]] DeclarativeStrategy strategy() const { return DeclarativeStrategy{spec}; }
+  [[nodiscard]] static RunConfig config() {
+    RunConfig cfg;
+    cfg.price.n_threads = 1u;       // solve-ledger counts are thread-invariant
+    cfg.prefetch_snapshots = false; // remove async-prefetch nondeterminism
+    return cfg;                    // settlement_mark_memo defaults true
+  }
+};
+
+[[nodiscard]] DailyHedgedExpiryFixture
+make_daily_hedged_strangle_fixture(const fs::path& dir, int n_dates, int expiry_day) {
+  const Corpus c = make_corpus(dir, "SPX", n_dates);
+  auto clock = Clock::from_manifest(c.manifest);
+  EXPECT_TRUE(clock.has_value()) << (clock.has_value() ? std::string{} : clock.error().to_string());
+
+  StrategySpec spec;
+  spec.name = "c1-daily-hedged-strangle";
+  LegSpec leg;
+  leg.uid = kUid;
+  leg.tenor.target_T = static_cast<double>(expiry_day * kDayNs) / kNsPerYear;
+  leg.tenor.snap_to_listed = false;
+  leg.structure.kind = StructureSpec::Kind::Strangle;
+  leg.structure.call_leg = StrikeSelector{StrikeSelector::Kind::Delta, 0.40};
+  leg.structure.put_leg = StrikeSelector{StrikeSelector::Kind::Delta, 0.40};
+  leg.size = SizeSpec{SizeSpec::Kind::FixedContracts, 1.0, +1.0};
+  spec.legs.push_back(leg);
+  spec.lifecycle.entry = LifecycleSpec::Entry::EveryNDays;
+  spec.lifecycle.entry_every_n = 100000; // >> corpus => opens once, at inception
+  spec.lifecycle.holding = LifecycleSpec::Holding::HoldToExpiry;
+  spec.hedge = HedgeSpec{HedgeSpec::Kind::DeltaToZero, HedgeSpec::Cadence::Daily, 0.0};
+
+  const std::size_t n_expiring = expiry_day < n_dates ? 2u : 0u; // call + put, same cohort
+  return DailyHedgedExpiryFixture{std::move(*clock), std::move(spec), n_expiring};
+}
+
+} // namespace
+
+// The pinned solve-ledger gate: expiry-day settlement marks must be memo hits, not
+// fresh solves, on the daily-hedge route. Pre-C1 this fails with
+// settlement_full_solves == 2 (both legs re-solved) and settlement_memo_hits == 0
+// (the memo was never populated) — the bug's exact count signature.
+TEST(BacktestSolveLedger, ExpiryMarksMemoHitOnDailyHedgeRoute) {
+  const fs::path dir = fresh_dir("c1-solve-ledger");
+  const DailyHedgedExpiryFixture fx =
+      make_daily_hedged_strangle_fixture(dir, /*n_dates=*/8, /*expiry_day=*/5);
+  ASSERT_EQ(fx.n_expiring_lots, 2u);
+
+  auto strat = fx.strategy();
+  auto r = run_backtest(fx.clock, strat, fx.config());
+  ASSERT_TRUE(r.has_value()) << r.error().to_string();
+  EXPECT_EQ(0u, r->solve_ledger.settlement_full_solves)
+      << "expiry settlement should be served from the L2 mark memo on the daily-hedge "
+         "route, not re-solved";
+  EXPECT_GE(r->solve_ledger.settlement_memo_hits, fx.n_expiring_lots);
+  std::printf("[btexec] C1 daily-hedge settlement memo: hits=%llu full_solves=%llu "
+              "(n_expiring_lots=%zu)\n",
+              static_cast<unsigned long long>(r->solve_ledger.settlement_memo_hits),
+              static_cast<unsigned long long>(r->solve_ledger.settlement_full_solves),
+              fx.n_expiring_lots);
+}
+
+// Bit-identity (KEY INVARIANT): the memo changes SOLVE COUNT, never VALUES. On a
+// non-expiry corpus (the cohort's expiry falls well beyond the run window, so
+// nothing ever settles) memo ON and memo OFF must produce a bit-identical result —
+// proving execute()'s new populate_from call (which now runs on EVERY daily-hedged
+// step, whether or not anything ever consumes the memo) is inert on the economics.
+// Both solve-ledger counters are also asserted at exactly 0 in both runs: with no
+// expiring lot, compute_step's L2 settlement branch never executes at all.
+TEST(BacktestSolveLedger, DailyHedgeNoExpiryMemoOnOffBitIdentical) {
+  const fs::path dir = fresh_dir("c1-solve-ledger-noexpiry");
+  const DailyHedgedExpiryFixture fx =
+      make_daily_hedged_strangle_fixture(dir, /*n_dates=*/6, /*expiry_day=*/60);
+  ASSERT_EQ(fx.n_expiring_lots, 0u) << "fixture must not settle within this corpus";
+
+  const auto run = [&](bool memo) {
+    auto strat = fx.strategy();
+    RunConfig cfg = fx.config();
+    cfg.settlement_mark_memo = memo;
+    return run_backtest(fx.clock, strat, cfg);
+  };
+  const auto r_on = run(true);
+  const auto r_off = run(false);
+  ASSERT_TRUE(r_on.has_value()) << r_on.error().to_string();
+  ASSERT_TRUE(r_off.has_value()) << r_off.error().to_string();
+  ASSERT_EQ(r_on->size(), r_off->size());
+
+  for (std::size_t i = 0; i < r_on->size(); ++i) {
+    EXPECT_TRUE(bits_equal(r_on->nav[i], r_off->nav[i])) << "nav row " << i;
+    EXPECT_TRUE(bits_equal(r_on->pnl_total[i], r_off->pnl_total[i])) << "pnl_total row " << i;
+    EXPECT_TRUE(bits_equal(r_on->cash[i], r_off->cash[i])) << "cash row " << i;
+    EXPECT_TRUE(bits_equal(r_on->gross_vega[i], r_off->gross_vega[i])) << "gross_vega row " << i;
+    EXPECT_TRUE(bits_equal(r_on->gross_delta[i], r_off->gross_delta[i])) << "gross_delta row " << i;
+  }
+  EXPECT_EQ(0u, r_on->solve_ledger.settlement_memo_hits);
+  EXPECT_EQ(0u, r_on->solve_ledger.settlement_full_solves);
+  EXPECT_EQ(0u, r_off->solve_ledger.settlement_memo_hits);
+  EXPECT_EQ(0u, r_off->solve_ledger.settlement_full_solves);
+  std::printf("[btexec] C1 daily-hedge no-expiry: memo on==off bit-identical over %zu rows\n",
+              r_on->size());
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

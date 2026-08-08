@@ -1395,6 +1395,11 @@ struct StepPnl {
   // (the truly-unobservable case) and substituted a later, post-expiry spot
   // instead. Summed into `BacktestResult::n_settlements_at_stale_spot`.
   std::uint32_t n_stale_spot_settlements{0};
+  // C1: this step's L2 settlement-mark-memo admission counts (batched-settle
+  // path only; see the `mark_memo` branch below). Summed into
+  // `BacktestResult::solve_ledger`.
+  std::uint32_t n_settlement_memo_hits{0};
+  std::uint32_t n_settlement_full_solves{0};
 };
 
 // WS-F F1 tolerance extension (SP100 task 2). One lot whose EXACT expiry step had
@@ -1482,6 +1487,8 @@ compute_step(const MarketSnapshot &base, const MarketSnapshot &shifted,
   std::uint32_t n_deferred = 0;
   double deferred_settle_cash = 0.0;
   std::uint32_t n_stale_spot_settlements = 0;
+  std::uint32_t n_settlement_memo_hits = 0;
+  std::uint32_t n_settlement_full_solves = 0;
 
   // Deferred settlements carried in from EARLIER steps, walked in LOT-ID order: a
   // lot settles at intrinsic the first time its board is back, and is otherwise
@@ -1674,12 +1681,14 @@ compute_step(const MarketSnapshot &base, const MarketSnapshot &shifted,
             mark_memo->find(lot.contract.uid, lot.contract.K, T_base, lot.contract.side, inst);
         if (mm.has_value() && memo_enabled) {
           served[i] = *mm; // duplicate settlement solve avoided
+          ++n_settlement_memo_hits; // C1: solve ledger — served, not re-solved
         } else {
           if (mm.has_value()) {
             // Memo has it, but consumption is disabled -> the solve below duplicates it.
             counters::ledger::bump(counters::ledger::Solve::DuplicateMarkSolves);
           }
           to_solve.push_back(lot); // served[i] stays NaN -> solved below
+          ++n_settlement_full_solves; // C1: solve ledger — falls back to a fresh solve
         }
       }
       const PriceFrame *sf_ptr = nullptr;
@@ -1780,7 +1789,7 @@ compute_step(const MarketSnapshot &base, const MarketSnapshot &shifted,
     ATX_TRY_VOID(target_marks->seal());
   }
   return Ok(StepPnl{t, settlement, n_unpriced, first_unpriced_uid, n_deferred, deferred_settle_cash,
-                    n_stale_spot_settlements});
+                    n_stale_spot_settlements, n_settlement_memo_hits, n_settlement_full_solves});
 }
 
 // The Error-policy message for a step that has `n_unpriced` held lots with no
@@ -2925,6 +2934,10 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
   // pure diagnostics -- see `BacktestResult::n_short_calls_assignable`.
   std::uint64_t n_short_calls_assignable_total = 0;
   std::uint64_t n_puts_exercisable_total = 0;
+  // Task C1: run-totals of the L2 settlement-mark-memo admission decisions.
+  // See `BacktestResult::solve_ledger` / `SolveLedgerSummary`.
+  std::uint64_t n_settlement_memo_hits_total = 0;
+  std::uint64_t n_settlement_full_solves_total = 0;
 
   for (std::size_t i = 1; i < refs.size(); ++i) {
     // Plan 5.5 safe point: the TOP of the step, before this step's snapshot load
@@ -2980,6 +2993,8 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
     const PnlTotals &t = step->totals;
     const double settlement = step->settlement;
     n_stale_spot_total += step->n_stale_spot_settlements;
+    n_settlement_memo_hits_total += step->n_settlement_memo_hits;
+    n_settlement_full_solves_total += step->n_settlement_full_solves;
 
     const double step_total = t.pnl_total + settlement;
     nav += step_total;                        // cumulative every step, regardless of recording
@@ -3052,6 +3067,9 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
   // Task B3: same placement discipline as the run-total counters above.
   out.n_short_calls_assignable = n_short_calls_assignable_total;
   out.n_puts_exercisable = n_puts_exercisable_total;
+  // Task C1: same placement discipline as the run-total counters above.
+  out.solve_ledger.settlement_memo_hits = n_settlement_memo_hits_total;
+  out.solve_ledger.settlement_full_solves = n_settlement_full_solves_total;
 
   // Plan 4.6: the engine may not emit a skewed column set. Pure read, so this
   // cannot change a value the run produced.
@@ -3381,6 +3399,22 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
       ATX_TRY_VOID(pricer->price_into(base_snap.set(), PriceFieldMask::FullGreeks,
                                       risk_frame.view(), retained_pricer.workspace(), cfg.price,
                                       entry_seeds));
+      // C1: this pass ALWAYS sets `ex.book_greeks` below, which makes the row-record
+      // and inception call sites skip their own standalone `book_greeks(...)` call
+      // (see `ex->book_greeks.has_value() ? ... : book_greeks(...)` at both call
+      // sites) — the ONLY place that used to populate the step-mark memo. On a
+      // strategy whose entries or hedge fire every step (in particular any DAILY
+      // DeltaToZero hedge, where `hedge_fires` above is unconditionally true) that
+      // fallback call never runs, so the memo was permanently cold and every
+      // settlement re-solved instead of serving from it -- exactly the ~1s/underlier
+      // /expiry-day cost the L2 perf sprint removed. Populate it here too, exactly as
+      // `book_greeks` does, from the SAME retained bundle this price_into pass just
+      // computed (no extra solve): the surface-instance guard in `StepMarkMemo::find`
+      // then passes on the following expiry step. Values are unaffected either way —
+      // a memo hit reads the SAME andersen_lake mark a settlement solve would
+      // produce (see step_mark_memo.hpp) — this only changes which of the two
+      // populate call sites the memo is fed from, never what settlement computes.
+      mark_memo.populate_from(*pricer, retained_pricer.workspace(), base_snap);
       ex.book_greeks = summarize_price_frame(risk_frame.frame);
       current_risk = &risk_frame.frame;
     }
@@ -3698,6 +3732,10 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
   // See `BacktestResult::n_short_calls_assignable` / `n_puts_exercisable`.
   std::uint64_t n_short_calls_assignable_total = 0;
   std::uint64_t n_puts_exercisable_total = 0;
+  // Task C1: run-totals of the L2 settlement-mark-memo admission decisions.
+  // See `BacktestResult::solve_ledger` / `SolveLedgerSummary`.
+  std::uint64_t n_settlement_memo_hits_total = 0;
+  std::uint64_t n_settlement_full_solves_total = 0;
 
   for (std::size_t i = 1; i < refs.size(); ++i) {
     // Plan 5.5 safe point: the TOP of the step, before this step's snapshot load
@@ -3764,6 +3802,8 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
     // run.
     const double settlement = step->settlement + exercise.settlement_pnl;
     n_stale_spot_total += step->n_stale_spot_settlements;
+    n_settlement_memo_hits_total += step->n_settlement_memo_hits;
+    n_settlement_full_solves_total += step->n_settlement_full_solves;
 
     // 2. Shares PnL + financing over the step, from the ledger held over the step.
     const double dt =
@@ -4061,6 +4101,9 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
   // Task B3: same placement discipline as the run-total counters above.
   out.n_short_calls_assignable = n_short_calls_assignable_total;
   out.n_puts_exercisable = n_puts_exercisable_total;
+  // Task C1: same placement discipline as the run-total counters above.
+  out.solve_ledger.settlement_memo_hits = n_settlement_memo_hits_total;
+  out.solve_ledger.settlement_full_solves = n_settlement_full_solves_total;
 
   // Plan 4.6: the engine may not emit a skewed column set. Pure read, so this
   // cannot change a value the run produced.

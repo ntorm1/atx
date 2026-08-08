@@ -1279,6 +1279,31 @@ private:
 // stride. STATE columns (`nav`, `cash`, `gross_*`, `n_open_lots`,
 // `n_unpriced_greeks`) are the value AT the recorded row. `nav` is the cumulative
 // Σ step_total (incl. settlement) from inception = 0.
+// C1 (backtest-lakehouse sprint, target 1.1.0): a RESULT SCALAR PAIR, not a
+// row-parallel series — run-totals of the step-mark memo's settlement
+// admission decisions (see `detail::StepMarkMemo`, `src/step_mark_memo.hpp`,
+// and `compute_step`'s L2 settlement branch in backtest.cpp). An expiring
+// lot's base mark either SERVES from the memo (`settlement_memo_hits`,
+// populated by the immediately preceding step's book-greeks/execute()
+// FullGreeks pass) or falls back to a fresh Andersen-Lake solve
+// (`settlement_full_solves` — a memo miss, a stale surface-instance guard, or
+// `RunConfig::settlement_mark_memo == false`). Per-lot-per-settlement-event
+// counts (a step settling two lots adds 2, split between the two counters as
+// each lot resolves). Populated identically on BOTH `run_backtest` overloads
+// (`compute_step` is shared). Same append-only, non-wire treatment as
+// `n_steps_entry_skipped` and its siblings below: absent from
+// `kBacktestSeriesColumns` and RunArchive serialization, so `ra_schema_hash()`
+// and every TSV/CSV header and golden are untouched. Both members are always
+// 0 on a run with no expiring lots, and `settlement_memo_hits` is always 0
+// under `RunConfig::settlement_mark_memo == false`, which never consults the
+// memo.
+struct SolveLedgerSummary {
+  std::uint64_t settlement_memo_hits{0};
+  std::uint64_t settlement_full_solves{0};
+
+  [[nodiscard]] bool operator==(const SolveLedgerSummary &) const noexcept = default;
+};
+
 struct BacktestResult {
   std::vector<std::string> date;
   std::vector<std::int64_t> ts_ns;
@@ -1519,6 +1544,10 @@ struct BacktestResult {
   // the boundary condition is the same option economics either way (see
   // `should_exercise_early`'s doc comment), so both sides share one counter.
   std::uint64_t n_puts_exercisable{0};
+
+  // Task C1 (backtest-lakehouse sprint, target 1.1.0): the settlement side of
+  // the L2 step-mark memo's solve ledger. See `SolveLedgerSummary` above.
+  SolveLedgerSummary solve_ledger{};
 
   [[nodiscard]] std::size_t size() const noexcept { return date.size(); }
 
