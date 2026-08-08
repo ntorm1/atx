@@ -543,11 +543,15 @@ concat_tables(const std::vector<std::shared_ptr<arrow::Table>> &tables) {
   return detail::flush_and_publish_file(*tmp_path, dst_path);
 }
 
-// Batches ~256-512 MB per file: accumulate tracks (already sorted by
-// track_key) until the running estimated byte size crosses the lower target,
-// then flush. The final, possibly-under-target remainder for a group is
-// always flushed too (a group is never silently dropped for being small).
-constexpr std::int64_t kTargetBatchBytes = 256LL * 1024 * 1024;
+// Batches target ~256-512 MB of COMPRESSED output per file: accumulate
+// tracks (already sorted by track_key) until `detail::should_flush_batch`
+// says the running RAW byte total's estimated-compressed size has crossed
+// the middle of that window, then flush. See track_store.hpp's
+// `detail::should_flush_batch` doc comment for why this compares an
+// estimated-compressed size rather than the raw total directly, and for
+// `kEstimatedZstdCompressionRatio`'s provenance. The final, possibly-under-
+// target remainder for a group is always flushed too (a group is never
+// silently dropped for being small).
 
 } // namespace
 
@@ -715,7 +719,7 @@ Result<CompactStats> compact(std::string_view lake_root) {
       batch_bytes += table_nbytes(*staged[idx].table);
       batch_tables.push_back(staged[idx].table);
       batch_members.push_back(idx);
-      if (batch_bytes >= kTargetBatchBytes) {
+      if (detail::should_flush_batch(batch_bytes)) {
         Status flushed = flush_batch();
         if (!flushed.has_value()) {
           return Err(flushed.error());

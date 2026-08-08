@@ -168,6 +168,40 @@ struct ReadBatch {
 
 } // namespace
 
+// ── compact()'s batch-sizing boundary logic (detail::should_flush_batch) ───
+// Pure-function unit coverage on synthetic byte counts -- no need to actually
+// write hundreds of MB through Arrow/Parquet to exercise the threshold math
+// itself. See track_store.hpp's `detail::` doc comment for
+// `kEstimatedZstdCompressionRatio`'s empirical provenance.
+TEST(TrackStoreSizingTest, EstimatedCompressedBytesAppliesTheCalibratedRatio) {
+  EXPECT_EQ(atx::vol::detail::estimated_compressed_bytes(0), 0);
+  EXPECT_EQ(atx::vol::detail::estimated_compressed_bytes(1000), 900);
+  EXPECT_EQ(atx::vol::detail::estimated_compressed_bytes(1'000'000'000), 900'000'000);
+}
+
+TEST(TrackStoreSizingTest, ShouldFlushBatchBoundary) {
+  // Zero and small raw totals never trigger a flush.
+  EXPECT_FALSE(atx::vol::detail::should_flush_batch(0));
+  EXPECT_FALSE(atx::vol::detail::should_flush_batch(1000));
+
+  // Exact boundary around kTargetBatchBytesCompressedMid (384 MiB) at the
+  // calibrated 0.90 ratio: raw=447,392,426 -> estimated compressed
+  // 402,653,183 (1 byte under the 402,653,184-byte target -> no flush);
+  // raw=447,392,427 -> estimated compressed 402,653,184 (== target -> flush).
+  EXPECT_EQ(atx::vol::detail::kTargetBatchBytesCompressedMid, 402'653'184);
+  EXPECT_FALSE(atx::vol::detail::should_flush_batch(447'392'426));
+  EXPECT_TRUE(atx::vol::detail::should_flush_batch(447'392'427));
+
+  // Comfortably above/below the boundary.
+  EXPECT_FALSE(atx::vol::detail::should_flush_batch(440'000'000));
+  EXPECT_TRUE(atx::vol::detail::should_flush_batch(1'000'000'000));
+}
+
+// constexpr-usable at compile time too (both functions are `constexpr`).
+static_assert(atx::vol::detail::estimated_compressed_bytes(1000) == 900);
+static_assert(!atx::vol::detail::should_flush_batch(447'392'426));
+static_assert(atx::vol::detail::should_flush_batch(447'392'427));
+
 // ── The Step-1 gate: 3 tracks, 2 hive partitions, full round trip ──────────
 TEST(TrackStoreTest, RoundTripThreeTracksAcrossTwoPartitions) {
   const fs::path dir = fresh_dir("roundtrip");
