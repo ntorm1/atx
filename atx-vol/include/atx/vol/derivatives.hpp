@@ -376,6 +376,20 @@ private:
 // and for CappedVolSwap (a decimal VOL cap instead, e.g. 2.5*0.20 = 0.50):
 // deriv_price requires cap_dec > 0 on a capped kind (else InvalidArgument)
 // and rejects a non-zero cap_dec on an uncapped kind (also InvalidArgument).
+//
+// UNIT NOTE (PV-7): the aged-trade blend weighs the accrued and future legs
+// by RAW OBSERVATION COUNT -- n_done/n_total and n_future/n_total (n_future =
+// rv_spec.n_obs_total - rv_spec.n_obs_done) -- never by calendar time
+// directly. That is only the right blend when the observation schedule
+// tracks calendar time at roughly the annualization's own cadence, i.e.
+// n_future ~= rv_spec.annualization * T_resid, T_resid being `maturity_t`
+// itself (the same residual year-fraction the future leg's K_var_future is
+// priced over); the default annualization = 252 implicitly assumes one
+// observation per trading day. Keeping `rv_spec` and `maturity_t` staged
+// consistently with that assumption -- e.g. after a roll or re-strike that
+// changes maturity_t but not n_obs_total/n_obs_done to match -- is entirely
+// the caller's responsibility; nothing here cross-validates n_future against
+// maturity_t.
 struct DerivContract {
   DerivKind kind = DerivKind::VarSwap;
   double maturity_t = 0.0;   // years until expiry
