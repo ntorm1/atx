@@ -380,7 +380,12 @@ struct FitDiag {
   // validate_no_arb is false — NEITHER case is a "verified globally clean"
   // claim. DIAGNOSTIC-ONLY for callers that leave validate_no_arb off; the
   // per-slice serving gates in `fit_slice_curve` do their own independent
-  // (always-on, full-quoted-range-aware) rejecting regardless of this field.
+  // rejecting regardless of this field, always on -- but NOT always
+  // full-quoted-range-aware (MUST-FIX 9): true for SVI (unconditionally) and
+  // for eSSVI's optional wing-residual layer (`resid_scale > 0`); the
+  // default eSSVI/C8/CStar/spline branches still scan the fixed
+  // `[-0.6, 0.6]` band (`kRiskCalendarMin`/`Max`, vol_curve.cpp). See
+  // essvi_calib.hpp for the precise per-branch statement.
   std::uint32_t n_butterfly_viol{0};
   // Calendar no-arb diagnostic (Task C-8): real post-fit surface-level
   // calendar-crossing count from the same eSSVI alternate-driver audit above
