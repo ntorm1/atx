@@ -12,6 +12,7 @@
 #include "atx/vol/derivatives.hpp"
 #include "atx/vol/detail/strip_grid.hpp"    // strip::simpson_weight (WingClamp oracle)
 #include "atx/vol/detail/legacy_surface.hpp"  // EssviSurface (demoted, S4-T21)
+#include "atx/vol/detail/risk_surface_validation.hpp" // RiskSurfaceValidationConfig (MUST-FIX 2)
 #include "atx/vol/priced_surface.hpp"  // E6: PricedSurface-native overloads
 #include "atx/vol/rates_curve.hpp"
 #include "atx/vol/surface.hpp"
@@ -20,6 +21,21 @@
 #include "atx/vol/vol_surface.hpp" // Tier-A instantiation set (closeout 1.2)
 #include "deriv_fixtures.hpp" // Task 0: deriv_testkit::make_curves / MC oracle
 #include "support/analytics_fixture.hpp" // E6: testkit::make_flat_surface
+
+namespace atx::vol {
+// Test-only seam (MUST-FIX 2 / C-6 I-6): `risk_validation_config` is pricer_
+// fitter.cpp's own FitQualityMode -> k_min/k_max table (the fit-time band the
+// independent risk oracle actually certifies); it has external linkage but no
+// header declares it, since `surface_policy.hpp`'s `certified_wing_half_band`
+// is a hand-kept COPY of its k_max column for the pricing-time read path, and
+// only the Balanced case is statically cross-checked (derivatives.cpp) --
+// Latency/Accuracy could drift apart from `risk_validation_config` with no
+// test catching it, silently re-creating FIT-C7. Forward-declared here,
+// exactly as `qp_active_set_for_test` reaches into `dense_slice.cpp` (C-7):
+// no header touched, production call sites (pricer_fitter.cpp) untouched.
+[[nodiscard]] RiskSurfaceValidationConfig
+risk_validation_config(FitQualityMode quality_mode) noexcept;
+}  // namespace atx::vol
 
 // Vol-derivatives coverage, ported from the C ats-vol Sprint-22 tests:
 //   test_vol_deriv_var_strip.c    -> VarStrip (flat-vol strip recovers sigma^2)
@@ -1942,6 +1958,27 @@ TEST(SurfacePolicy, CertifiedWingHalfBandMatchesEachQualityMode) {
   // whole feature is built on (also static_asserted in derivatives.cpp).
   EXPECT_DOUBLE_EQ(atx::vol::certified_wing_half_band(FitQualityMode::Balanced),
                    atx::vol::strip::kCertifiedWingHalfBand);
+}
+
+// MUST-FIX 2 (C-6 I-6): `certified_wing_half_band`'s three literals are a
+// hand-kept COPY of `risk_validation_config`'s `k_max` column (the fit-time
+// band the independent risk oracle actually certifies, pricer_fitter.cpp);
+// only the Balanced case was cross-checked (the test above, against the
+// SEPARATE `strip::kCertifiedWingHalfBand` constant -- not against
+// `risk_validation_config` itself). Correct today for all three modes
+// (verified below), but nothing previously caught the two literals drifting
+// apart -- silently re-creating FIT-C7 elsewhere. This is also the phase's
+// one live oracle gap (aggregate review §4): the WingClamp.SurfaceCertified
+// BandOverridesModeBlindDefault 0.35 pin is independent of the RESOLVER, but
+// was never checked against the fact it claims to mirror.
+TEST(SurfacePolicy, CertifiedWingHalfBandMatchesRiskValidationConfig) {
+  using atx::vol::FitQualityMode;
+  for (const FitQualityMode mode :
+       {FitQualityMode::Latency, FitQualityMode::Balanced, FitQualityMode::Accuracy}) {
+    EXPECT_DOUBLE_EQ(atx::vol::certified_wing_half_band(mode),
+                     atx::vol::risk_validation_config(mode).k_max)
+        << "mode=" << atx::vol::to_string(mode);
+  }
 }
 
 // ── Kind x engine dispatch matrix (PV-5) ──────────────────────────────────
