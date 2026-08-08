@@ -44,6 +44,7 @@
 #include "atx/vol/backtest.hpp"          // Clock, run_backtest, RunConfig, FrictionModel, ...
 #include "atx/vol/corpus.hpp"            // CorpusManifest, CorpusEntry, CorpusFitStatus
 #include "atx/vol/detail/counters.hpp"          // counters::ledger — L1 solve-economy gate
+#include "atx/vol/detail/pricing_executor.hpp"  // pricing_executor() — C2 warm() fan-out gate
 #include "atx/vol/portfolio_pricer.hpp"  // OptionContract, kNsPerYear
 #include "atx/vol/priced_surface.hpp"    // PricedSurface, PricingContext
 #include "atx/vol/research/snapshot_pool.hpp"  // C2: SnapshotPool, SnapshotPoolStats
@@ -70,9 +71,36 @@ std::atomic<std::uint64_t> g_count{0};
 std::atomic<bool> g_armed{false};
 }  // namespace atx_b3_alloc
 
+// C2 fault injection: drive a real unwind THROUGH SnapshotPool's loader window —
+// the region between inserting an entry into its shard and publishing it, which
+// SnapshotPoolLoaderUnwindPublishesAndEvicts regresses.
+//
+// SELF-CALIBRATING, deliberately. A count-based trigger ("fail the Nth
+// allocation") cannot express "inside the window" without hardcoding how many
+// allocations `acquire` makes on the way in — 24 of them on this toolchain, all
+// of them in std::filesystem/std::string internals where an injected failure just
+// terminates the process and proves nothing. Instead the trigger asks the POOL:
+// `identity_probes` is bumped immediately after the entry is inserted, so failing
+// the first allocation once that counter moves lands inside the window by
+// construction, at its shallowest point (the identity probe's file stream), and
+// stays correct if the STL's allocation pattern ever changes.
+//
+// `SnapshotPool::stats()` is a noexcept read of atomics that allocates nothing,
+// so consulting it from inside `operator new` cannot recurse. THREAD-LOCAL, so
+// arming it cannot disturb gtest's bookkeeping on other threads or a pricing-pool
+// worker; one-shot, so it disarms itself on the throw.
+namespace atx_c2_alloc {
+thread_local const atx::vol::SnapshotPool* g_unwind_watch = nullptr;
+}  // namespace atx_c2_alloc
+
 void* operator new(std::size_t sz) {
   if (atx_b3_alloc::g_armed.load(std::memory_order_relaxed)) {
     atx_b3_alloc::g_count.fetch_add(1, std::memory_order_relaxed);
+  }
+  if (atx_c2_alloc::g_unwind_watch != nullptr &&
+      atx_c2_alloc::g_unwind_watch->stats().identity_probes != 0u) {
+    atx_c2_alloc::g_unwind_watch = nullptr;  // one-shot
+    throw std::bad_alloc();
   }
   void* p = std::malloc(sz != 0 ? sz : 1);
   if (p == nullptr) {
@@ -2765,4 +2793,263 @@ TEST(BacktestExec, SnapshotPoolConcurrentRunsMatchSerial) {
   }
   std::printf("[btexec] pool soak: %d reps x %zu concurrent runs, bit-identical\n",
               kPoolSoakRepeats, kThreads);
+}
+
+// ── Task C2 fix round: the three gaps the review found ──────────────────────
+//
+//   1. A loader that UNWINDS used to abandon its entry un-ready forever, hanging
+//      every waiter and every later acquirer of that key (invariant L7).
+//   2. The bit-identity gate never exercised the pool's one real behavioural
+//      divergence — dropping the private cache's uid SUBSET — because
+//      DeclarativeStrategy does not override `referenced_uids()`, so both sides
+//      were whole-board. The fixed-book overload had no pool coverage at all.
+//   3. `warm()`'s executor dispatch never actually ran: `run_dynamic` inlines
+//      below 4 refs and `RunConfig::prefetch_depth` defaults to 2, so no pool
+//      worker ever executed an acquisition.
+
+namespace {
+
+// A second underlier, present in every archive of `make_two_name_corpus` and
+// referenced by NO book below. It is what makes the private cache's
+// subset-deserialize observable: the private route drops it, the pool keeps it.
+constexpr std::uint32_t kPoolOtherUid = 99;
+
+// Two surfaces per dated archive (kUid + kPoolOtherUid), otherwise `make_corpus`.
+[[nodiscard]] Corpus make_two_name_corpus(const fs::path& dir, int n_dates) {
+  std::vector<std::pair<std::string, std::string>> dp;
+  for (int d = 0; d < n_dates; ++d) {
+    const std::int64_t now = kBaseNow + static_cast<std::int64_t>(d) * kDayNs;
+    const double S = 100.0 * (1.0 + 0.004 * static_cast<double>(d));
+    const double vb = 0.001 * static_cast<double>(d);
+    const PricedSurface a = make_surface(kUid, S, S, now, vb);
+    const PricedSurface b = make_surface(kPoolOtherUid, 1.5 * S, 1.5 * S, now, 2.0 * vb);
+    char buf[16];
+    std::snprintf(buf, sizeof buf, "2026-08-%02d", d + 1);
+    const std::string date = buf;
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    const std::string path = (dir / (date + ".atxvsa")).string();
+    const std::array<SurfaceArchiveItem, 2> items{SurfaceArchiveItem{"SPX", &a},
+                                                  SurfaceArchiveItem{"XOM", &b}};
+    const Status st = write_surface_archive_v2_file(path, items);
+    EXPECT_TRUE(st.has_value()) << (st.has_value() ? std::string{} : st.error().to_string());
+    dp.emplace_back(date, path);
+  }
+  Corpus c;
+  c.dp = std::move(dp);
+  c.manifest = make_manifest(c.dp, "SPX");
+  return c;
+}
+
+}  // namespace
+
+// FINDING 1a. A load that FAILS must release every parked waiter and leave the
+// key retryable. A regression here does not fail this test — it HANGS it, which
+// is precisely why the contract needs a gate of its own.
+TEST(BacktestExec, SnapshotPoolFailedLoadReleasesEveryWaiterAndRetries) {
+  const fs::path dir = fresh_dir("pool-failed-load");
+  const Corpus c = make_corpus(dir, "SPX", 1);
+  const std::string missing = (dir / "2099-01-01.atxvsa").string();
+
+  SnapshotPool pool;
+  constexpr std::size_t kThreads = 8;
+  std::vector<Result<std::shared_ptr<const MarketSnapshot>>> out(
+      kThreads, Err(ErrorCode::Unknown, "acquire never returned"));
+  {
+    std::vector<std::jthread> threads;
+    threads.reserve(kThreads);
+    for (std::size_t t = 0; t < kThreads; ++t) {
+      threads.emplace_back([&, t] {
+        out[t] = pool.acquire("2099-01-01", missing, QueryPricingTier::LegacyCompatible);
+      });
+    }
+  }  // jthread join — this is the hang detector
+
+  for (std::size_t t = 0; t < kThreads; ++t) {
+    EXPECT_FALSE(out[t].has_value()) << "thread " << t << " got a snapshot for a missing archive";
+  }
+  const SnapshotPoolStats st = pool.stats();
+  // A failure is never cached: the entry is evicted, so nothing is resident and
+  // every attempt that became a loader is counted.
+  EXPECT_EQ(st.resident_entries, 0u);
+  EXPECT_GE(st.failed_loads, 1u);
+  EXPECT_EQ(st.failed_loads, st.archive_opens);
+
+  // The pool is not poisoned: a good date on the same pool still loads.
+  auto good = pool.acquire(c.dp[0].first, c.dp[0].second, QueryPricingTier::LegacyCompatible);
+  ASSERT_TRUE(good.has_value()) << good.error().to_string();
+  EXPECT_NE(*good, nullptr);
+  EXPECT_EQ(pool.stats().resident_entries, 1u);
+}
+
+// FINDING 1b. A loader that UNWINDS (bad_alloc out of the identity probe or the
+// mmap, out of the mismatch message's string concat, out of a lock) must still
+// publish and evict — invariant L7.
+//
+// Before the fix the entry stayed `ready == false` in the shard map forever:
+// waiters parked on its condition variable were never signalled, every later
+// acquire of that key parked too, and a `warm()` whose workers were parked never
+// reached its join barrier. One bad_alloc on one date wedged every run in the
+// process, and it presented as a CI timeout rather than a failing assertion.
+//
+// The injected failure is aimed by the pool's own telemetry rather than by an
+// allocation count — see `atx_c2_alloc::g_unwind_watch` — so it lands inside the
+// loader window by construction. `identity_probes == 1` afterwards is the
+// assertion that it really did.
+TEST(BacktestExec, SnapshotPoolLoaderUnwindPublishesAndEvicts) {
+  const fs::path dir = fresh_dir("pool-unwind");
+  const Corpus c = make_corpus(dir, "SPX", 1);
+  const std::string& date = c.dp[0].first;
+  const std::string& path = c.dp[0].second;
+
+  SnapshotPool pool;
+  bool threw = false;
+  atx_c2_alloc::g_unwind_watch = &pool;
+  try {
+    const auto got = pool.acquire(date, path, QueryPricingTier::LegacyCompatible);
+    (void)got.has_value();
+  } catch (...) {
+    // Deliberately `...`: an injected bad_alloc inside std::filesystem or the
+    // stream layer can surface re-wrapped. This gate cares only that SOMETHING
+    // unwound the loader.
+    threw = true;
+  }
+  atx_c2_alloc::g_unwind_watch = nullptr;  // disarm before gtest itself allocates
+
+  ASSERT_TRUE(threw) << "the injected allocation failure did not unwind the loader";
+  const SnapshotPoolStats st = pool.stats();
+  ASSERT_EQ(st.identity_probes, 1u)
+      << "the failure did not land inside the loader's publication window";
+
+  // The guard published-and-evicted: nothing is resident, the abandoned load is
+  // counted, and no thread can be left parked because the entry is gone.
+  EXPECT_EQ(st.resident_entries, 0u);
+  EXPECT_EQ(st.failed_loads, 1u);
+
+  // The key is retryable — the whole point of never caching a failure — and a
+  // crowd of acquirers arriving after the unwind all complete. Under the bug this
+  // join never returned.
+  constexpr std::size_t kThreads = 8;
+  std::vector<Result<std::shared_ptr<const MarketSnapshot>>> out(
+      kThreads, Err(ErrorCode::Unknown, "acquire never returned"));
+  {
+    std::vector<std::jthread> threads;
+    threads.reserve(kThreads);
+    for (std::size_t t = 0; t < kThreads; ++t) {
+      threads.emplace_back(
+          [&, t] { out[t] = pool.acquire(date, path, QueryPricingTier::LegacyCompatible); });
+    }
+  }  // jthread join — this is the hang detector
+  for (std::size_t t = 0; t < kThreads; ++t) {
+    ASSERT_TRUE(out[t].has_value()) << "thread " << t << ": " << out[t].error().to_string();
+    EXPECT_NE(*out[t], nullptr);
+  }
+  EXPECT_EQ(pool.stats().resident_entries, 1u);
+  std::printf("[btexec] pool L7: loader unwound inside its window, entry evicted, key retryable\n");
+}
+
+// FINDING 2. The pool's ONE real behavioural divergence from the private cache:
+// it cannot carry a book's uid subset, so it loads the whole board. This gate is
+// the only place that divergence is actually substituted, and it uses the
+// FIXED-BOOK overload, which had no pool coverage at all.
+//
+// Non-vacuity is pinned, not assumed: `MarketSnapshot::deserialized_bytes()` is a
+// deterministic count of surface-record bytes materialized, so the private route
+// reading STRICTLY FEWER bytes than the pooled one is proof that the subset
+// really dropped kPoolOtherUid and the pool really did not.
+TEST(BacktestExec, SnapshotPoolMatchesSubsettedPrivateCacheOnFixedBook) {
+  const fs::path dir = fresh_dir("pool-subset");
+  const Corpus c = make_two_name_corpus(dir, 6);
+  auto clock = Clock::from_manifest(c.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  const std::int64_t expiry = kBaseNow + 120 * kDayNs;  // ~0.33y, inside the slice grid
+  PortfolioState book;
+  book.lots.push_back(
+      Lot{1, OptionContract{kUid, 100.0, 0.0, Side::Put}, +2.0, 100.0, expiry, 0, 0.0});
+  book.lots.push_back(
+      Lot{2, OptionContract{kUid, 105.0, 0.0, Side::Call}, -1.0, 100.0, expiry, 0, 0.0});
+  // NB: no lot references kPoolOtherUid, which is what makes the subset bite.
+
+  MarketSnapshot::reset_deserialized_bytes();
+  RunConfig priv;  // private per-run cache => subset-deserialized to {kUid}
+  ASSERT_EQ(priv.snapshot_pool, nullptr);
+  auto r_priv = run_backtest(*clock, book, priv);
+  ASSERT_TRUE(r_priv.has_value()) << r_priv.error().to_string();
+  const std::uint64_t private_bytes = MarketSnapshot::deserialized_bytes();
+
+  MarketSnapshot::reset_deserialized_bytes();
+  SnapshotPool pool;
+  RunConfig pooled;
+  pooled.snapshot_pool = &pool;
+  auto r_pool = run_backtest(*clock, book, pooled);
+  ASSERT_TRUE(r_pool.has_value()) << r_pool.error().to_string();
+  const std::uint64_t pooled_bytes = MarketSnapshot::deserialized_bytes();
+
+  EXPECT_LT(private_bytes, pooled_bytes)
+      << "the private route did not actually subset (" << private_bytes << " vs " << pooled_bytes
+      << " bytes) — this gate would then be comparing two whole-board runs";
+  EXPECT_EQ(pool.stats().archive_opens, 6u);
+  expect_result_bit_identical(*r_priv, *r_pool, "subsetted private cache vs whole-board pool");
+  std::printf("[btexec] pool subset: private=%llu bytes, pooled=%llu bytes, results identical\n",
+              static_cast<unsigned long long>(private_bytes),
+              static_cast<unsigned long long>(pooled_bytes));
+}
+
+// FINDING 3. `warm()`'s executor dispatch. `run_dynamic` inlines below 4 refs and
+// `RunConfig::prefetch_depth` defaults to 2, so at defaults NO pool worker ever
+// runs an acquisition and the "safe to acquire on executor workers" half of
+// invariant L4 is never executed. A look-ahead of 6 puts the initial window fill
+// above the threshold, so the fan-out is real — under 8-way concurrency, and
+// still bit-identical to serial.
+TEST(BacktestExec, SnapshotPoolWarmFansOutOnExecutorWorkers) {
+  const fs::path dir = fresh_dir("pool-warm-dispatch");
+  const Corpus c = make_corpus(dir, "SPX", 12);
+  auto clock = Clock::from_manifest(c.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  const StrategySpec spec = pool_gate_spec();
+
+  SnapshotPool serial_pool;
+  RunConfig serial_cfg;
+  serial_cfg.snapshot_pool = &serial_pool;
+  serial_cfg.prefetch_depth = 6;  // initial window = 6 refs > run_dynamic's inline threshold
+  DeclarativeStrategy serial_strat{spec};
+  auto serial = run_backtest(*clock, serial_strat, serial_cfg);
+  ASSERT_TRUE(serial.has_value()) << serial.error().to_string();
+
+  constexpr std::size_t kThreads = 8;
+  SnapshotPool pool;
+  std::vector<Result<BacktestResult>> out(kThreads, Err(ErrorCode::Unknown, "run never assigned"));
+  {
+    std::vector<std::jthread> threads;
+    threads.reserve(kThreads);
+    for (std::size_t t = 0; t < kThreads; ++t) {
+      threads.emplace_back([&, t] {
+        RunConfig cfg;
+        cfg.snapshot_pool = &pool;
+        cfg.prefetch_depth = 6;
+        DeclarativeStrategy strat{spec};
+        out[t] = run_backtest(*clock, strat, cfg);
+      });
+    }
+  }
+  for (std::size_t t = 0; t < kThreads; ++t) {
+    ASSERT_TRUE(out[t].has_value()) << "thread " << t << ": " << out[t].error().to_string();
+    expect_result_bit_identical(*serial, *out[t], "deep-look-ahead pooled run vs serial");
+  }
+  EXPECT_EQ(pool.stats().archive_opens, 12u);
+
+  // The point of the gate: acquisitions genuinely executed on pool workers.
+  // Conditional because a single-context pool (hardware_concurrency 1, or an
+  // ATX_VOL_FIT_WORKERS=1 lease) has no worker to dispatch to and inlines
+  // everything, which is correct behaviour rather than a failure.
+  const std::uint64_t dispatched = serial_pool.stats().executor_dispatched_loads +
+                                   pool.stats().executor_dispatched_loads;
+  if (pricing_executor().size() > 0u) {
+    EXPECT_GT(dispatched, 0u) << "warm() never reached a pool worker: the executor route in "
+                                 "invariant L4 is still unexercised";
+  }
+  std::printf("[btexec] pool warm dispatch: %llu acquisitions ran on executor workers "
+              "(pool size %u)\n",
+              static_cast<unsigned long long>(dispatched), pricing_executor().size());
 }

@@ -105,6 +105,17 @@
 //       not a consistent-across-counters, snapshot. Assert on it from a quiesced
 //       point (all runs joined), as the gates do.
 //
+//   L7. A LOADER ALWAYS PUBLISHES, INCLUDING ON AN EXCEPTION. The entry is in the
+//       map, not ready, for the whole duration of the load, and a waiter parked at
+//       L4 has no exit but the publication. So the loader's publication runs from
+//       a scope guard: if `MarketSnapshot::load`, an allocation, or a lock throws,
+//       the entry is still marked ready — carrying a pre-seeded "loader did not
+//       complete" error — and still evicted, so waiters get an error and the next
+//       acquire retries. Without this a single `bad_alloc` on a single date would
+//       wedge that key for the life of the PROCESS: waiters hang, later acquirers
+//       hang, and a `warm()` whose workers are parked never reaches its join
+//       barrier. It would present as a CI timeout, not a failing assertion.
+//
 // ## Loads route through `PricingExecutor`, never `std::async`
 //
 // `warm()` dispatches its missing loads with `pricing_executor().run_dynamic`, so
@@ -114,6 +125,12 @@
 // of a single date loads on the CALLING thread: a one-element dispatch resolves
 // to exactly that anyway, and spelling it out keeps the single-date path free of
 // any dispatch at all.
+//
+// SIZE MATTERS HERE. `run_dynamic` inlines below its own threshold of 4, so a
+// look-ahead window of 1-3 refs never reaches a worker at all —
+// `RunConfig::prefetch_depth`'s default of 2 is in that band. The fan-out is real
+// only from depth 4 up; `SnapshotPoolStats::executor_dispatched_loads` reports
+// which of the two happened.
 
 #include <cstddef>
 #include <cstdint>
@@ -150,9 +167,21 @@ struct SnapshotPoolStats {
   std::uint64_t resident_entries{0};
   // Entries removed by `trim` / `clear` over the pool's life.
   std::uint64_t trimmed_entries{0};
-  // Loads that returned an error (and were removed rather than cached, so a
-  // retry re-attempts instead of replaying a stale failure).
+  // Loads that did not produce a snapshot — a reported error, OR a loader that
+  // unwound (invariant L7). Either way the entry is removed rather than cached,
+  // so a retry re-attempts instead of replaying a stale failure.
   std::uint64_t failed_loads{0};
+  // Acquisitions issued by `warm()` that ran on a thread OTHER than the one that
+  // called `warm` — i.e. real fan-out onto persistent `PricingExecutor` workers.
+  //
+  // LEGITIMATELY ZERO in the common case, which is exactly why it is worth
+  // having. `run_dynamic` inlines below its own threshold (4, pricing_executor.cpp),
+  // so a look-ahead window of 1-3 refs — what `RunConfig::prefetch_depth`'s
+  // default of 2 produces — is executed entirely by the caller and never wakes a
+  // worker. It is also 0 on a pool with no workers, and 0 for every acquisition
+  // made outside `warm`. Non-zero is the observable that the executor route in
+  // invariant L4 actually RAN, rather than being asserted only in a comment.
+  std::uint64_t executor_dispatched_loads{0};
 };
 
 class SnapshotPool {

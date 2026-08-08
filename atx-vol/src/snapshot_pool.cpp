@@ -11,6 +11,7 @@
 #include <optional>
 #include <shared_mutex>
 #include <string>
+#include <thread> // std::this_thread::get_id — the executor-dispatch observable
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -82,14 +83,43 @@ struct PoolKeyHash {
   return archive_v2_identity_from_header(header);
 }
 
+// Run `fn` when this object dies, on the normal path AND on an unwind. Used for
+// exactly one thing here — guaranteeing a loader publishes its entry (L7) — so it
+// is deliberately the minimal form rather than a general utility. `fn` must be
+// noexcept: it runs during unwinding.
+template <class F> class ScopeExit {
+public:
+  explicit ScopeExit(F fn) noexcept : fn_{std::move(fn)} {}
+  ~ScopeExit() { fn_(); }
+  ScopeExit(const ScopeExit &) = delete;
+  ScopeExit &operator=(const ScopeExit &) = delete;
+  ScopeExit(ScopeExit &&) = delete;
+  ScopeExit &operator=(ScopeExit &&) = delete;
+
+private:
+  F fn_;
+};
+
 // One pooled date. Written ONCE by its loader; `ready` is the release/acquire
 // publication edge for everything else in it (invariant L1).
 struct PoolEntry {
   std::atomic<bool> ready{false};
   std::mutex mutex; // guards the publication + the condition variable only
   std::condition_variable cv;
-  SnapshotPtr snapshot;                // set iff the load succeeded
-  std::optional<atx::core::Error> error; // set iff it failed
+  SnapshotPtr snapshot; // set iff the load succeeded
+  // PRE-SEEDED, and that is the point (invariant L7). An entry is inserted into
+  // its shard BEFORE its load runs, so between the insert and the publication it
+  // is visible-but-not-ready. If the loader UNWINDS in that window — `bad_alloc`
+  // out of the mmap or out of an error-message concatenation, `system_error` out
+  // of a lock — the publication guard still marks it ready, and THIS is the
+  // answer every parked waiter gets. Seeding it means a ready entry can never be
+  // `{no snapshot, no error}`, which a waiter would otherwise read as a
+  // successful load of a null snapshot. The string is allocated here, on the
+  // insert path, precisely so the unwind path never has to allocate one.
+  std::optional<atx::core::Error> error{atx::core::Error{
+      ErrorCode::Internal, "SnapshotPool: the archive load for this date did not complete — an "
+                           "exception escaped the loader. The entry was evicted, so a later "
+                           "acquire retries."}};
   std::uint64_t generation{0};
   ArchiveContentIdentity identity{};
 };
@@ -115,6 +145,7 @@ struct SnapshotPool::Impl {
   std::atomic<std::uint64_t> resident_entries{0};
   std::atomic<std::uint64_t> trimmed_entries{0};
   std::atomic<std::uint64_t> failed_loads{0};
+  std::atomic<std::uint64_t> executor_dispatched_loads{0};
 
   [[nodiscard]] Shard &shard_for(std::string_view date) noexcept {
     return shards[shard_of(date, shards.size())];
@@ -175,17 +206,79 @@ Result<SnapshotPtr> SnapshotPool::acquire(std::string_view date, std::string_vie
     return entry->snapshot;
   }
 
+  // ── THE LOADER PATH ────────────────────────────────────────────────────────
+  //
+  // L7 — PUBLICATION IS UNCONDITIONAL. From the insert above to the publication
+  // below the entry is in the shard map with `ready == false`, and a thread
+  // parked at L4 has NO other way out: nothing but this publication can satisfy
+  // its predicate. So every exit from this region must publish — including an
+  // exception, which several statements below can genuinely throw
+  // (`MarketSnapshot::load` is not noexcept, the mismatch message concatenates
+  // strings, `make_shared` allocates, a lock can raise `system_error`). Leaving
+  // that window on an unwind would wedge the key FOREVER: the waiters hang, every
+  // later acquire of the key hangs, and inside a `warm()` dispatch the parked
+  // workers never reach the join barrier, so `warm` hangs too — one `bad_alloc`
+  // on one date would wedge every run in the process, and it would surface as a
+  // CI timeout rather than a red test.
+  //
+  // `publish` is therefore `noexcept` and runs from a scope guard. It publishes
+  // whatever has been decided so far; an ABANDONED loader (neither a snapshot nor
+  // a reported failure, i.e. an exception is in flight) keeps the entry's
+  // pre-seeded error and is evicted exactly like a reported failure.
+  ArchiveContentIdentity probed{};
+  std::optional<atx::core::Error> failure;
+  SnapshotPtr snapshot;
+  bool published = false;
+
+  const auto publish = [&]() noexcept {
+    published = true;
+    const bool abandoned = snapshot == nullptr && !failure.has_value();
+    try {
+      if (abandoned || failure.has_value()) {
+        // Never cache a failure: drop the entry so a later acquire re-attempts.
+        // The waiters already parked on it still get this answer (they hold the
+        // handle), and the eviction happens BEFORE the publication so no thread
+        // can find the entry, see it ready-and-failed, and re-park.
+        impl_->failed_loads.fetch_add(1u, std::memory_order_relaxed);
+        const std::unique_lock lock{shard.mutex};
+        const auto found = shard.entries.find(key);
+        if (found != shard.entries.end() && found->second == entry) {
+          shard.entries.erase(found);
+          impl_->resident_entries.fetch_sub(1u, std::memory_order_relaxed);
+        }
+      }
+      const std::lock_guard lock{entry->mutex};
+      entry->identity = probed;
+      entry->snapshot = snapshot;
+      if (!abandoned) {
+        // Moved, not copied: the failure path is the one most likely to be an
+        // out-of-memory unwind, and a move-assign allocates nothing.
+        entry->error = std::move(failure);
+      }
+      entry->ready.store(true, std::memory_order_release);
+    } catch (...) {
+      // NOTHING may prevent the publication — a missed store here is exactly the
+      // hang this guard exists to prevent. The pre-seeded error keeps the
+      // outcome honest even if the assignments above did not run.
+      entry->ready.store(true, std::memory_order_release);
+    }
+    entry->cv.notify_all();
+  };
+  const ScopeExit publish_guard{[&]() noexcept {
+    if (!published) {
+      publish();
+    }
+  }};
+
   // L3 — the loader holds NO pool lock across the header probe or the mmap.
   const std::string &path = key.path;
   impl_->identity_probes.fetch_add(1u, std::memory_order_relaxed);
-  const ArchiveContentIdentity probed = probe_identity(path);
+  probed = probe_identity(path);
 
   impl_->archive_opens.fetch_add(1u, std::memory_order_relaxed);
   Result<MarketSnapshot> loaded =
       MarketSnapshot::load(path, query_pricing_tier, /*referenced_uids=*/{}, ArchiveBacking::Sealed);
 
-  std::optional<atx::core::Error> failure;
-  SnapshotPtr snapshot;
   if (!loaded.has_value()) {
     failure = loaded.error();
   } else if (probed != ArchiveContentIdentity{} && probed != loaded->source_identity()) {
@@ -202,29 +295,11 @@ Result<SnapshotPtr> SnapshotPool::acquire(std::string_view date, std::string_vie
     snapshot = std::make_shared<const MarketSnapshot>(std::move(*loaded));
   }
 
-  if (failure.has_value()) {
-    // Never cache a failure: drop the entry so a later acquire re-attempts. The
-    // waiters already parked on it still get this answer (they hold the handle).
-    impl_->failed_loads.fetch_add(1u, std::memory_order_relaxed);
-    const std::unique_lock lock{shard.mutex};
-    const auto found = shard.entries.find(key);
-    if (found != shard.entries.end() && found->second == entry) {
-      shard.entries.erase(found);
-      impl_->resident_entries.fetch_sub(1u, std::memory_order_relaxed);
-    }
-  }
-
-  {
-    const std::lock_guard lock{entry->mutex};
-    entry->identity = probed;
-    entry->snapshot = snapshot;
-    entry->error = failure;
-    entry->ready.store(true, std::memory_order_release);
-  }
-  entry->cv.notify_all();
-
-  if (failure.has_value()) {
-    return atx::core::Err(*failure);
+  publish();
+  // `failure` was moved into the entry; the published entry is immutable, so it
+  // is the authority for what this call returns.
+  if (entry->error.has_value()) {
+    return atx::core::Err(*entry->error);
   }
   return snapshot;
 }
@@ -239,9 +314,21 @@ Status SnapshotPool::warm(std::span<const SnapshotRef> refs,
   std::vector<std::optional<atx::core::Error>> failures(refs.size());
   // Routed through the ONE persistent pricing pool: no thread is created per
   // load, and a nested call (a run already executing inside executor work)
-  // degrades to inline rather than self-oversubscribing. A single-ref warm
-  // resolves to a fully inline dispatch on the calling thread.
+  // degrades to inline rather than self-oversubscribing.
+  //
+  // WHETHER THIS ACTUALLY FANS OUT DEPENDS ON THE WINDOW SIZE. `run_dynamic`
+  // inlines below its own threshold (`kInlineThreshold == 4`, pricing_executor.cpp),
+  // so a warm of 1-3 refs — which is what `RunConfig::prefetch_depth`'s default of
+  // 2 produces — runs entirely on the calling thread and never touches a worker.
+  // That is the correct behaviour (a 2-archive fan-out cannot amortize a worker
+  // wake), but it means the "acquisitions run on pool workers" half of invariant
+  // L4 only executes at a look-ahead depth of 4 or more. `executor_dispatched_loads`
+  // below is what makes that observable instead of assumed.
+  const std::thread::id dispatcher = std::this_thread::get_id();
   pricing_executor().run_dynamic(refs.size(), /*n_threads=*/0u, [&](std::size_t i, unsigned) {
+    if (std::this_thread::get_id() != dispatcher) {
+      impl_->executor_dispatched_loads.fetch_add(1u, std::memory_order_relaxed);
+    }
     auto got = acquire(refs[i].date, refs[i].archive_path, query_pricing_tier);
     if (!got.has_value()) {
       failures[i] = got.error();
@@ -295,7 +382,8 @@ SnapshotPoolStats SnapshotPool::stats() const noexcept {
                            impl_->identity_probes.load(std::memory_order_relaxed),
                            impl_->resident_entries.load(std::memory_order_relaxed),
                            impl_->trimmed_entries.load(std::memory_order_relaxed),
-                           impl_->failed_loads.load(std::memory_order_relaxed)};
+                           impl_->failed_loads.load(std::memory_order_relaxed),
+                           impl_->executor_dispatched_loads.load(std::memory_order_relaxed)};
 }
 
 ArchiveContentIdentity SnapshotPool::identity_of(std::string_view date,
