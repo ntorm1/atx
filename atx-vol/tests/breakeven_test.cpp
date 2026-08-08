@@ -1,10 +1,22 @@
 #include "atx/vol/breakeven.hpp"
 
 #include <cmath>
+#include <cstdint>
+#include <filesystem>
 #include <random>
+#include <string>
 #include <vector>
 
 #include <gtest/gtest.h>
+
+#include "atx/vol/backtest.hpp"    // Clock, MarketSnapshot
+#include "atx/vol/corpus.hpp"      // CorpusBoard, build_corpus, CorpusManifest, read_manifest_file
+#include "atx/vol/data.hpp"        // iso_to_ns
+#include "atx/vol/market_env.hpp"  // MarketEnv
+#include "atx/vol/panel.hpp"       // make_synthetic_american_panel, SynthPanelSpec
+#include "atx/vol/spy_fixture.hpp" // make_spy_synthetic_spec
+#include "atx/vol/vol_curve.hpp"   // CurveConfig, VolCurveKind
+#include "support/cached_artifacts.hpp" // cached_corpus
 
 namespace atx::vol {
 namespace {
@@ -293,6 +305,148 @@ TEST(Breakeven, PoisonedJobDoesNotSinkBatch) {
     }
     EXPECT_EQ(batch->status_ok[i], 1u) << i;
   }
+}
+
+// ---- Task 5: load_bev_path (real surfaces -> BevDayState) ----
+//
+// Synthetic-only, like MultinamePipeline/Corpus (no OPRA pull, no GTEST_SKIP):
+// a small daily corpus built from spy_fixture.hpp's known-truth SPY panel,
+// with the spot deliberately walked day-to-day (fixed multipliers, not
+// random) so the delta-hedged replay realizes genuine P&L and
+// solve_breakeven_vol has a real bracket to find in test (d). Fit once per
+// build tree via `cached_corpus` (the established convention for
+// fit-bound/slow suites -- see multiname_pipeline_test.cpp).
+
+namespace fs = std::filesystem;
+
+constexpr int kBevPathNDays = 6;
+constexpr const char *kBevPathDates[kBevPathNDays] = {"2026-06-01", "2026-06-02", "2026-06-03",
+                                                      "2026-06-04", "2026-06-05", "2026-06-06"};
+// Deterministic, reviewable daily moves (not GBM-random): a few percent per
+// day, enough realized movement for solve_breakeven_vol to find a genuine
+// sign-changing bracket.
+constexpr double kBevPathSpotMul[kBevPathNDays] = {1.000, 1.022, 0.985, 1.031, 0.978, 1.015};
+// Floor applied to each session's remaining tenor before probing q_eff_at
+// (Task 5's tenor_probe_years) -- about one calendar day.
+constexpr double kBevPathProbeFloor = 1.0 / 365.25;
+
+[[nodiscard]] std::int64_t bev_path_entry_ts() { return iso_to_ns(kBevPathDates[0]); }
+[[nodiscard]] std::int64_t bev_path_expiry_ts() {
+  return iso_to_ns(kBevPathDates[kBevPathNDays - 1]);
+}
+
+// One day's board: the canonical SPY fixture rescaled to `spot` (mirrors
+// multiname_pipeline_test.cpp's make_index_spec) so the strike ladder tracks
+// the walked spot while the fitted term structure/skew stay the fixture's.
+[[nodiscard]] SynthPanelSpec bev_path_day_spec(const std::string &date, double spot) {
+  SynthPanelSpec s = make_spy_synthetic_spec(date);
+  const double scale = spot / s.spot;
+  s.spot = spot;
+  for (double &k : s.strikes) {
+    k *= scale;
+  }
+  return s;
+}
+
+[[nodiscard]] CorpusBoard bev_path_board(const std::string &date, double spot) {
+  const SynthPanelSpec spec = bev_path_day_spec(date, spot);
+  auto panel = make_synthetic_american_panel(spec);
+  EXPECT_TRUE(panel.has_value()) << (panel.has_value() ? "" : panel.error().to_string());
+  CorpusBoard b;
+  b.date = date;
+  b.symbol = "SPY";
+  if (panel.has_value()) {
+    b.frame = panel->frame;
+  }
+  b.env = MarketEnv::flat(spec.spot, spec.r, iso_to_ns(spec.snapshot_iso), spec.cash_divs);
+  b.curve = CurveConfig{VolCurveKind::ConvexDense}; // penny-dense index recipe (corpus.hpp)
+  return b;
+}
+
+[[nodiscard]] std::vector<CorpusBoard> make_bev_path_boards() {
+  std::vector<CorpusBoard> boards;
+  boards.reserve(kBevPathNDays);
+  double spot = 600.0;
+  for (int i = 0; i < kBevPathNDays; ++i) {
+    spot *= kBevPathSpotMul[i];
+    boards.push_back(bev_path_board(kBevPathDates[i], spot));
+  }
+  return boards;
+}
+
+class BevPathLoader : public ::testing::Test {
+protected:
+  static void SetUpTestSuite() {
+    const std::vector<CorpusBoard> boards = make_bev_path_boards();
+    const fs::path out =
+        atx::vol::test::cached_corpus("bev-path-loader-spy-6d", [&boards] { return boards; });
+    auto man = read_manifest_file((out / "manifest.tsv").string());
+    ASSERT_TRUE(man.has_value()) << man.error().to_string();
+    ASSERT_EQ(man->n_boards, static_cast<std::uint32_t>(kBevPathNDays));
+    ASSERT_EQ(man->n_ok, static_cast<std::uint32_t>(kBevPathNDays))
+        << "every synthetic day must fit Ok for this fixture to be meaningful";
+    auto clk = Clock::from_manifest(*man);
+    ASSERT_TRUE(clk.has_value()) << clk.error().to_string();
+    clock_ = std::move(*clk);
+  }
+
+  static Clock clock_;
+};
+
+Clock BevPathLoader::clock_{};
+
+// (a) one BevDayState per session between entry and expiry, strictly
+// increasing ts_ns, positive spots.
+TEST_F(BevPathLoader, LoadedPathHasOneEntryPerSessionIncreasingTsPositiveSpots) {
+  const auto path =
+      load_bev_path(clock_, "SPY", bev_path_entry_ts(), bev_path_expiry_ts(), kBevPathProbeFloor);
+  ASSERT_TRUE(path.has_value()) << path.error().to_string();
+  EXPECT_FALSE(path->snapped);
+  EXPECT_EQ(path->settle_ts_ns, bev_path_expiry_ts());
+  ASSERT_EQ(path->days.size(), static_cast<std::size_t>(kBevPathNDays));
+  for (std::size_t i = 0; i < path->days.size(); ++i) {
+    EXPECT_GT(path->days[i].s, 0.0) << i;
+    if (i > 0) {
+      EXPECT_GT(path->days[i].ts_ns, path->days[i - 1].ts_ns) << i;
+    }
+  }
+  EXPECT_EQ(path->days.back().ts_ns, path->settle_ts_ns);
+}
+
+// (b) Exact snap on a non-session expiry fails closed.
+TEST_F(BevPathLoader, ExactSnapOnNonSessionExpiryFailsClosed) {
+  const std::int64_t mid_session_ts = iso_to_ns(kBevPathDates[2]) + kDayNs / 2;
+  const auto path = load_bev_path(clock_, "SPY", bev_path_entry_ts(), mid_session_ts,
+                                  kBevPathProbeFloor, BevExpirySnap::Exact);
+  EXPECT_FALSE(path.has_value());
+}
+
+// (c) LastSessionAtOrBefore snaps, snapped=true, settle < expiry.
+TEST_F(BevPathLoader, LastSessionAtOrBeforeSnapsAndSettlesBeforeExpiry) {
+  const std::int64_t mid_session_ts = iso_to_ns(kBevPathDates[2]) + kDayNs / 2;
+  const auto path = load_bev_path(clock_, "SPY", bev_path_entry_ts(), mid_session_ts,
+                                  kBevPathProbeFloor, BevExpirySnap::LastSessionAtOrBefore);
+  ASSERT_TRUE(path.has_value()) << path.error().to_string();
+  EXPECT_TRUE(path->snapped);
+  EXPECT_LT(path->settle_ts_ns, mid_session_ts);
+  EXPECT_EQ(path->settle_ts_ns, iso_to_ns(kBevPathDates[2]));
+  ASSERT_FALSE(path->days.empty());
+  EXPECT_EQ(path->days.back().ts_ns, path->settle_ts_ns);
+}
+
+// (d) end-to-end: load_bev_path + solve_breakeven_vol on one SPY contract.
+TEST_F(BevPathLoader, EndToEndLoadAndSolveProducesOkBreakevenVol) {
+  const auto path =
+      load_bev_path(clock_, "SPY", bev_path_entry_ts(), bev_path_expiry_ts(), kBevPathProbeFloor);
+  ASSERT_TRUE(path.has_value()) << path.error().to_string();
+  ASSERT_GE(path->days.size(), 2u);
+
+  const BevSpec spec = atm_call_expiring_at(path->days);
+  const auto lab = solve_breakeven_vol(path->days, spec, {}, {});
+  ASSERT_TRUE(lab.has_value()) << lab.error().to_string();
+  EXPECT_EQ(lab->flag, BevFlag::Ok);
+  EXPECT_GE(lab->sigma_be, 0.05);
+  EXPECT_LE(lab->sigma_be, 1.0);
 }
 
 } // namespace

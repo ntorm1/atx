@@ -17,10 +17,12 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <string_view>
 #include <vector>
 
 #include "atx/core/error.hpp"                 // Result (used in bev_replay_pnl's return type)
 #include "atx/vol/american.hpp"               // AlOpts, al_fast_opts, Side, Result
+#include "atx/vol/backtest.hpp"               // Clock, MarketSnapshot (Task 5: path loader)
 #include "atx/vol/detail/aggregate_arity.hpp" // BevReplayConfig field-count drift pin
 #include "atx/vol/rates_curve.hpp"            // DividendEvent
 
@@ -278,5 +280,94 @@ struct BevLabelFrame {
 [[nodiscard]] Result<BevLabelFrame> solve_breakeven_batch(std::span<const BevJob> jobs,
                                                           const BevSolveConfig &cfg = {},
                                                           unsigned n_threads = 0);
+
+// Task 5: surface-corpus path loader — builds a per-session `BevDayState`
+// path from stored `PricedSurface` corpora (a `Clock` + its archived
+// `MarketSnapshot`s), so a replay/solve can run against REAL market history
+// instead of only the synthetic paths THEO-2/3/4 test against. Layers on top
+// of the Clock/MarketSnapshot loader (backtest.hpp); it does not touch the
+// replay or solver, it only produces their `path` input.
+
+// How the requested option `expiry_ns` is reconciled against the clock's
+// actual session observations.
+enum class BevExpirySnap : std::uint8_t {
+  // FAIL CLOSED unless some session in `clock` observes `expiry_ns` EXACTLY.
+  // A path built against an interpolated/nearby session would silently mix a
+  // wrong settlement date into the label; refusing is the safe default.
+  Exact = 0,
+  // Snap down to the LAST session at-or-before `expiry_ns` when no exact
+  // observation exists. Sets `BevPath::snapped = true` and
+  // `BevPath::settle_ts_ns` to that session's timestamp (strictly less than
+  // `expiry_ns`) -- the label consumer decides whether a snapped label is
+  // admissible; this loader only reports the fact honestly. When a session
+  // DOES land exactly on `expiry_ns`, that session is used and `snapped`
+  // stays false (identical outcome to `Exact` in that case -- there was
+  // nothing to snap).
+  LastSessionAtOrBefore = 1,
+};
+
+// A loaded, replay-ready path plus its settlement provenance.
+struct BevPath {
+  std::vector<BevDayState> days; // ascending ts_ns; days.back().ts_ns == settle_ts_ns
+  std::int64_t settle_ts_ns{0};  // == the requested expiry_ns unless snapped
+  bool snapped{false};           // true iff settle_ts_ns != the requested expiry_ns
+};
+
+// Build a per-session `BevDayState` path for `uid` (an underlying SYMBOL,
+// resolved against each loaded session's own SurfaceSet via
+// `MarketSnapshot::uid_of`) spanning `entry_ts_ns` through the settlement
+// session `snap` resolves `expiry_ns` to.
+//
+// Per session in [entry_ts_ns, settle_ts_ns]: `s = pricing().S`,
+// `r = pricing().r`, `q_eff = q_eff_at(max(t_rem, tenor_probe_years))` where
+// `t_rem = (expiry_ns - session_ts_ns) / (365.25 * 86400e9)` (ACT/365.25,
+// `kNsPerYear`) is the remaining tenor from THAT session to the REQUESTED
+// `expiry_ns` (NOT the possibly-snapped `settle_ts_ns`) -- carry is a
+// property of the option's real listed expiry, independent of where the data
+// happens to run out; recomputing it fresh per session (rather than once at
+// entry) is the "carry errors masquerade as skew" guard. `tenor_probe_years`
+// floors `t_rem` near/at expiry (a `kTMinEval`-style guard) so `q_eff_at` is
+// never probed at a degenerate/zero tenor.
+//
+// One `MarketSnapshot::load` per session -- no `SnapshotCache` at this layer;
+// a caller driving many loads batches/caches at its own level (e.g. by date).
+//
+// Fail-closed:
+//   * `entry_ts_ns >= expiry_ns`, or `tenor_probe_years <= 0`: `InvalidArgument`.
+//   * `entry_ts_ns` is not itself an exact clock observation: `InvalidArgument`
+//     (the entry day anchors the replay; snapping it would silently relabel
+//     the trade's actual entry date -- only `expiry_ns` is snappable).
+//   * `Exact` and no session observes `expiry_ns` exactly: `InvalidArgument`.
+//   * `LastSessionAtOrBefore` and no session lies in `[entry_ts_ns,
+//     expiry_ns]`: `InvalidArgument`.
+//   * a session strictly between entry and settlement whose snapshot has no
+//     surface for `uid` (via `uid_of` + `find`): `NotFound`, naming the
+//     session's `ts_ns` -- a silent hole in the path would corrupt the label
+//     with no trace.
+//   * fewer than two sessions assemble (`BevPath::days.size() < 2`): the
+//     replay needs at least entry + settlement: `InvalidArgument`.
+//   * any `MarketSnapshot::load` failure propagates unchanged.
+//
+// Postconditions on a successful return: `days` is strictly increasing in
+// `ts_ns`, every `s > 0`, `days.size() >= 2`, and `days.back().ts_ns ==
+// settle_ts_ns` -- the path is ready to hand to `bev_replay_pnl` /
+// `solve_breakeven_vol` with `spec.expiry_ns = settle_ts_ns` (NOT the
+// originally requested `expiry_ns` when `snapped`).
+//
+// @param clock             the corpus timeline to walk, ascending.
+// @param uid                underlying symbol to resolve per session.
+// @param entry_ts_ns        the replay's first session; must be an exact
+//                            observation.
+// @param expiry_ns          the option's real listed expiry (also the carry
+//                            anchor for every session's `q_eff`).
+// @param tenor_probe_years  floor applied to each session's remaining tenor
+//                            before probing `q_eff_at` (must be > 0).
+// @param snap                how to reconcile `expiry_ns` against the
+//                            clock's actual sessions; defaults to the
+//                            fail-closed `Exact`.
+[[nodiscard]] Result<BevPath> load_bev_path(const Clock &clock, std::string_view uid,
+                                            std::int64_t entry_ts_ns, std::int64_t expiry_ns,
+                                            double tenor_probe_years,
+                                            BevExpirySnap snap = BevExpirySnap::Exact);
 
 } // namespace atx::vol

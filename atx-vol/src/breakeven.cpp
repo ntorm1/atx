@@ -8,7 +8,10 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
+#include <string>
+#include <string_view>
 #include <utility>
 
 #include "atx/vol/detail/parallel_for.hpp"
@@ -159,6 +162,116 @@ Result<BevLabelFrame> solve_breakeven_batch(std::span<const BevJob> jobs, const 
   });
 
   return Ok(std::move(frame));
+}
+
+// Task 5: surface-corpus path loader. Walks `clock`'s sessions ascending,
+// resolving `uid` against each loaded `MarketSnapshot`'s own SurfaceSet, and
+// assembles the per-day carry (S, r, q_eff) `bev_replay_pnl` / the solvers on
+// top of THEO-2/3/4 need. Does not touch the replay or solver; it only
+// produces their `path` input.
+Result<BevPath> load_bev_path(const Clock &clock, std::string_view uid, std::int64_t entry_ts_ns,
+                              std::int64_t expiry_ns, double tenor_probe_years,
+                              BevExpirySnap snap) {
+  if (!(entry_ts_ns < expiry_ns)) {
+    return Err(ErrorCode::InvalidArgument,
+               "load_bev_path: entry_ts_ns must be strictly before expiry_ns");
+  }
+  if (!(tenor_probe_years > 0.0)) {
+    return Err(ErrorCode::InvalidArgument, "load_bev_path: tenor_probe_years must be positive");
+  }
+
+  std::vector<BevDayState> days;
+  bool found_entry = false;
+  // True once a session observes expiry_ns EXACTLY -- that session is always
+  // the terminal one for either snap mode, and it is never "snapped".
+  bool found_exact_settle = false;
+  std::int64_t settle_ts_ns = 0;
+  bool snapped = false;
+
+  // JPL Rule 2: bounded by clock.refs().size(), the corpus timeline's own
+  // (already-materialized) length. Breaks early once a session strictly past
+  // expiry_ns is seen -- refs are ascending, so nothing further can qualify.
+  for (const SnapshotRef &ref : clock.refs()) {
+    ATX_TRY(const MarketSnapshot session, MarketSnapshot::load(ref.archive_path));
+    const std::int64_t ts = session.ts_ns();
+
+    if (ts < entry_ts_ns) {
+      continue; // strictly before the requested window
+    }
+    if (!found_entry) {
+      if (ts != entry_ts_ns) {
+        return Err(ErrorCode::InvalidArgument,
+                   "load_bev_path: entry_ts_ns " + std::to_string(entry_ts_ns) +
+                       " is not a clock observation (nearest at-or-after is " + std::to_string(ts) +
+                       ")");
+      }
+      found_entry = true;
+    }
+    if (ts > expiry_ns) {
+      break; // past the requested window; nothing further can qualify
+    }
+    if (!days.empty() && ts <= days.back().ts_ns) {
+      return Err(ErrorCode::InvalidArgument,
+                 "load_bev_path: clock observations are not strictly increasing at ts_ns=" +
+                     std::to_string(ts));
+    }
+
+    const std::optional<std::uint32_t> resolved_uid = session.uid_of(uid);
+    const SurfaceRef surf = resolved_uid.has_value() ? session.find(*resolved_uid) : SurfaceRef{};
+    if (surf == nullptr) {
+      return Err(ErrorCode::NotFound, "load_bev_path: no surface for uid '" + std::string(uid) +
+                                          "' at ts_ns=" + std::to_string(ts));
+    }
+
+    // Per-day carry: remaining tenor from THIS session to the REQUESTED
+    // expiry_ns (not the possibly-snapped settle), ACT/365.25 -- the "carry
+    // errors masquerade as skew" guard, re-probed every session rather than
+    // once at entry.
+    const double t_rem = static_cast<double>(expiry_ns - ts) / kNsPerYear;
+    const double q_eff = surf.q_eff_at(std::fmax(t_rem, tenor_probe_years));
+    days.push_back(BevDayState{ts, surf.pricing().S, surf.pricing().r, q_eff});
+
+    if (ts == expiry_ns) {
+      settle_ts_ns = ts;
+      snapped = false;
+      found_exact_settle = true;
+      break;
+    }
+    settle_ts_ns = ts; // tentative LastSessionAtOrBefore candidate
+    snapped = true;
+  }
+
+  if (!found_entry) {
+    return Err(ErrorCode::InvalidArgument, "load_bev_path: entry_ts_ns " +
+                                               std::to_string(entry_ts_ns) +
+                                               " is not a clock observation");
+  }
+  // Exhaustive switch (no default): a future third BevExpirySnap enumerator
+  // must add a case here or this turns into a compile error under /WX,
+  // rather than silently falling into whichever branch happened to be "else".
+  switch (snap) {
+  case BevExpirySnap::Exact:
+    if (!found_exact_settle) {
+      return Err(ErrorCode::InvalidArgument,
+                 "load_bev_path: expiry_ns " + std::to_string(expiry_ns) +
+                     " is not a clock observation (Exact requires an exact match)");
+    }
+    break;
+  case BevExpirySnap::LastSessionAtOrBefore:
+    if (days.empty()) {
+      return Err(ErrorCode::InvalidArgument, "load_bev_path: no session in [" +
+                                                 std::to_string(entry_ts_ns) + ", " +
+                                                 std::to_string(expiry_ns) + "] to snap to");
+    }
+    break;
+  }
+  if (days.size() < 2) {
+    return Err(ErrorCode::InvalidArgument, "load_bev_path: assembled path has " +
+                                               std::to_string(days.size()) +
+                                               " session(s); need at least 2 (entry + settlement)");
+  }
+
+  return Ok(BevPath{std::move(days), settle_ts_ns, snapped});
 }
 
 } // namespace atx::vol
