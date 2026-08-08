@@ -211,6 +211,38 @@ struct VarRiskStatistics {
 [[nodiscard]] Result<VarRiskStatistics>
 historical_var_statistics(std::span<const VarScenarioFrame> frames, double confidence);
 
+// Age/recency weighting for the weighted VaR/ES overload below.
+struct VarWeighting {
+  // 1.0 = equal weights (current behavior). Otherwise BRW/EWMA weight
+  // lambda^(age) normalized, age 0 = most recent scenario by shifted_ts_ns.
+  double ewma_lambda{1.0};
+};
+
+// Weighted quantile: sort losses ascending, accumulate normalized weights,
+// VaR = first loss whose cumulative weight >= confidence; ES = weighted mean
+// of losses >= VaR (weights renormalized over that tail). Applies the same
+// frame-qualification filter as the unweighted overload above (Ok status, no
+// failed legs, at least one ok leg, a real fingerprint, finite pnl), so with
+// ewma_lambda == 1.0 the two overloads select the identical loss set --
+// ewma_lambda == 1.0 (exact) is special-cased to delegate to the two-arg
+// overload directly, guaranteeing bit-identical reproduction rather than
+// merely numerically-close agreement (equal per-scenario weights make the
+// general weighted-quantile arithmetic and the plain nearest-rank arithmetic
+// mathematically equivalent, but not bit-identical, since they sum in a
+// different order).
+[[nodiscard]] Result<VarRiskStatistics>
+historical_var_statistics(std::span<const VarScenarioFrame> frames, double confidence,
+                          const VarWeighting &weighting);
+
+// One VarRiskStatistics per confidence in `confidences`, same order as input,
+// computed against the same weighted loss distribution. Every confidence must
+// be finite and in (0, 1); the result is monotone non-decreasing in
+// confidence (a higher confidence can only select an equal-or-larger loss
+// under the same weighted quantile rule).
+[[nodiscard]] Result<std::vector<VarRiskStatistics>>
+historical_var_curve(std::span<const VarScenarioFrame> frames, std::span<const double> confidences,
+                     const VarWeighting &weighting = {});
+
 // Immutable, reference-anchored portfolio plan. Preparation owns all normalized
 // definitions and retains no reference-surface borrow. Const replay calls are
 // safe concurrently when their output spans do not overlap.

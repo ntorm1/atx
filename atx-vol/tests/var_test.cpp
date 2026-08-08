@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
+#include <limits>
 #include <memory>
 #include <span>
 #include <string>
@@ -1213,6 +1214,132 @@ TEST(Var, HistoricalStatisticsUseNearestRankLossAndInclusiveExpectedShortfall) {
   EXPECT_EQ(risk->n_scenarios, 5u);
   EXPECT_FALSE(historical_var_statistics(frames, 0.0));
   EXPECT_FALSE(historical_var_statistics(frames, 1.0));
+}
+
+namespace {
+
+// 20-frame synthetic set for the weighted-overload reproduction pin: 17
+// qualifying frames with varied pnl and deliberately out-of-array-order
+// shifted_ts_ns (so age-by-recency sorting cannot coincidentally match array
+// order), plus 3 frames that the shared qualification filter must exclude
+// from both overloads identically -- one non-Ok status, one Ok status with a
+// failed leg, one Ok status with a zero fingerprint, and (separately) one
+// qualifying-looking frame with a non-finite pnl. Loss = -pnl, so varied pnl
+// signs exercise both sides of the distribution.
+std::vector<VarScenarioFrame> make_20frame_synthetic_set() {
+  std::vector<VarScenarioFrame> frames(20);
+  for (std::size_t i = 0; i < frames.size(); ++i) {
+    VarScenarioFrame &frame = frames[i];
+    frame.base_ts_ns = static_cast<std::int64_t>(i * 2u + 1u);
+    // Scrambled relative to array order: reverse-ish with a prime stride.
+    frame.shifted_ts_ns = static_cast<std::int64_t>(((i * 7u) % 20u) + 100u);
+    frame.status = VarScenarioStatus::Ok;
+    frame.base_value = 1000.0;
+    const double pnl =
+        15.0 * std::sin(static_cast<double>(i) * 0.9) + (static_cast<double>(i) - 10.0) * 1.25;
+    frame.pnl = pnl;
+    frame.shifted_value = frame.base_value + pnl;
+    frame.dollar_delta = 500.0;
+    frame.n_ok = 1u;
+    frame.n_failed = 0u;
+    frame.definition_fingerprint = i + 1u;
+  }
+  // Three frames the shared filter must drop from both overloads:
+  frames[3].status = VarScenarioStatus::ArchiveError; // non-Ok status
+  frames[3].n_failed = 1u;
+  frames[7].n_failed = 1u;                // Ok status but a failed leg
+  frames[11].definition_fingerprint = 0u; // Ok status but no fingerprint
+  return frames;
+}
+
+} // namespace
+
+TEST(Var, WeightedStatisticsWithUnitLambdaExactlyReproducesUnweightedOverload) {
+  const std::vector<VarScenarioFrame> frames = make_20frame_synthetic_set();
+  for (const double confidence : {0.60, 0.80, 0.90, 0.95, 0.99}) {
+    const auto unweighted = historical_var_statistics(frames, confidence);
+    const auto weighted = historical_var_statistics(frames, confidence, VarWeighting{1.0});
+    ASSERT_TRUE(unweighted) << (unweighted ? std::string{} : unweighted.error().to_string());
+    ASSERT_TRUE(weighted) << (weighted ? std::string{} : weighted.error().to_string());
+    EXPECT_EQ(*unweighted, *weighted) << "confidence=" << confidence;
+    EXPECT_EQ(unweighted->n_scenarios, 17u);
+  }
+}
+
+TEST(Var, WeightedStatisticsRejectsInvalidWeighting) {
+  const std::vector<VarScenarioFrame> frames = make_20frame_synthetic_set();
+  EXPECT_FALSE(historical_var_statistics(frames, 0.90, VarWeighting{0.0}));
+  EXPECT_FALSE(historical_var_statistics(frames, 0.90, VarWeighting{-1.0}));
+  EXPECT_FALSE(historical_var_statistics(frames, 0.90,
+                                         VarWeighting{std::numeric_limits<double>::quiet_NaN()}));
+}
+
+// Hand-derived EWMA example: 3 qualifying scenarios, losses (=-pnl) 10, 20,
+// 30 with scenario index 2 the most recent (age 0). lambda=0.5 gives
+// unnormalized weights age0=1, age1=0.5, age2=0.25 (total 1.75); normalized
+// 4/7 (idx2), 2/7 (idx1), 1/7 (idx0). Sorted ascending by loss, cumulative
+// weight is 1/7, 3/7, 1 after idx0/idx1/idx2 respectively.
+//   confidence=0.90: first cumulative >= 0.90 is idx2 (1.0) -> VaR=30,
+//     tail={idx2}, ES=30.
+//   confidence=0.30: first cumulative >= 0.30 is idx1 (3/7~=0.4286) ->
+//     VaR=20, tail={idx1,idx2} with renormalized weights 1/3, 2/3 ->
+//     ES = 1/3*20 + 2/3*30 = 80/3.
+TEST(Var, WeightedStatisticsMatchesHandDerivedEwmaExample) {
+  std::vector<VarScenarioFrame> frames(3);
+  const std::array<double, 3> pnl{-10.0, -20.0, -30.0}; // loss = -pnl = 10,20,30
+  for (std::size_t i = 0; i < frames.size(); ++i) {
+    frames[i].base_ts_ns = static_cast<std::int64_t>(i + 1u);
+    frames[i].shifted_ts_ns = static_cast<std::int64_t>(i + 1u); // idx2 most recent
+    frames[i].status = VarScenarioStatus::Ok;
+    frames[i].base_value = 100.0;
+    frames[i].shifted_value = 100.0 + pnl[i];
+    frames[i].pnl = pnl[i];
+    frames[i].dollar_delta = 1000.0;
+    frames[i].n_ok = 1u;
+    frames[i].definition_fingerprint = i + 1u;
+  }
+  const VarWeighting weighting{0.5};
+
+  const auto high = historical_var_statistics(frames, 0.90, weighting);
+  ASSERT_TRUE(high) << (high ? std::string{} : high.error().to_string());
+  EXPECT_DOUBLE_EQ(high->value_at_risk, 30.0);
+  EXPECT_DOUBLE_EQ(high->expected_shortfall, 30.0);
+
+  const auto low = historical_var_statistics(frames, 0.30, weighting);
+  ASSERT_TRUE(low) << (low ? std::string{} : low.error().to_string());
+  EXPECT_DOUBLE_EQ(low->value_at_risk, 20.0);
+  EXPECT_NEAR(low->expected_shortfall, 80.0 / 3.0, 1e-9);
+}
+
+TEST(Var, HistoricalVarCurveIsMonotoneNonDecreasingInConfidence) {
+  const std::vector<VarScenarioFrame> frames = make_20frame_synthetic_set();
+  const std::array<double, 6> confidences{0.50, 0.60, 0.75, 0.90, 0.95, 0.99};
+  const auto curve = historical_var_curve(frames, confidences);
+  ASSERT_TRUE(curve) << (curve ? std::string{} : curve.error().to_string());
+  ASSERT_EQ(curve->size(), confidences.size());
+  for (std::size_t i = 0; i < curve->size(); ++i) {
+    EXPECT_DOUBLE_EQ((*curve)[i].confidence, confidences[i]);
+    if (i > 0) {
+      EXPECT_GE((*curve)[i].value_at_risk, (*curve)[i - 1].value_at_risk)
+          << "confidence " << confidences[i] << " vs " << confidences[i - 1];
+    }
+  }
+  // Sanity: each curve entry matches calling the weighted overload directly
+  // at that single confidence (default weighting == unit lambda).
+  for (std::size_t i = 0; i < curve->size(); ++i) {
+    const auto direct = historical_var_statistics(frames, confidences[i]);
+    ASSERT_TRUE(direct);
+    EXPECT_EQ((*curve)[i], *direct);
+  }
+}
+
+TEST(Var, HistoricalVarCurveRejectsEmptyOrInvalidConfidences) {
+  const std::vector<VarScenarioFrame> frames = make_20frame_synthetic_set();
+  EXPECT_FALSE(historical_var_curve(frames, std::span<const double>{}));
+  const std::array<double, 2> bad{0.5, 1.0};
+  EXPECT_FALSE(historical_var_curve(frames, bad));
+  const std::array<double, 2> also_bad{0.5, 0.0};
+  EXPECT_FALSE(historical_var_curve(frames, also_bad));
 }
 
 TEST(Var, SurfaceDbRunSortsThreeDatesAndProducesAdjacentScenariosEndToEnd) {

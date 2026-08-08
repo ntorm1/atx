@@ -8,6 +8,7 @@
 #include <exception>
 #include <limits>
 #include <new>
+#include <numeric>
 #include <optional>
 #include <string>
 #include <tuple>
@@ -1626,6 +1627,150 @@ Result<VarRiskStatistics> historical_var_statistics(std::span<const VarScenarioF
   result.expected_shortfall = tail_sum / static_cast<double>(losses.size() - index);
   result.n_scenarios = losses.size();
   return Ok(result);
+}
+
+namespace {
+
+// Same qualifying-frame filter as historical_var_statistics's nearest-rank
+// path above, shared so the weighted overload can never silently pick a
+// different frame set for the same input.
+[[nodiscard]] bool var_frame_qualifies(const VarScenarioFrame &frame) noexcept {
+  return frame.status == VarScenarioStatus::Ok && frame.n_failed == 0u && frame.n_ok != 0u &&
+         frame.definition_fingerprint != 0u && std::isfinite(frame.pnl);
+}
+
+struct WeightedLossRecord {
+  double loss{0.0};
+  double weight{0.0}; // normalized; sums to 1 across every returned record
+  std::size_t scenario_index{0};
+};
+
+// Qualifying frames, sorted ascending by loss (ties broken by scenario
+// index, matching the unweighted path), each carrying its normalized
+// age/recency weight. Age 0 = most recent scenario by shifted_ts_ns among
+// the qualifying frames; ties in shifted_ts_ns keep ascending scenario-index
+// order so age assignment is deterministic.
+[[nodiscard]] Result<std::vector<WeightedLossRecord>>
+build_weighted_losses(std::span<const VarScenarioFrame> frames, const VarWeighting &weighting) {
+  if (frames.empty() || !std::isfinite(weighting.ewma_lambda) || weighting.ewma_lambda <= 0.0) {
+    return Err(ErrorCode::InvalidArgument, "historical VaR statistics: invalid input");
+  }
+  struct Candidate {
+    double loss{0.0};
+    std::int64_t shifted_ts_ns{0};
+    std::size_t scenario_index{0};
+  };
+  std::vector<Candidate> candidates;
+  candidates.reserve(frames.size());
+  for (std::size_t index = 0; index < frames.size(); ++index) {
+    if (var_frame_qualifies(frames[index])) {
+      candidates.push_back(Candidate{-frames[index].pnl, frames[index].shifted_ts_ns, index});
+    }
+  }
+  if (candidates.empty()) {
+    return Err(ErrorCode::Unavailable, "historical VaR statistics: no successful scenarios");
+  }
+  std::vector<std::size_t> by_recency(candidates.size());
+  std::iota(by_recency.begin(), by_recency.end(), std::size_t{0});
+  std::stable_sort(by_recency.begin(), by_recency.end(), [&](std::size_t left, std::size_t right) {
+    return candidates[left].shifted_ts_ns > candidates[right].shifted_ts_ns;
+  });
+  std::vector<double> raw_weight(candidates.size(), 0.0);
+  double total_weight = 0.0;
+  for (std::size_t age = 0; age < by_recency.size(); ++age) {
+    const double weight = std::pow(weighting.ewma_lambda, static_cast<double>(age));
+    raw_weight[by_recency[age]] = weight;
+    total_weight += weight;
+  }
+  std::vector<WeightedLossRecord> losses;
+  losses.reserve(candidates.size());
+  for (std::size_t i = 0; i < candidates.size(); ++i) {
+    losses.push_back(WeightedLossRecord{candidates[i].loss, raw_weight[i] / total_weight,
+                                        candidates[i].scenario_index});
+  }
+  std::sort(losses.begin(), losses.end(),
+            [](const WeightedLossRecord &left, const WeightedLossRecord &right) {
+              return std::tie(left.loss, left.scenario_index) <
+                     std::tie(right.loss, right.scenario_index);
+            });
+  return Ok(std::move(losses));
+}
+
+// Repeated floating-point summation of normalized weights carries rounding
+// noise many orders of magnitude smaller than any real weight increment
+// (weights are 1/n at the very finest for equal weighting on realistic
+// scenario counts); this epsilon absorbs that noise so the crossing index
+// lands on the mathematically-exact side of a confidence boundary that is
+// not exactly representable in binary floating point (e.g. confidence=0.95,
+// n=20 -> 19/20 stored as very slightly less than 0.95).
+constexpr double kCumulativeWeightEpsilon = 1.0e-9;
+
+[[nodiscard]] VarRiskStatistics
+weighted_statistics_from_sorted_losses(std::span<const WeightedLossRecord> sorted_losses,
+                                       double confidence) {
+  double cumulative = 0.0;
+  std::size_t var_index = sorted_losses.size() - 1u;
+  for (std::size_t i = 0; i < sorted_losses.size(); ++i) {
+    cumulative += sorted_losses[i].weight;
+    if (cumulative >= confidence - kCumulativeWeightEpsilon) {
+      var_index = i;
+      break;
+    }
+  }
+  double tail_weight = 0.0;
+  double tail_weighted_sum = 0.0;
+  for (std::size_t i = var_index; i < sorted_losses.size(); ++i) {
+    tail_weight += sorted_losses[i].weight;
+    tail_weighted_sum += sorted_losses[i].weight * sorted_losses[i].loss;
+  }
+  VarRiskStatistics result;
+  result.confidence = confidence;
+  result.value_at_risk = sorted_losses[var_index].loss;
+  result.expected_shortfall = tail_weighted_sum / tail_weight;
+  result.n_scenarios = sorted_losses.size();
+  return result;
+}
+
+} // namespace
+
+Result<VarRiskStatistics> historical_var_statistics(std::span<const VarScenarioFrame> frames,
+                                                    double confidence,
+                                                    const VarWeighting &weighting) {
+  // Equal weighting is mathematically identical to the plain nearest-rank
+  // path above, but the general weighted-quantile arithmetic (a running sum
+  // of weight*loss products, divided by a running sum of weights) is not
+  // bit-identical to that path's direct rank/average -- the two sum in a
+  // different order. Delegating on the exact ewma_lambda == 1.0 default
+  // guarantees the bit-exact reproduction this overload promises, rather
+  // than relying on floating-point arithmetic happening to agree.
+  if (weighting.ewma_lambda == 1.0) {
+    return historical_var_statistics(frames, confidence);
+  }
+  if (!std::isfinite(confidence) || confidence <= 0.0 || confidence >= 1.0) {
+    return Err(ErrorCode::InvalidArgument, "historical VaR statistics: invalid input");
+  }
+  ATX_TRY(std::vector<WeightedLossRecord> losses, build_weighted_losses(frames, weighting));
+  return Ok(weighted_statistics_from_sorted_losses(losses, confidence));
+}
+
+Result<std::vector<VarRiskStatistics>>
+historical_var_curve(std::span<const VarScenarioFrame> frames, std::span<const double> confidences,
+                     const VarWeighting &weighting) {
+  if (confidences.empty()) {
+    return Err(ErrorCode::InvalidArgument, "historical VaR curve: confidences must be non-empty");
+  }
+  for (const double confidence : confidences) {
+    if (!std::isfinite(confidence) || confidence <= 0.0 || confidence >= 1.0) {
+      return Err(ErrorCode::InvalidArgument, "historical VaR curve: invalid confidence");
+    }
+  }
+  std::vector<VarRiskStatistics> curve;
+  curve.reserve(confidences.size());
+  for (const double confidence : confidences) {
+    ATX_TRY(VarRiskStatistics stats, historical_var_statistics(frames, confidence, weighting));
+    curve.push_back(stats);
+  }
+  return Ok(std::move(curve));
 }
 
 Result<HistoricalVarResult> run_historical_var(const SurfaceDb &db,

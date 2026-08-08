@@ -62,6 +62,7 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/historical_projection.cpp
     src/var.cpp
     src/var_report.cpp
+    src/var_validation.cpp
     src/american_iv.cpp
     src/dividend.cpp
     src/s3.cpp
