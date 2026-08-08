@@ -35,6 +35,7 @@
 // loop on ONE thread — exactly `IStrategy`'s own rule (strategy.hpp).
 
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string>
 #include <utility>
@@ -97,8 +98,17 @@ struct CycleSwapRequest {
 // fair strike, failed or non-finite/zero entry vega, a non-finite qty. The
 // caller counts refusals and reports them; it never guesses. `lot.id` is left
 // 0 for the caller's monotonic watermark.
-[[nodiscard]] Result<SwapLot> solve_cycle_swap(const SurfaceRef &surface,
-                                               const CycleSwapRequest &req, double target_vega);
+//
+// `surface_certified_wing_band` (FIT-C7 / Task C-6): `surface`'s own
+// certified band, resolved by the caller from the SAME snapshot's provenance
+// (`certified_wing_band_for`, backtest.hpp) at the uid `surface` was resolved
+// from. Threaded into BOTH the fair-strike solve and the entry vega, so the
+// strike a swap opens at and the vega it is sized against trust the SAME
+// band. `std::nullopt` (the default) resolves the mode-blind band —
+// unchanged prior behaviour for a caller that does not (yet) supply one.
+[[nodiscard]] Result<SwapLot>
+solve_cycle_swap(const SurfaceRef &surface, const CycleSwapRequest &req, double target_vega,
+                 std::optional<double> surface_certified_wing_band = std::nullopt);
 
 // Strategy-side mirror of the engine's swap accruals, driving the five
 // `swap_*` greek signal columns. Usage, per `on_step`:

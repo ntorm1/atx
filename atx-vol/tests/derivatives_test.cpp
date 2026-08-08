@@ -1694,6 +1694,20 @@ TEST(CarrLee, RefinedPropagatesStripFlagsThroughDerivPrice) {
 // native overloads now accept the surface's own certified band explicitly
 // (`atx::vol::certified_wing_half_band(quality_mode)`, surface_policy.hpp);
 // `wing_clamp_k == 0` resolves through it when supplied.
+//
+// THIS IS THE MECHANISM, NOT THE WIRING. These tests exercise
+// `resolve_wing_clamp` directly through the low-level entry points and prove
+// the mechanism is correct; they do NOT by themselves prove any production
+// caller actually supplies a band. That is a SEPARATE fact, proved where the
+// callers live: `SwapLeg.SolveCycleSwapTrustsSurfaceCertifiedWingBandWhenSupplied`
+// (swap_leg_test.cpp — `backtest.cpp`'s swap mark lane and every
+// `DeclarativeStrategy` swap leg) and
+// `DerivBook.WingBandResolverAppliesTheCallersCertifiedBandPerRow`
+// (deriv_book_test.cpp — `price_deriv_book`'s public API). Review round 1
+// (task-C-6-review.md, CRITICAL-1/2) found the first delivery had ONLY this
+// half: the mechanism existed but no call site used it, and this file's
+// `q_default` case below was mislabeled in a way that read as "the fix" when
+// it was actually still reproducing the pre-fix number for a Latency surface.
 
 TEST(WingClamp, SurfaceCertifiedBandOverridesModeBlindDefault) {
   const double sigma = 0.30;
@@ -1705,15 +1719,22 @@ TEST(WingClamp, SurfaceCertifiedBandOverridesModeBlindDefault) {
       atx::vol::certified_wing_half_band(atx::vol::FitQualityMode::Latency);
   ASSERT_DOUBLE_EQ(latency_band, 0.35);
 
-  // No surface-carried band: the mode-blind default wins, exactly as before
-  // this task -- the Balanced-mode regression-bit-identity case.
-  const auto q_default = atx::vol::var_swap_fair_strike(ps, T_test);
-  ASSERT_TRUE(q_default.has_value()) << q_default.error().to_string();
-  EXPECT_DOUBLE_EQ(q_default->resolved_wing_clamp, atx::vol::strip::kCertifiedWingHalfBand);
-  EXPECT_TRUE(has_flag(q_default->flags, DerivFlags::WingClamped));
+  // NO SURFACE-CARRIED BAND SUPPLIED: this is NOT "the Latency behaviour" --
+  // it is the UNWIRED-CALLER fallback, the exact FIT-C7 gap that stays open
+  // for any caller that never resolves the surface's own quality mode. It
+  // remains correct and necessary (an unknown-provenance surface must not
+  // invent trust it was never given), but it is not what a Latency-fit
+  // surface's mark SHOULD read once its caller is wired -- see q_latency
+  // below, and the production-call-site tests cross-referenced above.
+  const auto q_unwired = atx::vol::var_swap_fair_strike(ps, T_test);
+  ASSERT_TRUE(q_unwired.has_value()) << q_unwired.error().to_string();
+  EXPECT_DOUBLE_EQ(q_unwired->resolved_wing_clamp, atx::vol::strip::kCertifiedWingHalfBand);
+  EXPECT_TRUE(has_flag(q_unwired->flags, DerivFlags::WingClamped));
 
   // Same default config, but the caller now states the surface's own Latency
-  // build quality mode: the strip must trust ONLY the certified 0.35 band.
+  // build quality mode (exactly what backtest.cpp/swap_leg.cpp/deriv_book.cpp
+  // now do via `certified_wing_band_for`/`WingBandResolver`): the strip must
+  // trust ONLY the certified 0.35 band. THIS is the fixed behaviour.
   const auto q_latency =
       atx::vol::var_swap_fair_strike(ps, T_test, deriv_default_config(), latency_band);
   ASSERT_TRUE(q_latency.has_value()) << q_latency.error().to_string();
@@ -1722,14 +1743,14 @@ TEST(WingClamp, SurfaceCertifiedBandOverridesModeBlindDefault) {
 
   // Same span and node count either way -- the certified band changes reads,
   // never the grid (mirrors WingClamp.DefaultClampReadsFlatBeyondCertifiedBand).
-  EXPECT_EQ(q_default->strip_nodes_used, q_latency->strip_nodes_used);
-  EXPECT_EQ(q_default->strip_k_lo_used, q_latency->strip_k_lo_used);
-  EXPECT_EQ(q_default->strip_k_hi_used, q_latency->strip_k_hi_used);
+  EXPECT_EQ(q_unwired->strip_nodes_used, q_latency->strip_nodes_used);
+  EXPECT_EQ(q_unwired->strip_k_lo_used, q_latency->strip_k_lo_used);
+  EXPECT_EQ(q_unwired->strip_k_hi_used, q_latency->strip_k_hi_used);
 
   // The mark actually moves: flattening more of a steepening wing under the
   // tighter certified band can only lower the strike further (mirrors
   // WingClamp.ExplicitBandTightensMonotonically) -- this IS the fix.
-  EXPECT_LT(q_latency->fair_strike_dec, q_default->fair_strike_dec);
+  EXPECT_LT(q_latency->fair_strike_dec, q_unwired->fair_strike_dec);
 }
 
 TEST(WingClamp, BalancedSurfaceCertifiedBandBitIdenticalToModeBlindDefault) {
@@ -1780,11 +1801,36 @@ TEST(WingClamp, SurfaceCertifiedBandHonorsExplicitOverride) {
   EXPECT_FALSE(has_flag(q_off->flags, DerivFlags::WingClamped));
 }
 
-// The surface-carried band must survive `deriv_greeks`' bump table: a bumped
-// evaluation prices through RespotView/VolShiftView, an adapter with no
-// provenance of its own, so `pin_center_scheme` has to pin the CENTER's
-// resolved band into every bump's config explicitly (derivatives.cpp) or the
-// stencils would difference a 0.35-clamped center against 0.5-clamped bumps.
+// Review fix I-5 (Task C-6, round 2): the ORIGINAL version of this test only
+// asserted the CENTER quote's `resolved_wing_clamp` and that the greeks were
+// finite -- both hold whether or not `pin_center_scheme` pins the band into
+// the bumps (the center is priced through `PricedSurfaceStripView`, which
+// carries the band regardless; a wrong, WIDER clamp on the bumps still
+// produces a finite, plausible-looking greek, just the WRONG one). It gave no
+// coverage for the actual invariant the pin exists to hold.
+//
+// This version compares two paths that MUST agree bit-for-bit if the pin is
+// present, and provably diverge if it is not:
+//
+//   Path A (surface-carried): default cfg (wing_clamp_k == 0), the band
+//     supplied via `certified_wing_band` on the surface adapter. Every bump
+//     prices through RespotView/VolShiftView, which carries no such member,
+//     so path A's bumps depend ENTIRELY on `pin_center_scheme` writing the
+//     center's resolved 0.35 into `cfg_pinned.wing_clamp_k` for them to see.
+//   Path B (explicit override): the SAME 0.35, but as `cfg.wing_clamp_k`
+//     directly. `resolve_wing_clamp`'s `> 0` branch never consults the
+//     surface, so path B resolves identically for the center AND every bump
+//     regardless of adapter type -- it needs no pin, and serves as the
+//     independent reference.
+//
+// Center and bumps alike then resolve the identical wing_band (0.35) via the
+// identical resolve_wing_clamp branch (Path A's explicit-override pin makes
+// its bumps take the SAME branch Path B's always took), off the SAME surface
+// and contract, so the two paths are bit-identical BY CONSTRUCTION whenever
+// the pin does its job. Remove `pin_center_scheme`'s wing-clamp pin and path
+// A's bumps silently fall back to the mode-blind 0.5 (RespotView/VolShiftView
+// carry no provenance) while path B's stay pinned at 0.35 regardless -- the
+// two diverge, which is exactly what this comparison is built to catch.
 TEST(WingClamp, SurfaceCertifiedBandStaysPinnedAcrossGreekBumps) {
   const double sigma = 0.30;
   const double T_test = 0.35;
@@ -1800,13 +1846,27 @@ TEST(WingClamp, SurfaceCertifiedBandStaysPinnedAcrossGreekBumps) {
   c.notional = 1.0e6;
   c.rv_spec.n_obs_total = 63;
 
-  const auto g = atx::vol::deriv_greeks(ps, c, deriv_default_config(),
-                                        atx::vol::DerivGreekBumps{}, latency_band);
-  ASSERT_TRUE(g.has_value()) << g.error().to_string();
-  EXPECT_DOUBLE_EQ(g->quote.resolved_wing_clamp, latency_band);
-  EXPECT_TRUE(std::isfinite(g->vega));
-  EXPECT_TRUE(std::isfinite(g->delta));
-  EXPECT_TRUE(std::isfinite(g->gamma));
+  const auto g_surface = atx::vol::deriv_greeks(ps, c, deriv_default_config(),
+                                                atx::vol::DerivGreekBumps{}, latency_band);
+  ASSERT_TRUE(g_surface.has_value()) << g_surface.error().to_string();
+  EXPECT_DOUBLE_EQ(g_surface->quote.resolved_wing_clamp, latency_band);
+
+  DerivConfig explicit_cfg = deriv_default_config();
+  explicit_cfg.wing_clamp_k = latency_band;
+  const auto g_explicit =
+      atx::vol::deriv_greeks(ps, c, explicit_cfg, atx::vol::DerivGreekBumps{});
+  ASSERT_TRUE(g_explicit.has_value()) << g_explicit.error().to_string();
+  EXPECT_DOUBLE_EQ(g_explicit->quote.resolved_wing_clamp, latency_band);
+
+  EXPECT_TRUE(std::isfinite(g_surface->vega));
+  EXPECT_EQ(g_surface->delta, g_explicit->delta);
+  EXPECT_EQ(g_surface->gamma, g_explicit->gamma);
+  EXPECT_EQ(g_surface->vega, g_explicit->vega);
+  EXPECT_EQ(g_surface->volga, g_explicit->volga);
+  EXPECT_EQ(g_surface->vanna, g_explicit->vanna);
+  EXPECT_EQ(g_surface->theta, g_explicit->theta);
+  EXPECT_EQ(g_surface->rho, g_explicit->rho);
+  EXPECT_EQ(g_surface->charm, g_explicit->charm);
 }
 
 TEST(SurfacePolicy, CertifiedWingHalfBandMatchesEachQualityMode) {

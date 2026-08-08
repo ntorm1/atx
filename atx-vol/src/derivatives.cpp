@@ -155,6 +155,19 @@ struct StripGrid {
   return !std::isnan(cfg.wing_clamp_k);
 }
 
+// Review fix I-4 (Task C-6, round 2): reject an unusable surface-carried band
+// instead of silently widening trust. `resolve_wing_clamp` only CONSULTS
+// `surface_band` when it is `> 0.0` (see below), so a caller-supplied NaN or
+// non-positive value used to fall through UNCHECKED to the wider mode-blind
+// default -- the unsafe direction: a caller whose own
+// `certified_wing_half_band` arithmetic produced garbage got MORE uncertified
+// trust, not less, with no diagnostic. `std::nullopt` ("no band supplied") is
+// always valid; a supplied value must be finite and positive, mirroring
+// `certified_wing_half_band`'s own contract (it never returns <= 0).
+[[nodiscard]] bool surface_certified_wing_band_valid(std::optional<double> band) noexcept {
+  return !band.has_value() || (std::isfinite(*band) && *band > 0.0);
+}
+
 // FIT-C7 / Task C-6: structural (not inheritance-based) detection of a
 // surface adapter that carries its own certified wing band -- `PricedSurface`-
 // native and `SurfaceRef`-native callers thread one in via
@@ -949,6 +962,15 @@ Result<DerivQuote> var_swap_fair_strike(const SurfaceT& surface,
   if (!wing_clamp_valid(cfg)) {
     return Err(ErrorCode::InvalidArgument, "wing_clamp_k must not be NaN");
   }
+  // Review fix I-4: resolved ONCE here (reused at the resolve_wing_clamp call
+  // below) and validated eagerly -- a non-finite/non-positive supplied band
+  // fails the call instead of silently widening trust to the mode-blind
+  // default (see surface_certified_wing_band_valid).
+  const std::optional<double> cert_wing_band = surface_certified_wing_band(surface);
+  if (!surface_certified_wing_band_valid(cert_wing_band)) {
+    return Err(ErrorCode::InvalidArgument,
+               "surface_certified_wing_band must be unset or a finite, positive half-band");
+  }
 
   // Grid bounds and node count: quality default, overridden by the config.
   // An explicit [k_min_log, k_max_log] PINS the span — the caller asked for
@@ -1039,7 +1061,7 @@ Result<DerivQuote> var_swap_fair_strike(const SurfaceT& surface,
   // truncated span. band <= 0 means the clamp is off. Resolved BEFORE the
   // resolution floor below, which has to know how many panels the C-3 split
   // will cut — and that depends on where this band falls inside the span.
-  const double wing_band = resolve_wing_clamp(cfg, surface_certified_wing_band(surface));
+  const double wing_band = resolve_wing_clamp(cfg, cert_wing_band);
   const bool wing_clamped =
       wing_band > 0.0 && (grid.k_min_log < -wing_band || grid.k_max_log > wing_band);
 
@@ -1291,6 +1313,15 @@ Result<DerivQuote> vol_swap_fair_strike(const SurfaceT& surface,
   }
   if (!wing_clamp_valid(cfg)) {
     return Err(ErrorCode::InvalidArgument, "wing_clamp_k must not be NaN");
+  }
+  // Review fix I-4: validated defensively here too, mirroring wing_clamp_valid
+  // beside it -- the Naive Carr-Lee path below never runs a strip and so never
+  // consults this, but the Refined path delegates to var_swap_fair_strike,
+  // which does, and a bad band should fail loud at THIS entry rather than only
+  // the one branch that happens to use it.
+  if (!surface_certified_wing_band_valid(surface_certified_wing_band(surface))) {
+    return Err(ErrorCode::InvalidArgument,
+               "surface_certified_wing_band must be unset or a finite, positive half-band");
   }
 
   // K_vol ~= sqrt(2 pi / T) * C_ATMF / (F * df) — shared with

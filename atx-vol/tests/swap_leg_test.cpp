@@ -40,6 +40,7 @@
 #include "atx/vol/priced_surface.hpp"   // PricedSurface, PricingContext
 #include "atx/vol/surface_archive.hpp"  // write_surface_archive_v2_file
 #include "atx/vol/surface_parity.hpp"   // SliceContext
+#include "atx/vol/surface_policy.hpp"   // FitQualityMode, certified_wing_half_band (Task C-6)
 #include "atx/vol/swap_leg.hpp"         // swap_contract_for_lot, SwapSignalProbe
 #include "atx/vol/types.hpp"            // Result, Status
 #include "atx/vol/vol_curve.hpp"        // CurveSurface, EssviCurve
@@ -93,16 +94,57 @@ constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 }
 
 // One-symbol archive on disk -> a loadable MarketSnapshot for the probe tests.
+// `provenance` (Task C-6: certified-band wiring) defaults to nullopt, which
+// the writer resolves to `legacy_surface_provenance()` -- Balanced quality --
+// exactly `write_surface_archive_v2_file`'s existing default.
 [[nodiscard]] std::string write_one(const fs::path &dir, const std::string &date,
-                                    const PricedSurface &s) {
+                                    const PricedSurface &s,
+                                    std::optional<SurfaceProvenance> provenance = std::nullopt) {
   std::error_code ec;
   fs::create_directories(dir, ec);
   const std::string path = (dir / (date + ".atxvsa")).string();
-  const SurfaceArchiveItem item{kSymbol, &s};
+  const SurfaceArchiveItem item{kSymbol, &s, provenance};
   const std::span<const SurfaceArchiveItem> items(&item, 1);
   const Status st = write_surface_archive_v2_file(path, items);
   EXPECT_TRUE(st.has_value()) << (st.has_value() ? std::string{} : st.error().to_string());
   return path;
+}
+
+// Steep-wing eSSVI surface (Task C-6): same phi/rho shape as derivatives_
+// test.cpp's `make_steep_wing_priced_surface` -- a caricature of an
+// undisciplined fitted wing, so a 0.35 vs 0.5 wing-trust band resolves
+// materially different strikes/vegas rather than a rounding-noise difference.
+[[nodiscard]] PricedSurface make_steep_wing_surface(std::uint32_t uid, double S,
+                                                    std::int64_t now_ts) {
+  CurveSurface cs;
+  std::vector<SliceContext> ctx;
+  const double Ts[] = {0.05, 0.10, 0.20, 0.35, 0.50, 0.75, 1.00};
+  int i = 0;
+  for (const double T : Ts) {
+    EssviParams e{};
+    e.theta = 0.09 * T; // sigma = 0.30 flat ATM
+    e.phi = 4.0;
+    e.rho = -0.7;
+    e.psi = 0.5;
+    e.p = 0.5;
+    e.lambda = 0.5;
+    e.T = T;
+    e.F = S;
+    e.expiry_id = static_cast<std::uint16_t>(i);
+    cs.push(std::make_unique<EssviCurve>(e, std::exp(-kR * T)));
+    ctx.push_back(SliceContext{T, S, 0.0, 0.0, 250, 7});
+    ++i;
+  }
+  PricingContext pc;
+  pc.S = S;
+  pc.r = kR;
+  pc.now_ts_ns = now_ts;
+  pc.method = AmericanMethod::AndersenLake;
+  pc.al_opts = al_fast_opts();
+  pc.uid = uid;
+  auto ps = PricedSurface::create(std::move(cs), std::move(ctx), pc);
+  EXPECT_TRUE(ps.has_value()) << (ps.has_value() ? std::string{} : ps.error().to_string());
+  return std::move(*ps);
 }
 
 [[nodiscard]] fs::path fresh_dir(const char *tag) {
@@ -226,6 +268,78 @@ TEST(SwapLeg, SolveCycleSwapStrikesFairAndSizesToTargetVega) {
       surface, swap_contract_for_lot(*lot, lot->start_ts_ns, staged), req.deriv_cfg);
   ASSERT_TRUE(q.has_value());
   EXPECT_NEAR(q->pv, 0.0, 1e-12);
+}
+
+// FIT-C7 / Task C-6, review round 1 CRITICAL-1/2: the production wiring.
+// `solve_cycle_swap` is `swap_leg.cpp`'s (and, through it, every
+// DeclarativeStrategy swap leg's) fair-strike and entry-vega solve; before
+// this fix landed no caller of it ever supplied a certified band, so a
+// Latency-fit surface's strike and sizing vega silently trusted the wider
+// mode-blind 0.5 band. This test resolves the band the SAME way the real
+// caller does (`certified_wing_band_for`, backtest.hpp, off the snapshot's
+// own same-blob provenance) and proves it is not a no-op: the strike a swap
+// opens at, and the vega it is sized against, both move.
+TEST(SwapLeg, SolveCycleSwapTrustsSurfaceCertifiedWingBandWhenSupplied) {
+  const fs::path dir = fresh_dir("latency-band");
+  const PricedSurface s0 = make_steep_wing_surface(kUid, 100.0, kBaseNow);
+  SurfaceProvenance prov{};
+  prov.quality_mode = FitQualityMode::Latency;
+  const Result<MarketSnapshot> snap =
+      MarketSnapshot::load(write_one(dir, "2026-08-01", s0, prov));
+  ASSERT_TRUE(snap.has_value());
+  const SurfaceRef surface = snap->find(kUid);
+  ASSERT_NE(surface, nullptr);
+
+  // The provenance round-tripped through the archive exactly as written.
+  const std::optional<double> band = certified_wing_band_for(*snap, kUid);
+  ASSERT_TRUE(band.has_value());
+  EXPECT_DOUBLE_EQ(*band, certified_wing_half_band(FitQualityMode::Latency));
+  EXPECT_DOUBLE_EQ(*band, 0.35);
+
+  std::vector<std::int64_t> sessions;
+  for (int i = 0; i < 5; ++i) {
+    sessions.push_back(kBaseNow + i * kStepNs);
+  }
+  const CycleSwapRequest req = make_request(sessions);
+  constexpr double kTarget = 2500.0;
+
+  // No band supplied: the pre-wiring behaviour (still reachable -- the
+  // parameter defaults to nullopt for a caller that has not resolved one).
+  const Result<SwapLot> lot_default = solve_cycle_swap(surface, req, kTarget);
+  ASSERT_TRUE(lot_default.has_value()) << lot_default.error().to_string();
+
+  // The certified band supplied, exactly as strategy.cpp's DeclarativeStrategy
+  // now does at its own solve_cycle_swap call site.
+  const Result<SwapLot> lot_latency = solve_cycle_swap(surface, req, kTarget, band);
+  ASSERT_TRUE(lot_latency.has_value()) << lot_latency.error().to_string();
+
+  // Both a real strike and a real (equal-vega) qty, but NOT the same numbers:
+  // trusting only +-0.35 of this steepening wing changes both the fair strike
+  // the swap opens at and the vega it is sized against.
+  EXPECT_GT(lot_default->strike_dec, 0.0);
+  EXPECT_GT(lot_latency->strike_dec, 0.0);
+  EXPECT_NE(lot_default->strike_dec, lot_latency->strike_dec);
+  EXPECT_NE(lot_default->qty, lot_latency->qty);
+
+  // Flattening more of the steepening wing under the tighter certified band
+  // can only lower the strike (WingClamp.ExplicitBandTightensMonotonically's
+  // identity, derivatives_test.cpp).
+  EXPECT_LT(lot_latency->strike_dec, lot_default->strike_dec);
+
+  // Independent oracle, same pattern as SolveCycleSwapStrikesFairAndSizesToTargetVega:
+  // qty * entry vega reproduces the target under the SAME band the solve used.
+  RealizedVarianceSpec staged{};
+  staged.annualization = 252.0;
+  staged.n_obs_total = lot_latency->n_obs_total;
+  const Result<DerivGreeks> g = detail::deriv_greeks_on_ref(
+      surface, swap_contract_for_lot(*lot_latency, lot_latency->start_ts_ns, staged),
+      req.deriv_cfg, DerivGreekBumps{}, band);
+  ASSERT_TRUE(g.has_value());
+  EXPECT_NEAR(lot_latency->qty * g->vega, kTarget, 1e-6 * kTarget);
+  // Brief acceptance A6, on the WIRED production call site rather than the
+  // bare entry point: a Latency-certified surface, a DEFAULT DerivConfig
+  // (`req.deriv_cfg` above), the effective clamp is exactly 0.35.
+  EXPECT_DOUBLE_EQ(g->quote.resolved_wing_clamp, 0.35);
 }
 
 TEST(SwapLeg, SolveCycleSwapRefusesAOneSessionCycle) {

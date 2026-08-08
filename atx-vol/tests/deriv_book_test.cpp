@@ -4,14 +4,17 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include "atx/vol/american.hpp" // al_fast_opts, AmericanMethod
 #include "atx/vol/deriv_book.hpp"
 #include "atx/vol/derivatives.hpp" // deriv_greeks (PricedSurface overload) — the reference
+#include "atx/vol/detail/strip_grid.hpp" // strip::kCertifiedWingHalfBand (Task C-6)
 #include "atx/vol/portfolio_pricer.hpp"
 #include "atx/vol/priced_surface.hpp"    // PricedSurface, PricingContext
 #include "atx/vol/surface_parity.hpp"    // SliceContext
+#include "atx/vol/surface_policy.hpp"    // FitQualityMode, certified_wing_half_band (Task C-6)
 #include "atx/vol/vol_curve.hpp"         // CurveSurface, EssviCurve
 #include "atx/vol/vol_surface.hpp"       // EssviParams
 #include "support/analytics_fixture.hpp" // testkit::make_flat_surface (PricedSurface)
@@ -84,6 +87,40 @@ using atx::vol::SurfaceSet;
       PricedSurface::create(std::move(cs), std::move(ctx), pc));
 }
 
+// Steep-wing eSSVI surface (Task C-6): same phi/rho shape as derivatives_
+// test.cpp's `make_steep_wing_priced_surface` -- a caricature of an
+// undisciplined fitted wing, so a 0.35 vs 0.5 wing-trust band resolves
+// materially different strikes rather than a rounding-noise difference.
+[[nodiscard]] PricedSurface make_steep_wing_surface(std::uint32_t uid, double S, double sigma) {
+  CurveSurface cs;
+  std::vector<SliceContext> ctx;
+  std::uint16_t i = 0;
+  for (const double T : atx::vol::testkit::fixture_tenors()) {
+    EssviParams e{};
+    e.theta = sigma * sigma * T;
+    e.phi = 4.0;
+    e.rho = -0.7;
+    e.psi = 0.5;
+    e.p = 0.5;
+    e.lambda = 0.5;
+    e.T = T;
+    e.F = S;
+    e.expiry_id = i;
+    cs.push(std::make_unique<EssviCurve>(e, std::exp(-atx::vol::testkit::kFixtureRate * T)));
+    ctx.push_back(SliceContext{T, S, 0.0, 0.0, 250, 7});
+    ++i;
+  }
+  PricingContext pc;
+  pc.S = S;
+  pc.r = atx::vol::testkit::kFixtureRate;
+  pc.now_ts_ns = atx::vol::testkit::kFixtureNow;
+  pc.method = atx::vol::AmericanMethod::AndersenLake;
+  pc.al_opts = atx::vol::al_fast_opts();
+  pc.uid = uid;
+  return atx::vol::testkit::unwrap_surface(
+      PricedSurface::create(std::move(cs), std::move(ctx), pc));
+}
+
 // An unaged 1e6-notional var swap struck at 0.
 [[nodiscard]] DerivContract var_swap_at(double T) {
   DerivContract c{};
@@ -132,6 +169,52 @@ TEST(DerivBook, PricesVarAndVolSwapAgainstSurfaceSet) {
   EXPECT_EQ(f->n_ok(), 2u);
   // qty scaling: row0 vega is 2x the single-contract vega, roughly 2*2*sigma*N*df
   EXPECT_GT(f->rows[0].greeks.vega, 0.0);
+}
+
+// FIT-C7 / Task C-6, review round 1 CRITICAL-1: `price_deriv_book` is the
+// umbrella-exported public entry point (deriv_book.hpp); before this fix
+// landed no caller of it could supply a certified band at all, so every row
+// against a non-Balanced-quality surface silently trusted the mode-blind
+// default. `WingBandResolver` closes that: a caller supplies a uid ->
+// std::optional<double> function and every row's own uid is looked up
+// through it. An unset resolver ({}) is unchanged prior behaviour.
+TEST(DerivBook, WingBandResolverAppliesTheCallersCertifiedBandPerRow) {
+  const atx::vol::PricedSurface ps = make_steep_wing_surface(21, 100.0, 0.30);
+  const atx::vol::PricedSurface *arr[] = {&ps};
+  auto ss = SurfaceSet::create(arr);
+  ASSERT_TRUE(ss.has_value());
+
+  DerivPosition p{};
+  p.id = 1;
+  p.uid = 21;
+  p.qty = 1.0;
+  p.contract = var_swap_at(0.35);
+  const DerivPosition book[] = {p};
+
+  // No resolver: the mode-blind default, unchanged prior behaviour.
+  const auto f_default = price_deriv_book(*ss, book);
+  ASSERT_TRUE(f_default.has_value()) << f_default.error().to_string();
+  ASSERT_EQ(f_default->rows[0].status, PriceStatus::Ok);
+  EXPECT_DOUBLE_EQ(f_default->rows[0].greeks.quote.resolved_wing_clamp,
+                   atx::vol::strip::kCertifiedWingHalfBand);
+
+  // A resolver that reports this uid's surface as Latency-quality.
+  const double latency_band =
+      atx::vol::certified_wing_half_band(atx::vol::FitQualityMode::Latency);
+  const atx::vol::WingBandResolver resolver =
+      [&](std::uint32_t uid) -> std::optional<double> {
+    return uid == 21u ? std::optional<double>{latency_band} : std::nullopt;
+  };
+  const auto f_latency =
+      price_deriv_book(*ss, book, atx::vol::DerivConfig{}, /*greeks=*/true,
+                       atx::vol::DerivGreekBumps{}, resolver);
+  ASSERT_TRUE(f_latency.has_value()) << f_latency.error().to_string();
+  ASSERT_EQ(f_latency->rows[0].status, PriceStatus::Ok);
+  EXPECT_DOUBLE_EQ(f_latency->rows[0].greeks.quote.resolved_wing_clamp, latency_band);
+
+  // Not a no-op, and not merely different: flattening more of the steepening
+  // wing under the tighter certified band can only lower the strike.
+  EXPECT_LT(f_latency->rows[0].fair_strike_dec, f_default->rows[0].fair_strike_dec);
 }
 
 TEST(DerivBook, MissingSurfaceMarksRowNotCall) {

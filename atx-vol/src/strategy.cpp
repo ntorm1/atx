@@ -1291,7 +1291,10 @@ Status DeclarativeStrategy::step_restrike(const MarketSnapshot &base, std::size_
       req.session_ts = spec_.session_ts;
       req.deriv_cfg = leg.deriv_cfg;
 
-      Result<SwapLot> lot = solve_cycle_swap(surface, req, target_vega);
+      // FIT-C7 / Task C-6: trust this leg's surface's OWN certified wing band
+      // (same-snapshot provenance for `uid`), not the mode-blind default.
+      Result<SwapLot> lot =
+          solve_cycle_swap(surface, req, target_vega, certified_wing_band_for(base, uid));
       if (!lot) {
         ++skipped_swap_cycles_;
         continue;

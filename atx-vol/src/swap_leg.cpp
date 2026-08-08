@@ -60,7 +60,8 @@ DerivContract swap_contract_for_lot(const SwapLot &lot, std::int64_t base_ts,
 }
 
 Result<SwapLot> solve_cycle_swap(const SurfaceRef &surface, const CycleSwapRequest &req,
-                                 double target_vega) {
+                                 double target_vega,
+                                 std::optional<double> surface_certified_wing_band) {
   if (!(std::isfinite(target_vega) && target_vega != 0.0)) {
     return Err(ErrorCode::Unavailable,
                "solve_cycle_swap: target vega is non-finite or zero; no leg to size against");
@@ -123,15 +124,16 @@ Result<SwapLot> solve_cycle_swap(const SurfaceRef &surface, const CycleSwapReque
   // entire entry difference).
   const Result<DerivQuote> fair =
       detail::deriv_price_on_ref(surface, swap_contract_for_lot(lot, lot.start_ts_ns, rv),
-                                 req.deriv_cfg);
+                                 req.deriv_cfg, surface_certified_wing_band);
   if (!fair || !(std::isfinite(fair->fair_strike_dec) && fair->fair_strike_dec > 0.0)) {
     return Err(ErrorCode::Unavailable,
                "solve_cycle_swap: fair-strike solve failed or returned a non-positive strike");
   }
   lot.strike_dec = fair->fair_strike_dec;
 
-  const Result<DerivGreeks> greeks = detail::deriv_greeks_on_ref(
-      surface, swap_contract_for_lot(lot, lot.start_ts_ns, rv), req.deriv_cfg, DerivGreekBumps{});
+  const Result<DerivGreeks> greeks =
+      detail::deriv_greeks_on_ref(surface, swap_contract_for_lot(lot, lot.start_ts_ns, rv),
+                                  req.deriv_cfg, DerivGreekBumps{}, surface_certified_wing_band);
   if (!greeks || !(std::isfinite(greeks->vega) && greeks->vega != 0.0)) {
     // Never a garbage qty: no vega, no leg.
     return Err(ErrorCode::Unavailable,
@@ -256,9 +258,14 @@ void SwapSignalProbe::append_swap_greek_signals(
       // The contract the engine's mark lane priced this row, rebuilt through
       // the one helper that also builds entry solves' — residual tenor plus
       // the fixings observed so far.
-      const Result<DerivGreeks> greeks =
-          detail::deriv_greeks_on_ref(surface, swap_contract_for_lot(lot, base.ts_ns(), mirror->rv),
-                                      kEngineSwapMarkCfg, DerivGreekBumps{});
+      //
+      // FIT-C7 / Task C-6: same-snapshot provenance for this lot's own uid, so
+      // the reported swap_vega/etc. signals trust the SAME certified band the
+      // engine's own mark lane (step_swap_lots, backtest.cpp) resolves for
+      // this surface, not the mode-blind default.
+      const Result<DerivGreeks> greeks = detail::deriv_greeks_on_ref(
+          surface, swap_contract_for_lot(lot, base.ts_ns(), mirror->rv), kEngineSwapMarkCfg,
+          DerivGreekBumps{}, certified_wing_band_for(base, lot.uid));
       if (!greeks) {
         priced = false; // never a PARTIAL total: one unpriced lot voids the set
         break;

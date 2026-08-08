@@ -48,6 +48,7 @@
 #include "atx/vol/priced_surface.hpp"   // PricedSurface
 #include "atx/vol/query_pricing.hpp"    // QueryPricingTier
 #include "atx/vol/surface_archive.hpp"  // SurfaceProvenance
+#include "atx/vol/surface_policy.hpp"   // certified_wing_half_band (FIT-C7 / Task C-6)
 #include "atx/vol/types.hpp"            // Result, Side
 
 namespace atx::vol {
@@ -281,6 +282,23 @@ private:
   std::int64_t ts_ns_{0};
   std::vector<std::pair<std::string, std::uint32_t>> syms_; // symbol -> uid
 };
+
+// FIT-C7 / Task C-6: the certified wing half-band `uid`'s surface actually
+// supports on `snapshot`, resolved from the SAME-BLOB provenance
+// `MarketSnapshot::provenance` already carries -- for `deriv_price_on_ref`'s
+// (etc.) `surface_certified_wing_band` argument, so a swap mark or a
+// vega-sized swap lot trusts exactly the band the fit pipeline certified for
+// that surface's OWN quality mode instead of the mode-blind default.
+// `std::nullopt` for an unknown uid (mirrors `find`'s null handle) OR a
+// legacy archive with no independently-admitted record --
+// `legacy_surface_provenance()` resolves `FitQualityMode::Balanced`, which
+// IS the mode-blind default, so this is never a behaviour change for those.
+[[nodiscard]] inline std::optional<double>
+certified_wing_band_for(const MarketSnapshot &snapshot, std::uint32_t uid) noexcept {
+  const SurfaceProvenance *prov = snapshot.provenance(uid);
+  return prov != nullptr ? std::optional<double>{certified_wing_half_band(prov->quality_mode)}
+                        : std::nullopt;
+}
 
 // ABI note: this pre-1.0 hot-path revision changes the IStrategy vtable and the
 // public ResolvedLeg, MarketSnapshot, SnapshotCacheStats, and RunConfig layouts.

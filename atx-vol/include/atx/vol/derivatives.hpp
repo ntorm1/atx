@@ -432,24 +432,40 @@ struct DerivConfig {
   // Refined pulls in the strip's own K_var for a smaller convexity bias.
   CarrLeeForm carr_lee_form = CarrLeeForm::Naive;
   // Wing trust band for the variance strip's SURFACE READS, in absolute
-  // log-forward-moneyness. The fit pipeline certifies a surface only on
-  // |k| <= 0.5 (RiskSurfaceValidationConfig::k_min/k_max); beyond it a
-  // parametric eSSVI/SVI slice serves an unbounded linear-in-|k| extrapolation
-  // no quote ever disciplined, and the strip's 1/K weighting turns that
-  // fiction into fair-strike level and daily mark noise (the sp100-2026 XOM
-  // 3M strike read ~38 vol against a ~30 ATM, with ~98% of its day-to-day
-  // variance sourced beyond |k| = 0.25). Nodes beyond the band keep their true
-  // strikes but read the BAND-EDGE vol — flat-vol tails, the standard desk
-  // discipline for un-quoted wings — so the strip stays complete (no
-  // truncation bias) while the uncertified region loses its say. The span,
-  // node count, and truncation flags are untouched: this clamps reads, not
-  // the grid. `DerivFlags::WingClamped` records that tails were in effect.
+  // log-forward-moneyness. The fit pipeline certifies a surface's no-
+  // arbitrage properties only over the band its OWN build quality mode's
+  // independent risk validator actually samples -- Latency |k| <= 0.35,
+  // Balanced |k| <= 0.50, Accuracy |k| <= 0.60
+  // (`atx::vol::certified_wing_half_band`, surface_policy.hpp; the fitter's
+  // own `risk_validation_config`, pricer_fitter.cpp). Beyond ITS certified
+  // band a parametric eSSVI/SVI slice serves an unbounded linear-in-|k|
+  // extrapolation no quote ever disciplined, and the strip's 1/K weighting
+  // turns that fiction into fair-strike level and daily mark noise (the
+  // sp100-2026 XOM 3M strike read ~38 vol against a ~30 ATM, with ~98% of its
+  // day-to-day variance sourced beyond |k| = 0.25). Nodes beyond the band keep
+  // their true strikes but read the BAND-EDGE vol — flat-vol tails, the
+  // standard desk discipline for un-quoted wings — so the strip stays
+  // complete (no truncation bias) while the uncertified region loses its say.
+  // The span, node count, and truncation flags are untouched: this clamps
+  // reads, not the grid. `DerivFlags::WingClamped` records that tails were in
+  // effect.
   //
-  //   0    -> the certified validation band, strip::kCertifiedWingHalfBand
-  //           (= 0.5, kept equal to RiskSurfaceValidationConfig{}.k_max).
+  //   0    -> the SURFACE's own certified band when the caller states one --
+  //           the `PricedSurface`/`SurfaceRef`-native entry points below
+  //           (`var_swap_fair_strike` etc.) take a `surface_certified_wing_
+  //           band` argument for exactly this (FIT-C7 / Task C-6) -- else
+  //           the mode-blind default `strip::kCertifiedWingHalfBand` (= 0.5,
+  //           the BALANCED band; kept equal to the default
+  //           `RiskSurfaceValidationConfig{}.k_max`). A surface priced
+  //           through a path with no such argument (the templated legacy
+  //           VolSurface/eSSVI/SVI containers, or a caller that does not
+  //           state the surface's quality mode) always resolves the
+  //           mode-blind default, regardless of the surface's true mode.
   //   > 0  -> explicit half-band; reads clamped to [-wing_clamp_k, +wing_clamp_k].
+  //           Wins over any surface-carried band.
   //   < 0  -> OFF: read the raw surface everywhere (pre-clamp behavior; the
   //           escape hatch for a surface whose wings ARE quote-disciplined).
+  //           Wins over any surface-carried band.
   //   NaN  -> InvalidArgument.
   double wing_clamp_k = 0.0;
   // Reserved — must be left at 0.

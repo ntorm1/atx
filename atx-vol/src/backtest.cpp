@@ -1051,7 +1051,14 @@ struct SwapStepResult {
     contract.cap_dec = lot.cap_dec;
     contract.notional = lot.notional;
     contract.rv_spec = acc.rv;
-    ATX_TRY(const DerivQuote quote, detail::deriv_price_on_ref(surface, contract, deriv_cfg));
+    // FIT-C7 / Task C-6: trust this lot's surface's OWN certified wing band
+    // (from the SAME snapshot's same-blob provenance), not the mode-blind
+    // default -- a Latency-fit surface certifies only +-0.35, and marking it
+    // through the wider +-0.5 default read uncertified extrapolation into
+    // swap_pnl.
+    const std::optional<double> wing_band = certified_wing_band_for(shifted, lot.uid);
+    ATX_TRY(const DerivQuote quote,
+            detail::deriv_price_on_ref(surface, contract, deriv_cfg, wing_band));
     const double pv_scaled = lot.qty * quote.pv;
     out.swap_pnl += pv_scaled - acc.prev_pv;
     out.swap_pv += pv_scaled;

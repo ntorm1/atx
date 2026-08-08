@@ -92,6 +92,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -126,6 +128,16 @@ struct DerivPriceRow {
   PriceStatus status{PriceStatus::Ok};
 };
 
+// A uid -> certified wing-band resolver (FIT-C7 / Task C-6). A caller who
+// tracks each surface's build quality mode (e.g. `MarketSnapshot::provenance`
+// / `certified_wing_band_for`, backtest.hpp -- the SurfaceSet this call prices
+// against typically comes from one) supplies one so every position's
+// `deriv_price`/`deriv_greeks` trusts exactly the band that mode certified
+// instead of the mode-blind default. An empty resolver (the default) resolves
+// the mode-blind band for every position -- unchanged prior behaviour for a
+// caller that does not (yet) supply one.
+using WingBandResolver = std::function<std::optional<double>(std::uint32_t uid)>;
+
 // Rows in input order plus the column sums over the Ok rows.
 struct DerivPriceFrame {
   std::vector<DerivPriceRow> rows;
@@ -151,12 +163,17 @@ struct DerivPriceFrame {
 //                 A non-positive bump is rejected by the pricer PER POSITION,
 //                 so a malformed `bumps` shows up as every row reporting
 //                 `InvalidContract` rather than as a call-level error.
+// @param wing_band_of  FIT-C7 / Task C-6: uid -> certified wing-band resolver
+//                 (see `WingBandResolver` above). Called once per position
+//                 when set; unset (the default) resolves the mode-blind band
+//                 for every position, unchanged prior behaviour.
 // @return the frame. Per-position failures are reported as row status, so this
 //         does not fail on any book the pricers can reject lane-by-lane.
 [[nodiscard]] Result<DerivPriceFrame>
 price_deriv_book(const SurfaceSet &surfaces, std::span<const DerivPosition> book,
                  const DerivConfig &cfg = DerivConfig{}, bool greeks = true,
-                 const DerivGreekBumps &bumps = DerivGreekBumps{});
+                 const DerivGreekBumps &bumps = DerivGreekBumps{},
+                 const WingBandResolver &wing_band_of = {});
 
 // Field-wise sum of two totals blocks — the seam that lets an option book's
 // `PriceTotals` and a deriv book's be reported as one desk-level risk number.

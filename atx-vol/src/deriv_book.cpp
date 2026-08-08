@@ -83,7 +83,8 @@ constexpr double kNaN = kPriceColumnNaN;
 // a NaN-filled row, which is what keeps a bad lane from failing the call.
 [[nodiscard]] DerivPriceRow price_one(const SurfaceSet &surfaces, const DerivPosition &p,
                                       const DerivConfig &cfg, bool greeks,
-                                      const DerivGreekBumps &bumps) {
+                                      const DerivGreekBumps &bumps,
+                                      const WingBandResolver &wing_band_of) {
   DerivPriceRow row{};
   row.id = p.id;
   row.uid = p.uid;
@@ -104,8 +105,14 @@ constexpr double kNaN = kPriceColumnNaN;
     return row;
   }
 
+  // FIT-C7 / Task C-6: this row's own certified wing band, when the caller
+  // supplied a resolver; std::nullopt (an unset resolver) resolves the
+  // mode-blind default, unchanged prior behaviour.
+  const std::optional<double> wing_band = wing_band_of ? wing_band_of(p.uid) : std::nullopt;
+
   if (greeks) {
-    const Result<DerivGreeks> g = detail::deriv_greeks_on_ref(ref, p.contract, cfg, bumps);
+    const Result<DerivGreeks> g =
+        detail::deriv_greeks_on_ref(ref, p.contract, cfg, bumps, wing_band);
     if (!g.has_value()) {
       row.status = status_for(g.error());
       return row;
@@ -117,7 +124,7 @@ constexpr double kNaN = kPriceColumnNaN;
     return row;
   }
 
-  const Result<DerivQuote> q = detail::deriv_price_on_ref(ref, p.contract, cfg);
+  const Result<DerivQuote> q = detail::deriv_price_on_ref(ref, p.contract, cfg, wing_band);
   if (!q.has_value()) {
     row.status = status_for(q.error());
     return row;
@@ -188,7 +195,8 @@ std::size_t DerivPriceFrame::n_ok() const noexcept {
 Result<DerivPriceFrame> price_deriv_book(const SurfaceSet &surfaces,
                                          std::span<const DerivPosition> book,
                                          const DerivConfig &cfg, bool greeks,
-                                         const DerivGreekBumps &bumps) {
+                                         const DerivGreekBumps &bumps,
+                                         const WingBandResolver &wing_band_of) {
   // The only STRUCTURAL rejection: `PriceTotals::n_ok` is a uint32 counter, so a
   // book that cannot be counted in one would silently wrap. Refused before any
   // allocation (mirrors Portfolio::create's index-representability gate).
@@ -202,7 +210,7 @@ Result<DerivPriceFrame> price_deriv_book(const SurfaceSet &surfaces,
   // Serial, fixed input order: the float-add association is the book's own
   // order, so the totals are bit-reproducible for a given input.
   for (const DerivPosition &p : book) {
-    frame.rows.push_back(price_one(surfaces, p, cfg, greeks, bumps));
+    frame.rows.push_back(price_one(surfaces, p, cfg, greeks, bumps, wing_band_of));
     accumulate(frame.totals, frame.rows.back(), greeks);
   }
   return Ok(std::move(frame));

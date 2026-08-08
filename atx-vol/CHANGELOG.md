@@ -53,6 +53,34 @@ identity an explicit `wing_clamp_k` override already has). Accuracy-mode
 surfaces widen from 0.5 to 0.6 and move the other direction. Balanced-mode
 surfaces are bit-identical either way (0.5 either way).
 
+**Wired, not just available** (review fix round 1): the paragraph above
+originally undersold this as an opt-in a caller had to reach for. It is now
+also wired into every live production path that prices or marks a swap lot
+against a stamped-provenance surface, so a Latency/Accuracy-fit surface's
+own band is read automatically, with no caller-side opt-in required:
+
+- `MarketSnapshot::provenance(uid)` (already plumbed end-to-end from
+  `FittedSurface::quality_mode()` through `SurfaceArchive`) now feeds a new
+  `certified_wing_band_for(snapshot, uid)` helper (`backtest.hpp`), used by
+  `step_swap_lots` (`backtest.cpp`) to mark every open swap lot's PnL against
+  its OWN surface's certified band, and by `DeclarativeStrategy` (`strategy.cpp`)
+  to size and fair-strike every new swap leg the same way.
+- `solve_cycle_swap` (`swap_leg.hpp`/`.cpp`) takes a new trailing
+  `surface_certified_wing_band` parameter (default `std::nullopt`, so any
+  caller not yet threading provenance is unaffected bit for bit) and forwards
+  it to both the fair-strike solve and the entry-vega greeks; `SwapSignalProbe`
+  passes it through as well.
+- `price_deriv_book` (`deriv_book.hpp`/`.cpp`) takes a new trailing
+  `WingBandResolver` callback (default empty, same no-op guarantee) so a
+  caller holding per-uid provenance from any source can apply it per row.
+
+A legacy archive with no independently-admitted `SurfaceProvenance` resolves
+`FitQualityMode::Balanced` (`legacy_surface_provenance()`), the mode-blind
+default band, so none of the above changes a mark for archives that predate
+provenance stamping. It changes marks only for Latency/Accuracy-stamped
+surfaces flowing through these paths, per the monotonic-tightening/-widening
+direction described above.
+
 ### Fixed — two silent kind x engine mismatches now fail loud (PV-5)
 
 `deriv_price` already rejected an engine that names no pricing formula for a
