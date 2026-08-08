@@ -345,6 +345,18 @@ public:
   [[nodiscard]] double q_eff_at(double T) const noexcept { ATX_VOL_SURFACE_REF_FWD(q_eff_at(T)); }
   [[nodiscard]] double rate_at(double T) const noexcept { ATX_VOL_SURFACE_REF_FWD(rate_at(T)); }
 
+  // Strip-carry hoisting (Task P-1). Both PricedSurface and PricedSurfaceView
+  // expose the identical `strip_carry_at` / `iv_with_carry` pair (see
+  // SurfaceStripCarry, priced_surface.hpp), so this forwards through the same
+  // owned-vs-view branch as every other accessor above with no borrow-form
+  // dispatch of its own.
+  [[nodiscard]] SurfaceStripCarry strip_carry_at(double T) const noexcept {
+    ATX_VOL_SURFACE_REF_FWD(strip_carry_at(T));
+  }
+  [[nodiscard]] double iv_with_carry(double K, const SurfaceStripCarry &carry) const noexcept {
+    ATX_VOL_SURFACE_REF_FWD(iv_with_carry(K, carry));
+  }
+
   [[nodiscard]] PricedSurface::ResolvedSurfacePoint resolve(double K, double T) const noexcept {
     ATX_VOL_SURFACE_REF_FWD(resolve(K, T));
   }

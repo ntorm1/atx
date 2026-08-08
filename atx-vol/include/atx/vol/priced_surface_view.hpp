@@ -96,6 +96,13 @@ public:
   [[nodiscard]] double q_eff_at(double T) const noexcept;
   [[nodiscard]] double rate_at(double T) const noexcept;
 
+  // ── Strip-carry hoisting (Task P-1; see SurfaceStripCarry, priced_surface.hpp) ──
+  // Mirrors PricedSurface::strip_carry_at / iv_with_carry exactly -- same
+  // opaque-snapshot contract, same bit-identity claim (T-bracket/carry are
+  // pure functions of T over this view's immutable mapped columns).
+  [[nodiscard]] SurfaceStripCarry strip_carry_at(double T) const noexcept;
+  [[nodiscard]] double iv_with_carry(double K, const SurfaceStripCarry &carry) const noexcept;
+
   [[nodiscard]] Result<double>
   fair_value(double K, double T, Side side,
              QueryExecution execution = QueryExecution::Configured) const;
@@ -162,15 +169,35 @@ private:
   [[nodiscard]] ForwardCarry interp_forward(double T) const noexcept;
   [[nodiscard]] double slice_rate(std::size_t index) const noexcept;
 
+  // Local mirror of CurveSurface::Bracket (private there too). Task P-1: this
+  // view's own T-bracket over col_T_, hoisted the same way SurfaceStripCarry
+  // hoists PricedSurface's.
+  struct Bracket {
+    std::size_t lo{0};
+    std::size_t hi{0};
+    double upper_weight{0.0};
+    [[nodiscard]] bool is_single_slice() const noexcept { return lo == hi; }
+  };
+  // Precondition: n_slices_ != 0 and T is finite/positive (callers guard this
+  // the same way forward_at/rate_at/q_eff_at do before calling interp_forward).
+  [[nodiscard]] Bracket surface_bracket(double T) const noexcept;
+
   // Surface-level total variance at (k_log, T) — replicates CurveSurface::w
   // (short-end scaling, single-slice long-end flat, linear-in-w bracket blend).
   [[nodiscard]] double surface_w(double k_log, double T) const noexcept;
+  // Resolve a point given an already-resolved bracket (the strip-carry-hoist
+  // ladder-reuse path). Bit-identical to surface_w(k_log, T) when
+  // resolved == surface_bracket(T).
+  [[nodiscard]] double surface_w(double k_log, double T, Bracket resolved) const noexcept;
   // Per-slice total variance w(k_log) — dispatch on the mapped kind byte.
   [[nodiscard]] double slice_w(std::size_t i, double k_log) const noexcept;
   [[nodiscard]] const IVolCurve *heavy_curve(std::size_t i) const noexcept;
 
   [[nodiscard]] ResolvedSurfacePoint resolve_with_carry(double K, double T,
                                                         ForwardCarry fc) const noexcept;
+  [[nodiscard]] ResolvedSurfacePoint resolve_with_carry_and_bracket(double K, double T,
+                                                                    ForwardCarry fc,
+                                                                    Bracket bracket) const noexcept;
 
   [[nodiscard]] Result<double> price_resolved(const ResolvedSurfacePoint &p, Side side) const;
   [[nodiscard]] Result<AmericanGreeks> greeks_resolved(const ResolvedSurfacePoint &p, Side side,

@@ -617,6 +617,35 @@ double PricedSurface::iv(double K, double T) const noexcept {
   return p.valid ? p.sigma : kNaN;
 }
 
+SurfaceStripCarry PricedSurface::strip_carry_at(double T) const noexcept {
+  SurfaceStripCarry sc;
+  sc.T = T;
+  if (!(T > 0.0) || !std::isfinite(T) || ctx_.empty()) {
+    return sc; // valid == false; forward/rate/bracket left at their sentinel 0
+  }
+  const ForwardCarry fc = interp_forward(T);
+  sc.forward = fc.forward;
+  sc.q_eff = fc.q_eff;
+  sc.rate = fc.rate;
+  const CurveSurface::Bracket bracket = surface_.bracket(T);
+  sc.bracket_lo = bracket.lo;
+  sc.bracket_hi = bracket.hi;
+  sc.bracket_upper_weight = bracket.upper_weight;
+  sc.valid = true;
+  return sc;
+}
+
+double PricedSurface::iv_with_carry(double K, const SurfaceStripCarry &carry) const noexcept {
+  if (!carry.valid || !(std::isfinite(K) && (K > 0.0))) {
+    return kNaN;
+  }
+  const ForwardCarry fc{carry.forward, carry.q_eff, carry.rate};
+  const CurveSurface::Bracket bracket{carry.bracket_lo, carry.bracket_hi,
+                                      carry.bracket_upper_weight};
+  const ResolvedSurfacePoint p = resolve_with_carry_and_bracket(K, carry.T, fc, bracket);
+  return p.valid ? p.sigma : kNaN;
+}
+
 double PricedSurface::total_variance(double K, double T) const noexcept {
   const ResolvedSurfacePoint p = resolve(K, T);
   // Same k_log as iv(); total variance is the curve's w(k, T) (not sigma).

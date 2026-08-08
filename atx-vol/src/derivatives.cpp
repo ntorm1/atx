@@ -2168,11 +2168,30 @@ namespace {
 // whenever the query T matches; a query at any other T (nothing does today, but
 // the templates are free to) falls back to the full resolve, so the cache is an
 // optimisation and never a behaviour change.
+//
+// Task P-1 (PV-P1/FIT-P2/GK-P): `ps->iv(K, T)` ALSO redoes its own
+// `interp_forward(T)` + `CurveSurface::bracket(T)` on every single call --
+// work that is just as T-invariant as `F_cached` above, and just as wasted
+// across the same 97-2049 per-node reads (plus, per GK-P, across the up-to-17
+// bumped/rolled repricings a greek stencil runs at the SAME T; see
+// `eval_bump_table`). `carry_cached` resolves that pair ONCE here, exactly
+// the way `PricedSurface::evaluate_batch`'s own bit-identical-T ladder reuse
+// already does (see its "T-bracket and carry are resolved ONCE and reused"
+// comment), and `iv_with_carry` consumes it in place of the redundant
+// `ps->iv`. `T_other_cached`/`F_other_cached`/`carry_other_cached` are a
+// second, LAZY slot for the one other T the theta/charm stencil ever queries
+// this same view at -- the roll to `T - dt` (deriv_greeks' eval_bump_table,
+// and C-10's two carry_theta reprices, all reuse that identical rolled T; see
+// the header note above `DerivGreeks::theta_carry`). Resolved on first miss,
+// reused for every later node/repricing at that T; a THIRD distinct T
+// (nothing does today) simply evicts and re-resolves -- always correct, only
+// loses the cache hit.
 struct PricedSurfaceStripView {
   const PricedSurface* ps;
   const CurveSet* curves;
   double T_cached;
   double F_cached;
+  SurfaceStripCarry carry_cached;
   // FIT-C7 / Task C-6: the caller-supplied certified band, if any --
   // `resolve_wing_clamp` reads this via `surface_certified_wing_band`'s
   // structural detection. `std::nullopt` (no band supplied) is
@@ -2181,17 +2200,42 @@ struct PricedSurfaceStripView {
   // does not care about) the surface's build quality mode should keep.
   std::optional<double> certified_wing_band;
 
+  // `mutable`: a read-through cache over pure functions of T (interp_forward /
+  // bracket / resolve_forward never depend on anything but T and this
+  // surface's/curve-set's own immutable state), not a change in what `iv`
+  // reports for a given (k_log, T) -- see the bit-identity note above.
+  mutable double T_other_cached = kNaN;
+  mutable double F_other_cached = kNaN;
+  mutable SurfaceStripCarry carry_other_cached{};
+
   PricedSurfaceStripView(const PricedSurface* surface, const CurveSet* cs, double T,
                          std::optional<double> band = std::nullopt) noexcept
       : ps{surface}, curves{cs}, T_cached{T}, F_cached{resolve_forward(*cs, T)},
-        certified_wing_band{band} {}
+        carry_cached{surface->strip_carry_at(T)}, certified_wing_band{band} {}
 
   [[nodiscard]] double iv(double k_log, double T) const noexcept {
-    const double F = (T == T_cached) ? F_cached : resolve_forward(*curves, T);
+    if (T == T_cached) {
+      return iv_at(k_log, F_cached, carry_cached);
+    }
+    // Raw double compare, no tolerance -- the same "bit-identical T" ladder
+    // convention `evaluate_batch` uses: a stencil always rolls to the exact
+    // same `contract.maturity_t - bumps.time_years` value, never a
+    // recomputed-and-therefore-possibly-different one.
+    if (T != T_other_cached) {
+      T_other_cached = T;
+      F_other_cached = resolve_forward(*curves, T);
+      carry_other_cached = ps->strip_carry_at(T);
+    }
+    return iv_at(k_log, F_other_cached, carry_other_cached);
+  }
+
+private:
+  [[nodiscard]] double iv_at(double k_log, double F,
+                             const SurfaceStripCarry& carry) const noexcept {
     if (!(F > 0.0) || !std::isfinite(k_log)) {
       return kNaN;
     }
-    return ps->iv(F * std::exp(k_log), T);
+    return ps->iv_with_carry(F * std::exp(k_log), carry);
   }
 };
 
@@ -2338,28 +2382,52 @@ constexpr double kFlatYieldFloorFrac = 1.0e-3;
 // strip templates require. Mirrors `PricedSurfaceStripView` above -- including
 // the reason it resolves F from the CurveSet rather than from the surface: the
 // vol must be read at the strike the strip is pricing, and the strip's own
-// forward is what makes that true by construction. Same one-tenor cache, for
-// the same reason (the strip calls `iv` once per node, 97-2049 times).
+// forward is what makes that true by construction. Same base+rolled carry
+// hoist too (Task P-1), through `SurfaceRef::strip_carry_at` /
+// `iv_with_carry`, which forward to whichever of PricedSurface /
+// PricedSurfaceView this handle borrows (see SurfaceStripCarry,
+// priced_surface.hpp) -- so this view's own code needs no is_view() branch of
+// its own, exactly like every other SurfaceRef accessor.
 struct SurfaceRefStripView {
   const SurfaceRef* ref; // non-owning, non-null, valid()
   const CurveSet* curves;
   double T_cached;
   double F_cached;
+  SurfaceStripCarry carry_cached;
   // FIT-C7 / Task C-6: mirrors `PricedSurfaceStripView::certified_wing_band`
   // above -- see that member's comment.
   std::optional<double> certified_wing_band;
 
+  // Lazy second slot for the rolled T -dt the greek stencil reprices at --
+  // see `PricedSurfaceStripView`'s header comment for the full rationale.
+  mutable double T_other_cached = kNaN;
+  mutable double F_other_cached = kNaN;
+  mutable SurfaceStripCarry carry_other_cached{};
+
   SurfaceRefStripView(const SurfaceRef* handle, const CurveSet* cs, double T,
                       std::optional<double> band = std::nullopt) noexcept
       : ref{handle}, curves{cs}, T_cached{T}, F_cached{resolve_forward(*cs, T)},
-        certified_wing_band{band} {}
+        carry_cached{handle->strip_carry_at(T)}, certified_wing_band{band} {}
 
   [[nodiscard]] double iv(double k_log, double T) const noexcept {
-    const double F = (T == T_cached) ? F_cached : resolve_forward(*curves, T);
+    if (T == T_cached) {
+      return iv_at(k_log, F_cached, carry_cached);
+    }
+    if (T != T_other_cached) {
+      T_other_cached = T;
+      F_other_cached = resolve_forward(*curves, T);
+      carry_other_cached = ref->strip_carry_at(T);
+    }
+    return iv_at(k_log, F_other_cached, carry_other_cached);
+  }
+
+private:
+  [[nodiscard]] double iv_at(double k_log, double F,
+                             const SurfaceStripCarry& carry) const noexcept {
     if (!(F > 0.0) || !std::isfinite(k_log)) {
       return kNaN;
     }
-    return ref->iv(F * std::exp(k_log), T);
+    return ref->iv_with_carry(F * std::exp(k_log), carry);
   }
 };
 

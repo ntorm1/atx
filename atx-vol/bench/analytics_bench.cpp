@@ -31,10 +31,20 @@
 //   analytics/diff/two_surface        — compute_surface_diff between the base
 //                                       skewed surface and a +2vol-bumped copy
 //                                       of the same underlying (same uid).
+//   deriv/greeks/standard_priced_surface — deriv_greeks on the PricedSurface-
+//                                       native entry point (Task P-1): a
+//                                       DerivQuality::Standard (257-node) var
+//                                       swap with the default greek bundle
+//                                       (second_order + carry_theta on), the
+//                                       center quote plus up to 17 bumped/
+//                                       rolled strip repricings per call — the
+//                                       per-strip-constant resolve hoist's
+//                                       target.
 
 #include <benchmark/benchmark.h>
 
 #include "atx/vol/analytics.hpp" // AnalyticsConfig, compute_surface_analytics, risk_neutral_density, var_swap_vol, compute_surface_diff
+#include "atx/vol/derivatives.hpp" // DerivContract/Config/GreekBumps, deriv_greeks (Task P-1)
 
 #include "bench_util.hpp"
 #include "support/analytics_fixture.hpp" // testkit::make_skewed_surface, kFixtureNow
@@ -128,6 +138,38 @@ void BM_SurfaceDiff(benchmark::State &state) {
   state.SetItemsProcessed(state.iterations()); // items = diff bundles
 }
 
+// ── deriv/greeks/standard_priced_surface ──────────────────────────────────
+
+// An unaged 1e6-notional var swap at the same 90d tenor as the RND/var-swap
+// cases above (inside the fixture's fitted pillar range), priced against the
+// skewed PricedSurface fixture.
+[[nodiscard]] DerivContract skewed_var_swap_contract() {
+  DerivContract c{};
+  c.kind = DerivKind::VarSwap;
+  c.maturity_t = kRndTenorYears;
+  c.notional = 1e6;
+  c.rv_spec.annualization = 252.0;
+  c.rv_spec.n_obs_total = 63u;
+  return c;
+}
+
+void BM_DerivGreeks_Standard_PricedSurface(benchmark::State &state) {
+  const PricedSurface &ps = skewed_surface();
+  const DerivContract contract = skewed_var_swap_contract();
+  const DerivConfig cfg{};       // DerivQuality::Standard (257-node strip)
+  const DerivGreekBumps bumps{}; // second_order + carry_theta both default true
+  for (auto _ : state) {
+    Result<DerivGreeks> g = deriv_greeks(ps, contract, cfg, bumps);
+    if (!g.has_value()) {
+      state.SkipWithError(g.error().to_string().c_str());
+      break;
+    }
+    benchmark::DoNotOptimize(g);
+    benchmark::ClobberMemory();
+  }
+  state.SetItemsProcessed(state.iterations()); // items = deriv_greeks calls
+}
+
 const int kRegistered = [] {
   apply_common(benchmark::RegisterBenchmark("analytics/surface/full", [](benchmark::State &state) {
     BM_SurfaceAnalytics(state, AnalyticsConfig{});
@@ -149,6 +191,10 @@ const int kRegistered = [] {
       ->Unit(benchmark::kMicrosecond);
 
   apply_common(benchmark::RegisterBenchmark("analytics/diff/two_surface", BM_SurfaceDiff))
+      ->Unit(benchmark::kMicrosecond);
+
+  apply_common(benchmark::RegisterBenchmark("deriv/greeks/standard_priced_surface",
+                                            BM_DerivGreeks_Standard_PricedSurface))
       ->Unit(benchmark::kMicrosecond);
   return 0;
 }();
