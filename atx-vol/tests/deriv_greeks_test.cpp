@@ -478,4 +478,141 @@ TEST(DerivGreeks, VegaIsBumpSizeIndependentOnSkewedSurface) {
   EXPECT_NEAR(g_small->vega, g_big->vega, 3e-2 * std::fabs(g_small->vega));
 }
 
+// Task C-10 (GK-C2): `theta` rolls ONLY the calendar (T -> T - dt) with
+// `rv_spec` held fixed, so it silently omits the implied->realized fixing
+// rollover -- the largest deterministic daily P&L term on an unaged/mid-life
+// swap (theta reports ~0 on a fair-struck swap even though the fixing roll
+// itself is a real, large daily mark move). theta_carry / theta_zero_fixing
+// price that roll too, by injecting one extra fixing into a COPY of rv_spec
+// before the same T - dt roll `theta` already takes.
+TEST(CarryTheta, FairSwapCarryIsDiscountingOnly) {
+  const double sigma = 0.20, T = 0.25, N = 1e6, r = 0.03;
+  const EssviSurface surf = make_flat_surface(sigma, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00, r);
+
+  // Resolve the strip's own fair strike first (a Simpson quadrature, not
+  // exactly sigma^2), then re-price fair-struck so the center's PV is 0 to
+  // floating precision and any residual theta_carry is real signal, not
+  // off-fair drift.
+  DerivContract probe{};
+  probe.kind = DerivKind::VarSwap;
+  probe.maturity_t = T;
+  probe.notional = N;
+  probe.rv_spec.annualization = 252.0;
+  probe.rv_spec.n_obs_total = 63u;
+  const auto probe_q = deriv_price(surf, cs, probe, deriv_default_config());
+  ASSERT_TRUE(probe_q.has_value()) << probe_q.error().to_string();
+  const double k_var = probe_q->fair_strike_dec;  // unaged: == raw K_var_future
+  ASSERT_GT(k_var, 0.0);
+
+  DerivContract c = probe;
+  c.strike_dec = k_var;  // fair-struck: center PV == 0
+  const auto g = deriv_greeks(surf, cs, c);
+  ASSERT_TRUE(g.has_value()) << g.error().to_string();
+  ASSERT_NEAR(g->pv, 0.0, 1.0);  // sanity: really fair-struck
+
+  const double df = cs.yield.disc(T);
+  // Scale of ONE fixing's mark move: w_future ~= 1/n_total of the future leg
+  // (valued at k_var) reweighted onto the accrued leg -- the natural,
+  // non-annualized epsilon a "theta_carry is small" claim gets quantified
+  // against (see theta_zero_fixing below, which IS this same scale,
+  // annualized).
+  const double one_fixing_pv = df * N * k_var / c.rv_spec.n_obs_total;
+
+  // theta_carry: the injected fixing lands exactly at today's implied
+  // variance rate, so the blend does not move (fair stays fair) and only the
+  // discount roll is left -- r*PV, here 0 because a fair-struck swap has
+  // nothing to discount. Brief's bound: < 5% of df*N*K_var/n_total.
+  EXPECT_NEAR(g->theta_carry, r * g->pv, 0.05 * one_fixing_pv);
+
+  // theta_zero_fixing: the deterministic "nothing happened overnight" mark --
+  // one fixing's worth of future-leg weight moves from K_var to a realized
+  // zero, annualized by the SAME dt the stencil rolls T by
+  // (DerivGreekBumps::time_years -- NOT rv_spec.annualization; the two need
+  // not agree, and here time_years = 1/365.25 while annualization = 252, see
+  // task-C-10-report.md for the derivation of why the code (and this test)
+  // divide by time_years, not a hardcoded 252).
+  const DerivGreekBumps bumps{};
+  EXPECT_NEAR(g->theta_zero_fixing, -one_fixing_pv / bumps.time_years,
+              0.05 * (one_fixing_pv / bumps.time_years));
+}
+
+// Pins theta_carry against theta_zero_fixing (and the aged-blend arithmetic
+// both ride) via a closed-form difference that is exact by construction,
+// independent of n_done, strike_dec, and even the rolled future leg's own
+// value -- see task-C-10-report.md for the full derivation. Deliberately
+// AGED and OFF-FAIR (unlike the unaged/fair fixture above) so this exercises
+// the general blend, not the n_done == 0 degenerate case.
+TEST(CarryTheta, SumIdentity) {
+  const double sigma = 0.20, T = 0.25, N = 1e6;
+  const EssviSurface surf = make_flat_surface(sigma, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00, 0.03);
+  DerivContract c{};
+  c.kind = DerivKind::VarSwap;
+  c.maturity_t = T;
+  c.notional = N;
+  c.strike_dec = 0.03;
+  c.rv_spec.annualization = 252.0;
+  c.rv_spec.n_obs_total = 63u;
+  c.rv_spec.n_obs_done = 21u;
+  c.rv_spec.rv_done_dec = 0.05;
+
+  const auto g = deriv_greeks(surf, cs, c);
+  ASSERT_TRUE(g.has_value()) << g.error().to_string();
+  ASSERT_TRUE(std::isfinite(g->theta_carry));
+  ASSERT_TRUE(std::isfinite(g->theta_zero_fixing));
+
+  // theta_carry - theta_zero_fixing == df(T-dt)*N*K_var_future /
+  //                                    (n_obs_total * bumps.time_years)
+  // Both variants inject exactly one fixing (n_done -> n_done+1) into the
+  // SAME blend at the SAME rolled T, differing only in the injected fixing's
+  // own value (K_var_future vs 0); every other term -- the rolled future leg
+  // K_var_future(T-dt), strike_dec, the n_done-weighted pre-fixing accrual --
+  // is common to both reprices and cancels in the difference.
+  const double k_var = g->quote.uncapped_var_dec;  // raw K_var_future at T
+  ASSERT_GT(k_var, 0.0);
+  const DerivGreekBumps bumps{};
+  const double df_rolled = cs.yield.disc(T - bumps.time_years);
+  const double expected =
+      df_rolled * N * k_var / (c.rv_spec.n_obs_total * bumps.time_years);
+  EXPECT_NEAR(g->theta_carry - g->theta_zero_fixing, expected, 0.05 * expected);
+}
+
+// bumps.carry_theta = false must leave both fields at their NaN default with
+// no extra evaluation paid -- the opt-out this knob exists for.
+TEST(CarryTheta, OptOutLeavesBothNaN) {
+  const EssviSurface surf = make_flat_surface(0.20, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+  const DerivContract c = var_swap_at(0.25);
+  DerivGreekBumps bumps{};
+  bumps.carry_theta = false;
+  const auto g = deriv_greeks(surf, cs, c, deriv_default_config(), bumps);
+  ASSERT_TRUE(g.has_value()) << g.error().to_string();
+  EXPECT_TRUE(std::isnan(g->theta_carry));
+  EXPECT_TRUE(std::isnan(g->theta_zero_fixing));
+  EXPECT_TRUE(std::isfinite(g->theta));  // plain theta is unaffected
+}
+
+// Fully aged: both carry variants equal theta exactly -- nothing left to
+// realize, so there is no fixing roll left to price either (mirrors
+// FullyAgedWithRateAccretesAtTheCarry's theta/rho identity above).
+TEST(CarryTheta, FullyAgedEqualsTheta) {
+  const double r = 0.043, T = 0.25;
+  const EssviSurface surf = make_flat_surface(0.20, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00, r);
+  DerivContract c{};
+  c.kind = DerivKind::VolSwap;
+  c.maturity_t = T;
+  c.notional = 1e5;
+  c.strike_dec = 0.18;
+  c.rv_spec.annualization = 252.0;
+  c.rv_spec.n_obs_total = 63u;
+  c.rv_spec.n_obs_done = 63u;
+  c.rv_spec.rv_done_dec = 0.0441;
+  const auto g = deriv_greeks(surf, cs, c);
+  ASSERT_TRUE(g.has_value()) << g.error().to_string();
+  EXPECT_DOUBLE_EQ(g->theta_carry, g->theta);
+  EXPECT_DOUBLE_EQ(g->theta_zero_fixing, g->theta);
+}
+
 }  // namespace

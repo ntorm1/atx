@@ -774,8 +774,41 @@ struct DerivGreeks {
   double pv = 0.0;
   double delta = 0.0, gamma = 0.0, vega = 0.0, volga = 0.0, vanna = 0.0;
   double theta = 0.0, rho = 0.0, charm = 0.0;
+  // Carry-theta diagnostics (Task C-10, GK-C2). `theta` above rolls ONLY the
+  // CALENDAR (T -> T - dt) with `rv_spec` held byte-for-byte fixed, so it
+  // silently omits the implied->realized fixing rollover -- the largest
+  // deterministic daily P&L term on any unaged/mid-life swap (theta reports
+  // ~0 on a fair-struck swap; the real daily mark move is the fixing roll,
+  // not the calendar roll). These two fields price THAT roll too: a COPY of
+  // `rv_spec` gets one additional fixing (n_done -> n_done+1) injected before
+  // the SAME T -> T - dt roll `theta` already takes, so any DerivKind's own
+  // aged-blend dispatch does the actual repricing -- nothing here duplicates
+  // per-kind blend math.
+  //   theta_carry: the injected fixing lands exactly AT today's model-free
+  //     implied variance rate (K_var_future, resolved fresh via
+  //     var_swap_fair_strike regardless of DerivKind -- the one process every
+  //     product kind's future leg is struck against). On a fair-struck swap
+  //     the blend does not move (fair stays fair), so this isolates the pure
+  //     discounting drift `theta`'s calendar-only roll already carries.
+  //   theta_zero_fixing: the injected fixing is a literal zero return
+  //     (nothing traded overnight) -- the deterministic "nothing happened"
+  //     mark move, i.e. the number a desk actually calls carry and the one to
+  //     put in a daily P&L predict.
+  // Both NaN when `theta` is (maturity_t <= bumps.time_years, or fully-aged
+  // handled below) or when `DerivGreekBumps::carry_theta` is false. Fully
+  // aged: both equal `theta` exactly -- the same PV = df*X identity theta/rho
+  // already share there, since nothing is left to realize and there is no
+  // fixing left to roll.
+  double theta_carry = kQuietNaN;
+  double theta_zero_fixing = kQuietNaN;
   DerivQuote quote{};  // the center (unbumped) quote
 };
+
+// Drift pin: DerivGreeks has exactly TWELVE fields (v1.1 appended theta_carry
+// / theta_zero_fixing, Task C-10). See the DerivConfig pin above for the
+// contract this protects.
+static_assert(detail::aggregate_arity_is_v<DerivGreeks, 12>,
+              "DerivGreeks field count changed: update this pin.");
 
 // Bump sizes for `deriv_greeks`. The defaults are the ones the whole test
 // matrix is calibrated against; they are exposed so a caller pricing a
@@ -791,7 +824,24 @@ struct DerivGreekBumps {
   // already pay for, so they are always computed and this knob does not gate
   // them.
   bool second_order = true;
+  // Gate for DerivGreeks::theta_carry / theta_zero_fixing (Task C-10). Costs
+  // ONE extra var_swap_fair_strike evaluation (resolving the model-free
+  // implied variance rate the injected fixing is struck at -- see the header
+  // note above DerivGreeks::theta_carry) plus TWO extra deriv_price
+  // repricings (the T - dt roll with one fixing injected at that rate, and
+  // again at a zero return), on top of the block's existing up-to-14. Skipped
+  // for free (no extra evaluation at all) when `contract.rv_spec.n_obs_total
+  // == 0` -- no fixing schedule exists to inject into, so both fields just
+  // equal `theta`. Default true: theta_zero_fixing is the number a daily P&L
+  // predict should read, and a caller should not have to opt in to see it.
+  bool carry_theta = true;
 };
+
+// Drift pin: DerivGreekBumps has exactly SIX fields (v1.1 appended
+// carry_theta, Task C-10). See the DerivConfig pin above for the contract
+// this protects.
+static_assert(detail::aggregate_arity_is_v<DerivGreekBumps, 6>,
+              "DerivGreekBumps field count changed: update this pin.");
 
 // Finite-difference greeks for any vol-derivative contract.
 //
@@ -850,13 +900,17 @@ struct DerivGreekBumps {
 // curve at maturity). At T == 0 the discount is gone and both are 0. The one
 // quote where this identity does not describe the PV is a DerivFlags::DfFallback
 // one (no discount factor resolved, df = 1 substituted); the flag on `quote` is
-// how a caller detects that.
+// how a caller detects that. theta_carry and theta_zero_fixing both equal this
+// same theta exactly — nothing is left to realize, so there is no fixing roll
+// left to price either.
 //
 // THETA/CHARM ARE NaN WHEN `maturity_t <= bumps.time_years`. The roll would
 // land at or past expiry, where an un-aged var/vol swap has no future leg left
 // to price (the pricers return InvalidArgument for T <= 0). Reporting "not
 // computed" beats failing the whole greek block over one stencil that cannot
-// exist.
+// exist. theta_carry / theta_zero_fixing share this same gate (same roll, same
+// knob, `DerivGreekBumps::time_years`) plus their own: NaN whenever
+// `DerivGreekBumps::carry_theta` is false.
 //
 // @return the error of the first failing evaluation — the center quote's, or a
 //         bumped one's (a bumped failure is a real failure: the same contract

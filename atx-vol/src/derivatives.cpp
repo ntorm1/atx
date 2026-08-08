@@ -1550,6 +1550,43 @@ template <class SurfaceT>
   return Ok(q.pv);
 }
 
+// Injects one additional fixing (n_done -> n_done+1) into a COPY of `rv`,
+// realized at annualized decimal rate `fixing_dec` (Task C-10 / GK-C2).
+// `fixing_dec` is K_var_future for theta_carry (the fixing lands exactly at
+// today's model-free implied variance rate) or 0.0 for theta_zero_fixing (a
+// literal zero return).
+//
+// PRICING ONLY CONSUMES `rv_done_dec` -- `aged_total_variance_dec` and every
+// dispatch path read that field directly, never `sum_sq_log_returns_done`
+// (confirmed: the raw sum is written by RealizedTracker::observe /
+// backtest.cpp / swap_leg.cpp and read back only by those same writers, never
+// by any pricer in this file). So the new fixing is folded in as a running-
+// mean update directly on rv_done_dec:
+//   rv_done_dec' = (n_done*rv_done_dec + fixing_dec) / (n_done + 1)
+// which is the EXACT algebraic identity a raw-sum injection of
+// `fixing_dec / annualization` (the tracker's own per-fixing conversion --
+// rv_done_dec = annualization*sum/n_done, inverted for one fixing) produces
+// when `rv.sum_sq_log_returns_done` is itself consistent with `rv.rv_done_dec`
+// -- see task-C-10-report.md for the derivation -- and, unlike accumulating
+// forward from the raw sum, does not silently discard a caller-set
+// rv_done_dec when sum_sq_log_returns_done was never populated to match it
+// (every deriv_greeks test fixture in this file does exactly that: rv_done_dec
+// set directly, sum_sq_log_returns_done left at its 0.0 default).
+// `sum_sq_log_returns_done` is still updated, back-derived from the NEW
+// rv_done_dec so the returned spec stays internally consistent with the
+// tracker's own identity, rather than accumulated forward from a raw sum that
+// may already have disagreed with rv_done_dec on entry.
+[[nodiscard]] RealizedVarianceSpec inject_carry_fixing(const RealizedVarianceSpec& rv,
+                                                        double fixing_dec) noexcept {
+  RealizedVarianceSpec out = rv;
+  const double n0 = static_cast<double>(rv.n_obs_done);
+  out.n_obs_done = rv.n_obs_done + 1u;
+  out.rv_done_dec = (n0 * rv.rv_done_dec + fixing_dec) / (n0 + 1.0);
+  out.sum_sq_log_returns_done =
+      out.rv_done_dec * static_cast<double>(out.n_obs_done) / rv.annualization;
+  return out;
+}
+
 // The repricings the stencils below difference. Members left at NaN are ones
 // this bump set did not evaluate, and NaN then propagates into exactly the
 // greeks that depend on them -- which is the "NaN = not computed" contract.
@@ -1559,14 +1596,20 @@ struct BumpPvs {
   double v_up = kNaN, v_dn = kNaN;      // sigma +/- dv
   double r_up = kNaN;                   // r + dr
   double t_dn = kNaN;                   // T - dt
+  double t_dn_carry = kNaN;             // T - dt, +1 fixing at K_var_future
+  double t_dn_zero_fixing = kNaN;       // T - dt, +1 zero-return fixing
   double sv_pp = kNaN, sv_pm = kNaN;    // (S+, sigma+), (S+, sigma-)
   double sv_mp = kNaN, sv_mm = kNaN;    // (S-, sigma+), (S-, sigma-)
   double t_s_up = kNaN, t_s_dn = kNaN;  // S(1 +/- h) at T - dt
 };
 
 // Up to 8 evaluations, 14 with second_order (one fewer / three fewer when the
-// contract cannot roll). Every failure propagates: a bumped contract that will
-// not price is a real failure, not a missing greek.
+// contract cannot roll), plus 3 more when `bumps.carry_theta` is on (one
+// var_swap_fair_strike call to resolve K_var_future, then the two carry-theta
+// reprices above) -- skipped entirely (no extra evaluation) when
+// `contract.rv_spec.n_obs_total == 0`, where there is no fixing schedule to
+// inject into. Every failure propagates: a bumped contract that will not
+// price is a real failure, not a missing greek.
 //
 // The center is repriced HERE, under the same pinned config as the bumps,
 // rather than reusing the caller's center quote: a stencil must difference
@@ -1601,6 +1644,37 @@ template <class SurfaceT>
   ATX_TRY(pv.r_up, bumped_pv(surface, cs_r, contract, cfg, 0.0, 0.0));
   if (can_roll) {
     ATX_TRY(pv.t_dn, bumped_pv(surface, curves, rolled, cfg, 0.0, 0.0));
+
+    if (bumps.carry_theta) {
+      const RealizedVarianceSpec& rv = contract.rv_spec;
+      if (rv.n_obs_total == 0u) {
+        // No fixing schedule exists (n_total == 0 -> "fully unaged, no
+        // accrual concept" per aged_total_variance_dec): the fixing roll and
+        // the calendar roll coincide, so both variants collapse to the
+        // plain theta reprice already computed above -- no extra cost.
+        pv.t_dn_carry = pv.t_dn;
+        pv.t_dn_zero_fixing = pv.t_dn;
+      } else {
+        // K_var_future resolved fresh, at the CENTER's own T and under the
+        // SAME pinned grid (`cfg` here is already `cfg_pinned` -- see
+        // deriv_greeks below) every other bump reads. Independent of
+        // DerivKind by construction: every product this file prices strikes
+        // its future leg against this same model-free variance process (see
+        // the file header), so this does not need, and deliberately does not
+        // read, any DerivKind-specific quote field.
+        ATX_TRY(const DerivQuote strip_q,
+                var_swap_fair_strike(surface, curves, contract.maturity_t, cfg));
+        const double k_var_future = strip_q.fair_strike_dec;
+
+        DerivContract rolled_carry = rolled;
+        rolled_carry.rv_spec = inject_carry_fixing(rv, k_var_future);
+        ATX_TRY(pv.t_dn_carry, bumped_pv(surface, curves, rolled_carry, cfg, 0.0, 0.0));
+
+        DerivContract rolled_zero = rolled;
+        rolled_zero.rv_spec = inject_carry_fixing(rv, 0.0);
+        ATX_TRY(pv.t_dn_zero_fixing, bumped_pv(surface, curves, rolled_zero, cfg, 0.0, 0.0));
+      }
+    }
   }
 
   if (bumps.second_order) {
@@ -1722,6 +1796,11 @@ Result<DerivGreeks> deriv_greeks(const SurfaceT& surface, const CurveSet& curves
     const double t_nonneg = std::fmax(contract.maturity_t, 0.0);
     g.rho = -t_nonneg * center.pv;
     g.theta = curves.yield.zero(contract.maturity_t) * center.pv;
+    // Nothing left to realize -> no fixing left to roll either (Task C-10):
+    // both carry variants equal theta exactly, the same identity rho/theta
+    // already share on this branch.
+    g.theta_carry = g.theta;
+    g.theta_zero_fixing = g.theta;
     return Ok(g);
   }
 
@@ -1739,6 +1818,13 @@ Result<DerivGreeks> deriv_greeks(const SurfaceT& surface, const CurveSet& curves
   g.volga = (p.v_up - 2.0 * p.c + p.v_dn) / (dv * dv);
   g.vanna = (p.sv_pp - p.sv_pm - p.sv_mp + p.sv_mm) / (4.0 * ds * dv);
   g.theta = (p.t_dn - p.c) / bumps.time_years;
+  // Task C-10 / GK-C2: same one-sided roll and divisor as theta above, just
+  // against a T - dt reprice that also carries one injected fixing (see
+  // eval_bump_table / inject_carry_fixing). NaN propagates from p.t_dn_carry
+  // / p.t_dn_zero_fixing exactly when theta itself is NaN (cannot roll) or
+  // when DerivGreekBumps::carry_theta is false.
+  g.theta_carry = (p.t_dn_carry - p.c) / bumps.time_years;
+  g.theta_zero_fixing = (p.t_dn_zero_fixing - p.c) / bumps.time_years;
   g.rho = (p.r_up - p.c) / bumps.rate_abs;
   // charm = d(delta)/dt on the SAME calendar-time convention as theta above:
   // one day of calendar time is one day of maturity gone.

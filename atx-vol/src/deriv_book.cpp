@@ -36,6 +36,8 @@ constexpr double kNaN = kPriceColumnNaN;
   g.theta = kNaN;
   g.rho = kNaN;
   g.charm = kNaN;
+  g.theta_carry = kNaN;
+  g.theta_zero_fixing = kNaN;
   g.quote.fair_strike_dec = kNaN;
   g.quote.fair_strike_points = kNaN;
   g.quote.pv = kNaN;
@@ -52,9 +54,14 @@ constexpr double kNaN = kPriceColumnNaN;
   return g;
 }
 
-// Position-scale a computed greek block. The nine sensitivities and the pv are
+// Position-scale a computed greek block. The nine sensitivities, the pv, AND
+// the two carry-theta diagnostics (Task C-10: theta_carry / theta_zero_fixing
+// are cash-amounts-per-year exactly like theta, not per-contract rates) are
 // cash amounts and scale; `quote` is the per-contract centre diagnostic and is
-// carried through VERBATIM (see deriv_book.hpp "Scaling").
+// carried through VERBATIM (see deriv_book.hpp "Scaling" -- "every numeric
+// output of a row is qty-scaled exactly once", which already covers these two
+// by that general wording, not just the field list this function happened to
+// enumerate before Task C-10 added them to DerivGreeks).
 [[nodiscard]] DerivGreeks scaled_greeks(const DerivGreeks &g, double qty) noexcept {
   DerivGreeks out = g;
   out.pv = qty * g.pv;
@@ -66,6 +73,8 @@ constexpr double kNaN = kPriceColumnNaN;
   out.theta = qty * g.theta;
   out.rho = qty * g.rho;
   out.charm = qty * g.charm;
+  out.theta_carry = qty * g.theta_carry;
+  out.theta_zero_fixing = qty * g.theta_zero_fixing;
   return out;
 }
 
