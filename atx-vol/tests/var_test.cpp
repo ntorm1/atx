@@ -2534,6 +2534,89 @@ TEST(Var, CorruptArchiveReportsArchiveErrorAndFailsRunUnderExcludeFromDistributi
       << result.error().to_string();
 }
 
+// Deep-dive review mustfix (2026-08-07, follow-up to Task 2 F4 above): the
+// scenario-level archive_error derivation in var.cpp --
+// `!base.snapshot.has_value() ? base.archive_error : shifted.archive_error`
+// -- only ever consults ONE side's SnapshotLoad. When BOTH loads fail, that
+// ternary always resolves to `base.archive_error`, discarding `shifted`'s
+// entirely. So an ordinary, genuinely absent BASE (validate_snapshot's
+// NotFound path, which leaves archive_error false) paired with a
+// structurally corrupt SHIFTED (a truncated archive, archive_error=true)
+// classified as MarketUnavailable instead of ArchiveError -- letting
+// ExcludeFromDistribution silently drop exactly the scenario F4 exists to
+// catch. This test sandwiches such a base-missing/shifted-corrupt pair
+// ("2026-01-05" holds no SPY surface at all; "2026-01-06" is truncated)
+// between two genuinely-OK scenarios far enough away (a max_session_gap_days
+// guard) that the corrupt date is never reloaded as a later base, so that
+// without the fix there is still a surviving OK scenario for
+// historical_var_statistics to silently compute from.
+TEST(Var, CorruptShiftedArchiveBehindMissingBaseStillFailsTheRun) {
+  const ScopedTempDirectory root("corrupt_shifted_missing_base");
+  auto db = SurfaceDb::create(root.path().string());
+  ASSERT_TRUE(db) << (db ? std::string{} : db.error().to_string());
+  ASSERT_TRUE(db->upsert_symbol("SPY", SymbolFitConfig{}));
+
+  const std::uint32_t spy_uid = uid_for_symbol("SPY");
+  const std::uint32_t aapl_uid = uid_for_symbol("AAPL");
+  const PricedSurface ref_surface = make_surface(spy_uid, 100.0, timestamp(2026, 1, 2));
+  const PricedSurface d04 = make_surface(spy_uid, 100.0, timestamp(2026, 1, 4));
+  // Deliberately holds NO SPY surface -- an ordinary, genuinely absent base
+  // (validate_snapshot's NotFound path; archive_error stays false), not a
+  // structural fault.
+  const PricedSurface d05_other_symbol = make_surface(aapl_uid, 190.0, timestamp(2026, 1, 5));
+  const PricedSurface d06 = make_surface(spy_uid, 100.0, timestamp(2026, 1, 6));
+  const PricedSurface d_far_base = make_surface(spy_uid, 100.0, timestamp(2026, 2, 1));
+  const PricedSurface d_far_shifted = make_surface(spy_uid, 101.0, timestamp(2026, 2, 2));
+
+  const std::array<SurfaceArchiveItem, 1> items_ref{{{"SPY", &ref_surface}}};
+  const std::array<SurfaceArchiveItem, 1> items_04{{{"SPY", &d04}}};
+  const std::array<SurfaceArchiveItem, 1> items_05{{{"AAPL", &d05_other_symbol}}};
+  const std::array<SurfaceArchiveItem, 1> items_06{{{"SPY", &d06}}};
+  const std::array<SurfaceArchiveItem, 1> items_far_base{{{"SPY", &d_far_base}}};
+  const std::array<SurfaceArchiveItem, 1> items_far_shifted{{{"SPY", &d_far_shifted}}};
+  ASSERT_TRUE(db->write_partition("2026-01-02", items_ref));
+  ASSERT_TRUE(db->write_partition("2026-01-04", items_04));
+  ASSERT_TRUE(db->write_partition("2026-01-05", items_05));
+  ASSERT_TRUE(db->write_partition("2026-01-06", items_06));
+  ASSERT_TRUE(db->write_partition("2026-02-01", items_far_base));
+  ASSERT_TRUE(db->write_partition("2026-02-02", items_far_shifted));
+
+  auto clock = Clock::from_surface_db(*db);
+  ASSERT_TRUE(clock) << (clock ? std::string{} : clock.error().to_string());
+  const auto corrupt_ref =
+      std::find_if(clock->refs().begin(), clock->refs().end(),
+                   [](const SnapshotRef &ref) { return ref.date == "2026-01-06"; });
+  ASSERT_NE(corrupt_ref, clock->refs().end());
+  {
+    std::error_code ec;
+    std::filesystem::resize_file(corrupt_ref->archive_path, 8, ec);
+    ASSERT_FALSE(ec) << ec.message();
+  }
+
+  const std::vector<VarPosition> positions = {option("SPY", Side::Call, 1.0)};
+  VarRunConfig config;
+  config.reference_date = "2026-01-02";
+  config.date_begin = "2026-01-04";
+  config.date_end = "2026-02-02";
+  config.confidence = 0.50;
+  config.evaluation = evaluation_config(1);
+  config.failure_policy = VarScenarioFailurePolicy::ExcludeFromDistribution;
+  config.archive_backing = ArchiveBacking::Mutable;
+  config.query_pricing_tier = QueryPricingTier::ColdReference;
+  config.provenance_policy = SurfaceProvenancePolicy::Compatibility;
+  // Isolates "2026-01-06" (corrupt) from ever being reloaded as a later
+  // base: the ~27-day gap to "2026-02-01" exceeds the guard, so that pair is
+  // calendar-skipped and the 02-01/02-02 scenario reloads fresh instead of
+  // reusing the corrupt shifted-becomes-next-base chain.
+  config.max_session_gap_days = 5;
+
+  auto result = run_historical_var(*db, positions, config);
+  ASSERT_FALSE(result) << "a corrupt SHIFTED archive behind a genuinely missing BASE must fail "
+                          "the run even under ExcludeFromDistribution, not be silently excluded";
+  EXPECT_NE(result.error().to_string().find("ArchiveError"), std::string::npos)
+      << result.error().to_string();
+}
+
 // [solver] F5: run_historical_var's per-scenario retry (var.cpp, the block
 // that calls PreparedVarPortfolio::replay_into and, on failure, poisons the
 // scenario/leg frames) labeled EVERY replay_into failure

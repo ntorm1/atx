@@ -2084,8 +2084,16 @@ Result<HistoricalVarResult> run_historical_var(const SurfaceDb &db,
                                           : std::span<VarLegFrame>{result.leg_frames}.subspan(
                                                 scenario_index * prepared.size(), prepared.size());
             if (!base.snapshot.has_value() || !shifted.snapshot.has_value()) {
-              const bool archive_error =
-                  !base.snapshot.has_value() ? base.archive_error : shifted.archive_error;
+              // Consult BOTH loads: when only one side failed to load, the
+              // other's archive_error is trivially false, so this is
+              // equivalent to the single-side check it replaces. When BOTH
+              // fail, an ordinary NotFound on one side must not hide a
+              // structural fault (corrupt/truncated archive, I/O error) on
+              // the other -- [solver] mustfix, deep-dive review follow-up to
+              // F4: the prior `!base.snapshot.has_value() ? base.archive_error
+              // : shifted.archive_error` always resolved to base's flag in
+              // the dual-failure case, silently discarding shifted's.
+              const bool archive_error = base.archive_error || shifted.archive_error;
               const VarLegStatus failure =
                   !base.snapshot.has_value() ? base.failure : shifted.failure;
               const std::int64_t base_ts =
