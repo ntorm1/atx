@@ -4446,3 +4446,194 @@ TEST(BacktestClock, AllDatesDroppedStillFailsClosedAtConstruction) {
          "this task -- gap accounting must not turn a wholly-unfit corpus into a usable clock";
   EXPECT_EQ(clock.error().code(), ErrorCode::InvalidArgument);
 }
+
+// ── Task B3: Early exercise / assignment checks ─────────────────────────────
+//
+// `ExercisePolicy` governs a per-step boundary check on ALIVE (non-expiring)
+// lots: `Advisory` (the default) only counts a lot that crosses the
+// early-exercise/assignment boundary; `Simulate` additionally converts it to
+// the hedge-share ledger at intrinsic, on the close preceding the event that
+// made early action optimal (an ex-dividend date for a short call). See
+// `should_exercise_early` (backtest.hpp) and `apply_early_exercise`
+// (backtest.cpp).
+
+namespace {
+
+// Opens ONE option lot (any side/qty/strike) on `uid` at inception and never
+// trades again -- the minimal fixture for exercising `apply_early_exercise`
+// in isolation, without a hedge overlay or any other strategy activity to
+// confound the accounting.
+class OpenOneOptionStrategy final : public IStrategy {
+public:
+  OpenOneOptionStrategy(std::uint32_t uid, double K, Side side, double qty, double multiplier,
+                        std::int64_t expiry) noexcept
+      : uid_{uid}, k_{K}, side_{side}, qty_{qty}, mult_{multiplier}, expiry_{expiry} {}
+
+  Status on_step(const MarketSnapshot & /*base*/, std::size_t step_index, PortfolioState &book,
+                 std::uint64_t &next_lot_id) override {
+    if (step_index == 0u) {
+      book.lots.push_back(Lot{next_lot_id++, OptionContract{uid_, k_, 0.0, side_}, qty_, mult_,
+                              expiry_, 0u, 0.0});
+    }
+    return atx::core::Ok();
+  }
+
+private:
+  std::uint32_t uid_{0};
+  double k_{0.0};
+  Side side_{Side::Call};
+  double qty_{0.0};
+  double mult_{100.0};
+  std::int64_t expiry_{0};
+};
+
+// A fixed-spot corpus over `make_short_dated_surface` (queryable down to a
+// 2-day tenor -- ordinary `make_surface`'s shortest slice is ~18 days, too
+// coarse for a "2 DTE" exercise fixture). Spot is CONSTANT across every date
+// (no drift), so intrinsic value is trivial to predict by hand and the only
+// moving part in the fixture is the ex-dividend timing.
+[[nodiscard]] CorpusManifest make_exercise_corpus(const fs::path &dir, std::uint32_t uid, double S,
+                                                  int n_dates) {
+  std::vector<std::pair<std::string, std::string>> dp;
+  for (int d = 0; d < n_dates; ++d) {
+    const std::int64_t now = kBaseNow + static_cast<std::int64_t>(d) * kDayNs;
+    const PricedSurface s = make_short_dated_surface(uid, S, S, now);
+    char buf[16];
+    std::snprintf(buf, sizeof buf, "2026-08-%02d", d + 1);
+    const std::string date = buf;
+    dp.emplace_back(date, write_one(dir, date, "XYZ", s));
+  }
+  return make_manifest(dp, "XYZ");
+}
+
+constexpr double kExerciseSpot = 120.0;
+constexpr double kExerciseStrike = 80.0; // deep ITM: intrinsic = 40/share
+constexpr double kExerciseQty = -2.0;    // short 2 calls
+constexpr double kExerciseMult = 100.0;
+constexpr double kExerciseDiv = 1.0; // $1 discrete dividend
+
+} // namespace
+
+// Pinned fixture (task brief): a short ITM call, 2 DTE, over a $1 discrete
+// dividend landing on the NEXT session. Under the default (Advisory) policy
+// the run must count the assignment risk without touching the book: the lot
+// survives and the advisory counter reads exactly 1 -- it fires on this one
+// step ("ex-div-1", the close immediately preceding the ex-date), and the
+// corpus has no later step to re-fire on.
+TEST(BacktestExercise, ShortItmCallOverExDivFlaggedAdvisory) {
+  const fs::path dir = fresh_dir("exercise-advisory-short-call");
+  const std::int64_t expiry = kBaseNow + 2 * kDayNs; // 2 DTE at day0 ("ex-div-1")
+  const std::int64_t ex_ts = kBaseNow + kDayNs;      // day1: the ex-div date
+
+  const CorpusManifest man = make_exercise_corpus(dir, kUid, kExerciseSpot, /*n_dates=*/2);
+  auto clock = Clock::from_manifest(man);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  OpenOneOptionStrategy strat{kUid,         kExerciseStrike, Side::Call,
+                             kExerciseQty, kExerciseMult,    expiry};
+  RunConfig cfg;
+  cfg.price.n_threads = 1u;
+  cfg.financing.share_dividends = {ShareDividend{kUid, ex_ts, kExerciseDiv}};
+  // cfg.exercise_policy left at its default: Advisory is the point of this test.
+
+  auto r = run_backtest(*clock, strat, cfg);
+  ASSERT_TRUE(r.has_value()) << r.error().to_string();
+  EXPECT_EQ(r->n_short_calls_assignable, 1u);
+  EXPECT_EQ(r->n_puts_exercisable, 0u);
+  // Advisory never mutates: the lot survives to the end of the run.
+  ASSERT_FALSE(r->n_open_lots.empty());
+  EXPECT_EQ(r->n_open_lots.back(), 1.0);
+}
+
+// Same fixture, `ExercisePolicy::Simulate`: the lot converts to the hedge
+// share ledger at intrinsic on day0's close (the ex-div-preceding close).
+// `run_backtest_incremental` with no resume mirrors the strategy-aware
+// `run_backtest` overload exactly (same documented contract) and additionally
+// exposes the final `BacktestCheckpoint`, the only place the exact per-uid
+// share ledger is directly observable.
+//
+// Sign check (documented here because it is easy to get backwards): a deep-
+// ITM call replicates LONG stock, so a SHORT call (qty < 0) replicates SHORT
+// stock -- assignment must therefore hand the writer a SHORT share position,
+// `shares == qty * multiplier` (qty already carries the short sign; no
+// further negation). Cash is solved so the conversion is liquidation-neutral
+// at the base spot: `shares * S + cash == qty * multiplier * intrinsic`, i.e.
+// `cash == qty * multiplier * (intrinsic - S) == -qty * multiplier * K` for a
+// call (since intrinsic == S - K when ITM).
+TEST(BacktestExercise, SimulatePolicyConvertsToShareLedger) {
+  const fs::path dir = fresh_dir("exercise-simulate-short-call");
+  const std::int64_t expiry = kBaseNow + 2 * kDayNs;
+  const std::int64_t ex_ts = kBaseNow + kDayNs;
+
+  const CorpusManifest man = make_exercise_corpus(dir, kUid, kExerciseSpot, /*n_dates=*/2);
+  auto clock = Clock::from_manifest(man);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  OpenOneOptionStrategy strat{kUid,         kExerciseStrike, Side::Call,
+                             kExerciseQty, kExerciseMult,    expiry};
+  RunConfig cfg;
+  cfg.price.n_threads = 1u;
+  cfg.financing.share_dividends = {ShareDividend{kUid, ex_ts, kExerciseDiv}};
+  cfg.exercise_policy = ExercisePolicy::Simulate;
+
+  auto continuation = run_backtest_incremental(*clock, strat, cfg);
+  ASSERT_TRUE(continuation.has_value()) << continuation.error().to_string();
+  const BacktestCheckpoint &cp = continuation->checkpoint;
+
+  EXPECT_TRUE(cp.portfolio.lots.empty()) << "the converted lot must leave the option book";
+  ASSERT_EQ(cp.hedge_shares.size(), 1u);
+  EXPECT_EQ(cp.hedge_shares[0].uid, kUid);
+  const double expected_shares = kExerciseQty * kExerciseMult; // short call -> short shares
+  EXPECT_NEAR(cp.hedge_shares[0].shares, expected_shares, 1e-9);
+
+  // Cash: the intrinsic-side conversion flow, plus the ex-dividend cash the
+  // resulting shares pick up in this SAME step (they carry through the
+  // ex-date -- the whole reason early exercise was optimal here).
+  const double conversion_cash = -kExerciseQty * kExerciseMult * kExerciseStrike; // -qty*mult*K
+  const double dividend_cash = expected_shares * kExerciseDiv; // short shares PAY it (negative)
+  const double expected_cash = conversion_cash + dividend_cash;
+  EXPECT_NEAR(cp.cash, expected_cash, 1.0e-6);
+
+  ASSERT_TRUE(continuation->rows.validate().has_value());
+  EXPECT_EQ(continuation->rows.n_short_calls_assignable, 1u);
+  EXPECT_NEAR(continuation->rows.cash.back(), expected_cash, 1.0e-6);
+}
+
+// The put lane exercises a DIFFERENT rule (interest-carry, not a discrete
+// dividend) and is not exercised by either pinned fixture above -- covered
+// here directly so both option-side branches of `apply_early_exercise` have
+// a real test, not just the call lane. A very deep-ITM long put (spot far
+// below strike) has negligible remaining time value, while the carry benefit
+// of collecting a $200 strike a full year early at r=4.3% is a few dollars
+// per share -- comfortably over the extension value, so this needs no
+// dividend schedule at all.
+TEST(BacktestExercise, DeepItmPutExercisableAdvisory) {
+  const fs::path dir = fresh_dir("exercise-advisory-deep-put");
+  constexpr double kSpot = 50.0;
+  constexpr double kStrike = 200.0; // 150 points ITM
+  const std::int64_t expiry = kBaseNow + 365 * kDayNs; // ~1Y, matches make_surface's T=1.00 slice
+
+  std::vector<std::pair<std::string, std::string>> dp;
+  for (int d = 0; d < 2; ++d) {
+    const std::int64_t now = kBaseNow + static_cast<std::int64_t>(d) * kDayNs;
+    const PricedSurface s = make_surface(kUid, kSpot, kSpot, now);
+    char buf[16];
+    std::snprintf(buf, sizeof buf, "2026-08-%02d", d + 1);
+    dp.emplace_back(std::string{buf}, write_one(dir, buf, "XYZ", s));
+  }
+  const CorpusManifest man = make_manifest(dp, "XYZ");
+  auto clock = Clock::from_manifest(man);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  OpenOneOptionStrategy strat{kUid, kStrike, Side::Put, /*qty=*/+3.0, /*multiplier=*/100.0, expiry};
+  RunConfig cfg;
+  cfg.price.n_threads = 1u;
+  // No dividend schedule at all -- the put lane needs none.
+
+  auto r = run_backtest(*clock, strat, cfg);
+  ASSERT_TRUE(r.has_value()) << r.error().to_string();
+  EXPECT_EQ(r->n_puts_exercisable, 1u);
+  EXPECT_EQ(r->n_short_calls_assignable, 0u);
+  ASSERT_FALSE(r->n_open_lots.empty());
+  EXPECT_EQ(r->n_open_lots.back(), 1.0); // Advisory: the lot survives
+}

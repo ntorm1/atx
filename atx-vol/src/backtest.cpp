@@ -1858,6 +1858,143 @@ compute_step(const MarketSnapshot &base, const MarketSnapshot &shifted,
          "; refusing under RunConfig::margin_breach == MarginBreachPolicy::Halt";
 }
 
+// Task B3 (backtest-lakehouse sprint): one step's early-exercise/assignment
+// counters plus, under `ExercisePolicy::Simulate`, the P&L this step's
+// conversions realize.
+struct ExerciseStepResult {
+  std::uint64_t n_short_calls_assignable{0};
+  std::uint64_t n_puts_exercisable{0};
+  // Simulate only: sum of qty*multiplier*(intrinsic - mark) over every lot
+  // converted this step -- the gain (short call / short put) or loss (long
+  // put) of closing at intrinsic instead of the model mark, i.e. exactly the
+  // extension value the counterparty who exercised/was assigned early
+  // sacrificed or captured. The caller folds this into the step's
+  // `settlement` (nav flow): the share+cash conversion itself
+  // (shares_delta*S_base + cash_flow == qty*multiplier*intrinsic, by
+  // construction below) is liquidation-NEUTRAL, so the intrinsic-vs-mark gap
+  // is the only piece the ordinary nav accounting does not already pick up.
+  // Always 0.0 under Advisory (never converts) and always 0.0 on the
+  // fixed-book overload (Simulate is refused there before any step runs).
+  double settlement_pnl{0.0};
+};
+
+// Task B3: pre-settlement early-exercise/assignment pass over `lots`' ALIVE
+// (non-expiring-this-step) positions, evaluated against `base` (today's
+// close -- "the ex-div-preceding close" the interface promises) with
+// `shifted` used ONLY to test whether an ex-date falls inside this step's
+// (base, shifted] window -- the SAME window `FinancingConfig::
+// share_dividends` cash booking already uses (see the hedge-ledger loop in
+// both `run_backtest` overloads). Lots expiring exactly this step are left
+// untouched -- `compute_step`'s own settlement/deferral pass owns those, and
+// running both would double-book the same lot.
+//
+// `hedge_ledger`/`cash` are non-null ONLY from the strategy-aware overload,
+// which alone owns a share ledger and a cash balance to convert into; the
+// fixed-book (B0) overload passes both null and can therefore only ever
+// observe (Advisory) -- `ExercisePolicy::Simulate` is refused before the run
+// loop starts there (see `run_backtest`'s up-front validation), so
+// `policy == Simulate` with a null ledger/cash should be unreachable in
+// practice. The null check below keeps this function safe regardless (a
+// counted-but-not-converted flag, never a null dereference).
+//
+// MUTATES `lots` IN PLACE: a converted lot is REMOVED (its economics move to
+// a `hedge_ledger` entry + a `cash` flow); an Advisory-flagged or
+// non-qualifying lot is left exactly as it was. Relative order of the
+// survivors is preserved (stable partition).
+[[nodiscard]] ExerciseStepResult
+apply_early_exercise(const MarketSnapshot &base, const MarketSnapshot &shifted,
+                     std::vector<Lot> &lots, std::span<const ShareDividend> share_dividends,
+                     ExercisePolicy policy, QueryExecution execution, HedgeLedger *hedge_ledger,
+                     double *cash) {
+  ExerciseStepResult result{};
+  if (lots.empty()) {
+    return result;
+  }
+  std::vector<Lot> kept;
+  kept.reserve(lots.size());
+  for (const Lot &lot : lots) {
+    if (lot.expiry_ts_ns <= shifted.ts_ns()) {
+      kept.push_back(lot); // settles this step; compute_step's own pass owns it
+      continue;
+    }
+    const bool is_call = lot.contract.side == Side::Call;
+    bool candidate = false;
+    double threshold = 0.0;
+    if (is_call) {
+      // Short-call assignment risk is keyed to an ex-date landing in THIS
+      // step's window -- with no schedule (or no match) there is nothing to
+      // capture by exercising early, so the candidacy check (and therefore
+      // the extra fair_value solve below) is skipped entirely on the common
+      // no-dividend-schedule run.
+      if (lot.qty < 0.0) {
+        for (const ShareDividend &div : share_dividends) {
+          if (div.uid == lot.contract.uid && div.ex_ts_ns > base.ts_ns() &&
+              div.ex_ts_ns <= shifted.ts_ns()) {
+            threshold += div.amount;
+            candidate = true;
+          }
+        }
+      }
+    } else {
+      candidate = true; // put: the carry check applies to any ITM put, either side
+    }
+    if (!candidate) {
+      kept.push_back(lot);
+      continue;
+    }
+    const SurfaceRef bs = base.find(lot.contract.uid);
+    if (bs == nullptr) {
+      kept.push_back(lot); // no board to decide against this step
+      continue;
+    }
+    const double S = bs->pricing().S;
+    const double K = lot.contract.K;
+    const double intrinsic = is_call ? std::max(0.0, S - K) : std::max(0.0, K - S);
+    if (intrinsic <= 0.0) {
+      kept.push_back(lot); // not ITM: never exercise-optimal, dividend or carry notwithstanding
+      continue;
+    }
+    const double T_base = residual_T(lot.expiry_ts_ns, base.ts_ns());
+    if (!is_call) {
+      threshold = K * (1.0 - std::exp(-bs->pricing().r * T_base));
+    }
+    const Result<double> mark_res = bs->fair_value(K, T_base, lot.contract.side, execution);
+    if (!mark_res || !std::isfinite(*mark_res)) {
+      kept.push_back(lot); // solve failure: not this pass's job to fail closed
+      continue;
+    }
+    const double extension = *mark_res - intrinsic;
+    if (!should_exercise_early(intrinsic, extension, threshold)) {
+      kept.push_back(lot);
+      continue;
+    }
+    if (is_call) {
+      ++result.n_short_calls_assignable;
+    } else {
+      ++result.n_puts_exercisable;
+    }
+    if (policy == ExercisePolicy::Simulate && hedge_ledger != nullptr && cash != nullptr) {
+      // Delta-1 conversion at intrinsic: `shares_delta` preserves the lot's
+      // ITM d(value)/dS (+1/share per contract for a call, -1/share for a
+      // put -- a deep-ITM long call replicates long stock, a deep-ITM long
+      // put replicates short stock), and `cash_flow` is solved so
+      // shares_delta*S + cash_flow == qty*multiplier*intrinsic EXACTLY -- the
+      // conversion is liquidation-NEUTRAL by construction. The intrinsic-
+      // vs-mark gap (the extension value the early exerciser sacrifices) is
+      // booked separately, into `result.settlement_pnl`, below.
+      const double sign = is_call ? 1.0 : -1.0;
+      const double shares_delta = lot.qty * lot.multiplier * sign;
+      hedge_ledger->add(lot.contract.uid, shares_delta);
+      *cash += lot.qty * lot.multiplier * (intrinsic - sign * S);
+      result.settlement_pnl += lot.qty * lot.multiplier * (intrinsic - *mark_res);
+      continue; // converted: drop the lot
+    }
+    kept.push_back(lot); // Advisory (or a null ledger/cash): flagged only, the lot stays
+  }
+  lots.swap(kept);
+  return result;
+}
+
 [[nodiscard]] constexpr std::string_view purpose_name(SurfacePurpose purpose) noexcept {
   switch (purpose) {
   case SurfacePurpose::MarketMark:
@@ -2596,6 +2733,16 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
                "run_backtest: PortfolioState::swap_lots requires the strategy overload (the "
                "fixed-book run has no cash ledger to settle a swap into)");
   }
+  // Task B3: same "no honest place to book it" refusal as the two checks
+  // above -- Simulate converts a lot into a hedge-share position plus a cash
+  // flow, and this overload has neither a share ledger nor a cash balance.
+  // Advisory needs neither and is unaffected (it only counts).
+  if (cfg.exercise_policy == ExercisePolicy::Simulate) {
+    return Err(ErrorCode::InvalidArgument,
+               "run_backtest: RunConfig::exercise_policy == Simulate requires the strategy "
+               "overload (the fixed-book run has no cash/share ledger to convert an assigned "
+               "or exercised lot into)");
+  }
   ATX_TRY_VOID(validate_lot_economics(initial.lots, "initial fixed book"));
   const std::span<const SnapshotRef> refs = clock.refs();
   if (refs.empty()) {
@@ -2752,6 +2899,11 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
   // A4: run-total of resolutions that substituted a stale (post-expiry) spot
   // because no expiry-date spot was ever recorded at deferral time.
   std::uint64_t n_stale_spot_total = 0;
+  // Task B3: run-totals of the early-exercise/assignment boundary checks.
+  // Advisory-only on this overload (Simulate is refused above), so these are
+  // pure diagnostics -- see `BacktestResult::n_short_calls_assignable`.
+  std::uint64_t n_short_calls_assignable_total = 0;
+  std::uint64_t n_puts_exercisable_total = 0;
 
   for (std::size_t i = 1; i < refs.size(); ++i) {
     // Plan 5.5 safe point: the TOP of the step, before this step's snapshot load
@@ -2780,6 +2932,16 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
     // V1 solve ledger: per-step solve deltas when a StepTrace is armed (fixed-book
     // overload has no execute/entry work — just compute_step). Zero cost otherwise.
     counters::ledger::StepScope step_ledger_scope;
+
+    // Task B3: pre-settlement early-exercise/assignment pass, BEFORE
+    // compute_step values the book -- Advisory-only here (no hedge_ledger /
+    // cash to convert into), so `book.lots` and every economics number below
+    // are untouched; only the two counters move.
+    const ExerciseStepResult exercise = apply_early_exercise(
+        *base, *shifted, book.lots, cfg.financing.share_dividends, cfg.exercise_policy,
+        cfg.price.query_execution, /*hedge_ledger=*/nullptr, /*cash=*/nullptr);
+    n_short_calls_assignable_total += exercise.n_short_calls_assignable;
+    n_puts_exercisable_total += exercise.n_puts_exercisable;
 
     // Partition + Taylor PnL-explain: byte-identical arithmetic to the strategy
     // overload's step (shared `compute_step`), which now also reports the count of
@@ -2866,6 +3028,9 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
   // honest stamp is always Frictionless regardless of what it says. See
   // `BacktestResult::friction_regime`.
   out.friction_regime = FrictionRegime::Frictionless;
+  // Task B3: same placement discipline as the run-total counters above.
+  out.n_short_calls_assignable = n_short_calls_assignable_total;
+  out.n_puts_exercisable = n_puts_exercisable_total;
 
   // Plan 4.6: the engine may not emit a skewed column set. Pure read, so this
   // cannot change a value the run produced.
@@ -3508,6 +3673,10 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
   // A4: run-total of resolutions that substituted a stale (post-expiry) spot
   // because no expiry-date spot was ever recorded at deferral time.
   std::uint64_t n_stale_spot_total = 0;
+  // Task B3: run-totals of the early-exercise/assignment boundary checks.
+  // See `BacktestResult::n_short_calls_assignable` / `n_puts_exercisable`.
+  std::uint64_t n_short_calls_assignable_total = 0;
+  std::uint64_t n_puts_exercisable_total = 0;
 
   for (std::size_t i = 1; i < refs.size(); ++i) {
     // Plan 5.5 safe point: the TOP of the step, before this step's snapshot load
@@ -3540,6 +3709,21 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
     // no trace is armed — never on the shipping hot path.
     counters::ledger::StepScope step_ledger_scope;
 
+    // Task B3: pre-settlement early-exercise/assignment pass, BEFORE
+    // compute_step values the book. Under Simulate, a converted lot is
+    // removed from `book.lots` here -- BEFORE compute_step sees it -- and
+    // its shares land in `hedge_ledger` in time to participate in THIS
+    // step's ordinary shares P&L / financing / ex-dividend cash passes
+    // below (the whole point: the shares carry through the very
+    // ex-dividend event that made early exercise optimal). Under Advisory
+    // (the default) this only counts; `book.lots`/`hedge_ledger`/`cash` are
+    // untouched and `exercise.settlement_pnl` is always 0.0.
+    const ExerciseStepResult exercise =
+        apply_early_exercise(*base, *shifted, book.lots, cfg.financing.share_dividends,
+                             cfg.exercise_policy, cfg.price.query_execution, &hedge_ledger, &cash);
+    n_short_calls_assignable_total += exercise.n_short_calls_assignable;
+    n_puts_exercisable_total += exercise.n_puts_exercisable;
+
     // 1. PnL of the current book (resolved on base) forward to shifted (unchanged B1).
     auto step = compute_step(*base, *shifted, book.lots, cfg.price, retained_pricer, &target_marks,
                              &settle_pricer, &settle_frame, &mark_memo, cfg.settlement_mark_memo,
@@ -3552,7 +3736,12 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
                  unpriced_error_message(step->n_unpriced, step->first_unpriced_uid));
     }
     const PnlTotals &t = step->totals;
-    const double settlement = step->settlement;
+    // Task B3: fold this step's Simulate conversions (intrinsic-vs-mark gap;
+    // see `ExerciseStepResult::settlement_pnl`) into the same nav-flow term
+    // an ordinary expiry settlement uses -- 0.0 under Advisory or when
+    // nothing converted, so this is a no-op on every existing (pre-B3)
+    // run.
+    const double settlement = step->settlement + exercise.settlement_pnl;
     n_stale_spot_total += step->n_stale_spot_settlements;
 
     // 2. Shares PnL + financing over the step, from the ledger held over the step.
@@ -3848,6 +4037,9 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
   // discipline as the run-total counters above. See
   // `BacktestResult::friction_regime` / `FrictionRegime`.
   out.friction_regime = friction_regime_for(cfg.frictions);
+  // Task B3: same placement discipline as the run-total counters above.
+  out.n_short_calls_assignable = n_short_calls_assignable_total;
+  out.n_puts_exercisable = n_puts_exercisable_total;
 
   // Plan 4.6: the engine may not emit a skewed column set. Pure read, so this
   // cannot change a value the run produced.

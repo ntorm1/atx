@@ -30,6 +30,7 @@
 // each step's `Portfolio` at the BASE-date residual T = (expiry - base.ts)/year;
 // because the lot's `expiry_ts_ns` is fixed, `T_base - dt == T_shifted` exactly.
 
+#include <cmath> // std::isfinite — should_exercise_early
 #include <cstddef>
 #include <cstdint>
 #include <functional> // std::function — RunConfig::step_observer
@@ -539,35 +540,104 @@ struct SwapAccrual {
 
 // ── EXERCISE MODEL: what this engine does and does NOT simulate (WS-F F3) ────
 //
-// EXPIRY SETTLEMENT is the ONLY exercise event. Every American lot is carried to
-// its `expiry_ts_ns` and cash-settled at intrinsic against the spot observed at
-// the exactly-matching snapshot. There is deliberately no assignment or
-// early-exercise simulation:
+// EXPIRY SETTLEMENT is the ONLY UNCONDITIONAL exercise event. Every American
+// lot is carried to its `expiry_ts_ns` and cash-settled at intrinsic against
+// the spot observed at the exactly-matching snapshot. Before Task B3
+// (backtest-lakehouse sprint) there was deliberately no assignment or
+// early-exercise simulation at all:
 //
-//   * a short ITM call over an ex-date is never assigned away;
-//   * a long deep-ITM put's optimal early exercise is never taken. Its forgone
-//     value IS carried in the mark (the pricer is American), but it is never
-//     REALIZED, so a hold-to-expiry book gives the early-exercise premium back
-//     at expiry instead of capturing it.
+//   * a short ITM call over an ex-date was never assigned away;
+//   * a long deep-ITM put's optimal early exercise was never taken. Its
+//     forgone value IS carried in the mark (the pricer is American), but it
+//     was never REALIZED, so a hold-to-expiry book gave the early-exercise
+//     premium back at expiry instead of capturing it.
 //
-// Roll-at-N-DTE strategies (the dispersion route) mostly dodge this because
-// they close well before expiry. `HoldToExpiry` / `CloseAtHorizon` DSL books do
-// NOT: read their settlement PnL as a lower bound on an optimally-exercised
-// book.
+// Task B3 closes part of that gap with `ExercisePolicy` (below), split into an
+// always-safe diagnostic and an opt-in simulation:
 //
-// Nor is there any corporate-action handling: `Lot` is immutable by design, so a
-// split in-window would change K and multiplier with no adjustment.
+//   `Advisory` (DEFAULT, behaviour-preserving): every step counts, but never
+//   converts, the lots meeting the early-exercise/assignment boundary --
+//   `BacktestResult::n_short_calls_assignable` /
+//   `n_puts_exercisable`. A default-constructed `RunConfig` is therefore
+//   BIT-IDENTICAL to the pre-B3 engine on every existing column; the two new
+//   counters are pure observation.
 //
-// This is a TRACKED DEFERRAL, not an oversight — see the sprint plan
-// §9 ("Assignment/early-exercise simulation in the backtest"). Closing it needs
-// an exercise-boundary decision rule per step, a settlement/assignment cash
-// convention, and share-delivery into the hedge ledger; that is its own design,
-// and half of it (a discrete-cash-dividend PDE American pricer) is the same
-// §9 deferral the pricing lane carries.
+//   `Simulate` (opt-in): the boundary lot is converted to the hedge SHARE
+//   ledger at INTRINSIC on the ex-dividend-preceding close (calls) or the
+//   step it first meets the carry boundary (puts) -- see
+//   `should_exercise_early` and `backtest.cpp`'s `apply_early_exercise`. The
+//   share-side economics reuse the SAME `HedgeLedger` / `FinancingConfig`
+//   machinery a strategy's own delta hedge does (Task A5): the resulting
+//   shares carry financing, discrete dividends and MTM exactly like any other
+//   hedge-ledger position from the conversion step onward. ONLY the
+//   strategy-aware overload can simulate -- it alone owns a cash/share
+//   ledger; the fixed-book (B0) overload fails closed
+//   (`ErrorCode::InvalidArgument`) if `Simulate` is requested, the same
+//   "no honest place to book it" refusal `PortfolioState::swap_lots` and
+//   `RunConfig::step_observer` already use there.
 //
-// What IS modelled, as of WS-F: discrete cash dividends on the HEDGE SHARE
-// ledger (`FinancingConfig::share_dividends`) — the leg of P1-4 that needed no
-// exercise model.
+// Roll-at-N-DTE strategies (the dispersion route) mostly dodge the underlying
+// problem because they close well before expiry. `HoldToExpiry` /
+// `CloseAtHorizon` DSL books, and any `Advisory`-policy run, do NOT: read their
+// settlement PnL as a lower bound on an optimally-exercised book.
+//
+// STILL OUT OF SCOPE (Task B3 is deliberately narrow -- YAGNI): no
+// corporate-action handling (`Lot` is immutable by design, so a split
+// in-window would change K and multiplier with no adjustment); no
+// pin/counterparty-level assignment allocation (a short position is either
+// fully converted or not at all, never partially); no continuous-dividend
+// early-exercise boundary (`Simulate`'s call lane keys off the DISCRETE
+// `FinancingConfig::share_dividends` schedule only, matching A5/F3(b)'s own
+// discrete-dividend design).
+//
+// What was already modelled, as of WS-F, independent of B3: discrete cash
+// dividends on the HEDGE SHARE ledger (`FinancingConfig::share_dividends`) —
+// the leg of P1-4 that needed no exercise model, and the schedule B3's call
+// lane reuses verbatim.
+
+// Task B3 (backtest-lakehouse sprint, target 1.1.0): governs
+// `RunConfig::exercise_policy`. See the EXERCISE MODEL block above for the
+// full behavioural contract; `Advisory` is the DEFAULT and is
+// behaviour-preserving (diagnostic counters only, never mutates the book or
+// any ledger).
+enum class ExercisePolicy : std::uint8_t {
+  Advisory = 0,
+  Simulate = 1,
+};
+
+// Task B3: the exercise/assignment decision rule, factored out as a PURE
+// function so it is unit-testable independent of the engine's per-step
+// machinery (same rationale as `MarginBreachPolicy`'s placement note below —
+// this lives in backtest.hpp rather than a dedicated header because it has no
+// Tier-B dependency to promote: every parameter is a `double`).
+//
+// `intrinsic` is the lot's current intrinsic value; a non-ITM lot
+// (`intrinsic <= 0.0`) is never exercise-optimal and this always returns
+// false for one. `extension_value` is the lot's remaining time value (mark -
+// intrinsic; must be finite and >= 0 for a sane American mark, else this
+// returns false rather than let a solver artifact drive a decision).
+// `threshold` is what the extension is compared against:
+//
+//   * a short call's assignment risk over an ex-date: the discrete forward
+//     dividend a long counterparty would capture by exercising before the
+//     ex-date (`FinancingConfig::share_dividends`, WS-F F3(b)/A5) -- the
+//     caller passes 0 (never firing) when no ex-date falls in this step's
+//     window;
+//   * a deep-ITM put's exercise opportunity, either side of the book: the
+//     interest-carry benefit of collecting the strike now instead of at
+//     expiry, `K * (1 - exp(-r*T))` -- the caller computes this from the
+//     board's own `r` and the lot's residual `T`, both already read for other
+//     per-step arithmetic (A5's financing-rate lookup, `compute_step`'s own
+//     `residual_T`).
+//
+// Exercise/assignment is optimal exactly when the remaining time value is
+// LESS than what early action would capture; a non-finite or non-positive
+// threshold never fires (there is nothing to capture).
+[[nodiscard]] inline bool should_exercise_early(double intrinsic, double extension_value,
+                                                double threshold) noexcept {
+  return intrinsic > 0.0 && std::isfinite(extension_value) && extension_value >= 0.0 &&
+         std::isfinite(threshold) && threshold > 0.0 && extension_value < threshold;
+}
 
 // ── Execution frictions + financing (Phase B2) ───────────────────────────────
 
@@ -1074,9 +1144,18 @@ struct RunConfig {
   // it just never turns a shortfall into an aborted run, so NAV/cash/every
   // other column a caller already depended on is untouched.
   MarginBreachPolicy margin_breach{MarginBreachPolicy::Ignore};
+  // Task B3 (backtest-lakehouse sprint, target 1.1.0): see `ExercisePolicy`
+  // above. Same sprint-owner-approved additive Tier-A exception as
+  // `swap_fixing_cadence` / `clock_gaps` / `margin_breach` before it; this is
+  // field 21, appended last per that convention. Output is bit-identical for
+  // every caller that does not set it -- `Advisory` (the default) only adds
+  // the two new `BacktestResult` counters (`n_short_calls_assignable`,
+  // `n_puts_exercisable`); it never mutates a lot, the cash ledger or the
+  // hedge-share ledger, so every existing column is untouched.
+  ExercisePolicy exercise_policy{ExercisePolicy::Advisory};
 };
 
-// Drift pin (plan item 4.2). RunConfig has exactly TWENTY fields. Adding,
+// Drift pin (plan item 4.2). RunConfig has exactly TWENTY-ONE fields. Adding,
 // removing or splitting one breaks this line, which is the point: it forces
 // whoever changes the struct to read the construction contract above instead of
 // appending a knob "for compatibility" with positional initializers that are no
@@ -1122,8 +1201,16 @@ struct RunConfig {
 // margin requirement actually exceeds available capital AND the caller opts
 // into `Halt`, which used to be unrepresentable).
 //
+// 20 -> 21 (Task B3, backtest-lakehouse sprint): `exercise_policy` APPENDED at
+// the end. Same sprint-owner-approved exception to the 1.x Tier-A freeze as
+// `swap_fixing_cadence` / `clock_gaps` / `margin_breach` before it. Output is
+// bit-identical for every caller that does not set it (`Advisory` -- the
+// default -- only populates the two new NON-WIRE result scalars; it changes
+// behavior only when a lot actually crosses the early-exercise boundary AND
+// the caller opts into `Simulate`, which used to be unrepresentable).
+//
 // BLIND SPOT: this probe pins the field COUNT, nothing else. It cannot see a
-// REORDER that leaves the count at 20 -- `aggregate_arity_is_v` (see
+// REORDER that leaves the count at 21 -- `aggregate_arity_is_v` (see
 // detail/aggregate_arity.hpp) only checks how many brace-initializer slots
 // `RunConfig{...}` accepts, with no notion of field NAMES or TYPES, so swapping
 // two existing fields (e.g. two `bool`s, or two `std::size_t`s) still compiles
@@ -1138,7 +1225,7 @@ struct RunConfig {
 // multi-argument positional brace list; `git grep -n "RunConfig cfg"` sites
 // build via `RunConfig cfg;` plus `cfg.field = ...` assignment, which is
 // order-independent by construction.
-static_assert(detail::aggregate_arity_is_v<RunConfig, 20>,
+static_assert(detail::aggregate_arity_is_v<RunConfig, 21>,
               "RunConfig field count changed: update this pin, and confirm every "
               "construction site still initializes by field name.");
 
@@ -1399,6 +1486,39 @@ struct BacktestResult {
   // which never calls `execute()` and therefore never charges anything a
   // configured `frictions` might otherwise imply.
   FrictionRegime friction_regime{FrictionRegime::Frictionless};
+
+  // Task B3 (backtest-lakehouse sprint, target 1.1.0): RESULT SCALARS, not
+  // row-parallel series — run-totals of the early-exercise/assignment
+  // boundary checks `RunConfig::exercise_policy` governs (see
+  // `ExercisePolicy` / `should_exercise_early` in this header and
+  // `apply_early_exercise` in backtest.cpp). Each counts LOT-STEP
+  // occurrences (a lot flagged on three consecutive steps adds 3; two
+  // distinct lots flagged the same step add 2), computed identically under
+  // BOTH policies -- `Advisory` only counts, `Simulate` counts AND converts,
+  // so the two counters mean the same thing regardless of which policy
+  // produced them. Same append-only, non-wire treatment as
+  // `n_steps_entry_skipped` and its siblings above: absent from
+  // `kBacktestSeriesColumns` and RunArchive serialization, so
+  // `ra_schema_hash()` and every TSV/CSV header and golden are untouched.
+  // Populated on BOTH `run_backtest` overloads (the check itself needs no
+  // cash/share ledger, only the base/shifted boards and the lot); ALWAYS 0
+  // for a book with no ITM short calls / ITM puts, and always 0 for a run
+  // whose `FinancingConfig::share_dividends` never places an ex-date inside
+  // a held short call's step window (the calls counter has no schedule-free
+  // trigger — see `should_exercise_early`'s doc comment).
+  //
+  // `n_short_calls_assignable`: a SHORT call (`Lot::qty < 0`) going ex-
+  // dividend next session whose extension value (mark - intrinsic) is LESS
+  // than the forward dividend it would cost the long counterparty to wait —
+  // i.e. assignment risk on OUR book.
+  std::uint64_t n_short_calls_assignable{0};
+  // `n_puts_exercisable`: a deep-ITM put, EITHER side of our book, whose
+  // extension value is LESS than the interest-carry benefit of collecting
+  // the strike now (`K * (1 - exp(-r*T))`) — an early-exercise opportunity
+  // on a long put we hold, or an assignment risk on a short put we wrote;
+  // the boundary condition is the same option economics either way (see
+  // `should_exercise_early`'s doc comment), so both sides share one counter.
+  std::uint64_t n_puts_exercisable{0};
 
   [[nodiscard]] std::size_t size() const noexcept { return date.size(); }
 
