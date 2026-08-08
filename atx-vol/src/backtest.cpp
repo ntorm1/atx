@@ -1910,11 +1910,29 @@ apply_early_exercise(const MarketSnapshot &base, const MarketSnapshot &shifted,
   if (lots.empty()) {
     return result;
   }
-  std::vector<Lot> kept;
-  kept.reserve(lots.size());
-  for (const Lot &lot : lots) {
+  // In-place stable compaction (erase-remove write-index) instead of a copy
+  // into a second vector: every lot is still evaluated every step (the
+  // counters below must reflect every candidate regardless of policy), but
+  // `lots` itself is mutated ONLY for a lot that is actually converted.
+  // `write` never runs ahead of `read`, so `keep_lot` below never overwrites
+  // data not yet read -- and on the common zero-conversion step (the
+  // overwhelming majority: no ex-div this step, no deep-ITM put) `write`
+  // tracks `read` exactly, so `keep_lot` degenerates to `++write` with no
+  // element assignment, and the trailing `resize` is skipped entirely
+  // (`any_converted` stays false). Relative order of survivors is preserved,
+  // same as the old copy-into-`kept` version.
+  std::size_t write = 0;
+  bool any_converted = false;
+  const auto keep_lot = [&lots, &write](std::size_t idx) {
+    if (write != idx) {
+      lots[write] = lots[idx];
+    }
+    ++write;
+  };
+  for (std::size_t read = 0; read < lots.size(); ++read) {
+    const Lot &lot = lots[read];
     if (lot.expiry_ts_ns <= shifted.ts_ns()) {
-      kept.push_back(lot); // settles this step; compute_step's own pass owns it
+      keep_lot(read); // settles this step; compute_step's own pass owns it
       continue;
     }
     const bool is_call = lot.contract.side == Side::Call;
@@ -1939,19 +1957,19 @@ apply_early_exercise(const MarketSnapshot &base, const MarketSnapshot &shifted,
       candidate = true; // put: the carry check applies to any ITM put, either side
     }
     if (!candidate) {
-      kept.push_back(lot);
+      keep_lot(read);
       continue;
     }
     const SurfaceRef bs = base.find(lot.contract.uid);
     if (bs == nullptr) {
-      kept.push_back(lot); // no board to decide against this step
+      keep_lot(read); // no board to decide against this step
       continue;
     }
     const double S = bs->pricing().S;
     const double K = lot.contract.K;
     const double intrinsic = is_call ? std::max(0.0, S - K) : std::max(0.0, K - S);
     if (intrinsic <= 0.0) {
-      kept.push_back(lot); // not ITM: never exercise-optimal, dividend or carry notwithstanding
+      keep_lot(read); // not ITM: never exercise-optimal, dividend or carry notwithstanding
       continue;
     }
     const double T_base = residual_T(lot.expiry_ts_ns, base.ts_ns());
@@ -1960,12 +1978,12 @@ apply_early_exercise(const MarketSnapshot &base, const MarketSnapshot &shifted,
     }
     const Result<double> mark_res = bs->fair_value(K, T_base, lot.contract.side, execution);
     if (!mark_res || !std::isfinite(*mark_res)) {
-      kept.push_back(lot); // solve failure: not this pass's job to fail closed
+      keep_lot(read); // solve failure: not this pass's job to fail closed
       continue;
     }
     const double extension = *mark_res - intrinsic;
     if (!should_exercise_early(intrinsic, extension, threshold)) {
-      kept.push_back(lot);
+      keep_lot(read);
       continue;
     }
     if (is_call) {
@@ -1987,11 +2005,14 @@ apply_early_exercise(const MarketSnapshot &base, const MarketSnapshot &shifted,
       hedge_ledger->add(lot.contract.uid, shares_delta);
       *cash += lot.qty * lot.multiplier * (intrinsic - sign * S);
       result.settlement_pnl += lot.qty * lot.multiplier * (intrinsic - *mark_res);
-      continue; // converted: drop the lot
+      any_converted = true;
+      continue; // converted: drop the lot (never copied into a write slot)
     }
-    kept.push_back(lot); // Advisory (or a null ledger/cash): flagged only, the lot stays
+    keep_lot(read); // Advisory (or a null ledger/cash): flagged only, the lot stays
   }
-  lots.swap(kept);
+  if (any_converted) {
+    lots.resize(write);
+  }
   return result;
 }
 
