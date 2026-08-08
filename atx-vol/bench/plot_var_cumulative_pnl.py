@@ -89,48 +89,55 @@ def compute_decomposition(df: pd.DataFrame) -> pd.DataFrame:
     the resulting per-scenario P&L therefore compounds two effects: the
     re-basing reset between the one-session-aged book and the freshly
     restruck book on the same date, and the genuine revaluation drift of
-    holding a restruck-once profile across each chained scenario. This
-    function separates them.
+    holding a restruck-once profile across every adjacent pair of scenarios.
+    This function separates them.
 
-    Row i and i+1 are "chained" iff ``shifted_date[i] == base_date[i+1]``
-    (adjacent scenarios sharing a session, i.e. no history break between
-    them). For chained rows, ``rebasing_reset[i] = base_value[i+1] -
-    shifted_value[i]`` — the value jump between the aged book and the
-    freshly restruck book, both valued on the same date/surface. It is NaN
-    on history breaks and on the trailing row (no successor to reset
-    against). ``cumulative_held_drift[k]`` telescopes ``cumulative_pnl[k]``
-    against the resets that precede it, leaving the value change of holding
-    the restruck-once profile across each chain.
+    ``rebasing_reset[i] = base_value[i+1] - shifted_value[i]`` for every
+    adjacent pair (i, i+1) — both chained pairs (``shifted_date[i] ==
+    base_date[i+1]``, i.e. no history break between them) and break pairs
+    alike. It is NaN only on the trailing row (no i+1 to pair against). The
+    boolean ``chained`` column records which is which, for annotation: at a
+    break, ``rebasing_reset`` conflates the break's own market move with the
+    re-basing jump (accepted convention; see docs/historical-var-engine-status.md).
+
+    ``cumulative_held_drift[k] = cumulative_pnl[k] + sum(rebasing_reset[i]
+    for i < k)`` (plain sum, no NaN skipping — the only NaN is at the
+    trailing row, never included as a "prior" term). Since
+    ``base_value[i+1] - base_value[i] == pnl[i] + rebasing_reset[i]`` holds
+    for every pair, this telescopes to ``cumulative_held_drift[k] ==
+    shifted_value[k] - base_value[0]`` — the value change of holding a
+    restruck-once profile from the first base date through scenario k.
 
     Does not mutate ``df``.
 
     Args:
         df: columns ``base_date``, ``shifted_date``, ``base_value``,
-            ``shifted_value``, ``pnl``, ``cumulative_pnl`` (``pnl`` is
-            unused here but part of the documented input shape).
+            ``shifted_value``, ``pnl``, ``cumulative_pnl``.
 
     Returns:
-        A copy of ``df`` with ``rebasing_reset`` and ``cumulative_held_drift``
-        columns added.
+        A copy of ``df`` with ``rebasing_reset``, ``chained``, and
+        ``cumulative_held_drift`` columns added.
     """
     result = df.copy()
     n = len(result)
 
     rebasing_reset = np.full(n, np.nan)
+    chained = pd.array([pd.NA] * n, dtype="boolean")
     if n > 1:
         base_date = result["base_date"].to_numpy()
         shifted_date = result["shifted_date"].to_numpy()
         base_value = result["base_value"].to_numpy(dtype=float)
         shifted_value = result["shifted_value"].to_numpy(dtype=float)
-        chained = shifted_date[:-1] == base_date[1:]
-        rebasing_reset[:-1] = np.where(
-            chained, base_value[1:] - shifted_value[:-1], np.nan
-        )
+        rebasing_reset[:-1] = base_value[1:] - shifted_value[:-1]
+        chained[:-1] = shifted_date[:-1] == base_date[1:]
     result["rebasing_reset"] = rebasing_reset
+    result["chained"] = chained
 
-    # Running total of resets strictly before row k, treating breaks (NaN) as
-    # contributing zero: prior_reset_sum[k] = nansum(rebasing_reset[:k]).
-    reset_running_total = np.nancumsum(rebasing_reset)
+    # Running total of resets strictly before row k. A plain cumsum: the
+    # only NaN in rebasing_reset is at the trailing row, and it is never
+    # included as a "prior" term (dropped by the [:-1] slice below), so it
+    # never needs NaN-skipping.
+    reset_running_total = np.cumsum(rebasing_reset)
     prior_reset_sum = np.concatenate(([0.0], reset_running_total[:-1]))
     result["cumulative_held_drift"] = (
         result["cumulative_pnl"].to_numpy(dtype=float) + prior_reset_sum
