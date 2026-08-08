@@ -2169,5 +2169,106 @@ TEST(BandAudit, MissingSurfaceTimestampFallsBackToADstAwareSuffixAndLogsIt) {
   fs::remove_all(root);
 }
 
+// ── band_audit — the empty-audit signal (final-review I1) ───────────────────
+//
+// `--fail-on-flagged` is the CI gate this sprint nominates as its long-term
+// detector and it decides on `n_flagged > 0` ALONE. An audit that measured
+// nothing produces no flagged row by construction — `score_expiry_band` returns
+// early on `row.n == 0` without ever setting `flagged`, and a cell that failed
+// to load contributes no row at all — so a gate over a moved hive root, a
+// non-matching date window, or a wholly non-finite surface family exited 0 while
+// auditing nothing. The same silent-empty class as the pre-fix EST-season bug
+// two tests up, one layer out. The report now carries what it actually measured;
+// the CLI turns that into its own exit code under the flag.
+
+TEST(BandAudit, AnAuditThatScoredNothingSaysSoInsteadOfLookingClean) {
+  const AdminFixture f = make_fixture("band_audit_scored_nothing");
+  build_healthy_db(f);
+  const SurfaceDb db = open_db(f);
+
+  // The reviewer's concrete scenario: the hive root moves or is renamed under an
+  // otherwise healthy database. Every cell becomes a skip note, no row is
+  // emitted, and `n_flagged` stays 0 — indistinguishable from a clean audit
+  // without a count of what was scored.
+  atx::vol::BandAuditSpec moved;
+  moved.hive_root = (f.root / "hive-moved-away").string();
+  moved.r = f.fx.r;
+  const auto moved_rep = atx::vol::band_audit(db, moved);
+  ASSERT_TRUE(moved_rep.has_value()) << (moved_rep ? "" : moved_rep.error().to_string());
+  EXPECT_TRUE(moved_rep->rows.empty());
+  EXPECT_EQ(moved_rep->n_flagged, 0u);
+  EXPECT_FALSE(moved_rep->skip_notes.empty()) << "a vanished hive must leave a trail";
+  EXPECT_EQ(moved_rep->n_dates_requested, std::size_t{3});
+  EXPECT_EQ(moved_rep->n_scored_expiries, std::size_t{0});
+  EXPECT_TRUE(moved_rep->scored_nothing());
+
+  // The other empty shape, and the one that leaves NO skip note at all: a date
+  // window that selects no partition. Nothing is even attempted.
+  atx::vol::BandAuditSpec no_dates;
+  no_dates.hive_root = f.hive.string();
+  no_dates.r = f.fx.r;
+  no_dates.date_lo = "2027-01-01";
+  no_dates.date_hi = "2027-12-31";
+  const auto range_rep = atx::vol::band_audit(db, no_dates);
+  ASSERT_TRUE(range_rep.has_value()) << (range_rep ? "" : range_rep.error().to_string());
+  EXPECT_TRUE(range_rep->rows.empty());
+  EXPECT_TRUE(range_rep->skip_notes.empty());
+  EXPECT_EQ(range_rep->n_dates_requested, std::size_t{0});
+  EXPECT_EQ(range_rep->n_scored_expiries, std::size_t{0});
+  EXPECT_TRUE(range_rep->scored_nothing());
+
+  // DISCRIMINATION: the healthy audit over the same database is not empty. A
+  // signal that fires on everything is the fail-open bug with the sign flipped.
+  atx::vol::BandAuditSpec healthy;
+  healthy.hive_root = f.hive.string();
+  healthy.r = f.fx.r;
+  const auto healthy_rep = atx::vol::band_audit(db, healthy);
+  ASSERT_TRUE(healthy_rep.has_value()) << (healthy_rep ? "" : healthy_rep.error().to_string());
+  ASSERT_EQ(healthy_rep->rows.size(), std::size_t{18}); // 3 symbols x 3 dates x 2 expiries
+  EXPECT_EQ(healthy_rep->n_dates_requested, std::size_t{3});
+  EXPECT_EQ(healthy_rep->n_scored_expiries, healthy_rep->rows.size());
+  EXPECT_FALSE(healthy_rep->scored_nothing());
+
+  fs::remove_all(f.root);
+}
+
+TEST(BandAudit, APartiallyEmptyAuditStaysOnTheFlaggedCleanRule) {
+  const AdminFixture f = make_fixture("band_audit_partially_empty");
+  build_healthy_db(f);
+  const SurfaceDb db = open_db(f);
+
+  // Delete ONE date's hive partition AFTER the build: that date's three cells
+  // now fail to load (skip notes, zero rows) while the other two score normally.
+  // This is the shape that must NOT take the empty-audit exit — the gate still
+  // measured 12 expiries and its verdict over them is the real answer.
+  fs::remove_all(f.hive / ("date=" + f.fx.dates.front()));
+
+  atx::vol::BandAuditSpec clean;
+  clean.hive_root = f.hive.string();
+  clean.r = f.fx.r;
+  clean.min_frac_in_band = 0.0; // trivially satisfied by any scored row
+  const auto clean_rep = atx::vol::band_audit(db, clean);
+  ASSERT_TRUE(clean_rep.has_value()) << (clean_rep ? "" : clean_rep.error().to_string());
+  EXPECT_FALSE(clean_rep->skip_notes.empty()) << "the deleted date must be visible";
+  EXPECT_EQ(clean_rep->n_dates_requested, std::size_t{3});
+  ASSERT_EQ(clean_rep->rows.size(), std::size_t{12}); // 2 surviving dates x 3 symbols x 2
+  EXPECT_EQ(clean_rep->n_scored_expiries, std::size_t{12});
+  EXPECT_FALSE(clean_rep->scored_nothing())
+      << "a partially-empty audit is a normal audit, not an empty one";
+  EXPECT_EQ(clean_rep->n_flagged, 0u); // -> the CLI's CLEAN rule (exit 0)
+
+  atx::vol::BandAuditSpec breach = clean;
+  breach.min_frac_in_band = 1.0 + 1e-9; // unsatisfiable by construction
+  const auto breach_rep = atx::vol::band_audit(db, breach);
+  ASSERT_TRUE(breach_rep.has_value()) << (breach_rep ? "" : breach_rep.error().to_string());
+  EXPECT_EQ(breach_rep->n_scored_expiries, std::size_t{12});
+  EXPECT_FALSE(breach_rep->scored_nothing());
+  // -> the CLI's FLAGGED rule (exit 3), which outranks nothing here because the
+  // audit is not empty; the empty-audit code can never shadow a real verdict.
+  EXPECT_EQ(breach_rep->n_flagged, breach_rep->rows.size());
+
+  fs::remove_all(f.root);
+}
+
 } // namespace
 } // namespace atx::vol

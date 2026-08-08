@@ -800,6 +800,11 @@ Result<BandAuditReport> band_audit(const SurfaceDb &db, const BandAuditSpec &spe
   }
 
   BandAuditReport out;
+  // Final-review I1. Recorded BEFORE the walk so the "audited nothing" message
+  // can name what was asked for even when the window matched no partition at
+  // all — "0 scored expiries across 0 requested dates" is a different operator
+  // problem from "0 scored expiries across 63 requested dates".
+  out.n_dates_requested = dates.size();
   const auto note = [&](std::string text) {
     if (out.skip_notes.size() < spec.max_skip_notes) {
       out.skip_notes.push_back(std::move(text));
@@ -886,6 +891,13 @@ Result<BandAuditReport> band_audit(const SurfaceDb &db, const BandAuditSpec &spe
           row.T = c.T;
           if (row.flagged) {
             ++out.n_flagged;
+          }
+          // Final-review I1: an expiry that measured NOTHING (`row.n == 0` —
+          // every listed quote one-sided/crossed, or every model price
+          // non-finite) still emits a row and can never be flagged, so
+          // `rows.size()` is not a measure of coverage. This is.
+          if (row.n > 0) {
+            ++out.n_scored_expiries;
           }
           out.rows.push_back(std::move(row));
         } // for (Chain c : chain->underlying().chains)

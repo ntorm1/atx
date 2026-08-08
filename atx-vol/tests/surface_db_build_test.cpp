@@ -2033,13 +2033,18 @@ TEST(SurfaceDbExitVocabulary, TheTwoCLIsDoNotCollide) {
   // The admin CLI's own code, which is the entire reason 4 is a gap in the build
   // CLI's sequence.
   EXPECT_EQ(kSurfaceDbVerifyExitAbsentOverLimit, 4);
+  // Final-review I1: `band-audit --fail-on-flagged` measured nothing. It skips
+  // BOTH 4 (verify's, in the same binary) and 5 (the build CLI's) for the same
+  // reason the build CLI skipped 4 in the first place.
+  EXPECT_EQ(kSurfaceDbBandAuditExitScoredNothing, 6);
 
   // THE COLLISION ITSELF. Every tool-specific code is distinct from every other
   // and from the three common ones. Enumerated rather than asserted pairwise by
   // hand so a new code added to either tool has one obvious place to appear.
   const std::vector<int> tool_specific{kSurfaceDbBuildExitTotalFitFailure,
                                        kSurfaceDbBuildExitCoverageRegression,
-                                       kSurfaceDbVerifyExitAbsentOverLimit};
+                                       kSurfaceDbVerifyExitAbsentOverLimit,
+                                       kSurfaceDbBandAuditExitScoredNothing};
   for (std::size_t i = 0; i < tool_specific.size(); ++i) {
     EXPECT_GT(tool_specific[i], kSurfaceDbBuildExitUsage)
         << "a tool-specific verdict must not reuse one of the three common codes";

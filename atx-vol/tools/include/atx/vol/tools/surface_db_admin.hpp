@@ -892,6 +892,29 @@ struct BandAuditReport {
   // as `skip_notes`, on its own budget.
   std::vector<std::string> snapshot_fallback_notes{};
   std::size_t n_snapshot_fallback_notes_elided{0};
+  // Final-review I1: HOW MUCH THIS AUDIT ACTUALLY MEASURED. Without these an
+  // audit that measured NOTHING is byte-for-byte a clean one — `rows` empty and
+  // `n_flagged == 0` — which is what let the CLI's `--fail-on-flagged` gate exit
+  // 0 while auditing nothing (hive root moved/renamed, a date window matching no
+  // partition, or every model price non-finite). `score_expiry_band` never flags
+  // a row that scored nothing (`row.n == 0` early return) and a cell that failed
+  // to load contributes no row at all, so `n_flagged` alone cannot see the
+  // difference. This is the same silent-empty class as the pre-fix EST-season
+  // snapshot bug above, one layer out.
+  //
+  // `n_dates_requested` — partition keys the [date_lo, date_hi] window selected
+  // (0 means the window itself matched nothing). `n_scored_expiries` — rows that
+  // measured at least one quote (`row.n > 0`); rows are still emitted for
+  // expiries that scored nothing, so this is NOT `rows.size()`.
+  std::size_t n_dates_requested{0};
+  std::size_t n_scored_expiries{0};
+  // The audit covered nothing: no expiry anywhere in the requested window
+  // measured a single quote. THE COUNTING POINT IS THE WHOLE AUDIT, deliberately
+  // — a partially-empty audit (some dates scored, some skipped) is a normal
+  // audit and must keep answering by the flagged/clean rule, or a single
+  // unreadable date would turn every gated run into a hard failure. Only the
+  // fully-empty audit is "this gate measured nothing".
+  [[nodiscard]] bool scored_nothing() const noexcept { return n_scored_expiries == 0u; }
 };
 
 // Pure per-expiry scorer (unit-tested): a quote is scored when bid > 0,
