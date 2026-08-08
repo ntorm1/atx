@@ -23,7 +23,8 @@
 #include "step_mark_memo.hpp" // detail::StepMarkMemo — the L2 settlement mark memo
 
 #include "atx/core/error.hpp"
-#include "atx/vol/breakeven.hpp" // BevDayState, BevSpec, BevReplayConfig, BevReplayResult, bev_replay_pnl
+// BevDayState, BevSpec, BevReplayConfig, BevReplayResult, bev_replay_pnl (THEO-2)
+#include "atx/vol/breakeven.hpp"
 #include "atx/vol/detail/backtest_series_columns.hpp" // the 25 {name, member} series columns
 #include "atx/vol/detail/counters.hpp"      // counters::ledger — V1 always-on solve ledger (per-step scrape)
 #include "atx/vol/detail/deriv_ref_bridge.hpp" // detail::deriv_price_on_ref — swap-lot marks
@@ -4081,7 +4082,11 @@ Result<BevReplayResult> bev_replay_pnl(std::span<const BevDayState> path, const 
   cash -= g0.price;
   {
     const double trade0 = -g0.delta; // delta-neutral entry
-    cash -= trade0 * path[0].s;      // buy/sell the hedge
+    // Slippage on the entry trade itself (largest position of the replay);
+    // charged before the notional settles, mirroring the rebalance ordering
+    // below.
+    cash -= std::fabs(trade0) * path[0].s * (cfg.hedge_slippage_bps / 1.0e4);
+    cash -= trade0 * path[0].s; // buy/sell the hedge
     ledger.add(0u, trade0);
   }
 
@@ -4101,16 +4106,19 @@ Result<BevReplayResult> bev_replay_pnl(std::span<const BevDayState> path, const 
 
     const double t_rem = yrs(cur.ts_ns);
     const double intrinsic = spec.side == Side::Call ? std::max(0.0, cur.s - spec.strike)
-                                                      : std::max(0.0, spec.strike - cur.s);
+                                                     : std::max(0.0, spec.strike - cur.s);
     if (i + 1 == path.size()) { // expiry: settle at intrinsic (mirrors backtest.cpp ~:3795-3797)
       cash += intrinsic;
+      // Slippage on the unwind trade (also the largest position, symmetric
+      // with the entry charge above).
+      cash -= std::fabs(ledger.get(0u)) * cur.s * (cfg.hedge_slippage_bps / 1.0e4);
       cash += ledger.get(0u) * cur.s; // liquidate the hedge at the final close
       break;
     }
 
     ATX_TRY(const AmericanGreeks g,
-            american_greeks_al(cur.s, spec.strike, t_rem, sigma, cur.r, cur.q_eff, spec.side,
-                               opts, /*need_vega=*/false, /*need_rho=*/false,
+            american_greeks_al(cur.s, spec.strike, t_rem, sigma, cur.r, cur.q_eff, spec.side, opts,
+                               /*need_vega=*/false, /*need_rho=*/false,
                                /*need_charm=*/false));
 
     if (cfg.apply_early_exercise) {
@@ -4122,10 +4130,19 @@ Result<BevReplayResult> bev_replay_pnl(std::span<const BevDayState> path, const 
           }
         }
       } else {
-        threshold = spec.strike * (1.0 - std::exp(-cur.r * t_rem));
+        // One-STEP forgone interest (decision horizon = next close), not full
+        // remaining life: `extension_value` already embeds the American
+        // boundary's full-life continuation value, so a full-life threshold
+        // over-triggers deep inside the continuation region (a put with
+        // substantial time value would "exercise" on day 1 at high r). This
+        // mirrors the call branch's (cur, next] dividend window above.
+        const double dt_next = static_cast<double>(path[i + 1].ts_ns - cur.ts_ns) / kNsPerYear;
+        threshold = spec.strike * (1.0 - std::exp(-cur.r * dt_next));
       }
       if (bev_should_exercise_early(intrinsic, g.price - intrinsic, threshold)) {
         cash += intrinsic;
+        // Slippage on the unwind trade, same as the expiry-settle liquidation.
+        cash -= std::fabs(ledger.get(0u)) * cur.s * (cfg.hedge_slippage_bps / 1.0e4);
         cash += ledger.get(0u) * cur.s;
         out.exercised_early = true;
         out.exercise_ts_ns = cur.ts_ns;

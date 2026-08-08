@@ -39,7 +39,6 @@ std::vector<BevDayState> synth_gbm_path(double sigma, std::size_t n_days, std::u
     p.push_back(BevDayState{static_cast<std::int64_t>(i) * kDayNs, s, r, q});
     s *= std::exp((r - q - 0.5 * sigma * sigma) * dt + sq * z(rng));
   }
-  // Timestamp grid is calendar==trading here; expiry is the last node.
   return p;
 }
 
@@ -87,7 +86,7 @@ TEST(Breakeven, PnlIsMonotoneDecreasingInEntrySigma) {
 }
 
 TEST(Breakeven, LongCheapGammaPathIsProfitable) {
-  const auto p = synth_gbm_path(0.40, 126, 11u); // realizes 40 vol
+  const auto p = synth_gbm_path(0.40, 126, 11u);                           // realizes 40 vol
   const auto r = bev_replay_pnl(p, atm_call_expiring_at(p), 0.20, {}, {}); // paid 20
   ASSERT_TRUE(r.has_value());
   EXPECT_GT(r->pnl, 0.0);
@@ -95,12 +94,62 @@ TEST(Breakeven, LongCheapGammaPathIsProfitable) {
 
 TEST(Breakeven, DeepItmCallExercisesBeforeLargeDividend) {
   auto p = synth_gbm_path(0.15, 60, 3u, /*s0=*/100.0, /*r=*/0.01);
-  BevSpec spec{60.0, p.back().ts_ns, Side::Call}; // deep ITM
+  BevSpec spec{60.0, p.back().ts_ns, Side::Call};         // deep ITM
   const DividendEvent div{p[30].ts_ns + kDayNs / 2, 5.0}; // huge dividend mid-path
   const auto r = bev_replay_pnl(p, spec, 0.15, std::span(&div, 1), {});
   ASSERT_TRUE(r.has_value());
   EXPECT_TRUE(r->exercised_early);
   EXPECT_LT(r->exercise_ts_ns, div.ex_date_ns);
+}
+
+TEST(Breakeven, DeepItmPutAtHighRateExercisesNearExpiry) {
+  // Deep ITM (strike 200 vs. spot ~100) plus a high rate (10%) makes the
+  // one-step forgone-interest threshold exceed the shrinking remaining time
+  // value well before the true expiry -- the put must exercise early.
+  auto p = synth_gbm_path(0.15, 20, 9u, /*s0=*/100.0, /*r=*/0.10);
+  const BevSpec spec{200.0, p.back().ts_ns, Side::Put};
+  const auto r = bev_replay_pnl(p, spec, 0.15, {}, {});
+  ASSERT_TRUE(r.has_value());
+  EXPECT_TRUE(r->exercised_early);
+}
+
+TEST(Breakeven, ItmPutWithTimeValueDoesNotFalseTriggerOnDayOne) {
+  // The reviewer's concrete failure case: r=5%, ~126d remaining, a put with
+  // real (~O(1)) time value. The pre-fix full-remaining-life threshold
+  // (~strike * (1 - exp(-r*T)), ~1.70 for strike~100) exceeded that time
+  // value and forced exercise on the very first step; the corrected
+  // one-step threshold (~strike * (1 - exp(-r*dt_next)), ~0.014) must not.
+  const auto p = synth_gbm_path(0.25, 126, 55u, /*s0=*/100.0, /*r=*/0.05);
+  const BevSpec spec{105.0, p.back().ts_ns, Side::Put}; // 5 pts ITM at entry
+  const auto r = bev_replay_pnl(p, spec, 0.25, {}, {});
+  ASSERT_TRUE(r.has_value());
+  // Robust either way: never exercises, or if it eventually does (as time
+  // value genuinely erodes later in the path), it is not the day-1 false
+  // trigger the bug produced (n_days == 1 there). Observed with this fix:
+  // exercises on n_days=30 -- comfortably clear of the day-1 boundary.
+  EXPECT_TRUE(!r->exercised_early || r->n_days > 1)
+      << "exercised_early=" << r->exercised_early << " n_days=" << r->n_days;
+}
+
+TEST(Breakeven, SlippageChargedOnEntryAndExitEvenWithNoIntermediateRebalances) {
+  // hedge_band huge enough that NO intermediate rebalance ever fires, so the
+  // entry hedge trade and the expiry-liquidation trade are the ONLY
+  // slippage-eligible trades in this run -- isolates exactly the two sites
+  // the fix adds (entry ~:4082, expiry liquidation ~:4107).
+  const auto p = synth_gbm_path(0.25, 126, 77u);
+  const BevSpec spec = atm_call_expiring_at(p);
+  const auto r0 = bev_replay_pnl(p, spec, 0.25, {}, BevReplayConfig{.hedge_band = 1.0e9});
+  ASSERT_TRUE(r0.has_value());
+  const auto r1 = bev_replay_pnl(p, spec, 0.25, {},
+                                 BevReplayConfig{.hedge_band = 1.0e9, .hedge_slippage_bps = 10.0});
+  ASSERT_TRUE(r1.has_value());
+  EXPECT_LT(r1->pnl, r0->pnl);
+  // Loose lower bound: a real 10bps charge on two round-trip legs near
+  // spot ~100 is order 0.1-0.2 (|delta| in [0,1], applied to ~S0 and
+  // ~S_expiry each); this floor only needs to rule out the pre-fix no-op
+  // (both entry and exit contributed exactly 0). Observed with this fix:
+  // diff ~= 0.106, a 5x margin over this floor.
+  EXPECT_GT(r0->pnl - r1->pnl, 0.02);
 }
 
 TEST(Breakeven, GoldenPathPnlIsPinned) {

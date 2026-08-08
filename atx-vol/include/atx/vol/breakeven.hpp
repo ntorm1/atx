@@ -18,9 +18,10 @@
 #include <optional>
 #include <span>
 
-#include "atx/vol/american.hpp"    // AlOpts, al_fast_opts, Side, Result
+#include "atx/core/error.hpp"                 // Result (used in bev_replay_pnl's return type)
+#include "atx/vol/american.hpp"               // AlOpts, al_fast_opts, Side, Result
 #include "atx/vol/detail/aggregate_arity.hpp" // BevReplayConfig field-count drift pin
-#include "atx/vol/rates_curve.hpp" // DividendEvent
+#include "atx/vol/rates_curve.hpp"            // DividendEvent
 
 namespace atx::vol {
 
@@ -70,9 +71,9 @@ static_assert(detail::aggregate_arity_is_v<BevReplayConfig, 5>,
 
 // Replay outcome for one (path, spec, sigma, dividends, cfg) trial.
 struct BevReplayResult {
-  double pnl{0.0};        // terminal cash, unit contract, mult=1
-  double premium{0.0};    // entry premium at trial sigma
-  double vega_entry{0.0}; // entry-day American vega at trial sigma
+  double pnl{0.0};         // terminal cash, unit contract, mult=1
+  double premium{0.0};     // entry premium at trial sigma
+  double vega_entry{0.0};  // entry-day American vega at trial sigma
   std::uint16_t n_days{0}; // sessions actually replayed (early-exit shortens this)
   bool exercised_early{false};
   std::int64_t exercise_ts_ns{0}; // valid iff exercised_early
@@ -89,7 +90,12 @@ struct BevReplayResult {
 // closes when `cfg.finance_cash` (default ON here — this label is meant to be
 // carry-faithful, even though the engine's own default for the analogous
 // knob is OFF). Hedge shares receive/pay each `DividendEvent::amount` on
-// ex-dates that fall in `(prev.ts_ns, cur.ts_ns]`. Expiry settles the option
+// ex-dates that fall in `(prev.ts_ns, cur.ts_ns]`. `BevDayState::q_eff` MUST
+// EXCLUDE any cash amount already carried in `dividends` — the pricer sees
+// `q_eff` as the option's carry input, while `dividends` are discrete cash
+// events applied only to the hedge share and the early-exercise threshold;
+// double-counting a dividend in both would misprice the option AND
+// misattribute its hedge cash flow. Expiry settles the option
 // at intrinsic and liquidates the hedge at the final close's spot, exactly as
 // the engine's own step loop does for a held-to-expiry lot. `apply_early_exercise`
 // (default ON) additionally allows the long side to take the engine's B3-style
@@ -120,8 +126,9 @@ struct BevReplayResult {
 // @param cfg        replay knobs; default-constructed selects `al_fast_opts()`,
 //                    zero hedge band, financing ON, early exercise ON, zero
 //                    slippage.
-[[nodiscard]] Result<BevReplayResult> bev_replay_pnl(
-    std::span<const BevDayState> path, const BevSpec &spec, double sigma,
-    std::span<const DividendEvent> dividends, const BevReplayConfig &cfg = {});
+[[nodiscard]] Result<BevReplayResult> bev_replay_pnl(std::span<const BevDayState> path,
+                                                     const BevSpec &spec, double sigma,
+                                                     std::span<const DividendEvent> dividends,
+                                                     const BevReplayConfig &cfg = {});
 
 } // namespace atx::vol
