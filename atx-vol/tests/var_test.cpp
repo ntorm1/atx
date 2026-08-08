@@ -868,6 +868,270 @@ TEST(Var, CrossSectionalRowFailureFallsBackToScalarLegStatuses) {
   EXPECT_EQ(cross_aggregate_frames[0].n_ok, fast_aggregate_frames[0].n_ok);
 }
 
+// A leg definition empirically confirmed (by direct solve_american_delta_batch
+// probing across base spots {80,89,96,100,103,111,120} at this fixture's
+// default variance_scale (1.0), both sides) to make the delta target
+// genuinely UNREACHABLE on this ESSVI surface: at a 1-year maturity the
+// achievable |delta| plateaus at exactly 1.0 beyond the American
+// early-exercise boundary (q_eff == r on this flat-forward surface gives both
+// calls and puts a genuine boundary), so 0.999999 sits in the narrow gap
+// between "reachable only via multi-pass/fallback search" (e.g. 0.9999) and
+// "trivially satisfied by the boundary's exact 1.0 plateau" (e.g.
+// 0.99999999) -- both the vectorized batch passes AND the scalar fallback
+// tail's own bracket search exhaust themselves without finding a root, so
+// solve_american_delta_batch returns row_status Err for this row on every
+// tested spot at variance_scale 1.0. Reused by both Test 2 (whole-scenario
+// downgrade) and Test 4 (thread invariance with a downgraded scenario
+// present).
+VarPosition unreachable_delta_target_position() {
+  return VarOptionPosition{"SPY", ProjectedMaturitySpec::years(1.0), 0.999999, Side::Call, 1.0,
+                           100.0};
+}
+
+// PreparedVarPortfolio::create resolves every leg's delta target against the
+// REFERENCE surface too (to anchor target_dollar_delta), through the SAME
+// config.projection_solve_policy -- so anchoring
+// unreachable_delta_target_position() at the fixture's default variance_scale
+// (1.0) would fail portfolio construction itself, before any scenario ever
+// replays. variance_scale 0.75 was empirically confirmed (probed across
+// spots {96,99,100,103}, with the 0.60-0.65 and 0.85+ neighborhoods both
+// failing on either side) to sit centrally in a reachable island, so the
+// SAME leg anchors fine at the reference date yet still fails during replay
+// against a scenario base surface built at the default variance_scale (1.0).
+constexpr double kReachableReferenceVarianceScale = 0.75;
+
+// [solver] Claimed-but-untested invariant #3: a row_status Err surfacing from
+// INSIDE solve_american_delta_batch itself (not a pre-solver guard like
+// ExpiredBeforeShift/SurfaceUnavailable, which
+// CrossSectionalRowFailureFallsBackToScalarLegStatuses and
+// CrossSectionalRetainedLegFallbackHandlesMarketUnavailable above already
+// cover) reaching resolve_group_contracts_cross_sectional's `return false`
+// downgrades the WHOLE scenario to scalar FastScreenColdConfirm, and the
+// downgraded frame is byte-identical to a portfolio configured
+// FastScreenColdConfirm from the start. The poison leg's target (0.999999,
+// see unreachable_delta_target_position) is admitted by config validation
+// (target in (0,1), default delta_tolerance) but genuinely unattainable
+// within BOTH the batch passes and the scalar fallback tail's own bracket
+// search on this surface -- a real solver-internal failure, not a
+// market/timestamp guard tripping first.
+TEST(Var, GenuineSolverRowFailureDowngradesWholeScenarioToScalarRoute) {
+  const std::uint32_t uid = uid_for_symbol("SPY");
+  const OneSurfaceSnapshot reference(uid, 100.0, timestamp(2026, 1, 2),
+                                     kReachableReferenceVarianceScale);
+  const OneSurfaceSnapshot base(uid, 99.0, timestamp(2026, 1, 5));
+  const OneSurfaceSnapshot shifted(uid, 101.0, timestamp(2026, 1, 7));
+  ASSERT_TRUE(reference.valid() && base.valid() && shifted.valid());
+
+  const std::vector<VarPosition> normal_positions = {
+      option("SPY", Side::Call, 1.25, 0.40),
+      option("SPY", Side::Put, -0.75, 0.30),
+      stock("SPY", 7.0),
+  };
+  std::vector<VarPosition> positions = normal_positions;
+  positions.push_back(unreachable_delta_target_position());
+  const std::size_t poison_index = positions.size() - 1u;
+
+  const std::vector<VarScenario> scenarios = {{base.surface().pricing().now_ts_ns, &base.set(),
+                                               shifted.surface().pricing().now_ts_ns,
+                                               &shifted.set()}};
+
+  // Sanity: WITHOUT the poison leg, this exact book resolves fully under the
+  // cross-sectional default -- the downgrade below is caused specifically by
+  // the poison leg, not some unrelated fixture defect.
+  auto healthy_prepared =
+      PreparedVarPortfolio::create(normal_positions, reference.set(), evaluation_config(1));
+  ASSERT_TRUE(healthy_prepared) << (healthy_prepared ? std::string{}
+                                                     : healthy_prepared.error().to_string());
+  std::vector<VarScenarioFrame> healthy_frames(1u);
+  std::vector<VarLegFrame> healthy_legs(normal_positions.size());
+  ASSERT_TRUE(
+      healthy_prepared->replay_into(scenarios, healthy_frames, healthy_legs, evaluation_config(1)));
+  EXPECT_EQ(healthy_frames[0].status, VarScenarioStatus::Ok);
+  for (const VarLegFrame &leg : healthy_legs) {
+    EXPECT_EQ(leg.status, VarLegStatus::Ok) << to_string(leg.status);
+  }
+
+  VarEvaluationConfig cross_config = evaluation_config(1);
+  cross_config.projection_solve_policy = OptionDeltaSolvePolicy::CrossSectionalColdConfirm;
+  auto cross_prepared = PreparedVarPortfolio::create(positions, reference.set(), cross_config);
+  ASSERT_TRUE(cross_prepared) << (cross_prepared ? std::string{}
+                                                 : cross_prepared.error().to_string());
+
+  VarEvaluationConfig forced_fast_config = evaluation_config(1);
+  forced_fast_config.projection_solve_policy = OptionDeltaSolvePolicy::FastScreenColdConfirm;
+  auto forced_prepared =
+      PreparedVarPortfolio::create(positions, reference.set(), forced_fast_config);
+  ASSERT_TRUE(forced_prepared) << (forced_prepared ? std::string{}
+                                                   : forced_prepared.error().to_string());
+
+  // Oracle: a portfolio literally configured FastScreenColdConfirm from the
+  // start, replayed retained-leg. The poison leg must genuinely fail here
+  // too (FastScreenColdConfirm's scalar route for this surface tier collapses
+  // to the SAME solve_american_delta(ColdReference) call the cross-sectional
+  // route's own fallback tail uses) -- proving this is a real, both-routes
+  // solver failure, not an artifact of one route only.
+  std::vector<VarScenarioFrame> forced_retained_frames(1u);
+  std::vector<VarLegFrame> forced_retained_legs(positions.size());
+  ASSERT_TRUE(forced_prepared->replay_into(scenarios, forced_retained_frames, forced_retained_legs,
+                                           forced_fast_config));
+  ASSERT_EQ(forced_retained_frames[0].status, VarScenarioStatus::LegFailure);
+  ASSERT_EQ(forced_retained_frames[0].n_failed, 1u);
+  ASSERT_EQ(forced_retained_frames[0].n_ok, normal_positions.size());
+  ASSERT_NE(forced_retained_legs[poison_index].status, VarLegStatus::Ok);
+  for (std::size_t i = 0; i < normal_positions.size(); ++i) {
+    ASSERT_EQ(forced_retained_legs[i].status, VarLegStatus::Ok)
+        << "position " << i << ": " << to_string(forced_retained_legs[i].status);
+  }
+
+  // Retained-leg cross-sectional route: the group resolver's row_status Err
+  // on the poison row (surfacing from inside solve_american_delta_batch)
+  // downgrades the WHOLE scenario; the downgrade recursion calls
+  // evaluate_scenario with FastScreenColdConfirm on the SAME leg_frames span,
+  // so this must reproduce the oracle bit-for-bit.
+  std::vector<VarScenarioFrame> cross_retained_frames(1u);
+  std::vector<VarLegFrame> cross_retained_legs(positions.size());
+  ASSERT_TRUE(cross_prepared->replay_into(scenarios, cross_retained_frames, cross_retained_legs,
+                                          cross_config));
+  expect_bit_identical(cross_retained_frames[0], forced_retained_frames[0]);
+  for (std::size_t i = 0; i < positions.size(); ++i) {
+    SCOPED_TRACE(::testing::Message() << "position " << i);
+    expect_bit_identical(cross_retained_legs[i], forced_retained_legs[i]);
+  }
+
+  // Aggregate route: evaluate_scenario_batched's fallback() ALSO calls
+  // evaluate_scenario(..., FastScreenColdConfirm) on the SAME frame output
+  // parameter, so the no-leg-output aggregate frame must match the SAME
+  // retained-leg oracle bit-for-bit too (not merely economically, and not the
+  // oracle's own aggregate-mode output, which routes through
+  // evaluate_scenario_batched's non-cross-sectional branch instead and is
+  // therefore not guaranteed bit-identical to the retained-leg oracle).
+  std::vector<VarScenarioFrame> cross_aggregate_frames(1u);
+  ASSERT_TRUE(cross_prepared->replay_into(scenarios, cross_aggregate_frames, {}, cross_config));
+  expect_bit_identical(cross_aggregate_frames[0], forced_retained_frames[0]);
+}
+
+// [solver] Claimed-but-untested invariant #4: the scalar fallback tail inside
+// solve_american_delta_batch (rows exhausting kMaxBatchDeltaPasses) firing
+// for a leg that STILL converges, exercised through the VaR engine end to
+// end. All prior VaR fixtures converge every row inside the batch passes; the
+// tail itself is otherwise only exercised by ContractProjection unit tests
+// directly against solve_american_delta_batch.
+//
+// Counter observability: the brief asks this test to assert the fallback
+// counter if one is observable in the default build. contract_projection.cpp
+// does not `#include "atx/vol/detail/counters.hpp"` and never calls
+// ATX_VOL_COUNT/ATX_VOL_COUNT_N anywhere -- confirmed by grep -- so no
+// counter is wired to this code path in ANY build configuration, not even
+// under -DATX_VOL_COUNTERS=ON (counters.hpp's own
+// Counter::ScalarFallbackLanes is explicitly documented "0 today; P3 will
+// fill" and is never bumped). There is therefore nothing to branch an
+// `#ifdef ATX_VOL_COUNTERS` block on for this specific path, so this test
+// asserts the ECONOMIC signature instead, per the brief's fallback
+// instruction: the fallback-tail leg's resolved strike/delta must be
+// bit-exact against the scalar Direct-policy oracle, which is the documented
+// guarantee (solver-correctness review, "Scalar fallback tail bit-parity")
+// -- solve_batch_fallback_tail re-runs the identical
+// solve_american_delta(surface, T, side, target, tolerance, ColdReference)
+// call a Direct-policy project_option_contract makes for the same inputs.
+TEST(Var, ScalarFallbackTailFiresThroughVarEngine) {
+  const std::uint32_t uid = uid_for_symbol("SPY");
+  const OneSurfaceSnapshot reference(uid, 100.0, timestamp(2026, 1, 2));
+  const OneSurfaceSnapshot base(uid, 99.0, timestamp(2026, 1, 5));
+  const OneSurfaceSnapshot shifted(uid, 101.0, timestamp(2026, 1, 7));
+  ASSERT_TRUE(reference.valid() && base.valid() && shifted.valid());
+
+  // Empirically confirmed (direct solve_american_delta_batch probing, spots
+  // 80-120): this target/maturity/side needs ~60 evaluations to converge --
+  // far beyond kMaxBatchDeltaPasses (8) -- so the row necessarily falls
+  // through to the scalar fallback tail inside ONE solve_american_delta_batch
+  // call, yet still succeeds (unlike Test 2's 0.999999, which never
+  // converges at all).
+  const VarPosition fallback_leg =
+      VarOptionPosition{"SPY", ProjectedMaturitySpec::years(1.0), 0.9999, Side::Call, 1.0, 100.0};
+  const std::vector<VarPosition> positions = {
+      option("SPY", Side::Call, 1.25, 0.40),
+      option("SPY", Side::Put, -0.75, 0.30),
+      stock("SPY", 7.0),
+      fallback_leg,
+  };
+  const std::size_t fallback_index = positions.size() - 1u;
+
+  // Fixture sanity: confirm the fallback tail is genuinely exercised (not
+  // just a slow-but-in-budget row) by probing solve_american_delta_batch
+  // directly at the same (T, side, target) the VaR leg resolves to.
+  {
+    const auto expiry = resolve_projected_expiry(base.surface().pricing().now_ts_ns,
+                                                 ProjectedMaturitySpec::years(1.0));
+    ASSERT_TRUE(expiry) << expiry.error().to_string();
+    const double t = static_cast<double>(*expiry - base.surface().pricing().now_ts_ns) / kNsPerYear;
+    AmericanDeltaBatchScratch scratch;
+    std::vector<double> strike(1, 0.0), achieved(1, 0.0);
+    std::vector<std::uint16_t> evaluations(1, 0);
+    std::vector<Status> row_status(1);
+    const std::vector<double> T{t};
+    const std::vector<Side> side{Side::Call};
+    const std::vector<double> target{0.9999};
+    const Status solved =
+        solve_american_delta_batch(base.surface(), T, side, target, 1.0e-7, scratch, strike,
+                                   achieved, evaluations, row_status);
+    ASSERT_TRUE(solved) << (solved ? std::string{} : solved.error().to_string());
+    ASSERT_TRUE(row_status[0]) << row_status[0].error().to_string();
+    // Mirrors kMaxBatchDeltaPasses (contract_projection.cpp) / kMirroredMaxBatchDeltaPasses
+    // (contract_projection_test.cpp): a bound distinguishing "converged
+    // inside the batch passes" from "fell through to the scalar tail",
+    // re-declared here for the same reason those test files do -- not
+    // exposed via the public header.
+    constexpr std::uint16_t kMirroredMaxBatchDeltaPasses = 8u;
+    ASSERT_GT(evaluations[0], kMirroredMaxBatchDeltaPasses)
+        << "fixture sanity: expected this row to require the scalar fallback tail";
+  }
+
+  const std::vector<VarScenario> scenarios = {{base.surface().pricing().now_ts_ns, &base.set(),
+                                               shifted.surface().pricing().now_ts_ns,
+                                               &shifted.set()}};
+
+  VarEvaluationConfig cross_config = evaluation_config(1);
+  cross_config.projection_solve_policy = OptionDeltaSolvePolicy::CrossSectionalColdConfirm;
+  auto cross_prepared = PreparedVarPortfolio::create(positions, reference.set(), cross_config);
+  ASSERT_TRUE(cross_prepared) << (cross_prepared ? std::string{}
+                                                 : cross_prepared.error().to_string());
+
+  VarEvaluationConfig direct_config = evaluation_config(1);
+  direct_config.projection_solve_policy = OptionDeltaSolvePolicy::Direct;
+  auto direct_prepared = PreparedVarPortfolio::create(positions, reference.set(), direct_config);
+  ASSERT_TRUE(direct_prepared) << (direct_prepared ? std::string{}
+                                                   : direct_prepared.error().to_string());
+
+  std::vector<VarScenarioFrame> cross_frames(1u);
+  std::vector<VarLegFrame> cross_legs(positions.size());
+  ASSERT_TRUE(cross_prepared->replay_into(scenarios, cross_frames, cross_legs, cross_config));
+  // The fallback-tail row still SUCCEEDS, so the group resolves cleanly and
+  // the scenario must NOT downgrade -- a defect that silently downgraded
+  // whenever the fallback tail fired (rather than only on genuine row
+  // failure, Test 2's concern) would flip this to LegFailure.
+  ASSERT_EQ(cross_frames[0].status, VarScenarioStatus::Ok);
+  for (std::size_t i = 0; i < positions.size(); ++i) {
+    ASSERT_EQ(cross_legs[i].status, VarLegStatus::Ok)
+        << "position " << i << ": " << to_string(cross_legs[i].status);
+  }
+
+  std::vector<VarScenarioFrame> direct_frames(1u);
+  std::vector<VarLegFrame> direct_legs(positions.size());
+  ASSERT_TRUE(direct_prepared->replay_into(scenarios, direct_frames, direct_legs, direct_config));
+  ASSERT_EQ(direct_frames[0].status, VarScenarioStatus::Ok);
+  ASSERT_EQ(direct_legs[fallback_index].status, VarLegStatus::Ok);
+
+  // The load-bearing assertion: bit-exact strike/delta parity between the
+  // cross-sectional route's fallback-tail-resolved leg and the scalar Direct
+  // oracle for the SAME leg -- not merely economically close.
+  const VarLegFrame &cross_leg = cross_legs[fallback_index];
+  const VarLegFrame &direct_leg = direct_legs[fallback_index];
+  EXPECT_EQ(bits(cross_leg.strike), bits(direct_leg.strike));
+  EXPECT_EQ(bits(cross_leg.base_delta), bits(direct_leg.base_delta));
+  EXPECT_EQ(bits(cross_leg.base_time_to_expiry), bits(direct_leg.base_time_to_expiry));
+  EXPECT_NEAR(std::fabs(cross_leg.base_delta), 0.9999, cross_config.delta_tolerance);
+}
+
 TEST(Var, CrossSectionalReplayIsBitInvariantAcrossThreadCountsAndLegOutputIsOptional) {
   const std::uint32_t uid = uid_for_symbol("SPY");
   const OneSurfaceSnapshot reference(uid, 100.0, timestamp(2026, 1, 2));
@@ -920,6 +1184,101 @@ TEST(Var, CrossSectionalReplayIsBitInvariantAcrossThreadCountsAndLegOutputIsOpti
   }
   for (std::size_t i = 0; i < serial_legs.size(); ++i) {
     expect_bit_identical(parallel_legs[i], serial_legs[i]);
+  }
+}
+
+// [solver] Claimed-but-untested invariant #5: thread-count bit-invariance
+// with a genuinely downgraded scenario in the set.
+// Var.CrossSectionalReplayIsBitInvariantAcrossThreadCountsAndLegOutputIsOptional
+// just above only ever exercises all-Ok scenarios; the one existing test that
+// DOES exercise a downgrade decision
+// (CrossSectionalAggregateMatchesRetainedAfterExclusionRebuild) runs its
+// downgraded scenario at n_threads=1 only. This test extends that thread-
+// invariance fixture's own book/scenario shape with the Test 2 poison leg
+// (unreachable_delta_target_position(), empirically confirmed unreachable at
+// every one of this fixture's own base spots {96,103,89,111}), so EVERY
+// scenario here downgrades to the scalar FastScreenColdConfirm route -- and
+// checks that a per-thread-range VarBatchScratch (Task 5's own worry:
+// "cannot leak state between scenarios") produces bit-identical frames/legs
+// whether the downgrade recursion for each scenario runs on a t1, t2, or t4
+// worker range.
+TEST(Var, ThreadCountBitInvarianceHoldsWithDowngradedScenariosPresent) {
+  const std::uint32_t uid = uid_for_symbol("SPY");
+  const OneSurfaceSnapshot reference(uid, 100.0, timestamp(2026, 1, 2),
+                                     kReachableReferenceVarianceScale);
+  ASSERT_TRUE(reference.valid());
+  const std::vector<VarPosition> positions = {
+      option("SPY", Side::Call, 1.25, 0.40),
+      option("SPY", Side::Put, -0.75, 0.30),
+      stock("SPY", 7.0),
+      unreachable_delta_target_position(),
+  };
+  const auto cross_config = [](unsigned n_threads) {
+    VarEvaluationConfig config = evaluation_config(n_threads);
+    config.projection_solve_policy = OptionDeltaSolvePolicy::CrossSectionalColdConfirm;
+    return config;
+  };
+  auto prepared = PreparedVarPortfolio::create(positions, reference.set(), cross_config(1));
+  ASSERT_TRUE(prepared) << (prepared ? std::string{} : prepared.error().to_string());
+
+  std::vector<std::unique_ptr<OneSurfaceSnapshot>> bases;
+  std::vector<std::unique_ptr<OneSurfaceSnapshot>> shifts;
+  const std::array<double, 4> base_spots{96.0, 103.0, 89.0, 111.0};
+  const std::array<double, 4> shifted_spots{99.0, 101.0, 94.0, 107.0};
+  for (std::size_t i = 0; i < base_spots.size(); ++i) {
+    bases.push_back(std::make_unique<OneSurfaceSnapshot>(
+        uid, base_spots[i], timestamp(2026, 1, 5 + static_cast<unsigned>(i))));
+    shifts.push_back(std::make_unique<OneSurfaceSnapshot>(
+        uid, shifted_spots[i], timestamp(2026, 1, 6 + static_cast<unsigned>(i))));
+    ASSERT_TRUE(bases.back()->valid() && shifts.back()->valid());
+  }
+
+  std::vector<VarScenario> scenarios;
+  scenarios.reserve(base_spots.size());
+  for (std::size_t i = 0; i < base_spots.size(); ++i) {
+    scenarios.push_back(VarScenario{bases[i]->surface().pricing().now_ts_ns, &bases[i]->set(),
+                                    shifts[i]->surface().pricing().now_ts_ns, &shifts[i]->set()});
+  }
+
+  std::vector<VarScenarioFrame> t1_frames(scenarios.size());
+  std::vector<VarScenarioFrame> t2_frames(scenarios.size());
+  std::vector<VarScenarioFrame> t4_frames(scenarios.size());
+  std::vector<VarScenarioFrame> aggregate_t4_frames(scenarios.size());
+  std::vector<VarLegFrame> t1_legs(scenarios.size() * positions.size());
+  std::vector<VarLegFrame> t2_legs(scenarios.size() * positions.size());
+  std::vector<VarLegFrame> t4_legs(scenarios.size() * positions.size());
+  ASSERT_TRUE(prepared->replay_into(scenarios, t1_frames, t1_legs, cross_config(1)));
+  ASSERT_TRUE(prepared->replay_into(scenarios, t2_frames, t2_legs, cross_config(2)));
+  ASSERT_TRUE(prepared->replay_into(scenarios, t4_frames, t4_legs, cross_config(4)));
+  ASSERT_TRUE(prepared->replay_into(scenarios, aggregate_t4_frames, std::span<VarLegFrame>{},
+                                    cross_config(4)));
+
+  // Sanity: this fixture must actually exercise the downgrade path on every
+  // scenario -- otherwise this test would silently degrade into a duplicate
+  // of the all-Ok thread-invariance test above.
+  for (std::size_t i = 0; i < scenarios.size(); ++i) {
+    ASSERT_EQ(t1_frames[i].status, VarScenarioStatus::LegFailure) << "scenario " << i;
+    ASSERT_EQ(t1_frames[i].n_failed, 1u) << "scenario " << i;
+  }
+
+  for (std::size_t i = 0; i < scenarios.size(); ++i) {
+    SCOPED_TRACE(::testing::Message() << "scenario " << i);
+    expect_bit_identical(t2_frames[i], t1_frames[i]);
+    expect_bit_identical(t4_frames[i], t1_frames[i]);
+    // Every scenario here downgrades (asserted above), so its numeric fields
+    // are the shared kNaN sentinel rather than a meaningful economic value --
+    // expect_economically_equal's fabs-based `close()` is never true for NaN
+    // and does not apply here (it is for all-Ok frames, e.g. the thread-
+    // invariance test above). Both the aggregate and retained routes reach a
+    // downgraded scenario's frame through the SAME evaluate_scenario(...,
+    // FastScreenColdConfirm) call (Test 2's finding), so bit-identical is the
+    // correct, and stronger, comparison here.
+    expect_bit_identical(aggregate_t4_frames[i], t1_frames[i]);
+  }
+  for (std::size_t i = 0; i < t1_legs.size(); ++i) {
+    SCOPED_TRACE(::testing::Message() << "leg " << i);
+    expect_bit_identical(t2_legs[i], t1_legs[i]);
+    expect_bit_identical(t4_legs[i], t1_legs[i]);
   }
 }
 

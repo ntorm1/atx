@@ -541,6 +541,102 @@ TEST(ContractProjection, BatchDeltaSolveRowsAreCompositionInvariantAndRepeatable
   }
 }
 
+// [solver] Claimed-but-untested invariant #2: pack-composition invariance of
+// solve_american_delta_batch's OWN strikes/deltas, at its exact request shape
+// (EvalField::FirstOrder, reduced GreekNeeds, ColdReference), when the SAME
+// rows are split into exactly two independent batch calls instead of one.
+// Distinct from BatchDeltaSolveRowsAreCompositionInvariantAndRepeatable just
+// above: every one of that test's hard-coded sub-span boundaries {0,10},
+// {10,22}, {7,8} lands on a maturity-block edge of the 3-maturity x 10-row
+// grid it builds, so it never actually cuts a contiguous same-T run
+// mid-stream -- the unit the laned kernel packs together in the first place
+// (priced_surface_test.cpp's dispatcher note: "packs form only inside
+// raw-bit-equal-T runs"). This test picks a split point at row 23, three rows
+// into the grid's third (10-row, same-T) maturity block, and appends
+// deep-wing/short-maturity hard rows (mirrors
+// BatchDeltaSolveRoutesHardRowsThroughScalarFallbackAndStillConfirms) so the
+// invariant is exercised through multi-pass active-set churn and the scalar
+// fallback tail, not only single-pass rows.
+TEST(ContractProjection, BatchSolveIsPackCompositionInvariantAtSolverRequestShape) {
+  const std::int64_t now = timestamp(2026, 7, 10);
+  const PricedSurface surface = make_surface(2u, 120.0, now);
+  const BatchDeltaGrid grid = make_batch_delta_grid(now);
+  const std::size_t n_easy = grid.T.size();
+  ASSERT_GE(n_easy, 30u);
+
+  const auto month_expiry = resolve_projected_expiry(now, ProjectedMaturitySpec::months(3));
+  ASSERT_TRUE(month_expiry) << month_expiry.error().to_string();
+  const double month_t = static_cast<double>(*month_expiry - now) / kNsPerYear;
+
+  std::vector<double> T = grid.T;
+  std::vector<Side> side = grid.side;
+  std::vector<double> target = grid.target;
+  for (const double hard_target : {0.95, 0.999}) {
+    for (const Side s : {Side::Call, Side::Put}) {
+      T.push_back(month_t);
+      side.push_back(s);
+      target.push_back(hard_target);
+    }
+  }
+  const std::size_t n = T.size();
+  ASSERT_GT(n, n_easy);
+
+  constexpr double tolerance = 1.0e-7;
+  AmericanDeltaBatchScratch whole_scratch;
+  BatchDeltaOutputs whole(n);
+  const Status whole_solved =
+      solve_american_delta_batch(surface, T, side, target, tolerance, whole_scratch, whole.strike,
+                                 whole.achieved, whole.evaluations, whole.row_status);
+  ASSERT_TRUE(whole_solved) << (whole_solved ? std::string{} : whole_solved.error().to_string());
+
+  // Row 23 sits mid-way through the grid's third maturity block (rows
+  // [20,30): 5 Call targets then 5 Put targets, all sharing one bit-identical
+  // T) -- neither a maturity boundary nor a side boundary, so pack A's tail
+  // and pack B's head are genuinely two halves of what would otherwise be one
+  // contiguous same-T, same-side laned run.
+  const std::size_t split = 23u;
+  ASSERT_LT(split, n_easy);
+
+  const auto solve_pack = [&](std::size_t begin, std::size_t count) {
+    AmericanDeltaBatchScratch pack_scratch;
+    BatchDeltaOutputs pack(count);
+    const Status solved = solve_american_delta_batch(
+        surface, std::span<const double>(T).subspan(begin, count),
+        std::span<const Side>(side).subspan(begin, count),
+        std::span<const double>(target).subspan(begin, count), tolerance, pack_scratch, pack.strike,
+        pack.achieved, pack.evaluations, pack.row_status);
+    return std::pair{solved, std::move(pack)};
+  };
+
+  auto [pack_a_solved, pack_a] = solve_pack(0u, split);
+  auto [pack_b_solved, pack_b] = solve_pack(split, n - split);
+  ASSERT_TRUE(pack_a_solved) << (pack_a_solved ? std::string{} : pack_a_solved.error().to_string());
+  ASSERT_TRUE(pack_b_solved) << (pack_b_solved ? std::string{} : pack_b_solved.error().to_string());
+
+  bool any_multi_pass = false;
+  for (std::size_t i = 0; i < n; ++i) {
+    ASSERT_TRUE(whole.row_status[i]) << "row " << i;
+    const bool in_a = i < split;
+    const BatchDeltaOutputs &pack = in_a ? pack_a : pack_b;
+    const std::size_t j = in_a ? i : i - split;
+    ASSERT_TRUE(pack.row_status[j]) << "row " << i;
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(whole.strike[i]),
+              std::bit_cast<std::uint64_t>(pack.strike[j]))
+        << "row " << i;
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(whole.achieved[i]),
+              std::bit_cast<std::uint64_t>(pack.achieved[j]))
+        << "row " << i;
+    if (i >= n_easy && whole.evaluations[i] > 1u) {
+      any_multi_pass = true;
+    }
+  }
+  // Sanity: the appended hard rows genuinely drove multi-pass/fallback
+  // routing (evaluations_out beyond a single laned pass), so the bit-equality
+  // above is not merely trivial single-pass agreement.
+  EXPECT_TRUE(any_multi_pass)
+      << "expected at least one appended hard row to exceed a single evaluation";
+}
+
 TEST(ContractProjection, BatchDeltaSolveRejectsStructurallyInvalidSpans) {
   const PricedSurface surface = make_surface(2u, 120.0, timestamp(2026, 7, 10));
   const std::vector<double> T = {0.25, 0.25};
