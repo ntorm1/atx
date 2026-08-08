@@ -136,6 +136,8 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/realized_vol.cpp
     # THEO-3: breakeven-vol root-find, layered over bev_replay_pnl (backtest.cpp)
     src/breakeven.cpp
+    # THEO-7: theo vocabulary + TheoEngine (identity semantics beside the served mark)
+    src/theo.cpp
 )
 add_library(atx::vol ALIAS atx-vol)
 

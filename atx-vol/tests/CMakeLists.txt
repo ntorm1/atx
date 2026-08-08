@@ -187,6 +187,8 @@ add_executable(atx-vol-tests
     # examples/bev_label_factory.cpp in via #include, main() suppressed --
     # see that test file's banner comment)
     bev_label_factory_gate_test.cpp
+    # THEO-7 — appended target: theo engine core
+    theo_test.cpp
 )
 # backtest_bench_test.cpp was relocated to bench/backtest_throughput_bench.cpp
 # (it is a throughput benchmark, not a correctness gate).
