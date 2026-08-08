@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "atx/vol/detail/archive_util.hpp" // crc32c, align_up, canonicalize_symbol
+#include "atx/vol/detail/writer_lock.hpp"  // Task D3: cross-process manifest writer lock
 
 namespace atx::vol {
 
@@ -1069,6 +1070,44 @@ std::uint64_t SurfaceDb::partition_config_fingerprint(std::string_view key) cons
 
 Status SurfaceDb::persist_locked(std::vector<DbSymbolEntry> symbols,
                                  std::vector<DbPartitionInfo> partitions) {
+  // Task D3: cross-process writer lock -- see BacktestDb::persist_locked's
+  // doc comment (backtest_db.cpp) for the full rationale; this mirrors it
+  // exactly. `mu_` above only serializes mutations through THIS SurfaceDb
+  // instance -- a second handle on the same root (another process, or
+  // another handle in this one) does not share it, so without this lock two
+  // writers could both read generation N, both compute N+1, and both
+  // publish: the LAST atomic rename wins and the other writer's update
+  // vanishes with no error. Held for exactly the read-modify-publish window
+  // below; released (RAII) on every return path.
+  const std::string manifest = manifest_path();
+  const std::string lock_path = manifest + ".lock";
+  auto guard = detail::WriterLock::acquire(lock_path);
+  if (!guard) {
+    return Err(guard.error());
+  }
+
+  // Re-read the on-disk manifest UNDER the lock: `symbols`/`partitions` were
+  // computed by the caller (e.g. upsert_symbol) against the OLD `snapshot_`,
+  // so if another writer advanced the generation since then, publishing them
+  // now would silently overwrite whatever that writer just committed with
+  // content that never accounted for it. Fail cleanly instead -- Unavailable,
+  // not a corrupted or lost write -- and resync `snapshot_` so the caller's
+  // very next retry decides against fresh state.
+  auto current_bytes = read_file_fully(manifest);
+  if (!current_bytes) {
+    return Err(current_bytes.error());
+  }
+  auto current = DbManifest::open(std::move(*current_bytes));
+  if (!current) {
+    return Err(current.error());
+  }
+  if (current->generation() != snapshot_->generation()) {
+    snapshot_ = std::make_shared<const DbManifest>(std::move(*current));
+    return Err(ErrorCode::Unavailable,
+               "SurfaceDb::persist_locked: manifest was concurrently advanced by another "
+               "writer; retry against the refreshed snapshot");
+  }
+
   SurfaceDbManifestWriteOpts write_opts;
   write_opts.generation = snapshot_->generation() + 1;
   write_opts.created_ts_ns = snapshot_->header().created_ts_ns;

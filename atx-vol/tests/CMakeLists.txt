@@ -100,6 +100,13 @@ add_executable(atx-vol-tests
     backtest_template_test.cpp
     backtest_db_test.cpp
     backtest_db_build_test.cpp
+    # backtest-production-lakehouse sprint, Task D3 -- appended target: the
+    # cross-process manifest writer lock (detail/writer_lock.hpp) and its
+    # BacktestDb/SurfaceDb persist_locked() retrofit. Registered
+    # UNCONDITIONALLY (unlike catalog_test.cpp below): BacktestDb/SurfaceDb
+    # are core atx-vol, compiled in every configuration, so this must be
+    # exercised in the ATX_VOL_LAKEHOUSE=OFF build too.
+    writer_lock_test.cpp
     research_db_test.cpp
     research_validation_test.cpp
     strategy_pipeline_test.cpp
@@ -190,6 +197,14 @@ add_executable(atx-vol-tests
 # src/track_store.cpp itself is gated, atx-vol/CMakeLists.txt).
 if(ATX_VOL_LAKEHOUSE)
     target_sources(atx-vol-tests PRIVATE track_store_test.cpp)
+    # Task D3 -- appended conditionally alongside track_store_test.cpp: the
+    # SQLite catalog (Catalog::open/probe/register_staging/mark_compacted/
+    # record_trial/trial_stats) does not exist in the OFF build (src/
+    # catalog.cpp joins atx-vol only under this same guard, atx-vol/
+    # CMakeLists.txt). The cross-process WriterLock primitive it shares with
+    # BacktestDb/SurfaceDb is tested separately and UNCONDITIONALLY in
+    # writer_lock_test.cpp above -- that code path is core, not lakehouse-only.
+    target_sources(atx-vol-tests PRIVATE catalog_test.cpp)
 endif()
 # backtest_bench_test.cpp was relocated to bench/backtest_throughput_bench.cpp
 # (it is a throughput benchmark, not a correctness gate).

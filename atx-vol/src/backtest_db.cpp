@@ -14,6 +14,7 @@
 
 #include "atx/vol/detail/backtest_series_columns.hpp"
 #include "atx/vol/detail/archive_util.hpp"
+#include "atx/vol/detail/writer_lock.hpp" // Task D3: cross-process manifest writer lock
 #include "atx/vol/research/track_key.hpp" // Task D1: make_engine_id() (engine_id incl. economics rev)
 
 namespace atx::vol {
@@ -923,17 +924,55 @@ Status BacktestDb::persist_locked(std::vector<BacktestStrategyTemplate> template
                                   std::vector<BacktestSeriesInfo> series) {
   std::sort(templates.begin(), templates.end(), template_key_less);
   std::sort(series.begin(), series.end(), series_key_less);
+
+  // Task D3: cross-process writer lock. `mu_` above only serializes
+  // mutations through THIS BacktestDb instance -- two separate handles on the
+  // same root (two handles in one process, or one handle each in two
+  // processes) do not share a `mu_`, so without this they could both read
+  // `snapshot_->generation == N`, both compute N+1, and both publish: the
+  // LAST atomic rename wins and the other writer's update vanishes with no
+  // error. `lock_path` is a sibling of the manifest file, held for exactly
+  // the read-modify-publish window below; released (RAII, WriterLock's
+  // destructor) on every return path, including the early returns.
+  const std::filesystem::path manifest = manifest_path();
+  const std::string lock_path = manifest.string() + ".lock";
+  auto guard = detail::WriterLock::acquire(lock_path);
+  if (!guard) {
+    return Err(guard.error());
+  }
+
+  // Re-read the on-disk manifest UNDER the lock: another writer may have
+  // advanced the generation since `snapshot_` was last synced (this
+  // process's own last write, or -- the case the lock exists for -- a
+  // DIFFERENT writer's). `templates`/`series` above were computed by the
+  // caller (e.g. register_template) against the OLD `snapshot_`, so if the
+  // generation moved, publishing them now would silently overwrite whatever
+  // the other writer just committed with content that never accounted for
+  // it. Fail cleanly instead -- Unavailable, not a corrupted or lost write --
+  // and resync `snapshot_` so the caller's very next retry decides against
+  // fresh state.
+  auto current = read_manifest(manifest);
+  if (!current) {
+    return Err(current.error());
+  }
+  if ((*current)->generation != snapshot_->generation) {
+    snapshot_ = std::move(*current);
+    return Err(ErrorCode::Unavailable,
+               "BacktestDb::persist_locked: manifest was concurrently advanced by another "
+               "writer; retry against the refreshed snapshot");
+  }
+
   const std::uint64_t next_generation = snapshot_->generation + 1;
   if (next_generation == 0) {
     return Err(ErrorCode::OutOfRange, "BacktestDb: manifest generation overflow");
   }
   const std::int64_t updated = wall_clock_ns();
-  const Status written = write_manifest_file(manifest_path(), next_generation,
-                                             snapshot_->created_ts_ns, updated, templates, series);
+  const Status written = write_manifest_file(manifest, next_generation, snapshot_->created_ts_ns,
+                                             updated, templates, series);
   if (!written) {
     return written;
   }
-  auto replacement = read_manifest(manifest_path());
+  auto replacement = read_manifest(manifest);
   if (!replacement || (*replacement)->generation != next_generation) {
     return Err(ErrorCode::ParseError, "BacktestDb: published manifest failed validation");
   }

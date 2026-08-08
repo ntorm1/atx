@@ -52,6 +52,13 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/fit_policy.cpp
     src/data.cpp
     src/detail/archive_util.cpp
+    # D3: cross-process manifest writer lock, used unconditionally by
+    # BacktestDb::persist_locked (backtest_db.cpp) and SurfaceDb::
+    # persist_locked (surface_db.cpp) -- both core atx-vol, so this joins
+    # the always-built list beside archive_util.cpp rather than the
+    # ATX_VOL_LAKEHOUSE-gated block below (that block is for the SQLite
+    # catalog, which is genuinely lakehouse-only).
+    src/detail/writer_lock.cpp
     src/surface_archive.cpp
     src/run_archive.cpp
     src/run_diagnostics.cpp
@@ -289,6 +296,23 @@ if(ATX_VOL_LAKEHOUSE)
     target_sources(atx-vol PRIVATE src/track_store.cpp)
     target_link_libraries(atx-vol PRIVATE Arrow::arrow_shared Parquet::parquet_shared)
     target_compile_definitions(atx-vol PRIVATE ATX_VOL_LAKEHOUSE)
+
+    # D3: SQLite catalog (research/catalog.hpp, src/catalog.cpp) -- tracks/
+    # trials over catalog.sqlite. NOT a new third-party dependency: it is
+    # built entirely on atx::core::db::Database (atx/core/db/sqlite.hpp),
+    # which already wraps atx-core's vendored SQLite amalgamation
+    # (atx-core/third-party/sqlite, compiled as atx_sqlite3 and linked
+    # PRIVATE into atx-core -- "the symbols propagate to the final link",
+    # per atx-core/CMakeLists.txt's own comment on that target). atx-vol
+    # already links atx::core PUBLIC unconditionally, so catalog.cpp needs
+    # NO find_package/vcpkg entry and NO new target_link_libraries edge here
+    # -- only the source file itself, gated the same way track_store.cpp is:
+    # a genuinely lakehouse-only feature (it catalogs D2's Parquet tracks),
+    # kept out of the ATX_VOL_LAKEHOUSE=OFF/minimal build on purpose, even
+    # though the underlying SQLite object code is already present in every
+    # atx-vol build via atx::core regardless of this flag (see the D3 report
+    # for the full dependency-story writeup on that pre-existing fact).
+    target_sources(atx-vol PRIVATE src/catalog.cpp)
 endif()
 
 # ---- Algorithm counters (P0.2) ----
