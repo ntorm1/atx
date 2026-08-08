@@ -179,6 +179,8 @@ add_executable(atx-vol-tests
     swap_leg_test.cpp                # swap-leg toolkit (contract bridge + signal probe)
     # stress-day fit-fidelity sprint (Task 2) — appended target:
     surface_db_populate_policy_test.cpp # populate publish gate: min_worst_frac_within_bidask=0.35
+    # THEO-1 — appended target: realized-vol estimator suite
+    realized_vol_test.cpp
 )
 # backtest_bench_test.cpp was relocated to bench/backtest_throughput_bench.cpp
 # (it is a throughput benchmark, not a correctness gate).

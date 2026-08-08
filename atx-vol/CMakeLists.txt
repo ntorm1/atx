@@ -132,6 +132,8 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/earnings_repro.cpp
     # declarative swap-lane DSL
     src/swap_leg.cpp
+    # THEO-1: OHLC realized-vol estimator suite (Tier-B, not on the umbrella)
+    src/realized_vol.cpp
 )
 add_library(atx::vol ALIAS atx-vol)
 
