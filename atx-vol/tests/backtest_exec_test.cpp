@@ -1981,19 +1981,29 @@ TEST(BacktestExec, L2StrategyCohortSettlementMemoBitIdentical) {
   //
   // C1 populates the memo from execute()'s own FullGreeks pass, so a settlement
   // here can now genuinely be SERVED from the memo for the first time. The served
-  // mark comes from a FullGreeks AVX2 batch over the WHOLE overlapping-cohort book
-  // (potentially dozens of lots); the solved mark comes from a Marks-only AVX2
-  // batch over just that day's few expiring lots -- a DIFFERENT SIMD lane
-  // composition for the identical contract. `L2MarkMemoCruxFullGreeksMarkEqualsMarks
-  // Mark` above already documents that FullGreeks and Marks marks are an ECONOMIC
-  // parity guarantee (<=1e-10 relative), not a bit-identity one; this is that same
-  // AVX2 reassociation residual, one order of magnitude smaller (~1e-16 relative,
-  // 1-2 ULP) because both routes are AVX2 here (vs. AVX2-vs-scalar in the crux
-  // test). Only `pnl_settlement`/`pnl_total`/`nav` can see it (they subtract the
-  // served/solved mark); `cash` does not (settlement credits CASH from the plain
-  // intrinsic, never the mark) and `gross_vega`/`n_open_lots` are untouched by
-  // settlement at all -- so those four stay bit-identical below.
-  constexpr double kSettlementMarkParityTol = 1e-9; // >>1-2 ULP, <<1 cent on this book
+  // mark comes from a FullGreeks AVX2 batch over the WHOLE overlapping-cohort book;
+  // the solved mark comes from a Marks-only AVX2 batch over just that day's few
+  // expiring lots. `L2MarkMemoCruxFullGreeksMarkEqualsMarksMark` above already
+  // documents that FullGreeks and Marks marks for the SAME contract are an ECONOMIC
+  // PARITY guarantee (<=1e-10 relative, ~1e-13 USD), not a bit-identity one, and
+  // THIS divergence is that exact same residual, not a distinct/smaller effect:
+  // measured directly (temporary instrumentation, since reverted) at up to 8.6e-12
+  // absolute / ~1.06e-14 relative on `pnl_settlement` itself (the quantity the crux
+  // gate's tolerance is actually stated against) across this fixture's 4 settling
+  // rows -- inside the crux gate's own <=1e-10 relative bound, one order tighter
+  // because both routes are AVX2 here (vs. AVX2-vs-scalar-analytic in the crux
+  // test). `nav`'s max diff (2.9e-11 absolute) is that same per-settlement residual
+  // accumulated across 4 settling rows into NAV's cumulative running sum -- NOT a
+  // separately-caused, smaller-magnitude effect; NAV's OWN relative error looks far
+  // smaller (~5e-16) only because NAV's absolute magnitude (~$40-60k on this
+  // fixture) dwarfs the few-lot absolute residual, which is why this comment
+  // reports the mechanism-relative figure (~1e-14, against the settlement/mark
+  // itself) rather than nav-relative. Only `pnl_settlement`/`pnl_total`/`nav` can
+  // see it (they subtract the served/solved mark); `cash` does not (settlement
+  // credits CASH from the plain intrinsic, never the mark) and
+  // `gross_vega`/`n_open_lots` are untouched by settlement at all -- so those four
+  // stay bit-identical below.
+  constexpr double kSettlementMarkParityTol = 1e-9; // ~34x the measured 2.9e-11 max abs diff
   for (std::size_t i = 0; i < r_on->size(); ++i) {
     EXPECT_NEAR(r_on->nav[i], r_off->nav[i], kSettlementMarkParityTol) << "nav row " << i;
     EXPECT_NEAR(r_on->pnl_total[i], r_off->pnl_total[i], kSettlementMarkParityTol)

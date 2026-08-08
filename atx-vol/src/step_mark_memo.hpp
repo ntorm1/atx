@@ -33,8 +33,15 @@ namespace atx::vol::detail {
 // pass) READS the lot's base mark instead of re-solving it. Keyed by bit-exact
 // (uid,K,T,side) and validated against the uid's base-surface instance id, so a
 // stale/mismatched entry fails closed to a fresh solve. Reset+repopulated on every
-// populated step (holds ONE date). The served mark is bit-identical to the
-// settlement solve (FullGreeks mark == Marks mark, L2 crux gate).
+// populated step (holds ONE date). The served mark is an ECONOMIC PARITY match to
+// the settlement solve, not a bit-identity one: FullGreeks mark and Marks mark for
+// the same contract agree to <=1e-10 relative (~1e-13 USD) -- the L2 crux gate
+// (`L2MarkMemoCruxFullGreeksMarkEqualsMarksMark`, backtest_exec_test.cpp), which
+// also documents WHY the two routes can diverge at all (an AVX2 batch-composition
+// reassociation residual between the FullGreeks batch and the Marks-only batch,
+// not a model split). `L2StrategyCohortSettlementMemoBitIdentical` in the same file
+// measures that residual propagated through a multi-settlement run (~1e-14
+// relative to the settlement mark itself, ~1e-11 absolute accumulated into NAV).
 class StepMarkMemo {
 public:
   void populate_from(const PortfolioPricer &pricer, const PortfolioWorkspace &ws,

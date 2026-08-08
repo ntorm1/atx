@@ -1634,12 +1634,19 @@ compute_step(const MarketSnapshot &base, const MarketSnapshot &shifted,
   // L2 (AL-solve-wall sprint): when a mark memo is supplied and enabled, an expiring
   // lot's base mark that the PRIOR step's book-greeks pass already computed (same
   // base date, matching uid surface instance) is SERVED from the memo instead of
-  // re-solved — only the memo MISSES go into the Marks batch. The served mark is
-  // bit-identical to the solve (FullGreeks mark == Marks mark, L2 crux; per-lane
-  // solve independence makes the misses' marks batch-composition-invariant), and the
-  // settlement is summed in the SAME expiring order, so memo ON == memo OFF ==
-  // legacy, bit-for-bit. When the memo is present but DISABLED, every expiring lot
-  // still solves (legacy behavior), and each solve of a memo-available mark bumps
+  // re-solved — only the memo MISSES go into the Marks batch. The served mark is an
+  // ECONOMIC PARITY match to the solve, not a bit-identity one: FullGreeks mark and
+  // Marks mark for the same contract agree to <=1e-10 relative (~1e-13 USD), per the
+  // L2 crux gate (`L2MarkMemoCruxFullGreeksMarkEqualsMarksMark`,
+  // backtest_exec_test.cpp) — an AVX2 batch-composition reassociation residual
+  // between the FullGreeks batch (the whole book) and the Marks-only batch (just
+  // the expiring lots), not a model split. The settlement is summed in the SAME
+  // expiring order regardless, so memo ON and memo OFF stay economically identical
+  // (`L2SettlementMarkMemoDropsExpirySolve`/`L2StrategyCohortSettlementMemoBitIdentical`
+  // pin this at <=1e-9 absolute on a multi-settlement run; small fixed-book/2-lot
+  // cases have so far measured bit-for-bit, but that is not a guaranteed property of
+  // the memo). When the memo is present but DISABLED, every expiring lot still
+  // solves (legacy behavior), and each solve of a memo-available mark bumps
   // DuplicateMarkSolves — the counter L2 drives to 0.
   if (expiring != nullptr && !expiring->empty()) {
     const std::size_t n_exp = expiring->size();
