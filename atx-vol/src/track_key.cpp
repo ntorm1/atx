@@ -166,7 +166,14 @@ std::vector<std::uint8_t> canonical_config_bytes(const BacktestStrategyTemplate 
   write_financing_config(writer, run_config.financing);
   writer.write_enum(run_config.unpriced);
   writer.write_enum(run_config.surface_provenance_policy);
+  // FIX-ROUND 1 (post-review): reconcile_nav's fail-closed abort
+  // (reconcile_row, backtest.cpp:3415-3429, propagated via ATX_TRY_VOID at
+  // backtest.cpp:3804/:4168) means it belongs beside clock_gaps/margin_breach
+  // below, not with the execution-only fields -- see track_key.hpp's
+  // INCLUDED entry for the full rationale.
+  writer.write_bool(run_config.reconcile_nav);
   writer.write_bool(run_config.book_entry_fill_slippage);
+  writer.write_double(run_config.reconcile_nav_tol);
   writer.write_enum(run_config.swap_fixing_cadence);
   writer.write_enum(run_config.clock_gaps);
   writer.write_enum(run_config.margin_breach);

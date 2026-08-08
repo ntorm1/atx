@@ -184,6 +184,24 @@ TEST(TrackKeyTest, EconomicsFieldChangesProduceDifferentKeys) {
     cfg.surface_provenance_policy = SurfaceProvenancePolicy::RequireAdmittedRisk;
     expect_different("surface_provenance_policy", cfg);
   }
+  // FIX-ROUND 1 (post-review correction): reconcile_nav / reconcile_nav_tol
+  // were originally excluded as "execution" on the theory that they only gate
+  // a post-hoc assertion. That misses reconcile_row's fail-closed ABORT
+  // (backtest.cpp:3415-3429, via ATX_TRY_VOID at :3804/:4168) when
+  // reconcile_nav is true and drift exceeds the tolerance -- the run produces
+  // no BacktestResult at all. A track cached under reconcile_nav=false could
+  // otherwise be served to a caller who asked for the reconcile_nav=true
+  // validation guarantee, silently bypassing it. See track_key.hpp.
+  {
+    RunConfig cfg = baseline;
+    cfg.reconcile_nav = !baseline.reconcile_nav;
+    expect_different("reconcile_nav", cfg);
+  }
+  {
+    RunConfig cfg = baseline;
+    cfg.reconcile_nav_tol = 1.0;
+    expect_different("reconcile_nav_tol", cfg);
+  }
   {
     RunConfig cfg = baseline;
     cfg.book_entry_fill_slippage = !baseline.book_entry_fill_slippage;
@@ -276,19 +294,14 @@ TEST(TrackKeyTest, ExecutionFieldChangesDoNotAffectKey) {
   }
   {
     RunConfig cfg = baseline;
-    cfg.reconcile_nav = !baseline.reconcile_nav;
-    expect_same("reconcile_nav", cfg);
-  }
-  {
-    RunConfig cfg = baseline;
-    cfg.reconcile_nav_tol = 1.0;
-    expect_same("reconcile_nav_tol", cfg);
-  }
-  {
-    RunConfig cfg = baseline;
     cfg.prefetch_depth = 8;
     expect_same("prefetch_depth", cfg);
   }
+  // reconcile_nav / reconcile_nav_tol moved OUT of this test in FIX-ROUND 1
+  // (post-review): reconcile_nav's fail-closed abort (reconcile_row,
+  // backtest.cpp:3415-3429/:3804/:4168) makes it an economics field, not an
+  // execution one -- see EconomicsFieldChangesProduceDifferentKeys below and
+  // track_key.hpp's INCLUDED entry for the full rationale.
 }
 
 // ── (c) same config, different kBacktestEconomicsRev => different key ──────
@@ -330,8 +343,15 @@ TEST(TrackKeyTest, GoldenHexPinIsStableAcrossRestarts) {
   const TrackKey key =
       make_track_key(canonical_config_bytes(tmpl, cfg), "golden-pin-engine-id/1", snapshot_id);
 
+  // FIX-ROUND 1 (post-review): re-pinned. reconcile_nav / reconcile_nav_tol
+  // moved from excluded to included in canonical_config_bytes (see
+  // track_key.hpp's INCLUDED entry and task-D1-report.md) -- the encoding
+  // widened by two fields, so the SAME (tmpl, cfg, engine_id, snapshot_id)
+  // now hashes to a different, but equally deterministic, 64-char digest.
+  // `cfg` above does not set reconcile_nav/reconcile_nav_tol explicitly, so
+  // this also pins their RunConfig{} defaults (true / 1.0e-6) being encoded.
   constexpr std::string_view kExpectedHex =
-      "b14c2a20f7f8f7a007168fd48e3be2e49d4366b6508633d082c79916b8ee0ae7";
+      "851d54ea078bb8289b33ad99256ac14c0129fb0698c4dc80acf61e368e8f86f7";
   EXPECT_EQ(key.hex().size(), 64u);
   EXPECT_EQ(key.hex(), kExpectedHex) << "actual hex was: " << key.hex();
 }

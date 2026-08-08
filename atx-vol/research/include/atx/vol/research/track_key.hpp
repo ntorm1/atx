@@ -72,10 +72,11 @@
 // ## Economics vs execution -- the RunConfig field-by-field split
 //
 // RunConfig has exactly TWENTY-TWO fields (drift-pinned in backtest.hpp).
-// Eleven are economics (change what a run COMPUTES) and eleven are execution
-// (change how fast / on what topology it computes the SAME thing, or are
-// non-deterministic runtime handles that cannot be hashed at all). Getting
-// this split wrong in the DANGEROUS direction (omitting an economics field)
+// THIRTEEN are economics (change what a run COMPUTES, or -- reconcile_nav's
+// fail-closed abort -- whether it produces a result AT ALL) and NINE are
+// execution (change how fast / on what topology it computes the SAME thing,
+// or are non-deterministic runtime handles that cannot be hashed at all).
+// Getting this split wrong in the DANGEROUS direction (omitting an economics field)
 // silently serves a wrong cached result; getting it wrong in the SAFE
 // direction (including an execution field) only costs a cache hit. Every call
 // below is documented so a reviewer can re-derive it from RunConfig's own doc
@@ -110,6 +111,25 @@
 //                                changes which lots' P&L reaches NAV.
 //   surface_provenance_policy   gates which archived surfaces admit at all;
 //                                changes the priced universe.
+//   reconcile_nav /              FIX-ROUND 1 (post-review correction -- see
+//   reconcile_nav_tol           task-D1-report.md): reconcile_row
+//                                (backtest.cpp:3415-3429), called via
+//                                ATX_TRY_VOID at backtest.cpp:3804/:4168,
+//                                returns Err and ABORTS THE RUN -- no
+//                                BacktestResult at all -- the first recorded
+//                                row whose (NAV - independently-recomputed
+//                                liquidation) drift exceeds reconcile_nav_tol,
+//                                but ONLY when reconcile_nav is true. Originally
+//                                misclassified as execution ("gates a post-hoc
+//                                assertion... does not change the NAV/cash
+//                                walk"), which is true of the WALK but ignores
+//                                the fail-closed abort -- exactly the
+//                                clock_gaps/margin_breach pattern below. A run
+//                                cached under reconcile_nav=false (completes,
+//                                undetected drift and all) served to a caller
+//                                requesting reconcile_nav=true would silently
+//                                bypass the validation guarantee that caller
+//                                asked for.
 //   book_entry_fill_slippage    "the gap is charged into cost (hence into
 //                                NAV and, exactly once, into cash)"
 //                                (backtest.hpp): directly moves NAV.
@@ -163,11 +183,6 @@
 //                                brief's own named example.
 //   settlement_mark_memo            "ON vs OFF is bit-for-bit identical
 //                                output" (RunConfig doc, verbatim).
-//   reconcile_nav /                 gates a POST-HOC assertion (abort if an
-//   reconcile_nav_tol              independently-recomputed liquidation value
-//                                drifts from NAV by more than the tolerance);
-//                                does not change the NAV/cash walk that
-//                                produces the value being checked.
 //
 // If a reviewer disagrees with any EXCLUDED call above, the fix is additive
 // (move one field's encoding from the execution list into
