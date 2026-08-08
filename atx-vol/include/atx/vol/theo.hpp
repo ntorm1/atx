@@ -269,9 +269,11 @@ public:
   virtual ~IFairVolModel() = default;
 
   // The feature schema this model was trained against (`kFairVolFeatureSchemaV1`
-  // for every model this module currently ships). A caller wiring a NEW model
-  // implementation in is responsible for checking this matches the feature
-  // block it assembles -- this interface has no way to enforce it centrally.
+  // for every model this module currently ships). `make_fair_vol_model_overlay`
+  // checks this against `kFairVolFeatureSchemaV1` at construction (it assembles
+  // exactly that fixed layout and nothing else) and refuses a mismatch --
+  // a NEW model implementation cannot silently receive a feature block laid
+  // out for a schema it wasn't trained against.
   [[nodiscard]] virtual std::uint32_t feature_schema() const noexcept = 0;
 
   // Predicts `y = ln(sigma_fair / market_vol)` per row, from `features_row_major`
@@ -314,8 +316,13 @@ load_linear_fair_vol_model(std::string_view coef_tsv_path);
 // `|dvol| * 0.5` -- a placeholder pending quantile heads on the model
 // interface (residual work, not this task's scope).
 //
-// `Err(InvalidArgument)` if `model` is null (checked HERE, at construction --
-// the overlay never re-checks it per call). At query time, this overlay
+// `Err(InvalidArgument)` if `model` is null, or if `model->feature_schema()`
+// isn't `kFairVolFeatureSchemaV1` -- both checked HERE, at construction (the
+// overlay never re-checks either per call). The schema check exists because
+// this overlay assembles exactly the `kFairVolFeatureSchemaV1` layout above
+// and nothing else; a model trained against any other schema would otherwise
+// silently receive a feature block laid out for a schema it never saw. At
+// query time, this overlay
 // fails OPEN, never closed (theo must always serve): missing `ctx.rv` or
 // `ctx.events`, a per-row surface read that comes back non-finite/invalid
 // (out-of-domain K/T, a rejected `delta()` call), or a non-finite predicted

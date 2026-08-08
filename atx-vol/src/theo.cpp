@@ -657,6 +657,16 @@ make_fair_vol_model_overlay(std::shared_ptr<const IFairVolModel> model) {
   if (model == nullptr) {
     return Err(ErrorCode::InvalidArgument, "make_fair_vol_model_overlay: model must not be null");
   }
+  // The overlay assembles exactly the kFairVolFeatureSchemaV1 layout (see
+  // theo.hpp's feature-order comment) and nothing else -- a model trained
+  // against a different schema must be refused here, not silently handed a
+  // feature block laid out for a schema it never saw.
+  const std::uint32_t schema = model->feature_schema();
+  if (schema != kFairVolFeatureSchemaV1) {
+    return Err(ErrorCode::InvalidArgument,
+               "make_fair_vol_model_overlay: model feature_schema() == " + std::to_string(schema) +
+                   ", expected " + std::to_string(kFairVolFeatureSchemaV1));
+  }
   std::unique_ptr<ITheoOverlay> overlay = std::make_unique<FairVolModelOverlay>(std::move(model));
   return Ok(std::move(overlay));
 }

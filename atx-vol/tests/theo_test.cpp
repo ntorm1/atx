@@ -1044,6 +1044,29 @@ make_fair_vol_model_fixture(double intercept, std::span<const double> coefs) {
   return FairVolModelFixture{std::move(model), std::move(*engine)};
 }
 
+// A minimal IFairVolModel stub that reports an arbitrary `feature_schema()`
+// and, if ever actually called, a trivial y == 0 prediction. Used only to
+// prove `make_fair_vol_model_overlay`'s construction-time schema check
+// (I1, review fix round 1) without needing a real coefficient file.
+class StubSchemaFairVolModel final : public IFairVolModel {
+public:
+  explicit StubSchemaFairVolModel(std::uint32_t schema) : schema_(schema) {}
+
+  [[nodiscard]] std::uint32_t feature_schema() const noexcept override { return schema_; }
+
+  [[nodiscard]] Status predict(std::span<const double> /*features_row_major*/, std::size_t n_rows,
+                               std::span<double> log_ratio_out) const override {
+    if (log_ratio_out.size() != n_rows) {
+      return Err(ErrorCode::InvalidArgument, "StubSchemaFairVolModel::predict: size mismatch");
+    }
+    std::fill(log_ratio_out.begin(), log_ratio_out.end(), 0.0);
+    return Ok();
+  }
+
+private:
+  std::uint32_t schema_;
+};
+
 } // namespace
 
 // (a) zero coefficients -> y == 0 for every row -> engine identity, and
@@ -1176,6 +1199,17 @@ TEST_F(TheoEngineTest, MakeFairVolModelOverlayRejectsNullModel) {
   EXPECT_EQ(overlay.error().code(), ErrorCode::InvalidArgument);
 }
 
+// I1 (review fix round 1): make_fair_vol_model_overlay checks
+// model->feature_schema() against kFairVolFeatureSchemaV1 at construction --
+// a model trained against a different schema must be refused rather than
+// silently handed a feature block laid out for kFairVolFeatureSchemaV1.
+TEST_F(TheoEngineTest, MakeFairVolModelOverlayRejectsSchemaMismatch) {
+  const std::shared_ptr<const IFairVolModel> model = std::make_shared<StubSchemaFairVolModel>(2);
+  const auto overlay = make_fair_vol_model_overlay(model);
+  ASSERT_FALSE(overlay.has_value());
+  EXPECT_EQ(overlay.error().code(), ErrorCode::InvalidArgument);
+}
+
 // Bonus: IFairVolModel::predict itself validates span sizes (the caller's
 // bug, not a graceful-degrade data condition -- see the interface doc).
 TEST_F(TheoEngineTest, LinearFairVolModelPredictRejectsFeatureSpanSizeMismatch) {
@@ -1190,6 +1224,65 @@ TEST_F(TheoEngineTest, LinearFairVolModelPredictRejectsFeatureSpanSizeMismatch) 
   const Status st = (*model)->predict(too_few_features, 1, log_ratio_out);
   ASSERT_FALSE(st.has_value());
   EXPECT_EQ(st.error().code(), ErrorCode::InvalidArgument);
+}
+
+// M (review fix round 1): FairVolModelOverlay::adjust sub-chunks its own
+// input span on the kTheoMaxBatch cap (theo.cpp's `while (begin <
+// queries.size())` loop) -- untested above that boundary via a DIRECT
+// overlay call, since routing through TheoEngine::value_into would never
+// hand the overlay more than kTheoMaxBatch queries at once (the engine does
+// its own chunking first), so the overlay's own loop would only ever run
+// one iteration either way. Calls overlay->adjust() directly with > one
+// chunk's worth of queries and checks per-index correctness at the seam
+// (mirrors Task 8's BatchAboveChunkCapKeepsPerQueryIdentityAtTheSeam /
+// MultiOverlayAccumulationHoldsAcrossChunkBoundary chunk-seam pattern).
+TEST_F(TheoEngineTest, FairVolModelOverlayAdjustSubChunksAboveMaxBatchBoundary) {
+  const std::array<double, kFairVolFeatureCount> coefs{};
+  const double b0 = std::log(0.9); // nonzero model: dvol == market_vol * (0.9 - 1)
+  const ScopedTempFile coef_file("chunk_boundary",
+                                 make_coef_tsv(kFairVolFeatureSchemaV1, b0, coefs));
+  auto loaded = load_linear_fair_vol_model(coef_file.path_string());
+  ASSERT_TRUE(loaded.has_value()) << loaded.error().to_string();
+  const std::shared_ptr<const IFairVolModel> model = std::move(*loaded);
+  auto overlay_result = make_fair_vol_model_overlay(model);
+  ASSERT_TRUE(overlay_result.has_value()) << overlay_result.error().to_string();
+  const std::unique_ptr<ITheoOverlay> overlay = std::move(*overlay_result);
+
+  RvPanel rv{};
+  rv.vol = {0.20, 0.22, 0.24, 0.26};
+  EventSchedule events(std::vector<std::int64_t>{});
+  const TheoContext ctx{.surface = &*surface_, .events = &events, .rv = &rv};
+
+  const std::size_t n = kTheoMaxBatch + 5; // > one chunk -- drives the while-loop twice
+  const std::array<double, 3> strikes{580.0, 600.0, 620.0};
+  const std::array<double, 2> tenors{surface_->context()[1].T, surface_->context()[3].T};
+
+  std::vector<TheoQuery> qs;
+  qs.reserve(n);
+  for (std::size_t i = 0; i < n; ++i) {
+    const Side side = (i % 2 == 0) ? Side::Call : Side::Put;
+    qs.push_back(TheoQuery{.strike = strikes[i % strikes.size()],
+                           .tenor_years = tenors[i % tenors.size()],
+                           .side = side});
+  }
+  std::vector<OverlayAdjust> out(n);
+  const Status st = overlay->adjust(ctx, qs, out);
+  ASSERT_TRUE(st.has_value()) << st.error().to_string();
+
+  // Seam indices spanning both internal chunks: last index of chunk 0 (255
+  // == kTheoMaxBatch - 1), first index of chunk 1 (256 == kTheoMaxBatch),
+  // and a spot-check well inside chunk 1 (260) -- plus index 0 itself.
+  const std::array<std::size_t, 4> check_indices{0, kTheoMaxBatch - 1, kTheoMaxBatch,
+                                                 kTheoMaxBatch + 4};
+  static_assert(kTheoMaxBatch == 256, "seam indices below assume kTheoMaxBatch == 256");
+  for (const std::size_t i : check_indices) {
+    const TheoQuery &q = qs[i];
+    const double market_vol = surface_->iv(q.strike, q.tenor_years);
+    ASSERT_TRUE(std::isfinite(market_vol) && market_vol > 0.0) << i;
+    const double expected_dvol = market_vol * (0.9 - 1.0);
+    EXPECT_NEAR(out[i].dvol, expected_dvol, 1e-10) << i;
+    EXPECT_EQ(out[i].flags & static_cast<std::uint32_t>(TheoFlagBits::ModelMissing), 0u) << i;
+  }
 }
 
 } // namespace
