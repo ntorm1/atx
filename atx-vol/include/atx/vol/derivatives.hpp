@@ -847,7 +847,14 @@ static_assert(detail::aggregate_arity_is_v<DerivGreeks, 12>,
 struct DerivGreekBumps {
   double spot_rel = 1.0e-4;          // relative S bump (central)
   double vol_abs = 1.0e-4;           // absolute parallel sigma bump (central)
-  double rate_abs = 1.0e-4;          // absolute zero-rate bump (one-sided)
+  // UNUSED as of Task P-2 (GK-C3): rho is now the closed form -T*PV (see
+  // deriv_greeks' own doc below) rather than a one-sided finite difference of
+  // a rate-shifted reprice, so there is no rate bump left to size. Kept as a
+  // field (not removed) so this v1.x struct stays additive-only / source-
+  // compatible with any existing caller-set value, which is now simply
+  // ignored; `bumps_valid` still requires it be > 0, matching every other
+  // bump size's validation, even though nothing reads it downstream.
+  double rate_abs = 1.0e-4;
   double time_years = 1.0 / 365.25;  // theta roll (one-sided, T decreasing)
   // vanna + charm, the only greeks needing evaluations of their own (4 spot x
   // vol crosses + 2 rolled spot bumps = 6 extra repricings); both are NaN when
@@ -860,7 +867,7 @@ struct DerivGreekBumps {
   // implied variance rate the injected fixing is struck at -- see the header
   // note above DerivGreeks::theta_carry) plus TWO extra deriv_price
   // repricings (the T - dt roll with one fixing injected at that rate, and
-  // again at a zero return), on top of the block's existing up-to-14. Skipped
+  // again at a zero return), on top of the block's existing up-to-13. Skipped
   // for free (no extra evaluation at all) when `contract.rv_spec.n_obs_total
   // == 0` -- no fixing schedule exists to inject into, so both fields just
   // equal `theta`. Default true: theta_zero_fixing is the number a daily P&L
@@ -888,12 +895,47 @@ static_assert(detail::aggregate_arity_is_v<DerivGreekBumps, 6>,
 //     vol is re-read at the ORIGINAL absolute strike. `curves.spot` is the
 //     divisor, so it must be > 0.
 //   - Vol is a PARALLEL additive shift of `iv(k,T)`; the curves are untouched.
-//   - Rate rebuilds the yield curve with every zero rate shifted by dr,
-//     sampled at the forward pillars' Ts plus the contract's own T. The
-//     FORWARD curve is deliberately held fixed: F is fitted independently
-//     upstream, so this reports the pure discounting exposure.
 //   - Theta rolls `contract.maturity_t` down by dt with the realized spec
 //     untouched, i.e. calendar time passes and nothing new is realized.
+//   - Rate has NO bump: rho is the closed form below, not a stencil.
+//
+// RHO IS EXACTLY -T*PV, ANALYTICALLY, NOT JUST ON THE FULLY-AGED BRANCH
+// (Task P-2, GK-C3). Every quote this library builds -- var swap, the
+// unaged/mid-life vol swap (Carr-Lee or the lognormal RV distribution model),
+// both capped kinds, at any age -- is assembled as `pv = df(r) * X`, where X
+// (the fair strike / undiscounted expectation / cap option blend) is PROVABLY
+// INDEPENDENT of the rate curve, not merely insensitive to it in practice:
+//   - The variance strip's own OTM(K)/(df*K^2) integrand has its discount
+//     factor cancel algebraically against the OTM price's own df (Demeterfi-
+//     Derman-Kamal-Zou), so K_var never reads `curves.yield` at all.
+//   - The Carr-Lee ATMF-straddle K_vol formula (`carr_lee_k_vol`) is a
+//     function of the ATMF implied vol and T alone -- no discount factor
+//     anywhere in it.
+//   - The one place a rate-like quantity enters a non-df channel --
+//     `DerivDiscreteCorrection::Diffusion1OverN`'s carry differential
+//     (`resolve_carry_diff`, r_bar - q_bar) -- is read off ln(F/S)/T, the
+//     FORWARD and spot, never `curves.yield`, so even that correction leaves
+//     X untouched by a rate curve rebuild.
+// So dPV/dr = X * d(df)/dr = -T * df(r) * X = -T * PV identically, exactly the
+// same identity the fully-aged branch below already uses (the two are one
+// statement, not two): the finite-difference r+ bump this used to cost was
+// recomputing that identity to FD precision, one whole extra repricing per
+// greek call (a second strip integration for var/capped swaps; a second
+// Carr-Lee straddle plus its own diagnostic strip for an unaged vol swap),
+// never discovering anything the closed form does not already say.
+// `Rho.AnalyticMatchesFD` (deriv_greeks_test.cpp) pins this identity against
+// the FD bump this replaced, across every DerivKind and aging state, before
+// the bump was ever deleted.
+//
+// FORWARD-CHANNEL RATE RISK IS DELIBERATELY NOT IN RHO, unchanged from every
+// prior version of this stencil: F is fitted independently upstream of this
+// library (see the spot-bump note above -- a spot bump moves F, but nothing
+// here ever moves F in response to r), so rho reports the pure discounting
+// exposure only, exactly as it always has. The switch to a closed form is
+// honest AND free: it removes the FD bump's own truncation noise (rho now
+// bit-identical across repeated calls and independent of `bumps.rate_abs`,
+// which is accordingly unused -- see its own field doc) without changing
+// what rho MEANS.
 //
 // THE CENTER'S NUMERICAL SCHEME IS PINNED INTO EVERY BUMP. Two things about
 // the pricing are resolved FROM THE SURFACE, so both move when the surface is

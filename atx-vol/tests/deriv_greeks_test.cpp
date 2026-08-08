@@ -135,6 +135,58 @@ TEST(DerivGreeks, VegaMatchesDirectReprice) {
   EXPECT_NEAR(g->vega, fd, 2e-2 * std::fabs(fd));
 }
 
+// Task P-2 / GK-P: `price_vol_swap`'s unaged-branch best-effort diagnostic
+// strip (populates `uncapped_var_dec` / `convexity_adjustment_dec` / the grid
+// fields, never read by any stencil) is skipped on every bumped/rolled
+// evaluation `deriv_greeks` issues through `bumped_pv` -- see
+// `is_bumped_greek_view`. Two claims to pin:
+//   1. The CENTER's own diagnostic is untouched: `deriv_greeks` prices it via
+//      the raw, un-wrapped surface, which never goes through `VolShiftView`.
+//   2. Skipping the diagnostic on bumps changes NOTHING about the reported
+//      greeks -- `vega` must still reproduce an INDEPENDENT direct central-
+//      difference reprice through the ordinary `deriv_price` entry point
+//      (also un-skipped, since a hand-built `EssviSurface` is never wrapped
+//      either), mirroring `VegaMatchesDirectReprice` above but for an unaged
+//      VolSwap, the kind/age combination the diagnostic actually guards.
+TEST(DerivGreeks, DiagnosticStripSkipLeavesUnagedVolSwapGreeksUnaffected) {
+  const double sigma = 0.20, T = 0.25;
+  const EssviSurface surf = make_flat_surface(sigma, 0.01, 1.00);
+  const EssviSurface surf_up = make_flat_surface(sigma + 0.01, 0.01, 1.00);
+  const EssviSurface surf_dn = make_flat_surface(sigma - 0.01, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00, 0.03);
+  DerivContract c{};
+  c.kind = DerivKind::VolSwap;
+  c.maturity_t = T;
+  c.notional = 1e6;
+  c.strike_dec = 0.18;
+  c.rv_spec.annualization = 252.0;
+  c.rv_spec.n_obs_total = 63u;  // unaged: n_obs_done left at 0
+
+  const auto g = deriv_greeks(surf, cs, c);
+  ASSERT_TRUE(g.has_value()) << g.error().to_string();
+
+  // Claim 1.
+  EXPECT_GT(g->quote.uncapped_var_dec, 0.0);
+  EXPECT_TRUE(std::isfinite(g->quote.convexity_adjustment_dec));
+  EXPECT_TRUE(std::isfinite(g->quote.integration_error_est));
+  EXPECT_GT(g->quote.strip_nodes_used, 0u);
+
+  // Claim 2.
+  const auto p1 = deriv_price(surf_up, cs, c, deriv_default_config());
+  const auto pm1 = deriv_price(surf_dn, cs, c, deriv_default_config());
+  ASSERT_TRUE(p1.has_value()) << p1.error().to_string();
+  ASSERT_TRUE(pm1.has_value()) << pm1.error().to_string();
+  const double fd = (p1->pv - pm1->pv) / 0.02;
+  EXPECT_NEAR(g->vega, fd, 2e-2 * std::fabs(fd));
+
+  // Every other greek stayed finite -- the skip did not silently drop
+  // anything else in the block.
+  for (const double v : {g->pv, g->delta, g->gamma, g->vega, g->volga, g->vanna,
+                         g->theta, g->rho, g->charm}) {
+    EXPECT_TRUE(std::isfinite(v));
+  }
+}
+
 // Fully aged: pure discounting, all market greeks exactly zero.
 TEST(DerivGreeks, FullyAgedHasOnlyRho) {
   const EssviSurface surf = make_flat_surface(0.20, 0.01, 1.00);
@@ -478,6 +530,66 @@ TEST(DerivGreeks, VegaIsBumpSizeIndependentOnSkewedSurface) {
   ASSERT_TRUE(g_big.has_value());
   EXPECT_GT(std::fabs(g_small->vega), 1.0);  // there is something to compare
   EXPECT_NEAR(g_small->vega, g_big->vega, 3e-2 * std::fabs(g_small->vega));
+}
+
+// Task P-2 / GK-C3: rho is EXACTLY -T*PV for every DerivKind and aging state,
+// not just the fully-aged branch's own closed form. Every quote in this file
+// is built as `pv = df(r) * X`, and X -- the fair-strike/expectation/cap-
+// option blend -- never reads the rate curve: the strip's own OTM(K)/df
+// integrand cancels its discount factor (Demeterfi-Derman-Kamal-Zou), the
+// Carr-Lee ATMF straddle formula never touches `curves.yield`, and the
+// Diffusion1OverN discrete-monitoring correction's carry differential
+// (`resolve_carry_diff`) is read off the FORWARD and spot, never the yield
+// curve either. So dPV/dr = X * d(df)/dr = -T*df*X = -T*PV identically, and
+// the one-sided FD r+ bump `eval_bump_table` used to pay for (a full extra
+// repricing -- a second strip integration for VarSwap/CappedVarSwap/
+// CappedVolSwap, a second Carr-Lee straddle plus its own diagnostic strip for
+// VolSwap) was recomputing that identity the hard way, to FD precision, not
+// deriving it.
+//
+// This test PINS the claim against the CURRENT one-sided FD bump -- proving
+// the identity on real code, not on paper -- before the bump is deleted and
+// rho becomes the closed form directly (Steps: this test must stay green,
+// unmodified, after that deletion too -- at that point both sides of the
+// comparison literally compute the same expression).
+//
+// A custom, much-smaller-than-default `rate_abs` (1e-6, vs. the production
+// default 1e-4) is used deliberately: the one-sided FD's own truncation is
+// O(dr) -- roughly (dr*T/2) relative, e.g. ~5e-5 at the default dr and T=1 --
+// which would swamp the 1e-6*|PV| bound below and test the STENCIL's own
+// discretization error instead of the IDENTITY. Shrinking dr is the ordinary
+// way to confirm a derivative identity empirically via FD convergence; the
+// default bump's own practical accuracy is a separate, already-covered
+// concern (VarSwapFlatSurfaceAnalyticTruths above).
+TEST(Rho, AnalyticMatchesFD) {
+  const EssviSurface surf = make_skewed_surface();
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00, 0.03);
+  DerivGreekBumps bumps{};
+  bumps.rate_abs = 1.0e-6;
+
+  for (const DerivKind kind : {DerivKind::VarSwap, DerivKind::VolSwap,
+                               DerivKind::CappedVarSwap, DerivKind::CappedVolSwap}) {
+    for (const std::uint32_t n_done : {0u, 21u}) {  // unaged, mid-life
+      DerivContract c{};
+      c.kind = kind;
+      c.maturity_t = 0.25;
+      c.notional = 1e6;
+      c.strike_dec = 0.03;
+      c.cap_dec = (kind == DerivKind::CappedVarSwap)   ? 0.25
+                  : (kind == DerivKind::CappedVolSwap) ? 0.50
+                                                       : 0.0;
+      c.rv_spec.annualization = 252.0;
+      c.rv_spec.n_obs_total = 63u;
+      c.rv_spec.n_obs_done = n_done;
+      c.rv_spec.rv_done_dec = 0.05;
+      const auto g = deriv_greeks(surf, cs, c, deriv_default_config(), bumps);
+      ASSERT_TRUE(g.has_value()) << "kind=" << static_cast<int>(kind) << " n_done=" << n_done
+                                  << ": " << g.error().to_string();
+      const double analytic_rho = -c.maturity_t * g->pv;
+      EXPECT_NEAR(g->rho, analytic_rho, 1.0e-6 * std::fabs(g->pv))
+          << "kind=" << static_cast<int>(kind) << " n_done=" << n_done;
+    }
+  }
 }
 
 // Task C-10 (GK-C2): `theta` rolls ONLY the calendar (T -> T - dt) with

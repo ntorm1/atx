@@ -5,8 +5,40 @@ that silently changes a NUMBER a caller already depends on belongs in this file.
 
 ## 1.1.0
 
-Vol-derivatives production sprint, Phase 1 (correctness). Grows only with
-changes that move a number a caller could already be marking with.
+Vol-derivatives production sprint, Phase 1 (correctness) and Phase 2
+(performance). Grows only with changes that move a number a caller could
+already be marking with.
+
+### Changed — `deriv_greeks`'s rho is now the closed form `-T*PV`, not a finite difference (GK-C3, Task P-2)
+
+Every quote this library prices is `pv = df(r) * X`, X (the fair strike /
+undiscounted expectation / cap-option blend) provably independent of the
+rate curve — the variance strip's own `OTM(K)/df` integrand cancels its
+discount factor algebraically, the Carr-Lee ATMF-straddle formula never
+reads `curves.yield`, and the `Diffusion1OverN` discrete-monitoring
+correction's carry differential is read off the forward/spot, not the yield
+curve. So `dPV/dr = -T*PV` identically — the same identity the fully-aged
+branch already used — for every `DerivKind` and aging state, not just the
+fully-aged one. `rho` is now computed directly from that identity instead of
+a one-sided finite difference (`(price(r+dr) - price(r)) / dr`, `dr =
+DerivGreekBumps::rate_abs`), which only ever recovered the same number to
+the stencil's own truncation error.
+
+**This moves `rho` by the FD truncation this deletes** — on the order of
+`(rate_abs * T / 2)` relative (e.g. ~1.25e-5 relative, ~0.001%, at the
+default `rate_abs = 1.0e-4` and `T = 0.25`; grows linearly with `T` and with
+`rate_abs`) — a real, if small, mark move on any book already reading `rho`.
+`DerivGreekBumps::rate_abs` is left in the struct (source-compatible,
+harmless) but is no longer consumed by anything; see its own field doc.
+**−1 repricing per `deriv_greeks` call** (the deleted `r+` bump; Standard
+unaged VarSwap greeks: 14 → 13 evaluations).
+
+**Migration**: any test or downstream number pinning `rho` to FD precision
+against the OLD one-sided stencil should re-pin against `-T*PV` (now exact,
+not approximate) instead; every other greek is bit-identical
+(`Rho.AnalyticMatchesFD`, `deriv_greeks_test.cpp`, pins the identity against
+the FD bump this replaced, across every `DerivKind` and aging state, before
+and after the deletion).
 
 ### Added — `DerivGreekBumps::carry_theta`: the fixing-roll theta a calendar-only roll drops, on by default (GK-C2, Task C-10)
 

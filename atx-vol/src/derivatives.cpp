@@ -189,6 +189,26 @@ template <class SurfaceT>
   }
 }
 
+// Task P-2 / GK-P: structural (not config-based) detection that `SurfaceT` is
+// a bumped-greek adapter -- `VolShiftView` below, the outermost wrapper
+// `bumped_pv` always constructs for every evaluation `eval_bump_table` issues
+// (including its own zero-shift "center" reprice and the two carry-theta
+// rolled reprices). `bumped_pv` is the ONLY call site that ever builds a
+// `VolShiftView` and hands it to `deriv_price`, so this tag exactly identifies
+// "this is a bump", with no reliance on a new `DerivConfig` field: the
+// unwrapped surface `deriv_greeks` uses for its own CENTER quote (and every
+// ordinary `deriv_price`/`price_vol_swap` caller outside `deriv_greeks`) never
+// carries it. `price_vol_swap` reads this to skip its best-effort convexity
+// diagnostic strip on bumped evaluations -- see that function's own comment.
+// Deferred (dependent) name lookup means `VolShiftView` need not be declared
+// yet at this point in the file (same instantiation-time-only requirement
+// `surface_certified_wing_band` above already relies on for
+// `PricedSurfaceStripView`, declared far below).
+template <class SurfaceT>
+[[nodiscard]] constexpr bool is_bumped_greek_view() noexcept {
+  return requires { SurfaceT::is_bumped_greek_view; };
+}
+
 // Resolve the wing trust half-band: 0 -> the surface's own certified band
 // when it carries one, else the mode-blind certified validation band; > 0 ->
 // the caller's own band; < 0 -> 0.0 (clamp off). The <= 0 encoding of "off"
@@ -636,24 +656,39 @@ template <class SurfaceT>
 
     // Best-effort variance strip to populate the convexity diagnostic; do not
     // fail the price call if the strip is unavailable.
-    if (const Result<DerivQuote> strip = var_swap_fair_strike(surface, curves, T, cfg);
-        strip.has_value()) {
-      out.uncapped_var_dec = strip->uncapped_var_dec;
-      out.convexity_adjustment_dec =
-          std::sqrt(std::fmax(strip->uncapped_var_dec, 0.0)) - k_vol;
-      out.integration_error_est = strip->integration_error_est;
-      carry_strip_grid(out, *strip);
-      // Aggregate review fix (I-1): this is the v1.1-default (Naive) path's
-      // ONLY strip -- C-5's I-2 fix ORs the Refined strip's flags in at :624
-      // above, but under Naive that strip never runs, so this one's
-      // provenance (StripTruncatedLeft/Right, WingClamped, LowT,
-      // InteriorBadNodes) was silently dropped even though its NUMBERS
-      // (uncapped_var_dec, integration_error_est, the grid fields just
-      // carried above, including resolved_wing_clamp) were served -- a quote
-      // that could contradict itself (e.g. a nonzero resolved_wing_clamp with
-      // WingClamped absent from flags). `out.flags = flags` below still wins,
-      // so OR it into `flags` here rather than `out.flags` directly.
-      flags |= strip->flags;
+    //
+    // Task P-2 / GK-P: SKIPPED on every bumped/rolled evaluation `deriv_greeks`
+    // issues through `bumped_pv` (`is_bumped_greek_view` detects this
+    // structurally -- see its own comment). Those stencils read only PV --
+    // `bumped_pv` returns `q.pv` and nothing else -- so this diagnostic's own
+    // fields (`uncapped_var_dec`, `convexity_adjustment_dec`,
+    // `integration_error_est`, the carried grid, the OR'd-in flags) are never
+    // read off a bumped quote; paying a second full strip integration per
+    // bump was pure waste, up to 14 of them on a Standard-tier unaged VolSwap
+    // `deriv_greeks` call. The CENTER quote is unaffected: `deriv_greeks`
+    // computes it via the unwrapped surface (never a `VolShiftView`), and so
+    // does every ordinary `price_vol_swap`/`deriv_price` caller outside
+    // `deriv_greeks`.
+    if constexpr (!is_bumped_greek_view<SurfaceT>()) {
+      if (const Result<DerivQuote> strip = var_swap_fair_strike(surface, curves, T, cfg);
+          strip.has_value()) {
+        out.uncapped_var_dec = strip->uncapped_var_dec;
+        out.convexity_adjustment_dec =
+            std::sqrt(std::fmax(strip->uncapped_var_dec, 0.0)) - k_vol;
+        out.integration_error_est = strip->integration_error_est;
+        carry_strip_grid(out, *strip);
+        // Aggregate review fix (I-1): this is the v1.1-default (Naive) path's
+        // ONLY strip -- C-5's I-2 fix ORs the Refined strip's flags in at :624
+        // above, but under Naive that strip never runs, so this one's
+        // provenance (StripTruncatedLeft/Right, WingClamped, LowT,
+        // InteriorBadNodes) was silently dropped even though its NUMBERS
+        // (uncapped_var_dec, integration_error_est, the grid fields just
+        // carried above, including resolved_wing_clamp) were served -- a quote
+        // that could contradict itself (e.g. a nonzero resolved_wing_clamp with
+        // WingClamped absent from flags). `out.flags = flags` below still wins,
+        // so OR it into `flags` here rather than `out.flags` directly.
+        flags |= strip->flags;
+      }
     }
     out.accrued_component_dec = 0.0;
     out.future_component_dec = k_vol;
@@ -1496,6 +1531,13 @@ struct VolShiftView {
   const SurfaceT* base;  // non-owning, non-null
   double vol_shift;
 
+  // Task P-2 / GK-P: structural marker `is_bumped_greek_view` (above) detects
+  // via `requires`. `bumped_pv` is the only call site that ever constructs a
+  // `VolShiftView`, so this tag exactly identifies a bumped/rolled greek
+  // evaluation -- see `is_bumped_greek_view`'s own comment for why this beats
+  // a new `DerivConfig` field.
+  static constexpr bool is_bumped_greek_view = true;
+
   [[nodiscard]] double iv(double k_log, double T) const noexcept {
     return base->iv(k_log, T) + vol_shift;
   }
@@ -1517,39 +1559,6 @@ struct VolShiftView {
     p.F *= scale;
   }
   return out;
-}
-
-// Rate bump: rebuild the yield curve with every zero rate shifted by dr.
-// Sampling at the forward pillars' Ts plus the contract's own T guarantees the
-// contract tenor is an exact pillar of the rebuilt curve, so its discount
-// factor is e^{-(r(T)+dr)T} exactly rather than an interpolant of one.
-[[nodiscard]] Result<CurveSet> rate_shift_curves(const CurveSet& base, double dr, double T) {
-  std::vector<double> ts;
-  ts.reserve(base.forward.points().size() + 1u);
-  for (const ForwardPoint& p : base.forward.points()) {
-    if (p.T > 0.0) {
-      ts.push_back(p.T);
-    }
-  }
-  if (T > 0.0) {
-    ts.push_back(T);
-  }
-  std::sort(ts.begin(), ts.end());
-  ts.erase(std::unique(ts.begin(), ts.end()), ts.end());
-  if (ts.empty()) {
-    // No positive tenor anywhere: there is no rate exposure to shift (the only
-    // way here is T <= 0 with no forward pillars, where df == 1 by definition).
-    return Ok(base);
-  }
-
-  std::vector<double> rates;
-  rates.reserve(ts.size());
-  for (const double t : ts) {
-    rates.push_back(base.yield.zero(t) + dr);
-  }
-  CurveSet out = base;
-  ATX_TRY_VOID(out.set_yield(ts, rates));
-  return Ok(std::move(out));
 }
 
 // One bumped repricing, through the SAME deriv_price every mark goes through.
@@ -1650,7 +1659,6 @@ struct BumpPvs {
   double c = kNaN;                      // center
   double s_up = kNaN, s_dn = kNaN;      // S(1 +/- h)
   double v_up = kNaN, v_dn = kNaN;      // sigma +/- dv
-  double r_up = kNaN;                   // r + dr
   double t_dn = kNaN;                   // T - dt
   double t_dn_carry = kNaN;             // T - dt, +1 fixing at K_var_future
   double t_dn_zero_fixing = kNaN;       // T - dt, +1 zero-return fixing
@@ -1659,7 +1667,7 @@ struct BumpPvs {
   double t_s_up = kNaN, t_s_dn = kNaN;  // S(1 +/- h) at T - dt
 };
 
-// Up to 8 evaluations, 14 with second_order (one fewer / three fewer when the
+// Up to 7 evaluations, 13 with second_order (one fewer / three fewer when the
 // contract cannot roll), plus 3 more when `bumps.carry_theta` is on (one
 // var_swap_fair_strike call to resolve K_var_future, then the two carry-theta
 // reprices above) -- skipped entirely (no extra evaluation) when
@@ -1695,9 +1703,6 @@ template <class SurfaceT>
   ATX_TRY(pv.s_dn, bumped_pv(surface, cs_dn, contract, cfg, ks_dn, 0.0));
   ATX_TRY(pv.v_up, bumped_pv(surface, curves, contract, cfg, 0.0, dv));
   ATX_TRY(pv.v_dn, bumped_pv(surface, curves, contract, cfg, 0.0, -dv));
-  ATX_TRY(const CurveSet cs_r,
-          rate_shift_curves(curves, bumps.rate_abs, contract.maturity_t));
-  ATX_TRY(pv.r_up, bumped_pv(surface, cs_r, contract, cfg, 0.0, 0.0));
   if (can_roll) {
     ATX_TRY(pv.t_dn, bumped_pv(surface, curves, rolled, cfg, 0.0, 0.0));
 
@@ -1917,7 +1922,26 @@ Result<DerivGreeks> deriv_greeks(const SurfaceT& surface, const CurveSet& curves
   // when DerivGreekBumps::carry_theta is false.
   g.theta_carry = (p.t_dn_carry - p.c) / bumps.time_years;
   g.theta_zero_fixing = (p.t_dn_zero_fixing - p.c) / bumps.time_years;
-  g.rho = (p.r_up - p.c) / bumps.rate_abs;
+  // Task P-2 / GK-C3: rho is EXACTLY -T*PV here too, not just on the
+  // fully-aged branch above -- every non-fully-aged quote this file builds is
+  // `pv = df(r) * X` with X (the fair-strike/expectation/cap-option blend)
+  // provably independent of the rate curve (the strip integrand's own df
+  // cancels, Carr-Lee's ATMF formula never reads curves.yield, and the
+  // Diffusion1OverN carry differential comes off the forward/spot, not the
+  // yield curve -- see Rho.AnalyticMatchesFD, deriv_greeks_test.cpp, which
+  // pins this against the FD bump this replaced across every DerivKind and
+  // aging state). No T-clamp is needed the way the fully-aged branch clamps
+  // T >= 0 (PV-9): every dispatch path that can reach a successful `center`
+  // here already required T > 0 to price at all, so `contract.maturity_t` is
+  // guaranteed positive whenever this line runs. Replaces a one-sided FD r+
+  // bump (a full extra repricing -- a second strip integration, or for
+  // VolSwap a second Carr-Lee straddle plus its own diagnostic strip) that
+  // only ever recovered this same identity, to FD precision, never anything
+  // else: forward-channel rate risk is deliberately NOT in rho (the bump
+  // mechanics doc above `deriv_greeks` holds the forward curve fixed under a
+  // rate shift), so there is no additional rate sensitivity this closed form
+  // could be missing.
+  g.rho = -contract.maturity_t * center.pv;
   // charm = d(delta)/dt on the SAME calendar-time convention as theta above:
   // one day of calendar time is one day of maturity gone.
   const double delta_rolled = (p.t_s_up - p.t_s_dn) / (2.0 * ds);
@@ -2455,14 +2479,6 @@ Result<DerivGreeks> deriv_greeks_on_ref(const SurfaceRef& ref, const DerivContra
   // bumped evaluation reuses it, so a stencil never differences two
   // differently-derived carries. It is told the roll up front so it can carry a
   // forward pillar at the rolled tenor too -- see `carry_from_ref`.
-  //
-  // NOTE for a future cross rate x time stencil: `rate_shift_curves` rebuilds
-  // the yield curve from the FORWARD pillars' tenors plus the contract's own, so
-  // it inherits this curve's rolled pillar and stays flat in rate. When there is
-  // no roll (T <= dt) it rebuilds a single pillar -- a flat-DISCOUNT curve -- which
-  // is harmless today because the rate bump prices the UNROLLED T only. A stencil
-  // that ever reprices at both r + dr and T - dt must re-establish the second
-  // pillar there.
   ATX_TRY(const CurveSet curves, carry_from_ref(ref, contract.maturity_t, bumps.time_years));
   const SurfaceRefStripView view{&ref, &curves, contract.maturity_t, surface_certified_wing_band};
   return deriv_greeks(view, curves, contract, cfg, bumps);

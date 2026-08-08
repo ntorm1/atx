@@ -135,8 +135,14 @@ Result<SwapLot> solve_cycle_swap(const SurfaceRef &surface, const CycleSwapReque
   // below -- `carry_theta`'s default-true cost (~3 extra strip-equivalent
   // evaluations, ~+21%) buys two fields (theta_carry/theta_zero_fixing) this
   // site never touches, on a per-cycle-open path.
+  //
+  // Task P-2 / GK-P3: `second_order` gates ONLY vanna/charm (6 extra
+  // repricings: 4 spot x vol crosses + 2 rolled spot bumps), neither of which
+  // this site reads either -- vega rides the same first-order stencil either
+  // way, so second_order buys nothing here.
   DerivGreekBumps entry_bumps{};
   entry_bumps.carry_theta = false;
+  entry_bumps.second_order = false;
   const Result<DerivGreeks> greeks =
       detail::deriv_greeks_on_ref(surface, swap_contract_for_lot(lot, lot.start_ts_ns, rv),
                                   req.deriv_cfg, entry_bumps, surface_certified_wing_band);
@@ -274,8 +280,14 @@ void SwapSignalProbe::append_swap_greek_signals(
       // theta/rho below, never theta_carry/theta_zero_fixing -- carry_theta's
       // default-true cost (~+21%) buys nothing here, on a per-step x per-lot
       // loop.
+      //
+      // Task P-2 / GK-P3: same reasoning for `second_order` -- this probe
+      // never reads vanna/charm (the only two fields it gates), so the 6
+      // extra spot x vol cross / rolled-spot repricings it pays for by
+      // default buy nothing on this per-step x per-lot loop either.
       DerivGreekBumps probe_bumps{};
       probe_bumps.carry_theta = false;
+      probe_bumps.second_order = false;
       const Result<DerivGreeks> greeks = detail::deriv_greeks_on_ref(
           surface, swap_contract_for_lot(lot, base.ts_ns(), mirror->rv), kEngineSwapMarkCfg,
           probe_bumps, certified_wing_band_for(base, lot.uid));
