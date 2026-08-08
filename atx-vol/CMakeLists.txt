@@ -134,6 +134,8 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/swap_leg.cpp
     # THEO-1: OHLC realized-vol estimator suite (Tier-B, not on the umbrella)
     src/realized_vol.cpp
+    # THEO-3: breakeven-vol root-find, layered over bev_replay_pnl (backtest.cpp)
+    src/breakeven.cpp
 )
 add_library(atx::vol ALIAS atx-vol)
 

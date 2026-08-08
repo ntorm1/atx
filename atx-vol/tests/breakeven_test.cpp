@@ -160,5 +160,35 @@ TEST(Breakeven, GoldenPathPnlIsPinned) {
   EXPECT_DOUBLE_EQ(r->pnl, 1.3832639438393373);
 }
 
+// ---- THEO-3: solve_breakeven_vol (bisection root-find over bev_replay_pnl) ----
+
+TEST(Breakeven, SolveRecoversTrueVolOnGbmWithinNoiseBand) {
+  // sigma_be estimates gamma-weighted realized vol; across seeds it centers on 0.25.
+  double sum = 0.0;
+  for (std::uint32_t seed = 0; seed < 20; ++seed) {
+    const auto p = synth_gbm_path(0.25, 126, 500u + seed);
+    const auto lab = solve_breakeven_vol(p, atm_call_expiring_at(p), {}, {});
+    ASSERT_TRUE(lab.has_value());
+    ASSERT_EQ(lab->flag, BevFlag::Ok);
+    sum += lab->sigma_be;
+  }
+  EXPECT_NEAR(sum / 20.0, 0.25, 0.02);
+}
+
+TEST(Breakeven, SolveResidualIsWithinVegaScaledTolerance) {
+  const auto p = synth_gbm_path(0.30, 126, 900u);
+  const auto lab = solve_breakeven_vol(p, atm_call_expiring_at(p), {}, {});
+  ASSERT_TRUE(lab.has_value());
+  EXPECT_LT(std::abs(lab->pnl_residual), lab->vega_at_be * 2e-4 + 1e-8);
+}
+
+TEST(Breakeven, FarOtmWingReturnsNoBracketNotError) {
+  const auto p = synth_gbm_path(0.10, 21, 8u);
+  BevSpec spec{p.front().s * 3.0, p.back().ts_ns, Side::Call}; // absurd wing
+  const auto lab = solve_breakeven_vol(p, spec, {}, {});
+  ASSERT_TRUE(lab.has_value());
+  EXPECT_EQ(lab->flag, BevFlag::NoBracket);
+}
+
 } // namespace
 } // namespace atx::vol

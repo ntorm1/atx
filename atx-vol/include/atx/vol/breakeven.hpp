@@ -131,4 +131,92 @@ struct BevReplayResult {
                                                      std::span<const DividendEvent> dividends,
                                                      const BevReplayConfig &cfg = {});
 
+// THEO-3: breakeven-vol root-find. Layers a bounded bisection over
+// `bev_replay_pnl`; the replay itself is untouched by anything below.
+
+// Root-find knobs for `solve_breakeven_vol`. DESIGNATED INITIALIZERS ONLY,
+// same construction contract as `BevReplayConfig` above: construct as
+// `BevSolveConfig{.sigma_tol = 1e-5}`, never positionally.
+// `aggregate_arity_is_v` below pins the field count at FOUR.
+struct BevSolveConfig {
+  BevReplayConfig replay{}; // forwarded verbatim to every bev_replay_pnl call
+  double sigma_lo{0.01};    // lower bracket bound; must be > 0
+  double sigma_hi{3.00};    // upper bracket bound; must be > sigma_lo
+  double sigma_tol{1e-4};   // bisection stops once the bracket width is below this
+};
+
+// Drift pin: BevSolveConfig has exactly FOUR fields (see BevReplayConfig's
+// pin above for the rationale).
+static_assert(detail::aggregate_arity_is_v<BevSolveConfig, 4>,
+              "BevSolveConfig field count changed: update this pin, and confirm "
+              "every construction site still uses designated initializers.");
+
+// Outcome flags for `solve_breakeven_vol`. `NoBracket` is DATA, not an error:
+// PnL(sigma) can fail to change sign across [sigma_lo, sigma_hi] for a
+// legitimately ill-conditioned wing (e.g. a far-OTM strike whose premium
+// never crosses the realized payoff inside the bracket), and the batch layer
+// that consumes labels filters on this flag rather than treating it as a
+// solver defect.
+enum class BevFlag : std::uint8_t {
+  Ok = 0,             // bisection converged within sigma_tol
+  NoBracket = 1,      // pnl(sigma_lo)/pnl(sigma_hi) did not bracket a root
+  ExercisedEarly = 2, // converged, and the converged replay exercised early
+  MaxIter = 3,        // hit kBevMaxSolveIter without meeting sigma_tol
+};
+
+// One breakeven-vol solve outcome.
+struct BevLabel {
+  double sigma_be{0.0};      // converged (or best-estimate) breakeven vol
+  double premium_at_be{0.0}; // entry premium of the converged/best-estimate replay
+  double vega_at_be{0.0};    // entry vega of the converged/best-estimate replay
+  double pnl_residual{0.0};  // replay PnL at sigma_be
+  std::uint16_t n_days{0};   // sessions replayed at sigma_be
+  std::uint8_t iters{0};     // bev_replay_pnl evaluations this solve spent
+  BevFlag flag{BevFlag::Ok};
+};
+
+// Bisection root-find for the breakeven vol: the constant sigma at which
+// `bev_replay_pnl`'s hedged P&L is zero. Relies on Task 2's proven
+// monotone-decreasing-in-sigma property (`PnlIsMonotoneDecreasingInEntrySigma`)
+// rather than re-deriving it.
+//
+// Algorithm: evaluate PnL at `cfg.sigma_lo` and `cfg.sigma_hi`. Given the
+// monotone-decreasing assumption, a genuine bracket needs a STRICT sign
+// change, `pnl(sigma_lo) > 0 > pnl(sigma_hi)`. A boundary PnL of exactly 0.0
+// does not count as an already-resolved root: for a far-enough-OTM wing at
+// `sigma_lo`, the American price/delta can underflow to exactly 0.0, so the
+// replay never trades and the resulting 0.0 carries no real vega/gradient
+// information. Anything failing the strict bracket is wing ill-conditioning,
+// not a solver failure — this returns `Ok(label)` with
+// `flag = BevFlag::NoBracket` and the closer-to-zero bracket endpoint as the
+// best estimate. Otherwise, standard bisection narrows [sigma_lo, sigma_hi]
+// until the bracket width drops below `cfg.sigma_tol`, bounded by
+// `kBevMaxSolveIter` (JPL Rule 2, see breakeven.cpp) bisection steps. Each
+// step is exactly one more `bev_replay_pnl` evaluation, and `BevLabel::iters`
+// counts every evaluation the call makes (the two bracket evals plus one per
+// bisection step) — a directly-auditable definition of "how much work did
+// this solve cost". If the cap is hit before `sigma_tol` is met, this
+// returns `Ok(label)` with `flag = BevFlag::MaxIter` and the narrowest
+// estimate reached. On convergence, `flag` is `BevFlag::ExercisedEarly` if
+// the converged replay exercised early, else `BevFlag::Ok`; `premium_at_be`,
+// `vega_at_be`, `pnl_residual`, and `n_days` all come from that same
+// converged (or best-estimate, for NoBracket/MaxIter) replay call.
+//
+// Validates only its own inputs (`sigma_lo < sigma_hi`, both > 0, and
+// `sigma_tol > 0`) and returns `Err(InvalidArgument)` on violation;
+// `path`/`spec` validation is delegated to `bev_replay_pnl`, whose errors
+// propagate unchanged.
+//
+// @param path       session closes in chronological order; forwarded as-is
+//                    to every `bev_replay_pnl` call (see that function's own
+//                    contract for the path/expiry requirements).
+// @param spec       the option being replayed.
+// @param dividends  discrete cash-dividend events, forwarded unchanged.
+// @param cfg        solve knobs; default-constructed brackets [0.01, 3.00]
+//                    with a 1e-4 sigma tolerance and default replay config.
+[[nodiscard]] Result<BevLabel> solve_breakeven_vol(std::span<const BevDayState> path,
+                                                   const BevSpec &spec,
+                                                   std::span<const DividendEvent> dividends,
+                                                   const BevSolveConfig &cfg = {});
+
 } // namespace atx::vol
