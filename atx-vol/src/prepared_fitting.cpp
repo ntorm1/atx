@@ -596,6 +596,37 @@ Result<PreparedSlice> PreparedSliceBuilder::prepare_legacy(const Chain &chain,
 
 } // namespace detail
 
+SliceKCoverage slice_k_coverage(std::span<const FitObs> rows) {
+  SliceKCoverage out{};
+  std::vector<double> ks;
+  ks.reserve(rows.size());
+  for (const FitObs &o : rows) {
+    if (std::isfinite(o.k)) {
+      ks.push_back(o.k);
+    }
+  }
+  if (ks.empty()) {
+    return out; // inadmissible: nothing straddles, nothing covered
+  }
+  std::sort(ks.begin(), ks.end());
+  bool has_left = false;
+  bool has_right = false;
+  for (const double k : ks) {
+    has_left = has_left || (k <= -kCoverageAtmEps);
+    has_right = has_right || (k >= kCoverageAtmEps);
+  }
+  out.straddles_atm = has_left && has_right;
+  for (std::size_t i = 0; i + 1 < ks.size(); ++i) {
+    const double lo = ks[i];
+    const double hi = ks[i + 1];
+    // The hole (lo, hi) is measured only when it overlaps the central band.
+    if (hi > -kCoverageCentralBand && lo < kCoverageCentralBand) {
+      out.max_central_gap = std::max(out.max_central_gap, hi - lo);
+    }
+  }
+  return out;
+}
+
 Result<PreparedSlice> PreparedSlice::create(const Chain &chain, const PreparedSliceInputs &inputs) {
   if (!inputs_valid(chain, inputs)) {
     return Err(ErrorCode::InvalidArgument,

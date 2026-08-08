@@ -52,6 +52,7 @@
 #include <mutex>
 #include <optional>
 #include <span>
+#include <string_view>
 #include <vector>
 
 #include "atx/vol/c8.hpp"           // C8Params
@@ -407,6 +408,17 @@ private:
   // instead of chasing unique_ptrs through the polymorphic slice stack.
   std::vector<double> maturities_; // == slices_.size(), ascending T
 };
+
+// Task 3: the ConvexDense refusal for a calendar-floor breach OUTSIDE the
+// previous slice's data-supported k-range (extrapolation-vs-extrapolation —
+// curve_fit.cpp's tradeable-overlap principle). A SHARED constant so
+// fit_curve_surface can count these refusals (n_slice_calendar_unsupported)
+// without string drift. Soft (Unavailable): the board fitter drops the slice
+// and truncates, like any other thin-slice refusal — the earlier slice's
+// data-free wing is refused, never propagated.
+inline constexpr std::string_view kCalendarFloorUnsupportedMsg =
+    "fit_slice_curve: calendar floor breach beyond previous slice's "
+    "data-supported k-range";
 
 // Producer-side override of the ConvexDense shared-k calendar-repair contract.
 // Default (`CurveConfig::convex_repair == nullopt`) keeps the historical fixed

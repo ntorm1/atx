@@ -419,6 +419,19 @@ Result<std::unique_ptr<IVolCurve>> fit_slice_curve(const CurveConfig &cfg,
     }
     const double calendar_tol = repair != nullptr ? repair->tolerance : kCalendarTol;
 
+    // Task 3 / Task 6 (D1): floor and promotion authority is bounded by the
+    // previous slice's data-supported range (+margin) ONLY when the caller arms
+    // it by supplying a finite range. Infinite (the default, and what a caller
+    // that supplies no range gets) restores the pre-Task-3 QP: floor rows at
+    // every lattice node, every scan violation promotable, never refused.
+    // `fit_curve_surface` arms the bound EXCLUSIVELY behind an UNCOVERED
+    // committed prev (Task 1's `slice_k_coverage` predicate) — the seed-ratchet
+    // shape — because out-of-support floor binding is routine and benign
+    // between two coverage-admissible dense slices (measured on 22/35 healthy
+    // 2020-03-19 slices; t3-redesign-investigation.md §3).
+    const double floor_lo = prev_data_k_range.first - kCalendarFloorSupportMargin;
+    const double floor_hi = prev_data_k_range.second + kCalendarFloorSupportMargin;
+
     std::vector<double> required_k(calendar_floor_knots.begin(),
                                    calendar_floor_knots.end());
     if (repair != nullptr && !repair->extra_node_ks.empty()) {
@@ -437,6 +450,7 @@ Result<std::unique_ptr<IVolCurve>> fit_slice_curve(const CurveConfig &cfg,
       ConvexFitContext context;
       context.required_k = std::span<const double>{required_k};
       context.noise_aware_regularization = true;
+      context.floor_support_k = {floor_lo, floor_hi};
       ATX_TRY(ConvexSliceFit fit,
               fit_convex_slice(obs_eu, F, T, df, risk_opts, w_prev, context));
 
@@ -448,13 +462,18 @@ Result<std::unique_ptr<IVolCurve>> fit_slice_curve(const CurveConfig &cfg,
 
       std::vector<double> violations;
       violations.reserve(8);
+      bool unsupported_violation = false;
       const auto scan_k = [&](double k) {
         const double wp = w_prev(k);
         const double wc = fit.iv(k);
         const double w_curr = (std::isfinite(wc) && wc > 0.0) ? wc * wc * T : kNaN;
         if (std::isfinite(wp) && std::isfinite(w_curr) &&
             wp - w_curr > calendar_tol) {
-          violations.push_back(k);
+          if (k < floor_lo || k > floor_hi) {
+            unsupported_violation = true; // extrapolation-vs-extrapolation
+          } else {
+            violations.push_back(k);
+          }
         }
       };
       if (repair == nullptr) {
@@ -475,6 +494,13 @@ Result<std::unique_ptr<IVolCurve>> fit_slice_curve(const CurveConfig &cfg,
                                   static_cast<double>(repair->grid_points - 1u);
           scan_k(repair->k_min + fraction * (repair->k_max - repair->k_min));
         }
+      }
+      if (unsupported_violation) {
+        // Refuse, never ratchet: promoting an out-of-support k would stamp the
+        // previous slice's data-free wing onto this slice (the 2025-04-10
+        // w(+0.15)=0.1208 plateau). Publishing without the floor would break
+        // calendar order on the oracle lattice. Soft-drop => truncation.
+        return Err(ErrorCode::Unavailable, std::string(kCalendarFloorUnsupportedMsg));
       }
       if (violations.empty()) {
         std::unique_ptr<IVolCurve> curve =
@@ -758,6 +784,15 @@ Result<std::unique_ptr<IVolCurve>> refit_slice_curve(
         warm_k.push_back(std::log(K / F));
       }
     }
+    // Task 3 residual (compatibility-only path): no prev_data_k_range is
+    // threaded here — refit_slice_curve's signature has no parameter for it —
+    // so the calendar floor's support band defaults to (-inf, +inf) and the
+    // ratchet containment fit_slice_curve applies on the cold path does NOT
+    // protect this warm refit. Acceptable only because the safe incremental
+    // live-refit facade never routes ConvexDense through here (README.md:278
+    // documents VolaSession::refit_slice as compatibility-only/unsafe). Thread
+    // the previous slice's data-supported k-range through this arm BEFORE ever
+    // exposing ConvexDense via a live-refit facade.
     ATX_TRY(std::unique_ptr<IVolCurve> curve,
             fit_slice_curve(cfg, obs_eu, F, T, df, w_prev, warm_k));
     if (diag != nullptr) {

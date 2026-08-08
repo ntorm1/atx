@@ -608,6 +608,9 @@ Result<ConvexSliceFit> fit_convex_slice(std::span<const FitObs> obs, double F, d
   if (w_prev) {
     for (Eigen::Index j = 0; j < N; ++j) {
       const double k = std::log(un(j) / F);
+      if (k < context.floor_support_k.first || k > context.floor_support_k.second) {
+        continue; // Task 3: no floor authority beyond the prev slice's data
+      }
       const double wp = w_prev(k);
       if (std::isfinite(wp) && wp > 0.0) {
         const double sig = std::sqrt(wp / T);

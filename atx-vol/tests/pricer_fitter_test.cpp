@@ -873,6 +873,58 @@ TEST_F(PricerFitterTest, MarkBidAskFloorRetainsParityScoringByDefault) {
                                             atx::vol::SurfaceAdmissionReason::QualityBelowFloor),
             attempt.evidence.worst_frac_within_bidask <
                 config.admission.min_worst_frac_within_bidask);
+
+  // Final-review I2 — A PUBLISH-FLOOR REFUSAL MUST BE ATTRIBUTABLE IN THE
+  // FAILURE TEXT. The floor verdict folds into `ValidationFailure::InvalidDomain`
+  // (pricer_fitter.cpp's `admission_attempt`) and STAYS folded: that mask is
+  // byte-stream/digest state and does not move. The cost was that a populate
+  // `failed_cell` line printed `mask=2049` for a publish-floor refusal and for a
+  // genuine domain defect alike. Task 2 armed this floor at 0.35 for every
+  // populate fit and the accepted next step is a full-history dry-run whose
+  // entire output is failed-cell lines, so the DETAIL TEXT now names the
+  // admission verdict — diagnostic rendering only; no admission semantics move.
+  //
+  // Populate is a v2 RISK request (surface_db_populate.cpp:519 ->
+  // map_legacy_fit_preset -> {Balanced, Risk}), so the string under test is the
+  // risk pipeline's "risk surface rejected: ..." message — exactly what
+  // `FitSlot::error_message` carries into the build report as `detail=`.
+  //
+  // The fixture board is fit so well that `worst_frac_within_bidask` is 1.0
+  // (probed), so no floor in [0,1] can trip on it as-is. Squeeze every listed
+  // band to a hair around its OWN mid: the mids are untouched, so the fit sees
+  // the same board and builds the same surface, but the band the admission
+  // diagnostic measures against is now far tighter than any real fit residual.
+  // Nothing about the board is malformed — this is precisely the "the fit is
+  // not close enough to publish" shape the Task-2 floor exists to refuse.
+  std::vector<OptionId> squeeze_ids;
+  std::vector<double> squeeze_bids;
+  std::vector<double> squeeze_asks;
+  for (const OptionId id : chain_->ids()) {
+    const auto quote = chain_->at(id);
+    ASSERT_TRUE(quote.has_value()) << quote.error().to_string();
+    const double mid = 0.5 * (quote->bid + quote->ask);
+    squeeze_ids.push_back(id);
+    squeeze_bids.push_back(mid * (1.0 - 1.0e-6));
+    squeeze_asks.push_back(mid * (1.0 + 1.0e-6));
+  }
+  ASSERT_FALSE(squeeze_ids.empty());
+  ASSERT_TRUE(chain_->update_quotes(squeeze_ids, squeeze_bids, squeeze_asks).has_value());
+
+  PricerConfig floored;
+  floored.quality_mode = atx::vol::FitQualityMode::Balanced;
+  floored.outputs = atx::vol::SurfaceOutputs::Risk;
+  floored.admission.min_worst_frac_within_bidask = 0.35; // kPopulateMinWorstFracInBand
+  PricerFitter floored_fitter{floored};
+  const auto refused = floored_fitter.fit(*chain_);
+  ASSERT_FALSE(refused.has_value()) << "a board no fit can hold to 1e-6 must fail the floor";
+  const std::string detail = refused.error().message();
+  EXPECT_NE(detail.find("risk surface rejected"), std::string::npos) << detail;
+  EXPECT_NE(detail.find("QualityBelowFloor"), std::string::npos)
+      << "a publish-floor refusal must be greppable apart from a domain defect: " << detail;
+  // The complete failed set is what makes that grep sound: on THIS board the
+  // primary reason is InsufficientQuoteCoverage (the squeeze costs served
+  // breadth too), so an `admission=` term alone would have hidden the floor.
+  EXPECT_NE(detail.find("admission_failed="), std::string::npos) << detail;
 }
 
 TEST_F(PricerFitterTest, V2MarkBidAskFloorRetainsParityScoringByDefault) {

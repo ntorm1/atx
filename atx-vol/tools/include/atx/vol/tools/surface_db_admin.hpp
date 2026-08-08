@@ -148,6 +148,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -828,5 +829,108 @@ struct TenorAuditReport {
 // somewhere to put an error without changing the signature.
 [[nodiscard]] Result<TenorAuditReport> tenor_audit(const SurfaceDb &db,
                                                     const TenorAuditSpec &spec = {});
+
+// ── band_audit — full-chain quote-fidelity inspector ─────────────────────────
+// AFTER-THE-FACT counterpart of the fit's own parity diagnostics, measured
+// against the FULL LISTED CHAIN instead of the fit's admitted rows: for each
+// (date, symbol) cell, load the stored surface AND the OPRA hive chain at the
+// build snapshot, reprice every two-sided listed quote through
+// PricedSurface::fair_value, and report per-expiry band statistics. This is
+// the detector for the 2020-03-18 / 2025-04-10 defect class (model above the
+// ask of the whole listed belly/wing) and the before/after instrument for the
+// fix validation. AN AUDIT, NOT A GATE (same stance as tenor_audit): every
+// row prints; the exit-code opt-in lives on the CLI.
+//
+// Fix round 1 (review Important 1): "the build snapshot" above is the
+// ARCHIVED SURFACE's OWN stored valuation instant
+// (`PricedSurface::pricing().now_ts_ns`), not a hardcoded UTC hour. A hive is
+// ET-anchored (the production orchestrator's `--snap-et` pull), so the same
+// wall-clock pre-close minute lands at two different UTC hours depending on
+// DST; deriving the hive snapshot from the surface itself is DST-proof by
+// construction instead of assuming EDT year-round. A surface with no usable
+// stored timestamp falls back to a DST-aware RECONSTRUCTED suffix and says so
+// via `BandAuditReport::snapshot_fallback_notes`.
+
+struct BandAuditRow {
+  std::string date{};
+  std::string symbol{};
+  double T{0.0};                           // expiry year-fraction at the snapshot
+  std::size_t n{0};                        // scored quotes (two-sided, finite model)
+  double frac_in_band{0.0};                // bid <= model <= ask
+  double frac_above_ask{0.0};              // model > ask (the spike signature)
+  double avg_signed_err_half_spreads{0.0}; // mean (model - mid) / half-spread
+  double max_abs_err_half_spreads{0.0};    // max |model - mid| / half-spread
+  bool flagged{false};                     // n > 0 && frac_in_band < floor
+};
+
+struct BandAuditSpec {
+  std::vector<std::string> symbols{};      // empty = every manifest symbol
+  std::string hive_root{};                 // REQUIRED: OPRA hive v2 root
+  std::string date_lo{};                   // empty = first partition key
+  std::string date_hi{};                   // empty = last partition key
+  std::string snapshot_suffix{"T19:55:00Z"};
+  double r{0.0};                           // flat fallback rate for the chain env
+  double min_frac_in_band{0.30};           // per-expiry flag floor
+  std::size_t max_skip_notes{kSurfaceDbVerifyMaxFailures};
+};
+
+struct BandAuditReport {
+  // Date-major (the hive loads one file per date), symbol-major within a
+  // date, ascending T within a cell.
+  std::vector<BandAuditRow> rows{};
+  std::size_t n_flagged{0};
+  std::vector<std::string> skip_notes{};   // capped like TenorAuditReport
+  std::size_t n_skip_notes_elided{0};
+  // Fix round 1 (review Important 1): one note per (date, symbol) cell whose
+  // archived surface carried no usable stored valuation timestamp
+  // (`PricedSurface::pricing().now_ts_ns`), so the hive reprice fell back to a
+  // DST-aware RECONSTRUCTED snapshot suffix instead of the surface's own
+  // exact instant. Never fatal — the cell is still scored under `rows` — but
+  // worth surfacing (the observability constraint the fallback exists under):
+  // a fallback-scored row is only as precise as the DST rule's calendar-day
+  // granularity, not the surface's bit-exact fit instant. Capped the same way
+  // as `skip_notes`, on its own budget.
+  std::vector<std::string> snapshot_fallback_notes{};
+  std::size_t n_snapshot_fallback_notes_elided{0};
+  // Final-review I1: HOW MUCH THIS AUDIT ACTUALLY MEASURED. Without these an
+  // audit that measured NOTHING is byte-for-byte a clean one — `rows` empty and
+  // `n_flagged == 0` — which is what let the CLI's `--fail-on-flagged` gate exit
+  // 0 while auditing nothing (hive root moved/renamed, a date window matching no
+  // partition, or every model price non-finite). `score_expiry_band` never flags
+  // a row that scored nothing (`row.n == 0` early return) and a cell that failed
+  // to load contributes no row at all, so `n_flagged` alone cannot see the
+  // difference. This is the same silent-empty class as the pre-fix EST-season
+  // snapshot bug above, one layer out.
+  //
+  // `n_dates_requested` — partition keys the [date_lo, date_hi] window selected
+  // (0 means the window itself matched nothing). `n_scored_expiries` — rows that
+  // measured at least one quote (`row.n > 0`); rows are still emitted for
+  // expiries that scored nothing, so this is NOT `rows.size()`.
+  std::size_t n_dates_requested{0};
+  std::size_t n_scored_expiries{0};
+  // The audit covered nothing: no expiry anywhere in the requested window
+  // measured a single quote. THE COUNTING POINT IS THE WHOLE AUDIT, deliberately
+  // — a partially-empty audit (some dates scored, some skipped) is a normal
+  // audit and must keep answering by the flagged/clean rule, or a single
+  // unreadable date would turn every gated run into a hard failure. Only the
+  // fully-empty audit is "this gate measured nothing".
+  [[nodiscard]] bool scored_nothing() const noexcept { return n_scored_expiries == 0u; }
+};
+
+// Pure per-expiry scorer (unit-tested): a quote is scored when bid > 0,
+// ask > bid and model_price is finite; counts via band_violation_stats
+// (fit_metrics.hpp:192-195, which skips the same rows), half-spread stats
+// over the same scored subset. date/symbol/T are left default for the caller.
+[[nodiscard]] BandAuditRow score_expiry_band(std::span<const double> model_price,
+                                             std::span<const double> bid,
+                                             std::span<const double> ask,
+                                             double min_frac_in_band);
+
+// Err: InvalidArgument for an empty hive_root; NotFound when spec.symbols
+// names an unconfigured symbol (the tenor_audit stance — checked BEFORE any
+// hive IO so a typo fails loud without a hive present). A cell that fails to
+// load (surface or chain) is a skip note, never fatal.
+[[nodiscard]] Result<BandAuditReport> band_audit(const SurfaceDb &db,
+                                                 const BandAuditSpec &spec);
 
 } // namespace atx::vol

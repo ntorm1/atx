@@ -56,6 +56,27 @@
 //                              and at least one row is `TRUNCATED`, in which
 //                              case it exits `3`. This is an AUDIT, not a gate:
 //                              nothing here refuses or quarantines a cell.
+//   band-audit --hive H [--symbol SYM] [--from D] [--to D] [--r X]
+//              [--min-frac X] [--fail-on-flagged]
+//                              AFTER-THE-FACT full-chain quote-fidelity
+//                              inspector (Task 4, stress-day fit-fidelity): for
+//                              each requested (date, symbol) cell, load the
+//                              stored surface AND the OPRA hive chain at the
+//                              build snapshot, reprice every two-sided listed
+//                              quote through `PricedSurface::fair_value`, and
+//                              report per-expiry band statistics — the detector
+//                              for a model priced above the ask of the whole
+//                              listed belly/wing. Prints
+//                              `date  symbol  T  n  frac_in_band  frac_above_ask
+//                              avg_signed_hs  max_abs_hs  flag` (TSV) per
+//                              expiry; `flag` is `BELOWFLOOR` or empty. Always
+//                              exits `0` UNLESS `--fail-on-flagged` is given and
+//                              EITHER at least one row is `BELOWFLOOR` (exit
+//                              `3`) OR the whole audit scored ZERO expiries
+//                              (exit `6` — it measured nothing; see code 6
+//                              below). `--hive` is REQUIRED. This is an AUDIT,
+//                              not a gate: nothing here refuses or quarantines
+//                              a cell.
 //
 // ── WRITE PATH ───────────────────────────────────────────────────────────────
 //
@@ -104,21 +125,35 @@
 //      which `disable`'s `--yes` is one), a flag left WITHOUT a value, or a
 //      malformed numeric value. Every one of these is decided before the database
 //      is opened, so no usage error can ever have written anything.
-//   3  `tenor-audit` only, and only when `--fail-on-truncated` was passed AND
-//      at least one row came back `TRUNCATED`. Every OTHER subcommand skips 3
-//      deliberately (see below) because it is atx-vol-surface-db-build's
-//      total-failure code and the two tools otherwise share one exit
-//      vocabulary — `tenor-audit` is the one designed exception, pinned to the
-//      literal value this task's spec named; a script that already branches on
-//      "3 means atx-vol-surface-db-build found nothing" must special-case
-//      `tenor-audit` if it also calls this subcommand with the flag.
+//   3  THE TWO AUDITS only: `tenor-audit --fail-on-truncated` with at least one
+//      `TRUNCATED` row, or `band-audit --fail-on-flagged` with at least one
+//      `BELOWFLOOR` row. Every OTHER subcommand skips 3 deliberately (see below)
+//      because it is atx-vol-surface-db-build's total-failure code and the two
+//      tools otherwise share one exit vocabulary — the audits are the designed
+//      exception, pinned to the literal value their specs named; a script that
+//      already branches on "3 means atx-vol-surface-db-build found nothing" must
+//      special-case them if it also calls them with their flags.
 //   4  `verify` only, and only when the operator asked for it: more cells are
 //      ABSENT than the `--max-absent N` ceiling allows. Nothing is corrupt — this
 //      is a COVERAGE answer, kept off code 1 so a script can tell "the database
 //      is missing more than I said to expect" from "the database is damaged".
-//      3 is otherwise skipped by every subcommand but `tenor-audit` above: it
+//      3 is otherwise skipped by every subcommand but the two audits above: it
 //      is atx-vol-surface-db-build's total-failure code and the two tools
 //      share one exit vocabulary.
+//   6  `band-audit` only, and only under `--fail-on-flagged`: the audit scored
+//      ZERO expiries — it measured NOTHING (final-review I1). Distinct from 3 on
+//      purpose. 3 is an ANSWER about the database ("these rows are below the
+//      floor"); 6 says there is no answer at all, and the operator's next action
+//      is to fix the invocation or the inputs (moved `--hive`, a `--from/--to`
+//      window matching no partition, a `--symbol` whose cells all failed to
+//      load) rather than to look at surfaces. It cannot shadow a real verdict:
+//      an audit with any flagged row necessarily scored something and has
+//      already exited 3 above. It is NOT 4 — `verify` owns 4 in this same
+//      binary — and not 5, which is the build CLI's coverage-regression refusal;
+//      see atx/vol/tools/surface_db_exit_codes.hpp, which now `static_assert`s
+//      all of that. WITHOUT `--fail-on-flagged` the same emptiness prints the
+//      same loud stderr warning and exits 0: an audit does not fail, and
+//      inspecting an empty window by hand is legitimate.
 //
 // ── ABSENCE, and why it is not a failure (FIX-H) ─────────────────────────────
 //
@@ -206,9 +241,17 @@ void print_usage(std::FILE *out) {
       "  tenor-audit [--symbol SYM] [--fail-on-truncated]\n"
       "                                flag cells whose fitted max_T falls short of\n"
       "                                neighboring dates' (default: every symbol)\n"
+      "  band-audit --hive HIVE_ROOT [--symbol SYM] [--from D] [--to D] [--r X]\n"
+      "             [--min-frac X] [--fail-on-flagged]\n"
+      "                                reprice the full listed chain against the\n"
+      "                                stored surface; flag expiries whose in-band\n"
+      "                                fraction falls below --min-frac (default 0.30)\n"
       "exit: 0 ok / 1 runtime failure or verify found failing cells / 2 usage /\n"
-      "      3 tenor-audit --fail-on-truncated found a TRUNCATED row /\n"
-      "      4 verify found more absent cells than --max-absent allows\n");
+      "      3 tenor-audit --fail-on-truncated found a TRUNCATED row, or\n"
+      "        band-audit --fail-on-flagged found a BELOWFLOOR row /\n"
+      "      4 verify found more absent cells than --max-absent allows /\n"
+      "      6 band-audit --fail-on-flagged scored ZERO expiries (it measured\n"
+      "        nothing; without the flag this warns loudly and exits 0)\n");
 }
 
 // Parse a non-negative count from a flag value, consuming the WHOLE token.
@@ -266,6 +309,29 @@ void print_usage(std::FILE *out) {
   }
   if (!std::isfinite(v) || v <= 0.0) {
     return false;
+  }
+  out = v;
+  return true;
+}
+
+// Parse a FINITE double from a flag value, consuming the whole token — the
+// same discipline as `parse_positive_double` one door over, but for a value
+// that is legitimately 0 or negative (band-audit's `--r`, a carry rate).
+// Mirrors atx-vol-surface-db-build's `parse_finite_double`: a bare `strtod`
+// silently coerces a typo to 0.0, which for a rate is not "no floor at all"
+// (parse_count's failure mode) but a WRONG, PLAUSIBLE-LOOKING rate that
+// changes every repriced quote without any usage error to say so.
+[[nodiscard]] bool parse_finite_double(std::string_view text, double &out) {
+  if (text.empty()) {
+    return false;
+  }
+  const std::string s(text);
+  const char *first = s.c_str();
+  char *end = nullptr;
+  errno = 0;
+  const double v = std::strtod(first, &end);
+  if (end != first + s.size() || errno == ERANGE || !std::isfinite(v)) {
+    return false; // trailing junk, out of range, or nan/inf
   }
   out = v;
   return true;
@@ -852,6 +918,97 @@ int run_tenor_audit(const SurfaceDb &db, const std::string &symbol, bool fail_on
   return 0;
 }
 
+// Task 4 (stress-day fit-fidelity). An AUDIT, not a gate: every row prints
+// regardless of its flag, and the default exit is 0 whatever it finds — same
+// stance as run_tenor_audit above, and the same deliberate reuse of exit 3 via
+// `--fail-on-flagged`.
+int run_band_audit(const SurfaceDb &db, const std::string &symbol, const std::string &hive_root,
+                   const std::string &from, const std::string &to, double r, double min_frac,
+                   bool fail_on_flagged) {
+  BandAuditSpec spec;
+  if (!symbol.empty()) {
+    spec.symbols.push_back(symbol);
+  }
+  spec.hive_root = hive_root;
+  spec.date_lo = from;
+  spec.date_hi = to;
+  spec.r = r;
+  spec.min_frac_in_band = min_frac;
+  const Result<BandAuditReport> rep = band_audit(db, spec);
+  if (!rep) {
+    std::fprintf(stderr, "atx-vol-surface-db: band_audit: %s\n", rep.error().to_string().c_str());
+    return 1;
+  }
+  for (const std::string &note : rep->skip_notes) {
+    std::fprintf(stderr, "atx-vol-surface-db: band-audit: skipped %s\n", note.c_str());
+  }
+  if (rep->n_skip_notes_elided > 0) {
+    std::fprintf(stderr, "atx-vol-surface-db: band-audit: %zu additional skip note(s) elided.\n",
+                 rep->n_skip_notes_elided);
+  }
+  // Fix round 1 (review Important 1's observability constraint): a cell whose
+  // surface carried no usable stored valuation timestamp fell back to a
+  // DST-aware reconstructed snapshot suffix instead of the surface's own
+  // exact instant. Never fatal (the cell is still scored above), but distinct
+  // from `skip_notes` — nothing here failed to load — so it gets its own,
+  // equally capped, stderr channel.
+  for (const std::string &note : rep->snapshot_fallback_notes) {
+    std::fprintf(stderr, "atx-vol-surface-db: band-audit: snapshot fallback: %s\n", note.c_str());
+  }
+  if (rep->n_snapshot_fallback_notes_elided > 0) {
+    std::fprintf(stderr,
+                 "atx-vol-surface-db: band-audit: %zu additional snapshot-fallback note(s) "
+                 "elided.\n",
+                 rep->n_snapshot_fallback_notes_elided);
+  }
+  std::printf("date\tsymbol\tT\tn\tfrac_in_band\tfrac_above_ask\tavg_signed_hs\tmax_abs_hs\tflag\n");
+  for (const BandAuditRow &row : rep->rows) {
+    std::printf("%s\t%s\t%.6f\t%zu\t%.4f\t%.4f\t%.3f\t%.3f\t%s\n", row.date.c_str(),
+                row.symbol.c_str(), row.T, row.n, row.frac_in_band, row.frac_above_ask,
+                row.avg_signed_err_half_spreads, row.max_abs_err_half_spreads,
+                row.flagged ? "BELOWFLOOR" : "");
+  }
+  if (fail_on_flagged && rep->n_flagged > 0) {
+    std::fprintf(stderr,
+                 "atx-vol-surface-db: band-audit: %zu row(s) BELOWFLOOR; failing per "
+                 "--fail-on-flagged.\n",
+                 rep->n_flagged);
+    return 3; // the tenor-audit precedent: the one deliberate reuse of 3
+  }
+  // FINAL-REVIEW I1 — the fail-open leg. Everything above decides on
+  // `n_flagged`, and an audit that measured NOTHING cannot produce a flagged row
+  // (`score_expiry_band` returns early on `row.n == 0` without ever setting
+  // `flagged`; a cell that failed to load contributes no row at all). So a gate
+  // pointed at a moved hive root, a `--from/--to` window matching no partition,
+  // or a surface family that went wholly non-finite exited 0 — CI green over an
+  // audit of nothing, the exact class that already bit once as the EST-season
+  // silent-empty. The counting point is the WHOLE audit (surface_db_admin.hpp):
+  // a partially-empty run has scored expiries and has already answered above by
+  // the flagged/clean rule, so only the fully-empty audit reaches here.
+  //
+  // The warning is UNCONDITIONAL — an operator inspecting an empty window
+  // interactively needs to be told just as much as a script does — but only
+  // `--fail-on-flagged` turns it into a non-zero status, because without the
+  // flag this subcommand is an audit and audits do not fail.
+  if (rep->scored_nothing()) {
+    std::fprintf(stderr,
+                 "atx-vol-surface-db: band-audit: AUDITED NOTHING — 0 scored expiries across "
+                 "%zu requested date(s) (%zu row(s) emitted, %zu skip note(s)). Check --hive, "
+                 "--from/--to and --symbol: no quote was measured, so a --fail-on-flagged "
+                 "verdict over this run would mean nothing.\n",
+                 rep->n_dates_requested, rep->rows.size(),
+                 rep->skip_notes.size() + rep->n_skip_notes_elided);
+    if (fail_on_flagged) {
+      std::fprintf(stderr,
+                   "atx-vol-surface-db: band-audit: failing per --fail-on-flagged (exit %d): the "
+                   "gate measured nothing.\n",
+                   kSurfaceDbBandAuditExitScoredNothing);
+      return kSurfaceDbBandAuditExitScoredNothing;
+    }
+  }
+  return 0;
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -880,6 +1037,10 @@ int main(int argc, char **argv) {
   AbsentCeiling max_absent;
   bool confirmed = false; // --yes; required by `disable` and by nothing else
   bool fail_on_truncated = false; // tenor-audit only
+  std::string hive_root;          // band-audit only; REQUIRED for that subcommand
+  double band_r = 0.0;             // band-audit only; --r, flat fallback carry rate
+  double band_min_frac = 0.30;     // band-audit only; --min-frac, per-expiry flag floor
+  bool fail_on_flagged = false;    // band-audit only
 
   for (int i = 2; i < argc; ++i) {
     const std::string_view a = argv[i];
@@ -935,6 +1096,27 @@ int main(int argc, char **argv) {
       confirmed = true;
     } else if (a == "--fail-on-truncated") {
       fail_on_truncated = true;
+    } else if (a == "--hive") {
+      hive_root = nv();
+    } else if (a == "--r") {
+      const std::string_view text = nv();
+      if (!missing_value && !parse_finite_double(text, band_r)) {
+        std::fprintf(stderr, "atx-vol-surface-db: --r expects a finite number, got '%.*s'\n",
+                     static_cast<int>(text.size()), text.data());
+        print_usage(stderr);
+        return 2;
+      }
+    } else if (a == "--min-frac") {
+      const std::string_view text = nv();
+      if (!missing_value && !parse_positive_double(text, band_min_frac)) {
+        std::fprintf(stderr,
+                     "atx-vol-surface-db: --min-frac expects a finite number > 0, got '%.*s'\n",
+                     static_cast<int>(text.size()), text.data());
+        print_usage(stderr);
+        return 2;
+      }
+    } else if (a == "--fail-on-flagged") {
+      fail_on_flagged = true;
     } else if (a == "--probe-tenor") {
       const std::string_view text = nv();
       if (!missing_value && !parse_positive_double(text, verify_spec.probe_T)) {
@@ -1006,7 +1188,7 @@ int main(int argc, char **argv) {
                                 subcommand == "symbols" || subcommand == "config" ||
                                 subcommand == "query" || subcommand == "verify" ||
                                 subcommand == "enable" || subcommand == "disable" ||
-                                subcommand == "tenor-audit";
+                                subcommand == "tenor-audit" || subcommand == "band-audit";
   if (!known_subcommand) {
     std::fprintf(stderr, "atx-vol-surface-db: unknown subcommand: %s\n", subcommand.c_str());
     print_usage(stderr);
@@ -1032,6 +1214,10 @@ int main(int argc, char **argv) {
   }
   if ((subcommand == "enable" || subcommand == "disable") && symbol.empty()) {
     std::fprintf(stderr, "atx-vol-surface-db: %s requires --symbol <SYM>\n", subcommand.c_str());
+    return 2;
+  }
+  if (subcommand == "band-audit" && hive_root.empty()) {
+    std::fprintf(stderr, "atx-vol-surface-db: band-audit requires --hive <HIVE_ROOT>\n");
     return 2;
   }
   // The confirmation. Checked HERE, with the other usage rules, so a `disable`
@@ -1089,7 +1275,11 @@ int main(int argc, char **argv) {
   if (subcommand == "tenor-audit") {
     return run_tenor_audit(*db, symbol, fail_on_truncated);
   }
-  // `verify` is the last of the nine `known_subcommand` names, so this is the
+  if (subcommand == "band-audit") {
+    return run_band_audit(*db, symbol, hive_root, verify_spec.key_lo, verify_spec.key_hi, band_r,
+                          band_min_frac, fail_on_flagged);
+  }
+  // `verify` is the last of the ten `known_subcommand` names, so this is the
   // end of the dispatch — an unknown name already exited 2 above, before the open.
   return run_verify(*db, verify_spec, min_cells, max_absent);
 }

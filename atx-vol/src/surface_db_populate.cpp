@@ -63,6 +63,8 @@ namespace {
   out.score_parity = cfg.score_parity;
   out.enforce_calendar_floor = cfg.enforce_calendar_floor;
   out.use_deam_cache_for_fit = cfg.use_deam_cache_for_fit;
+  // Task 2: arm the quote-fidelity publish floor (see populate_admission_policy).
+  out.admission = populate_admission_policy();
   return out;
 }
 
@@ -588,6 +590,9 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
       // coarser. It is accepted, not hidden: the reclaim's real yield is the drain
       // tail — every board whose build request lands after the queue has emptied —
       // not the LPT head. Do not read the gate below as a claim about the head.
+      // NOTE (Task 2): this nullptr is the CORPUS quarantine layer, not the
+      // publish gate. The quote-fidelity publication floor rides on
+      // pc.admission (populate_admission_policy via pricer_config_for_symbol).
       slots[pos] = fit_board(board, pc, /*admission=*/nullptr,
                              [&resolved, &board, &offer_inner_fit_workers](SessionInputs &in) {
                                apply_symbol_config(resolved, in);
@@ -1343,6 +1348,12 @@ Status write_populate_stats_csv(const SurfaceDbPopulateStats &s, const MetaKv &m
     body += '\n';
   }
   return write_meta_body(full_meta, body, path, "write_populate_stats_csv");
+}
+
+FitAdmissionPolicy populate_admission_policy() noexcept {
+  FitAdmissionPolicy policy; // WP12 Mark-serving defaults (fit_policy.hpp:119)
+  policy.min_worst_frac_within_bidask = kPopulateMinWorstFracInBand;
+  return policy;
 }
 
 Result<UniversePopulateCoverage>

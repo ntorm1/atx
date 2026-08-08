@@ -84,6 +84,7 @@ enum class SlicePrepOutcome : std::uint8_t {
   Prepared,             // the primary policy produced a fittable slice
   PreparedLegacyRescue, // recovered via the opt-in Legacy-prep rescue
   Starved,              // below the usable-row floor even after any rescue (thin)
+  Uncovered,            // admitted rows fail the k-coverage criterion (Task 1)
   CarryFailed,          // carry / forward resolution failed
   Failed,               // HARD preparation error (defect) — error retained
 };
@@ -281,7 +282,6 @@ struct CarryFallback {
 void prepare_fit_slice_into_slot(const Chain &chain, const SurfaceParityInputs &in,
                                  VolCurveKind kind, bool use_fit_cache, bool time_stages,
                                  std::size_t i, ChainPrepass &slot) {
-  (void)kind;
   const AmericanCorrectionCaches fit_caches =
       use_fit_cache ? in.deam.caches : AmericanCorrectionCaches{};
   PreparedSliceInputs prepare_inputs;
@@ -351,6 +351,19 @@ void prepare_fit_slice_into_slot(const Chain &chain, const SurfaceParityInputs &
     slot.prep_outcome = SlicePrepOutcome::PreparedLegacyRescue;
   } else {
     slot.prep_outcome = SlicePrepOutcome::Prepared;
+  }
+
+  // Task 1 (k-coverage): count alone (kMinPreparedFitRows) waves through
+  // stress-day husks whose belly the absolute spread filters evacuated
+  // (2020-03-18) and one-sided freshly-listed expiries (2025-04-10); the
+  // ConvexDense chord / power tails then serve the missing region
+  // extrapolated. Refuse such slices into the same truthful-drop lane as
+  // Starved. ConvexDense only: every other family's population and admission
+  // are byte-identical.
+  if (kind == VolCurveKind::ConvexDense &&
+      !slice_k_coverage(prepared->fit_observations()).admissible()) {
+    slot.prep_outcome = SlicePrepOutcome::Uncovered;
+    return;
   }
 
   slot.prepared.emplace(std::move(*prepared));
@@ -619,6 +632,9 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
     if (pre.prep_outcome == SlicePrepOutcome::Starved) {
       ++out.n_slices_starved; // W3.3: thin even after any rescue — surfaced, not hidden
     }
+    if (pre.prep_outcome == SlicePrepOutcome::Uncovered) {
+      ++out.n_slices_uncovered; // Task 1: coverage-refused — surfaced, not hidden
+    }
   }
 
   // Phase 2 (SEQUENTIAL): the fit is order-dependent — each fitted slice's w(k)
@@ -634,6 +650,13 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
   std::pair<double, double> last_committed_obs_k{
       -std::numeric_limits<double>::infinity(),
       std::numeric_limits<double>::infinity()};
+  // D1 (Task 6): whether the most recently COMMITTED slice's admitted rows
+  // pass Task 1's k-coverage predicate. A covered prev earns FULL calendar
+  // floor authority (pre-Task-3 QP, floor rows everywhere); the Task 3
+  // band+refusal arms only behind an UNCOVERED prev — a shape Task 1 refuses
+  // at prep, so through this driver the armed branch is defense-in-depth for
+  // prep-bypassing callers, not a live lane.
+  bool last_committed_covered = true;
   for (std::size_t ci = 0; ci < under.chains.size(); ++ci) {
     ChainPrepass &pre = prepass[ci];
     if (!pre.usable) {
@@ -650,6 +673,9 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
         break;
       case SlicePrepOutcome::Starved:
         rep.outcome = ExpiryFitOutcome::PrepStarved;
+        break;
+      case SlicePrepOutcome::Uncovered:
+        rep.outcome = ExpiryFitOutcome::PrepUncovered;
         break;
       case SlicePrepOutcome::Failed:
         rep.outcome = ExpiryFitOutcome::PrepFailed;
@@ -700,6 +726,13 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
       // The SplineVol projection keeps its own, spline-specific range source.
       if (const auto *sp = dynamic_cast<const SplineVolCurve *>(prev); sp != nullptr) {
         prev_data_k_range = sp->data_k_range();
+      }
+      if (cfg.kind == VolCurveKind::ConvexDense && last_committed_covered) {
+        // D1 (Task 6): coverage-admissible prev => unbounded floor authority.
+        // ConvexDense only: prev_data_k_range also feeds the parametric arms'
+        // tradeable_pair_band, whose semantics must not change.
+        prev_data_k_range = {-std::numeric_limits<double>::infinity(),
+                             std::numeric_limits<double>::infinity()};
       }
     }
     // The calendar floor inside fit_convex_slice enforces w_curr >= w_prev at the
@@ -784,11 +817,22 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
         // SOFT code (NotFound / Unavailable — a genuinely thin or butterfly-
         // inadmissible slice) is still dropped, preserving the Mark tolerance.
         const ErrorCode fit_code = slice_res.error().code();
+        const bool calendar_refusal =
+            fit_code == ErrorCode::Unavailable &&
+            slice_res.error().message() == kCalendarFloorUnsupportedMsg;
+        if (calendar_refusal) {
+          ++out.n_slice_calendar_unsupported; // Task 3: refused, not ratcheted
+        }
         ExpiryFitReport rep{};
         rep.chain_index = ci;
         rep.maturity = T;
         rep.n_observations = prepared.fit_observations().size();
-        rep.outcome = ExpiryFitOutcome::FitFailed;
+        // Task 6: a calendar refusal is a DISTINCT, expected outcome — it must
+        // not hide among the anonymous fit failures the drop report lumps
+        // together (the Task 5 observability concern). Every other failure
+        // keeps FitFailed; `error` carries the same code either way.
+        rep.outcome = calendar_refusal ? ExpiryFitOutcome::FitRefusedCalendar
+                                       : ExpiryFitOutcome::FitFailed;
         rep.error = fit_code;
         rep.carry_source = pre.carry_source;
         out.expiry_reports.push_back(rep);
@@ -881,6 +925,10 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
       if (lo <= hi) {
         last_committed_obs_k = {lo, hi};
       }
+      // D1 (Task 6): and whether those rows are coverage-admissible — the
+      // predicate that decides whether the NEXT ConvexDense slice is fitted
+      // with full (pre-Task-3) floor authority or with the Task 3 support band.
+      last_committed_covered = slice_k_coverage(prepared.fit_observations()).admissible();
     }
     out.per_expiry.push_back(parity);
     if (parity.n > 0) {

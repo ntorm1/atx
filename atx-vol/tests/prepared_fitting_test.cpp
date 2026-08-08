@@ -852,3 +852,79 @@ TEST(PreparedFitting, DeamSpreadNoBindKeepsEverything) {
   const std::vector<char> exact = atx::vol::detail::select_deam_spread(moneyness, 5u);
   EXPECT_EQ(count_selected(exact), moneyness.size());
 }
+
+// ── Task 1: k-coverage slice admission (stress-day starvation guard) ─────────
+// Calibrated on the 2026-08 investigation numbers; see the constants' doc in
+// atx/vol/detail/prepared_fitting.hpp.
+
+namespace {
+[[nodiscard]] std::vector<atx::vol::FitObs> rows_at(std::initializer_list<double> ks) {
+  std::vector<atx::vol::FitObs> rows;
+  for (const double k : ks) {
+    atx::vol::FitObs o{};
+    o.k = k;
+    rows.push_back(o);
+  }
+  return rows;
+}
+} // namespace
+
+TEST(SliceKCoverage, RefusesTheCovidBellyHole) {
+  // The nine 2020-03-18 T=1.7496 survivors: straddle ATM, but with a
+  // 0.516-wide hole from k=-0.155 to k=+0.361 crossing the forward.
+  const auto rows = rows_at({-2.052, -0.442, -0.317, -0.260, -0.155,
+                             +0.361, +0.526, +0.563, +0.587});
+  const auto cov = atx::vol::slice_k_coverage(rows);
+  EXPECT_TRUE(cov.straddles_atm);
+  EXPECT_NEAR(cov.max_central_gap, 0.516, 1.0e-9);
+  EXPECT_FALSE(cov.admissible());
+}
+
+TEST(SliceKCoverage, RefusesTheOneSidedSeed) {
+  // The eleven 2025-04-10 exp-2025-04-24 survivors: all puts, k in
+  // [-0.124, -0.069] — nothing right of ATM, so straddle fails whatever the
+  // gaps look like.
+  std::vector<atx::vol::FitObs> rows;
+  for (int i = 0; i < 11; ++i) {
+    atx::vol::FitObs o{};
+    o.k = -0.124 + 0.0055 * static_cast<double>(i);
+    rows.push_back(o);
+  }
+  const auto cov = atx::vol::slice_k_coverage(rows);
+  EXPECT_FALSE(cov.straddles_atm);
+  EXPECT_FALSE(cov.admissible());
+}
+
+TEST(SliceKCoverage, AdmitsAHealthyDenseSlice) {
+  // A healthy thinned belly: k from -0.50 to +0.45 in 0.05 steps — every
+  // central gap is 0.05, an order of magnitude under the 0.40 cap.
+  std::vector<atx::vol::FitObs> rows;
+  for (double k = -0.50; k <= 0.451; k += 0.05) {
+    atx::vol::FitObs o{};
+    o.k = k;
+    rows.push_back(o);
+  }
+  const auto cov = atx::vol::slice_k_coverage(rows);
+  EXPECT_TRUE(cov.straddles_atm);
+  EXPECT_LT(cov.max_central_gap, 0.06);
+  EXPECT_TRUE(cov.admissible());
+}
+
+TEST(SliceKCoverage, WingGapsOutsideTheCentralBandDoNotRefuse) {
+  // Sparse deep wings are normal (the RDP cap thins linear regions): a
+  // 1.0-wide hole entirely outside [-0.30, +0.30] must not trip the gate.
+  const auto rows =
+      rows_at({-1.50, -0.50, -0.25, -0.10, 0.0, 0.10, 0.25, 0.50, 1.50});
+  const auto cov = atx::vol::slice_k_coverage(rows);
+  EXPECT_TRUE(cov.straddles_atm);
+  EXPECT_NEAR(cov.max_central_gap, 0.25, 1.0e-12);
+  EXPECT_TRUE(cov.admissible());
+}
+
+TEST(SliceKCoverage, EmptyOrNonFiniteRowsAreInadmissible) {
+  EXPECT_FALSE(atx::vol::slice_k_coverage({}).admissible());
+  atx::vol::FitObs nan_row{};
+  nan_row.k = std::numeric_limits<double>::quiet_NaN();
+  const std::vector<atx::vol::FitObs> rows{nan_row};
+  EXPECT_FALSE(atx::vol::slice_k_coverage(rows).admissible());
+}

@@ -431,9 +431,14 @@ namespace {
 }
 
 // Fix Round 1 (spec gap). The fit driver's own reason a `Missing` expiry
-// never reached `expiries()`/`parity()` -- ONLY the five values the task
-// brief's outcome vocabulary actually names
-// (`Missing`/`CarryFailed`/`PrepStarved`/`PrepFailed`/`Skipped`/`FitFailed`).
+// never reached `expiries()`/`parity()` -- ONLY the values that name an
+// actual DROP: `CarryFailed`/`PrepStarved`/`PrepFailed`/`PrepUncovered`
+// (Task 1: admitted rows fail the k-coverage predicate)/`FitFailed`/
+// `FitRefusedCalendar` (Task 6: the ConvexDense calendar-floor refusal
+// behind an uncovered committed prev)/`Skipped`, plus the coarse
+// admission-layer `Missing` the caller falls back to. Keep this list in step
+// with `ExpiryFitOutcome` (surface_parity.hpp): the switch below is
+// exhaustive and `-Wswitch` guards the code, but nothing guards the prose.
 // The three `Fitted*` family values (`Fitted`, `FittedFallbackCurve`,
 // `FittedLegacyPrep`) are deliberately NOT drop reasons -- a chain reported
 // `Fitted` by the fit driver cannot also be admission-`Missing` by
@@ -455,6 +460,10 @@ namespace {
     return "FitFailed";
   case ExpiryFitOutcome::Skipped:
     return "Skipped";
+  case ExpiryFitOutcome::PrepUncovered:
+    return "PrepUncovered";
+  case ExpiryFitOutcome::FitRefusedCalendar:
+    return "FitRefusedCalendar";
   case ExpiryFitOutcome::Fitted:
   case ExpiryFitOutcome::FittedFallbackCurve:
   case ExpiryFitOutcome::FittedLegacyPrep:

@@ -66,6 +66,7 @@ add_executable(atx-vol-tests
     vol_curve_test.cpp
     curve_fit_parallel_test.cpp
     curve_fit_carry_fallback_test.cpp
+    curve_fit_coverage_test.cpp      # Task 1: k-coverage slice admission (PrepUncovered)
     parallel_for_test.cpp
     pricer_fitter_test.cpp
     spline_curve_test.cpp
@@ -176,6 +177,8 @@ add_executable(atx-vol-tests
     backtest_swap_test.cpp           # Task 10: the engine's variance/vol swap lane
     # declarative swap-lane DSL
     swap_leg_test.cpp                # swap-leg toolkit (contract bridge + signal probe)
+    # stress-day fit-fidelity sprint (Task 2) — appended target:
+    surface_db_populate_policy_test.cpp # populate publish gate: min_worst_frac_within_bidask=0.35
 )
 # backtest_bench_test.cpp was relocated to bench/backtest_throughput_bench.cpp
 # (it is a throughput benchmark, not a correctness gate).

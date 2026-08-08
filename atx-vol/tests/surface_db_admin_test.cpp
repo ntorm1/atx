@@ -25,6 +25,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <optional>
 #include <span>
 #include <string>
@@ -1941,6 +1942,332 @@ TEST(TenorAudit, SkipNotesAreCappedWithAnElidedCount) {
   EXPECT_EQ(full->skip_notes.size(), std::size_t{kDates});
   EXPECT_EQ(full->n_skip_notes_elided, std::size_t{0});
   fs::remove_all(root);
+}
+
+// ── band_audit — per-expiry scorer + spec validation ─────────────────────────
+
+TEST(BandAudit, ScoreExpiryBandCountsAndHalfSpreadStats) {
+  // Bands [9,11] [19,21] [29,31] [39,41] (mids 10/20/30/40, half-spread 1).
+  // Model: 10 (in-band), 22 (+2 half-spreads, above ask), 28.5 (-1.5, below
+  // bid), 40.5 (+0.5, in-band).
+  const double model[] = {10.0, 22.0, 28.5, 40.5};
+  const double bid[] = {9.0, 19.0, 29.0, 39.0};
+  const double ask[] = {11.0, 21.0, 31.0, 41.0};
+  const auto row = atx::vol::score_expiry_band(model, bid, ask, 0.30);
+  EXPECT_EQ(row.n, 4u);
+  EXPECT_DOUBLE_EQ(row.frac_in_band, 0.5);
+  EXPECT_DOUBLE_EQ(row.frac_above_ask, 0.25);
+  EXPECT_DOUBLE_EQ(row.avg_signed_err_half_spreads, (0.0 + 2.0 - 1.5 + 0.5) / 4.0);
+  EXPECT_DOUBLE_EQ(row.max_abs_err_half_spreads, 2.0);
+  EXPECT_FALSE(row.flagged); // 0.5 >= 0.30
+}
+
+TEST(BandAudit, ScoreExpiryBandSkipsUnscorableQuotesAndFlagsBelowFloor) {
+  // Zero-bid, crossed, and NaN-model quotes are skipped; the one scored quote
+  // sits above the ask, so the row flags at floor 0.30 — the 2020-03-18
+  // signature in miniature.
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const double model[] = {5.0, 5.0, nan, 33.0};
+  const double bid[] = {0.0, 6.0, 9.0, 29.0};
+  const double ask[] = {2.0, 5.5, 11.0, 31.0};
+  const auto row = atx::vol::score_expiry_band(model, bid, ask, 0.30);
+  EXPECT_EQ(row.n, 1u);
+  EXPECT_DOUBLE_EQ(row.frac_in_band, 0.0);
+  EXPECT_DOUBLE_EQ(row.frac_above_ask, 1.0);
+  EXPECT_TRUE(row.flagged);
+}
+
+TEST(BandAudit, EmptyExpiryIsAZeroRowNeverFlagged) {
+  const auto row = atx::vol::score_expiry_band({}, {}, {}, 0.30);
+  EXPECT_EQ(row.n, 0u);
+  EXPECT_FALSE(row.flagged);
+}
+
+TEST(BandAudit, RejectsAnUnconfiguredSymbolBeforeAnyHiveIo) {
+  // The tenor_audit stance (surface_db_admin.cpp:536-556): a typo'd --symbol
+  // must fail loud, not audit zero rows. The bogus hive_root proves no hive
+  // IO happens before the check.
+  const fs::path root = fresh_tenor_dir("band_audit_unconfigured");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value()) << (db ? "" : db.error().to_string());
+  ASSERT_TRUE(db->upsert_symbol("AAA", symbol_config_from_preset(FitPreset::Populate)).has_value());
+  atx::vol::BandAuditSpec spec;
+  spec.symbols = {"AAAX"};
+  spec.hive_root = (root / "no-such-hive").string();
+  const auto rep = atx::vol::band_audit(*db, spec);
+  ASSERT_FALSE(rep.has_value());
+  EXPECT_EQ(rep.error().code(), ErrorCode::NotFound);
+  fs::remove_all(root);
+}
+
+TEST(BandAudit, EmptyHiveRootIsInvalidArgument) {
+  const fs::path root = fresh_tenor_dir("band_audit_no_hive");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value()) << (db ? "" : db.error().to_string());
+  const auto rep = atx::vol::band_audit(*db, atx::vol::BandAuditSpec{});
+  ASSERT_FALSE(rep.has_value());
+  EXPECT_EQ(rep.error().code(), ErrorCode::InvalidArgument);
+  fs::remove_all(root);
+}
+
+// ── band_audit — full reprice loop + DST-aware snapshot fix round 1 ─────────
+//
+// Review of the initial submission flagged two Important findings: (1) the
+// orchestration loop (hive load -> corpus_board_from_opra ->
+// OptionChain::from_frame -> per-strike fair_value) had zero coverage beyond
+// the pure scorer and the two early-exit branches; (2) the hive snapshot
+// suffix was a hardcoded EDT constant ("T19:55:00Z"), which
+// run_surface_db_backfill.py's own DST addendum documents as WRONG for an
+// EST-season date ("T20:55:00Z"). The three tests below exercise the real
+// loop end to end via the existing AdminFixture/write_synthetic_hive_v2
+// machinery (no mocks) and cover both findings.
+
+// Finding 2: the full reprice loop, exercised against the Task 2 synthetic
+// fixture (3 symbols x 3 dates, EDT-season dates so this test is agnostic to
+// the fix round 1 snapshot-resolution change — it must pass whether the
+// snapshot comes from the surface's own timestamp or the old EDT default).
+// `min_frac_in_band` is the knob that manufactures a "designed to pass" vs
+// "designed to breach" case deterministically over the SAME fixture, rather
+// than hand-rolling a mis-fit surface: 0.0 is trivially satisfied by any
+// scored row, and a floor above 1.0 is trivially unsatisfiable by any of
+// them, so the two runs isolate the flag/count mechanics from numerical fit
+// quality entirely.
+TEST(BandAudit, EndToEndScoresTheFullRepricedChainAgainstTheStoredSurface) {
+  const AdminFixture f = make_fixture("band_audit_e2e");
+  build_healthy_db(f);
+  const SurfaceDb db = open_db(f);
+
+  atx::vol::BandAuditSpec pass_spec;
+  pass_spec.hive_root = f.hive.string();
+  pass_spec.r = f.fx.r;
+  pass_spec.min_frac_in_band = 0.0;
+  const auto pass_rep = atx::vol::band_audit(db, pass_spec);
+  ASSERT_TRUE(pass_rep.has_value()) << (pass_rep ? "" : pass_rep.error().to_string());
+  EXPECT_TRUE(pass_rep->skip_notes.empty())
+      << (pass_rep->skip_notes.empty() ? "" : pass_rep->skip_notes.front());
+  // 3 symbols x 3 dates x 2 expiries per (symbol, date) board (synthetic_opra_hive.hpp).
+  ASSERT_EQ(pass_rep->rows.size(), std::size_t{18});
+  for (const BandAuditRow &row : pass_rep->rows) {
+    EXPECT_GT(row.n, 0u) << row.date << " " << row.symbol << " T=" << row.T;
+    EXPECT_GE(row.frac_in_band, 0.0);
+    EXPECT_LE(row.frac_in_band, 1.0);
+    EXPECT_FALSE(row.flagged) << "min_frac_in_band=0 is trivially satisfied";
+  }
+  EXPECT_EQ(pass_rep->n_flagged, 0u);
+
+  atx::vol::BandAuditSpec breach_spec = pass_spec;
+  breach_spec.min_frac_in_band = 1.0 + 1e-9; // unsatisfiable by construction
+  const auto breach_rep = atx::vol::band_audit(db, breach_spec);
+  ASSERT_TRUE(breach_rep.has_value()) << (breach_rep ? "" : breach_rep.error().to_string());
+  ASSERT_EQ(breach_rep->rows.size(), pass_rep->rows.size());
+  for (const BandAuditRow &row : breach_rep->rows) {
+    EXPECT_TRUE(row.flagged);
+  }
+  EXPECT_EQ(breach_rep->n_flagged, breach_rep->rows.size());
+}
+
+// Finding 1 (primary path). `opra_panel.cpp`'s FIX-C-1 guard already refuses
+// a hive load whose requested snapshot stamp disagrees with the file's own
+// `ts` column, so the PRE-FIX bug here was never a silently WRONG price — it
+// was a silently EMPTY audit: every EST-season cell failed to load (recorded
+// as a skip note) and contributed zero rows, so `--fail-on-flagged` could
+// never fire over an EST month no matter what it held. `spec.snapshot_suffix`
+// below is left at its EDT-anchored DEFAULT ("T19:55:00Z", the WRONG value
+// for this fixture's EST-season date) DELIBERATELY: the fix means band_audit
+// must not need it to be right, because it derives the suffix from the
+// archived surface's own `pricing().now_ts_ns` instead. Before the fix this
+// test fails (`rep->rows` empty, a skip note explains why); after, it passes.
+TEST(BandAudit, EstSeasonDateResolvesToTheSurfacesOwnSnapshotInstant) {
+  const fs::path root = fresh_tenor_dir("band_audit_est_season");
+  const fs::path hive_dir = root / "hive";
+  const fs::path db_dir = root / "db";
+
+  tsupport::SyntheticHiveSpec fx;
+  fx.symbols = {"AAA"};
+  fx.dates = {"2022-12-19"}; // EST season (1st-Sun-Nov .. 2nd-Sun-Mar)
+  fx.snapshot_hour_utc = 20U;
+  fx.snapshot_minute_utc = 55U; // the EST-side 15:55 ET pre-close minute
+  tsupport::write_synthetic_hive_v2(hive_dir, fx);
+
+  SurfaceDbBuildSpec bspec;
+  bspec.db_root = db_dir.string();
+  bspec.hive.root_dir = hive_dir.string();
+  bspec.hive.date_lo = fx.dates.front();
+  bspec.hive.date_hi = fx.dates.front();
+  bspec.hive.symbols = fx.symbols;
+  bspec.hive.r = fx.r;
+  bspec.hive.snapshot_suffix = "T20:55:00Z"; // the BUILD itself must match the file's own ts too
+  const auto built = build_surface_db(bspec);
+  ASSERT_TRUE(built.has_value()) << (built ? "" : built.error().to_string());
+  ASSERT_EQ(built->coverage.cells_ok, 1u)
+      << "the EST-hive build must itself resolve against the file's own stamped ts";
+
+  auto db = SurfaceDb::open(db_dir.string());
+  ASSERT_TRUE(db.has_value()) << (db ? "" : db.error().to_string());
+
+  atx::vol::BandAuditSpec spec;
+  spec.hive_root = hive_dir.string();
+  spec.symbols = {"AAA"};
+  spec.date_lo = spec.date_hi = fx.dates.front();
+  spec.r = fx.r;
+  const auto rep = atx::vol::band_audit(*db, spec);
+  ASSERT_TRUE(rep.has_value()) << (rep ? "" : rep.error().to_string());
+  EXPECT_TRUE(rep->skip_notes.empty())
+      << (rep->skip_notes.empty() ? "" : rep->skip_notes.front());
+  ASSERT_FALSE(rep->rows.empty())
+      << "the surface's own now_ts_ns must resolve the EST snapshot, not the EDT default";
+  for (const BandAuditRow &row : rep->rows) {
+    EXPECT_GT(row.n, 0u) << row.date << " " << row.symbol << " T=" << row.T;
+  }
+  fs::remove_all(root);
+}
+
+// Finding 1 (fallback path + observability). A surface with no usable stored
+// valuation timestamp (`pricing().now_ts_ns <= 0` — an old/degenerate
+// archive) is hand-built with `now_ts=0` (TenorAudit's own technique,
+// bypassing the normal fit pipeline) and written directly into a partition,
+// paired with an EST-season hive fixture. band_audit must still resolve the
+// correct (EST) snapshot via the DST-aware fallback — not the same hardcoded
+// EDT assumption this whole fix round removes — and must SAY that it used
+// the fallback (the review's explicit observability constraint) via
+// `snapshot_fallback_notes`.
+TEST(BandAudit, MissingSurfaceTimestampFallsBackToADstAwareSuffixAndLogsIt) {
+  const fs::path root = fresh_tenor_dir("band_audit_fallback_dst");
+  const fs::path hive_dir = root / "hive";
+
+  tsupport::SyntheticHiveSpec fx;
+  fx.symbols = {"AAA"};
+  fx.dates = {"2022-12-19"};
+  fx.snapshot_hour_utc = 20U;
+  fx.snapshot_minute_utc = 55U;
+  tsupport::write_synthetic_hive_v2(hive_dir, fx);
+
+  auto db = SurfaceDb::create((root / "db").string());
+  ASSERT_TRUE(db.has_value()) << (db ? "" : db.error().to_string());
+  ASSERT_TRUE(db->upsert_symbol("AAA", symbol_config_from_preset(FitPreset::Populate)).has_value());
+  PricedSurface surf = testkit::make_flat_surface(1u, 100.0, 100.0, 0.25, /*now_ts=*/0);
+  ASSERT_TRUE(db->write_partition(fx.dates.front(),
+                                  std::vector<SurfaceArchiveItem>{{"AAA", &surf}})
+                  .has_value());
+
+  atx::vol::BandAuditSpec spec;
+  spec.hive_root = hive_dir.string();
+  spec.symbols = {"AAA"};
+  spec.date_lo = spec.date_hi = fx.dates.front();
+  spec.r = fx.r;
+  const auto rep = atx::vol::band_audit(*db, spec);
+  ASSERT_TRUE(rep.has_value()) << (rep ? "" : rep.error().to_string());
+  EXPECT_TRUE(rep->skip_notes.empty())
+      << (rep->skip_notes.empty() ? "" : rep->skip_notes.front());
+  ASSERT_EQ(rep->snapshot_fallback_notes.size(), std::size_t{1});
+  EXPECT_NE(rep->snapshot_fallback_notes.front().find("AAA"), std::string::npos);
+  EXPECT_EQ(rep->n_snapshot_fallback_notes_elided, std::size_t{0});
+  ASSERT_FALSE(rep->rows.empty());
+  for (const BandAuditRow &row : rep->rows) {
+    EXPECT_GT(row.n, 0u);
+  }
+  fs::remove_all(root);
+}
+
+// ── band_audit — the empty-audit signal (final-review I1) ───────────────────
+//
+// `--fail-on-flagged` is the CI gate this sprint nominates as its long-term
+// detector and it decides on `n_flagged > 0` ALONE. An audit that measured
+// nothing produces no flagged row by construction — `score_expiry_band` returns
+// early on `row.n == 0` without ever setting `flagged`, and a cell that failed
+// to load contributes no row at all — so a gate over a moved hive root, a
+// non-matching date window, or a wholly non-finite surface family exited 0 while
+// auditing nothing. The same silent-empty class as the pre-fix EST-season bug
+// two tests up, one layer out. The report now carries what it actually measured;
+// the CLI turns that into its own exit code under the flag.
+
+TEST(BandAudit, AnAuditThatScoredNothingSaysSoInsteadOfLookingClean) {
+  const AdminFixture f = make_fixture("band_audit_scored_nothing");
+  build_healthy_db(f);
+  const SurfaceDb db = open_db(f);
+
+  // The reviewer's concrete scenario: the hive root moves or is renamed under an
+  // otherwise healthy database. Every cell becomes a skip note, no row is
+  // emitted, and `n_flagged` stays 0 — indistinguishable from a clean audit
+  // without a count of what was scored.
+  atx::vol::BandAuditSpec moved;
+  moved.hive_root = (f.root / "hive-moved-away").string();
+  moved.r = f.fx.r;
+  const auto moved_rep = atx::vol::band_audit(db, moved);
+  ASSERT_TRUE(moved_rep.has_value()) << (moved_rep ? "" : moved_rep.error().to_string());
+  EXPECT_TRUE(moved_rep->rows.empty());
+  EXPECT_EQ(moved_rep->n_flagged, 0u);
+  EXPECT_FALSE(moved_rep->skip_notes.empty()) << "a vanished hive must leave a trail";
+  EXPECT_EQ(moved_rep->n_dates_requested, std::size_t{3});
+  EXPECT_EQ(moved_rep->n_scored_expiries, std::size_t{0});
+  EXPECT_TRUE(moved_rep->scored_nothing());
+
+  // The other empty shape, and the one that leaves NO skip note at all: a date
+  // window that selects no partition. Nothing is even attempted.
+  atx::vol::BandAuditSpec no_dates;
+  no_dates.hive_root = f.hive.string();
+  no_dates.r = f.fx.r;
+  no_dates.date_lo = "2027-01-01";
+  no_dates.date_hi = "2027-12-31";
+  const auto range_rep = atx::vol::band_audit(db, no_dates);
+  ASSERT_TRUE(range_rep.has_value()) << (range_rep ? "" : range_rep.error().to_string());
+  EXPECT_TRUE(range_rep->rows.empty());
+  EXPECT_TRUE(range_rep->skip_notes.empty());
+  EXPECT_EQ(range_rep->n_dates_requested, std::size_t{0});
+  EXPECT_EQ(range_rep->n_scored_expiries, std::size_t{0});
+  EXPECT_TRUE(range_rep->scored_nothing());
+
+  // DISCRIMINATION: the healthy audit over the same database is not empty. A
+  // signal that fires on everything is the fail-open bug with the sign flipped.
+  atx::vol::BandAuditSpec healthy;
+  healthy.hive_root = f.hive.string();
+  healthy.r = f.fx.r;
+  const auto healthy_rep = atx::vol::band_audit(db, healthy);
+  ASSERT_TRUE(healthy_rep.has_value()) << (healthy_rep ? "" : healthy_rep.error().to_string());
+  ASSERT_EQ(healthy_rep->rows.size(), std::size_t{18}); // 3 symbols x 3 dates x 2 expiries
+  EXPECT_EQ(healthy_rep->n_dates_requested, std::size_t{3});
+  EXPECT_EQ(healthy_rep->n_scored_expiries, healthy_rep->rows.size());
+  EXPECT_FALSE(healthy_rep->scored_nothing());
+
+  fs::remove_all(f.root);
+}
+
+TEST(BandAudit, APartiallyEmptyAuditStaysOnTheFlaggedCleanRule) {
+  const AdminFixture f = make_fixture("band_audit_partially_empty");
+  build_healthy_db(f);
+  const SurfaceDb db = open_db(f);
+
+  // Delete ONE date's hive partition AFTER the build: that date's three cells
+  // now fail to load (skip notes, zero rows) while the other two score normally.
+  // This is the shape that must NOT take the empty-audit exit — the gate still
+  // measured 12 expiries and its verdict over them is the real answer.
+  fs::remove_all(f.hive / ("date=" + f.fx.dates.front()));
+
+  atx::vol::BandAuditSpec clean;
+  clean.hive_root = f.hive.string();
+  clean.r = f.fx.r;
+  clean.min_frac_in_band = 0.0; // trivially satisfied by any scored row
+  const auto clean_rep = atx::vol::band_audit(db, clean);
+  ASSERT_TRUE(clean_rep.has_value()) << (clean_rep ? "" : clean_rep.error().to_string());
+  EXPECT_FALSE(clean_rep->skip_notes.empty()) << "the deleted date must be visible";
+  EXPECT_EQ(clean_rep->n_dates_requested, std::size_t{3});
+  ASSERT_EQ(clean_rep->rows.size(), std::size_t{12}); // 2 surviving dates x 3 symbols x 2
+  EXPECT_EQ(clean_rep->n_scored_expiries, std::size_t{12});
+  EXPECT_FALSE(clean_rep->scored_nothing())
+      << "a partially-empty audit is a normal audit, not an empty one";
+  EXPECT_EQ(clean_rep->n_flagged, 0u); // -> the CLI's CLEAN rule (exit 0)
+
+  atx::vol::BandAuditSpec breach = clean;
+  breach.min_frac_in_band = 1.0 + 1e-9; // unsatisfiable by construction
+  const auto breach_rep = atx::vol::band_audit(db, breach);
+  ASSERT_TRUE(breach_rep.has_value()) << (breach_rep ? "" : breach_rep.error().to_string());
+  EXPECT_EQ(breach_rep->n_scored_expiries, std::size_t{12});
+  EXPECT_FALSE(breach_rep->scored_nothing());
+  // -> the CLI's FLAGGED rule (exit 3), which outranks nothing here because the
+  // audit is not empty; the empty-audit code can never shadow a real verdict.
+  EXPECT_EQ(breach_rep->n_flagged, breach_rep->rows.size());
+
+  fs::remove_all(f.root);
 }
 
 } // namespace

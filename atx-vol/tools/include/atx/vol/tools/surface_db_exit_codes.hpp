@@ -84,6 +84,23 @@ inline constexpr int kSurfaceDbVerifyExitUsage = 2;
 // whole change removes (the same argument `is_carry_masked_fit_failure` records
 // for keeping the build CLI at exit 0 — surface_db_build.hpp).
 inline constexpr int kSurfaceDbVerifyExitAbsentOverLimit = 4;
+// FINAL-REVIEW I1. `band-audit --fail-on-flagged` scored ZERO expiries: the gate
+// ran and measured NOTHING (hive root moved/renamed, a `--from/--to` window
+// matching no partition, or every model price non-finite). Its own code, and
+// deliberately not 3: 3 says "the audit measured the database and found rows
+// below the floor" — an answer — while this says "there is no answer here at
+// all", and the operator's next action differs in kind (fix the invocation or
+// the inputs, not the surfaces). Not 0 either, which is the fail-open bug it
+// exists to close: a CI gate that passes while auditing nothing is not a gate.
+//
+// 6, NOT 4, AND NOT 5. Both were already spent — 4 by `verify`'s ABSENT verdict
+// in THIS SAME binary (so a wrapper reading 4 off `atx-vol-surface-db` would
+// have to know which subcommand ran to interpret it) and 5 by the build CLI's
+// coverage-regression refusal. 6 is the first free number under the rule this
+// header exists to enforce. Reached ONLY with `--fail-on-flagged`: without the
+// flag the same emptiness prints the same loud warning and exits 0, because
+// interactive inspection of an empty window is a legitimate thing to do.
+inline constexpr int kSurfaceDbBandAuditExitScoredNothing = 6;
 
 // ── The invariant, checked at COMPILE TIME in every TU that includes this ────
 //
@@ -109,9 +126,17 @@ static_assert(kSurfaceDbBuildExitCoverageRegression != kSurfaceDbVerifyExitAbsen
               "coverage-regression refusal must not be 'tidied' down onto it");
 static_assert(kSurfaceDbBuildExitTotalFitFailure != kSurfaceDbBuildExitCoverageRegression,
               "the build CLI's two verdicts must stay distinguishable");
+static_assert(kSurfaceDbBandAuditExitScoredNothing != kSurfaceDbVerifyExitAbsentOverLimit,
+              "atx-vol-surface-db verify owns 4 for `verdict ABSENT`; band-audit's "
+              "measured-nothing code must not take it — they share a binary");
+static_assert(kSurfaceDbBandAuditExitScoredNothing != kSurfaceDbBuildExitTotalFitFailure &&
+                  kSurfaceDbBandAuditExitScoredNothing != kSurfaceDbBuildExitCoverageRegression,
+              "band-audit's measured-nothing code must not collide with either build "
+              "CLI verdict");
 static_assert(kSurfaceDbBuildExitTotalFitFailure > kSurfaceDbBuildExitUsage &&
                   kSurfaceDbBuildExitCoverageRegression > kSurfaceDbBuildExitUsage &&
-                  kSurfaceDbVerifyExitAbsentOverLimit > kSurfaceDbBuildExitUsage,
+                  kSurfaceDbVerifyExitAbsentOverLimit > kSurfaceDbBuildExitUsage &&
+                  kSurfaceDbBandAuditExitScoredNothing > kSurfaceDbBuildExitUsage,
               "a tool-specific verdict must not reuse one of the three common codes");
 
 } // namespace atx::vol

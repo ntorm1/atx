@@ -278,8 +278,11 @@ struct ExpiryBuildReport {
   // its exact three values (e.g. spy_fit_rca.cpp). This is the FIT DRIVER's
   // own, finer-grained reason a chain never reached `expiries()`/`parity()`
   // (`ExpiryFitOutcome`: Fitted/FittedFallbackCurve/FittedLegacyPrep/
-  // CarryFailed/PrepStarved/PrepFailed/FitFailed/Skipped,
-  // surface_parity.hpp), read off `VolaSession::expiry_fit_reports()` and
+  // CarryFailed/PrepStarved/PrepFailed/FitFailed/Skipped/PrepUncovered
+  // (Task 1: admitted rows fail k-coverage)/FitRefusedCalendar (Task 6: the
+  // ConvexDense calendar-floor refusal behind an UNCOVERED prev, which used to
+  // arrive here as an anonymous `FitFailed`), surface_parity.hpp), read off
+  // `VolaSession::expiry_fit_reports()` and
   // indexed by chain position -- see `completed_attempt_report`
   // (pricer_fitter.cpp) for where this is populated. Meaningful only when
   // `outcome == Missing`; left at its default (`Fitted`, the enum's own 0
