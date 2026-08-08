@@ -31,20 +31,36 @@ def _one_dominant_returns(seed: int = 0, t=T_ROWS, n=N_CONFIGS, shift=0.5) -> pd
     return pd.DataFrame(data, columns=[f"cfg{i}" for i in range(n)])
 
 
-def test_pure_noise_pbo_near_half():
+NOISE_SEEDS = list(range(10))
+
+
+def test_pure_noise_mean_pbo_near_half():
     # PBO on a *single* iid-noise realization is a rank statistic over only
     # N_CONFIGS items; unlike a mean, its sampling variance does not shrink
-    # with T (confirmed empirically: T=960 vs T=76800 give the same spread),
-    # so different seeds land anywhere from ~0.15 to ~0.97 even though the
-    # estimator is unbiased around 0.5 on average. Seed 0 is a normal,
-    # non-adversarially-chosen draw that happens to land centrally (verified
-    # against an independent naive/loop reference implementation, which
-    # matches this module bit-for-bit) -- it isn't cherry-picked to dodge a
-    # bug, just picked to keep this a fast, deterministic single-draw test.
+    # with T (confirmed empirically: T=960 vs T=76800 give the same spread,
+    # since it's fundamentally about ranking N items, not estimating a
+    # mean) -- individual seeds land anywhere from ~0.15 to ~0.97 even
+    # though the estimator is unbiased around 0.5 on average. A single
+    # hand-picked seed can't distinguish a correct implementation from a
+    # moderately-biased one, so average PBO over NOISE_SEEDS independent
+    # draws instead: this cuts the statistic's spread by roughly sqrt(10)
+    # while keeping the brief's exact [0.35, 0.65] band, and stays fast
+    # since the vectorized 12870-split path is ~0.1-0.2s per draw.
+    pbos = [cscv_pbo(_noise_returns(seed=s), n_blocks=N_BLOCKS).pbo for s in NOISE_SEEDS]
+    mean_pbo = sum(pbos) / len(pbos)
+    assert 0.35 <= mean_pbo <= 0.65
+
+
+def test_pure_noise_deterministic_for_fixed_seed():
+    # Same input -> bit-identical output (no algorithmic randomness beyond
+    # the caller-supplied data). Kept separate from the band assertion
+    # above, which is inherently a statistical (multi-seed) claim.
     returns = _noise_returns(seed=0)
-    result = cscv_pbo(returns, n_blocks=N_BLOCKS)
-    assert isinstance(result, PboResult)
-    assert 0.35 <= result.pbo <= 0.65
+    a = cscv_pbo(returns, n_blocks=N_BLOCKS)
+    b = cscv_pbo(returns, n_blocks=N_BLOCKS)
+    assert isinstance(a, PboResult)
+    assert a.pbo == b.pbo
+    assert a.lambdas == b.lambdas
 
 
 def test_one_dominant_config_low_pbo():
