@@ -161,11 +161,14 @@ constexpr double kNaN = kPriceColumnNaN;
 // itself reported as "not computed" (theta/charm on a contract too short to
 // roll, vanna/charm under second_order=false) propagates its NaN into that
 // column of the total -- the total is genuinely unknown, and a partial sum
-// presented as complete is the failure mode being avoided.
-void accumulate(PriceTotals &t, const DerivPriceRow &row, bool greeks) noexcept {
+// presented as complete is the failure mode being avoided. That NaN-poisoning
+// is unchanged; GK-C9b adds the count of WHICH Ok rows caused it, per column,
+// so a NaN total names its own cause instead of going silent.
+void accumulate(DerivPriceFrame &frame, const DerivPriceRow &row, bool greeks) noexcept {
   if (row.status != PriceStatus::Ok) {
     return;
   }
+  PriceTotals &t = frame.totals;
   t.pv += row.pv;
   if (greeks) {
     const DerivGreeks &g = row.greeks;
@@ -175,10 +178,13 @@ void accumulate(PriceTotals &t, const DerivPriceRow &row, bool greeks) noexcept 
     t.vega += leg_vega;
     t.abs_vega += std::fabs(leg_vega);
     t.theta += g.theta;
+    frame.n_theta_excluded += std::isfinite(g.theta) ? 0u : 1u;
     t.rho += g.rho;
     t.vanna += g.vanna;
+    frame.n_vanna_excluded += std::isfinite(g.vanna) ? 0u : 1u;
     t.volga += g.volga;
     t.charm += g.charm;
+    frame.n_charm_excluded += std::isfinite(g.charm) ? 0u : 1u;
   }
   ++t.n_ok;
 }
@@ -211,7 +217,7 @@ Result<DerivPriceFrame> price_deriv_book(const SurfaceSet &surfaces,
   // order, so the totals are bit-reproducible for a given input.
   for (const DerivPosition &p : book) {
     frame.rows.push_back(price_one(surfaces, p, cfg, greeks, bumps, wing_band_of));
-    accumulate(frame.totals, frame.rows.back(), greeks);
+    accumulate(frame, frame.rows.back(), greeks);
   }
   return Ok(std::move(frame));
 }

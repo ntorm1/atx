@@ -466,6 +466,55 @@ TEST(DerivBook, BridgeThetaMatchesPricedSurfaceReferenceAtFrontPillar) {
   EXPECT_NEAR(f->rows[0].greeks.delta, reference->delta, 1e-6 * std::fabs(reference->delta) + 1e-9);
 }
 
+// GK-C9b. A NaN total used to be a dead end -- no way to tell "1 excluded
+// lane" from "every lane excluded". A book of 3: two ordinary lanes plus one
+// too-short-to-roll lane (T < bumps.time_years, theta/charm NaN on that ONE
+// otherwise-Ok row, mirrors DerivGreeks.RollPastExpiryLeavesThetaAndCharmNaN)
+// must still poison totals.theta/charm exactly as before (semantics
+// UNCHANGED) while now also naming the count: 1 lane excluded from each of
+// theta/charm, 0 from vanna (second_order stays on, so vanna's own NaN
+// condition never fires here).
+TEST(DerivBook, ExcludedLaneCountsNameTheNaNColumn) {
+  const PricedSurface ps = atx::vol::testkit::make_flat_surface(7, 100.0, 100.0, 0.30);
+  const PricedSurface *arr[] = {&ps};
+  auto ss = SurfaceSet::create(arr);
+  ASSERT_TRUE(ss.has_value());
+
+  const DerivGreekBumps bumps{};
+  DerivPosition normal_a{};
+  normal_a.id = 1;
+  normal_a.uid = 7;
+  normal_a.contract = var_swap_at(0.35);
+  DerivPosition normal_b = normal_a;
+  normal_b.id = 2;
+  DerivPosition too_short{};
+  too_short.id = 3;
+  too_short.uid = 7;
+  too_short.contract = var_swap_at(0.5 * bumps.time_years);  // half a day out: can't roll
+  const DerivPosition book[] = {normal_a, normal_b, too_short};
+
+  const auto f = price_deriv_book(*ss, book);
+  ASSERT_TRUE(f.has_value()) << f.error().to_string();
+  ASSERT_EQ(f->rows.size(), 3u);
+  EXPECT_EQ(f->rows[0].status, PriceStatus::Ok);
+  EXPECT_EQ(f->rows[1].status, PriceStatus::Ok);
+  EXPECT_EQ(f->rows[2].status, PriceStatus::Ok);
+  EXPECT_TRUE(std::isfinite(f->rows[0].greeks.theta));
+  EXPECT_TRUE(std::isfinite(f->rows[1].greeks.theta));
+  EXPECT_TRUE(std::isnan(f->rows[2].greeks.theta));
+  EXPECT_TRUE(std::isnan(f->rows[2].greeks.charm));
+
+  // Semantics unchanged: the one NaN lane still poisons the whole column.
+  EXPECT_TRUE(std::isnan(f->totals.theta));
+  EXPECT_TRUE(std::isnan(f->totals.charm));
+  EXPECT_TRUE(std::isfinite(f->totals.vega));  // an untouched column stays sane
+
+  // The count now names why.
+  EXPECT_EQ(f->n_theta_excluded, 1u);
+  EXPECT_EQ(f->n_charm_excluded, 1u);
+  EXPECT_EQ(f->n_vanna_excluded, 0u);
+}
+
 // The NumericError branch of the status mapping: a reserved discrete-correction
 // mode is NotImplemented — a well-formed contract the engine will not price —
 // and must NOT be conflated with InvalidContract. Run as an A/B against the same

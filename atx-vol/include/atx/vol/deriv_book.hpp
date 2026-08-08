@@ -98,6 +98,7 @@
 #include <vector>
 
 #include "atx/vol/derivatives.hpp"      // DerivContract/DerivConfig/DerivGreeks/DerivGreekBumps
+#include "atx/vol/detail/aggregate_arity.hpp" // DerivPriceFrame field-count drift pin (GK-C9b)
 #include "atx/vol/portfolio_pricer.hpp" // SurfaceSet, PriceTotals, PriceStatus, kPriceColumnNaN
 #include "atx/vol/types.hpp"            // Result
 
@@ -142,12 +143,33 @@ using WingBandResolver = std::function<std::optional<double>(std::uint32_t uid)>
 struct DerivPriceFrame {
   std::vector<DerivPriceRow> rows;
   PriceTotals totals{};
+  // GK-C9b. `totals.{theta,vanna,charm}` are NaN-poisoned by design the moment
+  // ANY Ok row's own column is NaN (theta/charm: a contract too short to roll
+  // past `bumps.time_years`; vanna/charm: additionally `second_order == false`)
+  // -- that poisoning is unchanged. What was missing was a count: a NaN total
+  // used to be a dead end with no way to tell "1 excluded lane" from "every
+  // lane excluded". These name how many Ok rows were excluded from each
+  // column, so the desk theta going NaN comes with a reason attached instead
+  // of silence. 0 when `greeks` was false (nothing was attempted, not "nothing
+  // excluded") or when every Ok lane's column was finite.
+  std::uint32_t n_theta_excluded{0};
+  std::uint32_t n_vanna_excluded{0};
+  std::uint32_t n_charm_excluded{0};
 
   // Number of rows that priced. Equals `totals.n_ok` by construction; counted
   // from `rows` so the frame stays self-describing if it is ever rebuilt or
   // filtered by a caller.
   [[nodiscard]] std::size_t n_ok() const noexcept;
 };
+
+// Drift pin: DerivPriceFrame has exactly FIVE fields (v1.1 appended
+// n_theta_excluded/n_vanna_excluded/n_charm_excluded, GK-C9b). Adding,
+// removing, or splitting one breaks this line -- update the count, and
+// confirm every construction site still default-constructs plus
+// designated/member assignment (there is no positional brace-init of this
+// type anywhere in this codebase today).
+static_assert(detail::aggregate_arity_is_v<DerivPriceFrame, 5>,
+              "DerivPriceFrame field count changed: update this pin.");
 
 // Price every position in `book` against its uid's surface.
 //
