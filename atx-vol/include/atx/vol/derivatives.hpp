@@ -922,7 +922,12 @@ static_assert(detail::aggregate_arity_is_v<DerivGreekBumps, 6>,
 // recomputing that identity to FD precision, one whole extra repricing per
 // greek call (a second strip integration for var/capped swaps; a second
 // Carr-Lee straddle plus its own diagnostic strip for an unaged vol swap),
-// never discovering anything the closed form does not already say.
+// never discovering anything the closed form does not already say. T is
+// clamped to >= 0 before the multiply, same as the fully-aged branch's own
+// PV-9 clamp: a cap-pinned quote can succeed at T <= 0 without being
+// FullyAged (only partially aged, e.g. an expired-but-not-rolled-off lot
+// pinned at its cap), where `df` is unconditionally 1.0 and the true dPV/dr
+// is 0, not a sign-flipped `-T*PV` (fix round 1, C-1).
 // `Rho.AnalyticMatchesFD` (deriv_greeks_test.cpp) pins this identity against
 // the FD bump this replaced, across every DerivKind and aging state, before
 // the bump was ever deleted.

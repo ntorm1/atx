@@ -1930,18 +1930,32 @@ Result<DerivGreeks> deriv_greeks(const SurfaceT& surface, const CurveSet& curves
   // Diffusion1OverN carry differential comes off the forward/spot, not the
   // yield curve -- see Rho.AnalyticMatchesFD, deriv_greeks_test.cpp, which
   // pins this against the FD bump this replaced across every DerivKind and
-  // aging state). No T-clamp is needed the way the fully-aged branch clamps
-  // T >= 0 (PV-9): every dispatch path that can reach a successful `center`
-  // here already required T > 0 to price at all, so `contract.maturity_t` is
-  // guaranteed positive whenever this line runs. Replaces a one-sided FD r+
-  // bump (a full extra repricing -- a second strip integration, or for
-  // VolSwap a second Carr-Lee straddle plus its own diagnostic strip) that
-  // only ever recovered this same identity, to FD precision, never anything
-  // else: forward-channel rate risk is deliberately NOT in rho (the bump
-  // mechanics doc above `deriv_greeks` holds the forward curve fixed under a
-  // rate shift), so there is no additional rate sensitivity this closed form
-  // could be missing.
-  g.rho = -contract.maturity_t * center.pv;
+  // aging state).
+  //
+  // CLAMP T >= 0 (fix round 1, C-1), same reason PV-9 clamps the fully-aged
+  // branch above: `deriv_price` performs NO `maturity_t` validation of its
+  // own, and NOT EVERY non-fully-aged success path requires T > 0 --
+  // `price_capped_var_swap`/`price_capped_vol_swap`'s CAP-PIN exit
+  // (`accrued >= cap` / `a >= cap_var`) returns a deterministic quote for ANY
+  // T, including T <= 0, and does so WITHOUT setting `DerivFlags::FullyAged`
+  // whenever the contract is only partially aged (n_done < n_total) -- so a
+  // cap-pinned, partially-aged, EXPIRED-but-not-rolled-off contract reaches
+  // this line, not the clamped fully-aged branch above. At T <= 0,
+  // `deriv_df_at_T` short-circuits `df = 1.0` unconditionally (no
+  // `curves.yield` read at all), so the true `dPV/dr` there is exactly 0, not
+  // `-T*PV` -- an un-clamped negative T would sign-flip that into a
+  // fabricated POSITIVE rho instead. `Rho.AnalyticMatchesFD` pins this exact
+  // scenario (a cap-pinned, partially-aged, negative-T CappedVarSwap/
+  // CappedVolSwap) against an independent oracle.
+  //
+  // Replaces a one-sided FD r+ bump (a full extra repricing -- a second strip
+  // integration, or for VolSwap a second Carr-Lee straddle plus its own
+  // diagnostic strip) that only ever recovered this same identity, to FD
+  // precision, never anything else: forward-channel rate risk is
+  // deliberately NOT in rho (the bump mechanics doc above `deriv_greeks`
+  // holds the forward curve fixed under a rate shift), so there is no
+  // additional rate sensitivity this closed form could be missing.
+  g.rho = -std::fmax(contract.maturity_t, 0.0) * center.pv;
   // charm = d(delta)/dt on the SAME calendar-time convention as theta above:
   // one day of calendar time is one day of maturity gone.
   const double delta_rolled = (p.t_s_up - p.t_s_dn) / (2.0 * ds);

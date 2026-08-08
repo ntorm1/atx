@@ -533,62 +533,105 @@ TEST(DerivGreeks, VegaIsBumpSizeIndependentOnSkewedSurface) {
 }
 
 // Task P-2 / GK-C3: rho is EXACTLY -T*PV for every DerivKind and aging state,
-// not just the fully-aged branch's own closed form. Every quote in this file
-// is built as `pv = df(r) * X`, and X -- the fair-strike/expectation/cap-
-// option blend -- never reads the rate curve: the strip's own OTM(K)/df
-// integrand cancels its discount factor (Demeterfi-Derman-Kamal-Zou), the
-// Carr-Lee ATMF straddle formula never touches `curves.yield`, and the
-// Diffusion1OverN discrete-monitoring correction's carry differential
-// (`resolve_carry_diff`) is read off the FORWARD and spot, never the yield
-// curve either. So dPV/dr = X * d(df)/dr = -T*df*X = -T*PV identically, and
-// the one-sided FD r+ bump `eval_bump_table` used to pay for (a full extra
-// repricing -- a second strip integration for VarSwap/CappedVarSwap/
-// CappedVolSwap, a second Carr-Lee straddle plus its own diagnostic strip for
-// VolSwap) was recomputing that identity the hard way, to FD precision, not
-// deriving it.
+// not just the fully-aged branch's own closed form (T clamped to >= 0 --
+// fix round 1, C-1: a cap-pinned quote can succeed at T <= 0 without being
+// FullyAged, where the true dPV/dr is 0, not a sign-flipped -T*PV). Every
+// quote in this file is built as `pv = df(r) * X`, and X -- the
+// fair-strike/expectation/cap-option blend -- never reads the rate curve:
+// the strip's own OTM(K)/df integrand cancels its discount factor
+// (Demeterfi-Derman-Kamal-Zou), the Carr-Lee ATMF straddle formula never
+// touches `curves.yield`, and the Diffusion1OverN discrete-monitoring
+// correction's carry differential (`resolve_carry_diff`) is read off the
+// FORWARD and spot, never the yield curve either. So dPV/dr = X * d(df)/dr =
+// -T*df*X = -T*PV identically (T >= 0), and the one-sided FD r+ bump this
+// file used to pay for (a full extra repricing -- a second strip integration
+// for VarSwap/CappedVarSwap/CappedVolSwap, a second Carr-Lee straddle plus
+// its own diagnostic strip for VolSwap) only ever recomputed that identity
+// the hard way, to FD precision, never deriving anything new.
 //
-// This test PINS the claim against the CURRENT one-sided FD bump -- proving
-// the identity on real code, not on paper -- before the bump is deleted and
-// rho becomes the closed form directly (Steps: this test must stay green,
-// unmodified, after that deletion too -- at that point both sides of the
-// comparison literally compute the same expression).
+// INDEPENDENT ORACLE (fix round 1, I-1): the FIRST version of this test
+// compared `g->rho` against `-c.maturity_t * g->pv` computed IN THE TEST --
+// the identical expression `deriv_greeks` itself now evaluates
+// (`g.rho = -std::fmax(contract.maturity_t, 0.0) * center.pv`,
+// `g.pv = center.pv`), making the comparison tautological and blind to any
+// bug in that expression (it missed C-1's missing clamp entirely: the
+// self-referential oracle clamps nowhere, so it "agreed" with the unclamped
+// bug). The oracle here instead differences TWO direct `deriv_price` calls,
+// through the ordinary PUBLIC entry point, at curves built independently at
+// r -/+ dr/2 (`make_flat_curves`'s own `rate` parameter) -- sharing no
+// expression, and no code path inside `deriv_greeks`/`eval_bump_table`, with
+// production rho. `dr = 1e-6` keeps the central difference's own O(dr^2)
+// truncation far below the 1e-6*|PV| bound (and is exact, not approximate,
+// for every T <= 0 case below: `deriv_df_at_T` returns the same constant
+// `df = 1.0` at both r -/+ dr/2, so the independent FD is EXACTLY 0 there,
+// not merely converged).
 //
-// A custom, much-smaller-than-default `rate_abs` (1e-6, vs. the production
-// default 1e-4) is used deliberately: the one-sided FD's own truncation is
-// O(dr) -- roughly (dr*T/2) relative, e.g. ~5e-5 at the default dr and T=1 --
-// which would swamp the 1e-6*|PV| bound below and test the STENCIL's own
-// discretization error instead of the IDENTITY. Shrinking dr is the ordinary
-// way to confirm a derivative identity empirically via FD convergence; the
-// default bump's own practical accuracy is a separate, already-covered
-// concern (VarSwapFlatSurfaceAnalyticTruths above).
+// The matrix covers kind x age x T-sign: the ordinary unaged/mid-life case
+// for all four kinds at T = 0.25, PLUS (C-1's own regression) a cap-pinned,
+// PARTIALLY aged (not FullyAged), EXPIRED (T < 0) CappedVarSwap and
+// CappedVolSwap -- exactly the configuration `price_capped_var_swap`'s /
+// `price_capped_vol_swap`'s cap-pin exit reaches without ever checking
+// T > 0 or setting `DerivFlags::FullyAged`.
 TEST(Rho, AnalyticMatchesFD) {
   const EssviSurface surf = make_skewed_surface();
-  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00, 0.03);
-  DerivGreekBumps bumps{};
-  bumps.rate_abs = 1.0e-6;
+  constexpr double kR = 0.03;
+  constexpr double kDr = 1.0e-6;  // independent-oracle central-difference step
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00, kR);
+  const CurveSet cs_lo = make_flat_curves(100.0, 0.01, 1.00, kR - 0.5 * kDr);
+  const CurveSet cs_hi = make_flat_curves(100.0, 0.01, 1.00, kR + 0.5 * kDr);
 
-  for (const DerivKind kind : {DerivKind::VarSwap, DerivKind::VolSwap,
-                               DerivKind::CappedVarSwap, DerivKind::CappedVolSwap}) {
-    for (const std::uint32_t n_done : {0u, 21u}) {  // unaged, mid-life
-      DerivContract c{};
-      c.kind = kind;
-      c.maturity_t = 0.25;
-      c.notional = 1e6;
-      c.strike_dec = 0.03;
-      c.cap_dec = (kind == DerivKind::CappedVarSwap)   ? 0.25
-                  : (kind == DerivKind::CappedVolSwap) ? 0.50
-                                                       : 0.0;
-      c.rv_spec.annualization = 252.0;
-      c.rv_spec.n_obs_total = 63u;
-      c.rv_spec.n_obs_done = n_done;
-      c.rv_spec.rv_done_dec = 0.05;
-      const auto g = deriv_greeks(surf, cs, c, deriv_default_config(), bumps);
-      ASSERT_TRUE(g.has_value()) << "kind=" << static_cast<int>(kind) << " n_done=" << n_done
-                                  << ": " << g.error().to_string();
-      const double analytic_rho = -c.maturity_t * g->pv;
-      EXPECT_NEAR(g->rho, analytic_rho, 1.0e-6 * std::fabs(g->pv))
-          << "kind=" << static_cast<int>(kind) << " n_done=" << n_done;
-    }
+  struct Case {
+    DerivKind kind;
+    double maturity_t;
+    std::uint32_t n_obs_done;
+    double cap_dec;
+    double strike_dec;
+    double rv_done_dec;
+    const char *label;
+  };
+  const Case cases[] = {
+      {DerivKind::VarSwap, 0.25, 0u, 0.0, 0.03, 0.05, "VarSwap unaged"},
+      {DerivKind::VarSwap, 0.25, 21u, 0.0, 0.03, 0.05, "VarSwap mid-life"},
+      {DerivKind::VolSwap, 0.25, 0u, 0.0, 0.03, 0.05, "VolSwap unaged"},
+      {DerivKind::VolSwap, 0.25, 21u, 0.0, 0.03, 0.05, "VolSwap mid-life"},
+      {DerivKind::CappedVarSwap, 0.25, 0u, 0.25, 0.03, 0.05, "CappedVarSwap unaged"},
+      {DerivKind::CappedVarSwap, 0.25, 21u, 0.25, 0.03, 0.05, "CappedVarSwap mid-life"},
+      {DerivKind::CappedVolSwap, 0.25, 0u, 0.50, 0.03, 0.05, "CappedVolSwap unaged"},
+      {DerivKind::CappedVolSwap, 0.25, 21u, 0.50, 0.03, 0.05, "CappedVolSwap mid-life"},
+      // C-1 regression: cap-pinned (accrued >= cap), PARTIALLY aged (21 of 63
+      // -- not FullyAged), EXPIRED (T < 0, not yet rolled off the book).
+      // w_done = 21/63 = 1/3, accrued = rv_done_dec/3.
+      {DerivKind::CappedVarSwap, -0.01, 21u, 0.02, 0.01, 0.10,
+       "CappedVarSwap pinned+partially-aged+expired"},
+      {DerivKind::CappedVolSwap, -0.01, 21u, 0.10, 0.01, 0.10,
+       "CappedVolSwap pinned+partially-aged+expired"},
+  };
+
+  for (const Case &tc : cases) {
+    DerivContract c{};
+    c.kind = tc.kind;
+    c.maturity_t = tc.maturity_t;
+    c.notional = 1e6;
+    c.strike_dec = tc.strike_dec;
+    c.cap_dec = tc.cap_dec;
+    c.rv_spec.annualization = 252.0;
+    c.rv_spec.n_obs_total = 63u;
+    c.rv_spec.n_obs_done = tc.n_obs_done;
+    c.rv_spec.rv_done_dec = tc.rv_done_dec;
+
+    const auto g = deriv_greeks(surf, cs, c);
+    ASSERT_TRUE(g.has_value()) << tc.label << ": " << g.error().to_string();
+    // M-4: a tolerance scaled by |pv| is vacuous at pv == 0 -- assert there is
+    // something real to compare against.
+    ASSERT_GT(std::fabs(g->pv), 0.0) << tc.label;
+
+    const auto p_lo = deriv_price(surf, cs_lo, c, deriv_default_config());
+    const auto p_hi = deriv_price(surf, cs_hi, c, deriv_default_config());
+    ASSERT_TRUE(p_lo.has_value()) << tc.label << ": " << p_lo.error().to_string();
+    ASSERT_TRUE(p_hi.has_value()) << tc.label << ": " << p_hi.error().to_string();
+    const double fd_rho = (p_hi->pv - p_lo->pv) / kDr;
+
+    EXPECT_NEAR(g->rho, fd_rho, 1.0e-6 * std::fabs(g->pv)) << tc.label;
   }
 }
 
