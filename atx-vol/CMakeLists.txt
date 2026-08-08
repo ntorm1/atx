@@ -124,6 +124,10 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     # translation unit compiles into atx-vol like every other research .cpp
     # (dispersion_run.cpp, run_archive.cpp, backtest_driver.cpp above).
     src/snapshot_pool.cpp
+    # D1: content-addressed track identity (TrackKey) + economics-rev
+    # tripwire pairing. Same research/include placement and same-library
+    # compilation as snapshot_pool.cpp immediately above.
+    src/track_key.cpp
     src/strategy.cpp
     src/dispersion_strategy.cpp
     src/tearsheet.cpp

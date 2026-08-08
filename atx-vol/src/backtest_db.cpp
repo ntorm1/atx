@@ -14,6 +14,7 @@
 
 #include "atx/vol/detail/backtest_series_columns.hpp"
 #include "atx/vol/detail/archive_util.hpp"
+#include "atx/vol/research/track_key.hpp" // Task D1: make_engine_id() (engine_id incl. economics rev)
 
 namespace atx::vol {
 using atx::core::Ok;
@@ -1418,6 +1419,23 @@ std::uint64_t backtest_series_identity(std::uint64_t template_fingerprint, std::
   const std::uint64_t run_archive_schema = ra_schema_hash();
   h = fnv_value(h, run_archive_schema);
   h = fnv_value(h, kBacktestTemplateEngineSchemaSalt);
+  // Task D1: fold the FULL engine identity -- ATX_VOL_VERSION_STRING +
+  // kBacktestEconomicsRev + ra_schema_hash(), see make_engine_id() in
+  // atx/vol/research/track_key.hpp -- so a change that moves the golden NAV
+  // invalidates every persisted series MECHANICALLY, through the same
+  // kBacktestEconomicsRev the D1 golden-NAV tripwire gates, instead of
+  // resting on someone remembering to hand-bump kBacktestDbEngineSchemaSalt /
+  // kBacktestTemplateEngineSchemaSalt above. Those two salts stay: they still
+  // gate the MANIFEST/PARTITION BINARY LAYOUT and the template's own
+  // encoding, which are structural changes an economics-rev fold cannot see.
+  // Folding this string is a NEW schema/generation input, not a format edit
+  // (`backtest_series_identity` was already, and remains, an opaque u64
+  // stored in the existing `run_identity_hash` column) -- so BacktestDb v1
+  // partitions stay byte- and reader-compatible; only the VALUE recomputed
+  // for a given (template, uid, sources) changes, which invalidates every
+  // series cached under the OLD recipe. That invalidation is expected: this
+  // is exactly the "no more resting on hand-bumped salts" this task closes.
+  h = fnv_string(h, make_engine_id());
   h = fnv_value(h, template_fingerprint);
   h = fnv_value(h, uid);
   const std::uint64_t count = sources.size();

@@ -178,6 +178,8 @@ add_executable(atx-vol-tests
     swap_leg_test.cpp                # swap-leg toolkit (contract bridge + signal probe)
     # backtest-production-lakehouse sprint, Task B2 — appended target:
     margin_test.cpp                  # Reg-T + scenario-grid margin models, engine wiring
+    # backtest-production-lakehouse sprint, Task D1 — appended target:
+    track_key_test.cpp               # content-addressed TrackKey + economics-rev tripwire
 )
 # backtest_bench_test.cpp was relocated to bench/backtest_throughput_bench.cpp
 # (it is a throughput benchmark, not a correctness gate).

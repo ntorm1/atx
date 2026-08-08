@@ -1,5 +1,6 @@
 #include "atx/vol/backtest_db.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -412,6 +413,64 @@ TEST(BacktestDbManifest, TemplateAndSeriesListingsAreDeterministic) {
   EXPECT_EQ(std::pair(series[2].template_id, series[2].symbol),
             std::pair(std::string("zeta"), std::string("MSFT")));
   std::filesystem::remove_all(root);
+}
+
+// ── Task D1: backtest_series_identity folds the full engine identity ───────
+// (ATX_VOL_VERSION_STRING + kBacktestEconomicsRev + ra_schema_hash(), via
+// make_engine_id()) instead of resting solely on the hand-bumped
+// kBacktestDbEngineSchemaSalt / kBacktestTemplateEngineSchemaSalt constants.
+// backtest_series_identity() is a free function declared in backtest_db.hpp
+// (already included above), so these are pure unit tests -- no BacktestDb
+// instance needed.
+
+[[nodiscard]] std::vector<BacktestSourcePartition> make_sources(std::size_t count) {
+  std::vector<BacktestSourcePartition> sources;
+  sources.reserve(count);
+  for (std::size_t i = 0; i < count; ++i) {
+    const std::string date = "2026-01-" + std::string(i < 9 ? "0" : "") + std::to_string(i + 1);
+    sources.push_back(BacktestSourcePartition{
+        date, ArchiveContentIdentity{1'000 + i, 10 + i, static_cast<std::uint32_t>(20 + i),
+                                     static_cast<std::uint32_t>(30 + i)}});
+  }
+  return sources;
+}
+
+TEST(BacktestDbSeriesIdentity, DeterministicForSameInputs) {
+  const std::vector<BacktestSourcePartition> sources = make_sources(3);
+  const std::uint64_t first = backtest_series_identity(777, 101, sources);
+  const std::uint64_t second = backtest_series_identity(777, 101, sources);
+  EXPECT_NE(first, 0u);
+  EXPECT_EQ(first, second);
+}
+
+TEST(BacktestDbSeriesIdentity, InvalidInputsReturnZero) {
+  const std::vector<BacktestSourcePartition> sources = make_sources(2);
+  EXPECT_EQ(backtest_series_identity(0, 101, sources), 0u) << "zero template_fingerprint";
+  EXPECT_EQ(backtest_series_identity(777, 0, sources), 0u) << "zero uid";
+  std::vector<BacktestSourcePartition> unsorted = sources;
+  std::reverse(unsorted.begin(), unsorted.end());
+  EXPECT_EQ(backtest_series_identity(777, 101, unsorted), 0u) << "out-of-order sources";
+}
+
+TEST(BacktestDbSeriesIdentity, DiscriminatesTemplateUidAndSources) {
+  const std::vector<BacktestSourcePartition> sources = make_sources(3);
+  const std::uint64_t baseline = backtest_series_identity(777, 101, sources);
+  EXPECT_NE(backtest_series_identity(778, 101, sources), baseline) << "template_fingerprint";
+  EXPECT_NE(backtest_series_identity(777, 102, sources), baseline) << "uid";
+  EXPECT_NE(backtest_series_identity(777, 101, make_sources(2)), baseline) << "sources";
+}
+
+// GOLDEN PIN, same discipline as run_archive_test.cpp's
+// `ra_schema_hash() == 0xdcce47781ac8390dull` freeze: proves the D1 fold
+// (make_engine_id(), which embeds kBacktestEconomicsRev) is actually part of
+// the computed value for a fixed input, not a no-op. Captured after the D1
+// fold landed (task-D1-report.md has the TDD RED/GREEN evidence); a future
+// intentional change to the identity recipe re-pins this deliberately, same
+// as any other schema-salt bump.
+TEST(BacktestDbSeriesIdentity, GoldenPinReflectsTheD1Fold) {
+  const std::vector<BacktestSourcePartition> sources = make_sources(3);
+  constexpr std::uint64_t kExpected = 7271453385763286616ULL;
+  EXPECT_EQ(backtest_series_identity(777, 101, sources), kExpected);
 }
 
 } // namespace
