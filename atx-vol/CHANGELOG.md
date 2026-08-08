@@ -8,6 +8,149 @@ that silently changes a NUMBER a caller already depends on belongs in this file.
 Vol-derivatives production sprint, Phase 1 (correctness). Grows only with
 changes that move a number a caller could already be marking with.
 
+### Added — `DerivGreekBumps::carry_theta`: the fixing-roll theta a calendar-only roll drops, on by default (GK-C2, Task C-10)
+
+`DerivGreeks::theta` rolls ONLY the calendar (`T -> T - dt`) with `rv_spec`
+held fixed, so it silently omits the implied-to-realized fixing rollover —
+the largest deterministic daily P&L term on an unaged/mid-life swap (a
+fair-struck swap reports `theta ~= 0` even though the fixing roll itself is
+a real, large daily mark move). `theta_carry`/`theta_zero_fixing` price that
+roll too, by injecting one extra fixing into a COPY of `rv_spec` (struck at
+the fresh `K_var_future`, or at a literal zero return respectively) before
+the same `T - dt` roll `theta` already takes. Both go NaN when the contract
+cannot roll, when the injected fixing would cross a dispatch-ENGINE boundary
+the center was never in (e.g. an unaged VolSwap under an explicit
+`DerivEngine::VolCarrLee`, which cannot price mid-life), or — after the C-R
+gate fix below — when the strip resolving `K_var_future` itself fails on a
+holey surface. Fully-aged: both equal `theta` exactly, unconditionally.
+
+`DerivGreeks` grows two public fields (`theta_carry`, `theta_zero_fixing`;
+arity 10 -> 12) and `DerivGreekBumps` grows one (`carry_theta`; arity 5 -> 6,
+**default `true`**). Default-on costs one extra `var_swap_fair_strike`
+evaluation (resolving `K_var_future`) plus two extra `deriv_price` repricings
+on top of the block's existing up-to-14 — **up to 17 repricings per
+`deriv_greeks` call, ~+21% over the pre-C-10 worst case** — skipped for free
+(no extra evaluation at all) when `contract.rv_spec.n_obs_total == 0` (no
+fixing schedule to inject into).
+
+**Migration**: every existing `deriv_greeks`/`price_deriv_book(greeks=true)`
+caller pays the extra cost starting now; set `DerivGreekBumps::carry_theta =
+false` to opt back out to the pre-C-10 evaluation count (both fields then
+stay at their `NaN` default, same as a contract that cannot roll). A reader
+of `DerivGreeks` gains two fields it must default-initialize/assign
+explicitly (no positional brace-init of this type exists in-repo today).
+
+### Fixed — an unaged VolSwap's `deriv_greeks` no longer loses the whole block over a holey surface (C-R aggregate review, Critical)
+
+`carry_theta`'s strip call (above) sat behind a plain `ATX_TRY`, and the
+SAME `var_swap_fair_strike` routine gained a new hard `Internal` failure
+this sprint (PV-4, past `max(2, n/100)` interior-bad nodes) — so a
+holey-but-otherwise-servable surface, under the DEFAULT config (`carry_theta`
+true, engine `Auto`), lost the ENTIRE `Result<DerivGreeks>` where pre-sprint
+it returned a complete block. `price_vol_swap`'s own unaged branch treats
+this identical strip call as best-effort and never fails the price over it.
+Both carry fields now degrade to `NaN` on any failure in that strip
+resolution or its two dependent repricings, mirroring the existing
+engine-boundary degrade — every other greek is unaffected, and the CENTER
+quote's fail-loud contract (PV-4) is untouched.
+
+**Migration**: none for a caller who was already getting a complete block;
+a caller relying on the (regressed, sprint-internal) hard failure to detect
+a holey surface should instead check `has_flag(quote.flags,
+DerivFlags::InteriorBadNodes)` on the embedded center quote, or call
+`var_swap_fair_strike` directly for its own fail-loud contract.
+
+### Fixed — five `DerivGreeks`/`FitDiag` correctness gaps from Task C-9
+
+**PV-9** — An expired-but-not-yet-rolled `FullyAged` lot (`contract.
+maturity_t < 0`, obs-count-driven aging already complete) computed `rho =
+-T*PV` with the NEGATIVE `T`, sign-flipping into a fabricated POSITIVE rho
+instead of "nothing left to discount". `T` is now clamped to `>= 0` before
+that multiply (`std::fmax(contract.maturity_t, 0.0)`), so a `FullyAged`
+contract past its own maturity now reports `rho == 0` like every other
+fully-realized lot. This number flows into `PriceTotals::rho` through
+`deriv_book::accumulate` for any book carrying such a lot.
+
+**GK-C8** — Front-pillar theta/charm (a roll landing below the surface's
+first fitted pillar) used to clamp the forward flat and the discount flat —
+dropping theta's own discount-roll term — and the header told callers to
+treat the result as merely indicative. `carry_from` (the PricedSurface-
+native carry snapshot) now inserts a second forward + rate pillar at the
+rolled tenor, read off the surface's OWN economic extrapolation
+(`PricedSurface::forward_at`/`rate_at`) instead of the flat clamps
+`resolve_forward`/`YieldCurve` apply outside the pillar range — mirroring
+the `SurfaceRef` bridge (`carry_from_ref`), which already carried that
+second pillar. Theta/charm on a front-pillar contract MOVE, and the header
+caveat calling the result indicative is deleted — it is now the surface's
+real extrapolated carry, not an approximation.
+
+**GK-C7** — `deriv_greeks` gains a new `InvalidArgument`: a `vol_abs` bump
+sitting at or above the surface's own ATM implied vol (`b.vol_abs >=
+sigma_atm`) used to push the vol-down bump's shifted nodes to a non-positive
+IV, which the strip funnel resolved to zero silently — hollowing out
+vega/volga/vanna with no visible signal. `deriv_greeks` now rejects that
+bump size up front (`"greek bump sizes must be > 0 (spot_rel < 1, vol_abs <
+ATM vol)"`), reading `sigma_atm` once at the contract's own `(k=0, T)` — an
+error-contract tightening exactly parallel to PV-5's dispatch-matrix fix.
+
+**GK-C9b** — `DerivPriceFrame::totals.{theta,vanna,charm}` are NaN-poisoned
+by design the moment any `Ok` row's own column is NaN (a contract too short
+to roll; `second_order == false` for vanna/charm) — but a NaN total used to
+be a dead end with no way to tell "1 excluded lane" from "every lane
+excluded". Three new fields, `n_theta_excluded`/`n_vanna_excluded`/
+`n_charm_excluded`, name how many `Ok` rows were excluded from each column
+(0 when `greeks` was false — nothing attempted, not "nothing excluded" — or
+every `Ok` lane's column was finite). `DerivPriceFrame` arity 2 -> 5.
+
+**FIT-C11** — The dense-slice right-wing power tail's exponent used to floor
+at exactly `0.0` on a degenerate fitted edge (last two node prices equal,
+zero slope), which made the tail flat-clamp a non-zero option price forever
+— exactly the flat-clamp this tail form exists to avoid. The exponent now
+floors at `1.0e-6` instead: still decays, if slowly, rather than never
+decaying at all. Far-strike prices on a degenerate board move from
+flat-clamped to (slowly) decaying.
+
+**Migration**: PV-9 corrects a fabricated positive rho to 0 for any expired,
+not-yet-rolled `FullyAged` lot — a caller marking such lots should expect
+this number to move. GK-C8 moves front-pillar theta/charm to the surface's
+real extrapolated carry; a caller that special-cased "indicative" front-
+pillar theta can remove that special case. GK-C7 is a new `InvalidArgument`
+a caller with a `vol_abs` bump close to a low-vol surface's ATM level may
+now see for the first time. GK-C9b is a pure append (three new zero-default
+fields) with no effect on existing totals. FIT-C11 moves far-wing prices on
+boards with a degenerate fitted edge (last two node prices exactly equal) by
+an amount that decays with distance from the edge.
+
+### Fixed — a converged, wing-clamp-certified QP solution where the fit used to fail closed (FIT-C3/FIT-C4, Task C-7)
+
+The dense-slice active-set QP's ratio test could produce a spurious NEGATIVE
+step size `alpha` at a numerically dual-degenerate vertex: a row whose
+directional derivative sits inside the `-1.0e-14` anti-cycling dead zone can
+still drift a few ulp past zero over many iterations, and selection takes
+the MINIMUM `alpha` — so an unclamped negative value beat every legitimate
+positive one, with its magnitude unbounded as the row's own gradient
+projection shrank toward the dead-zone edge. `x += alpha * p` then stepped
+BACKWARD out of the feasible region by an arbitrary multiple; the solver's
+own certificate correctly refused the resulting point, and the caller
+dropped the whole slice (or, under `fail_board_on_hard_slice_error`, the
+whole board). `alpha` is now clamped at `0.0`
+(`std::max(0.0, -gix/gip)`), turning that failure into the degenerate
+zero-length step an active-set method takes at a tied vertex: the row joins
+the working set at the current iterate and the walk continues to a genuine
+KKT-optimal certificate. A companion fix (FIT-C4) makes the DROP-side tie-
+break deterministic on an exactly-tied most-negative multiplier (lowest
+constraint-row index wins, matching the existing BLOCKING-side tie-break) —
+previously untested by any board that reaches the drop path.
+
+**Migration**: a board whose dense-slice fit used to fail (slice dropped, or
+the whole board refused under `fail_board_on_hard_slice_error`) at a
+numerically dual-degenerate vertex can now converge to a certified solution
+instead — an AVAILABILITY change, not a value change on any board that was
+already fitting successfully (the clamp only ever turns a would-be-refused
+certificate into a continued walk to the SAME KKT-optimal point a
+non-degenerate path would have found). No magnitude table: there is no
+"before" value to compare against on a board this fix newly admits.
+
 ### Fixed — the eSSVI alternate driver's `validate_no_arb` is no longer a dead knob (FIT-C1/FIT-C5, Task C-8)
 
 `essvi_calib_surface`[`_sequential`] unconditionally stamped `out_diag->
