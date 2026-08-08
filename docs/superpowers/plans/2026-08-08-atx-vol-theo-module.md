@@ -713,6 +713,9 @@ struct TheoQuery { double strike{0.0}; double tenor_years{0.0}; Side side{Side::
 
 enum class TheoFlagBits : std::uint32_t {
   None = 0, Extrapolated = 1u << 0, OverlayClamped = 1u << 1, ModelMissing = 1u << 2,
+  FastTierRoute = 1u << 3,  // nonzero-dvol reprice is cold AL while the served mark is
+                            // fast-tier cached: price-space edge carries the documented
+                            // route residual (vol-space edge unaffected)
 };
 
 struct TheoValue {

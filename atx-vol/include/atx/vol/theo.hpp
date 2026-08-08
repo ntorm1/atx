@@ -20,15 +20,32 @@
 // only ever ADDED to by a clamped overlay `dvol` (a sum over zero overlays
 // adds nothing at all), and whenever `theo_vol` lands back on `market_vol`
 // exactly (trivially true with no overlays, since no addition ever happens)
-// the engine reuses the ALREADY-COMPUTED `market_price` -- the surface's own
-// `fair_value(K, T, side)` result -- as `theo_price`, rather than re-deriving
-// it through a second, independently-rounded American solve. Only once an
-// overlay actually moves `theo_vol` away from `market_vol` does the engine pay
-// for a fresh American reprice, at `theo_vol`, over the surface's OWN carry
-// (`pricing().S`, `rate_at(T)`, `q_eff_at(T)`, `pricing().method`,
-// `pricing().al_opts`) -- the same inputs `PricedSurface::fair_value`
-// reprices with internally (see priced_surface.cpp `price_resolved`), so the
-// two curves stay carry-consistent as overlays are dialed up.
+// the engine reuses the ALREADY-COMPUTED `market_price` -- literally the same
+// `double` `surface.fair_value(K, T, side)` produced, not a second,
+// independently-rounded American solve at "the same" vol. This zero-overlay
+// case is the ONLY one the identity contract covers exactly.
+//
+// Once an overlay actually moves `theo_vol` away from `market_vol`, the
+// engine pays for a fresh, COLD Andersen-Lake reprice at `theo_vol`, over the
+// surface's own carry (`pricing().S`, `rate_at(T)`, `q_eff_at(T)`,
+// `pricing().method`, `pricing().al_opts`). On a COLD-tier surface
+// (`QueryPricingTier::LegacyCompatible`/`ColdReference`) that is the same
+// route `fair_value` itself takes, so the two prices stay a clean, carry-
+// consistent family as overlays are dialed up from zero. On a FAST-tier
+// surface (`RepresentativeFast`/`CarryBank`), `market_price` is served
+// through the cached Chebyshev-correction route
+// (`PricedSurface::price_resolved`'s `Configured` branch), which is only an
+// APPROXIMATION of the cold solve this engine reprices `theo_price` with --
+// so `market_price - theo_price` carries a genuine route residual (typically
+// small, concentrated at short tenors) that does NOT vanish as `dvol -> 0`
+// the way it would on a cold surface; it simply stops being COMPUTED at
+// `dvol == 0`, where the identity short-circuit above takes over instead.
+// `TheoFlagBits::FastTierRoute` is set on exactly the queries where that
+// residual is live (nonzero net `dvol`, fast-tier surface), naming it rather
+// than leaving it silently folded into `edge_vol`'s price-space sibling.
+// `edge_vol` itself (the VOL-space edge) is unaffected either way -- it is
+// `market_vol - theo_vol`, computed entirely from `iv()` reads and overlay
+// `dvol`, with no pricer call in it at all.
 //
 // `TheoConfig::price_theo = false` opts into a cheap, vol-space-only
 // screening sheet: it never pays for the extra American solve at a shifted
@@ -92,6 +109,15 @@ enum class TheoFlagBits : std::uint32_t {
   // Task 7's engine never sets this bit -- extending `OverlayAdjust` is that
   // future task's documented change, not this one's.
   ModelMissing = 1u << 2,
+  // Set on a query when the net applied overlay `dvol` is nonzero AND the
+  // surface serves its market mark through a fast-tier cached route
+  // (`PricedSurface::query_pricing_tier()` is `RepresentativeFast` or
+  // `CarryBank`) -- read ONCE per `value_into` call, not per query. Means:
+  // `market_price - theo_price` (the PRICE-space edge) carries the fast
+  // tier's cached-correction route residual against `theo_price`'s cold
+  // Andersen-Lake reprice, on top of whatever the overlay itself intended.
+  // `edge_vol` (the VOL-space edge) is unaffected -- see the header banner.
+  FastTierRoute = 1u << 3,
 };
 
 // One theo evaluation. Zero net overlay adjustment: `theo_vol == market_vol`,
@@ -194,7 +220,10 @@ public:
   // (`Err(InvalidArgument)` otherwise, `out` left byte-for-byte untouched),
   // and `ctx.surface != nullptr` (`Err(InvalidArgument)` otherwise).
   //
-  // A query the surface cannot price, or a non-OK overlay `adjust`, fails the
+  // A query the surface cannot price, a non-OK overlay `adjust`, or an
+  // overlay returning a non-finite `dvol`/`band` (a broken overlay is a bug,
+  // not a data condition -- this fails loud, naming the overlay and query
+  // index, rather than silently clamping NaN/Inf into `theo_vol`), fails the
   // WHOLE call (`Err` propagated unchanged) -- deterministic all-or-nothing
   // semantics; entries already written into `out` before the failing query
   // are left as computed (not rolled back), exactly as
