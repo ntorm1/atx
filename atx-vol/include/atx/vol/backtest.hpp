@@ -1027,11 +1027,15 @@ struct RunConfig {
   bool prefetch_snapshots{true};
   // L2 (AL-solve-wall sprint, fewer-solves): serve an expiring lot's base
   // settlement mark from the per-step mark memo (populated by the prior step's
-  // book-greeks pass at the SAME base date) instead of re-solving it. The memo'd
-  // mark is bit-identical to the settlement solve (FullGreeks mark == Marks mark,
-  // pinned by the L2 crux gate), so ON vs OFF is bit-for-bit identical output; OFF
-  // reproduces the pre-L2 solve-every-settlement behavior (and makes the
-  // DuplicateMarkSolves ledger counter observe the duplication it removes).
+  // book-greeks pass at the SAME base date) instead of re-solving it. The served
+  // mark is an ECONOMIC PARITY match to the settlement solve, not a bit-identity
+  // one: FullGreeks mark and Marks mark for the same contract agree to <=1e-10
+  // relative (~1e-13 USD) — per the L2 crux gate (`L2MarkMemoCruxFullGreeksMarkEqualsMarksMark`,
+  // backtest_exec_test.cpp) — an AVX2 batch-composition reassociation residual
+  // between FullGreeks batch (the whole book) and Marks-only batch (just the
+  // expiring lots), not a model split. BacktestDb builds force this OFF to preserve
+  // the incremental==one-shot bit-for-bit invariant (see backtest_db_build.cpp
+  // run_config()).
   bool settlement_mark_memo{true};
   // WS-F F1(d): per-recorded-row NAV-vs-liquidation reconciliation (IStrategy
   // overload only — the fixed-book overload has no cash/share ledger to
