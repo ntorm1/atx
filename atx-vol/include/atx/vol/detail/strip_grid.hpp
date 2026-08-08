@@ -182,6 +182,22 @@ struct WingCoverage {
 // `dk_max` is non-positive (no floor is expressible) or the current budget
 // already satisfies the requirement -- the caller compares the result against
 // `current_n` to learn whether the floor actually engaged.
+//
+// Aggregate review fix (C-R Important I-2 / MUST-FIX 3): the raw demand
+// `span/dk_max + 4*n_panels` grows without bound as sigma_atm*sqrt(T) -> 0
+// (a short-tenor or near-zero-vol quote) -- the tier SPAN floor does not
+// shrink with T, so `dk_max` alone drives the demand toward infinity with no
+// error, no flag, just an unbounded slowdown (a `deriv_greeks` call pays up
+// to 17 of these strips after C-10). It also let `std::ceil(intervals)` feed
+// a `std::size_t` cast that is UB once `intervals` exceeds `size_t`'s range.
+// `kMaxStripNodes` -- the Audit tier's own node count, the richest tier this
+// file ships -- caps both, checked BEFORE the cast so the overflow-prone
+// value never reaches it. A caller past the cap pays no more than Audit's
+// own cost; the existing `raised != current_n` check at the call site still
+// reports LowT ("under-resolved for its own vol scale"), which already
+// covers a capped grid honestly -- no new flag needed.
+inline constexpr std::size_t kMaxStripNodes = 2049;
+
 [[nodiscard]] inline std::size_t dk_floor_nodes(double span, std::size_t current_n,
                                                 double dk_max,
                                                 std::size_t n_panels) noexcept {
@@ -192,11 +208,17 @@ struct WingCoverage {
   if (static_cast<double>(current_n - 1u) >= intervals) {
     return current_n;
   }
+  // Capped here, before the ceil()->size_t cast below: `intervals` can be
+  // astronomically large, and casting an out-of-range double to `size_t` is
+  // undefined behaviour, not a saturating truncation.
+  if (!(intervals < static_cast<double>(kMaxStripNodes))) {
+    return current_n > kMaxStripNodes ? current_n : kMaxStripNodes;
+  }
   std::size_t n = odd_nodes(static_cast<std::size_t>(std::ceil(intervals)) + 1u, current_n);
   if ((n % 4u) != 1u) {
     n += 2u;
   }
-  return n;
+  return n > kMaxStripNodes ? kMaxStripNodes : n;
 }
 
 // Composite-Simpson weight for node i of n (n odd): end nodes 1, interior

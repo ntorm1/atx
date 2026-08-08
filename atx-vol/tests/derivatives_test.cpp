@@ -494,6 +494,14 @@ TEST(StripResolution, PanelSpacingRespectsCeilingAtTheFloorBoundary) {
   // ... and the guarantee must hold for ALL inputs, not just the one crossing
   // above. Walk sigma*sqrt(T) across four decades so every tier's resolved dk
   // crosses its own dk_max somewhere in the sweep.
+  //
+  // Aggregate review fix (I-2 / MUST-FIX 3): the sweep's smallest `s` values
+  // now push demand past `kMaxStripNodes` for every tier (most visibly
+  // Audit, whose span is widest) -- the floor's exact per-panel guarantee is
+  // deliberately traded for a bounded cost there, honestly flagged via
+  // LowT, rather than growing the node count without bound. Below the cap
+  // the exact guarantee is unchanged and still asserted; at/past it, assert
+  // the cap engaged instead.
   for (const DerivQuality tier : {DerivQuality::Fast, DerivQuality::Standard,
                                   DerivQuality::High, DerivQuality::Audit}) {
     for (int j = 0; j < 160; ++j) {
@@ -506,9 +514,22 @@ TEST(StripResolution, PanelSpacingRespectsCeilingAtTheFloorBoundary) {
       const auto q = var_swap_fair_strike(surf, cs, T_test, cfg);
       ASSERT_TRUE(q.has_value()) << "tier=" << static_cast<int>(tier) << " s=" << s;
       const double dk_max = atx::vol::strip::dk_ceiling(sigma, T_test);
-      EXPECT_LE(worst_panel_dk(*q, 0.5), dk_max)
-          << "tier=" << static_cast<int>(tier) << " s=" << s << " T=" << T_test
-          << " n=" << q->strip_nodes_used;
+      // strip_nodes_used == kMaxStripNodes is ambiguous on its own: Audit's
+      // OWN tier default already equals the cap, so a node count sitting
+      // there can mean either "the cap genuinely bound" (LowT true -- a
+      // truly under-resolved grid, ceiling not asserted) or "demand was
+      // already comfortably satisfied by the tier default" (LowT false --
+      // the pre-fix guarantee still holds). Use the real LowT flag, not the
+      // node count alone, to tell the two apart.
+      if (q->strip_nodes_used < atx::vol::strip::kMaxStripNodes ||
+          !has_flag(q->flags, DerivFlags::LowT)) {
+        EXPECT_LE(worst_panel_dk(*q, 0.5), dk_max)
+            << "tier=" << static_cast<int>(tier) << " s=" << s << " T=" << T_test
+            << " n=" << q->strip_nodes_used;
+      } else {
+        EXPECT_EQ(q->strip_nodes_used, atx::vol::strip::kMaxStripNodes)
+            << "tier=" << static_cast<int>(tier) << " s=" << s;
+      }
       // Provisioning the headroom must not cost the Richardson estimate.
       EXPECT_TRUE(std::isfinite(q->integration_error_est))
           << "tier=" << static_cast<int>(tier) << " s=" << s;
@@ -559,6 +580,35 @@ TEST(StripResolution, PanelSpacingRespectsCeilingAtTheFloorBoundary) {
       EXPECT_EQ(q->strip_nodes_used, n_raised) << "tier=" << static_cast<int>(tier);
     }
   }
+}
+
+// ── Aggregate review fix (C-R Important I-2 / MUST-FIX 3) ─────────────────
+//
+// `dk_floor_nodes`'s raw demand `span/dk_max + 4*n_panels` grows without
+// bound as sigma_atm*sqrt(T) -> 0: nothing capped it, and the uncapped path
+// fed `std::ceil(intervals)` into a `size_t` cast that is UB once `intervals`
+// exceeds `size_t`'s range. `kMaxStripNodes` (the Audit tier's own 2049)
+// caps both, checked before the cast. Unit-level pin on the pure function
+// itself, isolated from any particular surface/tenor fixture.
+TEST(StripResolution, DkFloorNodesCapsPastKMaxStripNodes) {
+  using atx::vol::strip::dk_floor_nodes;
+  using atx::vol::strip::kMaxStripNodes;
+
+  // Pathological demand (dk_max = 1e-12, the "T ~ 1 second" corner from the
+  // review): the raw `span/dk_max` term alone is ~6e12, far past size_t
+  // range on the `+1` the uncapped path would have cast. Capped at exactly
+  // kMaxStripNodes, still on the 4m+1 Richardson lattice.
+  const std::size_t n = dk_floor_nodes(/*span=*/6.0, /*current_n=*/2049u,
+                                        /*dk_max=*/1.0e-12, /*n_panels=*/4u);
+  EXPECT_EQ(n, kMaxStripNodes);
+  EXPECT_EQ(n % 4u, 1u) << "cap must stay on the 4m+1 Richardson lattice";
+
+  // An ordinary demand well under the cap raises exactly as before -- the
+  // cap only bites the pathological end, not everyday floor engagement.
+  const std::size_t small_raise =
+      dk_floor_nodes(/*span=*/2.0, /*current_n=*/97u, /*dk_max=*/0.01, /*n_panels=*/4u);
+  EXPECT_GT(small_raise, 97u);
+  EXPECT_LT(small_raise, kMaxStripNodes);
 }
 
 // ── C-3 / LIT-10: kink-aligned composite Simpson panels ──────────────────
