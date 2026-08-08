@@ -1,22 +1,39 @@
 // bev_label_factory_gate_test.cpp — correctness GATE for the label-factory
 // driver (THEO-6).
 //
-// `run_bev_label_factory` / `BevFactoryArgs` have no separate header (the
-// driver's own banner comment explains why: they are a small, CLI-only arg
-// bag with no reuse value beyond this one driver). So this test pulls the
-// EXACT implementation the shipped example TU runs by #include-ing
-// examples/bev_label_factory.cpp directly (its `main()` suppressed via
-// ATX_BEV_LABEL_FACTORY_NO_MAIN) rather than reimplementing or forward-
-// declaring a second, ODR-risky copy of the struct.
+// ACCESS MECHANISM. `run_bev_label_factory` / `BevFactoryArgs` have no
+// separate header — they are a small, CLI-only arg bag with no reuse value
+// beyond this one driver, so a `.hpp` was not warranted (see the driver's own
+// banner). This test therefore reaches them by `#define
+// ATX_BEV_LABEL_FACTORY_NO_MAIN` followed by a TEXTUAL `#include` of
+// examples/bev_label_factory.cpp below — a macro-guarded re-inclusion of the
+// whole example TU (its `main()` compiled out) directly into THIS test's own
+// translation unit, so the struct and function are declared exactly once and
+// the test exercises the shipped implementation byte-for-byte, not a
+// reimplementation or a second, ODR-risky forward-declared copy. This file is
+// the ONLY place that `#include`s the example TU, so there is no ODR hazard
+// from a second inclusion elsewhere. This is NOT the same mechanism
+// tests/spy_strangle_backtest_test.cpp uses for its own driver — that test
+// calls ordinary library entry points directly and never includes its
+// example TU at all; this driver's args struct has no such shared-header
+// alternative available to it. Reviewed and accepted as this task's access
+// mechanism (controller ruling, 2026-08-08); do not restructure it.
 //
-// Self-contained (synthetic eSSVI surfaces via the spy_strangle_backtest_
-// test.cpp `make_surface` pattern; no fit, no external data): builds a small
-// SurfaceDb corpus, then runs the driver TWICE with IDENTICAL args into two
-// temp files and pins:
-//   (a) both runs exit Ok(0);
-//   (b) the two output files are BYTE-IDENTICAL (memcmp, whole file);
-//   (c) at least one row converged (flag == 0, i.e. BevFlag::Ok);
-//   (d) every written row's log_ratio is finite.
+// FIXTURE. Self-contained: `make_surface` below mirrors spy_strangle_
+// backtest_test.cpp's own helper of the same name (closed-form eSSVI term
+// structure, no fit, no external data) so this gate has no data dependency.
+//
+// COVERAGE. Builds a small SurfaceDb corpus, then:
+//   (a)-(d) runs the full driver TWICE with IDENTICAL args into two temp
+//       files: both exit Ok(0); the two output files are BYTE-IDENTICAL
+//       (memcmp, whole file); at least one row converged (flag == 0, i.e.
+//       BevFlag::Ok); every written row's log_ratio is finite.
+//   (e) parse_args over a canned argv vector produces the expected
+//       BevFactoryArgs field-for-field.
+//   (f) parse_args rejects a missing required flag (no crash, no usage()
+//       call needed to observe the rejection).
+//   (g) load_dividends_tsv parses a valid two-row TSV correctly and rejects
+//       a malformed line with Err.
 
 #include <gtest/gtest.h>
 
@@ -244,4 +261,121 @@ TEST(BevLabelFactoryGate, TwoRunsProduceByteIdenticalFilesWithAtLeastOneOkLabel)
   }
   EXPECT_GT(n_ok, 0u) << "expected at least one converged (flag==0) label";
   std::printf("[gate] rows=%zu flag_ok=%zu\n", rows.size(), n_ok);
+}
+
+namespace {
+
+// Builds a `char**` argv over `storage`'s elements (storage must outlive the
+// returned vector -- each entry points into `storage[i]`'s own buffer).
+[[nodiscard]] std::vector<char *> make_argv(std::vector<std::string> &storage) {
+  std::vector<char *> argv;
+  argv.reserve(storage.size());
+  for (std::string &s : storage) {
+    argv.push_back(s.data());
+  }
+  return argv;
+}
+
+} // namespace
+
+// (e) parse_args: a canned argv vector produces the expected BevFactoryArgs
+// field-for-field.
+TEST(BevLabelFactoryGate, ParseArgsProducesExpectedFieldsFromCannedArgv) {
+  std::vector<std::string> argv_storage = {
+      "bev_label_factory",
+      "--db",
+      "C:/some/db",
+      "--uid",
+      "SPY",
+      "--entry-start",
+      "2026-01-01",
+      "--entry-end",
+      "2026-01-31",
+      "--tenor-days",
+      "45",
+      "--delta-lo",
+      "0.10",
+      "--delta-hi",
+      "0.90",
+      "--dividends",
+      "divs.tsv",
+      "--out",
+      "labels.tsv",
+      "--threads",
+      "4",
+  };
+  std::vector<char *> argv = make_argv(argv_storage);
+
+  BevFactoryArgs args;
+  const bool ok = parse_args(static_cast<int>(argv.size()), argv.data(), args);
+  ASSERT_TRUE(ok);
+  EXPECT_EQ(args.db, "C:/some/db");
+  EXPECT_EQ(args.uid, "SPY");
+  EXPECT_EQ(args.entry_start, "2026-01-01");
+  EXPECT_EQ(args.entry_end, "2026-01-31");
+  EXPECT_EQ(args.tenor_days, 45);
+  EXPECT_DOUBLE_EQ(args.delta_lo, 0.10);
+  EXPECT_DOUBLE_EQ(args.delta_hi, 0.90);
+  EXPECT_EQ(args.dividends, "divs.tsv");
+  EXPECT_EQ(args.out, "labels.tsv");
+  EXPECT_EQ(args.n_threads, 4u);
+}
+
+// (f) parse_args: a missing required flag (--db omitted here) is rejected --
+// no crash, just a clean `false`.
+TEST(BevLabelFactoryGate, ParseArgsRejectsMissingRequiredFlag) {
+  std::vector<std::string> argv_storage = {
+      "bev_label_factory",
+      "--uid",
+      "SPY",
+      "--entry-start",
+      "2026-01-01",
+      "--entry-end",
+      "2026-01-31",
+      "--tenor-days",
+      "45",
+      "--delta-lo",
+      "0.10",
+      "--delta-hi",
+      "0.90",
+      "--dividends",
+      "divs.tsv",
+      "--out",
+      "labels.tsv",
+  };
+  std::vector<char *> argv = make_argv(argv_storage);
+
+  BevFactoryArgs args;
+  const bool ok = parse_args(static_cast<int>(argv.size()), argv.data(), args);
+  EXPECT_FALSE(ok);
+}
+
+// (g) load_dividends_tsv: a valid two-row file parses correctly (count +
+// exact values); a malformed line (no amount field) is rejected with Err.
+TEST(BevLabelFactoryGate, LoadDividendsTsvParsesValidRowsAndRejectsMalformedLine) {
+  const std::string valid_path =
+      (fs::temp_directory_path() / "atx-bev-label-factory-divs-valid.tsv").string();
+  {
+    std::ofstream f(valid_path, std::ios::binary | std::ios::trunc);
+    f << "# comment line, skipped\n";
+    f << "1700000000000000000 1.25\n";
+    f << "1710000000000000000\t2.5\n";
+  }
+  const Result<std::vector<DividendEvent>> divs = load_dividends_tsv(valid_path);
+  ASSERT_TRUE(divs.has_value()) << divs.error().to_string();
+  ASSERT_EQ(divs->size(), 2u);
+  EXPECT_EQ((*divs)[0].ex_date_ns, 1700000000000000000LL);
+  EXPECT_DOUBLE_EQ((*divs)[0].amount, 1.25);
+  EXPECT_EQ((*divs)[1].ex_date_ns, 1710000000000000000LL);
+  EXPECT_DOUBLE_EQ((*divs)[1].amount, 2.5);
+
+  const std::string bad_path =
+      (fs::temp_directory_path() / "atx-bev-label-factory-divs-bad.tsv").string();
+  {
+    std::ofstream f(bad_path, std::ios::binary | std::ios::trunc);
+    f << "1700000000000000000 1.25\n";
+    f << "not-a-valid-line-missing-the-amount-field\n";
+  }
+  const Result<std::vector<DividendEvent>> bad = load_dividends_tsv(bad_path);
+  EXPECT_FALSE(bad.has_value());
 }

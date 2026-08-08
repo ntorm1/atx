@@ -72,7 +72,18 @@ using atx::core::Ok;
 
 namespace {
 
-// ── CLI arg struct (header-free: only this TU and its gate test need it) ────
+// ── CLI arg struct ────────────────────────────────────────────────────────
+//
+// Deliberately header-free: `BevFactoryArgs` is a small, CLI-only bag with no
+// reuse value beyond this one driver and its one gate test, so it does not
+// warrant a dedicated `.hpp`. The gate test reaches it (and `run_bev_label_
+// factory` below) by `#define ATX_BEV_LABEL_FACTORY_NO_MAIN` followed by a
+// textual `#include` of THIS file — a macro-guarded re-inclusion of the whole
+// example TU, with `main()` compiled out. That include appears in exactly one
+// test TU (see tests/bev_label_factory_gate_test.cpp's own banner), so there
+// is no second declaration of this struct anywhere to drift out of sync with
+// this one (no ODR risk) — an explicit, controller-approved access mechanism
+// for a driver whose logic must stay callable without argv/exit.
 
 struct BevFactoryArgs {
   std::string db;
@@ -87,10 +98,68 @@ struct BevFactoryArgs {
   unsigned n_threads{0}; // 0 = auto (atx_auto_worker_count())
 };
 
-// usage()/parse_args() are argv-only concerns, used solely by main() below --
-// they live inside the NO_MAIN guard (next to main()) rather than here, so a
-// NO_MAIN build (the gate test) does not carry two unused-function warnings
-// under -Werror.
+// [[maybe_unused]]: only `main()` (below, compiled out under
+// ATX_BEV_LABEL_FACTORY_NO_MAIN) calls this -- the gate test exercises
+// parse_args()'s rejection path directly instead of via usage()'s stderr text.
+[[maybe_unused]] void usage() {
+  std::fprintf(stderr, "usage: bev_label_factory --db ROOT --uid SYMBOL --entry-start DATE "
+                       "--entry-end DATE\n    --tenor-days N --delta-lo X --delta-hi X "
+                       "--dividends TSV --out FILE\n    [--threads N]\n");
+}
+
+// argv -> BevFactoryArgs, plus the required-field and range validation. Left
+// OUTSIDE the ATX_BEV_LABEL_FACTORY_NO_MAIN guard (unlike `main` below) on
+// purpose: the gate test exercises this parsing directly (a canned argv
+// vector in, a field-for-field BevFactoryArgs out; a missing required flag
+// rejected) rather than only indirectly through a real process's argv/exit.
+bool parse_args(int argc, char **argv, BevFactoryArgs &args) {
+  for (int i = 1; i < argc; ++i) {
+    const std::string_view flag{argv[i]};
+    auto next = [&](std::string &dst) {
+      if (i + 1 >= argc)
+        return false;
+      dst = argv[++i];
+      return true;
+    };
+    std::string v;
+    if (flag == "--db" && next(v)) {
+      args.db = v;
+    } else if (flag == "--uid" && next(v)) {
+      args.uid = v;
+    } else if (flag == "--entry-start" && next(v)) {
+      args.entry_start = v;
+    } else if (flag == "--entry-end" && next(v)) {
+      args.entry_end = v;
+    } else if (flag == "--tenor-days" && next(v)) {
+      args.tenor_days = std::atoi(v.c_str());
+    } else if (flag == "--delta-lo" && next(v)) {
+      args.delta_lo = std::atof(v.c_str());
+    } else if (flag == "--delta-hi" && next(v)) {
+      args.delta_hi = std::atof(v.c_str());
+    } else if (flag == "--dividends" && next(v)) {
+      args.dividends = v;
+    } else if (flag == "--out" && next(v)) {
+      args.out = v;
+    } else if (flag == "--threads" && next(v)) {
+      args.n_threads = static_cast<unsigned>(std::atoi(v.c_str()));
+    } else {
+      std::fprintf(stderr, "unknown/incomplete flag: %.*s\n", static_cast<int>(flag.size()),
+                   flag.data());
+      return false;
+    }
+  }
+  if (args.db.empty() || args.uid.empty() || args.entry_start.empty() || args.entry_end.empty() ||
+      args.dividends.empty() || args.out.empty()) {
+    std::fprintf(stderr, "--db/--uid/--entry-start/--entry-end/--dividends/--out are required\n");
+    return false;
+  }
+  if (args.tenor_days <= 0 || !(args.delta_lo > 0.0) || !(args.delta_hi < 1.0) ||
+      !(args.delta_lo < args.delta_hi)) {
+    std::fprintf(stderr, "invalid argument values (need tenor-days>0, 0<delta-lo<delta-hi<1)\n");
+    return false;
+  }
+  return true;
+}
 
 // ── Dividends TSV loader: mirrors earnings_forecast_loader.cpp's parsing
 // style (ifstream, string_view line slicing, no exceptions) for the simpler
@@ -433,7 +502,9 @@ std::string fmt_num(double v) {
   jobs.reserve(pending.size());
   for (std::size_t i = 0; i < pending.size(); ++i) {
     jobs.push_back(BevJob{.path = owned_paths[i].days,
-                          .spec = BevSpec{pending[i].strike, pending[i].expiry_ns, pending[i].side},
+                          .spec = BevSpec{.strike = pending[i].strike,
+                                          .expiry_ns = pending[i].expiry_ns,
+                                          .side = pending[i].side},
                           .dividends = dividends});
   }
 
@@ -532,65 +603,6 @@ std::string fmt_num(double v) {
 }
 
 #ifndef ATX_BEV_LABEL_FACTORY_NO_MAIN
-namespace {
-
-void usage() {
-  std::fprintf(stderr, "usage: bev_label_factory --db ROOT --uid SYMBOL --entry-start DATE "
-                       "--entry-end DATE\n    --tenor-days N --delta-lo X --delta-hi X "
-                       "--dividends TSV --out FILE\n    [--threads N]\n");
-}
-
-bool parse_args(int argc, char **argv, BevFactoryArgs &args) {
-  for (int i = 1; i < argc; ++i) {
-    const std::string_view flag{argv[i]};
-    auto next = [&](std::string &dst) {
-      if (i + 1 >= argc)
-        return false;
-      dst = argv[++i];
-      return true;
-    };
-    std::string v;
-    if (flag == "--db" && next(v)) {
-      args.db = v;
-    } else if (flag == "--uid" && next(v)) {
-      args.uid = v;
-    } else if (flag == "--entry-start" && next(v)) {
-      args.entry_start = v;
-    } else if (flag == "--entry-end" && next(v)) {
-      args.entry_end = v;
-    } else if (flag == "--tenor-days" && next(v)) {
-      args.tenor_days = std::atoi(v.c_str());
-    } else if (flag == "--delta-lo" && next(v)) {
-      args.delta_lo = std::atof(v.c_str());
-    } else if (flag == "--delta-hi" && next(v)) {
-      args.delta_hi = std::atof(v.c_str());
-    } else if (flag == "--dividends" && next(v)) {
-      args.dividends = v;
-    } else if (flag == "--out" && next(v)) {
-      args.out = v;
-    } else if (flag == "--threads" && next(v)) {
-      args.n_threads = static_cast<unsigned>(std::atoi(v.c_str()));
-    } else {
-      std::fprintf(stderr, "unknown/incomplete flag: %.*s\n", static_cast<int>(flag.size()),
-                   flag.data());
-      return false;
-    }
-  }
-  if (args.db.empty() || args.uid.empty() || args.entry_start.empty() || args.entry_end.empty() ||
-      args.dividends.empty() || args.out.empty()) {
-    std::fprintf(stderr, "--db/--uid/--entry-start/--entry-end/--dividends/--out are required\n");
-    return false;
-  }
-  if (args.tenor_days <= 0 || !(args.delta_lo > 0.0) || !(args.delta_hi < 1.0) ||
-      !(args.delta_lo < args.delta_hi)) {
-    std::fprintf(stderr, "invalid argument values (need tenor-days>0, 0<delta-lo<delta-hi<1)\n");
-    return false;
-  }
-  return true;
-}
-
-} // namespace
-
 int main(int argc, char **argv) {
   BevFactoryArgs args;
   if (!parse_args(argc, argv, args)) {
