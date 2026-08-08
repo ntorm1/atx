@@ -428,6 +428,7 @@ Result<BevReplayResult> bev_replay_pnl(std::span<const BevDayState> path,
   cash -= g0->price;
   {
     const double trade0 = -g0->delta;        // delta-neutral entry
+    cash -= std::abs(trade0) * path[0].s * cfg.hedge_slippage_bps / 1e4;
     cash -= trade0 * path[0].s;              // buy/sell the hedge
     ledger.add(0u, trade0);
   }
@@ -447,7 +448,8 @@ Result<BevReplayResult> bev_replay_pnl(std::span<const BevDayState> path,
                                  : std::max(0.0, spec.strike - cur.s);
     if (i + 1 == path.size()) {              // expiry: settle at intrinsic (:3795-3797)
       cash += intrinsic;
-      cash += ledger.get(0u) * cur.s;        // liquidate hedge
+      cash -= std::abs(ledger.get(0u)) * cur.s * cfg.hedge_slippage_bps / 1e4;
+      cash += ledger.get(0u) * cur.s;        // liquidate hedge (slippage on the unwind)
       break;
     }
     auto g = american_greeks_al(cur.s, spec.strike, t_rem, sigma, cur.r, cur.q_eff,
@@ -461,10 +463,16 @@ Result<BevReplayResult> bev_replay_pnl(std::span<const BevDayState> path,
           if (d.ex_date_ns > cur.ts_ns && d.ex_date_ns <= path[i + 1].ts_ns)
             threshold += d.amount;
       } else {
-        threshold = spec.strike * (1.0 - std::exp(-cur.r * t_rem));
+        // One-STEP forgone interest (decision horizon = next close), not full
+        // remaining life: extension_value already embeds the American boundary,
+        // so a full-life threshold over-triggers deep in the continuation region.
+        const double dt_next =
+            static_cast<double>(path[i + 1].ts_ns - cur.ts_ns) / kYearNs;
+        threshold = spec.strike * (1.0 - std::exp(-cur.r * dt_next));
       }
       if (bev_should_exercise_early(intrinsic, g->price - intrinsic, threshold)) {
         cash += intrinsic;
+        cash -= std::abs(ledger.get(0u)) * cur.s * cfg.hedge_slippage_bps / 1e4;
         cash += ledger.get(0u) * cur.s;
         out.exercised_early = true;
         out.exercise_ts_ns = cur.ts_ns;
