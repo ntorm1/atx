@@ -514,7 +514,22 @@ Result<std::unique_ptr<IVolCurve>> fit_slice_curve(const CurveConfig &cfg,
       }
     }
     std::unique_ptr<IVolCurve> curve = std::make_unique<EssviCurve>(slice, df);
-    ATX_TRY_VOID(validate_parametric_risk_shape(*curve));
+    // FIT-C5: the eSSVI backbone is butterfly-arb-free EVERYWHERE by
+    // construction (the Mingone cube-space fit enforces the Lee/Gatheral-
+    // Jacquier bound), so the fixed risk-band scan is sufficient whenever no
+    // wing residual was fit — this branch is BIT-IDENTICAL to before C-8 on
+    // that (default, residual_disable == true) path. The optional HINGE_QUAD
+    // wing-residual layer is NOT projected onto the admissible cone (the
+    // per-slice Roper projector is out of port scope; see the PORT NOTE on
+    // `fit_wing_residual`, essvi_calib.cpp), so a served residual slice needs
+    // the SAME full-quoted-range scan the SVI branch uses (FT-C2/FT-C5): the
+    // residual's hinge-quadratic wing term can carry Durrleman g < 0 outside
+    // the fixed [-0.6, 0.6] band that a narrower scan never sees.
+    if (slice.resid_scale > 0.0) {
+      ATX_TRY_VOID(validate_served_shape_over_quotes(*curve, obs_eu));
+    } else {
+      ATX_TRY_VOID(validate_parametric_risk_shape(*curve));
+    }
     return Ok(std::move(curve));
   }
   case VolCurveKind::Svi: {

@@ -626,18 +626,22 @@ TEST(EssviCalibSurface, RecoversSyntheticSurface_WithinTolerance) {
   EXPECT_EQ(arb->n_butterfly, 0u);
 }
 
-// FT-C9a (B5c): the alternate eSSVI driver (essvi_calib_surface[_sequential])
-// ran arb_project_calendar_essvi — the quality-destroying "Project"-style theta
-// bump the README warns about — by DEFAULT whenever validate_no_arb was set
-// (true by default), silently moving the ATM total-variance level to remove a
-// calendar crossing. That theta bump must be an EXPLICIT opt-in, not folded into
-// validate_no_arb; the default must leave the ATM level unmoved.
-TEST(EssviCalibSurface, AlternateDriverDefault_DoesNotThetaBumpCrossing) {
+// A 2-expiry board with shared (phi, rho) and a genuine ATM calendar crossing
+// between the two slices: since phi/rho are identical, w scales purely by
+// theta at every k (the same reasoning SurfaceFixture documents below), so
+// theta2 < theta1 is a crossing EVERYWHERE, not just at k=0. Shared by the
+// theta-project opt-in-repair test and the validate_no_arb honest-audit test
+// below — same crossing, two different knobs.
+struct TwoExpiryBoard {
+  Underlying under;
+  CurveSet curves;
+};
+
+[[nodiscard]] TwoExpiryBoard make_theta_crossing_board(double theta1, double theta2,
+                                                       double phi, double rho) {
   const double kF = 100.0;
-  const double phi = 1.0;
-  const double rho = -0.25;
   const std::array<double, 2> ts{0.25, 0.50};
-  const std::array<double, 2> thetas{0.060, 0.040};  // crossing: theta2 < theta1
+  const std::array<double, 2> thetas{theta1, theta2};
 
   Underlying u;
   u.uid = 1u;
@@ -692,18 +696,40 @@ TEST(EssviCalibSurface, AlternateDriverDefault_DoesNotThetaBumpCrossing) {
     fps.push_back(fp);
   }
   cs.forward.set(fps);
+  return TwoExpiryBoard{std::move(u), std::move(cs)};
+}
 
-  auto surf_res = VolSurface::create(1u, Parametrization::Essvi, u.chains.size());
+// FT-C9a (B5c): the alternate eSSVI driver (essvi_calib_surface[_sequential])
+// ran arb_project_calendar_essvi — the quality-destroying "Project"-style theta
+// bump the README warns about — by DEFAULT whenever validate_no_arb was set
+// (true by default), silently moving the ATM total-variance level to remove a
+// calendar crossing. That theta bump must be an EXPLICIT opt-in, not folded into
+// validate_no_arb; the default must leave the ATM level unmoved.
+//
+// C-8 made `validate_no_arb` an honest audit that now BAILS on exactly this
+// crossing (see ValidateNoArb_BailsOnCalendarInversion below), so this test
+// disables the audit explicitly to isolate its own concern — whether the
+// theta-project REPAIR runs — from the (separate, now-live) validate_no_arb
+// gate. Without this, default opts correctly refuse the call outright before
+// the theta-bump question is even reachable.
+TEST(EssviCalibSurface, AlternateDriverDefault_DoesNotThetaBumpCrossing) {
+  const TwoExpiryBoard board = make_theta_crossing_board(0.060, 0.040, 1.0, -0.25);
+
+  CalibOpts opts = calib_default_opts();
+  opts.validate_no_arb = false;
+
+  auto surf_res =
+      VolSurface::create(1u, Parametrization::Essvi, board.under.chains.size());
   ASSERT_TRUE(surf_res.has_value());
   VolSurface surface = *surf_res;
-  const auto st = essvi_calib_surface(surface, u, cs, calib_default_opts());
+  const auto st = essvi_calib_surface(surface, board.under, board.curves, opts);
   ASSERT_TRUE(st.has_value()) << st.error().to_string();
   ASSERT_EQ(surface.n_slices(), 2u);
 
   const double iv1 = surface.iv_on_slice(0u, 0.0);
   const double iv2 = surface.iv_on_slice(1u, 0.0);
-  const double theta1 = iv1 * iv1 * ts[0];
-  const double theta2 = iv2 * iv2 * ts[1];
+  const double theta1 = iv1 * iv1 * 0.25;
+  const double theta2 = iv2 * iv2 * 0.50;
   // Default must NOT run the theta bump: the ATM crossing is preserved and the
   // T2 ATM level stays near its raw independent fit (0.040).
   EXPECT_LT(theta2, theta1)
@@ -711,6 +737,140 @@ TEST(EssviCalibSurface, AlternateDriverDefault_DoesNotThetaBumpCrossing) {
       << " theta1=" << theta1 << ")";
   EXPECT_NEAR(theta2, 0.040, 5.0e-3)
       << "ATM level moved from its raw fit (theta2=" << theta2 << ")";
+}
+
+// C-8 (FIT-C1): `CalibOpts::validate_no_arb`'s documented contract (calib.hpp)
+// is "run the static-arb validators at the end and bail on a violation" — it
+// was dead on this driver: `out_diag->n_butterfly_viol` was unconditionally
+// stamped 0 and nothing ever bailed, regardless of the knob. The SAME crossing
+// board as above, with the audit left ON (calib_default_opts()'s true
+// default): the driver must now report the REAL nonzero calendar-violation
+// count and refuse to serve the surface, instead of silently serving it.
+TEST(EssviCalibSurface, ValidateNoArb_BailsOnCalendarInversion) {
+  const TwoExpiryBoard board = make_theta_crossing_board(0.060, 0.040, 1.0, -0.25);
+
+  auto surf_res =
+      VolSurface::create(1u, Parametrization::Essvi, board.under.chains.size());
+  ASSERT_TRUE(surf_res.has_value());
+  VolSurface surface = *surf_res;
+
+  const CalibOpts opts = calib_default_opts();
+  ASSERT_TRUE(opts.validate_no_arb) << "this test exercises the DEFAULT";
+  FitDiag diag{};
+  const auto st =
+      essvi_calib_surface(surface, board.under, board.curves, opts, &diag);
+  ASSERT_FALSE(st.has_value())
+      << "validate_no_arb must bail on a genuine calendar crossing";
+  EXPECT_EQ(st.error().code(), ErrorCode::Unavailable);
+  EXPECT_GT(diag.n_calendar_viol, 0u)
+      << "FitDiag must carry the REAL violation count, not a stamped zero";
+}
+
+// C-8 (FIT-C5): a single-chain board whose CORE strikes are pure eSSVI-
+// backbone-consistent quotes and whose WING strikes carry a deliberate upward
+// quadratic bump the rigid 3-parameter backbone cannot reproduce. With the
+// optional HINGE_QUAD wing-residual layer enabled — and left UN-projected, see
+// the PORT NOTE on `fit_wing_residual` — that bump reappears verbatim in the
+// served total variance and creates a genuine Durrleman g < 0 butterfly
+// violation in the wing.
+[[nodiscard]] Underlying make_wing_residual_violation_board() {
+  const double kF = 100.0;
+  const double T = 0.5;
+  const EssviParams tr = backbone(0.04, 1.0, -0.25, T);
+
+  std::vector<double> strikes;
+  for (double K = 86.0; K <= 116.0 + 1e-9; K += 2.0) {  // core: |k| <~ 0.15
+    strikes.push_back(K);
+  }
+  for (const double K : {120.0, 130.0, 140.0, 150.0, 160.0, 170.0, 180.0}) {
+    strikes.push_back(K);  // wing: out to k ~ 0.59
+  }
+  // Mirrors fit_wing_residual's own `scale = kmax` (max |k| over the obs).
+  const double scale = std::log(strikes.back() / kF);
+
+  Underlying u;
+  u.uid = 1u;
+  u.ticker = "X";
+  u.spot = kF;
+  Chain c;
+  c.uid = 1u;
+  c.expiry_id = 0u;
+  c.expiry_ns = static_cast<std::int64_t>(T * 3.15e16);
+  c.T = T;
+  c.strikes = strikes;
+  const std::size_t n2 = strikes.size() * 2u;
+  c.bids.assign(n2, 0.0);
+  c.asks.assign(n2, 0.0);
+  c.mids.assign(n2, 0.0);
+  c.ivs.assign(n2, std::numeric_limits<double>::quiet_NaN());
+  c.bid_sizes.assign(n2, 1);
+  c.ask_sizes.assign(n2, 1);
+  c.ts_ns.assign(n2, 0);
+  c.flags.assign(n2, 0u);
+  for (std::size_t s = 0; s < strikes.size(); ++s) {
+    const double K = strikes[s];
+    const double k = std::log(K / kF);
+    double w = essvi_backbone_w(tr, k);
+    // HINGE_QUAD's own dead-band/hinge shape (kResidInnerY == 0.4): only the
+    // wing beyond it carries the bump, matching what fit_wing_residual would
+    // need a large positive `yc^2` coefficient to reproduce.
+    const double y = std::clamp(k / scale, -1.0, 1.0);
+    if (y > 0.4) {
+      const double yc = y - 0.4;
+      w += 0.5 * yc * yc;
+    }
+    const double sig = std::sqrt(w / T);
+    for (int side_i = 0; side_i < 2; ++side_i) {
+      const auto side = static_cast<Side>(static_cast<std::uint8_t>(side_i));
+      const std::size_t idx = chain_index(static_cast<std::uint16_t>(s), side);
+      const double mid = black76_price(kF, K, T, sig, 1.0, side);
+      const double vega = black76_value_and_vega(kF, K, T, sig, 1.0, side).vega;
+      const double half = std::min(0.005 * vega, 0.25 * mid);
+      c.mids[idx] = mid;
+      c.bids[idx] = mid - half;
+      c.asks[idx] = mid + half;
+    }
+  }
+  u.chains.push_back(std::move(c));
+  return u;
+}
+
+// C-8 (FIT-C1/FIT-C5): pre-fix, `out_diag->n_butterfly_viol` was unconditionally
+// stamped 0 on this driver regardless of what the fitted surface actually
+// carried. Prove the count now reflects a REAL injected butterfly violation
+// (from the un-projected HINGE_QUAD wing residual) instead of the stamped
+// zero, and that the default validate_no_arb refuses to serve it.
+TEST(EssviCalibSurface, ValidateNoArb_ButterflyCountReflectsInjectedViolation) {
+  const Underlying under = make_wing_residual_violation_board();
+  CurveSet curves;
+  curves.spot = under.spot;
+  std::vector<ForwardPoint> fps;
+  for (const Chain& c : under.chains) {
+    ForwardPoint fp{};
+    fp.expiry_ns = c.expiry_ns;
+    fp.T = c.T;
+    fp.F = under.spot;
+    fps.push_back(fp);
+  }
+  curves.forward.set(fps);
+
+  auto surf_res = VolSurface::create(1u, Parametrization::Essvi, under.chains.size());
+  ASSERT_TRUE(surf_res.has_value());
+  VolSurface surface = *surf_res;
+
+  CalibOpts opts = calib_default_opts();
+  opts.residual_disable = false;
+  opts.residual_basis_kind = atx::vol::ResidualBasisKind::HingeQuad;
+  ASSERT_TRUE(opts.validate_no_arb) << "this test exercises the DEFAULT";
+
+  FitDiag diag{};
+  const auto st = essvi_calib_surface(surface, under, curves, opts, &diag);
+  ASSERT_FALSE(st.has_value())
+      << "an unprojected butterfly-violating wing residual must not be served";
+  EXPECT_EQ(st.error().code(), ErrorCode::Unavailable);
+  EXPECT_GT(diag.n_butterfly_viol, 0u)
+      << "FitDiag must carry the REAL butterfly count, not the historical "
+         "stamped zero";
 }
 
 TEST(EssviCalibSurface, NonEssviSurface_ReturnsInvalidArgument) {

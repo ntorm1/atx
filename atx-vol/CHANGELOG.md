@@ -8,6 +8,49 @@ that silently changes a NUMBER a caller already depends on belongs in this file.
 Vol-derivatives production sprint, Phase 1 (correctness). Grows only with
 changes that move a number a caller could already be marking with.
 
+### Fixed — the eSSVI alternate driver's `validate_no_arb` is no longer a dead knob (FIT-C1/FIT-C5, Task C-8)
+
+`essvi_calib_surface`[`_sequential`] unconditionally stamped `out_diag->
+n_butterfly_viol = 0` and never ran a calendar check, regardless of
+`CalibOpts::validate_no_arb` (default `true`) — the knob's documented
+contract ("run the static-arb validators at the end and bail on a
+violation", `calib.hpp`) was dead on this path. A genuinely calendar- or
+butterfly-arbitrageable surface (e.g. from an un-projected HINGE_QUAD
+wing-residual layer — the per-slice Roper projector stays out of port
+scope, see the PORT NOTE on `fit_wing_residual`) was served silently.
+
+`validate_no_arb` now runs a real post-fit audit (`arb_check_total_
+surface_all` over the surface's assembled slices, `[-0.5, 0.5]` / 64-grid
+— the same window the surface-recovery tests already independently
+certify clean), populates `FitDiag` with the real counts, and returns
+`Unavailable` on a nonzero count. This is INDEPENDENT of
+`essvi_alt_driver_theta_project` (FT-C9a's opt-in theta-bump repair, still
+default off, still the only thing that MOVES a fitted level) — the audit
+runs after that repair, so enabling both knobs is repair-then-audit.
+
+`FitDiag::n_calendar_viol` (new field — `FitDiag` carries no arity pin, so
+this is a plain append) reports the real calendar-violation count;
+`n_butterfly_viol` is no longer unconditionally zero on the eSSVI path.
+Both read 0 when `validate_no_arb` is false (audit not run — not itself a
+"verified clean" claim).
+
+The `fit_slice_curve` (canonical PricerFitter) Essvi branch is UNCHANGED
+on the default (`residual_disable == true`) path — bit-identical. When a
+caller has opted into the HINGE_QUAD/C2Bspline wing residual, the served-
+slice butterfly check now scans the full quoted range +/- 0.5 (mirroring
+FT-C2's raw-SVI fix) instead of the fixed `[-0.6, 0.6]` band, catching wing
+arb the un-projected residual can carry past it.
+
+**Migration**: a caller of `essvi_calib_surface`/`_sequential` relying on
+the default `validate_no_arb == true` that was previously served a
+(silently) arbitrageable surface now gets `Err(Unavailable)` instead —
+inspect `FitDiag::n_calendar_viol`/`n_butterfly_viol` for the real counts,
+or set `validate_no_arb = false` to keep the historical permissive
+behavior (e.g. a deliberately-biased fixture used to measure a KNOWN
+disease, as `essvi_deam_test.cpp`'s raw-route tests now do explicitly).
+The per-slice `essvi_fit_slice`/`fit_slice_curve` (PricerFitter) paths are
+unaffected either way.
+
 ### Fixed — the wing clamp now trusts a Latency-mode surface's OWN certified band, not a wider one nobody certified (FIT-C7, Task C-6)
 
 `DerivConfig::wing_clamp_k == 0` (the default) resolved unconditionally to

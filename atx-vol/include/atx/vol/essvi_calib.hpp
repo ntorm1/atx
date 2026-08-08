@@ -127,14 +127,33 @@ struct DeAmOptions;
 [[nodiscard]] std::array<double, 3> essvi_w_cube_grad(const EssviParams& slice,
                                                       double k_log) noexcept;
 
-// ── Surface driver (per-slice, calendar-projected) ───────────────────────
+// ── Surface driver (per-slice, post-fit audited) ─────────────────────────
 //
 // Loop the underlier's chains in ascending-T order; for each resolve (F, T,
 // df) from the curve set, build the observation set, fit the slice, and write
-// it into `surface` (which must be eSSVI-parametrized). After all slices are
-// fit, run the backbone calendar projection (`arb_project_calendar_essvi`) so
-// the surface is calendar-arb-free. Populates `surface`'s diagnostics
-// (rmse_vol, n_quotes_used/dropped) and, if provided, `out_diag`.
+// it into `surface` (which must be eSSVI-parametrized). Populates `surface`'s
+// diagnostics (rmse_vol, n_quotes_used/dropped) and, if provided, `out_diag`.
+//
+// Post-fit no-arb policy is TWO INDEPENDENT `CalibOpts` knobs — do not confuse
+// them:
+//   - `opts.essvi_alt_driver_theta_project` (default FALSE): opt-in backbone
+//     calendar-level REPAIR (`arb_project_calendar_essvi`) that bumps a
+//     slice's ATM total variance to remove a calendar crossing. This is the
+//     quality-destroying "Project"-style repair the README warns about
+//     (measured sp100-2026 XOM/CVX shifts of +83%..+263% ATM). Off by default
+//     so the served term structure is exactly the per-slice fit, untouched.
+//   - `opts.validate_no_arb` (default TRUE): honest post-fit AUDIT, run AFTER
+//     the opt-in repair above (so enabling both is repair-then-audit, not
+//     audit-before-repair). Scans the assembled surface with
+//     `arb_check_total_surface_all` for calendar + butterfly violations — the
+//     latter catches the optional wing-residual layer (HINGE_QUAD /
+//     C2Bspline), which is NOT projected onto the admissible cone (the
+//     per-slice Roper projector is out of port scope; see the PORT NOTE on
+//     `fit_wing_residual` in the source) — stamps the REAL counts into
+//     `out_diag` (`n_calendar_viol` / `n_butterfly_viol`; 0 when the audit did
+//     not run, which is NOT a "verified clean" claim), and — per the field's
+//     documented contract (calib.hpp) — BAILS (`Unavailable`) if either count
+//     is nonzero, refusing to serve an arbitrageable surface.
 //
 // @param prior  optional previously-fit surface (e.g. the prior snapshot's
 //              calibration) used to warm-start each slice's fit. For a slice
@@ -183,7 +202,10 @@ struct DeAmOptions;
 //              the synthetic-European CalibratePool fixtures would bias the other
 //              way), so it stays opt-in here.
 // @return InvalidArgument if `surface` is not eSSVI-parametrized; NotFound if
-//         the underlier has no chains or not a single slice fit; otherwise Ok.
+//         the underlier has no chains or not a single slice fit; Unavailable
+//         if `opts.validate_no_arb` is set and the post-fit audit finds a
+//         calendar or butterfly violation (see `out_diag` for the real
+//         counts); otherwise Ok.
 [[nodiscard]] Status essvi_calib_surface(VolSurface& surface,
                                          const Underlying& under,
                                          const CurveSet& curves,
@@ -196,9 +218,14 @@ struct DeAmOptions;
 // Mingone sequential surface driver. Identical chain walk to
 // `essvi_calib_surface`, but each slice is fit with a theta floor equal to the
 // previous slice's theta (theta_0 floored at the band minimum), so the fitted
-// term structure is theta-monotone by construction — no post-fit calendar
-// projection of the ATM level is needed. See the PORT NOTE in the source for
-// the (φ, ρ)-wing coupling the θ-floor alone does not remove.
+// ATM term structure is theta-monotone by construction — the opt-in theta-
+// project repair (`opts.essvi_alt_driver_theta_project`) has nothing to do
+// here. The shared post-fit `opts.validate_no_arb` audit (see
+// `essvi_calib_surface`) still runs, and can still bail: the θ-floor alone
+// does not remove the (φ, ρ)-wing coupling a per-slice-independent fit can
+// leave behind (see the PORT NOTE in the source), so a calendar crossing
+// confined to the wings is a real, catchable audit failure even though the
+// ATM level itself is monotone.
 //
 // @param prior  same warm-start contract as `essvi_calib_surface`'s `prior`.
 // @param deam   same opt-in de-Americanization contract as `essvi_calib_surface`'s

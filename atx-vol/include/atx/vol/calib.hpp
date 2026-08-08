@@ -368,10 +368,24 @@ struct FitDiag {
   std::uint32_t n_quotes_used{0};
   // Butterfly no-arb diagnostic (Task C2.5): summed per-slice butterfly
   // violations observed on the research/surface-driver path. Closed-form
-  // Martini-Mingone tally for raw-SVI slices; 0 by construction for eSSVI. This
-  // is a DIAGNOSTIC COUNT ONLY — the surface drivers do not reject on it (the
-  // per-slice serving gates in `fit_slice_curve` do the rejecting).
+  // Martini-Mingone tally for raw-SVI slices. For the eSSVI alternate driver
+  // (essvi_calib_surface[_sequential], Task C-8) this is a real post-fit
+  // grid-scan count over the assembled surface whenever `CalibOpts::
+  // validate_no_arb` is set — the eSSVI backbone alone is butterfly-free by
+  // construction, but the optional un-projected wing-residual layer is not, so
+  // this is NOT always 0 the way it was before C-8. 0 also means "the audit
+  // did not run" when validate_no_arb is false — NOT a "verified clean" claim
+  // in that case. DIAGNOSTIC-ONLY for callers that leave validate_no_arb off;
+  // the per-slice serving gates in `fit_slice_curve` do their own independent
+  // (always-on) rejecting regardless of this field.
   std::uint32_t n_butterfly_viol{0};
+  // Calendar no-arb diagnostic (Task C-8): real post-fit surface-level
+  // calendar-crossing count from the same eSSVI alternate-driver audit above
+  // (`arb_check_total_surface_all`, gated on `CalibOpts::validate_no_arb`). 0
+  // when the audit did not run — not a "verified clean" claim in that case.
+  // Unset (0) by every OTHER calibrator's driver (SVI, C8, CStar) — read only
+  // in the eSSVI alternate-driver context.
+  std::uint32_t n_calendar_viol{0};
 };
 
 struct InversionRouteDiagnostics {

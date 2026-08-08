@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
@@ -11,11 +12,12 @@
 #include "atx/vol/arb.hpp"          // arb_check_butterfly_svi_mm, arb_check_butterfly_slice
 #include "atx/vol/black76.hpp"      // black76_value_and_vega
 #include "atx/vol/calib.hpp"        // CalibOpts, FitObs
+#include "atx/vol/essvi_calib.hpp"  // essvi_fit_slice
 #include "atx/vol/spline_curve.hpp" // fit_spline_vol_slice
 #include "atx/vol/svi_calib.hpp"    // svi_project_mm
 #include "atx/vol/types.hpp"        // Side
 #include "atx/vol/vol_curve.hpp"    // fit_slice_curve, CurveConfig, SviCurve, C8Curve
-#include "atx/vol/vol_surface.hpp"  // SviParams
+#include "atx/vol/vol_surface.hpp"  // SviParams, EssviParams, essvi_backbone_w, essvi_total_w
 
 // Task C2.5: the raw-SVI and C8 serving seams (fit_slice_curve) must never
 // hand back a butterfly-arbitrageable slice. These tests fit a standard
@@ -242,6 +244,114 @@ TEST(VolCurve, SviServedSliceRejectsWingButterflyArb) {
   const auto served = fit_slice_curve(cfg, obs, F, T, df);
   EXPECT_FALSE(served.has_value())
       << "served-path admitted a raw-SVI slice with wing butterfly arb over the "
+         "quoted range +/- 0.5";
+}
+
+// C-8 (FIT-C5) fixture: CORE obs (|k| <= 0.15) are pure eSSVI-backbone-
+// consistent quotes; WING obs (k in [0.55, 1.2], beyond the HINGE_QUAD dead
+// band at 0.4 * scale = 0.48 for scale = kmax = 1.2) carry a deliberate
+// upward quadratic bump the rigid 3-parameter backbone cannot reproduce.
+[[nodiscard]] std::vector<FitObs> make_essvi_wing_residual_obs() {
+  const double T = 0.5, F = 100.0;
+  atx::vol::EssviParams tr{};
+  tr.theta = 0.04;
+  tr.phi = 1.0;
+  tr.rho = -0.25;
+  tr.T = T;
+
+  const auto push = [&](std::vector<FitObs>& obs, double k, double w) {
+    FitObs o{};
+    o.k = k;
+    o.w_mkt = w;
+    o.sigma_mkt = std::sqrt(w / T);
+    o.weight_w = 1.0;
+    o.active_weight_w = 1.0;
+    o.F = F;
+    o.K = F * std::exp(k);
+    o.df = 1.0;
+    obs.push_back(o);
+  };
+
+  std::vector<FitObs> obs;
+  // A LARGE core count is load-bearing, not cosmetic: the joint (core + wing)
+  // LM otherwise lets the 3-parameter backbone itself chase part of the wing
+  // bump (phi drifting several-fold off truth was observed at n_core ~ 25-70),
+  // which contaminates the ridge-LS "leftover" the residual layer fits and
+  // pulls a spurious HINGE_QUAD linear (yc) term out of what should be a pure
+  // quadratic bump — that stray linear term's OWN kink (HINGE_QUAD is only
+  // C0 at its dead-band boundary) then trips the narrow scan on its own,
+  // independent of the deliberate wing arb this fixture targets. Outweighing
+  // the 6 wing points ~65:1 anchors the backbone to the core-only optimum
+  // (verified: recovers truth to fp precision) and leaves the wing bump for
+  // the residual layer to absorb cleanly.
+  const int n_core = 400;
+  for (int i = 0; i < n_core; ++i) {
+    const double k = -0.15 + 0.30 * static_cast<double>(i) /
+                                  static_cast<double>(n_core - 1);
+    push(obs, k, atx::vol::essvi_backbone_w(tr, k));
+  }
+  constexpr double kScale = 1.2;         // == kmax over all obs (matches
+                                         // fit_wing_residual's own `scale`)
+  constexpr double kResidInnerY = 0.4;  // HINGE_QUAD's dead-band boundary
+  const std::array<double, 6> wing_k{0.75, 0.85, 0.95, 1.05, 1.15, 1.20};
+  for (const double k : wing_k) {
+    double w = atx::vol::essvi_backbone_w(tr, k);
+    const double y = std::clamp(k / kScale, -1.0, 1.0);
+    if (y > kResidInnerY) {
+      const double yc = y - kResidInnerY;
+      w += 0.5 * yc * yc;
+    }
+    push(obs, k, w);
+  }
+  return obs;
+}
+
+// FIT-C5 (mirrors FT-C2's SviServedSliceRejectsWingButterflyArb): the eSSVI
+// backbone is butterfly-arb-free EVERYWHERE by construction (the Mingone
+// cube-space fit enforces the Lee/Gatheral-Jacquier bound), but its optional
+// HINGE_QUAD wing-residual layer is NOT projected onto the admissible cone
+// (the per-slice Roper projector is out of port scope; see the PORT NOTE on
+// `fit_wing_residual`, essvi_calib.cpp) — the same class of served-arb gap
+// FT-C2 closed for raw-SVI. This fixture is quoted out to |k| = 1.2 with a
+// HINGE_QUAD-shaped wing bump the rigid backbone cannot absorb: the residual
+// reproduces it verbatim and carries genuine Durrleman g < 0 beyond k = 0.6,
+// invisible to the OLD fixed [-0.6, 0.6] scan. The served path must scan the
+// full quoted range +/- 0.5 (FT-C2/FIT-C5) and refuse it.
+TEST(VolCurve, EssviServedSliceRejectsWingButterflyArb) {
+  const double T = 0.5, F = 100.0, df = 1.0;
+  const std::vector<FitObs> obs = make_essvi_wing_residual_obs();
+
+  CalibOpts po = vc_permissive_opts();
+  po.residual_disable = false;
+  po.residual_basis_kind = atx::vol::ResidualBasisKind::HingeQuad;
+
+  // Non-vacuity: the RAW fit passes clean on the old [-0.6, 0.6] scan yet
+  // carries genuine wing butterfly arb over the quoted range +/- 0.5.
+  const auto raw =
+      atx::vol::essvi_fit_slice(std::span<const FitObs>(obs), T, F, po);
+  ASSERT_TRUE(raw.has_value());
+  const atx::vol::EssviParams sp = raw.value();
+  ASSERT_GT(sp.resid_scale, 0.0)
+      << "fixture must actually engage the wing-residual layer";
+  const std::function<double(double)> wf = [&](double k) {
+    return atx::vol::essvi_total_w(sp, k);
+  };
+  const auto narrow = arb_check_butterfly_slice(wf, T, -0.6, 0.6, 256u);
+  ASSERT_TRUE(narrow.has_value());
+  EXPECT_TRUE(narrow->empty()) << "fixture must be clean on the old [-0.6,0.6] scan";
+  // Mirrors validate_served_shape_over_quotes' own window: min(-0.6, k_lo-0.5)
+  // .. max(0.6, k_hi+0.5) for this fixture's obs (k in [-0.15, 1.20]).
+  const auto wide = arb_check_butterfly_slice(wf, T, -0.65, 1.70, 256u);
+  ASSERT_TRUE(wide.has_value());
+  EXPECT_FALSE(wide->empty()) << "fixture must carry real wing arb over quoted+/-0.5";
+
+  // Served path: must REFUSE.
+  CurveConfig cfg;
+  cfg.kind = VolCurveKind::Essvi;
+  cfg.parametric = po;
+  const auto served = fit_slice_curve(cfg, obs, F, T, df);
+  EXPECT_FALSE(served.has_value())
+      << "served-path admitted an eSSVI slice with wing butterfly arb over the "
          "quoted range +/- 0.5";
 }
 
