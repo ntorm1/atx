@@ -52,7 +52,26 @@ constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
           config.projection_solve_policy == OptionDeltaSolvePolicy::FastScreenColdConfirm ||
           config.projection_solve_policy == OptionDeltaSolvePolicy::CrossSectionalColdConfirm) &&
          std::isfinite(config.max_restrike_abs_log_moneyness) &&
-         config.max_restrike_abs_log_moneyness > 0.0;
+         config.max_restrike_abs_log_moneyness > 0.0 &&
+         (config.base_mark_source == VarBaseMarkSource::DedicatedPricePass ||
+          config.base_mark_source == VarBaseMarkSource::HarvestedFromSolver);
+}
+
+// Whether THIS config may reuse the cross-sectional solver's accepted-strike
+// cold price as the base mark instead of running the dedicated EvalField::Price
+// pass. Deliberately permissive rather than a config rejection: a caller on a
+// Direct/FastScreen policy, or one that opted valuation into a configured marks
+// accelerator, keeps today's numbers instead of failing to construct.
+//
+// The policy clause is load-bearing beyond mere admissibility: evaluate_scenario
+// and evaluate_scenario_batched both downgrade a failing scenario by rewriting
+// projection_solve_policy to FastScreenColdConfirm, so a downgraded scenario
+// automatically stops harvesting and prices its own marks on the scalar route.
+// The downgrade path needs no knob-awareness of its own.
+[[nodiscard]] bool harvest_base_marks(const VarEvaluationConfig &config) noexcept {
+  return config.base_mark_source == VarBaseMarkSource::HarvestedFromSolver &&
+         config.projection_solve_policy == OptionDeltaSolvePolicy::CrossSectionalColdConfirm &&
+         config.valuation_execution == QueryExecution::ColdReference;
 }
 
 // I4 diagnostic_flags bits (VarLegFrame): base/shifted tenor extrapolation and
@@ -580,6 +599,13 @@ struct VarBatchScratch {
   std::vector<double> shifted_iv{};
   std::vector<double> base_price{};
   std::vector<double> shifted_price{};
+  // VarBaseMarkSource::HarvestedFromSolver only: the cold American mark
+  // solve_american_delta_batch already computed at each leader slot's accepted
+  // strike. Filled by resolve_group_contracts_cross_sectional and read by BOTH
+  // valuation routes, which is what makes aggregate-vs-retained base-mark parity
+  // structural rather than coincidental. Left untouched (and unread) under
+  // DedicatedPricePass.
+  std::vector<double> harvested_base_price{};
   std::vector<double> base_delta{};
   std::vector<double> log_moneyness{};
   // Either-side tenor extrapolation (I3), computed once per slot while
@@ -616,6 +642,7 @@ template <class PreparedState>
   scratch.shifted_iv.resize(count);
   scratch.base_price.resize(count);
   scratch.shifted_price.resize(count);
+  scratch.harvested_base_price.resize(count);
   scratch.base_delta.resize(count);
   scratch.log_moneyness.resize(count);
   scratch.tenor_extrapolated.resize(count);
@@ -686,10 +713,16 @@ template <class PreparedState>
   const std::span<Status> row_status =
       std::span<Status>{scratch.solve_status}.subspan(group.begin, count);
 
+  // Under HarvestedFromSolver the solve additionally hands back the cold mark
+  // at each accepted strike -- the value the dedicated base Price pass would
+  // otherwise recompute. An empty span keeps the solver's harvest branches off
+  // entirely under DedicatedPricePass.
+  const std::span<double> harvested =
+      harvest_base_marks(config) ? doubles(scratch.harvested_base_price) : std::span<double>{};
   const Status solved = solve_american_delta_batch(
       base, const_doubles(scratch.solve_t), sides, const_doubles(scratch.solve_target),
       config.delta_tolerance, scratch.delta_scratch, doubles(scratch.strike),
-      doubles(scratch.base_delta), evaluations, row_status);
+      doubles(scratch.base_delta), evaluations, row_status, harvested);
   if (!solved) {
     return false;
   }
@@ -780,17 +813,36 @@ resolve_group_window_cross_sectional(const PreparedState &impl, const VarOptionG
 // (or re-resolves) the contract here -- that is entirely their own
 // responsibility; this function trusts `contract`/`base_delta`/`fingerprint`
 // as given.
-[[nodiscard]] VarLegStatus finish_option_leg(const NormalizedVarLeg &leg, const SurfaceRef &base,
-                                             const SurfaceRef &shifted, double base_spot,
-                                             double shifted_spot, const OptionContract &contract,
-                                             double base_delta, double shifted_time,
-                                             double log_moneyness, std::uint64_t fingerprint,
-                                             const VarEvaluationConfig &config,
-                                             VarLegFrame &frame) {
-  const PricedSurface::FusedResult base_evaluation =
-      base.evaluate(contract.K, contract.T, contract.side, PricedSurface::EvalField::Price, false,
-                    config.valuation_execution);
-  if (!base_evaluation.status || !std::isfinite(base_evaluation.price)) {
+//
+// `harvested_base_mark`, when engaged, REPLACES this function's own base
+// EvalField::Price evaluation with the cold mark the cross-sectional solver
+// already produced at `contract.K` (VarBaseMarkSource::HarvestedFromSolver).
+// Only evaluate_option_leg_resolved ever engages it, and only with the value
+// the aggregate route reads from the same scratch slot. A non-finite engaged
+// value is a PricingError exactly as a failed evaluation would be -- it never
+// silently falls back to computing the mark, which would reintroduce the pass
+// this knob exists to delete and hide the failure.
+[[nodiscard]] VarLegStatus
+finish_option_leg(const NormalizedVarLeg &leg, const SurfaceRef &base, const SurfaceRef &shifted,
+                  double base_spot, double shifted_spot, const OptionContract &contract,
+                  double base_delta, double shifted_time, double log_moneyness,
+                  std::uint64_t fingerprint, const VarEvaluationConfig &config, VarLegFrame &frame,
+                  std::optional<double> harvested_base_mark = std::nullopt) {
+  double base_mark = kNaN;
+  if (harvested_base_mark.has_value()) {
+    base_mark = *harvested_base_mark;
+  } else {
+    const PricedSurface::FusedResult base_evaluation =
+        base.evaluate(contract.K, contract.T, contract.side, PricedSurface::EvalField::Price, false,
+                      config.valuation_execution);
+    // A failed evaluation leaves base_mark NaN, so the one finiteness check
+    // below covers both the Err status and the finite-status/non-finite-price
+    // case the pre-harvest code tested separately.
+    if (base_evaluation.status) {
+      base_mark = base_evaluation.price;
+    }
+  }
+  if (!std::isfinite(base_mark)) {
     poison_leg(frame, VarLegStatus::PricingError, leg.kind, leg.uid);
     return frame.status;
   }
@@ -824,7 +876,7 @@ resolve_group_window_cross_sectional(const PreparedState &impl, const VarOptionG
     return frame.status;
   }
 
-  const double base_value = sizing->units * leg.multiplier * base_evaluation.price;
+  const double base_value = sizing->units * leg.multiplier * base_mark;
   const double shifted_value = sizing->units * leg.multiplier * shifted_evaluation.price;
   const double pnl = shifted_value - base_value;
   const double allowed_error =
@@ -842,7 +894,7 @@ resolve_group_window_cross_sectional(const PreparedState &impl, const VarOptionG
   frame.units = sizing->units;
   frame.base_spot = base_spot;
   frame.shifted_spot = shifted_spot;
-  frame.base_mark = base_evaluation.price;
+  frame.base_mark = base_mark;
   frame.shifted_mark = shifted_evaluation.price;
   frame.base_delta = base_delta;
   frame.dollar_delta = sizing->achieved_dollar_delta;
@@ -905,12 +957,14 @@ resolve_group_window_cross_sectional(const PreparedState &impl, const VarOptionG
 evaluate_option_leg_resolved(const NormalizedVarLeg &leg, double strike, double base_time,
                              double shifted_time, double base_delta, double log_moneyness,
                              std::uint64_t fingerprint, const VarScenario &scenario,
-                             const VarEvaluationConfig &config, VarLegFrame &frame) {
+                             const VarEvaluationConfig &config, VarLegFrame &frame,
+                             std::optional<double> harvested_base_mark = std::nullopt) {
   const SurfaceRef base = scenario.base_surfaces->find(leg.uid);
   const SurfaceRef shifted = scenario.shifted_surfaces->find(leg.uid);
   const OptionContract contract{leg.uid, strike, base_time, leg.side};
   return finish_option_leg(leg, base, shifted, base.pricing().S, shifted.pricing().S, contract,
-                           base_delta, shifted_time, log_moneyness, fingerprint, config, frame);
+                           base_delta, shifted_time, log_moneyness, fingerprint, config, frame,
+                           harvested_base_mark);
 }
 
 [[nodiscard]] VarLegStatus reuse_option_pricing(const NormalizedVarLeg &leg,
@@ -1007,6 +1061,11 @@ void evaluate_scenario(const PreparedState &impl, const VarScenario &scenario,
   const bool cross_sectional =
       batch_scratch != nullptr &&
       config.projection_solve_policy == OptionDeltaSolvePolicy::CrossSectionalColdConfirm;
+  // Harvesting rides entirely on the cross-sectional resolution below, so the
+  // downgrade `evaluate_scenario(..., fallback_config)` recursion -- which
+  // rewrites the policy to FastScreenColdConfirm and passes no scratch -- lands
+  // here with both flags false and prices its own marks.
+  const bool harvest = cross_sectional && harvest_base_marks(config);
   if (cross_sectional) {
     for (const VarOptionGroup &group : impl.option_groups) {
       const SurfaceRef base = scenario.base_surfaces->find(group.uid);
@@ -1054,11 +1113,15 @@ void evaluate_scenario(const PreparedState &impl, const VarScenario &scenario,
     } else if (leg.kind == VarLegKind::Option) {
       if (cross_sectional) {
         const std::size_t slot = impl.option_slot_by_leg[index];
+        // The SAME scratch slot evaluate_scenario_batched reads for this leg,
+        // so aggregate-vs-retained base-mark parity is by construction here.
         status = evaluate_option_leg_resolved(
             leg, batch_scratch->strike[slot], batch_scratch->base_time[slot],
             batch_scratch->shifted_time[slot], batch_scratch->base_delta[slot],
             batch_scratch->log_moneyness[slot], batch_scratch->fingerprint[slot], scenario, config,
-            leg_frame);
+            leg_frame,
+            harvest ? std::optional<double>{batch_scratch->harvested_base_price[slot]}
+                    : std::nullopt);
       } else {
         status = evaluate_option_leg(leg, scenario, config, leg_frame);
       }
@@ -1122,6 +1185,9 @@ void evaluate_scenario_batched(const PreparedState &impl, const VarScenario &sce
   constexpr auto price_field = PricedSurface::EvalField::Price;
   const bool cross_sectional =
       config.projection_solve_policy == OptionDeltaSolvePolicy::CrossSectionalColdConfirm;
+  // Same predicate the retained-leg route uses, and likewise false inside the
+  // fallback() downgrade (which rewrites the policy before recursing).
+  const bool harvest = cross_sectional && harvest_base_marks(config);
   for (const VarOptionGroup &group : impl.option_groups) {
     const SurfaceRef base = scenario.base_surfaces->find(group.uid);
     const SurfaceRef shifted = scenario.shifted_surfaces->find(group.uid);
@@ -1179,21 +1245,40 @@ void evaluate_scenario_batched(const PreparedState &impl, const VarScenario &sce
       return std::span<const double>{values}.subspan(begin, count);
     };
     const std::span<const Side> sides{scratch.side.data() + group.begin, count};
-    // [proj] M8 (deferred-minor fixed): the base and shifted mark passes
-    // each get their own IV scratch column now -- IV is otherwise dead data
-    // here (never read into any leg/frame field), but aliasing the two
-    // passes onto scratch.shifted_iv was a trap for a future reader who
-    // starts consuming base IVs.
-    PricedSurface::EvaluationSoA base_output;
-    base_output.iv = doubles(scratch.base_iv);
-    base_output.price = doubles(scratch.base_price);
-    base_output.status = std::span<Status>{scratch.base_status}.subspan(group.begin, count);
-    const Status base_batch = base.evaluate_batch(
-        const_doubles(scratch.strike), const_doubles(scratch.base_time), sides, price_field, false,
-        base_output, simd::SimdIsa::Auto, config.valuation_execution);
-    if (!base_batch) {
-      fallback();
-      return;
+    if (harvest) {
+      // [perf] F1: the dedicated base mark pass is DELETED here, not merely
+      // shortened -- resolve_group_window_cross_sectional's solve already
+      // produced the cold mark at every accepted strike. The leg loop below
+      // reads scratch.base_price/base_status exactly as it does under
+      // DedicatedPricePass, so only the source of those two columns changes.
+      for (std::size_t slot = group.begin; slot < group.end; ++slot) {
+        scratch.base_price[slot] = scratch.harvested_base_price[slot];
+        // A row whose harvest failed carries NaN; stamping Ok here and letting
+        // the leg loop's own finiteness check demote it to PricingError keeps
+        // this route's status derivation identical to the dedicated pass's.
+        scratch.base_status[slot] = Ok();
+        // base_iv is dead data on this route (see the M8 note below) and the
+        // solver does not hand its per-row IV back, so it is poisoned rather
+        // than left holding a previous scenario's value.
+        scratch.base_iv[slot] = kNaN;
+      }
+    } else {
+      // [proj] M8 (deferred-minor fixed): the base and shifted mark passes
+      // each get their own IV scratch column now -- IV is otherwise dead data
+      // here (never read into any leg/frame field), but aliasing the two
+      // passes onto scratch.shifted_iv was a trap for a future reader who
+      // starts consuming base IVs.
+      PricedSurface::EvaluationSoA base_output;
+      base_output.iv = doubles(scratch.base_iv);
+      base_output.price = doubles(scratch.base_price);
+      base_output.status = std::span<Status>{scratch.base_status}.subspan(group.begin, count);
+      const Status base_batch = base.evaluate_batch(
+          const_doubles(scratch.strike), const_doubles(scratch.base_time), sides, price_field,
+          false, base_output, simd::SimdIsa::Auto, config.valuation_execution);
+      if (!base_batch) {
+        fallback();
+        return;
+      }
     }
 
     PricedSurface::EvaluationSoA shifted_output;

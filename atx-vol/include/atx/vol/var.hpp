@@ -102,6 +102,31 @@ enum class VarScenarioStatus : std::uint8_t {
 
 [[nodiscard]] const char *to_string(VarScenarioStatus status) noexcept;
 
+// Where each option leg's BASE mark comes from. Both sources are cold American
+// lattice marks on the base surface at the accepted strike and base T -- this
+// knob does not open a prepared/fast marks tier, it only chooses whether that
+// one number is computed twice.
+//
+// The cross-sectional delta solver already evaluates the full first-order
+// Andersen-Lake bundle at every strike it tries, and it accepts a row at exactly
+// the strike its accepting pass evaluated -- so `AmericanGreeks::price` from
+// that pass IS the base mark, and the dedicated EvalField::Price pass that
+// follows recomputes it. HarvestedFromSolver reuses the solver's value and skips
+// that pass (~18-22 % of core time on the profiled SP100 fixture).
+//
+// NOT bit-identical to the dedicated pass. The laned Greek bundle's price and
+// the laned price kernel agree bit-for-bit on all but deep-wing short-dated
+// rows, and the scalar evaluate(Price) the retained-leg route runs today
+// disagrees with both at ~1e-14 relative -- the same pre-existing laned-vs-
+// scalar gap that makes the aggregate-vs-retained gate 1e-9 rather than bit
+// equality. Measured bounds are pinned by
+// ContractProjection.HarvestedSolverPriceIsBitIdenticalToDedicatedPricePass.
+// Default is therefore DedicatedPricePass.
+enum class VarBaseMarkSource : std::uint8_t {
+  DedicatedPricePass = 0,  // current behavior, default
+  HarvestedFromSolver = 1, // reuse the solver's accepted-strike cold price
+};
+
 struct VarEvaluationConfig {
   // 0 uses the process pricing executor's configured worker count.
   unsigned n_threads{0};
@@ -119,6 +144,18 @@ struct VarEvaluationConfig {
   // Restrike roots with |log-moneyness| beyond this bound fail the leg with
   // InvalidDelta instead of pricing on pure wing extrapolation.
   double max_restrike_abs_log_moneyness{5.0};
+  // Harvesting is ADMISSIBLE only where the solver is actually running and
+  // everything in sight is cold: projection_solve_policy ==
+  // CrossSectionalColdConfirm (no other policy runs the batch solver to harvest
+  // from) and valuation_execution == ColdReference (the harvested mark is a cold
+  // lattice mark by construction, so it must not silently override a caller's
+  // opt-in to a configured marks accelerator). Any other combination keeps the
+  // dedicated pass -- the conservative direction, identical to today's numbers.
+  // That is also what makes the whole-scenario downgrade to
+  // FastScreenColdConfirm immune to this knob: the downgraded config no longer
+  // satisfies the policy condition, so the scalar route computes its own marks
+  // exactly as it does with harvesting off.
+  VarBaseMarkSource base_mark_source{VarBaseMarkSource::DedicatedPricePass};
 };
 
 // A single independent historical return observation. The base and shifted

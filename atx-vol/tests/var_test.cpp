@@ -1391,6 +1391,264 @@ TEST(Var, CrossSectionalAggregateMatchesRetainedLegOutput) {
   }
 }
 
+// ── Task 7: VarBaseMarkSource::HarvestedFromSolver ───────────────────────────
+
+// The same eight-target cross-sectional book the aggregate-vs-retained tests
+// above use, replayed once per base-mark source.
+struct HarvestFixture {
+  std::uint32_t uid{uid_for_symbol("SPY")};
+  OneSurfaceSnapshot reference{uid, 100.0, timestamp(2026, 1, 2)};
+  OneSurfaceSnapshot base{uid, 97.0, timestamp(2026, 1, 5)};
+  OneSurfaceSnapshot shifted{uid, 103.0, timestamp(2026, 1, 6)};
+  std::array<double, 8> targets{0.10, 0.20, 0.30, 0.40, 0.55, 0.65, 0.75, 0.85};
+  std::vector<VarPosition> positions{};
+
+  HarvestFixture() {
+    positions.reserve(targets.size());
+    for (std::size_t index = 0u; index < targets.size(); ++index) {
+      positions.push_back(
+          option("SPY", index % 2u == 0u ? Side::Call : Side::Put, 1.0, targets[index]));
+    }
+  }
+
+  [[nodiscard]] bool valid() const noexcept {
+    return reference.valid() && base.valid() && shifted.valid();
+  }
+
+  [[nodiscard]] std::vector<VarScenario> scenarios() const {
+    return {VarScenario{base.surface().pricing().now_ts_ns, &base.set(),
+                        shifted.surface().pricing().now_ts_ns, &shifted.set()}};
+  }
+};
+
+VarEvaluationConfig harvest_config(unsigned n_threads, VarBaseMarkSource source) {
+  VarEvaluationConfig config = evaluation_config(n_threads);
+  config.projection_solve_policy = OptionDeltaSolvePolicy::CrossSectionalColdConfirm;
+  config.base_mark_source = source;
+  return config;
+}
+
+// The point of routing BOTH valuation paths through one harvested scratch slot:
+// the base marks stop being two independently computed numbers that happen to
+// agree to 1e-9 and become the SAME number. `base_value` is `units * multiplier
+// * base_mark` summed over legs in the same order on both routes, so under
+// HarvestedFromSolver aggregate and retained base values agree BIT for bit --
+// a strictly stronger statement than the 1e-7 economic bound
+// CrossSectionalAggregateMatchesRetainedLegOutput can make under the dedicated
+// pass, where the aggregate route prices through the laned kernel and the
+// retained route through the scalar one.
+TEST(Var, HarvestedBaseMarksAreSharedBitExactlyByAggregateAndRetainedRoutes) {
+  const HarvestFixture fixture;
+  ASSERT_TRUE(fixture.valid());
+  const VarEvaluationConfig config = harvest_config(1, VarBaseMarkSource::HarvestedFromSolver);
+  auto prepared = PreparedVarPortfolio::create(fixture.positions, fixture.reference.set(), config);
+  ASSERT_TRUE(prepared) << (prepared ? std::string{} : prepared.error().to_string());
+
+  const std::vector<VarScenario> scenarios = fixture.scenarios();
+  std::vector<VarScenarioFrame> retained_frames(1u);
+  std::vector<VarScenarioFrame> aggregate_frames(1u);
+  std::vector<VarLegFrame> legs(fixture.positions.size());
+  ASSERT_TRUE(prepared->replay_into(scenarios, retained_frames, legs, config));
+  ASSERT_TRUE(prepared->replay_into(scenarios, aggregate_frames, {}, config));
+  ASSERT_EQ(retained_frames[0].status, VarScenarioStatus::Ok);
+  ASSERT_EQ(aggregate_frames[0].status, retained_frames[0].status);
+  ASSERT_EQ(aggregate_frames[0].n_ok, retained_frames[0].n_ok);
+  EXPECT_EQ(bits(aggregate_frames[0].base_value), bits(retained_frames[0].base_value));
+
+  // Teeth: the same book on the dedicated pass does NOT agree bit for bit --
+  // so the equality above is the harvest doing work, not an accident of this
+  // fixture. (The shifted mark still comes from two different kernels under
+  // both sources, so only the BASE value can be pinned bit-exactly.)
+  const VarEvaluationConfig dedicated = harvest_config(1, VarBaseMarkSource::DedicatedPricePass);
+  std::vector<VarScenarioFrame> dedicated_retained(1u);
+  std::vector<VarScenarioFrame> dedicated_aggregate(1u);
+  std::vector<VarLegFrame> dedicated_legs(fixture.positions.size());
+  ASSERT_TRUE(prepared->replay_into(scenarios, dedicated_retained, dedicated_legs, dedicated));
+  ASSERT_TRUE(prepared->replay_into(scenarios, dedicated_aggregate, {}, dedicated));
+  EXPECT_NE(bits(dedicated_aggregate[0].base_value), bits(dedicated_retained[0].base_value))
+      << "the dedicated-pass routes agreed bit-exactly, so this fixture cannot "
+         "distinguish a working harvest from a no-op";
+
+  // And the harvested marks stay inside the engine's own economic gate against
+  // the dedicated pass on every leg-level field a caller reads.
+  ASSERT_EQ(legs.size(), dedicated_legs.size());
+  for (std::size_t index = 0u; index < legs.size(); ++index) {
+    SCOPED_TRACE(::testing::Message() << "leg " << index);
+    ASSERT_EQ(legs[index].status, VarLegStatus::Ok);
+    ASSERT_EQ(dedicated_legs[index].status, VarLegStatus::Ok);
+    // The strike solve is untouched by the knob: harvesting reads a column the
+    // solver already filled and changes no iterate.
+    EXPECT_EQ(bits(legs[index].strike), bits(dedicated_legs[index].strike));
+    EXPECT_EQ(bits(legs[index].base_delta), bits(dedicated_legs[index].base_delta));
+    EXPECT_EQ(bits(legs[index].units), bits(dedicated_legs[index].units));
+    EXPECT_EQ(legs[index].definition_fingerprint, dedicated_legs[index].definition_fingerprint);
+    const double mark_scale = std::max(1.0, std::fabs(dedicated_legs[index].base_mark));
+    EXPECT_LE(std::fabs(legs[index].base_mark - dedicated_legs[index].base_mark),
+              1.0e-9 * mark_scale);
+    EXPECT_EQ(bits(legs[index].shifted_mark), bits(dedicated_legs[index].shifted_mark));
+  }
+  const double value_scale = std::max(
+      {1.0, std::fabs(dedicated_retained[0].base_value), std::fabs(dedicated_retained[0].pnl)});
+  EXPECT_LE(std::fabs(retained_frames[0].base_value - dedicated_retained[0].base_value),
+            1.0e-9 * value_scale);
+  EXPECT_LE(std::fabs(retained_frames[0].pnl - dedicated_retained[0].pnl), 1.0e-9 * value_scale);
+  EXPECT_EQ(retained_frames[0].definition_fingerprint,
+            dedicated_retained[0].definition_fingerprint);
+}
+
+// Harvesting is admissible only on the all-cold cross-sectional route. Every
+// other configuration must reproduce the dedicated pass BIT for bit -- not
+// "closely" -- because nothing about the valuation changed at all. This is the
+// guard that keeps a future default flip from silently retiring the dedicated
+// pass for callers whose policy or execution tier was never eligible for it.
+TEST(Var, HarvestedBaseMarksAreIgnoredOutsideTheColdCrossSectionalRoute) {
+  const HarvestFixture fixture;
+  ASSERT_TRUE(fixture.valid());
+  const std::vector<VarScenario> scenarios = fixture.scenarios();
+
+  struct Case {
+    const char *name;
+    OptionDeltaSolvePolicy policy;
+    QueryExecution valuation;
+  };
+  for (const Case &probe :
+       {Case{"FastScreenColdConfirm", OptionDeltaSolvePolicy::FastScreenColdConfirm,
+             QueryExecution::ColdReference},
+        Case{"Direct", OptionDeltaSolvePolicy::Direct, QueryExecution::ColdReference},
+        Case{"ConfiguredValuation", OptionDeltaSolvePolicy::CrossSectionalColdConfirm,
+             QueryExecution::Configured}}) {
+    SCOPED_TRACE(probe.name);
+    VarEvaluationConfig dedicated = evaluation_config(1);
+    dedicated.projection_solve_policy = probe.policy;
+    dedicated.valuation_execution = probe.valuation;
+    VarEvaluationConfig harvested = dedicated;
+    harvested.base_mark_source = VarBaseMarkSource::HarvestedFromSolver;
+    // Both configurations must still be constructible -- the knob is permissive,
+    // never a rejection, so flipping the default can never break a caller whose
+    // policy makes harvesting inapplicable.
+    auto prepared =
+        PreparedVarPortfolio::create(fixture.positions, fixture.reference.set(), harvested);
+    ASSERT_TRUE(prepared) << (prepared ? std::string{} : prepared.error().to_string());
+
+    std::vector<VarScenarioFrame> dedicated_frames(1u);
+    std::vector<VarScenarioFrame> harvested_frames(1u);
+    std::vector<VarLegFrame> dedicated_legs(fixture.positions.size());
+    std::vector<VarLegFrame> harvested_legs(fixture.positions.size());
+    ASSERT_TRUE(prepared->replay_into(scenarios, dedicated_frames, dedicated_legs, dedicated));
+    ASSERT_TRUE(prepared->replay_into(scenarios, harvested_frames, harvested_legs, harvested));
+    expect_bit_identical(harvested_frames[0], dedicated_frames[0]);
+    for (std::size_t index = 0u; index < harvested_legs.size(); ++index) {
+      SCOPED_TRACE(::testing::Message() << "leg " << index);
+      expect_bit_identical(harvested_legs[index], dedicated_legs[index]);
+    }
+  }
+}
+
+// A scenario that downgrades to the scalar FastScreenColdConfirm route prices
+// its own marks and must be byte-identical with the knob on and off. The
+// mechanism is structural rather than a dedicated branch: both downgrade sites
+// rewrite projection_solve_policy before recursing, which is exactly the
+// condition harvest_base_marks tests, so the recursion cannot harvest.
+TEST(Var, HarvestedBaseMarksLeaveDowngradedScenariosOnTheScalarRoute) {
+  const std::uint32_t uid = uid_for_symbol("SPY");
+  const OneSurfaceSnapshot reference(uid, 100.0, timestamp(2026, 1, 2),
+                                     kReachableReferenceVarianceScale);
+  const OneSurfaceSnapshot base(uid, 99.0, timestamp(2026, 1, 5));
+  const OneSurfaceSnapshot shifted(uid, 101.0, timestamp(2026, 1, 7));
+  ASSERT_TRUE(reference.valid() && base.valid() && shifted.valid());
+
+  std::vector<VarPosition> positions = {
+      option("SPY", Side::Call, 1.25, 0.40),
+      option("SPY", Side::Put, -0.75, 0.30),
+      stock("SPY", 7.0),
+  };
+  positions.push_back(unreachable_delta_target_position());
+  const std::vector<VarScenario> scenarios = {{base.surface().pricing().now_ts_ns, &base.set(),
+                                               shifted.surface().pricing().now_ts_ns,
+                                               &shifted.set()}};
+
+  const VarEvaluationConfig dedicated = harvest_config(1, VarBaseMarkSource::DedicatedPricePass);
+  const VarEvaluationConfig harvested = harvest_config(1, VarBaseMarkSource::HarvestedFromSolver);
+  auto prepared = PreparedVarPortfolio::create(positions, reference.set(), harvested);
+  ASSERT_TRUE(prepared) << (prepared ? std::string{} : prepared.error().to_string());
+
+  std::vector<VarScenarioFrame> dedicated_frames(1u);
+  std::vector<VarScenarioFrame> harvested_frames(1u);
+  std::vector<VarScenarioFrame> harvested_aggregate(1u);
+  std::vector<VarLegFrame> dedicated_legs(positions.size());
+  std::vector<VarLegFrame> harvested_legs(positions.size());
+  ASSERT_TRUE(prepared->replay_into(scenarios, dedicated_frames, dedicated_legs, dedicated));
+  ASSERT_TRUE(prepared->replay_into(scenarios, harvested_frames, harvested_legs, harvested));
+  ASSERT_TRUE(prepared->replay_into(scenarios, harvested_aggregate, {}, harvested));
+  // Sanity: this book really does downgrade, so the equality below is about the
+  // downgrade path and not about a scenario that resolved normally.
+  ASSERT_EQ(dedicated_frames[0].status, VarScenarioStatus::LegFailure);
+  ASSERT_EQ(dedicated_frames[0].n_failed, 1u);
+
+  expect_bit_identical(harvested_frames[0], dedicated_frames[0]);
+  expect_bit_identical(harvested_aggregate[0], dedicated_frames[0]);
+  for (std::size_t index = 0u; index < positions.size(); ++index) {
+    SCOPED_TRACE(::testing::Message() << "position " << index);
+    expect_bit_identical(harvested_legs[index], dedicated_legs[index]);
+  }
+}
+
+// Determinism is inviolable regardless of where the base mark comes from: the
+// harvest is a pure function of the same per-scenario solve, so t1/t2/t4 must
+// still agree bit for bit. Mirrors
+// CrossSectionalReplayIsBitInvariantAcrossThreadCountsAndLegOutputIsOptional
+// with the knob on.
+TEST(Var, HarvestedReplayIsBitInvariantAcrossThreadCounts) {
+  const std::uint32_t uid = uid_for_symbol("SPY");
+  const OneSurfaceSnapshot reference(uid, 100.0, timestamp(2026, 1, 2));
+  ASSERT_TRUE(reference.valid());
+  const std::vector<VarPosition> positions = {
+      option("SPY", Side::Call, 1.25, 0.40),
+      option("SPY", Side::Put, -0.75, 0.30),
+      stock("SPY", 7.0),
+  };
+  auto prepared = PreparedVarPortfolio::create(
+      positions, reference.set(), harvest_config(1, VarBaseMarkSource::HarvestedFromSolver));
+  ASSERT_TRUE(prepared) << (prepared ? std::string{} : prepared.error().to_string());
+
+  std::vector<std::unique_ptr<OneSurfaceSnapshot>> bases;
+  std::vector<std::unique_ptr<OneSurfaceSnapshot>> shifts;
+  const std::array<double, 4> base_spots{96.0, 103.0, 89.0, 111.0};
+  const std::array<double, 4> shifted_spots{99.0, 101.0, 94.0, 107.0};
+  for (std::size_t i = 0; i < base_spots.size(); ++i) {
+    bases.push_back(std::make_unique<OneSurfaceSnapshot>(
+        uid, base_spots[i], timestamp(2026, 1, 5 + static_cast<unsigned>(i))));
+    shifts.push_back(std::make_unique<OneSurfaceSnapshot>(
+        uid, shifted_spots[i], timestamp(2026, 1, 6 + static_cast<unsigned>(i))));
+    ASSERT_TRUE(bases.back()->valid() && shifts.back()->valid());
+  }
+  std::vector<VarScenario> scenarios;
+  scenarios.reserve(base_spots.size());
+  for (std::size_t i = 0; i < base_spots.size(); ++i) {
+    scenarios.push_back(VarScenario{bases[i]->surface().pricing().now_ts_ns, &bases[i]->set(),
+                                    shifts[i]->surface().pricing().now_ts_ns, &shifts[i]->set()});
+  }
+
+  std::vector<VarScenarioFrame> serial_frames(scenarios.size());
+  std::vector<VarLegFrame> serial_legs(scenarios.size() * positions.size());
+  ASSERT_TRUE(prepared->replay_into(scenarios, serial_frames, serial_legs,
+                                    harvest_config(1, VarBaseMarkSource::HarvestedFromSolver)));
+  for (const unsigned n_threads : {2u, 4u}) {
+    SCOPED_TRACE(::testing::Message() << "n_threads " << n_threads);
+    std::vector<VarScenarioFrame> frames(scenarios.size());
+    std::vector<VarLegFrame> legs(scenarios.size() * positions.size());
+    ASSERT_TRUE(
+        prepared->replay_into(scenarios, frames, legs,
+                              harvest_config(n_threads, VarBaseMarkSource::HarvestedFromSolver)));
+    for (std::size_t i = 0; i < scenarios.size(); ++i) {
+      expect_bit_identical(frames[i], serial_frames[i]);
+    }
+    for (std::size_t i = 0; i < serial_legs.size(); ++i) {
+      expect_bit_identical(legs[i], serial_legs[i]);
+    }
+  }
+}
+
 TEST(Var, CrossSectionalRetainedLegsAreColdConfirmedPerLeg) {
   const std::uint32_t uid = uid_for_symbol("SPY");
   const OneSurfaceSnapshot reference(uid, 100.0, timestamp(2026, 1, 2));

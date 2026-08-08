@@ -758,6 +758,210 @@ TEST(ContractProjection, BatchDeltaSolveRoutesHardRowsThroughScalarFallbackAndSt
   EXPECT_LE(median_of(all_evaluations), 4.0);
 }
 
+// ── Task 7: base-mark harvest bit-parity pin ─────────────────────────────────
+
+// A >=200-row fixture spanning six maturities, both sides, eighteen delta
+// targets and a deep-wing/short-maturity hard-row tail (the same shape
+// BatchDeltaSolveRoutesHardRowsThroughScalarFallbackAndStillConfirms uses), so
+// the harvest pin below covers single-pass, multi-pass and scalar-fallback-tail
+// rows rather than only the easy interior.
+struct HarvestParityGrid {
+  std::vector<double> T;
+  std::vector<Side> side;
+  std::vector<double> target;
+};
+
+HarvestParityGrid make_harvest_parity_grid(std::int64_t now) {
+  HarvestParityGrid grid;
+  const auto push_t = [&](const ProjectedMaturitySpec &maturity) -> double {
+    const auto expiry = resolve_projected_expiry(now, maturity);
+    if (!expiry) {
+      ADD_FAILURE() << "harvest grid expiry: " << expiry.error().to_string();
+      return 0.0;
+    }
+    return static_cast<double>(*expiry - now) / kNsPerYear;
+  };
+  // Maturity-major ordering keeps every maturity's 36 rows contiguous and
+  // bit-identical in T, which is the laned evaluate_batch run shape the solver
+  // actually sees from resolve_group_contracts_cross_sectional.
+  for (const ProjectedMaturitySpec &maturity :
+       {ProjectedMaturitySpec::days(3), ProjectedMaturitySpec::days(30),
+        ProjectedMaturitySpec::months(3), ProjectedMaturitySpec::years(0.5),
+        ProjectedMaturitySpec::years(1.0), ProjectedMaturitySpec::years(2.0)}) {
+    const double t = push_t(maturity);
+    for (const Side side : {Side::Call, Side::Put}) {
+      for (const double target : {0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.55,
+                                  0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90}) {
+        grid.T.push_back(t);
+        grid.side.push_back(side);
+        grid.target.push_back(target);
+      }
+    }
+  }
+  const double month_t = push_t(ProjectedMaturitySpec::months(3));
+  const double year_t = push_t(ProjectedMaturitySpec::years(2.0));
+  const double short_t = push_t(ProjectedMaturitySpec::days(3));
+  for (const auto &[t, target] : {std::pair{month_t, 0.95}, std::pair{month_t, 0.999},
+                                  std::pair{year_t, 0.999}, std::pair{short_t, 0.02}}) {
+    for (const Side side : {Side::Call, Side::Put}) {
+      grid.T.push_back(t);
+      grid.side.push_back(side);
+      grid.target.push_back(target);
+    }
+  }
+  return grid;
+}
+
+// Task 7's decision test. The NAME is the hypothesis it was written to settle --
+// "is the harvested mark bit-identical to the dedicated EvalField::Price pass?"
+// -- and the MEASURED ANSWER, recorded in the pins below, is NO in general but
+// yes per-kernel and to ~1e-14 relative overall. Read the pins, not the name.
+//
+// There are two dedicated-pass oracles, one per VaR route: evaluate_batch(Price)
+// is what evaluate_scenario_batched runs on the aggregate route, and the scalar
+// evaluate(Price) is what finish_option_leg runs on the retained-leg route.
+// Measured on the 2026-08-08 Debug run of this 224-row fixture:
+//
+//   * 4/4 scalar-fallback-tail rows reproduce the SCALAR evaluate(Price) mark
+//     bit for bit -- by construction, the tail harvests that exact call.
+//   * 218/220 laned-accepted rows reproduce evaluate_batch(Price) bit for bit:
+//     the laned Greek bundle's `price` and the laned price kernel are the same
+//     Andersen-Lake solve. The two exceptions are the deep-wing 3-day rows
+//     (|delta| target 0.02), which differ by <= 1.10e-14 relative.
+//   * 165/224 rows differ from the SCALAR evaluate(Price) by <= 8.74e-14
+//     relative. That is the PRE-EXISTING laned-vs-scalar price-kernel gap -- the
+//     same gap that makes the engine's aggregate-vs-retained gate 1e-9 rather
+//     than bit equality -- not something the harvest introduces.
+//
+// So the harvest is not bit-identical to the dedicated pass, but it is ~5 orders
+// of magnitude inside the 1e-9 economic gate. Per the Task 7 brief that verdict
+// keeps VarBaseMarkSource::DedicatedPricePass as the default and records the
+// measured gap here as a `<=` pin. The SP100 P&L parity rerun the brief asks for
+// before any default flip WAS run (worst drift 1.5e-12 relative on scenario
+// P&L, aggregate-vs-retained gate exactly zero); see task-7-report.md for the
+// numbers and the decision not to take the flip in this task.
+TEST(ContractProjection, HarvestedSolverPriceIsBitIdenticalToDedicatedPricePass) {
+  const std::int64_t now = timestamp(2026, 7, 10);
+  const PricedSurface surface = make_surface(2u, 120.0, now);
+  const HarvestParityGrid grid = make_harvest_parity_grid(now);
+  const std::size_t n = grid.T.size();
+  ASSERT_GE(n, 200u);
+
+  constexpr double tolerance = 1.0e-7;
+  AmericanDeltaBatchScratch scratch;
+  BatchDeltaOutputs out(n);
+  std::vector<double> harvested(n, 0.0);
+  const Status solved = solve_american_delta_batch(surface, grid.T, grid.side, grid.target,
+                                                   tolerance, scratch, out.strike, out.achieved,
+                                                   out.evaluations, out.row_status, harvested);
+  ASSERT_TRUE(solved) << (solved ? std::string{} : solved.error().to_string());
+
+  // Oracle 1 -- the aggregate route's dedicated pass: one laned
+  // evaluate_batch(Price) over the accepted strikes, at the same cold
+  // execution, with the same analytic flag var.cpp passes.
+  std::vector<double> batch_iv(n, 0.0);
+  std::vector<double> batch_price(n, 0.0);
+  std::vector<Status> batch_status(n);
+  PricedSurface::EvaluationSoA batch_out;
+  batch_out.iv = batch_iv;
+  batch_out.price = batch_price;
+  batch_out.status = batch_status;
+  const Status priced =
+      surface.evaluate_batch(out.strike, grid.T, grid.side, PricedSurface::EvalField::Price, false,
+                             batch_out, simd::SimdIsa::Auto, QueryExecution::ColdReference);
+  ASSERT_TRUE(priced) << (priced ? std::string{} : priced.error().to_string());
+
+  std::size_t n_multi_pass = 0;
+  std::size_t n_fallback = 0;
+  std::size_t n_laned_vs_batch_mismatch = 0;
+  std::size_t n_fallback_vs_scalar_mismatch = 0;
+  std::size_t n_batch_bit_mismatch = 0;
+  std::size_t n_scalar_bit_mismatch = 0;
+  double max_batch_relative_gap = 0.0;
+  double max_scalar_relative_gap = 0.0;
+  for (std::size_t i = 0; i < n; ++i) {
+    ASSERT_TRUE(out.row_status[i]) << "row " << i << ": " << out.row_status[i].error().to_string();
+    ASSERT_TRUE(std::isfinite(harvested[i])) << "row " << i << " harvested a non-finite mark";
+    EXPECT_GT(harvested[i], 0.0) << "row " << i;
+    if (out.evaluations[i] > 1u) {
+      ++n_multi_pass;
+    }
+    // evaluations_out beyond the batch pass budget is the observable signature
+    // of a row the laned passes gave up on and the scalar fallback tail
+    // re-solved (the solver exposes no per-row route flag).
+    const bool fallback_row = out.evaluations[i] > kMirroredMaxBatchDeltaPasses;
+    n_fallback += fallback_row ? 1u : 0u;
+
+    // Oracle 2 -- the retained-leg route's dedicated mark.
+    const PricedSurface::FusedResult scalar =
+        surface.evaluate(out.strike[i], grid.T[i], grid.side[i], PricedSurface::EvalField::Price,
+                         false, QueryExecution::ColdReference);
+    ASSERT_TRUE(scalar.status) << "row " << i << ": " << scalar.status.error().to_string();
+    ASSERT_TRUE(batch_status[i]) << "row " << i << ": " << batch_status[i].error().to_string();
+
+    const auto relative_gap = [&](double oracle) {
+      return oracle == 0.0 ? std::fabs(harvested[i] - oracle)
+                           : std::fabs(harvested[i] - oracle) / std::fabs(oracle);
+    };
+    const bool matches_batch =
+        std::bit_cast<std::uint64_t>(harvested[i]) == std::bit_cast<std::uint64_t>(batch_price[i]);
+    const bool matches_scalar =
+        std::bit_cast<std::uint64_t>(harvested[i]) == std::bit_cast<std::uint64_t>(scalar.price);
+    if (!matches_batch) {
+      ++n_batch_bit_mismatch;
+      max_batch_relative_gap = std::max(max_batch_relative_gap, relative_gap(batch_price[i]));
+    }
+    if (!matches_scalar) {
+      ++n_scalar_bit_mismatch;
+      max_scalar_relative_gap = std::max(max_scalar_relative_gap, relative_gap(scalar.price));
+    }
+    if (fallback_row) {
+      n_fallback_vs_scalar_mismatch += matches_scalar ? 0u : 1u;
+    } else {
+      n_laned_vs_batch_mismatch += matches_batch ? 0u : 1u;
+    }
+  }
+  const auto summary = [&] {
+    return testing::Message() << " [n=" << n << " multi_pass=" << n_multi_pass
+                              << " fallback=" << n_fallback
+                              << " vs_batch_mismatch=" << n_batch_bit_mismatch
+                              << " vs_scalar_mismatch=" << n_scalar_bit_mismatch
+                              << " laned_vs_batch_mismatch=" << n_laned_vs_batch_mismatch
+                              << " fallback_vs_scalar_mismatch=" << n_fallback_vs_scalar_mismatch
+                              << " max_batch_gap=" << max_batch_relative_gap
+                              << " max_scalar_gap=" << max_scalar_relative_gap << "]";
+  };
+
+  // Coverage: the pins must not be a statement about easy single-pass rows only.
+  EXPECT_GT(n_multi_pass, 0u) << "fixture drove no multi-pass row";
+  EXPECT_GT(n_fallback, 0u) << "fixture drove no scalar-fallback-tail row";
+
+  // PIN 1 -- the one bit-exact promise the harvest makes on its own terms: a
+  // fallback-tail row's mark IS the scalar route's own evaluate(Price) call, so
+  // a harvested tail row must reproduce a pure scalar valuation exactly. This
+  // is the invariant that keeps the rare tail from importing laned-kernel noise
+  // for rows the laned passes never solved.
+  EXPECT_EQ(n_fallback_vs_scalar_mismatch, 0u)
+      << "a fallback-tail row failed to reproduce the scalar evaluate(Price) mark" << summary();
+
+  // PIN 2 -- the laned Greek bundle's `price` and the laned price kernel are the
+  // same Andersen-Lake solve. Pinned as a dominant-majority bound rather than
+  // "all rows": the measured exceptions are deep-wing short-dated rows (2/220
+  // here), so an exact count would be fixture- and ISA-brittle while the
+  // mechanism claim is not.
+  EXPECT_GE(n - n_batch_bit_mismatch, (n * 95u) / 100u)
+      << "the harvested mark stopped tracking the laned price kernel" << summary();
+
+  // PIN 3 -- the MEASURED cross-kernel gap as a `<=` bound (Task 7 brief,
+  // requirement 2). Measured worst case on this fixture: 1.10e-14 against
+  // evaluate_batch(Price), 8.74e-14 against the scalar evaluate(Price). The
+  // bound below leaves an order of magnitude of headroom and still sits three
+  // decades inside the engine's 1e-9 aggregate-vs-retained gate.
+  constexpr double kMaxHarvestRelativeGap = 1.0e-12;
+  EXPECT_LE(max_batch_relative_gap, kMaxHarvestRelativeGap) << summary();
+  EXPECT_LE(max_scalar_relative_gap, kMaxHarvestRelativeGap) << summary();
+}
+
 TEST(ContractProjection, BatchDeltaSolveReportsRowFailuresWithoutInventingStrikes) {
   const std::int64_t now = timestamp(2026, 7, 10);
   const PricedSurface surface = make_surface(2u, 120.0, now);

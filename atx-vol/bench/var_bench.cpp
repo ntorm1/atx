@@ -76,6 +76,7 @@ using atx::vol::QueryPricingTier;
 using atx::vol::StrikeRule;
 using atx::vol::SurfaceDb;
 using atx::vol::UnpricedLotPolicy;
+using atx::vol::VarBaseMarkSource;
 using atx::vol::VarEvaluationConfig;
 using atx::vol::VarExclusionSummary;
 using atx::vol::VarLegFrame;
@@ -88,6 +89,7 @@ using atx::vol::VarScenarioStatus;
 using atx::vol::VarStockPosition;
 using atx::vol::write_var_scenario_tsv;
 using atx::vol::bench::apply_common;
+using atx::vol::bench::dump_counters;
 
 constexpr std::string_view kHistoryBegin = "2026-01-02";
 // May 4 + 91 calendar days is after the July 31 reference timestamp. Starting
@@ -448,6 +450,23 @@ append_option_position(const Lot &lot, const MarketSnapshot &reference,
   return true;
 }
 
+// ATX_VAR_BENCH_BASE_MARK_SOURCE=harvested selects
+// VarBaseMarkSource::HarvestedFromSolver for this fixture's validation replays
+// AND for the timed cases; anything else (including unset) keeps the dedicated
+// base Price pass. An env knob rather than a registered case per source: the two
+// are compared by running the SAME filter twice and differencing the counters,
+// so doubling the registered case count would only lengthen every unrelated
+// bench run. Wiring it into the fixture as well as the timed loop is the point:
+// prepare_replayable_portfolio's aggregate-vs-cold-retained-oracle gate is the
+// SP100-scale parity check the plan requires before any default flip, and it
+// would be worthless if it always validated the source the timed cases did not
+// run.
+[[nodiscard]] VarBaseMarkSource base_mark_source_from_environment() {
+  return environment_value("ATX_VAR_BENCH_BASE_MARK_SOURCE") == "harvested"
+             ? VarBaseMarkSource::HarvestedFromSolver
+             : VarBaseMarkSource::DedicatedPricePass;
+}
+
 [[nodiscard]] bool prepare_replayable_portfolio(TerminalVarFixture &fixture,
                                                 const MarketSnapshot &reference) {
   VarEvaluationConfig evaluation;
@@ -455,6 +474,7 @@ append_option_position(const Lot &lot, const MarketSnapshot &reference,
   evaluation.delta_tolerance = kReplayDeltaTolerance;
   evaluation.projection_execution = QueryExecution::ColdReference;
   evaluation.valuation_execution = QueryExecution::ColdReference;
+  evaluation.base_mark_source = base_mark_source_from_environment();
   auto candidate = PreparedVarPortfolio::create(fixture.positions, reference.set(), evaluation);
   if (!candidate) {
     set_error(fixture, candidate.error().to_string());
@@ -765,6 +785,7 @@ void run_terminal_var(benchmark::State &state, unsigned threads,
   config.projection_execution = QueryExecution::ColdReference;
   config.valuation_execution = QueryExecution::ColdReference;
   config.projection_solve_policy = solve_policy;
+  config.base_mark_source = base_mark_source_from_environment();
 
   for (auto _ : state) {
     const auto status = fixture.prepared->replay_into(fixture.scenarios, frames, {}, config);
@@ -776,6 +797,16 @@ void run_terminal_var(benchmark::State &state, unsigned threads,
     benchmark::ClobberMemory();
   }
   emit_throughput(state, fixture, threads);
+  state.counters["harvested_base_marks"] =
+      config.base_mark_source == VarBaseMarkSource::HarvestedFromSolver ? 1.0 : 0.0;
+  // cnt_* columns for ONE untimed replay, so keep/revert decisions on this
+  // fixture have a wall-free, host-load-immune basis. Compiled out entirely
+  // (and emits no columns) unless the build set ATX_VOL_COUNTERS.
+  dump_counters(state, [&] {
+    const auto status = fixture.prepared->replay_into(fixture.scenarios, frames, {}, config);
+    benchmark::DoNotOptimize(frames.data());
+    (void)status;
+  });
 }
 
 void register_all() {
