@@ -30,6 +30,30 @@ using atx::core::Ok;
   return leg_frames_size == n_scenarios * n_legs;
 }
 
+// True iff every scenario block's leg uid matches the reference leg at the
+// same position, for every scenario block in `leg_frames`. Position-based
+// name resolution below (reference_legs[position]) is only safe once this
+// holds: a reference_legs span with the right COUNT but the wrong
+// order/identity -- reordered, filtered-then-repadded, or simply from a
+// different portfolio -- must never be silently trusted, or callers get
+// silent per-leg P&L misattribution. Caller must first establish
+// leg_frames.size() == n_scenarios * reference_legs.size() (so `% n_legs`
+// below is safe and every index lands in a real block).
+[[nodiscard]] bool
+leg_frames_match_reference_legs_by_uid(std::span<const VarLegFrame> leg_frames,
+                                       std::span<const VarReferenceLeg> reference_legs) noexcept {
+  if (reference_legs.empty()) {
+    return leg_frames.empty();
+  }
+  const std::size_t n_legs = reference_legs.size();
+  for (std::size_t index = 0u; index < leg_frames.size(); ++index) {
+    if (leg_frames[index].uid != reference_legs[index % n_legs].uid) {
+      return false;
+    }
+  }
+  return true;
+}
+
 } // namespace
 
 Status write_var_scenario_tsv(std::ostream &out, const HistoricalVarResult &result,
@@ -50,6 +74,11 @@ Status write_var_scenario_tsv(std::ostream &out, const HistoricalVarResult &resu
       return Err(ErrorCode::InvalidArgument,
                  "VaR scenario TSV: reference_legs must have exactly result.n_legs entries "
                  "when result.leg_frames is populated");
+    }
+    if (!leg_frames_match_reference_legs_by_uid(result.leg_frames, reference_legs)) {
+      return Err(ErrorCode::InvalidArgument,
+                 "VaR scenario TSV: reference_legs uid does not match result.leg_frames "
+                 "at one or more positions -- refusing to name a leg from a mismatched span");
     }
   }
 
@@ -120,6 +149,11 @@ attribute_by_underlier(const HistoricalVarResult &result,
   if (reference_legs.size() != result.n_legs) {
     return Err(ErrorCode::InvalidArgument,
                "VaR underlier attribution: reference_legs must have exactly result.n_legs entries");
+  }
+  if (!leg_frames_match_reference_legs_by_uid(result.leg_frames, reference_legs)) {
+    return Err(ErrorCode::InvalidArgument,
+               "VaR underlier attribution: reference_legs uid does not match result.leg_frames "
+               "at one or more positions -- refusing to attribute P&L from a mismatched span");
   }
 
   struct Accumulator {

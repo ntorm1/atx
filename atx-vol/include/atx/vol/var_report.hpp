@@ -51,7 +51,11 @@ struct VarExclusionSummary {
 // When result.leg_frames is empty (VarRunConfig::retain_leg_frames was
 // false), reference_legs is ignored and every max_abs_leg_* column is an
 // empty string. When result.leg_frames is non-empty, reference_legs MUST have
-// exactly result.n_legs entries or this returns an error Status.
+// exactly result.n_legs entries, AND -- since a matching count alone does not
+// prove matching identity -- every result.leg_frames[i].uid must equal
+// reference_legs[i % result.n_legs].uid; either violation returns an error
+// Status rather than silently naming a leg from a reordered or unrelated
+// reference_legs span.
 [[nodiscard]] Status write_var_scenario_tsv(std::ostream &out, const HistoricalVarResult &result,
                                             const VarExclusionSummary &exclusions,
                                             std::span<const VarReferenceLeg> reference_legs = {});
@@ -77,8 +81,10 @@ struct VarUnderlierAttribution {
 // write_var_scenario_tsv, HistoricalVarResult alone cannot name a uid, so
 // `reference_legs` (additive vs. the plan's `(result)`-only sketch; see
 // task-4-report.md) must have exactly result.n_legs entries in the same
-// position order used to build result.leg_frames; a size mismatch also
-// returns an error Status.
+// position order used to build result.leg_frames, AND every
+// result.leg_frames[i].uid must equal reference_legs[i % result.n_legs].uid
+// -- a size match alone does not prove identity. Either violation returns an
+// error Status rather than silently attributing P&L to the wrong underlier.
 [[nodiscard]] Result<std::vector<VarUnderlierAttribution>>
 attribute_by_underlier(const HistoricalVarResult &result,
                        std::span<const VarReferenceLeg> reference_legs);

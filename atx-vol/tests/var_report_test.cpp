@@ -212,6 +212,24 @@ TEST(VarReport, ScenarioTsvRejectsMismatchedReferenceLegCount) {
   EXPECT_FALSE(status);
 }
 
+// A reference_legs span with the RIGHT COUNT but the WRONG identity (here,
+// simply reordered) must be rejected, not silently trusted by position: a
+// caller passing a reordered or unrelated-but-coincidentally-sized span
+// would otherwise get every max_abs_leg_* name/reference-field silently
+// misattributed to the wrong leg.
+TEST(VarReport, ScenarioTsvRejectsReorderedReferenceLegs) {
+  const HistoricalVarResult result = make_synthetic_result();
+  const VarExclusionSummary exclusions = make_exclusions();
+  const std::vector<VarReferenceLeg> ordered = make_reference_legs();
+  const std::vector<VarReferenceLeg> reordered = {ordered[1],
+                                                  ordered[0]}; // same count, wrong uid per position
+
+  std::ostringstream out;
+  const Status status = write_var_scenario_tsv(out, result, exclusions, reordered);
+  EXPECT_FALSE(status);
+  EXPECT_TRUE(out.str().empty()) << "a rejected call must not have written partial output";
+}
+
 // Schema-stability gate (Task 4 step 3): the header this engine-level writer
 // produces must byte-match the header of the real SP100 fixture artifact
 // var_bench used to hand-roll, proving the extraction did not silently
@@ -281,6 +299,112 @@ TEST(VarReport, AttributeByUnderlierRejectsMismatchedReferenceLegCount) {
   const Result<std::vector<VarUnderlierAttribution>> attribution =
       attribute_by_underlier(result, one_leg);
   EXPECT_FALSE(attribution);
+}
+
+// Same identity concern as ScenarioTsvRejectsReorderedReferenceLegs: a
+// same-sized but reordered reference_legs span must never be trusted by
+// position alone, or P&L gets silently attributed to the wrong underlier.
+TEST(VarReport, AttributeByUnderlierRejectsReorderedReferenceLegs) {
+  const HistoricalVarResult result = make_synthetic_result();
+  const std::vector<VarReferenceLeg> ordered = make_reference_legs();
+  const std::vector<VarReferenceLeg> reordered = {ordered[1], ordered[0]};
+
+  const Result<std::vector<VarUnderlierAttribution>> attribution =
+      attribute_by_underlier(result, reordered);
+  EXPECT_FALSE(attribution);
+}
+
+// Two underliers landing on the exact same total_pnl must not produce
+// nondeterministic (hash-order-dependent) output ordering: stable_sort over
+// discovery order (scenario-major, position-ascending) must keep AAPL
+// (reference position 0) ahead of MSFT (position 1) on a tie.
+TEST(VarReport, AttributeByUnderlierIsStableOnEqualTotalPnlTies) {
+  HistoricalVarResult result;
+  result.n_legs = 2u;
+  result.base_dates = {"2026-01-02"};
+  result.shifted_dates = {"2026-01-05"};
+
+  VarScenarioFrame scenario;
+  scenario.base_ts_ns = 100;
+  scenario.shifted_ts_ns = 200;
+  scenario.status = VarScenarioStatus::Ok;
+  scenario.n_ok = 2u;
+  result.frames = {scenario};
+
+  VarLegFrame leg_aapl; // position 0
+  leg_aapl.status = VarLegStatus::Ok;
+  leg_aapl.uid = 111u;
+  leg_aapl.pnl = 3.0;
+
+  VarLegFrame leg_msft; // position 1
+  leg_msft.status = VarLegStatus::Ok;
+  leg_msft.uid = 222u;
+  leg_msft.pnl = 3.0; // exact tie with leg_aapl
+
+  result.leg_frames = {leg_aapl, leg_msft};
+
+  const std::vector<VarReferenceLeg> reference_legs = make_reference_legs();
+  const Result<std::vector<VarUnderlierAttribution>> attribution =
+      attribute_by_underlier(result, reference_legs);
+  ASSERT_TRUE(attribution) << (attribution ? std::string{} : attribution.error().to_string());
+  ASSERT_EQ(attribution->size(), 2u);
+  EXPECT_EQ((*attribution)[0].underlier, "AAPL");
+  EXPECT_DOUBLE_EQ((*attribution)[0].total_pnl, 3.0);
+  EXPECT_EQ((*attribution)[1].underlier, "MSFT");
+  EXPECT_DOUBLE_EQ((*attribution)[1].total_pnl, 3.0);
+}
+
+// A stock hedge and an option leg on the same underlier must roll into one
+// attribution row keyed on the underlier string, not split by VarLegKind.
+// worst_scenario_pnl also demonstrates it is NOT just total_pnl restated: the
+// stock hedge's -2 is worse than the option leg's +5 even though the total
+// (+3) is positive.
+TEST(VarReport, AttributeByUnderlierRollsUpStockAndOptionLegsForSameUnderlier) {
+  HistoricalVarResult result;
+  result.n_legs = 2u;
+  result.base_dates = {"2026-01-02"};
+  result.shifted_dates = {"2026-01-05"};
+
+  VarScenarioFrame scenario;
+  scenario.base_ts_ns = 100;
+  scenario.shifted_ts_ns = 200;
+  scenario.status = VarScenarioStatus::Ok;
+  scenario.n_ok = 2u;
+  result.frames = {scenario};
+
+  VarLegFrame option_leg; // position 0: AAPL option
+  option_leg.kind = VarLegKind::Option;
+  option_leg.status = VarLegStatus::Ok;
+  option_leg.uid = 111u;
+  option_leg.pnl = 5.0;
+
+  VarLegFrame stock_leg; // position 1: AAPL stock hedge, same underlier/uid
+  stock_leg.kind = VarLegKind::Stock;
+  stock_leg.status = VarLegStatus::Ok;
+  stock_leg.uid = 111u;
+  stock_leg.pnl = -2.0;
+
+  result.leg_frames = {option_leg, stock_leg};
+
+  VarReferenceLeg option_reference;
+  option_reference.kind = VarLegKind::Option;
+  option_reference.uid = 111u;
+  option_reference.underlier = "AAPL";
+
+  VarReferenceLeg stock_reference;
+  stock_reference.kind = VarLegKind::Stock;
+  stock_reference.uid = 111u;
+  stock_reference.underlier = "AAPL";
+
+  const std::vector<VarReferenceLeg> reference_legs = {option_reference, stock_reference};
+  const Result<std::vector<VarUnderlierAttribution>> attribution =
+      attribute_by_underlier(result, reference_legs);
+  ASSERT_TRUE(attribution) << (attribution ? std::string{} : attribution.error().to_string());
+  ASSERT_EQ(attribution->size(), 1u);
+  EXPECT_EQ((*attribution)[0].underlier, "AAPL");
+  EXPECT_DOUBLE_EQ((*attribution)[0].total_pnl, 3.0);
+  EXPECT_DOUBLE_EQ((*attribution)[0].worst_scenario_pnl, -2.0);
+  EXPECT_EQ((*attribution)[0].worst_scenario_base_ts_ns, 100);
 }
 
 TEST(VarReport, AttributeByUnderlierReturnsEmptyForNoScenarios) {
