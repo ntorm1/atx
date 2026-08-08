@@ -1,6 +1,6 @@
 # Historical VaR engine: goal, implementation, and current state
 
-Status date: 2026-08-02  
+Status date: 2026-08-07  
 Scope: `atx-vol` only
 
 ## Executive summary
@@ -17,14 +17,41 @@ base date therefore resolves a new strike at that same delta and relative time
 to expiry. The reference-date forward log-moneyness is retained only for audit;
 it is not replayed as the historical strike coordinate.
 
-The current implementation is a correctness baseline plus a first performance
-pass, not the final performance result. On the realistic SP100 fixture, the
-accepted screened/cold-confirm route processes 106 scenarios in 37.695 seconds
-with eight requested workers. That is about 2.85 core-seconds per scenario,
-assuming all eight workers are occupied, versus the target of at most 1
-core-second per scenario. A grouped batch-root experiment was slower and has
-been rejected. The next optimization needs to replace per-option scalar root
-solves with a genuinely cross-sectional inverse-delta algorithm.
+The production route is now the cross-sectional inverse-delta engine
+(`OptionDeltaSolvePolicy::CrossSectionalColdConfirm`, the library default). It
+replaces the direct and screened scalar per-option root solves with a small
+fixed number of cross-sectional batch passes over each base surface's option
+group; see "Contract projection extension" and "Shipped design" below.
+
+The honest performance number is a mixed result, not a clean pass. On the
+realistic SP100 fixture, five-repetition/CV-gated measurements give one
+citable core-second figure that meets the target and one that misses it: at
+four requested workers (`rel`, sse2 Release) the route runs at 0.995
+core-seconds per scenario (median 26.357 s, CV 3.68%) — under the 1.0
+core-second-per-scenario target at that operating point. The best citable
+eight-worker figure is 1.172 core-seconds per scenario (`rel-avx2`,
+`/arch:AVX2` Release, median 15.532 s, CV 4.96%), which misses the target.
+The gap is structural, not an unexplored algorithmic opportunity: the two
+cold mark passes (base and shifted) floor the route's per-scenario work at
+roughly 44%, essentially untouched by any solver-side accelerant, and the
+wall-time * workers / scenarios metric charges each of the eight requested
+threads as a full core on this benchmark host's 4-performance/8-efficiency-core
+part — SMT and E-core threads are not full cores, which inflates the
+thread-summed accounting past what the single-thread numbers (0.510-0.567
+core-s/scenario at one worker) would predict. See "Measured performance" for
+the full table and the citable-versus-directional distinction, and "Shipped
+design" for the remaining, explicitly speculative levers.
+
+The module is verified, not merely implemented, though verification is not
+total. The focused `Var.*` (21/21) and `ContractProjection.*` (17/17) suites
+are green on the merged tree, clang-format is clean over every file this
+sprint touched, and the SP100 aggregate-vs-retained correctness gate passes
+bit-exact at production scale (every parity error counter identically zero).
+What remains open: the full `atx_vol_fast`/`atx_vol_slow` label sweeps were
+not run this sprint (the user directed focused test groups instead), one
+pre-existing failure outside this module's scope remains unresolved and
+tracked, and a final whole-branch review has not yet been performed. See
+"Validation state" for the complete, ungenerous accounting.
 
 ## Economic objective
 
@@ -100,7 +127,10 @@ share count is the same as today's.
 The default public route uses cold-reference strike resolution and cold marks.
 Prepared pricing may be used to propose a delta root, but every successful
 screened root is cold-confirmed to the configured tolerance and falls back to
-the robust cold solver when needed.
+the robust cold solver when needed. The library default is now the
+cross-sectional route, `OptionDeltaSolvePolicy::CrossSectionalColdConfirm`
+(`VarEvaluationConfig::projection_solve_policy`); see "Contract projection
+extension" below for its semantics.
 
 ### Engine implementation
 
@@ -127,12 +157,36 @@ state or a restruck contract from one date into the next.
 
 [`include/atx/vol/contract_projection.hpp`](../include/atx/vol/contract_projection.hpp)
 and [`src/contract_projection.cpp`](../src/contract_projection.cpp) add
-`OptionDeltaSolvePolicy`:
+`OptionDeltaSolvePolicy`, with three members:
 
-- `Direct` uses the robust requested pricing route directly.
+- `Direct` uses the robust requested pricing route directly, one option at a
+  time.
 - `FastScreenColdConfirm` permits a prepared tier to propose a strike, checks it
   using cold-reference American delta, refines it if necessary, and uses the
   all-cold solver as the fallback.
+- `CrossSectionalColdConfirm` is the library default. In the scalar
+  `project_option_contract` entry point it behaves exactly like
+  `FastScreenColdConfirm` (a batch of one gains nothing); batch consumers such
+  as `PreparedVarPortfolio` route it to the cross-sectional group solver
+  instead, `solve_american_delta_batch`.
+
+`solve_american_delta_batch` finds, for every row in a same-surface option
+group, the strike whose cold American delta matches the requested absolute
+delta to `tolerance`. Each row is seeded from a Black-style inverse-delta
+candidate refreshed against the base surface's current smile — the same two
+smile-refresh iterations the scalar solver uses, so the seed is a function of
+today's surface, not a frozen reference-date value. The seeded candidates are
+then evaluated together in laned, cold (`QueryExecution::ColdReference`)
+`FirstOrder` passes over the AVX2 greek kernels: one safeguarded Newton step
+off the closed-form Black delta slope follows the seed pass, and every pass
+after that is a secant correction from the previous two points, up to
+`kMaxBatchDeltaPasses = 8` total laned passes. A row is accepted once its
+residual is within tolerance/2 of the target — half the caller's tolerance, so
+the documented laned-vs-scalar kernel gap cannot push an accepted row outside
+the scalar solver's cold oracle tolerance — and any row still unconverged after the
+laned passes is handed to the robust scalar fallback solver, in ascending
+row-id order. The whole path is deterministic: fixed row order,
+batch-composition-invariant kernels, and no cross-call state.
 
 This keeps delta-defined contract projection reusable outside the VaR engine.
 
@@ -216,99 +270,219 @@ scenario frames.
 
 ## Measured performance
 
-These are one-shot Release measurements on the current benchmark host. They are
-useful directional measurements, not the final five-repetition/CV-gated
-baseline.
+The canonical numbers are five-repetition, CV-gated measurements of the
+cross-sectional route on the i7-1260P (4P+8E) benchmark host, using the
+repository's quiet-window protocol: `rel` is the sse2 Release preset,
+`rel-avx2` is the `/arch:AVX2` Release preset. A row is citable only when
+its coefficient of variation is at most 5%; higher-CV rows reflect ambient
+host-load contamination during this sprint and are reported as directional
+context only, not as the sprint's performance result. Core-seconds/scenario is
+`median_wall_s * workers / 106`.
+
+| Preset | Workers | Median (5-rep) | CV | Core-seconds/scenario | Citable |
+|---|---:|---:|---:|---:|---|
+| rel (sse2) | 1 | 54.015 s | 7.95% | 0.510 | Directional (CV > 5%) |
+| rel (sse2) | 4 | 26.357 s | 3.68% | 0.995 | Citable |
+| rel (sse2) | 8 | 14.937 s | 22.97% | 1.127 | Directional (CV > 5%) |
+| rel (sse2) | 16 | 13.007 s | 6.98% | — | Directional (CV > 5%) |
+| rel-avx2 (/arch:AVX2) | 1 | 55.460 s | 34.77% | — | Directional (CV > 5%) |
+| rel-avx2 (/arch:AVX2) | 4 | 23.430 s | 41.32% | 0.884 | Directional (CV > 5%) |
+| rel-avx2 (/arch:AVX2) | 8 | 15.532 s | 4.96% | 1.172 | Citable |
+| rel-avx2 (/arch:AVX2) | 16 | 16.520 s | 7.94% | — | Directional (CV > 5%) |
+
+Against the target of at most 1.0 core-second/scenario: rel t4 (0.995,
+citable) meets it; the best citable eight-worker figure, rel-avx2 t8 (1.172),
+misses it. See the executive summary for the structural reason (the cold-mark
+floor plus the SMT/E-core thread-accounting convention on this host). Cells
+marked "—" are directional rows for which no core-seconds/scenario figure is
+reported here; deriving one from a CV > 5% median would manufacture false
+precision.
+
+Additional directional data points, kept for context:
+
+- Single-shot, quiet-host samples of the cross-sectional route (not
+  five-repetition, therefore not CV-gated): the Task 11 P&L-producing run at
+  t8, 13.887 s = 1.048 core-s/scenario; the Task 9 t1 sample, 60.133 s = 0.567
+  core-s/scenario.
+- A five-repetition attempt at the prior scalar screened/cold-confirm route,
+  run for a same-protocol comparison, also failed the CV gate on this host:
+  median 25.997 s, CV 17.11% — not citable. No CV-clean scalar-vs-cross-sectional
+  comparison exists under the Task 10 protocol; the citable cross-sectional
+  numbers above are judged against the 1.0 target, not against the scalar
+  route.
+- This host's screened/cold-confirm single-shot at sprint start (Task 1) was
+  25.464 s at t8 = 1.922 core-s/scenario. The original version of this
+  document reported 2.85 core-s/scenario for the same scalar route, captured
+  on a slower benchmark host than the one used for this sprint's
+  measurements — the two figures are not directly comparable to each other or
+  to the table above.
+
+### Historical one-shot measurements (pre-cross-sectional, kept for context)
+
+These are one-shot Release measurements taken earlier in the sprint, on the
+benchmark host used for the original version of this document, before the
+cross-sectional route existed. They are retained as rejected-route guardrails
+and are not directly comparable to the Task 10 table above (different host,
+single-shot rather than five-repetition/CV-gated, and the fast-screen row
+describes a route that has since been superseded, not rejected).
 
 | Route | 8-worker wall time for 106 scenarios | Scenarios/s | Approx. core-seconds/scenario | Decision |
 |---|---:|---:|---:|---|
 | Direct cold root + cold marks | 109.127 s | 0.971 | 8.24 | Correct baseline, too slow |
-| Fast screen, cold-confirmed root + cold marks | 37.695 s | 2.812 | 2.85 | Current accepted route |
+| Fast screen, cold-confirmed root + cold marks | 37.695 s | 2.812 | 2.85 | Superseded; see the Task 10 table above |
 | Experimental grouped batch root + cold marks | 57.717 s | 1.837 | 4.36 | Rejected; slower |
 
-The accepted route is about 2.90 times faster than the direct cold baseline, but
-it is still about 2.85 times slower than the target of one core-second per
-scenario. In eight-worker wall-clock terms, that target is approximately 13.25
-seconds for 106 scenarios if scaling is ideal.
-
-The fundamental remaining cost is per-option scalar inverse-delta work. Merely
-wrapping those scalar roots in a grouped loop does not solve the problem; the
-rejected experiment demonstrated that it can add batch passes while retaining
-most of the original root cost.
+At the time, the fast-screen scalar route was about 2.90 times faster than the
+direct cold baseline, but still about 2.85 times slower than the one
+core-second-per-scenario target. The grouped batch-root experiment wrapped
+per-option scalar root solves in a batch loop without reducing the underlying
+scalar root cost: every option still ran its own seed-Newton-bracket sequence
+with scalar cold delta evaluations, so the batch added orchestration overhead
+while retaining nearly all of the original root cost. The cross-sectional
+design that replaced it (see "Shipped design" below) is different in kind, not
+degree — a small, fixed number of cross-sectional kernel passes over a
+shrinking active set replaces per-option scalar iteration entirely.
 
 ## Current P&L result and artifacts
 
-The accepted screened/cold trace is:
+The accepted cross-sectional trace is:
 
 ```text
-C:\atx\artifacts\var\sp100_dispersion_ytd_pnl_screened.tsv
+C:\atx\artifacts\var\sp100_dispersion_ytd_pnl_cross.tsv
 ```
 
-Its final cumulative P&L is approximately $6,546,716. The existing chart is:
+Its final cumulative P&L is +$6,546,715.73 over 106 scenarios, with 12 visible
+history breaks and a maximum drawdown of -$1,102,049.95. That figure differs
+from the previously accepted screened/cold trace's $6,546,716 by $0.27 in the
+final cumulative value (maximum per-scenario |P&L delta| $0.41): the two
+solvers converge to slightly different strikes within the same delta
+tolerance, which is expected, bounded cross-route economic drift, not a
+defect. The producing run passed the SP100 1e-9 aggregate-vs-retained oracle
+gate with every parity counter (`max_abs_pnl_error`,
+`max_relative_value_error`, `max_relative_delta_error`) identically zero.
+
+The chart, regenerated from the accepted cross trace so the delivered chart
+and the final named trace share identical provenance, is:
 
 ```text
 C:\atx\artifacts\var\sp100_dispersion_ytd_cumulative_pnl.png
 ```
 
-That PNG was generated from the corrected cold-reference trace. It has the same
-corrected economics, but it should be regenerated from the accepted
-`*_screened.tsv` trace after the final code/benchmark cleanup so the delivered
-chart and final named trace have identical provenance.
-
 Other useful evidence files are:
 
 ```text
+C:\atx\artifacts\var\sp100_dispersion_ytd_benchmark_cross_t8.json
+C:\atx\artifacts\var\sp100_dispersion_ytd_failures_cross.tsv
+C:\atx\artifacts\var\sp100_dispersion_ytd_pnl_screened.tsv
 C:\atx\artifacts\var\sp100_dispersion_ytd_benchmark_screened.json
-C:\atx\artifacts\var\sp100_dispersion_ytd_failures_screened.tsv
-C:\atx\artifacts\var\sp100_dispersion_ytd_pnl_corrected.tsv
-C:\atx\artifacts\var\sp100_dispersion_ytd_benchmark_corrected.json
 ```
 
-Files named `*_final.*` currently contain results from the rejected grouped
-batch-root experiment and should not be cited as the accepted result.
+`sp100_dispersion_ytd_pnl_screened.tsv` is the prior accepted scalar
+screened/cold-confirm trace, retained for the cross-route economic comparison
+above. Files named `*_final.*` still contain results from the rejected
+grouped batch-root experiment and should not be cited as the accepted result.
 
 ## Validation state
 
-The focused VaR and contract-projection tests passed before the latest removal
-of the rejected batch-root implementation. Strict source checks also passed at
-that point. The cleanup is present in the working tree, but the following final
-gates have not yet been rerun after that cleanup:
+Focused suites are green on the merged tree: `^Var\.` 21/21, `^ContractProjection\.`
+17/17. clang-format is clean over every file this plan touched. The
+hygiene-preset build (`configure -Preset hygiene` then `build atx-vol-tests
+-Preset hygiene`) completed clean on this revision.
 
-- Focused `Var.*` and `ContractProjection.*` tests.
-- C++ formatting and strict source checks over every touched file.
-- PCH-off compile hygiene required by the C++ agent instructions.
-- The full `atx-vol` test suite, intentionally deferred until the end.
-- A stable repeated benchmark with the repository's CV gate.
-- Regeneration and visual inspection of the PNG from the accepted screened TSV.
+The full `atx_vol_fast` and `atx_vol_slow` label sweeps were not run in
+this sprint; the user directed focused test groups (`^Var\.`,
+`^ContractProjection\.`) instead of full-suite runs. The last partial
+`atx_vol_fast` evidence, taken before that direction, stood at 2639/2676 with
+2 failures. Both were triaged:
 
-The module should therefore be treated as implemented but still in active
-verification and optimization, not as a completed or committed production
-feature.
+- `VolUmbrella.TierAIsClosedUnderInclusion` was a pre-existing fork-point
+  failure (the `strategy.hpp` -> `swap_leg.hpp` Tier-A closure gap) already
+  fixed upstream on `main` by commit `be98049`. It passes on the merged `main`
+  today.
+- `SurfaceV2Provenance.ValidationFallbackAdmissionRecordsTheServedFamily`
+  fails on both the fork-derived tree and current merged `main`. It is a
+  pre-existing convex-dense risk-surface admission rejection in the
+  fitting/QP domain, with no overlap with any file this sprint touched. It is
+  tracked as an upstream defect outside this module's scope, not resolved by
+  this sprint.
 
-## Recommended next performance design
+Correctness at production scale is bit-exact: the SP100 aggregate-vs-retained
+1e-9 gate passes with every error counter identically zero (sse2 build). The
+Task 8 fixture defect that once caused a gate failure was in the bench
+fixture's oracle, not the engine: a superset-book retained-leg oracle is
+invalid under the cross-sectional route's whole-scenario fallback
+composition-dependence. The fix was a fresh same-book retained replay (commit
+`5630362`), regression-pinned by
+`Var.CrossSectionalAggregateMatchesRetainedAfterExclusionRebuild`. The
+engine's own gates — cold-confirm at 1e-7 per strike (the solver's internal
+batch acceptance tolerance is half that, tolerance/2, for headroom), cold
+marks only, bit-exact thread invariance, and scenario independence — are
+unchanged.
 
-The next attempt should eliminate the scalar root solve from the common case:
+A final whole-branch review has not yet been performed.
 
-1. Group unique options by base surface/underlier.
-2. Generate a vector of initial strikes directly from the existing Black-style
-   inverse-delta seed for all maturities and sides.
-3. Evaluate cold American deltas for the whole vector in one batch pass.
-4. Apply a vectorized Newton or secant correction and perform one or two further
-   batch delta passes.
-5. Cold-confirm every candidate against the configured tolerance.
-6. Send only the small unconverged tail to the robust scalar solver.
-7. Batch the base and shifted cold price marks once strikes are final.
+## Shipped design
 
-This changes the asymptotic constant that matters: thousands of independent
-scalar root searches become a small fixed number of cross-sectional kernel
-passes plus rare scalar fallbacks. The correctness gate remains unchanged:
-every accepted strike must satisfy cold American delta tolerance, and aggregate
-P&L must match the retained-leg cold oracle within the admitted economic error.
+The design once proposed in this section as future work is now implemented,
+tested, and the library default:
 
-Performance should then be measured separately at 1, 4, 8, and 16 workers. The
-one-worker result is essential because it directly tests the one-second-per-day
-per-core target; thread scaling cannot compensate for a slow single-scenario
-algorithm.
+1. Options sharing a base surface are grouped and stable-sorted by
+   `(uid, expiry_offset_ns)`, so bit-identical time-to-expiry rows land in
+   contiguous runs that the laned kernels' per-run T-bracket caching already
+   exploits.
+2. Every row is seeded from a Black-style inverse-delta candidate refreshed
+   against the base surface's current smile (two smile-refresh iterations,
+   mirroring the scalar solver) rather than a frozen reference-date value.
+3. The seeded candidates are evaluated together in laned, cold `FirstOrder`
+   passes; one safeguarded Newton step follows the seed pass, then secant
+   correction passes refine the shrinking active set, up to
+   `kMaxBatchDeltaPasses = 8` total passes, with internal batch acceptance at
+   tolerance/2 so the scalar cold oracle holds at the full tolerance.
+4. Any row still unconverged after the laned passes is handed to the robust
+   scalar fallback solver — 0.43% of rows on the SP100 fixture, after the
+   pass budget was raised from 6 to 8 to bring the fallback fraction under the
+   2% guardrail.
+5. Base and shifted cold price marks are batched once strikes are final.
+
+This changed the asymptotic constant that mattered: thousands of independent
+scalar root searches became a small fixed number of cross-sectional kernel
+passes plus a rare scalar fallback tail. The correctness gate did not change:
+every accepted strike still satisfies cold American delta tolerance, and
+aggregate P&L still matches the retained-leg cold oracle within the admitted
+economic error (in production it matches bit-exactly; see "Validation state").
+
+Measured on the SP100 fixture (deterministic counters, t8): delta-solve is
+55.8% of thread-summed core-time and the two cold mark passes are 44.1%, with
+an average of 3.77 laned passes per row. A laned `FirstOrder` cold
+evaluation costs about the same as a `Price` cold evaluation (~36 microseconds
+per row) — the batch solver reorganizes cold evaluations rather than
+eliminating them, which is why the mark passes are now close to half of total
+work and are the dominant remaining floor, not the solve.
+
+Two accelerant ideas were measured and rejected during development, not
+merely proposed and skipped, and are kept here as guardrails: a
+reference-anchored seed (4.66 laned passes/row, 9.6% scalar fallback —
+reference-date moneyness does not transfer across vol regimes, since the
+k(delta) map scales with the current smile level) and trimming the seed from
+two smile refreshes to one (4.32 passes/row, 5.37% fallback). Both regressed
+the pass count against the shipped Black-seed/two-refresh design and are not
+retained.
+
+The remaining ideas below are speculative — none has been measured on this
+codebase, and none is scheduled:
+
+- Further ISA work (for example AVX-512 laned kernels) to reduce the ~36
+  microsecond/row cold-evaluation cost directly, rather than reducing the
+  number of evaluations.
+- Reducing the fixed mark-pass cost itself (currently ~44% of work and
+  untouched by any solver-side accelerant), for example by batching the base
+  and shifted marks across scenarios rather than per scenario.
+- E-core-aware executor partitioning on hybrid parts. The wall * workers /
+  scenario metric currently charges SMT and E-core threads as full cores on
+  the 4P+8E benchmark host; the single-thread numbers (0.510-0.567
+  core-s/scenario) versus the eight-worker numbers (1.127-1.172) show this
+  metric convention accounts for part of the t8 gap independent of any
+  algorithmic change.
 
 ## Reproduction commands
 
@@ -319,17 +493,21 @@ cmake --preset rel -DATX_BUILD_BENCH=ON
 cmake --build build-rel --target atx-vol-tests atx-vol-projection-bench -- -j 12
 ```
 
-Run the realistic accepted route once while iterating:
+Build the `rel-avx2` preset the same way (`cmake --preset rel-avx2 ...` /
+`cmake --build build-rel-avx2 ...`) to reproduce the `rel-avx2` rows of the
+"Measured performance" table.
+
+Run the accepted cross-sectional route once while iterating:
 
 ```powershell
 $env:ATX_SP100_SURFACE_DB='C:\atx-scratch\surface-db\sp100-2026'
 $env:ATX_VAR_BENCH_SINGLE_SHOT='1'
-$env:ATX_VAR_PNL_TSV='C:\atx\artifacts\var\sp100_dispersion_ytd_pnl_screened.tsv'
-$env:ATX_VAR_FAILURE_TSV='C:\atx\artifacts\var\sp100_dispersion_ytd_failures_screened.tsv'
+$env:ATX_VAR_PNL_TSV='C:\atx\artifacts\var\sp100_dispersion_ytd_pnl_cross.tsv'
+$env:ATX_VAR_FAILURE_TSV='C:\atx\artifacts\var\sp100_dispersion_ytd_failures_cross.tsv'
 
 .\build-rel\bin\atx-vol-projection-bench.exe `
-  --benchmark_filter='^var/prepared/sp100_dispersion_terminal/ytd/thousands/screened_cold/t8/' `
-  --benchmark_out='C:\atx\artifacts\var\sp100_dispersion_ytd_benchmark_screened.json' `
+  --benchmark_filter='^var/prepared/sp100_dispersion_terminal/ytd/thousands/cross_cold/t8/' `
+  --benchmark_out='C:\atx\artifacts\var\sp100_dispersion_ytd_benchmark_cross_t8.json' `
   --benchmark_out_format=json
 ```
 
@@ -337,10 +515,14 @@ Generate the chart:
 
 ```powershell
 python atx-vol\bench\plot_var_cumulative_pnl.py `
-  C:\atx\artifacts\var\sp100_dispersion_ytd_pnl_screened.tsv `
+  C:\atx\artifacts\var\sp100_dispersion_ytd_pnl_cross.tsv `
   C:\atx\artifacts\var\sp100_dispersion_ytd_cumulative_pnl.png
 ```
 
-For a citable result, unset `ATX_VAR_BENCH_SINGLE_SHOT` and use the benchmark
-harness's normal warm-up, five repetitions, p95, and coefficient-of-variation
-reporting.
+For a citable result, unset `ATX_VAR_BENCH_SINGLE_SHOT`, use a leased quiet
+host, and use the benchmark harness's normal warm-up, five repetitions, and
+coefficient-of-variation reporting (CV <= 5% to cite). Run the same filter
+against both the `rel` (sse2) and `rel-avx2` (`/arch:AVX2`) presets to
+reproduce the "Measured performance" table; do not compare numbers across
+presets, across hosts, or against single-shot (`ATX_VAR_BENCH_SINGLE_SHOT=1`)
+runs.
