@@ -260,16 +260,36 @@ TEST(SolveLedger, IvNewtonItersCountsInversionResiduals) {
 
 // ── 2. No-churn day = 6 solve-equivs / unique ────────────────────────────────
 //
-// single_clip opens one ATM put at inception and holds it. Every later step the
+// single_clip opens one ATM call at inception and holds it. Every later step the
 // book is unchanged, so compute_step's pnl-base reuses the previous step's stamped
 // risk (0 bundles); the only work is the 1 target Marks solve + the 5-solve
 // book-greeks bundle = 6. Pinned per-step via an armed StepTrace.
+//
+// Side::Call, deliberately, not Put: Task B3 (c1624b6, backtest-production-
+// lakehouse sprint) added a per-step early-exercise/assignment Advisory pass
+// (apply_early_exercise, atx-vol/src/backtest.cpp) that evaluates ANY
+// in-the-money put -- long or short -- with one extra `fair_value` solve,
+// unconditionally by design: the Advisory counters (n_puts_exercisable /
+// n_short_calls_assignable) must be correct every step, and there is no policy
+// that turns the check off (ExercisePolicy::{Advisory,Simulate} both need it).
+// An AtmForward PUT strike is carried at (r-q)*T positive cost-of-carry above
+// spot at entry, so it is transiently ITM for the first step or two before this
+// fixture's spot drift (make_clock bumps S ~0.4%/day) carries it OTM -- pulling
+// in that extra solve non-deterministically with respect to corpus timing and
+// breaking this pin (al=7/marks=2 instead of 6/1, on steps 0-1 only; see
+// followup-solveledger-report.md in this sprint's sdd dir for the full
+// root-cause writeup). A long CALL is structurally immune: B3's call lane only
+// fires for SHORT lots (lot.qty < 0.0) with a matching ex-date in
+// FinancingConfig::share_dividends, neither of which this fixture has, for any
+// moneyness. Using Call here keeps this baseline decoupled from B3's orthogonal
+// feature, matching the file's "smallest faithful realization" philosophy --
+// the solve-economy cost model under test does not depend on option side.
 TEST(SolveLedger, NoChurnDayIsSixSolvesPerUnit) {
   const fs::path dir = fresh_dir("no-churn");
   const Clock clock = make_clock(dir, "SPX", {0, 1, 2, 3, 4});
 
   DeclarativeStrategy strategy{
-      single_clip(kUid, 0.25, Side::Put, StrikeSelector{StrikeSelector::Kind::AtmForward, 0.0})};
+      single_clip(kUid, 0.25, Side::Call, StrikeSelector{StrikeSelector::Kind::AtmForward, 0.0})};
   RunConfig config = deterministic_config();
 
   led::reset();
