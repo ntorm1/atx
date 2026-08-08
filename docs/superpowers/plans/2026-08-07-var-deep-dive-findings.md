@@ -43,10 +43,11 @@ The `sp100_dispersion_ytd_cumulative_pnl.png` presents cumulated restruck-scenar
 **Interfaces:**
 - Produces: pure function `compute_decomposition(df) -> df` in the plot script, imported by the test. Input df columns: `base_date`, `shifted_date`, `base_value`, `shifted_value`, `pnl`, `cumulative_pnl`. Output adds columns: `rebasing_reset` (float, NaN on chain breaks), `cumulative_held_drift` (float).
 
-**Definitions (exact):**
-- Row i and i+1 are *chained* iff `shifted_date[i] == base_date[i+1]`.
-- `rebasing_reset[i] = base_value[i+1] - shifted_value[i]` when chained, else NaN (history break).
-- `cumulative_held_drift[k] = cumulative_pnl[k] + sum(rebasing_reset[i] for i < k if chained)` — the telescoped value change of holding the restruck-once profile across each chain, per [pnl] section "telescoping decomposition".
+**Definitions (exact, corrected after Task 1 round 1 — resets sum over ALL adjacent pairs):**
+- Row i and i+1 are *chained* iff `shifted_date[i] == base_date[i+1]`; expose a boolean `chained` column for annotation.
+- `rebasing_reset[i] = base_value[i+1] - shifted_value[i]` for EVERY adjacent pair, chained or not. At a history break this conflates the gap's market move with the reset; that is the [pnl] report's convention (same-day resets +$4.87M, break resets +$0.96M) and keeps the telescoping identity exact.
+- `cumulative_held_drift[k] = cumulative_pnl[k] + sum(rebasing_reset[i] for i < k)` — since `base_value[i+1] - base_value[i] = pnl[i] + rebasing_reset[i]` for every pair, this telescopes to the held-profile value change; on the cross TSV the final value is ≈ +$0.72M, consistent with Steps 5-6.
+- Identity to test: `cumulative_held_drift[last] == cumulative_pnl[last] + sum(rebasing_reset[:-1])` and equivalently `== (base_value[last] + pnl[last]) - base_value[0]`.
 
 **Steps:**
 
