@@ -146,6 +146,64 @@ TEST(HistoricalProjection, ScenarioTimestampMustMatchSurfaceValuation) {
   EXPECT_TRUE(std::isnan(frames[0].value));
 }
 
+// [proj] I2: evaluate_into's default (Configured) must reproduce the SAME
+// leg the underlying PreparedOptionProjection would have produced under
+// Configured -- non-VaR callers see no change. An explicit ColdReference
+// override must instead reproduce the independent scalar ColdReference
+// oracle exactly, on an accelerator-backed (RepresentativeFast) surface
+// where the two routes are genuinely different code paths.
+TEST(HistoricalProjection,
+     EvaluateIntoDefaultConfiguredVsExplicitColdReferenceMatchIndependentOracles) {
+  const std::uint32_t uid = 1u;
+  PricedSurface source = make_surface(uid, 100.0, timestamp(2026, 1, 2));
+  auto prepared_fast = std::move(source).with_query_pricing(QueryPricingTier::RepresentativeFast);
+  ASSERT_TRUE(prepared_fast) << (prepared_fast ? std::string{} : prepared_fast.error().to_string());
+  const PricedSurface fast = std::move(*prepared_fast);
+  const std::vector<const PricedSurface *> pointers{&fast};
+  auto set = SurfaceSet::create(pointers);
+  ASSERT_TRUE(set);
+
+  const std::vector<RelativeOptionPosition> positions = {position(uid, Side::Call, 0.40, 1.0)};
+  auto prepared = PreparedHistoricalProjection::create(positions);
+  ASSERT_TRUE(prepared);
+  const std::vector<HistoricalProjectionScenario> scenarios = {{fast.pricing().now_ts_ns, &*set}};
+
+  std::vector<HistoricalProjectionFrame> configured_frames(1);
+  std::vector<ProjectedOption> configured_legs(1);
+  ASSERT_TRUE(prepared->evaluate_into(scenarios, configured_frames, configured_legs));
+  ASSERT_EQ(configured_legs[0].status, OptionProjectionStatus::Ok);
+
+  std::vector<HistoricalProjectionFrame> cold_frames(1);
+  std::vector<ProjectedOption> cold_legs(1);
+  ASSERT_TRUE(prepared->evaluate_into(scenarios, cold_frames, cold_legs,
+                                      HistoricalProjectionConfig{}, QueryExecution::ColdReference));
+  ASSERT_EQ(cold_legs[0].status, OptionProjectionStatus::Ok);
+
+  OptionProjectionConfig cold_check;
+  cold_check.output = OptionProjectionOutput::FullGreeks;
+  cold_check.query_execution = QueryExecution::ColdReference;
+  auto cold_oracle = project_option_contract(fast, positions[0].option, cold_check);
+  ASSERT_TRUE(cold_oracle) << (cold_oracle ? std::string{} : cold_oracle.error().to_string());
+  EXPECT_EQ(cold_legs[0], *cold_oracle)
+      << "explicit ColdReference must reach OptionProjectionConfig::query_execution, not silently "
+         "inherit the surface's prepared accelerator tier ([proj] I2)";
+
+  OptionProjectionConfig configured_check;
+  configured_check.output = OptionProjectionOutput::FullGreeks;
+  configured_check.query_execution = QueryExecution::Configured;
+  auto configured_oracle = project_option_contract(fast, positions[0].option, configured_check);
+  ASSERT_TRUE(configured_oracle);
+  EXPECT_EQ(configured_legs[0], *configured_oracle)
+      << "default execution (Configured) must keep non-VaR callers unchanged";
+
+  // Sanity: this fixture genuinely exercises the fast tier under Configured
+  // (otherwise the two EXPECT_EQ above would be vacuous -- Configured and
+  // ColdReference would coincide even without the fix).
+  EXPECT_EQ(fast.query_pricing_route(configured_legs[0].definition.contract.K,
+                                     configured_legs[0].definition.contract.T, Side::Call),
+            QueryPricingRoute::RepresentativeFast);
+}
+
 TEST(HistoricalProjection, VarUsesNearestRankAndInclusiveTail) {
   std::vector<HistoricalProjectionFrame> frames(6);
   for (std::size_t i = 0; i < 5; ++i) {

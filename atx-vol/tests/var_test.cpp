@@ -1452,4 +1452,308 @@ TEST(Var, NonMonotoneArchiveTimestampsReportTimestampMismatch) {
   EXPECT_EQ(result->frames[1].status, VarScenarioStatus::Ok);
 }
 
+// [proj] I1: a wholly missing run of partitions (a fit failure day, an
+// ingestion hole) must not bridge silently into a single multi-session
+// observation. Fixture: 01-02 -> 01-05 (3 calendar days, an ordinary
+// weekend) -> 01-15 (10 calendar days, an induced hole) -> 01-16 (1 day).
+TEST(Var, GapPolicySkipsAndCountsTransitionsBeyondMaxSessionGapDays) {
+  const ScopedTempDirectory root("gap_policy");
+  auto db = SurfaceDb::create(root.path().string());
+  ASSERT_TRUE(db) << (db ? std::string{} : db.error().to_string());
+  ASSERT_TRUE(db->upsert_symbol("SPY", SymbolFitConfig{}));
+
+  const std::uint32_t uid = uid_for_symbol("SPY");
+  const PricedSurface d02 = make_surface(uid, 100.0, timestamp(2026, 1, 2));
+  const PricedSurface d05 = make_surface(uid, 101.0, timestamp(2026, 1, 5));
+  const PricedSurface d15 = make_surface(uid, 104.0, timestamp(2026, 1, 15));
+  const PricedSurface d16 = make_surface(uid, 103.0, timestamp(2026, 1, 16));
+
+  const std::array<SurfaceArchiveItem, 1> items_02{{{"SPY", &d02}}};
+  const std::array<SurfaceArchiveItem, 1> items_05{{{"SPY", &d05}}};
+  const std::array<SurfaceArchiveItem, 1> items_15{{{"SPY", &d15}}};
+  const std::array<SurfaceArchiveItem, 1> items_16{{{"SPY", &d16}}};
+  ASSERT_TRUE(db->write_partition("2026-01-02", items_02));
+  ASSERT_TRUE(db->write_partition("2026-01-05", items_05));
+  ASSERT_TRUE(db->write_partition("2026-01-15", items_15));
+  ASSERT_TRUE(db->write_partition("2026-01-16", items_16));
+
+  const std::vector<VarPosition> positions = {option("SPY", Side::Call, 1.0)};
+  VarRunConfig base_config;
+  base_config.reference_date = "2026-01-16";
+  base_config.date_begin = "2026-01-02";
+  base_config.date_end = "2026-01-16";
+  base_config.confidence = 0.50;
+  base_config.evaluation = evaluation_config(1);
+  base_config.archive_backing = ArchiveBacking::Mutable;
+  base_config.query_pricing_tier = QueryPricingTier::ColdReference;
+  base_config.provenance_policy = SurfaceProvenancePolicy::Compatibility;
+
+  // gap 0 (default): the guard is disabled -- every adjacent partition
+  // bridges, current behavior preserved.
+  auto bridged = run_historical_var(*db, positions, base_config);
+  ASSERT_TRUE(bridged) << (bridged ? std::string{} : bridged.error().to_string());
+  EXPECT_EQ(bridged->n_gap_skipped, 0u);
+  ASSERT_EQ(bridged->frames.size(), 3u);
+  EXPECT_EQ(bridged->base_dates,
+            (std::vector<std::string>{"2026-01-02", "2026-01-05", "2026-01-15"}));
+  EXPECT_EQ(bridged->shifted_dates,
+            (std::vector<std::string>{"2026-01-05", "2026-01-15", "2026-01-16"}));
+
+  // gap 5: the 01-05 -> 01-15 (10 calendar day) transition must be skipped
+  // and counted; the two normal-gap transitions survive.
+  VarRunConfig gapped_config = base_config;
+  gapped_config.max_session_gap_days = 5;
+  auto gapped = run_historical_var(*db, positions, gapped_config);
+  ASSERT_TRUE(gapped) << (gapped ? std::string{} : gapped.error().to_string());
+  EXPECT_EQ(gapped->n_gap_skipped, 1u);
+  ASSERT_EQ(gapped->frames.size(), 2u);
+  EXPECT_EQ(gapped->base_dates, (std::vector<std::string>{"2026-01-02", "2026-01-15"}));
+  EXPECT_EQ(gapped->shifted_dates, (std::vector<std::string>{"2026-01-05", "2026-01-16"}));
+  for (const VarScenarioFrame &frame : gapped->frames) {
+    EXPECT_EQ(frame.status, VarScenarioStatus::Ok);
+  }
+}
+
+// [proj] I5: ExcludeFromDistribution shrinks the sample silently today.
+// Reuses NonMonotoneArchiveTimestampsReportTimestampMismatch's fixture shape
+// (one deliberately non-monotone embedded timestamp) to induce exactly one
+// TimestampMismatch scenario alongside one Ok scenario.
+TEST(Var, ExclusionAccountingCountsFailedScenariosAndMaxExcludedFractionCanFailRun) {
+  const ScopedTempDirectory root("exclusion_accounting");
+  auto db = SurfaceDb::create(root.path().string());
+  ASSERT_TRUE(db) << (db ? std::string{} : db.error().to_string());
+  ASSERT_TRUE(db->upsert_symbol("SPY", SymbolFitConfig{}));
+
+  const std::uint32_t uid = uid_for_symbol("SPY");
+  const PricedSurface ref_surface = make_surface(uid, 100.0, timestamp(2026, 1, 2));
+  const PricedSurface d05 = make_surface(uid, 100.0, timestamp(2026, 1, 5));
+  // Deliberately regressed embedded timestamp (earlier than d05's own),
+  // inducing a non-monotone base -> shifted pair for exactly one scenario.
+  const PricedSurface d06 = make_surface(uid, 100.0, timestamp(2026, 1, 4));
+  const PricedSurface d07 = make_surface(uid, 100.0, timestamp(2026, 1, 7));
+
+  const std::array<SurfaceArchiveItem, 1> items_ref{{{"SPY", &ref_surface}}};
+  const std::array<SurfaceArchiveItem, 1> items_05{{{"SPY", &d05}}};
+  const std::array<SurfaceArchiveItem, 1> items_06{{{"SPY", &d06}}};
+  const std::array<SurfaceArchiveItem, 1> items_07{{{"SPY", &d07}}};
+  ASSERT_TRUE(db->write_partition("2026-01-02", items_ref));
+  ASSERT_TRUE(db->write_partition("2026-01-05", items_05));
+  ASSERT_TRUE(db->write_partition("2026-01-06", items_06));
+  ASSERT_TRUE(db->write_partition("2026-01-07", items_07));
+
+  const std::vector<VarPosition> positions = {option("SPY", Side::Call, 1.0)};
+  VarRunConfig config;
+  config.reference_date = "2026-01-02";
+  config.date_begin = "2026-01-05";
+  config.date_end = "2026-01-07";
+  config.confidence = 0.50;
+  config.evaluation = evaluation_config(1);
+  config.failure_policy = VarScenarioFailurePolicy::ExcludeFromDistribution;
+  config.archive_backing = ArchiveBacking::Mutable;
+  config.query_pricing_tier = QueryPricingTier::ColdReference;
+  config.provenance_policy = SurfaceProvenancePolicy::Compatibility;
+
+  auto excluded_ok = run_historical_var(*db, positions, config);
+  ASSERT_TRUE(excluded_ok) << (excluded_ok ? std::string{} : excluded_ok.error().to_string());
+  ASSERT_EQ(excluded_ok->frames.size(), 2u);
+  EXPECT_EQ(excluded_ok->frames[0].status, VarScenarioStatus::TimestampMismatch);
+  EXPECT_EQ(excluded_ok->frames[1].status, VarScenarioStatus::Ok);
+  EXPECT_EQ(excluded_ok->n_excluded_from_distribution, 1u);
+
+  // max_excluded_fraction = 0.0 disallows ANY exclusion: the 1-of-2 (50%)
+  // excluded fraction here must fail the run outright.
+  config.max_excluded_fraction = 0.0;
+  auto rejected = run_historical_var(*db, positions, config);
+  ASSERT_FALSE(rejected)
+      << "excluded fraction 0.5 must fail the run when max_excluded_fraction=0.0";
+  EXPECT_NE(rejected.error().to_string().find("max_excluded_fraction"), std::string::npos)
+      << rejected.error().to_string();
+}
+
+// [proj] I4: a restrike root this far into the wing is pure parametric
+// extrapolation -- no quote has ever existed there. A deliberately tight
+// bound (0.001) is exceeded by ANY non-ATM restrike, so this reliably
+// exercises the reject path without depending on exact vol calibration.
+TEST(Var, RestrikeBeyondWingBoundFailsWithInvalidDelta) {
+  const std::uint32_t uid = uid_for_symbol("SPY");
+  const OneSurfaceSnapshot reference(uid, 100.0, timestamp(2026, 1, 2));
+  ASSERT_TRUE(reference.valid());
+  const OneSurfaceSnapshot base(uid, 100.0, timestamp(2026, 1, 5));
+  const OneSurfaceSnapshot shifted(uid, 101.0, timestamp(2026, 1, 6));
+  ASSERT_TRUE(base.valid() && shifted.valid());
+
+  const std::vector<VarPosition> positions = {option("SPY", Side::Call, 1.0, 0.35)};
+  const std::vector<VarScenario> scenarios = {{base.surface().pricing().now_ts_ns, &base.set(),
+                                               shifted.surface().pricing().now_ts_ns,
+                                               &shifted.set()}};
+
+  VarEvaluationConfig tight_config = evaluation_config(1);
+  tight_config.max_restrike_abs_log_moneyness = 0.001;
+  auto tight_prepared = PreparedVarPortfolio::create(positions, reference.set(), tight_config);
+  ASSERT_TRUE(tight_prepared) << (tight_prepared ? std::string{}
+                                                 : tight_prepared.error().to_string());
+
+  std::vector<VarScenarioFrame> retained_frames(1u);
+  std::vector<VarLegFrame> legs(1u);
+  ASSERT_TRUE(tight_prepared->replay_into(scenarios, retained_frames, legs, tight_config));
+  ASSERT_EQ(legs[0].status, VarLegStatus::InvalidDelta) << to_string(legs[0].status);
+  EXPECT_EQ(retained_frames[0].status, VarScenarioStatus::LegFailure);
+
+  // Aggregate route must reject the SAME leg for parity on the scenario totals.
+  std::vector<VarScenarioFrame> aggregate_frames(1u);
+  ASSERT_TRUE(tight_prepared->replay_into(scenarios, aggregate_frames, {}, tight_config));
+  EXPECT_EQ(aggregate_frames[0].status, VarScenarioStatus::LegFailure);
+  EXPECT_EQ(aggregate_frames[0].n_failed, 1u);
+
+  // The default bound (5.0, today's implicit behavior) must accept the SAME
+  // restrike normally.
+  const VarEvaluationConfig wide_config = evaluation_config(1);
+  auto wide_prepared = PreparedVarPortfolio::create(positions, reference.set(), wide_config);
+  ASSERT_TRUE(wide_prepared);
+  std::vector<VarScenarioFrame> wide_frames(1u);
+  std::vector<VarLegFrame> wide_legs(1u);
+  ASSERT_TRUE(wide_prepared->replay_into(scenarios, wide_frames, wide_legs, wide_config));
+  EXPECT_EQ(wide_legs[0].status, VarLegStatus::Ok) << to_string(wide_legs[0].status);
+}
+
+// [proj] I4: the (0.8x, 1.0x] band below the bound is an early-warning flag,
+// not a rejection. Derive a bound from the wide-open run's own resolved
+// strike so the test needs no fragile numeric assumptions about calibration.
+TEST(Var, RestrikeNearWingBoundSetsEarlyWarningFlagWithoutFailingTheLeg) {
+  const std::uint32_t uid = uid_for_symbol("SPY");
+  const OneSurfaceSnapshot reference(uid, 100.0, timestamp(2026, 1, 2));
+  ASSERT_TRUE(reference.valid());
+  const OneSurfaceSnapshot base(uid, 100.0, timestamp(2026, 1, 5));
+  const OneSurfaceSnapshot shifted(uid, 101.0, timestamp(2026, 1, 6));
+  ASSERT_TRUE(base.valid() && shifted.valid());
+
+  const std::vector<VarPosition> positions = {option("SPY", Side::Call, 1.0, 0.35)};
+  const std::vector<VarScenario> scenarios = {{base.surface().pricing().now_ts_ns, &base.set(),
+                                               shifted.surface().pricing().now_ts_ns,
+                                               &shifted.set()}};
+
+  const VarEvaluationConfig wide_config = evaluation_config(1);
+  auto wide_prepared = PreparedVarPortfolio::create(positions, reference.set(), wide_config);
+  ASSERT_TRUE(wide_prepared);
+  std::vector<VarScenarioFrame> wide_frames(1u);
+  std::vector<VarLegFrame> wide_legs(1u);
+  ASSERT_TRUE(wide_prepared->replay_into(scenarios, wide_frames, wide_legs, wide_config));
+  ASSERT_EQ(wide_legs[0].status, VarLegStatus::Ok);
+  EXPECT_EQ(wide_legs[0].diagnostic_flags & 0x4u, 0u);
+
+  const double forward = base.surface().forward_at(wide_legs[0].base_time_to_expiry);
+  ASSERT_TRUE(std::isfinite(forward) && forward > 0.0);
+  const double log_moneyness = std::log(wide_legs[0].strike / forward);
+  ASSERT_GT(std::fabs(log_moneyness), 0.0);
+
+  VarEvaluationConfig near_config = evaluation_config(1);
+  near_config.max_restrike_abs_log_moneyness = std::fabs(log_moneyness) / 0.9;
+  auto near_prepared = PreparedVarPortfolio::create(positions, reference.set(), near_config);
+  ASSERT_TRUE(near_prepared);
+  std::vector<VarScenarioFrame> near_frames(1u);
+  std::vector<VarLegFrame> near_legs(1u);
+  ASSERT_TRUE(near_prepared->replay_into(scenarios, near_frames, near_legs, near_config));
+  ASSERT_EQ(near_legs[0].status, VarLegStatus::Ok)
+      << "0.9x the bound must still be accepted -- only beyond the bound rejects";
+  EXPECT_NE(near_legs[0].diagnostic_flags & 0x4u, 0u)
+      << "0.9x the bound is inside the (0.8x, 1.0x] early-warning band";
+}
+
+// [proj] I3: plumb extrapolates_tenor into VarLegFrame::diagnostic_flags,
+// telemetry only (no status/value change on the fixture paths).
+TEST(Var, DiagnosticFlagsRecordTenorExtrapolationOnBothSidesAndStayClearInsideTheFittedDomain) {
+  const std::uint32_t uid = uid_for_symbol("SPY");
+  const OneSurfaceSnapshot reference(uid, 100.0, timestamp(2026, 1, 2));
+  ASSERT_TRUE(reference.valid());
+  const OneSurfaceSnapshot base(uid, 100.0, timestamp(2026, 1, 5));
+  const OneSurfaceSnapshot shifted(uid, 100.5, timestamp(2026, 1, 6));
+  ASSERT_TRUE(base.valid() && shifted.valid());
+
+  const VarEvaluationConfig config = evaluation_config(1);
+  const std::vector<VarScenario> scenarios = {{base.surface().pricing().now_ts_ns, &base.set(),
+                                               shifted.surface().pricing().now_ts_ns,
+                                               &shifted.set()}};
+
+  // Short (2 calendar day) template: base_time (~2/365.25y) and shifted_time
+  // (~1/365.25y) both fall below make_surface's front pillar (0.03y), so
+  // BOTH sides extrapolate.
+  const std::vector<VarPosition> short_positions = {
+      VarOptionPosition{"SPY", ProjectedMaturitySpec::days(2), 0.40, Side::Call, 1.0, 100.0}};
+  auto short_prepared = PreparedVarPortfolio::create(short_positions, reference.set(), config);
+  ASSERT_TRUE(short_prepared) << (short_prepared ? std::string{}
+                                                 : short_prepared.error().to_string());
+  std::vector<VarScenarioFrame> short_frames(1u);
+  std::vector<VarLegFrame> short_legs(1u);
+  ASSERT_TRUE(short_prepared->replay_into(scenarios, short_frames, short_legs, config));
+  ASSERT_EQ(short_legs[0].status, VarLegStatus::Ok) << to_string(short_legs[0].status);
+  EXPECT_EQ(short_legs[0].diagnostic_flags, 0x3u)
+      << "bits 0 and 1 (only) must be set; bit 2 stays clear at the default 5.0 bound";
+
+  // The aggregate route has no per-leg VarLegFrame output, but the scenario
+  // totals it DOES produce must still match the retained-leg route exactly.
+  std::vector<VarScenarioFrame> short_aggregate_frames(1u);
+  ASSERT_TRUE(short_prepared->replay_into(scenarios, short_aggregate_frames, {}, config));
+  EXPECT_EQ(short_aggregate_frames[0].status, short_frames[0].status);
+  EXPECT_EQ(short_aggregate_frames[0].n_ok, short_frames[0].n_ok);
+  EXPECT_EQ(short_aggregate_frames[0].n_failed, short_frames[0].n_failed);
+
+  // Normal 3-month template stays inside [0.03, 1.00] on both dates: no bits.
+  const std::vector<VarPosition> normal_positions = {option("SPY", Side::Call, 1.0)};
+  auto normal_prepared = PreparedVarPortfolio::create(normal_positions, reference.set(), config);
+  ASSERT_TRUE(normal_prepared);
+  std::vector<VarScenarioFrame> normal_frames(1u);
+  std::vector<VarLegFrame> normal_legs(1u);
+  ASSERT_TRUE(normal_prepared->replay_into(scenarios, normal_frames, normal_legs, config));
+  ASSERT_EQ(normal_legs[0].status, VarLegStatus::Ok);
+  EXPECT_EQ(normal_legs[0].diagnostic_flags, 0u);
+}
+
+// [proj] I3: HistoricalVarResult::n_tenor_extrapolated_legs aggregates
+// diagnostic_flags bits 0/1 across leg_frames -- only meaningful when
+// VarRunConfig::retain_leg_frames is true, since it is a leg_frames rollup.
+TEST(Var, NTenorExtrapolatedLegsAggregatesFlaggedLegFramesEndToEnd) {
+  const ScopedTempDirectory root("tenor_extrapolation_count");
+  auto db = SurfaceDb::create(root.path().string());
+  ASSERT_TRUE(db) << (db ? std::string{} : db.error().to_string());
+  ASSERT_TRUE(db->upsert_symbol("SPY", SymbolFitConfig{}));
+
+  const std::uint32_t uid = uid_for_symbol("SPY");
+  const PricedSurface d02 = make_surface(uid, 100.0, timestamp(2026, 1, 2));
+  const PricedSurface d05 = make_surface(uid, 100.0, timestamp(2026, 1, 5));
+  const PricedSurface d06 = make_surface(uid, 100.5, timestamp(2026, 1, 6));
+  ASSERT_TRUE(
+      db->write_partition("2026-01-02", std::array<SurfaceArchiveItem, 1>{{{"SPY", &d02}}}));
+  ASSERT_TRUE(
+      db->write_partition("2026-01-05", std::array<SurfaceArchiveItem, 1>{{{"SPY", &d05}}}));
+  ASSERT_TRUE(
+      db->write_partition("2026-01-06", std::array<SurfaceArchiveItem, 1>{{{"SPY", &d06}}}));
+
+  const std::vector<VarPosition> positions = {
+      VarOptionPosition{"SPY", ProjectedMaturitySpec::days(2), 0.40, Side::Call, 1.0, 100.0}};
+  VarRunConfig config;
+  config.reference_date = "2026-01-02";
+  config.date_begin = "2026-01-05";
+  config.date_end = "2026-01-06";
+  config.confidence = 0.50;
+  config.evaluation = evaluation_config(1);
+  config.archive_backing = ArchiveBacking::Mutable;
+  config.query_pricing_tier = QueryPricingTier::ColdReference;
+  config.provenance_policy = SurfaceProvenancePolicy::Compatibility;
+
+  // Not retained: the counter must stay 0 -- it is a leg_frames rollup and
+  // leg_frames itself is empty here.
+  config.retain_leg_frames = false;
+  auto not_retained = run_historical_var(*db, positions, config);
+  ASSERT_TRUE(not_retained) << (not_retained ? std::string{} : not_retained.error().to_string());
+  EXPECT_EQ(not_retained->n_tenor_extrapolated_legs, 0u);
+  EXPECT_TRUE(not_retained->leg_frames.empty());
+
+  config.retain_leg_frames = true;
+  auto retained = run_historical_var(*db, positions, config);
+  ASSERT_TRUE(retained) << (retained ? std::string{} : retained.error().to_string());
+  ASSERT_EQ(retained->leg_frames.size(), 1u);
+  EXPECT_EQ(retained->leg_frames[0].status, VarLegStatus::Ok);
+  EXPECT_EQ(retained->n_tenor_extrapolated_legs, 1u);
+}
+
 } // namespace

@@ -116,6 +116,9 @@ struct VarEvaluationConfig {
   // projection remains cold-confirmed to delta_tolerance with a robust cold
   // fallback.
   OptionDeltaSolvePolicy projection_solve_policy{OptionDeltaSolvePolicy::CrossSectionalColdConfirm};
+  // Restrike roots with |log-moneyness| beyond this bound fail the leg with
+  // InvalidDelta instead of pricing on pure wing extrapolation.
+  double max_restrike_abs_log_moneyness{5.0};
 };
 
 // A single independent historical return observation. The base and shifted
@@ -166,6 +169,9 @@ struct VarLegFrame {
   double base_time_to_expiry{0.0};
   double shifted_time_to_expiry{0.0};
   std::uint64_t definition_fingerprint{0};
+  // Bit 0: base-side tenor extrapolation; bit 1: shifted-side tenor
+  // extrapolation; bit 2: restrike root beyond max_restrike_abs_log_moneyness.
+  std::uint8_t diagnostic_flags{0};
 
   [[nodiscard]] bool operator==(const VarLegFrame &) const = default;
 };
@@ -264,6 +270,12 @@ struct VarRunConfig {
   // prepares a certified accelerator during snapshot load for repeated replay.
   QueryPricingTier query_pricing_tier{QueryPricingTier::ColdReference};
   SurfaceProvenancePolicy provenance_policy{SurfaceProvenancePolicy::RequireAdmittedRisk};
+  // Maximum calendar-day gap between base and shifted session for a transition
+  // to enter the distribution. 0 disables the guard (current behavior).
+  int max_session_gap_days{0};
+  // Fail the run when more than this fraction of scenarios is excluded under
+  // ExcludeFromDistribution. 1.0 disables the guard.
+  double max_excluded_fraction{1.0};
 };
 
 struct HistoricalVarResult {
@@ -278,6 +290,12 @@ struct HistoricalVarResult {
   // Scenario-major and empty unless VarRunConfig::retain_leg_frames is true.
   std::vector<VarLegFrame> leg_frames{};
   std::size_t n_legs{0};
+  std::size_t n_gap_skipped{0};
+  std::size_t n_excluded_from_distribution{0};
+  // Legs whose solve or valuation used tenor extrapolation, either side.
+  // Only meaningful when VarRunConfig::retain_leg_frames is true -- it is an
+  // aggregate over leg_frames, which is itself empty otherwise.
+  std::size_t n_tenor_extrapolated_legs{0};
 };
 
 // End-to-end SurfaceDb replay. The database is read only. Dates are resolved

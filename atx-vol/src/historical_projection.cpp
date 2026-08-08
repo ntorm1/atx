@@ -47,11 +47,10 @@ PreparedHistoricalProjection::create(std::span<const RelativeOptionPosition> pos
   return Ok(std::move(result));
 }
 
-Status
-PreparedHistoricalProjection::evaluate_into(std::span<const HistoricalProjectionScenario> scenarios,
-                                            std::span<HistoricalProjectionFrame> frames,
-                                            std::span<ProjectedOption> leg_output,
-                                            const HistoricalProjectionConfig &config) const {
+Status PreparedHistoricalProjection::evaluate_into(
+    std::span<const HistoricalProjectionScenario> scenarios,
+    std::span<HistoricalProjectionFrame> frames, std::span<ProjectedOption> leg_output,
+    const HistoricalProjectionConfig &config, QueryExecution execution) const {
   if (frames.size() != scenarios.size() ||
       leg_output.size() != scenarios.size() * positions_.size() ||
       !(std::isfinite(config.delta_tolerance) && config.delta_tolerance > 0.0 &&
@@ -72,6 +71,7 @@ PreparedHistoricalProjection::evaluate_into(std::span<const HistoricalProjection
     projection_config.analytic_greeks = config.analytic_greeks;
     projection_config.delta_tolerance = config.delta_tolerance;
     projection_config.n_threads = 1u;
+    projection_config.query_execution = execution;
     const Status status = projection_.project_into(*scenario.surfaces, legs, projection_config);
 
     HistoricalProjectionFrame frame;
