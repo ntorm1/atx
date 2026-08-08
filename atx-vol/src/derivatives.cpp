@@ -1593,8 +1593,18 @@ template <class SurfaceT>
   const double n0 = static_cast<double>(rv.n_obs_done);
   out.n_obs_done = rv.n_obs_done + 1u;
   out.rv_done_dec = (n0 * rv.rv_done_dec + fixing_dec) / (n0 + 1.0);
+  // MUST-FIX 4 (aggregate review): a hand-built DerivContract can set
+  // annualization <= 0 without going through RealizedTracker::create's own
+  // validation -- this is the first division on this path with none of its
+  // own. No pricer in this file reads sum_sq_log_returns_done back (see the
+  // comment above), so a bad annualization is otherwise harmless, but
+  // writing +-inf/NaN into a caller-visible spec is worse than leaving the
+  // field at its ordinary "not populated" 0.0 default, which every fixture
+  // in this file already treats as normal.
   out.sum_sq_log_returns_done =
-      out.rv_done_dec * static_cast<double>(out.n_obs_done) / rv.annualization;
+      (rv.annualization > 0.0)
+          ? out.rv_done_dec * static_cast<double>(out.n_obs_done) / rv.annualization
+          : 0.0;
   return out;
 }
 

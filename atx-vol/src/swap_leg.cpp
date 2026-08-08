@@ -131,9 +131,15 @@ Result<SwapLot> solve_cycle_swap(const SurfaceRef &surface, const CycleSwapReque
   }
   lot.strike_dec = fair->fair_strike_dec;
 
+  // MUST-FIX 5 / aggregate review I-4: this call reads ONLY `greeks->vega`
+  // below -- `carry_theta`'s default-true cost (~3 extra strip-equivalent
+  // evaluations, ~+21%) buys two fields (theta_carry/theta_zero_fixing) this
+  // site never touches, on a per-cycle-open path.
+  DerivGreekBumps entry_bumps{};
+  entry_bumps.carry_theta = false;
   const Result<DerivGreeks> greeks =
       detail::deriv_greeks_on_ref(surface, swap_contract_for_lot(lot, lot.start_ts_ns, rv),
-                                  req.deriv_cfg, DerivGreekBumps{}, surface_certified_wing_band);
+                                  req.deriv_cfg, entry_bumps, surface_certified_wing_band);
   if (!greeks || !(std::isfinite(greeks->vega) && greeks->vega != 0.0)) {
     // Never a garbage qty: no vega, no leg.
     return Err(ErrorCode::Unavailable,
@@ -263,9 +269,16 @@ void SwapSignalProbe::append_swap_greek_signals(
       // the reported swap_vega/etc. signals trust the SAME certified band the
       // engine's own mark lane (step_swap_lots, backtest.cpp) resolves for
       // this surface, not the mode-blind default.
+      //
+      // MUST-FIX 5 / aggregate review I-4: this probe reads delta/gamma/vega/
+      // theta/rho below, never theta_carry/theta_zero_fixing -- carry_theta's
+      // default-true cost (~+21%) buys nothing here, on a per-step x per-lot
+      // loop.
+      DerivGreekBumps probe_bumps{};
+      probe_bumps.carry_theta = false;
       const Result<DerivGreeks> greeks = detail::deriv_greeks_on_ref(
           surface, swap_contract_for_lot(lot, base.ts_ns(), mirror->rv), kEngineSwapMarkCfg,
-          DerivGreekBumps{}, certified_wing_band_for(base, lot.uid));
+          probe_bumps, certified_wing_band_for(base, lot.uid));
       if (!greeks) {
         priced = false; // never a PARTIAL total: one unpriced lot voids the set
         break;

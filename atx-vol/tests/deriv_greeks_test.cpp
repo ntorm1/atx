@@ -744,4 +744,35 @@ TEST(CarryTheta, UnagedVolSwapCarryTracksLinearBlendWithinModelSwitchTolerance) 
   EXPECT_NEAR(g->theta_carry - g->theta_zero_fixing, expected, 0.01 * expected);
 }
 
+// MUST-FIX 4 (aggregate review): `inject_carry_fixing`'s back-derivation of
+// `sum_sq_log_returns_done` divides by `rv.annualization` with no guard --
+// the first division on this path with none. `RealizedTracker::create`
+// validates annualization > 0, but a hand-built `DerivContract` (every
+// fixture in this file, and any caller who does not go through the tracker)
+// bypasses that entirely, so annualization == 0 reaches this division
+// unchecked and would write +-inf/NaN into the injected copy. No pricer in
+// this file reads `sum_sq_log_returns_done` back (see the comment on
+// `inject_carry_fixing`), so the failure mode was latent, not a wrong greek
+// -- but this pins that the guard is in place and the block stays entirely
+// finite regardless.
+TEST(CarryTheta, ZeroAnnualizationDoesNotPoisonInjectedFixing) {
+  const double sigma = 0.20, T = 0.25;
+  const EssviSurface surf = make_flat_surface(sigma, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+  DerivContract c{};
+  c.kind = DerivKind::VolSwap;
+  c.maturity_t = T;
+  c.notional = 1e5;
+  c.strike_dec = 0.18;
+  c.rv_spec.annualization = 0.0;  // hand-built: bypasses RealizedTracker::create
+  c.rv_spec.n_obs_total = 63u;    // unaged: n_obs_done left at 0
+
+  const auto g = deriv_greeks(surf, cs, c);  // default bumps: carry_theta == true
+  ASSERT_TRUE(g.has_value()) << g.error().to_string();
+  EXPECT_TRUE(std::isfinite(g->theta_carry));
+  EXPECT_TRUE(std::isfinite(g->theta_zero_fixing));
+  EXPECT_TRUE(std::isfinite(g->pv));
+  EXPECT_TRUE(std::isfinite(g->theta));
+}
+
 }  // namespace
