@@ -176,6 +176,8 @@ add_executable(atx-vol-tests
     backtest_swap_test.cpp           # Task 10: the engine's variance/vol swap lane
     # declarative swap-lane DSL
     swap_leg_test.cpp                # swap-leg toolkit (contract bridge + signal probe)
+    # backtest-production-lakehouse sprint, Task B2 — appended target:
+    margin_test.cpp                  # Reg-T + scenario-grid margin models, engine wiring
 )
 # backtest_bench_test.cpp was relocated to bench/backtest_throughput_bench.cpp
 # (it is a throughput benchmark, not a correctness gate).

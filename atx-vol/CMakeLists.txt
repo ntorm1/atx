@@ -89,6 +89,7 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/fit_scheduler.cpp
     src/corpus_board_fit.cpp
     src/scenario_grid.cpp
+    src/margin.cpp
     src/pnl_attribution.cpp
     src/corpus.cpp
     src/surface_db_populate.cpp
