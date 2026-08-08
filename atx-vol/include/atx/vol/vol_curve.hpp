@@ -338,8 +338,8 @@ private:
 // total variance linearly across the two bracketing slices (never in sigma).
 //
 // OUTSIDE the fitted range this does NOT return NaN -- unlike `VolSurface` and
-// the demoted per-family `Surface<Slice>` containers (EssviSurface/SviSurface),
-// which DO apply the strict Sprint-26 no-extrapolation guard. Instead:
+// the demoted per-family containers, which DO apply the strict Sprint-26
+// no-extrapolation guard. Instead:
 //   - SHORT of the front slice: implied vol is held FLAT at the front slice's
 //     own iv, so total variance scales linearly in T (w = w_front * T/T_front)
 //     -- bounded and positive as T -> 0, which is what lets a hold-to-expiry

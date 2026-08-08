@@ -206,10 +206,10 @@ public:
   // fitted-range gate here. Outside the fitted tenor range this EXTRAPOLATES
   // (`CurveSurface::w`: flat vol short of the front pillar; flat total variance,
   // i.e. zero forward variance, at or past the last one). It does NOT return NaN
-  // the way `VolSurface` and the demoted per-family `Surface<Slice>` containers
-  // (EssviSurface/SviSurface) do outside THEIR fitted range; a caller that needs
-  // that stricter guarantee must check K/T against `context()` itself. Identical
-  // to `VolaSession::iv` on the override path.
+  // the way `VolSurface` and the demoted per-family containers do outside
+  // THEIR fitted range; a caller that needs that stricter guarantee must
+  // check K/T against `context()` itself. Identical to `VolaSession::iv` on
+  // the override path.
   [[nodiscard]] double iv(double K, double T) const noexcept;
 
   // Total variance w(k, T) = sigma^2 * T at (K, T). Same domain / extrapolation
