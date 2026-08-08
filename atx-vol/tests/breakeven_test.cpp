@@ -190,5 +190,110 @@ TEST(Breakeven, FarOtmWingReturnsNoBracketNotError) {
   EXPECT_EQ(lab->flag, BevFlag::NoBracket);
 }
 
+// ---- THEO-4: solve_breakeven_batch (deterministic parallel fan-out) ----
+
+// Build kN independent (path, spec) pairs from seeds [seed0, seed0+kN) plus
+// the BevJob span-list over them. `paths`/`specs` are returned by value so
+// the caller keeps them alive for the lifetime of every BevJob's spans (the
+// jobs themselves are non-owning, per BevJob's contract).
+struct BevBatchFixture {
+  std::vector<std::vector<BevDayState>> paths;
+  std::vector<BevSpec> specs;
+  std::vector<BevJob> jobs;
+};
+
+BevBatchFixture make_batch_fixture(std::size_t kN, std::uint32_t seed0) {
+  BevBatchFixture fx;
+  fx.paths.reserve(kN);
+  fx.specs.reserve(kN);
+  for (std::size_t i = 0; i < kN; ++i) {
+    fx.paths.push_back(synth_gbm_path(0.25, 126, seed0 + static_cast<std::uint32_t>(i)));
+    fx.specs.push_back(atm_call_expiring_at(fx.paths.back()));
+  }
+  fx.jobs.reserve(kN);
+  for (std::size_t i = 0; i < kN; ++i) {
+    fx.jobs.push_back(BevJob{.path = fx.paths[i], .spec = fx.specs[i], .dividends = {}});
+  }
+  return fx;
+}
+
+TEST(Breakeven, BatchMatchesSerialFieldForField) {
+  constexpr std::size_t kN = 32;
+  const auto fx = make_batch_fixture(kN, /*seed0=*/0u);
+
+  const auto batch = solve_breakeven_batch(fx.jobs, {}, /*n_threads=*/1);
+  ASSERT_TRUE(batch.has_value());
+  ASSERT_EQ(batch->sigma_be.size(), kN);
+  ASSERT_EQ(batch->premium_at_be.size(), kN);
+  ASSERT_EQ(batch->vega_at_be.size(), kN);
+  ASSERT_EQ(batch->pnl_residual.size(), kN);
+  ASSERT_EQ(batch->n_days.size(), kN);
+  ASSERT_EQ(batch->iters.size(), kN);
+  ASSERT_EQ(batch->flag.size(), kN);
+  ASSERT_EQ(batch->status_ok.size(), kN);
+
+  for (std::size_t i = 0; i < kN; ++i) {
+    const auto serial = solve_breakeven_vol(fx.paths[i], fx.specs[i], {}, {});
+    ASSERT_TRUE(serial.has_value()) << i;
+    EXPECT_EQ(batch->status_ok[i], 1u) << i;
+    EXPECT_EQ(batch->sigma_be[i], serial->sigma_be) << i;
+    EXPECT_EQ(batch->premium_at_be[i], serial->premium_at_be) << i;
+    EXPECT_EQ(batch->vega_at_be[i], serial->vega_at_be) << i;
+    EXPECT_EQ(batch->pnl_residual[i], serial->pnl_residual) << i;
+    EXPECT_EQ(batch->n_days[i], serial->n_days) << i;
+    EXPECT_EQ(batch->iters[i], serial->iters) << i;
+    EXPECT_EQ(batch->flag[i], static_cast<std::uint8_t>(serial->flag)) << i;
+  }
+}
+
+TEST(Breakeven, BatchIsBitIdenticalAcrossThreadCounts) {
+  constexpr std::size_t kN = 32;
+  const auto fx = make_batch_fixture(kN, /*seed0=*/2000u);
+
+  const auto t1 = solve_breakeven_batch(fx.jobs, {}, /*n_threads=*/1);
+  const auto t4 = solve_breakeven_batch(fx.jobs, {}, /*n_threads=*/4);
+  ASSERT_TRUE(t1.has_value());
+  ASSERT_TRUE(t4.has_value());
+  ASSERT_EQ(t1->sigma_be.size(), kN);
+  ASSERT_EQ(t4->sigma_be.size(), kN);
+
+  for (std::size_t i = 0; i < kN; ++i) {
+    EXPECT_EQ(t1->sigma_be[i], t4->sigma_be[i]) << i;
+    EXPECT_EQ(t1->premium_at_be[i], t4->premium_at_be[i]) << i;
+    EXPECT_EQ(t1->vega_at_be[i], t4->vega_at_be[i]) << i;
+    EXPECT_EQ(t1->pnl_residual[i], t4->pnl_residual[i]) << i;
+    EXPECT_EQ(t1->n_days[i], t4->n_days[i]) << i;
+    EXPECT_EQ(t1->iters[i], t4->iters[i]) << i;
+    EXPECT_EQ(t1->flag[i], t4->flag[i]) << i;
+    EXPECT_EQ(t1->status_ok[i], t4->status_ok[i]) << i;
+  }
+}
+
+TEST(Breakeven, PoisonedJobDoesNotSinkBatch) {
+  constexpr std::size_t kN = 16;
+  auto fx = make_batch_fixture(kN, /*seed0=*/3000u);
+  fx.jobs[7].path = {}; // poisoned: empty path, rejected by bev_replay_pnl
+
+  const auto batch = solve_breakeven_batch(fx.jobs, {}, /*n_threads=*/1);
+  ASSERT_TRUE(batch.has_value());
+  ASSERT_EQ(batch->status_ok.size(), kN);
+
+  EXPECT_EQ(batch->status_ok[7], 0u);
+  EXPECT_EQ(batch->sigma_be[7], 0.0);
+  EXPECT_EQ(batch->premium_at_be[7], 0.0);
+  EXPECT_EQ(batch->vega_at_be[7], 0.0);
+  EXPECT_EQ(batch->pnl_residual[7], 0.0);
+  EXPECT_EQ(batch->n_days[7], 0u);
+  EXPECT_EQ(batch->iters[7], 0u);
+  EXPECT_EQ(batch->flag[7], 0u);
+
+  for (std::size_t i = 0; i < kN; ++i) {
+    if (i == 7) {
+      continue;
+    }
+    EXPECT_EQ(batch->status_ok[i], 1u) << i;
+  }
+}
+
 } // namespace
 } // namespace atx::vol

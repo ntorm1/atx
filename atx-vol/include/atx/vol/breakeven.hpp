@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <vector>
 
 #include "atx/core/error.hpp"                 // Result (used in bev_replay_pnl's return type)
 #include "atx/vol/american.hpp"               // AlOpts, al_fast_opts, Side, Result
@@ -218,5 +219,64 @@ struct BevLabel {
                                                    const BevSpec &spec,
                                                    std::span<const DividendEvent> dividends,
                                                    const BevSolveConfig &cfg = {});
+
+// THEO-4: batch label runner — deterministic parallel fan-out over
+// solve_breakeven_vol. Layers a disjoint-write parallel fan-out over Task 3's
+// solver; the solver itself is untouched by anything below.
+
+// One breakeven-vol label request: a (path, spec, dividends) triple forwarded
+// to solve_breakeven_vol with the batch's shared BevSolveConfig. `path` and
+// `dividends` are NON-OWNING spans -- the caller must keep the backing
+// storage alive for the duration of the solve_breakeven_batch call that
+// consumes this job; BevJob stores no lifetime machinery of its own.
+struct BevJob {
+  std::span<const BevDayState> path;
+  BevSpec spec{};
+  std::span<const DividendEvent> dividends;
+};
+
+// Structure-of-arrays batch result, index-aligned with the `jobs` span passed
+// to solve_breakeven_batch: element i of every vector describes jobs[i]'s
+// outcome. `flag` stores `static_cast<std::uint8_t>(BevLabel::flag)` and is
+// MEANINGFUL ONLY WHEN `status_ok[i] == 1` -- a rejected job (bad path, etc.)
+// writes flag=0 alongside status_ok=0 rather than any BevFlag enumerator
+// value, so a reader must check status_ok before interpreting flag (or any
+// other field): every numeric field is 0.0/0 for a rejected job.
+struct BevLabelFrame {
+  std::vector<double> sigma_be, premium_at_be, vega_at_be, pnl_residual;
+  std::vector<std::uint16_t> n_days;
+  std::vector<std::uint8_t> iters, flag;
+  std::vector<std::uint8_t> status_ok; // 1 = solver ran, 0 = input rejected
+};
+
+// Deterministic parallel fan-out of solve_breakeven_vol over `jobs`, one
+// label per job, `cfg` shared and forwarded verbatim to every solve. Uses
+// `parallel_for` (atx/vol/detail/parallel_for.hpp)'s contiguous block
+// partition: each worker owns a disjoint [lo, hi) range of job indices and
+// writes only its own output slots, so the returned frame is BIT-IDENTICAL
+// for any `n_threads` (0 = atx_auto_worker_count(), 1 = serial, byte-for-byte
+// with a loop of `jobs.size()` direct solve_breakeven_vol calls).
+//
+// A per-job failure (an invalid path/spec that bev_replay_pnl or
+// solve_breakeven_vol itself rejects) writes `status_ok[j] = 0` and neutral
+// (0.0/0) values for every other field at index j; it does NOT sink the
+// batch -- every other job's result is unaffected. See BevLabelFrame's
+// comment for the flag/status_ok discriminator contract.
+//
+// `cfg` itself is validated once, up front, exactly as solve_breakeven_vol
+// validates its own cfg (sigma_lo/sigma_hi/sigma_tol): an invalid cfg is a
+// batch-wide configuration error, not a per-job one, so this returns
+// `Err(InvalidArgument)` immediately without touching any job or spawning any
+// worker. `jobs` may be empty, which returns `Ok` with every vector empty.
+//
+// @param jobs      one label request per output slot; spans inside each
+//                   BevJob must stay alive for the duration of this call.
+// @param cfg       solve knobs, shared by every job; default as
+//                   solve_breakeven_vol's default.
+// @param n_threads worker count forwarded to parallel_for (0 = auto,
+//                   1 = serial).
+[[nodiscard]] Result<BevLabelFrame> solve_breakeven_batch(std::span<const BevJob> jobs,
+                                                          const BevSolveConfig &cfg = {},
+                                                          unsigned n_threads = 0);
 
 } // namespace atx::vol
