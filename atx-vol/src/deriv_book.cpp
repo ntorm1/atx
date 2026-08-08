@@ -22,7 +22,8 @@ constexpr double kNaN = kPriceColumnNaN;
 // default-initializes its sensitivities to 0.0 (Task 7's convention, where a
 // fully-aged contract genuinely HAS zero market greeks), which at the portfolio
 // layer would be indistinguishable from a measured zero. Every numeric field --
-// the nine sensitivities AND the embedded centre quote's -- is therefore
+// the eleven sensitivities (the original nine plus Task C-10's theta_carry /
+// theta_zero_fixing) AND the embedded centre quote's -- is therefore
 // overwritten with the frame's "not computed" sentinel. `strip_nodes_used == 0`
 // and `flags == None` are already exactly "no strip ran".
 [[nodiscard]] DerivGreeks nan_greeks() noexcept {

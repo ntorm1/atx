@@ -179,7 +179,8 @@ static_assert(detail::aggregate_arity_is_v<DerivPriceFrame, 5>,
 //                 valid and yields an empty frame with zeroed totals.
 // @param cfg      pricing config, applied to every position.
 // @param greeks   false prices MARKS ONLY: one `deriv_price` per position
-//                 instead of the ~8-14 repricings a greek block costs. Every
+//                 instead of the ~8-17 repricings a greek block costs (up to
+//                 17 with `bumps.carry_theta` on, Task C-10). Every
 //                 greek field (rows and totals) is then NaN.
 // @param bumps    finite-difference bump sizes; ignored when `greeks` is false.
 //                 A non-positive bump is rejected by the pricer PER POSITION,
