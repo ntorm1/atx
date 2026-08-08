@@ -274,10 +274,25 @@ using detail::StepMarkMemo;
   case FrictionModel::SpreadKind::None:
   case FrictionModel::SpreadKind::PriceBps:
   case FrictionModel::SpreadKind::VolTicks:
+  case FrictionModel::SpreadKind::QuoteSide:
     return true;
   default:
     return false;
   }
+}
+
+// B1: which `FrictionRegime` a `FrictionModel` implies -- classifies the
+// ASSUMPTION (see `FrictionRegime`, backtest.hpp), not any realized cost, so
+// this is a pure function of config alone.
+[[nodiscard]] FrictionRegime friction_regime_for(const FrictionModel &f) noexcept {
+  if (f.spread_kind == FrictionModel::SpreadKind::QuoteSide) {
+    return FrictionRegime::QuoteSide;
+  }
+  if (f.spread_kind == FrictionModel::SpreadKind::None && f.impact_fraction == 0.0 &&
+      f.per_contract_cost == 0.0 && f.hedge_slippage_bps == 0.0) {
+    return FrictionRegime::Frictionless;
+  }
+  return FrictionRegime::Modeled;
 }
 
 [[nodiscard]] bool valid_unpriced_policy(UnpricedLotPolicy policy) noexcept {
@@ -356,6 +371,31 @@ using detail::StepMarkMemo;
       !finite_nonnegative(cfg.frictions.hedge_slippage_bps)) {
     return Err(ErrorCode::InvalidArgument,
                "run_backtest: friction inputs must be finite and nonnegative");
+  }
+  // B1: crossing fractions are a FRACTION of the half-spread ([0,1]; 0 fills
+  // at mid, 1 fills at the full bid/ask) -- checked unconditionally (not just
+  // under QuoteSide) so a caller cannot stage an out-of-range value behind a
+  // spread_kind switch and have it silently take effect later.
+  const auto valid_crossing_fraction = [](double value) noexcept {
+    return std::isfinite(value) && value >= 0.0 && value <= 1.0;
+  };
+  if (!valid_crossing_fraction(cfg.frictions.crossing_fraction_single) ||
+      !valid_crossing_fraction(cfg.frictions.crossing_fraction_complex)) {
+    return Err(ErrorCode::InvalidArgument,
+               "run_backtest: crossing_fraction_single/_complex must be finite and in [0,1]");
+  }
+  // B1: a QuoteSide fill the engine does not CHARGE is invisible in NAV (the
+  // fill-vs-model-mark gap rides in `book_entry_fill_slippage`'s accounting,
+  // same as any other quote-side fill policy -- see that field's doc comment),
+  // so the combination is refused rather than shipped as a knob that silently
+  // does nothing. Mirrors the dispersion route's identical
+  // `QuoteSideFillWithoutSlippageBookingIsRejected` rule for its own
+  // `ScheduleFillPolicy::CrossSpread`.
+  if (cfg.frictions.spread_kind == FrictionModel::SpreadKind::QuoteSide &&
+      !cfg.book_entry_fill_slippage) {
+    return Err(ErrorCode::InvalidArgument,
+               "run_backtest: SpreadKind::QuoteSide requires RunConfig::book_entry_fill_slippage "
+               "(otherwise the fill-vs-mark gap never reaches NAV)");
   }
   if (!std::isfinite(cfg.financing.initial_cash)) {
     return Err(ErrorCode::InvalidArgument, "run_backtest: initial_cash must be finite");
@@ -2736,6 +2776,11 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
   // straight from `clock`, not from any per-step accumulator.
   out.n_clock_dates_dropped = static_cast<std::uint64_t>(clock.dropped_dates().size());
   out.clock_dates_dropped.assign(clock.dropped_dates().begin(), clock.dropped_dates().end());
+  // B1: this overload never calls `execute()` (no strategy, no cash ledger, no
+  // fills) -- ANY `cfg.frictions` a caller configured is inert here, so the
+  // honest stamp is always Frictionless regardless of what it says. See
+  // `BacktestResult::friction_regime`.
+  out.friction_regime = FrictionRegime::Frictionless;
 
   // Plan 4.6: the engine may not emit a skewed column set. Pure read, so this
   // cannot change a value the run produced.
@@ -2842,10 +2887,74 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
         return mark * (cfg.frictions.half_spread_bps / 1.0e4);
       case FrictionModel::SpreadKind::VolTicks:
         return vega * cfg.frictions.vol_tick;
+      case FrictionModel::SpreadKind::QuoteSide:
+        // B1: QuoteSide charges its spread by CHOOSING the fill price itself
+        // (`quote_side_fill` below), not by adding a synthetic cost on top of
+        // the model mid the way PriceBps/VolTicks do -- see
+        // `book_entry_fill_slippage`'s doc comment on why stacking both would
+        // pay the spread twice. `impact_fraction` still applies (below); only
+        // the spread term is 0 here.
+        return 0.0;
       }
       return 0.0;
     }();
     return spread + mark * cfg.frictions.impact_fraction;
+  };
+
+  // B1: the crossing fraction for a fill whose COHORT contributes `leg_count`
+  // legs to this entry/close pass -- exactly one leg uses
+  // `crossing_fraction_single`, anything wider uses `crossing_fraction_complex`
+  // (ORATS: mid + f·half-spread, f≈0.75 single-leg / ≈0.53 four-leg).
+  const auto crossing_fraction = [&cfg](std::uint32_t leg_count) -> double {
+    return leg_count <= 1u ? cfg.frictions.crossing_fraction_single
+                           : cfg.frictions.crossing_fraction_complex;
+  };
+
+  // B1: SpreadKind::QuoteSide's fill price for one option leg. `model_mark` is
+  // THIS fill's own model fair value; `trade_qty`'s SIGN picks the crossing
+  // direction (>= 0 is a BUY -- fills at mid + f·half-spread; < 0 is a SELL --
+  // fills at mid - f·half-spread). An ENTRY passes `lot.qty` directly (its own
+  // sign IS the trade direction); a ROLL-CLOSE passes `-lot.qty` (closing a
+  // long lot SELLS it, closing a short lot BUYS it back). `contract` keys the
+  // optional `quote_lookup`: a present, USABLE quote (finite, bid > 0,
+  // ask >= bid) sources `mid`/`half_spread` from the recorded NBBO; anything
+  // else falls back to `model_mark`/`model_mark * half_spread_bps/1e4`, the
+  // existing PriceBps half-spread formula.
+  const auto quote_side_fill = [&cfg, &crossing_fraction](const OptionContract &contract,
+                                                          double model_mark, double trade_qty,
+                                                          std::uint32_t leg_count) -> double {
+    double base_mid = model_mark;
+    double quote_half_spread = model_mark * (cfg.frictions.half_spread_bps / 1.0e4);
+    if (cfg.frictions.quote_lookup) {
+      const std::optional<FrictionModel::RawQuote> q = cfg.frictions.quote_lookup(contract);
+      if (q.has_value() && std::isfinite(q->bid) && std::isfinite(q->ask) && q->bid > 0.0 &&
+          q->ask >= q->bid) {
+        base_mid = 0.5 * (q->bid + q->ask);
+        quote_half_spread = 0.5 * (q->ask - q->bid);
+      }
+    }
+    const double sign = trade_qty >= 0.0 ? 1.0 : -1.0;
+    return base_mid + sign * crossing_fraction(leg_count) * quote_half_spread;
+  };
+
+  // B1: leg count for the QuoteSide crossing fraction -- the number of lots in
+  // `lots` that are ENTERING/CLOSING this pass (absent from `complement` per
+  // `complement_index`) and share `cohort`. O(cohort size) per call; a cohort
+  // is a handful of legs at most (a straddle, a dispersion basket), so this
+  // stays cheap even called once per leg -- same "small N, linear scan"
+  // precedent as `group_vega` in strategy.cpp. Never invoked outside
+  // SpreadKind::QuoteSide.
+  const auto cohort_leg_count = [](std::span<const Lot> lots,
+                                   const ReusableLotIdIndex &complement_index,
+                                   std::span<const Lot> complement,
+                                   std::uint32_t cohort) -> std::uint32_t {
+    std::uint32_t n = 0;
+    for (const Lot &l : lots) {
+      if (l.cohort == cohort && !complement_index.find(complement, l.id).has_value()) {
+        ++n;
+      }
+    }
+    return n;
   };
 
   const auto push_row =
@@ -3023,7 +3132,7 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
           vega = current_risk->vega[lot_index] / weight;
         }
       }
-      const double mark = lot.entry_price; // the FILL price the strategy chose
+      double mark = lot.entry_price; // the FILL price the strategy chose
       // F2: the price the BOOK is carried at this row. Identical to the fill
       // unless the caller opted into fill-slippage accounting, which makes the
       // (fill - mark) gap a realized cost instead of an invisible one.
@@ -3036,6 +3145,17 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
                   std::to_string(lot.id) + " uid=" + std::to_string(lot.contract.uid));
         }
         model_mark = current_risk->price[lot_index];
+      }
+      // B1: QuoteSide picks its OWN fill price, overriding whatever the
+      // strategy set on `lot.entry_price` -- `validate_run_config` requires
+      // `book_entry_fill_slippage` under QuoteSide, so `model_mark` above is
+      // always the freshly solved model mark here, never a bare copy of
+      // `mark`. `lot.qty`'s own sign is the trade direction (a positive-qty
+      // lot is a BUY, opening long).
+      if (cfg.frictions.spread_kind == FrictionModel::SpreadKind::QuoteSide) {
+        const std::uint32_t leg_count =
+            cohort_leg_count(book.lots, before_lot_index, before_lots, lot.cohort);
+        mark = quote_side_fill(lot.contract, model_mark, lot.qty, leg_count);
       }
       const double hs = half_spread(mark, vega);
       // Signed: positive whenever the fill is worse than the mark (buying above
@@ -3107,12 +3227,34 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
         }
         mark = *fallback;
       }
-      const double hs = half_spread(mark, vega);
+      // B1: `mark` above is the CLOSE's model fair value (from `close_marks`
+      // or the fallback solve). QuoteSide fills the actual CLOSE away from it
+      // -- `fill_mark` starts as a copy so every other spread_kind is
+      // untouched below. Closing a long lot (qty > 0) SELLS it and closing a
+      // short lot BUYS it back, the OPPOSITE of an entry's own-sign
+      // direction, hence `-lot.qty`. `close_slippage` mirrors the entry
+      // loop's `fill_slippage`: the model-mark-vs-fill gap, captured as a
+      // realized cost (`ex.cost`, hence NAV) instead of silently changing
+      // the raw close proceeds -- `cash` below still adds at the MODEL mark,
+      // exactly as it always did, so this is a no-op add for every other
+      // spread_kind.
+      double fill_mark = mark;
+      double close_slippage = 0.0;
+      if (cfg.frictions.spread_kind == FrictionModel::SpreadKind::QuoteSide) {
+        const std::uint32_t leg_count =
+            cohort_leg_count(before_lots, after_lot_index, book.lots, lot.cohort);
+        const OptionContract close_contract{lot.contract.uid, lot.contract.K, T_res,
+                                            lot.contract.side};
+        fill_mark = quote_side_fill(close_contract, mark, -lot.qty, leg_count);
+        close_slippage = lot.qty * lot.multiplier * (mark - fill_mark);
+      }
+      const double hs = half_spread(fill_mark, vega);
       const double leg_cost = std::fabs(lot.qty) * lot.multiplier * hs +
-                              cfg.frictions.per_contract_cost * std::fabs(lot.qty);
+                              cfg.frictions.per_contract_cost * std::fabs(lot.qty) +
+                              close_slippage;
       ex.cost += leg_cost;
-      cash += lot.qty * lot.multiplier * mark; // proceeds from closing
-      ex.turnover_notional += std::fabs(lot.qty * lot.multiplier * mark);
+      cash += lot.qty * lot.multiplier * mark; // proceeds at the model mark; the slippage rides above
+      ex.turnover_notional += std::fabs(lot.qty * lot.multiplier * fill_mark);
       ex.turnover_vega += std::fabs(lot.qty * lot.multiplier * vega);
     }
 
@@ -3601,6 +3743,10 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
   // straight from `clock`, not from any per-step accumulator.
   out.n_clock_dates_dropped = static_cast<std::uint64_t>(clock.dropped_dates().size());
   out.clock_dates_dropped.assign(clock.dropped_dates().begin(), clock.dropped_dates().end());
+  // B1: one scalar classification of `cfg.frictions`, same placement
+  // discipline as the run-total counters above. See
+  // `BacktestResult::friction_regime` / `FrictionRegime`.
+  out.friction_regime = friction_regime_for(cfg.frictions);
 
   // Plan 4.6: the engine may not emit a skewed column set. Pure read, so this
   // cannot change a value the run produced.

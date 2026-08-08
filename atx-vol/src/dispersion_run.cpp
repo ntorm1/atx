@@ -1358,6 +1358,14 @@ std::string dispersion_regime_detail(const FrictionModel &frictions,
   case FrictionModel::SpreadKind::VolTicks:
     parts.push_back(number(frictions.vol_tick) + " vol-tick half-spread");
     break;
+  // B1 (backtest-lakehouse sprint): the dispersion route does not offer
+  // QuoteSide (no `fill_policy`/CLI mapping selects it -- see
+  // `dispersion_engine_run_config_from`), so this case exists only to keep
+  // the switch exhaustive for the shared `FrictionModel::SpreadKind` enum;
+  // it is unreachable from any dispersion config path today.
+  case FrictionModel::SpreadKind::QuoteSide:
+    parts.push_back("quote-side crossing (engine-level; not a dispersion-route knob)");
+    break;
   }
   if (frictions.per_contract_cost != 0.0) {
     parts.push_back("$" + number(frictions.per_contract_cost) + "/contract");
@@ -2013,6 +2021,11 @@ Status write_dispersion_effective_config(const fs::path &path, const DispersionR
       return "price_bps";
     case FrictionModel::SpreadKind::VolTicks:
       return "vol_ticks";
+    // B1: unreachable from any dispersion config path (see the identical note
+    // on `dispersion_regime_detail` above) -- present only to keep this
+    // switch exhaustive for the shared enum.
+    case FrictionModel::SpreadKind::QuoteSide:
+      return "quote_side";
     }
     return "none";
   };

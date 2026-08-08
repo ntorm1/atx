@@ -576,7 +576,15 @@ struct SwapAccrual {
 // surface (no stored bid/ask), so the spread is a documented model. The default
 // (`SpreadKind::None`, all costs 0) reproduces the frictionless run bit-for-bit.
 struct FrictionModel {
-  enum class SpreadKind : std::uint8_t { None = 0, PriceBps = 1, VolTicks = 2 };
+  // B1 (backtest-lakehouse sprint, target 1.1.0): `QuoteSide` APPENDED at the
+  // end (same additive-enum treatment as every `RunConfig` knob this sprint
+  // adds — see the `aggregate_arity_is_v<RunConfig, 19>` note below). It fills
+  // at `mid ± f(leg_count)·half_spread` instead of charging a synthetic spread
+  // ON TOP of the model mid: `quote_lookup` supplies the recorded NBBO when the
+  // caller has one, `half_spread_bps` (the existing PriceBps knob) supplies the
+  // fallback half-spread when it does not. See `quote_lookup`,
+  // `crossing_fraction_single/_complex` below and `execute()` (backtest.cpp).
+  enum class SpreadKind : std::uint8_t { None = 0, PriceBps = 1, VolTicks = 2, QuoteSide = 3 };
   SpreadKind spread_kind{SpreadKind::None};
   double half_spread_bps{0.0}; // PriceBps: half-spread = mark * bps/1e4 (per share)
   double vol_tick{0.0};        // VolTicks: half-spread = vega * vol_tick (per share)
@@ -598,7 +606,62 @@ struct FrictionModel {
   double impact_fraction{0.0};
   double per_contract_cost{0.0};  // $ per option contract traded
   double hedge_slippage_bps{0.0}; // shares fill at S * (1 +/- bps/1e4)
+
+  // B1: one recorded two-sided quote for an option leg, returned by
+  // `quote_lookup` below. Usable only when both sides are finite, `bid > 0.0`
+  // and `ask >= bid`; anything else (including an unset `quote_lookup`) is
+  // treated exactly like an absent quote by `execute()` — it falls back to the
+  // modeled PriceBps half-spread around that fill's own model mark, so a
+  // `QuoteSide` run with no (or a broken) quote source degrades to precisely
+  // the PriceBps-modeled economics rather than a silently wrong price.
+  struct RawQuote {
+    double bid{0.0};
+    double ask{0.0};
+  };
+  // B1: optional per-fill recorded-quote source for `SpreadKind::QuoteSide`.
+  // `execute()` (backtest.cpp) calls this once per entry, roll-close, and close
+  // fill on an option leg — never for hedge shares, which keep their own
+  // `hedge_slippage_bps` — with that leg's exact contract. Unset (the default,
+  // a falsy `std::function`) means every `QuoteSide` fill takes the modeled
+  // fallback; inert under every OTHER `spread_kind`. The listed-quote route
+  // (`ListedScheduleLeg::raw_bid/raw_ask`, `listed_dispersion_schedule.hpp`) is
+  // the intended production source a caller wires in here — this field is the
+  // seam, not that wiring, which is caller-side.
+  using QuoteLookup = std::function<std::optional<RawQuote>(const OptionContract &)>;
+  QuoteLookup quote_lookup{};
+  // B1: ORATS-calibrated crossing fractions for `SpreadKind::QuoteSide`
+  // (`mid + f·half_spread`) — the sprint's feature-gap literature review reads
+  // "mid + f·half-spread, f≈0.75 single-leg / ≈0.53 four-leg". `_single` prices
+  // a fill whose COHORT (`Lot::cohort`) contributes exactly one leg to this
+  // entry/close pass; `_complex` prices every wider cohort (a straddle, a
+  // dispersion basket) — multi-leg fills cross LESS of the spread on average.
+  // Both are inert (never read) under every OTHER `spread_kind`, so leaving
+  // them at their ORATS defaults is safe even on a run that never turns
+  // `QuoteSide` on. Overridable.
+  double crossing_fraction_single{0.75};
+  double crossing_fraction_complex{0.53};
 };
+
+// B1 (backtest-lakehouse sprint, target 1.1.0): which execution-friction
+// assumption produced a `BacktestResult` — see `BacktestResult::friction_regime`
+// below, the result-scalar stamp every run carries so no artifact leaves the
+// engine without its own pricing assumption attached (a TSV/tearsheet reader
+// should never have to cross-reference the `RunConfig` that produced it to know
+// whether the NAV assumes free liquidity). Classified from `FrictionModel`
+// alone (`friction_regime_for`, backtest.cpp), NOT from realized cost, so a
+// `QuoteSide` run whose quotes all happened to fall back still reports
+// `QuoteSide` — it names the ASSUMPTION, not the outcome:
+//   Frictionless: `spread_kind == None` AND every other cost knob
+//     (`impact_fraction`, `per_contract_cost`, `hedge_slippage_bps`) is 0 — the
+//     `SpreadKind::None`, "all costs 0" combination `FrictionModel` itself
+//     documents as bit-identical to a frictionless replay (invariant I3).
+//   Modeled: any other NON-`QuoteSide` combination (`PriceBps`, `VolTicks`, a
+//     `None` run with `impact_fraction`/`per_contract_cost`/
+//     `hedge_slippage_bps` nonzero) — an assumed/synthetic spread, not an
+//     observed one.
+//   QuoteSide: `spread_kind == QuoteSide` — fills cross a recorded (or,
+//     absent one, a modeled-PriceBps-fallback) NBBO.
+enum class FrictionRegime : std::uint8_t { Frictionless = 0, Modeled = 1, QuoteSide = 2 };
 
 // WS-F F3(b) (BT-P1-4). One discrete cash dividend on one underlier's SHARES.
 // The hedge-share ledger used to accrue dividends only as a continuous
@@ -1259,6 +1322,19 @@ struct BacktestResult {
   // a bare count cannot carry ("which dates"). Same non-wire, append-only
   // treatment; empty exactly when `n_clock_dates_dropped == 0`.
   std::vector<std::string> clock_dates_dropped{};
+
+  // B1 (backtest-lakehouse sprint, target 1.1.0): a RESULT SCALAR, not a
+  // row-parallel series — which execution-friction assumption produced this
+  // run, classified once from `RunConfig::frictions` by `friction_regime_for`
+  // (backtest.cpp) and copied onto `out` before it is returned. See
+  // `FrictionRegime` above for the three-way classification. Same
+  // append-only, non-wire treatment as `n_steps_entry_skipped` and its
+  // siblings: absent from `kBacktestSeriesColumns` and RunArchive
+  // serialization, so `ra_schema_hash()` and every TSV/CSV header and golden
+  // are untouched. Always `Frictionless` for the fixed-book (B0) overload,
+  // which never calls `execute()` and therefore never charges anything a
+  // configured `frictions` might otherwise imply.
+  FrictionRegime friction_regime{FrictionRegime::Frictionless};
 
   [[nodiscard]] std::size_t size() const noexcept { return date.size(); }
 

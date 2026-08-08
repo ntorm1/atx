@@ -245,8 +245,11 @@ class NoopStrategy : public IStrategy {
 
 // A single-clip declarative strategy: opens ONE structure at inception and holds it
 // (EveryNDays with a cadence longer than the corpus ⇒ only step 0 opens).
+// `sign` (B1) defaults to +1.0 (long/buy) so every pre-existing call site is
+// unaffected; a QuoteSide sell-side test passes -1.0.
 [[nodiscard]] StrategySpec single_clip(std::uint32_t uid, double target_T, Side side,
-                                       StrikeSelector strike, HedgeSpec hedge = {}) {
+                                       StrikeSelector strike, HedgeSpec hedge = {},
+                                       double sign = +1.0) {
   StrategySpec spec;
   spec.name = "single-clip";
   LegSpec leg;
@@ -255,7 +258,7 @@ class NoopStrategy : public IStrategy {
   leg.structure.kind = StructureSpec::Kind::Single;
   leg.structure.single_side = side;
   leg.strike = strike;
-  leg.size = SizeSpec{SizeSpec::Kind::FixedContracts, 1.0, +1.0};
+  leg.size = SizeSpec{SizeSpec::Kind::FixedContracts, 1.0, sign};
   spec.legs.push_back(leg);
   spec.lifecycle.entry = LifecycleSpec::Entry::EveryNDays;
   spec.lifecycle.holding = LifecycleSpec::Holding::HoldToExpiry;
@@ -263,6 +266,118 @@ class NoopStrategy : public IStrategy {
   spec.hedge = hedge;
   return spec;
 }
+
+// B1: a single-clip STRADDLE (call+put at the same strike/expiry, ONE cohort,
+// TWO legs) — `SizeSpec::Kind::FixedContracts` applies `sign*value` to EVERY
+// leg of the structure (strategy.cpp's `expand_and_size_leg`), so both legs
+// open qty=+1 (or -1) here, the multi-leg QuoteSide crossing-fraction fixture.
+[[nodiscard]] StrategySpec single_clip_straddle(std::uint32_t uid, double target_T,
+                                                StrikeSelector strike, double sign = +1.0) {
+  StrategySpec spec;
+  spec.name = "single-clip-straddle";
+  LegSpec leg;
+  leg.uid = uid;
+  leg.tenor.target_T = target_T;
+  leg.structure.kind = StructureSpec::Kind::Straddle;
+  leg.strike = strike;
+  leg.size = SizeSpec{SizeSpec::Kind::FixedContracts, 1.0, sign};
+  spec.legs.push_back(leg);
+  spec.lifecycle.entry = LifecycleSpec::Entry::EveryNDays;
+  spec.lifecycle.holding = LifecycleSpec::Holding::HoldToExpiry;
+  spec.lifecycle.entry_every_n = 100000;  // >> corpus ⇒ opens once, at inception
+  return spec;
+}
+
+// B1: opens ONE lot at inception (a synthetic model contract, priced straight
+// off the surface — no DeclarativeStrategy resolution machinery needed) and
+// closes it with NO re-entry on the very next step, isolating execute()'s
+// ROLL-CLOSE loop from its entry loop.
+class OpenThenCloseStrategy : public IStrategy {
+ public:
+  OpenThenCloseStrategy(std::uint32_t uid, double target_T, Side side, double sign)
+      : uid_(uid), target_T_(target_T), side_(side), sign_(sign) {}
+
+  Status on_step(const MarketSnapshot& base, std::size_t step_index, PortfolioState& book,
+                 std::uint64_t& next_lot_id) override {
+    if (step_index == 0) {
+      const SurfaceRef s = base.find(uid_);
+      if (s == nullptr) {
+        return atx::core::Err(ErrorCode::NotFound, "OpenThenCloseStrategy: no surface");
+      }
+      const double K = s->forward_at(target_T_);
+      const auto fv = s->fair_value(K, target_T_, side_);
+      if (!fv.has_value()) {
+        return atx::core::Err(fv.error());
+      }
+      Lot lot;
+      lot.id = next_lot_id++;
+      lot.contract = OptionContract{uid_, K, target_T_, side_};
+      lot.qty = sign_;
+      lot.multiplier = 100.0;
+      // Well beyond this fixture's tiny corpus, so the lot never settles —
+      // the only close this test exercises is the strategy-driven one below.
+      lot.expiry_ts_ns = base.ts_ns() + std::llround(target_T_ * kNsPerYear) + 30 * kDayNs;
+      lot.cohort = 1;
+      lot.entry_price = *fv;
+      book.lots.push_back(lot);
+    } else {
+      book.lots.clear();  // roll-close: engine diffs before_lots vs. the now-empty book
+    }
+    return atx::core::Ok();
+  }
+
+ private:
+  std::uint32_t uid_;
+  double target_T_;
+  Side side_;
+  double sign_;
+};
+
+// B1: fixture for the QuoteSide friction-model tests. A tiny 2-date
+// single-underlying corpus (`make_corpus`'s pattern) plus a `RunConfig` whose
+// `quote_lookup` returns the SAME fixed (bid, ask) for every contract.
+//
+// `BacktestResult` carries no per-lot fill-price column, so `entry_fill_price`
+// recovers the engine's actual fill from the inception cash ledger instead: an
+// entry's net cash effect collapses to exactly `-Σ qty*multiplier*fill` (see
+// backtest.cpp's entry loop — `cash -= qty*mult*model_mark` then
+// `cash -= ex.cost`, and `ex.cost`'s `fill_slippage` term is
+// `qty*mult*(fill-model_mark)`, so the `model_mark` terms cancel) whenever
+// `per_contract_cost == 0` (this fixture's default) and every opened leg fills
+// at the SAME price (true here: the lookup ignores its argument). `n_legs`
+// divides out a straddle's two identically-priced legs.
+class ExecFixture {
+ public:
+  [[nodiscard]] static ExecFixture listed_quotes(double bid, double ask) {
+    ExecFixture fx;
+    fx.dir_ = fresh_dir("quoteside");
+    fx.corpus_ = make_corpus(fx.dir_, "SPX", 2);
+    fx.bid_ = bid;
+    fx.ask_ = ask;
+    return fx;
+  }
+
+  [[nodiscard]] const Corpus& corpus() const noexcept { return corpus_; }
+
+  [[nodiscard]] RunConfig config() const {
+    RunConfig cfg;
+    cfg.frictions.quote_lookup = [bid = bid_, ask = ask_](const OptionContract&)
+        -> std::optional<FrictionModel::RawQuote> {
+      return FrictionModel::RawQuote{bid, ask};
+    };
+    return cfg;
+  }
+
+  [[nodiscard]] static double entry_fill_price(const BacktestResult& r, int n_legs = 1) {
+    return -r.cash.front() / (static_cast<double>(n_legs) * 100.0);
+  }
+
+ private:
+  fs::path dir_;
+  Corpus corpus_;
+  double bid_{0.0};
+  double ask_{0.0};
+};
 
 }  // namespace
 
@@ -2063,4 +2178,197 @@ TEST(BacktestExec, L4NarrowedBaseNeverReusedByPnlStamp) {
   EXPECT_TRUE(bits_equal(reuse->pnl_total, ref->pnl_total));
   std::printf("[btexec] L4 stamp guard: narrowed base re-solved (analytic>=1), full base reused "
               "(analytic==0); both pnl bit-match the cold full reference\n");
+}
+
+// ── B1: SpreadKind::QuoteSide fills ──────────────────────────────────────────
+//
+// (a) a recorded quote crosses at mid ± f·half-spread, f picked by the
+//     committed cohort's leg count (single vs. complex); (b) an absent quote
+//     falls back to the modeled PriceBps half-spread; (c) every
+//     `BacktestResult` carries its `friction_regime`.
+
+TEST(BacktestExec, QuoteSideFillCrossesRecordedSpread) {
+  auto fx = ExecFixture::listed_quotes(/*bid=*/1.00, /*ask=*/1.10);
+  RunConfig cfg = fx.config();
+  cfg.frictions.spread_kind = FrictionModel::SpreadKind::QuoteSide;
+
+  auto clock = Clock::from_manifest(fx.corpus().manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  DeclarativeStrategy strat{single_clip(kUid, 0.5, Side::Put,
+                                       StrikeSelector{StrikeSelector::Kind::AtmForward, 0.0})};
+  auto r = run_backtest(*clock, strat, cfg);
+  ASSERT_TRUE(r.has_value()) << r.error().to_string();
+
+  // buy fills at 1.05 + 0.75*0.05 = 1.0875 (single leg -> crossing_fraction_single).
+  EXPECT_NEAR(1.0875, ExecFixture::entry_fill_price(*r), 1e-9);
+  EXPECT_EQ(FrictionRegime::QuoteSide, r->friction_regime);
+}
+
+TEST(BacktestExec, QuoteSideFillUsesComplexFractionForMultiLegCohort) {
+  auto fx = ExecFixture::listed_quotes(/*bid=*/1.00, /*ask=*/1.10);
+  RunConfig cfg = fx.config();
+  cfg.frictions.spread_kind = FrictionModel::SpreadKind::QuoteSide;
+
+  auto clock = Clock::from_manifest(fx.corpus().manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  // A straddle: call+put share ONE cohort, so both legs price with
+  // crossing_fraction_complex, not crossing_fraction_single.
+  DeclarativeStrategy strat{single_clip_straddle(
+      kUid, 0.5, StrikeSelector{StrikeSelector::Kind::AtmForward, 0.0})};
+  auto r = run_backtest(*clock, strat, cfg);
+  ASSERT_TRUE(r.has_value()) << r.error().to_string();
+
+  // buy fills at 1.05 + 0.53*0.05 = 1.0765 (complex, both legs identical).
+  EXPECT_NEAR(1.0765, ExecFixture::entry_fill_price(*r, /*n_legs=*/2), 1e-9);
+}
+
+TEST(BacktestExec, QuoteSideSellFillsBelowMid) {
+  auto fx = ExecFixture::listed_quotes(/*bid=*/1.00, /*ask=*/1.10);
+  RunConfig cfg = fx.config();
+  cfg.frictions.spread_kind = FrictionModel::SpreadKind::QuoteSide;
+
+  auto clock = Clock::from_manifest(fx.corpus().manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  DeclarativeStrategy strat{single_clip(kUid, 0.5, Side::Put,
+                                       StrikeSelector{StrikeSelector::Kind::AtmForward, 0.0},
+                                       /*hedge=*/HedgeSpec{}, /*sign=*/-1.0)};
+  auto r = run_backtest(*clock, strat, cfg);
+  ASSERT_TRUE(r.has_value()) << r.error().to_string();
+
+  // A short entry SELLS: fills at 1.05 - 0.75*0.05 = 1.0125. qty<0 flips the
+  // cash-recovery sign from ExecFixture::entry_fill_price's (qty>0 buy)
+  // convention, so this test recovers it directly.
+  EXPECT_NEAR(1.0125, r->cash.front() / 100.0, 1e-9);
+}
+
+TEST(BacktestExec, QuoteSideRollCloseCrossesRecordedSpread) {
+  auto fx = ExecFixture::listed_quotes(/*bid=*/1.00, /*ask=*/1.10);
+  RunConfig cfg = fx.config();
+  cfg.frictions.spread_kind = FrictionModel::SpreadKind::QuoteSide;
+
+  OpenThenCloseStrategy strat(kUid, 0.5, Side::Put, /*sign=*/+1.0);
+  auto clock = Clock::from_manifest(fx.corpus().manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  auto r = run_backtest(*clock, strat, cfg);
+  ASSERT_TRUE(r.has_value()) << r.error().to_string();
+  ASSERT_GE(r->cash.size(), 2u);
+
+  // Row 0 opens (buy, entry loop, crosses UP); row 1 closes with no
+  // re-entry (roll-close loop only) -- closing a long put SELLS it, crossing
+  // DOWN: 1.05 - 0.75*0.05 = 1.0125.
+  const double close_proceeds = r->cash[1] - r->cash[0];
+  EXPECT_NEAR(1.0125, close_proceeds / 100.0, 1e-9);
+}
+
+TEST(BacktestExec, QuoteSideFallsBackToModeledPriceBpsHalfSpreadWhenQuoteAbsent) {
+  const fs::path dir = fresh_dir("quoteside-fallback");
+  const Corpus c = make_corpus(dir, "SPX", 2);
+  auto clock = Clock::from_manifest(c.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  const StrategySpec spec = single_clip(kUid, 0.5, Side::Put,
+                                        StrikeSelector{StrikeSelector::Kind::AtmForward, 0.0});
+
+  // PriceBps: an established, well-tested modeled half-spread charged ON TOP
+  // of a model-mid fill.
+  RunConfig price_bps_cfg;
+  price_bps_cfg.frictions.spread_kind = FrictionModel::SpreadKind::PriceBps;
+  price_bps_cfg.frictions.half_spread_bps = 40.0;
+  DeclarativeStrategy strat_bps{spec};
+  auto r_bps = run_backtest(*clock, strat_bps, price_bps_cfg);
+  ASSERT_TRUE(r_bps.has_value()) << r_bps.error().to_string();
+
+  // QuoteSide with NO quote_lookup wired and crossing_fraction_single=1.0 (a
+  // full cross) must reduce to EXACTLY the same fill/cost/nav as PriceBps
+  // above: `mid + 1.0*(mid*bps/1e4)` is the identical formula, just reached
+  // via the fallback branch instead of the additive half_spread() lane.
+  RunConfig quote_cfg;
+  quote_cfg.frictions.spread_kind = FrictionModel::SpreadKind::QuoteSide;
+  quote_cfg.frictions.half_spread_bps = 40.0;
+  quote_cfg.frictions.crossing_fraction_single = 1.0;
+  // quote_lookup left unset -> every fill falls back to the modeled half-spread.
+  DeclarativeStrategy strat_quote{spec};
+  auto r_quote = run_backtest(*clock, strat_quote, quote_cfg);
+  ASSERT_TRUE(r_quote.has_value()) << r_quote.error().to_string();
+
+  EXPECT_NEAR(r_bps->cost.front(), r_quote->cost.front(), 1e-6);
+  EXPECT_NEAR(r_bps->nav.front(), r_quote->nav.front(), 1e-6);
+  EXPECT_NE(r_bps->cost.front(), 0.0) << "the fixture must actually charge something";
+  EXPECT_EQ(FrictionRegime::Modeled, r_bps->friction_regime);
+  EXPECT_EQ(FrictionRegime::QuoteSide, r_quote->friction_regime);
+}
+
+TEST(BacktestExec, FrictionRegimeClassifiesFrictionlessModeledAndQuoteSide) {
+  const fs::path dir = fresh_dir("frictionregime");
+  const Corpus c = make_corpus(dir, "SPX", 2);
+  auto clock = Clock::from_manifest(c.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  const StrategySpec spec = single_clip(kUid, 0.5, Side::Put,
+                                        StrikeSelector{StrikeSelector::Kind::AtmForward, 0.0});
+
+  {
+    DeclarativeStrategy strat{spec};
+    RunConfig cfg;  // default: SpreadKind::None, every other cost knob 0
+    auto r = run_backtest(*clock, strat, cfg);
+    ASSERT_TRUE(r.has_value()) << r.error().to_string();
+    EXPECT_EQ(FrictionRegime::Frictionless, r->friction_regime);
+  }
+  {
+    DeclarativeStrategy strat{spec};
+    RunConfig cfg;
+    cfg.frictions.spread_kind = FrictionModel::SpreadKind::PriceBps;
+    cfg.frictions.half_spread_bps = 25.0;
+    auto r = run_backtest(*clock, strat, cfg);
+    ASSERT_TRUE(r.has_value()) << r.error().to_string();
+    EXPECT_EQ(FrictionRegime::Modeled, r->friction_regime);
+  }
+  {
+    DeclarativeStrategy strat{spec};
+    RunConfig cfg;
+    cfg.frictions.spread_kind = FrictionModel::SpreadKind::QuoteSide;
+    auto r = run_backtest(*clock, strat, cfg);
+    ASSERT_TRUE(r.has_value()) << r.error().to_string();
+    EXPECT_EQ(FrictionRegime::QuoteSide, r->friction_regime);
+  }
+}
+
+// Invariant I3: a frictionless replay (SpreadKind::None) must stay
+// bit-identical to a run that never heard of QuoteSide. Reuses the existing
+// ZeroFrictionIdentity fixture pattern (default vs. explicit-zero RunConfig)
+// but additionally proves the NEW crossing-fraction fields are inert at their
+// ORATS defaults under None -- widening FrictionModel must not move a single
+// bit of the frictionless golden.
+TEST(BacktestExec, QuoteSideFieldsAreInertUnderNoneSpreadKind) {
+  const fs::path dir = fresh_dir("quoteside-inert");
+  const Corpus c = make_corpus(dir, "SPX", 6);
+  auto clock = Clock::from_manifest(c.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  const StrategySpec spec = single_clip(kUid, 0.25, Side::Put,
+                                        StrikeSelector{StrikeSelector::Kind::AtmForward, 0.0});
+
+  DeclarativeStrategy s_default{spec};
+  DeclarativeStrategy s_new_fields{spec};
+
+  RunConfig def{};  // SpreadKind::None (the default) -- crossing fractions untouched
+  RunConfig with_fields{};
+  with_fields.frictions.crossing_fraction_single = 0.11;   // != the 0.75 default
+  with_fields.frictions.crossing_fraction_complex = 0.22;  // != the 0.53 default
+  with_fields.frictions.quote_lookup = [](const OptionContract&) {
+    return std::optional<FrictionModel::RawQuote>{FrictionModel::RawQuote{1.0, 2.0}};
+  };
+
+  auto rd = run_backtest(*clock, s_default, def);
+  auto rf = run_backtest(*clock, s_new_fields, with_fields);
+  ASSERT_TRUE(rd.has_value()) << rd.error().to_string();
+  ASSERT_TRUE(rf.has_value()) << rf.error().to_string();
+  const BacktestResult& a = *rd;
+  const BacktestResult& b = *rf;
+  ASSERT_EQ(a.size(), b.size());
+  ASSERT_GT(a.size(), 1u);
+  for (std::size_t i = 0; i < a.size(); ++i) {
+    EXPECT_TRUE(bits_equal(a.nav[i], b.nav[i])) << "nav row " << i;
+    EXPECT_TRUE(bits_equal(a.cash[i], b.cash[i])) << "cash row " << i;
+    EXPECT_TRUE(bits_equal(a.cost[i], b.cost[i])) << "cost row " << i;
+  }
+  EXPECT_EQ(FrictionRegime::Frictionless, a.friction_regime);
+  EXPECT_EQ(FrictionRegime::Frictionless, b.friction_regime);
 }
