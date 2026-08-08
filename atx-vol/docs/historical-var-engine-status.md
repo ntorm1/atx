@@ -368,6 +368,36 @@ and the final named trace share identical provenance, is:
 C:\atx\artifacts\var\sp100_dispersion_ytd_cumulative_pnl.png
 ```
 
+### Reading the cumulative P&L chart correctly
+
+The chart title and subtitle disclose the replay semantics directly: every
+scenario restrikes each option to its reference |Δ| and relative expiry,
+re-sizes to the reference dollar delta, and reprices on the shifted surface
+(see "Historical replay semantics" above) — the cumulative line therefore
+compounds per-session restruck scenarios, not the mark-to-market P&L of
+holding the 2026-07-31 book through history. A forensic review of this trace
+(`pnl-forensics.md`, not part of this repository) decomposed the
++$6,546,715.73 total into two effects: **+$5.83M is re-basing resets** — the
+value jump between the one-session-aged book and the freshly restruck book,
+including the 12 history-break resets — and only **+$0.72M is genuine
+held-profile revaluation drift**, the telescoped value change of holding a
+restruck-once profile across the chained scenarios (shifted book value at the
+end minus base book value at the start). 89% of the cumulative total is
+therefore a methodology artifact of cumulating characteristic-preserving VaR
+scenarios, not economic drift of the replayed book.
+
+`plot_var_cumulative_pnl.py`'s `compute_decomposition` plots both readings:
+the total cumulative line and a `cumulative_held_drift` series shaded as the
+re-basing-reset remainder. `cumulative_held_drift` is defined to subtract only
+same-session (chained) resets — `rebasing_reset` is NaN at a history break,
+since the aged and freshly-restruck books are not valued on the same date
+there — so its endpoint on the accepted cross trace is +$1.68M, not +$0.72M:
+it still carries the $955.8K contributed by the 12 history-break resets that
+the full forensic split above attributes to re-basing resets rather than held
+drift. The two figures measure related but distinct things (same-day-only
+drift vs. the pure start-to-end telescope); both are far below the naively
+cumulated +$6.55M, which is the disclosure this task set out to make.
+
 Other useful evidence files are:
 
 ```text

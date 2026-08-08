@@ -12,6 +12,8 @@ from pathlib import Path
 
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
 from matplotlib.ticker import FuncFormatter
 
 
@@ -19,6 +21,8 @@ from matplotlib.ticker import FuncFormatter
 class PnlRow:
     base_date: date
     shifted_date: date
+    base_value: float
+    shifted_value: float
     pnl: float
     cumulative_pnl: float
     n_positions: int
@@ -37,7 +41,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("output", type=Path, help="PNG output path")
     parser.add_argument(
         "--title",
-        default="Historical Replay of the 2026-07-31 SP100 Dispersion Portfolio",
+        default=(
+            "Characteristic-Restruck Historical Replay — "
+            "2026-07-31 SP100 Dispersion Profile"
+        ),
     )
     return parser.parse_args()
 
@@ -49,6 +56,8 @@ def read_trace(path: Path) -> list[PnlRow]:
             PnlRow(
                 base_date=date.fromisoformat(row["base_date"]),
                 shifted_date=date.fromisoformat(row["shifted_date"]),
+                base_value=float(row["base_value"]),
+                shifted_value=float(row["shifted_value"]),
                 pnl=float(row["pnl"]),
                 cumulative_pnl=float(row["cumulative_pnl"]),
                 n_positions=int(row["n_positions"]),
@@ -69,6 +78,78 @@ def read_trace(path: Path) -> list[PnlRow]:
     if not rows:
         raise ValueError(f"P&L trace is empty: {path}")
     return rows
+
+
+def compute_decomposition(df: pd.DataFrame) -> pd.DataFrame:
+    """Decompose cumulative restruck-scenario P&L into resets vs. held drift.
+
+    The engine restrikes every option to its reference |delta| and relative
+    time-to-expiry, and re-sizes to the reference dollar delta, on every
+    scenario's base date (see docs/historical-var-engine-status.md). Summing
+    the resulting per-scenario P&L therefore compounds two effects: the
+    re-basing reset between the one-session-aged book and the freshly
+    restruck book on the same date, and the genuine revaluation drift of
+    holding a restruck-once profile across each chained scenario. This
+    function separates them.
+
+    Row i and i+1 are "chained" iff ``shifted_date[i] == base_date[i+1]``
+    (adjacent scenarios sharing a session, i.e. no history break between
+    them). For chained rows, ``rebasing_reset[i] = base_value[i+1] -
+    shifted_value[i]`` — the value jump between the aged book and the
+    freshly restruck book, both valued on the same date/surface. It is NaN
+    on history breaks and on the trailing row (no successor to reset
+    against). ``cumulative_held_drift[k]`` telescopes ``cumulative_pnl[k]``
+    against the resets that precede it, leaving the value change of holding
+    the restruck-once profile across each chain.
+
+    Does not mutate ``df``.
+
+    Args:
+        df: columns ``base_date``, ``shifted_date``, ``base_value``,
+            ``shifted_value``, ``pnl``, ``cumulative_pnl`` (``pnl`` is
+            unused here but part of the documented input shape).
+
+    Returns:
+        A copy of ``df`` with ``rebasing_reset`` and ``cumulative_held_drift``
+        columns added.
+    """
+    result = df.copy()
+    n = len(result)
+
+    rebasing_reset = np.full(n, np.nan)
+    if n > 1:
+        base_date = result["base_date"].to_numpy()
+        shifted_date = result["shifted_date"].to_numpy()
+        base_value = result["base_value"].to_numpy(dtype=float)
+        shifted_value = result["shifted_value"].to_numpy(dtype=float)
+        chained = shifted_date[:-1] == base_date[1:]
+        rebasing_reset[:-1] = np.where(
+            chained, base_value[1:] - shifted_value[:-1], np.nan
+        )
+    result["rebasing_reset"] = rebasing_reset
+
+    # Running total of resets strictly before row k, treating breaks (NaN) as
+    # contributing zero: prior_reset_sum[k] = nansum(rebasing_reset[:k]).
+    reset_running_total = np.nancumsum(rebasing_reset)
+    prior_reset_sum = np.concatenate(([0.0], reset_running_total[:-1]))
+    result["cumulative_held_drift"] = (
+        result["cumulative_pnl"].to_numpy(dtype=float) + prior_reset_sum
+    )
+    return result
+
+
+def rows_to_frame(rows: list[PnlRow]) -> pd.DataFrame:
+    """Convert parsed trace rows into the frame compute_decomposition expects."""
+    return pd.DataFrame(
+        {
+            "base_date": [row.base_date for row in rows],
+            "shifted_date": [row.shifted_date for row in rows],
+            "base_value": [row.base_value for row in rows],
+            "shifted_value": [row.shifted_value for row in rows],
+            "pnl": [row.pnl for row in rows],
+            "cumulative_pnl": [row.cumulative_pnl for row in rows],
+        }
+    )
 
 
 def dollar_axis(value: float, _position: float) -> str:
@@ -93,45 +174,73 @@ def drawdown(rows: list[PnlRow]) -> float:
 
 
 def plot(rows: list[PnlRow], output: Path, title: str) -> None:
+    held_drift = compute_decomposition(rows_to_frame(rows))["cumulative_held_drift"].tolist()
+
     dates: list[date] = [rows[0].base_date]
     values: list[float] = [0.0]
+    held_values: list[float] = [0.0]
     previous_shifted: date | None = None
     previous_cumulative = 0.0
+    previous_held = 0.0
     gaps = 0
 
-    for row in rows:
+    for row, held in zip(rows, held_drift):
         if previous_shifted is not None and row.base_date != previous_shifted:
             dates.append(row.base_date)
             values.append(math.nan)
+            held_values.append(math.nan)
             dates.append(row.base_date)
             values.append(previous_cumulative)
+            held_values.append(previous_held)
             gaps += 1
         dates.append(row.shifted_date)
         values.append(row.cumulative_pnl)
+        held_values.append(held)
         previous_shifted = row.shifted_date
         previous_cumulative = row.cumulative_pnl
+        previous_held = held
 
     plt.style.use("seaborn-v0_8-whitegrid")
-    figure, axis = plt.subplots(figsize=(13.5, 7.4), constrained_layout=True)
-    axis.plot(dates, values, color="#1261A0", linewidth=2.0)
+    figure, axis = plt.subplots(figsize=(13.5, 8.2))
     axis.axhline(0.0, color="#333333", linewidth=0.9, alpha=0.75)
+
+    # The gap between the total and held-drift lines is the cumulative
+    # re-basing reset: the value jump from restriking/re-sizing the book
+    # every session, which is not held-book drift. Shade it so the two
+    # honest readings (total restruck-scenario compounding vs. genuine
+    # revaluation drift) are visually separated, not just line-labeled.
+    reset_band = [
+        not (math.isnan(total) or math.isnan(held))
+        for total, held in zip(values, held_values)
+    ]
     axis.fill_between(
         dates,
         values,
-        0.0,
-        where=[not math.isnan(value) and value >= 0.0 for value in values],
-        color="#2A9D8F",
-        alpha=0.14,
+        held_values,
+        where=reset_band,
+        color="#EB6834",
+        alpha=0.20,
         interpolate=True,
+        label="Cumulative re-basing resets (remainder)",
+        zorder=1,
     )
-    axis.fill_between(
+
+    axis.plot(
         dates,
         values,
-        0.0,
-        where=[not math.isnan(value) and value < 0.0 for value in values],
-        color="#D1495B",
-        alpha=0.14,
-        interpolate=True,
+        color="#1261A0",
+        linewidth=2.0,
+        label="Cumulative restruck-scenario P&L (total)",
+        zorder=3,
+    )
+    axis.plot(
+        dates,
+        held_values,
+        color="#4A3AA7",
+        linewidth=1.8,
+        linestyle="--",
+        label="Held-profile revaluation drift",
+        zorder=2,
     )
 
     endpoint = rows[-1]
@@ -142,7 +251,7 @@ def plot(rows: list[PnlRow], output: Path, title: str) -> None:
         edgecolor="white",
         linewidth=1.1,
         s=55,
-        zorder=3,
+        zorder=4,
     )
     axis.annotate(
         dollar_axis(endpoint.cumulative_pnl, 0.0),
@@ -154,8 +263,26 @@ def plot(rows: list[PnlRow], output: Path, title: str) -> None:
         fontweight="bold",
         color="#1261A0",
     )
+    axis.scatter(
+        [endpoint.shifted_date],
+        [held_drift[-1]],
+        color="#4A3AA7",
+        edgecolor="white",
+        linewidth=1.1,
+        s=45,
+        zorder=4,
+    )
+    axis.annotate(
+        dollar_axis(held_drift[-1], 0.0),
+        (endpoint.shifted_date, held_drift[-1]),
+        xytext=(-10, -14),
+        textcoords="offset points",
+        ha="right",
+        fontsize=10,
+        fontweight="bold",
+        color="#4A3AA7",
+    )
 
-    axis.set_title(title, loc="left", fontsize=16, fontweight="bold", pad=18)
     first = rows[0]
     excluded = (
         first.coverage_excluded_option_lots
@@ -165,21 +292,19 @@ def plot(rows: list[PnlRow], output: Path, title: str) -> None:
     portfolio_label = f"{first.n_positions:,} replayable positions"
     if first.source_option_lots != 0:
         portfolio_label += f" ({excluded:,} source options excluded)"
-    subtitle = (
+    stats_line = (
         f"{portfolio_label} | {len(rows)} adjacent-session scenarios | "
         f"{gaps} visible history breaks | max drawdown {dollar_axis(drawdown(rows), 0.0)}"
     )
-    axis.text(
-        0.0,
-        1.015,
-        subtitle,
-        transform=axis.transAxes,
-        fontsize=10,
-        color="#555555",
-        va="bottom",
+    disclosure_line = (
+        "Each scenario restrikes every option to its reference |delta| and relative expiry, "
+        "re-sizes to the reference dollar delta, and reprices on the shifted surface: "
+        "cumulative P&L compounds per-session restruck scenarios, not a held book. Model "
+        "mids, no transaction costs."
     )
+
     axis.set_xlabel("Shifted market date")
-    axis.set_ylabel("Cumulative replay P&L")
+    axis.set_ylabel("Cumulative P&L")
     axis.yaxis.set_major_formatter(FuncFormatter(dollar_axis))
     axis.xaxis.set_major_locator(mdates.MonthLocator())
     axis.xaxis.set_major_formatter(mdates.DateFormatter("%b %Y"))
@@ -187,6 +312,44 @@ def plot(rows: list[PnlRow], output: Path, title: str) -> None:
     axis.grid(axis="y", alpha=0.34)
     axis.spines["top"].set_visible(False)
     axis.spines["right"].set_visible(False)
+    axis.legend(loc="upper left", frameon=False, fontsize=9.5)
+
+    # Header block (title, stats, disclosure) is placed in figure-fraction
+    # coordinates with a manually reserved top margin, rather than fighting
+    # constrained_layout for space above the axes: constrained_layout only
+    # tracks the Axes title artist, not arbitrary text, so multi-line
+    # disclosure text above the axes would otherwise overlap the title.
+    figure.subplots_adjust(top=0.80, left=0.07, right=0.975, bottom=0.09)
+    figure.text(
+        0.045,
+        0.965,
+        title,
+        fontsize=16,
+        fontweight="bold",
+        color="#111111",
+        ha="left",
+        va="top",
+    )
+    figure.text(
+        0.045,
+        0.915,
+        stats_line,
+        fontsize=10,
+        color="#555555",
+        ha="left",
+        va="top",
+    )
+    figure.text(
+        0.045,
+        0.888,
+        disclosure_line,
+        fontsize=9,
+        color="#555555",
+        ha="left",
+        va="top",
+        style="italic",
+        wrap=True,
+    )
 
     output.parent.mkdir(parents=True, exist_ok=True)
     figure.savefig(output, dpi=200, facecolor="white")
