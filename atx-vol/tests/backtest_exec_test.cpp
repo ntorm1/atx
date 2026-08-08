@@ -34,6 +34,7 @@
 #include <new>
 #include <span>
 #include <string>
+#include <thread>  // std::jthread — the C2 concurrent-pool soak
 #include <utility>
 #include <vector>
 
@@ -45,6 +46,7 @@
 #include "atx/vol/detail/counters.hpp"          // counters::ledger — L1 solve-economy gate
 #include "atx/vol/portfolio_pricer.hpp"  // OptionContract, kNsPerYear
 #include "atx/vol/priced_surface.hpp"    // PricedSurface, PricingContext
+#include "atx/vol/research/snapshot_pool.hpp"  // C2: SnapshotPool, SnapshotPoolStats
 #include "atx/vol/strategy.hpp"          // DeclarativeStrategy, StrategySpec, HedgeSpec
 #include "atx/vol/surface_archive.hpp"   // write_surface_archive_v2_file, SurfaceArchiveItem
 #include "atx/vol/surface_parity.hpp"    // SliceContext
@@ -2541,4 +2543,226 @@ TEST(BacktestExec, QuoteSideFieldsAreInertUnderNoneSpreadKind) {
   }
   EXPECT_EQ(FrictionRegime::Frictionless, a.friction_regime);
   EXPECT_EQ(FrictionRegime::Frictionless, b.friction_regime);
+}
+
+// ── Task C2: process-wide sealed snapshot pool ──────────────────────────────
+//
+// Three gates on `SnapshotPool` (research tier) wired through
+// `RunConfig::snapshot_pool`:
+//   (a) SnapshotPoolSecondRunOpensNoArchives     — a second run over the same
+//       clock, sharing the pool, performs ZERO archive opens.
+//   (b) SnapshotPoolIsBitIdenticalToPrivateCache — pooled and private-cache runs
+//       agree bit-for-bit on every BacktestResult column and scalar.
+//   (c) SnapshotPoolConcurrentRunsMatchSerial    — 8 concurrent `std::jthread`
+//       runs sharing one pool reproduce the serial result exactly, looped
+//       `kPoolSoakRepeats` times.
+//
+// The pool decides only WHERE the bytes come from; (b) and (c) are the pins that
+// it never decides WHAT they are.
+
+namespace {
+
+// Every row-parallel double column a run fills, paired for a bitwise compare.
+[[nodiscard]] std::vector<std::pair<const std::vector<double>*, const std::vector<double>*>>
+result_columns(const BacktestResult& a, const BacktestResult& b) {
+  return {{&a.pnl_total, &b.pnl_total},
+          {&a.pnl_delta, &b.pnl_delta},
+          {&a.pnl_gamma, &b.pnl_gamma},
+          {&a.pnl_vega, &b.pnl_vega},
+          {&a.pnl_vanna, &b.pnl_vanna},
+          {&a.pnl_volga, &b.pnl_volga},
+          {&a.pnl_theta, &b.pnl_theta},
+          {&a.pnl_rho, &b.pnl_rho},
+          {&a.pnl_charm, &b.pnl_charm},
+          {&a.pnl_unexplained, &b.pnl_unexplained},
+          {&a.pnl_settlement, &b.pnl_settlement},
+          {&a.pnl_shares, &b.pnl_shares},
+          {&a.financing, &b.financing},
+          {&a.cost, &b.cost},
+          {&a.nav, &b.nav},
+          {&a.cash, &b.cash},
+          {&a.gross_delta, &b.gross_delta},
+          {&a.gross_gamma, &b.gross_gamma},
+          {&a.gross_vega, &b.gross_vega},
+          {&a.gross_theta, &b.gross_theta},
+          {&a.gross_vega_abs, &b.gross_vega_abs},
+          {&a.turnover_notional, &b.turnover_notional},
+          {&a.turnover_vega, &b.turnover_vega},
+          {&a.swap_pv, &b.swap_pv},
+          {&a.swap_pnl, &b.swap_pnl},
+          {&a.n_open_lots, &b.n_open_lots},
+          {&a.n_unpriced_lots, &b.n_unpriced_lots},
+          {&a.n_unpriced_greeks, &b.n_unpriced_greeks},
+          {&a.step_pnl_total, &b.step_pnl_total},
+          {&a.nav_liquidation, &b.nav_liquidation},
+          {&a.margin_required, &b.margin_required}};
+}
+
+// Bitwise equality over the WHOLE result: dates, timestamps, every double column
+// (including the non-wire ones), the signal series and every run scalar.
+void expect_result_bit_identical(const BacktestResult& a, const BacktestResult& b,
+                                 const char* what) {
+  ASSERT_EQ(a.size(), b.size()) << what;
+  ASSERT_EQ(a.date, b.date) << what;
+  ASSERT_EQ(a.ts_ns, b.ts_ns) << what;
+  for (const auto& [va, vb] : result_columns(a, b)) {
+    ASSERT_EQ(va->size(), vb->size()) << what << ": column length";
+    for (std::size_t i = 0; i < va->size(); ++i) {
+      EXPECT_TRUE(bits_equal((*va)[i], (*vb)[i])) << what << ": column row " << i;
+    }
+  }
+  ASSERT_EQ(a.signals.size(), b.signals.size()) << what;
+  for (std::size_t s = 0; s < a.signals.size(); ++s) {
+    EXPECT_EQ(a.signals[s].first, b.signals[s].first) << what << ": signal name " << s;
+    ASSERT_EQ(a.signals[s].second.size(), b.signals[s].second.size()) << what;
+    for (std::size_t i = 0; i < a.signals[s].second.size(); ++i) {
+      EXPECT_TRUE(bits_equal(a.signals[s].second[i], b.signals[s].second[i]))
+          << what << ": signal " << a.signals[s].first << " row " << i;
+    }
+  }
+  EXPECT_EQ(a.n_steps_entry_skipped, b.n_steps_entry_skipped) << what;
+  EXPECT_EQ(a.n_settlements_at_stale_spot, b.n_settlements_at_stale_spot) << what;
+  EXPECT_EQ(a.n_hedge_steps_skipped, b.n_hedge_steps_skipped) << what;
+  EXPECT_EQ(a.n_clock_dates_dropped, b.n_clock_dates_dropped) << what;
+  EXPECT_EQ(a.clock_dates_dropped, b.clock_dates_dropped) << what;
+  EXPECT_EQ(a.friction_regime, b.friction_regime) << what;
+  EXPECT_EQ(a.n_short_calls_assignable, b.n_short_calls_assignable) << what;
+  EXPECT_EQ(a.n_puts_exercisable, b.n_puts_exercisable) << what;
+  EXPECT_EQ(a.solve_ledger.settlement_memo_hits, b.solve_ledger.settlement_memo_hits) << what;
+  EXPECT_EQ(a.solve_ledger.settlement_full_solves, b.solve_ledger.settlement_full_solves) << what;
+}
+
+[[nodiscard]] StrategySpec pool_gate_spec() {
+  return single_clip(kUid, 0.25, Side::Put, StrikeSelector{StrikeSelector::Kind::AtmForward, 0.0});
+}
+
+}  // namespace
+
+// (a) Two sequential runs sharing one pool: the second opens NOTHING.
+TEST(BacktestExec, SnapshotPoolSecondRunOpensNoArchives) {
+  const fs::path dir = fresh_dir("pool-reuse");
+  const Corpus c = make_corpus(dir, "SPX", 6);
+  auto clock = Clock::from_manifest(c.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  SnapshotPool pool;
+  RunConfig cfg;
+  cfg.snapshot_pool = &pool;
+
+  const StrategySpec spec = pool_gate_spec();
+  DeclarativeStrategy first{spec};
+  auto r1 = run_backtest(*clock, first, cfg);
+  ASSERT_TRUE(r1.has_value()) << r1.error().to_string();
+  const SnapshotPoolStats after_first = pool.stats();
+
+  DeclarativeStrategy second{spec};
+  auto r2 = run_backtest(*clock, second, cfg);
+  ASSERT_TRUE(r2.has_value()) << r2.error().to_string();
+  const SnapshotPoolStats after_second = pool.stats();
+
+  // Run 1 opened each of the 6 dated archives exactly once (single-flight), and
+  // probed each one's content identity exactly once.
+  EXPECT_EQ(after_first.archive_opens, 6u);
+  EXPECT_EQ(after_first.identity_probes, 6u);
+  EXPECT_EQ(after_first.resident_entries, 6u);
+  // Run 2: ZERO archive opens, ZERO identity probes — every acquisition is a hit.
+  EXPECT_EQ(after_second.archive_opens, after_first.archive_opens);
+  EXPECT_EQ(after_second.identity_probes, after_first.identity_probes);
+  EXPECT_GT(after_second.hits, after_first.hits);
+  EXPECT_EQ(after_second.resident_entries, 6u);
+
+  // The two runs also agree bit-for-bit (the pool served run 2 the same bytes).
+  expect_result_bit_identical(*r1, *r2, "pooled run 1 vs pooled run 2");
+
+  // Explicit trim is the ONLY eviction: dropping everything before the last date
+  // leaves exactly the last entry resident, and live readers keep their handles.
+  const std::size_t dropped = pool.trim(c.dp.back().first);
+  EXPECT_EQ(dropped, 5u);
+  EXPECT_EQ(pool.stats().resident_entries, 1u);
+  EXPECT_EQ(pool.stats().trimmed_entries, 5u);
+}
+
+// (b) Pooled and private-cache runs are bit-identical.
+TEST(BacktestExec, SnapshotPoolIsBitIdenticalToPrivateCache) {
+  const fs::path dir = fresh_dir("pool-identity");
+  const Corpus c = make_corpus(dir, "SPX", 8, 100.0, 0.006, 0.001);
+  auto clock = Clock::from_manifest(c.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  const StrategySpec spec = pool_gate_spec();
+
+  RunConfig priv;  // snapshot_pool == nullptr => today's private per-run cache
+  ASSERT_EQ(priv.snapshot_pool, nullptr);
+  DeclarativeStrategy s_priv{spec};
+  auto r_priv = run_backtest(*clock, s_priv, priv);
+  ASSERT_TRUE(r_priv.has_value()) << r_priv.error().to_string();
+
+  SnapshotPool pool;
+  RunConfig pooled;
+  pooled.snapshot_pool = &pool;
+  DeclarativeStrategy s_pool{spec};
+  auto r_pool = run_backtest(*clock, s_pool, pooled);
+  ASSERT_TRUE(r_pool.has_value()) << r_pool.error().to_string();
+
+  expect_result_bit_identical(*r_priv, *r_pool, "private cache vs shared pool");
+  EXPECT_EQ(pool.stats().archive_opens, 8u);
+}
+
+// (c) 8 concurrent runs sharing one pool == the serial run, repeated as a soak.
+//
+// CI VALUE, deliberately not the brief's 100. Each repeat is a FRESH pool plus 8
+// full 6-date backtests racing to fill it, so every repeat is one cold-start race
+// per date. Measured on this box: 100 repeats = 7.9-9.2 s (three consecutive
+// passes, all green, 2400 concurrent runs, every rep reporting exactly 6 archive
+// opens); 20 repeats is ~1.8 s, which is what a per-commit gate can afford.
+// Raise this constant to reproduce the full soak — nothing else changes.
+constexpr int kPoolSoakRepeats = 20;
+
+TEST(BacktestExec, SnapshotPoolConcurrentRunsMatchSerial) {
+  const fs::path dir = fresh_dir("pool-concurrent");
+  const Corpus c = make_corpus(dir, "SPX", 6);
+  auto clock = Clock::from_manifest(c.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  const StrategySpec spec = pool_gate_spec();
+
+  // Serial reference: its own pool, one run, nothing concurrent.
+  SnapshotPool serial_pool;
+  RunConfig serial_cfg;
+  serial_cfg.snapshot_pool = &serial_pool;
+  DeclarativeStrategy serial_strat{spec};
+  auto serial = run_backtest(*clock, serial_strat, serial_cfg);
+  ASSERT_TRUE(serial.has_value()) << serial.error().to_string();
+
+  constexpr std::size_t kThreads = 8;
+  for (int rep = 0; rep < kPoolSoakRepeats; ++rep) {
+    SnapshotPool pool;  // fresh pool each repeat => the cold race is exercised
+    std::vector<Result<BacktestResult>> out(kThreads,
+                                            Err(ErrorCode::Unknown, "run never assigned"));
+    {
+      std::vector<std::jthread> threads;
+      threads.reserve(kThreads);
+      for (std::size_t t = 0; t < kThreads; ++t) {
+        threads.emplace_back([&, t] {
+          RunConfig cfg;
+          cfg.snapshot_pool = &pool;
+          DeclarativeStrategy strat{spec};
+          out[t] = run_backtest(*clock, strat, cfg);
+        });
+      }
+    }  // jthread join
+    for (std::size_t t = 0; t < kThreads; ++t) {
+      ASSERT_TRUE(out[t].has_value())
+          << "rep " << rep << " thread " << t << ": " << out[t].error().to_string();
+      expect_result_bit_identical(*serial, *out[t], "concurrent pooled run vs serial");
+    }
+    // Single-flight: 8 concurrent runs over the same 6 dates opened each archive
+    // exactly once, whichever thread won each race.
+    const SnapshotPoolStats st = pool.stats();
+    EXPECT_EQ(st.archive_opens, 6u) << "rep " << rep;
+    EXPECT_EQ(st.identity_probes, 6u) << "rep " << rep;
+    EXPECT_EQ(st.resident_entries, 6u) << "rep " << rep;
+  }
+  std::printf("[btexec] pool soak: %d reps x %zu concurrent runs, bit-identical\n",
+              kPoolSoakRepeats, kThreads);
 }

@@ -27,7 +27,8 @@
 #include "atx/vol/detail/counters.hpp"      // counters::ledger — V1 always-on solve ledger (per-step scrape)
 #include "atx/vol/detail/deriv_ref_bridge.hpp" // detail::deriv_price_on_ref — swap-lot marks
 #include "atx/vol/detail/phase_profile.hpp"
-#include "atx/vol/margin.hpp"          // Task B2: regt_short_option_margin
+#include "atx/vol/margin.hpp"                 // Task B2: regt_short_option_margin
+#include "atx/vol/research/snapshot_pool.hpp" // Task C2: SnapshotPool (RunConfig::snapshot_pool)
 #include "atx/vol/strategy.hpp"        // IStrategy
 #include "atx/vol/surface_archive.hpp" // SurfaceArchive
 #include "atx/vol/surface_db.hpp"      // SurfaceDb, DbPartitionInfo, kSurfaceDbPartitionDir/Ext
@@ -107,6 +108,65 @@ std::atomic<std::uint64_t> g_deserialized_bytes{0};
   }
   return Ok();
 }
+
+// ── Where a run's dated snapshots come from (Task C2) ───────────────────────
+//
+// Exactly two routes, chosen once per run and never mixed:
+//
+//   CACHE  — `cfg.snapshot_pool == nullptr`, i.e. everything that existed before
+//            C2. Either the caller's own `cfg.snapshot_cache`, or the PRIVATE
+//            per-run cache the engine builds (bounded, uid-subsetted, Sealed)
+//            with its async look-ahead prefetch. Byte-for-byte the old path.
+//
+//   POOL   — `cfg.snapshot_pool != nullptr`. The process-wide sealed pool serves
+//            every date, so N variants over one corpus open each archive once
+//            between them. Look-ahead becomes `SnapshotPool::warm`, which loads
+//            the window through the persistent `PricingExecutor` instead of the
+//            cache's thread-per-load `std::async`.
+//
+// The two produce IDENTICAL bytes for the same (archive, tier): the corpus is
+// immutable under the Sealed declaration both routes make, and neither route can
+// change what a surface prices to. What differs is only who paid for the open.
+// (`RunConfig::snapshot_pool` states the mutual exclusion; `validate_run_config`
+// enforces it.)
+class SnapshotSource {
+public:
+  SnapshotSource(std::shared_ptr<SnapshotCache> cache, SnapshotPool *pool)
+      : cache_{std::move(cache)}, pool_{pool} {}
+
+  [[nodiscard]] Result<std::shared_ptr<const MarketSnapshot>> load(const SnapshotRef &ref,
+                                                                   const RunConfig &cfg) const {
+    if (pool_ != nullptr) {
+      return pool_->acquire(ref.date, ref.archive_path, cfg.query_pricing_tier);
+    }
+    return cache_->load(ref.archive_path, cfg.query_pricing_tier, cfg.query_cache_build_policy);
+  }
+
+  // The look-ahead fill for `refs[first .. first+count)`, clipped to the clock.
+  //
+  // On the CACHE route this is the historical `prefetch_window` verbatim (async,
+  // returns before the loads finish). On the POOL route it is a `warm`, which is
+  // SYNCHRONOUS: the window's missing dates are loaded now, fanned over the
+  // persistent pricing executor. That is a scheduling difference only — the same
+  // archives are read, in the same run, and every column is bit-identical either
+  // way (the pool's overlap comes from running whole VARIANTS concurrently, which
+  // is what it exists for, not from read-ahead inside one variant).
+  [[nodiscard]] Status prefetch(std::span<const SnapshotRef> refs, std::size_t first,
+                                std::size_t count, const RunConfig &cfg) const {
+    if (pool_ == nullptr) {
+      return prefetch_window(*cache_, refs, first, count, cfg);
+    }
+    if (first >= refs.size()) {
+      return Ok();
+    }
+    const std::size_t last = first + count < refs.size() ? first + count : refs.size();
+    return pool_->warm(refs.subspan(first, last - first), cfg.query_pricing_tier);
+  }
+
+private:
+  std::shared_ptr<SnapshotCache> cache_; // null iff pool_ != nullptr
+  SnapshotPool *pool_{nullptr};          // non-owning; null on the cache route
+};
 
 // Contract residual T on the snapshot dated `base_ts`: (expiry - base.ts)/year.
 [[nodiscard]] double residual_T(std::int64_t expiry_ts_ns, std::int64_t base_ts_ns) noexcept {
@@ -366,6 +426,21 @@ using detail::StepMarkMemo;
       !valid_clock_gap_policy(cfg.clock_gaps) ||
       !valid_margin_breach_policy(cfg.margin_breach)) {
     return Err(ErrorCode::InvalidArgument, "run_backtest: invalid RunConfig enum value");
+  }
+  // Task C2. The two snapshot routes are mutually exclusive, and the pool refuses
+  // the history-dependent build policy — see `RunConfig::snapshot_pool`.
+  if (cfg.snapshot_pool != nullptr) {
+    if (cfg.snapshot_cache != nullptr) {
+      return Err(ErrorCode::InvalidArgument,
+                 "run_backtest: snapshot_cache and snapshot_pool are mutually exclusive — supply "
+                 "exactly one snapshot route");
+    }
+    if (cfg.query_cache_build_policy == QueryCacheBuildPolicy::ReuseOnly) {
+      return Err(ErrorCode::InvalidArgument,
+                 "run_backtest: snapshot_pool does not support QueryCacheBuildPolicy::ReuseOnly — "
+                 "the served tier would depend on what another run already built, making pricing "
+                 "depend on pool history");
+    }
   }
   if (cfg.price.prices_only) {
     return Err(ErrorCode::InvalidArgument,
@@ -2871,14 +2946,21 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
   // used exactly as the caller configured it; the Sealed win is taken on the cache
   // this function constructs and exclusively owns, which is the replay path the
   // optimization was built for and the one no caller can observe.
+  //
+  // Task C2: NONE of the above applies on the pool route. A process-wide pool is
+  // shared across books, so it cannot carry this book's uid subset (a subset
+  // snapshot cached under one book is missing another's uids) — it serves the
+  // whole board, exactly like the caller-supplied-cache case, and it is Sealed by
+  // construction. `book_uids` is then simply unused.
   const std::size_t prefetch_depth = effective_prefetch_depth(cfg);
-  const std::shared_ptr<SnapshotCache> snapshot_cache =
-      cfg.snapshot_cache
+  const SnapshotSource snapshots{
+      cfg.snapshot_pool != nullptr ? std::shared_ptr<SnapshotCache>{}
+      : cfg.snapshot_cache
           ? cfg.snapshot_cache
           : std::make_shared<SnapshotCache>(private_snapshot_cache_capacity(prefetch_depth),
-                                            std::move(book_uids), ArchiveBacking::Sealed);
-  auto base_res = snapshot_cache->load(refs[0].archive_path, cfg.query_pricing_tier,
-                                       cfg.query_cache_build_policy);
+                                            std::move(book_uids), ArchiveBacking::Sealed),
+      cfg.snapshot_pool};
+  auto base_res = snapshots.load(refs[0], cfg);
   if (!base_res) {
     return Err(base_res.error());
   }
@@ -2888,7 +2970,7 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
   if (cfg.prefetch_snapshots) {
     // Initial fill of the whole look-ahead window; each later step adds only the
     // one ref that newly enters it.
-    ATX_TRY_VOID(prefetch_window(*snapshot_cache, refs, 1u, prefetch_depth, cfg));
+    ATX_TRY_VOID(snapshots.prefetch(refs, 1u, prefetch_depth, cfg));
   }
 
   double nav = 0.0;
@@ -2956,8 +3038,7 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
       return Err(ErrorCode::Cancelled, "run_backtest: cancelled before step " +
                                            std::to_string(i) + " (" + refs[i].date + ")");
     }
-    auto shifted_res = snapshot_cache->load(refs[i].archive_path, cfg.query_pricing_tier,
-                                            cfg.query_cache_build_policy);
+    auto shifted_res = snapshots.load(refs[i], cfg);
     if (!shifted_res) {
       return Err(shifted_res.error());
     }
@@ -2967,7 +3048,7 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
     if (cfg.prefetch_snapshots) {
       // The window is [i+1, i+depth]; step i-1 already covered through i+depth-1,
       // so exactly one ref newly enters it here.
-      ATX_TRY_VOID(prefetch_window(*snapshot_cache, refs, i + prefetch_depth, 1u, cfg));
+      ATX_TRY_VOID(snapshots.prefetch(refs, i + prefetch_depth, 1u, cfg));
     }
 
     // V1 solve ledger: per-step solve deltas when a StepTrace is armed (fixed-book
@@ -3618,19 +3699,24 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
   // Only the PRIVATE cache may be subsetted: a caller-supplied cache can be
   // reused across books whose referenced sets differ, and a subset snapshot
   // cached under one book would be missing another's uids.
+  //
+  // Task C2: the pool route takes neither the subset nor the private cache — it
+  // is process-wide and shared across strategies, so it serves the whole board
+  // (see the matching note on the fixed-book overload).
   const std::span<const std::uint32_t> strategy_uids = strat.referenced_uids();
   const std::size_t prefetch_depth = effective_prefetch_depth(cfg);
   const std::size_t private_capacity = private_snapshot_cache_capacity(prefetch_depth);
-  const std::shared_ptr<SnapshotCache> snapshot_cache =
-      cfg.snapshot_cache ? cfg.snapshot_cache
+  const SnapshotSource snapshots{
+      cfg.snapshot_pool != nullptr ? std::shared_ptr<SnapshotCache>{}
+      : cfg.snapshot_cache        ? cfg.snapshot_cache
       : strategy_uids.empty()
           ? std::make_shared<SnapshotCache>(private_capacity, ArchiveBacking::Sealed)
           : std::make_shared<SnapshotCache>(
                 private_capacity,
                 std::vector<std::uint32_t>(strategy_uids.begin(), strategy_uids.end()),
-                ArchiveBacking::Sealed);
-  auto base_res = snapshot_cache->load(refs[0].archive_path, cfg.query_pricing_tier,
-                                       cfg.query_cache_build_policy);
+                ArchiveBacking::Sealed),
+      cfg.snapshot_pool};
+  auto base_res = snapshots.load(refs[0], cfg);
   if (!base_res) {
     return Err(base_res.error());
   }
@@ -3646,7 +3732,7 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
   if (cfg.prefetch_snapshots) {
     // Initial fill of the whole look-ahead window; each later step adds only the
     // one ref that newly enters it.
-    ATX_TRY_VOID(prefetch_window(*snapshot_cache, refs, 1u, prefetch_depth, cfg));
+    ATX_TRY_VOID(snapshots.prefetch(refs, 1u, prefetch_depth, cfg));
   }
 
   double nav = resume != nullptr ? resume->nav : 0.0;
@@ -3755,8 +3841,7 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
                                            std::to_string(i) + " (" + refs[i].date + ")");
     }
     const std::size_t global_step_index = global_step_base + i;
-    auto shifted_res = snapshot_cache->load(refs[i].archive_path, cfg.query_pricing_tier,
-                                            cfg.query_cache_build_policy);
+    auto shifted_res = snapshots.load(refs[i], cfg);
     if (!shifted_res) {
       return Err(shifted_res.error());
     }
@@ -3766,7 +3851,7 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
     if (cfg.prefetch_snapshots) {
       // The window is [i+1, i+depth]; step i-1 already covered through i+depth-1,
       // so exactly one ref newly enters it here.
-      ATX_TRY_VOID(prefetch_window(*snapshot_cache, refs, i + prefetch_depth, 1u, cfg));
+      ATX_TRY_VOID(snapshots.prefetch(refs, i + prefetch_depth, 1u, cfg));
     }
 
     // V1 solve ledger: record this step's per-unique solve deltas (pnl-base + target +

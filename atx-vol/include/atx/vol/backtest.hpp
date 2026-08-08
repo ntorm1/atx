@@ -55,6 +55,12 @@ namespace atx::vol {
 
 class IStrategy; // strategy.hpp — drives the strategy-aware run_backtest overload
 class SurfaceDb; // surface_db.hpp — Clock::from_surface_db source
+// research/snapshot_pool.hpp — the process-wide sealed snapshot pool (C2).
+// FORWARD-DECLARED, never included: this header is Tier-A and closed under
+// inclusion (vol_umbrella_test.cpp), and the pool is a research-tier type.
+// `RunConfig::snapshot_pool` is a non-owning pointer, so the declaration is all
+// a caller who does not use the pool ever needs.
+class SnapshotPool;
 
 // ── Timeline ────────────────────────────────────────────────────────────────
 
@@ -1153,9 +1159,29 @@ struct RunConfig {
   // `n_puts_exercisable`); it never mutates a lot, the cash ledger or the
   // hedge-share ledger, so every existing column is untouched.
   ExercisePolicy exercise_policy{ExercisePolicy::Advisory};
+  // Task C2 (backtest-lakehouse sprint, target 1.1.0): the process-wide SEALED
+  // snapshot pool this run reads its dated archives from
+  // (`atx/vol/research/snapshot_pool.hpp`). NON-OWNING — the pointee must
+  // outlive the run, exactly like `CancelToken`'s flag and `step_observer`'s
+  // callable, and for the same reason: a `shared_ptr` here would silently keep
+  // a process-lifetime cache alive past the sweep that owns it.
+  //
+  // NULL (the default) is TODAY'S BEHAVIOUR, bit-for-bit: the engine builds its
+  // private per-run `SnapshotCache` exactly as before, with the same subset,
+  // capacity, Sealed backing and look-ahead prefetch. Non-null routes every
+  // snapshot acquisition through the shared pool instead, so N variants over one
+  // corpus open each archive ONCE between them; the bytes are identical either
+  // way, so every column is (`BacktestExec.SnapshotPoolIsBitIdenticalToPrivateCache`).
+  //
+  // MUTUALLY EXCLUSIVE with `snapshot_cache` above: setting both is refused with
+  // InvalidArgument rather than silently ranked. And a pool run refuses
+  // `QueryCacheBuildPolicy::ReuseOnly`, which resolves each date to a fast or a
+  // cold tier depending on what some OTHER run already built — history-dependent
+  // pricing is precisely what a process-wide pool must not introduce.
+  SnapshotPool *snapshot_pool{nullptr};
 };
 
-// Drift pin (plan item 4.2). RunConfig has exactly TWENTY-ONE fields. Adding,
+// Drift pin (plan item 4.2). RunConfig has exactly TWENTY-TWO fields. Adding,
 // removing or splitting one breaks this line, which is the point: it forces
 // whoever changes the struct to read the construction contract above instead of
 // appending a knob "for compatibility" with positional initializers that are no
@@ -1209,8 +1235,18 @@ struct RunConfig {
 // behavior only when a lot actually crosses the early-exercise boundary AND
 // the caller opts into `Simulate`, which used to be unrepresentable).
 //
+// 21 -> 22 (Task C2, backtest-lakehouse sprint): `snapshot_pool` APPENDED at
+// the end. Same sprint-owner-approved exception to the 1.x Tier-A freeze as
+// `swap_fixing_cadence` / `clock_gaps` / `margin_breach` / `exercise_policy`
+// before it. Output is bit-identical for every caller that does not set it
+// (`nullptr` -- the default -- builds the same private per-run SnapshotCache
+// with the same subset, capacity, Sealed backing and look-ahead the engine has
+// always built); it changes anything at all only when a caller hands the run a
+// process-wide pool, which used to be unrepresentable. The field is a
+// FORWARD-DECLARED pointer, so no Tier-A header gained a non-Tier-A include.
+//
 // BLIND SPOT: this probe pins the field COUNT, nothing else. It cannot see a
-// REORDER that leaves the count at 21 -- `aggregate_arity_is_v` (see
+// REORDER that leaves the count at 22 -- `aggregate_arity_is_v` (see
 // detail/aggregate_arity.hpp) only checks how many brace-initializer slots
 // `RunConfig{...}` accepts, with no notion of field NAMES or TYPES, so swapping
 // two existing fields (e.g. two `bool`s, or two `std::size_t`s) still compiles
@@ -1225,7 +1261,7 @@ struct RunConfig {
 // multi-argument positional brace list; `git grep -n "RunConfig cfg"` sites
 // build via `RunConfig cfg;` plus `cfg.field = ...` assignment, which is
 // order-independent by construction.
-static_assert(detail::aggregate_arity_is_v<RunConfig, 21>,
+static_assert(detail::aggregate_arity_is_v<RunConfig, 22>,
               "RunConfig field count changed: update this pin, and confirm every "
               "construction site still initializes by field name.");
 

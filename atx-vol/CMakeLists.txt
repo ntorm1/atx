@@ -119,6 +119,11 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/strategy_pipeline.cpp
     src/quant_pipeline.cpp
     src/snapshot_cache.cpp
+    # C2: research-tier process-wide sealed snapshot pool. Header lives under
+    # research/include (the atx-vol-research INTERFACE include root); the
+    # translation unit compiles into atx-vol like every other research .cpp
+    # (dispersion_run.cpp, run_archive.cpp, backtest_driver.cpp above).
+    src/snapshot_pool.cpp
     src/strategy.cpp
     src/dispersion_strategy.cpp
     src/tearsheet.cpp
