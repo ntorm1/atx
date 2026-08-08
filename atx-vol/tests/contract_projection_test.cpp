@@ -16,6 +16,7 @@
 #include "atx/vol/contract_projection.hpp"
 #include "atx/vol/portfolio_pricer.hpp"
 #include "atx/vol/priced_surface.hpp"
+#include "atx/vol/simd/cpu.hpp"
 #include "atx/vol/strategy.hpp"
 #include "atx/vol/surface_parity.hpp"
 #include "atx/vol/vol_curve.hpp"
@@ -812,35 +813,49 @@ HarvestParityGrid make_harvest_parity_grid(std::int64_t now) {
   return grid;
 }
 
-// Task 7's decision test. The NAME is the hypothesis it was written to settle --
-// "is the harvested mark bit-identical to the dedicated EvalField::Price pass?"
-// -- and the MEASURED ANSWER, recorded in the pins below, is NO in general but
-// yes per-kernel and to ~1e-14 relative overall. Read the pins, not the name.
+// Task 7's decision test. It was written to settle "is the harvested mark
+// bit-identical to the dedicated EvalField::Price pass?" and the MEASURED ANSWER
+// is NO -- close to it, but not it -- so the pins below are a `<=` bound on the
+// measured gap plus the one bit-exact promise the harvest really makes.
+//
+// WHY THEY DIFFER (this is an ENTRY-POINT difference, not an ISA one): the
+// solver requests the analytic FirstOrder bundle, so a harvested mark is
+// `american_greeks_al(...).price`, while the dedicated pass requests
+// EvalField::Price with analytic=false, so its mark is `american_price(...)`.
+// Both are cold Andersen-Lake solves of the same contract; they are not the same
+// arithmetic. A secondary ISA effect rides on top: evaluate_batch(Price)'s
+// wrapper packs into the AVX2 kernel only when a same-T run fills a 4-lane pack
+// and otherwise calls that same scalar american_price.
 //
 // There are two dedicated-pass oracles, one per VaR route: evaluate_batch(Price)
 // is what evaluate_scenario_batched runs on the aggregate route, and the scalar
-// evaluate(Price) is what finish_option_leg runs on the retained-leg route.
-// Measured on the 2026-08-08 Debug run of this 224-row fixture:
+// evaluate(Price) is what finish_option_leg runs on the retained-leg route. This
+// fixture's 36-row same-T runs DO fill AVX2 packs, so it exercises both; note
+// that the SP100 production fixture does NOT (its same-T runs average 1.87
+// lanes, so its dedicated pass is entirely scalar american_price and the scalar
+// oracle below is the one that governs there).
+//
+// Measured on this 224-row fixture, 2026-08-08, i7-1260P with have_avx2()==true,
+// in BOTH configurations -- Debug (build/) and Release+LTO (build-rel/) --
+// which produced BIT-IDENTICAL worst gaps:
 //
 //   * 4/4 scalar-fallback-tail rows reproduce the SCALAR evaluate(Price) mark
 //     bit for bit -- by construction, the tail harvests that exact call.
-//   * 218/220 laned-accepted rows reproduce evaluate_batch(Price) bit for bit:
-//     the laned Greek bundle's `price` and the laned price kernel are the same
-//     Andersen-Lake solve. The two exceptions are the deep-wing 3-day rows
-//     (|delta| target 0.02), which differ by <= 1.10e-14 relative.
-//   * 165/224 rows differ from the SCALAR evaluate(Price) by <= 8.74e-14
-//     relative. That is the PRE-EXISTING laned-vs-scalar price-kernel gap -- the
-//     same gap that makes the engine's aggregate-vs-retained gate 1e-9 rather
-//     than bit equality -- not something the harvest introduces.
+//   * 218/220 laned-accepted rows reproduce evaluate_batch(Price) bit for bit.
+//     The two exceptions are the deep-wing 3-day rows (|delta| target 0.02),
+//     which differ by <= 1.0954527921980049e-14 relative.
+//   * Debug 165/224 and Release 166/224 rows differ from the SCALAR
+//     evaluate(Price), both by <= 8.7408957739219891e-14 relative. Only the
+//     COUNT moves between build types; the worst gap does not, which is why the
+//     `<=` pin below needs no per-config value.
 //
-// So the harvest is not bit-identical to the dedicated pass, but it is ~5 orders
+// So the harvest is not bit-identical to the dedicated pass, but it is ~4 orders
 // of magnitude inside the 1e-9 economic gate. Per the Task 7 brief that verdict
-// keeps VarBaseMarkSource::DedicatedPricePass as the default and records the
-// measured gap here as a `<=` pin. The SP100 P&L parity rerun the brief asks for
-// before any default flip WAS run (worst drift 1.5e-12 relative on scenario
-// P&L, aggregate-vs-retained gate exactly zero); see task-7-report.md for the
-// numbers and the decision not to take the flip in this task.
-TEST(ContractProjection, HarvestedSolverPriceIsBitIdenticalToDedicatedPricePass) {
+// keeps VarBaseMarkSource::DedicatedPricePass as the default. The SP100 P&L
+// parity rerun the brief asks for before any default flip WAS run (worst drift
+// 1.5e-12 relative on scenario P&L); see task-7-report.md for the numbers and
+// the decision not to take the flip in this task.
+TEST(ContractProjection, HarvestedSolverPriceMatchesDedicatedPricePassWithinPinnedGap) {
   const std::int64_t now = timestamp(2026, 7, 10);
   const PricedSurface surface = make_surface(2u, 120.0, now);
   const HarvestParityGrid grid = make_harvest_parity_grid(now);
@@ -877,6 +892,7 @@ TEST(ContractProjection, HarvestedSolverPriceIsBitIdenticalToDedicatedPricePass)
   std::size_t n_fallback_vs_scalar_mismatch = 0;
   std::size_t n_batch_bit_mismatch = 0;
   std::size_t n_scalar_bit_mismatch = 0;
+  std::size_t n_oracle_disagreement = 0;
   double max_batch_relative_gap = 0.0;
   double max_scalar_relative_gap = 0.0;
   for (std::size_t i = 0; i < n; ++i) {
@@ -915,6 +931,15 @@ TEST(ContractProjection, HarvestedSolverPriceIsBitIdenticalToDedicatedPricePass)
       ++n_scalar_bit_mismatch;
       max_scalar_relative_gap = std::max(max_scalar_relative_gap, relative_gap(scalar.price));
     }
+    // The two ORACLES against each other, with the harvest out of the picture
+    // entirely. This is the PRE-EXISTING gap between the aggregate route's
+    // evaluate_batch(Price) and the retained route's scalar evaluate(Price) --
+    // measuring it here is what lets the header comment attribute the harvest's
+    // gap to a route difference that already existed rather than to the harvest.
+    if (std::bit_cast<std::uint64_t>(batch_price[i]) !=
+        std::bit_cast<std::uint64_t>(scalar.price)) {
+      ++n_oracle_disagreement;
+    }
     if (fallback_row) {
       n_fallback_vs_scalar_mismatch += matches_scalar ? 0u : 1u;
     } else {
@@ -928,6 +953,7 @@ TEST(ContractProjection, HarvestedSolverPriceIsBitIdenticalToDedicatedPricePass)
                               << " vs_scalar_mismatch=" << n_scalar_bit_mismatch
                               << " laned_vs_batch_mismatch=" << n_laned_vs_batch_mismatch
                               << " fallback_vs_scalar_mismatch=" << n_fallback_vs_scalar_mismatch
+                              << " oracle_disagreement=" << n_oracle_disagreement
                               << " max_batch_gap=" << max_batch_relative_gap
                               << " max_scalar_gap=" << max_scalar_relative_gap << "]";
   };
@@ -944,19 +970,34 @@ TEST(ContractProjection, HarvestedSolverPriceIsBitIdenticalToDedicatedPricePass)
   EXPECT_EQ(n_fallback_vs_scalar_mismatch, 0u)
       << "a fallback-tail row failed to reproduce the scalar evaluate(Price) mark" << summary();
 
-  // PIN 2 -- the laned Greek bundle's `price` and the laned price kernel are the
-  // same Andersen-Lake solve. Pinned as a dominant-majority bound rather than
-  // "all rows": the measured exceptions are deep-wing short-dated rows (2/220
-  // here), so an exact count would be fixture- and ISA-brittle while the
-  // mechanism claim is not.
-  EXPECT_GE(n - n_batch_bit_mismatch, (n * 95u) / 100u)
-      << "the harvested mark stopped tracking the laned price kernel" << summary();
+  // PIN 2 -- when the dedicated pass runs the SAME (AVX2-packed) route the
+  // solver's bundle does, the harvested mark tracks it almost exactly, so the
+  // harvest is not introducing arithmetic of its own. Pinned as a
+  // dominant-majority bound rather than "all rows": the measured exceptions are
+  // deep-wing short-dated rows (2/220 here), so an exact count would be fixture-
+  // and ISA-brittle while the claim is not. ISA-guarded for the same reason
+  // Var.HarvestedBaseMarksAreSharedBitExactlyByAggregateAndRetainedRoutes is --
+  // without AVX2 the batch wrapper is scalar american_price and this becomes a
+  // restatement of the scalar comparison below.
+  if (simd::have_avx2()) {
+    EXPECT_GE(n - n_batch_bit_mismatch, (n * 95u) / 100u)
+        << "the harvested mark stopped tracking the batched price route" << summary();
+    // The two dedicated-pass oracles ALREADY disagree with each other on this
+    // fixture, with the harvest nowhere in the picture. That is the pre-existing
+    // route split the header comment attributes the gap to; if this ever hits
+    // zero, the scalar pin below has silently become a different claim.
+    EXPECT_GT(n_oracle_disagreement, 0u)
+        << "evaluate_batch(Price) and scalar evaluate(Price) agreed everywhere, so this "
+           "fixture no longer demonstrates the pre-existing route split"
+        << summary();
+  }
 
-  // PIN 3 -- the MEASURED cross-kernel gap as a `<=` bound (Task 7 brief,
-  // requirement 2). Measured worst case on this fixture: 1.10e-14 against
-  // evaluate_batch(Price), 8.74e-14 against the scalar evaluate(Price). The
-  // bound below leaves an order of magnitude of headroom and still sits three
-  // decades inside the engine's 1e-9 aggregate-vs-retained gate.
+  // PIN 3 -- the MEASURED gap as a `<=` bound (Task 7 brief, requirement 2).
+  // Worst case on this fixture, BIT-IDENTICAL in Debug and Release+LTO:
+  // 1.0954527921980049e-14 against evaluate_batch(Price) and
+  // 8.7408957739219891e-14 against the scalar evaluate(Price). The bound below
+  // leaves an order of magnitude of headroom and still sits three decades inside
+  // the engine's 1e-9 aggregate-vs-retained gate.
   constexpr double kMaxHarvestRelativeGap = 1.0e-12;
   EXPECT_LE(max_batch_relative_gap, kMaxHarvestRelativeGap) << summary();
   EXPECT_LE(max_scalar_relative_gap, kMaxHarvestRelativeGap) << summary();

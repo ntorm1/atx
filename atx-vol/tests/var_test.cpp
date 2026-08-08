@@ -17,6 +17,7 @@
 
 #include "atx/core/datetime.hpp"
 #include "atx/vol/contract_projection.hpp"
+#include "atx/vol/simd/cpu.hpp"
 #include "atx/vol/surface_archive.hpp"
 #include "atx/vol/surface_db.hpp"
 #include "atx/vol/surface_parity.hpp"
@@ -1459,18 +1460,44 @@ TEST(Var, HarvestedBaseMarksAreSharedBitExactlyByAggregateAndRetainedRoutes) {
   // so the equality above is the harvest doing work, not an accident of this
   // fixture. (The shifted mark still comes from two different kernels under
   // both sources, so only the BASE value can be pinned bit-exactly.)
+  //
+  // ISA-GUARDED, same precedent as american_batch_test.cpp's
+  // AmericanWrapperKnownScalarLanes expectations: the aggregate route only
+  // diverges from the retained one when the resolved-price wrapper actually
+  // packs its lanes into the AVX2 kernel. Without AVX2 every lane in that
+  // wrapper falls back to the SAME scalar american_price the retained route
+  // calls (american_batch.cpp's scalar_lane), the two routes agree bit-exactly
+  // under the dedicated pass too, and an unconditional EXPECT_NE would fail a
+  // perfectly healthy build. The harvest equality above is asserted on every
+  // host either way -- only its teeth are ISA-dependent.
   const VarEvaluationConfig dedicated = harvest_config(1, VarBaseMarkSource::DedicatedPricePass);
   std::vector<VarScenarioFrame> dedicated_retained(1u);
   std::vector<VarScenarioFrame> dedicated_aggregate(1u);
   std::vector<VarLegFrame> dedicated_legs(fixture.positions.size());
   ASSERT_TRUE(prepared->replay_into(scenarios, dedicated_retained, dedicated_legs, dedicated));
   ASSERT_TRUE(prepared->replay_into(scenarios, dedicated_aggregate, {}, dedicated));
-  EXPECT_NE(bits(dedicated_aggregate[0].base_value), bits(dedicated_retained[0].base_value))
-      << "the dedicated-pass routes agreed bit-exactly, so this fixture cannot "
-         "distinguish a working harvest from a no-op";
+  if (simd::have_avx2()) {
+    EXPECT_NE(bits(dedicated_aggregate[0].base_value), bits(dedicated_retained[0].base_value))
+        << "the dedicated-pass routes agreed bit-exactly, so this fixture cannot "
+           "distinguish a working harvest from a no-op";
+  }
 
-  // And the harvested marks stay inside the engine's own economic gate against
-  // the dedicated pass on every leg-level field a caller reads.
+  // How far the harvested marks may move the numbers a caller reads, pinned at
+  // the MEASURED scale rather than at the engine's 1e-9 economic gate. Pinning
+  // at 1e-9 would make these assertions nearly vacuous -- they would admit a
+  // change five orders of magnitude larger than anything the harvest actually
+  // does, so a real regression could land green.
+  //
+  // Measured worst drift on this fixture (2026-08-08, Debug):
+  //   leg base_mark   3.08e-14 relative
+  //   scenario base_value 1.60e-15, pnl 1.49e-15 relative
+  // The bounds below sit ~1.5 decades above the leg measurement and ~4 above the
+  // scenario one, which is margin for ISA/build variation without admitting a
+  // 1e-10 regression. The leg bound matches the `<=` gap pin in
+  // contract_projection_test.cpp, which measures the same quantity per row.
+  constexpr double kMaxLegMarkDrift = 1.0e-12;
+  constexpr double kMaxScenarioValueDrift = 1.0e-11;
+  double worst_leg_drift = 0.0;
   ASSERT_EQ(legs.size(), dedicated_legs.size());
   for (std::size_t index = 0u; index < legs.size(); ++index) {
     SCOPED_TRACE(::testing::Message() << "leg " << index);
@@ -1483,15 +1510,22 @@ TEST(Var, HarvestedBaseMarksAreSharedBitExactlyByAggregateAndRetainedRoutes) {
     EXPECT_EQ(bits(legs[index].units), bits(dedicated_legs[index].units));
     EXPECT_EQ(legs[index].definition_fingerprint, dedicated_legs[index].definition_fingerprint);
     const double mark_scale = std::max(1.0, std::fabs(dedicated_legs[index].base_mark));
-    EXPECT_LE(std::fabs(legs[index].base_mark - dedicated_legs[index].base_mark),
-              1.0e-9 * mark_scale);
+    const double leg_drift =
+        std::fabs(legs[index].base_mark - dedicated_legs[index].base_mark) / mark_scale;
+    worst_leg_drift = std::max(worst_leg_drift, leg_drift);
+    EXPECT_LE(leg_drift, kMaxLegMarkDrift);
     EXPECT_EQ(bits(legs[index].shifted_mark), bits(dedicated_legs[index].shifted_mark));
   }
   const double value_scale = std::max(
       {1.0, std::fabs(dedicated_retained[0].base_value), std::fabs(dedicated_retained[0].pnl)});
-  EXPECT_LE(std::fabs(retained_frames[0].base_value - dedicated_retained[0].base_value),
-            1.0e-9 * value_scale);
-  EXPECT_LE(std::fabs(retained_frames[0].pnl - dedicated_retained[0].pnl), 1.0e-9 * value_scale);
+  const double base_value_drift =
+      std::fabs(retained_frames[0].base_value - dedicated_retained[0].base_value) / value_scale;
+  const double pnl_drift =
+      std::fabs(retained_frames[0].pnl - dedicated_retained[0].pnl) / value_scale;
+  EXPECT_LE(base_value_drift, kMaxScenarioValueDrift)
+      << "worst leg drift " << worst_leg_drift << ", pnl drift " << pnl_drift;
+  EXPECT_LE(pnl_drift, kMaxScenarioValueDrift)
+      << "worst leg drift " << worst_leg_drift << ", base_value drift " << base_value_drift;
   EXPECT_EQ(retained_frames[0].definition_fingerprint,
             dedicated_retained[0].definition_fingerprint);
 }
