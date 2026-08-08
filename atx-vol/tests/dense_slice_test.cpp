@@ -46,6 +46,7 @@ using atx::core::linalg::VecX;
 using atx::vol::black76_price;
 using atx::vol::black76_value_and_vega;
 using atx::vol::ConvexFitOpts;
+using atx::vol::ConvexSliceFit;
 using atx::vol::ErrorCode;
 using atx::vol::fit_convex_slice;
 using atx::vol::FitObs;
@@ -422,6 +423,33 @@ TEST(DenseSlice, FlatVolIsRecoveredAndArbFree) {
     ++checked;
   }
   EXPECT_GT(checked, 5);
+}
+
+// FIT-C11. The right-wing power tail's exponent is
+// `max(0.0, -slope*Kn/C.back())` (dense_slice.cpp). A board whose last two
+// fitted node prices are EXACTLY equal -- a degenerate zero edge slope, e.g. a
+// featureless far-OTM tail with no fit signal -- drives that expression to
+// exactly 0.0 pre-fix, and C.back() * (K/Kn)^-0.0 == C.back() identically: the
+// tail never decays, contradicting the class's own doc ("tends to zero instead
+// of flat-clamping a non-zero option price indefinitely"). Pin such a board
+// directly (bypassing the QP fitter, which would not degenerate this cleanly
+// on real data) and require the far strike to have decayed.
+TEST(DenseSlice, DegenerateFlatEdgeSlopeStillDecaysPastKMax) {
+  ConvexSliceFit fit;
+  fit.T = 0.25;
+  fit.F = 100.0;
+  fit.df = std::exp(-0.03 * fit.T);
+  fit.u = {80.0, 90.0, 100.0, 110.0, 120.0};
+  // Convex, monotone decreasing board, EXCEPT the last two nodes are pinned to
+  // the identical price -- the degenerate zero-slope right edge under test.
+  fit.C = {22.0, 13.0, 6.0, 2.0, 2.0};
+
+  const double k_max = fit.u.back();
+  const double at_edge = fit.call_price(k_max);
+  const double far = fit.call_price(10.0 * k_max);
+  ASSERT_TRUE(std::isfinite(at_edge));
+  ASSERT_TRUE(std::isfinite(far));
+  EXPECT_LT(far, at_edge);
 }
 
 TEST(DenseSlice, SmileIsRecovered) {

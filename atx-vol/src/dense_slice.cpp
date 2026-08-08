@@ -396,11 +396,16 @@ double ConvexSliceFit::call_price(double K) const noexcept {
     }
     // Right wing in CALL space. A power tail matches the edge slope while
     // remaining positive, decreasing and convex, and tends to zero instead of
-    // flat-clamping a non-zero option price indefinitely.
+    // flat-clamping a non-zero option price indefinitely. FIT-C11: floor the
+    // exponent at a small positive epsilon rather than 0.0 -- a degenerate
+    // fitted edge (last two node prices exactly equal, zero slope) would
+    // otherwise clamp to EXACTLY 0.0 and C.back()*(K/Kn)^-0.0 == C.back() for
+    // every K, i.e. the flat-clamp this tail exists to avoid. The epsilon
+    // still decays (if slowly) instead of never decaying at all.
     const std::size_t n = u.size();
     const double Kn = u.back();
     const double slope = (C[n - 1] - C[n - 2]) / (u[n - 1] - u[n - 2]);
-    const double exponent = std::max(0.0, -slope * Kn / C.back());
+    const double exponent = std::max(1.0e-6, -slope * Kn / C.back());
     return C.back() * std::pow(K / Kn, -exponent);
   }
   // Bracket K and linearly interpolate (convexity-preserving: the piecewise-linear
