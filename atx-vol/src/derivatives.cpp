@@ -1616,10 +1616,24 @@ template <class SurfaceT>
   return Ok(pv);
 }
 
-// Bump sizes are a caller input: validate once, at the boundary.
-[[nodiscard]] bool bumps_valid(const DerivGreekBumps& b) noexcept {
-  return b.spot_rel > 0.0 && b.spot_rel < 1.0 && b.vol_abs > 0.0 && b.rate_abs > 0.0 &&
-         b.time_years > 0.0;
+// Bump sizes are a caller input: validate once, at the boundary. vol_abs also
+// gets a surface-aware check: a down-bump >= the surface's own ATM vol pushes
+// v_dn's vol-shifted nodes (VolShiftView::iv, above) to <= 0, and the strip
+// funnel resolves that non-positive iv silently rather than erroring --
+// hollowing out vega/volga/vanna with no visible signal. Reading sigma_atm
+// once at k=0, this contract's own T, is a cheap sufficient guard for the
+// common case (it does not certify every node across the smile survives the
+// shift, only the ATM one). A non-finite read (surface has no opinion at this
+// T) is not itself a bump-size failure, so it does not reject here.
+template <class SurfaceT>
+[[nodiscard]] bool bumps_valid(const DerivGreekBumps& b, const SurfaceT& surface,
+                                double T) noexcept {
+  if (!(b.spot_rel > 0.0 && b.spot_rel < 1.0 && b.vol_abs > 0.0 && b.rate_abs > 0.0 &&
+        b.time_years > 0.0)) {
+    return false;
+  }
+  const double sigma_atm = surface.iv(0.0, T);
+  return !(std::isfinite(sigma_atm) && b.vol_abs >= sigma_atm);
 }
 
 // Pin everything about the center quote that a bumped evaluation would
@@ -1681,8 +1695,9 @@ template <class SurfaceT>
 Result<DerivGreeks> deriv_greeks(const SurfaceT& surface, const CurveSet& curves,
                                  const DerivContract& contract, const DerivConfig& cfg,
                                  const DerivGreekBumps& bumps) {
-  if (!bumps_valid(bumps)) {
-    return Err(ErrorCode::InvalidArgument, "greek bump sizes must be > 0 (spot_rel < 1)");
+  if (!bumps_valid(bumps, surface, contract.maturity_t)) {
+    return Err(ErrorCode::InvalidArgument,
+               "greek bump sizes must be > 0 (spot_rel < 1, vol_abs < ATM vol)");
   }
   if (!(curves.spot > 0.0)) {
     return Err(ErrorCode::InvalidArgument, "greeks need curves.spot > 0 (delta's divisor)");

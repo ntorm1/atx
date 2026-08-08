@@ -383,6 +383,22 @@ TEST(DerivGreeks, RejectsUnusableBumpsAndSpot) {
   EXPECT_EQ(gs.error().code(), ErrorCode::InvalidArgument);
 }
 
+// A vol_abs bump >= the surface's own ATM vol pushes v_dn's down-shifted iv
+// to <= 0 -- a silently-corrupted node the downstream strip resolves rather
+// than errors on, hollowing out vega/volga/vanna with no visible signal.
+// Reject up front off a cheap single sigma_atm read at k=0. (GK-C7)
+TEST(DerivGreeks, RejectsVolAbsBumpAtOrAboveAtmVol) {
+  const EssviSurface surf = make_flat_surface(0.10, 0.01, 1.00);  // 0.10-vol surface
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+  const DerivContract c = var_swap_at(0.25);
+
+  DerivGreekBumps too_big{};
+  too_big.vol_abs = 0.15;  // >= sigma_atm = 0.10
+  const auto g = deriv_greeks(surf, cs, c, deriv_default_config(), too_big);
+  ASSERT_FALSE(g.has_value());
+  EXPECT_EQ(g.error().code(), ErrorCode::InvalidArgument);
+}
+
 // Charm's sign on a negative-skew surface, cross-checked against an INDEPENDENT
 // maturity difference.
 //
