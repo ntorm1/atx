@@ -1311,6 +1311,114 @@ TEST(Var, WeightedStatisticsMatchesHandDerivedEwmaExample) {
   EXPECT_NEAR(low->expected_shortfall, 80.0 / 3.0, 1e-9);
 }
 
+// Regression coverage for build_weighted_losses's recency sort: the test
+// above has shifted_ts_ns monotonically increasing WITH array order (frame 2
+// is both last in the array and newest by timestamp), so a bug that aged
+// frames by ARRAY POSITION instead of by shifted_ts_ns would silently pass
+// it. This fixture scrambles the two: array order is {loss=15, loss=25,
+// loss=35} but timestamp order (newest first) is {frame2, frame0, frame1} --
+// neither ascending- nor descending-array-position matches ascending- or
+// descending-timestamp.
+//
+// lambda=0.5. True ages by shifted_ts_ns (frame2 ts=300 newest -> age0,
+// frame0 ts=200 -> age1, frame1 ts=100 oldest -> age2): unnormalized weights
+// 1, 0.5, 0.25 (total 1.75); normalized frame2=4/7, frame0=2/7, frame1=1/7.
+// Sorted ascending by loss: frame0(15, 2/7), frame1(25, 1/7), frame2(35,
+// 4/7); cumulative 2/7~=0.2857, 3/7~=0.4286, 1. At confidence=0.35 the first
+// cumulative >= 0.35 is frame1's slot -> VaR=25, tail={frame1(1/7),
+// frame2(4/7)} (tail weight 5/7) -> ES = (1/7*25 + 4/7*35) / (5/7)
+// = (25 + 140) / 5 = 33.
+//
+// A bug that used ascending ARRAY POSITION as age (age(frame0)=0,
+// age(frame1)=1, age(frame2)=2) would instead put frame0's weight at 4/7
+// (age0): cumulative after frame0 alone (sorted-ascending-loss position 0)
+// is already 4/7~=0.5714 >= 0.35, giving VaR=15 -- wrong.
+//
+// A bug that used DESCENDING array position as age (age(frame2)=0,
+// age(frame1)=1, age(frame0)=2) would put frame1's weight at 2/7 instead of
+// 1/7 (frame2 still lands on age0 by coincidence, since it is both last in
+// the array and newest by timestamp in this fixture). VaR still comes out
+// to 25 (same sorted position crosses the threshold), but the tail weight
+// changes: tail={frame1(2/7), frame2(4/7)} (tail weight 6/7) -> ES =
+// (2/7*25 + 4/7*35) / (6/7) = (50 + 140) / 6 = 190/6 ~= 31.6667 -- wrong,
+// and different enough from the true 33 to catch this bug even though VaR
+// alone would not.
+TEST(Var, WeightedStatisticsAgesByTimestampNotByArrayPosition) {
+  std::vector<VarScenarioFrame> frames(3);
+  const std::array<double, 3> pnl{-15.0, -25.0, -35.0};        // loss = -pnl = 15, 25, 35
+  const std::array<std::int64_t, 3> shifted_ts{200, 100, 300}; // scrambled vs. array order
+  for (std::size_t i = 0; i < frames.size(); ++i) {
+    frames[i].base_ts_ns = static_cast<std::int64_t>(i + 1u);
+    frames[i].shifted_ts_ns = shifted_ts[i];
+    frames[i].status = VarScenarioStatus::Ok;
+    frames[i].base_value = 100.0;
+    frames[i].shifted_value = 100.0 + pnl[i];
+    frames[i].pnl = pnl[i];
+    frames[i].dollar_delta = 1000.0;
+    frames[i].n_ok = 1u;
+    frames[i].definition_fingerprint = i + 1u;
+  }
+  const VarWeighting weighting{0.5};
+
+  const auto result = historical_var_statistics(frames, 0.35, weighting);
+  ASSERT_TRUE(result) << (result ? std::string{} : result.error().to_string());
+  EXPECT_DOUBLE_EQ(result->value_at_risk, 25.0);
+  EXPECT_NEAR(result->expected_shortfall, 33.0, 1e-9);
+}
+
+// Regression coverage for tie-breaking in build_weighted_losses's recency
+// sort when two frames share the same shifted_ts_ns. The implementation
+// sorts a by_recency index permutation with std::stable_sort (descending
+// shifted_ts_ns); stable_sort preserves the relative order of equal-key
+// elements from its input, and that input is candidates in ascending
+// original scenario-index order (candidates are appended while scanning
+// `frames` from index 0 upward) -- so among tied timestamps, the frame with
+// the SMALLER original scenario index keeps an earlier position in the
+// sorted-by-recency list and therefore gets the SMALLER age (treated as more
+// recent). This test pins that documented, stable_sort-derived behavior.
+//
+// lambda=0.5, 3 frames: frame0(loss=10, ts=500), frame1(loss=20, ts=500 --
+// tied with frame0), frame2(loss=30, ts=100, oldest, untied).
+//
+// Documented tie-break -> ages: frame0=age0, frame1=age1, frame2=age2.
+// Unnormalized weights 1, 0.5, 0.25 (total 1.75); normalized frame0=4/7,
+// frame1=2/7, frame2=1/7. Sorted ascending by loss: frame0(10, 4/7),
+// frame1(20, 2/7), frame2(30, 1/7); cumulative 4/7~=0.5714, 6/7~=0.8571, 1.
+// At confidence=0.60 the first cumulative >= 0.60 is frame1's slot ->
+// VaR=20, tail={frame1(2/7), frame2(1/7)} (tail weight 3/7) -> ES =
+// (2/7*20 + 1/7*30) / (3/7) = (40 + 30) / 3 = 70/3 ~= 23.3333.
+//
+// Had the tie broken the other way (frame1 treated as more recent than
+// frame0: ages frame1=age0, frame0=age1, frame2=age2), VaR would coincide at
+// 20 (same sorted-ascending-loss slot crosses 0.60 either way), but the tail
+// weights would differ: tail={frame1(4/7), frame2(1/7)} (tail weight 5/7) ->
+// ES = (4/7*20 + 1/7*30) / (5/7) = (80 + 30) / 5 = 22 -- distinguishable from
+// the documented-tie-break ES of 70/3 above, so this test would catch a
+// reversed (or otherwise nondeterministic) tie-break via ES even though VaR
+// alone would not.
+TEST(Var, WeightedStatisticsBreaksShiftedTsTiesByAscendingScenarioIndex) {
+  std::vector<VarScenarioFrame> frames(3);
+  const std::array<double, 3> pnl{-10.0, -20.0, -30.0};        // loss = -pnl = 10, 20, 30
+  const std::array<std::int64_t, 3> shifted_ts{500, 500, 100}; // frame0 ties frame1
+  for (std::size_t i = 0; i < frames.size(); ++i) {
+    frames[i].base_ts_ns = static_cast<std::int64_t>(i + 1u);
+    frames[i].shifted_ts_ns = shifted_ts[i];
+    frames[i].status = VarScenarioStatus::Ok;
+    frames[i].base_value = 100.0;
+    frames[i].shifted_value = 100.0 + pnl[i];
+    frames[i].pnl = pnl[i];
+    frames[i].dollar_delta = 1000.0;
+    frames[i].n_ok = 1u;
+    frames[i].definition_fingerprint = i + 1u;
+  }
+  const VarWeighting weighting{0.5};
+
+  const auto result = historical_var_statistics(frames, 0.60, weighting);
+  ASSERT_TRUE(result) << (result ? std::string{} : result.error().to_string());
+  EXPECT_DOUBLE_EQ(result->value_at_risk, 20.0);
+  EXPECT_NEAR(result->expected_shortfall, 70.0 / 3.0, 1e-9);
+}
+
 TEST(Var, HistoricalVarCurveIsMonotoneNonDecreasingInConfidence) {
   const std::vector<VarScenarioFrame> frames = make_20frame_synthetic_set();
   const std::array<double, 6> confidences{0.50, 0.60, 0.75, 0.90, 0.95, 0.99};
@@ -1324,8 +1432,9 @@ TEST(Var, HistoricalVarCurveIsMonotoneNonDecreasingInConfidence) {
           << "confidence " << confidences[i] << " vs " << confidences[i - 1];
     }
   }
-  // Sanity: each curve entry matches calling the weighted overload directly
-  // at that single confidence (default weighting == unit lambda).
+  // Sanity: each curve entry matches calling the unweighted 2-arg overload
+  // directly at that single confidence (default weighting == unit lambda,
+  // which the 3-arg overload delegates straight to the 2-arg function).
   for (std::size_t i = 0; i < curve->size(); ++i) {
     const auto direct = historical_var_statistics(frames, confidences[i]);
     ASSERT_TRUE(direct);

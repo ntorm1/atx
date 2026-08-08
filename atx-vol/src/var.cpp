@@ -1697,12 +1697,15 @@ build_weighted_losses(std::span<const VarScenarioFrame> frames, const VarWeighti
 }
 
 // Repeated floating-point summation of normalized weights carries rounding
-// noise many orders of magnitude smaller than any real weight increment
-// (weights are 1/n at the very finest for equal weighting on realistic
-// scenario counts); this epsilon absorbs that noise so the crossing index
-// lands on the mathematically-exact side of a confidence boundary that is
-// not exactly representable in binary floating point (e.g. confidence=0.95,
-// n=20 -> 19/20 stored as very slightly less than 0.95).
+// noise on the order of a few ULPs per addition -- many orders of magnitude
+// smaller than any weight increment this function actually sees. Note this
+// code path is only reached for ewma_lambda != 1.0: the exact-equal-weight
+// case (where increments could get as fine as 1/n) is special-cased away to
+// a direct call into the unweighted two-arg overload before ever reaching
+// here -- see historical_var_statistics's ewma_lambda == 1.0 branch below.
+// This epsilon absorbs that summation noise so the crossing index lands on
+// the mathematically-exact side of a confidence boundary even when that
+// boundary is not itself exactly representable in binary floating point.
 constexpr double kCumulativeWeightEpsilon = 1.0e-9;
 
 [[nodiscard]] VarRiskStatistics
