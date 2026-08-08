@@ -1708,10 +1708,15 @@ TEST(Var, DiagnosticFlagsRecordTenorExtrapolationOnBothSidesAndStayClearInsideTh
   EXPECT_EQ(normal_legs[0].diagnostic_flags, 0u);
 }
 
-// [proj] I3: HistoricalVarResult::n_tenor_extrapolated_legs aggregates
-// diagnostic_flags bits 0/1 across leg_frames -- only meaningful when
-// VarRunConfig::retain_leg_frames is true, since it is a leg_frames rollup.
-TEST(Var, NTenorExtrapolatedLegsAggregatesFlaggedLegFramesEndToEnd) {
+// [proj] I3, review fix round 1: HistoricalVarResult::n_tenor_extrapolated_legs
+// is a deterministic sum of VarScenarioFrame::n_tenor_extrapolated, populated
+// on BOTH routes -- an aggregate run (retain_leg_frames=false, the default)
+// must report the identical count a retained-leg run of the SAME fixture
+// does, and the retained run's count must equal the number of leg_frames
+// with diagnostic_flags bit 0 or 1 set. Before this fix, the aggregate route
+// always reported 0 here (indistinguishable from "no extrapolation" --
+// exactly the silent-telemetry failure mode this task exists to close).
+TEST(Var, NTenorExtrapolatedLegsIsIdenticalAcrossAggregateAndRetainedRoutes) {
   const ScopedTempDirectory root("tenor_extrapolation_count");
   auto db = SurfaceDb::create(root.path().string());
   ASSERT_TRUE(db) << (db ? std::string{} : db.error().to_string());
@@ -1728,8 +1733,12 @@ TEST(Var, NTenorExtrapolatedLegsAggregatesFlaggedLegFramesEndToEnd) {
   ASSERT_TRUE(
       db->write_partition("2026-01-06", std::array<SurfaceArchiveItem, 1>{{{"SPY", &d06}}}));
 
+  // One short (2-day, extrapolated) leg and one normal 3-month (not
+  // extrapolated) leg, so the count is neither 0 nor "every leg" -- a
+  // trivial implementation can't accidentally satisfy this fixture.
   const std::vector<VarPosition> positions = {
-      VarOptionPosition{"SPY", ProjectedMaturitySpec::days(2), 0.40, Side::Call, 1.0, 100.0}};
+      VarOptionPosition{"SPY", ProjectedMaturitySpec::days(2), 0.40, Side::Call, 1.0, 100.0},
+      option("SPY", Side::Call, 1.0)};
   VarRunConfig config;
   config.reference_date = "2026-01-02";
   config.date_begin = "2026-01-05";
@@ -1740,20 +1749,34 @@ TEST(Var, NTenorExtrapolatedLegsAggregatesFlaggedLegFramesEndToEnd) {
   config.query_pricing_tier = QueryPricingTier::ColdReference;
   config.provenance_policy = SurfaceProvenancePolicy::Compatibility;
 
-  // Not retained: the counter must stay 0 -- it is a leg_frames rollup and
-  // leg_frames itself is empty here.
   config.retain_leg_frames = false;
-  auto not_retained = run_historical_var(*db, positions, config);
-  ASSERT_TRUE(not_retained) << (not_retained ? std::string{} : not_retained.error().to_string());
-  EXPECT_EQ(not_retained->n_tenor_extrapolated_legs, 0u);
-  EXPECT_TRUE(not_retained->leg_frames.empty());
+  auto aggregate = run_historical_var(*db, positions, config);
+  ASSERT_TRUE(aggregate) << (aggregate ? std::string{} : aggregate.error().to_string());
+  EXPECT_TRUE(aggregate->leg_frames.empty());
 
   config.retain_leg_frames = true;
   auto retained = run_historical_var(*db, positions, config);
   ASSERT_TRUE(retained) << (retained ? std::string{} : retained.error().to_string());
-  ASSERT_EQ(retained->leg_frames.size(), 1u);
-  EXPECT_EQ(retained->leg_frames[0].status, VarLegStatus::Ok);
-  EXPECT_EQ(retained->n_tenor_extrapolated_legs, 1u);
+  ASSERT_EQ(retained->leg_frames.size(), positions.size());
+  for (const VarLegFrame &leg : retained->leg_frames) {
+    ASSERT_EQ(leg.status, VarLegStatus::Ok) << to_string(leg.status);
+  }
+
+  std::size_t retained_leg_frame_count = 0u;
+  for (const VarLegFrame &leg : retained->leg_frames) {
+    if ((leg.diagnostic_flags & 0x3u) != 0u) {
+      ++retained_leg_frame_count;
+    }
+  }
+  EXPECT_EQ(retained_leg_frame_count, 1u)
+      << "fixture sanity: exactly the short-dated leg must be flagged";
+  EXPECT_EQ(retained->n_tenor_extrapolated_legs, retained_leg_frame_count);
+
+  // The load-bearing assertion: the AGGREGATE route (no leg_frames at all)
+  // must report the SAME count as the retained route on the identical
+  // fixture, not silently 0.
+  EXPECT_EQ(aggregate->n_tenor_extrapolated_legs, retained->n_tenor_extrapolated_legs);
+  EXPECT_EQ(aggregate->n_tenor_extrapolated_legs, 1u);
 }
 
 } // namespace

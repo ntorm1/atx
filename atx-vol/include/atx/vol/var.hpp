@@ -187,6 +187,11 @@ struct VarScenarioFrame {
   std::uint32_t n_ok{0};
   std::uint32_t n_failed{0};
   std::uint64_t definition_fingerprint{0};
+  // Count of Ok legs in this scenario whose base or shifted side used tenor
+  // extrapolation (VarLegFrame::diagnostic_flags bits 0/1's per-scenario
+  // tally). Populated by both the aggregate and retained-leg routes, so it
+  // is available regardless of VarRunConfig::retain_leg_frames.
+  std::uint32_t n_tenor_extrapolated{0};
 
   [[nodiscard]] bool operator==(const VarScenarioFrame &) const = default;
 };
@@ -293,8 +298,9 @@ struct HistoricalVarResult {
   std::size_t n_gap_skipped{0};
   std::size_t n_excluded_from_distribution{0};
   // Legs whose solve or valuation used tenor extrapolation, either side.
-  // Only meaningful when VarRunConfig::retain_leg_frames is true -- it is an
-  // aggregate over leg_frames, which is itself empty otherwise.
+  // Deterministic sum of VarScenarioFrame::n_tenor_extrapolated across
+  // frames, in scenario order; populated on both the aggregate and
+  // retained-leg routes (VarRunConfig::retain_leg_frames does not gate it).
   std::size_t n_tenor_extrapolated_legs{0};
 };
 

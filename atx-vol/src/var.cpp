@@ -581,6 +581,12 @@ struct VarBatchScratch {
   std::vector<double> shifted_price{};
   std::vector<double> base_delta{};
   std::vector<double> log_moneyness{};
+  // Either-side tenor extrapolation (I3), computed once per slot while
+  // base/shifted SurfaceRefs are already in scope (the group-resolution
+  // loops below) so the aggregate route's per-leg finalization can fold it
+  // into VarScenarioFrame::n_tenor_extrapolated without a second surface
+  // lookup or materializing a VarLegFrame.
+  std::vector<std::uint8_t> tenor_extrapolated{};
   std::vector<double> base_spot{};
   std::vector<double> shifted_spot{};
   std::vector<std::uint64_t> fingerprint{};
@@ -611,6 +617,7 @@ template <class PreparedState>
   scratch.shifted_price.resize(count);
   scratch.base_delta.resize(count);
   scratch.log_moneyness.resize(count);
+  scratch.tenor_extrapolated.resize(count);
   scratch.base_spot.resize(count);
   scratch.shifted_spot.resize(count);
   scratch.fingerprint.resize(count);
@@ -752,6 +759,16 @@ resolve_group_window_cross_sectional(const PreparedState &impl, const VarOptionG
     scratch.shifted_time[slot] = shifted_time;
     scratch.base_spot[slot] = base.pricing().S;
     scratch.shifted_spot[slot] = shifted.pricing().S;
+    // I3, review fix round 1: both extrapolates_tenor calls read the
+    // surface's already-resolved TenorDomain (O(1), no fresh curve
+    // resolve) -- cheap enough to compute unconditionally here, shared by
+    // BOTH the retained cross-sectional route (evaluate_scenario) and the
+    // aggregate route (evaluate_scenario_batched), since they both funnel
+    // through this one function.
+    scratch.tenor_extrapolated[slot] = (base.extrapolates_tenor(scratch.base_time[slot]) ||
+                                        shifted.extrapolates_tenor(shifted_time))
+                                           ? 1u
+                                           : 0u;
   }
   return true;
 }
@@ -1059,6 +1076,10 @@ void evaluate_scenario(const PreparedState &impl, const VarScenario &scenario,
     frame.shifted_value += leg_frame.shifted_value;
     frame.pnl += leg_frame.pnl;
     frame.dollar_delta += leg_frame.dollar_delta;
+    if ((leg_frame.diagnostic_flags &
+         (kDiagBaseTenorExtrapolated | kDiagShiftedTenorExtrapolated)) != 0u) {
+      ++frame.n_tenor_extrapolated;
+    }
     aggregate_fingerprint =
         atx::core::hash_combine(aggregate_fingerprint, leg_frame.definition_fingerprint);
   }
@@ -1136,6 +1157,15 @@ void evaluate_scenario_batched(const PreparedState &impl, const VarScenario &sce
         scratch.shifted_spot[slot] = shifted.pricing().S;
         scratch.base_delta[slot] = resolved.base_delta;
         scratch.log_moneyness[slot] = resolved.log_moneyness;
+        // I3, review fix round 1: same either-side definition as
+        // resolve_group_window_cross_sectional's cross-sectional branch and
+        // finish_option_leg's retained-route flags -- base/shifted are
+        // already resolved SurfaceRefs in this scope, so this is not a
+        // fresh surface lookup.
+        scratch.tenor_extrapolated[slot] = (base.extrapolates_tenor(resolved.contract.T) ||
+                                            shifted.extrapolates_tenor(shifted_time))
+                                               ? 1u
+                                               : 0u;
         scratch.fingerprint[slot] = resolved.fingerprint;
       }
     }
@@ -1192,6 +1222,7 @@ void evaluate_scenario_batched(const PreparedState &impl, const VarScenario &sce
     double pnl = 0.0;
     double dollar_delta = 0.0;
     std::uint64_t fingerprint = 0u;
+    bool tenor_extrapolated = false;
     if (leg.kind == VarLegKind::Stock) {
       VarLegFrame stock_frame;
       status = evaluate_stock_leg(leg, scenario, stock_frame);
@@ -1204,6 +1235,11 @@ void evaluate_scenario_batched(const PreparedState &impl, const VarScenario &sce
       }
     } else {
       const std::size_t slot = impl.option_slot_by_leg[index];
+      // Read regardless of this leg's eventual status -- it is only USED
+      // below once status == Ok is confirmed, and every resolved slot's
+      // scratch.tenor_extrapolated was already populated in the group loop
+      // above (review fix round 1).
+      tenor_extrapolated = scratch.tenor_extrapolated[slot] != 0u;
       if (!scratch.base_status[slot] || !scratch.shifted_status[slot] ||
           !std::isfinite(scratch.base_price[slot]) || !std::isfinite(scratch.shifted_price[slot])) {
         status = VarLegStatus::PricingError;
@@ -1251,6 +1287,9 @@ void evaluate_scenario_batched(const PreparedState &impl, const VarScenario &sce
     frame.shifted_value += shifted_value;
     frame.pnl += pnl;
     frame.dollar_delta += dollar_delta;
+    if (tenor_extrapolated) {
+      ++frame.n_tenor_extrapolated;
+    }
     aggregate_fingerprint = atx::core::hash_combine(aggregate_fingerprint, fingerprint);
   }
   if (frame.n_failed != 0u) {
@@ -1744,18 +1783,18 @@ Result<HistoricalVarResult> run_historical_var(const SurfaceDb &db,
     return Err(ErrorCode::Internal, "historical VaR: replay worker failed");
   }
 
-  // I3: aggregate the tenor-extrapolation telemetry evaluate_scenario/
-  // evaluate_scenario_batched already stamped per leg. Only meaningful when
-  // leg_frames were retained -- poisoned legs always carry diagnostic_flags
-  // == 0 (poison_leg resets the whole frame), so this never over-counts a
-  // failed leg.
-  if (config.retain_leg_frames) {
+  // I3 (review fix round 1): sum the per-scenario tallies both
+  // evaluate_scenario and evaluate_scenario_batched now stamp on
+  // VarScenarioFrame::n_tenor_extrapolated -- populated on EVERY route, not
+  // just when leg_frames are retained. result.frames is a fixed-size,
+  // scenario-index-ordered array each worker writes into by index (never
+  // appended), so summing it in ascending index order here is a
+  // deterministic, thread-count-invariant reduction: it depends on
+  // scenario order, never on which worker finished which scenario first.
+  {
     std::size_t extrapolated = 0u;
-    for (const VarLegFrame &leg : result.leg_frames) {
-      if ((leg.diagnostic_flags & (kDiagBaseTenorExtrapolated | kDiagShiftedTenorExtrapolated)) !=
-          0u) {
-        ++extrapolated;
-      }
+    for (const VarScenarioFrame &frame : result.frames) {
+      extrapolated += frame.n_tenor_extrapolated;
     }
     result.n_tenor_extrapolated_legs = extrapolated;
   }
