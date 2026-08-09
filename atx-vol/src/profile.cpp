@@ -8,6 +8,7 @@
 
 #include "atx/vol/profile.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <limits>
@@ -393,17 +394,42 @@ ProfileVerdict classify_profile(const ClassifierInputs &in) noexcept {
   int votes_illiquid = 0;
   int max_votes = 0;
 
-  // Quote-density tiers (research §2.1, Table 2).
-  if (in.n_live_quotes >= 4000u) {
+  // Quote-density tiers, PER EXPIRY (research §2.1, Table 2, renormalised).
+  //
+  // The ported tiers were absolute leg counts (4000/1500/500/100), which
+  // conflate "well quoted" with "lists many maturities": measured on OPRA the
+  // median expiry count runs 24 (mega/ETF), 16 (large), 12 (mid), 9 (small), so
+  // an absolute count reads a mid cap with a long ladder as denser than a mega
+  // cap with a short one. 3,000 legs over 30 expiries and 3,000 over 6 are not
+  // the same board and the absolute rule cannot tell them apart.
+  //
+  // The boundaries sit at the geometric midpoint between the measured median
+  // two-sided-legs-per-expiry of the liquidity tiers each one separates
+  // (1,544 board-sessions: S&P 100 4 sessions plus lqbench at both snapshot
+  // minutes) -- mega/ETF 157, large 77, mid 35, small 24, so 110 and 50 -- with
+  // the top and bottom boundaries quantile-matched to the absolute rule's own
+  // index-ETF and illiquid shares (4.7% and 11.0%), which no tier median
+  // anchors. Boundaries derived instead by quantile-matching all four shares
+  // give 199/94/40/15; the 40 was measured to be the wrong call, because it
+  // moves boards whose median relative spread is 45% into LiquidSingleName,
+  // whose SPY-derived `max_spread_vol = 0.05` then filters most of the board
+  // away. The tier-midpoint boundaries keep every tier's median board in the
+  // bucket the absolute rule gives it.
+  const std::uint32_t quoted_expiries = in.n_quoted_expiries > 0u ? in.n_quoted_expiries
+                                        : in.n_live_expiries > 0u ? in.n_live_expiries
+                                                                  : 1u;
+  const double quotes_per_expiry =
+      static_cast<double>(in.n_live_quotes) / static_cast<double>(quoted_expiries);
+  if (quotes_per_expiry >= 200.0) {
     ++votes_index_etf;
     ++max_votes;
-  } else if (in.n_live_quotes >= 1500u) {
+  } else if (quotes_per_expiry >= 110.0) {
     ++votes_mega_cap;
     ++max_votes;
-  } else if (in.n_live_quotes >= 500u) {
+  } else if (quotes_per_expiry >= 50.0) {
     ++votes_liquid;
     ++max_votes;
-  } else if (in.n_live_quotes >= 100u) {
+  } else if (quotes_per_expiry >= 15.0) {
     ++votes_ordinary;
     ++max_votes;
   } else {
@@ -411,7 +437,9 @@ ProfileVerdict classify_profile(const ClassifierInputs &in) noexcept {
     ++max_votes;
   }
 
-  // Median spread tier — tighter spreads => more liquid.
+  // Median spread tier — tighter spreads => more liquid. Negated so a dead
+  // board's sentinel (and any NaN) reads as maximally wide, not as tight.
+  const bool wide_book = !(in.median_spread_pct < 0.40);
   if (in.median_spread_pct < 0.02) {
     ++votes_index_etf;
     ++max_votes;
@@ -471,6 +499,24 @@ ProfileVerdict classify_profile(const ClassifierInputs &in) noexcept {
     kind = ProfileKind::IlliquidSmallCap;
   }
 
+  // A wide book vetoes the liquid buckets.
+  //
+  // The spread axis is the only one that measures execution quality directly,
+  // and when it says "illiquid" that vote is counted LAST above with a strict
+  // `>`, so it loses every tie to a more liquid bucket. Measured consequence:
+  // UVXY (41% median spread) classified LiquidSingleName and BKNG (40%, and it
+  // lists 0DTE) classified IndexEtfUltraLiquid -- both then had their entire
+  // board filtered away by a profile whose quote filter assumes a penny market
+  // (`max_spread_vol = 0.05`), and both returned "no expiry produced a usable
+  // slice". A board quoting 40% wide is at best ORDINARY whatever else it looks
+  // like. The vote still chooses freely between ordinary and illiquid, and the
+  // reported confidence becomes the ordinary bucket's own share, which is the
+  // truth: on a vetoed board the heuristics did NOT agree.
+  if (wide_book && kind != ProfileKind::IlliquidSmallCap) {
+    kind = ProfileKind::OrdinarySingleName;
+    best_votes = votes_ordinary;
+  }
+
   const double confidence =
       (max_votes > 0) ? static_cast<double>(best_votes) / static_cast<double>(max_votes) : 0.5;
   return {kind, confidence};
@@ -480,14 +526,33 @@ ClassifierInputs classifier_inputs_from_underlier(const Underlying &under) noexc
   // Aggregate quote-state across chains.
   std::uint32_t n_live = 0u;
   std::uint32_t n_atm = 0u;
+  std::uint32_t n_quoted_expiries = 0u;
+  std::uint32_t n_identifiable_expiries = 0u;
+  std::uint32_t max_near_money_strikes = 0u;
   bool has_zerodte = false;
   bool has_weeklies = false;
 
   constexpr std::size_t kSpreadBuf = 256u;
   std::array<double, kSpreadBuf> spreads{};
   std::uint32_t n_spreads = 0u;
+  // Stride-decimated sample of the relative spreads, in place of the reservoir
+  // that simply took the first `kSpreadBuf` two-sided legs. Chains arrive sorted
+  // ascending in T, so a prefix reservoir measures the FRONT of a large board,
+  // not the board: measured over 1,544 OPRA board-sessions the prefix median ran
+  // 20-35% WIDE of the true median at every liquidity tier (mega 0.067 vs 0.050,
+  // small 0.312 vs 0.279), because a front expiry is mostly cheap far-OTM legs
+  // whose relative spread is huge. Sampling every `stride`-th leg and doubling
+  // `stride` whenever the buffer fills keeps the sample uniform over the whole
+  // board -- hence over every expiry -- in one pass, with no allocation (this
+  // function is `noexcept` and runs per board on the fit path).
+  std::uint32_t stride = 1u;
+  std::uint32_t n_seen = 0u;
 
   const double S = (under.spot > 0.0) ? under.spot : 0.0;
+  // Near-money band as a price interval, so the per-strike test stays two
+  // comparisons: |ln(K/S)| <= b  <=>  S*exp(-b) <= K <= S*exp(b).
+  const double near_money_lo = S * std::exp(-kNearMoneyLogMoneyness);
+  const double near_money_hi = S * std::exp(kNearMoneyLogMoneyness);
   for (const Chain &c : under.chains) {
     if (c.T <= 0.0) {
       continue;
@@ -508,8 +573,12 @@ ClassifierInputs classifier_inputs_from_underlier(const Underlying &under) noexc
       continue;
     }
 
+    bool expiry_quoted = false;
+    std::uint32_t near_money_strikes = 0u;
     for (std::size_t s = 0; s < ns; ++s) {
       const double K = c.strikes[s];
+      const bool near_money = S > 0.0 && K >= near_money_lo && K <= near_money_hi;
+      bool strike_quoted = false;
       for (int side_i = 0; side_i < 2; ++side_i) {
         const Side side = static_cast<Side>(static_cast<std::uint8_t>(side_i));
         const std::size_t ix = chain_index(static_cast<std::uint16_t>(s), side);
@@ -519,21 +588,45 @@ ClassifierInputs classifier_inputs_from_underlier(const Underlying &under) noexc
           continue;
         }
         ++n_live;
-        if (S > 0.0 && K > 0.5 * S && K < 1.5 * S) {
+        expiry_quoted = true;
+        strike_quoted = true;
+        if (near_money) {
           ++n_atm;
         }
-        if (n_spreads < kSpreadBuf) {
-          const double mid = 0.5 * (bid + ask);
-          if (mid > 0.0) {
-            spreads[n_spreads] = (ask - bid) / mid;
-            ++n_spreads;
+        const double mid = 0.5 * (bid + ask);
+        if (mid > 0.0) {
+          if (n_seen % stride == 0u) {
+            if (n_spreads == kSpreadBuf) {
+              // Halve the sample, keeping every second entry, and double the
+              // stride: the buffer again holds legs 0, stride, 2*stride, ...
+              for (std::uint32_t i = 0u; 2u * i < n_spreads; ++i) {
+                spreads[i] = spreads[2u * i];
+              }
+              n_spreads = (n_spreads + 1u) / 2u;
+              stride *= 2u;
+            }
+            if (n_seen % stride == 0u) {
+              spreads[n_spreads] = (ask - bid) / mid;
+              ++n_spreads;
+            }
           }
+          ++n_seen;
         }
       }
+      if (near_money && strike_quoted) {
+        ++near_money_strikes;
+      }
     }
+    if (expiry_quoted) {
+      ++n_quoted_expiries;
+    }
+    if (near_money_strikes >= kMinIdentifiableSliceStrikes) {
+      ++n_identifiable_expiries;
+    }
+    max_near_money_strikes = std::max(max_near_money_strikes, near_money_strikes);
   }
 
-  // Cheap median estimate: insertion-sort the small reservoir. A board with no
+  // Cheap median estimate: insertion-sort the small sample. A board with no
   // two-sided quote has no spread to measure; 0.0 would be the TIGHTEST possible
   // value and would vote IndexEtfUltraLiquid, so a dead board must instead read as
   // maximally wide.
@@ -554,7 +647,10 @@ ClassifierInputs classifier_inputs_from_underlier(const Underlying &under) noexc
   ClassifierInputs in{};
   in.n_live_quotes = n_live;
   in.n_live_expiries = static_cast<std::uint32_t>(under.chains.size());
+  in.n_quoted_expiries = n_quoted_expiries;
   in.n_atm_quotes = n_atm;
+  in.n_identifiable_expiries = n_identifiable_expiries;
+  in.max_near_money_strikes = max_near_money_strikes;
   in.median_spread_pct = median_spread;
   in.has_zerodte = has_zerodte;
   in.has_weeklies = has_weeklies;

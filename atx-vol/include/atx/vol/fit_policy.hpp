@@ -18,6 +18,11 @@
 
 namespace atx::vol {
 
+// Distinct near-money strikes a single expiry must carry before C8's eight free
+// parameters are identified on it: eight to pin them plus two so the slice is
+// fitted rather than interpolated.
+inline constexpr std::uint32_t kC8MinSliceStrikes = 10u;
+
 enum class FitSelectionMode : std::uint8_t {
   Auto = 0,           // profile-first; held-out validation only when ambiguous
   CrossValidated = 1, // always run the held-out curve selector
@@ -62,12 +67,26 @@ struct FitPolicyConfig {
   // A low-confidence liquid/ordinary classification is validated out of sample.
   double min_direct_confidence{0.70};
   bool validate_ambiguous{true};
-  // Below this many live quote legs a board is "thin", with two consequences: a
-  // board-voted verdict cannot support a useful even/odd holdout (route it
-  // directly to the parsimonious SVI family instead of paying for a doomed
-  // validation pass), and no board -- however confidently classified -- can
-  // identify C8's eight free parameters.
-  std::uint32_t sparse_validation_floor{600};
+  // Dead-board backstop for the identifiability demotion: the minimum number of
+  // two-sided NEAR-THE-MONEY legs (|ln(K/S)| <= kNearMoneyLogMoneyness) a board
+  // must carry before its own vote is trusted.
+  //
+  // NOTE THE UNIT. This was a floor of 600 on the board's TOTAL two-sided leg
+  // count, which is a strike-count test wearing a liquidity test's name: it
+  // demoted 49% of the lqbench universe and 8.7% of the S&P 100 -- DUK, KHC,
+  // SYK, AMT, CMCSA, T, CL, SO, MO, BMY, dividend-heavy mega caps with short
+  // strike ladders. Counted near the money the same names clear it by an order
+  // of magnitude (the thinnest S&P 100 board carries 121 near-money nodes), and
+  // the structural arm below does the discriminating.
+  //
+  // Zero disables the demotion outright -- the documented "route on the board's
+  // own vote whatever the board looks like" switch.
+  std::uint32_t sparse_validation_floor{24};
+  // How many expiries must independently identify a smile (each carrying at
+  // least `kMinIdentifiableSliceStrikes` distinct near-money strikes) before the
+  // board is routed on its own vote. One is enough to fit a slice; the calendar
+  // dimension is the fitter's problem, not the classifier's.
+  std::uint32_t min_identifiable_expiries{1};
   // Adaptive knot budget for the dense index/ETF HFT route. The cap is a
   // calibration input rather than a curve-local field, so PricerFitter applies it
   // when materializing SessionInputs -- and an explicit PricerConfig

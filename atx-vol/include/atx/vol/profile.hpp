@@ -170,14 +170,49 @@ struct Profile {
 
 // ── Classifier ───────────────────────────────────────────────────────────
 
+// ── Near-money geometry (the identifiability features) ───────────────────
+//
+// Half-width of the near-the-money band, in log-moneyness |ln(K/S)|.
+//
+// Symmetric in k on purpose. The band this replaces was written in price as
+// `0.5*S < K < 1.5*S`, i.e. k in (-0.693, +0.405) — it reached 70% further down
+// than up, so "near the money" meant something different on each wing. 0.40
+// keeps the strikes a smile is actually identified from and drops the deep
+// wings, whose vega is small enough that the quoted spread dominates them.
+inline constexpr double kNearMoneyLogMoneyness = 0.40;
+
+// Distinct near-money strikes one expiry must carry before its smile is
+// identified: level, skew and curvature are three parameters, and the fourth
+// strike leaves one residual degree of freedom, so the slice is fitted rather
+// than interpolated.
+//
+// Calibrated, not assumed: on 216 lqbench boards fitted with the guard disabled,
+// EVERY board whose best expiry carried fewer than four near-money strikes came
+// back with a mean vol RMSE of 0.115–0.61, against a corpus median of 0.038, and
+// all four boards above 0.15 were in that set.
+inline constexpr std::uint32_t kMinIdentifiableSliceStrikes = 4u;
+
 // Inputs the heuristic classifier consumes (ports `AtsVolClassifierInputs`).
 // All "rolling" metrics are supplied by the caller — the classifier keeps no
 // window. It is policy-free: same inputs in, same kind out.
 struct ClassifierInputs {
   std::uint32_t n_live_quotes{0u};
   std::uint32_t n_live_expiries{0u};
-  std::uint32_t n_atm_quotes{0u}; // quote count inside |k_log| < 0.05
-  double median_spread_pct{0.0};  // (ask-bid)/mid, median across active
+  // Expiries carrying at least one two-sided leg. Quote density is voted on
+  // per expiry (`n_live_quotes / n_quoted_expiries`), so a board with a long
+  // maturity ladder is not mistaken for a densely quoted one. Falls back to
+  // `n_live_expiries` when a caller leaves it unset.
+  std::uint32_t n_quoted_expiries{0u};
+  // Two-sided legs inside `kNearMoneyLogMoneyness` of the money.
+  std::uint32_t n_atm_quotes{0u};
+  // Expiries carrying at least `kMinIdentifiableSliceStrikes` DISTINCT
+  // near-money strikes with a two-sided quote. Strikes, not legs: a call and a
+  // put on the same strike are one point of the smile, not two.
+  std::uint32_t n_identifiable_expiries{0u};
+  // The deepest single expiry's distinct near-money strike count — the model
+  // capacity any one slice can support.
+  std::uint32_t max_near_money_strikes{0u};
+  double median_spread_pct{0.0}; // (ask-bid)/mid, median across active
   bool has_zerodte{false};
   bool has_weeklies{false};
   bool htb_flag{false};                  // kUflagHtb on the underlier
