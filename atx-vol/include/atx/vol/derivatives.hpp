@@ -223,11 +223,16 @@ enum class CarrLeeForm : std::uint8_t {
 };
 
 // Which numerical scheme `deriv_greeks` uses for delta / gamma / vega / vanna
-// / volga (Task P-4, GK-P). Theta / theta_carry / theta_zero_fixing / charm
-// are UNAFFECTED by this knob -- each rolls `contract.maturity_t` and so
-// prices "genuinely new information" a closed form cannot shortcut (see
+// / volga (Task P-4, GK-P). Theta / theta_carry / theta_zero_fixing are
+// UNAFFECTED by this knob -- each rolls `contract.maturity_t` and so prices
+// "genuinely new information" a closed form cannot shortcut (see
 // `DerivGreekBumps::method`'s own doc) -- and rho is ALREADY the closed form
-// `-T*PV` on every path regardless (Task P-2, GK-C3).
+// `-T*PV` on every path regardless (Task P-2, GK-C3). charm IS affected
+// (Review fix round 2, I-2): it differences an FD-rolled delta at `T - dt`
+// (method-independent) against `g.delta` AT `T`, which IS the value this
+// knob selects -- see `deriv_greeks`'s own charm comment, derivatives.cpp,
+// and `AnalyticGreeks.*`'s charm gate, deriv_greeks_test.cpp, for the
+// measured magnitude (small: ~3.7e-4 relative on the skew-unaged fixture).
 //
 //   FiniteDifference -> every affected greek comes from a bumped repricing
 //               through `deriv_price` (the pre-P-4 behaviour, unchanged bit

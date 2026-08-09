@@ -134,11 +134,12 @@
 //
 //   q_i'(0) = vega_i * sigma'(x_i) / K_i(0)
 //
-// `c_i*K_i(0)` cancels exactly ONE of c_i's two `1/K_i` factors (c_i =
-// w_i*dx/(3*df*K_i(0))), leaving the second one carried by q_i'(0) itself --
-// Review fix round 1, I-1: this line previously dropped that surviving
-// `1/K_i`, which the code (`inv_dfk = 1/(df*K)`, applied once per node) never
-// did:
+// The product `c_i*K_i(0)*q_i'(0)` carries TWO `1/K_i` factors -- one from
+// c_i (c_i = w_i*dx/(3*df*K_i(0))) and one from q_i'(0) itself, above.
+// Multiplying by K_i(0) cancels only c_i's; q_i'(0)'s own `1/K_i(0)`
+// survives into the final line -- Review fix round 1, I-1 / round 2, N-1:
+// this line previously dropped that surviving `1/K_i`, which the code
+// (`inv_dfk = 1/(df*K)`, applied once per node) never did:
 //
 //   dK_var/du = (2/T) * sum_i c_i * K_i * q_i'(0)
 //             = (2/T) * sum_i [w_i*dx/3 / (df*K_i)] * vega_i * sigma'(x_i)
@@ -196,9 +197,11 @@
 //
 //   q_i''(0) = [vega_i*sigma''(x_i) + volga_i*sigma'(x_i)^2] / K_i(0)
 //
-// As in delta's derivation above, `c_i*K_i(0)` cancels only ONE of c_i's two
-// `1/K_i` factors -- the second survives inside q_i''(0) itself (Review fix
-// round 1, I-1: this line previously dropped it):
+// As in delta's derivation above, `c_i*K_i(0)*q_i''(0)` carries two `1/K_i`
+// factors -- one from c_i, one from q_i''(0) itself; multiplying by K_i(0)
+// cancels only c_i's, and q_i''(0)'s own `1/K_i(0)` survives into the final
+// line (Review fix round 1, I-1 / round 2, N-1: this line previously
+// dropped it):
 //
 //   d^2 K_var / du^2 = (2/T) * sum_i c_i * K_i * q_i''(0)
 //                    = (2/T) * sum_i [w_i*dx/3/(df*K_i)] *
@@ -230,9 +233,11 @@
 //           = [vega_i'(u) - vega_i(u)] / K_i(u) = volga_i(u)*sigma_i'(u)/K_i(u)
 //
 // dK_var/dv, as a function of u (vega_Kvar(u) = (2/T)*sum_i c_i*K_i*r_i(u)),
-// differentiated once more in u at u = 0 gives -- again, `c_i*K_i(0)` cancels
-// only ONE of c_i's two `1/K_i` factors, the second surviving inside r_i'(0)
-// itself (Review fix round 1, I-1: this line previously dropped it):
+// differentiated once more in u at u = 0 gives -- again, `c_i*K_i(0)*r_i'(0)`
+// carries two `1/K_i` factors, one from c_i and one from r_i'(0) itself;
+// multiplying by K_i(0) cancels only c_i's, and r_i'(0)'s own survives into
+// the final line (Review fix round 1, I-1 / round 2, N-1: this line
+// previously dropped it):
 //
 //   d^2K_var/(du dv) = (2/T) * sum_i c_i * K_i * r_i'(0)
 //                    = (2/T) * sum_i [w_i*dx/3/(df*K_i)] * volga_i*sigma'(x_i)

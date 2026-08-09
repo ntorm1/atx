@@ -213,11 +213,18 @@ void BM_DerivGreeks_Standard_PricedSurface(benchmark::State &state) {
 // come from the closed form (deriv_analytic_greeks.hpp) instead of the up-to
 // -8 spot/vol bump repricings `eval_bump_table` would otherwise pay for
 // (`skip_market_bumps`, derivatives.cpp); theta/theta_carry/theta_zero_
-// fixing/charm/rho are unaffected by the method and cost exactly what they
-// already did. Paired against the FD case above -- same binary, only the
-// bumps struct differs -- for the Task P-4 A/B measurement (no env-var seam
-// needed: `method` is an ordinary runtime config field, not a compiled-in
-// choice).
+// fixing/charm cost exactly what they already did either way (their own
+// evaluations never route through the closed form -- `DerivGreekMethod`'s
+// own doc, derivatives.hpp), and rho is already the P-2 closed form on
+// every path regardless. Review fix round 2, I-2: charm's COST is
+// unaffected by the knob but its VALUE is not -- it differences the same
+// FD-rolled delta against `g.delta`, which the knob does select -- this
+// bench case does not read `charm`, so the distinction does not change
+// anything measured here.
+//
+// Paired against the FD case above -- same binary, only the bumps struct
+// differs -- for the Task P-4 A/B measurement (no env-var seam needed:
+// `method` is an ordinary runtime config field, not a compiled-in choice).
 void BM_DerivGreeks_Analytic_PricedSurface(benchmark::State &state) {
   const PricedSurface &ps = skewed_surface();
   const DerivContract contract = skewed_var_swap_contract();
