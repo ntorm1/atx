@@ -40,6 +40,15 @@ struct BevDayState {
   double q_eff{0.0};     // effective carry to expiry (borrow + div yield proxy)
 };
 
+// Drift pin (M6): BevDayState has exactly FOUR fields. `load_bev_path`
+// (breakeven.cpp) constructs it positionally -- this pin exists so a future
+// field INSERTED between existing ones (not appended) turns red at compile
+// time instead of silently rebinding that positional call to the wrong slots.
+static_assert(detail::aggregate_arity_is_v<BevDayState, 4>,
+              "BevDayState field count changed: update this pin, and confirm "
+              "load_bev_path's positional BevDayState{...} construction still "
+              "matches field order.");
+
 // The single option being replayed: one unit contract, long, of `side` at
 // `strike`, expiring at `expiry_ns`.
 struct BevSpec {
@@ -47,6 +56,14 @@ struct BevSpec {
   std::int64_t expiry_ns{0};
   Side side{Side::Call};
 };
+
+// Drift pin (M6): BevSpec has exactly THREE fields -- see BevDayState's pin
+// above for the rationale. Construction sites use designated initializers
+// (e.g. bev_label_factory.cpp); this pin catches a field INSERTED (not
+// appended) before every site is confirmed to still use them.
+static_assert(detail::aggregate_arity_is_v<BevSpec, 3>,
+              "BevSpec field count changed: update this pin, and confirm "
+              "every construction site still uses designated initializers.");
 
 // Replay knobs. DESIGNATED INITIALIZERS ONLY (mirrors `AlOpts`'s construction
 // contract, american.hpp ~:51-66): construct as
@@ -313,6 +330,24 @@ struct BevPath {
   bool snapped{false};           // true iff settle_ts_ns != the requested expiry_ns
 };
 
+namespace detail {
+
+// M3/item 6: the "every s > 0" postcondition check `load_bev_path`'s push
+// loop enforces per session, factored out so it can be unit-tested directly.
+// `atx::vol::detail`: no stability promise, not part of the frozen umbrella
+// (same convention as `aggregate_arity.hpp`) -- exposed ONLY because a
+// corrupted-S session cannot currently be driven through `load_bev_path` via
+// any real, on-disk-loaded `Clock`/`MarketSnapshot`: both archive-record
+// readers (`PricedSurface::create`, `priced_surface.cpp`;
+// `PricedSurfaceView::create_over_record`, `priced_surface_view.cpp`) already
+// reject a non-finite/non-positive spot at LOAD time, so `MarketSnapshot::
+// load` itself fails first and this predicate never actually fires end to
+// end today -- defense in depth against a failure mode the archive readers
+// already close off upstream, tested at the predicate level instead.
+[[nodiscard]] Status bev_day_spot_is_valid(double s, std::int64_t ts_ns);
+
+} // namespace detail
+
 // Build a per-session `BevDayState` path for `uid` (an underlying SYMBOL,
 // resolved against each loaded session's own SurfaceSet via
 // `MarketSnapshot::uid_of`) spanning `entry_ts_ns` through the settlement
@@ -344,6 +379,10 @@ struct BevPath {
 //     surface for `uid` (via `uid_of` + `find`): `NotFound`, naming the
 //     session's `ts_ns` -- a silent hole in the path would corrupt the label
 //     with no trace.
+//   * a session whose resolved `surf.pricing().S` is non-finite or <= 0:
+//     `InvalidArgument`, naming the session's `ts_ns` -- enforces the "every
+//     `s > 0`" postcondition below at the source rather than letting a bad
+//     spot ride silently into `days` and fail opaquely much later.
 //   * fewer than two sessions assemble (`BevPath::days.size() < 2`): the
 //     replay needs at least entry + settlement: `InvalidArgument`.
 //   * any `MarketSnapshot::load` failure propagates unchanged.

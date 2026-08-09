@@ -237,6 +237,10 @@ constexpr double kTenorProbeYears = 1.0 / 365.25;
 
 // One surviving candidate: a strike/side/expiry job plus everything the TSV
 // row needs that solve_breakeven_batch's SoA frame does not itself carry.
+// `path_idx` indexes `owned_paths` (I1: every candidate for one entry date
+// shares the SAME loaded path, since load_bev_path's arguments never depend
+// on delta target or side -- `owned_paths` therefore has one entry per entry
+// date, not one per pending job, so this is an indirection rather than `i`).
 struct PendingJob {
   std::int64_t entry_ts_ns{0};
   double strike{0.0};
@@ -244,6 +248,7 @@ struct PendingJob {
   Side side{Side::Call};
   double sigma_entry_iv{0.0};
   bool snapped{false};
+  std::size_t path_idx{0};
 };
 
 struct RunCounters {
@@ -280,15 +285,48 @@ struct RunCounters {
 }
 
 // Build every surviving (strike, side) candidate for one entry date, loading
-// its replay path (Task 5) and appending to `pending`/`owned_paths` (index-
-// aligned). Soft failures (unreachable delta, invalid iv, path load failure)
-// skip just that candidate; nothing here is fatal to the whole run.
+// its replay path (Task 5) and appending to `pending` (each entry's
+// `path_idx` points into `owned_paths`, NOT index-aligned with `pending` --
+// see PendingJob's comment). Soft failures (unreachable delta, invalid iv,
+// path load failure) skip just that candidate; nothing here is fatal to the
+// whole run.
 void collect_entry_date_jobs(const Clock &full_clock, const BevFactoryArgs &args,
                              const PricedSurface &surf, std::int64_t entry_ts_ns, double T,
-                             RunCounters &counters, std::vector<PendingJob> &pending,
-                             std::vector<BevPath> &owned_paths) {
+                             std::string_view entry_date, RunCounters &counters,
+                             std::vector<PendingJob> &pending, std::vector<BevPath> &owned_paths) {
   const auto nominal_expiry_ns =
       entry_ts_ns + static_cast<std::int64_t>(std::llround(T * kNsPerYear));
+
+  // I1: every argument to load_bev_path below (full_clock aside) is invariant
+  // across the whole delta*side candidate lattice below -- target/side never
+  // influence entry_ts_ns/nominal_expiry_ns. Call it ONCE per entry date and
+  // share the resulting BevPath across every surviving candidate's BevJob,
+  // rather than up to 2*(1/kDeltaGridStep + 1) times with byte-identical
+  // arguments (38 at the documented default --delta-lo 0.05 --delta-hi 0.95).
+  // `full_clock.between(entry_date, ...)` date-bounds the walk to [this entry
+  // date, corpus end] so load_bev_path does not re-open (MarketSnapshot::load)
+  // every archive from the start of the WHOLE corpus on every entry date just
+  // to skip past ts < entry_ts_ns -- the upper bound is left at the corpus's
+  // own last date (rather than an exact expiry-date bound, which would need a
+  // ts_ns->date conversion this driver has no utility for) because
+  // load_bev_path's own walk already breaks as soon as it sees a session past
+  // expiry_ns, so bounding the top further would save at most one archive
+  // open. `entry_date` is already the exact partition key `entry_ts_ns` was
+  // read from (the caller's own `SnapshotRef::date`), so this cannot exclude
+  // the entry session itself.
+  std::optional<std::size_t> path_idx;
+  {
+    const Result<Clock> bounded_clock =
+        full_clock.between(entry_date, full_clock.refs().back().date);
+    if (bounded_clock.has_value()) {
+      Result<BevPath> path = load_bev_path(*bounded_clock, args.uid, entry_ts_ns, nominal_expiry_ns,
+                                           kTenorProbeYears, BevExpirySnap::LastSessionAtOrBefore);
+      if (path.has_value()) {
+        path_idx = owned_paths.size();
+        owned_paths.push_back(std::move(*path));
+      }
+    }
+  }
 
   const int lo_i = static_cast<int>(std::ceil(args.delta_lo / kDeltaGridStep - 1e-9));
   const int hi_i = static_cast<int>(std::floor(args.delta_hi / kDeltaGridStep + 1e-9));
@@ -320,19 +358,18 @@ void collect_entry_date_jobs(const Clock &full_clock, const BevFactoryArgs &args
         ++counters.n_candidates_prebuild_skipped; // can't produce a target
         continue;
       }
-      Result<BevPath> path = load_bev_path(full_clock, args.uid, entry_ts_ns, nominal_expiry_ns,
-                                           kTenorProbeYears, BevExpirySnap::LastSessionAtOrBefore);
-      if (!path.has_value()) {
-        ++counters.n_candidates_prebuild_skipped;
+      if (!path_idx.has_value()) {
+        ++counters.n_candidates_prebuild_skipped; // shared path (I1) failed to load
         continue;
       }
+      const BevPath &loaded = owned_paths[*path_idx];
       pending.push_back(PendingJob{.entry_ts_ns = entry_ts_ns,
                                    .strike = *k,
-                                   .expiry_ns = path->settle_ts_ns,
+                                   .expiry_ns = loaded.settle_ts_ns,
                                    .side = side,
                                    .sigma_entry_iv = sigma_entry_iv,
-                                   .snapped = path->snapped});
-      owned_paths.push_back(std::move(*path));
+                                   .snapped = loaded.snapped,
+                                   .path_idx = *path_idx});
     }
   }
 }
@@ -490,18 +527,21 @@ std::string fmt_num(double v) {
       ++counters.n_entry_dates_skipped;
       continue;
     }
-    collect_entry_date_jobs(full_clock, args, *surf, *entry_ts_ns, *T, counters, pending,
+    collect_entry_date_jobs(full_clock, args, *surf, *entry_ts_ns, *T, ref.date, counters, pending,
                             owned_paths);
   }
 
   // Build the batch's job spans only once every path is stable in
   // `owned_paths` -- BevJob::path/dividends are non-owning, so nothing may
-  // reference `owned_paths[i].days` before that vector's final contents (and
-  // therefore each element's OWN heap-backed `days` buffer) are settled.
+  // reference an `owned_paths[...].days` buffer before that vector's final
+  // contents (and therefore each element's OWN heap-backed `days` buffer) are
+  // settled. `pending[i].path_idx` indexes `owned_paths` (I1: every candidate
+  // for one entry date shares the SAME loaded path, so `owned_paths` has one
+  // entry per entry date, not one per pending job -- `i` would be wrong).
   std::vector<BevJob> jobs;
   jobs.reserve(pending.size());
   for (std::size_t i = 0; i < pending.size(); ++i) {
-    jobs.push_back(BevJob{.path = owned_paths[i].days,
+    jobs.push_back(BevJob{.path = owned_paths[pending[i].path_idx].days,
                           .spec = BevSpec{.strike = pending[i].strike,
                                           .expiry_ns = pending[i].expiry_ns,
                                           .side = pending[i].side},

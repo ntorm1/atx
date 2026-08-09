@@ -28,16 +28,39 @@ namespace {
 // statically-visible cap, independent of `sigma_tol` or path length.
 constexpr std::uint8_t kBevMaxSolveIter = 40;
 
+// M7: the four-clause BevSolveConfig validation predicate, shared by
+// solve_breakeven_vol and solve_breakeven_batch (which validates `cfg` once,
+// batch-wide, before touching any job or spawning a worker -- see its own
+// call site). `caller` names the entry point in the error message, matching
+// each site's previous (pre-extraction) message text exactly.
+[[nodiscard]] Status validate_bev_solve_cfg(const BevSolveConfig &cfg, std::string_view caller) {
+  if (!(cfg.sigma_lo > 0.0) || !(cfg.sigma_hi > 0.0) || !(cfg.sigma_lo < cfg.sigma_hi) ||
+      !(cfg.sigma_tol > 0.0)) {
+    return Err(ErrorCode::InvalidArgument,
+               std::string(caller) + ": sigma_lo/sigma_hi/sigma_tol out of range");
+  }
+  return Ok();
+}
+
 } // namespace
+
+namespace detail {
+
+Status bev_day_spot_is_valid(double s, std::int64_t ts_ns) {
+  if (!std::isfinite(s) || !(s > 0.0)) {
+    return Err(ErrorCode::InvalidArgument,
+               "load_bev_path: non-finite/non-positive spot (S=" + std::to_string(s) +
+                   ") at ts_ns=" + std::to_string(ts_ns));
+  }
+  return Ok();
+}
+
+} // namespace detail
 
 Result<BevLabel> solve_breakeven_vol(std::span<const BevDayState> path, const BevSpec &spec,
                                      std::span<const DividendEvent> dividends,
                                      const BevSolveConfig &cfg) {
-  if (!(cfg.sigma_lo > 0.0) || !(cfg.sigma_hi > 0.0) || !(cfg.sigma_lo < cfg.sigma_hi) ||
-      !(cfg.sigma_tol > 0.0)) {
-    return Err(ErrorCode::InvalidArgument,
-               "solve_breakeven_vol: sigma_lo/sigma_hi/sigma_tol out of range");
-  }
+  ATX_TRY_VOID(validate_bev_solve_cfg(cfg, "solve_breakeven_vol"));
 
   ATX_TRY(const BevReplayResult r_lo,
           bev_replay_pnl(path, spec, cfg.sigma_lo, dividends, cfg.replay));
@@ -110,11 +133,7 @@ Result<BevLabelFrame> solve_breakeven_batch(std::span<const BevJob> jobs, const 
   // configuration error (mirrors solve_breakeven_vol's own upfront
   // validation) rather than a per-job rejection: fail closed before touching
   // the frame or spawning any worker.
-  if (!(cfg.sigma_lo > 0.0) || !(cfg.sigma_hi > 0.0) || !(cfg.sigma_lo < cfg.sigma_hi) ||
-      !(cfg.sigma_tol > 0.0)) {
-    return Err(ErrorCode::InvalidArgument,
-               "solve_breakeven_batch: sigma_lo/sigma_hi/sigma_tol out of range");
-  }
+  ATX_TRY_VOID(validate_bev_solve_cfg(cfg, "solve_breakeven_batch"));
 
   const std::size_t n = jobs.size();
   BevLabelFrame frame;
@@ -223,13 +242,22 @@ Result<BevPath> load_bev_path(const Clock &clock, std::string_view uid, std::int
                                           "' at ts_ns=" + std::to_string(ts));
     }
 
+    // M3/item 6: enforce the "every s > 0" postcondition breakeven.hpp
+    // documents rather than letting a zero/NaN spot (a bad fit, a truncated
+    // archive) ride silently into `days` -- the failure would otherwise
+    // surface much later as an opaque solver error with no session timestamp
+    // in it, or (in the batch runner) as a bare status_ok[j] = 0 with no
+    // diagnostic at all. Named in the style of the NotFound branch above.
+    const double session_s = surf.pricing().S;
+    ATX_TRY_VOID(detail::bev_day_spot_is_valid(session_s, ts));
+
     // Per-day carry: remaining tenor from THIS session to the REQUESTED
     // expiry_ns (not the possibly-snapped settle), ACT/365.25 -- the "carry
     // errors masquerade as skew" guard, re-probed every session rather than
     // once at entry.
     const double t_rem = static_cast<double>(expiry_ns - ts) / kNsPerYear;
     const double q_eff = surf.q_eff_at(std::fmax(t_rem, tenor_probe_years));
-    days.push_back(BevDayState{ts, surf.pricing().S, surf.pricing().r, q_eff});
+    days.push_back(BevDayState{ts, session_s, surf.pricing().r, q_eff});
 
     if (ts == expiry_ns) {
       settle_ts_ns = ts;

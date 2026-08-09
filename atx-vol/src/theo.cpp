@@ -674,6 +674,16 @@ private:
     if (!std::isfinite(log_moneyness)) {
       return false;
     }
+    // M4: features 3/4 are contractually rv_21d/rv_63d (kFairVolFeatureSchemaV1,
+    // theo.hpp), but `RvPanel::window` is a public, caller-settable field
+    // (realized_vol.hpp) -- `realized_vol_panel` happens to always populate
+    // the default {5,21,63,252} windows today, but nothing enforces that a
+    // caller handing this overlay a `TheoContext::rv` built some other way
+    // used the windows the model expects. Degrade to ModelMissing rather than
+    // silently feeding the model whatever vol lives at slots 1/2.
+    if (ctx.rv->window[1] != 21 || ctx.rv->window[2] != 63) {
+      return false;
+    }
     const double rv_21d = ctx.rv->vol[1];
     const double rv_63d = ctx.rv->vol[2];
     if (!std::isfinite(rv_21d) || !std::isfinite(rv_63d)) {

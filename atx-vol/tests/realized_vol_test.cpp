@@ -65,5 +65,36 @@ TEST(RealizedVol, PanelWindowsAreTrailingAndOrdered) {
   for (double v : p->vol) EXPECT_TRUE(std::isfinite(v) && v > 0.05 && v < 0.60);
 }
 
+// Item 1 / M2: a 1-bar history can't form a return term for ANY window (all
+// four are >= 2), so every slot degrades to the per-slot NaN flag rather than
+// the whole panel failing -- CloseToClose, the estimator the shipped backtest
+// example actually drives this with (TheoEdgeSignalStrategy::signals(), on
+// every step starting at bars_.size() == 1).
+TEST(RealizedVol, PanelOneBarHistoryIsAllNaNSlots) {
+  const auto bars = synth_gbm_bars(0.20, 1, 11u);
+  const auto p = realized_vol_panel(bars, RvEstimator::CloseToClose);
+  ASSERT_TRUE(p.has_value());
+  for (double v : p->vol)
+    EXPECT_TRUE(std::isnan(v));
+}
+
+// Item 1 / M2: a 3-bar history is >= 2 for every window, so no slot flags
+// NaN -- but every window (5, 21, 63, 252) exceeds 3 bars, so every slot's
+// trailing slice silently falls back to the SAME whole 3-bar span. All four
+// vols come out identical even though window[1]/[2] are still labelled 21d/
+// 63d -- the undisclosed mislabeling the review named (a short real history
+// blends against a 2-3 day realized vol labelled 21-day).
+TEST(RealizedVol, PanelThreeBarHistoryFallsBackToWholeSpanForEveryWindow) {
+  const auto bars = synth_gbm_bars(0.20, 3, 12u);
+  const auto p = realized_vol_panel(bars, RvEstimator::CloseToClose);
+  ASSERT_TRUE(p.has_value());
+  const auto direct = realized_vol(bars, RvEstimator::CloseToClose);
+  ASSERT_TRUE(direct.has_value());
+  for (std::size_t i = 0; i < p->vol.size(); ++i) {
+    EXPECT_TRUE(std::isfinite(p->vol[i])) << "slot " << i;
+    EXPECT_DOUBLE_EQ(p->vol[i], *direct) << "slot " << i;
+  }
+}
+
 }  // namespace
 }  // namespace atx::vol

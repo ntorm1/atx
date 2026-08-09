@@ -35,9 +35,9 @@
 
 #include <gtest/gtest.h>
 
-#include "atx/vol/american.hpp" // al_fast_opts, AmericanMethod
-#include "atx/vol/event_vol.hpp" // EventSchedule, censored_total_variance, event_recombined_vol, count_events_at
-#include "atx/vol/panel.hpp" // make_synthetic_american_panel, SynthPanelSpec
+#include "atx/vol/american.hpp"  // al_fast_opts, AmericanMethod
+#include "atx/vol/event_vol.hpp" // EventSchedule, count_events_at
+#include "atx/vol/panel.hpp"     // make_synthetic_american_panel, SynthPanelSpec
 #include "atx/vol/priced_surface.hpp"
 #include "atx/vol/query_pricing.hpp"  // QueryPricingTier
 #include "atx/vol/realized_vol.hpp"   // RvPanel
@@ -841,6 +841,31 @@ TEST_F(TheoEngineTest, RvBlendOutOfRangeWindowIdxSetsModelMissing) {
   EXPECT_NE(v->flags & static_cast<std::uint32_t>(TheoFlagBits::ModelMissing), 0u);
 }
 
+// Item 1 / M2: a finite RvPanel whose SELECTED slot is NaN -- exactly the
+// shape `realized_vol_panel` returns for a short history (see
+// RealizedVol.PanelOneBarHistoryIsAllNaNSlots, realized_vol_test.cpp) --
+// pins the untested three-link chain the review named: panel len<2 -> per-
+// slot NaN -> Ok(panel) -> adjust_one's !isfinite(rv_anchor) -> ModelMissing.
+// `TheoEdgeSignalStrategy::signals()` hits exactly this on its very first
+// recorded step (bars_.size() == 1).
+TEST_F(TheoEngineTest, RvBlendNonFiniteSelectedSlotSetsModelMissingAndZeroEdge) {
+  RvPanel rv{};
+  rv.vol = {0.10, std::numeric_limits<double>::quiet_NaN(), 0.30, 0.40};
+  auto overlay = make_rv_blend_overlay(RvBlendConfig{.rv_window_idx = 1});
+  ASSERT_TRUE(overlay.has_value()) << overlay.error().to_string();
+  std::vector<std::unique_ptr<ITheoOverlay>> overlays;
+  overlays.push_back(std::move(*overlay));
+  auto engine = TheoEngine::create(std::move(overlays));
+  ASSERT_TRUE(engine.has_value()) << engine.error().to_string();
+  const TheoContext ctx{.surface = &*surface_, .rv = &rv};
+  const TheoQuery q{.strike = 600.0, .tenor_years = surface_->context()[1].T, .side = Side::Call};
+
+  const auto v = engine->value(ctx, q);
+  ASSERT_TRUE(v.has_value()) << v.error().to_string();
+  EXPECT_DOUBLE_EQ(v->edge_vol, 0.0);
+  EXPECT_NE(v->flags & static_cast<std::uint32_t>(TheoFlagBits::ModelMissing), 0u);
+}
+
 TEST_F(TheoEngineTest, MakeRvBlendOverlayRejectsNonFiniteWeight) {
   const auto overlay =
       make_rv_blend_overlay(RvBlendConfig{.weight = std::numeric_limits<double>::quiet_NaN()});
@@ -1166,6 +1191,29 @@ TEST_F(TheoEngineTest, FairVolModelMissingEventsContextSetsModelMissingAndZeroEd
   EXPECT_NE(v->flags & static_cast<std::uint32_t>(TheoFlagBits::ModelMissing), 0u);
 }
 
+// M4: build_features hard-codes ctx.rv->vol[1]/[2] as rv_21d/rv_63d, but
+// RvPanel::window is a public, caller-settable field (realized_vol.hpp) --
+// nothing upstream of the overlay enforces window[1] == 21 / window[2] == 63.
+// A panel built with different windows must degrade to ModelMissing rather
+// than silently feed the model whatever vol lives at those slots.
+TEST_F(TheoEngineTest, FairVolModelMismatchedRvWindowSetsModelMissingAndZeroEdge) {
+  const std::array<double, kFairVolFeatureCount> coefs{};
+  auto fixture = make_fair_vol_model_fixture(0.0, coefs);
+  ASSERT_TRUE(fixture.has_value());
+
+  RvPanel rv{};
+  rv.vol = {0.20, 0.22, 0.24, 0.26};
+  rv.window = {10, 30, 90, 252}; // NOT the model's expected {*, 21, 63, *}
+  EventSchedule events(std::vector<std::int64_t>{});
+  const TheoContext ctx{.surface = &*surface_, .events = &events, .rv = &rv};
+  const TheoQuery q{.strike = 600.0, .tenor_years = surface_->context()[1].T, .side = Side::Call};
+
+  const auto v = fixture->engine.value(ctx, q);
+  ASSERT_TRUE(v.has_value()) << v.error().to_string();
+  EXPECT_DOUBLE_EQ(v->edge_vol, 0.0);
+  EXPECT_NE(v->flags & static_cast<std::uint32_t>(TheoFlagBits::ModelMissing), 0u);
+}
+
 // Bonus: a file with no "# schema=<n>" line anywhere is refused, ParseError
 // (distinct from a present-but-wrong schema, which is (c) above).
 TEST_F(TheoEngineTest, LoadLinearFairVolModelRejectsMissingSchemaHeader) {
@@ -1325,7 +1373,7 @@ public:
 // boundary silently drifting, or overlays being invoked per-query instead of
 // per-chunk) would change this count even though value_into's own return
 // status stays Ok.
-TEST_F(TheoEngineTest, ValueIntoDoesNotAllocatePerQuery) {
+TEST_F(TheoEngineTest, ValueIntoCallsOverlaysOncePerChunk) {
   auto counting = std::make_unique<CountingOverlay>();
   const CountingOverlay *counting_ptr = counting.get();
   std::vector<std::unique_ptr<ITheoOverlay>> overlays;
@@ -1385,7 +1433,7 @@ TEST_F(TheoEngineTest, SheetMatchesValueIntoFieldForField) {
   std::vector<TheoQuery> qs;
   qs.reserve(n);
   // Mixed-radix decomposition, same fix and rationale as
-  // ValueIntoDoesNotAllocatePerQuery above -- decorrelates side from tenor so
+  // ValueIntoCallsOverlaysOncePerChunk above -- decorrelates side from tenor so
   // all 12 strike x tenor x side combinations appear. Both `direct` and
   // `sheet` below are computed from the SAME `qs`, so the fix changes no
   // expectation: field-for-field parity holds for whatever queries are here.

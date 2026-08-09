@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
+#include <limits>
 #include <random>
 #include <string>
 #include <vector>
@@ -432,6 +433,29 @@ TEST_F(BevPathLoader, LastSessionAtOrBeforeSnapsAndSettlesBeforeExpiry) {
   EXPECT_EQ(path->settle_ts_ns, iso_to_ns(kBevPathDates[2]));
   ASSERT_FALSE(path->days.empty());
   EXPECT_EQ(path->days.back().ts_ns, path->settle_ts_ns);
+}
+
+// M3/item 6: `load_bev_path` documents (breakeven.hpp) "every s > 0" as a
+// postcondition on a successful return and now enforces it per session via
+// `detail::bev_day_spot_is_valid`, naming the offending `ts_ns`. Tested
+// directly at the predicate rather than end-to-end through a real corpus/
+// Clock: a corrupted-S session cannot currently reach `load_bev_path` via any
+// real, on-disk-loaded archive -- both `PricedSurface::create` and
+// `PricedSurfaceView::create_over_record` already reject a non-finite/
+// non-positive spot at LOAD time (`MarketSnapshot::load` itself would fail
+// first), so this is defense in depth against a failure mode the archive
+// readers already close off upstream (see the predicate's own doc comment).
+TEST_F(BevPathLoader, CorruptedSpotSessionIsRejected) {
+  constexpr std::int64_t kTsNs = 123456789LL;
+  for (const double bad_s : {0.0, -1.0, std::numeric_limits<double>::quiet_NaN(),
+                             std::numeric_limits<double>::infinity()}) {
+    const Status st = detail::bev_day_spot_is_valid(bad_s, kTsNs);
+    ASSERT_FALSE(st.has_value()) << "s=" << bad_s;
+    EXPECT_EQ(st.error().code(), ErrorCode::InvalidArgument);
+    EXPECT_NE(st.error().message().find(std::to_string(kTsNs)), std::string::npos)
+        << st.error().message();
+  }
+  EXPECT_TRUE(detail::bev_day_spot_is_valid(600.0, kTsNs).has_value());
 }
 
 // (d) end-to-end: load_bev_path + solve_breakeven_vol on one SPY contract.

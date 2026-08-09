@@ -71,21 +71,28 @@ struct Args {
   double contracts{1.0};
   double sign{+1.0};
   std::string mark_domain{"extrapolate"};
-  // Task 10: read-only theo-edge signal probe, ON by default. The A/B
-  // NAV-byte-identity proof (Task 10 brief, step 4) needs both variants
-  // out of the SAME binary/build, so this is a flag rather than baked in.
-  bool emit_theo_signals{true};
+  // Task 10: read-only theo-edge signal probe. OFF by default (final-review
+  // I3: the original default-ON wiring silently stopped the driver's own
+  // default runs from exercising the default zero-copy WS-ZC1 borrow path --
+  // see main()'s comment). `--theo-signals` opts in; the A/B NAV-byte-
+  // identity proof (Task 10 brief, step 4) needs both variants out of the
+  // SAME binary/build, so this stays a flag rather than two binaries.
+  bool emit_theo_signals{false};
 };
 
 void usage() {
-  std::fprintf(stderr, "usage: atx-vol-spy-leaps-strangle --out DIR [--db-prefix P] [--year-lo Y] "
-                       "[--year-hi Y]\n    [--from D] [--to D] [--delta X] [--tenor-years X] "
-                       "[--roll-months X] [--contracts X] [--sign +1|-1]\n    "
-                       "[--mark-domain extrapolate|carry|error] [--no-theo-signals]\n"
-                       "    (theo signals: ON by default; forces owned archive backing instead of "
-                       "the default zero-copy borrow, ATX_VOL_ZC_BORROW=0, ONLY for this run -- "
-                       "see main(). Assumes a SPY corpus regardless of --db-prefix; "
-                       "theo_edge_atm/theo_band_atm are NaN for any other symbol.)\n");
+  std::fprintf(stderr,
+               "usage: atx-vol-spy-leaps-strangle --out DIR [--db-prefix P] [--year-lo Y] "
+               "[--year-hi Y]\n    [--from D] [--to D] [--delta X] [--tenor-years X] "
+               "[--roll-months X] [--contracts X] [--sign +1|-1]\n    "
+               "[--mark-domain extrapolate|carry|error] [--theo-signals] "
+               "[--no-theo-signals]\n"
+               "    (theo signals: OFF by default, so the default (no-flag) run exercises "
+               "the default zero-copy WS-ZC1 borrow path. --theo-signals opts in and forces "
+               "owned archive backing instead, ATX_VOL_ZC_BORROW=0, ONLY for this run -- "
+               "see main(); --no-theo-signals is accepted as a no-op (OFF is already the "
+               "default). Assumes a SPY corpus regardless of --db-prefix; "
+               "theo_edge_atm/theo_band_atm are NaN for any other symbol.)\n");
 }
 
 bool parse_args(int argc, char **argv, Args &args) {
@@ -121,8 +128,10 @@ bool parse_args(int argc, char **argv, Args &args) {
       args.sign = std::atof(v.c_str());
     } else if (flag == "--mark-domain" && next(v)) {
       args.mark_domain = v;
+    } else if (flag == "--theo-signals") {
+      args.emit_theo_signals = true;
     } else if (flag == "--no-theo-signals") {
-      args.emit_theo_signals = false;
+      args.emit_theo_signals = false; // no-op: OFF is already the default (I3)
     } else {
       std::fprintf(stderr, "unknown/incomplete flag: %.*s\n", static_cast<int>(flag.size()),
                    flag.data());
@@ -298,12 +307,14 @@ int main(int argc, char **argv) {
   // never a priced value, so it cannot be the thing that breaks the NAV
   // byte-identity proof this probe exists to uphold.
   //
-  // Gated on `emit_theo_signals` (fix round 1, I1): ONLY the signals-on route
-  // needs owned surfaces. `--no-theo-signals` (and every other invocation of
-  // this driver) keeps exercising the default zero-copy WS-ZC1 borrow path
-  // unchanged -- forcing owned reconstruct unconditionally would have made
-  // this driver's OWN default runs stop covering that path, so a borrow-
-  // specific regression would go invisible here. `_putenv_s` is a Windows CRT
+  // Gated on `emit_theo_signals` (final-review I3; supersedes fix round 1's
+  // gate, which had this backwards): `emit_theo_signals` now defaults to
+  // FALSE, so the driver's OWN default (no-flag) runs keep exercising the
+  // default zero-copy WS-ZC1 borrow path unchanged. Only an explicit
+  // `--theo-signals` run forces the owned-reconstruct route this probe needs
+  // -- fix round 1 gated the override on a default-TRUE flag instead, so the
+  // driver's default run was silently the one NOT covering borrow, exactly
+  // backwards from what its own comment claimed. `_putenv_s` is a Windows CRT
   // API; `MarketSnapshot::load` itself reads this same env var behind a
   // `#if defined(_WIN32)` guard (backtest.cpp) -- guarded here to match
   // rather than assuming the Windows-only toolchain unconditionally.

@@ -1,4 +1,7 @@
-// THEO-4: batch label runner benchmarks.
+// THEO-4/THEO-10: breakeven-vol batch label runner AND theo-sheet benchmarks
+// (Task 10 added the theo/sheet_200q cases to this same TU/target -- see that
+// section's own banner below for the full detail; only listed here for a
+// one-line pointer).
 //
 //   bev/solve/126d_al_fast — a single solve_breakeven_vol call (bisection
 //     root-find over bev_replay_pnl) on a synthetic 126-day GBM path, at the
@@ -15,8 +18,11 @@
 //   bev/batch/64jobs       — solve_breakeven_batch over 64 independent jobs
 //     (n_threads=0, i.e. atx_auto_worker_count()) -- the deterministic
 //     parallel fan-out this task adds over the single-label solve above.
+//   theo/sheet_200q/*      — compute_theo_sheet (Task 10) over a 200-query
+//     screening sheet, price_theo true/false variants -- see the "theo/
+//     sheet_200q" banner further down this file for the full detail.
 //
-// Both cases build their synthetic path(s) with the SAME ACT/365.25-
+// The two bev/* cases build their synthetic path(s) with the SAME ACT/365.25-
 // calibrated GBM generator as tests/breakeven_test.cpp's synth_gbm_path
 // (duplicated here rather than shared, since that helper lives in an
 // anonymous namespace of a *_test.cpp, not a tests/support/ header this
