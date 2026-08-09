@@ -1,0 +1,74 @@
+[build-system]
+requires = ["setuptools>=80"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "atx-db"
+version = "0.2.0"
+description = "Point-in-time US equity fundamentals and public-market datasets"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "duckdb>=1.5,<2",
+    "pandas>=2.2,<4",
+    "pyarrow>=18,<23",
+    "requests>=2.31,<3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "filelock>=3,<4",
+    "mypy>=1.17,<2",
+    "pytest>=9,<10",
+    "pytest-cov>=7,<8",
+    "pytest-xdist>=3,<4",
+    "ruff>=0.12,<1",
+    "types-requests>=2.31,<3",
+    "pandas-stubs>=2.2,<3",
+]
+
+[project.scripts]
+atx-db = "atx_db.cli:main"
+atx-db-asof = "atx_db.asof.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["atx_db*"]
+
+[tool.setuptools.package-data]
+atx_db = ["py.typed", "seeds/*.csv"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.12"
+packages = ["atx_db"]
+strict = true
+warn_unreachable = true
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+# Keep the default bounded so an accidental full DB run does not saturate the
+# workstation. Use scripts/db_dev_tests.py for the normal changed-test loop, or
+# override with `-n auto` when the machine can be dedicated to a full-suite run.
+#
+# The default lane EXCLUDES @pytest.mark.slow tests (heavy integration tests that
+# do full warehouse builds / backups / backfills — ~14 tests that were ~55% of
+# total wall time). Iterative dev runs the fast lane; the release gate adds
+# `--run-slow` to run everything. See conftest.py::pytest_collection_modifyitems.
+addopts = "-q -n 4"
+markers = [
+    "slow: heavy integration test (full builds/backups/backfills/lake exports); skipped by default, run with --run-slow",
+]
+# Do not accumulate per-test temp warehouses across runs. Passing tests' tmp dirs
+# are deleted immediately; only the most recent failed run is kept for debugging.
+# (A prior default let ~145 GB of per-test DuckDB copies pile up under pytest-of-*.)
+tmp_path_retention_count = 1
+tmp_path_retention_policy = "failed"

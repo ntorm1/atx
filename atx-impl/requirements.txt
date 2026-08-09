@@ -1,4 +1,0 @@
-duckdb==1.5.1
-pandas==2.2.1
-pyarrow==18.0.0
-requests==2.31.0

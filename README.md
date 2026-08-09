@@ -13,7 +13,8 @@ atx/
 ├── atx-vol/         # equity-options pricing + volatility fitting (see its README)
 ├── atx-tsdb/        # zero-copy time-series panel store
 ├── atx-kb/          # knowledge base
-├── atx-db/          # SQLite-backed persistence
+├── atx-agent-db/    # C++ SQLite-backed agent coordination
+├── atx-db/          # Python US-equity data warehouse and research platform
 ├── atx-engine/      # backtest engine, alpha DSL, risk
 ├── atx-impl/        # strategy implementations
 ├── atx-ui/          # optional; gated behind ATX_BUILD_UI

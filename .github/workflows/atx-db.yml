@@ -1,0 +1,63 @@
+name: atx-db
+
+on:
+  push:
+    paths:
+      - "atx-db/**"
+      - ".github/workflows/atx-db.yml"
+  pull_request:
+    paths:
+      - "atx-db/**"
+      - ".github/workflows/atx-db.yml"
+
+jobs:
+  focused-quality:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: atx-db
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: atx-db/pyproject.toml
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e ".[dev]"
+      - name: Compile package
+        run: python -m compileall -q src tests scripts
+      - name: Lint productionized surfaces
+        run: >-
+          python -m ruff check
+          src/atx_db/cli.py
+          src/atx_db/thirteenf.py
+          src/atx_db/thirteenf_archive.py
+          src/atx_db/thirteenf_amendments.py
+          src/atx_db/thirteenf_signals.py
+          src/atx_db/openfigi_signals.py
+          src/atx_db/thirteenf_backtest.py
+          src/atx_db/thirteenf_analysis.py
+          tests/test_thirteenf_archive.py
+          tests/test_thirteenf_signals.py
+          tests/test_openfigi_signals.py
+          tests/test_thirteenf_backtest.py
+      - name: Typecheck productionized surfaces
+        run: >-
+          python -m mypy --strict
+          src/atx_db/cli.py
+          src/atx_db/thirteenf_archive.py
+          src/atx_db/thirteenf_amendments.py
+          src/atx_db/thirteenf_signals.py
+          src/atx_db/openfigi_signals.py
+          src/atx_db/thirteenf_backtest.py
+          src/atx_db/thirteenf_analysis.py
+      - name: Focused tests
+        run: >-
+          python -m pytest -q -n0 --tb=short
+          tests/test_import.py
+          tests/test_module_boundaries.py
+          tests/test_thirteenf_archive.py
+          tests/test_thirteenf_signals.py
+          tests/test_openfigi_signals.py
+          tests/test_thirteenf_backtest.py

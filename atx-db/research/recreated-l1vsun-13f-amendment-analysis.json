@@ -1,0 +1,78 @@
+{
+  "amendments": {
+    "amended_manager_quarters": 12768,
+    "manager_quarter_rows": 298107,
+    "position_corrections": 4379243,
+    "spike_manager_quarters": 1757
+  },
+  "backtest_47d": {
+    "by_stress_regime": [
+      {
+        "completed_trades": 123,
+        "is_stress_quarter": false,
+        "mean_net_short_return": -0.012288844735395496
+      }
+    ],
+    "completed_trades": 123,
+    "horizons": [
+      {
+        "completed_trades": 128,
+        "mean_net_short_return": 0.003022933671036599,
+        "median_net_short_return": 0.008252441121819387,
+        "short_win_rate": 0.53125,
+        "trading_days": 5
+      },
+      {
+        "completed_trades": 128,
+        "mean_net_short_return": 0.007392688375550513,
+        "median_net_short_return": 0.011862500705992651,
+        "short_win_rate": 0.546875,
+        "trading_days": 10
+      },
+      {
+        "completed_trades": 127,
+        "mean_net_short_return": -0.0002968421233713972,
+        "median_net_short_return": -0.0006591683708248022,
+        "short_win_rate": 0.49606299212598426,
+        "trading_days": 21
+      },
+      {
+        "completed_trades": 123,
+        "mean_net_short_return": -0.012288844735395496,
+        "median_net_short_return": -6.542056074765237e-05,
+        "short_win_rate": 0.4959349593495935,
+        "trading_days": 47
+      }
+    ],
+    "maximum_market_cap_usd": 10000000000.0,
+    "mean_net_short_return": -0.012288844735395496,
+    "median_net_short_return": -6.542056074765237e-05,
+    "minimum_market_cap_usd": 2000000000.0,
+    "one_way_slippage_bps": 5.0,
+    "short_win_rate": 0.4959349593495935
+  },
+  "disclosed_exits": {
+    "disclosed_exit_rate": 0.16609672691744015,
+    "exited_manager_positions": 340,
+    "exits_disclosed_within_47_trading_days": 0,
+    "followup_manager_positions": 2047
+  },
+  "signals": {
+    "candidate_count": 78077,
+    "mapped_signals": 278,
+    "maximum_rank_per_quarter": 20,
+    "signal_count": 556,
+    "signals_per_year": 61.77777777777778,
+    "stress_quarters_excluded": true,
+    "years_with_signals": 9
+  },
+  "source": {
+    "archive_count": 53,
+    "holding_rows": 120181801,
+    "maximum_filing_date": "2026-05-29",
+    "maximum_report_period": "2026-03-31",
+    "minimum_filing_date": "2013-05-20",
+    "minimum_report_period": "1987-03-31",
+    "submission_rows": 397833
+  }
+}

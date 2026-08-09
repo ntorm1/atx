@@ -1,0 +1,998 @@
+from __future__ import annotations
+
+import datetime as dt
+import inspect
+import json
+from collections import Counter
+
+import pytest
+
+
+class StubA:
+    dataset_id = "a"
+    depends_on: tuple[str, ...] = ()
+
+
+class StubB:
+    dataset_id = "b"
+    depends_on: tuple[str, ...] = ()
+
+
+class StubC:
+    dataset_id = "c"
+    depends_on = ("b", "a")
+
+
+class StubD:
+    dataset_id = "d"
+    depends_on = ("b",)
+
+
+def _registry(*classes):
+    return {cls.dataset_id: (cls, lambda params: params) for cls in classes}
+
+
+class TickClock:
+    def __init__(self) -> None:
+        self.current = dt.datetime(2026, 7, 1, 12, 0, 0)
+
+    def __call__(self) -> dt.datetime:
+        value = self.current
+        self.current += dt.timedelta(seconds=1)
+        return value
+
+
+class RecordingDataset:
+    depends_on: tuple[str, ...] = ()
+    calls: list[tuple[str, dict]] = []
+    fail_remaining: dict[str, int] = {}
+    watermark_values: dict[str, str] = {}
+
+    @classmethod
+    def reset(cls) -> None:
+        cls.calls = []
+        cls.fail_remaining = {}
+        cls.watermark_values = {}
+
+    def run(self, store, options):
+        from atx_db.dataset import DatasetLoadResult
+
+        dataset_id = self.dataset_id
+        RecordingDataset.calls.append((dataset_id, dict(options)))
+        remaining = RecordingDataset.fail_remaining.get(dataset_id, 0)
+        if remaining > 0:
+            RecordingDataset.fail_remaining[dataset_id] = remaining - 1
+            raise RuntimeError(f"planned failure for {dataset_id}")
+        watermark = RecordingDataset.watermark_values.get(dataset_id)
+        if watermark is not None:
+            _upsert_watermark(store, dataset_id, "max_available_at", watermark)
+        return DatasetLoadResult(
+            dataset_id=dataset_id,
+            rows_loaded=10,
+            source=f"stub:{dataset_id}",
+            details={},
+        )
+
+
+class ExecA(RecordingDataset):
+    dataset_id = "a"
+
+
+class ExecB(RecordingDataset):
+    dataset_id = "b"
+    depends_on = ("a",)
+
+
+class ExecC(RecordingDataset):
+    dataset_id = "c"
+    depends_on = ("b",)
+
+
+class ExecD(RecordingDataset):
+    dataset_id = "d"
+
+
+def _exec_registry(*classes):
+    return {cls.dataset_id: (cls, lambda params: dict(params)) for cls in classes}
+
+
+def _upsert_watermark(store, dataset_id: str, name: str, value: str) -> None:
+    store.con.execute(
+        """
+        DELETE FROM dataset_watermarks
+        WHERE dataset_id = ? AND watermark_name = ?
+        """,
+        [dataset_id, name],
+    )
+    store.con.execute(
+        """
+        INSERT INTO dataset_watermarks (
+            dataset_id, watermark_name, watermark_value, updated_at
+        )
+        VALUES (?, ?, ?, ?)
+        """,
+        [dataset_id, name, value, dt.datetime(2026, 7, 1, 12, 0, 0)],
+    )
+
+
+@pytest.fixture(autouse=True)
+def _reset_recording_dataset():
+    RecordingDataset.reset()
+    yield
+    RecordingDataset.reset()
+
+
+def test_build_dataset_dag_topo_sort_is_stable_by_dataset_id():
+    from atx_db.orchestrator import build_dataset_dag
+
+    dag = build_dataset_dag(_registry(StubD, StubC, StubB, StubA))
+
+    assert dag.order == ("a", "b", "c", "d")
+    assert dag.dependencies_of("c") == ("a", "b")
+    assert dag.children_of("b") == ("c", "d")
+
+
+def test_build_dataset_dag_rejects_missing_dependency():
+    from atx_db.orchestrator import MissingDependencyError, build_dataset_dag
+
+    class NeedsMissing:
+        dataset_id = "needs_missing"
+        depends_on = ("missing",)
+
+    with pytest.raises(MissingDependencyError, match="missing"):
+        build_dataset_dag(_registry(NeedsMissing))
+
+
+def test_build_dataset_dag_cycle_error_names_path():
+    from atx_db.orchestrator import CycleError, build_dataset_dag
+
+    class CycleA:
+        dataset_id = "cycle_a"
+        depends_on = ("cycle_c",)
+
+    class CycleB:
+        dataset_id = "cycle_b"
+        depends_on = ("cycle_a",)
+
+    class CycleC:
+        dataset_id = "cycle_c"
+        depends_on = ("cycle_b",)
+
+    with pytest.raises(CycleError) as excinfo:
+        build_dataset_dag(_registry(CycleA, CycleB, CycleC))
+
+    assert excinfo.value.path == ("cycle_a", "cycle_c", "cycle_b", "cycle_a")
+    assert "cycle_a -> cycle_c -> cycle_b -> cycle_a" in str(excinfo.value)
+
+
+def test_build_dataset_dag_rejects_string_depends_on():
+    from atx_db.orchestrator import build_dataset_dag
+
+    class BadDepends:
+        dataset_id = "bad"
+        depends_on = "a"
+
+    with pytest.raises(TypeError, match="depends_on"):
+        build_dataset_dag(_registry(BadDepends))
+
+
+def test_create_run_manifest_writes_parent_steps_and_audit(tmp_store):
+    from atx_db.orchestrator import build_dataset_dag, create_run_manifest
+
+    dag = build_dataset_dag(_registry(StubC, StubA, StubB))
+    started_at = dt.datetime(2026, 7, 1, 12, 0, 0)
+
+    manifest = create_run_manifest(
+        tmp_store,
+        dag,
+        run_id="run-test-001",
+        params={"full_rebuild": False, "symbols": ["AAPL"]},
+        git_sha="abcdef1",
+        actor="pytest",
+        started_at=started_at,
+    )
+
+    assert manifest.run_id == "run-test-001"
+    assert manifest.dataset_order == ("a", "b", "c")
+
+    parent = tmp_store.con.execute(
+        """
+        SELECT job_run_id, run_id, run_kind, parent_run_id, job_name, dataset_id,
+               status, started_at, attempt_count, max_retries,
+               retry_delay_seconds, params_json, git_sha
+        FROM etl_job_runs
+        WHERE run_id = ?
+        """,
+        [manifest.run_id],
+    ).fetchone()
+    assert parent == (
+        "run-test-001",
+        "run-test-001",
+        "orchestrator",
+        None,
+        "refresh_quant_warehouse",
+        "__orchestrator__",
+        "running",
+        started_at,
+        0,
+        0,
+        0.0,
+        '{"full_rebuild": false, "symbols": ["AAPL"]}',
+        "abcdef1",
+    )
+
+    steps = tmp_store.con.execute(
+        """
+        SELECT dataset_id, status, rows, started_at, finished_at,
+               watermark_before, watermark_after, error
+        FROM etl_job_steps
+        WHERE run_id = ?
+        ORDER BY dataset_id
+        """,
+        [manifest.run_id],
+    ).fetchall()
+    assert steps == [
+        ("a", "pending", None, None, None, None, None, None),
+        ("b", "pending", None, None, None, None, None, None),
+        ("c", "pending", None, None, None, None, None, None),
+    ]
+
+    audit = tmp_store.con.execute(
+        """
+        SELECT actor, action, dataset_id, details_json
+        FROM etl_job_audit
+        WHERE run_id = ?
+        """,
+        [manifest.run_id],
+    ).fetchall()
+    assert len(audit) == 1
+    actor, action, dataset_id, details_json = audit[0]
+    assert (actor, action, dataset_id) == ("pytest", "run_start", None)
+    details = json.loads(details_json)
+    assert details == {"dataset_count": 3, "dataset_order": ["a", "b", "c"]}
+
+
+def test_migration_0065_0066_catalog_idempotence_and_index_split(tmp_store):
+    from atx_db import migrations
+
+    versions = {
+        row[0]
+        for row in tmp_store.con.execute(
+            """
+            SELECT CAST(version AS INTEGER)
+            FROM schema_migrations
+            WHERE version ~ '^[0-9]+$'
+            """
+        ).fetchall()
+    }
+    assert {65, 66}.issubset(versions)
+
+    tables = {
+        row[0]
+        for row in tmp_store.con.execute(
+            """
+            SELECT table_name
+            FROM duckdb_tables()
+            WHERE schema_name = 'main'
+              AND table_name IN ('etl_job_runs', 'etl_job_steps', 'etl_job_audit')
+            """
+        ).fetchall()
+    }
+    assert tables == {"etl_job_runs", "etl_job_steps", "etl_job_audit"}
+
+    run_columns = {
+        row[0]
+        for row in tmp_store.con.execute(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'main'
+              AND table_name = 'etl_job_runs'
+            """
+        ).fetchall()
+    }
+    assert {"run_id", "run_kind", "parent_run_id", "git_sha"}.issubset(run_columns)
+
+    expected_columns = {
+        "etl_job_steps": {
+            "run_id",
+            "dataset_id",
+            "status",
+            "rows",
+            "started_at",
+            "finished_at",
+            "watermark_before",
+            "watermark_after",
+            "error",
+        },
+        "etl_job_audit": {
+            "audit_id",
+            "run_id",
+            "dataset_id",
+            "actor",
+            "ts",
+            "action",
+            "details_json",
+        },
+    }
+    for table_name, expected in expected_columns.items():
+        columns = {
+            row[0]
+            for row in tmp_store.con.execute(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'main'
+                  AND table_name = ?
+                """,
+                [table_name],
+            ).fetchall()
+        }
+        fields = {
+            row[0]
+            for row in tmp_store.con.execute(
+                "SELECT field_name FROM field_catalog WHERE table_name = ?",
+                [table_name],
+            ).fetchall()
+        }
+        assert columns == expected
+        assert fields == expected
+
+    table_catalog_rows = tmp_store.con.execute(
+        """
+        SELECT count(*)
+        FROM table_catalog
+        WHERE table_name IN ('etl_job_runs', 'etl_job_steps', 'etl_job_audit')
+        """
+    ).fetchone()[0]
+    assert table_catalog_rows == 3
+
+    index_names = {
+        row[0]
+        for row in tmp_store.con.execute(
+            """
+            SELECT index_name
+            FROM duckdb_indexes()
+            WHERE table_name IN ('etl_job_steps', 'etl_job_audit')
+            """
+        ).fetchall()
+    }
+    assert "idx_etl_job_steps_run_status" in index_names
+    assert "idx_etl_job_audit_run_ts" in index_names
+
+    schema_src = inspect.getsource(migrations._etl_job_orchestrator_manifest_schema)
+    index_src = inspect.getsource(migrations._etl_job_orchestrator_manifest_indexes)
+    assert "CREATE INDEX" not in schema_src
+    assert "CREATE TABLE" not in index_src
+
+    migrations._etl_job_orchestrator_manifest_schema(tmp_store.con)
+    migrations._etl_job_orchestrator_manifest_indexes(tmp_store.con)
+
+    table_catalog_rows_after = tmp_store.con.execute(
+        """
+        SELECT count(*)
+        FROM table_catalog
+        WHERE table_name IN ('etl_job_runs', 'etl_job_steps', 'etl_job_audit')
+        """
+    ).fetchone()[0]
+    assert table_catalog_rows_after == 3
+
+
+def test_orchestrator_incremental_second_run_skips_all_current_nodes(tmp_store):
+    from atx_db.orchestrator import DatasetOrchestrator
+
+    RecordingDataset.watermark_values = {
+        "a": "2026-01-01T09:30:00",
+        "b": "2026-01-01T10:00:00",
+        "c": "2026-01-01T10:30:00",
+    }
+    orchestrator = DatasetOrchestrator(
+        tmp_store,
+        _exec_registry(ExecC, ExecA, ExecB),
+        actor="pytest",
+        clock=TickClock(),
+        sleeper=lambda _delay: None,
+    )
+
+    first = orchestrator.run(run_id="incremental-run-1")
+    second = orchestrator.run(run_id="incremental-run-2")
+
+    assert first.status == "succeeded"
+    assert second.status == "succeeded"
+    assert [dataset_id for dataset_id, _options in RecordingDataset.calls] == [
+        "a",
+        "b",
+        "c",
+    ]
+
+    steps = tmp_store.con.execute(
+        """
+        SELECT dataset_id, status, rows, watermark_before, watermark_after
+        FROM etl_job_steps
+        WHERE run_id = ?
+        ORDER BY dataset_id
+        """,
+        [second.run_id],
+    ).fetchall()
+    assert [(dataset_id, status, rows) for dataset_id, status, rows, *_ in steps] == [
+        ("a", "skipped", 0),
+        ("b", "skipped", 0),
+        ("c", "skipped", 0),
+    ]
+    assert all(watermark_before == watermark_after for *_, watermark_before, watermark_after in steps)
+
+    audit_actions = [
+        row[0]
+        for row in tmp_store.con.execute(
+            """
+            SELECT action
+            FROM etl_job_audit
+            WHERE run_id = ?
+            ORDER BY ts, action
+            """,
+            [second.run_id],
+        ).fetchall()
+    ]
+    assert audit_actions.count("step_skip_incremental") == 3
+
+    b_first_options = RecordingDataset.calls[1][1]
+    assert b_first_options["incremental_since"] == "2026-01-01T09:30:00"
+    assert b_first_options["since"] == "2026-01-01T09:30:00"
+    assert b_first_options["start_date"] == "2026-01-01"
+
+
+def test_orchestrator_upstream_watermark_change_runs_downstream_closure(tmp_store):
+    from atx_db.orchestrator import DatasetOrchestrator
+
+    RecordingDataset.watermark_values = {
+        "a": "2026-01-01T09:30:00",
+        "b": "2026-01-01T10:00:00",
+        "c": "2026-01-01T10:30:00",
+        "d": "2026-01-01T11:00:00",
+    }
+    orchestrator = DatasetOrchestrator(
+        tmp_store,
+        _exec_registry(ExecA, ExecB, ExecC, ExecD),
+        actor="pytest",
+        clock=TickClock(),
+        sleeper=lambda _delay: None,
+    )
+    orchestrator.run(run_id="closure-run-1")
+    RecordingDataset.calls.clear()
+
+    RecordingDataset.watermark_values["a"] = "2026-01-02T09:30:00"
+    _upsert_watermark(tmp_store, "a", "max_available_at", "2026-01-02T09:30:00")
+
+    orchestrator.run(run_id="closure-run-2")
+
+    assert [dataset_id for dataset_id, _options in RecordingDataset.calls] == [
+        "a",
+        "b",
+        "c",
+    ]
+    statuses = dict(
+        tmp_store.con.execute(
+            """
+            SELECT dataset_id, status
+            FROM etl_job_steps
+            WHERE run_id = ?
+            ORDER BY dataset_id
+            """,
+            ["closure-run-2"],
+        ).fetchall()
+    )
+    assert statuses == {
+        "a": "succeeded",
+        "b": "succeeded",
+        "c": "succeeded",
+        "d": "skipped",
+    }
+
+
+def test_orchestrator_full_rebuild_runs_even_when_watermarks_match(tmp_store):
+    from atx_db.orchestrator import DatasetOrchestrator
+
+    RecordingDataset.watermark_values = {
+        "a": "2026-01-01T09:30:00",
+        "b": "2026-01-01T10:00:00",
+        "c": "2026-01-01T10:30:00",
+    }
+    orchestrator = DatasetOrchestrator(
+        tmp_store,
+        _exec_registry(ExecA, ExecB, ExecC),
+        actor="pytest",
+        clock=TickClock(),
+        sleeper=lambda _delay: None,
+    )
+    orchestrator.run(run_id="full-rebuild-run-1")
+    RecordingDataset.calls.clear()
+
+    orchestrator.run(run_id="full-rebuild-run-2", full_rebuild=True)
+
+    assert [dataset_id for dataset_id, _options in RecordingDataset.calls] == [
+        "a",
+        "b",
+        "c",
+    ]
+    incremental_window_keys = {"incremental_since", "since", "as_of_ts", "start_date"}
+    for _dataset_id, options in RecordingDataset.calls:
+        assert options["full_rebuild"] is True
+        assert incremental_window_keys.isdisjoint(options)
+
+    statuses = {
+        row[0]: row[1]
+        for row in tmp_store.con.execute(
+            """
+            SELECT dataset_id, status
+            FROM etl_job_steps
+            WHERE run_id = ?
+            """,
+            ["full-rebuild-run-2"],
+        ).fetchall()
+    }
+    assert set(statuses.values()) == {"succeeded"}
+
+
+def test_orchestrator_retries_with_exponential_backoff_and_audit(tmp_store):
+    from atx_db.orchestrator import DatasetOrchestrator, RetryPolicy
+
+    RecordingDataset.watermark_values = {"a": "2026-01-01T09:30:00"}
+    RecordingDataset.fail_remaining = {"a": 2}
+    slept: list[float] = []
+    orchestrator = DatasetOrchestrator(
+        tmp_store,
+        _exec_registry(ExecA),
+        actor="pytest",
+        clock=TickClock(),
+        sleeper=slept.append,
+        retry_policy_by_dataset={
+            "a": RetryPolicy(max_retries=2, retry_delay_seconds=0.5)
+        },
+    )
+
+    orchestrator.run(run_id="retry-run-1")
+
+    assert [dataset_id for dataset_id, _options in RecordingDataset.calls] == [
+        "a",
+        "a",
+        "a",
+    ]
+    assert slept == [0.5, 1.0]
+    retry_rows = tmp_store.con.execute(
+        """
+        SELECT action, details_json
+        FROM etl_job_audit
+        WHERE run_id = ? AND dataset_id = ?
+        ORDER BY ts
+        """,
+        ["retry-run-1", "a"],
+    ).fetchall()
+    assert [action for action, _details_json in retry_rows].count("step_retry") == 2
+    retry_details = [
+        json.loads(details_json)
+        for action, details_json in retry_rows
+        if action == "step_retry"
+    ]
+    assert [details["delay_seconds"] for details in retry_details] == [0.5, 1.0]
+
+
+def test_orchestrator_backfill_entrypoint_records_manifest_steps_and_audit(tmp_store):
+    from atx_db.orchestrator import DatasetOrchestrator
+
+    orchestrator = DatasetOrchestrator(
+        tmp_store,
+        _exec_registry(ExecA),
+        actor="pytest",
+        clock=TickClock(),
+        sleeper=lambda _delay: None,
+    )
+
+    result = orchestrator.run_backfill(
+        "a",
+        dt.date(2014, 1, 1),
+        dt.date(2014, 3, 1),
+        "1mo",
+        run_id="orchestrated-backfill-1",
+        max_parallel=2,
+    )
+
+    assert result.run_id == "orchestrated-backfill-1"
+    assert result.status == "succeeded"
+    assert result.partitions_planned == 2
+    assert result.rows_written == 20
+    assert result.requested_max_parallel == 2
+    assert result.effective_max_parallel == 1
+    assert [dataset_id for dataset_id, _options in RecordingDataset.calls] == ["a", "a"]
+    assert all(
+        options["backfill_run_id"] == "orchestrated-backfill-1"
+        for _dataset_id, options in RecordingDataset.calls
+    )
+
+    parent = tmp_store.con.execute(
+        """
+        SELECT run_kind, job_name, dataset_id, status, params_json
+        FROM etl_job_runs
+        WHERE run_id = ?
+        """,
+        [result.run_id],
+    ).fetchone()
+    assert parent[:4] == (
+        "backfill",
+        "warehouse_backfill",
+        "__orchestrator__",
+        "succeeded",
+    )
+    params = json.loads(parent[4])
+    assert params["mode"] == "backfill"
+    assert params["requested_max_parallel"] == 2
+    assert params["effective_max_parallel"] == 1
+    assert params["max_parallel"] == 1
+
+    step = tmp_store.con.execute(
+        """
+        SELECT status, rows, watermark_after, error
+        FROM etl_job_steps
+        WHERE run_id = ? AND dataset_id = 'a'
+        """,
+        [result.run_id],
+    ).fetchone()
+    assert step[0:2] == ("succeeded", 20)
+    assert step[3] is None
+    summary = json.loads(step[2])["partition_summary"]
+    assert summary["partitions"] == 2
+    assert summary["succeeded"] == 2
+    assert summary["rows_written"] == 20
+
+    backfill_header = tmp_store.con.execute(
+        """
+        SELECT dataset_id, status
+        FROM backfill_run
+        WHERE backfill_run_id = ?
+        """,
+        [result.run_id],
+    ).fetchone()
+    assert backfill_header == ("a", "succeeded")
+
+    audit_actions = [
+        row[0]
+        for row in tmp_store.con.execute(
+            """
+            SELECT action
+            FROM etl_job_audit
+            WHERE run_id = ?
+            ORDER BY ts, action
+            """,
+            [result.run_id],
+        ).fetchall()
+    ]
+    assert "run_start" in audit_actions
+    assert "backfill_step_start" in audit_actions
+    assert "backfill_step_succeeded" in audit_actions
+    assert "backfill_run_succeed" in audit_actions
+    backfill_done_details = json.loads(
+        tmp_store.con.execute(
+            """
+            SELECT details_json
+            FROM etl_job_audit
+            WHERE run_id = ? AND action = 'backfill_run_succeed'
+            """,
+            [result.run_id],
+        ).fetchone()[0]
+    )
+    assert backfill_done_details["requested_max_parallel"] == 2
+    assert backfill_done_details["effective_max_parallel"] == 1
+    assert backfill_done_details["max_parallel"] == 1
+
+
+def test_orchestrator_maintenance_entrypoint_records_manifest_steps_and_audit(tmp_store):
+    from atx_db.orchestrator import DatasetOrchestrator
+
+    orchestrator = DatasetOrchestrator(
+        tmp_store,
+        _exec_registry(ExecA, ExecB),
+        actor="pytest",
+        clock=TickClock(),
+        sleeper=lambda _delay: None,
+    )
+
+    result = orchestrator.run_maintenance(
+        "b",
+        dt.date(2014, 1, 1),
+        dt.date(2014, 3, 1),
+        "1mo",
+        run_id="orchestrated-maintenance-1",
+    )
+
+    assert result.status == "succeeded"
+    assert result.dataset_order == ("b",)
+    assert result.partitions_planned == 2
+    assert [dataset_id for dataset_id, _options in RecordingDataset.calls] == ["b", "b"]
+
+    parent = tmp_store.con.execute(
+        """
+        SELECT run_kind, job_name, status
+        FROM etl_job_runs
+        WHERE run_id = ?
+        """,
+        [result.run_id],
+    ).fetchone()
+    assert parent == ("maintenance", "warehouse_maintenance", "succeeded")
+
+    steps = tmp_store.con.execute(
+        """
+        SELECT dataset_id, status, rows
+        FROM etl_job_steps
+        WHERE run_id = ?
+        ORDER BY dataset_id
+        """,
+        [result.run_id],
+    ).fetchall()
+    assert steps == [("b", "succeeded", 20)]
+
+    audit_actions = {
+        row[0]
+        for row in tmp_store.con.execute(
+            """
+            SELECT action
+            FROM etl_job_audit
+            WHERE run_id = ?
+            """,
+            [result.run_id],
+        ).fetchall()
+    }
+    assert {"run_start", "maintenance_step_start", "maintenance_run_succeed"}.issubset(
+        audit_actions
+    )
+
+
+def test_orchestrator_resume_rejects_backfill_run_id_without_mutating_status(tmp_store):
+    from atx_db.orchestrator import DatasetOrchestrator
+
+    orchestrator = DatasetOrchestrator(
+        tmp_store,
+        _exec_registry(ExecA),
+        actor="pytest",
+        clock=TickClock(),
+        sleeper=lambda _delay: None,
+    )
+    result = orchestrator.run_backfill(
+        "a",
+        dt.date(2014, 1, 1),
+        dt.date(2014, 3, 1),
+        "1mo",
+        run_id="resume-rejects-backfill-run",
+    )
+    before_parent = tmp_store.con.execute(
+        """
+        SELECT run_kind, status, finished_at
+        FROM etl_job_runs
+        WHERE run_id = ?
+        """,
+        [result.run_id],
+    ).fetchone()
+    before_backfill = tmp_store.con.execute(
+        """
+        SELECT status, finished_at
+        FROM backfill_run
+        WHERE backfill_run_id = ?
+        """,
+        [result.run_id],
+    ).fetchone()
+    before_steps = tmp_store.con.execute(
+        """
+        SELECT dataset_id, status, rows, finished_at
+        FROM etl_job_steps
+        WHERE run_id = ?
+        ORDER BY dataset_id
+        """,
+        [result.run_id],
+    ).fetchall()
+
+    with pytest.raises(ValueError, match="run_kind.*backfill"):
+        orchestrator.resume(result.run_id)
+
+    assert tmp_store.con.execute(
+        """
+        SELECT run_kind, status, finished_at
+        FROM etl_job_runs
+        WHERE run_id = ?
+        """,
+        [result.run_id],
+    ).fetchone() == before_parent
+    assert tmp_store.con.execute(
+        """
+        SELECT status, finished_at
+        FROM backfill_run
+        WHERE backfill_run_id = ?
+        """,
+        [result.run_id],
+    ).fetchone() == before_backfill
+    assert tmp_store.con.execute(
+        """
+        SELECT dataset_id, status, rows, finished_at
+        FROM etl_job_steps
+        WHERE run_id = ?
+        ORDER BY dataset_id
+        """,
+        [result.run_id],
+    ).fetchall() == before_steps
+    assert tmp_store.con.execute(
+        """
+        SELECT count(*)
+        FROM etl_job_audit
+        WHERE run_id = ? AND action = 'run_resume'
+        """,
+        [result.run_id],
+    ).fetchone()[0] == 0
+
+
+def test_orchestrator_resume_reruns_only_failed_and_pending_steps(tmp_store):
+    from atx_db.orchestrator import DatasetOrchestrator, OrchestratorRunError
+
+    RecordingDataset.watermark_values = {
+        "a": "2026-01-01T09:30:00",
+        "b": "2026-01-01T10:00:00",
+        "c": "2026-01-01T10:30:00",
+    }
+    RecordingDataset.fail_remaining = {"b": 1}
+    orchestrator = DatasetOrchestrator(
+        tmp_store,
+        _exec_registry(ExecA, ExecB, ExecC),
+        actor="pytest",
+        clock=TickClock(),
+        sleeper=lambda _delay: None,
+    )
+
+    with pytest.raises(OrchestratorRunError):
+        orchestrator.run(run_id="resume-run-1")
+    calls_before_resume = Counter(dataset_id for dataset_id, _options in RecordingDataset.calls)
+    assert calls_before_resume == Counter({"a": 1, "b": 1})
+    first_a_step = tmp_store.con.execute(
+        """
+        SELECT status, finished_at, watermark_after
+        FROM etl_job_steps
+        WHERE run_id = ? AND dataset_id = ?
+        """,
+        ["resume-run-1", "a"],
+    ).fetchone()
+    assert first_a_step[0] == "succeeded"
+
+    orchestrator.resume("resume-run-1")
+
+    calls_after_resume = Counter(dataset_id for dataset_id, _options in RecordingDataset.calls)
+    assert calls_after_resume == Counter({"a": 1, "b": 2, "c": 1})
+    second_a_step = tmp_store.con.execute(
+        """
+        SELECT status, finished_at, watermark_after
+        FROM etl_job_steps
+        WHERE run_id = ? AND dataset_id = ?
+        """,
+        ["resume-run-1", "a"],
+    ).fetchone()
+    assert second_a_step == first_a_step
+    statuses = dict(
+        tmp_store.con.execute(
+            """
+            SELECT dataset_id, status
+            FROM etl_job_steps
+            WHERE run_id = ?
+            ORDER BY dataset_id
+            """,
+            ["resume-run-1"],
+        ).fetchall()
+    )
+    assert statuses == {"a": "succeeded", "b": "succeeded", "c": "succeeded"}
+    assert tmp_store.con.execute(
+        """
+        SELECT count(*)
+        FROM etl_job_audit
+        WHERE run_id = ? AND action = 'run_resume'
+        """,
+        ["resume-run-1"],
+    ).fetchone()[0] == 1
+
+
+def test_job_manager_run_all_enabled_drives_orchestrator_bridge(tmp_store):
+    from atx_db.jobs import JobManager
+
+    RecordingDataset.watermark_values = {
+        "a": "2026-01-01T09:30:00",
+        "b": "2026-01-01T10:00:00",
+    }
+    manager = JobManager(tmp_store)
+
+    run_result = manager.run_all_enabled(
+        registry=_exec_registry(ExecA, ExecB),
+        run_id="bridge-run-1",
+        full_rebuild=True,
+        git_sha="abc123",
+    )
+
+    assert run_result.status == "succeeded"
+    assert run_result.run_id == "bridge-run-1"
+    assert run_result.dataset_order == ("a", "b")
+    assert [dataset_id for dataset_id, _options in RecordingDataset.calls] == ["a", "b"]
+    assert all(options["full_rebuild"] is True for _dataset_id, options in RecordingDataset.calls)
+
+    parent = tmp_store.con.execute(
+        """
+        SELECT run_kind, job_name, dataset_id, status, git_sha
+        FROM etl_job_runs
+        WHERE run_id = ?
+        """,
+        ["bridge-run-1"],
+    ).fetchone()
+    assert parent == (
+        "orchestrator",
+        "refresh_quant_warehouse",
+        "__orchestrator__",
+        "succeeded",
+        "abc123",
+    )
+
+    projected = manager.run_all_results(run_result.run_id, run_result.dataset_order)
+    assert [result.dataset_id for result in projected] == ["a", "b"]
+    assert [result.rows_loaded for result in projected] == [10, 10]
+    assert all(result.run_id == "bridge-run-1" for result in projected)
+    assert all(result.source == "orchestrator:succeeded" for result in projected)
+    assert all(result.details["status"] == "succeeded" for result in projected)
+
+
+def test_job_manager_run_all_failure_writes_run_fail_and_preserves_partial_manifest(tmp_store):
+    from atx_db.jobs import JobManager
+    from atx_db.orchestrator import OrchestratorRunError
+
+    RecordingDataset.watermark_values = {
+        "a": "2026-01-01T09:30:00",
+        "b": "2026-01-01T10:00:00",
+        "c": "2026-01-01T10:30:00",
+    }
+    RecordingDataset.fail_remaining = {"b": 1}
+    manager = JobManager(tmp_store)
+
+    with pytest.raises(OrchestratorRunError):
+        manager.run_all_enabled(
+            registry=_exec_registry(ExecA, ExecB, ExecC),
+            run_id="bridge-failure-run-1",
+            git_sha="abc123",
+        )
+
+    parent_status = tmp_store.con.execute(
+        """
+        SELECT status
+        FROM etl_job_runs
+        WHERE run_id = ? AND run_kind = 'orchestrator'
+        """,
+        ["bridge-failure-run-1"],
+    ).fetchone()[0]
+    assert parent_status == "partial"
+
+    statuses = dict(
+        tmp_store.con.execute(
+            """
+            SELECT dataset_id, status
+            FROM etl_job_steps
+            WHERE run_id = ?
+            ORDER BY dataset_id
+            """,
+            ["bridge-failure-run-1"],
+        ).fetchall()
+    )
+    assert statuses == {"a": "succeeded", "b": "failed", "c": "pending"}
+    assert tmp_store.con.execute(
+        """
+        SELECT count(*)
+        FROM etl_job_audit
+        WHERE run_id = ? AND action = 'run_fail'
+        """,
+        ["bridge-failure-run-1"],
+    ).fetchone()[0] == 1
+
+    resumed = manager.run_all_enabled(
+        registry=_exec_registry(ExecA, ExecB, ExecC),
+        resume="bridge-failure-run-1",
+    )
+
+    assert resumed.status == "succeeded"
+    calls = Counter(dataset_id for dataset_id, _options in RecordingDataset.calls)
+    assert calls == Counter({"a": 1, "b": 2, "c": 1})

@@ -105,15 +105,16 @@ scratch/
 *.duckdb_tmp/
 .*.duckdb_tmp/
 
-# Python warehouse (atx-impl/db) — code is tracked; data artifacts are not
+# Python warehouse (atx-db) — code is tracked; runtime data artifacts are not
 __pycache__/
 *.pyc
 .pytest_cache/
 .mypy_cache/
 *.egg-info/
 .venv/
-# Parquet lakehouse exports are reproducible from the DuckDB warehouse
-atx-impl/db/lake/
+# Warehouse databases, source caches, and Parquet exports are reproducible or
+# operator-managed runtime state. Keep all of them out of source control.
+atx-db/data/
 *.csv
 
 # Vendor option-chain data (Databento OPRA) is NOT committed — licensing +
