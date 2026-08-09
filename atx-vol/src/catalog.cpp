@@ -609,6 +609,21 @@ Status Catalog::apply_gc_rewrite(std::string_view old_file, std::string_view new
 
   ATX_TRY(db::Transaction txn, db::Transaction::begin_immediate(db_));
 
+  // Review finding (Important): a per-key UPDATE that matches ZERO rows is
+  // not a SQLite error -- WHERE track_key=? AND status=? AND file=? simply
+  // no-ops if a CONCURRENT writer changed that row's status/file between the
+  // caller's own rows_by_file() snapshot and this call (e.g. a D5
+  // economics-rev supersession retiring a `kept_keys` row mid-rewrite: its
+  // status flips to Retired while `file` still points at `old_file`). A
+  // silent no-op here would let the caller (track_gc.cpp) go on to
+  // physically delete `old_file` anyway, leaving that row Retired with a
+  // non-null `file` pointing at bytes that no longer exist -- exactly the
+  // dangling-pointer state TrackStatus::Retired's own doc comment claims
+  // this function prevents. Every per-key UPDATE must therefore affect
+  // EXACTLY one row or the whole call fails closed (txn's destructor rolls
+  // back on this early return, so nothing partial is ever committed) --
+  // the caller sees the conflict and must re-snapshot and retry rather than
+  // proceed to delete anything.
   if (!retired_keys.empty()) {
     ATX_TRY(auto *clear_stmt, db_.prepare_cached(kClearReclaimedFileSql));
     for (const std::string &key : retired_keys) {
@@ -620,7 +635,15 @@ Status Catalog::apply_gc_rewrite(std::string_view old_file, std::string_view new
         ATX_TRY_VOID(clear_stmt->reset());
         return Err(step.error());
       }
+      const std::int64_t changed = db_.changes();
       ATX_TRY_VOID(clear_stmt->reset());
+      if (changed != 1) {
+        return Err(ErrorCode::Internal,
+                   "Catalog::apply_gc_rewrite: retired row changed concurrently -- expected to "
+                   "clear track_key=" +
+                       key + " status=retired file=" + std::string(old_file) +
+                       ", matched " + std::to_string(changed) + " row(s); retry against a fresh scan");
+      }
     }
   }
 
@@ -636,7 +659,15 @@ Status Catalog::apply_gc_rewrite(std::string_view old_file, std::string_view new
         ATX_TRY_VOID(repoint_stmt->reset());
         return Err(step.error());
       }
+      const std::int64_t changed = db_.changes();
       ATX_TRY_VOID(repoint_stmt->reset());
+      if (changed != 1) {
+        return Err(ErrorCode::Internal,
+                   "Catalog::apply_gc_rewrite: surviving row changed concurrently -- expected to "
+                   "repoint track_key=" +
+                       key + " status=compacted file=" + std::string(old_file) +
+                       ", matched " + std::to_string(changed) + " row(s); retry against a fresh scan");
+      }
     }
   }
 

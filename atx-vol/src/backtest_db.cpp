@@ -930,23 +930,46 @@ Result<BacktestReaderMark> BacktestReaderMark::acquire(std::string_view root) {
   const auto tick = static_cast<std::uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count());
   const std::string filename = "reader-" + std::to_string(pid) + "-" + std::to_string(tick) + "-" +
                                std::to_string(counter.fetch_add(1)) + ".mark";
-  const std::filesystem::path mark_path = dir / filename;
+  const std::string mark_path = (dir / filename).string();
 
-  std::ofstream out(mark_path, std::ios::binary | std::ios::trunc);
-  if (!out) {
-    return Err(ErrorCode::IoError, "BacktestReaderMark::acquire: cannot create mark file");
+  // Review finding (Important, fix-round 1): atomic-publish discipline
+  // (detail/archive_util.hpp), same as every other durable lakehouse write
+  // -- catalog.sqlite is the ONE documented exception, and this is not it.
+  // A plain std::ofstream(mark_path, trunc) makes the mark DISCOVERABLE at
+  // its final, scanned-for name the instant the file is created -- empty,
+  // before the pid is written. vacuum's scan below treats an unparseable/
+  // empty mark file as "cannot determine an owner", i.e. NOT a live
+  // blocker (the same conservative default detail::WriterLock's own
+  // stale-owner probe uses) -- so a mark caught mid-creation would be
+  // invisible to a racing vacuum for the whole window between create and
+  // the pid write landing, exactly when a reader that just called
+  // mark_reader() per this class's own doc contract needs it to be seen.
+  // Reserve a unique temp file, write+flush the pid into THAT, then
+  // atomically rename onto the mark's real name: vacuum's scan only ever
+  // observes the mark file fully formed or not present at all, never
+  // partially written.
+  ATX_TRY(const std::string tmp_path, detail::reserve_unique_publish_temp_file(mark_path));
+
+  {
+    std::ofstream out(tmp_path, std::ios::binary | std::ios::trunc);
+    if (!out) {
+      std::error_code rm_ec;
+      std::filesystem::remove(tmp_path, rm_ec);
+      return Err(ErrorCode::IoError, "BacktestReaderMark::acquire: cannot open temp mark file");
+    }
+    out << pid;
+    out.flush();
+    if (!out) {
+      std::error_code rm_ec;
+      std::filesystem::remove(tmp_path, rm_ec);
+      return Err(ErrorCode::IoError, "BacktestReaderMark::acquire: cannot write temp mark file");
+    }
   }
-  out << pid;
-  out.flush();
-  if (!out) {
-    std::error_code rm_ec;
-    std::filesystem::remove(mark_path, rm_ec);
-    return Err(ErrorCode::IoError, "BacktestReaderMark::acquire: cannot write mark file");
-  }
-  out.close();
+
+  ATX_TRY_VOID(detail::flush_and_publish_file(tmp_path, mark_path));
 
   BacktestReaderMark mark;
-  mark.mark_path_ = mark_path.string();
+  mark.mark_path_ = mark_path;
   return Ok(std::move(mark));
 }
 

@@ -774,6 +774,95 @@ TEST(CatalogTest, ApplyGcRewriteRejectsSurvivorsWithoutANewFile) {
   EXPECT_EQ(result.error().code(), atx::core::ErrorCode::InvalidArgument);
 }
 
+// Review finding (Important, fix-round 1): a per-key UPDATE matching ZERO
+// rows is not a SQLite error, so a caller-supplied kept_keys/retired_keys
+// entry that no longer matches its expected (status, file) -- because a
+// CONCURRENT writer changed it between the caller's own rows_by_file()
+// snapshot and this call -- used to silently no-op and still commit Ok().
+// track_gc.cpp then physically deleted old_file unconditionally, leaving
+// the stale row pointing at bytes that no longer exist. Both loops must now
+// fail closed (Err(Internal), whole transaction rolled back) the instant
+// any single UPDATE affects anything other than exactly one row.
+
+TEST(CatalogTest, ApplyGcRewriteFailsClosedWhenAKeptRowWasConcurrentlyRetired) {
+  const fs::path root = fresh_lake_root("gc-rewrite-race");
+  auto cat = Catalog::open(root.string());
+  ASSERT_TRUE(cat.has_value());
+  const std::string old_file = "tracks/underlier=SPY/family=strangle_hedged/batch-000000.parquet";
+  const std::string new_file = "tracks/underlier=SPY/family=strangle_hedged/batch-gc-000000.parquet";
+
+  const TrackKey kept_key = make_indexed_key(4, 1);
+  const TrackKey other_retired_key = make_indexed_key(4, 2);
+  const std::string config_json = R"({"template_id":"strangle","canonical_config_hex":"race"})";
+  const std::string data_snapshot_id = "snapshot-race";
+  ASSERT_TRUE(cat->register_staging(kept_key, make_meta(), make_registration_at_rev(1, config_json, data_snapshot_id))
+                  .has_value());
+  ASSERT_TRUE(cat->mark_compacted(kept_key, old_file, 0).has_value());
+  ASSERT_TRUE(cat->register_staging(other_retired_key, make_meta(), make_registration(2)).has_value());
+  ASSERT_TRUE(cat->mark_compacted(other_retired_key, old_file, 0).has_value());
+
+  // Simulates the finding's race directly: GC snapshotted membership
+  // (kept_key still 'compacted') and started rewriting old_file's Parquet
+  // bytes, but BEFORE apply_gc_rewrite runs, a concurrent register_staging
+  // supersedes kept_key via D5 economics-rev retirement -- a real, ordinary
+  // event (same underlier/family/config_json/data_snapshot_id, higher
+  // economics_rev), not a contrived one.
+  const TrackKey superseder_key = make_indexed_key(4, 3);
+  ASSERT_TRUE(cat->register_staging(superseder_key, make_meta(),
+                                    make_registration_at_rev(2, config_json, data_snapshot_id))
+                  .has_value());
+  auto raced_row = cat->probe(kept_key);
+  ASSERT_TRUE(raced_row.has_value() && raced_row->has_value());
+  ASSERT_EQ((*raced_row)->status, TrackStatus::Retired) << "sanity: the race actually fired";
+  ASSERT_TRUE((*raced_row)->file.has_value()) << "supersession never touches file/row_group by itself";
+  EXPECT_EQ(*(*raced_row)->file, old_file);
+
+  const std::vector<std::string> retired_keys{other_retired_key.hex()};
+  const std::vector<std::string> kept_keys{kept_key.hex()}; // stale -- no longer actually 'compacted'
+  auto result = cat->apply_gc_rewrite(old_file, new_file, retired_keys, kept_keys);
+  ASSERT_FALSE(result.has_value())
+      << "a stale kept_keys entry must fail closed, never silently no-op and commit";
+  EXPECT_EQ(result.error().code(), atx::core::ErrorCode::Internal);
+
+  // Fails CLOSED: the whole transaction rolled back, including the
+  // retired_keys half that would have succeeded on its own.
+  auto other_row = cat->probe(other_retired_key);
+  ASSERT_TRUE(other_row.has_value() && other_row->has_value());
+  EXPECT_TRUE((*other_row)->file.has_value())
+      << "the transaction must roll back atomically -- no partial apply, even for the half that matched";
+  auto kept_row_after = cat->probe(kept_key);
+  ASSERT_TRUE(kept_row_after.has_value() && kept_row_after->has_value());
+  ASSERT_TRUE((*kept_row_after)->file.has_value());
+  EXPECT_EQ(*(*kept_row_after)->file, old_file) << "unchanged -- rolled back, not repointed";
+}
+
+TEST(CatalogTest, ApplyGcRewriteFailsClosedWhenARetiredKeyDoesNotActuallyMatch) {
+  const fs::path root = fresh_lake_root("gc-rewrite-badretired");
+  auto cat = Catalog::open(root.string());
+  ASSERT_TRUE(cat.has_value());
+  const std::string old_file = "tracks/underlier=SPY/family=strangle_hedged/batch-000000.parquet";
+
+  const TrackKey still_compacted_key = make_indexed_key(5, 1);
+  ASSERT_TRUE(cat->register_staging(still_compacted_key, make_meta(), make_registration(1)).has_value());
+  ASSERT_TRUE(cat->mark_compacted(still_compacted_key, old_file, 0).has_value());
+
+  // still_compacted_key was never retired -- claiming it as a retired_keys
+  // entry (a caller bug, or a snapshot that went stale) must not silently
+  // clear its file pointer: the WHERE clause's status='retired' guard
+  // rejects this UPDATE (0 rows changed), and that must surface as a hard
+  // failure, not a quiet no-op.
+  const std::vector<std::string> retired_keys{still_compacted_key.hex()};
+  auto result = cat->apply_gc_rewrite(old_file, "", retired_keys, {});
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code(), atx::core::ErrorCode::Internal);
+
+  auto row = cat->probe(still_compacted_key);
+  ASSERT_TRUE(row.has_value() && row->has_value());
+  EXPECT_EQ((*row)->status, TrackStatus::Compacted) << "unaffected -- rolled back";
+  ASSERT_TRUE((*row)->file.has_value()) << "file pointer must survive a rejected/rolled-back call";
+  EXPECT_EQ(*(*row)->file, old_file);
+}
+
 // ── record_trial / trial_stats (feeds B4's DSR) ─────────────────────────────
 
 TEST(CatalogTest, RecordTrialAgainstUnknownTrackFails) {
