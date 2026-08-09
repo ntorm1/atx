@@ -211,6 +211,11 @@ if(ATX_VOL_LAKEHOUSE)
     # actually compiled into atx-vol (src/sweep_driver.cpp joins only under
     # this same guard, atx-vol/CMakeLists.txt).
     target_sources(atx-vol-tests PRIVATE sweep_driver_test.cpp)
+    # D5 fix-round: track_compact's crash-recovery reconcile pass
+    # (research/track_compact_reconcile.hpp) -- needs Catalog::mark_compacted/
+    # list_by_status and TrackStore::compact() actually compiled into
+    # atx-vol, same gate as the three test files immediately above.
+    target_sources(atx-vol-tests PRIVATE track_compact_reconcile_test.cpp)
 endif()
 # backtest_bench_test.cpp was relocated to bench/backtest_throughput_bench.cpp
 # (it is a throughput benchmark, not a correctness gate).

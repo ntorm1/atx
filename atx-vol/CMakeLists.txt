@@ -325,6 +325,16 @@ if(ATX_VOL_LAKEHOUSE)
     # so it stays declared unconditionally, same as track_store.hpp/
     # catalog.hpp; only this .cpp needs the gate).
     target_sources(atx-vol PRIVATE src/sweep_driver.cpp)
+
+    # D5 fix-round: track_compact's crash-recovery reconcile pass
+    # (research/track_compact_reconcile.hpp, src/track_compact_reconcile.cpp)
+    # -- needs BOTH Arrow/Parquet reading (to relocate a track directly in
+    # the lake) AND catalog.hpp, so it cannot live in track_store.cpp
+    # (deliberately Catalog-free, see catalog.hpp's own doc comment) and
+    # gets its own TU, gated the same way as the three sources immediately
+    # above (its header only names already-unconditionally-declared types,
+    # same as sweep_driver.hpp).
+    target_sources(atx-vol PRIVATE src/track_compact_reconcile.cpp)
 endif()
 
 # ---- Algorithm counters (P0.2) ----
