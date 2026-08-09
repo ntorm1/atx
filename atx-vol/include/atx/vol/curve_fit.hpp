@@ -87,6 +87,14 @@ struct CurveSurfaceReport {
   // (never-certified) de-Am audit — certification must not claim Configured-grade
   // de-Am for it. Always 0 when the flag is off (byte-identical default path).
   std::size_t n_slices_legacy_rescued{0};
+  // W1-B (F21): slices whose primary preparation starved under the OTM-only leg
+  // rule and were recovered by re-preparing with `CalibOpts::itm_leg_fallback`,
+  // gated on `SurfaceParityInputs::{per_slice,board_starved}_itm_leg_fallback`.
+  // Orthogonal to `n_slices_legacy_rescued`: the leg rule and the preparation
+  // policy are independent relaxations and a slice can carry both, so the two
+  // counters may each include the same slice. Always 0 when both flags are off
+  // (byte-identical default path).
+  std::size_t n_slices_itm_rescued{0};
   // W3.3 (F3): expiries that stayed below the usable-row floor even after any
   // rescue attempt — truthfully thin (not a defect), surfaced so admission can
   // distinguish a genuinely sparse board from one starved by a preparation

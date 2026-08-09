@@ -166,8 +166,15 @@ struct RowResult {
 // exactly one iteration of the C `ats_vol_svi_build_observations` inner loop
 // (tenor buckets omitted → scalar max_spread_vol / min_vega_weight). The caller
 // has already validated F/T/df and the chain SoA sizing.
+//
+// W1-B: `ignore_preference` disarms ONLY the prefer-OTM gate; every other
+// filter is untouched. It is set exclusively by the ITM-leg fallback pass,
+// which has already established that this strike's OTM leg carries no
+// two-sided quote — so the gate can no longer be choosing between two usable
+// legs, only discarding the one that is left.
 [[nodiscard]] RowResult evaluate_row(const Chain &chain, std::uint16_t strike_idx, Side side,
-                                     double F, double T, double df, const CalibOpts &opts) {
+                                     double F, double T, double df, const CalibOpts &opts,
+                                     bool ignore_preference = false) {
   RowResult r{};
   const double K = chain.strikes[strike_idx];
   if (!(K > 0.0)) {
@@ -198,7 +205,7 @@ struct RowResult {
   // gate deliberately sits AFTER the flag + bid/ask checks, matching the C, so
   // a flagged non-preferred leg still counts as a drop above).
   const bool prefer_call = (K >= F);
-  if (prefer_call != (side == Side::Call)) {
+  if (!ignore_preference && prefer_call != (side == Side::Call)) {
     r.outcome = RowOutcome::Skipped;
     r.rejection = ObsRejectionReason::None;
     return r;
@@ -1111,6 +1118,9 @@ Result<ObsSet> build_observations(const Chain &chain, double F, double T, double
     }
     const auto sidx = static_cast<std::uint16_t>(s);
     const Side preferred = (K >= F) ? Side::Call : Side::Put;
+    const Side other = (preferred == Side::Call) ? Side::Put : Side::Call;
+    ObsRejectionReason preferred_rejection = ObsRejectionReason::InvalidStrike;
+    RowOutcome other_outcome = RowOutcome::Rejected;
     for (int side_i = 0; side_i < 2; ++side_i) {
       const Side side = static_cast<Side>(static_cast<std::uint8_t>(side_i));
       const RowResult rr = evaluate_row(chain, sidx, side, F, T, df, opts);
@@ -1120,10 +1130,40 @@ Result<ObsSet> build_observations(const Chain &chain, double F, double T, double
         ++n_drop;
       }
       if (side == preferred) {
-        out.provenance.push_back(ObsProvenance{static_cast<std::uint32_t>(s), side, rr.rejection});
+        preferred_rejection = rr.rejection;
+      } else {
+        other_outcome = rr.outcome;
       }
       // Skipped: the non-preferred leg — not counted (C bare `continue`).
     }
+
+    // W1-B (F21): the OTM leg carries no two-sided quote, but the ITM leg does
+    // (it reached the preference gate, i.e. `Skipped`). Re-run that leg through
+    // the SAME cascade with only the preference gate disarmed, and take it in
+    // place of the strike's missing OTM evidence. Nothing else about the row is
+    // special-cased: an ITM leg that cannot be inverted, is too wide in vol
+    // units, or carries too little vega is rejected exactly as an OTM leg would
+    // be, and the strike stays dead.
+    Side used_side = preferred;
+    ObsRejectionReason used_rejection = preferred_rejection;
+    if (opts.itm_leg_fallback && preferred_rejection == ObsRejectionReason::InvalidBidAsk &&
+        other_outcome == RowOutcome::Skipped) {
+      const RowResult fb = evaluate_row(chain, sidx, other, F, T, df, opts,
+                                        /*ignore_preference=*/true);
+      used_side = other;
+      used_rejection = fb.rejection;
+      if (fb.outcome == RowOutcome::Accepted) {
+        out.obs.push_back(fb.obs);
+        ++out.n_itm_fallback;
+      } else {
+        // The strike is dead for a NEW reason — the ITM leg's own — which the
+        // first pass never evaluated. Count it, so `n_dropped` still equals the
+        // number of legs this builder judged and threw away.
+        ++n_drop;
+      }
+    }
+    out.provenance.push_back(
+        ObsProvenance{static_cast<std::uint32_t>(s), used_side, used_rejection});
   }
 
   out.n_dropped = n_drop;

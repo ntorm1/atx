@@ -153,6 +153,27 @@ struct CalibOpts {
   double min_vega_weight{1.0e-6}; // drop below this weight_sigma = (vega/spread)²
   double max_spread_vol{0.05};    // drop quotes with spread/vega above this
   double max_weight{1.0e3};       // finite positive upper clip on stored w-space weights
+
+  // W1-B (F21). The builder keeps ONE leg per strike, the OTM one (call for
+  // K >= F, else put). On a penny-dense board both legs are quoted and the
+  // choice is free; on a thin board the OTM leg is frequently absent — an unset
+  // side never reaches the chain, so its SoA slot reads bid = ask = 0 — and the
+  // strike then contributes NOTHING even when its ITM leg is a clean two-sided
+  // quote. Under this flag a strike whose OTM leg carries no two-sided quote
+  // falls back to its ITM leg instead of being discarded. The ITM leg is a
+  // legitimate observation: European put-call parity holds in IV space, so the
+  // de-Americanized ITM premium inverts to the same vol the OTM leg would have.
+  //
+  // The trigger is deliberately narrow — ONLY `InvalidBidAsk` on the OTM leg,
+  // i.e. "there is no OTM quote here". An OTM leg that IS quoted but fails the
+  // quality cascade means the strike itself is bad, and substituting its ITM
+  // twin would launder a rejection rather than recover information.
+  //
+  // Cost, stated honestly: an ITM leg is the wider, lower-vega side, so a
+  // rescued row is a noisier observation than an OTM one. DEFAULT FALSE =>
+  // bit-identical to the historical one-leg rule; the drivers arm it as a
+  // last resort (`SurfaceParityInputs::{per_slice,board_starved}_itm_leg_fallback`).
+  bool itm_leg_fallback{false};
   // 0 = use every surviving observation. Positive = cap the per-slice
   // de-Americanized fit population before the expensive American-IV inversion,
   // selecting adaptive knots by normalized total-variance interpolation error.
@@ -438,9 +459,14 @@ struct DeAmAuditDiagnostics {
 // quotes rejected by the filter cascade (`out_n_dropped` in the C).
 struct ObsSet {
   std::vector<FitObs> obs;
-  // One preferred-leg record per source strike, in source strike order.
+  // One record per source strike, in source strike order, describing the leg
+  // the builder actually USED (or last tried): the OTM leg normally, the ITM
+  // leg on a strike rescued by `CalibOpts::itm_leg_fallback`.
   std::vector<ObsProvenance> provenance;
   std::uint32_t n_dropped{0};
+  // Strikes whose OTM leg carried no two-sided quote and whose ITM leg was
+  // admitted in its place. Always 0 unless `CalibOpts::itm_leg_fallback`.
+  std::uint32_t n_itm_fallback{0};
   // Independent raw-mid American-IV inversions performed only for parity
   // scoring semantics (anchor, cap warm-start, or OTM shortcut).
   std::uint32_t n_score_inversions{0};
@@ -463,7 +489,10 @@ struct ObsSet {
 //     5. IV inversion of the raw mid fails, or the IV ∉ (0.005, 5.0);
 //     6. spread_vol = (ask − bid) / vega > max_spread_vol   (when vega > 1e-12);
 //     7. weight_sigma = vega² / spread² < min_vega_weight.
-//   The non-preferred leg is silently skipped (NOT counted as a drop).
+//   The non-preferred leg is silently skipped (NOT counted as a drop) unless
+//   `opts.itm_leg_fallback` is set AND the preferred leg was rejected at (2),
+//   in which case the ITM leg is re-run through the same cascade and admitted
+//   in its place.
 //
 // The stored `FitObs::mid` is the anchor target (bid / mid / ask per
 // `opts.anchor_kind`); the IV inversion always uses the raw symmetric mid.

@@ -1200,6 +1200,14 @@ Result<VolaSession> VolaSession::build(const Underlying &under, const SessionInp
       prep_policy.legacy_prep_rescue == LegacyPrepRescueMode::EverySlice;
   sp.board_starved_legacy_prep_fallback =
       prep_policy.legacy_prep_rescue == LegacyPrepRescueMode::BoardStarvedOnly;
+  // W1-B (F21): arm the ITM-leg retry in its LAST-RESORT form on every board.
+  // It fires only when the primary preparation left the board with no fittable
+  // slice at all, so it cannot change what a board that already fits serves; on
+  // a board that would otherwise be a total refusal it reads the strike's ITM
+  // leg instead of discarding the strike. Unlike the legacy-prep rescue it is
+  // not gated on the family: it changes which LEG of a strike is read, not the
+  // preparation policy, so it cannot lower a slice's de-Am certification grade.
+  sp.board_starved_itm_leg_fallback = true;
   sp.calib.per_slice_linear_fallback = prep_policy.linear_fallback;
 
   // SOTA hot path: build per-side correction caches and route every American

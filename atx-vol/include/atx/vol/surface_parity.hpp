@@ -255,6 +255,25 @@ struct SurfaceParityInputs {
   // `VolaSession::build` turns it on for every non-eSSVI family.
   bool board_starved_legacy_prep_fallback{false};
 
+  // W1-B (F21): ITM-leg rescue. A starved expiry is re-prepared with
+  // `CalibOpts::itm_leg_fallback` on, so a strike whose OTM leg carries no
+  // two-sided quote contributes its ITM leg instead of nothing. Same two
+  // triggers as the legacy-prep rescue above, and for the same reason: an ITM
+  // leg is the wider, lower-vega side of the strike, so a rescued row is a
+  // noisier observation and the aggressive form is NOT quality-neutral.
+  //
+  // `per_slice_itm_leg_fallback` retries every starved expiry;
+  // `board_starved_itm_leg_fallback` retries only when the primary preparation
+  // left the board with NO fittable slice at all, so it can only convert a
+  // total refusal into a fit and costs nothing on a board that already fits.
+  // The per-slice form wins if both are set. The retry runs AFTER the
+  // legacy-prep rescue in the preparation ladder — measured, not assumed; see
+  // the ladder comment in `fit_curve_surface` — so every W2-B outcome is
+  // unchanged and this relaxation is purely additive.
+  // DEFAULT FALSE => bit-identical to the historical one-leg-per-strike rule.
+  bool per_slice_itm_leg_fallback{false};
+  bool board_starved_itm_leg_fallback{false};
+
   // W3.4 (F4): completeness contract. When TRUE, an expiry whose PREPARATION or
   // slice FIT fails with a HARD error code (anything other than NotFound /
   // Unavailable — i.e. a genuine defect such as a non-converged QP `Internal`)

@@ -234,10 +234,15 @@ TEST(PreparedFitting, LegacyCompatibilityPreservesHistoricalPermissiveRowsAndWei
   const auto prepared = PreparedSlice::create(chain, inputs);
   ASSERT_TRUE(prepared.has_value()) << prepared.error().to_string();
 
-  // Historical eSSVI ignored quote flags and allowed locked bid==ask rows. The
-  // explicit compatibility policy retains both; Configured rejects both.
-  ASSERT_EQ(prepared->fit_observations().size(), chain.n_strikes());
-  EXPECT_TRUE(prepared->rejections().empty());
+  // Historical eSSVI ignored quote FLAGS, and the compatibility policy still
+  // does — that is what it exists for. W1-B narrows it in exactly one place: a
+  // LOCKED market (ask == bid) is no longer admitted anywhere. `make_chain`
+  // locks the strike-6 call, so the permissive population is one row short of
+  // the strike count and carries that single rejection.
+  ASSERT_EQ(prepared->fit_observations().size(), chain.n_strikes() - 1u);
+  ASSERT_EQ(prepared->rejections().size(), 1u);
+  EXPECT_EQ(prepared->rejections().front().key, (ObservationKey{3u, 6u, Side::Call}));
+  EXPECT_EQ(prepared->rejections().front().reason, ObservationRejectionReason::InvalidBidAsk);
   EXPECT_EQ(prepared->provenance().policy, PreparedObservationPolicy::LegacyEssviCompatibility);
   EXPECT_DOUBLE_EQ(prepared->provenance().S, kS);
   EXPECT_DOUBLE_EQ(prepared->provenance().q_eff, kR);
@@ -497,6 +502,108 @@ TEST(PreparedFitting, SharedExpiryPreparationRejectsThinLegacySliceBeforeFit) {
   EXPECT_EQ(surface.error().code(), atx::core::ErrorCode::NotFound);
 }
 
+// ── W1-B: ITM-leg fallback and the locked-market rule ───────────────────────
+
+// The thin-board shape both preparation policies must survive: every strike is
+// above the forward, and only the ITM puts are quoted (an unset side arrives as
+// bid = ask = mid = 0, exactly what the OPRA loader leaves behind).
+[[nodiscard]] Chain make_itm_only_chain() {
+  Chain chain = make_chain();
+  for (std::size_t s = 0; s < chain.strikes.size(); ++s) {
+    chain.strikes[s] = kF + 5.0 * (static_cast<double>(s) + 1.0); // 105 … 140
+  }
+  chain.flags.assign(chain.flags.size(), 0u);
+  for (std::size_t s = 0; s < chain.strikes.size(); ++s) {
+    for (const Side side : {Side::Call, Side::Put}) {
+      const std::size_t idx = chain_index(static_cast<std::uint16_t>(s), side);
+      if (side == Side::Call) {
+        chain.bids[idx] = 0.0; // unquoted OTM leg
+        chain.asks[idx] = 0.0;
+        chain.mids[idx] = 0.0;
+        continue;
+      }
+      const double mid = black76_price(kF, chain.strikes[s], kT, 0.24, kDf, side);
+      chain.mids[idx] = mid;
+      chain.bids[idx] = mid - 0.02;
+      chain.asks[idx] = mid + 0.02;
+    }
+  }
+  return chain;
+}
+
+TEST(PreparedFitting, ConfiguredItmFallbackKeysTheStrikeOnTheLegItActuallyUsed) {
+  Chain chain = make_itm_only_chain();
+  chain.exercise_style = ExerciseStyle::European; // isolate the leg rule from de-Am
+
+  const auto starved = PreparedSlice::create(chain, configured_inputs());
+  ASSERT_FALSE(starved.has_value());
+  EXPECT_EQ(starved.error().code(), atx::core::ErrorCode::NotFound);
+
+  PreparedSliceInputs inputs = configured_inputs();
+  inputs.calib.itm_leg_fallback = true;
+  const auto rescued = PreparedSlice::create(chain, inputs);
+  ASSERT_TRUE(rescued.has_value()) << rescued.error().to_string();
+  ASSERT_EQ(rescued->fit_observations().size(), chain.n_strikes());
+  for (const atx::vol::FitObs &row : rescued->fit_observations()) {
+    EXPECT_EQ(row.side, Side::Put);
+  }
+  // Every accepted observation key names the PUT leg — the source key must
+  // describe the quote the row was built from, not the leg the OTM rule wanted.
+  for (const ObservationKey &key : accepted_keys(*rescued)) {
+    EXPECT_EQ(key.side, Side::Put);
+  }
+}
+
+TEST(PreparedFitting, LegacyPrepAlsoFallsBackToTheItmLegWhenTheOtmLegIsUnquoted) {
+  // American exercise: `PreparedSlice::create` routes a European chain to the
+  // Configured builder even under the legacy policy, so only an American chain
+  // exercises `prepare_legacy`'s own leg-selection rule.
+  const Chain chain = make_itm_only_chain();
+  PreparedSliceInputs inputs = configured_inputs();
+  inputs.policy = PreparedObservationPolicy::LegacyEssviCompatibility;
+
+  const auto without = PreparedSlice::create(chain, inputs);
+  ASSERT_FALSE(without.has_value()) << "the OTM rule alone must find nothing on an ITM-only board";
+  EXPECT_EQ(without.error().code(), atx::core::ErrorCode::NotFound);
+
+  inputs.calib.itm_leg_fallback = true;
+  const auto with = PreparedSlice::create(chain, inputs);
+  ASSERT_TRUE(with.has_value()) << with.error().to_string();
+  // Six of the eight ITM puts invert; the two deepest do not, because the
+  // fixture's mids are European prices and a European put below its American
+  // intrinsic has no American-equivalent vol. That rejection is the de-Am
+  // contract doing its job — the fallback offers the leg, it does not force it.
+  EXPECT_EQ(with->fit_observations().size(), 6u);
+  for (const atx::vol::FitObs &row : with->fit_observations()) {
+    EXPECT_EQ(row.side, Side::Put);
+  }
+}
+
+TEST(PreparedFitting, LockedMarketIsRejectedUnderBothPreparationPolicies) {
+  // W1-B reconciliation: classification and the selector holdout already
+  // required `ask > bid`, while the legacy predicate accepted `ask >= bid`. A
+  // zero-width quote carries no price uncertainty and its floored spread gives
+  // the row ~1e16x a normal row's weight, so the strict rule wins everywhere.
+  Chain chain = make_chain();
+  chain.flags.assign(chain.flags.size(), 0u); // isolate the width rule from flags
+  const std::size_t locked = chain_index(0u, Side::Put);
+  chain.bids[locked] = chain.mids[locked];
+  chain.asks[locked] = chain.mids[locked];
+
+  for (const PreparedObservationPolicy policy :
+       {PreparedObservationPolicy::Configured,
+        PreparedObservationPolicy::LegacyEssviCompatibility}) {
+    PreparedSliceInputs inputs = configured_inputs();
+    inputs.policy = policy;
+    const auto prepared = PreparedSlice::create(chain, inputs);
+    ASSERT_TRUE(prepared.has_value()) << prepared.error().to_string();
+    for (const atx::vol::FitObs &row : prepared->fit_observations()) {
+      EXPECT_GT(std::fabs(row.K - chain.strikes.front()), 1e-9)
+          << "locked strike admitted under policy " << static_cast<int>(policy);
+    }
+  }
+}
+
 TEST(PreparedFitting, ConfiguredCapAppliesIdenticallyToFitKeysAndScoringRows) {
   const Chain chain = make_chain();
   PreparedSliceInputs inputs = configured_inputs();
@@ -750,15 +857,23 @@ TEST(PreparedFitting, LegacyCompatibilityRemainsWiredThroughEssviSurfaceEndToEnd
   ASSERT_TRUE(report.has_value()) << report.error().to_string();
   ASSERT_EQ(report->n_slices, 1u);
   ASSERT_EQ(report->context.size(), 1u);
-  EXPECT_EQ(report->context.front().n_used, underlying.chains.front().n_strikes());
-  // Golden from the historical permissive eSSVI route on this deliberately
-  // flagged/locked board. This pins the compatibility seam end to end.
-  // Economic-seam pin, not a bit-identity pin (PLAN §3): the K2 Choi-L3 IV
-  // seed (e34e3bb) changes the de-Am inversion's Halley path, shifting this
-  // converged ATM IV by ~4.9e-11 vol pts — six orders inside the 1e-4 economic
-  // gate. Tolerance is 1e-9: tight enough to catch any real regression
-  // (>=1e-4-class), loose enough to tolerate iteration-seed LSB drift.
-  EXPECT_NEAR(report->surface.iv_on_slice(0u, 0.0), 0.35315599514657198, 1.0e-9);
+  // W1-B: one row short of the strike count — `make_chain` locks the strike-6
+  // call and a locked market is no longer a usable quote under any policy.
+  EXPECT_EQ(report->context.front().n_used, underlying.chains.front().n_strikes() - 1u);
+  // Golden from the permissive eSSVI route on this deliberately flagged/locked
+  // board. This pins the compatibility seam end to end. Economic-seam pin, not
+  // a bit-identity pin (PLAN §3); tolerance 1e-9 is tight enough to catch any
+  // real (>=1e-4-class) regression and loose enough for iteration-seed LSB
+  // drift such as the K2 Choi-L3 IV seed's ~4.9e-11 Halley-path shift.
+  //
+  // W1-B moved this golden from 0.35315599514657198 to 0.2395…, and the size of
+  // the move is itself the evidence for the locked-market rule. The board is
+  // priced at a flat 24% vol, so the ATM IV SHOULD read ~0.2395 (slightly under
+  // 0.24 because the Black-76 mids are inverted as American premia). The old
+  // golden was 11 vol points high because the locked row's zero width, floored
+  // at kMinSpread = 1e-8, gave that single dead quote ~1e16x a normal row's
+  // weight — one non-market owning the whole slice.
+  EXPECT_NEAR(report->surface.iv_on_slice(0u, 0.0), 0.23953833370592545, 1.0e-9);
 }
 
 TEST(PreparedFitting, BoardCanonicalizesSliceOrderAndRejectsDuplicateExpiryKeys) {

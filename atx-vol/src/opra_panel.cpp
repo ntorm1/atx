@@ -249,10 +249,21 @@ template <typename RateFn>
     double call_mid = -1.0;
     double put_mid = -1.0;
   };
-  // Keyed on the ISO expiry string, which sorts chronologically, so ascending
-  // map iteration visits the front expiry first.
+  // W1-B (F35). The anchor below is `argmin |call_mid - put_mid|`, so a leg
+  // with no bid is not merely admitted — it is PREFERRED: halving one side's
+  // mid shrinks the gap, and the most defective pair on the board becomes the
+  // anchor for the spot the entire pipeline is then built on. Require both legs
+  // strictly two-sided (`bid > 0 && ask > bid`) to enter the pair table at all.
+  // This is the same rule board classification, the Configured cascade and the
+  // selector holdout already use, so the loader no longer trusts a quote the
+  // fitter would refuse. Measured no-op on both OPRA corpora (1.22M rows): no
+  // surviving row has a zero bid or a locked market, so no board's implied spot
+  // moves — it closes the hole rather than papering over one.
   std::map<std::string, std::map<double, MidPair>> by_expiry;
   for (const QuoteRow &row : frame.rows) {
+    if (!(row.bid > 0.0) || !(row.ask > row.bid)) {
+      continue;
+    }
     const double mid = 0.5 * (row.bid + row.ask);
     if (!(mid > 0.0)) {
       continue;
@@ -363,6 +374,27 @@ template <typename RateFn>
   }
   if (std::isfinite(best_spot) && best_spot > 0.0) {
     return Ok(best_spot);
+  }
+  // W1-B: separate the two refusals an operator has to act on differently.
+  // "No pair at all" is a board-shape fact — the GNK / ATAI cohort, where no
+  // strike carries a two-sided call AND a two-sided put — and no tolerance
+  // widening will change it. "No well-conditioned expiry" means pairs exist but
+  // every one of them is sub-1-day or back-solves to a degenerate forward. The
+  // single old message conflated the two and read as the second.
+  std::size_t n_pairs = 0;
+  for (const auto &[expiry, strikes] : by_expiry) {
+    (void)expiry;
+    for (const auto &[strike, pair] : strikes) {
+      (void)strike;
+      if (pair.call_mid > 0.0 && pair.put_mid > 0.0) {
+        ++n_pairs;
+      }
+    }
+  }
+  if (n_pairs == 0) {
+    return Err(ErrorCode::Unavailable,
+               "no strike carries a two-sided call and a two-sided put on any expiry, so "
+               "put-call parity cannot imply a spot; pass spot_override");
   }
   return Err(ErrorCode::Unavailable,
              "no well-conditioned co-terminal expiry to imply spot; pass spot_override");

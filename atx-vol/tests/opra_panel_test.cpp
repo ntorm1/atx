@@ -391,6 +391,71 @@ TEST(OpraPanel, Load_SyntheticXomSlice_CountsAndImpliedSpot) {
   fs::remove_all(dir);
 }
 
+// W1-B (F35): the PCP anchor is chosen by argmin |call_mid - put_mid|, so a leg
+// whose bid is zero drags its stored mid toward the other side's and is picked
+// *preferentially* — the spot the whole pipeline is built on can be anchored on
+// the most defective pair on the board. The anchor must require both legs
+// strictly two-sided.
+TEST(OpraPanel, ImpliedSpot_IgnoresAZeroBidPairWhenChoosingThePcpAnchor) {
+  const double r = 0.04;
+  const std::string snap = "2026-05-01";
+  const double t = pm_year_fraction(snap, "2026-06-19");
+  const double df = std::exp(-r * t);
+  constexpr double kForward = 111.0;
+
+  std::vector<RawRow> rows;
+  const auto add_pair = [&](double strike, double put_mid) {
+    const double call_mid = put_mid + df * (kForward - strike);
+    rows.push_back(
+        RawRow{"XOM", osi_sym("XOM", "260619", 'C', strike), call_mid - 0.05, call_mid + 0.05});
+    rows.push_back(
+        RawRow{"XOM", osi_sym("XOM", "260619", 'P', strike), put_mid - 0.05, put_mid + 0.05});
+  };
+  // Honest pairs whose |C - P| gap is large.
+  add_pair(105.0, 5.0);
+  add_pair(115.0, 5.0);
+  // The defective pair: the put has NO bid (a literal zero), which halves its
+  // stored mid and makes |C - P| the smallest on the board. The forward it
+  // implies is wrong by construction — an ask alone is not a price.
+  rows.push_back(RawRow{"XOM", osi_sym("XOM", "260619", 'C', 110.0), 7.95, 8.05});
+  rows.push_back(RawRow{"XOM", osi_sym("XOM", "260619", 'P', 110.0), 0.0, 16.1});
+
+  const std::string path = write_slice("pcp_zero_bid_anchor.parquet", rows);
+  OpraLoadSpec spec;
+  spec.path = path;
+  spec.underlying = "XOM";
+  spec.snapshot_iso = snap;
+  spec.r = r;
+
+  const auto loaded = load_opra_cbbo_parquet(spec);
+  ASSERT_TRUE(loaded.has_value()) << loaded.error().to_string();
+  EXPECT_NEAR(loaded->implied_spot, kForward * std::exp(-r * t), 1e-3);
+}
+
+// The GNK/ATAI shape: no strike carries a two-sided call AND a two-sided put, so
+// no co-terminal PCP pair exists at all. That is a refusal — but it must SAY
+// that, rather than "no well-conditioned expiry", which reads as a conditioning
+// problem an operator could fix by widening a tolerance.
+TEST(OpraPanel, ImpliedSpot_RefusalNamesTheMissingTwoSidedCoTerminalPair) {
+  std::vector<RawRow> rows;
+  for (const double strike : {105.0, 110.0, 115.0}) {
+    rows.push_back(RawRow{"XOM", osi_sym("XOM", "260619", 'C', strike), 2.0, 2.4});
+    rows.push_back(RawRow{"XOM", osi_sym("XOM", "260619", 'P', strike + 2.5), 3.0, 3.4});
+  }
+  const std::string path = write_slice("pcp_no_pair.parquet", rows);
+  OpraLoadSpec spec;
+  spec.path = path;
+  spec.underlying = "XOM";
+  spec.snapshot_iso = "2026-05-01";
+  spec.r = 0.04;
+
+  const auto loaded = load_opra_cbbo_parquet(spec);
+  ASSERT_FALSE(loaded.has_value());
+  EXPECT_EQ(loaded.error().code(), atx::core::ErrorCode::Unavailable);
+  EXPECT_NE(loaded.error().message().find("two-sided"), std::string::npos)
+      << loaded.error().message();
+}
+
 TEST(OpraPanel, Load_RejectsDisplayedSizeBeforeInt32Narrowing) {
   const i64 too_large = static_cast<i64>((std::numeric_limits<std::int32_t>::max)()) + 1;
   const std::vector<RawRow> rows{RawRow{"XOM", "XOM   260619C00110000", 2.0, 2.2, too_large, 12}};

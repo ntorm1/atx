@@ -878,3 +878,128 @@ TEST(CurveFitLegacyPrepRescue, BoardStarvedModeRecoversATotallyStarvedBoard) {
     EXPECT_EQ(er.outcome, ExpiryFitOutcome::FittedLegacyPrep);
   }
 }
+
+// ── W1-B: the ITM-leg rescue at the driver ──────────────────────────────────
+
+namespace {
+
+// The thin-board shape the one-leg-per-strike rule is blind to: every strike
+// sits ABOVE the forward, so the OTM (call) leg is preferred everywhere — and
+// only the ITM puts are quoted. `make_chain`'s deep-wing calls are simply not
+// there. The board carries real, invertible information at every strike and the
+// OTM rule discards all of it.
+[[nodiscard]] Chain make_itm_leg_only_chain(double T, int n_strikes) {
+  Chain c;
+  c.T = T;
+  c.expiry_ns = static_cast<std::int64_t>(T * 3.1536e16);
+
+  const std::vector<DividendEvent> no_divs;
+  const double F = hybrid_forward(kSpot, kRate, /*borrow=*/0.0, T, no_divs, c.expiry_ns,
+                                  /*now_ts_ns=*/0, HybridDivParams{});
+  const double q_eff = kRate - std::log(F / kSpot) / T;
+
+  constexpr double kLo = 0.02;
+  constexpr double kHi = 0.18;
+  c.strikes.reserve(static_cast<std::size_t>(n_strikes));
+  for (int i = 0; i < n_strikes; ++i) {
+    const double frac = static_cast<double>(i) / static_cast<double>(n_strikes - 1);
+    c.strikes.push_back(F * std::exp(kLo + frac * (kHi - kLo)));
+  }
+
+  const std::size_t n = c.strikes.size();
+  c.bids.assign(2 * n, 0.0);
+  c.asks.assign(2 * n, 0.0);
+  c.bid_sizes.assign(2 * n, 0);
+  c.ask_sizes.assign(2 * n, 0);
+  c.mids.assign(2 * n, 0.0);
+  c.ivs.assign(2 * n, std::numeric_limits<double>::quiet_NaN());
+  c.ts_ns.assign(2 * n, 0);
+  c.flags.assign(2 * n, 0);
+
+  for (std::size_t i = 0; i < n; ++i) {
+    const double K = c.strikes[i];
+    const double sigma = smile_sigma(std::log(K / F));
+    const auto px_res = american_price(kSpot, K, T, sigma, kRate, q_eff, Side::Put,
+                                       AmericanMethod::AndersenLake, std::nullopt);
+    if (!px_res.has_value()) {
+      ADD_FAILURE() << "american_price failed for K=" << K << " T=" << T;
+      continue;
+    }
+    const double px = *px_res;
+    const double half = std::max(0.0025 * px, 1.0e-4);
+    const std::size_t idx = chain_index(static_cast<std::uint16_t>(i), Side::Put);
+    c.mids[idx] = px;
+    c.bids[idx] = px - half;
+    c.asks[idx] = px + half;
+    c.bid_sizes[idx] = 1;
+    c.ask_sizes[idx] = 1;
+  }
+  return c;
+}
+
+} // namespace
+
+TEST(CurveFitItmLegRescue, BoardStarvedModeRecoversAnItmOnlyBoard) {
+  Underlying under;
+  under.spot = kSpot;
+  for (const double T : {0.30, 0.60}) {
+    under.chains.push_back(make_itm_leg_only_chain(T, 13));
+  }
+  CurveConfig cfg;
+  cfg.kind = VolCurveKind::Svi; // no k-coverage gate; the thin-board family
+
+  SurfaceParityInputs off = base_inputs(1);
+  auto rep_off = fit_curve_surface(under, off, cfg);
+  ASSERT_FALSE(rep_off.has_value()) << "the OTM rule must find nothing here";
+  EXPECT_EQ(rep_off.error().code(), ErrorCode::NotFound);
+  EXPECT_NE(rep_off.error().message().find("InvalidBidAsk"), std::string::npos)
+      << rep_off.error().message();
+
+  SurfaceParityInputs on = off;
+  on.board_starved_itm_leg_fallback = true;
+  auto rep_on = fit_curve_surface(under, on, cfg);
+  ASSERT_TRUE(rep_on.has_value()) << rep_on.error().to_string();
+  EXPECT_EQ(rep_on->n_slices, 2u);
+  EXPECT_EQ(rep_on->n_slices_itm_rescued, 2u);
+}
+
+TEST(CurveFitItmLegRescue, BoardStarvedModeLeavesAPartiallyFittingBoardAlone) {
+  // Same last-resort contract the legacy-prep rescue carries: a board that
+  // already produces a slice must be bit-identical, because an ITM row is a
+  // wider, lower-vega observation that can drag worst-slice quality.
+  Underlying under;
+  under.spot = kSpot;
+  under.chains.push_back(make_chain(0.30, 17)); // fits
+  under.chains.push_back(make_itm_leg_only_chain(0.60, 13));
+  CurveConfig cfg;
+  cfg.kind = VolCurveKind::Svi;
+
+  SurfaceParityInputs on = base_inputs(1);
+  on.board_starved_itm_leg_fallback = true;
+  auto rep_on = fit_curve_surface(under, on, cfg);
+  ASSERT_TRUE(rep_on.has_value()) << rep_on.error().to_string();
+  EXPECT_EQ(rep_on->n_slices, 1u);
+  EXPECT_EQ(rep_on->n_slices_itm_rescued, 0u);
+  EXPECT_EQ(rep_on->n_slices_starved, 1u);
+
+  // The per-slice mode is the one that recovers it.
+  SurfaceParityInputs every = base_inputs(1);
+  every.per_slice_itm_leg_fallback = true;
+  auto rep_every = fit_curve_surface(under, every, cfg);
+  ASSERT_TRUE(rep_every.has_value()) << rep_every.error().to_string();
+  EXPECT_EQ(rep_every->n_slices, 2u);
+  EXPECT_EQ(rep_every->n_slices_itm_rescued, 1u);
+}
+
+TEST(CurveFitItmLegRescue, RefusalNamesTheItmFallbackState) {
+  Underlying under;
+  under.spot = kSpot;
+  under.chains.push_back(make_itm_leg_only_chain(0.30, 13));
+  CurveConfig cfg;
+  cfg.kind = VolCurveKind::Svi;
+
+  auto rep = fit_curve_surface(under, base_inputs(1), cfg);
+  ASSERT_FALSE(rep.has_value());
+  EXPECT_NE(rep.error().message().find("itm_fallback=off"), std::string::npos)
+      << rep.error().message();
+}

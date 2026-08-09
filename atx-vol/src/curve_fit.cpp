@@ -1,6 +1,7 @@
 #include "atx/vol/curve_fit.hpp"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -166,6 +167,11 @@ struct ChainPrepass {
   // rows the permissive predicate kept, and rows its fit-inversion audit dropped.
   std::uint32_t legacy_fit_rows = 0;
   std::uint32_t legacy_audit_dropped = 0;
+  // W1-B (F21): this slice's population came from the ITM-leg retry. Orthogonal
+  // to `prep_outcome` — the leg rule and the preparation POLICY are independent
+  // axes, and a slice can be rescued on both — so it is its own flag rather
+  // than another `SlicePrepOutcome` enumerator.
+  bool itm_leg_rescued = false;
 };
 
 // W2-B: the board-level refusal string. `NotFound: no expiry produced a usable
@@ -233,6 +239,10 @@ struct ChainPrepass {
                                                  : "off";
   out += " linear_fallback=";
   out += in.calib.per_slice_linear_fallback ? "on" : "off";
+  out += " itm_fallback=";
+  out += in.per_slice_itm_leg_fallback       ? "every-slice"
+         : in.board_starved_itm_leg_fallback ? "board-starved"
+                                             : "off";
 
   // Widest board evidence available: the retained preparation error of the
   // non-fitting expiry with the most strikes.
@@ -254,15 +264,17 @@ struct ChainPrepass {
     out += "; widest non-fitting expiry #" + std::to_string(widest_index) +
            " T=" + std::to_string(under.chains[widest_index].T) +
            " strikes=" + std::to_string(widest_strikes) + ": ";
-    // Both attempts, when they differ. The primary carries the configured
-    // cascade's rejection histogram (which filter emptied the slice); the second
-    // is what the permissive rescue could still not save (how much of the loss
-    // is the board rather than the policy).
+    // Both ends of the preparation ladder, when they differ. The primary
+    // carries the configured cascade's rejection histogram (which filter
+    // emptied the slice); the second is what the most relaxed attempt still
+    // could not save (how much of the loss is the board rather than the
+    // policy). The ladder's arming state is printed above, so the reader knows
+    // which relaxations that last attempt actually carried.
     out += widest.primary_prep_error.has_value() ? widest.primary_prep_error->to_string()
                                                  : widest.prep_error->to_string();
     if (widest.primary_prep_error.has_value() &&
         widest.prep_error->message() != widest.primary_prep_error->message()) {
-      out += " | after permissive rescue: " + widest.prep_error->to_string();
+      out += " | after the last rescue attempt: " + widest.prep_error->to_string();
     }
   }
   return out;
@@ -389,10 +401,12 @@ struct CarryFallback {
 // W2-B: `allow_legacy_rescue` is the caller's decision, not a re-read of
 // `in.per_slice_legacy_prep_fallback`, because the board-level last-resort pass
 // needs to force the rescue on for a second attempt at chains the first pass
-// already declined it for.
+// already declined it for. W1-B: `allow_itm_rescue` is the same contract for
+// the ITM-leg retry.
 void prepare_fit_slice_into_slot(const Chain &chain, const SurfaceParityInputs &in,
                                  VolCurveKind kind, bool use_fit_cache, bool allow_legacy_rescue,
-                                 bool time_stages, std::size_t i, ChainPrepass &slot) {
+                                 bool allow_itm_rescue, bool time_stages, std::size_t i,
+                                 ChainPrepass &slot) {
   const AmericanCorrectionCaches fit_caches =
       use_fit_cache ? in.deam.caches : AmericanCorrectionCaches{};
   PreparedSliceInputs prepare_inputs;
@@ -412,65 +426,114 @@ void prepare_fit_slice_into_slot(const Chain &chain, const SurfaceParityInputs &
   prepare_inputs.audit_fit_inversions = in.deam.audit_fit_inversions;
   prepare_inputs.max_iv_residual_half_spreads = in.deam.max_iv_residual_half_spreads;
   prepare_inputs.prepare_scoring = in.score_parity;
-  const ProfileClock::time_point t_obs0 =
-      time_stages ? ProfileClock::now() : ProfileClock::time_point{};
-  Result<PreparedSlice> prepared = PreparedSlice::create(chain, prepare_inputs);
-  if (time_stages) {
-    slot.ms_obs_eu += elapsed_ms(t_obs0, ProfileClock::now());
+  // ── Preparation ladder (W2-B, W1-B) ───────────────────────────────────────
+  // Attempts in strictly increasing order of relaxation; the FIRST one to clear
+  // the usable-row floor wins, so a slice is served on the widest population
+  // the least-relaxed rule can build:
+  //
+  //   1. the caller's policy, OTM leg only              (always)
+  //   2. + the permissive predicate     (W2-B, allow_legacy_rescue)
+  //   3. + the ITM leg, caller's policy (W1-B, allow_itm_rescue)
+  //   4. + both
+  //
+  // The ITM relaxation is ordered AFTER the permissive one, and the ordering
+  // was MEASURED rather than assumed. Running the ITM retry first is tempting
+  // (it keeps the strict cascade's provenance) but on lqbench 2026-08-03 it
+  // changed thirteen boards W2-B already recovered: some gained slices, but DNA
+  // fell 6 -> 4 and EVGO 2 -> 1 because a thinner ITM population cleared the
+  // floor and pre-empted the wider permissive one, and PACB left the measured
+  // set entirely. In this order every W2-B outcome is unchanged and W1-B is
+  // purely additive.
+  struct PrepAttempt {
+    PreparedObservationPolicy policy;
+    bool itm_leg;
+  };
+  const bool rescue_eligible =
+      allow_legacy_rescue &&
+      in.fit_prep_policy != PreparedObservationPolicy::LegacyEssviCompatibility;
+  const bool itm_eligible = allow_itm_rescue && !prepare_inputs.calib.itm_leg_fallback;
+  std::array<PrepAttempt, 4> ladder{};
+  std::size_t n_ladder = 0;
+  ladder[n_ladder++] = PrepAttempt{in.fit_prep_policy, prepare_inputs.calib.itm_leg_fallback};
+  if (rescue_eligible) {
+    ladder[n_ladder++] = PrepAttempt{PreparedObservationPolicy::LegacyEssviCompatibility,
+                                     prepare_inputs.calib.itm_leg_fallback};
+  }
+  if (itm_eligible) {
+    ladder[n_ladder++] = PrepAttempt{in.fit_prep_policy, true};
+    if (rescue_eligible) {
+      ladder[n_ladder++] = PrepAttempt{PreparedObservationPolicy::LegacyEssviCompatibility, true};
+    }
   }
 
-  const bool primary_ok =
-      prepared.has_value() && prepared->fit_observations().size() >= kMinPreparedFitRows;
-  if (!primary_ok) {
-    // W2-B: retain the EXPECTED (thin) preparation error too. The builder folds
-    // its rejection histogram into that message, and it is the only surviving
-    // evidence of why the funnel emptied — the board-level refusal below quotes
-    // it. `prep_outcome` stays the discriminator, so no consumer that keys on
-    // `Failed` sees a behaviour change.
-    if (!prepared.has_value()) {
-      slot.primary_prep_error = prepared.error();
+  const auto meets_floor = [](const Result<PreparedSlice> &r) noexcept {
+    return r.has_value() && r->fit_observations().size() >= kMinPreparedFitRows;
+  };
+  const auto run_attempt = [&](const PrepAttempt &a) {
+    PreparedSliceInputs attempt_inputs = prepare_inputs;
+    attempt_inputs.policy = a.policy;
+    attempt_inputs.calib.itm_leg_fallback = a.itm_leg;
+    if (a.policy == PreparedObservationPolicy::LegacyEssviCompatibility &&
+        in.fit_prep_policy != PreparedObservationPolicy::LegacyEssviCompatibility) {
+      // A rescued row was admitted by a predicate the configured cascade
+      // refused, so it is repriced-audited unconditionally (charter §8.1).
+      attempt_inputs.audit_fit_inversions = true;
+      attempt_inputs.out_legacy_fit_rows = &slot.legacy_fit_rows;
+      attempt_inputs.out_legacy_audit_dropped = &slot.legacy_audit_dropped;
     }
-    if (!prepared.has_value() && !prep_error_is_expected(prepared.error().code())) {
-      slot.prep_outcome = SlicePrepOutcome::Failed;
-      slot.prep_error = prepared.error();
-      return;
-    }
-    if (!prepared.has_value()) {
-      slot.prep_error = prepared.error();
-    }
-    const bool rescue_eligible =
-        allow_legacy_rescue &&
-        in.fit_prep_policy != PreparedObservationPolicy::LegacyEssviCompatibility;
-    if (!rescue_eligible) {
-      slot.prep_outcome = SlicePrepOutcome::Starved;
-      return;
-    }
-    PreparedSliceInputs rescue_inputs = prepare_inputs;
-    rescue_inputs.policy = PreparedObservationPolicy::LegacyEssviCompatibility;
-    rescue_inputs.audit_fit_inversions = true;
-    rescue_inputs.out_legacy_fit_rows = &slot.legacy_fit_rows;
-    rescue_inputs.out_legacy_audit_dropped = &slot.legacy_audit_dropped;
-    const ProfileClock::time_point t_rescue0 =
+    const ProfileClock::time_point t0 =
         time_stages ? ProfileClock::now() : ProfileClock::time_point{};
-    Result<PreparedSlice> rescued = PreparedSlice::create(chain, rescue_inputs);
+    Result<PreparedSlice> r = PreparedSlice::create(chain, attempt_inputs);
     if (time_stages) {
-      slot.ms_obs_eu += elapsed_ms(t_rescue0, ProfileClock::now());
+      slot.ms_obs_eu += elapsed_ms(t0, ProfileClock::now());
     }
-    if (!rescued.has_value()) {
-      slot.prep_error = rescued.error(); // the LAST attempt's evidence wins
-      slot.prep_outcome = prep_error_is_expected(rescued.error().code()) ? SlicePrepOutcome::Starved
-                                                                         : SlicePrepOutcome::Failed;
-      return;
-    }
-    if (rescued->fit_observations().size() < kMinPreparedFitRows) {
-      slot.prep_outcome = SlicePrepOutcome::Starved;
-      return;
-    }
-    prepared = std::move(rescued);
-    slot.prep_outcome = SlicePrepOutcome::PreparedLegacyRescue;
-  } else {
-    slot.prep_outcome = SlicePrepOutcome::Prepared;
+    return r;
+  };
+
+  Result<PreparedSlice> prepared = run_attempt(ladder[0]);
+  std::size_t accepted = 0;
+  // W2-B: retain the EXPECTED (thin) preparation error too. The builder folds
+  // its rejection histogram into that message, and it is the only surviving
+  // evidence of why the funnel emptied — the board-level refusal quotes it.
+  // `prep_outcome` stays the discriminator, so no consumer that keys on
+  // `Failed` sees a behaviour change.
+  if (!prepared.has_value()) {
+    slot.primary_prep_error = prepared.error();
   }
+  for (std::size_t a = 1; a < n_ladder && !meets_floor(prepared); ++a) {
+    // A HARD error is a real defect, never a thin slice: stop and surface it
+    // rather than papering over it with a more permissive retry.
+    if (!prepared.has_value() && !prep_error_is_expected(prepared.error().code())) {
+      break;
+    }
+    Result<PreparedSlice> next = run_attempt(ladder[a]);
+    // Adopt a clearing attempt; adopt a failing one only for its ERROR, because
+    // the last attempt's message names the binding condition after every
+    // relaxation. A valued-but-thin attempt is discarded: the ladder is
+    // monotone in permissiveness, so it cannot beat what we already hold.
+    if (meets_floor(next) || !next.has_value()) {
+      prepared = std::move(next);
+      accepted = a;
+    }
+  }
+
+  if (!meets_floor(prepared)) {
+    if (!prepared.has_value()) {
+      slot.prep_error = prepared.error();
+      if (!prep_error_is_expected(prepared.error().code())) {
+        slot.prep_outcome = SlicePrepOutcome::Failed;
+        return;
+      }
+    }
+    slot.prep_outcome = SlicePrepOutcome::Starved;
+    return;
+  }
+  slot.itm_leg_rescued = ladder[accepted].itm_leg && !ladder[0].itm_leg;
+  slot.prep_outcome =
+      (ladder[accepted].policy == PreparedObservationPolicy::LegacyEssviCompatibility &&
+       in.fit_prep_policy != PreparedObservationPolicy::LegacyEssviCompatibility)
+          ? SlicePrepOutcome::PreparedLegacyRescue
+          : SlicePrepOutcome::Prepared;
 
   // Task 1 (k-coverage): count alone (kMinPreparedFitRows) waves through
   // stress-day husks whose belly the absolute spread filters evacuated
@@ -578,7 +641,7 @@ void prepare_fit_slice_into_slot(const Chain &chain, const SurfaceParityInputs &
     slot.df = df;
 
     prepare_fit_slice_into_slot(chain, in, kind, use_fit_cache, in.per_slice_legacy_prep_fallback,
-                                time_stages, i, slot);
+                                in.per_slice_itm_leg_fallback, time_stages, i, slot);
     if (!slot.usable) {
       return; // Starved / Failed already stamped; a confident anchor is still recorded
     }
@@ -741,22 +804,27 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
       pre.carry = std::move(fb_carry);
       pre.carry_available = true;
       prepare_fit_slice_into_slot(under.chains[i], in, cfg.kind, use_fit_cache,
-                                  in.per_slice_legacy_prep_fallback, time_stages, i, pre);
+                                  in.per_slice_legacy_prep_fallback, in.per_slice_itm_leg_fallback,
+                                  time_stages, i, pre);
     });
   }
 
-  // ── Phase 1.75 (W2-B): LAST-RESORT Legacy-prep rescue ─────────────────────
+  // ── Phase 1.75 (W2-B, W1-B): LAST-RESORT re-preparation ───────────────────
   // Only when the board is otherwise a TOTAL refusal — no chain became
-  // fittable — do the starved expiries get a second preparation under the
-  // permissive predicate. Gating on "zero usable slices" is what makes this
+  // fittable — do the starved expiries get a second preparation with the
+  // relaxations the caller armed: the ITM-leg rule (W1-B) and/or the permissive
+  // predicate (W2-B). Gating on "zero usable slices" is what makes both
   // default-safe: a board that already fits skips the loop entirely, so its
-  // served slices, diagnostics and preparation cost are bit-identical to the
-  // pre-W2-B path, and no recovered (permissively populated) slice can drag a
-  // healthy board's worst-slice quality under an admission floor. The
-  // aggressive per-slice form stays available through
-  // `per_slice_legacy_prep_fallback`, which already ran above.
-  if (in.board_starved_legacy_prep_fallback && !in.per_slice_legacy_prep_fallback &&
-      in.fit_prep_policy != PreparedObservationPolicy::LegacyEssviCompatibility &&
+  // served slices, diagnostics and preparation cost are bit-identical, and no
+  // recovered slice — whether it carries permissively-admitted quotes or wider
+  // ITM legs — can drag a healthy board's worst-slice quality under an
+  // admission floor. The aggressive per-slice forms stay available through
+  // `per_slice_{legacy_prep,itm_leg}_fallback`, which already ran above.
+  const bool board_itm_retry = in.board_starved_itm_leg_fallback && !in.per_slice_itm_leg_fallback;
+  const bool board_legacy_retry =
+      in.board_starved_legacy_prep_fallback && !in.per_slice_legacy_prep_fallback &&
+      in.fit_prep_policy != PreparedObservationPolicy::LegacyEssviCompatibility;
+  if ((board_itm_retry || board_legacy_retry) &&
       std::none_of(prepass.begin(), prepass.end(),
                    [](const ChainPrepass &pre) { return pre.usable; })) {
     std::vector<std::size_t> starved_idx;
@@ -765,11 +833,16 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
         starved_idx.push_back(i);
       }
     }
+    // One pass, both relaxations: the ladder inside
+    // `prepare_fit_slice_into_slot` walks them in increasing order, so a board
+    // recovers under the least relaxation that can carry it.
+    const bool allow_legacy = board_legacy_retry || in.per_slice_legacy_prep_fallback;
+    const bool allow_itm = board_itm_retry || in.per_slice_itm_leg_fallback;
     const bool use_fit_cache = allow_fit_cache(in, cfg.kind);
     parallel_for_dynamic(starved_idx.size(), in.fit_workers, [&](std::size_t task) {
       const std::size_t i = starved_idx[task];
-      prepare_fit_slice_into_slot(under.chains[i], in, cfg.kind, use_fit_cache,
-                                  /*allow_legacy_rescue=*/true, time_stages, i, prepass[i]);
+      prepare_fit_slice_into_slot(under.chains[i], in, cfg.kind, use_fit_cache, allow_legacy,
+                                  allow_itm, time_stages, i, prepass[i]);
     });
   }
 
@@ -1041,6 +1114,9 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
     // 5. Commit the slice + its context (ascending T by construction).
     if (pre.prep_outcome == SlicePrepOutcome::PreparedLegacyRescue) {
       ++out.n_slices_legacy_rescued; // W3.3: a starved slice recovered under Legacy prep
+    }
+    if (pre.itm_leg_rescued) {
+      ++out.n_slices_itm_rescued; // W1-B: recovered by reading the strike's ITM leg
     }
     // W3.4 (F4): the committed-slice outcome — LinearVariance fallback and
     // Legacy-prep rescue are surfaced distinctly from a clean primary fit.
