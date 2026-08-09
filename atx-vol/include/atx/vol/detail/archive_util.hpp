@@ -6,6 +6,26 @@
 // surface_archive.cpp so both formats share ONE bit-identical implementation.
 //
 // Thread-safety: CRC/name helpers are pure; publication helpers are thread-safe.
+//
+// ATOMIC-PUBLISH DISCIPLINE, AND ITS ONE DOCUMENTED EXCEPTION. Every durable
+// artifact this file's `reserve_unique_publish_temp_file`/
+// `flush_and_publish_file` pair touches follows the same house rule: write a
+// unique same-directory temp, flush it, then atomically rename it onto the
+// destination -- a reader never observes a partially-written file. The
+// exception is a SQLite-managed database file (Task D3's `catalog.sqlite`,
+// research/catalog.hpp): SQLite owns that file's on-disk durability and
+// crash-consistency itself, via its own WAL journal (`PRAGMA
+// journal_mode=WAL`) -- there is no "write a temp copy of the live database
+// and rename it in" equivalent for a file a running SQLite connection has
+// open and is actively journaling against. Durability there is delegated
+// entirely to SQLite's own mechanisms (the WAL journal plus `synchronous=
+// NORMAL`), and a reader's equivalent of "validate before trusting" is
+// SQLite's own integrity checking (`PRAGMA integrity_check`, or simply that
+// every read goes through a real SQLite connection, which refuses to open a
+// database it cannot parse) rather than this file's temp-then-rename
+// primitives. Nothing in `research/catalog.cpp` calls into
+// `reserve_unique_publish_temp_file`/`flush_and_publish_file` for this
+// reason -- not an oversight, the documented exception.
 
 #include <cstddef>
 #include <cstdint>

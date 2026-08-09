@@ -443,6 +443,31 @@ constexpr const char *kStressRootEnv = "ATX_VOL_CATALOG_STRESS_ROOT";
 #endif
 }
 
+// RAII safety net for the driver test below. `ASSERT_*` (unlike `EXPECT_*`)
+// expands to a bare `return` on failure -- if that fires anywhere between
+// spawning `child_thread` and the driver's own explicit `child_thread.
+// join()`, the `std::thread` destructor would run on a still-joinable
+// thread, which calls `std::terminate()` and crashes the WHOLE test
+// process (not just fails this one test), orphaning the spawned child in
+// the process. This guard's destructor joins (a no-op once the explicit
+// join below has already run -- `joinable()` is then false) and clears
+// `kStressRootEnv` on every exit path, normal or early.
+class StressChildGuard {
+public:
+  explicit StressChildGuard(std::thread &t) : t_(t) {}
+  ~StressChildGuard() {
+    if (t_.joinable()) {
+      t_.join();
+    }
+    ::_putenv_s(kStressRootEnv, "");
+  }
+  StressChildGuard(const StressChildGuard &) = delete;
+  StressChildGuard &operator=(const StressChildGuard &) = delete;
+
+private:
+  std::thread &t_;
+};
+
 // Child half: skipped unless the driver test below set kStressRootEnv.
 TEST(CatalogWriterStressChild, InsertOneThousandRows) {
   const std::string root = stress_root_env();
@@ -474,6 +499,7 @@ TEST(CatalogWriterStressDriver, TwoRealProcessesTwoThousandRowsZeroCorruption) {
   int child_rc = -1;
   std::thread child_thread(
       [&] { child_rc = run_second_process("CatalogWriterStressChild.InsertOneThousandRows"); });
+  StressChildGuard guard(child_thread);
 
   // The PARENT's own 1000 rows, running CONCURRENTLY with the child (both
   // real OS processes/threads, both real WAL-mode SQLite connections to the
@@ -490,8 +516,10 @@ TEST(CatalogWriterStressDriver, TwoRealProcessesTwoThousandRowsZeroCorruption) {
     }
   }
 
+  // Explicit join on the normal path (must happen BEFORE the verification
+  // below, which needs the child's writes complete) -- `guard`'s destructor
+  // then finds the thread already not-joinable and only clears the env var.
   child_thread.join();
-  ::_putenv_s(kStressRootEnv, "");
   EXPECT_EQ(child_rc, 0) << "child process (1000 concurrent inserts) did not exit cleanly";
 
   const fs::path db_path = root / std::string(kCatalogDbName);

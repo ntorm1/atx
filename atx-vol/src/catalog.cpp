@@ -65,8 +65,14 @@ constexpr std::string_view kMarkCompactedSql =
 
 constexpr std::string_view kCountTrialsSql = "SELECT COUNT(*) FROM trials WHERE sweep_id = ?1;";
 
+// ORDER BY trial_id: determinism is a binding sprint constraint. Without an
+// explicit order, the float summation order behind sr_variance's mean/
+// sum-of-squares (Catalog::trial_stats) would ride on SQLite's own implicit
+// scan order -- unspecified by the SQL standard and not itself guaranteed
+// stable across SQLite versions/query plans. trial_id (INTEGER PRIMARY KEY,
+// insertion order) gives a stable, reproducible aggregation order.
 constexpr std::string_view kSelectTrialSharpesSql =
-    "SELECT sharpe FROM trials WHERE sweep_id = ?1 AND sharpe IS NOT NULL;";
+    "SELECT sharpe FROM trials WHERE sweep_id = ?1 AND sharpe IS NOT NULL ORDER BY trial_id;";
 
 constexpr std::string_view kInsertTrialSql =
     "INSERT INTO trials(track_key, sweep_id, sharpe, created_ts) VALUES (?1, ?2, ?3, ?4);";

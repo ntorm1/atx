@@ -61,14 +61,16 @@
 // that makes the lakehouse's catalog writes single-writer/many-reader
 // WITHOUT this task's own file-lock machinery (contrast `detail/
 // writer_lock.hpp`, which exists because BacktestDb/SurfaceDb's manifest is
-// a flat file with no built-in concurrency control at all): SQLite's own WAL
-// journal is the house atomic-publish discipline's documented exception
-// (`detail/archive_util.hpp`'s doc comment) -- the catalog database file is
-// managed by SQLite, not by reserve-temp/flush/atomic-rename. `open()`
-// reads `journal_mode` back after setting it (rather than trusting the
-// PRAGMA's own Status, which reports success even when WAL silently falls
-// back to a different mode on an unsupported filesystem) and fails closed
-// if it did not actually land in WAL.
+// a flat file with no built-in concurrency control at all): `catalog.sqlite`
+// is the house atomic-publish discipline's one documented exception --
+// `detail/archive_util.hpp`'s doc comment names it explicitly -- since a
+// SQLite-managed database file has no "temp copy + atomic rename" equivalent
+// while a connection has it open; durability is delegated entirely to
+// SQLite's own WAL journal instead. `open()` reads `journal_mode` back after
+// setting it (rather than trusting the PRAGMA's own Status, which reports
+// success even when WAL silently falls back to a different mode on an
+// unsupported filesystem) and fails closed if it did not actually land in
+// WAL.
 //
 // A concurrent SECOND writer beyond `busy_timeout`'s budget fails fast with
 // `Err(ErrorCode::Unavailable)` (SQLite's `SQLITE_BUSY`/`SQLITE_LOCKED`,
