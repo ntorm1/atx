@@ -1,0 +1,761 @@
+# atx-vol: surface fitting — breadth and depth
+
+**Date:** 2026-08-09 · **Base:** `main` @ `7195aba` · **Predecessor:** `docs/superpowers/plans/2026-08-09-atx-vol-thin-board-autofit.md`
+**Agent profile:** every implementation task follows `C:\atx\.agents\cpp\agent.md`.
+
+## Goal
+
+Two properties, as acceptance criteria:
+
+1. **Breadth.** Any well-formed American equity board fits, or returns a typed
+   refusal that names a property of the *board* rather than of our plumbing.
+   Today 9.3% of tier-D boards still refuse, and several mechanisms that were
+   built to prevent exactly that are wired up but never execute.
+2. **Depth.** A served surface is arbitrage-free where it is used, the region
+   where that holds is stated rather than implied, and the quality numbers we
+   publish measure the surface we actually serve.
+
+The predecessor sprint fixed *routing*. This one is about the *fit itself* and
+about measuring it honestly.
+
+---
+
+## 0. How to read the evidence in this document
+
+Three sources, weighted differently:
+
+- **Measured** — numbers I produced from real OPRA runs. Reproduce with the
+  commands in §9.
+- **Verified in code** — `file:line` claims I read directly. Every citation in
+  §2, and the ones marked (v) elsewhere, were opened and confirmed.
+- **From the literature** — external results, cited in §8. Where a source is
+  paywalled or a claim is an inference rather than a quotation, it says so.
+
+**Two of my own earlier conclusions are withdrawn in this document** (§1.4).
+That is the third and fourth time this codebase has falsified one of my
+hypotheses about arbitrage. Treat confident causal stories here — including
+mine — as things to measure, not things to build on.
+
+---
+
+## 1. Measured baseline
+
+### 1.1 Where the predecessor sprint left us
+
+240-name liquidity-stratified OPRA universe, 4 snapshots; S&P 100 control,
+4 sessions. Tier C fit success 99.2%, tier D 90.7%, control 416/416, fit CPU
+0.50× pre-sprint, zero-diagnostics 0.0%, targeted tests 213/215.
+
+Still open from that sprint: tier D short of 95%, and cross-session routing
+flips at 10.4% / 14.9% against a 10% bar.
+
+### 1.2 `calendar_arb_free` is populated from two different grids
+
+There are two fit lanes, dispatched at `session.cpp:1268`
+(`if (eff.curve.kind != VolCurveKind::Essvi)`), and they write the *same*
+boolean from *different* domains (v):
+
+| lane | families | check band | grid / pair | repair band |
+|---|---|---|---|---|
+| `run_surface_parity` | eSSVI only | **k ∈ [−3.0, +3.0]** (`surface_parity.cpp:62-64`) | 25 | ±0.50 (`surface_parity.cpp:78-79`) |
+| `fit_curve_surface` | all others | k ∈ [−0.6, +0.6] (`session.cpp:1284-1286`) | 65 | tradeable overlap (`vol_curve.cpp:44-60`) |
+
+k = ±3.0 is a strike 20.1× and 0.0498× the forward. The source itself labels
+that grid **"DIAGNOSTIC ONLY"** (`surface_parity.cpp:60-61`) and explains at
+`:70-77` that the repair was deliberately narrowed to ±0.50 in 2026-08 because
+repairing over ±3.0 had been fabricating served levels — the XOM/CVX defect,
++8..25 ATM vol points.
+
+### 1.3 A separate oracle already certifies the band that matters
+
+`RiskSurfaceValidationConfig` (`detail/risk_surface_validation.hpp:51-68`) (v):
+k ∈ [−0.50, +0.50], **129** calendar points, tolerance **1e-8**, plus price
+bounds, strike monotonicity, butterfly via call-price convexity, and a Lee wing
+slope ceiling of 2.0. It runs on every risk build (`pricer_fitter.cpp:1508`,
+`:1950`, `:2135`) and calendar failure is **not** in the degradable set
+(`surface_policy.cpp:32-33`) (v), so it hard-rejects.
+
+`PricerFitter::surface()` returns the risk surface when Risk is in `outputs`,
+the default (`pricer_fitter.cpp:2221-2229`, `surface_policy.hpp:146-147`).
+
+**Consequence:** boards reporting `calendar_arb_free = false` were, on the same
+run, admitted as calendar-arbitrage-free on |k| ≤ 0.5 at 1e-8. **T1 exists to
+confirm that empirically rather than by inference — do not treat it as settled
+until T1 reports.**
+
+### 1.4 Corrected measurements
+
+Instrumented `universe_autofit` to export `n_calendar_viol_pre` and
+`n_price_bound_violations`. lqbench 15:55 2026-08-03 (221 served); S&P 100
+2026-07-22 (104 served); `--preset robust --r 0.043`.
+
+The check never fails: **0** sentinel-1 rows on either corpus, consistent with
+`arb_check_calendar` having no `Err` path (`arb.cpp:347-383`) (v). Every
+reported `false` is a found crossing.
+
+| corpus | lane | n | % clean | violations / sampled point (mean, median) |
+|---|---|---|---|---|
+| lqbench | eSSVI ±3.0 | 203 | 5.4% | 0.153, 0.152 |
+| lqbench | poly ±0.6 | 18 | 66.7% | 0.051, 0.027 |
+| S&P 100 | eSSVI ±3.0 | 100 | 2.0% | 0.156, 0.164 |
+| S&P 100 | poly ±0.6 | 4 | 25.0% | 0.033, 0.009 |
+
+In the certified band the rate is ~3% and two thirds of boards are clean; out to
+±3.0 it is ~15% and almost nothing is. The apparent corpus gap (10.4% vs 2.9%)
+is mostly lane composition — 91.9% vs 96.2% on the ±3.0 lane — plus more slices
+per board (median 15 vs 13), i.e. more adjacent pairs to test.
+
+Fit quality does not predict the flag: violating boards median `rmse_vol` 0.0338
+vs 0.0352 for clean ones. The violating surfaces fit their quotes *better*.
+
+> **WITHDRAWN (1):** I previously reported "~90% of served surfaces carry a real
+> calendar violation." The crossings are real but sit in a band the library
+> explicitly declines to certify or repair, on surfaces separately certified in
+> the traded band. The framing was wrong.
+>
+> **WITHDRAWN (2):** I previously reported "price-bound violations are 0
+> everywhere, so this is purely calendar." `n_price_bound_violations` is only
+> populated on the polymorphic lane (`session.cpp:1302`); the eSSVI path copies
+> only the calendar fields (`session.cpp:1434-1438`) (v), so it is structurally
+> zero for 92–96% of boards and reads identically to "verified clean."
+> **Butterfly is unmeasured, not clean.**
+
+---
+
+## 2. Root cause of the calendar crossings
+
+Not a hypothesis — a two-line proof from sourced asymptotics.
+
+For SSVI/eSSVI, `w(k) = (θ/2){1 + ρψk/θ + √((ψk/θ + ρ)² + 1 − ρ²)}` with
+ψ = θφ has asymptotic wing slopes
+
+```
+right:  ∂w/∂k    → ψ(1+ρ)/2
+left:   ∂w/∂|k|  → ψ(1−ρ)/2
+```
+
+(Gatheral–Jacquier Remark 4.3: `w(k,t) = ((1±ρ)/2)·θ_t·φ(θ_t)·|k| + O(1)`.)
+
+**If slice i+1 has a smaller wing slope than slice i, the two total-variance
+curves must cross at some finite k**, because `w_{i+1} − w_i → −∞`.
+
+Our sequential eSSVI fit couples slices **only through θ** (v):
+`essvi_calib.cpp:1075-1079` floors the θ band at the previous slice's θ and does
+nothing else. ψ is bounded only by the per-slice butterfly cap
+`essvi_phi_max(theta, rho)` (`vol_surface.cpp:172-174`). Nothing orders the wing
+slopes across maturities.
+
+Flooring θ pins the slices at k = 0 and leaves the wings free. So a board with
+N expiries needs N−1 consecutive pairs to satisfy the wing ordering **by luck** —
+pass rate falls roughly as (1−p)^(N−1). That is why dense mega-caps do worse
+than sparse small-caps, and it matches §1.4: the per-point rate is flat while
+the per-board pass rate collapses with slice count.
+
+Independent practitioner confirmation, same failure, same diagnosis — Wystup
+(MathFinance FX Column, ~2020): *"They are non-intersecting in the region of
+quoted volatilities… if we zoom out… the curves for 2Y and 1Y intersect… this
+isn't a market-based arbitrage, but a model-based arbitrage. The problem is that
+each SVI-fit is done for one maturity, and these tenor-wise calibrations don't
+know of each other."*
+
+### 2.1 The fix is a set of linear constraints
+
+In coordinates (θ, ψ, χ := ρψ), for consecutive slices 1 (near) and 2 (far):
+
+```
+NECESSARY
+  (N1)  θ₂ ≥ θ₁
+  (N2)  ψ₂ + χ₂ ≥ ψ₁ + χ₁        (right wing slope non-decreasing)
+        ψ₂ − χ₂ ≥ ψ₁ − χ₁        (left  wing slope non-decreasing)
+        equivalently |χ₂ − χ₁| ≤ ψ₂ − ψ₁
+
+SUFFICIENT (add)
+  (S1)  ψ₂/θ₂ ≤ ψ₁/θ₁            (φ decreasing in maturity)  — bilinear
+```
+
+(N1) and (N2) are **linear**. Sources: Hendriks & Martini (2019) Prop 3.1;
+Corbetta, Cohort, Laachir, Martini (2019); Mingone (2022). There is a genuine
+discrepancy in the literature over whether (N1)+(N2) alone are sufficient —
+Corbetta et al. say yes, Mingone and Pasquazzi say no. Pasquazzi (2023) Prop
+4.14 resolves it against sufficiency. **Implement (N1)+(N2)+(S1).**
+
+Mingone's **look-ahead cap** matters and a purely sequential scheme lacks it:
+`C_ψi = min( (ψ_{i−1}/θ_{i−1})θ_i , f_i , f_{i+1}/p_{i+1} , … , f_N/∏_{j>i} p_j )`
+with `f_i = min(4/(1+|ρ_i|), √(4θ_i/(1+|ρ_i|)))` and
+`p_i = max((1+ρ_{i−1})/(1+ρ_i), (1−ρ_{i−1})/(1−ρ_i))`. Without it, slice *i* can
+paint slice *i+3* into an infeasible corner.
+
+### 2.2 A dormant hazard, not a current cause
+
+`rho_eff` (`vol_surface.cpp:40-49`) blends ρ across k when `rho_scale > 0`. Every
+published butterfly/calendar condition for SSVI/eSSVI assumes a **single ρ per
+slice**, so a k-dependent ρ would void them.
+
+**It is dormant** (v): `EssviParams::rho_scale{}` defaults to 0
+(`vol_surface.hpp:106`), the function short-circuits at `:41`, and grep finds
+**no assignment** to `.rho_scale` anywhere in `src/` or `include/` outside
+archive round-trip. So this is not causing today's crossings. It is a loaded
+gun: anyone who enables the blend silently invalidates the constraints T3 adds.
+Either delete it or derive its conditions — see T9.
+
+---
+
+## 3. Breadth findings
+
+### B1 — The rescue ladder is inert on the dominant route *(highest value)*
+
+The predecessor sprint's 4-rung preparation ladder (`a2d43e0` ITM leg,
+`4e88207` explicit strictness) lives entirely in `fit_curve_surface`. eSSVI —
+the route taken by `LiquidSingleName`, `OrdinarySingleName` and non-event
+`MegaCapEvent`, i.e. the plurality of the universe — dispatches instead to
+`run_surface_parity` at `session.cpp:1430` (v).
+
+`surface_parity.cpp` contains **zero** occurrences of `itm`,
+`per_slice_itm_leg_fallback`, `board_starved_itm_leg_fallback`,
+`per_slice_legacy_prep_fallback`, `board_starved_legacy_prep_fallback`, or
+`linear_fallback` (v, grep over the whole file). The session sets those flags
+unconditionally (`session.cpp:1199-1202`, `:1210`, `:1211`) and they are
+silently dropped.
+
+Rungs 2 and 4 (permissive predicate) are genuinely moot on that lane — it
+already prepares permissively. **Rung 3 is not**: ITM-leg selection is
+orthogonal to prep policy (`curve_fit.cpp:170-174`), and `per_slice_linear_
+fallback` is likewise unavailable.
+
+This partially undercuts W1-B from the predecessor sprint: its measured gains
+came from non-eSSVI boards only. **Size: 2–4 days.** Prefer making
+`run_surface_parity` delegate preparation to `prepare_fit_slice_into_slot` so
+there is one preparation body, over porting the ladder twice.
+
+### B2 — `FitContext` is never populated, disabling C8 and two profiles
+
+The router's richest branches read `FitContext` (`fit_policy.hpp:54-63`) and no
+production path writes a single field (v). The struct is plumbed intact —
+`CorpusBoard::fit_context` ← `panel.fit_context` ← `spec.fit_context` ←
+`market->fit_context` — but the only production producer of those cells sets
+provenance strings (`dispersion_run.cpp:811`).
+
+Consequences, each independently checkable:
+- `is_event_window` (`fit_policy.cpp:11-16`) is always false ⇒ **the C8 route
+  (`fit_policy.cpp:66`) is unreachable despite having a complete calibrator**,
+  as is the dense-event LinearVariance route (`:58-63`).
+- The Opening-phase C8 demotion (`fit_policy.cpp:95-98`) is dead code.
+- `ProfileKind::VolProduct` unreachable: `profile.cpp:717` hardcodes
+  `in.vol_product = false` (v), no vol products in the ticker-seed table, and
+  the wide-book veto then forces them to `OrdinarySingleName`
+  (`profile.cpp:527-529`). **The predecessor sprint's "vol products 100%" was
+  achieved with those names routed as ordinary single names.**
+- `ProfileKind::HtbDividendName` unreachable: needs `under.flags & kUflagHtb`,
+  and `Underlying::flags` is written only by `tests/profile_test.cpp:203`.
+- Earnings-proximity (`profile.cpp:487`) and forward-dispersion
+  (`profile.cpp:493`) classifier axes never fire.
+
+**Size: 3–5 days** to feed earnings dates, a borrow flag and session phase into
+`FitContext` on the batch path. The consumer side is already built.
+
+### B3 — The 13 residual refusals need two changes, not one
+
+Class (a), `no strike carries a two-sided call and a two-sided put`
+(`opra_panel.cpp:394-398`): reached only when **no** `(expiry, strike)` cell has
+both legs strictly two-sided (`:262-266`, `:292-294`). A genuine board-shape
+fact, not a tolerance.
+
+The PCP spot is **not** necessary — it is an artifact of the loader having no
+spot feed. `OpraLoadSpec::spot_override` exists (`opra_panel.hpp:186`, consumed
+`opra_panel.cpp:1031-1032`) and the batch plumbing exists
+(`opra_batch.hpp:68` → `opra_batch_detail.hpp:237`), but **nothing in production
+fills it**.
+
+**An external spot alone will not fix these boards.** With zero two-sided pairs,
+every expiry's carry solve also fails ⇒ `CarryFailed`
+(`curve_fit.cpp:603-609`), and phase-1.5 repair needs ≥1 confident anchor
+(`:758-762`). The escape hatch exists — `DeAmOptions::imply_borrow=false` +
+`borrow_fixed` (`deamer.hpp:319-320`) returns `confident = true`
+(`deamer.cpp:523-531`) — with **no production caller**.
+
+So: (i) a market-input source populating `spot_override` per (date, symbol),
+1–2 days; (ii) a carry policy falling back to a supplied borrow when no
+co-terminal pair exists, 2–3 days. Both, or neither helps.
+
+### B4 — Instrument conventions that are simply not wired
+
+| shape | defect | size |
+|---|---|---|
+| **0DTE index boards** | `OpraLoadSpec::expiry_close` defaults to `MidnightUtc` (`opra_panel.hpp:205`) and **no production caller sets it** — only two `examples/`. Every same-day expiry is dropped at `opra_panel.cpp:817-822`. PM-close support exists and is correct, just unwired. | 1 day |
+| **Cash-settled European index (SPX/NDX/VIX)** | `exercise_style` defaults to `American` (`opra_panel.hpp:208`); the European branches (`deamer.cpp:814`, `prepared_fitting.cpp:247`, `parity.cpp:123`) are unreachable in production. Index boards run American de-Am on European options. | 1–2 days |
+| **Boards spanning a dividend** | No dividend source on the surface path; `cash_divs` only reaches the fit via the dispersion runner's TSV. A discrete dividend is absorbed into implied borrow, and phase-1.5 then **interpolates linearly across the ex-date step** (`curve_fit.cpp:765`). | 2–3 days |
+| **Hard-to-borrow** | PCP borrow solve brackets `[-0.5, +0.5]` (`deamer.cpp:66-67`); a genuine squeeze cannot be resolved and surfaces as `CarryFailed`. | 1 day + B3(ii) |
+| **Few expiries (1–3)** | **Supported.** Calendar floor skipped while empty (`curve_fit.cpp:935`), `min_fitted_expiries` 1, selector refusal advisory. Wants a regression test, not a fix. | — |
+
+### B5 — Curve-family inventory
+
+`VolCurveKind` (`vol_curve.hpp:78-94`) has six members. Corrected taxonomy: the
+`Wing`/`CStar16M` names I referred to previously live in the separate legacy
+`Parametrization` enum (`vol_surface.hpp:69-76`), not in `VolCurveKind`.
+
+- **CStar** has a *complete, compiled* calibrator (`cstar_calib.hpp:101`,
+  `src/cstar.cpp`, `src/cstar_calib.cpp`, both in `CMakeLists.txt:48-49`) but
+  **no `VolCurveKind` tag**, so `fit_slice_curve` cannot reach it under any
+  configuration. Dead capital.
+- **Wing** has no calibrator at all; every dispatch arm is a no-op or NaN
+  (`vol_surface.cpp:238`, `projection.cpp:59,79`, `arb.cpp:49`).
+- **S3** is a fixture generator (`s3.hpp:71-110`), not an `IVolCurve`.
+- **SplineVol** is half-wired: gated on `CurveConfig::spline_candidate`
+  (default false), refit returns `NotImplemented`, excluded from the DB
+  (`surface_db.cpp:348`, `curve_kind <= 4`).
+- **SABR is absent entirely.** A genuine gap, but not a defect — and eSSVI
+  dominates it for thin slices (3 params, butterfly-certified, whereas Hagan's
+  expansion admits negative densities at low strikes / long maturities).
+
+Hygiene: stale comment at `vol_curve.hpp:77` ("C8 / CStar are deferred");
+no `parse` for `VolCurveKind` — the only string→kind map is an ad-hoc chain at
+`universe_autofit.cpp:371-377` that silently defaults unknown strings to
+`ConvexDense` and does not round-trip `to_string`.
+
+### B6 — The selector is a one-horse race, blocked by a prep pin not a list
+
+`production_selector_config()` (`curve_selector.cpp:77-83`) pushes exactly one
+candidate, eSSVI. `bounded_selector_candidates()` (`:56-75`) has **three test
+callers and zero production callers** (v).
+
+But widening the list buys nothing yet: the selector hardcodes
+`PreparedObservationPolicy::Configured` (`curve_selector.cpp:303`) for
+cross-candidate comparability while the served eSSVI path prepares permissively,
+so on real data every refusal is `sampled=8 prepared=0` (`:285-294`). **Unpin
+preparation first, then widen.** Two further caveats: the ranking metric
+`oos_vw` has no complexity penalty (a 48-node dense curve is compared to a
+5-parameter eSSVI on raw held-out fit), and the relaxed 0.5 coverage floors that
+`d591457` introduced deliberately break cross-family comparability.
+
+---
+
+## 4. Depth findings
+
+### D1 — The number that gates arbitrage is computed on every board and never exported
+
+`universe_autofit` reads 7 of ~30 `SessionDiagnostics` fields
+(`:416-423`) and never touches `risk_health`. The `ValidationDigest`
+(`surface_policy.hpp:111-142`) carries 11 counters and 5 slacks and is reachable
+at `pricer_fitter.hpp:492-495`. **Everything else in this document is measured
+against the wrong band until this is exported.**
+
+### D2 — `CalendarRepair` is inert on every non-eSSVI board
+
+The risk policy sets it (`pricer_fitter.cpp:1250`) and it is copied into parity
+inputs (`session.cpp:1165`), but non-eSSVI dispatches to `fit_curve_surface`,
+and **`curve_fit.cpp` never reads `in.repair`**. So `arb_project_calendar_essvi`
+and the whole `MonotoneFit`/`Project` machinery are unreachable for
+ConvexDense / SVI / C8 / SplineVol / LinearVariance. Either wire a repair stage
+or make the field an error on that lane, so it stops reading as
+configured-and-working.
+
+### D3 — The SVI Lee gate is loose by 2×
+
+Lee's bound in total variance is `limsup w(k)/|k| ≤ 2`. For raw SVI the wing
+slope is `b(1+|ρ|)`, so the bound is **`b(1+|ρ|) ≤ 2`**. Our gate is
+`b(1+|ρ|) ≤ 4` (`arb.cpp:632-641`), chosen "matching the eSSVI convention" —
+but eSSVI carries an explicit `θ/2` prefactor that raw SVI does not. The
+codebase's own oracle uses 2.0 (`risk_surface_validation.hpp:67`), so two gates
+in the same library disagree by 2×.
+
+The backstop that would catch this doesn't: the oracle measures a *local* slope
+over the last 0.0078-wide grid interval at k = ±0.5
+(`risk_surface_validation.cpp:390-391`), and SVI/eSSVI approach their asymptotes
+slowly, so a slice with asymptotic slope 3.5 passes. For SVI/eSSVI the
+asymptotic slope is closed-form — no sampling needed.
+
+SVI is the auto-route for `IlliquidSmallCap` / `HtbDividendName` / `VolProduct`.
+
+### D4 — Reported quality is not the served surface's quality
+
+- `CandidateScore::rmse_vol` is an **out-of-sample** number from a
+  **half-density** fit: `curve_selector.cpp:322-334` splits strike-ordered rows
+  alternately, fits on evens, scores on odds. Production serves a full-board
+  fit whose error is never measured. Wrong data, wrong fit, wrong weighting.
+- `chi2_reduced` hardcodes **dof = 3 for every family**
+  (`curve_fit.cpp:1098`). C8 has 8 parameters; ConvexDense has up to `node_cap`
+  nodes. Systematically optimistic — a 40-node fit on 60 quotes reports N−dof =
+  57 instead of 20.
+- `max_weight = 1e3` (`calib.hpp:155`) **collapses European-exercise weights to
+  uniform**: with `max_spread_vol = 0.05` every surviving row has
+  `weight_w ≥ 400/(2σT)²`, exceeding 1e3 for σT < 0.316 — every listed tenor to
+  ~1.5y at 20 vol. The de-Am builder deliberately skips this clip and says why
+  (`calib.cpp:1490-1495`); the European branch never got the same fix.
+- No robust loss in ConvexDense or SplineVol.
+
+Weighting itself is correct (`obs_weight_w` = vega²/spread²/(2σT)²). The defect
+is entirely on the reporting side.
+
+### D5 — Served-but-bad surfaces are structurally unreportable
+
+`fit_slice_curve` (`vol_curve.hpp:517-523`) has **no diagnostics out-param** —
+unlike `refit_slice_curve`, which takes `FitDiag*`. So RMSE, iteration counts
+and every signal below cannot reach the caller on the serving path. Downstream
+of that:
+
+- **eSSVI can serve the seed cube as a "fit."** When damped normal equations
+  stay non-PD until λ > 1e8, `lm_step` returns −1.0
+  (`essvi_calib.cpp:340-344`) and the caller keeps the last good cube
+  (`:881-883`) — on the first inner step that is the *seed*, returned `Ok`.
+- **"Totally stuck" is indistinguishable from "converged":** when every
+  backtrack is rejected the step routine returns unchanged parameters
+  (`svi_calib.cpp:770-775`), the caller sees step norm exactly 0 and breaks on
+  the convergence test (`:1160-1163`). `inner_iters_total` reads *small* — the
+  counter moves the wrong way.
+- **Every polytope projection is silently swallowed** — `mm_project_admissible`
+  returns `touched` and all six call sites discard it. A slice pinned at
+  b = 1e-8 (flat), |ρ| = 1−1e-4, or the Lee cap is served as an ordinary fit.
+- **C8 revert-to-seed is unflagged**: an inadmissible or butterfly-violating C8
+  fit is discarded for the eSSVI-derived JW seed (`vol_curve.cpp:703-716`) and
+  the caller sees a "C8 curve" that is a plain SVI-JW smile.
+- Every calibrator except the ConvexDense QP returns `Ok` at the iteration cap.
+  Only ConvexDense fails closed and carries a real certificate.
+- eSSVI is **warm-started from the previous surface** within 5 days
+  (`essvi_calib.cpp:993-1011`) with a sequential θ-floor loop-carry, and
+  `FitDiag` has no cold-vs-warm field — two runs producing different parameters
+  look identical in diagnostics.
+
+### D6 — De-Americanization: the audit cannot see the error that matters
+
+- `de_americanize_chain` has **zero production callers** (v) — tests only. The
+  docs at `surface_parity.hpp:23` claiming each expiry runs it are stale.
+- The accuracy gate is **spread-normalised**: `residual / (0.5 * spread)`,
+  budget 0.25 (`deamer.cpp:110-116`), i.e. an absolute budget of `spread/8`. A
+  wide-spread board cannot produce a large number by construction. **This is
+  why "zero de-Am rejections on thin boards" and large silent error coexist.**
+- The audit is **structurally blind to carry error**: it reprices with the same
+  `q_eff` the inversion used (`deamer.cpp:144-145`), so a wrong borrow yields
+  σ such that `price(σ, q_wrong) = mid`, and the audit passes.
+- **Missing IV-band guard on the Legacy path.** `american_iv.cpp:240-242`
+  returns 0.005 for a price at/below intrinsic; `calib.cpp:1337` rejects that
+  but `prepared_fitting.cpp:499-541` only checks `has_value()`. Combined with
+  the board-wide ITM-leg fallback and no |k| cutoff, **a deep-ITM rescued leg
+  quoted at intrinsic enters the fit as a 0.5%-vol observation** — and passes
+  the audit. Affects exactly the thin boards in scope.
+- Fit and serve legs use different Andersen–Lake presets under `Bulk`
+  (`session.cpp:1072` vs `:1084`), so the round trip is not the identity, and
+  parity is scored at the *fit* rung.
+- `n_atm = 1` under Fast/Hft makes every carry-confidence diagnostic report the
+  most reassuring value for the least reliable carry: dispersion 0, LOO shift 0,
+  confidence half-width 0.
+
+The literature is harsher than our own diagnostics. Koster/Menn/Oeltz feed
+*noiseless, model-consistent* American prices to exactly our iterate-on-parity
+loop and it converges fast to **5.92% against a true 5.00% dividend** — +18%
+relative — because the American call may exercise at the dividend date and so
+prices partly off a shorter maturity; forcing call and put IVs to agree by
+moving the forward **mis-attributes a term-structure effect to carry**.
+Burkovska et al. measure ≤1% vanilla price error concealing a **50% error in
+calibrated σ** and a Heston barrier repricing 8.75 → 4.54. And deep-ITM
+de-Americanization is **ill-posed**, not merely inaccurate: their Remark 4.1
+gives S₀=100, K=120, r=1%, P_Am=20.00 with two roots u≈1.036 and u≈1.112 giving
+European prices 18.81 vs 19.69. Guard: `P_Am > (K−S₀)⁺·1.01`.
+
+### D7 — `refit_slice` flips the surface-wide calendar flag from a 3-slice check
+
+`session.cpp:2651-2661` builds an adjacent-only `[prev, candidate, next]`
+surface, then `:2683` sets `diag_.calendar_arb_free = true` unconditionally for
+the **entire** surface, without touching `n_calendar_viol_pre`. That breaks the
+documented `calendar_arb_free == (n_calendar_viol_pre == 0)` invariant
+(`session.hpp:355-359`). The price-bound check immediately below is re-run over
+the full surface for exactly this reason; calendar didn't get the same
+treatment.
+
+---
+
+## 5. Workstreams
+
+Strict file ownership so tasks can run in parallel worktrees. A task must not
+edit another task's files; if it needs to, stop and escalate.
+
+### T1 — Export the oracle. **Do this first, alone.** *(S, ~1 day)*
+
+**Owns:** `atx-vol/examples/universe_autofit.cpp`, `atx-vol/tools/analyze_universe_autofit.py`
+
+Export from `risk_health.validation`: `n_calendar_violations`,
+`n_butterfly_violations`, `n_price_bound_violations`, `n_wing_violations`,
+`max_calendar_slack`, `first_calendar_k`, plus `risk_health.state` and the
+already-exported `n_calendar_viol_pre` / `n_price_bound_violations`.
+
+**Acceptance:** a run over lqbench + control reporting, for every board, the
+oracle's verdict alongside the legacy boolean. Answer explicitly: **how many
+served boards violate calendar inside |k| ≤ 0.5?** If that number is ~0, §2's
+fix is about the wings only and T3 can be scoped down. If it is material, §2's
+fix is load-bearing. **Nothing else in this sprint should start before T1
+reports.**
+
+### T2 — Davis–Hobson feasibility gate *(S, ~1–2 days)*
+
+**Owns:** new `atx-vol/include/atx/vol/detail/quote_feasibility.hpp` + `src/`, `atx-vol/tests/quote_feasibility_test.cpp`
+
+Before fitting a slice, test whether *any* arbitrage-free surface reproduces its
+quotes. Normalise `r_i = p_i/DF`, `k_i = K_i/F`, add `(0, 1)`. Build the support
+function R (largest decreasing convex minorant). Davis–Hobson Thm 3.1: prices
+are consistent with no-arbitrage **iff** R is strictly decreasing on
+`[0, k_{n₀∧n}]`, `R'(0+) ≥ −1`, and `R(k_i) = r_i` ∀i. One monotone convex-hull
+pass, O(n) on sorted strikes.
+
+**Acceptance:** classify every currently-refusing slice as *infeasible data*
+(weak or model-independent arbitrage) vs *fitter limitation*. This re-scopes B3
+and the tier-D gap. Report the split; do not change routing yet.
+
+### T3 — Cross-slice wing-slope ordering in the eSSVI fit *(L, ~5–8 days)*
+
+**Owns:** `atx-vol/src/essvi_calib.cpp`, `atx-vol/include/atx/vol/essvi_calib.hpp`, `atx-vol/tests/essvi_calib_test.cpp`
+
+Implement §2.1. Add (N1)+(N2)+(S1) to the sequential path, in (θ, ψ, χ=ρψ)
+coordinates where (N1)/(N2) are linear. Add Mingone's look-ahead cap so slice
+*i* cannot make slice *i+3* infeasible.
+
+Recommended shape, from Pasquazzi's 108-chain comparison: **Corbetta anchoring
+as the warm start, Mingone's box as the refinement.** Corbetta anchors the slice
+at the observed near-ATM point (k*, θ*) via `θ = θ* − ρψk*`, leaving 2 free
+parameters and a closed-form ψ interval per ρ — which is also the best available
+answer for thin slices (§B, T7). Mingone's box makes the whole N-slice
+admissible region a product of intervals, so bounded LM with an analytic
+Jacobian and no active-set logic suffices.
+
+**Acceptance:** calendar violations inside the certified band go to zero and stay
+there; `rmse_vol` on the control corpus does not worsen by more than 5%
+like-for-like; fit CPU within 1.3×. Corbetta report 1.2 s in Python for 12
+maturities × ~98 options, ~0.01 s estimated in C#, so this should be cheap.
+**Do not start before T1.**
+
+### T4 — Exact crossing detection; state the certified band *(M, ~3 days)*
+
+**Owns:** `atx-vol/src/arb.cpp`, `atx-vol/include/atx/vol/arb.hpp`, `atx-vol/tests/arb_test.cpp`
+
+Two changes:
+1. Replace grid sampling with the **quartic root test**. Two raw-SVI (or eSSVI
+   difference) slices cross exactly where a quartic has a real root
+   (GJ Lemma 3.3 / eq. 3.7); Ferrari/Cardano closed form, ~50 flops, exact
+   crossing locations, no missed narrow crossings. Back-substitute to drop
+   spurious roots from the two squarings. Keep the grid scan as a test oracle.
+2. Make the served-surface gate report **in-band and out-of-band violations as
+   separate counters**, over one band and one grid for both lanes. A fixed
+   |k| ≤ 0.60 window is delta-inhomogeneous by eleven orders of magnitude across
+   a board — at 1 week / 35 vol the call delta at k = +0.60 is 0 to machine
+   precision; at 2 years it is 0.084. Report in a delta band (Wystup's 1%–99%)
+   or in standard-deviation moneyness `k/√w`. Keep an unbounded-k check as an
+   *internal invariant*, because Roper (IV4) is quantified over all of ℝ and
+   anything computing Dupire local vol off this surface needs it.
+
+**Acceptance:** one metric, one band, documented; the two lanes comparable.
+
+### T5 — Deep-ITM de-Am guard and a real round-trip metric *(M, ~3 days)*
+
+**Owns:** `atx-vol/src/deamer.cpp`, `atx-vol/include/atx/vol/deamer.hpp`, `atx-vol/src/prepared_fitting.cpp`, `atx-vol/tests/deamer_test.cpp`
+
+1. Hard-gate `P_Am > (K−S₀)⁺·(1+δ)`, δ = 1% (D6, Burkovska Remark 4.1). Below
+   that the inversion is multi-valued and the answer depends on the bracket.
+2. Close the IV-band hole at `prepared_fitting.cpp:499-541` so an intrinsic-priced
+   deep-ITM rescued leg cannot enter as a 0.5%-vol observation.
+3. Add an **absolute** round-trip metric in vol points — de-Am → fit →
+   re-Americanize → compare to the original American mid — alongside the
+   spread-normalised ratio. The current gate cannot fail on a wide board.
+
+**Acceptance:** the round-trip error is reported per board on the benchmark, and
+the thin-board population is measured rather than assumed clean.
+
+### T6 — One-sided quotes as bounds, not discards *(M, ~4 days)*
+
+**Owns:** `atx-vol/src/calib.cpp`, `atx-vol/include/atx/vol/calib.hpp`, `atx-vol/src/opra_panel.cpp`, `atx-vol/tests/calib_test.cpp`
+
+Do **not** use hard inequality constraints — Cohen–Reisinger–Wang warn that
+arbitrage-free prices may not exist inside the bid-ask box, making the problem
+infeasible. Use their asymmetric soft penalty, with
+`δ_j^a = ask_j − ref_j`, `δ_j^b = ref_j − bid_j`:
+
+```
+f_j(x) = max( −x − δ_j^b + ε₀ ,  −(ε₀/δ_j^b)·x ,  (ε₀/δ_j^a)·x ,  x − δ_j^a + ε₀ )
+ε₀ = (1/N)·min_j(δ_j^a ∧ δ_j^b)
+```
+
+Slope `ε₀/δ` inside the band, unit slope outside — so it *is* liquidity
+weighting, degrading to `1/spread` when both sides quote. A bid-only strike sets
+`δ^a = +∞` and keeps a one-sided arm. Convex and piecewise-linear, so it drops
+into the existing IRLS loop. Also: project a missing or incoherent bid onto the
+lower arbitrage bound rounded up to the tick and **keep the strike**, rather
+than discarding it.
+
+**Acceptance:** strikes currently dropped for one-sidedness contribute; tier-D
+`rmse_vol` does not worsen; the count of admitted-as-bound legs is reported.
+
+### T7 — Thin-slice shape borrowing *(M, ~4 days)* — start after T3
+
+**Owns:** `atx-vol/src/curve_fit.cpp` (prep/fallback region only), `atx-vol/tests/curve_fit_test.cpp`
+
+For slices below the identifiability floor, freeze SVI-JW `{ψ, p, c, ṽ}` from
+the neighbour or a board-level fit and fit only `v_t` — **a 1-parameter fit that
+needs 1 quote**. Justification is Gatheral–Jacquier's own: *"If smiles scaled
+perfectly as 1/√w_t (as is approximately the case empirically), these parameters
+would be constant, independent of the slice t."* Pair with their closed-form
+butterfly guarantee `c' = p + 2ψ`, `ṽ' = v·4pc'/(p+c')²`.
+
+Depends on T3 because the borrowed shape must satisfy the ordering constraints.
+
+### T8 — Breadth wiring *(M, ~4 days, parallelisable internally)*
+
+**Owns:** `atx-vol/src/opra_panel.cpp` (loader defaults), `atx-vol/src/opra_batch*.cpp`, `atx-vol/include/atx/vol/opra_panel.hpp`
+
+B4 rows 1–2 (0DTE PM close, European index exercise style) and B3(i)
+(`spot_override` feed). Cheap, high-visibility, independent of the depth work.
+Conflicts with T6 on `opra_panel.cpp` — sequence them or split the file
+ownership by function.
+
+### T9 — Decide the ρ-blend, prune the dead *(S, ~2 days)*
+
+**Owns:** `atx-vol/include/atx/vol/vol_surface.hpp`, `atx-vol/src/vol_surface.cpp`, `atx-vol/include/atx/vol/vol_curve.hpp`
+
+Either delete `rho_R`/`rho_scale` or derive and enforce its no-arbitrage
+conditions (§2.2). It is dormant today; leaving a switch that silently voids
+T3's guarantees is the worst of the three options. Also: fix the stale comment
+at `vol_curve.hpp:77`, add a real `parse_curve_kind` that round-trips
+`to_string`, and decide whether CStar gets a `VolCurveKind` tag or gets deleted.
+
+### T10 — Diagnostics out-param on the serving path *(M, ~3 days)*
+
+**Owns:** `atx-vol/include/atx/vol/vol_curve.hpp`, `atx-vol/src/vol_curve.cpp`, `atx-vol/src/svi_calib.cpp`, `atx-vol/src/c8_calib.cpp`
+
+Give `fit_slice_curve` a `FitDiag*` out-param mirroring `refit_slice_curve`, and
+populate: converged flag, iteration count, final gradient norm, `projection_
+touched`, `reverted_to_seed`, `warm_started`. Nothing in D5 is observable until
+this exists. Conflicts with T3 on `essvi_calib.cpp` — T3 owns that file; T10
+takes the others and T3 adds the eSSVI fields.
+
+---
+
+## 6. Sequencing
+
+```
+T1  ────────────────────────────────  (alone; gates everything)
+     │
+     ├── T2 ──────────  (re-scopes breadth; report before T7/T8 land)
+     ├── T3 ──────────────────────── T7          (depth core)
+     ├── T4 ──────────  (metric; independent of T3's implementation)
+     ├── T5 ──────────
+     ├── T6 ──────────  ┐ conflict on opra_panel.cpp
+     ├── T8 ──────────  ┘ sequence or split by function
+     ├── T9 ──────────
+     └── T10 ─────────  (T3 owns essvi_calib.cpp)
+```
+
+T1 first and alone. T2 next, because it may show that a chunk of the residual
+9.3% is data that no fitter can serve, which would change T6's and T8's value.
+Everything else parallelises with the ownership above.
+
+---
+
+## 7. Acceptance gates
+
+1. **Calendar, stated honestly.** One certified band, one grid, both lanes.
+   In-band violations on served surfaces: **zero**. Out-of-band reported
+   separately and not treated as a defect unless something evaluates there.
+2. **Butterfly measured.** A surface-level butterfly counter exists and is
+   exported for both lanes. Currently it is structurally zero on 92–96% of
+   boards and we cannot say anything about it.
+3. **Tier D fit success ≥ 95%**, or a Davis–Hobson classification showing the
+   residual is infeasible data rather than a fitter limitation. Either outcome
+   closes the gate; a bare number does not.
+4. **Control corpus holds:** 416/416, eSSVI in-band median ≥ 0.94, and
+   like-for-like `rmse_vol` no worse than 1.05×.
+5. **Fit CPU ≤ 1.3×** the current 0.50× baseline, load-normalised. Do not
+   divide the fit ratio by the load ratio — see the predecessor plan's method
+   notes.
+6. **De-Am round-trip** reported in absolute vol points on every benchmark
+   board, not only as a spread-normalised ratio.
+7. **No served surface is silently degraded:** projection-touched,
+   reverted-to-seed, and iteration-capped all reach the caller.
+8. Targeted tests pass; `hygiene` preset clean.
+
+---
+
+## 8. Considered and rejected
+
+| Approach | Why not |
+|---|---|
+| **Carr–Pelts / Ensemble CP** | 3.11 s per SPX surface, and every price evaluation contains a Newton solve for ẑ — nondeterministic cycle count on the hot path. No implied vol without a further numerical inversion. Genuinely good for an LV/LSV stack; wrong tool here. |
+| **Neural surface smoothing** (Ackerer et al.; Zheng et al.) | 1.3–2.2 min per surface on K80s, no batching win since each board is its own fit. No-arbitrage enforced as a *soft penalty on a synthetic grid*, so you must run a checker anyway — at which point a cheap QP projection dominates. Non-deterministic and seed-sensitive. The one idea worth stealing is the multiplicative-corrector structure, which needs no network. |
+| **Fengler constrained-spline QP** | Good nightly de-arbitrage sweep, not a tick-path fitter: a capped-iteration QP can return an *infeasible* point, the backward maturity chaining serialises expiries, and the output is a price spline needing a BS inversion per served strike. Keep in reserve. |
+| **Andreasen–Huge / discrete local vol** | Viable — 3.2 ms/expiry measured, sub-ms achievable with a fixed grid and a hand-rolled Thomas solver — but grid selection is data-dependent (branchy hot path) and the output is a discrete price vector needing an arbitrage-preserving interpolant, with a documented staircase density and spurious ATM spike. Reserve as a fallback for boards where the parametric fit exceeds bid-ask. |
+| **SABR for thin slices** | eSSVI is also 3 parameters *and* butterfly-certified; Hagan's expansion admits negative densities at low strikes and long maturities. Strictly dominated for this use. |
+| **Widening the arb tolerance** | Treats the symptom. With (N1)(N2)(S1) the surface is calendar-free on all of ℝ, which makes the band debate moot. |
+
+---
+
+## 9. Reproducing the measurements
+
+```
+# instrumented example (T1 extends this)
+cmake --build build-rel --target universe_autofit
+
+build-rel/bin/universe_autofit.exe \
+  --opra-root C:/atx-data/opra-v1-lqbench-1555 --date 2026-08-03 \
+  --symbols-file C:/atx-data/universe/lqbench_clean.txt \
+  --snapshot-suffix T19:55:00Z --r 0.043 --preset robust --out lq.csv
+
+# control (all four sessions are stamped T19:55:00Z)
+build-rel/bin/universe_autofit.exe \
+  --opra-root <scratch>/opra-v1-hivebench --date 2026-07-22 \
+  --symbols-file <scratch>/sp100.txt \
+  --snapshot-suffix T19:55:00Z --r 0.043 --preset robust --out sp100.csv
+```
+
+Gate scorer and the tier map live in the predecessor sprint's artifacts.
+
+---
+
+## 10. References
+
+**Calendar / SSVI constraints**
+- Gatheral & Jacquier, *Arbitrage-free SVI volatility surfaces*, Quantitative Finance 14(1):59–71 (2014). [arXiv:1204.0646](https://arxiv.org/abs/1204.0646). Thm 4.1 (calendar, iff), Thm 4.2 + Lemma 4.2 (butterfly; cond. 1 necessary = Lee), Remark 4.3 (wing slopes), Lemma 3.3/eq. 3.7 (quartic), §5.1 (butterfly repair), §5.2 (crossedness), Thm 4.3, Lemma 5.1.
+- Hendriks & Martini, *The extended SSVI volatility surface*, J. Computational Finance 22(3):25–39 (2019). [SSRN 2971502](https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2971502). Prop 3.1.
+- Corbetta, Cohort, Laachir, Martini, Decisions in Economics and Finance 42(2):665–677 (2019). [arXiv:1804.04924](https://arxiv.org/abs/1804.04924). Anchoring; ρ-sampling + Brent.
+- Mingone, Quantitative Finance 22(12) (2022). [arXiv:2204.00312](https://arxiv.org/abs/2204.00312). Global box, Prop 3.1, look-ahead cap.
+- Pasquazzi, *eSSVI Surface Calibration*, [arXiv:2304.02106](https://arxiv.org/abs/2304.02106) (2023). Prop 4.14 resolves the necessity/sufficiency discrepancy; 108-chain empirical comparison.
+- Roper, *Arbitrage Free Implied Volatility Surfaces*, Univ. of Sydney (2010). Thm 2.9 (IV1–IV6), Thm 2.15.
+- Wystup, *Calendar arbitrage in the FX volatility surface*, MathFinance FX Column (~2020).
+
+**Wings**
+- Lee, *The Moment Formula for Implied Volatility at Extreme Strikes*, Mathematical Finance 14(3):469–480 (2004). Thm 3.2/3.4; §5.1 on spline extrapolation.
+- Benaim & Friz, *Regular Variation and Smile Asymptotics*, Mathematical Finance 19(1):1–12 (2009). [arXiv:math/0603146](https://arxiv.org/abs/math/0603146).
+
+**Quotes, feasibility, repair**
+- Davis & Hobson, *The Range of Traded Option Prices*, Mathematical Finance 17(1):1–14 (2007). Thm 3.1.
+- Cohen, Reisinger & Wang, *Detecting and Repairing Arbitrage in Traded Option Prices*, Applied Mathematical Finance 27(5):345–373 (2020). [arXiv:2008.09454](https://arxiv.org/abs/2008.09454). Asymmetric penalty; infeasibility warning.
+- Gerhold & Gülüm, [arXiv:1608.05585](https://arxiv.org/abs/1608.05585). Bid-ask consistency conditions.
+- Echenim, Gobet & Maurice, [arXiv:2207.02989](https://arxiv.org/abs/2207.02989) (2022). Missing-bid projection.
+- Le Floc'h, [arXiv:2004.08650](https://arxiv.org/abs/2004.08650); *Arbitrage in Zeliade's SVI example*.
+- Cont & Tankov, J. Computational Finance 7(3) (2004), §4.3. Morozov discrepancy principle for the regularisation weight.
+
+**De-Americanization**
+- Burkovska, Gaß, Glau, Mahlstedt, Schoutens, Wohlmuth, *Calibration to American options: numerical investigation of the de-Americanization method*, Quantitative Finance 18(7):1091–1113 (2018). [arXiv:1611.06181](https://arxiv.org/abs/1611.06181). Remark 4.1 (ill-posedness); parameter vs price error. **No dividend results — the dividend claim is their conjecture.**
+- Koster, Menn & Oeltz (RIVACON), *Forward Fitting to Quotes of American Options*. The +18% relative dividend error on noiseless input.
+- Liu, Leitao, Borovykh & Oosterlee, Applied Mathematical Finance (2022). [arXiv:2001.11786](https://arxiv.org/abs/2001.11786), §2.3.2. Early-exercise differential.
+- Andersen, Lake & Offengenden, J. Computational Finance 20(1):39–87 (2016). [SSRN 2547027](https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2547027).
+- Healy, [arXiv:2109.15157](https://arxiv.org/abs/2109.15157), Table 6. ~5.6 µs/price batched.
+- Battauz, De Donno & Sbuelz, Management Science 61(5):1094–1107 (2015). Double continuation region under negative carry — relevant to HTB names.
+
+**Rejected approaches**
+- Andreasen & Huge, *Volatility Interpolation*, Risk 24(3) (2011). [SSRN 1694972](https://papers.ssrn.com/sol3/papers.cfm?abstract_id=1694972).
+- Fengler, Quantitative Finance 9(4):417–428 (2009). [EconStor 10419/25038](https://www.econstor.eu/bitstream/10419/25038/1/496021680.PDF).
+- Antonov, Spector & Konikov, Risk (Aug 2020). [SSRN 3403708](https://papers.ssrn.com/sol3/papers.cfm?abstract_id=3403708).
+- Ackerer, Tagasovska & Vatter, NeurIPS 2020. [arXiv:1906.05065](https://arxiv.org/abs/1906.05065). Table 6 timings.
+
+---
+
+## 11. Unverified, flagged
+
+- §1.3's inference that every `status=ok` board passed the risk oracle rests on
+  `surface()` returning the risk surface by default. T1 confirms it empirically.
+- All breadth reachability claims are static (grep + read); nothing was executed
+  to observe a branch being taken.
+- The Corbetta-vs-Mingone sufficiency discrepancy was resolved via Pasquazzi,
+  not by reading Hendriks–Martini directly (paywalled).
+- Frequency of the ConvexDense wing-fallback path (D-review F5): the counter
+  exists but is compiled out by default.
+- Hull eq. 11.11's dividend parity bound: three agreeing secondary sources, no
+  primary fetch.
+- No vendor's explicit minimum-quote count could be found. A data-sufficiency
+  *gate* demonstrably exists (Cboe's VIX methodology refuses outright when all
+  OTM puts are excluded); a numeric threshold could not be verified.
