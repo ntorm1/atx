@@ -65,6 +65,16 @@
       }
     },
     {
+      "name": "dev-lakehouse-off",
+      "inherits": "dev",
+      "displayName": "dev-lakehouse-off: dev + ATX_VOL_LAKEHOUSE=OFF (CI link-check leg, E3)",
+      "description": "Task E3 CI gate: proves the minimal-install configuration (no research Parquet track store / track_compact CLI) still configures and LINKS cleanly -- track_store.cpp/catalog.cpp/sweep_driver.cpp/track_compact_reconcile.cpp/track_gc.cpp and their tests drop out of the graph entirely (see atx-vol/CMakeLists.txt's ATX_VOL_LAKEHOUSE guard and atx-vol/tests/CMakeLists.txt's matching guard) rather than leaving a dangling undefined-symbol link error. Own binaryDir (build-lakehouse-off/) so this never disturbs the warm ON build in build/ -- D2 verified this leg by temporarily flipping build/'s cache variable and reverting; this preset makes the same leg a standing, non-destructive, re-runnable target instead. Same toolchain/deps as `dev` (ATX_VOL_LAKEHOUSE does not touch compiler flags or third-party deps, so no FETCHCONTENT_BASE_DIR isolation is needed the way rel-avx2 needs one). See atx-vol/ci/lakehouse_off_link_gate.ps1.",
+      "binaryDir": "${sourceDir}/build-lakehouse-off",
+      "cacheVariables": {
+        "ATX_VOL_LAKEHOUSE": "OFF"
+      }
+    },
+    {
       "name": "rel",
       "inherits": "dev",
       "displayName": "rel: Release (canonical acceptance / benchmarks)",
@@ -112,6 +122,7 @@
     { "name": "dev", "configurePreset": "dev" },
     { "name": "dev-counters", "configurePreset": "dev-counters" },
     { "name": "dev-shared", "configurePreset": "dev-shared" },
+    { "name": "dev-lakehouse-off", "configurePreset": "dev-lakehouse-off" },
     { "name": "rel", "configurePreset": "rel" },
     { "name": "rel-avx2", "configurePreset": "rel-avx2" },
     { "name": "hygiene", "configurePreset": "hygiene" },
