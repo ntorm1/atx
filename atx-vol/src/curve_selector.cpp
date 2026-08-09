@@ -10,6 +10,7 @@
 #include <numeric>
 #include <optional>
 #include <span>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -49,6 +50,27 @@ std::vector<CurveConfig> default_selector_candidates() {
   candidates.push_back(convex);
   candidates.push_back(svi);
   candidates.push_back(c8);
+  return candidates;
+}
+
+std::vector<CurveConfig> bounded_selector_candidates() {
+  std::vector<CurveConfig> candidates;
+  CurveConfig essvi;
+  essvi.kind = VolCurveKind::Essvi;
+  CurveConfig svi;
+  svi.kind = VolCurveKind::Svi;
+  CurveConfig linear;
+  linear.kind = VolCurveKind::LinearVariance;
+  // eSSVI's broad-coverage baseline first (so a budgeted caller that stops after
+  // one candidate still gets the safe family), then the two other cheap
+  // parametric forms. ConvexDense and C8 are deliberately absent: the dense
+  // per-expiry QP and the eight-parameter fit are what make
+  // `default_selector_candidates()` a research ladder, and excluding them bounds
+  // the cost DETERMINISTICALLY -- a wall-clock `time_budget_ms` would make the
+  // chosen family depend on host load.
+  candidates.push_back(essvi);
+  candidates.push_back(svi);
+  candidates.push_back(linear);
   return candidates;
 }
 
@@ -259,6 +281,25 @@ prepare_expiry(const Underlying &under, const SurfaceParityInputs &in, std::size
   // only the SERVED build in fit_curve_surface; consulting it here would let the
   // permissive Legacy predicate feed different populations to different
   // candidates. Hardcoded on purpose, not an oversight.
+  //
+  // W1-A re-examined this and KEPT it, with the cost now written down. Measured
+  // (lqbench 2026-08-03/05, both snapshot minutes): every single `select_curve`
+  // refusal on real OPRA data is `sampled=8 prepared=0` -- all eight sampled
+  // expiries fail below, none of them at the holdout split. The same boards fit
+  // cleanly with `--pin essvi` (served under the permissive
+  // LegacyEssviCompatibility prep) and fail with `--pin svi` /
+  // `--pin linear-variance` under this same strict cascade
+  // ("no expiry produced a usable slice"). So the selector is scoring a
+  // materially stricter population than the eSSVI route it is selecting FOR,
+  // and on a wide-spread board that costs it every expiry.
+  //
+  // Scoring each candidate under the policy it would actually be served with is
+  // the honest fix, but it is a preparation-policy decision (F02/W2-B, where
+  // prep strictness stops riding on family choice) and it would trade this
+  // failure for a silent one: candidates ranked on different row populations.
+  // Until prep policy is an explicit input, the comparability pin stays and
+  // PricerFitter treats the refusal as ADVISORY -- a refusal here can no longer
+  // drop the board (see `FitDecision::selector_fallback`).
   inputs.policy = PreparedObservationPolicy::Configured;
   inputs.prepare_scoring = true;
   Result<PreparedSlice> prepared = PreparedSlice::create(chain, inputs);
@@ -457,11 +498,13 @@ Result<SelectorResult> select_curve(const Underlying &under, const SurfaceParity
   if (!(in.S > 0.0) || !std::isfinite(in.r) || !valid_expiry_rates(in, under)) {
     return Err(ErrorCode::InvalidArgument, "select_curve: invalid spot, rate, or term rates");
   }
-  if (!std::isfinite(sel.min_expiry_coverage) || sel.min_expiry_coverage < 0.0 ||
-      sel.min_expiry_coverage > 1.0 || !std::isfinite(sel.min_holdout_coverage) ||
-      sel.min_holdout_coverage < 0.0 || sel.min_holdout_coverage > 1.0 ||
-      !std::isfinite(sel.min_served_quote_coverage) || sel.min_served_quote_coverage < 0.0 ||
-      sel.min_served_quote_coverage > 1.0 || !std::isfinite(sel.time_budget_ms) ||
+  const auto valid_fraction = [](double value) noexcept {
+    return std::isfinite(value) && value >= 0.0 && value <= 1.0;
+  };
+  if (!valid_fraction(sel.min_expiry_coverage) || !valid_fraction(sel.min_holdout_coverage) ||
+      !valid_fraction(sel.relaxed_min_expiry_coverage) ||
+      !valid_fraction(sel.relaxed_min_holdout_coverage) ||
+      !valid_fraction(sel.min_served_quote_coverage) || !std::isfinite(sel.time_budget_ms) ||
       sel.time_budget_ms < 0.0) {
     return Err(ErrorCode::InvalidArgument, "select_curve: invalid coverage floor");
   }
@@ -517,7 +560,18 @@ Result<SelectorResult> select_curve(const Underlying &under, const SurfaceParity
     prepared.push_back(std::move(*expiry));
   }
   if (prepared.empty() || required_holdout == 0u) {
-    return Err(ErrorCode::NotFound, "select_curve: no common prepared holdout keys");
+    // P1 (typed refusal names the board condition): "no expiry prepared" and
+    // "prepared expiries carry no two-sided holdout quote" are different board
+    // defects with different remedies, and the single opaque message could not
+    // tell them apart in the field. Carry the counts.
+    std::string detail = "select_curve: no common prepared holdout keys (sampled=";
+    detail += std::to_string(out.sampled_expiry_indices.size());
+    detail += " prepared=";
+    detail += std::to_string(prepared.size());
+    detail += " holdout_keys=";
+    detail += std::to_string(required_holdout);
+    detail += ")";
+    return Err(ErrorCode::NotFound, std::move(detail));
   }
 
   out.scores.reserve(candidates.size());
@@ -648,6 +702,23 @@ Result<SelectorResult> select_curve(const Underlying &under, const SurfaceParity
     out.scores.push_back(score);
     ++out.scores_evaluated;
     has_admitted_candidate = has_admitted_candidate || (score.admitted && !score.disqualified);
+  }
+
+  // F05 second stage. The strict floors are a CROSS-CANDIDATE comparability
+  // guarantee (see SelectorConfig), and comparability is worth nothing once the
+  // alternative is refusing the board. When nobody cleared them, re-admit at
+  // the relaxed floors: `select_candidate_index` ranks expiry coverage, then
+  // holdout coverage, before any quality term, so the widest-covering family
+  // still wins and a candidate that scored strictly more of the board can never
+  // lose to one that scored less.
+  if (!has_admitted_candidate) {
+    for (CandidateScore &score : out.scores) {
+      score.admitted = score.n_successful_holdout > 0u &&
+                       score.expiry_coverage >= sel.relaxed_min_expiry_coverage &&
+                       score.holdout_coverage >= sel.relaxed_min_holdout_coverage;
+      has_admitted_candidate = has_admitted_candidate || (score.admitted && !score.disqualified);
+    }
+    out.relaxed_coverage_admission = has_admitted_candidate;
   }
 
   if (out.budget_exhausted && !has_admitted_candidate) {

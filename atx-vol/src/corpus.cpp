@@ -481,6 +481,13 @@ void fingerprint_append_admission_rule(std::string &out, const CorpusAdmissionRu
   fingerprint_append_double(bytes, fit.policy.min_direct_confidence);
   fingerprint_append_u64(bytes, fit.policy.validate_ambiguous ? 1u : 0u);
   fingerprint_append_u64(bytes, fit.policy.sparse_validation_floor);
+  // Both arms of the identifiability demotion are routing inputs, so both must
+  // key the manifest: two configs that route differently must never share a
+  // cache key. Adding this deliberately invalidates every stored manifest, as
+  // does `sparse_validation_floor` changing unit (total legs -> near-money legs)
+  // -- the surfaces behind the old fingerprints were fitted under a different
+  // routing rule and are not reusable.
+  fingerprint_append_u64(bytes, fit.policy.min_identifiable_expiries);
   fingerprint_append_u64(bytes, fit.policy.dense_node_cap);
   fingerprint_append_u64(bytes, cfg.build.write_opts.flags);
   fingerprint_append_u64(bytes, cfg.build.write_opts.lookup_load_pct);

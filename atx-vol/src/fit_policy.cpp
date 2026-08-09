@@ -15,18 +15,40 @@ namespace {
   return context.event_distance_days.has_value() && *context.event_distance_days <= 7u;
 }
 
-// C8 spends eight free parameters on one slice. A board too thin to support an
-// even/odd holdout is also too thin to identify them, whatever the classifier's
-// provenance -- a ticker prior tells us WHICH underlier this is, not that today's
-// snapshot carries enough quotes to fit it. Fall back to the five-parameter eSSVI
-// backbone, which is C8's own seed family.
-[[nodiscard]] bool board_supports_c8(const FitDecision &out,
-                                     const FitPolicyConfig &config) noexcept {
-  return out.features.n_live_quotes >= config.sparse_validation_floor;
+// C8 spends eight free parameters on ONE slice, so the question is what the
+// deepest single expiry carries, not what the board carries in total: a ticker
+// prior tells us WHICH underlier this is, not that today's snapshot puts enough
+// distinct strikes near the money of any one maturity. Fall back to the
+// five-parameter eSSVI backbone, which is C8's own seed family.
+[[nodiscard]] bool board_supports_c8(const FitDecision &out) noexcept {
+  return out.features.max_near_money_strikes >= kC8MinSliceStrikes;
 }
 
-void configure_direct_route(FitDecision &out, const FitContext &context,
-                            const FitPolicyConfig &config) noexcept {
+// Can this board identify the parameters the board-voted route wants to fit?
+//
+// Two conditions, both measured near the money, neither an absolute leg count:
+//   * at least `min_identifiable_expiries` expiries each carry
+//     `kMinIdentifiableSliceStrikes` distinct near-money strikes, so at least
+//     one smile is over- rather than exactly determined; and
+//   * the board clears a small near-money leg floor, which only catches boards
+//     that are effectively dead.
+//
+// Measured on 849 fitted OPRA board-sessions (lqbench, two snapshot minutes,
+// two sessions each) this fires on 3.1% of boards and on none of the 416 S&P 100
+// control boards; the absolute 600-leg floor it replaces fired on 49% and 8.7%
+// respectively. Every board it demotes is one whose deep-wing-only or
+// three-strikes-and-out geometry leaves the fitter nothing to identify a smile
+// from.
+[[nodiscard]] bool board_is_identifiable(const ClassifierInputs &features,
+                                         const FitPolicyConfig &config) noexcept {
+  if (config.sparse_validation_floor == 0u) {
+    return true;
+  }
+  return features.n_atm_quotes >= config.sparse_validation_floor &&
+         features.n_identifiable_expiries >= config.min_identifiable_expiries;
+}
+
+void configure_direct_route(FitDecision &out, const FitContext &context) noexcept {
   switch (out.profile.kind) {
   case ProfileKind::IndexEtfUltraLiquid:
     out.preset = FitPreset::Hft;
@@ -41,9 +63,8 @@ void configure_direct_route(FitDecision &out, const FitContext &context,
       out.curve.kind = VolCurveKind::LinearVariance;
     } else {
       out.preset = FitPreset::Fast;
-      out.curve.kind = is_event_window(context) && board_supports_c8(out, config)
-                           ? VolCurveKind::C8
-                           : VolCurveKind::Essvi;
+      out.curve.kind = is_event_window(context) && board_supports_c8(out) ? VolCurveKind::C8
+                                                                          : VolCurveKind::Essvi;
     }
     break;
   case ProfileKind::LiquidSingleName:
@@ -212,24 +233,24 @@ FitDecision select_fit_policy(const Underlying &under, std::string_view ticker,
     out.source = FitDecisionSource::BoardFeatures;
   }
 
-  configure_direct_route(out, context, config);
+  configure_direct_route(out, context);
   out.primary_curve = out.curve;
 
   if (config.mode == FitSelectionMode::CrossValidated) {
     out.needs_cross_validation = true;
     out.source = FitDecisionSource::CrossValidation;
-  } else if (out.features.n_live_quotes < config.sparse_validation_floor &&
+  } else if (!board_is_identifiable(out.features, config) &&
              out.source == FitDecisionSource::BoardFeatures) {
-    // Scoped to board voting on purpose: a thin board makes the VOTE unreliable,
-    // so reclassifying it as a small cap recovers information. A ticker prior or
-    // an operator override still knows which underlier this is, and demoting SPY
-    // to IlliquidSmallCap because of one thin snapshot would throw that away. The
-    // model-capacity risk those sources do carry is handled where it belongs, by
-    // board_supports_c8() in configure_direct_route.
+    // Scoped to board voting on purpose: an unidentifiable board makes the VOTE
+    // unreliable, so reclassifying it as a small cap recovers information. A
+    // ticker prior or an operator override still knows which underlier this is,
+    // and demoting SPY to IlliquidSmallCap because of one thin snapshot would
+    // throw that away. The model-capacity risk those sources do carry is handled
+    // where it belongs, by board_supports_c8() in configure_direct_route.
     out.needs_cross_validation = false;
     out.source = FitDecisionSource::SparseGuard;
     out.profile = {ProfileKind::IlliquidSmallCap, std::max(out.profile.confidence, 0.80)};
-    configure_direct_route(out, context, config);
+    configure_direct_route(out, context);
     out.primary_curve = out.curve;
   } else if (config.validate_ambiguous && out.profile.confidence < config.min_direct_confidence) {
     out.needs_cross_validation = true;

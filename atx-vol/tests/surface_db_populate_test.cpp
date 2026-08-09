@@ -1681,11 +1681,20 @@ TEST(SurfaceDbPopulate, StatsCsvShape) {
   // AAA: n_attempted=2, n_ok=2, n_failed=0, n_disabled=0 -> success_rate=1;
   // pinned curve -> no OOS score -> "nan" (the NaN-when-unavailable rule).
   EXPECT_NE(text.find("AAA,2,2,0,0,1,nan,0\n"), std::string::npos) << text;
-  // BBB: same counts (a directly-routed, non-ambiguous board also has no
-  // selector OOS score even though its curve isn't pinned -- fit_board's
-  // `oos_in_band_available` is tied to the selector having run at all, not
-  // to pin_curve specifically; mirrors corpus.cpp's CorpusEntry.oos_in_band).
-  EXPECT_NE(text.find("BBB,2,2,0,0,1,nan,0\n"), std::string::npos) << text;
+  // BBB: same counts, but it is the OTHER side of the same rule --
+  // `oos_in_band_available` is tied to the selector having run at all, not to
+  // pin_curve specifically, and BBB's unpinned board DOES cross-validate, so its
+  // row carries a real score.
+  //
+  // Rebaselined for the identifiability guard (W2-A). BBB used to be routed
+  // directly because an absolute 600-leg floor force-demoted every board this
+  // small to IlliquidSmallCap with cross-validation switched off; measured near
+  // the money it is a perfectly identifiable board, so it now reaches the
+  // ambiguity check and the selector runs.
+  EXPECT_EQ(text.find("BBB,2,2,0,0,1,nan,0\n"), std::string::npos)
+      << "BBB cross-validates now, so its OOS score is available\n"
+      << text;
+  EXPECT_NE(text.find("BBB,2,2,0,0,1,1,0\n"), std::string::npos) << text;
 
   std::filesystem::remove_all(root);
 }

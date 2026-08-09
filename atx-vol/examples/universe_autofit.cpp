@@ -116,6 +116,8 @@ struct Row {
   std::string chosen_kind;
   std::string primary_kind;
   bool used_fallback{false};
+  bool selector_fallback{false}; // selector refused; profile's direct route served
+  std::string selector_error;    // the refusal text, when the selector produced one
   bool selector_ran{false};
   double selector_oos_vw{0.0};
   // fit diagnostics
@@ -155,6 +157,24 @@ std::string csv_escape(const std::string &s) {
   for (char c : s) { if (c == '"') q += "\"\""; else q += c; }
   q += "\"";
   return q;
+}
+
+// The selector's refusal, when the fit fell back to the profile's own family.
+// It survives in the build report as a Selection-stage attempt on BOTH the
+// published and the last-attempt report, so an operator can see why a board was
+// not cross-validated without re-running anything.
+std::string selection_refusal(const PricerFitter &fitter) {
+  for (const auto *report : {&fitter.published_report(), &fitter.last_attempt_report()}) {
+    if (!report->has_value()) {
+      continue;
+    }
+    for (const SurfaceBuildAttemptReport &attempt : (*report)->attempts) {
+      if (attempt.stage == SurfaceBuildStage::Selection && attempt.failure.has_value()) {
+        return attempt.failure->to_string();
+      }
+    }
+  }
+  return {};
 }
 
 } // namespace
@@ -334,7 +354,9 @@ int main(int argc, char **argv) {
           row.chosen_kind = to_string(d.curve.kind);
           row.primary_kind = to_string(d.primary_curve.kind);
           row.used_fallback = d.used_fallback;
+          row.selector_fallback = d.selector_fallback;
         }
+        row.selector_error = selection_refusal(fitter);
         return;
       }
 
@@ -347,7 +369,9 @@ int main(int argc, char **argv) {
         row.chosen_kind = to_string(d.curve.kind);
         row.primary_kind = to_string(d.primary_curve.kind);
         row.used_fallback = d.used_fallback;
+        row.selector_fallback = d.selector_fallback;
       }
+      row.selector_error = selection_refusal(fitter);
       if (fitter.selection()) {
         row.selector_ran = true;
         const SelectorResult &sel = *fitter.selection();
@@ -396,20 +420,21 @@ int main(int argc, char **argv) {
            "effective_preset,chosen_kind,primary_kind,used_fallback,selector_ran,selector_oos_vw,"
            "worst_in_band,mean_in_band,mean_chi2,mean_rmse_vol,calendar_arb_free,n_slices,"
            "n_quotes_used,n_valued,n_price_nan,n_bidiv_nan,n_askiv_nan,load_ms,chain_ms,fit_ms,"
-           "value_ms\n";
+           "value_ms,selector_fallback,selector_error\n";
     for (const Row &w : rows) {
       char buf[512];
       std::snprintf(buf, sizeof(buf),
                     ",%zu,%zu,%.6f,%s,%.3f,%s,%s,%s,%s,%d,%d,%.4f,%.4f,%.4f,%.4f,%.6f,%d,%zu,%zu,"
-                    "%zu,%zu,%zu,%zu,%.3f,%.3f,%.3f,%.3f\n",
+                    "%zu,%zu,%zu,%zu,%.3f,%.3f,%.3f,%.3f,%d,",
                     w.n_rows, w.n_options, w.spot, w.profile.c_str(), w.profile_conf,
                     w.decision_source.c_str(), w.effective_preset.c_str(), w.chosen_kind.c_str(),
                     w.primary_kind.c_str(), w.used_fallback ? 1 : 0, w.selector_ran ? 1 : 0,
                     w.selector_oos_vw, w.worst_in_band, w.mean_in_band, w.mean_chi2,
                     w.mean_rmse_vol, w.calendar_arb_free ? 1 : 0, w.n_slices, w.n_quotes_used,
                     w.n_valued, w.n_price_nan, w.n_bidiv_nan, w.n_askiv_nan, w.load_ms, w.chain_ms,
-                    w.fit_ms, w.value_ms);
-      out << csv_escape(w.symbol) << ',' << w.status << ',' << csv_escape(w.error) << buf;
+                    w.fit_ms, w.value_ms, w.selector_fallback ? 1 : 0);
+      out << csv_escape(w.symbol) << ',' << w.status << ',' << csv_escape(w.error) << buf
+          << csv_escape(w.selector_error) << '\n';
     }
   }
 

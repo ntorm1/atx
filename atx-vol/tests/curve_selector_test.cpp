@@ -614,6 +614,146 @@ TEST(CurveSelector, SplineCandidateCarriesRequesterFitOpts) {
   EXPECT_NE(out_on->chosen.kind, VolCurveKind::SplineVol);
 }
 
+// ── W1-A / F05: coverage floors are a cross-candidate comparability
+// guarantee, not a quality floor ────────────────────────────────────────────
+//
+// A board whose expiries carry very different strike counts: the 25-strike
+// expiry leaves 13 fit rows after the even/odd split, the 11-strike expiry only
+// 6. A SplineVol candidate with `min_obs = 10` therefore fits exactly one of
+// the two, which is the shape of the real defect -- one unfittable expiry (or
+// one failed deep-wing re-Americanization) sinking a board the family covers
+// everywhere else.
+[[nodiscard]] Underlying make_uneven_two_expiry_underlying() {
+  Underlying u;
+  u.spot = kBumpSpot;
+  u.chains.push_back(make_bumpy_chain(0.25, 25));
+  u.chains.push_back(make_bumpy_chain(0.60, 11));
+  return u;
+}
+
+TEST(CurveSelector, RelaxedCoverageFloorsAdmitAPartiallyCoveredSoleCandidate) {
+  const Underlying under = make_uneven_two_expiry_underlying();
+  const SurfaceParityInputs in = bumpy_inputs();
+
+  CurveConfig spline;
+  spline.kind = VolCurveKind::SplineVol;
+  spline.spline.min_obs = 10u; // unreachable on the 11-strike expiry's fit split
+
+  // Strict-only contract (both stages at 1.0): the partially covered family is
+  // refused and the whole board is lost -- the pre-W1-A behaviour.
+  SelectorConfig strict;
+  strict.candidates = {spline};
+  strict.relaxed_min_expiry_coverage = 1.0;
+  strict.relaxed_min_holdout_coverage = 1.0;
+  const auto refused = select_curve(under, in, strict);
+  ASSERT_FALSE(refused.has_value());
+  EXPECT_EQ(refused.error().code(), atx::core::ErrorCode::NotFound);
+
+  // Default floors: nothing cleared the strict pass, so admission is
+  // re-evaluated at the relaxed floors and the board is served.
+  SelectorConfig relaxed;
+  relaxed.candidates = {spline};
+  const auto selected = select_curve(under, in, relaxed);
+  ASSERT_TRUE(selected.has_value()) << selected.error().to_string();
+  EXPECT_TRUE(selected->relaxed_coverage_admission);
+  EXPECT_EQ(selected->chosen.kind, VolCurveKind::SplineVol);
+  ASSERT_EQ(selected->scores.size(), 1u);
+  EXPECT_TRUE(selected->scores.front().admitted);
+  EXPECT_DOUBLE_EQ(selected->scores.front().expiry_coverage, 0.5);
+  EXPECT_LT(selected->scores.front().holdout_coverage, 1.0);
+}
+
+TEST(CurveSelector, RelaxedFloorsAreConfigurableAndValidated) {
+  SelectorConfig config;
+  config.relaxed_min_expiry_coverage = 1.01;
+  EXPECT_FALSE(select_curve(make_bumpy_underlying(), bumpy_inputs(), config).has_value());
+  config = SelectorConfig{};
+  config.relaxed_min_holdout_coverage = -0.5;
+  EXPECT_FALSE(select_curve(make_bumpy_underlying(), bumpy_inputs(), config).has_value());
+}
+
+TEST(CurveSelector, FullyCoveredBoardStillAdmitsUnderTheStrictFloors) {
+  // The relaxed stage must be unreachable whenever the strict pass admits
+  // somebody: a healthy board's selection is bit-unchanged by F05.
+  CurveConfig essvi;
+  essvi.kind = VolCurveKind::Essvi;
+  SelectorConfig sel;
+  sel.candidates = {essvi};
+
+  const auto selected = select_curve(make_bumpy_underlying(), bumpy_inputs(), sel);
+  ASSERT_TRUE(selected.has_value()) << selected.error().to_string();
+  EXPECT_FALSE(selected->relaxed_coverage_admission);
+  ASSERT_EQ(selected->scores.size(), 1u);
+  EXPECT_DOUBLE_EQ(selected->scores.front().expiry_coverage, 1.0);
+  EXPECT_DOUBLE_EQ(selected->scores.front().holdout_coverage, 1.0);
+}
+
+// ── W1-A / P1: a refusal names the board condition ──────────────────────────
+TEST(CurveSelector, PreparationRefusalNamesTheBoardCondition) {
+  // Every listed expiry is inside the selector's short-dated cut, so nothing is
+  // even sampled. The refusal must say so rather than emit one opaque string
+  // that cannot distinguish "no expiry prepared" from "no two-sided holdout".
+  Underlying u;
+  u.spot = kBumpSpot;
+  u.chains.push_back(make_bumpy_chain(0.01, 25));
+
+  const auto refused = select_curve(u, bumpy_inputs(), SelectorConfig{});
+  ASSERT_FALSE(refused.has_value());
+  EXPECT_EQ(refused.error().code(), atx::core::ErrorCode::NotFound);
+  EXPECT_NE(refused.error().message().find("sampled=0"), std::string::npos)
+      << refused.error().message();
+  EXPECT_NE(refused.error().message().find("prepared=0"), std::string::npos)
+      << refused.error().message();
+}
+
+// ── W1-A / F03: a bounded ladder exists, is reachable, and actually selects ──
+// Before W1-A the only production candidate list was a one-element vector built
+// inline inside `production_selector_config()`, and the 5-family research list
+// had no caller at all -- so "multi-family selection" was unreachable short of
+// hand-building CurveConfigs. It is now a named, bounded, tested entry point.
+TEST(CurveSelector, BoundedLadderIsTheThreeCheapParametricFamilies) {
+  const std::vector<CurveConfig> ladder = atx::vol::bounded_selector_candidates();
+  ASSERT_EQ(ladder.size(), 3u);
+  EXPECT_EQ(ladder[0].kind, VolCurveKind::Essvi);
+  EXPECT_EQ(ladder[1].kind, VolCurveKind::Svi);
+  EXPECT_EQ(ladder[2].kind, VolCurveKind::LinearVariance);
+  for (const CurveConfig &candidate : ladder) {
+    EXPECT_NE(candidate.kind, VolCurveKind::ConvexDense) << "dense QP is not a bounded rung";
+    EXPECT_NE(candidate.kind, VolCurveKind::C8) << "8 free parameters is not a bounded rung";
+    EXPECT_FALSE(candidate.spline_candidate);
+  }
+}
+
+TEST(CurveSelector, BoundedLadderScoresEveryRungAndPicksAWinner) {
+  SelectorConfig sel;
+  sel.candidates = atx::vol::bounded_selector_candidates();
+  const auto selected = select_curve(make_bumpy_underlying(), bumpy_inputs(), sel);
+  ASSERT_TRUE(selected.has_value()) << selected.error().to_string();
+  ASSERT_EQ(selected->scores.size(), 3u);
+  EXPECT_EQ(selected->scores_evaluated, 3u);
+  EXPECT_FALSE(selected->budget_exhausted);
+  EXPECT_EQ(selected->scores[0].kind, VolCurveKind::Essvi);
+  EXPECT_EQ(selected->scores[1].kind, VolCurveKind::Svi);
+  EXPECT_EQ(selected->scores[2].kind, VolCurveKind::LinearVariance);
+  EXPECT_LT(selected->chosen_index, 3u);
+}
+
+// The production DEFAULT deliberately stays single-candidate. That is a
+// measured decision, not the F03 oversight: on lqbench (240 names, 2026-08-03
+// 19:55Z) the three-family ladder moves 26 boards -- ORCL, UNH, MA, HD, CAT,
+// AVGO, NFLX, WFC, VZ, PLTR among them -- off eSSVI onto families whose fit
+// diagnostics are all-zero, dropping measurable boards 117 -> 91 at 1.37x the
+// fit CPU with no median in-band gain. See production_selector_config()'s
+// contract for the two defects that must close before widening it.
+TEST(CurveSelector, ProductionDefaultStaysSingleCandidateAndDeadlineFree) {
+  const SelectorConfig production = atx::vol::production_selector_config();
+  ASSERT_EQ(production.candidates.size(), 1u);
+  EXPECT_EQ(production.candidates.front().kind, VolCurveKind::Essvi);
+  // Determinism: the cost bound is the candidate set, never a wall-clock
+  // deadline that would make the chosen family depend on host load.
+  EXPECT_DOUBLE_EQ(production.time_budget_ms, 0.0);
+}
+
 TEST(FitAdmission, RejectsPartialAndUnhealthySurfaceWithStablePrimaryReason) {
   SurfaceAdmissionEvidence evidence;
   evidence.attempted_expiries = 4u;

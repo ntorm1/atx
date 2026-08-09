@@ -151,6 +151,43 @@ TEST(ProfileClassifier, ClassifyProfile_ImminentEarnings_ReturnsMegaCapEvent) {
             static_cast<int>(ProfileKind::MegaCapEvent));
 }
 
+// Quote density is a per-expiry property. Two boards carrying the SAME number of
+// two-sided legs, one over four expiries and one over sixty, are not the same
+// kind of board; an absolute leg count cannot tell them apart.
+TEST(ProfileClassifier, ClassifyProfile_QuoteDensity_IsPerExpiry) {
+  ClassifierInputs dense{};
+  dense.n_live_quotes = 1200u;
+  dense.n_live_expiries = 4u;
+  dense.n_quoted_expiries = 4u; // 300 legs/expiry
+  dense.median_spread_pct = 0.10;
+
+  ClassifierInputs spread_thin = dense;
+  spread_thin.n_live_expiries = 60u;
+  spread_thin.n_quoted_expiries = 60u; // 20 legs/expiry
+
+  EXPECT_EQ(classify_profile(dense).kind, ProfileKind::IndexEtfUltraLiquid);
+  EXPECT_EQ(classify_profile(spread_thin).kind, ProfileKind::OrdinarySingleName);
+}
+
+// A 40%-wide book cannot be served by a profile whose quote filter assumes a
+// penny market, however dense it is and however tight its listing cadence looks.
+// The spread axis's illiquid vote is counted last with a strict `>`, so without
+// an explicit veto it loses every tie to a more liquid bucket.
+TEST(ProfileClassifier, ClassifyProfile_WideBook_VetoesTheLiquidBuckets) {
+  ClassifierInputs in{};
+  in.n_live_quotes = 1020u;
+  in.n_live_expiries = 12u;
+  in.n_quoted_expiries = 12u; // 85 legs/expiry -> the `liquid` density tier
+  in.median_spread_pct = 0.41;
+  in.has_zerodte = true; // and the cadence axis votes index ETF
+  EXPECT_EQ(classify_profile(in).kind, ProfileKind::OrdinarySingleName);
+
+  // The same board quoted tight keeps a liquid verdict -- the veto is the
+  // spread's doing, not the density's.
+  in.median_spread_pct = 0.10;
+  EXPECT_EQ(classify_profile(in).kind, ProfileKind::LiquidSingleName);
+}
+
 // ── classify_underlier (chain-state aggregation) ──────────────────────────
 
 TEST(ProfileClassifier, ClassifyUnderlier_SparseWideChain_ReturnsIlliquid) {
@@ -182,6 +219,67 @@ TEST(ProfileClassifier, ClassifyUnderlierWithTicker_Miss_FallsBackToChainStats) 
       classify_underlier_with_ticker(make_sparse_underlier(), "ZZZZ");
   EXPECT_EQ(static_cast<int>(v.kind),
             static_cast<int>(ProfileKind::IlliquidSmallCap));
+}
+
+// ── Near-money structure (the identifiability features) ───────────────────
+
+// The band the near-money count used to be taken over was 0.5*S < K < 1.5*S,
+// which in log-moneyness reaches -0.69 down but only +0.41 up. It is symmetric
+// now, and narrow enough that "near the money" means it.
+TEST(ProfileClassifier, ClassifierInputs_NearMoneyBand_IsSymmetricInLogMoneyness) {
+  Underlying u;
+  u.uid = 1u;
+  u.ticker = "ZZZZ";
+  u.spot = 100.0;
+  // |ln(0.55)| = 0.598 and |ln(1.80)| = 0.588 -- both outside the band, but the
+  // old price band admitted the 55 strike and rejected the 180 one.
+  u.chains.push_back(make_flat_chain(0.05, {55.0, 180.0}, 1.0, 1.2));
+
+  const auto in = atx::vol::classifier_inputs_from_underlier(u);
+  EXPECT_EQ(in.n_live_quotes, 4u);
+  EXPECT_EQ(in.n_atm_quotes, 0u);
+  EXPECT_EQ(in.n_identifiable_expiries, 0u);
+}
+
+TEST(ProfileClassifier, ClassifierInputs_IdentifiableExpiries_NeedNearMoneyStrikeDepth) {
+  Underlying u;
+  u.uid = 1u;
+  u.ticker = "ZZZZ";
+  u.spot = 100.0;
+  u.chains.push_back(make_flat_chain(0.05, {95.0, 98.0, 102.0, 105.0}, 1.0, 1.2));
+  u.chains.push_back(make_flat_chain(0.30, {97.0, 100.0, 103.0}, 1.0, 1.2));
+  u.chains.push_back(make_flat_chain(0.60, {30.0, 40.0, 300.0, 400.0}, 1.0, 1.2));
+
+  const auto in = atx::vol::classifier_inputs_from_underlier(u);
+  EXPECT_EQ(in.n_quoted_expiries, 3u);
+  EXPECT_EQ(in.max_near_money_strikes, 4u);
+  EXPECT_EQ(in.n_identifiable_expiries, 1u) << "only the four-strike expiry qualifies";
+  EXPECT_EQ(in.n_atm_quotes, 14u) << "(4 + 3) near-money strikes, both sides";
+}
+
+// The median spread used to be taken over the first 256 two-sided legs in chain
+// order, and chains are sorted ascending in T -- so on any board with more than
+// 256 legs in its front expiries it measured the front, not the board.
+TEST(ProfileClassifier, ClassifierInputs_SpreadMedian_SpansEveryExpiry) {
+  Underlying u;
+  u.uid = 1u;
+  u.ticker = "ZZZZ";
+  u.spot = 100.0;
+  std::vector<double> tight_strikes;
+  for (int i = 0; i < 100; ++i) {
+    tight_strikes.push_back(90.0 + 0.2 * static_cast<double>(i));
+  }
+  std::vector<double> wide_strikes;
+  for (int i = 0; i < 200; ++i) {
+    wide_strikes.push_back(90.0 + 0.1 * static_cast<double>(i));
+  }
+  // 200 legs at a 1% spread in front, 400 legs at 67% behind it.
+  u.chains.push_back(make_flat_chain(0.05, tight_strikes, 1.00, 1.01));
+  u.chains.push_back(make_flat_chain(0.50, wide_strikes, 1.00, 2.00));
+
+  const auto in = atx::vol::classifier_inputs_from_underlier(u);
+  EXPECT_EQ(in.n_live_quotes, 600u);
+  EXPECT_GT(in.median_spread_pct, 0.5) << "the board median is wide; only the front is tight";
 }
 
 // ── Registry (ports the default-profile cases) ────────────────────────────
