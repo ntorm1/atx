@@ -94,6 +94,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "atx/core/db/sqlite.hpp"           // atx::core::db::Database (opaque-handle RAII wrapper)
 #include "atx/vol/research/track_key.hpp"   // TrackKey
@@ -192,6 +193,16 @@ public:
   // deliberately pure-read; a future retention/eviction task owns deciding
   // what "access" means for that column, out of this task's scope.
   [[nodiscard]] atx::core::Result<std::optional<TrackRow>> probe(const TrackKey &key);
+
+  // Every row currently at `status`, ordered by `track_key` for determinism.
+  // Read-only, same "pure read" contract as `probe()` (does not mutate
+  // `last_access_ts`). Task D5's `reconcile_stuck_compactions`
+  // (track_compact_reconcile.hpp) is the first caller: it needs every
+  // `Staging` row to find ones a crashed `track_compact` run left stranded
+  // (staged input already deleted, `mark_compacted` never called) -- a query
+  // `probe()` alone cannot answer, since that takes one specific key, not
+  // "all keys in a state."
+  [[nodiscard]] atx::core::Result<std::vector<TrackRow>> list_by_status(TrackStatus status);
 
   // Inserts a fresh `status='staging'` row (file/row_group NULL,
   // created_ts == last_access_ts == now). Err(AlreadyExists) if `key` is

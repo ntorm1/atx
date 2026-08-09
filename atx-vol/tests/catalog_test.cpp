@@ -406,6 +406,42 @@ TEST(CatalogTest, RegisterStagingSupersessionIsScopedToTheSameUnderlierFamilyAnd
   EXPECT_EQ((*superseded_row)->status, TrackStatus::Retired);
 }
 
+// ── list_by_status (Task D5 fix-round: track_compact_reconcile's own probe) ─
+
+TEST(CatalogTest, ListByStatusReturnsOnlyMatchingRowsOrderedByTrackKey) {
+  const fs::path root = fresh_lake_root("list-by-status");
+  auto cat = Catalog::open(root.string());
+  ASSERT_TRUE(cat.has_value());
+
+  // Insertion order deliberately NOT track_key order, so a passing
+  // "ordered by track_key" assertion actually exercises the SQL's own
+  // ORDER BY rather than pandas-style insertion-order luck.
+  const TrackKey key_b = make_indexed_key(9, 2);
+  const TrackKey key_a = make_indexed_key(9, 1);
+  const TrackKey key_c = make_indexed_key(9, 3);
+  ASSERT_TRUE(cat->register_staging(key_b, make_meta(), make_registration(2)).has_value());
+  ASSERT_TRUE(cat->register_staging(key_a, make_meta(), make_registration(1)).has_value());
+  ASSERT_TRUE(cat->register_staging(key_c, make_meta(), make_registration(3)).has_value());
+  ASSERT_TRUE(cat->mark_compacted(key_c, "batch.parquet", 0).has_value());
+
+  auto staging_rows = cat->list_by_status(TrackStatus::Staging);
+  ASSERT_TRUE(staging_rows.has_value()) << (staging_rows ? "" : staging_rows.error().to_string());
+  ASSERT_EQ(staging_rows->size(), 2u) << "key_c is compacted, not staging";
+  EXPECT_LT((*staging_rows)[0].track_key, (*staging_rows)[1].track_key) << "ORDER BY track_key";
+  for (const TrackRow &row : *staging_rows) {
+    EXPECT_EQ(row.status, TrackStatus::Staging);
+  }
+
+  auto compacted_rows = cat->list_by_status(TrackStatus::Compacted);
+  ASSERT_TRUE(compacted_rows.has_value());
+  ASSERT_EQ(compacted_rows->size(), 1u);
+  EXPECT_EQ((*compacted_rows)[0].track_key, key_c.hex());
+
+  auto retired_rows = cat->list_by_status(TrackStatus::Retired);
+  ASSERT_TRUE(retired_rows.has_value());
+  EXPECT_TRUE(retired_rows->empty());
+}
+
 // ── mark_compacted ───────────────────────────────────────────────────────
 
 TEST(CatalogTest, MarkCompactedTransitionsStagingToCompacted) {

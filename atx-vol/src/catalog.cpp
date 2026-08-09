@@ -96,6 +96,41 @@ constexpr std::string_view kSelectTrialSharpesSql =
 constexpr std::string_view kInsertTrialSql =
     "INSERT INTO trials(track_key, sweep_id, sharpe, created_ts) VALUES (?1, ?2, ?3, ?4);";
 
+constexpr std::string_view kListByStatusSql =
+    "SELECT track_key, underlier, family, config_json, engine_id, economics_rev, "
+    "data_snapshot_id, date_min, date_max, status, file, row_group, created_ts, "
+    "last_access_ts FROM tracks WHERE status = ?1 ORDER BY track_key;";
+
+// Shared by probe() and list_by_status() -- both read the same 14-column
+// SELECT shape (kProbeSql/kListByStatusSql), so this is the ONE place that
+// column order has to agree with the schema.
+[[nodiscard]] Result<TrackRow> row_from_statement(db::Statement &stmt) {
+  TrackRow row;
+  row.track_key = std::string(stmt.column_text(0));
+  row.underlier = std::string(stmt.column_text(1));
+  row.family = std::string(stmt.column_text(2));
+  row.config_json = std::string(stmt.column_text(3));
+  row.engine_id = std::string(stmt.column_text(4));
+  row.economics_rev = stmt.column_int(5);
+  row.data_snapshot_id = std::string(stmt.column_text(6));
+  row.date_min = std::string(stmt.column_text(7));
+  row.date_max = std::string(stmt.column_text(8));
+  auto status = track_status_from_string(stmt.column_text(9));
+  if (!status) {
+    return Err(status.error());
+  }
+  row.status = *status;
+  if (!stmt.column_is_null(10)) {
+    row.file = std::string(stmt.column_text(10));
+  }
+  if (!stmt.column_is_null(11)) {
+    row.row_group = stmt.column_int(11);
+  }
+  row.created_ts = stmt.column_int(12);
+  row.last_access_ts = stmt.column_int(13);
+  return Ok(std::move(row));
+}
+
 } // namespace
 
 std::string_view to_string(TrackStatus status) noexcept {
@@ -182,33 +217,32 @@ Result<std::optional<TrackRow>> Catalog::probe(const TrackKey &key) {
     return Ok(std::optional<TrackRow>{});
   }
 
-  TrackRow row;
-  row.track_key = std::string(stmt->column_text(0));
-  row.underlier = std::string(stmt->column_text(1));
-  row.family = std::string(stmt->column_text(2));
-  row.config_json = std::string(stmt->column_text(3));
-  row.engine_id = std::string(stmt->column_text(4));
-  row.economics_rev = stmt->column_int(5);
-  row.data_snapshot_id = std::string(stmt->column_text(6));
-  row.date_min = std::string(stmt->column_text(7));
-  row.date_max = std::string(stmt->column_text(8));
-  auto status = track_status_from_string(stmt->column_text(9));
-  if (!status) {
-    ATX_TRY_VOID(stmt->reset());
-    return Err(status.error());
-  }
-  row.status = *status;
-  if (!stmt->column_is_null(10)) {
-    row.file = std::string(stmt->column_text(10));
-  }
-  if (!stmt->column_is_null(11)) {
-    row.row_group = stmt->column_int(11);
-  }
-  row.created_ts = stmt->column_int(12);
-  row.last_access_ts = stmt->column_int(13);
-
+  Result<TrackRow> row = row_from_statement(*stmt);
   ATX_TRY_VOID(stmt->reset());
-  return Ok(std::optional<TrackRow>{std::move(row)});
+  if (!row.has_value()) {
+    return Err(row.error());
+  }
+  return Ok(std::optional<TrackRow>{std::move(*row)});
+}
+
+Result<std::vector<TrackRow>> Catalog::list_by_status(TrackStatus status) {
+  std::vector<TrackRow> rows;
+  ATX_TRY(auto *stmt, db_.prepare_cached(kListByStatusSql));
+  ATX_TRY_VOID(stmt->bind(1, to_string(status)));
+  for (;;) {
+    ATX_TRY(const auto step, stmt->step());
+    if (step == db::Statement::Step::Done) {
+      break;
+    }
+    Result<TrackRow> row = row_from_statement(*stmt);
+    if (!row.has_value()) {
+      ATX_TRY_VOID(stmt->reset());
+      return Err(row.error());
+    }
+    rows.push_back(std::move(*row));
+  }
+  ATX_TRY_VOID(stmt->reset());
+  return Ok(std::move(rows));
 }
 
 Status Catalog::register_staging(const TrackKey &key, const TrackMeta &meta,
@@ -227,6 +261,22 @@ Status Catalog::register_staging(const TrackKey &key, const TrackMeta &meta,
     return Err(ErrorCode::InvalidArgument,
                "Catalog::register_staging: date_max precedes date_min");
   }
+
+  // Fix-round (D5 review finding 1): the fresh-row INSERT and the
+  // supersession retire UPDATE below must land as ONE atomic unit. Without
+  // this transaction they are two independent autocommit statements, and a
+  // crash between them is UNRECOVERABLE, not merely benign bookkeeping
+  // drift: the fresh row's key is now registered, so every future probe()
+  // against it is a HIT -- nothing ever calls register_staging for that
+  // exact key again, so nothing ever re-drives the retire step for the
+  // predecessor it was supposed to supersede. That predecessor would stay
+  // un-retired forever unless some LATER, unrelated generation happens to
+  // register against the same variant. begin_immediate (not begin):
+  // acquires the write reservation up front -- both statements below are
+  // writes, so there is no read phase that would benefit from a deferred
+  // transaction, and acquiring immediately avoids a late upgrade failing
+  // with SQLITE_BUSY_SNAPSHOT against a concurrent writer.
+  ATX_TRY(db::Transaction txn, db::Transaction::begin_immediate(db_));
 
   const std::int64_t now = wall_clock_ns();
   ATX_TRY(auto *stmt, db_.prepare_cached(kInsertTrackSql));
@@ -274,7 +324,13 @@ Status Catalog::register_staging(const TrackKey &key, const TrackMeta &meta,
     return Err(retire_step.error());
   }
   ATX_TRY_VOID(retire_stmt->reset());
-  return Ok();
+
+  // Commits both statements atomically. Any early `return Err(...)` above
+  // leaves `txn` un-committed -- its destructor issues ROLLBACK, so a
+  // failure at either statement leaves NEITHER applied (no fresh row
+  // registered with its predecessor left un-retired, and no predecessor
+  // retired against a fresh row that never actually landed).
+  return txn.commit();
 }
 
 Status Catalog::mark_compacted(const TrackKey &key, std::string_view file,
