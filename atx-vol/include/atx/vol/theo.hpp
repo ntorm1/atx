@@ -406,4 +406,20 @@ private:
   TheoConfig cfg_;
 };
 
+// Allocating convenience over `value_into` (Task 10; mirrors
+// `compute_surface_analytics`'s shape, analytics.hpp): resolves every query in
+// `queries` into a freshly-allocated `std::vector<TheoValue>` sized to
+// `queries.size()`, via exactly one `value_into` call -- field-for-field
+// identical to what a caller's own `std::vector<TheoValue>
+// out(queries.size()); engine.value_into(ctx, queries, out);` would produce
+// (there is no second implementation to drift out of step). Prefer
+// `value_into` directly on a hot path with a caller-owned, reused buffer; this
+// exists for callers -- a one-off screening sheet, a script, a test -- that
+// would otherwise hand-roll the same allocate-then-fill pattern. Errors
+// propagate unchanged from `value_into` (out-of-size never happens here: the
+// vector is sized exactly to `queries.size()` before the call).
+[[nodiscard]] Result<std::vector<TheoValue>> compute_theo_sheet(const TheoContext &ctx,
+                                                                const TheoEngine &engine,
+                                                                std::span<const TheoQuery> queries);
+
 } // namespace atx::vol

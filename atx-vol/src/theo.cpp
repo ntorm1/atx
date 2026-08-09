@@ -75,6 +75,14 @@ Status TheoEngine::value_into(const TheoContext &ctx, std::span<const TheoQuery>
   const QueryPricingTier tier = surface.query_pricing_tier();
   const bool fast_tier_surface =
       tier == QueryPricingTier::RepresentativeFast || tier == QueryPricingTier::CarryBank;
+  // M2 (Task 10 perf pass), read ONCE per call, not per chunk: with zero
+  // overlays engaged, theo_vol == market_vol for EVERY query by construction
+  // (nothing ever adds to it) -- the whole overlay-scratch apparatus below (the
+  // fixed `OverlayAdjust` buffer, its per-chunk clear, the band_sq_sum
+  // accumulator) exists only to feed that addition, so this flag lets the loop
+  // below skip allocating and clearing it for nothing rather than pay that
+  // cost every chunk just to add zero.
+  const bool has_overlays = !overlays_.empty();
 
   std::size_t begin = 0;
   while (begin < qs.size()) {
@@ -82,20 +90,48 @@ Status TheoEngine::value_into(const TheoContext &ctx, std::span<const TheoQuery>
     const std::span<const TheoQuery> chunk_q = qs.subspan(begin, n);
     const std::span<TheoValue> chunk_out = out.subspan(begin, n);
 
-    // Baseline: one surface read per query. theo_vol seeds at market_vol so a
-    // chunk with no engaged overlays is bit-for-bit the served mark already
-    // (the identity contract) -- nothing below mutates it further.
+    // Baseline: one FUSED surface resolve per query (M1, Task 10 perf pass).
+    // `evaluate(Iv|Price)` replaces the former two independent reads -- iv()
+    // then fair_value(), each re-doing the SAME (K,T) resolution -- with a
+    // single resolve; documented bit-identical to the separate calls
+    // (priced_surface.hpp's evaluate() doc: "iv and price match iv(K,T) /
+    // fair_value(K,T,side).value()"). theo_vol seeds at market_vol so a chunk
+    // with no engaged overlays is bit-for-bit the served mark already (the
+    // identity contract) -- nothing below mutates it further.
     for (std::size_t i = 0; i < n; ++i) {
       const TheoQuery &q = chunk_q[i];
-      const Result<double> market_price = surface.fair_value(q.strike, q.tenor_years, q.side);
-      if (!market_price.has_value()) {
-        return Err(market_price.error());
+      const PricedSurface::FusedResult fused =
+          surface.evaluate(q.strike, q.tenor_years, q.side,
+                           PricedSurface::EvalField::Iv | PricedSurface::EvalField::Price,
+                           /*analytic=*/false);
+      if (!fused.status.has_value()) {
+        return Err(fused.status.error());
       }
       TheoValue &v = chunk_out[i];
       v = TheoValue{};
-      v.market_vol = surface.iv(q.strike, q.tenor_years);
-      v.market_price = *market_price;
+      v.market_vol = fused.iv;
+      v.market_price = fused.price;
       v.theo_vol = v.market_vol;
+    }
+
+    if (!has_overlays) {
+      // M2: no overlays => no scratch clearing at all. theo_vol == market_vol
+      // for this whole chunk already (set above); finalize the identity path
+      // directly -- edge_vol is trivially 0.0 (identical doubles subtract
+      // exactly), band_vol is the floor (an empty sum-of-squares floored is
+      // the floor), theo_price reuses market_price bit-for-bit (the identity
+      // contract), and FastTierRoute never applies (it is gated on a nonzero
+      // net dvol, which cannot happen on this branch) -- exactly the values
+      // the general path below would also produce for a zero-dvol query, just
+      // without ever touching the overlay scratch to get there.
+      for (std::size_t i = 0; i < n; ++i) {
+        TheoValue &v = chunk_out[i];
+        v.edge_vol = 0.0;
+        v.band_vol = cfg_.band_floor_vol;
+        v.theo_price = v.market_price;
+      }
+      begin += n;
+      continue;
     }
 
     // Fixed-capacity, no-allocation overlay scratch -- reused across every
@@ -111,8 +147,17 @@ Status TheoEngine::value_into(const TheoContext &ctx, std::span<const TheoQuery>
 
     std::size_t overlay_index = 0;
     for (const std::unique_ptr<ITheoOverlay> &overlay : overlays_) {
-      for (std::size_t i = 0; i < n; ++i) {
-        scratch_span[i] = OverlayAdjust{};
+      // M2: `scratch`'s own declaration above already zeroed [0, n) for the
+      // FIRST overlay -- re-clearing it here would be a redundant second
+      // clear. Overlay index 1+ still needs a fresh scratch: the PREVIOUS
+      // overlay's dvol/band is sitting there and would otherwise leak into
+      // this overlay's read (each overlay call is expected to see a clean
+      // slate to write its OWN adjustment into, per ITheoOverlay::adjust's
+      // "fill out[i] for every i" contract).
+      if (overlay_index != 0) {
+        for (std::size_t i = 0; i < n; ++i) {
+          scratch_span[i] = OverlayAdjust{};
+        }
       }
       const Status st = overlay->adjust(ctx, chunk_q, scratch_span);
       if (!st.has_value()) {
@@ -186,6 +231,16 @@ Status TheoEngine::value_into(const TheoContext &ctx, std::span<const TheoQuery>
     begin += n;
   }
   return Ok();
+}
+
+Result<std::vector<TheoValue>> compute_theo_sheet(const TheoContext &ctx, const TheoEngine &engine,
+                                                  std::span<const TheoQuery> queries) {
+  std::vector<TheoValue> out(queries.size());
+  const Status st = engine.value_into(ctx, queries, out);
+  if (!st.has_value()) {
+    return Err(st.error());
+  }
+  return Ok(std::move(out));
 }
 
 // ── RV-blend fair vol (Task 8) ──────────────────────────────────────────────

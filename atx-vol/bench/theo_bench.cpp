@@ -27,20 +27,31 @@
 // silently injects ~45% extra variance per unit of priced time against that
 // grid.
 
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <random>
+#include <string_view>
 #include <vector>
 
 #include <benchmark/benchmark.h>
 
+#include "atx/vol/american.hpp" // al_fast_opts, AmericanMethod
 #include "atx/vol/breakeven.hpp"
+#include "atx/vol/priced_surface.hpp" // PricedSurface, PricingContext
+#include "atx/vol/surface_parity.hpp" // SliceContext
+#include "atx/vol/theo.hpp"           // TheoEngine, compute_theo_sheet (Task 10)
+#include "atx/vol/vol_curve.hpp"      // CurveSurface, EssviCurve
+#include "atx/vol/vol_surface.hpp"    // EssviParams
 
 #include "bench_util.hpp"
 
 namespace atx::vol::bench {
 namespace {
+
+using atx::core::Ok;
 
 constexpr std::int64_t kDayNs = 86'400'000'000'000LL;
 
@@ -112,6 +123,126 @@ void BM_BevBatch_64jobs(benchmark::State &state) {
   state.SetItemsProcessed(state.iterations() * static_cast<std::int64_t>(kN));
 }
 
+// ── theo/sheet_200q (Task 10: batch perf pass + theo sheet convenience API) ─
+//
+// compute_theo_sheet over 200 queries -- a screening-sheet-sized batch, well
+// under one kTheoMaxBatch (256) chunk, so this isolates per-query resolve +
+// overlay cost with no chunk-boundary effects. One overlay is engaged with a
+// small nonzero dvol on EVERY query (mirrors a live RvBlend lean, not the
+// identity path -- with zero overlays engaged, price_theo has nothing to do:
+// M2's identity branch reuses market_price unconditionally and never reaches
+// the American reprice either way, which would make a true/false comparison
+// meaningless). `price_theo=true` therefore pays a fresh cold Andersen-Lake
+// reprice at the shifted theo_vol on every row -- the M1 (fused evaluate) and
+// M2 (skip-scratch-when-empty) perf changes land on the RESOLVE/overlay side
+// of this cost, not on that reprice, which is the same American-pricer cost
+// bench/ANCHORS.md's published anchors already bound (~45,000 prices/s @
+// Ryzen 9 5900, 1 core; "close to 100,000/s/CPU" algorithmic ceiling, SSRN
+// 2547027). `price_theo=false` skips the reprice entirely (the vol-space-only
+// screening path the header banner documents), isolating the resolve+overlay
+// cost alone -- the ratio between the two variants is the reprice's own
+// share of the sheet's total cost.
+
+// A small nonzero dvol on every query -- deliberately NOT `make_rv_blend_overlay`
+// (which needs an `RvPanel` this bench has no reason to fabricate): the point is a
+// stable, engine-agnostic nonzero net adjustment so `price_theo=true` always takes
+// the reprice branch, not a specific overlay's own cost.
+class ConstantDvolOverlay final : public ITheoOverlay {
+public:
+  explicit ConstantDvolOverlay(double dvol) : dvol_(dvol) {}
+
+  [[nodiscard]] std::string_view name() const noexcept override { return "bench_constant_dvol"; }
+
+  [[nodiscard]] Status adjust(const TheoContext & /*ctx*/, std::span<const TheoQuery> queries,
+                              std::span<OverlayAdjust> out) const override {
+    for (std::size_t i = 0; i < queries.size(); ++i) {
+      out[i] = OverlayAdjust{.dvol = dvol_, .band = 0.0};
+    }
+    return Ok();
+  }
+
+private:
+  double dvol_;
+};
+
+// Cheap synthetic eSSVI surface (mirrors theo_test.cpp's make_fast_tier_surface
+// recipe) -- cold tier by construction (no with_query_pricing call), so this
+// exercises the SAME cold Andersen-Lake reprice route fair_value() itself takes.
+[[nodiscard]] Result<PricedSurface> make_theo_bench_surface() {
+  constexpr double kSpot = 100.0;
+  constexpr double kRate = 0.03;
+  CurveSurface curves;
+  std::vector<SliceContext> context;
+  std::uint16_t expiry_id = 0;
+  for (const double term : {0.10, 0.25, 0.50, 1.00}) {
+    EssviParams parameters{};
+    parameters.theta = 0.04 + 0.01 * term;
+    parameters.phi = 1.3;
+    parameters.rho = -0.3;
+    parameters.psi = 0.5;
+    parameters.p = 0.5;
+    parameters.lambda = 0.5;
+    parameters.T = term;
+    parameters.F = kSpot;
+    parameters.expiry_id = expiry_id++;
+    curves.push(std::make_unique<EssviCurve>(parameters, std::exp(-kRate * term)));
+    context.push_back(SliceContext{term, kSpot, 0.0, 0.0, 50, 0});
+  }
+  PricingContext pricing;
+  pricing.S = kSpot;
+  pricing.r = kRate;
+  pricing.now_ts_ns = 1'700'000'000'000'000'000LL;
+  pricing.method = AmericanMethod::AndersenLake;
+  pricing.al_opts = al_fast_opts();
+  pricing.uid = 7;
+  return PricedSurface::create(std::move(curves), std::move(context), pricing);
+}
+
+// 200 queries spanning every strike x tenor x side combination the fixture
+// surface fits, cycled to exactly 200 -- a screening-sheet-sized batch.
+[[nodiscard]] std::vector<TheoQuery> make_theo_bench_queries() {
+  constexpr std::size_t kN = 200;
+  const std::array<double, 5> strikes{85.0, 92.5, 100.0, 107.5, 115.0};
+  const std::array<double, 4> tenors{0.10, 0.25, 0.50, 1.00};
+  std::vector<TheoQuery> qs;
+  qs.reserve(kN);
+  for (std::size_t i = 0; i < kN; ++i) {
+    const Side side = (i % 2 == 0) ? Side::Call : Side::Put;
+    qs.push_back(TheoQuery{.strike = strikes[i % strikes.size()],
+                           .tenor_years = tenors[i % tenors.size()],
+                           .side = side});
+  }
+  return qs;
+}
+
+void BM_TheoSheet_200q(benchmark::State &state, bool price_theo) {
+  const Result<PricedSurface> surface = make_theo_bench_surface();
+  if (!surface.has_value()) {
+    state.SkipWithError(surface.error().to_string().c_str());
+    return;
+  }
+  const std::vector<TheoQuery> queries = make_theo_bench_queries();
+  std::vector<std::unique_ptr<ITheoOverlay>> overlays;
+  overlays.push_back(std::make_unique<ConstantDvolOverlay>(0.02));
+  const Result<TheoEngine> engine =
+      TheoEngine::create(std::move(overlays), TheoConfig{.price_theo = price_theo});
+  if (!engine.has_value()) {
+    state.SkipWithError(engine.error().to_string().c_str());
+    return;
+  }
+  const TheoContext ctx{.surface = &*surface};
+
+  for (auto _ : state) {
+    const Result<std::vector<TheoValue>> sheet = compute_theo_sheet(ctx, *engine, queries);
+    if (!sheet.has_value()) {
+      state.SkipWithError(sheet.error().to_string().c_str());
+      return;
+    }
+    benchmark::DoNotOptimize(sheet->data());
+  }
+  state.SetItemsProcessed(state.iterations() * static_cast<std::int64_t>(queries.size()));
+}
+
 const int kRegistered = [] {
   apply_common(benchmark::RegisterBenchmark("bev/solve/126d_al_fast", BM_BevSolve_126d_AlFast))
       ->Unit(benchmark::kMillisecond);
@@ -124,6 +255,14 @@ const int kRegistered = [] {
   apply_common(benchmark::RegisterBenchmark("bev/batch/64jobs", BM_BevBatch_64jobs))
       ->Unit(benchmark::kMillisecond)
       ->UseRealTime();
+  apply_common(benchmark::RegisterBenchmark(
+                   "theo/sheet_200q/price_theo_true",
+                   [](benchmark::State &state) { BM_TheoSheet_200q(state, /*price_theo=*/true); }))
+      ->Unit(benchmark::kMicrosecond);
+  apply_common(benchmark::RegisterBenchmark(
+                   "theo/sheet_200q/price_theo_false",
+                   [](benchmark::State &state) { BM_TheoSheet_200q(state, /*price_theo=*/false); }))
+      ->Unit(benchmark::kMicrosecond);
   return 0;
 }();
 

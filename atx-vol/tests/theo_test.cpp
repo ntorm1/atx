@@ -1285,5 +1285,137 @@ TEST_F(TheoEngineTest, FairVolModelOverlayAdjustSubChunksAboveMaxBatchBoundary) 
   }
 }
 
+// ── Task 10: batch perf pass + theo sheet convenience API ──────────────────
+
+namespace {
+
+// Counts how many times adjust() is invoked -- once per value_into CHUNK, not
+// once per query. Deliberately writes a trivial identity adjustment
+// (dvol=0, band=0) for every row: this overlay exists purely to pin the
+// chunking CALL COUNT through the M1/M2 perf changes (fused `evaluate()`,
+// scratch skipped/reduced when overlays are engaged), not to exercise
+// adjustment arithmetic -- SheetMatchesValueIntoFieldForField below covers
+// value parity against a real (nonzero) overlay separately.
+class CountingOverlay final : public ITheoOverlay {
+public:
+  [[nodiscard]] std::string_view name() const noexcept override { return "test_counting_overlay"; }
+
+  [[nodiscard]] Status adjust(const TheoContext & /*ctx*/, std::span<const TheoQuery> queries,
+                              std::span<OverlayAdjust> out) const override {
+    ++call_count;
+    for (std::size_t i = 0; i < queries.size(); ++i) {
+      out[i] = OverlayAdjust{};
+    }
+    return Ok();
+  }
+
+  // Test-only instrumentation, mutated from a const method the same way
+  // adjust() itself is const per the interface -- a counting stub inherently
+  // needs to record its own call count without widening the ITheoOverlay
+  // contract's constness for every implementation.
+  mutable std::size_t call_count{0};
+};
+
+} // namespace
+
+// 10k queries into a span PRE-SIZED by the caller (never resized/grown by
+// value_into itself), chunked at kTheoMaxBatch -- pins the exact
+// ceil(10000/256) == 40 chunk count through the M1 (fused evaluate) and M2
+// (conditional scratch) perf changes: a chunking regression (e.g. a chunk
+// boundary silently drifting, or overlays being invoked per-query instead of
+// per-chunk) would change this count even though value_into's own return
+// status stays Ok.
+TEST_F(TheoEngineTest, ValueIntoDoesNotAllocatePerQuery) {
+  auto counting = std::make_unique<CountingOverlay>();
+  const CountingOverlay *counting_ptr = counting.get();
+  std::vector<std::unique_ptr<ITheoOverlay>> overlays;
+  overlays.push_back(std::move(counting));
+  auto engine = TheoEngine::create(std::move(overlays));
+  ASSERT_TRUE(engine.has_value()) << engine.error().to_string();
+  const TheoContext ctx{.surface = &*surface_};
+
+  constexpr std::size_t kN = 10'000;
+  const std::array<double, 3> strikes{580.0, 600.0, 620.0};
+  const std::array<double, 2> tenors{surface_->context()[1].T, surface_->context()[3].T};
+  std::vector<TheoQuery> qs;
+  qs.reserve(kN);
+  for (std::size_t i = 0; i < kN; ++i) {
+    const Side side = (i % 2 == 0) ? Side::Call : Side::Put;
+    qs.push_back(TheoQuery{.strike = strikes[i % strikes.size()],
+                           .tenor_years = tenors[i % tenors.size()],
+                           .side = side});
+  }
+  std::vector<TheoValue> out(kN); // pre-sized ONCE, up front -- value_into never grows it
+
+  const Status st = engine->value_into(ctx, qs, out);
+  ASSERT_TRUE(st.has_value()) << st.error().to_string();
+
+  constexpr std::size_t kExpectedChunks = (kN + kTheoMaxBatch - 1) / kTheoMaxBatch;
+  static_assert(kExpectedChunks == 40, "10000 / 256 chunking math changed");
+  EXPECT_EQ(counting_ptr->call_count, kExpectedChunks);
+}
+
+// compute_theo_sheet is an allocating convenience over value_into (the
+// compute_surface_analytics shape) -- not a parallel implementation. Proves
+// field-for-field parity against a direct value_into call, across a batch
+// that spans multiple chunks (kTheoMaxBatch + 7) and with a REAL (nonzero)
+// overlay engaged so every TheoValue field -- theo_vol, theo_price,
+// market_vol, market_price, edge_vol, band_vol, flags -- carries a nontrivial,
+// distinguishing value rather than all coinciding at the zero-overlay
+// identity.
+TEST_F(TheoEngineTest, SheetMatchesValueIntoFieldForField) {
+  std::vector<std::unique_ptr<ITheoOverlay>> overlays_direct;
+  overlays_direct.push_back(std::make_unique<ConstantAdjustOverlay>(0.01, 0.02));
+  auto engine = TheoEngine::create(std::move(overlays_direct));
+  ASSERT_TRUE(engine.has_value()) << engine.error().to_string();
+  const TheoContext ctx{.surface = &*surface_};
+
+  const std::size_t n = kTheoMaxBatch + 7;
+  const std::array<double, 3> strikes{580.0, 600.0, 620.0};
+  const std::array<double, 2> tenors{surface_->context()[1].T, surface_->context()[3].T};
+  std::vector<TheoQuery> qs;
+  qs.reserve(n);
+  for (std::size_t i = 0; i < n; ++i) {
+    const Side side = (i % 2 == 0) ? Side::Call : Side::Put;
+    qs.push_back(TheoQuery{.strike = strikes[i % strikes.size()],
+                           .tenor_years = tenors[i % tenors.size()],
+                           .side = side});
+  }
+
+  std::vector<TheoValue> direct(n);
+  const Status st = engine->value_into(ctx, qs, direct);
+  ASSERT_TRUE(st.has_value()) << st.error().to_string();
+
+  const Result<std::vector<TheoValue>> sheet = compute_theo_sheet(ctx, *engine, qs);
+  ASSERT_TRUE(sheet.has_value()) << sheet.error().to_string();
+  ASSERT_EQ(sheet->size(), direct.size());
+
+  for (std::size_t i = 0; i < n; ++i) {
+    EXPECT_DOUBLE_EQ((*sheet)[i].theo_vol, direct[i].theo_vol) << i;
+    EXPECT_DOUBLE_EQ((*sheet)[i].theo_price, direct[i].theo_price) << i;
+    EXPECT_DOUBLE_EQ((*sheet)[i].market_vol, direct[i].market_vol) << i;
+    EXPECT_DOUBLE_EQ((*sheet)[i].market_price, direct[i].market_price) << i;
+    EXPECT_DOUBLE_EQ((*sheet)[i].edge_vol, direct[i].edge_vol) << i;
+    EXPECT_DOUBLE_EQ((*sheet)[i].band_vol, direct[i].band_vol) << i;
+    EXPECT_EQ((*sheet)[i].flags, direct[i].flags) << i;
+  }
+}
+
+// Bonus (not in the brief's Step 1 list): compute_theo_sheet propagates a
+// value_into failure unchanged rather than swallowing it -- same
+// InvalidArgument a direct value_into(ctx-with-null-surface, ...) call
+// produces (OutSpanSizeMismatchIsRejectedBeforeMutation's sibling case).
+TEST_F(TheoEngineTest, ComputeTheoSheetPropagatesValueIntoFailure) {
+  auto engine = TheoEngine::create({});
+  ASSERT_TRUE(engine.has_value()) << engine.error().to_string();
+  const TheoContext ctx{}; // surface == nullptr
+  const std::array<TheoQuery, 1> qs{
+      TheoQuery{.strike = 600.0, .tenor_years = surface_->context()[1].T, .side = Side::Call}};
+
+  const Result<std::vector<TheoValue>> sheet = compute_theo_sheet(ctx, *engine, qs);
+  ASSERT_FALSE(sheet.has_value());
+  EXPECT_EQ(sheet.error().code(), ErrorCode::InvalidArgument);
+}
+
 } // namespace
 } // namespace atx::vol
