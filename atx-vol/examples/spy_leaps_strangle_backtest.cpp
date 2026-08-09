@@ -420,7 +420,7 @@ int main(int argc, char **argv) {
                    : args.mark_domain == "error" ? MarkDomainPolicy::Error
                                                  : MarkDomainPolicy::Extrapolate;
 
-  // ── Task 10: read-only theo-edge signal probe (--no-theo-signals to skip) ──
+  // ── Task 10: read-only theo-edge signal probe (--theo-signals to enable) ──
   IStrategy *active_strategy = &strat;
   std::optional<TheoEdgeSignalStrategy> signal_strat;
   if (args.emit_theo_signals) {

@@ -513,13 +513,12 @@ TEST_F(BevPathLoader, LastSessionAtOrBeforeSnapsAndSettlesBeforeExpiry) {
 // M3/item 6: `load_bev_path` documents (breakeven.hpp) "every s > 0" as a
 // postcondition on a successful return and now enforces it per session via
 // `detail::bev_day_spot_is_valid`, naming the offending `ts_ns`. Tested
-// directly at the predicate rather than end-to-end through a real corpus/
-// Clock: a corrupted-S session cannot currently reach `load_bev_path` via any
-// real, on-disk-loaded archive -- both `PricedSurface::create` and
-// `PricedSurfaceView::create_over_record` already reject a non-finite/
-// non-positive spot at LOAD time (`MarketSnapshot::load` itself would fail
-// first), so this is defense in depth against a failure mode the archive
-// readers already close off upstream (see the predicate's own doc comment).
+// directly at the predicate: the archive readers' own header gate is
+// `S > 0.0` (rejects zero/negative/NaN at load) with `isfinite` checked on
+// the rate only, so of the four corruptions below only `+inf` survives to
+// `load_bev_path` end to end -- for that case this predicate is the sole
+// enforcement, for the rest defense in depth (see the predicate's doc
+// comment in breakeven.hpp).
 TEST_F(BevPathLoader, CorruptedSpotSessionIsRejected) {
   constexpr std::int64_t kTsNs = 123456789LL;
   for (const double bad_s : {0.0, -1.0, std::numeric_limits<double>::quiet_NaN(),

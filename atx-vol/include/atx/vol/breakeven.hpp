@@ -335,15 +335,15 @@ namespace detail {
 // M3/item 6: the "every s > 0" postcondition check `load_bev_path`'s push
 // loop enforces per session, factored out so it can be unit-tested directly.
 // `atx::vol::detail`: no stability promise, not part of the frozen umbrella
-// (same convention as `aggregate_arity.hpp`) -- exposed ONLY because a
-// corrupted-S session cannot currently be driven through `load_bev_path` via
-// any real, on-disk-loaded `Clock`/`MarketSnapshot`: both archive-record
-// readers (`PricedSurface::create`, `priced_surface.cpp`;
-// `PricedSurfaceView::create_over_record`, `priced_surface_view.cpp`) already
-// reject a non-finite/non-positive spot at LOAD time, so `MarketSnapshot::
-// load` itself fails first and this predicate never actually fires end to
-// end today -- defense in depth against a failure mode the archive readers
-// already close off upstream, tested at the predicate level instead.
+// (same convention as `aggregate_arity.hpp`). Coverage note: both
+// archive-record readers (`PricedSurface::create`, `priced_surface.cpp`;
+// `PricedSurfaceView::create_over_record`, `priced_surface_view.cpp`) gate
+// the loaded header on `S > 0.0` -- which rejects a zero, negative, or NaN
+// spot at LOAD time -- but `isfinite` is checked on the RATE only, so a
+// `+inf` spot passes that gate and IS admitted upstream. For `+inf` this
+// predicate is therefore the only enforcement of the postcondition; for the
+// other corruptions it is defense in depth. Tested at the predicate level
+// (all four cases) because only the `+inf` case is reachable end to end.
 [[nodiscard]] Status bev_day_spot_is_valid(double s, std::int64_t ts_ns);
 
 } // namespace detail

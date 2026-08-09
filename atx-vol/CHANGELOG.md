@@ -758,15 +758,20 @@ by the trainer, from the surface corpus plus a separately-computed RV
 history — see `theo.hpp`'s ML-seam banner). `TheoEdgeSignalStrategy`
 (`examples/spy_leaps_strangle_backtest.cpp`) is a read-only `IStrategy`
 decorator that records `theo_edge_atm`/`theo_band_atm` per step without
-altering any order, hedge, or NAV path — proven byte-identical to the
-undecorated run on real SPY 2019 data (899/899 shared `track.tsv` cells).
+altering any order, hedge, or NAV path — verified byte-identical to the
+undecorated run on real SPY 2019 data (899/899 shared `track.tsv` cells) in
+a one-off manual A/B whose artifact was not preserved (requires the local
+`spy-2019` corpus to reproduce) and whose arms also differed in snapshot
+surface backing; the decorator has no automated test coverage (see the
+sprint summary's Validation state).
 
 **Engine extension, not a parallel engine.** `bev_replay_pnl`'s
 implementation is appended to the end of `src/backtest.cpp` specifically to
-reuse that file's local `HedgeLedger` share ledger and mirror the existing
-engine's rebalance/settlement/financing accounting verbatim; `git diff` on
-that file is exactly one inserted `#include` line and a pure append after the
-existing close. `run_backtest`'s step loop, `RunConfig`, and `HedgeLedger`'s
+reuse that file's local `HedgeLedger` share ledger (`add`/`get`) and mirror
+the existing engine's rebalance/settlement/financing conventions (the
+single-instrument rebalance ordering is re-derived inline, not delegated);
+`git diff` on that file is exactly one inserted `#include` line and a pure
+append after the existing close. `run_backtest`'s step loop, `RunConfig`, and `HedgeLedger`'s
 class definition are byte-untouched.
 
 **Effect on existing callers.** None. All three new headers are Tier-B,
