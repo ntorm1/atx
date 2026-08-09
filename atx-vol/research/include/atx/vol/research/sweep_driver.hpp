@@ -59,15 +59,19 @@
 // There is no per-variant partial-failure mode; that is a possible future
 // widening, not something this task's brief asks for.
 //
-// This task does NOT implement economics-rev SUPERSESSION bookkeeping
-// (retiring an old-revision row so both generations stay queryable) or D4
-// compact+reload verification -- both are Task D5's job, which extends this
-// same file. `run_sweep`'s own cache-first correctness does not need
-// supersession machinery: a revision bump changes `engine_id`, which changes
-// every `TrackKey` in the sweep, so a probe under the new revision can never
-// hit an old-revision row in the first place (see point 2 above) --
-// supersession is about GC/bookkeeping of the now-unreachable old rows, not
-// about correctness of what a fresh sweep computes.
+// `run_sweep`'s own cache-first correctness does not need supersession
+// machinery: a revision bump changes `engine_id`, which changes every
+// `TrackKey` in the sweep, so a probe under the new revision can never hit an
+// old-revision row in the first place (see point 2 above). Bookkeeping the
+// now-unreachable old rows -- retiring them so both generations stay
+// queryable -- is Task D5's job, and it lands entirely inside
+// `Catalog::register_staging` (catalog.hpp/.cpp): every miss this file
+// publishes already calls `register_staging` with the CURRENT
+// `kBacktestEconomicsRev` (Phase 5 below), so a sweep re-run after a rev bump
+// retires its own old-generation rows automatically, with NO code in this
+// file needing to know a bump happened. See `TrackStatus::Retired` and
+// `Catalog::register_staging`'s doc comments (catalog.hpp) for the exact
+// match/compare rule.
 //
 // ## Threading
 //

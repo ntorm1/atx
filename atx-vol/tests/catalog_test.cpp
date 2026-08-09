@@ -211,6 +211,201 @@ TEST(CatalogTest, RegisterStagingRejectsDateMaxBeforeDateMin) {
   EXPECT_EQ(result.error().code(), atx::core::ErrorCode::InvalidArgument);
 }
 
+// ── economics-rev supersession (Task D5) ────────────────────────────────────
+//
+// A revision bump changes `engine_id` (track_key.hpp's `make_engine_id()`),
+// which changes every `TrackKey` -- so the "new" generation's row is always a
+// FRESH insert, never a collision with the old one. What `register_staging`
+// additionally does now is retire the OLD generation's row(s) for the SAME
+// logical variant: same `underlier`/`family`/`config_json`/
+// `data_snapshot_id` (all of which stay byte-identical across a rev bump --
+// none of the four encodes `engine_id`), but a STRICTLY LOWER
+// `economics_rev`. Matched purely on the integer `economics_rev` field
+// (never `created_ts`/wall-clock), so the outcome cannot depend on which
+// generation happened to be registered "first" in real time -- see the I1-I8
+// determinism note this task's controller flagged. Retiring is a STATUS
+// LABEL only: the row is never deleted, so both generations stay
+// `probe()`-able (and, on the Python side, `atxpy.tracks.catalog()`'s
+// unfiltered `SELECT * FROM tracks` still returns it) -- "kept queryable" per
+// the brief.
+//
+// A real `run_sweep` call can never itself construct this scenario within one
+// build (`kBacktestEconomicsRev` is a compile-time constant -- see
+// track_key.hpp), so these tests exercise the boundary directly at the
+// `Catalog` layer with hand-crafted `TrackKey`/`TrackRegistration` values that
+// mimic what TWO builds at two different revs would each independently
+// produce for the identical variant (same config_json/data_snapshot_id, two
+// different track_keys because `make_engine_id()` folded a different rev into
+// each build's `engine_id`).
+
+[[nodiscard]] TrackRegistration make_registration_at_rev(std::int64_t economics_rev,
+                                                          const std::string &config_json,
+                                                          const std::string &data_snapshot_id) {
+  TrackRegistration reg;
+  reg.config_json = config_json;
+  reg.engine_id = "test-engine-rev" + std::to_string(economics_rev);
+  reg.economics_rev = economics_rev;
+  reg.data_snapshot_id = data_snapshot_id;
+  reg.date_min = "2026-01-02";
+  reg.date_max = "2026-01-30";
+  return reg;
+}
+
+TEST(CatalogTest, RegisterStagingRetiresOlderGenerationRowForTheSameVariant) {
+  const fs::path root = fresh_lake_root("supersede-basic");
+  auto cat = Catalog::open(root.string());
+  ASSERT_TRUE(cat.has_value());
+
+  const TrackMeta meta = make_meta();
+  const std::string config_json = R"({"template_id":"strangle","canonical_config_hex":"ab12"})";
+  const std::string data_snapshot_id = "snapshot-fixed";
+
+  // Generation 1 (rev 1) -- as if produced by today's build.
+  const TrackKey gen1_key = make_indexed_key(1, 0);
+  ASSERT_TRUE(
+      cat->register_staging(gen1_key, meta, make_registration_at_rev(1, config_json, data_snapshot_id))
+          .has_value());
+  // The old generation gets compacted (a realistic timeline: it has been
+  // sitting in the lakehouse a while by the time a rev bump ships) --
+  // retiring must preserve file/row_group, not just flip status blind.
+  ASSERT_TRUE(cat->mark_compacted(gen1_key, "tracks/underlier=SPY/family=strangle_hedged/batch-000000.parquet",
+                                  0)
+                  .has_value());
+
+  // Generation 2 (rev 2) -- as if produced by a rebuilt binary after
+  // kBacktestEconomicsRev bumped. SAME config_json/data_snapshot_id/meta,
+  // DIFFERENT track_key (different engine_id folded into the hash).
+  const TrackKey gen2_key = make_indexed_key(2, 0);
+  ASSERT_TRUE(
+      cat->register_staging(gen2_key, meta, make_registration_at_rev(2, config_json, data_snapshot_id))
+          .has_value());
+
+  // Old generation: retired, but still fully queryable with its compacted
+  // placement intact (retiring is a label, not a delete/rewrite).
+  auto old_row = cat->probe(gen1_key);
+  ASSERT_TRUE(old_row.has_value());
+  ASSERT_TRUE(old_row->has_value()) << "a retired row must still be probe()-able";
+  EXPECT_EQ((*old_row)->status, TrackStatus::Retired);
+  ASSERT_TRUE((*old_row)->file.has_value());
+  EXPECT_EQ(*(*old_row)->file, "tracks/underlier=SPY/family=strangle_hedged/batch-000000.parquet");
+  ASSERT_TRUE((*old_row)->row_group.has_value());
+  EXPECT_EQ(*(*old_row)->row_group, 0);
+  EXPECT_EQ((*old_row)->economics_rev, 1);
+
+  // New generation: staged normally, untouched by its own retire step.
+  auto new_row = cat->probe(gen2_key);
+  ASSERT_TRUE(new_row.has_value());
+  ASSERT_TRUE(new_row->has_value());
+  EXPECT_EQ((*new_row)->status, TrackStatus::Staging);
+  EXPECT_EQ((*new_row)->economics_rev, 2);
+}
+
+TEST(CatalogTest, RegisterStagingNeverRetiresRowsAtTheSameEconomicsRev) {
+  // "rev N vs N": two DIFFERENT track_keys can share config_json/
+  // data_snapshot_id/meta at the identical economics_rev only via an
+  // engine_id difference that is NOT an economics change (e.g. a
+  // RunArchive-schema-only rebuild) -- kBacktestEconomicsRev unchanged.
+  // Supersession must not fire: retiring is specifically about an economics
+  // generation change, not incidental same-rev build churn.
+  const fs::path root = fresh_lake_root("supersede-same-rev");
+  auto cat = Catalog::open(root.string());
+  ASSERT_TRUE(cat.has_value());
+
+  const TrackMeta meta = make_meta();
+  const std::string config_json = R"({"template_id":"strangle","canonical_config_hex":"cd34"})";
+  const std::string data_snapshot_id = "snapshot-fixed-2";
+
+  const TrackKey key_a = make_indexed_key(3, 0);
+  ASSERT_TRUE(
+      cat->register_staging(key_a, meta, make_registration_at_rev(5, config_json, data_snapshot_id))
+          .has_value());
+  const TrackKey key_b = make_indexed_key(4, 0);
+  ASSERT_TRUE(
+      cat->register_staging(key_b, meta, make_registration_at_rev(5, config_json, data_snapshot_id))
+          .has_value());
+
+  auto row_a = cat->probe(key_a);
+  ASSERT_TRUE(row_a.has_value());
+  ASSERT_TRUE(row_a->has_value());
+  EXPECT_EQ((*row_a)->status, TrackStatus::Staging)
+      << "economics_rev < registration.economics_rev is STRICT -- an equal rev must never retire";
+
+  auto row_b = cat->probe(key_b);
+  ASSERT_TRUE(row_b.has_value());
+  ASSERT_TRUE(row_b->has_value());
+  EXPECT_EQ((*row_b)->status, TrackStatus::Staging);
+}
+
+TEST(CatalogTest, RegisterStagingNeverRetroactivelyRetiresANewerGeneration) {
+  // "rev N vs N-1", registered out of rev ORDER: a rev-1 registration must
+  // never retire an already-registered rev-2 row for the same variant --
+  // supersession compares economics_rev NUMERICALLY, never by which row
+  // landed first (no wall-clock/created_ts ordering).
+  const fs::path root = fresh_lake_root("supersede-out-of-order");
+  auto cat = Catalog::open(root.string());
+  ASSERT_TRUE(cat.has_value());
+
+  const TrackMeta meta = make_meta();
+  const std::string config_json = R"({"template_id":"strangle","canonical_config_hex":"ef56"})";
+  const std::string data_snapshot_id = "snapshot-fixed-3";
+
+  const TrackKey newer_key = make_indexed_key(5, 0);
+  ASSERT_TRUE(
+      cat->register_staging(newer_key, meta, make_registration_at_rev(2, config_json, data_snapshot_id))
+          .has_value());
+  const TrackKey older_key = make_indexed_key(6, 0);
+  ASSERT_TRUE(
+      cat->register_staging(older_key, meta, make_registration_at_rev(1, config_json, data_snapshot_id))
+          .has_value());
+
+  auto newer_row = cat->probe(newer_key);
+  ASSERT_TRUE(newer_row.has_value());
+  ASSERT_TRUE(newer_row->has_value());
+  EXPECT_EQ((*newer_row)->status, TrackStatus::Staging)
+      << "a later-registered OLDER rev must not retroactively retire an already-registered newer one";
+}
+
+TEST(CatalogTest, RegisterStagingSupersessionIsScopedToTheSameUnderlierFamilyAndSnapshot) {
+  // config_json alone matching is not enough: underlier/family/
+  // data_snapshot_id must ALSO match, or an unrelated track (different
+  // hive placement, or the same economics replayed over different market
+  // data) would be wrongly retired.
+  const fs::path root = fresh_lake_root("supersede-scoped");
+  auto cat = Catalog::open(root.string());
+  ASSERT_TRUE(cat.has_value());
+
+  const std::string config_json = R"({"template_id":"strangle","canonical_config_hex":"9988"})";
+
+  const TrackKey diff_underlier_key = make_indexed_key(7, 0);
+  ASSERT_TRUE(cat->register_staging(diff_underlier_key, TrackMeta{"SPY", "strangle_hedged"},
+                                    make_registration_at_rev(1, config_json, "snap-x"))
+                  .has_value());
+  const TrackKey diff_snapshot_key = make_indexed_key(7, 1);
+  ASSERT_TRUE(cat->register_staging(diff_snapshot_key, TrackMeta{"QQQ", "strangle_hedged"},
+                                    make_registration_at_rev(1, config_json, "snap-y"))
+                  .has_value());
+
+  // A rev-2 registration for QQQ/snap-y (matching diff_snapshot_key exactly)
+  // must retire ONLY diff_snapshot_key, never the SPY/snap-x row above --
+  // same config_json, but a different underlier AND a different
+  // data_snapshot_id.
+  const TrackKey superseder_key = make_indexed_key(7, 2);
+  ASSERT_TRUE(cat->register_staging(superseder_key, TrackMeta{"QQQ", "strangle_hedged"},
+                                    make_registration_at_rev(2, config_json, "snap-y"))
+                  .has_value());
+
+  auto unrelated_row = cat->probe(diff_underlier_key);
+  ASSERT_TRUE(unrelated_row.has_value());
+  ASSERT_TRUE(unrelated_row->has_value());
+  EXPECT_EQ((*unrelated_row)->status, TrackStatus::Staging)
+      << "a different underlier's same-config row must never be retired";
+
+  auto superseded_row = cat->probe(diff_snapshot_key);
+  ASSERT_TRUE(superseded_row.has_value());
+  ASSERT_TRUE(superseded_row->has_value());
+  EXPECT_EQ((*superseded_row)->status, TrackStatus::Retired);
+}
+
 // ── mark_compacted ───────────────────────────────────────────────────────
 
 TEST(CatalogTest, MarkCompactedTransitionsStagingToCompacted) {

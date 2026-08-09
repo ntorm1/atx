@@ -63,6 +63,25 @@ constexpr std::string_view kMarkCompactedSql =
     "UPDATE tracks SET status = ?1, file = ?2, row_group = ?3 WHERE track_key = ?4 AND status = "
     "?5;";
 
+// Economics-rev supersession (Task D5). Retires every OLDER-generation row
+// for the SAME logical variant as the row `register_staging` just inserted:
+// same `underlier`/`family`/`config_json`/`data_snapshot_id` (none of the
+// four encodes `engine_id`, so all four stay byte-identical across an
+// economics_rev bump -- see track_key.hpp), but a STRICTLY LOWER
+// `economics_rev`. The comparison is a plain integer `<` -- never
+// `created_ts`/wall-clock -- so the outcome is the same regardless of which
+// generation's row happened to be registered "first" in real time (I1-I8).
+// `status != ?1` is not required for correctness (re-setting 'retired' to
+// 'retired' is a no-op) but keeps `Database::changes()` meaningful for a
+// caller that inspects it. Never touches `file`/`row_group`: retiring is a
+// status LABEL only, so an already-compacted old row keeps pointing at its
+// real Parquet data (never deleted -- both generations stay `probe()`-able,
+// and `atxpy.tracks.catalog()`'s unfiltered SELECT still returns it, per the
+// brief's "both generations queryable").
+constexpr std::string_view kRetireSupersededSql =
+    "UPDATE tracks SET status = ?1 WHERE underlier = ?2 AND family = ?3 AND config_json = ?4 AND "
+    "data_snapshot_id = ?5 AND economics_rev < ?6 AND status != ?1;";
+
 constexpr std::string_view kCountTrialsSql = "SELECT COUNT(*) FROM trials WHERE sweep_id = ?1;";
 
 // ORDER BY trial_id: determinism is a binding sprint constraint. Without an
@@ -236,6 +255,25 @@ Status Catalog::register_staging(const TrackKey &key, const TrackMeta &meta,
     return Err(step.error());
   }
   ATX_TRY_VOID(stmt->reset());
+
+  // Economics-rev supersession (Task D5) -- see kRetireSupersededSql's own
+  // comment for the exact match/compare rule. Runs AFTER the insert above so
+  // the fresh row already exists (irrelevant to the UPDATE's own WHERE
+  // clause, which only ever touches OTHER rows: their economics_rev is
+  // strictly less than this row's, so this row itself can never match).
+  ATX_TRY(auto *retire_stmt, db_.prepare_cached(kRetireSupersededSql));
+  ATX_TRY_VOID(retire_stmt->bind(1, to_string(TrackStatus::Retired)));
+  ATX_TRY_VOID(retire_stmt->bind(2, meta.underlier));
+  ATX_TRY_VOID(retire_stmt->bind(3, meta.family));
+  ATX_TRY_VOID(retire_stmt->bind(4, registration.config_json));
+  ATX_TRY_VOID(retire_stmt->bind(5, registration.data_snapshot_id));
+  ATX_TRY_VOID(retire_stmt->bind(6, registration.economics_rev));
+  auto retire_step = retire_stmt->step();
+  if (!retire_step) {
+    ATX_TRY_VOID(retire_stmt->reset());
+    return Err(retire_step.error());
+  }
+  ATX_TRY_VOID(retire_stmt->reset());
   return Ok();
 }
 

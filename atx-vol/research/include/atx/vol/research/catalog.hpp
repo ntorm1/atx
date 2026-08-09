@@ -111,8 +111,19 @@ inline constexpr std::string_view kCatalogDbName = "catalog.sqlite";
 enum class TrackStatus : std::uint8_t {
   Staging,   // "staging"   -- write_staging() landed it; file/row_group NULL
   Compacted, // "compacted" -- mark_compacted() folded it into a Parquet batch
-  Retired,   // "retired"   -- reserved for a future retention/eviction task;
-             //                no API in this task ever writes it
+  Retired,   // "retired"   -- Task D5: `register_staging` writes this on an
+             //                OLDER-generation row it just superseded (see
+             //                that method's doc comment). Retired rows are
+             //                NEVER deleted or rewritten -- still `probe()`-
+             //                able, still returned by an unfiltered
+             //                `SELECT * FROM tracks` (atxpy.tracks.catalog())
+             //                -- "kept queryable" per the brief. A future
+             //                retention/eviction task (D6) may additionally
+             //                write this status for a DIFFERENT reason
+             //                (last_access_ts-driven GC) and may choose to
+             //                actually delete/rewrite Parquet data for rows
+             //                already in this state; that is out of D5's
+             //                scope.
 };
 
 [[nodiscard]] std::string_view to_string(TrackStatus status) noexcept;
@@ -190,6 +201,24 @@ public:
   // not re-created or updated by this call. Err(InvalidArgument) on an empty
   // `meta.underlier`/`meta.family`/any `TrackRegistration` field, or
   // `date_max < date_min`.
+  //
+  // Task D5, economics-rev SUPERSESSION: immediately after the insert
+  // succeeds, retires (status -> `Retired`, see that enumerator's doc
+  // comment) every row sharing this call's `meta.underlier`/`meta.family`/
+  // `registration.config_json`/`registration.data_snapshot_id` -- the parts
+  // of a track's identity that stay byte-identical across a
+  // `kBacktestEconomicsRev` bump, since none of them encodes `engine_id`
+  // (track_key.hpp) -- whose `economics_rev` is STRICTLY LESS than this
+  // call's `registration.economics_rev`. A plain integer comparison, never
+  // `created_ts`/wall-clock, so which generation's row happens to land first
+  // in real time cannot change the outcome (I1-I8). Retiring never touches
+  // `file`/`row_group` or deletes anything -- an old row that was already
+  // compacted keeps pointing at its real Parquet data; both generations stay
+  // `probe()`-able and `catalog()`-queryable. A row can therefore be
+  // registered as `Retired`'s target zero, one, or several times over its
+  // life (once per LATER generation that ever gets registered against the
+  // same variant) -- always idempotent, since re-setting an already-retired
+  // row to `Retired` is a no-op.
   [[nodiscard]] atx::core::Status register_staging(const TrackKey &key, const TrackMeta &meta,
                                                     const TrackRegistration &registration);
 
