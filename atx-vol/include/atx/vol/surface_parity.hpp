@@ -236,6 +236,25 @@ struct SurfaceParityInputs {
   // historical drop-the-slice behavior. Only consulted by `fit_curve_surface`.
   bool per_slice_legacy_prep_fallback{false};
 
+  // W2-B: the LAST-RESORT form of the rescue above. When TRUE (and
+  // `per_slice_legacy_prep_fallback` is false), the driver re-prepares the
+  // starved expiries under LegacyEssviCompatibility ONLY IF the primary
+  // preparation left the board with NO fittable slice at all — i.e. only on a
+  // board that is otherwise a total refusal. It therefore cannot change what a
+  // board that already fits serves, and costs nothing on one: the second pass
+  // is skipped entirely when any chain is usable.
+  //
+  // This exists because the per-slice form above is NOT quality-neutral. A
+  // recovered slice carries quotes the configured cascade rejected, so it can
+  // pull a board's worst-slice parity under an admission floor and fail a board
+  // that previously passed on its clean slices alone (measured: 2 of 3 boards
+  // on the AAPL/GOOGL/NVDA populate lane). Same rescue, same code path
+  // (`prepare_fit_slice_into_slot`), same `FittedLegacyPrep` outcome — only the
+  // trigger differs. `per_slice_legacy_prep_fallback` wins if both are set.
+  // DEFAULT FALSE => byte-identical to the historical drop-the-board behavior;
+  // `VolaSession::build` turns it on for every non-eSSVI family.
+  bool board_starved_legacy_prep_fallback{false};
+
   // W3.4 (F4): completeness contract. When TRUE, an expiry whose PREPARATION or
   // slice FIT fails with a HARD error code (anything other than NotFound /
   // Unavailable — i.e. a genuine defect such as a non-converged QP `Internal`)

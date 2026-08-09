@@ -8,6 +8,7 @@
 #include <limits>
 #include <optional>
 #include <span>
+#include <string>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -51,6 +52,86 @@ inline constexpr double kWeightEps = 1.0e-18;
 
 // The C returns ERR_NO_DATA (→ NotFound) unless at least this many rows survive.
 inline constexpr std::size_t kMinObs = 5;
+
+// ── Starvation diagnostics (W2-B) ───────────────────────────────────────────
+// `ObsSet::provenance` records WHY each preferred leg was dropped, but the
+// builder discards the whole set when too few rows survive — losing the
+// evidence exactly when a caller needs it, which is how a filter-starved board
+// reached the operator as an anonymous "no expiry produced a usable slice".
+// These two helpers fold the provenance into the error string. Failure path
+// only: no cost on any accepted slice.
+
+[[nodiscard]] const char *obs_rejection_reason_name(ObsRejectionReason reason) noexcept {
+  switch (reason) {
+  case ObsRejectionReason::None:
+    return "None";
+  case ObsRejectionReason::InvalidStrike:
+    return "InvalidStrike";
+  case ObsRejectionReason::QuoteFlag:
+    return "QuoteFlag";
+  case ObsRejectionReason::InvalidBidAsk:
+    return "InvalidBidAsk";
+  case ObsRejectionReason::InvalidMid:
+    return "InvalidMid";
+  case ObsRejectionReason::SpreadToMid:
+    return "SpreadToMid";
+  case ObsRejectionReason::RawIvFailure:
+    return "RawIvFailure";
+  case ObsRejectionReason::RawIvOutOfBand:
+    return "RawIvOutOfBand";
+  case ObsRejectionReason::SpreadVol:
+    return "SpreadVol";
+  case ObsRejectionReason::LowVegaWeight:
+    return "LowVegaWeight";
+  case ObsRejectionReason::ObservationCap:
+    return "ObservationCap";
+  case ObsRejectionReason::Deamericanization:
+    return "Deamericanization";
+  case ObsRejectionReason::EuropeanPrice:
+    return "EuropeanPrice";
+  }
+  return "Unknown";
+}
+
+// "(kept=1 of 23; rejected SpreadToMid x14, Deamericanization x8)" — reasons
+// ordered by descending count so the dominant cause reads first. Ties keep
+// enumerator order, so the string is deterministic for a given provenance.
+[[nodiscard]] std::string describe_rejections(std::size_t n_kept,
+                                              std::span<const ObsProvenance> provenance) {
+  constexpr std::size_t kNReasons =
+      static_cast<std::size_t>(ObsRejectionReason::EuropeanPrice) + 1u;
+  std::array<std::size_t, kNReasons> tally{};
+  for (const ObsProvenance &row : provenance) {
+    const auto slot = static_cast<std::size_t>(row.rejection);
+    if (row.rejection != ObsRejectionReason::None && slot < kNReasons) {
+      ++tally[slot];
+    }
+  }
+  std::array<std::size_t, kNReasons> order{};
+  for (std::size_t i = 0; i < kNReasons; ++i) {
+    order[i] = i;
+  }
+  std::stable_sort(order.begin(), order.end(),
+                   [&tally](std::size_t a, std::size_t b) { return tally[a] > tally[b]; });
+
+  std::string out =
+      "(kept=" + std::to_string(n_kept) + " of " + std::to_string(provenance.size()) + "; rejected";
+  bool any = false;
+  for (const std::size_t slot : order) {
+    if (tally[slot] == 0u) {
+      break; // descending order: nothing after the first zero can be nonzero
+    }
+    out += any ? ", " : " ";
+    out += obs_rejection_reason_name(static_cast<ObsRejectionReason>(slot));
+    out += " x" + std::to_string(tally[slot]);
+    any = true;
+  }
+  if (!any) {
+    out += " none";
+  }
+  out += ")";
+  return out;
+}
 
 // Sentinel written into a fit row's independent score column when anchor-
 // independent scoring is requested but its raw-mid inversion failed or landed
@@ -1053,7 +1134,8 @@ Result<ObsSet> build_observations(const Chain &chain, double F, double T, double
     audit_direct_european_inversions(chain, F, T, df, opts, out);
   }
   if (out.obs.size() < kMinObs) {
-    return Err(ErrorCode::NotFound, "build_observations: fewer than 5 observations survived");
+    return Err(ErrorCode::NotFound, "build_observations: fewer than 5 observations survived " +
+                                        describe_rejections(out.obs.size(), out.provenance));
   }
   return Ok(std::move(out));
 }
@@ -1384,7 +1466,8 @@ Result<ObsSet> build_observations_european(const Chain &chain, double S, double 
   finalize_route_diag(out.deam_audit.accurate, std::move(audit_residuals[3]));
   if (out.obs.size() < kMinObs) {
     return Err(ErrorCode::NotFound,
-               "build_observations_european: fewer than 5 European obs survived");
+               "build_observations_european: fewer than 5 European obs survived " +
+                   describe_rejections(out.obs.size(), out.provenance));
   }
   return Ok(std::move(out));
 }

@@ -662,6 +662,7 @@ Status PricerFitter::fit(const OptionChain &chain,
     }
     if (cfg_.fit_prep_policy)
       in.fit_prep_policy = *cfg_.fit_prep_policy;
+    in.prep = cfg_.prep;
     if (cfg_.audit_fit_inversions)
       in.deam.audit_fit_inversions = *cfg_.audit_fit_inversions;
     if (cfg_.warm_start_carry)
@@ -912,6 +913,7 @@ Status PricerFitter::fit(const OptionChain &chain,
     }
     if (cfg_.fit_prep_policy)
       in.fit_prep_policy = *cfg_.fit_prep_policy;
+    in.prep = cfg_.prep;
     if (cfg_.audit_fit_inversions)
       in.deam.audit_fit_inversions = *cfg_.audit_fit_inversions;
     if (cfg_.warm_start_carry)

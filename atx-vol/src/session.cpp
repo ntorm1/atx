@@ -1168,7 +1168,39 @@ Result<VolaSession> VolaSession::build(const Underlying &under, const SessionInp
   sp.score_parity = eff.score_parity;
   sp.enforce_calendar_floor = eff.enforce_calendar_floor;
   sp.use_deam_cache_for_fit = eff.use_deam_cache_for_fit;
-  sp.fit_prep_policy = eff.fit_prep_policy;
+
+  // ── Preparation policy: chosen, not inherited from the curve family ────────
+  // Historically the family decided the strictness (eSSVI => permissive,
+  // everything else => the full CalibOpts cascade) and the two per-slice rescue
+  // lanes had no route here at all. Now the caller states a family-neutral
+  // REQUEST and `resolve_preparation_policy` answers what the selected driver
+  // will actually do. The two legacy spellings that live callers already set —
+  // `SessionInputs::fit_prep_policy` and `CalibOpts::per_slice_linear_fallback`
+  // — are folded into the request so they keep working; an explicit `prep` field
+  // always wins over its legacy spelling.
+  const PreparationLane prep_lane = (eff.curve.kind == VolCurveKind::Essvi)
+                                        ? PreparationLane::EssviDriver
+                                        : PreparationLane::PolymorphicDriver;
+  PreparationPolicyRequest prep_request = eff.prep;
+  if (prep_request.strictness == PrepStrictness::Auto &&
+      eff.fit_prep_policy == PreparedObservationPolicy::LegacyEssviCompatibility) {
+    prep_request.strictness = PrepStrictness::Permissive;
+  }
+  if (prep_request.linear_fallback == ThinSliceRescue::Auto &&
+      eff.calib.per_slice_linear_fallback) {
+    prep_request.linear_fallback = ThinSliceRescue::On;
+  }
+  const ResolvedPreparationPolicy prep_policy = resolve_preparation_policy(prep_request, prep_lane);
+  sp.fit_prep_policy = prep_policy.primary;
+  // `run_surface_parity` reads `fit_prep_policy` only behind this flag; without
+  // it a Configured request on the eSSVI lane would be silently ignored.
+  sp.essvi_serve_configured_prep = prep_lane == PreparationLane::EssviDriver &&
+                                   prep_policy.primary == PreparedObservationPolicy::Configured;
+  sp.per_slice_legacy_prep_fallback =
+      prep_policy.legacy_prep_rescue == LegacyPrepRescueMode::EverySlice;
+  sp.board_starved_legacy_prep_fallback =
+      prep_policy.legacy_prep_rescue == LegacyPrepRescueMode::BoardStarvedOnly;
+  sp.calib.per_slice_linear_fallback = prep_policy.linear_fallback;
 
   // SOTA hot path: build per-side correction caches and route every American
   // inversion (de-Am) + re-pricing (parity) through the cached pricer. The

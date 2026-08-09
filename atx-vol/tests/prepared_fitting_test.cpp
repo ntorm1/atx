@@ -928,3 +928,98 @@ TEST(SliceKCoverage, EmptyOrNonFiniteRowsAreInadmissible) {
   const std::vector<atx::vol::FitObs> rows{nan_row};
   EXPECT_FALSE(atx::vol::slice_k_coverage(rows).admissible());
 }
+
+// ── W2-B: the explicit preparation-policy decision ──────────────────────────
+//
+// Preparation strictness must be an INPUT, not a consequence of which curve
+// family the router picked. These pin `resolve_preparation_policy`'s whole
+// contract: it is pure, total, constexpr-evaluable, and returns what the named
+// driver WILL do rather than what the caller asked for.
+
+TEST(PreparationPolicyResolve, AutoReproducesEachLanesHistoricalStrictness) {
+  constexpr atx::vol::PreparationPolicyRequest kAuto{};
+  constexpr auto essvi =
+      atx::vol::resolve_preparation_policy(kAuto, atx::vol::PreparationLane::EssviDriver);
+  constexpr auto poly =
+      atx::vol::resolve_preparation_policy(kAuto, atx::vol::PreparationLane::PolymorphicDriver);
+  static_assert(essvi.primary == PreparedObservationPolicy::LegacyEssviCompatibility,
+                "the eSSVI driver's historical prep is the permissive predicate");
+  static_assert(poly.primary == PreparedObservationPolicy::Configured,
+                "the polymorphic driver's historical prep is the CalibOpts cascade");
+  EXPECT_EQ(essvi.primary, PreparedObservationPolicy::LegacyEssviCompatibility);
+  EXPECT_EQ(poly.primary, PreparedObservationPolicy::Configured);
+}
+
+TEST(PreparationPolicyResolve, StrictnessIsIndependentOfTheLane) {
+  // The whole point of the decoupling: a thin-board caller can demand the
+  // permissive population on the SVI/polymorphic lane, and a caller can demand
+  // the strict cascade on the eSSVI lane. Neither is implied by the family.
+  atx::vol::PreparationPolicyRequest req{};
+  req.strictness = atx::vol::PrepStrictness::Permissive;
+  EXPECT_EQ(atx::vol::resolve_preparation_policy(req, atx::vol::PreparationLane::PolymorphicDriver)
+                .primary,
+            PreparedObservationPolicy::LegacyEssviCompatibility);
+
+  req.strictness = atx::vol::PrepStrictness::Configured;
+  EXPECT_EQ(
+      atx::vol::resolve_preparation_policy(req, atx::vol::PreparationLane::EssviDriver).primary,
+      PreparedObservationPolicy::Configured);
+}
+
+TEST(PreparationPolicyResolve, LegacyPrepRescueDefaultsToTheLastResortFormOnly) {
+  // Auto must pick the form that CANNOT cost a healthy board its surface: the
+  // board-level last resort, which runs only when the primary preparation left
+  // nothing fittable. The aggressive per-slice form is reachable only by asking.
+  constexpr atx::vol::PreparationPolicyRequest kAuto{};
+  EXPECT_EQ(
+      atx::vol::resolve_preparation_policy(kAuto, atx::vol::PreparationLane::PolymorphicDriver)
+          .legacy_prep_rescue,
+      atx::vol::LegacyPrepRescueMode::BoardStarvedOnly);
+
+  atx::vol::PreparationPolicyRequest on{};
+  on.legacy_prep_rescue = atx::vol::ThinSliceRescue::On;
+  EXPECT_EQ(atx::vol::resolve_preparation_policy(on, atx::vol::PreparationLane::PolymorphicDriver)
+                .legacy_prep_rescue,
+            atx::vol::LegacyPrepRescueMode::EverySlice);
+
+  // The eSSVI driver implements no per-slice rescue, so it must never claim one.
+  EXPECT_EQ(atx::vol::resolve_preparation_policy(kAuto, atx::vol::PreparationLane::EssviDriver)
+                .legacy_prep_rescue,
+            atx::vol::LegacyPrepRescueMode::Off);
+  EXPECT_EQ(atx::vol::resolve_preparation_policy(on, atx::vol::PreparationLane::EssviDriver)
+                .legacy_prep_rescue,
+            atx::vol::LegacyPrepRescueMode::Off);
+}
+
+TEST(PreparationPolicyResolve, LegacyPrepRescueIsSuppressedWhenItCannotMatter) {
+  // Re-preparing an already-permissive population under the permissive
+  // predicate is a no-op; resolving it on would be a lie in the report.
+  atx::vol::PreparationPolicyRequest req{};
+  req.strictness = atx::vol::PrepStrictness::Permissive;
+  req.legacy_prep_rescue = atx::vol::ThinSliceRescue::On;
+  EXPECT_EQ(atx::vol::resolve_preparation_policy(req, atx::vol::PreparationLane::PolymorphicDriver)
+                .legacy_prep_rescue,
+            atx::vol::LegacyPrepRescueMode::Off);
+
+  // An explicit Off wins over the Auto default on the lane that does run it.
+  atx::vol::PreparationPolicyRequest off{};
+  off.legacy_prep_rescue = atx::vol::ThinSliceRescue::Off;
+  EXPECT_EQ(atx::vol::resolve_preparation_policy(off, atx::vol::PreparationLane::PolymorphicDriver)
+                .legacy_prep_rescue,
+            atx::vol::LegacyPrepRescueMode::Off);
+}
+
+TEST(PreparationPolicyResolve, LinearFallbackStaysOptInEverywhere) {
+  constexpr atx::vol::PreparationPolicyRequest kAuto{};
+  EXPECT_FALSE(
+      atx::vol::resolve_preparation_policy(kAuto, atx::vol::PreparationLane::PolymorphicDriver)
+          .linear_fallback);
+
+  atx::vol::PreparationPolicyRequest on{};
+  on.linear_fallback = atx::vol::ThinSliceRescue::On;
+  EXPECT_TRUE(atx::vol::resolve_preparation_policy(on, atx::vol::PreparationLane::PolymorphicDriver)
+                  .linear_fallback);
+  // run_surface_parity has no per-slice fit fallback either.
+  EXPECT_FALSE(atx::vol::resolve_preparation_policy(on, atx::vol::PreparationLane::EssviDriver)
+                   .linear_fallback);
+}

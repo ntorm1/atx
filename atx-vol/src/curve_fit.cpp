@@ -155,11 +155,118 @@ struct ChainPrepass {
   // a HARD preparation failure verbatim so phase 2 can propagate it truthfully.
   SlicePrepOutcome prep_outcome = SlicePrepOutcome::Skipped;
   std::optional<atx::core::Error> prep_error;
+  // W2-B: the PRIMARY (configured-policy) attempt's error, retained separately
+  // and even when it was `expected` (thin). `prep_error` above is the error that
+  // DECIDED the outcome — after a rescue that is the rescue's — so without this
+  // the strict funnel's own rejection histogram, the evidence that distinguishes
+  // "the filter emptied this slice" from "this slice has no two-sided quotes",
+  // is lost the moment a rescue runs.
+  std::optional<atx::core::Error> primary_prep_error;
   // Legacy-rescue preparation tallies (meaningful only when a rescue ran):
   // rows the permissive predicate kept, and rows its fit-inversion audit dropped.
   std::uint32_t legacy_fit_rows = 0;
   std::uint32_t legacy_audit_dropped = 0;
 };
+
+// W2-B: the board-level refusal string. `NotFound: no expiry produced a usable
+// slice` told an operator nothing — a 23-row board and a 6000-row board whose
+// quotes cannot be de-Americanized under negative carry produced the identical
+// message, and the per-expiry evidence the driver already collected was thrown
+// away at the boundary. This names the outcome census, the preparation policy
+// that produced it (so a strictness choice is visible in its own failure), and
+// the single most informative per-expiry detail: the thin/starved expiry with
+// the most quote rows, whose retained error carries the builder's rejection
+// histogram. Failure path only — no cost on a board that fits.
+[[nodiscard]] std::string describe_board_refusal(const Underlying &under,
+                                                 const SurfaceParityInputs &in,
+                                                 const CurveConfig &cfg,
+                                                 std::span<const ChainPrepass> prepass,
+                                                 std::span<const ExpiryFitReport> reports) {
+  std::size_t n_starved = 0, n_uncovered = 0, n_carry_failed = 0, n_prep_failed = 0;
+  std::size_t n_fit_failed = 0, n_calendar_refused = 0, n_skipped = 0;
+  for (const ExpiryFitReport &rep : reports) {
+    switch (rep.outcome) {
+    case ExpiryFitOutcome::PrepStarved:
+      ++n_starved;
+      break;
+    case ExpiryFitOutcome::PrepUncovered:
+      ++n_uncovered;
+      break;
+    case ExpiryFitOutcome::CarryFailed:
+      ++n_carry_failed;
+      break;
+    case ExpiryFitOutcome::PrepFailed:
+      ++n_prep_failed;
+      break;
+    case ExpiryFitOutcome::FitFailed:
+      ++n_fit_failed;
+      break;
+    case ExpiryFitOutcome::FitRefusedCalendar:
+      ++n_calendar_refused;
+      break;
+    case ExpiryFitOutcome::Skipped:
+      ++n_skipped;
+      break;
+    case ExpiryFitOutcome::Fitted:
+    case ExpiryFitOutcome::FittedFallbackCurve:
+    case ExpiryFitOutcome::FittedLegacyPrep:
+      break; // unreachable here: a fitted slice means the surface is non-empty
+    }
+  }
+
+  std::string out = "fit_curve_surface: no expiry produced a usable slice; chains=" +
+                    std::to_string(reports.size()) + " starved=" + std::to_string(n_starved) +
+                    " uncovered=" + std::to_string(n_uncovered) +
+                    " carry_failed=" + std::to_string(n_carry_failed) +
+                    " prep_failed=" + std::to_string(n_prep_failed) +
+                    " fit_failed=" + std::to_string(n_fit_failed) +
+                    " calendar_refused=" + std::to_string(n_calendar_refused) +
+                    " skipped=" + std::to_string(n_skipped);
+  out += "; kind=";
+  out += to_string(cfg.kind);
+  out += " prep=";
+  out += (in.fit_prep_policy == PreparedObservationPolicy::LegacyEssviCompatibility) ? "permissive"
+                                                                                     : "configured";
+  out += " legacy_prep_rescue=";
+  out += in.per_slice_legacy_prep_fallback       ? "every-slice"
+         : in.board_starved_legacy_prep_fallback ? "board-starved"
+                                                 : "off";
+  out += " linear_fallback=";
+  out += in.calib.per_slice_linear_fallback ? "on" : "off";
+
+  // Widest board evidence available: the retained preparation error of the
+  // non-fitting expiry with the most strikes.
+  const std::size_t n = std::min(prepass.size(), under.chains.size());
+  std::size_t widest_index = n;
+  std::size_t widest_strikes = 0;
+  for (std::size_t i = 0; i < n; ++i) {
+    if (!prepass[i].prep_error.has_value()) {
+      continue;
+    }
+    const std::size_t strikes = under.chains[i].n_strikes();
+    if (widest_index == n || strikes > widest_strikes) {
+      widest_index = i;
+      widest_strikes = strikes;
+    }
+  }
+  if (widest_index < n) {
+    const ChainPrepass &widest = prepass[widest_index];
+    out += "; widest non-fitting expiry #" + std::to_string(widest_index) +
+           " T=" + std::to_string(under.chains[widest_index].T) +
+           " strikes=" + std::to_string(widest_strikes) + ": ";
+    // Both attempts, when they differ. The primary carries the configured
+    // cascade's rejection histogram (which filter emptied the slice); the second
+    // is what the permissive rescue could still not save (how much of the loss
+    // is the board rather than the policy).
+    out += widest.primary_prep_error.has_value() ? widest.primary_prep_error->to_string()
+                                                 : widest.prep_error->to_string();
+    if (widest.primary_prep_error.has_value() &&
+        widest.prep_error->message() != widest.primary_prep_error->message()) {
+      out += " | after permissive rescue: " + widest.prep_error->to_string();
+    }
+  }
+  return out;
+}
 
 // Recover each fit observation's SOURCE chain quote (raw American mid + kill-
 // mask flags) by strike, so the incremental-cache certification data is
@@ -279,9 +386,13 @@ struct CarryFallback {
 // body. Does NOT touch slot.carry / slot.borrow: the caller owns the
 // certification carry (which differs between a solved and a fallback expiry) and
 // the committed borrow.
+// W2-B: `allow_legacy_rescue` is the caller's decision, not a re-read of
+// `in.per_slice_legacy_prep_fallback`, because the board-level last-resort pass
+// needs to force the rescue on for a second attempt at chains the first pass
+// already declined it for.
 void prepare_fit_slice_into_slot(const Chain &chain, const SurfaceParityInputs &in,
-                                 VolCurveKind kind, bool use_fit_cache, bool time_stages,
-                                 std::size_t i, ChainPrepass &slot) {
+                                 VolCurveKind kind, bool use_fit_cache, bool allow_legacy_rescue,
+                                 bool time_stages, std::size_t i, ChainPrepass &slot) {
   const AmericanCorrectionCaches fit_caches =
       use_fit_cache ? in.deam.caches : AmericanCorrectionCaches{};
   PreparedSliceInputs prepare_inputs;
@@ -311,13 +422,24 @@ void prepare_fit_slice_into_slot(const Chain &chain, const SurfaceParityInputs &
   const bool primary_ok =
       prepared.has_value() && prepared->fit_observations().size() >= kMinPreparedFitRows;
   if (!primary_ok) {
+    // W2-B: retain the EXPECTED (thin) preparation error too. The builder folds
+    // its rejection histogram into that message, and it is the only surviving
+    // evidence of why the funnel emptied — the board-level refusal below quotes
+    // it. `prep_outcome` stays the discriminator, so no consumer that keys on
+    // `Failed` sees a behaviour change.
+    if (!prepared.has_value()) {
+      slot.primary_prep_error = prepared.error();
+    }
     if (!prepared.has_value() && !prep_error_is_expected(prepared.error().code())) {
       slot.prep_outcome = SlicePrepOutcome::Failed;
       slot.prep_error = prepared.error();
       return;
     }
+    if (!prepared.has_value()) {
+      slot.prep_error = prepared.error();
+    }
     const bool rescue_eligible =
-        in.per_slice_legacy_prep_fallback &&
+        allow_legacy_rescue &&
         in.fit_prep_policy != PreparedObservationPolicy::LegacyEssviCompatibility;
     if (!rescue_eligible) {
       slot.prep_outcome = SlicePrepOutcome::Starved;
@@ -335,12 +457,9 @@ void prepare_fit_slice_into_slot(const Chain &chain, const SurfaceParityInputs &
       slot.ms_obs_eu += elapsed_ms(t_rescue0, ProfileClock::now());
     }
     if (!rescued.has_value()) {
-      if (!prep_error_is_expected(rescued.error().code())) {
-        slot.prep_outcome = SlicePrepOutcome::Failed;
-        slot.prep_error = rescued.error();
-      } else {
-        slot.prep_outcome = SlicePrepOutcome::Starved;
-      }
+      slot.prep_error = rescued.error(); // the LAST attempt's evidence wins
+      slot.prep_outcome = prep_error_is_expected(rescued.error().code()) ? SlicePrepOutcome::Starved
+                                                                         : SlicePrepOutcome::Failed;
       return;
     }
     if (rescued->fit_observations().size() < kMinPreparedFitRows) {
@@ -458,7 +577,8 @@ void prepare_fit_slice_into_slot(const Chain &chain, const SurfaceParityInputs &
     slot.q_eff = q_eff;
     slot.df = df;
 
-    prepare_fit_slice_into_slot(chain, in, kind, use_fit_cache, time_stages, i, slot);
+    prepare_fit_slice_into_slot(chain, in, kind, use_fit_cache, in.per_slice_legacy_prep_fallback,
+                                time_stages, i, slot);
     if (!slot.usable) {
       return; // Starved / Failed already stamped; a confident anchor is still recorded
     }
@@ -620,8 +740,36 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
       fb_carry.source = pre.carry_source;
       pre.carry = std::move(fb_carry);
       pre.carry_available = true;
-      prepare_fit_slice_into_slot(under.chains[i], in, cfg.kind, use_fit_cache, time_stages, i,
-                                  pre);
+      prepare_fit_slice_into_slot(under.chains[i], in, cfg.kind, use_fit_cache,
+                                  in.per_slice_legacy_prep_fallback, time_stages, i, pre);
+    });
+  }
+
+  // ── Phase 1.75 (W2-B): LAST-RESORT Legacy-prep rescue ─────────────────────
+  // Only when the board is otherwise a TOTAL refusal — no chain became
+  // fittable — do the starved expiries get a second preparation under the
+  // permissive predicate. Gating on "zero usable slices" is what makes this
+  // default-safe: a board that already fits skips the loop entirely, so its
+  // served slices, diagnostics and preparation cost are bit-identical to the
+  // pre-W2-B path, and no recovered (permissively populated) slice can drag a
+  // healthy board's worst-slice quality under an admission floor. The
+  // aggressive per-slice form stays available through
+  // `per_slice_legacy_prep_fallback`, which already ran above.
+  if (in.board_starved_legacy_prep_fallback && !in.per_slice_legacy_prep_fallback &&
+      in.fit_prep_policy != PreparedObservationPolicy::LegacyEssviCompatibility &&
+      std::none_of(prepass.begin(), prepass.end(),
+                   [](const ChainPrepass &pre) { return pre.usable; })) {
+    std::vector<std::size_t> starved_idx;
+    for (std::size_t i = 0; i < prepass.size(); ++i) {
+      if (prepass[i].prep_outcome == SlicePrepOutcome::Starved) {
+        starved_idx.push_back(i);
+      }
+    }
+    const bool use_fit_cache = allow_fit_cache(in, cfg.kind);
+    parallel_for_dynamic(starved_idx.size(), in.fit_workers, [&](std::size_t task) {
+      const std::size_t i = starved_idx[task];
+      prepare_fit_slice_into_slot(under.chains[i], in, cfg.kind, use_fit_cache,
+                                  /*allow_legacy_rescue=*/true, time_stages, i, prepass[i]);
     });
   }
 
@@ -960,7 +1108,8 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
   }
 
   if (out.surface.empty()) {
-    return Err(ErrorCode::NotFound, "fit_curve_surface: no expiry produced a usable slice");
+    return Err(ErrorCode::NotFound,
+               describe_board_refusal(under, in, cfg, prepass, out.expiry_reports));
   }
   out.n_slices = out.surface.n_slices();
   out.worst_frac_within_bidask = std::isfinite(worst) ? worst : 0.0;

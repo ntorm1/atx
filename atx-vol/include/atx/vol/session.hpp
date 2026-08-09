@@ -150,6 +150,12 @@ struct SessionInputs {
   // cold-driver predicate, which keeps thin single-name expiries that the strict
   // usable-row floor would otherwise starve. Only affects a polymorphic-curve
   // build; the default eSSVI path (run_surface_parity) does not read it.
+  //
+  // LEGACY SPELLING (W2-B). This is the family-coupled half of what `prep` below
+  // now expresses: it can only say "permissive on the polymorphic lane". It is
+  // retained because live callers set it, and it is folded into the request as
+  // `PrepStrictness::Permissive` whenever `prep.strictness` is left at `Auto`.
+  // An explicit `prep.strictness` always wins. Prefer `prep` for new code.
   PreparedObservationPolicy fit_prep_policy{PreparedObservationPolicy::Configured};
   // Post-assembly calendar-arbitrage repair (see surface_parity.hpp
   // CalendarRepair). None (default) checks only — the raw independent-per-slice
@@ -220,14 +226,28 @@ struct SessionInputs {
   // still used as a fallback for any slice that was never stamped
   // (`expiry_ns == 0`) -- see `solve_implied_emove`'s doc (session.cpp).
   TimeSpec time{};
+  // W2-B: the EXPLICIT preparation-strictness + thin-slice-rescue decision (see
+  // detail/prepared_policy.hpp). Every field defaults to `Auto`, which
+  // `VolaSession::build` resolves against the fit LANE the curve family selects
+  // — `PreparationLane::EssviDriver` for `curve.kind == Essvi`,
+  // `PreparationLane::PolymorphicDriver` otherwise — via
+  // `resolve_preparation_policy`. All-`Auto` reproduces the historical
+  // preparation on both lanes EXCEPT for one deliberate change: the per-slice
+  // Legacy-prep rescue (`SurfaceParityInputs::per_slice_legacy_prep_fallback`)
+  // is now ON for the polymorphic lane, which is a pure recovery path — it can
+  // only add slices whose strict preparation starved, never remove one.
+  //
+  // Appended last (post-v1); no positional-compatibility promise, per the
+  // construction contract above.
+  PreparationPolicyRequest prep{};
 };
 
-// Drift pin (plan item 4.2). SessionInputs has exactly TWENTY-THREE fields.
+// Drift pin (plan item 4.2). SessionInputs has exactly TWENTY-FOUR fields.
 // Adding, removing or splitting one breaks this line, which is the point: it
 // forces whoever changes the struct to read the construction contract above
 // instead of appending a knob "for compatibility" with positional initializers
 // that are no longer part of the API.
-static_assert(detail::aggregate_arity_is_v<SessionInputs, 23>,
+static_assert(detail::aggregate_arity_is_v<SessionInputs, 24>,
               "SessionInputs field count changed: update this pin, and confirm every "
               "construction site still initializes by field name.");
 

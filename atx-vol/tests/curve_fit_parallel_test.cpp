@@ -12,15 +12,16 @@
 #include <string>
 #include <vector>
 
-#include "atx/vol/american.hpp"        // american_price, al_fast_opts, AlOpts
-#include "atx/vol/curve_fit.hpp"       // fit_curve_surface, CurveSurfaceReport
-#include "atx/vol/dividend.hpp"        // hybrid_forward, HybridDivParams
-#include "atx/vol/opra_panel.hpp"      // load_opra_cbbo_parquet, OpraLoadSpec
-#include "atx/vol/detail/parallel_for.hpp"    // atx_auto_worker_count
-#include "atx/vol/surface_parity.hpp"  // SurfaceParityInputs, SliceContext, CalendarRepair
-#include "atx/vol/types.hpp"           // Side
-#include "atx/vol/universe.hpp"        // Underlying, Chain, chain_index, Universe, data_install
-#include "atx/vol/vol_curve.hpp"       // CurveConfig, IVolCurve
+#include "atx/vol/american.hpp"            // american_price, al_fast_opts, AlOpts
+#include "atx/vol/arb.hpp"                 // QuoteFlag, to_u8 (kill-mask rescue probe)
+#include "atx/vol/curve_fit.hpp"           // fit_curve_surface, CurveSurfaceReport
+#include "atx/vol/detail/parallel_for.hpp" // atx_auto_worker_count
+#include "atx/vol/dividend.hpp"            // hybrid_forward, HybridDivParams
+#include "atx/vol/opra_panel.hpp"          // load_opra_cbbo_parquet, OpraLoadSpec
+#include "atx/vol/surface_parity.hpp"      // SurfaceParityInputs, SliceContext, CalendarRepair
+#include "atx/vol/types.hpp"               // Side
+#include "atx/vol/universe.hpp"            // Underlying, Chain, chain_index, Universe, data_install
+#include "atx/vol/vol_curve.hpp"           // CurveConfig, IVolCurve
 
 // S0-1 gate: `fit_curve_surface`'s per-chain de-Am pre-pass fans out over
 // `in.fit_workers` (parallel_for block-partition), but the fit itself stays
@@ -689,4 +690,191 @@ TEST(CurveFitExpiryTaxonomy, HardFitErrorPropagatesUnderCompletenessContract) {
   auto rep_on = fit_curve_surface(under, in_on, cfg);
   ASSERT_FALSE(rep_on.has_value());
   EXPECT_EQ(rep_on.error().code(), ErrorCode::InvalidArgument);
+}
+
+// ── W2-B: thin-slice rescue observability + typed board refusal ─────────────
+
+namespace {
+
+// A chain whose OTM legs all sit BELOW the forward (k in [-0.20, -0.05]). Rows
+// like this pass the usable-row count but fail Task 1's k-coverage straddle
+// test, which is what makes them the ordering probe for "does the coverage gate
+// still run after a Legacy-prep rescue".
+[[nodiscard]] Chain make_one_sided_chain(double T, int n_strikes) {
+  Chain c;
+  c.T = T;
+  c.expiry_ns = static_cast<std::int64_t>(T * 3.1536e16);
+
+  const std::vector<DividendEvent> no_divs;
+  const double F = hybrid_forward(kSpot, kRate, /*borrow=*/0.0, T, no_divs, c.expiry_ns,
+                                  /*now_ts_ns=*/0, HybridDivParams{});
+  const double q_eff = kRate - std::log(F / kSpot) / T;
+
+  constexpr double kLo = -0.20;
+  constexpr double kHi = -0.05;
+  c.strikes.reserve(static_cast<std::size_t>(n_strikes));
+  for (int i = 0; i < n_strikes; ++i) {
+    const double frac = static_cast<double>(i) / static_cast<double>(n_strikes - 1);
+    c.strikes.push_back(F * std::exp(kLo + frac * (kHi - kLo)));
+  }
+
+  const std::size_t n = c.strikes.size();
+  c.bids.assign(2 * n, 0.0);
+  c.asks.assign(2 * n, 0.0);
+  c.bid_sizes.assign(2 * n, 0);
+  c.ask_sizes.assign(2 * n, 0);
+  c.mids.assign(2 * n, 0.0);
+  c.ivs.assign(2 * n, std::numeric_limits<double>::quiet_NaN());
+  c.ts_ns.assign(2 * n, 0);
+  c.flags.assign(2 * n, 0);
+
+  for (std::size_t i = 0; i < n; ++i) {
+    const double K = c.strikes[i];
+    const double k = std::log(K / F);
+    const double sigma = smile_sigma(k);
+    const auto px_res = american_price(kSpot, K, T, sigma, kRate, q_eff, Side::Put,
+                                       AmericanMethod::AndersenLake, std::nullopt);
+    if (!px_res.has_value()) {
+      ADD_FAILURE() << "american_price failed for K=" << K << " T=" << T;
+      continue;
+    }
+    const double px = *px_res;
+    const double half = std::max(0.0025 * px, 1.0e-4);
+    const std::size_t idx = chain_index(static_cast<std::uint16_t>(i), Side::Put);
+    c.mids[idx] = px;
+    c.bids[idx] = px - half;
+    c.asks[idx] = px + half;
+    c.bid_sizes[idx] = 1;
+    c.ask_sizes[idx] = 1;
+  }
+  return c;
+}
+
+} // namespace
+
+// W2-B: a rescued slice must not read as an ordinary `Fitted`. The rescue lane
+// already existed and already incremented `n_slices_legacy_rescued`, but nothing
+// pinned the per-expiry taxonomy, which is what admission and the RCA tools read.
+TEST(CurveFitLegacyPrepRescue, RescuedSlicesReportFittedLegacyPrep) {
+  const Underlying under = make_synthetic_underlying();
+  CurveConfig cfg; // default ConvexDense
+
+  SurfaceParityInputs in = base_inputs(1);
+  in.calib.max_spread_to_mid_pct = 0.001; // starves Configured prep on every slice
+  in.per_slice_legacy_prep_fallback = true;
+
+  auto rep = fit_curve_surface(under, in, cfg);
+  ASSERT_TRUE(rep.has_value()) << rep.error().to_string();
+  ASSERT_EQ(rep->expiry_reports.size(), 4u);
+  for (const auto &er : rep->expiry_reports) {
+    EXPECT_EQ(er.outcome, ExpiryFitOutcome::FittedLegacyPrep)
+        << "chain " << er.chain_index << " was rescued; it must not report as Fitted";
+  }
+  EXPECT_EQ(rep->n_slices_legacy_rescued, 4u);
+}
+
+// W2-B ordering pin (hazard: `PrepUncovered` runs AFTER any rescue). A slice the
+// permissive predicate hands back one-sided must still be refused by Task 1's
+// k-coverage gate — the rescue may not launder a shape the coverage rule exists
+// to reject, and the outcome must say `PrepUncovered`, not `FittedLegacyPrep`.
+TEST(CurveFitLegacyPrepRescue, RescueDoesNotBypassKCoverageRefusal) {
+  Underlying under;
+  under.spot = kSpot;
+  under.chains.push_back(make_one_sided_chain(0.30, 17));
+
+  CurveConfig cfg; // ConvexDense: the only family the coverage gate arms for
+  SurfaceParityInputs in = base_inputs(1);
+  in.calib.max_spread_to_mid_pct = 0.001; // starves Configured prep
+  in.per_slice_legacy_prep_fallback = true;
+
+  auto rep = fit_curve_surface(under, in, cfg);
+  ASSERT_FALSE(rep.has_value()) << "a one-sided board must not produce a served slice";
+  EXPECT_EQ(rep.error().code(), ErrorCode::NotFound);
+  EXPECT_NE(rep.error().message().find("uncovered=1"), std::string::npos)
+      << "refusal should name the coverage refusal: " << rep.error().message();
+}
+
+// W2-B acceptance criterion 1: "no expiry produced a usable slice" with no
+// further detail is not an acceptable refusal. The terminal error must name the
+// board condition that produced it, so a 23-row board reads as thin rather than
+// as an anonymous NotFound.
+TEST(CurveFitBoardRefusal, NamesTheBoardConditionThatStarvedEveryExpiry) {
+  const Underlying under = make_synthetic_underlying();
+  CurveConfig cfg; // default ConvexDense
+
+  SurfaceParityInputs in = base_inputs(1);
+  in.calib.max_spread_to_mid_pct = 0.001; // starves Configured prep on every slice
+  // Rescue explicitly OFF: this is the refusal shape, not the recovery shape.
+  in.per_slice_legacy_prep_fallback = false;
+
+  auto rep = fit_curve_surface(under, in, cfg);
+  ASSERT_FALSE(rep.has_value());
+  EXPECT_EQ(rep.error().code(), ErrorCode::NotFound);
+  const std::string msg = rep.error().message();
+  EXPECT_NE(msg.find("chains=4"), std::string::npos) << msg;
+  EXPECT_NE(msg.find("starved=4"), std::string::npos) << msg;
+  // The dominant quote-rejection reason is the actionable half: it separates a
+  // filter-starved board from one whose quotes cannot be de-Americanized at all.
+  EXPECT_NE(msg.find("SpreadToMid"), std::string::npos)
+      << "refusal should name the dominant quote rejection: " << msg;
+}
+
+// W2-B: the last-resort rescue mode. `board_starved_legacy_prep_fallback` runs
+// the SAME rescue as `per_slice_legacy_prep_fallback`, but only when the primary
+// preparation left the board with nothing fittable. That trigger is what makes
+// it default-safe, and it is the whole difference between the two modes — so it
+// is pinned on a MIXED board, where one expiry fits under Configured and one
+// starves only because every quote carries a kill-mask flag the permissive
+// predicate ignores.
+TEST(CurveFitLegacyPrepRescue, BoardStarvedModeLeavesAPartiallyFittingBoardAlone) {
+  Underlying under;
+  under.spot = kSpot;
+  under.chains.push_back(make_chain(0.30, 17)); // fits under Configured
+  Chain flagged = make_chain(0.60, 17);         // Configured drops every row
+  std::fill(flagged.flags.begin(), flagged.flags.end(),
+            atx::vol::to_u8(atx::vol::QuoteFlag::Stale));
+  under.chains.push_back(std::move(flagged));
+
+  CurveConfig cfg;
+  cfg.kind = VolCurveKind::Svi; // the thin-board family; no k-coverage gate
+
+  SurfaceParityInputs in = base_inputs(1);
+  in.board_starved_legacy_prep_fallback = true;
+  auto rep = fit_curve_surface(under, in, cfg);
+  ASSERT_TRUE(rep.has_value()) << rep.error().to_string();
+  EXPECT_EQ(rep->n_slices, 1u) << "the flagged expiry must NOT be rescued: the board already fits";
+  EXPECT_EQ(rep->n_slices_legacy_rescued, 0u);
+  EXPECT_EQ(rep->n_slices_starved, 1u);
+
+  // The aggressive mode is the one that recovers it, and says so.
+  SurfaceParityInputs every = base_inputs(1);
+  every.per_slice_legacy_prep_fallback = true;
+  auto rep_every = fit_curve_surface(under, every, cfg);
+  ASSERT_TRUE(rep_every.has_value()) << rep_every.error().to_string();
+  EXPECT_EQ(rep_every->n_slices, 2u);
+  EXPECT_EQ(rep_every->n_slices_legacy_rescued, 1u);
+}
+
+// ... and on a board where NOTHING fits, the last-resort mode does fire, with
+// the same taxonomy the per-slice mode produces. This is the OGI/ALLO cohort
+// shape: a total refusal is the only case the default is allowed to change.
+TEST(CurveFitLegacyPrepRescue, BoardStarvedModeRecoversATotallyStarvedBoard) {
+  const Underlying under = make_synthetic_underlying();
+  CurveConfig cfg;
+  cfg.kind = VolCurveKind::Svi;
+
+  SurfaceParityInputs off = base_inputs(1);
+  off.calib.max_spread_to_mid_pct = 0.001; // starves Configured prep everywhere
+  auto rep_off = fit_curve_surface(under, off, cfg);
+  ASSERT_FALSE(rep_off.has_value());
+
+  SurfaceParityInputs on = off;
+  on.board_starved_legacy_prep_fallback = true;
+  auto rep_on = fit_curve_surface(under, on, cfg);
+  ASSERT_TRUE(rep_on.has_value()) << rep_on.error().to_string();
+  EXPECT_EQ(rep_on->n_slices, 4u);
+  EXPECT_EQ(rep_on->n_slices_legacy_rescued, 4u);
+  for (const auto &er : rep_on->expiry_reports) {
+    EXPECT_EQ(er.outcome, ExpiryFitOutcome::FittedLegacyPrep);
+  }
 }

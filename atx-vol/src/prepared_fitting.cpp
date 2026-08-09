@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <string>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -588,8 +589,23 @@ Result<PreparedSlice> PreparedSliceBuilder::prepare_legacy(const Chain &chain,
     *inputs.out_legacy_audit_dropped = n_audit_dropped;
   }
   if (out.fit_rows_.size() < kMinPreparedFitRows) {
+    // W2-B: name the condition. The permissive predicate only ever drops a row
+    // for an invalid strike/quote, the de-Am cap, or a failed/audit-rejected
+    // de-Americanization — and the last of those is a board property (negative
+    // effective carry collapses the Andersen-Lake boundary), not a filter
+    // choice, so it must be distinguishable from "the funnel was too strict".
+    std::size_t n_deam_rejected = 0;
+    for (const ObservationRejection &rej : out.rejections_) {
+      if (rej.reason == ObservationRejectionReason::Deamericanization) {
+        ++n_deam_rejected;
+      }
+    }
     return Err(ErrorCode::NotFound,
-               "PreparedSlice::create: fewer than 5 legacy eSSVI rows survived");
+               "PreparedSlice::create: fewer than 5 legacy eSSVI rows survived (kept=" +
+                   std::to_string(out.fit_rows_.size()) + " of " +
+                   std::to_string(chain.n_strikes()) + " strikes; de-Am rejected " +
+                   std::to_string(n_deam_rejected) + ", audit dropped " +
+                   std::to_string(n_audit_dropped) + ")");
   }
   return Ok(std::move(out));
 }
