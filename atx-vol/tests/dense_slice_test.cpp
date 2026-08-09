@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <limits>
 #include <string>
 #include <utility>
@@ -111,6 +112,45 @@ std::vector<double> strike_grid(double F) {
     ks.push_back(K);
   }
   return ks;
+}
+
+// Task P-5 (FIT-P1) characterization fixture, shared by both P-5 iv()
+// regression tests below (IvBisectionEarlyExitMatchesPreP5BaselineWithin1e11
+// and IvBisectionEarlyExitIsActuallyEngagedInProduction): F=100, T=0.25,
+// df=0.98, flat 22% vol, strikes 70%-130% of F via strike_grid/mk_obs.
+constexpr double kP5F = 100.0, kP5T = 0.25, kP5Df = 0.98;
+
+// Served iv() at kP5F/kP5T/kP5Df's fixture, captured from the UNMODIFIED
+// (pre-P-5, fixed 64-iteration bisection, no early exit) code, at k from
+// -0.60 to 0.60 in steps of 0.03 -- see task-P-5-report.md's characterization
+// section for the capture method.
+constexpr double kPreP5Iv[41] = {
+    0.38306620209843278, 0.36585647544632593, 0.34854766705012208, 0.33113476990919311,
+    0.31361215772259232, 0.29597346148127623, 0.27821141126176629, 0.26031763012829434,
+    0.24228236072034093, 0.22409409487564735, 0.22034599272928146, 0.22092830152199339,
+    0.22134878962186633, 0.22135402335839144, 0.22088461146865995, 0.22018063596501236,
+    0.22106308025283938, 0.22090261863719107, 0.22033568585089119, 0.22096225288330668,
+    0.22000000584963630, 0.22085483829700253, 0.22025983560406370, 0.22064066740980282,
+    0.22065811537153923, 0.22021009273612463, 0.22032406422399492, 0.22053656799330695,
+    0.22052467701593248, 0.21918848633132137, 0.21704597398801689, 0.21671195086840145,
+    0.21753825849925401, 0.21913648501516581, 0.22126220321505885, 0.22493746009124133,
+    0.23892309280367430, 0.25284689612604161, 0.26671198479956604, 0.28052111779829192,
+    0.29427675652366592,
+};
+
+// Whether ATX_VOL_DISABLE_IV_EARLY_EXIT is set in this process's environment
+// (test-only presence check; `getenv` is deprecated under MSVC's CRT, so this
+// mirrors dense_slice.cpp's own `getenv_s`-based env_flag_enabled rather than
+// calling it -- that helper is TU-local to dense_slice.cpp, not shared, and a
+// bare presence check does not need its exact-value-match semantics).
+bool p5_early_exit_disabled_by_env() {
+#if defined(_WIN32)
+  std::size_t sz = 0;
+  char buf[8] = {};
+  return getenv_s(&sz, buf, sizeof(buf), "ATX_VOL_DISABLE_IV_EARLY_EXIT") == 0 && sz > 0;
+#else
+  return std::getenv("ATX_VOL_DISABLE_IV_EARLY_EXIT") != nullptr;
+#endif
 }
 
 // An in-the-money-heavy observation set (~11 strikes) at a flat vol, with one
@@ -1039,36 +1079,19 @@ TEST(ConvexSliceFit, FeasibleStartWithTinyIterationCapStillSucceeds) {
 // deliberately NOT bit-identical to the old fixed-64-iteration loop (the
 // last ulp of the returned midpoint can move once the loop stops as soon as
 // the bracket is near-machine width instead of always halving 64 times).
-// `kPreP5Iv` is the served iv() at this exact fixture/k-grid captured from
-// the UNMODIFIED (pre-P-5) bisection -- see task-P-5-report.md's
-// characterization section for the capture method. Every point must still
-// agree within 1e-11 (the acceptance bound; measured drift maxes out far
-// below it, ~2.8e-13, see the report).
+// `kPreP5Iv` (file scope, above) is the served iv() at this exact
+// fixture/k-grid captured from the UNMODIFIED (pre-P-5) bisection -- see
+// task-P-5-report.md's characterization section for the capture method.
+// Every point must still agree within 1e-11 (the acceptance bound; measured
+// drift maxes out far below it, ~2.8e-13, see the report).
 TEST(ConvexSliceFit, IvBisectionEarlyExitMatchesPreP5BaselineWithin1e11) {
   using namespace atx::vol;
-  constexpr double F = 100.0, T = 0.25, df = 0.98;
   std::vector<FitObs> obs;
-  for (const double K : strike_grid(F)) {
-    obs.push_back(mk_obs(F, T, df, K, 0.22));
+  for (const double K : strike_grid(kP5F)) {
+    obs.push_back(mk_obs(kP5F, kP5T, kP5Df, K, 0.22));
   }
-  const auto fit = fit_convex_slice(obs, F, T, df, ConvexFitOpts{});
+  const auto fit = fit_convex_slice(obs, kP5F, kP5T, kP5Df, ConvexFitOpts{});
   ASSERT_TRUE(fit.has_value());
-
-  // Captured pre-P-5 (fixed 64-iteration bisection, no early exit), k from
-  // -0.60 to 0.60 in steps of 0.03, same fixture as above.
-  static constexpr double kPreP5Iv[41] = {
-      0.38306620209843278, 0.36585647544632593, 0.34854766705012208, 0.33113476990919311,
-      0.31361215772259232, 0.29597346148127623, 0.27821141126176629, 0.26031763012829434,
-      0.24228236072034093, 0.22409409487564735, 0.22034599272928146, 0.22092830152199339,
-      0.22134878962186633, 0.22135402335839144, 0.22088461146865995, 0.22018063596501236,
-      0.22106308025283938, 0.22090261863719107, 0.22033568585089119, 0.22096225288330668,
-      0.22000000584963630, 0.22085483829700253, 0.22025983560406370, 0.22064066740980282,
-      0.22065811537153923, 0.22021009273612463, 0.22032406422399492, 0.22053656799330695,
-      0.22052467701593248, 0.21918848633132137, 0.21704597398801689, 0.21671195086840145,
-      0.21753825849925401, 0.21913648501516581, 0.22126220321505885, 0.22493746009124133,
-      0.23892309280367430, 0.25284689612604161, 0.26671198479956604, 0.28052111779829192,
-      0.29427675652366592,
-  };
 
   double max_abs_diff = 0.0;
   for (int i = 0; i <= 40; ++i) {
@@ -1081,47 +1104,53 @@ TEST(ConvexSliceFit, IvBisectionEarlyExitMatchesPreP5BaselineWithin1e11) {
   EXPECT_LT(max_abs_diff, 1.0e-11);
 }
 
-// Guards that the early exit is actually engaged (not silently reverted to
-// the fixed 64-iteration loop by a future edit): a public-API-only replica
-// of ConvexSliceFit::iv()'s bisection (call_price/black76_price are already
-// public, so no production seam is needed) must converge well under 64
-// iterations on an ordinary, healthy-vega node. Measured on this fixture:
-// 44/64 iterations (31% fewer), uniform across the whole k-grid above -- see
-// task-P-5-report.md for the full iteration-count table.
-TEST(ConvexSliceFit, IvBisectionEarlyExitUsesFewerThan64IterationsAtHealthyVega) {
+// Task P-5 review I-2 fix: the PRIOR version of this test asserted `iters <
+// 64` against a hand-rolled REPLICA of the bisection loop, never calling
+// `fit->iv()`. The review verified that deleting the early-exit break in
+// `src/dense_slice.cpp` left that version green (the replica kept its own
+// copy of the break condition, so it stayed "early-exiting" regardless of
+// what production did), and that the drift-tolerance sibling above ALSO
+// cannot catch a reverted optimization -- under
+// `ATX_VOL_DISABLE_IV_EARLY_EXIT=1` (behaviourally identical to deleting the
+// break) it passes bit-exactly, because its pinned values ARE the pre-P-5
+// values. So the shipped optimization had no regression guard at all.
+//
+// This version calls the SHIPPING `fit->iv()` directly. The early exit
+// provably changes the returned midpoint whenever it fires before iteration
+// 64 (it stops at a strictly wider bracket than 64 fixed halvings would have
+// reached), so if the break is ever silently reverted, every one of these
+// 41 points becomes bit-identical to the pre-P-5 `kPreP5Iv` again --
+// verified BOTH ways below by actually deleting the break, rebuilding, and
+// observing this exact test fail (see task-P-5-report.md's fix-round
+// section for the captured failure output), then restoring it and observing
+// green again. Skipped under `ATX_VOL_DISABLE_IV_EARLY_EXIT=1`, the
+// intentional bench-only override that restores pre-P-5 arithmetic on
+// purpose -- bit-identity is the CORRECT behavior there, not a regression.
+TEST(ConvexSliceFit, IvBisectionEarlyExitIsActuallyEngagedInProduction) {
   using namespace atx::vol;
-  constexpr double F = 100.0, T = 0.25, df = 0.98;
-  std::vector<FitObs> obs;
-  for (const double K : strike_grid(F)) {
-    obs.push_back(mk_obs(F, T, df, K, 0.22));
+  if (p5_early_exit_disabled_by_env()) {
+    GTEST_SKIP() << "ATX_VOL_DISABLE_IV_EARLY_EXIT is set -- bit-identity to "
+                    "the pre-P-5 baseline is the intended bench-A/B behavior here";
   }
-  const auto fit = fit_convex_slice(obs, F, T, df, ConvexFitOpts{});
+  std::vector<FitObs> obs;
+  for (const double K : strike_grid(kP5F)) {
+    obs.push_back(mk_obs(kP5F, kP5T, kP5Df, K, 0.22));
+  }
+  const auto fit = fit_convex_slice(obs, kP5F, kP5T, kP5Df, ConvexFitOpts{});
   ASSERT_TRUE(fit.has_value());
 
-  const double K = F; // ATM, healthy vega
-  const double c = fit->call_price(K);
-  const double lower = df * std::max(F - K, 0.0);
-  const double upper = df * F;
-  const double epsilon = std::min(1.0e-6 * std::max(1.0, upper), 0.25 * (upper - lower));
-  const double safe_price = std::min(std::max(c, lower + epsilon), std::nextafter(upper, lower));
-  ASSERT_GT(safe_price, lower);
-  ASSERT_LT(safe_price, upper);
-  double lo = 1.0e-10, hi = kIvMax;
-  ASSERT_GE(black76_price(F, K, T, hi, df, Side::Call), safe_price);
-  int iters = 0;
-  for (int iter = 0; iter < 64; ++iter) {
-    ++iters;
-    const double mid = 0.5 * (lo + hi);
-    const double model = black76_price(F, K, T, mid, df, Side::Call);
-    if (model < safe_price) {
-      lo = mid;
-    } else {
-      hi = mid;
-    }
-    if ((hi - lo) < 1.0e-12 * std::max(1.0, hi)) {
-      break;
+  int bit_identical_to_pre_p5 = 0;
+  for (int i = 0; i <= 40; ++i) {
+    const double k = -0.60 + 0.03 * static_cast<double>(i);
+    const double iv = fit->iv(k);
+    if (iv == kPreP5Iv[static_cast<std::size_t>(i)]) {
+      ++bit_identical_to_pre_p5;
     }
   }
-  EXPECT_LT(iters, 64);
-  EXPECT_LE(iters, 48); // measured 44; generous margin for a different fixture/tolerance tweak
+  EXPECT_EQ(bit_identical_to_pre_p5, 0)
+      << "fit->iv() matched the pre-P-5 pinned baseline bit-for-bit at "
+      << bit_identical_to_pre_p5
+      << "/41 points -- the early exit is not firing in production (deleting "
+         "the break condition in ConvexSliceFit::iv(), src/dense_slice.cpp, "
+         "reproduces exactly this failure)";
 }

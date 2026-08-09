@@ -11,6 +11,7 @@
 #include "atx/vol/black76.hpp"     // black76_price -- price-space calendar floor scan (P-5)
 #include "atx/vol/c8_calib.hpp"    // c8_fit_slice_lm
 #include "atx/vol/detail/counters.hpp" // ConvexDense wing-anchor observability
+#include "atx/vol/detail/dense_slice_price.hpp" // safe_call_price (shared w/ dense_slice.cpp, P-5 I-1)
 #include "atx/vol/essvi_calib.hpp" // essvi_fit_slice
 #include "atx/vol/svi_calib.hpp"   // svi_fit_slice, svi_project_mm
 
@@ -471,7 +472,10 @@ Result<std::unique_ptr<IVolCurve>> fit_slice_curve(const CurveConfig &cfg,
       // task-P-5-report.md Sec.2). Not a bit-for-bit-identical arithmetic
       // path (one black76_price call instead of bisecting fit.iv() ~64
       // times), but the same SOURCE decision, so the set of flagged k's is
-      // unchanged.
+      // unchanged. Task P-5 review I-1: the projection itself now lives in
+      // ONE place (detail::safe_call_price, shared with ConvexSliceFit::iv())
+      // instead of being copy-pasted here -- the prior copy is exactly the
+      // kind of drift-prone duplication that produced the wing bug above.
       const auto scan_k = [&](double k) {
         const double wp = w_prev(k);
         if (!std::isfinite(wp)) {
@@ -483,20 +487,9 @@ Result<std::unique_ptr<IVolCurve>> fit_slice_curve(const CurveConfig &cfg,
         }
         const double K = F * std::exp(k);
         const double c = fit.call_price(K);
-        if (!std::isfinite(c)) {
-          return;
-        }
-        const double lower = df * std::max(F - K, 0.0);
-        const double upper = df * F;
-        const double gap = upper - lower;
-        const double epsilon = std::min(1.0e-6 * std::max(1.0, upper), 0.25 * gap);
-        const double safe_price =
-            std::min(std::max(c, lower + epsilon), std::nextafter(upper, lower));
-        if (!(safe_price > lower) || !(safe_price < upper)) {
+        const double safe_price = detail::safe_call_price(F, K, T, df, c);
+        if (!std::isfinite(safe_price)) {
           return; // iv() would have returned NaN here too -- no comparable current vol
-        }
-        if (black76_price(F, K, T, kIvMax, df, Side::Call) < safe_price) {
-          return; // iv() would have failed to bracket -- same no-violation outcome
         }
         const double floor_price =
             black76_price(F, K, T, std::sqrt(w_floor / T), df, Side::Call);

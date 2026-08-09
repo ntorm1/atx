@@ -16,6 +16,7 @@
 #include "atx/core/linalg/linalg.hpp" // MatX, VecX
 #include "atx/core/linalg/solve.hpp"  // solve, solve_spd
 #include "atx/vol/black76.hpp"        // black76_price, black76_value_and_vega
+#include "atx/vol/detail/dense_slice_price.hpp" // safe_call_price (shared w/ vol_curve.cpp, P-5 I-1)
 #include "atx/vol/implied_vol.hpp"    // implied_vol
 
 namespace atx::vol {
@@ -452,22 +453,20 @@ double ConvexSliceFit::iv(double k_log) const noexcept {
   }
   const double K = F * std::exp(k_log);
   const double c = call_price(K);
-  if (!std::isfinite(c)) {
-    return kNaN;
-  }
   // Price-space convex wings legitimately approach intrinsic/zero so closely
   // that a finite-vol root is lost to floating-point cancellation. Project the
   // price into Black's open interval by taking the maximum with a parallel
-  // intrinsic+epsilon line (left) / epsilon floor (right). The maximum of these
+  // intrinsic+epsilon line (left) / epsilon floor (right); the maximum of these
   // convex functions remains convex, so numerical invertibility does not trade
-  // away the very shape guarantee the dense fit provides.
-  const double lower = df * std::max(F - K, 0.0);
-  const double upper = df * F;
-  const double gap = upper - lower;
-  const double epsilon = std::min(1.0e-6 * std::max(1.0, upper), 0.25 * gap);
-  const double safe_price =
-      std::min(std::max(c, lower + epsilon), std::nextafter(upper, lower));
-  if (!(safe_price > lower) || !(safe_price < upper)) {
+  // away the very shape guarantee the dense fit provides. This projection (plus
+  // the bracket-feasibility gate below it) is shared with the ConvexDense
+  // calendar-admission scan (src/vol_curve.cpp's scan_k) via
+  // detail::safe_call_price -- Task P-5 review I-1: the two call sites must
+  // agree on which wing prices are invertible, or they silently disagree
+  // exactly where a fitted price sits close to the intrinsic/forward bound
+  // (the defect class the price-space scan's first attempt hit).
+  const double safe_price = detail::safe_call_price(F, K, T, df, c);
+  if (!std::isfinite(safe_price)) {
     return kNaN;
   }
   // The generic IV helper stops at a price tolerance appropriate for market
@@ -480,9 +479,6 @@ double ConvexSliceFit::iv(double k_log) const noexcept {
   // would move the served price off the convex curve and create false density.
   double lo = 1.0e-10;
   double hi = kIvMax;
-  if (black76_price(F, K, T, hi, df, Side::Call) < safe_price) {
-    return kNaN;
-  }
   // FIT-P1 (Task P-5): a fixed 64-iteration bisection here was up to ~260k
   // Black-76 calls per Audit strip on a ConvexDense surface, with no early
   // exit even once the bracket was already far tighter than any consumer

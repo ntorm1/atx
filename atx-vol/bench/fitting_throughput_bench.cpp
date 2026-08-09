@@ -43,6 +43,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <limits>
 #include <optional>
 #include <utility>
@@ -52,11 +53,13 @@
 
 #include "atx/vol/american.hpp"    // AmericanMethod, american_price
 #include "atx/vol/american_iv.hpp" // american_implied_vol
+#include "atx/vol/black76.hpp"     // black76_price, black76_value_and_vega
 #include "atx/vol/calib.hpp" // CalibOpts, FitObs, calib_default_opts, build_observations_european
 #include "atx/vol/chain.hpp" // OptionChain
 #include "atx/vol/correction.hpp"     // CorrectionCache, AmericanCorrectionCaches
 #include "atx/vol/data.hpp"           // iso_to_ns
 #include "atx/vol/deamer.hpp"         // DeAmOptions
+#include "atx/vol/dense_slice.hpp"    // ConvexSliceFit, fit_convex_slice, ConvexFitOpts
 #include "atx/vol/dividend.hpp"       // hybrid_forward, HybridDivParams (real-board forward)
 #include "atx/vol/essvi_calib.hpp"    // essvi_fit_slice, essvi_calib_surface
 #include "atx/vol/market_env.hpp"     // MarketEnv
@@ -885,6 +888,89 @@ void BM_SharedBoundaryDeam(benchmark::State &state) {
                           static_cast<std::int64_t>(fixture->chain.n_strikes()));
 }
 
+// ── Task P-5 review I-3: ConvexDense served-iv() Audit-strip cost ──────────
+//
+// The paired A/B behind task-P-5-report.md's "1.40x median" figure (bisection
+// early exit, src/dense_slice.cpp) was produced by a harness deleted before
+// commit, leaving that number unreproducible and
+// `ATX_VOL_DISABLE_IV_EARLY_EXIT` (src/dense_slice.cpp, read once at process
+// load) with zero consumers in the tree. This case is the durable
+// replacement, mirroring how P-3's `deriv/price/audit_priced_surface` case
+// (bench/analytics_bench.cpp) makes ATX_VOL_DISABLE_STRIP_BATCH
+// reproducible: build ONE ConvexDense fit outside the timed loop (F=100,
+// T=0.25, df=0.98, flat 22% vol, strikes 70%-130% of F -- the same fixture
+// dense_slice_test.cpp's P-5 regression tests pin), then time one Audit-tier
+// strip sweep of `ConvexSliceFit::iv()` -- 4097 nodes across k in [-0.60,
+// 0.60], the FIT-P1 finding's own scenario ("~260k Black-76 calls per Audit
+// strip": 4097 nodes * ~64 pre-P-5 iterations). Since the env flag is read
+// once at process load, running THIS SAME BINARY twice with
+// ATX_VOL_DISABLE_IV_EARLY_EXIT alternately set/unset reproduces the paired
+// A/B on any preset, including release -- no separate build required.
+[[nodiscard]] std::vector<double> convex_dense_strip_ks() {
+  constexpr int kStripNodes = 4097;
+  std::vector<double> ks(static_cast<std::size_t>(kStripNodes));
+  for (int i = 0; i < kStripNodes; ++i) {
+    ks[static_cast<std::size_t>(i)] =
+        -0.60 + 1.20 * static_cast<double>(i) / static_cast<double>(kStripNodes - 1);
+  }
+  return ks;
+}
+
+// Function-local static: built once for the whole process, not per-registration
+// or per-iteration -- only the iv() sweep itself is timed.
+const ConvexSliceFit &convex_dense_strip_fixture() {
+  static const ConvexSliceFit fit = [] {
+    constexpr double F = 100.0, T = 0.25, df = 0.98, vol = 0.22;
+    std::vector<FitObs> obs;
+    for (double K = 0.70 * F; K <= 1.30 * F + 1e-9; K += 0.02 * F) {
+      const Side side = (K >= F) ? Side::Call : Side::Put;
+      FitObs o{};
+      o.K = K;
+      o.F = F;
+      o.df = df;
+      o.k = std::log(K / F);
+      o.side = side;
+      o.mid = black76_price(F, K, T, vol, df, side);
+      o.spread = 0.02;
+      o.vega = black76_value_and_vega(F, K, T, vol, df, side).vega;
+      o.sigma_mkt = vol;
+      obs.push_back(o);
+    }
+    Result<ConvexSliceFit> result = fit_convex_slice(obs, F, T, df, ConvexFitOpts{});
+    return result.has_value() ? *std::move(result) : ConvexSliceFit{};
+  }();
+  return fit;
+}
+
+void BM_ConvexDenseIvStrip(benchmark::State &state) {
+  const ConvexSliceFit &fit = convex_dense_strip_fixture();
+  if (!(fit.T > 0.0)) {
+    state.SkipWithError("ConvexDense strip fixture failed to fit");
+    return;
+  }
+  const std::vector<double> ks = convex_dense_strip_ks();
+  double sink = 0.0;
+  for (auto _ : state) {
+    for (const double k : ks) {
+      sink += fit.iv(k);
+    }
+    benchmark::DoNotOptimize(sink);
+    benchmark::ClobberMemory();
+  }
+  state.SetItemsProcessed(state.iterations() * static_cast<std::int64_t>(ks.size()));
+#if defined(_WIN32)
+  std::size_t sz = 0;
+  char buf[8] = {};
+  const bool early_exit_disabled =
+      getenv_s(&sz, buf, sizeof(buf), "ATX_VOL_DISABLE_IV_EARLY_EXIT") == 0 && sz > 0;
+#else
+  const bool early_exit_disabled = std::getenv("ATX_VOL_DISABLE_IV_EARLY_EXIT") != nullptr;
+#endif
+  state.counters["early_exit_disabled"] = early_exit_disabled ? 1.0 : 0.0;
+  state.SetLabel("kernel=ConvexSliceFit::iv fixture=F100_T0.25_df0.98_flat22vol nodes=4097 "
+                 "env=ATX_VOL_DISABLE_IV_EARLY_EXIT");
+}
+
 const int kRegistered = [] {
   // B7 (FT-P): the CANONICAL fitting-throughput row is the served facade
   // (PricerFitter::fit: policy resolution -> surface build -> admission ->
@@ -941,6 +1027,9 @@ const int kRegistered = [] {
   apply_common(benchmark::RegisterBenchmark("fit/american_iv/cold", BM_AmericanIvCold))
       ->Unit(benchmark::kMicrosecond);
   apply_common(benchmark::RegisterBenchmark("fit/american_iv/warm", BM_AmericanIvWarm))
+      ->Unit(benchmark::kMicrosecond);
+  apply_common(
+      benchmark::RegisterBenchmark("serve/convexdense_iv_strip/synth", BM_ConvexDenseIvStrip))
       ->Unit(benchmark::kMicrosecond);
   // Flat 0.24 board: measures route mechanics on a trivially-interpolable box.
   apply_common(benchmark::RegisterBenchmark("fit/deam_shared_boundary/scalar_reference",

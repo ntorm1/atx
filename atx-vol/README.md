@@ -822,7 +822,7 @@ frozen?" is answered by where the header lives, not by judgement:
 |---|---|---|---|
 | **Tier-A** | exactly the headers `atx/vol/vol.hpp` includes | 58 | **Frozen for 1.x.** Closed under inclusion |
 | **Tier-B** | other headers directly under `include/atx/vol/`, plus `simd/` | 31 + 9 | Public and supported to include; **not** frozen |
-| `detail/` | `include/atx/vol/detail/` | 29 (+1 generated) | **No stability promise.** Installed because Tier-A reaches it |
+| `detail/` | `include/atx/vol/detail/` | 30 (+1 generated) | **No stability promise.** Installed because Tier-A reaches it |
 | `tools/` | `tools/include/atx/vol/tools/` — target `atx::vol::tools` | 6 | CLI support. Not part of the shipped library surface |
 | `research/` | `research/include/atx/vol/research/` — target `atx::vol::research` | 9 | Run orchestration. Not part of the shipped library surface |
 
@@ -836,11 +836,14 @@ moving — which is the point it was making. The first post-1.0.0 growth is
 already in the table: the strategy DSL made `strategy.hpp` include
 `swap_leg.hpp`, so closure-under-inclusion promoted it (Tier-A 57 → **58**),
 and `detail/convex_recovery.hpp` landed alongside it (`detail/` 28 → **29**).
-The v1.0.0 tag itself ships 57 / 31 / 28.
+The v1.0.0 tag itself ships 57 / 31 / 28. Task P-5 (vol-derivatives
+production sprint, review fix round 1) added `detail/dense_slice_price.hpp`
+(the `ConvexSliceFit::iv()` / calendar-scan shared price projection) —
+`detail/` 29 → **30**, no Tier-A/Tier-B change.
 
 That drift is now caught by a test rather than by a reader.
 `VolUmbrella.TierCountsMatchTheReadmeTable` (`tests/vol_umbrella_test.cpp`)
-asserts all three of **58 / 31 / 29** against the live header tree — Tier-A from
+asserts all three of **58 / 31 / 30** against the live header tree — Tier-A from
 the umbrella manifest, Tier-B and `detail/` by counting `.hpp` files in the
 directories this table names — and each failure message says to update this
 table. Previously the Tier-A *set* was machine-checked but no **count** was, and
