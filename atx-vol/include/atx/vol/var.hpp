@@ -1,14 +1,14 @@
 #pragma once
 
-// Historical simulation VaR for characteristic-preserving option/stock books.
+// Historical simulation VaR for a fixed option/stock portfolio.
 //
 // A reference-date option is identified by relative time to expiry and absolute
 // American spot delta. The delta string is its moneyness coordinate: every
 // historical observation independently restrikes the option on its base surface
-// to that same delta and relative expiry. Units are then scaled to the reference
-// dollar delta and held while the resulting concrete strike/expiry is repriced
-// on the shifted surface. Stock hedges follow the same rule (shares are sized on
-// the base date and held through the transition).
+// to that same delta and relative expiry. The signed quantity from the reference
+// portfolio is held fixed while that concrete strike/expiry is repriced on the
+// shifted surface. Stock hedge shares are likewise fixed. Dollar delta is an
+// output of each historical base valuation, never a per-scenario sizing target.
 
 #include <cstddef>
 #include <cstdint>
@@ -51,10 +51,12 @@ struct VarStockPosition {
 
 using VarPosition = std::variant<VarOptionPosition, VarStockPosition>;
 
-// Economic sizing boundary shared by options and stock hedges. `unit_delta` is
-// signed (calls/stock positive, puts negative); `target_dollar_delta` carries the
-// desired position sign. All inputs must be finite, spot/multiplier positive,
-// and |unit_delta| in (0, 1].
+// Standalone economic sizing helper for callers that intentionally want to
+// construct a dollar-delta-targeted strategy book. PreparedVarPortfolio does not
+// use it: historical VaR replays the fixed units supplied in VarPosition.
+// `unit_delta` is signed (calls/stock positive, puts negative);
+// `target_dollar_delta` carries the desired position sign. All inputs must be
+// finite, spot/multiplier positive, and |unit_delta| in (0, 1].
 struct VarSizingInput {
   double target_dollar_delta{0.0};
   double spot{0.0};
@@ -180,6 +182,8 @@ struct VarReferenceLeg {
   double reference_spot{0.0};
   double reference_mark{0.0};
   double reference_delta{0.0};
+  // Reference-date dollar delta, retained for audit. Unlike the old
+  // characteristic-target replay, this is not held constant through history.
   double target_dollar_delta{0.0};
   // Requested absolute delta moneyness for an option; zero for stock.
   double target_abs_delta{0.0};

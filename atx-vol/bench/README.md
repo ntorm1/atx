@@ -51,7 +51,8 @@ surface database and filter on
 fixture runs the overlapping 3M/25-delta dispersion-strangle strategy through
 the last replayable session, retains its terminal checkpoint, converts every
 open lot to a delta/TTE `VarPosition`, and replays the resulting portfolio over
-the YTD history. Only original adjacent database partitions form return
+the YTD history with terminal option quantities and hedge shares held fixed.
+Only original adjacent database partitions form return
 scenarios: dates without SPY are counted, and the surrounding multi-session gap
 is never bridged. Underliers without complete coverage and numerically
 unreplayable lots are reported separately.
@@ -69,13 +70,14 @@ $env:ATX_SP100_SURFACE_DB='C:\atx-scratch\surface-db\sp100-2026'
 ```
 
 Set `ATX_VAR_PNL_TSV` to export the validated aggregate scenario trace while
-building the fixture. The bundled plotter turns that trace into a cumulative
-P&L PNG and leaves gaps where non-adjacent history was excluded:
+building the fixture. The bundled plotter shows the independent one-day P&Ls
+and their distribution. It deliberately does not sum the mutually exclusive
+VaR scenarios:
 
 ```powershell
 $env:ATX_VAR_PNL_TSV='artifacts\var\sp100_dispersion_ytd_pnl.tsv'
 .\build-rel\bin\atx-vol-projection-bench.exe --benchmark_filter='^var/prepared/sp100_dispersion_terminal/ytd/thousands/t8/'
-python atx-vol\bench\plot_var_cumulative_pnl.py $env:ATX_VAR_PNL_TSV artifacts\var\sp100_dispersion_ytd_cumulative_pnl.png
+python atx-vol\bench\plot_var_scenario_pnl.py $env:ATX_VAR_PNL_TSV artifacts\var\sp100_dispersion_ytd_one_day_pnl.png
 ```
 
 Every case carries `->MinWarmUpTime(0.5)` (>= 0.5 s warm-up), `->Repetitions(5)`,

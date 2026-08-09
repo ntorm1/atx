@@ -1,21 +1,26 @@
 # Historical VaR engine: goal, implementation, and current state
 
-Status date: 2026-08-07  
+Status date: 2026-08-08
 Scope: `atx-vol` only
 
 ## Executive summary
 
-The goal is to replay today's option and stock portfolio through historical
-`atx-vol` surface snapshots while preserving the portfolio's economic
-characteristics, then calculate historical-simulation VaR and expected
-shortfall from the resulting one-period P&L distribution.
+The goal is to replay a fixed terminal option and stock portfolio through
+historical `atx-vol` surface snapshots, then calculate historical-simulation
+VaR and expected shortfall from the resulting one-period P&L distribution.
 
-The reusable engine and SP100 dispersion benchmark are implemented in the
-working tree. The important economic correction is also implemented: an
-option's requested absolute delta is the moneyness coordinate. Each historical
-base date therefore resolves a new strike at that same delta and relative time
-to expiry. The reference-date forward log-moneyness is retained only for audit;
-it is not replayed as the historical strike coordinate.
+An option's requested absolute delta is the projection coordinate. Each
+historical base date resolves a new strike at that delta and relative time to
+expiry, but the terminal portfolio's signed option quantity is unchanged.
+Stock hedge shares are unchanged too. Earlier versions re-sized every option
+and stock position on every scenario base date to preserve reference dollar
+delta. That replayed a characteristic-target strategy rather than the final
+held portfolio and has been removed.
+
+The old cumulative-P&L chart was also methodologically invalid. Historical VaR
+scenarios are alternative one-day observations for the same reference book;
+their sum is not an equity curve. The report now plots one-day P&L by scenario
+and its distribution, with 95% and 99% loss cutoffs.
 
 The production route is now the cross-sectional inverse-delta engine
 (`OptionDeltaSolvePolicy::CrossSectionalColdConfirm`, the library default). It
@@ -77,12 +82,10 @@ does the following:
 1. Resolve the same relative time to expiry on the base date.
 2. Find the concrete strike whose cold-reference American spot delta has the
    requested absolute delta, preserving call/put side.
-3. Resize the option units so that the historical base position has the same
-   signed dollar delta as the reference position:
+3. Carry the terminal portfolio's signed quantity into the scenario unchanged:
 
    ```text
-   scenario_units = target_dollar_delta
-                  / (base_spot * base_unit_delta * contract_multiplier)
+   scenario_units = reference_quantity
    ```
 
 4. Hold that concrete strike, expiry, and unit count over the base-to-shifted
@@ -90,19 +93,19 @@ does the following:
 5. Price the held contract on both surfaces and calculate:
 
    ```text
-   scenario_pnl = scenario_units * contract_multiplier
+   scenario_pnl = reference_quantity * contract_multiplier
                 * (shifted_mark - base_mark)
    ```
 
-Stock hedges use the same dollar-delta sizing boundary. A stock's unit delta is
-one, shares are resolved on the historical base date, and those shares are held
-through the interval.
+Stock hedge shares are also copied unchanged. Their historical dollar delta is
+`reference_shares * base_spot`, and their one-period P&L is
+`reference_shares * (shifted_spot - base_spot)`.
 
 This answers the intended question: “What would today's portfolio have earned
-or lost on every historical adjacent-session market move if its delta
-moneyness, relative expiry, and reference dollar-delta exposures had been held
-constant?” It does not claim that the historical concrete strike or original
-share count is the same as today's.
+or lost on every historical adjacent-session market move if its option profile
+were projected to that base market and its actual contract/share quantities
+were held fixed for the next session?” The historical concrete option strike
+changes as part of projection; the exposure does not.
 
 ## Implemented components
 
@@ -111,8 +114,9 @@ share count is the same as today's.
 [`include/atx/vol/var.hpp`](../include/atx/vol/var.hpp) defines the reusable API:
 
 - `VarOptionPosition`, `VarStockPosition`, and `VarPosition` describe inputs.
-- `resolve_var_sizing` is the shared, sign-safe dollar-delta sizing boundary.
-  It rejects invalid or overflowing inputs and never silently clamps exposure.
+- `resolve_var_sizing` remains a standalone, sign-safe helper for callers that
+  intentionally construct dollar-delta-targeted strategy books. The historical
+  VaR replay does not use it.
 - `PreparedVarPortfolio` normalizes and anchors a portfolio once, then replays
   any number of independent scenarios without retaining borrowed reference
   surfaces.
@@ -202,9 +206,9 @@ This keeps delta-defined contract projection reusable outside the VaR engine.
 - [`bench/var_bench.cpp`](../bench/var_bench.cpp) builds a realistic terminal
   portfolio from the SP100 overlapping dispersion-strangle backtest and times
   prepared replay across 1, 4, 8, and 16 requested workers.
-- [`bench/plot_var_cumulative_pnl.py`](../bench/plot_var_cumulative_pnl.py)
-  converts an exported scenario TSV into a cumulative-P&L PNG, retaining visible
-  breaks where the historical series is not adjacent.
+- [`bench/plot_var_scenario_pnl.py`](../bench/plot_var_scenario_pnl.py)
+  converts an exported scenario TSV into a one-day P&L timeline and histogram;
+  it deliberately does not sum mutually exclusive VaR scenarios.
 
 The new implementation and tests are wired into the existing `atx-vol` CMake
 targets; the benchmark is part of `atx-vol-projection-bench` when
@@ -224,9 +228,10 @@ units, and the next mark generated about $2.23 billion of artificial P&L. The
 aggregate trace ended around +$2.48 billion, which is why the first cumulative
 P&L chart was obviously wrong.
 
-The corrected engine now restrikes to the requested absolute delta on every
-base surface before sizing. The accepted SP100 trace ends around +$6.55 million,
-not billions.
+The engine restrikes to the requested absolute delta on every base surface and
+then values the fixed terminal quantity. The earlier billion-dollar result was
+caused by combining boundary deltas with dollar-delta re-sizing; the re-sizing
+path no longer exists in historical replay.
 
 Two proposed accelerators were also rejected on evidence:
 
@@ -249,15 +254,15 @@ be replayed over every selected scenario.
 | Source terminal option lots | 9,966 |
 | Excluded for incomplete underlier coverage | 6,666 |
 | Excluded at extreme delta boundaries | 45 |
-| Excluded after replayability screening | 351 |
-| Retained option positions | 2,904 |
+| Excluded after replayability screening | 360 |
+| Retained option positions | 2,895 |
 | Retained stock hedges | 33 |
-| Total replayed positions | 2,937 |
+| Total replayed positions | 2,928 |
 | Underliers | 33 |
 | Adjacent-session scenarios | 106 |
 | Dates missing SPY | 18 |
 | Skipped multi-session gaps | 16 |
-| Visible chart breaks | 12 |
+| History breaks | 12 |
 
 The benchmark is therefore a realistic thousands-of-options portfolio, but it
 is explicitly a replayable subset of the terminal strategy book. It is not
@@ -345,74 +350,41 @@ shrinking active set replaces per-option scalar iteration entirely.
 
 ## Current P&L result and artifacts
 
-The accepted cross-sectional trace is:
+The corrected fixed-unit cross-sectional trace is:
 
 ```text
-C:\atx\artifacts\var\sp100_dispersion_ytd_pnl_cross.tsv
+C:\atx\artifacts\var\sp100_dispersion_ytd_pnl_fixed_units.tsv
 ```
 
-Its final cumulative P&L is +$6,546,715.73 over 106 scenarios, with 12 visible
-history breaks and a maximum drawdown of -$1,102,049.95. That figure differs
-from the previously accepted screened/cold trace's $6,546,716 by $0.27 in the
-final cumulative value (maximum per-scenario |P&L delta| $0.41): the two
-solvers converge to slightly different strikes within the same delta
-tolerance, which is expected, bounded cross-route economic drift, not a
-defect. The producing run passed the SP100 1e-9 aggregate-vs-retained oracle
-gate with every parity counter (`max_abs_pnl_error`,
-`max_relative_value_error`, `max_relative_delta_error`) identically zero.
+It contains 106 alternative adjacent-session observations over 2,928 accepted
+positions. The production-scale run proved every successful scenario leg kept
+exactly the terminal reference quantity. Aggregate-vs-retained parity counters
+were all zero. The loss distribution is:
 
-The chart, regenerated from the accepted cross trace so the delivered chart
-and the final named trace share identical provenance, is:
+| Metric | Result |
+|---|---:|
+| 95% VaR | $415,634.66 |
+| 99% VaR | $941,857.72 |
+| 99% ES | $950,796.42 |
+| Worst one-day P&L | -$959,735.12 |
+| Best one-day P&L | +$1,630,680.01 |
+
+The arithmetic sum of all scenario P&Ls is +$6,314,335.32, but that number is
+not a return and must not be used as a baseline. The scenarios are mutually
+exclusive historical observations for one reference book. Summing them creates
+a synthetic repeated-entry strategy and re-arms theta on every observation.
+
+The corrected chart therefore shows one-day P&L and its histogram rather than
+a cumulative line:
 
 ```text
-C:\atx\artifacts\var\sp100_dispersion_ytd_cumulative_pnl.png
+C:\atx\artifacts\var\sp100_dispersion_ytd_one_day_pnl_fixed_units.png
 ```
 
-### Reading the cumulative P&L chart correctly
-
-The chart title and subtitle disclose the replay semantics directly: every
-scenario restrikes each option to its reference |Δ| and relative expiry,
-re-sizes to the reference dollar delta, and reprices on the shifted surface
-(see "Historical replay semantics" above) — the cumulative line therefore
-compounds per-session restruck scenarios, not the mark-to-market P&L of
-holding the 2026-07-31 book through history. A forensic review of this trace
-(`pnl-forensics.md`, not part of this repository) decomposed the
-+$6,546,715.73 total into two effects: **+$5.82M is re-basing resets**
-(+$4.87M same-day plus +$0.96M at the 12 history breaks) — the value jump
-between the one-session-aged book and the freshly restruck book — and only
-**+$0.72M is genuine held-profile revaluation drift**, the telescoped value
-change of holding a restruck-once profile from the first base date onward
-(shifted book value at the end minus base book value at the start). 89% of
-the cumulative total is therefore a methodology artifact of cumulating
-characteristic-preserving VaR scenarios, not economic drift of the replayed
-book.
-
-`plot_var_cumulative_pnl.py`'s `compute_decomposition` plots both readings:
-the total cumulative line and a `cumulative_held_drift` series shaded as the
-re-basing-reset remainder. `rebasing_reset[i] = base_value[i+1] -
-shifted_value[i]` is computed for every adjacent scenario pair, not only
-chained ones, so `cumulative_held_drift` telescopes cleanly to
-`shifted_value[last] - base_value[first]` and its endpoint on the accepted
-cross trace is +$723,044.52 (+$0.72M), matching the forensic figure exactly.
-At a history break the reset conflates the gap's own market move with the
-re-basing jump (there is no same-date aged-vs-fresh comparison across a
-break) — an accepted convention carried over from the forensic report, not a
-defect; the `chained` column on the decomposed frame records which resets are
-same-day versus break-spanning for anyone who wants to split them further.
-
-Other useful evidence files are:
-
-```text
-C:\atx\artifacts\var\sp100_dispersion_ytd_benchmark_cross_t8.json
-C:\atx\artifacts\var\sp100_dispersion_ytd_failures_cross.tsv
-C:\atx\artifacts\var\sp100_dispersion_ytd_pnl_screened.tsv
-C:\atx\artifacts\var\sp100_dispersion_ytd_benchmark_screened.json
-```
-
-`sp100_dispersion_ytd_pnl_screened.tsv` is the prior accepted scalar
-screened/cold-confirm trace, retained for the cross-route economic comparison
-above. Files named `*_final.*` still contain results from the rejected
-grouped batch-root experiment and should not be cited as the accepted result.
+The fixture still reports material pre-replay exclusions: 6,666 source options
+lack full-history underlier coverage, 45 are at unsupported delta boundaries,
+and 360 fail at least one replay scenario. The result is the fixed held exposure
+of the 2,928-position replayable subset, not the full 9,966-lot terminal book.
 
 ## Validation state
 
@@ -534,21 +506,21 @@ Run the accepted cross-sectional route once while iterating:
 ```powershell
 $env:ATX_SP100_SURFACE_DB='C:\atx-scratch\surface-db\sp100-2026'
 $env:ATX_VAR_BENCH_SINGLE_SHOT='1'
-$env:ATX_VAR_PNL_TSV='C:\atx\artifacts\var\sp100_dispersion_ytd_pnl_cross.tsv'
-$env:ATX_VAR_FAILURE_TSV='C:\atx\artifacts\var\sp100_dispersion_ytd_failures_cross.tsv'
+$env:ATX_VAR_PNL_TSV='C:\atx\artifacts\var\sp100_dispersion_ytd_pnl_fixed_units.tsv'
+$env:ATX_VAR_FAILURE_TSV='C:\atx\artifacts\var\sp100_dispersion_ytd_failures_fixed_units.tsv'
 
 .\build-rel\bin\atx-vol-projection-bench.exe `
   --benchmark_filter='^var/prepared/sp100_dispersion_terminal/ytd/thousands/cross_cold/t8/' `
-  --benchmark_out='C:\atx\artifacts\var\sp100_dispersion_ytd_benchmark_cross_t8.json' `
+  --benchmark_out='C:\atx\artifacts\var\sp100_dispersion_ytd_benchmark_fixed_units.json' `
   --benchmark_out_format=json
 ```
 
 Generate the chart:
 
 ```powershell
-python atx-vol\bench\plot_var_cumulative_pnl.py `
-  C:\atx\artifacts\var\sp100_dispersion_ytd_pnl_cross.tsv `
-  C:\atx\artifacts\var\sp100_dispersion_ytd_cumulative_pnl.png
+python atx-vol\bench\plot_var_scenario_pnl.py `
+  C:\atx\artifacts\var\sp100_dispersion_ytd_pnl_fixed_units.tsv `
+  C:\atx\artifacts\var\sp100_dispersion_ytd_one_day_pnl_fixed_units.png
 ```
 
 For a citable result, unset `ATX_VAR_BENCH_SINGLE_SHOT`, use a leased quiet

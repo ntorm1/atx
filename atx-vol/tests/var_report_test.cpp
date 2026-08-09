@@ -3,7 +3,6 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
-#include <fstream>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -142,7 +141,7 @@ VarExclusionSummary make_exclusions() {
 // are poisoned to pnl=0, so std::max_element's strict '<' comparator never
 // updates past the first element -- position 0 (AAPL) again, deterministically.
 constexpr char kExpectedTsvWithLegs[] =
-    "base_date\tshifted_date\tbase_value\tshifted_value\tpnl\tcumulative_pnl\t"
+    "base_date\tshifted_date\tbase_value\tshifted_value\tpnl\t"
     "dollar_delta\tn_positions\tsource_option_lots\tcoverage_excluded_option_lots\t"
     "delta_boundary_excluded_option_lots\treplay_excluded_option_lots\tstock_hedges\t"
     "max_abs_leg_index\tmax_abs_leg_underlier\t"
@@ -150,9 +149,9 @@ constexpr char kExpectedTsvWithLegs[] =
     "max_abs_leg_target_dollar_delta\tmax_abs_leg_log_moneyness\t"
     "max_abs_leg_scenario_units\tmax_abs_leg_base_delta\tmax_abs_leg_base_mark\t"
     "max_abs_leg_shifted_mark\tmax_abs_leg_pnl\n"
-    "2026-01-02\t2026-01-05\t18\t19\t1\t1\t1350\t2\t100\t20\t5\t3\t7\t"
+    "2026-01-02\t2026-01-05\t18\t19\t1\t1350\t2\t100\t20\t5\t3\t7\t"
     "0\tAAPL\t10\t0.5\t75000\t0.25\t10\t0.5\t5\t5.5\t5\n"
-    "2026-01-05\t2026-01-06\t0\t0\t0\t1\t0\t0\t100\t20\t5\t3\t7\t"
+    "2026-01-05\t2026-01-06\t0\t0\t0\t0\t0\t100\t20\t5\t3\t7\t"
     "0\tAAPL\t10\t0.5\t75000\t0.25\t0\t0\t0\t0\t0\n";
 
 TEST(VarReport, ArchiveErrorStatusStringIsStable) {
@@ -188,7 +187,7 @@ TEST(VarReport, ScenarioTsvEmitsEmptyLegColumnsWithoutRetainedLegs) {
   // the 11 empty columns themselves.
   const std::string empty_leg_columns(11u, '\t');
   const std::string expected =
-      "base_date\tshifted_date\tbase_value\tshifted_value\tpnl\tcumulative_pnl\t"
+      "base_date\tshifted_date\tbase_value\tshifted_value\tpnl\t"
       "dollar_delta\tn_positions\tsource_option_lots\tcoverage_excluded_option_lots\t"
       "delta_boundary_excluded_option_lots\treplay_excluded_option_lots\tstock_hedges\t"
       "max_abs_leg_index\tmax_abs_leg_underlier\t"
@@ -196,8 +195,8 @@ TEST(VarReport, ScenarioTsvEmitsEmptyLegColumnsWithoutRetainedLegs) {
       "max_abs_leg_target_dollar_delta\tmax_abs_leg_log_moneyness\t"
       "max_abs_leg_scenario_units\tmax_abs_leg_base_delta\tmax_abs_leg_base_mark\t"
       "max_abs_leg_shifted_mark\tmax_abs_leg_pnl\n"
-      "2026-01-02\t2026-01-05\t18\t19\t1\t1\t1350\t2\t100\t20\t5\t3\t7" +
-      empty_leg_columns + "\n" + "2026-01-05\t2026-01-06\t0\t0\t0\t1\t0\t0\t100\t20\t5\t3\t7" +
+      "2026-01-02\t2026-01-05\t18\t19\t1\t1350\t2\t100\t20\t5\t3\t7" +
+      empty_leg_columns + "\n" + "2026-01-05\t2026-01-06\t0\t0\t0\t0\t0\t100\t20\t5\t3\t7" +
       empty_leg_columns + "\n";
   EXPECT_EQ(out.str(), expected);
 }
@@ -230,19 +229,7 @@ TEST(VarReport, ScenarioTsvRejectsReorderedReferenceLegs) {
   EXPECT_TRUE(out.str().empty()) << "a rejected call must not have written partial output";
 }
 
-// Schema-stability gate (Task 4 step 3): the header this engine-level writer
-// produces must byte-match the header of the real SP100 fixture artifact
-// var_bench used to hand-roll, proving the extraction did not silently
-// change the column set/order/naming. Skips (not fails) when the artifact is
-// absent -- it is a locally-generated bench fixture, not a repo file.
-TEST(VarReport, ScenarioTsvHeaderMatchesArchivedSp100Artifact) {
-  std::ifstream artifact{"C:/atx/artifacts/var/sp100_dispersion_ytd_pnl_cross.tsv"};
-  if (!artifact.is_open()) {
-    GTEST_SKIP() << "sp100_dispersion_ytd_pnl_cross.tsv fixture artifact not present on this host";
-  }
-  std::string artifact_header;
-  ASSERT_TRUE(std::getline(artifact, artifact_header));
-
+TEST(VarReport, ScenarioTsvDoesNotPublishMeaninglessCumulativeScenarioPnl) {
   const HistoricalVarResult empty_result;
   const VarExclusionSummary exclusions;
   std::ostringstream out;
@@ -251,7 +238,9 @@ TEST(VarReport, ScenarioTsvHeaderMatchesArchivedSp100Artifact) {
   const std::string produced = out.str();
   const std::size_t header_end = produced.find('\n');
   ASSERT_NE(header_end, std::string::npos);
-  EXPECT_EQ(produced.substr(0, header_end), artifact_header);
+  const std::string header = produced.substr(0, header_end);
+  EXPECT_EQ(header.find("cumulative_pnl"), std::string::npos);
+  EXPECT_NE(header.find("\tpnl\tdollar_delta\t"), std::string::npos);
 }
 
 TEST(VarReport, AttributeByUnderlierHandComputedTotalsWorstAndOrdering) {

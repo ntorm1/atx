@@ -82,7 +82,7 @@ Status write_var_scenario_tsv(std::ostream &out, const HistoricalVarResult &resu
     }
   }
 
-  out << "base_date\tshifted_date\tbase_value\tshifted_value\tpnl\tcumulative_pnl\t"
+  out << "base_date\tshifted_date\tbase_value\tshifted_value\tpnl\t"
          "dollar_delta\tn_positions\tsource_option_lots\tcoverage_excluded_option_lots\t"
          "delta_boundary_excluded_option_lots\treplay_excluded_option_lots\tstock_hedges\t"
          "max_abs_leg_index\tmax_abs_leg_underlier\t"
@@ -91,14 +91,12 @@ Status write_var_scenario_tsv(std::ostream &out, const HistoricalVarResult &resu
          "max_abs_leg_scenario_units\tmax_abs_leg_base_delta\tmax_abs_leg_base_mark\t"
          "max_abs_leg_shifted_mark\tmax_abs_leg_pnl\n";
   out << std::setprecision(17);
-  double cumulative_pnl = 0.0;
   for (std::size_t index = 0u; index < result.frames.size(); ++index) {
     const VarScenarioFrame &frame = result.frames[index];
-    cumulative_pnl += frame.pnl;
     out << result.base_dates[index] << '\t' << result.shifted_dates[index] << '\t'
         << frame.base_value << '\t' << frame.shifted_value << '\t' << frame.pnl << '\t'
-        << cumulative_pnl << '\t' << frame.dollar_delta << '\t' << frame.n_ok << '\t'
-        << exclusions.source_option_lots << '\t' << exclusions.coverage_excluded_option_lots << '\t'
+        << frame.dollar_delta << '\t' << frame.n_ok << '\t' << exclusions.source_option_lots << '\t'
+        << exclusions.coverage_excluded_option_lots << '\t'
         << exclusions.delta_boundary_excluded_option_lots << '\t'
         << exclusions.replay_excluded_option_lots << '\t' << exclusions.stock_hedges << '\t';
     if (have_legs) {

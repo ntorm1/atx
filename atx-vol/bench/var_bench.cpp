@@ -47,7 +47,6 @@
 #include "atx/vol/universe.hpp"
 #include "atx/vol/var.hpp"
 #include "atx/vol/var_report.hpp"
-#include "atx/vol/var_validation.hpp"
 
 #include "bench_util.hpp"
 
@@ -55,7 +54,6 @@ namespace {
 
 using atx::vol::ArchiveBacking;
 using atx::vol::BacktestCheckpoint;
-using atx::vol::christoffersen;
 using atx::vol::Clock;
 using atx::vol::CorpusEntry;
 using atx::vol::CorpusFitStatus;
@@ -66,7 +64,6 @@ using atx::vol::DispersionUniverse;
 using atx::vol::HedgeSharePosition;
 using atx::vol::historical_var_statistics;
 using atx::vol::HistoricalVarResult;
-using atx::vol::kupiec_pof;
 using atx::vol::Lot;
 using atx::vol::MarketSnapshot;
 using atx::vol::OptionDeltaSolvePolicy;
@@ -107,9 +104,8 @@ constexpr double kMaxAggregateRelativeValueError = 1.0e-9;
 constexpr double kMaxAggregateRelativeDeltaError = 1.0e-9;
 constexpr double kGrossIndexVega = 10'000.0;
 constexpr std::size_t kMinNames = 60u;
-// Confidence used for the terminal-output validation block (Task 5): matches
-// VarRunConfig's own default, so the printed VaR/breach diagnostics describe
-// the same risk level a caller gets from run_historical_var out of the box.
+// Confidence used for the terminal-output distribution summary. This is not a
+// VaR backtest: the threshold and observations come from the same sample.
 constexpr double kValidationConfidence = 0.99;
 
 [[nodiscard]] std::string environment_value(const char *name) {
@@ -284,52 +280,19 @@ void add_symbol(std::unordered_map<std::uint32_t, std::string> &symbols, std::st
   return true;
 }
 
-// Task 5: a `validation:` diagnostic block for the terminal SP100 book's
-// full realized P&L distribution, printed once to stderr when the fixture
-// builds -- purely a terminal-output side effect alongside the M3 preamble
-// (bench_main.cpp's print_quiet_window_preamble); it never touches Google
-// Benchmark's console/JSON reporters, so --benchmark_out output is
-// unaffected. `frames` is expected to be a fully-Ok scenario set (the
-// caller has already rebuilt the book to exclude any replay failures), so
-// the breach sequence below covers every scenario in order without needing
-// a separate qualifying-frame filter.
-void print_validation_block(std::span<const VarScenarioFrame> frames) {
+// In-sample distribution summary only. Kupiec/Christoffersen are deliberately
+// not run here: comparing observations with a quantile estimated from those
+// same observations mechanically controls the breach count and is not an
+// out-of-sample VaR backtest.
+void print_distribution_summary(std::span<const VarScenarioFrame> frames) {
   const auto risk = historical_var_statistics(frames, kValidationConfidence);
   if (!risk) {
-    std::cerr << "validation: skipped (" << risk.error().to_string() << ")\n";
+    std::cerr << "distribution: skipped (" << risk.error().to_string() << ")\n";
     return;
   }
-  // std::vector<bool> is not a contiguous bool range and cannot back a
-  // std::span<const bool>; a plain heap array gives real contiguous bool
-  // storage instead.
-  auto breach_sequence = std::make_unique<bool[]>(frames.size());
-  std::size_t n_breaches = 0u;
-  for (std::size_t i = 0u; i < frames.size(); ++i) {
-    const bool breach = -frames[i].pnl > risk->value_at_risk;
-    breach_sequence[i] = breach;
-    n_breaches += breach ? 1u : 0u;
-  }
-  const std::span<const bool> breaches(breach_sequence.get(), frames.size());
-
-  std::cerr << "validation: confidence=" << kValidationConfidence << " var=" << risk->value_at_risk
-            << " es=" << risk->expected_shortfall << " n_scenarios=" << risk->n_scenarios
-            << " n_breaches=" << n_breaches;
-
-  if (const auto kupiec = kupiec_pof(frames.size(), n_breaches, kValidationConfidence)) {
-    std::cerr << " kupiec_lr=" << kupiec->lr_pof << " kupiec_p=" << kupiec->p_value;
-  } else {
-    std::cerr << " kupiec_error=" << kupiec.error().to_string();
-  }
-
-  if (const auto christoffersen_result = christoffersen(breaches, kValidationConfidence)) {
-    std::cerr << " christoffersen_lr_ind=" << christoffersen_result->lr_independence
-              << " christoffersen_p_ind=" << christoffersen_result->p_independence
-              << " christoffersen_lr_cc=" << christoffersen_result->lr_conditional_coverage
-              << " christoffersen_p_cc=" << christoffersen_result->p_conditional_coverage;
-  } else {
-    std::cerr << " christoffersen_error=" << christoffersen_result.error().to_string();
-  }
-  std::cerr << '\n';
+  std::cerr << "distribution: in_sample=true confidence=" << kValidationConfidence
+            << " var=" << risk->value_at_risk << " es=" << risk->expected_shortfall
+            << " n_scenarios=" << risk->n_scenarios << " note=not_an_out_of_sample_var_backtest\n";
 }
 
 [[nodiscard]] IndexCompleteTimeline index_complete_timeline(const Clock &history,
@@ -551,6 +514,22 @@ append_option_position(const Lot &lot, const MarketSnapshot &reference,
     return false;
   }
 
+  // Production-scale economic invariant: every successful historical leg is
+  // the same signed holding as the terminal reference portfolio. This catches
+  // the former dollar-delta rebasing defect even when aggregate P&L identities
+  // and fast-vs-retained parity remain perfectly green.
+  const std::span<const VarReferenceLeg> reference_legs = candidate->reference_legs();
+  for (std::size_t scenario = 0u; scenario < fixture.scenarios.size(); ++scenario) {
+    const std::size_t offset = scenario * candidate->size();
+    for (std::size_t position = 0u; position < candidate->size(); ++position) {
+      if (legs[offset + position].status == atx::vol::VarLegStatus::Ok &&
+          legs[offset + position].units != reference_legs[position].reference_units) {
+        set_error(fixture, "historical replay resized a terminal portfolio holding");
+        return false;
+      }
+    }
+  }
+
   std::vector<VarScenarioFrame> aggregate_frames(fixture.scenarios.size());
   const auto aggregate_replay =
       candidate->replay_into(fixture.scenarios, aggregate_frames, {}, evaluation);
@@ -585,7 +564,7 @@ append_option_position(const Lot &lot, const MarketSnapshot &reference,
     set_error(fixture, "aggregate YTD SP100 replay exceeds the cold economic parity tolerance");
     return false;
   }
-  print_validation_block(aggregate_frames);
+  print_distribution_summary(aggregate_frames);
   const std::string pnl_trace_path = environment_value("ATX_VAR_PNL_TSV");
   if (!pnl_trace_path.empty() &&
       !write_pnl_trace(fixture, aggregate_frames, legs, candidate->reference_legs(), pnl_trace_path,

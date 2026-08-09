@@ -335,6 +335,9 @@ struct NormalizedVarLeg {
   ProjectedMaturitySpec maturity{};
   Side side{Side::Call};
   double multiplier{1.0};
+  // Signed contracts/shares from the reference portfolio. Historical replay
+  // must never resize this exposure as spot or delta changes.
+  double units{0.0};
   double target_dollar_delta{0.0};
   double target_abs_delta{0.0};
   // Constant for year-fraction/calendar-day maturities; zero selects the
@@ -343,7 +346,7 @@ struct NormalizedVarLeg {
   std::uint64_t fingerprint{0};
   // Earliest leg with the same historical pricing definition. Quantity is
   // deliberately excluded: duplicate contracts share marks/Greeks, then scale
-  // independently to their own reference dollar delta.
+  // independently in their own fixed reference units.
   std::size_t pricing_leader{0u};
 };
 
@@ -499,6 +502,7 @@ namespace {
   leg.maturity = position.time_to_expiry;
   leg.side = position.side;
   leg.multiplier = position.multiplier;
+  leg.units = position.quantity;
   leg.target_dollar_delta = target_dollar_delta;
   leg.target_abs_delta = position.target_abs_delta;
   if (position.time_to_expiry.kind == ProjectedMaturityKind::YearFraction ||
@@ -544,6 +548,7 @@ namespace {
   leg.uid = uid;
   leg.underlier = symbol;
   leg.multiplier = 1.0;
+  leg.units = position.shares;
   leg.target_dollar_delta = target_dollar_delta;
   leg.target_abs_delta = 0.0;
   leg.fingerprint = stock_definition_fingerprint(uid);
@@ -564,6 +569,7 @@ reuse_option_anchor(const VarOptionPosition &position, const NormalizedVarLeg &p
     return Err(ErrorCode::Unavailable, "historical VaR: duplicate option normalization invalid");
   }
   leg.target_dollar_delta = target_dollar_delta;
+  leg.units = position.quantity;
   reference = prototype_reference;
   reference.reference_units = position.quantity;
   reference.target_dollar_delta = target_dollar_delta;
@@ -837,7 +843,7 @@ resolve_group_window_cross_sectional(const PreparedState &impl, const VarOptionG
 
 // Shared tail of evaluate_option_leg/evaluate_option_leg_resolved: prices
 // scalar base/shifted marks at the already-resolved `contract`, sizes to the
-// leg's target dollar delta, and fills `frame`. Neither caller has resolved
+// leg's fixed signed units, and fills `frame`. Neither caller has resolved
 // (or re-resolves) the contract here -- that is entirely their own
 // responsibility; this function trusts `contract`/`base_delta`/`fingerprint`
 // as given.
@@ -886,12 +892,6 @@ finish_option_leg(const NormalizedVarLeg &leg, const SurfaceRef &base, const Sur
     poison_leg(frame, VarLegStatus::InvalidDelta, leg.kind, leg.uid);
     return frame.status;
   }
-  const Result<VarSizingResult> sizing = resolve_var_sizing(
-      VarSizingInput{leg.target_dollar_delta, base_spot, base_delta, leg.multiplier});
-  if (!sizing) {
-    poison_leg(frame, VarLegStatus::InvalidValue, leg.kind, leg.uid);
-    return frame.status;
-  }
   if (!finite_positive(shifted_time)) {
     poison_leg(frame, VarLegStatus::ExpiredBeforeShift, leg.kind, leg.uid);
     return frame.status;
@@ -904,13 +904,12 @@ finish_option_leg(const NormalizedVarLeg &leg, const SurfaceRef &base, const Sur
     return frame.status;
   }
 
-  const double base_value = sizing->units * leg.multiplier * base_mark;
-  const double shifted_value = sizing->units * leg.multiplier * shifted_evaluation.price;
+  const double dollar_delta = leg.units * leg.multiplier * base_delta * base_spot;
+  const double base_value = leg.units * leg.multiplier * base_mark;
+  const double shifted_value = leg.units * leg.multiplier * shifted_evaluation.price;
   const double pnl = shifted_value - base_value;
-  const double allowed_error =
-      config.delta_tolerance * std::max(1.0, std::fabs(leg.target_dollar_delta));
-  if (!std::isfinite(base_value) || !std::isfinite(shifted_value) || !std::isfinite(pnl) ||
-      std::fabs(sizing->achieved_dollar_delta - leg.target_dollar_delta) > allowed_error) {
+  if (!std::isfinite(dollar_delta) || !std::isfinite(base_value) || !std::isfinite(shifted_value) ||
+      !std::isfinite(pnl)) {
     poison_leg(frame, VarLegStatus::InvalidValue, leg.kind, leg.uid);
     return frame.status;
   }
@@ -919,13 +918,13 @@ finish_option_leg(const NormalizedVarLeg &leg, const SurfaceRef &base, const Sur
   frame.kind = VarLegKind::Option;
   frame.status = VarLegStatus::Ok;
   frame.uid = leg.uid;
-  frame.units = sizing->units;
+  frame.units = leg.units;
   frame.base_spot = base_spot;
   frame.shifted_spot = shifted_spot;
   frame.base_mark = base_mark;
   frame.shifted_mark = shifted_evaluation.price;
   frame.base_delta = base_delta;
-  frame.dollar_delta = sizing->achieved_dollar_delta;
+  frame.dollar_delta = dollar_delta;
   frame.base_value = base_value;
   frame.shifted_value = shifted_value;
   frame.pnl = pnl;
@@ -997,32 +996,24 @@ evaluate_option_leg_resolved(const NormalizedVarLeg &leg, double strike, double 
 
 [[nodiscard]] VarLegStatus reuse_option_pricing(const NormalizedVarLeg &leg,
                                                 const VarLegFrame &leader,
-                                                const VarEvaluationConfig &config,
                                                 VarLegFrame &frame) noexcept {
   if (leader.status != VarLegStatus::Ok) {
     poison_leg(frame, leader.status, leg.kind, leg.uid);
     return frame.status;
   }
-  const Result<VarSizingResult> sizing = resolve_var_sizing(
-      VarSizingInput{leg.target_dollar_delta, leader.base_spot, leader.base_delta, leg.multiplier});
-  if (!sizing) {
-    poison_leg(frame, VarLegStatus::InvalidValue, leg.kind, leg.uid);
-    return frame.status;
-  }
-  const double base_value = sizing->units * leg.multiplier * leader.base_mark;
-  const double shifted_value = sizing->units * leg.multiplier * leader.shifted_mark;
+  const double dollar_delta = leg.units * leg.multiplier * leader.base_delta * leader.base_spot;
+  const double base_value = leg.units * leg.multiplier * leader.base_mark;
+  const double shifted_value = leg.units * leg.multiplier * leader.shifted_mark;
   const double pnl = shifted_value - base_value;
-  const double allowed_error =
-      config.delta_tolerance * std::max(1.0, std::fabs(leg.target_dollar_delta));
-  if (!std::isfinite(base_value) || !std::isfinite(shifted_value) || !std::isfinite(pnl) ||
-      std::fabs(sizing->achieved_dollar_delta - leg.target_dollar_delta) > allowed_error) {
+  if (!std::isfinite(dollar_delta) || !std::isfinite(base_value) || !std::isfinite(shifted_value) ||
+      !std::isfinite(pnl)) {
     poison_leg(frame, VarLegStatus::InvalidValue, leg.kind, leg.uid);
     return frame.status;
   }
 
   frame = leader;
-  frame.units = sizing->units;
-  frame.dollar_delta = sizing->achieved_dollar_delta;
+  frame.units = leg.units;
+  frame.dollar_delta = dollar_delta;
   frame.base_value = base_value;
   frame.shifted_value = shifted_value;
   frame.pnl = pnl;
@@ -1049,16 +1040,12 @@ evaluate_option_leg_resolved(const NormalizedVarLeg &leg, double strike, double 
     poison_leg(frame, VarLegStatus::InvalidValue, leg.kind, leg.uid);
     return frame.status;
   }
-  const Result<VarSizingResult> sizing =
-      resolve_var_sizing(VarSizingInput{leg.target_dollar_delta, base_spot, 1.0, 1.0});
-  if (!sizing) {
-    poison_leg(frame, VarLegStatus::InvalidValue, leg.kind, leg.uid);
-    return frame.status;
-  }
-  const double base_value = sizing->units * base_spot;
-  const double shifted_value = sizing->units * shifted_spot;
+  const double dollar_delta = leg.units * base_spot;
+  const double base_value = leg.units * base_spot;
+  const double shifted_value = leg.units * shifted_spot;
   const double pnl = shifted_value - base_value;
-  if (!std::isfinite(base_value) || !std::isfinite(shifted_value) || !std::isfinite(pnl)) {
+  if (!std::isfinite(dollar_delta) || !std::isfinite(base_value) || !std::isfinite(shifted_value) ||
+      !std::isfinite(pnl)) {
     poison_leg(frame, VarLegStatus::InvalidValue, leg.kind, leg.uid);
     return frame.status;
   }
@@ -1067,13 +1054,13 @@ evaluate_option_leg_resolved(const NormalizedVarLeg &leg, double strike, double 
   frame.kind = VarLegKind::Stock;
   frame.status = VarLegStatus::Ok;
   frame.uid = leg.uid;
-  frame.units = sizing->units;
+  frame.units = leg.units;
   frame.base_spot = base_spot;
   frame.shifted_spot = shifted_spot;
   frame.base_mark = base_spot;
   frame.shifted_mark = shifted_spot;
   frame.base_delta = 1.0;
-  frame.dollar_delta = sizing->achieved_dollar_delta;
+  frame.dollar_delta = dollar_delta;
   frame.base_value = base_value;
   frame.shifted_value = shifted_value;
   frame.pnl = pnl;
@@ -1137,7 +1124,7 @@ void evaluate_scenario(const PreparedState &impl, const VarScenario &scenario,
     VarLegFrame &leg_frame = leg_frames[index];
     VarLegStatus status = VarLegStatus::Ok;
     if (leg.kind == VarLegKind::Option && leg.pricing_leader != index) {
-      status = reuse_option_pricing(leg, leg_frames[leg.pricing_leader], config, leg_frame);
+      status = reuse_option_pricing(leg, leg_frames[leg.pricing_leader], leg_frame);
     } else if (leg.kind == VarLegKind::Option) {
       if (cross_sectional) {
         const std::size_t slot = impl.option_slot_by_leg[index];
@@ -1367,23 +1354,14 @@ void evaluate_scenario_batched(const PreparedState &impl, const VarScenario &sce
         // stay in parity with the retained-leg route (NaN-safe: see there).
         status = VarLegStatus::InvalidDelta;
       } else {
-        const Result<VarSizingResult> sizing =
-            resolve_var_sizing(VarSizingInput{leg.target_dollar_delta, scratch.base_spot[slot],
-                                              scratch.base_delta[slot], leg.multiplier});
-        if (!sizing) {
-          status = VarLegStatus::InvalidValue;
-        } else {
-          dollar_delta = sizing->achieved_dollar_delta;
-          base_value = sizing->units * leg.multiplier * scratch.base_price[slot];
-          shifted_value = sizing->units * leg.multiplier * scratch.shifted_price[slot];
-        }
+        dollar_delta =
+            leg.units * leg.multiplier * scratch.base_delta[slot] * scratch.base_spot[slot];
+        base_value = leg.units * leg.multiplier * scratch.base_price[slot];
+        shifted_value = leg.units * leg.multiplier * scratch.shifted_price[slot];
         pnl = shifted_value - base_value;
-        const double allowed_error =
-            config.delta_tolerance * std::max(1.0, std::fabs(leg.target_dollar_delta));
         if (status == VarLegStatus::Ok &&
             (!std::isfinite(dollar_delta) || !std::isfinite(base_value) ||
-             !std::isfinite(shifted_value) || !std::isfinite(pnl) ||
-             std::fabs(dollar_delta - leg.target_dollar_delta) > allowed_error)) {
+             !std::isfinite(shifted_value) || !std::isfinite(pnl))) {
           status = VarLegStatus::InvalidValue;
         }
         fingerprint = scratch.fingerprint[slot];
@@ -1568,7 +1546,7 @@ Result<PreparedVarPortfolio> PreparedVarPortfolio::create(std::span<const VarPos
         reference.reference_units * reference.reference_mark * normalized->multiplier;
     prepared.impl_->reference_dollar_delta += reference.target_dollar_delta;
     fingerprint_words.push_back(normalized->fingerprint);
-    fingerprint_words.push_back(std::bit_cast<std::uint64_t>(normalized->target_dollar_delta));
+    fingerprint_words.push_back(std::bit_cast<std::uint64_t>(normalized->units));
     fingerprint_words.push_back(std::bit_cast<std::uint64_t>(normalized->target_abs_delta));
     fingerprint_words.push_back(static_cast<std::uint64_t>(normalized->kind));
     prepared.impl_->reference_legs.push_back(std::move(reference));

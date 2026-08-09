@@ -33,9 +33,10 @@ struct VarExclusionSummary {
   std::size_t stock_hedges{0};
 };
 
-// Writes the per-scenario TSV exactly as var_bench emitted it before this
-// task (same header, same column order, same std::setprecision(17)
-// formatting), sourced from result.frames / result.leg_frames.
+// Writes one independent historical observation per row using
+// std::setprecision(17), sourced from result.frames / result.leg_frames. It
+// intentionally does not emit cumulative scenario P&L: the rows are
+// alternative VaR observations, not successive returns of a traded strategy.
 //
 // The plan's sketch of this function is `(out, result, exclusions)`.
 // HistoricalVarResult alone cannot name the "max_abs_leg_*" leg -- VarLegFrame

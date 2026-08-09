@@ -286,7 +286,7 @@ TEST(Var, DollarDeltaSizingIsReusableSignSafeAndRejectsInvalidInputs) {
   EXPECT_FALSE(resolve_var_sizing(VarSizingInput{1.0, 100.0, 0.40, 0.0}));
 }
 
-TEST(Var, ReplayPreservesDeltaMoneynessTteAndDollarDeltaThenHoldsConcreteContract) {
+TEST(Var, ReplayPreservesDeltaMoneynessTteAndFixedUnitsThenHoldsConcreteContract) {
   const std::uint32_t uid = uid_for_symbol("SPY");
   const OneSurfaceSnapshot reference(uid, 100.0, timestamp(2026, 1, 2));
   const OneSurfaceSnapshot base(uid, 82.0, timestamp(2026, 1, 5), 2.0);
@@ -328,8 +328,7 @@ TEST(Var, ReplayPreservesDeltaMoneynessTteAndDollarDeltaThenHoldsConcreteContrac
       projection_config);
   ASSERT_TRUE(expected_shifted);
 
-  const double expected_units = reference_leg.target_dollar_delta /
-                                (base.surface().pricing().S * expected_base->greeks.delta * 100.0);
+  const double expected_units = 1.75;
   // The engine (CrossSectionalColdConfirm) and expected_base/expected_shifted
   // (scalar Direct oracle, see OptionProjectionConfig::delta_solve_policy
   // default) are independent solves; compare at the cross-route gate rather
@@ -347,8 +346,10 @@ TEST(Var, ReplayPreservesDeltaMoneynessTteAndDollarDeltaThenHoldsConcreteContrac
   EXPECT_LE(std::fabs(legs[0].base_delta - expected_base->greeks.delta),
             2.0 * config.delta_tolerance);
   EXPECT_NEAR(std::fabs(legs[0].base_delta), 0.40, config.delta_tolerance);
-  EXPECT_NEAR(legs[0].dollar_delta, reference_leg.target_dollar_delta,
-              std::fabs(reference_leg.target_dollar_delta) * 1.0e-13);
+  EXPECT_TRUE(close_cross_route(legs[0].dollar_delta, expected_units * 100.0 * legs[0].base_delta *
+                                                          base.surface().pricing().S));
+  EXPECT_NE(legs[0].dollar_delta, reference_leg.target_dollar_delta)
+      << "dollar delta must float with the historical market; units must not";
   EXPECT_TRUE(
       close_cross_route(legs[0].base_value, expected_units * 100.0 * expected_base->model_mark));
   EXPECT_TRUE(close_cross_route(legs[0].shifted_value,
@@ -437,7 +438,7 @@ TEST(Var, YearFractionReplayMatchesDirectContractProjection) {
   EXPECT_EQ(legs[0].definition_fingerprint, projected_definition_fingerprint(reconstructed));
 }
 
-TEST(Var, StockHedgeResizesAtBaseAndProducesNonzeroHeldPeriodPnl) {
+TEST(Var, StockHedgeKeepsReferenceSharesAndProducesHeldPeriodPnl) {
   const std::uint32_t uid = uid_for_symbol("SPY");
   const OneSurfaceSnapshot reference(uid, 100.0, timestamp(2026, 1, 2));
   const OneSurfaceSnapshot base(uid, 80.0, timestamp(2026, 1, 5));
@@ -460,17 +461,17 @@ TEST(Var, StockHedgeResizesAtBaseAndProducesNonzeroHeldPeriodPnl) {
   ASSERT_TRUE(prepared->replay_into(scenarios, frames, legs, evaluation_config(1)));
   ASSERT_EQ(legs[0].status, VarLegStatus::Ok);
   EXPECT_EQ(legs[0].kind, VarLegKind::Stock);
-  EXPECT_DOUBLE_EQ(legs[0].units, 15.0);
+  EXPECT_DOUBLE_EQ(legs[0].units, 12.0);
   EXPECT_DOUBLE_EQ(legs[0].base_delta, 1.0);
-  EXPECT_DOUBLE_EQ(legs[0].dollar_delta, 1200.0);
-  EXPECT_DOUBLE_EQ(legs[0].base_value, 1200.0);
-  EXPECT_DOUBLE_EQ(legs[0].shifted_value, 1260.0);
-  EXPECT_DOUBLE_EQ(legs[0].pnl, 60.0);
-  EXPECT_DOUBLE_EQ(frames[0].pnl, 60.0);
+  EXPECT_DOUBLE_EQ(legs[0].dollar_delta, 960.0);
+  EXPECT_DOUBLE_EQ(legs[0].base_value, 960.0);
+  EXPECT_DOUBLE_EQ(legs[0].shifted_value, 1008.0);
+  EXPECT_DOUBLE_EQ(legs[0].pnl, 48.0);
+  EXPECT_DOUBLE_EQ(frames[0].pnl, 48.0);
   EXPECT_NE(frames[0].pnl, 0.0);
 }
 
-TEST(Var, LongAndShortCallAndPutSignsArePreservedByDollarDeltaScaling) {
+TEST(Var, LongAndShortCallAndPutQuantitiesRemainFixed) {
   const std::uint32_t uid = uid_for_symbol("SPY");
   const OneSurfaceSnapshot reference(uid, 100.0, timestamp(2026, 1, 2));
   const OneSurfaceSnapshot base(uid, 92.0, timestamp(2026, 1, 5));
@@ -509,6 +510,10 @@ TEST(Var, LongAndShortCallAndPutSignsArePreservedByDollarDeltaScaling) {
   EXPECT_LT(legs[1].units, 0.0);
   EXPECT_GT(legs[2].units, 0.0);
   EXPECT_LT(legs[3].units, 0.0);
+  EXPECT_DOUBLE_EQ(legs[0].units, 2.0);
+  EXPECT_DOUBLE_EQ(legs[1].units, -2.0);
+  EXPECT_DOUBLE_EQ(legs[2].units, 3.0);
+  EXPECT_DOUBLE_EQ(legs[3].units, -3.0);
   for (std::size_t i = 0; i < legs.size(); ++i) {
     EXPECT_EQ(legs[i].status, VarLegStatus::Ok);
     EXPECT_EQ(std::signbit(legs[i].dollar_delta),
@@ -890,7 +895,7 @@ VarPosition unreachable_delta_target_position() {
 }
 
 // PreparedVarPortfolio::create resolves every leg's delta target against the
-// REFERENCE surface too (to anchor target_dollar_delta), through the SAME
+// REFERENCE surface too (to record the reference-date dollar delta), through the SAME
 // config.projection_solve_policy -- so anchoring
 // unreachable_delta_target_position() at the fixture's default variance_scale
 // (1.0) would fail portfolio construction itself, before any scenario ever
