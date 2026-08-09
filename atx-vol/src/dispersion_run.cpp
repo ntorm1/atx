@@ -192,9 +192,9 @@ Status write_methodology_map(const fs::path &path) {
   return out ? Ok() : Err(ErrorCode::IoError, "cannot flush methodology map");
 }
 
-// â”€â”€ Native reference reconciliation (ported from tools/reference_spy_dispersion.py)
+// ── Native reference reconciliation (ported from tools/reference_spy_dispersion.py)
 
-// REVIEW C-2 follow-up. `kVegaScale = 0.01` used to live here â€” a FOURTH private
+// REVIEW C-2 follow-up. `kVegaScale = 0.01` used to live here — a FOURTH private
 // copy of the per-contract vol-point conversion, in the one place a drift would
 // be MASKED rather than caught, since this validator is what re-derives the
 // persisted `vega_per_contract_per_vol_point` column. It is gone; the site below
@@ -308,7 +308,7 @@ Result<std::string> str(const DictTsv &tsv, std::size_t row, std::string_view na
 }
 
 // Every comparison involving a NaN is false, so `|actual - expected| > tolerance`
-// used to PASS whenever either side had gone non-finite â€” this validator agreed
+// used to PASS whenever either side had gone non-finite — this validator agreed
 // with the artifact it exists to check, and the caller published the NaN. An Inf
 // TOLERANCE is the same failure from the other side: it admits every value.
 // `dec()` already refuses a literal "nan"/"inf" cell, so a non-finite number
@@ -435,7 +435,7 @@ Result<std::vector<ReferenceReconRecord>> verify_schedule(const fs::path &path) 
       // A straddle pair with no usable vega cannot have been sized vega-flat, and
       // dividing by it yields an Inf (nonzero target) or NaN (zero target)
       // expected quantity. `close_to` now refuses a non-finite side, so this
-      // would be caught either way â€” but as a "vega-flat quantity" tolerance
+      // would be caught either way — but as a "vega-flat quantity" tolerance
       // failure, which names the symptom rather than the unusable divisor the
       // artifact actually carries. Fail here, the way every other malformed-roll
       // condition in this validator does.
@@ -948,9 +948,9 @@ read_share_dividend_artifact(const fs::path &path) {
   return Ok(std::move(schedule));
 }
 
-// â”€â”€ Public: corpus phase-split line (B1 / T1) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Public: corpus phase-split line (B1 / T1) ───────────────────────────────
 //
-// FIELD LAYOUT â€” this is a contract. The line goes to stdout under
+// FIELD LAYOUT — this is a contract. The line goes to stdout under
 // `ATX_VOL_CORPUS_PHASE_TIMING` and is read by operator scripts OUTSIDE this
 // repo, which no change made here can update.
 //
@@ -966,7 +966,7 @@ read_share_dividend_artifact(const fs::path &path) {
 //  10  date_batch       dates per ingest batch (ATX_VOL_CORPUS_DATE_BATCH)
 //  11  reclaimed        T1/T-I4: distinct BOARDS that picked up inner workers a
 //                       draining pool could no longer place
-//  12  inner_slots      T1/T-I4: raw SUM of every inner budget offered â€” many
+//  12  inner_slots      T1/T-I4: raw SUM of every inner budget offered — many
 //                       per board, NOT a per-board mean. Without 11 and 12 the
 //                       phase-timing probe cannot report whether the reclaim
 //                       fired at all.
@@ -976,7 +976,7 @@ read_share_dividend_artifact(const fs::path &path) {
 //
 //   * NEW FIELDS APPEND. `9cfcbc3` inserted fields 11 and 12 BETWEEN `boards`
 //     and `date_batch`, pushing `date_batch` from field 10 to field 12 and
-//     shifting every positional reader â€” for no gain, since the counters read
+//     shifting every positional reader — for no gain, since the counters read
 //     no better beside `boards` than at the end. Field 10 is restored here
 //     [MINORS M9], and appending is the rule that keeps it stable.
 //   * EVERY FIELD IS `name=value`. Keying by NAME is always available and is
@@ -1004,12 +1004,12 @@ std::string format_corpus_phase_line(double ingest_s, double build_s,
   // rev2-ws-t N-M2: `written` is snprintf's UNTRUNCATED length, so it can exceed
   // `sizeof buf`. Sizing the std::string from it read past the end of the buffer
   // whenever the line truncated (measured: 1073 bytes returned from a 512-byte
-  // buffer). Build from the NUL terminator instead â€” identical in the
+  // buffer). Build from the NUL terminator instead — identical in the
   // non-truncating case, which is every realistic one (~270 chars).
   return written > 0 ? std::string(buf) : std::string{};
 }
 
-// â”€â”€ Public: fingerprints + corpus config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Public: fingerprints + corpus config ────────────────────────────────────
 
 std::uint64_t dispersion_hash_text(std::string_view text) {
   const std::uint64_t hash = atx::core::hash_bytes(text.data(), text.size());
@@ -1047,7 +1047,7 @@ QualifiedCorpusConfig dispersion_corpus_config(const DispersionCorpusPolicy &pol
   return config;
 }
 
-// â”€â”€ Public: surface-only backtest compute seam â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Public: surface-only backtest compute seam ──────────────────────────────
 
 DispersionBacktestConfig dispersion_backtest_config_from_run_spec(const RunSpec &spec) {
   DispersionBacktestConfig config;
@@ -1078,14 +1078,14 @@ namespace {
 //
 // MEASURED AGAINST CAPITAL, not against peak NAV. `BacktestResult::nav` is
 // cumulative P&L from an inception of ZERO, not an equity curve, so
-// "fraction of peak NAV" is degenerate here â€” peak NAV is 0 on a losing run and
+// "fraction of peak NAV" is degenerate here — peak NAV is 0 on a losing run and
 // the ratio is meaningless. A capital base is also what a real risk system
 // stops on ("halt after losing 20% of capital"), so `read_dispersion_run_config`
 // requires `limit_capital` whenever `limit_drawdown_stop` is set.
 //
 // Enforcing it needs exactly ONE replay, not a fixed point. Halting only ever
 // suppresses entries at or AFTER the breach step, and NAV up to that step is a
-// function of trades made strictly before it â€” so the first breach index is
+// function of trades made strictly before it — so the first breach index is
 // invariant under the halt. Any later breach is moot: there is no new risk left
 // to stop.
 [[nodiscard]] std::optional<std::size_t> first_drawdown_breach(const BacktestResult &track,
@@ -1131,7 +1131,7 @@ run_dispersion_surface_backtest(const Clock &clock, std::vector<UniverseRow> sch
   return Ok(std::move(outcome));
 }
 
-// â”€â”€ Public: X1 strict typed run config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Public: X1 strict typed run config ──────────────────────────────────────
 
 namespace {
 
@@ -1304,7 +1304,7 @@ private:
 
 } // namespace
 
-// â”€â”€ X5: friction/impact regime â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── X5: friction/impact regime ──────────────────────────────────────────────
 
 std::string_view to_string(DispersionFrictionRegime regime) noexcept {
   switch (regime) {
@@ -1321,7 +1321,7 @@ std::string_view to_string(DispersionFrictionRegime regime) noexcept {
 namespace {
 
 // True when the model actually charges something. `spread_kind == None` with a
-// nonzero half_spread is still frictionless â€” the engine reads the kind â€” so the
+// nonzero half_spread is still frictionless — the engine reads the kind — so the
 // classification follows the KIND, not the bare parameter, and cannot overstate.
 [[nodiscard]] bool frictions_active(const FrictionModel &f) noexcept {
   const bool spread = f.spread_kind == FrictionModel::SpreadKind::PriceBps
@@ -1437,7 +1437,7 @@ read_dispersion_benchmark_series(const fs::path &path) {
       return Err(ErrorCode::ParseError, "benchmark series row " + std::to_string(row) +
                                             " has a non-numeric value: '" + value + "'");
     }
-    // REVIEW C-6. The date is the JOIN KEY, not decoration â€” it used to be parsed
+    // REVIEW C-6. The date is the JOIN KEY, not decoration — it used to be parsed
     // and thrown away, which is what let a misaligned file produce confident
     // numbers for the wrong observations.
     std::string date = line.substr(0, tab);
@@ -1456,7 +1456,7 @@ read_dispersion_benchmark_series(const fs::path &path) {
       return Err(ErrorCode::ParseError,
                  "benchmark series row " + std::to_string(row) + " date '" + date +
                      "' does not advance on the previous row's '" + series.back().date +
-                     "' â€” benchmark dates must be unique and ascending");
+                     "' — benchmark dates must be unique and ascending");
     }
     series.push_back(DispersionBenchmarkRow{std::move(date), parsed});
   }
@@ -1556,7 +1556,7 @@ FrictionModel dispersion_friction_preset(DispersionFrictionPreset preset) {
   FrictionModel model;
   switch (preset) {
   case DispersionFrictionPreset::None:
-    return model; // frictionless mid â€” exactly the pinned golden
+    return model; // frictionless mid — exactly the pinned golden
   case DispersionFrictionPreset::RetailListedOptions:
     // A documented, deliberately conservative listed-options execution setting:
     // 25 bps half-spread on the option premium (a ~0.5% round-trip, typical of a
@@ -1713,7 +1713,7 @@ Result<DispersionRunConfig> read_dispersion_run_config(const fs::path &path) {
       {{"compatibility", SurfaceProvenancePolicy::Compatibility},
        {"require_admitted_risk", SurfaceProvenancePolicy::RequireAdmittedRisk}}));
 
-  // â”€â”€ WS-F F4 (BT-W): the listed-route execution knobs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── WS-F F4 (BT-W): the listed-route execution knobs ──────────────────────
   ATX_TRY_VOID(binder.enumerated("unpriced", config.unpriced,
                                  {{"error", UnpricedLotPolicy::Error},
                                   {"exclude", UnpricedLotPolicy::ExcludeAndReport}}));
@@ -1725,7 +1725,7 @@ Result<DispersionRunConfig> read_dispersion_run_config(const fs::path &path) {
       binder.boolean("book_entry_fill_slippage", config.book_entry_fill_slippage));
   ATX_TRY_VOID(binder.boolean("reconcile_nav", config.reconcile_nav));
 
-  // â”€â”€ WS-F F6 (BT-P2-8): quote-quality admission, consumed by build-schedule â”€
+  // ── WS-F F6 (BT-P2-8): quote-quality admission, consumed by build-schedule ─
   ATX_TRY_VOID(binder.number("quote_min_bid", config.quote_quality.min_bid));
   ATX_TRY_VOID(binder.number("quote_max_age_ns", config.quote_quality.max_quote_age_ns));
   ATX_TRY_VOID(binder.boolean("quote_reject_locked", config.quote_quality.reject_locked));
@@ -1737,7 +1737,7 @@ Result<DispersionRunConfig> read_dispersion_run_config(const fs::path &path) {
             read_share_dividend_artifact(config.dividend_ledger));
   }
 
-  // Contract validation â€” the invariants read_run_spec enforced, plus the ones
+  // Contract validation — the invariants read_run_spec enforced, plus the ones
   // the new knobs need.
   if (config.dates.lo > config.dates.hi || config.universe.min_names == 0 ||
       config.universe.min_weight_coverage <= 0.0 || config.universe.min_weight_coverage > 1.0 ||
@@ -1789,7 +1789,7 @@ Result<DispersionRunConfig> read_dispersion_run_config(const fs::path &path) {
     return Err(ErrorCode::InvalidArgument, "index_symbol must not be empty");
   }
   // X4 strike contract. Each rule validates only the parameter it reads, and a
-  // parameter set for a rule that ignores it is refused â€” otherwise a spec could
+  // parameter set for a rule that ignores it is refused — otherwise a spec could
   // carry `strike_abs_delta=0.4` under the default rule and quietly do nothing.
   if (config.strike.rule == StrikeRule::DeltaStrangle &&
       (!(config.strike.target_abs_delta > 0.0) || !(config.strike.target_abs_delta < 1.0))) {
@@ -1839,12 +1839,12 @@ DispersionBacktestConfig dispersion_backtest_config_from(const DispersionRunConf
   // ignoring `config.unpriced`, and never set `surface_provenance_policy`,
   // `book_entry_fill_slippage` or `reconcile_nav` at all. Because
   // `dispersion_run_surface_backtest` reads the STRICT typed config, all four of
-  // those keys bound by name and survived `reject_unknown()` â€” so the shipped
+  // those keys bound by name and survived `reject_unknown()` — so the shipped
   // `run-surface-backtest` accepted four spec keys by name and gave them no effect.
   //
   // Deferring to `dispersion_engine_run_config_from` makes the "single place"
   // claim on `dispersion_engine_run_config_from` (dispersion_run.hpp:323-325)
-  // literally true â€” there is now exactly one
+  // literally true — there is now exactly one
   // construction of the engine RunConfig, and a knob visible there is reachable
   // from BOTH routes. It cannot move a golden: every one of the four defaults to
   // precisely the value this block hardcoded or inherited (`unpriced` Error,
@@ -1858,7 +1858,7 @@ DispersionBacktestConfig dispersion_backtest_config_from(const DispersionRunConf
 
 RunConfig dispersion_engine_run_config_from(const DispersionRunConfig &config) {
   // WS-F F4 (BT-W). The listed replay used to construct `RunConfig config;
-  // config.unpriced = Error;` and nothing else â€” so `friction_*`,
+  // config.unpriced = Error;` and nothing else — so `friction_*`,
   // `financing_*`, `cost_*` and `provenance` in the spec were accepted, echoed,
   // and then had no effect whatsoever on the headline artifact. Every field the
   // engine honours is now assigned from the typed spec HERE, in one place, so a
@@ -1898,16 +1898,16 @@ RunConfig make_listed_replay_run_config(const DispersionRunConfig &config, const
                                         const ListedDispersionStrategy &strategy) {
   RunConfig run = dispersion_engine_run_config_from(config);
   // WS-F F5 (BT-T2), review follow-up. The listed replay supplies its
-  // OWN cache â€” it shares one across the replay and the reconciliation pass â€”
+  // OWN cache — it shares one across the replay and the reconciliation pass —
   // and the engine deliberately never subsets a SUPPLIED cache, because it
   // cannot know what else the caller will serve from it. So F5 was inert on
   // exactly the path whose premise motivated it: the listed `run-backtest`
   // still loaded the whole board every date.
   //
   // The caller DOES know. Both consumers of this cache touch exactly the
-  // schedule's uids â€” the replay through `ListedDispersionStrategy`, and
+  // schedule's uids — the replay through `ListedDispersionStrategy`, and
   // `reconcile_listed_dispersion`, which resolves nothing but `leg.uid`
-  // (listed_dispersion_reconciliation.cpp:147) â€” so the cache is subsetted at
+  // (listed_dispersion_reconciliation.cpp:147) — so the cache is subsetted at
   // construction. `uid_of` is unaffected: `MarketSnapshot::load` builds the
   // symbol table from the WHOLE archive directory even under a subset.
   //
@@ -1972,7 +1972,7 @@ Status persist_typed_spec_keys(const fs::path &source_spec, const fs::path &run_
       continue;
     }
     // `benchmark_series` is the one path-valued extra, and the typed reader
-    // resolves relative paths against the spec's OWN directory â€” so carry it
+    // resolves relative paths against the spec's OWN directory — so carry it
     // across absolute, or the run dir would resolve it somewhere else.
     if (key == "benchmark_series" && !value.empty() && !fs::path{value}.is_absolute()) {
       out << key << '\t' << (source_base / value).lexically_normal().string() << '\n';
@@ -2489,7 +2489,7 @@ Status verify_projected_var_artifacts_impl(const fs::path &run_dir, std::size_t 
 
 } // namespace
 
-// â”€â”€ Public: native reference reconciliation (M1) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Public: native reference reconciliation (M1) ────────────────────────────
 
 Result<std::vector<ReferenceReconRecord>>
 reconcile_dispersion_reference(const fs::path &run_dir, bool schedule_only) {
@@ -2541,7 +2541,7 @@ Status write_reference_reconciliation_file(const fs::path &path,
   return Ok();
 }
 
-// â”€â”€ Public: file-oriented workflow entry points â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Public: file-oriented workflow entry points ─────────────────────────────
 
 Status dispersion_build_corpus(const fs::path &source_spec_path, const fs::path &run_dir,
                                const DispersionCorpusPolicy &policy) {
@@ -2550,7 +2550,7 @@ Status dispersion_build_corpus(const fs::path &source_spec_path, const fs::path 
   const std::vector<std::string> symbols = all_symbols(universe_rows, spec.index_symbol);
   // L9 (RECONCILE 1): the entry-gate floor reads from the ONE versioned
   // methodology policy rather than a scattered literal. `min_names_entry` == 51,
-  // so this is the same gate the inline `51u` enforced â€” main's example already
+  // so this is the same gate the inline `51u` enforced — main's example already
   // read it from here, and dispatching build-corpus into this function must not
   // quietly put the literal back.
   const ListedDispersionMethodology methodology;
@@ -2721,7 +2721,7 @@ Status dispersion_build_corpus(const fs::path &source_spec_path, const fs::path 
   return Ok();
 }
 
-// â”€â”€ X5: tearsheet emission â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── X5: tearsheet emission ──────────────────────────────────────────────────
 
 namespace {
 
@@ -2900,7 +2900,7 @@ Status dispersion_run_surface_backtest(const fs::path &run_dir) {
   ATX_TRY(DispersionBacktestOutcome outcome,
           run_dispersion_surface_backtest(clock, universe_rows, config,
                                           run_config.universe.index_symbol));
-  // X5. Fold in the benchmark-relative block when â€” and only when â€” the spec
+  // X5. Fold in the benchmark-relative block when — and only when — the spec
   // supplied a benchmark. Absent (the default) this is skipped entirely and the
   // sheet stays exactly the absolute one `run_dispersion_surface_backtest` built.
   if (!run_config.benchmark_series.empty()) {
@@ -2948,7 +2948,7 @@ Status dispersion_run_surface_backtest(const fs::path &run_dir) {
   // S3-T16. The surface route's three reporting artifacts. Unlike the listed
   // route there is no archive counterpart to fall back on, so a default run of
   // this stage publishes nothing and an operator who wants the tables declares
-  // `emit_tsv_diagnostics true`. The economics above are unchanged either way â€”
+  // `emit_tsv_diagnostics true`. The economics above are unchanged either way —
   // the run still computes, and its regime/NAV console line still prints.
   if (run_config.emit_tsv_diagnostics) {
     ATX_TRY_VOID(write_backtest_tsv(backtest, (run_dir / "surface_backtest.tsv").string()));
@@ -3053,8 +3053,8 @@ Status dispersion_run_projected_var(const fs::path &run_dir, CancelToken cancel)
   ATX_TRY_VOID(invalidate_projected_var_generation(run_dir));
   // REVIEW C-15. This used to be the LOOSE `read_run_spec`, on the stated
   // grounds that "a projected-VaR run consumes no execution knobs". True, and
-  // beside the point: it consumes CONSTRUCTION knobs â€” side, weighting, strike
-  // policy and contract multiplier â€” and the loose reader has no field for any
+  // beside the point: it consumes CONSTRUCTION knobs — side, weighting, strike
+  // policy and contract multiplier — and the loose reader has no field for any
   // of them, so the route hardcoded two and ignored two. One spec therefore
   // built one book in `run-surface-backtest` and a different book here, with no
   // error and no diagnostic. The same run directory's `run_spec.tsv` is already
@@ -3084,9 +3084,9 @@ Status dispersion_run_projected_var(const fs::path &run_dir, CancelToken cancel)
   // removes the day-1 freeze and the manifest-string coupling in one move; with a
   // single-block schedule the resolved basket is identical to before.
   //
-  // â”€â”€ REVIEW C-1: THE AS-OF IS THE LAST QUALIFIED SNAPSHOT â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── REVIEW C-1: THE AS-OF IS THE LAST QUALIFIED SNAPSHOT ──────────────────
   //
-  // The anchor used to be `snapshots.front()` â€” the OLDEST session â€” while
+  // The anchor used to be `snapshots.front()` — the OLDEST session — while
   // `dispersion_book_var` fixes the VaR reference at `frames.back().value`, the
   // LAST session (listed_dispersion_pipeline.cpp:508-516), and every loss is
   // `reference_value - frame.value` (historical_projection.cpp:118-147). That is
@@ -3099,7 +3099,7 @@ Status dispersion_run_projected_var(const fs::path &run_dir, CancelToken cancel)
   //
   // AS-OF SEMANTICS, chosen deliberately: the as-of is THE LAST QUALIFIED
   // SNAPSHOT IN THE MANIFEST CLOCK. It is not a caller-supplied parameter,
-  // because the reference value is not one either â€” the seam fixes it at
+  // because the reference value is not one either — the seam fixes it at
   // `frames.back()`, so any anchor other than the last session simply re-opens
   // the mismatch this closes. A caller who wants a different as-of moves
   // `date_hi`, which already bounds which sessions qualify. The book is then
@@ -3136,13 +3136,13 @@ Status dispersion_run_projected_var(const fs::path &run_dir, CancelToken cancel)
   // REV-TAIL I-2. The book -> OptionProjectionSpec synthesis + prepare +
   // evaluate_into + per-confidence VaR split USED to be hand-rolled inline here,
   // a second copy of `dispersion_book_var` (listed_dispersion_pipeline.cpp:464).
-  // `347ad44` â€” the commit whose stated purpose was restoring CLI seams â€” created
+  // `347ad44` — the commit whose stated purpose was restoring CLI seams — created
   // that copy by inlining, and in doing so left `dispersion_book_var` with ZERO
   // production callers: an exported public API whose only remaining caller was a
   // test. That is exactly the shape this file's own header warns rots quietly and
   // is then deleted by someone who assumes it was always dead. Worse, the tested
-  // copy was the ORPHANED one â€” `dispersion_run_projected_var` has no test at all
-  // â€” so the shipped economics were the untested duplicate of a tested seam.
+  // copy was the ORPHANED one — `dispersion_run_projected_var` has no test at all
+  // — so the shipped economics were the untested duplicate of a tested seam.
   //
   // What `347ad44` did NOT do is regress this route. The pre-inline CLI body
   // (`b0080fa:examples/spy_dispersion_backtest.cpp:950,981-982`) read the SAME
@@ -3189,7 +3189,7 @@ Status dispersion_run_projected_var(const fs::path &run_dir, CancelToken cancel)
               // Plan 5.5 safe point: the top of a snapshot batch. This lambda is
               // the whole of the entry's long-running work, and every artifact
               // (`projected_var.tsv`, the scenarios/legs pair, the generation
-              // marker) is written only after it returns â€” so a stop here leaves
+              // marker) is written only after it returns — so a stop here leaves
               // the run dir byte-for-byte as it was found. The Status propagates
               // out through dispersion_book_var's ATX_TRY.
               if (cancel.stop_requested()) {
@@ -3236,7 +3236,7 @@ Status dispersion_run_projected_var(const fs::path &run_dir, CancelToken cancel)
 
   // S3-T16. The canonical triple is this stage's ONLY output and it has no
   // archive counterpart, so with the flag off the projection still runs and
-  // still reports on the console, but publishes nothing â€” and the unconditional
+  // still reports on the console, but publishes nothing — and the unconditional
   // `invalidate_projected_var_generation` above has already removed any earlier
   // generation, so a run directory is never left claiming a VaR that no longer
   // matches its inputs. `verify_projected_var_artifacts` treats an absent triple
@@ -3262,7 +3262,7 @@ Status dispersion_run_projected_var(const fs::path &run_dir, CancelToken cancel)
                 << frame.definition_fingerprint << '\n';
       // `var.n_positions == initial.positions.size()`, and the seam builds one
       // relative template per book position IN ORDER, so leg `i` is book position
-      // `i` and its quantity is `initial.positions[i].qty` â€” the same value the
+      // `i` and its quantity is `initial.positions[i].qty` — the same value the
       // inlined copy read out of its own `relative_positions[leg].quantity`.
       for (std::size_t leg = 0; leg < var.n_positions; ++leg) {
         const ProjectedOption &projected = legs[scenario * var.n_positions + leg];
@@ -3282,7 +3282,7 @@ Status dispersion_run_projected_var(const fs::path &run_dir, CancelToken cancel)
     if (!frame_out || !leg_out)
       return Err(ErrorCode::IoError, "projected VaR: output write failed");
     // The incomplete-frame gate that used to sit here now fires inside
-    // `dispersion_book_var`, before these writes â€” see the ordering note above.
+    // `dispersion_book_var`, before these writes — see the ordering note above.
 
     std::ofstream summary(run_dir / "projected_var.tsv.pending",
                           std::ios::binary | std::ios::trunc);

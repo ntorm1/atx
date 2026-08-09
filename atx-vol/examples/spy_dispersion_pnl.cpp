@@ -1,10 +1,10 @@
-// spy_dispersion_pnl.cpp â€” the WS-D acceptance driver: the vega-flat dispersion
+// spy_dispersion_pnl.cpp — the WS-D acceptance driver: the vega-flat dispersion
 // PnL-track backtest, rendered end-to-end from a fitted SurfaceDb.
 //
-// Long top-N 40Î” 3M single-name strangles vs a short SPY 40Î” 3M strangle sized
+// Long top-N 40Δ 3M single-name strangles vs a short SPY 40Δ 3M strangle sized
 // NET-VEGA-ZERO at entry (FlatVega), a NEW clip every trading day, DAILY
 // delta-hedged, HELD TO EXPIRY. Strikes/expiries are resolved off the
-// serialized surface (projection path â€” no listed-contract snapping). Emits the
+// serialized surface (projection path — no listed-contract snapping). Emits the
 // PnL-track TSV (`# key=value` meta header + per-step series) the Python
 // renderer `tools/spy_dispersion_pnl_report.py` turns into the acceptance PNG.
 //
@@ -332,7 +332,7 @@ int main(int argc, char **argv) {
     return 2;
   }
 
-  // â”€â”€ Resolve the universe: explicit --names, else the --universe fixture. â”€â”€
+  // ── Resolve the universe: explicit --names, else the --universe fixture. ──
   std::vector<std::string> names = args.names;
   if (names.empty()) {
     if (args.universe.empty()) {
@@ -363,12 +363,12 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  // â”€â”€ Calendar-gap audit (I1): the PNG must be auditable against the request. â”€â”€
+  // ── Calendar-gap audit (I1): the PNG must be auditable against the request. ──
   // A trading day missing from the db (an F-c fit-drop) leaves no partition and
   // silently holes/narrows the track; the meta records the ACTUAL window only.
   // Here we record requested-vs-actual and count expected sessions absent from
   // the run. Expected-session source: `--expected-sessions` (a trading calendar
-  // â€” the ONLY way to see interior F-c drops, since the db cannot self-report a
+  // — the ONLY way to see interior F-c drops, since the db cannot self-report a
   // date it never wrote), else the db's own in-range partition dates (self-
   // contained: surfaces boundary narrowing, but missing==0 for interior holes).
   const std::string actual_start = clock->refs().front().date;
@@ -430,7 +430,7 @@ int main(int argc, char **argv) {
   }
   if (window_narrowed) {
     std::fprintf(stderr,
-                 "WARNING: window narrowed â€” requested [%s .. %s] but db covers [%s .. %s]\n",
+                 "WARNING: window narrowed — requested [%s .. %s] but db covers [%s .. %s]\n",
                  requested_start.c_str(), requested_end.c_str(), actual_start.c_str(),
                  actual_end.c_str());
   }
@@ -477,8 +477,8 @@ int main(int argc, char **argv) {
   }
 
   // The spine (Wave C): time the engine call, fold the tearsheet, capture the
-  // stats. `wall_clock_ms` still brackets ONLY `run_backtest` â€” the fold is not
-  // inside the interval â€” so the meta header's timing keys keep their meaning.
+  // stats. `wall_clock_ms` still brackets ONLY `run_backtest` — the fold is not
+  // inside the interval — so the meta header's timing keys keep their meaning.
   auto outcome = run_timed(*clock, strat, rc);
   if (!outcome) {
     std::fprintf(stderr, "run_backtest: %s\n", outcome.error().to_string().c_str());
@@ -498,9 +498,9 @@ int main(int argc, char **argv) {
   std::error_code ec;
   fs::create_directories(args.out, ec);
 
-  // â”€â”€ The self-describing PnL-track TSV (D5): identity + config + headline
+  // ── The self-describing PnL-track TSV (D5): identity + config + headline
   //    stats + engine timing + surface stats in the meta header; the renderer
-  //    titles the chart and fills its stats box from these keys. â”€â”€
+  //    titles the chart and fills its stats box from these keys. ──
   const Meta meta = {
       {"strategy", "spy_dispersion_vega_flat"},
       {"names", join(cfg.names)},

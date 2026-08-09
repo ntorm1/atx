@@ -301,7 +301,7 @@ public:
   // value, per tearsheet.hpp's own doc comment).
   [[nodiscard]] atx::core::Result<TrialStats> trial_stats(std::string_view sweep_id);
 
-  // â”€â”€ Task D6: retention/GC support â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Task D6: retention/GC support ─────────────────────────────────────
 
   // Retires (status -> `Retired`, see that enumerator's doc comment) every
   // `Compacted` row whose `last_access_ts < older_than_ts_ns`. A pure status

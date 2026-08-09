@@ -54,7 +54,7 @@ namespace fs = std::filesystem;
   return Error{ErrorCode::IoError, std::move(msg)};
 }
 
-// â”€â”€ Batch naming, deliberately DISTINCT from compact()'s own numbering â”€â”€â”€â”€
+// ── Batch naming, deliberately DISTINCT from compact()'s own numbering ────
 //
 // compact() names batches "batch-NNNNNN.parquet" and picks its next index by
 // scanning the destination directory for that exact pattern

@@ -63,7 +63,7 @@ Result<SweepResult> run_sweep(const SweepSpec &spec, const SweepConfig &config) 
   const std::string engine_id = make_engine_id();
   const std::size_t n = spec.variants.size();
 
-  // â”€â”€ Phase 1: TrackKey per ORIGINAL variant, dedupe by first occurrence â”€â”€â”€â”€
+  // ── Phase 1: TrackKey per ORIGINAL variant, dedupe by first occurrence ────
   //
   // `unique_order[u]` is the index (into `spec.variants`) of the u-th DISTINCT
   // key, in the order that key was FIRST seen scanning `spec.variants` left to
@@ -93,11 +93,11 @@ Result<SweepResult> run_sweep(const SweepSpec &spec, const SweepConfig &config) 
     }
   }
 
-  // â”€â”€ Phase 2: open the lakehouse â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Phase 2: open the lakehouse ────────────────────────────────────────────
   ATX_TRY(Catalog catalog, Catalog::open(config.lake_root));
   TrackStore store(config.lake_root);
 
-  // â”€â”€ Phase 3: probe every unique key, cache-first â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Phase 3: probe every unique key, cache-first ───────────────────────────
   std::vector<SweepVariantOutcome> outcomes(unique_order.size());
   std::vector<std::size_t> misses; // indices into unique_order/outcomes
   for (std::size_t u = 0; u < unique_order.size(); ++u) {
@@ -112,7 +112,7 @@ Result<SweepResult> run_sweep(const SweepSpec &spec, const SweepConfig &config) 
     }
   }
 
-  // â”€â”€ Phase 4: run every miss, variant-parallel, RunConfig::price.n_threads
+  // ── Phase 4: run every miss, variant-parallel, RunConfig::price.n_threads
   // forced to 1 per variant (the outer fan-out is where the concurrency
   // lives -- see the header's "Threading" doc). Each worker writes only its
   // own disjoint `run_results[i]` slot, mirroring the proven-race-free
@@ -135,7 +135,7 @@ Result<SweepResult> run_sweep(const SweepSpec &spec, const SweepConfig &config) 
     run_results[i] = run_backtest(spec.clock, *strat, cfg);
   });
 
-  // â”€â”€ Phase 5: publish, serially, on the calling thread â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Phase 5: publish, serially, on the calling thread ──────────────────────
   //
   // `Catalog` wraps exactly one `atx::core::db::Database`, which "must NOT be
   // shared across threads" (atx/core/db/sqlite.hpp) -- so registration happens
@@ -169,7 +169,7 @@ Result<SweepResult> run_sweep(const SweepSpec &spec, const SweepConfig &config) 
     outcomes[u].result = std::move(result);
   }
 
-  // â”€â”€ Phase 6: one trial per ORIGINAL variant -- attempts, not unique configs â”€
+  // ── Phase 6: one trial per ORIGINAL variant -- attempts, not unique configs ─
   for (std::size_t i = 0; i < n; ++i) {
     ATX_TRY_VOID(catalog.record_trial(keys[i], config.sweep_id, std::nullopt));
   }

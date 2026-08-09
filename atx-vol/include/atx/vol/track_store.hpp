@@ -192,7 +192,7 @@ private:
 // error: `compact()` returns a zeroed `CompactStats`.
 [[nodiscard]] Result<CompactStats> compact(std::string_view lake_root);
 
-// â”€â”€ Batch-sizing (compact()'s 256-512MB target) -- exposed for unit testing â”€
+// ── Batch-sizing (compact()'s 256-512MB target) -- exposed for unit testing ─
 //
 // `compact()`'s running batch byte count (`table_nbytes()`, track_store.cpp)
 // sums RAW/UNCOMPRESSED Arrow buffer bytes as tracks are accumulated into a

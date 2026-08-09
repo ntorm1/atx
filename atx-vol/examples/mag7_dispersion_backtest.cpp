@@ -1,4 +1,4 @@
-// mag7_dispersion_backtest.cpp â€” the acceptance example: MAG7-vs-SPY
+// mag7_dispersion_backtest.cpp — the acceptance example: MAG7-vs-SPY
 // dispersion-strangle backtest, driven entirely by a SurfaceDb. Gate test:
 // Mag7DispersionBacktest (tests/mag7_dispersion_backtest_test.cpp). OFF by
 // default (ATX_BUILD_EXAMPLES).
@@ -221,8 +221,8 @@ int main(int argc, char **argv) {
   }
 
   // The spine (Wave C): time the engine call, fold the tearsheet, capture the
-  // stats. `wall_clock_ms` still brackets ONLY `run_backtest` â€” the fold is not
-  // inside the interval â€” so `engine_metrics.csv`'s timing rows keep their
+  // stats. `wall_clock_ms` still brackets ONLY `run_backtest` — the fold is not
+  // inside the interval — so `engine_metrics.csv`'s timing rows keep their
   // meaning. `stats.cache` is the spine reading `rc.snapshot_cache->stats()`;
   // this driver always supplies a shared cache (:189), so it takes the non-null
   // branch and the four deterministic `n_steps`/`cache_*` rows do not move.

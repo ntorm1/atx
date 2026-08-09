@@ -129,7 +129,7 @@ void insert_raw_reader_mark(const fs::path &db_path, std::string_view file, std:
   ASSERT_TRUE(step.has_value()) << (step ? "" : step.error().to_string());
 }
 
-// â”€â”€ Basic open / schema / WAL â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Basic open / schema / WAL ───────────────────────────────────────────────
 
 TEST(CatalogTest, OpenCreatesDbFile) {
   const fs::path root = fresh_lake_root("open");
@@ -171,7 +171,7 @@ TEST(CatalogTest, WalModeIsEnabled) {
   EXPECT_EQ(stmt->column_text(0), "wal");
 }
 
-// â”€â”€ probe / register_staging round trip (brief Step 1a) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── probe / register_staging round trip (brief Step 1a) ────────────────────
 
 TEST(CatalogTest, ProbeMissThenRegisterThenProbeHit) {
   const fs::path root = fresh_lake_root("roundtrip");
@@ -248,7 +248,7 @@ TEST(CatalogTest, RegisterStagingRejectsDateMaxBeforeDateMin) {
   EXPECT_EQ(result.error().code(), atx::core::ErrorCode::InvalidArgument);
 }
 
-// â”€â”€ economics-rev supersession (Task D5) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── economics-rev supersession (Task D5) ────────────────────────────────────
 //
 // A revision bump changes `engine_id` (track_key.hpp's `make_engine_id()`),
 // which changes every `TrackKey` -- so the "new" generation's row is always a
@@ -443,7 +443,7 @@ TEST(CatalogTest, RegisterStagingSupersessionIsScopedToTheSameUnderlierFamilyAnd
   EXPECT_EQ((*superseded_row)->status, TrackStatus::Retired);
 }
 
-// â”€â”€ list_by_status (Task D5 fix-round: track_compact_reconcile's own probe) â”€
+// ── list_by_status (Task D5 fix-round: track_compact_reconcile's own probe) ─
 
 TEST(CatalogTest, ListByStatusReturnsOnlyMatchingRowsOrderedByTrackKey) {
   const fs::path root = fresh_lake_root("list-by-status");
@@ -479,7 +479,7 @@ TEST(CatalogTest, ListByStatusReturnsOnlyMatchingRowsOrderedByTrackKey) {
   EXPECT_TRUE(retired_rows->empty());
 }
 
-// â”€â”€ mark_compacted â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── mark_compacted ───────────────────────────────────────────────────────
 
 TEST(CatalogTest, MarkCompactedTransitionsStagingToCompacted) {
   const fs::path root = fresh_lake_root("compact");
@@ -524,7 +524,7 @@ TEST(CatalogTest, MarkCompactedTwiceFailsInvalidArgument) {
   EXPECT_EQ(again.error().code(), atx::core::ErrorCode::InvalidArgument);
 }
 
-// â”€â”€ Task D6: retention/GC support â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Task D6: retention/GC support ───────────────────────────────────────────
 //
 // gc()'s own orchestration (Arrow-touching batch rewrite/delete) is tested in
 // track_gc_test.cpp -- these are the pure-Catalog pieces gc() is built on:
@@ -864,7 +864,7 @@ TEST(CatalogTest, ApplyGcRewriteFailsClosedWhenARetiredKeyDoesNotActuallyMatch) 
   EXPECT_EQ(*(*row)->file, old_file);
 }
 
-// â”€â”€ record_trial / trial_stats (feeds B4's DSR) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── record_trial / trial_stats (feeds B4's DSR) ─────────────────────────────
 
 TEST(CatalogTest, RecordTrialAgainstUnknownTrackFails) {
   const fs::path root = fresh_lake_root("trial-missing");
@@ -959,7 +959,7 @@ TEST(CatalogTest, TrialStatsSingleTrialVarianceIsZeroNotNan) {
   EXPECT_DOUBLE_EQ(stats->sr_variance, 0.0);
 }
 
-// â”€â”€ single-writer enforcement: bounded fail-fast under real contention â”€â”€â”€â”€â”€
+// ── single-writer enforcement: bounded fail-fast under real contention ─────
 
 TEST(CatalogTest, ConcurrentWriterBeyondBusyTimeoutFailsFastNotIndefinitely) {
   const fs::path root = fresh_lake_root("busy");
@@ -998,7 +998,7 @@ TEST(CatalogTest, ConcurrentWriterBeyondBusyTimeoutFailsFastNotIndefinitely) {
                   .has_value());
 }
 
-// â”€â”€ brief Step 1(b): two REAL processes, 1000 rows each, zero corruption â”€â”€
+// ── brief Step 1(b): two REAL processes, 1000 rows each, zero corruption ──
 
 constexpr const char *kStressRootEnv = "ATX_VOL_CATALOG_STRESS_ROOT";
 

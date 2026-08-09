@@ -102,7 +102,7 @@ Result<std::string> read_text(const fs::path &path) {
 // (unused-result-adjacent MSVC deprecation), so `_dupenv_s` is used on
 // Windows, matching the existing pattern in
 // listed_definitions_cache_test.cpp's `definitions_tsv_path_from_env`. An
-// EMPTY return (unset or explicitly empty) means "disabled" â€” the same
+// EMPTY return (unset or explicitly empty) means "disabled" — the same
 // sentinel `read_listed_definitions_cached` already uses for "no cache".
 std::string cache_dir_from_env() {
   std::string path;
@@ -130,9 +130,9 @@ std::string cache_dir_from_env() {
 // closeout sprint Task 4.8, plan item 6.7): 1->2 is +15.2% median wall, 11/12
 // rounds won; 2->4 and 4->8 are statistical washes (+1.9% 7/12, +1.6% 7/12)
 // that also raise resident whole-board snapshots for no reliable win (depth 8
-// holds 10 against depth 2's 4 â€” private_snapshot_cache_capacity, backtest.cpp),
+// holds 10 against depth 2's 4 — private_snapshot_cache_capacity, backtest.cpp),
 // so the default stops at 2 rather than climbing further. Depth is a
-// scheduling knob ONLY â€” the output is bit-identical at every depth (see
+// scheduling knob ONLY — the output is bit-identical at every depth (see
 // RunConfig::prefetch_depth), so an override can cost throughput but can never
 // change a number.
 //
@@ -177,14 +177,14 @@ std::size_t projected_prefetch_depth() {
 // anonymous-namespace helper byte-for-byte identical to the old example `hash_file`).
 // After the T9 build-schedule cutover the example had no remaining caller, so its
 // duplicate `hash_file` was removed rather than exporting the library's internal
-// helper (O5). `read_text` stays â€” `verify_occ_ess_evidence` still calls it.
+// helper (O5). `read_text` stays — `verify_occ_ess_evidence` still calls it.
 //
 // RECONCILE 1: `hash_text` went the same way. It existed only to seed build-corpus's
 // input/policy fingerprints, and build-corpus is now a one-line dispatch into
 // `dispersion_build_corpus`, which computes both from the NAMED constants on
 // `DispersionCorpusPolicy` (dispersion_run.hpp) instead of from example literals.
 
-// â”€â”€ Runtime diagnostics â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Runtime diagnostics ──────────────────────────────────────────────────────
 // PhaseTimer + the `diagnostics` section encoder now live in the library
 // (atx/vol/research/run_diagnostics.hpp), so the binary result container measures phases
 // exactly as the old loose diagnostics_<subcommand>.tsv did. `PhaseTimer` here
@@ -203,10 +203,10 @@ void print_diag_summary(const char *subcommand, PhaseTimer::Duration total,
                static_cast<unsigned long long>(total_count), per_unit, unit);
 }
 
-// â”€â”€ RunArchive staging helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── RunArchive staging helpers ───────────────────────────────────────────────
 
 // Intern `value` into a first-appearance dict column, returning its u32 code.
-// O(dict) per call â€” fine for the small mark-divergence set the only caller
+// O(dict) per call — fine for the small mark-divergence set the only caller
 // builds. The dict/codes vectors grow in lockstep.
 std::uint32_t dict_intern(std::vector<std::string> &dict, std::string_view value) {
   for (std::size_t i = 0; i < dict.size(); ++i) {
@@ -219,7 +219,7 @@ std::uint32_t dict_intern(std::vector<std::string> &dict, std::string_view value
 }
 
 // Mark-divergence rows collected by the Record replay, staged for the
-// `mark_divergence` RunArchive section (there is no library encoder for it â€” it
+// `mark_divergence` RunArchive section (there is no library encoder for it — it
 // is example-owned, so the section is hand-built here). Owns every array its
 // columns span (dict codes/tables + numeric columns), so the returned section is
 // self-contained via RaSectionData::storage.
@@ -263,7 +263,7 @@ RaSectionData build_mark_divergence_section(std::shared_ptr<MarkDivergenceArena>
 // and `persist_occ_ess_evidence`, src/dispersion_run.cpp:114 and :136, the
 // T-wave lift). Their only caller was `build_corpus_command`, which
 // is now a dispatch into `dispersion_build_corpus`; the library writes both
-// artifacts. `verify_occ_ess_evidence` below is NOT a duplicate in that sense â€”
+// artifacts. `verify_occ_ess_evidence` below is NOT a duplicate in that sense —
 // two shipped subcommands (`build-schedule`, `verify`) still call it here.
 
 Status verify_occ_ess_evidence(const fs::path &run_dir, const Clock &clock) {
@@ -308,7 +308,7 @@ Status verify_occ_ess_evidence(const fs::path &run_dir, const Clock &clock) {
   return Ok();
 }
 
-// RECONCILE 1 â€” `build-corpus` is a dispatch into `dispersion_build_corpus`, so the
+// RECONCILE 1 — `build-corpus` is a dispatch into `dispersion_build_corpus`, so the
 // ~90-line body and `write_methodology_map` that used to live here are gone. The
 // library entry point writes the same artifacts in the same order and adds the two
 // things this copy could not reach:
@@ -327,8 +327,8 @@ Status verify_occ_ess_evidence(const fs::path &run_dir, const Clock &clock) {
 
 // The per-date OPRA quote join (formerly the example's `load_listed_quotes`) now
 // lives in the library as `listed_quotes_for_date` (verbatim lift, T1). Both former
-// consumers â€” build-schedule (via build_listed_dispersion_schedule) and run-backtest
-// reconciliation â€” call the library seam, so the example's duplicate was removed (T9).
+// consumers — build-schedule (via build_listed_dispersion_schedule) and run-backtest
+// reconciliation — call the library seam, so the example's duplicate was removed (T9).
 
 Status build_schedule_command(const fs::path &run_dir, const fs::path &cache_dir) {
   const auto cmd_start = PhaseTimer::now();
@@ -341,7 +341,7 @@ Status build_schedule_command(const fs::path &run_dir, const fs::path &cache_dir
   auto phase = PhaseTimer::now();
   ATX_TRY(RunSpec spec, read_run_spec(run_dir / "run_spec.tsv"));
   // REV-FIXTAIL I-A: the SAME run_spec.tsv, also through the STRICT typed reader,
-  // for the one thing the loose RunSpec cannot carry â€” F6's quote-quality
+  // for the one thing the loose RunSpec cannot carry — F6's quote-quality
   // admission policy. `quote_min_bid` / `quote_max_age_ns` / `quote_reject_locked`
   // bound by name, survived `reject_unknown()` and were published into
   // `run_config.tsv` as EFFECTIVE, while their only consumer was a library-only
@@ -364,8 +364,8 @@ Status build_schedule_command(const fs::path &run_dir, const fs::path &cache_dir
   // chain `build-schedule -> project-schedule -> run-projected-backtest`:
   // `run_projected_backtest_command` reads the loose `read_run_spec` (below) and
   // never strict-reads, so after this change that chain has no lenient entry
-  // point at all. Judged an improvement â€” a spec key that is a typo should not
-  // reach a published NAV â€” but it is a behaviour change on that chain and not
+  // point at all. Judged an improvement — a spec key that is a typo should not
+  // reach a published NAV — but it is a behaviour change on that chain and not
   // merely a duplicate of a read run-backtest already performs.
   ATX_TRY(DispersionRunConfig run_config, read_dispersion_run_config(run_dir / "run_spec.tsv"));
   ATX_TRY(std::vector<UniverseRow> universe_rows, read_universe(run_dir / "universe_schedule.tsv"));
@@ -373,7 +373,7 @@ Status build_schedule_command(const fs::path &run_dir, const fs::path &cache_dir
 
   // Task 8: `--cache DIR` / `ATX_VOL_CACHE` (default DISABLED, i.e. `cache_dir`
   // empty) opts into the ATXDEFS1 pre-parsed cache. Disabled, this is
-  // byte-for-byte `read_listed_definitions_file` â€” see that seam's costs
+  // byte-for-byte `read_listed_definitions_file` — see that seam's costs
   // disclosure in listed_definitions_cache.hpp before enabling it. `&timer`
   // charges the `definitions_cache` hit/miss phase ONLY when the cache is
   // consulted (`cache_dir` non-empty); a disabled run charges nothing extra,
@@ -405,9 +405,9 @@ Status build_schedule_command(const fs::path &run_dir, const fs::path &cache_dir
   // The DTE roll-trigger, per-date universe rebind, forward lookup, coverage gate,
   // deferral, cohort numbering, surface fingerprint, roll sizing, the entry/three-roll
   // acceptance gate, and the M1 clock/first-roll coupling check all run inside the call.
-  // REV-MTIDY I-1: the nine assignments that used to sit here â€” including
+  // REV-MTIDY I-1: the nine assignments that used to sit here — including
   // `sched_spec.quality = run_config.quote_quality`, the ONE line REV-FIXTAIL
-  // I-A added to make the three `quote_*` keys reach a shipped selection â€” are
+  // I-A added to make the three `quote_*` keys reach a shipped selection — are
   // now `listed_schedule_spec_from` (dispersion_run.hpp). They were moved for a
   // measured reason: deleting that assignment from this file left the ENTIRE
   // gate green (2262/2262, 0 failed), because the gtests I-A shipped call
@@ -442,7 +442,7 @@ Status build_schedule_command(const fs::path &run_dir, const fs::path &cache_dir
   // cache key. This write MUST stay ABOVE the write_run_archive call below. If the
   // archive were stamped first, trade_schedule.tsv would appear afterwards, the
   // next route (run-backtest) would recompute a different identity, and its write
-  // would start FRESH â€” silently dropping this command's trade_schedule section
+  // would start FRESH — silently dropping this command's trade_schedule section
   // with no error. Pinned by
   // RunDir.MergeWriteDropsCarriedSectionsWhenAFoldedInputAppearsLate.
   ATX_TRY_VOID(
@@ -451,7 +451,7 @@ Status build_schedule_command(const fs::path &run_dir, const fs::path &cache_dir
   sections.push_back(encode_schedule_section("trade_schedule", schedule));
   timer.add("write_outputs", write_start);
   sections.push_back(encode_diagnostics_section(timer, "build_schedule", schedule.rolls.size()));
-  // Must stay BELOW the trade_schedule.tsv write above â€” see the ordering note
+  // Must stay BELOW the trade_schedule.tsv write above — see the ordering note
   // there and the contract on RunDir::run_identity_hash.
   ATX_TRY_VOID(RunDir(run_dir).write_run_archive(sections));
   std::printf("built immutable schedule: rolls=%zu\n", schedule.rolls.size());
@@ -472,7 +472,7 @@ Status verify_command(const fs::path &run_dir) {
   // text inputs parse, the backtest/reconciliation cardinalities agree, the
   // schedule passes its structural + vega-arithmetic validation, and the
   // core-mode date/roll/breadth floors hold. This is the example's old verify
-  // gate lifted into RunDir::verify â€” the loose backtest.tsv / contract_marks.tsv
+  // gate lifted into RunDir::verify — the loose backtest.tsv / contract_marks.tsv
   // / reconciliation.tsv result files no longer exist, so their existence checks
   // are now the layered-CRC envelope over run.atxrun's sections.
   ATX_TRY_VOID(RunDir(run_dir).verify());
@@ -494,7 +494,7 @@ Status verify_command(const fs::path &run_dir) {
   // S3-T17: the M1 native reference reconciliation, wired into the one shipped
   // binary that can reach it. `reconcile_dispersion_reference` re-derives the
   // vega-flat schedule quantities from the persisted artifact and numerically
-  // compares them against the recorded values â€” an arithmetic check independent
+  // compares them against the recorded values — an arithmetic check independent
   // of the engine that produced them, which is a different question from the
   // structural + envelope one `RunDir::verify()` above answers. Until now its
   // only caller was the library-only `dispersion_verify`, so it reached no
@@ -503,7 +503,7 @@ Status verify_command(const fs::path &run_dir) {
   //
   // SCHEDULE-ONLY, and that is not a shortcut. The full mode additionally parses
   // `backtest.tsv`, `contract_marks.tsv` and `reconciliation.tsv`, and after
-  // S3-T17 NOTHING writes those three into a run directory â€” the deleted library
+  // S3-T17 NOTHING writes those three into a run directory — the deleted library
   // twin was their last writer, and this binary has published its economics as
   // `run.atxrun` sections since the RunArchive cutover. Asking for the full mode
   // here would be a call that can only ever fail on a directory this pipeline
@@ -584,7 +584,7 @@ Status run_backtest_command(const fs::path &run_dir, const fs::path &cache_dir) 
   // M4's reporting contract: the run records WHAT produced its numbers, regime
   // first, BEFORE the replay, so a failed run still leaves the evidence of what it
   // attempted. A published NAV that does not say which frictions produced it is
-  // not a result â€” and until this line the listed route emitted no such record.
+  // not a result — and until this line the listed route emitted no such record.
   ATX_TRY_VOID(write_dispersion_effective_config(run_dir / "run_config.tsv", run_config));
   timer.add("setup_read", phase);
 
@@ -606,17 +606,17 @@ Status run_backtest_command(const fs::path &run_dir, const fs::path &cache_dir) 
   //
   // The symbol list and the owner reserves are quote-join setup (the symbols are
   // the join's key set), so they are charged to `quote_join` rather than left
-  // uncharged â€” that keeps the partition exact rather than approximate.
+  // uncharged — that keeps the partition exact rather than approximate.
   const auto join_setup_start = PhaseTimer::now();
   const std::vector<std::string> symbols = all_symbols(universe_rows, spec.index_symbol);
   // The exact contract set this re-mark pass will read: every leg of every roll.
-  // The OPRA panels carry the whole listed universe for these symbols â€” on the
+  // The OPRA panels carry the whole listed universe for these symbols — on the
   // Wave E fixture the unfiltered join emitted 41k quotes per session against a
-  // schedule of 66 legs â€” so handing the join the key set lets it skip the
+  // schedule of 66 legs — so handing the join the key set lets it skip the
   // definition lookup, the OSI parse and quote construction for everything else.
   // Read the `wanted` contract in listed_opra.hpp first: it also NARROWS six of
   // the join's seven fatal exits to these keys, and it REQUIRES a strictly
-  // increasing span â€” hence the sort + unique below, which is enforced, not
+  // increasing span — hence the sort + unique below, which is enforced, not
   // advisory.
   //
   // The UNION over ALL rolls, not the active cohort. A roll date marks both the
@@ -657,7 +657,7 @@ Status run_backtest_command(const fs::path &run_dir, const fs::path &cache_dir) 
         ListedReconciliationSnapshot{clock.refs()[i].date, snapshot_owners[i]->ts_ns(),
                                      &snapshot_owners[i]->set(), quote_owners[i]});
   }
-  // M1 wired into production (design Â§3): the reconciler is fed the FULL clock.refs()
+  // M1 wired into production (design §3): the reconciler is fed the FULL clock.refs()
   // timeline (every session, including any leading warm-up / low-coverage session
   // before the first roll). reconcile_listed_schedule trims that lead-in down to the
   // first roll date before reconciling, so a warm-up session no longer aborts an
@@ -712,7 +712,7 @@ Status run_backtest_command(const fs::path &run_dir, const fs::path &cache_dir) 
 // instead of the nearest listed grid strike) with COLD certified greeks, keeping
 // roll_date / valuation_ts_ns / cohort / expiry_ts_ns / n_names / weights / side
 // identical to the listed build. The projected portfolio differs from the listed one
-// ONLY by contract idealization â€” not by tenor and not by solver tier. The listed
+// ONLY by contract idealization — not by tenor and not by solver tier. The listed
 // sizing rule (build_listed_dispersion_roll) is reused verbatim, so projected_schedule
 // .tsv is the exact ATX_LISTED_DISPERSION_SCHEDULE format and passes the shared
 // validator (net vega ~ 0, gross = 2x target); only per-member strike and its cold
@@ -734,12 +734,12 @@ Status project_schedule_command(const fs::path &run_dir) {
 
   // Owning SINGLE-SLOT per-roll snapshot cache for the projection. The
   // ListedArchiveLookup hands project_listed_schedule a BORROWED MarketSnapshot*,
-  // which must stay valid until the next lookup call â€” the projection dereferences
+  // which must stay valid until the next lookup call — the projection dereferences
   // it only while processing that one roll and never retains it afterwards (the
   // rolls it emits are plain data), so exactly one board needs to be resident at a
   // time. A cumulative cache kept every roll-date board alive for the whole call;
   // each is a full heap deserialize (not an mmap), so peak memory scaled with the
-  // roll count â€” harmless at 7 rolls, ~120 boards resident on a multi-year corpus.
+  // roll count — harmless at 7 rolls, ~120 boards resident on a multi-year corpus.
   // Re-emplacing releases the previous board before the new one is stored. A roll
   // date absent from the qualified clock returns Ok(nullptr);
   // project_listed_schedule turns that into the example's exact NotFound message
@@ -775,7 +775,7 @@ Status project_schedule_command(const fs::path &run_dir) {
   // greeks, listed sizing (build_listed_dispersion_roll) and the schedule validator all
   // run inside the call; the per-roll stdout diagnostic line prints from within it. The
   // whole call is charged to cold_solve (archive_load's per-load subset is no longer
-  // separable now the loop lives in the library â€” only build-schedule per-phase
+  // separable now the loop lives in the library — only build-schedule per-phase
   // granularity was a T9 obligation; the diagnostics SECTION format is unchanged).
   const auto solve_start = PhaseTimer::now();
   ATX_TRY(ListedDispersionSchedule projected,
@@ -812,12 +812,12 @@ Status project_schedule_command(const fs::path &run_dir) {
 // COLD IS THE DEFAULT BECAUSE CONFIGURED IS KNOWN TO BE WRONG ON THIS BOOK, not merely
 // slower. `dispersion-parity` Task 2 diagnosed the fast tier's residual: with an
 // identical book (22 lots, n_unpriced = 0) and the name legs interpolating cleanly under
-// ~50 bps, the whole deviation came from the SPY index American PUT â€” fast mark 13.797
-// vs cold 12.775, an 800 bps error â€” while the SPY CALL at the same strike and expiry
+// ~50 bps, the whole deviation came from the SPY index American PUT — fast mark 13.797
+// vs cold 12.775, an 800 bps error — while the SPY CALL at the same strike and expiry
 // matched cold to under 0.1 bps. A put-only error at the same node is the early-exercise
 // boundary, which only binds for the put; CarryBank was cross-checked and is worse
 // (~1054 bps). On a 49-session dispersion corpus that shows up as final_nav 25013.36865
-// under configured against 18528.61666 under cold â€” a 35% overstatement on a book that
+// under configured against 18528.61666 under cold — a 35% overstatement on a book that
 // is short index puts. Configured also costs ~21x more wall time (~4.3 s vs ~0.20 s),
 // so the previous default was both the wrong number AND the slow one.
 //
@@ -828,7 +828,7 @@ Status project_schedule_command(const fs::path &run_dir) {
 // run.atxrun `meta` section, so provenance of which route produced a run is unchanged.
 // Records per-roll mark divergence between the frozen schedule marks and the live seed
 // marks. `--schedule` selects the input schedule (default trade_schedule.tsv);
-// `--out` is a provenance label only â€” no file is written under it; the name is
+// `--out` is a provenance label only — no file is written under it; the name is
 // recorded in the run.atxrun `meta` section (requested_out) so the request stays
 // visible.
 //
@@ -836,12 +836,12 @@ Status project_schedule_command(const fs::path &run_dir) {
 // rides the priced run. There is no second pass. The shadow replay that used to
 // re-walk the clock, re-load every archive and re-step a private
 // ListedDispersionStrategy purely to recompute rows the priced run already computed
-// is DELETED â€” it was proven bit-exactly redundant on a 135-session production
+// is DELETED — it was proven bit-exactly redundant on a 135-session production
 // corpus (137 rows across 7 rolls and 11 underlyings) before removal, and the
 // library-side observer carries its own fail-closed guards
 // (make_mark_divergence_observer: roll cursor + valuation timestamp).
 // `--no-divergence` therefore now means "do not install the observer", leaving the
-// bare priced backtest â€” the bare-backtest wall-time path. The priced run never
+// bare priced backtest — the bare-backtest wall-time path. The priced run never
 // consulted the shadow, and `Strategy.StepObserverAbsentIsBitIdentical` pins that
 // installing the observer does not perturb it, so the backtest output is
 // byte-identical either way.
@@ -851,7 +851,7 @@ Status run_projected_backtest_command(const fs::path &run_dir, const fs::path &s
   const auto cmd_start = PhaseTimer::now();
   // PHASE LIST IS BYTE-STABLE AND STAYS THAT WAY. The `diagnostics` section emits
   // one row per PRE-DECLARED phase, so adding, removing or renaming a name here
-  // changes that section's row set â€” a RunArchive-visible artifact change, not a
+  // changes that section's row set — a RunArchive-visible artifact change, not a
   // cosmetic one. It is therefore held at exactly the five names the shadow-replay
   // era declared, even though T5's deletion changed what two of them measure:
   //   * `divergence_replay` no longer times a second pass over the clock. It now
@@ -879,14 +879,14 @@ Status run_projected_backtest_command(const fs::path &run_dir, const fs::path &s
   ATX_TRY(ListedDispersionSchedule schedule,
           read_listed_dispersion_schedule_file((run_dir / schedule_file).string()));
 
-  // Query route for the priced run â€” the only run there is.
+  // Query route for the priced run — the only run there is.
   RunConfig config;
   config.unpriced = UnpricedLotPolicy::Error;
   config.prefetch_depth = projected_prefetch_depth();
   // Sized to the look-ahead window plus one spare slot, NOT unbounded. The
   // default-constructed SnapshotCache this replaces was unbounded, so a 135-session
   // replay retained all 135 reconstructed snapshots for the whole run and freed them
-  // in one storm at teardown â€” peak memory and that teardown paid for a strictly
+  // in one storm at teardown — peak memory and that teardown paid for a strictly
   // forward-only walk that never looks back.
   //
   // depth + 2 is the live working set (base + shifted + depth in flight), and it is
@@ -899,7 +899,7 @@ Status run_projected_backtest_command(const fs::path &run_dir, const fs::path &s
     // Route P canonical (I1): cold certified economics both sides, no fast tier
     // attached. The SAME ProjectionConfig{} constant that project_listed_schedule
     // authored the persisted projected_schedule marks through governs this replay's
-    // cold seed â€” one config drives BOTH cold routes (execution AND analytic), so the
+    // cold seed — one config drives BOTH cold routes (execution AND analytic), so the
     // persisted marks and the marks this replay recomputes cannot silently drift (the
     // I1 root cause: two hand-maintained copies). `analytic` equals RunConfig::price's
     // default (true), so setting it explicitly is economically a no-op that removes the
@@ -919,7 +919,7 @@ Status run_projected_backtest_command(const fs::path &run_dir, const fs::path &s
     config.query_pricing_tier = QueryPricingTier::RepresentativeFast;
     config.price.query_execution = QueryExecution::Configured;
     // Say so, every time. This route has a diagnosed accuracy gap (see the doc block),
-    // and it used to be the silent default â€” a caller could take its nav for the
+    // and it used to be the silent default — a caller could take its nav for the
     // canonical one with nothing in the output to suggest otherwise. The printed
     // `[configured]` tag alone did not carry that meaning to anyone who had not read
     // the source.
@@ -934,33 +934,33 @@ Status run_projected_backtest_command(const fs::path &run_dir, const fs::path &s
   // `observed` (there is nothing to stage before the run produces the rows); the
   // section itself is still hand-built from this arena by the unchanged
   // build_mark_divergence_section, so the emitted artifact's construction is
-  // untouched by T5 â€” only its upstream row source moved.
+  // untouched by T5 — only its upstream row source moved.
   auto divergence_arena = std::make_shared<MarkDivergenceArena>();
-  // The observer's sink â€” now the SOLE mark-divergence source, filled only by the
+  // The observer's sink — now the SOLE mark-divergence source, filled only by the
   // priced run's step_observer. Declared out here because both it and `schedule`
   // are borrowed by the observer and must outlive the run_backtest call that
   // consumes it.
   std::vector<ListedMarkDivergenceRow> observed;
-  // Callback count for the observer-coverage gate after the priced run â€” the half of
+  // Callback count for the observer-coverage gate after the priced run — the half of
   // the evidence-channel contract that `all_rolls_consumed()` structurally cannot
   // supply (see the two-gate comment at the priced run). A DEDICATED counter, not a
   // read-back of the `divergence_replay` phase's count: `PhaseTimer::phases()` does
   // expose one, but that phase list is held byte-stable for the `diagnostics`
   // ARTIFACT, so keying a fail-closed correctness gate off a phase NAME would let a
-  // future rename there silently disarm it. Same lifetime story as `observed` â€” the
+  // future rename there silently disarm it. Same lifetime story as `observed` — the
   // wrapper borrows it and both outlive the run_backtest call.
   std::size_t observer_calls = 0u;
   if (!skip_divergence) {
     // `schedule` is the very object ListedDispersionStrategy::create copies below,
     // so the observer's schedule and the strategy's are value-equal by construction
-    // â€” which is the invariant make_mark_divergence_observer's two fail-closed
+    // — which is the invariant make_mark_divergence_observer's two fail-closed
     // guards (roll cursor, valuation timestamp) rest on.
     //
     // Wrapped, not assigned directly, purely to keep the `divergence_replay`
     // diagnostics phase measuring something real: it now accumulates the
     // observer-callback time, one add per observed step, so its count still equals
     // the session count the shadow-replay era recorded. The wrapper is pure
-    // measurement â€” it forwards the event and the Status unchanged, so a
+    // measurement — it forwards the event and the Status unchanged, so a
     // fail-closed guard inside the observer still aborts the run through
     // run_backtest's ATX_TRY_VOID exactly as it would unwrapped. The inner
     // observer is captured BY VALUE so the wrapper owns it; `timer` is a local of
@@ -968,7 +968,7 @@ Status run_projected_backtest_command(const fs::path &run_dir, const fs::path &s
     //
     // The wrapper is ALSO where collection coverage is witnessed: `observer_calls` is
     // bumped in lockstep with the phase's unit count, so the two can never disagree.
-    // Counting here rather than inside make_mark_divergence_observer is deliberate â€”
+    // Counting here rather than inside make_mark_divergence_observer is deliberate —
     // this is the site that is conditional, so it is the site whose absence has to be
     // observable.
     config.step_observer = [&timer, &observer_calls,
@@ -1046,30 +1046,30 @@ Status run_projected_backtest_command(const fs::path &run_dir, const fs::path &s
     }
   }
 #endif
-  // EVIDENCE CHANNEL FOR THE ZERO-DIVERGENCE CLAIM â€” TWO GATES, ONE CONTRACT.
+  // EVIDENCE CHANNEL FOR THE ZERO-DIVERGENCE CLAIM — TWO GATES, ONE CONTRACT.
   // An empty `mark_divergence` section must mean "every roll fired and none diverged",
   // never "nothing was looking". It takes BOTH checks below to say that, and neither
   // one alone is sufficient:
   //
-  //   (1) ROLL COVERAGE â€” `all_rolls_consumed()`, carried from the deleted shadow
+  //   (1) ROLL COVERAGE — `all_rolls_consumed()`, carried from the deleted shadow
   //       replay's post-loop gate (the message differs because the subject does: one
   //       run, not a replay). It interrogates the priced STRATEGY: every scheduled
   //       roll actually fired, so no roll went unexamined by the object the observer
   //       reads.
-  //   (2) COLLECTION COVERAGE â€” `observer_calls == clock.size()`. It interrogates the
+  //   (2) COLLECTION COVERAGE — `observer_calls == clock.size()`. It interrogates the
   //       observer WRAPPER: the observer was installed and fired on every session.
   //
   // (2) exists because (1) structurally cannot supply it. The strategy does not know
   // whether an observer was ever attached, so on its own (1) cannot distinguish "the
-  // observer ran and legitimately found zero divergences" â€” the normal, expected cold
-  // outcome â€” from "the observer was never installed, so of course the section is
+  // observer ran and legitimately found zero divergences" — the normal, expected cold
+  // outcome — from "the observer was never installed, so of course the section is
   // empty". The shadow's single gate COULD distinguish them, because the object it
   // interrogated was the object its own collection loop had just walked; moving
   // collection into `config.step_observer` split that one guarantee into two, and only
   // one of the two halves came across with the comment.
   //
   // What the pair deliberately does NOT claim: that the observer's detection logic is
-  // itself correct. That is the observer's own contract â€” its roll-cursor and
+  // itself correct. That is the observer's own contract — its roll-cursor and
   // valuation-timestamp guards fail CLOSED through run_backtest's ATX_TRY_VOID, so a
   // fired-but-misaligned observer aborts the run rather than under-reporting, and the
   // ListedDispersionPipeline observer tests pin the row content.
@@ -1088,7 +1088,7 @@ Status run_projected_backtest_command(const fs::path &run_dir, const fs::path &s
   timer.add("priced_run", priced_start, backtest.size());
 
   // Stage the observer's rows into the arena, in kMarkDivergenceCols REGISTRY
-  // ORDER â€” the same order, the same dict_intern and the same Side->u8 mapping the
+  // ORDER — the same order, the same dict_intern and the same Side->u8 mapping the
   // deleted shadow staged with, so build_mark_divergence_section (unchanged) sees a
   // bit-identical arena and the emitted section is byte-identical to the shadow era's.
   // Positional and append-only: the observer accumulates in step order and, within a
@@ -1116,9 +1116,9 @@ Status run_projected_backtest_command(const fs::path &run_dir, const fs::path &s
     // Evidence line, inherited from the deleted arbiter's verdict line. There is no
     // longer a second source to compare against, so this reports the one number a
     // reader of a stdout-only transcript still needs: how many rows the sole source
-    // produced. Zero remains legitimate on either route â€” a row exists only where
+    // produced. Zero remains legitimate on either route — a row exists only where
     // the live seed mark differs from the frozen schedule mark, so a schedule
-    // replayed on the tier that authored it reproduces its own marks â€” and it is now
+    // replayed on the tier that authored it reproduces its own marks — and it is now
     // exactly as informative as the section it describes, with no equivalence claim
     // attached to be vacuous about.
     std::printf("mark divergence rows: %llu\n", static_cast<unsigned long long>(arena.n_rows));
@@ -1126,7 +1126,7 @@ Status run_projected_backtest_command(const fs::path &run_dir, const fs::path &s
 
   // Hard cutover: the loose projected_backtest.tsv / mark_divergence.tsv result
   // files are replaced by the run.atxrun result container. The priced backtest is
-  // named for the observer's presence â€” the registry's two projected
+  // named for the observer's presence — the registry's two projected
   // variants: projected_cold (the canonical cold divergence route) or
   // projected_nodiv (--no-divergence, the bare priced run). The execution tier
   // (cold vs the diagnostic fast tier) and the requested --out name are recorded
@@ -1224,13 +1224,13 @@ Status run_projected_backtest_command(const fs::path &run_dir, const fs::path &s
 
 // runarchive dump <run_dir> <section> [--tsv]: the escape hatch. Opens
 // <run_dir>/run.atxrun and either prints a one-line section summary (default) or,
-// with --tsv, streams the section back out in a loose-TSV shape â€” columns in
+// with --tsv, streams the section back out in a loose-TSV shape — columns in
 // stored order, %.17g doubles / %lld i64 / %u u32 / decoded dict and enum
 // strings. The byte-identical legacy TSV shape holds only for the backtest-schema
 // sections (backtest / projected_cold / projected_nodiv): they reproduce
 // write_backtest_tsv byte-for-byte (date + ts_ns + the 25 registry doubles + any
 // per-signal series). Other sections (e.g. contract_marks / reconciliation) are
-// NOT byte-identical to their legacy writers â€” an NA-able F64 stored as quiet NaN
+// NOT byte-identical to their legacy writers — an NA-able F64 stored as quiet NaN
 // prints here as "nan", where those writers emit "NA".
 // stdout is switched to binary so the emitted \n line endings are not translated.
 Status runarchive_dump_command(const fs::path &run_dir, const std::string &section_name, bool tsv) {
@@ -1308,8 +1308,8 @@ Status runarchive_dump_command(const fs::path &run_dir, const std::string &secti
 // tables, and S3-T16 put those tables behind `emit_tsv_diagnostics`, which
 // defaults OFF. A default run of either therefore computes, prints its console
 // line, and leaves the run directory unchanged. That quiet default is the
-// intended behaviour â€” forcing the flag on would re-create the artifact sprawl
-// S3 removed â€” but at a terminal it is indistinguishable from a run that failed
+// intended behaviour — forcing the flag on would re-create the artifact sprawl
+// S3 removed — but at a terminal it is indistinguishable from a run that failed
 // to write something, and the operator has no way to learn the flag's name.
 //
 // So the seam says so, and does nothing else. The note is STDERR-ONLY (every
@@ -1322,7 +1322,7 @@ Status runarchive_dump_command(const fs::path &run_dir, const std::string &secti
 // read introduces no new failure mode: it happens only on the success path, and
 // both entry points strict-read this same file through this same reader before
 // doing any work (the X1 "strict typed spec" property described above), so a
-// spec that got this far parses. A read that somehow fails is swallowed â€” an
+// spec that got this far parses. A read that somehow fails is swallowed — an
 // advisory note is never worth failing a successful run over.
 void note_if_diagnostics_disabled(const fs::path &run_dir, const char *subcommand) {
   const fs::path spec_path = run_dir / "run_spec.tsv";
@@ -1359,7 +1359,7 @@ void usage() {
               "  environment variable; DISABLED (today's behaviour, byte-for-byte) if\n"
               "  neither is set. Read this before turning it on:\n"
               "    * a HIT is a median 1.274x faster than not caching (n=3, sign 3/3,\n"
-              "      p=0.125 on a one-sided sign test â€” WEAK, not a strong claim);\n"
+              "      p=0.125 on a one-sided sign test — WEAK, not a strong claim);\n"
               "    * the run that POPULATES the cache is a median 1.856x SLOWER than not\n"
               "      caching at all;\n"
               "    * peak working set on that populating run is roughly 3 GB against a\n"
@@ -1420,8 +1420,8 @@ int main(int argc, char **argv) {
   // `--cache` default: the ATX_VOL_CACHE environment variable, itself
   // defaulting to empty (disabled). An explicit `--cache` below overrides
   // either. Cache-disabled-by-default is load-bearing (Task 8 ruling): no
-  // existing invocation of this binary â€” including the controller's
-  // parity_full_run.ps1, which never passes --cache â€” may change behaviour.
+  // existing invocation of this binary — including the controller's
+  // parity_full_run.ps1, which never passes --cache — may change behaviour.
   fs::path cache = cache_dir_from_env();
   for (int i = 2; i < argc; ++i) {
     const std::string_view argument = argv[i];
@@ -1450,7 +1450,7 @@ int main(int argc, char **argv) {
       return 2;
     }
   }
-  // RECONCILE 1 â€” the CLI/library split, in one place. `dispersion_run.hpp` states
+  // RECONCILE 1 — the CLI/library split, in one place. `dispersion_run.hpp` states
   // the same contract entry point by entry point and is the authority; this table
   // is what makes it observable from the command line:
   //
@@ -1474,7 +1474,7 @@ int main(int argc, char **argv) {
   // bodies with NO library twin at all: S3-T17 deleted the three that existed
   // (`dispersion_build_schedule`, `dispersion_run_backtest`, `dispersion_verify`)
   // rather than dispatch into them, because these bodies are already the
-  // collapsed form â€” each is a composition of named library seams
+  // collapsed form — each is a composition of named library seams
   // (`build_listed_dispersion_schedule_audited`, `make_listed_replay_run_config`,
   // `reconcile_listed_schedule`, `RunDir::write_run_archive`, `RunDir::verify`)
   // and the twins had drifted away from them. See the seam contract at the top of
@@ -1491,7 +1491,7 @@ int main(int argc, char **argv) {
   } else if (command == "run-projected-backtest" && !run.empty()) {
     status = run_projected_backtest_command(
         run, schedule.empty() ? fs::path("trade_schedule.tsv") : schedule,
-        // Default `cold`, not `configured` â€” the diagnostic route is both wrong on this
+        // Default `cold`, not `configured` — the diagnostic route is both wrong on this
         // book and ~21x slower. Rationale in run_projected_backtest_command's doc block.
         execution.empty() ? std::string("cold") : execution,
         out.empty() ? fs::path("projected_backtest.tsv") : out, no_divergence);
