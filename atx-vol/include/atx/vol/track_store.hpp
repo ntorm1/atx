@@ -202,10 +202,7 @@ private:
 // files would land well under 256MB. `should_flush_batch` fixes this by
 // converting the raw running total into an ESTIMATED COMPRESSED size via
 // `kEstimatedZstdCompressionRatio` before comparing it against the MIDDLE of
-// the target window, `kTargetBatchBytesCompressedMid` (384MB) -- anchoring on
-// the middle rather than either edge gives a ratio-estimation error ~128MB of
-// headroom in EITHER direction before a real batch drifts outside [256,
-// 512]MB.
+// the target window, `kTargetBatchBytesCompressedMid` (384MB).
 //
 // `kEstimatedZstdCompressionRatio` provenance: measured 2026-08-08 against
 // schema v1's exact 33-column layout -- 20 distinct 64-hex-char track keys
@@ -220,13 +217,30 @@ private:
 // (one row group, `parquet::Compression::ZSTD`, default level). Measured:
 // manual raw-byte estimate 12,800,000 B, actual compressed file size
 // 11,513,317 B, ratio 0.8995 -- rounded to the (still-conservative, i.e. an
-// even-worse-than-measured-compression) 0.90 used below. Because this is an
-// upper bound on the real ratio (not real production data), a batch is
-// expected to land AT OR BELOW the 384MB middle target in practice, not
-// exactly at it -- see track_store_test.cpp's `TrackStoreSizingTest` for the
-// boundary-logic unit test and the D2 fix report for the full measurement
-// methodology. Re-measure and update this constant if schema v1's column
-// count/types ever change.
+// even-worse-than-measured-compression) 0.90 used below.
+//
+// TASK E3 UPDATE (2026-08-09) -- the "~128MB of headroom in either direction"
+// claim this comment used to make above is KNOWN FALSE for real data and has
+// been removed rather than left to mislead. E3 wrote one real (not
+// synthetic-uniform) BacktestResult-shaped batch -- an actually-solved
+// autocorrelated NAV/PnL/greeks series, replicated across 20 track keys,
+// through the real TrackStore::write_staging + compact() path -- and
+// measured a REAL ratio of 0.6487 (raw 1,248,000 B -> compressed 809,522 B),
+// well below the 0.90 synthetic-worst-case estimate above. At the measured
+// REAL ratio, `should_flush_batch` would flush a raw batch at the 384MB
+// mid-target's raw-equivalent (~426.7MB raw, since 0.90 was calibrated
+// assuming that raw size compresses to 384MB) down to an ACTUAL compressed
+// size of only ~277MB (426.7MB x 0.6487) -- a mere ~21MB above the 256MB
+// floor of the [256, 512]MB target window, not the ~128MB of headroom this
+// comment used to claim. Recalibrating `kEstimatedZstdCompressionRatio`
+// itself to the measured real ratio is DEFERRED (not done in this task --
+// see task-E3-report.md Sec 8 for why, and for the sample-size caveat on the
+// 0.6487 measurement itself: 20 keys derived from one real solved run, not
+// 20 independently-solved runs). Re-measure and update this constant (and
+// this comment) if schema v1's column count/types ever change, and revisit
+// the recalibration question at that time -- see track_store_test.cpp's
+// `TrackStoreSizingTest` for the boundary-logic unit test and the D2 fix
+// report for the original synthetic-measurement methodology.
 namespace detail {
 
 inline constexpr double kEstimatedZstdCompressionRatio = 0.90;

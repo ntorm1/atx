@@ -85,12 +85,39 @@ namespace atx::vol {
 //   catalogued as a separate, non-economic phenomenon ("wave-1 pricing/
 //   greeks drift ... remains visible on the listed route, re-measured
 //   separately"). It is NOT attributable to any change landed during THIS
-//   sprint: Task A3 proved its own default-flip change bit-identical on this
-//   exact corpus (before/after), and no other sprint commit touches this
-//   corpus's economics (the one candidate, 5292cae's
-//   `apply_to_financing` -> `flat_r` routing fix, is inert here because
-//   `bt-sota-baseline/run_spec.tsv` never sets `rate_applies_to_financing` --
-//   confirmed by inspection, matching 5292cae's own commit message).
+//   sprint. Every sprint commit that could plausibly touch this corpus's
+//   economics is accounted for:
+//
+//     - A3 (RunConfig.reconcile_nav/book_entry_fill_slippage default flips)
+//       proved its OWN change bit-identical before/after on this exact
+//       corpus (real data, same CLI, same regime line, byte-for-byte).
+//     - E1 (5292cae, `apply_to_financing` -> `FinancingConfig::flat_r`
+//       routing fix) is inert here: `bt-sota-baseline/run_spec.tsv` never
+//       sets `rate_applies_to_financing` (confirmed by inspection), matching
+//       5292cae's own commit message's claim.
+//     - A1 (a381df7, swap fixing-cadence guard) and A2 (9fc8e7a, RollAtHorizon
+//       no-trade-step close) both landed BEFORE A3's own baseline measurement
+//       (commit 76411e0, the "before" tip A3 measured against) -- so A3's
+//       bit-identity check never independently covered them, and they need
+//       their own argument, not a ride on A3's. Verified by reading the code
+//       rather than assuming: A1 touches `strategy.hpp`/`strategy.cpp`/
+//       `backtest.cpp`'s swap-fixing accrual loop, which only executes for a
+//       lot carrying a populated `StrategySpec::swap_legs` -- and
+//       `swap_legs` is populated and consumed nowhere but `strategy.cpp`'s
+//       generic `DeclarativeStrategy`/`StrategySpec` interpreter (grep:
+//       `swap_legs` appears in exactly one .cpp in the whole tree). A2
+//       touches `strategy.cpp`'s `LifecycleSpec::Holding::RollAtHorizon`
+//       branch, that same generic interpreter. The golden 82-session replay
+//       does not go through either: `dispersion_run.cpp` (the surface-only
+//       projected backtest's own orchestrator, line ~1114) constructs a
+//       `DispersionStrategy` directly (`dispersion_strategy.cpp`) -- a
+//       bespoke `IStrategy` built straight on `build_dispersion_book`, which
+//       never references `StrategySpec`, `LifecycleSpec::Holding`, or
+//       `swap_legs` at all (its one incidental mention of the string
+//       "RollAtHorizon" is a doc comment about an unrelated synthetic-expiry
+//       invariant, not a call into A2's code). A1's and A2's touched surface
+//       is therefore structurally unreachable from this corpus's code path,
+//       independent of whatever A3's bit-identity check did or didn't cover.
 //
 //   CONCLUSION: this is a literal-transcription correction (D1 typed in the
 //   wrong, already-superseded number), NOT a sprint economics change --

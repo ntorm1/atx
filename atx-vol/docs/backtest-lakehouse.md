@@ -299,7 +299,7 @@ non-zero exit code naming what failed.
 `track_key.hpp`) pairs one literal against `kBacktestEconomicsRev`:
 
 ```cpp
-inline constexpr double kGolden82SessionFinalNav = 247.4065016443293;
+inline constexpr double kGolden82SessionFinalNav = 24740.624124996561;
 inline constexpr int kGolden82SessionEconomicsRev = 1;
 static_assert(kGolden82SessionEconomicsRev == kBacktestEconomicsRev, /* ... */);
 ```
@@ -320,16 +320,31 @@ Two-layer enforcement:
    pipeline, is out of this task's scope** (this doc does not claim it is
    wired) — the sprint's CI gate for this tripwire lands in Task E3.
 
-**Known open discrepancy, stated rather than hidden.** A prior task in this
-sprint (A3) found that `247.4065016443293` predates an earlier (pre-sprint)
-dispersion sizing-unit migration and, reproduced directly against the real
-82-session corpus on that task's machine, measured the corpus's actual
-current NAV as `24740.624124996561` — roughly 100× the literal above. That
-finding was out of A3's scope to fix and is repeated here so a reader of this
-doc, and whoever wires Task E3's CI gate, has it in front of them rather than
-discovering it independently: **the literal `golden_pin.hpp` ships today may
-need re-measurement and re-pinning before E3 can rely on it**, independent of
-anything in this task.
+**Known discrepancy — RESOLVED by Task E3.** This doc originally disclosed an
+open discrepancy here: Task A3 had measured the real 82-session corpus's
+current NAV as `24740.624124996561`, not an exact ×100 of the
+then-checked-in pin `247.4065016443293`. Task E3 root-caused and fixed it
+(see `golden_pin.hpp`'s own evidence-chain comment for the full git-forensics
+chain): `247.4065016443293` was a **doubly-stale** figure — Task D1 (this
+sprint) copied it from old sprint prose that predates a re-pin event
+(commit `2de65c7`, 2026-07-25) that had *already* happened, and already been
+corrected on `main`, *before this sprint even started*. `2de65c7` itself
+first corrected the M2-era figure to `247.40624124981315`, then applied the
+E1 sizing migration's exact ×100 rescale to `24740.624124981368` — D1 never
+reproduced any of this against the actual corpus before typing the pin in.
+E3 re-measured directly and got `24740.624124996561`, bit-for-bit identical
+to A3's independent measurement (the tiny residual against `2de65c7`'s
+`24740.624124981368` is ~6.1e-13 relative — ordinary non-economic
+pricing-path drift, not a discrepancy). `kGolden82SessionFinalNav` is
+corrected to `24740.624124996561` above. **No `kBacktestEconomicsRev` bump**:
+nothing landed in this sprint moved this corpus's NAV (A3's own default-flip
+change was proven bit-identical before/after on this exact corpus; the one
+other sprint-landed economics-adjacent change, E1's `apply_to_financing`→
+`flat_r` routing fix, is inert here because this corpus's `run_spec.tsv`
+never sets `rate_applies_to_financing`; and A1/A2, though they landed before
+A3's baseline measurement, are structurally unreachable from this corpus's
+`DispersionStrategy` code path — see `golden_pin.hpp` for the verification).
+This was a literal-transcription bug, not an economics change.
 
 ## Python / DuckDB query cookbook (`atxpy.tracks`, `pip install atxpy[lakehouse]`)
 
