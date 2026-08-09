@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import astuple, dataclass
 
+import pandas as pd
+
 from .connection import DuckDBStore
 from .industry_templates import refresh_entity_industry_templates
 
@@ -1154,15 +1156,43 @@ def _insert_derived_reit_statement_points(store: DuckDBStore) -> int:
     return after - before
 
 
-def refresh_fundamental_statement_points(store: DuckDBStore) -> int:
-    """Refresh normalized statement facts from mapped SEC fact revisions."""
+def refresh_fundamental_statement_points(
+    store: DuckDBStore,
+    concepts: tuple[str, ...] | None = None,
+) -> int:
+    """Refresh mapped statement facts, optionally for selected raw concepts."""
 
     seed_fundamental_statement_map(store)
-    refresh_entity_industry_templates(store)
-    with store.transaction():
-        store.con.execute("DELETE FROM fundamental_statement_points")
-        store.con.execute(
-            """
+    selected = tuple(sorted({str(concept) for concept in concepts or () if concept}))
+    registered = False
+    concept_join = ""
+    if selected:
+        store.con.register(
+            "fundamental_statement_concept_filter",
+            pd.DataFrame({"concept": selected}),
+        )
+        registered = True
+        concept_join = (
+            "JOIN fundamental_statement_concept_filter cf "
+            "ON cf.concept = r.concept"
+        )
+    else:
+        refresh_entity_industry_templates(store)
+    try:
+        with store.transaction():
+            if selected:
+                store.con.execute(
+                    """
+                    DELETE FROM fundamental_statement_points
+                    WHERE concept IN (
+                        SELECT concept FROM fundamental_statement_concept_filter
+                    )
+                    """
+                )
+            else:
+                store.con.execute("DELETE FROM fundamental_statement_points")
+            store.con.execute(
+                f"""
             INSERT INTO fundamental_statement_points (
                 statement_point_id,
                 fact_revision_id,
@@ -1294,6 +1324,7 @@ def refresh_fundamental_statement_points(store: DuckDBStore) -> int:
                             r.fact_revision_id
                     ) AS canonical_rank
                 FROM fundamental_fact_revisions r
+                {concept_join}
                 LEFT JOIN security_industry_templates it
                   ON it.security_id = r.security_id
                 JOIN fundamental_statement_map m
@@ -1390,8 +1421,12 @@ def refresh_fundamental_statement_points(store: DuckDBStore) -> int:
                 source_loaded_at
             FROM sequenced
             """
-        )
-        _insert_derived_reit_statement_points(store)
+            )
+            if not selected:
+                _insert_derived_reit_statement_points(store)
+    finally:
+        if registered:
+            store.con.unregister("fundamental_statement_concept_filter")
     return int(store.con.execute("SELECT count(*) FROM fundamental_statement_points").fetchone()[0])
 
 
@@ -1624,13 +1659,34 @@ def refresh_fundamental_periods(store: DuckDBStore) -> int:
     return int(store.con.execute("SELECT count(*) FROM fundamental_periods").fetchone()[0])
 
 
-def refresh_fundamental_ttm_points(store: DuckDBStore) -> int:
-    """Refresh PIT-safe trailing-twelve-month statement values."""
+def refresh_fundamental_ttm_points(
+    store: DuckDBStore,
+    canonical_metrics: tuple[str, ...] | None = None,
+) -> int:
+    """Refresh PIT-safe trailing-twelve-month statement values.
+
+    ``canonical_metrics`` scopes both the delete and the source scan. This keeps a
+    single-concept activation from rewriting the full multi-million-row TTM surface.
+    Omitting it preserves the original full-refresh behavior.
+    """
+
+    selected = tuple(sorted({str(metric) for metric in canonical_metrics or () if metric}))
+    placeholders = ", ".join("?" for _ in selected)
+    metric_filter_sql = (
+        f"AND canonical_metric IN ({placeholders})" if selected else ""
+    )
 
     with store.transaction():
-        store.con.execute("DELETE FROM fundamental_ttm_points")
+        if selected:
+            store.con.execute(
+                f"DELETE FROM fundamental_ttm_points "
+                f"WHERE canonical_metric IN ({placeholders})",
+                list(selected),
+            )
+        else:
+            store.con.execute("DELETE FROM fundamental_ttm_points")
         store.con.execute(
-            """
+            f"""
             INSERT INTO fundamental_ttm_points (
                 ttm_point_id,
                 ttm_revision_group_id,
@@ -1703,6 +1759,7 @@ def refresh_fundamental_ttm_points(store: DuckDBStore) -> int:
                   AND period_start IS NOT NULL
                   AND period_end IS NOT NULL
                   AND value IS NOT NULL
+                  {metric_filter_sql}
             ),
             reported_quarter_points AS (
                 SELECT
@@ -1987,6 +2044,7 @@ def refresh_fundamental_ttm_points(store: DuckDBStore) -> int:
                 END AS calculation_method,
                 source_loaded_at
             FROM sequenced
-            """
+            """,
+            list(selected),
         )
     return int(store.con.execute("SELECT count(*) FROM fundamental_ttm_points").fetchone()[0])

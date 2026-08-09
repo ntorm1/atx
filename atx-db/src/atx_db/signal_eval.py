@@ -31,6 +31,13 @@ IC_HORIZONS: tuple[int, ...] = (1, 5, 10, 21, 63)
 DEFAULT_N_QUANTILES: int = 10
 SOURCE_NAME: str = "atx-db signal evaluation engine"
 DEFAULT_UNIVERSE_ID: str = "us_common_equity_liquid_v1"
+RETURN_TARGET_ADJUSTED_PRICES: str = "adjusted_prices"
+RETURN_TARGET_SURVIVORSHIP_SAFE: str = "survivorship_safe"
+DEFAULT_SURVIVORSHIP_SAFE_SOURCE: str = "atx_forward_returns_survivorship_safe_v1"
+SUPPORTED_RETURN_TARGETS: tuple[str, ...] = (
+    RETURN_TARGET_ADJUSTED_PRICES,
+    RETURN_TARGET_SURVIVORSHIP_SAFE,
+)
 
 # clause-G gated DQC check names (registered in quality_check_registry by migration 0179)
 LEAKAGE_DQC_CHECK_NAME: str = "factor_leakage_tplus0"
@@ -47,6 +54,12 @@ class IcResult:
     per_date: pd.DataFrame  # factor_id, as_of_date, horizon, rank_ic, n_names   (intermediate; not persisted)
 
 
+@dataclass(frozen=True)
+class NeutralizationResult:
+    panel: pd.DataFrame
+    diagnostics: dict[str, Any]
+
+
 _PER_DATE_COLUMNS = ["factor_id", "as_of_date", "horizon", "rank_ic", "n_names"]
 _IC_COLUMNS = [
     "factor_id",
@@ -55,6 +68,9 @@ _IC_COLUMNS = [
     "ic_std",
     "ic_information_ratio",
     "ic_tstat",
+    "hac_lags",
+    "hac_standard_error",
+    "hac_tstat",
     "sign_consistency",
     "n_dates",
     "mean_names",
@@ -143,6 +159,9 @@ _FACTOR_IC_TABLE_COLUMNS = [
     "ic_std",
     "ic_information_ratio",
     "ic_tstat",
+    "hac_lags",
+    "hac_standard_error",
+    "hac_tstat",
     "sign_consistency",
     "n_dates",
     "mean_names",
@@ -308,6 +327,29 @@ def _rank_corr(values: pd.Series, targets: pd.Series) -> tuple[float, int]:
     return float(ranked_values.corr(ranked_targets)), n_names
 
 
+def _newey_west_mean_statistics(
+    values: pd.Series,
+    *,
+    lags: int,
+) -> tuple[int, float, float]:
+    """Bartlett-kernel HAC standard error and t-statistic of a sample mean."""
+
+    array = pd.to_numeric(values, errors="coerce").dropna().to_numpy(dtype=float)
+    n_obs = len(array)
+    if n_obs < 2:
+        return 0, float("nan"), float("nan")
+    used_lags = min(max(int(lags), 0), n_obs - 1)
+    demeaned = array - float(array.mean())
+    long_run_variance = float(np.dot(demeaned, demeaned) / n_obs)
+    for lag in range(1, used_lags + 1):
+        weight = 1.0 - lag / (used_lags + 1.0)
+        autocovariance = float(np.dot(demeaned[lag:], demeaned[:-lag]) / n_obs)
+        long_run_variance += 2.0 * weight * autocovariance
+    standard_error = math.sqrt(max(long_run_variance, 0.0) / n_obs)
+    tstat = float("nan") if standard_error == 0.0 else float(array.mean()) / standard_error
+    return used_lags, standard_error, tstat
+
+
 def _empty_ic_result() -> IcResult:
     return IcResult(
         ic=pd.DataFrame(columns=_IC_COLUMNS),
@@ -333,6 +375,9 @@ def _aggregate_ic(per_date: pd.DataFrame) -> pd.DataFrame:
                     "ic_std": float("nan"),
                     "ic_information_ratio": float("nan"),
                     "ic_tstat": float("nan"),
+                    "hac_lags": 0,
+                    "hac_standard_error": float("nan"),
+                    "hac_tstat": float("nan"),
                     "sign_consistency": float("nan"),
                     "n_dates": 0,
                     "mean_names": float("nan"),
@@ -350,6 +395,11 @@ def _aggregate_ic(per_date: pd.DataFrame) -> pd.DataFrame:
             if not math.isnan(ic_information_ratio)
             else float("nan")
         )
+        requested_hac_lags = max(1, math.ceil(int(horizon) / 21))
+        hac_lags, hac_standard_error, hac_tstat = _newey_west_mean_statistics(
+            valid.sort_values("as_of_date", kind="stable")["rank_ic"],
+            lags=requested_hac_lags,
+        )
         sign_target = np.sign(mean_rank_ic)
         sign_consistency = float((np.sign(valid["rank_ic"]) == sign_target).mean())
         mean_names = float(valid["n_names"].mean())
@@ -361,6 +411,9 @@ def _aggregate_ic(per_date: pd.DataFrame) -> pd.DataFrame:
                 "ic_std": ic_std,
                 "ic_information_ratio": ic_information_ratio,
                 "ic_tstat": ic_tstat,
+                "hac_lags": hac_lags,
+                "hac_standard_error": hac_standard_error,
+                "hac_tstat": hac_tstat,
                 "sign_consistency": sign_consistency,
                 "n_dates": n_dates,
                 "mean_names": mean_names,
@@ -1049,6 +1102,219 @@ def load_panel_for_eval(
             store.con.unregister("signal_eval_factor_filter")
 
 
+def load_pit_classifications_for_panel(
+    store,
+    panel: pd.DataFrame,
+    *,
+    taxonomy_code: str = "FAMA_FRENCH_12",
+) -> pd.DataFrame:
+    """Resolve one knowledge-date-safe classification per panel security/date.
+
+    The join enforces both effective-time validity and warehouse knowledge time. A current
+    classification snapshot therefore cannot leak backward into a historical evaluation.
+    """
+
+    columns = ["security_id", "as_of_date", "classification_group", "classification_available_at"]
+    if panel is None or panel.empty:
+        return pd.DataFrame(columns=columns)
+    keys = panel.loc[:, ["security_id", "as_of_date"]].drop_duplicates().copy()
+    keys["as_of_date"] = pd.to_datetime(keys["as_of_date"]).dt.date
+    store.con.register("signal_eval_classification_keys", keys)
+    try:
+        return store.con.execute(
+            """
+            SELECT
+                k.security_id,
+                k.as_of_date,
+                ec.node_code AS classification_group,
+                ec.available_at AS classification_available_at
+            FROM signal_eval_classification_keys k
+            JOIN entity_classification ec
+              ON ec.security_id = k.security_id
+             AND ec.valid_from <= k.as_of_date
+             AND coalesce(ec.valid_to, DATE '9999-12-31') > k.as_of_date
+             AND ec.as_of_date <= k.as_of_date
+             AND ec.available_at < CAST(k.as_of_date AS TIMESTAMP) + INTERVAL '1 day'
+            JOIN taxonomy t
+              ON t.taxonomy_id = ec.taxonomy_id
+             AND t.code = ?
+            QUALIFY row_number() OVER (
+                PARTITION BY k.security_id, k.as_of_date
+                ORDER BY
+                    ec.available_at DESC,
+                    ec.as_of_date DESC,
+                    ec.valid_from DESC,
+                    ec.source_loaded_at DESC,
+                    ec.classification_id DESC
+            ) = 1
+            ORDER BY k.as_of_date, k.security_id
+            """,
+            [taxonomy_code],
+        ).df()
+    finally:
+        store.con.unregister("signal_eval_classification_keys")
+
+
+def neutralize_panel_by_industry(
+    panel: pd.DataFrame,
+    classifications: pd.DataFrame,
+    *,
+    taxonomy_code: str = "FAMA_FRENCH_12",
+    min_group_size: int = 5,
+    min_coverage: float = 0.80,
+    strict: bool = True,
+) -> NeutralizationResult:
+    """Replace raw values with within-industry percentile ranks centered on zero.
+
+    Unclassified rows and factor/date/industry groups smaller than ``min_group_size`` are
+    excluded. In strict mode the usable-row fraction must meet ``min_coverage``; this prevents a
+    nominally industry-neutral run from silently evaluating a small, selected subset.
+    """
+
+    required_panel = {"security_id", "as_of_date", "factor_id", "value"}
+    missing_panel = sorted(required_panel.difference(panel.columns))
+    if missing_panel:
+        raise ValueError(f"panel is missing required columns: {missing_panel}")
+    required_classifications = {"security_id", "as_of_date", "classification_group"}
+    missing_classifications = sorted(required_classifications.difference(classifications.columns))
+    if missing_classifications:
+        raise ValueError(
+            f"classifications are missing required columns: {missing_classifications}"
+        )
+    if min_group_size < 2:
+        raise ValueError("min_group_size must be at least 2")
+    if not 0.0 <= min_coverage <= 1.0:
+        raise ValueError("min_coverage must be between 0 and 1")
+
+    work = panel.copy()
+    work["as_of_date"] = pd.to_datetime(work["as_of_date"]).dt.normalize()
+    groups = classifications.loc[
+        :, ["security_id", "as_of_date", "classification_group"]
+    ].copy()
+    groups["as_of_date"] = pd.to_datetime(groups["as_of_date"]).dt.normalize()
+    groups = groups.drop_duplicates(["security_id", "as_of_date"], keep="last")
+    merged = work.merge(groups, on=["security_id", "as_of_date"], how="left")
+
+    eligible = merged["value"].notna()
+    input_rows = int(eligible.sum())
+    classified_rows = int((eligible & merged["classification_group"].notna()).sum())
+    group_keys = ["factor_id", "as_of_date", "classification_group"]
+    merged["classification_group_size"] = merged.groupby(
+        group_keys, dropna=False
+    )["value"].transform("count")
+    usable = (
+        eligible
+        & merged["classification_group"].notna()
+        & (merged["classification_group_size"] >= min_group_size)
+    )
+    usable_rows = int(usable.sum())
+    usable_coverage = float(usable_rows / input_rows) if input_rows else 0.0
+    diagnostics = {
+        "taxonomy_code": taxonomy_code,
+        "min_group_size": int(min_group_size),
+        "min_coverage": float(min_coverage),
+        "input_rows": input_rows,
+        "classified_rows": classified_rows,
+        "usable_rows": usable_rows,
+        "classification_coverage": float(classified_rows / input_rows) if input_rows else 0.0,
+        "usable_coverage": usable_coverage,
+    }
+    if strict and usable_coverage < min_coverage:
+        raise ValueError(
+            "PIT industry-neutralization coverage is "
+            f"{usable_coverage:.2%}, below the required {min_coverage:.2%} "
+            f"for taxonomy {taxonomy_code}"
+        )
+
+    out = merged.loc[usable].copy()
+    if out.empty:
+        return NeutralizationResult(panel=work.iloc[0:0].copy(), diagnostics=diagnostics)
+    within_group_rank = out.groupby(group_keys, dropna=False)["value"].rank(
+        method="average"
+    )
+    within_group_size = out.groupby(group_keys, dropna=False)["value"].transform("count")
+    out["value"] = (within_group_rank - 0.5) / within_group_size - 0.5
+    out = out.drop(columns=["classification_group_size"])
+    out = out.sort_values(
+        ["factor_id", "as_of_date", "security_id"], kind="stable"
+    ).reset_index(drop=True)
+    return NeutralizationResult(panel=out, diagnostics=diagnostics)
+
+
+def load_survivorship_safe_forward_returns(
+    store,
+    panel: pd.DataFrame,
+    *,
+    horizons: Iterable[int],
+    source: str = DEFAULT_SURVIVORSHIP_SAFE_SOURCE,
+) -> pd.DataFrame:
+    """Read the governed survivorship-safe target at only the requested formation keys."""
+
+    columns = ["security_id", "as_of_date", "horizon", "forward_return"]
+    horizon_list = tuple(dict.fromkeys(int(horizon) for horizon in horizons))
+    if not horizon_list or any(horizon < 1 for horizon in horizon_list):
+        raise ValueError("horizons must contain positive integers")
+    if panel is None or panel.empty:
+        return pd.DataFrame(columns=columns)
+    if not _relation_row_count(store, "forward_returns_survivorship_safe"):
+        raise ValueError(
+            "survivorship-safe return target requested, but "
+            "forward_returns_survivorship_safe is empty"
+        )
+
+    keys = panel.loc[:, ["security_id", "as_of_date"]].drop_duplicates().copy()
+    keys["as_of_date"] = pd.to_datetime(keys["as_of_date"]).dt.date
+    store.con.register("signal_eval_survivorship_keys", keys)
+    store.con.register(
+        "signal_eval_survivorship_horizons",
+        pd.DataFrame({"horizon": list(horizon_list)}),
+    )
+    try:
+        result = store.con.execute(
+            """
+            SELECT
+                f.security_id,
+                f.as_of_date,
+                f.horizon_days AS horizon,
+                f.forward_return
+            FROM forward_returns_survivorship_safe f
+            JOIN signal_eval_survivorship_keys k
+              ON k.security_id = f.security_id
+             AND k.as_of_date = f.as_of_date
+            JOIN signal_eval_survivorship_horizons h
+              ON h.horizon = f.horizon_days
+            WHERE f.source = ?
+              AND f.is_latest_revision = true
+              AND f.forward_return IS NOT NULL
+            QUALIFY row_number() OVER (
+                PARTITION BY f.security_id, f.as_of_date, f.horizon_days
+                ORDER BY f.available_at DESC, f.source_loaded_at DESC, f.forward_return_id DESC
+            ) = 1
+            ORDER BY f.security_id, f.as_of_date, f.horizon_days
+            """,
+            [source],
+        ).df()
+    finally:
+        store.con.unregister("signal_eval_survivorship_horizons")
+        store.con.unregister("signal_eval_survivorship_keys")
+    if result.empty:
+        raise ValueError(
+            "survivorship-safe return target requested, but no rows matched the panel, "
+            f"horizons, and source {source!r}"
+        )
+    return result
+
+
+def _manifest_params_json(
+    base: dict[str, Any],
+    evaluation_params: dict[str, Any] | None,
+) -> str:
+    params = dict(base)
+    if evaluation_params:
+        params.update(evaluation_params)
+    return json_dumps(params)
+
+
 def _hash_eval_id(prefix: str, *parts: object) -> str:
     """Deterministic id hash, mirroring ``db.alpha_research._hash_id``."""
 
@@ -1065,6 +1331,7 @@ def _build_ic_manifest(
     n_quantiles: int,
     source: str,
     run_id: str | None,
+    evaluation_params: dict[str, Any] | None = None,
 ) -> pd.DataFrame:
     """One ``factor_eval_manifest`` row per factor scored by ``compute_information_coefficient``.
 
@@ -1076,7 +1343,10 @@ def _build_ic_manifest(
     if ic.empty:
         return pd.DataFrame(columns=_FACTOR_EVAL_MANIFEST_COLUMNS)
 
-    params_json = json_dumps({"horizons": list(horizons), "n_quantiles": n_quantiles})
+    params_json = _manifest_params_json(
+        {"horizons": list(horizons), "n_quantiles": n_quantiles},
+        evaluation_params,
+    )
 
     if panel.empty:
         panel_stats = pd.DataFrame(
@@ -1211,12 +1481,16 @@ def _build_quantile_manifest(
     n_quantiles: int,
     source: str,
     run_id: str | None,
+    evaluation_params: dict[str, Any] | None = None,
 ) -> pd.DataFrame:
     """One ``factor_eval_manifest`` row per factor scored by ``compute_quantile_spread``."""
 
     if quantile_spread.empty:
         return pd.DataFrame(columns=_FACTOR_EVAL_MANIFEST_COLUMNS)
-    params_json = json_dumps({"horizons": list(horizons), "n_quantiles": n_quantiles})
+    params_json = _manifest_params_json(
+        {"horizons": list(horizons), "n_quantiles": n_quantiles},
+        evaluation_params,
+    )
     return _build_factor_manifest_rows(
         quantile_spread["factor_id"].unique(),
         _panel_stats_by_factor(panel),
@@ -1238,12 +1512,15 @@ def _build_turnover_manifest(
     n_quantiles: int,
     source: str,
     run_id: str | None,
+    evaluation_params: dict[str, Any] | None = None,
 ) -> pd.DataFrame:
     """One ``factor_eval_manifest`` row per factor scored by ``compute_turnover``."""
 
     if turnover.empty:
         return pd.DataFrame(columns=_FACTOR_EVAL_MANIFEST_COLUMNS)
-    params_json = json_dumps({"n_quantiles": n_quantiles})
+    params_json = _manifest_params_json(
+        {"n_quantiles": n_quantiles}, evaluation_params
+    )
     return _build_factor_manifest_rows(
         turnover["factor_id"].unique(),
         _panel_stats_by_factor(panel),
@@ -1264,6 +1541,7 @@ def _build_correlation_manifest(
     universe_id: str,
     source: str,
     run_id: str | None,
+    evaluation_params: dict[str, Any] | None = None,
 ) -> pd.DataFrame:
     """One ``factor_eval_manifest`` row per factor scored by ``compute_factor_correlation``.
 
@@ -1274,7 +1552,7 @@ def _build_correlation_manifest(
     if correlation.empty:
         return pd.DataFrame(columns=_FACTOR_EVAL_MANIFEST_COLUMNS)
     factor_ids = set(correlation["factor_id_a"].unique()) | set(correlation["factor_id_b"].unique())
-    params_json = json_dumps({})
+    params_json = _manifest_params_json({}, evaluation_params)
     return _build_factor_manifest_rows(
         factor_ids,
         _panel_stats_by_factor(panel),
@@ -1295,12 +1573,13 @@ def _build_breadth_manifest(
     universe_id: str,
     source: str,
     run_id: str | None,
+    evaluation_params: dict[str, Any] | None = None,
 ) -> pd.DataFrame:
     """One ``factor_eval_manifest`` row per factor scored by ``compute_breadth``."""
 
     if breadth.empty:
         return pd.DataFrame(columns=_FACTOR_EVAL_MANIFEST_COLUMNS)
-    params_json = json_dumps({})
+    params_json = _manifest_params_json({}, evaluation_params)
     return _build_factor_manifest_rows(
         breadth["factor_id"].unique(),
         _panel_stats_by_factor(panel),
@@ -1588,50 +1867,200 @@ def persist_breadth(
     }
 
 
-def _derive_forward_returns_from_prices(store, *, horizons: tuple[int, ...]) -> pd.DataFrame:
-    prices = store.con.execute(
-        """
-        SELECT security_id, trade_date AS as_of_date, close
-        FROM equity_daily_bars
-        WHERE close IS NOT NULL
-        ORDER BY security_id, trade_date
-        """
-    ).df()
-    return compute_forward_returns(prices, horizons=horizons)
+def _derive_forward_returns_from_prices(
+    store,
+    *,
+    horizons: tuple[int, ...],
+    panel: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """Build split/dividend-adjusted targets at the panel's formation dates.
+
+    The landed feed's ``adjusted_close`` is not reliable, so the canonical
+    warehouse convention is raw close multiplied by all *future* positive
+    ``split_factor`` values.  Computing both endpoints on that basis makes
+    factors after the return horizon cancel and correctly retains actions
+    inside the horizon.  DuckDB computes the full per-security windows, then
+    emits only keys present in ``panel``; this avoids materializing a
+    ``bars x horizons`` pandas frame for every security in the warehouse.
+    """
+
+    horizons = tuple(dict.fromkeys(int(horizon) for horizon in horizons))
+    if not horizons or any(horizon < 1 for horizon in horizons):
+        raise ValueError("horizons must contain positive integers")
+
+    registered = False
+    key_join = ""
+    bar_scope_join = ""
+    if panel is not None:
+        if panel.empty:
+            return pd.DataFrame(
+                columns=["security_id", "as_of_date", "horizon", "forward_return"]
+            )
+        keys = panel.loc[:, ["security_id", "as_of_date"]].drop_duplicates().copy()
+        keys["as_of_date"] = pd.to_datetime(keys["as_of_date"]).dt.date
+        store.con.register("signal_eval_formation_keys", keys)
+        registered = True
+        key_join = (
+            "JOIN signal_eval_formation_keys k "
+            "ON k.security_id = w.security_id AND k.as_of_date = w.as_of_date"
+        )
+        bar_scope_join = (
+            "SEMI JOIN signal_eval_formation_keys k "
+            "ON k.security_id = b.security_id"
+        )
+
+    lead_columns = ",\n".join(
+        f"lead(adjusted_close, {horizon}) OVER "
+        "(PARTITION BY security_id ORDER BY as_of_date) AS close_fwd_"
+        f"{horizon}"
+        for horizon in horizons
+    )
+    return_branches = "\nUNION ALL\n".join(
+        f"SELECT w.security_id, w.as_of_date, {horizon} AS horizon, "
+        f"w.close_fwd_{horizon} / w.adjusted_close - 1.0 AS forward_return "
+        f"FROM wide_returns w {key_join} "
+        f"WHERE w.close_fwd_{horizon} IS NOT NULL AND w.adjusted_close > 0"
+        for horizon in horizons
+    )
+    try:
+        return store.con.execute(
+            f"""
+            WITH adjusted AS (
+                SELECT
+                    b.security_id,
+                    b.trade_date AS as_of_date,
+                    b.close * coalesce(
+                        product(
+                            CASE
+                                WHEN b.split_factor IS NOT NULL AND b.split_factor > 0
+                                THEN b.split_factor
+                                ELSE 1.0
+                            END
+                        ) OVER (
+                            PARTITION BY b.security_id
+                            ORDER BY b.trade_date
+                            ROWS BETWEEN 1 FOLLOWING AND UNBOUNDED FOLLOWING
+                        ),
+                        1.0
+                    ) AS adjusted_close
+                FROM equity_daily_bars b
+                {bar_scope_join}
+                WHERE b.close IS NOT NULL AND b.close > 0
+            ),
+            wide_returns AS (
+                SELECT
+                    security_id,
+                    as_of_date,
+                    adjusted_close,
+                    {lead_columns}
+                FROM adjusted
+            )
+            {return_branches}
+            ORDER BY security_id, as_of_date, horizon
+            """
+        ).df()
+    finally:
+        if registered:
+            store.con.unregister("signal_eval_formation_keys")
 
 
 def evaluate_panel(
     store,
     *,
+    panel: pd.DataFrame | None = None,
     forward_returns: pd.DataFrame | None = None,
     n_quantiles: int = DEFAULT_N_QUANTILES,
     horizons: Iterable[int] = IC_HORIZONS,
     universe_id: str = DEFAULT_UNIVERSE_ID,
+    start_date=None,
+    end_date=None,
+    factor_ids: Iterable[str] | None = None,
+    return_target: str = RETURN_TARGET_ADJUSTED_PRICES,
+    survivorship_safe_source: str = DEFAULT_SURVIVORSHIP_SAFE_SOURCE,
+    neutralize_taxonomy: str | None = None,
+    neutralization_min_group_size: int = 5,
+    neutralization_min_coverage: float = 0.80,
     run_id: str | None = None,
 ) -> dict[str, int]:
     """Orchestrate the signal-evaluation surface: read the panel, score, persist.
 
-    Reads ``v_factor_panel`` read-only via ``load_panel_for_eval``. If ``forward_returns``
-    is not supplied, it is derived from ``equity_daily_bars`` (never re-derived from the
-    panel itself, keeping the scoring target strictly separate from factor inputs).
+    Reads ``v_factor_panel`` read-only via ``load_panel_for_eval`` unless an explicit
+    research ``panel`` is supplied. If ``forward_returns`` is not supplied, ``return_target``
+    selects split-adjusted warehouse prices or the governed survivorship-safe target at only the
+    panel's formation keys. ``neutralize_taxonomy`` optionally replaces raw values with strict,
+    point-in-time within-industry ranks; current classifications never leak into past dates.
 
     Runs and persists, in order: the IC / IC-decay surface (PF4-S1-0), the quantile/decile
     spread and turnover surfaces (PF4-S1-1), then the factor-to-factor correlation/crowding
     and per-date breadth surfaces (PF4-S1-2). Each surface writes its own
     ``factor_eval_manifest`` rows (keyed by a distinct, eval-kind-scoped ``eval_id``) plus
     its own metric table(s); the returned dict merges every surface's per-table row counts,
-    summing ``factor_eval_manifest`` across surfaces. Breadth is computed without a live
-    as-of universe-size join here (``universe_counts=None``): wiring the as-of universe
-    membership count is deferred, matching the sprint doc's note that the live
-    price x fundamental overlap is currently empty pending PF4-S4/PF4-S6; ``compute_breadth``
-    still emits ``n_names``/``n_non_null`` with ``universe_size``/``coverage_fraction`` NULL.
-    The gated leakage/coverage DQC checks are PF4-S1-3 and are not run here.
+    summing ``factor_eval_manifest`` across surfaces. Breadth uses the interval-keyed,
+    point-in-time ``universe_membership`` roster. The gated leakage/coverage DQC checks are
+    PF4-S1-3 and are not run here.
     """
 
-    horizons = tuple(horizons)
-    panel = load_panel_for_eval(store)
+    horizons = tuple(dict.fromkeys(int(horizon) for horizon in horizons))
+    if return_target not in SUPPORTED_RETURN_TARGETS:
+        raise ValueError(
+            f"return_target must be one of {SUPPORTED_RETURN_TARGETS}, got {return_target!r}"
+        )
+    if panel is None:
+        panel = load_panel_for_eval(
+            store,
+            start_date=start_date,
+            end_date=end_date,
+            factor_ids=factor_ids,
+        )
+    else:
+        required = {"security_id", "as_of_date", "factor_id", "value"}
+        missing = sorted(required.difference(panel.columns))
+        if missing:
+            raise ValueError(f"panel is missing required columns: {missing}")
+        panel = panel.copy()
+        if start_date is not None:
+            panel = panel[pd.to_datetime(panel["as_of_date"]).dt.date >= start_date]
+        if end_date is not None:
+            panel = panel[pd.to_datetime(panel["as_of_date"]).dt.date <= end_date]
+        if factor_ids:
+            factor_filter = {str(factor_id) for factor_id in factor_ids}
+            panel = panel[panel["factor_id"].astype(str).isin(factor_filter)]
+
+    evaluation_params: dict[str, Any] = {
+        "return_target": "injected" if forward_returns is not None else return_target,
+    }
+    if forward_returns is None and return_target == RETURN_TARGET_SURVIVORSHIP_SAFE:
+        evaluation_params["survivorship_safe_source"] = survivorship_safe_source
+    if neutralize_taxonomy is not None:
+        classifications = load_pit_classifications_for_panel(
+            store,
+            panel,
+            taxonomy_code=neutralize_taxonomy,
+        )
+        neutralized = neutralize_panel_by_industry(
+            panel,
+            classifications,
+            taxonomy_code=neutralize_taxonomy,
+            min_group_size=neutralization_min_group_size,
+            min_coverage=neutralization_min_coverage,
+            strict=True,
+        )
+        panel = neutralized.panel
+        evaluation_params["neutralization"] = neutralized.diagnostics
     if forward_returns is None:
-        forward_returns = _derive_forward_returns_from_prices(store, horizons=horizons)
+        if return_target == RETURN_TARGET_SURVIVORSHIP_SAFE:
+            forward_returns = load_survivorship_safe_forward_returns(
+                store,
+                panel,
+                horizons=horizons,
+                source=survivorship_safe_source,
+            )
+        else:
+            forward_returns = _derive_forward_returns_from_prices(
+                store,
+                horizons=horizons,
+                panel=panel,
+            )
 
     ic_result = compute_information_coefficient(panel, forward_returns, horizons=horizons)
     ic_manifest = _build_ic_manifest(
@@ -1642,6 +2071,7 @@ def evaluate_panel(
         n_quantiles=n_quantiles,
         source=SOURCE_NAME,
         run_id=run_id,
+        evaluation_params=evaluation_params,
     )
     counts: dict[str, int] = dict(
         persist_factor_ic(
@@ -1663,6 +2093,7 @@ def evaluate_panel(
         n_quantiles=n_quantiles,
         source=SOURCE_NAME,
         run_id=run_id,
+        evaluation_params=evaluation_params,
     )
     quantile_counts = persist_quantile_spread(
         store,
@@ -1680,6 +2111,7 @@ def evaluate_panel(
         n_quantiles=n_quantiles,
         source=SOURCE_NAME,
         run_id=run_id,
+        evaluation_params=evaluation_params,
     )
     turnover_counts = persist_turnover(
         store,
@@ -1697,6 +2129,7 @@ def evaluate_panel(
         universe_id=universe_id,
         source=SOURCE_NAME,
         run_id=run_id,
+        evaluation_params=evaluation_params,
     )
     correlation_counts = persist_correlation_crowding(
         store,
@@ -1707,13 +2140,15 @@ def evaluate_panel(
         run_id=run_id,
     )
 
-    breadth = compute_breadth(panel, universe_counts=None)
+    universe_counts = _derive_universe_counts(store, panel, universe_id=universe_id)
+    breadth = compute_breadth(panel, universe_counts=universe_counts)
     breadth_manifest = _build_breadth_manifest(
         panel,
         breadth,
         universe_id=universe_id,
         source=SOURCE_NAME,
         run_id=run_id,
+        evaluation_params=evaluation_params,
     )
     breadth_counts = persist_breadth(
         store,

@@ -489,6 +489,46 @@ def test_duration_fact_without_period_start_is_excluded(tmp_store):
     assert good == 1
 
 
+def test_scoped_revision_and_statement_refresh_preserves_other_concepts(tmp_store):
+    from atx_db.fundamental_statements import refresh_fundamental_statement_points
+    from atx_db.fundamentals import refresh_fundamental_fact_revisions
+
+    _seed_security(tmp_store)
+    _insert_company_fact(
+        tmp_store,
+        concept="NetIncomeLoss",
+        value=500_000_000.0,
+        period_start=dt.date(2023, 1, 1),
+        period_end=dt.date(2023, 12, 31),
+    )
+    _insert_company_fact(
+        tmp_store,
+        concept="AccountsPayableCurrent",
+        value=100_000_000.0,
+        period_start=None,
+        period_end=dt.date(2023, 12, 31),
+    )
+    refresh_fundamental_fact_revisions(tmp_store)
+    refresh_fundamental_statement_points(tmp_store)
+    net_income_before = tmp_store.con.execute(
+        "SELECT count(*) FROM fundamental_statement_points "
+        "WHERE concept = 'NetIncomeLoss'"
+    ).fetchone()[0]
+
+    scope = ("AccountsPayableCurrent",)
+    refresh_fundamental_fact_revisions(tmp_store, scope)
+    refresh_fundamental_statement_points(tmp_store, scope)
+
+    assert tmp_store.con.execute(
+        "SELECT count(*) FROM fundamental_statement_points "
+        "WHERE concept = 'NetIncomeLoss'"
+    ).fetchone()[0] == net_income_before
+    assert tmp_store.con.execute(
+        "SELECT count(*) FROM fundamental_statement_points "
+        "WHERE concept = 'AccountsPayableCurrent' AND canonical_metric = 'ap'"
+    ).fetchone()[0] == 1
+
+
 def test_loader_still_works_for_core_metrics(tmp_store):
     """After expansion, the standardization loader must still produce points for core concepts."""
     from atx_db.fundamental_statements import seed_fundamental_statement_map, refresh_fundamental_statement_points

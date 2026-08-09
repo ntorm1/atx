@@ -23,16 +23,16 @@ import logging
 import time
 import uuid
 import zipfile
-from dataclasses import dataclass, field
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
 
 import pandas as pd
 import requests
 
 from .connection import DuckDBStore
 from .dataset import Dataset, DatasetLoadResult
-from .warehouse import now_utc_naive
+from .warehouse import now_utc_naive, record_source_file
 
 logger = logging.getLogger(__name__)
 
@@ -40,9 +40,12 @@ SOURCE_SIC = "SEC SIC list (public domain)"
 SOURCE_FF = "Ken French Data Library (public)"
 SOURCE_NAICS = "Census Bureau NAICS 2022 (public domain)"
 SOURCE_ENTITY = "SEC submissions JSON"
+SEC_BULK_SUBMISSIONS_URL = (
+    "https://www.sec.gov/Archives/edgar/daily-index/bulkdata/submissions.zip"
+)
 
 # ---------------------------------------------------------------------------
-# SIC: 10 divisions (A–J) + 83 two-digit major groups
+# SIC: 10 divisions (A-J) + 83 two-digit major groups
 # ---------------------------------------------------------------------------
 
 # Division code → (sort_order, label)
@@ -1029,7 +1032,17 @@ class EntityClassificationDataset(Dataset):
         if options.fetcher is not None:
             fetcher = options.fetcher
         elif options.submissions_zip is not None:
-            fetcher = _make_submissions_zip_fetcher(options.submissions_zip)
+            submissions_zip = Path(options.submissions_zip).resolve()
+            record_source_file(
+                store,
+                dataset_id=self.dataset_id,
+                source_url=SEC_BULK_SUBMISSIONS_URL,
+                cache_path=submissions_zip,
+                status="cached",
+                metadata={"source_kind": "SEC nightly bulk submissions archive"},
+                compute_hash=True,
+            )
+            fetcher = _make_submissions_zip_fetcher(submissions_zip)
         elif options.sic_file is not None:
             fetcher = _make_csv_fetcher(options.sic_file)
         else:

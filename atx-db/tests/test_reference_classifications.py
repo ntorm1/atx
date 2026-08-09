@@ -638,3 +638,14 @@ class TestSecBulkSubmissionsZipFetcher:
             """
         ).fetchall()
         assert rows == [("JPM", "6022"), ("MSFT", "7372")]
+        source_file = tmp_store.con.execute(
+            """
+            SELECT sha256, byte_count, status
+            FROM raw_source_files
+            WHERE dataset_id = 'entity_classification'
+            """
+        ).fetchone()
+        assert source_file is not None
+        assert len(source_file[0]) == 64
+        assert source_file[1] > 0
+        assert source_file[2] == "cached"

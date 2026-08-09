@@ -298,13 +298,16 @@ def test_composite_seed_rows_round_trip_into_catalog(tmp_store) -> None:
     ).fetchone()[0]
 
     assert composite[0:2] == ("fundamental_quality", 1)
-    assert json.loads(composite[2]) == {"method": "zscore_cs"}
+    standardization = json.loads(composite[2])
+    assert standardization["method"] == "zscore_cs"
+    assert standardization["complete_case"] is True
     assert {
         "net_income",
         "operating_cash_flow",
-        "assets",
-        "gross_margin_change",
-        "asset_turnover_change",
+        "total_assets",
+        "gross_profit",
+        "revenue",
+        "lt_debt",
     } <= edges
     assert dataset_row == 1
 

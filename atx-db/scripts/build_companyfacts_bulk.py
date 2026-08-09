@@ -32,6 +32,8 @@ import json
 import sys
 from pathlib import Path
 
+import pandas as pd
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from atx_db import DEFAULT_DB_PATH, DuckDBStore
@@ -67,6 +69,12 @@ def parse_args() -> argparse.Namespace:
         help="Target resolver: loaded_facts (default) | universe | sec_company_tickers | symbols.",
     )
     parser.add_argument("--universe-id", default=None)
+    parser.add_argument(
+        "--factor-ids",
+        nargs="+",
+        default=None,
+        help="Restrict targets to symbols with current observations for these factor IDs.",
+    )
     parser.add_argument("--limit", type=int, default=None, help="Cap targets (debug/smoke).")
     parser.add_argument("--user-agent", default=SEC_USER_AGENT)
     return parser.parse_args()
@@ -79,14 +87,40 @@ def main() -> int:
     if not args.companyfacts_zip.exists():
         raise SystemExit(f"companyfacts.zip not found at {args.companyfacts_zip}; pass --download to fetch it.")
 
-    options = SecCompanyFactsOptions(
-        companyfacts_zip=args.companyfacts_zip,
-        symbol_source=args.symbol_source,
-        symbol_limit=args.limit,
-        universe_id=args.universe_id,
-        skip_failed_targets=True,  # CIKs absent from the archive are recorded + skipped
-    )
     with DuckDBStore(args.db_path) as store:
+        symbols: tuple[str, ...] = ("AAPL",)
+        symbol_source = args.symbol_source
+        if args.factor_ids:
+            store.con.register(
+                "companyfacts_factor_filter",
+                pd.DataFrame({"factor_id": sorted(set(args.factor_ids))}),
+            )
+            try:
+                symbols = tuple(
+                    str(row[0])
+                    for row in store.con.execute(
+                        """
+                        SELECT DISTINCT f.symbol
+                        FROM fundamental_factor_values f
+                        JOIN companyfacts_factor_filter x USING (factor_id)
+                        WHERE f.is_latest_revision AND f.symbol IS NOT NULL
+                        ORDER BY f.symbol
+                        """
+                    ).fetchall()
+                )
+            finally:
+                store.con.unregister("companyfacts_factor_filter")
+            if not symbols:
+                raise SystemExit("No current factor observations matched --factor-ids")
+            symbol_source = "symbols"
+        options = SecCompanyFactsOptions(
+            symbols=symbols,
+            companyfacts_zip=args.companyfacts_zip,
+            symbol_source=symbol_source,
+            symbol_limit=args.limit,
+            universe_id=args.universe_id,
+            skip_failed_targets=True,  # CIKs absent from the archive are recorded + skipped
+        )
         result = SecCompanyFactsDataset().run(store, options)
     details = dict(result.details)
     details.pop("failed_targets", None)

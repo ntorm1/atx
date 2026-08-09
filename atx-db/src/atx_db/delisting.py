@@ -52,9 +52,9 @@ DELIST_CODE_ROWS = (
             "not an official CRSP DLSTCD reason code."
         ),
         "DELISTED_OR_TRANSFERRED_UNKNOWN",
-        True,
-        -0.30,
-        "optional_shumway_warther_unresolved_delete_minus_30pct",
+        False,
+        None,
+        "not_allowed_without_performance_related_reason",
         DEFAULT_CODE_SOURCE,
     ),
     (

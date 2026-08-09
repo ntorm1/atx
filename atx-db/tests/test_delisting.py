@@ -191,7 +191,7 @@ def test_delisting_events_default_to_unobserved_return_and_are_pit_visible(tmp_s
     assert _date_value(after_available.iloc[0]["delist_date"]) == dt.date(2024, 2, 1)
 
 
-def test_delisting_events_apply_imputation_only_when_requested(tmp_store):
+def test_delisting_events_do_not_impute_unknown_exchange_deletes(tmp_store):
     from atx_db.delisting import DelistingEventOptions, refresh_delisting_events
 
     _seed_security(tmp_store)
@@ -213,11 +213,11 @@ def test_delisting_events_apply_imputation_only_when_requested(tmp_store):
         FROM delisting_events
         """
     ).fetchone()
-    assert row[0] == pytest.approx(-0.30)
+    assert row[0] is None
     assert row[1:] == (
-        True,
-        "optional_shumway_warther_unresolved_delete_minus_30pct",
-        "low",
+        False,
+        "none",
+        "none",
     )
 
 

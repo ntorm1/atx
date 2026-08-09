@@ -1,11 +1,12 @@
 #!/usr/bin/env python
 """Build the industry-classification taxonomy and PIT entity classification rows.
 
-Runs four datasets in dependency order:
+Runs five datasets in dependency order:
   1. sic_taxonomy        - SIC division/major-group hierarchy
   2. fama_french_taxonomy - Fama-French 12 industry nodes
   3. naics_taxonomy       - NAICS 2022 2-digit sector nodes
   4. entity_classification - PIT entity-level SIC + derived FF12/NAICS rows
+  5. industry templates    - current statement-template routing and coverage
 
 Usage
 -----
@@ -22,6 +23,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from atx_db import DEFAULT_DB_PATH, DuckDBStore
+from atx_db.industry_templates import run_industry_template_refresh
 from atx_db.reference_classifications import (
     EntityClassificationDataset,
     EntityClassificationOptions,
@@ -108,6 +110,16 @@ def main() -> int:
                     "run_id": r4.run_id,
                     "details": r4.details,
                 },
+                indent=2,
+                default=str,
+            )
+        )
+
+        # 5. Industry-specific statement routing derived from the freshly loaded SIC rows.
+        template_result = run_industry_template_refresh(store)
+        print(
+            json.dumps(
+                {"step": "industry_templates", **template_result},
                 indent=2,
                 default=str,
             )

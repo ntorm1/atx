@@ -18,7 +18,9 @@ from atx_db.signal_eval import (
     compute_breadth,
     compute_leakage,
     compute_coverage,
-    load_panel_for_eval,
+    load_pit_classifications_for_panel,
+    load_survivorship_safe_forward_returns,
+    neutralize_panel_by_industry,
     evaluate_panel,
 )
 
@@ -51,6 +53,8 @@ def test_zero_signal_factor_has_rank_ic_near_zero() -> None:
     assert isinstance(result, IcResult)
     mean_ic_h1 = result.ic.loc[result.ic["horizon"] == 1, "mean_rank_ic"].iloc[0]
     assert abs(mean_ic_h1) < 0.05
+    assert {"hac_lags", "hac_standard_error", "hac_tstat"}.issubset(result.ic.columns)
+    assert result.ic["hac_tstat"].notna().all()
 
 
 def test_persistent_but_fading_factor_has_monotone_decaying_ic() -> None:
@@ -127,6 +131,180 @@ def test_compute_forward_returns_from_prices() -> None:
     assert np.allclose(r, [0.10, 0.10, 0.10, 0.10])           # 10% per step, last row NaN dropped
 
 
+def test_warehouse_forward_returns_are_split_adjusted_and_panel_scoped(tmp_store) -> None:
+    from atx_db.signal_eval import _derive_forward_returns_from_prices
+
+    available_at = dt.datetime(2020, 1, 10, 22, 0)
+    for trade_date, close, split_factor in [
+        (dt.date(2020, 1, 2), 100.0, 1.0),
+        (dt.date(2020, 1, 3), 50.0, 0.5),
+        (dt.date(2020, 1, 6), 55.0, 1.0),
+    ]:
+        tmp_store.con.execute(
+            """
+            INSERT INTO equity_daily_bars (
+                source, security_id, symbol, trade_date, open, high, low, close,
+                adjusted_close, volume, split_factor, is_adjusted,
+                available_at, source_loaded_at
+            ) VALUES ('test', 'S1', 'AAA', ?, ?, ?, ?, ?, ?, 1000, ?, false, ?, ?)
+            """,
+            [
+                trade_date,
+                close,
+                close,
+                close,
+                close,
+                close,
+                split_factor,
+                available_at,
+                available_at,
+            ],
+        )
+
+    panel = pd.DataFrame(
+        {
+            "security_id": ["S1", "S1"],
+            "as_of_date": [dt.date(2020, 1, 2), dt.date(2020, 1, 3)],
+        }
+    )
+    result = _derive_forward_returns_from_prices(
+        tmp_store,
+        horizons=(1,),
+        panel=panel,
+    ).sort_values("as_of_date")
+
+    assert len(result) == 2
+    assert result.iloc[0]["forward_return"] == pytest.approx(0.0)
+    assert result.iloc[1]["forward_return"] == pytest.approx(0.10)
+
+
+def test_industry_neutralization_centers_within_groups_and_enforces_coverage() -> None:
+    as_of_date = dt.date(2024, 6, 28)
+    rows = []
+    classifications = []
+    for group_index, group in enumerate(("BusEq", "Money")):
+        for rank in range(6):
+            security_id = f"{group}-{rank}"
+            rows.append(
+                {
+                    "security_id": security_id,
+                    "as_of_date": as_of_date,
+                    "factor_id": "profitability",
+                    "value": float(group_index * 100 + rank),
+                }
+            )
+            classifications.append(
+                {
+                    "security_id": security_id,
+                    "as_of_date": as_of_date,
+                    "classification_group": group,
+                }
+            )
+
+    result = neutralize_panel_by_industry(
+        pd.DataFrame(rows),
+        pd.DataFrame(classifications),
+        min_group_size=5,
+        min_coverage=1.0,
+    )
+
+    assert result.diagnostics["usable_coverage"] == 1.0
+    assert result.panel.groupby("classification_group")["value"].mean().abs().max() < 1e-12
+    assert result.panel.groupby("classification_group")["value"].min().nunique() == 1
+    with pytest.raises(ValueError, match="coverage"):
+        neutralize_panel_by_industry(
+            pd.DataFrame(rows),
+            pd.DataFrame(classifications[:6]),
+            min_group_size=5,
+            min_coverage=0.75,
+        )
+
+
+def test_pit_classification_loader_does_not_backfill_future_knowledge(tmp_store) -> None:
+    tmp_store.con.execute(
+        """
+        INSERT INTO taxonomy (
+            taxonomy_id, code, name, provider, version, is_hierarchical, description, source
+        ) VALUES ('ff12-test', 'FAMA_FRENCH_12', 'FF12', 'test', 'test', false, 'test', 'test')
+        """
+    )
+    tmp_store.con.execute(
+        """
+        INSERT INTO taxonomy_node (
+            node_id, taxonomy_id, node_code, node_label, parent_node_id, level, sort_order
+        ) VALUES ('ff12-buseq', 'ff12-test', 'BusEq', 'Business Equipment', NULL, 1, 1)
+        """
+    )
+    tmp_store.con.execute(
+        """
+        INSERT INTO entity_classification (
+            classification_id, security_id, taxonomy_id, node_id, node_code,
+            is_primary, valid_from, valid_to, as_of_date, available_at,
+            source_loaded_at, run_id, source
+        ) VALUES (
+            'class-future', 'S1', 'ff12-test', 'ff12-buseq', 'BusEq',
+            false, DATE '2025-01-02', NULL, DATE '2025-01-02',
+            TIMESTAMP '2025-01-02 12:00:00', TIMESTAMP '2025-01-02 12:00:00',
+            'test', 'test'
+        )
+        """
+    )
+    panel = pd.DataFrame(
+        {
+            "security_id": ["S1", "S1"],
+            "as_of_date": [dt.date(2024, 12, 31), dt.date(2025, 1, 2)],
+            "factor_id": ["f", "f"],
+            "value": [1.0, 1.0],
+        }
+    )
+
+    got = load_pit_classifications_for_panel(tmp_store, panel)
+
+    assert got[["security_id", "as_of_date", "classification_group"]].to_dict("records") == [
+        {
+            "security_id": "S1",
+            "as_of_date": pd.Timestamp("2025-01-02"),
+            "classification_group": "BusEq",
+        }
+    ]
+
+
+def test_survivorship_safe_loader_is_scoped_and_source_governed(tmp_store) -> None:
+    tmp_store.con.execute(
+        """
+        INSERT INTO forward_returns_survivorship_safe (
+            forward_return_id, source, security_id, as_of_date, horizon_days,
+            forward_end_date, forward_return, is_delisted_in_horizon, is_stitched, available_at
+        ) VALUES
+            ('safe-hit', 'safe-test', 'S1', DATE '2024-01-02', 21,
+             DATE '2024-02-01', -0.45, true, true, TIMESTAMP '2024-02-02 12:00:00'),
+            ('other-source', 'other', 'S1', DATE '2024-01-02', 21,
+             DATE '2024-02-01', 0.99, false, false, TIMESTAMP '2024-02-02 12:00:00'),
+            ('other-key', 'safe-test', 'S2', DATE '2024-01-02', 21,
+             DATE '2024-02-01', 0.10, false, false, TIMESTAMP '2024-02-02 12:00:00')
+        """
+    )
+    panel = pd.DataFrame(
+        {
+            "security_id": ["S1"],
+            "as_of_date": [dt.date(2024, 1, 2)],
+            "factor_id": ["f"],
+            "value": [1.0],
+        }
+    )
+
+    got = load_survivorship_safe_forward_returns(
+        tmp_store,
+        panel,
+        horizons=(21,),
+        source="safe-test",
+    )
+
+    assert got[["security_id", "horizon", "forward_return"]].to_dict("records") == [
+        {"security_id": "S1", "horizon": 21, "forward_return": -0.45}
+    ]
+
+
 def test_evaluate_panel_persists_ic_rows_per_factor(tmp_store) -> None:
     # v_factor_panel is empty on a fresh template; evaluate_panel with an injected panel/returns still writes rows.
     # (Full base-table seeding is exercised in the DQC integration test; here we assert the persistence contract.)
@@ -136,6 +314,53 @@ def test_evaluate_panel_persists_ic_rows_per_factor(tmp_store) -> None:
         run_id="rid-ic",
     )
     assert "factor_ic" in counts and "factor_ic_decay" in counts
+
+
+def test_evaluate_panel_records_injected_return_target_in_manifest(tmp_store) -> None:
+    dates = _dates(4)
+    securities = [f"S{i}" for i in range(8)]
+    panel = pd.DataFrame(
+        [
+            {
+                "security_id": security_id,
+                "as_of_date": as_of_date,
+                "factor_id": "manifest_factor",
+                "value": float(index),
+            }
+            for as_of_date in dates
+            for index, security_id in enumerate(securities)
+        ]
+    )
+    forward_returns = pd.DataFrame(
+        [
+            {
+                "security_id": security_id,
+                "as_of_date": as_of_date,
+                "horizon": 1,
+                "forward_return": float(index) / 100.0,
+            }
+            for as_of_date in dates
+            for index, security_id in enumerate(securities)
+        ]
+    )
+
+    evaluate_panel(
+        tmp_store,
+        panel=panel,
+        forward_returns=forward_returns,
+        horizons=(1,),
+        n_quantiles=4,
+        run_id="manifest-target",
+    )
+
+    params = tmp_store.con.execute(
+        """
+        SELECT DISTINCT json_extract_string(params_json, '$.return_target')
+        FROM factor_eval_manifest
+        WHERE run_id = 'manifest-target'
+        """
+    ).fetchall()
+    assert params == [("injected",)]
 
 
 def test_monotone_factor_has_monotone_deciles_and_positive_spread() -> None:

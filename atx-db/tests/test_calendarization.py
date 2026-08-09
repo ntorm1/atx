@@ -598,3 +598,44 @@ def test_quarterly_ttm_stitch_noops_without_9mo_ytd(tmp_store) -> None:
         )
 
     assert refresh_fundamental_ttm_points(tmp_store) == 0
+
+
+def test_ttm_refresh_can_scope_delete_and_scan_to_one_metric(tmp_store) -> None:
+    from atx_db.fundamental_statements import refresh_fundamental_ttm_points
+
+    sid = "SEC-CIK-0000000303"
+    quarter_dates = [
+        (dt.date(2024, 1, 1), dt.date(2024, 3, 31), "Q1"),
+        (dt.date(2024, 4, 1), dt.date(2024, 6, 30), "Q2"),
+        (dt.date(2024, 7, 1), dt.date(2024, 9, 30), "Q3"),
+        (dt.date(2024, 10, 1), dt.date(2024, 12, 31), "Q4"),
+    ]
+    for metric, base in (("revenue", 10.0), ("stock_issuance", 1.0)):
+        for index, (start, end, fiscal_period) in enumerate(quarter_dates, 1):
+            _insert_statement_point(
+                tmp_store,
+                statement_id=f"scope-{metric}-{index}",
+                security_id=sid,
+                symbol="SCOPE",
+                metric=metric,
+                value=base * index,
+                start=start,
+                end=end,
+                fiscal_year=2024,
+                fiscal_period=fiscal_period,
+                accession=f"scope-{metric}-{index}",
+                available_at=dt.datetime(2025, 2, index, 22, 0),
+            )
+
+    assert refresh_fundamental_ttm_points(tmp_store) == 2
+    tmp_store.con.execute(
+        "DELETE FROM fundamental_statement_points WHERE canonical_metric = 'stock_issuance'"
+    )
+
+    assert refresh_fundamental_ttm_points(
+        tmp_store,
+        canonical_metrics=("stock_issuance",),
+    ) == 1
+    assert tmp_store.con.execute(
+        "SELECT canonical_metric FROM fundamental_ttm_points ORDER BY canonical_metric"
+    ).fetchall() == [("revenue",)]

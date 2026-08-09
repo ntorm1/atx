@@ -657,13 +657,40 @@ def refresh_xbrl_concept_catalog(store: DuckDBStore) -> int:
     return int(len(frame))
 
 
-def refresh_fundamental_fact_revisions(store: DuckDBStore) -> int:
-    """Refresh accession-level revision chains from SEC companyfacts."""
+def refresh_fundamental_fact_revisions(
+    store: DuckDBStore,
+    concepts: tuple[str, ...] | None = None,
+) -> int:
+    """Refresh accession-level revision chains, optionally for selected concepts."""
 
-    with store.transaction():
-        store.con.execute("DELETE FROM fundamental_fact_revisions")
-        store.con.execute(
-            """
+    selected = tuple(sorted({str(concept) for concept in concepts or () if concept}))
+    registered = False
+    concept_predicate = ""
+    if selected:
+        store.con.register(
+            "fundamental_revision_concept_filter",
+            pd.DataFrame({"concept": selected}),
+        )
+        registered = True
+        concept_predicate = (
+            "AND f.concept IN ("
+            "SELECT concept FROM fundamental_revision_concept_filter)"
+        )
+    try:
+        with store.transaction():
+            if selected:
+                store.con.execute(
+                    """
+                    DELETE FROM fundamental_fact_revisions
+                    WHERE concept IN (
+                        SELECT concept FROM fundamental_revision_concept_filter
+                    )
+                    """
+                )
+            else:
+                store.con.execute("DELETE FROM fundamental_fact_revisions")
+            store.con.execute(
+                f"""
             INSERT INTO fundamental_fact_revisions (
                 fact_revision_id,
                 revision_group_id,
@@ -747,7 +774,7 @@ def refresh_fundamental_fact_revisions(store: DuckDBStore) -> int:
                     run_id,
                     source_url,
                     source_loaded_at
-                FROM sec_company_facts
+                FROM sec_company_facts f
                 WHERE source IS NOT NULL
                   AND source <> ''
                   AND security_id IS NOT NULL
@@ -762,6 +789,7 @@ def refresh_fundamental_fact_revisions(store: DuckDBStore) -> int:
                   AND accession_number IS NOT NULL
                   AND accession_number <> ''
                   AND filed_date IS NOT NULL
+                  {concept_predicate}
             ),
             sequenced AS (
                 SELECT
@@ -834,7 +862,10 @@ def refresh_fundamental_fact_revisions(store: DuckDBStore) -> int:
                 source_loaded_at
             FROM sequenced
             """
-        )
+            )
+    finally:
+        if registered:
+            store.con.unregister("fundamental_revision_concept_filter")
     return int(store.con.execute("SELECT count(*) FROM fundamental_fact_revisions").fetchone()[0])
 
 
