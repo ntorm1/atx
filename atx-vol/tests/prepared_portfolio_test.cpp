@@ -626,46 +626,103 @@ TEST(PreparedPortfolio, GroupedPriceEqualsIndependentOracleAndPinnedFingerprint)
   // fall through to a Release-captured number.
   //
   // P-5 POST-CLOSE RE-PIN (Task P-5 review, regression reopened after close; P-6
-  // reviewer's full-suite run caught this as its own M-4). Root cause: P-5's
-  // ConvexSliceFit::iv() bisection early-exit (src/dense_slice.cpp), landed after
-  // this fixture's positions all route to ConvexDenseCurve (odd uid, `make_convex`
-  // above) whose iv()/w() queries call fit_.iv() directly — the exact function the
-  // early-exit changed. NOT the calendar-scan half of P-5 (src/vol_curve.cpp's
-  // scan_k): make_convex hand-constructs ConvexSliceFit/ConvexDenseCurve directly
-  // and never calls fit_slice_curve, so that code path is unreachable from this
-  // fixture and could not have contributed.
-  // Isolation: the test PASSES under ATX_VOL_DISABLE_IV_EARLY_EXIT=1 (which restores
-  // pre-P-5 bisection behavior and nothing else) and FAILS otherwise — a direct,
-  // reproducible causal isolation, not an inference from timing.
-  // Magnitude, measured directly on this fixture's ConvexDense legs (early-exit-on
-  // vs early-exit-off, matched by (uid,K,T,side), 1345 comparable positions):
-  // max |iv drift| = 2.8421709430404e-13, max |price drift| = 7.8417e-12 absolute
-  // (~1.11e-12 relative) — both far inside the 1e-11 envelope the P-5 brief
-  // sanctioned, and consistent in magnitude with the general 41-point
-  // ConvexSliceFit.IvBisectionEarlyExitMatchesPreP5BaselineWithin1e11 characterization
-  // (2.79554e-13). The grouped==independent-oracle bit-for-bit parity block above and
-  // the thread-count invariance checks below both stayed green through this: only the
-  // whole-frame FNV hash moved, because a hash has no tolerance band (one last-place
-  // bit rehashes everything), exactly like every prior re-pin recorded above. This is
-  // a benign re-pin, not a numerical defect — see task-P-5-report.md's "Post-close
-  // regression" section for the full diagnosis.
-  // Re-measured dev (Debug, SSE2) directly: 718570745730299145 -> 10976559059648513121
-  // (this is the only cell the P-6 reviewer's full run and this triage both actually
-  // exercised, so it is the only value changed below).
-  // rel (Release, SSE2) and rel-avx2 (Release, FMA) were NOT re-measured: building
-  // atx-vol-tests fresh under `rel` hit a pre-existing, unrelated shared-cache defect
-  // -- C:\atx-cache\deps\spdlog-build (a build-farm-wide cache outside every worktree,
-  // shared with whatever else is running under `rel`/`rel-avx2` right now) still held
-  // an ITERATOR_DEBUG_LEVEL=2 (Debug ABI) spdlog.lib, which lld-link refuses to link
-  // against atx-core.lib's ITERATOR_DEBUG_LEVEL=0 (Release ABI): "/failifmismatch:
-  // mismatch detected for '_ITERATOR_DEBUG_LEVEL'". Forcibly rebuilding that shared
-  // cache from a single worktree risks breaking whatever else is using it concurrently
-  // (the same class of cross-worktree hazard the wrong-tree guard above exists to
-  // prevent), so it was left alone rather than "fixed" out of scope. The two values
-  // below are therefore UNVERIFIED post-P-5, not confirmed-unaffected -- both use the
-  // SAME fit_.iv() call the dev pin above proves moved, so they should be treated as
-  // likely-also-stale until someone with authority over the shared cache re-measures
-  // them. See task-P-5-report.md's "Post-close regression" section, concern list.
+  // reviewer's full-suite run caught this as its own M-4; independently re-adjudicated
+  // in task-P-5-review.md's "Post-close regression adjudication"). Root cause: P-5's
+  // ConvexSliceFit::iv() bisection early-exit (src/dense_slice.cpp). NOT the
+  // calendar-scan half of P-5 (src/vol_curve.cpp's scan_k): make_convex() above
+  // hand-constructs ConvexSliceFit/ConvexDenseCurve directly and never calls
+  // fit_convex_slice or fit_slice_curve (the only place scan_k lives), so that code
+  // path is structurally unreachable from this fixture. ConvexDenseCurve::w() calls
+  // fit_.iv(k_log) directly — exactly the function the early-exit changed — and every
+  // odd-uid position in this fixture routes there.
+  //
+  // ATTRIBUTION BY BIJECTION, not inference. With this pin at its current value:
+  //     ATX_VOL_DISABLE_IV_EARLY_EXIT unset -> PASS, h4 = 10976559059648513121 (this pin)
+  //     ATX_VOL_DISABLE_IV_EARLY_EXIT=0     -> PASS, h4 = 10976559059648513121
+  //     ATX_VOL_DISABLE_IV_EARLY_EXIT=1     -> FAIL, h4 = 718570745730299145 (the PRIOR
+  //                                            golden, EXACTLY)
+  // Disabling the seam does not merely change the outcome — it recovers the prior pin
+  // bit-for-bit. Any other contributor to this shift would have produced a THIRD value
+  // under `=1`, not the exact previous golden, so this rules out any other cause and
+  // retroactively re-confirms the prior pin was correct for the pre-P-5 tree.
+  // REPRODUCTION RECIPE for the next time this pin turns red: with the pin left at its
+  // CURRENTLY STORED value, run the test under `=1` first. If `=1` reproduces the
+  // stored golden exactly, the entire delta is this one seam and nothing else, and
+  // re-pinning to the unset/`=0` hash is proven benign by the same bijection used here.
+  // If `=1` does NOT reproduce the stored golden, something else also moved — do NOT
+  // re-pin until that is separately explained.
+  //
+  // Magnitude, measured directly on this fixture's ConvexDense legs (early-exit-on vs
+  // off, matched by (uid,K,T,side); 1344 distinct contracts, 1344/1344 moved, zero key
+  // mismatches):
+  //     iv:    max |drift| = 2.8421709430404007e-13, at uid=1, K=92,  T=0.05
+  //            (0.18352904337586617 vs 0.18352904337558196)
+  //     price: max |drift| = 7.8417272675324057e-12 abs (rel 1.11e-12), at uid=1,
+  //            K=102, T=0.65 (7.0756986169948197 vs 7.075698616986978)
+  // Inside the sanctioned envelope three ways, not merely "small":
+  //   1. 2.84e-13 vs the brief's <=1e-11 iv-drift gate — inside by 35x.
+  //   2. Inside the PROVABLE bound, not just this fixture's measurement: round 0
+  //      established the early exit's drift is bounded by the exit bracket width,
+  //      < 1e-12 * max(1.0, hi), for every input. This fixture's served vols are
+  //      0.18-0.30 (hi < 1), so the bound is 1e-12 here and the measured 2.84e-13
+  //      sits under it — an ordinary instance of a proven bound, not a lucky sample.
+  //   3. The price drift is quantitatively EXPLAINED, not merely small: at K=102,
+  //      T=0.65 the Andersen-Lake vega is ~28, and 2.84e-13 x 28 ~ 8e-12 — matching
+  //      the observed 7.84e-12. The price move is the direct linear image of the
+  //      sanctioned iv move through an ordinary sensitivity, nothing amplified.
+  //
+  // What this does NOT rest on: the grouped==independent-oracle bit-for-bit parity
+  // block above and the thread-count invariance checks below both stayed green
+  // through this, but that carries NO evidential weight for benignity here — both
+  // sides of the oracle consume the SAME PricedSurface, so a surface-layer shift moves
+  // grouped and oracle identically and can never open a gap between them. Proof, not
+  // assertion: running the whole test under `=1` (a DIFFERENT surface arithmetic)
+  // produced exactly ONE failing assertion — this fingerprint — with zero oracle
+  // failures across 1346 positions x 11 bit-exact comparisons, and both thread-
+  // invariance checks green. The oracle stays green under either arithmetic and would
+  // stay green for an iv drift of any magnitude, as long as it was deterministic. It
+  // is real and has caught real defects before (the A1 re-pin above), but it is
+  // orthogonal to this class of change and is noted here only for completeness, not
+  // as evidence for this re-pin.
+  //
+  // This is a benign re-pin, not a numerical defect — see task-P-5-report.md's
+  // "Post-close regression" section (and task-P-5-review.md's "Post-close regression
+  // adjudication") for the full diagnosis.
+  //
+  // Re-measured dev (Debug, SSE2) directly: 718570745730299145 -> 10976559059648513121.
+  // This is the ONLY cell actually re-measured; the other two are addressed below.
+  //
+  // rel (Release, SSE2) and rel-avx2 (Release, FMA) are STALE-BY-EXPECTATION and
+  // UNVERIFIED, not confirmed-unaffected — and this is wider than just these two
+  // cells: ConvexDenseCurve::w() -> fit_.iv() is unconditional on every preset, so no
+  // P-5 change across this task's four commits (rounds 0-3) has EVER been verified on
+  // a Release preset. A repo-wide grep confirms this file holds the only
+  // kGoldenFingerprint* family in the tree; the other config-split pins were checked
+  // and are not exposed to this class of change — session_test.cpp:1566 is eSSVI and
+  // tolerance-based (EXPECT_NEAR, not a hash), american_test.cpp:2686 (BoundaryHoist)
+  // pins on explicit (S,K,T,sigma,r,q) with no vol surface. The one remaining
+  // candidate worth checking is multiname_pipeline_test.cpp:923's NDEBUG dispersion
+  // baselines, if that pipeline routes ConvexDense.
+  // Verification was attempted and blocked, not skipped: a from-scratch `rel` build of
+  // atx-vol-tests reached final link (369/370 objects) and failed there on a
+  // pre-existing, unrelated shared-cache defect — a stale Debug-ABI spdlog.lib in
+  // C:\atx-cache\deps\spdlog-build (a build-farm-wide cache outside every worktree,
+  // shared across the sibling pool trees) clashing with Release-ABI atx-core.lib:
+  // "/failifmismatch: mismatch detected for '_ITERATOR_DEBUG_LEVEL'". That cache was
+  // independently confirmed being rewritten by a sibling worktree DURING this
+  // investigation, so force-rebuilding it from a single worktree would race a live
+  // consumer — left alone rather than "fixed" out of scope. This is a documented-
+  // mechanism defect (the cache is keyed by dependency, not by build configuration),
+  // not something P-5 caused or could have caused.
+  // PRESCRIBED PROCEDURE for whoever next has authority over the shared cache: do NOT
+  // blind re-bless these two cells. Fix the cache, then on each Release preset run
+  // this test under `ATX_VOL_DISABLE_IV_EARLY_EXIT=1` with the pin left at its
+  // CURRENTLY STORED (unchanged) value below. If it PASSES, `=1` recovered the stored
+  // golden exactly, the entire delta is this sanctioned seam, and re-pinning to the
+  // unset-run's hash is proven benign by the same bijection above. If it FAILS,
+  // something else also moved on that preset and the pin must NOT be updated until
+  // that is separately explained. See task-P-5-report.md's "Post-close regression"
+  // section, concern list.
 #if defined(NDEBUG)
   constexpr std::uint64_t kGoldenFingerprintSse2 = 17305682487856730537ULL;
 #else
