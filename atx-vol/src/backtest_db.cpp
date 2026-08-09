@@ -1,14 +1,18 @@
 #include "atx/vol/backtest_db.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <bit>
 #include <chrono>
 #include <cmath>
+#include <fstream>
 #include <iomanip>
 #include <limits>
 #include <numeric>
 #include <optional>
 #include <sstream>
+#include <system_error>
+#include <thread>
 #include <unordered_set>
 #include <utility>
 
@@ -54,6 +58,45 @@ constexpr std::size_t kMaxSymbolBytes = 32;
 [[nodiscard]] Result<detail::WriterLock>
 acquire_manifest_writer_lock(const std::filesystem::path &manifest) {
   return detail::WriterLock::acquire(manifest.string() + ".lock");
+}
+
+// Task D6: BacktestReaderMark's mechanism -- see that class's own doc
+// comment. `<root>/readers/` is a sibling of `partitions/`, never a
+// generation-versioned BacktestDb filename, so it is never mistaken for a
+// partition candidate by vacuum_unindexed_partitions' own directory scan
+// (which only ever iterates partitions/).
+[[nodiscard]] std::filesystem::path reader_marks_dir(std::string_view root) {
+  return std::filesystem::path(std::string(root)) / "readers";
+}
+
+// Best-effort: an empty/unreadable/malformed mark file reads as "cannot
+// determine an owner" -- nullopt -- which vacuum's scan (below) treats
+// exactly like detail::WriterLock treats an indeterminate owner: NOT
+// eligible for stale cleanup, the conservative default (never guess a live
+// mark is dead).
+[[nodiscard]] std::optional<std::uint64_t> read_reader_mark_pid(const std::filesystem::path &path) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in) {
+    return std::nullopt;
+  }
+  std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  std::size_t end = text.size();
+  while (end > 0 && (text[end - 1] == '\0' || text[end - 1] == '\n' || text[end - 1] == '\r' ||
+                     text[end - 1] == ' ')) {
+    --end;
+  }
+  if (end == 0) {
+    return std::nullopt;
+  }
+  std::uint64_t value = 0;
+  for (std::size_t i = 0; i < end; ++i) {
+    const char c = text[i];
+    if (c < '0' || c > '9') {
+      return std::nullopt;
+    }
+    value = value * 10 + static_cast<std::uint64_t>(c - '0');
+  }
+  return value;
 }
 
 [[nodiscard]] constexpr std::int64_t u64_bits(std::uint64_t value) noexcept {
@@ -863,8 +906,129 @@ Status BacktestDb::refresh() {
   return Ok();
 }
 
+Result<BacktestReaderMark> BacktestReaderMark::acquire(std::string_view root) {
+  if (root.empty()) {
+    return Err(ErrorCode::InvalidArgument, "BacktestReaderMark::acquire: empty root");
+  }
+  const std::filesystem::path dir = reader_marks_dir(root);
+  std::error_code mkdir_ec;
+  std::filesystem::create_directories(dir, mkdir_ec);
+  if (mkdir_ec) {
+    return Err(ErrorCode::IoError,
+               "BacktestReaderMark::acquire: cannot create readers directory: " + mkdir_ec.message());
+  }
+
+  // Unique by construction (pid + monotonic in-process counter + a
+  // steady_clock tick) -- no CREATE_NEW/O_EXCL exclusivity needed the way
+  // detail::WriterLock needs it, since this is a many-holder registration,
+  // not mutual exclusion: an extremely improbable name collision would only
+  // ever occur between two marks from the SAME process, and losing one to
+  // the other's overwrite still leaves at least one live mark, which is all
+  // vacuum's guard below checks for.
+  static std::atomic<std::uint64_t> counter{0};
+  const std::uint64_t pid = detail::current_process_id();
+  const auto tick = static_cast<std::uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count());
+  const std::string filename = "reader-" + std::to_string(pid) + "-" + std::to_string(tick) + "-" +
+                               std::to_string(counter.fetch_add(1)) + ".mark";
+  const std::filesystem::path mark_path = dir / filename;
+
+  std::ofstream out(mark_path, std::ios::binary | std::ios::trunc);
+  if (!out) {
+    return Err(ErrorCode::IoError, "BacktestReaderMark::acquire: cannot create mark file");
+  }
+  out << pid;
+  out.flush();
+  if (!out) {
+    std::error_code rm_ec;
+    std::filesystem::remove(mark_path, rm_ec);
+    return Err(ErrorCode::IoError, "BacktestReaderMark::acquire: cannot write mark file");
+  }
+  out.close();
+
+  BacktestReaderMark mark;
+  mark.mark_path_ = mark_path.string();
+  return Ok(std::move(mark));
+}
+
+BacktestReaderMark::~BacktestReaderMark() { release(); }
+
+BacktestReaderMark::BacktestReaderMark(BacktestReaderMark &&other) noexcept
+    : mark_path_{std::move(other.mark_path_)} {
+  other.mark_path_.clear();
+}
+
+BacktestReaderMark &BacktestReaderMark::operator=(BacktestReaderMark &&other) noexcept {
+  if (this != &other) {
+    release();
+    mark_path_ = std::move(other.mark_path_);
+    other.mark_path_.clear();
+  }
+  return *this;
+}
+
+void BacktestReaderMark::release() noexcept {
+  if (mark_path_.empty()) {
+    return;
+  }
+  std::error_code ec;
+  // Bounded best-effort retry, same tolerance detail::WriterLock::release()
+  // documents: a concurrent liveness-probe reader (vacuum's own scan) can
+  // hold a transient open against this file on Windows.
+  for (int attempt = 0; attempt < 5; ++attempt) {
+    std::filesystem::remove(mark_path_, ec);
+    if (!ec) {
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  mark_path_.clear();
+}
+
+Result<BacktestReaderMark> BacktestDb::mark_reader() const { return BacktestReaderMark::acquire(root_); }
+
 Result<std::size_t> BacktestDb::vacuum_unindexed_partitions() {
   const std::lock_guard lock(*mu_);
+
+  // Task D6: refuse OUTRIGHT -- before even reading the manifest, let alone
+  // enumerating or removing a candidate -- while a live reader mark is
+  // registered. See BacktestReaderMark's own doc comment for the mechanism
+  // and vacuum_unindexed_partitions' header doc comment for what this does
+  // and does not protect.
+  {
+    const std::filesystem::path readers_dir = reader_marks_dir(root_);
+    std::error_code exists_ec;
+    if (std::filesystem::exists(readers_dir, exists_ec) && !exists_ec) {
+      std::error_code list_ec;
+      std::filesystem::directory_iterator it(readers_dir, list_ec);
+      const std::filesystem::directory_iterator dir_end;
+      for (; !list_ec && it != dir_end; it.increment(list_ec)) {
+        std::error_code type_ec;
+        if (!it->is_regular_file(type_ec) || type_ec) {
+          continue;
+        }
+        const std::optional<std::uint64_t> pid = read_reader_mark_pid(it->path());
+        if (!pid.has_value()) {
+          // Cannot determine an owner -- conservative default, same as
+          // detail::WriterLock's own stale-takeover probe: NOT eligible for
+          // cleanup, but also not treated as a live blocker (an empty/
+          // unreadable file is not evidence of a live reader either).
+          continue;
+        }
+        if (detail::process_alive(*pid)) {
+          return Err(ErrorCode::Unavailable,
+                     "BacktestDb::vacuum_unindexed_partitions: refusing -- a live reader mark is "
+                     "registered at " +
+                         it->path().string());
+        }
+        // Confirmed-dead owner -- opportunistic cleanup, mirroring
+        // detail::WriterLock's own stale-owner takeover, so a mark left by a
+        // crashed reader does not block vacuum forever.
+        std::error_code rm_ec;
+        std::filesystem::remove(it->path(), rm_ec);
+      }
+    }
+  }
+
   auto replacement = read_manifest(manifest_path());
   if (!replacement) {
     return tl::unexpected<Error>(std::move(replacement).error());

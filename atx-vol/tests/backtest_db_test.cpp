@@ -17,6 +17,15 @@
 namespace atx::vol {
 namespace {
 
+namespace fs = std::filesystem;
+
+// Task D6: mirrors writer_lock_test.cpp's own write_text helper (plain text
+// dump, no atomic-publish machinery needed for a test-only mark file).
+void write_text(const fs::path &p, std::string_view text) {
+  std::ofstream out(p, std::ios::binary | std::ios::trunc);
+  out << text;
+}
+
 [[nodiscard]] std::filesystem::path test_root(std::string_view stem) {
   static std::atomic<std::uint64_t> sequence{0};
   const std::filesystem::path root =
@@ -327,6 +336,90 @@ TEST(BacktestDbSeries, VacuumRemovesOnlyUnindexedDatabasePartitions) {
   auto no_more = db->vacuum_unindexed_partitions();
   ASSERT_TRUE(no_more.has_value());
   EXPECT_EQ(*no_more, 0u);
+  std::filesystem::remove_all(root);
+}
+
+// ── Task D6: vacuum refuses while a live reader mark is registered ─────────
+//
+// Closes the live-reader deletion hazard the class's own doc comment names
+// at backtest_db.hpp:131-140 ("Cross-process callers must ... ensure no
+// reader still relies on an older manifest snapshot" -- previously an
+// unenforced caller obligation). `BacktestReaderMark` is the minimal
+// mechanism the brief implies: a manifest-adjacent mark file with
+// PID-liveness, mirroring detail::WriterLock's own convention but as a
+// many-reader registration (multiple marks may coexist), never mutual
+// exclusion.
+
+TEST(BacktestDbVacuum, RefusesWhileALiveReaderMarkIsRegistered) {
+  const std::filesystem::path root = test_root("vacuum-live-reader");
+  auto db = BacktestDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+  const BacktestStrategyTemplate value = make_template("strangle");
+  ASSERT_TRUE(db->register_template(value).has_value());
+  ASSERT_TRUE(db->write_series(value.id, "AAPL", 101, make_series(101)).has_value());
+  auto info = db->find_series(value.id, "AAPL");
+  ASSERT_TRUE(info.has_value());
+
+  BacktestSeriesData revised = make_series(101);
+  revised.backtest.pnl_delta[1] += 0.5;
+  ASSERT_TRUE(db->write_series(*info, revised).has_value());
+  // An orphaned, unindexed partition now exists (the pre-revision one) --
+  // exactly what vacuum_unindexed_partitions targets, same setup as
+  // VacuumRemovesOnlyUnindexedDatabasePartitions above.
+
+  auto mark = db->mark_reader();
+  ASSERT_TRUE(mark.has_value()) << (mark ? "" : mark.error().to_string());
+  EXPECT_TRUE(mark->held());
+
+  auto refused = db->vacuum_unindexed_partitions();
+  ASSERT_FALSE(refused.has_value())
+      << "vacuum must refuse outright (not partially apply) while a live reader mark exists";
+  EXPECT_EQ(refused.error().code(), ErrorCode::Unavailable);
+
+  const std::filesystem::path partition_dir = root / kBacktestDbPartitionDir;
+  EXPECT_TRUE(fs::exists(partition_dir / info->partition_filename))
+      << "the orphaned partition must be untouched while refused";
+
+  mark->release();
+  EXPECT_FALSE(mark->held());
+  auto now_allowed = db->vacuum_unindexed_partitions();
+  ASSERT_TRUE(now_allowed.has_value()) << (now_allowed ? "" : now_allowed.error().to_string());
+  EXPECT_EQ(*now_allowed, 1u) << "released -- the same orphan is reclaimable again";
+  std::filesystem::remove_all(root);
+}
+
+TEST(BacktestDbVacuum, IgnoresAndCleansUpAStaleDeadPidReaderMark) {
+  const std::filesystem::path root = test_root("vacuum-stale-reader");
+  auto db = BacktestDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+  const BacktestStrategyTemplate value = make_template("strangle");
+  ASSERT_TRUE(db->register_template(value).has_value());
+  ASSERT_TRUE(db->write_series(value.id, "AAPL", 101, make_series(101)).has_value());
+  auto info = db->find_series(value.id, "AAPL");
+  ASSERT_TRUE(info.has_value());
+  BacktestSeriesData revised = make_series(101);
+  revised.backtest.pnl_delta[1] += 0.5;
+  ASSERT_TRUE(db->write_series(*info, revised).has_value());
+
+  // Simulates a reader that registered a mark and crashed before releasing
+  // it -- planted directly (same "not a real PID on any host this test runs
+  // on" convention writer_lock_test.cpp's StaleLockWithDeadOwnerPidIsTakenOver
+  // uses), since reproducing an actual crash deterministically is not
+  // possible.
+  const std::filesystem::path readers_dir = root / "readers";
+  std::error_code mkdir_ec;
+  fs::create_directories(readers_dir, mkdir_ec);
+  ASSERT_FALSE(mkdir_ec) << mkdir_ec.message();
+  const std::filesystem::path stale_mark = readers_dir / "reader-999999999-stale.mark";
+  write_text(stale_mark, "999999999");
+  ASSERT_TRUE(fs::exists(stale_mark));
+
+  auto result = db->vacuum_unindexed_partitions();
+  ASSERT_TRUE(result.has_value()) << (result ? "" : result.error().to_string())
+                                  << " -- a dead-pid mark must not block vacuum";
+  EXPECT_EQ(*result, 1u);
+  EXPECT_FALSE(fs::exists(stale_mark))
+      << "a confirmed-dead mark is opportunistically cleaned up while scanning";
   std::filesystem::remove_all(root);
 }
 

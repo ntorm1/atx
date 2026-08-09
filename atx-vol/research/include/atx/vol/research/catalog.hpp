@@ -51,6 +51,17 @@
 //   track_key TEXT NOT NULL REFERENCES tracks(track_key),
 //   sweep_id TEXT NOT NULL, sharpe REAL, created_ts INTEGER NOT NULL);
 // CREATE INDEX idx_tracks_dims ON tracks(underlier, family, date_min, date_max);
+//
+// -- Task D6 (retention/GC). The brief's Step 1(a) inline amendment replaces
+// -- "epoch = catalog row readers_epoch, incremented by load-side BEGIN..."
+// -- with a shared advisory mark a reader registers in SQLite; GC skips any
+// -- batch file carrying a live one. `file` is NOT a foreign key into
+// -- tracks.file: a mark protects a PHYSICAL batch file, which several tracks
+// -- can share and which can outlive any one of their rows changing status.
+// CREATE TABLE reader_marks(
+//   mark_id INTEGER PRIMARY KEY,
+//   file TEXT NOT NULL, pid INTEGER NOT NULL, created_ts INTEGER NOT NULL);
+// CREATE INDEX idx_reader_marks_file ON reader_marks(file);
 // ```
 //
 // Landed verbatim from the brief -- see catalog.cpp's schema constant for the
@@ -92,6 +103,7 @@
 #include <chrono>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -112,19 +124,28 @@ inline constexpr std::string_view kCatalogDbName = "catalog.sqlite";
 enum class TrackStatus : std::uint8_t {
   Staging,   // "staging"   -- write_staging() landed it; file/row_group NULL
   Compacted, // "compacted" -- mark_compacted() folded it into a Parquet batch
-  Retired,   // "retired"   -- Task D5: `register_staging` writes this on an
-             //                OLDER-generation row it just superseded (see
-             //                that method's doc comment). Retired rows are
-             //                NEVER deleted or rewritten -- still `probe()`-
-             //                able, still returned by an unfiltered
+  Retired,   // "retired"   -- written for TWO distinct reasons, both still
+             //                `probe()`-able and returned by an unfiltered
              //                `SELECT * FROM tracks` (atxpy.tracks.catalog())
-             //                -- "kept queryable" per the brief. A future
-             //                retention/eviction task (D6) may additionally
-             //                write this status for a DIFFERENT reason
-             //                (last_access_ts-driven GC) and may choose to
-             //                actually delete/rewrite Parquet data for rows
-             //                already in this state; that is out of D5's
-             //                scope.
+             //                forever -- the row itself is NEVER deleted:
+             //                  (1) Task D5 economics-rev supersession
+             //                      (`register_staging`, on an OLDER-
+             //                      generation row it just superseded).
+             //                  (2) Task D6 `retire_stale` (last_access_ts
+             //                      aged past a GC threshold).
+             //                UNLIKE D5-only retirement, Task D6's `gc()` may
+             //                go on to PHYSICALLY reclaim a retired row's
+             //                Parquet bytes (rewrite its batch file without
+             //                that row, or delete the file outright if
+             //                nothing else in it survives) -- when it does,
+             //                `apply_gc_rewrite` clears that row's
+             //                `file`/`row_group` to NULL (see TrackRow's own
+             //                doc comment), so a Retired row's `file` is
+             //                *usually*, but not always, still resolvable:
+             //                NULL means "reclaimed, the bytes are gone";
+             //                non-null (and D5-only retired rows are ALWAYS
+             //                non-null, since D6 may not have swept them yet)
+             //                means the Parquet data is still exactly there.
 };
 
 [[nodiscard]] std::string_view to_string(TrackStatus status) noexcept;
@@ -133,8 +154,14 @@ enum class TrackStatus : std::uint8_t {
 [[nodiscard]] atx::core::Result<TrackStatus> track_status_from_string(std::string_view text);
 
 // One `tracks` row, as read back by `probe()`. `file`/`row_group` are
-// populated (non-nullopt) iff `status == Compacted` -- exactly the schema's
-// "NULL while staging" contract.
+// populated (non-nullopt) for `status == Compacted` -- exactly the schema's
+// "NULL while staging" contract -- AND for most `status == Retired` rows,
+// which keep pointing at their real Parquet data by default (D5's own
+// "retiring never touches file/row_group" contract). The one exception:
+// Task D6's `gc()` may have PHYSICALLY reclaimed a retired row's bytes, in
+// which case `apply_gc_rewrite` clears both fields to NULL -- see
+// `TrackStatus::Retired`'s own doc comment for the full "NULL means gone,
+// non-null means still there" rule.
 struct TrackRow {
   std::string track_key;
   std::string underlier;
@@ -273,6 +300,70 @@ public:
   // `dsr()` itself separately guards `n_trials <= 1` regardless of this
   // value, per tearsheet.hpp's own doc comment).
   [[nodiscard]] atx::core::Result<TrialStats> trial_stats(std::string_view sweep_id);
+
+  // ── Task D6: retention/GC support ─────────────────────────────────────
+
+  // Retires (status -> `Retired`, see that enumerator's doc comment) every
+  // `Compacted` row whose `last_access_ts < older_than_ts_ns`. A pure status
+  // LABEL transition -- like D5's supersession retire, this never touches
+  // `file`/`row_group` by itself; physically reclaiming the data is a
+  // SEPARATE, later step (`apply_gc_rewrite`) a caller takes only after
+  // confirming no live reader mark protects the batch file involved. Never
+  // targets `Staging` rows (nothing compacted yet to reclaim) or rows
+  // already `Retired` (already handled, re-retiring is simply not selected
+  // by the `status = 'compacted'` filter -- no-op, not an error). Returns
+  // the number of rows retired by THIS call.
+  [[nodiscard]] atx::core::Result<std::int64_t> retire_stale(std::int64_t older_than_ts_ns);
+
+  // Every row (any status) currently pointing at `file`, ordered by
+  // `track_key` -- a batch file's full membership, which GC needs before
+  // rewriting or deleting it: some rows in the file may be `Retired`
+  // (candidates to drop) while others are still `Compacted` (must survive
+  // the rewrite, repointed at wherever the survivors land).
+  [[nodiscard]] atx::core::Result<std::vector<TrackRow>> rows_by_file(std::string_view file);
+
+  // Registers a shared advisory mark on `file`, tagged with the CALLING
+  // process's own pid (never caller-supplied -- a mark cannot be forged
+  // against a different, unrelated live process). Returns the mark's id,
+  // which the caller passes to `release_reader_mark` when done. This is the
+  // brief's Step 1(a) replacement mechanism verbatim: "reader takes a shared
+  // advisory mark in SQLite, GC skips marked batches" -- MULTIPLE marks (by
+  // the same or different processes, on the same or different files) may
+  // coexist; this is a many-reader registration, never mutual exclusion, so
+  // it never waits or contends. Err(InvalidArgument) on an empty `file`.
+  [[nodiscard]] atx::core::Result<std::int64_t> mark_reader(std::string_view file);
+
+  // Releases a mark by id. Idempotent: releasing an already-released (or
+  // never-existent) id is not an error, mirroring
+  // `detail::WriterLock::release()`'s own contract.
+  [[nodiscard]] atx::core::Status release_reader_mark(std::int64_t mark_id);
+
+  // True iff `file` currently carries at least one LIVE advisory mark (a
+  // `mark_reader()` row whose pid is still a running process --
+  // `detail::process_alive`, writer_lock.hpp). While scanning, any mark
+  // found to name a CONFIRMED-DEAD pid is opportunistically deleted --
+  // self-healing cleanup for a reader that crashed without releasing,
+  // mirroring `detail::WriterLock`'s own stale-owner takeover -- so a marker
+  // left behind by a crash does not block GC on `file` forever.
+  [[nodiscard]] atx::core::Result<bool> has_live_reader_mark(std::string_view file);
+
+  // Applies one GC batch outcome atomically (one transaction): every
+  // `retired_keys` row (must currently be `Retired` and point at `old_file`)
+  // has `file`/`row_group` cleared to NULL -- see `TrackStatus::Retired`'s
+  // doc comment on why this, rather than leaving them pointing at bytes GC
+  // is about to delete. If `new_file` is non-empty, every `kept_keys` row
+  // (must currently be `Compacted` and point at `old_file`) is repointed at
+  // `new_file` with `row_group = 0` -- the batch was rewritten without the
+  // retired rows, not deleted. If `new_file` is EMPTY, `kept_keys` must also
+  // be empty (the whole batch was deleted -- nothing survived it to repoint)
+  // -- Err(InvalidArgument) otherwise, since silently accepting the reverse
+  // would orphan a survivor's only pointer to its own data. Callers decide
+  // (and durably publish) the new/deleted file on disk BEFORE calling this
+  // -- see track_gc.cpp's own doc comment for the full deletion-ordering
+  // argument (catalog publish before the old file is removed).
+  [[nodiscard]] atx::core::Status apply_gc_rewrite(std::string_view old_file, std::string_view new_file,
+                                                    std::span<const std::string> retired_keys,
+                                                    std::span<const std::string> kept_keys);
 
 private:
   Catalog(atx::core::db::Database db, std::string lake_root)

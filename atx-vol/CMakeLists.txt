@@ -335,6 +335,12 @@ if(ATX_VOL_LAKEHOUSE)
     # above (its header only names already-unconditionally-declared types,
     # same as sweep_driver.hpp).
     target_sources(atx-vol PRIVATE src/track_compact_reconcile.cpp)
+
+    # Task D6: last_access_ts-driven retention/GC (research/track_gc.hpp,
+    # src/track_gc.cpp) -- needs BOTH Arrow/Parquet reading+writing (to
+    # rewrite/delete batch files) AND catalog.hpp, same gate and same reason
+    # as src/track_compact_reconcile.cpp immediately above.
+    target_sources(atx-vol PRIVATE src/track_gc.cpp)
 endif()
 
 # ---- Algorithm counters (P0.2) ----

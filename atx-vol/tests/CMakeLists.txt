@@ -216,6 +216,10 @@ if(ATX_VOL_LAKEHOUSE)
     # list_by_status and TrackStore::compact() actually compiled into
     # atx-vol, same gate as the three test files immediately above.
     target_sources(atx-vol-tests PRIVATE track_compact_reconcile_test.cpp)
+    # Task D6: last_access_ts-driven GC (research/track_gc.hpp) -- needs BOTH
+    # Arrow/Parquet reading+writing AND Catalog, same gate as
+    # track_compact_reconcile_test.cpp immediately above.
+    target_sources(atx-vol-tests PRIVATE track_gc_test.cpp)
 endif()
 # backtest_bench_test.cpp was relocated to bench/backtest_throughput_bench.cpp
 # (it is a throughput benchmark, not a correctness gate).

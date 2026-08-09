@@ -3,9 +3,12 @@
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <span>
 #include <string>
 #include <system_error>
 #include <vector>
+
+#include "atx/vol/detail/writer_lock.hpp" // Task D6: detail::current_process_id/process_alive reuse
 
 namespace atx::vol {
 
@@ -47,6 +50,10 @@ CREATE TABLE IF NOT EXISTS trials(     -- B4's N: EVERY variant ever attempted
   track_key TEXT NOT NULL REFERENCES tracks(track_key),
   sweep_id TEXT NOT NULL, sharpe REAL, created_ts INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_tracks_dims ON tracks(underlier, family, date_min, date_max);
+CREATE TABLE IF NOT EXISTS reader_marks( -- Task D6: shared advisory marks
+  mark_id INTEGER PRIMARY KEY,
+  file TEXT NOT NULL, pid INTEGER NOT NULL, created_ts INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_reader_marks_file ON reader_marks(file);
 )sql";
 
 constexpr std::string_view kProbeSql =
@@ -100,6 +107,35 @@ constexpr std::string_view kListByStatusSql =
     "SELECT track_key, underlier, family, config_json, engine_id, economics_rev, "
     "data_snapshot_id, date_min, date_max, status, file, row_group, created_ts, "
     "last_access_ts FROM tracks WHERE status = ?1 ORDER BY track_key;";
+
+// Task D6 -- retire_stale: pure status-label transition, same shape as
+// kRetireSupersededSql above, but selecting on age (last_access_ts) rather
+// than on economics_rev/variant identity. Only ever targets 'compacted' rows
+// -- see retire_stale's own doc comment for why 'staging'/'retired' rows are
+// never selected.
+constexpr std::string_view kRetireStaleSql =
+    "UPDATE tracks SET status = ?1 WHERE status = ?2 AND last_access_ts < ?3;";
+
+constexpr std::string_view kRowsByFileSql =
+    "SELECT track_key, underlier, family, config_json, engine_id, economics_rev, "
+    "data_snapshot_id, date_min, date_max, status, file, row_group, created_ts, "
+    "last_access_ts FROM tracks WHERE file = ?1 ORDER BY track_key;";
+
+constexpr std::string_view kInsertReaderMarkSql =
+    "INSERT INTO reader_marks(file, pid, created_ts) VALUES (?1, ?2, ?3);";
+constexpr std::string_view kDeleteReaderMarkByIdSql = "DELETE FROM reader_marks WHERE mark_id = ?1;";
+constexpr std::string_view kSelectReaderMarksForFileSql =
+    "SELECT mark_id, pid FROM reader_marks WHERE file = ?1;";
+
+// apply_gc_rewrite's two UPDATEs. Both repeat `status`/`old_file`(=`file`) in
+// the WHERE clause as a defensive guard -- a row that changed shape between
+// the caller's own read (rows_by_file) and this call (e.g. a concurrent
+// writer) is simply not touched, rather than blindly overwritten.
+constexpr std::string_view kClearReclaimedFileSql =
+    "UPDATE tracks SET file = NULL, row_group = NULL WHERE track_key = ?1 AND status = ?2 AND file = "
+    "?3;";
+constexpr std::string_view kRepointRewrittenFileSql =
+    "UPDATE tracks SET file = ?1, row_group = 0 WHERE track_key = ?2 AND status = ?3 AND file = ?4;";
 
 // Shared by probe() and list_by_status() -- both read the same 14-column
 // SELECT shape (kProbeSql/kListByStatusSql), so this is the ONE place that
@@ -456,6 +492,155 @@ Result<TrialStats> Catalog::trial_stats(std::string_view sweep_id) {
   }
   stats.sr_variance = sum_sq / static_cast<double>(sharpes.size() - 1);
   return Ok(stats);
+}
+
+// ── Task D6: retention/GC support ───────────────────────────────────────
+
+Result<std::int64_t> Catalog::retire_stale(std::int64_t older_than_ts_ns) {
+  ATX_TRY(auto *stmt, db_.prepare_cached(kRetireStaleSql));
+  ATX_TRY_VOID(stmt->bind(1, to_string(TrackStatus::Retired)));
+  ATX_TRY_VOID(stmt->bind(2, to_string(TrackStatus::Compacted)));
+  ATX_TRY_VOID(stmt->bind(3, older_than_ts_ns));
+  auto step = stmt->step();
+  if (!step) {
+    ATX_TRY_VOID(stmt->reset());
+    return Err(step.error());
+  }
+  const std::int64_t changed = db_.changes();
+  ATX_TRY_VOID(stmt->reset());
+  return Ok(changed);
+}
+
+Result<std::vector<TrackRow>> Catalog::rows_by_file(std::string_view file) {
+  std::vector<TrackRow> rows;
+  ATX_TRY(auto *stmt, db_.prepare_cached(kRowsByFileSql));
+  ATX_TRY_VOID(stmt->bind(1, file));
+  for (;;) {
+    ATX_TRY(const auto step, stmt->step());
+    if (step == db::Statement::Step::Done) {
+      break;
+    }
+    Result<TrackRow> row = row_from_statement(*stmt);
+    if (!row.has_value()) {
+      ATX_TRY_VOID(stmt->reset());
+      return Err(row.error());
+    }
+    rows.push_back(std::move(*row));
+  }
+  ATX_TRY_VOID(stmt->reset());
+  return Ok(std::move(rows));
+}
+
+Result<std::int64_t> Catalog::mark_reader(std::string_view file) {
+  if (file.empty()) {
+    return Err(ErrorCode::InvalidArgument, "Catalog::mark_reader: empty file");
+  }
+  ATX_TRY(auto *stmt, db_.prepare_cached(kInsertReaderMarkSql));
+  ATX_TRY_VOID(stmt->bind(1, file));
+  ATX_TRY_VOID(stmt->bind(2, static_cast<std::int64_t>(detail::current_process_id())));
+  ATX_TRY_VOID(stmt->bind(3, wall_clock_ns()));
+  auto step = stmt->step();
+  if (!step) {
+    ATX_TRY_VOID(stmt->reset());
+    return Err(step.error());
+  }
+  const std::int64_t mark_id = db_.last_insert_rowid();
+  ATX_TRY_VOID(stmt->reset());
+  return Ok(mark_id);
+}
+
+Status Catalog::release_reader_mark(std::int64_t mark_id) {
+  ATX_TRY(auto *stmt, db_.prepare_cached(kDeleteReaderMarkByIdSql));
+  ATX_TRY_VOID(stmt->bind(1, mark_id));
+  auto step = stmt->step();
+  if (!step) {
+    ATX_TRY_VOID(stmt->reset());
+    return Err(step.error());
+  }
+  ATX_TRY_VOID(stmt->reset());
+  return Ok();
+}
+
+Result<bool> Catalog::has_live_reader_mark(std::string_view file) {
+  ATX_TRY(auto *select_stmt, db_.prepare_cached(kSelectReaderMarksForFileSql));
+  ATX_TRY_VOID(select_stmt->bind(1, file));
+  std::vector<std::pair<std::int64_t, std::int64_t>> marks; // (mark_id, pid)
+  for (;;) {
+    ATX_TRY(const auto step, select_stmt->step());
+    if (step == db::Statement::Step::Done) {
+      break;
+    }
+    marks.emplace_back(select_stmt->column_int(0), select_stmt->column_int(1));
+  }
+  ATX_TRY_VOID(select_stmt->reset());
+
+  bool any_live = false;
+  for (const auto &[mark_id, pid] : marks) {
+    if (detail::process_alive(static_cast<std::uint64_t>(pid))) {
+      any_live = true;
+      continue;
+    }
+    // Confirmed-dead owner -- opportunistic cleanup, mirroring
+    // detail::WriterLock's own stale-owner takeover. Best-effort: a failure
+    // here does not change the liveness ANSWER (this mark was already
+    // established dead), only whether the row lingers to be swept next time.
+    ATX_TRY(auto *delete_stmt, db_.prepare_cached(kDeleteReaderMarkByIdSql));
+    ATX_TRY_VOID(delete_stmt->bind(1, mark_id));
+    static_cast<void>(delete_stmt->step());
+    ATX_TRY_VOID(delete_stmt->reset());
+  }
+  return Ok(any_live);
+}
+
+Status Catalog::apply_gc_rewrite(std::string_view old_file, std::string_view new_file,
+                                 std::span<const std::string> retired_keys,
+                                 std::span<const std::string> kept_keys) {
+  if (old_file.empty()) {
+    return Err(ErrorCode::InvalidArgument, "Catalog::apply_gc_rewrite: empty old_file");
+  }
+  if (new_file.empty() && !kept_keys.empty()) {
+    return Err(ErrorCode::InvalidArgument,
+               "Catalog::apply_gc_rewrite: kept_keys non-empty but new_file empty -- a batch "
+               "delete must have no survivors");
+  }
+  if (retired_keys.empty() && kept_keys.empty()) {
+    return Err(ErrorCode::InvalidArgument, "Catalog::apply_gc_rewrite: nothing to apply");
+  }
+
+  ATX_TRY(db::Transaction txn, db::Transaction::begin_immediate(db_));
+
+  if (!retired_keys.empty()) {
+    ATX_TRY(auto *clear_stmt, db_.prepare_cached(kClearReclaimedFileSql));
+    for (const std::string &key : retired_keys) {
+      ATX_TRY_VOID(clear_stmt->bind(1, key));
+      ATX_TRY_VOID(clear_stmt->bind(2, to_string(TrackStatus::Retired)));
+      ATX_TRY_VOID(clear_stmt->bind(3, old_file));
+      auto step = clear_stmt->step();
+      if (!step) {
+        ATX_TRY_VOID(clear_stmt->reset());
+        return Err(step.error());
+      }
+      ATX_TRY_VOID(clear_stmt->reset());
+    }
+  }
+
+  if (!kept_keys.empty()) {
+    ATX_TRY(auto *repoint_stmt, db_.prepare_cached(kRepointRewrittenFileSql));
+    for (const std::string &key : kept_keys) {
+      ATX_TRY_VOID(repoint_stmt->bind(1, new_file));
+      ATX_TRY_VOID(repoint_stmt->bind(2, key));
+      ATX_TRY_VOID(repoint_stmt->bind(3, to_string(TrackStatus::Compacted)));
+      ATX_TRY_VOID(repoint_stmt->bind(4, old_file));
+      auto step = repoint_stmt->step();
+      if (!step) {
+        ATX_TRY_VOID(repoint_stmt->reset());
+        return Err(step.error());
+      }
+      ATX_TRY_VOID(repoint_stmt->reset());
+    }
+  }
+
+  return txn.commit();
 }
 
 } // namespace atx::vol

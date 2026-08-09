@@ -47,13 +47,25 @@
 //
 // Only built when ATX_VOL_LAKEHOUSE is ON (atx-vol/CMakeLists.txt) -- the
 // library entry points it wraps do not exist in the OFF build.
+//
+// Task D6: also dispatches a `gc` subcommand over `atx::vol::gc()`
+// (research/track_gc.hpp) -- last_access_ts-driven retention. Kept as an
+// explicit, separately-invoked subcommand rather than folded into the
+// default compact-and-reconcile flow above: GC is destructive (it retires
+// and eventually reclaims tracks nobody has read in a while) and needs an
+// operator-supplied age policy (`older_than_ts_ns`), so running it
+// automatically on every `track_compact <lake_root>` call would silently
+// delete data under a default threshold no caller asked for. The default
+// (no subcommand) invocation's behavior is completely unchanged.
 
 #include "atx/vol/research/catalog.hpp"
 #include "atx/vol/research/track_compact_reconcile.hpp"
+#include "atx/vol/research/track_gc.hpp"
 #include "atx/vol/research/track_key.hpp"
 #include "atx/vol/research/track_store.hpp"
 
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 #include <string_view>
 
@@ -62,17 +74,55 @@ namespace {
 void print_usage(const char *argv0) {
   std::fprintf(stderr,
                "usage: %s <lake_root>\n"
-               "  Compacts every staged track under <lake_root>/staging/ into\n"
+               "       %s gc <lake_root> <older_than_ts_ns>\n"
+               "  <lake_root>: compacts every staged track under <lake_root>/staging/ into\n"
                "  hive-partitioned, zstd-compressed Parquet batch files under\n"
                "  <lake_root>/tracks/underlier=<U>/family=<F>/batch-NNNNNN.parquet,\n"
                "  marks each one 'compacted' in <lake_root>/catalog.sqlite, then\n"
-               "  reconciles any track a PRIOR interrupted run left stuck 'staging'.\n",
-               argv0);
+               "  reconciles any track a PRIOR interrupted run left stuck 'staging'.\n"
+               "  gc: retires tracks whose last_access_ts precedes <older_than_ts_ns>\n"
+               "  (nanoseconds since epoch) and reclaims disk for batches that are now\n"
+               "  entirely or partially retired, skipping any batch a live reader has\n"
+               "  advisory-marked (Catalog::mark_reader). See track_gc.hpp.\n",
+               argv0, argv0);
+}
+
+int run_gc(const std::string &lake_root, std::string_view older_than_arg) {
+  char *end = nullptr;
+  const long long parsed = std::strtoll(std::string(older_than_arg).c_str(), &end, 10);
+  if (end == nullptr || *end != '\0') {
+    std::fprintf(stderr, "track_compact gc: <older_than_ts_ns> is not a valid integer: %.*s\n",
+                 static_cast<int>(older_than_arg.size()), older_than_arg.data());
+    return 2;
+  }
+  const atx::vol::Result<atx::vol::GcStats> result =
+      atx::vol::gc(lake_root, static_cast<std::int64_t>(parsed));
+  if (!result.has_value()) {
+    std::fprintf(stderr, "track_compact gc: %s\n", result.error().to_string().c_str());
+    return 1;
+  }
+  const atx::vol::GcStats &stats = *result;
+  std::printf("track_compact gc: %llu track(s) retired; %llu batch(es) rewritten, %llu deleted, "
+              "%llu skipped (live reader mark), %llu old file(s) not removed\n",
+              static_cast<unsigned long long>(stats.tracks_retired),
+              static_cast<unsigned long long>(stats.batches_rewritten),
+              static_cast<unsigned long long>(stats.batches_deleted),
+              static_cast<unsigned long long>(stats.batches_skipped_live_reader),
+              static_cast<unsigned long long>(stats.old_files_not_removed));
+  return 0;
 }
 
 } // namespace
 
 int main(int argc, char **argv) {
+  if (argc >= 2 && std::string_view(argv[1]) == "gc") {
+    if (argc != 4) {
+      print_usage(argv[0]);
+      return 2;
+    }
+    return run_gc(argv[2], argv[3]);
+  }
+
   if (argc != 2) {
     print_usage(argv[0]);
     return 2;

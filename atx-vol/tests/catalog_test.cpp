@@ -92,6 +92,42 @@ namespace db = atx::core::db;
   return stmt->column_int(0);
 }
 
+// Task D6 test backdoor: `Catalog` deliberately exposes no way to set
+// `last_access_ts` to anything but "now" (register_staging's own contract) --
+// there is no production reason a caller should be able to forge it. Testing
+// `retire_stale`'s age threshold deterministically (not via a real sleep,
+// which would make the suite slow and flaky) needs SOME way to plant an old
+// timestamp, so this reaches around the public API with a raw connection,
+// exactly like `raw_count` above already does for read-only inspection.
+void set_last_access_ts_raw(const fs::path &db_path, const std::string &track_key, std::int64_t ts) {
+  auto conn = db::Database::open(db_path.string(), db::OpenMode::ReadWrite);
+  ASSERT_TRUE(conn.has_value()) << (conn ? "" : conn.error().to_string());
+  auto stmt = conn->prepare("UPDATE tracks SET last_access_ts = ?1 WHERE track_key = ?2;");
+  ASSERT_TRUE(stmt.has_value());
+  ASSERT_TRUE(stmt->bind(1, ts).has_value());
+  ASSERT_TRUE(stmt->bind(2, track_key).has_value());
+  auto step = stmt->step();
+  ASSERT_TRUE(step.has_value()) << (step ? "" : step.error().to_string());
+  ASSERT_EQ(conn->changes(), 1) << "set_last_access_ts_raw: no such track_key: " << track_key;
+}
+
+// Raw insert into reader_marks, for planting a mark whose pid is GUARANTEED
+// dead without needing to spawn and wait on a real child process -- same
+// "not a real PID on any host this test runs on" convention
+// writer_lock_test.cpp's StaleLockWithDeadOwnerPidIsTakenOver uses.
+constexpr std::int64_t kDefinitelyDeadPid = 999999999;
+
+void insert_raw_reader_mark(const fs::path &db_path, std::string_view file, std::int64_t pid) {
+  auto conn = db::Database::open(db_path.string(), db::OpenMode::ReadWrite);
+  ASSERT_TRUE(conn.has_value()) << (conn ? "" : conn.error().to_string());
+  auto stmt = conn->prepare("INSERT INTO reader_marks(file, pid, created_ts) VALUES (?1, ?2, 0);");
+  ASSERT_TRUE(stmt.has_value());
+  ASSERT_TRUE(stmt->bind(1, file).has_value());
+  ASSERT_TRUE(stmt->bind(2, pid).has_value());
+  auto step = stmt->step();
+  ASSERT_TRUE(step.has_value()) << (step ? "" : step.error().to_string());
+}
+
 // ── Basic open / schema / WAL ───────────────────────────────────────────────
 
 TEST(CatalogTest, OpenCreatesDbFile) {
@@ -485,6 +521,257 @@ TEST(CatalogTest, MarkCompactedTwiceFailsInvalidArgument) {
   ASSERT_FALSE(again.has_value())
       << "a track already compacted must not silently accept a second compaction";
   EXPECT_EQ(again.error().code(), atx::core::ErrorCode::InvalidArgument);
+}
+
+// ── Task D6: retention/GC support ───────────────────────────────────────────
+//
+// gc()'s own orchestration (Arrow-touching batch rewrite/delete) is tested in
+// track_gc_test.cpp -- these are the pure-Catalog pieces gc() is built on:
+// retire_stale (the last_access_ts-driven status transition), rows_by_file
+// (a batch's full membership), the reader_marks advisory-mark table (the
+// brief's "reader takes a shared advisory mark in SQLite, GC skips marked
+// batches" replacement for the superseded readers_epoch mechanism), and
+// apply_gc_rewrite (the one transaction that publishes a rewrite/delete).
+
+TEST(CatalogTest, RetireStaleRetiresOnlyCompactedRowsPastTheThreshold) {
+  const fs::path root = fresh_lake_root("retire-stale");
+  auto cat = Catalog::open(root.string());
+  ASSERT_TRUE(cat.has_value());
+  const fs::path db_path = root / std::string(kCatalogDbName);
+
+  const TrackKey old_key = make_indexed_key(0, 1);
+  const TrackKey new_key = make_indexed_key(0, 2);
+  const TrackKey staging_key = make_indexed_key(0, 3);
+  ASSERT_TRUE(cat->register_staging(old_key, make_meta(), make_registration(1)).has_value());
+  ASSERT_TRUE(cat->mark_compacted(old_key, "tracks/underlier=SPY/family=strangle_hedged/batch-000000.parquet", 0)
+                  .has_value());
+  ASSERT_TRUE(cat->register_staging(new_key, make_meta(), make_registration(2)).has_value());
+  ASSERT_TRUE(cat->mark_compacted(new_key, "tracks/underlier=SPY/family=strangle_hedged/batch-000000.parquet", 0)
+                  .has_value());
+  ASSERT_TRUE(cat->register_staging(staging_key, make_meta(), make_registration(3)).has_value());
+
+  set_last_access_ts_raw(db_path, old_key.hex(), 1000);
+  set_last_access_ts_raw(db_path, new_key.hex(), 5000);
+
+  auto retired = cat->retire_stale(3000);
+  ASSERT_TRUE(retired.has_value()) << (retired ? "" : retired.error().to_string());
+  EXPECT_EQ(*retired, 1) << "only the old COMPACTED row is past the threshold";
+
+  auto old_row = cat->probe(old_key);
+  ASSERT_TRUE(old_row.has_value());
+  ASSERT_TRUE(old_row->has_value());
+  EXPECT_EQ((*old_row)->status, TrackStatus::Retired);
+  ASSERT_TRUE((*old_row)->file.has_value()) << "retire_stale is a status label only -- never touches file/row_group";
+  EXPECT_EQ(*(*old_row)->file, "tracks/underlier=SPY/family=strangle_hedged/batch-000000.parquet");
+
+  auto new_row = cat->probe(new_key);
+  ASSERT_TRUE(new_row.has_value());
+  ASSERT_TRUE(new_row->has_value());
+  EXPECT_EQ((*new_row)->status, TrackStatus::Compacted) << "newer than the threshold must survive";
+
+  auto staging_row = cat->probe(staging_key);
+  ASSERT_TRUE(staging_row.has_value());
+  ASSERT_TRUE(staging_row->has_value());
+  EXPECT_EQ((*staging_row)->status, TrackStatus::Staging)
+      << "retire_stale only ever targets Compacted rows, never Staging";
+
+  // Idempotent: nothing left to retire on a second call at the same threshold.
+  auto second = cat->retire_stale(3000);
+  ASSERT_TRUE(second.has_value());
+  EXPECT_EQ(*second, 0);
+}
+
+TEST(CatalogTest, RowsByFileReturnsEveryRowPointingAtThatFileOrderedByKey) {
+  const fs::path root = fresh_lake_root("rows-by-file");
+  auto cat = Catalog::open(root.string());
+  ASSERT_TRUE(cat.has_value());
+
+  const TrackKey key_b = make_indexed_key(1, 2);
+  const TrackKey key_a = make_indexed_key(1, 1);
+  const TrackKey other_file_key = make_indexed_key(1, 3);
+  ASSERT_TRUE(cat->register_staging(key_b, make_meta(), make_registration(2)).has_value());
+  ASSERT_TRUE(cat->register_staging(key_a, make_meta(), make_registration(1)).has_value());
+  ASSERT_TRUE(cat->register_staging(other_file_key, make_meta(), make_registration(3)).has_value());
+  ASSERT_TRUE(cat->mark_compacted(key_b, "tracks/underlier=SPY/family=strangle_hedged/batch-000000.parquet", 0)
+                  .has_value());
+  ASSERT_TRUE(cat->mark_compacted(key_a, "tracks/underlier=SPY/family=strangle_hedged/batch-000000.parquet", 0)
+                  .has_value());
+  ASSERT_TRUE(
+      cat->mark_compacted(other_file_key, "tracks/underlier=SPY/family=strangle_hedged/batch-000001.parquet", 0)
+          .has_value());
+
+  auto rows = cat->rows_by_file("tracks/underlier=SPY/family=strangle_hedged/batch-000000.parquet");
+  ASSERT_TRUE(rows.has_value()) << (rows ? "" : rows.error().to_string());
+  ASSERT_EQ(rows->size(), 2u);
+  EXPECT_EQ((*rows)[0].track_key, key_a.hex()) << "ORDER BY track_key";
+  EXPECT_EQ((*rows)[1].track_key, key_b.hex());
+
+  auto empty = cat->rows_by_file("tracks/underlier=SPY/family=strangle_hedged/batch-999999.parquet");
+  ASSERT_TRUE(empty.has_value());
+  EXPECT_TRUE(empty->empty());
+}
+
+TEST(CatalogTest, MarkReaderThenHasLiveReaderMarkIsTrue) {
+  const fs::path root = fresh_lake_root("mark-live");
+  auto cat = Catalog::open(root.string());
+  ASSERT_TRUE(cat.has_value());
+
+  auto before = cat->has_live_reader_mark("tracks/underlier=SPY/family=strangle_hedged/batch-000000.parquet");
+  ASSERT_TRUE(before.has_value());
+  EXPECT_FALSE(*before) << "no mark registered yet";
+
+  auto mark_id = cat->mark_reader("tracks/underlier=SPY/family=strangle_hedged/batch-000000.parquet");
+  ASSERT_TRUE(mark_id.has_value()) << (mark_id ? "" : mark_id.error().to_string());
+  EXPECT_GT(*mark_id, 0);
+
+  auto after = cat->has_live_reader_mark("tracks/underlier=SPY/family=strangle_hedged/batch-000000.parquet");
+  ASSERT_TRUE(after.has_value());
+  EXPECT_TRUE(*after) << "mark_reader uses the CALLING process's own (live) pid";
+
+  auto other_file = cat->has_live_reader_mark("tracks/underlier=SPY/family=strangle_hedged/batch-000001.parquet");
+  ASSERT_TRUE(other_file.has_value());
+  EXPECT_FALSE(*other_file) << "a mark on one file must not protect a different file";
+}
+
+TEST(CatalogTest, ReleaseReaderMarkClearsLivenessAndIsIdempotent) {
+  const fs::path root = fresh_lake_root("mark-release");
+  auto cat = Catalog::open(root.string());
+  ASSERT_TRUE(cat.has_value());
+  const std::string file = "tracks/underlier=SPY/family=strangle_hedged/batch-000000.parquet";
+
+  auto mark_id = cat->mark_reader(file);
+  ASSERT_TRUE(mark_id.has_value());
+  ASSERT_TRUE(cat->has_live_reader_mark(file).value_or(false));
+
+  ASSERT_TRUE(cat->release_reader_mark(*mark_id).has_value());
+  auto after = cat->has_live_reader_mark(file);
+  ASSERT_TRUE(after.has_value());
+  EXPECT_FALSE(*after);
+
+  // Idempotent: releasing an already-released (or never-existent) id is not
+  // an error -- mirrors WriterLock::release()'s own idempotence contract.
+  EXPECT_TRUE(cat->release_reader_mark(*mark_id).has_value());
+  EXPECT_TRUE(cat->release_reader_mark(123456789).has_value());
+}
+
+TEST(CatalogTest, HasLiveReaderMarkIgnoresAndCleansUpADeadPidMark) {
+  const fs::path root = fresh_lake_root("mark-stale");
+  auto cat = Catalog::open(root.string());
+  ASSERT_TRUE(cat.has_value());
+  const fs::path db_path = root / std::string(kCatalogDbName);
+  const std::string file = "tracks/underlier=SPY/family=strangle_hedged/batch-000000.parquet";
+
+  // Simulates a reader that registered a mark and then crashed without
+  // releasing it -- reachable in the real system, but not reproducible
+  // deterministically by actually killing a process, so this plants the
+  // post-crash STATE directly, same discipline track_compact_reconcile_test
+  // .cpp uses for track_compact's own crash window.
+  insert_raw_reader_mark(db_path, file, kDefinitelyDeadPid);
+  EXPECT_EQ(raw_count(db_path, "SELECT COUNT(*) FROM reader_marks;"), 1);
+
+  auto live = cat->has_live_reader_mark(file);
+  ASSERT_TRUE(live.has_value()) << (live ? "" : live.error().to_string());
+  EXPECT_FALSE(*live) << "a dead-pid mark must not be treated as live";
+
+  EXPECT_EQ(raw_count(db_path, "SELECT COUNT(*) FROM reader_marks;"), 0)
+      << "a confirmed-dead mark is opportunistically cleaned up while scanning, mirroring "
+         "WriterLock's own stale-owner takeover";
+}
+
+TEST(CatalogTest, ApplyGcRewriteWholeBatchDeleteClearsEveryRetiredRow) {
+  const fs::path root = fresh_lake_root("gc-rewrite-delete");
+  auto cat = Catalog::open(root.string());
+  ASSERT_TRUE(cat.has_value());
+  const fs::path db_path = root / std::string(kCatalogDbName);
+  const std::string old_file = "tracks/underlier=SPY/family=strangle_hedged/batch-000000.parquet";
+
+  const TrackKey key_a = make_indexed_key(2, 1);
+  const TrackKey key_b = make_indexed_key(2, 2);
+  ASSERT_TRUE(cat->register_staging(key_a, make_meta(), make_registration(1)).has_value());
+  ASSERT_TRUE(cat->mark_compacted(key_a, old_file, 0).has_value());
+  ASSERT_TRUE(cat->register_staging(key_b, make_meta(), make_registration(2)).has_value());
+  ASSERT_TRUE(cat->mark_compacted(key_b, old_file, 0).has_value());
+
+  // Both tracks in this batch are now old enough to retire -- the "whole
+  // batch reclaimed" scenario (kept_keys empty), a different apply_gc_rewrite
+  // code path than the survivors test above (new_file non-empty).
+  set_last_access_ts_raw(db_path, key_a.hex(), 1000);
+  set_last_access_ts_raw(db_path, key_b.hex(), 1000);
+  ASSERT_TRUE(cat->retire_stale(2000).has_value());
+
+  const std::vector<std::string> retired_keys{key_a.hex(), key_b.hex()};
+  ASSERT_TRUE(cat->apply_gc_rewrite(old_file, "", retired_keys, {}).has_value());
+
+  for (const TrackKey &key : {key_a, key_b}) {
+    auto row = cat->probe(key);
+    ASSERT_TRUE(row.has_value());
+    ASSERT_TRUE(row->has_value());
+    EXPECT_EQ((*row)->status, TrackStatus::Retired);
+    EXPECT_FALSE((*row)->file.has_value())
+        << "physically-reclaimed retired data must clear file, not keep pointing at deleted bytes";
+    EXPECT_FALSE((*row)->row_group.has_value());
+  }
+}
+
+TEST(CatalogTest, ApplyGcRewriteRepointsSurvivorsAtTheNewFile) {
+  const fs::path root = fresh_lake_root("gc-rewrite-survivors");
+  auto cat = Catalog::open(root.string());
+  ASSERT_TRUE(cat.has_value());
+  const std::string old_file = "tracks/underlier=SPY/family=strangle_hedged/batch-000000.parquet";
+  const std::string new_file = "tracks/underlier=SPY/family=strangle_hedged/batch-gc-000000.parquet";
+
+  const TrackKey survivor = make_indexed_key(3, 1);
+  const TrackKey reclaimed = make_indexed_key(3, 2);
+  ASSERT_TRUE(cat->register_staging(survivor, make_meta(), make_registration(1)).has_value());
+  ASSERT_TRUE(cat->mark_compacted(survivor, old_file, 0).has_value());
+  ASSERT_TRUE(cat->register_staging(reclaimed, make_meta(), make_registration(2)).has_value());
+  ASSERT_TRUE(cat->mark_compacted(reclaimed, old_file, 0).has_value());
+
+  // Retire ONLY `reclaimed` directly (bypassing retire_stale's age semantics,
+  // which are covered by their own test) via a fresh registration at a
+  // strictly higher economics_rev for the SAME variant -- D5's supersession
+  // path, the other real way a row becomes Retired.
+  TrackRegistration superseder = make_registration(2);
+  superseder.economics_rev = 2;
+  const TrackKey superseder_key = make_indexed_key(3, 3);
+  ASSERT_TRUE(cat->register_staging(superseder_key, make_meta(), superseder).has_value());
+  auto sanity_row = cat->probe(reclaimed);
+  ASSERT_TRUE(sanity_row.has_value());
+  ASSERT_TRUE(sanity_row->has_value());
+  ASSERT_EQ((*sanity_row)->status, TrackStatus::Retired) << "sanity: supersession fired";
+
+  const std::vector<std::string> retired_keys{reclaimed.hex()};
+  const std::vector<std::string> kept_keys{survivor.hex()};
+  ASSERT_TRUE(cat->apply_gc_rewrite(old_file, new_file, retired_keys, kept_keys).has_value());
+
+  auto survivor_row = cat->probe(survivor);
+  ASSERT_TRUE(survivor_row.has_value());
+  ASSERT_TRUE(survivor_row->has_value());
+  EXPECT_EQ((*survivor_row)->status, TrackStatus::Compacted);
+  ASSERT_TRUE((*survivor_row)->file.has_value());
+  EXPECT_EQ(*(*survivor_row)->file, new_file);
+  ASSERT_TRUE((*survivor_row)->row_group.has_value());
+  EXPECT_EQ(*(*survivor_row)->row_group, 0);
+
+  auto reclaimed_row = cat->probe(reclaimed);
+  ASSERT_TRUE(reclaimed_row.has_value());
+  ASSERT_TRUE(reclaimed_row->has_value());
+  EXPECT_EQ((*reclaimed_row)->status, TrackStatus::Retired);
+  EXPECT_FALSE((*reclaimed_row)->file.has_value());
+}
+
+TEST(CatalogTest, ApplyGcRewriteRejectsSurvivorsWithoutANewFile) {
+  const fs::path root = fresh_lake_root("gc-rewrite-guard");
+  auto cat = Catalog::open(root.string());
+  ASSERT_TRUE(cat.has_value());
+
+  const std::vector<std::string> retired_keys{};
+  const std::vector<std::string> kept_keys{"deadbeef"};
+  auto result = cat->apply_gc_rewrite("tracks/underlier=SPY/family=strangle_hedged/batch-000000.parquet", "",
+                                      retired_keys, kept_keys);
+  ASSERT_FALSE(result.has_value())
+      << "a batch delete (empty new_file) must never claim survivors -- that would silently orphan them";
+  EXPECT_EQ(result.error().code(), atx::core::ErrorCode::InvalidArgument);
 }
 
 // ── record_trial / trial_stats (feeds B4's DSR) ─────────────────────────────
