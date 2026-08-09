@@ -695,6 +695,48 @@ it O(distinct tenors) instead of O(rows).
       skew fixture — v1.0.0 vs post-P-6, both presets. Target: ≥5× FD path, ≥25× with P-4
       analytic. Record in this file under Outcomes.
 
+#### Outcomes
+
+Measured on both Release presets (i7-1260P, clang-cl 18, ThinLTO), interleaved paired A/B with
+arms round-robined within each round; each round's value is the best-of-N from that round's
+registered 5 repetitions. Full protocol and per-round data: `task-P-R-review.md` §3.1.
+
+**Headline, `deriv/greeks/standard_priced_surface`, `572bc55` (pre-Phase-2) vs `7943a4b`
+(post-P-6):**
+
+| preset | FD path | analytic (+P-4) |
+|---|---|---|
+| `rel-avx2` (Release + AVX2/FMA) | **1.924×** (ratio CV 4.8%, 16/16 wins; all three arm CVs 3.8–4.6%, inside the repo's 5% trustworthiness bar) | **3.120×** (ratio CV 5.9%) |
+| `rel` (Release, SSE2) | **1.916×** (ratio CV 6.9%) | **3.063×** (ratio CV 8.1%) |
+
+The two presets — independently built, independently measured, different ISA — agree within
+0.5% (FD) and 2% (analytic). **Release does not rescue the Debug figures**: P-4 measures
+1.57–1.60× on Release against 1.65× on Debug, and P-3's greeks contribution stays in the same
+1.1–1.2× band as its Debug 1.09× (`task-P-R-review.md` §3.2).
+
+**Targets ≥5× (FD path) and ≥25× (with P-4 analytic) were both MISSED** — by **2.6×** on the
+FD path and **8.0×** on the analytic path. **Ruling: plan defect, not an implementation
+shortfall** (`task-P-R-review.md` §5.1, on the same footing as the P-5 ≥2× ruling). `≥25×`
+traces to P-4's own Findings stating an *evaluation-count* ratio ("~25× fewer evaluations"),
+which the sprint's acceptance line then carried across as a *wall-clock* target — a unit
+error — and the evaluation-count claim does not survive P-4's own scope either (actual
+reduction ≈2.6×, not ~25×). `≥5×` was never itself a derived figure; it was assembled from
+three per-task aspirations, two of which (P-3, P-5) were already individually ruled brief
+defects or missed before this review. The delivered, Release-measured, CV-clean Phase-2
+outcome is **1.92× FD / 3.12× analytic**, and that is the figure to cite downstream — not the
+target.
+
+**`572bc55` is a strictly smaller-workload denominator than a literal `v1.0.0` comparison would
+be**, so the targets are missed under the literal spec too, not only against the corrected
+baseline: Phase 1's C-10 turned `carry_theta` on by default (~+21% cost to the same call) and
+grew `DerivGreeks`' arity, so a `v1.0.0` binary does strictly less work per call than `572bc55`
+does — the literal "v1.0.0 vs post-P-6" multiple would be *smaller* than 1.924× / 3.120×, not
+larger (`task-P-R-review.md` M-2).
+
+Correctness was preserved exactly throughout — end-to-end bit-identity verified by bijection on
+both Release presets over a 1344-leg portfolio frame (`task-P-R-review.md` §2) — which was the
+sprint's stated priority-1.
+
 ---
 
 ## Phase 3 — Features (product + risk surface a dispersion desk runs)

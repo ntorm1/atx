@@ -692,43 +692,50 @@ TEST(PreparedPortfolio, GroupedPriceEqualsIndependentOracleAndPinnedFingerprint)
   // Re-measured dev (Debug, SSE2) directly: 718570745730299145 -> 10976559059648513121.
   // This is the ONLY cell actually re-measured; the other two are addressed below.
   //
-  // rel (Release, SSE2) and rel-avx2 (Release, FMA) are STALE-BY-EXPECTATION and
-  // UNVERIFIED, not confirmed-unaffected — and this is wider than just these two
-  // cells: ConvexDenseCurve::w() -> fit_.iv() is unconditional on every preset, so no
-  // P-5 change across this task's four commits (rounds 0-3) has EVER been verified on
-  // a Release preset. A repo-wide grep confirms this file holds the only
-  // kGoldenFingerprint* family in the tree; the other config-split pins were checked
-  // and are not exposed to this class of change — session_test.cpp:1566 is eSSVI and
-  // tolerance-based (EXPECT_NEAR, not a hash), american_test.cpp:2686 (BoundaryHoist)
-  // pins on explicit (S,K,T,sigma,r,q) with no vol surface. The one remaining
-  // candidate worth checking is multiname_pipeline_test.cpp:923's NDEBUG dispersion
-  // baselines, if that pipeline routes ConvexDense.
-  // Verification was attempted and blocked, not skipped: a from-scratch `rel` build of
-  // atx-vol-tests reached final link (369/370 objects) and failed there on a
-  // pre-existing, unrelated shared-cache defect — a stale Debug-ABI spdlog.lib in
-  // C:\atx-cache\deps\spdlog-build (a build-farm-wide cache outside every worktree,
-  // shared across the sibling pool trees) clashing with Release-ABI atx-core.lib:
-  // "/failifmismatch: mismatch detected for '_ITERATOR_DEBUG_LEVEL'". That cache was
-  // independently confirmed being rewritten by a sibling worktree DURING this
-  // investigation, so force-rebuilding it from a single worktree would race a live
-  // consumer — left alone rather than "fixed" out of scope. This is a documented-
-  // mechanism defect (the cache is keyed by dependency, not by build configuration),
-  // not something P-5 caused or could have caused.
-  // PRESCRIBED PROCEDURE for whoever next has authority over the shared cache: do NOT
-  // blind re-bless these two cells. Fix the cache, then on each Release preset run
-  // this test under `ATX_VOL_DISABLE_IV_EARLY_EXIT=1` with the pin left at its
-  // CURRENTLY STORED (unchanged) value below. If it PASSES, `=1` recovered the stored
-  // golden exactly, the entire delta is this sanctioned seam, and re-pinning to the
-  // unset-run's hash is proven benign by the same bijection above. If it FAILS,
-  // something else also moved on that preset and the pin must NOT be updated until
-  // that is separately explained. See task-P-5-report.md's "Post-close regression"
-  // section, concern list.
+  // rel (Release, SSE2) and rel-avx2 (Release, FMA): RE-PINNED (Task P-R gate,
+  // CONDITIONAL PASS item C1). The P-R aggregate reviewer discharged the shared-cache
+  // blocker that stopped the P-5 doc round twice: CMakePresets.json's `rel-avx2`
+  // description (and scripts/new-worktree.ps1's `-Isolated`) already document a
+  // per-worktree deps route — set `ATX_DEPS_DIR` (or `-DFETCHCONTENT_BASE_DIR`) to a
+  // path under the worktree, e.g. `C:/atx-wt/pool-7/deps/<preset>`, before configuring
+  // — which never touches `C:\atx-cache\deps` at all. Both Release presets configured
+  // and built cleanly against isolated deps trees; the shared cache was not read,
+  // rebuilt, or deleted.
+  // Ran this file's own bijection procedure on each preset, pin left at its
+  // then-CURRENTLY-STORED (pre-Phase-2) value, from `build-<preset>/` (not
+  // `build-<preset>/bin` — this binary is cwd-sensitive):
+  //     rel      stored=17305682487856730537: unset -> FAIL, h4=10792185469627952234
+  //                                            `=1`  -> PASS (recovers 17305682487856730537
+  //                                                     exactly)
+  //     rel-avx2 stored=8754310291975640041:  unset -> FAIL, h4=6991026360803624389
+  //                                            `=1`  -> PASS (recovers 8754310291975640041
+  //                                                     exactly)
+  // Both bijections held: on each preset, disabling the seam recovers the OLD pin
+  // exactly, proving the entire delta on that preset is this one sanctioned seam and
+  // nothing else — the same argument as the dev re-pin above, independently re-run
+  // here rather than taken on the reviewer's reported numbers. This also proves
+  // `iv_batch` is bit-identical to scalar `iv()` under /arch:AVX2 (no separate SIMD
+  // arithmetic is introduced) and that P-1/P-2/P-3/P-6, all live in these binaries,
+  // compose to bit-identical-to-pre-Phase-2 once P-5's seam is accounted for — the
+  // ≤1e-11 envelope does not accumulate across the composed call chain.
+  // Re-pinned both cells to the unset-run values above. A repo-wide grep confirms this
+  // file holds the only kGoldenFingerprint* family in the tree; the other config-split
+  // pins were checked and are not exposed to this class of change —
+  // session_test.cpp:1566 is eSSVI and tolerance-based (EXPECT_NEAR, not a hash),
+  // american_test.cpp:2686 (BoundaryHoist) pins on explicit (S,K,T,sigma,r,q) with no
+  // vol surface, and multiname_pipeline_test.cpp:923's NDEBUG dispersion baselines were
+  // independently confirmed green (17/17, `rel-avx2`) — no re-pin owed there.
+  // PROCEDURE for the next time either of these two cells turns red: same as dev
+  // above — with the pin left at its CURRENTLY STORED value, run under `=1` first. An
+  // exact recovery of the stored golden proves the entire delta is one sanctioned seam
+  // and re-pinning to the unset-run hash is safe; anything else means stop and report,
+  // not re-pin. See task-P-R-fixes-report.md for the full record of this round.
 #if defined(NDEBUG)
-  constexpr std::uint64_t kGoldenFingerprintSse2 = 17305682487856730537ULL;
+  constexpr std::uint64_t kGoldenFingerprintSse2 = 10792185469627952234ULL;
 #else
   constexpr std::uint64_t kGoldenFingerprintSse2 = 10976559059648513121ULL;
 #endif
-  constexpr std::uint64_t kGoldenFingerprintFma = 8754310291975640041ULL;
+  constexpr std::uint64_t kGoldenFingerprintFma = 6991026360803624389ULL;
   constexpr std::uint64_t kGoldenFingerprint =
       atx::vol::test::kFmaContraction ? kGoldenFingerprintFma : kGoldenFingerprintSse2;
   EXPECT_EQ(h4, kGoldenFingerprint);

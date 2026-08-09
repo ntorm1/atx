@@ -36,6 +36,26 @@ price/backtest/spy_real/cold
             ["fit/e2e/spy_real"],
         )
 
+    def test_strips_min_time_suffix_alongside_min_warmup_time(self) -> None:
+        # P-R gate C2 / I-3: _REGISTRATION_SUFFIX omitted `min_time`, so a name
+        # carrying both `min_time` (e.g. an explicit ->MinTime() registration) and
+        # the always-present `min_warmup_time` truncated at the LATER suffix,
+        # leaving `min_time:...` attached to the "base" name and false-redding two
+        # real registrations (serve/convexdense_iv_strip/synth,
+        # fit/surface_cold_altdriver/spy_real) that both call ->MinTime().
+        output = (
+            "serve/convexdense_iv_strip/synth/min_time:1.000/min_warmup_time:0.500/repeats:5\n"
+            "fit/surface_cold_altdriver/spy_real/min_time:2.000/min_warmup_time:0.500/repeats:5\n"
+        )
+
+        self.assertEqual(
+            missing_required_names(
+                output,
+                ["serve/convexdense_iv_strip/synth", "fit/surface_cold_altdriver/spy_real"],
+            ),
+            [],
+        )
+
     def test_ignores_framework_owned_one_shot_registration_metadata(self) -> None:
         output = """fit/e2e/spy_real/iterations:1/real_time
 fit/e2e/100name/iterations:1/real_time
