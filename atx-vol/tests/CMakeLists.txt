@@ -128,6 +128,10 @@ add_executable(atx-vol-tests
     mag7_dispersion_backtest_test.cpp
     spy_dispersion_pnl_test.cpp
     dispersion_run_test.cpp
+    # Task E1 (backtest-lakehouse sprint) — appended target: the friction/
+    # financing/policy CLI flag seam (examples/dispersion_realism_flags.hpp)
+    # both mag7_dispersion_backtest and spy_dispersion_pnl include.
+    dispersion_realism_flags_test.cpp
     analytics_primitives_test.cpp
     analytics_density_test.cpp
     analytics_aggregate_test.cpp
