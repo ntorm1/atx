@@ -132,6 +132,9 @@ add_executable(atx-vol-tests
     # financing/policy CLI flag seam (examples/dispersion_realism_flags.hpp)
     # both mag7_dispersion_backtest and spy_dispersion_pnl include.
     dispersion_realism_flags_test.cpp
+    # Task E1 fix round — appended target: the FrictionRegime stringifier seam
+    # (tools/dispersion_backtest_regime.hpp) spy_dispersion_backtest.cpp uses.
+    dispersion_backtest_regime_test.cpp
     analytics_primitives_test.cpp
     analytics_density_test.cpp
     analytics_aggregate_test.cpp

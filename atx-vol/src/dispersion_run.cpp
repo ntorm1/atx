@@ -53,6 +53,7 @@
 #include "atx/vol/portfolio_pricer.hpp"
 #include "atx/vol/research/run_archive.hpp" // RunDir, encode_*_section (S3-T16 .atxrun default)
 #include "atx/vol/strategy.hpp"
+#include "atx/vol/research/track_key.hpp" // kBacktestEconomicsRev (E1 fix round: artifact-level economics rev)
 #include "atx/vol/universe.hpp"
 
 namespace atx::vol {
@@ -2061,6 +2062,11 @@ Status write_dispersion_effective_config(const fs::path &path, const DispersionR
       // REGIME FIRST (M4): the first two rows say which execution assumptions
       // produced every number in this run directory.
       << "friction_regime\t" << to_string(dispersion_friction_regime(config)) << '\n'
+      // E1 fix round: D1's kBacktestEconomicsRev names WHICH revision of the
+      // engine's economics interpretation produced every number below --
+      // adjacent to friction_regime so a reader never has to open a second
+      // artifact to know both "what assumptions" and "which engine build".
+      << "economics_rev\t" << kBacktestEconomicsRev << '\n'
       << "friction_regime_detail\t"
       << dispersion_regime_detail(engine.frictions, config.costs) << '\n'
       << "friction_spread_kind\t" << spread_kind(engine.frictions.spread_kind) << '\n'
@@ -2769,6 +2775,10 @@ dispersion_report_metadata(const DispersionRunConfig &config, const TearSheet &s
   // tools/spy_dispersion_tearsheet_report.py (Python-side enforcement is task Y4).
   meta.emplace_back("friction_regime", std::string(to_string(regime)));
   meta.emplace_back("friction_detail", dispersion_regime_detail(config.frictions, config.costs));
+  // E1 fix round: D1's kBacktestEconomicsRev, right beside the regime it
+  // completes -- "what assumptions" (friction_regime/friction_detail) and
+  // "which engine build interpreted them" (economics_rev) belong together.
+  meta.emplace_back("economics_rev", std::to_string(kBacktestEconomicsRev));
   meta.emplace_back("total_return", metric_text(sheet.total_return));
   meta.emplace_back("total_cost", metric_text(sheet.total_cost));
   meta.emplace_back("total_financing", metric_text(sheet.total_financing));
@@ -2952,10 +2962,10 @@ Status dispersion_run_surface_backtest(const fs::path &run_dir) {
   // execution assumptions produced it.
   detail::log_emitf(LogLevel::Info, LogStream::Stdout,
                     "surface-only projected backtest complete: dates=%zu final_nav=%.10g "
-                    "regime=%s (%s) cost=%.10g",
+                    "regime=%s (%s) economics_rev=%d cost=%.10g",
                     backtest.size(), backtest.nav.back(), std::string(to_string(regime)).c_str(),
                     dispersion_regime_detail(run_config.frictions, run_config.costs).c_str(),
-                    outcome.sheet.total_cost);
+                    kBacktestEconomicsRev, outcome.sheet.total_cost);
   return Ok();
 }
 
