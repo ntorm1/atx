@@ -81,7 +81,11 @@ void usage() {
   std::fprintf(stderr, "usage: atx-vol-spy-leaps-strangle --out DIR [--db-prefix P] [--year-lo Y] "
                        "[--year-hi Y]\n    [--from D] [--to D] [--delta X] [--tenor-years X] "
                        "[--roll-months X] [--contracts X] [--sign +1|-1]\n    "
-                       "[--mark-domain extrapolate|carry|error] [--no-theo-signals]\n");
+                       "[--mark-domain extrapolate|carry|error] [--no-theo-signals]\n"
+                       "    (theo signals: ON by default; forces owned archive backing instead of "
+                       "the default zero-copy borrow, ATX_VOL_ZC_BORROW=0, ONLY for this run -- "
+                       "see main(). Assumes a SPY corpus regardless of --db-prefix; "
+                       "theo_edge_atm/theo_band_atm are NaN for any other symbol.)\n");
 }
 
 bool parse_args(int argc, char **argv, Args &args) {
@@ -292,11 +296,22 @@ int main(int argc, char **argv) {
   // "it cannot make a run non-deterministic" (backtest.cpp) is the load
   // path's own guarantee that this changes ONLY the surfaces' memory backing,
   // never a priced value, so it cannot be the thing that breaks the NAV
-  // byte-identity proof this probe exists to uphold. Set unconditionally
-  // (before ANY snapshot load, not just when signals are on) so the run's
-  // OWN backing choice never becomes a second, confounding variable in the
-  // signals-on/signals-off A/B comparison.
-  _putenv_s("ATX_VOL_ZC_BORROW", "0");
+  // byte-identity proof this probe exists to uphold.
+  //
+  // Gated on `emit_theo_signals` (fix round 1, I1): ONLY the signals-on route
+  // needs owned surfaces. `--no-theo-signals` (and every other invocation of
+  // this driver) keeps exercising the default zero-copy WS-ZC1 borrow path
+  // unchanged -- forcing owned reconstruct unconditionally would have made
+  // this driver's OWN default runs stop covering that path, so a borrow-
+  // specific regression would go invisible here. `_putenv_s` is a Windows CRT
+  // API; `MarketSnapshot::load` itself reads this same env var behind a
+  // `#if defined(_WIN32)` guard (backtest.cpp) -- guarded here to match
+  // rather than assuming the Windows-only toolchain unconditionally.
+#if defined(_WIN32)
+  if (args.emit_theo_signals) {
+    _putenv_s("ATX_VOL_ZC_BORROW", "0");
+  }
+#endif
 
   // ── Cross-root manifest + session-timestamp grid ─────────────────────────
   CorpusManifest manifest;

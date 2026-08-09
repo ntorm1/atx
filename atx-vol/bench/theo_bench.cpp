@@ -142,6 +142,15 @@ void BM_BevBatch_64jobs(benchmark::State &state) {
 // screening path the header banner documents), isolating the resolve+overlay
 // cost alone -- the ratio between the two variants is the reprice's own
 // share of the sheet's total cost.
+//
+// DEDUP (ANCHORS.md S5, fix round 1): 200 queries cover exactly 5 strikes x 4
+// tenors x 2 sides = 40 UNIQUE (K, T, side) triples, each repeated 5x to fill
+// the 200-row sheet -- dedup_ratio 5.0. `items_per_second` (the headline
+// throughput below) is therefore a QUERY rate, not a unique-contract rate;
+// `state.counters["unique_queries_per_s"]`/`["dedup_ratio"]` are reported
+// alongside it, mirroring portfolio_throughput_bench.cpp's
+// unique_contracts_per_s/dedup_ratio convention, so the headline number is
+// never read without its dedup context.
 
 // A small nonzero dvol on every query -- deliberately NOT `make_rv_blend_overlay`
 // (which needs an `RvPanel` this bench has no reason to fabricate): the point is a
@@ -198,8 +207,16 @@ private:
   return PricedSurface::create(std::move(curves), std::move(context), pricing);
 }
 
-// 200 queries spanning every strike x tenor x side combination the fixture
-// surface fits, cycled to exactly 200 -- a screening-sheet-sized batch.
+// 200 queries genuinely spanning every strike x tenor x side combination the
+// fixture surface fits (5 x 4 x 2 = 40 unique triples), cycled 5x to fill 200
+// rows -- a screening-sheet-sized batch. Mixed-radix index decomposition
+// (side fastest, then tenor, then strike -- period 2*4*5 = 40, exactly the
+// combination count) rather than one `i % size` per axis: independent
+// per-axis moduli whose periods share a common factor ALIAS (fix round 1, M):
+// the original `side = i%2` alongside `tenor = tenors[i%4]` made side and
+// tenor perfectly correlated (side is fully determined by `i%4`), so only
+// 20 of the 40 combinations ever appeared -- a put-only (or call-only) bug at
+// one tenor would have been invisible to this sheet.
 [[nodiscard]] std::vector<TheoQuery> make_theo_bench_queries() {
   constexpr std::size_t kN = 200;
   const std::array<double, 5> strikes{85.0, 92.5, 100.0, 107.5, 115.0};
@@ -208,12 +225,18 @@ private:
   qs.reserve(kN);
   for (std::size_t i = 0; i < kN; ++i) {
     const Side side = (i % 2 == 0) ? Side::Call : Side::Put;
-    qs.push_back(TheoQuery{.strike = strikes[i % strikes.size()],
-                           .tenor_years = tenors[i % tenors.size()],
-                           .side = side});
+    const std::size_t tenor_idx = (i / 2) % tenors.size();
+    const std::size_t strike_idx = (i / (2 * tenors.size())) % strikes.size();
+    qs.push_back(
+        TheoQuery{.strike = strikes[strike_idx], .tenor_years = tenors[tenor_idx], .side = side});
   }
   return qs;
 }
+
+// Count of DISTINCT (K, T, side) triples `make_theo_bench_queries` produces
+// -- 5 strikes x 4 tenors x 2 sides = 40, independent of `kN` (the mixed-radix
+// generator above never repeats a combination before exhausting all of them).
+inline constexpr std::size_t kTheoBenchUniqueQueries = 5 * 4 * 2;
 
 void BM_TheoSheet_200q(benchmark::State &state, bool price_theo) {
   const Result<PricedSurface> surface = make_theo_bench_surface();
@@ -241,6 +264,19 @@ void BM_TheoSheet_200q(benchmark::State &state, bool price_theo) {
     benchmark::DoNotOptimize(sheet->data());
   }
   state.SetItemsProcessed(state.iterations() * static_cast<std::int64_t>(queries.size()));
+
+  // Dedup context beside the headline throughput (ANCHORS.md S5, fix round
+  // 1): `items_per_second` above is a QUERY rate over 200 rows that repeat
+  // only 40 unique (K, T, side) triples -- mirrors
+  // portfolio_throughput_bench.cpp's unique_contracts_per_s/dedup_ratio pair.
+  const double iters = static_cast<double>(state.iterations());
+  const double n_queries = static_cast<double>(queries.size());
+  const double n_unique = static_cast<double>(kTheoBenchUniqueQueries);
+  state.counters["unique_queries_per_s"] =
+      benchmark::Counter(n_unique * iters, benchmark::Counter::kIsRate);
+  state.counters["n_queries"] = n_queries;
+  state.counters["n_unique"] = n_unique;
+  state.counters["dedup_ratio"] = (n_unique > 0.0) ? n_queries / n_unique : 0.0;
 }
 
 const int kRegistered = [] {

@@ -1339,11 +1339,20 @@ TEST_F(TheoEngineTest, ValueIntoDoesNotAllocatePerQuery) {
   const std::array<double, 2> tenors{surface_->context()[1].T, surface_->context()[3].T};
   std::vector<TheoQuery> qs;
   qs.reserve(kN);
+  // Mixed-radix index decomposition (side fastest, then tenor, then strike --
+  // period 2*2*3 == 12, exactly the strike x tenor x side combination count),
+  // not one `i % size` per axis (fix round 1, M): independent per-axis moduli
+  // sharing a common factor ALIAS -- the original `side = i%2` alongside
+  // `tenor = tenors[i%2]` made side and tenor perfectly correlated (Call
+  // never paired tenors[1]), covering only 6 of 12 combinations. This test
+  // only counts overlay CALLS (chunk count), not per-combination values, so
+  // the fix changes no expectation.
   for (std::size_t i = 0; i < kN; ++i) {
     const Side side = (i % 2 == 0) ? Side::Call : Side::Put;
-    qs.push_back(TheoQuery{.strike = strikes[i % strikes.size()],
-                           .tenor_years = tenors[i % tenors.size()],
-                           .side = side});
+    const std::size_t tenor_idx = (i / 2) % tenors.size();
+    const std::size_t strike_idx = (i / (2 * tenors.size())) % strikes.size();
+    qs.push_back(
+        TheoQuery{.strike = strikes[strike_idx], .tenor_years = tenors[tenor_idx], .side = side});
   }
   std::vector<TheoValue> out(kN); // pre-sized ONCE, up front -- value_into never grows it
 
@@ -1375,11 +1384,17 @@ TEST_F(TheoEngineTest, SheetMatchesValueIntoFieldForField) {
   const std::array<double, 2> tenors{surface_->context()[1].T, surface_->context()[3].T};
   std::vector<TheoQuery> qs;
   qs.reserve(n);
+  // Mixed-radix decomposition, same fix and rationale as
+  // ValueIntoDoesNotAllocatePerQuery above -- decorrelates side from tenor so
+  // all 12 strike x tenor x side combinations appear. Both `direct` and
+  // `sheet` below are computed from the SAME `qs`, so the fix changes no
+  // expectation: field-for-field parity holds for whatever queries are here.
   for (std::size_t i = 0; i < n; ++i) {
     const Side side = (i % 2 == 0) ? Side::Call : Side::Put;
-    qs.push_back(TheoQuery{.strike = strikes[i % strikes.size()],
-                           .tenor_years = tenors[i % tenors.size()],
-                           .side = side});
+    const std::size_t tenor_idx = (i / 2) % tenors.size();
+    const std::size_t strike_idx = (i / (2 * tenors.size())) % strikes.size();
+    qs.push_back(
+        TheoQuery{.strike = strikes[strike_idx], .tenor_years = tenors[tenor_idx], .side = side});
   }
 
   std::vector<TheoValue> direct(n);
