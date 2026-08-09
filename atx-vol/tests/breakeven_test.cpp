@@ -115,6 +115,56 @@ TEST(Breakeven, DeepItmCallExercisesBeforeLargeDividend) {
   EXPECT_LT(r->exercise_ts_ns, div.ex_date_ns);
 }
 
+// M7: apply_early_exercise=false is documented (breakeven.hpp ~:120-125) as
+// "disable it to reproduce the pure hold-to-expiry engine convention" -- this
+// scenario (same setup as DeepItmCallExercisesBeforeLargeDividend above,
+// where the default cfg genuinely finds it optimal to exercise before the
+// dividend) is the one place on this branch that behavioral knob has ever
+// been exercised by a test. `exercised_early` must go false, and since the
+// default cfg's early exercise is by-construction OPTIMAL for the long
+// holder in this scenario (a real B3-style trigger, not incidental), forcing
+// hold-to-expiry cannot produce a BETTER pnl -- any non-optimal exercise
+// policy is <= the optimal one's payoff in an optimal-stopping problem.
+TEST(Breakeven, ApplyEarlyExerciseFalseForcesHoldToExpiryAndNeverImprovesPnl) {
+  auto p = synth_gbm_path(0.15, 60, 3u, /*s0=*/100.0, /*r=*/0.01);
+  BevSpec spec{60.0, p.back().ts_ns, Side::Call};
+  const DividendEvent div{p[30].ts_ns + kDayNs / 2, 5.0};
+
+  const auto r_default = bev_replay_pnl(p, spec, 0.15, std::span(&div, 1), {});
+  ASSERT_TRUE(r_default.has_value());
+  ASSERT_TRUE(r_default->exercised_early); // the scenario this test reuses
+
+  const auto r_no_early = bev_replay_pnl(p, spec, 0.15, std::span(&div, 1),
+                                         BevReplayConfig{.apply_early_exercise = false});
+  ASSERT_TRUE(r_no_early.has_value());
+  EXPECT_FALSE(r_no_early->exercised_early);
+  EXPECT_LT(r_no_early->pnl, r_default->pnl);
+}
+
+// M7: finance_cash=false is documented (breakeven.hpp ~:109-112) as turning
+// OFF the r*dt cash-accrual the label default otherwise carries -- the other
+// documented default-vs-engine-convention knob, previously never exercised
+// by any test. `hedge_band = 1.0e9` (mirrors
+// SlippageChargedOnEntryAndExitEvenWithNoIntermediateRebalances above)
+// suppresses every intermediate rebalance, so the ONLY hedge trades are
+// entry and expiry liquidation and the intermediate cash balance is constant
+// -- isolating financing's effect from hedge-trade noise. At entry, a long
+// ATM call is hedged by SELLING delta shares (cash IN, delta ~0.5 * S0) to
+// fund a much smaller premium (cash OUT); the net entry cash balance is
+// positive, so compounding it at r=5% (`finance_cash=true`) over ~126 days
+// of positive carry can only ADD to the terminal cash versus leaving it flat
+// (`finance_cash=false`).
+TEST(Breakeven, FinanceCashFalseDropsTheRateAccrualPresentAtDefault) {
+  const auto p = synth_gbm_path(0.25, 126, 77u, /*s0=*/100.0, /*r=*/0.05);
+  const BevSpec spec = atm_call_expiring_at(p);
+  const auto r_financed = bev_replay_pnl(p, spec, 0.25, {}, BevReplayConfig{.hedge_band = 1.0e9});
+  ASSERT_TRUE(r_financed.has_value());
+  const auto r_unfinanced = bev_replay_pnl(
+      p, spec, 0.25, {}, BevReplayConfig{.hedge_band = 1.0e9, .finance_cash = false});
+  ASSERT_TRUE(r_unfinanced.has_value());
+  EXPECT_GT(r_financed->pnl, r_unfinanced->pnl);
+}
+
 TEST(Breakeven, DeepItmPutAtHighRateExercisesNearExpiry) {
   // Deep ITM (strike 200 vs. spot ~100) plus a high rate (10%) makes the
   // one-step forgone-interest threshold exceed the shrinking remaining time
@@ -201,6 +251,18 @@ TEST(Breakeven, FarOtmWingReturnsNoBracketNotError) {
   const auto lab = solve_breakeven_vol(p, spec, {}, {});
   ASSERT_TRUE(lab.has_value());
   EXPECT_EQ(lab->flag, BevFlag::NoBracket);
+}
+
+// M7: solve_breakeven_vol's upfront BevSolveConfig validation (now the
+// shared, file-local validate_bev_solve_cfg) was previously never exercised
+// by any test -- every existing test above runs at the default cfg. Pins the
+// rejection path at this entry point.
+TEST(Breakeven, SolveBreakevenVolRejectsInvalidCfg) {
+  const auto p = synth_gbm_path(0.25, 60, 42u);
+  const auto lab = solve_breakeven_vol(p, atm_call_expiring_at(p), {},
+                                       BevSolveConfig{.sigma_lo = 1.0, .sigma_hi = 0.5});
+  ASSERT_FALSE(lab.has_value());
+  EXPECT_EQ(lab.error().code(), ErrorCode::InvalidArgument);
 }
 
 // ---- THEO-4: solve_breakeven_batch (deterministic parallel fan-out) ----
@@ -306,6 +368,19 @@ TEST(Breakeven, PoisonedJobDoesNotSinkBatch) {
     }
     EXPECT_EQ(batch->status_ok[i], 1u) << i;
   }
+}
+
+// M7: solve_breakeven_batch's upfront BevSolveConfig validation is a SEPARATE
+// copy of the same predicate solve_breakeven_vol validates above (now shared
+// via validate_bev_solve_cfg) -- an invalid cfg is a batch-wide configuration
+// error, rejected before touching the frame or spawning any worker. Neither
+// copy was previously exercised by any test.
+TEST(Breakeven, SolveBreakevenBatchRejectsInvalidCfg) {
+  const auto fx = make_batch_fixture(/*kN=*/4, /*seed0=*/4000u);
+  const auto batch =
+      solve_breakeven_batch(fx.jobs, BevSolveConfig{.sigma_tol = 0.0}, /*n_threads=*/1);
+  ASSERT_FALSE(batch.has_value());
+  EXPECT_EQ(batch.error().code(), ErrorCode::InvalidArgument);
 }
 
 // ---- Task 5: load_bev_path (real surfaces -> BevDayState) ----
