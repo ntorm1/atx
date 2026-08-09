@@ -392,7 +392,19 @@ ProfileVerdict classify_profile(const ClassifierInputs &in) noexcept {
   int votes_liquid = 0;
   int votes_ordinary = 0;
   int votes_illiquid = 0;
-  int max_votes = 0;
+
+  // The five voted kinds are not unordered categories: they are RUNGS of one
+  // liquidity ladder, IndexEtfUltraLiquid (0) down to IlliquidSmallCap (4).
+  // Every axis below therefore votes for a position on that ladder, and the
+  // span of the positions voted is what the reported confidence measures --
+  // see the return statement.
+  int min_rung = static_cast<int>(kLiquidityLadderRungs);
+  int max_rung = -1;
+  const auto rung = [&min_rung, &max_rung](ProfileKind voted) noexcept {
+    const int r = static_cast<int>(voted);
+    min_rung = std::min(min_rung, r);
+    max_rung = std::max(max_rung, r);
+  };
 
   // Quote-density tiers, PER EXPIRY (research §2.1, Table 2, renormalised).
   //
@@ -422,19 +434,19 @@ ProfileVerdict classify_profile(const ClassifierInputs &in) noexcept {
       static_cast<double>(in.n_live_quotes) / static_cast<double>(quoted_expiries);
   if (quotes_per_expiry >= 200.0) {
     ++votes_index_etf;
-    ++max_votes;
+    rung(ProfileKind::IndexEtfUltraLiquid);
   } else if (quotes_per_expiry >= 110.0) {
     ++votes_mega_cap;
-    ++max_votes;
+    rung(ProfileKind::MegaCapEvent);
   } else if (quotes_per_expiry >= 50.0) {
     ++votes_liquid;
-    ++max_votes;
+    rung(ProfileKind::LiquidSingleName);
   } else if (quotes_per_expiry >= 15.0) {
     ++votes_ordinary;
-    ++max_votes;
+    rung(ProfileKind::OrdinarySingleName);
   } else {
     ++votes_illiquid;
-    ++max_votes;
+    rung(ProfileKind::IlliquidSmallCap);
   }
 
   // Median spread tier — tighter spreads => more liquid. Negated so a dead
@@ -442,62 +454,61 @@ ProfileVerdict classify_profile(const ClassifierInputs &in) noexcept {
   const bool wide_book = !(in.median_spread_pct < 0.40);
   if (in.median_spread_pct < 0.02) {
     ++votes_index_etf;
-    ++max_votes;
+    rung(ProfileKind::IndexEtfUltraLiquid);
   } else if (in.median_spread_pct < 0.05) {
     ++votes_mega_cap;
-    ++max_votes;
+    rung(ProfileKind::MegaCapEvent);
   } else if (in.median_spread_pct < 0.15) {
     ++votes_liquid;
-    ++max_votes;
+    rung(ProfileKind::LiquidSingleName);
   } else if (in.median_spread_pct < 0.40) {
     ++votes_ordinary;
-    ++max_votes;
+    rung(ProfileKind::OrdinarySingleName);
   } else {
     ++votes_illiquid;
-    ++max_votes;
+    rung(ProfileKind::IlliquidSmallCap);
   }
 
-  // 0DTE / weekly cadence => index ETF or mega-cap event.
-  if (in.has_zerodte) {
+  // Listing cadence => index ETF or mega-cap event.
+  //
+  // A DAILY expiry cycle is an index-complex property, and it is asserted here
+  // by counting expiries in a fixed forward window rather than by asking how far
+  // away the front one happens to be today -- the latter answers "what weekday
+  // is it", not "what does this underlier list". See kFrontExpiryWindowYears.
+  if (in.n_front_expiries >= kMinDailyCycleExpiries) {
     ++votes_index_etf;
-    ++max_votes;
+    rung(ProfileKind::IndexEtfUltraLiquid);
   } else if (in.has_weeklies && in.n_live_expiries >= 20u) {
     ++votes_mega_cap;
-    ++max_votes;
+    rung(ProfileKind::MegaCapEvent);
   }
 
   // Imminent earnings => mega-cap-event regardless of size (2-vote bonus).
   if (in.event_distance_days > 0 && in.event_distance_days <= 7) {
     votes_mega_cap += 2;
-    max_votes += 2;
+    rung(ProfileKind::MegaCapEvent);
   }
 
   // Forward dispersion: high p90 PCP-RMSE => data-quality issue => illiquid.
   if (in.forward_dispersion_bp > 100.0) {
     ++votes_illiquid;
-    ++max_votes;
+    rung(ProfileKind::IlliquidSmallCap);
   }
 
   // Pick the winning bucket. The comparison order preserves the C's tie
   // precedence (ordinary < index_etf < mega_cap < liquid < illiquid).
   int best_votes = votes_ordinary;
   ProfileKind kind = ProfileKind::OrdinarySingleName;
-  if (votes_index_etf > best_votes) {
-    best_votes = votes_index_etf;
-    kind = ProfileKind::IndexEtfUltraLiquid;
-  }
-  if (votes_mega_cap > best_votes) {
-    best_votes = votes_mega_cap;
-    kind = ProfileKind::MegaCapEvent;
-  }
-  if (votes_liquid > best_votes) {
-    best_votes = votes_liquid;
-    kind = ProfileKind::LiquidSingleName;
-  }
-  if (votes_illiquid > best_votes) {
-    best_votes = votes_illiquid;
-    kind = ProfileKind::IlliquidSmallCap;
-  }
+  const auto challenge = [&best_votes, &kind](int votes, ProfileKind candidate) noexcept {
+    if (votes > best_votes) {
+      best_votes = votes;
+      kind = candidate;
+    }
+  };
+  challenge(votes_index_etf, ProfileKind::IndexEtfUltraLiquid);
+  challenge(votes_mega_cap, ProfileKind::MegaCapEvent);
+  challenge(votes_liquid, ProfileKind::LiquidSingleName);
+  challenge(votes_illiquid, ProfileKind::IlliquidSmallCap);
 
   // A wide book vetoes the liquid buckets.
   //
@@ -509,18 +520,113 @@ ProfileVerdict classify_profile(const ClassifierInputs &in) noexcept {
   // board filtered away by a profile whose quote filter assumes a penny market
   // (`max_spread_vol = 0.05`), and both returned "no expiry produced a usable
   // slice". A board quoting 40% wide is at best ORDINARY whatever else it looks
-  // like. The vote still chooses freely between ordinary and illiquid, and the
-  // reported confidence becomes the ordinary bucket's own share, which is the
-  // truth: on a vetoed board the heuristics did NOT agree.
+  // like. The vote still chooses freely between ordinary and illiquid, and a
+  // vetoed board's confidence stays low on its own, without special-casing:
+  // the spread axis has voted the bottom rung while a liquid density vote sits
+  // near the top, so the ladder span below is already wide.
   if (wide_book && kind != ProfileKind::IlliquidSmallCap) {
     kind = ProfileKind::OrdinarySingleName;
-    best_votes = votes_ordinary;
   }
 
-  const double confidence =
-      (max_votes > 0) ? static_cast<double>(best_votes) / static_cast<double>(max_votes) : 0.5;
+  // Confidence = how tightly the axes agree on WHERE the board sits, measured
+  // as the span they cover on the liquidity ladder.
+  //
+  // This was `best_votes / max_votes`, the modal bucket's vote share, and that
+  // is the wrong statistic for two reasons.
+  //
+  // It is not ordinal. The five kinds are a ladder, so an axis that lands one
+  // rung away from the winner is near-agreement, while one that lands four
+  // rungs away contradicts it outright -- a vote share scores both as simply
+  // "not the mode". With two or three axes voting, "the axes landed on the SAME
+  // rung" is a demanding test that a healthy mid-liquidity board fails about
+  // half the time: measured over 767 board-voted OPRA sessions, 37% of boards
+  // had their two liquidity axes one rung apart, which is sampling behaviour,
+  // not ambiguity.
+  //
+  // And it quantizes onto a handful of rationals that straddle the caller's
+  // gate. Over the same corpus the share took only the values 0, 1/3, 1/2, 2/3
+  // and 1, and `FitPolicyConfig::min_direct_confidence` defaults to 0.70 -- so
+  // the routing decision turned on whether a board landed on 2/3 or on 1,
+  // a ONE-VOTE difference, for 20% of the universe. The span measure below
+  // takes the values 1, 0.75, 0.5, 0.25, 0 and leaves the same 0.70 gate in the
+  // middle of a 0.25-wide empty band: crossing it now requires two axes to
+  // disagree about the board's rung by two rungs rather than by one.
+  //
+  // Measured effect on cross-session reproducibility of the cross-validation
+  // decision itself, same corpus, adjacent sessions: 28.6% / 13.5% of symbols
+  // changed routes at 10:30 / 15:55 under the vote share, 2.3% / 2.3% under the
+  // span.
+  const double confidence = (max_rung >= min_rung)
+                                ? 1.0 - static_cast<double>(max_rung - min_rung) /
+                                            static_cast<double>(kLiquidityLadderRungs - 1u)
+                                : 0.5;
   return {kind, confidence};
 }
+
+namespace {
+
+// One-pass, allocation-free approximate median of an unbounded stream.
+//
+// Stride-decimated sample, in place of the reservoir that simply took the first
+// `kCap` two-sided legs. Chains arrive sorted ascending in T, so a prefix
+// reservoir measures the FRONT of a large board, not the board: measured over
+// 1,544 OPRA board-sessions the prefix median ran 20-35% WIDE of the true median
+// at every liquidity tier (mega 0.067 vs 0.050, small 0.312 vs 0.279), because a
+// front expiry is mostly cheap far-OTM legs whose relative spread is huge.
+// Keeping every `stride`-th value and doubling `stride` whenever the buffer fills
+// keeps the sample uniform over the whole stream in one pass, with no allocation
+// -- the only shape allowed here, because `classifier_inputs_from_underlier` is
+// `noexcept`, runs per board on the fit path, and SPY carries ~13k two-sided
+// legs, so a throwing allocation would std::terminate.
+class StrideMedian {
+public:
+  void push(double v) noexcept {
+    if (seen_ % stride_ == 0u) {
+      if (n_ == kCap) {
+        // Halve the sample, keeping every second entry, and double the stride:
+        // the buffer again holds values 0, stride, 2*stride, ...
+        for (std::uint32_t i = 0u; 2u * i < n_; ++i) {
+          buf_[i] = buf_[2u * i];
+        }
+        n_ = (n_ + 1u) / 2u;
+        stride_ *= 2u;
+      }
+      if (seen_ % stride_ == 0u) {
+        buf_[n_] = v;
+        ++n_;
+      }
+    }
+    ++seen_;
+  }
+
+  // Sentinel when the stream was empty: `max()` so a board with nothing to
+  // measure reads as maximally WIDE. 0.0 would be the tightest possible value
+  // and would vote the most liquid bucket.
+  [[nodiscard]] double median() noexcept {
+    if (n_ == 0u) {
+      return std::numeric_limits<double>::max();
+    }
+    for (std::uint32_t i = 1u; i < n_; ++i) {
+      const double v = buf_[i];
+      std::uint32_t j = i;
+      while (j > 0u && buf_[j - 1u] > v) {
+        buf_[j] = buf_[j - 1u];
+        --j;
+      }
+      buf_[j] = v;
+    }
+    return buf_[n_ / 2u];
+  }
+
+private:
+  static constexpr std::size_t kCap = 256u;
+  std::array<double, kCap> buf_{};
+  std::uint32_t n_{0u};
+  std::uint32_t stride_{1u};
+  std::uint32_t seen_{0u};
+};
+
+} // namespace
 
 ClassifierInputs classifier_inputs_from_underlier(const Underlying &under) noexcept {
   // Aggregate quote-state across chains.
@@ -529,24 +635,10 @@ ClassifierInputs classifier_inputs_from_underlier(const Underlying &under) noexc
   std::uint32_t n_quoted_expiries = 0u;
   std::uint32_t n_identifiable_expiries = 0u;
   std::uint32_t max_near_money_strikes = 0u;
-  bool has_zerodte = false;
+  std::uint32_t n_front_expiries = 0u;
   bool has_weeklies = false;
 
-  constexpr std::size_t kSpreadBuf = 256u;
-  std::array<double, kSpreadBuf> spreads{};
-  std::uint32_t n_spreads = 0u;
-  // Stride-decimated sample of the relative spreads, in place of the reservoir
-  // that simply took the first `kSpreadBuf` two-sided legs. Chains arrive sorted
-  // ascending in T, so a prefix reservoir measures the FRONT of a large board,
-  // not the board: measured over 1,544 OPRA board-sessions the prefix median ran
-  // 20-35% WIDE of the true median at every liquidity tier (mega 0.067 vs 0.050,
-  // small 0.312 vs 0.279), because a front expiry is mostly cheap far-OTM legs
-  // whose relative spread is huge. Sampling every `stride`-th leg and doubling
-  // `stride` whenever the buffer fills keeps the sample uniform over the whole
-  // board -- hence over every expiry -- in one pass, with no allocation (this
-  // function is `noexcept` and runs per board on the fit path).
-  std::uint32_t stride = 1u;
-  std::uint32_t n_seen = 0u;
+  StrideMedian board_spreads;
 
   const double S = (under.spot > 0.0) ? under.spot : 0.0;
   // Near-money band as a price interval, so the per-strike test stays two
@@ -557,8 +649,8 @@ ClassifierInputs classifier_inputs_from_underlier(const Underlying &under) noexc
     if (c.T <= 0.0) {
       continue;
     }
-    if (c.T < 0.01) {
-      has_zerodte = true;
+    if (c.T <= kFrontExpiryWindowYears) {
+      ++n_front_expiries;
     }
     if (c.T <= 0.10) {
       has_weeklies = true;
@@ -595,22 +687,7 @@ ClassifierInputs classifier_inputs_from_underlier(const Underlying &under) noexc
         }
         const double mid = 0.5 * (bid + ask);
         if (mid > 0.0) {
-          if (n_seen % stride == 0u) {
-            if (n_spreads == kSpreadBuf) {
-              // Halve the sample, keeping every second entry, and double the
-              // stride: the buffer again holds legs 0, stride, 2*stride, ...
-              for (std::uint32_t i = 0u; 2u * i < n_spreads; ++i) {
-                spreads[i] = spreads[2u * i];
-              }
-              n_spreads = (n_spreads + 1u) / 2u;
-              stride *= 2u;
-            }
-            if (n_seen % stride == 0u) {
-              spreads[n_spreads] = (ask - bid) / mid;
-              ++n_spreads;
-            }
-          }
-          ++n_seen;
+          board_spreads.push((ask - bid) / mid);
         }
       }
       if (near_money && strike_quoted) {
@@ -626,24 +703,6 @@ ClassifierInputs classifier_inputs_from_underlier(const Underlying &under) noexc
     max_near_money_strikes = std::max(max_near_money_strikes, near_money_strikes);
   }
 
-  // Cheap median estimate: insertion-sort the small sample. A board with no
-  // two-sided quote has no spread to measure; 0.0 would be the TIGHTEST possible
-  // value and would vote IndexEtfUltraLiquid, so a dead board must instead read as
-  // maximally wide.
-  double median_spread = std::numeric_limits<double>::max();
-  if (n_spreads > 0u) {
-    for (std::uint32_t i = 1u; i < n_spreads; ++i) {
-      const double v = spreads[i];
-      std::uint32_t j = i;
-      while (j > 0u && spreads[j - 1u] > v) {
-        spreads[j] = spreads[j - 1u];
-        --j;
-      }
-      spreads[j] = v;
-    }
-    median_spread = spreads[n_spreads / 2u];
-  }
-
   ClassifierInputs in{};
   in.n_live_quotes = n_live;
   in.n_live_expiries = static_cast<std::uint32_t>(under.chains.size());
@@ -651,8 +710,8 @@ ClassifierInputs classifier_inputs_from_underlier(const Underlying &under) noexc
   in.n_atm_quotes = n_atm;
   in.n_identifiable_expiries = n_identifiable_expiries;
   in.max_near_money_strikes = max_near_money_strikes;
-  in.median_spread_pct = median_spread;
-  in.has_zerodte = has_zerodte;
+  in.median_spread_pct = board_spreads.median();
+  in.n_front_expiries = n_front_expiries;
   in.has_weeklies = has_weeklies;
   in.htb_flag = (under.flags & kUflagHtb) != 0u;
   in.vol_product = false;

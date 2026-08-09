@@ -13,7 +13,8 @@
 //       [--snapshot-suffix T14:00:00Z] [--r 0.043] [--preset robust]
 //       [--fit-workers N] [--limit N] [--out results.csv] [--no-value]
 //       [--oos-max-expiries N] [--selector-budget-ms N] [--sparse-floor N]
-//       [--min-direct-confidence X]
+//       [--min-direct-confidence X] [--path-template "{symbol}/{date}.parquet"]
+//       [--no-fit]
 //
 // Output CSV: one row per symbol with load/fit/value status + diagnostics.
 // Summary to stdout: status counts, curve-family histogram, profile histogram,
@@ -120,6 +121,18 @@ struct Row {
   std::string selector_error;    // the refusal text, when the selector produced one
   bool selector_ran{false};
   double selector_oos_vw{0.0};
+  // Raw classifier features behind the routing decision. Emitted so a
+  // reproducibility study can attribute a cross-session routing flip to the
+  // board observable that moved, instead of inferring it from the verdict.
+  std::uint32_t f_live_quotes{0};
+  std::uint32_t f_live_expiries{0};
+  std::uint32_t f_quoted_expiries{0};
+  std::uint32_t f_atm_quotes{0};
+  std::uint32_t f_ident_expiries{0};
+  std::uint32_t f_max_nm_strikes{0};
+  double f_median_spread{0.0};
+  std::uint32_t f_front_expiries{0};
+  bool f_weeklies{false};
   // fit diagnostics
   double worst_in_band{0.0};
   double mean_in_band{0.0};
@@ -139,6 +152,26 @@ struct Row {
   double fit_ms{0.0};
   double value_ms{0.0};
 };
+
+void record_decision(Row &row, const FitDecision &d) {
+  row.profile = profile_name(d.profile.kind);
+  row.profile_conf = d.profile.confidence;
+  row.decision_source = source_name(d.source);
+  row.effective_preset = preset_name(d.preset);
+  row.chosen_kind = to_string(d.curve.kind);
+  row.primary_kind = to_string(d.primary_curve.kind);
+  row.used_fallback = d.used_fallback;
+  row.selector_fallback = d.selector_fallback;
+  row.f_live_quotes = d.features.n_live_quotes;
+  row.f_live_expiries = d.features.n_live_expiries;
+  row.f_quoted_expiries = d.features.n_quoted_expiries;
+  row.f_atm_quotes = d.features.n_atm_quotes;
+  row.f_ident_expiries = d.features.n_identifiable_expiries;
+  row.f_max_nm_strikes = d.features.max_near_money_strikes;
+  row.f_median_spread = d.features.median_spread_pct;
+  row.f_front_expiries = d.features.n_front_expiries;
+  row.f_weeklies = d.features.has_weeklies;
+}
 
 std::vector<std::string> read_symbols_file(const std::string &path) {
   std::vector<std::string> out;
@@ -182,12 +215,16 @@ std::string selection_refusal(const PricerFitter &fitter) {
 int main(int argc, char **argv) {
   std::string opra_root, date, symbols_file, out_csv = "universe_autofit_results.csv";
   std::string snapshot_suffix = "T14:00:00Z";
+  // Default matches the per-symbol OPRA v1 hive; a single-file-per-date hive is
+  // reachable with --path-template "date={date}/data.parquet".
+  std::string path_template = "{symbol}/{date}.parquet";
   std::string preset_name_arg = "robust";
   std::string pin_kind; // empty => auto-select; else pin this family for every board
   double r = 0.043;
   unsigned fit_workers = atx_auto_worker_count();
   std::size_t limit = 0;
   bool do_value = true;
+  bool do_fit = true;
   std::optional<unsigned> oos_max_expiries;
   std::optional<double> selector_budget_ms;
   std::optional<std::uint32_t> sparse_floor;
@@ -200,12 +237,14 @@ int main(int argc, char **argv) {
     else if (a == "--date") date = nv();
     else if (a == "--symbols-file") symbols_file = nv();
     else if (a == "--snapshot-suffix") snapshot_suffix = nv();
+    else if (a == "--path-template") path_template = nv();
     else if (a == "--r") r = std::strtod(nv(), nullptr);
     else if (a == "--preset") preset_name_arg = nv();
     else if (a == "--fit-workers") fit_workers = static_cast<unsigned>(std::strtoul(nv(), nullptr, 10));
     else if (a == "--limit") limit = static_cast<std::size_t>(std::strtoull(nv(), nullptr, 10));
     else if (a == "--out") out_csv = nv();
     else if (a == "--no-value") do_value = false;
+    else if (a == "--no-fit") do_fit = do_value = false;
     else if (a == "--pin") pin_kind = nv();
     else if (a == "--oos-max-expiries")
       oos_max_expiries = static_cast<unsigned>(std::strtoul(nv(), nullptr, 10));
@@ -223,9 +262,9 @@ int main(int argc, char **argv) {
     std::fprintf(stderr,
                  "usage: universe_autofit --opra-root DIR --date YYYY-MM-DD --symbols-file FILE "
                  "[--snapshot-suffix T14:00:00Z] [--r 0.043] [--preset robust] [--fit-workers N] "
-                 "[--limit N] [--out FILE] [--no-value] [--oos-max-expiries N] "
-                 "[--selector-budget-ms N] [--sparse-floor N] "
-                 "[--min-direct-confidence X]\n");
+                 "[--limit N] [--out FILE] [--no-value] [--no-fit] "
+                 "[--oos-max-expiries N] [--selector-budget-ms N] [--sparse-floor N] "
+                 "[--min-direct-confidence X] [--path-template T]\n");
     return 2;
   }
 
@@ -258,6 +297,7 @@ int main(int argc, char **argv) {
   spec.date_hi = date;
   spec.root_dir = opra_root;
   spec.snapshot_suffix = snapshot_suffix;
+  spec.path_template = path_template;
   spec.r = r;
   const Result<OpraBatchResult> batch = load_opra_daterange(spec);
   if (!batch) {
@@ -336,6 +376,16 @@ int main(int argc, char **argv) {
         else cc.kind = VolCurveKind::ConvexDense;
         cfg.curve = cc;
       }
+
+      // Routing-only mode: resolve the policy exactly as PricerFitter would and
+      // stop. Used to study classifier reproducibility over a whole universe
+      // without paying for the fit, which dominates the wall clock.
+      if (!do_fit) {
+        record_decision(row, select_fit_policy(chain->underlying(), chain->underlying().ticker,
+                                               cfg.context, cfg.policy));
+        row.status = "ok";
+        return;
+      }
       PricerFitter fitter{cfg};
 
       const auto t2 = Clock::now();
@@ -346,30 +396,14 @@ int main(int argc, char **argv) {
         row.error = st.error().to_string();
         // decision may still explain what the policy attempted
         if (fitter.decision()) {
-          const FitDecision &d = *fitter.decision();
-          row.profile = profile_name(d.profile.kind);
-          row.profile_conf = d.profile.confidence;
-          row.decision_source = source_name(d.source);
-          row.effective_preset = preset_name(d.preset);
-          row.chosen_kind = to_string(d.curve.kind);
-          row.primary_kind = to_string(d.primary_curve.kind);
-          row.used_fallback = d.used_fallback;
-          row.selector_fallback = d.selector_fallback;
+          record_decision(row, *fitter.decision());
         }
         row.selector_error = selection_refusal(fitter);
         return;
       }
 
       if (fitter.decision()) {
-        const FitDecision &d = *fitter.decision();
-        row.profile = profile_name(d.profile.kind);
-        row.profile_conf = d.profile.confidence;
-        row.decision_source = source_name(d.source);
-        row.effective_preset = preset_name(d.preset);
-        row.chosen_kind = to_string(d.curve.kind);
-        row.primary_kind = to_string(d.primary_curve.kind);
-        row.used_fallback = d.used_fallback;
-        row.selector_fallback = d.selector_fallback;
+        record_decision(row, *fitter.decision());
       }
       row.selector_error = selection_refusal(fitter);
       if (fitter.selection()) {
@@ -420,11 +454,13 @@ int main(int argc, char **argv) {
            "effective_preset,chosen_kind,primary_kind,used_fallback,selector_ran,selector_oos_vw,"
            "worst_in_band,mean_in_band,mean_chi2,mean_rmse_vol,calendar_arb_free,n_slices,"
            "n_quotes_used,n_valued,n_price_nan,n_bidiv_nan,n_askiv_nan,load_ms,chain_ms,fit_ms,"
-           "value_ms,selector_fallback,selector_error\n";
+           "value_ms,selector_fallback,f_live_quotes,f_live_expiries,f_quoted_expiries,"
+           "f_atm_quotes,f_ident_expiries,f_max_nm_strikes,f_median_spread,f_front_expiries,"
+           "f_weeklies,selector_error\n";
     for (const Row &w : rows) {
       char buf[512];
       std::snprintf(buf, sizeof(buf),
-                    ",%zu,%zu,%.6f,%s,%.3f,%s,%s,%s,%s,%d,%d,%.4f,%.4f,%.4f,%.4f,%.6f,%d,%zu,%zu,"
+                    ",%zu,%zu,%.6f,%s,%.6f,%s,%s,%s,%s,%d,%d,%.4f,%.4f,%.4f,%.4f,%.6f,%d,%zu,%zu,"
                     "%zu,%zu,%zu,%zu,%.3f,%.3f,%.3f,%.3f,%d,",
                     w.n_rows, w.n_options, w.spot, w.profile.c_str(), w.profile_conf,
                     w.decision_source.c_str(), w.effective_preset.c_str(), w.chosen_kind.c_str(),
@@ -433,7 +469,12 @@ int main(int argc, char **argv) {
                     w.mean_rmse_vol, w.calendar_arb_free ? 1 : 0, w.n_slices, w.n_quotes_used,
                     w.n_valued, w.n_price_nan, w.n_bidiv_nan, w.n_askiv_nan, w.load_ms, w.chain_ms,
                     w.fit_ms, w.value_ms, w.selector_fallback ? 1 : 0);
-      out << csv_escape(w.symbol) << ',' << w.status << ',' << csv_escape(w.error) << buf
+      char fbuf[256];
+      std::snprintf(fbuf, sizeof(fbuf), "%u,%u,%u,%u,%u,%u,%.6g,%u,%d,", w.f_live_quotes,
+                    w.f_live_expiries, w.f_quoted_expiries, w.f_atm_quotes, w.f_ident_expiries,
+                    w.f_max_nm_strikes, w.f_median_spread, w.f_front_expiries,
+                    w.f_weeklies ? 1 : 0);
+      out << csv_escape(w.symbol) << ',' << w.status << ',' << csv_escape(w.error) << buf << fbuf
           << csv_escape(w.selector_error) << '\n';
     }
   }
