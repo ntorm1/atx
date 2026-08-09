@@ -112,13 +112,22 @@ enum class TheoFlagBits : std::uint32_t {
   // which IS a bug (non-finite dvol/band).
   ModelMissing = 1u << 2,
   // Set on a query when the net applied overlay `dvol` is nonzero AND the
-  // surface serves its market mark through a fast-tier cached route
-  // (`PricedSurface::query_pricing_tier()` is `RepresentativeFast` or
-  // `CarryBank`) -- read ONCE per `value_into` call, not per query. Means:
-  // `market_price - theo_price` (the PRICE-space edge) carries the fast
-  // tier's cached-correction route residual against `theo_price`'s cold
-  // Andersen-Lake reprice, on top of whatever the overlay itself intended.
-  // `edge_vol` (the VOL-space edge) is unaffected -- see the header banner.
+  // surface is fast-tier CONFIGURED (`PricedSurface::query_pricing_tier()`
+  // is `RepresentativeFast` or `CarryBank`) -- read ONCE per `value_into`
+  // call, not per query. (final-review M5: softened from "means the residual
+  // is live" -- it is a CONFIGURATION signal, not a per-query guarantee. A
+  // fast-tier-configured surface still cold-falls-back to a real Andersen-
+  // Lake solve for any individual query that lands outside its certified
+  // correction box (`PricedSurface::QueryPricingRoute::ColdFallback`), and
+  // for those queries `market_price` already IS that cold solve, so the
+  // residual this bit describes is exactly zero there -- over-flagging only,
+  // never under.) Where the residual IS live: `market_price - theo_price`
+  // (the PRICE-space edge) carries the fast tier's cached-correction route
+  // residual against `theo_price`'s cold Andersen-Lake reprice, on top of
+  // whatever the overlay itself intended. For the exact per-query answer,
+  // call `PricedSurface::query_pricing_route(K, T, side, execution)`
+  // directly. `edge_vol` (the VOL-space edge) is unaffected either way --
+  // see the header banner.
   FastTierRoute = 1u << 3,
 };
 
@@ -244,14 +253,29 @@ static_assert(detail::aggregate_arity_is_v<EventVarConfig, 2>,
 //
 // `IFairVolModel` is the interface an offline-trained fair-vol model
 // implements to plug into `TheoEngine` as an overlay. The feature vector it
-// consumes is a FIXED, VERSIONED layout -- the label factory (Task 6's TSV)
-// and any offline trainer must produce/consume this exact ordering, hence
-// `kFairVolFeatureSchemaV1` is threaded through both the model and its
-// loader rather than left implicit.
+// consumes is a FIXED, VERSIONED layout -- any offline trainer must
+// produce/consume this exact ordering, hence `kFairVolFeatureSchemaV1` is
+// threaded through both the model and its loader rather than left implicit.
+//
+// Task 6's label-factory TSV (`examples/bev_label_factory.cpp`) is NOT a
+// source of this layout (final-review I2): it supplies only the TARGET
+// (`log_ratio = ln(sigma_be / sigma_entry_iv)`) plus join keys
+// (`entry_ts_ns`, `uid`, `strike`, `expiry_ns`, `side`) and solve diagnostics
+// for one label. The `kFairVolFeatureSchemaV1` feature block below is
+// assembled OFFLINE by the trainer, joining that TSV against the surface
+// corpus (for `log_moneyness`/`tenor_years`/`market_vol`/`delta_abs`) and a
+// separately-computed RV history (for `rv_21d`/`rv_63d`) -- there is no
+// producer on this branch for `n_events_to_expiry` at all (the label factory
+// is explicitly carry-only, no event calendar) or for a real-data `RvPanel`
+// wired to the label corpus (the only real-data `RvPanel` producer on this
+// branch is the degenerate O=H=L=C=spot bar mirror inside
+// `spy_leaps_strangle_backtest.cpp`, unrelated to the label pipeline); both
+// are the trainer's job to derive.
 
-// Feature vector contract for fair-vol models. Fixed order, versioned; the label
-// factory (Task 6 TSV) and any offline trainer must produce/consume this exact
-// layout.
+// Feature vector contract for fair-vol models. Fixed order, versioned; any
+// offline trainer must produce/consume this exact layout when assembling
+// training rows -- see the ML seam banner above for what Task 6's TSV does
+// and does not supply.
 inline constexpr std::size_t kFairVolFeatureCount = 8;
 inline constexpr std::uint32_t kFairVolFeatureSchemaV1 = 1;
 // [0] log_moneyness = ln(K/F)      [1] tenor_years

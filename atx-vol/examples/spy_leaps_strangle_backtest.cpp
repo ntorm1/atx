@@ -214,7 +214,12 @@ public:
   // target LEAPS tenor) query on the step's SPY surface. NaN when the SPY
   // surface can't be resolved on `base` or the TheoEngine call itself fails
   // (never a missing column -- mirrors SwapSignalProbe's "absent measurement
-  // is NaN, never a missing column" contract, swap_leg.hpp).
+  // is NaN, never a missing column" contract, swap_leg.hpp). NOTE (final-
+  // review M1): `theo_band_atm` is the engine's config floor
+  // (`TheoConfig::band_floor_vol`, 0.002) on every resolved step here --
+  // `RvBlendOverlay`, the only overlay this driver engages, always reports
+  // `band = 0`, so nothing on this path ever drives it above the floor; read
+  // it as "config floor", not a live per-step uncertainty estimate.
   [[nodiscard]] std::vector<std::pair<std::string, double>>
   signals(const MarketSnapshot &base) const override {
     constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();

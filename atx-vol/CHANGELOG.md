@@ -750,8 +750,12 @@ construction, not by tolerance). Two shipped overlays (`make_rv_blend_overlay`,
 engine. `compute_theo_sheet` is a batch convenience over the engine's
 allocation-free `value_into` hot path. A new example driver,
 `examples/bev_label_factory.cpp`, walks a delta-lattice strike ladder across
-entry dates and emits a byte-deterministic TSV of breakeven-vol labels — the
-training data `IFairVolModel` implementations consume. `TheoEdgeSignalStrategy`
+entry dates and emits a byte-deterministic TSV of breakeven-vol labels —
+target (`log_ratio`) plus join keys and solve diagnostics only, NOT the
+`kFairVolFeatureSchemaV1` feature block `IFairVolModel` implementations
+consume (final-review I2 correction: that feature block is assembled offline
+by the trainer, from the surface corpus plus a separately-computed RV
+history — see `theo.hpp`'s ML-seam banner). `TheoEdgeSignalStrategy`
 (`examples/spy_leaps_strangle_backtest.cpp`) is a read-only `IStrategy`
 decorator that records `theo_edge_atm`/`theo_band_atm` per step without
 altering any order, hedge, or NAV path — proven byte-identical to the

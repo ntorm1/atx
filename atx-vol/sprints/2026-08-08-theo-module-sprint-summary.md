@@ -3,7 +3,7 @@
 **Dates:** 2026-08-08 (single day)
 **Branch:** `feat/theo-module` (worktree `C:\atx-wt\pool-9`), base `5338455` on `main` `92f26e0`
 **Plan:** `docs/superpowers/plans/2026-08-08-atx-vol-theo-module.md` · **Ledger:** `.superpowers/sdd/2026-08-08-atx-vol-theo-module/progress.md`
-**Method:** subagent-driven development — fresh implementer per task, spec + quality review per task, fix loops, controller as project manager; closeout (this task) run under the lifted "focused suites only" directive (full gate is this task's job).
+**Method:** subagent-driven development — fresh implementer per task, spec + quality review per task, fix loops, controller as project manager; closeout (this task) run under the lifted "focused suites only" directive. A full-lane `ctest -L atx_vol_fast` attempt was made and host-interrupted at 2,288/2,779; a 2026-08-09 amendment then narrowed this closeout's shipped gate to the targeted-suite `ctest -R` run only (see Validation state) — the full fast/slow/forcescalar gate was NOT this task's job as shipped, superseding the original directive's wording below.
 
 ## Goal
 
@@ -66,11 +66,17 @@ reaches it by textual include, ODR-safe, single TU). Walks entry dates,
 resolves a delta-lattice strike ladder (5%-step delta grid, re-checked
 against each resolved strike's actual `|delta|`), loads paths, and solves
 one deterministic `solve_breakeven_batch` call across every accumulated job.
-Emits a byte-deterministic TSV: `entry_ts_ns, expiry_ns, strike, side,
-sigma_be, sigma_entry_iv, log_ratio, ...` (label factory feature/target
-columns feeding `IFairVolModel` training, Task 9's schema). Carry-only —
-no earnings/event-calendar code in the driver. All-skip is fail-loud (a
-zero-row run is `Err`, not a silently-valid empty TSV).
+Emits a byte-deterministic TSV: `entry_ts_ns, uid, strike, expiry_ns, side,
+sigma_be, sigma_entry_iv, log_ratio, premium, vega, n_days, iters, flag,
+snapped` — the TARGET (`log_ratio`) plus join keys and solve diagnostics
+ONLY (final-review I2 correction: this TSV does NOT carry the
+`kFairVolFeatureSchemaV1` feature block Task 9's `IFairVolModel` consumes;
+that block is assembled offline by the trainer, joining this TSV against the
+surface corpus and a separately-computed RV history — see `theo.hpp`'s
+ML-seam banner). Carry-only — no earnings/event-calendar code in the driver,
+so this branch has no producer for the feature schema's `n_events_to_expiry`
+either. All-skip is fail-loud (a zero-row run is `Err`, not a silently-valid
+empty TSV).
 
 ### `atx-vol/include/atx/vol/theo.hpp` + `src/theo.cpp` (Tasks 7–10)
 
@@ -127,10 +133,18 @@ bar (`O=H=L=C=spot`) into an unbounded `RvPanel`-feeding history (`CloseToClose`
 estimator, since a once-daily snapshot has no real intraday range);
 `signals()` queries the theo engine ATM at the strategy's target LEAPS tenor
 and emits `theo_edge_atm`/`theo_band_atm` (always both, NaN when
-unmeasurable). New `--no-theo-signals` CLI flag (default off — signals on
-by default). NAV byte-identity proven on real SPY 2019 data: 899/899
-shared `track.tsv` cells identical between signals-on/off runs (see Task
-10's report for the full evidence trail).
+unmeasurable). `theo_band_atm` is the engine's config floor
+(`TheoConfig::band_floor_vol`, 0.002) on every resolved step here — the only
+overlay this driver engages, `RvBlendOverlay`, always reports `band = 0` — so
+it is not a live per-step uncertainty estimate on this branch (final-review
+M1). `--theo-signals` CLI flag, **OFF by default as shipped** (final-review
+I3 correction: Task 10 shipped this default-ON, which — after fix round 1
+gated the borrow-path override on it — silently stopped the driver's own
+default runs from covering the WS-ZC1 zero-copy borrow path; `--no-theo-
+signals` is kept as an accepted no-op). NAV byte-identity was checked
+manually, once, in Task 10, on real SPY 2019 data: 899/899 shared
+`track.tsv` cells identical between a signals-on and a signals-off run — see
+"Validation state" below for what that check does and does not cover.
 
 ## Measured perf
 
@@ -163,11 +177,13 @@ therefore a **query** rate over a 5x-duplicated set, not a unique-contract
 rate.
 
 **Build config / CV caveat.** All four rows above were captured on a
-shared host with the full `atx_vol_fast`/`atx_vol_slow`/forcescalar ctest
-gate running concurrently in the background (this same closeout task) — the
-box was not quiescent, so every CV here exceeds the repo's 5% quiet-window
-gate and none of these rows are checked in as a `bench/baselines/*.json`
-citable baseline. They are reported honestly, per this repo's own noisy-host
+shared host with `ctest -L atx_vol_fast` running concurrently in the
+background (this same closeout task's targeted-suite attempt, before it was
+host-interrupted — see Validation state; final-review correction: `atx_vol_
+slow` and forcescalar were never launched this closeout, only the one
+`atx_vol_fast` lane was) — the box was not quiescent, so every CV here
+exceeds the repo's 5% quiet-window gate and none of these rows are checked in
+as a `bench/baselines/*.json` citable baseline. They are reported honestly, per this repo's own noisy-host
 disclosure precedent (`bench/README.md`, `bench/ANCHORS.md` §5, Task 10's
 own fix-round rerun). Medians and the true/false ratio are consistent in
 order of magnitude with the two source tasks' own numbers: Task 4's ad hoc
@@ -238,10 +254,16 @@ Per user mandate, `bev_replay_pnl` (the breakeven replay's fixed-sigma
 delta-hedged single-option P&L) is appended to the END of
 `atx-vol/src/backtest.cpp` — not a new `.cpp`, not a parallel replay engine —
 specifically so it can reuse that translation unit's file-local
-`HedgeLedger` share ledger and mirror the existing engine's rebalance,
-expiry-settlement, and cash-financing accounting verbatim rather than
-re-deriving a second copy of that bookkeeping. The extension is genuinely
-append-only: `git diff` on that file is exactly two hunks, a single new
+`HedgeLedger` share ledger and MIRROR the existing engine's rebalance,
+expiry-settlement, and cash-financing accounting (final-review correction
+(h): "mirror", not "reuse verbatim" as an earlier draft of this section put
+it — the append reuses `HedgeLedger::add`/`get`, a share-count container,
+but its own rebalance/slippage/settle ordering is RE-DERIVED inline at
+`backtest.cpp:4155-4165` rather than delegated to `HedgeLedger::hedge_daily`,
+so this is a second, independently-written copy of that bookkeeping that
+shares only the ledger container, not the step-loop code path). The
+extension is genuinely append-only: `git diff` on that file is exactly two
+hunks, a single new
 `#include "atx/vol/breakeven.hpp"` line inserted in alphabetical order among
 the existing includes, and a pure append after the file's closing
 `} // namespace atx::vol`. `run_backtest`'s own step loop, `RunConfig`, and
@@ -305,6 +327,22 @@ commit SHAs). Summary:
   `spx-wilmott-repro-tests.exe`), `SurfaceV2Provenance.
   ValidationFallbackAdmissionRecordsTheServedFamily`,
   `SurfaceDbPopulate.PropagatesStoredSurfacePolicyAndPersistsServedProvenance`.
+- **`TheoEdgeSignalStrategy` coverage disclosure (final-review item 27).**
+  None of the ctest suites named above exercise `TheoEdgeSignalStrategy` or
+  `spy_leaps_strangle_backtest.cpp` at all — this driver has **zero**
+  automated (ctest) coverage on this branch. The NAV byte-identity claim
+  above (899/899 shared `track.tsv` cells) is real, but its sole evidence is
+  a manual A/B run whose artifact was not preserved and is not reproducible
+  without `C:/atx-data/surface-db-r2/spy-2019` (outside this worktree, not
+  part of the repo). Per final-review I3, the two A/B arms also differed in
+  **surface backing**, not the decorator alone: as originally shipped, the
+  signals-on arm forced `ATX_VOL_ZC_BORROW=0` (owned reconstruct) while the
+  signals-off arm used the default zero-copy borrow route — so the A/B
+  isolated the decorator PLUS a surface-backing change together. The claim
+  itself stands (the structural argument — `signals()` is `const`, every
+  other `IStrategy` virtual forwards unchanged, `TheoEngine::value` is `const`
+  with no memo/thread-local state — supports it independently of the run),
+  but a reader should not take it as a reproducible, ctest-backed result.
 
 ## Commit map
 
