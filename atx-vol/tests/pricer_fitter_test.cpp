@@ -283,10 +283,19 @@ protected:
   double spot_{0.0};
 };
 
+// W1-A / F03: the eSSVI-only production default survives, but it is now a
+// MEASURED choice rather than an unexamined one, and the multi-family ladder it
+// declines is reachable and tested -- `bounded_selector_candidates()`; see
+// CurveSelector.ProductionDefaultStaysSingleCandidateAndDeadlineFree for the
+// lqbench numbers behind the decision. A PricerConfig must also never carry a
+// wall-clock selector deadline by default: that would make the chosen family
+// depend on host load.
 TEST(PricerFitterPolicy, ProductionSelectorDefaultsToBroadCoverageEssviOnly) {
   const PricerConfig config;
   ASSERT_EQ(config.selector.candidates.size(), 1u);
   EXPECT_EQ(config.selector.candidates.front().kind, atx::vol::VolCurveKind::Essvi);
+  EXPECT_DOUBLE_EQ(config.selector.time_budget_ms, 0.0);
+  EXPECT_EQ(atx::vol::bounded_selector_candidates().size(), 3u);
 }
 
 TEST_F(PricerFitterTest, ChainEnumerateDecodeAndSnapshot) {
@@ -1554,6 +1563,56 @@ TEST(PricerFitterPolicy, RiskAutoFitFallsBackWhenPrimaryFailsIndependentOracle) 
   EXPECT_TRUE(fitter.published_report()->attempts.back().admission.admitted);
 }
 
+// ── W1-A / F04: cross-validation is advisory, never a veto ─────────────────
+// The legacy mark path used to `return Err` the moment `select_curve` refused,
+// while the v2/risk path already fell back to the profile's own family. The
+// asymmetry killed perfectly fittable OPRA boards (CIFR, VKTX, NEE) whose
+// selector-side preparation starved even though the served eSSVI route fits
+// them. Both paths must now serve the profile's curve and REPORT the
+// substitution.
+//
+// The refusal is forced through config alone (a SplineVol candidate whose
+// `min_obs` no slice can reach => no candidate meets admission), so the test
+// does not depend on a pathological board.
+TEST(PricerFitterPolicy, SelectorRefusalServesTheProfileCurveAndRecordsTheFallback) {
+  SynthPanelSpec spec = make_spy_synthetic_spec();
+  auto panel = make_synthetic_american_panel(spec);
+  ASSERT_TRUE(panel.has_value()) << panel.error().message();
+  auto chain = OptionChain::from_frame(panel->frame, spec.r, spec.spot);
+  ASSERT_TRUE(chain.has_value()) << chain.error().message();
+
+  atx::vol::CurveConfig impossible;
+  impossible.kind = atx::vol::VolCurveKind::SplineVol;
+  impossible.spline.min_obs = 1000u;
+
+  PricerConfig config;
+  config.policy.mode = atx::vol::FitSelectionMode::CrossValidated;
+  config.selector.candidates = {impossible};
+  PricerFitter fitter{config};
+
+  const atx::core::Status fitted = fitter.fit(*chain);
+  ASSERT_TRUE(fitted.has_value()) << fitted.error().to_string();
+
+  ASSERT_TRUE(fitter.decision().has_value());
+  const atx::vol::FitDecision &decision = *fitter.decision();
+  EXPECT_TRUE(decision.selector_fallback) << "a silent substitution is the defect, not the fix";
+  EXPECT_NE(decision.curve.kind, atx::vol::VolCurveKind::SplineVol);
+  EXPECT_FALSE(fitter.selection().has_value())
+      << "no family was cross-validated, so no selection may be published";
+
+  // The selector's own error survives as a Selection-stage attempt: the reason
+  // the board fell back is recoverable, not thrown away.
+  ASSERT_TRUE(fitter.published_report().has_value());
+  const auto &attempts = fitter.published_report()->attempts;
+  ASSERT_GE(attempts.size(), 2u);
+  EXPECT_EQ(attempts.front().stage, atx::vol::SurfaceBuildStage::Selection);
+  ASSERT_TRUE(attempts.front().failure.has_value());
+  EXPECT_EQ(attempts.front().failure->code(), atx::core::ErrorCode::NotFound);
+  EXPECT_FALSE(attempts.front().failure->message().empty());
+  EXPECT_FALSE(attempts.front().build_succeeded);
+  EXPECT_TRUE(attempts.back().admission.admitted);
+}
+
 TEST(PricerFitterPolicy, AdmissionFailureRetainsPublishedSurfaceAndDecisionTransactionally) {
   SynthPanelSpec good_spec = make_spy_synthetic_spec();
   auto good_panel = make_synthetic_american_panel(good_spec);
@@ -1635,7 +1694,13 @@ TEST(PricerFitterPolicy, DuplicateMaturityIsRejectedAndReportedWithoutDoubleCoun
   EXPECT_LE(attempt.evidence.fitted_expiries, attempt.evidence.attempted_expiries);
 }
 
-TEST(PricerFitterPolicy, SelectorFailureUpdatesAttemptOnlyAndPreservesPublishedState) {
+// W1-A / F04: this test used to PIN the defect -- a board whose every expiry
+// sits inside the selector's short-dated cut produced `select_curve: no common
+// prepared holdout keys` and the legacy path dropped the underlier. That is the
+// exact condition measured on CIFR/VKTX (`sampled=8 prepared=0`), and the
+// v2/risk path has always survived it. The board must now publish through the
+// profile's own family, with the refusal preserved as a Selection attempt.
+TEST(PricerFitterPolicy, ThinBoardSelectorRefusalPublishesTheProfileCurve) {
   SynthPanelSpec good_spec = make_spy_synthetic_spec();
   auto good_panel = make_synthetic_american_panel(good_spec);
   ASSERT_TRUE(good_panel.has_value()) << good_panel.error().message();
@@ -1650,8 +1715,10 @@ TEST(PricerFitterPolicy, SelectorFailureUpdatesAttemptOnlyAndPreservesPublishedS
   config.admission.require_calendar_arb_free = false;
   PricerFitter fitter{config};
   ASSERT_TRUE(fitter.fit(*good_chain).has_value());
+  ASSERT_TRUE(fitter.decision().has_value());
+  EXPECT_FALSE(fitter.decision()->selector_fallback) << "the healthy board cross-validated";
   const auto *const published = fitter.surface();
-  const auto published_kind = fitter.decision()->curve.kind;
+  ASSERT_NE(published, nullptr);
 
   SynthPanelSpec too_short = good_spec;
   too_short.expiries.resize(1u);
@@ -1661,17 +1728,22 @@ TEST(PricerFitterPolicy, SelectorFailureUpdatesAttemptOnlyAndPreservesPublishedS
   ASSERT_TRUE(short_chain.has_value()) << short_chain.error().message();
   auto &short_under = const_cast<atx::vol::Underlying &>(short_chain->underlying());
   ASSERT_EQ(short_under.chains.size(), 1u);
-  short_under.chains.front().T = 0.01;
-  ASSERT_FALSE(fitter.fit(*short_chain).has_value());
+  short_under.chains.front().T = 0.01; // inside the selector's T > 0.019 cut
+  const atx::core::Status refit = fitter.fit(*short_chain);
+  ASSERT_TRUE(refit.has_value()) << refit.error().to_string();
 
-  EXPECT_EQ(fitter.surface(), published);
-  EXPECT_EQ(fitter.decision()->curve.kind, published_kind);
+  EXPECT_NE(fitter.surface(), published) << "the fallback fit must publish, not abstain";
+  ASSERT_TRUE(fitter.decision().has_value());
+  EXPECT_TRUE(fitter.decision()->selector_fallback);
+  EXPECT_FALSE(fitter.selection().has_value());
+  ASSERT_TRUE(fitter.published_report().has_value());
   EXPECT_TRUE(fitter.published_report()->published);
-  ASSERT_TRUE(fitter.last_attempt_report().has_value());
-  EXPECT_FALSE(fitter.last_attempt_report()->published);
-  ASSERT_EQ(fitter.last_attempt_report()->attempts.size(), 1u);
-  EXPECT_EQ(fitter.last_attempt_report()->attempts.front().stage,
-            atx::vol::SurfaceBuildStage::Selection);
+  const auto &attempts = fitter.published_report()->attempts;
+  ASSERT_GE(attempts.size(), 2u);
+  EXPECT_EQ(attempts.front().stage, atx::vol::SurfaceBuildStage::Selection);
+  ASSERT_TRUE(attempts.front().failure.has_value());
+  EXPECT_NE(attempts.front().failure->message().find("prepared=0"), std::string::npos)
+      << attempts.front().failure->to_string();
 }
 
 TEST(PricerFitterPolicy, SessionOverlayCurveIsThePublishedDecisionAndReportCurve) {

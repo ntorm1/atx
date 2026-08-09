@@ -224,6 +224,14 @@ struct FitDecision {
   CurveConfig primary_curve{};
   bool needs_cross_validation{false};
   bool used_fallback{false};
+  // The held-out selector was asked for a family and REFUSED (too thin a
+  // held-out sample, no admissible candidate, budget exhausted), so `curve`
+  // came from the profile's direct route instead. Cross-validation is advisory
+  // among already-admissible families, never a veto on the board -- but the
+  // substitution must not be silent, so it is reported here. Distinct from
+  // `used_fallback`, which records a fallback-LADDER rung taken after a BUILD
+  // failed; the two can both be set on one board.
+  bool selector_fallback{false};
 };
 
 [[nodiscard]] FitDecision select_fit_policy(const Underlying &under, std::string_view ticker,

@@ -685,6 +685,25 @@ Status PricerFitter::fit(const OptionChain &chain,
       in.use_deam_cache_for_fit = false;
     }
 
+    // The profile's own direct route, materialized identically whether it is
+    // taken because the policy was confident or because cross-validation
+    // refused. The adaptive knot budget is a policy default, so an explicit
+    // cfg_.max_obs_per_slice (already applied above) must win -- its documented
+    // contract is "nullopt => use the preset default". Apply the cap before
+    // mirroring calib into the curve so the two never disagree.
+    const auto serve_profile_curve = [&](FitDecision &decision) {
+      if (decision.curve.kind == VolCurveKind::LinearVariance &&
+          !cfg_.max_obs_per_slice.has_value() && cfg_.policy.dense_node_cap > 0) {
+        in.calib.max_obs_per_slice = cfg_.policy.dense_node_cap;
+      }
+      decision.curve.parametric = in.calib;
+      in.curve = decision.curve;
+    };
+    // The selector's refusal, when it had one and the board was served anyway.
+    // Kept out of the early-exit path so it can be replayed into the build
+    // report next to the attempt that actually published.
+    std::optional<atx::core::Error> selection_failure;
+
     // Curve config: pinned, profile-direct, or held-out selected for this board.
     if (cfg_.curve.has_value()) {
       in.curve = *cfg_.curve;
@@ -695,16 +714,7 @@ Status PricerFitter::fit(const OptionChain &chain,
       in.curve.kind = VolCurveKind::LinearVariance;
       in.curve_pinned = true;
     } else if (next_decision.has_value() && !next_decision->needs_cross_validation) {
-      // The adaptive knot budget is a policy default, so an explicit
-      // cfg_.max_obs_per_slice (already applied above) must win -- its documented
-      // contract is "nullopt => use the preset default". Apply the cap before
-      // mirroring calib into the curve so the two never disagree.
-      if (next_decision->curve.kind == VolCurveKind::LinearVariance &&
-          !cfg_.max_obs_per_slice.has_value() && cfg_.policy.dense_node_cap > 0) {
-        in.calib.max_obs_per_slice = cfg_.policy.dense_node_cap;
-      }
-      next_decision->curve.parametric = in.calib;
-      in.curve = next_decision->curve;
+      serve_profile_curve(*next_decision);
     } else {
       SurfaceParityInputs sp;
       sp.S = in.S;
@@ -723,7 +733,35 @@ Status PricerFitter::fit(const OptionChain &chain,
       sp.enforce_calendar_floor = in.enforce_calendar_floor;
       sp.use_deam_cache_for_fit = in.use_deam_cache_for_fit;
       Result<SelectorResult> selected = select_curve(chain.underlying(), sp, cfg_.selector);
-      if (!selected.has_value()) {
+      if (selected.has_value()) {
+        SelectorResult chosen = std::move(*selected);
+        // Parametric candidates inherit the selected profile's calibration policy;
+        // the held-out selector chooses family/curve-local knobs, not a second quote
+        // filtering policy.
+        chosen.chosen.parametric = in.calib;
+        in.curve = chosen.chosen;
+        if (next_decision.has_value()) {
+          next_decision->curve = chosen.chosen;
+          next_decision->preset = effective_preset;
+        }
+        next_selection = std::move(chosen);
+      } else if (next_decision.has_value()) {
+        // Cross-validation is advisory among already admissible families (the
+        // v2/risk path below has always read it that way). A refusal means the
+        // held-out sample was too thin to RANK families, which is not evidence
+        // that the board cannot be fit -- so serve the profile's own direct
+        // route and let FitAdmissionPolicy and the fallback ladder decide.
+        // Reported, never silent: the refusal is replayed into the build report
+        // and `FitDecision::selector_fallback` names the substitution.
+        selection_failure = std::move(selected).error();
+        next_decision->selector_fallback = true;
+        next_decision->preset = effective_preset;
+        serve_profile_curve(*next_decision);
+      } else {
+        // No profile prior exists to fall back to (unreachable while
+        // next_decision is populated for every non-pinned board), so the
+        // refusal stays terminal rather than serving a default-constructed
+        // curve nobody chose.
         SurfaceBuildReport report;
         report.primary_curve = in.curve;
         report.retained_last_known_good = market_mark_surface_ != nullptr;
@@ -732,17 +770,6 @@ Status PricerFitter::fit(const OptionChain &chain,
         last_attempt_report_ = std::move(report);
         return Err(std::move(selected).error());
       }
-      SelectorResult chosen = std::move(*selected);
-      // Parametric candidates inherit the selected profile's calibration policy;
-      // the held-out selector chooses family/curve-local knobs, not a second quote
-      // filtering policy.
-      chosen.chosen.parametric = in.calib;
-      in.curve = chosen.chosen;
-      if (next_decision.has_value()) {
-        next_decision->curve = chosen.chosen;
-        next_decision->preset = effective_preset;
-      }
-      next_selection = std::move(chosen);
     }
 
     if (session_overlay) {
@@ -762,6 +789,13 @@ Status PricerFitter::fit(const OptionChain &chain,
             : cfg_.admission;
     SurfaceBuildReport report;
     report.primary_curve = primary_curve;
+    if (selection_failure.has_value()) {
+      // Advisory selection still owes an audit trail: the published report
+      // names WHY the profile's family was served instead of a cross-validated
+      // one, in the same attempt history as every build failure.
+      report.attempts.push_back(failed_attempt_report(under, primary_curve, *selection_failure,
+                                                      SurfaceBuildStage::Selection));
+    }
     std::optional<VolaSession> admitted_session;
     std::optional<atx::core::Error> primary_failure;
 
@@ -1322,7 +1356,9 @@ Status PricerFitter::fit(const OptionChain &chain,
     } else if (decision_.has_value()) {
       // Cross-validation is advisory among already admissible families. If its
       // held-out sample is too thin, use the profile's safe primary rather than
-      // returning through an un-stamped early-exit path.
+      // returning through an un-stamped early-exit path. The substitution is
+      // stamped so it is observable here exactly as on the legacy path.
+      decision_->selector_fallback = true;
       in.curve = decision_->curve;
       in.curve.parametric = in.calib;
       if (in.curve.kind == VolCurveKind::LinearVariance) {
