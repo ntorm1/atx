@@ -60,6 +60,23 @@
 // own) -- exactly like the `std::mutex` it complements. Different
 // `WriterLock` objects (any thread, any process) contending for the same
 // `lock_path` are the whole point and are safe.
+//
+// LOCK ORDERING (binding invariant, all call sites): acquire the WriterLock
+// BEFORE taking any in-process `std::mutex` (BacktestDb/SurfaceDb's `mu_`),
+// and hold it until after that mutex is released. NEVER the other way
+// around. Rationale: `acquire`'s wait against a LIVE contender is bounded by
+// `timeout` (default 5000ms) -- real wall-clock time, not a fast in-process
+// spin. If a writer took its `mu_` first and then called `acquire` while
+// still holding it (this was Task D3's original shape, fixed after review),
+// every OTHER in-process caller of a `mu_`-guarded method -- readers
+// included, e.g. `BacktestDb::templates()`/`generation()` -- would stall for
+// up to that same 5000ms merely because a DIFFERENT process happened to be
+// mid-write. Acquiring the file lock first keeps that wait entirely outside
+// `mu_`: once held, `mu_` only ever guards the fast in-process
+// read-modify-publish sequence, exactly as it did before this lock existed.
+// A single, consistent order across every caller (file-lock -> mu_) is also
+// what makes this deadlock-free -- two locks taken in the same order by
+// every thread/process can never form a cycle.
 
 #include <chrono>
 #include <cstdint>

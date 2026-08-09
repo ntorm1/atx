@@ -44,6 +44,18 @@ constexpr std::size_t kMaxSymbolBytes = 32;
       .count();
 }
 
+// Task D3: every public mutator acquires this BEFORE `std::lock_guard
+// lock(*mu_)` -- see detail/writer_lock.hpp's "LOCK ORDERING" doc comment
+// for why that order is load-bearing (a cross-process wait taken under `mu_`
+// would stall every in-process reader for up to WriterLock::kDefaultTimeout,
+// not just other writers). `persist_locked` itself no longer acquires this
+// lock -- it is a precondition that the caller already holds it (alongside
+// `mu_`) for the whole read-modify-publish window.
+[[nodiscard]] Result<detail::WriterLock>
+acquire_manifest_writer_lock(const std::filesystem::path &manifest) {
+  return detail::WriterLock::acquire(manifest.string() + ".lock");
+}
+
 [[nodiscard]] constexpr std::int64_t u64_bits(std::uint64_t value) noexcept {
   return std::bit_cast<std::int64_t>(value);
 }
@@ -920,26 +932,23 @@ Result<std::size_t> BacktestDb::vacuum_unindexed_partitions() {
   return Ok(removed);
 }
 
+// PRECONDITION (Task D3): the caller already holds a `WriterLock` on this
+// manifest's `<path>.lock` (acquired via `acquire_manifest_writer_lock`,
+// BEFORE `mu_` -- see detail/writer_lock.hpp's "LOCK ORDERING" doc comment)
+// for the duration of this call, in addition to `mu_` itself. This function
+// does not acquire or check either lock -- it trusts the caller, exactly as
+// it already trusted the caller to hold `mu_` before this task existed.
+// `mu_` above only serializes mutations through THIS BacktestDb instance --
+// two separate handles on the same root (two handles in one process, or one
+// handle each in two processes) do not share a `mu_`, so without the
+// WriterLock they could both read `snapshot_->generation == N`, both compute
+// N+1, and both publish: the LAST atomic rename wins and the other writer's
+// update vanishes with no error.
 Status BacktestDb::persist_locked(std::vector<BacktestStrategyTemplate> templates,
                                   std::vector<BacktestSeriesInfo> series) {
   std::sort(templates.begin(), templates.end(), template_key_less);
   std::sort(series.begin(), series.end(), series_key_less);
-
-  // Task D3: cross-process writer lock. `mu_` above only serializes
-  // mutations through THIS BacktestDb instance -- two separate handles on the
-  // same root (two handles in one process, or one handle each in two
-  // processes) do not share a `mu_`, so without this they could both read
-  // `snapshot_->generation == N`, both compute N+1, and both publish: the
-  // LAST atomic rename wins and the other writer's update vanishes with no
-  // error. `lock_path` is a sibling of the manifest file, held for exactly
-  // the read-modify-publish window below; released (RAII, WriterLock's
-  // destructor) on every return path, including the early returns.
   const std::filesystem::path manifest = manifest_path();
-  const std::string lock_path = manifest.string() + ".lock";
-  auto guard = detail::WriterLock::acquire(lock_path);
-  if (!guard) {
-    return Err(guard.error());
-  }
 
   // Re-read the on-disk manifest UNDER the lock: another writer may have
   // advanced the generation since `snapshot_` was last synced (this
@@ -993,6 +1002,14 @@ Status BacktestDb::register_template(const BacktestStrategyTemplate &strategy_te
   if (fingerprint == 0) {
     return Err(ErrorCode::InvalidArgument,
                "BacktestDb::register_template: invalid economic fingerprint");
+  }
+  // Lock order (detail/writer_lock.hpp): WriterLock BEFORE mu_, always --
+  // acquired here even though the id-already-registered path below may turn
+  // out to need no write, because that can only be known after `mu_` is
+  // taken, and the file lock must already be held by then.
+  auto file_lock = acquire_manifest_writer_lock(manifest_path());
+  if (!file_lock) {
+    return Err(file_lock.error());
   }
   const std::lock_guard lock(*mu_);
   const auto it = std::lower_bound(
@@ -1108,6 +1125,16 @@ Status BacktestDb::write_series(const BacktestSeriesInfo &supplied,
                "BacktestDb::write_series: caller metadata disagrees with data");
   }
 
+  // Lock order (detail/writer_lock.hpp): WriterLock BEFORE mu_. This
+  // critical section computes `next_generation` from `snapshot_` and writes
+  // a partition file NAMED after it (below) before ever reaching
+  // persist_locked -- both the generation read and the partition file's
+  // name are cross-process-racy exactly like persist_locked's own re-read,
+  // so the file lock has to span this whole section, not just the tail.
+  auto file_lock = acquire_manifest_writer_lock(manifest_path());
+  if (!file_lock) {
+    return Err(file_lock.error());
+  }
   const std::lock_guard lock(*mu_);
   const auto template_it = std::lower_bound(
       snapshot_->templates.begin(), snapshot_->templates.end(), supplied.template_id,

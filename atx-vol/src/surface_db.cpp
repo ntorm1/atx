@@ -1068,23 +1068,35 @@ std::uint64_t SurfaceDb::partition_config_fingerprint(std::string_view key) cons
 
 // ── SurfaceDb: manifest mutation ──────────────────────────────────────────
 
+namespace {
+
+// Task D3: every public mutator acquires this BEFORE `std::lock_guard
+// lock(*mu_)` -- see detail/writer_lock.hpp's "LOCK ORDERING" doc comment
+// for why that order is load-bearing (a cross-process wait taken under `mu_`
+// would stall every in-process reader for up to WriterLock::kDefaultTimeout,
+// not just other writers). `persist_locked` itself no longer acquires this
+// lock -- it is a precondition that the caller already holds it (alongside
+// `mu_`) for the whole read-modify-publish window.
+[[nodiscard]] Result<detail::WriterLock> acquire_manifest_writer_lock(const std::string &manifest) {
+  return detail::WriterLock::acquire(manifest + ".lock");
+}
+
+} // namespace
+
+// PRECONDITION (Task D3): the caller already holds a `WriterLock` on this
+// manifest's `<path>.lock` (acquired via `acquire_manifest_writer_lock`,
+// BEFORE `mu_`) for the duration of this call, in addition to `mu_` itself.
+// This function does not acquire or check either lock -- it trusts the
+// caller, exactly as it already trusted the caller to hold `mu_` before this
+// task existed. `mu_` above only serializes mutations through THIS SurfaceDb
+// instance -- a second handle on the same root (another process, or another
+// handle in this one) does not share it, so without the WriterLock two
+// writers could both read generation N, both compute N+1, and both publish:
+// the LAST atomic rename wins and the other writer's update vanishes with no
+// error.
 Status SurfaceDb::persist_locked(std::vector<DbSymbolEntry> symbols,
                                  std::vector<DbPartitionInfo> partitions) {
-  // Task D3: cross-process writer lock -- see BacktestDb::persist_locked's
-  // doc comment (backtest_db.cpp) for the full rationale; this mirrors it
-  // exactly. `mu_` above only serializes mutations through THIS SurfaceDb
-  // instance -- a second handle on the same root (another process, or
-  // another handle in this one) does not share it, so without this lock two
-  // writers could both read generation N, both compute N+1, and both
-  // publish: the LAST atomic rename wins and the other writer's update
-  // vanishes with no error. Held for exactly the read-modify-publish window
-  // below; released (RAII) on every return path.
   const std::string manifest = manifest_path();
-  const std::string lock_path = manifest + ".lock";
-  auto guard = detail::WriterLock::acquire(lock_path);
-  if (!guard) {
-    return Err(guard.error());
-  }
 
   // Re-read the on-disk manifest UNDER the lock: `symbols`/`partitions` were
   // computed by the caller (e.g. upsert_symbol) against the OLD `snapshot_`,
@@ -1149,6 +1161,11 @@ Status SurfaceDb::upsert_symbol(std::string_view symbol, const SymbolFitConfig &
     return Err(ErrorCode::InvalidArgument, "SurfaceDb::upsert_symbol: empty canonical symbol");
   }
 
+  // Lock order (detail/writer_lock.hpp): WriterLock BEFORE mu_.
+  auto file_lock = acquire_manifest_writer_lock(manifest_path());
+  if (!file_lock) {
+    return Err(file_lock.error());
+  }
   std::lock_guard<std::mutex> lock(*mu_);
   const std::shared_ptr<const DbManifest> snap = snapshot_;
 
@@ -1191,6 +1208,13 @@ Status SurfaceDb::upsert_symbols(std::span<const DbSymbolEntry> upserts) {
     last_of[canon[i]] = i;
   }
 
+  // Lock order (detail/writer_lock.hpp): WriterLock BEFORE mu_ -- acquired
+  // even though the batch may turn out `!changed` (a pure no-op write)
+  // below, since that can only be known after `mu_` is taken.
+  auto file_lock = acquire_manifest_writer_lock(manifest_path());
+  if (!file_lock) {
+    return Err(file_lock.error());
+  }
   std::lock_guard<std::mutex> lock(*mu_);
   const std::shared_ptr<const DbManifest> snap = snapshot_;
 
@@ -1248,6 +1272,11 @@ Status SurfaceDb::remove_symbol(std::string_view symbol) {
     return Err(ErrorCode::InvalidArgument, "SurfaceDb::remove_symbol: empty canonical symbol");
   }
 
+  // Lock order (detail/writer_lock.hpp): WriterLock BEFORE mu_.
+  auto file_lock = acquire_manifest_writer_lock(manifest_path());
+  if (!file_lock) {
+    return Err(file_lock.error());
+  }
   std::lock_guard<std::mutex> lock(*mu_);
   const std::shared_ptr<const DbManifest> snap = snapshot_;
 
@@ -1334,6 +1363,14 @@ Status SurfaceDb::write_partition(std::string_view key, std::span<const SurfaceA
     return Err(ErrorCode::IoError, "SurfaceDb::write_partition: cannot stat partition file");
   }
 
+  // Lock order (detail/writer_lock.hpp): WriterLock BEFORE mu_. (The archive
+  // file write above is keyed by `key`, not by manifest generation, so it
+  // does not itself need the cross-process lock's protection -- only the
+  // manifest read-modify-publish below does.)
+  auto file_lock = acquire_manifest_writer_lock(manifest_path());
+  if (!file_lock) {
+    return Err(file_lock.error());
+  }
   std::lock_guard<std::mutex> lock(*mu_);
   const std::shared_ptr<const DbManifest> snap = snapshot_;
 
@@ -1734,6 +1771,13 @@ Status SurfaceDb::drop_partition(std::string_view key) {
   }
   const std::string path = partition_path(*canon);
 
+  // Lock order (detail/writer_lock.hpp): WriterLock BEFORE mu_ -- acquired
+  // even though the key may turn out absent (NotFound below), since that can
+  // only be known after `mu_` is taken.
+  auto file_lock = acquire_manifest_writer_lock(manifest_path());
+  if (!file_lock) {
+    return Err(file_lock.error());
+  }
   std::lock_guard<std::mutex> lock(*mu_);
   const std::shared_ptr<const DbManifest> snap = snapshot_;
   if (snap->find_partition(*canon) == nullptr) {
