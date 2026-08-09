@@ -444,6 +444,23 @@ public:
   // archives fall back to `PricingContext::r` if a slice carries invalid df/T.
   [[nodiscard]] double rate_at(double T) const noexcept;
 
+  // Batched sibling of `iv(K,T)` (Task P-3 / GK-P2): resolves this surface's
+  // T-bracket and forward/carry ONCE (exactly like `strip_carry_at` does),
+  // then reads every strike -- eliminating the per-call re-resolution that N
+  // independent `iv(K[i], T)` calls each pay redundantly (a quadrature strip
+  // is the intended caller: it queries one T across up to ~2000 K's).
+  // Bit-identical to calling `iv(K[i], T)` for each i: `interp_forward(T)` /
+  // `CurveSurface::bracket(T)` are pure functions of T alone over this
+  // surface's immutable state, so resolving them once and reusing computes
+  // exactly what N fresh per-call resolutions would (the same guarantee
+  // `evaluate_batch`'s bit-identical-T ladder reuse already relies on).
+  // `out[i]` is NaN wherever `K[i]` is non-finite/non-positive or `T` is
+  // invalid, matching `iv`'s own domain exactly.
+  // Precondition (asserted in debug, degrades to the shorter length in
+  // release rather than reading/writing out of bounds): `K.size() ==
+  // out.size()`.
+  void iv_batch(std::span<const double> K, double T, std::span<double> out) const noexcept;
+
   // ── Strip-carry hoisting (Task P-1; see SurfaceStripCarry above) ───────────
 
   // Resolve T's forward/carry and this surface's own T-bracket ONCE. `valid`

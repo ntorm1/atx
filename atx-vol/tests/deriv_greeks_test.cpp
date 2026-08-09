@@ -14,6 +14,19 @@
 // reprices through `deriv_price`, so a product/age/cap regime gets its greeks
 // from exactly the path that produced its mark.
 
+namespace atx::vol::detail {
+// Task P-3 test seam: forces `eval_bump_table`'s `CachedBumpView` to bypass
+// its shared read-vector cache and always read the surface live -- exactly
+// reproducing the pre-P-3 RespotView+VolShiftView composition numerically
+// (same `base->iv(k_log + k_shift, T) + vol_shift` expression). Forward-
+// declared here (external linkage, no header touched) rather than exposed
+// publicly, mirroring `derivatives_test.cpp`'s own `risk_validation_config`/
+// `set_strip_batch_disabled_for_test` precedent. `DerivGreeks.ReadCache*`
+// below uses it to run the SAME contract through both the cached and
+// uncached tables and assert exact bit equality on every output greek.
+void set_bump_read_cache_disabled_for_test(bool disabled) noexcept;
+}  // namespace atx::vol::detail
+
 namespace {
 
 using atx::vol::CurveSet;
@@ -254,6 +267,146 @@ TEST(DerivGreeks, PricedSurfaceOverload) {
   const double df = std::exp(-atx::vol::testkit::kFixtureRate * 0.35);
   const double vega_expected = 2.0 * 0.30 * 1e6 * df;
   EXPECT_NEAR(g->vega, vega_expected, 0.05 * vega_expected);
+}
+
+// ── Task P-3 / GK-P2: greek bump table read-vector cache ──────────────────
+//
+// `eval_bump_table`'s six (k_shift, T) buckets memoize the surface read
+// every bumped evaluation shares with its siblings (see `BumpReadCache` /
+// `CachedBumpView`, derivatives.cpp). `set_bump_read_cache_disabled_for_test`
+// forces every evaluation back onto a live read (the pre-P-3 RespotView+
+// VolShiftView numerics), so these tests run the SAME contract/bumps through
+// both and assert EXACT bit equality on every output greek -- proving the
+// cache changes nothing but how many times the surface is actually read.
+namespace {
+
+// Always restores the cached (production default) path on scope exit, even
+// across an ASSERT_* early return.
+struct BumpCacheResetGuard {
+  ~BumpCacheResetGuard() { atx::vol::detail::set_bump_read_cache_disabled_for_test(false); }
+};
+
+// EXPECT_EQ on NaN is always false (IEEE 754), so a field this task's stencils
+// legitimately leave NaN -- vanna/charm when second_order is off, theta_carry/
+// theta_zero_fixing when carry_theta is off or the roll cannot happen -- needs
+// an isnan-first compare, not a raw equality.
+void expect_eq_or_both_nan(double a, double b, const char *field) {
+  if (std::isnan(a)) {
+    EXPECT_TRUE(std::isnan(b)) << field << ": uncached=NaN cached=" << b;
+  } else {
+    EXPECT_EQ(a, b) << field;
+  }
+}
+
+void expect_greeks_cache_matches_uncached(const atx::vol::PricedSurface &ps,
+                                          const DerivContract &contract, const DerivConfig &cfg,
+                                          const DerivGreekBumps &bumps) {
+  atx::vol::detail::set_bump_read_cache_disabled_for_test(true);
+  const auto g_uncached = atx::vol::deriv_greeks(ps, contract, cfg, bumps);
+  atx::vol::detail::set_bump_read_cache_disabled_for_test(false);
+  const auto g_cached = atx::vol::deriv_greeks(ps, contract, cfg, bumps);
+
+  ASSERT_TRUE(g_uncached.has_value()) << g_uncached.error().to_string();
+  ASSERT_TRUE(g_cached.has_value()) << g_cached.error().to_string();
+  expect_eq_or_both_nan(g_uncached->pv, g_cached->pv, "pv");
+  expect_eq_or_both_nan(g_uncached->delta, g_cached->delta, "delta");
+  expect_eq_or_both_nan(g_uncached->gamma, g_cached->gamma, "gamma");
+  expect_eq_or_both_nan(g_uncached->vega, g_cached->vega, "vega");
+  expect_eq_or_both_nan(g_uncached->theta, g_cached->theta, "theta");
+  expect_eq_or_both_nan(g_uncached->rho, g_cached->rho, "rho");
+  expect_eq_or_both_nan(g_uncached->vanna, g_cached->vanna, "vanna");
+  expect_eq_or_both_nan(g_uncached->volga, g_cached->volga, "volga");
+  expect_eq_or_both_nan(g_uncached->charm, g_cached->charm, "charm");
+  expect_eq_or_both_nan(g_uncached->theta_carry, g_cached->theta_carry, "theta_carry");
+  expect_eq_or_both_nan(g_uncached->theta_zero_fixing, g_cached->theta_zero_fixing,
+                        "theta_zero_fixing");
+}
+
+}  // namespace
+
+// VarSwap: every one of the up to 14 bumped evaluations runs a FULL strip
+// (price_var_swap always quadratures), so this exercises the cache's biggest
+// dedup opportunity -- all six read-vector buckets, each shared by up to
+// three evaluations. Covers both the flat and the genuinely skewed
+// PricedSurface fixture, default bumps (second_order + carry_theta both on).
+TEST(DerivGreeks, ReadCacheMatchesUncachedVarSwapFlatAndSkew) {
+  BumpCacheResetGuard guard;
+  const atx::vol::PricedSurface flat = atx::vol::testkit::make_flat_surface(40, 100.0, 100.0, 0.22);
+  const atx::vol::PricedSurface skew = atx::vol::testkit::make_skewed_surface(41, 100.0, 100.0);
+
+  DerivContract c{};
+  c.kind = DerivKind::VarSwap;
+  c.maturity_t = 0.35;
+  c.notional = 1e6;
+  c.rv_spec.annualization = 252.0;
+  c.rv_spec.n_obs_total = 63u;
+
+  const DerivConfig cfg = deriv_default_config();
+  const DerivGreekBumps bumps{};  // second_order = true, carry_theta = true
+
+  expect_greeks_cache_matches_uncached(flat, c, cfg, bumps);
+  expect_greeks_cache_matches_uncached(skew, c, cfg, bumps);
+}
+
+// VolSwap, unaged: the CENTER's Carr-Lee branch reads only the ATM point
+// (see `price_vol_swap`'s unaged dispatch, `is_bumped_greek_view` skips its
+// diagnostic strip on every bumped view) -- a read pattern with far FEWER
+// per-evaluation reads than VarSwap's full strip, and carry_theta's extra
+// K_var_future strip (run on the UNWRAPPED surface, not cached) exercises a
+// mixed cached/uncached call within one `eval_bump_table` invocation. Proves
+// the cache is correct regardless of how many reads a given DerivKind's
+// dispatch performs, not just in the "every call is a full strip" case above.
+TEST(DerivGreeks, ReadCacheMatchesUncachedVolSwapUnagedCarryTheta) {
+  BumpCacheResetGuard guard;
+  const atx::vol::PricedSurface flat = atx::vol::testkit::make_flat_surface(42, 100.0, 100.0, 0.22);
+  const atx::vol::PricedSurface skew = atx::vol::testkit::make_skewed_surface(43, 100.0, 100.0);
+
+  DerivContract c{};
+  c.kind = DerivKind::VolSwap;
+  c.maturity_t = 0.35;
+  c.notional = 1e6;
+  c.rv_spec.annualization = 252.0;
+  c.rv_spec.n_obs_total = 63u;  // unaged, n_total > 1 -- carry_theta fully engages
+
+  const DerivConfig cfg = deriv_default_config();
+  const DerivGreekBumps bumps{};
+
+  expect_greeks_cache_matches_uncached(flat, c, cfg, bumps);
+  expect_greeks_cache_matches_uncached(skew, c, cfg, bumps);
+}
+
+// CappedVarSwap / CappedVolSwap: a third, independent dispatch family (the
+// displaced-lognormal / split-domain-quadrature closed forms), plus
+// second_order OFF and carry_theta OFF variants -- proving the cache is a
+// correct no-op difference on the SMALLER bump tables those flags produce
+// too, not just the maximal 14-evaluation table.
+TEST(DerivGreeks, ReadCacheMatchesUncachedCappedKindsAndReducedBumpFlags) {
+  BumpCacheResetGuard guard;
+  const atx::vol::PricedSurface skew = atx::vol::testkit::make_skewed_surface(44, 100.0, 100.0);
+
+  DerivContract capped_var{};
+  capped_var.kind = DerivKind::CappedVarSwap;
+  capped_var.maturity_t = 0.35;
+  capped_var.notional = 1e6;
+  capped_var.cap_dec = 0.10;  // variance cap, well above the fixture's K_var
+  capped_var.rv_spec.annualization = 252.0;
+  capped_var.rv_spec.n_obs_total = 63u;
+
+  DerivContract capped_vol = capped_var;
+  capped_vol.kind = DerivKind::CappedVolSwap;
+  capped_vol.cap_dec = 0.40;  // vol cap
+
+  const DerivConfig cfg = deriv_default_config();
+  expect_greeks_cache_matches_uncached(skew, capped_var, cfg, DerivGreekBumps{});
+  expect_greeks_cache_matches_uncached(skew, capped_vol, cfg, DerivGreekBumps{});
+
+  DerivGreekBumps no_second_order{};
+  no_second_order.second_order = false;
+  expect_greeks_cache_matches_uncached(skew, capped_var, cfg, no_second_order);
+
+  DerivGreekBumps no_carry_theta{};
+  no_carry_theta.carry_theta = false;
+  expect_greeks_cache_matches_uncached(skew, capped_vol, cfg, no_carry_theta);
 }
 
 // Fully aged with time still to run: PV(t) = e^{-r(T-t)}*X is a pure discount,

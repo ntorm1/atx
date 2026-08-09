@@ -735,6 +735,52 @@ TEST(PricedSurface, EvaluateBatchLadderBitIdenticalToPerEntry) {
   }
 }
 
+// ── iv_batch (Task P-3 / GK-P2) ──────────────────────────────────────────
+//
+// `iv_batch` resolves T's carry/bracket ONCE and reuses it across every K --
+// the same ladder-reuse guarantee `evaluate_batch` already proves for the
+// full pricer bundle, narrowed to the pure IV resolution a quadrature strip
+// actually needs. Bit-identical to per-call `iv(K[i], T)` is the whole
+// contract, so every check below is `bits_equal`, never a tolerance.
+TEST(PricedSurface, IvBatchMatchesPerCallIvOnStrikeLadder) {
+  const PricedSurface surfaces[] = {make_essvi_varycarry(1), make_essvi(2, 6),
+                                    make_convex(3, 6, 40)};
+  for (const PricedSurface &s : surfaces) {
+    for (const double T : {0.05, 0.30, 0.80, 1.20}) {
+      std::vector<double> Ks;
+      for (int i = 0; i < 61; ++i) {
+        Ks.push_back(60.0 + 90.0 * (static_cast<double>(i) + 0.5) / 61.0);
+      }
+      std::vector<double> out(Ks.size(), -1.0);
+      s.iv_batch(Ks, T, out);
+      for (std::size_t i = 0; i < Ks.size(); ++i) {
+        EXPECT_TRUE(bits_equal(out[i], s.iv(Ks[i], T)))
+            << "K=" << Ks[i] << " T=" << T << " batch=" << out[i] << " scalar=" << s.iv(Ks[i], T);
+      }
+    }
+  }
+}
+
+// Degenerate/invalid inputs: non-finite/non-positive K, non-finite/non-
+// positive T, and an empty span. Every branch mirrors `iv(K,T)`'s own NaN
+// contract exactly (see `resolve`/`valid_query`).
+TEST(PricedSurface, IvBatchMatchesPerCallIvOnDegenerateInputs) {
+  const PricedSurface s = make_essvi(4, 4);
+  const std::vector<double> Ks = {-5.0, 0.0, kNaN, std::numeric_limits<double>::infinity(), 100.0};
+  for (const double T : {-1.0, 0.0, kNaN, 0.30}) {
+    std::vector<double> out(Ks.size(), -1.0);
+    s.iv_batch(Ks, T, out);
+    for (std::size_t i = 0; i < Ks.size(); ++i) {
+      const double want = s.iv(Ks[i], T);
+      EXPECT_TRUE(bits_equal(out[i], want)) << "K=" << Ks[i] << " T=" << T;
+    }
+  }
+
+  double sentinel = 7.0;
+  s.iv_batch(std::span<const double>{}, 0.30, std::span<double>{});
+  EXPECT_EQ(sentinel, 7.0); // zero-length is a no-op, nothing written anywhere
+}
+
 // A MIXED batch: interleaved T runs + singletons + a degenerate entry. Status + IV
 // stay bit-identical to the standalone evaluate() for every entry; price/greeks match
 // within the economic gate.

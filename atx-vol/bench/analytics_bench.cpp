@@ -193,6 +193,36 @@ void BM_DerivGreeks_Standard_PricedSurface(benchmark::State &state) {
   state.SetItemsProcessed(state.iterations()); // items = deriv_greeks calls
 }
 
+// ── deriv/price/audit_priced_surface ──────────────────────────────────────
+
+// Task P-3 / PV-P4: a SINGLE quote (no bump table) at DerivQuality::Audit --
+// the richest tier this file ships (2049-node strip, kMaxStripNodes), so the
+// batched surface-read path (PricedSurfaceStripView::iv_batch, gated on
+// `has_strip_iv_batch`) gathers the most nodes per call. Isolates the strip
+// batching win from the greek bump table's read-vector cache (that is
+// `deriv/greeks/standard_priced_surface` above); this case never touches
+// `CachedBumpView` at all. `ATX_VOL_DISABLE_STRIP_BATCH=1` (read once at
+// process load, `derivatives.cpp`'s `g_strip_batch_disabled`) forces the
+// SAME binary back onto the pre-P-3 per-node scalar loop, which is how the
+// paired A/B measurement in the task report was taken -- two runs of this
+// exact binary, only the env var differing.
+void BM_DerivPrice_Audit_PricedSurface(benchmark::State &state) {
+  const PricedSurface &ps = skewed_surface();
+  const DerivContract contract = skewed_var_swap_contract();
+  DerivConfig cfg{};
+  cfg.quality = DerivQuality::Audit;
+  for (auto _ : state) {
+    Result<DerivQuote> q = deriv_price(ps, contract, cfg);
+    if (!q.has_value()) {
+      state.SkipWithError(q.error().to_string().c_str());
+      break;
+    }
+    benchmark::DoNotOptimize(q);
+    benchmark::ClobberMemory();
+  }
+  state.SetItemsProcessed(state.iterations()); // items = deriv_price calls
+}
+
 // ── swap_leg/solve_cycle_swap_entry ────────────────────────────────────────
 
 // A one-symbol on-disk archive -> loadable MarketSnapshot, built ONCE (the
@@ -324,6 +354,10 @@ const int kRegistered = [] {
 
   apply_common(benchmark::RegisterBenchmark("deriv/greeks/standard_priced_surface",
                                             BM_DerivGreeks_Standard_PricedSurface))
+      ->Unit(benchmark::kMicrosecond);
+
+  apply_common(benchmark::RegisterBenchmark("deriv/price/audit_priced_surface",
+                                            BM_DerivPrice_Audit_PricedSurface))
       ->Unit(benchmark::kMicrosecond);
 
   apply_common(benchmark::RegisterBenchmark("swap_leg/solve_cycle_swap_entry",

@@ -1,9 +1,15 @@
 #include "atx/vol/derivatives.hpp"
 
 #include <algorithm>
+#include <array>
+#include <atomic>
+#include <bit>
 #include <cassert>
 #include <cmath>
 #include <concepts>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
 #include <limits>
 #include <numbers>
 #include <optional>
@@ -48,6 +54,15 @@ double refine_carr_lee_k_vol(double k_vol_naive, double k_var, double T) noexcep
   const double denominator = 8.0 + 2.0 * T * naive_sq;
   return k_vol_naive * (1.0 + numerator / denominator);
 }
+
+// Task P-3 test/bench seams. Declared here (external linkage, no header
+// touched -- mirrors this exact file's own `risk_validation_config` forward-
+// declaration precedent in deriv_greeks_test.cpp) so a test TU can force each
+// optimization off and prove the ON path is bit-identical to the OFF one on
+// the same inputs; defined below, past the anonymous-namespace state each one
+// toggles. Production call sites never invoke either.
+void set_strip_batch_disabled_for_test(bool disabled) noexcept;
+void set_bump_read_cache_disabled_for_test(bool disabled) noexcept;
 
 }  // namespace detail
 
@@ -207,6 +222,62 @@ template <class SurfaceT>
 template <class SurfaceT>
 [[nodiscard]] constexpr bool is_bumped_greek_view() noexcept {
   return requires { SurfaceT::is_bumped_greek_view; };
+}
+
+// Task P-3 / PV-P4: structural detection that `SurfaceT` exposes a batched
+// surface read alongside its scalar `iv(k_log, T)` -- today only
+// `PricedSurfaceStripView` (wired to `PricedSurface::iv_batch`). Every other
+// SurfaceT (VolSurface/EssviSurface/SviSurface, SurfaceRefStripView) has no
+// such member and the variance strip's node loop falls through to its
+// original, untouched per-node scalar path -- see var_swap_fair_strike below.
+template <class SurfaceT>
+[[nodiscard]] constexpr bool has_strip_iv_batch() noexcept {
+  return requires(const SurfaceT& s, std::span<const double> x, double t, std::span<double> out) {
+    s.iv_batch(x, t, out);
+  };
+}
+
+// Read a boolean override from an environment variable ONCE at process load,
+// mirroring `simd::cpu.cpp`'s `ATX_SIMD_ISA` seeding exactly (same rationale:
+// a CI/bench leg toggles a whole-process default without touching any call
+// site). "1" enables the override; anything else (including unset) leaves it
+// off.
+[[nodiscard]] bool env_flag_enabled(const char* name) noexcept {
+#if defined(_WIN32)
+  std::size_t sz = 0;
+  char buf[8] = {};
+  if (getenv_s(&sz, buf, sizeof(buf), name) != 0 || sz == 0) {
+    return false;
+  }
+  return std::strcmp(buf, "1") == 0;
+#else
+  const char* v = std::getenv(name);
+  return v != nullptr && std::strcmp(v, "1") == 0;
+#endif
+}
+
+// Task P-3 test/bench seam (mirrors `simd::set_simd_isa_override`): forces
+// `var_swap_fair_strike` to run its per-node scalar surface-read loop even
+// when `SurfaceT` exposes a batched `iv_batch`. Production call sites never
+// set this; `Strip.BatchedMatchesScalar*` (derivatives_test.cpp) uses it to
+// prove the batched gather path is bit-identical to the untouched per-node
+// loop on the exact same surface and resolved grid, and the paired A/B bench
+// uses the `ATX_VOL_DISABLE_STRIP_BATCH` env seed to measure the SAME binary
+// with and without the optimization.
+std::atomic<bool> g_strip_batch_disabled{env_flag_enabled("ATX_VOL_DISABLE_STRIP_BATCH")};
+
+[[nodiscard]] bool strip_batch_disabled_for_test() noexcept {
+  return g_strip_batch_disabled.load(std::memory_order_relaxed);
+}
+
+// Task P-3 test/bench seam for the greek bump table's read-vector cache
+// (`BumpReadCache`/`CachedBumpView` below): same rationale and pattern as
+// `g_strip_batch_disabled` above, independent knob (the two optimizations
+// are orthogonal -- see each type's own header comment).
+std::atomic<bool> g_bump_read_cache_disabled{env_flag_enabled("ATX_VOL_DISABLE_BUMP_CACHE")};
+
+[[nodiscard]] bool bump_read_cache_disabled_for_test() noexcept {
+  return g_bump_read_cache_disabled.load(std::memory_order_relaxed);
 }
 
 // Resolve the wing trust half-band: 0 -> the surface's own certified band
@@ -1176,13 +1247,15 @@ Result<DerivQuote> var_swap_fair_strike(const SurfaceT& surface,
   // Nodes with a non-finite / non-positive surface IV contribute zero; a bad
   // node touching either integration boundary flips the truncation flag.
   //
-  // The strip's one surface read. Returns the normalized integrand at log-
-  // moneyness x, and whether the surface's IV there was unusable.
-  const auto integrand_at = [&](double x) {
+  // Task P-3 / PV-P4: classification + Black-76 pricing given an ALREADY-
+  // RESOLVED sigma, shared verbatim by the scalar (surface read inline, one
+  // node at a time) and batched (surface read hoisted into one iv_batch call,
+  // see below) node loops -- the two loops can therefore never compute a
+  // price or a badness verdict differently; only WHERE sigma comes from
+  // differs between them.
+  const auto price_node = [&](double x, double sigma) noexcept {
     const double K = F * std::exp(x);
     const Side side = (x < 0.0) ? Side::Put : Side::Call;
-    const double x_read = wing_band > 0.0 ? std::clamp(x, -wing_band, wing_band) : x;
-    const double sigma = surface.iv(x_read, T);
     const bool bad = !std::isfinite(sigma) || sigma <= 0.0;
     const double price = bad ? 0.0 : black76_price(F, K, T, sigma, df, side);
     return std::pair<double, bool>{price / (df * K), bad};
@@ -1199,55 +1272,169 @@ Result<DerivQuote> var_swap_fair_strike(const SurfaceT& surface,
   // the middle of an otherwise-usable surface), counted here and consumed
   // after the loop.
   std::size_t interior_bad_count = 0;
-  double shared = 0.0;  // integrand at the node the previous panel ended on
-  for (std::size_t p = 0; p < split.count; ++p) {
-    const strip::StripPanel& panel = split.panels[p];
-    const std::size_t np = panel.n_nodes;
-    const std::size_t np_half = (np + 1) / 2;
-    const double dx = (panel.k_hi - panel.k_lo) / static_cast<double>(np - 1);
-    double sum = 0.0;
-    double sum_half = 0.0;
-    for (std::size_t i = 0; i < np; ++i) {
-      // A panel's first node IS the previous panel's last node, and carries
-      // the same value: reusing it is what keeps the split at exactly one
-      // iv() read per DISTINCT node, as the un-split single pass was.
-      double integrand = shared;
-      if (p == 0 || i != 0) {
-        // Panel ends are the kink abscissae verbatim rather than k_lo + i*dx,
-        // so no rounding step can drift a kink off the node it must sit on.
-        const double x = (i == 0)        ? panel.k_lo
-                         : (i + 1 == np) ? panel.k_hi
-                                         : panel.k_lo + dx * static_cast<double>(i);
-        const auto [value, bad] = integrand_at(x);
-        integrand = value;
-        // A panel-boundary kink (e.g. k = 0) is a node strictly inside the
-        // WHOLE grid even though it sits at the edge of ITS panel -- only
-        // the true ends of the entire split (p == 0's first node, the last
-        // panel's last node) are the grid's own boundary.
-        const bool is_grid_first = (p == 0 && i == 0);
-        const bool is_grid_last = (p + 1 == split.count && i + 1 == np);
-        if (is_grid_first) {
-          bad_first = bad;
-        } else if (is_grid_last) {
-          bad_last = bad;
-        } else if (bad) {
-          ++interior_bad_count;
+
+  // The strip's one surface read, per node. Returns the normalized integrand
+  // at log-moneyness x, and whether the surface's IV there was unusable.
+  const auto integrand_at = [&](double x) {
+    const double x_read = wing_band > 0.0 ? std::clamp(x, -wing_band, wing_band) : x;
+    return price_node(x, surface.iv(x_read, T));
+  };
+
+  // Untouched pre-P-3 single-pass loop: one surface read per distinct node,
+  // interleaved with the Simpson accumulation. This is the ONLY path for any
+  // SurfaceT without a batched read (VolSurface/EssviSurface/SviSurface,
+  // SurfaceRefStripView) -- see `has_strip_iv_batch` below -- and it is also
+  // what `Strip.BatchedMatchesScalar*` compares the batched path against via
+  // `detail::set_strip_batch_disabled_for_test`.
+  const auto run_scalar_node_loop = [&]() noexcept {
+    double shared = 0.0;  // integrand at the node the previous panel ended on
+    for (std::size_t p = 0; p < split.count; ++p) {
+      const strip::StripPanel& panel = split.panels[p];
+      const std::size_t np = panel.n_nodes;
+      const std::size_t np_half = (np + 1) / 2;
+      const double dx = (panel.k_hi - panel.k_lo) / static_cast<double>(np - 1);
+      double sum = 0.0;
+      double sum_half = 0.0;
+      for (std::size_t i = 0; i < np; ++i) {
+        // A panel's first node IS the previous panel's last node, and carries
+        // the same value: reusing it is what keeps the split at exactly one
+        // iv() read per DISTINCT node, as the un-split single pass was.
+        double integrand = shared;
+        if (p == 0 || i != 0) {
+          // Panel ends are the kink abscissae verbatim rather than k_lo +
+          // i*dx, so no rounding step can drift a kink off the node it must
+          // sit on.
+          const double x = (i == 0)        ? panel.k_lo
+                           : (i + 1 == np) ? panel.k_hi
+                                           : panel.k_lo + dx * static_cast<double>(i);
+          const auto [value, bad] = integrand_at(x);
+          integrand = value;
+          // A panel-boundary kink (e.g. k = 0) is a node strictly inside the
+          // WHOLE grid even though it sits at the edge of ITS panel -- only
+          // the true ends of the entire split (p == 0's first node, the last
+          // panel's last node) are the grid's own boundary.
+          const bool is_grid_first = (p == 0 && i == 0);
+          const bool is_grid_last = (p + 1 == split.count && i + 1 == np);
+          if (is_grid_first) {
+            bad_first = bad;
+          } else if (is_grid_last) {
+            bad_last = bad;
+          } else if (bad) {
+            ++interior_bad_count;
+          }
+        }
+        sum += simpson_w(i, np) * integrand;
+        if (halvable && (i % 2u) == 0u) {
+          // Every other node of this panel, quadratured on its own
+          // half-density grid (spacing 2*dx) with that grid's own Simpson
+          // weights. The panel boundaries -- and so the kinks -- are
+          // boundaries of THAT grid too, which is what makes the /15
+          // difference an error estimate.
+          sum_half += simpson_w(i / 2u, np_half) * integrand;
+        }
+        if (i + 1 == np) {
+          shared = integrand;
         }
       }
-      sum += simpson_w(i, np) * integrand;
-      if (halvable && (i % 2u) == 0u) {
-        // Every other node of this panel, quadratured on its own half-density
-        // grid (spacing 2*dx) with that grid's own Simpson weights. The panel
-        // boundaries — and so the kinks — are boundaries of THAT grid too,
-        // which is what makes the /15 difference an error estimate.
-        sum_half += simpson_w(i / 2u, np_half) * integrand;
+      integral += sum * (dx / 3.0);
+      integral_half += sum_half * (2.0 * dx / 3.0);
+    }
+  };
+
+  // Task P-3 / GK-P2 / PV-P4: batched surface read. Runs ONLY when SurfaceT
+  // structurally exposes a batched `iv_batch(x, T, out)` (today: only
+  // `PricedSurfaceStripView`, wired to `PricedSurface::iv_batch`) -- every
+  // other SurfaceT falls straight through to the untouched scalar loop above,
+  // zero behaviour change. `g_strip_batch_disabled_for_test` is a test-only
+  // escape hatch (mirrors `simd::set_simd_isa_override`'s established
+  // pattern; also readable from `ATX_VOL_DISABLE_STRIP_BATCH` for A/B
+  // benchmarking the SAME binary) that forces the scalar loop even when the
+  // batched path is available, so a test can prove the two are bit-identical
+  // on the exact same surface/grid.
+  //
+  // Gather pass: walk the SAME distinct-node sequence `run_scalar_node_loop`
+  // would (`p == 0 || i != 0`, identical x formula) into a flat buffer, so
+  // the ONE `iv_batch` call below resolves the whole strip's carry/bracket
+  // once instead of once per node (P-1 already hoisted that across CALLS at
+  // the SAME T via `PricedSurfaceStripView`'s own carry cache; this hoists it
+  // across NODES within one call too, and collapses N per-node function calls
+  // -- through PricedSurfaceStripView::iv -> iv_at -> PricedSurface::
+  // iv_with_carry -> resolve_with_carry_and_bracket -- into one tight loop).
+  // Consume pass then re-walks the identical sequence a second time, reusing
+  // `price_node`/the classification logic verbatim, sourcing sigma from the
+  // gathered buffer instead of a live read. `PricedSurface::iv_batch` is
+  // PROVEN bit-identical to per-call `iv(K,T)` (PricedSurface.IvBatchMatches
+  // PerCallIv*, priced_surface_test.cpp) and `PricedSurfaceStripView::
+  // iv_batch` performs the identical `K = F*exp(x_read)` round-trip
+  // `iv_at`/`integrand_at` already do per node, so this path's sigma values
+  // are bit-identical to the scalar loop's by construction, not merely by
+  // observation.
+  bool used_batched_path = false;
+  if constexpr (has_strip_iv_batch<SurfaceT>()) {
+    if (!strip_batch_disabled_for_test()) {
+      used_batched_path = true;
+      std::array<double, strip::kMaxStripNodes> x_read_buf{};
+      std::size_t gather_n = 0;
+      for (std::size_t p = 0; p < split.count; ++p) {
+        const strip::StripPanel& panel = split.panels[p];
+        const std::size_t np = panel.n_nodes;
+        const double dx = (panel.k_hi - panel.k_lo) / static_cast<double>(np - 1);
+        for (std::size_t i = 0; i < np; ++i) {
+          if (p != 0 && i == 0) {
+            continue;  // shared boundary value, reused below -- no fresh read
+          }
+          const double x = (i == 0)        ? panel.k_lo
+                           : (i + 1 == np) ? panel.k_hi
+                                           : panel.k_lo + dx * static_cast<double>(i);
+          x_read_buf[gather_n++] = wing_band > 0.0 ? std::clamp(x, -wing_band, wing_band) : x;
+        }
       }
-      if (i + 1 == np) {
-        shared = integrand;
+      std::array<double, strip::kMaxStripNodes> sigma_buf{};
+      surface.iv_batch(std::span<const double>(x_read_buf.data(), gather_n), T,
+                       std::span<double>(sigma_buf.data(), gather_n));
+
+      std::size_t read_idx = 0;
+      double shared = 0.0;
+      for (std::size_t p = 0; p < split.count; ++p) {
+        const strip::StripPanel& panel = split.panels[p];
+        const std::size_t np = panel.n_nodes;
+        const std::size_t np_half = (np + 1) / 2;
+        const double dx = (panel.k_hi - panel.k_lo) / static_cast<double>(np - 1);
+        double sum = 0.0;
+        double sum_half = 0.0;
+        for (std::size_t i = 0; i < np; ++i) {
+          double integrand = shared;
+          if (p == 0 || i != 0) {
+            const double x = (i == 0)        ? panel.k_lo
+                             : (i + 1 == np) ? panel.k_hi
+                                             : panel.k_lo + dx * static_cast<double>(i);
+            const auto [value, bad] = price_node(x, sigma_buf[read_idx++]);
+            integrand = value;
+            const bool is_grid_first = (p == 0 && i == 0);
+            const bool is_grid_last = (p + 1 == split.count && i + 1 == np);
+            if (is_grid_first) {
+              bad_first = bad;
+            } else if (is_grid_last) {
+              bad_last = bad;
+            } else if (bad) {
+              ++interior_bad_count;
+            }
+          }
+          sum += simpson_w(i, np) * integrand;
+          if (halvable && (i % 2u) == 0u) {
+            sum_half += simpson_w(i / 2u, np_half) * integrand;
+          }
+          if (i + 1 == np) {
+            shared = integrand;
+          }
+        }
+        integral += sum * (dx / 3.0);
+        integral_half += sum_half * (2.0 * dx / 3.0);
       }
     }
-    integral += sum * (dx / 3.0);
-    integral_half += sum_half * (2.0 * dx / 3.0);
+  }
+  if (!used_batched_path) {
+    run_scalar_node_loop();
   }
 
   // Review fix round 1 (Critical): interior-bad-node accounting is gated on
@@ -1511,35 +1698,139 @@ Result<DerivQuote> deriv_price(const SurfaceT& surface, const CurveSet& curves,
 
 namespace {
 
-// Sticky-strike respot view. The bumped curves move the forward by e^{k_shift},
-// so reading the base surface at k + k_shift keeps the vol tied to the SAME
-// absolute strike the bumped strip prices at.
-template <class SurfaceT>
-struct RespotView {
-  const SurfaceT* base;  // non-owning, non-null
-  double k_shift;
+// Task P-3 / GK-P2: per-(shift, T) memoized surface read for the greek bump
+// table. `eval_bump_table` pins the strip's own grid identically across every
+// bumped evaluation (`pin_center_scheme`, called by its caller `deriv_greeks`
+// before the table runs) -- and, as established in `resolve_wing_clamp`'s own
+// comments, the pinned wing band and n_nodes/span do not depend on the
+// bumped surface's runtime vol either -- so the SAME sequence of (shifted)
+// log-moneyness nodes is queried by every evaluation sharing a (k_shift, T)
+// pair: {x} (center: pv.c, pv.v_up, pv.v_dn), {x+ks+}/{x+ks-} (spot bumps and
+// their vol cross-terms), each again at the rolled T-dt (theta and its
+// carry-fixing variants; second-order's t_s_up/t_s_dn). Six distinct
+// buckets total, matching GK-P2's "6 distinct read vectors" finding.
+//
+// Keyed on the EXACT bit pattern of the shifted query (not a positional
+// replay), so a slot is correct regardless of how many reads a given
+// DerivKind/aging dispatch performs inside one `bumped_pv` call, or in what
+// order -- a genuine memoization cache, not an order-coupled recording that
+// would silently misindex if two dispatch paths read a different number of
+// points. A miss just computes and caches; nothing here can return a value
+// for the wrong input.
+//
+// PV-P4 perf note: the first cut of this cache used `std::unordered_map` and
+// MEASURED SLOWER than no caching at all on this Debug/SSE2 preset (paired
+// A/B, `deriv/greeks/standard_priced_surface`: ~1.5ms uncached vs ~2.1ms
+// cached, a ~35% REGRESSION) -- MSVC's debug-iterator-checked STL makes
+// hash-table find/emplace pay far more than the vtable-dispatch-plus-sqrt eSSVI
+// read it was meant to avoid. A flat, sorted `vector<pair<key,sigma>>` avoids
+// hashing and node-based bucket traversal entirely: recording APPENDS
+// (O(1), no lookup -- a within-evaluation duplicate, e.g. the ATM sigma_atm
+// read vs the node loop's own k=0 node, just appends twice, which is
+// harmless and far cheaper than an O(n) duplicate check on every append);
+// `eval_bump_table` calls `finish_recording()` once, exactly when it knows
+// the slot's one recording evaluation has completed, sorting by key ONCE
+// (O(n log n)); every subsequent read for that slot is then an O(log n)
+// `std::lower_bound` over contiguous memory -- see the paired A/B in
+// task-P-3-report.md for the measured recovery.
+struct BumpReadCache {
+  std::vector<std::pair<std::uint64_t, double>> entries;
+  bool sorted = false;
 
-  [[nodiscard]] double iv(double k_log, double T) const noexcept {
-    return base->iv(k_log + k_shift, T);
+  // Called by `eval_bump_table` immediately after this slot's ONE recording
+  // evaluation returns successfully -- every bump that reuses this slot runs
+  // strictly after, so no reader ever observes a partially-sorted vector. A
+  // slot nothing ever replays against (the two second-order T-dt slots,
+  // each used by exactly one bump) need not call this at all; it simply
+  // stays in append/scan-never mode, which costs nothing extra.
+  void finish_recording() noexcept {
+    // Raw-pointer sort, not `entries.begin()/.end()` -- see `CachedBumpView::
+    // iv`'s matching comment on why a checked `vector::iterator` measured
+    // slower than the read this cache exists to short-circuit under this
+    // Debug-CRT preset.
+    std::pair<std::uint64_t, double>* data = entries.data();
+    std::sort(data, data + entries.size(),
+             [](const auto& a, const auto& b) noexcept { return a.first < b.first; });
+    sorted = true;
   }
 };
 
-// Parallel additive vol shift. Composed OVER a RespotView for the cross bumps,
-// which is why it is a separate view rather than another field on that one.
+// Combines the sticky-strike respot (bumped curves move the forward by
+// e^{k_shift}, so reading the base surface at k + k_shift keeps the vol tied
+// to the SAME absolute strike the bumped strip prices at) and the parallel
+// additive vol shift into ONE view, with the shifted read routed through a
+// shared `BumpReadCache` slot instead of a live surface call on every hit.
+// `vol_shift` is applied AFTER the cache lookup/store -- "the constant vol
+// offset applied at use site" (task brief) -- so sigma+-'s bumps reuse the
+// exact same cached read the center/spot-bump evaluations already populated
+// for their shared (k_shift, T), and a miss still computes and caches the
+// RAW (pre-vol-shift) read exactly once, never a vol-shifted one that a
+// later, differently-shifted bump could not reuse. NaN propagates through
+// `sigma + vol_shift` unchanged (NaN + x is always NaN), so no special case
+// is needed for an unusable read.
 template <class SurfaceT>
-struct VolShiftView {
+struct CachedBumpView {
   const SurfaceT* base;  // non-owning, non-null
+  double k_shift;
   double vol_shift;
+  BumpReadCache* cache;  // non-owning, non-null; shared across every bump
+                         // evaluation querying this (k_shift, T) pair
 
   // Task P-2 / GK-P: structural marker `is_bumped_greek_view` (above) detects
   // via `requires`. `bumped_pv` is the only call site that ever constructs a
-  // `VolShiftView`, so this tag exactly identifies a bumped/rolled greek
+  // `CachedBumpView`, so this tag exactly identifies a bumped/rolled greek
   // evaluation -- see `is_bumped_greek_view`'s own comment for why this beats
   // a new `DerivConfig` field.
   static constexpr bool is_bumped_greek_view = true;
 
   [[nodiscard]] double iv(double k_log, double T) const noexcept {
-    return base->iv(k_log, T) + vol_shift;
+    const double x = k_log + k_shift;
+    // Task P-3 test/bench seam: forcing this off reproduces the pre-P-3
+    // RespotView+VolShiftView composition exactly (always a live read), so
+    // `DerivGreeks.ReadCacheMatchesUncached` can prove the cache changes
+    // nothing but how many times the surface is actually read.
+    if (bump_read_cache_disabled_for_test()) {
+      return base->iv(x, T) + vol_shift;
+    }
+    const std::uint64_t key = std::bit_cast<std::uint64_t>(x);
+    if (cache->sorted) {
+      // Hand-rolled binary search over a RAW POINTER, not `vector::iterator`
+      // + `std::lower_bound`: this build's Debug CRT (`/MDd`, see the cpp
+      // persona doc) defaults `_ITERATOR_DEBUG_LEVEL=2`, which wraps
+      // `vector<T>::iterator` in a checked type carrying a container pointer
+      // and generation counter that every increment/dereference/comparison
+      // re-validates -- measured (paired A/B, see BumpReadCache's own
+      // comment) as SLOWER under this preset than the plain, uninstrumented
+      // function-call chain the cache exists to short-circuit. `const
+      // Entry*` is a raw pointer, not a wrapped container iterator, so
+      // indexing it directly keeps the O(log n) win real here.
+      const std::pair<std::uint64_t, double>* data = cache->entries.data();
+      std::size_t lo = 0;
+      std::size_t hi = cache->entries.size();
+      while (lo < hi) {
+        const std::size_t mid = lo + (hi - lo) / 2;
+        if (data[mid].first < key) {
+          lo = mid + 1;
+        } else {
+          hi = mid;
+        }
+      }
+      if (lo < cache->entries.size() && data[lo].first == key) {
+        return data[lo].second + vol_shift;
+      }
+      // Not found among the recorded reads. Never reached in practice (the
+      // pinned grid guarantees every replaying evaluation queries a subset
+      // of exactly what the recording evaluation queried -- see the header
+      // comment), but SAFE if it ever were: compute live rather than mutate
+      // an already-sorted vector with an unsorted append, which would break
+      // every LATER binary search against it.
+      return base->iv(x, T) + vol_shift;
+    }
+    // Recording phase (or a slot nothing ever finishes/replays against):
+    // append-only, no lookup -- see `BumpReadCache`'s own comment for why.
+    const double sigma = base->iv(x, T);
+    cache->entries.emplace_back(key, sigma);
+    return sigma + vol_shift;
   }
 };
 
@@ -1562,12 +1853,15 @@ struct VolShiftView {
 }
 
 // One bumped repricing, through the SAME deriv_price every mark goes through.
+// `cache` is the (k_shift, T)-keyed `BumpReadCache` slot this evaluation
+// shares with every other bump in the table that reads the same shifted
+// nodes at the same T -- see `CachedBumpView` and `eval_bump_table`'s own
+// six-slot layout below.
 template <class SurfaceT>
 [[nodiscard]] Result<double> bumped_pv(const SurfaceT& surface, const CurveSet& curves,
                                        const DerivContract& contract, const DerivConfig& cfg,
-                                       double k_shift, double vol_shift) {
-  const RespotView<SurfaceT> respot{&surface, k_shift};
-  const VolShiftView<RespotView<SurfaceT>> view{&respot, vol_shift};
+                                       double k_shift, double vol_shift, BumpReadCache& cache) {
+  const CachedBumpView<SurfaceT> view{&surface, k_shift, vol_shift, &cache};
   ATX_TRY(const DerivQuote q, deriv_price(view, curves, contract, cfg));
   return Ok(q.pv);
 }
@@ -1697,14 +1991,37 @@ template <class SurfaceT>
   DerivContract rolled = contract;
   rolled.maturity_t = contract.maturity_t - bumps.time_years;
 
+  // Task P-3 / GK-P2: the six (k_shift, T) read-vector caches -- see
+  // `BumpReadCache`/`CachedBumpView`'s own comments for the full mapping.
+  // {center, spot-up, spot-down} x {this contract's T, T - bumps.time_years}.
+  BumpReadCache cache_c_t0;   // {0}          @ T       -- pv.c, pv.v_up, pv.v_dn
+  BumpReadCache cache_up_t0;  // {+ks_up}     @ T       -- pv.s_up, pv.sv_pp, pv.sv_pm
+  BumpReadCache cache_dn_t0;  // {+ks_dn}     @ T       -- pv.s_dn, pv.sv_mp, pv.sv_mm
+  BumpReadCache cache_c_tr;   // {0}          @ T - dt  -- pv.t_dn, carry_pv, zero_pv
+  BumpReadCache cache_up_tr;  // {+ks_up}     @ T - dt  -- pv.t_s_up
+  BumpReadCache cache_dn_tr;  // {+ks_dn}     @ T - dt  -- pv.t_s_dn
+
+  // Each cache_*_t0/cache_*_tr slot's RECORDING evaluation is the first
+  // `bumped_pv` call issued against it below; `finish_recording()` right
+  // after that call succeeds sorts the slot ONCE so every later evaluation
+  // sharing it (still to come, strictly after -- see each call's own comment
+  // for exactly which) gets the O(log n) binary-search path instead of the
+  // O(n) append/scan-never one. A slot no later evaluation reuses (cache_up_tr,
+  // cache_dn_tr, each fed by exactly one bump) is left unsorted -- correct
+  // either way, since `CachedBumpView::iv` only ever reads what it itself
+  // just appended there.
   BumpPvs pv{};
-  ATX_TRY(pv.c, bumped_pv(surface, curves, contract, cfg, 0.0, 0.0));
-  ATX_TRY(pv.s_up, bumped_pv(surface, cs_up, contract, cfg, ks_up, 0.0));
-  ATX_TRY(pv.s_dn, bumped_pv(surface, cs_dn, contract, cfg, ks_dn, 0.0));
-  ATX_TRY(pv.v_up, bumped_pv(surface, curves, contract, cfg, 0.0, dv));
-  ATX_TRY(pv.v_dn, bumped_pv(surface, curves, contract, cfg, 0.0, -dv));
+  ATX_TRY(pv.c, bumped_pv(surface, curves, contract, cfg, 0.0, 0.0, cache_c_t0));
+  cache_c_t0.finish_recording();  // replayed by pv.v_up, pv.v_dn below
+  ATX_TRY(pv.s_up, bumped_pv(surface, cs_up, contract, cfg, ks_up, 0.0, cache_up_t0));
+  cache_up_t0.finish_recording();  // replayed by pv.sv_pp, pv.sv_pm below
+  ATX_TRY(pv.s_dn, bumped_pv(surface, cs_dn, contract, cfg, ks_dn, 0.0, cache_dn_t0));
+  cache_dn_t0.finish_recording();  // replayed by pv.sv_mp, pv.sv_mm below
+  ATX_TRY(pv.v_up, bumped_pv(surface, curves, contract, cfg, 0.0, dv, cache_c_t0));
+  ATX_TRY(pv.v_dn, bumped_pv(surface, curves, contract, cfg, 0.0, -dv, cache_c_t0));
   if (can_roll) {
-    ATX_TRY(pv.t_dn, bumped_pv(surface, curves, rolled, cfg, 0.0, 0.0));
+    ATX_TRY(pv.t_dn, bumped_pv(surface, curves, rolled, cfg, 0.0, 0.0, cache_c_tr));
+    cache_c_tr.finish_recording();  // replayed by carry_pv/zero_pv below
 
     if (bumps.carry_theta) {
       const RealizedVarianceSpec& rv = contract.rv_spec;
@@ -1757,12 +2074,12 @@ template <class SurfaceT>
           DerivContract rolled_carry = rolled;
           rolled_carry.rv_spec = inject_carry_fixing(rv, k_var_future);
           const Result<double> carry_pv =
-              bumped_pv(surface, curves, rolled_carry, cfg, 0.0, 0.0);
+              bumped_pv(surface, curves, rolled_carry, cfg, 0.0, 0.0, cache_c_tr);
 
           DerivContract rolled_zero = rolled;
           rolled_zero.rv_spec = inject_carry_fixing(rv, 0.0);
           const Result<double> zero_pv =
-              bumped_pv(surface, curves, rolled_zero, cfg, 0.0, 0.0);
+              bumped_pv(surface, curves, rolled_zero, cfg, 0.0, 0.0, cache_c_tr);
 
           pv.t_dn_carry = carry_pv.has_value() ? *carry_pv : kNaN;
           pv.t_dn_zero_fixing = zero_pv.has_value() ? *zero_pv : kNaN;
@@ -1775,13 +2092,13 @@ template <class SurfaceT>
   }
 
   if (bumps.second_order) {
-    ATX_TRY(pv.sv_pp, bumped_pv(surface, cs_up, contract, cfg, ks_up, dv));
-    ATX_TRY(pv.sv_pm, bumped_pv(surface, cs_up, contract, cfg, ks_up, -dv));
-    ATX_TRY(pv.sv_mp, bumped_pv(surface, cs_dn, contract, cfg, ks_dn, dv));
-    ATX_TRY(pv.sv_mm, bumped_pv(surface, cs_dn, contract, cfg, ks_dn, -dv));
+    ATX_TRY(pv.sv_pp, bumped_pv(surface, cs_up, contract, cfg, ks_up, dv, cache_up_t0));
+    ATX_TRY(pv.sv_pm, bumped_pv(surface, cs_up, contract, cfg, ks_up, -dv, cache_up_t0));
+    ATX_TRY(pv.sv_mp, bumped_pv(surface, cs_dn, contract, cfg, ks_dn, dv, cache_dn_t0));
+    ATX_TRY(pv.sv_mm, bumped_pv(surface, cs_dn, contract, cfg, ks_dn, -dv, cache_dn_t0));
     if (can_roll) {
-      ATX_TRY(pv.t_s_up, bumped_pv(surface, cs_up, rolled, cfg, ks_up, 0.0));
-      ATX_TRY(pv.t_s_dn, bumped_pv(surface, cs_dn, rolled, cfg, ks_dn, 0.0));
+      ATX_TRY(pv.t_s_up, bumped_pv(surface, cs_up, rolled, cfg, ks_up, 0.0, cache_up_tr));
+      ATX_TRY(pv.t_s_dn, bumped_pv(surface, cs_dn, rolled, cfg, ks_dn, 0.0, cache_dn_tr));
     }
   }
   return Ok(pv);
@@ -2267,6 +2584,39 @@ struct PricedSurfaceStripView {
     return iv_at(k_log, F_other_cached, carry_other_cached);
   }
 
+  // Task P-3 / PV-P4: batched sibling of `iv(k_log, T)`, consumed by
+  // var_swap_fair_strike's node loop (`has_strip_iv_batch` /
+  // `strip_batch_disabled_for_test` decide whether it is reached). `x` holds
+  // ALREADY-CLAMPED log-moneyness values -- the caller applies the wing clamp
+  // itself, exactly as every `iv(x_read, T)` call already does. Fast path
+  // handles the strip's own tenor (T == T_cached); var_swap_fair_strike's
+  // node loop never queries any other T in one call, so the `iv()` fallback
+  // below (correct, just unbatched) is never actually reached in production.
+  //
+  // `out[i] = F_cached * std::exp(x[i])` reproduces `iv_at`'s own
+  // `F * std::exp(k_log)` round-trip verbatim, so the strike this hands to
+  // `PricedSurface::iv_batch` is bit-identical to what `iv_at` would compute
+  // per node; `iv_batch`'s own K-validity check (`isfinite(K) && K > 0.0`)
+  // then reproduces `iv_at`'s `!(F > 0.0) || !isfinite(k_log)` guard exactly
+  // -- every combination that trips one trips the other (F <= 0 or a
+  // non-finite x makes K non-finite or non-positive), so no separate guard is
+  // needed here. `out` doubles as K's scratch buffer: each element is READ
+  // into the resolution call before that SAME index is overwritten with
+  // sigma, so the aliasing is safe in-place transform, not a hazard.
+  void iv_batch(std::span<const double> x, double T, std::span<double> out) const noexcept {
+    const std::size_t n = std::min(x.size(), out.size());
+    if (T != T_cached) {
+      for (std::size_t i = 0; i < n; ++i) {
+        out[i] = iv(x[i], T);
+      }
+      return;
+    }
+    for (std::size_t i = 0; i < n; ++i) {
+      out[i] = F_cached * std::exp(x[i]);
+    }
+    ps->iv_batch(out.first(n), T_cached, out.first(n));
+  }
+
 private:
   [[nodiscard]] double iv_at(double k_log, double F,
                              const SurfaceStripCarry& carry) const noexcept {
@@ -2278,6 +2628,15 @@ private:
 };
 
 } // namespace
+
+namespace detail {
+void set_strip_batch_disabled_for_test(bool disabled) noexcept {
+  g_strip_batch_disabled.store(disabled, std::memory_order_relaxed);
+}
+void set_bump_read_cache_disabled_for_test(bool disabled) noexcept {
+  g_bump_read_cache_disabled.store(disabled, std::memory_order_relaxed);
+}
+} // namespace detail
 
 Result<DerivQuote> var_swap_fair_strike(const PricedSurface& surface, double T,
                                         const DerivConfig& cfg,

@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
+#include <bit>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -35,6 +37,19 @@ namespace atx::vol {
 // no header touched, production call sites (pricer_fitter.cpp) untouched.
 [[nodiscard]] RiskSurfaceValidationConfig
 risk_validation_config(FitQualityMode quality_mode) noexcept;
+
+namespace detail {
+// Task P-3 test seam: forces `var_swap_fair_strike` back onto its original
+// per-node scalar surface-read loop even when `SurfaceT` (a PricedSurface-
+// backed strip view) exposes the batched `iv_batch` gather path -- see
+// `has_strip_iv_batch`/`g_strip_batch_disabled` (derivatives.cpp). Same
+// forward-declaration precedent as `risk_validation_config` above: external
+// linkage, no header touched, production call sites never invoke it.
+// `Strip.BatchedMatchesScalar*` below uses it to run the SAME (surface, T,
+// cfg) through both the batched and scalar loops and assert exact bit
+// equality.
+void set_strip_batch_disabled_for_test(bool disabled) noexcept;
+}  // namespace detail
 }  // namespace atx::vol
 
 // Vol-derivatives coverage, ported from the C ats-vol Sprint-22 tests:
@@ -372,6 +387,147 @@ TEST(VarStrip, IntegrationErrorEstimate_FiniteAndBoundsFlatVolError) {
   EXPECT_GE(q->integration_error_est, 0.0);
   // Estimate is in K_var units and should be tiny on a flat surface.
   EXPECT_LT(q->integration_error_est, 1.0e-6);
+}
+
+// ── Task P-3 / PV-P4: batched strip reads (bit-identity gate) ─────────────
+//
+// var_swap_fair_strike gathers every distinct node's log-moneyness into a
+// buffer and reads the surface via ONE `PricedSurface::iv_batch` call
+// whenever `SurfaceT` (a PricedSurface-backed strip view) exposes it
+// structurally; every other SurfaceT (the legacy VolSurface/EssviSurface/
+// SviSurface instantiations above, and SurfaceRef-native strips) keeps the
+// original per-node scalar loop untouched. `set_strip_batch_disabled_for_
+// test` forces even a PricedSurface-backed strip back onto that identical
+// scalar loop, so these tests run the SAME (surface, T, cfg) through both
+// and assert EXACT bit equality -- not a tolerance -- across every quality
+// tier on both a flat and a genuinely skewed surface, per the task's own
+// acceptance gate.
+namespace {
+
+[[nodiscard]] bool bits_equal_or_both_nan(double a, double b) noexcept {
+  if (std::isnan(a) && std::isnan(b)) {
+    return true;
+  }
+  return std::bit_cast<std::uint64_t>(a) == std::bit_cast<std::uint64_t>(b);
+}
+
+// Always restores the batched (production default) path on scope exit, even
+// across an ASSERT_* early return, so one failing iteration cannot leak the
+// override into a later test.
+struct StripBatchResetGuard {
+  ~StripBatchResetGuard() { atx::vol::detail::set_strip_batch_disabled_for_test(false); }
+};
+
+void expect_batched_matches_scalar(const atx::vol::PricedSurface &ps, double T,
+                                   const DerivConfig &cfg) {
+  atx::vol::detail::set_strip_batch_disabled_for_test(true);
+  const auto q_scalar = atx::vol::var_swap_fair_strike(ps, T, cfg);
+  atx::vol::detail::set_strip_batch_disabled_for_test(false);
+  const auto q_batched = atx::vol::var_swap_fair_strike(ps, T, cfg);
+  ASSERT_TRUE(q_scalar.has_value()) << q_scalar.error().to_string();
+  ASSERT_TRUE(q_batched.has_value()) << q_batched.error().to_string();
+
+  EXPECT_TRUE(bits_equal_or_both_nan(q_scalar->fair_strike_dec, q_batched->fair_strike_dec))
+      << "fair_strike_dec scalar=" << q_scalar->fair_strike_dec
+      << " batched=" << q_batched->fair_strike_dec;
+  EXPECT_TRUE(bits_equal_or_both_nan(q_scalar->uncapped_var_dec, q_batched->uncapped_var_dec));
+  EXPECT_TRUE(
+      bits_equal_or_both_nan(q_scalar->integration_error_est, q_batched->integration_error_est));
+  EXPECT_TRUE(
+      bits_equal_or_both_nan(q_scalar->resolved_wing_clamp, q_batched->resolved_wing_clamp));
+  EXPECT_EQ(q_scalar->flags, q_batched->flags);
+  EXPECT_EQ(q_scalar->strip_nodes_used, q_batched->strip_nodes_used);
+  EXPECT_TRUE(bits_equal_or_both_nan(q_scalar->strip_k_lo_used, q_batched->strip_k_lo_used));
+  EXPECT_TRUE(bits_equal_or_both_nan(q_scalar->strip_k_hi_used, q_batched->strip_k_hi_used));
+}
+
+}  // namespace
+
+TEST(Strip, BatchedMatchesScalarFlatSurfaceAllTiers) {
+  StripBatchResetGuard guard;
+  const atx::vol::PricedSurface ps =
+      atx::vol::testkit::make_flat_surface(30, 100.0, 100.0, 0.22);
+  const double T = 0.35;  // a fitted pillar of the shared fixture grid
+  for (const DerivQuality quality :
+       {DerivQuality::Fast, DerivQuality::Standard, DerivQuality::High, DerivQuality::Audit}) {
+    DerivConfig cfg = deriv_default_config();
+    cfg.quality = quality;
+    SCOPED_TRACE(static_cast<int>(quality));
+    expect_batched_matches_scalar(ps, T, cfg);
+  }
+}
+
+// A genuinely skewed/curved surface: multiple slices, non-flat smile, so the
+// gathered nodes span both the put and call OTM branches and (at Audit's
+// wide default span) the wing-clamp kink split -- the multi-panel code path
+// the flat fixture above cannot exercise (a flat smile never wing-clamps
+// within the certified band the same way).
+TEST(Strip, BatchedMatchesScalarSkewSurfaceAllTiers) {
+  StripBatchResetGuard guard;
+  const atx::vol::PricedSurface ps = atx::vol::testkit::make_skewed_surface(31, 100.0, 100.0);
+  const double T = 0.35;
+  for (const DerivQuality quality :
+       {DerivQuality::Fast, DerivQuality::Standard, DerivQuality::High, DerivQuality::Audit}) {
+    DerivConfig cfg = deriv_default_config();
+    cfg.quality = quality;
+    SCOPED_TRACE(static_cast<int>(quality));
+    expect_batched_matches_scalar(ps, T, cfg);
+  }
+}
+
+// End-to-end through the public dispatch entries (deriv_price / deriv_greeks)
+// on both fixtures at Audit quality (the richest/most panel-split-exercising
+// tier): proves the batched path survives the FULL product dispatch
+// (var_swap_fair_strike feeding price_var_swap's PV/flags assembly), not
+// merely the strip primitive in isolation. `deriv_greeks`'s OWN center
+// quote goes through the same unwrapped PricedSurfaceStripView (see
+// derivatives.cpp's `deriv_greeks(const PricedSurface&, ...)` overload), so
+// this also covers the batched path from inside the greek stencil's center
+// evaluation -- the bumped/rolled evaluations stay on the scalar loop by
+// construction (`CachedBumpView` has no `iv_batch`; see the DerivGreeks
+// read-cache tests in deriv_greeks_test.cpp).
+TEST(Strip, BatchedMatchesScalarViaDerivPriceAndGreeksAuditTier) {
+  StripBatchResetGuard guard;
+  const atx::vol::PricedSurface flat = atx::vol::testkit::make_flat_surface(32, 100.0, 100.0, 0.25);
+  const atx::vol::PricedSurface skew = atx::vol::testkit::make_skewed_surface(33, 100.0, 100.0);
+  const std::array<const atx::vol::PricedSurface *, 2> fixtures{&flat, &skew};
+
+  DerivConfig cfg = deriv_default_config();
+  cfg.quality = DerivQuality::Audit;
+
+  atx::vol::DerivContract contract{};
+  contract.kind = DerivKind::VarSwap;
+  contract.maturity_t = 0.35;
+  contract.notional = 1.0e6;
+  contract.strike_dec = 0.05;
+  contract.marking = DerivMarkingConvention::Otc;
+
+  for (const atx::vol::PricedSurface *ps : fixtures) {
+    atx::vol::detail::set_strip_batch_disabled_for_test(true);
+    const auto price_scalar = atx::vol::deriv_price(*ps, contract, cfg);
+    const auto greeks_scalar = atx::vol::deriv_greeks(*ps, contract, cfg);
+
+    atx::vol::detail::set_strip_batch_disabled_for_test(false);
+    const auto price_batched = atx::vol::deriv_price(*ps, contract, cfg);
+    const auto greeks_batched = atx::vol::deriv_greeks(*ps, contract, cfg);
+
+    ASSERT_TRUE(price_scalar.has_value());
+    ASSERT_TRUE(price_batched.has_value());
+    EXPECT_TRUE(bits_equal_or_both_nan(price_scalar->pv, price_batched->pv));
+    EXPECT_TRUE(
+        bits_equal_or_both_nan(price_scalar->fair_strike_dec, price_batched->fair_strike_dec));
+
+    ASSERT_TRUE(greeks_scalar.has_value());
+    ASSERT_TRUE(greeks_batched.has_value());
+    EXPECT_TRUE(bits_equal_or_both_nan(greeks_scalar->pv, greeks_batched->pv));
+    EXPECT_TRUE(bits_equal_or_both_nan(greeks_scalar->delta, greeks_batched->delta));
+    EXPECT_TRUE(bits_equal_or_both_nan(greeks_scalar->gamma, greeks_batched->gamma));
+    EXPECT_TRUE(bits_equal_or_both_nan(greeks_scalar->vega, greeks_batched->vega));
+    EXPECT_TRUE(bits_equal_or_both_nan(greeks_scalar->theta, greeks_batched->theta));
+    EXPECT_TRUE(bits_equal_or_both_nan(greeks_scalar->vanna, greeks_batched->vanna));
+    EXPECT_TRUE(bits_equal_or_both_nan(greeks_scalar->volga, greeks_batched->volga));
+    EXPECT_TRUE(bits_equal_or_both_nan(greeks_scalar->charm, greeks_batched->charm));
+  }
 }
 
 // ── PV-2 / C-2: short-tenor strip resolution floor ───────────────────────
