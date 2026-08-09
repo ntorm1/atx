@@ -36,6 +36,7 @@ using atx::vol::deriv_greeks;
 using atx::vol::deriv_price;
 using atx::vol::DerivConfig;
 using atx::vol::DerivContract;
+using atx::vol::DerivDiscreteCorrection;
 using atx::vol::DerivEngine;
 using atx::vol::DerivGreekBumps;
 using atx::vol::DerivGreekMethod;
@@ -1122,10 +1123,13 @@ double parity_gate(double scale) {
 // theta / theta_carry / theta_zero_fixing are asserted BIT-IDENTICAL --
 // `method` only ever branches inside `deriv_greeks`'s delta/gamma/vega/
 // vanna/volga assignment (see derivatives.cpp), so everything else runs the
-// identical code either way. charm is a documented hybrid under
-// AnalyticStrip (its FD stencil differences the analytic delta against an
-// FD-rolled delta at T - dt, out of this task's scope -- see derivatives.cpp
-// eval_bump_table's own comment): checked finite, not tightly pinned.
+// identical code either way. charm IS affected (Review fix round 1, I-2 --
+// the CHANGELOG previously claimed otherwise): it differences an FD-rolled
+// delta at T - dt (identical under either method) against `g.delta`, which
+// IS the method-dependent value -- so |charm_an - charm_fd| =
+// |delta_an - delta_fd| / bumps.time_years EXACTLY, a provable (not merely
+// empirical) consequence of delta's own gate above, checked below rather
+// than left as a liveness-only assertion.
 void expect_analytic_matches_fd(const EssviSurface &surf, const CurveSet &cs,
                                  const DerivContract &c, const char *label) {
   DerivGreekBumps fd_bumps{};
@@ -1158,7 +1162,10 @@ void expect_analytic_matches_fd(const EssviSurface &surf, const CurveSet &cs,
   EXPECT_NEAR(g_an->vanna, g_fd->vanna, gate) << label << " vanna";
   EXPECT_NEAR(g_an->volga, g_fd->volga, gate) << label << " volga";
 
+  // Review fix round 1, I-2: charm's own gate, derived (not guessed) from
+  // delta's -- see this function's own doc above for the exact identity.
   EXPECT_TRUE(std::isfinite(g_an->charm)) << label;
+  EXPECT_NEAR(g_an->charm, g_fd->charm, gate / fd_bumps.time_years) << label << " charm";
 }
 
 TEST(AnalyticGreeks, MatchesFDFlatUnaged) {
@@ -1237,6 +1244,10 @@ TEST(AnalyticGreeks, MatchesFDPricedSurfaceSkewed) {
   EXPECT_NEAR(g_an->vega, g_fd->vega, gate);
   EXPECT_NEAR(g_an->vanna, g_fd->vanna, gate);
   EXPECT_NEAR(g_an->volga, g_fd->volga, gate);
+  // Review fix round 1, I-2: see expect_analytic_matches_fd's own doc for
+  // why this ratio is an exact, not merely empirical, consequence of delta's
+  // gate above.
+  EXPECT_NEAR(g_an->charm, g_fd->charm, gate / fd_bumps.time_years);
 }
 
 // Default stays FD -- no mark move for any existing caller (flip evaluated
@@ -1283,6 +1294,42 @@ TEST(AnalyticGreeks, FallsBackToFDForOutOfScopeKinds) {
       EXPECT_EQ(g_an->vanna, g_fd->vanna) << static_cast<int>(kind);
     }
     EXPECT_EQ(g_an->charm, g_fd->charm) << static_cast<int>(kind);
+  }
+}
+
+// Review fix round 1, C-1: `Diffusion1OverN` adds a term QUADRATIC in K_var
+// to the future leg (`price_var_swap`'s discrete-monitoring branch) before
+// it becomes the quantity PV is linear in -- the raw-strip closed form this
+// task's analytic path differentiates knows nothing about that addend, so
+// an in-scope-by-kind VarSwap priced with the correction ON must ALSO fall
+// back to FD, bit-identically, exactly like an out-of-scope kind above.
+// Covers both a flat and a skewed surface (the reviewer's measured C-1
+// evidence showed the bug firing on both, not just skew).
+TEST(AnalyticGreeks, FallsBackToFDForDiscreteCorrection) {
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00, 0.03);
+  DerivConfig cfg{};
+  cfg.discrete_correction_mode = DerivDiscreteCorrection::Diffusion1OverN;
+  const DerivContract c = var_swap_at(0.25);  // n_obs_total = 63 -> correction engages
+
+  for (const EssviSurface &surf : {make_flat_surface(0.20, 0.01, 1.00), make_skewed_surface()}) {
+    DerivGreekBumps fd_bumps{};
+    DerivGreekBumps an_bumps{};
+    an_bumps.method = DerivGreekMethod::AnalyticStrip;
+    const auto g_fd = deriv_greeks(surf, cs, c, cfg, fd_bumps);
+    const auto g_an = deriv_greeks(surf, cs, c, cfg, an_bumps);
+    ASSERT_TRUE(g_fd.has_value()) << g_fd.error().to_string();
+    ASSERT_TRUE(g_an.has_value()) << g_an.error().to_string();
+    EXPECT_EQ(g_an->pv, g_fd->pv);
+    EXPECT_EQ(g_an->delta, g_fd->delta);
+    EXPECT_EQ(g_an->gamma, g_fd->gamma);
+    EXPECT_EQ(g_an->vega, g_fd->vega);
+    EXPECT_EQ(g_an->volga, g_fd->volga);
+    if (std::isnan(g_fd->vanna)) {
+      EXPECT_TRUE(std::isnan(g_an->vanna));
+    } else {
+      EXPECT_EQ(g_an->vanna, g_fd->vanna);
+    }
+    EXPECT_EQ(g_an->charm, g_fd->charm);
   }
 }
 

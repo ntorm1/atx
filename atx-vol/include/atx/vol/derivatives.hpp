@@ -232,20 +232,25 @@ enum class CarrLeeForm : std::uint8_t {
 //   FiniteDifference -> every affected greek comes from a bumped repricing
 //               through `deriv_price` (the pre-P-4 behaviour, unchanged bit
 //               for bit). Works for every `DerivKind`.
-//   AnalyticStrip -> `DerivKind::VarSwap` (uncapped, any age) differentiates
+//   AnalyticStrip -> `DerivKind::VarSwap` (uncapped, any age) WITH
+//               `DerivConfig::discrete_correction_mode == None` differentiates
 //               the model-free strip's own closed form instead of repricing
 //               it under a bump -- see `deriv_analytic_greeks.hpp`
 //               (derivatives.cpp) for the full derivation. Requested on any
 //               OTHER kind (`VolSwap`, `CappedVarSwap`, `CappedVolSwap` --
 //               each prices through a genuinely nonlinear model layer on top
-//               of the strip that admits no such shortcut) falls back to
-//               FiniteDifference SILENTLY: the fallback only ever picks
-//               which NUMERICAL METHOD computes a greek, and never changes
-//               what dispatch error a given (kind, engine) combination
-//               raises -- an invalid engine/kind pairing fails exactly the
-//               same way under either method (PV-5's dispatch matrix,
-//               `deriv_price`, runs identically either way; only `deriv_
-//               greeks`'s POST-price greek computation branches on this).
+//               of the strip that admits no such shortcut) OR with the
+//               `Diffusion1OverN` discrete-monitoring correction ON (its
+//               addend is QUADRATIC in K_var, so the raw-strip closed form
+//               this file differentiates does not reproduce it -- Review
+//               fix round 1, C-1) falls back to FiniteDifference SILENTLY:
+//               the fallback only ever picks which NUMERICAL METHOD computes
+//               a greek, and never changes what dispatch error a given
+//               (kind, engine) combination raises -- an invalid engine/kind
+//               pairing fails exactly the same way under either method
+//               (PV-5's dispatch matrix, `deriv_price`, runs identically
+//               either way; only `deriv_greeks`'s POST-price greek
+//               computation branches on this).
 enum class DerivGreekMethod : std::uint8_t {
   FiniteDifference = 0,
   AnalyticStrip = 1,

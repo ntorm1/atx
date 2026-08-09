@@ -12,21 +12,30 @@ already be marking with.
 ### Added — `DerivGreekBumps::method`: opt-in closed-form VarSwap strip greeks, `AnalyticStrip` (GK-P, Task P-4)
 
 `deriv_greeks`' delta/gamma/vega/vanna/volga for an uncapped `DerivKind::VarSwap`
-(any age) can now come from the strip's own closed form instead of a bumped
-repricing. `K_var` is a LINEAR functional of the strip's Black-76 node prices
-with fixed composite-Simpson weights, so differentiating it costs one pass of
-node-level Black-76 vega/volga plus four extra batched smile-derivative read
-vectors (`sigma'(k)`, `sigma''(k)` via a 5-point stencil) instead of repricing
-the whole N-node strip integral once per bump — up to 8 of the up-to-16 strip
-repricings a full second-order `deriv_greeks` call pays are skipped when in
-scope. Every other `DerivKind` (`VolSwap`, both capped kinds) prices through a
-genuinely nonlinear model layer that admits no such shortcut and falls back to
-`FiniteDifference` SILENTLY — requesting `AnalyticStrip` on an out-of-scope
-kind reprices bit-identically to an explicit `FiniteDifference` request, never
-an error and never a wrong analytic result. `theta`/`theta_carry`/
-`theta_zero_fixing`/`charm` are unaffected by this knob (each still rolls
+(any age) priced with `DerivConfig::discrete_correction_mode ==
+DerivDiscreteCorrection::None` can now come from the strip's own closed form
+instead of a bumped repricing. `K_var` is a LINEAR functional of the strip's
+Black-76 node prices with fixed composite-Simpson weights, so differentiating
+it costs one pass of node-level Black-76 vega/volga plus four extra batched
+smile-derivative read vectors (`sigma'(k)`, `sigma''(k)` via a 5-point
+stencil) instead of repricing the whole N-node strip integral once per bump —
+up to 8 of the up-to-16 strip repricings a full second-order `deriv_greeks`
+call pays are skipped when in scope. Every other `DerivKind` (`VolSwap`, both
+capped kinds), AND an in-kind VarSwap priced with the `Diffusion1OverN`
+discrete-monitoring correction ON (its addend is quadratic in `K_var`, which
+the raw-strip closed form does not account for — Review fix round 1, C-1),
+prices through — or via — a term this closed form cannot shortcut, and falls
+back to `FiniteDifference` SILENTLY: requesting `AnalyticStrip` out of scope
+reprices bit-identically to an explicit `FiniteDifference` request, never an
+error and never a wrong analytic result. `theta`/`theta_carry`/
+`theta_zero_fixing` are unaffected by this knob (each still rolls
 `maturity_t`, genuinely new information no closed form shortcuts); `rho` is
-already the P-2 closed form on every path regardless.
+already the P-2 closed form on every path regardless. `charm` IS affected —
+it differences the FD-rolled delta at `T - dt` against whichever delta the
+knob selected at `T`, so under `AnalyticStrip` one side of that difference is
+analytic; measured move is small (skew-unaged fixture: `+1.362483629` (FD) →
+`+1.361984058` (AnalyticStrip), 3.67e-4 relative) but real and gated
+(`AnalyticGreeks.*`, `deriv_greeks_test.cpp`, Review fix round 1, I-2).
 
 `DerivGreekBumps` grows one field (`method`, arity 6 -> 7): a new
 `enum class DerivGreekMethod : uint8_t { FiniteDifference = 0, AnalyticStrip = 1 }`.

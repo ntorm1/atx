@@ -20,9 +20,11 @@
 // `accumulate_strip` / `node_x`, C-3's kink-aligned panel split
 // (`strip::plan_strip_split`, detail/strip_grid.hpp). That makes K_var a
 // LINEAR functional of the N Black-76 prices {P_i} at those nodes, with
-// FIXED coefficients c_i = w_i * dx_panel / (3 * df * K_i):
+// coefficients c_i = w_i * dx_panel / (3 * df * K_i) that are fixed AT THE
+// CENTER (u = 0) but NOT along the spot-bump path below -- K_i(u) moves
+// with u, and so does c_i's own 1/K_i factor:
 //
-//   K_var = (2/T) * sum_i c_i * P_i(F, K_i, T, sigma_i)
+//   K_var = (2/T) * sum_i c_i * P_i(F, K_i, T, sigma_i)     (at u = 0 only)
 //
 // The quadrature weights {c_i} are exactly the "adjoint" the GK-P finding
 // names: differentiating a LINEAR functional of N Black-76 prices costs the
@@ -33,17 +35,29 @@
 // entire performance argument; everything below is the calculus that turns
 // "differentiate the sum" into formulas over the surface's own smile
 // derivatives sigma'(k) / sigma''(k), which this file samples via a handful
-// of extra batched read vectors rather than repricing anything.
+// of extra batched read vectors rather than repricing anything. (The DELTA/
+// GAMMA/VANNA sections below differentiate along u, so they work with
+// q_i = P_i/K_i directly rather than c_i*P_i -- see each section for why.)
 //
-// Scope: `DerivKind::VarSwap` ONLY, uncapped, any age. The future leg IS this
-// strip (`k_var_future_dec` in `price_var_swap`); the accrued leg is a
-// contract-fixed constant no bump touches. `VolSwap` (Carr-Lee / the
-// lognormal RV model) and both capped kinds price through a genuinely
-// NONLINEAR model layer on top of the strip (a straddle formula, a
+// Scope: `DerivKind::VarSwap` ONLY, uncapped, any age, AND
+// `DerivConfig::discrete_correction_mode == DerivDiscreteCorrection::None`.
+// The future leg IS this strip (`k_var_future_dec` in `price_var_swap`); the
+// accrued leg is a contract-fixed constant no bump touches. `VolSwap`
+// (Carr-Lee / the lognormal RV model) and both capped kinds price through a
+// genuinely NONLINEAR model layer on top of the strip (a straddle formula, a
 // displaced-lognormal expectation, a split-domain quadrature) -- none of
 // those admit the same "differentiate the linear functional" shortcut, so
-// they stay FD. `derivatives.cpp` enforces the scope check (kind ==
-// VarSwap); this file assumes it, not re-derives it.
+// they stay FD. The `Diffusion1OverN` discrete-monitoring correction adds
+// `(T/n_rem)*((r-q) - K_var/2)^2` to `k_var_future_dec` BEFORE it becomes the
+// quantity PV is linear in (`price_var_swap`) -- QUADRATIC in the very K_var
+// this file differentiates, so every sensitivity below would need an extra
+// `(1 - (T/n_rem)*mu)` chain-rule factor (plus a volga/vanna cross term) this
+// file does not compute; a VarSwap priced with that correction ON also stays
+// FD (Review fix round 1, C-1 -- the raw strip's own closed form silently
+// disagreed with the corrected PV by orders of the parity gate).
+// `derivatives.cpp` enforces both halves of the scope check (kind ==
+// VarSwap AND discrete_correction_mode == None); this file assumes them,
+// not re-derives them.
 //
 // ─────────────────────────────────────────────────────────────────────────
 // NOTATION
@@ -120,8 +134,14 @@
 //
 //   q_i'(0) = vega_i * sigma'(x_i) / K_i(0)
 //
+// `c_i*K_i(0)` cancels exactly ONE of c_i's two `1/K_i` factors (c_i =
+// w_i*dx/(3*df*K_i(0))), leaving the second one carried by q_i'(0) itself --
+// Review fix round 1, I-1: this line previously dropped that surviving
+// `1/K_i`, which the code (`inv_dfk = 1/(df*K)`, applied once per node) never
+// did:
+//
 //   dK_var/du = (2/T) * sum_i c_i * K_i * q_i'(0)
-//             = (2/T) * sum_i [w_i*dx/3 / df] * vega_i * sigma'(x_i)
+//             = (2/T) * sum_i [w_i*dx/3 / (df*K_i)] * vega_i * sigma'(x_i)
 //
 // delta = (1/S) * dK_var/du (chain rule above).
 //
@@ -176,8 +196,12 @@
 //
 //   q_i''(0) = [vega_i*sigma''(x_i) + volga_i*sigma'(x_i)^2] / K_i(0)
 //
+// As in delta's derivation above, `c_i*K_i(0)` cancels only ONE of c_i's two
+// `1/K_i` factors -- the second survives inside q_i''(0) itself (Review fix
+// round 1, I-1: this line previously dropped it):
+//
 //   d^2 K_var / du^2 = (2/T) * sum_i c_i * K_i * q_i''(0)
-//                    = (2/T) * sum_i [w_i*dx/3/df] *
+//                    = (2/T) * sum_i [w_i*dx/3/(df*K_i)] *
 //                          [vega_i*sigma''(x_i) + volga_i*sigma'(x_i)^2]
 //
 // SANITY COROLLARY (regression-worthy): on a genuinely FLAT smile
@@ -206,10 +230,12 @@
 //           = [vega_i'(u) - vega_i(u)] / K_i(u) = volga_i(u)*sigma_i'(u)/K_i(u)
 //
 // dK_var/dv, as a function of u (vega_Kvar(u) = (2/T)*sum_i c_i*K_i*r_i(u)),
-// differentiated once more in u at u = 0 gives
+// differentiated once more in u at u = 0 gives -- again, `c_i*K_i(0)` cancels
+// only ONE of c_i's two `1/K_i` factors, the second surviving inside r_i'(0)
+// itself (Review fix round 1, I-1: this line previously dropped it):
 //
 //   d^2K_var/(du dv) = (2/T) * sum_i c_i * K_i * r_i'(0)
-//                    = (2/T) * sum_i [w_i*dx/3/df] * volga_i*sigma'(x_i)
+//                    = (2/T) * sum_i [w_i*dx/3/(df*K_i)] * volga_i*sigma'(x_i)
 //
 // vanna = (1/S) * d^2K_var/(du dv) -- a SINGLE 1/S factor: this is a first
 // spot-derivative of a (vol-differentiated) quantity, not a second one, so
@@ -268,6 +294,7 @@
 // local slope" is read as "locally flat", the same fail-safe direction the
 // wing clamp's own flat tail already takes.
 
+#include <algorithm>  // std::clamp (Review fix round 1, I-3 -- was only transitive)
 #include <cassert>
 #include <cmath>
 #include <cstddef>
@@ -334,7 +361,9 @@ template <class SurfaceT>
 // (the one shared source both walk).
 [[nodiscard]] inline double analytic_node_x(const strip::StripPanel& panel, std::size_t np,
                                             double dx, std::size_t i) noexcept {
-  return (i == 0) ? panel.k_lo : (i + 1 == np) ? panel.k_hi : panel.k_lo + dx * static_cast<double>(i);
+  return (i == 0)          ? panel.k_lo
+        : (i + 1 == np)    ? panel.k_hi
+                           : panel.k_lo + dx * static_cast<double>(i);
 }
 
 // Computes the block above on the EXACT pinned grid `var_swap_fair_strike`
@@ -430,7 +459,8 @@ template <class SurfaceT>
   assert(idx == n && "plan_strip_split's own distinct-node-count contract");
 
   if constexpr (has_analytic_iv_batch<SurfaceT>()) {
-    surface.iv_batch(std::span<const double>(buf_c.data(), n), T, std::span<double>(buf_c.data(), n));
+    surface.iv_batch(std::span<const double>(buf_c.data(), n), T,
+                     std::span<double>(buf_c.data(), n));
     surface.iv_batch(std::span<const double>(buf_dn.data(), n), T,
                      std::span<double>(buf_dn.data(), n));
     surface.iv_batch(std::span<const double>(buf_up.data(), n), T,
@@ -468,7 +498,8 @@ template <class SurfaceT>
 
   idx = 0;
   double shared_K = 0.0, shared_sigma = 0.0;
-  double shared_sigma_dn = 0.0, shared_sigma_up = 0.0, shared_sigma_dn2 = 0.0, shared_sigma_up2 = 0.0;
+  double shared_sigma_dn = 0.0, shared_sigma_up = 0.0;
+  double shared_sigma_dn2 = 0.0, shared_sigma_up2 = 0.0;
   for (std::size_t p = 0; p < split.count; ++p) {
     const strip::StripPanel& panel = split.panels[p];
     const std::size_t np = panel.n_nodes;
@@ -516,9 +547,10 @@ template <class SurfaceT>
                                          (12.0 * kSmileDerivStep)
                                    : 0.0;
       const double sig_curv =
-          slope_usable ? (-sigma_up2 + 16.0 * sigma_up - 30.0 * sigma + 16.0 * sigma_dn - sigma_dn2) /
-                             (12.0 * kSmileDerivStep * kSmileDerivStep)
-                       : 0.0;
+          slope_usable
+              ? (-sigma_up2 + 16.0 * sigma_up - 30.0 * sigma + 16.0 * sigma_dn - sigma_dn2) /
+                    (12.0 * kSmileDerivStep * kSmileDerivStep)
+              : 0.0;
 
       sum_vega += w * bv.vega * inv_dfk;
       sum_delta += w * bv.vega * sig_slope * inv_dfk;

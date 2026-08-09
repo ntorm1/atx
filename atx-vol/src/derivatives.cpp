@@ -2404,8 +2404,42 @@ Result<DerivGreeks> deriv_greeks(const SurfaceT& surface, const CurveSet& curves
   // failed loud before this line is ever reached -- this fallback only
   // selects which numerical method computes a greek, never which errors
   // `deriv_price` raises.
-  const bool analytic_in_scope =
-      bumps.method == DerivGreekMethod::AnalyticStrip && contract.kind == DerivKind::VarSwap;
+  //
+  // Review fix round 1, C-1: `kind == VarSwap` alone is NOT the whole scope
+  // -- `analytic_strip_greeks` differentiates the RAW strip K_var only, and
+  // `price_var_swap` does not always price the raw strip. Every `DerivConfig`
+  // field was re-audited for whether it changes what the closed form must
+  // reproduce:
+  //   - `discrete_correction_mode == Diffusion1OverN` adds
+  //     `(T/n_rem)*((r-q) - K_var/2)^2` to `k_var_future_dec` BEFORE it
+  //     becomes the linear-in-K_var quantity PV is linear in (`price_var_
+  //     swap`, the `Diffusion1OverN` branch below `var_swap_fair_strike`) --
+  //     that addend is QUADRATIC in K_var, so every first-order sensitivity
+  //     picks up a `(1 - (T/n_rem)*mu)` factor this closed form does not
+  //     know about, and volga/vanna pick up an extra cross term too. Gated
+  //     below -- this was the missed dimension (C-1).
+  //   - `engine`: VarSwap reaches `price_var_swap` regardless of engine
+  //     (`deriv_price`'s dispatch matrix); no engine choice changes the
+  //     strip formula for this kind. Not scope-relevant.
+  //   - `quality`/`k_min_log`/`k_max_log`/`strip_nodes`/`width_sigmas`: all
+  //     four only shape WHICH grid gets resolved; `analytic_strip_greeks` is
+  //     handed the CENTER's own already-resolved `strip_k_lo_used`/
+  //     `strip_k_hi_used`/`strip_nodes_used`, so whatever grid these
+  //     produced is reproduced exactly regardless of how it got there. Not
+  //     separately scope-relevant.
+  //   - `wing_clamp_k`: same reasoning -- the resolved band travels as
+  //     `center.resolved_wing_clamp`, already threaded into the analytic
+  //     call. Not separately scope-relevant.
+  //   - `vol_of_vol`/`carr_lee_form`: both drive only the RV distribution
+  //     model (mid-life VolSwap, both capped kinds) and the standalone
+  //     Carr-Lee K_vol entry -- `price_var_swap` never reads either field.
+  //     Not scope-relevant for VarSwap.
+  //   - `abs_price_tol`/`rel_price_tol`/`flags_request`: reserved, must be
+  //     zero (`reserved_fields_clean`, checked inside `var_swap_fair_strike`
+  //     before any of this runs). Not scope-relevant.
+  const bool analytic_in_scope = bumps.method == DerivGreekMethod::AnalyticStrip &&
+                                 contract.kind == DerivKind::VarSwap &&
+                                 cfg.discrete_correction_mode == DerivDiscreteCorrection::None;
 
   ATX_TRY(const BumpPvs p,
           eval_bump_table(surface, curves, contract, cfg_pinned, bumps, analytic_in_scope));
