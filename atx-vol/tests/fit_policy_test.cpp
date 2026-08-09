@@ -249,6 +249,82 @@ TEST(FitPolicy, EmptyBoardDoesNotVoteUltraLiquidIndex) {
   EXPECT_NE(classify_profile(features).kind, ProfileKind::IndexEtfUltraLiquid);
 }
 
+// W3-A (F11). A Mark policy that does NOT CONSUME parity evidence must not
+// reject a surface because that evidence is absent or incomplete: the evidence
+// is advisory for such a policy, so its absence cannot be disqualifying. Before
+// W3-A only `Disabled` reached this arm, because a floor-free Mark request
+// turned scoring OFF; now every auto-routed board is scored, so a board where
+// one slice produced no scored row resolves `Failed` — and rejecting THAT would
+// convert a measurement shortfall into a lost surface, strictly worse than the
+// unmeasured publish it replaces. Quote/Risk and a floored Mark still fail
+// closed: they read the evidence, so its absence is disqualifying.
+TEST(FitAdmission, UnconsumedMarkDiagnosticsSurviveAScoringShortfall) {
+  SurfaceAdmissionEvidence evidence;
+  evidence.attempted_expiries = 4u;
+  evidence.fitted_expiries = 4u;
+  evidence.attempted_quotes = 40u;
+  evidence.fitted_quotes = 38u;
+  evidence.front_expiry_fitted = true;
+  evidence.calendar_arb_free = true;
+  evidence.finite_iv_domain = true;
+  evidence.european_price_bounds = true;
+  evidence.strike_monotone = true;
+  evidence.strike_convex = true;
+  evidence.calendar_total_variance = true;
+  evidence.forward_variance_nonnegative = true;
+
+  for (const ParityDiagnosticState state :
+       {ParityDiagnosticState::Disabled, ParityDiagnosticState::Failed,
+        ParityDiagnosticState::NotScored}) {
+    evidence.parity_state = state;
+    SCOPED_TRACE(static_cast<int>(state));
+
+    FitAdmissionPolicy mark;
+    mark.consumer = SurfaceConsumer::Mark;
+    ASSERT_FALSE(fit_admission_consumes_parity(mark));
+    EXPECT_TRUE(evaluate_surface_admission(evidence, mark).admitted);
+
+    FitAdmissionPolicy floored = mark;
+    floored.min_worst_frac_within_bidask = 0.50;
+    const SurfaceAdmissionDecision floored_decision = evaluate_surface_admission(evidence, floored);
+    EXPECT_FALSE(floored_decision.admitted);
+    EXPECT_TRUE(
+        has_admission_failure(floored_decision, SurfaceAdmissionReason::DiagnosticsUnavailable));
+
+    for (const SurfaceConsumer consumer : {SurfaceConsumer::Quote, SurfaceConsumer::Risk}) {
+      FitAdmissionPolicy strict = mark;
+      strict.consumer = consumer;
+      const SurfaceAdmissionDecision strict_decision = evaluate_surface_admission(evidence, strict);
+      EXPECT_FALSE(strict_decision.admitted);
+      EXPECT_TRUE(
+          has_admission_failure(strict_decision, SurfaceAdmissionReason::DiagnosticsUnavailable));
+    }
+  }
+}
+
+// The converse half of the same contract: VALID diagnostics are still read by a
+// floor-free Mark policy for every gate that does not depend on the floor, so
+// broadening the exemption above must not have made Mark blind.
+TEST(FitAdmission, ValidDiagnosticsStillGateNonFiniteQualityOnAFloorFreeMark) {
+  SurfaceAdmissionEvidence evidence;
+  evidence.attempted_expiries = 1u;
+  evidence.fitted_expiries = 1u;
+  evidence.attempted_quotes = 10u;
+  evidence.fitted_quotes = 10u;
+  evidence.front_expiry_fitted = true;
+  evidence.parity_state = ParityDiagnosticState::Valid;
+  evidence.finite_diagnostics = false; // a scored but non-finite chi2/RMSE
+  evidence.calendar_arb_free = true;
+  evidence.finite_iv_domain = true;
+  evidence.european_price_bounds = true;
+
+  FitAdmissionPolicy mark;
+  mark.consumer = SurfaceConsumer::Mark;
+  const SurfaceAdmissionDecision decision = evaluate_surface_admission(evidence, mark);
+  EXPECT_FALSE(decision.admitted);
+  EXPECT_TRUE(has_admission_failure(decision, SurfaceAdmissionReason::NonFiniteDiagnostics));
+}
+
 TEST(FitPolicy, ForcedCrossValidationOverridesDirectTickerPrior) {
   const Underlying u = make_underlier("SPY", 2500, 0.01);
   FitPolicyConfig config;

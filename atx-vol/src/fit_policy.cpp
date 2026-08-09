@@ -149,10 +149,18 @@ SurfaceAdmissionDecision evaluate_surface_admission(const SurfaceAdmissionEviden
     fail(SurfaceAdmissionReason::DuplicateMaturity);
   }
   const bool diagnostics_valid = evidence.parity_state == ParityDiagnosticState::Valid;
-  const bool disabled_unconsumed_mark_diagnostics =
-      policy.consumer == SurfaceConsumer::Mark && !fit_admission_consumes_parity(policy) &&
-      evidence.parity_state == ParityDiagnosticState::Disabled;
-  if (!diagnostics_valid && !disabled_unconsumed_mark_diagnostics) {
+  // A policy that does not CONSUME the parity evidence cannot reject on its
+  // absence. Before W3-A this arm only had to cover `Disabled`, because a
+  // floor-free Mark request turned scoring off wholesale; W3-A scores every
+  // auto-routed board, so a board where one slice produced no scored row now
+  // resolves `Failed` instead. Rejecting that would turn a MEASUREMENT
+  // shortfall into a lost surface -- strictly worse than the unmeasured publish
+  // it replaces, and the opposite of what "always measure" is for. Quote/Risk
+  // and any Mark policy carrying a bid/ask quality floor still fail closed:
+  // they read the evidence, so its absence IS disqualifying for them.
+  const bool unconsumed_mark_diagnostics =
+      policy.consumer == SurfaceConsumer::Mark && !fit_admission_consumes_parity(policy);
+  if (!diagnostics_valid && !unconsumed_mark_diagnostics) {
     fail(SurfaceAdmissionReason::DiagnosticsUnavailable);
   }
   if (diagnostics_valid &&
