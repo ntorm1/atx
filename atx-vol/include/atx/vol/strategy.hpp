@@ -557,6 +557,24 @@ public:
   [[nodiscard]] virtual std::span<const std::uint32_t> referenced_uids() const noexcept {
     return {};
   }
+  // A2 (backtest-production-lakehouse sprint): cumulative count of steps on
+  // which this strategy ATTEMPTED to build a fresh entry cohort and found
+  // nothing to open (a soft, data-driven no-trade — e.g. DropRenormalize
+  // leaving too few surviving names) as opposed to a step where no entry was
+  // ever scheduled. The engine copies this verbatim into
+  // `BacktestResult::n_steps_entry_skipped` after the run; it never increments
+  // this itself, since only the strategy can distinguish "skipped" from
+  // "not due".
+  //
+  // The default returns 0 for a strategy with NO such no-trade concept at all
+  // (a fixed-book test double, a strategy whose every failure is fatal). It is
+  // NOT a license to leave a production strategy silently untracked: EVERY
+  // strategy that has a soft/DropRenormalize-style no-trade contract MUST
+  // override this, or the field misreports (reads a steady 0) for every run
+  // of that strategy instead of naming a real gap. Both shipped no-trade
+  // strategies — `DeclarativeStrategy` and `DispersionStrategy` — override it;
+  // a new one implementing the same contract should too.
+  [[nodiscard]] virtual std::uint64_t n_steps_entry_skipped() const noexcept { return 0; }
 };
 
 // Interprets a `StrategySpec` against each snapshot. Holds the lifecycle state:
@@ -617,6 +635,15 @@ public:
   }
   [[nodiscard]] std::uint64_t skipped_swap_cycles() const noexcept { return skipped_swap_cycles_; }
 
+  // A2: CUMULATIVE across the run, in EVERY holding mode (unlike the restrike
+  // trio above) — one count per step whose entry side reached prepare_cohort's
+  // NO-TRADE result (`Ok(nullopt)`; see on_step's no-trade branch, strategy.cpp).
+  // Overrides IStrategy::n_steps_entry_skipped(); the engine copies it into
+  // `BacktestResult::n_steps_entry_skipped` once, at the end of the run.
+  [[nodiscard]] std::uint64_t n_steps_entry_skipped() const noexcept override {
+    return n_steps_entry_skipped_;
+  }
+
 private:
   struct PendingCohort {
     std::vector<Lot> lots;
@@ -643,6 +670,9 @@ private:
   bool have_front_{false};
   std::vector<ResolveDrop> last_dropped_;
   std::vector<FullGreekSeed> last_entry_seeds_;
+  // A2: see the public accessor above. Incremented once per no-trade step,
+  // regardless of holding mode.
+  std::uint64_t n_steps_entry_skipped_{0};
   // ── FixedExpiryRestrike state (inert in every other mode) ────────────────
   // The engine-accrual mirror behind the swap greek signal columns; wired only
   // when the spec carries swap legs. One probe, one strategy, one thread —
@@ -805,6 +835,15 @@ public:
   // Read it from the stepping thread, and copy the events out to keep them.
   [[nodiscard]] std::span<const RiskEvent> risk_events() const noexcept { return risk_events_; }
 
+  // A2 follow-up: CUMULATIVE across the run — one count per step that reached
+  // the NO-TRADE CONTRACT above (DropRenormalize + Unavailable). Overrides
+  // IStrategy::n_steps_entry_skipped(); see that declaration for the full
+  // contract. Does NOT count the separate X3 risk-halt no-trade step (a
+  // resolved book the risk gate declined, not a failed resolution).
+  [[nodiscard]] std::uint64_t n_steps_entry_skipped() const noexcept override {
+    return n_steps_entry_skipped_;
+  }
+
 private:
   // `price_options == nullptr` preserves the documented legacy 4-arg/build_book
   // construction exactly. A non-null route is the engine seed-producing path.
@@ -830,6 +869,8 @@ private:
   // Per-step telemetry mirrored into `signals()` (which does not see step_index).
   double last_risk_scale_{1.0};
   RiskBreachReason last_risk_reason_{RiskBreachReason::None};
+  // A2 follow-up: see the public accessor above.
+  std::uint64_t n_steps_entry_skipped_{0};
 };
 
 } // namespace atx::vol

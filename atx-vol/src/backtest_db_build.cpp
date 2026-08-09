@@ -299,6 +299,35 @@ source_identities(std::span<const SourceSnapshot> sources) {
   config.frictions = strategy_template.frictions;
   config.record_every_n = 1u;
   config.unpriced = UnpricedLotPolicy::Error;
+  // Controller follow-up (2026-08-08, post D1): C1's per-step settlement-mark memo
+  // (`StepMarkMemo`, commit 06e87d7) is walk-continuity state -- it is populated by
+  // the PRIOR step's book-greeks pass at that step's exact base date and consulted
+  // on the VERY NEXT step (backtest.cpp `execute()`/`compute_step`) -- and, like the
+  // pending stride-block state that makes `run_backtest_incremental` itself refuse
+  // to resume a non-1 `record_every_n` (backtest.cpp, `run_backtest_incremental`'s
+  // own guard -- this file just always supplies 1u, above), it is intentionally NOT
+  // part of `BacktestCheckpoint`. A resumed leg (`run_extension`, below) therefore
+  // always starts with a cold memo, while a continuous one-shot leg (`run_full`) over
+  // the SAME combined range may be warm at that exact step (e.g. any Daily DeltaToZero
+  // hedge keeps it warm on every step) -- so whether an expiring lot's settlement
+  // mark is SERVED from the memo (a FullGreeks whole-book AVX2 batch) or FRESHLY
+  // SOLVED (a Marks-only AVX2 batch over just the expiring lots) becomes a function
+  // of how the walk happened to be CHUNKED, not of the data. The two are only an
+  // economic-parity match, not a bit-identity one -- C1's own
+  // `BacktestExec.L2StrategyCohortSettlementMemoBitIdentical` tolerates up to 1e-9
+  // absolute between memo on/off for exactly this reason -- which silently broke
+  // `docs/backtest-db.md`'s "Incremental equality is an engine invariant" guarantee
+  // (`BacktestDbBuild.ExtensionAcrossExactProjectedExpiryMatchesOneShotSettlement`)
+  // the first time an appended range's checkpoint boundary landed one step before an
+  // exact expiry that a continuous run would have kept the memo warm for. BacktestDb
+  // needs strict bit-for-bit reproducibility, a stronger contract than
+  // `run_backtest_incremental` itself promises, so this cell disables the memo
+  // rather than loosening that invariant: both `run_full` and `run_extension` share
+  // this same config, so every settlement always takes the fresh-solve path
+  // regardless of chunking, and the two legs stay bit-identical by construction. The
+  // cost is a handful of extra `fair_value` solves per expiry event, not a per-step
+  // hot-path cost -- negligible for a batch build.
+  config.settlement_mark_memo = false;
   return config;
 }
 

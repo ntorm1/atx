@@ -52,6 +52,13 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/fit_policy.cpp
     src/data.cpp
     src/detail/archive_util.cpp
+    # D3: cross-process manifest writer lock, used unconditionally by
+    # BacktestDb::persist_locked (backtest_db.cpp) and SurfaceDb::
+    # persist_locked (surface_db.cpp) -- both core atx-vol, so this joins
+    # the always-built list beside archive_util.cpp rather than the
+    # ATX_VOL_LAKEHOUSE-gated block below (that block is for the SQLite
+    # catalog, which is genuinely lakehouse-only).
+    src/detail/writer_lock.cpp
     src/surface_archive.cpp
     src/run_archive.cpp
     src/run_diagnostics.cpp
@@ -92,6 +99,7 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/fit_scheduler.cpp
     src/corpus_board_fit.cpp
     src/scenario_grid.cpp
+    src/margin.cpp
     src/pnl_attribution.cpp
     src/corpus.cpp
     src/surface_db_populate.cpp
@@ -121,6 +129,19 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/strategy_pipeline.cpp
     src/quant_pipeline.cpp
     src/snapshot_cache.cpp
+    # C2: process-wide sealed snapshot pool. Header is Tier-B
+    # (include/atx/vol/snapshot_pool.hpp, promoted from research/include by
+    # Task E2); the translation unit compiles into atx-vol like every other
+    # research-adjacent .cpp (dispersion_run.cpp, run_archive.cpp,
+    # backtest_driver.cpp above).
+    src/snapshot_pool.cpp
+    # D1: content-addressed track identity (TrackKey) + economics-rev
+    # tripwire pairing. Same Tier-B header placement (E2 promotion) and
+    # same-library compilation as snapshot_pool.cpp immediately above.
+    src/track_key.cpp
+    # D2's src/track_store.cpp joins conditionally below (ATX_VOL_LAKEHOUSE) --
+    # it is the one atx-vol source that needs Arrow/Parquet, so it is not
+    # listed unconditionally here the way track_key.cpp above is.
     src/strategy.cpp
     src/dispersion_strategy.cpp
     src/tearsheet.cpp
@@ -266,6 +287,73 @@ target_link_libraries(atx-vol
         atx::tsdb  # read-only mmap (tsdb::Mapping) for the S2 zero-read surface open
         atx_warnings
 )
+
+# ---- D2: research Parquet track store (backtest-production-lakehouse sprint) ----
+# ATX_VOL_LAKEHOUSE (root CMakeLists.txt) gates the ONE atx-vol translation
+# unit that touches Arrow/Parquet directly (src/track_store.cpp -- its header,
+# include/atx/vol/track_store.hpp, is Arrow-free and always declared, and is
+# Tier-B public surface since the E2 promotion -- the tier lives on the header
+# alone; this gate is unaffected). Linked PRIVATE: track_store.cpp's own TU needs Arrow/Parquet
+# headers+libs, but nothing in track_store.hpp does, so no consumer of
+# atx::vol should see an extra Arrow include root propagate from THIS edge —
+# note atx::core already links Arrow::arrow_shared/Parquet::parquet_shared
+# PUBLIC unconditionally (io/parquet.hpp, predates this option, out of D2's
+# scope), so this PRIVATE edge is not what makes Arrow appear on atx-vol's
+# consumers; it is what makes track_store.cpp independently correct should
+# that unconditional atx-core edge ever change.
+if(ATX_VOL_LAKEHOUSE)
+    find_package(Arrow CONFIG REQUIRED)
+    find_package(Parquet CONFIG REQUIRED)
+    target_sources(atx-vol PRIVATE src/track_store.cpp)
+    target_link_libraries(atx-vol PRIVATE Arrow::arrow_shared Parquet::parquet_shared)
+    target_compile_definitions(atx-vol PRIVATE ATX_VOL_LAKEHOUSE)
+
+    # D3: SQLite catalog (include/atx/vol/catalog.hpp, Tier-B since the E2
+    # promotion; src/catalog.cpp) -- tracks/
+    # trials over catalog.sqlite. NOT a new third-party dependency: it is
+    # built entirely on atx::core::db::Database (atx/core/db/sqlite.hpp),
+    # which already wraps atx-core's vendored SQLite amalgamation
+    # (atx-core/third-party/sqlite, compiled as atx_sqlite3 and linked
+    # PRIVATE into atx-core -- "the symbols propagate to the final link",
+    # per atx-core/CMakeLists.txt's own comment on that target). atx-vol
+    # already links atx::core PUBLIC unconditionally, so catalog.cpp needs
+    # NO find_package/vcpkg entry and NO new target_link_libraries edge here
+    # -- only the source file itself, gated the same way track_store.cpp is:
+    # a genuinely lakehouse-only feature (it catalogs D2's Parquet tracks),
+    # kept out of the ATX_VOL_LAKEHOUSE=OFF/minimal build on purpose, even
+    # though the underlying SQLite object code is already present in every
+    # atx-vol build via atx::core regardless of this flag (see the D3 report
+    # for the full dependency-story writeup on that pre-existing fact).
+    target_sources(atx-vol PRIVATE src/catalog.cpp)
+
+    # C3: cache-first variant sweep driver (include/atx/vol/sweep_driver.hpp,
+    # Tier-B since the E2 promotion; src/sweep_driver.cpp) -- enumerates a
+    # BacktestStrategyTemplate grid, dedupes to TrackKey, probes D3's Catalog
+    # cache-first, and publishes misses through D2's TrackStore. Gated the
+    # same way as track_store.cpp/catalog.cpp immediately above: the driver's
+    # whole reason to exist is the lakehouse cache it drives, so it does not
+    # exist in the OFF build either (its header only names already-Arrow/
+    # SQLite-free types -- Catalog/TrackStore/TrackKey -- so it stays declared
+    # unconditionally, same as track_store.hpp/
+    # catalog.hpp; only this .cpp needs the gate).
+    target_sources(atx-vol PRIVATE src/sweep_driver.cpp)
+
+    # D5 fix-round: track_compact's crash-recovery reconcile pass
+    # (research/track_compact_reconcile.hpp, src/track_compact_reconcile.cpp)
+    # -- needs BOTH Arrow/Parquet reading (to relocate a track directly in
+    # the lake) AND catalog.hpp, so it cannot live in track_store.cpp
+    # (deliberately Catalog-free, see catalog.hpp's own doc comment) and
+    # gets its own TU, gated the same way as the three sources immediately
+    # above (its header only names already-unconditionally-declared types,
+    # same as sweep_driver.hpp).
+    target_sources(atx-vol PRIVATE src/track_compact_reconcile.cpp)
+
+    # Task D6: last_access_ts-driven retention/GC (research/track_gc.hpp,
+    # src/track_gc.cpp) -- needs BOTH Arrow/Parquet reading+writing (to
+    # rewrite/delete batch files) AND catalog.hpp, same gate and same reason
+    # as src/track_compact_reconcile.cpp immediately above.
+    target_sources(atx-vol PRIVATE src/track_gc.cpp)
+endif()
 
 # ---- Algorithm counters (P0.2) ----
 # PUBLIC so the library AND every consumer (bench/tests that include
@@ -681,4 +769,13 @@ if(ATX_BUILD_TOOLS)
     # (python/src/atxvol/report/dispersion.py) are written for.
     add_executable(atxvol_spy_dispersion_backtest tools/spy_dispersion_backtest.cpp)
     target_link_libraries(atxvol_spy_dispersion_backtest PRIVATE atx::vol atx::core atx_warnings)
+
+    # D2: track_compact -- folds staging/ into the hive-partitioned zstd
+    # Parquet tracks/ lakehouse (atx::vol::compact(), track_store.hpp). Only
+    # buildable when ATX_VOL_LAKEHOUSE actually compiled TrackStore/compact()
+    # into atx-vol above; ATX_BUILD_TOOLS alone is not enough.
+    if(ATX_VOL_LAKEHOUSE)
+        add_executable(track_compact tools/track_compact.cpp)
+        target_link_libraries(track_compact PRIVATE atx::vol atx::core atx_warnings)
+    endif()
 endif()

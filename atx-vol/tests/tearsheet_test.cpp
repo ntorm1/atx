@@ -770,3 +770,230 @@ TEST(TearSheet, StrideInvariantAnnualizedStats) {
               t1.sharpe, t2.sharpe, t3.sharpe, t1.ann_return, t1.ann_vol, t1.hit_rate, r1->size(),
               r2->size(), r3->size());
 }
+
+// ── B4: rigor tearsheet — PSR / DSR / MinTRL + attribution residual alarm ──
+//
+// Every pinned constant below was computed OFFLINE in Python, using the
+// standard-library `statistics.NormalDist` (an INDEPENDENT normal CDF/PPF
+// implementation from this file's `atx::core::norm_cdf` / this TU's Acklam-
+// based `norm_ppf` detail function) — not this library, so the expected
+// values are not tautological. Full derivations are in each test's comment.
+
+// 1. PSR reference value.
+TEST(TearSheet, PsrReferenceValue) {
+  // Python (statistics.NormalDist):
+  //   sr, skew, kurt, T, benchmark = 0.08, -0.3, 4.5, 60, 0.0
+  //   var_term = 1 - skew*sr + ((kurt-1)/4)*sr^2
+  //            = 1 - (-0.3)(0.08) + (3.5/4)(0.0064)
+  //            = 1 + 0.024 + 0.0056 = 1.0296
+  //   z = (sr-benchmark)*sqrt(T-1)/sqrt(var_term)
+  //     = 0.08*sqrt(59)/sqrt(1.0296) = 0.605594226148472
+  //   PSR = Phi(z) = 0.7276078813197
+  const double p = psr(0.08, -0.3, 4.5, 60, 0.0);
+  EXPECT_NEAR(p, 0.7276078813197, 1e-9);
+}
+
+// 2. PSR domain guards.
+TEST(TearSheet, PsrDomainGuards) {
+  // T < 2: sqrt(T-1) is 0 (or undefined below 1), refused rather than
+  // silently returning Phi(0)==0.5 for every input.
+  EXPECT_TRUE(std::isnan(psr(0.10, 0.0, 3.0, 1, 0.0)));
+  EXPECT_TRUE(std::isnan(psr(0.10, 0.0, 3.0, 0, 0.0)));
+
+  // Degenerate variance term: sr=10, skew=10, kurt=1 ->
+  //   1 - 10*10 + ((1-1)/4)*100 = 1 - 100 + 0 = -99 <= 0.
+  EXPECT_TRUE(std::isnan(psr(10.0, 10.0, 1.0, 60, 0.0)));
+
+  // sr == benchmark is NOT degenerate: PSR == 0.5 exactly (Phi(0)).
+  EXPECT_NEAR(psr(0.10, -0.2, 3.5, 100, 0.10), 0.5, 1e-12);
+}
+
+// 3. DSR reference value — the brief's own worked example.
+TEST(TearSheet, DsrReferenceValue_BriefExample) {
+  // Python (statistics.NormalDist):
+  //   sr, skew, kurt, T, N = 1.0, -1.0, 5.0, 252, 100
+  //   var_term = 1 - (-1.0)(1.0) + ((5.0-1)/4)(1.0)^2 = 1 + 1 + 1 = 3.0
+  //   V_hat    = var_term / T = 3.0 / 252 = 0.011904761904761904
+  //     (the single-stream Sharpe-variance estimator implied by the same
+  //     skew/kurt/T -- a representative TrialStats.sr_variance when the
+  //     trial catalog's own cross-trial variance is unavailable; the same
+  //     convention atx-engine/eval/deflated_sharpe.hpp falls back to.)
+  //   gammaE = 0.5772156649015329
+  //   q_hi = Phi^-1(1 - 1/N)     = Phi^-1(0.99)             = 2.3263478740408408
+  //   q_lo = Phi^-1(1 - 1/(N*e)) = Phi^-1(0.9963212055882856) = 2.680210444966887
+  //   max_z = (1-gammaE)*q_hi + gammaE*q_lo = 2.5306028932016846
+  //   SR0   = sqrt(V_hat) * max_z = 0.27611141218978497
+  //   z     = (sr-SR0)*sqrt(T-1)/sqrt(var_term) = 6.621371624722196
+  //   DSR   = Phi(z) = 0.999999999982206
+  const TrialStats trials{100, 0.011904761904761904};
+  const double d = dsr(1.0, -1.0, 5.0, 252, trials);
+  EXPECT_NEAR(d, 0.999999999982206, 1e-9);
+}
+
+// 4. DSR reference value — a second, less-saturated pin (DsrReferenceValue_
+// BriefExample lands PSR at ~1.0, which cannot discriminate a sign/formula
+// error in the selection-benchmark term as sharply as a mid-range value can).
+TEST(TearSheet, DsrReferenceValue_Discriminating) {
+  // Python (statistics.NormalDist):
+  //   sr, skew, kurt, T, N = 0.10, -0.4, 4.2, 120, 50
+  //   var_term = 1 - (-0.4)(0.10) + ((4.2-1)/4)(0.10)^2
+  //            = 1 + 0.04 + 0.008 = 1.048
+  //   V_hat    = 1.048 / 120 = 0.008733333333333334
+  //   q_hi = Phi^-1(1 - 1/50)      = Phi^-1(0.98)              = 2.053748910631822
+  //   q_lo = Phi^-1(1 - 1/(50*e))  = Phi^-1(0.9926424111765713) = 2.4393139538578943
+  //   max_z = (1-gammaE)*q_hi + gammaE*q_lo = 2.276303093420348
+  //   SR0   = sqrt(V_hat) * max_z = 0.2127257712452147
+  //   z     = (0.10-0.2127257712452147)*sqrt(119)/sqrt(1.048) = -1.2012020223543558
+  //   DSR   = Phi(z) = 0.1148364225606856
+  const TrialStats trials{50, 0.008733333333333334};
+  const double d = dsr(0.10, -0.4, 4.2, 120, trials);
+  EXPECT_NEAR(d, 0.1148364225606856, 1e-9);
+}
+
+// 5. N<=1 ("no selection") collapses SR0 to 0, so DSR == PSR(sr,...,T,0.0).
+// This is a structural identity between two calls of THIS library (not an
+// offline pin), complementing the hand-computed constants above.
+TEST(TearSheet, DsrNoSelectionCollapsesToPsrAtZero) {
+  const double baseline = psr(0.12, -0.2, 3.8, 500, 0.0);
+  EXPECT_NEAR(dsr(0.12, -0.2, 3.8, 500, TrialStats{1, 0.05}), baseline, 1e-12);
+  EXPECT_NEAR(dsr(0.12, -0.2, 3.8, 500, TrialStats{0, 0.05}), baseline, 1e-12);
+  // sr_variance is irrelevant at N<=1 -- the Z^-1(1-1/N) divergence guard
+  // fires regardless of what V[SR] the caller supplied.
+  EXPECT_NEAR(dsr(0.12, -0.2, 3.8, 500, TrialStats{1, 999.0}), baseline, 1e-12);
+}
+
+// 6. DSR domain guards.
+TEST(TearSheet, DsrDomainGuards) {
+  // A negative cross-trial variance is a caller/catalog bug, not a "no
+  // selection" case -- refused rather than silently sqrt'd into a complex
+  // (NaN'd) SR0.
+  EXPECT_TRUE(std::isnan(dsr(0.10, 0.0, 3.0, 100, TrialStats{50, -1.0})));
+  // The underlying psr() guard (T < 2) still applies through dsr().
+  EXPECT_TRUE(std::isnan(dsr(0.10, 0.0, 3.0, 1, TrialStats{50, 0.01})));
+  // ...and so does psr()'s degenerate-variance-term guard: dsr's own var_term
+  // is computed off the OBSERVED sr/skew/kurt (not SR0), so a pathological
+  // combination there (sr=10, skew=10, kurt=1 -> var_term=-99, see
+  // PsrDomainGuards) poisons dsr the same way regardless of TrialStats.
+  EXPECT_TRUE(std::isnan(dsr(10.0, 10.0, 1.0, 60, TrialStats{50, 0.01})));
+}
+
+// 7. MinTRL reference value, with a round-trip consistency check against psr.
+TEST(TearSheet, MinTrlReferenceValue) {
+  // Python (statistics.NormalDist):
+  //   sr, skew, kurt, benchmark, alpha = 0.2, 0.1, 3.5, 0.0, 0.95
+  //   var_term = 1 - 0.1*0.2 + ((3.5-1)/4)*0.2^2 = 1 - 0.02 + 0.025 = 1.005
+  //   z_alpha  = Phi^-1(0.95) = 1.6448536269514715
+  //   diff     = sr - benchmark = 0.2
+  //   ratio    = z_alpha / diff = 8.224268134757358
+  //   MinTRL   = 1 + var_term*ratio^2 = 68.97677928414718
+  //   (round-trip check done in Python too: Phi(z at T=MinTRL) == 0.95 exactly)
+  const double trl = min_trl(0.2, 0.1, 3.5, 0.0, 0.95);
+  EXPECT_NEAR(trl, 68.97677928414718, 1e-6);
+
+  // Round-trip: plugging MinTRL back into the PSR formula (by hand, since
+  // psr() only accepts an integer T) must reproduce alpha.
+  const double var_term = 1.0 - 0.1 * 0.2 + ((3.5 - 1.0) / 4.0) * 0.2 * 0.2;
+  const double z = (0.2 - 0.0) * std::sqrt(trl - 1.0) / std::sqrt(var_term);
+  EXPECT_NEAR(0.5 * std::erfc(-z / std::sqrt(2.0)), 0.95, 1e-9);
+}
+
+// 8. MinTRL domain guards.
+TEST(TearSheet, MinTrlDomainGuards) {
+  EXPECT_TRUE(std::isnan(min_trl(0.10, 0.0, 3.0, 0.0, 0.0)));  // alpha <= 0
+  EXPECT_TRUE(std::isnan(min_trl(0.10, 0.0, 3.0, 0.0, 1.0)));  // alpha >= 1
+  EXPECT_TRUE(std::isnan(min_trl(10.0, 10.0, 1.0, 0.0, 0.95)));  // var_term <= 0
+
+  // sr == benchmark: a zero effect size needs an infinite track record at any
+  // nontrivial confidence -- +infinity is the CORRECT answer, not a NaN.
+  const double trl = min_trl(0.10, 0.0, 3.0, 0.10, 0.95);
+  EXPECT_TRUE(std::isinf(trl));
+  EXPECT_GT(trl, 0.0);
+}
+
+namespace {
+
+// A 21-row hand-built BacktestResult (row 0 = inception, rows 1..20 traded)
+// with UNIFORM per-row greek P&L, used by the residual-alarm tests below.
+// gross(row) = |1.0|+|0.5|+|1.0|+|0.1|+|0.2|+|0.3|+|0.05|+|0.02| = 3.17 per
+// row; `unexplained_bump` overrides `pnl_unexplained` on rows
+// [bump_start, bump_start+bump_len) (1-indexed into the 20 traded rows).
+[[nodiscard]] BacktestResult make_residual_fixture(std::size_t bump_start, std::size_t bump_len,
+                                                    double bumped_unexplained) {
+  BacktestResult r;
+  constexpr std::size_t n = 21;
+  for (std::size_t i = 0; i < n; ++i) {
+    r.date.push_back("d" + std::to_string(i));
+    r.ts_ns.push_back(kBaseNow + static_cast<std::int64_t>(i) * kDayNs);
+  }
+  r.pnl_delta.assign(n, 1.0);
+  r.pnl_gamma.assign(n, 0.5);
+  r.pnl_vega.assign(n, -1.0);
+  r.pnl_vanna.assign(n, 0.1);
+  r.pnl_volga.assign(n, 0.2);
+  r.pnl_theta.assign(n, -0.3);
+  r.pnl_rho.assign(n, 0.05);
+  r.pnl_charm.assign(n, -0.02);
+  r.pnl_unexplained.assign(n, 0.01);
+  r.pnl_delta[0] = r.pnl_gamma[0] = r.pnl_vega[0] = r.pnl_vanna[0] = r.pnl_volga[0] =
+      r.pnl_theta[0] = r.pnl_rho[0] = r.pnl_charm[0] = r.pnl_unexplained[0] = 0.0;  // inception
+  for (std::size_t k = 0; k < bump_len; ++k) {
+    r.pnl_unexplained[bump_start + k] = bumped_unexplained;
+  }
+  EXPECT_EQ(r.size(), n);  // ASSERT_* cannot be used in a non-void helper
+  return r;
+}
+
+}  // namespace
+
+// 9. A clean book (uniform, tiny unexplained residual) never trips.
+TEST(TearSheet, UnexplainedAlarmCleanBookDoesNotTrip) {
+  const BacktestResult r = make_residual_fixture(/*bump_start=*/0, /*bump_len=*/0, 0.0);
+  const ResidualAlarm alarm = unexplained_alarm(r, /*window=*/5, /*tolerance=*/0.10);
+  EXPECT_FALSE(alarm.tripped);
+  // Every window is identical: ratio == 0.01 / 3.17.
+  EXPECT_NEAR(alarm.worst_ratio, 0.01 / 3.17, 1e-9);
+}
+
+// 10. A deliberately mis-marked greek (5 consecutive rows whose
+// pnl_unexplained is bumped from 0.01 to 2.0, simulating a mismarked greek
+// whose Taylor residual blew up) trips the alarm, and the worst window is
+// exactly the one fully covering the mismark.
+TEST(TearSheet, UnexplainedAlarmTripsOnMismarkedGreek) {
+  const BacktestResult r = make_residual_fixture(/*bump_start=*/11, /*bump_len=*/5, 2.0);
+  const ResidualAlarm alarm = unexplained_alarm(r, /*window=*/5, /*tolerance=*/0.10);
+  EXPECT_TRUE(alarm.tripped);
+  // Fully-overlapping window: unexpl_sum = 5*2.0 = 10.0, gross_sum = 5*3.17 =
+  // 15.85, ratio = 10.0/15.85 = 0.6309148580968...
+  EXPECT_NEAR(alarm.worst_ratio, 10.0 / 15.85, 1e-9);
+  EXPECT_EQ(alarm.worst_window_start, 11u);
+}
+
+// 11. Degenerate inputs form no window and report the zero-initialized,
+// non-tripped result rather than crash or divide by zero.
+TEST(TearSheet, UnexplainedAlarmDegenerateInputsFormNoWindow) {
+  const BacktestResult r = make_residual_fixture(0, 0, 0.0);
+
+  // window == 0: cannot form a window.
+  {
+    const ResidualAlarm alarm = unexplained_alarm(r, /*window=*/0, /*tolerance=*/0.10);
+    EXPECT_FALSE(alarm.tripped);
+    EXPECT_EQ(alarm.worst_ratio, 0.0);
+  }
+  // window > row count: cannot form a window.
+  {
+    const ResidualAlarm alarm = unexplained_alarm(r, /*window=*/100, /*tolerance=*/0.10);
+    EXPECT_FALSE(alarm.tripped);
+    EXPECT_EQ(alarm.worst_ratio, 0.0);
+  }
+  // Size-mismatched columns (a partially hand-built result): must not read
+  // out of bounds, must fail safe to the empty result.
+  {
+    BacktestResult bad;
+    bad.date = {"d0", "d1", "d2"};
+    bad.ts_ns = {kBaseNow, kBaseNow + kDayNs, kBaseNow + 2 * kDayNs};
+    bad.pnl_delta = {0.0, 1.0};  // short by one row
+    const ResidualAlarm alarm = unexplained_alarm(bad, /*window=*/2, /*tolerance=*/0.10);
+    EXPECT_FALSE(alarm.tripped);
+    EXPECT_EQ(alarm.worst_ratio, 0.0);
+  }
+}

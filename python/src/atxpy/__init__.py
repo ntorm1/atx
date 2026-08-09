@@ -36,6 +36,7 @@ from . import mining as mining
 from .mining import mine_alphas, combine_pool
 from . import learn as learn
 from . import fund as fund
+from . import tracks as tracks
 
 __version__ = "0.1.0"
 
@@ -87,5 +88,7 @@ __all__ = [
     # learn (ML alphas) + fund (meta-book)
     "learn",
     "fund",
+    # lakehouse read path: atxpy.tracks.load/catalog/returns_matrix
+    "tracks",
     "__version__",
 ]

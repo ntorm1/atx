@@ -262,6 +262,10 @@ Status DispersionStrategy::on_step_impl(const MarketSnapshot &base, std::size_t 
     // existing book untouched, and continue. Any other code stays fatal.
     if (cfg_.missing.policy == MissingNamePolicy::DropRenormalize &&
         built.error().code() == ErrorCode::Unavailable) {
+      // A2 follow-up: mirrors DeclarativeStrategy's identically-named counter
+      // for the identically-shaped no-trade contract (see IStrategy::
+      // n_steps_entry_skipped's doc — every no-trade strategy must track this).
+      ++n_steps_entry_skipped_;
       return Ok();
     }
     return Err(built.error());

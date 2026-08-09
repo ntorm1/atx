@@ -34,6 +34,7 @@
 #include <new>
 #include <span>
 #include <string>
+#include <thread>  // std::jthread — the C2 concurrent-pool soak
 #include <utility>
 #include <vector>
 
@@ -43,8 +44,10 @@
 #include "atx/vol/backtest.hpp"          // Clock, run_backtest, RunConfig, FrictionModel, ...
 #include "atx/vol/corpus.hpp"            // CorpusManifest, CorpusEntry, CorpusFitStatus
 #include "atx/vol/detail/counters.hpp"          // counters::ledger — L1 solve-economy gate
+#include "atx/vol/detail/pricing_executor.hpp"  // pricing_executor() — C2 warm() fan-out gate
 #include "atx/vol/portfolio_pricer.hpp"  // OptionContract, kNsPerYear
 #include "atx/vol/priced_surface.hpp"    // PricedSurface, PricingContext
+#include "atx/vol/snapshot_pool.hpp"  // C2: SnapshotPool, SnapshotPoolStats
 #include "atx/vol/strategy.hpp"          // DeclarativeStrategy, StrategySpec, HedgeSpec
 #include "atx/vol/surface_archive.hpp"   // write_surface_archive_v2_file, SurfaceArchiveItem
 #include "atx/vol/surface_parity.hpp"    // SliceContext
@@ -68,9 +71,36 @@ std::atomic<std::uint64_t> g_count{0};
 std::atomic<bool> g_armed{false};
 }  // namespace atx_b3_alloc
 
+// C2 fault injection: drive a real unwind THROUGH SnapshotPool's loader window —
+// the region between inserting an entry into its shard and publishing it, which
+// SnapshotPoolLoaderUnwindPublishesAndEvicts regresses.
+//
+// SELF-CALIBRATING, deliberately. A count-based trigger ("fail the Nth
+// allocation") cannot express "inside the window" without hardcoding how many
+// allocations `acquire` makes on the way in — 24 of them on this toolchain, all
+// of them in std::filesystem/std::string internals where an injected failure just
+// terminates the process and proves nothing. Instead the trigger asks the POOL:
+// `identity_probes` is bumped immediately after the entry is inserted, so failing
+// the first allocation once that counter moves lands inside the window by
+// construction, at its shallowest point (the identity probe's file stream), and
+// stays correct if the STL's allocation pattern ever changes.
+//
+// `SnapshotPool::stats()` is a noexcept read of atomics that allocates nothing,
+// so consulting it from inside `operator new` cannot recurse. THREAD-LOCAL, so
+// arming it cannot disturb gtest's bookkeeping on other threads or a pricing-pool
+// worker; one-shot, so it disarms itself on the throw.
+namespace atx_c2_alloc {
+thread_local const atx::vol::SnapshotPool* g_unwind_watch = nullptr;
+}  // namespace atx_c2_alloc
+
 void* operator new(std::size_t sz) {
   if (atx_b3_alloc::g_armed.load(std::memory_order_relaxed)) {
     atx_b3_alloc::g_count.fetch_add(1, std::memory_order_relaxed);
+  }
+  if (atx_c2_alloc::g_unwind_watch != nullptr &&
+      atx_c2_alloc::g_unwind_watch->stats().identity_probes != 0u) {
+    atx_c2_alloc::g_unwind_watch = nullptr;  // one-shot
+    throw std::bad_alloc();
   }
   void* p = std::malloc(sz != 0 ? sz : 1);
   if (p == nullptr) {
@@ -245,8 +275,11 @@ class NoopStrategy : public IStrategy {
 
 // A single-clip declarative strategy: opens ONE structure at inception and holds it
 // (EveryNDays with a cadence longer than the corpus ⇒ only step 0 opens).
+// `sign` (B1) defaults to +1.0 (long/buy) so every pre-existing call site is
+// unaffected; a QuoteSide sell-side test passes -1.0.
 [[nodiscard]] StrategySpec single_clip(std::uint32_t uid, double target_T, Side side,
-                                       StrikeSelector strike, HedgeSpec hedge = {}) {
+                                       StrikeSelector strike, HedgeSpec hedge = {},
+                                       double sign = +1.0) {
   StrategySpec spec;
   spec.name = "single-clip";
   LegSpec leg;
@@ -255,7 +288,7 @@ class NoopStrategy : public IStrategy {
   leg.structure.kind = StructureSpec::Kind::Single;
   leg.structure.single_side = side;
   leg.strike = strike;
-  leg.size = SizeSpec{SizeSpec::Kind::FixedContracts, 1.0, +1.0};
+  leg.size = SizeSpec{SizeSpec::Kind::FixedContracts, 1.0, sign};
   spec.legs.push_back(leg);
   spec.lifecycle.entry = LifecycleSpec::Entry::EveryNDays;
   spec.lifecycle.holding = LifecycleSpec::Holding::HoldToExpiry;
@@ -263,6 +296,118 @@ class NoopStrategy : public IStrategy {
   spec.hedge = hedge;
   return spec;
 }
+
+// B1: a single-clip STRADDLE (call+put at the same strike/expiry, ONE cohort,
+// TWO legs) — `SizeSpec::Kind::FixedContracts` applies `sign*value` to EVERY
+// leg of the structure (strategy.cpp's `expand_and_size_leg`), so both legs
+// open qty=+1 (or -1) here, the multi-leg QuoteSide crossing-fraction fixture.
+[[nodiscard]] StrategySpec single_clip_straddle(std::uint32_t uid, double target_T,
+                                                StrikeSelector strike, double sign = +1.0) {
+  StrategySpec spec;
+  spec.name = "single-clip-straddle";
+  LegSpec leg;
+  leg.uid = uid;
+  leg.tenor.target_T = target_T;
+  leg.structure.kind = StructureSpec::Kind::Straddle;
+  leg.strike = strike;
+  leg.size = SizeSpec{SizeSpec::Kind::FixedContracts, 1.0, sign};
+  spec.legs.push_back(leg);
+  spec.lifecycle.entry = LifecycleSpec::Entry::EveryNDays;
+  spec.lifecycle.holding = LifecycleSpec::Holding::HoldToExpiry;
+  spec.lifecycle.entry_every_n = 100000;  // >> corpus ⇒ opens once, at inception
+  return spec;
+}
+
+// B1: opens ONE lot at inception (a synthetic model contract, priced straight
+// off the surface — no DeclarativeStrategy resolution machinery needed) and
+// closes it with NO re-entry on the very next step, isolating execute()'s
+// ROLL-CLOSE loop from its entry loop.
+class OpenThenCloseStrategy : public IStrategy {
+ public:
+  OpenThenCloseStrategy(std::uint32_t uid, double target_T, Side side, double sign)
+      : uid_(uid), target_T_(target_T), side_(side), sign_(sign) {}
+
+  Status on_step(const MarketSnapshot& base, std::size_t step_index, PortfolioState& book,
+                 std::uint64_t& next_lot_id) override {
+    if (step_index == 0) {
+      const SurfaceRef s = base.find(uid_);
+      if (s == nullptr) {
+        return atx::core::Err(ErrorCode::NotFound, "OpenThenCloseStrategy: no surface");
+      }
+      const double K = s->forward_at(target_T_);
+      const auto fv = s->fair_value(K, target_T_, side_);
+      if (!fv.has_value()) {
+        return atx::core::Err(fv.error());
+      }
+      Lot lot;
+      lot.id = next_lot_id++;
+      lot.contract = OptionContract{uid_, K, target_T_, side_};
+      lot.qty = sign_;
+      lot.multiplier = 100.0;
+      // Well beyond this fixture's tiny corpus, so the lot never settles —
+      // the only close this test exercises is the strategy-driven one below.
+      lot.expiry_ts_ns = base.ts_ns() + std::llround(target_T_ * kNsPerYear) + 30 * kDayNs;
+      lot.cohort = 1;
+      lot.entry_price = *fv;
+      book.lots.push_back(lot);
+    } else {
+      book.lots.clear();  // roll-close: engine diffs before_lots vs. the now-empty book
+    }
+    return atx::core::Ok();
+  }
+
+ private:
+  std::uint32_t uid_;
+  double target_T_;
+  Side side_;
+  double sign_;
+};
+
+// B1: fixture for the QuoteSide friction-model tests. A tiny 2-date
+// single-underlying corpus (`make_corpus`'s pattern) plus a `RunConfig` whose
+// `quote_lookup` returns the SAME fixed (bid, ask) for every contract.
+//
+// `BacktestResult` carries no per-lot fill-price column, so `entry_fill_price`
+// recovers the engine's actual fill from the inception cash ledger instead: an
+// entry's net cash effect collapses to exactly `-Σ qty*multiplier*fill` (see
+// backtest.cpp's entry loop — `cash -= qty*mult*model_mark` then
+// `cash -= ex.cost`, and `ex.cost`'s `fill_slippage` term is
+// `qty*mult*(fill-model_mark)`, so the `model_mark` terms cancel) whenever
+// `per_contract_cost == 0` (this fixture's default) and every opened leg fills
+// at the SAME price (true here: the lookup ignores its argument). `n_legs`
+// divides out a straddle's two identically-priced legs.
+class ExecFixture {
+ public:
+  [[nodiscard]] static ExecFixture listed_quotes(double bid, double ask) {
+    ExecFixture fx;
+    fx.dir_ = fresh_dir("quoteside");
+    fx.corpus_ = make_corpus(fx.dir_, "SPX", 2);
+    fx.bid_ = bid;
+    fx.ask_ = ask;
+    return fx;
+  }
+
+  [[nodiscard]] const Corpus& corpus() const noexcept { return corpus_; }
+
+  [[nodiscard]] RunConfig config() const {
+    RunConfig cfg;
+    cfg.frictions.quote_lookup = [bid = bid_, ask = ask_](const OptionContract&)
+        -> std::optional<FrictionModel::RawQuote> {
+      return FrictionModel::RawQuote{bid, ask};
+    };
+    return cfg;
+  }
+
+  [[nodiscard]] static double entry_fill_price(const BacktestResult& r, int n_legs = 1) {
+    return -r.cash.front() / (static_cast<double>(n_legs) * 100.0);
+  }
+
+ private:
+  fs::path dir_;
+  Corpus corpus_;
+  double bid_{0.0};
+  double ask_{0.0};
+};
 
 }  // namespace
 
@@ -1857,10 +2002,44 @@ TEST(BacktestExec, L2StrategyCohortSettlementMemoBitIdentical) {
     }
   }
   EXPECT_GT(settle_rows, 0) << "no cohort settled — the strategy memo path is not exercised";
+  // C1 (backtest-lakehouse sprint): before C1, this strategy's memo was NEVER
+  // actually consulted -- `Entry::EveryStep` keeps `ExecResult::book_greeks` set on
+  // every step (entry_happened is always true), so the standalone `book_greeks()`
+  // call that was the ONLY pre-C1 memo-populate site never ran, and every
+  // settlement always re-solved regardless of `settlement_mark_memo`. That made
+  // "memo on == memo off" trivially bit-identical: both arms always solved.
+  //
+  // C1 populates the memo from execute()'s own FullGreeks pass, so a settlement
+  // here can now genuinely be SERVED from the memo for the first time. The served
+  // mark comes from a FullGreeks AVX2 batch over the WHOLE overlapping-cohort book;
+  // the solved mark comes from a Marks-only AVX2 batch over just that day's few
+  // expiring lots. `L2MarkMemoCruxFullGreeksMarkEqualsMarksMark` above already
+  // documents that FullGreeks and Marks marks for the SAME contract are an ECONOMIC
+  // PARITY guarantee (<=1e-10 relative, ~1e-13 USD), not a bit-identity one, and
+  // THIS divergence is that exact same residual, not a distinct/smaller effect:
+  // measured directly (temporary instrumentation, since reverted) at up to 8.6e-12
+  // absolute / ~1.06e-14 relative on `pnl_settlement` itself (the quantity the crux
+  // gate's tolerance is actually stated against) across this fixture's 4 settling
+  // rows -- inside the crux gate's own <=1e-10 relative bound, one order tighter
+  // because both routes are AVX2 here (vs. AVX2-vs-scalar-analytic in the crux
+  // test). `nav`'s max diff (2.9e-11 absolute) is that same per-settlement residual
+  // accumulated across 4 settling rows into NAV's cumulative running sum -- NOT a
+  // separately-caused, smaller-magnitude effect; NAV's OWN relative error looks far
+  // smaller (~5e-16) only because NAV's absolute magnitude (~$40-60k on this
+  // fixture) dwarfs the few-lot absolute residual, which is why this comment
+  // reports the mechanism-relative figure (~1e-14, against the settlement/mark
+  // itself) rather than nav-relative. Only `pnl_settlement`/`pnl_total`/`nav` can
+  // see it (they subtract the served/solved mark); `cash` does not (settlement
+  // credits CASH from the plain intrinsic, never the mark) and
+  // `gross_vega`/`n_open_lots` are untouched by settlement at all -- so those four
+  // stay bit-identical below.
+  constexpr double kSettlementMarkParityTol = 1e-9; // ~34x the measured 2.9e-11 max abs diff
   for (std::size_t i = 0; i < r_on->size(); ++i) {
-    EXPECT_TRUE(bits_equal(r_on->nav[i], r_off->nav[i])) << "nav row " << i;
-    EXPECT_TRUE(bits_equal(r_on->pnl_total[i], r_off->pnl_total[i])) << "pnl_total row " << i;
-    EXPECT_TRUE(bits_equal(r_on->pnl_settlement[i], r_off->pnl_settlement[i])) << "settle row " << i;
+    EXPECT_NEAR(r_on->nav[i], r_off->nav[i], kSettlementMarkParityTol) << "nav row " << i;
+    EXPECT_NEAR(r_on->pnl_total[i], r_off->pnl_total[i], kSettlementMarkParityTol)
+        << "pnl_total row " << i;
+    EXPECT_NEAR(r_on->pnl_settlement[i], r_off->pnl_settlement[i], kSettlementMarkParityTol)
+        << "settle row " << i;
     EXPECT_TRUE(bits_equal(r_on->gross_vega[i], r_off->gross_vega[i])) << "gross_vega row " << i;
     EXPECT_TRUE(bits_equal(r_on->cash[i], r_off->cash[i])) << "cash row " << i;
     EXPECT_EQ(r_on->n_open_lots[i], r_off->n_open_lots[i]) << "n_open_lots row " << i;
@@ -1868,6 +2047,142 @@ TEST(BacktestExec, L2StrategyCohortSettlementMemoBitIdentical) {
   std::printf("[btexec] L2 strategy cohort settlement: memo on==off over %d settle rows, "
               "bit-identical\n",
               settle_rows);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// C1 (backtest-lakehouse sprint) — mark-memo repopulation on the execute() path.
+//
+// `L2StrategyCohortSettlementMemoBitIdentical` above already documents the defect:
+// its strategy re-enters EVERY step (`Entry::EveryStep`), so `ExecResult::book_greeks`
+// has a value on every step and the standalone `book_greeks()` call that is the ONLY
+// place the step-mark memo gets populated (pre-C1) never runs — the memo is
+// permanently cold, and every settlement re-solves.
+//
+// A DAILY-HEDGED strategy hits the identical starvation for a different reason:
+// `HedgeSpec::Cadence::Daily` makes `execute()`'s `hedge_fires` true on EVERY step
+// regardless of `entry_happened`, so `ExecResult::book_greeks` again always has a
+// value and the memo again never populates. C1 fixes this at the root — execute()'s
+// own FullGreeks `price_into` pass now populates the memo itself — so BOTH shapes
+// benefit; this fixture isolates the daily-hedge trigger with a single cohort held
+// to an EXACT expiry so the solve-ledger counts are unambiguous (`n_expiring_lots`
+// lots, one settlement event, nothing else).
+// ─────────────────────────────────────────────────────────────────────────────
+
+namespace {
+
+// A daily-hedged strangle (call+put, ONE cohort opened at inception via a huge
+// `entry_every_n`, `HoldToExpiry`) whose expiry lands EXACTLY on a later clock
+// date — `expiry_day < n_dates` settles it inside the run; `expiry_day >= n_dates`
+// leaves it open at run end (the bit-identity/no-expiry variant below). "ExecFixture
+// ::daily_hedged_strangle_over_expiry() or equivalent" from the C1 brief: kept as a
+// standalone fixture rather than folded into `ExecFixture` above (that class is
+// QuoteSide-specific — its `.corpus()`/`.config()` return QuoteSide-only types/
+// configs — so bolting an unrelated daily-hedge/expiry mode onto it would trade one
+// coupling for another).
+struct DailyHedgedExpiryFixture {
+  Clock clock;
+  StrategySpec spec;
+  std::size_t n_expiring_lots{0};
+
+  [[nodiscard]] DeclarativeStrategy strategy() const { return DeclarativeStrategy{spec}; }
+  [[nodiscard]] static RunConfig config() {
+    RunConfig cfg;
+    cfg.price.n_threads = 1u;       // solve-ledger counts are thread-invariant
+    cfg.prefetch_snapshots = false; // remove async-prefetch nondeterminism
+    return cfg;                    // settlement_mark_memo defaults true
+  }
+};
+
+[[nodiscard]] DailyHedgedExpiryFixture
+make_daily_hedged_strangle_fixture(const fs::path& dir, int n_dates, int expiry_day) {
+  const Corpus c = make_corpus(dir, "SPX", n_dates);
+  auto clock = Clock::from_manifest(c.manifest);
+  EXPECT_TRUE(clock.has_value()) << (clock.has_value() ? std::string{} : clock.error().to_string());
+
+  StrategySpec spec;
+  spec.name = "c1-daily-hedged-strangle";
+  LegSpec leg;
+  leg.uid = kUid;
+  leg.tenor.target_T = static_cast<double>(expiry_day * kDayNs) / kNsPerYear;
+  leg.tenor.snap_to_listed = false;
+  leg.structure.kind = StructureSpec::Kind::Strangle;
+  leg.structure.call_leg = StrikeSelector{StrikeSelector::Kind::Delta, 0.40};
+  leg.structure.put_leg = StrikeSelector{StrikeSelector::Kind::Delta, 0.40};
+  leg.size = SizeSpec{SizeSpec::Kind::FixedContracts, 1.0, +1.0};
+  spec.legs.push_back(leg);
+  spec.lifecycle.entry = LifecycleSpec::Entry::EveryNDays;
+  spec.lifecycle.entry_every_n = 100000; // >> corpus => opens once, at inception
+  spec.lifecycle.holding = LifecycleSpec::Holding::HoldToExpiry;
+  spec.hedge = HedgeSpec{HedgeSpec::Kind::DeltaToZero, HedgeSpec::Cadence::Daily, 0.0};
+
+  const std::size_t n_expiring = expiry_day < n_dates ? 2u : 0u; // call + put, same cohort
+  return DailyHedgedExpiryFixture{std::move(*clock), std::move(spec), n_expiring};
+}
+
+} // namespace
+
+// The pinned solve-ledger gate: expiry-day settlement marks must be memo hits, not
+// fresh solves, on the daily-hedge route. Pre-C1 this fails with
+// settlement_full_solves == 2 (both legs re-solved) and settlement_memo_hits == 0
+// (the memo was never populated) — the bug's exact count signature.
+TEST(BacktestSolveLedger, ExpiryMarksMemoHitOnDailyHedgeRoute) {
+  const fs::path dir = fresh_dir("c1-solve-ledger");
+  const DailyHedgedExpiryFixture fx =
+      make_daily_hedged_strangle_fixture(dir, /*n_dates=*/8, /*expiry_day=*/5);
+  ASSERT_EQ(fx.n_expiring_lots, 2u);
+
+  auto strat = fx.strategy();
+  auto r = run_backtest(fx.clock, strat, fx.config());
+  ASSERT_TRUE(r.has_value()) << r.error().to_string();
+  EXPECT_EQ(0u, r->solve_ledger.settlement_full_solves)
+      << "expiry settlement should be served from the L2 mark memo on the daily-hedge "
+         "route, not re-solved";
+  EXPECT_GE(r->solve_ledger.settlement_memo_hits, fx.n_expiring_lots);
+  std::printf("[btexec] C1 daily-hedge settlement memo: hits=%llu full_solves=%llu "
+              "(n_expiring_lots=%zu)\n",
+              static_cast<unsigned long long>(r->solve_ledger.settlement_memo_hits),
+              static_cast<unsigned long long>(r->solve_ledger.settlement_full_solves),
+              fx.n_expiring_lots);
+}
+
+// Bit-identity (KEY INVARIANT): the memo changes SOLVE COUNT, never VALUES. On a
+// non-expiry corpus (the cohort's expiry falls well beyond the run window, so
+// nothing ever settles) memo ON and memo OFF must produce a bit-identical result —
+// proving execute()'s new populate_from call (which now runs on EVERY daily-hedged
+// step, whether or not anything ever consumes the memo) is inert on the economics.
+// Both solve-ledger counters are also asserted at exactly 0 in both runs: with no
+// expiring lot, compute_step's L2 settlement branch never executes at all.
+TEST(BacktestSolveLedger, DailyHedgeNoExpiryMemoOnOffBitIdentical) {
+  const fs::path dir = fresh_dir("c1-solve-ledger-noexpiry");
+  const DailyHedgedExpiryFixture fx =
+      make_daily_hedged_strangle_fixture(dir, /*n_dates=*/6, /*expiry_day=*/60);
+  ASSERT_EQ(fx.n_expiring_lots, 0u) << "fixture must not settle within this corpus";
+
+  const auto run = [&](bool memo) {
+    auto strat = fx.strategy();
+    RunConfig cfg = fx.config();
+    cfg.settlement_mark_memo = memo;
+    return run_backtest(fx.clock, strat, cfg);
+  };
+  const auto r_on = run(true);
+  const auto r_off = run(false);
+  ASSERT_TRUE(r_on.has_value()) << r_on.error().to_string();
+  ASSERT_TRUE(r_off.has_value()) << r_off.error().to_string();
+  ASSERT_EQ(r_on->size(), r_off->size());
+
+  for (std::size_t i = 0; i < r_on->size(); ++i) {
+    EXPECT_TRUE(bits_equal(r_on->nav[i], r_off->nav[i])) << "nav row " << i;
+    EXPECT_TRUE(bits_equal(r_on->pnl_total[i], r_off->pnl_total[i])) << "pnl_total row " << i;
+    EXPECT_TRUE(bits_equal(r_on->cash[i], r_off->cash[i])) << "cash row " << i;
+    EXPECT_TRUE(bits_equal(r_on->gross_vega[i], r_off->gross_vega[i])) << "gross_vega row " << i;
+    EXPECT_TRUE(bits_equal(r_on->gross_delta[i], r_off->gross_delta[i])) << "gross_delta row " << i;
+  }
+  EXPECT_EQ(0u, r_on->solve_ledger.settlement_memo_hits);
+  EXPECT_EQ(0u, r_on->solve_ledger.settlement_full_solves);
+  EXPECT_EQ(0u, r_off->solve_ledger.settlement_memo_hits);
+  EXPECT_EQ(0u, r_off->solve_ledger.settlement_full_solves);
+  std::printf("[btexec] C1 daily-hedge no-expiry: memo on==off bit-identical over %zu rows\n",
+              r_on->size());
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2063,4 +2378,678 @@ TEST(BacktestExec, L4NarrowedBaseNeverReusedByPnlStamp) {
   EXPECT_TRUE(bits_equal(reuse->pnl_total, ref->pnl_total));
   std::printf("[btexec] L4 stamp guard: narrowed base re-solved (analytic>=1), full base reused "
               "(analytic==0); both pnl bit-match the cold full reference\n");
+}
+
+// ── B1: SpreadKind::QuoteSide fills ──────────────────────────────────────────
+//
+// (a) a recorded quote crosses at mid ± f·half-spread, f picked by the
+//     committed cohort's leg count (single vs. complex); (b) an absent quote
+//     falls back to the modeled PriceBps half-spread; (c) every
+//     `BacktestResult` carries its `friction_regime`.
+
+TEST(BacktestExec, QuoteSideFillCrossesRecordedSpread) {
+  auto fx = ExecFixture::listed_quotes(/*bid=*/1.00, /*ask=*/1.10);
+  RunConfig cfg = fx.config();
+  cfg.frictions.spread_kind = FrictionModel::SpreadKind::QuoteSide;
+
+  auto clock = Clock::from_manifest(fx.corpus().manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  DeclarativeStrategy strat{single_clip(kUid, 0.5, Side::Put,
+                                       StrikeSelector{StrikeSelector::Kind::AtmForward, 0.0})};
+  auto r = run_backtest(*clock, strat, cfg);
+  ASSERT_TRUE(r.has_value()) << r.error().to_string();
+
+  // buy fills at 1.05 + 0.75*0.05 = 1.0875 (single leg -> crossing_fraction_single).
+  EXPECT_NEAR(1.0875, ExecFixture::entry_fill_price(*r), 1e-9);
+  EXPECT_EQ(FrictionRegime::QuoteSide, r->friction_regime);
+}
+
+TEST(BacktestExec, QuoteSideFillUsesComplexFractionForMultiLegCohort) {
+  auto fx = ExecFixture::listed_quotes(/*bid=*/1.00, /*ask=*/1.10);
+  RunConfig cfg = fx.config();
+  cfg.frictions.spread_kind = FrictionModel::SpreadKind::QuoteSide;
+
+  auto clock = Clock::from_manifest(fx.corpus().manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  // A straddle: call+put share ONE cohort, so both legs price with
+  // crossing_fraction_complex, not crossing_fraction_single.
+  DeclarativeStrategy strat{single_clip_straddle(
+      kUid, 0.5, StrikeSelector{StrikeSelector::Kind::AtmForward, 0.0})};
+  auto r = run_backtest(*clock, strat, cfg);
+  ASSERT_TRUE(r.has_value()) << r.error().to_string();
+
+  // buy fills at 1.05 + 0.53*0.05 = 1.0765 (complex, both legs identical).
+  EXPECT_NEAR(1.0765, ExecFixture::entry_fill_price(*r, /*n_legs=*/2), 1e-9);
+}
+
+TEST(BacktestExec, QuoteSideSellFillsBelowMid) {
+  auto fx = ExecFixture::listed_quotes(/*bid=*/1.00, /*ask=*/1.10);
+  RunConfig cfg = fx.config();
+  cfg.frictions.spread_kind = FrictionModel::SpreadKind::QuoteSide;
+
+  auto clock = Clock::from_manifest(fx.corpus().manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  DeclarativeStrategy strat{single_clip(kUid, 0.5, Side::Put,
+                                       StrikeSelector{StrikeSelector::Kind::AtmForward, 0.0},
+                                       /*hedge=*/HedgeSpec{}, /*sign=*/-1.0)};
+  auto r = run_backtest(*clock, strat, cfg);
+  ASSERT_TRUE(r.has_value()) << r.error().to_string();
+
+  // A short entry SELLS: fills at 1.05 - 0.75*0.05 = 1.0125. qty<0 flips the
+  // cash-recovery sign from ExecFixture::entry_fill_price's (qty>0 buy)
+  // convention, so this test recovers it directly.
+  EXPECT_NEAR(1.0125, r->cash.front() / 100.0, 1e-9);
+}
+
+TEST(BacktestExec, QuoteSideRollCloseCrossesRecordedSpread) {
+  auto fx = ExecFixture::listed_quotes(/*bid=*/1.00, /*ask=*/1.10);
+  RunConfig cfg = fx.config();
+  cfg.frictions.spread_kind = FrictionModel::SpreadKind::QuoteSide;
+
+  OpenThenCloseStrategy strat(kUid, 0.5, Side::Put, /*sign=*/+1.0);
+  auto clock = Clock::from_manifest(fx.corpus().manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  auto r = run_backtest(*clock, strat, cfg);
+  ASSERT_TRUE(r.has_value()) << r.error().to_string();
+  ASSERT_GE(r->cash.size(), 2u);
+
+  // Row 0 opens (buy, entry loop, crosses UP); row 1 closes with no
+  // re-entry (roll-close loop only) -- closing a long put SELLS it, crossing
+  // DOWN: 1.05 - 0.75*0.05 = 1.0125.
+  const double close_proceeds = r->cash[1] - r->cash[0];
+  EXPECT_NEAR(1.0125, close_proceeds / 100.0, 1e-9);
+}
+
+TEST(BacktestExec, QuoteSideFallsBackToModeledPriceBpsHalfSpreadWhenQuoteAbsent) {
+  const fs::path dir = fresh_dir("quoteside-fallback");
+  const Corpus c = make_corpus(dir, "SPX", 2);
+  auto clock = Clock::from_manifest(c.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  const StrategySpec spec = single_clip(kUid, 0.5, Side::Put,
+                                        StrikeSelector{StrikeSelector::Kind::AtmForward, 0.0});
+
+  // PriceBps: an established, well-tested modeled half-spread charged ON TOP
+  // of a model-mid fill.
+  RunConfig price_bps_cfg;
+  price_bps_cfg.frictions.spread_kind = FrictionModel::SpreadKind::PriceBps;
+  price_bps_cfg.frictions.half_spread_bps = 40.0;
+  DeclarativeStrategy strat_bps{spec};
+  auto r_bps = run_backtest(*clock, strat_bps, price_bps_cfg);
+  ASSERT_TRUE(r_bps.has_value()) << r_bps.error().to_string();
+
+  // QuoteSide with NO quote_lookup wired and crossing_fraction_single=1.0 (a
+  // full cross) must reduce to EXACTLY the same fill/cost/nav as PriceBps
+  // above: `mid + 1.0*(mid*bps/1e4)` is the identical formula, just reached
+  // via the fallback branch instead of the additive half_spread() lane.
+  RunConfig quote_cfg;
+  quote_cfg.frictions.spread_kind = FrictionModel::SpreadKind::QuoteSide;
+  quote_cfg.frictions.half_spread_bps = 40.0;
+  quote_cfg.frictions.crossing_fraction_single = 1.0;
+  // quote_lookup left unset -> every fill falls back to the modeled half-spread.
+  DeclarativeStrategy strat_quote{spec};
+  auto r_quote = run_backtest(*clock, strat_quote, quote_cfg);
+  ASSERT_TRUE(r_quote.has_value()) << r_quote.error().to_string();
+
+  EXPECT_NEAR(r_bps->cost.front(), r_quote->cost.front(), 1e-6);
+  EXPECT_NEAR(r_bps->nav.front(), r_quote->nav.front(), 1e-6);
+  EXPECT_NE(r_bps->cost.front(), 0.0) << "the fixture must actually charge something";
+  EXPECT_EQ(FrictionRegime::Modeled, r_bps->friction_regime);
+  EXPECT_EQ(FrictionRegime::QuoteSide, r_quote->friction_regime);
+}
+
+TEST(BacktestExec, FrictionRegimeClassifiesFrictionlessModeledAndQuoteSide) {
+  const fs::path dir = fresh_dir("frictionregime");
+  const Corpus c = make_corpus(dir, "SPX", 2);
+  auto clock = Clock::from_manifest(c.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  const StrategySpec spec = single_clip(kUid, 0.5, Side::Put,
+                                        StrikeSelector{StrikeSelector::Kind::AtmForward, 0.0});
+
+  {
+    DeclarativeStrategy strat{spec};
+    RunConfig cfg;  // default: SpreadKind::None, every other cost knob 0
+    auto r = run_backtest(*clock, strat, cfg);
+    ASSERT_TRUE(r.has_value()) << r.error().to_string();
+    EXPECT_EQ(FrictionRegime::Frictionless, r->friction_regime);
+  }
+  {
+    DeclarativeStrategy strat{spec};
+    RunConfig cfg;
+    cfg.frictions.spread_kind = FrictionModel::SpreadKind::PriceBps;
+    cfg.frictions.half_spread_bps = 25.0;
+    auto r = run_backtest(*clock, strat, cfg);
+    ASSERT_TRUE(r.has_value()) << r.error().to_string();
+    EXPECT_EQ(FrictionRegime::Modeled, r->friction_regime);
+  }
+  {
+    DeclarativeStrategy strat{spec};
+    RunConfig cfg;
+    cfg.frictions.spread_kind = FrictionModel::SpreadKind::QuoteSide;
+    auto r = run_backtest(*clock, strat, cfg);
+    ASSERT_TRUE(r.has_value()) << r.error().to_string();
+    EXPECT_EQ(FrictionRegime::QuoteSide, r->friction_regime);
+  }
+}
+
+// Invariant I3: a frictionless replay (SpreadKind::None) must stay
+// bit-identical to a run that never heard of QuoteSide. Reuses the existing
+// ZeroFrictionIdentity fixture pattern (default vs. explicit-zero RunConfig)
+// but additionally proves the NEW crossing-fraction fields are inert at their
+// ORATS defaults under None -- widening FrictionModel must not move a single
+// bit of the frictionless golden.
+TEST(BacktestExec, QuoteSideFieldsAreInertUnderNoneSpreadKind) {
+  const fs::path dir = fresh_dir("quoteside-inert");
+  const Corpus c = make_corpus(dir, "SPX", 6);
+  auto clock = Clock::from_manifest(c.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  const StrategySpec spec = single_clip(kUid, 0.25, Side::Put,
+                                        StrikeSelector{StrikeSelector::Kind::AtmForward, 0.0});
+
+  DeclarativeStrategy s_default{spec};
+  DeclarativeStrategy s_new_fields{spec};
+
+  RunConfig def{};  // SpreadKind::None (the default) -- crossing fractions untouched
+  RunConfig with_fields{};
+  with_fields.frictions.crossing_fraction_single = 0.11;   // != the 0.75 default
+  with_fields.frictions.crossing_fraction_complex = 0.22;  // != the 0.53 default
+  with_fields.frictions.quote_lookup = [](const OptionContract&) {
+    return std::optional<FrictionModel::RawQuote>{FrictionModel::RawQuote{1.0, 2.0}};
+  };
+
+  auto rd = run_backtest(*clock, s_default, def);
+  auto rf = run_backtest(*clock, s_new_fields, with_fields);
+  ASSERT_TRUE(rd.has_value()) << rd.error().to_string();
+  ASSERT_TRUE(rf.has_value()) << rf.error().to_string();
+  const BacktestResult& a = *rd;
+  const BacktestResult& b = *rf;
+  ASSERT_EQ(a.size(), b.size());
+  ASSERT_GT(a.size(), 1u);
+  for (std::size_t i = 0; i < a.size(); ++i) {
+    EXPECT_TRUE(bits_equal(a.nav[i], b.nav[i])) << "nav row " << i;
+    EXPECT_TRUE(bits_equal(a.cash[i], b.cash[i])) << "cash row " << i;
+    EXPECT_TRUE(bits_equal(a.cost[i], b.cost[i])) << "cost row " << i;
+  }
+  EXPECT_EQ(FrictionRegime::Frictionless, a.friction_regime);
+  EXPECT_EQ(FrictionRegime::Frictionless, b.friction_regime);
+}
+
+// ── Task C2: process-wide sealed snapshot pool ──────────────────────────────
+//
+// Three gates on `SnapshotPool` (Tier-B, atx/vol/snapshot_pool.hpp) wired through
+// `RunConfig::snapshot_pool`:
+//   (a) SnapshotPoolSecondRunOpensNoArchives     — a second run over the same
+//       clock, sharing the pool, performs ZERO archive opens.
+//   (b) SnapshotPoolIsBitIdenticalToPrivateCache — pooled and private-cache runs
+//       agree bit-for-bit on every BacktestResult column and scalar.
+//   (c) SnapshotPoolConcurrentRunsMatchSerial    — 8 concurrent `std::jthread`
+//       runs sharing one pool reproduce the serial result exactly, looped
+//       `kPoolSoakRepeats` times.
+//
+// The pool decides only WHERE the bytes come from; (b) and (c) are the pins that
+// it never decides WHAT they are.
+
+namespace {
+
+// Every row-parallel double column a run fills, paired for a bitwise compare.
+[[nodiscard]] std::vector<std::pair<const std::vector<double>*, const std::vector<double>*>>
+result_columns(const BacktestResult& a, const BacktestResult& b) {
+  return {{&a.pnl_total, &b.pnl_total},
+          {&a.pnl_delta, &b.pnl_delta},
+          {&a.pnl_gamma, &b.pnl_gamma},
+          {&a.pnl_vega, &b.pnl_vega},
+          {&a.pnl_vanna, &b.pnl_vanna},
+          {&a.pnl_volga, &b.pnl_volga},
+          {&a.pnl_theta, &b.pnl_theta},
+          {&a.pnl_rho, &b.pnl_rho},
+          {&a.pnl_charm, &b.pnl_charm},
+          {&a.pnl_unexplained, &b.pnl_unexplained},
+          {&a.pnl_settlement, &b.pnl_settlement},
+          {&a.pnl_shares, &b.pnl_shares},
+          {&a.financing, &b.financing},
+          {&a.cost, &b.cost},
+          {&a.nav, &b.nav},
+          {&a.cash, &b.cash},
+          {&a.gross_delta, &b.gross_delta},
+          {&a.gross_gamma, &b.gross_gamma},
+          {&a.gross_vega, &b.gross_vega},
+          {&a.gross_theta, &b.gross_theta},
+          {&a.gross_vega_abs, &b.gross_vega_abs},
+          {&a.turnover_notional, &b.turnover_notional},
+          {&a.turnover_vega, &b.turnover_vega},
+          {&a.swap_pv, &b.swap_pv},
+          {&a.swap_pnl, &b.swap_pnl},
+          {&a.n_open_lots, &b.n_open_lots},
+          {&a.n_unpriced_lots, &b.n_unpriced_lots},
+          {&a.n_unpriced_greeks, &b.n_unpriced_greeks},
+          {&a.step_pnl_total, &b.step_pnl_total},
+          {&a.nav_liquidation, &b.nav_liquidation},
+          {&a.margin_required, &b.margin_required}};
+}
+
+// Bitwise equality over the WHOLE result: dates, timestamps, every double column
+// (including the non-wire ones), the signal series and every run scalar.
+void expect_result_bit_identical(const BacktestResult& a, const BacktestResult& b,
+                                 const char* what) {
+  ASSERT_EQ(a.size(), b.size()) << what;
+  ASSERT_EQ(a.date, b.date) << what;
+  ASSERT_EQ(a.ts_ns, b.ts_ns) << what;
+  for (const auto& [va, vb] : result_columns(a, b)) {
+    ASSERT_EQ(va->size(), vb->size()) << what << ": column length";
+    for (std::size_t i = 0; i < va->size(); ++i) {
+      EXPECT_TRUE(bits_equal((*va)[i], (*vb)[i])) << what << ": column row " << i;
+    }
+  }
+  ASSERT_EQ(a.signals.size(), b.signals.size()) << what;
+  for (std::size_t s = 0; s < a.signals.size(); ++s) {
+    EXPECT_EQ(a.signals[s].first, b.signals[s].first) << what << ": signal name " << s;
+    ASSERT_EQ(a.signals[s].second.size(), b.signals[s].second.size()) << what;
+    for (std::size_t i = 0; i < a.signals[s].second.size(); ++i) {
+      EXPECT_TRUE(bits_equal(a.signals[s].second[i], b.signals[s].second[i]))
+          << what << ": signal " << a.signals[s].first << " row " << i;
+    }
+  }
+  EXPECT_EQ(a.n_steps_entry_skipped, b.n_steps_entry_skipped) << what;
+  EXPECT_EQ(a.n_settlements_at_stale_spot, b.n_settlements_at_stale_spot) << what;
+  EXPECT_EQ(a.n_hedge_steps_skipped, b.n_hedge_steps_skipped) << what;
+  EXPECT_EQ(a.n_clock_dates_dropped, b.n_clock_dates_dropped) << what;
+  EXPECT_EQ(a.clock_dates_dropped, b.clock_dates_dropped) << what;
+  EXPECT_EQ(a.friction_regime, b.friction_regime) << what;
+  EXPECT_EQ(a.n_short_calls_assignable, b.n_short_calls_assignable) << what;
+  EXPECT_EQ(a.n_puts_exercisable, b.n_puts_exercisable) << what;
+  EXPECT_EQ(a.solve_ledger.settlement_memo_hits, b.solve_ledger.settlement_memo_hits) << what;
+  EXPECT_EQ(a.solve_ledger.settlement_full_solves, b.solve_ledger.settlement_full_solves) << what;
+}
+
+[[nodiscard]] StrategySpec pool_gate_spec() {
+  return single_clip(kUid, 0.25, Side::Put, StrikeSelector{StrikeSelector::Kind::AtmForward, 0.0});
+}
+
+}  // namespace
+
+// (a) Two sequential runs sharing one pool: the second opens NOTHING.
+TEST(BacktestExec, SnapshotPoolSecondRunOpensNoArchives) {
+  const fs::path dir = fresh_dir("pool-reuse");
+  const Corpus c = make_corpus(dir, "SPX", 6);
+  auto clock = Clock::from_manifest(c.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  SnapshotPool pool;
+  RunConfig cfg;
+  cfg.snapshot_pool = &pool;
+
+  const StrategySpec spec = pool_gate_spec();
+  DeclarativeStrategy first{spec};
+  auto r1 = run_backtest(*clock, first, cfg);
+  ASSERT_TRUE(r1.has_value()) << r1.error().to_string();
+  const SnapshotPoolStats after_first = pool.stats();
+
+  DeclarativeStrategy second{spec};
+  auto r2 = run_backtest(*clock, second, cfg);
+  ASSERT_TRUE(r2.has_value()) << r2.error().to_string();
+  const SnapshotPoolStats after_second = pool.stats();
+
+  // Run 1 opened each of the 6 dated archives exactly once (single-flight), and
+  // probed each one's content identity exactly once.
+  EXPECT_EQ(after_first.archive_opens, 6u);
+  EXPECT_EQ(after_first.identity_probes, 6u);
+  EXPECT_EQ(after_first.resident_entries, 6u);
+  // Run 2: ZERO archive opens, ZERO identity probes — every acquisition is a hit.
+  EXPECT_EQ(after_second.archive_opens, after_first.archive_opens);
+  EXPECT_EQ(after_second.identity_probes, after_first.identity_probes);
+  EXPECT_GT(after_second.hits, after_first.hits);
+  EXPECT_EQ(after_second.resident_entries, 6u);
+
+  // The two runs also agree bit-for-bit (the pool served run 2 the same bytes).
+  expect_result_bit_identical(*r1, *r2, "pooled run 1 vs pooled run 2");
+
+  // Explicit trim is the ONLY eviction: dropping everything before the last date
+  // leaves exactly the last entry resident, and live readers keep their handles.
+  const std::size_t dropped = pool.trim(c.dp.back().first);
+  EXPECT_EQ(dropped, 5u);
+  EXPECT_EQ(pool.stats().resident_entries, 1u);
+  EXPECT_EQ(pool.stats().trimmed_entries, 5u);
+}
+
+// (b) Pooled and private-cache runs are bit-identical.
+TEST(BacktestExec, SnapshotPoolIsBitIdenticalToPrivateCache) {
+  const fs::path dir = fresh_dir("pool-identity");
+  const Corpus c = make_corpus(dir, "SPX", 8, 100.0, 0.006, 0.001);
+  auto clock = Clock::from_manifest(c.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  const StrategySpec spec = pool_gate_spec();
+
+  RunConfig priv;  // snapshot_pool == nullptr => today's private per-run cache
+  ASSERT_EQ(priv.snapshot_pool, nullptr);
+  DeclarativeStrategy s_priv{spec};
+  auto r_priv = run_backtest(*clock, s_priv, priv);
+  ASSERT_TRUE(r_priv.has_value()) << r_priv.error().to_string();
+
+  SnapshotPool pool;
+  RunConfig pooled;
+  pooled.snapshot_pool = &pool;
+  DeclarativeStrategy s_pool{spec};
+  auto r_pool = run_backtest(*clock, s_pool, pooled);
+  ASSERT_TRUE(r_pool.has_value()) << r_pool.error().to_string();
+
+  expect_result_bit_identical(*r_priv, *r_pool, "private cache vs shared pool");
+  EXPECT_EQ(pool.stats().archive_opens, 8u);
+}
+
+// (c) 8 concurrent runs sharing one pool == the serial run, repeated as a soak.
+//
+// CI VALUE, deliberately not the brief's 100. Each repeat is a FRESH pool plus 8
+// full 6-date backtests racing to fill it, so every repeat is one cold-start race
+// per date. Measured on this box: 100 repeats = 7.9-9.2 s (three consecutive
+// passes, all green, 2400 concurrent runs, every rep reporting exactly 6 archive
+// opens); 20 repeats is ~1.8 s, which is what a per-commit gate can afford.
+// Raise this constant to reproduce the full soak — nothing else changes.
+constexpr int kPoolSoakRepeats = 20;
+
+TEST(BacktestExec, SnapshotPoolConcurrentRunsMatchSerial) {
+  const fs::path dir = fresh_dir("pool-concurrent");
+  const Corpus c = make_corpus(dir, "SPX", 6);
+  auto clock = Clock::from_manifest(c.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  const StrategySpec spec = pool_gate_spec();
+
+  // Serial reference: its own pool, one run, nothing concurrent.
+  SnapshotPool serial_pool;
+  RunConfig serial_cfg;
+  serial_cfg.snapshot_pool = &serial_pool;
+  DeclarativeStrategy serial_strat{spec};
+  auto serial = run_backtest(*clock, serial_strat, serial_cfg);
+  ASSERT_TRUE(serial.has_value()) << serial.error().to_string();
+
+  constexpr std::size_t kThreads = 8;
+  for (int rep = 0; rep < kPoolSoakRepeats; ++rep) {
+    SnapshotPool pool;  // fresh pool each repeat => the cold race is exercised
+    std::vector<Result<BacktestResult>> out(kThreads,
+                                            Err(ErrorCode::Unknown, "run never assigned"));
+    {
+      std::vector<std::jthread> threads;
+      threads.reserve(kThreads);
+      for (std::size_t t = 0; t < kThreads; ++t) {
+        threads.emplace_back([&, t] {
+          RunConfig cfg;
+          cfg.snapshot_pool = &pool;
+          DeclarativeStrategy strat{spec};
+          out[t] = run_backtest(*clock, strat, cfg);
+        });
+      }
+    }  // jthread join
+    for (std::size_t t = 0; t < kThreads; ++t) {
+      ASSERT_TRUE(out[t].has_value())
+          << "rep " << rep << " thread " << t << ": " << out[t].error().to_string();
+      expect_result_bit_identical(*serial, *out[t], "concurrent pooled run vs serial");
+    }
+    // Single-flight: 8 concurrent runs over the same 6 dates opened each archive
+    // exactly once, whichever thread won each race.
+    const SnapshotPoolStats st = pool.stats();
+    EXPECT_EQ(st.archive_opens, 6u) << "rep " << rep;
+    EXPECT_EQ(st.identity_probes, 6u) << "rep " << rep;
+    EXPECT_EQ(st.resident_entries, 6u) << "rep " << rep;
+  }
+  std::printf("[btexec] pool soak: %d reps x %zu concurrent runs, bit-identical\n",
+              kPoolSoakRepeats, kThreads);
+}
+
+// ── Task C2 fix round: the three gaps the review found ──────────────────────
+//
+//   1. A loader that UNWINDS used to abandon its entry un-ready forever, hanging
+//      every waiter and every later acquirer of that key (invariant L7).
+//   2. The bit-identity gate never exercised the pool's one real behavioural
+//      divergence — dropping the private cache's uid SUBSET — because
+//      DeclarativeStrategy does not override `referenced_uids()`, so both sides
+//      were whole-board. The fixed-book overload had no pool coverage at all.
+//   3. `warm()`'s executor dispatch never actually ran: `run_dynamic` inlines
+//      below 4 refs and `RunConfig::prefetch_depth` defaults to 2, so no pool
+//      worker ever executed an acquisition.
+
+namespace {
+
+// A second underlier, present in every archive of `make_two_name_corpus` and
+// referenced by NO book below. It is what makes the private cache's
+// subset-deserialize observable: the private route drops it, the pool keeps it.
+constexpr std::uint32_t kPoolOtherUid = 99;
+
+// Two surfaces per dated archive (kUid + kPoolOtherUid), otherwise `make_corpus`.
+[[nodiscard]] Corpus make_two_name_corpus(const fs::path& dir, int n_dates) {
+  std::vector<std::pair<std::string, std::string>> dp;
+  for (int d = 0; d < n_dates; ++d) {
+    const std::int64_t now = kBaseNow + static_cast<std::int64_t>(d) * kDayNs;
+    const double S = 100.0 * (1.0 + 0.004 * static_cast<double>(d));
+    const double vb = 0.001 * static_cast<double>(d);
+    const PricedSurface a = make_surface(kUid, S, S, now, vb);
+    const PricedSurface b = make_surface(kPoolOtherUid, 1.5 * S, 1.5 * S, now, 2.0 * vb);
+    char buf[16];
+    std::snprintf(buf, sizeof buf, "2026-08-%02d", d + 1);
+    const std::string date = buf;
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    const std::string path = (dir / (date + ".atxvsa")).string();
+    const std::array<SurfaceArchiveItem, 2> items{SurfaceArchiveItem{"SPX", &a},
+                                                  SurfaceArchiveItem{"XOM", &b}};
+    const Status st = write_surface_archive_v2_file(path, items);
+    EXPECT_TRUE(st.has_value()) << (st.has_value() ? std::string{} : st.error().to_string());
+    dp.emplace_back(date, path);
+  }
+  Corpus c;
+  c.dp = std::move(dp);
+  c.manifest = make_manifest(c.dp, "SPX");
+  return c;
+}
+
+}  // namespace
+
+// FINDING 1a. A load that FAILS must release every parked waiter and leave the
+// key retryable. A regression here does not fail this test — it HANGS it, which
+// is precisely why the contract needs a gate of its own.
+TEST(BacktestExec, SnapshotPoolFailedLoadReleasesEveryWaiterAndRetries) {
+  const fs::path dir = fresh_dir("pool-failed-load");
+  const Corpus c = make_corpus(dir, "SPX", 1);
+  const std::string missing = (dir / "2099-01-01.atxvsa").string();
+
+  SnapshotPool pool;
+  constexpr std::size_t kThreads = 8;
+  std::vector<Result<std::shared_ptr<const MarketSnapshot>>> out(
+      kThreads, Err(ErrorCode::Unknown, "acquire never returned"));
+  {
+    std::vector<std::jthread> threads;
+    threads.reserve(kThreads);
+    for (std::size_t t = 0; t < kThreads; ++t) {
+      threads.emplace_back([&, t] {
+        out[t] = pool.acquire("2099-01-01", missing, QueryPricingTier::LegacyCompatible);
+      });
+    }
+  }  // jthread join — this is the hang detector
+
+  for (std::size_t t = 0; t < kThreads; ++t) {
+    EXPECT_FALSE(out[t].has_value()) << "thread " << t << " got a snapshot for a missing archive";
+  }
+  const SnapshotPoolStats st = pool.stats();
+  // A failure is never cached: the entry is evicted, so nothing is resident and
+  // every attempt that became a loader is counted.
+  EXPECT_EQ(st.resident_entries, 0u);
+  EXPECT_GE(st.failed_loads, 1u);
+  EXPECT_EQ(st.failed_loads, st.archive_opens);
+
+  // The pool is not poisoned: a good date on the same pool still loads.
+  auto good = pool.acquire(c.dp[0].first, c.dp[0].second, QueryPricingTier::LegacyCompatible);
+  ASSERT_TRUE(good.has_value()) << good.error().to_string();
+  EXPECT_NE(*good, nullptr);
+  EXPECT_EQ(pool.stats().resident_entries, 1u);
+}
+
+// FINDING 1b. A loader that UNWINDS (bad_alloc out of the identity probe or the
+// mmap, out of the mismatch message's string concat, out of a lock) must still
+// publish and evict — invariant L7.
+//
+// Before the fix the entry stayed `ready == false` in the shard map forever:
+// waiters parked on its condition variable were never signalled, every later
+// acquire of that key parked too, and a `warm()` whose workers were parked never
+// reached its join barrier. One bad_alloc on one date wedged every run in the
+// process, and it presented as a CI timeout rather than a failing assertion.
+//
+// The injected failure is aimed by the pool's own telemetry rather than by an
+// allocation count — see `atx_c2_alloc::g_unwind_watch` — so it lands inside the
+// loader window by construction. `identity_probes == 1` afterwards is the
+// assertion that it really did.
+TEST(BacktestExec, SnapshotPoolLoaderUnwindPublishesAndEvicts) {
+  const fs::path dir = fresh_dir("pool-unwind");
+  const Corpus c = make_corpus(dir, "SPX", 1);
+  const std::string& date = c.dp[0].first;
+  const std::string& path = c.dp[0].second;
+
+  SnapshotPool pool;
+  bool threw = false;
+  atx_c2_alloc::g_unwind_watch = &pool;
+  try {
+    const auto got = pool.acquire(date, path, QueryPricingTier::LegacyCompatible);
+    (void)got.has_value();
+  } catch (...) {
+    // Deliberately `...`: an injected bad_alloc inside std::filesystem or the
+    // stream layer can surface re-wrapped. This gate cares only that SOMETHING
+    // unwound the loader.
+    threw = true;
+  }
+  atx_c2_alloc::g_unwind_watch = nullptr;  // disarm before gtest itself allocates
+
+  ASSERT_TRUE(threw) << "the injected allocation failure did not unwind the loader";
+  const SnapshotPoolStats st = pool.stats();
+  ASSERT_EQ(st.identity_probes, 1u)
+      << "the failure did not land inside the loader's publication window";
+
+  // The guard published-and-evicted: nothing is resident, the abandoned load is
+  // counted, and no thread can be left parked because the entry is gone.
+  EXPECT_EQ(st.resident_entries, 0u);
+  EXPECT_EQ(st.failed_loads, 1u);
+
+  // The key is retryable — the whole point of never caching a failure — and a
+  // crowd of acquirers arriving after the unwind all complete. Under the bug this
+  // join never returned.
+  constexpr std::size_t kThreads = 8;
+  std::vector<Result<std::shared_ptr<const MarketSnapshot>>> out(
+      kThreads, Err(ErrorCode::Unknown, "acquire never returned"));
+  {
+    std::vector<std::jthread> threads;
+    threads.reserve(kThreads);
+    for (std::size_t t = 0; t < kThreads; ++t) {
+      threads.emplace_back(
+          [&, t] { out[t] = pool.acquire(date, path, QueryPricingTier::LegacyCompatible); });
+    }
+  }  // jthread join — this is the hang detector
+  for (std::size_t t = 0; t < kThreads; ++t) {
+    ASSERT_TRUE(out[t].has_value()) << "thread " << t << ": " << out[t].error().to_string();
+    EXPECT_NE(*out[t], nullptr);
+  }
+  EXPECT_EQ(pool.stats().resident_entries, 1u);
+  std::printf("[btexec] pool L7: loader unwound inside its window, entry evicted, key retryable\n");
+}
+
+// FINDING 2. The pool's ONE real behavioural divergence from the private cache:
+// it cannot carry a book's uid subset, so it loads the whole board. This gate is
+// the only place that divergence is actually substituted, and it uses the
+// FIXED-BOOK overload, which had no pool coverage at all.
+//
+// Non-vacuity is pinned, not assumed: `MarketSnapshot::deserialized_bytes()` is a
+// deterministic count of surface-record bytes materialized, so the private route
+// reading STRICTLY FEWER bytes than the pooled one is proof that the subset
+// really dropped kPoolOtherUid and the pool really did not.
+TEST(BacktestExec, SnapshotPoolMatchesSubsettedPrivateCacheOnFixedBook) {
+  const fs::path dir = fresh_dir("pool-subset");
+  const Corpus c = make_two_name_corpus(dir, 6);
+  auto clock = Clock::from_manifest(c.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  const std::int64_t expiry = kBaseNow + 120 * kDayNs;  // ~0.33y, inside the slice grid
+  PortfolioState book;
+  book.lots.push_back(
+      Lot{1, OptionContract{kUid, 100.0, 0.0, Side::Put}, +2.0, 100.0, expiry, 0, 0.0});
+  book.lots.push_back(
+      Lot{2, OptionContract{kUid, 105.0, 0.0, Side::Call}, -1.0, 100.0, expiry, 0, 0.0});
+  // NB: no lot references kPoolOtherUid, which is what makes the subset bite.
+
+  MarketSnapshot::reset_deserialized_bytes();
+  RunConfig priv;  // private per-run cache => subset-deserialized to {kUid}
+  ASSERT_EQ(priv.snapshot_pool, nullptr);
+  auto r_priv = run_backtest(*clock, book, priv);
+  ASSERT_TRUE(r_priv.has_value()) << r_priv.error().to_string();
+  const std::uint64_t private_bytes = MarketSnapshot::deserialized_bytes();
+
+  MarketSnapshot::reset_deserialized_bytes();
+  SnapshotPool pool;
+  RunConfig pooled;
+  pooled.snapshot_pool = &pool;
+  auto r_pool = run_backtest(*clock, book, pooled);
+  ASSERT_TRUE(r_pool.has_value()) << r_pool.error().to_string();
+  const std::uint64_t pooled_bytes = MarketSnapshot::deserialized_bytes();
+
+  EXPECT_LT(private_bytes, pooled_bytes)
+      << "the private route did not actually subset (" << private_bytes << " vs " << pooled_bytes
+      << " bytes) — this gate would then be comparing two whole-board runs";
+  EXPECT_EQ(pool.stats().archive_opens, 6u);
+  expect_result_bit_identical(*r_priv, *r_pool, "subsetted private cache vs whole-board pool");
+  std::printf("[btexec] pool subset: private=%llu bytes, pooled=%llu bytes, results identical\n",
+              static_cast<unsigned long long>(private_bytes),
+              static_cast<unsigned long long>(pooled_bytes));
+}
+
+// FINDING 3. `warm()`'s executor dispatch. `run_dynamic` inlines below 4 refs and
+// `RunConfig::prefetch_depth` defaults to 2, so at defaults NO pool worker ever
+// runs an acquisition and the "safe to acquire on executor workers" half of
+// invariant L4 is never executed. A look-ahead of 6 puts the initial window fill
+// above the threshold, so the fan-out is real — under 8-way concurrency, and
+// still bit-identical to serial.
+TEST(BacktestExec, SnapshotPoolWarmFansOutOnExecutorWorkers) {
+  const fs::path dir = fresh_dir("pool-warm-dispatch");
+  const Corpus c = make_corpus(dir, "SPX", 12);
+  auto clock = Clock::from_manifest(c.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  const StrategySpec spec = pool_gate_spec();
+
+  SnapshotPool serial_pool;
+  RunConfig serial_cfg;
+  serial_cfg.snapshot_pool = &serial_pool;
+  serial_cfg.prefetch_depth = 6;  // initial window = 6 refs > run_dynamic's inline threshold
+  DeclarativeStrategy serial_strat{spec};
+  auto serial = run_backtest(*clock, serial_strat, serial_cfg);
+  ASSERT_TRUE(serial.has_value()) << serial.error().to_string();
+
+  constexpr std::size_t kThreads = 8;
+  SnapshotPool pool;
+  std::vector<Result<BacktestResult>> out(kThreads, Err(ErrorCode::Unknown, "run never assigned"));
+  {
+    std::vector<std::jthread> threads;
+    threads.reserve(kThreads);
+    for (std::size_t t = 0; t < kThreads; ++t) {
+      threads.emplace_back([&, t] {
+        RunConfig cfg;
+        cfg.snapshot_pool = &pool;
+        cfg.prefetch_depth = 6;
+        DeclarativeStrategy strat{spec};
+        out[t] = run_backtest(*clock, strat, cfg);
+      });
+    }
+  }
+  for (std::size_t t = 0; t < kThreads; ++t) {
+    ASSERT_TRUE(out[t].has_value()) << "thread " << t << ": " << out[t].error().to_string();
+    expect_result_bit_identical(*serial, *out[t], "deep-look-ahead pooled run vs serial");
+  }
+  EXPECT_EQ(pool.stats().archive_opens, 12u);
+
+  // The point of the gate: acquisitions genuinely executed on pool workers.
+  // Conditional because a single-context pool (hardware_concurrency 1, or an
+  // ATX_VOL_FIT_WORKERS=1 lease) has no worker to dispatch to and inlines
+  // everything, which is correct behaviour rather than a failure.
+  const std::uint64_t dispatched = serial_pool.stats().executor_dispatched_loads +
+                                   pool.stats().executor_dispatched_loads;
+  if (pricing_executor().size() > 0u) {
+    EXPECT_GT(dispatched, 0u) << "warm() never reached a pool worker: the executor route in "
+                                 "invariant L4 is still unexercised";
+  }
+  std::printf("[btexec] pool warm dispatch: %llu acquisitions ran on executor workers "
+              "(pool size %u)\n",
+              static_cast<unsigned long long>(dispatched), pricing_executor().size());
 }

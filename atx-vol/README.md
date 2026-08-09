@@ -564,6 +564,13 @@ three-calendar-month strangle held to expiry and delta-hedged at every stored
 close. See [docs/backtest-db.md](docs/backtest-db.md) for the storage contract,
 library API, and `atx-vol-backtest-db-build` workflow.
 
+**The track lakehouse is a separate, independent system** — content-addressed
+(`TrackKey`), Parquet-backed (`TrackStore`), cataloged in SQLite (`Catalog`),
+and read cache-first by a variant sweep driver (`run_sweep`). See
+[docs/backtest-lakehouse.md](docs/backtest-lakehouse.md) for the lake layout,
+the `TrackKey` recipe, the economics-rev invalidation story, GC/compaction
+operations, and the DuckDB/Python query cookbook (`atxpy.tracks`).
+
 **Variance/vol-swap lane (`backtest.hpp`).** The strategy-aware engine
 (`run_backtest(Clock, IStrategy, ...)`) additionally carries an OTC
 variance/vol-swap book (`PortfolioState::swap_lots`), additive to the option
@@ -821,10 +828,10 @@ frozen?" is answered by where the header lives, not by judgement:
 | Tier | Where | Count | Promise |
 |---|---|---|---|
 | **Tier-A** | exactly the headers `atx/vol/vol.hpp` includes | 58 | **Frozen for 1.x.** Closed under inclusion |
-| **Tier-B** | other headers directly under `include/atx/vol/`, plus `simd/` | 37 + 9 | Public and supported to include; **not** frozen |
-| `detail/` | `include/atx/vol/detail/` | 29 (+1 generated) | **No stability promise.** Installed because Tier-A reaches it |
+| **Tier-B** | other headers directly under `include/atx/vol/`, plus `simd/` | 43 + 9 | Public and supported to include; **not** frozen |
+| `detail/` | `include/atx/vol/detail/` | 30 (+1 generated) | **No stability promise.** Installed because Tier-A reaches it |
 | `tools/` | `tools/include/atx/vol/tools/` — target `atx::vol::tools` | 6 | CLI support. Not part of the shipped library surface |
-| `research/` | `research/include/atx/vol/research/` — target `atx::vol::research` | 9 | Run orchestration. Not part of the shipped library surface |
+| `research/` | `research/include/atx/vol/research/` — target `atx::vol::research` | 12 | Run orchestration. Not part of the shipped library surface |
 
 **Three of the five digits above had rotted by v1, and the first three no longer
 can.** All five rows were re-derived at the release commit: Tier-A 56 → **57**,
@@ -838,14 +845,60 @@ already in the table: the strategy DSL made `strategy.hpp` include
 and `detail/convex_recovery.hpp` landed alongside it (`detail/` 28 → **29**).
 The v1.0.0 tag itself ships 57 / 31 / 28.
 
-That drift is now caught by a test rather than by a reader.
+The backtest-production-lakehouse sprint's margin engine (Task B2) added
+`margin.hpp` (Reg-T + scenario-grid margin models) as new public surface — the
+sprint's global constraints require new public surface to enter at Tier-B or
+`research/`, never Tier-A, so it landed alongside the other advanced/harness
+headers rather than joining `vol.hpp`'s frozen include list (Tier-B 31 →
+**32**).
+
+Task D3 (same sprint) added `detail/writer_lock.hpp` (`detail/` 29 → **30**)
+without updating this table or `VolUmbrella.TierCountsMatchTheReadmeTable`'s
+pinned literal alongside it — exactly the undetected-rot failure mode this
+section already describes, caught here only when Task D6 next touched
+`detail/`-adjacent code and found the machine check already red (Task D6
+itself adds no header under `detail/`, so 30 is D3's correction, not a D6
+addition). `research/` had drifted further and silently, from 9 to 16,
+across every research-tier header this sprint landed (`track_key.hpp`,
+`track_store.hpp`, `catalog.hpp`, `sweep_driver.hpp`,
+`track_compact_reconcile.hpp`, `golden_pin.hpp`, and others) — not
+machine-checked (see below), so nothing caught it until re-derived here;
+Task D6's own `track_gc.hpp` makes it 17.
+
+**Task E2 (same sprint, closing it out) promotes five of those research-tier
+headers to Tier-B**: `sweep_driver.hpp`, `track_key.hpp`, `track_store.hpp`,
+`catalog.hpp` and `snapshot_pool.hpp` are `git mv`'d from
+`research/include/atx/vol/research/` to `include/atx/vol/` (Tier-B 32 →
+**37**, `research/` 17 → **12**). This is a *promotion*, not a rewrite: every
+one of the five was already documented Arrow/SQLite-free at the header level
+(only the corresponding `.cpp` needs `ATX_VOL_LAKEHOUSE`, unchanged by the
+move — see `atx-vol/CMakeLists.txt`), the namespace was already plain
+`atx::vol` with no `research::` sub-namespace, and Tier-A stays untouched:
+none of the five is reachable from `vol.hpp`, so nothing here touches the
+frozen set. The promotion reflects that these five are the lakehouse's
+*stable identity/storage/orchestration vocabulary* (`TrackKey`, the Parquet
+track store, the SQLite catalog, the cache-first sweep driver, the sealed
+snapshot pool) rather than one-off run-orchestration drivers — a caller
+building against the lakehouse now includes them the same way as any other
+Tier-B header, with the same "public but not frozen for 1.x" promise. The
+research-tier headers that still depend on them (`golden_pin.hpp`,
+`track_compact_reconcile.hpp`) and every source/test file that included the
+old paths were updated in the same commit; `docs/backtest-lakehouse.md`
+documents the resulting lake layout, `TrackKey` recipe and operational
+surface. Tier-A's own forward-declaration of `SnapshotPool` in
+`backtest.hpp` is unchanged in mechanism (still forward-declared, never
+`#include`d) precisely so Tier-A's closed-under-inclusion rule does not pull
+this newly-Tier-B header into Tier-A.
+
+That drift is now caught by a test rather than by a reader, for the two
+digits that can be.
 `VolUmbrella.TierCountsMatchTheReadmeTable` (`tests/vol_umbrella_test.cpp`)
-asserts all three of **58 / 37 / 29** against the live header tree — Tier-A from
+asserts all three of **58 / 43 / 30** against the live header tree — Tier-A from
 the umbrella manifest, Tier-B and `detail/` by counting `.hpp` files in the
 directories this table names — and each failure message says to update this
 table. Previously the Tier-A *set* was machine-checked but no **count** was, and
 nothing compared any of them to this table at all, which is how three rows rotted
-undetected. `simd/` 9, `tools/` 6 and `research/` 9 remain prose: they are
+undetected. `simd/` 9, `tools/` 6 and `research/` 12 remain prose: they are
 outside `include/atx/vol/` and are not covered by that test, so re-derive those
 three by hand. The `+1 generated` on `detail/` is likewise uncovered — it does
 not exist in the source tree the test walks.
@@ -865,6 +918,22 @@ sprint's `var_report.hpp` and `var_validation.hpp` landed on `main` in
 parallel with the theo-module branch (each side's count was correct in
 isolation); reconciled here at the theo-module merge. Tier-A (58) and
 `detail/` (29) held.
+
+**2026-08-09 backtest-production-lakehouse merge reconciliation:** Tier-B
+37 → **43**, `detail/` 29 → **30**. Both `main` (theo-module + VaR, above)
+and `feat/backtest-lakehouse` had independently reconciled their own Tier-B
+count to 37, each correct in isolation but blind to the other branch's new
+headers: `main` was missing the lakehouse sprint's `catalog.hpp`,
+`margin.hpp`, `snapshot_pool.hpp`, `sweep_driver.hpp`, `track_key.hpp` and
+`track_store.hpp` (six headers), while `feat/backtest-lakehouse` — cut
+before `var.hpp` existed — was missing `breakeven.hpp`, `realized_vol.hpp`,
+`theo.hpp`, `var.hpp`, `var_report.hpp` and `var_validation.hpp` (six
+headers). The union recount is 37 + 6, not 37 + 37 − overlap; both sides'
+"37" already counted 31 headers in common. `detail/` similarly gains only
+the lakehouse sprint's `writer_lock.hpp` (Task D3), which `main` never had.
+Tier-A (58) held on both sides — neither sprint added to `vol.hpp`'s include
+list — and `research/` (12) is unaffected: `main` added no `research/`
+headers of its own.
 
 **Re-derive rather than trust any digit here.** The commands are one line each:
 `grep -c '^#include "atx/vol/' include/atx/vol/vol.hpp` is Tier-A; each remaining

@@ -1418,9 +1418,23 @@ Status DeclarativeStrategy::on_step(const MarketSnapshot &base, std::size_t step
     // the close depend on whether the entry side happened to succeed. Pinned by
     // Strategy.CloseAtHorizonClosingALotWithNoSurfaceFailsClosedInTheEngine,
     // which asserts the no-trade and off-tick branches fail identically.
+    //
+    // A2 fix: RollAtHorizon reaches this same branch with `d.clear == true`
+    // whenever the single live cohort is AT its horizon and today's re-entry
+    // could not be built — before this fix `d.clear` was silently dropped here
+    // (only the success path below ever consumed it), so the aged cohort rode
+    // past its own roll horizon, all the way to expiry on an unbuildable
+    // corpus. The close is an unconditional risk rule exactly as it is for
+    // CloseAtHorizon above; only the RE-ENTRY is conditional on prepare_cohort
+    // succeeding. CloseAtHorizon itself is untouched: lifecycle_decide never
+    // sets `d.clear` in that mode, so this is a no-op there.
     if (close_at_horizon) {
       std::erase_if(book.lots, closes_at_horizon);
     }
+    if (d.clear) {
+      book.lots.clear(); // RollAtHorizon: close the aged cohort even though no replacement opened
+    }
+    ++n_steps_entry_skipped_;
     return Ok();
   }
   PendingCohort &pending = **prepared;

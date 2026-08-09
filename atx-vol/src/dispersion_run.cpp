@@ -53,6 +53,7 @@
 #include "atx/vol/portfolio_pricer.hpp"
 #include "atx/vol/research/run_archive.hpp" // RunDir, encode_*_section (S3-T16 .atxrun default)
 #include "atx/vol/strategy.hpp"
+#include "atx/vol/track_key.hpp" // kBacktestEconomicsRev (E1 fix round: artifact-level economics rev)
 #include "atx/vol/universe.hpp"
 
 namespace atx::vol {
@@ -1358,6 +1359,14 @@ std::string dispersion_regime_detail(const FrictionModel &frictions,
   case FrictionModel::SpreadKind::VolTicks:
     parts.push_back(number(frictions.vol_tick) + " vol-tick half-spread");
     break;
+  // B1 (backtest-lakehouse sprint): the dispersion route does not offer
+  // QuoteSide (no `fill_policy`/CLI mapping selects it -- see
+  // `dispersion_engine_run_config_from`), so this case exists only to keep
+  // the switch exhaustive for the shared `FrictionModel::SpreadKind` enum;
+  // it is unreachable from any dispersion config path today.
+  case FrictionModel::SpreadKind::QuoteSide:
+    parts.push_back("quote-side crossing (engine-level; not a dispersion-route knob)");
+    break;
   }
   if (frictions.per_contract_cost != 0.0) {
     parts.push_back("$" + number(frictions.per_contract_cost) + "/contract");
@@ -1859,7 +1868,24 @@ RunConfig dispersion_engine_run_config_from(const DispersionRunConfig &config) {
   run.frictions = dispersion_effective_frictions(config.frictions, config.costs);
   run.financing = config.financing;
   if (config.rate.apply_to_financing) {
-    run.financing.borrow_rate = config.rate.flat_rate;
+    // Task E1 (backtest-lakehouse sprint), fixing a latent gap A5 tracked
+    // (progress.md: "dispersion_run.cpp:1861-1864 sets finance_premium=true
+    // with no reference_uid/flat_r"). This used to write `config.rate.
+    // flat_rate` into `run.financing.borrow_rate` -- the wrong field
+    // (`borrow_rate` prices the SHORT-shares borrow proxy; it has nothing to
+    // do with `finance_premium`'s cash-carry rate, and doing so silently
+    // clobbered whatever `financing_borrow_rate` spec key the caller had
+    // already set) -- while `finance_premium`'s own rate source
+    // (`FinancingConfig::flat_r` / `reference_uid`, see backtest.cpp's
+    // finance_premium block) was left unset entirely. `DispersionRateSource`'s
+    // own doc comment (dispersion_run.hpp) already states the intent: "Setting
+    // apply_to_financing routes the same [flat_rate] rate into FinancingConfig
+    // as well." Routing it into `flat_r` is that fix: it both makes the flat
+    // discount rate the ACTUAL cash-carry accrual rate (previously it accrued
+    // at the base snapshot's own single-name surface `r`, or hard-errored on a
+    // multi-name corpus with no reference set -- the fail-closed path A5's
+    // sprint added) and stops clobbering `borrow_rate`.
+    run.financing.flat_r = config.rate.flat_rate;
     run.financing.finance_premium = true;
   }
   run.surface_provenance_policy = config.provenance;
@@ -2013,6 +2039,11 @@ Status write_dispersion_effective_config(const fs::path &path, const DispersionR
       return "price_bps";
     case FrictionModel::SpreadKind::VolTicks:
       return "vol_ticks";
+    // B1: unreachable from any dispersion config path (see the identical note
+    // on `dispersion_regime_detail` above) -- present only to keep this
+    // switch exhaustive for the shared enum.
+    case FrictionModel::SpreadKind::QuoteSide:
+      return "quote_side";
     }
     return "none";
   };
@@ -2031,6 +2062,11 @@ Status write_dispersion_effective_config(const fs::path &path, const DispersionR
       // REGIME FIRST (M4): the first two rows say which execution assumptions
       // produced every number in this run directory.
       << "friction_regime\t" << to_string(dispersion_friction_regime(config)) << '\n'
+      // E1 fix round: D1's kBacktestEconomicsRev names WHICH revision of the
+      // engine's economics interpretation produced every number below --
+      // adjacent to friction_regime so a reader never has to open a second
+      // artifact to know both "what assumptions" and "which engine build".
+      << "economics_rev\t" << kBacktestEconomicsRev << '\n'
       << "friction_regime_detail\t"
       << dispersion_regime_detail(engine.frictions, config.costs) << '\n'
       << "friction_spread_kind\t" << spread_kind(engine.frictions.spread_kind) << '\n'
@@ -2739,6 +2775,10 @@ dispersion_report_metadata(const DispersionRunConfig &config, const TearSheet &s
   // tools/spy_dispersion_tearsheet_report.py (Python-side enforcement is task Y4).
   meta.emplace_back("friction_regime", std::string(to_string(regime)));
   meta.emplace_back("friction_detail", dispersion_regime_detail(config.frictions, config.costs));
+  // E1 fix round: D1's kBacktestEconomicsRev, right beside the regime it
+  // completes -- "what assumptions" (friction_regime/friction_detail) and
+  // "which engine build interpreted them" (economics_rev) belong together.
+  meta.emplace_back("economics_rev", std::to_string(kBacktestEconomicsRev));
   meta.emplace_back("total_return", metric_text(sheet.total_return));
   meta.emplace_back("total_cost", metric_text(sheet.total_cost));
   meta.emplace_back("total_financing", metric_text(sheet.total_financing));
@@ -2922,10 +2962,10 @@ Status dispersion_run_surface_backtest(const fs::path &run_dir) {
   // execution assumptions produced it.
   detail::log_emitf(LogLevel::Info, LogStream::Stdout,
                     "surface-only projected backtest complete: dates=%zu final_nav=%.10g "
-                    "regime=%s (%s) cost=%.10g",
+                    "regime=%s (%s) economics_rev=%d cost=%.10g",
                     backtest.size(), backtest.nav.back(), std::string(to_string(regime)).c_str(),
                     dispersion_regime_detail(run_config.frictions, run_config.costs).c_str(),
-                    outcome.sheet.total_cost);
+                    kBacktestEconomicsRev, outcome.sheet.total_cost);
   return Ok();
 }
 

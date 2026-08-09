@@ -27,6 +27,8 @@
 #include "atx/vol/corpus.hpp"
 #include "atx/vol/research/run_archive.hpp"
 #include "atx/vol/research/run_diagnostics.hpp"
+#include "atx/vol/track_key.hpp" // kBacktestEconomicsRev (E1 fix round)
+#include "dispersion_backtest_regime.hpp" // friction_regime_text (E1 fix round)
 #include "atx/vol/detail/counters.hpp"
 #include "atx/vol/dispersion.hpp"
 #include "atx/vol/research/dispersion_backtest.hpp"
@@ -672,18 +674,34 @@ Status run_backtest_command(const fs::path &run_dir, const fs::path &cache_dir) 
   // layer reads coverage straight from the archive) are staged and published
   // atomically via RunDir.
   phase = PhaseTimer::now();
+  // E1 fix round: this route's headline artifact -- the RunArchive `meta`
+  // section -- carried neither `friction_regime` nor `economics_rev` (review
+  // finding). `backtest.friction_regime` is B1's own field, stamped by the
+  // engine that just ran, so this reads the ASSUMPTION THE ENGINE ACTUALLY
+  // USED rather than re-deriving it; `economics_rev` names which build of
+  // that engine's economics interpretation produced it (D1). `extra` becomes
+  // ROWS in the `meta` ScalarKV section, not columns -- the RunArchive schema
+  // hash (and therefore every existing byte-compat guarantee on this
+  // artifact) is untouched (see `encode_meta_section`'s own header comment).
+  const std::vector<std::pair<std::string, std::string>> meta_extra = {
+      {"friction_regime", std::string(friction_regime_text(backtest.friction_regime))},
+      {"economics_rev", std::to_string(kBacktestEconomicsRev)},
+  };
   std::vector<RaSectionData> sections;
   sections.push_back(encode_schedule_section("trade_schedule", schedule));
   sections.push_back(encode_backtest_section("backtest", backtest));
   sections.push_back(encode_reconciliation_section(reconciliation));
   sections.push_back(encode_contract_marks_section(reconciliation));
-  sections.push_back(encode_meta_section(spec));
+  sections.push_back(encode_meta_section(spec, meta_extra));
   timer.add("write_outputs", phase);
   sections.push_back(encode_diagnostics_section(timer, "run_backtest", backtest.size()));
   ATX_TRY_VOID(RunDir(run_dir).write_run_archive(sections));
 
-  std::printf("backtest complete: dates=%zu rolls=%zu final_nav=%.10g\n", backtest.size(),
-              schedule.rolls.size(), backtest.nav.back());
+  std::printf("backtest complete: dates=%zu rolls=%zu final_nav=%.10g friction_regime=%s "
+              "economics_rev=%d\n",
+              backtest.size(), schedule.rolls.size(), backtest.nav.back(),
+              std::string(friction_regime_text(backtest.friction_regime)).c_str(),
+              kBacktestEconomicsRev);
   print_diag_summary("run_backtest", PhaseTimer::now() - cmd_start, backtest.size(), "session",
                      "sessions");
   return Ok();
@@ -1115,10 +1133,20 @@ Status run_projected_backtest_command(const fs::path &run_dir, const fs::path &s
   // in meta so --out/--execution stay provenance-visible.
   const auto write_start = PhaseTimer::now();
   const std::string projected_section = skip_divergence ? "projected_nodiv" : "projected_cold";
+  // E1 fix round: same addition as run_backtest_command above -- this route's
+  // `meta` section already carried an `extra` block, it just never named the
+  // regime the engine actually classified `backtest` under, nor the
+  // economics revision. `config.frictions`/`config.financing` are always this
+  // route's RunConfig{} defaults (a diagnostic priced-mark-divergence replay,
+  // never spec-driven), so `friction_regime` here is a real, if invariant,
+  // classification of what actually ran -- not a placeholder.
   const std::vector<std::pair<std::string, std::string>> meta_extra = {
       {"projected_execution", execution},
       {"skip_divergence", skip_divergence ? "1" : "0"},
-      {"requested_out", out_file.string()}};
+      {"requested_out", out_file.string()},
+      {"friction_regime", std::string(friction_regime_text(backtest.friction_regime))},
+      {"economics_rev", std::to_string(kBacktestEconomicsRev)},
+  };
   std::vector<RaSectionData> sections;
   sections.push_back(encode_backtest_section(projected_section, backtest));
   if (!skip_divergence) {
@@ -1128,8 +1156,11 @@ Status run_projected_backtest_command(const fs::path &run_dir, const fs::path &s
   timer.add("write_outputs", write_start);
   sections.push_back(encode_diagnostics_section(timer, "run_projected_backtest", backtest.size()));
   ATX_TRY_VOID(RunDir(run_dir).write_run_archive(sections));
-  std::printf("projected backtest complete [%s]: dates=%zu rolls=%zu final_nav=%.10g\n",
-              execution.c_str(), backtest.size(), schedule.rolls.size(), backtest.nav.back());
+  std::printf("projected backtest complete [%s]: dates=%zu rolls=%zu final_nav=%.10g "
+              "friction_regime=%s economics_rev=%d\n",
+              execution.c_str(), backtest.size(), schedule.rolls.size(), backtest.nav.back(),
+              std::string(friction_regime_text(backtest.friction_regime)).c_str(),
+              kBacktestEconomicsRev);
   print_diag_summary("run_projected_backtest", PhaseTimer::now() - cmd_start, backtest.size(),
                      "session", "sessions");
   return Ok();

@@ -105,6 +105,54 @@ backtest_series_identity(std::uint64_t template_fingerprint, std::uint32_t uid,
 // same signal/optional-column shape. The strong guarantee holds on failure.
 [[nodiscard]] Status append_backtest_results(BacktestResult &dst, const BacktestResult &src);
 
+// Task D6: a live PID-liveness registration that `BacktestDb::
+// vacuum_unindexed_partitions` refuses to run past -- see that method's own
+// doc comment and the hazard this closes (immediately above, and originally
+// named unenforced at :131-140 pre-D6). Acquire one (`BacktestDb::
+// mark_reader`) BEFORE resolving any partition filename you intend to keep
+// reading across a window where a concurrent vacuum could otherwise remove
+// it (e.g. a batch job that calls `load_series`/`map_backtest` repeatedly
+// against series it looked up earlier), and hold it until you no longer
+// need the guarantee -- release promptly (explicit `release()` or letting
+// the guard go out of scope), since a live mark blocks EVERY vacuum on this
+// root, not just a call that would actually collide with it.
+//
+// MECHANISM: `<root>/readers/reader-<pid>-<nonce>.mark`, body = the owning
+// process's PID -- mirrors `detail::WriterLock`'s own PID-liveness
+// convention, but UNLIKE WriterLock this is never mutual exclusion: several
+// marks (same or different processes, same or different intent) may coexist,
+// so `acquire()` never waits or contends, it simply writes its own uniquely-
+// named file. A mark whose process has died is stale and is treated as
+// absent -- self-healingly removed the next time anything scans the
+// directory (a `vacuum_unindexed_partitions()` call, in practice) -- so a
+// reader that crashed without releasing does not block vacuum forever.
+//
+// Independent of any `BacktestDb` handle's lifetime: `release()` is a plain
+// file delete, not a call back into the `BacktestDb` that created it (there
+// usually isn't one by the time a long-lived reader is done), so a
+// `BacktestReaderMark` is safe to outlive, or be destroyed independently of,
+// its originating handle.
+class BacktestReaderMark {
+public:
+  [[nodiscard]] static Result<BacktestReaderMark> acquire(std::string_view root);
+
+  ~BacktestReaderMark();
+  BacktestReaderMark(BacktestReaderMark &&other) noexcept;
+  BacktestReaderMark &operator=(BacktestReaderMark &&other) noexcept;
+  BacktestReaderMark(const BacktestReaderMark &) = delete;
+  BacktestReaderMark &operator=(const BacktestReaderMark &) = delete;
+
+  // Release early. Idempotent -- a no-op if already released or moved-from.
+  // The destructor calls this, so callers normally never need to.
+  void release() noexcept;
+
+  [[nodiscard]] bool held() const noexcept { return !mark_path_.empty(); }
+
+private:
+  BacktestReaderMark() = default;
+  std::string mark_path_;
+};
+
 class BacktestDb {
 public:
   // Create root + partitions and publish generation 1. AlreadyExists if a
@@ -133,11 +181,25 @@ public:
   // the current manifest. Unknown files, writer temporary files, directories,
   // symlinks, and every currently indexed partition are untouched.
   //
-  // Serialized with in-process mutations. Cross-process callers must honor the
-  // database's offline/single-writer contract and ensure no reader still relies
-  // on an older manifest snapshot. IoError may report a partial vacuum if a
-  // filesystem failure occurs after earlier candidates were removed.
+  // Serialized with in-process mutations. Task D6: additionally refuses
+  // outright -- Err(Unavailable), nothing removed -- while ANY live
+  // `BacktestReaderMark` is registered against this root (see that class's
+  // own doc comment). This closes the live-reader deletion hazard for a
+  // REGISTERED reader specifically; it is not a general cross-process lock
+  // on every possible reader. A caller that reads partitions without ever
+  // acquiring a mark (a one-shot `load_series`/`map_backtest` call, which
+  // resolves its filename and finishes before returning -- the common case)
+  // needs no mark and is unaffected either way. Cross-process callers still
+  // carry the "ensure no reader still relies on an older manifest snapshot"
+  // obligation this comment always named -- what changed is that a reader
+  // who WANTS that guarantee enforced now has a mechanism to make vacuum
+  // refuse on its behalf, instead of only a documented convention to honor.
+  // IoError may report a partial vacuum if a filesystem failure occurs after
+  // earlier candidates were removed.
   [[nodiscard]] Result<std::size_t> vacuum_unindexed_partitions();
+
+  // Convenience: `BacktestReaderMark::acquire(root())`.
+  [[nodiscard]] Result<BacktestReaderMark> mark_reader() const;
 
   // Catalog identity is template.id; economic identity is its fingerprint.
   // Re-registering the same id+fingerprint is a no-op. Reusing an id for

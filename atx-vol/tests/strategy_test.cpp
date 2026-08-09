@@ -650,7 +650,15 @@ TEST(Strategy, RollAtHorizonFailureLeavesBookIdsAndLifecycleStateUnchanged) {
   EXPECT_EQ(book.lots.front().cohort, original.cohort + 1u);
 }
 
-TEST(Strategy, RollAtHorizonNoTradeLeavesBookIdsAndLifecycleStateUnchanged) {
+// Task A2: a no-trade step is NOT a no-close step for RollAtHorizon either. The
+// single live cohort is AT its horizon on step 1 (residual T == the T=0.25
+// entry leg's tenor, unchanged since `valid`/`missing` share `kBaseNow`, which
+// is < roll_at_T=0.30), so `lifecycle_decide` sets `d.clear`. Before the A2
+// fix, `d.clear` was only ever consumed on the success path, so the aged
+// cohort here rode on unchanged; the close is now unconditional at the
+// horizon, exactly like CloseAtHorizon's own no-trade close
+// (Strategy.CloseAtHorizonNoTradeStillClosesLotsAtTheHorizon).
+TEST(Strategy, RollAtHorizonNoTradeStillClosesTheAgedCohortAtItsHorizon) {
   const PricedSurface valid_surface = make_surface(kUid, 100.0, 100.0, kBaseNow);
   const PricedSurface unrelated_surface = make_surface(kUid + 1, 100.0, 100.0, kBaseNow);
   auto valid = snapshot_of({{"SPY", &valid_surface}}, "roll-no-trade-valid");
@@ -670,18 +678,20 @@ TEST(Strategy, RollAtHorizonNoTradeLeavesBookIdsAndLifecycleStateUnchanged) {
   ASSERT_EQ(book.lots.size(), 1u);
   const Lot original = book.lots.front();
   const std::uint64_t original_next_id = next_lot_id;
+  EXPECT_EQ(strategy.n_steps_entry_skipped(), 0u);
 
   const Status no_trade = strategy.on_step(*missing, 1, book, next_lot_id);
   ASSERT_TRUE(no_trade.has_value()) << no_trade.error().to_string();
-  ASSERT_EQ(book.lots.size(), 1u);
-  expect_lot_equal(book.lots.front(), original);
-  EXPECT_EQ(next_lot_id, original_next_id);
+  EXPECT_TRUE(book.lots.empty());               // A2: the horizon close must still commit
+  EXPECT_EQ(next_lot_id, original_next_id);      // no entry => no lot ids consumed
   EXPECT_TRUE(strategy.entry_risk_seeds().empty());
+  EXPECT_EQ(strategy.n_steps_entry_skipped(), 1u);
 
   ASSERT_TRUE(strategy.on_step(*valid, 1, book, next_lot_id).has_value());
   ASSERT_EQ(book.lots.size(), 1u);
   EXPECT_EQ(book.lots.front().id, original_next_id);
   EXPECT_EQ(book.lots.front().cohort, original.cohort + 1u);
+  EXPECT_EQ(strategy.n_steps_entry_skipped(), 1u); // the successful reopen does not move it
 }
 
 TEST(Strategy, CloseAtHorizonFailedReopenDoesNotCommitStagedCloses) {
@@ -2807,6 +2817,13 @@ namespace {
 // oracle hand-computes the engine's accrual off these very numbers).
 constexpr double kOracleSpots[5] = {100.0, 106.0, 96.0, 103.0, 111.0};
 
+// Task A1: the 30-CALENDAR-day step above is ~21 NYSE weekday sessions,
+// coarser than a swap lot's implicitly-daily fixing schedule, so
+// SignalsMatchIndependentSwapGreeksOracle below opts into
+// `SwapFixingCadence::AcceptClockAsSchedule` so the PnL/settlement accrual
+// survives the gap instead of refusing the run (see that test's own comment
+// for why the oracle's hand-computed `n_obs_done` does NOT change).
+
 struct OracleCorpus {
   CorpusManifest manifest;
   std::vector<std::int64_t> sessions;
@@ -2927,6 +2944,10 @@ TEST(StrategyRestrikeSwap, SignalsMatchIndependentSwapGreeksOracle) {
   StrategySpec spec = restrike_spec(corpus.sessions); // 0.25y -> expiry = session 4
   spec.swap_legs.push_back(var_swap_leg());
   RunConfig rcfg;
+  // Task A1: the 30-calendar-day step is ~21 NYSE weekday sessions, coarser
+  // than this lot's implicitly-daily schedule -- opt in (see the
+  // `elapsed_weekdays` comment near `kOracleSpots` above).
+  rcfg.swap_fixing_cadence = SwapFixingCadence::AcceptClockAsSchedule;
 
   // The lot's terms, off a prefix the engine itself validated (never off the
   // strategy): opened day 0, expiring session 4, 3 observable returns.
@@ -2958,7 +2979,16 @@ TEST(StrategyRestrikeSwap, SignalsMatchIndependentSwapGreeksOracle) {
 
   // The accrual as of day 2, hand-computed from the EXPLICIT spot path: the
   // engine seeds on day 1 (accrues nothing) and takes its first return on
-  // day 2 — r = ln(S2/S1) — exactly one observation done.
+  // day 2 — r = ln(S2/S1) — exactly one observation done. Task A1 note: the
+  // swap_vega/swap_delta SIGNAL columns are computed off the strategy-level
+  // greeks PROBE (swap_leg.hpp/.cpp), a SEPARATE realized-variance tracker
+  // from `SwapAccrual`/`step_swap_lots` (backtest.cpp) that Task A1's cadence
+  // guard does not touch -- the probe keeps its pre-existing "+1 fixing per
+  // step" counting regardless of `RunConfig::swap_fixing_cadence`. Only the
+  // PnL/settlement accrual needed the `AcceptClockAsSchedule` opt-in above
+  // (to survive the ~21-weekday-session gap instead of refusing the run); the
+  // oracle here still hand-computes n_obs_done = 1, unchanged, to match what
+  // the probe actually reports.
   RealizedVarianceSpec rv{};
   rv.annualization = lot.annualization;
   rv.n_obs_total = lot.n_obs_total;

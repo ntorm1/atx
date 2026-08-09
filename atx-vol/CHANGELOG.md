@@ -3,6 +3,336 @@
 Breaking behavioural changes are recorded here with their migration. Anything
 that silently changes a NUMBER a caller already depends on belongs in this file.
 
+## 1.1.0
+
+The backtest-production-lakehouse sprint. Adds a content-addressed track
+lakehouse (`TrackKey` / `TrackStore` / `Catalog` / cache-first sweep driver /
+GC — see [docs/backtest-lakehouse.md](docs/backtest-lakehouse.md)), a
+quote-side fill model, a Reg-T + scenario-grid margin engine, and a rigor
+tearsheet (PSR/DSR/MinTRL). Tier-A stays frozen throughout — every new type
+this sprint introduced enters at Tier-B or `research/`, per the sprint's own
+global constraint — but the backtest engine's `RunConfig` picks up three
+behavioural default flips inside that constraint, all with migration lines
+below.
+
+### BREAKING — swap fixings on a clock coarser than the daily schedule now fail closed by default
+
+`RunConfig::swap_fixing_cadence` (new enum `SwapFixingCadence`, `backtest.hpp`)
+is appended as `RunConfig`'s 18th field (arity pin `17` → `18`). The
+realized-variance leg used to book exactly one fixing per **clock step**
+regardless of how many NYSE sessions actually elapsed between steps, so a
+clock coarser than a swap lot's implicitly-daily fixing schedule silently
+overstated `annualization * Σr² / n_done` by roughly the gap factor (a
+weekly clock ~5x), with no error and no count.
+
+**New default, `RequireEverySession`.** A step whose elapsed weekday-session
+count (`weekday_sessions_between` — Mon–Fri, holiday-blind, no new calendar
+dependency) is not exactly 1 now returns
+`Err(ErrorCode::SwapFixingScheduleViolation)`, naming the offending step and
+the expected-vs-seen session count, instead of completing with the
+overstated variance.
+
+**Migration.** A caller whose corpus is intentionally coarser than daily
+(and was silently accepting the overstated variance before) sets
+
+```cpp
+cfg.swap_fixing_cadence = SwapFixingCadence::AcceptClockAsSchedule;
+```
+
+which books the gap's one observed return while scaling `n_obs_done` by the
+elapsed-session count (instead of always advancing it by one), so the
+daily-strike convention is not overstated by the gap.
+
+`ErrorCode::SwapFixingScheduleViolation` is appended to `atx-core::ErrorCode`
+(existing values unchanged).
+
+### BREAKING — `RollAtHorizon` now closes the aged cohort even when re-entry fails soft (no opt-out)
+
+`DeclarativeStrategy::on_step`'s `RollAtHorizon` lifecycle used to close the
+live cohort only when a fresh entry cohort resolved on the *same* step. On a
+step where the live cohort was **at** its roll horizon but re-entry failed
+soft (e.g. `DropRenormalize` finding too few surviving names), the close was
+silently dropped in the no-trade branch — the aged cohort then rode past its
+own roll horizon, potentially all the way to expiry, on any corpus where
+re-entry stayed unbuildable. The horizon close is now unconditional there,
+exactly as it already was for `CloseAtHorizon`; only re-entry itself stays
+conditional on `prepare_cohort` succeeding (`CloseAtHorizon` is untouched —
+`lifecycle_decide` never sets a clear in that mode).
+
+**Effect.** Any `RollAtHorizon` corpus that ever hit a no-trade horizon step
+now closes that cohort's position (and books its NAV/cash effect) at the
+horizon instead of silently continuing to carry it — a real NAV-moving fix,
+not a diagnostic. **No opt-out**: the prior behavior was a lifecycle defect,
+not a documented configuration choice.
+
+**New diagnostic.** `BacktestResult::n_steps_entry_skipped` (run-total
+scalar, non-wire — absent from `kBacktestSeriesColumns`/RunArchive, so
+`ra_schema_hash()` is untouched) counts steps whose entry resolution reached
+the soft no-trade path, in every holding mode; `IStrategy` gains the
+matching `n_steps_entry_skipped()` accessor (default `0`), the same
+additive-virtual pattern as `hedge_spec()`/`referenced_uids()`.
+
+### BREAKING — deferred expiry settlements now settle at the frozen expiry-date spot, and stale substitutions are counted (no opt-out)
+
+`DeferredSettlementBook` (`backtest.cpp`, reachable only under
+`UnpricedLotPolicy::ExcludeAndReport` — the one policy that defers a lot
+instead of failing the run closed) used to settle a deferred lot's intrinsic
+value against whatever *later* step's board happened to reappear first,
+which could have drifted arbitrarily far from the lot's true expiry-date
+value. It now records the underlying spot at the moment the board first goes
+missing and settles against **that** recorded spot; only when no spot was
+ever recorded (the base board was *also* absent at the deferral step) does
+resolution fall back to the reappearing step's own spot — and that fallback
+is now counted via `BacktestResult::n_settlements_at_stale_spot` (run-total
+scalar, non-wire; always `0` under `UnpricedLotPolicy::Error`, which never
+defers).
+
+**Also fixed: a permanent NAV-vs-liquidation gap.** A deferred lot leaves
+`book.lots`/`book_totals.pv` the instant it defers, but NAV's explain lane
+previously booked nothing for that drop on the deferral row, and — when the
+base mark was unknown — nothing at resolution either, even though cash
+always received the full intrinsic. The explain lane now sheds the lot's
+carried mark on the deferral row and recognizes the full intrinsic
+unconditionally at resolution, closing the gap in both directions.
+
+**Effect.** Moves NAV for any run with deferred-settlement lots — both from
+the corrected settlement spot and from the NAV-vs-liquidation gap closing.
+**No opt-out**: the prior numbers were a genuine accounting error, not a
+documented configuration. The 82-session golden SPY dispersion pin is
+unaffected (verified bit-for-bit, `24740.624124996561`) — that corpus has
+zero deferred-settlement lots in its window.
+
+### BREAKING — NAV reconciliation and entry-fill slippage are on by default
+
+`RunConfig::reconcile_nav` and `RunConfig::book_entry_fill_slippage`
+(`backtest.hpp`) both flip `false` → `true`. Pure default-value changes — no
+field added, reordered, or removed; `aggregate_arity_is_v<RunConfig, 22>` is
+unaffected by this pair.
+
+**Effect.** An entry fill away from the model mark now hits `cost` (and
+therefore `nav`/`cash`) by default instead of being silently absorbed at the
+model mark. Every completed run's NAV is now audited by default against an
+independently recomputed liquidation value; a run whose drift exceeds
+`reconcile_nav_tol` now returns `Err` (no `BacktestResult` at all) instead of
+completing with an undetected accounting gap.
+
+**Migration.** A caller that needs the pre-1.1.0 shape — no fill-slippage
+booking, no reconciliation abort, e.g. for a bit-exact replay suite pinned
+against the old numbers — sets both fields back explicitly:
+
+```cpp
+cfg.reconcile_nav = false;
+cfg.book_entry_fill_slippage = false;
+```
+
+Verified bit-for-bit unchanged on the real 82-session SPY corpus with both
+flags set this way (frictionless regime, `cost == 0` before and after).
+
+### BREAKING — multi-name financing rate resolution fails closed instead of silently using archive order
+
+`FinancingConfig` (`backtest.hpp`) gains two appended fields:
+`std::uint32_t reference_uid{0}` and `std::optional<double> flat_r{}`.
+
+**Old behaviour.** `finance_premium`'s cash-carry rate always came from
+`base->surface_at(0)` — the first surface in *archive order*, an arbitrary
+constituent on any multi-name corpus.
+
+**New behaviour.** `flat_r`, if set, is used directly. Otherwise
+`reference_uid`, if non-zero, names the uid to read `r` from. Otherwise
+(`reference_uid == 0`, the default): on a base snapshot with at most one
+surface, this reproduces the old `surface_at(0)` pick bit-for-bit — there is
+only one surface to choose. **On a genuinely multi-name corpus, the run now
+fails closed with `ErrorCode::InvalidArgument` naming the surface count and
+date, instead of silently keying off archive order.**
+
+**This is a compatibility break, not a bug fix — call it out explicitly
+before upgrading.** A `finance_premium = true` run over a multi-name corpus
+that used to complete (picking whichever surface happened to sort first in
+the archive) now aborts unless it names a rate source. The ambiguous
+reference is treated as a configuration mistake, not a data gap, so the
+check fires unconditionally rather than only when the day's cash balance
+happens to be nonzero.
+
+**Migration.** Set `FinancingConfig::reference_uid` to the uid whose rate
+should fund `finance_premium` (set it to the archive-index-0 uid to
+reproduce the exact prior numeric behaviour), or set `flat_r` directly to an
+explicit rate that bypasses any board lookup. Single-name callers are
+unaffected — the default keeps working exactly as before.
+
+### NEW — quote-side fill model
+
+`FrictionModel::SpreadKind::QuoteSide` (value `3`, appended) fills at
+`mid ± f(leg_count)·half_spread` off a recorded two-sided quote
+(`FrictionModel::RawQuote` / `QuoteLookup` / `quote_lookup`), ORATS
+convention, instead of charging a synthetic spread cost on top of the model
+mark the way `PriceBps`/`VolTicks` do. `crossing_fraction_single{0.75}` /
+`crossing_fraction_complex{0.53}` select by how many lots the entry/close
+cohort contributes (one leg vs. more).
+
+**Semantics note, since this is easy to get backwards against the existing
+lanes:** `QuoteSide` does not stack with a separate spread charge —
+`half_spread()` returns `0.0` under `QuoteSide` specifically because the
+crossing distance chosen for the fill price *is* the spread cost; charging
+both would pay the spread twice. `impact_fraction` still applies additively
+on top, same as every other `spread_kind`. `spread_kind == QuoteSide` now
+*requires* `book_entry_fill_slippage` (`validate_run_config` enforces this) —
+otherwise the fill-vs-mark gap this lane produces never reaches NAV. A new
+`FrictionRegime` enum (`Frictionless` / `Modeled` / `QuoteSide`) and
+`BacktestResult::friction_regime` classify which regime a run actually took,
+stamped once per run from `FrictionModel` alone.
+
+**No caller-visible flip.** `spread_kind` still defaults to `None`; a run
+that never opts into `QuoteSide` is bit-identical, including with a live
+`quote_lookup` and non-default crossing fractions wired but unused (the new
+fields are structurally inert unless `QuoteSide` is selected — a dedicated
+invariant test proves it). No migration action needed.
+
+### NOTE — scenario-grid margin's vol-shock magnitude is a documented default, not a spec value
+
+`MarginScenarioSpec::vol_shock` (`margin.hpp`, the Reg-T + scenario-grid
+margin engine's `scenario_margin`) defaults to `±0.10` absolute vol points.
+The originating brief text for this constant was truncated before a number;
+`±0.10` is a conservative, explicitly documented choice, overridable per call
+— not a value re-derived from any external spec. Flagging here so a caller
+who assumed a different convention notices before relying on the default.
+
+### NOTE — `psr`/`dsr`/`min_trl` take RAW kurtosis, opposite of the sibling atx-engine convention
+
+`atx::vol::psr` / `dsr` / `min_trl` (`tools/tearsheet.hpp`, the PSR/DSR/MinTRL
+rigor tearsheet) take `kurt` as Bailey & Lopez de Prado's `γ4` — **raw
+(Pearson) kurtosis**, where a Gaussian is `3`. The sibling
+`atx-engine/eval/deflated_sharpe.hpp` implements the same formula but takes
+**excess kurtosis**, where a Gaussian is `0`. Both are individually correct
+against their own documented formula; a future integration point that
+computes moments once and feeds both **must convert explicitly** between the
+two conventions. No code in either module does this conversion for you.
+
+### NEW — backtest CLI realism knobs, and economics stamps on every emitted artifact
+
+`mag7_dispersion_backtest` and `spy_dispersion_pnl` (`examples/`) gain a
+shared flag surface (`examples/dispersion_realism_flags.hpp`) exposing
+knobs that previously silently took `RunConfig{}`'s defaults no matter what
+an operator asked for: `--unpriced`, `--exercise-policy`, `--margin-breach`,
+`--friction-spread-kind` (`none|price_bps|vol_ticks|quote_side`,
+`--half-spread-bps`, `--vol-tick`, `--impact-fraction`,
+`--per-contract-cost`, `--hedge-slippage-bps`,
+`--crossing-fraction-{single,complex}`), and `--borrow-rate`,
+`--finance-premium`, `--shares-carry`, `--initial-cash`,
+`--financing-reference-uid`, `--financing-flat-r`.
+
+**Every artifact both CLIs emit now prints `friction_regime` and
+`economics_rev`** — `series.csv` / `strategy_metrics.csv` /
+`engine_metrics.csv` / `db_stats.csv` for `mag7_dispersion_backtest`;
+`pnl_track.tsv` for `spy_dispersion_pnl`; and, on the
+`atxvol_spy_dispersion_backtest` tool route, `run_config.tsv`,
+`surface_tearsheet.tsv` / `surface_pnl_track.tsv`, `run.atxrun`'s `meta`
+section (`run-backtest` / `run-projected-backtest`), and every affected
+console summary line. `encode_meta_section`'s `extra` parameter appends
+**rows**, not columns, so this is additive metadata: no `RunArchive` section,
+column layout, or schema hash changed on any artifact.
+
+### BREAKING — `mag7_dispersion_backtest`'s unpriced-lot default flips from lenient to fail-closed
+
+`mag7_dispersion_backtest`'s default `UnpricedLotPolicy` flips from the
+CLI's own `ExcludeAndReport` override to `RunConfig{}`'s production default,
+`Error`. The CLI used to force `rc.unpriced =
+UnpricedLotPolicy::ExcludeAndReport;` unconditionally, silently overriding
+the engine's own already-fail-closed default; that override is deleted, not
+replaced with a different one.
+
+**Migration.** Pass `--unpriced exclude` to restore the prior lenient
+behaviour. `spy_dispersion_pnl`'s own default (`ExcludeAndReport`, required
+for its held-to-expiry corpus's expected calendar-edge gaps) is unchanged,
+and is now overridable via the same flag on that CLI too.
+
+### FIXED — dispersion's `apply_to_financing` rate now reaches the field the engine actually reads
+
+`dispersion_engine_run_config_from`'s `apply_to_financing` translation wrote
+the flat discount rate into `FinancingConfig::borrow_rate` — the wrong
+field. `borrow_rate` prices the short-shares borrow proxy, an unrelated cost
+lane, and this silently clobbered whatever `financing_borrow_rate` spec key
+a caller had separately set; meanwhile `finance_premium`'s own rate source
+(`flat_r` / `reference_uid`, the fields `backtest.cpp`'s accrual block
+actually reads) was never set at all — so the first multi-name dispersion
+run to flip `rate_applies_to_financing` on would have hit the fail-closed
+multi-name check above with no valid `reference_uid`. Fixed: the rate is now
+written into `FinancingConfig::flat_r`, which takes unconditional priority
+over the `reference_uid` lookup, so an `apply_to_financing = true` run can no
+longer reach that fail-closed branch on any name count. No `run_spec.tsv` in
+the repository sets `rate_applies_to_financing`, so the golden 82-session
+pin is unaffected.
+
+**No `kBacktestEconomicsRev` bump was needed for this fix**, and the
+reasoning is structural, not usage-odds: `canonical_config_bytes` folds
+`flat_r` by presence-then-value, and this fix always flips that presence bit
+on the `apply_to_financing = true` path (pre-fix: `flat_r` never set,
+presence `0`; post-fix: always set, presence `1`) — independent of
+`kBacktestEconomicsRev`, independent of what `borrow_rate` used to hold. A
+pre-fix track's `TrackKey` can therefore never collide with a post-fix run
+of "the same" config, because the config bytes themselves already diverge
+structurally.
+
+### FIXED — the 82-session golden NAV pin corrected to the already-current value (no economics change)
+
+`research/include/atx/vol/research/golden_pin.hpp`'s `kGolden82SessionFinalNav`
+(introduced this sprint, Task D1) shipped as `247.4065016443293` — copied from
+stale sprint/CHANGELOG prose without reproducing it against the corpus. That
+literal was already TWO generations out of date before D1 ever typed it in:
+commit `2de65c7` (2026-07-25, pre-dates this sprint) had already superseded it
+once to `247.40624124981315` ("already stale by one generation" per that
+commit's own message) and, in the same commit, applied the E1 sizing
+migration's exact ×100 rescale to `24740.624124981368`. Task E3 re-measured
+directly against the real 82-session SPY corpus at this sprint's tip and got
+`24740.624124996561` — bit-for-bit identical to Task A3's independent
+measurement earlier in this same sprint, and within 6.1e-13 relative of
+2de65c7's post-E1 figure (ordinary pricing-path drift, seven orders of
+magnitude below a cent, the same class 2de65c7 itself already catalogued as
+non-economic). `kGolden82SessionFinalNav` is corrected to `24740.624124996561`.
+
+**No `kBacktestEconomicsRev` bump.** Nothing landed in this sprint moved this
+corpus's NAV — Task A3 proved its own default-flip bit-identical before/after
+on this exact corpus, and the one other candidate (Task E1's
+`apply_to_financing`→`flat_r` routing fix, commit `5292cae`) is inert here
+because `bt-sota-baseline/run_spec.tsv` never sets
+`rate_applies_to_financing`. This is a correction of a mistyped literal, not a
+re-pin driven by a real NAV movement — bumping the rev would be wrong twice
+over: it would misrepresent what happened, and (folded into `make_engine_id()`
+→ `TrackKey`) it would invalidate every cached BacktestDb/TrackStore entry in
+the lakehouse for no economics reason at all. See `golden_pin.hpp`'s own
+comment for the full chain of evidence (git commits, control experiment,
+exact numbers).
+
+### Tier promotion — five research-tier headers become Tier-B public surface
+
+`sweep_driver.hpp`, `track_key.hpp`, `track_store.hpp`, `catalog.hpp` and
+`snapshot_pool.hpp` move (`git mv`) from
+`research/include/atx/vol/research/` to `include/atx/vol/` — Tier-B
+32 → **37**, `research/` 17 → **12** (`VolUmbrella.TierCountsMatchTheReadmeTable`
+now asserts 58 / 37 / 30; see the README's *API stability policy (1.x)*
+section for the full count history). Tier-A is untouched: none of the five
+is reachable from `vol.hpp`, and `backtest.hpp`'s forward-declaration of
+`SnapshotPool` stays a
+forward declaration specifically so Tier-A's closed-under-inclusion rule does
+not pull it in.
+
+This is a promotion, not a rewrite: all five were already documented
+Arrow/SQLite-free at the header level (only their `.cpp`s need
+`ATX_VOL_LAKEHOUSE`, unchanged by the move), and the namespace was already
+plain `atx::vol` with no `research::` sub-namespace. It reflects that these
+five are the lakehouse's stable identity/storage/orchestration vocabulary —
+`TrackKey`, the Parquet track store, the SQLite catalog, the cache-first
+sweep driver, the sealed snapshot pool — rather than one-off run-orchestration
+drivers, and now carries the same "public but not frozen for 1.x" promise as
+any other Tier-B header.
+
+**Migration.** Update `#include "atx/vol/research/{sweep_driver,track_key,
+track_store,catalog,snapshot_pool}.hpp"` to `#include "atx/vol/{name}.hpp"`.
+No namespace change. See
+[docs/backtest-lakehouse.md](docs/backtest-lakehouse.md) for the full lake
+layout, the `TrackKey` recipe, the economics-rev invalidation story (and its
+compile-time-enforced golden-NAV tripwire pairing), GC/compaction
+operations, and the DuckDB/Python (`atxpy.tracks`) query cookbook.
+
 ## 1.0.0
 
 The first release with a stability promise. Everything below happened during the

@@ -13,7 +13,8 @@ dependencies = ["numpy>=1.23"]
 
 [project.optional-dependencies]
 pandas = ["pandas>=2.0"]
-test = ["pytest>=7", "numpy>=1.23", "pandas>=2.0"]
+lakehouse = ["duckdb>=0.10", "pyarrow>=14.0", "pandas>=2.0"]
+test = ["pytest>=7", "numpy>=1.23", "pandas>=2.0", "duckdb>=0.10", "pyarrow>=14.0"]
 
 [tool.scikit-build]
 minimum-version = "0.10"

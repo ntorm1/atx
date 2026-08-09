@@ -3,9 +3,11 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <fstream>
 #include <ios>
+#include <limits>
 #include <span>
 #include <string>
 #include <string_view>
@@ -13,6 +15,7 @@
 #include <vector>
 
 #include "atx/core/error.hpp"                   // Err, Ok, ErrorCode
+#include "atx/core/math.hpp"                    // atx::core::norm_cdf (B4: PSR/DSR/MinTRL)
 #include "atx/vol/backtest.hpp"                 // BacktestResult
 #include "atx/vol/detail/backtest_series_columns.hpp"  // backtest_series_columns() (single source)
 
@@ -97,6 +100,192 @@ Result<std::vector<std::string>> backtest_return_dates(const BacktestResult& r) 
                    "greater than 1.");
   }
   return Ok(std::vector<std::string>(r.date.begin() + 1, r.date.end()));
+}
+
+namespace {
+
+// ── B4: standard-normal inverse CDF (Z^-1), private to this TU ─────────────
+//
+// `atx::core::norm_cdf` (folded in from the ported C `ats-vol` library) gives
+// Phi(x); nothing in-tree exposes a LINKABLE Phi^-1(p). analytics_primitives.cpp
+// has one (`norm_inv`, a bisection-based exact-by-construction inverse for a
+// low-call-count wing-strike solve), but it is itself anonymous-namespace-
+// private to that TU and unreachable from here. Rather than promote it across
+// a module boundary for one caller, this is a fresh implementation, as the
+// task brief allows ("if none exists, implement Acklam's or Wichura's AS241").
+//
+// Acklam's rational approximation (P. J. Acklam, "An algorithm for computing
+// the inverse normal cumulative distribution function", 2003) -- relative
+// error < 1.15e-9 on its own -- followed by ONE Halley refinement step
+// against `atx::core::norm_cdf`, lifting the accuracy to within a few ULP of
+// machine precision. (The same two-stage recipe atx-engine/eval/stats_ext.hpp
+// documents for its own norm_ppf; implemented independently here since
+// atx-vol does not depend on atx-engine -- see the design note atop
+// tearsheet.hpp's B4 section for why the two are not shared.)
+//
+// DOMAIN: p in (0, 1). p outside that range is a precondition violation of
+// this detail function; every public caller below (psr/dsr/min_trl) is
+// responsible for guarding the p it passes in, and does so.
+[[nodiscard]] double norm_ppf(double p) noexcept {
+  static constexpr double kA[6] = {-3.969683028665376e+01, 2.209460984245205e+02,
+                                   -2.759285104469687e+02, 1.383577518672690e+02,
+                                   -3.066479806614716e+01, 2.506628277459239e+00};
+  static constexpr double kB[5] = {-5.447609879822406e+01, 1.615858368580409e+02,
+                                   -1.556989798598866e+02, 6.680131188771972e+01,
+                                   -1.328068155288572e+01};
+  static constexpr double kC[6] = {-7.784894002430293e-03, -3.223964580411365e-01,
+                                   -2.400758277161838e+00, -2.549732539343734e+00,
+                                   4.374664141464968e+00,  2.938163982698783e+00};
+  static constexpr double kD[4] = {7.784695709041462e-03, 3.224671290700398e-01,
+                                   2.445134137142996e+00, 3.754408661907416e+00};
+  constexpr double kPLow = 0.02425;
+  constexpr double kPHigh = 1.0 - kPLow;  // 0.97575
+
+  double x = 0.0;
+  if (p < kPLow) {
+    // Lower tail: q = sqrt(-2 ln p).
+    const double q = std::sqrt(-2.0 * std::log(p));
+    x = (((((kC[0] * q + kC[1]) * q + kC[2]) * q + kC[3]) * q + kC[4]) * q + kC[5]) /
+        ((((kD[0] * q + kD[1]) * q + kD[2]) * q + kD[3]) * q + 1.0);
+  } else if (p <= kPHigh) {
+    // Central region: q = p - 0.5, r = q^2.
+    const double q = p - 0.5;
+    const double r = q * q;
+    x = (((((kA[0] * r + kA[1]) * r + kA[2]) * r + kA[3]) * r + kA[4]) * r + kA[5]) * q /
+        (((((kB[0] * r + kB[1]) * r + kB[2]) * r + kB[3]) * r + kB[4]) * r + 1.0);
+  } else {
+    // Upper tail: q = sqrt(-2 ln(1-p)); negated lower-tail form.
+    const double q = std::sqrt(-2.0 * std::log(1.0 - p));
+    x = -(((((kC[0] * q + kC[1]) * q + kC[2]) * q + kC[3]) * q + kC[4]) * q + kC[5]) /
+        ((((kD[0] * q + kD[1]) * q + kD[2]) * q + kD[3]) * q + 1.0);
+  }
+
+  // One Halley step against the exact CDF: e = Phi(x) - p; u scales the
+  // Newton step by the inverse density (kSqrt2Pi*exp(x^2/2) == 1/phi(x)), the
+  // trailing division applies Halley's second-order correction.
+  constexpr double kSqrt2Pi = 2.5066282746310002;  // sqrt(2*pi)
+  const double e = atx::core::norm_cdf(x) - p;
+  const double u = e * kSqrt2Pi * std::exp(x * x / 2.0);
+  x -= u / (1.0 + x * u / 2.0);
+  return x;
+}
+
+// Euler-Mascheroni constant gamma -- the extreme-value weight in the expected
+// maximum of N standard normals (Bailey-LdP 2014 Sec 3.3, eq. for E[max]).
+constexpr double kEulerMascheroni = 0.5772156649015329;
+
+// The Bailey-LdP variance-scaling term shared by psr/dsr/min_trl:
+// 1 - skew*sr + ((kurt-1)/4)*sr^2. `kurt` is RAW (Pearson) kurtosis --
+// see tearsheet.hpp's B4 section for why (a Gaussian series has kurt==3).
+[[nodiscard]] double psr_var_term(double sr, double skew, double kurt) noexcept {
+  return 1.0 - skew * sr + ((kurt - 1.0) / 4.0) * sr * sr;
+}
+
+}  // namespace
+
+double psr(double sr, double skew, double kurt, std::size_t T, double benchmark) noexcept {
+  // SAFETY: sqrt(T-1) is 0 at T==1 (and undefined below it); T<2 would
+  // silently give Phi(0)==0.5 for every input rather than signal "no
+  // information", so it is refused explicitly instead.
+  if (T < 2U) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  const double var_term = psr_var_term(sr, skew, kurt);
+  // SAFETY: a pathological skew/kurtosis/sr combination can drive var_term to
+  // <= 0, where its square root is undefined; the !(>0) form also rejects a
+  // NaN var_term. Fail to NaN rather than propagate silently.
+  if (!(var_term > 0.0)) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  const double tf = static_cast<double>(T);
+  const double z = (sr - benchmark) * std::sqrt(tf - 1.0) / std::sqrt(var_term);
+  return atx::core::norm_cdf(z);
+}
+
+double dsr(double sr, double skew, double kurt, std::size_t T, TrialStats trials) noexcept {
+  // SAFETY: a variance cannot be negative -- a caller/catalog bug, refused
+  // rather than sqrt'd into a NaN SR0 that would silently poison the PSR call
+  // below.
+  if (trials.sr_variance < 0.0) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  double sr0 = 0.0;  // N<=1: "no selection" -- nothing to benchmark against.
+  if (trials.n_trials > 1U) {
+    // SAFETY: Z^-1(1 - 1/N) diverges to -infinity at N<=1 (guarded above by
+    // the n_trials>1U branch, not here) -- sqrt(0)*(-infinity) would
+    // otherwise be a silent NaN when a caller passes a default-initialized
+    // TrialStats{1, 0.0}.
+    const double n = static_cast<double>(trials.n_trials);
+    const double e = std::exp(1.0);
+    const double q_hi = norm_ppf(1.0 - 1.0 / n);         // Phi^-1(1 - 1/N)
+    const double q_lo = norm_ppf(1.0 - 1.0 / (n * e));   // Phi^-1(1 - 1/(N*e))
+    const double max_z = (1.0 - kEulerMascheroni) * q_hi + kEulerMascheroni * q_lo;
+    sr0 = std::sqrt(trials.sr_variance) * max_z;
+  }
+  return psr(sr, skew, kurt, T, sr0);
+}
+
+double min_trl(double sr, double skew, double kurt, double benchmark, double alpha) noexcept {
+  // SAFETY: Phi^-1 is undefined outside (0,1).
+  if (!(alpha > 0.0 && alpha < 1.0)) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  const double var_term = psr_var_term(sr, skew, kurt);
+  // SAFETY: same guard as psr -- a non-positive variance term has no real
+  // square root.
+  if (!(var_term > 0.0)) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  // sr == benchmark is deliberately NOT special-cased: Z^-1(alpha)/0.0 is the
+  // IEEE +-infinity for every alpha != 0.5 (a zero effect size genuinely
+  // needs an infinite track record at any nontrivial confidence -- the
+  // correct answer, not a bug to mask), and the 0/0 at alpha==0.5 is NaN
+  // (PSR is 0.5 for EVERY T when sr==benchmark, so "the smallest T reaching
+  // confidence 0.5" is not a single well-defined number there either). Both
+  // fall out of the arithmetic unassisted; see tearsheet.hpp's doc comment.
+  const double z_alpha = norm_ppf(alpha);
+  const double ratio = z_alpha / (sr - benchmark);
+  return 1.0 + var_term * ratio * ratio;
+}
+
+ResidualAlarm unexplained_alarm(const BacktestResult& r, std::size_t window,
+                                double tolerance) noexcept {
+  ResidualAlarm out;
+  const std::size_t n = r.size();
+  // SAFETY (always-on, both debug and release): `window == 0` or fewer than
+  // `window` recorded rows cannot form a single complete window. A size
+  // mismatch on any of the nine columns (a hand-built or partially-populated
+  // result) would read out of bounds below -- refused for the same reason,
+  // not merely asserted.
+  if (window == 0U || n < window || r.pnl_delta.size() != n || r.pnl_gamma.size() != n ||
+      r.pnl_vega.size() != n || r.pnl_vanna.size() != n || r.pnl_volga.size() != n ||
+      r.pnl_theta.size() != n || r.pnl_rho.size() != n || r.pnl_charm.size() != n ||
+      r.pnl_unexplained.size() != n) {
+    return out;
+  }
+
+  for (std::size_t start = 0; start + window <= n; ++start) {
+    double gross_sum = 0.0;
+    double unexpl_sum = 0.0;
+    for (std::size_t i = start; i < start + window; ++i) {
+      gross_sum += std::fabs(r.pnl_delta[i]) + std::fabs(r.pnl_gamma[i]) +
+                   std::fabs(r.pnl_vega[i]) + std::fabs(r.pnl_vanna[i]) +
+                   std::fabs(r.pnl_volga[i]) + std::fabs(r.pnl_theta[i]) +
+                   std::fabs(r.pnl_rho[i]) + std::fabs(r.pnl_charm[i]);
+      unexpl_sum += std::fabs(r.pnl_unexplained[i]);
+    }
+    // gross_sum == 0 (a perfectly flat window) -> ratio 0: there is no Greek
+    // activity to have mismarked, so it can never be the worst window.
+    const double ratio = gross_sum > 0.0 ? unexpl_sum / gross_sum : 0.0;
+    if (ratio > out.worst_ratio) {
+      out.worst_ratio = ratio;
+      out.worst_window_start = start;
+    }
+    if (ratio > tolerance) {
+      out.tripped = true;
+    }
+  }
+  return out;
 }
 
 BenchmarkStats benchmark_stats(std::span<const double> strategy,
@@ -306,6 +495,26 @@ TearSheet tearsheet(const BacktestResult& r, double periods_per_year) {
 
   const double tv_sum = col_sum(r.turnover_vega);
   ts.pnl_per_vega_traded = tv_sum > 0.0 ? ts.total_return / tv_sum : 0.0;
+
+  // ── Margin (Task B2) ──
+  //
+  // `margin_required` is non-wire and empty on a hand-built/TSV-read/decoded
+  // result (see BacktestResult::margin_required's comment), so both stats
+  // stay at their guarded 0 default in that case -- there is no earlier
+  // series to fall back to, unlike `gross_vega_abs`'s |gross_vega| fallback.
+  if (r.margin_required.size() == n) {
+    double margin_sum = 0.0;
+    double margin_peak = 0.0;
+    for (std::size_t i = 0; i < n; ++i) {
+      margin_sum += r.margin_required[i];
+      if (r.margin_required[i] > margin_peak) {
+        margin_peak = r.margin_required[i];
+      }
+    }
+    const double mean_margin = margin_sum / static_cast<double>(n);
+    ts.return_on_margin = mean_margin > 0.0 ? ts.total_return / mean_margin : 0.0;
+    ts.margin_utilization_peak = margin_peak;
+  }
 
   return ts;
 }

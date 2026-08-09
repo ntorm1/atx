@@ -24,6 +24,7 @@
 #include "atx/vol/research/dispersion_backtest.hpp"
 #include "atx/vol/research/dispersion_run.hpp"
 #include "atx/vol/research/dispersion_workflow.hpp" // read_run_spec / write_resolved_spec (F4)
+#include "atx/vol/track_key.hpp" // kBacktestEconomicsRev (E1 fix round)
 #include "atx/vol/types.hpp"
 
 using namespace atx::vol;
@@ -261,14 +262,22 @@ TEST(DispersionRunConfigStrict, FlatRateReachesFinancingOnlyWhenOptedIn) {
   const fs::path off = write_spec("atx-disp-cfg-rate-off", kBaselineSpec);
   const Result<DispersionRunConfig> without = read_dispersion_run_config(off);
   ASSERT_TRUE(without) << without.error().to_string();
-  EXPECT_EQ(dispersion_backtest_config_from(*without).run.financing.borrow_rate, 0.0);
+  EXPECT_FALSE(dispersion_backtest_config_from(*without).run.financing.flat_r.has_value());
 
   const std::string body = std::string(kBaselineSpec) + "rate_applies_to_financing\t1\n";
   const fs::path on = write_spec("atx-disp-cfg-rate-on", body);
   const Result<DispersionRunConfig> with = read_dispersion_run_config(on);
   ASSERT_TRUE(with) << with.error().to_string();
   const DispersionBacktestConfig backtest = dispersion_backtest_config_from(*with);
-  EXPECT_EQ(backtest.run.financing.borrow_rate, 0.043);
+  // Task E1: `flat_rate` must land in `FinancingConfig::flat_r` -- the field
+  // `finance_premium`'s cash-carry accrual actually reads (backtest.cpp) --
+  // not `borrow_rate` (a different, short-shares-borrow-proxy knob this used
+  // to silently clobber; see dispersion_run.cpp's own comment on the fix).
+  // `borrow_rate` stays at ITS OWN default (0.0, unset by this spec), proving
+  // the two knobs no longer collide.
+  EXPECT_DOUBLE_EQ(backtest.run.financing.borrow_rate, 0.0);
+  ASSERT_TRUE(backtest.run.financing.flat_r.has_value());
+  EXPECT_DOUBLE_EQ(*backtest.run.financing.flat_r, 0.043);
   EXPECT_TRUE(backtest.run.financing.finance_premium);
 }
 
@@ -852,6 +861,10 @@ TEST(DispersionRunConfigXB, ReportMetadata_LeadsWithTheRegime) {
   EXPECT_EQ(meta[0].first, "friction_regime");
   EXPECT_EQ(meta[0].second, "frictioned+impact");
   EXPECT_EQ(meta[1].first, "friction_detail");
+  // E1 fix round: economics_rev sits right beside the regime it completes.
+  ASSERT_GT(meta.size(), 2u);
+  EXPECT_EQ(meta[2].first, "economics_rev");
+  EXPECT_EQ(meta[2].second, std::to_string(kBacktestEconomicsRev));
 
   const auto find = [&](const char *key) -> const std::string * {
     for (const auto &kv : meta) {
@@ -950,6 +963,10 @@ TEST(DispersionRunConfigXB, SurfaceArtifacts_EmitFrictionRegimeFirst) {
         << tsv.substr(0, 128);
     EXPECT_NE(tsv.find("friction_regime\tfrictioned+impact\n"), std::string::npos)
         << tsv.substr(0, 128);
+    // E1 fix round: economics_rev must be in this artifact too.
+    EXPECT_NE(tsv.find("economics_rev\t" + std::to_string(kBacktestEconomicsRev) + '\n'),
+              std::string::npos)
+        << tsv.substr(0, 200);
   }
 
   // surface_pnl_track.tsv: `# key=value` meta header, REGIME FIRST, non-empty value.
@@ -961,6 +978,10 @@ TEST(DispersionRunConfigXB, SurfaceArtifacts_EmitFrictionRegimeFirst) {
         << tsv.substr(0, 128);
     EXPECT_NE(tsv.find("# friction_regime=frictioned+impact\n"), std::string::npos)
         << tsv.substr(0, 128);
+    // E1 fix round: economics_rev must be in this artifact too.
+    EXPECT_NE(tsv.find("# economics_rev=" + std::to_string(kBacktestEconomicsRev) + '\n'),
+              std::string::npos)
+        << tsv.substr(0, 200);
   }
 }
 
@@ -1283,8 +1304,13 @@ TEST(DispersionRunConfigStrict, ListedEngineConfigCarriesEveryDeclaredExecutionK
   EXPECT_DOUBLE_EQ(engine.frictions.hedge_slippage_bps, 1.5);
   EXPECT_TRUE(engine.financing.shares_carry);
   EXPECT_DOUBLE_EQ(engine.financing.initial_cash, 2'500'000.0);
-  // rate_applies_to_financing routes flat_rate into the ledger.
-  EXPECT_DOUBLE_EQ(engine.financing.borrow_rate, 0.043);
+  // Task E1: rate_applies_to_financing routes flat_rate into
+  // `FinancingConfig::flat_r` -- the field `finance_premium`'s cash-carry
+  // accrual actually reads -- not `borrow_rate` (this spec never sets
+  // `financing_borrow_rate`, so it stays at its own 0.0 default).
+  EXPECT_DOUBLE_EQ(engine.financing.borrow_rate, 0.0);
+  ASSERT_TRUE(engine.financing.flat_r.has_value());
+  EXPECT_DOUBLE_EQ(*engine.financing.flat_r, 0.043);
   EXPECT_TRUE(engine.financing.finance_premium);
   EXPECT_EQ(engine.surface_provenance_policy, SurfaceProvenancePolicy::RequireAdmittedRisk);
   EXPECT_EQ(engine.unpriced, UnpricedLotPolicy::ExcludeAndReport);
@@ -1354,13 +1380,14 @@ TEST(DispersionRunConfigStrict, EffectiveRunConfigArtifactRecordsRegimeFirstAndE
   EXPECT_EQ(first.substr(0, first.find('\t')), "friction_regime");
 
   const std::map<std::string, std::string> kv = read_kv(artifact);
-  for (const char *key : {"friction_regime", "friction_regime_detail", "friction_spread_kind",
-                          "friction_half_spread_bps", "friction_per_contract_cost",
-                          "friction_hedge_slippage_bps", "cost_impact_k", "cost_adv_fraction",
-                          "financing_borrow_rate", "financing_finance_premium",
-                          "financing_shares_carry", "financing_initial_cash", "provenance",
-                          "unpriced", "fill_policy", "book_entry_fill_slippage", "reconcile_nav",
-                          "quote_min_bid", "quote_max_age_ns", "quote_reject_locked"}) {
+  for (const char *key : {"friction_regime", "economics_rev", "friction_regime_detail",
+                          "friction_spread_kind", "friction_half_spread_bps",
+                          "friction_per_contract_cost", "friction_hedge_slippage_bps",
+                          "cost_impact_k", "cost_adv_fraction", "financing_borrow_rate",
+                          "financing_finance_premium", "financing_shares_carry",
+                          "financing_initial_cash", "provenance", "unpriced", "fill_policy",
+                          "book_entry_fill_slippage", "reconcile_nav", "quote_min_bid",
+                          "quote_max_age_ns", "quote_reject_locked"}) {
     EXPECT_NE(kv.find(key), kv.end()) << "run_config.tsv is missing " << key;
   }
   EXPECT_EQ(kv.at("provenance"), "require_admitted_risk");
@@ -1370,6 +1397,10 @@ TEST(DispersionRunConfigStrict, EffectiveRunConfigArtifactRecordsRegimeFirstAndE
   EXPECT_EQ(kv.at("quote_max_age_ns"), "300000000000");
   EXPECT_NE(kv.at("friction_regime_detail").find("bps half-spread"), std::string::npos)
       << kv.at("friction_regime_detail");
+  // E1 fix round: run_config.tsv is a per-run artifact -- it must name WHICH
+  // revision of the engine's economics interpretation produced its numbers,
+  // right beside the assumptions it already names.
+  EXPECT_EQ(kv.at("economics_rev"), std::to_string(kBacktestEconomicsRev));
 }
 
 TEST(DispersionRunConfigStrict, BuildCorpusPreservesEveryTypedKeyIntoTheRunDirectory) {

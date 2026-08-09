@@ -1,19 +1,25 @@
 #include "atx/vol/backtest_db.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <bit>
 #include <chrono>
 #include <cmath>
+#include <fstream>
 #include <iomanip>
 #include <limits>
 #include <numeric>
 #include <optional>
 #include <sstream>
+#include <system_error>
+#include <thread>
 #include <unordered_set>
 #include <utility>
 
 #include "atx/vol/detail/backtest_series_columns.hpp"
 #include "atx/vol/detail/archive_util.hpp"
+#include "atx/vol/detail/writer_lock.hpp" // Task D3: cross-process manifest writer lock
+#include "atx/vol/track_key.hpp" // Task D1: make_engine_id() (engine_id incl. economics rev)
 
 namespace atx::vol {
 using atx::core::Ok;
@@ -40,6 +46,57 @@ constexpr std::size_t kMaxSymbolBytes = 32;
   return std::chrono::duration_cast<std::chrono::nanoseconds>(
              std::chrono::system_clock::now().time_since_epoch())
       .count();
+}
+
+// Task D3: every public mutator acquires this BEFORE `std::lock_guard
+// lock(*mu_)` -- see detail/writer_lock.hpp's "LOCK ORDERING" doc comment
+// for why that order is load-bearing (a cross-process wait taken under `mu_`
+// would stall every in-process reader for up to WriterLock::kDefaultTimeout,
+// not just other writers). `persist_locked` itself no longer acquires this
+// lock -- it is a precondition that the caller already holds it (alongside
+// `mu_`) for the whole read-modify-publish window.
+[[nodiscard]] Result<detail::WriterLock>
+acquire_manifest_writer_lock(const std::filesystem::path &manifest) {
+  return detail::WriterLock::acquire(manifest.string() + ".lock");
+}
+
+// Task D6: BacktestReaderMark's mechanism -- see that class's own doc
+// comment. `<root>/readers/` is a sibling of `partitions/`, never a
+// generation-versioned BacktestDb filename, so it is never mistaken for a
+// partition candidate by vacuum_unindexed_partitions' own directory scan
+// (which only ever iterates partitions/).
+[[nodiscard]] std::filesystem::path reader_marks_dir(std::string_view root) {
+  return std::filesystem::path(std::string(root)) / "readers";
+}
+
+// Best-effort: an empty/unreadable/malformed mark file reads as "cannot
+// determine an owner" -- nullopt -- which vacuum's scan (below) treats
+// exactly like detail::WriterLock treats an indeterminate owner: NOT
+// eligible for stale cleanup, the conservative default (never guess a live
+// mark is dead).
+[[nodiscard]] std::optional<std::uint64_t> read_reader_mark_pid(const std::filesystem::path &path) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in) {
+    return std::nullopt;
+  }
+  std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  std::size_t end = text.size();
+  while (end > 0 && (text[end - 1] == '\0' || text[end - 1] == '\n' || text[end - 1] == '\r' ||
+                     text[end - 1] == ' ')) {
+    --end;
+  }
+  if (end == 0) {
+    return std::nullopt;
+  }
+  std::uint64_t value = 0;
+  for (std::size_t i = 0; i < end; ++i) {
+    const char c = text[i];
+    if (c < '0' || c > '9') {
+      return std::nullopt;
+    }
+    value = value * 10 + static_cast<std::uint64_t>(c - '0');
+  }
+  return value;
 }
 
 [[nodiscard]] constexpr std::int64_t u64_bits(std::uint64_t value) noexcept {
@@ -849,8 +906,152 @@ Status BacktestDb::refresh() {
   return Ok();
 }
 
+Result<BacktestReaderMark> BacktestReaderMark::acquire(std::string_view root) {
+  if (root.empty()) {
+    return Err(ErrorCode::InvalidArgument, "BacktestReaderMark::acquire: empty root");
+  }
+  const std::filesystem::path dir = reader_marks_dir(root);
+  std::error_code mkdir_ec;
+  std::filesystem::create_directories(dir, mkdir_ec);
+  if (mkdir_ec) {
+    return Err(ErrorCode::IoError,
+               "BacktestReaderMark::acquire: cannot create readers directory: " + mkdir_ec.message());
+  }
+
+  // Unique by construction (pid + monotonic in-process counter + a
+  // steady_clock tick) -- no CREATE_NEW/O_EXCL exclusivity needed the way
+  // detail::WriterLock needs it, since this is a many-holder registration,
+  // not mutual exclusion: an extremely improbable name collision would only
+  // ever occur between two marks from the SAME process, and losing one to
+  // the other's overwrite still leaves at least one live mark, which is all
+  // vacuum's guard below checks for.
+  static std::atomic<std::uint64_t> counter{0};
+  const std::uint64_t pid = detail::current_process_id();
+  const auto tick = static_cast<std::uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count());
+  const std::string filename = "reader-" + std::to_string(pid) + "-" + std::to_string(tick) + "-" +
+                               std::to_string(counter.fetch_add(1)) + ".mark";
+  const std::string mark_path = (dir / filename).string();
+
+  // Review finding (Important, fix-round 1): atomic-publish discipline
+  // (detail/archive_util.hpp), same as every other durable lakehouse write
+  // -- catalog.sqlite is the ONE documented exception, and this is not it.
+  // A plain std::ofstream(mark_path, trunc) makes the mark DISCOVERABLE at
+  // its final, scanned-for name the instant the file is created -- empty,
+  // before the pid is written. vacuum's scan below treats an unparseable/
+  // empty mark file as "cannot determine an owner", i.e. NOT a live
+  // blocker (the same conservative default detail::WriterLock's own
+  // stale-owner probe uses) -- so a mark caught mid-creation would be
+  // invisible to a racing vacuum for the whole window between create and
+  // the pid write landing, exactly when a reader that just called
+  // mark_reader() per this class's own doc contract needs it to be seen.
+  // Reserve a unique temp file, write+flush the pid into THAT, then
+  // atomically rename onto the mark's real name: vacuum's scan only ever
+  // observes the mark file fully formed or not present at all, never
+  // partially written.
+  ATX_TRY(const std::string tmp_path, detail::reserve_unique_publish_temp_file(mark_path));
+
+  {
+    std::ofstream out(tmp_path, std::ios::binary | std::ios::trunc);
+    if (!out) {
+      std::error_code rm_ec;
+      std::filesystem::remove(tmp_path, rm_ec);
+      return Err(ErrorCode::IoError, "BacktestReaderMark::acquire: cannot open temp mark file");
+    }
+    out << pid;
+    out.flush();
+    if (!out) {
+      std::error_code rm_ec;
+      std::filesystem::remove(tmp_path, rm_ec);
+      return Err(ErrorCode::IoError, "BacktestReaderMark::acquire: cannot write temp mark file");
+    }
+  }
+
+  ATX_TRY_VOID(detail::flush_and_publish_file(tmp_path, mark_path));
+
+  BacktestReaderMark mark;
+  mark.mark_path_ = mark_path;
+  return Ok(std::move(mark));
+}
+
+BacktestReaderMark::~BacktestReaderMark() { release(); }
+
+BacktestReaderMark::BacktestReaderMark(BacktestReaderMark &&other) noexcept
+    : mark_path_{std::move(other.mark_path_)} {
+  other.mark_path_.clear();
+}
+
+BacktestReaderMark &BacktestReaderMark::operator=(BacktestReaderMark &&other) noexcept {
+  if (this != &other) {
+    release();
+    mark_path_ = std::move(other.mark_path_);
+    other.mark_path_.clear();
+  }
+  return *this;
+}
+
+void BacktestReaderMark::release() noexcept {
+  if (mark_path_.empty()) {
+    return;
+  }
+  std::error_code ec;
+  // Bounded best-effort retry, same tolerance detail::WriterLock::release()
+  // documents: a concurrent liveness-probe reader (vacuum's own scan) can
+  // hold a transient open against this file on Windows.
+  for (int attempt = 0; attempt < 5; ++attempt) {
+    std::filesystem::remove(mark_path_, ec);
+    if (!ec) {
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  mark_path_.clear();
+}
+
+Result<BacktestReaderMark> BacktestDb::mark_reader() const { return BacktestReaderMark::acquire(root_); }
+
 Result<std::size_t> BacktestDb::vacuum_unindexed_partitions() {
   const std::lock_guard lock(*mu_);
+
+  // Task D6: refuse OUTRIGHT -- before even reading the manifest, let alone
+  // enumerating or removing a candidate -- while a live reader mark is
+  // registered. See BacktestReaderMark's own doc comment for the mechanism
+  // and vacuum_unindexed_partitions' header doc comment for what this does
+  // and does not protect.
+  {
+    const std::filesystem::path readers_dir = reader_marks_dir(root_);
+    std::error_code exists_ec;
+    if (std::filesystem::exists(readers_dir, exists_ec) && !exists_ec) {
+      std::error_code list_ec;
+      std::filesystem::directory_iterator it(readers_dir, list_ec);
+      const std::filesystem::directory_iterator dir_end;
+      for (; !list_ec && it != dir_end; it.increment(list_ec)) {
+        std::error_code type_ec;
+        if (!it->is_regular_file(type_ec) || type_ec) {
+          continue;
+        }
+        const std::optional<std::uint64_t> pid = read_reader_mark_pid(it->path());
+        if (!pid.has_value()) {
+          // Cannot determine an owner -- conservative default, same as
+          // detail::WriterLock's own stale-takeover probe: NOT eligible for
+          // cleanup, but also not treated as a live blocker (an empty/
+          // unreadable file is not evidence of a live reader either).
+          continue;
+        }
+        if (detail::process_alive(*pid)) {
+          return Err(ErrorCode::Unavailable,
+                     "BacktestDb::vacuum_unindexed_partitions: refusing -- a live reader mark is "
+                     "registered at " +
+                         it->path().string());
+        }
+        // Confirmed-dead owner -- opportunistic cleanup, mirroring
+        // detail::WriterLock's own stale-owner takeover, so a mark left by a
+        // crashed reader does not block vacuum forever.
+        std::error_code rm_ec;
+        std::filesystem::remove(it->path(), rm_ec);
+      }
+    }
+  }
+
   auto replacement = read_manifest(manifest_path());
   if (!replacement) {
     return tl::unexpected<Error>(std::move(replacement).error());
@@ -918,21 +1119,56 @@ Result<std::size_t> BacktestDb::vacuum_unindexed_partitions() {
   return Ok(removed);
 }
 
+// PRECONDITION (Task D3): the caller already holds a `WriterLock` on this
+// manifest's `<path>.lock` (acquired via `acquire_manifest_writer_lock`,
+// BEFORE `mu_` -- see detail/writer_lock.hpp's "LOCK ORDERING" doc comment)
+// for the duration of this call, in addition to `mu_` itself. This function
+// does not acquire or check either lock -- it trusts the caller, exactly as
+// it already trusted the caller to hold `mu_` before this task existed.
+// `mu_` above only serializes mutations through THIS BacktestDb instance --
+// two separate handles on the same root (two handles in one process, or one
+// handle each in two processes) do not share a `mu_`, so without the
+// WriterLock they could both read `snapshot_->generation == N`, both compute
+// N+1, and both publish: the LAST atomic rename wins and the other writer's
+// update vanishes with no error.
 Status BacktestDb::persist_locked(std::vector<BacktestStrategyTemplate> templates,
                                   std::vector<BacktestSeriesInfo> series) {
   std::sort(templates.begin(), templates.end(), template_key_less);
   std::sort(series.begin(), series.end(), series_key_less);
+  const std::filesystem::path manifest = manifest_path();
+
+  // Re-read the on-disk manifest UNDER the lock: another writer may have
+  // advanced the generation since `snapshot_` was last synced (this
+  // process's own last write, or -- the case the lock exists for -- a
+  // DIFFERENT writer's). `templates`/`series` above were computed by the
+  // caller (e.g. register_template) against the OLD `snapshot_`, so if the
+  // generation moved, publishing them now would silently overwrite whatever
+  // the other writer just committed with content that never accounted for
+  // it. Fail cleanly instead -- Unavailable, not a corrupted or lost write --
+  // and resync `snapshot_` so the caller's very next retry decides against
+  // fresh state.
+  auto current = read_manifest(manifest);
+  if (!current) {
+    return Err(current.error());
+  }
+  if ((*current)->generation != snapshot_->generation) {
+    snapshot_ = std::move(*current);
+    return Err(ErrorCode::Unavailable,
+               "BacktestDb::persist_locked: manifest was concurrently advanced by another "
+               "writer; retry against the refreshed snapshot");
+  }
+
   const std::uint64_t next_generation = snapshot_->generation + 1;
   if (next_generation == 0) {
     return Err(ErrorCode::OutOfRange, "BacktestDb: manifest generation overflow");
   }
   const std::int64_t updated = wall_clock_ns();
-  const Status written = write_manifest_file(manifest_path(), next_generation,
-                                             snapshot_->created_ts_ns, updated, templates, series);
+  const Status written = write_manifest_file(manifest, next_generation, snapshot_->created_ts_ns,
+                                             updated, templates, series);
   if (!written) {
     return written;
   }
-  auto replacement = read_manifest(manifest_path());
+  auto replacement = read_manifest(manifest);
   if (!replacement || (*replacement)->generation != next_generation) {
     return Err(ErrorCode::ParseError, "BacktestDb: published manifest failed validation");
   }
@@ -953,6 +1189,14 @@ Status BacktestDb::register_template(const BacktestStrategyTemplate &strategy_te
   if (fingerprint == 0) {
     return Err(ErrorCode::InvalidArgument,
                "BacktestDb::register_template: invalid economic fingerprint");
+  }
+  // Lock order (detail/writer_lock.hpp): WriterLock BEFORE mu_, always --
+  // acquired here even though the id-already-registered path below may turn
+  // out to need no write, because that can only be known after `mu_` is
+  // taken, and the file lock must already be held by then.
+  auto file_lock = acquire_manifest_writer_lock(manifest_path());
+  if (!file_lock) {
+    return Err(file_lock.error());
   }
   const std::lock_guard lock(*mu_);
   const auto it = std::lower_bound(
@@ -1068,6 +1312,16 @@ Status BacktestDb::write_series(const BacktestSeriesInfo &supplied,
                "BacktestDb::write_series: caller metadata disagrees with data");
   }
 
+  // Lock order (detail/writer_lock.hpp): WriterLock BEFORE mu_. This
+  // critical section computes `next_generation` from `snapshot_` and writes
+  // a partition file NAMED after it (below) before ever reaching
+  // persist_locked -- both the generation read and the partition file's
+  // name are cross-process-racy exactly like persist_locked's own re-read,
+  // so the file lock has to span this whole section, not just the tail.
+  auto file_lock = acquire_manifest_writer_lock(manifest_path());
+  if (!file_lock) {
+    return Err(file_lock.error());
+  }
   const std::lock_guard lock(*mu_);
   const auto template_it = std::lower_bound(
       snapshot_->templates.begin(), snapshot_->templates.end(), supplied.template_id,
@@ -1418,6 +1672,23 @@ std::uint64_t backtest_series_identity(std::uint64_t template_fingerprint, std::
   const std::uint64_t run_archive_schema = ra_schema_hash();
   h = fnv_value(h, run_archive_schema);
   h = fnv_value(h, kBacktestTemplateEngineSchemaSalt);
+  // Task D1: fold the FULL engine identity -- ATX_VOL_VERSION_STRING +
+  // kBacktestEconomicsRev + ra_schema_hash(), see make_engine_id() in
+  // atx/vol/track_key.hpp -- so a change that moves the golden NAV
+  // invalidates every persisted series MECHANICALLY, through the same
+  // kBacktestEconomicsRev the D1 golden-NAV tripwire gates, instead of
+  // resting on someone remembering to hand-bump kBacktestDbEngineSchemaSalt /
+  // kBacktestTemplateEngineSchemaSalt above. Those two salts stay: they still
+  // gate the MANIFEST/PARTITION BINARY LAYOUT and the template's own
+  // encoding, which are structural changes an economics-rev fold cannot see.
+  // Folding this string is a NEW schema/generation input, not a format edit
+  // (`backtest_series_identity` was already, and remains, an opaque u64
+  // stored in the existing `run_identity_hash` column) -- so BacktestDb v1
+  // partitions stay byte- and reader-compatible; only the VALUE recomputed
+  // for a given (template, uid, sources) changes, which invalidates every
+  // series cached under the OLD recipe. That invalidation is expected: this
+  // is exactly the "no more resting on hand-bumped salts" this task closes.
+  h = fnv_string(h, make_engine_id());
   h = fnv_value(h, template_fingerprint);
   h = fnv_value(h, uid);
   const std::uint64_t count = sources.size();

@@ -104,6 +104,13 @@ add_executable(atx-vol-tests
     backtest_template_test.cpp
     backtest_db_test.cpp
     backtest_db_build_test.cpp
+    # backtest-production-lakehouse sprint, Task D3 -- appended target: the
+    # cross-process manifest writer lock (detail/writer_lock.hpp) and its
+    # BacktestDb/SurfaceDb persist_locked() retrofit. Registered
+    # UNCONDITIONALLY (unlike catalog_test.cpp below): BacktestDb/SurfaceDb
+    # are core atx-vol, compiled in every configuration, so this must be
+    # exercised in the ATX_VOL_LAKEHOUSE=OFF build too.
+    writer_lock_test.cpp
     research_db_test.cpp
     research_validation_test.cpp
     strategy_pipeline_test.cpp
@@ -125,6 +132,13 @@ add_executable(atx-vol-tests
     mag7_dispersion_backtest_test.cpp
     spy_dispersion_pnl_test.cpp
     dispersion_run_test.cpp
+    # Task E1 (backtest-lakehouse sprint) — appended target: the friction/
+    # financing/policy CLI flag seam (examples/dispersion_realism_flags.hpp)
+    # both mag7_dispersion_backtest and spy_dispersion_pnl include.
+    dispersion_realism_flags_test.cpp
+    # Task E1 fix round — appended target: the FrictionRegime stringifier seam
+    # (tools/dispersion_backtest_regime.hpp) spy_dispersion_backtest.cpp uses.
+    dispersion_backtest_regime_test.cpp
     analytics_primitives_test.cpp
     analytics_density_test.cpp
     analytics_aggregate_test.cpp
@@ -192,7 +206,44 @@ add_executable(atx-vol-tests
     bev_label_factory_gate_test.cpp
     # THEO-7 — appended target: theo engine core
     theo_test.cpp
+    # backtest-production-lakehouse sprint, Task B2 — appended target:
+    margin_test.cpp                  # Reg-T + scenario-grid margin models, engine wiring
+    # backtest-production-lakehouse sprint, Task D1 — appended target:
+    track_key_test.cpp               # content-addressed TrackKey + economics-rev tripwire
 )
+
+# backtest-production-lakehouse sprint, Task D2 — appended conditionally: the
+# Parquet track store round-trip test includes Arrow/Parquet headers directly
+# (to verify row groups / codec / sorting-columns from real file metadata) and
+# needs TrackStore::write_staging/compact() actually compiled into atx-vol, so
+# it only joins the suite when ATX_VOL_LAKEHOUSE is ON (mirrors how
+# src/track_store.cpp itself is gated, atx-vol/CMakeLists.txt).
+if(ATX_VOL_LAKEHOUSE)
+    target_sources(atx-vol-tests PRIVATE track_store_test.cpp)
+    # Task D3 -- appended conditionally alongside track_store_test.cpp: the
+    # SQLite catalog (Catalog::open/probe/register_staging/mark_compacted/
+    # record_trial/trial_stats) does not exist in the OFF build (src/
+    # catalog.cpp joins atx-vol only under this same guard, atx-vol/
+    # CMakeLists.txt). The cross-process WriterLock primitive it shares with
+    # BacktestDb/SurfaceDb is tested separately and UNCONDITIONALLY in
+    # writer_lock_test.cpp above -- that code path is core, not lakehouse-only.
+    target_sources(atx-vol-tests PRIVATE catalog_test.cpp)
+    # Task C3 -- appended conditionally alongside track_store_test.cpp/
+    # catalog_test.cpp: the cache-first sweep driver (run_sweep) needs
+    # Catalog::probe/register_staging/record_trial and TrackStore::write_staging
+    # actually compiled into atx-vol (src/sweep_driver.cpp joins only under
+    # this same guard, atx-vol/CMakeLists.txt).
+    target_sources(atx-vol-tests PRIVATE sweep_driver_test.cpp)
+    # D5 fix-round: track_compact's crash-recovery reconcile pass
+    # (research/track_compact_reconcile.hpp) -- needs Catalog::mark_compacted/
+    # list_by_status and TrackStore::compact() actually compiled into
+    # atx-vol, same gate as the three test files immediately above.
+    target_sources(atx-vol-tests PRIVATE track_compact_reconcile_test.cpp)
+    # Task D6: last_access_ts-driven GC (research/track_gc.hpp) -- needs BOTH
+    # Arrow/Parquet reading+writing AND Catalog, same gate as
+    # track_compact_reconcile_test.cpp immediately above.
+    target_sources(atx-vol-tests PRIVATE track_gc_test.cpp)
+endif()
 # backtest_bench_test.cpp was relocated to bench/backtest_throughput_bench.cpp
 # (it is a throughput benchmark, not a correctness gate).
 

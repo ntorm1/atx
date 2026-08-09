@@ -17,6 +17,7 @@ Google Benchmark is **not** a hard atx-vol dependency):
 | `atx-vol-reloc-bench` | `backtest_throughput_bench.cpp`, `american_greeks_reuse_bench.cpp`, `strangle_solver_bench.cpp` | multi-underlier backtest steps/s, FD-vs-analytic American Greeks, and the SPY strangle solver's per-eval cost breakdown (relocated out of the test suite — they measure timing, not correctness) |
 | `atx-vol-fitting-bench` | `fitting_throughput_bench.cpp`, `corpus_build_bench.cpp` | whole-surface and single-slice eSSVI calibration cost (synthetic AND one real-OPRA SPY board), the 16.5k-anchor-comparable American-IV inversion rate, and 20-board corpus build throughput |
 | `atx-vol-e2e-hotpath-bench` | `e2e_hotpath_bench.cpp` | canonical real-OPRA fit/model-mark/snapshot path plus cold, representative, and screen-with-cold-confirm SPY backtests |
+| `atx-vol-sweep-cache-bench` | `sweep_cache_bench.cpp` | `run_sweep` (Task C3 lakehouse) over a 32-variant grid, cold (empty catalog, every variant a real backtest) vs warm (already-populated catalog, every variant a cache-hit probe) — the sprint's headline cache-reuse ratio. `ATX_VOL_LAKEHOUSE`-gated (needs Catalog/TrackStore compiled in), same as `atx-vol-tests`' `sweep_driver_test.cpp` |
 
 The old `examples/*.cpp` hand-timed demos are left untouched — they are human
 demos, not gates.
@@ -339,3 +340,33 @@ $env:ATX_VOL_FIT_WORKERS=1
 ./build-rel-avx2/bin/atx-vol-reloc-bench.exe --benchmark_filter="backtest/" --benchmark_out=bench/baselines/i7-1260p-clang18-avx2-backtest-throughput.json --benchmark_out_format=json
 ./build-rel-avx2/bin/atx-vol-e2e-hotpath-bench.exe --benchmark_filter="attribution" --benchmark_out=bench/baselines/i7-1260p-clang18-avx2-e2e-attribution.json --benchmark_out_format=json
 ```
+
+## Sweep cache bench (Task E3, sprint headline number)
+
+`atx-vol-sweep-cache-bench` (`sweep_cache_bench.cpp`) — `sweep/cached_rerun/
+cold_32variant` (empty lakehouse, every one of a 32-variant grid runs a real
+backtest) vs `sweep/cached_rerun/warm_32variant_rerun` (same grid re-run
+against an already-populated lakehouse, every variant a catalog probe hit,
+zero backtests). The `cold`/`warm` mean-time RATIO — not either row's
+absolute number — is the sprint's headline claim (target: >=100x). Only
+built when `ATX_VOL_LAKEHOUSE` is ON (needs Catalog/TrackStore/sweep_driver
+actually compiled into `atx-vol`, same gate `atx-vol-tests`' own
+`sweep_driver_test.cpp` uses). Baseline: `i7-1260p-clang18-avx2-sweep-cache.json`.
+
+```
+cmake --preset rel-avx2 -DATX_BUILD_BENCH=ON -DFETCHCONTENT_BASE_DIR=C:/atx-wt/<wt>/deps/rel-avx2
+cmake --build build-rel-avx2 --target atx-vol-sweep-cache-bench
+$env:ATX_VOL_FIT_WORKERS=1
+./build-rel-avx2/bin/atx-vol-sweep-cache-bench.exe --benchmark_out=bench/baselines/i7-1260p-clang18-avx2-sweep-cache.json --benchmark_out_format=json
+```
+
+Captured 2026-08-09 on a host shared with several concurrently-active Claude
+Code agent sessions (see the checked-in baseline's own `cv_provisional_policy`
+context note for the `Get-Process` evidence and the full best-of-3 numbers).
+`cold_32variant` did not meet the <=5% CV bar in any of 3 independent runs
+(host contention, not the sweep driver) and is marked `provisional` in the
+checked-in JSON; `warm_32variant_rerun` met it in 2 of 3. The cold/warm RATIO
+itself was >=100x in all three independent runs (113x, 134x, 143x) despite
+either row's own elevated CV — common-mode host noise mostly cancels in a
+same-run ratio even when it does not cancel in one row's absolute time. See
+`task-E3-report.md` for the full 3-run table.

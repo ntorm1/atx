@@ -623,6 +623,10 @@ TEST(MultinamePipeline, NoTradeOnRollDateLeavesBookIntact) {
   ASSERT_EQ(book.lots.size(), 2u * (1u + 3u));
   const std::vector<Lot> before = book.lots; // the held book, snapshotted
   const std::uint64_t next_id_before = next_id;
+  // A2 follow-up: DispersionStrategy's NO-TRADE CONTRACT (dispersion_strategy.cpp)
+  // mirrors DeclarativeStrategy's, and tracks the same counter (IStrategy::
+  // n_steps_entry_skipped) -- 0 before the no-trade step below.
+  EXPECT_EQ(strat.n_steps_entry_skipped(), 0u);
 
   // On date 2 the surviving basket is one name < min_names(2), so the book build is
   // Unavailable — a no-trade date. And the front cohort (residual 29d) is inside
@@ -652,6 +656,8 @@ TEST(MultinamePipeline, NoTradeOnRollDateLeavesBookIntact) {
   }
   // No lots opened on a no-trade step => the monotonic id counter did not advance.
   EXPECT_EQ(next_id, next_id_before);
+  // A2 follow-up: the no-trade step is counted, exactly once.
+  EXPECT_EQ(strat.n_steps_entry_skipped(), 1u);
 }
 
 // ── S1-3a: the plan's ACTUAL gate — a HELD name goes missing mid-run ──────────
@@ -714,6 +720,10 @@ TEST(MultinamePipeline, HeldNameGoesMissingMidRunAndRunCompletes) {
   // lenient policy explicitly.
   RunConfig rc_lenient;
   rc_lenient.unpriced = UnpricedLotPolicy::ExcludeAndReport;
+  // Task A3: this gate is precisely about SURVIVING the mid-run surface gap
+  // (S1-3b, pinned below as a documented, pre-existing truncation) — NAV vs.
+  // liquidation legitimately drifts under it, so reconciliation opts out here.
+  rc_lenient.reconcile_nav = false;
   auto res = run_backtest(*clock, strat, rc_lenient);
   ASSERT_TRUE(res.has_value()) << res.error().to_string();
   ASSERT_EQ(res->size(), dates.size());
@@ -900,6 +910,9 @@ TEST(MultinamePipeline, HeldLotWithoutSurfaceIsCountedNotHidden) {
   // WS-F F1(c): ExcludeAndReport is now an explicit opt-in (the default is Error).
   RunConfig rc_lenient;
   rc_lenient.unpriced = UnpricedLotPolicy::ExcludeAndReport;
+  // Task A3: the S1-3b truncation this gate exists to COUNT is a documented,
+  // pre-existing gap, not something reconciliation should abort on here.
+  rc_lenient.reconcile_nav = false;
   auto res = run_backtest(*clock, strat, rc_lenient);
   ASSERT_TRUE(res.has_value()) << res.error().to_string();
   ASSERT_EQ(res->size(), dates.size());
@@ -1101,6 +1114,10 @@ TEST(MultinamePipeline, BookGreeksUnderCountIsReported) {
   // WS-F F1(c): ExcludeAndReport is now an explicit opt-in (the default is Error).
   RunConfig rc_lenient;
   rc_lenient.unpriced = UnpricedLotPolicy::ExcludeAndReport;
+  // Task A3: same documented S1-3b gap as the sibling gates above — the
+  // resulting NAV-vs-liquidation drift is expected, not a leak, so
+  // reconciliation opts out rather than aborting before the counts land.
+  rc_lenient.reconcile_nav = false;
   auto res = run_backtest(*clock, strat, rc_lenient);
   ASSERT_TRUE(res.has_value()) << res.error().to_string();
   ASSERT_EQ(res->size(), dates.size());
@@ -1170,6 +1187,9 @@ TEST(MultinamePipeline, GrossVegaIsUnderReportedWhenALegIsUnpriced) {
   // the whole point of this gate is the truncated (lenient) reading.
   RunConfig rc_lenient;
   rc_lenient.unpriced = UnpricedLotPolicy::ExcludeAndReport;
+  // Task A3: the whole point of this gate is the truncated (lenient) reading
+  // (S1-3b) — expected NAV-vs-liquidation drift, not a leak.
+  rc_lenient.reconcile_nav = false;
   auto res_m = run_backtest(*clock_m, strat_m, rc_lenient);
   ASSERT_TRUE(res_m.has_value()) << res_m.error().to_string();
 

@@ -30,6 +30,7 @@
 // each step's `Portfolio` at the BASE-date residual T = (expiry - base.ts)/year;
 // because the lot's `expiry_ts_ns` is fixed, `T_base - dt == T_shifted` exactly.
 
+#include <cmath> // std::isfinite — should_exercise_early
 #include <cstddef>
 #include <cstdint>
 #include <functional> // std::function — RunConfig::step_observer
@@ -54,6 +55,14 @@ namespace atx::vol {
 
 class IStrategy; // strategy.hpp — drives the strategy-aware run_backtest overload
 class SurfaceDb; // surface_db.hpp — Clock::from_surface_db source
+// atx/vol/snapshot_pool.hpp — the process-wide sealed snapshot pool (C2).
+// FORWARD-DECLARED, never included: this header is Tier-A and closed under
+// inclusion (vol_umbrella_test.cpp), and the pool is a Tier-B type (E2
+// promotion) -- #include-ing it here would pull it into Tier-A by that same
+// closure rule, which is not the intent of the promotion.
+// `RunConfig::snapshot_pool` is a non-owning pointer, so the declaration is all
+// a caller who does not use the pool ever needs.
+class SnapshotPool;
 
 // ── Timeline ────────────────────────────────────────────────────────────────
 
@@ -106,8 +115,25 @@ public:
   [[nodiscard]] std::span<const SnapshotRef> refs() const noexcept { return refs_; }
   [[nodiscard]] std::size_t size() const noexcept { return refs_.size(); }
 
+  // Task A6 (backtest-lakehouse sprint): dates from the manifest's `dates` list
+  // that `from_manifest` could NOT place a ref for -- no entry on that date had
+  // `status == CorpusFitStatus::Ok` with a non-empty `archive_path`. Ascending,
+  // matching `dates`' own order. Before this task these dates were dropped with
+  // no record at all, so the run silently spanned the gap as one ordinary step
+  // (fit-survivorship); they are always recorded now, regardless of
+  // `RunConfig::clock_gaps`, which only governs whether a non-empty list here
+  // is tolerated or refused. Always EMPTY for a clock built by
+  // `from_surface_db` (a SurfaceDb partition list has no separate
+  // "planned but not admitted" notion to compare against). `between()` carries
+  // forward only the dropped dates that fall inside the requested window, so a
+  // sliced clock's own gap accounting describes exactly what IT spans.
+  [[nodiscard]] std::span<const std::string> dropped_dates() const noexcept {
+    return dropped_dates_;
+  }
+
 private:
   std::vector<SnapshotRef> refs_;
+  std::vector<std::string> dropped_dates_;
 };
 
 // ── Archive backing (WS-ZC1) ────────────────────────────────────────────────
@@ -522,35 +548,104 @@ struct SwapAccrual {
 
 // ── EXERCISE MODEL: what this engine does and does NOT simulate (WS-F F3) ────
 //
-// EXPIRY SETTLEMENT is the ONLY exercise event. Every American lot is carried to
-// its `expiry_ts_ns` and cash-settled at intrinsic against the spot observed at
-// the exactly-matching snapshot. There is deliberately no assignment or
-// early-exercise simulation:
+// EXPIRY SETTLEMENT is the ONLY UNCONDITIONAL exercise event. Every American
+// lot is carried to its `expiry_ts_ns` and cash-settled at intrinsic against
+// the spot observed at the exactly-matching snapshot. Before Task B3
+// (backtest-lakehouse sprint) there was deliberately no assignment or
+// early-exercise simulation at all:
 //
-//   * a short ITM call over an ex-date is never assigned away;
-//   * a long deep-ITM put's optimal early exercise is never taken. Its forgone
-//     value IS carried in the mark (the pricer is American), but it is never
-//     REALIZED, so a hold-to-expiry book gives the early-exercise premium back
-//     at expiry instead of capturing it.
+//   * a short ITM call over an ex-date was never assigned away;
+//   * a long deep-ITM put's optimal early exercise was never taken. Its
+//     forgone value IS carried in the mark (the pricer is American), but it
+//     was never REALIZED, so a hold-to-expiry book gave the early-exercise
+//     premium back at expiry instead of capturing it.
 //
-// Roll-at-N-DTE strategies (the dispersion route) mostly dodge this because
-// they close well before expiry. `HoldToExpiry` / `CloseAtHorizon` DSL books do
-// NOT: read their settlement PnL as a lower bound on an optimally-exercised
-// book.
+// Task B3 closes part of that gap with `ExercisePolicy` (below), split into an
+// always-safe diagnostic and an opt-in simulation:
 //
-// Nor is there any corporate-action handling: `Lot` is immutable by design, so a
-// split in-window would change K and multiplier with no adjustment.
+//   `Advisory` (DEFAULT, behaviour-preserving): every step counts, but never
+//   converts, the lots meeting the early-exercise/assignment boundary --
+//   `BacktestResult::n_short_calls_assignable` /
+//   `n_puts_exercisable`. A default-constructed `RunConfig` is therefore
+//   BIT-IDENTICAL to the pre-B3 engine on every existing column; the two new
+//   counters are pure observation.
 //
-// This is a TRACKED DEFERRAL, not an oversight — see the sprint plan
-// §9 ("Assignment/early-exercise simulation in the backtest"). Closing it needs
-// an exercise-boundary decision rule per step, a settlement/assignment cash
-// convention, and share-delivery into the hedge ledger; that is its own design,
-// and half of it (a discrete-cash-dividend PDE American pricer) is the same
-// §9 deferral the pricing lane carries.
+//   `Simulate` (opt-in): the boundary lot is converted to the hedge SHARE
+//   ledger at INTRINSIC on the ex-dividend-preceding close (calls) or the
+//   step it first meets the carry boundary (puts) -- see
+//   `should_exercise_early` and `backtest.cpp`'s `apply_early_exercise`. The
+//   share-side economics reuse the SAME `HedgeLedger` / `FinancingConfig`
+//   machinery a strategy's own delta hedge does (Task A5): the resulting
+//   shares carry financing, discrete dividends and MTM exactly like any other
+//   hedge-ledger position from the conversion step onward. ONLY the
+//   strategy-aware overload can simulate -- it alone owns a cash/share
+//   ledger; the fixed-book (B0) overload fails closed
+//   (`ErrorCode::InvalidArgument`) if `Simulate` is requested, the same
+//   "no honest place to book it" refusal `PortfolioState::swap_lots` and
+//   `RunConfig::step_observer` already use there.
 //
-// What IS modelled, as of WS-F: discrete cash dividends on the HEDGE SHARE
-// ledger (`FinancingConfig::share_dividends`) — the leg of P1-4 that needed no
-// exercise model.
+// Roll-at-N-DTE strategies (the dispersion route) mostly dodge the underlying
+// problem because they close well before expiry. `HoldToExpiry` /
+// `CloseAtHorizon` DSL books, and any `Advisory`-policy run, do NOT: read their
+// settlement PnL as a lower bound on an optimally-exercised book.
+//
+// STILL OUT OF SCOPE (Task B3 is deliberately narrow -- YAGNI): no
+// corporate-action handling (`Lot` is immutable by design, so a split
+// in-window would change K and multiplier with no adjustment); no
+// pin/counterparty-level assignment allocation (a short position is either
+// fully converted or not at all, never partially); no continuous-dividend
+// early-exercise boundary (`Simulate`'s call lane keys off the DISCRETE
+// `FinancingConfig::share_dividends` schedule only, matching A5/F3(b)'s own
+// discrete-dividend design).
+//
+// What was already modelled, as of WS-F, independent of B3: discrete cash
+// dividends on the HEDGE SHARE ledger (`FinancingConfig::share_dividends`) —
+// the leg of P1-4 that needed no exercise model, and the schedule B3's call
+// lane reuses verbatim.
+
+// Task B3 (backtest-lakehouse sprint, target 1.1.0): governs
+// `RunConfig::exercise_policy`. See the EXERCISE MODEL block above for the
+// full behavioural contract; `Advisory` is the DEFAULT and is
+// behaviour-preserving (diagnostic counters only, never mutates the book or
+// any ledger).
+enum class ExercisePolicy : std::uint8_t {
+  Advisory = 0,
+  Simulate = 1,
+};
+
+// Task B3: the exercise/assignment decision rule, factored out as a PURE
+// function so it is unit-testable independent of the engine's per-step
+// machinery (same rationale as `MarginBreachPolicy`'s placement note below —
+// this lives in backtest.hpp rather than a dedicated header because it has no
+// Tier-B dependency to promote: every parameter is a `double`).
+//
+// `intrinsic` is the lot's current intrinsic value; a non-ITM lot
+// (`intrinsic <= 0.0`) is never exercise-optimal and this always returns
+// false for one. `extension_value` is the lot's remaining time value (mark -
+// intrinsic; must be finite and >= 0 for a sane American mark, else this
+// returns false rather than let a solver artifact drive a decision).
+// `threshold` is what the extension is compared against:
+//
+//   * a short call's assignment risk over an ex-date: the discrete forward
+//     dividend a long counterparty would capture by exercising before the
+//     ex-date (`FinancingConfig::share_dividends`, WS-F F3(b)/A5) -- the
+//     caller passes 0 (never firing) when no ex-date falls in this step's
+//     window;
+//   * a deep-ITM put's exercise opportunity, either side of the book: the
+//     interest-carry benefit of collecting the strike now instead of at
+//     expiry, `K * (1 - exp(-r*T))` -- the caller computes this from the
+//     board's own `r` and the lot's residual `T`, both already read for other
+//     per-step arithmetic (A5's financing-rate lookup, `compute_step`'s own
+//     `residual_T`).
+//
+// Exercise/assignment is optimal exactly when the remaining time value is
+// LESS than what early action would capture; a non-finite or non-positive
+// threshold never fires (there is nothing to capture).
+[[nodiscard]] inline bool should_exercise_early(double intrinsic, double extension_value,
+                                                double threshold) noexcept {
+  return intrinsic > 0.0 && std::isfinite(extension_value) && extension_value >= 0.0 &&
+         std::isfinite(threshold) && threshold > 0.0 && extension_value < threshold;
+}
 
 // ── Execution frictions + financing (Phase B2) ───────────────────────────────
 
@@ -559,7 +654,15 @@ struct SwapAccrual {
 // surface (no stored bid/ask), so the spread is a documented model. The default
 // (`SpreadKind::None`, all costs 0) reproduces the frictionless run bit-for-bit.
 struct FrictionModel {
-  enum class SpreadKind : std::uint8_t { None = 0, PriceBps = 1, VolTicks = 2 };
+  // B1 (backtest-lakehouse sprint, target 1.1.0): `QuoteSide` APPENDED at the
+  // end (same additive-enum treatment as every `RunConfig` knob this sprint
+  // adds — see the `aggregate_arity_is_v<RunConfig, 19>` note below). It fills
+  // at `mid ± f(leg_count)·half_spread` instead of charging a synthetic spread
+  // ON TOP of the model mid: `quote_lookup` supplies the recorded NBBO when the
+  // caller has one, `half_spread_bps` (the existing PriceBps knob) supplies the
+  // fallback half-spread when it does not. See `quote_lookup`,
+  // `crossing_fraction_single/_complex` below and `execute()` (backtest.cpp).
+  enum class SpreadKind : std::uint8_t { None = 0, PriceBps = 1, VolTicks = 2, QuoteSide = 3 };
   SpreadKind spread_kind{SpreadKind::None};
   double half_spread_bps{0.0}; // PriceBps: half-spread = mark * bps/1e4 (per share)
   double vol_tick{0.0};        // VolTicks: half-spread = vega * vol_tick (per share)
@@ -581,7 +684,62 @@ struct FrictionModel {
   double impact_fraction{0.0};
   double per_contract_cost{0.0};  // $ per option contract traded
   double hedge_slippage_bps{0.0}; // shares fill at S * (1 +/- bps/1e4)
+
+  // B1: one recorded two-sided quote for an option leg, returned by
+  // `quote_lookup` below. Usable only when both sides are finite, `bid > 0.0`
+  // and `ask >= bid`; anything else (including an unset `quote_lookup`) is
+  // treated exactly like an absent quote by `execute()` — it falls back to the
+  // modeled PriceBps half-spread around that fill's own model mark, so a
+  // `QuoteSide` run with no (or a broken) quote source degrades to precisely
+  // the PriceBps-modeled economics rather than a silently wrong price.
+  struct RawQuote {
+    double bid{0.0};
+    double ask{0.0};
+  };
+  // B1: optional per-fill recorded-quote source for `SpreadKind::QuoteSide`.
+  // `execute()` (backtest.cpp) calls this once per entry, roll-close, and close
+  // fill on an option leg — never for hedge shares, which keep their own
+  // `hedge_slippage_bps` — with that leg's exact contract. Unset (the default,
+  // a falsy `std::function`) means every `QuoteSide` fill takes the modeled
+  // fallback; inert under every OTHER `spread_kind`. The listed-quote route
+  // (`ListedScheduleLeg::raw_bid/raw_ask`, `listed_dispersion_schedule.hpp`) is
+  // the intended production source a caller wires in here — this field is the
+  // seam, not that wiring, which is caller-side.
+  using QuoteLookup = std::function<std::optional<RawQuote>(const OptionContract &)>;
+  QuoteLookup quote_lookup{};
+  // B1: ORATS-calibrated crossing fractions for `SpreadKind::QuoteSide`
+  // (`mid + f·half_spread`) — the sprint's feature-gap literature review reads
+  // "mid + f·half-spread, f≈0.75 single-leg / ≈0.53 four-leg". `_single` prices
+  // a fill whose COHORT (`Lot::cohort`) contributes exactly one leg to this
+  // entry/close pass; `_complex` prices every wider cohort (a straddle, a
+  // dispersion basket) — multi-leg fills cross LESS of the spread on average.
+  // Both are inert (never read) under every OTHER `spread_kind`, so leaving
+  // them at their ORATS defaults is safe even on a run that never turns
+  // `QuoteSide` on. Overridable.
+  double crossing_fraction_single{0.75};
+  double crossing_fraction_complex{0.53};
 };
+
+// B1 (backtest-lakehouse sprint, target 1.1.0): which execution-friction
+// assumption produced a `BacktestResult` — see `BacktestResult::friction_regime`
+// below, the result-scalar stamp every run carries so no artifact leaves the
+// engine without its own pricing assumption attached (a TSV/tearsheet reader
+// should never have to cross-reference the `RunConfig` that produced it to know
+// whether the NAV assumes free liquidity). Classified from `FrictionModel`
+// alone (`friction_regime_for`, backtest.cpp), NOT from realized cost, so a
+// `QuoteSide` run whose quotes all happened to fall back still reports
+// `QuoteSide` — it names the ASSUMPTION, not the outcome:
+//   Frictionless: `spread_kind == None` AND every other cost knob
+//     (`impact_fraction`, `per_contract_cost`, `hedge_slippage_bps`) is 0 — the
+//     `SpreadKind::None`, "all costs 0" combination `FrictionModel` itself
+//     documents as bit-identical to a frictionless replay (invariant I3).
+//   Modeled: any other NON-`QuoteSide` combination (`PriceBps`, `VolTicks`, a
+//     `None` run with `impact_fraction`/`per_contract_cost`/
+//     `hedge_slippage_bps` nonzero) — an assumed/synthetic spread, not an
+//     observed one.
+//   QuoteSide: `spread_kind == QuoteSide` — fills cross a recorded (or,
+//     absent one, a modeled-PriceBps-fallback) NBBO.
+enum class FrictionRegime : std::uint8_t { Frictionless = 0, Modeled = 1, QuoteSide = 2 };
 
 // WS-F F3(b) (BT-P1-4). One discrete cash dividend on one underlier's SHARES.
 // The hedge-share ledger used to accrue dividends only as a continuous
@@ -621,6 +779,25 @@ struct FinancingConfig {
   // charging both would double-count. uids with no schedule keep the proxy
   // exactly as before.
   std::vector<ShareDividend> share_dividends{};
+
+  // A5 (backtest-production-lakehouse sprint, target 1.1.0): which uid's `r`
+  // sources the cash-carry rate `finance_premium` accrues at. Before this field
+  // existed the rate always came from `MarketSnapshot::surface_at(0)` -- the
+  // first surface in ARCHIVE order, an arbitrary constituent on any multi-name
+  // corpus. 0 (the default) means "require a single-name corpus": on a base
+  // snapshot with at most one surface this reproduces the old `surface_at(0)`
+  // behaviour bit-for-bit (there is only one surface to pick), and on a
+  // multi-name corpus with no `flat_r` override it now FAILS CLOSED with an
+  // explicit config error instead of silently keying off archive order. Set an
+  // explicit uid to pin the rate source on a multi-name corpus. Ignored
+  // whenever `flat_r` is set. APPENDED (additive, Tier-A freeze amended for
+  // this sprint) -- existing fields keep their order.
+  std::uint32_t reference_uid{0};
+  // Explicit flat continuous rate for `finance_premium`, overriding any
+  // per-uid surface lookup (and therefore any board/corpus dependency)
+  // entirely. unset (the default) leaves `reference_uid` in force. APPENDED,
+  // same additive treatment as `reference_uid` above.
+  std::optional<double> flat_r{};
 };
 
 // ── Run config + result ─────────────────────────────────────────────────────
@@ -751,6 +928,84 @@ enum class MarkDomainPolicy : std::uint8_t {
   Error = 2,
 };
 
+// How the swap realized-variance lane reconciles a live lot's fixing schedule
+// (implicitly daily — `SwapLot::n_obs_total` is sized assuming one fixing per
+// NYSE session) against the clock's actual step cadence.
+//
+// A step's ACCRUAL WINDOW is `(base.ts_ns, shifted.ts_ns]`; the number of NYSE
+// trading sessions inside it ("elapsed sessions") is 1 for an ordinary daily
+// clock and >1 whenever the clock skips sessions the fixing schedule assumed
+// it would visit (a weekly clock, a corpus with gaps). The pre-fix engine
+// always booked `n_obs_done += 1` per step regardless, so a coarser-than-daily
+// clock silently overstated `annualization * Sigma r^2 / n_done` by roughly the
+// gap factor (a weekly clock ~5x).
+enum class SwapFixingCadence : std::uint8_t {
+  // FAIL CLOSED (default): every step of a live swap lot's fixing pass must
+  // observe EXACTLY 1 elapsed session. A step spanning 0 or >1 sessions is a
+  // schedule violation (`ErrorCode::SwapFixingScheduleViolation`) rather than
+  // a silently mispriced accrual.
+  RequireEverySession = 0,
+  // Opt-in: accept the clock's own step cadence AS the fixing schedule. One
+  // squared return is still booked per step (the gap's realized move is one
+  // observation, not `elapsed_sessions` of them), but `n_obs_done` advances by
+  // `elapsed_sessions` rather than by 1, so the daily-strike convention
+  // (`annualization * Sigma r^2 / n_done`) is not overstated by the gap. This
+  // is a conservative reading of a multi-session gap (one wide return spread
+  // over N accrual slots), not a reconstruction of the unobserved daily path.
+  AcceptClockAsSchedule = 1,
+};
+
+// Task A6 (backtest-lakehouse sprint): how `run_backtest` / `run_backtest_incremental`
+// react to a `Clock` whose source manifest had dates with no admitted (Ok) fit
+// -- see `Clock::dropped_dates()`. Those dates are always COUNTED now; this
+// governs only whether a non-empty `clock.dropped_dates()` is tolerated (the
+// run spans the gap as one step, same as every engine version before this
+// task) or refused outright before a single step runs.
+enum class ClockGapPolicy : std::uint8_t {
+  // Preserve the historical step sequence: the run proceeds exactly as it
+  // always has, spanning every gap as one ordinary step between the
+  // surrounding Ok dates. `BacktestResult::n_clock_dates_dropped` and
+  // `clock_dates_dropped` report the exclusion instead of leaving it
+  // invisible, but no economics number moves -- BEHAVIOUR-PRESERVING DEFAULT.
+  Accept = 0,
+  // Fail closed: refuse (`ErrorCode::InvalidArgument`) before processing a
+  // single step whenever `clock.dropped_dates()` is non-empty, naming every
+  // dropped date in the error message. The production QIS mode for a corpus
+  // that must have no undocumented gap.
+  Error = 1,
+};
+
+// Task B2 (backtest-lakehouse sprint, target 1.1.0): what a recorded row whose
+// Reg-T margin requirement (`BacktestResult::margin_required`, computed every
+// row from `atx/vol/margin.hpp`'s `regt_short_option_margin` summed over the
+// book's short option lots -- see backtest.cpp's `book_margin_required`)
+// exceeds AVAILABLE CAPITAL should do. "Available capital" is that row's cash
+// balance: `BacktestResult::cash` for the strategy overload, always 0.0 for
+// the fixed-book (B0) overload, which carries no ledger at all -- so a short
+// book under `Halt` on B0 refuses unconditionally. That is an intentional
+// fail-closed reading, not an oversight: B0 represents no funded account, and
+// `Halt` says "represent only a book capital can actually cover".
+//
+// This enum lives in backtest.hpp (Tier-A) rather than margin.hpp (Tier-B)
+// deliberately: `RunConfig` is Tier-A and Tier-A is closed under inclusion
+// (`VolUmbrella.TierAIsClosedUnderInclusion`), so a Tier-A struct may not
+// reach into a Tier-B header for one of its field's types without promoting
+// that header too -- and margin.hpp is new surface this sprint deliberately
+// keeps OUT of the frozen umbrella. See margin.hpp's own file header for the
+// one-way "engine calls into margin, never the reverse" rule this mirrors at
+// the type level.
+enum class MarginBreachPolicy : std::uint8_t {
+  // BEHAVIOUR-PRESERVING DEFAULT: `margin_required` is still computed and
+  // recorded every row (see `BacktestResult::margin_required`), but a
+  // shortfall never halts the run -- bit-identical to the pre-B2 engine, with
+  // the new column carried as a diagnostic only.
+  Ignore = 0,
+  // Fail closed: the FIRST recorded row whose margin requirement exceeds
+  // available capital aborts the run (`ErrorCode::InvalidArgument`, naming
+  // the date and the shortfall) instead of being recorded.
+  Halt = 1,
+};
+
 // One observed engine step, handed to RunConfig::step_observer immediately after
 // IStrategy::on_step returns Ok and BEFORE the transition validation / hedge /
 // execute stage. Fires once per clock step INCLUDING inception (step_index 0), in
@@ -849,11 +1104,15 @@ struct RunConfig {
   bool prefetch_snapshots{true};
   // L2 (AL-solve-wall sprint, fewer-solves): serve an expiring lot's base
   // settlement mark from the per-step mark memo (populated by the prior step's
-  // book-greeks pass at the SAME base date) instead of re-solving it. The memo'd
-  // mark is bit-identical to the settlement solve (FullGreeks mark == Marks mark,
-  // pinned by the L2 crux gate), so ON vs OFF is bit-for-bit identical output; OFF
-  // reproduces the pre-L2 solve-every-settlement behavior (and makes the
-  // DuplicateMarkSolves ledger counter observe the duplication it removes).
+  // book-greeks pass at the SAME base date) instead of re-solving it. The served
+  // mark is an ECONOMIC PARITY match to the settlement solve, not a bit-identity
+  // one: FullGreeks mark and Marks mark for the same contract agree to <=1e-10
+  // relative (~1e-13 USD) — per the L2 crux gate (`L2MarkMemoCruxFullGreeksMarkEqualsMarksMark`,
+  // backtest_exec_test.cpp) — an AVX2 batch-composition reassociation residual
+  // between FullGreeks batch (the whole book) and Marks-only batch (just the
+  // expiring lots), not a model split. BacktestDb builds force this OFF to preserve
+  // the incremental==one-shot bit-for-bit invariant (see backtest_db_build.cpp
+  // run_config()).
   bool settlement_mark_memo{true};
   // WS-F F1(d): per-recorded-row NAV-vs-liquidation reconciliation (IStrategy
   // overload only — the fixed-book overload has no cash/share ledger to
@@ -865,9 +1124,13 @@ struct RunConfig {
   //                 row's base) + hedge-share MTM + cumulative NON-CASH financing
   //
   // publishes it in `BacktestResult::nav_liquidation`, and aborts the run when it
-  // deviates from `nav` by more than `reconcile_nav_tol`. OFF by default: it is a
-  // debug/audit gate, and it costs nothing when off (one bool test per row).
-  bool reconcile_nav{false};
+  // deviates from `nav` by more than `reconcile_nav_tol`.
+  //
+  // ON by default (Task A3, BT-P1-2): NAV is production accounting, not a
+  // debug artifact, so the gate that proves it closes ships on too. A run that
+  // wants the pre-A3 bit-exact replay behavior opts out explicitly; it costs
+  // nothing when off either way (one bool test per row).
+  bool reconcile_nav{true};
   // WS-F F2 (BT-P1-1): book the ENTRY FILL SLIPPAGE — qty*multiplier*(fill -
   // model mark) — as a realized execution cost.
   //
@@ -879,13 +1142,16 @@ struct RunConfig {
   // look free. With this on, the gap is charged into `cost` (hence into NAV and,
   // exactly once, into cash) and `reconcile_nav` closes.
   //
-  // OFF by default and BIT-IDENTICAL when off: the mark used is `entry_price`
-  // itself, so the booked slippage is exactly 0.0 and the cash expression is
-  // unchanged. On, an entry whose model mark cannot be solved is a hard error
-  // rather than a silent zero. Note the modeled `FrictionModel` half-spread is
-  // ADDITIVE to this; a run using real quote-side fills normally sets
-  // `half_spread_bps`/`vol_tick` to 0 so the spread is not paid twice.
-  bool book_entry_fill_slippage{false};
+  // ON by default (Task A3, BT-P1-2): a production QIS default must show a
+  // fill-vs-mark gap, not delete it. BIT-IDENTICAL to the pre-A3 default when
+  // turned OFF (the opt-out for bit-exact replay suites): the mark used is
+  // `entry_price` itself, so the booked slippage is exactly 0.0 and the cash
+  // expression is unchanged. On, an entry whose model mark cannot be solved is
+  // a hard error rather than a silent zero. Note the modeled `FrictionModel`
+  // half-spread is ADDITIVE to this; a run using real quote-side fills
+  // normally sets `half_spread_bps`/`vol_tick` to 0 so the spread is not paid
+  // twice.
+  bool book_entry_fill_slippage{true};
   // Absolute drift tolerance for `reconcile_nav`. The two quantities are the same
   // flows summed in different orders, so the honest floor is rounding
   // (~|cash|*eps per row), not zero. Must be finite and positive.
@@ -940,9 +1206,63 @@ struct RunConfig {
   // gets exactly the old behavior; the OUTPUT does not move either way, which is
   // what makes this a default worth changing inside a release.
   std::size_t prefetch_depth{2};
+  // Task A1 (2026-08 backtest-lakehouse sprint): whether a live swap lot's
+  // fixing pass requires the clock to visit exactly one NYSE session per step
+  // (`RequireEverySession`, fail closed) or accepts the clock's own cadence as
+  // the schedule, scaling `n_obs_done` by the elapsed-session count instead of
+  // always advancing it by one (`AcceptClockAsSchedule`). See
+  // `SwapFixingCadence` above. Sprint-owner-approved additive Tier-A exception
+  // (backtest.hpp's own "new knobs append at the end" convention); this is
+  // field 18, appended last per that convention.
+  SwapFixingCadence swap_fixing_cadence{SwapFixingCadence::RequireEverySession};
+  // Task A6 (2026-08 backtest-lakehouse sprint): whether a run tolerates a
+  // `Clock` carrying a non-empty `dropped_dates()` (`Accept`, spanning the gap
+  // as one step, same as always) or refuses to run at all (`Error`). See
+  // `ClockGapPolicy` above. Same sprint-owner-approved additive Tier-A
+  // exception as `swap_fixing_cadence`; this is field 19, appended last per
+  // that convention.
+  ClockGapPolicy clock_gaps{ClockGapPolicy::Accept};
+  // Task B2 (backtest-lakehouse sprint, target 1.1.0): see `MarginBreachPolicy`
+  // above. Same sprint-owner-approved additive Tier-A exception as
+  // `swap_fixing_cadence` / `clock_gaps` before it; this is field 20, appended
+  // last per that convention. Output is bit-identical for every caller that
+  // does not set it -- `Ignore` (the default) computes and records
+  // `BacktestResult::margin_required` on every row exactly as `Halt` would,
+  // it just never turns a shortfall into an aborted run, so NAV/cash/every
+  // other column a caller already depended on is untouched.
+  MarginBreachPolicy margin_breach{MarginBreachPolicy::Ignore};
+  // Task B3 (backtest-lakehouse sprint, target 1.1.0): see `ExercisePolicy`
+  // above. Same sprint-owner-approved additive Tier-A exception as
+  // `swap_fixing_cadence` / `clock_gaps` / `margin_breach` before it; this is
+  // field 21, appended last per that convention. Output is bit-identical for
+  // every caller that does not set it -- `Advisory` (the default) only adds
+  // the two new `BacktestResult` counters (`n_short_calls_assignable`,
+  // `n_puts_exercisable`); it never mutates a lot, the cash ledger or the
+  // hedge-share ledger, so every existing column is untouched.
+  ExercisePolicy exercise_policy{ExercisePolicy::Advisory};
+  // Task C2 (backtest-lakehouse sprint, target 1.1.0): the process-wide SEALED
+  // snapshot pool this run reads its dated archives from
+  // (`atx/vol/snapshot_pool.hpp`). NON-OWNING — the pointee must
+  // outlive the run, exactly like `CancelToken`'s flag and `step_observer`'s
+  // callable, and for the same reason: a `shared_ptr` here would silently keep
+  // a process-lifetime cache alive past the sweep that owns it.
+  //
+  // NULL (the default) is TODAY'S BEHAVIOUR, bit-for-bit: the engine builds its
+  // private per-run `SnapshotCache` exactly as before, with the same subset,
+  // capacity, Sealed backing and look-ahead prefetch. Non-null routes every
+  // snapshot acquisition through the shared pool instead, so N variants over one
+  // corpus open each archive ONCE between them; the bytes are identical either
+  // way, so every column is (`BacktestExec.SnapshotPoolIsBitIdenticalToPrivateCache`).
+  //
+  // MUTUALLY EXCLUSIVE with `snapshot_cache` above: setting both is refused with
+  // InvalidArgument rather than silently ranked. And a pool run refuses
+  // `QueryCacheBuildPolicy::ReuseOnly`, which resolves each date to a fast or a
+  // cold tier depending on what some OTHER run already built — history-dependent
+  // pricing is precisely what a process-wide pool must not introduce.
+  SnapshotPool *snapshot_pool{nullptr};
 };
 
-// Drift pin (plan item 4.2). RunConfig has exactly SEVENTEEN fields. Adding,
+// Drift pin (plan item 4.2). RunConfig has exactly TWENTY-THREE fields. Adding,
 // removing or splitting one breaks this line, which is the point: it forces
 // whoever changes the struct to read the construction contract above instead of
 // appending a knob "for compatibility" with positional initializers that are no
@@ -965,8 +1285,63 @@ struct RunConfig {
 // its semantic group (the three fail-closed valuation policies), not appended at
 // the end. Its default keeps a default-constructed RunConfig bit-identical.
 //
+// 2026-08-09 backtest-lakehouse merge reconciliation: main's `mark_domain`
+// insertion (17 -> 18 above) and the five-field lakehouse append chain below
+// were developed in parallel off the same 17-field ancestor -- each branch's
+// own arity pin (18 on main, 22 on feat/backtest-lakehouse) was correct in
+// isolation but neither saw the other's field. The union RENUMBERS the
+// lakehouse chain by +1 (18->19 through 22->23) to run after `mark_domain`,
+// since `mark_domain` is an INSERT ahead of `prefetch_depth`'s position while
+// every lakehouse field APPENDS after it; the renumber changes no field's
+// position or default, only the count each step is narrated against.
+//
+// 18 -> 19 (Task A1, backtest-lakehouse sprint): `swap_fixing_cadence` APPENDED
+// at the end. Sprint-owner-approved exception to the 1.x Tier-A freeze
+// (target: 1.1.0) for this ONE additive field; see the sprint's
+// global-constraints.md amendment. Output is bit-identical for every caller
+// that does not set it (`RequireEverySession` — the default — reduces to the
+// old book-a-fixing-per-step arithmetic on any clock that genuinely visits one
+// NYSE session per step; it changes behavior only when the clock and the
+// fixing schedule actually disagree, which used to compute a silently wrong
+// answer instead of an error).
+//
+// 19 -> 20 (Task A6, backtest-lakehouse sprint): `clock_gaps` APPENDED at the
+// end. Sprint-owner-approved exception to the 1.x Tier-A freeze for this ONE
+// additive field, same as `swap_fixing_cadence` before it. Output is
+// bit-identical for every caller that does not set it (`Accept` -- the
+// default -- reduces to the pre-A6 step sequence exactly; it changes
+// behavior only when the clock actually carries a dropped date AND the
+// caller opts into `Error`, which used to be unrepresentable).
+//
+// 20 -> 21 (Task B2, backtest-lakehouse sprint): `margin_breach` APPENDED at
+// the end. Same sprint-owner-approved exception to the 1.x Tier-A freeze as
+// `swap_fixing_cadence` / `clock_gaps` before it. Output is bit-identical for
+// every caller that does not set it (`Ignore` -- the default -- still
+// populates `BacktestResult::margin_required` every row, it just never turns
+// a shortfall into an aborted run, so it changes behavior only when a book's
+// margin requirement actually exceeds available capital AND the caller opts
+// into `Halt`, which used to be unrepresentable).
+//
+// 21 -> 22 (Task B3, backtest-lakehouse sprint): `exercise_policy` APPENDED at
+// the end. Same sprint-owner-approved exception to the 1.x Tier-A freeze as
+// `swap_fixing_cadence` / `clock_gaps` / `margin_breach` before it. Output is
+// bit-identical for every caller that does not set it (`Advisory` -- the
+// default -- only populates the two new NON-WIRE result scalars; it changes
+// behavior only when a lot actually crosses the early-exercise boundary AND
+// the caller opts into `Simulate`, which used to be unrepresentable).
+//
+// 22 -> 23 (Task C2, backtest-lakehouse sprint): `snapshot_pool` APPENDED at
+// the end. Same sprint-owner-approved exception to the 1.x Tier-A freeze as
+// `swap_fixing_cadence` / `clock_gaps` / `margin_breach` / `exercise_policy`
+// before it. Output is bit-identical for every caller that does not set it
+// (`nullptr` -- the default -- builds the same private per-run SnapshotCache
+// with the same subset, capacity, Sealed backing and look-ahead the engine has
+// always built); it changes anything at all only when a caller hands the run a
+// process-wide pool, which used to be unrepresentable. The field is a
+// FORWARD-DECLARED pointer, so no Tier-A header gained a non-Tier-A include.
+//
 // BLIND SPOT: this probe pins the field COUNT, nothing else. It cannot see a
-// REORDER that leaves the count at 18 -- `aggregate_arity_is_v` (see
+// REORDER that leaves the count at 23 -- `aggregate_arity_is_v` (see
 // detail/aggregate_arity.hpp) only checks how many brace-initializer slots
 // `RunConfig{...}` accepts, with no notion of field NAMES or TYPES, so swapping
 // two existing fields (e.g. two `bool`s, or two `std::size_t`s) still compiles
@@ -981,7 +1356,7 @@ struct RunConfig {
 // multi-argument positional brace list; `git grep -n "RunConfig cfg"` sites
 // build via `RunConfig cfg;` plus `cfg.field = ...` assignment, which is
 // order-independent by construction.
-static_assert(detail::aggregate_arity_is_v<RunConfig, 18>,
+static_assert(detail::aggregate_arity_is_v<RunConfig, 23>,
               "RunConfig field count changed: update this pin, and confirm every "
               "construction site still initializes by field name.");
 
@@ -1035,6 +1410,31 @@ private:
 // stride. STATE columns (`nav`, `cash`, `gross_*`, `n_open_lots`,
 // `n_unpriced_greeks`) are the value AT the recorded row. `nav` is the cumulative
 // Σ step_total (incl. settlement) from inception = 0.
+// C1 (backtest-lakehouse sprint, target 1.1.0): a RESULT SCALAR PAIR, not a
+// row-parallel series — run-totals of the step-mark memo's settlement
+// admission decisions (see `detail::StepMarkMemo`, `src/step_mark_memo.hpp`,
+// and `compute_step`'s L2 settlement branch in backtest.cpp). An expiring
+// lot's base mark either SERVES from the memo (`settlement_memo_hits`,
+// populated by the immediately preceding step's book-greeks/execute()
+// FullGreeks pass) or falls back to a fresh Andersen-Lake solve
+// (`settlement_full_solves` — a memo miss, a stale surface-instance guard, or
+// `RunConfig::settlement_mark_memo == false`). Per-lot-per-settlement-event
+// counts (a step settling two lots adds 2, split between the two counters as
+// each lot resolves). Populated identically on BOTH `run_backtest` overloads
+// (`compute_step` is shared). Same append-only, non-wire treatment as
+// `n_steps_entry_skipped` and its siblings below: absent from
+// `kBacktestSeriesColumns` and RunArchive serialization, so `ra_schema_hash()`
+// and every TSV/CSV header and golden are untouched. Both members are always
+// 0 on a run with no expiring lots, and `settlement_memo_hits` is always 0
+// under `RunConfig::settlement_mark_memo == false`, which never consults the
+// memo.
+struct SolveLedgerSummary {
+  std::uint64_t settlement_memo_hits{0};
+  std::uint64_t settlement_full_solves{0};
+
+  [[nodiscard]] bool operator==(const SolveLedgerSummary &) const noexcept = default;
+};
+
 struct BacktestResult {
   std::vector<std::string> date;
   std::vector<std::int64_t> ts_ns;
@@ -1188,9 +1588,135 @@ struct BacktestResult {
   // parallel to `date`, and the run has already asserted
   // |nav_liquidation[i] - nav[i]| <= RunConfig::reconcile_nav_tol on every row.
   std::vector<double> nav_liquidation;
+  // Task B2 (backtest-lakehouse sprint, target 1.1.0): Reg-T margin required
+  // for this row's book -- `atx/vol/margin.hpp`'s `regt_short_option_margin`,
+  // summed over the SHORT option lots (long/flat lots need no maintenance
+  // collateral; see backtest.cpp's `book_margin_required`). Same non-wire,
+  // EMPTY-OR-ROW-PARALLEL convention as `gross_vega_abs` / `nav_liquidation`
+  // above: absent from `kBacktestSeriesColumns` and the frozen RunArchive
+  // registry, so `ra_schema_hash()`, every TSV/CSV header and every existing
+  // golden are untouched. ALWAYS COMPUTED -- unlike `nav_liquidation`, this
+  // column is not gated by a RunConfig on/off switch; `RunConfig::
+  // margin_breach` governs only whether a shortfall HALTS the run (see
+  // `MarginBreachPolicy`), never whether this column is populated, so
+  // `Ignore` (the default) still records it every row. Empty on a hand-built
+  // result, a TSV read or an archive decode, exactly like its two non-wire
+  // siblings.
+  std::vector<double> margin_required;
   // Strategy diagnostics: name -> per-recorded-row series (parallel to `date`).
   // Empty for the fixed-book overload; populated by the IStrategy overload.
   std::vector<std::pair<std::string, std::vector<double>>> signals;
+
+  // A2 (backtest-production-lakehouse sprint, target 1.1.0): a RESULT SCALAR,
+  // not a row-parallel series — one count for the whole run, copied verbatim
+  // from `IStrategy::n_steps_entry_skipped()` after the strategy-aware
+  // `run_backtest` completes (see backtest.cpp). It is NOT part of the frozen
+  // 25-column wire series set: absent from `kBacktestSeriesColumns`
+  // (backtest_series_columns.hpp) and from BacktestDb/RunArchive serialization,
+  // so `ra_schema_hash()`, every TSV/CSV header and every golden are untouched.
+  // Sprint-owner-approved additive field on this Tier-A struct (append-only;
+  // existing fields keep their order). Always 0 for the fixed-book (B0)
+  // overload, which has no strategy to ask.
+  std::uint64_t n_steps_entry_skipped{0};
+
+  // A4 (backtest-production-lakehouse sprint, target 1.1.0): a RESULT SCALAR,
+  // not a row-parallel series — a run-total count of deferred-lot settlements
+  // that could not use the expiry-date spot recorded at deferral time (see
+  // `DeferredSettlementBook` in backtest.cpp) and substituted a later,
+  // post-expiry spot instead. The substitution still books cash/explain at
+  // that stale spot — this counter only NAMES it rather than letting it drift
+  // silently. Same append-only, non-wire treatment as `n_steps_entry_skipped`
+  // above: absent from `kBacktestSeriesColumns` and RunArchive serialization,
+  // so `ra_schema_hash()` and every TSV/CSV header and golden are untouched.
+  // Always 0 under `UnpricedLotPolicy::Error`, which never defers.
+  std::uint64_t n_settlements_at_stale_spot{0};
+
+  // A5 (backtest-production-lakehouse sprint, target 1.1.0): a RESULT SCALAR,
+  // not a row-parallel series — a run-total count of STEPS (inception included)
+  // on which the daily delta-hedge overlay wanted to fill at least one uid's
+  // shares and could not, because that uid's base surface was absent
+  // (`ExcludeAndReport` only; see `ExecResult::n_unpriced_hedges` and
+  // `HedgeLedger::hedge_daily` in backtest.cpp). The skipped fill leaves that
+  // uid's hedge-share position exactly as it was — the whole point, since the
+  // pre-F1 bug flattened it "for free" at spot 0.0 instead — so this counter
+  // only NAMES the exclusion rather than letting it pass unremarked. Counts
+  // STEPS, not individual skipped fills: a step where two uids both skip still
+  // adds 1. Same append-only, non-wire treatment as `n_steps_entry_skipped` and
+  // `n_settlements_at_stale_spot` above: absent from `kBacktestSeriesColumns`
+  // and RunArchive serialization, so `ra_schema_hash()` and every TSV/CSV
+  // header and golden are untouched. Always 0 under `UnpricedLotPolicy::Error`,
+  // which aborts the run instead of skipping, and always 0 for the fixed-book
+  // (B0) overload, which has no strategy and therefore never hedges.
+  std::uint64_t n_hedge_steps_skipped{0};
+
+  // A6 (backtest-lakehouse sprint, target 1.1.0): a RESULT SCALAR, not a
+  // row-parallel series — copied verbatim from `clock.dropped_dates().size()`
+  // (see `Clock::dropped_dates`) once, before the run processes its first
+  // step. Counts dates the source manifest listed with no admitted (Ok) fit,
+  // which `Clock::from_manifest` used to drop with no record at all — the run
+  // spanned the resulting gap as one ordinary step (fit-survivorship). Same
+  // append-only, non-wire treatment as `n_steps_entry_skipped` and its
+  // siblings above: absent from `kBacktestSeriesColumns` and RunArchive
+  // serialization, so `ra_schema_hash()` and every TSV/CSV header and golden
+  // are untouched. Always 0 for a clock built by `from_surface_db`, and
+  // always 0 under `RunConfig::clock_gaps == ClockGapPolicy::Error`, which
+  // refuses the run outright rather than let a nonzero count through.
+  std::uint64_t n_clock_dates_dropped{0};
+  // A6: the actual dropped dates behind `n_clock_dates_dropped` above, in the
+  // same ascending order as `Clock::dropped_dates()` — the diagnostic detail
+  // a bare count cannot carry ("which dates"). Same non-wire, append-only
+  // treatment; empty exactly when `n_clock_dates_dropped == 0`.
+  std::vector<std::string> clock_dates_dropped{};
+
+  // B1 (backtest-lakehouse sprint, target 1.1.0): a RESULT SCALAR, not a
+  // row-parallel series — which execution-friction assumption produced this
+  // run, classified once from `RunConfig::frictions` by `friction_regime_for`
+  // (backtest.cpp) and copied onto `out` before it is returned. See
+  // `FrictionRegime` above for the three-way classification. Same
+  // append-only, non-wire treatment as `n_steps_entry_skipped` and its
+  // siblings: absent from `kBacktestSeriesColumns` and RunArchive
+  // serialization, so `ra_schema_hash()` and every TSV/CSV header and golden
+  // are untouched. Always `Frictionless` for the fixed-book (B0) overload,
+  // which never calls `execute()` and therefore never charges anything a
+  // configured `frictions` might otherwise imply.
+  FrictionRegime friction_regime{FrictionRegime::Frictionless};
+
+  // Task B3 (backtest-lakehouse sprint, target 1.1.0): RESULT SCALARS, not
+  // row-parallel series — run-totals of the early-exercise/assignment
+  // boundary checks `RunConfig::exercise_policy` governs (see
+  // `ExercisePolicy` / `should_exercise_early` in this header and
+  // `apply_early_exercise` in backtest.cpp). Each counts LOT-STEP
+  // occurrences (a lot flagged on three consecutive steps adds 3; two
+  // distinct lots flagged the same step add 2), computed identically under
+  // BOTH policies -- `Advisory` only counts, `Simulate` counts AND converts,
+  // so the two counters mean the same thing regardless of which policy
+  // produced them. Same append-only, non-wire treatment as
+  // `n_steps_entry_skipped` and its siblings above: absent from
+  // `kBacktestSeriesColumns` and RunArchive serialization, so
+  // `ra_schema_hash()` and every TSV/CSV header and golden are untouched.
+  // Populated on BOTH `run_backtest` overloads (the check itself needs no
+  // cash/share ledger, only the base/shifted boards and the lot); ALWAYS 0
+  // for a book with no ITM short calls / ITM puts, and always 0 for a run
+  // whose `FinancingConfig::share_dividends` never places an ex-date inside
+  // a held short call's step window (the calls counter has no schedule-free
+  // trigger — see `should_exercise_early`'s doc comment).
+  //
+  // `n_short_calls_assignable`: a SHORT call (`Lot::qty < 0`) going ex-
+  // dividend next session whose extension value (mark - intrinsic) is LESS
+  // than the forward dividend it would cost the long counterparty to wait —
+  // i.e. assignment risk on OUR book.
+  std::uint64_t n_short_calls_assignable{0};
+  // `n_puts_exercisable`: a deep-ITM put, EITHER side of our book, whose
+  // extension value is LESS than the interest-carry benefit of collecting
+  // the strike now (`K * (1 - exp(-r*T))`) — an early-exercise opportunity
+  // on a long put we hold, or an assignment risk on a short put we wrote;
+  // the boundary condition is the same option economics either way (see
+  // `should_exercise_early`'s doc comment), so both sides share one counter.
+  std::uint64_t n_puts_exercisable{0};
+
+  // Task C1 (backtest-lakehouse sprint, target 1.1.0): the settlement side of
+  // the L2 step-mark memo's solve ledger. See `SolveLedgerSummary` above.
+  SolveLedgerSummary solve_ledger{};
 
   [[nodiscard]] std::size_t size() const noexcept { return date.size(); }
 

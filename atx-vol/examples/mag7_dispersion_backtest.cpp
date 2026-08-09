@@ -27,6 +27,7 @@
 
 #include "atx/vol/backtest.hpp"            // Clock, RunConfig, SnapshotCache
 #include "atx/vol/research/backtest_driver.hpp"     // run_timed (the timed-run + tearsheet + stats spine)
+#include "atx/vol/track_key.hpp"  // kBacktestEconomicsRev
 #include "atx/vol/dispersion.hpp"          // MissingNamePolicy, MissingNameSpec
 #include "atx/vol/dispersion_strangle.hpp" // DispersionStrangleConfig, make_dispersion_strangle_spec
 #include "atx/vol/tools/run_report.hpp"          // MetaKv, write_* emitters, EngineRunStats
@@ -34,6 +35,7 @@
 #include "atx/vol/surface_db.hpp"          // SurfaceDb
 #include "atx/vol/tools/tearsheet.hpp"           // TearSheet
 #include "atx/vol/types.hpp"               // Result, Status
+#include "dispersion_realism_flags.hpp"    // Task E1: friction/financing/policy CLI flags
 
 using namespace atx::vol;
 namespace fs = std::filesystem;
@@ -92,6 +94,7 @@ struct Args {
   std::size_t min_names{4};
   bool frictions{false};
   unsigned threads{0}; // 0 = RunConfig default (all cores)
+  RealismArgs realism; // Task E1: financing/friction/policy overrides
 };
 
 void print_usage() {
@@ -99,7 +102,8 @@ void print_usage() {
                "usage: mag7_dispersion_backtest --db DIR [--out DIR] "
                "[--names AAPL,MSFT,GOOGL,AMZN,NVDA,META,TSLA] [--index SPY] "
                "[--theta-per-name 10.0] [--delta 0.40] [--tenor-days 90] "
-               "[--close-dte 10] [--min-names 4] [--frictions] [--threads N]\n");
+               "[--close-dte 10] [--min-names 4] [--frictions] [--threads N]%s\n",
+               std::string(kRealismUsage).c_str());
 }
 
 // Parse argv into `a`. False (unknown flag / missing required --db) -> caller
@@ -130,6 +134,8 @@ void print_usage() {
       a.frictions = true;
     } else if (arg == "--threads") {
       a.threads = static_cast<unsigned>(std::strtoul(nv(), nullptr, 10));
+    } else if (parse_realism_flag(arg, nv, a.realism)) {
+      // Task E1: financing/friction/policy flag, recognized and consumed above.
     } else {
       std::fprintf(stderr, "unknown arg: %s\n", argv[i]);
       return false;
@@ -188,7 +194,12 @@ int main(int argc, char **argv) {
   DeclarativeStrategy strat(*spec);
   RunConfig rc;
   rc.snapshot_cache = std::make_shared<SnapshotCache>();
-  rc.unpriced = UnpricedLotPolicy::ExcludeAndReport;
+  // Task E1: this used to force UnpricedLotPolicy::ExcludeAndReport here,
+  // overriding RunConfig{}'s own (already-Error, WS-F F1(c)) default -- the
+  // acceptance driver silently truncated NAV across any missing board instead
+  // of failing loud. Deleting the override lets the engine's production
+  // default stand; `--unpriced exclude` opts back into the lenient behavior
+  // below.
   rc.price.n_threads = args.threads;
   if (args.frictions) {
     // Simple nonzero default: a modest bid/ask (5 bps half-spread on mark) +
@@ -197,6 +208,16 @@ int main(int argc, char **argv) {
     rc.frictions.spread_kind = FrictionModel::SpreadKind::PriceBps;
     rc.frictions.half_spread_bps = 5.0;
     rc.frictions.per_contract_cost = 0.65;
+  }
+  // Task E1: explicit flags refine (or replace) the --frictions preset above,
+  // same "preset first, explicit keys refine" order dispersion_run.cpp's own
+  // typed config builder uses for its friction_preset spec key.
+  {
+    std::string realism_err;
+    if (!apply_realism_args(args.realism, rc, realism_err)) {
+      std::fprintf(stderr, "%s\n", realism_err.c_str());
+      return 2;
+    }
   }
 
   // The spine (Wave C): time the engine call, fold the tearsheet, capture the
@@ -239,6 +260,14 @@ int main(int argc, char **argv) {
       {"frictions", args.frictions ? "on" : "off"},
       {"missing_policy", missing_policy_str(cfg.missing.policy)},
       {"min_names", std::to_string(cfg.missing.min_names)},
+      // Task E1: every emitted artifact now names its own pricing assumption
+      // (A3/B1's `friction_regime`, classified from `RunConfig::frictions`
+      // alone -- see `BacktestResult::friction_regime`'s own comment) and the
+      // engine economics revision (D1's `kBacktestEconomicsRev`) that produced
+      // it, so a reader of series.csv/strategy_metrics.csv/engine_metrics.csv/
+      // db_stats.csv never has to cross-reference the RunConfig that made them.
+      {"friction_regime", std::string(to_string(r.friction_regime))},
+      {"economics_rev", std::to_string(kBacktestEconomicsRev)},
   };
 
   const std::string series_path = (fs::path(args.out) / "series.csv").string();
@@ -291,6 +320,7 @@ int main(int argc, char **argv) {
               "names: %s vs index %s | delta=%.2f tenor=%.0fd close=%.1fd theta/name=$%.2f/day "
               "min_names=%zu frictions=%s\n"
               "[timing] run_backtest: %.1f ms over %zu steps (%.1f steps/s)\n"
+              "[economics] friction_regime=%s economics_rev=%d\n"
               "[tearsheet] total_return=%.2f ann_return=%.2f ann_vol=%.2f sharpe=%.3f "
               "max_drawdown=%.2f hit_rate=%.3f\n"
               "[book] avg_gross_vega=%.1f avg_gross_gamma=%.4f peak_open_lots=%.0f\n"
@@ -299,9 +329,10 @@ int main(int argc, char **argv) {
               clock->refs().front().date.c_str(), clock->refs().back().date.c_str(), r.size(),
               join_csv_list(cfg.names).c_str(), cfg.index_symbol.c_str(), cfg.target_abs_delta,
               cfg.tenor_days, cfg.close_dte_days, cfg.theta_per_name_daily, cfg.missing.min_names,
-              args.frictions ? "on" : "off", wall_ms, r.size(), steps_per_s, ts.total_return,
-              ts.ann_return, ts.ann_vol, ts.sharpe, ts.max_drawdown, ts.hit_rate, ts.avg_gross_vega,
-              ts.avg_gross_gamma, peak_lots, series_path.c_str(), strat_path.c_str(),
-              engine_path.c_str(), db_stats_path.c_str());
+              args.frictions ? "on" : "off", wall_ms, r.size(), steps_per_s,
+              std::string(to_string(r.friction_regime)).c_str(), kBacktestEconomicsRev,
+              ts.total_return, ts.ann_return, ts.ann_vol, ts.sharpe, ts.max_drawdown, ts.hit_rate,
+              ts.avg_gross_vega, ts.avg_gross_gamma, peak_lots, series_path.c_str(),
+              strat_path.c_str(), engine_path.c_str(), db_stats_path.c_str());
   return 0;
 }

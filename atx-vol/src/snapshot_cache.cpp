@@ -81,6 +81,25 @@ using UidSubset = std::shared_ptr<const std::vector<std::uint32_t>>;
   return std::make_shared<const MarketSnapshot>(std::move(snapshot));
 }
 
+// ONE OS THREAD PER LOAD, AND IT IS STILL `std::async`. That cost is real — a
+// 250-date replay creates and joins 250 threads — and Task C2 (the process-wide
+// `SnapshotPool`, atx/vol/snapshot_pool.hpp, Tier-B) is what removes it for the
+// variant-parallel topology: a pooled run never reaches this function, and the
+// pool's loads run on the CALLING thread or on the persistent `PricingExecutor`,
+// creating no thread at all.
+//
+// This one was DELIBERATELY LEFT as `std::async`, and it is worth stating why so
+// the next reader does not "fix" it into a regression. `SnapshotCache::prefetch`
+// is FIRE-AND-FORGET by contract: it must return before the load finishes, which
+// is the entire look-ahead overlap `run_backtest`'s private cache is built on
+// (`Backtest.PrefetchDepthIsBitIdenticalToSingleStepLookAhead` and the
+// `private_snapshot_cache_capacity` derivation both assume it). `PricingExecutor`
+// exposes only COLLECTIVE, join-barrier dispatches (`run_blocks` / `run_ranges` /
+// `run_dynamic`) — there is no fire-and-forget submit. Routing this call through
+// it would therefore either make `prefetch` synchronous (silently deleting the
+// look-ahead) or need a new blocking-I/O submit lane on the pricing pool, whose
+// workers would then be parked in `read()` while pricing dispatches wait on them.
+// Neither is a cache change; both are new infrastructure with their own gate.
 [[nodiscard]] std::shared_future<SnapshotResult> start_load(const std::string &path,
                                                             QueryPricingTier query_pricing_tier,
                                                             UidSubset referenced_uids,

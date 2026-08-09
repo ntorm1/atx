@@ -38,6 +38,7 @@
 #include "atx/core/error.hpp"              // Err, Ok, ATX_TRY
 #include "atx/vol/backtest.hpp"            // Clock, RunConfig, SnapshotCache
 #include "atx/vol/research/backtest_driver.hpp"     // run_timed (the timed-run + tearsheet + stats spine)
+#include "atx/vol/track_key.hpp"  // kBacktestEconomicsRev
 #include "atx/vol/corpus.hpp"              // CorpusManifest, CorpusEntry (windowed clock)
 #include "atx/vol/dispersion.hpp"          // MissingNamePolicy, MissingNameSpec
 #include "atx/vol/dispersion_strangle.hpp" // DispersionStrangleConfig, make_dispersion_strangle_spec
@@ -46,6 +47,7 @@
 #include "atx/vol/tools/tearsheet.hpp"           // TearSheet, write_backtest_pnl_tsv
 #include "atx/vol/types.hpp"               // Result, Status
 #include "atx/vol/universe.hpp"            // canonical_symbol
+#include "dispersion_realism_flags.hpp"    // Task E1: friction/financing/policy CLI flags
 
 using namespace atx::vol;
 namespace fs = std::filesystem;
@@ -255,6 +257,7 @@ struct Args {
   bool hedge{true};
   bool frictions{false};
   unsigned threads{0};
+  RealismArgs realism; // Task E1: financing/friction/policy overrides
 };
 
 void usage() {
@@ -263,7 +266,8 @@ void usage() {
                "[--universe FILE | --names A,B,C] [--index SPY] "
                "[--start YYYY-MM-DD] [--end YYYY-MM-DD] [--expected-sessions FILE] "
                "[--top-n 50] [--delta 0.40] [--tenor-days 90] [--theta-per-name 10.0] "
-               "[--min-names 4] [--no-hedge] [--frictions] [--threads N]\n");
+               "[--min-names 4] [--no-hedge] [--frictions] [--threads N]%s\n",
+               std::string(kRealismUsage).c_str());
 }
 
 [[nodiscard]] bool parse_args(int argc, char **argv, Args &a) {
@@ -302,6 +306,8 @@ void usage() {
       a.frictions = true;
     } else if (arg == "--threads") {
       a.threads = static_cast<unsigned>(std::strtoul(nv(), nullptr, 10));
+    } else if (parse_realism_flag(arg, nv, a.realism)) {
+      // Task E1: financing/friction/policy flag, recognized and consumed above.
     } else {
       std::fprintf(stderr, "unknown arg: %s\n", argv[i]);
       return false;
@@ -449,12 +455,25 @@ int main(int argc, char **argv) {
   DeclarativeStrategy strat(*spec);
   RunConfig rc;
   rc.snapshot_cache = std::make_shared<SnapshotCache>();
+  // Task E1: default left at ExcludeAndReport (unchanged) -- only the mag7
+  // acceptance driver's default flips to Error; this PnL-track driver's
+  // held-to-expiry corpus is expected to have unpriced gaps at the calendar
+  // edges (see the calendar-gap audit above), so `--unpriced error` is an
+  // explicit opt-in rather than the default.
   rc.unpriced = UnpricedLotPolicy::ExcludeAndReport;
   rc.price.n_threads = args.threads;
   if (args.frictions) {
     rc.frictions.spread_kind = FrictionModel::SpreadKind::PriceBps;
     rc.frictions.half_spread_bps = 5.0;
     rc.frictions.per_contract_cost = 0.65;
+  }
+  // Task E1: explicit flags refine (or replace) the --frictions preset above.
+  {
+    std::string realism_err;
+    if (!apply_realism_args(args.realism, rc, realism_err)) {
+      std::fprintf(stderr, "%s\n", realism_err.c_str());
+      return 2;
+    }
   }
 
   // The spine (Wave C): time the engine call, fold the tearsheet, capture the
@@ -524,6 +543,11 @@ int main(int argc, char **argv) {
       {"peak_open_lots", fmt_num(peak_lots)},
       {"wall_clock_ms", fmt_num(wall_ms)},
       {"steps_per_s", fmt_num(steps_per_s)},
+      // Task E1: every emitted artifact now names its own pricing assumption
+      // + engine economics revision -- see mag7_dispersion_backtest.cpp's
+      // identical addition for the full rationale.
+      {"friction_regime", std::string(to_string(r.friction_regime))},
+      {"economics_rev", std::to_string(kBacktestEconomicsRev)},
   };
 
   const std::string tsv_path = (fs::path(args.out) / "pnl_track.tsv").string();
@@ -543,6 +567,7 @@ int main(int argc, char **argv) {
               "names: %zu vs index %s | delta=%.2f tenor=%.0fd theta/name=$%.2f/day held-to-expiry "
               "hedge=%s frictions=%s%s\n"
               "[timing] run_backtest: %.1f ms over %zu steps (%.1f steps/s) peak_lots=%.0f\n"
+              "[economics] friction_regime=%s economics_rev=%d\n"
               "[tearsheet] total_return=%.2f sharpe=%.3f ann_vol=%.2f max_drawdown=%.2f "
               "hit_rate=%.3f avg_gross_vega=%.1f\n"
               "[wrote] %s\n"
@@ -553,7 +578,9 @@ int main(int argc, char **argv) {
               missing.size(), window_narrowed ? "yes" : "no", cfg.names.size(),
               cfg.index_symbol.c_str(), cfg.target_abs_delta, cfg.tenor_days,
               cfg.theta_per_name_daily, args.hedge ? "on" : "off", args.frictions ? "on" : "off",
-              dropped_note.c_str(), wall_ms, r.size(), steps_per_s, peak_lots, ts.total_return,
+              dropped_note.c_str(), wall_ms, r.size(), steps_per_s, peak_lots,
+              std::string(to_string(r.friction_regime)).c_str(), kBacktestEconomicsRev,
+              ts.total_return,
               ts.sharpe, ts.ann_vol, ts.max_drawdown, ts.hit_rate, ts.avg_gross_vega,
               tsv_path.c_str(), tsv_path.c_str());
   return 0;

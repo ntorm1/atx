@@ -25,6 +25,7 @@
 // cost` per step, so its running sum equals the attribution sum).
 
 #include <cstddef>
+#include <cstdint>
 #include <span>
 #include <string>
 #include <string_view>
@@ -136,6 +137,15 @@ struct TearSheet {
   double avg_gross_vega{0};
   double avg_gross_gamma{0}; // mean(gross_gamma over all rows)
 
+  // ── Margin (Task B2, backtest-lakehouse sprint) ──
+  //
+  // `BacktestResult::margin_required` is EMPTY unless `run_backtest` populated
+  // it (non-wire, same convention as `gross_vega_abs` -- see that field's own
+  // comment), so a hand-built, TSV-read or archive-decoded result folds both
+  // statistics to 0 rather than divide by an absent series.
+  double return_on_margin{0};        // total_return / mean(margin_required)
+  double margin_utilization_peak{0}; // max(margin_required) over all rows
+
   // ── X5 benchmark-relative block. `has_benchmark` is false unless the sheet was
   // built by `tearsheet_with_benchmark`, so plain `tearsheet()` is unchanged. ──
   BenchmarkStats benchmark{};
@@ -165,6 +175,160 @@ struct TearSheet {
 // The per-step return series `tearsheet` folds, exposed so a caller can align a
 // benchmark to it without duplicating the `step_pnl_total` fallback rule.
 [[nodiscard]] std::vector<double> backtest_return_series(const BacktestResult& r);
+
+// ── B4: rigor tearsheet — PSR / DSR / MinTRL (Bailey & Lopez de Prado) ──────
+//
+// Selection-bias-aware Sharpe statistics, following Bailey & Lopez de Prado,
+// "The Sharpe Ratio Efficient Frontier" (2012) and "The Deflated Sharpe
+// Ratio" (2014). All three entry points below are PURE, allocation-free,
+// dependency-free (math-only: <cmath> + `atx::core::norm_cdf`) functions of
+// their scalar arguments -- no BacktestResult, no I/O, no SQLite. The driver
+// is responsible for computing `sr`/`skew`/`kurt`/`T` off its own return
+// series (this header does not prescribe HOW) and for sourcing `TrialStats`
+// from the trial catalog (Task D3, not built here).
+//
+// KURTOSIS CONVENTION (load-bearing, easy to get backwards): `kurt` below is
+// the RAW (Pearson) kurtosis gamma_4 -- a Gaussian return series has kurt ==
+// 3.0, NOT 0.0. This is the literal Bailey-LdP notation (their gamma_4 is not
+// an EXCESS kurtosis), and it is what makes the "(kurt-1)/4" term below
+// collapse to the textbook Mertens/Lo variance-of-Sharpe estimator at kurt==3
+// (skew==0 too): 1 + 0.5*SR^2. A caller holding EXCESS kurtosis (kappa, where
+// a Gaussian is 0) must pass `kappa + 3.0`, not `kappa`.
+//
+// SR/skew/kurt/T are all PER-PERIOD (non-annualized) -- annualizing SR while
+// leaving T at the per-period count double-counts the horizon; the caller
+// annualizes the RESULT (PSR/DSR are already probabilities in [0,1]) rather
+// than the inputs, exactly as `probabilistic_sharpe` documents in
+// atx-engine/eval/deflated_sharpe.hpp (an independent, engine-side
+// implementation of the same formulas this header does not depend on -- see
+// the design note on `TrialStats` below for why the two are not shared).
+
+// TrialStats — the two numbers `dsr` needs out of the trial catalog (Task
+// D3): how many independent strategy variants were tried, and the CROSS-
+// TRIAL variance of their Sharpe-ratio estimates. Plain aggregate (Rule of
+// Zero); this header does NOT link SQLite or know the catalog exists -- the
+// driver queries D3's registry and passes these two numbers in.
+struct TrialStats {
+  std::uint64_t n_trials{0}; // N: independent trials attempted (0 or 1 == "no selection")
+  double sr_variance{0.0};   // V[SR]: cross-trial variance of the Sharpe estimates; must be >= 0
+};
+
+// psr — Probabilistic Sharpe Ratio: P(true SR > `benchmark` | observed `sr`
+// and the return distribution's `skew`/`kurt` moments), Bailey-LdP (2012)
+// eq. 5:
+//
+//   PSR(benchmark) = Phi[ (sr - benchmark) * sqrt(T-1)
+//                         / sqrt(1 - skew*sr + ((kurt-1)/4)*sr^2) ]
+//
+// DOMAIN GUARDS (this is a public pure function, so preconditions are
+// enforced rather than merely documented):
+//   * `T < 2`                 -> NaN. sqrt(T-1) is 0 at T==1, which would
+//     silently return Phi(0)==0.5 for EVERY sr/benchmark pair rather than
+//     signal "no information" -- that is wrong information, not absent
+//     information, so it is refused instead.
+//   * the variance term <= 0  -> NaN. A pathological skew/kurtosis/sr
+//     combination can drive `1 - skew*sr + ((kurt-1)/4)*sr^2` to <= 0, where
+//     its square root is undefined; propagating a NaN/inf PSR from there
+//     silently would be worse than refusing up front.
+[[nodiscard]] double psr(double sr, double skew, double kurt, std::size_t T,
+                         double benchmark) noexcept;
+
+// dsr — Deflated Sharpe Ratio: `psr` evaluated at SR0, the EXPECTED MAXIMUM
+// Sharpe that `trials.n_trials` independent random trials (each with Sharpe
+// variance `trials.sr_variance`) would have produced by pure chance
+// (Bailey-LdP 2014 Sec 3.3, the Gumbel-limit approximation to E[max] of N
+// standard normals rescaled by the per-trial Sharpe std):
+//
+//   SR0 = sqrt(V[SR]) * [ (1-gamma)*Z^-1(1 - 1/N) + gamma*Z^-1(1 - 1/(N*e)) ]
+//   DSR = psr(sr, skew, kurt, T, SR0)
+//
+// gamma = 0.5772156649015329 (Euler-Mascheroni constant).
+//
+// DOMAIN GUARDS:
+//   * `trials.n_trials <= 1`     -> SR0 collapses to 0.0 ("no selection", the
+//     benchmark of a SINGLE trial is nothing to select against), so
+//     `dsr(...)` reduces to `psr(sr, skew, kurt, T, 0.0)`. This is an
+//     explicit guard, not incidental: Z^-1(1 - 1/N) diverges to -infinity at
+//     N<=1, and `sqrt(V)==0` (a common TrialStats default) would otherwise
+//     produce the silent NaN `0 * -infinity`.
+//   * `trials.sr_variance < 0`   -> NaN. A variance cannot be negative; this
+//     is a caller/catalog bug, not a "collapse to 0" case like N<=1.
+//   * the underlying `psr` guards (T < 2, variance term <= 0) apply
+//     unchanged, since `dsr` is defined entirely in terms of `psr`.
+[[nodiscard]] double dsr(double sr, double skew, double kurt, std::size_t T,
+                         TrialStats trials) noexcept;
+
+// min_trl — Minimum Track Record Length: the smallest (real-valued) T at
+// which `psr(sr, skew, kurt, T, benchmark)` reaches confidence `alpha`,
+// solved directly from the PSR formula for T (Bailey-LdP 2012 eq. 10):
+//
+//   MinTRL = 1 + [1 - skew*sr + ((kurt-1)/4)*sr^2] * (Z^-1(alpha) / (sr-benchmark))^2
+//
+// The result is a REAL number of periods (fractional) -- a caller wanting
+// "sessions needed" takes `std::ceil` of it; `psr` itself only accepts an
+// integer T, so this closed form is the direct way to answer "how long".
+//
+// DOMAIN GUARDS:
+//   * `alpha` outside (0, 1)   -> NaN (Z^-1 is undefined there).
+//   * the variance term <= 0  -> NaN, same guard as `psr`.
+//   * `sr == benchmark`       -> NOT specially guarded; IEEE arithmetic
+//     already gives the right answer without one. The numerator
+//     Z^-1(alpha)/0 is +-infinity for every alpha != 0.5 (a ZERO effect size
+//     genuinely needs an INFINITE track record to confirm at any nontrivial
+//     confidence -- that is the correct answer, not a bug to mask), and at
+//     alpha == 0.5 the 0/0 is NaN (PSR(sr,...,T,benchmark) is 0.5 for EVERY
+//     T when sr==benchmark, so "the smallest T reaching confidence 0.5" is
+//     not a single well-defined number -- NaN is the honest answer there
+//     too). Both fall out of the formula unassisted.
+[[nodiscard]] double min_trl(double sr, double skew, double kurt, double benchmark,
+                             double alpha) noexcept;
+
+// ── B4: attribution residual alarm ──────────────────────────────────────────
+//
+// `pnl_unexplained` is the pure higher-order Taylor REMAINDER against the
+// eight Greek attribution axes (see `PortfolioPricer`'s own doc comment on
+// the column, and `pnl_attribution.hpp`'s "unexplained = PnlFrame's Taylor
+// residual, verbatim"). A mismarked or wrong-signed greek -- stale vega, a
+// swapped delta/gamma column, a corrupted charm feed -- makes the OTHER eight
+// axes individually plausible while the remainder against them blows up;
+// this is the audit that catches that failure mode, since none of the
+// existing `attr_*` totals in `TearSheet` isolate it on their own (they are
+// whole-run sums, not a rolling quality check).
+struct ResidualAlarm {
+  bool tripped{false};               // true iff any window's ratio exceeded `tolerance`
+  double worst_ratio{0.0};           // max windowed |unexplained|/gross seen; 0 if no window formed
+  std::size_t worst_window_start{0}; // row index the worst window starts at (0 if none formed)
+};
+
+// Pure fold over `r`'s eight Greek columns + `pnl_unexplained`. For every
+// window of `window` CONSECUTIVE rows (row 0 included -- inception's PnL is
+// structurally 0 so it never contributes), forms
+//
+//   ratio = Sigma|pnl_unexplained| / Sigma(|pnl_delta|+|pnl_gamma|+|pnl_vega|
+//                                         +|pnl_vanna|+|pnl_volga|+|pnl_theta|
+//                                         +|pnl_rho|+|pnl_charm|)
+//
+// over that window, and trips when `ratio > tolerance` for ANY window.
+// `worst_ratio`/`worst_window_start` report the single worst window even
+// when it does not trip, so a caller can watch the audit trend toward the
+// tolerance before it fires. `gross` is deliberately the eight GREEK axes
+// only -- settlement/shares/financing/cost are execution/ledger flows, not
+// part of the Taylor expansion `pnl_unexplained` is the remainder of, so
+// mixing them in would dilute the ratio with activity the residual was never
+// measuring the quality of.
+//
+// DEGENERATE INPUTS (fail to the zero-initialized, non-tripped result rather
+// than read out of bounds or divide by zero):
+//   * `window == 0`, or fewer than `window` recorded rows -- no complete
+//     window can be formed.
+//   * any of the nine columns not sized to `r.size()` -- a hand-built or
+//     partially-populated result; this is an ALWAYS-ON release-build guard
+//     (not a debug assert), since reading past a short column would be UB in
+//     every build.
+//   * a window whose gross sum is 0 (a perfectly flat book) contributes
+//     ratio 0 -- there is no Greek activity to have mismarked.
+[[nodiscard]] ResidualAlarm unexplained_alarm(const BacktestResult& r, std::size_t window,
+                                              double tolerance) noexcept;
 
 // REVIEW C-6. The DATES of the `backtest_return_series` observations, so a
 // benchmark can be joined to the strategy BY DATE rather than by position.

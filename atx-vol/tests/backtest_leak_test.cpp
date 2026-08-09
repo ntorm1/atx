@@ -224,6 +224,14 @@ TEST(BacktestLeak, HedgeAtMissingSurfaceSkipsInsteadOfFreeFlatten) {
 
   RunConfig cfg;
   cfg.unpriced = UnpricedLotPolicy::ExcludeAndReport;
+  // Task A3: this fixture's whole point is the surface gap (an INTENTIONAL
+  // unpriced hole under the lenient policy), so NAV-vs-liquidation legitimately
+  // drifts here — exactly the drift
+  // `NavLiquidationReconciliationObservesTheExcludeAndReportDrift` asserts
+  // reconciliation aborts on. That property is orthogonal to what THIS gate
+  // measures (skip vs. free-flatten), so it opts out rather than aborting
+  // before the skip can be observed.
+  cfg.reconcile_nav = false;
   const auto r = run_backtest(*clock, strat, cfg);
   ASSERT_TRUE(r.has_value()) << r.error().to_string();
   ASSERT_EQ(r->size(), static_cast<std::size_t>(kDates));
@@ -313,6 +321,11 @@ TEST(BacktestLeak, DefaultUnpricedPolicyIsErrorNotSilentTruncation) {
   // The old behavior stays reachable, explicitly.
   RunConfig lenient;
   lenient.unpriced = UnpricedLotPolicy::ExcludeAndReport;
+  // Task A3: same intentional-gap fixture as the hedge gate above — the
+  // resulting NAV-vs-liquidation drift is real, expected, and asserted
+  // separately (`NavLiquidationReconciliationObservesTheExcludeAndReportDrift`);
+  // this gate only cares that the exclusion path actually fired.
+  lenient.reconcile_nav = false;
   GapStrategy strat2{kUidB, 150.0, expiry, HedgeSpec{}, /*close_step=*/0};
   const auto ok = run_backtest(*clock, strat2, lenient);
   ASSERT_TRUE(ok.has_value()) << ok.error().to_string();
@@ -349,6 +362,13 @@ TEST(BacktestLeak, NavLiquidationReconciliationHoldsOnACleanHedgedFinancedRun) {
   cfg.frictions.hedge_slippage_bps = 1.0;
   cfg.financing.initial_cash = 1.0e6;
   cfg.financing.finance_premium = true;
+  // A5: this corpus carries two names (AAA, BBB); an ambiguous multi-name
+  // financing reference now fails closed, so the source must be explicit.
+  // AAA is archive-index 0 (`make_gap_corpus` writes it first) -- pinning it
+  // here reproduces the pre-A5 `surface_at(0)` rate this test always used,
+  // bit-for-bit. Reconciliation itself does not depend on which valid
+  // reference is chosen; this is the same-value choice, not a requirement.
+  cfg.financing.reference_uid = kUidA;
   cfg.financing.borrow_rate = 0.005;
   cfg.financing.shares_carry = true;
 

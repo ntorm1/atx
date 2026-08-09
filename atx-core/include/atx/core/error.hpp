@@ -45,6 +45,12 @@ enum class ErrorCode : u16 {
   // for, and callers routinely want to treat it as success. Appended last so
   // no existing enumerator's `u16` value moves.
   Cancelled,
+  // atx-vol backtest (Task A1, backtest-lakehouse sprint): a live swap lot's
+  // fixing pass observed a clock step whose elapsed NYSE-session count
+  // disagreed with the lot's implicitly-daily fixing schedule, under
+  // `atx::vol::SwapFixingCadence::RequireEverySession`. Appended last so no
+  // existing enumerator's `u16` value moves (same discipline as `Cancelled`).
+  SwapFixingScheduleViolation,
 };
 
 [[nodiscard]] constexpr std::string_view to_string(ErrorCode code) noexcept {
@@ -73,6 +79,8 @@ enum class ErrorCode : u16 {
     return "ParseError";
   case ErrorCode::Cancelled:
     return "Cancelled";
+  case ErrorCode::SwapFixingScheduleViolation:
+    return "SwapFixingScheduleViolation";
   }
   return "Unrecognized"; // unreachable for valid enumerators
 }

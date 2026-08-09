@@ -3022,6 +3022,12 @@ TEST(CorpusBuildSession, SyntheticThirteenNameThreeDateBreadthScoreboard) {
   // date drops 4 of 5 names) and asserts the EXCLUSION counts below, so it must
   // opt into the lenient policy explicitly.
   serial_cfg.unpriced = UnpricedLotPolicy::ExcludeAndReport;
+  // Task A3: the below-minimum-survivor regime this scoreboard deliberately
+  // drives is an intentional, documented exclusion (asserted below), not an
+  // accounting leak — NAV-vs-liquidation legitimately drifts under it, so
+  // reconciliation (default-on) is opted out here rather than aborting before
+  // the exclusion counts can be observed.
+  serial_cfg.reconcile_nav = false;
   DispersionStrategy serial_strategy{universe, dispersion_cfg};
   auto serial = run_backtest(*clock, serial_strategy, serial_cfg);
   ASSERT_TRUE(serial.has_value()) << serial.error().to_string();
