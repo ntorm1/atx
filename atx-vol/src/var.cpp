@@ -8,6 +8,7 @@
 #include <exception>
 #include <limits>
 #include <new>
+#include <numeric>
 #include <optional>
 #include <string>
 #include <tuple>
@@ -15,6 +16,7 @@
 #include <utility>
 #include <vector>
 
+#include "atx/core/datetime.hpp"
 #include "atx/core/error.hpp"
 #include "atx/core/hash.hpp"
 #include "atx/vol/detail/pricing_executor.hpp"
@@ -48,7 +50,95 @@ constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
          valid_query_execution(config.valuation_execution) &&
          (config.projection_solve_policy == OptionDeltaSolvePolicy::Direct ||
           config.projection_solve_policy == OptionDeltaSolvePolicy::FastScreenColdConfirm ||
-          config.projection_solve_policy == OptionDeltaSolvePolicy::CrossSectionalColdConfirm);
+          config.projection_solve_policy == OptionDeltaSolvePolicy::CrossSectionalColdConfirm) &&
+         std::isfinite(config.max_restrike_abs_log_moneyness) &&
+         config.max_restrike_abs_log_moneyness > 0.0 &&
+         (config.base_mark_source == VarBaseMarkSource::DedicatedPricePass ||
+          config.base_mark_source == VarBaseMarkSource::HarvestedFromSolver);
+}
+
+// Whether THIS config may reuse the cross-sectional solver's accepted-strike
+// cold price as the base mark instead of running the dedicated EvalField::Price
+// pass. Deliberately permissive rather than a config rejection: a caller on a
+// Direct/FastScreen policy, or one that opted valuation into a configured marks
+// accelerator, keeps today's numbers instead of failing to construct.
+//
+// The policy clause is load-bearing beyond mere admissibility: evaluate_scenario
+// and evaluate_scenario_batched both downgrade a failing scenario by rewriting
+// projection_solve_policy to FastScreenColdConfirm, so a downgraded scenario
+// automatically stops harvesting and prices its own marks on the scalar route.
+// The downgrade path needs no knob-awareness of its own.
+[[nodiscard]] bool harvest_base_marks(const VarEvaluationConfig &config) noexcept {
+  return config.base_mark_source == VarBaseMarkSource::HarvestedFromSolver &&
+         config.projection_solve_policy == OptionDeltaSolvePolicy::CrossSectionalColdConfirm &&
+         config.valuation_execution == QueryExecution::ColdReference;
+}
+
+// I4 diagnostic_flags bits (VarLegFrame): base/shifted tenor extrapolation and
+// a restrike-root early-warning band. A root already beyond
+// max_restrike_abs_log_moneyness never reaches this helper -- it is rejected
+// (InvalidDelta) before any frame is populated, and poison_leg zeroes
+// diagnostic_flags along with everything else.
+constexpr std::uint8_t kDiagBaseTenorExtrapolated = 0x1u;
+constexpr std::uint8_t kDiagShiftedTenorExtrapolated = 0x2u;
+constexpr std::uint8_t kDiagRestrikeNearBound = 0x4u;
+
+// Shared by every VarLegFrame-producing path (evaluate_option_leg's scalar
+// resolve and evaluate_option_leg_resolved's cross-sectional resolve both
+// terminate in finish_option_leg) so aggregate-vs-retained parity and
+// thread-count bit-invariance hold trivially: there is exactly one place this
+// is computed.
+[[nodiscard]] std::uint8_t option_diagnostic_flags(const SurfaceRef &base,
+                                                   const SurfaceRef &shifted, double base_time,
+                                                   double shifted_time, double log_moneyness,
+                                                   double max_abs_log_moneyness) noexcept {
+  std::uint8_t flags = 0;
+  if (base.extrapolates_tenor(base_time)) {
+    flags |= kDiagBaseTenorExtrapolated;
+  }
+  if (shifted.extrapolates_tenor(shifted_time)) {
+    flags |= kDiagShiftedTenorExtrapolated;
+  }
+  if (std::isfinite(log_moneyness) && std::fabs(log_moneyness) > 0.8 * max_abs_log_moneyness) {
+    flags |= kDiagRestrikeNearBound;
+  }
+  return flags;
+}
+
+// SurfaceDb partition keys are canonical "YYYY-MM-DD" (Clock's own contract:
+// backtest.hpp's from_surface_db). Parsed into a proleptic-Gregorian day
+// ordinal purely for calendar-day gap arithmetic (I1) -- never for calendar
+// validity, since these keys are produced upstream, not user input. A
+// malformed key (should not occur) returns 0 so a gap computed against it
+// stays finite and the guard fails toward NOT skipping.
+[[nodiscard]] std::int64_t session_date_ordinal(std::string_view date) noexcept {
+  if (date.size() != 10u || date[4] != '-' || date[7] != '-') {
+    return 0;
+  }
+  std::int64_t year = 0;
+  std::int64_t month = 0;
+  std::int64_t day = 0;
+  for (std::size_t i = 0; i < 4u; ++i) {
+    if (date[i] < '0' || date[i] > '9')
+      return 0;
+    year = year * 10 + (date[i] - '0');
+  }
+  for (std::size_t i = 5; i < 7u; ++i) {
+    if (date[i] < '0' || date[i] > '9')
+      return 0;
+    month = month * 10 + (date[i] - '0');
+  }
+  for (std::size_t i = 8; i < 10u; ++i) {
+    if (date[i] < '0' || date[i] > '9')
+      return 0;
+    day = day * 10 + (date[i] - '0');
+  }
+  if (month < 1 || month > 12 || day < 1 || day > 31) {
+    return 0;
+  }
+  return atx::core::time::days_from_civil(static_cast<std::int32_t>(year),
+                                          static_cast<std::uint32_t>(month),
+                                          static_cast<std::uint32_t>(day));
 }
 
 [[nodiscard]] std::uint64_t nonzero_hash(const void *data, std::size_t size) noexcept {
@@ -67,23 +157,51 @@ constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
              : static_cast<std::uint32_t>(value);
 }
 
+// Execution-context count a dispatch over `count` items at `requested_threads`
+// will actually use: 0 requests the full pool (executor.size() + 1, caller
+// included), any explicit request clamps DOWN to that capacity and to `count`
+// (never more contexts than items). Shared by run_balanced_ranges (the static
+// partition) and replay_into's PricingExecutor::run_dynamic dispatch (Task 8),
+// so both scheduling strategies agree on how many workers a given
+// (count, requested_threads) pair resolves to. It is also a safe UPPER BOUND
+// on run_dynamic's stable worker_id range even where the executor's own
+// inline/nested rules shrink the real dispatch further (that only ever
+// produces FEWER distinct worker_ids, all still < this count) -- so sizing a
+// per-worker scratch vector to this count is always safe.
+[[nodiscard]] unsigned resolved_worker_count(std::size_t count,
+                                             unsigned requested_threads) noexcept {
+  if (count == 0u) {
+    return 0u;
+  }
+  const unsigned capacity = pricing_executor().size() + 1u;
+  unsigned resolved = requested_threads == 0u ? capacity : std::min(requested_threads, capacity);
+  if (resolved == 0u) {
+    resolved = 1u;
+  }
+  if (static_cast<std::size_t>(resolved) > count) {
+    resolved = static_cast<unsigned>(count);
+  }
+  return resolved;
+}
+
+// The static contiguous-range scheduler. Splits [0, count) into
+// `resolved_worker_count` CONTIGUOUS blocks and hands each to a worker via
+// run_blocks, so a worker's range is always ascending and non-overlapping.
+// Two callers remain after Task 8: run_historical_var's loader loop (below)
+// -- its `base = std::move(shifted)` snapshot chaining requires contiguity
+// and the loop is IO-bound anyway, so it was deliberately left off
+// run_dynamic -- and replay_into_static_scheduling_for_test, which freezes
+// this scheduling strategy purely so the swap to run_dynamic in replay_into
+// (the production scenario-evaluation entry point) can be pinned against it.
 template <class F>
 void run_balanced_ranges(std::size_t count, unsigned requested_threads, F &&body) {
   if (count == 0u) {
     return;
   }
-  PricingExecutor &executor = pricing_executor();
-  const unsigned capacity = executor.size() + 1u;
-  unsigned ranges = requested_threads == 0u ? capacity : std::min(requested_threads, capacity);
-  if (ranges == 0u) {
-    ranges = 1u;
-  }
-  if (static_cast<std::size_t>(ranges) > count) {
-    ranges = static_cast<unsigned>(count);
-  }
+  const unsigned ranges = resolved_worker_count(count, requested_threads);
   const std::size_t quotient = count / static_cast<std::size_t>(ranges);
   const std::size_t remainder = count % static_cast<std::size_t>(ranges);
-  executor.run_blocks(ranges, ranges, [&](std::size_t range_index) {
+  pricing_executor().run_blocks(ranges, ranges, [&](std::size_t range_index) {
     const std::size_t lo = range_index * quotient + std::min(range_index, remainder);
     const std::size_t hi = lo + quotient + (range_index < remainder ? 1u : 0u);
     body(lo, hi);
@@ -203,6 +321,11 @@ required_uids(std::span<const VarPosition> positions) {
 struct SnapshotLoad {
   std::optional<MarketSnapshot> snapshot{};
   VarLegStatus failure{VarLegStatus::SurfaceUnavailable};
+  // Set when `failure` stems from a load error other than a genuinely absent
+  // surface (corrupt/truncated archive, I/O error) -- a structural fault the
+  // caller must classify as VarScenarioStatus::ArchiveError, not
+  // MarketUnavailable, regardless of VarScenarioFailurePolicy ([solver] F4).
+  bool archive_error{false};
 };
 
 struct NormalizedVarLeg {
@@ -268,7 +391,16 @@ struct OptionAnchorKeyHash {
   Result<MarketSnapshot> loaded = MarketSnapshot::load(ref.archive_path, config.query_pricing_tier,
                                                        uids, config.archive_backing);
   if (!loaded) {
-    return {};
+    // NotFound is the "archive genuinely has nothing at this uid" shape
+    // (matching validate_snapshot's own NotFound -> SurfaceUnavailable
+    // mapping below); anything else here (IoError, a corrupt/truncated
+    // archive's ParseError, ...) is an infrastructure fault, not an absent
+    // market -- classify it distinctly so ExcludeFromDistribution cannot
+    // silently absorb it.
+    SnapshotLoad result;
+    result.failure = VarLegStatus::SurfaceUnavailable;
+    result.archive_error = loaded.error().code() != ErrorCode::NotFound;
+    return result;
   }
   const Status validation = validate_snapshot(*loaded, uids, config.provenance_policy);
   if (!validation) {
@@ -442,6 +574,9 @@ struct ResolvedVarContract {
   OptionContract contract{};
   std::int64_t expiry_ts_ns{0};
   double base_delta{0.0};
+  // log(strike / base-surface forward at contract.T); NaN if the forward was
+  // unavailable. I4's restrike wing-bound check reads this.
+  double log_moneyness{0.0};
   std::uint64_t fingerprint{0};
 };
 
@@ -476,6 +611,9 @@ struct ResolvedVarContract {
   resolved.expiry_ts_ns = projected->definition.expiry_ts_ns;
   resolved.base_delta = projected->achieved_delta;
   resolved.fingerprint = projected->definition.fingerprint;
+  resolved.log_moneyness = finite_positive(projected->forward)
+                               ? std::log(resolved.contract.K / projected->forward)
+                               : kNaN;
   return std::isfinite(resolved.base_delta) &&
          std::fabs(std::fabs(resolved.base_delta) - leg.target_abs_delta) <= config.delta_tolerance;
 }
@@ -485,10 +623,25 @@ struct VarBatchScratch {
   std::vector<double> base_time{};
   std::vector<double> shifted_time{};
   std::vector<Side> side{};
+  std::vector<double> base_iv{};
   std::vector<double> shifted_iv{};
   std::vector<double> base_price{};
   std::vector<double> shifted_price{};
+  // VarBaseMarkSource::HarvestedFromSolver only: the cold American mark
+  // solve_american_delta_batch already computed at each leader slot's accepted
+  // strike. Filled by resolve_group_contracts_cross_sectional and read by BOTH
+  // valuation routes, which is what makes aggregate-vs-retained base-mark parity
+  // structural rather than coincidental. Left untouched (and unread) under
+  // DedicatedPricePass.
+  std::vector<double> harvested_base_price{};
   std::vector<double> base_delta{};
+  std::vector<double> log_moneyness{};
+  // Either-side tenor extrapolation (I3), computed once per slot while
+  // base/shifted SurfaceRefs are already in scope (the group-resolution
+  // loops below) so the aggregate route's per-leg finalization can fold it
+  // into VarScenarioFrame::n_tenor_extrapolated without a second surface
+  // lookup or materializing a VarLegFrame.
+  std::vector<std::uint8_t> tenor_extrapolated{};
   std::vector<double> base_spot{};
   std::vector<double> shifted_spot{};
   std::vector<std::uint64_t> fingerprint{};
@@ -513,10 +666,14 @@ template <class PreparedState>
   scratch.base_time.resize(count);
   scratch.shifted_time.resize(count);
   scratch.side.resize(count);
+  scratch.base_iv.resize(count);
   scratch.shifted_iv.resize(count);
   scratch.base_price.resize(count);
   scratch.shifted_price.resize(count);
+  scratch.harvested_base_price.resize(count);
   scratch.base_delta.resize(count);
+  scratch.log_moneyness.resize(count);
+  scratch.tenor_extrapolated.resize(count);
   scratch.base_spot.resize(count);
   scratch.shifted_spot.resize(count);
   scratch.fingerprint.resize(count);
@@ -584,10 +741,16 @@ template <class PreparedState>
   const std::span<Status> row_status =
       std::span<Status>{scratch.solve_status}.subspan(group.begin, count);
 
+  // Under HarvestedFromSolver the solve additionally hands back the cold mark
+  // at each accepted strike -- the value the dedicated base Price pass would
+  // otherwise recompute. An empty span keeps the solver's harvest branches off
+  // entirely under DedicatedPricePass.
+  const std::span<double> harvested =
+      harvest_base_marks(config) ? doubles(scratch.harvested_base_price) : std::span<double>{};
   const Status solved = solve_american_delta_batch(
       base, const_doubles(scratch.solve_t), sides, const_doubles(scratch.solve_target),
       config.delta_tolerance, scratch.delta_scratch, doubles(scratch.strike),
-      doubles(scratch.base_delta), evaluations, row_status);
+      doubles(scratch.base_delta), evaluations, row_status, harvested);
   if (!solved) {
     return false;
   }
@@ -618,6 +781,13 @@ template <class PreparedState>
     definition.expiry_ts_ns = scratch.solve_expiry[slot];
     definition.multiplier = leg.multiplier;
     scratch.fingerprint[slot] = projected_definition_fingerprint(definition);
+    // scratch.delta_scratch was just (re)sized to this group's row count by
+    // solve_american_delta_batch above, so it is indexed locally from
+    // group.begin -- forward[i] is the seed-time F(T) for local row i,
+    // populated regardless of which internal pass converged that row.
+    const double forward = scratch.delta_scratch.forward[slot - group.begin];
+    scratch.log_moneyness[slot] =
+        finite_positive(forward) ? std::log(scratch.strike[slot] / forward) : kNaN;
   }
   return true;
 }
@@ -651,6 +821,16 @@ resolve_group_window_cross_sectional(const PreparedState &impl, const VarOptionG
     scratch.shifted_time[slot] = shifted_time;
     scratch.base_spot[slot] = base.pricing().S;
     scratch.shifted_spot[slot] = shifted.pricing().S;
+    // I3, review fix round 1: both extrapolates_tenor calls read the
+    // surface's already-resolved TenorDomain (O(1), no fresh curve
+    // resolve) -- cheap enough to compute unconditionally here, shared by
+    // BOTH the retained cross-sectional route (evaluate_scenario) and the
+    // aggregate route (evaluate_scenario_batched), since they both funnel
+    // through this one function.
+    scratch.tenor_extrapolated[slot] = (base.extrapolates_tenor(scratch.base_time[slot]) ||
+                                        shifted.extrapolates_tenor(shifted_time))
+                                           ? 1u
+                                           : 0u;
   }
   return true;
 }
@@ -661,19 +841,48 @@ resolve_group_window_cross_sectional(const PreparedState &impl, const VarOptionG
 // (or re-resolves) the contract here -- that is entirely their own
 // responsibility; this function trusts `contract`/`base_delta`/`fingerprint`
 // as given.
+//
+// `harvested_base_mark`, when engaged, REPLACES this function's own base
+// EvalField::Price evaluation with the cold mark the cross-sectional solver
+// already produced at `contract.K` (VarBaseMarkSource::HarvestedFromSolver).
+// Only evaluate_option_leg_resolved ever engages it, and only with the value
+// the aggregate route reads from the same scratch slot. A non-finite engaged
+// value is a PricingError exactly as a failed evaluation would be -- it never
+// silently falls back to computing the mark, which would reintroduce the pass
+// this knob exists to delete and hide the failure.
 [[nodiscard]] VarLegStatus
 finish_option_leg(const NormalizedVarLeg &leg, const SurfaceRef &base, const SurfaceRef &shifted,
                   double base_spot, double shifted_spot, const OptionContract &contract,
-                  double base_delta, double shifted_time, std::uint64_t fingerprint,
-                  const VarEvaluationConfig &config, VarLegFrame &frame) {
-  const PricedSurface::FusedResult base_evaluation =
-      base.evaluate(contract.K, contract.T, contract.side, PricedSurface::EvalField::Price, false,
-                    config.valuation_execution);
-  if (!base_evaluation.status || !std::isfinite(base_evaluation.price)) {
+                  double base_delta, double shifted_time, double log_moneyness,
+                  std::uint64_t fingerprint, const VarEvaluationConfig &config, VarLegFrame &frame,
+                  std::optional<double> harvested_base_mark = std::nullopt) {
+  double base_mark = kNaN;
+  if (harvested_base_mark.has_value()) {
+    base_mark = *harvested_base_mark;
+  } else {
+    const PricedSurface::FusedResult base_evaluation =
+        base.evaluate(contract.K, contract.T, contract.side, PricedSurface::EvalField::Price, false,
+                      config.valuation_execution);
+    // A failed evaluation leaves base_mark NaN, so the one finiteness check
+    // below covers both the Err status and the finite-status/non-finite-price
+    // case the pre-harvest code tested separately.
+    if (base_evaluation.status) {
+      base_mark = base_evaluation.price;
+    }
+  }
+  if (!std::isfinite(base_mark)) {
     poison_leg(frame, VarLegStatus::PricingError, leg.kind, leg.uid);
     return frame.status;
   }
   if (!std::isfinite(base_delta) || std::fabs(base_delta) <= config.delta_tolerance) {
+    poison_leg(frame, VarLegStatus::InvalidDelta, leg.kind, leg.uid);
+    return frame.status;
+  }
+  // I4: a restrike root this far into the wing is pure parametric
+  // extrapolation -- no quote has ever existed there. Reject explicitly
+  // (InvalidDelta) rather than silently pricing whatever the wing model says.
+  // NaN-safe: a non-finite log_moneyness (forward unavailable) also rejects.
+  if (!(std::fabs(log_moneyness) <= config.max_restrike_abs_log_moneyness)) {
     poison_leg(frame, VarLegStatus::InvalidDelta, leg.kind, leg.uid);
     return frame.status;
   }
@@ -695,7 +904,7 @@ finish_option_leg(const NormalizedVarLeg &leg, const SurfaceRef &base, const Sur
     return frame.status;
   }
 
-  const double base_value = sizing->units * leg.multiplier * base_evaluation.price;
+  const double base_value = sizing->units * leg.multiplier * base_mark;
   const double shifted_value = sizing->units * leg.multiplier * shifted_evaluation.price;
   const double pnl = shifted_value - base_value;
   const double allowed_error =
@@ -713,7 +922,7 @@ finish_option_leg(const NormalizedVarLeg &leg, const SurfaceRef &base, const Sur
   frame.units = sizing->units;
   frame.base_spot = base_spot;
   frame.shifted_spot = shifted_spot;
-  frame.base_mark = base_evaluation.price;
+  frame.base_mark = base_mark;
   frame.shifted_mark = shifted_evaluation.price;
   frame.base_delta = base_delta;
   frame.dollar_delta = sizing->achieved_dollar_delta;
@@ -724,6 +933,9 @@ finish_option_leg(const NormalizedVarLeg &leg, const SurfaceRef &base, const Sur
   frame.base_time_to_expiry = contract.T;
   frame.shifted_time_to_expiry = shifted_time;
   frame.definition_fingerprint = fingerprint;
+  frame.diagnostic_flags =
+      option_diagnostic_flags(base, shifted, contract.T, shifted_time, log_moneyness,
+                              config.max_restrike_abs_log_moneyness);
   return frame.status;
 }
 
@@ -757,7 +969,8 @@ finish_option_leg(const NormalizedVarLeg &leg, const SurfaceRef &base, const Sur
   const double shifted_time =
       static_cast<double>(resolved.expiry_ts_ns - scenario.shifted_ts_ns) / kNsPerYear;
   return finish_option_leg(leg, base, shifted, base_spot, shifted_spot, resolved.contract,
-                           resolved.base_delta, shifted_time, resolved.fingerprint, config, frame);
+                           resolved.base_delta, shifted_time, resolved.log_moneyness,
+                           resolved.fingerprint, config, frame);
 }
 
 // Retained-leg counterpart to evaluate_scenario_batched's aggregate path
@@ -770,14 +983,16 @@ finish_option_leg(const NormalizedVarLeg &leg, const SurfaceRef &base, const Sur
 // evaluate_scenario's resolution phase before this is ever reached.
 [[nodiscard]] VarLegStatus
 evaluate_option_leg_resolved(const NormalizedVarLeg &leg, double strike, double base_time,
-                             double shifted_time, double base_delta, std::uint64_t fingerprint,
-                             const VarScenario &scenario, const VarEvaluationConfig &config,
-                             VarLegFrame &frame) {
+                             double shifted_time, double base_delta, double log_moneyness,
+                             std::uint64_t fingerprint, const VarScenario &scenario,
+                             const VarEvaluationConfig &config, VarLegFrame &frame,
+                             std::optional<double> harvested_base_mark = std::nullopt) {
   const SurfaceRef base = scenario.base_surfaces->find(leg.uid);
   const SurfaceRef shifted = scenario.shifted_surfaces->find(leg.uid);
   const OptionContract contract{leg.uid, strike, base_time, leg.side};
   return finish_option_leg(leg, base, shifted, base.pricing().S, shifted.pricing().S, contract,
-                           base_delta, shifted_time, fingerprint, config, frame);
+                           base_delta, shifted_time, log_moneyness, fingerprint, config, frame,
+                           harvested_base_mark);
 }
 
 [[nodiscard]] VarLegStatus reuse_option_pricing(const NormalizedVarLeg &leg,
@@ -874,6 +1089,11 @@ void evaluate_scenario(const PreparedState &impl, const VarScenario &scenario,
   const bool cross_sectional =
       batch_scratch != nullptr &&
       config.projection_solve_policy == OptionDeltaSolvePolicy::CrossSectionalColdConfirm;
+  // Harvesting rides entirely on the cross-sectional resolution below, so the
+  // downgrade `evaluate_scenario(..., fallback_config)` recursion -- which
+  // rewrites the policy to FastScreenColdConfirm and passes no scratch -- lands
+  // here with both flags false and prices its own marks.
+  const bool harvest = cross_sectional && harvest_base_marks(config);
   if (cross_sectional) {
     for (const VarOptionGroup &group : impl.option_groups) {
       const SurfaceRef base = scenario.base_surfaces->find(group.uid);
@@ -921,10 +1141,15 @@ void evaluate_scenario(const PreparedState &impl, const VarScenario &scenario,
     } else if (leg.kind == VarLegKind::Option) {
       if (cross_sectional) {
         const std::size_t slot = impl.option_slot_by_leg[index];
+        // The SAME scratch slot evaluate_scenario_batched reads for this leg,
+        // so aggregate-vs-retained base-mark parity is by construction here.
         status = evaluate_option_leg_resolved(
             leg, batch_scratch->strike[slot], batch_scratch->base_time[slot],
             batch_scratch->shifted_time[slot], batch_scratch->base_delta[slot],
-            batch_scratch->fingerprint[slot], scenario, config, leg_frame);
+            batch_scratch->log_moneyness[slot], batch_scratch->fingerprint[slot], scenario, config,
+            leg_frame,
+            harvest ? std::optional<double>{batch_scratch->harvested_base_price[slot]}
+                    : std::nullopt);
       } else {
         status = evaluate_option_leg(leg, scenario, config, leg_frame);
       }
@@ -943,6 +1168,10 @@ void evaluate_scenario(const PreparedState &impl, const VarScenario &scenario,
     frame.shifted_value += leg_frame.shifted_value;
     frame.pnl += leg_frame.pnl;
     frame.dollar_delta += leg_frame.dollar_delta;
+    if ((leg_frame.diagnostic_flags &
+         (kDiagBaseTenorExtrapolated | kDiagShiftedTenorExtrapolated)) != 0u) {
+      ++frame.n_tenor_extrapolated;
+    }
     aggregate_fingerprint =
         atx::core::hash_combine(aggregate_fingerprint, leg_frame.definition_fingerprint);
   }
@@ -984,6 +1213,9 @@ void evaluate_scenario_batched(const PreparedState &impl, const VarScenario &sce
   constexpr auto price_field = PricedSurface::EvalField::Price;
   const bool cross_sectional =
       config.projection_solve_policy == OptionDeltaSolvePolicy::CrossSectionalColdConfirm;
+  // Same predicate the retained-leg route uses, and likewise false inside the
+  // fallback() downgrade (which rewrites the policy before recursing).
+  const bool harvest = cross_sectional && harvest_base_marks(config);
   for (const VarOptionGroup &group : impl.option_groups) {
     const SurfaceRef base = scenario.base_surfaces->find(group.uid);
     const SurfaceRef shifted = scenario.shifted_surfaces->find(group.uid);
@@ -1019,6 +1251,16 @@ void evaluate_scenario_batched(const PreparedState &impl, const VarScenario &sce
         scratch.base_spot[slot] = base.pricing().S;
         scratch.shifted_spot[slot] = shifted.pricing().S;
         scratch.base_delta[slot] = resolved.base_delta;
+        scratch.log_moneyness[slot] = resolved.log_moneyness;
+        // I3, review fix round 1: same either-side definition as
+        // resolve_group_window_cross_sectional's cross-sectional branch and
+        // finish_option_leg's retained-route flags -- base/shifted are
+        // already resolved SurfaceRefs in this scope, so this is not a
+        // fresh surface lookup.
+        scratch.tenor_extrapolated[slot] = (base.extrapolates_tenor(resolved.contract.T) ||
+                                            shifted.extrapolates_tenor(shifted_time))
+                                               ? 1u
+                                               : 0u;
         scratch.fingerprint[slot] = resolved.fingerprint;
       }
     }
@@ -1031,16 +1273,40 @@ void evaluate_scenario_batched(const PreparedState &impl, const VarScenario &sce
       return std::span<const double>{values}.subspan(begin, count);
     };
     const std::span<const Side> sides{scratch.side.data() + group.begin, count};
-    PricedSurface::EvaluationSoA base_output;
-    base_output.iv = doubles(scratch.shifted_iv);
-    base_output.price = doubles(scratch.base_price);
-    base_output.status = std::span<Status>{scratch.base_status}.subspan(group.begin, count);
-    const Status base_batch = base.evaluate_batch(
-        const_doubles(scratch.strike), const_doubles(scratch.base_time), sides, price_field, false,
-        base_output, simd::SimdIsa::Auto, config.valuation_execution);
-    if (!base_batch) {
-      fallback();
-      return;
+    if (harvest) {
+      // [perf] F1: the dedicated base mark pass is DELETED here, not merely
+      // shortened -- resolve_group_window_cross_sectional's solve already
+      // produced the cold mark at every accepted strike. The leg loop below
+      // reads scratch.base_price/base_status exactly as it does under
+      // DedicatedPricePass, so only the source of those two columns changes.
+      for (std::size_t slot = group.begin; slot < group.end; ++slot) {
+        scratch.base_price[slot] = scratch.harvested_base_price[slot];
+        // A row whose harvest failed carries NaN; stamping Ok here and letting
+        // the leg loop's own finiteness check demote it to PricingError keeps
+        // this route's status derivation identical to the dedicated pass's.
+        scratch.base_status[slot] = Ok();
+        // base_iv is dead data on this route (see the M8 note below) and the
+        // solver does not hand its per-row IV back, so it is poisoned rather
+        // than left holding a previous scenario's value.
+        scratch.base_iv[slot] = kNaN;
+      }
+    } else {
+      // [proj] M8 (deferred-minor fixed): the base and shifted mark passes
+      // each get their own IV scratch column now -- IV is otherwise dead data
+      // here (never read into any leg/frame field), but aliasing the two
+      // passes onto scratch.shifted_iv was a trap for a future reader who
+      // starts consuming base IVs.
+      PricedSurface::EvaluationSoA base_output;
+      base_output.iv = doubles(scratch.base_iv);
+      base_output.price = doubles(scratch.base_price);
+      base_output.status = std::span<Status>{scratch.base_status}.subspan(group.begin, count);
+      const Status base_batch = base.evaluate_batch(
+          const_doubles(scratch.strike), const_doubles(scratch.base_time), sides, price_field,
+          false, base_output, simd::SimdIsa::Auto, config.valuation_execution);
+      if (!base_batch) {
+        fallback();
+        return;
+      }
     }
 
     PricedSurface::EvaluationSoA shifted_output;
@@ -1070,6 +1336,7 @@ void evaluate_scenario_batched(const PreparedState &impl, const VarScenario &sce
     double pnl = 0.0;
     double dollar_delta = 0.0;
     std::uint64_t fingerprint = 0u;
+    bool tenor_extrapolated = false;
     if (leg.kind == VarLegKind::Stock) {
       VarLegFrame stock_frame;
       status = evaluate_stock_leg(leg, scenario, stock_frame);
@@ -1082,11 +1349,22 @@ void evaluate_scenario_batched(const PreparedState &impl, const VarScenario &sce
       }
     } else {
       const std::size_t slot = impl.option_slot_by_leg[index];
+      // Read regardless of this leg's eventual status -- it is only USED
+      // below once status == Ok is confirmed, and every resolved slot's
+      // scratch.tenor_extrapolated was already populated in the group loop
+      // above (review fix round 1).
+      tenor_extrapolated = scratch.tenor_extrapolated[slot] != 0u;
       if (!scratch.base_status[slot] || !scratch.shifted_status[slot] ||
           !std::isfinite(scratch.base_price[slot]) || !std::isfinite(scratch.shifted_price[slot])) {
         status = VarLegStatus::PricingError;
       } else if (!std::isfinite(scratch.base_delta[slot]) ||
                  std::fabs(scratch.base_delta[slot]) <= config.delta_tolerance) {
+        status = VarLegStatus::InvalidDelta;
+      } else if (!(std::fabs(scratch.log_moneyness[slot]) <=
+                   config.max_restrike_abs_log_moneyness)) {
+        // I4: mirrors finish_option_leg's wing-bound rejection so the
+        // aggregate route's per-scenario status/n_ok/n_failed/value totals
+        // stay in parity with the retained-leg route (NaN-safe: see there).
         status = VarLegStatus::InvalidDelta;
       } else {
         const Result<VarSizingResult> sizing =
@@ -1123,6 +1401,9 @@ void evaluate_scenario_batched(const PreparedState &impl, const VarScenario &sce
     frame.shifted_value += shifted_value;
     frame.pnl += pnl;
     frame.dollar_delta += dollar_delta;
+    if (tenor_extrapolated) {
+      ++frame.n_tenor_extrapolated;
+    }
     aggregate_fingerprint = atx::core::hash_combine(aggregate_fingerprint, fingerprint);
   }
   if (frame.n_failed != 0u) {
@@ -1139,13 +1420,24 @@ void evaluate_scenario_batched(const PreparedState &impl, const VarScenario &sce
   }
 }
 
-void fill_loaded_failure(std::span<const VarReferenceLeg> reference_legs, VarScenarioFrame &frame,
-                         std::span<VarLegFrame> output, VarLegStatus status,
-                         std::int64_t base_ts_ns, std::int64_t shifted_ts_ns) noexcept {
+// `scenario_status_override`, when set, replaces the scenario status
+// scenario_status_for(status) would otherwise derive. Needed for
+// VarScenarioStatus::ArchiveError ([solver] F4): an archive load failure has
+// no dedicated VarLegStatus of its own (legs still poison as
+// SurfaceUnavailable, economically the closest existing leg status), but the
+// SCENARIO must be distinguishable from an ordinary MarketUnavailable so
+// VarScenarioFailurePolicy::ExcludeFromDistribution cannot silently absorb
+// it.
+void fill_loaded_failure(
+    std::span<const VarReferenceLeg> reference_legs, VarScenarioFrame &frame,
+    std::span<VarLegFrame> output, VarLegStatus status, std::int64_t base_ts_ns,
+    std::int64_t shifted_ts_ns,
+    std::optional<VarScenarioStatus> scenario_status_override = std::nullopt) noexcept {
   VarScenario scenario;
   scenario.base_ts_ns = base_ts_ns;
   scenario.shifted_ts_ns = shifted_ts_ns;
-  poison_scenario(frame, scenario, scenario_status_for(status), reference_legs.size());
+  poison_scenario(frame, scenario, scenario_status_override.value_or(scenario_status_for(status)),
+                  reference_legs.size());
   for (std::size_t index = 0; index < output.size(); ++index) {
     poison_leg(output[index], status, reference_legs[index].kind, reference_legs[index].uid);
   }
@@ -1203,6 +1495,8 @@ const char *to_string(VarScenarioStatus status) noexcept {
     return "TimestampMismatch";
   case VarScenarioStatus::LegFailure:
     return "LegFailure";
+  case VarScenarioStatus::ArchiveError:
+    return "ArchiveError";
   }
   return "Unknown";
 }
@@ -1373,6 +1667,93 @@ Status PreparedVarPortfolio::replay_into(std::span<const VarScenario> scenarios,
   const bool cross_sectional =
       config.projection_solve_policy == OptionDeltaSolvePolicy::CrossSectionalColdConfirm;
   try {
+    // F2 (perf review): scenarios are mathematically independent, and every
+    // scenario writes only its OWN frames[i] / leg_frames slot, so which
+    // worker claims which scenario can never move a single output byte -- only
+    // WHEN it finishes. This replay used the static contiguous-range
+    // scheduler (run_balanced_ranges, still used below by
+    // replay_into_static_scheduling_for_test and by run_historical_var's
+    // loader loop) until Task 8: a worker scheduled on a slow core -- or one
+    // that simply drew a harder block -- could stall the whole dispatch on
+    // its own fixed range. run_dynamic fixes that: workers claim scenario
+    // indices ONE AT A TIME from a shared counter, so a slow worker just
+    // claims fewer.
+    //
+    // Each participating execution context owns one STABLE worker_id in
+    // [0, resolved) for the dispatch's lifetime (PricingExecutor's contract),
+    // so per-worker VarBatchScratch indexed by worker_id is exactly as
+    // leak-proof as the old per-range scratch: every worker's scratch is
+    // EITHER freshly built once up front (leg_frames empty or cross_sectional)
+    // or never touched (the pure retained-leg, non-cross-sectional route never
+    // reads batch_scratch). The one thing that changes is that a worker's
+    // claimed scenarios are no longer a contiguous ascending run -- they can
+    // interleave arbitrarily with every other worker's. That is safe because
+    // VarBatchScratch carries no cross-scenario state: every field a scenario
+    // reads was written BY THAT SAME SCENARIO's own
+    // resolve_group_contracts_cross_sectional / resolve_group_window_* call
+    // (Task 7's harvested_base_price included -- it is overwritten by
+    // solve_american_delta_batch every group, every scenario, never merely
+    // reused from a prior one), so nothing depends on scenario adjacency. Pins:
+    // DynamicSchedulingMatchesStaticSchedulingBitExactly,
+    // ...WithDowngradedScenariosPresent (Task 6's interleave-onto-one-worker
+    // risk), ...UnderHarvestedBaseMarks (Task 7's scratch-bleed risk).
+    const unsigned resolved = resolved_worker_count(scenarios.size(), config.n_threads);
+    std::vector<VarBatchScratch> worker_scratch(resolved);
+    if (leg_frames.empty() || cross_sectional) {
+      for (VarBatchScratch &scratch : worker_scratch) {
+        scratch = make_var_batch_scratch(*impl_);
+      }
+    }
+    pricing_executor().run_dynamic(
+        scenarios.size(), config.n_threads, [&](std::size_t scenario_index, unsigned worker_id) {
+          VarBatchScratch &batch_scratch = worker_scratch[worker_id];
+          if (leg_frames.empty()) {
+            evaluate_scenario_batched(*impl_, scenarios[scenario_index], frames[scenario_index],
+                                      batch_scratch, config);
+          } else {
+            const std::span<VarLegFrame> output =
+                leg_frames.subspan(scenario_index * impl_->legs.size(), impl_->legs.size());
+            evaluate_scenario(*impl_, scenarios[scenario_index], frames[scenario_index], output,
+                              config, cross_sectional ? &batch_scratch : nullptr);
+          }
+        });
+  } catch (const std::bad_alloc &) {
+    return Err(ErrorCode::Unavailable, "historical VaR: worker allocation failed");
+  } catch (const std::exception &) {
+    return Err(ErrorCode::Internal, "historical VaR: worker failed");
+  }
+  return Ok();
+}
+
+// TEST-ONLY (Task 8): frozen copy of replay_into's pre-Task-8 body, unchanged
+// except for its name -- see the class declaration in var.hpp for why this
+// exists. Keep this in sync with replay_into's validation prologue (the two
+// are intentionally NOT sharing a helper for it: this method's whole point is
+// to be an inert, independently-reviewable fossil of "what the engine did
+// before run_dynamic," not a thin wrapper that could silently start
+// exercising the new code through a shared code path).
+Status PreparedVarPortfolio::replay_into_static_scheduling_for_test(
+    std::span<const VarScenario> scenarios, std::span<VarScenarioFrame> frames,
+    std::span<VarLegFrame> leg_frames, const VarEvaluationConfig &config) const {
+  if (scenarios.empty() || frames.size() != scenarios.size() || !valid_evaluation_config(config) ||
+      impl_->legs.empty() ||
+      scenarios.size() > std::numeric_limits<std::size_t>::max() / impl_->legs.size() ||
+      (!leg_frames.empty() && leg_frames.size() != scenarios.size() * impl_->legs.size())) {
+    return Err(ErrorCode::InvalidArgument, "historical VaR: invalid replay input/output/config");
+  }
+  std::int64_t previous_base = 0;
+  for (const VarScenario &scenario : scenarios) {
+    if (scenario.base_ts_ns <= 0 || scenario.shifted_ts_ns <= scenario.base_ts_ns ||
+        scenario.base_surfaces == nullptr || scenario.shifted_surfaces == nullptr ||
+        (previous_base != 0 && scenario.base_ts_ns <= previous_base)) {
+      return Err(ErrorCode::InvalidArgument, "historical VaR: invalid/unsorted scenario");
+    }
+    previous_base = scenario.base_ts_ns;
+  }
+
+  const bool cross_sectional =
+      config.projection_solve_policy == OptionDeltaSolvePolicy::CrossSectionalColdConfirm;
+  try {
     run_balanced_ranges(scenarios.size(), config.n_threads, [&](std::size_t lo, std::size_t hi) {
       // Scenarios are mathematically independent, and run_balanced_ranges
       // hands each worker a contiguous, non-overlapping scenario subrange (a
@@ -1448,11 +1829,160 @@ Result<VarRiskStatistics> historical_var_statistics(std::span<const VarScenarioF
   return Ok(result);
 }
 
+namespace {
+
+// Same qualifying-frame filter as historical_var_statistics's nearest-rank
+// path above, shared so the weighted overload can never silently pick a
+// different frame set for the same input.
+[[nodiscard]] bool var_frame_qualifies(const VarScenarioFrame &frame) noexcept {
+  return frame.status == VarScenarioStatus::Ok && frame.n_failed == 0u && frame.n_ok != 0u &&
+         frame.definition_fingerprint != 0u && std::isfinite(frame.pnl);
+}
+
+struct WeightedLossRecord {
+  double loss{0.0};
+  double weight{0.0}; // normalized; sums to 1 across every returned record
+  std::size_t scenario_index{0};
+};
+
+// Qualifying frames, sorted ascending by loss (ties broken by scenario
+// index, matching the unweighted path), each carrying its normalized
+// age/recency weight. Age 0 = most recent scenario by shifted_ts_ns among
+// the qualifying frames; ties in shifted_ts_ns keep ascending scenario-index
+// order so age assignment is deterministic.
+[[nodiscard]] Result<std::vector<WeightedLossRecord>>
+build_weighted_losses(std::span<const VarScenarioFrame> frames, const VarWeighting &weighting) {
+  if (frames.empty() || !std::isfinite(weighting.ewma_lambda) || weighting.ewma_lambda <= 0.0) {
+    return Err(ErrorCode::InvalidArgument, "historical VaR statistics: invalid input");
+  }
+  struct Candidate {
+    double loss{0.0};
+    std::int64_t shifted_ts_ns{0};
+    std::size_t scenario_index{0};
+  };
+  std::vector<Candidate> candidates;
+  candidates.reserve(frames.size());
+  for (std::size_t index = 0; index < frames.size(); ++index) {
+    if (var_frame_qualifies(frames[index])) {
+      candidates.push_back(Candidate{-frames[index].pnl, frames[index].shifted_ts_ns, index});
+    }
+  }
+  if (candidates.empty()) {
+    return Err(ErrorCode::Unavailable, "historical VaR statistics: no successful scenarios");
+  }
+  std::vector<std::size_t> by_recency(candidates.size());
+  std::iota(by_recency.begin(), by_recency.end(), std::size_t{0});
+  std::stable_sort(by_recency.begin(), by_recency.end(), [&](std::size_t left, std::size_t right) {
+    return candidates[left].shifted_ts_ns > candidates[right].shifted_ts_ns;
+  });
+  std::vector<double> raw_weight(candidates.size(), 0.0);
+  double total_weight = 0.0;
+  for (std::size_t age = 0; age < by_recency.size(); ++age) {
+    const double weight = std::pow(weighting.ewma_lambda, static_cast<double>(age));
+    raw_weight[by_recency[age]] = weight;
+    total_weight += weight;
+  }
+  std::vector<WeightedLossRecord> losses;
+  losses.reserve(candidates.size());
+  for (std::size_t i = 0; i < candidates.size(); ++i) {
+    losses.push_back(WeightedLossRecord{candidates[i].loss, raw_weight[i] / total_weight,
+                                        candidates[i].scenario_index});
+  }
+  std::sort(losses.begin(), losses.end(),
+            [](const WeightedLossRecord &left, const WeightedLossRecord &right) {
+              return std::tie(left.loss, left.scenario_index) <
+                     std::tie(right.loss, right.scenario_index);
+            });
+  return Ok(std::move(losses));
+}
+
+// Repeated floating-point summation of normalized weights carries rounding
+// noise on the order of a few ULPs per addition -- many orders of magnitude
+// smaller than any weight increment this function actually sees. Note this
+// code path is only reached for ewma_lambda != 1.0: the exact-equal-weight
+// case (where increments could get as fine as 1/n) is special-cased away to
+// a direct call into the unweighted two-arg overload before ever reaching
+// here -- see historical_var_statistics's ewma_lambda == 1.0 branch below.
+// This epsilon absorbs that summation noise so the crossing index lands on
+// the mathematically-exact side of a confidence boundary even when that
+// boundary is not itself exactly representable in binary floating point.
+constexpr double kCumulativeWeightEpsilon = 1.0e-9;
+
+[[nodiscard]] VarRiskStatistics
+weighted_statistics_from_sorted_losses(std::span<const WeightedLossRecord> sorted_losses,
+                                       double confidence) {
+  double cumulative = 0.0;
+  std::size_t var_index = sorted_losses.size() - 1u;
+  for (std::size_t i = 0; i < sorted_losses.size(); ++i) {
+    cumulative += sorted_losses[i].weight;
+    if (cumulative >= confidence - kCumulativeWeightEpsilon) {
+      var_index = i;
+      break;
+    }
+  }
+  double tail_weight = 0.0;
+  double tail_weighted_sum = 0.0;
+  for (std::size_t i = var_index; i < sorted_losses.size(); ++i) {
+    tail_weight += sorted_losses[i].weight;
+    tail_weighted_sum += sorted_losses[i].weight * sorted_losses[i].loss;
+  }
+  VarRiskStatistics result;
+  result.confidence = confidence;
+  result.value_at_risk = sorted_losses[var_index].loss;
+  result.expected_shortfall = tail_weighted_sum / tail_weight;
+  result.n_scenarios = sorted_losses.size();
+  return result;
+}
+
+} // namespace
+
+Result<VarRiskStatistics> historical_var_statistics(std::span<const VarScenarioFrame> frames,
+                                                    double confidence,
+                                                    const VarWeighting &weighting) {
+  // Equal weighting is mathematically identical to the plain nearest-rank
+  // path above, but the general weighted-quantile arithmetic (a running sum
+  // of weight*loss products, divided by a running sum of weights) is not
+  // bit-identical to that path's direct rank/average -- the two sum in a
+  // different order. Delegating on the exact ewma_lambda == 1.0 default
+  // guarantees the bit-exact reproduction this overload promises, rather
+  // than relying on floating-point arithmetic happening to agree.
+  if (weighting.ewma_lambda == 1.0) {
+    return historical_var_statistics(frames, confidence);
+  }
+  if (!std::isfinite(confidence) || confidence <= 0.0 || confidence >= 1.0) {
+    return Err(ErrorCode::InvalidArgument, "historical VaR statistics: invalid input");
+  }
+  ATX_TRY(std::vector<WeightedLossRecord> losses, build_weighted_losses(frames, weighting));
+  return Ok(weighted_statistics_from_sorted_losses(losses, confidence));
+}
+
+Result<std::vector<VarRiskStatistics>>
+historical_var_curve(std::span<const VarScenarioFrame> frames, std::span<const double> confidences,
+                     const VarWeighting &weighting) {
+  if (confidences.empty()) {
+    return Err(ErrorCode::InvalidArgument, "historical VaR curve: confidences must be non-empty");
+  }
+  for (const double confidence : confidences) {
+    if (!std::isfinite(confidence) || confidence <= 0.0 || confidence >= 1.0) {
+      return Err(ErrorCode::InvalidArgument, "historical VaR curve: invalid confidence");
+    }
+  }
+  std::vector<VarRiskStatistics> curve;
+  curve.reserve(confidences.size());
+  for (const double confidence : confidences) {
+    ATX_TRY(VarRiskStatistics stats, historical_var_statistics(frames, confidence, weighting));
+    curve.push_back(stats);
+  }
+  return Ok(std::move(curve));
+}
+
 Result<HistoricalVarResult> run_historical_var(const SurfaceDb &db,
                                                std::span<const VarPosition> positions,
                                                const VarRunConfig &config) {
   if (!valid_evaluation_config(config.evaluation) || !std::isfinite(config.confidence) ||
-      config.confidence <= 0.0 || config.confidence >= 1.0) {
+      config.confidence <= 0.0 || config.confidence >= 1.0 || config.max_session_gap_days < 0 ||
+      !std::isfinite(config.max_excluded_fraction) || config.max_excluded_fraction < 0.0 ||
+      config.max_excluded_fraction > 1.0) {
     return Err(ErrorCode::InvalidArgument, "historical VaR: invalid run config");
   }
   ATX_TRY(std::vector<std::uint32_t> uids, required_uids(positions));
@@ -1493,7 +2023,25 @@ Result<HistoricalVarResult> run_historical_var(const SurfaceDb &db,
                "historical VaR: date range needs at least two observations");
   }
   const std::span<const SnapshotRef> refs = window.refs();
-  const std::size_t scenario_count = refs.size() - 1u;
+  // I1: filter adjacent-partition pairs whose calendar gap exceeds the guard
+  // (disabled at 0) BEFORE any snapshot for the pair is loaded, so a wholly
+  // missing run of partitions never bridges silently into a single
+  // multi-session observation the way an unguarded adjacency walk would.
+  std::vector<std::size_t> surviving_base_ref;
+  surviving_base_ref.reserve(refs.size() > 0u ? refs.size() - 1u : 0u);
+  std::size_t n_gap_skipped = 0u;
+  for (std::size_t index = 0; index + 1u < refs.size(); ++index) {
+    if (config.max_session_gap_days > 0) {
+      const std::int64_t gap =
+          session_date_ordinal(refs[index + 1u].date) - session_date_ordinal(refs[index].date);
+      if (gap > static_cast<std::int64_t>(config.max_session_gap_days)) {
+        ++n_gap_skipped;
+        continue;
+      }
+    }
+    surviving_base_ref.push_back(index);
+  }
+  const std::size_t scenario_count = surviving_base_ref.size();
   if (prepared.size() != 0u &&
       scenario_count > std::numeric_limits<std::size_t>::max() / prepared.size()) {
     return Err(ErrorCode::OutOfRange, "historical VaR: scenario/leg output size overflows");
@@ -1505,12 +2053,13 @@ Result<HistoricalVarResult> run_historical_var(const SurfaceDb &db,
   result.reference_value = prepared.reference_value();
   result.reference_dollar_delta = prepared.reference_dollar_delta();
   result.n_legs = prepared.size();
+  result.n_gap_skipped = n_gap_skipped;
   result.base_dates.reserve(scenario_count);
   result.shifted_dates.reserve(scenario_count);
   result.frames.resize(scenario_count);
   for (std::size_t index = 0; index < scenario_count; ++index) {
-    result.base_dates.push_back(refs[index].date);
-    result.shifted_dates.push_back(refs[index + 1u].date);
+    result.base_dates.push_back(refs[surviving_base_ref[index]].date);
+    result.shifted_dates.push_back(refs[surviving_base_ref[index] + 1u].date);
   }
   if (config.retain_leg_frames) {
     result.leg_frames.resize(scenario_count * prepared.size());
@@ -1519,22 +2068,47 @@ Result<HistoricalVarResult> run_historical_var(const SurfaceDb &db,
   try {
     run_balanced_ranges(
         scenario_count, config.evaluation.n_threads, [&](std::size_t lo, std::size_t hi) {
-          SnapshotLoad base = load_snapshot(refs[lo], uids, config);
+          std::size_t base_ref_index = surviving_base_ref[lo];
+          SnapshotLoad base = load_snapshot(refs[base_ref_index], uids, config);
           for (std::size_t scenario_index = lo; scenario_index < hi; ++scenario_index) {
-            SnapshotLoad shifted = load_snapshot(refs[scenario_index + 1u], uids, config);
+            const std::size_t expected_base_ref = surviving_base_ref[scenario_index];
+            if (expected_base_ref != base_ref_index) {
+              // A gap-skipped pair breaks the "shifted becomes next base"
+              // reuse chain; reload fresh at this (rare) boundary.
+              base = load_snapshot(refs[expected_base_ref], uids, config);
+              base_ref_index = expected_base_ref;
+            }
+            SnapshotLoad shifted = load_snapshot(refs[expected_base_ref + 1u], uids, config);
             std::span<VarLegFrame> output =
                 result.leg_frames.empty() ? std::span<VarLegFrame>{}
                                           : std::span<VarLegFrame>{result.leg_frames}.subspan(
                                                 scenario_index * prepared.size(), prepared.size());
             if (!base.snapshot.has_value() || !shifted.snapshot.has_value()) {
+              // Consult BOTH loads: when only one side failed to load, the
+              // other's archive_error is trivially false, so this is
+              // equivalent to the single-side check it replaces. When BOTH
+              // fail, an ordinary NotFound on one side must not hide a
+              // structural fault (corrupt/truncated archive, I/O error) on
+              // the other -- [solver] mustfix, deep-dive review follow-up to
+              // F4: the prior `!base.snapshot.has_value() ? base.archive_error
+              // : shifted.archive_error` always resolved to base's flag in
+              // the dual-failure case, silently discarding shifted's.
+              const bool archive_error = base.archive_error || shifted.archive_error;
               const VarLegStatus failure =
                   !base.snapshot.has_value() ? base.failure : shifted.failure;
               const std::int64_t base_ts =
                   base.snapshot.has_value() ? base.snapshot->ts_ns() : std::int64_t{0};
               const std::int64_t shifted_ts =
                   shifted.snapshot.has_value() ? shifted.snapshot->ts_ns() : std::int64_t{0};
-              fill_loaded_failure(prepared.reference_legs(), result.frames[scenario_index], output,
-                                  failure, base_ts, shifted_ts);
+              // [solver] F4: a corrupt/truncated archive or I/O failure is
+              // structural, not a market condition -- ArchiveError overrides
+              // the MarketUnavailable that scenario_status_for(failure)
+              // would otherwise derive from SurfaceUnavailable.
+              fill_loaded_failure(
+                  prepared.reference_legs(), result.frames[scenario_index], output, failure,
+                  base_ts, shifted_ts,
+                  archive_error ? std::optional<VarScenarioStatus>{VarScenarioStatus::ArchiveError}
+                                : std::nullopt);
             } else {
               const VarScenario scenario{base.snapshot->ts_ns(), &base.snapshot->set(),
                                          shifted.snapshot->ts_ns(), &shifted.snapshot->set()};
@@ -1544,12 +2118,19 @@ Result<HistoricalVarResult> run_historical_var(const SurfaceDb &db,
                   std::span<const VarScenario>{&scenario, 1u},
                   std::span<VarScenarioFrame>{&result.frames[scenario_index], 1u}, output, serial);
               if (!replay) {
+                // [solver] F5: replay_into's own pre-flight scenario check
+                // (shifted_ts_ns <= base_ts_ns) is the realistic reason this
+                // single-scenario replay fails -- a structural non-monotone-
+                // timestamp archive fault, not a generic invalid value.
+                const VarLegStatus failure = scenario.shifted_ts_ns <= scenario.base_ts_ns
+                                                 ? VarLegStatus::TimestampMismatch
+                                                 : VarLegStatus::InvalidValue;
                 fill_loaded_failure(prepared.reference_legs(), result.frames[scenario_index],
-                                    output, VarLegStatus::InvalidValue, scenario.base_ts_ns,
-                                    scenario.shifted_ts_ns);
+                                    output, failure, scenario.base_ts_ns, scenario.shifted_ts_ns);
               }
             }
             base = std::move(shifted);
+            base_ref_index = expected_base_ref + 1u;
           }
         });
   } catch (const std::bad_alloc &) {
@@ -1558,12 +2139,59 @@ Result<HistoricalVarResult> run_historical_var(const SurfaceDb &db,
     return Err(ErrorCode::Internal, "historical VaR: replay worker failed");
   }
 
+  // I3 (review fix round 1): sum the per-scenario tallies both
+  // evaluate_scenario and evaluate_scenario_batched now stamp on
+  // VarScenarioFrame::n_tenor_extrapolated -- populated on EVERY route, not
+  // just when leg_frames are retained. result.frames is a fixed-size,
+  // scenario-index-ordered array each worker writes into by index (never
+  // appended), so summing it in ascending index order here is a
+  // deterministic, thread-count-invariant reduction: it depends on
+  // scenario order, never on which worker finished which scenario first.
+  {
+    std::size_t extrapolated = 0u;
+    for (const VarScenarioFrame &frame : result.frames) {
+      extrapolated += frame.n_tenor_extrapolated;
+    }
+    result.n_tenor_extrapolated_legs = extrapolated;
+  }
+
   if (config.failure_policy == VarScenarioFailurePolicy::RejectRun) {
     for (std::size_t index = 0; index < result.frames.size(); ++index) {
       if (result.frames[index].status != VarScenarioStatus::Ok) {
         return Err(ErrorCode::Unavailable, "historical VaR: scenario " + result.base_dates[index] +
                                                " -> " + result.shifted_dates[index] + " failed (" +
                                                to_string(result.frames[index].status) + ")");
+      }
+    }
+  } else {
+    // [solver] F4: ExcludeFromDistribution otherwise excludes any non-Ok
+    // scenario from the loss distribution silently (historical_var_statistics
+    // below only sums Ok frames). ArchiveError is structural -- a corrupt
+    // archive or I/O fault, not an ordinary missing-market day -- so it must
+    // still fail the run even under this policy; a systematically
+    // I/O-degraded run must not silently shrink the loss distribution.
+    std::size_t excluded = 0u;
+    for (std::size_t index = 0; index < result.frames.size(); ++index) {
+      if (result.frames[index].status == VarScenarioStatus::ArchiveError) {
+        return Err(ErrorCode::Unavailable, "historical VaR: scenario " + result.base_dates[index] +
+                                               " -> " + result.shifted_dates[index] + " failed (" +
+                                               to_string(result.frames[index].status) + ")");
+      }
+      if (result.frames[index].status != VarScenarioStatus::Ok) {
+        ++excluded;
+      }
+    }
+    result.n_excluded_from_distribution = excluded;
+    // I5: 1.0 disables the guard (today's unbounded ExcludeFromDistribution
+    // behavior). Below 1.0, a failure-correlated shrink of the loss
+    // distribution beyond this fraction fails the run outright instead of
+    // silently thinning the tail exactly when the data is worst.
+    if (config.max_excluded_fraction < 1.0 && !result.frames.empty()) {
+      const double fraction =
+          static_cast<double>(excluded) / static_cast<double>(result.frames.size());
+      if (fraction > config.max_excluded_fraction) {
+        return Err(ErrorCode::Unavailable,
+                   "historical VaR: excluded scenario fraction exceeds max_excluded_fraction");
       }
     }
   }

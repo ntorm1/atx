@@ -341,12 +341,25 @@ constexpr std::size_t kMaxBatchDeltaPasses = 8;
 // missing/unreachable surface data, NotFound for a target the scalar solver
 // could not bracket) and strike_out[row]/achieved_delta_out[row] are (re)set
 // to NaN -- never a stale or partially-converged candidate.
+//
+// When `accepted_price_out` is nonempty every row that succeeds here also gets
+// its cold mark harvested. The tail's bracketing solver evaluates DELTAS only
+// (`solve_american_delta`'s `evaluate` lambda calls `surface.delta`), so unlike
+// the laned passes there is no price already lying around: the mark costs one
+// scalar cold `evaluate(..., EvalField::Price, ...)` per fallback row. That is
+// deliberately the SCALAR route's own call -- same field, same analytic flag,
+// same cold execution the retained-leg valuation path uses -- so a harvested
+// tail row reproduces a pure scalar valuation bit for bit rather than importing
+// the laned price kernel's result for a row the laned passes never solved. The
+// tail is the rare path (sub-1 % of rows on the profiled book), so this cannot
+// reintroduce the dedicated pass's cost at batch scale.
 void solve_batch_fallback_tail(const SurfaceRef &surface, std::span<const double> T,
                                std::span<const Side> side, std::span<const double> target_abs_delta,
                                double tolerance, std::span<const std::uint32_t> fallback_rows,
                                std::span<double> strike_out, std::span<double> achieved_delta_out,
                                std::span<std::uint16_t> evaluations_out,
-                               std::span<Status> row_status_out) {
+                               std::span<Status> row_status_out,
+                               std::span<double> accepted_price_out) {
   for (const std::uint32_t row : fallback_rows) {
     Result<DeltaSolution> solved =
         solve_american_delta(surface, T[row], side[row], target_abs_delta[row], tolerance,
@@ -361,6 +374,16 @@ void solve_batch_fallback_tail(const SurfaceRef &surface, std::span<const double
     achieved_delta_out[row] = solved->achieved_delta;
     evaluations_out[row] = add_evaluations(evaluations_out[row], solved->evaluations);
     row_status_out[row] = Ok();
+    if (!accepted_price_out.empty()) {
+      const PricedSurface::FusedResult mark =
+          surface.evaluate(solved->strike, T[row], side[row], PricedSurface::EvalField::Price,
+                           /*analytic=*/false, QueryExecution::ColdReference);
+      // A mark that fails here leaves NaN and an Ok row_status: the STRIKE is
+      // genuinely solved and confirmed, only the valuation is unavailable, and
+      // that is exactly what the dedicated pass would have reported for this
+      // row. The consumer gates on the harvested value being finite.
+      accepted_price_out[row] = mark.status ? mark.price : kNaN;
+    }
   }
 }
 
@@ -490,40 +513,67 @@ void AmericanDeltaBatchScratch::resize(std::size_t n) {
   fallback_rows.reserve(n);
 }
 
+Result<std::uint32_t> checked_row_count(std::size_t n) noexcept {
+  // std::size_t is not wider than std::uint32_t on every supported platform
+  // (e.g. a 32-bit build): the comparison would then be tautologically false
+  // and warn as such, so the bound is only meaningful -- and only compiled --
+  // where size_t can actually exceed uint32_t's range.
+  if constexpr (sizeof(std::size_t) > sizeof(std::uint32_t)) {
+    if (n > static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())) {
+      return Err(ErrorCode::OutOfRange,
+                 "contract projection: batch delta solve row count exceeds uint32_t range");
+    }
+  }
+  return Ok(static_cast<std::uint32_t>(n));
+}
+
 Status solve_american_delta_batch(const SurfaceRef &surface, std::span<const double> T,
                                   std::span<const Side> side,
                                   std::span<const double> target_abs_delta, double tolerance,
                                   AmericanDeltaBatchScratch &scratch, std::span<double> strike_out,
                                   std::span<double> achieved_delta_out,
                                   std::span<std::uint16_t> evaluations_out,
-                                  std::span<Status> row_status_out) {
+                                  std::span<Status> row_status_out,
+                                  std::span<double> accepted_price_out) {
   const std::size_t n = T.size();
   if (surface == nullptr || n == 0u || side.size() != n || target_abs_delta.size() != n ||
       strike_out.size() != n || achieved_delta_out.size() != n || evaluations_out.size() != n ||
-      row_status_out.size() != n) {
+      row_status_out.size() != n ||
+      (!accepted_price_out.empty() && accepted_price_out.size() != n)) {
     return Err(ErrorCode::InvalidArgument,
                "contract projection: batch delta solve span/size mismatch");
   }
   if (!(std::isfinite(tolerance) && tolerance > 0.0 && tolerance <= 1.0e-3)) {
     return Err(ErrorCode::InvalidArgument, "contract projection: invalid delta target/tolerance");
   }
+  const Result<std::uint32_t> row_count = checked_row_count(n);
+  if (!row_count) {
+    return Err(row_count.error());
+  }
 
   scratch.resize(n);
   // Rows the batch passes could not finish; owned by the scratch (not a
   // solver-local vector) so the rare fallback path allocates nothing beyond
   // resize(n); empty on the happy path.
+  const bool harvest = !accepted_price_out.empty();
   const auto route_to_fallback = [&](std::uint32_t row, Status status) {
     strike_out[row] = kNaN;
     achieved_delta_out[row] = kNaN;
+    if (harvest) {
+      accepted_price_out[row] = kNaN;
+    }
     row_status_out[row] = std::move(status);
     scratch.fallback_rows.push_back(row);
   };
 
   // Seed (curve reads only, no boundary solves): the Black-style inverse-delta
   // seed with two smile-refresh iterations, mirroring solve_american_delta.
-  for (std::uint32_t i = 0; i < static_cast<std::uint32_t>(n); ++i) {
+  for (std::uint32_t i = 0; i < *row_count; ++i) {
     strike_out[i] = kNaN;
     achieved_delta_out[i] = kNaN;
+    if (harvest) {
+      accepted_price_out[i] = kNaN;
+    }
     evaluations_out[i] = 0u;
     row_status_out[i] = Ok();
     const double target = target_abs_delta[i];
@@ -617,6 +667,17 @@ Status solve_american_delta_batch(const SurfaceRef &surface, std::span<const dou
       if (std::fabs(residual) <= 0.5 * tolerance) {
         strike_out[row] = scratch.strike[row];
         achieved_delta_out[row] = delta;
+        if (harvest) {
+          // THIS pass evaluated scratch.strike[row], and this row is being
+          // accepted at exactly that strike, so scratch.price[j] -- written by
+          // the same laned FirstOrder bundle that produced `delta` -- is the
+          // cold American mark at the ACCEPTED strike. This acceptance branch is
+          // the ONLY place a laned row's mark is written: a row a pass does not
+          // accept moves to a new candidate strike without recording anything,
+          // so a multi-pass row can never end up carrying an earlier pass's
+          // price at a strike that was subsequently rejected.
+          accepted_price_out[row] = scratch.price[j];
+        }
         row_status_out[row] = Ok();
         continue;
       }
@@ -716,7 +777,8 @@ Status solve_american_delta_batch(const SurfaceRef &surface, std::span<const dou
   // routed by a later pass).
   std::sort(scratch.fallback_rows.begin(), scratch.fallback_rows.end());
   solve_batch_fallback_tail(surface, T, side, target_abs_delta, tolerance, scratch.fallback_rows,
-                            strike_out, achieved_delta_out, evaluations_out, row_status_out);
+                            strike_out, achieved_delta_out, evaluations_out, row_status_out,
+                            accepted_price_out);
   return Ok();
 }
 

@@ -20,6 +20,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <iostream>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -37,6 +38,7 @@
 
 #include "atx/vol/backtest.hpp"
 #include "atx/vol/corpus.hpp"
+#include "atx/vol/detail/pricing_executor.hpp"
 #include "atx/vol/dispersion.hpp"
 #include "atx/vol/dispersion_surface_db.hpp"
 #include "atx/vol/research/dispersion_backtest.hpp"
@@ -44,6 +46,8 @@
 #include "atx/vol/surface_db.hpp"
 #include "atx/vol/universe.hpp"
 #include "atx/vol/var.hpp"
+#include "atx/vol/var_report.hpp"
+#include "atx/vol/var_validation.hpp"
 
 #include "bench_util.hpp"
 
@@ -51,6 +55,7 @@ namespace {
 
 using atx::vol::ArchiveBacking;
 using atx::vol::BacktestCheckpoint;
+using atx::vol::christoffersen;
 using atx::vol::Clock;
 using atx::vol::CorpusEntry;
 using atx::vol::CorpusFitStatus;
@@ -59,17 +64,23 @@ using atx::vol::DispersionBacktestConfig;
 using atx::vol::DispersionStrategy;
 using atx::vol::DispersionUniverse;
 using atx::vol::HedgeSharePosition;
+using atx::vol::historical_var_statistics;
+using atx::vol::HistoricalVarResult;
+using atx::vol::kupiec_pof;
 using atx::vol::Lot;
 using atx::vol::MarketSnapshot;
 using atx::vol::OptionDeltaSolvePolicy;
 using atx::vol::PreparedVarPortfolio;
+using atx::vol::pricing_executor;
 using atx::vol::ProjectedMaturitySpec;
 using atx::vol::QueryExecution;
 using atx::vol::QueryPricingTier;
 using atx::vol::StrikeRule;
 using atx::vol::SurfaceDb;
 using atx::vol::UnpricedLotPolicy;
+using atx::vol::VarBaseMarkSource;
 using atx::vol::VarEvaluationConfig;
+using atx::vol::VarExclusionSummary;
 using atx::vol::VarLegFrame;
 using atx::vol::VarOptionPosition;
 using atx::vol::VarPosition;
@@ -78,7 +89,9 @@ using atx::vol::VarScenario;
 using atx::vol::VarScenarioFrame;
 using atx::vol::VarScenarioStatus;
 using atx::vol::VarStockPosition;
+using atx::vol::write_var_scenario_tsv;
 using atx::vol::bench::apply_common;
+using atx::vol::bench::dump_counters;
 
 constexpr std::string_view kHistoryBegin = "2026-01-02";
 // May 4 + 91 calendar days is after the July 31 reference timestamp. Starting
@@ -94,6 +107,10 @@ constexpr double kMaxAggregateRelativeValueError = 1.0e-9;
 constexpr double kMaxAggregateRelativeDeltaError = 1.0e-9;
 constexpr double kGrossIndexVega = 10'000.0;
 constexpr std::size_t kMinNames = 60u;
+// Confidence used for the terminal-output validation block (Task 5): matches
+// VarRunConfig's own default, so the printed VaR/breach diagnostics describe
+// the same risk level a caller gets from run_historical_var out of the box.
+constexpr double kValidationConfidence = 0.99;
 
 [[nodiscard]] std::string environment_value(const char *name) {
 #if defined(_MSC_VER)
@@ -182,38 +199,34 @@ void add_symbol(std::unordered_map<std::uint32_t, std::string> &symbols, std::st
     error = "cannot open YTD SP100 P&L trace output";
     return false;
   }
-  output << "base_date\tshifted_date\tbase_value\tshifted_value\tpnl\tcumulative_pnl\t"
-            "dollar_delta\tn_positions\tsource_option_lots\tcoverage_excluded_option_lots\t"
-            "delta_boundary_excluded_option_lots\treplay_excluded_option_lots\tstock_hedges\t"
-            "max_abs_leg_index\tmax_abs_leg_underlier\t"
-            "max_abs_leg_reference_units\tmax_abs_leg_reference_delta\t"
-            "max_abs_leg_target_dollar_delta\tmax_abs_leg_log_moneyness\t"
-            "max_abs_leg_scenario_units\tmax_abs_leg_base_delta\tmax_abs_leg_base_mark\t"
-            "max_abs_leg_shifted_mark\tmax_abs_leg_pnl\n";
-  output << std::setprecision(17);
-  double cumulative_pnl = 0.0;
-  for (std::size_t index = 0u; index < frames.size(); ++index) {
-    const VarScenarioFrame &frame = frames[index];
-    const std::span<const VarLegFrame> scenario_legs =
-        leg_frames.subspan(index * reference_legs.size(), reference_legs.size());
-    const auto largest = std::max_element(scenario_legs.begin(), scenario_legs.end(),
-                                          [](const VarLegFrame &left, const VarLegFrame &right) {
-                                            return std::fabs(left.pnl) < std::fabs(right.pnl);
-                                          });
-    const std::size_t largest_index = static_cast<std::size_t>(largest - scenario_legs.begin());
-    const VarReferenceLeg &largest_reference = reference_legs[largest_index];
-    cumulative_pnl += frame.pnl;
-    output << fixture.base_dates[index] << '\t' << fixture.shifted_dates[index] << '\t'
-           << frame.base_value << '\t' << frame.shifted_value << '\t' << frame.pnl << '\t'
-           << cumulative_pnl << '\t' << frame.dollar_delta << '\t' << frame.n_ok << '\t'
-           << fixture.terminal_option_lots << '\t' << fixture.excluded_option_lots << '\t'
-           << fixture.excluded_delta_boundary_lots << '\t' << fixture.excluded_replay_option_lots
-           << '\t' << fixture.hedge_positions << '\t' << largest_index << '\t'
-           << largest_reference.underlier << '\t' << largest_reference.reference_units << '\t'
-           << largest_reference.reference_delta << '\t' << largest_reference.target_dollar_delta
-           << '\t' << largest_reference.log_moneyness << '\t' << largest->units << '\t'
-           << largest->base_delta << '\t' << largest->base_mark << '\t' << largest->shifted_mark
-           << '\t' << largest->pnl << '\n';
+
+  // The scenario-level economics (frames) come from the fast/aggregate replay
+  // route; the per-leg breakdown (leg_frames) comes from the separately
+  // replayed retained-leg oracle -- this mixed provenance is deliberate and
+  // predates the var_report.hpp extraction (see the two replay_into calls in
+  // prepare_replayable_portfolio). HistoricalVarResult is just a plain
+  // struct, so assembling one from these two already-validated sources for
+  // the sole purpose of formatting is safe: it does not claim they came from
+  // a single run_historical_var call.
+  HistoricalVarResult result;
+  result.base_dates.assign(fixture.base_dates.begin(), fixture.base_dates.end());
+  result.shifted_dates.assign(fixture.shifted_dates.begin(), fixture.shifted_dates.end());
+  result.frames.assign(frames.begin(), frames.end());
+  result.leg_frames.assign(leg_frames.begin(), leg_frames.end());
+  result.n_legs = reference_legs.size();
+
+  VarExclusionSummary exclusions;
+  exclusions.source_option_lots = fixture.terminal_option_lots;
+  exclusions.coverage_excluded_option_lots = fixture.excluded_option_lots;
+  exclusions.delta_boundary_excluded_option_lots = fixture.excluded_delta_boundary_lots;
+  exclusions.replay_excluded_option_lots = fixture.excluded_replay_option_lots;
+  exclusions.stock_hedges = fixture.hedge_positions;
+
+  const atx::vol::Status status =
+      write_var_scenario_tsv(output, result, exclusions, reference_legs);
+  if (!status) {
+    error = status.error().to_string();
+    return false;
   }
   if (!output) {
     error = "cannot write YTD SP100 P&L trace output";
@@ -269,6 +282,54 @@ void add_symbol(std::unordered_map<std::uint32_t, std::string> &symbols, std::st
     return false;
   }
   return true;
+}
+
+// Task 5: a `validation:` diagnostic block for the terminal SP100 book's
+// full realized P&L distribution, printed once to stderr when the fixture
+// builds -- purely a terminal-output side effect alongside the M3 preamble
+// (bench_main.cpp's print_quiet_window_preamble); it never touches Google
+// Benchmark's console/JSON reporters, so --benchmark_out output is
+// unaffected. `frames` is expected to be a fully-Ok scenario set (the
+// caller has already rebuilt the book to exclude any replay failures), so
+// the breach sequence below covers every scenario in order without needing
+// a separate qualifying-frame filter.
+void print_validation_block(std::span<const VarScenarioFrame> frames) {
+  const auto risk = historical_var_statistics(frames, kValidationConfidence);
+  if (!risk) {
+    std::cerr << "validation: skipped (" << risk.error().to_string() << ")\n";
+    return;
+  }
+  // std::vector<bool> is not a contiguous bool range and cannot back a
+  // std::span<const bool>; a plain heap array gives real contiguous bool
+  // storage instead.
+  auto breach_sequence = std::make_unique<bool[]>(frames.size());
+  std::size_t n_breaches = 0u;
+  for (std::size_t i = 0u; i < frames.size(); ++i) {
+    const bool breach = -frames[i].pnl > risk->value_at_risk;
+    breach_sequence[i] = breach;
+    n_breaches += breach ? 1u : 0u;
+  }
+  const std::span<const bool> breaches(breach_sequence.get(), frames.size());
+
+  std::cerr << "validation: confidence=" << kValidationConfidence << " var=" << risk->value_at_risk
+            << " es=" << risk->expected_shortfall << " n_scenarios=" << risk->n_scenarios
+            << " n_breaches=" << n_breaches;
+
+  if (const auto kupiec = kupiec_pof(frames.size(), n_breaches, kValidationConfidence)) {
+    std::cerr << " kupiec_lr=" << kupiec->lr_pof << " kupiec_p=" << kupiec->p_value;
+  } else {
+    std::cerr << " kupiec_error=" << kupiec.error().to_string();
+  }
+
+  if (const auto christoffersen_result = christoffersen(breaches, kValidationConfidence)) {
+    std::cerr << " christoffersen_lr_ind=" << christoffersen_result->lr_independence
+              << " christoffersen_p_ind=" << christoffersen_result->p_independence
+              << " christoffersen_lr_cc=" << christoffersen_result->lr_conditional_coverage
+              << " christoffersen_p_cc=" << christoffersen_result->p_conditional_coverage;
+  } else {
+    std::cerr << " christoffersen_error=" << christoffersen_result.error().to_string();
+  }
+  std::cerr << '\n';
 }
 
 [[nodiscard]] IndexCompleteTimeline index_complete_timeline(const Clock &history,
@@ -391,6 +452,23 @@ append_option_position(const Lot &lot, const MarketSnapshot &reference,
   return true;
 }
 
+// ATX_VAR_BENCH_BASE_MARK_SOURCE=harvested selects
+// VarBaseMarkSource::HarvestedFromSolver for this fixture's validation replays
+// AND for the timed cases; anything else (including unset) keeps the dedicated
+// base Price pass. An env knob rather than a registered case per source: the two
+// are compared by running the SAME filter twice and differencing the counters,
+// so doubling the registered case count would only lengthen every unrelated
+// bench run. Wiring it into the fixture as well as the timed loop is the point:
+// prepare_replayable_portfolio's aggregate-vs-cold-retained-oracle gate is the
+// SP100-scale parity check the plan requires before any default flip, and it
+// would be worthless if it always validated the source the timed cases did not
+// run.
+[[nodiscard]] VarBaseMarkSource base_mark_source_from_environment() {
+  return environment_value("ATX_VAR_BENCH_BASE_MARK_SOURCE") == "harvested"
+             ? VarBaseMarkSource::HarvestedFromSolver
+             : VarBaseMarkSource::DedicatedPricePass;
+}
+
 [[nodiscard]] bool prepare_replayable_portfolio(TerminalVarFixture &fixture,
                                                 const MarketSnapshot &reference) {
   VarEvaluationConfig evaluation;
@@ -398,6 +476,7 @@ append_option_position(const Lot &lot, const MarketSnapshot &reference,
   evaluation.delta_tolerance = kReplayDeltaTolerance;
   evaluation.projection_execution = QueryExecution::ColdReference;
   evaluation.valuation_execution = QueryExecution::ColdReference;
+  evaluation.base_mark_source = base_mark_source_from_environment();
   auto candidate = PreparedVarPortfolio::create(fixture.positions, reference.set(), evaluation);
   if (!candidate) {
     set_error(fixture, candidate.error().to_string());
@@ -506,6 +585,7 @@ append_option_position(const Lot &lot, const MarketSnapshot &reference,
     set_error(fixture, "aggregate YTD SP100 replay exceeds the cold economic parity tolerance");
     return false;
   }
+  print_validation_block(aggregate_frames);
   const std::string pnl_trace_path = environment_value("ATX_VAR_PNL_TSV");
   if (!pnl_trace_path.empty() &&
       !write_pnl_trace(fixture, aggregate_frames, legs, candidate->reference_legs(), pnl_trace_path,
@@ -665,6 +745,32 @@ append_option_position(const Lot &lot, const MarketSnapshot &reference,
   return fixture;
 }
 
+// [perf] F4: the pool's Auto size honours the ATX_VOL_FIT_WORKERS env cap (a
+// knob shared with the fitter, `pricing_executor.hpp`'s file header), so a
+// "tN" row can silently run fewer than N workers with no trace in the JSON --
+// inflating any wall-clock-per-worker metric a reader derives from `threads`
+// (the REQUESTED count) without knowing the pool shrank. Mirrors var.cpp's
+// own resolved_worker_count exactly (same clamp: 0 requests the full pool,
+// an explicit request clamps down to pool capacity and to n_scenarios) so
+// this counter reports precisely what replay_into's run_dynamic dispatch
+// actually resolved `threads` to for this fixture. Any metric a reader
+// derives from this JSON that divides by worker count should divide by
+// THIS, not by `threads`.
+[[nodiscard]] unsigned resolved_worker_count(std::size_t n_scenarios, unsigned requested_threads) {
+  if (n_scenarios == 0u) {
+    return 0u;
+  }
+  const unsigned capacity = pricing_executor().size() + 1u;
+  unsigned resolved = requested_threads == 0u ? capacity : std::min(requested_threads, capacity);
+  if (resolved == 0u) {
+    resolved = 1u;
+  }
+  if (static_cast<std::size_t>(resolved) > n_scenarios) {
+    resolved = static_cast<unsigned>(n_scenarios);
+  }
+  return resolved;
+}
+
 void emit_throughput(benchmark::State &state, const TerminalVarFixture &fixture, unsigned threads) {
   const double iterations = static_cast<double>(state.iterations());
   const double scenarios = static_cast<double>(fixture.scenarios.size());
@@ -691,6 +797,13 @@ void emit_throughput(benchmark::State &state, const TerminalVarFixture &fixture,
   state.counters["max_relative_value_error"] = fixture.max_relative_value_error;
   state.counters["max_relative_delta_error"] = fixture.max_relative_delta_error;
   state.counters["threads"] = static_cast<double>(threads);
+  // Additive (F4): the actual pool size replay_into's dispatch resolved
+  // `threads` to. Equal to `threads` on a healthy run; a citable-table
+  // reader should treat resolved != threads rows as run under a shrunk pool
+  // (ATX_VOL_FIT_WORKERS or a low-core host), not as this fixture's true tN
+  // throughput.
+  state.counters["resolved_workers"] =
+      static_cast<double>(resolved_worker_count(fixture.scenarios.size(), threads));
 }
 
 void run_terminal_var(benchmark::State &state, unsigned threads,
@@ -707,6 +820,7 @@ void run_terminal_var(benchmark::State &state, unsigned threads,
   config.projection_execution = QueryExecution::ColdReference;
   config.valuation_execution = QueryExecution::ColdReference;
   config.projection_solve_policy = solve_policy;
+  config.base_mark_source = base_mark_source_from_environment();
 
   for (auto _ : state) {
     const auto status = fixture.prepared->replay_into(fixture.scenarios, frames, {}, config);
@@ -718,6 +832,16 @@ void run_terminal_var(benchmark::State &state, unsigned threads,
     benchmark::ClobberMemory();
   }
   emit_throughput(state, fixture, threads);
+  state.counters["harvested_base_marks"] =
+      config.base_mark_source == VarBaseMarkSource::HarvestedFromSolver ? 1.0 : 0.0;
+  // cnt_* columns for ONE untimed replay, so keep/revert decisions on this
+  // fixture have a wall-free, host-load-immune basis. Compiled out entirely
+  // (and emits no columns) unless the build set ATX_VOL_COUNTERS.
+  dump_counters(state, [&] {
+    const auto status = fixture.prepared->replay_into(fixture.scenarios, frames, {}, config);
+    benchmark::DoNotOptimize(frames.data());
+    (void)status;
+  });
 }
 
 void register_all() {

@@ -3179,11 +3179,15 @@ Status dispersion_run_projected_var(const fs::path &run_dir, CancelToken cancel)
                 scenarios.push_back(
                     {owners.back()->ts_ns(), &owners.back()->set()});
               }
+              // I2: this route feeds projected_historical_var, so marks must
+              // be cold-confirmed like VarEvaluationConfig's own default --
+              // never silently inherit whatever query tier the loaded
+              // snapshots happen to carry.
               ATX_TRY_VOID(prepared.evaluate_into(
                   scenarios, output_frames.subspan(batch_start, batch_size),
                   output_legs.subspan(batch_start * prepared.n_positions(),
                                       batch_size * prepared.n_positions()),
-                  evaluation_config));
+                  evaluation_config, QueryExecution::ColdReference));
             }
             return Ok();
           },

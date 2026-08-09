@@ -16,6 +16,7 @@
 #include "atx/vol/contract_projection.hpp"
 #include "atx/vol/portfolio_pricer.hpp"
 #include "atx/vol/priced_surface.hpp"
+#include "atx/vol/simd/cpu.hpp"
 #include "atx/vol/strategy.hpp"
 #include "atx/vol/surface_parity.hpp"
 #include "atx/vol/vol_curve.hpp"
@@ -541,6 +542,104 @@ TEST(ContractProjection, BatchDeltaSolveRowsAreCompositionInvariantAndRepeatable
   }
 }
 
+// [solver] Claimed-but-untested invariant #2: pack-composition invariance of
+// solve_american_delta_batch's OWN strikes/deltas, at its exact request shape
+// (EvalField::FirstOrder, reduced GreekNeeds, ColdReference), when the SAME
+// rows are split into exactly two independent batch calls instead of one.
+// Distinct from BatchDeltaSolveRowsAreCompositionInvariantAndRepeatable just
+// above in two ways it actually doesn't cover: that test's four sub-spans are
+// each compared, one at a time, against the FULL 30-row batch -- never
+// against each other as a complementary two-way partition covering every
+// row (the brief's literal "split into two packs") -- and none of its four
+// cases includes a single hard/fallback-routed row (it only ever solves the
+// easy 30-row grid). This test does both: cuts the full row set into exactly
+// two packs at row 23 (three rows into the grid's third, 10-row, same-T
+// maturity block -- a larger, differently-placed same-T fragment than
+// {10,22}'s existing 2-row one), and appends deep-wing/short-maturity hard
+// rows (mirrors BatchDeltaSolveRoutesHardRowsThroughScalarFallbackAndStillConfirms)
+// so the invariant is exercised through multi-pass active-set churn and the
+// scalar fallback tail straddling the pack boundary, not only single-pass
+// rows.
+TEST(ContractProjection, BatchSolveIsPackCompositionInvariantAtSolverRequestShape) {
+  const std::int64_t now = timestamp(2026, 7, 10);
+  const PricedSurface surface = make_surface(2u, 120.0, now);
+  const BatchDeltaGrid grid = make_batch_delta_grid(now);
+  const std::size_t n_easy = grid.T.size();
+  ASSERT_GE(n_easy, 30u);
+
+  const auto month_expiry = resolve_projected_expiry(now, ProjectedMaturitySpec::months(3));
+  ASSERT_TRUE(month_expiry) << month_expiry.error().to_string();
+  const double month_t = static_cast<double>(*month_expiry - now) / kNsPerYear;
+
+  std::vector<double> T = grid.T;
+  std::vector<Side> side = grid.side;
+  std::vector<double> target = grid.target;
+  for (const double hard_target : {0.95, 0.999}) {
+    for (const Side s : {Side::Call, Side::Put}) {
+      T.push_back(month_t);
+      side.push_back(s);
+      target.push_back(hard_target);
+    }
+  }
+  const std::size_t n = T.size();
+  ASSERT_GT(n, n_easy);
+
+  constexpr double tolerance = 1.0e-7;
+  AmericanDeltaBatchScratch whole_scratch;
+  BatchDeltaOutputs whole(n);
+  const Status whole_solved =
+      solve_american_delta_batch(surface, T, side, target, tolerance, whole_scratch, whole.strike,
+                                 whole.achieved, whole.evaluations, whole.row_status);
+  ASSERT_TRUE(whole_solved) << (whole_solved ? std::string{} : whole_solved.error().to_string());
+
+  // Row 23 sits mid-way through the grid's third maturity block (rows
+  // [20,30): 5 Call targets then 5 Put targets, all sharing one bit-identical
+  // T) -- neither a maturity boundary nor a side boundary, so pack A's tail
+  // and pack B's head are genuinely two halves of what would otherwise be one
+  // contiguous same-T, same-side laned run.
+  const std::size_t split = 23u;
+  ASSERT_LT(split, n_easy);
+
+  const auto solve_pack = [&](std::size_t begin, std::size_t count) {
+    AmericanDeltaBatchScratch pack_scratch;
+    BatchDeltaOutputs pack(count);
+    const Status solved = solve_american_delta_batch(
+        surface, std::span<const double>(T).subspan(begin, count),
+        std::span<const Side>(side).subspan(begin, count),
+        std::span<const double>(target).subspan(begin, count), tolerance, pack_scratch, pack.strike,
+        pack.achieved, pack.evaluations, pack.row_status);
+    return std::pair{solved, std::move(pack)};
+  };
+
+  auto [pack_a_solved, pack_a] = solve_pack(0u, split);
+  auto [pack_b_solved, pack_b] = solve_pack(split, n - split);
+  ASSERT_TRUE(pack_a_solved) << (pack_a_solved ? std::string{} : pack_a_solved.error().to_string());
+  ASSERT_TRUE(pack_b_solved) << (pack_b_solved ? std::string{} : pack_b_solved.error().to_string());
+
+  bool any_multi_pass = false;
+  for (std::size_t i = 0; i < n; ++i) {
+    ASSERT_TRUE(whole.row_status[i]) << "row " << i;
+    const bool in_a = i < split;
+    const BatchDeltaOutputs &pack = in_a ? pack_a : pack_b;
+    const std::size_t j = in_a ? i : i - split;
+    ASSERT_TRUE(pack.row_status[j]) << "row " << i;
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(whole.strike[i]),
+              std::bit_cast<std::uint64_t>(pack.strike[j]))
+        << "row " << i;
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(whole.achieved[i]),
+              std::bit_cast<std::uint64_t>(pack.achieved[j]))
+        << "row " << i;
+    if (i >= n_easy && whole.evaluations[i] > 1u) {
+      any_multi_pass = true;
+    }
+  }
+  // Sanity: the appended hard rows genuinely drove multi-pass/fallback
+  // routing (evaluations_out beyond a single laned pass), so the bit-equality
+  // above is not merely trivial single-pass agreement.
+  EXPECT_TRUE(any_multi_pass)
+      << "expected at least one appended hard row to exceed a single evaluation";
+}
+
 TEST(ContractProjection, BatchDeltaSolveRejectsStructurallyInvalidSpans) {
   const PricedSurface surface = make_surface(2u, 120.0, timestamp(2026, 7, 10));
   const std::vector<double> T = {0.25, 0.25};
@@ -658,6 +757,250 @@ TEST(ContractProjection, BatchDeltaSolveRoutesHardRowsThroughScalarFallbackAndSt
       << "expected at least one hard row's evaluations_out to exceed the batch pass budget, "
          "proving the scalar fallback tail actually ran";
   EXPECT_LE(median_of(all_evaluations), 4.0);
+}
+
+// ── Task 7: base-mark harvest bit-parity pin ─────────────────────────────────
+
+// A >=200-row fixture spanning six maturities, both sides, eighteen delta
+// targets and a deep-wing/short-maturity hard-row tail (the same shape
+// BatchDeltaSolveRoutesHardRowsThroughScalarFallbackAndStillConfirms uses), so
+// the harvest pin below covers single-pass, multi-pass and scalar-fallback-tail
+// rows rather than only the easy interior.
+struct HarvestParityGrid {
+  std::vector<double> T;
+  std::vector<Side> side;
+  std::vector<double> target;
+};
+
+HarvestParityGrid make_harvest_parity_grid(std::int64_t now) {
+  HarvestParityGrid grid;
+  const auto push_t = [&](const ProjectedMaturitySpec &maturity) -> double {
+    const auto expiry = resolve_projected_expiry(now, maturity);
+    if (!expiry) {
+      ADD_FAILURE() << "harvest grid expiry: " << expiry.error().to_string();
+      return 0.0;
+    }
+    return static_cast<double>(*expiry - now) / kNsPerYear;
+  };
+  // Maturity-major ordering keeps every maturity's 36 rows contiguous and
+  // bit-identical in T, which is the laned evaluate_batch run shape the solver
+  // actually sees from resolve_group_contracts_cross_sectional.
+  for (const ProjectedMaturitySpec &maturity :
+       {ProjectedMaturitySpec::days(3), ProjectedMaturitySpec::days(30),
+        ProjectedMaturitySpec::months(3), ProjectedMaturitySpec::years(0.5),
+        ProjectedMaturitySpec::years(1.0), ProjectedMaturitySpec::years(2.0)}) {
+    const double t = push_t(maturity);
+    for (const Side side : {Side::Call, Side::Put}) {
+      for (const double target : {0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.55,
+                                  0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90}) {
+        grid.T.push_back(t);
+        grid.side.push_back(side);
+        grid.target.push_back(target);
+      }
+    }
+  }
+  const double month_t = push_t(ProjectedMaturitySpec::months(3));
+  const double year_t = push_t(ProjectedMaturitySpec::years(2.0));
+  const double short_t = push_t(ProjectedMaturitySpec::days(3));
+  for (const auto &[t, target] : {std::pair{month_t, 0.95}, std::pair{month_t, 0.999},
+                                  std::pair{year_t, 0.999}, std::pair{short_t, 0.02}}) {
+    for (const Side side : {Side::Call, Side::Put}) {
+      grid.T.push_back(t);
+      grid.side.push_back(side);
+      grid.target.push_back(target);
+    }
+  }
+  return grid;
+}
+
+// Task 7's decision test. It was written to settle "is the harvested mark
+// bit-identical to the dedicated EvalField::Price pass?" and the MEASURED ANSWER
+// is NO -- close to it, but not it -- so the pins below are a `<=` bound on the
+// measured gap plus the one bit-exact promise the harvest really makes.
+//
+// WHY THEY DIFFER (this is an ENTRY-POINT difference, not an ISA one): the
+// solver requests the analytic FirstOrder bundle, so a harvested mark is
+// `american_greeks_al(...).price`, while the dedicated pass requests
+// EvalField::Price with analytic=false, so its mark is `american_price(...)`.
+// Both are cold Andersen-Lake solves of the same contract; they are not the same
+// arithmetic. A secondary ISA effect rides on top: evaluate_batch(Price)'s
+// wrapper packs into the AVX2 kernel only when a same-T run fills a 4-lane pack
+// and otherwise calls that same scalar american_price.
+//
+// There are two dedicated-pass oracles, one per VaR route: evaluate_batch(Price)
+// is what evaluate_scenario_batched runs on the aggregate route, and the scalar
+// evaluate(Price) is what finish_option_leg runs on the retained-leg route. This
+// fixture's 36-row same-T runs DO fill AVX2 packs, so it exercises both; note
+// that the SP100 production fixture does NOT (its same-T runs average 1.87
+// lanes, so its dedicated pass is entirely scalar american_price and the scalar
+// oracle below is the one that governs there).
+//
+// Measured on this 224-row fixture, 2026-08-08, i7-1260P with have_avx2()==true,
+// in BOTH configurations -- Debug (build/) and Release+LTO (build-rel/) --
+// which produced BIT-IDENTICAL worst gaps:
+//
+//   * 4/4 scalar-fallback-tail rows reproduce the SCALAR evaluate(Price) mark
+//     bit for bit -- by construction, the tail harvests that exact call.
+//   * 218/220 laned-accepted rows reproduce evaluate_batch(Price) bit for bit.
+//     The two exceptions are the deep-wing 3-day rows (|delta| target 0.02),
+//     which differ by <= 1.0954527921980049e-14 relative.
+//   * Debug 165/224 and Release 166/224 rows differ from the SCALAR
+//     evaluate(Price), both by <= 8.7408957739219891e-14 relative. Only the
+//     COUNT moves between build types; the worst gap does not, which is why the
+//     `<=` pin below needs no per-config value.
+//
+// So the harvest is not bit-identical to the dedicated pass, but it is ~4 orders
+// of magnitude inside the 1e-9 economic gate. Per the Task 7 brief that verdict
+// keeps VarBaseMarkSource::DedicatedPricePass as the default. The SP100 P&L
+// parity rerun the brief asks for before any default flip WAS run (worst drift
+// 1.5e-12 relative on scenario P&L); see task-7-report.md for the numbers and
+// the decision not to take the flip in this task.
+TEST(ContractProjection, HarvestedSolverPriceMatchesDedicatedPricePassWithinPinnedGap) {
+  const std::int64_t now = timestamp(2026, 7, 10);
+  const PricedSurface surface = make_surface(2u, 120.0, now);
+  const HarvestParityGrid grid = make_harvest_parity_grid(now);
+  const std::size_t n = grid.T.size();
+  ASSERT_GE(n, 200u);
+
+  constexpr double tolerance = 1.0e-7;
+  AmericanDeltaBatchScratch scratch;
+  BatchDeltaOutputs out(n);
+  std::vector<double> harvested(n, 0.0);
+  const Status solved = solve_american_delta_batch(surface, grid.T, grid.side, grid.target,
+                                                   tolerance, scratch, out.strike, out.achieved,
+                                                   out.evaluations, out.row_status, harvested);
+  ASSERT_TRUE(solved) << (solved ? std::string{} : solved.error().to_string());
+
+  // Oracle 1 -- the aggregate route's dedicated pass: one laned
+  // evaluate_batch(Price) over the accepted strikes, at the same cold
+  // execution, with the same analytic flag var.cpp passes.
+  std::vector<double> batch_iv(n, 0.0);
+  std::vector<double> batch_price(n, 0.0);
+  std::vector<Status> batch_status(n);
+  PricedSurface::EvaluationSoA batch_out;
+  batch_out.iv = batch_iv;
+  batch_out.price = batch_price;
+  batch_out.status = batch_status;
+  const Status priced =
+      surface.evaluate_batch(out.strike, grid.T, grid.side, PricedSurface::EvalField::Price, false,
+                             batch_out, simd::SimdIsa::Auto, QueryExecution::ColdReference);
+  ASSERT_TRUE(priced) << (priced ? std::string{} : priced.error().to_string());
+
+  std::size_t n_multi_pass = 0;
+  std::size_t n_fallback = 0;
+  std::size_t n_laned_vs_batch_mismatch = 0;
+  std::size_t n_fallback_vs_scalar_mismatch = 0;
+  std::size_t n_batch_bit_mismatch = 0;
+  std::size_t n_scalar_bit_mismatch = 0;
+  std::size_t n_oracle_disagreement = 0;
+  double max_batch_relative_gap = 0.0;
+  double max_scalar_relative_gap = 0.0;
+  for (std::size_t i = 0; i < n; ++i) {
+    ASSERT_TRUE(out.row_status[i]) << "row " << i << ": " << out.row_status[i].error().to_string();
+    ASSERT_TRUE(std::isfinite(harvested[i])) << "row " << i << " harvested a non-finite mark";
+    EXPECT_GT(harvested[i], 0.0) << "row " << i;
+    if (out.evaluations[i] > 1u) {
+      ++n_multi_pass;
+    }
+    // evaluations_out beyond the batch pass budget is the observable signature
+    // of a row the laned passes gave up on and the scalar fallback tail
+    // re-solved (the solver exposes no per-row route flag).
+    const bool fallback_row = out.evaluations[i] > kMirroredMaxBatchDeltaPasses;
+    n_fallback += fallback_row ? 1u : 0u;
+
+    // Oracle 2 -- the retained-leg route's dedicated mark.
+    const PricedSurface::FusedResult scalar =
+        surface.evaluate(out.strike[i], grid.T[i], grid.side[i], PricedSurface::EvalField::Price,
+                         false, QueryExecution::ColdReference);
+    ASSERT_TRUE(scalar.status) << "row " << i << ": " << scalar.status.error().to_string();
+    ASSERT_TRUE(batch_status[i]) << "row " << i << ": " << batch_status[i].error().to_string();
+
+    const auto relative_gap = [&](double oracle) {
+      return oracle == 0.0 ? std::fabs(harvested[i] - oracle)
+                           : std::fabs(harvested[i] - oracle) / std::fabs(oracle);
+    };
+    const bool matches_batch =
+        std::bit_cast<std::uint64_t>(harvested[i]) == std::bit_cast<std::uint64_t>(batch_price[i]);
+    const bool matches_scalar =
+        std::bit_cast<std::uint64_t>(harvested[i]) == std::bit_cast<std::uint64_t>(scalar.price);
+    if (!matches_batch) {
+      ++n_batch_bit_mismatch;
+      max_batch_relative_gap = std::max(max_batch_relative_gap, relative_gap(batch_price[i]));
+    }
+    if (!matches_scalar) {
+      ++n_scalar_bit_mismatch;
+      max_scalar_relative_gap = std::max(max_scalar_relative_gap, relative_gap(scalar.price));
+    }
+    // The two ORACLES against each other, with the harvest out of the picture
+    // entirely. This is the PRE-EXISTING gap between the aggregate route's
+    // evaluate_batch(Price) and the retained route's scalar evaluate(Price) --
+    // measuring it here is what lets the header comment attribute the harvest's
+    // gap to a route difference that already existed rather than to the harvest.
+    if (std::bit_cast<std::uint64_t>(batch_price[i]) !=
+        std::bit_cast<std::uint64_t>(scalar.price)) {
+      ++n_oracle_disagreement;
+    }
+    if (fallback_row) {
+      n_fallback_vs_scalar_mismatch += matches_scalar ? 0u : 1u;
+    } else {
+      n_laned_vs_batch_mismatch += matches_batch ? 0u : 1u;
+    }
+  }
+  const auto summary = [&] {
+    return testing::Message() << " [n=" << n << " multi_pass=" << n_multi_pass
+                              << " fallback=" << n_fallback
+                              << " vs_batch_mismatch=" << n_batch_bit_mismatch
+                              << " vs_scalar_mismatch=" << n_scalar_bit_mismatch
+                              << " laned_vs_batch_mismatch=" << n_laned_vs_batch_mismatch
+                              << " fallback_vs_scalar_mismatch=" << n_fallback_vs_scalar_mismatch
+                              << " oracle_disagreement=" << n_oracle_disagreement
+                              << " max_batch_gap=" << max_batch_relative_gap
+                              << " max_scalar_gap=" << max_scalar_relative_gap << "]";
+  };
+
+  // Coverage: the pins must not be a statement about easy single-pass rows only.
+  EXPECT_GT(n_multi_pass, 0u) << "fixture drove no multi-pass row";
+  EXPECT_GT(n_fallback, 0u) << "fixture drove no scalar-fallback-tail row";
+
+  // PIN 1 -- the one bit-exact promise the harvest makes on its own terms: a
+  // fallback-tail row's mark IS the scalar route's own evaluate(Price) call, so
+  // a harvested tail row must reproduce a pure scalar valuation exactly. This
+  // is the invariant that keeps the rare tail from importing laned-kernel noise
+  // for rows the laned passes never solved.
+  EXPECT_EQ(n_fallback_vs_scalar_mismatch, 0u)
+      << "a fallback-tail row failed to reproduce the scalar evaluate(Price) mark" << summary();
+
+  // PIN 2 -- when the dedicated pass runs the SAME (AVX2-packed) route the
+  // solver's bundle does, the harvested mark tracks it almost exactly, so the
+  // harvest is not introducing arithmetic of its own. Pinned as a
+  // dominant-majority bound rather than "all rows": the measured exceptions are
+  // deep-wing short-dated rows (2/220 here), so an exact count would be fixture-
+  // and ISA-brittle while the claim is not. ISA-guarded for the same reason
+  // Var.HarvestedBaseMarksAreSharedBitExactlyByAggregateAndRetainedRoutes is --
+  // without AVX2 the batch wrapper is scalar american_price and this becomes a
+  // restatement of the scalar comparison below.
+  if (simd::have_avx2()) {
+    EXPECT_GE(n - n_batch_bit_mismatch, (n * 95u) / 100u)
+        << "the harvested mark stopped tracking the batched price route" << summary();
+    // The two dedicated-pass oracles ALREADY disagree with each other on this
+    // fixture, with the harvest nowhere in the picture. That is the pre-existing
+    // route split the header comment attributes the gap to; if this ever hits
+    // zero, the scalar pin below has silently become a different claim.
+    EXPECT_GT(n_oracle_disagreement, 0u)
+        << "evaluate_batch(Price) and scalar evaluate(Price) agreed everywhere, so this "
+           "fixture no longer demonstrates the pre-existing route split"
+        << summary();
+  }
+
+  // PIN 3 -- the MEASURED gap as a `<=` bound (Task 7 brief, requirement 2).
+  // Worst case on this fixture, BIT-IDENTICAL in Debug and Release+LTO:
+  // 1.0954527921980049e-14 against evaluate_batch(Price) and
+  // 8.7408957739219891e-14 against the scalar evaluate(Price). The bound below
+  // leaves an order of magnitude of headroom and still sits three decades inside
+  // the engine's 1e-9 aggregate-vs-retained gate.
+  constexpr double kMaxHarvestRelativeGap = 1.0e-12;
+  EXPECT_LE(max_batch_relative_gap, kMaxHarvestRelativeGap) << summary();
+  EXPECT_LE(max_scalar_relative_gap, kMaxHarvestRelativeGap) << summary();
 }
 
 TEST(ContractProjection, BatchDeltaSolveReportsRowFailuresWithoutInventingStrikes) {
@@ -801,6 +1144,122 @@ TEST(ContractProjection, BatchDeltaSolveEvaluationCountsSaturate) {
   // The hard row's count must exceed the batch-only budget: proof the
   // fallback's evaluations were folded in via add_evaluations, not dropped.
   EXPECT_GT(out.evaluations[hard_row], kMirroredMaxBatchDeltaPasses) << "hard row " << hard_row;
+}
+
+// [solver] F1: the batch solver's internal acceptance test
+// (contract_projection.cpp's run_pass, "Half-tolerance internal acceptance")
+// accepts a row at half the caller's tolerance and relies on an ASSUMED
+// |laned delta - scalar delta| <= tolerance/2 kernel gap so the independent
+// SCALAR cold oracle still holds at the full tolerance. Nothing pinned that
+// gap before this test: the only existing kernel-parity gate
+// (PricedSurface.EvaluateBatchGreeksForceAvx2MatchesScalarWithinGate,
+// priced_surface_test.cpp:848) tolerates up to ~1e-7 abs + 1e-5 rel (~4e-6 at
+// a 0.40 delta) -- two orders of magnitude looser than the 5e-8 headroom the
+// solver's half-tolerance margin assumes at the DEFAULT delta_tolerance
+// (1e-7). This test pins the bound directly, at the solver's EXACT request
+// shape: EvalField::FirstOrder (not the full Iv|Price|FirstOrder|SecondOrder
+// bundle run_pass never requests), the reduced
+// GreekNeeds{vega=false, rho=false, charm=false}, and
+// QueryExecution::ColdReference -- mirroring contract_projection.cpp's
+// run_pass call to evaluate_batch exactly (same EvalField, analytic flag,
+// SimdIsa::Auto, execution, and GreekNeeds).
+TEST(ContractProjection, BatchLanedDeltaMatchesScalarColdOracleAtSolverRequestShape) {
+  const std::int64_t now = timestamp(2026, 7, 10);
+  const PricedSurface surface = make_surface(2u, 120.0, now);
+
+  // >= 200 (strike, expiry, side) rows: a maturity ladder from very short to
+  // 2Y crossed with a wide moneyness sweep (deep-ITM through deep-OTM), the
+  // region the review flags as where laned/scalar boundary-solve divergence
+  // is documented to concentrate (deep-ITM, near-exercise-boundary lanes).
+  std::vector<double> K;
+  std::vector<double> T;
+  std::vector<Side> side;
+  for (const double t : {0.01, 0.02, 0.05, 0.10, 0.25, 0.50, 1.00, 2.00}) {
+    for (int i = 0; i < 30; ++i) {
+      const double moneyness = 0.50 + 1.40 * static_cast<double>(i) / 29.0; // 0.50x .. 1.90x
+      const double strike = 120.0 * moneyness;
+      for (const Side s : {Side::Call, Side::Put}) {
+        K.push_back(strike);
+        T.push_back(t);
+        side.push_back(s);
+      }
+    }
+  }
+  const std::size_t n = K.size();
+  ASSERT_GE(n, 200u);
+
+  std::vector<double> out_iv(n), out_price(n);
+  std::vector<AmericanGreeks> out_greeks(n);
+  std::vector<Status> out_status(n);
+  const PricedSurface::EvaluationSoA out{out_iv, out_price, out_greeks, out_status, {}, {}};
+  const Status evaluated = surface.evaluate_batch(
+      K, T, side, PricedSurface::EvalField::FirstOrder, /*analytic=*/true, out, simd::SimdIsa::Auto,
+      QueryExecution::ColdReference, GreekNeeds{.vega = false, .rho = false, .charm = false});
+  ASSERT_TRUE(evaluated) << (evaluated ? std::string{} : evaluated.error().to_string());
+
+  double max_gap = 0.0;
+  std::size_t max_gap_row = 0;
+  std::size_t compared = 0;
+  for (std::size_t i = 0; i < n; ++i) {
+    if (!out_status[i]) {
+      continue; // per-row market/domain error, not part of the parity claim
+    }
+    const auto scalar = surface.delta(K[i], T[i], side[i], QueryExecution::ColdReference);
+    ASSERT_TRUE(scalar) << "row " << i << ": " << scalar.error().to_string();
+    ASSERT_TRUE(std::isfinite(out_greeks[i].delta)) << "row " << i;
+    const double gap = std::fabs(out_greeks[i].delta - *scalar);
+    if (gap > max_gap) {
+      max_gap = gap;
+      max_gap_row = i;
+    }
+    ++compared;
+  }
+  ASSERT_GE(compared, 200u);
+  EXPECT_LE(max_gap, 5.0e-8) << "max laned-vs-scalar delta gap " << max_gap << " at row "
+                             << max_gap_row << " (K=" << K[max_gap_row] << ", T=" << T[max_gap_row]
+                             << ")";
+}
+
+// [solver] F2: solve_american_delta_batch's seed loop casts the caller's
+// std::size_t row count to std::uint32_t (active/fallback row ids and
+// evaluate_batch pack indices are uint32_t throughout); a count above
+// 2^32-1 silently truncates instead of erroring, leaving rows past the
+// truncation point untouched (caller garbage / default-Ok status) while the
+// call still returns Ok -- a silent partial result rather than a fail-loud
+// error. Constructing a >= 2^32-row span to exercise this through
+// solve_american_delta_batch itself is not practical (32+ GB of strikes), so
+// the fix (checked_row_count) is unit-tested directly.
+TEST(ContractProjection, CheckedRowCountRejectsCountsAboveUint32Max) {
+  constexpr std::size_t kUint32Max =
+      static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max());
+
+  const auto at_max = checked_row_count(kUint32Max);
+  ASSERT_TRUE(at_max) << (at_max ? std::string{} : at_max.error().to_string());
+  EXPECT_EQ(*at_max, std::numeric_limits<std::uint32_t>::max());
+
+  const auto zero = checked_row_count(std::size_t{0});
+  ASSERT_TRUE(zero);
+  EXPECT_EQ(*zero, 0u);
+
+  const auto typical = checked_row_count(std::size_t{4096});
+  ASSERT_TRUE(typical);
+  EXPECT_EQ(*typical, 4096u);
+
+  // Guard for a hypothetical 32-bit size_t build, where "kUint32Max + 1" and
+  // "1 << 32" are not representable and the bound is vacuously satisfied by
+  // every size_t value.
+  if constexpr (sizeof(std::size_t) > sizeof(std::uint32_t)) {
+    const auto one_over = checked_row_count(kUint32Max + std::size_t{1});
+    EXPECT_FALSE(one_over);
+    if (!one_over) {
+      EXPECT_EQ(one_over.error().code(), ErrorCode::OutOfRange);
+    }
+    const auto two_to_32 = checked_row_count(std::size_t{1} << 32);
+    EXPECT_FALSE(two_to_32);
+    if (!two_to_32) {
+      EXPECT_EQ(two_to_32.error().code(), ErrorCode::OutOfRange);
+    }
+  }
 }
 
 TEST(ContractProjection, ProjectedDefinitionFingerprintHelperMatchesProjection) {

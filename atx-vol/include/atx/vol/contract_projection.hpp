@@ -174,6 +174,13 @@ struct AmericanDeltaBatchScratch {
   void resize(std::size_t n);
 };
 
+// Validate that a row count fits solve_american_delta_batch's row-id space:
+// active/fallback row ids and evaluate_batch pack indices are std::uint32_t
+// throughout. Exposed (rather than kept file-local) so the bound is directly
+// unit-testable -- constructing a >= 2^32-row span to exercise it through
+// solve_american_delta_batch itself is not practical.
+[[nodiscard]] Result<std::uint32_t> checked_row_count(std::size_t n) noexcept;
+
 // Cross-sectional inverse-delta solve on ONE surface (owned or view). For each
 // row i: find strike_out[i] with | |cold American delta| - target_abs_delta[i] |
 // <= tolerance, achieved via a Black-style inverse-delta seed, laned cold
@@ -191,11 +198,27 @@ struct AmericanDeltaBatchScratch {
 // in row_status_out and never invent strikes. Deterministic: fixed row
 // order, batch-composition-invariant kernels, no cross-call state.
 // Thread-safe for concurrent calls on distinct scratch.
+//
+// `accepted_price_out` (optional; empty, or length n like every other span)
+// harvests the COLD AMERICAN MARK at each row's accepted strike -- the quantity
+// a caller would otherwise recompute in a dedicated EvalField::Price pass over
+// the solved strikes. It costs no extra laned pass: every laned FirstOrder pass
+// already materializes `AmericanGreeks::price` at the strike it evaluated, and a
+// row is accepted at exactly the strike its accepting pass evaluated, so the
+// harvested value is that pass's own price column. Rows accepted by a laned pass
+// therefore carry the laned Greek bundle's mark; rows that fell through to the
+// scalar fallback tail carry ONE scalar cold `evaluate(..., EvalField::Price,
+// ...)` at the scalar solve's own strike (the tail's bracketing solver computes
+// deltas only), which keeps the tail bit-identical to a pure scalar valuation
+// route. Rows that failed (row_status_out Err) get NaN, as do all rows when a
+// pass errors out mid-run. Harvesting is a pure function of results the solve
+// already produced, so it changes no strike, delta, evaluation count or status.
 [[nodiscard]] Status solve_american_delta_batch(
     const SurfaceRef &surface, std::span<const double> T, std::span<const Side> side,
     std::span<const double> target_abs_delta, double tolerance, AmericanDeltaBatchScratch &scratch,
     std::span<double> strike_out, std::span<double> achieved_delta_out,
-    std::span<std::uint16_t> evaluations_out, std::span<Status> row_status_out);
+    std::span<std::uint16_t> evaluations_out, std::span<Status> row_status_out,
+    std::span<double> accepted_price_out = {});
 
 // Resolve one template directly against one surface. On success the output is a
 // concrete absolute-expiry definition plus the requested mark/risk materialization.

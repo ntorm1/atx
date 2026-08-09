@@ -368,6 +368,38 @@ and the final named trace share identical provenance, is:
 C:\atx\artifacts\var\sp100_dispersion_ytd_cumulative_pnl.png
 ```
 
+### Reading the cumulative P&L chart correctly
+
+The chart title and subtitle disclose the replay semantics directly: every
+scenario restrikes each option to its reference |Δ| and relative expiry,
+re-sizes to the reference dollar delta, and reprices on the shifted surface
+(see "Historical replay semantics" above) — the cumulative line therefore
+compounds per-session restruck scenarios, not the mark-to-market P&L of
+holding the 2026-07-31 book through history. A forensic review of this trace
+(`pnl-forensics.md`, not part of this repository) decomposed the
++$6,546,715.73 total into two effects: **+$5.82M is re-basing resets**
+(+$4.87M same-day plus +$0.96M at the 12 history breaks) — the value jump
+between the one-session-aged book and the freshly restruck book — and only
+**+$0.72M is genuine held-profile revaluation drift**, the telescoped value
+change of holding a restruck-once profile from the first base date onward
+(shifted book value at the end minus base book value at the start). 89% of
+the cumulative total is therefore a methodology artifact of cumulating
+characteristic-preserving VaR scenarios, not economic drift of the replayed
+book.
+
+`plot_var_cumulative_pnl.py`'s `compute_decomposition` plots both readings:
+the total cumulative line and a `cumulative_held_drift` series shaded as the
+re-basing-reset remainder. `rebasing_reset[i] = base_value[i+1] -
+shifted_value[i]` is computed for every adjacent scenario pair, not only
+chained ones, so `cumulative_held_drift` telescopes cleanly to
+`shifted_value[last] - base_value[first]` and its endpoint on the accepted
+cross trace is +$723,044.52 (+$0.72M), matching the forensic figure exactly.
+At a history break the reset conflates the gap's own market move with the
+re-basing jump (there is no same-date aged-vs-fresh comparison across a
+break) — an accepted convention carried over from the forensic report, not a
+defect; the `chained` column on the decomposed frame records which resets are
+same-day versus break-spanning for anyone who wants to split them further.
+
 Other useful evidence files are:
 
 ```text

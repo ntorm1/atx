@@ -641,7 +641,9 @@ dispersion_book_var(const DispersionBook &book, const ProjectedMaturitySpec &mat
       [scenarios](const PreparedHistoricalProjection &prepared,
                   std::span<HistoricalProjectionFrame> frames, std::span<ProjectedOption> legs,
                   const HistoricalProjectionConfig &config) {
-        return prepared.evaluate_into(scenarios, frames, legs, config);
+        // I2: this overload feeds projected_historical_var below, so force
+        // the same cold-confirmed marks VarEvaluationConfig defaults to.
+        return prepared.evaluate_into(scenarios, frames, legs, config, QueryExecution::ColdReference);
       },
       cfg);
 }

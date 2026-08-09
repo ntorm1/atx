@@ -62,11 +62,16 @@ public:
 
   // `leg_output` is scenario-major and must contain scenarios.size()*n_positions()
   // slots. The evaluator allocates no result storage; a parallel call may create
-  // its bounded worker vector.
+  // its bounded worker vector. `execution` routes every mark/Greek/delta-solve
+  // residual this call makes; Configured (default) preserves this engine's
+  // historical behavior of inheriting each surface's own prepared query tier.
+  // VaR-path callers (dispersion_book_var and friends) pass ColdReference
+  // explicitly, matching VarEvaluationConfig's cold-by-default marks.
   [[nodiscard]] Status evaluate_into(std::span<const HistoricalProjectionScenario> scenarios,
                                      std::span<HistoricalProjectionFrame> frames,
                                      std::span<ProjectedOption> leg_output,
-                                     const HistoricalProjectionConfig &config = {}) const;
+                                     const HistoricalProjectionConfig &config = {},
+                                     QueryExecution execution = QueryExecution::Configured) const;
 
 private:
   std::vector<RelativeOptionPosition> positions_{};
