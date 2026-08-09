@@ -185,6 +185,36 @@ pre-fix track's `TrackKey` can therefore never collide with a post-fix run
 of "the same" config, because the config bytes themselves already diverge
 structurally.
 
+### FIXED — the 82-session golden NAV pin corrected to the already-current value (no economics change)
+
+`research/include/atx/vol/research/golden_pin.hpp`'s `kGolden82SessionFinalNav`
+(introduced this sprint, Task D1) shipped as `247.4065016443293` — copied from
+stale sprint/CHANGELOG prose without reproducing it against the corpus. That
+literal was already TWO generations out of date before D1 ever typed it in:
+commit `2de65c7` (2026-07-25, pre-dates this sprint) had already superseded it
+once to `247.40624124981315` ("already stale by one generation" per that
+commit's own message) and, in the same commit, applied the E1 sizing
+migration's exact ×100 rescale to `24740.624124981368`. Task E3 re-measured
+directly against the real 82-session SPY corpus at this sprint's tip and got
+`24740.624124996561` — bit-for-bit identical to Task A3's independent
+measurement earlier in this same sprint, and within 6.1e-13 relative of
+2de65c7's post-E1 figure (ordinary pricing-path drift, seven orders of
+magnitude below a cent, the same class 2de65c7 itself already catalogued as
+non-economic). `kGolden82SessionFinalNav` is corrected to `24740.624124996561`.
+
+**No `kBacktestEconomicsRev` bump.** Nothing landed in this sprint moved this
+corpus's NAV — Task A3 proved its own default-flip bit-identical before/after
+on this exact corpus, and the one other candidate (Task E1's
+`apply_to_financing`→`flat_r` routing fix, commit `5292cae`) is inert here
+because `bt-sota-baseline/run_spec.tsv` never sets
+`rate_applies_to_financing`. This is a correction of a mistyped literal, not a
+re-pin driven by a real NAV movement — bumping the rev would be wrong twice
+over: it would misrepresent what happened, and (folded into `make_engine_id()`
+→ `TrackKey`) it would invalidate every cached BacktestDb/TrackStore entry in
+the lakehouse for no economics reason at all. See `golden_pin.hpp`'s own
+comment for the full chain of evidence (git commits, control experiment,
+exact numbers).
+
 ### Tier promotion — five research-tier headers become Tier-B public surface
 
 `sweep_driver.hpp`, `track_key.hpp`, `track_store.hpp`, `catalog.hpp` and
