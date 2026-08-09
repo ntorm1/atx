@@ -3,11 +3,15 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <limits>
+#include <map>
+#include <optional>
+#include <tuple>
 #include <utility>
 
 #include "atx/core/error.hpp"
-#include "atx/vol/detail/deriv_ref_bridge.hpp" // deriv_price_on_ref / deriv_greeks_on_ref
+#include "atx/vol/detail/deriv_ref_bridge.hpp" // deriv_price_on_ref / deriv_greeks_on_ref, Task P-6 shared block
 
 namespace atx::vol {
 
@@ -89,12 +93,146 @@ constexpr double kNaN = kPriceColumnNaN;
                                                 : PriceStatus::NumericError;
 }
 
+// ── Task P-6 (GK-P book memo): book-level shared VarSwap strip ─────────────
+//
+// L VarSwap positions sharing (uid, T) each used to pay their own full
+// strip (and, on the greeks path, market-bump grid or P-4 analytic block)
+// even though none of that expensive work reads anything but (uid, T, the
+// book-wide cfg, and this uid's own certified wing band) -- see
+// `detail::VarSwapSharedBlock`'s own doc (deriv_ref_bridge.hpp) for the
+// bit-identity argument. This memo, built and consumed ONLY within one
+// `price_deriv_book` call (mirrors `pnl_attribution.cpp`'s (uid,T) pivot
+// memo, :113-127, the pattern this follows), resolves that shared block ONCE
+// per distinct key and reuses it for every row that shares it.
+//
+// KEY-FIELD AUDIT -- every field that can change what the shared block
+// computes, and why it is or is not part of the key:
+//   uid            IN KEY. Selects the surface (and its forward/rate/vol
+//                  reads) the strip integrates against.
+//   T (maturity_t) IN KEY, compared by EXACT BITS (`t_bits`, never a
+//                  tolerance -- two contracts a femtosecond apart in T must
+//                  not collide). The strip's own grid/quadrature is a
+//                  function of T.
+//   wing band      IN KEY (`wing_band_of(uid)`'s resolved value, bits +
+//                  presence). Feeds `resolve_wing_clamp` inside the strip.
+//                  Documented as "uid -> certified wing-band resolver" (a
+//                  pure function of uid), so in EVERY expected caller this
+//                  is redundant with `uid` already being in the key -- kept
+//                  as an EXPLICIT key field anyway (not assumed-constant) so
+//                  a resolver that is NOT actually pure per-uid degrades to
+//                  "separate blocks, one per distinct band observed" rather
+//                  than silently serving a stale band to a later row. Costs
+//                  nothing when the assumption holds (one wing-band value
+//                  per uid -> one map entry per uid, same as omitting it).
+//   kind-class     IN KEY, but as an ELIGIBILITY GATE rather than a stored
+//                  key dimension: only `DerivKind::VarSwap` rows ever reach
+//                  the memo at all (VolSwap/CappedVarSwap/CappedVolSwap price
+//                  through a genuinely nonlinear model layer with no such
+//                  shared strip -- P-4's own `DerivGreekMethod::AnalyticStrip`
+//                  scope draws this exact line, derivatives.hpp). Every entry
+//                  the map ever holds is therefore VarSwap by construction, so
+//                  adding `kind` as a stored key field would be a no-op --
+//                  functionally identical to gating eligibility up front,
+//                  which is what this does.
+//   cfg (whole)    NOT IN KEY, and provably so: `cfg` is ONE value for the
+//                  ENTIRE `price_deriv_book` call (a single parameter, not
+//                  per-row -- deriv_book.hpp's own signature), so it cannot
+//                  vary between two rows the SAME memo instance ever prices.
+//                  A per-row cfg field cannot cause a same-map collision
+//                  regardless of whether it is a key dimension. What DOES
+//                  gate eligibility (see `var_swap_memo_eligible` below) is
+//                  `cfg.discrete_correction_mode`: memo-eligibility requires
+//                  `== None`. `Diffusion1OverN` folds a QUADRATIC-in-K_var
+//                  addend keyed off each ROW's own remaining-fixing count
+//                  into the future leg BEFORE it becomes the shared value
+//                  this memo would cache raw -- reproducing that per row
+//                  would need caching `resolve_carry_diff`'s result too and
+//                  re-deriving the addend per row, out of this task's scope
+//                  (mirrors `DerivGreekMethod::AnalyticStrip`'s OWN identical
+//                  exclusion, and the exact class of bug P-4 shipped once
+//                  already -- a scope predicate that ignored this same field,
+//                  CHANGELOG.md). `FullMc` is reserved (`NotImplemented`)
+//                  regardless of memo. Book-wide, so gated ONCE, not per row.
+//   bumps (whole)  NOT IN KEY, same reasoning as `cfg`: one value for the
+//                  whole call. `bumps.method` (FiniteDifference vs
+//                  AnalyticStrip) selects WHICH shared sub-block
+//                  (`VarSwapSharedBlock::have_analytic`) gets built, but
+//                  every row in ONE memo instance sees the SAME `bumps`, so
+//                  there is no cross-row contamination risk to key against --
+//                  see the P-4 interaction note below.
+//   contract.strike_dec / notional / rv_spec / marking / id
+//                  NOT IN KEY, by design: these are exactly what the affine
+//                  per-row combine (`assemble_var_swap_quote`,
+//                  derivatives.cpp) applies AFTER the shared block, so two
+//                  rows differing ONLY in these fields correctly, and
+//                  intentionally, share one block. `VarSwapMemo.DiffersOnly*`
+//                  (deriv_book_test.cpp) pins that changing each of these
+//                  alone still changes the row's OWN total while the shared
+//                  block's build count stays flat.
+//   contract.cap_dec
+//                  NOT IN KEY. For a VarSwap this must be exactly 0.0 (a
+//                  nonzero cap_dec on an uncapped kind is a malformed
+//                  contract, `InvalidArgument`) -- `validate_var_swap_dispatch`
+//                  (derivatives.cpp) checks this PER ROW regardless of the
+//                  memo, so a malformed row fails correctly without needing
+//                  a key entry of its own.
+//   qty            NOT IN KEY. Applied by `price_one` itself, AFTER the
+//                  shared-block call returns, exactly as it always was
+//                  (`p.qty * g->pv`, `scaled_greeks(*g, p.qty)`) -- the memo
+//                  is entirely upstream of this multiply.
+//
+// P-4 INTERACTION (analytic vs FD, read carefully). `VarSwapSharedBlock`
+// resolves EITHER the raw FD market-bump grid OR the raw P-4 analytic block
+// for a given (uid, T) group, chosen ONCE by `bumps.method` when the group is
+// first built (`ensure_var_swap_greeks_block`, derivatives.cpp) -- never
+// both, and never re-chosen later. Because `bumps` is the SAME book-wide
+// value for every row a single `price_deriv_book` call ever prices, EVERY
+// row that reaches this memo (VarSwap, `discrete_correction_mode == None`)
+// resolves `analytic_in_scope` to the SAME boolean
+// (`bumps.method == AnalyticStrip`) -- there is no row-specific input left
+// that could route two rows of the SAME (uid, T) group to different
+// sub-blocks, so a row can never read a block built for the other method.
+// (A hypothetical FUTURE per-row bumps override would need `bumps.method`
+// added to the key -- there is none today, so it is not.) Kind-class
+// (VarSwap only) plus `discrete_correction_mode == None` is exactly P-4's
+// OWN `AnalyticStrip` scope predicate; a row this memo serves under FD would
+// have taken the SAME FD path unmemoized, and one served under AnalyticStrip
+// would have taken that SAME path -- the memo changes nothing about WHICH
+// method prices a row, only whether the strip work is repeated.
+[[nodiscard]] std::uint64_t bits_of(double x) noexcept {
+  std::uint64_t b = 0;
+  std::memcpy(&b, &x, sizeof b);
+  return b;
+}
+
+// {uid, T-bits, wing-band-present, wing-band-bits}. `std::map`'s default
+// lexicographic `<` gives deterministic, total ordering -- mirrors
+// `pnl_attribution.cpp`'s own `std::map<std::pair<uint32_t,uint64_t>,...>`
+// pivot memo exactly (same file, :113).
+using VarSwapMemoKey = std::tuple<std::uint32_t, std::uint64_t, bool, std::uint64_t>;
+
+[[nodiscard]] VarSwapMemoKey var_swap_memo_key(std::uint32_t uid, double maturity_t,
+                                               std::optional<double> wing_band) noexcept {
+  return VarSwapMemoKey{uid, bits_of(maturity_t), wing_band.has_value(),
+                        wing_band.has_value() ? bits_of(*wing_band) : 0u};
+}
+
+using VarSwapMemo = std::map<VarSwapMemoKey, detail::VarSwapSharedBlock>;
+
+// Eligibility gate ("kind-class" -- see the key-field audit above).
+// `discrete_correction_ok` is resolved ONCE, book-wide, by the caller.
+[[nodiscard]] bool var_swap_memo_eligible(const DerivContract &contract,
+                                          bool discrete_correction_ok) noexcept {
+  return discrete_correction_ok && contract.kind == DerivKind::VarSwap;
+}
+
 // Price ONE position. Never fails: every rejection is encoded in `status` with
 // a NaN-filled row, which is what keeps a bad lane from failing the call.
 [[nodiscard]] DerivPriceRow price_one(const SurfaceSet &surfaces, const DerivPosition &p,
                                       const DerivConfig &cfg, bool greeks,
                                       const DerivGreekBumps &bumps,
-                                      const WingBandResolver &wing_band_of) {
+                                      const WingBandResolver &wing_band_of,
+                                      bool discrete_correction_ok, VarSwapMemo &var_swap_memo) {
   DerivPriceRow row{};
   row.id = p.id;
   row.uid = p.uid;
@@ -120,9 +258,15 @@ constexpr double kNaN = kPriceColumnNaN;
   // mode-blind default, unchanged prior behaviour.
   const std::optional<double> wing_band = wing_band_of ? wing_band_of(p.uid) : std::nullopt;
 
+  const bool use_memo = var_swap_memo_eligible(p.contract, discrete_correction_ok);
+
   if (greeks) {
     const Result<DerivGreeks> g =
-        detail::deriv_greeks_on_ref(ref, p.contract, cfg, bumps, wing_band);
+        use_memo ? detail::deriv_greeks_var_swap_on_ref_shared(
+                       ref, p.contract, cfg, bumps,
+                       var_swap_memo[var_swap_memo_key(p.uid, p.contract.maturity_t, wing_band)],
+                       wing_band)
+                : detail::deriv_greeks_on_ref(ref, p.contract, cfg, bumps, wing_band);
     if (!g.has_value()) {
       row.status = status_for(g.error());
       return row;
@@ -134,7 +278,12 @@ constexpr double kNaN = kPriceColumnNaN;
     return row;
   }
 
-  const Result<DerivQuote> q = detail::deriv_price_on_ref(ref, p.contract, cfg, wing_band);
+  const Result<DerivQuote> q =
+      use_memo ? detail::deriv_price_var_swap_on_ref_shared(
+                     ref, p.contract, cfg,
+                     var_swap_memo[var_swap_memo_key(p.uid, p.contract.maturity_t, wing_band)],
+                     wing_band)
+              : detail::deriv_price_on_ref(ref, p.contract, cfg, wing_band);
   if (!q.has_value()) {
     row.status = status_for(q.error());
     return row;
@@ -223,10 +372,18 @@ Result<DerivPriceFrame> price_deriv_book(const SurfaceSet &surfaces,
   DerivPriceFrame frame;
   frame.rows.reserve(book.size());
   frame.totals = open_totals(greeks);
+  // Task P-6 (GK-P book memo): resolved ONCE, book-wide -- see the key-field
+  // audit above `var_swap_memo_eligible`'s own doc for why `cfg` as a whole,
+  // and this field specifically, is never a per-row concern.
+  const bool discrete_correction_ok = cfg.discrete_correction_mode == DerivDiscreteCorrection::None;
+  VarSwapMemo var_swap_memo;
   // Serial, fixed input order: the float-add association is the book's own
-  // order, so the totals are bit-reproducible for a given input.
+  // order, so the totals are bit-reproducible for a given input. The memo
+  // does not change this -- it changes HOW EXPENSIVELY a row's own numbers
+  // are produced, never their value or the order they are produced in.
   for (const DerivPosition &p : book) {
-    frame.rows.push_back(price_one(surfaces, p, cfg, greeks, bumps, wing_band_of));
+    frame.rows.push_back(
+        price_one(surfaces, p, cfg, greeks, bumps, wing_band_of, discrete_correction_ok, var_swap_memo));
     accumulate(frame, frame.rows.back(), greeks);
   }
   return Ok(std::move(frame));

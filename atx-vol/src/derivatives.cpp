@@ -20,6 +20,7 @@
 
 #include "atx/core/error.hpp"
 #include "atx/vol/black76.hpp"
+#include "atx/vol/detail/counters.hpp" // Task P-6: ledger::Solve::VarSwapStripEvals
 #include "atx/vol/detail/deriv_ref_bridge.hpp" // Task 9: SurfaceRef-native entry points
 #include "atx/vol/detail/legacy_surface.hpp" // Essvi/SviSurface (demoted, S4-T21)
 #include "atx/vol/detail/risk_surface_validation.hpp" // RiskSurfaceValidationConfig (wing-clamp band assert)
@@ -455,6 +456,97 @@ template <class SurfaceT>
   carry_strip_grid(out, strip_quote);
   out.flags = flags;
   return Ok(out);
+}
+
+// ── Task P-6 (GK-P book memo): price_var_swap split into strip/assemble ────
+//
+// L VarSwap rows sharing (uid, T) each pay their own full `price_var_swap`
+// above, including its OWN `var_swap_fair_strike` call, even though that
+// call reads nothing but (surface, curves, T, cfg) -- none of it depends on
+// `contract.strike_dec` / `notional` / `rv_spec`. These two functions split
+// that call out so `deriv_book.cpp`'s book-level memo can resolve it ONCE per
+// (uid, T) and reuse it for every row, while the CONTRACT-SPECIFIC tail (aged
+// blend, discount, strike offset) still runs once per row, unchanged.
+//
+// SCOPE: `cfg.discrete_correction_mode == None` only. `Diffusion1OverN` folds
+// a QUADRATIC-in-K_var addend into `k_var_future_dec` keyed off the ROW's own
+// `n_remaining` (`price_var_swap`'s own branch, above) -- reproducing that
+// here would mean caching `resolve_carry_diff`'s result too and re-deriving
+// the addend per row, which this task's scope does not cover (mirrors Task
+// P-4's own `AnalyticStrip` scope exclusion for the identical reason -- see
+// `DerivGreekMethod`'s doc, derivatives.hpp). A caller (`deriv_book.cpp`)
+// checks `cfg.discrete_correction_mode` itself before using these; they do
+// not re-check it, since `cfg` is one book-wide value for the whole memo.
+//
+// These intentionally DUPLICATE `price_var_swap`'s tail rather than having it
+// call through them, to keep that heavily-tested function completely
+// unchanged. `VarSwapMemo.*` (deriv_book_test.cpp) pins the two paths
+// bit-identical against each other; keep them in sync.
+
+// The STRIP-ONLY half: resolves K_var(T), nothing contract-specific. Safe to
+// cache and reuse across every row sharing (surface, T, cfg).
+template <class SurfaceT>
+[[nodiscard]] Result<DerivQuote> resolve_var_swap_strip_raw(const SurfaceT& surface,
+                                                             const CurveSet& curves, double T,
+                                                             const DerivConfig& cfg) {
+  if (!(T > 0.0)) {
+    return Err(ErrorCode::InvalidArgument, "var swap needs T > 0 to price the future leg");
+  }
+  return var_swap_fair_strike(surface, curves, T, cfg);
+}
+
+// The CONTRACT-SPECIFIC half: `price_var_swap`'s tail, fed a precomputed (or
+// absent, for a fully-aged row that never needed one) strip result instead of
+// resolving it fresh. `df`/`df_fallback` are `deriv_df_at_T(curves, T, ...)`'s
+// own outputs -- also uid/T-only, so the caller resolves them once per group
+// too. `raw` is `std::nullopt` exactly when
+// `!(rv.n_obs_total == 0u || rv.n_obs_done < rv.n_obs_total)` (fully aged) --
+// the caller evaluates that same gate before deciding whether to look up a
+// strip block at all.
+[[nodiscard]] DerivQuote assemble_var_swap_quote(const DerivContract& contract, double df,
+                                                  bool df_fallback,
+                                                  const std::optional<DerivQuote>& raw) {
+  const RealizedVarianceSpec& rv = contract.rv_spec;
+  const bool strip_ran = raw.has_value();
+  const double k_var_future_dec = strip_ran ? raw->fair_strike_dec : 0.0;
+
+  const double total = aged_total_variance_dec(rv.rv_done_dec, k_var_future_dec, rv.n_obs_done,
+                                               rv.n_obs_total);
+  const double pv = df * contract.notional * (total - contract.strike_dec);
+
+  DerivFlags flags = df_fallback ? DerivFlags::DfFallback : DerivFlags::None;
+  if (strip_ran) {
+    flags |= raw->flags;
+  }
+  if (rv.n_obs_done > 0u) {
+    flags |= DerivFlags::Aged;
+  }
+  if (rv.n_obs_total > 0u && rv.n_obs_done >= rv.n_obs_total) {
+    flags |= DerivFlags::FullyAged;
+  }
+
+  double w_done = 0.0;
+  double w_future = 1.0;
+  if (rv.n_obs_total > 0u) {
+    w_done = static_cast<double>(rv.n_obs_done) / static_cast<double>(rv.n_obs_total);
+    w_future = 1.0 - w_done;
+  }
+
+  DerivQuote out{};
+  out.fair_strike_dec = total;  // fair strike that prices the contract to PV = 0
+  out.fair_strike_points = 1.0e4 * total;
+  out.pv = pv;
+  out.undiscounted_expectation_dec = total;
+  out.uncapped_var_dec = strip_ran ? raw->uncapped_var_dec : 0.0;
+  out.accrued_component_dec = w_done * rv.rv_done_dec;
+  out.future_component_dec = w_future * k_var_future_dec;
+  out.convexity_adjustment_dec = 0.0;
+  out.integration_error_est = strip_ran ? raw->integration_error_est : 0.0;
+  if (strip_ran) {
+    carry_strip_grid(out, *raw);
+  }
+  out.flags = flags;
+  return out;
 }
 
 // Carr-Lee ATMF-straddle vol-strike, K_vol ~= sqrt(2 pi / T) * C_ATMF(T) /
@@ -1082,6 +1174,10 @@ Result<DerivQuote> var_swap_fair_strike(const SurfaceT& surface,
   if (!wing_clamp_valid(cfg)) {
     return Err(ErrorCode::InvalidArgument, "wing_clamp_k must not be NaN");
   }
+  // Task P-6: one bump per actual strip quadrature attempt, counted past the
+  // cheap up-front validation (a caller error above never touches the grid,
+  // so it is not "an evaluation") -- see Solve::VarSwapStripEvals's own doc.
+  counters::ledger::bump(counters::ledger::Solve::VarSwapStripEvals);
   // Review fix I-4: resolved ONCE here (reused at the resolve_wing_clamp call
   // below) and validated eagerly -- a non-finite/non-positive supplied band
   // fails the call instead of silently widening trust to the mode-blind
@@ -2545,6 +2641,417 @@ Result<DerivGreeks> deriv_greeks(const SurfaceT& surface, const CurveSet& curves
   return Ok(g);
 }
 
+// ── Task P-6 (GK-P book memo): VarSwap shared per-(uid,T) block ────────────
+//
+// `deriv_book.cpp` prices L VarSwap rows that share (uid, T, book-wide cfg).
+// PV and every strip-affine greek read nothing surface/tenor-dependent that
+// is not IDENTICAL across those L rows -- `resolve_var_swap_strip_raw` /
+// `assemble_var_swap_quote` above already isolate that for PV; the functions
+// below extend the same split through `deriv_greeks`'s own bump table, so a
+// book-level caller can resolve the expensive part ONCE per (uid, T) and
+// combine it with each row's own strike/notional/rv_spec via EXACTLY the
+// formulas `price_var_swap` / `deriv_greeks` already use.
+//
+// `VarSwapSharedBlock` itself (the memo state) is declared in
+// `deriv_ref_bridge.hpp`, not here -- see that header for the field-by-field
+// doc. It holds no SurfaceT template parameter (every field is a plain
+// value/`Result<DerivQuote>`), so `deriv_book.cpp` can hold it directly in
+// its memo map; only the BUILDERS below are templated, exactly like
+// `SurfaceRefStripView` itself.
+//
+// SCOPE mirrors `resolve_var_swap_strip_raw`: `contract.kind == VarSwap` and
+// `cfg.discrete_correction_mode == None`, enforced by the caller
+// (deriv_book.cpp), not re-checked here.
+//
+// EVERY raw strip evaluation is shared, including theta / theta_carry /
+// theta_zero_fixing / charm's own T-dt roll: `ensure_var_swap_greeks_block`
+// resolves the T-dt strip (`c_tdt_raw`) and, under `second_order`, its two
+// spot-bumped companions (`s_up_tdt_raw` / `s_dn_tdt_raw`) ONCE per (uid, T)
+// group too, alongside the T-side market-bump grid -- T - bumps.time_years is
+// a book-wide constant offset from T, so every row in the group rolls to the
+// SAME T-dt. What genuinely stays PER ROW is only the CHEAP combine step
+// (`assemble_var_swap_quote`'s aged blend + discount + strike offset, and
+// carry-theta's `inject_carry_fixing`) -- no strip integration, just a few
+// flops -- since that is exactly where each row's own strike/notional/rv_spec
+// enters.
+
+using detail::VarSwapSharedBlock;
+
+// Mirrors `deriv_price<SurfaceT>`'s OWN dispatch-level validation for the
+// VarSwap case (the reserved-engine switch, `reserved_fields_clean`,
+// `vol_of_vol_valid`, the uncapped-kind `cap_dec == 0` rule, and VarSwap's own
+// "VolCarrLee cannot price a var swap" rejection) -- reproduced here because
+// the shared-block path calls `var_swap_fair_strike` directly for a
+// NOT-fully-aged row (bypassing `deriv_price`'s dispatch) and never reaches
+// it AT ALL for a fully-aged one, so a fully-aged row with a malformed `cfg`
+// must still fail exactly as `deriv_price` would have. `wing_clamp_valid` /
+// `surface_certified_wing_band_valid` are deliberately NOT duplicated here --
+// `deriv_price`'s dispatch never checks them either; only
+// `var_swap_fair_strike` itself does, which is why a fully-aged row is
+// unaffected by a bad wing-clamp band under the UNMEMOIZED path too.
+[[nodiscard]] Status validate_var_swap_dispatch(const DerivContract& contract,
+                                                 const DerivConfig& cfg) {
+  switch (cfg.engine) {
+  case DerivEngine::RvDistributionProxy:
+  case DerivEngine::RvDistributionAffine:
+  case DerivEngine::McQe:
+    return Err(ErrorCode::NotImplemented, "reserved pricing engine");
+  case DerivEngine::Auto:
+  case DerivEngine::StripLogContract:
+  case DerivEngine::VolCarrLee:
+    break;
+  }
+  if (!reserved_fields_clean(cfg)) {
+    return Err(ErrorCode::NotImplemented, "reserved config field is non-zero");
+  }
+  if (!vol_of_vol_valid(cfg)) {
+    return Err(ErrorCode::InvalidArgument, "vol_of_vol must be >= 0");
+  }
+  if (contract.cap_dec != 0.0) {
+    return Err(ErrorCode::InvalidArgument, "cap_dec is only valid on capped kinds");
+  }
+  if (cfg.engine == DerivEngine::VolCarrLee) {
+    return Err(ErrorCode::InvalidArgument, "engine cannot price a var swap");
+  }
+  return Ok();
+}
+
+// Resolve `df_at_T` / `center_raw` -- the ONLY block state every row (fully
+// aged or not) needs. Idempotent.
+template <class SurfaceT>
+void ensure_var_swap_center(VarSwapSharedBlock& block, const SurfaceT& surface,
+                             const CurveSet& curves, double T, const DerivConfig& cfg) {
+  if (block.center_resolved) {
+    return;
+  }
+  block.center_resolved = true;
+  DerivFlags df_flags = DerivFlags::None;
+  block.df_at_T = deriv_df_at_T(curves, T, df_flags);
+  block.df_fallback_at_T = has_flag(df_flags, DerivFlags::DfFallback);
+  block.center_raw = resolve_var_swap_strip_raw(surface, curves, T, cfg);
+}
+
+// Resolve the market-greek sub-block (pinned-grid center + FD spot/vol bump
+// grid, or the raw P-4 analytic block) AND the T-dt roll sub-block (theta /
+// carry-theta / charm's shared input) -- called once a NOT-fully-aged row
+// asks for greeks. `cfg` is the group's own (unpinned) config; `center` is
+// the already-assembled center quote (used only to derive `cfg_pinned` and,
+// under AnalyticStrip, its own grid/wing-clamp fields -- exactly
+// `deriv_greeks`'s own `pin_center_scheme(cfg, center)` / `analytic_strip_
+// greeks(..., center.strip_k_lo_used, ...)` call sites). Idempotent.
+template <class SurfaceT>
+void ensure_var_swap_greeks_block(VarSwapSharedBlock& block, const SurfaceT& surface,
+                                   const CurveSet& curves, double T, const DerivConfig& cfg,
+                                   const DerivGreekBumps& bumps, const DerivQuote& center) {
+  if (block.greeks_resolved) {
+    return;
+  }
+  block.greeks_resolved = true;
+  block.cfg_pinned = pin_center_scheme(cfg, center);
+  block.pinned_center_raw = resolve_var_swap_strip_raw(surface, curves, T, block.cfg_pinned);
+
+  if (block.pinned_center_raw.has_value()) {
+    const bool analytic_in_scope = bumps.method == DerivGreekMethod::AnalyticStrip;
+    if (analytic_in_scope) {
+      block.have_analytic = true;
+      const double f_at_t = resolve_forward(curves, T);
+      const detail::AnalyticStripGreeks ag = detail::analytic_strip_greeks(
+          surface, f_at_t, curves.spot, T, block.df_at_T, center.strip_k_lo_used,
+          center.strip_k_hi_used, static_cast<std::size_t>(center.strip_nodes_used),
+          center.resolved_wing_clamp);
+      block.a_delta = ag.delta;
+      block.a_gamma = ag.gamma;
+      block.a_vega = ag.vega;
+      block.a_vanna = ag.vanna;
+      block.a_volga = ag.volga;
+    } else {
+      block.have_second_order = bumps.second_order;
+      const double h = bumps.spot_rel;
+      const double dv = bumps.vol_abs;
+      const double ks_up = std::log1p(h);
+      const double ks_dn = std::log1p(-h);
+      const CurveSet cs_up = respot_curves(curves, 1.0 + h);
+      const CurveSet cs_dn = respot_curves(curves, 1.0 - h);
+
+      // Single-use slots (no `begin_recording`): each grid point below is
+      // read exactly once per GROUP (vs. once per ROW on the unmemoized
+      // path), so the within-row read-cache replay `eval_bump_table` relies
+      // on has nothing left to buy here -- see `CachedBumpView`'s own I-3
+      // "single-use slot" comment for why a live read is correct in that mode.
+      BumpReadCache no_cache_up;
+      BumpReadCache no_cache_dn;
+      BumpReadCache no_cache_c;
+      {
+        const CachedBumpView<SurfaceT> view{&surface, ks_up, 0.0, &no_cache_up};
+        block.s_up_raw = resolve_var_swap_strip_raw(view, cs_up, T, block.cfg_pinned);
+      }
+      {
+        const CachedBumpView<SurfaceT> view{&surface, ks_dn, 0.0, &no_cache_dn};
+        block.s_dn_raw = resolve_var_swap_strip_raw(view, cs_dn, T, block.cfg_pinned);
+      }
+      {
+        const CachedBumpView<SurfaceT> view{&surface, 0.0, dv, &no_cache_c};
+        block.v_up_raw = resolve_var_swap_strip_raw(view, curves, T, block.cfg_pinned);
+      }
+      {
+        const CachedBumpView<SurfaceT> view{&surface, 0.0, -dv, &no_cache_c};
+        block.v_dn_raw = resolve_var_swap_strip_raw(view, curves, T, block.cfg_pinned);
+      }
+      if (block.have_second_order) {
+        BumpReadCache no_cache_pp;
+        BumpReadCache no_cache_pm;
+        BumpReadCache no_cache_mp;
+        BumpReadCache no_cache_mm;
+        {
+          const CachedBumpView<SurfaceT> view{&surface, ks_up, dv, &no_cache_pp};
+          block.sv_pp_raw = resolve_var_swap_strip_raw(view, cs_up, T, block.cfg_pinned);
+        }
+        {
+          const CachedBumpView<SurfaceT> view{&surface, ks_up, -dv, &no_cache_pm};
+          block.sv_pm_raw = resolve_var_swap_strip_raw(view, cs_up, T, block.cfg_pinned);
+        }
+        {
+          const CachedBumpView<SurfaceT> view{&surface, ks_dn, dv, &no_cache_mp};
+          block.sv_mp_raw = resolve_var_swap_strip_raw(view, cs_dn, T, block.cfg_pinned);
+        }
+        {
+          const CachedBumpView<SurfaceT> view{&surface, ks_dn, -dv, &no_cache_mm};
+          block.sv_mm_raw = resolve_var_swap_strip_raw(view, cs_dn, T, block.cfg_pinned);
+        }
+      }
+    }
+  }
+
+  block.can_roll = T > bumps.time_years;
+  if (block.can_roll) {
+    block.t_minus_dt = T - bumps.time_years;
+    DerivFlags df_flags = DerivFlags::None;
+    block.df_at_Tdt = deriv_df_at_T(curves, block.t_minus_dt, df_flags);
+    block.df_fallback_at_Tdt = has_flag(df_flags, DerivFlags::DfFallback);
+    block.c_tdt_raw = resolve_var_swap_strip_raw(surface, curves, block.t_minus_dt, block.cfg_pinned);
+    if (bumps.second_order) {
+      block.have_tdt_spot_bumps = true;
+      const double h = bumps.spot_rel;
+      const double ks_up = std::log1p(h);
+      const double ks_dn = std::log1p(-h);
+      const CurveSet cs_up = respot_curves(curves, 1.0 + h);
+      const CurveSet cs_dn = respot_curves(curves, 1.0 - h);
+      BumpReadCache no_cache_up;
+      BumpReadCache no_cache_dn;
+      {
+        const CachedBumpView<SurfaceT> view{&surface, ks_up, 0.0, &no_cache_up};
+        block.s_up_tdt_raw = resolve_var_swap_strip_raw(view, cs_up, block.t_minus_dt, block.cfg_pinned);
+      }
+      {
+        const CachedBumpView<SurfaceT> view{&surface, ks_dn, 0.0, &no_cache_dn};
+        block.s_dn_tdt_raw = resolve_var_swap_strip_raw(view, cs_dn, block.t_minus_dt, block.cfg_pinned);
+      }
+    }
+  }
+}
+
+// Marks-only entry point. Bit-identical to `deriv_price(surface, curves,
+// contract, cfg)` on an in-scope VarSwap contract, reusing `block`'s
+// per-(uid,T) strip instead of resolving it fresh.
+template <class SurfaceT>
+[[nodiscard]] Result<DerivQuote> deriv_price_var_swap_shared(const SurfaceT& surface,
+                                                              const CurveSet& curves,
+                                                              const DerivContract& contract,
+                                                              const DerivConfig& cfg,
+                                                              VarSwapSharedBlock& block) {
+  ATX_TRY_VOID(validate_var_swap_dispatch(contract, cfg));
+  const double T = contract.maturity_t;
+  ensure_var_swap_center(block, surface, curves, T, cfg);
+  const RealizedVarianceSpec& rv = contract.rv_spec;
+  const bool need_strip = rv.n_obs_total == 0u || rv.n_obs_done < rv.n_obs_total;
+  if (need_strip && !block.center_raw.has_value()) {
+    return Err(block.center_raw.error());
+  }
+  const std::optional<DerivQuote> center_strip =
+      need_strip ? std::optional<DerivQuote>(*block.center_raw) : std::nullopt;
+  return Ok(assemble_var_swap_quote(contract, block.df_at_T, block.df_fallback_at_T, center_strip));
+}
+
+// Full-greeks entry point. Bit-identical to `deriv_greeks(surface, curves,
+// contract, cfg, bumps)` on an in-scope VarSwap contract: every raw strip
+// value `block` supplies is exactly what a fresh per-row call would have
+// resolved for the SAME (surface, T-or-T-dt, cfg) (a pure, deterministic
+// function -- reusing it changes nothing about the bits), and every formula
+// below is the SAME expression `deriv_greeks<SurfaceT>` uses, just fed a
+// cached raw input instead of a freshly-resolved one.
+template <class SurfaceT>
+[[nodiscard]] Result<DerivGreeks> deriv_greeks_var_swap_shared(
+    const SurfaceT& surface, const CurveSet& curves, const DerivContract& contract,
+    const DerivConfig& cfg, const DerivGreekBumps& bumps, VarSwapSharedBlock& block) {
+  if (!bumps_valid(bumps, surface, contract.maturity_t)) {
+    return Err(ErrorCode::InvalidArgument,
+               "greek bump sizes must be > 0 (spot_rel < 1, vol_abs < ATM vol)");
+  }
+  if (!(curves.spot > 0.0)) {
+    return Err(ErrorCode::InvalidArgument, "greeks need curves.spot > 0 (delta's divisor)");
+  }
+  ATX_TRY_VOID(validate_var_swap_dispatch(contract, cfg));
+
+  const double T = contract.maturity_t;
+  ensure_var_swap_center(block, surface, curves, T, cfg);
+
+  const RealizedVarianceSpec& rv = contract.rv_spec;
+  const bool need_strip = rv.n_obs_total == 0u || rv.n_obs_done < rv.n_obs_total;
+  if (need_strip && !block.center_raw.has_value()) {
+    return Err(block.center_raw.error());
+  }
+  const std::optional<DerivQuote> center_strip =
+      need_strip ? std::optional<DerivQuote>(*block.center_raw) : std::nullopt;
+  const DerivQuote center =
+      assemble_var_swap_quote(contract, block.df_at_T, block.df_fallback_at_T, center_strip);
+
+  DerivGreeks g{};
+  g.pv = center.pv;
+  g.quote = center;
+
+  if (has_flag(center.flags, DerivFlags::FullyAged)) {
+    const double t_nonneg = std::fmax(T, 0.0);
+    g.rho = -t_nonneg * center.pv;
+    g.theta = curves.yield.zero(T) * center.pv;
+    g.theta_carry = g.theta;
+    g.theta_zero_fixing = g.theta;
+    return Ok(g);
+  }
+
+  ensure_var_swap_greeks_block(block, surface, curves, T, cfg, bumps, center);
+
+  if (!block.pinned_center_raw.has_value()) {
+    return Err(block.pinned_center_raw.error());
+  }
+  const auto assemble_at = [&](const Result<DerivQuote> &raw) noexcept -> double {
+    const std::optional<DerivQuote> s = need_strip ? std::optional<DerivQuote>(*raw) : std::nullopt;
+    return assemble_var_swap_quote(contract, block.df_at_T, block.df_fallback_at_T, s).pv;
+  };
+  const double pv_c = assemble_at(block.pinned_center_raw);
+
+  const double ds = bumps.spot_rel * curves.spot;
+  const double dv = bumps.vol_abs;
+  if (block.have_analytic) {
+    double w_future = 1.0;
+    if (rv.n_obs_total > 0u) {
+      const double w_done =
+          static_cast<double>(rv.n_obs_done) / static_cast<double>(rv.n_obs_total);
+      w_future = 1.0 - w_done;
+    }
+    const double scale = block.df_at_T * contract.notional * w_future;
+    g.delta = scale * block.a_delta;
+    g.gamma = scale * block.a_gamma;
+    g.vega = scale * block.a_vega;
+    g.vanna = bumps.second_order ? scale * block.a_vanna : kNaN;
+    g.volga = scale * block.a_volga;
+  } else {
+    if (!block.s_up_raw.has_value()) return Err(block.s_up_raw.error());
+    if (!block.s_dn_raw.has_value()) return Err(block.s_dn_raw.error());
+    if (!block.v_up_raw.has_value()) return Err(block.v_up_raw.error());
+    if (!block.v_dn_raw.has_value()) return Err(block.v_dn_raw.error());
+    const double s_up = assemble_at(block.s_up_raw);
+    const double s_dn = assemble_at(block.s_dn_raw);
+    const double v_up = assemble_at(block.v_up_raw);
+    const double v_dn = assemble_at(block.v_dn_raw);
+    g.delta = (s_up - s_dn) / (2.0 * ds);
+    g.gamma = (s_up - 2.0 * pv_c + s_dn) / (ds * ds);
+    g.vega = (v_up - v_dn) / (2.0 * dv);
+    g.volga = (v_up - 2.0 * pv_c + v_dn) / (dv * dv);
+    // `sv_*` stay `kNaN` (this file's own sentinel) when `!second_order`, and
+    // `g.vanna`'s UNCONDITIONAL arithmetic below then produces NaN by
+    // PROPAGATION -- the same mechanism `eval_bump_table`'s own BumpPvs
+    // defaults rely on -- rather than an explicit `kNaN` assignment, so the
+    // NaN's bit pattern matches the unmemoized path exactly (see this
+    // function's own theta/charm section for the identical reasoning).
+    double sv_pp = kNaN;
+    double sv_pm = kNaN;
+    double sv_mp = kNaN;
+    double sv_mm = kNaN;
+    if (block.have_second_order) {
+      if (!block.sv_pp_raw.has_value()) return Err(block.sv_pp_raw.error());
+      if (!block.sv_pm_raw.has_value()) return Err(block.sv_pm_raw.error());
+      if (!block.sv_mp_raw.has_value()) return Err(block.sv_mp_raw.error());
+      if (!block.sv_mm_raw.has_value()) return Err(block.sv_mm_raw.error());
+      sv_pp = assemble_at(block.sv_pp_raw);
+      sv_pm = assemble_at(block.sv_pm_raw);
+      sv_mp = assemble_at(block.sv_mp_raw);
+      sv_mm = assemble_at(block.sv_mm_raw);
+    }
+    g.vanna = (sv_pp - sv_pm - sv_mp + sv_mm) / (4.0 * ds * dv);
+  }
+
+  // Theta / theta_carry / theta_zero_fixing / charm are computed via the SAME
+  // UNCONDITIONAL formulas `deriv_greeks<SurfaceT>` always runs, fed a local
+  // that stays `kNaN` (this file's own sentinel, `BumpPvs`'s default) exactly
+  // when the unmemoized `eval_bump_table` would never have attempted that
+  // cell -- e.g. `!can_roll` or `!second_order`. This is deliberate: it lets
+  // NaN arithmetic (not an explicit branch) produce the "not computed"
+  // result, which is what makes the NaN PAYLOAD bit-identical to the
+  // unmemoized path (an explicit `g.theta = kNaN_literal` would not be
+  // guaranteed to carry the same bit pattern the arithmetic propagation does).
+  double pv_t_dn = kNaN;
+  double pv_t_dn_carry = kNaN;
+  double pv_t_dn_zero_fixing = kNaN;
+  double pv_t_s_up = kNaN;
+  double pv_t_s_dn = kNaN;
+
+  const auto assemble_at_tdt = [&](const DerivContract &c,
+                                    const Result<DerivQuote> &raw) noexcept -> double {
+    const bool need = c.rv_spec.n_obs_total == 0u || c.rv_spec.n_obs_done < c.rv_spec.n_obs_total;
+    const std::optional<DerivQuote> s = need ? std::optional<DerivQuote>(*raw) : std::nullopt;
+    return assemble_var_swap_quote(c, block.df_at_Tdt, block.df_fallback_at_Tdt, s).pv;
+  };
+
+  DerivContract rolled = contract;
+  if (block.can_roll) {
+    rolled.maturity_t = block.t_minus_dt;
+    if (!block.c_tdt_raw.has_value()) {
+      return Err(block.c_tdt_raw.error());
+    }
+    pv_t_dn = assemble_at_tdt(rolled, block.c_tdt_raw);
+
+    // Carry-theta (Task C-10). VarSwap never crosses
+    // `carry_fixing_crosses_engine_boundary`'s VolSwap-only dispatch
+    // boundary (unconditionally false for `kind == VarSwap`), so it is not
+    // re-checked here. The injection value is `eval_bump_table`'s own
+    // "K_var_future resolved fresh, at the CENTER's own T, under the SAME
+    // pinned grid" -- by construction the SAME (surface, T, cfg_pinned) call
+    // as `pinned_center_raw`'s (a pure, deterministic function of those three
+    // inputs), so reusing it here cannot diverge from a fresh call and never
+    // independently fails once `pinned_center_raw` (checked above) has.
+    if (bumps.carry_theta) {
+      if (rv.n_obs_total == 0u) {
+        pv_t_dn_carry = pv_t_dn;
+        pv_t_dn_zero_fixing = pv_t_dn;
+      } else {
+        const double k_var_future_at_T = block.pinned_center_raw->fair_strike_dec;
+        DerivContract rolled_carry = rolled;
+        rolled_carry.rv_spec = inject_carry_fixing(rv, k_var_future_at_T);
+        DerivContract rolled_zero = rolled;
+        rolled_zero.rv_spec = inject_carry_fixing(rv, 0.0);
+        pv_t_dn_carry = assemble_at_tdt(rolled_carry, block.c_tdt_raw);
+        pv_t_dn_zero_fixing = assemble_at_tdt(rolled_zero, block.c_tdt_raw);
+      }
+    }
+
+    if (block.have_tdt_spot_bumps) {
+      if (!block.s_up_tdt_raw.has_value()) return Err(block.s_up_tdt_raw.error());
+      if (!block.s_dn_tdt_raw.has_value()) return Err(block.s_dn_tdt_raw.error());
+      pv_t_s_up = assemble_at_tdt(rolled, block.s_up_tdt_raw);
+      pv_t_s_dn = assemble_at_tdt(rolled, block.s_dn_tdt_raw);
+    }
+  }
+
+  g.theta = (pv_t_dn - pv_c) / bumps.time_years;
+  g.theta_carry = (pv_t_dn_carry - pv_c) / bumps.time_years;
+  g.theta_zero_fixing = (pv_t_dn_zero_fixing - pv_c) / bumps.time_years;
+  const double delta_rolled = (pv_t_s_up - pv_t_s_dn) / (2.0 * ds);
+  g.charm = (delta_rolled - g.delta) / bumps.time_years;
+
+  g.rho = -std::fmax(T, 0.0) * center.pv;
+  return Ok(g);
+}
+
 // ── RealizedTracker ────────────────────────────────────────────────────────
 
 Result<RealizedTracker> RealizedTracker::create(double annualization,
@@ -3120,6 +3627,40 @@ Result<DerivGreeks> deriv_greeks_on_ref(const SurfaceRef& ref, const DerivContra
   ATX_TRY(const CurveSet curves, carry_from_ref(ref, contract.maturity_t, bumps.time_years));
   const SurfaceRefStripView view{&ref, &curves, contract.maturity_t, surface_certified_wing_band};
   return deriv_greeks(view, curves, contract, cfg, bumps);
+}
+
+// Task P-6 (GK-P book memo). Mirrors `deriv_price_on_ref` exactly, just
+// sourcing/extending the strip through `block` (a caller-owned, per-(uid,T)
+// memo entry) instead of resolving it fresh -- see
+// `deriv_price_var_swap_shared`'s own doc for the bit-identity argument.
+Result<DerivQuote> deriv_price_var_swap_on_ref_shared(const SurfaceRef& ref,
+                                                       const DerivContract& contract,
+                                                       const DerivConfig& cfg,
+                                                       VarSwapSharedBlock& block,
+                                                       std::optional<double> surface_certified_wing_band) {
+  if (!ref.valid()) {
+    return Err(ErrorCode::InvalidArgument, "deriv: null surface handle");
+  }
+  ATX_TRY(const CurveSet curves, carry_from_ref(ref, contract.maturity_t, 0.0));
+  const SurfaceRefStripView view{&ref, &curves, contract.maturity_t, surface_certified_wing_band};
+  return deriv_price_var_swap_shared(view, curves, contract, cfg, block);
+}
+
+// Task P-6. Mirrors `deriv_greeks_on_ref` exactly, sourcing/extending the
+// strip and market-bump grid through `block` -- see
+// `deriv_greeks_var_swap_shared`'s own doc.
+Result<DerivGreeks> deriv_greeks_var_swap_on_ref_shared(const SurfaceRef& ref,
+                                                         const DerivContract& contract,
+                                                         const DerivConfig& cfg,
+                                                         const DerivGreekBumps& bumps,
+                                                         VarSwapSharedBlock& block,
+                                                         std::optional<double> surface_certified_wing_band) {
+  if (!ref.valid()) {
+    return Err(ErrorCode::InvalidArgument, "deriv: null surface handle");
+  }
+  ATX_TRY(const CurveSet curves, carry_from_ref(ref, contract.maturity_t, bumps.time_years));
+  const SurfaceRefStripView view{&ref, &curves, contract.maturity_t, surface_certified_wing_band};
+  return deriv_greeks_var_swap_shared(view, curves, contract, cfg, bumps, block);
 }
 
 }  // namespace detail

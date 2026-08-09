@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -10,6 +11,8 @@
 #include "atx/vol/american.hpp" // al_fast_opts, AmericanMethod
 #include "atx/vol/deriv_book.hpp"
 #include "atx/vol/derivatives.hpp" // deriv_greeks (PricedSurface overload) — the reference
+#include "atx/vol/detail/counters.hpp"       // Task P-6: ledger::Solve::VarSwapStripEvals
+#include "atx/vol/detail/deriv_ref_bridge.hpp" // Task P-6: unmemoized detail::*_on_ref reference
 #include "atx/vol/detail/strip_grid.hpp" // strip::kCertifiedWingHalfBand (Task C-6)
 #include "atx/vol/portfolio_pricer.hpp"
 #include "atx/vol/priced_surface.hpp"    // PricedSurface, PricingContext
@@ -28,9 +31,11 @@ namespace {
 
 using atx::vol::combine_totals;
 using atx::vol::CurveSurface;
+using atx::vol::DerivConfig;
 using atx::vol::DerivContract;
 using atx::vol::DerivDiscreteCorrection;
 using atx::vol::DerivGreekBumps;
+using atx::vol::DerivGreekMethod;
 using atx::vol::DerivKind;
 using atx::vol::DerivPosition;
 using atx::vol::EssviCurve;
@@ -41,7 +46,9 @@ using atx::vol::PriceStatus;
 using atx::vol::PriceTotals;
 using atx::vol::PricingContext;
 using atx::vol::SliceContext;
+using atx::vol::SurfaceRef;
 using atx::vol::SurfaceSet;
+namespace ledger = atx::vol::counters::ledger;
 
 // A surface carrying BOTH a genuine downside skew AND a genuine term structure
 // of forwards: every slice gets its own F(T) = S*e^{(r-q)T}, so
@@ -561,6 +568,378 @@ TEST(DerivBook, ReservedCorrectionModeMarksRowNumericError) {
   const auto m = price_deriv_book(*ss, book, cfg, /*greeks=*/false);
   ASSERT_TRUE(m.has_value());
   EXPECT_EQ(m->rows[0].status, PriceStatus::NumericError);
+}
+
+// ── Task P-6 (GK-P book memo) ───────────────────────────────────────────────
+
+[[nodiscard]] std::uint64_t raw_bits(double x) noexcept {
+  std::uint64_t b = 0;
+  std::memcpy(&b, &x, sizeof b);
+  return b;
+}
+
+// A book of L VarSwap rows sharing (uid, T) must cost O(distinct (uid,T)
+// groups) strip evaluations, not O(L) rows -- the core performance claim.
+// `counters::ledger::Solve::VarSwapStripEvals` bumps once per actual
+// `var_swap_fair_strike` quadrature (see that enumerator's own doc,
+// counters.hpp); comparing a 10-row/2-tenor book's delta against the SUM of
+// two single-row probes (one per tenor) proves the shared cost is paid
+// exactly once per tenor, independent of how many rows share it.
+TEST(VarSwapMemo, EvalCountIsPerDistinctTenorNotPerRow) {
+  const PricedSurface ps = make_carry_skew_surface(7, 100.0, 0.30, 0.02);
+  const PricedSurface *arr[] = {&ps};
+  auto ss = SurfaceSet::create(arr);
+  ASSERT_TRUE(ss.has_value());
+
+  DerivPosition probe1{};
+  probe1.id = 1;
+  probe1.uid = 7;
+  probe1.qty = 1.0;
+  probe1.contract = var_swap_at(0.35);
+  probe1.contract.rv_spec.n_obs_done = 10u; // mid-life: not fully aged, needs the strip
+  const DerivPosition probe1_book[] = {probe1};
+
+  ledger::reset();
+  const auto f_probe1 = price_deriv_book(*ss, probe1_book);
+  ASSERT_TRUE(f_probe1.has_value()) << f_probe1.error().to_string();
+  ASSERT_EQ(f_probe1->rows[0].status, PriceStatus::Ok);
+  const std::uint64_t per_group_t1 = ledger::snapshot().get(ledger::Solve::VarSwapStripEvals);
+  ASSERT_GT(per_group_t1, 0u);
+
+  DerivPosition probe2 = probe1;
+  probe2.contract.maturity_t = 0.5;
+  const DerivPosition probe2_book[] = {probe2};
+  ledger::reset();
+  const auto f_probe2 = price_deriv_book(*ss, probe2_book);
+  ASSERT_TRUE(f_probe2.has_value()) << f_probe2.error().to_string();
+  ASSERT_EQ(f_probe2->rows[0].status, PriceStatus::Ok);
+  const std::uint64_t per_group_t2 = ledger::snapshot().get(ledger::Solve::VarSwapStripEvals);
+  ASSERT_GT(per_group_t2, 0u);
+
+  // 10 rows: 5 at T=0.35, 5 at T=0.5, each with its OWN strike/notional/age --
+  // exactly the "L rows sharing (uid,T,cfg)" scenario the book memo targets.
+  std::vector<DerivPosition> book10;
+  for (std::uint32_t i = 0; i < 5u; ++i) {
+    DerivPosition p = probe1;
+    p.id = i;
+    p.contract.strike_dec = 0.01 * static_cast<double>(i);
+    p.contract.notional = 1.0e6 + 1.0e5 * static_cast<double>(i);
+    p.contract.rv_spec.n_obs_done = i;
+    book10.push_back(p);
+  }
+  for (std::uint32_t i = 0; i < 5u; ++i) {
+    DerivPosition p = probe2;
+    p.id = 100u + i;
+    p.contract.strike_dec = 0.02 * static_cast<double>(i);
+    p.contract.notional = 2.0e6 + 1.0e5 * static_cast<double>(i);
+    p.contract.rv_spec.n_obs_done = i + 1u;
+    book10.push_back(p);
+  }
+  ASSERT_EQ(book10.size(), 10u);
+
+  ledger::reset();
+  const auto f10 = price_deriv_book(*ss, book10);
+  ASSERT_TRUE(f10.has_value()) << f10.error().to_string();
+  ASSERT_EQ(f10->rows.size(), 10u);
+  for (const auto &row : f10->rows) {
+    EXPECT_EQ(row.status, PriceStatus::Ok);
+  }
+  const std::uint64_t evals_10rows = ledger::snapshot().get(ledger::Solve::VarSwapStripEvals);
+
+  // EXACT, not approximate: 2 groups' worth, independent of how many rows
+  // share each one -- not just "less than 10x", but precisely the sum of the
+  // two single-row probes.
+  EXPECT_EQ(evals_10rows, per_group_t1 + per_group_t2);
+  EXPECT_LT(evals_10rows, 10u * per_group_t1); // well under the naive 10x
+}
+
+// Marks-only (greeks=false) pays for the strip alone (no bump table), and the
+// memo still collapses it to one build per (uid,T) group.
+TEST(VarSwapMemo, MarksOnlyEvalCountIsAlsoPerDistinctTenor) {
+  const PricedSurface ps = make_carry_skew_surface(7, 100.0, 0.30, 0.02);
+  const PricedSurface *arr[] = {&ps};
+  auto ss = SurfaceSet::create(arr);
+  ASSERT_TRUE(ss.has_value());
+
+  DerivPosition probe{};
+  probe.id = 1;
+  probe.uid = 7;
+  probe.qty = 1.0;
+  probe.contract = var_swap_at(0.35);
+  probe.contract.rv_spec.n_obs_done = 10u;
+  const DerivPosition probe_book[] = {probe};
+
+  ledger::reset();
+  const auto f_probe =
+      price_deriv_book(*ss, probe_book, DerivConfig{}, /*greeks=*/false);
+  ASSERT_TRUE(f_probe.has_value()) << f_probe.error().to_string();
+  const std::uint64_t per_group = ledger::snapshot().get(ledger::Solve::VarSwapStripEvals);
+  ASSERT_GT(per_group, 0u);
+
+  std::vector<DerivPosition> book;
+  for (std::uint32_t i = 0; i < 6u; ++i) {
+    DerivPosition p = probe;
+    p.id = i;
+    p.contract.strike_dec = 0.01 * static_cast<double>(i);
+    p.contract.rv_spec.n_obs_done = i;
+    book.push_back(p);
+  }
+
+  ledger::reset();
+  const auto f = price_deriv_book(*ss, book, DerivConfig{}, /*greeks=*/false);
+  ASSERT_TRUE(f.has_value()) << f.error().to_string();
+  for (const auto &row : f->rows) {
+    EXPECT_EQ(row.status, PriceStatus::Ok);
+  }
+  const std::uint64_t evals = ledger::snapshot().get(ledger::Solve::VarSwapStripEvals);
+  EXPECT_EQ(evals, per_group); // one tenor -> one build, regardless of row count
+}
+
+// THE hard gate: memoized book rows are bit-identical to calling the
+// unmemoized `detail::deriv_greeks_on_ref` directly, once per row, with no
+// shared block at all. Exercises the FD path (the bumps default) with
+// second_order and carry_theta on, across TWO surfaces (uid 7 and 9), two
+// tenors each, and three rows per (uid,T) group that differ in EVERY field
+// the memo's key deliberately omits: strike_dec, notional, qty, and rv_spec's
+// own aging (n_obs_done) -- exactly "L rows sharing (uid,T,cfg)". One row is
+// deliberately too short to roll (theta/charm/carry-theta all NaN on that
+// row), so this ALSO pins that the memo's NaN payload -- not just its
+// finite-value bits -- matches the unmemoized path (see
+// `deriv_greeks_var_swap_shared`'s own comment, derivatives.cpp, on why NaN
+// is produced by UNCONDITIONAL arithmetic rather than an explicit literal).
+TEST(VarSwapMemo, RowsAreBitIdenticalToTheUnmemoizedPerRowPath) {
+  const PricedSurface psA = make_carry_skew_surface(7, 100.0, 0.30, 0.02);
+  const PricedSurface psB = make_carry_skew_surface(9, 120.0, 0.22, -0.01);
+  const PricedSurface *arr[] = {&psA, &psB};
+  auto ss = SurfaceSet::create(arr);
+  ASSERT_TRUE(ss.has_value());
+
+  const DerivGreekBumps bumps{}; // FD, second_order + carry_theta on (defaults)
+  std::vector<DerivPosition> book;
+  const double tenors[] = {0.35, 0.5};
+  const std::uint32_t uids[] = {7u, 9u};
+  std::uint64_t next_id = 1;
+  for (std::uint32_t uid : uids) {
+    for (double T : tenors) {
+      for (std::uint32_t i = 0; i < 3u; ++i) {
+        DerivPosition p{};
+        p.id = next_id++;
+        p.uid = uid;
+        p.qty = 1.0 + 0.5 * static_cast<double>(i);
+        p.contract = var_swap_at(T);
+        p.contract.strike_dec = 0.005 * static_cast<double>(i);
+        p.contract.notional = 1.0e6 * (1.0 + 0.25 * static_cast<double>(i));
+        p.contract.rv_spec.n_obs_done = i * 7u; // varies aging, all still mid-life
+        book.push_back(p);
+      }
+    }
+  }
+  // One row too short to roll: theta/charm/theta_carry/theta_zero_fixing NaN.
+  DerivPosition too_short{};
+  too_short.id = next_id++;
+  too_short.uid = 7u;
+  too_short.qty = 1.0;
+  too_short.contract = var_swap_at(0.5 * bumps.time_years);
+  book.push_back(too_short);
+  // Shares (uid=7, T=0.35) with the FIRST group above but is FULLY AGED:
+  // must bypass the shared block's strip entirely and still agree bit for
+  // bit with the unmemoized fully-aged closed form.
+  DerivPosition fully_aged{};
+  fully_aged.id = next_id++;
+  fully_aged.uid = 7u;
+  fully_aged.qty = -2.0;
+  fully_aged.contract = var_swap_at(0.35);
+  fully_aged.contract.rv_spec.n_obs_done = fully_aged.contract.rv_spec.n_obs_total;
+  fully_aged.contract.rv_spec.rv_done_dec = 0.05;
+  book.push_back(fully_aged);
+
+  const auto f_memo = price_deriv_book(*ss, book, DerivConfig{}, /*greeks=*/true, bumps);
+  ASSERT_TRUE(f_memo.has_value()) << f_memo.error().to_string();
+  ASSERT_EQ(f_memo->rows.size(), book.size());
+
+  double ref_pv_sum = 0.0;
+  for (std::size_t i = 0; i < book.size(); ++i) {
+    const DerivPosition &p = book[i];
+    const SurfaceRef ref = ss->find(p.uid);
+    ASSERT_NE(ref, nullptr);
+    const auto g = atx::vol::detail::deriv_greeks_on_ref(ref, p.contract, DerivConfig{}, bumps,
+                                                          std::nullopt);
+    ASSERT_TRUE(g.has_value()) << "row " << i << ": " << g.error().to_string();
+
+    const auto &row = f_memo->rows[i];
+    ASSERT_EQ(row.status, PriceStatus::Ok) << "row " << i;
+    EXPECT_EQ(raw_bits(row.pv), raw_bits(p.qty * g->pv)) << "row " << i << " pv";
+    EXPECT_EQ(raw_bits(row.fair_strike_dec), raw_bits(g->quote.fair_strike_dec))
+        << "row " << i << " fair_strike_dec";
+    EXPECT_EQ(raw_bits(row.greeks.delta), raw_bits(p.qty * g->delta)) << "row " << i << " delta";
+    EXPECT_EQ(raw_bits(row.greeks.gamma), raw_bits(p.qty * g->gamma)) << "row " << i << " gamma";
+    EXPECT_EQ(raw_bits(row.greeks.vega), raw_bits(p.qty * g->vega)) << "row " << i << " vega";
+    EXPECT_EQ(raw_bits(row.greeks.volga), raw_bits(p.qty * g->volga)) << "row " << i << " volga";
+    EXPECT_EQ(raw_bits(row.greeks.vanna), raw_bits(p.qty * g->vanna)) << "row " << i << " vanna";
+    EXPECT_EQ(raw_bits(row.greeks.theta), raw_bits(p.qty * g->theta)) << "row " << i << " theta";
+    EXPECT_EQ(raw_bits(row.greeks.rho), raw_bits(p.qty * g->rho)) << "row " << i << " rho";
+    EXPECT_EQ(raw_bits(row.greeks.charm), raw_bits(p.qty * g->charm)) << "row " << i << " charm";
+    EXPECT_EQ(raw_bits(row.greeks.theta_carry), raw_bits(p.qty * g->theta_carry))
+        << "row " << i << " theta_carry";
+    EXPECT_EQ(raw_bits(row.greeks.theta_zero_fixing), raw_bits(p.qty * g->theta_zero_fixing))
+        << "row " << i << " theta_zero_fixing";
+    ref_pv_sum += p.qty * g->pv;
+  }
+  // Totals: the SAME serial sum in book order the frame's own accumulate()
+  // performs, so this is bit-identical too, not just "close".
+  EXPECT_EQ(raw_bits(f_memo->totals.pv), raw_bits(ref_pv_sum));
+}
+
+// P-4 interaction, analytic branch ON: `bumps.method = AnalyticStrip` selects
+// the shared block's raw analytic sub-block (`have_analytic`) instead of the
+// FD bump grid -- still resolved ONCE per (uid,T) group, still bit-identical
+// to the unmemoized path, and cheaper (no market-bump grid at all).
+TEST(VarSwapMemo, AnalyticStripPathIsAlsoMemoizedAndBitIdentical) {
+  const PricedSurface ps = make_carry_skew_surface(7, 100.0, 0.30, 0.02);
+  const PricedSurface *arr[] = {&ps};
+  auto ss = SurfaceSet::create(arr);
+  ASSERT_TRUE(ss.has_value());
+
+  DerivGreekBumps bumps{};
+  bumps.method = DerivGreekMethod::AnalyticStrip;
+
+  DerivPosition probe{};
+  probe.id = 1;
+  probe.uid = 7;
+  probe.qty = 1.0;
+  probe.contract = var_swap_at(0.35);
+  probe.contract.rv_spec.n_obs_done = 5u;
+  const DerivPosition probe_book[] = {probe};
+  ledger::reset();
+  const auto f_probe = price_deriv_book(*ss, probe_book, DerivConfig{}, /*greeks=*/true, bumps);
+  ASSERT_TRUE(f_probe.has_value()) << f_probe.error().to_string();
+  const std::uint64_t per_group = ledger::snapshot().get(ledger::Solve::VarSwapStripEvals);
+  ASSERT_GT(per_group, 0u);
+
+  std::vector<DerivPosition> book;
+  for (std::uint32_t i = 0; i < 4u; ++i) {
+    DerivPosition p = probe;
+    p.id = i;
+    p.contract.strike_dec = 0.01 * static_cast<double>(i);
+    p.contract.notional = 1.0e6 + 5.0e4 * static_cast<double>(i);
+    p.contract.rv_spec.n_obs_done = i;
+    book.push_back(p);
+  }
+
+  ledger::reset();
+  const auto f = price_deriv_book(*ss, book, DerivConfig{}, /*greeks=*/true, bumps);
+  ASSERT_TRUE(f.has_value()) << f.error().to_string();
+  const std::uint64_t evals = ledger::snapshot().get(ledger::Solve::VarSwapStripEvals);
+  EXPECT_EQ(evals, per_group); // 4 rows, 1 tenor -> exactly one group's cost
+
+  for (std::size_t i = 0; i < book.size(); ++i) {
+    const DerivPosition &p = book[i];
+    const SurfaceRef ref = ss->find(p.uid);
+    const auto g = atx::vol::detail::deriv_greeks_on_ref(ref, p.contract, DerivConfig{}, bumps,
+                                                          std::nullopt);
+    ASSERT_TRUE(g.has_value()) << "row " << i;
+    ASSERT_EQ(f->rows[i].status, PriceStatus::Ok) << "row " << i;
+    EXPECT_EQ(raw_bits(f->rows[i].greeks.delta), raw_bits(p.qty * g->delta)) << "row " << i;
+    EXPECT_EQ(raw_bits(f->rows[i].greeks.gamma), raw_bits(p.qty * g->gamma)) << "row " << i;
+    EXPECT_EQ(raw_bits(f->rows[i].greeks.vega), raw_bits(p.qty * g->vega)) << "row " << i;
+    EXPECT_EQ(raw_bits(f->rows[i].greeks.vanna), raw_bits(p.qty * g->vanna)) << "row " << i;
+    EXPECT_EQ(raw_bits(f->rows[i].greeks.volga), raw_bits(p.qty * g->volga)) << "row " << i;
+    EXPECT_EQ(raw_bits(f->rows[i].pv), raw_bits(p.qty * g->pv)) << "row " << i;
+  }
+}
+
+// P-3/P-4-class key-omission guard: two rows share (uid, T) but the caller's
+// `WingBandResolver` is (deliberately, adversarially) NOT a pure function of
+// uid -- it alternates on every call. A real resolver is documented as
+// "uid -> band" (pure per uid), so this never happens in practice, but the
+// memo keys on the RESOLVED band anyway (see deriv_book.cpp's key-field
+// audit) rather than assuming purity; this proves that choice actually
+// prevents row 2 from silently reading row 1's cached band.
+TEST(VarSwapMemo, WingBandDifferenceIsInTheKeyNotJustUid) {
+  const PricedSurface ps = make_steep_wing_surface(21, 100.0, 0.30);
+  const PricedSurface *arr[] = {&ps};
+  auto ss = SurfaceSet::create(arr);
+  ASSERT_TRUE(ss.has_value());
+
+  DerivPosition p0{};
+  p0.id = 1;
+  p0.uid = 21;
+  p0.qty = 1.0;
+  p0.contract = var_swap_at(0.35);
+  DerivPosition p1 = p0;
+  p1.id = 2;
+  const DerivPosition book[] = {p0, p1};
+
+  const double band_latency = atx::vol::certified_wing_half_band(atx::vol::FitQualityMode::Latency);
+  const double band_accuracy =
+      atx::vol::certified_wing_half_band(atx::vol::FitQualityMode::Accuracy);
+  ASSERT_NE(band_latency, band_accuracy);
+  int call = 0;
+  const atx::vol::WingBandResolver resolver = [&](std::uint32_t) -> std::optional<double> {
+    return (call++ % 2 == 0) ? std::optional<double>{band_latency}
+                            : std::optional<double>{band_accuracy};
+  };
+  const auto f =
+      price_deriv_book(*ss, book, DerivConfig{}, /*greeks=*/true, DerivGreekBumps{}, resolver);
+  ASSERT_TRUE(f.has_value()) << f.error().to_string();
+  ASSERT_EQ(f->rows[0].status, PriceStatus::Ok);
+  ASSERT_EQ(f->rows[1].status, PriceStatus::Ok);
+  EXPECT_DOUBLE_EQ(f->rows[0].greeks.quote.resolved_wing_clamp, band_latency);
+  EXPECT_DOUBLE_EQ(f->rows[1].greeks.quote.resolved_wing_clamp, band_accuracy);
+  EXPECT_NE(f->rows[0].fair_strike_dec, f->rows[1].fair_strike_dec);
+}
+
+// `cfg.discrete_correction_mode != None` gates a VarSwap row OUT of the memo
+// entirely (see deriv_book.cpp's key-field audit -- reproducing the
+// QUADRATIC-in-K_var, per-row-n_remaining correction is out of this task's
+// scope, exactly like P-4's own AnalyticStrip scope exclusion). Rows must
+// still price CORRECTLY (matching the unmemoized reference), and the eval
+// count must NOT show the O(distinct tenors) reduction -- confirming the
+// gate actually routes these rows around the shared block rather than
+// (incorrectly) serving them a raw-strip block that never saw the
+// correction.
+TEST(VarSwapMemo, DiscreteCorrectionModeBypassesTheMemoButStaysCorrect) {
+  const PricedSurface ps = make_carry_skew_surface(7, 100.0, 0.30, 0.02);
+  const PricedSurface *arr[] = {&ps};
+  auto ss = SurfaceSet::create(arr);
+  ASSERT_TRUE(ss.has_value());
+
+  DerivConfig cfg{};
+  cfg.discrete_correction_mode = DerivDiscreteCorrection::Diffusion1OverN;
+
+  std::vector<DerivPosition> book;
+  for (std::uint32_t i = 0; i < 4u; ++i) {
+    DerivPosition p{};
+    p.id = i;
+    p.uid = 7;
+    p.qty = 1.0;
+    p.contract = var_swap_at(0.35);
+    p.contract.strike_dec = 0.01 * static_cast<double>(i);
+    p.contract.rv_spec.n_obs_done = i;
+    book.push_back(p);
+  }
+
+  ledger::reset();
+  const auto f = price_deriv_book(*ss, book, cfg);
+  ASSERT_TRUE(f.has_value()) << f.error().to_string();
+  const std::uint64_t evals = ledger::snapshot().get(ledger::Solve::VarSwapStripEvals);
+
+  for (std::size_t i = 0; i < book.size(); ++i) {
+    const DerivPosition &p = book[i];
+    const SurfaceRef ref = ss->find(p.uid);
+    const auto g = atx::vol::detail::deriv_greeks_on_ref(ref, p.contract, cfg, DerivGreekBumps{},
+                                                          std::nullopt);
+    ASSERT_TRUE(g.has_value()) << "row " << i;
+    ASSERT_EQ(f->rows[i].status, PriceStatus::Ok) << "row " << i;
+    EXPECT_EQ(raw_bits(f->rows[i].pv), raw_bits(p.qty * g->pv)) << "row " << i;
+    EXPECT_EQ(raw_bits(f->rows[i].greeks.delta), raw_bits(p.qty * g->delta)) << "row " << i;
+  }
+  // NOT the memoized O(1 group) count: correction mode routes every row
+  // around the shared block, so this scales with row count, same as before
+  // this task. A generous upper bound (not an exact multiple, since a single
+  // row's own eval count already varies with second_order/carry_theta) --
+  // the point is "not collapsed to ~1 group's worth".
+  EXPECT_GT(evals, 4u);
 }
 
 TEST(DerivBook, CombineTotalsAddsFieldsAndCounts) {

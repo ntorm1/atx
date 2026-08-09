@@ -860,6 +860,20 @@ enum class Solve : unsigned {
   // aborted the suite), so it is deliberately not counted. In-fit de-Am queries at
   // the session rate == baked rate, so this stays 0 through a normal fit/serve.
   CacheCarryDrift,
+  // Task P-6 (GK-P book memo, append-only). One bump per actual variance-strip
+  // quadrature (`var_swap_fair_strike`'s templated body, the ONE place every
+  // dispatch path -- price_var_swap, deriv_greeks' FD/analytic bump table, the
+  // vol-swap/capped-swap best-effort diagnostics -- resolves K_var), counted
+  // AFTER its own cheap validation guards (T>0, reserved fields, vol_of_vol,
+  // wing_clamp) so a call rejected before ever touching the grid is not
+  // counted as an evaluation. This is what `price_deriv_book`'s book-level
+  // shared-strip memo measures itself against: a book of L VarSwap rows over
+  // K distinct (uid,T) groups must bump this O(K), not O(L) -- PV, every
+  // market greek, AND theta/theta_carry/theta_zero_fixing/charm's own T-dt
+  // roll are all resolved from the SAME per-group shared block (see
+  // `deriv_ref_bridge.hpp`'s `VarSwapSharedBlock`); only each row's own cheap
+  // aged-blend/discount/strike-offset combine (no strip work) runs per row.
+  VarSwapStripEvals,
   Count_
 };
 
@@ -870,7 +884,7 @@ inline constexpr unsigned kCount = static_cast<unsigned>(Solve::Count_);
 inline constexpr const char *kNames[kCount] = {
     "sl_al_boundary_solves", "sl_al_premium_evals",     "sl_greeks_fd",
     "sl_greeks_analytic",    "sl_greeks_adjoint",       "sl_iv_newton_iters",
-    "sl_duplicate_mark_solves", "sl_cache_carry_drift",
+    "sl_duplicate_mark_solves", "sl_cache_carry_drift", "sl_var_swap_strip_evals",
 };
 
 // A merged, point-in-time copy. Plain values (not atomics) so it is trivially
