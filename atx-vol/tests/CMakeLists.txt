@@ -205,6 +205,12 @@ if(ATX_VOL_LAKEHOUSE)
     # BacktestDb/SurfaceDb is tested separately and UNCONDITIONALLY in
     # writer_lock_test.cpp above -- that code path is core, not lakehouse-only.
     target_sources(atx-vol-tests PRIVATE catalog_test.cpp)
+    # Task C3 -- appended conditionally alongside track_store_test.cpp/
+    # catalog_test.cpp: the cache-first sweep driver (run_sweep) needs
+    # Catalog::probe/register_staging/record_trial and TrackStore::write_staging
+    # actually compiled into atx-vol (src/sweep_driver.cpp joins only under
+    # this same guard, atx-vol/CMakeLists.txt).
+    target_sources(atx-vol-tests PRIVATE sweep_driver_test.cpp)
 endif()
 # backtest_bench_test.cpp was relocated to bench/backtest_throughput_bench.cpp
 # (it is a throughput benchmark, not a correctness gate).

@@ -313,6 +313,18 @@ if(ATX_VOL_LAKEHOUSE)
     # atx-vol build via atx::core regardless of this flag (see the D3 report
     # for the full dependency-story writeup on that pre-existing fact).
     target_sources(atx-vol PRIVATE src/catalog.cpp)
+
+    # C3: cache-first variant sweep driver (research/sweep_driver.hpp,
+    # src/sweep_driver.cpp) -- enumerates a BacktestStrategyTemplate grid,
+    # dedupes to TrackKey, probes D3's Catalog cache-first, and publishes
+    # misses through D2's TrackStore. Gated the same way as track_store.cpp/
+    # catalog.cpp immediately above: the driver's whole reason to exist is the
+    # lakehouse cache it drives, so it does not exist in the OFF build either
+    # (its header, research/include/atx/vol/research/sweep_driver.hpp, only
+    # names already-Arrow/SQLite-free types -- Catalog/TrackStore/TrackKey --
+    # so it stays declared unconditionally, same as track_store.hpp/
+    # catalog.hpp; only this .cpp needs the gate).
+    target_sources(atx-vol PRIVATE src/sweep_driver.cpp)
 endif()
 
 # ---- Algorithm counters (P0.2) ----
