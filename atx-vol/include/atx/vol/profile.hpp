@@ -84,6 +84,16 @@ enum class ProfileKind : std::uint8_t {
 // Number of profile kinds (ATS_VOL_PROFILE_KIND_COUNT).
 inline constexpr std::size_t kProfileKindCount = 7u;
 
+// The first five kinds are not an unordered set: they are the rungs of one
+// LIQUIDITY LADDER, most liquid (IndexEtfUltraLiquid) to least
+// (IlliquidSmallCap), and every axis the heuristic classifier votes on is a
+// monotone liquidity observable that picks a rung. HtbDividendName and
+// VolProduct sit off the ladder -- they are short-circuit classifications on a
+// borrow/product flag, not liquidity verdicts -- so they are excluded from the
+// count. `classify_profile` reports its confidence as the span of the rungs its
+// axes voted for, normalised by `kLiquidityLadderRungs - 1`.
+inline constexpr std::uint32_t kLiquidityLadderRungs = 5u;
+
 // HTB underlier-flag bit. atx-vol's `Underlying::flags` stores the C
 // `ATS_VOL_UFLAG_*` bitfield as a raw u32, but universe.hpp names no constant
 // for the bits; the classifier reads the HTB bit, so name it here (ports
@@ -192,6 +202,35 @@ inline constexpr double kNearMoneyLogMoneyness = 0.40;
 // all four boards above 0.15 were in that set.
 inline constexpr std::uint32_t kMinIdentifiableSliceStrikes = 4u;
 
+// ── Listing cadence (the daily-expiry-cycle feature) ─────────────────────
+//
+// Window, in years, over which the classifier counts listed expiries to decide
+// whether an underlier runs a DAILY expiry cycle (SPY/QQQ/IWM/SPX and the index
+// complex) or a weekly/monthly one (everything else).
+//
+// This replaces a `front expiry T < 0.01 years` test that was read as "lists
+// 0DTE". It was not: 0.01 years is 3.65 days, so on a Monday the Friday expiry
+// sits at T = 0.011 and the flag is OFF, while on a Wednesday it sits at
+// T = 0.0055 and the flag is ON -- for every name in the universe that lists a
+// weekly. Measured over the 240-name lqbench universe the flag fired on 6.4% of
+// boards on Monday 2026-08-03 and on 67.1% of the SAME boards on Wednesday
+// 2026-08-05, at both snapshot minutes. It was reading the weekday, not the
+// listing, and it casts its vote for the MOST liquid bucket.
+//
+// Counting expiries inside a fixed forward window is weekday-invariant instead:
+// a daily-cycle product lists one on every trading day, so the count is ~8 in a
+// ten-day window from any weekday, while a Friday-only name lists one or two.
+// Measured on the same corpus the count is bimodal with an EMPTY GAP between 2
+// and 5 (counts observed: 0, 1, 2, 5, 8, 9), and thresholding anywhere inside
+// that gap is stable on 217/217 and 222/222 symbols across sessions, against
+// 135/217 and 136/222 unstable for the calendar test it replaces.
+inline constexpr double kFrontExpiryWindowYears = 10.0 / 365.0;
+
+// Expiries required inside `kFrontExpiryWindowYears` before an underlier counts
+// as running a daily expiry cycle. Placed at the midpoint of the measured empty
+// gap (2 | 5) so neither mode sits on the boundary.
+inline constexpr std::uint32_t kMinDailyCycleExpiries = 4u;
+
 // Inputs the heuristic classifier consumes (ports `AtsVolClassifierInputs`).
 // All "rolling" metrics are supplied by the caller — the classifier keeps no
 // window. It is policy-free: same inputs in, same kind out.
@@ -213,7 +252,10 @@ struct ClassifierInputs {
   // capacity any one slice can support.
   std::uint32_t max_near_money_strikes{0u};
   double median_spread_pct{0.0}; // (ask-bid)/mid, median across active
-  bool has_zerodte{false};
+  // Listed expiries inside `kFrontExpiryWindowYears`. A daily expiry cycle is
+  // `>= kMinDailyCycleExpiries`; see the constants above for why the cadence
+  // axis counts a window rather than testing the front expiry's distance.
+  std::uint32_t n_front_expiries{0u};
   bool has_weeklies{false};
   bool htb_flag{false};                  // kUflagHtb on the underlier
   bool vol_product{false};               // operator hint: VXX-family ticker?
@@ -223,9 +265,28 @@ struct ClassifierInputs {
   double median_q_eff{0.0};              // median q across expiries (HTB sniff)
 };
 
-// Classifier verdict: the chosen kind plus a [0, 1] "how many heuristics agree"
-// confidence. A confidence below 0.7 means the caller should fall back to the
-// previous profile and request an operator override.
+// Classifier verdict: the chosen kind plus a [0, 1] confidence.
+//
+// For a voted (ladder) verdict the confidence is ORDINAL: it reports how tightly
+// the voting axes agreed about WHERE on the liquidity ladder the board sits,
+//
+//     confidence = 1 - (widest rung voted - narrowest rung voted) / 4,
+//
+// so it takes the values 1 (every axis picked the same rung), 0.75 (one rung
+// apart), 0.5, 0.25 and 0 (an axis called the board an index ETF while another
+// called it dead). It is NOT the modal bucket's vote share, which was the
+// previous definition: a share cannot distinguish "one rung away" from "four
+// rungs away", and with two or three axes it quantizes onto {0, 1/3, 1/2, 2/3,
+// 1} -- values one vote apart, straddling the caller's routing gate. See the
+// comment at the return of `classify_profile` for the measurement.
+//
+// The short-circuit verdicts (vol product, hard-to-borrow) are off the ladder
+// and report their own fixed prior instead.
+//
+// A confidence below `FitPolicyConfig::min_direct_confidence` means the caller
+// should gather more evidence -- cross-validate, or fall back to the previous
+// profile and request an operator override -- rather than route on the vote
+// alone.
 //
 // PORT NOTE — the C surfaced (out_kind, out_confidence) through out-params and
 // an `int` status. The classifier never fails, so this port returns the pair by

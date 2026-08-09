@@ -64,7 +64,23 @@ struct FitContext {
 
 struct FitPolicyConfig {
   FitSelectionMode mode{FitSelectionMode::Auto};
-  // A low-confidence liquid/ordinary classification is validated out of sample.
+  // A low-confidence classification is validated out of sample instead of being
+  // routed on directly.
+  //
+  // Read against `ProfileVerdict::confidence`, which is ORDINAL: 1.0 when every
+  // classifier axis picked the same rung of the liquidity ladder, then 0.75,
+  // 0.5, 0.25, 0.0 as the axes spread out over it. 0.70 therefore means
+  // "cross-validate once the axes disagree by two rungs or more", and it sits in
+  // the middle of the empty band between 0.5 and 0.75 -- any value in (0.5,
+  // 0.75] expresses the same policy, so the gate cannot be decided by a
+  // hair's-breadth move in one observable.
+  //
+  // It used to be read against the modal bucket's VOTE SHARE, which on the
+  // measured corpus took only the values 0, 1/3, 1/2, 2/3 and 1. 0.70 fell into
+  // the 0.667|0.800 gap with 20% of all boards sitting exactly on 0.667, so a
+  // single vote decided the route -- and because the fitter substitutes the
+  // caller's preset for the profile's own on the cross-validated path, that one
+  // vote could change the curve family actually served.
   double min_direct_confidence{0.70};
   bool validate_ambiguous{true};
   // Dead-board backstop for the identifiability demotion: the minimum number of
