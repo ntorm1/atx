@@ -23,6 +23,8 @@
 #include "step_mark_memo.hpp" // detail::StepMarkMemo — the L2 settlement mark memo
 
 #include "atx/core/error.hpp"
+// BevDayState, BevSpec, BevReplayConfig, BevReplayResult, bev_replay_pnl (THEO-2)
+#include "atx/vol/breakeven.hpp"
 #include "atx/vol/detail/backtest_series_columns.hpp" // the 25 {name, member} series columns
 #include "atx/vol/detail/counters.hpp"      // counters::ledger — V1 always-on solve ledger (per-step scrape)
 #include "atx/vol/detail/deriv_ref_bridge.hpp" // detail::deriv_price_on_ref — swap-lot marks
@@ -3993,6 +3995,178 @@ Result<BacktestContinuation> run_backtest_incremental(const Clock &clock, IStrat
                "checkpoint (BacktestCheckpoint carries no per-lot carried marks)");
   }
   return run_backtest_strategy_impl(clock, strat, cfg, resume, true);
+}
+
+} // namespace atx::vol
+
+// ─────────────────────────────────────────────────────────────────────────
+// THEO-2: breakeven replay — fixed-sigma delta-hedged single-option P&L.
+//
+// APPEND-ONLY extension of the engine above: nothing before this banner is
+// touched. `bev_replay_pnl` (breakeven.hpp) lives in THIS translation unit
+// (not a new .cpp) purely to reuse `HedgeLedger`, the file-local share ledger
+// defined earlier in this file (~:602), as its hedge-share ledger — unnamed
+// namespaces attach to the enclosing namespace for the rest of the TU, so the
+// class stays reachable here even though its lexical anonymous-namespace
+// block already closed. Rebalance and expiry-settlement ordering mirror
+// `HedgeLedger::hedge_daily` (~:695-715) and the engine's own expiry-settle
+// block (~:3785-3798); financing mirrors the cash-carry leg of the step
+// loop's financing block (~:3686-3712).
+// ─────────────────────────────────────────────────────────────────────────
+
+namespace atx::vol {
+namespace {
+
+// Bounded-loop guard (JPL Rule 2): every path `bev_replay_pnl` walks is capped
+// here, so the day loop below has a statically visible upper bound regardless
+// of caller input.
+constexpr std::uint16_t kBevMaxDays = 4000;
+
+// Replay-path-only extension of the WS-F F3 exercise model (backtest.hpp's
+// "EXERCISE MODEL: what this engine does and does NOT simulate" banner,
+// ~:523-553): the engine's own step loop is UNCHANGED by this file and still
+// settles every American lot at expiry only — there is no existing early-
+// exercise machinery anywhere in the engine to reuse. `bev_replay_pnl` adds
+// this pure decision rule because, unlike a held-to-expiry book lot, a
+// breakeven replay is explicitly modelling the long side's OPTIMAL exercise
+// policy (B3 semantics) for a single option outside the book/frame plumbing.
+// Unifying it with a future book-level exercise/assignment model is
+// sprint-doc residual work (see the banner's tracked-deferral note), not done
+// here.
+//
+// `extension_value` is the American continuation value in excess of intrinsic
+// (price - intrinsic) at the trial sigma; `threshold` is the caller's
+// forgone-carry proxy for the step ahead (call: dividends payable before the
+// next close; put: discounted-strike interest). Exercising is optimal exactly
+// when intrinsic is positive and the remaining time value is smaller than
+// what holding through the next step would forgo.
+[[nodiscard]] bool bev_should_exercise_early(double intrinsic, double extension_value,
+                                             double threshold) noexcept {
+  return intrinsic > 0.0 && std::isfinite(extension_value) && extension_value >= 0.0 &&
+         std::isfinite(threshold) && threshold > 0.0 && extension_value < threshold;
+}
+
+} // namespace
+
+Result<BevReplayResult> bev_replay_pnl(std::span<const BevDayState> path, const BevSpec &spec,
+                                       double sigma, std::span<const DividendEvent> dividends,
+                                       const BevReplayConfig &cfg) {
+  if (path.size() < 2 || path.size() > kBevMaxDays) {
+    return Err(ErrorCode::InvalidArgument, "bev_replay_pnl: path size out of range");
+  }
+  if (path.back().ts_ns != spec.expiry_ns) {
+    // Fail-closed, mirrors backtest.hpp:12-15: a later spot is not a valid
+    // settlement price, so a path whose last node isn't the exact expiry
+    // observation is rejected rather than extrapolated.
+    return Err(ErrorCode::InvalidArgument, "bev_replay_pnl: expiry not last observation");
+  }
+  if (!(sigma > 0.0) || !(spec.strike > 0.0)) {
+    return Err(ErrorCode::InvalidArgument, "bev_replay_pnl: non-positive sigma or strike");
+  }
+  const AlOpts opts = cfg.al_opts.value_or(al_fast_opts());
+
+  BevReplayResult out{};
+  HedgeLedger ledger; // the engine's share ledger; single hedge instrument at uid 0
+  double cash = 0.0;
+  const auto yrs = [&](std::int64_t ts) {
+    return static_cast<double>(spec.expiry_ns - ts) / kNsPerYear; // ACT/365.25
+  };
+
+  // Entry: one boundary solve -> price + delta (+ vega for the label record).
+  ATX_TRY(const AmericanGreeks g0,
+          american_greeks_al(path[0].s, spec.strike, yrs(path[0].ts_ns), sigma, path[0].r,
+                             path[0].q_eff, spec.side, opts, /*need_vega=*/true,
+                             /*need_rho=*/false, /*need_charm=*/false));
+  out.premium = g0.price;
+  out.vega_entry = g0.vega;
+  cash -= g0.price;
+  {
+    const double trade0 = -g0.delta; // delta-neutral entry
+    // Slippage on the entry trade itself (largest position of the replay);
+    // charged before the notional settles, mirroring the rebalance ordering
+    // below.
+    cash -= std::fabs(trade0) * path[0].s * (cfg.hedge_slippage_bps / 1.0e4);
+    cash -= trade0 * path[0].s; // buy/sell the hedge
+    ledger.add(0u, trade0);
+  }
+
+  // JPL Rule 2: bounded by path.size(), itself capped to kBevMaxDays above.
+  for (std::size_t i = 1; i < path.size(); ++i) {
+    const BevDayState &prev = path[i - 1];
+    const BevDayState &cur = path[i];
+    const double dt = static_cast<double>(cur.ts_ns - prev.ts_ns) / kNsPerYear;
+    if (cfg.finance_cash) {
+      cash *= std::exp(prev.r * dt);
+    }
+    for (const DividendEvent &d : dividends) { // ex-dates in (prev, cur]
+      if (d.ex_date_ns > prev.ts_ns && d.ex_date_ns <= cur.ts_ns) {
+        cash += ledger.get(0u) * d.amount;
+      }
+    }
+
+    const double t_rem = yrs(cur.ts_ns);
+    const double intrinsic = spec.side == Side::Call ? std::max(0.0, cur.s - spec.strike)
+                                                     : std::max(0.0, spec.strike - cur.s);
+    if (i + 1 == path.size()) { // expiry: settle at intrinsic (mirrors backtest.cpp ~:3795-3797)
+      cash += intrinsic;
+      // Slippage on the unwind trade (also the largest position, symmetric
+      // with the entry charge above).
+      cash -= std::fabs(ledger.get(0u)) * cur.s * (cfg.hedge_slippage_bps / 1.0e4);
+      cash += ledger.get(0u) * cur.s; // liquidate the hedge at the final close
+      break;
+    }
+
+    ATX_TRY(const AmericanGreeks g,
+            american_greeks_al(cur.s, spec.strike, t_rem, sigma, cur.r, cur.q_eff, spec.side, opts,
+                               /*need_vega=*/false, /*need_rho=*/false,
+                               /*need_charm=*/false));
+
+    if (cfg.apply_early_exercise) {
+      double threshold = 0.0;
+      if (spec.side == Side::Call) {
+        for (const DividendEvent &d : dividends) { // pending dividend before next close
+          if (d.ex_date_ns > cur.ts_ns && d.ex_date_ns <= path[i + 1].ts_ns) {
+            threshold += d.amount;
+          }
+        }
+      } else {
+        // One-STEP forgone interest (decision horizon = next close), not full
+        // remaining life: `extension_value` already embeds the American
+        // boundary's full-life continuation value, so a full-life threshold
+        // over-triggers deep inside the continuation region (a put with
+        // substantial time value would "exercise" on day 1 at high r). This
+        // mirrors the call branch's (cur, next] dividend window above.
+        const double dt_next = static_cast<double>(path[i + 1].ts_ns - cur.ts_ns) / kNsPerYear;
+        threshold = spec.strike * (1.0 - std::exp(-cur.r * dt_next));
+      }
+      if (bev_should_exercise_early(intrinsic, g.price - intrinsic, threshold)) {
+        cash += intrinsic;
+        // Slippage on the unwind trade, same as the expiry-settle liquidation.
+        cash -= std::fabs(ledger.get(0u)) * cur.s * (cfg.hedge_slippage_bps / 1.0e4);
+        cash += ledger.get(0u) * cur.s;
+        out.exercised_early = true;
+        out.exercise_ts_ns = cur.ts_ns;
+        out.n_days = static_cast<std::uint16_t>(i);
+        out.pnl = cash;
+        return Ok(out);
+      }
+    }
+
+    // Rebalance: HedgeLedger::hedge_daily's band/slippage/settle/record ordering
+    // (~:699-712) — slippage on |trade|*spot, notional settled into cash, then
+    // recorded — folded into cash (a single-instrument replay has no separate
+    // cost lane).
+    const double net = g.delta + ledger.get(0u);
+    if (std::fabs(net) > cfg.hedge_band) {
+      const double trade = -net;
+      cash -= std::fabs(trade) * cur.s * (cfg.hedge_slippage_bps / 1.0e4);
+      cash -= trade * cur.s;
+      ledger.add(0u, trade);
+    }
+  }
+  out.n_days = static_cast<std::uint16_t>(path.size() - 1);
+  out.pnl = cash;
+  return Ok(out);
 }
 
 } // namespace atx::vol

@@ -479,3 +479,27 @@ if(Python3_Interpreter_FOUND)
     )
     set_tests_properties(atx-vol-pg-observability-name-coverage PROPERTIES LABELS atx_vol)
 endif()
+
+# ── THEO-4/THEO-10 (theo-module sprint) — breakeven-vol batch label runner AND
+# theo-sheet benchmarks, one TU/target (Task 10 added the theo/* cases to the
+# same TU rather than a second target). bev/solve/126d_al_fast — single
+# solve_breakeven_vol (Task 3) call on a synthetic 126-day GBM path, al_fast
+# default; anchors the per-label solve cost. bev/batch/64jobs —
+# solve_breakeven_batch (Task 4) over 64 independent jobs at auto worker
+# count, the deterministic parallel fan-out this task adds over the single-
+# label solve. theo/sheet_200q/price_theo_{true,false} — compute_theo_sheet
+# (Task 10) over a 200-query screening sheet, with/without the cold American
+# reprice at a shifted theo_vol (see theo_bench.cpp's own banner). Own target
+# (one owner per TU).
+add_executable(atx-vol-theo-bench
+    bench_main.cpp
+    theo_bench.cpp
+)
+target_link_libraries(atx-vol-theo-bench
+    PRIVATE
+        atx::vol
+        atx::core
+        benchmark::benchmark
+        atx_warnings
+        Threads::Threads
+)

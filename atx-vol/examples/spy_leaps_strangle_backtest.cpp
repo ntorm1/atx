@@ -29,11 +29,14 @@
 // observable session.
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <limits>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -41,8 +44,10 @@
 
 #include "atx/vol/backtest.hpp"        // Clock, RunConfig, SnapshotCache, run_backtest
 #include "atx/vol/corpus.hpp"          // CorpusManifest, CorpusEntry
+#include "atx/vol/realized_vol.hpp"    // OhlcBar, RvPanel, RvEstimator, realized_vol_panel
 #include "atx/vol/strategy.hpp"        // StrategySpec, DeclarativeStrategy
 #include "atx/vol/surface_db.hpp"      // SurfaceDb
+#include "atx/vol/theo.hpp"            // TheoEngine, TheoContext, TheoQuery, make_rv_blend_overlay
 #include "atx/vol/tools/tearsheet.hpp" // TearSheet, tearsheet, write_backtest_* TSV
 #include "atx/vol/types.hpp"           // Result, Status
 
@@ -66,15 +71,28 @@ struct Args {
   double contracts{1.0};
   double sign{+1.0};
   std::string mark_domain{"extrapolate"};
+  // Task 10: read-only theo-edge signal probe. OFF by default (final-review
+  // I3: the original default-ON wiring silently stopped the driver's own
+  // default runs from exercising the default zero-copy WS-ZC1 borrow path --
+  // see main()'s comment). `--theo-signals` opts in; the A/B NAV-byte-
+  // identity proof (Task 10 brief, step 4) needs both variants out of the
+  // SAME binary/build, so this stays a flag rather than two binaries.
+  bool emit_theo_signals{false};
 };
 
 void usage() {
-  std::fprintf(
-      stderr,
-      "usage: atx-vol-spy-leaps-strangle --out DIR [--db-prefix P] [--year-lo Y] "
-      "[--year-hi Y]\n    [--from D] [--to D] [--delta X] [--tenor-years X] "
-      "[--roll-months X] [--contracts X] [--sign +1|-1]\n    "
-      "[--mark-domain extrapolate|carry|error]\n");
+  std::fprintf(stderr,
+               "usage: atx-vol-spy-leaps-strangle --out DIR [--db-prefix P] [--year-lo Y] "
+               "[--year-hi Y]\n    [--from D] [--to D] [--delta X] [--tenor-years X] "
+               "[--roll-months X] [--contracts X] [--sign +1|-1]\n    "
+               "[--mark-domain extrapolate|carry|error] [--theo-signals] "
+               "[--no-theo-signals]\n"
+               "    (theo signals: OFF by default, so the default (no-flag) run exercises "
+               "the default zero-copy WS-ZC1 borrow path. --theo-signals opts in and forces "
+               "owned archive backing instead, ATX_VOL_ZC_BORROW=0, ONLY for this run -- "
+               "see main(); --no-theo-signals is accepted as a no-op (OFF is already the "
+               "default). Assumes a SPY corpus regardless of --db-prefix; "
+               "theo_edge_atm/theo_band_atm are NaN for any other symbol.)\n");
 }
 
 bool parse_args(int argc, char **argv, Args &args) {
@@ -110,6 +128,10 @@ bool parse_args(int argc, char **argv, Args &args) {
       args.sign = std::atof(v.c_str());
     } else if (flag == "--mark-domain" && next(v)) {
       args.mark_domain = v;
+    } else if (flag == "--theo-signals") {
+      args.emit_theo_signals = true;
+    } else if (flag == "--no-theo-signals") {
+      args.emit_theo_signals = false; // no-op: OFF is already the default (I3)
     } else {
       std::fprintf(stderr, "unknown/incomplete flag: %.*s\n", static_cast<int>(flag.size()),
                    flag.data());
@@ -141,6 +163,133 @@ std::string fmt_num(double v) {
   return num_buf;
 }
 
+// ── Task 10: read-only theo-edge backtest signal probe ─────────────────────
+//
+// Decorates the strangle strategy driving this backtest with two per-step
+// diagnostic columns, `theo_edge_atm` / `theo_band_atm`, from a
+// `TheoEngine{RvBlend}` (default `RvBlendConfig`) over the step's own SPY
+// surface. Mirrors `SwapSignalProbe`'s split (swap_leg.hpp): a non-const
+// step that mirrors state the engine doesn't expose (there, per-lot swap
+// accrual; here, a rolling realized-vol history this driver has no other
+// reason to keep), and a const `signals()` reader that consumes it.
+//
+// READ-ONLY BY CONSTRUCTION: every `IStrategy` virtual except `signals()`
+// forwards UNCHANGED to `inner_` -- this type adds no order, hedge, or NAV
+// path of its own, only an extra diagnostic column the engine records
+// alongside the ones the inner strategy already drives. `on_step` mirrors
+// realized-vol history from `base` (a READ), never touches `book` beyond
+// forwarding it to `inner_.on_step` untouched, so the NAV/book/hedge
+// trajectory this driver produces is IDENTICAL, byte-for-byte, whether or not
+// this wrapper is in the loop (Task 10 brief step 4's non-negotiable proof).
+class TheoEdgeSignalStrategy final : public IStrategy {
+public:
+  TheoEdgeSignalStrategy(IStrategy &inner, TheoEngine engine, std::string underlier_symbol,
+                         double atm_tenor_years)
+      : inner_(inner), engine_(std::move(engine)), symbol_(std::move(underlier_symbol)),
+        tenor_years_(atm_tenor_years) {}
+
+  Status on_step(const MarketSnapshot &base, std::size_t step_index, PortfolioState &book,
+                 std::uint64_t &next_lot_id) override {
+    update_rv_history(base);
+    return inner_.on_step(base, step_index, book, next_lot_id);
+  }
+  Status on_step(const MarketSnapshot &base, std::size_t step_index, PortfolioState &book,
+                 std::uint64_t &next_lot_id, const PriceOptions &price_options) override {
+    update_rv_history(base);
+    return inner_.on_step(base, step_index, book, next_lot_id, price_options);
+  }
+  [[nodiscard]] std::span<const FullGreekSeed> entry_risk_seeds() const noexcept override {
+    return inner_.entry_risk_seeds();
+  }
+  [[nodiscard]] HedgeSpec hedge_spec() const override { return inner_.hedge_spec(); }
+  [[nodiscard]] QueryExecution required_economic_execution() const noexcept override {
+    return inner_.required_economic_execution();
+  }
+  [[nodiscard]] std::span<const std::uint32_t> referenced_uids() const noexcept override {
+    return inner_.referenced_uids();
+  }
+
+  // theo_edge_atm / theo_band_atm, ALWAYS both, from the RvBlend-overlaid
+  // TheoEngine at the ATM (K == spot), tenor-matched (T == the strategy's own
+  // target LEAPS tenor) query on the step's SPY surface. NaN when the SPY
+  // surface can't be resolved on `base` or the TheoEngine call itself fails
+  // (never a missing column -- mirrors SwapSignalProbe's "absent measurement
+  // is NaN, never a missing column" contract, swap_leg.hpp). NOTE (final-
+  // review M1): `theo_band_atm` is the engine's config floor
+  // (`TheoConfig::band_floor_vol`, 0.002) on every resolved step here --
+  // `RvBlendOverlay`, the only overlay this driver engages, always reports
+  // `band = 0`, so nothing on this path ever drives it above the floor; read
+  // it as "config floor", not a live per-step uncertainty estimate.
+  [[nodiscard]] std::vector<std::pair<std::string, double>>
+  signals(const MarketSnapshot &base) const override {
+    constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
+    double edge_atm = kNaN;
+    double band_atm = kNaN;
+    const PricedSurface *surface = spy_surface(base);
+    if (surface != nullptr && !bars_.empty()) {
+      // CloseToClose over this driver's own degenerate (O=H=L=C=spot) daily
+      // bars -- see update_rv_history: no intraday range is observable from a
+      // once-daily surface snapshot, so an estimator that needs a real
+      // high/low range (Parkinson/Garman-Klass/Rogers-Satchell/YangZhang)
+      // would be reading a structurally-zero range every day, not a genuine
+      // absence of movement.
+      const Result<RvPanel> panel = realized_vol_panel(bars_, RvEstimator::CloseToClose);
+      const TheoContext ctx{.surface = surface, .rv = panel.has_value() ? &*panel : nullptr};
+      const TheoQuery q{
+          .strike = surface->pricing().S, .tenor_years = tenor_years_, .side = Side::Call};
+      const Result<TheoValue> v = engine_.value(ctx, q);
+      if (v.has_value()) {
+        edge_atm = v->edge_vol;
+        band_atm = v->band_vol;
+      }
+    }
+    return {{"theo_edge_atm", edge_atm}, {"theo_band_atm", band_atm}};
+  }
+
+private:
+  // Owned-surface lookup for `symbol_` on `base`, or nullptr (unknown symbol,
+  // or a view-backed/borrowed snapshot -- `SurfaceRef::owned()` is null on the
+  // BORROW route MarketSnapshot::load takes by default at this driver's
+  // QueryPricingTier::LegacyCompatible, see backtest.cpp's WS-ZC1 comment;
+  // `main()`'s `ATX_VOL_ZC_BORROW=0` is what makes this resolve non-null here).
+  [[nodiscard]] const PricedSurface *spy_surface(const MarketSnapshot &base) const noexcept {
+    const std::optional<std::uint32_t> uid = base.uid_of(symbol_);
+    if (!uid.has_value()) {
+      return nullptr;
+    }
+    return base.find(*uid).owned();
+  }
+
+  // Mirrors one degenerate daily OHLC bar (O=H=L=C=spot) per step into a
+  // rolling, unbounded history -- this driver's own state, kept ONLY because
+  // the RvBlend overlay needs an RvPanel and nothing upstream of this wrapper
+  // computes one from an options-surface backtest's daily spot series. A
+  // non-finite/non-positive spot, or a repeated timestamp (defensive; the
+  // engine calls on_step exactly once per step), is skipped rather than
+  // corrupting the history with a bad or duplicate bar.
+  void update_rv_history(const MarketSnapshot &base) {
+    const PricedSurface *surface = spy_surface(base);
+    if (surface == nullptr) {
+      return;
+    }
+    const double spot = surface->pricing().S;
+    const std::int64_t ts = surface->pricing().now_ts_ns;
+    if (!std::isfinite(spot) || !(spot > 0.0)) {
+      return;
+    }
+    if (!bars_.empty() && bars_.back().ts_ns == ts) {
+      return;
+    }
+    bars_.push_back(OhlcBar{ts, spot, spot, spot, spot});
+  }
+
+  IStrategy &inner_;
+  TheoEngine engine_;
+  std::string symbol_;
+  double tenor_years_;
+  std::vector<OhlcBar> bars_;
+};
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -149,6 +298,36 @@ int main(int argc, char **argv) {
     usage();
     return 2;
   }
+
+  // TheoEdgeSignalStrategy needs a concrete `const PricedSurface&` per step
+  // (TheoContext::surface's type, theo.hpp -- unchanged by this driver, no
+  // library modification), but this driver's default MarketSnapshot loads are
+  // ZERO-COPY VIEW-BACKED (QueryPricingTier::LegacyCompatible, the loader's
+  // own default, borrows PricedSurfaceView records rather than reconstructing
+  // owned PricedSurface objects -- see MarketSnapshot::load's WS-ZC1 comment,
+  // backtest.cpp). `ATX_VOL_ZC_BORROW=0` is that same load path's own
+  // documented escape hatch to force the OWNED reconstruct route instead --
+  // "it cannot make a run non-deterministic" (backtest.cpp) is the load
+  // path's own guarantee that this changes ONLY the surfaces' memory backing,
+  // never a priced value, so it cannot be the thing that breaks the NAV
+  // byte-identity proof this probe exists to uphold.
+  //
+  // Gated on `emit_theo_signals` (final-review I3; supersedes fix round 1's
+  // gate, which had this backwards): `emit_theo_signals` now defaults to
+  // FALSE, so the driver's OWN default (no-flag) runs keep exercising the
+  // default zero-copy WS-ZC1 borrow path unchanged. Only an explicit
+  // `--theo-signals` run forces the owned-reconstruct route this probe needs
+  // -- fix round 1 gated the override on a default-TRUE flag instead, so the
+  // driver's default run was silently the one NOT covering borrow, exactly
+  // backwards from what its own comment claimed. `_putenv_s` is a Windows CRT
+  // API; `MarketSnapshot::load` itself reads this same env var behind a
+  // `#if defined(_WIN32)` guard (backtest.cpp) -- guarded here to match
+  // rather than assuming the Windows-only toolchain unconditionally.
+#if defined(_WIN32)
+  if (args.emit_theo_signals) {
+    _putenv_s("ATX_VOL_ZC_BORROW", "0");
+  }
+#endif
 
   // ── Cross-root manifest + session-timestamp grid ─────────────────────────
   CorpusManifest manifest;
@@ -241,7 +420,27 @@ int main(int argc, char **argv) {
                    : args.mark_domain == "error" ? MarkDomainPolicy::Error
                                                  : MarkDomainPolicy::Extrapolate;
 
-  auto run = run_backtest(*clock, strat, rc);
+  // ── Task 10: read-only theo-edge signal probe (--theo-signals to enable) ──
+  IStrategy *active_strategy = &strat;
+  std::optional<TheoEdgeSignalStrategy> signal_strat;
+  if (args.emit_theo_signals) {
+    auto rv_overlay = make_rv_blend_overlay(); // default RvBlendConfig
+    if (!rv_overlay) {
+      std::fprintf(stderr, "make_rv_blend_overlay: %s\n", rv_overlay.error().to_string().c_str());
+      return 1;
+    }
+    std::vector<std::unique_ptr<ITheoOverlay>> theo_overlays;
+    theo_overlays.push_back(std::move(*rv_overlay));
+    auto theo_engine = TheoEngine::create(std::move(theo_overlays));
+    if (!theo_engine) {
+      std::fprintf(stderr, "TheoEngine::create: %s\n", theo_engine.error().to_string().c_str());
+      return 1;
+    }
+    signal_strat.emplace(strat, std::move(*theo_engine), "SPY", args.tenor_years);
+    active_strategy = &*signal_strat;
+  }
+
+  auto run = run_backtest(*clock, *active_strategy, rc);
   if (!run) {
     std::fprintf(stderr, "run_backtest: %s\n", run.error().to_string().c_str());
     return 1;
@@ -284,6 +483,7 @@ int main(int argc, char **argv) {
       {"hedge", "delta_to_zero_daily"},
       {"frictions", "none"},
       {"reconcile_nav", "on"},
+      {"theo_signals", args.emit_theo_signals ? "on" : "off"},
       {"final_nav", fmt_num(final_nav)},
       {"final_nav_liquidation", fmt_num(final_liq)},
       {"total_return", fmt_num(ts.total_return)},

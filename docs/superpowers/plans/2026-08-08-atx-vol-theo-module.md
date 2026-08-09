@@ -286,7 +286,11 @@ std::vector<BevDayState> synth_gbm_path(double sigma, std::size_t n_days,
                                         double r = 0.0, double q = 0.0) {
   std::mt19937 rng(seed);
   std::normal_distribution<double> z(0.0, 1.0);
-  const double dt = 1.0 / 252.0, sq = sigma * std::sqrt(dt);
+  // dt MUST match the timestamp grid: nodes are 1 CALENDAR day apart and the replay
+  // prices with T = ns/(365.25*86400e9), so per-step variance uses 1/365.25. (1/252
+  // injects a real ~20% realized-vs-hedged vol gap — found in execution, confirmed by
+  // pure-BS replication. Tasks 3-5 reuse this corrected helper.)
+  const double dt = 1.0 / 365.25, sq = sigma * std::sqrt(dt);
   std::vector<BevDayState> p;
   p.reserve(n_days + 1);
   double s = s0;
@@ -294,7 +298,7 @@ std::vector<BevDayState> synth_gbm_path(double sigma, std::size_t n_days,
     p.push_back(BevDayState{static_cast<std::int64_t>(i) * kDayNs, s, r, q});
     s *= std::exp((r - q - 0.5 * sigma * sigma) * dt + sq * z(rng));
   }
-  // Timestamp grid is calendar==trading here; expiry is the last node.
+  // Calendar-day grid; expiry is the last node.
   return p;
 }
 
@@ -424,6 +428,7 @@ Result<BevReplayResult> bev_replay_pnl(std::span<const BevDayState> path,
   cash -= g0->price;
   {
     const double trade0 = -g0->delta;        // delta-neutral entry
+    cash -= std::abs(trade0) * path[0].s * cfg.hedge_slippage_bps / 1e4;
     cash -= trade0 * path[0].s;              // buy/sell the hedge
     ledger.add(0u, trade0);
   }
@@ -443,7 +448,8 @@ Result<BevReplayResult> bev_replay_pnl(std::span<const BevDayState> path,
                                  : std::max(0.0, spec.strike - cur.s);
     if (i + 1 == path.size()) {              // expiry: settle at intrinsic (:3795-3797)
       cash += intrinsic;
-      cash += ledger.get(0u) * cur.s;        // liquidate hedge
+      cash -= std::abs(ledger.get(0u)) * cur.s * cfg.hedge_slippage_bps / 1e4;
+      cash += ledger.get(0u) * cur.s;        // liquidate hedge (slippage on the unwind)
       break;
     }
     auto g = american_greeks_al(cur.s, spec.strike, t_rem, sigma, cur.r, cur.q_eff,
@@ -457,10 +463,16 @@ Result<BevReplayResult> bev_replay_pnl(std::span<const BevDayState> path,
           if (d.ex_date_ns > cur.ts_ns && d.ex_date_ns <= path[i + 1].ts_ns)
             threshold += d.amount;
       } else {
-        threshold = spec.strike * (1.0 - std::exp(-cur.r * t_rem));
+        // One-STEP forgone interest (decision horizon = next close), not full
+        // remaining life: extension_value already embeds the American boundary,
+        // so a full-life threshold over-triggers deep in the continuation region.
+        const double dt_next =
+            static_cast<double>(path[i + 1].ts_ns - cur.ts_ns) / kYearNs;
+        threshold = spec.strike * (1.0 - std::exp(-cur.r * dt_next));
       }
       if (bev_should_exercise_early(intrinsic, g->price - intrinsic, threshold)) {
         cash += intrinsic;
+        cash -= std::abs(ledger.get(0u)) * cur.s * cfg.hedge_slippage_bps / 1e4;
         cash += ledger.get(0u) * cur.s;
         out.exercised_early = true;
         out.exercise_ts_ns = cur.ts_ns;
@@ -701,6 +713,9 @@ struct TheoQuery { double strike{0.0}; double tenor_years{0.0}; Side side{Side::
 
 enum class TheoFlagBits : std::uint32_t {
   None = 0, Extrapolated = 1u << 0, OverlayClamped = 1u << 1, ModelMissing = 1u << 2,
+  FastTierRoute = 1u << 3,  // nonzero-dvol reprice is cold AL while the served mark is
+                            // fast-tier cached: price-space edge carries the documented
+                            // route residual (vol-space edge unaffected)
 };
 
 struct TheoValue {

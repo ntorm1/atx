@@ -729,3 +729,61 @@ those three are bit-identical. Guarded by
 `Strategy.DispersionGrossVegaLimitIsDollarsPerVolPointAtNonHistoricalMultiplier`,
 whose oracle (`2 * target_vega`, for any multiplier) is hand-derived from the
 sizing contract rather than re-evaluated from the code.
+
+### NEW — theo-vol overlay engine, breakeven-vol label pipeline, and an ML seam (theo-module sprint, Tasks 1-10)
+
+**What shipped.** Three new Tier-B headers (bumping the Tier-B count 31 → 35
+across this sprint, including a pre-sprint `var.hpp` drift sync folded in on
+the way): `realized_vol.hpp` (five OHLC realized-vol estimators —
+close-to-close, Parkinson, Garman-Klass, Rogers-Satchell, Yang-Zhang — plus a
+trailing-window `RvPanel`); `breakeven.hpp` (a four-layer label pipeline:
+`bev_replay_pnl` fixed-sigma delta-hedged single-option replay,
+`solve_breakeven_vol` bisection root-find, `solve_breakeven_batch`
+deterministic parallel fan-out, `load_bev_path` real-surface-corpus loader);
+`theo.hpp` (`TheoEngine`, a theo-vol overlay measure composed beside a
+`PricedSurface`'s served mark — `theo_vol`/`theo_price` are bit-identical to
+the surface's own `iv()`/`fair_value()` with zero overlays engaged, by
+construction, not by tolerance). Two shipped overlays (`make_rv_blend_overlay`,
+`make_event_var_overlay`) and an `IFairVolModel` ML seam
+(`load_linear_fair_vol_model` + `make_fair_vol_model_overlay`, a fixed
+8-feature versioned schema) compose additional vol-space adjustments onto the
+engine. `compute_theo_sheet` is a batch convenience over the engine's
+allocation-free `value_into` hot path. A new example driver,
+`examples/bev_label_factory.cpp`, walks a delta-lattice strike ladder across
+entry dates and emits a byte-deterministic TSV of breakeven-vol labels —
+target (`log_ratio`) plus join keys and solve diagnostics only, NOT the
+`kFairVolFeatureSchemaV1` feature block `IFairVolModel` implementations
+consume (final-review I2 correction: that feature block is assembled offline
+by the trainer, from the surface corpus plus a separately-computed RV
+history — see `theo.hpp`'s ML-seam banner). `TheoEdgeSignalStrategy`
+(`examples/spy_leaps_strangle_backtest.cpp`) is a read-only `IStrategy`
+decorator that records `theo_edge_atm`/`theo_band_atm` per step without
+altering any order, hedge, or NAV path — verified byte-identical to the
+undecorated run on real SPY 2019 data (899/899 shared `track.tsv` cells) in
+a one-off manual A/B whose artifact was not preserved (requires the local
+`spy-2019` corpus to reproduce) and whose arms also differed in snapshot
+surface backing; the decorator has no automated test coverage (see the
+sprint summary's Validation state).
+
+**Engine extension, not a parallel engine.** `bev_replay_pnl`'s
+implementation is appended to the end of `src/backtest.cpp` specifically to
+reuse that file's local `HedgeLedger` share ledger (`add`/`get`) and mirror
+the existing engine's rebalance/settlement/financing conventions (the
+single-instrument rebalance ordering is re-derived inline, not delegated);
+`git diff` on that file is exactly one inserted `#include` line and a pure
+append after the existing close. `run_backtest`'s step loop, `RunConfig`, and `HedgeLedger`'s
+class definition are byte-untouched.
+
+**Effect on existing callers.** None. All three new headers are Tier-B,
+reachable only by explicit include, outside the `vol.hpp` umbrella; no
+existing signature, default, or served number changes. The one library file
+touched outside the new headers (`src/backtest.cpp`) gains only an
+`#include` and an append — no existing symbol in that file is modified.
+
+**Not shipped (see the sprint summary's residual-work register for the
+full list).** Quantile heads on `IFairVolModel` (`OverlayAdjust::band` from
+the fair-vol overlay is a `|dvol| * 0.5` placeholder); `TheoFlagBits::
+Extrapolated` is declared but never set (no surface extrapolation predicate
+exposed yet); label storage is TSV-only (no Parquet — house rule, revisit
+with the lakehouse); dividend/borrow inputs for single names and purged-CV/
+embargo tooling stay Python-side; the theo signal probe assumes a SPY corpus.

@@ -135,6 +135,12 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/earnings_repro.cpp
     # declarative swap-lane DSL
     src/swap_leg.cpp
+    # THEO-1: OHLC realized-vol estimator suite (Tier-B, not on the umbrella)
+    src/realized_vol.cpp
+    # THEO-3: breakeven-vol root-find, layered over bev_replay_pnl (backtest.cpp)
+    src/breakeven.cpp
+    # THEO-7: theo vocabulary + TheoEngine (identity semantics beside the served mark)
+    src/theo.cpp
 )
 add_library(atx::vol ALIAS atx-vol)
 
@@ -600,6 +606,18 @@ if(ATX_BUILD_EXAMPLES)
     # examples/amzn_earnings_report.cpp.
     add_executable(amzn_earnings_report examples/amzn_earnings_report.cpp)
     target_link_libraries(amzn_earnings_report PRIVATE atx::vol atx::core atx_warnings)
+
+    # Offline label-factory driver (THEO-6): walks a SurfaceDb date range,
+    # builds per-(entry, expiry, strike, side) breakeven-vol jobs through the
+    # strike-lattice delta filter, solves them in batch (Task 4), and writes
+    # a byte-deterministic sorted TSV whose target column is
+    # log_ratio = ln(sigma_be / sigma_entry_iv) -- the model target from the
+    # research doc's Section 8.2. The correctness GATE is
+    # tests/bev_label_factory_gate_test.cpp (compiles this TU's
+    # run_bev_label_factory() directly, main() suppressed). See
+    # examples/bev_label_factory.cpp.
+    add_executable(bev_label_factory examples/bev_label_factory.cpp)
+    target_link_libraries(bev_label_factory PRIVATE atx::vol atx::core atx_warnings)
 
     # Earnings-censored atmCen cohort VALIDATION driver (Task 9): batch the
     # shared harness (atx/vol/earnings_repro_config.hpp) over the checked-in
