@@ -695,6 +695,62 @@ TEST(VarSwapMemo, MarksOnlyEvalCountIsAlsoPerDistinctTenor) {
   EXPECT_EQ(evals, per_group); // one tenor -> one build, regardless of row count
 }
 
+// Fix round 1, I-2 regression guard. An ALL-fully-aged book must cost the
+// memo NOTHING: the unmemoized path (`price_var_swap`) skips the strip
+// entirely once `n_obs_done == n_obs_total`, and the group-build helper
+// (`ensure_var_swap_center_strip`, derivatives.cpp) must honour that SAME
+// gate rather than resolving the (expensive, K-quadrature) strip just
+// because a group happens to exist. Before the fix, `ensure_var_swap_center`
+// ran the strip unconditionally on first touch regardless of aging --
+// inverting the point of the memo (a real, cheap workload made slower).
+// Covers both greeks=true and greeks=false, two tenors, two uids: zero
+// strip evaluations in every case, not merely "fewer than 10x".
+TEST(VarSwapMemo, AllFullyAgedBookCostsTheMemoZeroStripEvals) {
+  const PricedSurface ps7 = make_carry_skew_surface(7, 100.0, 0.30, 0.02);
+  const PricedSurface ps9 = make_carry_skew_surface(9, 100.0, 0.25, 0.01);
+  const PricedSurface *arr[] = {&ps7, &ps9};
+  auto ss = SurfaceSet::create(arr);
+  ASSERT_TRUE(ss.has_value());
+
+  std::vector<DerivPosition> book;
+  std::uint32_t next_id = 0;
+  for (const std::uint32_t uid : {7u, 9u}) {
+    for (const double T : {0.35, 0.5}) {
+      for (std::uint32_t i = 0; i < 3u; ++i) {
+        DerivPosition p{};
+        p.id = next_id++;
+        p.uid = uid;
+        p.qty = 1.0;
+        p.contract = var_swap_at(T);
+        p.contract.strike_dec = 0.01 * static_cast<double>(i);
+        p.contract.notional = 1.0e6 + 1.0e5 * static_cast<double>(i);
+        // Fully aged: n_obs_done == n_obs_total, so the unmemoized path never
+        // touches the strip for this row either.
+        p.contract.rv_spec.n_obs_done = p.contract.rv_spec.n_obs_total;
+        book.push_back(p);
+      }
+    }
+  }
+  ASSERT_EQ(book.size(), 12u);
+
+  ledger::reset();
+  const auto f_greeks = price_deriv_book(*ss, book, DerivConfig{}, /*greeks=*/true);
+  ASSERT_TRUE(f_greeks.has_value()) << f_greeks.error().to_string();
+  ASSERT_EQ(f_greeks->rows.size(), 12u);
+  for (const auto &row : f_greeks->rows) {
+    EXPECT_EQ(row.status, PriceStatus::Ok);
+  }
+  EXPECT_EQ(ledger::snapshot().get(ledger::Solve::VarSwapStripEvals), 0u);
+
+  ledger::reset();
+  const auto f_marks = price_deriv_book(*ss, book, DerivConfig{}, /*greeks=*/false);
+  ASSERT_TRUE(f_marks.has_value()) << f_marks.error().to_string();
+  for (const auto &row : f_marks->rows) {
+    EXPECT_EQ(row.status, PriceStatus::Ok);
+  }
+  EXPECT_EQ(ledger::snapshot().get(ledger::Solve::VarSwapStripEvals), 0u);
+}
+
 // THE hard gate: memoized book rows are bit-identical to calling the
 // unmemoized `detail::deriv_greeks_on_ref` directly, once per row, with no
 // shared block at all. Exercises the FD path (the bumps default) with

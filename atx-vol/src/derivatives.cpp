@@ -2716,18 +2716,33 @@ using detail::VarSwapSharedBlock;
   return Ok();
 }
 
-// Resolve `df_at_T` / `center_raw` -- the ONLY block state every row (fully
-// aged or not) needs. Idempotent.
-template <class SurfaceT>
-void ensure_var_swap_center(VarSwapSharedBlock& block, const SurfaceT& surface,
-                             const CurveSet& curves, double T, const DerivConfig& cfg) {
-  if (block.center_resolved) {
+// Resolve `df_at_T` -- cheap (no quadrature), and every row wants it
+// (including a fully-aged one, whose PV is still `df * notional *
+// (rv_done_dec - strike)`). Idempotent, unconditional.
+void ensure_var_swap_df(VarSwapSharedBlock& block, const CurveSet& curves, double T) noexcept {
+  if (block.df_resolved) {
     return;
   }
-  block.center_resolved = true;
+  block.df_resolved = true;
   DerivFlags df_flags = DerivFlags::None;
   block.df_at_T = deriv_df_at_T(curves, T, df_flags);
   block.df_fallback_at_T = has_flag(df_flags, DerivFlags::DfFallback);
+}
+
+// Resolve `center_raw` -- the strip itself. Fix round 1, I-2: the CALLER
+// must gate this on `need_strip` (this file's own
+// `n_obs_total == 0u || n_obs_done < n_obs_total` test, recomputed at each
+// call site) -- an all-fully-aged (uid,T) group must never call this at all,
+// matching `price_var_swap`'s own "fully aged never runs the strip" gate.
+// Idempotent for the groups that DO need it (first not-fully-aged row
+// resolves it once; every sibling, fully aged or not, reuses the result).
+template <class SurfaceT>
+void ensure_var_swap_center_strip(VarSwapSharedBlock& block, const SurfaceT& surface,
+                                   const CurveSet& curves, double T, const DerivConfig& cfg) {
+  if (block.strip_resolved) {
+    return;
+  }
+  block.strip_resolved = true;
   block.center_raw = resolve_var_swap_strip_raw(surface, curves, T, cfg);
 }
 
@@ -2861,11 +2876,14 @@ template <class SurfaceT>
                                                               VarSwapSharedBlock& block) {
   ATX_TRY_VOID(validate_var_swap_dispatch(contract, cfg));
   const double T = contract.maturity_t;
-  ensure_var_swap_center(block, surface, curves, T, cfg);
+  ensure_var_swap_df(block, curves, T);
   const RealizedVarianceSpec& rv = contract.rv_spec;
   const bool need_strip = rv.n_obs_total == 0u || rv.n_obs_done < rv.n_obs_total;
-  if (need_strip && !block.center_raw.has_value()) {
-    return Err(block.center_raw.error());
+  if (need_strip) {
+    ensure_var_swap_center_strip(block, surface, curves, T, cfg);
+    if (!block.center_raw.has_value()) {
+      return Err(block.center_raw.error());
+    }
   }
   const std::optional<DerivQuote> center_strip =
       need_strip ? std::optional<DerivQuote>(*block.center_raw) : std::nullopt;
@@ -2893,12 +2911,15 @@ template <class SurfaceT>
   ATX_TRY_VOID(validate_var_swap_dispatch(contract, cfg));
 
   const double T = contract.maturity_t;
-  ensure_var_swap_center(block, surface, curves, T, cfg);
+  ensure_var_swap_df(block, curves, T);
 
   const RealizedVarianceSpec& rv = contract.rv_spec;
   const bool need_strip = rv.n_obs_total == 0u || rv.n_obs_done < rv.n_obs_total;
-  if (need_strip && !block.center_raw.has_value()) {
-    return Err(block.center_raw.error());
+  if (need_strip) {
+    ensure_var_swap_center_strip(block, surface, curves, T, cfg);
+    if (!block.center_raw.has_value()) {
+      return Err(block.center_raw.error());
+    }
   }
   const std::optional<DerivQuote> center_strip =
       need_strip ? std::optional<DerivQuote>(*block.center_raw) : std::nullopt;
@@ -3629,6 +3650,34 @@ Result<DerivGreeks> deriv_greeks_on_ref(const SurfaceRef& ref, const DerivContra
   return deriv_greeks(view, curves, contract, cfg, bumps);
 }
 
+// Fix round 1, I-3. `VarSwapSharedBlock` is only a valid cache for a VarSwap
+// contract priced with no discrete-monitoring correction (see
+// `resolve_var_swap_strip_raw`'s own doc for why `Diffusion1OverN` cannot
+// safely share the raw strip) -- both `*_on_ref_shared` entry points below
+// document this as a precondition, and BOTH used to leave it unenforced:
+// violating it silently returns a WRONG number (a VolSwap priced through the
+// variance-swap formula; a Diffusion1OverN correction silently dropped) with
+// no `Err`, the same failure shape as P-4's shipped C-1. Enforced here,
+// centrally, as an `Err(InvalidArgument, ...)` rather than an `assert`:
+// these are already `Result`-returning entry points, so a Result-typed
+// rejection costs nothing new at any call site and — unlike `assert` — fails
+// the same way in every build configuration, not just when assertions are
+// compiled in. `price_deriv_book` (this scope's only caller today) already
+// gates on both conditions before ever reaching here (`var_swap_memo_
+// eligible`, deriv_book.cpp); this closes the door for the next one.
+[[nodiscard]] Status validate_var_swap_shared_scope(const DerivContract& contract,
+                                                     const DerivConfig& cfg) noexcept {
+  if (contract.kind != DerivKind::VarSwap) {
+    return Err(ErrorCode::InvalidArgument,
+               "deriv: shared-block entry point requires DerivKind::VarSwap");
+  }
+  if (cfg.discrete_correction_mode != DerivDiscreteCorrection::None) {
+    return Err(ErrorCode::InvalidArgument,
+               "deriv: shared-block entry point requires discrete_correction_mode == None");
+  }
+  return Ok();
+}
+
 // Task P-6 (GK-P book memo). Mirrors `deriv_price_on_ref` exactly, just
 // sourcing/extending the strip through `block` (a caller-owned, per-(uid,T)
 // memo entry) instead of resolving it fresh -- see
@@ -3641,6 +3690,7 @@ Result<DerivQuote> deriv_price_var_swap_on_ref_shared(const SurfaceRef& ref,
   if (!ref.valid()) {
     return Err(ErrorCode::InvalidArgument, "deriv: null surface handle");
   }
+  ATX_TRY_VOID(validate_var_swap_shared_scope(contract, cfg));
   ATX_TRY(const CurveSet curves, carry_from_ref(ref, contract.maturity_t, 0.0));
   const SurfaceRefStripView view{&ref, &curves, contract.maturity_t, surface_certified_wing_band};
   return deriv_price_var_swap_shared(view, curves, contract, cfg, block);
@@ -3658,6 +3708,7 @@ Result<DerivGreeks> deriv_greeks_var_swap_on_ref_shared(const SurfaceRef& ref,
   if (!ref.valid()) {
     return Err(ErrorCode::InvalidArgument, "deriv: null surface handle");
   }
+  ATX_TRY_VOID(validate_var_swap_shared_scope(contract, cfg));
   ATX_TRY(const CurveSet curves, carry_from_ref(ref, contract.maturity_t, bumps.time_years));
   const SurfaceRefStripView view{&ref, &curves, contract.maturity_t, surface_certified_wing_band};
   return deriv_greeks_var_swap_shared(view, curves, contract, cfg, bumps, block);

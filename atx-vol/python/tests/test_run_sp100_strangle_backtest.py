@@ -96,6 +96,11 @@ SOLVE_LEDGER_KEYS = (
     "sl_iv_newton_iters",
     "sl_duplicate_mark_solves",
     "sl_cache_carry_drift",
+    # Task P-6 (VarSwap book memo). Appended last -- matches `ledger::Solve`
+    # (counters.hpp), whose new counter is appended before `Count_` so
+    # existing indices stay stable. Caller-visible through `av.solve_ledger()`
+    # (fix round 1, I-1): the tearsheet and bench JSON read this same 9-tuple.
+    "sl_var_swap_strip_evals",
 )
 
 

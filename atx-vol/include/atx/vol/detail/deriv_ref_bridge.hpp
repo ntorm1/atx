@@ -71,11 +71,23 @@ namespace detail {
 // deriv_book.hpp's own "Determinism / threading" section), so this is not a
 // new constraint.
 struct VarSwapSharedBlock {
-  // T-side: the group's own maturity.
+  // T-side: the group's own maturity. `df_at_T` is cheap (no quadrature) and
+  // every row wants it (even a fully-aged one), so it resolves unconditionally
+  // on first touch. `center_raw` is the expensive strip -- kept behind its
+  // OWN flag, deliberately separate from `df_resolved`, and resolved ONLY
+  // once a row that actually needs it (not fully aged) asks: an all-fully-
+  // aged (uid,T) group must cost the memo NOTHING, matching the unmemoized
+  // path's own "fully aged skips the strip entirely" gate
+  // (`price_var_swap`). Fix round 1, I-2: collapsing this into one flag would
+  // let a fully-aged FIRST row mark the strip "resolved" while leaving
+  // `center_raw` at its placeholder `Ok(DerivQuote{})` default, silently
+  // serving a later NOT-fully-aged sibling a zeroed strip -- two flags is
+  // what keeps that impossible.
   double df_at_T = 0.0;
   bool df_fallback_at_T = false;
-  bool center_resolved = false;
-  Result<DerivQuote> center_raw = atx::core::Ok(DerivQuote{});  // meaningful iff center_resolved
+  bool df_resolved = false;
+  bool strip_resolved = false;
+  Result<DerivQuote> center_raw = atx::core::Ok(DerivQuote{});  // meaningful iff strip_resolved
 
   // Market-greek + T-dt roll sub-block: both are needed by exactly the same
   // condition (a NOT-fully-aged row asking for greeks), so both resolve
@@ -106,10 +118,14 @@ struct VarSwapSharedBlock {
 };
 
 // Marks-only shared-block entry point. Bit-identical to `deriv_price_on_ref`
-// on an in-scope VarSwap contract (`cfg.discrete_correction_mode == None` --
-// NOT re-checked here, the caller's responsibility, see
-// `resolve_var_swap_strip_raw`'s own doc) -- reuses/extends `block` instead
-// of resolving the strip fresh.
+// on an in-scope VarSwap contract (`cfg.discrete_correction_mode == None`) --
+// reuses/extends `block` instead of resolving the strip fresh.
+//
+// Fix round 1, I-3: `block` is only a valid cache under BOTH `contract.kind
+// == DerivKind::VarSwap` and `cfg.discrete_correction_mode == None` -- ENFORCED
+// (returns `Err(InvalidArgument, ...)` on violation, see
+// `validate_var_swap_shared_scope` in derivatives.cpp), not left to the
+// caller as before.
 //
 // @pre `ref.valid()`.
 [[nodiscard]] Result<DerivQuote>
@@ -118,8 +134,8 @@ deriv_price_var_swap_on_ref_shared(const SurfaceRef &ref, const DerivContract &c
                                    std::optional<double> surface_certified_wing_band = std::nullopt);
 
 // Full-greeks shared-block entry point. Bit-identical to
-// `deriv_greeks_on_ref` on an in-scope VarSwap contract, same scope/caveat as
-// above.
+// `deriv_greeks_on_ref` on an in-scope VarSwap contract, same enforced
+// scope as above.
 [[nodiscard]] Result<DerivGreeks>
 deriv_greeks_var_swap_on_ref_shared(const SurfaceRef &ref, const DerivContract &contract,
                                     const DerivConfig &cfg, const DerivGreekBumps &bumps,
