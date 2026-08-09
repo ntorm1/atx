@@ -483,9 +483,12 @@ TEST(Strip, BatchedMatchesScalarSkewSurfaceAllTiers) {
 // quote goes through the same unwrapped PricedSurfaceStripView (see
 // derivatives.cpp's `deriv_greeks(const PricedSurface&, ...)` overload), so
 // this also covers the batched path from inside the greek stencil's center
-// evaluation -- the bumped/rolled evaluations stay on the scalar loop by
-// construction (`CachedBumpView` has no `iv_batch`; see the DerivGreeks
-// read-cache tests in deriv_greeks_test.cpp).
+// evaluation. Since Review fix round 1 (I-7), `CachedBumpView::iv_batch`
+// forwards the batched read too, so toggling `strip_batch_disabled_for_test`
+// here also drives every BUMPED/rolled evaluation on and off the batched
+// path -- this end-to-end comparison therefore also proves I-7's forwarding
+// bit-identical, on top of the dedicated read-cache tests in
+// deriv_greeks_test.cpp.
 TEST(Strip, BatchedMatchesScalarViaDerivPriceAndGreeksAuditTier) {
   StripBatchResetGuard guard;
   const atx::vol::PricedSurface flat = atx::vol::testkit::make_flat_surface(32, 100.0, 100.0, 0.25);
@@ -528,6 +531,45 @@ TEST(Strip, BatchedMatchesScalarViaDerivPriceAndGreeksAuditTier) {
     EXPECT_TRUE(bits_equal_or_both_nan(greeks_scalar->volga, greeks_batched->volga));
     EXPECT_TRUE(bits_equal_or_both_nan(greeks_scalar->charm, greeks_batched->charm));
   }
+}
+
+// ── Review fix round 1, CRITICAL-1 ────────────────────────────────────────
+//
+// `n` (== grid.n_nodes, the resolved distinct node count) is NOT bounded by
+// `strip::kMaxStripNodes` on every path: the adaptive span rescale can raise
+// it without a cap (unlike `dk_floor_nodes`), and a caller-PINNED
+// `cfg.strip_nodes` is deliberately never clamped at all (see that block's
+// own comment). Before this fix, either path resolving n > kMaxStripNodes
+// overflowed the batched gather's fixed 2049-element stack buffers with no
+// bound check and no assert. Pinning `strip_nodes` directly is the
+// deterministic way to force n past the cap regardless of this fixture's own
+// vol level (the adaptive-rescale route needs a high sigma*sqrt(T) Audit
+// quote to reach the same n and is exercised implicitly by
+// `StripResolution.DkFloorNodesCapsPastKMaxStripNodes` at the pure-function
+// level already).
+//
+// `expect_batched_matches_scalar` is a strictly stronger check here than
+// "does not crash": var_swap_fair_strike's own `n <= kMaxStripNodes` guard
+// means that with n this large BOTH legs of the helper (batch-toggle on and
+// off) take the identical scalar loop, so bit-identity between them is not
+// merely expected but the only way this test could pass without the guard
+// being missing or broken -- a resurrected overflow would corrupt the stack
+// on the "batched" leg and make an accidental bit-identical match to the
+// always-safe scalar leg vanishingly unlikely, not a certainty this test
+// could rely on by chance.
+TEST(Strip, BatchedPathFallsBackAboveMaxStripNodes) {
+  StripBatchResetGuard guard;
+  const atx::vol::PricedSurface ps = atx::vol::testkit::make_skewed_surface(34, 100.0, 100.0);
+  const double T = 0.35;
+  DerivConfig cfg = deriv_default_config();
+  cfg.quality = DerivQuality::Audit;
+  cfg.strip_nodes = 5001u;  // comfortably past strip::kMaxStripNodes (2049)
+  expect_batched_matches_scalar(ps, T, cfg);
+
+  const auto q = atx::vol::var_swap_fair_strike(ps, T, cfg);
+  ASSERT_TRUE(q.has_value()) << q.error().to_string();
+  EXPECT_EQ(q->strip_nodes_used, 5001u);
+  EXPECT_GT(q->strip_nodes_used, atx::vol::strip::kMaxStripNodes);
 }
 
 // ── PV-2 / C-2: short-tenor strip resolution floor ───────────────────────
