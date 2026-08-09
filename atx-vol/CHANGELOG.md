@@ -728,7 +728,7 @@ and its round-trip validator all adopt it with the same operand association, so
 those three are bit-identical. Guarded by
 `Strategy.DispersionGrossVegaLimitIsDollarsPerVolPointAtNonHistoricalMultiplier`,
 whose oracle (`2 * target_vega`, for any multiplier) is hand-derived from the
-gross-vega formula at both the historical and a non-historical multiplier.
+sizing contract rather than re-evaluated from the code.
 
 ### NEW — theo-vol overlay engine, breakeven-vol label pipeline, and an ML seam (theo-module sprint, Tasks 1-10)
 
@@ -778,4 +778,3 @@ Extrapolated` is declared but never set (no surface extrapolation predicate
 exposed yet); label storage is TSV-only (no Parquet — house rule, revisit
 with the lakehouse); dividend/borrow inputs for single names and purged-CV/
 embargo tooling stay Python-side; the theo signal probe assumes a SPY corpus.
-sizing contract rather than re-evaluated from the code.
