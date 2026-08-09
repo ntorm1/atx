@@ -182,8 +182,38 @@
 //   prefetch_snapshots /            "OUTPUT IS UNAFFECTED AT ANY DEPTH"
 //   prefetch_depth                 (RunConfig::prefetch_depth doc); the
 //                                brief's own named example.
-//   settlement_mark_memo            "ON vs OFF is bit-for-bit identical
-//                                output" (RunConfig doc, verbatim).
+//   settlement_mark_memo            NOT bit-identical -- excluded on a
+//                                tolerance judgment, not a bit-identity one.
+//                                KNOWN LIMITATION, same treatment as
+//                                price/analytic_greeks above: a served
+//                                memo mark is documented (RunConfig's own
+//                                field doc, backtest.hpp) as an ECONOMIC
+//                                PARITY match to a fresh settlement solve,
+//                                not bit-identical -- <=1e-10 relative
+//                                (~1e-13 USD per contract) at the mark
+//                                level, the L2 crux gate
+//                                (`L2MarkMemoCruxFullGreeksMarkEqualsMarksMark`,
+//                                backtest_exec_test.cpp); up to 1e-9
+//                                absolute at the whole-cohort NAV level per
+//                                `BacktestExec.L2StrategyCohortSettlement-
+//                                MemoBitIdentical`. BacktestDb builds force
+//                                this field OFF specifically BECAUSE on !=
+//                                off at that residual -- see
+//                                `backtest_db_build.cpp`'s `run_config()`,
+//                                which needs strict bit-for-bit
+//                                incremental-equals-one-shot reproducibility,
+//                                a stronger contract than this key's own
+//                                economic-parity scope. Two configs
+//                                differing ONLY in this field therefore
+//                                share one `TrackKey` and CAN produce
+//                                byte-different tracks within that
+//                                tolerance band -- excluded because the
+//                                residual is sub-economic for every caller
+//                                this cache serves today, not because the
+//                                field is bit-inert. A future consumer that
+//                                needs bit-exact reproducibility across
+//                                this knob needs its own key component,
+//                                exactly like PriceOptions above.
 //
 // If a reviewer disagrees with any EXCLUDED call above, the fix is additive
 // (move one field's encoding from the execution list into

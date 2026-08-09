@@ -133,7 +133,8 @@ result is computed):** `price` (`PriceOptions`: `n_threads` is bit-identical
 by design; `analytic_greeks` is bit-identical for price and every Greek
 **except theta/charm** — see the callout below), `record_every_n`,
 `step_observer`, `cancel`, `snapshot_cache`, `snapshot_pool`,
-`prefetch_snapshots`, `prefetch_depth`, `settlement_mark_memo`.
+`prefetch_snapshots`, `prefetch_depth`, `settlement_mark_memo` (**not
+bit-identical either** — see the second callout below).
 
 **Known limitation, stated rather than silently absorbed:** a track's
 `pnl_theta`/`pnl_charm` columns are compute-path-dependent
@@ -142,6 +143,17 @@ entirely excluded from the key. `TrackKey` is scoped to economics (NAV / cash
 / P&L), not to every stored column; a consumer that needs theta/charm
 reproducibility from the cache needs its own key component for
 `PriceOptions`.
+
+**Second known limitation:** `settlement_mark_memo` is excluded on a
+tolerance judgment, not a bit-identity one — a served memo mark is an
+*economic parity* match to a fresh settlement solve (≤1e-10 relative per
+contract; up to 1e-9 absolute at the whole-cohort NAV level), not
+bit-identical, which is exactly why BacktestDb builds force it OFF (they need
+strict bit-for-bit incremental-equals-one-shot reproducibility, a stronger
+contract than this cache's own economic-parity scope). Two configs differing
+only in this field share one `TrackKey` and can produce byte-different
+tracks within that tolerance band; see `track_key.hpp`'s own header comment
+for the full citation chain.
 
 ## Writing and compacting
 
@@ -169,7 +181,13 @@ is deliberately Catalog-free (one-directional dependency graph). The
 WAL actually took, and creates the `tracks`/`trials`/`reader_marks` schema
 (idempotent). Core API:
 
-- `probe(key) -> Result<optional<TrackRow>>` — cache-first lookup, pure read.
+- `probe(key) -> Result<optional<TrackRow>>` — cache-first lookup. **Not pure
+  read** (fix-round, Important 1): on a HIT, touches `last_access_ts` to the
+  current wall-clock time (one additional single-statement `UPDATE`) — this
+  is what makes GC's "ages past a threshold" retention (below) genuinely
+  *access*-based rather than merely *creation-age*-based; a MISS performs no
+  write. `run_sweep` (below) fails the whole sweep closed rather than
+  reporting a hit when the probed row is `Retired`.
 - `register_staging(key, meta, registration)` — inserts a fresh `Staging`
   row; `Err(AlreadyExists)` if `key` is already known. Immediately after,
   **supersedes older-economics-generation rows** (D5): every row sharing
@@ -206,7 +224,12 @@ reclaimed the bytes, at which point `apply_gc_rewrite` clears both to NULL —
    run entirely (and, since `TrackKey` already folds `engine_id` — which
    folds `kBacktestEconomicsRev` — a hit can only ever be a track computed
    under the *current* economics revision: there is no separate freshness
-   check to get wrong).
+   check to get wrong). **A hit whose row is `Retired`** (D6 age-based GC —
+   a different hazard from D5 supersession, which always retires a
+   *different*, older-generation key — see "What invalidates what" below) is
+   refused with `Err` naming the track key, never reported as a hit: this
+   driver never reloads a hit's data, so serving one for a `Retired` row
+   could report success for a variant whose data no longer exists anywhere.
 3. **Variant-parallel execution** — every miss runs `run_backtest` with
    `price.n_threads` forced to 1; the outer fan-out
    (`SweepConfig::n_threads`) is what runs variants concurrently. Every run
@@ -292,6 +315,7 @@ non-zero exit code naming what failed.
 | `ATX_VOL_VERSION_STRING` or `ra_schema_hash()` changes | Same effect as an economics-rev bump (both fold into `engine_id`) even without a `kBacktestEconomicsRev` change — e.g. a release version bump alone invalidates the cache. |
 | `last_access_ts` ages past a `gc()` threshold | `Compacted` → `Retired` (D6). The row stays queryable; only a *later* `gc()` call may physically reclaim its bytes, and only once no live reader mark protects its batch file. |
 | A batch file's rows are all `Retired` and no live reader mark protects it | `gc()` deletes the file outright; the catalog's `file`/`row_group` for those rows go to NULL. |
+| A `run_sweep` probe hits a track D6 has `Retired` (age-based GC, same `TrackKey` — **not** D5 supersession, which is always a *different* key) | No effect on `TrackKey`, but `run_sweep` (`sweep_driver.cpp`) fails the **whole sweep** closed (`Err`, naming the offending track key) instead of reporting a cache hit. `run_sweep` never reloads a hit's data, so a stale hit here would report success for a variant whose backing data may have already been physically reclaimed (`file`/`row_group` cleared to NULL) with no automated revive path — `register_staging` on the same key hits `AlreadyExists`, `mark_compacted` refuses a non-`Staging` row. Recovery: a fresh `kBacktestEconomicsRev` bump (new `TrackKey`), or manual catalog intervention. |
 
 ## Economics tripwire: the golden 82-session pin
 

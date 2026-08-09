@@ -15,6 +15,93 @@ global constraint — but the backtest engine's `RunConfig` picks up three
 behavioural default flips inside that constraint, all with migration lines
 below.
 
+### BREAKING — swap fixings on a clock coarser than the daily schedule now fail closed by default
+
+`RunConfig::swap_fixing_cadence` (new enum `SwapFixingCadence`, `backtest.hpp`)
+is appended as `RunConfig`'s 18th field (arity pin `17` → `18`). The
+realized-variance leg used to book exactly one fixing per **clock step**
+regardless of how many NYSE sessions actually elapsed between steps, so a
+clock coarser than a swap lot's implicitly-daily fixing schedule silently
+overstated `annualization * Σr² / n_done` by roughly the gap factor (a
+weekly clock ~5x), with no error and no count.
+
+**New default, `RequireEverySession`.** A step whose elapsed weekday-session
+count (`weekday_sessions_between` — Mon–Fri, holiday-blind, no new calendar
+dependency) is not exactly 1 now returns
+`Err(ErrorCode::SwapFixingScheduleViolation)`, naming the offending step and
+the expected-vs-seen session count, instead of completing with the
+overstated variance.
+
+**Migration.** A caller whose corpus is intentionally coarser than daily
+(and was silently accepting the overstated variance before) sets
+
+```cpp
+cfg.swap_fixing_cadence = SwapFixingCadence::AcceptClockAsSchedule;
+```
+
+which books the gap's one observed return while scaling `n_obs_done` by the
+elapsed-session count (instead of always advancing it by one), so the
+daily-strike convention is not overstated by the gap.
+
+`ErrorCode::SwapFixingScheduleViolation` is appended to `atx-core::ErrorCode`
+(existing values unchanged).
+
+### BREAKING — `RollAtHorizon` now closes the aged cohort even when re-entry fails soft (no opt-out)
+
+`DeclarativeStrategy::on_step`'s `RollAtHorizon` lifecycle used to close the
+live cohort only when a fresh entry cohort resolved on the *same* step. On a
+step where the live cohort was **at** its roll horizon but re-entry failed
+soft (e.g. `DropRenormalize` finding too few surviving names), the close was
+silently dropped in the no-trade branch — the aged cohort then rode past its
+own roll horizon, potentially all the way to expiry, on any corpus where
+re-entry stayed unbuildable. The horizon close is now unconditional there,
+exactly as it already was for `CloseAtHorizon`; only re-entry itself stays
+conditional on `prepare_cohort` succeeding (`CloseAtHorizon` is untouched —
+`lifecycle_decide` never sets a clear in that mode).
+
+**Effect.** Any `RollAtHorizon` corpus that ever hit a no-trade horizon step
+now closes that cohort's position (and books its NAV/cash effect) at the
+horizon instead of silently continuing to carry it — a real NAV-moving fix,
+not a diagnostic. **No opt-out**: the prior behavior was a lifecycle defect,
+not a documented configuration choice.
+
+**New diagnostic.** `BacktestResult::n_steps_entry_skipped` (run-total
+scalar, non-wire — absent from `kBacktestSeriesColumns`/RunArchive, so
+`ra_schema_hash()` is untouched) counts steps whose entry resolution reached
+the soft no-trade path, in every holding mode; `IStrategy` gains the
+matching `n_steps_entry_skipped()` accessor (default `0`), the same
+additive-virtual pattern as `hedge_spec()`/`referenced_uids()`.
+
+### BREAKING — deferred expiry settlements now settle at the frozen expiry-date spot, and stale substitutions are counted (no opt-out)
+
+`DeferredSettlementBook` (`backtest.cpp`, reachable only under
+`UnpricedLotPolicy::ExcludeAndReport` — the one policy that defers a lot
+instead of failing the run closed) used to settle a deferred lot's intrinsic
+value against whatever *later* step's board happened to reappear first,
+which could have drifted arbitrarily far from the lot's true expiry-date
+value. It now records the underlying spot at the moment the board first goes
+missing and settles against **that** recorded spot; only when no spot was
+ever recorded (the base board was *also* absent at the deferral step) does
+resolution fall back to the reappearing step's own spot — and that fallback
+is now counted via `BacktestResult::n_settlements_at_stale_spot` (run-total
+scalar, non-wire; always `0` under `UnpricedLotPolicy::Error`, which never
+defers).
+
+**Also fixed: a permanent NAV-vs-liquidation gap.** A deferred lot leaves
+`book.lots`/`book_totals.pv` the instant it defers, but NAV's explain lane
+previously booked nothing for that drop on the deferral row, and — when the
+base mark was unknown — nothing at resolution either, even though cash
+always received the full intrinsic. The explain lane now sheds the lot's
+carried mark on the deferral row and recognizes the full intrinsic
+unconditionally at resolution, closing the gap in both directions.
+
+**Effect.** Moves NAV for any run with deferred-settlement lots — both from
+the corrected settlement spot and from the NAV-vs-liquidation gap closing.
+**No opt-out**: the prior numbers were a genuine accounting error, not a
+documented configuration. The 82-session golden SPY dispersion pin is
+unaffected (verified bit-for-bit, `24740.624124996561`) — that corpus has
+zero deferred-settlement lots in its window.
+
 ### BREAKING — NAV reconciliation and entry-fill slippage are on by default
 
 `RunConfig::reconcile_nav` and `RunConfig::book_entry_fill_slippage`
