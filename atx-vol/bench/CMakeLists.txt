@@ -127,6 +127,29 @@ target_link_libraries(atx-vol-dispersion-bench
         Threads::Threads
 )
 
+# ── Task E3 (backtest-production-lakehouse sprint) — sweep cache bench ─────
+# The sprint's headline cache number: `run_sweep` (Task C3, sweep_driver.hpp)
+# over a 32-variant grid, COLD (empty lakehouse -- every variant a miss, a
+# real backtest runs) vs WARM (same grid re-run against an already-populated
+# lakehouse -- every variant a catalog probe hit, no backtest runs at all).
+# Needs Catalog/TrackStore/sweep_driver actually compiled into atx-vol, same
+# as tests/sweep_driver_test.cpp (tests/CMakeLists.txt gates that file the
+# same way) -- so this whole target only exists when ATX_VOL_LAKEHOUSE is ON.
+if(ATX_VOL_LAKEHOUSE)
+    add_executable(atx-vol-sweep-cache-bench
+        bench_main.cpp
+        sweep_cache_bench.cpp
+    )
+    target_link_libraries(atx-vol-sweep-cache-bench
+        PRIVATE
+            atx::vol
+            atx::core
+            benchmark::benchmark
+            atx_warnings
+            Threads::Threads
+    )
+endif()
+
 # Fitting/calibration throughput (C0.3): calibrations/s as a first-class
 # number, directly comparable to the published 16.5k American-calibrations/s
 # anchor (fit/american_iv/*), legacy whole-surface and single-slice eSSVI
