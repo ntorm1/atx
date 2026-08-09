@@ -624,10 +624,52 @@ TEST(PreparedPortfolio, GroupedPriceEqualsIndependentOracleAndPinnedFingerprint)
   // implies NDEBUG in the shipped preset set and a Debug+FMA cell is unreachable. If a
   // Debug+AVX2 preset is ever added, SPLIT this branch and capture it — do not let it
   // fall through to a Release-captured number.
+  //
+  // P-5 POST-CLOSE RE-PIN (Task P-5 review, regression reopened after close; P-6
+  // reviewer's full-suite run caught this as its own M-4). Root cause: P-5's
+  // ConvexSliceFit::iv() bisection early-exit (src/dense_slice.cpp), landed after
+  // this fixture's positions all route to ConvexDenseCurve (odd uid, `make_convex`
+  // above) whose iv()/w() queries call fit_.iv() directly — the exact function the
+  // early-exit changed. NOT the calendar-scan half of P-5 (src/vol_curve.cpp's
+  // scan_k): make_convex hand-constructs ConvexSliceFit/ConvexDenseCurve directly
+  // and never calls fit_slice_curve, so that code path is unreachable from this
+  // fixture and could not have contributed.
+  // Isolation: the test PASSES under ATX_VOL_DISABLE_IV_EARLY_EXIT=1 (which restores
+  // pre-P-5 bisection behavior and nothing else) and FAILS otherwise — a direct,
+  // reproducible causal isolation, not an inference from timing.
+  // Magnitude, measured directly on this fixture's ConvexDense legs (early-exit-on
+  // vs early-exit-off, matched by (uid,K,T,side), 1345 comparable positions):
+  // max |iv drift| = 2.8421709430404e-13, max |price drift| = 7.8417e-12 absolute
+  // (~1.11e-12 relative) — both far inside the 1e-11 envelope the P-5 brief
+  // sanctioned, and consistent in magnitude with the general 41-point
+  // ConvexSliceFit.IvBisectionEarlyExitMatchesPreP5BaselineWithin1e11 characterization
+  // (2.79554e-13). The grouped==independent-oracle bit-for-bit parity block above and
+  // the thread-count invariance checks below both stayed green through this: only the
+  // whole-frame FNV hash moved, because a hash has no tolerance band (one last-place
+  // bit rehashes everything), exactly like every prior re-pin recorded above. This is
+  // a benign re-pin, not a numerical defect — see task-P-5-report.md's "Post-close
+  // regression" section for the full diagnosis.
+  // Re-measured dev (Debug, SSE2) directly: 718570745730299145 -> 10976559059648513121
+  // (this is the only cell the P-6 reviewer's full run and this triage both actually
+  // exercised, so it is the only value changed below).
+  // rel (Release, SSE2) and rel-avx2 (Release, FMA) were NOT re-measured: building
+  // atx-vol-tests fresh under `rel` hit a pre-existing, unrelated shared-cache defect
+  // -- C:\atx-cache\deps\spdlog-build (a build-farm-wide cache outside every worktree,
+  // shared with whatever else is running under `rel`/`rel-avx2` right now) still held
+  // an ITERATOR_DEBUG_LEVEL=2 (Debug ABI) spdlog.lib, which lld-link refuses to link
+  // against atx-core.lib's ITERATOR_DEBUG_LEVEL=0 (Release ABI): "/failifmismatch:
+  // mismatch detected for '_ITERATOR_DEBUG_LEVEL'". Forcibly rebuilding that shared
+  // cache from a single worktree risks breaking whatever else is using it concurrently
+  // (the same class of cross-worktree hazard the wrong-tree guard above exists to
+  // prevent), so it was left alone rather than "fixed" out of scope. The two values
+  // below are therefore UNVERIFIED post-P-5, not confirmed-unaffected -- both use the
+  // SAME fit_.iv() call the dev pin above proves moved, so they should be treated as
+  // likely-also-stale until someone with authority over the shared cache re-measures
+  // them. See task-P-5-report.md's "Post-close regression" section, concern list.
 #if defined(NDEBUG)
   constexpr std::uint64_t kGoldenFingerprintSse2 = 17305682487856730537ULL;
 #else
-  constexpr std::uint64_t kGoldenFingerprintSse2 = 718570745730299145ULL;
+  constexpr std::uint64_t kGoldenFingerprintSse2 = 10976559059648513121ULL;
 #endif
   constexpr std::uint64_t kGoldenFingerprintFma = 8754310291975640041ULL;
   constexpr std::uint64_t kGoldenFingerprint =
