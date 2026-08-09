@@ -3666,7 +3666,7 @@ Result<DerivGreeks> deriv_greeks_on_ref(const SurfaceRef& ref, const DerivContra
 // gates on both conditions before ever reaching here (`var_swap_memo_
 // eligible`, deriv_book.cpp); this closes the door for the next one.
 [[nodiscard]] Status validate_var_swap_shared_scope(const DerivContract& contract,
-                                                     const DerivConfig& cfg) noexcept {
+                                                     const DerivConfig& cfg) {
   if (contract.kind != DerivKind::VarSwap) {
     return Err(ErrorCode::InvalidArgument,
                "deriv: shared-block entry point requires DerivKind::VarSwap");

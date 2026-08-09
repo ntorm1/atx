@@ -998,6 +998,56 @@ TEST(VarSwapMemo, DiscreteCorrectionModeBypassesTheMemoButStaysCorrect) {
   EXPECT_GT(evals, 4u);
 }
 
+// Fix round 2, I-3 direct coverage. `deriv_price_var_swap_on_ref_shared` /
+// `deriv_greeks_var_swap_on_ref_shared` (deriv_ref_bridge.hpp) require
+// `contract.kind == VarSwap` and `cfg.discrete_correction_mode == None` --
+// `price_deriv_book`'s own `var_swap_memo_eligible` gate never lets a
+// violating call reach them, so that path alone can never exercise the
+// rejection. Calling both entry points directly, out-of-band from
+// `price_deriv_book`, with each precondition violated in turn.
+TEST(VarSwapMemo, SharedEntryPointsRejectOutOfScopeContractsDirectly) {
+  const PricedSurface ps = make_carry_skew_surface(7, 100.0, 0.30, 0.02);
+  const PricedSurface *arr[] = {&ps};
+  auto ss = SurfaceSet::create(arr);
+  ASSERT_TRUE(ss.has_value());
+  const SurfaceRef ref = ss->find(7);
+  ASSERT_TRUE(ref.valid());
+
+  DerivContract not_var_swap = var_swap_at(0.35);
+  not_var_swap.kind = DerivKind::VolSwap;
+  DerivContract discretely_corrected = var_swap_at(0.35);
+  DerivConfig discrete_cfg{};
+  discrete_cfg.discrete_correction_mode = DerivDiscreteCorrection::Diffusion1OverN;
+
+  atx::vol::detail::VarSwapSharedBlock block{};
+
+  const auto price_wrong_kind = atx::vol::detail::deriv_price_var_swap_on_ref_shared(
+      ref, not_var_swap, DerivConfig{}, block, std::nullopt);
+  ASSERT_FALSE(price_wrong_kind.has_value());
+  EXPECT_EQ(price_wrong_kind.error().code(), atx::vol::ErrorCode::InvalidArgument);
+
+  const auto price_wrong_correction = atx::vol::detail::deriv_price_var_swap_on_ref_shared(
+      ref, discretely_corrected, discrete_cfg, block, std::nullopt);
+  ASSERT_FALSE(price_wrong_correction.has_value());
+  EXPECT_EQ(price_wrong_correction.error().code(), atx::vol::ErrorCode::InvalidArgument);
+
+  const auto greeks_wrong_kind = atx::vol::detail::deriv_greeks_var_swap_on_ref_shared(
+      ref, not_var_swap, DerivConfig{}, DerivGreekBumps{}, block, std::nullopt);
+  ASSERT_FALSE(greeks_wrong_kind.has_value());
+  EXPECT_EQ(greeks_wrong_kind.error().code(), atx::vol::ErrorCode::InvalidArgument);
+
+  const auto greeks_wrong_correction = atx::vol::detail::deriv_greeks_var_swap_on_ref_shared(
+      ref, discretely_corrected, discrete_cfg, DerivGreekBumps{}, block, std::nullopt);
+  ASSERT_FALSE(greeks_wrong_correction.has_value());
+  EXPECT_EQ(greeks_wrong_correction.error().code(), atx::vol::ErrorCode::InvalidArgument);
+
+  // Rejection must not mutate `block`: every field still reads as freshly
+  // default-constructed (matches I-3's own doc, "before `carry_from_ref` so a
+  // rejected call cannot mutate `block`").
+  EXPECT_FALSE(block.df_resolved);
+  EXPECT_FALSE(block.strip_resolved);
+}
+
 TEST(DerivBook, CombineTotalsAddsFieldsAndCounts) {
   PriceTotals a{};
   a.pv = 10.0;
