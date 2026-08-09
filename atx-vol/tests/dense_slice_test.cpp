@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstdlib>
 #include <limits>
 #include <string>
 #include <utility>
@@ -31,6 +30,17 @@ Result<atx::core::linalg::VecX> qp_active_set_for_test(
     atx::core::linalg::VecX x0, int max_iter, bool *converged_out, int *iterations_out,
     std::vector<Eigen::Index> *dropped_rows_out = nullptr);
 } // namespace atx::vol
+
+// Task P-5 review N-1: forward declaration of the P-5 test/bench seam defined
+// in src/dense_slice.cpp -- mirrors derivatives.cpp's
+// `set_strip_batch_disabled_for_test` forward-declare-in-the-consumer
+// convention (no header touched). Reads the SAME predicate
+// ConvexSliceFit::iv() reads (env_flag_enabled's exact `"1"` match), so this
+// test's skip guard cannot disagree with what production actually did, the
+// way a local presence-only re-check of the environment variable could.
+namespace atx::vol::detail {
+[[nodiscard]] bool iv_early_exit_disabled_for_test() noexcept;
+} // namespace atx::vol::detail
 
 // Phase 1 of the arbitrage-constrained dense surface: the per-slice convex
 // call-price QP. These tests pin the two properties the whole approach rests on:
@@ -137,21 +147,6 @@ constexpr double kPreP5Iv[41] = {
     0.23892309280367430, 0.25284689612604161, 0.26671198479956604, 0.28052111779829192,
     0.29427675652366592,
 };
-
-// Whether ATX_VOL_DISABLE_IV_EARLY_EXIT is set in this process's environment
-// (test-only presence check; `getenv` is deprecated under MSVC's CRT, so this
-// mirrors dense_slice.cpp's own `getenv_s`-based env_flag_enabled rather than
-// calling it -- that helper is TU-local to dense_slice.cpp, not shared, and a
-// bare presence check does not need its exact-value-match semantics).
-bool p5_early_exit_disabled_by_env() {
-#if defined(_WIN32)
-  std::size_t sz = 0;
-  char buf[8] = {};
-  return getenv_s(&sz, buf, sizeof(buf), "ATX_VOL_DISABLE_IV_EARLY_EXIT") == 0 && sz > 0;
-#else
-  return std::getenv("ATX_VOL_DISABLE_IV_EARLY_EXIT") != nullptr;
-#endif
-}
 
 // An in-the-money-heavy observation set (~11 strikes) at a flat vol, with one
 // deep-ITM print forced far below its no-arb intrinsic floor (df*(F-K)) and
@@ -1123,12 +1118,19 @@ TEST(ConvexSliceFit, IvBisectionEarlyExitMatchesPreP5BaselineWithin1e11) {
 // verified BOTH ways below by actually deleting the break, rebuilding, and
 // observing this exact test fail (see task-P-5-report.md's fix-round
 // section for the captured failure output), then restoring it and observing
-// green again. Skipped under `ATX_VOL_DISABLE_IV_EARLY_EXIT=1`, the
-// intentional bench-only override that restores pre-P-5 arithmetic on
-// purpose -- bit-identity is the CORRECT behavior there, not a regression.
+// green again. Skipped when `detail::iv_early_exit_disabled_for_test()`
+// reports the intentional bench-only override that restores pre-P-5
+// arithmetic -- bit-identity is the CORRECT behavior there, not a
+// regression. Task P-5 review N-1: this used to re-derive "is the override
+// on?" from a local presence-only check of the environment variable, which
+// disagreed with production's exact-match-"1" semantics at, e.g.,
+// ATX_VOL_DISABLE_IV_EARLY_EXIT=0 (production runs the early exit; the old
+// guard would have skipped anyway). Now reads the same accessor production
+// itself is built from, so this guard cannot disagree with what the binary
+// actually did.
 TEST(ConvexSliceFit, IvBisectionEarlyExitIsActuallyEngagedInProduction) {
   using namespace atx::vol;
-  if (p5_early_exit_disabled_by_env()) {
+  if (detail::iv_early_exit_disabled_for_test()) {
     GTEST_SKIP() << "ATX_VOL_DISABLE_IV_EARLY_EXIT is set -- bit-identity to "
                     "the pre-P-5 baseline is the intended bench-A/B behavior here";
   }

@@ -29,6 +29,18 @@ using atx::core::linalg::solve;
 using atx::core::linalg::solve_spd;
 using atx::core::linalg::VecX;
 
+namespace detail {
+// Task P-5 review N-1: the ONE place that reads `g_iv_early_exit_disabled`
+// from outside this TU. Mirrors derivatives.cpp's
+// `strip_batch_disabled_for_test` precedent -- declared here (external
+// linkage, no header touched) so a bench or test TU reads the EXACT
+// predicate production reads (env_flag_enabled's exact-match-"1" semantics)
+// instead of each re-deriving its own (weaker, presence-only) guess at what
+// the environment variable means. Defined below, past the anonymous
+// namespace `g_iv_early_exit_disabled` lives in.
+[[nodiscard]] bool iv_early_exit_disabled_for_test() noexcept;
+} // namespace detail
+
 namespace {
 
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
@@ -364,6 +376,12 @@ struct Node {
 };
 
 } // namespace
+
+namespace detail {
+bool iv_early_exit_disabled_for_test() noexcept {
+  return g_iv_early_exit_disabled.load(std::memory_order_relaxed);
+}
+} // namespace detail
 
 // Test-only direct entry into the active-set QP kernel above. qp_active_set is
 // TU-local to this file (anonymous namespace), and fit_convex_slice's public

@@ -43,7 +43,6 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <cstdlib>
 #include <limits>
 #include <optional>
 #include <utility>
@@ -75,6 +74,21 @@
 
 #include "bench_util.hpp"
 #include "support/spy_fit_fixture.hpp" // kSpyFitFixtures, find_spy_fit_parquet, load_spy_fit_fixture
+
+// Task P-5 review N-1: forward declaration of the P-5 test/bench seam defined
+// in src/dense_slice.cpp (mirrors derivatives.cpp's
+// `set_strip_batch_disabled_for_test` forward-declare-in-the-consumer
+// convention, no header touched -- same shape as this file's own
+// `iv_shootout_bench.cpp` sibling declaring `implied_vol_traced` before its
+// own `namespace atx::vol::bench {` opens). Reads the SAME predicate
+// ConvexSliceFit::iv() reads, so the `early_exit_disabled` counter below
+// cannot mislabel a row the way an independent presence-only re-check of the
+// environment variable could (e.g. ATX_VOL_DISABLE_IV_EARLY_EXIT=0 sets the
+// variable but leaves the override OFF -- production's exact-match-"1"
+// semantics, not a presence check).
+namespace atx::vol::detail {
+[[nodiscard]] bool iv_early_exit_disabled_for_test() noexcept;
+} // namespace atx::vol::detail
 
 namespace atx::vol::bench {
 namespace {
@@ -958,14 +972,12 @@ void BM_ConvexDenseIvStrip(benchmark::State &state) {
     benchmark::ClobberMemory();
   }
   state.SetItemsProcessed(state.iterations() * static_cast<std::int64_t>(ks.size()));
-#if defined(_WIN32)
-  std::size_t sz = 0;
-  char buf[8] = {};
-  const bool early_exit_disabled =
-      getenv_s(&sz, buf, sizeof(buf), "ATX_VOL_DISABLE_IV_EARLY_EXIT") == 0 && sz > 0;
-#else
-  const bool early_exit_disabled = std::getenv("ATX_VOL_DISABLE_IV_EARLY_EXIT") != nullptr;
-#endif
+  // Task P-5 review N-1: read the SAME predicate ConvexSliceFit::iv() itself
+  // is built from (exact-match-"1" semantics), not an independent presence
+  // check on the environment variable -- a presence check mislabels this
+  // counter at, e.g., ATX_VOL_DISABLE_IV_EARLY_EXIT=0 (production runs the
+  // early exit; a presence check would report the override as active).
+  const bool early_exit_disabled = detail::iv_early_exit_disabled_for_test();
   state.counters["early_exit_disabled"] = early_exit_disabled ? 1.0 : 0.0;
   state.SetLabel("kernel=ConvexSliceFit::iv fixture=F100_T0.25_df0.98_flat22vol nodes=4097 "
                  "env=ATX_VOL_DISABLE_IV_EARLY_EXIT");
@@ -1028,9 +1040,17 @@ const int kRegistered = [] {
       ->Unit(benchmark::kMicrosecond);
   apply_common(benchmark::RegisterBenchmark("fit/american_iv/warm", BM_AmericanIvWarm))
       ->Unit(benchmark::kMicrosecond);
+  // Task P-5 review N-2: MinTime(1.0) baked in rather than left as an
+  // operator-supplied `--benchmark_min_time=1.0s` flag the report used to
+  // instruct P-R to pass. The reviewer reproduced the reported ratio at the
+  // library default min_time too (8 pairs, median 1.392x, CV 9.2%), so the
+  // flag was never load-bearing for the result -- but an unencoded setting
+  // is still a setting the next reader has to rediscover or take on faith.
+  // Baking it removes that step and keeps the harness self-describing.
   apply_common(
       benchmark::RegisterBenchmark("serve/convexdense_iv_strip/synth", BM_ConvexDenseIvStrip))
-      ->Unit(benchmark::kMicrosecond);
+      ->Unit(benchmark::kMicrosecond)
+      ->MinTime(1.0);
   // Flat 0.24 board: measures route mechanics on a trivially-interpolable box.
   apply_common(benchmark::RegisterBenchmark("fit/deam_shared_boundary/scalar_reference",
                                             BM_SharedBoundaryDeam))
