@@ -35,17 +35,55 @@ using atx::core::Ok;
 using atx::core::Result;
 using atx::core::Status;
 
-namespace {
-
-namespace fs = std::filesystem;
-
-[[nodiscard]] std::uint64_t current_process_id() noexcept {
+// Task D6: declared in writer_lock.hpp, defined here (not in the anonymous
+// namespace below -- external linkage, matching the header) so
+// catalog.cpp/backtest_db.cpp can share this exact liveness probe instead of
+// re-deriving a second one. See the header's own doc comment on these two
+// functions for why.
+std::uint64_t current_process_id() noexcept {
 #if defined(_WIN32)
   return static_cast<std::uint64_t>(::GetCurrentProcessId());
 #else
   return static_cast<std::uint64_t>(::getpid());
 #endif
 }
+
+#if defined(_WIN32)
+bool process_alive(std::uint64_t pid) noexcept {
+  if (pid == 0 || pid > static_cast<std::uint64_t>((std::numeric_limits<DWORD>::max)())) {
+    return false;
+  }
+  HANDLE h = ::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, static_cast<DWORD>(pid));
+  if (h == nullptr) {
+    // ERROR_INVALID_PARAMETER: no process with this id exists right now.
+    return false;
+  }
+  DWORD exit_code = 0;
+  const BOOL got = ::GetExitCodeProcess(h, &exit_code);
+  ::CloseHandle(h);
+  // Indeterminate reads as "alive" -- the conservative direction: it can only
+  // cause a caller to wait/report contention on a dead owner, never to act
+  // (delete a lock file, reclaim GC'd data) against a live one's resource.
+  return (got == FALSE) || exit_code == STILL_ACTIVE;
+}
+#else
+bool process_alive(std::uint64_t pid) noexcept {
+  if (pid == 0) {
+    return false;
+  }
+  const int rc = ::kill(static_cast<pid_t>(pid), 0);
+  if (rc == 0) {
+    return true;
+  }
+  // ESRCH: definitively no such process. Anything else (e.g. EPERM -- exists,
+  // owned by someone else) reads conservatively as "alive".
+  return errno != ESRCH;
+}
+#endif
+
+namespace {
+
+namespace fs = std::filesystem;
 
 [[nodiscard]] std::optional<std::uint64_t> parse_pid(std::string_view text) noexcept {
   // Trim the trailing whitespace/NUL padding a fixed-size read buffer leaves.
@@ -131,23 +169,6 @@ void close_handle(std::intptr_t native_handle) noexcept {
   return parse_pid(std::string_view(buf, static_cast<std::size_t>(read)));
 }
 
-[[nodiscard]] bool process_alive(std::uint64_t pid) noexcept {
-  if (pid == 0 || pid > static_cast<std::uint64_t>((std::numeric_limits<DWORD>::max)())) {
-    return false;
-  }
-  HANDLE h = ::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, static_cast<DWORD>(pid));
-  if (h == nullptr) {
-    // ERROR_INVALID_PARAMETER: no process with this id exists right now.
-    return false;
-  }
-  DWORD exit_code = 0;
-  const BOOL got = ::GetExitCodeProcess(h, &exit_code);
-  ::CloseHandle(h);
-  // Indeterminate reads as "alive" -- the conservative direction: it can only
-  // cause acquire() to wait/report contention on a dead owner, never to
-  // delete a live one's lock.
-  return (got == FALSE) || exit_code == STILL_ACTIVE;
-}
 #else
 [[nodiscard]] Result<std::optional<std::intptr_t>> try_create_new(const fs::path &path) {
   const std::string p = path.string();
@@ -191,18 +212,6 @@ void close_handle(std::intptr_t native_handle) noexcept { ::close(static_cast<in
   return parse_pid(std::string_view(buf, static_cast<std::size_t>(got)));
 }
 
-[[nodiscard]] bool process_alive(std::uint64_t pid) noexcept {
-  if (pid == 0) {
-    return false;
-  }
-  const int rc = ::kill(static_cast<pid_t>(pid), 0);
-  if (rc == 0) {
-    return true;
-  }
-  // ESRCH: definitively no such process. Anything else (e.g. EPERM -- exists,
-  // owned by someone else) reads conservatively as "alive".
-  return errno != ESRCH;
-}
 #endif
 
 // Deletes `path` iff it still holds exactly `expected_pid` -- narrows (does

@@ -87,6 +87,22 @@
 
 namespace atx::vol::detail {
 
+// Task D6 reuse: the SAME "is this PID still a running process" probe
+// WriterLock's own stale-owner takeover uses (Win32 OpenProcess +
+// GetExitCodeProcess; POSIX kill(pid, 0) -- see the anonymous-namespace
+// implementation in writer_lock.cpp for the exact semantics, including the
+// "indeterminate reads as alive" conservative-direction rule). Exposed here
+// so OTHER PID-liveness advisory mechanisms (the track lakehouse Catalog's
+// reader_marks, BacktestReaderMark) can share ONE platform-specific
+// implementation instead of re-deriving a second Win32/POSIX liveness probe
+// -- the same "one implementation, not a second copy that can drift" rule
+// this sprint already applied to SHA-256 (Task D1). Unlike WriterLock
+// itself, callers of these two functions are not implementing mutual
+// exclusion: multiple concurrent PID-tagged marks are the whole point for a
+// many-reader registration.
+[[nodiscard]] std::uint64_t current_process_id() noexcept;
+[[nodiscard]] bool process_alive(std::uint64_t pid) noexcept;
+
 class WriterLock {
 public:
   // Bounded retry budget against a LIVE contender. Never waited out against a
