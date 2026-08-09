@@ -174,13 +174,19 @@ struct PricerConfig {
   // explicit opt-in -- assign `risk_admission_policy()` -- per WP12 staging.
   FitAdmissionPolicy admission{};
   // Optional overrides for the preset's cold-fit diagnostic/quality-speed knobs.
-  // nullopt => use the preset default, except a floor-free Mark admission
-  // defaults `score_parity` off because it admits Disabled diagnostics. A Mark
-  // bid/ask quality floor and Quote/Risk admission retain scoring by default.
-  // An explicit false skips the second de-Am diagnostic pass and therefore
-  // fails closed when admission requires that evidence. false for
-  // `enforce_calendar_floor` maximizes raw in-band fit quality by fitting dense
-  // slices independently.
+  // nullopt => use the preset default, with one deliberate exception: a board
+  // the LIBRARY routed (no `curve` pin and not the preset-pinned Hft dense
+  // route) ALWAYS scores parity, whatever the admission policy consumes (W3-A,
+  // principle P4). A published surface must carry evidence of how well the
+  // family the library chose actually fits; a floor-free Mark policy left that
+  // evidence unmeasured on every non-eSSVI route, which reported zeroed rather
+  // than poor diagnostics. A CALLER-pinned curve under a floor-free Mark
+  // admission keeps the opt-out -- an explicit pin includes its latency budget.
+  // A Mark bid/ask quality floor and Quote/Risk admission retain scoring by
+  // default. An explicit false skips the second de-Am diagnostic pass on every
+  // route and therefore fails closed when admission requires that evidence.
+  // false for `enforce_calendar_floor` maximizes raw in-band fit quality by
+  // fitting dense slices independently.
   std::optional<bool> use_correction_cache{};
   // Explicit query-time pricing contract. LegacyCompatible preserves historical
   // serving, ColdReference forces cold Andersen-Lake/FD, RepresentativeFast uses

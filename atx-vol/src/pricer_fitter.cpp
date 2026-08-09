@@ -383,6 +383,14 @@ duplicate_maturity_report(const Underlying &under, const CurveConfig &curve) {
   // produced worst_frac_within_bidask; the F2 quote-coverage numerator/denominator
   // are its board-level count.
   const std::span<const ParityReport> parity = session.parity();
+  // W3-A (F11, second order). `Disabled` is the ONLY state in which an unscored
+  // slice may be credited as fully served: the caller opted out of the
+  // serve-check board-wide, so there is no measurement to gate on and the
+  // historical "an unmeasured serve cannot gate" fallback stands. Once scoring
+  // WAS requested, a fitted slice that produced no scored row is an absence of
+  // evidence, not evidence of service -- crediting it is what pinned
+  // quote_coverage at exactly 1.0 and made every coverage floor unfireable.
+  const bool parity_requested = diagnostics.parity_state != ParityDiagnosticState::Disabled;
   std::vector<bool> consumed(fitted.size(), false);
   std::size_t consecutive_gaps = 0u;
   for (std::size_t i = 0u; i < under.chains.size(); ++i) {
@@ -431,15 +439,18 @@ duplicate_maturity_report(const Underlying &under, const CurveConfig &curve) {
     // wide board a dense fit caps far below the strikes it actually serves. Count
     // this expiry's scored quotes (attempted_quotes) and those the surface serves
     // in-band (fitted_quotes) from its parity report. One metric, every family: an
-    // eSSVI slice's n_within is scored the same way. When parity was not scored
-    // (score_parity off — only ever with the serve floor disabled), fall back to
-    // the fit-observation count on both sides (an unmeasured serve cannot gate).
+    // eSSVI slice's n_within is scored the same way. When scoring was DISABLED
+    // board-wide, fall back to the fit-observation count on both sides (an
+    // unmeasured serve cannot gate); when scoring was requested but this slice
+    // produced no scored row, the quotes count as attempted and NOT as served.
     if (context_index < parity.size() && parity[context_index].n > 0u) {
       attempt.evidence.attempted_quotes += parity[context_index].n;
       attempt.evidence.fitted_quotes += parity[context_index].n_within;
     } else {
       attempt.evidence.attempted_quotes += context->n_used;
-      attempt.evidence.fitted_quotes += context->n_used;
+      if (!parity_requested) {
+        attempt.evidence.fitted_quotes += context->n_used;
+      }
     }
     attempt.expiries.push_back(
         ExpiryBuildReport{i, chain.T, ExpiryBuildOutcome::Fitted, context->n_used});
@@ -529,6 +540,21 @@ admission_reason_name(SurfaceAdmissionReason reason) noexcept {
   return out;
 }
 
+// W3-A (F12). A surface that fitted fewer expiries than the board attempted is
+// legitimate Mark output -- serving the slices that fit beats serving nothing --
+// but it is NOT whole, and `Healthy` with `reasons = None` claims that it is: a
+// 1-of-6-expiry surface was indistinguishable from a 6-of-6 one without walking
+// `published_report()`. One predicate, shared by the cold publish and the
+// incremental republish, so a refit of a surviving slice cannot launder the gap
+// away. `CarryGap` is reused rather than given a new bit because it is ALREADY
+// the one publish-with-Degraded reason for "one or more expiries were dropped
+// from the fitted surface" (surface_policy.hpp), and every persisted mask
+// (`kKnownValidationFailures` in surface_archive.cpp / surface_db.cpp) already
+// round-trips a Degraded+CarryGap provenance. A new bit would invalidate both.
+[[nodiscard]] constexpr bool surface_has_expiry_gap(const SurfaceAdmissionEvidence &e) noexcept {
+  return e.fitted_expiries < e.attempted_expiries;
+}
+
 [[nodiscard]] SurfaceParityInputs refit_preparation_inputs(const VolaSession &session) {
   const SessionInputs &stored = session.inputs();
   SurfaceParityInputs inputs;
@@ -558,6 +584,7 @@ using detail::completed_attempt_report;
 using detail::duplicate_maturity_report;
 using detail::failed_attempt_report;
 using detail::refit_preparation_inputs;
+using detail::surface_has_expiry_gap;
 
 Status PricerFitter::fit(const OptionChain &chain,
                          const std::function<void(SessionInputs &)> &session_overlay) {
@@ -613,6 +640,11 @@ Status PricerFitter::fit(const OptionChain &chain,
       effective_preset = d.needs_cross_validation ? cfg_.preset : d.preset;
       next_decision = std::move(d);
     }
+    // The board was routed by the LIBRARY: the caller pinned neither a family
+    // (cfg_.curve) nor the preset-pinned dense Hft route, so every downstream
+    // choice -- profile, preset, selector, fallback rung -- is ours. Used both
+    // to force diagnostics on (below) and to gate the fallback ladder.
+    const bool auto_routed = next_decision.has_value();
 
     SessionInputs in =
         make_session_inputs(effective_preset, chain.spot(), chain.rate(), chain.now_ns());
@@ -646,12 +678,25 @@ Status PricerFitter::fit(const OptionChain &chain,
     in.query_pricing_tier = cfg_.query_pricing_tier;
     if (cfg_.score_parity.has_value()) {
       in.score_parity = *cfg_.score_parity;
-    } else if (fit_admission_consumes_parity(cfg_.admission)) {
+    } else if (auto_routed || fit_admission_consumes_parity(cfg_.admission)) {
+      // W3-A (F11), principle P4 -- ALWAYS MEASURE. A board the library routed
+      // must publish evidence of how well the family IT picked actually fits;
+      // whether the admission policy happens to consume that evidence is a
+      // property of the caller's gate, not of the board, and it must not decide
+      // whether the surface is measured at all. Before this, a floor-free Mark
+      // request (the default) left `score_parity` false, and every family
+      // except the legacy eSSVI driver -- which scores unconditionally -- then
+      // published `mean_in_band`/`mean_chi2`/`mean_rmse_vol` as exact zeros:
+      // not a bad fit, NO measurement, on 45.6% of a 240-name universe.
+      // Scoring adds one cold re-Americanization pass per slice and changes no
+      // fit row (`prepare_scoring` only adds an anchor-independent score
+      // inversion, calib.cpp), so this buys evidence, never a different curve.
       in.score_parity = true;
     } else if (cfg_.admission.consumer == SurfaceConsumer::Mark) {
-      // A floor-free Mark admission consumes the fitted curve, not the
-      // re-Americanized quality report. Diagnostic-dependent Mark policies and
-      // Quote/Risk remain scored by default.
+      // A floor-free Mark admission of a curve the CALLER pinned consumes the
+      // fitted curve, not the re-Americanized quality report. An explicit pin is
+      // an instruction, including its latency budget. Diagnostic-dependent Mark
+      // policies and Quote/Risk remain scored by default.
       in.score_parity = false;
     }
     if (cfg_.enforce_calendar_floor.has_value()) {
@@ -818,7 +863,6 @@ Status PricerFitter::fit(const OptionChain &chain,
     // came from the held-out selector. A curve the CALLER pinned (cfg_.curve, or the
     // preset-pinned Hft dense route) is an explicit instruction and is never
     // silently substituted.
-    const bool auto_routed = next_decision.has_value() && !cfg_.curve.has_value() && !pinned_hft;
     if (!admitted_session.has_value() && auto_routed) {
       for (const VolCurveKind rung : fallback_curve_rungs(primary_curve.kind)) {
         in.curve = primary_curve;
@@ -854,6 +898,8 @@ Status PricerFitter::fit(const OptionChain &chain,
     report.published = true;
     report.published_curve = in.curve;
     report.attempts.back().stage = SurfaceBuildStage::Publication;
+    // Read the published attempt's own evidence BEFORE `report` is moved below.
+    const bool published_expiry_gap = surface_has_expiry_gap(report.attempts.back().evidence);
     VolaSession sess = std::move(*admitted_session);
     // FittedSurface's ctor is private (friend PricerFitter), so make_unique cannot
     // reach it — construct explicitly.
@@ -875,11 +921,12 @@ Status PricerFitter::fit(const OptionChain &chain,
     provenance.expiry_revisions.assign(chain.expiry_quote_revisions().begin(),
                                        chain.expiry_quote_revisions().end());
     std::optional<FitSnapshotProvenance> next_provenance{std::move(provenance)};
+    // A partial board is served, but it does not get to claim it is whole.
     const SurfaceHealth next_health{
         .purpose = legacy_purpose,
         .quality_mode = legacy_quality,
-        .state = SurfaceState::Healthy,
-        .reasons = ValidationFailure::None,
+        .state = published_expiry_gap ? SurfaceState::Degraded : SurfaceState::Healthy,
+        .reasons = published_expiry_gap ? ValidationFailure::CarryGap : ValidationFailure::None,
         .candidate_generation = legacy_generation,
         .served_generation = legacy_generation,
     };
@@ -1923,6 +1970,10 @@ Result<ExpiryRefitDiagnostics> PricerFitter::refit_expiry(const OptionChain &cha
   }
 
   attempt.stage = SurfaceBuildStage::Publication;
+  // §5.2, mirroring the risk path's CarryGap merge: the expiry gap is a property
+  // of the SERVED surface, not of the one slice being refit, so re-derive it from
+  // the candidate's own evidence instead of stamping a clean Healthy below.
+  const bool refit_expiry_gap = surface_has_expiry_gap(attempt.evidence);
   report.attempts.push_back(std::move(attempt));
   report.published = true;
   const SliceContext refreshed_context = candidate.expiries()[*fitted_index];
@@ -1944,8 +1995,9 @@ Result<ExpiryRefitDiagnostics> PricerFitter::refit_expiry(const OptionChain &cha
   } else {
     market_mark_surface_ = std::move(next_surface);
     market_mark_provenance_ = std::move(next_provenance);
-    market_mark_health_.state = SurfaceState::Healthy;
-    market_mark_health_.reasons = ValidationFailure::None;
+    market_mark_health_.state = refit_expiry_gap ? SurfaceState::Degraded : SurfaceState::Healthy;
+    market_mark_health_.reasons =
+        refit_expiry_gap ? ValidationFailure::CarryGap : ValidationFailure::None;
     market_mark_health_.candidate_generation = candidate_generation_;
     market_mark_health_.served_generation = candidate_generation_;
   }
