@@ -26,6 +26,7 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/rates_curve.cpp
     src/universe.cpp
     src/derivatives.cpp
+    src/deriv_analytic_greeks.cpp
     src/deriv_book.cpp
     src/detail/rv_lognormal.cpp
     src/vol_surface.cpp

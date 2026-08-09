@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 
 #include "atx/vol/rates_curve.hpp"
@@ -37,6 +38,7 @@ using atx::vol::DerivConfig;
 using atx::vol::DerivContract;
 using atx::vol::DerivEngine;
 using atx::vol::DerivGreekBumps;
+using atx::vol::DerivGreekMethod;
 using atx::vol::DerivKind;
 using atx::vol::ErrorCode;
 using atx::vol::EssviSlice;
@@ -1081,6 +1083,228 @@ TEST(CarryTheta, ZeroAnnualizationDoesNotPoisonInjectedFixing) {
   EXPECT_TRUE(std::isfinite(g->theta_zero_fixing));
   EXPECT_TRUE(std::isfinite(g->pv));
   EXPECT_TRUE(std::isfinite(g->theta));
+}
+
+// ── Task P-4 / GK-P: analytic strip greeks (opt-in, FD-parity-gated) ──────
+//
+// `DerivGreekMethod::AnalyticStrip` differentiates the model-free variance
+// strip's own closed form (delta/gamma/vega/vanna/volga) instead of
+// repricing it under a bump -- `DerivKind::VarSwap` only (uncapped, any
+// age); every other kind falls back to `FiniteDifference` silently. Parity
+// gate: |analytic - FD| <= max(1e-8*scale, 5*kFdNoiseFloor), kFdNoiseFloor
+// the measured FD-cancellation bound `HighVolRegimeGridPinKeepsSecondOrder
+// Sane` (above) pins (~2.2e-7) -- gamma/vanna/volga get a genuinely
+// non-flat oracle here for the first time: the analytic form IS the oracle,
+// and the FD path (already exercised by every other test in this file)
+// cross-checks it, two independent constructions of the same number.
+//
+// `scale` is the CONTRACT's own economic scale (`notional`), the SAME gate
+// applied to all five greeks in one case, rather than each greek's own raw
+// FD value: vanna is a mixed second partial FD's own stencil differences
+// four PVs and divides by `4*ds*dv` (ds, dv both O(1e-4) or smaller), so its
+// OWN cancellation noise is larger than a plain central difference's and,
+// like `HighVolRegimeGridPinKeepsSecondOrderSane`'s own measured bound,
+// scales with the contract's notional (bigger PVs -> bigger absolute ULP
+// noise from the same relative cancellation) -- `kFdNoiseFloor` was measured
+// there at notional 1e5; this suite's fixtures run at 1e6, so the floor is
+// scaled by that same 10x. Gating each greek on ITS OWN (possibly near-zero,
+// noise-dominated) FD value instead would make the tolerance for a
+// near-flat vanna arbitrarily tight for no principled reason -- the
+// CONTRACT's scale, not any one greek's incidental size, is what "scale" in
+// the brief's formula means here.
+constexpr double kFdNoiseFloor = 2.2e-7;
+
+double parity_gate(double scale) {
+  return std::max(1.0e-8 * scale, 5.0 * kFdNoiseFloor * (scale / 1.0e5));
+}
+
+// One (fixture, age) case: analytic vs FD on the SAME contract. PV / rho /
+// theta / theta_carry / theta_zero_fixing are asserted BIT-IDENTICAL --
+// `method` only ever branches inside `deriv_greeks`'s delta/gamma/vega/
+// vanna/volga assignment (see derivatives.cpp), so everything else runs the
+// identical code either way. charm is a documented hybrid under
+// AnalyticStrip (its FD stencil differences the analytic delta against an
+// FD-rolled delta at T - dt, out of this task's scope -- see derivatives.cpp
+// eval_bump_table's own comment): checked finite, not tightly pinned.
+void expect_analytic_matches_fd(const EssviSurface &surf, const CurveSet &cs,
+                                 const DerivContract &c, const char *label) {
+  DerivGreekBumps fd_bumps{};
+  DerivGreekBumps an_bumps{};
+  an_bumps.method = DerivGreekMethod::AnalyticStrip;
+
+  const auto g_fd = deriv_greeks(surf, cs, c, deriv_default_config(), fd_bumps);
+  const auto g_an = deriv_greeks(surf, cs, c, deriv_default_config(), an_bumps);
+  ASSERT_TRUE(g_fd.has_value()) << label << ": " << g_fd.error().to_string();
+  ASSERT_TRUE(g_an.has_value()) << label << ": " << g_an.error().to_string();
+
+  EXPECT_EQ(g_an->pv, g_fd->pv) << label;
+  EXPECT_EQ(g_an->rho, g_fd->rho) << label;
+  EXPECT_EQ(g_an->theta, g_fd->theta) << label;
+  if (std::isnan(g_fd->theta_carry)) {
+    EXPECT_TRUE(std::isnan(g_an->theta_carry)) << label;
+  } else {
+    EXPECT_EQ(g_an->theta_carry, g_fd->theta_carry) << label;
+  }
+  if (std::isnan(g_fd->theta_zero_fixing)) {
+    EXPECT_TRUE(std::isnan(g_an->theta_zero_fixing)) << label;
+  } else {
+    EXPECT_EQ(g_an->theta_zero_fixing, g_fd->theta_zero_fixing) << label;
+  }
+
+  const double gate = parity_gate(c.notional);
+  EXPECT_NEAR(g_an->delta, g_fd->delta, gate) << label << " delta";
+  EXPECT_NEAR(g_an->gamma, g_fd->gamma, gate) << label << " gamma";
+  EXPECT_NEAR(g_an->vega, g_fd->vega, gate) << label << " vega";
+  EXPECT_NEAR(g_an->vanna, g_fd->vanna, gate) << label << " vanna";
+  EXPECT_NEAR(g_an->volga, g_fd->volga, gate) << label << " volga";
+
+  EXPECT_TRUE(std::isfinite(g_an->charm)) << label;
+}
+
+TEST(AnalyticGreeks, MatchesFDFlatUnaged) {
+  const EssviSurface surf = make_flat_surface(0.20, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00, 0.03);
+  const DerivContract c = var_swap_at(0.25);
+  expect_analytic_matches_fd(surf, cs, c, "flat unaged");
+}
+
+TEST(AnalyticGreeks, MatchesFDFlatMidLife) {
+  const EssviSurface surf = make_flat_surface(0.20, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00, 0.03);
+  DerivContract c = var_swap_at(0.25);
+  c.rv_spec.n_obs_done = 21u;
+  c.rv_spec.rv_done_dec = 0.05;
+  expect_analytic_matches_fd(surf, cs, c, "flat mid-life");
+}
+
+TEST(AnalyticGreeks, MatchesFDSkewUnaged) {
+  const EssviSurface surf = make_skewed_surface();
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00, 0.03);
+  const DerivContract c = var_swap_at(0.25);
+  expect_analytic_matches_fd(surf, cs, c, "skew unaged");
+}
+
+TEST(AnalyticGreeks, MatchesFDSkewMidLife) {
+  const EssviSurface surf = make_skewed_surface();
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00, 0.03);
+  DerivContract c = var_swap_at(0.25);
+  c.rv_spec.n_obs_done = 21u;
+  c.rv_spec.rv_done_dec = 0.05;
+  expect_analytic_matches_fd(surf, cs, c, "skew mid-life");
+}
+
+// High-vol / wing-clamped regime (same fixture as
+// HighVolRegimeGridPinKeepsSecondOrderSane above): sigma*sqrt(T) = 0.35 puts
+// the E2 adaptive-wing rescale AND the wing clamp both in play, so the strip
+// splits into (up to) four panels -- [k_lo,-0.5], [-0.5,0], [0,0.5],
+// [0.5,k_hi] -- exercising this task's multi-panel walk and the flat-tail
+// sigma'=sigma''=0 convention inside the clamp, not just the plain k=0 split
+// the flat/skew cases above take.
+TEST(AnalyticGreeks, MatchesFDHighVolWingClamped) {
+  const EssviSurface surf = make_flat_surface(0.35, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00, 0.03);
+  DerivContract c = var_swap_at(1.0);
+  c.rv_spec.n_obs_done = 21u;
+  c.rv_spec.rv_done_dec = 0.05;
+  expect_analytic_matches_fd(surf, cs, c, "high-vol wing-clamped");
+}
+
+// PricedSurface-native path -- the production entry point, and the ONE
+// fixture in this suite whose surface exposes a batched `iv_batch`
+// (`PricedSurfaceStripView`), so it is the only case here exercising this
+// task's batched read branch (`has_analytic_iv_batch`) rather than the
+// scalar per-node fallback every EssviSurface case above takes.
+TEST(AnalyticGreeks, MatchesFDPricedSurfaceSkewed) {
+  const atx::vol::PricedSurface ps = atx::vol::testkit::make_skewed_surface(21, 100.0, 100.0);
+  DerivContract c{};
+  c.kind = DerivKind::VarSwap;
+  c.maturity_t = 0.35;
+  c.notional = 1e6;
+  c.rv_spec.annualization = 252.0;
+  c.rv_spec.n_obs_total = 88u;
+
+  DerivGreekBumps fd_bumps{};
+  DerivGreekBumps an_bumps{};
+  an_bumps.method = DerivGreekMethod::AnalyticStrip;
+  const auto g_fd = atx::vol::deriv_greeks(ps, c, DerivConfig{}, fd_bumps);
+  const auto g_an = atx::vol::deriv_greeks(ps, c, DerivConfig{}, an_bumps);
+  ASSERT_TRUE(g_fd.has_value()) << g_fd.error().to_string();
+  ASSERT_TRUE(g_an.has_value()) << g_an.error().to_string();
+  EXPECT_EQ(g_an->pv, g_fd->pv);
+  const double gate = parity_gate(c.notional);
+  EXPECT_NEAR(g_an->delta, g_fd->delta, gate);
+  EXPECT_NEAR(g_an->gamma, g_fd->gamma, gate);
+  EXPECT_NEAR(g_an->vega, g_fd->vega, gate);
+  EXPECT_NEAR(g_an->vanna, g_fd->vanna, gate);
+  EXPECT_NEAR(g_an->volga, g_fd->volga, gate);
+}
+
+// Default stays FD -- no mark move for any existing caller (flip evaluated
+// no sooner than 2.0, see DerivGreekBumps::method's own doc).
+TEST(AnalyticGreeks, DefaultMethodIsFiniteDifference) {
+  const DerivGreekBumps bumps{};
+  EXPECT_EQ(bumps.method, DerivGreekMethod::FiniteDifference);
+}
+
+// Silent fallback: AnalyticStrip requested on an out-of-scope kind reprices
+// EXACTLY like an explicit FiniteDifference request (bit-identical), never a
+// half-implemented alternate path.
+TEST(AnalyticGreeks, FallsBackToFDForOutOfScopeKinds) {
+  const EssviSurface surf = make_skewed_surface();
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00, 0.03);
+  for (const DerivKind kind :
+       {DerivKind::VolSwap, DerivKind::CappedVarSwap, DerivKind::CappedVolSwap}) {
+    DerivContract c{};
+    c.kind = kind;
+    c.maturity_t = 0.25;
+    c.notional = 1e6;
+    c.strike_dec = 0.03;
+    c.cap_dec = (kind == DerivKind::CappedVarSwap)   ? 0.25
+                : (kind == DerivKind::CappedVolSwap) ? 0.50
+                                                     : 0.0;
+    c.rv_spec.annualization = 252.0;
+    c.rv_spec.n_obs_total = 63u;
+
+    DerivGreekBumps fd_bumps{};
+    DerivGreekBumps an_bumps{};
+    an_bumps.method = DerivGreekMethod::AnalyticStrip;
+    const auto g_fd = deriv_greeks(surf, cs, c, deriv_default_config(), fd_bumps);
+    const auto g_an = deriv_greeks(surf, cs, c, deriv_default_config(), an_bumps);
+    ASSERT_TRUE(g_fd.has_value()) << static_cast<int>(kind);
+    ASSERT_TRUE(g_an.has_value()) << static_cast<int>(kind);
+    EXPECT_EQ(g_an->pv, g_fd->pv) << static_cast<int>(kind);
+    EXPECT_EQ(g_an->delta, g_fd->delta) << static_cast<int>(kind);
+    EXPECT_EQ(g_an->gamma, g_fd->gamma) << static_cast<int>(kind);
+    EXPECT_EQ(g_an->vega, g_fd->vega) << static_cast<int>(kind);
+    EXPECT_EQ(g_an->volga, g_fd->volga) << static_cast<int>(kind);
+    if (std::isnan(g_fd->vanna)) {
+      EXPECT_TRUE(std::isnan(g_an->vanna)) << static_cast<int>(kind);
+    } else {
+      EXPECT_EQ(g_an->vanna, g_fd->vanna) << static_cast<int>(kind);
+    }
+    EXPECT_EQ(g_an->charm, g_fd->charm) << static_cast<int>(kind);
+  }
+}
+
+// Fallback selects a METHOD; it never changes what error the kind x engine
+// dispatch matrix raises (PV-5). VarSwap x explicit VolCarrLee is
+// InvalidArgument under EITHER method -- the same `deriv_price` dispatch
+// runs first, unconditionally, regardless of `bumps.method`.
+TEST(AnalyticGreeks, DoesNotSwallowDispatchMatrixErrors) {
+  const EssviSurface surf = make_skewed_surface();
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00, 0.03);
+  const DerivContract c = var_swap_at(0.25);
+  DerivConfig cfg{};
+  cfg.engine = DerivEngine::VolCarrLee;  // invalid for VarSwap (PV-5)
+
+  DerivGreekBumps an_bumps{};
+  an_bumps.method = DerivGreekMethod::AnalyticStrip;
+  const auto g_fd = deriv_greeks(surf, cs, c, cfg, DerivGreekBumps{});
+  const auto g_an = deriv_greeks(surf, cs, c, cfg, an_bumps);
+  ASSERT_FALSE(g_fd.has_value());
+  ASSERT_FALSE(g_an.has_value());
+  EXPECT_EQ(g_fd.error().code(), g_an.error().code());
+  EXPECT_EQ(g_fd.error().code(), ErrorCode::InvalidArgument);
 }
 
 }  // namespace

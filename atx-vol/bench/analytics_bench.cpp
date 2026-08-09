@@ -35,12 +35,23 @@
 //                                       native entry point (Task P-1): a
 //                                       DerivQuality::Standard (257-node) var
 //                                       swap with the default greek bundle
-//                                       (second_order + carry_theta on), the
+//                                       (second_order + carry_theta on,
+//                                       method == FiniteDifference), the
 //                                       center quote plus up to 16 bumped/
 //                                       rolled strip repricings per call
 //                                       (Task P-2 dropped the r+ FD rho bump:
 //                                       17 -> 16) — the per-strip-constant
 //                                       resolve hoist's target.
+//   deriv/greeks/varswap_analytic_priced_surface — Task P-4 / GK-P: the
+//                                       IDENTICAL contract/cfg as the case
+//                                       above with only bumps.method flipped
+//                                       to AnalyticStrip — delta/gamma/vega/
+//                                       vanna/volga come from the closed
+//                                       form (deriv_analytic_greeks.hpp)
+//                                       instead of up to 8 spot/vol bump
+//                                       repricings; theta/rho/charm cost the
+//                                       same either way. The A/B pair for
+//                                       this task's paired measurement.
 //   swap_leg/solve_cycle_swap_entry   — solve_cycle_swap's entry-vega greeks
 //                                       call (swap_leg.cpp, Task P-2 / GK-P3):
 //                                       a VarSwap cycle-open sizing solve that
@@ -180,7 +191,39 @@ void BM_DerivGreeks_Standard_PricedSurface(benchmark::State &state) {
   const PricedSurface &ps = skewed_surface();
   const DerivContract contract = skewed_var_swap_contract();
   const DerivConfig cfg{};       // DerivQuality::Standard (257-node strip)
-  const DerivGreekBumps bumps{}; // second_order + carry_theta both default true
+  const DerivGreekBumps bumps{}; // second_order + carry_theta both default true; method == FD
+  for (auto _ : state) {
+    Result<DerivGreeks> g = deriv_greeks(ps, contract, cfg, bumps);
+    if (!g.has_value()) {
+      state.SkipWithError(g.error().to_string().c_str());
+      break;
+    }
+    benchmark::DoNotOptimize(g);
+    benchmark::ClobberMemory();
+  }
+  state.SetItemsProcessed(state.iterations()); // items = deriv_greeks calls
+}
+
+// ── deriv/greeks/varswap_analytic_priced_surface ───────────────────────────
+//
+// Task P-4 / GK-P: the SAME contract/cfg as `deriv/greeks/standard_priced_
+// surface` above -- same surface, same tenor, same DerivQuality::Standard
+// 257-node strip, same second_order + carry_theta defaults -- with only
+// `bumps.method` flipped to `AnalyticStrip`. Delta/gamma/vega/vanna/volga
+// come from the closed form (deriv_analytic_greeks.hpp) instead of the up-to
+// -8 spot/vol bump repricings `eval_bump_table` would otherwise pay for
+// (`skip_market_bumps`, derivatives.cpp); theta/theta_carry/theta_zero_
+// fixing/charm/rho are unaffected by the method and cost exactly what they
+// already did. Paired against the FD case above -- same binary, only the
+// bumps struct differs -- for the Task P-4 A/B measurement (no env-var seam
+// needed: `method` is an ordinary runtime config field, not a compiled-in
+// choice).
+void BM_DerivGreeks_Analytic_PricedSurface(benchmark::State &state) {
+  const PricedSurface &ps = skewed_surface();
+  const DerivContract contract = skewed_var_swap_contract();
+  const DerivConfig cfg{};
+  DerivGreekBumps bumps{};
+  bumps.method = DerivGreekMethod::AnalyticStrip;
   for (auto _ : state) {
     Result<DerivGreeks> g = deriv_greeks(ps, contract, cfg, bumps);
     if (!g.has_value()) {
@@ -354,6 +397,10 @@ const int kRegistered = [] {
 
   apply_common(benchmark::RegisterBenchmark("deriv/greeks/standard_priced_surface",
                                             BM_DerivGreeks_Standard_PricedSurface))
+      ->Unit(benchmark::kMicrosecond);
+
+  apply_common(benchmark::RegisterBenchmark("deriv/greeks/varswap_analytic_priced_surface",
+                                            BM_DerivGreeks_Analytic_PricedSurface))
       ->Unit(benchmark::kMicrosecond);
 
   apply_common(benchmark::RegisterBenchmark("deriv/price/audit_priced_surface",

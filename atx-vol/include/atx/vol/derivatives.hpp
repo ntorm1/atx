@@ -222,6 +222,35 @@ enum class CarrLeeForm : std::uint8_t {
   Refined = 1,
 };
 
+// Which numerical scheme `deriv_greeks` uses for delta / gamma / vega / vanna
+// / volga (Task P-4, GK-P). Theta / theta_carry / theta_zero_fixing / charm
+// are UNAFFECTED by this knob -- each rolls `contract.maturity_t` and so
+// prices "genuinely new information" a closed form cannot shortcut (see
+// `DerivGreekBumps::method`'s own doc) -- and rho is ALREADY the closed form
+// `-T*PV` on every path regardless (Task P-2, GK-C3).
+//
+//   FiniteDifference -> every affected greek comes from a bumped repricing
+//               through `deriv_price` (the pre-P-4 behaviour, unchanged bit
+//               for bit). Works for every `DerivKind`.
+//   AnalyticStrip -> `DerivKind::VarSwap` (uncapped, any age) differentiates
+//               the model-free strip's own closed form instead of repricing
+//               it under a bump -- see `deriv_analytic_greeks.hpp`
+//               (derivatives.cpp) for the full derivation. Requested on any
+//               OTHER kind (`VolSwap`, `CappedVarSwap`, `CappedVolSwap` --
+//               each prices through a genuinely nonlinear model layer on top
+//               of the strip that admits no such shortcut) falls back to
+//               FiniteDifference SILENTLY: the fallback only ever picks
+//               which NUMERICAL METHOD computes a greek, and never changes
+//               what dispatch error a given (kind, engine) combination
+//               raises -- an invalid engine/kind pairing fails exactly the
+//               same way under either method (PV-5's dispatch matrix,
+//               `deriv_price`, runs identically either way; only `deriv_
+//               greeks`'s POST-price greek computation branches on this).
+enum class DerivGreekMethod : std::uint8_t {
+  FiniteDifference = 0,
+  AnalyticStrip = 1,
+};
+
 // Provenance / diagnostic bitmask carried on DerivQuote::flags (mirrors
 // AtsVolDerivFlags exactly).
 enum class DerivFlags : std::uint32_t {
@@ -873,12 +902,20 @@ struct DerivGreekBumps {
   // equal `theta`. Default true: theta_zero_fixing is the number a daily P&L
   // predict should read, and a caller should not have to opt in to see it.
   bool carry_theta = true;
+  // Task P-4 / GK-P: opt-in closed-form delta/gamma/vega/vanna/volga for
+  // `DerivKind::VarSwap` (see `DerivGreekMethod`'s own doc for scope and the
+  // silent-fallback contract). Default `FiniteDifference` -- no mark move
+  // for any existing caller; the flip to a different default is a migration
+  // this library will evaluate no sooner than a 2.0 (mirrors
+  // `CarrLeeForm::Refined`'s own "planned 2.0 default" precedent, not a
+  // commitment that 2.0 makes it).
+  DerivGreekMethod method = DerivGreekMethod::FiniteDifference;
 };
 
-// Drift pin: DerivGreekBumps has exactly SIX fields (v1.1 appended
-// carry_theta, Task C-10). See the DerivConfig pin above for the contract
-// this protects.
-static_assert(detail::aggregate_arity_is_v<DerivGreekBumps, 6>,
+// Drift pin: DerivGreekBumps has exactly SEVEN fields (v1.1 appended
+// method, Task P-4). See the DerivConfig pin above for the contract this
+// protects.
+static_assert(detail::aggregate_arity_is_v<DerivGreekBumps, 7>,
               "DerivGreekBumps field count changed: update this pin.");
 
 // Finite-difference greeks for any vol-derivative contract.

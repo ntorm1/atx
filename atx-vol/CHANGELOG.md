@@ -9,6 +9,39 @@ Vol-derivatives production sprint, Phase 1 (correctness) and Phase 2
 (performance). Grows only with changes that move a number a caller could
 already be marking with.
 
+### Added — `DerivGreekBumps::method`: opt-in closed-form VarSwap strip greeks, `AnalyticStrip` (GK-P, Task P-4)
+
+`deriv_greeks`' delta/gamma/vega/vanna/volga for an uncapped `DerivKind::VarSwap`
+(any age) can now come from the strip's own closed form instead of a bumped
+repricing. `K_var` is a LINEAR functional of the strip's Black-76 node prices
+with fixed composite-Simpson weights, so differentiating it costs one pass of
+node-level Black-76 vega/volga plus four extra batched smile-derivative read
+vectors (`sigma'(k)`, `sigma''(k)` via a 5-point stencil) instead of repricing
+the whole N-node strip integral once per bump — up to 8 of the up-to-16 strip
+repricings a full second-order `deriv_greeks` call pays are skipped when in
+scope. Every other `DerivKind` (`VolSwap`, both capped kinds) prices through a
+genuinely nonlinear model layer that admits no such shortcut and falls back to
+`FiniteDifference` SILENTLY — requesting `AnalyticStrip` on an out-of-scope
+kind reprices bit-identically to an explicit `FiniteDifference` request, never
+an error and never a wrong analytic result. `theta`/`theta_carry`/
+`theta_zero_fixing`/`charm` are unaffected by this knob (each still rolls
+`maturity_t`, genuinely new information no closed form shortcuts); `rho` is
+already the P-2 closed form on every path regardless.
+
+`DerivGreekBumps` grows one field (`method`, arity 6 -> 7): a new
+`enum class DerivGreekMethod : uint8_t { FiniteDifference = 0, AnalyticStrip = 1 }`.
+**Default `FiniteDifference` — no mark move, no evaluation-count change, for
+any existing caller.** The flip to `AnalyticStrip`-by-default is a 2.0
+decision, not this task's.
+
+**Migration**: none required. A caller pricing VarSwap greeks in a hot loop
+can opt in with `bumps.method = DerivGreekMethod::AnalyticStrip`; parity
+against FD is gated at `|Δ| <= max(1e-8*scale, 5*FD-noise-floor)` per greek,
+flat and skewed surfaces, unaged and mid-life contracts (`AnalyticGreeks.*`,
+`deriv_greeks_test.cpp`). See `task-P-4-report.md` for the measured parity
+deltas and the paired A/B timing (Debug/SSE2 preset — a Release re-measure is
+scheduled separately).
+
 ### Changed — `deriv_greeks`'s rho is now the closed form `-T*PV`, not a finite difference (GK-C3, Task P-2)
 
 Every quote this library prices is `pv = df(r) * X`, X (the fair strike /

@@ -30,6 +30,7 @@
 #include "atx/vol/surface_parity.hpp" // SliceContext (E6 carry extraction)
 #include "atx/vol/surface_policy.hpp" // certified_wing_half_band (FIT-C7 / Task C-6)
 #include "atx/vol/vol_surface.hpp" // Tier-A calibration-grade surface container
+#include "deriv_analytic_greeks.hpp" // Task P-4 / GK-P: DerivGreekMethod::AnalyticStrip
 
 namespace atx::vol {
 
@@ -2103,11 +2104,23 @@ struct BumpPvs {
 // rather than reusing the caller's center quote: a stencil must difference
 // values from one consistent configuration, and the caller's center was priced
 // before the grid and xi were pinned.
+//
+// `skip_market_bumps` (Task P-4 / GK-P): true when `deriv_greeks` will source
+// delta/gamma/vega/vanna/volga from the closed form instead
+// (`DerivGreekMethod::AnalyticStrip` on an in-scope `DerivKind::VarSwap`) --
+// skips pv.s_up/s_dn/v_up/v_dn and, under `second_order`, the four sv_*
+// cross terms (up to 8 of this table's evaluations), the ONLY consumers of
+// which are those five greeks. `pv.c` (theta's own reference point) and
+// theta/theta_carry/theta_zero_fixing/charm's own evaluations (pv.t_dn and
+// friends, pv.t_s_up/pv.t_s_dn) are UNCHANGED either way -- those roll
+// `maturity_t` and so price "genuinely new information" no closed form here
+// shortcuts (see `DerivGreekMethod`'s own doc, derivatives.hpp).
 template <class SurfaceT>
 [[nodiscard]] Result<BumpPvs> eval_bump_table(const SurfaceT& surface, const CurveSet& curves,
                                               const DerivContract& contract,
                                               const DerivConfig& cfg,
-                                              const DerivGreekBumps& bumps) {
+                                              const DerivGreekBumps& bumps,
+                                              bool skip_market_bumps) {
   const double h = bumps.spot_rel;
   const double dv = bumps.vol_abs;
   const double ks_up = std::log1p(h);
@@ -2157,17 +2170,25 @@ template <class SurfaceT>
                             : strip::kMaxStripNodes;
 
   BumpPvs pv{};
-  cache_c_t0.begin_recording(reserve_hint);
-  ATX_TRY(pv.c, bumped_pv(surface, curves, contract, cfg, 0.0, 0.0, cache_c_t0));
-  cache_c_t0.finish_recording();  // replayed by pv.v_up, pv.v_dn below
-  cache_up_t0.begin_recording(reserve_hint);
-  ATX_TRY(pv.s_up, bumped_pv(surface, cs_up, contract, cfg, ks_up, 0.0, cache_up_t0));
-  cache_up_t0.finish_recording();  // replayed by pv.sv_pp, pv.sv_pm below
-  cache_dn_t0.begin_recording(reserve_hint);
-  ATX_TRY(pv.s_dn, bumped_pv(surface, cs_dn, contract, cfg, ks_dn, 0.0, cache_dn_t0));
-  cache_dn_t0.finish_recording();  // replayed by pv.sv_mp, pv.sv_mm below
-  ATX_TRY(pv.v_up, bumped_pv(surface, curves, contract, cfg, 0.0, dv, cache_c_t0));
-  ATX_TRY(pv.v_dn, bumped_pv(surface, curves, contract, cfg, 0.0, -dv, cache_c_t0));
+  if (skip_market_bumps) {
+    // I-3's existing "single-use slot" mode (no `begin_recording`): nothing
+    // will ever replay `cache_c_t0` once v_up/v_dn are skipped too, so
+    // `CachedBumpView` just reads live and the reserve()+sort() a recording
+    // slot pays for is not spent on zero readers.
+    ATX_TRY(pv.c, bumped_pv(surface, curves, contract, cfg, 0.0, 0.0, cache_c_t0));
+  } else {
+    cache_c_t0.begin_recording(reserve_hint);
+    ATX_TRY(pv.c, bumped_pv(surface, curves, contract, cfg, 0.0, 0.0, cache_c_t0));
+    cache_c_t0.finish_recording();  // replayed by pv.v_up, pv.v_dn below
+    cache_up_t0.begin_recording(reserve_hint);
+    ATX_TRY(pv.s_up, bumped_pv(surface, cs_up, contract, cfg, ks_up, 0.0, cache_up_t0));
+    cache_up_t0.finish_recording();  // replayed by pv.sv_pp, pv.sv_pm below
+    cache_dn_t0.begin_recording(reserve_hint);
+    ATX_TRY(pv.s_dn, bumped_pv(surface, cs_dn, contract, cfg, ks_dn, 0.0, cache_dn_t0));
+    cache_dn_t0.finish_recording();  // replayed by pv.sv_mp, pv.sv_mm below
+    ATX_TRY(pv.v_up, bumped_pv(surface, curves, contract, cfg, 0.0, dv, cache_c_t0));
+    ATX_TRY(pv.v_dn, bumped_pv(surface, curves, contract, cfg, 0.0, -dv, cache_c_t0));
+  }
   if (can_roll) {
     cache_c_tr.begin_recording(reserve_hint);
     ATX_TRY(pv.t_dn, bumped_pv(surface, curves, rolled, cfg, 0.0, 0.0, cache_c_tr));
@@ -2242,10 +2263,12 @@ template <class SurfaceT>
   }
 
   if (bumps.second_order) {
-    ATX_TRY(pv.sv_pp, bumped_pv(surface, cs_up, contract, cfg, ks_up, dv, cache_up_t0));
-    ATX_TRY(pv.sv_pm, bumped_pv(surface, cs_up, contract, cfg, ks_up, -dv, cache_up_t0));
-    ATX_TRY(pv.sv_mp, bumped_pv(surface, cs_dn, contract, cfg, ks_dn, dv, cache_dn_t0));
-    ATX_TRY(pv.sv_mm, bumped_pv(surface, cs_dn, contract, cfg, ks_dn, -dv, cache_dn_t0));
+    if (!skip_market_bumps) {
+      ATX_TRY(pv.sv_pp, bumped_pv(surface, cs_up, contract, cfg, ks_up, dv, cache_up_t0));
+      ATX_TRY(pv.sv_pm, bumped_pv(surface, cs_up, contract, cfg, ks_up, -dv, cache_up_t0));
+      ATX_TRY(pv.sv_mp, bumped_pv(surface, cs_dn, contract, cfg, ks_dn, dv, cache_dn_t0));
+      ATX_TRY(pv.sv_mm, bumped_pv(surface, cs_dn, contract, cfg, ks_dn, -dv, cache_dn_t0));
+    }
     if (can_roll) {
       ATX_TRY(pv.t_s_up, bumped_pv(surface, cs_up, rolled, cfg, ks_up, 0.0, cache_up_tr));
       ATX_TRY(pv.t_s_dn, bumped_pv(surface, cs_dn, rolled, cfg, ks_dn, 0.0, cache_dn_tr));
@@ -2372,15 +2395,64 @@ Result<DerivGreeks> deriv_greeks(const SurfaceT& surface, const CurveSet& curves
   // bumped evaluation; see pin_center_scheme and the header.
   const DerivConfig cfg_pinned = pin_center_scheme(cfg, center);
 
-  ATX_TRY(const BumpPvs p, eval_bump_table(surface, curves, contract, cfg_pinned, bumps));
+  // Task P-4 / GK-P: AnalyticStrip is IN SCOPE only for an uncapped VarSwap
+  // (see `DerivGreekMethod`'s own doc, derivatives.hpp) -- every other kind
+  // falls back to FiniteDifference SILENTLY, right here, by simply never
+  // setting this true; the kind x engine dispatch matrix already ran inside
+  // `deriv_price` above (the `ATX_TRY(center, ...)` at the top of this
+  // function), so a genuinely invalid (kind, engine) pairing has ALREADY
+  // failed loud before this line is ever reached -- this fallback only
+  // selects which numerical method computes a greek, never which errors
+  // `deriv_price` raises.
+  const bool analytic_in_scope =
+      bumps.method == DerivGreekMethod::AnalyticStrip && contract.kind == DerivKind::VarSwap;
+
+  ATX_TRY(const BumpPvs p,
+          eval_bump_table(surface, curves, contract, cfg_pinned, bumps, analytic_in_scope));
 
   const double ds = bumps.spot_rel * curves.spot;  // absolute spot bump
   const double dv = bumps.vol_abs;
-  g.delta = (p.s_up - p.s_dn) / (2.0 * ds);
-  g.gamma = (p.s_up - 2.0 * p.c + p.s_dn) / (ds * ds);
-  g.vega = (p.v_up - p.v_dn) / (2.0 * dv);
-  g.volga = (p.v_up - 2.0 * p.c + p.v_dn) / (dv * dv);
-  g.vanna = (p.sv_pp - p.sv_pm - p.sv_mp + p.sv_mm) / (4.0 * ds * dv);
+  if (analytic_in_scope) {
+    // Closed form: differentiates the model-free strip's own linear
+    // functional of Black-76 prices instead of repricing it under a bump --
+    // see deriv_analytic_greeks.hpp for the full derivation. `F`/`df` are
+    // resolved fresh at the SAME (curves, T) the center's own strip used
+    // (pure functions of those two inputs, so they agree with the center's
+    // internal resolution by construction, not by re-derivation); `w_future`
+    // mirrors `price_var_swap`'s own blend weight exactly -- see
+    // `AnalyticStripGreeks`'s own doc for why that is the whole scale factor
+    // needed (PV is LINEAR in k_var_future_dec with that slope).
+    DerivFlags df_flags_unused = DerivFlags::None;
+    const double f_at_t = resolve_forward(curves, contract.maturity_t);
+    const double df_at_t = deriv_df_at_T(curves, contract.maturity_t, df_flags_unused);
+    double w_future = 1.0;
+    if (contract.rv_spec.n_obs_total > 0u) {
+      const double w_done = static_cast<double>(contract.rv_spec.n_obs_done) /
+                            static_cast<double>(contract.rv_spec.n_obs_total);
+      w_future = 1.0 - w_done;
+    }
+    const detail::AnalyticStripGreeks ag = detail::analytic_strip_greeks(
+        surface, f_at_t, curves.spot, contract.maturity_t, df_at_t, center.strip_k_lo_used,
+        center.strip_k_hi_used, static_cast<std::size_t>(center.strip_nodes_used),
+        center.resolved_wing_clamp);
+    const double scale = df_at_t * contract.notional * w_future;
+    g.delta = scale * ag.delta;
+    g.gamma = scale * ag.gamma;
+    g.vega = scale * ag.vega;
+    // `second_order` still gates vanna under EITHER method -- its documented
+    // contract ("NaN when off", DerivGreekBumps::second_order) predates
+    // AnalyticStrip and is preserved rather than silently narrowed just
+    // because the closed form makes vanna no more expensive than the other
+    // four.
+    g.vanna = bumps.second_order ? scale * ag.vanna : kNaN;
+    g.volga = scale * ag.volga;
+  } else {
+    g.delta = (p.s_up - p.s_dn) / (2.0 * ds);
+    g.gamma = (p.s_up - 2.0 * p.c + p.s_dn) / (ds * ds);
+    g.vega = (p.v_up - p.v_dn) / (2.0 * dv);
+    g.volga = (p.v_up - 2.0 * p.c + p.v_dn) / (dv * dv);
+    g.vanna = (p.sv_pp - p.sv_pm - p.sv_mp + p.sv_mm) / (4.0 * ds * dv);
+  }
   g.theta = (p.t_dn - p.c) / bumps.time_years;
   // Task C-10 / GK-C2: same one-sided roll and divisor as theta above, just
   // against a T - dt reprice that also carries one injected fixing (see
@@ -2424,7 +2496,16 @@ Result<DerivGreeks> deriv_greeks(const SurfaceT& surface, const CurveSet& curves
   // additional rate sensitivity this closed form could be missing.
   g.rho = -std::fmax(contract.maturity_t, 0.0) * center.pv;
   // charm = d(delta)/dt on the SAME calendar-time convention as theta above:
-  // one day of calendar time is one day of maturity gone.
+  // one day of calendar time is one day of maturity gone. `delta_rolled` is
+  // ALWAYS the FD spot-bump delta at T - dt (Task P-4 does not touch this --
+  // charm needs a genuinely NEW, rolled repricing, same "not a closed form"
+  // reasoning as theta itself; see DerivGreekMethod's own doc). Under
+  // AnalyticStrip this differences an FD delta (at T - dt) against the
+  // ANALYTIC delta (`g.delta`, at T) -- a documented hybrid, not an
+  // inconsistency: the two constructions are proven to agree within the
+  // parity suite's own gate (`AnalyticGreeks.*`, deriv_greeks_test.cpp), so
+  // substituting one for the other here moves charm by at most that same
+  // tiny, already-bounded amount divided by `bumps.time_years`.
   const double delta_rolled = (p.t_s_up - p.t_s_dn) / (2.0 * ds);
   g.charm = (delta_rolled - g.delta) / bumps.time_years;
   return Ok(g);
