@@ -9,6 +9,50 @@ Vol-derivatives production sprint, Phase 1 (correctness) and Phase 2
 (performance). Grows only with changes that move a number a caller could
 already be marking with.
 
+### Changed — ConvexDense served `iv()` now within 1e-11 (not bit-identical) of the pre-P-5 value (FIT-P1, Task P-5)
+
+`ConvexSliceFit::iv()`'s Black-76 inversion was a fixed 64-iteration
+bisection with no early exit — up to ~260k Black-76 calls per Audit-tier
+strip on a ConvexDense surface. It now breaks as soon as the bracket is
+already near-machine width (`hi - lo < 1e-12 * max(1.0, hi)`, the same bound
+the function's own docstring already promises), instead of always finishing
+all 64 halvings once that width is reached. This is a genuine (if small)
+behavioral change: the returned midpoint can differ from the old
+fixed-iteration result by up to the final bracket width, so served vols are
+no longer bit-identical to pre-P-5 builds, only guaranteed within 1e-11
+(measured max drift on the pinned characterization fixture: ~2.8e-13, five
+orders of magnitude inside the bound — `ConvexSliceFit.
+IvBisectionEarlyExitMatchesPreP5BaselineWithin1e11`, dense_slice_test.cpp).
+Measured iterations dropped from 64 to 44 uniformly across the fixture's
+whole k-grid (bisection bracket width is a deterministic function of
+iteration count alone, independent of vega/moneyness) — a 31% cut, not the
+brief's optimistic "~1/3 of iterations" reading; paired A/B on a
+~4097-node Audit-strip `iv()` sweep (Debug/dev preset, 10 alternating
+pairs) measured a **1.40x** median speedup, matching the 65-vs-45
+Black-76-call-count ratio almost exactly and falling short of the sprint
+plan's 2x target — see `task-P-5-report.md` for the full measurement and
+diagnosis.
+
+The ConvexDense calendar-admission scan (`fit_slice_curve`'s shared-k
+refit loop, `src/vol_curve.cpp`) also no longer inverts the fitted node
+price to a vol via `iv()` just to square it back into a total variance for
+comparison — it compares directly in price space against
+`black76_price` of the floor's implied vol, which is what the floor is
+actually enforced in anyway (`fit_convex_slice`'s own `cfloor` rows). Two
+Black-76 calls per scanned k instead of ~65. This is proven to select the
+IDENTICAL set of floor violations as the pre-P-5 vol-space scan on a
+fixture matrix spanning every scan_k call site (legacy slack, legacy
+crossing, strict on-lattice, strict off-lattice) —
+`VolCurve.CalendarScanPriceSpaceSelectsIdenticalFloorsAsPreP5Baseline`,
+vol_curve_test.cpp.
+
+**Migration**: none required for either change. No public API or knob moved
+— `ATX_VOL_DISABLE_IV_EARLY_EXIT` is a process-load-time bench-only seam
+(mirrors `ATX_VOL_DISABLE_STRIP_BATCH`, Task P-3), never read by production
+call sites, and does not change the default. A caller comparing served
+`iv()` against a stored pre-1.1.0 value should widen any bit-identity
+assumption to a 1e-11 tolerance.
+
 ### Added — `DerivGreekBumps::method`: opt-in closed-form VarSwap strip greeks, `AnalyticStrip` (GK-P, Task P-4)
 
 `deriv_greeks`' delta/gamma/vega/vanna/volga for an uncapped `DerivKind::VarSwap`

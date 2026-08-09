@@ -1,8 +1,11 @@
 #include "atx/vol/dense_slice.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstddef>
+#include <cstdlib>
+#include <cstring>
 #include <functional>
 #include <limits>
 #include <string>
@@ -31,6 +34,32 @@ constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 constexpr double kQpCertificateTol = 1.0e-8;
 constexpr double kQpActiveTol = 1.0e-9;
 constexpr double kQpStartTol = 1.0e-12;
+
+// Read a boolean override from an environment variable ONCE at process load,
+// mirroring derivatives.cpp's `ATX_VOL_DISABLE_STRIP_BATCH` seed (same
+// rationale: a bench leg toggles a whole-process default without touching any
+// call site). "1" enables the override; anything else (including unset)
+// leaves it off.
+[[nodiscard]] bool env_flag_enabled(const char *name) noexcept {
+#if defined(_WIN32)
+  std::size_t sz = 0;
+  char buf[8] = {};
+  if (getenv_s(&sz, buf, sizeof(buf), name) != 0 || sz == 0) {
+    return false;
+  }
+  return std::strcmp(buf, "1") == 0;
+#else
+  const char *v = std::getenv(name);
+  return v != nullptr && std::strcmp(v, "1") == 0;
+#endif
+}
+
+// Task P-5 (FIT-P1) test/bench seam: forces ConvexSliceFit::iv()'s bisection
+// to run its full fixed 64 iterations (pre-P-5 behavior) even though the
+// early-exit tolerance below converges sooner. Production call sites never
+// set this; the paired A/B bench uses the ATX_VOL_DISABLE_IV_EARLY_EXIT env
+// seed to measure the SAME binary with and without the optimization.
+std::atomic<bool> g_iv_early_exit_disabled{env_flag_enabled("ATX_VOL_DISABLE_IV_EARLY_EXIT")};
 
 struct QpSolveResult {
   VecX x;
@@ -454,6 +483,18 @@ double ConvexSliceFit::iv(double k_log) const noexcept {
   if (black76_price(F, K, T, hi, df, Side::Call) < safe_price) {
     return kNaN;
   }
+  // FIT-P1 (Task P-5): a fixed 64-iteration bisection here was up to ~260k
+  // Black-76 calls per Audit strip on a ConvexDense surface, with no early
+  // exit even once the bracket was already far tighter than any consumer
+  // reads. Break once the bracket is at the documented near-machine width
+  // (1e-12 relative to hi, absolute below hi=1) instead of always running to
+  // 64 -- this moves the returned midpoint by at most that bracket width, so
+  // it is NOT bit-identical to the old fixed-iteration result, only agreeing
+  // to within the stated tolerance (see dense_slice_test.cpp's
+  // IvBisectionEarlyExitMatchesPreP5BaselineWithin1e11 for the measured drift).
+  // `g_iv_early_exit_disabled` exists solely so a bench can measure the SAME
+  // binary with the optimization on and off (see its declaration above).
+  const bool early_exit = !g_iv_early_exit_disabled.load(std::memory_order_relaxed);
   for (int iter = 0; iter < 64; ++iter) {
     const double mid = 0.5 * (lo + hi);
     const double model = black76_price(F, K, T, mid, df, Side::Call);
@@ -461,6 +502,9 @@ double ConvexSliceFit::iv(double k_log) const noexcept {
       lo = mid;
     } else {
       hi = mid;
+    }
+    if (early_exit && (hi - lo) < 1.0e-12 * std::max(1.0, hi)) {
+      break;
     }
   }
   return 0.5 * (lo + hi);

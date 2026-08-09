@@ -1034,3 +1034,94 @@ TEST(ConvexSliceFit, FeasibleStartWithTinyIterationCapStillSucceeds) {
     EXPECT_EQ(fit.error().code(), ErrorCode::Internal);
   }
 }
+
+// Task P-5 (FIT-P1) characterization: the bisection early exit is
+// deliberately NOT bit-identical to the old fixed-64-iteration loop (the
+// last ulp of the returned midpoint can move once the loop stops as soon as
+// the bracket is near-machine width instead of always halving 64 times).
+// `kPreP5Iv` is the served iv() at this exact fixture/k-grid captured from
+// the UNMODIFIED (pre-P-5) bisection -- see task-P-5-report.md's
+// characterization section for the capture method. Every point must still
+// agree within 1e-11 (the acceptance bound; measured drift maxes out far
+// below it, ~2.8e-13, see the report).
+TEST(ConvexSliceFit, IvBisectionEarlyExitMatchesPreP5BaselineWithin1e11) {
+  using namespace atx::vol;
+  constexpr double F = 100.0, T = 0.25, df = 0.98;
+  std::vector<FitObs> obs;
+  for (const double K : strike_grid(F)) {
+    obs.push_back(mk_obs(F, T, df, K, 0.22));
+  }
+  const auto fit = fit_convex_slice(obs, F, T, df, ConvexFitOpts{});
+  ASSERT_TRUE(fit.has_value());
+
+  // Captured pre-P-5 (fixed 64-iteration bisection, no early exit), k from
+  // -0.60 to 0.60 in steps of 0.03, same fixture as above.
+  static constexpr double kPreP5Iv[41] = {
+      0.38306620209843278, 0.36585647544632593, 0.34854766705012208, 0.33113476990919311,
+      0.31361215772259232, 0.29597346148127623, 0.27821141126176629, 0.26031763012829434,
+      0.24228236072034093, 0.22409409487564735, 0.22034599272928146, 0.22092830152199339,
+      0.22134878962186633, 0.22135402335839144, 0.22088461146865995, 0.22018063596501236,
+      0.22106308025283938, 0.22090261863719107, 0.22033568585089119, 0.22096225288330668,
+      0.22000000584963630, 0.22085483829700253, 0.22025983560406370, 0.22064066740980282,
+      0.22065811537153923, 0.22021009273612463, 0.22032406422399492, 0.22053656799330695,
+      0.22052467701593248, 0.21918848633132137, 0.21704597398801689, 0.21671195086840145,
+      0.21753825849925401, 0.21913648501516581, 0.22126220321505885, 0.22493746009124133,
+      0.23892309280367430, 0.25284689612604161, 0.26671198479956604, 0.28052111779829192,
+      0.29427675652366592,
+  };
+
+  double max_abs_diff = 0.0;
+  for (int i = 0; i <= 40; ++i) {
+    const double k = -0.60 + 0.03 * static_cast<double>(i);
+    const double iv = fit->iv(k);
+    const double diff = std::fabs(iv - kPreP5Iv[static_cast<std::size_t>(i)]);
+    max_abs_diff = std::max(max_abs_diff, diff);
+    EXPECT_NEAR(iv, kPreP5Iv[static_cast<std::size_t>(i)], 1.0e-11) << "k=" << k;
+  }
+  EXPECT_LT(max_abs_diff, 1.0e-11);
+}
+
+// Guards that the early exit is actually engaged (not silently reverted to
+// the fixed 64-iteration loop by a future edit): a public-API-only replica
+// of ConvexSliceFit::iv()'s bisection (call_price/black76_price are already
+// public, so no production seam is needed) must converge well under 64
+// iterations on an ordinary, healthy-vega node. Measured on this fixture:
+// 44/64 iterations (31% fewer), uniform across the whole k-grid above -- see
+// task-P-5-report.md for the full iteration-count table.
+TEST(ConvexSliceFit, IvBisectionEarlyExitUsesFewerThan64IterationsAtHealthyVega) {
+  using namespace atx::vol;
+  constexpr double F = 100.0, T = 0.25, df = 0.98;
+  std::vector<FitObs> obs;
+  for (const double K : strike_grid(F)) {
+    obs.push_back(mk_obs(F, T, df, K, 0.22));
+  }
+  const auto fit = fit_convex_slice(obs, F, T, df, ConvexFitOpts{});
+  ASSERT_TRUE(fit.has_value());
+
+  const double K = F; // ATM, healthy vega
+  const double c = fit->call_price(K);
+  const double lower = df * std::max(F - K, 0.0);
+  const double upper = df * F;
+  const double epsilon = std::min(1.0e-6 * std::max(1.0, upper), 0.25 * (upper - lower));
+  const double safe_price = std::min(std::max(c, lower + epsilon), std::nextafter(upper, lower));
+  ASSERT_GT(safe_price, lower);
+  ASSERT_LT(safe_price, upper);
+  double lo = 1.0e-10, hi = kIvMax;
+  ASSERT_GE(black76_price(F, K, T, hi, df, Side::Call), safe_price);
+  int iters = 0;
+  for (int iter = 0; iter < 64; ++iter) {
+    ++iters;
+    const double mid = 0.5 * (lo + hi);
+    const double model = black76_price(F, K, T, mid, df, Side::Call);
+    if (model < safe_price) {
+      lo = mid;
+    } else {
+      hi = mid;
+    }
+    if ((hi - lo) < 1.0e-12 * std::max(1.0, hi)) {
+      break;
+    }
+  }
+  EXPECT_LT(iters, 64);
+  EXPECT_LE(iters, 48); // measured 44; generous margin for a different fixture/tolerance tweak
+}

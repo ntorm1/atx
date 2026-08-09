@@ -524,3 +524,113 @@ TEST(VolCurve, ConvexRepairSpecInvalidSpecRejected) {
   ASSERT_FALSE(inverted.has_value());
   EXPECT_EQ(inverted.error().code(), atx::core::ErrorCode::InvalidArgument);
 }
+
+// Task P-5 (FIT-P1): the calendar-admission scan_k (fit_slice_curve's
+// ConvexDense branch) used to invert the fitted node price to an implied vol
+// via ConvexSliceFit::iv() and square it back to a total variance just to
+// compare against w_prev -- pure waste, since the floor is enforced in PRICE
+// space by fit_convex_slice's own cfloor rows. This pins that the
+// price-space rewrite selects the IDENTICAL set of floor violations (hence
+// the identical required_k growth and served curve) as the pre-P-5
+// vol-space scan, across a fixture matrix spanning every scan_k call site:
+// legacy slack (no violation expected), legacy crossing that the coarse
+// 64-interval lattice cannot see (no violation on THIS lattice either --
+// verbatim ConvexRepairSpecRepairsOffLatticeCalendarCrossing's fixture),
+// strict on-lattice (repairs), and strict off-lattice via extra_node_ks
+// (verbatim ConvexRepairSpecExtraNodeKsBecomeExactFloorNodes's fixture).
+//
+// `kPreP5*` are served w(k) at 9 representative k's (both wings, the
+// kink/repair regions, and ATM) captured from the UNMODIFIED (pre-P-5,
+// iv()-inversion) scan -- see task-P-5-report.md for the capture method and
+// the full 41-point / 4-case comparison (max observed drift ~8e-13, driven
+// entirely by the UNRELATED iv() bisection early-exit task P-5 also lands,
+// not by a different floor being chosen). 1e-9 here is ~1e4x that noise
+// floor and ~1e6x below the ~1e-3 scale a genuinely different floor
+// selection would move these values by (this bug WAS caught this way during
+// implementation: an earlier, less faithful price-space rewrite that
+// skipped iv()'s wing safe-price projection moved these same points by
+// 3e-3-5e-3 -- a completely different set of floors chosen, not noise).
+TEST(VolCurve, CalendarScanPriceSpaceSelectsIdenticalFloorsAsPreP5Baseline) {
+  constexpr double T = 0.10;
+  constexpr double F = 100.0;
+  constexpr double df = 0.999;
+  const std::vector<FitObs> obs = make_smile_obs(T, F, df, 15);
+  constexpr std::array<double, 9> kSampleK = {-0.60, -0.51, -0.33, -0.21, 0.0,
+                                              0.21,  0.33,  0.51,  0.60};
+
+  const auto expect_matches = [&](const char* label, const IVolCurve& curve,
+                                  const std::array<double, 9>& pinned) {
+    for (std::size_t i = 0; i < kSampleK.size(); ++i) {
+      EXPECT_NEAR(curve.w(kSampleK[i]), pinned[i], 1.0e-9)
+          << label << " k=" << kSampleK[i];
+    }
+  };
+
+  CurveConfig cfg;
+  cfg.kind = VolCurveKind::ConvexDense;
+  const auto base = fit_slice_curve(cfg, obs, F, T, df);
+  ASSERT_TRUE(base.has_value()) << base.error().to_string();
+  const IVolCurve& base_curve = **base;
+
+  // Case A: mostly-slack w_prev (no violations expected on the legacy lattice).
+  const auto w_prev_slack = [&base_curve](double k) { return base_curve.w(k) - 1.0e-3; };
+  const auto slack = fit_slice_curve(cfg, obs, F, T, df, w_prev_slack);
+  ASSERT_TRUE(slack.has_value()) << slack.error().to_string();
+  static constexpr std::array<double, 9> kPreP5Slack = {
+      0.023073812939698696, 0.016885898743741863, 0.0073482334401989667,
+      0.0061095771687040704, 0.0048400976716167256, 0.005410183306104998,
+      0.0071283048771612623, 0.015982888220143317, 0.021649702357522241,
+  };
+  expect_matches("slack", **slack, kPreP5Slack);
+
+  // Case B: legacy off-lattice crossing (verbatim ConvexRepairSpecRepairsOffLatticeCalendarCrossing
+  // fixture) -- exercises the coarse 64-interval legacy scan and at least one refit pass.
+  // The bump is narrow enough (3e-3 width) that the legacy lattice never samples
+  // inside it, so this case's served curve is expected to equal Case A's exactly.
+  const auto w_prev_bump = [&base_curve](double k) {
+    const double z = (k + 0.50) / 3.0e-3;
+    return base_curve.w(k) - 1.0e-9 + 9.0e-8 * std::exp(-z * z);
+  };
+  const auto legacy = fit_slice_curve(cfg, obs, F, T, df, w_prev_bump);
+  ASSERT_TRUE(legacy.has_value()) << legacy.error().to_string();
+  expect_matches("legacy_crossing", **legacy, kPreP5Slack);
+
+  // Case C: strict ConvexRepairSpec on-lattice (same bump, dense 65-point grid).
+  CurveConfig strict_cfg = cfg;
+  strict_cfg.convex_repair = ConvexRepairSpec{};
+  strict_cfg.convex_repair->k_min = -0.50;
+  strict_cfg.convex_repair->k_max = 0.50;
+  strict_cfg.convex_repair->grid_points = 65;
+  strict_cfg.convex_repair->tolerance = 1.0e-9;
+  const auto strict = fit_slice_curve(strict_cfg, obs, F, T, df, w_prev_bump);
+  ASSERT_TRUE(strict.has_value()) << strict.error().to_string();
+  static constexpr std::array<double, 9> kPreP5StrictOnLattice = {
+      0.023073812939698696, 0.016885898743741863, 0.015900422507329481,
+      0.0080931546180809163, 0.004840097628925997, 0.0054101833061062842,
+      0.0071283048771754376, 0.015982888220143317, 0.021649702357522241,
+  };
+  expect_matches("strict_on_lattice", **strict, kPreP5StrictOnLattice);
+
+  // Case D: strict ConvexRepairSpec off-lattice via extra_node_ks (verbatim
+  // ConvexRepairSpecExtraNodeKsBecomeExactFloorNodes fixture).
+  const auto w_prev_off = [&base_curve](double k) {
+    const double z = (k + 0.517) / 2.5e-3;
+    return base_curve.w(k) - 1.0e-9 + 9.0e-8 * std::exp(-z * z);
+  };
+  CurveConfig off_cfg = cfg;
+  ConvexRepairSpec off_spec;
+  off_spec.k_min = -0.50;
+  off_spec.k_max = 0.50;
+  off_spec.grid_points = 65;
+  off_spec.tolerance = 1.0e-9;
+  off_spec.extra_node_ks = {-0.517};
+  off_cfg.convex_repair = off_spec;
+  const auto off_lattice = fit_slice_curve(off_cfg, obs, F, T, df, w_prev_off);
+  ASSERT_TRUE(off_lattice.has_value()) << off_lattice.error().to_string();
+  static constexpr std::array<double, 9> kPreP5StrictOffLattice = {
+      0.023073812939698696, 0.021083968927089494, 0.016052219842009045,
+      0.0081063700823840162, 0.0048400976266193101, 0.0054101833061063068,
+      0.0071283048771760829, 0.015982888220143317, 0.021649702357522241,
+  };
+  expect_matches("strict_off_lattice", **off_lattice, kPreP5StrictOffLattice);
+}

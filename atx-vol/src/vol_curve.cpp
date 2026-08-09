@@ -8,6 +8,7 @@
 
 #include "atx/core/error.hpp"
 #include "atx/vol/arb.hpp" // butterfly gates + shared-k pair projection + independent shape check
+#include "atx/vol/black76.hpp"     // black76_price -- price-space calendar floor scan (P-5)
 #include "atx/vol/c8_calib.hpp"    // c8_fit_slice_lm
 #include "atx/vol/detail/counters.hpp" // ConvexDense wing-anchor observability
 #include "atx/vol/essvi_calib.hpp" // essvi_fit_slice
@@ -448,12 +449,58 @@ Result<std::unique_ptr<IVolCurve>> fit_slice_curve(const CurveConfig &cfg,
 
       std::vector<double> violations;
       violations.reserve(8);
+      // FIT-P1 (Task P-5): the floor this scan is checking is ITSELF enforced
+      // in price space (fit_convex_slice's cfloor rows, dense_slice.cpp), so
+      // inverting the fitted node back to an implied vol here just to square
+      // it into a total variance was pure waste -- up to 64 Black-76 calls
+      // per scanned k via fit.iv(), on top of the fit itself. Compare prices
+      // directly instead: fold calendar_tol into the FLOOR side (shift the
+      // required total variance down by the tolerance before pricing it),
+      // so "floored price >= current price" is exactly the old "wp - w_curr >
+      // calendar_tol" decision under Black-76's monotone-in-sigma price (same
+      // equivalence dense_slice.cpp's own cfloor construction relies on).
+      // The current-side price MUST go through the identical safe_price
+      // projection ConvexSliceFit::iv() applies before it would invert --
+      // in a wing the raw node price can sit within float noise of the
+      // intrinsic/forward no-arb bound, where comparing it unprojected
+      // disagrees with what iv()-then-square used to compare (found during
+      // characterization: comparing the raw node price flagged spurious wing
+      // violations a slack floor never triggered against the pinned
+      // pre-change baseline -- see VolCurve.
+      // CalendarScanPriceSpaceSelectsIdenticalFloorsAsPreP5Baseline and
+      // task-P-5-report.md Sec.2). Not a bit-for-bit-identical arithmetic
+      // path (one black76_price call instead of bisecting fit.iv() ~64
+      // times), but the same SOURCE decision, so the set of flagged k's is
+      // unchanged.
       const auto scan_k = [&](double k) {
         const double wp = w_prev(k);
-        const double wc = fit.iv(k);
-        const double w_curr = (std::isfinite(wc) && wc > 0.0) ? wc * wc * T : kNaN;
-        if (std::isfinite(wp) && std::isfinite(w_curr) &&
-            wp - w_curr > calendar_tol) {
+        if (!std::isfinite(wp)) {
+          return;
+        }
+        const double w_floor = wp - calendar_tol;
+        if (!(w_floor > 0.0)) {
+          return; // current total variance is always >= 0, so no floor to violate
+        }
+        const double K = F * std::exp(k);
+        const double c = fit.call_price(K);
+        if (!std::isfinite(c)) {
+          return;
+        }
+        const double lower = df * std::max(F - K, 0.0);
+        const double upper = df * F;
+        const double gap = upper - lower;
+        const double epsilon = std::min(1.0e-6 * std::max(1.0, upper), 0.25 * gap);
+        const double safe_price =
+            std::min(std::max(c, lower + epsilon), std::nextafter(upper, lower));
+        if (!(safe_price > lower) || !(safe_price < upper)) {
+          return; // iv() would have returned NaN here too -- no comparable current vol
+        }
+        if (black76_price(F, K, T, kIvMax, df, Side::Call) < safe_price) {
+          return; // iv() would have failed to bracket -- same no-violation outcome
+        }
+        const double floor_price =
+            black76_price(F, K, T, std::sqrt(w_floor / T), df, Side::Call);
+        if (std::isfinite(floor_price) && safe_price < floor_price) {
           violations.push_back(k);
         }
       };
