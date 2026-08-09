@@ -822,9 +822,9 @@ frozen?" is answered by where the header lives, not by judgement:
 |---|---|---|---|
 | **Tier-A** | exactly the headers `atx/vol/vol.hpp` includes | 58 | **Frozen for 1.x.** Closed under inclusion |
 | **Tier-B** | other headers directly under `include/atx/vol/`, plus `simd/` | 32 + 9 | Public and supported to include; **not** frozen |
-| `detail/` | `include/atx/vol/detail/` | 29 (+1 generated) | **No stability promise.** Installed because Tier-A reaches it |
+| `detail/` | `include/atx/vol/detail/` | 30 (+1 generated) | **No stability promise.** Installed because Tier-A reaches it |
 | `tools/` | `tools/include/atx/vol/tools/` — target `atx::vol::tools` | 6 | CLI support. Not part of the shipped library surface |
-| `research/` | `research/include/atx/vol/research/` — target `atx::vol::research` | 9 | Run orchestration. Not part of the shipped library surface |
+| `research/` | `research/include/atx/vol/research/` — target `atx::vol::research` | 17 | Run orchestration. Not part of the shipped library surface |
 
 **Three of the five digits above had rotted by v1, and the first three no longer
 can.** All five rows were re-derived at the release commit: Tier-A 56 → **57**,
@@ -845,14 +845,28 @@ sprint's global constraints require new public surface to enter at Tier-B or
 headers rather than joining `vol.hpp`'s frozen include list (Tier-B 31 →
 **32**).
 
-That drift is now caught by a test rather than by a reader.
+Task D3 (same sprint) added `detail/writer_lock.hpp` (`detail/` 29 → **30**)
+without updating this table or `VolUmbrella.TierCountsMatchTheReadmeTable`'s
+pinned literal alongside it — exactly the undetected-rot failure mode this
+section already describes, caught here only when Task D6 next touched
+`detail/`-adjacent code and found the machine check already red (Task D6
+itself adds no header under `detail/`, so 30 is D3's correction, not a D6
+addition). `research/` had drifted further and silently, from 9 to 16,
+across every research-tier header this sprint landed (`track_key.hpp`,
+`track_store.hpp`, `catalog.hpp`, `sweep_driver.hpp`,
+`track_compact_reconcile.hpp`, `golden_pin.hpp`, and others) — not
+machine-checked (see below), so nothing caught it until re-derived here;
+Task D6's own `track_gc.hpp` makes it 17.
+
+That drift is now caught by a test rather than by a reader, for the two
+digits that can be.
 `VolUmbrella.TierCountsMatchTheReadmeTable` (`tests/vol_umbrella_test.cpp`)
-asserts all three of **58 / 32 / 29** against the live header tree — Tier-A from
+asserts all three of **58 / 32 / 30** against the live header tree — Tier-A from
 the umbrella manifest, Tier-B and `detail/` by counting `.hpp` files in the
 directories this table names — and each failure message says to update this
 table. Previously the Tier-A *set* was machine-checked but no **count** was, and
 nothing compared any of them to this table at all, which is how three rows rotted
-undetected. `simd/` 9, `tools/` 6 and `research/` 9 remain prose: they are
+undetected. `simd/` 9, `tools/` 6 and `research/` 17 remain prose: they are
 outside `include/atx/vol/` and are not covered by that test, so re-derive those
 three by hand. The `+1 generated` on `detail/` is likewise uncovered — it does
 not exist in the source tree the test walks.

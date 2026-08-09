@@ -342,7 +342,7 @@ TEST(VolUmbrella, TierCountsMatchTheReadmeTable) {
        fs::directory_iterator(include_root() / "atx" / "vol" / "detail")) {
     if (entry.is_regular_file() && entry.path().extension() == ".hpp") ++detail_headers;
   }
-  EXPECT_EQ(detail_headers, std::size_t{29})
+  EXPECT_EQ(detail_headers, std::size_t{30})
       << "detail/ count drifted -- update the README table (## Versioning) "
          "alongside this literal (the install-tree '+1 generated' header does "
          "not live under include_root() and is not counted here)";
