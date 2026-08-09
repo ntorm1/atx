@@ -980,6 +980,76 @@ TEST(DispersionBacktestConfigFrom, AgreesWithTheEngineRunConfigBuilderOnEveryKno
   EXPECT_EQ(surface.reconcile_nav, engine.reconcile_nav);
   EXPECT_DOUBLE_EQ(surface.financing.borrow_rate, engine.financing.borrow_rate);
   EXPECT_EQ(surface.financing.finance_premium, engine.financing.finance_premium);
+  // Task E1: both builders must also agree on WHERE `apply_to_financing`'s
+  // rate landed (see the dedicated test immediately below for the full
+  // rationale) -- an identity check alone (as the two lines above already do
+  // for borrow_rate/finance_premium) would stay green even if both builders
+  // shared the SAME wrong field, so this also pins the value.
+  ASSERT_TRUE(engine.financing.flat_r.has_value());
+  EXPECT_TRUE(surface.financing.flat_r.has_value());
+  EXPECT_DOUBLE_EQ(*engine.financing.flat_r, config.rate.flat_rate);
+}
+
+// Task E1 (backtest-lakehouse sprint): fixes a latent gap A5 tracked
+// (progress.md: "dispersion_run.cpp:1861-1864 sets finance_premium=true with
+// no reference_uid/flat_r ... the only apply_to_financing=true test never
+// calls run_backtest"). `dispersion_engine_run_config_from` used to write
+// `config.rate.flat_rate` into `run.financing.borrow_rate` -- the wrong field
+// (clobbering whatever `financing_borrow_rate` spec key the caller set,
+// per this test) -- while never setting `finance_premium`'s own rate source
+// (`FinancingConfig::flat_r`). A live caller who turned `apply_to_financing`
+// on against a multi-name dispersion corpus (the normal case) would hit
+// `run_backtest`'s A5 fail-closed multi-name-without-a-reference error,
+// because neither `reference_uid` nor `flat_r` was ever set.
+//
+// This does not itself invoke `run_backtest` (see the report for why a
+// bespoke multi-name SurfaceDb fixture was judged not worth the added
+// surface area here): `backtest.cpp`'s finance_premium block takes `flat_r`
+// UNCONDITIONALLY over any `reference_uid`/surface lookup
+// (`if (cfg.financing.flat_r.has_value()) { r = *cfg.financing.flat_r; }
+// else { ... the multi-name fail-closed check ... }`), so proving `flat_r`
+// is populated here is a complete, direct proof that the fail-closed branch
+// can no longer fire on this path -- independently covered end-to-end (on a
+// real corpus, not this pure-config-builder gate) by
+// `BacktestFinancing.MultiNameCorpusWithoutReferenceFailsClosed`
+// (backtest_test.cpp, Task A5) for the underlying engine behavior itself.
+TEST(DispersionBacktestConfigFrom, ApplyToFinancingRoutesFlatRateIntoFinancingFlatRNotBorrowRate) {
+  DispersionRunConfig config;
+  // A pre-existing, independently-set borrow rate (the `financing_borrow_rate`
+  // spec key, X2) -- the regression this pins: `apply_to_financing` must not
+  // silently overwrite it.
+  config.financing.borrow_rate = 0.0175;
+  config.rate.flat_rate = 0.043;
+  config.rate.apply_to_financing = true;
+
+  const RunConfig engine = dispersion_engine_run_config_from(config);
+
+  EXPECT_TRUE(engine.financing.finance_premium);
+  ASSERT_TRUE(engine.financing.flat_r.has_value())
+      << "apply_to_financing must set FinancingConfig::flat_r -- finance_premium's own rate "
+         "source -- or a multi-name corpus fails closed with no reference set";
+  EXPECT_DOUBLE_EQ(*engine.financing.flat_r, 0.043);
+  // The unrelated borrow_rate spec key must survive untouched.
+  EXPECT_DOUBLE_EQ(engine.financing.borrow_rate, 0.0175);
+  // reference_uid is a SEPARATE knob (financing_reference_uid is not yet a
+  // spec key); apply_to_financing must not touch it either.
+  EXPECT_EQ(engine.financing.reference_uid, 0u);
+}
+
+// The off case: apply_to_financing defaulting false must leave `financing`
+// exactly as `config.financing` set it -- no accidental flat_r/finance_premium.
+TEST(DispersionBacktestConfigFrom, ApplyToFinancingOffLeavesFinancingUntouched) {
+  DispersionRunConfig config;
+  config.financing.borrow_rate = 0.02;
+  config.financing.finance_premium = true; // set directly via financing_finance_premium
+  config.rate.flat_rate = 0.043;           // present but apply_to_financing is false
+  ASSERT_FALSE(config.rate.apply_to_financing);
+
+  const RunConfig engine = dispersion_engine_run_config_from(config);
+
+  EXPECT_TRUE(engine.financing.finance_premium); // from config.financing, not the rate route
+  EXPECT_DOUBLE_EQ(engine.financing.borrow_rate, 0.02);
+  EXPECT_FALSE(engine.financing.flat_r.has_value());
 }
 
 // ── REV-MTIDY I-1 — the guard the quote-knob repair shipped without ──────────

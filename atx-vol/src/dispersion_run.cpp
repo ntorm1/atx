@@ -1867,7 +1867,24 @@ RunConfig dispersion_engine_run_config_from(const DispersionRunConfig &config) {
   run.frictions = dispersion_effective_frictions(config.frictions, config.costs);
   run.financing = config.financing;
   if (config.rate.apply_to_financing) {
-    run.financing.borrow_rate = config.rate.flat_rate;
+    // Task E1 (backtest-lakehouse sprint), fixing a latent gap A5 tracked
+    // (progress.md: "dispersion_run.cpp:1861-1864 sets finance_premium=true
+    // with no reference_uid/flat_r"). This used to write `config.rate.
+    // flat_rate` into `run.financing.borrow_rate` -- the wrong field
+    // (`borrow_rate` prices the SHORT-shares borrow proxy; it has nothing to
+    // do with `finance_premium`'s cash-carry rate, and doing so silently
+    // clobbered whatever `financing_borrow_rate` spec key the caller had
+    // already set) -- while `finance_premium`'s own rate source
+    // (`FinancingConfig::flat_r` / `reference_uid`, see backtest.cpp's
+    // finance_premium block) was left unset entirely. `DispersionRateSource`'s
+    // own doc comment (dispersion_run.hpp) already states the intent: "Setting
+    // apply_to_financing routes the same [flat_rate] rate into FinancingConfig
+    // as well." Routing it into `flat_r` is that fix: it both makes the flat
+    // discount rate the ACTUAL cash-carry accrual rate (previously it accrued
+    // at the base snapshot's own single-name surface `r`, or hard-errored on a
+    // multi-name corpus with no reference set -- the fail-closed path A5's
+    // sprint added) and stops clobbering `borrow_rate`.
+    run.financing.flat_r = config.rate.flat_rate;
     run.financing.finance_premium = true;
   }
   run.surface_provenance_policy = config.provenance;

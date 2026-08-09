@@ -261,14 +261,22 @@ TEST(DispersionRunConfigStrict, FlatRateReachesFinancingOnlyWhenOptedIn) {
   const fs::path off = write_spec("atx-disp-cfg-rate-off", kBaselineSpec);
   const Result<DispersionRunConfig> without = read_dispersion_run_config(off);
   ASSERT_TRUE(without) << without.error().to_string();
-  EXPECT_EQ(dispersion_backtest_config_from(*without).run.financing.borrow_rate, 0.0);
+  EXPECT_FALSE(dispersion_backtest_config_from(*without).run.financing.flat_r.has_value());
 
   const std::string body = std::string(kBaselineSpec) + "rate_applies_to_financing\t1\n";
   const fs::path on = write_spec("atx-disp-cfg-rate-on", body);
   const Result<DispersionRunConfig> with = read_dispersion_run_config(on);
   ASSERT_TRUE(with) << with.error().to_string();
   const DispersionBacktestConfig backtest = dispersion_backtest_config_from(*with);
-  EXPECT_EQ(backtest.run.financing.borrow_rate, 0.043);
+  // Task E1: `flat_rate` must land in `FinancingConfig::flat_r` -- the field
+  // `finance_premium`'s cash-carry accrual actually reads (backtest.cpp) --
+  // not `borrow_rate` (a different, short-shares-borrow-proxy knob this used
+  // to silently clobber; see dispersion_run.cpp's own comment on the fix).
+  // `borrow_rate` stays at ITS OWN default (0.0, unset by this spec), proving
+  // the two knobs no longer collide.
+  EXPECT_DOUBLE_EQ(backtest.run.financing.borrow_rate, 0.0);
+  ASSERT_TRUE(backtest.run.financing.flat_r.has_value());
+  EXPECT_DOUBLE_EQ(*backtest.run.financing.flat_r, 0.043);
   EXPECT_TRUE(backtest.run.financing.finance_premium);
 }
 
@@ -1283,8 +1291,13 @@ TEST(DispersionRunConfigStrict, ListedEngineConfigCarriesEveryDeclaredExecutionK
   EXPECT_DOUBLE_EQ(engine.frictions.hedge_slippage_bps, 1.5);
   EXPECT_TRUE(engine.financing.shares_carry);
   EXPECT_DOUBLE_EQ(engine.financing.initial_cash, 2'500'000.0);
-  // rate_applies_to_financing routes flat_rate into the ledger.
-  EXPECT_DOUBLE_EQ(engine.financing.borrow_rate, 0.043);
+  // Task E1: rate_applies_to_financing routes flat_rate into
+  // `FinancingConfig::flat_r` -- the field `finance_premium`'s cash-carry
+  // accrual actually reads -- not `borrow_rate` (this spec never sets
+  // `financing_borrow_rate`, so it stays at its own 0.0 default).
+  EXPECT_DOUBLE_EQ(engine.financing.borrow_rate, 0.0);
+  ASSERT_TRUE(engine.financing.flat_r.has_value());
+  EXPECT_DOUBLE_EQ(*engine.financing.flat_r, 0.043);
   EXPECT_TRUE(engine.financing.finance_premium);
   EXPECT_EQ(engine.surface_provenance_policy, SurfaceProvenancePolicy::RequireAdmittedRisk);
   EXPECT_EQ(engine.unpriced, UnpricedLotPolicy::ExcludeAndReport);
