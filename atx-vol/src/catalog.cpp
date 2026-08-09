@@ -61,6 +61,11 @@ constexpr std::string_view kProbeSql =
     "data_snapshot_id, date_min, date_max, status, file, row_group, created_ts, "
     "last_access_ts FROM tracks WHERE track_key = ?1;";
 
+// Touch-on-probe (fix-round, Important 1): the ONE write `probe()` performs,
+// and only on a hit. Single statement, no explicit transaction -- same
+// "one autocommit write" discipline as `kRetireStaleSql`/`kMarkCompactedSql`.
+constexpr std::string_view kTouchLastAccessSql = "UPDATE tracks SET last_access_ts = ?1 WHERE track_key = ?2;";
+
 constexpr std::string_view kInsertTrackSql =
     "INSERT INTO tracks(track_key, underlier, family, config_json, engine_id, economics_rev, "
     "data_snapshot_id, date_min, date_max, status, file, row_group, created_ts, "
@@ -258,6 +263,24 @@ Result<std::optional<TrackRow>> Catalog::probe(const TrackKey &key) {
   if (!row.has_value()) {
     return Err(row.error());
   }
+
+  // Touch-on-probe (fix-round, Important 1) -- see catalog.hpp's own doc
+  // comment on `probe()` for why this write exists. One additional
+  // single-statement UPDATE; failure here is reported to the caller (this
+  // function is not pure-read any more, so it fails closed like every other
+  // catalog write) rather than swallowed.
+  const std::int64_t touched_ts = wall_clock_ns();
+  ATX_TRY(auto *touch_stmt, db_.prepare_cached(kTouchLastAccessSql));
+  ATX_TRY_VOID(touch_stmt->bind(1, touched_ts));
+  ATX_TRY_VOID(touch_stmt->bind(2, key.hex()));
+  auto touch_step = touch_stmt->step();
+  if (!touch_step) {
+    ATX_TRY_VOID(touch_stmt->reset());
+    return Err(touch_step.error());
+  }
+  ATX_TRY_VOID(touch_stmt->reset());
+  row->last_access_ts = touched_ts;
+
   return Ok(std::optional<TrackRow>{std::move(*row)});
 }
 

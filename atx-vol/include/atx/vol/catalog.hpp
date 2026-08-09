@@ -216,14 +216,27 @@ public:
 
   [[nodiscard]] std::string_view lake_root() const noexcept { return lake_root_; }
 
-  // `nullopt` on a miss (not an error). Does not mutate `last_access_ts` --
-  // deliberately pure-read; a future retention/eviction task owns deciding
-  // what "access" means for that column, out of this task's scope.
+  // `nullopt` on a miss (not an error). NOT pure-read any more (fix-round,
+  // Important 1): on a HIT, touches `last_access_ts` -- a single UPDATE to
+  // the current wall-clock time -- before returning. `probe()` is the
+  // lakehouse's only "this track was actually consulted" signal; without
+  // this write, `last_access_ts` never moved past `register_staging`'s own
+  // INSERT (write-once), which silently demoted D6's documented
+  // "access-based" retention (track_gc.hpp, docs/backtest-lakehouse.md) to
+  // mere creation-age retention, and could age out a track being served
+  // every day exactly as fast as one nobody has touched since it was
+  // written. A MISS still performs no write at all. The extra write is a
+  // single autocommit statement (no explicit transaction -- same discipline
+  // as `retire_stale`/`mark_compacted`), and touches only wall-clock
+  // metadata that sits OUTSIDE `TrackKey`'s hash, so it has no effect on
+  // determinism or on any economics path.
   [[nodiscard]] atx::core::Result<std::optional<TrackRow>> probe(const TrackKey &key);
 
   // Every row currently at `status`, ordered by `track_key` for determinism.
-  // Read-only, same "pure read" contract as `probe()` (does not mutate
-  // `last_access_ts`). Task D5's `reconcile_stuck_compactions`
+  // Read-only -- unlike `probe()` (Important 1 fix-round: touch-on-probe),
+  // `list_by_status` does NOT mutate `last_access_ts`; it is a bulk
+  // structural scan, not an "this track was accessed" signal. Task D5's
+  // `reconcile_stuck_compactions`
   // (track_compact_reconcile.hpp) is the first caller: it needs every
   // `Staging` row to find ones a crashed `track_compact` run left stranded
   // (staged input already deleted, `mark_compacted` never called) -- a query

@@ -94,8 +94,9 @@ namespace db = atx::core::db;
 }
 
 // Task D6 test backdoor: `Catalog` deliberately exposes no way to set
-// `last_access_ts` to anything but "now" (register_staging's own contract) --
-// there is no production reason a caller should be able to forge it. Testing
+// `last_access_ts` to anything but "now" (`register_staging`'s INSERT, or --
+// fix-round, Important 1 -- a `probe()` hit's touch-on-probe UPDATE) -- there
+// is no production reason a caller should be able to forge it. Testing
 // `retire_stale`'s age threshold deterministically (not via a real sleep,
 // which would make the suite slow and flaky) needs SOME way to plant an old
 // timestamp, so this reaches around the public API with a raw connection,
@@ -204,7 +205,60 @@ TEST(CatalogTest, ProbeMissThenRegisterThenProbeHit) {
   EXPECT_FALSE(row.file.has_value());
   EXPECT_FALSE(row.row_group.has_value());
   EXPECT_GT(row.created_ts, 0);
-  EXPECT_EQ(row.created_ts, row.last_access_ts);
+  // Touch-on-probe (fix-round, Important 1): this `probe()` call is itself a
+  // hit, so it touches `last_access_ts` to a fresh wall-clock read -- no
+  // longer exactly `created_ts` (set once, by `register_staging`'s INSERT,
+  // a moment earlier), only guaranteed not to have regressed behind it.
+  EXPECT_GE(row.last_access_ts, row.created_ts);
+}
+
+// ── touch-on-probe (fix-round, Important 1) ─────────────────────────────────
+//
+// `last_access_ts` was write-once (`register_staging`'s INSERT only) before
+// this fix -- `probe()` never advanced it, so the "access-based" retention
+// track_gc.hpp/docs/backtest-lakehouse.md describe was actually creation-age
+// retention: a track probed (and served) every single day aged out exactly
+// as fast as one nobody had touched since it was written.
+
+TEST(CatalogTest, ProbeHitAdvancesLastAccessTsPastAPlantedStaleValueAndNeverRegresses) {
+  const fs::path root = fresh_lake_root("touch-on-probe");
+  auto cat = Catalog::open(root.string());
+  ASSERT_TRUE(cat.has_value());
+  const fs::path db_path = root / std::string(kCatalogDbName);
+  const TrackKey key = make_indexed_key(0, 50);
+  ASSERT_TRUE(cat->register_staging(key, make_meta(), make_registration()).has_value());
+
+  // Plant an old timestamp directly -- register_staging's own INSERT always
+  // uses "now", so this raw backdoor is the only deterministic way to get a
+  // stale starting point (same discipline retire_stale's own tests above
+  // use via set_last_access_ts_raw).
+  set_last_access_ts_raw(db_path, key.hex(), 1000);
+
+  auto first = cat->probe(key); // a hit -- touches last_access_ts as a side effect
+  ASSERT_TRUE(first.has_value()) << (first ? "" : first.error().to_string());
+  ASSERT_TRUE(first->has_value());
+  EXPECT_GT((*first)->last_access_ts, 1000)
+      << "a probe HIT must advance last_access_ts past the planted stale value";
+  const std::int64_t after_first_probe = (*first)->last_access_ts;
+
+  auto second = cat->probe(key);
+  ASSERT_TRUE(second.has_value());
+  ASSERT_TRUE(second->has_value());
+  EXPECT_GE((*second)->last_access_ts, after_first_probe)
+      << "a second hit must never regress last_access_ts behind an earlier touch";
+}
+
+TEST(CatalogTest, ProbeMissPerformsNoWrite) {
+  const fs::path root = fresh_lake_root("touch-on-probe-miss");
+  auto cat = Catalog::open(root.string());
+  ASSERT_TRUE(cat.has_value());
+  const fs::path db_path = root / std::string(kCatalogDbName);
+
+  auto miss = cat->probe(make_indexed_key(0, 51));
+  ASSERT_TRUE(miss.has_value()) << (miss ? "" : miss.error().to_string());
+  EXPECT_FALSE(miss->has_value());
+  EXPECT_EQ(raw_count(db_path, "SELECT COUNT(*) FROM tracks;"), 0)
+      << "a probe MISS must not have written a row -- touch-on-probe applies to hits only";
 }
 
 TEST(CatalogTest, RegisterStagingDuplicateKeyFailsAlreadyExists) {

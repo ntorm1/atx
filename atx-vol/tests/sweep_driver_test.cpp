@@ -73,10 +73,12 @@
 #include <cstdlib>
 #endif
 
+#include "atx/core/db/sqlite.hpp"       // raw connection -- set_last_access_ts_raw backdoor below
 #include "atx/vol/american.hpp"        // al_fast_opts, AmericanMethod
 #include "atx/vol/backtest_template.hpp" // BacktestStrategyTemplate, ProjectedTemplateStrategy
 #include "atx/vol/corpus.hpp"           // CorpusManifest, CorpusEntry, CorpusFitStatus
 #include "atx/vol/priced_surface.hpp"   // PricedSurface, PricingContext
+#include "atx/vol/research/track_gc.hpp" // gc() -- Critical-1 fix-round: sweep<->gc composition test
 #include "atx/vol/snapshot_pool.hpp" // SnapshotPool
 #include "atx/vol/track_key.hpp" // track_key_from_hex
 #include "atx/vol/surface_archive.hpp"  // write_surface_archive_v2_file, SurfaceArchiveItem
@@ -264,6 +266,24 @@ void mark_all_compacted(Catalog &catalog, const std::vector<CompactedTrackPlacem
     ASSERT_TRUE(key.has_value()) << (key.has_value() ? std::string{} : key.error().to_string());
     ASSERT_TRUE(catalog.mark_compacted(*key, placement.file, placement.row_group).has_value());
   }
+}
+
+// Critical-1 fix-round test backdoor: `Catalog` exposes no way to forge
+// `last_access_ts` to an arbitrary past value -- same discipline
+// catalog_test.cpp's/track_gc_test.cpp's own set_last_access_ts_raw uses, so
+// this composition test can drive `gc()`'s age threshold deterministically
+// instead of sleeping for real.
+void set_last_access_ts_raw(const fs::path &lake_root, const std::string &track_key, std::int64_t ts) {
+  const fs::path db_path = lake_root / std::string(kCatalogDbName);
+  auto conn = atx::core::db::Database::open(db_path.string(), atx::core::db::OpenMode::ReadWrite);
+  ASSERT_TRUE(conn.has_value()) << (conn.has_value() ? std::string{} : conn.error().to_string());
+  auto stmt = conn->prepare("UPDATE tracks SET last_access_ts = ?1 WHERE track_key = ?2;");
+  ASSERT_TRUE(stmt.has_value());
+  ASSERT_TRUE(stmt->bind(1, ts).has_value());
+  ASSERT_TRUE(stmt->bind(2, track_key).has_value());
+  auto step = stmt->step();
+  ASSERT_TRUE(step.has_value()) << (step.has_value() ? std::string{} : step.error().to_string());
+  ASSERT_EQ(conn->changes(), 1) << "set_last_access_ts_raw: no such track_key: " << track_key;
 }
 
 // ── D5: env-var-gated fixture-lake producer (WritesRealCxxLakeAndCsvSidecar-
@@ -708,6 +728,89 @@ TEST(SweepDriverTest, CompactMarkCompactedAndArrowReloadMatchesOriginalResultsTo
           << "track " << hex << " row " << i;
     }
   }
+
+  std::error_code ec;
+  fs::remove_all(dir, ec);
+}
+
+// ── Critical-1 fix-round: sweep<->gc composition -- a Retired probe hit must
+// fail the sweep closed, never report cache_hit=true ─────────────────────────
+//
+// D6's `retire_stale`/`gc()` (research/track_gc.hpp) can retire -- and
+// physically reclaim -- the EXACT `TrackKey` a later, otherwise-identical
+// `run_sweep` call would probe (unlike D5 economics-rev supersession, which
+// always retires a DIFFERENT, older-generation key -- see sweep_driver.hpp's
+// own doc comment). Drives a REAL `Catalog` through the full lifecycle a
+// production lake would: run_sweep (register) -> compact() -> mark_compacted
+// (compact-ish state) -> age out + gc() (retire + physically reclaim, the
+// whole-file-delete path since this track is alone in its batch) -> a second
+// run_sweep against the SAME spec/lake_root must return Err naming the track
+// key, never a silent cache hit for data that no longer exists anywhere.
+TEST(SweepDriverTest, RunSweepFailsClosedInsteadOfServingAGcRetiredTrackAsACacheHit) {
+  const fs::path dir = fresh_dir("gc-composition");
+  const Corpus corpus = make_corpus(dir / "corpus", "SPX", 5);
+  const fs::path lake_root = dir / "lake";
+
+  SweepSpec spec;
+  spec.variants = {make_variant(1.0, 100u)};
+  spec.clock = corpus.clock;
+  spec.uid = kUid;
+  spec.meta = TrackMeta{"SPX", "strangle_gc_composition_test"};
+  spec.data_snapshot_id = fixed_snapshot_id(0x13);
+
+  SweepConfig config;
+  config.lake_root = lake_root.string();
+  config.sweep_id = "sweep-gc-composition";
+  config.n_threads = 1;
+
+  auto first = run_sweep(spec, config);
+  ASSERT_TRUE(first.has_value()) << (first.has_value() ? std::string{} : first.error().to_string());
+  ASSERT_EQ(first->variants.size(), 1u);
+  EXPECT_EQ(first->engine_runs, 1u);
+  const TrackKey key = first->variants[0].key;
+
+  // compact() -> mark_compacted(): the same glue tools/track_compact.cpp
+  // wires for real (mark_all_compacted, defined above), landing this track
+  // at TrackStatus::Compacted -- retire_stale only ever selects Compacted
+  // rows (catalog.hpp's own doc comment), so gc() has nothing to age out
+  // while it is still Staging.
+  auto compacted = compact(lake_root.string());
+  ASSERT_TRUE(compacted.has_value()) << (compacted.has_value() ? std::string{} : compacted.error().to_string());
+  ASSERT_EQ(compacted->tracks_compacted, 1u);
+  {
+    auto catalog = Catalog::open(lake_root.string());
+    ASSERT_TRUE(catalog.has_value());
+    mark_all_compacted(*catalog, compacted->placements);
+  }
+
+  // Age the row out via the raw last_access_ts backdoor, then gc(): the sole
+  // track in its batch retires AND is physically reclaimed (whole-file
+  // delete path -- file/row_group cleared to NULL).
+  set_last_access_ts_raw(lake_root, key.hex(), 1000);
+  auto gc_stats = gc(lake_root.string(), 3000);
+  ASSERT_TRUE(gc_stats.has_value()) << (gc_stats.has_value() ? std::string{} : gc_stats.error().to_string());
+  EXPECT_EQ(gc_stats->tracks_retired, 1u);
+  EXPECT_EQ(gc_stats->batches_deleted, 1u) << "sole track in its batch -- the whole-file reclaim path";
+
+  {
+    auto catalog = Catalog::open(lake_root.string());
+    ASSERT_TRUE(catalog.has_value());
+    auto row = catalog->probe(key);
+    ASSERT_TRUE(row.has_value() && row->has_value());
+    EXPECT_EQ((*row)->status, TrackStatus::Retired);
+    EXPECT_FALSE((*row)->file.has_value())
+        << "sanity: this track was physically reclaimed, not merely status-retired";
+  }
+
+  // A second, otherwise-identical sweep must NOT report a cache hit for this
+  // now-Retired (and reclaimed) key -- it must fail the WHOLE sweep closed
+  // and name the offending track_key, per sweep_driver.cpp's Phase 3 fix.
+  auto second = run_sweep(spec, config);
+  ASSERT_FALSE(second.has_value())
+      << "run_sweep must refuse to report a cache hit for a Retired probe result";
+  EXPECT_EQ(second.error().code(), atx::core::ErrorCode::Internal);
+  EXPECT_NE(second.error().to_string().find(key.hex()), std::string::npos)
+      << "the error must name the offending track_key: " << second.error().to_string();
 
   std::error_code ec;
   fs::remove_all(dir, ec);

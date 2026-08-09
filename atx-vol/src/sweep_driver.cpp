@@ -106,6 +106,41 @@ Result<SweepResult> run_sweep(const SweepSpec &spec, const SweepConfig &config) 
     outcomes[u].first_variant_index = variant_idx;
     ATX_TRY(std::optional<TrackRow> probed, catalog.probe(keys[variant_idx]));
     if (probed.has_value()) {
+      // Fix-round finding (Critical 1): a `Retired` row must never be
+      // reported as a cache hit. Unlike D5 supersession -- which always
+      // retires a DIFFERENT, older-generation `TrackKey` (a different
+      // `engine_id`, see the file doc comment's point 2) -- D6's
+      // `retire_stale`/`gc()` can retire, and later physically reclaim, THIS
+      // EXACT key (`apply_gc_rewrite` clears `file`/`row_group` to NULL once
+      // reclaimed; catalog.hpp's `TrackStatus::Retired` doc comment). This
+      // driver never reloads a hit's data (`SweepVariantOutcome::result` is
+      // populated only for `ran`, see its own doc comment), so silently
+      // reporting `cache_hit = true` here would report SUCCESS for a variant
+      // whose backing data may no longer exist anywhere, with no downstream
+      // signal that anything is wrong -- exactly the "cache that might
+      // silently serve a wrong or partial answer is worse than one that
+      // refuses" posture this sprint is built on. Fail the WHOLE sweep
+      // closed unconditionally on `Retired` (not gated on `file` being NULL):
+      // a row that is Retired-but-not-yet-reclaimed can be physically
+      // reclaimed by a concurrent `gc()` at any moment, so "was this hit
+      // durable" must never depend on that race. There is no automated
+      // revive today -- `register_staging` on the same key hits
+      // `AlreadyExists`, and `mark_compacted` refuses a non-`Staging` row --
+      // so recovery is a fresh `kBacktestEconomicsRev` bump (a new
+      // `TrackKey`) or manual catalog intervention.
+      if (probed->status == TrackStatus::Retired) {
+        return Err(ErrorCode::Internal,
+                   "run_sweep: variants[" + std::to_string(variant_idx) +
+                       "] probed a Retired track (track_key=" + keys[variant_idx].hex() +
+                       (probed->file.has_value()
+                            ? std::string(", file present but not guaranteed durable")
+                            : std::string(", file already reclaimed by gc()")) +
+                       ") -- refusing to report a cache hit for data the lakehouse may no "
+                       "longer hold. Recovery: re-run this variant under a bumped "
+                       "kBacktestEconomicsRev (registers a fresh, un-retired track_key), or "
+                       "inspect/repair the 'tracks' row for this track_key in catalog.sqlite "
+                       "directly");
+      }
       outcomes[u].cache_hit = true;
     } else {
       misses.push_back(u);

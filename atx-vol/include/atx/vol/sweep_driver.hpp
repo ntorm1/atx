@@ -23,8 +23,11 @@
 //      `kBacktestEconomicsRev`, track_key.hpp) into the hash, so a probe HIT
 //      can only ever be a track computed under the CURRENT economics
 //      revision -- there is no separate freshness check to get wrong, and no
-//      stale-revision row can ever be served as a hit. A hit skips the run
-//      entirely; a miss is scheduled.
+//      stale-revision row can ever be served as a hit. A hit whose row is
+//      `TrackStatus::Retired` (D6 age-based GC, NOT D5 supersession -- see
+//      "What this is NOT" below) is refused with a loud `Err` rather than
+//      reported as a hit. Otherwise, a hit skips the run entirely; a miss is
+//      scheduled.
 //   3. VARIANT-PARALLEL EXECUTION -- every miss runs `run_backtest` with
 //      `RunConfig::price.n_threads` forced to 1 (the brief's "opts.n_threads=1
 //      inner runs"): the OUTER fan-out (`SweepConfig::n_threads`, via
@@ -72,6 +75,23 @@
 // file needing to know a bump happened. See `TrackStatus::Retired` and
 // `Catalog::register_staging`'s doc comments (catalog.hpp) for the exact
 // match/compare rule.
+//
+// D6's age-based retirement (`Catalog::retire_stale`/`gc()`, track_gc.hpp) is
+// a DIFFERENT hazard from D5 supersession above: it can retire -- and, on a
+// later call, physically reclaim -- the EXACT `TrackKey` a probe here is
+// about to look up (same key, just aged out), not a different, older-
+// generation one. Phase 3 (sweep_driver.cpp) therefore fails the whole sweep
+// closed the instant a probe returns a `Retired` row, rather than reporting
+// a hit: this driver never reloads a hit's data (`SweepVariantOutcome`'s own
+// doc comment), so silently treating a `Retired` row as a hit could report
+// success for a variant whose data no longer exists anywhere at all
+// (`apply_gc_rewrite` clears `file`/`row_group` to NULL once reclaimed,
+// catalog.hpp's own `TrackStatus::Retired` doc comment) -- exactly the
+// "cache that might silently serve a wrong or partial answer" this sprint's
+// posture refuses to be. There is no automated revive path today
+// (`register_staging` on the same key hits `AlreadyExists`; `mark_compacted`
+// refuses a non-`Staging` row) -- recovery is a fresh `kBacktestEconomicsRev`
+// bump (a new `TrackKey`) or manual catalog intervention.
 //
 // ## Threading
 //
