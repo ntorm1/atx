@@ -18,6 +18,11 @@
 
 namespace atx::vol {
 
+// Distinct near-money strikes a single expiry must carry before C8's eight free
+// parameters are identified on it: eight to pin them plus two so the slice is
+// fitted rather than interpolated.
+inline constexpr std::uint32_t kC8MinSliceStrikes = 10u;
+
 enum class FitSelectionMode : std::uint8_t {
   Auto = 0,           // profile-first; held-out validation only when ambiguous
   CrossValidated = 1, // always run the held-out curve selector
@@ -59,15 +64,45 @@ struct FitContext {
 
 struct FitPolicyConfig {
   FitSelectionMode mode{FitSelectionMode::Auto};
-  // A low-confidence liquid/ordinary classification is validated out of sample.
+  // A low-confidence classification is validated out of sample instead of being
+  // routed on directly.
+  //
+  // Read against `ProfileVerdict::confidence`, which is ORDINAL: 1.0 when every
+  // classifier axis picked the same rung of the liquidity ladder, then 0.75,
+  // 0.5, 0.25, 0.0 as the axes spread out over it. 0.70 therefore means
+  // "cross-validate once the axes disagree by two rungs or more", and it sits in
+  // the middle of the empty band between 0.5 and 0.75 -- any value in (0.5,
+  // 0.75] expresses the same policy, so the gate cannot be decided by a
+  // hair's-breadth move in one observable.
+  //
+  // It used to be read against the modal bucket's VOTE SHARE, which on the
+  // measured corpus took only the values 0, 1/3, 1/2, 2/3 and 1. 0.70 fell into
+  // the 0.667|0.800 gap with 20% of all boards sitting exactly on 0.667, so a
+  // single vote decided the route -- and because the fitter substitutes the
+  // caller's preset for the profile's own on the cross-validated path, that one
+  // vote could change the curve family actually served.
   double min_direct_confidence{0.70};
   bool validate_ambiguous{true};
-  // Below this many live quote legs a board is "thin", with two consequences: a
-  // board-voted verdict cannot support a useful even/odd holdout (route it
-  // directly to the parsimonious SVI family instead of paying for a doomed
-  // validation pass), and no board -- however confidently classified -- can
-  // identify C8's eight free parameters.
-  std::uint32_t sparse_validation_floor{600};
+  // Dead-board backstop for the identifiability demotion: the minimum number of
+  // two-sided NEAR-THE-MONEY legs (|ln(K/S)| <= kNearMoneyLogMoneyness) a board
+  // must carry before its own vote is trusted.
+  //
+  // NOTE THE UNIT. This was a floor of 600 on the board's TOTAL two-sided leg
+  // count, which is a strike-count test wearing a liquidity test's name: it
+  // demoted 49% of the lqbench universe and 8.7% of the S&P 100 -- DUK, KHC,
+  // SYK, AMT, CMCSA, T, CL, SO, MO, BMY, dividend-heavy mega caps with short
+  // strike ladders. Counted near the money the same names clear it by an order
+  // of magnitude (the thinnest S&P 100 board carries 121 near-money nodes), and
+  // the structural arm below does the discriminating.
+  //
+  // Zero disables the demotion outright -- the documented "route on the board's
+  // own vote whatever the board looks like" switch.
+  std::uint32_t sparse_validation_floor{24};
+  // How many expiries must independently identify a smile (each carrying at
+  // least `kMinIdentifiableSliceStrikes` distinct near-money strikes) before the
+  // board is routed on its own vote. One is enough to fit a slice; the calendar
+  // dimension is the fitter's problem, not the classifier's.
+  std::uint32_t min_identifiable_expiries{1};
   // Adaptive knot budget for the dense index/ETF HFT route. The cap is a
   // calibration input rather than a curve-local field, so PricerFitter applies it
   // when materializing SessionInputs -- and an explicit PricerConfig
@@ -224,6 +259,14 @@ struct FitDecision {
   CurveConfig primary_curve{};
   bool needs_cross_validation{false};
   bool used_fallback{false};
+  // The held-out selector was asked for a family and REFUSED (too thin a
+  // held-out sample, no admissible candidate, budget exhausted), so `curve`
+  // came from the profile's direct route instead. Cross-validation is advisory
+  // among already-admissible families, never a veto on the board -- but the
+  // substitution must not be silent, so it is reported here. Distinct from
+  // `used_fallback`, which records a fallback-LADDER rung taken after a BUILD
+  // failed; the two can both be set on one board.
+  bool selector_fallback{false};
 };
 
 [[nodiscard]] FitDecision select_fit_policy(const Underlying &under, std::string_view ticker,

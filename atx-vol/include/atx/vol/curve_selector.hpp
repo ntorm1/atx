@@ -106,6 +106,12 @@ struct SelectorResult {
   // Candidates fully scored before an optional budget stopped the search.
   std::size_t scores_evaluated{0};
   bool budget_exhausted{false};
+  // No candidate cleared `SelectorConfig::min_*_coverage`, so admission was
+  // re-evaluated at `relaxed_min_*_coverage`. The winner therefore did NOT
+  // score the whole common held-out population: its `chi2_reduced`/`rmse_vol`
+  // are not cross-candidate comparable (R-34) and `oos_in_band`/`oos_vw`
+  // under-report against the full denominator.
+  bool relaxed_coverage_admission{false};
 };
 
 // Search policy.
@@ -127,6 +133,26 @@ struct SelectorConfig {
   // are never removed from the denominator to make the candidate look better.
   double min_expiry_coverage{1.0};
   double min_holdout_coverage{1.0};
+  // Second-stage floors, applied ONLY when NO candidate cleared the strict
+  // floors above.
+  //
+  // A 1.0 coverage floor is a CROSS-CANDIDATE COMPARABILITY guarantee (see the
+  // R-34 note on CandidateScore), not a quality floor: it forces every family
+  // to be ranked on an identical held-out population. That guarantee is worth
+  // nothing once the alternative is refusing the board outright -- and with a
+  // single candidate (`production_selector_config()`, `score_curve_oos`) there
+  // is no comparison to protect at all, so demanding 100% means one failed
+  // deep-wing re-Americanization discards a board the family covers everywhere
+  // else. When the strict pass admits nobody, admission is re-evaluated at
+  // these floors and `SelectorResult::relaxed_coverage_admission` records it.
+  //
+  // The denominator stays the FULL required population, so a partially covered
+  // candidate under-reports `oos_in_band`/`oos_vw` rather than flattering
+  // itself, and `select_candidate_index` ranks coverage before quality — the
+  // widest-covering family wins the relaxed stage. Set both to 1.0 to restore
+  // the strict-only contract.
+  double relaxed_min_expiry_coverage{0.5};
+  double relaxed_min_holdout_coverage{0.5};
   // The candidate chosen on the common held-out population is rebuilt by its
   // serving driver before publication. That driver may apply a different
   // preparation policy, so require it to retain at least a majority of the
@@ -156,10 +182,35 @@ selector_served_admission_policy(const FitAdmissionPolicy &base,
 // fallback and explicit research mode.
 [[nodiscard]] std::vector<CurveConfig> default_selector_candidates();
 
-// Bounded production policy for ambiguous boards. Production evaluates only
-// the broad-coverage eSSVI baseline; callers that explicitly request research
-// cross-validation may use SelectorConfig{} (all default candidates, unlimited
-// soft deadline) or provide their own candidate ladder/budget.
+// Bounded three-family ladder: the cheap parametric forms (eSSVI baseline, raw
+// SVI, linear variance), in that order. The two expensive families in
+// `default_selector_candidates()` -- ConvexDense's per-expiry dense QP and C8's
+// eight free parameters -- are excluded; that, rather than a wall-clock
+// deadline, is what bounds the cost, so selection stays reproducible on a
+// loaded host. Assign it to `SelectorConfig::candidates` to cross-validate over
+// a real family ladder. NOT the production default -- see below for the
+// measurement that says why.
+[[nodiscard]] std::vector<CurveConfig> bounded_selector_candidates();
+
+// Production policy for ambiguous boards: the broad-coverage eSSVI baseline
+// alone, deadline-free (hence deterministic).
+//
+// The single candidate is MEASURED, not an oversight (lqbench, 240 names,
+// 2026-08-03 19:55Z): swapping in `bounded_selector_candidates()` moves 26
+// boards off eSSVI onto SVI/linear variance -- ORCL, UNH, MA, HD, CAT, AVGO,
+// NFLX, WFC, VZ, PLTR among them -- and every one of those 26 then reports
+// all-zero fit diagnostics, because the quality fields are populated only on
+// the eSSVI path. Measurable boards fall 117 -> 91 and fit CPU rises 1.37x, for
+// no change in the median in-band of the boards that stay measurable (0.9872
+// either way). Two independent defects must close before a multi-family default
+// is honest: the diagnostics gap on non-eSSVI families, and the preparation
+// asymmetry that has this selector score every candidate under the strict
+// `Configured` cascade while the eSSVI route it selects for is SERVED under the
+// permissive legacy prep. Until then a wider default trades measurable eSSVI
+// surfaces for unmeasurable ones.
+//
+// Callers that explicitly want research cross-validation may use
+// SelectorConfig{} (all default candidates) or supply their own ladder/budget.
 [[nodiscard]] SelectorConfig production_selector_config();
 
 // Pure winner-selection policy over already-scored candidates (Task C2.5). The

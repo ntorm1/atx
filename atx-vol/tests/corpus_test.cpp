@@ -2905,7 +2905,14 @@ TEST(CorpusBuildSession, SyntheticThirteenNameThreeDateBreadthScoreboard) {
       event_spec.expiries.push_back(
           SynthExpiry{std::string(expiry_iso), T, S3Params{0.42, -0.9 * std::sqrt(T), 0.8}});
     }
-    event_spec.strikes = {160.0, 180.0, 200.0, 220.0, 240.0};
+    // Eleven strikes on a 200 spot, all inside |ln(K/S)| = 0.223. The C8 route
+    // this case exists to exercise is now gated on the deepest slice carrying at
+    // least `kC8MinSliceStrikes` distinct near-money strikes rather than on an
+    // absolute board leg count (W2-A), and the old five-strike ladder cannot
+    // identify eight free parameters -- it would silently route to eSSVI and
+    // there would be no primary rejection to fall back FROM.
+    event_spec.strikes = {160.0, 168.0, 176.0, 184.0, 192.0, 200.0,
+                          208.0, 216.0, 224.0, 232.0, 240.0};
     event_spec.half_spread_frac = 0.03;
     event_spec.min_half_spread = 0.05;
     CorpusBoard event = board_from_spec(event_spec, date, "AAPL");

@@ -174,13 +174,19 @@ struct PricerConfig {
   // explicit opt-in -- assign `risk_admission_policy()` -- per WP12 staging.
   FitAdmissionPolicy admission{};
   // Optional overrides for the preset's cold-fit diagnostic/quality-speed knobs.
-  // nullopt => use the preset default, except a floor-free Mark admission
-  // defaults `score_parity` off because it admits Disabled diagnostics. A Mark
-  // bid/ask quality floor and Quote/Risk admission retain scoring by default.
-  // An explicit false skips the second de-Am diagnostic pass and therefore
-  // fails closed when admission requires that evidence. false for
-  // `enforce_calendar_floor` maximizes raw in-band fit quality by fitting dense
-  // slices independently.
+  // nullopt => use the preset default, with one deliberate exception: a board
+  // the LIBRARY routed (no `curve` pin and not the preset-pinned Hft dense
+  // route) ALWAYS scores parity, whatever the admission policy consumes (W3-A,
+  // principle P4). A published surface must carry evidence of how well the
+  // family the library chose actually fits; a floor-free Mark policy left that
+  // evidence unmeasured on every non-eSSVI route, which reported zeroed rather
+  // than poor diagnostics. A CALLER-pinned curve under a floor-free Mark
+  // admission keeps the opt-out -- an explicit pin includes its latency budget.
+  // A Mark bid/ask quality floor and Quote/Risk admission retain scoring by
+  // default. An explicit false skips the second de-Am diagnostic pass on every
+  // route and therefore fails closed when admission requires that evidence.
+  // false for `enforce_calendar_floor` maximizes raw in-band fit quality by
+  // fitting dense slices independently.
   std::optional<bool> use_correction_cache{};
   // Explicit query-time pricing contract. LegacyCompatible preserves historical
   // serving, ColdReference forces cold Andersen-Lake/FD, RepresentativeFast uses
@@ -198,6 +204,24 @@ struct PricerConfig {
   // audit_fit_inversions gates the lenient path's cold-reference fit audit.
   std::optional<PreparedObservationPolicy> fit_prep_policy{};
   std::optional<bool> audit_fit_inversions{};
+  // W2-B: the family-neutral preparation decision (detail/prepared_policy.hpp),
+  // copied onto `SessionInputs::prep`. Preparation strictness used to be an
+  // accident of curve-family choice — the auto-router sends illiquid small caps
+  // to SVI, and SVI drew the STRICTEST quote filter while eSSVI drew the
+  // permissive one — so a thin board could not ask for the population it needs
+  // without also changing the family it fits with. Naming `prep.strictness`
+  // decides that independently of `curve`, and the two rescue tri-states are the
+  // only route to `SurfaceParityInputs::per_slice_legacy_prep_fallback` and
+  // `CalibOpts::per_slice_linear_fallback`, which were otherwise unreachable
+  // from this config.
+  //
+  // Every field defaults to `Auto`; see `resolve_preparation_policy` for what
+  // that resolves to per fit lane. `Auto` reproduces the historical preparation
+  // except that the Legacy-prep rescue is ON for non-eSSVI families.
+  //
+  // The legacy `fit_prep_policy` above still works and is folded in as
+  // `PrepStrictness::Permissive` when `prep.strictness` is left at `Auto`.
+  PreparationPolicyRequest prep{};
   // Opt into the cross-pair warm start for the term-borrow carry solve
   // (DeAmOptions::warm_start_carry): seeds each near-ATM pair's borrow
   // fixed-point from the previous pair's converged state, cutting the

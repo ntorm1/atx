@@ -325,6 +325,153 @@ TEST(BuildObservations, WideSpreadVolOnPreferredLeg_Dropped) {
   }
 }
 
+// ── build_observations: ITM-leg fallback (W1-B / F21) ───────────────────
+//
+// The one-leg-per-strike rule keeps the OTM leg and skips the ITM one. On a
+// thin board the OTM leg is frequently unquoted (an unset side arrives as
+// bid = ask = 0), so the strike contributes NOTHING even though its ITM leg is
+// a clean two-sided quote. These pin the opt-in fallback and, just as
+// importantly, the cases where it must NOT fire.
+
+// Erase one leg the way the loader does: an unset side never reaches the chain,
+// so its SoA slot keeps the zero-initialized value.
+void unquote_leg(Chain &c, std::uint16_t strike_index, Side side) {
+  const std::size_t idx = chain_index(strike_index, side);
+  c.bids[idx] = 0.0;
+  c.asks[idx] = 0.0;
+  c.mids[idx] = 0.0;
+}
+
+TEST(BuildObservations, UnquotedOtmLeg_WithoutFallback_DiscardsTheWholeStrike) {
+  const std::vector<double> strikes{85.0, 90.0, 95.0, 100.0, 105.0, 110.0};
+  Chain c = make_priced_chain(strikes);
+  unquote_leg(c, 5u, Side::Call); // K = 110 > F: the OTM call is the preferred leg
+
+  const auto res = build_observations(c, kF, kT, kDf, calib_default_opts());
+  ASSERT_TRUE(res.has_value()) << res.error().to_string();
+  EXPECT_EQ(res->obs.size(), 5u);
+  for (const FitObs &o : res->obs) {
+    EXPECT_GT(std::fabs(o.K - 110.0), 1e-9) << "the 110 strike must contribute nothing";
+  }
+}
+
+TEST(BuildObservations, UnquotedOtmLeg_WithFallback_UsesTheItmLeg) {
+  const std::vector<double> strikes{85.0, 90.0, 95.0, 100.0, 105.0, 110.0};
+  Chain c = make_priced_chain(strikes);
+  unquote_leg(c, 5u, Side::Call);
+  CalibOpts opts = calib_default_opts();
+  opts.itm_leg_fallback = true;
+
+  const auto res = build_observations(c, kF, kT, kDf, opts);
+  ASSERT_TRUE(res.has_value()) << res.error().to_string();
+  ASSERT_EQ(res->obs.size(), 6u);
+  EXPECT_EQ(res->n_itm_fallback, 1u);
+  // Rows stay in ascending source-strike order, one per strike, so the rescued
+  // 110 row is last — and it is the PUT.
+  const FitObs &rescued = res->obs.back();
+  EXPECT_NEAR(rescued.K, 110.0, 1e-12);
+  EXPECT_EQ(rescued.side, Side::Put);
+  // The ITM put inverts to the same flat vol the board was priced at: put-call
+  // parity holds in IV space, which is why the ITM leg is usable at all.
+  EXPECT_NEAR(rescued.sigma_mkt, kVol, 1e-4);
+  // Provenance is re-keyed onto the leg that was actually used.
+  ASSERT_EQ(res->provenance.size(), strikes.size());
+  EXPECT_EQ(res->provenance.back().side, Side::Put);
+  EXPECT_EQ(res->provenance.back().rejection, atx::vol::ObsRejectionReason::None);
+}
+
+TEST(BuildObservations, QuotedButRejectedOtmLeg_DoesNotSubstituteTheItmLeg) {
+  // The fallback answers "this strike has no OTM quote", not "this strike's OTM
+  // quote is poor". A quoted-but-filtered OTM leg means the strike itself is
+  // bad, so the ITM leg must NOT be substituted for it.
+  const std::vector<double> strikes{85.0, 90.0, 95.0, 100.0, 105.0, 110.0};
+  Chain c = make_priced_chain(strikes);
+  const std::size_t idx = chain_index(3, Side::Call); // 100 call, wide in vol units
+  const double mid = c.mids[idx];
+  c.bids[idx] = mid - 1.0;
+  c.asks[idx] = mid + 1.0;
+  CalibOpts opts = calib_default_opts();
+  opts.itm_leg_fallback = true;
+
+  const auto res = build_observations(c, kF, kT, kDf, opts);
+  ASSERT_TRUE(res.has_value()) << res.error().to_string();
+  EXPECT_EQ(res->obs.size(), 5u);
+  EXPECT_EQ(res->n_itm_fallback, 0u);
+  for (const FitObs &o : res->obs) {
+    EXPECT_GT(std::fabs(o.K - 100.0), 1e-9);
+  }
+}
+
+TEST(BuildObservations, ItmFallbackIsInertWhenEveryOtmLegIsQuoted) {
+  // A dense board must be bit-identical with the flag on: every preferred leg
+  // is quotable, so the fallback never runs.
+  const std::vector<double> strikes{85.0, 90.0, 95.0, 100.0, 105.0, 110.0};
+  const Chain c = make_priced_chain(strikes);
+  CalibOpts on = calib_default_opts();
+  on.itm_leg_fallback = true;
+
+  const auto base = build_observations(c, kF, kT, kDf, calib_default_opts());
+  const auto with_fallback = build_observations(c, kF, kT, kDf, on);
+  ASSERT_TRUE(base.has_value());
+  ASSERT_TRUE(with_fallback.has_value());
+  ASSERT_EQ(base->obs.size(), with_fallback->obs.size());
+  EXPECT_EQ(with_fallback->n_itm_fallback, 0u);
+  EXPECT_EQ(base->n_dropped, with_fallback->n_dropped);
+  for (std::size_t i = 0; i < base->obs.size(); ++i) {
+    EXPECT_EQ(base->obs[i].side, with_fallback->obs[i].side);
+    EXPECT_DOUBLE_EQ(base->obs[i].K, with_fallback->obs[i].K);
+    EXPECT_DOUBLE_EQ(base->obs[i].sigma_mkt, with_fallback->obs[i].sigma_mkt);
+    EXPECT_DOUBLE_EQ(base->obs[i].weight_w, with_fallback->obs[i].weight_w);
+  }
+}
+
+TEST(BuildObservations, ItmFallbackRescuesASliceTheOtmRuleWouldStarve) {
+  // The thin-board shape: every strike sits above the forward and only the ITM
+  // puts are quoted. Without the fallback the slice yields zero rows.
+  const std::vector<double> strikes{105.0, 110.0, 115.0, 120.0, 125.0, 130.0};
+  Chain c = make_priced_chain(strikes);
+  for (std::uint16_t s = 0; s < strikes.size(); ++s) {
+    unquote_leg(c, s, Side::Call);
+  }
+
+  const auto starved = build_observations(c, kF, kT, kDf, calib_default_opts());
+  ASSERT_FALSE(starved.has_value());
+  EXPECT_EQ(starved.error().code(), ErrorCode::NotFound);
+
+  CalibOpts opts = calib_default_opts();
+  opts.itm_leg_fallback = true;
+  const auto rescued = build_observations(c, kF, kT, kDf, opts);
+  ASSERT_TRUE(rescued.has_value()) << rescued.error().to_string();
+  EXPECT_EQ(rescued->obs.size(), strikes.size());
+  EXPECT_EQ(rescued->n_itm_fallback, static_cast<std::uint32_t>(strikes.size()));
+  for (const FitObs &o : rescued->obs) {
+    EXPECT_EQ(o.side, Side::Put);
+    EXPECT_NEAR(o.sigma_mkt, kVol, 1e-4);
+  }
+}
+
+TEST(BuildObservations, ItmFallbackRefusalNamesTheItmLegsOwnRejection) {
+  // When the fallback runs and the ITM leg is ALSO unusable, the retained
+  // rejection must name the ITM leg's binding condition — that is the reason
+  // the strike is dead, and reporting the OTM leg's "no quote" would hide it.
+  const std::vector<double> strikes{105.0, 110.0, 115.0, 120.0, 125.0, 130.0};
+  Chain c = make_priced_chain(strikes);
+  for (std::uint16_t s = 0; s < strikes.size(); ++s) {
+    unquote_leg(c, s, Side::Call);
+    const std::size_t put = chain_index(s, Side::Put);
+    c.bids[put] = c.mids[put] - 5.0; // vol-wide: rejected by max_spread_vol
+    c.asks[put] = c.mids[put] + 5.0;
+  }
+  CalibOpts opts = calib_default_opts();
+  opts.itm_leg_fallback = true;
+
+  const auto res = build_observations(c, kF, kT, kDf, opts);
+  ASSERT_FALSE(res.has_value());
+  EXPECT_EQ(res.error().code(), ErrorCode::NotFound);
+  EXPECT_NE(res.error().to_string().find("SpreadVol"), std::string::npos)
+      << res.error().to_string();
+}
+
 TEST(BuildObservations, NonPositiveForward_ReturnsInvalidArgument) {
   const Chain c = make_priced_chain({90.0, 95.0, 100.0, 105.0, 110.0});
   const auto res = build_observations(c, 0.0, kT, kDf, calib_default_opts());

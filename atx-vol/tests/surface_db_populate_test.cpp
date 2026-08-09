@@ -1656,7 +1656,25 @@ TEST(SurfaceDbPopulate, StatsCsvShape) {
   aaa_cfg.curve = CurveConfig{}; // ConvexDense, node_cap 40
   ASSERT_TRUE(db->upsert_symbol("AAA", aaa_cfg).has_value());
 
-  const std::vector<CorpusBoard> boards = make_boards();
+  // BBB has to be a board the router actually sends to the held-out selector,
+  // because it is this test's ONLY positive case for "the OOS column carries a
+  // number when the selector ran". Say that with the board rather than leaning
+  // on whatever the classifier happens to make of the default fixture: the
+  // routing gate reads `ProfileVerdict::confidence`, which is the span of the
+  // rungs the classifier's axes voted for, so an ambiguous board is one whose
+  // axes disagree by two rungs or more. `make_boards()`'s BBB carries ~26
+  // two-sided legs per expiry (the `ordinary` density rung) quoted ~10% wide
+  // (the `liquid` spread rung) -- ONE rung apart, which is what an ordinary
+  // mid-liquidity board looks like and is routed directly. A dense ladder at
+  // the same spread puts the density axis on the `index ETF` rung, two away,
+  // which is a genuine contradiction and cross-validates.
+  std::vector<CorpusBoard> boards = make_boards();
+  for (CorpusBoard &b : boards) {
+    if (b.symbol == "BBB") {
+      b = make_board_n_strikes(b.date, b.symbol, b.date == kDate0 ? 60.0 : 61.0,
+                               b.date == kDate0 ? 0.34 : 0.33, /*n_strikes*/ 110);
+    }
+  }
   const SurfaceDbPopulateConfig cfg;
   auto result = populate_surface_db(*db, boards, cfg);
   ASSERT_TRUE(result.has_value()) << (result ? "" : result.error().to_string());
@@ -1681,11 +1699,21 @@ TEST(SurfaceDbPopulate, StatsCsvShape) {
   // AAA: n_attempted=2, n_ok=2, n_failed=0, n_disabled=0 -> success_rate=1;
   // pinned curve -> no OOS score -> "nan" (the NaN-when-unavailable rule).
   EXPECT_NE(text.find("AAA,2,2,0,0,1,nan,0\n"), std::string::npos) << text;
-  // BBB: same counts (a directly-routed, non-ambiguous board also has no
-  // selector OOS score even though its curve isn't pinned -- fit_board's
-  // `oos_in_band_available` is tied to the selector having run at all, not
-  // to pin_curve specifically; mirrors corpus.cpp's CorpusEntry.oos_in_band).
-  EXPECT_NE(text.find("BBB,2,2,0,0,1,nan,0\n"), std::string::npos) << text;
+  // BBB: same counts, but it is the OTHER side of the same rule --
+  // `oos_in_band_available` is tied to the selector having run at all, not to
+  // pin_curve specifically, and BBB's unpinned board DOES cross-validate, so its
+  // row carries a real score.
+  //
+  // Rebaselined for the identifiability guard (W2-A). BBB used to be routed
+  // directly because an absolute 600-leg floor force-demoted every board this
+  // small to IlliquidSmallCap with cross-validation switched off; measured near
+  // the money it is a perfectly identifiable board, so it now reaches the
+  // ambiguity check. W4 makes the board state that intent outright (above)
+  // instead of depending on the classifier's confidence scale.
+  EXPECT_EQ(text.find("BBB,2,2,0,0,1,nan,0\n"), std::string::npos)
+      << "BBB cross-validates now, so its OOS score is available\n"
+      << text;
+  EXPECT_NE(text.find("BBB,2,2,0,0,1,1,0\n"), std::string::npos) << text;
 
   std::filesystem::remove_all(root);
 }

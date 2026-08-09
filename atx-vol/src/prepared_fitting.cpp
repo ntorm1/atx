@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <string>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -13,6 +14,7 @@
 #include "atx/core/error.hpp"
 #include "atx/vol/black76.hpp"
 #include "atx/vol/correction.hpp" // CorrectionCache::populated/side (C1 route attribution)
+#include "atx/vol/deamer.hpp"     // otm_side, european_equiv_iv
 #include "atx/vol/detail/deam_pass_counter.hpp" // C1 proof: fit de-Am pass tally
 #include "atx/vol/surface_parity.hpp"
 
@@ -65,11 +67,40 @@ constexpr double kMinSpread = 1.0e-8;
   return ObservationKey{inputs.expiry_index, static_cast<std::uint32_t>(strike_index), side};
 }
 
+// W1-B locked-market reconciliation. Board classification, the Configured
+// cascade (`calib.cpp` step 2) and the selector's holdout split all require
+// `ask > bid`; this predicate alone accepted `ask >= bid`. A locked market is
+// not a cheaper quote, it is the ABSENCE of a market: zero width carries no
+// price uncertainty, and the weight formula below divides by a spread floored
+// at `kMinSpread` (1e-8), so one locked row would carry ~1e16x a normal row's
+// weight and own the objective outright. The strict rule is therefore the one
+// of record everywhere. Measured no-op on both OPRA corpora (1.22M rows,
+// lqbench 15:55 + 10:30): zero locked and zero crossed quotes survive the
+// loader, so this changes no served board — it closes a latent divergence.
 [[nodiscard]] bool quote_valid(const Chain &chain, std::size_t quote_index) noexcept {
   const double bid = chain.bids[quote_index];
   const double ask = chain.asks[quote_index];
   const double mid = chain.mids[quote_index];
-  return bid > 0.0 && ask > 0.0 && ask >= bid && std::isfinite(mid) && mid > 0.0;
+  return bid > 0.0 && ask > bid && std::isfinite(mid) && mid > 0.0;
+}
+
+// W1-B (F21): the leg this strike's observation is built from. Normally the OTM
+// leg (`otm_side`); under `itm_leg_fallback`, the ITM leg when the OTM leg
+// carries no two-sided quote and the ITM leg does. Shared by the de-Am strike
+// cap, the shared-boundary batch seed and the main loop of `prepare_legacy`,
+// which must agree exactly on which leg each strike contributes.
+[[nodiscard]] Side prepared_leg_side(const Chain &chain, std::size_t strike_index, double log_k,
+                                     bool itm_leg_fallback) noexcept {
+  const Side otm = otm_side(log_k);
+  if (!itm_leg_fallback) {
+    return otm;
+  }
+  const auto index = static_cast<std::uint16_t>(strike_index);
+  if (quote_valid(chain, chain_index(index, otm))) {
+    return otm;
+  }
+  const Side itm = (otm == Side::Call) ? Side::Put : Side::Call;
+  return quote_valid(chain, chain_index(index, itm)) ? itm : otm;
 }
 
 } // namespace
@@ -252,7 +283,14 @@ Result<PreparedSlice> PreparedSliceBuilder::prepare_configured(const Chain &chai
     const FitObs &row = out.fit_rows_[row_index];
     const std::size_t index = row.source_strike_index;
     if (index >= chain.n_strikes() || accepted[index].has_value() ||
-        chain.strikes[index] != row.K || preferred_side(chain.strikes[index], row.F) != row.side) {
+        chain.strikes[index] != row.K) {
+      return Err(ErrorCode::Internal,
+                 "PreparedSlice::create: configured row carries an invalid source key");
+    }
+    // W1-B: still ONE row per strike, but under `itm_leg_fallback` that row may
+    // legitimately be the ITM leg, so the side is no longer a function of
+    // (K, F). Everything else about the source key is checked exactly as before.
+    if (!inputs.calib.itm_leg_fallback && preferred_side(chain.strikes[index], row.F) != row.side) {
       return Err(ErrorCode::Internal,
                  "PreparedSlice::create: configured row carries an invalid source key");
     }
@@ -349,7 +387,7 @@ Result<PreparedSlice> PreparedSliceBuilder::prepare_legacy(const Chain &chain,
         continue;
       }
       const double safe_k = std::log(strike / inputs.F);
-      const Side side = otm_side(safe_k);
+      const Side side = prepared_leg_side(chain, index, safe_k, inputs.calib.itm_leg_fallback);
       const std::size_t quote_index = chain_index(static_cast<std::uint16_t>(index), side);
       if (!quote_valid(chain, quote_index)) {
         continue;
@@ -392,7 +430,8 @@ Result<PreparedSlice> PreparedSliceBuilder::prepare_legacy(const Chain &chain,
       if (!(strike > 0.0)) {
         continue;
       }
-      const Side side = otm_side(std::log(strike / inputs.F));
+      const Side side = prepared_leg_side(chain, index, std::log(strike / inputs.F),
+                                          inputs.calib.itm_leg_fallback);
       const std::size_t quote_index = chain_index(static_cast<std::uint16_t>(index), side);
       if (!quote_valid(chain, quote_index) || (!cap_dropped.empty() && cap_dropped[index] != 0)) {
         continue;
@@ -429,7 +468,7 @@ Result<PreparedSlice> PreparedSliceBuilder::prepare_legacy(const Chain &chain,
   for (std::size_t index = 0; index < chain.n_strikes(); ++index) {
     const double strike = chain.strikes[index];
     const double safe_k = (strike > 0.0) ? std::log(strike / inputs.F) : 0.0;
-    const Side side = otm_side(safe_k);
+    const Side side = prepared_leg_side(chain, index, safe_k, inputs.calib.itm_leg_fallback);
     const ObservationKey key = key_for(inputs, index, side);
     const std::size_t quote_index = chain_index(static_cast<std::uint16_t>(index), side);
     PreparedObservation observation;
@@ -588,8 +627,23 @@ Result<PreparedSlice> PreparedSliceBuilder::prepare_legacy(const Chain &chain,
     *inputs.out_legacy_audit_dropped = n_audit_dropped;
   }
   if (out.fit_rows_.size() < kMinPreparedFitRows) {
+    // W2-B: name the condition. The permissive predicate only ever drops a row
+    // for an invalid strike/quote, the de-Am cap, or a failed/audit-rejected
+    // de-Americanization — and the last of those is a board property (negative
+    // effective carry collapses the Andersen-Lake boundary), not a filter
+    // choice, so it must be distinguishable from "the funnel was too strict".
+    std::size_t n_deam_rejected = 0;
+    for (const ObservationRejection &rej : out.rejections_) {
+      if (rej.reason == ObservationRejectionReason::Deamericanization) {
+        ++n_deam_rejected;
+      }
+    }
     return Err(ErrorCode::NotFound,
-               "PreparedSlice::create: fewer than 5 legacy eSSVI rows survived");
+               "PreparedSlice::create: fewer than 5 legacy eSSVI rows survived (kept=" +
+                   std::to_string(out.fit_rows_.size()) + " of " +
+                   std::to_string(chain.n_strikes()) + " strikes; de-Am rejected " +
+                   std::to_string(n_deam_rejected) + ", audit dropped " +
+                   std::to_string(n_audit_dropped) + ")");
   }
   return Ok(std::move(out));
 }

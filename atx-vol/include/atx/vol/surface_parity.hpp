@@ -236,6 +236,44 @@ struct SurfaceParityInputs {
   // historical drop-the-slice behavior. Only consulted by `fit_curve_surface`.
   bool per_slice_legacy_prep_fallback{false};
 
+  // W2-B: the LAST-RESORT form of the rescue above. When TRUE (and
+  // `per_slice_legacy_prep_fallback` is false), the driver re-prepares the
+  // starved expiries under LegacyEssviCompatibility ONLY IF the primary
+  // preparation left the board with NO fittable slice at all — i.e. only on a
+  // board that is otherwise a total refusal. It therefore cannot change what a
+  // board that already fits serves, and costs nothing on one: the second pass
+  // is skipped entirely when any chain is usable.
+  //
+  // This exists because the per-slice form above is NOT quality-neutral. A
+  // recovered slice carries quotes the configured cascade rejected, so it can
+  // pull a board's worst-slice parity under an admission floor and fail a board
+  // that previously passed on its clean slices alone (measured: 2 of 3 boards
+  // on the AAPL/GOOGL/NVDA populate lane). Same rescue, same code path
+  // (`prepare_fit_slice_into_slot`), same `FittedLegacyPrep` outcome — only the
+  // trigger differs. `per_slice_legacy_prep_fallback` wins if both are set.
+  // DEFAULT FALSE => byte-identical to the historical drop-the-board behavior;
+  // `VolaSession::build` turns it on for every non-eSSVI family.
+  bool board_starved_legacy_prep_fallback{false};
+
+  // W1-B (F21): ITM-leg rescue. A starved expiry is re-prepared with
+  // `CalibOpts::itm_leg_fallback` on, so a strike whose OTM leg carries no
+  // two-sided quote contributes its ITM leg instead of nothing. Same two
+  // triggers as the legacy-prep rescue above, and for the same reason: an ITM
+  // leg is the wider, lower-vega side of the strike, so a rescued row is a
+  // noisier observation and the aggressive form is NOT quality-neutral.
+  //
+  // `per_slice_itm_leg_fallback` retries every starved expiry;
+  // `board_starved_itm_leg_fallback` retries only when the primary preparation
+  // left the board with NO fittable slice at all, so it can only convert a
+  // total refusal into a fit and costs nothing on a board that already fits.
+  // The per-slice form wins if both are set. The retry runs AFTER the
+  // legacy-prep rescue in the preparation ladder — measured, not assumed; see
+  // the ladder comment in `fit_curve_surface` — so every W2-B outcome is
+  // unchanged and this relaxation is purely additive.
+  // DEFAULT FALSE => bit-identical to the historical one-leg-per-strike rule.
+  bool per_slice_itm_leg_fallback{false};
+  bool board_starved_itm_leg_fallback{false};
+
   // W3.4 (F4): completeness contract. When TRUE, an expiry whose PREPARATION or
   // slice FIT fails with a HARD error code (anything other than NotFound /
   // Unavailable — i.e. a genuine defect such as a non-converged QP `Internal`)

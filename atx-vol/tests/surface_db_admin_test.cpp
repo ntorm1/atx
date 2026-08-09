@@ -1149,13 +1149,13 @@ TEST(SurfaceDbAdmin, VerifyDbDetectsInPlacePayloadCorruption) {
 
 // ── the ATM probe branch ────────────────────────────────────────────────────
 
-// A stored surface whose SMILE is degenerate (the total-variance intercept `a`
-// of every SVI slice rewritten to a wildly negative constant) but whose record
+// A stored surface whose SMILE is degenerate (the total-variance level of every
+// slice rewritten to a wildly negative constant) but whose record
 // CRC is REPAIRED, so the bytes are perfectly self-consistent. S, r, and every
 // slice's T/forward/qeff are all left untouched, so `PricedSurfaceView`'s
 // semantic reconstruct-equivalence checks (cb7fe2e, [SE-P1-1]) — which reject a
 // non-positive spot or forward at MAP time — stay silent: mapping proves
-// nothing about it. Only the ATM evaluation, where `svi_total_w` goes negative
+// nothing about it. Only the ATM evaluation, where total variance goes negative
 // and `sigma = sqrt(w/T)` is NaN, can tell it apart from a healthy cell. This is
 // the one thing that makes `verify` more than a map-only walk, and it must be
 // reported as its own failure kind, not as a checksum fault.
@@ -1175,20 +1175,26 @@ TEST(SurfaceDbAdmin, VerifyDbFlagsNonFiniteAtmProbe) {
     std::uint64_t payload_off[2] = {};
     std::memcpy(payload_off, rec.data() + h.col_payload_off_off, sizeof payload_off);
     for (std::uint32_t i = 0; i < h.n_slices; ++i) {
-      // Must actually be Svi for `a` (SviParams's first field, byte 0 of the
-      // per-slice payload) to land where this writes — assert it so a future
-      // change to the fitted curve family fails loudly here instead of quietly
-      // scribbling over an unrelated byte and making this test meaningless.
+      // Byte 0 of the per-slice payload must be that slice's total-variance
+      // LEVEL for this corruption to mean anything — `EssviParams::theta` here,
+      // `SviParams::a` on the SVI route. Assert the kind so a future change to a
+      // family whose first field is something else fails loudly instead of
+      // quietly scribbling over an unrelated byte.
+      //
+      // Rebaselined for the identifiability guard (W2-A): the synthetic hive
+      // board carries nine near-money strikes on each of its two expiries, so it
+      // is no longer force-demoted to IlliquidSmallCap/SVI by an absolute
+      // 600-leg floor and now fits on the eSSVI route.
       const auto kind = static_cast<VolCurveKind>(
           *reinterpret_cast<const std::uint8_t *>(rec.data() + h.col_kind_off + i));
-      ASSERT_EQ(kind, VolCurveKind::Svi);
+      ASSERT_EQ(kind, VolCurveKind::Essvi);
     }
-    // svi_total_w(k) == a + b*(rho*(k-m) + sqrt((k-m)^2 + sigma^2)); `a` alone
-    // dominates for any realistically-fitted b/sigma, driving w negative at
-    // every k — no need to reverse-engineer the fitted b/rho/m/sigma values.
-    const double bogus_a = -1.0e9;
+    // essvi_total_w(k) is theta scaled by a strictly positive shape factor, so a
+    // hugely negative theta drives w negative at every k — no need to
+    // reverse-engineer the fitted phi/rho values.
+    const double bogus_level = -1.0e9;
     for (const std::uint64_t off : payload_off) {
-      std::memcpy(rec.data() + off, &bogus_a, sizeof bogus_a);
+      std::memcpy(rec.data() + off, &bogus_level, sizeof bogus_level);
     }
     repair_record_crc(rec);
   });

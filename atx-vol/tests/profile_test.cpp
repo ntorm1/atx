@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "atx/vol/calib.hpp"        // OptimizationLevel, CalibLossKind
+#include "atx/vol/fit_policy.hpp"   // FitPolicyConfig (the routing gate under test)
 #include "atx/vol/profile.hpp"
 #include "atx/vol/types.hpp"        // ErrorCode
 #include "atx/vol/universe.hpp"     // Underlying, Chain
@@ -22,15 +23,17 @@
 
 namespace {
 
+using atx::vol::CalibLossKind;
+using atx::vol::Chain;
+using atx::vol::ClassifierInputs;
 using atx::vol::classify_profile;
 using atx::vol::classify_underlier;
 using atx::vol::classify_underlier_with_ticker;
-using atx::vol::ClassifierInputs;
-using atx::vol::CalibLossKind;
-using atx::vol::Chain;
 using atx::vol::ErrorCode;
+using atx::vol::FitPolicyConfig;
 using atx::vol::OptimizationLevel;
 using atx::vol::Parametrization;
+using atx::vol::PricingRoute;
 using atx::vol::Profile;
 using atx::vol::profile_default;
 using atx::vol::profile_lookup;
@@ -38,7 +41,6 @@ using atx::vol::profile_make_cold_fast;
 using atx::vol::profile_tier_priority;
 using atx::vol::ProfileKind;
 using atx::vol::ProfileVerdict;
-using atx::vol::PricingRoute;
 using atx::vol::ResidualBasisKind;
 using atx::vol::tick_size;
 using atx::vol::ticker_seed_profile;
@@ -52,7 +54,7 @@ ClassifierInputs make_spy_inputs() {
   in.n_live_expiries = 35u;
   in.n_atm_quotes = 800u;
   in.median_spread_pct = 0.01;
-  in.has_zerodte = true;
+  in.n_front_expiries = 8u;
   in.has_weeklies = true;
   in.htb_flag = false;
   in.vol_product = false;
@@ -144,11 +146,48 @@ TEST(ProfileClassifier, ClassifyProfile_ImminentEarnings_ReturnsMegaCapEvent) {
   // Reduce SPY-like signals so the 2-vote earnings bonus flips the bucket.
   in.n_live_quotes = 2500u;
   in.median_spread_pct = 0.04;
-  in.has_zerodte = false;
+  in.n_front_expiries = 1u;
   in.event_distance_days = 5u;
   const ProfileVerdict v = classify_profile(in);
   EXPECT_EQ(static_cast<int>(v.kind),
             static_cast<int>(ProfileKind::MegaCapEvent));
+}
+
+// Quote density is a per-expiry property. Two boards carrying the SAME number of
+// two-sided legs, one over four expiries and one over sixty, are not the same
+// kind of board; an absolute leg count cannot tell them apart.
+TEST(ProfileClassifier, ClassifyProfile_QuoteDensity_IsPerExpiry) {
+  ClassifierInputs dense{};
+  dense.n_live_quotes = 1200u;
+  dense.n_live_expiries = 4u;
+  dense.n_quoted_expiries = 4u; // 300 legs/expiry
+  dense.median_spread_pct = 0.10;
+
+  ClassifierInputs spread_thin = dense;
+  spread_thin.n_live_expiries = 60u;
+  spread_thin.n_quoted_expiries = 60u; // 20 legs/expiry
+
+  EXPECT_EQ(classify_profile(dense).kind, ProfileKind::IndexEtfUltraLiquid);
+  EXPECT_EQ(classify_profile(spread_thin).kind, ProfileKind::OrdinarySingleName);
+}
+
+// A 40%-wide book cannot be served by a profile whose quote filter assumes a
+// penny market, however dense it is and however tight its listing cadence looks.
+// The spread axis's illiquid vote is counted last with a strict `>`, so without
+// an explicit veto it loses every tie to a more liquid bucket.
+TEST(ProfileClassifier, ClassifyProfile_WideBook_VetoesTheLiquidBuckets) {
+  ClassifierInputs in{};
+  in.n_live_quotes = 1020u;
+  in.n_live_expiries = 12u;
+  in.n_quoted_expiries = 12u; // 85 legs/expiry -> the `liquid` density tier
+  in.median_spread_pct = 0.41;
+  in.n_front_expiries = 8u; // and the cadence axis votes index ETF
+  EXPECT_EQ(classify_profile(in).kind, ProfileKind::OrdinarySingleName);
+
+  // The same board quoted tight keeps a liquid verdict -- the veto is the
+  // spread's doing, not the density's.
+  in.median_spread_pct = 0.10;
+  EXPECT_EQ(classify_profile(in).kind, ProfileKind::LiquidSingleName);
 }
 
 // ── classify_underlier (chain-state aggregation) ──────────────────────────
@@ -182,6 +221,67 @@ TEST(ProfileClassifier, ClassifyUnderlierWithTicker_Miss_FallsBackToChainStats) 
       classify_underlier_with_ticker(make_sparse_underlier(), "ZZZZ");
   EXPECT_EQ(static_cast<int>(v.kind),
             static_cast<int>(ProfileKind::IlliquidSmallCap));
+}
+
+// ── Near-money structure (the identifiability features) ───────────────────
+
+// The band the near-money count used to be taken over was 0.5*S < K < 1.5*S,
+// which in log-moneyness reaches -0.69 down but only +0.41 up. It is symmetric
+// now, and narrow enough that "near the money" means it.
+TEST(ProfileClassifier, ClassifierInputs_NearMoneyBand_IsSymmetricInLogMoneyness) {
+  Underlying u;
+  u.uid = 1u;
+  u.ticker = "ZZZZ";
+  u.spot = 100.0;
+  // |ln(0.55)| = 0.598 and |ln(1.80)| = 0.588 -- both outside the band, but the
+  // old price band admitted the 55 strike and rejected the 180 one.
+  u.chains.push_back(make_flat_chain(0.05, {55.0, 180.0}, 1.0, 1.2));
+
+  const auto in = atx::vol::classifier_inputs_from_underlier(u);
+  EXPECT_EQ(in.n_live_quotes, 4u);
+  EXPECT_EQ(in.n_atm_quotes, 0u);
+  EXPECT_EQ(in.n_identifiable_expiries, 0u);
+}
+
+TEST(ProfileClassifier, ClassifierInputs_IdentifiableExpiries_NeedNearMoneyStrikeDepth) {
+  Underlying u;
+  u.uid = 1u;
+  u.ticker = "ZZZZ";
+  u.spot = 100.0;
+  u.chains.push_back(make_flat_chain(0.05, {95.0, 98.0, 102.0, 105.0}, 1.0, 1.2));
+  u.chains.push_back(make_flat_chain(0.30, {97.0, 100.0, 103.0}, 1.0, 1.2));
+  u.chains.push_back(make_flat_chain(0.60, {30.0, 40.0, 300.0, 400.0}, 1.0, 1.2));
+
+  const auto in = atx::vol::classifier_inputs_from_underlier(u);
+  EXPECT_EQ(in.n_quoted_expiries, 3u);
+  EXPECT_EQ(in.max_near_money_strikes, 4u);
+  EXPECT_EQ(in.n_identifiable_expiries, 1u) << "only the four-strike expiry qualifies";
+  EXPECT_EQ(in.n_atm_quotes, 14u) << "(4 + 3) near-money strikes, both sides";
+}
+
+// The median spread used to be taken over the first 256 two-sided legs in chain
+// order, and chains are sorted ascending in T -- so on any board with more than
+// 256 legs in its front expiries it measured the front, not the board.
+TEST(ProfileClassifier, ClassifierInputs_SpreadMedian_SpansEveryExpiry) {
+  Underlying u;
+  u.uid = 1u;
+  u.ticker = "ZZZZ";
+  u.spot = 100.0;
+  std::vector<double> tight_strikes;
+  for (int i = 0; i < 100; ++i) {
+    tight_strikes.push_back(90.0 + 0.2 * static_cast<double>(i));
+  }
+  std::vector<double> wide_strikes;
+  for (int i = 0; i < 200; ++i) {
+    wide_strikes.push_back(90.0 + 0.1 * static_cast<double>(i));
+  }
+  // 200 legs at a 1% spread in front, 400 legs at 67% behind it.
+  u.chains.push_back(make_flat_chain(0.05, tight_strikes, 1.00, 1.01));
+  u.chains.push_back(make_flat_chain(0.50, wide_strikes, 1.00, 2.00));
+
+  const auto in = atx::vol::classifier_inputs_from_underlier(u);
+  EXPECT_EQ(in.n_live_quotes, 600u);
+  EXPECT_GT(in.median_spread_pct, 0.5) << "the board median is wide; only the front is tight";
 }
 
 // ── Registry (ports the default-profile cases) ────────────────────────────
@@ -384,4 +484,99 @@ TEST(TickerSeedProfile, AgreesWithTheTickerAwareClassifier) {
   }
 }
 
-}  // namespace
+// ── Reproducibility of the routing decision (sprint W4) ──────────────────
+//
+// The classifier is the library's answer to "resolve a configuration when the
+// caller supplied none". An answer that changes between two adjacent trading
+// days on the same underlier has resolved nothing, so these cases pin the two
+// properties that make the verdict a function of the BOARD rather than of the
+// calendar or of one vote.
+
+// A listing viewed from two different weekdays is the SAME listing. The cadence
+// axis used to ask how far away the front expiry was (`T < 0.01` years, i.e.
+// 3.65 days), which on a Monday is false for a Friday-only name and on a
+// Wednesday is true -- and it votes for the most liquid bucket, so two thirds of
+// the universe was reclassified by the day of the week.
+TEST(ProfileClassifier, ClassifyUnderlier_WeeklyListing_IsWeekdayInvariant) {
+  const std::vector<double> strikes{40.0, 45.0, 50.0, 55.0, 60.0};
+  const auto weekly_from = [&strikes](double first_friday_days) {
+    Underlying u;
+    u.uid = 1u;
+    u.ticker = "ZZZZ";
+    u.spot = 50.0;
+    for (int week = 0; week < 6; ++week) {
+      const double days = first_friday_days + 7.0 * static_cast<double>(week);
+      u.chains.push_back(make_flat_chain(days / 365.0, strikes, 1.00, 1.05));
+    }
+    return u;
+  };
+  // Same Friday-only ladder, seen on a Monday (front expiry 4 days out) and on
+  // a Wednesday (2 days out).
+  const ProfileVerdict monday = classify_underlier(weekly_from(4.0));
+  const ProfileVerdict wednesday = classify_underlier(weekly_from(2.0));
+  EXPECT_EQ(monday.kind, wednesday.kind);
+  EXPECT_DOUBLE_EQ(monday.confidence, wednesday.confidence);
+  EXPECT_NE(monday.kind, ProfileKind::IndexEtfUltraLiquid)
+      << "a Friday-only ladder is not an index ETF on any weekday";
+}
+
+// The cadence axis still fires for what it was meant to catch: a product that
+// lists an expiry every trading day.
+TEST(ProfileClassifier, ClassifyProfile_DailyExpiryCycle_VotesIndexEtf) {
+  ClassifierInputs weekly{};
+  weekly.n_live_quotes = 900u;
+  weekly.n_live_expiries = 12u;
+  weekly.n_quoted_expiries = 12u;  // 75 legs/expiry -> the `liquid` tier
+  weekly.median_spread_pct = 0.10; // -> the `liquid` tier
+  weekly.n_front_expiries = 1u;
+  ClassifierInputs daily = weekly;
+  daily.n_front_expiries = atx::vol::kMinDailyCycleExpiries;
+
+  EXPECT_EQ(classify_profile(weekly).kind, ProfileKind::LiquidSingleName);
+  // Two axes say `liquid`, the cadence axis says index ETF: the plurality still
+  // holds, but the board is no longer unanimous.
+  const ProfileVerdict v = classify_profile(daily);
+  EXPECT_EQ(v.kind, ProfileKind::LiquidSingleName);
+  EXPECT_LT(v.confidence, classify_profile(weekly).confidence);
+}
+
+// Confidence is ORDINAL: it reports how far apart the axes are on the liquidity
+// ladder. A vote share cannot express this -- both boards below have exactly one
+// axis dissenting from a two-axis majority, so both scored 2/3 before.
+TEST(ProfileClassifier, ClassifyProfile_Confidence_MeasuresLadderSpread) {
+  ClassifierInputs near_miss{};
+  near_miss.n_live_quotes = 900u;
+  near_miss.n_live_expiries = 12u;
+  near_miss.n_quoted_expiries = 12u;  // 75 legs/expiry -> `liquid`
+  near_miss.median_spread_pct = 0.20; // -> `ordinary`, one rung away
+  near_miss.n_front_expiries = 1u;
+
+  ClassifierInputs contradiction = near_miss;
+  contradiction.median_spread_pct = 0.60; // -> `illiquid`, two rungs away
+
+  EXPECT_DOUBLE_EQ(classify_profile(near_miss).confidence, 0.75);
+  EXPECT_DOUBLE_EQ(classify_profile(contradiction).confidence, 0.50);
+  // Unanimity is the only way to score 1.0.
+  ClassifierInputs unanimous = near_miss;
+  unanimous.median_spread_pct = 0.10;
+  EXPECT_DOUBLE_EQ(classify_profile(unanimous).confidence, 1.0);
+}
+
+// The default routing gate must not sit where the confidence has mass. Adjacent
+// rungs are the ordinary condition of a mid-liquidity board and must route
+// directly; only a genuine contradiction is worth the held-out selector.
+TEST(ProfileClassifier, ClassifyProfile_Confidence_StraddlesTheDefaultGate) {
+  const FitPolicyConfig defaults{};
+  ClassifierInputs in{};
+  in.n_live_quotes = 900u;
+  in.n_live_expiries = 12u;
+  in.n_quoted_expiries = 12u;
+  in.n_front_expiries = 1u;
+
+  in.median_spread_pct = 0.20; // one rung from the density axis
+  EXPECT_GE(classify_profile(in).confidence, defaults.min_direct_confidence);
+  in.median_spread_pct = 0.60; // two rungs
+  EXPECT_LT(classify_profile(in).confidence, defaults.min_direct_confidence);
+}
+
+} // namespace

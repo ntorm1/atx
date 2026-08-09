@@ -10,6 +10,7 @@
 #include <limits>
 #include <optional> // std::nullopt (cold accurate re-inversion on audit failure)
 #include <span>     // prepared.fit_observations() view (C1 input certification)
+#include <string>   // typed board-refusal message (W2-B)
 #include <utility>
 #include <vector>
 
@@ -475,7 +476,45 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
   }
 
   if (idx == 0) {
-    return Err(ErrorCode::NotFound, "run_surface_parity: no expiry produced a usable eSSVI slice");
+    // W2-B: name the board condition. This driver already built a truthful
+    // per-expiry census; discarding it at the boundary is what made a thin board
+    // and a de-Americanization-refused board look identical to an operator.
+    // (It can only emit Skipped / CarryFailed / PrepStarved / PrepFailed /
+    // FitFailed / Fitted — it implements no per-slice rescue, so the four
+    // rescue/coverage outcomes are structurally absent here, not merely zero.)
+    std::size_t n_starved = 0, n_prep_failed = 0, n_fit_failed = 0, n_skipped = 0;
+    for (const ExpiryFitReport &rep : expiry_reports) {
+      switch (rep.outcome) {
+      case ExpiryFitOutcome::PrepStarved:
+        ++n_starved;
+        break;
+      case ExpiryFitOutcome::PrepFailed:
+        ++n_prep_failed;
+        break;
+      case ExpiryFitOutcome::FitFailed:
+        ++n_fit_failed;
+        break;
+      case ExpiryFitOutcome::Skipped:
+        ++n_skipped;
+        break;
+      case ExpiryFitOutcome::CarryFailed:
+      case ExpiryFitOutcome::Fitted:
+      case ExpiryFitOutcome::FittedFallbackCurve:
+      case ExpiryFitOutcome::FittedLegacyPrep:
+      case ExpiryFitOutcome::PrepUncovered:
+      case ExpiryFitOutcome::FitRefusedCalendar:
+        break; // carry skips are tallied by n_carry_skipped; the rest cannot occur
+      }
+    }
+    return Err(ErrorCode::NotFound,
+               "run_surface_parity: no expiry produced a usable eSSVI slice; chains=" +
+                   std::to_string(expiry_reports.size()) + " starved=" + std::to_string(n_starved) +
+                   " carry_failed=" + std::to_string(n_carry_skipped) + " prep_failed=" +
+                   std::to_string(n_prep_failed) + " fit_failed=" + std::to_string(n_fit_failed) +
+                   " skipped=" + std::to_string(n_skipped) + "; prep=" +
+                   ((prep_policy == PreparedObservationPolicy::LegacyEssviCompatibility)
+                        ? "permissive"
+                        : "configured"));
   }
 
   // 6. Calendar no-arbitrage on the assembled surface. Count the raw crossings

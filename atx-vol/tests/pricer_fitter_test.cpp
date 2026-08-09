@@ -283,10 +283,19 @@ protected:
   double spot_{0.0};
 };
 
+// W1-A / F03: the eSSVI-only production default survives, but it is now a
+// MEASURED choice rather than an unexamined one, and the multi-family ladder it
+// declines is reachable and tested -- `bounded_selector_candidates()`; see
+// CurveSelector.ProductionDefaultStaysSingleCandidateAndDeadlineFree for the
+// lqbench numbers behind the decision. A PricerConfig must also never carry a
+// wall-clock selector deadline by default: that would make the chosen family
+// depend on host load.
 TEST(PricerFitterPolicy, ProductionSelectorDefaultsToBroadCoverageEssviOnly) {
   const PricerConfig config;
   ASSERT_EQ(config.selector.candidates.size(), 1u);
   EXPECT_EQ(config.selector.candidates.front().kind, atx::vol::VolCurveKind::Essvi);
+  EXPECT_DOUBLE_EQ(config.selector.time_budget_ms, 0.0);
+  EXPECT_EQ(atx::vol::bounded_selector_candidates().size(), 3u);
 }
 
 TEST_F(PricerFitterTest, ChainEnumerateDecodeAndSnapshot) {
@@ -1554,6 +1563,56 @@ TEST(PricerFitterPolicy, RiskAutoFitFallsBackWhenPrimaryFailsIndependentOracle) 
   EXPECT_TRUE(fitter.published_report()->attempts.back().admission.admitted);
 }
 
+// ── W1-A / F04: cross-validation is advisory, never a veto ─────────────────
+// The legacy mark path used to `return Err` the moment `select_curve` refused,
+// while the v2/risk path already fell back to the profile's own family. The
+// asymmetry killed perfectly fittable OPRA boards (CIFR, VKTX, NEE) whose
+// selector-side preparation starved even though the served eSSVI route fits
+// them. Both paths must now serve the profile's curve and REPORT the
+// substitution.
+//
+// The refusal is forced through config alone (a SplineVol candidate whose
+// `min_obs` no slice can reach => no candidate meets admission), so the test
+// does not depend on a pathological board.
+TEST(PricerFitterPolicy, SelectorRefusalServesTheProfileCurveAndRecordsTheFallback) {
+  SynthPanelSpec spec = make_spy_synthetic_spec();
+  auto panel = make_synthetic_american_panel(spec);
+  ASSERT_TRUE(panel.has_value()) << panel.error().message();
+  auto chain = OptionChain::from_frame(panel->frame, spec.r, spec.spot);
+  ASSERT_TRUE(chain.has_value()) << chain.error().message();
+
+  atx::vol::CurveConfig impossible;
+  impossible.kind = atx::vol::VolCurveKind::SplineVol;
+  impossible.spline.min_obs = 1000u;
+
+  PricerConfig config;
+  config.policy.mode = atx::vol::FitSelectionMode::CrossValidated;
+  config.selector.candidates = {impossible};
+  PricerFitter fitter{config};
+
+  const atx::core::Status fitted = fitter.fit(*chain);
+  ASSERT_TRUE(fitted.has_value()) << fitted.error().to_string();
+
+  ASSERT_TRUE(fitter.decision().has_value());
+  const atx::vol::FitDecision &decision = *fitter.decision();
+  EXPECT_TRUE(decision.selector_fallback) << "a silent substitution is the defect, not the fix";
+  EXPECT_NE(decision.curve.kind, atx::vol::VolCurveKind::SplineVol);
+  EXPECT_FALSE(fitter.selection().has_value())
+      << "no family was cross-validated, so no selection may be published";
+
+  // The selector's own error survives as a Selection-stage attempt: the reason
+  // the board fell back is recoverable, not thrown away.
+  ASSERT_TRUE(fitter.published_report().has_value());
+  const auto &attempts = fitter.published_report()->attempts;
+  ASSERT_GE(attempts.size(), 2u);
+  EXPECT_EQ(attempts.front().stage, atx::vol::SurfaceBuildStage::Selection);
+  ASSERT_TRUE(attempts.front().failure.has_value());
+  EXPECT_EQ(attempts.front().failure->code(), atx::core::ErrorCode::NotFound);
+  EXPECT_FALSE(attempts.front().failure->message().empty());
+  EXPECT_FALSE(attempts.front().build_succeeded);
+  EXPECT_TRUE(attempts.back().admission.admitted);
+}
+
 TEST(PricerFitterPolicy, AdmissionFailureRetainsPublishedSurfaceAndDecisionTransactionally) {
   SynthPanelSpec good_spec = make_spy_synthetic_spec();
   auto good_panel = make_synthetic_american_panel(good_spec);
@@ -1635,7 +1694,13 @@ TEST(PricerFitterPolicy, DuplicateMaturityIsRejectedAndReportedWithoutDoubleCoun
   EXPECT_LE(attempt.evidence.fitted_expiries, attempt.evidence.attempted_expiries);
 }
 
-TEST(PricerFitterPolicy, SelectorFailureUpdatesAttemptOnlyAndPreservesPublishedState) {
+// W1-A / F04: this test used to PIN the defect -- a board whose every expiry
+// sits inside the selector's short-dated cut produced `select_curve: no common
+// prepared holdout keys` and the legacy path dropped the underlier. That is the
+// exact condition measured on CIFR/VKTX (`sampled=8 prepared=0`), and the
+// v2/risk path has always survived it. The board must now publish through the
+// profile's own family, with the refusal preserved as a Selection attempt.
+TEST(PricerFitterPolicy, ThinBoardSelectorRefusalPublishesTheProfileCurve) {
   SynthPanelSpec good_spec = make_spy_synthetic_spec();
   auto good_panel = make_synthetic_american_panel(good_spec);
   ASSERT_TRUE(good_panel.has_value()) << good_panel.error().message();
@@ -1650,8 +1715,10 @@ TEST(PricerFitterPolicy, SelectorFailureUpdatesAttemptOnlyAndPreservesPublishedS
   config.admission.require_calendar_arb_free = false;
   PricerFitter fitter{config};
   ASSERT_TRUE(fitter.fit(*good_chain).has_value());
+  ASSERT_TRUE(fitter.decision().has_value());
+  EXPECT_FALSE(fitter.decision()->selector_fallback) << "the healthy board cross-validated";
   const auto *const published = fitter.surface();
-  const auto published_kind = fitter.decision()->curve.kind;
+  ASSERT_NE(published, nullptr);
 
   SynthPanelSpec too_short = good_spec;
   too_short.expiries.resize(1u);
@@ -1661,17 +1728,22 @@ TEST(PricerFitterPolicy, SelectorFailureUpdatesAttemptOnlyAndPreservesPublishedS
   ASSERT_TRUE(short_chain.has_value()) << short_chain.error().message();
   auto &short_under = const_cast<atx::vol::Underlying &>(short_chain->underlying());
   ASSERT_EQ(short_under.chains.size(), 1u);
-  short_under.chains.front().T = 0.01;
-  ASSERT_FALSE(fitter.fit(*short_chain).has_value());
+  short_under.chains.front().T = 0.01; // inside the selector's T > 0.019 cut
+  const atx::core::Status refit = fitter.fit(*short_chain);
+  ASSERT_TRUE(refit.has_value()) << refit.error().to_string();
 
-  EXPECT_EQ(fitter.surface(), published);
-  EXPECT_EQ(fitter.decision()->curve.kind, published_kind);
+  EXPECT_NE(fitter.surface(), published) << "the fallback fit must publish, not abstain";
+  ASSERT_TRUE(fitter.decision().has_value());
+  EXPECT_TRUE(fitter.decision()->selector_fallback);
+  EXPECT_FALSE(fitter.selection().has_value());
+  ASSERT_TRUE(fitter.published_report().has_value());
   EXPECT_TRUE(fitter.published_report()->published);
-  ASSERT_TRUE(fitter.last_attempt_report().has_value());
-  EXPECT_FALSE(fitter.last_attempt_report()->published);
-  ASSERT_EQ(fitter.last_attempt_report()->attempts.size(), 1u);
-  EXPECT_EQ(fitter.last_attempt_report()->attempts.front().stage,
-            atx::vol::SurfaceBuildStage::Selection);
+  const auto &attempts = fitter.published_report()->attempts;
+  ASSERT_GE(attempts.size(), 2u);
+  EXPECT_EQ(attempts.front().stage, atx::vol::SurfaceBuildStage::Selection);
+  ASSERT_TRUE(attempts.front().failure.has_value());
+  EXPECT_NE(attempts.front().failure->message().find("prepared=0"), std::string::npos)
+      << attempts.front().failure->to_string();
 }
 
 TEST(PricerFitterPolicy, SessionOverlayCurveIsThePublishedDecisionAndReportCurve) {
@@ -2335,6 +2407,234 @@ TEST(RiskSurfaceAdmission, PriceBoundClampCountRejectsCandidateWithPriceBounds) 
   merge_session_failure_context(clean, untouched);
   EXPECT_TRUE(untouched.admitted());
   EXPECT_EQ(untouched.n_price_bound_violations, 0u);
+}
+
+// ── W3-A: the diagnostics blackout (F11/F12) ────────────────────────────────
+//
+// A published surface must always carry evidence of how well it fits. The
+// blackout was never a family limitation -- `fit_curve_surface` scores parity
+// for every family -- it was `score_parity` resolving to FALSE for the default
+// floor-free Mark admission, which only the legacy eSSVI driver (which scores
+// unconditionally) survived. The boards that reported nothing were therefore
+// exactly the non-eSSVI routes, and on none of them had the caller asked for
+// that family: the LIBRARY chose it. The fixture board is SPY, whose ticker
+// prior routes it to the Hft LinearVariance path -- the headline all-zero case.
+TEST_F(PricerFitterTest, AutoRoutedLinearVarianceMarkAlwaysScoresParity) {
+  const PricerConfig config; // no pinned curve, default (floor-free) Mark admission
+  ASSERT_FALSE(config.curve.has_value());
+  ASSERT_FALSE(atx::vol::fit_admission_consumes_parity(config.admission));
+
+  PricerFitter fitter{config};
+  ASSERT_TRUE(fitter.fit(*chain_).has_value());
+  ASSERT_NE(fitter.surface(), nullptr);
+  const VolaSession &session = fitter.surface()->session();
+  ASSERT_TRUE(fitter.decision().has_value());
+  EXPECT_EQ(fitter.decision()->curve.kind, atx::vol::VolCurveKind::LinearVariance);
+
+  EXPECT_TRUE(session.inputs().score_parity);
+  const atx::vol::SessionDiagnostics &diagnostics = session.diagnostics();
+  EXPECT_EQ(diagnostics.parity_state, atx::vol::ParityDiagnosticState::Valid);
+  EXPECT_GT(diagnostics.mean_rmse_vol, 0.0);
+  EXPECT_GT(diagnostics.mean_frac_within_bidask, 0.0);
+  EXPECT_GT(diagnostics.mean_chi2_reduced, 0.0);
+}
+
+// The same contract on the OTHER unmeasured route: the thin-board SVI family a
+// profile demotion picks. Reached by naming the profile rather than reshaping
+// the board, so the assertion is about routing, not about board geometry.
+TEST_F(PricerFitterTest, AutoRoutedSviMarkAlwaysScoresParity) {
+  PricerConfig config;
+  config.context.profile_override = atx::vol::ProfileKind::IlliquidSmallCap;
+  PricerFitter fitter{config};
+  ASSERT_TRUE(fitter.fit(*chain_).has_value());
+  ASSERT_NE(fitter.surface(), nullptr);
+  ASSERT_TRUE(fitter.decision().has_value());
+  EXPECT_EQ(fitter.decision()->curve.kind, atx::vol::VolCurveKind::Svi);
+
+  const VolaSession &session = fitter.surface()->session();
+  EXPECT_TRUE(session.inputs().score_parity);
+  EXPECT_EQ(session.diagnostics().parity_state, atx::vol::ParityDiagnosticState::Valid);
+  EXPECT_GT(session.diagnostics().mean_rmse_vol, 0.0);
+}
+
+// A CALLER-pinned curve is an explicit instruction, and the parity opt-out it
+// implies stays honoured -- "always measure" is the contract for boards the
+// LIBRARY routed, not a global override of the caller's latency budget. This is
+// the control that keeps the forcing rule from becoming "always, everywhere".
+TEST_F(PricerFitterTest, PinnedCurveKeepsTheFloorFreeMarkParityOptOut) {
+  PricerConfig config;
+  config.preset = FitPreset::Fast;
+  config.curve = atx::vol::CurveConfig{atx::vol::VolCurveKind::Svi};
+  PricerFitter fitter{config};
+  ASSERT_TRUE(fitter.fit(*chain_).has_value());
+  ASSERT_NE(fitter.surface(), nullptr);
+  EXPECT_FALSE(fitter.surface()->session().inputs().score_parity);
+  EXPECT_EQ(fitter.surface()->session().diagnostics().parity_state,
+            atx::vol::ParityDiagnosticState::Disabled);
+
+  // Same for the preset-pinned Hft dense route (no curve, but not auto-routed).
+  PricerConfig hft;
+  hft.preset = FitPreset::Hft;
+  PricerFitter hft_fitter{hft};
+  ASSERT_TRUE(hft_fitter.fit(*chain_).has_value());
+  ASSERT_NE(hft_fitter.surface(), nullptr);
+  EXPECT_FALSE(hft_fitter.surface()->session().inputs().score_parity);
+}
+
+// W3-A (F11, second order). With parity unscored, `completed_attempt_report`
+// fell back to attempted == fitted == the fit-observation count, so
+// quote_coverage was IDENTICALLY 1.0 on every unscored route and no floor in
+// [0, 1] could ever bind. Prove both halves: the measured coverage is a real
+// number below 1.0, and a floor set above it actually refuses the board.
+TEST_F(PricerFitterTest, AutoRoutedQuoteCoverageIsMeasuredNotAssumed) {
+  // Squeeze every band symmetrically around its UNCHANGED mid: the board (and
+  // therefore the fit) is untouched, but the parsimonious fit's smoothing
+  // residual now falls outside the narrowed band on some strikes, so the served
+  // fraction is genuinely below 1.0.
+  std::vector<OptionId> ids;
+  std::vector<double> bids;
+  std::vector<double> asks;
+  for (const OptionId id : chain_->ids()) {
+    const auto option = chain_->at(id);
+    ASSERT_TRUE(option.has_value());
+    const double half = 0.10 * (option->ask - option->bid);
+    ids.push_back(id);
+    bids.push_back(option->mid - half);
+    asks.push_back(option->mid + half);
+  }
+  ASSERT_FALSE(ids.empty());
+  ASSERT_TRUE(chain_->update_quotes(ids, bids, asks).has_value());
+
+  PricerConfig config;
+  config.context.profile_override = atx::vol::ProfileKind::IlliquidSmallCap;
+  PricerFitter fitter{config};
+  ASSERT_TRUE(fitter.fit(*chain_).has_value());
+  ASSERT_TRUE(fitter.published_report().has_value());
+  const atx::vol::SurfaceAdmissionEvidence &evidence =
+      fitter.published_report()->attempts.back().evidence;
+  ASSERT_GT(evidence.attempted_quotes, 0u);
+  const double coverage =
+      static_cast<double>(evidence.fitted_quotes) / static_cast<double>(evidence.attempted_quotes);
+  ASSERT_LT(coverage, 1.0) << "an unscored route reported a fabricated coverage of 1.0";
+  ASSERT_GT(coverage, 0.0);
+
+  PricerConfig floored = config;
+  floored.admission.min_quote_coverage = 0.5 * (coverage + 1.0);
+  PricerFitter floored_fitter{floored};
+  EXPECT_FALSE(floored_fitter.fit(*chain_).has_value());
+  ASSERT_TRUE(floored_fitter.last_attempt_report().has_value());
+  bool refused_on_coverage = false;
+  for (const atx::vol::SurfaceBuildAttemptReport &attempt :
+       floored_fitter.last_attempt_report()->attempts) {
+    refused_on_coverage =
+        refused_on_coverage ||
+        atx::vol::has_admission_failure(
+            attempt.admission, atx::vol::SurfaceAdmissionReason::InsufficientQuoteCoverage);
+  }
+  EXPECT_TRUE(refused_on_coverage) << "the served-coverage floor must be able to bind";
+}
+
+// `SelectorConfig::min_served_quote_coverage` is the mark path's selector-only
+// served-breadth floor (`selector_served_admission_policy`). It could never bind
+// on a family the selector served WITHOUT parity scoring, because coverage was
+// pinned at 1.0. Serve SVI through the selector and show the floor firing.
+TEST_F(PricerFitterTest, SelectorServedBreadthFloorBindsOnANonEssviFamily) {
+  std::vector<OptionId> ids;
+  std::vector<double> bids;
+  std::vector<double> asks;
+  for (const OptionId id : chain_->ids()) {
+    const auto option = chain_->at(id);
+    ASSERT_TRUE(option.has_value());
+    const double half = 0.10 * (option->ask - option->bid);
+    ids.push_back(id);
+    bids.push_back(option->mid - half);
+    asks.push_back(option->mid + half);
+  }
+  ASSERT_FALSE(ids.empty());
+  ASSERT_TRUE(chain_->update_quotes(ids, bids, asks).has_value());
+
+  PricerConfig config;
+  config.policy.mode = atx::vol::FitSelectionMode::CrossValidated;
+  config.selector.candidates.clear();
+  config.selector.candidates.push_back(atx::vol::CurveConfig{atx::vol::VolCurveKind::Svi});
+
+  PricerFitter served{config};
+  ASSERT_TRUE(served.fit(*chain_).has_value());
+  ASSERT_TRUE(served.selection().has_value()) << "the selector must have chosen the family";
+  ASSERT_TRUE(served.published_report().has_value());
+  const atx::vol::SurfaceAdmissionEvidence &evidence =
+      served.published_report()->attempts.back().evidence;
+  ASSERT_GT(evidence.attempted_quotes, 0u);
+  const double coverage =
+      static_cast<double>(evidence.fitted_quotes) / static_cast<double>(evidence.attempted_quotes);
+  ASSERT_LT(coverage, 1.0);
+  ASSERT_GT(coverage, config.selector.min_served_quote_coverage)
+      << "the production floor must still admit this board";
+
+  PricerConfig floored = config;
+  floored.selector.min_served_quote_coverage = 0.5 * (coverage + 1.0);
+  PricerFitter refused{floored};
+  EXPECT_FALSE(refused.fit(*chain_).has_value());
+}
+
+// W3-A (F12). A board that fits one of six expiries is legitimate Mark output --
+// serving the slices that fit beats serving nothing -- but it is not WHOLE, and
+// `Healthy` with `reasons = None` claims that it is. The caller previously had
+// to walk `published_report()` to tell a 1-of-6 surface from a 6-of-6 one.
+TEST_F(PricerFitterTest, PartiallyFittedMarkPublishesDegradedNotHealthy) {
+  const PricerConfig config = essvi_config();
+
+  // Control: the intact board publishes a WHOLE surface and stays Healthy.
+  PricerFitter whole{config};
+  ASSERT_TRUE(whole.fit(*chain_).has_value());
+  ASSERT_TRUE(whole.published_report().has_value());
+  const atx::vol::SurfaceAdmissionEvidence &whole_evidence =
+      whole.published_report()->attempts.back().evidence;
+  ASSERT_EQ(whole_evidence.fitted_expiries, whole_evidence.attempted_expiries);
+  EXPECT_EQ(whole.bundle().market_mark_health.state, atx::vol::SurfaceState::Healthy);
+  EXPECT_EQ(whole.bundle().market_mark_health.reasons, atx::vol::ValidationFailure::None);
+
+  // Cross every quote of one expiry (bid > ask): that expiry drops out of the
+  // fitted surface and the remaining five publish.
+  const double bad_T = chain_->underlying().chains[1].T;
+  std::vector<OptionId> ids;
+  std::vector<double> bids;
+  std::vector<double> asks;
+  for (const OptionId id : chain_->ids()) {
+    const auto option = chain_->at(id);
+    ASSERT_TRUE(option.has_value());
+    if (std::fabs(option->T - bad_T) > 1.0e-12) {
+      continue;
+    }
+    ids.push_back(id);
+    bids.push_back(2.0);
+    asks.push_back(1.0);
+  }
+  ASSERT_FALSE(ids.empty());
+  ASSERT_TRUE(chain_->update_quotes(ids, bids, asks).has_value());
+
+  PricerFitter partial{config};
+  ASSERT_TRUE(partial.fit(*chain_).has_value()) << "a partial mark surface is still served";
+  ASSERT_NE(partial.surface(), nullptr);
+  ASSERT_TRUE(partial.published_report().has_value());
+  const atx::vol::SurfaceAdmissionEvidence &partial_evidence =
+      partial.published_report()->attempts.back().evidence;
+  ASSERT_LT(partial_evidence.fitted_expiries, partial_evidence.attempted_expiries);
+
+  const atx::vol::SurfaceHealth health = partial.bundle().market_mark_health;
+  EXPECT_EQ(health.state, atx::vol::SurfaceState::Degraded);
+  EXPECT_TRUE(
+      atx::vol::has_validation_failure(health.reasons, atx::vol::ValidationFailure::CarryGap));
+  EXPECT_TRUE(health.serving_candidate());
+
+  // A local refit of a surviving expiry must not launder the gap away: the
+  // missing expiry is a property of the SERVED surface, not of the slice refit.
+  if (partial.refit_expiry(*chain_, 0u).has_value()) {
+    const atx::vol::SurfaceHealth after = partial.bundle().market_mark_health;
+    EXPECT_EQ(after.state, atx::vol::SurfaceState::Degraded);
+    EXPECT_TRUE(
+        atx::vol::has_validation_failure(after.reasons, atx::vol::ValidationFailure::CarryGap));
+  }
 }
 
 TEST(LinearVarianceCurve, InterpolatesTotalVarianceAndClampsWings) {

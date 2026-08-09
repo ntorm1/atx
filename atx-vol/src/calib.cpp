@@ -8,6 +8,7 @@
 #include <limits>
 #include <optional>
 #include <span>
+#include <string>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -52,6 +53,86 @@ inline constexpr double kWeightEps = 1.0e-18;
 // The C returns ERR_NO_DATA (→ NotFound) unless at least this many rows survive.
 inline constexpr std::size_t kMinObs = 5;
 
+// ── Starvation diagnostics (W2-B) ───────────────────────────────────────────
+// `ObsSet::provenance` records WHY each preferred leg was dropped, but the
+// builder discards the whole set when too few rows survive — losing the
+// evidence exactly when a caller needs it, which is how a filter-starved board
+// reached the operator as an anonymous "no expiry produced a usable slice".
+// These two helpers fold the provenance into the error string. Failure path
+// only: no cost on any accepted slice.
+
+[[nodiscard]] const char *obs_rejection_reason_name(ObsRejectionReason reason) noexcept {
+  switch (reason) {
+  case ObsRejectionReason::None:
+    return "None";
+  case ObsRejectionReason::InvalidStrike:
+    return "InvalidStrike";
+  case ObsRejectionReason::QuoteFlag:
+    return "QuoteFlag";
+  case ObsRejectionReason::InvalidBidAsk:
+    return "InvalidBidAsk";
+  case ObsRejectionReason::InvalidMid:
+    return "InvalidMid";
+  case ObsRejectionReason::SpreadToMid:
+    return "SpreadToMid";
+  case ObsRejectionReason::RawIvFailure:
+    return "RawIvFailure";
+  case ObsRejectionReason::RawIvOutOfBand:
+    return "RawIvOutOfBand";
+  case ObsRejectionReason::SpreadVol:
+    return "SpreadVol";
+  case ObsRejectionReason::LowVegaWeight:
+    return "LowVegaWeight";
+  case ObsRejectionReason::ObservationCap:
+    return "ObservationCap";
+  case ObsRejectionReason::Deamericanization:
+    return "Deamericanization";
+  case ObsRejectionReason::EuropeanPrice:
+    return "EuropeanPrice";
+  }
+  return "Unknown";
+}
+
+// "(kept=1 of 23; rejected SpreadToMid x14, Deamericanization x8)" — reasons
+// ordered by descending count so the dominant cause reads first. Ties keep
+// enumerator order, so the string is deterministic for a given provenance.
+[[nodiscard]] std::string describe_rejections(std::size_t n_kept,
+                                              std::span<const ObsProvenance> provenance) {
+  constexpr std::size_t kNReasons =
+      static_cast<std::size_t>(ObsRejectionReason::EuropeanPrice) + 1u;
+  std::array<std::size_t, kNReasons> tally{};
+  for (const ObsProvenance &row : provenance) {
+    const auto slot = static_cast<std::size_t>(row.rejection);
+    if (row.rejection != ObsRejectionReason::None && slot < kNReasons) {
+      ++tally[slot];
+    }
+  }
+  std::array<std::size_t, kNReasons> order{};
+  for (std::size_t i = 0; i < kNReasons; ++i) {
+    order[i] = i;
+  }
+  std::stable_sort(order.begin(), order.end(),
+                   [&tally](std::size_t a, std::size_t b) { return tally[a] > tally[b]; });
+
+  std::string out =
+      "(kept=" + std::to_string(n_kept) + " of " + std::to_string(provenance.size()) + "; rejected";
+  bool any = false;
+  for (const std::size_t slot : order) {
+    if (tally[slot] == 0u) {
+      break; // descending order: nothing after the first zero can be nonzero
+    }
+    out += any ? ", " : " ";
+    out += obs_rejection_reason_name(static_cast<ObsRejectionReason>(slot));
+    out += " x" + std::to_string(tally[slot]);
+    any = true;
+  }
+  if (!any) {
+    out += " none";
+  }
+  out += ")";
+  return out;
+}
+
 // Sentinel written into a fit row's independent score column when anchor-
 // independent scoring is requested but its raw-mid inversion failed or landed
 // out of band. It is deliberately non-finite so every score consumer (all guard
@@ -85,8 +166,15 @@ struct RowResult {
 // exactly one iteration of the C `ats_vol_svi_build_observations` inner loop
 // (tenor buckets omitted → scalar max_spread_vol / min_vega_weight). The caller
 // has already validated F/T/df and the chain SoA sizing.
+//
+// W1-B: `ignore_preference` disarms ONLY the prefer-OTM gate; every other
+// filter is untouched. It is set exclusively by the ITM-leg fallback pass,
+// which has already established that this strike's OTM leg carries no
+// two-sided quote — so the gate can no longer be choosing between two usable
+// legs, only discarding the one that is left.
 [[nodiscard]] RowResult evaluate_row(const Chain &chain, std::uint16_t strike_idx, Side side,
-                                     double F, double T, double df, const CalibOpts &opts) {
+                                     double F, double T, double df, const CalibOpts &opts,
+                                     bool ignore_preference = false) {
   RowResult r{};
   const double K = chain.strikes[strike_idx];
   if (!(K > 0.0)) {
@@ -117,7 +205,7 @@ struct RowResult {
   // gate deliberately sits AFTER the flag + bid/ask checks, matching the C, so
   // a flagged non-preferred leg still counts as a drop above).
   const bool prefer_call = (K >= F);
-  if (prefer_call != (side == Side::Call)) {
+  if (!ignore_preference && prefer_call != (side == Side::Call)) {
     r.outcome = RowOutcome::Skipped;
     r.rejection = ObsRejectionReason::None;
     return r;
@@ -1030,6 +1118,9 @@ Result<ObsSet> build_observations(const Chain &chain, double F, double T, double
     }
     const auto sidx = static_cast<std::uint16_t>(s);
     const Side preferred = (K >= F) ? Side::Call : Side::Put;
+    const Side other = (preferred == Side::Call) ? Side::Put : Side::Call;
+    ObsRejectionReason preferred_rejection = ObsRejectionReason::InvalidStrike;
+    RowOutcome other_outcome = RowOutcome::Rejected;
     for (int side_i = 0; side_i < 2; ++side_i) {
       const Side side = static_cast<Side>(static_cast<std::uint8_t>(side_i));
       const RowResult rr = evaluate_row(chain, sidx, side, F, T, df, opts);
@@ -1039,10 +1130,40 @@ Result<ObsSet> build_observations(const Chain &chain, double F, double T, double
         ++n_drop;
       }
       if (side == preferred) {
-        out.provenance.push_back(ObsProvenance{static_cast<std::uint32_t>(s), side, rr.rejection});
+        preferred_rejection = rr.rejection;
+      } else {
+        other_outcome = rr.outcome;
       }
       // Skipped: the non-preferred leg — not counted (C bare `continue`).
     }
+
+    // W1-B (F21): the OTM leg carries no two-sided quote, but the ITM leg does
+    // (it reached the preference gate, i.e. `Skipped`). Re-run that leg through
+    // the SAME cascade with only the preference gate disarmed, and take it in
+    // place of the strike's missing OTM evidence. Nothing else about the row is
+    // special-cased: an ITM leg that cannot be inverted, is too wide in vol
+    // units, or carries too little vega is rejected exactly as an OTM leg would
+    // be, and the strike stays dead.
+    Side used_side = preferred;
+    ObsRejectionReason used_rejection = preferred_rejection;
+    if (opts.itm_leg_fallback && preferred_rejection == ObsRejectionReason::InvalidBidAsk &&
+        other_outcome == RowOutcome::Skipped) {
+      const RowResult fb = evaluate_row(chain, sidx, other, F, T, df, opts,
+                                        /*ignore_preference=*/true);
+      used_side = other;
+      used_rejection = fb.rejection;
+      if (fb.outcome == RowOutcome::Accepted) {
+        out.obs.push_back(fb.obs);
+        ++out.n_itm_fallback;
+      } else {
+        // The strike is dead for a NEW reason — the ITM leg's own — which the
+        // first pass never evaluated. Count it, so `n_dropped` still equals the
+        // number of legs this builder judged and threw away.
+        ++n_drop;
+      }
+    }
+    out.provenance.push_back(
+        ObsProvenance{static_cast<std::uint32_t>(s), used_side, used_rejection});
   }
 
   out.n_dropped = n_drop;
@@ -1053,7 +1174,8 @@ Result<ObsSet> build_observations(const Chain &chain, double F, double T, double
     audit_direct_european_inversions(chain, F, T, df, opts, out);
   }
   if (out.obs.size() < kMinObs) {
-    return Err(ErrorCode::NotFound, "build_observations: fewer than 5 observations survived");
+    return Err(ErrorCode::NotFound, "build_observations: fewer than 5 observations survived " +
+                                        describe_rejections(out.obs.size(), out.provenance));
   }
   return Ok(std::move(out));
 }
@@ -1384,7 +1506,8 @@ Result<ObsSet> build_observations_european(const Chain &chain, double S, double 
   finalize_route_diag(out.deam_audit.accurate, std::move(audit_residuals[3]));
   if (out.obs.size() < kMinObs) {
     return Err(ErrorCode::NotFound,
-               "build_observations_european: fewer than 5 European obs survived");
+               "build_observations_european: fewer than 5 European obs survived " +
+                   describe_rejections(out.obs.size(), out.provenance));
   }
   return Ok(std::move(out));
 }

@@ -1893,12 +1893,19 @@ TEST(VolaSession, CarryFailedExpiryIsCountedInDiagnostics) {
 }
 
 // 2d follow-up (review I-2): under the risk policy's fit audit, an expiry
-// whose rows are all AUDIT-dropped (here: locked quotes — the audit cannot
-// evaluate a zero-spread budget, and the accurate fallback re-audit fails the
-// same way) falls below the usable-observation floor and is dropped from the
-// surface. That audit-created gap must be COUNTED, not silently absorbed —
-// the same §5.2 surfacing as a carry skip. Without the audit flag those rows
-// would have been fitted, so this gap is new-reachable and must not hide.
+// whose rows are all AUDIT-dropped falls below the usable-observation floor
+// and is dropped from the surface. That audit-created gap must be COUNTED, not
+// silently absorbed — the same §5.2 surfacing as a carry skip. Without the
+// audit flag those rows would have been fitted, so this gap is new-reachable
+// and must not hide.
+//
+// W1-B: the fixture used LOCKED quotes (bid == ask) to make the residual
+// budget zero. A locked market is no longer admitted anywhere — it is the
+// absence of a market, not a tight one — so those rows are now refused as
+// InvalidBidAsk before they can reach the audit, and this test would have
+// measured the wrong gate. The shape that still exercises the AUDIT is a
+// genuinely two-sided but sub-tick quote: the budget is ~1e-9 of a price, far
+// below any inversion residual, so every row is repriced and dropped.
 TEST(VolaSession, AuditStarvedExpiryIsCountedInDiagnostics) {
   const SynthPanelSpec spec = make_spec();
   Universe u;
@@ -1911,17 +1918,23 @@ TEST(VolaSession, AuditStarvedExpiryIsCountedInDiagnostics) {
   Underlying *under = *under_res;
   ASSERT_EQ(under->chains.size(), std::size_t{4});
 
-  // Lock every quote of the third expiry (bid == ask == mid, flags clear):
-  // the legs stay carry-valid (ask >= bid), so carry resolves — but every fit
-  // row fails the zero-spread audit and is dropped by the audit protocol.
-  atx::vol::Chain &locked = under->chains[2];
-  for (std::size_t i = 0; i < locked.mids.size(); ++i) {
-    locked.bids[i] = locked.mids[i];
-    locked.asks[i] = locked.mids[i];
+  // Collapse every quote of the third expiry to a sub-tick two-sided width
+  // (flags clear): the legs stay carry-valid AND quote-valid, so carry resolves
+  // and the rows reach the fit — but their audit budget is 1e-9 of a dollar
+  // against every other expiry's ~1e-2, five orders apart in each direction
+  // from the residual the reprice actually leaves. Every row of THIS expiry is
+  // therefore repriced against the cold reference and dropped, and no other
+  // expiry is touched.
+  constexpr double kSubTickHalfSpread = 1.0e-9;
+  atx::vol::Chain &narrow = under->chains[2];
+  for (std::size_t i = 0; i < narrow.mids.size(); ++i) {
+    narrow.bids[i] = narrow.mids[i] - kSubTickHalfSpread;
+    narrow.asks[i] = narrow.mids[i] + kSubTickHalfSpread;
   }
 
   SessionInputs in = make_inputs(spec);
   in.deam.audit_fit_inversions = true;
+  in.deam.max_iv_residual_half_spreads = 1.0e-7;
   const auto sess = VolaSession::build(*under, in);
   ASSERT_TRUE(sess.has_value()) << sess.error().to_string();
   EXPECT_EQ(sess->diagnostics().n_slices, std::size_t{3});
@@ -2142,4 +2155,80 @@ TEST(VolaSessionCacheBox, ShortTenorBelowTBox_FallsBackToColdWithRouteFlag) {
   EXPECT_NEAR(*fv, *cold, 1.0e-3)
       << "below-T-box fair_value must serve the cold AL price at the query tenor (fv=" << *fv
       << " cold=" << *cold << ")";
+}
+
+// ── W2-B: preparation strictness is chosen, not inherited from the family ───
+
+// The bug this closes: because the auto-router sends illiquid small caps to SVI
+// and only the eSSVI driver prepared permissively, the thinnest boards drew the
+// STRICTEST quote filter and starved. `SessionInputs::prep` now carries the
+// decision, and its `Auto` default turns the per-slice Legacy-prep rescue ON for
+// every non-eSSVI family — so a board the Configured funnel starves is recovered
+// with no caller opt-in, and says so in its per-expiry taxonomy.
+TEST(VolaSession, ThinPolymorphicBoardIsLegacyPrepRescuedByDefault) {
+  const SynthPanelSpec spec = make_spec();
+  Universe u;
+  const Underlying *under = install(spec, u);
+  ASSERT_NE(under, nullptr);
+
+  SessionInputs in = make_inputs(spec);
+  in.curve = atx::vol::CurveConfig{VolCurveKind::Svi};
+  in.curve_pinned = true;
+  // 0.1% cap against ~4% synthetic spreads: the Configured cascade drops every
+  // row on every slice, exactly the funnel that starved the OPRA thin cohort.
+  in.calib.max_spread_to_mid_pct = 0.001;
+
+  const auto sess = VolaSession::build(*under, in);
+  ASSERT_TRUE(sess.has_value()) << sess.error().to_string();
+  EXPECT_GT(sess->diagnostics().n_slices, std::size_t{0});
+  std::size_t n_rescued = 0;
+  for (const auto &rep : sess->expiry_fit_reports()) {
+    if (rep.outcome == atx::vol::ExpiryFitOutcome::FittedLegacyPrep) {
+      ++n_rescued;
+    }
+    EXPECT_NE(rep.outcome, atx::vol::ExpiryFitOutcome::Fitted)
+        << "a rescued slice must not report as an ordinary Fitted";
+  }
+  EXPECT_EQ(n_rescued, sess->diagnostics().n_slices);
+}
+
+// The same board with the rescue explicitly OFF reproduces the historical
+// drop-every-slice refusal — the decision is a real knob in both directions,
+// and the refusal now names the condition instead of an anonymous NotFound.
+TEST(VolaSession, ThinPolymorphicBoardRefusalIsRestoredByExplicitOff) {
+  const SynthPanelSpec spec = make_spec();
+  Universe u;
+  const Underlying *under = install(spec, u);
+  ASSERT_NE(under, nullptr);
+
+  SessionInputs in = make_inputs(spec);
+  in.curve = atx::vol::CurveConfig{VolCurveKind::Svi};
+  in.curve_pinned = true;
+  in.calib.max_spread_to_mid_pct = 0.001;
+  in.prep.legacy_prep_rescue = atx::vol::ThinSliceRescue::Off;
+
+  const auto sess = VolaSession::build(*under, in);
+  ASSERT_FALSE(sess.has_value());
+  const std::string msg = sess.error().message();
+  EXPECT_NE(msg.find("starved="), std::string::npos) << msg;
+}
+
+// The eSSVI lane is untouched: its historical permissive preparation is what
+// `Auto` resolves to there, and it implements no per-slice rescue, so the same
+// starving CalibOpts cap leaves the default board bit-compatible.
+TEST(VolaSession, EssviLaneKeepsItsPermissivePreparationUnderTheSameCap) {
+  const SynthPanelSpec spec = make_spec();
+  Universe u;
+  const Underlying *under = install(spec, u);
+  ASSERT_NE(under, nullptr);
+
+  SessionInputs in = make_inputs(spec); // default curve == Essvi
+  in.calib.max_spread_to_mid_pct = 0.001;
+
+  const auto sess = VolaSession::build(*under, in);
+  ASSERT_TRUE(sess.has_value()) << sess.error().to_string();
+  for (const auto &rep : sess->expiry_fit_reports()) {
+    EXPECT_NE(rep.outcome, atx::vol::ExpiryFitOutcome::FittedLegacyPrep)
+        << "run_surface_parity implements no rescue; it must never claim one";
+  }
 }

@@ -379,10 +379,18 @@ TEST(Dispersion, BookEconomicallyStableAfterVegaOnlyResolve) {
     const double expected_qty_scaled = expected_qty / kVegaPerVolPoint;
     EXPECT_NEAR(leg.straddle_qty, expected_qty_scaled,
                 1.0e-5 * std::max(1.0, std::fabs(expected_qty_scaled)));
-    // This carry-correction work package permits two-tenths of a cent on the
-    // deliberately wide synthetic fixture (observed maximum: 0.122 cents).
-    EXPECT_NEAR(leg.call_mark, expected_call, 2.0e-3);
-    EXPECT_NEAR(leg.put_mark, expected_put, 2.0e-3);
+    // Half a cent on the deliberately wide synthetic fixture (observed maximum:
+    // 0.235 cents, or 15 ppm of the mark). Widened from two-tenths of a cent by
+    // W2-A: the fixture's 13-strike x 4-expiry boards carry 104 two-sided legs,
+    // so the old absolute 600-leg sparse floor force-demoted all three to
+    // IlliquidSmallCap (Fast preset, QuickMark iteration caps). Measured near the
+    // money they are plainly identifiable, so they now keep their board verdict
+    // and fit at the Ordinary profile's tighter convergence budget. Everything
+    // this case actually pins -- K, T, sigma, straddle vega, straddle quantity,
+    // and the book's vega neutrality -- is unchanged at its original tolerance;
+    // only the marks moved, by a quarter of a cent on a $15 option.
+    EXPECT_NEAR(leg.call_mark, expected_call, 5.0e-3);
+    EXPECT_NEAR(leg.put_mark, expected_put, 5.0e-3);
   };
   // Re-captured via Dispersion.PrintBookHexAnchors_C1_7 (feat/bt-sota, WS-C).
   // The C1.7 contract under test — vega-only `resolve_leg` reproduces the
