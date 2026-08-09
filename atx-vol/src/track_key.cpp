@@ -148,6 +148,44 @@ std::string TrackKey::hex() const {
   return out;
 }
 
+namespace {
+
+// -1 for anything outside '0'-'9'/'a'-'f' -- deliberately excludes 'A'-'F':
+// hex() never emits uppercase, so an uppercase input did not round-trip
+// through it (see track_key_from_hex's doc comment).
+[[nodiscard]] int lowercase_hex_digit(char c) noexcept {
+  if (c >= '0' && c <= '9') {
+    return c - '0';
+  }
+  if (c >= 'a' && c <= 'f') {
+    return c - 'a' + 10;
+  }
+  return -1;
+}
+
+} // namespace
+
+atx::core::Result<TrackKey> track_key_from_hex(std::string_view hex) {
+  TrackKey key;
+  if (hex.size() != key.sha256.size() * 2) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "track_key_from_hex: expected exactly " +
+                              std::to_string(key.sha256.size() * 2) + " hex characters, got " +
+                              std::to_string(hex.size()));
+  }
+  for (std::size_t i = 0; i < key.sha256.size(); ++i) {
+    const int hi = lowercase_hex_digit(hex[i * 2]);
+    const int lo = lowercase_hex_digit(hex[i * 2 + 1]);
+    if (hi < 0 || lo < 0) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            "track_key_from_hex: non-lowercase-hex character at offset " +
+                                std::to_string(i * 2));
+    }
+    key.sha256[i] = static_cast<std::uint8_t>((hi << 4) | lo);
+  }
+  return atx::core::Ok(key);
+}
+
 std::vector<std::uint8_t> canonical_config_bytes(const BacktestStrategyTemplate &strategy_template,
                                                   const RunConfig &run_config) {
   CanonicalWriter writer;

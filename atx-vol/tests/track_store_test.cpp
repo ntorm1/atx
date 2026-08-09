@@ -258,6 +258,41 @@ TEST(TrackStoreTest, RoundTripThreeTracksAcrossTwoPartitions) {
   EXPECT_EQ(compacted->batch_files_written, 2u);
   EXPECT_EQ(compacted->staged_files_deleted, 3u);
 
+  // Task D5: `placements` -- one entry per compacted track, letting a caller
+  // (track_compact.cpp) drive `Catalog::mark_compacted` per track without
+  // re-deriving the batch layout itself. key_a/key_b landed together in the
+  // SPY/strangle_hedged batch; key_c alone in AAPL/iron_condor's -- both
+  // "batch-000000.parquet" (each partition's own first/only batch), and
+  // every track shares row_group 0 (one row group holds every track a batch
+  // folded in -- see track_store.hpp's schema comment).
+  ASSERT_EQ(compacted->placements.size(), 3u);
+  const auto find_placement = [&](const std::string &hex) -> const CompactedTrackPlacement * {
+    for (const auto &p : compacted->placements) {
+      if (p.track_key_hex == hex) {
+        return &p;
+      }
+    }
+    return nullptr;
+  };
+  const CompactedTrackPlacement *placement_a = find_placement(key_a.hex());
+  const CompactedTrackPlacement *placement_b = find_placement(key_b.hex());
+  const CompactedTrackPlacement *placement_c = find_placement(key_c.hex());
+  ASSERT_NE(placement_a, nullptr);
+  ASSERT_NE(placement_b, nullptr);
+  ASSERT_NE(placement_c, nullptr);
+  EXPECT_EQ(placement_a->file, "tracks/underlier=SPY/family=strangle_hedged/batch-000000.parquet");
+  EXPECT_EQ(placement_a->row_group, 0);
+  EXPECT_EQ(placement_b->file, placement_a->file) << "key_a/key_b share one batch file";
+  EXPECT_EQ(placement_b->row_group, 0);
+  EXPECT_EQ(placement_c->file, "tracks/underlier=AAPL/family=iron_condor/batch-000000.parquet");
+  EXPECT_EQ(placement_c->row_group, 0);
+  // A round-trip through track_key_from_hex (track_key.hpp) recovers the
+  // original TrackKey -- the exact operation mark_compacted's real caller
+  // (track_compact.cpp) performs.
+  auto reparsed_a = track_key_from_hex(placement_a->track_key_hex);
+  ASSERT_TRUE(reparsed_a.has_value());
+  EXPECT_EQ(reparsed_a->hex(), key_a.hex());
+
   // Staged inputs are gone -- deleted only after their batch's atomic rename
   // landed, which by this point it has.
   std::error_code exists_ec;

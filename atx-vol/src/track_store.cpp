@@ -689,12 +689,20 @@ Result<CompactStats> compact(std::string_view lake_root) {
       if (!combined.has_value()) {
         return Err(combined.error());
       }
-      const std::string dst_path = (dst_dir / format_batch_name(next_batch)).string();
+      const std::uint64_t used_batch_idx = next_batch;
+      const std::string batch_name = format_batch_name(used_batch_idx);
+      const std::string dst_path = (dst_dir / batch_name).string();
       ++next_batch;
       Status write_status = write_parquet_batch(**combined, dst_path);
       if (!write_status.has_value()) {
         return write_status;
       }
+      // Task D5: `Catalog::mark_compacted`/`TrackRow::file` store this SAME
+      // hive-relative, forward-slash form (catalog_test.cpp's fixtures use
+      // exactly this shape) -- built directly from underlier/family/
+      // batch_name rather than fs::relative(dst_path, lake_root), which
+      // would emit backslashes on Windows.
+      const std::string relative_file = "tracks/underlier=" + underlier + "/family=" + family + "/" + batch_name;
       // The batch file landed durably (atomic rename). Only now delete the
       // staged inputs it folded in.
       for (const std::size_t idx : batch_members) {
@@ -706,6 +714,10 @@ Result<CompactStats> compact(std::string_view lake_root) {
                          ": " + rm_ec.message());
         }
         ++stats.staged_files_deleted;
+        // One row group per batch file (see write_parquet_batch above) --
+        // every track this batch folded in shares row_group 0.
+        stats.placements.push_back(
+            CompactedTrackPlacement{staged[idx].track_key_hex, relative_file, /*row_group=*/0});
       }
       stats.tracks_compacted += batch_members.size();
       ++stats.batch_files_written;

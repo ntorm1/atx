@@ -198,6 +198,7 @@
 
 #include "atx/vol/backtest.hpp"          // RunConfig
 #include "atx/vol/backtest_template.hpp" // BacktestStrategyTemplate
+#include "atx/vol/types.hpp"             // Result, ErrorCode
 
 namespace atx::vol {
 
@@ -218,6 +219,19 @@ struct TrackKey {
 
   [[nodiscard]] bool operator==(const TrackKey &) const noexcept = default;
 };
+
+// The inverse of `TrackKey::hex()` (Task D5). Needed because a `TrackKey` is
+// not always available where a track's identity is: `TrackStore::compact()`
+// (track_store.cpp) reads only the hex string back out of a staged file's
+// Feather metadata (the original `TrackKey` the writer held is long gone by
+// then), so a caller that wants to act on that identity -- e.g. calling
+// `Catalog::mark_compacted`, which takes a `TrackKey`, not a hex string --
+// needs to parse it back. Err(InvalidArgument) unless `hex` is EXACTLY 64
+// lowercase hex characters -- `hex()` only ever emits lowercase
+// (track_key.cpp's `kHexDigits`), so a string that did not round-trip
+// through `hex()` (wrong length, uppercase, or a non-hex character) is
+// rejected rather than silently canonicalized.
+[[nodiscard]] Result<TrackKey> track_key_from_hex(std::string_view hex);
 
 // Deterministic canonical byte encoding of the economics-relevant subset of
 // (strategy_template, run_config) -- see the field-by-field enumeration

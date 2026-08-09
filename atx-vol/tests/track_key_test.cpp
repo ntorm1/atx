@@ -356,6 +356,53 @@ TEST(TrackKeyTest, GoldenHexPinIsStableAcrossRestarts) {
   EXPECT_EQ(key.hex(), kExpectedHex) << "actual hex was: " << key.hex();
 }
 
+// ── track_key_from_hex -- the inverse of hex() (Task D5) ────────────────────
+//
+// Needed because TrackStore::compact() reads only the hex string back out of
+// a staged file's metadata (the original TrackKey struct is long gone by
+// then) -- a caller that wants to call Catalog::mark_compacted (which takes a
+// TrackKey, not a string) after compact() has to parse it back.
+
+TEST(TrackKeyTest, FromHexRoundTripsHex) {
+  const BacktestStrategyTemplate tmpl = make_template();
+  RunConfig cfg{};
+  cfg.frictions.half_spread_bps = 3.0;
+  const TrackKey key =
+      make_track_key(canonical_config_bytes(tmpl, cfg), make_engine_id(), fixed_snapshot_id());
+  const std::string hex = key.hex();
+
+  auto parsed = track_key_from_hex(hex);
+  ASSERT_TRUE(parsed.has_value()) << (parsed ? "" : parsed.error().to_string());
+  EXPECT_EQ(parsed->hex(), hex);
+  EXPECT_EQ(parsed->sha256, key.sha256);
+}
+
+TEST(TrackKeyTest, FromHexRejectsWrongLength) {
+  auto too_short = track_key_from_hex("ab12");
+  ASSERT_FALSE(too_short.has_value());
+  EXPECT_EQ(too_short.error().code(), atx::core::ErrorCode::InvalidArgument);
+
+  const std::string too_long(65, 'a');
+  auto rejected_long = track_key_from_hex(too_long);
+  ASSERT_FALSE(rejected_long.has_value());
+  EXPECT_EQ(rejected_long.error().code(), atx::core::ErrorCode::InvalidArgument);
+}
+
+TEST(TrackKeyTest, FromHexRejectsUppercaseOrNonHexCharacters) {
+  // hex() only ever emits lowercase (kHexDigits, track_key.cpp) -- a string
+  // that did not round-trip through it must not silently canonicalize.
+  const std::string upper(64, 'A');
+  auto rejected_upper = track_key_from_hex(upper);
+  ASSERT_FALSE(rejected_upper.has_value());
+  EXPECT_EQ(rejected_upper.error().code(), atx::core::ErrorCode::InvalidArgument);
+
+  std::string non_hex(64, '0');
+  non_hex[10] = 'z';
+  auto rejected_nonhex = track_key_from_hex(non_hex);
+  ASSERT_FALSE(rejected_nonhex.has_value());
+  EXPECT_EQ(rejected_nonhex.error().code(), atx::core::ErrorCode::InvalidArgument);
+}
+
 // ── Step 5 economics tripwire (mechanical piece; CI wiring is Task D6's) ───
 
 namespace {

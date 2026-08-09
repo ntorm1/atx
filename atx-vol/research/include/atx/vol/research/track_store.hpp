@@ -92,6 +92,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "atx/vol/backtest.hpp"           // BacktestResult
 #include "atx/vol/research/track_key.hpp" // TrackKey
@@ -110,13 +111,37 @@ struct TrackMeta {
   std::string family;
 };
 
+// Where one track landed after THIS `compact()` call folded it into a batch
+// (Task D5) -- exactly the two pieces of information `Catalog::mark_compacted`
+// needs (catalog.hpp) beyond the track's own identity, which `compact()`
+// itself only ever has as a hex string (`track_key`, read back out of the
+// staged file's Feather metadata -- the original `TrackKey` struct the
+// writer held is long gone by the time `compact()` runs; parse it back with
+// `track_key_from_hex`, track_key.hpp). `file` is relative to `lake_root`
+// (hive-path style, forward slashes, e.g.
+// "tracks/underlier=SPY/family=strangle/batch-000000.parquet") -- portable
+// across wherever `lake_root` happens to be mounted, matching the string
+// `Catalog::mark_compacted`/`TrackRow::file` already store. Every track
+// folded into the SAME batch file shares that file and `row_group` (schema
+// v1 packs one row group per batch file, holding every track's rows -- see
+// the schema comment above -- not one row group per track).
+struct CompactedTrackPlacement {
+  std::string track_key_hex;
+  std::string file;
+  std::int64_t row_group{0};
+};
+
 // Outcome of one `compact()` call. Counts reflect exactly what THIS call did --
 // tracks already compacted by a prior run (and therefore no longer present
-// under staging/) are not recounted.
+// under staging/) are not recounted. `placements` has exactly one entry per
+// track this call folded in (`placements.size() == tracks_compacted`), in no
+// particular cross-partition order -- a caller that wants
+// `Catalog::mark_compacted` called for each simply iterates it.
 struct CompactStats {
   std::uint64_t tracks_compacted{0};
   std::uint64_t batch_files_written{0};
   std::uint64_t staged_files_deleted{0};
+  std::vector<CompactedTrackPlacement> placements;
 };
 
 // One Parquet track lakehouse rooted at `lake_root`. Stateless beyond the root
