@@ -21,7 +21,7 @@
 #include <system_error>
 #include <vector>
 
-#include "atx/vol/research/track_key.hpp" // track_key_from_hex
+#include "atx/vol/track_key.hpp" // track_key_from_hex
 
 namespace atx::vol {
 

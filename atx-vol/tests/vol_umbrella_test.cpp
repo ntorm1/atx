@@ -308,8 +308,10 @@ TEST(VolUmbrella, TierAIsClosedUnderInclusion) {
 // `UmbrellaIsExactlyTierA` above pins the Tier-A *set* against `kTierA`, but
 // nothing pinned `kTierA`'s own SIZE, nor Tier-B's or `detail/`'s -- so a
 // fourth silent drift (after Tier-A 56->57, Tier-B 23->31, `detail/` 25->28,
-// then Tier-B 31->32 when Task B2's margin.hpp landed as new Tier-B surface --
-// see the README's "## Versioning" table) would again go uncaught until the
+// then Tier-B 31->32 when Task B2's margin.hpp landed as new Tier-B surface,
+// then Tier-B 32->37 when Task E2 promoted `sweep_driver.hpp`, `track_key.hpp`,
+// `track_store.hpp`, `catalog.hpp` and `snapshot_pool.hpp` out of `research/`
+// -- see the README's "## Versioning" table) would again go uncaught until the
 // next manual audit. Re-derive the same way
 // the README tells a human to: Tier-B is every top-level header minus Tier-A
 // minus `vol.hpp` itself; `detail/` is counted in the SOURCE tree only (the
@@ -333,7 +335,7 @@ TEST(VolUmbrella, TierCountsMatchTheReadmeTable) {
   // Tier-B = every top-level header minus the Tier-A ones minus vol.hpp itself.
   ASSERT_GT(top_level_headers, std::size(kTierA) + 1u);
   const std::size_t tier_b = top_level_headers - std::size(kTierA) - 1u;
-  EXPECT_EQ(tier_b, std::size_t{32})
+  EXPECT_EQ(tier_b, std::size_t{37})
       << "Tier-B count drifted -- update the README table (## Versioning) "
          "alongside this literal";
 

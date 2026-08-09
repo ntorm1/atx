@@ -1,4 +1,4 @@
-#include "atx/vol/research/catalog.hpp"
+#include "atx/vol/catalog.hpp"
 
 #include <chrono>
 #include <cstdint>
@@ -494,7 +494,7 @@ Result<TrialStats> Catalog::trial_stats(std::string_view sweep_id) {
   return Ok(stats);
 }
 
-// ── Task D6: retention/GC support ───────────────────────────────────────
+// â”€â”€ Task D6: retention/GC support â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 Result<std::int64_t> Catalog::retire_stale(std::int64_t older_than_ts_ns) {
   ATX_TRY(auto *stmt, db_.prepare_cached(kRetireStaleSql));

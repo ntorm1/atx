@@ -44,9 +44,10 @@
 // content identities the run actually consumed (already recorded as BacktestDb
 // source lineage: `BacktestSourcePartition` / `ArchiveContentIdentity` in
 // backtest_db.hpp). Computed by the CALLER, not this header: track_key.hpp is
-// research-tier and must not depend upward on backtest_db.hpp (which itself
-// depends on this tier's run_archive.hpp) or on SurfaceDb; accepting a
-// pre-computed 32-byte digest keeps the layering one-directional.
+// Tier-B (promoted from research/ in the E2 tier-promotion pass) and
+// deliberately does not depend upward on backtest_db.hpp (itself Tier-B, but
+// which depends on the research-tier run_archive.hpp) or on SurfaceDb;
+// accepting a pre-computed 32-byte digest keeps the layering one-directional.
 //
 // ## Why not full RunArchive reuse for canonical_config
 //

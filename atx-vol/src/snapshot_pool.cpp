@@ -1,4 +1,4 @@
-#include "atx/vol/research/snapshot_pool.hpp"
+#include "atx/vol/snapshot_pool.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -11,12 +11,12 @@
 #include <optional>
 #include <shared_mutex>
 #include <string>
-#include <thread> // std::this_thread::get_id — the executor-dispatch observable
+#include <thread> // std::this_thread::get_id â€” the executor-dispatch observable
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
-#include "atx/vol/detail/pricing_executor.hpp" // pricing_executor() — the one persistent pool
+#include "atx/vol/detail/pricing_executor.hpp" // pricing_executor() â€” the one persistent pool
 #include "atx/vol/surface_archive.hpp"         // ArchiveV2Header, archive_v2_identity_from_header
 
 namespace atx::vol {
@@ -61,7 +61,7 @@ struct PoolKeyHash {
 // The archive's content identity, read from its 256-byte v2 header only. Byte-
 // content sensitive (see `ArchiveContentIdentity`); an unreadable or not-yet-an-
 // archive file yields the default (all-zero) identity so the load that follows
-// surfaces the real error. Mirrors `current_identity` in snapshot_cache.cpp —
+// surfaces the real error. Mirrors `current_identity` in snapshot_cache.cpp â€”
 // deliberately a copy rather than a shared symbol, because that one is a private
 // implementation detail of a different cache with a different (per-call, R-19
 // rewrite-detecting) contract, and the two must be free to diverge.
@@ -84,7 +84,7 @@ struct PoolKeyHash {
 }
 
 // Run `fn` when this object dies, on the normal path AND on an unwind. Used for
-// exactly one thing here — guaranteeing a loader publishes its entry (L7) — so it
+// exactly one thing here â€” guaranteeing a loader publishes its entry (L7) â€” so it
 // is deliberately the minimal form rather than a general utility. `fn` must be
 // noexcept: it runs during unwinding.
 template <class F> class ScopeExit {
@@ -109,15 +109,15 @@ struct PoolEntry {
   SnapshotPtr snapshot; // set iff the load succeeded
   // PRE-SEEDED, and that is the point (invariant L7). An entry is inserted into
   // its shard BEFORE its load runs, so between the insert and the publication it
-  // is visible-but-not-ready. If the loader UNWINDS in that window — `bad_alloc`
+  // is visible-but-not-ready. If the loader UNWINDS in that window â€” `bad_alloc`
   // out of the mmap or out of an error-message concatenation, `system_error` out
-  // of a lock — the publication guard still marks it ready, and THIS is the
+  // of a lock â€” the publication guard still marks it ready, and THIS is the
   // answer every parked waiter gets. Seeding it means a ready entry can never be
   // `{no snapshot, no error}`, which a waiter would otherwise read as a
   // successful load of a null snapshot. The string is allocated here, on the
   // insert path, precisely so the unwind path never has to allocate one.
   std::optional<atx::core::Error> error{atx::core::Error{
-      ErrorCode::Internal, "SnapshotPool: the archive load for this date did not complete — an "
+      ErrorCode::Internal, "SnapshotPool: the archive load for this date did not complete â€” an "
                            "exception escaped the loader. The entry was evicted, so a later "
                            "acquire retries."}};
   std::uint64_t generation{0};
@@ -165,7 +165,7 @@ Result<SnapshotPtr> SnapshotPool::acquire(std::string_view date, std::string_vie
   const PoolKey key = make_key(date, archive_path, query_pricing_tier);
   Shard &shard = impl_->shard_for(date);
 
-  // L1 — warm read path: shared lock only, just long enough to copy the handle.
+  // L1 â€” warm read path: shared lock only, just long enough to copy the handle.
   EntryPtr entry;
   {
     const std::shared_lock lock{shard.mutex};
@@ -177,7 +177,7 @@ Result<SnapshotPtr> SnapshotPool::acquire(std::string_view date, std::string_vie
 
   bool is_loader = false;
   if (entry == nullptr) {
-    // L2 — write path: unique lock, double-checked insert. Exactly one thread
+    // L2 â€” write path: unique lock, double-checked insert. Exactly one thread
     // leaves this block as the loader for this (key, generation).
     const std::unique_lock lock{shard.mutex};
     const auto found = shard.entries.find(key);
@@ -195,7 +195,7 @@ Result<SnapshotPtr> SnapshotPool::acquire(std::string_view date, std::string_vie
   if (!is_loader) {
     impl_->hits.fetch_add(1u, std::memory_order_relaxed);
     if (!entry->ready.load(std::memory_order_acquire)) {
-      // L4 — block on a RUNNING loader; no lock of ours is held here.
+      // L4 â€” block on a RUNNING loader; no lock of ours is held here.
       impl_->coalesced_waits.fetch_add(1u, std::memory_order_relaxed);
       std::unique_lock lock{entry->mutex};
       entry->cv.wait(lock, [&] { return entry->ready.load(std::memory_order_acquire); });
@@ -206,18 +206,18 @@ Result<SnapshotPtr> SnapshotPool::acquire(std::string_view date, std::string_vie
     return entry->snapshot;
   }
 
-  // ── THE LOADER PATH ────────────────────────────────────────────────────────
+  // â”€â”€ THE LOADER PATH â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   //
-  // L7 — PUBLICATION IS UNCONDITIONAL. From the insert above to the publication
+  // L7 â€” PUBLICATION IS UNCONDITIONAL. From the insert above to the publication
   // below the entry is in the shard map with `ready == false`, and a thread
   // parked at L4 has NO other way out: nothing but this publication can satisfy
-  // its predicate. So every exit from this region must publish — including an
+  // its predicate. So every exit from this region must publish â€” including an
   // exception, which several statements below can genuinely throw
   // (`MarketSnapshot::load` is not noexcept, the mismatch message concatenates
   // strings, `make_shared` allocates, a lock can raise `system_error`). Leaving
   // that window on an unwind would wedge the key FOREVER: the waiters hang, every
   // later acquire of the key hangs, and inside a `warm()` dispatch the parked
-  // workers never reach the join barrier, so `warm` hangs too — one `bad_alloc`
+  // workers never reach the join barrier, so `warm` hangs too â€” one `bad_alloc`
   // on one date would wedge every run in the process, and it would surface as a
   // CI timeout rather than a red test.
   //
@@ -257,7 +257,7 @@ Result<SnapshotPtr> SnapshotPool::acquire(std::string_view date, std::string_vie
       }
       entry->ready.store(true, std::memory_order_release);
     } catch (...) {
-      // NOTHING may prevent the publication — a missed store here is exactly the
+      // NOTHING may prevent the publication â€” a missed store here is exactly the
       // hang this guard exists to prevent. The pre-seeded error keeps the
       // outcome honest even if the assignments above did not run.
       entry->ready.store(true, std::memory_order_release);
@@ -270,7 +270,7 @@ Result<SnapshotPtr> SnapshotPool::acquire(std::string_view date, std::string_vie
     }
   }};
 
-  // L3 — the loader holds NO pool lock across the header probe or the mmap.
+  // L3 â€” the loader holds NO pool lock across the header probe or the mmap.
   const std::string &path = key.path;
   impl_->identity_probes.fetch_add(1u, std::memory_order_relaxed);
   probed = probe_identity(path);
@@ -283,7 +283,7 @@ Result<SnapshotPtr> SnapshotPool::acquire(std::string_view date, std::string_vie
     failure = loaded.error();
   } else if (probed != ArchiveContentIdentity{} && probed != loaded->source_identity()) {
     // The bytes moved between the probe and the map. Under the Sealed
-    // declaration this cannot happen, so it means the declaration was false —
+    // declaration this cannot happen, so it means the declaration was false â€”
     // fail closed rather than pool a snapshot whose provenance we just watched
     // change.
     failure = atx::core::Error{ErrorCode::InvalidArgument,
@@ -318,8 +318,8 @@ Status SnapshotPool::warm(std::span<const SnapshotRef> refs,
   //
   // WHETHER THIS ACTUALLY FANS OUT DEPENDS ON THE WINDOW SIZE. `run_dynamic`
   // inlines below its own threshold (`kInlineThreshold == 4`, pricing_executor.cpp),
-  // so a warm of 1-3 refs — which is what `RunConfig::prefetch_depth`'s default of
-  // 2 produces — runs entirely on the calling thread and never touches a worker.
+  // so a warm of 1-3 refs â€” which is what `RunConfig::prefetch_depth`'s default of
+  // 2 produces â€” runs entirely on the calling thread and never touches a worker.
   // That is the correct behaviour (a 2-archive fan-out cannot amortize a worker
   // wake), but it means the "acquisitions run on pool workers" half of invariant
   // L4 only executes at a look-ahead depth of 4 or more. `executor_dispatched_loads`

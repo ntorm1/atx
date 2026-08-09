@@ -2,7 +2,7 @@
 // backtest-production-lakehouse sprint). Folds every staged track under
 // <lake_root>/staging/ into hive-partitioned, zstd-compressed Parquet batch
 // files under <lake_root>/tracks/underlier=<U>/family=<F>/batch-NNNNNN.parquet.
-// See atx/vol/research/track_store.hpp for the schema and the atomic-publish
+// See atx/vol/track_store.hpp for the schema and the atomic-publish
 // discipline this CLI relies on end to end.
 //
 // Task D5: also syncs the D3 catalog -- for every track `compact()` folded
@@ -58,11 +58,11 @@
 // delete data under a default threshold no caller asked for. The default
 // (no subcommand) invocation's behavior is completely unchanged.
 
-#include "atx/vol/research/catalog.hpp"
+#include "atx/vol/catalog.hpp"
 #include "atx/vol/research/track_compact_reconcile.hpp"
 #include "atx/vol/research/track_gc.hpp"
-#include "atx/vol/research/track_key.hpp"
-#include "atx/vol/research/track_store.hpp"
+#include "atx/vol/track_key.hpp"
+#include "atx/vol/track_store.hpp"
 
 #include <cstdio>
 #include <cstdlib>

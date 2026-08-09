@@ -59,7 +59,7 @@
 #include <cstdint>
 #include <string_view>
 
-#include "atx/vol/research/catalog.hpp" // Catalog, TrackStatus
+#include "atx/vol/catalog.hpp" // Catalog, TrackStatus
 #include "atx/vol/types.hpp"            // Result
 
 namespace atx::vol {

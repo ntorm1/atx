@@ -1,21 +1,21 @@
 // atx-vol backtest engine (Phase B2) execution/ledger/hedge gate tests.
 //
-// Drives the strategy-aware `run_backtest` with the B2 additions — modeled
+// Drives the strategy-aware `run_backtest` with the B2 additions â€” modeled
 // frictions, an engine-internal cash/borrow ledger, and the engine-owned
-// delta-hedge overlay — over synthetic single-underlying eSSVI corpora (the
+// delta-hedge overlay â€” over synthetic single-underlying eSSVI corpora (the
 // backtest_test make_surface pattern; analytic, no fitting, runs everywhere).
 //
 // Five gates:
-//   1. ZeroFrictionIdentity — default RunConfig{} (frictionless, financing off,
+//   1. ZeroFrictionIdentity â€” default RunConfig{} (frictionless, financing off,
 //      hedge None) is bit-identical to an explicitly-zeroed config, and the
 //      cost/pnl_shares/financing columns are exactly 0.0 every row.
-//   2. NavReconciliation    — for a delta-hedged put with cash-carry financing,
+//   2. NavReconciliation    â€” for a delta-hedged put with cash-carry financing,
 //      the independently recomputed book-value NAV increment == step_total.
-//   3. Financing            — cash grows at exp(r*dt); short shares bleed
+//   3. Financing            â€” cash grows at exp(r*dt); short shares bleed
 //      borrow_rate*|short|*S*dt.
-//   4. HedgeOverlay         — post-hedge |net book delta| <= band each row; the
-//      hedge PnL neutralizes the option delta axis (pnl_shares ≈ -pnl_delta).
-//   5. FrictionMonotonicity — final nav decreases and total cost increases with
+//   4. HedgeOverlay         â€” post-hedge |net book delta| <= band each row; the
+//      hedge PnL neutralizes the option delta axis (pnl_shares â‰ˆ -pnl_delta).
+//   5. FrictionMonotonicity â€” final nav decreases and total cost increases with
 //      half_spread_bps.
 
 #include <gtest/gtest.h>
@@ -34,7 +34,7 @@
 #include <new>
 #include <span>
 #include <string>
-#include <thread>  // std::jthread — the C2 concurrent-pool soak
+#include <thread>  // std::jthread â€” the C2 concurrent-pool soak
 #include <utility>
 #include <vector>
 
@@ -43,11 +43,11 @@
 #include "atx/vol/american.hpp"          // al_fast_opts, AmericanMethod, AmericanGreeks
 #include "atx/vol/backtest.hpp"          // Clock, run_backtest, RunConfig, FrictionModel, ...
 #include "atx/vol/corpus.hpp"            // CorpusManifest, CorpusEntry, CorpusFitStatus
-#include "atx/vol/detail/counters.hpp"          // counters::ledger — L1 solve-economy gate
-#include "atx/vol/detail/pricing_executor.hpp"  // pricing_executor() — C2 warm() fan-out gate
+#include "atx/vol/detail/counters.hpp"          // counters::ledger â€” L1 solve-economy gate
+#include "atx/vol/detail/pricing_executor.hpp"  // pricing_executor() â€” C2 warm() fan-out gate
 #include "atx/vol/portfolio_pricer.hpp"  // OptionContract, kNsPerYear
 #include "atx/vol/priced_surface.hpp"    // PricedSurface, PricingContext
-#include "atx/vol/research/snapshot_pool.hpp"  // C2: SnapshotPool, SnapshotPoolStats
+#include "atx/vol/snapshot_pool.hpp"  // C2: SnapshotPool, SnapshotPoolStats
 #include "atx/vol/strategy.hpp"          // DeclarativeStrategy, StrategySpec, HedgeSpec
 #include "atx/vol/surface_archive.hpp"   // write_surface_archive_v2_file, SurfaceArchiveItem
 #include "atx/vol/surface_parity.hpp"    // SliceContext
@@ -55,7 +55,7 @@
 #include "atx/vol/vol_curve.hpp"         // CurveSurface, EssviCurve
 #include "atx/vol/vol_surface.hpp"       // EssviParams
 
-#include "../src/step_mark_memo.hpp"  // detail::StepMarkMemo — L2 memo admission gate
+#include "../src/step_mark_memo.hpp"  // detail::StepMarkMemo â€” L2 memo admission gate
 
 using namespace atx::vol;
 namespace fs = std::filesystem;
@@ -64,20 +64,20 @@ namespace fs = std::filesystem;
 // around the measured run_backtest calls (see HedgeLedgerAllocationIsStepInvariant).
 // Replacing global operator new here affects only this test binary; the count is a
 // deterministic tally of ::operator new calls while armed. Aligned/over-aligned
-// allocations route to their own operators (not replaced) — irrelevant here because
+// allocations route to their own operators (not replaced) â€” irrelevant here because
 // the hedge ledger/scratch are plain std::vector / std::unordered_map allocations.
 namespace atx_b3_alloc {
 std::atomic<std::uint64_t> g_count{0};
 std::atomic<bool> g_armed{false};
 }  // namespace atx_b3_alloc
 
-// C2 fault injection: drive a real unwind THROUGH SnapshotPool's loader window —
+// C2 fault injection: drive a real unwind THROUGH SnapshotPool's loader window â€”
 // the region between inserting an entry into its shard and publishing it, which
 // SnapshotPoolLoaderUnwindPublishesAndEvicts regresses.
 //
 // SELF-CALIBRATING, deliberately. A count-based trigger ("fail the Nth
 // allocation") cannot express "inside the window" without hardcoding how many
-// allocations `acquire` makes on the way in — 24 of them on this toolchain, all
+// allocations `acquire` makes on the way in â€” 24 of them on this toolchain, all
 // of them in std::filesystem/std::string internals where an injected failure just
 // terminates the process and proves nothing. Instead the trigger asks the POOL:
 // `identity_probes` is bumped immediately after the entry is inserted, so failing
@@ -242,7 +242,7 @@ struct Corpus {
 
 // Independent oracle for the skew-adjusted delta: delta + VegaSlope * vega,
 // VegaSlope = (1 - omega) * (-dSigma/dk) / F(T), dSigma/dk a central FD
-// (h = 1e-4) on `PricedSurface::total_variance` in log-moneyness space —
+// (h = 1e-4) on `PricedSurface::total_variance` in log-moneyness space â€”
 // mirrors (does NOT call) portfolio_pricer.cpp's local
 // `priced_surface_skew_slope` helper, so this test proves the production
 // seam against a from-scratch re-derivation rather than the implementation
@@ -264,7 +264,7 @@ struct Corpus {
   return gr->delta + vega_slope * gr->vega;
 }
 
-// A do-nothing strategy (empty book every step) — the flat-book financing seam.
+// A do-nothing strategy (empty book every step) â€” the flat-book financing seam.
 class NoopStrategy : public IStrategy {
  public:
   Status on_step(const MarketSnapshot& /*base*/, std::size_t /*step_index*/,
@@ -274,7 +274,7 @@ class NoopStrategy : public IStrategy {
 };
 
 // A single-clip declarative strategy: opens ONE structure at inception and holds it
-// (EveryNDays with a cadence longer than the corpus ⇒ only step 0 opens).
+// (EveryNDays with a cadence longer than the corpus â‡’ only step 0 opens).
 // `sign` (B1) defaults to +1.0 (long/buy) so every pre-existing call site is
 // unaffected; a QuoteSide sell-side test passes -1.0.
 [[nodiscard]] StrategySpec single_clip(std::uint32_t uid, double target_T, Side side,
@@ -292,13 +292,13 @@ class NoopStrategy : public IStrategy {
   spec.legs.push_back(leg);
   spec.lifecycle.entry = LifecycleSpec::Entry::EveryNDays;
   spec.lifecycle.holding = LifecycleSpec::Holding::HoldToExpiry;
-  spec.lifecycle.entry_every_n = 100000;  // >> corpus ⇒ opens once, at inception
+  spec.lifecycle.entry_every_n = 100000;  // >> corpus â‡’ opens once, at inception
   spec.hedge = hedge;
   return spec;
 }
 
 // B1: a single-clip STRADDLE (call+put at the same strike/expiry, ONE cohort,
-// TWO legs) — `SizeSpec::Kind::FixedContracts` applies `sign*value` to EVERY
+// TWO legs) â€” `SizeSpec::Kind::FixedContracts` applies `sign*value` to EVERY
 // leg of the structure (strategy.cpp's `expand_and_size_leg`), so both legs
 // open qty=+1 (or -1) here, the multi-leg QuoteSide crossing-fraction fixture.
 [[nodiscard]] StrategySpec single_clip_straddle(std::uint32_t uid, double target_T,
@@ -314,12 +314,12 @@ class NoopStrategy : public IStrategy {
   spec.legs.push_back(leg);
   spec.lifecycle.entry = LifecycleSpec::Entry::EveryNDays;
   spec.lifecycle.holding = LifecycleSpec::Holding::HoldToExpiry;
-  spec.lifecycle.entry_every_n = 100000;  // >> corpus ⇒ opens once, at inception
+  spec.lifecycle.entry_every_n = 100000;  // >> corpus â‡’ opens once, at inception
   return spec;
 }
 
 // B1: opens ONE lot at inception (a synthetic model contract, priced straight
-// off the surface — no DeclarativeStrategy resolution machinery needed) and
+// off the surface â€” no DeclarativeStrategy resolution machinery needed) and
 // closes it with NO re-entry on the very next step, isolating execute()'s
 // ROLL-CLOSE loop from its entry loop.
 class OpenThenCloseStrategy : public IStrategy {
@@ -344,7 +344,7 @@ class OpenThenCloseStrategy : public IStrategy {
       lot.contract = OptionContract{uid_, K, target_T_, side_};
       lot.qty = sign_;
       lot.multiplier = 100.0;
-      // Well beyond this fixture's tiny corpus, so the lot never settles —
+      // Well beyond this fixture's tiny corpus, so the lot never settles â€”
       // the only close this test exercises is the strategy-driven one below.
       lot.expiry_ts_ns = base.ts_ns() + std::llround(target_T_ * kNsPerYear) + 30 * kDayNs;
       lot.cohort = 1;
@@ -369,8 +369,8 @@ class OpenThenCloseStrategy : public IStrategy {
 //
 // `BacktestResult` carries no per-lot fill-price column, so `entry_fill_price`
 // recovers the engine's actual fill from the inception cash ledger instead: an
-// entry's net cash effect collapses to exactly `-Σ qty*multiplier*fill` (see
-// backtest.cpp's entry loop — `cash -= qty*mult*model_mark` then
+// entry's net cash effect collapses to exactly `-Î£ qty*multiplier*fill` (see
+// backtest.cpp's entry loop â€” `cash -= qty*mult*model_mark` then
 // `cash -= ex.cost`, and `ex.cost`'s `fill_slippage` term is
 // `qty*mult*(fill-model_mark)`, so the `model_mark` terms cancel) whenever
 // `per_contract_cost == 0` (this fixture's default) and every opened leg fills
@@ -411,7 +411,7 @@ class ExecFixture {
 
 }  // namespace
 
-// ── 1. Zero-friction / feature-off identity ─────────────────────────────────
+// â”€â”€ 1. Zero-friction / feature-off identity â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 TEST(BacktestExec, ZeroFrictionIdentity) {
   const fs::path dir = fresh_dir("identity");
   const Corpus c = make_corpus(dir, "SPX", 6);
@@ -507,14 +507,14 @@ TEST(BacktestExec, OpeningCostReducesInceptionNavAndReturn) {
   EXPECT_EQ(r.nav.back(), summed_pnl);
 }
 
-// ── 2. NAV reconciliation (book value increment == step_total) ──────────────
+// â”€â”€ 2. NAV reconciliation (book value increment == step_total) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 TEST(BacktestExec, NavReconciliation) {
   const fs::path dir = fresh_dir("navrecon");
   const Corpus c = make_corpus(dir, "SPX", 7);
   auto clock = Clock::from_manifest(c.manifest);
   ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
 
-  const double target_T = 0.5;  // expiry beyond the corpus ⇒ no settlement
+  const double target_T = 0.5;  // expiry beyond the corpus â‡’ no settlement
   const StrategySpec spec =
       single_clip(kUid, target_T, Side::Put, StrikeSelector{StrikeSelector::Kind::AtmForward, 0.0},
                   HedgeSpec{HedgeSpec::Kind::DeltaToZero, HedgeSpec::Cadence::Daily, 1e-6});
@@ -564,7 +564,7 @@ TEST(BacktestExec, NavReconciliation) {
   std::printf("[btexec] nav-reconciliation worst |dBV - d_step_total| = %.3e\n", worst);
 }
 
-// ── 3. Financing: cash carry + short-share borrow ───────────────────────────
+// â”€â”€ 3. Financing: cash carry + short-share borrow â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 TEST(BacktestExec, Financing) {
   // (a) Flat book: cash grows at exp(r*dt) per step, financing == cash-carry.
   {
@@ -582,7 +582,7 @@ TEST(BacktestExec, Financing) {
     ASSERT_TRUE(res.has_value()) << res.error().to_string();
     const BacktestResult& r = *res;
     ASSERT_GT(r.size(), 1u);
-    EXPECT_EQ(r.cash[0], 1'000'000.0);  // no trades ⇒ inception cash == initial
+    EXPECT_EQ(r.cash[0], 1'000'000.0);  // no trades â‡’ inception cash == initial
 
     for (std::size_t i = 1; i < r.size(); ++i) {
       const double dt = static_cast<double>(r.ts_ns[i] - r.ts_ns[i - 1]) / kNsPerYear;
@@ -594,7 +594,7 @@ TEST(BacktestExec, Financing) {
                 r.cash.back(), kR);
   }
 
-  // (b) Short-share book: long call, delta-hedged ⇒ short shares that bleed borrow.
+  // (b) Short-share book: long call, delta-hedged â‡’ short shares that bleed borrow.
   {
     const fs::path dir = fresh_dir("finborrow");
     const Corpus c = make_corpus(dir, "SPX", 6);
@@ -706,7 +706,7 @@ TEST(BacktestExec, ShareCarryAndCashFinancingComposeWithoutDoubleFunding) {
   }
 }
 
-// ── 4. Hedge overlay: net delta banded, hedge PnL offsets the delta axis ─────
+// â”€â”€ 4. Hedge overlay: net delta banded, hedge PnL offsets the delta axis â”€â”€â”€â”€â”€
 TEST(BacktestExec, HedgeOverlay) {
   const fs::path dir = fresh_dir("hedge");
   const Corpus c = make_corpus(dir, "SPX", 8, 100.0, 0.006, 0.001);  // livelier spot moves
@@ -731,7 +731,7 @@ TEST(BacktestExec, HedgeOverlay) {
     EXPECT_LE(std::fabs(r.gross_delta[i]), band + 1e-6) << "row " << i;
   }
 
-  // The share hedge neutralizes the option's delta axis: pnl_shares ≈ -pnl_delta,
+  // The share hedge neutralizes the option's delta axis: pnl_shares â‰ˆ -pnl_delta,
   // leaving the long option to run its gamma/theta. (Residual is FP-level because
   // shares held over each step == -option delta at that step's base.)
   double sum_shares = 0.0;
@@ -743,12 +743,12 @@ TEST(BacktestExec, HedgeOverlay) {
   EXPECT_GT(std::fabs(sum_delta), 0.0);
   EXPECT_LT(sum_shares * sum_delta, 0.0) << "hedge PnL must oppose the option delta axis";
   EXPECT_NEAR(sum_shares + sum_delta, 0.0, 1e-6 * (std::fabs(sum_delta) + 1.0));
-  std::printf("[btexec] hedge: worst |net delta|=%.3e  Σpnl_shares=%.4f  Σpnl_delta=%.4f\n",
+  std::printf("[btexec] hedge: worst |net delta|=%.3e  Î£pnl_shares=%.4f  Î£pnl_delta=%.4f\n",
               worst_net, sum_shares, sum_delta);
 }
 
-// ── 4b. Skew-adjusted delta: hedger inherits it via PriceFrame, zero hedger
-//        code change (I6) ─────────────────────────────────────────────────
+// â”€â”€ 4b. Skew-adjusted delta: hedger inherits it via PriceFrame, zero hedger
+//        code change (I6) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 TEST(Backtest, HedgeTradesOnAdjustedDelta) {
   // Deterministic 2-day synthetic backtest, hedge band ~0, on the file's
   // standard put-skewed eSSVI corpus (make_surface's rho = -0.4 + 0.02*i is
@@ -857,14 +857,14 @@ TEST(Backtest, HedgeTradesOnAdjustedDelta) {
               worst_gap);
 }
 
-// ── 5. Friction monotonicity: more spread ⇒ lower nav, higher cost ──────────
+// â”€â”€ 5. Friction monotonicity: more spread â‡’ lower nav, higher cost â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 TEST(BacktestExec, FrictionMonotonicity) {
   const fs::path dir = fresh_dir("monotonic");
   const Corpus c = make_corpus(dir, "SPX", 6);
   auto clock = Clock::from_manifest(c.manifest);
   ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
 
-  // A put clip opened every step ⇒ an entry (and thus friction) on every row.
+  // A put clip opened every step â‡’ an entry (and thus friction) on every row.
   StrategySpec spec;
   spec.name = "atm-put-clip";
   LegSpec leg;
@@ -896,7 +896,7 @@ TEST(BacktestExec, FrictionMonotonicity) {
     costs[j] = tc;
   }
 
-  // More spread ⇒ strictly more total cost and strictly lower final nav.
+  // More spread â‡’ strictly more total cost and strictly lower final nav.
   EXPECT_EQ(costs[0], 0.0);
   EXPECT_LT(costs[0], costs[1]);
   EXPECT_LT(costs[1], costs[2]);
@@ -906,7 +906,7 @@ TEST(BacktestExec, FrictionMonotonicity) {
               navs[2], costs[0], costs[1], costs[2]);
 }
 
-// ── B3. Daily delta-hedge + O(1) share ledger is allocation-free in steady state ──
+// â”€â”€ B3. Daily delta-hedge + O(1) share ledger is allocation-free in steady state â”€â”€
 //
 // The hedge overlay's HEAP footprint must not grow with the step count: after
 // warm-up (every hedged uid resident in the ledger) the pass reuses its per-uid
@@ -918,7 +918,7 @@ TEST(BacktestExec, FrictionMonotonicity) {
 // step count. Pre-B3 the overlay heap-allocated a fresh `uids` vector on EVERY
 // hedge step, so the isolated count grew with D; this test is that regression's gate.
 //
-// n_threads=1 + prefetch off ⇒ the whole run is single-threaded, so the armed
+// n_threads=1 + prefetch off â‡’ the whole run is single-threaded, so the armed
 // global-new tally is deterministic (no worker-pool / async-prefetch allocations).
 TEST(BacktestExec, HedgeLedgerAllocationIsStepInvariant) {
   const fs::path dir = fresh_dir("allocsteady");
@@ -944,7 +944,7 @@ TEST(BacktestExec, HedgeLedgerAllocationIsStepInvariant) {
     return spec;
   };
 
-  // Single-threaded, no async prefetch ⇒ the armed tally counts only this thread.
+  // Single-threaded, no async prefetch â‡’ the armed tally counts only this thread.
   const auto run_counted = [&](const StrategySpec& spec, int n_dates) -> std::uint64_t {
     const Corpus c = make_corpus(dir, "SPX", n_dates, 100.0, 0.006, 0.001);
     auto clock = Clock::from_manifest(c.manifest);
@@ -979,7 +979,7 @@ TEST(BacktestExec, HedgeLedgerAllocationIsStepInvariant) {
   // uid set during warm-up) and does NOT grow with the step count: doubling the
   // dates does not increase the hedge-attributable allocation count.
   EXPECT_LE(hedge_extra_2d, hedge_extra_d)
-      << "hedge allocation grew with step count — a per-step heap allocation regressed the "
+      << "hedge allocation grew with step count â€” a per-step heap allocation regressed the "
          "zero-alloc steady state (hedge_extra_d=" << hedge_extra_d
       << " hedge_extra_2d=" << hedge_extra_2d << ")";
   std::printf("[btexec] B3 zero-alloc: hedge-attributable allocs D=%llu 2D=%llu (on_d=%llu off_d=%llu "
@@ -990,12 +990,12 @@ TEST(BacktestExec, HedgeLedgerAllocationIsStepInvariant) {
               static_cast<unsigned long long>(on_2d), static_cast<unsigned long long>(off_2d));
 }
 
-// ── B4. Held-to-expiry daily overlapping cohorts compose + settle at scale ───────
+// â”€â”€ B4. Held-to-expiry daily overlapping cohorts compose + settle at scale â”€â”€â”€â”€â”€â”€â”€
 //
-// EveryStep entry + HoldToExpiry over kNames 40Δ strangles builds many overlapping
+// EveryStep entry + HoldToExpiry over kNames 40Î” strangles builds many overlapping
 // daily cohorts; a ~20-clock-day tenor (target_T = 20*kDayNs/kNsPerYear, which
 // rounds to exactly 20 clock-days so expiries land ON clock dates) makes cohorts
-// reach expiry MID-RUN — exercising the expiry sweep + engine settlement (B2
+// reach expiry MID-RUN â€” exercising the expiry sweep + engine settlement (B2
 // batched marks) at scale, not just accumulation. Verifies the composition is
 // correct (overlapping cohorts accumulate, cohorts settle, the book never empties)
 // and bit-identical across thread counts (determinism at scale).
@@ -1087,9 +1087,9 @@ TEST(BacktestExec, HeldToExpiryDailyCohortsComposeAtScale) {
               kNames, kDates, max_lots, settle_rows);
 }
 
-// ── B5a. Strategy-overload hedge + cohort determinism (B3 + B4) ───────────────
+// â”€â”€ B5a. Strategy-overload hedge + cohort determinism (B3 + B4) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 //
-// EXACT coverage: the STRATEGY overload on the M2 universe shape (kNames 40Δ
+// EXACT coverage: the STRATEGY overload on the M2 universe shape (kNames 40Î”
 // strangles, EveryStep entry, HoldToExpiry, DeltaToZero DAILY hedge). This exercises
 // B3 (the O(1) daily delta-hedge ledger, band 0.0 so it fires every step) and B4
 // (daily overlapping cohort accumulation). It does NOT exercise B1 subset-deser (the
@@ -1157,8 +1157,8 @@ TEST(BacktestExec, StrategyLoopHedgeAndCohorts_Deterministic) {
   };
 
   auto a = run(1);
-  auto b = run(1); // same config, second run — determinism
-  auto c = run(4); // different thread count — thread-invariance
+  auto b = run(1); // same config, second run â€” determinism
+  auto c = run(4); // different thread count â€” thread-invariance
   ASSERT_TRUE(a.has_value()) << a.error().to_string();
   ASSERT_TRUE(b.has_value()) << b.error().to_string();
   ASSERT_TRUE(c.has_value()) << c.error().to_string();
@@ -1182,16 +1182,16 @@ TEST(BacktestExec, StrategyLoopHedgeAndCohorts_Deterministic) {
               kNames, kDates);
 }
 
-// ── B5b. Fixed-book composed subset-deser + batched settlement determinism (B1 + B2) ─
+// â”€â”€ B5b. Fixed-book composed subset-deser + batched settlement determinism (B1 + B2) â”€
 //
 // The strategy gate above cannot exercise B1 (strategy overload = whole board) nor
 // B2 (no expiries), so this companion gates the composed FIXED-BOOK path where BOTH
-// run. The archive holds 4 names; the fixed book references only 2 (book ⊂ archive),
+// run. The archive holds 4 names; the fixed book references only 2 (book âŠ‚ archive),
 // so the fixed-book overload's private cache subset-deserializes. To PROVE the
 // subset path is load-bearing (not merely present), the 2 UNREFERENCED surfaces are
 // written with a MISMATCHED now_ts_ns: a whole-board load then fails the
 // surfaces-agree-on-ts check (asserted as a positive control), while the subset load
-// of the 2 referenced (matching-ts) names succeeds — so a run that succeeds MUST have
+// of the 2 referenced (matching-ts) names succeeds â€” so a run that succeeds MUST have
 // taken the subset path. One book lot expires exactly on a mid-window clock date, so
 // B2 batched settlement fires (asserted: exactly one settling row). Then 2-run +
 // 1-vs-4-thread bit-identity over the composed run.
@@ -1232,7 +1232,7 @@ TEST(BacktestExec, FixedBookComposedSubsetAndSettlement_Deterministic) {
 
   // Positive control: a WHOLE-BOARD load fails (mixed now_ts across the 4 surfaces).
   auto whole = MarketSnapshot::load(dp.front().second);
-  EXPECT_FALSE(whole.has_value()) << "whole-board load should fail on mismatched now_ts_ns — the "
+  EXPECT_FALSE(whole.has_value()) << "whole-board load should fail on mismatched now_ts_ns â€” the "
                                      "subset path is what makes the run below succeed";
   // The subset load of the 2 referenced (matching-ts) names succeeds with 2 surfaces.
   auto sub = MarketSnapshot::load(dp.front().second, QueryPricingTier::LegacyCompatible,
@@ -1258,7 +1258,7 @@ TEST(BacktestExec, FixedBookComposedSubsetAndSettlement_Deterministic) {
   auto a = run(1);
   ASSERT_TRUE(a.has_value()) << (a.has_value() ? std::string{} : a.error().to_string())
                              << " (the fixed-book subset run must succeed even though the "
-                                "whole-board load fails — proof the B1 subset path ran)";
+                                "whole-board load fails â€” proof the B1 subset path ran)";
   // B2 batched settlement ran: exactly one lot expired mid-window and settled.
   int settle_rows = 0;
   for (std::size_t i = 0; i < a->size(); ++i) {
@@ -1292,7 +1292,7 @@ TEST(BacktestExec, FixedBookComposedSubsetAndSettlement_Deterministic) {
               settle_rows);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // L1 (AL-solve-wall sprint, fewer-solves): base-risk stamp survives a membership
 // change. See portfolio_pricer.cpp PortfolioPricer::carry_base_risk_subset and
 // backtest.cpp RetainedBookPricer::prepare. The solve-economy gate below is the
@@ -1300,7 +1300,7 @@ TEST(BacktestExec, FixedBookComposedSubsetAndSettlement_Deterministic) {
 // PerUnit (which pins the PRE-L1 11 s/u expiry-day cost): after L1 the survivor's
 // expiry-day pnl-base bundle is REUSED across the settlement shrink, dropping the
 // A-attributable expiry-day cost 11 -> 6 (== the no-churn day).
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 namespace led = atx::vol::counters::ledger;
 
 namespace {
@@ -1358,11 +1358,11 @@ class AbsentNameStrategy final : public IStrategy {
 
 }  // namespace
 
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Zero-surface snapshot + finance_premium (plan 1.12).
 //
 // `MarketSnapshot::load`'s subset-miss path LEGALLY yields a snapshot owning no
-// surfaces (a book/strategy naming only uids absent from this partition — the load
+// surfaces (a book/strategy naming only uids absent from this partition â€” the load
 // deliberately keeps an empty SurfaceSet instead of falling back to a whole-board
 // read). The cash-carry accrual then sourced its base-date rate from
 // `base->surface_at(0)`, an unbounded index into an empty backing, and the null
@@ -1372,7 +1372,7 @@ class AbsentNameStrategy final : public IStrategy {
 // loop's own missing-data convention: a FLAT balance carries no economics (the
 // hedge-share ledger's `n != 0.0` rule), a LIVE one is a valuation failure that
 // must fail closed rather than silently drop a step of financing out of NAV.
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 TEST(BacktestExec, ZeroSurfaceSnapshotWithLiveCashAndFinancePremiumFailsClosed) {
   const fs::path dir = fresh_dir("zero-surface-live-cash");
   const Clock clock = offset_clock(dir, "SPX", {0, 20});
@@ -1413,12 +1413,12 @@ TEST(BacktestExec, ZeroSurfaceSnapshotWithZeroCashAndFinancePremiumCarriesNothin
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Non-monotone snapshot timestamps (plan 2.4).
 //
 // A `Clock` is ordered by DATE STRING, but every economic quantity in a step is
 // driven by `dt = (shifted.ts_ns - base.ts_ns) / kNsPerYear`, and that timestamp
-// comes from the ARCHIVE's `now_ts_ns` — a different thing entirely. A
+// comes from the ARCHIVE's `now_ts_ns` â€” a different thing entirely. A
 // mislabelled or misordered partition therefore hands the step loop a negative
 // dt, and nothing checked it: `exp(r*dt)` shrinks the cash balance instead of
 // growing it, the borrow bleed becomes a rebate, and the shares-carry term flips
@@ -1428,11 +1428,11 @@ TEST(BacktestExec, ZeroSurfaceSnapshotWithZeroCashAndFinancePremiumCarriesNothin
 // It must fail closed with a clear error instead. Both overloads validate it:
 // the fixed-book run has no financing, but it derives residual T, settlement and
 // expiry drops from the same timestamps.
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 TEST(BacktestExec, BackwardsSnapshotTimestampsFailClosed) {
   const fs::path dir = fresh_dir("backwards-ts-strategy");
   // Date strings ascend (2026-08-01, 2026-08-02); their archives' valuation
-  // stamps do NOT — day 20 then day 0.
+  // stamps do NOT â€” day 20 then day 0.
   const Clock clock = offset_clock(dir, "SPX", {20, 0});
   NoopStrategy strat;
 
@@ -1541,7 +1541,7 @@ TEST(BacktestExec, L1ExpiryDaySurvivorReusesBaseRiskAcrossSettlement) {
   EXPECT_EQ(analytic(expiry), 1u) << "pnl-base re-solve removed by L1 (was 2 bundles)";
 
   // The A-attributable expiry-day cost (total minus B's one settlement mark) is now 6
-  // == the no-churn day — the 11 -> 6 solve-economy win, and it exceeds no-churn by
+  // == the no-churn day â€” the 11 -> 6 solve-economy win, and it exceeds no-churn by
   // exactly B's settlement mark, no extra pnl-base bundle.
   const std::uint64_t a_expiry_cost = al(expiry) - 1u;
   EXPECT_EQ(a_expiry_cost, 6u) << "expiry-day steady state 11 -> 6 solve-equivs/unit (L1 gate)";
@@ -1594,7 +1594,7 @@ TEST(BacktestExec, L1SurvivorPnlBitIdenticalAcrossMembershipChange) {
   // Rows 3 (B's expiry day, where the carry fires) and 4 (a following no-churn day)
   // have alive == {A} in BOTH runs: A's Taylor PnL COMPONENTS + book greeks must be
   // bit-equal. (`pnl_total` is EXCLUDED: the fixed-book overload folds B's settlement
-  // into row 3's aggregate — step_total = t.pnl_total + settlement — so the aggregate
+  // into row 3's aggregate â€” step_total = t.pnl_total + settlement â€” so the aggregate
   // legitimately differs; every per-axis component below is settlement-free pure-A.)
   const auto a_cols = [](const BacktestResult& r, std::size_t i) {
     return std::array<double, 13>{
@@ -1608,7 +1608,7 @@ TEST(BacktestExec, L1SurvivorPnlBitIdenticalAcrossMembershipChange) {
     for (std::size_t k = 0; k < ca.size(); ++k) {
       EXPECT_TRUE(bits_equal(ca[k], cb[k]))
           << "survivor A PnL/greeks diverged at row " << i << " col " << k
-          << " ({A}=" << ca[k] << " vs {A,B}=" << cb[k] << ") — the carry-over is NOT bit-identical";
+          << " ({A}=" << ca[k] << " vs {A,B}=" << cb[k] << ") â€” the carry-over is NOT bit-identical";
     }
   }
   // Row 4 has NO settlement in either run, so the aggregate pnl_total is pure-A too.
@@ -1619,7 +1619,7 @@ TEST(BacktestExec, L1SurvivorPnlBitIdenticalAcrossMembershipChange) {
 
 // Positive control (Trap 3): the carry re-homes the stamp, but it must NOT weaken the
 // pnl reuse's base-surface guard. Stamp base risk at surface v1, carry onto the
-// subset book, then run pnl against a DIFFERENT base surface v2 — the guard must
+// subset book, then run pnl against a DIFFERENT base surface v2 â€” the guard must
 // REFUSE the (now surface-mismatched) reuse and RE-SOLVE. The re-solve is observable
 // on the ledger AND its result must equal a cold pnl on the subset at v2 (it would be
 // the WRONG v1 risk if the carry silently defeated the guard).
@@ -1685,7 +1685,7 @@ TEST(BacktestExec, L1CarryStillHonorsSurfaceGuard) {
 }
 
 // Positive control: a survivor whose INPUT changed (tenor T) is a different
-// (uid,K,T,side) key, so carry_base_risk_subset must REFUSE (return false) — reuse
+// (uid,K,T,side) key, so carry_base_risk_subset must REFUSE (return false) â€” reuse
 // would serve stale risk. The subsequent solve then recomputes at the new tenor.
 TEST(BacktestExec, L1SubsetCarryRefusesOnChangedInput) {
   const std::int64_t ts = kBaseNow;
@@ -1730,8 +1730,8 @@ TEST(BacktestExec, L1SubsetCarryRefusesOnChangedInput) {
               "the new tenor\n");
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// L2 (AL-solve-wall sprint) — per-(contract,date) settlement-mark memo.
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// L2 (AL-solve-wall sprint) â€” per-(contract,date) settlement-mark memo.
 //
 // CRUX (PM adjudication): the settlement-mark memo serves the settlement path a
 // mark that was computed by the FullGreeks/analytic book-greeks pass, in place of
@@ -1742,22 +1742,22 @@ TEST(BacktestExec, L1SubsetCarryRefusesOnChangedInput) {
 // the Marks-mask path routes the 4-wide AVX2 boundary kernel while the FullGreeks
 // analytic mark stays scalar, so the two are no longer bit-identical: they diverge
 // by the AVX2 economic-parity residual (measured ~1e-13 USD absolute, ~1e-14
-// relative on this population — FMA/reduction-order, not a model difference). We
+// relative on this population â€” FMA/reduction-order, not a model difference). We
 // therefore hold the crux to a <=1e-10 RELATIVE tolerance instead of bit-identity:
-// ~1000x above float noise, ~1e7x below the 1-tick economic gate — i.e. ~10 orders
+// ~1000x above float noise, ~1e7x below the 1-tick economic gate â€” i.e. ~10 orders
 // of magnitude below a settlement tick, so the memo substitution stays economically
-// exact. Documented under the PM epsilon license (algorithmically correct — same
-// AL solve, SIMD-reassociated — and economically meaningless). If the divergence
+// exact. Documented under the PM epsilon license (algorithmically correct â€” same
+// AL solve, SIMD-reassociated â€” and economically meaningless). If the divergence
 // ever EXCEEDS this relative tolerance, that is a real model split: STOP and report,
 // do NOT widen the tolerance.
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 TEST(BacktestExec, L2MarkMemoCruxFullGreeksMarkEqualsMarksMark) {
   const PricedSurface s = make_surface(kUid, 100.0, 100.0, kBaseNow, 0.0);
   const PricedSurface* ptrs[] = {&s};
   auto set = SurfaceSet::create(std::span<const PricedSurface* const>{ptrs});
   ASSERT_TRUE(set.has_value());
 
-  // A spread of strikes/sides/tenors — a representative settling-lot population.
+  // A spread of strikes/sides/tenors â€” a representative settling-lot population.
   std::vector<Position> pos;
   std::uint64_t id = 1;
   for (const double K : {80.0, 95.0, 100.0, 105.0, 120.0}) {
@@ -1793,7 +1793,7 @@ TEST(BacktestExec, L2MarkMemoCruxFullGreeksMarkEqualsMarksMark) {
     // AVX2 economic-parity tolerance, not bit-identity: the Marks path (AVX2 boundary)
     // and the FullGreeks-analytic mark (scalar) differ only by the SIMD reassociation
     // residual (~1e-13 USD, ~1e-14 relative). <=1e-10 relative is ~10 orders below a
-    // tick — economic nil (PM epsilon license). A denominator floor of 1.0 keeps the
+    // tick â€” economic nil (PM epsilon license). A denominator floor of 1.0 keeps the
     // bound sane for deep-OTM marks near zero without ever loosening it economically.
     const double marks_px = marks->price[i];
     const double greeks_px = greeks->price[i];
@@ -1802,7 +1802,7 @@ TEST(BacktestExec, L2MarkMemoCruxFullGreeksMarkEqualsMarksMark) {
         << "CRUX FAIL: Marks mark diverges from FullGreeks-analytic mark ABOVE the AVX2 "
            "economic-parity tolerance for lot "
         << marks->id[i] << " (Marks=" << marks_px << " FullGreeks=" << greeks_px
-        << " rel=" << rel << ") — this exceeds ~10 orders below a tick, so it is a real "
+        << " rel=" << rel << ") â€” this exceeds ~10 orders below a tick, so it is a real "
            "model split, NOT a SIMD epsilon; STOP + report, do NOT widen the tolerance.";
   }
   ASSERT_GT(n_ok, 20u) << "crux population too small to be meaningful";
@@ -1812,7 +1812,7 @@ TEST(BacktestExec, L2MarkMemoCruxFullGreeksMarkEqualsMarksMark) {
 }
 
 // L2 gate: the settlement-mark memo serves B's expiry-day base mark from the prior
-// step's book-greeks pass instead of re-solving it — expiry al 7 -> 6, and the new
+// step's book-greeks pass instead of re-solving it â€” expiry al 7 -> 6, and the new
 // DuplicateMarkSolves counter goes 0 (memo on) / >=1 (memo off, proving the counter
 // sees the duplication). Memo ON is BIT-IDENTICAL to memo OFF (the pre-L2 behavior).
 TEST(BacktestExec, L2SettlementMarkMemoDropsExpirySolve) {
@@ -1830,7 +1830,7 @@ TEST(BacktestExec, L2SettlementMarkMemoDropsExpirySolve) {
   };
   const auto dup = [](const led::Counts& c) { return c.get(led::Solve::DuplicateMarkSolves); };
 
-  // Memo OFF: pre-L2 economy — the expiry step still solves B's settlement (al 7), and
+  // Memo OFF: pre-L2 economy â€” the expiry step still solves B's settlement (al 7), and
   // the counter observes that duplicate (B's mark was already in the memo).
   RunConfig off = det_config();
   off.settlement_mark_memo = false;
@@ -1871,7 +1871,7 @@ TEST(BacktestExec, L2SettlementMarkMemoDropsExpirySolve) {
     for (std::size_t k = 0; k < con.size(); ++k) {
       EXPECT_TRUE(bits_equal(con[k], cof[k]))
           << "L2 memo ON != OFF at row " << i << " col " << k
-          << " — the settlement memo is NOT bit-identical to the solve";
+          << " â€” the settlement memo is NOT bit-identical to the solve";
     }
   }
   std::printf("[btexec] L2 settlement memo: expiry al 7->6, dup=%llu (on)/%llu (off), memo on==off\n",
@@ -1879,8 +1879,8 @@ TEST(BacktestExec, L2SettlementMarkMemoDropsExpirySolve) {
               static_cast<unsigned long long>(dup(total_off)));
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// L2 memo admission gate (plan 1.11) — NaN is the settlement path's IN-BAND
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// L2 memo admission gate (plan 1.11) â€” NaN is the settlement path's IN-BAND
 // "must solve" sentinel, so a NaN mark must never be admitted to the memo.
 //
 // compute_step's L2 settlement branch seeds `served[i]` with NaN, serves a memo
@@ -1891,10 +1891,10 @@ TEST(BacktestExec, L2SettlementMarkMemoDropsExpirySolve) {
 // null `sf_ptr` when it is the only expiring lot, and desyncs `solve_ix` against
 // the solve frame when it is not.
 //
-// The marks that trip this cannot be produced through the public pricing stack —
-// every Ok-stamp in portfolio_pricer.cpp sweeps `isfinite(price)` first — so the
+// The marks that trip this cannot be produced through the public pricing stack â€”
+// every Ok-stamp in portfolio_pricer.cpp sweeps `isfinite(price)` first â€” so the
 // gate is driven directly through `populate_from_marks` (see step_mark_memo.hpp).
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 TEST(BacktestExec, L2MarkMemoNonFiniteOkMarkIsNotServed) {
   const PricedSurface s = make_surface(kUid, 100.0, 100.0, kBaseNow, 0.0);
   const PricedSurface* ptrs[] = {&s};
@@ -1905,7 +1905,7 @@ TEST(BacktestExec, L2MarkMemoNonFiniteOkMarkIsNotServed) {
   constexpr double kQNaN = std::numeric_limits<double>::quiet_NaN();
   constexpr double kInf = std::numeric_limits<double>::infinity();
   const std::vector<RetainedMark> marks{
-      // A finite Ok mark — the positive control: still served.
+      // A finite Ok mark â€” the positive control: still served.
       RetainedMark{kUid, 100.0, 0.25, Side::Call, 3.25, PriceStatus::Ok},
       // Ok-status but non-finite: must be a memo MISS, not a served NaN/Inf.
       RetainedMark{kUid, 95.0, 0.25, Side::Put, kQNaN, PriceStatus::Ok},
@@ -1923,7 +1923,7 @@ TEST(BacktestExec, L2MarkMemoNonFiniteOkMarkIsNotServed) {
       << "positive control: a finite Ok mark must still be served from the memo";
   EXPECT_TRUE(bits_equal(*served(100.0, Side::Call), 3.25));
   EXPECT_FALSE(served(95.0, Side::Put).has_value())
-      << "a NaN Ok mark was admitted — it collides with the settlement miss sentinel "
+      << "a NaN Ok mark was admitted â€” it collides with the settlement miss sentinel "
          "(null sf_ptr deref / desynced solve_ix)";
   EXPECT_FALSE(served(90.0, Side::Put).has_value()) << "+Inf Ok mark admitted";
   EXPECT_FALSE(served(85.0, Side::Put).has_value()) << "-Inf Ok mark admitted";
@@ -1931,7 +1931,7 @@ TEST(BacktestExec, L2MarkMemoNonFiniteOkMarkIsNotServed) {
 }
 
 // L2 strategy-path bit-identity: over a daily-cohort strangle that settles cohorts
-// mid-run (the B4 shape), memo ON == memo OFF, full result bit-for-bit — proving the
+// mid-run (the B4 shape), memo ON == memo OFF, full result bit-for-bit â€” proving the
 // settlement memo is bit-identical in the STRATEGY overload too (where it is
 // populated only from the non-seeded book-greeks pass and falls closed on stale/
 // execute-fired steps).
@@ -2001,7 +2001,7 @@ TEST(BacktestExec, L2StrategyCohortSettlementMemoBitIdentical) {
       ++settle_rows;
     }
   }
-  EXPECT_GT(settle_rows, 0) << "no cohort settled — the strategy memo path is not exercised";
+  EXPECT_GT(settle_rows, 0) << "no cohort settled â€” the strategy memo path is not exercised";
   // C1 (backtest-lakehouse sprint): before C1, this strategy's memo was NEVER
   // actually consulted -- `Entry::EveryStep` keeps `ExecResult::book_greeks` set on
   // every step (entry_happened is always true), so the standalone `book_greeks()`
@@ -2049,35 +2049,35 @@ TEST(BacktestExec, L2StrategyCohortSettlementMemoBitIdentical) {
               settle_rows);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// C1 (backtest-lakehouse sprint) — mark-memo repopulation on the execute() path.
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// C1 (backtest-lakehouse sprint) â€” mark-memo repopulation on the execute() path.
 //
 // `L2StrategyCohortSettlementMemoBitIdentical` above already documents the defect:
 // its strategy re-enters EVERY step (`Entry::EveryStep`), so `ExecResult::book_greeks`
 // has a value on every step and the standalone `book_greeks()` call that is the ONLY
-// place the step-mark memo gets populated (pre-C1) never runs — the memo is
+// place the step-mark memo gets populated (pre-C1) never runs â€” the memo is
 // permanently cold, and every settlement re-solves.
 //
 // A DAILY-HEDGED strategy hits the identical starvation for a different reason:
 // `HedgeSpec::Cadence::Daily` makes `execute()`'s `hedge_fires` true on EVERY step
 // regardless of `entry_happened`, so `ExecResult::book_greeks` again always has a
-// value and the memo again never populates. C1 fixes this at the root — execute()'s
-// own FullGreeks `price_into` pass now populates the memo itself — so BOTH shapes
+// value and the memo again never populates. C1 fixes this at the root â€” execute()'s
+// own FullGreeks `price_into` pass now populates the memo itself â€” so BOTH shapes
 // benefit; this fixture isolates the daily-hedge trigger with a single cohort held
 // to an EXACT expiry so the solve-ledger counts are unambiguous (`n_expiring_lots`
 // lots, one settlement event, nothing else).
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 namespace {
 
 // A daily-hedged strangle (call+put, ONE cohort opened at inception via a huge
 // `entry_every_n`, `HoldToExpiry`) whose expiry lands EXACTLY on a later clock
-// date — `expiry_day < n_dates` settles it inside the run; `expiry_day >= n_dates`
+// date â€” `expiry_day < n_dates` settles it inside the run; `expiry_day >= n_dates`
 // leaves it open at run end (the bit-identity/no-expiry variant below). "ExecFixture
 // ::daily_hedged_strangle_over_expiry() or equivalent" from the C1 brief: kept as a
 // standalone fixture rather than folded into `ExecFixture` above (that class is
-// QuoteSide-specific — its `.corpus()`/`.config()` return QuoteSide-only types/
-// configs — so bolting an unrelated daily-hedge/expiry mode onto it would trade one
+// QuoteSide-specific â€” its `.corpus()`/`.config()` return QuoteSide-only types/
+// configs â€” so bolting an unrelated daily-hedge/expiry mode onto it would trade one
 // coupling for another).
 struct DailyHedgedExpiryFixture {
   Clock clock;
@@ -2124,7 +2124,7 @@ make_daily_hedged_strangle_fixture(const fs::path& dir, int n_dates, int expiry_
 // The pinned solve-ledger gate: expiry-day settlement marks must be memo hits, not
 // fresh solves, on the daily-hedge route. Pre-C1 this fails with
 // settlement_full_solves == 2 (both legs re-solved) and settlement_memo_hits == 0
-// (the memo was never populated) — the bug's exact count signature.
+// (the memo was never populated) â€” the bug's exact count signature.
 TEST(BacktestSolveLedger, ExpiryMarksMemoHitOnDailyHedgeRoute) {
   const fs::path dir = fresh_dir("c1-solve-ledger");
   const DailyHedgedExpiryFixture fx =
@@ -2147,7 +2147,7 @@ TEST(BacktestSolveLedger, ExpiryMarksMemoHitOnDailyHedgeRoute) {
 
 // Bit-identity (KEY INVARIANT): the memo changes SOLVE COUNT, never VALUES. On a
 // non-expiry corpus (the cohort's expiry falls well beyond the run window, so
-// nothing ever settles) memo ON and memo OFF must produce a bit-identical result —
+// nothing ever settles) memo ON and memo OFF must produce a bit-identical result â€”
 // proving execute()'s new populate_from call (which now runs on EVERY daily-hedged
 // step, whether or not anything ever consumes the memo) is inert on the economics.
 // Both solve-ledger counters are also asserted at exactly 0 in both runs: with no
@@ -2185,8 +2185,8 @@ TEST(BacktestSolveLedger, DailyHedgeNoExpiryMemoOnOffBitIdentical) {
               r_on->size());
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// L4 (AL-solve-wall sprint) — first-order tier wiring (the K4 last-mile seam).
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// L4 (AL-solve-wall sprint) â€” first-order tier wiring (the K4 last-mile seam).
 //
 // Edit B threads `PricedSurface::GreekNeeds` from evaluate/evaluate_batch/
 // greeks_analytic down into `american_greeks_al(..., need_vega, need_rho, need_charm)`,
@@ -2200,14 +2200,14 @@ TEST(BacktestSolveLedger, DailyHedgeNoExpiryMemoOnOffBitIdentical) {
 // unrequested greeks 0), (2) the per-role ledger economy (full=5, risk=3, hedge=1
 // boundary solves/unique), and (3) the stamp-guard safety (a narrowed base is
 // re-solved, never served, by a following pnl).
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // (1) Edit-B bit-identity / K4 guarantee. `greeks_analytic` with the DEFAULT
 // GreekNeeds{} reproduces the pre-L4 maskless bundle bit-for-bit; a reduced request
 // returns its requested columns BIT-IDENTICAL to the full bundle (same base boundary +
 // sigma+/- stencils) with the unrequested greeks left exactly 0 on the native put AL
 // route. (Calls / degenerate corners defer to american_greeks_fd, the full oracle,
-// which ignores the mask — a correctness-preserving superset; the "==0" drop is
+// which ignores the mask â€” a correctness-preserving superset; the "==0" drop is
 // asserted only on puts, which take the analytic route this fixture is built for.)
 TEST(BacktestExec, L4EditBReducedColumnsBitIdenticalToFullBundle) {
   const PricedSurface s = make_surface(kUid, 100.0, 100.0, kBaseNow, 0.0);
@@ -2265,7 +2265,7 @@ TEST(BacktestExec, L4EditBReducedColumnsBitIdenticalToFullBundle) {
     }
   }
   ASSERT_GT(n_ok, 20u);
-  EXPECT_GT(n_put_masked, 5u) << "no puts took the masked analytic AL route — fixture invalid";
+  EXPECT_GT(n_put_masked, 5u) << "no puts took the masked analytic AL route â€” fixture invalid";
   std::printf("[btexec] L4 Edit-B: reduced columns bit-identical to full on %zu lots; "
               "%zu puts masked rho/charm/vega to 0\n",
               n_ok, n_put_masked);
@@ -2273,7 +2273,7 @@ TEST(BacktestExec, L4EditBReducedColumnsBitIdenticalToFullBundle) {
 
 // (2) Per-role ledger economy: a single-unique FullGreeks/analytic price spends 5
 // boundary solves at full needs, 3 at the risk role ({delta,vega}, r+/- skipped), 1 at
-// the hedge role ({delta}, sigma+/- and r+/- skipped) — the K4 tier, on the SCALAR
+// the hedge role ({delta}, sigma+/- and r+/- skipped) â€” the K4 tier, on the SCALAR
 // analytic production route (american_greeks_al), independent of any dark AVX2 flag.
 TEST(BacktestExec, L4PerRoleBundleSolveEconomy) {
   const PricedSurface s = make_surface(kUid, 100.0, 100.0, kBaseNow, 0.0);
@@ -2360,12 +2360,12 @@ TEST(BacktestExec, L4NarrowedBaseNeverReusedByPnlStamp) {
   ASSERT_TRUE(got.has_value()) << got.error().to_string();
   EXPECT_GE(analytic(led::snapshot()), 1u)
       << "L4 STAMP GUARD FAILED: a narrowed (risk-role) base bundle was reused for a full "
-         "P&L attribution — pnl_rho/pnl_charm would be silently wrong. STOP + report.";
+         "P&L attribution â€” pnl_rho/pnl_charm would be silently wrong. STOP + report.";
   EXPECT_TRUE(bits_equal(got->pnl_total, ref->pnl_total)) << "guard re-solve != cold full pnl";
   EXPECT_TRUE(bits_equal(got->pv_base, ref->pv_base));
   EXPECT_TRUE(bits_equal(got->pnl_vega, ref->pnl_vega));
 
-  // (b) Positive control: a FULL base IS reused (guard allows it) — no fresh bundle.
+  // (b) Positive control: a FULL base IS reused (guard allows it) â€” no fresh bundle.
   PortfolioPricer p_full(std::move(*Portfolio::create(std::array<Position, 1>{pa})));
   PortfolioWorkspace ws2;
   ws2.reserve(1, 1);
@@ -2380,9 +2380,9 @@ TEST(BacktestExec, L4NarrowedBaseNeverReusedByPnlStamp) {
               "(analytic==0); both pnl bit-match the cold full reference\n");
 }
 
-// ── B1: SpreadKind::QuoteSide fills ──────────────────────────────────────────
+// â”€â”€ B1: SpreadKind::QuoteSide fills â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 //
-// (a) a recorded quote crosses at mid ± f·half-spread, f picked by the
+// (a) a recorded quote crosses at mid Â± fÂ·half-spread, f picked by the
 //     committed cohort's leg count (single vs. complex); (b) an absent quote
 //     falls back to the modeled PriceBps half-spread; (c) every
 //     `BacktestResult` carries its `friction_regime`.
@@ -2573,15 +2573,15 @@ TEST(BacktestExec, QuoteSideFieldsAreInertUnderNoneSpreadKind) {
   EXPECT_EQ(FrictionRegime::Frictionless, b.friction_regime);
 }
 
-// ── Task C2: process-wide sealed snapshot pool ──────────────────────────────
+// â”€â”€ Task C2: process-wide sealed snapshot pool â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 //
-// Three gates on `SnapshotPool` (research tier) wired through
+// Three gates on `SnapshotPool` (Tier-B, atx/vol/snapshot_pool.hpp) wired through
 // `RunConfig::snapshot_pool`:
-//   (a) SnapshotPoolSecondRunOpensNoArchives     — a second run over the same
+//   (a) SnapshotPoolSecondRunOpensNoArchives     â€” a second run over the same
 //       clock, sharing the pool, performs ZERO archive opens.
-//   (b) SnapshotPoolIsBitIdenticalToPrivateCache — pooled and private-cache runs
+//   (b) SnapshotPoolIsBitIdenticalToPrivateCache â€” pooled and private-cache runs
 //       agree bit-for-bit on every BacktestResult column and scalar.
-//   (c) SnapshotPoolConcurrentRunsMatchSerial    — 8 concurrent `std::jthread`
+//   (c) SnapshotPoolConcurrentRunsMatchSerial    â€” 8 concurrent `std::jthread`
 //       runs sharing one pool reproduce the serial result exactly, looped
 //       `kPoolSoakRepeats` times.
 //
@@ -2693,7 +2693,7 @@ TEST(BacktestExec, SnapshotPoolSecondRunOpensNoArchives) {
   EXPECT_EQ(after_first.archive_opens, 6u);
   EXPECT_EQ(after_first.identity_probes, 6u);
   EXPECT_EQ(after_first.resident_entries, 6u);
-  // Run 2: ZERO archive opens, ZERO identity probes — every acquisition is a hit.
+  // Run 2: ZERO archive opens, ZERO identity probes â€” every acquisition is a hit.
   EXPECT_EQ(after_second.archive_opens, after_first.archive_opens);
   EXPECT_EQ(after_second.identity_probes, after_first.identity_probes);
   EXPECT_GT(after_second.hits, after_first.hits);
@@ -2743,7 +2743,7 @@ TEST(BacktestExec, SnapshotPoolIsBitIdenticalToPrivateCache) {
 // per date. Measured on this box: 100 repeats = 7.9-9.2 s (three consecutive
 // passes, all green, 2400 concurrent runs, every rep reporting exactly 6 archive
 // opens); 20 repeats is ~1.8 s, which is what a per-commit gate can afford.
-// Raise this constant to reproduce the full soak — nothing else changes.
+// Raise this constant to reproduce the full soak â€” nothing else changes.
 constexpr int kPoolSoakRepeats = 20;
 
 TEST(BacktestExec, SnapshotPoolConcurrentRunsMatchSerial) {
@@ -2795,12 +2795,12 @@ TEST(BacktestExec, SnapshotPoolConcurrentRunsMatchSerial) {
               kPoolSoakRepeats, kThreads);
 }
 
-// ── Task C2 fix round: the three gaps the review found ──────────────────────
+// â”€â”€ Task C2 fix round: the three gaps the review found â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 //
 //   1. A loader that UNWINDS used to abandon its entry un-ready forever, hanging
 //      every waiter and every later acquirer of that key (invariant L7).
 //   2. The bit-identity gate never exercised the pool's one real behavioural
-//      divergence — dropping the private cache's uid SUBSET — because
+//      divergence â€” dropping the private cache's uid SUBSET â€” because
 //      DeclarativeStrategy does not override `referenced_uids()`, so both sides
 //      were whole-board. The fixed-book overload had no pool coverage at all.
 //   3. `warm()`'s executor dispatch never actually ran: `run_dynamic` inlines
@@ -2844,7 +2844,7 @@ constexpr std::uint32_t kPoolOtherUid = 99;
 }  // namespace
 
 // FINDING 1a. A load that FAILS must release every parked waiter and leave the
-// key retryable. A regression here does not fail this test — it HANGS it, which
+// key retryable. A regression here does not fail this test â€” it HANGS it, which
 // is precisely why the contract needs a gate of its own.
 TEST(BacktestExec, SnapshotPoolFailedLoadReleasesEveryWaiterAndRetries) {
   const fs::path dir = fresh_dir("pool-failed-load");
@@ -2863,7 +2863,7 @@ TEST(BacktestExec, SnapshotPoolFailedLoadReleasesEveryWaiterAndRetries) {
         out[t] = pool.acquire("2099-01-01", missing, QueryPricingTier::LegacyCompatible);
       });
     }
-  }  // jthread join — this is the hang detector
+  }  // jthread join â€” this is the hang detector
 
   for (std::size_t t = 0; t < kThreads; ++t) {
     EXPECT_FALSE(out[t].has_value()) << "thread " << t << " got a snapshot for a missing archive";
@@ -2884,7 +2884,7 @@ TEST(BacktestExec, SnapshotPoolFailedLoadReleasesEveryWaiterAndRetries) {
 
 // FINDING 1b. A loader that UNWINDS (bad_alloc out of the identity probe or the
 // mmap, out of the mismatch message's string concat, out of a lock) must still
-// publish and evict — invariant L7.
+// publish and evict â€” invariant L7.
 //
 // Before the fix the entry stayed `ready == false` in the shard map forever:
 // waiters parked on its condition variable were never signalled, every later
@@ -2893,7 +2893,7 @@ TEST(BacktestExec, SnapshotPoolFailedLoadReleasesEveryWaiterAndRetries) {
 // process, and it presented as a CI timeout rather than a failing assertion.
 //
 // The injected failure is aimed by the pool's own telemetry rather than by an
-// allocation count — see `atx_c2_alloc::g_unwind_watch` — so it lands inside the
+// allocation count â€” see `atx_c2_alloc::g_unwind_watch` â€” so it lands inside the
 // loader window by construction. `identity_probes == 1` afterwards is the
 // assertion that it really did.
 TEST(BacktestExec, SnapshotPoolLoaderUnwindPublishesAndEvicts) {
@@ -2926,7 +2926,7 @@ TEST(BacktestExec, SnapshotPoolLoaderUnwindPublishesAndEvicts) {
   EXPECT_EQ(st.resident_entries, 0u);
   EXPECT_EQ(st.failed_loads, 1u);
 
-  // The key is retryable — the whole point of never caching a failure — and a
+  // The key is retryable â€” the whole point of never caching a failure â€” and a
   // crowd of acquirers arriving after the unwind all complete. Under the bug this
   // join never returned.
   constexpr std::size_t kThreads = 8;
@@ -2939,7 +2939,7 @@ TEST(BacktestExec, SnapshotPoolLoaderUnwindPublishesAndEvicts) {
       threads.emplace_back(
           [&, t] { out[t] = pool.acquire(date, path, QueryPricingTier::LegacyCompatible); });
     }
-  }  // jthread join — this is the hang detector
+  }  // jthread join â€” this is the hang detector
   for (std::size_t t = 0; t < kThreads; ++t) {
     ASSERT_TRUE(out[t].has_value()) << "thread " << t << ": " << out[t].error().to_string();
     EXPECT_NE(*out[t], nullptr);
@@ -2988,7 +2988,7 @@ TEST(BacktestExec, SnapshotPoolMatchesSubsettedPrivateCacheOnFixedBook) {
 
   EXPECT_LT(private_bytes, pooled_bytes)
       << "the private route did not actually subset (" << private_bytes << " vs " << pooled_bytes
-      << " bytes) — this gate would then be comparing two whole-board runs";
+      << " bytes) â€” this gate would then be comparing two whole-board runs";
   EXPECT_EQ(pool.stats().archive_opens, 6u);
   expect_result_bit_identical(*r_priv, *r_pool, "subsetted private cache vs whole-board pool");
   std::printf("[btexec] pool subset: private=%llu bytes, pooled=%llu bytes, results identical\n",
@@ -3000,7 +3000,7 @@ TEST(BacktestExec, SnapshotPoolMatchesSubsettedPrivateCacheOnFixedBook) {
 // `RunConfig::prefetch_depth` defaults to 2, so at defaults NO pool worker ever
 // runs an acquisition and the "safe to acquire on executor workers" half of
 // invariant L4 is never executed. A look-ahead of 6 puts the initial window fill
-// above the threshold, so the fan-out is real — under 8-way concurrency, and
+// above the threshold, so the fan-out is real â€” under 8-way concurrency, and
 // still bit-identical to serial.
 TEST(BacktestExec, SnapshotPoolWarmFansOutOnExecutorWorkers) {
   const fs::path dir = fresh_dir("pool-warm-dispatch");

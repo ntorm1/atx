@@ -1,6 +1,6 @@
 #pragma once
 
-// atx-vol backtest engine (Phase B0) — the canonical forward-pass driver that
+// atx-vol backtest engine (Phase B0) â€” the canonical forward-pass driver that
 // marks a FIXED hand-built option book across a corpus of fitted-surface
 // snapshots and decomposes each step's PnL into the PortfolioPricer Taylor axes.
 //
@@ -8,7 +8,7 @@
 // corpus manifest, an absolute-expiry-aged `Lot`/`PortfolioState`, and the
 // resolve-today -> pnl_explain-forward -> move-swap loop that produces a SoA
 // `BacktestResult` time series (PnL + attribution + book greeks). There is NO
-// strategy, NO frictions, and NO cash ledger here — those arrive in B1/B2. The
+// strategy, NO frictions, and NO cash ledger here â€” those arrive in B1/B2. The
 // book is handed in whole and held to expiry; expiring lots settle at intrinsic
 // only when the clock contains an observation at the exact expiry timestamp.
 // Crossing expiry without that observation fails closed: a later spot is not a
@@ -30,10 +30,10 @@
 // each step's `Portfolio` at the BASE-date residual T = (expiry - base.ts)/year;
 // because the lot's `expiry_ts_ns` is fixed, `T_base - dt == T_shifted` exactly.
 
-#include <cmath> // std::isfinite — should_exercise_early
+#include <cmath> // std::isfinite â€” should_exercise_early
 #include <cstddef>
 #include <cstdint>
-#include <functional> // std::function — RunConfig::step_observer
+#include <functional> // std::function â€” RunConfig::step_observer
 #include <memory>
 #include <optional>
 #include <span>
@@ -53,16 +53,18 @@
 
 namespace atx::vol {
 
-class IStrategy; // strategy.hpp — drives the strategy-aware run_backtest overload
-class SurfaceDb; // surface_db.hpp — Clock::from_surface_db source
-// research/snapshot_pool.hpp — the process-wide sealed snapshot pool (C2).
+class IStrategy; // strategy.hpp â€” drives the strategy-aware run_backtest overload
+class SurfaceDb; // surface_db.hpp â€” Clock::from_surface_db source
+// atx/vol/snapshot_pool.hpp â€” the process-wide sealed snapshot pool (C2).
 // FORWARD-DECLARED, never included: this header is Tier-A and closed under
-// inclusion (vol_umbrella_test.cpp), and the pool is a research-tier type.
+// inclusion (vol_umbrella_test.cpp), and the pool is a Tier-B type (E2
+// promotion) -- #include-ing it here would pull it into Tier-A by that same
+// closure rule, which is not the intent of the promotion.
 // `RunConfig::snapshot_pool` is a non-owning pointer, so the declaration is all
 // a caller who does not use the pool ever needs.
 class SnapshotPool;
 
-// ── Timeline ────────────────────────────────────────────────────────────────
+// â”€â”€ Timeline â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // One dated market snapshot in the backtest timeline: the corpus date string and
 // the on-disk archive that holds that date's fitted surface(s).
@@ -88,7 +90,7 @@ public:
   // unchanged.
   [[nodiscard]] static Result<Clock> from_surface_db(const SurfaceDb &db);
 
-  // Subset this clock to the refs whose date lies in [date_lo, date_hi] —
+  // Subset this clock to the refs whose date lies in [date_lo, date_hi] â€”
   // INCLUSIVE on both ends. Dates are compared as plain strings, which is
   // chronological for the canonical ISO "YYYY-MM-DD" partition keys
   // `from_surface_db` produces (and for the corpus dates `from_manifest` does).
@@ -96,17 +98,17 @@ public:
   // ascending order; `*this` is unchanged.
   //
   // Out-of-range bounds CLAMP: a window wider than the corpus is the whole
-  // corpus, not an error — an operator asking for "2020..2030" wants everything
+  // corpus, not an error â€” an operator asking for "2020..2030" wants everything
   // there is. InvalidArgument when the window selects NO ref (date_lo > date_hi,
   // or a real gap between two dates the corpus does not cover); the message
   // names the available range so the caller can self-serve the correction.
   [[nodiscard]] Result<Clock> between(std::string_view date_lo, std::string_view date_hi) const;
 
-  // BORROW of the timeline vector this `Clock` owns — including the `date` and
+  // BORROW of the timeline vector this `Clock` owns â€” including the `date` and
   // `archive_path` strings inside each `SnapshotRef`. A clock is immutable once a
   // `from_*` factory has returned it (nothing rewrites `refs_`), so the span is
   // valid for the clock's lifetime and concurrent const readers are safe.
-  // INVALIDATION: destroying the clock, or assigning over it — the type is
+  // INVALIDATION: destroying the clock, or assigning over it â€” the type is
   // COPYABLE as well as movable, and a span taken from one clock never names the
   // copy's storage. A step loop that outlives the clock (or that stores refs past
   // a rebuild) must copy them out, not keep this span.
@@ -134,23 +136,23 @@ private:
   std::vector<std::string> dropped_dates_;
 };
 
-// ── Archive backing (WS-ZC1) ────────────────────────────────────────────────
+// â”€â”€ Archive backing (WS-ZC1) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 //
 // How a snapshot that BORROWS its surfaces obtains the archive bytes those views
 // read. It is a statement about the FILE'S LIFECYCLE, made by the caller, because
-// only the caller knows it — not something the loader can infer.
+// only the caller knows it â€” not something the loader can infer.
 //
 //   Mutable (default, safe): map, copy once into an owned buffer, DROP the mapping.
-//     For any archive something may still rewrite, evict, or delete — above all the
+//     For any archive something may still rewrite, evict, or delete â€” above all the
 //     `SurfaceDb` store path (write -> reopen -> rewrite/evict/delete). A resident
 //     `atx::tsdb::Mapping` keeps the file open, and on Windows those operations then
 //     fail with a sharing violation; commit 8627ccb reverted exactly that regression
 //     (~22 SurfaceDb/SurfaceDbPopulate tests) and `SnapshotCacheEvictsStaleEntry-
 //     WhenArchiveRewrittenSameLength` pins it. This backing costs a whole-archive
 //     copy, which scales with archive BYTES while the reconstruction it replaces
-//     scales with SURFACES — so it is a net loss on short runs.
+//     scales with SURFACES â€” so it is a net loss on short runs.
 //
-//   Sealed: keep the mapping for the snapshot's lifetime — no copy at all. ONLY for
+//   Sealed: keep the mapping for the snapshot's lifetime â€” no copy at all. ONLY for
 //     an immutable, read-only corpus: a historical replay, where nothing rewrites or
 //     deletes a partition mid-run. This is where the WS-ZC1 win actually lives
 //     (~9x on snapshot_load); it is opt-in precisely because it pins the file.
@@ -158,15 +160,15 @@ private:
 //     cache memoizes each archive's content-identity check for the CACHE's whole
 //     lifetime, not just one snapshot's (see `SnapshotCache::archive_backing`).
 //
-// Choosing Sealed for a partition the store may mutate does not corrupt data — the
-// mapped bytes stay coherent — but it WILL make the store's rewrite/delete fail. Ask
+// Choosing Sealed for a partition the store may mutate does not corrupt data â€” the
+// mapped bytes stay coherent â€” but it WILL make the store's rewrite/delete fail. Ask
 // for Sealed only when the corpus is genuinely read-only for the snapshot's lifetime.
 enum class ArchiveBacking : std::uint8_t {
   Mutable = 0,
   Sealed = 1,
 };
 
-// ── Snapshot loader ─────────────────────────────────────────────────────────
+// â”€â”€ Snapshot loader â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // A single loaded market date: owns the archive's `PricedSurface`s and their
 // same-blob provenance, and holds a non-owning `SurfaceSet` over the surfaces'
@@ -187,10 +189,10 @@ public:
   // contains an empty SurfaceSet and reads only timestamp metadata from one mapped
   // record. Empty (the default) keeps the whole-board load. `uid_of` still
   // resolves every archived name regardless. NB: while the pricer's SurfaceSet takes
-  // `const PricedSurface*` (seam §6), the subset is reconstructed owned, not served
-  // zero-copy — the win is the reduced surface count, not zero-allocation.
+  // `const PricedSurface*` (seam Â§6), the subset is reconstructed owned, not served
+  // zero-copy â€” the win is the reduced surface count, not zero-allocation.
   // `backing` states this archive's lifecycle (see ArchiveBacking). It affects only
-  // HOW the borrowed bytes are obtained — the resulting snapshot is byte-identical
+  // HOW the borrowed bytes are obtained â€” the resulting snapshot is byte-identical
   // either way. Defaults to Mutable: safe for every caller, including the SurfaceDb
   // store path; a read-only replay corpus opts into Sealed.
   [[nodiscard]] static Result<MarketSnapshot>
@@ -205,7 +207,7 @@ public:
   MarketSnapshot &operator=(const MarketSnapshot &) = delete;
 
   [[nodiscard]] const SurfaceSet &set() const noexcept { return set_; }
-  // WS-ZC1: a `SurfaceRef` handle — the resolved surface may be OWNED (a freshly
+  // WS-ZC1: a `SurfaceRef` handle â€” the resolved surface may be OWNED (a freshly
   // fit board) or a zero-copy BORROW of this snapshot's mapped archive record.
   // Pointer-style use (`s->pricing()`, `s != nullptr`) is unchanged.
   [[nodiscard]] SurfaceRef find(std::uint32_t uid) const noexcept { return set_.find(uid); }
@@ -221,7 +223,7 @@ public:
   // for both owned and borrowed surface backings and remains stable across moves.
   [[nodiscard]] ArchiveContentIdentity source_identity() const noexcept { return source_identity_; }
   // Read-only view of the OWNED surfaces (archive order). EMPTY on a borrowed
-  // (zero-copy) load — use `n_surfaces()` / `surface_at()` for backing-agnostic
+  // (zero-copy) load â€” use `n_surfaces()` / `surface_at()` for backing-agnostic
   // access. Safe across a move (vector move preserves element addresses).
   [[nodiscard]] std::span<const PricedSurface> surfaces() const noexcept { return surfaces_; }
   // Read-only view of the BORROWED surfaces (archive order). Empty on an owned load.
@@ -232,8 +234,8 @@ public:
 
   // Backing-agnostic surface access (archive order), whichever backing was chosen.
   //
-  // NOT always non-empty (this used to claim it was): `load`'s subset-miss path —
-  // a requested uid subset that matched no directory entry — deliberately keeps an
+  // NOT always non-empty (this used to claim it was): `load`'s subset-miss path â€”
+  // a requested uid subset that matched no directory entry â€” deliberately keeps an
   // EMPTY SurfaceSet rather than falling back to a whole-board read, so a
   // successfully loaded snapshot can legally own zero surfaces. Callers that want
   // "the date's first surface" must check `n_surfaces()` (or the null handle below)
@@ -242,7 +244,7 @@ public:
     return views_.empty() ? surfaces_.size() : views_.size();
   }
   // Out of range (which includes EVERY index of a zero-surface snapshot) yields a
-  // NULL handle — `ref == nullptr`, checkable exactly like `find()`'s result —
+  // NULL handle â€” `ref == nullptr`, checkable exactly like `find()`'s result â€”
   // instead of indexing an empty backing out of bounds.
   [[nodiscard]] SurfaceRef surface_at(std::size_t i) const noexcept {
     if (i >= n_surfaces()) {
@@ -259,7 +261,7 @@ public:
   [[nodiscard]] static std::uint64_t open_count() noexcept;
   static void reset_open_count() noexcept;
 
-  // WS-F F5 (BT-T2): process-wide SURFACE-RECORD BYTES materialized by loads —
+  // WS-F F5 (BT-T2): process-wide SURFACE-RECORD BYTES materialized by loads â€”
   // the sum of the archive directory entries' `surface_size` over every record a
   // load turned into a surface or a view. Deterministic by construction (the
   // same number on a busy host as on a quiet one), so a subset-vs-whole-board
@@ -276,7 +278,7 @@ private:
                  ArchiveContentIdentity source_identity,
                  std::vector<std::pair<std::string, std::uint32_t>> &&syms) noexcept;
 
-  // ── LIFETIME (WS-ZC1) ──────────────────────────────────────────────────────
+  // â”€â”€ LIFETIME (WS-ZC1) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   // On the borrowed path each `PricedSurfaceView` in `views_` points into the
   // memory mapping that `archive_` co-owns, and `set_` holds `SurfaceRef`s to the
   // `views_` elements. That makes the ownership a strict chain:
@@ -284,8 +286,8 @@ private:
   //     archive_ (owns the Mapping)  <--  views_ (borrow its bytes)  <--  set_
   //
   // DECLARATION ORDER BELOW IS THE ENFORCEMENT. Members are destroyed in reverse
-  // declaration order, so `set_` dies first, then `views_`, and `archive_` — the
-  // mapping — dies LAST. A view therefore cannot outlive the bytes it reads, and
+  // declaration order, so `set_` dies first, then `views_`, and `archive_` â€” the
+  // mapping â€” dies LAST. A view therefore cannot outlive the bytes it reads, and
   // the snapshot cannot hand out a `SurfaceRef` into a released mapping. Do not
   // reorder these four members.
   //
@@ -331,7 +333,7 @@ struct SnapshotCacheStats {
 // accuracy contract share one archive open/map. Distinct tiers never alias.
 // The default constructor is unbounded for deliberate reuse across repeated
 // backtest/reconciliation sweeps. Passing a positive capacity selects a
-// deterministic INSERTION-ORDER (FIFO) eviction mode for one-pass pipelines —
+// deterministic INSERTION-ORDER (FIFO) eviction mode for one-pass pipelines â€”
 // deliberately not least-recently-used: a forward-only sweep never revisits a
 // date, so recency ranks the dates it has already passed above the read-ahead
 // entries it is about to need (sequential flooding), and the cache then evicts
@@ -379,11 +381,11 @@ public:
   load(std::string_view archive_path, QueryPricingTier query_pricing_tier,
        QueryCacheBuildPolicy build_policy);
   // The lifecycle this cache's loads declare (see ArchiveBacking). FIXED AT
-  // CONSTRUCTION and immutable thereafter — there is deliberately no setter.
+  // CONSTRUCTION and immutable thereafter â€” there is deliberately no setter.
   //
   // WHY NO SETTER (WS-ZC regression). The backing is part of the cache key, so an
   // entry loaded under one backing is never served under the other. A mid-flight
-  // `set_archive_backing` therefore does not "retune" a cache — it ORPHANS every
+  // `set_archive_backing` therefore does not "retune" a cache â€” it ORPHANS every
   // entry already in it. `run_backtest` used to call exactly that, unconditionally,
   // on a cache the CALLER owned and had preloaded: the run silently re-loaded every
   // preloaded snapshot, and a ReuseOnly fast request then missed and silently
@@ -405,7 +407,7 @@ private:
   std::shared_ptr<Impl> impl_;
 };
 
-// ── Book state (absolute-expiry aging) ──────────────────────────────────────
+// â”€â”€ Book state (absolute-expiry aging) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // One open lot. At the engine boundary K must be finite and positive, T and qty
 // finite, multiplier finite and positive, entry_price finite and nonnegative,
@@ -424,12 +426,12 @@ struct Lot {
   [[nodiscard]] bool operator==(const Lot &) const = default;
 };
 
-// ── Vol-derivative (swap) lane ──────────────────────────────────────────────
+// â”€â”€ Vol-derivative (swap) lane â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 //
 // One OTC variance/volatility-swap lot. ADDITIVE to the option lane: a book with
 // no swap lots prices, accrues and settles exactly as it did before this lane
 // existed, and both swap result columns are exactly 0.0 (the engine early-outs
-// on an empty `PortfolioState::swap_lots` — no pricing, no allocation).
+// on an empty `PortfolioState::swap_lots` â€” no pricing, no allocation).
 //
 // IMMUTABLE once emitted by a strategy: the same transition check that pins
 // option lots bit-compares every field of a surviving swap lot, and a new lot's
@@ -437,21 +439,21 @@ struct Lot {
 // with option lots, so the two id spaces never collide). A strategy opens one by
 // appending to `book.swap_lots` in `on_step`.
 //
-// NO EARLY CLOSE IN v1 — swaps are HELD TO EXPIRY. A strategy that ERASES a swap
+// NO EARLY CLOSE IN v1 â€” swaps are HELD TO EXPIRY. A strategy that ERASES a swap
 // lot from `book.swap_lots` gets InvalidArgument, not a close: there is no unwind
 // price for an OTC swap here and nowhere to book one, so an erased lot would
 // leave its last mark in NAV with nothing to offset it, orphan its accrual (which
 // makes the checkpoint unresumable), and drop `swap_pv` by a mark that never
 // settled. The engine removes a lot only by SETTLING it, which happens in the
-// swap pass before `on_step` ever sees the book — so every lot present when the
+// swap pass before `on_step` ever sees the book â€” so every lot present when the
 // strategy is called must still be there when it returns.
 //
 // Running fixing/accrual state lives in the ENGINE (`SwapAccrual`), NEVER on the
-// lot — that is what makes the lot bit-comparable across a step.
+// lot â€” that is what makes the lot bit-comparable across a step.
 //
 // ENTRY ECONOMICS v1: a swap opens at ZERO COST. There are no frictions on this
 // lane (no spread, no per-contract cost, no impact) and no premium moves at
-// entry — whether the strike is fair is the strategy's problem. The accrual's
+// entry â€” whether the strike is fair is the strategy's problem. The accrual's
 // `prev_pv` therefore starts at 0.0, so the WHOLE first mark (the entry PV
 // difference against the chosen strike) lands in that step's `swap_pnl`.
 //
@@ -460,16 +462,16 @@ struct Lot {
 // accrues no return. A lot opened at inception therefore seeds on refs[1] and
 // needs N+1 steps to accrue N returns.
 //
-// EVERY STEP A LOT IS ALIVE TAKES A FIXING, INCLUDING ITS EXPIRY DAY — the
+// EVERY STEP A LOT IS ALIVE TAKES A FIXING, INCLUDING ITS EXPIRY DAY â€” the
 // expiry close IS that contract's final fixing. So an absent surface fails
 // closed on BOTH sides of expiry: NotFound for a held lot (it cannot be marked)
 // and NotFound for a settling one (it cannot take its terminal fixing, and
-// settling anyway would divide a short Σr² by a denominator one observation
+// settling anyway would divide a short Î£rÂ² by a denominator one observation
 // light). This mirrors the option lane, which likewise refuses to settle a lot
 // whose surface is missing.
 //
-// SETTLEMENT needs no PRICING — the terminal rate is read off the accrual, not
-// solved: `rv_done_dec` (the Σr²/n_done estimator), square-rooted for the vol
+// SETTLEMENT needs no PRICING â€” the terminal rate is read off the accrual, not
+// solved: `rv_done_dec` (the Î£rÂ²/n_done estimator), square-rooted for the vol
 // kinds and capped for the capped ones, less `strike_dec`, times `qty *
 // notional`. A clock coarser than the fixing schedule therefore settles on the
 // returns it actually observed, which is a real estimate; a series with NO
@@ -483,7 +485,7 @@ struct SwapLot {
   double cap_dec{0.0}; // > 0 required on a capped kind; must be 0 otherwise
   double notional{0.0};
   double qty{1.0};
-  // INFORMATIONAL ONLY — the engine seeds on FIRST SIGHT, never off this stamp.
+  // INFORMATIONAL ONLY â€” the engine seeds on FIRST SIGHT, never off this stamp.
   // It is validated (must not be after `expiry_ts_ns`) and carried for
   // provenance/reporting; changing it changes no engine arithmetic.
   std::int64_t start_ts_ns{0};
@@ -515,7 +517,7 @@ public:
 //
 // TWO DELIBERATE DEVIATIONS from `RealizedTracker::observe_dated`:
 //   * a fixing past `n_obs_total` is a NO-OP (the contract is fully observed and
-//     simply stops accruing — `prev_spot`/`prev_ts_ns` freeze too), where the
+//     simply stops accruing â€” `prev_spot`/`prev_ts_ns` freeze too), where the
 //     tracker returns InvalidArgument. A backtest clock keeps delivering dates
 //     after the last fixing; that is not a caller error.
 //   * ordering is still validated FIRST and unconditionally: `ts_ns <=
@@ -544,7 +546,7 @@ struct SwapAccrual {
   }
 };
 
-// ── EXERCISE MODEL: what this engine does and does NOT simulate (WS-F F3) ────
+// â”€â”€ EXERCISE MODEL: what this engine does and does NOT simulate (WS-F F3) â”€â”€â”€â”€
 //
 // EXPIRY SETTLEMENT is the ONLY UNCONDITIONAL exercise event. Every American
 // lot is carried to its `expiry_ts_ns` and cash-settled at intrinsic against
@@ -597,7 +599,7 @@ struct SwapAccrual {
 // discrete-dividend design).
 //
 // What was already modelled, as of WS-F, independent of B3: discrete cash
-// dividends on the HEDGE SHARE ledger (`FinancingConfig::share_dividends`) —
+// dividends on the HEDGE SHARE ledger (`FinancingConfig::share_dividends`) â€”
 // the leg of P1-4 that needed no exercise model, and the schedule B3's call
 // lane reuses verbatim.
 
@@ -613,7 +615,7 @@ enum class ExercisePolicy : std::uint8_t {
 
 // Task B3: the exercise/assignment decision rule, factored out as a PURE
 // function so it is unit-testable independent of the engine's per-step
-// machinery (same rationale as `MarginBreachPolicy`'s placement note below —
+// machinery (same rationale as `MarginBreachPolicy`'s placement note below â€”
 // this lives in backtest.hpp rather than a dedicated header because it has no
 // Tier-B dependency to promote: every parameter is a `double`).
 //
@@ -645,7 +647,7 @@ enum class ExercisePolicy : std::uint8_t {
          std::isfinite(threshold) && threshold > 0.0 && extension_value < threshold;
 }
 
-// ── Execution frictions + financing (Phase B2) ───────────────────────────────
+// â”€â”€ Execution frictions + financing (Phase B2) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // Modeled bid/ask + costs applied ONLY to traded quantity (entries, roll-closes,
 // hedge shares); holding accrues financing only. PricedSurface is a fitted MID
@@ -654,8 +656,8 @@ enum class ExercisePolicy : std::uint8_t {
 struct FrictionModel {
   // B1 (backtest-lakehouse sprint, target 1.1.0): `QuoteSide` APPENDED at the
   // end (same additive-enum treatment as every `RunConfig` knob this sprint
-  // adds — see the `aggregate_arity_is_v<RunConfig, 19>` note below). It fills
-  // at `mid ± f(leg_count)·half_spread` instead of charging a synthetic spread
+  // adds â€” see the `aggregate_arity_is_v<RunConfig, 19>` note below). It fills
+  // at `mid Â± f(leg_count)Â·half_spread` instead of charging a synthetic spread
   // ON TOP of the model mid: `quote_lookup` supplies the recorded NBBO when the
   // caller has one, `half_spread_bps` (the existing PriceBps knob) supplies the
   // fallback half-spread when it does not. See `quote_lookup`,
@@ -666,7 +668,7 @@ struct FrictionModel {
   double vol_tick{0.0};        // VolTicks: half-spread = vega * vol_tick (per share)
   // REVIEW C-4. A size/participation-driven impact term, as a FRACTION of the
   // mark, charged PER SHARE and IN ADDITION to whichever `spread_kind` lane is
-  // selected — including `None`, which is how a pure-impact run is expressed.
+  // selected â€” including `None`, which is how a pure-impact run is expressed.
   //
   // It is its OWN lane rather than a `half_spread_bps` addend because the spread
   // and the impact scale on different quantities (vega vs price), so folding one
@@ -686,7 +688,7 @@ struct FrictionModel {
   // B1: one recorded two-sided quote for an option leg, returned by
   // `quote_lookup` below. Usable only when both sides are finite, `bid > 0.0`
   // and `ask >= bid`; anything else (including an unset `quote_lookup`) is
-  // treated exactly like an absent quote by `execute()` — it falls back to the
+  // treated exactly like an absent quote by `execute()` â€” it falls back to the
   // modeled PriceBps half-spread around that fill's own model mark, so a
   // `QuoteSide` run with no (or a broken) quote source degrades to precisely
   // the PriceBps-modeled economics rather than a silently wrong price.
@@ -696,21 +698,21 @@ struct FrictionModel {
   };
   // B1: optional per-fill recorded-quote source for `SpreadKind::QuoteSide`.
   // `execute()` (backtest.cpp) calls this once per entry, roll-close, and close
-  // fill on an option leg — never for hedge shares, which keep their own
-  // `hedge_slippage_bps` — with that leg's exact contract. Unset (the default,
+  // fill on an option leg â€” never for hedge shares, which keep their own
+  // `hedge_slippage_bps` â€” with that leg's exact contract. Unset (the default,
   // a falsy `std::function`) means every `QuoteSide` fill takes the modeled
   // fallback; inert under every OTHER `spread_kind`. The listed-quote route
   // (`ListedScheduleLeg::raw_bid/raw_ask`, `listed_dispersion_schedule.hpp`) is
-  // the intended production source a caller wires in here — this field is the
+  // the intended production source a caller wires in here â€” this field is the
   // seam, not that wiring, which is caller-side.
   using QuoteLookup = std::function<std::optional<RawQuote>(const OptionContract &)>;
   QuoteLookup quote_lookup{};
   // B1: ORATS-calibrated crossing fractions for `SpreadKind::QuoteSide`
-  // (`mid + f·half_spread`) — the sprint's feature-gap literature review reads
-  // "mid + f·half-spread, f≈0.75 single-leg / ≈0.53 four-leg". `_single` prices
+  // (`mid + fÂ·half_spread`) â€” the sprint's feature-gap literature review reads
+  // "mid + fÂ·half-spread, fâ‰ˆ0.75 single-leg / â‰ˆ0.53 four-leg". `_single` prices
   // a fill whose COHORT (`Lot::cohort`) contributes exactly one leg to this
   // entry/close pass; `_complex` prices every wider cohort (a straddle, a
-  // dispersion basket) — multi-leg fills cross LESS of the spread on average.
+  // dispersion basket) â€” multi-leg fills cross LESS of the spread on average.
   // Both are inert (never read) under every OTHER `spread_kind`, so leaving
   // them at their ORATS defaults is safe even on a run that never turns
   // `QuoteSide` on. Overridable.
@@ -719,31 +721,31 @@ struct FrictionModel {
 };
 
 // B1 (backtest-lakehouse sprint, target 1.1.0): which execution-friction
-// assumption produced a `BacktestResult` — see `BacktestResult::friction_regime`
+// assumption produced a `BacktestResult` â€” see `BacktestResult::friction_regime`
 // below, the result-scalar stamp every run carries so no artifact leaves the
 // engine without its own pricing assumption attached (a TSV/tearsheet reader
 // should never have to cross-reference the `RunConfig` that produced it to know
 // whether the NAV assumes free liquidity). Classified from `FrictionModel`
 // alone (`friction_regime_for`, backtest.cpp), NOT from realized cost, so a
 // `QuoteSide` run whose quotes all happened to fall back still reports
-// `QuoteSide` — it names the ASSUMPTION, not the outcome:
+// `QuoteSide` â€” it names the ASSUMPTION, not the outcome:
 //   Frictionless: `spread_kind == None` AND every other cost knob
-//     (`impact_fraction`, `per_contract_cost`, `hedge_slippage_bps`) is 0 — the
+//     (`impact_fraction`, `per_contract_cost`, `hedge_slippage_bps`) is 0 â€” the
 //     `SpreadKind::None`, "all costs 0" combination `FrictionModel` itself
 //     documents as bit-identical to a frictionless replay (invariant I3).
 //   Modeled: any other NON-`QuoteSide` combination (`PriceBps`, `VolTicks`, a
 //     `None` run with `impact_fraction`/`per_contract_cost`/
-//     `hedge_slippage_bps` nonzero) — an assumed/synthetic spread, not an
+//     `hedge_slippage_bps` nonzero) â€” an assumed/synthetic spread, not an
 //     observed one.
-//   QuoteSide: `spread_kind == QuoteSide` — fills cross a recorded (or,
+//   QuoteSide: `spread_kind == QuoteSide` â€” fills cross a recorded (or,
 //     absent one, a modeled-PriceBps-fallback) NBBO.
 enum class FrictionRegime : std::uint8_t { Frictionless = 0, Modeled = 1, QuoteSide = 2 };
 
 // WS-F F3(b) (BT-P1-4). One discrete cash dividend on one underlier's SHARES.
 // The hedge-share ledger used to accrue dividends only as a continuous
-// `q_eff_at(0.25)` proxy — the surface's effective carry at a FIXED 3-month
+// `q_eff_at(0.25)` proxy â€” the surface's effective carry at a FIXED 3-month
 // tenor, regardless of the step length and regardless of where the ex-dates
-// actually fall — while the OPTION surfaces price the real discrete schedule.
+// actually fall â€” while the OPTION surfaces price the real discrete schedule.
 // A delta-hedged book across ex-dates on a high-yield name therefore carried a
 // systematic hedge-carry bias.
 //
@@ -770,7 +772,7 @@ struct FinancingConfig {
   // F3(b): discrete cash dividends on hedge shares. EMPTY BY DEFAULT, and an
   // empty schedule leaves every run bit-identical. A step whose (base, shifted]
   // window contains an ex-date books `shares * amount` into BOTH cash and the
-  // financing column — a real cash event, so it is booked whether or not
+  // financing column â€” a real cash event, so it is booked whether or not
   // `shares_carry` is on. For a uid that HAS a schedule the continuous
   // `q_eff_at(0.25)` dividend proxy is suppressed (its yield term drops to 0,
   // the funding term is unaffected): the discrete cash IS the dividend, and
@@ -798,7 +800,7 @@ struct FinancingConfig {
   std::optional<double> flat_r{};
 };
 
-// ── Run config + result ─────────────────────────────────────────────────────
+// â”€â”€ Run config + result â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // What to do when a step cannot value a position because its surface is absent.
 // This policy does not apply to a strategy-driven roll close: omitting a close mark
@@ -818,14 +820,14 @@ struct FinancingConfig {
 //
 // What this policy does NOT relax, under either setting: a lot whose expiry passed
 // BETWEEN sessions without ever hitting an exact step still errors ("no exact expiry
-// observation"). That is a calendar bug rather than missing market data — see
-// `TenorSpec::snap_to_sessions` — and it stays fail-closed.
+// observation"). That is a calendar bug rather than missing market data â€” see
+// `TenorSpec::snap_to_sessions` â€” and it stays fail-closed.
 enum class UnpricedLotPolicy : std::uint8_t {
   // Preserve the historical held-valuation arithmetic (skip the unavailable P&L or
   // Greek lane) and report the exclusion in `BacktestResult::n_unpriced_lots`.
   //
   // Lane 3: the uid's hedge fill is SKIPPED for that step. Its share position is
-  // left exactly as it was — deliberately NOT flattened, which is the pre-F1 bug —
+  // left exactly as it was â€” deliberately NOT flattened, which is the pre-F1 bug â€”
   // so it rides the gap unhedged and shows up in lane 2 until the board returns.
   //
   // Lane 4: the lot is DEFERRED. It keeps its economic exposure and stays counted in
@@ -838,12 +840,12 @@ enum class UnpricedLotPolicy : std::uint8_t {
   // Deferred settlements cannot cross a `run_backtest_incremental` checkpoint (there
   // is no slot for them in `BacktestCheckpoint`); capturing one there is an error.
   // While a lot is deferred it is in neither the cash ledger nor the repriced book,
-  // so `reconcile_nav` (opt-in) sees it as drift — the same ExcludeAndReport drift
+  // so `reconcile_nav` (opt-in) sees it as drift â€” the same ExcludeAndReport drift
   // `BacktestResult::nav_liquidation` is there to expose, not a new class of leak.
   ExcludeAndReport = 0,
   // Abort the run: any step with an unpriced held lot returns Err(NotFound). The mode
   // a production QIS run uses so a missing board can never silently truncate PnL.
-  // FULLY fail-closed — every one of the four lanes above aborts, exactly as it did
+  // FULLY fail-closed â€” every one of the four lanes above aborts, exactly as it did
   // before ExcludeAndReport learned to tolerate lanes 3 and 4.
   Error = 1,
 };
@@ -857,7 +859,7 @@ enum class SurfaceProvenancePolicy : std::uint8_t {
 };
 
 // How the swap realized-variance lane reconciles a live lot's fixing schedule
-// (implicitly daily — `SwapLot::n_obs_total` is sized assuming one fixing per
+// (implicitly daily â€” `SwapLot::n_obs_total` is sized assuming one fixing per
 // NYSE session) against the clock's actual step cadence.
 //
 // A step's ACCRUAL WINDOW is `(base.ts_ns, shifted.ts_ns]`; the number of NYSE
@@ -951,15 +953,15 @@ struct StepEvent {
 // (the engine propagates it verbatim), so an observer may enforce its own
 // invariants fail-closed. C++-only: deliberately NOT exposed through the pybind11
 // RunConfig binding (the hand-kept def_readwrite list in
-// python/src/bindings/backtest.cpp) — a std::function is not sensibly bindable and
+// python/src/bindings/backtest.cpp) â€” a std::function is not sensibly bindable and
 // the Python surface stays unchanged. The omission is a decision, not drift.
 using StepObserver = std::function<Status(const StepEvent &)>;
 
-// CONSTRUCTION CONTRACT (v1, plan item 4.2) — DESIGNATED INITIALIZERS ONLY.
+// CONSTRUCTION CONTRACT (v1, plan item 4.2) â€” DESIGNATED INITIALIZERS ONLY.
 // Set fields by name (`RunConfig cfg{}; cfg.unpriced = ...;` or a designated
 // initializer); never `RunConfig{a, b, c, ...}`. Three fields here used to carry
 // an "appended for positional aggregate source compatibility" note, meaning they
-// were parked at the end of the struct — away from the knob each belongs with —
+// were parked at the end of the struct â€” away from the knob each belongs with â€”
 // solely so positional initializers kept compiling. They now live in their
 // natural groups, and the field-count `static_assert` below makes a silent
 // re-append a compile error.
@@ -971,7 +973,7 @@ struct RunConfig {
   // Pricer thread fan-out. Default 0 => use all hardware cores (clamped to the
   // book's unique-contract count). Output is bit-identical to any thread count
   // (PortfolioPricer's serial-scatter reduction), so parallel-by-default is a free
-  // throughput win — a backtest step reprices the whole book, the dominant cost.
+  // throughput win â€” a backtest step reprices the whole book, the dominant cost.
   // analytic_greeks on by default: the backtest reprices the whole book every step,
   // so the analytic Andersen-Lake greeks (5 solves/contract vs the FD path's 7, with
   // exact continuation-PDE theta/charm) are a direct per-step speedup; the mark and
@@ -1002,7 +1004,7 @@ struct RunConfig {
   // On a requested stop `run_backtest` returns `ErrorCode::Cancelled` and NO
   // BacktestResult: the run is abandoned before the result is handed back, so a
   // partially-filled result can never reach a caller, a writer, or validate().
-  // Nothing on disk is touched either way — `run_backtest` performs no file I/O.
+  // Nothing on disk is touched either way â€” `run_backtest` performs no file I/O.
   // Sits beside `step_observer` because both are per-step run control the caller
   // owns; the referenced flag must outlive the call.
   CancelToken cancel{};
@@ -1012,7 +1014,7 @@ struct RunConfig {
   // WS-F F1(c) (BT-P1-2) BREAKING DEFAULT CHANGE: this used to default to
   // `ExcludeAndReport`, so a default-constructed RunConfig silently truncated NAV
   // across a missing board (the excluded step's PnL is never recovered when the
-  // surface reappears — NAV permanently diverges from liquidation value, reported
+  // surface reappears â€” NAV permanently diverges from liquidation value, reported
   // only as a count in `n_unpriced_lots`). A production QIS default must fail
   // closed; callers that genuinely want the lenient arithmetic now opt in.
   UnpricedLotPolicy unpriced{UnpricedLotPolicy::Error};
@@ -1030,15 +1032,15 @@ struct RunConfig {
   // book-greeks pass at the SAME base date) instead of re-solving it. The served
   // mark is an ECONOMIC PARITY match to the settlement solve, not a bit-identity
   // one: FullGreeks mark and Marks mark for the same contract agree to <=1e-10
-  // relative (~1e-13 USD) — per the L2 crux gate (`L2MarkMemoCruxFullGreeksMarkEqualsMarksMark`,
-  // backtest_exec_test.cpp) — an AVX2 batch-composition reassociation residual
+  // relative (~1e-13 USD) â€” per the L2 crux gate (`L2MarkMemoCruxFullGreeksMarkEqualsMarksMark`,
+  // backtest_exec_test.cpp) â€” an AVX2 batch-composition reassociation residual
   // between FullGreeks batch (the whole book) and Marks-only batch (just the
   // expiring lots), not a model split. BacktestDb builds force this OFF to preserve
   // the incremental==one-shot bit-for-bit invariant (see backtest_db_build.cpp
   // run_config()).
   bool settlement_mark_memo{true};
   // WS-F F1(d): per-recorded-row NAV-vs-liquidation reconciliation (IStrategy
-  // overload only — the fixed-book overload has no cash/share ledger to
+  // overload only â€” the fixed-book overload has no cash/share ledger to
   // reconcile against). NAV is a cumulative flow sum; nothing ever checked it
   // against an INDEPENDENTLY recomputed liquidation value, so the P1-2/P1-3 leak
   // family drifted it silently. When on, every recorded row recomputes
@@ -1054,8 +1056,8 @@ struct RunConfig {
   // wants the pre-A3 bit-exact replay behavior opts out explicitly; it costs
   // nothing when off either way (one bool test per row).
   bool reconcile_nav{true};
-  // WS-F F2 (BT-P1-1): book the ENTRY FILL SLIPPAGE — qty*multiplier*(fill -
-  // model mark) — as a realized execution cost.
+  // WS-F F2 (BT-P1-1): book the ENTRY FILL SLIPPAGE â€” qty*multiplier*(fill -
+  // model mark) â€” as a realized execution cost.
   //
   // The engine carries the book at its model mark but pays `Lot::entry_price`.
   // When a strategy fills AWAY from the mark (a quote-side fill policy, an
@@ -1080,7 +1082,7 @@ struct RunConfig {
   // (~|cash|*eps per row), not zero. Must be finite and positive.
   double reconcile_nav_tol{1.0e-6};
   // Snapshot look-ahead DEPTH: how many future steps' snapshots may be in flight
-  // at once. 1 is the historical single-step look-ahead — at step i exactly one
+  // at once. 1 is the historical single-step look-ahead â€” at step i exactly one
   // load (i+1) overlaps step i's economics, so if a load costs more than a step's
   // economics the run is load-bound and the loads are effectively serialized.
   // A depth of D keeps D loads in flight, so an independent-and-parallel load
@@ -1105,7 +1107,7 @@ struct RunConfig {
   // Measured on the 135-session projected replay, one binary with the depth
   // alternated inside a single session, 12 interleaved rounds over depths
   // {1,2,4,8}, medians and win-counts only (this
-  // host has no frequency pinning and per-pair spreads reach ±40 %):
+  // host has no frequency pinning and per-pair spreads reach Â±40 %):
   //
   //     1 -> 2 : +15.2 % median, 11/12 rounds won
   //     1 -> 4 : +19.8 % median, 10/12
@@ -1121,7 +1123,7 @@ struct RunConfig {
   //
   // The curve is a step, not a ramp: overlapping the FIRST load is where all of the
   // win is, and nothing past depth 2 is distinguishable from noise. Depth 2 is
-  // therefore the cheapest default that takes it — one extra in-flight snapshot and
+  // therefore the cheapest default that takes it â€” one extra in-flight snapshot and
   // one extra cache slot (`private_snapshot_cache_capacity` = depth + 2, so 4
   // instead of 3), against a fifth of the replay's wall clock.
   //
@@ -1165,7 +1167,7 @@ struct RunConfig {
   ExercisePolicy exercise_policy{ExercisePolicy::Advisory};
   // Task C2 (backtest-lakehouse sprint, target 1.1.0): the process-wide SEALED
   // snapshot pool this run reads its dated archives from
-  // (`atx/vol/research/snapshot_pool.hpp`). NON-OWNING — the pointee must
+  // (`atx/vol/snapshot_pool.hpp`). NON-OWNING â€” the pointee must
   // outlive the run, exactly like `CancelToken`'s flag and `step_observer`'s
   // callable, and for the same reason: a `shared_ptr` here would silently keep
   // a process-lifetime cache alive past the sweep that owns it.
@@ -1180,7 +1182,7 @@ struct RunConfig {
   // MUTUALLY EXCLUSIVE with `snapshot_cache` above: setting both is refused with
   // InvalidArgument rather than silently ranked. And a pool run refuses
   // `QueryCacheBuildPolicy::ReuseOnly`, which resolves each date to a fast or a
-  // cold tier depending on what some OTHER run already built — history-dependent
+  // cold tier depending on what some OTHER run already built â€” history-dependent
   // pricing is precisely what a process-wide pool must not introduce.
   SnapshotPool *snapshot_pool{nullptr};
 };
@@ -1193,10 +1195,10 @@ struct RunConfig {
 //
 // 15 -> 16 (plan item 5.5): `cancel` was INSERTED beside `step_observer`, its
 // semantic group, not appended at the end. That is exactly the move the old
-// convention forbade and this one requires — and it is safe only because there
+// convention forbade and this one requires â€” and it is safe only because there
 // are no positional initializers left in-tree to rebind.
 //
-// 16 -> 17 (main merge): `prefetch_depth` APPENDED at the end — the pipelined
+// 16 -> 17 (main merge): `prefetch_depth` APPENDED at the end â€” the pipelined
 // snapshot look-ahead depth main's backtest-replay work introduced. Appending is
 // the form this convention prescribes for a new knob, and it is what supersedes
 // the branch's earlier `kPrefetchLookahead` file-scope constant in backtest.cpp.
@@ -1208,7 +1210,7 @@ struct RunConfig {
 // at the end. Sprint-owner-approved exception to the 1.x Tier-A freeze
 // (target: 1.1.0) for this ONE additive field; see the sprint's
 // global-constraints.md amendment. Output is bit-identical for every caller
-// that does not set it (`RequireEverySession` — the default — reduces to the
+// that does not set it (`RequireEverySession` â€” the default â€” reduces to the
 // old book-a-fixing-per-step arithmetic on any clock that genuinely visits one
 // NYSE session per step; it changes behavior only when the clock and the
 // fixing schedule actually disagree, which used to compute a silently wrong
@@ -1314,19 +1316,19 @@ private:
 // step, downsampled by `record_every_n` (the final step is always recorded). When
 // `record_every_n>1` the per-step FLOW columns (`pnl_*`, `pnl_settlement`,
 // `pnl_shares`, `financing`, `cost`, `turnover_*`, `n_unpriced_lots`) hold the
-// BLOCK SUM over every step since the previous recorded row — not the last step
-// alone — so `Σ column == nav.back()` and the attribution totals are exact at any
+// BLOCK SUM over every step since the previous recorded row â€” not the last step
+// alone â€” so `Î£ column == nav.back()` and the attribution totals are exact at any
 // stride. STATE columns (`nav`, `cash`, `gross_*`, `n_open_lots`,
 // `n_unpriced_greeks`) are the value AT the recorded row. `nav` is the cumulative
-// Σ step_total (incl. settlement) from inception = 0.
+// Î£ step_total (incl. settlement) from inception = 0.
 // C1 (backtest-lakehouse sprint, target 1.1.0): a RESULT SCALAR PAIR, not a
-// row-parallel series — run-totals of the step-mark memo's settlement
+// row-parallel series â€” run-totals of the step-mark memo's settlement
 // admission decisions (see `detail::StepMarkMemo`, `src/step_mark_memo.hpp`,
 // and `compute_step`'s L2 settlement branch in backtest.cpp). An expiring
 // lot's base mark either SERVES from the memo (`settlement_memo_hits`,
 // populated by the immediately preceding step's book-greeks/execute()
 // FullGreeks pass) or falls back to a fresh Andersen-Lake solve
-// (`settlement_full_solves` — a memo miss, a stale surface-instance guard, or
+// (`settlement_full_solves` â€” a memo miss, a stale surface-instance guard, or
 // `RunConfig::settlement_mark_memo == false`). Per-lot-per-settlement-event
 // counts (a step settling two lots adds 2, split between the two counters as
 // each lot resolves). Populated identically on BOTH `run_backtest` overloads
@@ -1358,19 +1360,19 @@ struct BacktestResult {
   std::vector<double> cash; // engine cash ledger balance (B2; 0.0 fixed-book)
   // Book greeks on the base. NAME WARNING (C-3, pipeline-m production review):
   // every one of these is the SIGNED aggregate `PriceTotals::<greek>`, i.e. the
-  // NET book exposure — "gross" here has always meant "whole book" rather than
+  // NET book exposure â€” "gross" here has always meant "whole book" rather than
   // "sum of absolute leg exposures". The names are frozen: they are the emitted
   // TSV header and the RunArchive column registry `kBacktestCols` whose fold is
   // `ra_schema_hash()`, so renaming one would move a schema hash and every
   // golden. `gross_vega_abs` below carries the genuinely gross vega instead.
   std::vector<double> gross_delta, gross_gamma, gross_vega, gross_theta;
-  // TRUE GROSS vega: Σ|position-scaled leg vega| over the Ok lanes of the same
+  // TRUE GROSS vega: Î£|position-scaled leg vega| over the Ok lanes of the same
   // book pricing that produced `gross_vega`, in the same per-UNIT-vol,
   // position-scaled dollars (multiply by `kVegaPerVolPoint` for dollars per vol
   // point). Non-negative by construction.
   //
-  // C-3. `gross_vega` is a near-cancelling residual for any vega-neutral book —
-  // a dispersion book drives it to ~0 BY DESIGN — so the risk-normalized
+  // C-3. `gross_vega` is a near-cancelling residual for any vega-neutral book â€”
+  // a dispersion book drives it to ~0 BY DESIGN â€” so the risk-normalized
   // tearsheet statistics that call themselves gross (`avg_gross_vega`,
   // `return_on_gross_vega`, `vega_adj_sharpe`) were dividing the run's return by
   // that residual. They consume THIS series now.
@@ -1378,7 +1380,7 @@ struct BacktestResult {
   // DELIBERATELY NOT SERIALIZED. It is absent from `kBacktestSeriesColumns`
   // (backtest_series_columns.hpp) and from the frozen RunArchive registry, so
   // `ra_schema_hash()`, every TSV header and every golden are untouched. It is
-  // therefore EMPTY — not zero-filled — on any result that did not come from
+  // therefore EMPTY â€” not zero-filled â€” on any result that did not come from
   // `run_backtest`: a hand-built one, a TSV read, or an archive decode. The
   // tearsheet fold falls back to |`gross_vega`| in exactly that case, which is
   // bit-for-bit what it always did. Empty-or-row-parallel, like
@@ -1394,7 +1396,7 @@ struct BacktestResult {
   // BOTH ARE EXACTLY 0.0 ON EVERY ROW of a book with no swap lots, and both are
   // 0.0 on the inception row and throughout the fixed-book overload (which
   // refuses swap lots outright). Row-parallel to `date` on any engine-produced
-  // result; EMPTY on a hand-built one, a TSV read or an archive decode — this
+  // result; EMPTY on a hand-built one, a TSV read or an archive decode â€” this
   // pair is deliberately NOT part of the frozen `kBacktestSeriesColumns` /
   // RunArchive registry, so `ra_schema_hash()` and every golden are untouched
   // (and `backtest_db` refuses to persist a run that carries swap state at all
@@ -1405,7 +1407,7 @@ struct BacktestResult {
   // had no board is DEFERRED, and a deferred lot has left the engine's `lots`
   // vector (it is past its expiry, which every book-facing invariant forbids) while
   // still holding real exposure the run has not settled. Those lots are counted
-  // here — this column is "positions still open", not "book vector size" — and are
+  // here â€” this column is "positions still open", not "book vector size" â€” and are
   // excluded from `gross_*`. Always exactly the book size under `Error`, which
   // never defers.
   std::vector<double> n_open_lots;
@@ -1416,10 +1418,10 @@ struct BacktestResult {
   // over the four lanes `UnpricedLotPolicy` governs:
   //   1. a HELD lot whose base or shifted surface is absent over the step;
   //   2. (WS-F F1(b)) a HEDGE-SHARE ledger entry whose base or shifted surface is
-  //      absent over the step — its share MTM and financing are excluded from this
+  //      absent over the step â€” its share MTM and financing are excluded from this
   //      row exactly as an unpriced lot's PnL is;
   //   3. (SP100) a delta-hedge SHARE FILL the overlay skipped because the uid has no
-  //      board on this row's base — the position is left in place, unhedged;
+  //      board on this row's base â€” the position is left in place, unhedged;
   //   4. (SP100) a SETTLEMENT event at a lot's exact expiry with no board: the step
   //      that defers the lot, every later step it spends waiting, and the step it
   //      finally settles on are each counted once.
@@ -1433,7 +1435,7 @@ struct BacktestResult {
   // step's PnL completeness (base AND shifted): `book_greeks` prices a single-date
   // snapshot against this row's date alone, so the two counts can diverge (a held
   // lot absent from the step's base but present again on this row's date is counted
-  // in `n_unpriced_lots` but NOT here). Filled on EVERY row including row 0 —
+  // in `n_unpriced_lots` but NOT here). Filled on EVERY row including row 0 â€”
   // inception computes book greeks, so its count is a real measurement, not 0.0 by
   // convention. Under RunConfig::unpriced == Error a row with a non-zero count aborts.
   // A DEFERRED lot (see `n_open_lots`) is NOT counted here: it is absent from the
@@ -1445,7 +1447,7 @@ struct BacktestResult {
   // retained regardless of `record_every_n`. This is the TRUE per-step return
   // series the risk/return statistics (Sharpe, ann_return, ann_vol, hit_rate,
   // avg_daily_pnl) are computed from, so those stats are invariant to the record
-  // stride — block-summed recorded rows would destroy the per-step variance and
+  // stride â€” block-summed recorded rows would destroy the per-step variance and
   // win/loss distribution. Length == refs-1 at any stride (NOT parallel to `date`,
   // which is downsampled). Empty for hand-built results, in which case the
   // consumers fall back to the recorded `pnl_total` rows (i.e. stride-1 behavior).
@@ -1479,7 +1481,7 @@ struct BacktestResult {
   std::vector<std::pair<std::string, std::vector<double>>> signals;
 
   // A2 (backtest-production-lakehouse sprint, target 1.1.0): a RESULT SCALAR,
-  // not a row-parallel series — one count for the whole run, copied verbatim
+  // not a row-parallel series â€” one count for the whole run, copied verbatim
   // from `IStrategy::n_steps_entry_skipped()` after the strategy-aware
   // `run_backtest` completes (see backtest.cpp). It is NOT part of the frozen
   // 25-column wire series set: absent from `kBacktestSeriesColumns`
@@ -1491,11 +1493,11 @@ struct BacktestResult {
   std::uint64_t n_steps_entry_skipped{0};
 
   // A4 (backtest-production-lakehouse sprint, target 1.1.0): a RESULT SCALAR,
-  // not a row-parallel series — a run-total count of deferred-lot settlements
+  // not a row-parallel series â€” a run-total count of deferred-lot settlements
   // that could not use the expiry-date spot recorded at deferral time (see
   // `DeferredSettlementBook` in backtest.cpp) and substituted a later,
   // post-expiry spot instead. The substitution still books cash/explain at
-  // that stale spot — this counter only NAMES it rather than letting it drift
+  // that stale spot â€” this counter only NAMES it rather than letting it drift
   // silently. Same append-only, non-wire treatment as `n_steps_entry_skipped`
   // above: absent from `kBacktestSeriesColumns` and RunArchive serialization,
   // so `ra_schema_hash()` and every TSV/CSV header and golden are untouched.
@@ -1503,13 +1505,13 @@ struct BacktestResult {
   std::uint64_t n_settlements_at_stale_spot{0};
 
   // A5 (backtest-production-lakehouse sprint, target 1.1.0): a RESULT SCALAR,
-  // not a row-parallel series — a run-total count of STEPS (inception included)
+  // not a row-parallel series â€” a run-total count of STEPS (inception included)
   // on which the daily delta-hedge overlay wanted to fill at least one uid's
   // shares and could not, because that uid's base surface was absent
   // (`ExcludeAndReport` only; see `ExecResult::n_unpriced_hedges` and
   // `HedgeLedger::hedge_daily` in backtest.cpp). The skipped fill leaves that
-  // uid's hedge-share position exactly as it was — the whole point, since the
-  // pre-F1 bug flattened it "for free" at spot 0.0 instead — so this counter
+  // uid's hedge-share position exactly as it was â€” the whole point, since the
+  // pre-F1 bug flattened it "for free" at spot 0.0 instead â€” so this counter
   // only NAMES the exclusion rather than letting it pass unremarked. Counts
   // STEPS, not individual skipped fills: a step where two uids both skip still
   // adds 1. Same append-only, non-wire treatment as `n_steps_entry_skipped` and
@@ -1521,10 +1523,10 @@ struct BacktestResult {
   std::uint64_t n_hedge_steps_skipped{0};
 
   // A6 (backtest-lakehouse sprint, target 1.1.0): a RESULT SCALAR, not a
-  // row-parallel series — copied verbatim from `clock.dropped_dates().size()`
+  // row-parallel series â€” copied verbatim from `clock.dropped_dates().size()`
   // (see `Clock::dropped_dates`) once, before the run processes its first
   // step. Counts dates the source manifest listed with no admitted (Ok) fit,
-  // which `Clock::from_manifest` used to drop with no record at all — the run
+  // which `Clock::from_manifest` used to drop with no record at all â€” the run
   // spanned the resulting gap as one ordinary step (fit-survivorship). Same
   // append-only, non-wire treatment as `n_steps_entry_skipped` and its
   // siblings above: absent from `kBacktestSeriesColumns` and RunArchive
@@ -1534,13 +1536,13 @@ struct BacktestResult {
   // refuses the run outright rather than let a nonzero count through.
   std::uint64_t n_clock_dates_dropped{0};
   // A6: the actual dropped dates behind `n_clock_dates_dropped` above, in the
-  // same ascending order as `Clock::dropped_dates()` — the diagnostic detail
+  // same ascending order as `Clock::dropped_dates()` â€” the diagnostic detail
   // a bare count cannot carry ("which dates"). Same non-wire, append-only
   // treatment; empty exactly when `n_clock_dates_dropped == 0`.
   std::vector<std::string> clock_dates_dropped{};
 
   // B1 (backtest-lakehouse sprint, target 1.1.0): a RESULT SCALAR, not a
-  // row-parallel series — which execution-friction assumption produced this
+  // row-parallel series â€” which execution-friction assumption produced this
   // run, classified once from `RunConfig::frictions` by `friction_regime_for`
   // (backtest.cpp) and copied onto `out` before it is returned. See
   // `FrictionRegime` above for the three-way classification. Same
@@ -1553,7 +1555,7 @@ struct BacktestResult {
   FrictionRegime friction_regime{FrictionRegime::Frictionless};
 
   // Task B3 (backtest-lakehouse sprint, target 1.1.0): RESULT SCALARS, not
-  // row-parallel series — run-totals of the early-exercise/assignment
+  // row-parallel series â€” run-totals of the early-exercise/assignment
   // boundary checks `RunConfig::exercise_policy` governs (see
   // `ExercisePolicy` / `should_exercise_early` in this header and
   // `apply_early_exercise` in backtest.cpp). Each counts LOT-STEP
@@ -1570,16 +1572,16 @@ struct BacktestResult {
   // for a book with no ITM short calls / ITM puts, and always 0 for a run
   // whose `FinancingConfig::share_dividends` never places an ex-date inside
   // a held short call's step window (the calls counter has no schedule-free
-  // trigger — see `should_exercise_early`'s doc comment).
+  // trigger â€” see `should_exercise_early`'s doc comment).
   //
   // `n_short_calls_assignable`: a SHORT call (`Lot::qty < 0`) going ex-
   // dividend next session whose extension value (mark - intrinsic) is LESS
-  // than the forward dividend it would cost the long counterparty to wait —
+  // than the forward dividend it would cost the long counterparty to wait â€”
   // i.e. assignment risk on OUR book.
   std::uint64_t n_short_calls_assignable{0};
   // `n_puts_exercisable`: a deep-ITM put, EITHER side of our book, whose
   // extension value is LESS than the interest-carry benefit of collecting
-  // the strike now (`K * (1 - exp(-r*T))`) — an early-exercise opportunity
+  // the strike now (`K * (1 - exp(-r*T))`) â€” an early-exercise opportunity
   // on a long put we hold, or an assignment risk on a short put we wrote;
   // the boundary condition is the same option economics either way (see
   // `should_exercise_early`'s doc comment), so both sides share one counter.
@@ -1591,12 +1593,12 @@ struct BacktestResult {
 
   [[nodiscard]] std::size_t size() const noexcept { return date.size(); }
 
-  // ── Column-shape invariant (plan item 4.6) ────────────────────────────────
+  // â”€â”€ Column-shape invariant (plan item 4.6) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   //
   // Everything above is a parallel column set over `size()` rows, and nothing
   // used to enforce that. A result whose `nav` was one row shorter than `date`
   // indexed OUT OF RANGE inside the tearsheet fold and both serializers rather
-  // than reporting a shape error — benchmark_stats_test.cpp documented the
+  // than reporting a shape error â€” benchmark_stats_test.cpp documented the
   // hazard in a comment and worked around it by filling every column by hand.
   // `validate` is the enforcement point.
   //
@@ -1607,7 +1609,7 @@ struct BacktestResult {
   //     misalignment this rejects; it is never a legal partial result.
   //   * this is already the documented contract of `gross_vega_abs` and
   //     `nav_liquidation`. 4.6 makes it universal and checked, which also keeps
-  //     legitimately sparse results legal — a fixture that fills the columns a
+  //     legitimately sparse results legal â€” a fixture that fills the columns a
   //     fold reads and leaves the rest empty stays valid.
   //   * every `signals` series is empty-or-row-parallel too, and signal names
   //     must be non-empty and unique: both serializers append one dynamic
@@ -1621,7 +1623,7 @@ struct BacktestResult {
   // CSV writers validate on entry, so no hand-built or decoded one reaches those
   // wires. `encode_backtest_section` (the RunArchive encoder) has no error channel
   // and is NOT checked; its production callers pass a `run_backtest` result that
-  // already was. The check is a pure read — it never touches a value.
+  // already was. The check is a pure read â€” it never touches a value.
   //
   // @return InvalidArgument naming the first offending column and both lengths.
   [[nodiscard]] Status validate() const;
@@ -1683,8 +1685,8 @@ struct BacktestContinuation {
                                                   const RunConfig &cfg = {});
 
 // B1 driver: the strategy-aware overload. `strat.on_step` runs at inception
-// (step 0) and after each move-swap on the new base — opening entries / rolling
-// cohorts / closing lots — then the same resolve-today -> pnl_explain-forward ->
+// (step 0) and after each move-swap on the new base â€” opening entries / rolling
+// cohorts / closing lots â€” then the same resolve-today -> pnl_explain-forward ->
 // move-swap loop MTMs the evolving book. Book greeks and `signals(base)` are
 // recorded AFTER each step's entries. Settlement of expiring lots is engine-owned
 // (at intrinsic), identical to the fixed-book overload and subject to the same
@@ -1695,7 +1697,7 @@ struct BacktestContinuation {
 // date's spot as a fixing, (b) marks the lot through `deriv_price` against the
 // shifted surface, or (c) cash-settles it from the accrual when its expiry is
 // observed EXACTLY, on the same convention options settle on. An absent surface
-// for ANY live swap lot — held OR settling — is NotFound: the lane fails closed
+// for ANY live swap lot â€” held OR settling â€” is NotFound: the lane fails closed
 // exactly as the hedge-share ledger and the option settlement path do.
 [[nodiscard]] Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat,
                                                   const RunConfig &cfg = {});

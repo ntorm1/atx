@@ -1,11 +1,11 @@
 // WS-X regression suite for the strict typed dispersion run config and the
 // execution-realism knobs it turns on.
 //
-//   X1 — one typed DispersionRunConfig the run spec STRICTLY deserializes into:
+//   X1 â€” one typed DispersionRunConfig the run spec STRICTLY deserializes into:
 //        unknown keys are rejected BY NAME instead of silently ignored, which is
 //        the bug class that let ~14 of the ~20 spec keys do nothing.
-//   X2 — frictions + financing actually reach the engine (they never did).
-//   X6 — spread + square-root market-impact fill model.
+//   X2 â€” frictions + financing actually reach the engine (they never did).
+//   X6 â€” spread + square-root market-impact fill model.
 //
 // Everything here defaults to the pinned frictionless golden; each test that
 // exercises realism opts in explicitly.
@@ -24,7 +24,7 @@
 #include "atx/vol/research/dispersion_backtest.hpp"
 #include "atx/vol/research/dispersion_run.hpp"
 #include "atx/vol/research/dispersion_workflow.hpp" // read_run_spec / write_resolved_spec (F4)
-#include "atx/vol/research/track_key.hpp" // kBacktestEconomicsRev (E1 fix round)
+#include "atx/vol/track_key.hpp" // kBacktestEconomicsRev (E1 fix round)
 #include "atx/vol/types.hpp"
 
 using namespace atx::vol;
@@ -70,7 +70,7 @@ constexpr const char *kBaselineSpec = "key\tvalue\n"
 
 } // namespace
 
-// ── X1: the compatibility test — the pinned spec parses clean ────────────────
+// â”€â”€ X1: the compatibility test â€” the pinned spec parses clean â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 TEST(DispersionRunConfigStrict, PinnedBaselineSpecParsesUnchanged) {
   const fs::path path = write_spec("atx-disp-cfg-baseline", kBaselineSpec);
@@ -118,7 +118,7 @@ TEST(DispersionRunConfigStrict, PinnedBaselineSpecParsesUnchanged) {
   EXPECT_EQ(backtest.entry_every_n, 21u);
 }
 
-// ── X1: the strictness that did not exist before ────────────────────────────
+// â”€â”€ X1: the strictness that did not exist before â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 TEST(DispersionRunConfigStrict, UnknownKeyIsRejectedByName) {
   // A plausible typo for `gross_index_vega`. Pre-X1 this parsed "successfully"
@@ -204,7 +204,7 @@ TEST(DispersionRunConfigStrict, DrawdownStopRequiresACapitalBase) {
   EXPECT_EQ(with->limits.capital, 1000000.0);
 }
 
-// ── X2: frictions + financing now reach the engine ──────────────────────────
+// â”€â”€ X2: frictions + financing now reach the engine â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 TEST(DispersionRunConfigStrict, FrictionAndFinancingKeysReachTheEngineConfig) {
   const std::string body = std::string(kBaselineSpec) +
@@ -281,7 +281,7 @@ TEST(DispersionRunConfigStrict, FlatRateReachesFinancingOnlyWhenOptedIn) {
   EXPECT_TRUE(backtest.run.financing.finance_premium);
 }
 
-// ── X6: spread + square-root impact ─────────────────────────────────────────
+// â”€â”€ X6: spread + square-root impact â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 TEST(DispersionCostModelTest, ZeroCoefficientsCollapseToTheMidFill) {
   const DispersionCostModel none;
@@ -332,8 +332,8 @@ TEST(DispersionCostModelTest, ImpactIsConcaveInParticipation) {
 }
 
 // REVIEW C-4. The impact occupies its OWN additive lane and never rewrites the
-// configured spread kind. (This test previously asserted the opposite — that any
-// active impact folded the model to `PriceBps` — which is exactly the behaviour
+// configured spread kind. (This test previously asserted the opposite â€” that any
+// active impact folded the model to `PriceBps` â€” which is exactly the behaviour
 // that deleted a configured `vol_tick`.)
 TEST(DispersionCostModelTest, ImpactRidesItsOwnAdditiveLaneAndKeepsTheSpreadKind) {
   DispersionCostModel model;
@@ -344,7 +344,7 @@ TEST(DispersionCostModelTest, ImpactRidesItsOwnAdditiveLaneAndKeepsTheSpreadKind
 
   const double impact_fraction = model.k * std::pow(model.adv_fraction, model.beta);
 
-  // With no configured spread, the impact alone is the whole execution cost —
+  // With no configured spread, the impact alone is the whole execution cost â€”
   // and the kind stays `None`, because the impact lane no longer needs a lane
   // to hide in.
   const FrictionModel from_none = dispersion_effective_frictions(FrictionModel{}, model);
@@ -363,7 +363,7 @@ TEST(DispersionCostModelTest, ImpactRidesItsOwnAdditiveLaneAndKeepsTheSpreadKind
   EXPECT_NEAR(combined.impact_fraction, impact_fraction, 1e-15);
 }
 
-// REVIEW C-4 — the combination the pre-fix code silently discarded. The engine
+// REVIEW C-4 â€” the combination the pre-fix code silently discarded. The engine
 // charges `vega * vol_tick + mark * impact_fraction`; the ENGINE-LEVEL charged
 // cost is pinned by `Backtest.C4_ImpactIsChargedOnTopOfAVolTickSpreadNotInsteadOfIt`
 // in backtest_test.cpp, which is the independent additive oracle. This one pins
@@ -409,11 +409,11 @@ TEST(DispersionRunConfigStrict, CostKeysReachTheEngineAsASeparateAdditiveImpactL
 }
 
 
-// ── Small item: the optional projected-VaR stage is now gated by verify ──────
+// â”€â”€ Small item: the optional projected-VaR stage is now gated by verify â”€â”€â”€â”€â”€â”€
 //
 // `run-projected-var` was half-wired: it wrote three artifacts and `verify`
 // checked none of them, so a truncated or stale projected-VaR run passed
-// silently. The gate is deliberately CONDITIONAL — the stage is optional — but
+// silently. The gate is deliberately CONDITIONAL â€” the stage is optional â€” but
 // once the summary exists the whole envelope is checked.
 
 namespace {
@@ -591,7 +591,7 @@ TEST(DispersionProjectedVarGate, WrongHeaderIsRejected) {
 }
 
 // REVIEW C-1. The economics parse, the scenario count matches, and every field
-// the pre-C-1 contract named is present and well formed — the ONLY thing wrong
+// the pre-C-1 contract named is present and well formed â€” the ONLY thing wrong
 // is that the summary does not say which session's book it measures. That has to
 // be a verify failure, otherwise a stale artifact left by an earlier binary
 // passes `verify` and gets read as current.
@@ -605,7 +605,7 @@ TEST(DispersionProjectedVarGate, C1_SummaryWithoutTheAsOfProvenanceIsRejected) {
       << "a projected-VaR summary silent about its as-of session verified clean";
 }
 
-// ── Small items: knobs that existed in the code but not in the spec ──────────
+// â”€â”€ Small items: knobs that existed in the code but not in the spec â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // `entry_every_n` reached the lifecycle spec but was NOT readable from the run
 // spec, so every run silently used the 21-step default no matter what an
@@ -653,16 +653,16 @@ TEST(DispersionRunConfigStrict, MultiplierIsSettableAndValidated) {
   EXPECT_FALSE(read_dispersion_run_config(write_spec("atx-disp-cfg-mult0", bad)));
 }
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-// WS-X-B â€” X4 policy knobs + X5 reporting, at the strict-config seam.
+// Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â
+// WS-X-B Ã¢â‚¬â€ X4 policy knobs + X5 reporting, at the strict-config seam.
 //
 // The governing constraint for this workstream is that EVERY new knob defaults
 // to today's behaviour, so a spec written before the change produces identical
 // output after it. The first test below pins that at the config level; the
 // end-to-end byte-identity is measured separately by replaying the reference run.
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â
 
-// â”€â”€ The pinned baseline spec still parses, and every X4/X5 field defaults â”€â”€â”€
+// Ã¢â€â‚¬Ã¢â€â‚¬ The pinned baseline spec still parses, and every X4/X5 field defaults Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 TEST(DispersionRunConfigXB, BaselineSpec_LeavesEveryNewKnobAtTheShippedDefault) {
   const fs::path path = write_spec("atx_xb_defaults", kBaselineSpec);
   auto config = read_dispersion_run_config(path);
@@ -677,7 +677,7 @@ TEST(DispersionRunConfigXB, BaselineSpec_LeavesEveryNewKnobAtTheShippedDefault) 
   EXPECT_TRUE(config->benchmark_series.empty());
   EXPECT_EQ(config->periods_per_year, 252.0);
 
-  // And the regime the baseline describes is FRICTIONLESS â€” the pin's regime.
+  // And the regime the baseline describes is FRICTIONLESS Ã¢â‚¬â€ the pin's regime.
   EXPECT_EQ(dispersion_friction_regime(*config), DispersionFrictionRegime::Frictionless);
 
   // Those defaults must survive the trip into the backtest config, or the knob
@@ -688,7 +688,7 @@ TEST(DispersionRunConfigXB, BaselineSpec_LeavesEveryNewKnobAtTheShippedDefault) 
   EXPECT_EQ(backtest.strike.log_moneyness, 0.0);
 }
 
-// â”€â”€ X4: every nameable scheme parses AND reaches the engine config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Ã¢â€â‚¬Ã¢â€â‚¬ X4: every nameable scheme parses AND reaches the engine config Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 TEST(DispersionRunConfigXB, WeightingSchemes_ParseAndReachTheEngine) {
   const struct {
     const char *spelling;
@@ -705,7 +705,7 @@ TEST(DispersionRunConfigXB, WeightingSchemes_ParseAndReachTheEngine) {
     auto config = read_dispersion_run_config(path);
     ASSERT_TRUE(config.has_value()) << c.spelling << ": " << config.error().to_string();
     EXPECT_EQ(config->weighting, c.expected) << c.spelling;
-    // The knob must survive into the engine config â€” a scheme parsed and then
+    // The knob must survive into the engine config Ã¢â‚¬â€ a scheme parsed and then
     // dropped at the seam is exactly the silent-no-op this workstream forbids.
     EXPECT_EQ(dispersion_backtest_config_from(*config).weighting, c.expected) << c.spelling;
   }
@@ -736,9 +736,9 @@ TEST(DispersionRunConfigXB, StrikeRules_ParseAndReachTheEngine) {
   }
 }
 
-// â”€â”€ X4: out-of-contract combinations are refused, naming the key â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Ã¢â€â‚¬Ã¢â€â‚¬ X4: out-of-contract combinations are refused, naming the key Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 TEST(DispersionRunConfigXB, StrikeParameters_AreRefusedUnderARuleThatIgnoresThem) {
-  // A moneyness offset under the default rule would silently do nothing â€” which
+  // A moneyness offset under the default rule would silently do nothing Ã¢â‚¬â€ which
   // is the failure mode the strict seam exists to prevent.
   {
     const std::string body = std::string(kBaselineSpec) + "strike_log_moneyness\t0.05\n";
@@ -789,9 +789,9 @@ TEST(DispersionRunConfigXB, StrikeParameters_AreRefusedUnderARuleThatIgnoresThem
   }
 }
 
-// â”€â”€ X5: the friction/impact regime is classified from what reaches the engine â”€
+// Ã¢â€â‚¬Ã¢â€â‚¬ X5: the friction/impact regime is classified from what reaches the engine Ã¢â€â‚¬
 TEST(DispersionRunConfigXB, FrictionRegime_ClassifiesTheThreeRegimes) {
-  // Frictionless â€” the pin.
+  // Frictionless Ã¢â‚¬â€ the pin.
   {
     const fs::path path = write_spec("atx_xb_regime_none", kBaselineSpec);
     auto config = read_dispersion_run_config(path);
@@ -802,7 +802,7 @@ TEST(DispersionRunConfigXB, FrictionRegime_ClassifiesTheThreeRegimes) {
     EXPECT_NE(dispersion_regime_detail(config->frictions, config->costs).find("mid fills"),
               std::string::npos);
   }
-  // Frictioned â€” a spread/commission, but no impact term.
+  // Frictioned Ã¢â‚¬â€ a spread/commission, but no impact term.
   {
     const std::string body =
         std::string(kBaselineSpec) + "friction_preset\tretail_listed_options\n";
@@ -815,7 +815,7 @@ TEST(DispersionRunConfigXB, FrictionRegime_ClassifiesTheThreeRegimes) {
     EXPECT_NE(detail.find("half-spread"), std::string::npos) << detail;
     EXPECT_NE(detail.find("/contract"), std::string::npos) << detail;
   }
-  // Frictioned + impact â€” the regime in which the pinned result flips sign.
+  // Frictioned + impact Ã¢â‚¬â€ the regime in which the pinned result flips sign.
   {
     const std::string body = std::string(kBaselineSpec) +
                              "friction_preset\tretail_listed_options\n"
@@ -830,7 +830,7 @@ TEST(DispersionRunConfigXB, FrictionRegime_ClassifiesTheThreeRegimes) {
               std::string::npos);
   }
   // An impact model with ZERO participation is inert, so it must NOT be reported
-  // as an impact regime â€” overstating the realism of a run is the same class of
+  // as an impact regime Ã¢â‚¬â€ overstating the realism of a run is the same class of
   // error as understating it.
   {
     const std::string body = std::string(kBaselineSpec) + "cost_impact_k\t0.4\n";
@@ -841,7 +841,7 @@ TEST(DispersionRunConfigXB, FrictionRegime_ClassifiesTheThreeRegimes) {
   }
 }
 
-// â”€â”€ X5: the report metadata leads with the regime and never fakes a benchmark â”€
+// Ã¢â€â‚¬Ã¢â€â‚¬ X5: the report metadata leads with the regime and never fakes a benchmark Ã¢â€â‚¬
 TEST(DispersionRunConfigXB, ReportMetadata_LeadsWithTheRegime) {
   const std::string body = std::string(kBaselineSpec) +
                            "friction_preset\tretail_listed_options\n"
@@ -985,7 +985,7 @@ TEST(DispersionRunConfigXB, SurfaceArtifacts_EmitFrictionRegimeFirst) {
   }
 }
 
-// â”€â”€ X5: the benchmark series reader â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Ã¢â€â‚¬Ã¢â€â‚¬ X5: the benchmark series reader Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 TEST(DispersionRunConfigXB, BenchmarkSeriesReader_ParsesAndRefusesMalformedRows) {
   const fs::path dir = fs::temp_directory_path() / "atx_xb_bench";
   std::error_code error;
@@ -1028,7 +1028,7 @@ TEST(DispersionRunConfigXB, BenchmarkSeriesReader_ParsesAndRefusesMalformedRows)
   }
 }
 
-// ── REVIEW C-6: the reader's own validation ─────────────────────────────────
+// â”€â”€ REVIEW C-6: the reader's own validation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 //
 // Every shape below used to load cleanly and then be aligned by POSITION, so it
 // reached the published report as a confident number over the wrong observations.
@@ -1063,7 +1063,7 @@ TEST(DispersionRunConfigXB, C6_BenchmarkReaderRefusesUnusableDateColumns) {
         << series.error().to_string();
   }
   // Non-finite values. `from_chars` parses "nan"/"inf", so these are real rows,
-  // not parse failures — they used to flow straight into alpha/beta.
+  // not parse failures â€” they used to flow straight into alpha/beta.
   for (const char *token : {"nan", "inf", "-inf"}) {
     const std::string body =
         "date\tpnl\n2026-01-02\t4\n2026-01-05\t" + std::string(token) + "\n2026-01-06\t6\n";
@@ -1084,7 +1084,7 @@ TEST(DispersionRunConfigXB, C6_BenchmarkReaderRefusesUnusableDateColumns) {
   fs::remove_all(dir, error);
 }
 
-// ── REVIEW C-6: the join itself ─────────────────────────────────────────────
+// â”€â”€ REVIEW C-6: the join itself â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 namespace {
 
 [[nodiscard]] std::vector<DispersionBenchmarkRow> bench_rows(
@@ -1113,7 +1113,7 @@ TEST(DispersionBenchmarkJoinUnit, C6_ExactDatesPairsEveryObservationAndNothingEl
   EXPECT_EQ(paired->n_unmatched, 0u);
 }
 
-// THE case. Equal length, ascending, well-formed — and off by one session. This
+// THE case. Equal length, ascending, well-formed â€” and off by one session. This
 // is the only shape that produces a confidently wrong number rather than an
 // obviously wrong one, so it must be an error and not a silent pairing.
 TEST(DispersionBenchmarkJoinUnit, C6_AShiftedEqualLengthSeriesIsRefusedUnderExactDates) {
@@ -1166,7 +1166,7 @@ TEST(DispersionBenchmarkJoinUnit, C6_ALengthMismatchNeverTruncatesTheStrategyTai
                                          DispersionBenchmarkJoin::ExactDates)
                    .has_value());
 
-  // Under inner join, a longer benchmark is fine — the extra session has no
+  // Under inner join, a longer benchmark is fine â€” the extra session has no
   // strategy observation to pair with and simply does not appear.
   const auto inner = pair_dispersion_benchmark(kStrategyDates, kStrategyPnl, longer,
                                                DispersionBenchmarkJoin::InnerJoinOnDates);
@@ -1211,11 +1211,11 @@ TEST(DispersionRunConfigXB, C6_BenchmarkJoinPolicyIsANamedSpecKeyDefaultingToExa
   }
 }
 
-// â”€â”€ WS-F F4 (BT-W): the LISTED route's execution knobs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Ã¢â€â‚¬Ã¢â€â‚¬ WS-F F4 (BT-W): the LISTED route's execution knobs Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 //
 // X2/X6 routed frictions, financing, limits and costs into the SURFACE backtest
-// (`dispersion_backtest_config_from`). The LISTED `run-backtest` â€” the headline
-// artifact â€” still built `RunConfig config; config.unpriced = Error;` and
+// (`dispersion_backtest_config_from`). The LISTED `run-backtest` Ã¢â‚¬â€ the headline
+// artifact Ã¢â‚¬â€ still built `RunConfig config; config.unpriced = Error;` and
 // nothing else, so every published listed NAV was frictionless, carry-free and
 // provenance-permissive REGARDLESS of what the spec declared. And even for the
 // surface route the value could not reach the run directory, because
@@ -1294,7 +1294,7 @@ TEST(DispersionRunConfigStrict, ListedEngineConfigCarriesEveryDeclaredExecutionK
   EXPECT_EQ(engine.frictions.spread_kind, FrictionModel::SpreadKind::PriceBps);
   // REVIEW C-4: the declared 25 bps reaches the engine UNCHANGED, and the
   // square-root impact term (X6) reaches it as its own additive lane. This used
-  // to assert `half_spread_bps > 25` because impact was folded into the spread —
+  // to assert `half_spread_bps > 25` because impact was folded into the spread â€”
   // the fold that discarded a `VolTicks` base. Both halves are asserted, so
   // dropping either one is red.
   EXPECT_DOUBLE_EQ(engine.frictions.half_spread_bps, 25.0);

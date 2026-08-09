@@ -8,12 +8,12 @@ and never writes to either of them:
     `<lake_root>/tracks/underlier=<U>/family=<F>/batch-NNNNNN.parquet`
     (schema v1: `track_key`/`date`/`ts_ns` + the 25 frozen series columns +
     the 5-column nullable swap lane; see
-    `atx-vol/research/include/atx/vol/research/track_store.hpp` and
+    `atx-vol/include/atx/vol/track_store.hpp` (Tier-B) and
     `atx-vol/include/atx/vol/detail/backtest_series_columns.hpp`, the two
     C++ sources of truth `ALL_COLUMNS` below is copied from verbatim).
   * D3's SQLite catalog -- `<lake_root>/catalog.sqlite` (WAL mode), tables
     `tracks`/`trials` (see
-    `atx-vol/research/include/atx/vol/research/catalog.hpp`).
+    `atx-vol/include/atx/vol/catalog.hpp`, Tier-B).
 
 `load()` reads Parquet directly through DuckDB (a plain filesystem read --
 DuckDB never opens these files for write); `catalog()`/`returns_matrix()`
@@ -60,7 +60,7 @@ ALL_COLUMNS: tuple[str, ...] = (
     ("track_key", "date", "ts_ns") + _SERIES_COLUMNS + _SWAP_LANE_COLUMNS + _HIVE_COLUMNS
 )
 
-# atx-vol/research/include/atx/vol/research/catalog.hpp: kCatalogDbName.
+# atx-vol/include/atx/vol/catalog.hpp: kCatalogDbName.
 _CATALOG_DB_NAME = "catalog.sqlite"
 
 

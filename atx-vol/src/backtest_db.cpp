@@ -19,7 +19,7 @@
 #include "atx/vol/detail/backtest_series_columns.hpp"
 #include "atx/vol/detail/archive_util.hpp"
 #include "atx/vol/detail/writer_lock.hpp" // Task D3: cross-process manifest writer lock
-#include "atx/vol/research/track_key.hpp" // Task D1: make_engine_id() (engine_id incl. economics rev)
+#include "atx/vol/track_key.hpp" // Task D1: make_engine_id() (engine_id incl. economics rev)
 
 namespace atx::vol {
 using atx::core::Ok;
@@ -1674,7 +1674,7 @@ std::uint64_t backtest_series_identity(std::uint64_t template_fingerprint, std::
   h = fnv_value(h, kBacktestTemplateEngineSchemaSalt);
   // Task D1: fold the FULL engine identity -- ATX_VOL_VERSION_STRING +
   // kBacktestEconomicsRev + ra_schema_hash(), see make_engine_id() in
-  // atx/vol/research/track_key.hpp -- so a change that moves the golden NAV
+  // atx/vol/track_key.hpp -- so a change that moves the golden NAV
   // invalidates every persisted series MECHANICALLY, through the same
   // kBacktestEconomicsRev the D1 golden-NAV tripwire gates, instead of
   // resting on someone remembering to hand-bump kBacktestDbEngineSchemaSalt /
@@ -1765,7 +1765,7 @@ template <class T> void append_vector(std::vector<T> &dst, const std::vector<T> 
 
 // True when a result carries a swap lane that actually DID something. A
 // zero-swap engine run fills both columns with exactly 0.0, which is
-// indistinguishable in meaning from the empty columns a decoded result has —
+// indistinguishable in meaning from the empty columns a decoded result has â€”
 // so "populated" here means "carries a non-zero value", not "non-empty".
 [[nodiscard]] bool result_has_swap_data(const BacktestResult &result) noexcept {
   for (const double v : result.swap_pv) {
@@ -1801,8 +1801,8 @@ template <class T> void append_vector(std::vector<T> &dst, const std::vector<T> 
   // The on-disk checkpoint format (three frozen sections, folded into
   // `ra_schema_hash()`) carries no swap lane. Refuse a checkpoint that has one
   // rather than dropping it: a resumed run would silently restart every swap
-  // lot's fixing series from zero. Extending the format is a schema decision —
-  // a new section plus a version gate plus fresh goldens — not a side effect of
+  // lot's fixing series from zero. Extending the format is a schema decision â€”
+  // a new section plus a version gate plus fresh goldens â€” not a side effect of
   // the engine gaining the lane. Decoded checkpoints never carry swap state, so
   // this only ever fires on the write path.
   if (!checkpoint.portfolio.swap_lots.empty() || !checkpoint.swap_accruals.empty()) {
@@ -1892,7 +1892,7 @@ Status append_backtest_results(BacktestResult &dst, const BacktestResult &src) {
     return Err(ErrorCode::InvalidArgument, "backtest_db: appended optional columns differ");
   }
   // A swap-lane SHAPE change is tolerated only when neither side has real swap
-  // data — that is the DB-extension case (a decoded prefix reports the lane
+  // data â€” that is the DB-extension case (a decoded prefix reports the lane
   // absent, a freshly computed swap-free continuation reports it present and
   // all-zero), and collapsing it to "absent" loses nothing. If EITHER side
   // actually carries swap PnL, collapsing would destroy it AND disarm the

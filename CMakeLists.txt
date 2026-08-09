@@ -323,7 +323,9 @@ option(ATX_VOL_COUNTERS "Instrument atx-vol pricing hot paths with opt-in algori
 option(ATX_VOL_PROFILE "Instrument atx-vol phase wall times with compile-time opt-in timers" OFF)
 
 # ---- atx-vol research lakehouse (Task D2, backtest-production-lakehouse sprint) ----
-# Gates the Parquet track store (research/track_store.hpp, src/track_store.cpp)
+# Gates the Parquet track store (atx-vol/include/atx/vol/track_store.hpp,
+# src/track_store.cpp -- the header is Tier-B (E2 promotion); only the .cpp is
+# gated behind this flag, see atx-vol/CMakeLists.txt)
 # and its `track_compact` CLI on Arrow + Parquet (vcpkg `arrow[parquet]`, which
 # already pulls in zstd as a mandatory port dependency -- ARROW_WITH_ZSTD is
 # compiled in; no separate "zstd feature" exists on the vcpkg arrow port to

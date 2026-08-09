@@ -83,7 +83,7 @@ using UidSubset = std::shared_ptr<const std::vector<std::uint32_t>>;
 
 // ONE OS THREAD PER LOAD, AND IT IS STILL `std::async`. That cost is real — a
 // 250-date replay creates and joins 250 threads — and Task C2 (the process-wide
-// `SnapshotPool`, research/snapshot_pool.hpp) is what removes it for the
+// `SnapshotPool`, atx/vol/snapshot_pool.hpp, Tier-B) is what removes it for the
 // variant-parallel topology: a pooled run never reaches this function, and the
 // pool's loads run on the CALLING thread or on the persistent `PricingExecutor`,
 // creating no thread at all.

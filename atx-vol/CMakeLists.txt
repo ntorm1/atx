@@ -10,7 +10,7 @@
 # portfolio/risk on the PricedSurface stack, vol derivatives, surface archive)
 # PLUS a Vola-Dynamics
 # American-equity parity layer: de-Americanization (american_iv, deamer), hybrid
-# dividends + borrow (dividend), exact S3 curve (s3), fit metrics / reduced-χ²
+# dividends + borrow (dividend), exact S3 curve (s3), fit metrics / reduced-Ï‡Â²
 # (fit_metrics), parity metrics (parity), panel fixtures (panel), and the
 # multi-expiry parity harness (surface_parity). See
 # README.md and docs/superpowers/specs/2026-07-04-atx-vol-vola-parity-design.md.
@@ -126,14 +126,15 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/strategy_pipeline.cpp
     src/quant_pipeline.cpp
     src/snapshot_cache.cpp
-    # C2: research-tier process-wide sealed snapshot pool. Header lives under
-    # research/include (the atx-vol-research INTERFACE include root); the
-    # translation unit compiles into atx-vol like every other research .cpp
-    # (dispersion_run.cpp, run_archive.cpp, backtest_driver.cpp above).
+    # C2: process-wide sealed snapshot pool. Header is Tier-B
+    # (include/atx/vol/snapshot_pool.hpp, promoted from research/include by
+    # Task E2); the translation unit compiles into atx-vol like every other
+    # research-adjacent .cpp (dispersion_run.cpp, run_archive.cpp,
+    # backtest_driver.cpp above).
     src/snapshot_pool.cpp
     # D1: content-addressed track identity (TrackKey) + economics-rev
-    # tripwire pairing. Same research/include placement and same-library
-    # compilation as snapshot_pool.cpp immediately above.
+    # tripwire pairing. Same Tier-B header placement (E2 promotion) and
+    # same-library compilation as snapshot_pool.cpp immediately above.
     src/track_key.cpp
     # D2's src/track_store.cpp joins conditionally below (ATX_VOL_LAKEHOUSE) --
     # it is the one atx-vol source that needs Arrow/Parquet, so it is not
@@ -209,24 +210,24 @@ target_compile_features(atx-vol PUBLIC cxx_std_20)
 # ---- Public-surface tiering (S4-T18 / plan 4.1) ------------------------------
 # `include/atx/vol/` above is the SHIPPED public surface: Tier-A (the frozen v1
 # API, and exactly what the `atx/vol/vol.hpp` umbrella includes) plus Tier-B
-# (public but advanced — reachable by explicit include, deliberately outside the
+# (public but advanced â€” reachable by explicit include, deliberately outside the
 # umbrella). `include/atx/vol/detail/` is internal machinery with no stability
 # promise.
 #
 # Two header homes sit OUTSIDE that surface, each behind its own target so the
 # separation is expressed in the build graph and not only in a directory name:
 #
-#   atx-vol-tools    — CLI-support headers (surface-db build/admin/populate/exit
+#   atx-vol-tools    â€” CLI-support headers (surface-db build/admin/populate/exit
 #                      codes, the run-report writers, the tearsheet). Consumed by
 #                      tools/*_main.cpp and the acceptance examples, not by a
 #                      library consumer.
-#   atx-vol-research — dispersion RUN ORCHESTRATION (the run/workflow/pipeline
+#   atx-vol-research â€” dispersion RUN ORCHESTRATION (the run/workflow/pipeline
 #                      drivers and the run-archive artifacts they emit). The
 #                      dispersion VOCABULARY (dispersion.hpp, listed_*.hpp)
 #                      stays on the public surface; only the drivers move.
 #
 # MINIMAL SHAPE, AND IT STAYED THAT WAY. Both are INTERFACE targets that own an
-# include root only — the implementing translation units still compile into
+# include root only â€” the implementing translation units still compile into
 # atx-vol, so atx-vol carries the include roots PUBLIC. S4-T18 left a note here
 # saying plan 5.6 would split those .cpp into real static libraries and demote
 # these two edges to PRIVATE. 5.6 (S5-T27) promoted the tool EXECUTABLES instead
@@ -238,12 +239,12 @@ target_compile_features(atx-vol PUBLIC cxx_std_20)
 #      atx-vol links atx-vol-research PUBLIC, and atx-vol-research links
 #      atx-vol-tools INTERFACE (below), so the tools include root reaches every
 #      `atx::vol` consumer through research regardless. Containing the tools
-#      headers means demoting the RESEARCH edge too — and the research headers
+#      headers means demoting the RESEARCH edge too â€” and the research headers
 #      are shipped, so that is a distribution-surface decision, not a build tidy.
 #   2. The .cpp cannot simply move down a layer. The research tier's own public
 #      headers include the tools headers (research/dispersion_run.hpp and
 #      research/backtest_driver.hpp both name TearSheet), while the tools sources
-#      call back into the core library — so "tools as a lower static library" is a
+#      call back into the core library â€” so "tools as a lower static library" is a
 #      two-way edge, not a tier. It needs a real decomposition, not a target move.
 #
 # Both remain open. Neither is a defect in what ships: the reachability is stated
@@ -281,10 +282,11 @@ target_link_libraries(atx-vol
 # ---- D2: research Parquet track store (backtest-production-lakehouse sprint) ----
 # ATX_VOL_LAKEHOUSE (root CMakeLists.txt) gates the ONE atx-vol translation
 # unit that touches Arrow/Parquet directly (src/track_store.cpp -- its header,
-# research/include/atx/vol/research/track_store.hpp, is Arrow-free and always
-# declared). Linked PRIVATE: track_store.cpp's own TU needs Arrow/Parquet
+# include/atx/vol/track_store.hpp, is Arrow-free and always declared, and is
+# Tier-B public surface since the E2 promotion -- the tier lives on the header
+# alone; this gate is unaffected). Linked PRIVATE: track_store.cpp's own TU needs Arrow/Parquet
 # headers+libs, but nothing in track_store.hpp does, so no consumer of
-# atx::vol should see an extra Arrow include root propagate from THIS edge —
+# atx::vol should see an extra Arrow include root propagate from THIS edge â€”
 # note atx::core already links Arrow::arrow_shared/Parquet::parquet_shared
 # PUBLIC unconditionally (io/parquet.hpp, predates this option, out of D2's
 # scope), so this PRIVATE edge is not what makes Arrow appear on atx-vol's
@@ -297,7 +299,8 @@ if(ATX_VOL_LAKEHOUSE)
     target_link_libraries(atx-vol PRIVATE Arrow::arrow_shared Parquet::parquet_shared)
     target_compile_definitions(atx-vol PRIVATE ATX_VOL_LAKEHOUSE)
 
-    # D3: SQLite catalog (research/catalog.hpp, src/catalog.cpp) -- tracks/
+    # D3: SQLite catalog (include/atx/vol/catalog.hpp, Tier-B since the E2
+    # promotion; src/catalog.cpp) -- tracks/
     # trials over catalog.sqlite. NOT a new third-party dependency: it is
     # built entirely on atx::core::db::Database (atx/core/db/sqlite.hpp),
     # which already wraps atx-core's vendored SQLite amalgamation
@@ -314,15 +317,15 @@ if(ATX_VOL_LAKEHOUSE)
     # for the full dependency-story writeup on that pre-existing fact).
     target_sources(atx-vol PRIVATE src/catalog.cpp)
 
-    # C3: cache-first variant sweep driver (research/sweep_driver.hpp,
-    # src/sweep_driver.cpp) -- enumerates a BacktestStrategyTemplate grid,
-    # dedupes to TrackKey, probes D3's Catalog cache-first, and publishes
-    # misses through D2's TrackStore. Gated the same way as track_store.cpp/
-    # catalog.cpp immediately above: the driver's whole reason to exist is the
-    # lakehouse cache it drives, so it does not exist in the OFF build either
-    # (its header, research/include/atx/vol/research/sweep_driver.hpp, only
-    # names already-Arrow/SQLite-free types -- Catalog/TrackStore/TrackKey --
-    # so it stays declared unconditionally, same as track_store.hpp/
+    # C3: cache-first variant sweep driver (include/atx/vol/sweep_driver.hpp,
+    # Tier-B since the E2 promotion; src/sweep_driver.cpp) -- enumerates a
+    # BacktestStrategyTemplate grid, dedupes to TrackKey, probes D3's Catalog
+    # cache-first, and publishes misses through D2's TrackStore. Gated the
+    # same way as track_store.cpp/catalog.cpp immediately above: the driver's
+    # whole reason to exist is the lakehouse cache it drives, so it does not
+    # exist in the OFF build either (its header only names already-Arrow/
+    # SQLite-free types -- Catalog/TrackStore/TrackKey -- so it stays declared
+    # unconditionally, same as track_store.hpp/
     # catalog.hpp; only this .cpp needs the gate).
     target_sources(atx-vol PRIVATE src/sweep_driver.cpp)
 
@@ -345,7 +348,7 @@ endif()
 
 # ---- Algorithm counters (P0.2) ----
 # PUBLIC so the library AND every consumer (bench/tests that include
-# atx/vol/detail/counters.hpp) agree on the macro's value — the header's inline atomic
+# atx/vol/detail/counters.hpp) agree on the macro's value â€” the header's inline atomic
 # storage is guarded by it, so a split view would be an ODR hazard. OFF by
 # default: the definition is absent and the macros compile to nothing.
 if(ATX_VOL_COUNTERS)
@@ -376,8 +379,8 @@ endif()
 
 # ---- Benchmarks (Google Benchmark; opt-in via the shared ATX_BUILD_BENCH) ----
 # Mirrors atx-core/bench and atx-engine/bench. Three targets:
-#   atx-vol-american-bench   — American pricer route/side/API/grid matrix
-#   atx-vol-portfolio-bench  — PricedSurface queries + PortfolioPricer throughput
+#   atx-vol-american-bench   â€” American pricer route/side/API/grid matrix
+#   atx-vol-portfolio-bench  â€” PricedSurface queries + PortfolioPricer throughput
 if(ATX_BUILD_BENCH)
     add_subdirectory(bench)
 endif()
@@ -501,8 +504,8 @@ if(ATX_BUILD_EXAMPLES)
     add_executable(spy_ytd_corpus examples/spy_ytd_corpus.cpp)
     target_link_libraries(spy_ytd_corpus PRIVATE atx::vol atx::core atx_warnings)
 
-    # Validation harness: re-run the SAME short 40d 6m strangle a second way — from
-    # the RAW OPRA mid marks on actual listed contracts — and compare its P&L series
+    # Validation harness: re-run the SAME short 40d 6m strangle a second way â€” from
+    # the RAW OPRA mid marks on actual listed contracts â€” and compare its P&L series
     # against the interpolated-from-fits backtest (with a bridge series that splits
     # the gap into strike/tenor granularity vs fit-vs-market fidelity).
     add_executable(spy_strangle_tradeable examples/spy_strangle_tradeable.cpp)
@@ -605,7 +608,7 @@ if(ATX_BUILD_EXAMPLES)
     target_link_libraries(surface_db_dispersion_backtest PRIVATE atx::vol atx::core atx_warnings)
 
     # WS-D acceptance driver: the vega-flat SPY dispersion PnL-track backtest
-    # (long top-N 40Δ strangles vs a short SPY strangle, net-vega-zero at entry,
+    # (long top-N 40Î” strangles vs a short SPY strangle, net-vega-zero at entry,
     # daily clip, daily delta-hedge, held to expiry) -> the pnl_track.tsv the
     # Python renderer tools/spy_dispersion_pnl_report.py turns into the
     # acceptance PNG. Strategy gate: SpyDispersionPnl
@@ -615,9 +618,9 @@ if(ATX_BUILD_EXAMPLES)
     target_link_libraries(spy_dispersion_pnl PRIVATE atx::vol atx::core atx_warnings)
 
     # The strangle-vs-varswap comparison, DECLARATIVE: one fixed-expiry,
-    # daily-restriked 40Δ strangle against one uncapped variance swap struck
+    # daily-restriked 40Î” strangle against one uncapped variance swap struck
     # fair and sized to the strangle's entry vega, both on ONE SurfaceDb clock,
-    # delta-hedged daily — expressed as a ~20-line StrategySpec
+    # delta-hedged daily â€” expressed as a ~20-line StrategySpec
     # (FixedExpiryRestrike + one MatchGroupVega swap leg) and emitting the
     # track.tsv the Python renderer tools/render_strangle_vs_varswap.py turns
     # into the comparison report. It replaced the bespoke
@@ -633,7 +636,7 @@ if(ATX_BUILD_EXAMPLES)
 
     # Variance-strip diagnostic: per-session K_var at a constant tenor under the
     # default config and a ladder of pinned log-strike spans, plus the wing IVs
-    # the strip reads — the instrument for attributing day-to-day fair-strike
+    # the strip reads â€” the instrument for attributing day-to-day fair-strike
     # movement to surface regions. See examples/varswap_strip_diag.cpp.
     add_executable(atx-vol-varswap-strip-diag examples/varswap_strip_diag.cpp)
     target_link_libraries(atx-vol-varswap-strip-diag
@@ -682,7 +685,7 @@ endif()
 # installed into <prefix>/bin by cmake/atx-vol-install.cmake and are ON by
 # default (the ATX_BUILD_TOOLS option in the root CMakeLists states why). All
 # three were previously gated behind ATX_BUILD_EXAMPLES, which is OFF by default
-# and describes demonstrations — so the shipped tooling was, until now, built by
+# and describes demonstrations â€” so the shipped tooling was, until now, built by
 # nothing except an explicitly opted-in developer build.
 #
 # WHAT IS AND IS NOT IN THIS TIER. A tool here is something an OPERATOR runs

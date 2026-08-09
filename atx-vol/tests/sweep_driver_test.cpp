@@ -45,7 +45,7 @@
 //       absent) to independently verify atxpy.tracks reads it correctly --
 //       D4's own tests only ever read Python-built fixtures.
 
-#include "atx/vol/research/sweep_driver.hpp"
+#include "atx/vol/sweep_driver.hpp"
 
 #include <array>
 #include <cstdint>
@@ -77,8 +77,8 @@
 #include "atx/vol/backtest_template.hpp" // BacktestStrategyTemplate, ProjectedTemplateStrategy
 #include "atx/vol/corpus.hpp"           // CorpusManifest, CorpusEntry, CorpusFitStatus
 #include "atx/vol/priced_surface.hpp"   // PricedSurface, PricingContext
-#include "atx/vol/research/snapshot_pool.hpp" // SnapshotPool
-#include "atx/vol/research/track_key.hpp" // track_key_from_hex
+#include "atx/vol/snapshot_pool.hpp" // SnapshotPool
+#include "atx/vol/track_key.hpp" // track_key_from_hex
 #include "atx/vol/surface_archive.hpp"  // write_surface_archive_v2_file, SurfaceArchiveItem
 #include "atx/vol/surface_parity.hpp"   // SliceContext
 #include "atx/vol/vol_curve.hpp"        // CurveSurface, EssviCurve
@@ -223,7 +223,7 @@ struct Corpus {
   return n;
 }
 
-// ── D5: compact/reload integration leg helpers -- reads a compacted Parquet
+// â”€â”€ D5: compact/reload integration leg helpers -- reads a compacted Parquet
 // batch back via Arrow C++ directly (track_store_test.cpp's own read_batch/
 // dbl_at/str_at pattern, trimmed to what this file's reload gate needs).
 [[nodiscard]] std::shared_ptr<arrow::Table> read_batch_table(const std::string &path) {
@@ -266,7 +266,7 @@ void mark_all_compacted(Catalog &catalog, const std::vector<CompactedTrackPlacem
   }
 }
 
-// ── D5: env-var-gated fixture-lake producer (WritesRealCxxLakeAndCsvSidecar-
+// â”€â”€ D5: env-var-gated fixture-lake producer (WritesRealCxxLakeAndCsvSidecar-
 // ForPythonReadCrossCheck) -- see this file's top doc comment.
 constexpr const char *kFixtureLakeEnv = "ATX_VOL_D5_FIXTURE_LAKE";
 
@@ -289,7 +289,7 @@ constexpr const char *kFixtureLakeEnv = "ATX_VOL_D5_FIXTURE_LAKE";
 
 } // namespace
 
-// ── (a)+(b): duplicate collapse + staging/register on miss + cache-first rerun ──
+// â”€â”€ (a)+(b): duplicate collapse + staging/register on miss + cache-first rerun â”€â”€
 TEST(SweepDriverTest, DuplicateVariantsCollapseAndRerunIsAllCacheHits) {
   const fs::path dir = fresh_dir("dup-rerun");
   const Corpus corpus = make_corpus(dir / "corpus", "SPX", 6);
@@ -312,7 +312,7 @@ TEST(SweepDriverTest, DuplicateVariantsCollapseAndRerunIsAllCacheHits) {
   config.sweep_id = "sweep-dup-rerun";
   config.n_threads = 1;
 
-  // ── cold run: 4 submitted, 3 unique, 3 engine runs, 4 trial rows ──────────
+  // â”€â”€ cold run: 4 submitted, 3 unique, 3 engine runs, 4 trial rows â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   auto first = run_sweep(spec, config);
   ASSERT_TRUE(first.has_value()) << (first.has_value() ? std::string{} : first.error().to_string());
   EXPECT_EQ(first->n_variants_submitted, 4u);
@@ -357,7 +357,7 @@ TEST(SweepDriverTest, DuplicateVariantsCollapseAndRerunIsAllCacheHits) {
     EXPECT_EQ(stats->n_trials, 4u) << "trials count ATTEMPTS (4 original variants), not unique configs (3)";
   }
 
-  // ── rerun, SAME sweep: 0 engine runs, all hits, 4 more trial rows ─────────
+  // â”€â”€ rerun, SAME sweep: 0 engine runs, all hits, 4 more trial rows â”€â”€â”€â”€â”€â”€â”€â”€â”€
   auto second = run_sweep(spec, config);
   ASSERT_TRUE(second.has_value()) << (second.has_value() ? std::string{} : second.error().to_string());
   EXPECT_EQ(second->engine_runs, 0u);
@@ -380,7 +380,7 @@ TEST(SweepDriverTest, DuplicateVariantsCollapseAndRerunIsAllCacheHits) {
   fs::remove_all(dir, ec);
 }
 
-// ── enumeration/dedupe determinism: same grid -> same ordered key list ─────
+// â”€â”€ enumeration/dedupe determinism: same grid -> same ordered key list â”€â”€â”€â”€â”€
 TEST(SweepDriverTest, EnumerationOrderIsDeterministicAcrossFreshLakes) {
   const fs::path dir = fresh_dir("enum-det");
   const Corpus corpus = make_corpus(dir / "corpus", "SPX", 4);
@@ -432,8 +432,8 @@ TEST(SweepDriverTest, EnumerationOrderIsDeterministicAcrossFreshLakes) {
   fs::remove_all(dir, ec);
 }
 
-// ── (c): sweep NAVs are bit-identical to individually-run baselines, under
-// real variant-level concurrency sharing one SnapshotPool ──────────────────
+// â”€â”€ (c): sweep NAVs are bit-identical to individually-run baselines, under
+// real variant-level concurrency sharing one SnapshotPool â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 TEST(SweepDriverTest, SweepResultNavsMatchIndividualBaselinesUnderVariantParallelism) {
   const fs::path dir = fresh_dir("parallel-nav");
   const Corpus corpus = make_corpus(dir / "corpus", "SPX", 6);
@@ -497,7 +497,7 @@ TEST(SweepDriverTest, SweepResultNavsMatchIndividualBaselinesUnderVariantParalle
   fs::remove_all(dir, ec);
 }
 
-// ── D5 INHERITED OBLIGATION (C3 review): failure-injection abort-recovery ──
+// â”€â”€ D5 INHERITED OBLIGATION (C3 review): failure-injection abort-recovery â”€â”€
 //
 // Pins the write_staging/register_staging two-step publish window's
 // self-healing: if the LAST miss of a sweep fails mid-run, every EARLIER
@@ -582,8 +582,8 @@ TEST(SweepDriverTest, LastMissFailureLeavesEarlierMissesDurablyStagedAndSelfHeal
   }
   EXPECT_EQ(staged_file_count(lake_root), 5u);
 
-  // ── Re-run the SAME sweep: earlier 5 are cache hits, the previously-
-  // failed 6th re-runs cleanly and lands its own staging+register row. ─────
+  // â”€â”€ Re-run the SAME sweep: earlier 5 are cache hits, the previously-
+  // failed 6th re-runs cleanly and lands its own staging+register row. â”€â”€â”€â”€â”€
   spec.base_config.step_observer = nullptr; // no more injected failures
   auto second = run_sweep(spec, config);
   ASSERT_TRUE(second.has_value()) << (second.has_value() ? std::string{} : second.error().to_string());
@@ -613,7 +613,7 @@ TEST(SweepDriverTest, LastMissFailureLeavesEarlierMissesDurablyStagedAndSelfHeal
   fs::remove_all(dir, ec);
 }
 
-// ── D5 scope item 2: compact/reload integration leg ─────────────────────────
+// â”€â”€ D5 scope item 2: compact/reload integration leg â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 //
 // sweep -> TrackStore::compact() -> Catalog::mark_compacted (per
 // CompactStats::placements, the compact()<->catalog glue track_compact.cpp's
@@ -713,7 +713,7 @@ TEST(SweepDriverTest, CompactMarkCompactedAndArrowReloadMatchesOriginalResultsTo
   fs::remove_all(dir, ec);
 }
 
-// ── D5 INHERITED OBLIGATION (D4 review): real C++ writer -> Python reader ──
+// â”€â”€ D5 INHERITED OBLIGATION (D4 review): real C++ writer -> Python reader â”€â”€
 //
 // D4's own tests only ever read Python-built fixture lakes (test_tracks.py's
 // own doc comment: "No compiled C++ artifact that produces a lake exists in

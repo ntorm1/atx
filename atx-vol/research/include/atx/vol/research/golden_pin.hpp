@@ -29,7 +29,7 @@
 //      lakehouse-sprint.md, Task D6 Step 2) -- this header and the test's
 //      skip-cleanly contract are the mechanical piece D1 owns.
 
-#include "atx/vol/research/track_key.hpp" // kBacktestEconomicsRev
+#include "atx/vol/track_key.hpp" // kBacktestEconomicsRev
 
 namespace atx::vol {
 

@@ -12,7 +12,7 @@
 // Plus the Step 5 economics tripwire (TrackKeyGoldenReplay), corpus-gated and
 // GTEST_SKIP-clean in every worktree today -- see golden_pin.hpp.
 
-#include "atx/vol/research/track_key.hpp"
+#include "atx/vol/track_key.hpp"
 
 #include <array>
 #include <cstdint>
@@ -50,7 +50,7 @@ namespace {
 
 } // namespace
 
-// ── (a) same config twice => identical key ──────────────────────────────────
+// â”€â”€ (a) same config twice => identical key â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 TEST(TrackKeyTest, SameConfigTwiceIsIdentical) {
   const BacktestStrategyTemplate tmpl = make_template();
@@ -70,7 +70,7 @@ TEST(TrackKeyTest, SameConfigTwiceIsIdentical) {
   EXPECT_EQ(make_engine_id(), engine_id) << "make_engine_id() must be deterministic within a build";
 }
 
-// ── (b) any single economics field change => different key ─────────────────
+// â”€â”€ (b) any single economics field change => different key â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 TEST(TrackKeyTest, EconomicsFieldChangesProduceDifferentKeys) {
   const BacktestStrategyTemplate tmpl = make_template();
@@ -304,7 +304,7 @@ TEST(TrackKeyTest, ExecutionFieldChangesDoNotAffectKey) {
   // track_key.hpp's INCLUDED entry for the full rationale.
 }
 
-// ── (c) same config, different kBacktestEconomicsRev => different key ──────
+// â”€â”€ (c) same config, different kBacktestEconomicsRev => different key â”€â”€â”€â”€â”€â”€
 
 TEST(TrackKeyTest, EconomicsRevChangeProducesDifferentKey) {
   const BacktestStrategyTemplate tmpl = make_template();
@@ -321,7 +321,7 @@ TEST(TrackKeyTest, EconomicsRevChangeProducesDifferentKey) {
   EXPECT_NE(rev1.hex(), rev2.hex());
 }
 
-// ── (d) golden hex pin -- stable across process restarts ───────────────────
+// â”€â”€ (d) golden hex pin -- stable across process restarts â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 TEST(TrackKeyTest, GoldenHexPinIsStableAcrossRestarts) {
   // A FIXED, version-independent engine_id: this test pins the SHA-256 +
@@ -356,7 +356,7 @@ TEST(TrackKeyTest, GoldenHexPinIsStableAcrossRestarts) {
   EXPECT_EQ(key.hex(), kExpectedHex) << "actual hex was: " << key.hex();
 }
 
-// ── track_key_from_hex -- the inverse of hex() (Task D5) ────────────────────
+// â”€â”€ track_key_from_hex -- the inverse of hex() (Task D5) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 //
 // Needed because TrackStore::compact() reads only the hex string back out of
 // a staged file's metadata (the original TrackKey struct is long gone by
@@ -403,7 +403,7 @@ TEST(TrackKeyTest, FromHexRejectsUppercaseOrNonHexCharacters) {
   EXPECT_EQ(rejected_nonhex.error().code(), atx::core::ErrorCode::InvalidArgument);
 }
 
-// ── Step 5 economics tripwire (mechanical piece; CI wiring is Task D6's) ───
+// â”€â”€ Step 5 economics tripwire (mechanical piece; CI wiring is Task D6's) â”€â”€â”€
 
 namespace {
 

@@ -8,12 +8,12 @@ without a full CMake/vcpkg configure) -- see the D4 report for the fixture
 choice this implies. Every fixture lake here is built directly with
 pyarrow/sqlite3, matching the LANDED schema byte-for-byte against its C++
 sources of truth:
-  * `atx-vol/research/include/atx/vol/research/track_store.hpp` (schema
+  * `atx-vol/include/atx/vol/track_store.hpp` (Tier-B; schema
     v1's column list/order/nullability) and `atx-vol/src/track_store.cpp`'s
     `schema_v1_fields()` (the function that actually builds it);
   * `atx-vol/include/atx/vol/detail/backtest_series_columns.hpp` (the 25
     frozen series columns, in order);
-  * `atx-vol/research/include/atx/vol/research/catalog.hpp` /
+  * `atx-vol/include/atx/vol/catalog.hpp` (Tier-B) /
     `atx-vol/src/catalog.cpp` (the `tracks`/`trials` SQLite DDL).
 """
 
@@ -44,7 +44,7 @@ SERIES_COLUMNS = (
     "gross_vega", "gross_theta", "turnover_notional", "turnover_vega", "n_open_lots",
     "n_unpriced_lots", "n_unpriced_greeks",
 )
-# atx-vol/research/include/atx/vol/research/track_store.hpp (schema comment)
+# atx-vol/include/atx/vol/track_store.hpp (schema comment)
 # and track_store.cpp's schema_v1_fields().
 SWAP_LANE_COLUMNS = ("swap_pv", "swap_pnl", "gross_vega_abs", "nav_liquidation", "step_pnl_total")
 
@@ -164,7 +164,7 @@ def _build_catalog(lake_root: Path, track_rows: list[dict], trial_rows: list[dic
         con.close()
 
 
-# ── schema-drift guard ───────────────────────────────────────────────────
+# â”€â”€ schema-drift guard â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def test_all_columns_matches_landed_schema_shape():
     assert len(SERIES_COLUMNS) == 25
@@ -182,7 +182,7 @@ def test_all_columns_matches_landed_schema_shape():
     assert tracks._SWAP_LANE_COLUMNS == SWAP_LANE_COLUMNS
 
 
-# ── load(): partition pruning ────────────────────────────────────────────
+# â”€â”€ load(): partition pruning â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def test_load_partition_pruning_touches_only_matching_directory(tmp_path):
     lake = _basic_lake(tmp_path)
@@ -198,7 +198,7 @@ def test_load_partition_pruning_touches_only_matching_directory(tmp_path):
     assert "Scanning Files: 1/2" in plan_text
 
 
-# ── load(): column projection ────────────────────────────────────────────
+# â”€â”€ load(): column projection â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def test_load_column_projection_returns_only_requested_columns(tmp_path):
     lake = _basic_lake(tmp_path)
@@ -216,7 +216,7 @@ def test_load_unknown_column_raises_value_error(tmp_path):
         tracks.load(lake, columns=["not_a_real_column"])
 
 
-# ── load(): track_keys / date_range filters ──────────────────────────────
+# â”€â”€ load(): track_keys / date_range filters â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def test_load_filters_by_track_keys_and_date_range(tmp_path):
     lake = _basic_lake(tmp_path)
@@ -240,7 +240,7 @@ def test_load_default_reads_every_partition(tmp_path):
     assert table.num_rows == 3 * len(DATES)
 
 
-# ── load(): read-only ─────────────────────────────────────────────────────
+# â”€â”€ load(): read-only â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def test_load_does_not_mutate_lakehouse_files(tmp_path):
     lake = _basic_lake(tmp_path)
@@ -255,7 +255,7 @@ def test_load_does_not_mutate_lakehouse_files(tmp_path):
     assert all_files_after == parquet_files  # no stray temp/lock files
 
 
-# ── catalog() ──────────────────────────────────────────────────────────────
+# â”€â”€ catalog() â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def test_catalog_returns_tracks_table(tmp_path):
     lake = tmp_path
@@ -296,7 +296,7 @@ def test_catalog_missing_db_raises_and_does_not_create_file(tmp_path):
     assert not (lake / "catalog.sqlite").exists()
 
 
-# ── returns_matrix() ─────────────────────────────────────────────────────
+# â”€â”€ returns_matrix() â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def test_returns_matrix_pivots_nan_free_with_expected_values(tmp_path):
     lake = _basic_lake(tmp_path)

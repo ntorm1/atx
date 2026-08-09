@@ -95,7 +95,7 @@
 #include <vector>
 
 #include "atx/vol/backtest.hpp"           // BacktestResult
-#include "atx/vol/research/track_key.hpp" // TrackKey
+#include "atx/vol/track_key.hpp" // TrackKey
 #include "atx/vol/types.hpp"              // Result, Status, Error, ErrorCode
 
 namespace atx::vol {
@@ -192,7 +192,7 @@ private:
 // error: `compact()` returns a zeroed `CompactStats`.
 [[nodiscard]] Result<CompactStats> compact(std::string_view lake_root);
 
-// ── Batch-sizing (compact()'s 256-512MB target) -- exposed for unit testing ─
+// â”€â”€ Batch-sizing (compact()'s 256-512MB target) -- exposed for unit testing â”€
 //
 // `compact()`'s running batch byte count (`table_nbytes()`, track_store.cpp)
 // sums RAW/UNCOMPRESSED Arrow buffer bytes as tracks are accumulated into a

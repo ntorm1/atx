@@ -109,8 +109,8 @@
 #include <vector>
 
 #include "atx/core/db/sqlite.hpp"           // atx::core::db::Database (opaque-handle RAII wrapper)
-#include "atx/vol/research/track_key.hpp"   // TrackKey
-#include "atx/vol/research/track_store.hpp" // TrackMeta
+#include "atx/vol/track_key.hpp"   // TrackKey
+#include "atx/vol/track_store.hpp" // TrackMeta
 #include "atx/vol/tools/tearsheet.hpp"      // TrialStats (B4)
 #include "atx/vol/types.hpp"                // Result, Status, Error, ErrorCode
 
@@ -301,7 +301,7 @@ public:
   // value, per tearsheet.hpp's own doc comment).
   [[nodiscard]] atx::core::Result<TrialStats> trial_stats(std::string_view sweep_id);
 
-  // ── Task D6: retention/GC support ─────────────────────────────────────
+  // â”€â”€ Task D6: retention/GC support â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   // Retires (status -> `Retired`, see that enumerator's doc comment) every
   // `Compacted` row whose `last_access_ts < older_than_ts_ns`. A pure status

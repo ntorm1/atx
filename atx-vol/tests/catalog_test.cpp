@@ -1,5 +1,6 @@
 // Catalog -- SQLite catalog for the backtest lakehouse (Task D3,
-// backtest-production-lakehouse sprint). research/catalog.hpp, src/catalog.cpp.
+// backtest-production-lakehouse sprint). atx/vol/catalog.hpp (Tier-B, E2
+// promotion), src/catalog.cpp.
 //
 // Only built when ATX_VOL_LAKEHOUSE is ON (tests/CMakeLists.txt) -- Catalog's
 // implementation does not exist in the OFF build, mirroring track_store_test.cpp.
@@ -14,7 +15,7 @@
 // single-writer-fails-fast under real cross-connection contention (bounded,
 // not an indefinite block), and the rest of the CRUD/validation surface.
 
-#include "atx/vol/research/catalog.hpp"
+#include "atx/vol/catalog.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -128,7 +129,7 @@ void insert_raw_reader_mark(const fs::path &db_path, std::string_view file, std:
   ASSERT_TRUE(step.has_value()) << (step ? "" : step.error().to_string());
 }
 
-// ── Basic open / schema / WAL ───────────────────────────────────────────────
+// â”€â”€ Basic open / schema / WAL â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 TEST(CatalogTest, OpenCreatesDbFile) {
   const fs::path root = fresh_lake_root("open");
@@ -170,7 +171,7 @@ TEST(CatalogTest, WalModeIsEnabled) {
   EXPECT_EQ(stmt->column_text(0), "wal");
 }
 
-// ── probe / register_staging round trip (brief Step 1a) ────────────────────
+// â”€â”€ probe / register_staging round trip (brief Step 1a) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 TEST(CatalogTest, ProbeMissThenRegisterThenProbeHit) {
   const fs::path root = fresh_lake_root("roundtrip");
@@ -247,7 +248,7 @@ TEST(CatalogTest, RegisterStagingRejectsDateMaxBeforeDateMin) {
   EXPECT_EQ(result.error().code(), atx::core::ErrorCode::InvalidArgument);
 }
 
-// ── economics-rev supersession (Task D5) ────────────────────────────────────
+// â”€â”€ economics-rev supersession (Task D5) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 //
 // A revision bump changes `engine_id` (track_key.hpp's `make_engine_id()`),
 // which changes every `TrackKey` -- so the "new" generation's row is always a
@@ -442,7 +443,7 @@ TEST(CatalogTest, RegisterStagingSupersessionIsScopedToTheSameUnderlierFamilyAnd
   EXPECT_EQ((*superseded_row)->status, TrackStatus::Retired);
 }
 
-// ── list_by_status (Task D5 fix-round: track_compact_reconcile's own probe) ─
+// â”€â”€ list_by_status (Task D5 fix-round: track_compact_reconcile's own probe) â”€
 
 TEST(CatalogTest, ListByStatusReturnsOnlyMatchingRowsOrderedByTrackKey) {
   const fs::path root = fresh_lake_root("list-by-status");
@@ -478,7 +479,7 @@ TEST(CatalogTest, ListByStatusReturnsOnlyMatchingRowsOrderedByTrackKey) {
   EXPECT_TRUE(retired_rows->empty());
 }
 
-// ── mark_compacted ───────────────────────────────────────────────────────
+// â”€â”€ mark_compacted â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 TEST(CatalogTest, MarkCompactedTransitionsStagingToCompacted) {
   const fs::path root = fresh_lake_root("compact");
@@ -523,7 +524,7 @@ TEST(CatalogTest, MarkCompactedTwiceFailsInvalidArgument) {
   EXPECT_EQ(again.error().code(), atx::core::ErrorCode::InvalidArgument);
 }
 
-// ── Task D6: retention/GC support ───────────────────────────────────────────
+// â”€â”€ Task D6: retention/GC support â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 //
 // gc()'s own orchestration (Arrow-touching batch rewrite/delete) is tested in
 // track_gc_test.cpp -- these are the pure-Catalog pieces gc() is built on:
@@ -863,7 +864,7 @@ TEST(CatalogTest, ApplyGcRewriteFailsClosedWhenARetiredKeyDoesNotActuallyMatch) 
   EXPECT_EQ(*(*row)->file, old_file);
 }
 
-// ── record_trial / trial_stats (feeds B4's DSR) ─────────────────────────────
+// â”€â”€ record_trial / trial_stats (feeds B4's DSR) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 TEST(CatalogTest, RecordTrialAgainstUnknownTrackFails) {
   const fs::path root = fresh_lake_root("trial-missing");
@@ -958,7 +959,7 @@ TEST(CatalogTest, TrialStatsSingleTrialVarianceIsZeroNotNan) {
   EXPECT_DOUBLE_EQ(stats->sr_variance, 0.0);
 }
 
-// ── single-writer enforcement: bounded fail-fast under real contention ─────
+// â”€â”€ single-writer enforcement: bounded fail-fast under real contention â”€â”€â”€â”€â”€
 
 TEST(CatalogTest, ConcurrentWriterBeyondBusyTimeoutFailsFastNotIndefinitely) {
   const fs::path root = fresh_lake_root("busy");
@@ -997,7 +998,7 @@ TEST(CatalogTest, ConcurrentWriterBeyondBusyTimeoutFailsFastNotIndefinitely) {
                   .has_value());
 }
 
-// ── brief Step 1(b): two REAL processes, 1000 rows each, zero corruption ──
+// â”€â”€ brief Step 1(b): two REAL processes, 1000 rows each, zero corruption â”€â”€
 
 constexpr const char *kStressRootEnv = "ATX_VOL_CATALOG_STRESS_ROOT";
 

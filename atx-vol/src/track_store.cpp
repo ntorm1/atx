@@ -1,4 +1,4 @@
-#include "atx/vol/research/track_store.hpp"
+#include "atx/vol/track_store.hpp"
 
 // Third-party Arrow/Parquet headers. These arrive as IMPORTED CONFIG targets
 // (find_package(Arrow/Parquet CONFIG REQUIRED), atx-vol/CMakeLists.txt) whose
@@ -52,7 +52,7 @@ namespace {
 
 namespace fs = std::filesystem;
 
-// ── Arrow status -> atx Error ───────────────────────────────────────────────
+// â”€â”€ Arrow status -> atx Error â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 [[nodiscard]] Error from_arrow(const arrow::Status &s, std::string_view ctx) {
   std::string msg{ctx};
@@ -70,7 +70,7 @@ namespace fs = std::filesystem;
   return Error{ErrorCode::Internal, std::move(msg)};
 }
 
-// ── TrackMeta / BacktestResult validation ───────────────────────────────────
+// â”€â”€ TrackMeta / BacktestResult validation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 [[nodiscard]] bool is_hive_safe(std::string_view s) noexcept {
   if (s.empty()) {
@@ -143,7 +143,7 @@ namespace fs = std::filesystem;
   return Ok();
 }
 
-// ── ISO "YYYY-MM-DD" -> date32 (days since 1970-01-01) ──────────────────────
+// â”€â”€ ISO "YYYY-MM-DD" -> date32 (days since 1970-01-01) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 [[nodiscard]] std::optional<std::int32_t> parse_iso_date_days(std::string_view s) noexcept {
   if (s.size() != 10 || s[4] != '-' || s[7] != '-') {
@@ -186,7 +186,7 @@ namespace fs = std::filesystem;
   return static_cast<std::int32_t>(days);
 }
 
-// ── Arrow table construction ─────────────────────────────────────────────────
+// â”€â”€ Arrow table construction â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // Wraps `values` as a non-nullable, zero-copy Arrow array. `values` must
 // outlive every use of the returned array -- callers only ever pass a member
@@ -376,7 +376,7 @@ build_track_table(const TrackKey &key, const BacktestResult &result) {
   return Ok(arrow::Table::Make(std::move(schema), arrays, rows));
 }
 
-// ── compact() internals ──────────────────────────────────────────────────────
+// â”€â”€ compact() internals â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 struct StagedTrack {
   std::string path;

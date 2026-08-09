@@ -11,7 +11,7 @@
 // Only built when ATX_VOL_LAKEHOUSE is ON (tests/CMakeLists.txt) -- the
 // library entry points this file exercises do not exist in the OFF build.
 
-#include "atx/vol/research/track_store.hpp"
+#include "atx/vol/track_store.hpp"
 
 #include <arrow/array.h>
 #include <arrow/io/file.h>
@@ -168,7 +168,7 @@ struct ReadBatch {
 
 } // namespace
 
-// ── compact()'s batch-sizing boundary logic (detail::should_flush_batch) ───
+// â”€â”€ compact()'s batch-sizing boundary logic (detail::should_flush_batch) â”€â”€â”€
 // Pure-function unit coverage on synthetic byte counts -- no need to actually
 // write hundreds of MB through Arrow/Parquet to exercise the threshold math
 // itself. See track_store.hpp's `detail::` doc comment for
@@ -202,7 +202,7 @@ static_assert(atx::vol::detail::estimated_compressed_bytes(1000) == 900);
 static_assert(!atx::vol::detail::should_flush_batch(447'392'426));
 static_assert(atx::vol::detail::should_flush_batch(447'392'427));
 
-// ── The Step-1 gate: 3 tracks, 2 hive partitions, full round trip ──────────
+// â”€â”€ The Step-1 gate: 3 tracks, 2 hive partitions, full round trip â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 TEST(TrackStoreTest, RoundTripThreeTracksAcrossTwoPartitions) {
   const fs::path dir = fresh_dir("roundtrip");
   std::error_code mkdir_ec;
@@ -309,7 +309,7 @@ TEST(TrackStoreTest, RoundTripThreeTracksAcrossTwoPartitions) {
   ASSERT_TRUE(fs::exists(spy_batch)) << spy_batch.string();
   ASSERT_TRUE(fs::exists(aapl_batch)) << aapl_batch.string();
 
-  // ── SPY/strangle_hedged batch: track_a (4 rows) + track_b (3 rows) = 7 ────
+  // â”€â”€ SPY/strangle_hedged batch: track_a (4 rows) + track_b (3 rows) = 7 â”€â”€â”€â”€
   const ReadBatch spy = read_batch(spy_batch.string());
   ASSERT_EQ(spy.table->num_rows(), 7);
   ASSERT_EQ(spy.table->num_columns(), 33) << "track_key + date + ts_ns + 25 series + 5 swap-lane";
@@ -348,7 +348,7 @@ TEST(TrackStoreTest, RoundTripThreeTracksAcrossTwoPartitions) {
     EXPECT_EQ(str_at(*spy.table, "track_key", i), key_b.hex());
   }
 
-  // ── Spot-check 5+ cells vs the source BacktestResult (bit-exact) ──────────
+  // â”€â”€ Spot-check 5+ cells vs the source BacktestResult (bit-exact) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   // 1. track_a row 0: nav.
   EXPECT_EQ(dbl_at(*spy.table, "nav", 0), track_a.nav[0]);
   // 2. track_a row 2: pnl_vega.
@@ -368,7 +368,7 @@ TEST(TrackStoreTest, RoundTripThreeTracksAcrossTwoPartitions) {
   // ts_ns zero-copy round trip.
   EXPECT_EQ(dbl_at(*spy.table, "cash", 1), track_a.cash[1]);
 
-  // ── AAPL/iron_condor batch: track_c (5 rows) ───────────────────────────────
+  // â”€â”€ AAPL/iron_condor batch: track_c (5 rows) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const ReadBatch aapl = read_batch(aapl_batch.string());
   ASSERT_EQ(aapl.table->num_rows(), 5);
   ASSERT_EQ(aapl.meta->num_row_groups(), 1);
@@ -394,7 +394,7 @@ TEST(TrackStoreTest, RoundTripThreeTracksAcrossTwoPartitions) {
   fs::remove_all(dir, cleanup_ec);
 }
 
-// ── compact() on an absent/empty staging/ is a clean no-op, not an error ───
+// â”€â”€ compact() on an absent/empty staging/ is a clean no-op, not an error â”€â”€â”€
 TEST(TrackStoreTest, CompactWithNoStagingIsANoOp) {
   const fs::path dir = fresh_dir("no-staging");
   std::error_code mkdir_ec;
@@ -410,7 +410,7 @@ TEST(TrackStoreTest, CompactWithNoStagingIsANoOp) {
   fs::remove_all(dir, cleanup_ec);
 }
 
-// ── write_staging validates BacktestResult shape before touching disk ──────
+// â”€â”€ write_staging validates BacktestResult shape before touching disk â”€â”€â”€â”€â”€â”€
 TEST(TrackStoreTest, WriteStagingRejectsEmptyResult) {
   const fs::path dir = fresh_dir("empty-result");
   TrackStore store(dir.string());
@@ -426,7 +426,7 @@ TEST(TrackStoreTest, WriteStagingRejectsEmptyResult) {
   fs::remove_all(dir, ec);
 }
 
-// ── write_staging validates TrackMeta before touching disk ─────────────────
+// â”€â”€ write_staging validates TrackMeta before touching disk â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 TEST(TrackStoreTest, WriteStagingRejectsHiveUnsafeMeta) {
   const fs::path dir = fresh_dir("bad-meta");
   TrackStore store(dir.string());
@@ -450,7 +450,7 @@ TEST(TrackStoreTest, WriteStagingRejectsHiveUnsafeMeta) {
   fs::remove_all(dir, ec);
 }
 
-// ── compact() is additive across runs: batch-000001 never clobbers batch-000000 ──
+// â”€â”€ compact() is additive across runs: batch-000001 never clobbers batch-000000 â”€â”€
 TEST(TrackStoreTest, CompactIsAdditiveAcrossRuns) {
   const fs::path dir = fresh_dir("additive");
   std::error_code mkdir_ec;

@@ -35,7 +35,7 @@
 #include <vector>
 
 #include "atx/vol/detail/archive_util.hpp"  // reserve_unique_publish_temp_file, flush_and_publish_file
-#include "atx/vol/research/catalog.hpp"     // Catalog, TrackRow, TrackStatus
+#include "atx/vol/catalog.hpp"     // Catalog, TrackRow, TrackStatus
 
 namespace atx::vol {
 
@@ -54,7 +54,7 @@ namespace fs = std::filesystem;
   return Error{ErrorCode::IoError, std::move(msg)};
 }
 
-// ── Batch naming, deliberately DISTINCT from compact()'s own numbering ────
+// â”€â”€ Batch naming, deliberately DISTINCT from compact()'s own numbering â”€â”€â”€â”€
 //
 // compact() names batches "batch-NNNNNN.parquet" and picks its next index by
 // scanning the destination directory for that exact pattern
