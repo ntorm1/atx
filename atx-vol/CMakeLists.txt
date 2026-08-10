@@ -39,6 +39,7 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/surface_policy.cpp
     src/risk_surface_validation.cpp
     src/convex_recovery.cpp
+    src/quote_feasibility.cpp
     src/calib.cpp
     src/prepared_fitting.cpp
     src/c8.cpp
