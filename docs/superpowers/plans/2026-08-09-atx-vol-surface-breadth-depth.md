@@ -9,8 +9,10 @@ Two properties, as acceptance criteria:
 
 1. **Breadth.** Any well-formed American equity board fits, or returns a typed
    refusal that names a property of the *board* rather than of our plumbing.
-   Today 9.3% of tier-D boards still refuse, and several mechanisms that were
-   built to prevent exactly that are wired up but never execute.
+   ~~Today 9.3% of tier-D boards still refuse~~ — **withdrawn, see §1.5 (6):
+   the figure does not reproduce; it is 1.8% (4/223)**. Several mechanisms built
+   to prevent refusals are wired up but never execute. The real breadth loss is
+   **carry**, not refusal count — §1.6.
 2. **Depth.** A served surface is arbitrage-free where it is used, the region
    where that holds is stated rather than implied, and the quality numbers we
    publish measure the surface we actually serve.
@@ -35,6 +37,13 @@ Three sources, weighted differently:
 That is the third and fourth time this codebase has falsified one of my
 hypotheses about arbitrage. Treat confident causal stories here — including
 mine — as things to measure, not things to build on.
+
+> **Update, mid-sprint.** Six more of this document's own claims have since been
+> falsified by measurement — WITHDRAWN (3)–(8) in **§1.5**, which also restates
+> the baseline on the production fit path. §1.6–§1.8 record where the sprint's
+> target actually moved. **Read §1.5 before §1.4**: §1.4's table was measured
+> through a code path production never takes. The advice in the paragraph above
+> turned out to apply to this document more than to its predecessors.
 
 ---
 
@@ -69,19 +78,25 @@ repairing over ±3.0 had been fabricating served levels — the XOM/CVX defect,
 ### 1.3 A separate oracle already certifies the band that matters
 
 `RiskSurfaceValidationConfig` (`detail/risk_surface_validation.hpp:51-68`) (v):
-k ∈ [−0.50, +0.50], **129** calendar points, tolerance **1e-8**, plus price
-bounds, strike monotonicity, butterfly via call-price convexity, and a Lee wing
-slope ceiling of 2.0. It runs on every risk build (`pricer_fitter.cpp:1508`,
-`:1950`, `:2135`) and calendar failure is **not** in the degradable set
-(`surface_policy.cpp:32-33`) (v), so it hard-rejects.
+k ∈ [−0.50, +0.50], tolerance **1e-8**, plus price bounds, strike monotonicity,
+butterfly via call-price convexity, and a Lee wing slope ceiling of 2.0. It runs
+on every risk build (`pricer_fitter.cpp:1508`, `:1950`, `:2135`) and calendar
+failure is **not** in the degradable set (`surface_policy.cpp:32-33`) (v), so it
+hard-rejects.
+
+> **CORRECTED (grid size).** "129 calendar points" was the struct default, which
+> is what Accuracy mode uses. Production runs **Balanced**, which samples **97
+> strike / 65 calendar** points (`pricer_fitter.cpp:1795-1800`) (v). Confirmed
+> empirically by T1b: `oracle_n_calendar_samples == 65 × (n_slices − 1)` on
+> 192/192 lqbench boards.
 
 `PricerFitter::surface()` returns the risk surface when Risk is in `outputs`,
 the default (`pricer_fitter.cpp:2221-2229`, `surface_policy.hpp:146-147`).
 
-**Consequence:** boards reporting `calendar_arb_free = false` were, on the same
-run, admitted as calendar-arbitrage-free on |k| ≤ 0.5 at 1e-8. **T1 exists to
-confirm that empirically rather than by inference — do not treat it as settled
-until T1 reports.**
+**Consequence, as originally stated:** boards reporting `calendar_arb_free =
+false` were, on the same run, admitted as calendar-arbitrage-free on |k| ≤ 0.5
+at 1e-8. **T1 has now reported and this inference was wrong on the path it was
+measured on. See §1.5, WITHDRAWN (3).**
 
 ### 1.4 Corrected measurements
 
@@ -119,6 +134,107 @@ vs 0.0352 for clean ones. The violating surfaces fit their quotes *better*.
 > only the calendar fields (`session.cpp:1434-1438`) (v), so it is structurally
 > zero for 92–96% of boards and reads identically to "verified clean."
 > **Butterfly is unmeasured, not clean.**
+
+### 1.5 What T1/T1b/T2/T8 measured, and what it withdrew
+
+Everything in §1.1–§1.4 was measured through `universe_autofit` as it stood
+before T1. That harness constructed a `PricerConfig` naming neither
+`quality_mode` nor `outputs`. `PricerFitter::is_v2_request()`
+(`pricer_fitter.cpp:2174`) (v) returns
+`cfg_.quality_mode.has_value() || cfg_.outputs.has_value()`, and **both are
+`std::optional`, default unset** (`pricer_fitter.hpp:273-274`). Naming *either*
+opts into the v2 dual mark/risk pipeline with the independent oracle. Naming
+neither takes the legacy single-surface branch (`pricer_fitter.cpp:621`), which
+publishes into the market_mark slot and **never validates**.
+
+Production names both, unconditionally: `pricer_config_for_symbol`
+(`surface_db_populate.cpp:52-68`) (v) assigns `out.quality_mode` and
+`out.outputs` from `SurfacePolicy`, whose fields are non-optional. **So the
+benchmark and production were never running the same code path**, and §1.4's
+table describes the legacy one. T1b (`5b41cb9`) added `--fit-path
+production|legacy`, defaulting to production, mirroring
+`pricer_config_for_symbol`.
+
+**Re-measured on the production path** — lqbench 2026-08-03 (192 boards) and
+S&P 100 2026-07-22 (104 boards), `--preset robust --r 0.043`:
+
+| property | production path |
+|---|---|
+| boards served | 85.3% |
+| slices served | 57.7% |
+| calendar violations, |k| ≤ 0.5 | **0** across 155,285 samples |
+| strike/butterfly/price-bound violations | **0** across 308,817 samples |
+| `mm_state` | `rejected` on 192/192 and 104/104 |
+| boards publishing `degraded` on `CarryGap` | 177/192 |
+| eSSVI rejected as **primary** curve family | 60% (lqbench) / 68% (control) |
+
+> **WITHDRAWN (3)** — §1.3. "Every `status=ok` board was certified
+> arbitrage-free on |k| ≤ 0.5." The oracle never ran on the path §1.4 measured.
+> The inference was sound about production and simply untested; the sentence
+> asserted it as established.
+>
+> **WITHDRAWN (4)** — §D1. "The number that gates arbitrage is computed on every
+> board and never exported." Half wrong: on the benchmark path it was **not
+> computed at all**. A default-constructed `ValidationDigest` reads as
+> "0 violations", which is indistinguishable from "verified clean" — the same
+> defect as WITHDRAWN (2), one layer up. T1 (`91904d3`) exports an `oracle_ran`
+> column derived from `candidate_generation != 0` so the two cannot be confused
+> again.
+>
+> **WITHDRAWN (5)** — §B4 row 1. "0DTE index boards are silently dropped because
+> `expiry_close` defaults to `MidnightUtc`." Stale. `opra_panel.cpp:784-786` (v)
+> maps every convention except `UsIndexAmOpen` to `SettlementSession::Pm`, fixed
+> in `7b402ae` before this sprint. Worth **0 expiries**. Pinned by a test in
+> `9777b7c` so the claim cannot drift back.
+>
+> **WITHDRAWN (6)** — the **9.3% tier-D refusal** figure that motivates the Goal
+> and gate 3. It does not reproduce: **4/223 = 1.8%** on this document's own §9
+> corpus and command. Every downstream sizing that rests on 9.3% is overstated
+> by ~5×.
+>
+> **WITHDRAWN (7)** — §T2's normalisation. The plan says `r_i = p_i/DF`; the
+> correct reduction is `r_i = p_i/(DF·F)`. Corrected in `77960f4`.
+>
+> **CORRECTED (8)** — §T9. "No assignment to `.rho_scale` anywhere in `src/`."
+> `batch.cpp:279` assigns `.rho_R`. The ingress inventory in T9 must be
+> re-derived, not trusted.
+
+### 1.6 The target moved: carry, not geometry
+
+Geometry is **clean** on the served production surface — 0 violations, both
+constraint classes, both corpora. The sprint's depth premise is therefore
+satisfied *for what is served*, and the binding constraint on breadth is
+**carry**:
+
+- **29 of 29 lost boards** are lost to carry. The mechanism is two lines in
+  `apply_risk_policy()` (`pricer_fitter.cpp:1247`) (v):
+  `deam.require_carry_confidence = true` (`:1251`) and
+  `deam.audit_fit_inversions = true` (`:1256`).
+- On boards that **do** serve, carry still costs **42% of slices and 47% of
+  quotes**.
+- **177/192** boards publish `degraded` on `CarryGap`.
+
+This reshapes T5 into a carry workstream (T5c) combining T5 + B3(ii) + B4 row 4.
+**Setting `require_carry_confidence = false` is forbidden**: recovery must come
+from carry being *known*, not from carry being *unchecked*.
+
+### 1.7 The clean oracle result describes a substitute, not the intended fit
+
+eSSVI is rejected as the **primary** family on 60% / 68% of production boards and
+survives only via ladder substitution (`used_fallback` 1 → 114). So §1.5's zero
+violations certify the substitute surface. Which constraint rejects the primary
+is the open question T1c answers, and **T3 cannot be scoped until it does** —
+T3's stated acceptance criterion ("calendar violations inside the certified band
+go to zero") is already vacuously satisfied. T1b's recommended restatement:
+*the eSSVI-primary rejection rate falls from 60% / 68%.*
+
+### 1.8 Scope note: no engine consumer exists
+
+Nothing in `atx-engine/` or `atx-impl/` consumes `atx/vol/`. The surface DB is
+read only by the dispersion backtests, `surface_db_main`, and the Python
+bindings. The coverage numbers in this document gate the **research layer**, not
+a live signal path. Engine integration is a real gap and this plan does not
+address it.
 
 ---
 
@@ -281,8 +397,8 @@ co-terminal pair exists, 2–3 days. Both, or neither helps.
 
 | shape | defect | size |
 |---|---|---|
-| **0DTE index boards** | `OpraLoadSpec::expiry_close` defaults to `MidnightUtc` (`opra_panel.hpp:205`) and **no production caller sets it** — only two `examples/`. Every same-day expiry is dropped at `opra_panel.cpp:817-822`. PM-close support exists and is correct, just unwired. | 1 day |
-| **Cash-settled European index (SPX/NDX/VIX)** | `exercise_style` defaults to `American` (`opra_panel.hpp:208`); the European branches (`deamer.cpp:814`, `prepared_fitting.cpp:247`, `parity.cpp:123`) are unreachable in production. Index boards run American de-Am on European options. | 1–2 days |
+| ~~**0DTE index boards**~~ | **WITHDRAWN — §1.5 (5).** Stale claim. `opra_panel.cpp:784-786` maps every convention except `UsIndexAmOpen` to `SettlementSession::Pm` (`7b402ae`, pre-sprint). Worth **0 expiries**; pinned by a test in `9777b7c`. | **0** |
+| **Cash-settled European index (SPX/NDX/VIX)** | `exercise_style` defaults to `American` (`opra_panel.hpp:208`); the European branches (`deamer.cpp:814`, `prepared_fitting.cpp:247`, `parity.cpp:123`) are unreachable in production. Index boards run American de-Am on European options. **LANDED `9777b7c`** — both fields become `std::optional` overrides resolved from the board's OSI root through a curated registry (keyed on root, not index: SPX is AM-settled but SPXW is PM; OEX is cash-settled *American* while XEO on the same index is European). Measured: exercise style Amer→Euro takes `n_quotes_used` 576 → 1702 and `mean_rmse_vol` 5.8e-5 → 0 on a real SPX board. | done |
 | **Boards spanning a dividend** | No dividend source on the surface path; `cash_divs` only reaches the fit via the dispersion runner's TSV. A discrete dividend is absorbed into implied borrow, and phase-1.5 then **interpolates linearly across the ex-date step** (`curve_fit.cpp:765`). | 2–3 days |
 | **Hard-to-borrow** | PCP borrow solve brackets `[-0.5, +0.5]` (`deamer.cpp:66-67`); a genuine squeeze cannot be resolved and surfaces as `CarryFailed`. | 1 day + B3(ii) |
 | **Few expiries (1–3)** | **Supported.** Calendar floor skipped while empty (`curve_fit.cpp:935`), `min_fitted_expiries` 1, selector refusal advisory. Wants a regression test, not a fix. | — |
@@ -331,13 +447,16 @@ preparation first, then widen.** Two further caveats: the ranking metric
 
 ## 4. Depth findings
 
-### D1 — The number that gates arbitrage is computed on every board and never exported
+### D1 — ~~The number that gates arbitrage is computed on every board and never exported~~ → it was not computed at all
 
-`universe_autofit` reads 7 of ~30 `SessionDiagnostics` fields
-(`:416-423`) and never touches `risk_health`. The `ValidationDigest`
-(`surface_policy.hpp:111-142`) carries 11 counters and 5 slacks and is reachable
-at `pricer_fitter.hpp:492-495`. **Everything else in this document is measured
-against the wrong band until this is exported.**
+**WITHDRAWN as stated — see §1.5 (4).** `universe_autofit` read 7 of ~30
+`SessionDiagnostics` fields (`:416-423`) and never touched `risk_health`; the
+`ValidationDigest` (`surface_policy.hpp:111-142`) carries 11 counters and 5
+slacks and is reachable at `pricer_fitter.hpp:492-495`. All true. But the digest
+was not *computed* on the benchmark path, because that path never engaged v2 —
+so the counters were default-constructed zeros, which read identically to
+"verified clean". Fixed by T1 (`91904d3`, `oracle_ran` guard column) and T1b
+(`5b41cb9`, `--fit-path production`).
 
 ### D2 — `CalendarRepair` is inert on every non-eSSVI board
 
@@ -644,6 +763,14 @@ T1 first and alone. T2 next, because it may show that a chunk of the residual
 9.3% is data that no fitter can serve, which would change T6's and T8's value.
 Everything else parallelises with the ownership above.
 
+> **As executed.** T1 → T1b → T1c on lane A; T2 → T9 on lane B; T8 → T5c on
+> lane C. T1b was inserted because T1 showed the benchmark was measuring the
+> wrong code path (§1.5). T5 was reshaped into **T5c** (carry) because
+> measurement moved the binding constraint off geometry (§1.6). T2 reported
+> **0 of 4** residual refusals are Davis–Hobson-infeasible data — every one is a
+> fitter or plumbing limitation, so gate 3 cannot be closed by classification
+> and must be closed on the number.
+
 ---
 
 ## 7. Acceptance gates
@@ -651,12 +778,33 @@ Everything else parallelises with the ownership above.
 1. **Calendar, stated honestly.** One certified band, one grid, both lanes.
    In-band violations on served surfaces: **zero**. Out-of-band reported
    separately and not treated as a defect unless something evaluates there.
+   → **MET on the production path before any depth work landed** (§1.5): 0
+   violations across 155,285 calendar samples. Restated so it cannot be read as
+   a win this sprint earned. The live version of this gate is **1′** below.
 2. **Butterfly measured.** A surface-level butterfly counter exists and is
    exported for both lanes. Currently it is structurally zero on 92–96% of
-   boards and we cannot say anything about it.
+   boards and we cannot say anything about it. → **MET** by T1 (`91904d3`): the
+   oracle's strike/butterfly counters are exported with an `oracle_ran` guard so
+   "not computed" is distinguishable from "computed and clean". 0 violations
+   across 308,817 strike samples.
 3. **Tier D fit success ≥ 95%**, or a Davis–Hobson classification showing the
    residual is infeasible data rather than a fitter limitation. Either outcome
-   closes the gate; a bare number does not.
+   closes the gate; a bare number does not. → T2 classified **0 of 4** as
+   infeasible data, so this gate must be closed on the number. Baseline is
+   1.8% refusing (§1.5 (6)), not 9.3%.
+
+**Rebaselined gates, added after measurement:**
+
+- **1′. eSSVI survives as PRIMARY.** The primary-rejection rate falls from
+  60% (lqbench) / 68% (control). This replaces T3's vacuous stated criterion
+  (§1.7). Scope set by T1c.
+- **9. Carry breadth.** Of the 29 boards lost to carry, the count recovered
+  **with a known, confidence-stamped carry** is reported — never by relaxing
+  `require_carry_confidence`. The 42% slice / 47% quote loss and the 177/192
+  `degraded`-on-`CarryGap` population are reported before and after.
+- **10. Carry confidence is distributional, not binary.** A recovered board
+  reports *which* fallback source supplied its carry and at what confidence. A
+  board that returns with a fabricated carry is worse than a board that refuses.
 4. **Control corpus holds:** 416/416, eSSVI in-band median ≥ 0.94, and
    like-for-like `rmse_vol` no worse than 1.05×.
 5. **Fit CPU ≤ 1.3×** the current 0.50× baseline, load-normalised. Do not
@@ -746,10 +894,23 @@ Gate scorer and the tier map live in the predecessor sprint's artifacts.
 
 ## 11. Unverified, flagged
 
-- §1.3's inference that every `status=ok` board passed the risk oracle rests on
-  `surface()` returning the risk surface by default. T1 confirms it empirically.
-- All breadth reachability claims are static (grep + read); nothing was executed
-  to observe a branch being taken.
+- ~~§1.3's inference that every `status=ok` board passed the risk oracle rests on
+  `surface()` returning the risk surface by default. T1 confirms it
+  empirically.~~ **RESOLVED — and the flag was right to be there.** T1 falsified
+  it on the path §1.4 measured; T1b re-measured on production. §1.5 (3).
+- ~~All breadth reachability claims are static (grep + read); nothing was
+  executed to observe a branch being taken.~~ **PARTLY RESOLVED.** Executing
+  them falsified two: B4 row 1 was already fixed (§1.5 (5)), and the 9.3%
+  refusal figure does not reproduce (§1.5 (6)). **Six plan hypotheses have now
+  been falsified by measurement.** Any remaining static claim in this document
+  should be assumed unmeasured until a run says otherwise.
+- The 2× Lee-bound convention error (D3) is **verified**, not flagged:
+  `arb.cpp:632-641` gates raw SVI at `b(1+|ρ|) ≤ 4`, justified in-comment as
+  "matching the eSSVI/Mingone-cube convention". eSSVI's `w = (θ/2){…}` carries a
+  ½ prefactor, so `ψ(1+ρ) ≤ 4` *is* Lee's slope-2 bound there; raw SVI has no
+  prefactor and its bound is `≤ 2`. The convention was ported across a
+  parametrization boundary that changes it by exactly 2×. Compare
+  `risk_surface_validation.hpp:67`: `max_abs_wing_total_variance_slope{2.0}`.
 - The Corbetta-vs-Mingone sufficiency discrepancy was resolved via Pasquazzi,
   not by reading Hendriks–Martini directly (paywalled).
 - Frequency of the ConvexDense wing-fallback path (D-review F5): the counter
