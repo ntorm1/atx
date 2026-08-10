@@ -296,6 +296,86 @@ TEST(CurveFitCarryFallback, ConfidentBoardBitIdenticalRegardlessOfGate) {
   }
 }
 
+// ── T5c (B3ii): the two carry-fallback extensions ────────────────────────
+
+// (e) An expiry with NO co-terminal pair at all cannot solve its own carry, so
+// `resolve_chain_forward` returns Unavailable. Historically that hard-dropped in
+// the prepass, out of reach of the repair pass — even on a board whose other
+// expiries pin the carry perfectly. It is a statement about ONE expiry's quote
+// shape, not about the board's carry, so it now defers to the term-structure
+// repair like any other non-confident expiry.
+TEST(CurveFitCarryFallback, NoCoterminalPairExpiryRepairedFromTermStructure) {
+  Underlying under;
+  under.spot = kSpot;
+  under.chains.push_back(make_carry_chain(0.10, borrow_of_T(0.10), /*n_pairs=*/15, /*n_total=*/15));
+  // Zero co-terminal pairs: every strike carries only its OTM leg.
+  under.chains.push_back(make_carry_chain(0.30, borrow_of_T(0.30), /*n_pairs=*/0, /*n_total=*/15));
+  under.chains.push_back(make_carry_chain(0.60, borrow_of_T(0.60), /*n_pairs=*/15, /*n_total=*/15));
+
+  const auto rep = fit_curve_surface(under, carry_inputs(true), CurveConfig{});
+  ASSERT_TRUE(rep.has_value()) << rep.error().to_string();
+  ASSERT_EQ(rep->expiry_reports.size(), 3u);
+  EXPECT_EQ(rep->expiry_reports[1].outcome, ExpiryFitOutcome::Fitted);
+  EXPECT_EQ(rep->expiry_reports[1].carry_source, CarrySource::TermStructureInterp);
+  EXPECT_EQ(rep->n_slices, 3u);
+  EXPECT_EQ(rep->n_carry_skipped, 0u);
+
+  // Interpolated between the two solved neighbours, not invented.
+  const double b_lo = committed_borrow_at(*rep, 0.10);
+  const double b_hi = committed_borrow_at(*rep, 0.60);
+  const double b_mid = committed_borrow_at(*rep, 0.30);
+  ASSERT_TRUE(std::isfinite(b_lo) && std::isfinite(b_hi) && std::isfinite(b_mid));
+  const double alpha = (0.30 - 0.10) / (0.60 - 0.10);
+  EXPECT_NEAR(b_mid, b_lo + alpha * (b_hi - b_lo), 1.0e-9);
+
+  // Without the repair pass armed (no confidence requirement) the board is
+  // bit-identical to its historical shape: the pairless expiry is still dropped.
+  const auto open = fit_curve_surface(under, carry_inputs(false), CurveConfig{});
+  ASSERT_TRUE(open.has_value()) << open.error().to_string();
+  EXPECT_EQ(open->n_slices, 2u);
+  EXPECT_EQ(open->expiry_reports[1].outcome, ExpiryFitOutcome::CarryFailed);
+}
+
+// (f) A board with ZERO confident expiries recovers when at least one expiry's
+// carry is MEASURED to inside the standard-deviation-moneyness budget: the
+// second-tier anchor. Provenance stays honest — no expiry reports Solved, and the
+// board is never confident, so admission publishes Degraded (CarryGap).
+TEST(CurveFitCarryFallback, ZeroConfidentBoardRecoversViaMoneynessBoundedAnchor) {
+  Underlying under;
+  under.spot = kSpot;
+  for (const double T : {0.10, 0.30, 0.60, 1.00}) {
+    under.chains.push_back(make_carry_chain(T, borrow_of_T(T), /*n_pairs=*/15, /*n_total=*/15));
+  }
+
+  // A rate-unit leave-one-out gate no real solve can meet: every expiry is
+  // NON-confident, so tier one is empty — the production shape of all 28 boards
+  // that lost every expiry to carry on lqbench 2026-08-03.
+  SurfaceParityInputs in = carry_inputs(true);
+  in.deam.max_carry_leave_one_out = 1.0e-12;
+
+  const auto rep = fit_curve_surface(under, in, CurveConfig{});
+  ASSERT_TRUE(rep.has_value()) << rep.error().to_string();
+  EXPECT_EQ(rep->n_slices, 4u);
+  EXPECT_EQ(rep->n_carry_skipped, 0u);
+  for (const auto &er : rep->expiry_reports) {
+    EXPECT_EQ(er.outcome, ExpiryFitOutcome::Fitted);
+    EXPECT_NE(er.carry_source, CarrySource::Solved) << "a fallback carry must not read as solved";
+  }
+  // The anchors commit their OWN measured borrow, so the recovered carry tracks
+  // the generating term structure rather than a fabricated constant.
+  for (const double T : {0.10, 0.30, 0.60, 1.00}) {
+    EXPECT_NEAR(committed_borrow_at(*rep, T), borrow_of_T(T), 5.0e-3) << "T=" << T;
+  }
+
+  // Turning the second tier OFF (non-positive budget) restores the historical
+  // total refusal — the tier is the only reason this board serves.
+  SurfaceParityInputs no_tier = in;
+  no_tier.deam.max_carry_moneyness_shift = 0.0;
+  const auto refused = fit_curve_surface(under, no_tier, CurveConfig{});
+  ASSERT_FALSE(refused.has_value());
+  EXPECT_EQ(refused.error().code(), ErrorCode::NotFound);
+}
+
 // Stage B (session admission gate). A board whose non-confident expiries were
 // ADMITTED via the term-structure fallback must publish DEGRADED (CarryGap), not
 // be hard-rejected (InsufficientData) — otherwise Decision B would REGRESS thin

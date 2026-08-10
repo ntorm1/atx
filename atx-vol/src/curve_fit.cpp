@@ -144,6 +144,19 @@ struct ChainPrepass {
   bool carry_confident = false;
   bool needs_carry_repair = false;
   CarrySource carry_source = CarrySource::Solved;
+  // T5c. `carry_bounded` marks an expiry whose OWN solve succeeded and whose
+  // carry uncertainty is inside the standard-deviation-moneyness budget
+  // (`carry_moneyness_bounded`) although it missed the rate-unit confidence
+  // gate. Such an expiry is a SECOND-TIER anchor: used only when the board has
+  // no confident one, and never laundered as confident. `solved_borrow` retains
+  // that solve's borrow so the repair pass can commit it without a second
+  // resolve. `carry_solve_failed` distinguishes an expiry whose solve
+  // ERRORED (no quotable co-terminal pair, or every pair's solve failed) from
+  // one that merely missed the gate — the former has no borrow of its own but is
+  // still repairable from the board term structure.
+  bool carry_bounded = false;
+  bool carry_solve_failed = false;
+  double solved_borrow = 0.0;
   std::vector<double> source_mids;        // ‖ prepared fit rows; raw chain.mids at (K, side)
   std::vector<std::uint8_t> source_flags; // ‖ prepared fit rows; raw chain.flags at (K, side)
   std::vector<double> chain_mids;         // full-chain snapshot
@@ -601,8 +614,29 @@ void prepare_fit_slice_into_slot(const Chain &chain, const SurfaceParityInputs &
       slot.ms_forward_borrow = elapsed_ms(t_forward0, ProfileClock::now());
     }
     if (!d_res) {
-      // A real carry failure (no quotable co-terminal pair / degenerate forward /
-      // non-convergence) — NOT the confidence gate, which the probe disarmed.
+      // A real carry failure — NOT the confidence gate, which the probe disarmed.
+      // T5c (B3ii). Split the failure by kind. `Unavailable` is the DATA-shaped
+      // one — this expiry carries no quotable co-terminal pair, or every pair's
+      // fixed point failed — and it says nothing at all about the BOARD's carry,
+      // which the other expiries may pin down perfectly well. Historically it
+      // hard-dropped here, so an expiry with a one-sided strip was unreachable by
+      // the phase-1.5 term-structure repair even on a board with a dozen
+      // confident anchors: measured on lqbench 2026-08-03, 29 of the 211 expiries
+      // on the 28 carry-lost boards took this path. Defer it to the repair pass
+      // instead. Any other code (Internal / InvalidArgument — a degenerate
+      // forward base, a malformed chain) is a genuine defect for THIS expiry and
+      // still hard-drops: a fallback borrow cannot repair a broken forward.
+      //
+      // Deferral is armed by the same flag that arms the repair pass itself
+      // (`require_carry_confidence`), so every non-risk caller — market-mark,
+      // selector, backtest — keeps the historical hard-drop bit-for-bit.
+      if (in.deam.require_carry_confidence && d_res.error().code() == ErrorCode::Unavailable) {
+        slot.T = T;
+        slot.rate = rate;
+        slot.carry_solve_failed = true;
+        slot.needs_carry_repair = true;
+        return;
+      }
       slot.carry_failed = true;
       slot.prep_outcome = SlicePrepOutcome::CarryFailed;
       return;
@@ -627,6 +661,12 @@ void prepare_fit_slice_into_slot(const Chain &chain, const SurfaceParityInputs &
       slot.rate = rate;
       slot.carry = d_res->carry; // raw solve tallies, restamped as fallback later
       slot.needs_carry_repair = true;
+      // T5c: retain this solve so the repair pass can offer it as a SECOND-TIER
+      // anchor when the board has no confident expiry at all. Whether it may be
+      // is `carry_moneyness_bounded`'s decision, not this one, and a bounded
+      // carry is still never `confident`.
+      slot.carry_bounded = carry_moneyness_bounded(d_res->carry, in.deam);
+      slot.solved_borrow = d_res->borrow;
       return;
     }
 
@@ -742,11 +782,43 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
   // ZERO confident anchors nothing is fabricated: the deferred expiries stay
   // dropped (behaviour unchanged). This runs BEFORE the skip/starve tally below so
   // the counts reflect the post-repair board.
+  //
+  // T5c extends it on two axes, both measured on lqbench 2026-08-03 (the run
+  // that produced 28 boards losing EVERY expiry to carry):
+  //
+  //   (i) an expiry whose own solve returned `Unavailable` (no quotable
+  //       co-terminal pair) now arrives here too, instead of hard-dropping in
+  //       phase 1 where no repair could reach it — 29 of those 211 expiries;
+  //  (ii) when the board has NO confident expiry at all — true of all 28 boards,
+  //       0 confident expiries out of 211 — the anchor set falls back to the
+  //       expiries whose carry is MEASURED to inside the standard-deviation-
+  //       moneyness budget (`carry_moneyness_bounded`). That is a real second
+  //       measurement, not a relaxation of the first: it asks whether the forward
+  //       this expiry implies is pinned to inside 1% of the slice's own width,
+  //       which is the unit the fit consumes, and it keeps the same
+  //       `min_confident_borrow_pairs` floor so a single-pair solve — whose
+  //       dispersion and leave-one-out read 0 only because nothing disputes them
+  //       — can never anchor anything.
+  //
+  // A board with neither tier still fabricates nothing and stays dropped. Every
+  // expiry served off a second-tier anchor carries a non-Solved CarrySource and
+  // `confident = false`, so the session counts it in `n_carry_fallback_expiries`
+  // and admission publishes Degraded + CarryGap, never Healthy.
   {
     std::vector<CarryAnchor> anchors; // ascending T (chains load ascending-T)
     for (const ChainPrepass &pre : prepass) {
       if (pre.carry_confident) {
         anchors.push_back(CarryAnchor{pre.T, pre.borrow});
+      }
+    }
+    // Second tier, consulted ONLY when the first is empty, so a board with even
+    // one confident expiry is bit-identical to the pre-T5c path.
+    const bool second_tier = anchors.empty();
+    if (second_tier) {
+      for (const ChainPrepass &pre : prepass) {
+        if (pre.carry_bounded) {
+          anchors.push_back(CarryAnchor{pre.T, pre.solved_borrow});
+        }
       }
     }
     std::vector<std::size_t> repair_idx;
@@ -762,7 +834,13 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
       }
       const Chain &chain = under.chains[i];
       const double rate = expiry_rate(in, i);
-      const CarryFallback fb = term_structure_fallback_borrow(chain.T, anchors);
+      // A second-tier anchor commits its OWN solved borrow rather than reading
+      // itself off the interpolant it is a node of — same number either way, but
+      // the provenance is honest about where the carry came from.
+      const CarryFallback fb =
+          (second_tier && pre.carry_bounded)
+              ? CarryFallback{pre.solved_borrow, CarrySource::MoneynessBounded}
+              : term_structure_fallback_borrow(chain.T, anchors);
       const double F = hybrid_forward(in.S, rate, fb.borrow, chain.T, in.cash_divs, chain.expiry_ns,
                                       in.now_ts_ns, in.deam.hyb);
       if (!(F > 0.0) || !std::isfinite(F)) {
@@ -799,6 +877,10 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
       fb_carry.max_leave_one_out_shift = pre.carry.max_leave_one_out_shift;
       fb_carry.confidence_half_width = pre.carry.confidence_half_width;
       fb_carry.max_pcp_residual = pre.carry.max_pcp_residual;
+      fb_carry.atm_sigma = pre.carry.atm_sigma;
+      fb_carry.dispersion_moneyness = pre.carry.dispersion_moneyness;
+      fb_carry.max_leave_one_out_moneyness = pre.carry.max_leave_one_out_moneyness;
+      fb_carry.confidence_half_width_moneyness = pre.carry.confidence_half_width_moneyness;
       fb_carry.confident = false;
       fb_carry.source = pre.carry_source;
       pre.carry = std::move(fb_carry);
@@ -806,6 +888,18 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
       prepare_fit_slice_into_slot(under.chains[i], in, cfg.kind, use_fit_cache,
                                   in.per_slice_legacy_prep_fallback, in.per_slice_itm_leg_fallback,
                                   time_stages, i, pre);
+      // T5c: an expiry that reached here because its OWN carry solve FAILED, and
+      // that still produced no slice, must keep reporting the carry failure. The
+      // attempted repair changes what we TRIED, not what went wrong: a chain with
+      // no quotable co-terminal pair usually has no preparable strip either, and
+      // relabelling it `Starved` would drop it out of `n_carry_skipped` and hence
+      // out of the CarryGap reason — turning a surfaced gap into a silent one
+      // (§5.2). Expiries deferred by the confidence gate are unaffected: their
+      // carry solved, so `Starved` is already the truthful outcome for them.
+      if (pre.carry_solve_failed && !pre.usable) {
+        pre.carry_failed = true;
+        pre.prep_outcome = SlicePrepOutcome::CarryFailed;
+      }
     });
   }
 

@@ -33,6 +33,7 @@ using atx::vol::american_price;
 using atx::vol::AmericanMethod;
 using atx::vol::audit_european_equiv_iv;
 using atx::vol::audit_european_equiv_iv_batch;
+using atx::vol::carry_moneyness_bounded;
 using atx::vol::Chain;
 using atx::vol::chain_index;
 using atx::vol::de_americanize_chain;
@@ -619,6 +620,93 @@ TEST(DeAmer, RobustCarrySupportsHardToBorrowStrip) {
   EXPECT_NEAR(result->borrow, b_true, 1e-4);
   EXPECT_TRUE(result->carry.confident);
   EXPECT_GE(result->carry.effective_pair_count, 3.0);
+}
+
+// ── Carry uncertainty in the unit the fit consumes (T5c) ─────────────────
+
+// The rate-unit carry statistics are restated as standard-deviation moneyness
+// by exactly `sqrt(T) / atm_sigma`: a borrow error `db` moves every observation's
+// `k = ln(K/F)` by `db*T`, which is `db*sqrt(T)/sigma` slice standard deviations.
+// `atm_sigma` is the retained pairs' own near-ATM level, so the identity is
+// checkable against the smile the chain was generated from.
+TEST(DeAmer, CarryUncertaintyIsRestatedInStandardDeviationMoneyness) {
+  const Scenario sc;
+  Chain chain = make_synthetic_chain(sc, 0.031, {96.0, 98.0, 100.0, 102.0, 104.0});
+  DeAmOptions opts;
+  opts.hyb = sc.hyb;
+  opts.n_atm = 5;
+  opts.max_borrow_pairs = 5;
+
+  const auto result = resolve_chain_forward(chain, sc.S, sc.r, sc.divs, sc.now_ns, opts);
+  ASSERT_TRUE(result.has_value()) << (result ? std::string{} : result.error().to_string());
+  const auto &carry = result->carry;
+  ASSERT_GT(carry.n_retained, 0u);
+
+  // The near-ATM level the pairs converged on IS the generating smile's ATM vol.
+  EXPECT_NEAR(carry.atm_sigma, true_sigma(0.0), 0.02);
+
+  const double scale = std::sqrt(sc.T) / carry.atm_sigma;
+  EXPECT_DOUBLE_EQ(carry.dispersion_moneyness, carry.dispersion * scale);
+  EXPECT_DOUBLE_EQ(carry.max_leave_one_out_moneyness, carry.max_leave_one_out_shift * scale);
+  EXPECT_DOUBLE_EQ(carry.confidence_half_width_moneyness, carry.confidence_half_width * scale);
+}
+
+// A one-pair solve reports dispersion 0 and leave-one-out 0 only because nothing
+// disputes it (de-Am review D6). It must never present as a bounded carry, no
+// matter how reassuring those two numbers look.
+TEST(DeAmer, SinglePairCarryIsNeverMoneynessBounded) {
+  const Scenario sc;
+  Chain chain = make_synthetic_chain(sc, 0.02, {100.0});
+  DeAmOptions opts;
+  opts.hyb = sc.hyb;
+  opts.n_atm = 1;
+  opts.max_borrow_pairs = 1;
+  opts.min_confident_borrow_pairs = 3;
+  opts.require_carry_confidence = false; // want the diagnostics, not the Err
+
+  const auto result = resolve_chain_forward(chain, sc.S, sc.r, sc.divs, sc.now_ns, opts);
+  ASSERT_TRUE(result.has_value()) << (result ? std::string{} : result.error().to_string());
+  EXPECT_EQ(result->carry.n_retained, 1u);
+  EXPECT_DOUBLE_EQ(result->carry.dispersion, 0.0);
+  EXPECT_DOUBLE_EQ(result->carry.max_leave_one_out_shift, 0.0);
+  EXPECT_FALSE(result->carry.confident);
+  EXPECT_FALSE(carry_moneyness_bounded(result->carry, opts));
+}
+
+// The second tier is a MEASUREMENT, not a waiver: a carry whose moneyness shift
+// exceeds the budget stays unbounded, and one inside it is bounded while still
+// reporting `confident == false` under a rate gate it misses.
+TEST(DeAmer, MoneynessBoundedTracksTheBudgetAndNeverImpliesConfidence) {
+  const Scenario sc;
+  Chain chain = make_synthetic_chain(sc, 0.031, {96.0, 98.0, 100.0, 102.0, 104.0});
+  DeAmOptions opts;
+  opts.hyb = sc.hyb;
+  opts.n_atm = 5;
+  opts.max_borrow_pairs = 5;
+  // A rate gate this tight cannot be met by any real solve, so the expiry is
+  // NOT confident — exactly the production shape this tier exists for.
+  opts.max_carry_leave_one_out = 1.0e-12;
+
+  const auto result = resolve_chain_forward(chain, sc.S, sc.r, sc.divs, sc.now_ns, opts);
+  ASSERT_TRUE(result.has_value()) << (result ? std::string{} : result.error().to_string());
+  ASSERT_FALSE(result->carry.confident);
+  ASSERT_GE(result->carry.n_retained, opts.min_confident_borrow_pairs);
+
+  // Budget straddling the measured shift: bounded above it, not below it.
+  const double measured = result->carry.max_leave_one_out_moneyness;
+  ASSERT_TRUE(std::isfinite(measured));
+  DeAmOptions generous = opts;
+  generous.max_carry_moneyness_shift = std::fmax(measured * 2.0, 1.0e-9);
+  EXPECT_TRUE(carry_moneyness_bounded(result->carry, generous));
+
+  DeAmOptions strict = opts;
+  strict.max_carry_moneyness_shift = measured * 0.5;
+  EXPECT_FALSE(carry_moneyness_bounded(result->carry, strict));
+
+  // A non-positive budget disables the tier outright.
+  DeAmOptions disabled = opts;
+  disabled.max_carry_moneyness_shift = 0.0;
+  EXPECT_FALSE(carry_moneyness_bounded(result->carry, disabled));
 }
 
 // ── Single-quote consistency ─────────────────────────────────────────────

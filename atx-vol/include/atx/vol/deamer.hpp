@@ -244,6 +244,14 @@ enum class CarrySource : std::uint8_t {
   Solved = 0,          // borrow inferred from this expiry's own co-terminal pairs
   TermStructureInterp, // fallback: linearly interpolated between bracketing confident expiries
   TermStructureExtrap, // fallback: flat-extended from the nearest confident expiry
+  // Fallback (T5c): this expiry's OWN co-terminal solve, admitted because its
+  // carry uncertainty is inside the standard-deviation-MONEYNESS budget even
+  // though it misses the rate-unit confidence gate (see
+  // `carry_moneyness_bounded`). Measured, not certified: `confident` is never
+  // true for it, so admission publishes Degraded + CarryGap exactly like the
+  // two term-structure fallbacks. APPEND-ONLY: the enumerator values are
+  // persisted (surface archive / surface-db provenance).
+  MoneynessBounded,
 };
 
 // Carry is a measured input, not an invisible scalar.  These diagnostics make
@@ -264,6 +272,30 @@ struct CarryDiagnostics {
   // serialized carry keeps its meaning; only the board-level repair pass stamps
   // a fallback value. `confident` is NEVER set true for a fallback carry.
   CarrySource source{CarrySource::Solved};
+
+  // ── Carry uncertainty in the unit the FIT consumes (T5c) ────────────────
+  //
+  // `dispersion` / `max_leave_one_out_shift` / `confidence_half_width` above are
+  // in ANNUALIZED RATE units. The fit does not consume a rate: it consumes the
+  // forward, through `k = ln(K/F)`, and compares that k against the slice's own
+  // width `sqrt(w) = sigma*sqrt(T)`. A borrow error `db` moves every k by
+  // `db*T`, i.e. by `db*sqrt(T)/sigma` STANDARD DEVIATIONS of the slice. So a
+  // rate-unit budget applied flat across a board is not one budget at all — at
+  // one week it demands two orders of magnitude more forward precision than at
+  // two years, for no economic reason. These mirror fields restate the same
+  // three numbers in that invariant unit:
+  //
+  //     x_moneyness = x_rate * sqrt(T) / atm_sigma
+  //
+  // `atm_sigma` is the robust-weighted mean of the retained carry pairs' own
+  // recovered call/put vols (the near-ATM level the fixed point converged on);
+  // it is 0.0 when no pair was retained, and the mirror fields are then 0.0 too.
+  // These are DIAGNOSTIC restatements — nothing here changes the `confident`
+  // verdict, which is still the rate-unit gate, unchanged.
+  double atm_sigma{0.0};
+  double dispersion_moneyness{0.0};
+  double max_leave_one_out_moneyness{0.0};
+  double confidence_half_width_moneyness{0.0};
 };
 
 struct ChainForward {
@@ -276,6 +308,31 @@ struct ChainForward {
 resolve_chain_forward(const Chain &chain, double S, double r,
                       std::span<const DividendEvent> cash_divs, std::int64_t now_ts_ns,
                       const DeAmOptions &opts) noexcept;
+
+// Is this expiry's carry MEASURED tightly enough — in the unit the fit consumes
+// — to serve as a board-level fallback anchor, even though it did not clear the
+// rate-unit confidence gate?
+//
+// True iff ALL of:
+//   * the solve retained at least `opts.min_confident_borrow_pairs` pairs. The
+//     SAME floor the confidence gate uses, and it is load-bearing rather than
+//     decorative: a one-pair solve reports dispersion 0 and leave-one-out 0
+//     because there is nothing to disagree with it, so without this floor the
+//     least reliable carry on the board would present the most reassuring
+//     numbers (de-Am review D6).
+//   * `atm_sigma` is finite and positive — without a slice width there is no
+//     moneyness unit to measure in, so the answer is "not established".
+//   * `max_leave_one_out_moneyness <= opts.max_carry_moneyness_shift`, and
+//   * `dispersion_moneyness <= 4 * opts.max_carry_moneyness_shift`.
+//
+// This is deliberately NOT a weakening of `confident`: a bounded carry is still
+// `confident == false`, so `require_carry_confidence` keeps its exact meaning
+// and any surface built on one publishes Degraded (CarryGap). It answers a
+// different, narrower question — "is the forward this expiry implies pinned to
+// inside 1% of a standard deviation?" — which is what a *fallback* needs to be
+// honest rather than fabricated.
+[[nodiscard]] bool carry_moneyness_bounded(const CarryDiagnostics &carry,
+                                           const DeAmOptions &opts) noexcept;
 
 // Strike indices of the co-terminal pairs ELIGIBLE for the robust carry solve
 // — exactly the selection `resolve_chain_forward` makes (both legs quotable,
@@ -325,6 +382,21 @@ struct DeAmOptions {
   double max_carry_dispersion = 0.02;     // annualized borrow-rate units
   double max_carry_leave_one_out = 0.005; // annualized borrow-rate units
   bool require_carry_confidence = false;  // compatibility seam; admission may require it
+  // T5c — the SECOND-TIER carry budget, in standard-deviation moneyness (see
+  // CarryDiagnostics' mirror fields). It gates `carry_moneyness_bounded`, which
+  // NOTHING in the carry solve itself reads: `confident` remains the rate-unit
+  // verdict above, bit-for-bit. A board-level repair pass may use it to admit an
+  // expiry whose carry is MEASURED to inside this budget as a NON-confident
+  // fallback anchor (CarrySource::MoneynessBounded ⇒ Degraded + CarryGap).
+  //
+  // CALIBRATION (not a fresh guess): 0.01 is the value at which this criterion
+  // COINCIDES with the existing `max_carry_leave_one_out = 0.005` rate gate at
+  // the one-year / 50-vol pillar — 0.005 * sqrt(1.0) / 0.50 = 0.01. So the
+  // second tier asks for exactly the economic precision the library already
+  // demands at that pillar, only stated in a maturity-invariant unit. The
+  // dispersion companion keeps the same 4x ratio the rate knobs carry
+  // (0.02 / 0.005), so it is `4 * max_carry_moneyness_shift`.
+  double max_carry_moneyness_shift = 0.01;
   // American-IV inversion Newton controls for the per-strike de-Am solve. The
   // default (1e-7 / 64) matches american_implied_vol and keeps the cold path
   // bit-identical; the fast-preset session loosens `iv_tol` to the fast pricer's

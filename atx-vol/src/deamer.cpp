@@ -445,6 +445,22 @@ namespace {
   return (sum_w > 0.0) ? (sum_wb / sum_w) : median;
 }
 
+// Restate the rate-unit carry uncertainty in standard-deviation moneyness, the
+// unit the fit consumes (see CarryDiagnostics). `atm_sigma` is the retained
+// pairs' robust-weighted near-ATM vol; a non-positive one leaves every mirror
+// field at 0 and, with it, `carry_moneyness_bounded` false — "no slice width, no
+// moneyness unit, so nothing is established".
+void stamp_carry_moneyness(CarryDiagnostics &diag, double T, double atm_sigma) noexcept {
+  diag.atm_sigma = (std::isfinite(atm_sigma) && atm_sigma > 0.0) ? atm_sigma : 0.0;
+  if (!(diag.atm_sigma > 0.0) || !(T > 0.0) || !std::isfinite(T)) {
+    return;
+  }
+  const double scale = std::sqrt(T) / diag.atm_sigma;
+  diag.dispersion_moneyness = diag.dispersion * scale;
+  diag.max_leave_one_out_moneyness = diag.max_leave_one_out_shift * scale;
+  diag.confidence_half_width_moneyness = diag.confidence_half_width * scale;
+}
+
 [[nodiscard]] double quote_relative_spread(const Chain &chain, std::size_t call_idx,
                                            std::size_t put_idx) noexcept {
   const double call_rel =
@@ -571,6 +587,13 @@ struct CarryPairSelection {
   // counts. Seeds change only the initial guesses of the safeguarded Newton /
   // borrow fixed-point; the converged root and per-leg vols are unchanged.
   double seed_borrow = 0.0, seed_sc = 0.0, seed_sp = 0.0;
+  // Parallel to `diag.pairs`: the near-ATM vol level each pair's fixed point
+  // converged on, kept only to form the retained-pair `atm_sigma` below (the
+  // slice width the moneyness restatement is measured against). Deliberately not
+  // a `CarryPairDiagnostic` field — it is an aggregate input, not a per-pair
+  // diagnostic, and the pair struct is persisted by the certification layer.
+  std::vector<double> pair_sigma;
+  pair_sigma.reserve(k);
   for (std::size_t j = 0; j < k; ++j) {
     const std::size_t i = both_valid[j];
     const double K = chain.strikes[i];
@@ -601,6 +624,7 @@ struct CarryPairSelection {
       diag.pairs.push_back(CarryPairDiagnostic{static_cast<std::uint16_t>(i), K, tb->borrow,
                                                tb->forward, tb->rmse_pcp, relative_spread, age,
                                                base_weight, 0.0, false});
+      pair_sigma.push_back(0.5 * (tb->sigma_call + tb->sigma_put));
       diag.max_pcp_residual = std::fmax(diag.max_pcp_residual, tb->rmse_pcp);
     }
   }
@@ -662,6 +686,21 @@ struct CarryPairSelection {
                               ? 2.576 * diag.dispersion / std::sqrt(diag.effective_pair_count)
                               : std::numeric_limits<double>::infinity();
   diag.confidence_half_width = std::fmax(sampling, diag.max_leave_one_out_shift);
+  // T5c: the retained pairs' robust-weighted near-ATM vol — the slice width the
+  // moneyness restatement divides by. Same weights the borrow location used, so
+  // a pair the Huber step rejected does not set the slice's width either.
+  {
+    double sigma_w = 0.0;
+    double sigma_ws = 0.0;
+    for (std::size_t i = 0; i < diag.pairs.size() && i < pair_sigma.size(); ++i) {
+      if (!diag.pairs[i].retained || !(pair_sigma[i] > 0.0) || !std::isfinite(pair_sigma[i])) {
+        continue;
+      }
+      sigma_w += diag.pairs[i].robust_weight;
+      sigma_ws += diag.pairs[i].robust_weight * pair_sigma[i];
+    }
+    stamp_carry_moneyness(diag, T, (sigma_w > 0.0) ? (sigma_ws / sigma_w) : 0.0);
+  }
   diag.confident = diag.n_retained >= opts.min_confident_borrow_pairs &&
                    diag.dispersion <= opts.max_carry_dispersion &&
                    diag.max_leave_one_out_shift <= opts.max_carry_leave_one_out;
@@ -784,6 +823,12 @@ resolve_european_chain_carry(const Chain &chain, double S, double r,
                               ? 2.576 * diag.dispersion / std::sqrt(diag.effective_pair_count)
                               : std::numeric_limits<double>::infinity();
   diag.confidence_half_width = std::fmax(sampling, diag.max_leave_one_out_shift);
+  // T5c: the European route solves parity on raw mids and never inverts a leg,
+  // so it has no near-ATM vol to state a slice width with. `atm_sigma` stays 0,
+  // which leaves the moneyness mirrors 0 and `carry_moneyness_bounded` false — a
+  // European chain is never admitted as a moneyness-bounded fallback anchor. It
+  // does not need to be: European parity is an exact equality, so its carry
+  // either clears the (unchanged) confidence gate or is genuinely unresolved.
   diag.confident = diag.n_retained >= opts.min_confident_borrow_pairs &&
                    diag.dispersion <= opts.max_carry_dispersion &&
                    diag.max_leave_one_out_shift <= opts.max_carry_leave_one_out;
@@ -801,6 +846,23 @@ resolve_european_chain_carry(const Chain &chain, double S, double r,
 }
 
 } // namespace
+
+bool carry_moneyness_bounded(const CarryDiagnostics &carry, const DeAmOptions &opts) noexcept {
+  if (carry.n_retained < opts.min_confident_borrow_pairs) {
+    return false; // a one-pair solve reports 0 dispersion because nothing disputes it
+  }
+  if (!(carry.atm_sigma > 0.0) || !std::isfinite(carry.atm_sigma)) {
+    return false; // no slice width => no moneyness unit => nothing established
+  }
+  const double budget = opts.max_carry_moneyness_shift;
+  if (!(budget > 0.0) || !std::isfinite(budget)) {
+    return false; // a non-positive budget disables the second tier entirely
+  }
+  return std::isfinite(carry.max_leave_one_out_moneyness) &&
+         std::isfinite(carry.dispersion_moneyness) &&
+         carry.max_leave_one_out_moneyness <= budget &&
+         carry.dispersion_moneyness <= 4.0 * budget;
+}
 
 Result<ChainForward> resolve_chain_forward(const Chain &chain, double S, double r,
                                            std::span<const DividendEvent> cash_divs,
