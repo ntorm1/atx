@@ -63,6 +63,10 @@ class ManifestError(ValueError):
     """Raised when the manifest JSON is missing a required field."""
 
 
+class OutputCollisionError(ManifestError):
+    """Raised when two planned invocations would write the same out_path."""
+
+
 def validate_manifest(manifest: dict[str, Any]) -> None:
     for key in _TOP_LEVEL_REQUIRED_KEYS:
         if key not in manifest:
@@ -82,7 +86,14 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
 
 
 def load_manifest(path: Path) -> dict[str, Any]:
-    manifest = json.loads(Path(path).read_text(encoding="utf-8"))
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        raise ManifestError(f"manifest file not found: {path}") from None
+    try:
+        manifest = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ManifestError(f"manifest file is not valid JSON: {path} ({exc})") from None
     validate_manifest(manifest)
     return manifest
 
@@ -121,19 +132,47 @@ class Invocation:
     argv: list[str]
     out_path: Path
     log_path: Path
+    run_index: int
+
+
+def check_no_output_collisions(invocations: list[Invocation]) -> None:
+    """Two runs sharing (uid, entry_start, tenor_days) but differing in db
+    or entry_end still resolve to the same out_path -- the second
+    sequential invocation would silently overwrite the first's TSV while
+    manifest_out.json records both as distinct successes pointing at the
+    same file. Raises before any invocation is launched (dry-run or not)."""
+    by_path: dict[Path, list[Invocation]] = {}
+    for inv in invocations:
+        by_path.setdefault(inv.out_path, []).append(inv)
+    colliding = sorted((path, invs) for path, invs in by_path.items() if len(invs) > 1)
+    if not colliding:
+        return
+    lines = []
+    for path, invs in colliding:
+        runs = ", ".join(f"runs[{inv.run_index}]" for inv in invs)
+        first = invs[0]
+        lines.append(
+            f"  {path}: {runs} (uid={first.uid}, entry_start={first.entry_start}, "
+            f"tenor_days={first.tenor_days})"
+        )
+    raise OutputCollisionError(
+        "manifest.runs produce colliding output paths -- multiple runs write "
+        "the same out_path:\n" + "\n".join(lines)
+    )
 
 
 def build_invocations(manifest: dict[str, Any], exe: str, out_dir: Path) -> list[Invocation]:
     defaults = manifest["defaults"]
     invocations: list[Invocation] = []
-    for run in manifest["runs"]:
+    for run_index, run in enumerate(manifest["runs"]):
         uid = str(run["uid"])
         entry_start = str(run["entry_start"])
         for tenor_days in manifest["tenor_days"]:
             out_path = out_dir / f"{uid}_{entry_start}_{tenor_days}d.tsv"
             log_path = out_path.with_suffix(".log")
             argv = build_command(exe, defaults, run, tenor_days, out_path)
-            invocations.append(Invocation(uid, entry_start, tenor_days, argv, out_path, log_path))
+            invocations.append(Invocation(uid, entry_start, tenor_days, argv, out_path, log_path, run_index))
+    check_no_output_collisions(invocations)
     return invocations
 
 
@@ -153,7 +192,27 @@ def parse_meta_header(text: str) -> dict[str, str]:
 
 def run_invocation(inv: Invocation) -> dict[str, Any]:
     inv.out_path.parent.mkdir(parents=True, exist_ok=True)
-    completed = subprocess.run(inv.argv, capture_output=True, text=True, check=False)
+    try:
+        completed = subprocess.run(inv.argv, capture_output=True, text=True, check=False)
+    except OSError as exc:
+        # --exe (or the interpreter resolving it) doesn't exist -- record
+        # the failure instead of letting it kill the whole batch mid-run,
+        # which would lose the record of already-completed invocations.
+        inv.log_path.write_text(
+            "argv: " + json.dumps(inv.argv) + "\n" f"error: failed to launch: {exc}\n",
+            encoding="utf-8",
+        )
+        return {
+            "uid": inv.uid,
+            "entry_start": inv.entry_start,
+            "tenor_days": inv.tenor_days,
+            "out": str(inv.out_path),
+            "log": str(inv.log_path),
+            "argv": inv.argv,
+            "returncode": None,
+            "meta": {},
+            "error": str(exc),
+        }
     inv.log_path.write_text(
         "argv: " + json.dumps(inv.argv) + "\n"
         f"returncode: {completed.returncode}\n"
@@ -191,11 +250,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
     try:
         manifest = load_manifest(args.manifest)
+        invocations = build_invocations(manifest, args.exe, args.out_dir)
     except ManifestError as exc:
         print(f"bev_corpus_run: {exc}", file=sys.stderr)
         return 2
-
-    invocations = build_invocations(manifest, args.exe, args.out_dir)
 
     if args.dry_run:
         for inv in invocations:

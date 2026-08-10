@@ -12,11 +12,10 @@ from __future__ import annotations
 import contextlib
 import io
 import json
-import sys
 import unittest
 from pathlib import Path
 
-from bev_corpus_run import ManifestError, load_manifest, main
+from bev_corpus_run import ManifestError, build_invocations, load_manifest, main
 
 # A stub driver standing in for bev_label_factory. It validates it received
 # --out, then either fails (uid == "FAIL") or writes a minimal meta-header +
@@ -231,6 +230,30 @@ class LiveRunTest(unittest.TestCase):
             self.assertEqual(inv["meta"]["n_rows_written"], "3")
             self.assertTrue(Path(inv["out"]).exists())
 
+    def test_nonexistent_exe_records_failure_and_still_writes_manifest_out(self) -> None:
+        # --exe pointing at a path that doesn't exist makes subprocess.run
+        # raise OSError (FileNotFoundError on Windows/POSIX) rather than
+        # returning a completed process -- this must not abort the batch
+        # before manifest_out.json is written.
+        manifest_path, manifest = _write_manifest(self.tmp)
+        out_dir = self.tmp / "out"
+        missing_exe = str(self.tmp / "does-not-exist.exe")
+
+        rc, _ = _run_main(
+            ["--manifest", str(manifest_path), "--exe", missing_exe, "--out-dir", str(out_dir)]
+        )
+
+        self.assertNotEqual(rc, 0)
+
+        manifest_out_path = out_dir / "manifest_out.json"
+        self.assertTrue(manifest_out_path.exists())
+        manifest_out = json.loads(manifest_out_path.read_text(encoding="utf-8"))
+        self.assertFalse(manifest_out["ok"])
+        self.assertEqual(len(manifest_out["invocations"]), 4)
+        for inv in manifest_out["invocations"]:
+            self.assertNotEqual(inv["returncode"], 0)
+            self.assertEqual(inv["meta"], {})
+
 
 class ManifestValidationTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -263,6 +286,123 @@ class ManifestValidationTest(unittest.TestCase):
             load_manifest(path)
         self.assertIn("db", str(ctx.exception))
         self.assertIn("runs[0]", str(ctx.exception))
+
+    def test_invalid_json_raises_manifest_error_naming_file(self) -> None:
+        path = self.tmp / "manifest.json"
+        path.write_text("{not valid json", encoding="utf-8")
+
+        with self.assertRaises(ManifestError) as ctx:
+            load_manifest(path)
+        self.assertIn(str(path), str(ctx.exception))
+
+    def test_missing_manifest_file_raises_manifest_error_naming_file(self) -> None:
+        path = self.tmp / "does-not-exist.json"
+
+        with self.assertRaises(ManifestError) as ctx:
+            load_manifest(path)
+        self.assertIn(str(path), str(ctx.exception))
+
+    def test_main_exits_with_config_error_code_on_invalid_json(self) -> None:
+        path = self.tmp / "manifest.json"
+        path.write_text("{not valid json", encoding="utf-8")
+        out_dir = self.tmp / "out"
+
+        rc, _ = _run_main(
+            ["--manifest", str(path), "--exe", "bev_label_factory.exe", "--out-dir", str(out_dir)]
+        )
+        self.assertEqual(rc, 2)
+
+    def test_main_exits_with_config_error_code_on_missing_manifest_file(self) -> None:
+        path = self.tmp / "does-not-exist.json"
+        out_dir = self.tmp / "out"
+
+        rc, _ = _run_main(
+            ["--manifest", str(path), "--exe", "bev_label_factory.exe", "--out-dir", str(out_dir)]
+        )
+        self.assertEqual(rc, 2)
+
+
+def _collision_manifest() -> dict:
+    # Two runs sharing (uid, entry_start, tenor_days) but differing in db
+    # and entry_end -- both resolve to the same out_path
+    # "SPY_2019-01-02_30d.tsv" and would silently overwrite each other.
+    return {
+        "defaults": {"delta_lo": 0.05, "delta_hi": 0.95, "threads": 0},
+        "tenor_days": [30],
+        "runs": [
+            {
+                "db": "C:/atx-data/surface-db-r2/spy-2019",
+                "uid": "SPY",
+                "entry_start": "2019-01-02",
+                "entry_end": "2019-12-31",
+                "dividends": "C:/atx-data/div/spy.tsv",
+                "events": "",
+            },
+            {
+                "db": "C:/atx-data/surface-db-r2/spy-2019-restated",
+                "uid": "SPY",
+                "entry_start": "2019-01-02",
+                "entry_end": "2019-06-30",
+                "dividends": "C:/atx-data/div/spy.tsv",
+                "events": "",
+            },
+        ],
+    }
+
+
+class OutputCollisionTest(unittest.TestCase):
+    def setUp(self) -> None:
+        import tempfile
+
+        self._tmpdir_obj = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmpdir_obj.name)
+
+    def tearDown(self) -> None:
+        self._tmpdir_obj.cleanup()
+
+    def test_build_invocations_raises_naming_the_colliding_uid_entry_start_tenor(self) -> None:
+        manifest = _collision_manifest()
+
+        with self.assertRaises(ManifestError) as ctx:
+            build_invocations(manifest, "bev_label_factory.exe", self.tmp / "out")
+
+        msg = str(ctx.exception)
+        self.assertIn("SPY", msg)
+        self.assertIn("2019-01-02", msg)
+        self.assertIn("30", msg)
+
+    def test_main_full_run_rejects_collision_before_any_launch_or_write(self) -> None:
+        manifest_path = self.tmp / "manifest.json"
+        manifest_path.write_text(json.dumps(_collision_manifest()), encoding="utf-8")
+        stub_path = _write_stub(self.tmp)
+        out_dir = self.tmp / "out"
+
+        rc, _ = _run_main(
+            ["--manifest", str(manifest_path), "--exe", str(stub_path), "--out-dir", str(out_dir)]
+        )
+
+        self.assertNotEqual(rc, 0)
+        # Neither the stub subprocess ran nor was out_dir (or anything in
+        # it, including manifest_out.json) ever created.
+        self.assertFalse(out_dir.exists())
+
+    def test_main_dry_run_rejects_collision_before_printing_any_argv(self) -> None:
+        manifest_path = self.tmp / "manifest.json"
+        manifest_path.write_text(json.dumps(_collision_manifest()), encoding="utf-8")
+        out_dir = self.tmp / "out"
+
+        rc, printed = _run_main(
+            [
+                "--manifest", str(manifest_path),
+                "--exe", "bev_label_factory.exe",
+                "--out-dir", str(out_dir),
+                "--dry-run",
+            ]
+        )
+
+        self.assertNotEqual(rc, 0)
+        self.assertEqual(printed, "")
+        self.assertFalse(out_dir.exists())
 
 
 if __name__ == "__main__":

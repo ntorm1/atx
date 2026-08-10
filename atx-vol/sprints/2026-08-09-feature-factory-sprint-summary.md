@@ -181,6 +181,11 @@ not correctness bugs — none blocked any task's review):**
    short/malformed row (`dict(zip(...)`) rather than a clean `ValueError`
    exit-2; the report-only leakage property has unit-level, not
    end-to-end-through-`main()`, coverage.
+8. The spot-history pre-pass hard-fails the whole run if the uid is
+   missing from any session in the ~253-bar window (`kRvHistoryBars`),
+   while the entry loop itself soft-skips missing-uid dates; revisit
+   (per-session skip-with-counter, mirroring the entry loop's own
+   contract) before multi-name panels land.
 
 ## Validation state
 

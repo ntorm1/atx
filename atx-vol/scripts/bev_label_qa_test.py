@@ -9,7 +9,6 @@ Run: python -m pytest atx-vol/scripts/bev_label_qa_test.py -q
 
 from __future__ import annotations
 
-import json
 import math
 import statistics
 import tempfile
@@ -140,6 +139,21 @@ class ParseTsvFileTest(_TmpDirCase):
         header, rows = parse_tsv_file(path)
         self.assertEqual(header, _HEADER.split("\t"))
         self.assertEqual(rows, [])
+
+    def test_truncated_row_raises_value_error_naming_file_and_row(self) -> None:
+        # A short/truncated row (fewer fields than the header) must fail
+        # loudly here -- dict(zip(header, record)) would otherwise silently
+        # drop the trailing keys, surfacing as a KeyError deep in a later
+        # section instead of a clean, attributable parse error.
+        truncated_row = "\t".join(_ROW_A2.split("\t")[:-3])
+        path = _write_file(self.tmp, "truncated.tsv", [_ROW_A1, truncated_row])
+
+        with self.assertRaises(ValueError) as ctx:
+            parse_tsv_file(path)
+
+        msg = str(ctx.exception)
+        self.assertIn(str(path), msg)
+        self.assertIn("2", msg)  # truncated_row is the 2nd data row
 
 
 class StatsHelperTest(unittest.TestCase):
@@ -389,6 +403,15 @@ class BuildReportAndMainTest(_TmpDirCase):
         # The report names the duplicated key's fields.
         self.assertIn("1000000000", text)
         self.assertIn("100.0", text)
+
+    def test_main_exits_2_and_names_file_row_on_truncated_row(self) -> None:
+        truncated_row = "\t".join(_ROW_A2.split("\t")[:-3])
+        path = _write_file(self.tmp, "truncated.tsv", [_ROW_A1, truncated_row])
+        out_md = self.tmp / "report.md"
+
+        rc = main(["--out-md", str(out_md), str(path)])
+
+        self.assertEqual(rc, 2)
 
 
 if __name__ == "__main__":

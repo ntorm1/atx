@@ -170,7 +170,13 @@ def parse_tsv_file(path: Path) -> tuple[list[str], list[dict[str, str]]]:
         return [], []
     reader = csv.reader(lines, delimiter="\t")
     header = next(reader)
-    rows = [dict(zip(header, record)) for record in reader]
+    rows: list[dict[str, str]] = []
+    for row_num, record in enumerate(reader, start=1):
+        if len(record) != len(header):
+            raise ValueError(
+                f"{path}: row {row_num}: expected {len(header)} column(s), got {len(record)}"
+            )
+        rows.append(dict(zip(header, record)))
     return header, rows
 
 
