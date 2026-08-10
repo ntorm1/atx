@@ -5,33 +5,43 @@
 // filter, solves the whole batch (Task 4's `solve_breakeven_batch`), and
 // writes a byte-deterministic, sorted TSV whose target column is
 // `log_ratio = ln(sigma_be / sigma_entry_iv)` — the model target from the
-// research doc's Section 8.2. This driver stays CARRY-ONLY: it does not join
-// an earnings calendar or count events (that happens Python-side at training
-// time), and it does not touch bev_replay_pnl / solve_breakeven_vol / the
-// batch runner / the path loader, only fans work into them.
+// research doc's Section 8.2. As of Task F-3, each row also carries the full
+// `kFairVolFeatureSchemaV1` feature block (theo.hpp) beside that target, so a
+// trainer consumes this ONE file directly: the label factory itself resolves
+// `--events`, the spot-history RV pre-pass, and the surface's own
+// forward/delta reads into the eight schema columns, rather than leaving
+// that assembly to a separate offline join. This driver still does not
+// touch bev_replay_pnl / solve_breakeven_vol / the batch runner / the path
+// loader, only fans work into them.
 //
 //   bev_label_factory --db <root> --uid <symbol> --entry-start <date>
 //       --entry-end <date> --tenor-days <n> --delta-lo 0.05 --delta-hi 0.95
 //       --dividends <tsv> --out labels.tsv [--threads N] [--events <tsv>]
 //
-// --events <tsv> is OPTIONAL and, in this task, feature-only: one ISO
-// (YYYY-MM-DD) announcement date per line, `#` comment lines and blank lines
-// skipped, CR tolerated. Timestamps are midnight UTC of the announcement
-// date -- a deliberate day-resolution approximation. When omitted (or the
-// path is empty), no calendar is loaded and the per-candidate event count is
-// NaN. The label TSV's row schema is UNCHANGED by this flag; the event count
-// is only stamped onto the in-memory `PendingJob` for a later consumer.
+// --events <tsv> is OPTIONAL: one ISO (YYYY-MM-DD) announcement date per
+// line, `#` comment lines and blank lines skipped, CR tolerated. Timestamps
+// are midnight UTC of the announcement date -- a deliberate day-resolution
+// approximation. When omitted (or the path is empty), no calendar is loaded
+// and the emitted `n_events_to_expiry` column is NaN for every row (never 0
+// -- 0 means "calendar loaded, zero events counted before expiry"; NaN means
+// "no calendar was supplied at all"; the two are never conflated).
 //
-// Also feature-only: a one-time spot-history pre-pass (`load_spot_history`,
-// Task F-2) walks the corpus once up front to build a trailing realized-vol
-// panel (`RvEstimator::CloseToClose`, 252 annualization, up to
-// `kRvHistoryBars` spot-mirror closes) for EVERY entry date, ending at and
-// including that date's own session close. The resulting `rv_21d`/`rv_63d`
-// are stamped onto every surviving candidate's `PendingJob`, NaN when the
-// trailing history is too short — again a row-schema-invisible, in-memory-
-// only feature for a later consumer, not a TSV column in this task. A
-// pre-pass load failure IS fatal (unlike a per-date RV shortfall): a corpus
-// that can serve surfaces but not spots is broken.
+// A one-time spot-history pre-pass (`load_spot_history`, Task F-2) walks the
+// corpus once up front to build a trailing realized-vol panel
+// (`RvEstimator::CloseToClose`, 252 annualization, up to `kRvHistoryBars`
+// spot-mirror closes) for EVERY entry date, ending at and including that
+// date's own session close. The resulting `rv_21d`/`rv_63d` land in their
+// own schema columns (NaN when the trailing history is too short --
+// tallied by `n_entry_dates_rv_short`), and `iv_minus_rv = market_vol -
+// rv_21d` is derived from them at row-build time (NaN-propagating, by
+// construction, whenever rv_21d is NaN). `market_vol` itself duplicates
+// `sigma_entry_iv` -- the SAME `surf.iv(K, T)` read, bit-equal -- emitted a
+// second time under its schema name anyway, so the eight feature columns
+// form a contiguous, self-contained slice a trainer can consume without
+// joining this file back against anything for the one column it would
+// otherwise be missing. A spot-history pre-pass load failure IS fatal
+// (unlike a per-date RV shortfall): a corpus that can serve surfaces but not
+// spots is broken.
 //
 // Flow, per entry date in [--entry-start, --entry-end]:
 //   1. Open that date's partition and reconstruct an OWNED PricedSurface for
@@ -40,8 +50,16 @@
 //      view route) because only PricedSurface::context() exposes the discrete
 //      fitted tenor pillars the "closest to --tenor-days" selection needs.
 //   2. Pick the pillar T whose calendar-day tenor is closest to --tenor-days
-//      (ties broken toward the shorter tenor) and derive a nominal expiry_ns
-//      from it.
+//      (ties broken toward the shorter tenor), derive a nominal expiry_ns
+//      from it, and read the forward `F = surf.forward_at(T)` for that SAME
+//      pillar (Task F-3, the same accessor `theo.cpp`'s serving-side
+//      `build_features` calls) -- ONE call per entry date, shared by every
+//      candidate below (`log_moneyness = ln(K/F)` never needs a second read
+//      of F within one date). A non-finite/non-positive forward skips the
+//      WHOLE entry date (`n_entry_dates_forward_invalid`), before any
+//      candidate is built -- mirrors the serving overlay's own per-row
+//      refusal on the same guard, hoisted to per-date here because F does
+//      not vary with strike/side.
 //   3. For each side and each delta on a fixed 5%-step lattice inside
 //      [--delta-lo, --delta-hi], resolve a strike via `resolve_strike_by_delta`
 //      and re-check the resolved strike's actual |delta| (the surface's own
@@ -86,6 +104,7 @@
 #include "atx/vol/surface_archive.hpp"  // SurfaceArchiveV2
 #include "atx/vol/surface_db.hpp"       // SurfaceDb
 #include "atx/vol/surface_parity.hpp"   // SliceContext
+#include "atx/vol/theo.hpp"             // kFairVolFeatureCount, kFairVolFeatureSchemaV1
 #include "atx/vol/types.hpp"            // Result, Status, Side, ErrorCode
 
 using namespace atx::vol;
@@ -451,6 +470,19 @@ struct PendingJob {
   // File-local; a later task (F-3) consumes it as a feature column.
   double rv_21d{std::numeric_limits<double>::quiet_NaN()};
   double rv_63d{std::numeric_limits<double>::quiet_NaN()};
+  // Task F-3: the fitted pillar T (year-fraction) this candidate was solved
+  // against. NOT reconstructible from expiry_ns after the fact (expiry_ns
+  // above is the LOADED PATH's snapped settle date -- load_bev_path's
+  // LastSessionAtOrBefore semantics -- not the nominal T-derived expiry), so
+  // it is threaded through here for LabelRow::tenor_years at row-build time,
+  // same one-value-per-entry-date pattern as n_events/rv_21d/rv_63d above.
+  double tenor_years{0.0};
+  // Task F-3 schema-block values: `log_moneyness` comes from the single
+  // per-entry-date `forward_at(T)` call (collect_entry_date_jobs), `delta_abs`
+  // is already in scope per candidate (the actual |delta| the wing filter
+  // below already checked) -- neither costs an extra surface call.
+  double log_moneyness{0.0};
+  double delta_abs{0.0};
 };
 
 struct RunCounters {
@@ -465,6 +497,11 @@ struct RunCounters {
   // realized_vol_panel needs for that window. Not itself an error; NaN rides
   // through to every PendingJob for that date.
   std::size_t n_entry_dates_rv_short{0};
+  // Task F-3: entry dates whose pillar forward (`surf.forward_at(T)`) came
+  // out non-finite or non-positive -- log_moneyness is undefined for every
+  // candidate that date could produce, so the whole date's lattice is
+  // skipped before any candidate is built (collect_entry_date_jobs).
+  std::size_t n_entry_dates_forward_invalid{0};
 };
 
 // The fitted pillar (year-fraction T) whose calendar-day tenor is closest to
@@ -498,7 +535,10 @@ struct RunCounters {
 // the caller from the spot-history pre-pass and stamped onto every surviving
 // candidate unchanged, exactly like `n_events`. Soft failures (unreachable
 // delta, invalid iv, path load failure) skip just that candidate; nothing
-// here is fatal to the whole run.
+// here is fatal to the whole run -- EXCEPT a non-finite/non-positive pillar
+// forward (Task F-3), which skips every candidate this date could produce
+// (see the `forward_at` guard below) since it is invariant across the whole
+// lattice, not a per-candidate condition.
 void collect_entry_date_jobs(const Clock &full_clock, const BevFactoryArgs &args,
                              const PricedSurface &surf, std::int64_t entry_ts_ns, double T,
                              const std::optional<EventSchedule> &events, double rv_21d,
@@ -515,6 +555,22 @@ void collect_entry_date_jobs(const Clock &full_clock, const BevFactoryArgs &args
   const double n_events = events.has_value()
                               ? static_cast<double>(count_events_at(*events, entry_ts_ns, T))
                               : std::numeric_limits<double>::quiet_NaN();
+
+  // Task F-3: forward economics for this pillar, computed ONCE per entry
+  // date -- invariant across the whole candidate lattice below (depends only
+  // on T, never strike/side), exactly like n_events above. Same accessor the
+  // serving overlay uses (theo.cpp's build_features:
+  // `ctx.surface->forward_at(q.tenor_years)`). A non-finite/non-positive
+  // forward means log_moneyness is undefined for EVERY candidate this date
+  // could produce, so the guard fires once here rather than once per
+  // candidate -- mirrors the serving overlay's own per-row refusal on the
+  // same condition, hoisted to per-date since forward_at's result cannot
+  // vary within one date's loop.
+  const double forward = surf.forward_at(T);
+  if (!std::isfinite(forward) || !(forward > 0.0)) {
+    ++counters.n_entry_dates_forward_invalid;
+    return; // every candidate for this entry date is skipped
+  }
 
   // I1: every argument to load_bev_path below (full_clock aside) is invariant
   // across the whole delta*side candidate lattice below -- target/side never
@@ -581,6 +637,10 @@ void collect_entry_date_jobs(const Clock &full_clock, const BevFactoryArgs &args
         ++counters.n_candidates_prebuild_skipped; // shared path (I1) failed to load
         continue;
       }
+      // Task F-3: log_moneyness from the per-entry-date forward above -- NO
+      // second surface call, just std::log over an already-resolved strike
+      // and an already-computed forward.
+      const double log_moneyness = std::log(*k / forward);
       const BevPath &loaded = owned_paths[*path_idx];
       pending.push_back(PendingJob{.entry_ts_ns = entry_ts_ns,
                                    .strike = *k,
@@ -591,7 +651,10 @@ void collect_entry_date_jobs(const Clock &full_clock, const BevFactoryArgs &args
                                    .path_idx = *path_idx,
                                    .n_events = n_events,
                                    .rv_21d = rv_21d,
-                                   .rv_63d = rv_63d});
+                                   .rv_63d = rv_63d,
+                                   .tenor_years = T,
+                                   .log_moneyness = log_moneyness,
+                                   .delta_abs = ad});
     }
   }
 }
@@ -613,7 +676,31 @@ struct LabelRow {
   std::uint8_t iters{0};
   std::uint8_t flag{0};
   bool snapped{false};
+  // Task F-3: kFairVolFeatureSchemaV1 feature block (theo.hpp), schema
+  // order. `market_vol` duplicates `sigma_entry_iv` above by construction
+  // (same `surf.iv(K, T)` read, bit-equal) -- emitted anyway so this block is
+  // a contiguous, self-contained slice (see the file banner). `iv_minus_rv`
+  // is computed at row build as `sigma_entry_iv - rv_21d`, NaN-propagating
+  // when rv_21d is NaN.
+  double log_moneyness{0.0};
+  double tenor_years{0.0};
+  double market_vol{0.0};
+  double rv_21d{std::numeric_limits<double>::quiet_NaN()};
+  double rv_63d{std::numeric_limits<double>::quiet_NaN()};
+  double iv_minus_rv{std::numeric_limits<double>::quiet_NaN()};
+  double n_events_to_expiry{std::numeric_limits<double>::quiet_NaN()};
+  double delta_abs{0.0};
 };
+
+// Drift tripwire: the eight LabelRow fields above (log_moneyness ..
+// delta_abs) are a hand-written expansion of kFairVolFeatureSchemaV1, not a
+// generated one -- if that schema ever grows/shrinks, THIS constant changes
+// first and this assert forces a look at LabelRow/append_rows_tsv/the
+// row-build loop above before anything silently drifts out of schema order.
+static_assert(kFairVolFeatureCount == 8,
+              "kFairVolFeatureSchemaV1 changed size -- update LabelRow's schema-block fields, "
+              "append_rows_tsv's header/row writer, and the row-build loop in "
+              "run_bev_label_factory to match, in the new schema order.");
 
 void append_sanitized(std::string &out, std::string_view s) {
   for (const char c : s) {
@@ -659,7 +746,9 @@ void append_u32(std::string &out, std::uint32_t v) {
 // Appends the header row + one row per `rows` entry (already sorted).
 void append_rows_tsv(std::string &out, std::string_view uid, std::span<const LabelRow> rows) {
   out += "entry_ts_ns\tuid\tstrike\texpiry_ns\tside\tsigma_be\tsigma_entry_iv\tlog_ratio\t"
-         "premium\tvega\tn_days\titers\tflag\tsnapped\n";
+         "premium\tvega\tn_days\titers\tflag\tsnapped\t"
+         "log_moneyness\ttenor_years\tmarket_vol\trv_21d\trv_63d\tiv_minus_rv\t"
+         "n_events_to_expiry\tdelta_abs\n";
   for (const LabelRow &r : rows) {
     append_i64(out, r.entry_ts_ns);
     out += '\t';
@@ -688,6 +777,22 @@ void append_rows_tsv(std::string &out, std::string_view uid, std::span<const Lab
     append_u32(out, r.flag);
     out += '\t';
     out += r.snapped ? '1' : '0';
+    out += '\t';
+    append_double(out, r.log_moneyness);
+    out += '\t';
+    append_double(out, r.tenor_years);
+    out += '\t';
+    append_double(out, r.market_vol);
+    out += '\t';
+    append_double(out, r.rv_21d);
+    out += '\t';
+    append_double(out, r.rv_63d);
+    out += '\t';
+    append_double(out, r.iv_minus_rv);
+    out += '\t';
+    append_double(out, r.n_events_to_expiry);
+    out += '\t';
+    append_double(out, r.delta_abs);
     out += '\n';
   }
 }
@@ -846,6 +951,13 @@ std::string fmt_num(double v) {
     if (!std::isfinite(log_ratio)) {
       continue;
     }
+    // Task F-3: market_vol duplicates sigma_entry_iv by construction (same
+    // surf.iv(K,T) read, bit-equal) -- see the file banner and LabelRow's own
+    // comment for why it is still emitted. iv_minus_rv is computed here, not
+    // stored on PendingJob, since it is a pure function of two values already
+    // in scope; NaN-propagating when rv_21d is NaN (documented).
+    const double market_vol = sigma_entry_iv;
+    const double iv_minus_rv = market_vol - pending[i].rv_21d;
     rows.push_back(LabelRow{.entry_ts_ns = pending[i].entry_ts_ns,
                             .strike = pending[i].strike,
                             .expiry_ns = pending[i].expiry_ns,
@@ -858,7 +970,15 @@ std::string fmt_num(double v) {
                             .n_days = frame.n_days[i],
                             .iters = frame.iters[i],
                             .flag = frame.flag[i],
-                            .snapped = pending[i].snapped});
+                            .snapped = pending[i].snapped,
+                            .log_moneyness = pending[i].log_moneyness,
+                            .tenor_years = pending[i].tenor_years,
+                            .market_vol = market_vol,
+                            .rv_21d = pending[i].rv_21d,
+                            .rv_63d = pending[i].rv_63d,
+                            .iv_minus_rv = iv_minus_rv,
+                            .n_events_to_expiry = pending[i].n_events,
+                            .delta_abs = pending[i].delta_abs});
   }
   counters.n_rows_written = rows.size();
 
@@ -870,7 +990,9 @@ std::string fmt_num(double v) {
                    " candidates=" + std::to_string(counters.n_candidates_considered) +
                    " prebuild_skipped=" + std::to_string(counters.n_candidates_prebuild_skipped) +
                    " solved_ok=" + std::to_string(counters.n_jobs_solved_ok) +
-                   " rv_short=" + std::to_string(counters.n_entry_dates_rv_short) + ")");
+                   " rv_short=" + std::to_string(counters.n_entry_dates_rv_short) +
+                   " forward_invalid=" + std::to_string(counters.n_entry_dates_forward_invalid) +
+                   ")");
   }
 
   // Byte-stable sort: (entry_ts_ns, expiry_ns, strike, side), side compared by
@@ -896,6 +1018,11 @@ std::string fmt_num(double v) {
   // byte-identical files (the gate's memcmp requirement).
   const std::vector<std::pair<std::string, std::string>> meta = {
       {"tool", "bev_label_factory"},
+      // Task F-3: the fixed feature layout the eight trailing TSV columns
+      // are laid out in (kFairVolFeatureSchemaV1, theo.hpp) -- lets a
+      // trainer confirm it is reading the schema it expects before touching
+      // a single column.
+      {"feature_schema", std::to_string(kFairVolFeatureSchemaV1)},
       {"db", args.db},
       {"uid", args.uid},
       {"entry_start", args.entry_start},
@@ -912,17 +1039,19 @@ std::string fmt_num(double v) {
       {"n_candidates_prebuild_skipped", std::to_string(counters.n_candidates_prebuild_skipped)},
       {"n_jobs_solved_ok", std::to_string(counters.n_jobs_solved_ok)},
       {"n_entry_dates_rv_short", std::to_string(counters.n_entry_dates_rv_short)},
+      {"n_entry_dates_forward_invalid", std::to_string(counters.n_entry_dates_forward_invalid)},
       {"n_rows_written", std::to_string(counters.n_rows_written)},
   };
 
   ATX_TRY_VOID(write_labels_tsv(args.out, args.uid, meta, rows));
 
   std::printf("[bev_label_factory] entry_dates=%zu (skipped %zu) candidates=%zu "
-              "(prebuild_skipped %zu) solved_ok=%zu rv_short=%zu rows=%zu -> %s\n",
+              "(prebuild_skipped %zu) solved_ok=%zu rv_short=%zu forward_invalid=%zu rows=%zu "
+              "-> %s\n",
               counters.n_entry_dates, counters.n_entry_dates_skipped,
               counters.n_candidates_considered, counters.n_candidates_prebuild_skipped,
-              counters.n_jobs_solved_ok, counters.n_entry_dates_rv_short, counters.n_rows_written,
-              args.out.c_str());
+              counters.n_jobs_solved_ok, counters.n_entry_dates_rv_short,
+              counters.n_entry_dates_forward_invalid, counters.n_rows_written, args.out.c_str());
   return Ok(0);
 }
 

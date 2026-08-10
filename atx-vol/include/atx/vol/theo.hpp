@@ -257,25 +257,23 @@ static_assert(detail::aggregate_arity_is_v<EventVarConfig, 2>,
 // produce/consume this exact ordering, hence `kFairVolFeatureSchemaV1` is
 // threaded through both the model and its loader rather than left implicit.
 //
-// Task 6's label-factory TSV (`examples/bev_label_factory.cpp`) is NOT a
-// source of this layout (final-review I2): it supplies only the TARGET
-// (`log_ratio = ln(sigma_be / sigma_entry_iv)`) plus join keys
-// (`entry_ts_ns`, `uid`, `strike`, `expiry_ns`, `side`) and solve diagnostics
-// for one label. The `kFairVolFeatureSchemaV1` feature block below is
-// assembled OFFLINE by the trainer, joining that TSV against the surface
-// corpus (for `log_moneyness`/`tenor_years`/`market_vol`/`delta_abs`) and a
-// separately-computed RV history (for `rv_21d`/`rv_63d`) -- there is no
-// producer on this branch for `n_events_to_expiry` at all (the label factory
-// is explicitly carry-only, no event calendar) or for a real-data `RvPanel`
-// wired to the label corpus (the only real-data `RvPanel` producer on this
-// branch is the degenerate O=H=L=C=spot bar mirror inside
-// `spy_leaps_strangle_backtest.cpp`, unrelated to the label pipeline); both
-// are the trainer's job to derive.
+// As of this sprint, the label-factory TSV (`examples/bev_label_factory.cpp`,
+// `bev_label_factory --events <tsv>`) emits the full `kFairVolFeatureSchemaV1`
+// feature block beside the target (`log_ratio = ln(sigma_be /
+// sigma_entry_iv)`) and its join keys (`entry_ts_ns`, `uid`, `strike`,
+// `expiry_ns`, `side`) -- a trainer reads that ONE file directly, with no
+// offline join against the surface corpus or a separately-computed RV
+// history required. `n_events_to_expiry` is NaN when the driver was run
+// without `--events` (no calendar supplied at all -- distinct from a
+// loaded-and-empty calendar, which counts 0). `rv_21d`/`rv_63d` are
+// close-to-close realized vol over spot-mirror bars (O=H=L=C=spot,
+// `RvEstimator::CloseToClose`) rather than real OHLC, until real OHLC lands
+// in the corpus this driver walks.
 
 // Feature vector contract for fair-vol models. Fixed order, versioned; any
 // offline trainer must produce/consume this exact layout when assembling
-// training rows -- see the ML seam banner above for what Task 6's TSV does
-// and does not supply.
+// training rows -- see the ML seam banner above for what the label-factory
+// TSV supplies.
 inline constexpr std::size_t kFairVolFeatureCount = 8;
 inline constexpr std::uint32_t kFairVolFeatureSchemaV1 = 1;
 // [0] log_moneyness = ln(K/F)      [1] tenor_years
