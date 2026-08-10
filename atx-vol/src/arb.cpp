@@ -853,6 +853,148 @@ Result<std::vector<ArbViolation>> arb_check_calendar(const VolSurface &s,
   return Ok(std::move(out));
 }
 
+DeltaBand delta_band_from_atm_w(double w_atm, double z) noexcept {
+  if (!std::isfinite(w_atm) || !(w_atm > 0.0) || !std::isfinite(z) ||
+      !(z > 0.0)) {
+    return DeltaBand{};
+  }
+  const double half = z * std::sqrt(w_atm);
+  return DeltaBand{0.5 * w_atm - half, 0.5 * w_atm + half};
+}
+
+namespace {
+
+// The band a slice PAIR is certified on: the intersection of the two slices'
+// delta bands. Empty when either slice has no usable ATM variance.
+[[nodiscard]] DeltaBand pair_band(double w_atm_lo, double w_atm_hi,
+                                  double z) noexcept {
+  const DeltaBand a = delta_band_from_atm_w(w_atm_lo, z);
+  const DeltaBand b = delta_band_from_atm_w(w_atm_hi, z);
+  if (!a.usable() || !b.usable()) {
+    return DeltaBand{};
+  }
+  return DeltaBand{std::max(a.k_lo, b.k_lo), std::min(a.k_hi, b.k_hi)};
+}
+
+// Worst deficit over a FINITE sub-range of a violating interval, with the k it
+// occurs at. The whole interval violates, so any probe is a valid witness; the
+// sweep only sharpens the reported number (documented as a lower bound).
+[[nodiscard]] ArbViolation witness_over(const SviCrossingSlice &lo,
+                                        const SviCrossingSlice &hi, double k_lo,
+                                        double k_hi) noexcept {
+  constexpr int kSamples = 16;
+  double k_best = k_lo;
+  double slack = lo.w(k_lo) - hi.w(k_lo);
+  for (int i = 1; i <= kSamples; ++i) {
+    const double t = static_cast<double>(i) / static_cast<double>(kSamples);
+    const double k = std::clamp(k_lo + t * (k_hi - k_lo), k_lo, k_hi);
+    const double d = lo.w(k) - hi.w(k);
+    if (d > slack) {
+      slack = d;
+      k_best = k;
+    }
+  }
+  return ArbViolation{k_best, lo.T(), hi.T(), slack,
+                      ArbViolation::Kind::Calendar};
+}
+
+struct FiniteRange {
+  double lo{};
+  double hi{};
+};
+
+// A finite stand-in for a possibly-unbounded violating interval. D has constant
+// sign across the whole interval, so any finite sub-range of it is a valid
+// witness range — this only decides where the record points, never whether one
+// is emitted. Both ends infinite (no crossing anywhere, the pair is inverted on
+// all of R) collapses to a symmetric window rather than to -inf/-inf, which
+// would evaluate w at infinity and produce NaN.
+[[nodiscard]] FiniteRange finite_range(double k_lo, double k_hi,
+                                       double span) noexcept {
+  const bool lo_inf = !std::isfinite(k_lo);
+  const bool hi_inf = !std::isfinite(k_hi);
+  if (lo_inf && hi_inf) {
+    return FiniteRange{-span, span};
+  }
+  if (lo_inf) {
+    return FiniteRange{k_hi - span, k_hi};
+  }
+  if (hi_inf) {
+    return FiniteRange{k_lo, k_lo + span};
+  }
+  return FiniteRange{k_lo, k_hi};
+}
+
+}  // namespace
+
+Result<CalendarBandReport> arb_check_calendar_banded(const VolSurface &s,
+                                                     double z,
+                                                     std::uint32_t n_grid) {
+  CalendarBandReport out{};
+  const std::size_t n = s.n_slices();
+  if (n < 2) {
+    return Ok(std::move(out));
+  }
+
+  if (const std::optional<std::vector<SviCrossingSlice>> exact =
+          exact_crossing_slices(s);
+      exact.has_value()) {
+    const std::vector<SviCrossingSlice> &slices = *exact;
+    for (std::size_t i = 1; i < slices.size(); ++i) {
+      const SviCrossingSlice &lo = slices[i - 1];
+      const SviCrossingSlice &hi = slices[i];
+      ++out.n_pairs_exact;
+      const DeltaBand band = pair_band(lo.w(0.0), hi.w(0.0), z);
+      for (const CalendarInterval &iv :
+           svi_pair_calendar_intervals(lo, hi, kCalendarExactTol)) {
+        const double span = std::max(1.0, band.k_hi - band.k_lo);
+        if (band.usable()) {
+          const double a = std::max(iv.k_lo, band.k_lo);
+          const double b = std::min(iv.k_hi, band.k_hi);
+          if (b >= a) {
+            out.in_band.push_back(witness_over(lo, hi, a, b));
+          }
+        }
+        // Left and right out-of-band pieces. With NO usable band the whole
+        // interval is out of band: refusing to certify anything is the only
+        // honest reading of "this slice has no tradeable window".
+        if (!band.usable()) {
+          const FiniteRange r = finite_range(iv.k_lo, iv.k_hi, span);
+          out.out_of_band.push_back(witness_over(lo, hi, r.lo, r.hi));
+          continue;
+        }
+        const double left_hi = std::min(iv.k_hi, band.k_lo);
+        if (left_hi > iv.k_lo) {
+          const FiniteRange r = finite_range(iv.k_lo, left_hi, span);
+          out.out_of_band.push_back(witness_over(lo, hi, r.lo, r.hi));
+        }
+        const double right_lo = std::max(iv.k_lo, band.k_hi);
+        if (right_lo < iv.k_hi) {
+          const FiniteRange r = finite_range(right_lo, iv.k_hi, span);
+          out.out_of_band.push_back(witness_over(lo, hi, r.lo, r.hi));
+        }
+      }
+    }
+    return Ok(std::move(out));
+  }
+
+  // SAMPLED fallback: the same outer window for both lanes, split by the same
+  // band. `certified_over_r()` goes false so the caller cannot mistake this for
+  // the unbounded statement.
+  out.n_pairs_sampled = static_cast<std::uint32_t>(n - 1);
+  ATX_TRY(const std::vector<ArbViolation> viols,
+          arb_check_calendar(s, -kSampledOuterK, kSampledOuterK, n_grid));
+  for (const ArbViolation &v : viols) {
+    const DeltaBand band = pair_band(s.w(0.0, v.T1), s.w(0.0, v.T2), z);
+    if (band.usable() && band.contains(v.k_log)) {
+      out.in_band.push_back(v);
+    } else {
+      out.out_of_band.push_back(v);
+    }
+  }
+  return Ok(std::move(out));
+}
+
 Result<std::vector<ArbViolation>> arb_check_calendar(const CurveSurface &s,
                                                      double k_min, double k_max,
                                                      std::uint32_t n_grid) {

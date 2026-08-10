@@ -252,6 +252,81 @@ svi_pair_calendar_intervals(const SviCrossingSlice &lo, const SviCrossingSlice &
 arb_check_calendar(const VolSurface &s, double k_min, double k_max,
                    std::uint32_t n_grid);
 
+// ── The certified band, stated once ──────────────────────────────────────
+//
+// A fixed |k| <= 0.60 window is delta-INHOMOGENEOUS across a board by about
+// eleven orders of magnitude: at 1 week / 35 vol the forward call delta at
+// k = +0.60 is zero to machine precision; at 2 years it is 0.084. "Violations
+// inside the band" counted over a fixed k window therefore means something
+// different on every slice of the same surface, and the number is not
+// comparable between two tenors, two boards, or the two fit lanes.
+//
+// The band below is Wystup's 1%-99% DELTA band mapped into log-moneyness in
+// closed form. With forward call delta = Phi(d_1) and
+// d_1 = -k/sqrt(w) + sqrt(w)/2, the delta levels 1-p and p sit at
+//     k = w/2 -/+ z*sqrt(w),      z = Phi^{-1}(1 - p),
+// so the band is centred at k = w/2 with half-width z*sqrt(w). It scales with
+// sqrt(w) exactly as the slice's own moneyness scale does, which is precisely
+// what makes it comparable across tenors.
+//
+// `w` is the slice's ATM total variance. A skew-exact delta band is implicit in
+// k — the w at the edge is the w being solved for — so pinning it at ATM keeps
+// the band a closed-form monotone interval, which is the standard flat-vol
+// reading of a delta quote and is what a trader means by "25 delta".
+//
+// `z` is a parameter rather than a tail probability so the number is auditable
+// at the call site and this header needs no inverse normal CDF.
+inline constexpr double kWystupTailQuantile = 2.3263478740408408;  // Phi^-1(0.99)
+
+struct DeltaBand {
+  double k_lo{};
+  double k_hi{};
+  [[nodiscard]] bool contains(double k) const noexcept {
+    return k >= k_lo && k <= k_hi;
+  }
+  [[nodiscard]] bool usable() const noexcept { return k_hi > k_lo; }
+};
+
+// Empty (k_lo == k_hi == 0) for a non-positive or non-finite `w_atm`, which is
+// not a band and must not silently read as one.
+[[nodiscard]] DeltaBand delta_band_from_atm_w(double w_atm, double z) noexcept;
+
+// Calendar violations split by whether they fall inside the certified band.
+//
+// OUT-OF-BAND IS NOT A DEFECT unless something evaluates there. It is reported
+// rather than dropped because Roper's IV4 is quantified over all of R and
+// anything computing Dupire local vol off this surface needs it there — so the
+// unbounded check is kept as an internal invariant and surfaced as its own
+// counter, instead of being folded into the number a gate reads.
+//
+// `certified_over_r()` is the honest half of that promise: the exact regime
+// decides both tails, the sampled fallback cannot, and the caller can tell
+// which it got instead of having to assume.
+struct CalendarBandReport {
+  std::vector<ArbViolation> in_band;
+  std::vector<ArbViolation> out_of_band;
+  std::uint32_t n_pairs_exact{};
+  std::uint32_t n_pairs_sampled{};
+  [[nodiscard]] bool certified_over_r() const noexcept {
+    return n_pairs_sampled == 0;
+  }
+};
+
+// Outer window the SAMPLED fallback can see at all. Matches the +/-3.0
+// diagnostic grid the eSSVI lane already used, so a sampled out-of-band count
+// stays comparable with what that lane reported before.
+inline constexpr double kSampledOuterK = 3.0;
+
+// One metric, one band, both fit lanes. The band for a slice PAIR is the
+// intersection of the two slices' delta bands: a strike outside either slice's
+// 1%-99% window is not tradeable on that pair, so a crossing there is not
+// economically realisable and belongs in the out-of-band counter.
+//
+// No error path, matching `arb_check_calendar`: a surface with fewer than two
+// slices reports two zero counters and two empty vectors.
+[[nodiscard]] Result<CalendarBandReport>
+arb_check_calendar_banded(const VolSurface &s, double z, std::uint32_t n_grid);
+
 // Calendar check for a polymorphic CurveSurface (ConvexDense/SVI served path).
 // Sample n_grid equispaced log-moneyness points in [k_min,k_max]; record a
 // Calendar violation wherever total variance DECREASES across a consecutive

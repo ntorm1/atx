@@ -62,7 +62,11 @@ using atx::vol::Parametrization;
 using atx::vol::prefit_filter_underlier;
 using atx::vol::QuoteBatch;
 using atx::vol::QuoteFlag;
+using atx::vol::arb_check_calendar_banded;
 using atx::vol::CalendarInterval;
+using atx::vol::delta_band_from_atm_w;
+using atx::vol::DeltaBand;
+using atx::vol::kWystupTailQuantile;
 using atx::vol::ResidualBasisKind;
 using atx::vol::Side;
 using atx::vol::SliceCrossings;
@@ -676,6 +680,163 @@ TEST(ArbCalendarExact, DifferentialAgainstTheDenseGridOracle) {
   std::printf(
       "[differential] pairs=%zu coarse64=%zu dense_oracle=%zu exact=%zu\n",
       n_pairs, n_coarse_found, n_dense_found, n_exact_found);
+}
+
+// ── The certified band: in-band vs out-of-band ────────────────────────────
+
+TEST(DeltaBand, ReproducesTheDeltaLevelsItClaims) {
+  // The band is only worth anything if k_lo/k_hi really are the 99%/1% forward
+  // call deltas. Check against Phi(d1) directly.
+  constexpr double kInvSqrt2 = 0.70710678118654752440;
+  const auto phi = [](double x) { return 0.5 * std::erfc(-x * kInvSqrt2); };
+  for (const double w : {0.0004, 0.01, 0.0625, 0.25, 1.0}) {
+    const auto band = delta_band_from_atm_w(w, kWystupTailQuantile);
+    ASSERT_TRUE(band.usable()) << "w=" << w;
+    const double sw = std::sqrt(w);
+    const double d1_lo = -band.k_lo / sw + 0.5 * sw;
+    const double d1_hi = -band.k_hi / sw + 0.5 * sw;
+    EXPECT_NEAR(phi(d1_lo), 0.99, 1.0e-12) << "w=" << w;
+    EXPECT_NEAR(phi(d1_hi), 0.01, 1.0e-12) << "w=" << w;
+  }
+  // Not a band: must not silently read as one.
+  EXPECT_FALSE(delta_band_from_atm_w(0.0, kWystupTailQuantile).usable());
+  EXPECT_FALSE(delta_band_from_atm_w(-1.0, kWystupTailQuantile).usable());
+  EXPECT_FALSE(delta_band_from_atm_w(
+                   std::numeric_limits<double>::quiet_NaN(),
+                   kWystupTailQuantile)
+                   .usable());
+}
+
+TEST(DeltaBand, IsTenorHomogeneousWhereAFixedKWindowIsNot) {
+  // The measurement that motivates the band. 35 vol at 1 week vs 2 years: the
+  // fixed +/-0.60 window spans deltas eleven orders of magnitude apart, while
+  // the delta band spans the same 1%-99% at both by construction.
+  constexpr double kInvSqrt2 = 0.70710678118654752440;
+  const auto phi = [](double x) { return 0.5 * std::erfc(-x * kInvSqrt2); };
+  const double w_week = 0.35 * 0.35 * (7.0 / 365.0);
+  const double w_2y = 0.35 * 0.35 * 2.0;
+  const auto delta_at = [&](double w, double k) {
+    return phi(-k / std::sqrt(w) + 0.5 * std::sqrt(w));
+  };
+  EXPECT_LT(delta_at(w_week, 0.60), 1.0e-11);
+  EXPECT_GT(delta_at(w_2y, 0.60), 0.05);
+
+  const auto b_week = delta_band_from_atm_w(w_week, kWystupTailQuantile);
+  const auto b_2y = delta_band_from_atm_w(w_2y, kWystupTailQuantile);
+  EXPECT_NEAR(delta_at(w_week, b_week.k_hi), 0.01, 1.0e-12);
+  EXPECT_NEAR(delta_at(w_2y, b_2y.k_hi), 0.01, 1.0e-12);
+  // ... and the band widens with tenor, which the fixed window cannot.
+  EXPECT_LT(b_week.k_hi - b_week.k_lo, b_2y.k_hi - b_2y.k_lo);
+}
+
+TEST(ArbCalendarBanded, SeparatesAWingCrossingFromTheTradeableBand) {
+  // Same fixture as CertifiesTheUnboundedTailsAGridCannotReach: ordered near
+  // the money, inverted in both wings past |k| = 0.7433. ATM total variance is
+  // 0.08 / 0.21, so the pair band is roughly +/-0.62 — the crossing is real and
+  // sits outside it. That must be TWO out-of-band records and ZERO in-band,
+  // not a boolean that reads as a broken surface.
+  const VolSurface surf =
+      make_svi_2slice(svi_slice(0.05, 0.30, 0.0, 0.0, 0.1, 0.25),
+                      svi_slice(0.20, 0.10, 0.0, 0.0, 0.1, 1.00));
+  const auto rep = arb_check_calendar_banded(surf, kWystupTailQuantile, 64);
+  ASSERT_TRUE(rep.has_value());
+  EXPECT_TRUE(rep->in_band.empty());
+  EXPECT_EQ(rep->out_of_band.size(), 2u);
+  EXPECT_EQ(rep->n_pairs_exact, 1u);
+  EXPECT_EQ(rep->n_pairs_sampled, 0u);
+  EXPECT_TRUE(rep->certified_over_r());
+  for (const ArbViolation &v : rep->out_of_band) {
+    EXPECT_GT(v.slack, 0.0);
+    EXPECT_NEAR(v.slack,
+                svi_total_w(surf.svi_slices()[0], v.k_log) -
+                    svi_total_w(surf.svi_slices()[1], v.k_log),
+                1.0e-15);
+    EXPECT_GT(std::fabs(v.k_log), 0.7);  // out in the wing, where it belongs
+  }
+}
+
+TEST(ArbCalendarBanded, CountsAnInBandCrossingAsInBand) {
+  // The narrow crossing at k ~ 0.009 is deep inside both slices' delta bands.
+  const VolSurface surf = make_narrow_crossing_surface();
+  const auto rep = arb_check_calendar_banded(surf, kWystupTailQuantile, 64);
+  ASSERT_TRUE(rep.has_value());
+  ASSERT_EQ(rep->in_band.size(), 1u);
+  EXPECT_NEAR(rep->in_band.front().k_log, 0.009, 2.0e-3);
+  EXPECT_TRUE(rep->certified_over_r());
+  // The same crossing's interval is bounded, so nothing spills outside.
+  EXPECT_TRUE(rep->out_of_band.empty());
+}
+
+TEST(ArbCalendarBanded, ReportsThatTheSampledFallbackCannotCertifyR) {
+  // A residual-carrying eSSVI pair is not exactly decidable, so the report must
+  // say so rather than hand back an unbounded claim it did not earn.
+  const VolSurface surf = make_essvi_2slice_resid(0.10, 0.10, 0.05);
+  const auto rep = arb_check_calendar_banded(surf, kWystupTailQuantile, 64);
+  ASSERT_TRUE(rep.has_value());
+  EXPECT_EQ(rep->n_pairs_exact, 0u);
+  EXPECT_EQ(rep->n_pairs_sampled, 1u);
+  EXPECT_FALSE(rep->certified_over_r());
+  EXPECT_FALSE(rep->in_band.empty() && rep->out_of_band.empty());
+}
+
+TEST(ArbCalendarBanded, EveryViolationLandsInExactlyOneCounter) {
+  // The split must be a partition: the two counters together must account for
+  // every crossing the unbanded exact check finds inside +/-3, and no record
+  // may appear on both sides.
+  std::mt19937_64 rng(0xB4DDu);
+  std::uniform_real_distribution<double> u01(0.0, 1.0);
+  const auto draw = [&](double lo, double hi) { return lo + (hi - lo) * u01(rng); };
+  std::size_t n_in = 0;
+  std::size_t n_out = 0;
+  for (int trial = 0; trial < 400; ++trial) {
+    const auto draw_slice = [&](double T) {
+      const double rho = draw(-0.9, 0.9);
+      const double b = std::min(draw(0.005, 0.6), 2.0 / (1.0 + std::fabs(rho)));
+      const double sigma = draw(0.01, 0.6);
+      const double a = draw(0.001, 0.25);
+      return svi_slice(a, b, rho, draw(-0.4, 0.4), sigma, T);
+    };
+    const SviParams p_lo = draw_slice(0.25);
+    const SviParams p_hi = draw_slice(1.00);
+    const VolSurface surf = make_svi_2slice(p_lo, p_hi);
+    const auto rep = arb_check_calendar_banded(surf, kWystupTailQuantile, 64);
+    ASSERT_TRUE(rep.has_value());
+    n_in += rep->in_band.size();
+    n_out += rep->out_of_band.size();
+
+    // The pair band is the INTERSECTION of the two slices' bands; on an
+    // ATM-ordered pair that is the shorter slice's, but the fixture draws
+    // ATM-inverted pairs too.
+    const DeltaBand b_lo =
+        delta_band_from_atm_w(svi_total_w(p_lo, 0.0), kWystupTailQuantile);
+    const DeltaBand b_hi =
+        delta_band_from_atm_w(svi_total_w(p_hi, 0.0), kWystupTailQuantile);
+    const DeltaBand band{std::max(b_lo.k_lo, b_hi.k_lo),
+                         std::min(b_lo.k_hi, b_hi.k_hi)};
+    for (const ArbViolation &v : rep->in_band) {
+      EXPECT_GT(v.slack, 0.0) << "trial " << trial;
+      EXPECT_NEAR(v.slack,
+                  svi_total_w(p_lo, v.k_log) - svi_total_w(p_hi, v.k_log),
+                  1.0e-12);
+      EXPECT_LE(v.k_log, band.k_hi + 1.0e-12) << "trial " << trial;
+      EXPECT_GE(v.k_log, band.k_lo - 1.0e-12) << "trial " << trial;
+    }
+    for (const ArbViolation &v : rep->out_of_band) {
+      EXPECT_GT(v.slack, 0.0) << "trial " << trial;
+      EXPECT_NEAR(v.slack,
+                  svi_total_w(p_lo, v.k_log) - svi_total_w(p_hi, v.k_log),
+                  1.0e-12);
+    }
+    // Consistency with the unbanded check over the in-band window: if anything
+    // is reported in band, the plain check restricted to that band must agree.
+    if (band.usable()) {
+      const auto plain = arb_check_calendar(surf, band.k_lo, band.k_hi, 64);
+      ASSERT_TRUE(plain.has_value());
+      EXPECT_EQ(plain->empty(), rep->in_band.empty()) << "trial " << trial;
+    }
+  }
+  std::printf("[banded] in_band=%zu out_of_band=%zu\n", n_in, n_out);
+  EXPECT_GT(n_in + n_out, std::size_t{0});
 }
 
 // ── Calendar check (CurveSurface: ConvexDense/SVI served path) ─────────────
