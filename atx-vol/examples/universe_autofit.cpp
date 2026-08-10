@@ -14,7 +14,10 @@
 //       [--fit-workers N] [--limit N] [--out results.csv] [--no-value]
 //       [--oos-max-expiries N] [--selector-budget-ms N] [--sparse-floor N]
 //       [--min-direct-confidence X] [--path-template "{symbol}/{date}.parquet"]
-//       [--no-fit]
+//       [--no-fit] [--fit-path production|legacy]
+//       [--v2-fields none|quality|outputs|both] [--outputs risk|mark|both]
+//       [--risk-admission required|na] [--fallback lkg|none]
+//       [--publish-floor on|off] [--symbol-knobs on|off]
 //
 // Output CSV: one row per symbol with load/fit/value status + diagnostics.
 // Summary to stdout: status counts, curve-family histogram, profile histogram,
@@ -43,17 +46,19 @@
 #include "atx/vol/pricer_fitter.hpp" // PricerFitter, PricerConfig, OutputField
 #include "atx/vol/profile.hpp"       // ProfileKind
 #include "atx/vol/session.hpp"       // FitPreset, SessionDiagnostics
+#include "atx/vol/surface_db.hpp"    // SymbolFitConfig, symbol_config_from_preset
 #include "atx/vol/surface_policy.hpp" // SurfaceHealth, ValidationDigest, SurfaceState
+#include "atx/vol/tools/surface_db_populate.hpp" // populate_admission_policy
 #include "atx/vol/types.hpp"         // Result
 #include "atx/vol/vol_curve.hpp"     // VolCurveKind, to_string
 
 using namespace atx::vol;
-using Clock = std::chrono::steady_clock;
+using SteadyClock = std::chrono::steady_clock;
 
 namespace {
 
-double ms_since(Clock::time_point t0) {
-  return std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+double ms_since(SteadyClock::time_point t0) {
+  return std::chrono::duration<double, std::milli>(SteadyClock::now() - t0).count();
 }
 
 const char *profile_name(ProfileKind k) {
@@ -99,6 +104,133 @@ FitPreset parse_preset(std::string_view name) {
   if (name == "populate") return FitPreset::Populate;
   if (name == "bulk") return FitPreset::Bulk;
   return FitPreset::Fast;
+}
+
+// ── T1b: which fit CONTRACT the harness exercises ───────────────────────────
+//
+// Until T1b this example named neither `PricerConfig::quality_mode` nor
+// `::outputs`, so `PricerFitter::is_v2_request()` was false on every board and
+// every number the sprint published came from the LEGACY single-surface branch
+// (`pricer_fitter.cpp:621`) with the independent risk oracle never run. The
+// path that actually persists surfaces — `populate_universe_streaming` ->
+// `pricer_config_for_symbol` (`surface_db_populate.cpp:52`) — is a v2 request.
+// The benchmark was measuring a configuration nobody serves.
+//
+// `Production` reproduces that translation; `Legacy` leaves `PricerConfig`
+// exactly as it was, so one run pair is an A/B of the two contracts.
+enum class FitPath : std::uint8_t { Legacy, Production };
+
+// The five `PricerConfig` fields `pricer_config_for_symbol` sets beyond the
+// preset, plus the four optional<bool> knobs it forwards, each independently
+// switchable so the breadth delta can be attributed one field at a time. The
+// enum VALUES are never hardcoded here: they are read from
+// `symbol_config_from_preset(preset)`, the same seed
+// `populate_universe_streaming` writes into the manifest.
+struct FitPathSpec {
+  FitPath path{FitPath::Production};
+  bool name_quality_mode{false};
+  bool name_outputs{false};
+  bool publish_floor{false};  // admission = populate_admission_policy()
+  bool symbol_knobs{false};   // the four optional<bool> forwards
+  FitQualityMode quality_mode{FitQualityMode::Balanced};
+  SurfaceOutputs outputs{SurfaceOutputs::Risk};
+  RiskAdmission risk_admission{RiskAdmission::Required};
+  SurfaceFallback fallback{SurfaceFallback::LastKnownGood};
+  // Only assigned when the path (or an override) asks for them; the legacy
+  // request must stay byte-identical to the pre-T1b config, and both fields
+  // already default to these values on PricerConfig.
+  bool set_risk_admission{false};
+  bool set_fallback{false};
+};
+
+[[nodiscard]] const char *outputs_name(SurfaceOutputs o) {
+  switch (o) {
+  case SurfaceOutputs::MarketMark: return "mark";
+  case SurfaceOutputs::Risk: return "risk";
+  case SurfaceOutputs::MarketMarkAndRisk: return "mark+risk";
+  }
+  return "?";
+}
+
+[[nodiscard]] const char *risk_admission_name(RiskAdmission a) {
+  switch (a) {
+  case RiskAdmission::NotApplicable: return "na";
+  case RiskAdmission::Required: return "required";
+  }
+  return "?";
+}
+
+[[nodiscard]] const char *fallback_name(SurfaceFallback f) {
+  switch (f) {
+  case SurfaceFallback::None: return "none";
+  case SurfaceFallback::LastKnownGood: return "lkg";
+  }
+  return "?";
+}
+
+// A compact, machine-readable record of the EFFECTIVE contract, emitted per row
+// so a CSV can never be mistaken for one produced under different overrides.
+// `-` marks a field the request leaves unnamed, which for quality_mode/outputs
+// is exactly the legacy signal.
+[[nodiscard]] std::string fit_config_label(const FitPathSpec &s) {
+  std::string out = "qm=";
+  out += s.name_quality_mode ? std::string(to_string(s.quality_mode)) : std::string("-");
+  out += ",out=";
+  out += s.name_outputs ? outputs_name(s.outputs) : "-";
+  out += ",ra=";
+  out += s.set_risk_admission ? risk_admission_name(s.risk_admission) : "-";
+  out += ",fb=";
+  out += s.set_fallback ? fallback_name(s.fallback) : "-";
+  out += ",floor=";
+  out += s.publish_floor ? "populate" : "default";
+  out += ",knobs=";
+  out += s.symbol_knobs ? "on" : "off";
+  return out;
+}
+
+// Mirror of `surface_db_populate.cpp`'s TU-private `pricer_config_for_symbol`
+// (the precedent for reproducing it in an example is `spy_fit_rca.cpp:55`).
+//
+// Deliberate divergences, all of them because an EXAMPLE cannot be the populate
+// driver, not because the fidelity is optional:
+//   * `pin_curve` is left false. Populate pins only the designated index leg
+//     (`seed_symbol_config`); this harness has no index leg and its whole
+//     purpose is to measure the auto-selector, so pinning would change what is
+//     being measured rather than make it more production-like.
+//   * The fields `PricerConfig` cannot carry (band_k, al_override/al,
+//     calendar_repair) reach the real fit through `fit_board`'s
+//     `session_overlay` hook, which is not on `PricerConfig`. `PricerFitter::fit`
+//     does accept an overlay, but the risk pipeline deliberately runs it LAST
+//     (pricer_fitter.cpp, MERGE note) and populate's own overlay is
+//     `apply_symbol_config`; reproducing it here would be reproducing the
+//     driver, not the config. Flagged rather than papered over.
+void apply_fit_path(PricerConfig &cfg, const SymbolFitConfig &sym, const FitPathSpec &spec) {
+  if (spec.name_quality_mode) {
+    cfg.quality_mode = spec.quality_mode;
+  }
+  if (spec.name_outputs) {
+    cfg.outputs = spec.outputs;
+  }
+  if (spec.set_risk_admission) {
+    cfg.risk_admission = spec.risk_admission;
+  }
+  if (spec.set_fallback) {
+    cfg.fallback = spec.fallback;
+  }
+  if (spec.symbol_knobs) {
+    // Plain bools on SymbolFitConfig, optional<bool> on PricerConfig: the
+    // populate translation ENGAGES all four, and two of them (score_parity,
+    // enforce_calendar_floor) are hard preconditions of a v2 risk request —
+    // pricer_fitter.cpp rejects the whole request as "invalid correctness
+    // policy" if either is explicitly false.
+    cfg.use_correction_cache = sym.use_correction_cache;
+    cfg.score_parity = sym.score_parity;
+    cfg.enforce_calendar_floor = sym.enforce_calendar_floor;
+    cfg.use_deam_cache_for_fit = sym.use_deam_cache_for_fit;
+  }
+  if (spec.publish_floor) {
+    cfg.admission = populate_admission_policy();
+  }
 }
 
 // One symbol's full outcome. Plain data; workers write disjoint slots.
@@ -309,6 +441,12 @@ int main(int argc, char **argv) {
   std::optional<double> selector_budget_ms;
   std::optional<std::uint32_t> sparse_floor;
   std::optional<double> min_direct_confidence;
+  // T1b. Production is the DEFAULT: the legacy contract is reachable only by
+  // asking for it, because a benchmark whose default measures a configuration
+  // nothing serves is how this sprint published a wrong headline metric.
+  std::string fit_path_arg = "production";
+  std::optional<std::string> v2_fields_arg, outputs_arg, risk_admission_arg, fallback_arg,
+      publish_floor_arg, symbol_knobs_arg;
 
   for (int i = 1; i < argc; ++i) {
     const std::string_view a = argv[i];
@@ -333,6 +471,13 @@ int main(int argc, char **argv) {
       sparse_floor = static_cast<std::uint32_t>(std::strtoul(nv(), nullptr, 10));
     else if (a == "--min-direct-confidence")
       min_direct_confidence = std::strtod(nv(), nullptr);
+    else if (a == "--fit-path") fit_path_arg = nv();
+    else if (a == "--v2-fields") v2_fields_arg = nv();
+    else if (a == "--outputs") outputs_arg = nv();
+    else if (a == "--risk-admission") risk_admission_arg = nv();
+    else if (a == "--fallback") fallback_arg = nv();
+    else if (a == "--publish-floor") publish_floor_arg = nv();
+    else if (a == "--symbol-knobs") symbol_knobs_arg = nv();
     else {
       std::fprintf(stderr, "unknown arg: %s\n", argv[i]);
       return 2;
@@ -344,7 +489,10 @@ int main(int argc, char **argv) {
                  "[--snapshot-suffix T14:00:00Z] [--r 0.043] [--preset robust] [--fit-workers N] "
                  "[--limit N] [--out FILE] [--no-value] [--no-fit] "
                  "[--oos-max-expiries N] [--selector-budget-ms N] [--sparse-floor N] "
-                 "[--min-direct-confidence X] [--path-template T]\n");
+                 "[--min-direct-confidence X] [--path-template T] "
+                 "[--fit-path production|legacy] [--v2-fields none|quality|outputs|both] "
+                 "[--outputs risk|mark|both] [--risk-admission required|na] "
+                 "[--fallback lkg|none] [--publish-floor on|off] [--symbol-knobs on|off]\n");
     return 2;
   }
 
@@ -356,6 +504,99 @@ int main(int argc, char **argv) {
   if (limit > 0 && symbols.size() > limit) symbols.resize(limit);
   const FitPreset preset = parse_preset(preset_name_arg);
 
+  // ── Resolve the fit contract ────────────────────────────────────────────
+  // The production VALUES come from the seed `populate_universe_streaming`
+  // actually writes (`seed_symbol_config` -> `symbol_config_from_preset`), not
+  // from a default-constructed `SurfacePolicy`. The two disagree: the seed maps
+  // a Risk-purpose preset to `SurfaceOutputs::Risk`, while `SurfacePolicy{}` is
+  // `MarketMarkAndRisk`. Reading the seed is what makes this the served config
+  // rather than a plausible-looking neighbour of it.
+  const SymbolFitConfig production_symbol_cfg = symbol_config_from_preset(preset);
+  FitPathSpec spec_build;
+  if (fit_path_arg == "legacy") {
+    spec_build.path = FitPath::Legacy;
+  } else if (fit_path_arg == "production") {
+    spec_build.path = FitPath::Production;
+  } else {
+    std::fprintf(stderr, "--fit-path must be production or legacy (got %s)\n",
+                 fit_path_arg.c_str());
+    return 2;
+  }
+  spec_build.quality_mode = production_symbol_cfg.surface_policy.quality_mode;
+  spec_build.outputs = production_symbol_cfg.surface_policy.outputs;
+  spec_build.risk_admission = production_symbol_cfg.surface_policy.risk_admission;
+  spec_build.fallback = production_symbol_cfg.surface_policy.fallback;
+  if (spec_build.path == FitPath::Production) {
+    spec_build.name_quality_mode = true;
+    spec_build.name_outputs = true;
+    spec_build.set_risk_admission = true;
+    spec_build.set_fallback = true;
+    spec_build.publish_floor = true;
+    spec_build.symbol_knobs = true;
+  }
+  // Per-field overrides. Their ONLY purpose is attribution: run production with
+  // one field pushed back to its legacy value and the breadth delta that moves
+  // is that field's cost. Not a production shape — the CSV's `fit_config`
+  // column records what was actually requested.
+  const auto parse_on_off = [](const std::string &v, const char *flag, bool &out) -> bool {
+    if (v == "on") { out = true; return true; }
+    if (v == "off") { out = false; return true; }
+    std::fprintf(stderr, "%s must be on or off (got %s)\n", flag, v.c_str());
+    return false;
+  };
+  if (v2_fields_arg.has_value()) {
+    const std::string &v = *v2_fields_arg;
+    if (v != "none" && v != "quality" && v != "outputs" && v != "both") {
+      std::fprintf(stderr, "--v2-fields must be none|quality|outputs|both (got %s)\n", v.c_str());
+      return 2;
+    }
+    spec_build.name_quality_mode = (v == "quality" || v == "both");
+    spec_build.name_outputs = (v == "outputs" || v == "both");
+  }
+  if (outputs_arg.has_value()) {
+    const std::string &v = *outputs_arg;
+    if (v == "risk") spec_build.outputs = SurfaceOutputs::Risk;
+    else if (v == "mark") spec_build.outputs = SurfaceOutputs::MarketMark;
+    else if (v == "both") spec_build.outputs = SurfaceOutputs::MarketMarkAndRisk;
+    else {
+      std::fprintf(stderr, "--outputs must be risk|mark|both (got %s)\n", v.c_str());
+      return 2;
+    }
+  }
+  if (risk_admission_arg.has_value()) {
+    const std::string &v = *risk_admission_arg;
+    if (v == "required") spec_build.risk_admission = RiskAdmission::Required;
+    else if (v == "na") spec_build.risk_admission = RiskAdmission::NotApplicable;
+    else {
+      std::fprintf(stderr, "--risk-admission must be required|na (got %s)\n", v.c_str());
+      return 2;
+    }
+    spec_build.set_risk_admission = true;
+  }
+  if (fallback_arg.has_value()) {
+    const std::string &v = *fallback_arg;
+    if (v == "lkg") spec_build.fallback = SurfaceFallback::LastKnownGood;
+    else if (v == "none") spec_build.fallback = SurfaceFallback::None;
+    else {
+      std::fprintf(stderr, "--fallback must be lkg|none (got %s)\n", v.c_str());
+      return 2;
+    }
+    spec_build.set_fallback = true;
+  }
+  if (publish_floor_arg.has_value() &&
+      !parse_on_off(*publish_floor_arg, "--publish-floor", spec_build.publish_floor)) {
+    return 2;
+  }
+  if (symbol_knobs_arg.has_value() &&
+      !parse_on_off(*symbol_knobs_arg, "--symbol-knobs", spec_build.symbol_knobs)) {
+    return 2;
+  }
+  // Frozen before any worker starts: the contract must be one immutable value
+  // for the whole run, and every fit thread reads it concurrently.
+  const FitPathSpec fit_spec = spec_build;
+  const std::string fit_config = fit_config_label(fit_spec);
+  const char *const fit_path_name = fit_spec.path == FitPath::Production ? "production" : "legacy";
+
   // Progress must be visible under output redirection (Windows stdio is fully
   // buffered when stdout is not a console).
   std::setvbuf(stdout, nullptr, _IONBF, 0);
@@ -363,6 +604,8 @@ int main(int argc, char **argv) {
   std::printf("[universe_autofit] symbols=%zu date=%s snapshot=%s preset=%s fit-workers=%u\n",
               symbols.size(), date.c_str(), snapshot_suffix.c_str(), preset_name_arg.c_str(),
               fit_workers);
+  std::printf("[fit-path] %s  %s  (v2_request=%d)\n", fit_path_name, fit_config.c_str(),
+              (fit_spec.name_quality_mode || fit_spec.name_outputs) ? 1 : 0);
 #if defined(NDEBUG)
   std::printf("[build] Release (NDEBUG)\n");
 #else
@@ -370,7 +613,7 @@ int main(int argc, char **argv) {
 #endif
 
   // ── Load the snapshot hive (single date) ──────────────────────────────────
-  const auto t_load0 = Clock::now();
+  const auto t_load0 = SteadyClock::now();
   OpraBatchSpec spec;
   spec.symbols = symbols;
   spec.date_lo = date;
@@ -393,7 +636,7 @@ int main(int argc, char **argv) {
   std::vector<const OpraBatchEntry *> entries(batch->entries.size());
   for (std::size_t i = 0; i < batch->entries.size(); ++i) entries[i] = &batch->entries[i];
 
-  const auto t_fit0 = Clock::now();
+  const auto t_fit0 = SteadyClock::now();
   std::atomic<std::size_t> n_done{0};
   parallel_for(entries.size(), fit_workers, [&](std::size_t i) {
     const OpraBatchEntry &e = *entries[i];
@@ -404,10 +647,10 @@ int main(int argc, char **argv) {
       const Row &r;
       std::atomic<std::size_t> &done;
       std::size_t total;
-      Clock::time_point t0;
+      SteadyClock::time_point t0;
       ~Progress() {
         const std::size_t k = ++done;
-        const double el = std::chrono::duration<double>(Clock::now() - t0).count();
+        const double el = std::chrono::duration<double>(SteadyClock::now() - t0).count();
         std::fprintf(stderr, "[%zu/%zu] %-8s %-14s fit=%.0fms eta=%.0fs\n", k, total,
                      r.symbol.c_str(), r.status.c_str(), r.fit_ms,
                      k ? el / static_cast<double>(k) * static_cast<double>(total - k) : 0.0);
@@ -421,13 +664,13 @@ int main(int argc, char **argv) {
     }
 
     try {
-      const auto t0 = Clock::now();
+      const auto t0 = SteadyClock::now();
       CorpusBoard board = corpus_board_from_opra(e.date, e.symbol, *e.panel);
       row.load_ms = ms_since(t0);
       row.n_rows = board.frame.rows.size();
       row.spot = board.frame.spot;
 
-      const auto t1 = Clock::now();
+      const auto t1 = SteadyClock::now();
       Result<OptionChain> chain = OptionChain::from_frame(board.frame, board.env);
       row.chain_ms = ms_since(t1);
       if (!chain) {
@@ -456,6 +699,9 @@ int main(int argc, char **argv) {
         else cc.kind = VolCurveKind::ConvexDense;
         cfg.curve = cc;
       }
+      // Last, so the contract under measurement is never silently undone by a
+      // knob above it.
+      apply_fit_path(cfg, production_symbol_cfg, fit_spec);
 
       // Routing-only mode: resolve the policy exactly as PricerFitter would and
       // stop. Used to study classifier reproducibility over a whole universe
@@ -468,7 +714,7 @@ int main(int argc, char **argv) {
       }
       PricerFitter fitter{cfg};
 
-      const auto t2 = Clock::now();
+      const auto t2 = SteadyClock::now();
       const Status st = fitter.fit(chain.value());
       row.fit_ms = ms_since(t2);
       if (!st) {
@@ -506,7 +752,7 @@ int main(int argc, char **argv) {
       record_oracle(row, fitter.bundle());
 
       if (do_value) {
-        const auto t3 = Clock::now();
+        const auto t3 = SteadyClock::now();
         const Result<ChainValuation> val =
             fitter.value_chain(chain.value(), OutputField::Prices | OutputField::Bands, 1);
         row.value_ms = ms_since(t3);
@@ -550,7 +796,10 @@ int main(int argc, char **argv) {
            "oracle_n_calendar_violations,oracle_n_wing_violations,oracle_max_calendar_slack,"
            "oracle_max_butterfly_slack,oracle_max_price_bound_slack,"
            "oracle_max_wing_slope_excess,oracle_first_calendar_k,oracle_first_butterfly_k,"
-           "mm_state\n";
+           "mm_state,"
+           // T1b: which fit contract produced this row. Constant within a run;
+           // per-row so a concatenation of two runs stays self-describing.
+           "fit_path,fit_config\n";
     for (const Row &w : rows) {
       char buf[512];
       std::snprintf(buf, sizeof(buf),
@@ -589,7 +838,8 @@ int main(int argc, char **argv) {
                     w.o_max_wing_slope_excess, w.o_first_calendar_k, w.o_first_butterfly_k,
                     w.mm_state.c_str());
       out << csv_escape(w.symbol) << ',' << w.status << ',' << csv_escape(w.error) << buf << fbuf
-          << csv_escape(w.selector_error) << obuf << '\n';
+          << csv_escape(w.selector_error) << obuf << ',' << fit_path_name << ','
+          << csv_escape(fit_config) << '\n';
     }
   }
 
@@ -610,6 +860,7 @@ int main(int argc, char **argv) {
   }
 
   std::printf("\n=== universe_autofit summary ===\n");
+  std::printf("fit-path: %s (%s)\n", fit_path_name, fit_config.c_str());
   std::printf("wall: load=%.1fs fit+value=%.1fs (workers=%u) | serial fit cpu=%.1fs\n",
               load_total_ms / 1e3, fit_total_ms / 1e3, fit_workers, fit_ms_sum / 1e3);
   std::printf("-- status --\n");
