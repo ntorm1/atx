@@ -22,6 +22,17 @@
 // NaN. The label TSV's row schema is UNCHANGED by this flag; the event count
 // is only stamped onto the in-memory `PendingJob` for a later consumer.
 //
+// Also feature-only: a one-time spot-history pre-pass (`load_spot_history`,
+// Task F-2) walks the corpus once up front to build a trailing realized-vol
+// panel (`RvEstimator::CloseToClose`, 252 annualization, up to
+// `kRvHistoryBars` spot-mirror closes) for EVERY entry date, ending at and
+// including that date's own session close. The resulting `rv_21d`/`rv_63d`
+// are stamped onto every surviving candidate's `PendingJob`, NaN when the
+// trailing history is too short — again a row-schema-invisible, in-memory-
+// only feature for a later consumer, not a TSV column in this task. A
+// pre-pass load failure IS fatal (unlike a per-date RV shortfall): a corpus
+// that can serve surfaces but not spots is broken.
+//
 // Flow, per entry date in [--entry-start, --entry-end]:
 //   1. Open that date's partition and reconstruct an OWNED PricedSurface for
 //      --uid (SurfaceDb::open_partition -> SurfaceArchiveV2::reconstruct_symbol).
@@ -70,6 +81,7 @@
 #include "atx/vol/portfolio_pricer.hpp" // kNsPerYear, SurfaceRef
 #include "atx/vol/priced_surface.hpp"   // PricedSurface
 #include "atx/vol/rates_curve.hpp"      // DividendEvent
+#include "atx/vol/realized_vol.hpp"     // OhlcBar, RvEstimator, RvPanel, realized_vol_panel
 #include "atx/vol/strategy.hpp"         // resolve_strike_by_delta
 #include "atx/vol/surface_archive.hpp"  // SurfaceArchiveV2
 #include "atx/vol/surface_db.hpp"       // SurfaceDb
@@ -342,6 +354,74 @@ constexpr double kDeltaGridStep = 0.05;
 // kBevPathProbeFloor convention.
 constexpr double kTenorProbeYears = 1.0 / 365.25;
 
+// Task F-2: trailing spot-history depth for the per-entry-date RV panel. The
+// widest window realized_vol_panel computes is 252 sessions, which needs 253
+// closes (252 log-returns); a longer available history is truncated by that
+// panel's own trailing-slice logic anyway, so there is no reason to load
+// more.
+constexpr std::size_t kRvHistoryBars = 253;
+
+// Index of `full_clock.refs()`'s ref whose date == `date`, or nullopt if no
+// ref matches. Only called twice per run (the requested entry window's first
+// and last date), so a linear scan over the corpus timeline is not worth a
+// dedicated date->index map.
+[[nodiscard]] std::optional<std::size_t> find_ref_index(const Clock &full_clock,
+                                                        std::string_view date) noexcept {
+  const std::span<const SnapshotRef> refs = full_clock.refs();
+  // Bounded by refs.size() -- the whole corpus timeline.
+  for (std::size_t i = 0; i < refs.size(); ++i) {
+    if (refs[i].date == date) {
+      return i;
+    }
+  }
+  return std::nullopt;
+}
+
+// Task F-2: spot-history pre-pass. One MarketSnapshot::load per session in
+// [first_needed_idx, last_needed_idx] of clock.refs(), emitting a
+// spot-mirror OhlcBar (open == high == low == close == S) per session -- the
+// in-memory array the per-entry-date realized_vol_panel calls slice, so the
+// pre-pass is one corpus walk instead of one per entry date. Spot resolve
+// mirrors load_bev_path's own pattern exactly (src/breakeven.cpp:213-244):
+// uid_of -> find, Err(NotFound, ...) naming uid and ts on a missing surface;
+// guard std::isfinite(S) && S > 0.0 with Err(InvalidArgument, ...) naming
+// ts_ns.
+[[nodiscard]] Result<std::vector<OhlcBar>> load_spot_history(const Clock &clock,
+                                                             std::string_view uid,
+                                                             std::size_t first_needed_idx,
+                                                             std::size_t last_needed_idx) {
+  const std::span<const SnapshotRef> refs = clock.refs();
+  if (refs.empty() || first_needed_idx > last_needed_idx || last_needed_idx >= refs.size()) {
+    return Err(ErrorCode::InvalidArgument, "load_spot_history: index range [" +
+                                               std::to_string(first_needed_idx) + ", " +
+                                               std::to_string(last_needed_idx) + "] invalid for " +
+                                               std::to_string(refs.size()) + " refs");
+  }
+  std::vector<OhlcBar> bars;
+  bars.reserve(last_needed_idx - first_needed_idx + 1);
+  // JPL Rule 2: bounded by [first_needed_idx, last_needed_idx], a fixed,
+  // already-validated sub-range of clock.refs().
+  for (std::size_t i = first_needed_idx; i <= last_needed_idx; ++i) {
+    const SnapshotRef &ref = refs[i];
+    ATX_TRY(const MarketSnapshot session, MarketSnapshot::load(ref.archive_path));
+    const std::int64_t ts = session.ts_ns();
+    const std::optional<std::uint32_t> resolved_uid = session.uid_of(uid);
+    const SurfaceRef surf = resolved_uid.has_value() ? session.find(*resolved_uid) : SurfaceRef{};
+    if (surf == nullptr) {
+      return Err(ErrorCode::NotFound, "load_spot_history: no surface for uid '" + std::string(uid) +
+                                          "' at ts_ns=" + std::to_string(ts));
+    }
+    const double S = surf.pricing().S;
+    if (!(std::isfinite(S) && S > 0.0)) {
+      return Err(ErrorCode::InvalidArgument,
+                 "load_spot_history: non-finite/non-positive spot (S=" + std::to_string(S) +
+                     ") at ts_ns=" + std::to_string(ts));
+    }
+    bars.push_back(OhlcBar{.ts_ns = ts, .open = S, .high = S, .low = S, .close = S});
+  }
+  return Ok(std::move(bars));
+}
+
 // One surviving candidate: a strike/side/expiry job plus everything the TSV
 // row needs that solve_breakeven_batch's SoA frame does not itself carry.
 // `path_idx` indexes `owned_paths` (I1: every candidate for one entry date
@@ -362,6 +442,15 @@ struct PendingJob {
   // on entry_ts_ns/T, never on strike/side. File-local; a later task (F-3)
   // consumes it as a feature column.
   double n_events{0.0};
+  // Task F-2: trailing realized-vol panel (RvEstimator::CloseToClose,
+  // 252.0 annualization) over up to kRvHistoryBars spot-mirror bars ending
+  // at and including entry_ts_ns's own session close -- the information set
+  // available at entry. NaN when the trailing history is too short
+  // (realized_vol_panel's own per-slot NaN contract). Same value across the
+  // whole candidate lattice for one entry date, like n_events above.
+  // File-local; a later task (F-3) consumes it as a feature column.
+  double rv_21d{std::numeric_limits<double>::quiet_NaN()};
+  double rv_63d{std::numeric_limits<double>::quiet_NaN()};
 };
 
 struct RunCounters {
@@ -371,6 +460,11 @@ struct RunCounters {
   std::size_t n_candidates_prebuild_skipped{0};
   std::size_t n_jobs_solved_ok{0};
   std::size_t n_rows_written{0};
+  // Task F-2: entry dates (out of n_entry_dates - n_entry_dates_skipped)
+  // whose 21d RV slot came out NaN -- trailing history shorter than
+  // realized_vol_panel needs for that window. Not itself an error; NaN rides
+  // through to every PendingJob for that date.
+  std::size_t n_entry_dates_rv_short{0};
 };
 
 // The fitted pillar (year-fraction T) whose calendar-day tenor is closest to
@@ -400,13 +494,15 @@ struct RunCounters {
 // Build every surviving (strike, side) candidate for one entry date, loading
 // its replay path (Task 5) and appending to `pending` (each entry's
 // `path_idx` points into `owned_paths`, NOT index-aligned with `pending` --
-// see PendingJob's comment). Soft failures (unreachable delta, invalid iv,
-// path load failure) skip just that candidate; nothing here is fatal to the
-// whole run.
+// see PendingJob's comment). `rv_21d`/`rv_63d` (Task F-2) are precomputed by
+// the caller from the spot-history pre-pass and stamped onto every surviving
+// candidate unchanged, exactly like `n_events`. Soft failures (unreachable
+// delta, invalid iv, path load failure) skip just that candidate; nothing
+// here is fatal to the whole run.
 void collect_entry_date_jobs(const Clock &full_clock, const BevFactoryArgs &args,
                              const PricedSurface &surf, std::int64_t entry_ts_ns, double T,
-                             const std::optional<EventSchedule> &events,
-                             std::string_view entry_date, RunCounters &counters,
+                             const std::optional<EventSchedule> &events, double rv_21d,
+                             double rv_63d, std::string_view entry_date, RunCounters &counters,
                              std::vector<PendingJob> &pending, std::vector<BevPath> &owned_paths) {
   const auto nominal_expiry_ns =
       entry_ts_ns + static_cast<std::int64_t>(std::llround(T * kNsPerYear));
@@ -493,7 +589,9 @@ void collect_entry_date_jobs(const Clock &full_clock, const BevFactoryArgs &args
                                    .sigma_entry_iv = sigma_entry_iv,
                                    .snapped = loaded.snapped,
                                    .path_idx = *path_idx,
-                                   .n_events = n_events});
+                                   .n_events = n_events,
+                                   .rv_21d = rv_21d,
+                                   .rv_63d = rv_63d});
     }
   }
 }
@@ -629,9 +727,35 @@ std::string fmt_num(double v) {
   ATX_TRY(const Clock full_clock, Clock::from_surface_db(db));
   ATX_TRY(const Clock entry_clock, full_clock.between(args.entry_start, args.entry_end));
 
+  // Task F-2: spot-history pre-pass. Loaded ONCE, ahead of the entry loop
+  // below, over [first entry date - kRvHistoryBars, last entry date] of
+  // full_clock.refs() -- indices are into full_clock (not entry_clock's own,
+  // narrower span), since the trailing RV window for the FIRST entry date
+  // reaches back before entry_clock's own start. A load failure here is a
+  // HARD error (ATX_TRY, not a per-date skip): a corpus that can serve
+  // surfaces but not spots is broken, and silently stamping NaN onto every
+  // label would be worse than failing loudly.
+  const std::optional<std::size_t> first_entry_idx =
+      find_ref_index(full_clock, entry_clock.refs().front().date);
+  const std::optional<std::size_t> last_entry_idx =
+      find_ref_index(full_clock, entry_clock.refs().back().date);
+  if (!first_entry_idx.has_value() || !last_entry_idx.has_value()) {
+    return Err(ErrorCode::NotFound,
+               "run_bev_label_factory: entry date range not found in full clock");
+  }
+  const std::size_t first_needed_idx =
+      *first_entry_idx > kRvHistoryBars ? *first_entry_idx - kRvHistoryBars : 0;
+  ATX_TRY(const std::vector<OhlcBar> spot_history,
+          load_spot_history(full_clock, args.uid, first_needed_idx, *last_entry_idx));
+
   RunCounters counters;
   std::vector<PendingJob> pending;
   std::vector<BevPath> owned_paths;
+
+  // Walking pointer into `spot_history`: entry dates ascend (entry_clock.
+  // refs() is ordered), so this only ever advances across the whole loop
+  // below, never re-scans a bar it has already passed.
+  std::size_t bar_ptr = 0;
 
   // Bounded by entry_clock.size() -- the requested entry-date window.
   for (const SnapshotRef &ref : entry_clock.refs()) {
@@ -652,8 +776,39 @@ std::string fmt_num(double v) {
       ++counters.n_entry_dates_skipped;
       continue;
     }
-    collect_entry_date_jobs(full_clock, args, *surf, *entry_ts_ns, *T, events, ref.date, counters,
-                            pending, owned_paths);
+
+    // Task F-2: per-entry-date RV panel over the trailing spot-mirror bars
+    // ENDING AT AND INCLUDING this entry date's own session close (the
+    // information set available at entry). NaN when the panel's 21d slot
+    // comes out short -- not an error, just a feature-quality flag (counted
+    // below).
+    double rv_21d = std::numeric_limits<double>::quiet_NaN();
+    double rv_63d = std::numeric_limits<double>::quiet_NaN();
+    // Bounded by spot_history.size().
+    while (bar_ptr < spot_history.size() && spot_history[bar_ptr].ts_ns < *entry_ts_ns) {
+      ++bar_ptr;
+    }
+    if (bar_ptr < spot_history.size() && spot_history[bar_ptr].ts_ns == *entry_ts_ns) {
+      const std::size_t window_begin =
+          (bar_ptr + 1 > kRvHistoryBars) ? bar_ptr + 1 - kRvHistoryBars : 0;
+      const std::span<const OhlcBar> window{spot_history.data() + window_begin,
+                                            bar_ptr + 1 - window_begin};
+      // Err is unreachable in practice (spot-mirror bars always pass OHLC
+      // validation, per this task's brief); if it ever fires, rv_21d/rv_63d
+      // simply stay at NaN -- the n_entry_dates_rv_short counter below still
+      // catches it.
+      const Result<RvPanel> panel = realized_vol_panel(window, RvEstimator::CloseToClose, 252.0);
+      if (panel.has_value()) {
+        rv_21d = panel->vol[1];
+        rv_63d = panel->vol[2];
+      }
+    }
+    if (!std::isfinite(rv_21d)) {
+      ++counters.n_entry_dates_rv_short;
+    }
+
+    collect_entry_date_jobs(full_clock, args, *surf, *entry_ts_ns, *T, events, rv_21d, rv_63d,
+                            ref.date, counters, pending, owned_paths);
   }
 
   // Build the batch's job spans only once every path is stable in
@@ -714,7 +869,8 @@ std::string fmt_num(double v) {
                    " skipped=" + std::to_string(counters.n_entry_dates_skipped) +
                    " candidates=" + std::to_string(counters.n_candidates_considered) +
                    " prebuild_skipped=" + std::to_string(counters.n_candidates_prebuild_skipped) +
-                   " solved_ok=" + std::to_string(counters.n_jobs_solved_ok) + ")");
+                   " solved_ok=" + std::to_string(counters.n_jobs_solved_ok) +
+                   " rv_short=" + std::to_string(counters.n_entry_dates_rv_short) + ")");
   }
 
   // Byte-stable sort: (entry_ts_ns, expiry_ns, strike, side), side compared by
@@ -755,16 +911,18 @@ std::string fmt_num(double v) {
       {"n_candidates_considered", std::to_string(counters.n_candidates_considered)},
       {"n_candidates_prebuild_skipped", std::to_string(counters.n_candidates_prebuild_skipped)},
       {"n_jobs_solved_ok", std::to_string(counters.n_jobs_solved_ok)},
+      {"n_entry_dates_rv_short", std::to_string(counters.n_entry_dates_rv_short)},
       {"n_rows_written", std::to_string(counters.n_rows_written)},
   };
 
   ATX_TRY_VOID(write_labels_tsv(args.out, args.uid, meta, rows));
 
   std::printf("[bev_label_factory] entry_dates=%zu (skipped %zu) candidates=%zu "
-              "(prebuild_skipped %zu) solved_ok=%zu rows=%zu -> %s\n",
+              "(prebuild_skipped %zu) solved_ok=%zu rv_short=%zu rows=%zu -> %s\n",
               counters.n_entry_dates, counters.n_entry_dates_skipped,
               counters.n_candidates_considered, counters.n_candidates_prebuild_skipped,
-              counters.n_jobs_solved_ok, counters.n_rows_written, args.out.c_str());
+              counters.n_jobs_solved_ok, counters.n_entry_dates_rv_short, counters.n_rows_written,
+              args.out.c_str());
   return Ok(0);
 }
 

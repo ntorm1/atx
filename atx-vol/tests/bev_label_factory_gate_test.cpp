@@ -419,3 +419,61 @@ TEST(BevLabelFactoryGate, EventsPathEmptyMeansNoCalendar) {
   ASSERT_TRUE(sched.has_value());
   EXPECT_FALSE(sched->has_value());
 }
+
+// Task F-2: spot pre-pass. (k) bars come out ascending, one per session,
+// close == the fixture's own spot for that date; (l) a 3-bar history yields
+// finite (fallback, not NaN) 21d/63d slots (realized_vol_panel per-slot
+// contract) -- asserted at the panel level here, at the TSV level in Task
+// F-3's test. Builds its own small SurfaceDb corpus (same helpers as (a)-(d)
+// above, `make_surface`/`spot_for_day`/`date_for_day`) under a distinct temp
+// root so it has no data dependency on that test.
+TEST(BevLabelFactoryGate, SpotHistoryMirrorsSessionSpots) {
+  const std::string root =
+      (fs::temp_directory_path() / "atx-bev-label-factory-spot-history-db").string();
+  std::error_code ec;
+  fs::remove_all(root, ec);
+  auto db = SurfaceDb::create(root);
+  ASSERT_TRUE(db.has_value()) << db.error().to_string();
+
+  for (int d = 0; d < kNDates; ++d) {
+    const double S = spot_for_day(d);
+    const double vol_bump = 0.001 * static_cast<double>(d);
+    const PricedSurface spy =
+        make_surface(S, kBaseNow + static_cast<std::int64_t>(d) * kDayNs, vol_bump);
+    const SurfaceArchiveItem item{"SPY", &spy};
+    const std::span<const SurfaceArchiveItem> items(&item, 1);
+    const Status st = db->write_partition(date_for_day(d), items);
+    ASSERT_TRUE(st.has_value()) << st.error().to_string();
+  }
+
+  const Result<Clock> clock_r = Clock::from_surface_db(*db);
+  ASSERT_TRUE(clock_r.has_value()) << clock_r.error().to_string();
+  const Clock &clock = *clock_r;
+
+  const Result<std::vector<OhlcBar>> bars =
+      load_spot_history(clock, "SPY", 0, clock.refs().size() - 1);
+  ASSERT_TRUE(bars.has_value()) << bars.error().to_string();
+  ASSERT_EQ(bars->size(), clock.refs().size());
+  for (std::size_t i = 1; i < bars->size(); ++i) {
+    EXPECT_LT((*bars)[i - 1].ts_ns, (*bars)[i].ts_ns);
+  }
+  for (const OhlcBar &b : *bars) { // spot-mirror invariant: O==H==L==C, all > 0
+    EXPECT_GT(b.close, 0.0);
+    EXPECT_EQ(b.open, b.close);
+    EXPECT_EQ(b.high, b.close);
+    EXPECT_EQ(b.low, b.close);
+  }
+  // Panel over the first 3 bars: 5d slot falls back to whole span (valid),
+  // 21d/63d/252d slots fall back to the same 3-bar span too (window > size
+  // falls back to whole span, >= 2 bars, so they are NUMBERS not NaN) --
+  // assert the documented fallback, not an imagined NaN.
+  const Result<RvPanel> p3 =
+      realized_vol_panel(std::span{bars->data(), 3}, RvEstimator::CloseToClose, 252.0);
+  ASSERT_TRUE(p3.has_value()) << p3.error().to_string();
+  EXPECT_TRUE(std::isfinite(p3->vol[1]));
+  // 1-bar history: every slot NaN.
+  const Result<RvPanel> p1 =
+      realized_vol_panel(std::span{bars->data(), 1}, RvEstimator::CloseToClose, 252.0);
+  ASSERT_TRUE(p1.has_value()) << p1.error().to_string();
+  EXPECT_TRUE(std::isnan(p1->vol[1]));
+}
