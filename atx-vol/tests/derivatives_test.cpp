@@ -2244,29 +2244,56 @@ TEST(WingMode, FlatSurfaceInvariant) {
   ASSERT_TRUE(q_lee.has_value());
   ASSERT_TRUE(q_raw.has_value());
 
+  // Review fix I-3: isolate the mechanism directly instead of arguing it in
+  // prose. `FlatClamp` with the clamp turned OFF (`wing_clamp_k = -1.0`)
+  // runs the exact same code path FlatClamp always has, reading the exact
+  // same raw, unclamped values LeeSlope's `beta == 0` shortcut also reads
+  // here (see below) -- if that is really the whole story, this must be
+  // bit-exact with `q_lee`, not merely close.
+  DerivConfig flat_clamp_off = deriv_default_config();
+  flat_clamp_off.wing_mode = StripWingMode::FlatClamp;
+  flat_clamp_off.wing_clamp_k = -1.0;
+  const auto q_flat_clamp_off = var_swap_fair_strike(surf, cs, T_test, flat_clamp_off);
+  ASSERT_TRUE(q_flat_clamp_off.has_value());
+  EXPECT_EQ(q_lee->fair_strike_dec, q_flat_clamp_off->fair_strike_dec);
+
   // Measured, not the brief-literal 1e-12 (deviation, same class C-3 already
   // established this sprint: "brief's literal test params unmeasurable as
-  // specified" -- task-C-3-report.md). Every node's SERVED VOL is bit-
-  // identical across all three modes on this fixture -- verified by
-  // construction: phi=0/rho=0 makes w(k) EXACTLY theta for every k (0.5*x*2
-  // round-trips x exactly in IEEE754), so the central-difference slope is
-  // EXACTLY 0 and `lee_slope_sigma`'s beta==0 branch (derivatives.cpp)
-  // returns the SAME `surface.iv` call FlatClamp's clamped read and Raw's
-  // unclamped read both make. What remains is `split_wing_band`: FlatClamp
-  // splits at +-0.5 (4 panels), LeeSlope/Raw do not (2 panels) -- composite
-  // Simpson evaluates a DIFFERENT set of quadrature nodes under a different
-  // panelization of the SAME constant integrand, and the two panelizations'
-  // discrete sums need not agree past quadrature precision. Measured
-  // 9.6852e-11 (q_lee, q_raw both differ from q_flat by that exact amount,
-  // to 16 significant digits -- confirming LeeSlope and Raw share the
-  // identical 2-panel topology and reads here); 1.0e-9 keeps an order of
-  // magnitude of margin while staying ~4 decades tighter than this file's
-  // other flat-surface check below.
-  EXPECT_NEAR(q_flat->fair_strike_dec, q_lee->fair_strike_dec, 1.0e-9);
-  EXPECT_NEAR(q_flat->fair_strike_dec, q_raw->fair_strike_dec, 1.0e-9);
+  // specified" -- task-C-3-report.md). The SERVED VOL is bit-identical
+  // across all three modes on this fixture -- verified by construction:
+  // phi=0/rho=0 makes w(k) EXACTLY theta for every k (0.5*x*2 round-trips x
+  // exactly in IEEE754), so the central-difference slope is EXACTLY 0 and
+  // `lee_slope_sigma`'s beta==0 branch (derivatives.cpp) returns the SAME
+  // `surface.iv` call FlatClamp's clamped read and Raw's unclamped read both
+  // make -- and the assertion just above proves it directly, not by
+  // argument. The INTEGRAND is not constant (`price/(df*K)` spans ~23
+  // orders of magnitude from k=-1 to k=0 on this fixture -- a genuinely
+  // constant integrand would make Simpson EXACT, so if it were constant a
+  // panelization difference could never move the answer at all); what is
+  // constant is only the served VOL. What remains is `split_wing_band`:
+  // FlatClamp splits at +-0.5 (4 panels), LeeSlope/Raw do not (2 panels,
+  // since this fixture's slope is exactly 0 and so never binds the Lee
+  // clamp -- see WingMode.SlopeFoldsToZeroKeepsTheEdgeSplitAndTheError
+  // Honest for the case where it does) -- composite Simpson evaluates a
+  // DIFFERENT set of quadrature nodes under the two panelizations of this
+  // ANALYTIC (not constant) integrand, and each panelization's own
+  // Richardson estimate is exactly the bound on how far its discrete sum can
+  // sit from the true integral. Anchoring the gate to the SUM of both
+  // modes' own reported `integration_error_est` (rather than a magic
+  // constant that silently voids itself if the default grid ever changes)
+  // makes that bound explicit and self-updating.
+  const double gap_lee = std::fabs(q_flat->fair_strike_dec - q_lee->fair_strike_dec);
+  const double gap_raw = std::fabs(q_flat->fair_strike_dec - q_raw->fair_strike_dec);
+  ASSERT_TRUE(q_flat->integration_error_est == q_flat->integration_error_est);
+  ASSERT_TRUE(q_lee->integration_error_est == q_lee->integration_error_est);
+  ASSERT_TRUE(q_raw->integration_error_est == q_raw->integration_error_est);
+  const double err_budget = q_flat->integration_error_est + q_lee->integration_error_est;
+  EXPECT_LE(gap_lee, err_budget);
+  EXPECT_LE(gap_raw, q_flat->integration_error_est + q_raw->integration_error_est);
   // LeeSlope and Raw share the SAME panelization (both resolve
-  // split_wing_band == 0.0) and, via the beta==0 shortcut, the SAME reads --
-  // bit-identical, not merely quadrature-close.
+  // split_wing_band == 0.0 -- the clamp never binds on this fixture) and,
+  // via the beta==0 shortcut, the SAME reads -- bit-identical, not merely
+  // quadrature-close.
   EXPECT_EQ(q_lee->fair_strike_dec, q_raw->fair_strike_dec);
   EXPECT_NEAR(q_flat->fair_strike_dec, sigma * sigma, 5.0e-5);
 }
@@ -2325,12 +2352,19 @@ TEST(WingMode, SlopeClampBinds) {
   ASSERT_TRUE(q_lee.has_value());
   EXPECT_TRUE(has_flag(q_lee->flags, DerivFlags::WingExtrapolated));
 
-  // Independent oracle: re-integrate the SAME resolved grid (band = 0.0 for
-  // `plan_strip_split`, exactly what `var_swap_fair_strike`'s own
-  // `split_wing_band` resolves under this mode) with the extrapolation
-  // formula spelled out by hand, parameterized on the RIGHT-edge slope so it
-  // can be evaluated once at Lee's clamp value and once at the fixture's own
-  // (excessive) raw slope.
+  // Independent oracle: re-integrate the SAME resolved grid with the
+  // extrapolation formula spelled out by hand, parameterized on the
+  // RIGHT-edge slope so it can be evaluated once at Lee's clamp value and
+  // once at the fixture's own (excessive) raw slope.
+  //
+  // Review fix I-1: the split band passed to `plan_strip_split` here must
+  // match what `var_swap_fair_strike`'s `split_wing_band` ACTUALLY resolves,
+  // not always `0.0`. This fixture's right edge clamps (`slope_raw > 2.0`,
+  // asserted above), so production now keeps the band-edge panel boundary
+  // (the fix for I-1 — the served slope right at the edge is `2-eps` from
+  // outside but the raw surface's own `2.534836` from inside, a genuine C0/C1
+  // break that needs isolating exactly like FlatClamp's). Passing `band`
+  // here reproduces that.
   constexpr double eps = 1.0e-3;
   const double w_edge_r = w_at(band);
   const double w_edge_l = w_at(-band);
@@ -2339,7 +2373,7 @@ TEST(WingMode, SlopeClampBinds) {
 
   const auto oracle = [&](double beta_r) {
     const auto split = atx::vol::strip::plan_strip_split(
-        q_lee->strip_k_lo_used, q_lee->strip_k_hi_used, q_lee->strip_nodes_used, 0.0);
+        q_lee->strip_k_lo_used, q_lee->strip_k_hi_used, q_lee->strip_nodes_used, band);
     const double F = cs.spot;
     const double df = cs.yield.disc(T_test);
     double integral = 0.0;
@@ -2379,6 +2413,88 @@ TEST(WingMode, SlopeClampBinds) {
   // THIS oracle instead, so the two oracle values must themselves be clearly
   // distinguishable for the comparison above to carry any weight.
   EXPECT_GT(std::fabs(k_var_unclamped - k_var_clamped), 1.0e-6);
+
+  // Review fix I-1: this is the ONE test in the clamp-BINDING regime -- the
+  // regime where the split decision must differ from the non-binding case
+  // (WingMode.OrderingUnderSkew, WingMode.SplitLogicNoEdgeKinkUnderLeeSlope)
+  // by keeping the edge as a panel boundary rather than dropping it. Before
+  // the fix, dropping it unconditionally here left a real C0/C1 break
+  // mid-panel and both silently produced a far less accurate K_var AND
+  // under-reported its own error by 2.2x-3.2x (the /15 divisor assumes O(h^4),
+  // which no longer holds once the split is missing at a real kink) --
+  // exactly why "small and finite" is not enough here and this must be
+  // pinned to an ordinary-magnitude bound instead.
+  ASSERT_TRUE(q_lee->integration_error_est == q_lee->integration_error_est);
+  EXPECT_LT(q_lee->integration_error_est, 1.0e-6);
+}
+
+// Review fix I-1: the REACHABLE clamp-binding case, not the exotic beta > 2
+// corner `SlopeClampBinds` constructs above. Any eSSVI slice's right-wing
+// total-variance slope is NEGATIVE below the smile's own minimum whenever
+// rho < 0 (ordinary equity skew, not a contrived corner), so beta_right
+// folds to Lee's zero floor at ordinary bands -- reproduces the review's own
+// concrete fixture (sprint's steep-skew surface, phi=4.0/rho=-0.7/
+// sigma_atm=0.20, T=0.5, wing_clamp_k=0.15, well inside
+// certified_wing_half_band(Latency)=0.35, so a slightly steeper
+// Latency-quality surface lands here by default).
+TEST(WingMode, SlopeFoldsToZeroKeepsTheEdgeSplitAndTheErrorEstimateHonest) {
+  const double sigma = 0.20;
+  const double T_test = 0.5;
+  const EssviSurface surf = make_steep_wing_surface(sigma, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+  const double band = 0.15;
+
+  // Precondition: the right edge's raw slope really is negative, so
+  // `clamp_lee_slope`'s `!(beta > 0.0)` branch folds it to 0 -- the
+  // reachable case, not the exotic beta > 2 one.
+  constexpr double h = 1.0e-4;
+  const auto w_at = [&](double k) {
+    const double s = surf.iv(k, T_test);
+    return s * s * T_test;
+  };
+  const double slope_r_raw = (w_at(band + h) - w_at(band - h)) / (2.0 * h);
+  ASSERT_LT(slope_r_raw, 0.0) << "fixture must fold to zero to exercise the reachable case";
+
+  DerivConfig flat = deriv_default_config();
+  flat.wing_mode = StripWingMode::FlatClamp;
+  flat.wing_clamp_k = band;
+  DerivConfig lee = deriv_default_config();
+  lee.wing_mode = StripWingMode::LeeSlopeExtrapolation;
+  lee.wing_clamp_k = band;
+
+  const auto q_flat = var_swap_fair_strike(surf, cs, T_test, flat);
+  const auto q_lee = var_swap_fair_strike(surf, cs, T_test, lee);
+  ASSERT_TRUE(q_flat.has_value());
+  ASSERT_TRUE(q_lee.has_value());
+  ASSERT_TRUE(has_flag(q_flat->flags, DerivFlags::WingClamped));
+  ASSERT_TRUE(has_flag(q_lee->flags, DerivFlags::WingExtrapolated));
+
+  // Same grid under both modes -- and, after this fix, the SAME split too:
+  // the right edge's Lee clamp bound, so LeeSlope now keeps the band-edge
+  // panel boundary FlatClamp always has, instead of dropping it into what
+  // would otherwise be a real mid-panel kink.
+  ASSERT_EQ(q_flat->strip_nodes_used, q_lee->strip_nodes_used);
+  ASSERT_EQ(q_flat->strip_k_lo_used, q_lee->strip_k_lo_used);
+  ASSERT_EQ(q_flat->strip_k_hi_used, q_lee->strip_k_hi_used);
+  const auto split_flat = atx::vol::strip::plan_strip_split(
+      q_flat->strip_k_lo_used, q_flat->strip_k_hi_used, q_flat->strip_nodes_used, band);
+  const auto split_lee = atx::vol::strip::plan_strip_split(
+      q_lee->strip_k_lo_used, q_lee->strip_k_hi_used, q_lee->strip_nodes_used, band);
+  EXPECT_EQ(split_flat.count, split_lee.count);
+  EXPECT_GT(split_lee.count, 2u) << "the edge must still be a panel boundary here";
+
+  // The payoff: LeeSlope's error estimate is back to the SAME ORDER OF
+  // MAGNITUDE as FlatClamp's own on the identical grid -- measured
+  // 5.849e-09 vs 5.822e-09 (0.47% apart; the served function differs on the
+  // LEFT wing, where the clamp did not bind, so a small residual gap is
+  // expected and fine) -- a world away from the pre-fix 96.9x-17,000x
+  // blowup review fix I-1 measured (the observed quadrature order collapsed
+  // from 4 to ~1.9 there because a real C0/C1 break sat unsplit mid-panel).
+  // 2x keeps ample margin over the measured ~1.005x while still being a
+  // three-orders-of-magnitude tighter bound than the defect this pins shut.
+  ASSERT_TRUE(q_flat->integration_error_est == q_flat->integration_error_est);
+  ASSERT_TRUE(q_lee->integration_error_est == q_lee->integration_error_est);
+  EXPECT_LT(q_lee->integration_error_est, 2.0 * q_flat->integration_error_est);
 }
 
 TEST(WingMode, RawMatchesLegacyWingClampOff) {
