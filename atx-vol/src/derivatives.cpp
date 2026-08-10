@@ -1305,6 +1305,20 @@ Result<DerivQuote> var_swap_fair_strike(const SurfaceT& surface,
     use_lee_slope = true;
     break;
   }
+  // Review fix m-3: the single shared "is Lee extrapolation actually doing
+  // anything on this call" predicate. `use_lee_slope && wing_band > 0.0` was
+  // previously written out independently at three sites (the slope-resolution
+  // guard just below, the scalar node-loop dispatch, and the batched-path
+  // disable), held in sync by nothing but proximity -- the same defect class
+  // as P-4's I-2 and P-5's I-1, just in code instead of a named local. The
+  // concrete failure this closes: narrowing the batched-path disable alone
+  // (e.g. to `wing_clamped`, round-0 ledger Minor M-3's proposal) without
+  // narrowing the other two identically would let a PricedSurface-backed
+  // LeeSlope strip take the batched gather, which has no representation for
+  // the extrapolation formula and would silently serve a clamped-position
+  // read instead -- FlatClamp values under a LeeSlope config. One bool, used
+  // at all three sites, makes that impossible by construction.
+  const bool lee_engaged = use_lee_slope && wing_band > 0.0;
 
   // Task F-1 (review fix I-1): the fitted slice's OWN total-variance slope at
   // each band edge, resolved ONCE per call (not per node) from a central
@@ -1370,7 +1384,7 @@ Result<DerivQuote> var_swap_fair_strike(const SurfaceT& surface,
   };
   LeeWingSlope lee_slope{};
   bool lee_clamp_bound = false;
-  if (use_lee_slope && wing_band > 0.0) {
+  if (lee_engaged) {
     lee_slope.w_edge_right = total_w_at(wing_band);
     const double slope_r =
         (total_w_at(wing_band + kLeeSlopeH) - total_w_at(wing_band - kLeeSlopeH)) /
@@ -1608,7 +1622,7 @@ Result<DerivQuote> var_swap_fair_strike(const SurfaceT& surface,
   // below is otherwise byte-for-byte the pre-F-1 expression, so that mode's
   // reads are unchanged in every particular, not merely in aggregate result.
   const auto run_scalar_node_loop = [&]() noexcept {
-    if (use_lee_slope && wing_band > 0.0) {
+    if (lee_engaged) {
       accumulate_strip([&](double x) noexcept { return lee_slope_sigma(x); });
       return;
     }
@@ -1673,8 +1687,7 @@ Result<DerivQuote> var_swap_fair_strike(const SurfaceT& surface,
     // over performance for a brand-new opt-in mode; FlatClamp/Raw are
     // unaffected (`use_lee_slope` is false for both, so this condition is
     // identical to the pre-F-1 one for them).
-    if (!strip_batch_disabled_for_test() && n <= strip::kMaxStripNodes &&
-        !(use_lee_slope && wing_band > 0.0)) {
+    if (!strip_batch_disabled_for_test() && n <= strip::kMaxStripNodes && !lee_engaged) {
       used_batched_path = true;
 
       // Review fix round 1, I-2: no `{}` value-init on either buffer -- every

@@ -202,20 +202,29 @@ constexpr double kNaN = kPriceColumnNaN;
 // resolves EITHER the raw FD market-bump grid OR the raw P-4 analytic block
 // for a given (uid, T) group, chosen ONCE by `bumps.method` when the group is
 // first built (`ensure_var_swap_greeks_block`, derivatives.cpp) -- never
-// both, and never re-chosen later. Because `bumps` is the SAME book-wide
-// value for every row a single `price_deriv_book` call ever prices, EVERY
-// row that reaches this memo (VarSwap, `discrete_correction_mode == None`)
-// resolves `analytic_in_scope` to the SAME boolean
-// (`bumps.method == AnalyticStrip`) -- there is no row-specific input left
-// that could route two rows of the SAME (uid, T) group to different
-// sub-blocks, so a row can never read a block built for the other method.
-// (A hypothetical FUTURE per-row bumps override would need `bumps.method`
-// added to the key -- there is none today, so it is not.) Kind-class
-// (VarSwap only) plus `discrete_correction_mode == None` is exactly P-4's
-// OWN `AnalyticStrip` scope predicate; a row this memo serves under FD would
-// have taken the SAME FD path unmemoized, and one served under AnalyticStrip
-// would have taken that SAME path -- the memo changes nothing about WHICH
-// method prices a row, only whether the strip work is repeated.
+// both, and never re-chosen later. Because `bumps` and `cfg` are both the
+// SAME book-wide values for every row a single `price_deriv_book` call ever
+// prices, EVERY row that reaches this memo (VarSwap, `discrete_correction_mode
+// == None`) resolves `analytic_in_scope` to the SAME boolean -- there is no
+// row-specific input left that could route two rows of the SAME (uid, T)
+// group to different sub-blocks, so a row can never read a block built for
+// the other method. (A hypothetical FUTURE per-row bumps override would need
+// `bumps.method` added to the key -- there is none today, so it is not.)
+// Review fix m-4: kind-class (VarSwap only) plus `discrete_correction_mode ==
+// None` is NOT, on its own, P-4's full `AnalyticStrip` scope predicate --
+// Task F-1 added `wing_mode != LeeSlopeExtrapolation` to it, so the two
+// sentences above describing "the SAME boolean" understated what that
+// boolean depends on. The conclusion is unaffected: this site's
+// `analytic_in_scope` is `bumps.method == AnalyticStrip &&
+// analytic_scope_from_cfg(cfg)`, calling the exact same
+// `analytic_scope_from_cfg(const DerivConfig&)` P-4's other call site
+// (`deriv_greeks`) does (review fix I-2's single shared definition, closing
+// what used to be two independently-written copies) -- so a row this memo
+// serves under FD would have taken the SAME FD path unmemoized, and one
+// served under AnalyticStrip (which now also requires LeeSlope not be the
+// active wing mode) would have taken that SAME path -- the memo still
+// changes nothing about WHICH method prices a row, only whether the strip
+// work is repeated.
 [[nodiscard]] std::uint64_t bits_of(double x) noexcept {
   std::uint64_t b = 0;
   std::memcpy(&b, &x, sizeof b);

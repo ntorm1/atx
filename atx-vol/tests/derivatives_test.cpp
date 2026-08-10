@@ -2281,7 +2281,13 @@ TEST(WingMode, FlatSurfaceInvariant) {
   // sit from the true integral. Anchoring the gate to the SUM of both
   // modes' own reported `integration_error_est` (rather than a magic
   // constant that silently voids itself if the default grid ever changes)
-  // makes that bound explicit and self-updating.
+  // makes that bound explicit and self-updating. This IS a loosening, and
+  // said so plainly: `err_budget` below measures 1.5794e-09 on today's
+  // default grid, 1.58x looser in absolute terms than the 1.0e-9 constant it
+  // replaces, while the actual `gap_lee` it gates (9.6852e-11) is unchanged
+  // and still passes at 6.13% of the new budget (16x margin) -- the
+  // mechanism-anchored bound is the right trade for staying valid if the
+  // default grid ever changes, not a tightening.
   const double gap_lee = std::fabs(q_flat->fair_strike_dec - q_lee->fair_strike_dec);
   const double gap_raw = std::fabs(q_flat->fair_strike_dec - q_raw->fair_strike_dec);
   ASSERT_TRUE(q_flat->integration_error_est == q_flat->integration_error_est);
@@ -2407,6 +2413,16 @@ TEST(WingMode, SlopeClampBinds) {
   const double k_var_clamped = oracle(2.0 - eps);
   const double k_var_unclamped = oracle(slope_raw);
 
+  // Review fix I-1: THIS is the assertion that carries the fix for this
+  // test -- the oracle's `plan_strip_split` call above now passes `band`
+  // instead of unconditionally `0.0` (see the comment on that call), so a
+  // bit-tight match here requires production to have made the SAME
+  // clamp-bound split decision the oracle now assumes. Confirmed non-vacuous
+  // by an independent reversion probe (task-F-1-fix-round-1-review.md
+  // section 2): reverting only the gate back to
+  // `use_lee_slope ? 0.0 : wing_band` moves `q_lee->fair_strike_dec` away
+  // from this oracle by 8.247e-09 -- about 8,247x (roughly four orders of
+  // magnitude) past the 1.0e-12 tolerance.
   EXPECT_NEAR(q_lee->fair_strike_dec, k_var_clamped, 1.0e-12);
   // The unclamped oracle uses a materially steeper wing (slope_raw > 2 vs the
   // clamped 2 - eps) -- if production had failed to clamp, it would match
@@ -2414,16 +2430,20 @@ TEST(WingMode, SlopeClampBinds) {
   // distinguishable for the comparison above to carry any weight.
   EXPECT_GT(std::fabs(k_var_unclamped - k_var_clamped), 1.0e-6);
 
-  // Review fix I-1: this is the ONE test in the clamp-BINDING regime -- the
-  // regime where the split decision must differ from the non-binding case
-  // (WingMode.OrderingUnderSkew, WingMode.SplitLogicNoEdgeKinkUnderLeeSlope)
-  // by keeping the edge as a panel boundary rather than dropping it. Before
-  // the fix, dropping it unconditionally here left a real C0/C1 break
-  // mid-panel and both silently produced a far less accurate K_var AND
-  // under-reported its own error by 2.2x-3.2x (the /15 divisor assumes O(h^4),
-  // which no longer holds once the split is missing at a real kink) --
-  // exactly why "small and finite" is not enough here and this must be
-  // pinned to an ordinary-magnitude bound instead.
+  // Review fix m-2: the bound below is a SMOKE check, not I-1's evidence for
+  // THIS test -- this fixture's error is dominated by resolving a served
+  // wing that reaches ~200% vol (an extreme HINGE_QUAD residual, not the
+  // edge kink), so its `integration_error_est` only improves modestly under
+  // the fix (measured 7.6613e-08 pre-fix vs 6.0100e-08 post-fix, both three
+  // decades inside a 1.0e-6 bound -- an absolute threshold this loose cannot
+  // tell the two apart; confirmed by the same reversion probe, this
+  // assertion PASSES unchanged under a full revert of the gate). What
+  // carries I-1 for THIS test is the `EXPECT_NEAR` above, via the oracle's
+  // `0.0 -> band` split change -- see WingMode.SlopeFoldsToZeroKeepsTheEdge
+  // SplitAndTheErrorEstimateHonest for the fixture where the error-estimate
+  // MAGNITUDE itself (not just the strike) is the load-bearing check. This
+  // assertion stays only as a sanity floor (NaN-safety plus "still small in
+  // an absolute sense"), not a regression pin.
   ASSERT_TRUE(q_lee->integration_error_est == q_lee->integration_error_est);
   EXPECT_LT(q_lee->integration_error_est, 1.0e-6);
 }
@@ -2469,20 +2489,33 @@ TEST(WingMode, SlopeFoldsToZeroKeepsTheEdgeSplitAndTheErrorEstimateHonest) {
   ASSERT_TRUE(has_flag(q_flat->flags, DerivFlags::WingClamped));
   ASSERT_TRUE(has_flag(q_lee->flags, DerivFlags::WingExtrapolated));
 
-  // Same grid under both modes -- and, after this fix, the SAME split too:
-  // the right edge's Lee clamp bound, so LeeSlope now keeps the band-edge
-  // panel boundary FlatClamp always has, instead of dropping it into what
-  // would otherwise be a real mid-panel kink.
+  // Same grid under both modes -- and, after this fix, the SAME reason the
+  // split decision differs from the non-binding case
+  // (WingMode.SplitLogicNoEdgeKinkUnderLeeSlope): the right edge's Lee clamp
+  // bound here, so LeeSlope keeps the band-edge panel boundary FlatClamp
+  // always has, instead of dropping it into what would otherwise be a real
+  // mid-panel kink.
   ASSERT_EQ(q_flat->strip_nodes_used, q_lee->strip_nodes_used);
   ASSERT_EQ(q_flat->strip_k_lo_used, q_lee->strip_k_lo_used);
   ASSERT_EQ(q_flat->strip_k_hi_used, q_lee->strip_k_hi_used);
-  const auto split_flat = atx::vol::strip::plan_strip_split(
-      q_flat->strip_k_lo_used, q_flat->strip_k_hi_used, q_flat->strip_nodes_used, band);
-  const auto split_lee = atx::vol::strip::plan_strip_split(
-      q_lee->strip_k_lo_used, q_lee->strip_k_hi_used, q_lee->strip_nodes_used, band);
-  EXPECT_EQ(split_flat.count, split_lee.count);
-  EXPECT_GT(split_lee.count, 2u) << "the edge must still be a panel boundary here";
-
+  // Review fix m-1: a `plan_strip_split(k_lo, k_hi, n, band)` comparison used
+  // to sit here, calling that pure function on both sides with k_lo/k_hi/n
+  // already asserted equal three lines up and the SAME literal `band` fed to
+  // both calls -- so it compared the function to itself and could not
+  // observe what `var_swap_fair_strike` actually resolved `split_wing_band`
+  // to internally; it passed unchanged under a full revert of this fix.
+  // What DOES observe production's actual split decision is the
+  // error-estimate comparison below: a genuinely-dropped edge panel leaves
+  // an unresolved C0/C1 kink mid-panel that the Richardson estimate's own
+  // `/15` divisor (which assumes O(h^4) convergence, broken by the kink)
+  // cannot see coming, so `integration_error_est` moves by orders of
+  // magnitude exactly when the split decision is wrong and by nothing when
+  // it is right -- confirmed non-vacuous by an independent reversion probe:
+  // reverting only the gate back to `use_lee_slope ? 0.0 : wing_band` makes
+  // the bound below fail: err_est_lee/err_est_flat measured at 43.9x under
+  // reversion (2.5586e-07 vs 5.8210e-09), ~22x past the 2x bound this
+  // assertion requires (task-F-1-fix-round-1-review.md section 2).
+  //
   // The payoff: LeeSlope's error estimate is back to the SAME ORDER OF
   // MAGNITUDE as FlatClamp's own on the identical grid -- measured
   // 5.849e-09 vs 5.822e-09 (0.47% apart; the served function differs on the
@@ -2526,10 +2559,16 @@ TEST(WingMode, RawMatchesLegacyWingClampOff) {
 // edge is a genuine C0 kink under FlatClamp (d(iv)/dk drops to zero across
 // it) and stays a panel boundary; LeeSlopeExtrapolation is continuous AND
 // slope-matched there when the clamp does not bind, so no panel boundary is
-// needed. Demonstrated structurally (via the SAME public `plan_strip_split`
-// entry point `var_swap_fair_strike` itself calls) AND via the Richardson
-// error estimate staying small for BOTH -- proving the missing edge panel
-// costs LeeSlope nothing, not merely asserting it in prose.
+// needed. This is the CONTROL for the non-binding regime -- this fixture's
+// right-edge raw slope at this band is measured positive and inside Lee's
+// [0, 2-eps] bound (see the in-test note below), so `split_wing_band`
+// resolves to 0.0 for LeeSlope here both before and after review fix I-1's
+// clamp-bound gate; the binding regime, where the gate actually changes the
+// outcome, is WingMode.SlopeFoldsToZeroKeepsTheEdgeSplitAndTheErrorEstimate
+// Honest's job, not this test's. The payoff of not needing the edge panel is
+// demonstrated via the Richardson error estimate staying small for BOTH
+// modes -- proving the missing edge panel costs LeeSlope nothing, not merely
+// asserting it in prose.
 TEST(WingMode, SplitLogicNoEdgeKinkUnderLeeSlope) {
   const double sigma = 0.20;
   const double T_test = 0.5;
@@ -2556,16 +2595,41 @@ TEST(WingMode, SplitLogicNoEdgeKinkUnderLeeSlope) {
   ASSERT_EQ(q_flat->strip_k_lo_used, q_lee->strip_k_lo_used);
   ASSERT_EQ(q_flat->strip_k_hi_used, q_lee->strip_k_hi_used);
 
-  // Direct structural check via the exact entry point `var_swap_fair_strike`
-  // itself calls: band = 0.5 (what FlatClamp's `split_wing_band` resolves)
-  // vs 0.0 (what LeeSlope's resolves). [k_lo,-0.5,0,0.5,k_hi] -> 4 panels;
-  // [k_lo,0,k_hi] -> 2.
+  // Precondition, mirroring WingMode.SlopeFoldsToZeroKeepsTheEdgeSplitAndThe
+  // ErrorEstimateHonest's own check: the right edge's raw slope at THIS
+  // fixture's default-resolved band (0.5, certified_wing_half_band(Balanced))
+  // is inside Lee's [0, 2-eps] bound, so the clamp does not bind and
+  // `split_wing_band` resolves to 0.0 for LeeSlope -- the SAME value it
+  // resolved to before review fix I-1 existed, which is what makes this test
+  // a control rather than a regression pin for that fix.
+  constexpr double h = 1.0e-4;
+  const auto w_at = [&](double k) {
+    const double s = surf.iv(k, T_test);
+    return s * s * T_test;
+  };
+  const double default_band = 0.5;
+  const double slope_r_raw =
+      (w_at(default_band + h) - w_at(default_band - h)) / (2.0 * h);
+  ASSERT_GE(slope_r_raw, 0.0) << "fixture must NOT fold to zero -- this is the control";
+  ASSERT_LT(slope_r_raw, 2.0) << "fixture must NOT exceed Lee's bound -- this is the control";
+
+  // Structural well-formedness check at the two band values `split_wing_band`
+  // resolves to for each mode here (0.5 for FlatClamp, 0.0 for LeeSlope --
+  // see the precondition above): `plan_strip_split` itself must produce a
+  // panelization on the 4m+1 Richardson lattice for either.
+  //
+  // Review fix m-1: this used to also assert
+  // `EXPECT_EQ(split_flat.count, 4u)` / `EXPECT_EQ(split_lee.count, 2u)` --
+  // both pure restatements of `plan_strip_split`'s own arithmetic at literal
+  // hardcoded bands, never reading back what `var_swap_fair_strike` actually
+  // resolved `split_wing_band` to internally for either mode; removed rather
+  // than left as an assertion that read as evidence while carrying none.
+  // What DOES read production's own numbers back is the error-estimate
+  // check below.
   const auto split_flat = atx::vol::strip::plan_strip_split(
       q_flat->strip_k_lo_used, q_flat->strip_k_hi_used, q_flat->strip_nodes_used, 0.5);
   const auto split_lee = atx::vol::strip::plan_strip_split(
       q_lee->strip_k_lo_used, q_lee->strip_k_hi_used, q_lee->strip_nodes_used, 0.0);
-  EXPECT_EQ(split_flat.count, 4u);
-  EXPECT_EQ(split_lee.count, 2u);
 
   // Payoff for not needing that extra split: the Richardson estimate stays
   // valid (every panel 4m+1) and small for BOTH. If LeeSlope's node reads
