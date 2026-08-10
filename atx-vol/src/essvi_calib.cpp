@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -646,13 +647,99 @@ void fit_dense_residual(std::span<const FitObs> obs, EssviParams& slice,
 // HINGE_QUAD basis (slots 1..4 of resid_coef == {yp, yp², yc, yc²}, matching
 // `essvi_residual_w`). Inverse-noise weighted ridge least squares.
 //
-// PORT NOTE — the C follows the ridge LS with a per-slice Roper density
-// projection (`ats_vol_essvi_residual_arb_project`) that damps the coefficients
-// until g(k) >= 0. That per-slice projector is NOT exposed by the ported
-// arb.hpp (which surfaces only the surface-level `arb_repair_calendar_residual`
-// / total-surface projectors), so it is deferred here: the fitted residual is
-// left un-projected and its static-arb safety is a caller/surface-level check.
+// R1 — THE LAYER'S ADMISSIBLE REGION (T3). Until this was derived the layer was
+// fit by an UNCONSTRAINED ridge LS: coefficients of arbitrary sign, and — per
+// the PORT NOTE the C's own pipeline does not have — no density projection
+// either. Both gaps are load-bearing on the production fit path.
+//
+// (R1a) The layer may only ADD total variance: `essvi_residual_w >= 0`.
+//
+//   Every CROSS-SLICE ordering guarantee in this system is established on
+//   BACKBONES — `arb_project_calendar_essvi` evaluates `essvi_backbone_w` on
+//   both slices, and the theta floor this file's sequential driver applies is a
+//   backbone-level bound. `arb_repair_calendar_residual` then tests slice i's
+//   backbone against slice i+1's TOTAL variance, so a NEGATIVE residual on
+//   slice i+1 voids an ordering that was just proven, and that repair can only
+//   damp slice i's residual — it is structurally unable to fix the pair and
+//   refuses the whole board (arb.cpp:1055). A per-slice layer holds no
+//   information about its neighbours, so there is no amount of variance it can
+//   safely subtract; restricting it to add-only makes
+//   `backbone(i) <= backbone(i+1) <= total(i+1)` hold BY CONSTRUCTION.
+//
+//   Measured (T1c attempts export, `--preset robust --fit-path production`):
+//   this refusal is 14/26 of lqbench's and 23/34 of sp100's BUILD-stage
+//   eSSVI-primary rejections — 37 of the 60 across both corpora.
+//
+//   The HINGE_QUAD basis makes this cheap and exact. `essvi_residual_w` clamps
+//   y = k/scale to [-1, 1], so each wing contributes r(u) = c_lin·u + c_quad·u²
+//   over u = |y| - kResidHingeInnerY in [0, kResidHingeUMax], and the two wings
+//   have DISJOINT support (yp·yc == 0 at every observation). r >= 0 on that
+//   interval iff the linear factor (c_lin + c_quad·u) is non-negative at both
+//   endpoints, so the admissible set is a 2-D polyhedral cone per wing and the
+//   normal equations are exactly block-diagonal across the pair.
+//
+// (R1b) The layer must leave the Lee/Roper density non-negative — the projector
+//   the PORT NOTE deferred. The eSSVI backbone is butterfly-free by
+//   construction (`essvi_phi_max` ceiling + cube reparam clamp + `lee_project`),
+//   so this layer is the ONLY source of a butterfly violation on an eSSVI
+//   slice, and nothing bounds the wing slope it can add: -(w'²/4)(¼ + 1/w)
+//   craters g wherever the ridge LS parks slope the butterfly-capped backbone
+//   could not reach. Mirrors `fit_dense_residual`'s greedy projection, damping
+//   the OFFENDING WING (scaling a wing by α in [0,1] keeps it inside the cone,
+//   which damping one coefficient would not) and falling back to a
+//   backbone-only slice when no admissible residual is reachable.
+//
+// Neither branch runs on a slice whose unconstrained fit is already admissible:
+// the historical solve is kept and its coefficients are written unchanged, so
+// this is bit-identical wherever the constraint does not bind.
+//
 // The layer is off by default (`opts.residual_disable == true`).
+
+// Dead-band half-width of the HINGE_QUAD basis. MUST match `kResidInnerY` in
+// vol_surface.cpp — the runtime evaluator this fit is posed against.
+constexpr double kResidHingeInnerY = 0.4;
+// y is clamped to [-1, 1] by `essvi_residual_w`, so each hinge spans [0, this].
+constexpr double kResidHingeUMax = 1.0 - kResidHingeInnerY;
+
+// One wing of the HINGE_QUAD residual: r(u) = lin·u + quad·u².
+struct HingeSide {
+  double lin{0.0};
+  double quad{0.0};
+};
+
+// r(u) >= 0 for every u in [0, kResidHingeUMax]. r(u) = u·(lin + quad·u) and
+// u >= 0, so the sign is that of the LINEAR factor, whose extremes over a
+// closed interval are its endpoints.
+[[nodiscard]] bool hinge_side_is_nonneg(const HingeSide& c) noexcept {
+  return c.lin >= 0.0 && c.lin + kResidHingeUMax * c.quad >= 0.0;
+}
+
+// Minimize J(c) = ½·cᵀAc − cᵀb over that cone, for the SPD 2x2 block A of one
+// wing (the conditioning ridge is already on its diagonal) — an exact KKT
+// enumeration, not an iteration: A is SPD, so if the stationary point is
+// infeasible the minimizer lies on the boundary, and each of the two edges
+// reduces to a 1-D parabola whose constrained minimum is its clamped vertex.
+// The cone's apex (0, 0) is reachable as either clamp, so the three candidate
+// cases are covered. Both edge candidates are feasible by construction.
+[[nodiscard]] HingeSide solve_hinge_side_constrained(double a11, double a12,
+                                                     double a22, double b1,
+                                                     double b2) noexcept {
+  const auto obj = [&](const HingeSide& c) noexcept {
+    return 0.5 * (c.lin * (a11 * c.lin + a12 * c.quad) +
+                  c.quad * (a12 * c.lin + a22 * c.quad)) -
+           (c.lin * b1 + c.quad * b2);
+  };
+  // Edge lin == 0; feasible half-line is quad >= 0.
+  const HingeSide edge_lin{0.0, (a22 > 0.0) ? std::max(0.0, b2 / a22) : 0.0};
+  // Edge lin + uMax·quad == 0, i.e. c = t·(−uMax, 1); feasible half-line t <= 0.
+  const double dad =
+      a11 * kResidHingeUMax * kResidHingeUMax - 2.0 * a12 * kResidHingeUMax + a22;
+  const double dab = -kResidHingeUMax * b1 + b2;
+  const double t = (dad > 0.0) ? std::min(0.0, dab / dad) : 0.0;
+  const HingeSide edge_ray{-kResidHingeUMax * t, t};
+  return (obj(edge_lin) <= obj(edge_ray)) ? edge_lin : edge_ray;
+}
+
 void fit_wing_residual(std::span<const FitObs> obs, EssviParams& slice,
                        const CalibOpts& opts) {
   double kmax = 0.0;
@@ -662,7 +749,7 @@ void fit_wing_residual(std::span<const FitObs> obs, EssviParams& slice,
   if (!(kmax > 0.0)) {
     return;
   }
-  constexpr double kInnerY = 0.4;
+  constexpr double kInnerY = kResidHingeInnerY;
   constexpr int kNb = 4;
   const double scale = kmax;
   const double ridge =
@@ -693,13 +780,62 @@ void fit_wing_residual(std::span<const FitObs> obs, EssviParams& slice,
     return;  // leave the slice backbone-only
   }
   const VecX& c = *sol;
-  slice.resid_coef[1] = c(0);
-  slice.resid_coef[2] = c(1);
-  slice.resid_coef[3] = c(2);
-  slice.resid_coef[4] = c(3);
-  slice.resid_scale = scale;
-  slice.resid_basis_kind = ResidualBasisKind::HingeQuad;
-  slice.resid_n_basis = 5;
+  HingeSide put{c(0), c(1)};
+  HingeSide call{c(2), c(3)};
+
+  // (R1a) Re-solve only the wing whose unconstrained answer left the cone, so a
+  // slice that was already admissible keeps its historical coefficients bit for
+  // bit. The two 2x2 blocks are independent: yp·yc == 0 at every observation, so
+  // the off-diagonal blocks of `a` are exactly zero (only the ridge sits on the
+  // diagonal), and minimizing each wing separately IS the joint minimizer.
+  assert(a(0, 2) == 0.0 && a(0, 3) == 0.0 && a(1, 2) == 0.0 && a(1, 3) == 0.0);
+  if (!hinge_side_is_nonneg(put)) {
+    put = solve_hinge_side_constrained(a(0, 0), a(0, 1), a(1, 1), rhs(0), rhs(1));
+  }
+  if (!hinge_side_is_nonneg(call)) {
+    call = solve_hinge_side_constrained(a(2, 2), a(2, 3), a(3, 3), rhs(2), rhs(3));
+  }
+
+  // (R1b) Greedy density projection, mirroring `fit_dense_residual`: locate the
+  // worst-g grid point and halve the WING that is active there, until the
+  // Lee/Roper density on the total (backbone + residual) is non-negative. A
+  // uniform scale keeps a wing inside its cone, so (R1a) survives every damping
+  // step. Bounded: 40 halvings take any coefficient below 1e-12 of its value.
+  const auto store = [&](EssviParams& s) noexcept {
+    s.resid_coef = {};
+    s.resid_coef[1] = put.lin;
+    s.resid_coef[2] = put.quad;
+    s.resid_coef[3] = call.lin;
+    s.resid_coef[4] = call.quad;
+    s.resid_scale = scale;
+    s.resid_basis_kind = ResidualBasisKind::HingeQuad;
+    s.resid_n_basis = 5;
+  };
+  for (int iter = 0; iter < 40; ++iter) {
+    if (put.lin == 0.0 && put.quad == 0.0 && call.lin == 0.0 &&
+        call.quad == 0.0) {
+      return;  // nothing left to serve — backbone-only
+    }
+    EssviParams trial = slice;
+    store(trial);
+    double k_worst = 0.0;
+    if (dense_resid_min_g(trial, kmax, &k_worst) >= 0.0) {
+      slice = trial;  // admissible — commit
+      return;
+    }
+    const double y = std::clamp(k_worst / scale, -1.0, 1.0);
+    if (y < -kInnerY) {
+      put.lin *= 0.5;
+      put.quad *= 0.5;
+    } else if (y > kInnerY) {
+      call.lin *= 0.5;
+      call.quad *= 0.5;
+    } else {
+      break;  // violation inside the dead band — not this layer's to repair
+    }
+  }
+  // No admissible residual within the budget: leave the slice backbone-only
+  // (safe) rather than serve a density-violating wing correction.
 }
 
 // ── Per-slice fit-core scratch arena ─────────────────────────────────────

@@ -324,6 +324,261 @@ TEST(EssviFitSlice, DenseResidualCollapsedWindow_IsNotServedAsNearZeroVol) {
       << "serves " << std::sqrt(min_w / T) << " vol at k = " << k_at_min;
 }
 
+// ── T3: the HINGE_QUAD wing-residual layer's admissible region ───────────
+//
+// Measured on the T1c attempts export (lqbench 2026-08-03, sp100 2026-07-22,
+// `--preset robust --fit-path production`): 37 of the 60 BUILD-stage eSSVI-
+// primary rejections are `arb_repair_calendar_residual` refusing a board. That
+// guard (`arb.cpp:1030`) is reachable ONLY when the lower slice carries a
+// residual layer, and it fires AFTER `arb_project_calendar_essvi` has already
+// made the BACKBONES calendar-monotone — so what it is reporting is
+// `w_total(upper) < w_backbone(upper)`, i.e. the UPPER slice's residual being
+// negative. The two profiles that enable this layer in production
+// (`IndexEtfUltraLiquid`, `LiquidSingleName`) both select HINGE_QUAD, whose fit
+// is a plain ridge LS with coefficients unconstrained in sign and, per the
+// PORT NOTE it carries, no density projection either.
+//
+// R1 (constructive, replaces the corrective repair): a per-slice residual layer
+// may only ADD total variance, and must leave the Lee/Roper density
+// non-negative. Every cross-slice ordering guarantee in this system is
+// established on BACKBONES; a per-slice layer with no knowledge of its
+// neighbours has no information that could tell it how much variance it may
+// safely subtract, and `arb_repair_calendar_residual` can only damp the LOWER
+// slice's residual, so it is structurally unable to repair a violation the
+// UPPER slice's residual caused.
+
+namespace {
+
+// Quotes on an eSSVI backbone with the two wings bent in OPPOSITE directions
+// outside the residual layer's dead band (|k| > kResidInnerY * kmax = 0.2 here).
+// eSSVI wings are asymptotically linear in |k|, so neither bend is reachable by
+// the backbone: the unconstrained ridge LS answers with a POSITIVE call-side
+// residual and a NEGATIVE put-side one — the exact shape that voids a
+// backbone-established calendar ordering.
+std::vector<FitObs> bent_wing_obs(const EssviParams& truth, double T, double F,
+                                  double put_bend, double call_bend,
+                                  double bend_start = 0.20) {
+  std::vector<FitObs> obs;
+  const int n = 41;
+  for (int i = 0; i < n; ++i) {
+    const double k =
+        -0.50 + 1.00 * static_cast<double>(i) / static_cast<double>(n - 1);
+    const double u = std::max(0.0, std::fabs(k) - bend_start);
+    const double bend = (k < 0.0) ? put_bend : call_bend;
+    double w = essvi_backbone_w(truth, k) + bend * u * u;
+    if (w < 1.0e-6) {
+      w = 1.0e-6;
+    }
+    FitObs o{};
+    o.k = k;
+    o.w_mkt = w;
+    o.sigma_mkt = std::sqrt(w / T);
+    o.weight_w = 1.0;
+    o.active_weight_w = 1.0;
+    o.F = F;
+    o.K = F * std::exp(k);
+    o.df = 1.0;
+    obs.push_back(o);
+  }
+  return obs;
+}
+
+CalibOpts hinge_quad_opts() {
+  CalibOpts o = calib_default_opts();
+  o.residual_disable = false;
+  o.residual_basis_kind = atx::vol::ResidualBasisKind::HingeQuad;
+  o.residual_n_basis_terms = 5;
+  return o;
+}
+
+// Worst (most negative) value of total - backbone over the layer's own
+// evaluation window.
+double worst_residual(const EssviParams& s, double kmax, double* k_at = nullptr) {
+  double worst = 0.0;
+  for (int i = 0; i <= 400; ++i) {
+    const double k =
+        -1.15 * kmax + 2.30 * kmax * static_cast<double>(i) / 400.0;
+    const double d = atx::vol::essvi_total_w(s, k) - essvi_backbone_w(s, k);
+    if (d < worst) {
+      worst = d;
+      if (k_at != nullptr) {
+        *k_at = k;
+      }
+    }
+  }
+  return worst;
+}
+
+}  // namespace
+
+// R1, part 1 — the layer may not subtract variance from the backbone it sits on.
+TEST(EssviWingResidual, NeverSubtractsVarianceFromTheBackbone) {
+  const double T = 0.5;
+  const double F = 100.0;
+  const EssviParams truth = backbone(0.040, 1.5, -0.30, T);
+  // Put wing bent DOWN (unreachable concavity), call wing bent UP.
+  const std::vector<FitObs> obs = bent_wing_obs(truth, T, F, -0.15, 0.15);
+
+  const auto res = essvi_fit_slice(obs, T, F, hinge_quad_opts());
+  ASSERT_TRUE(res.has_value());
+  ASSERT_GT(res->resid_scale, 0.0)
+      << "fixture must actually exercise the residual layer";
+
+  double k_at = 0.0;
+  const double worst = worst_residual(*res, 0.50, &k_at);
+  EXPECT_GE(worst, 0.0) << "residual subtracts " << -worst
+                        << " of total variance at k = " << k_at;
+}
+
+// R1, part 2 — the deferred per-slice density projection (PORT NOTE in
+// `fit_wing_residual`). A steep LINEAR wing is unreachable by the butterfly-
+// capped backbone, so the ridge LS parks the excess slope in the residual, where
+// nothing bounds it: -(w'^2/4)(1/4 + 1/w) then craters the Lee/Roper density.
+// The eSSVI backbone is butterfly-free by construction, so this layer is the
+// ONLY source of a butterfly violation on an eSSVI slice.
+TEST(EssviWingResidual, KeepsTheLeeRoperDensityNonNegative) {
+  const double T = 0.25;
+  const double F = 100.0;
+  const EssviParams truth = backbone(0.030, 1.5, -0.30, T);
+
+  std::vector<FitObs> obs;
+  const int n = 41;
+  for (int i = 0; i < n; ++i) {
+    const double k =
+        -0.50 + 1.00 * static_cast<double>(i) / static_cast<double>(n - 1);
+    const double u = std::max(0.0, std::fabs(k) - 0.20);
+    const double w = essvi_backbone_w(truth, k) + 1.20 * u;  // steep, linear
+    FitObs o{};
+    o.k = k;
+    o.w_mkt = w;
+    o.sigma_mkt = std::sqrt(w / T);
+    o.weight_w = 1.0;
+    o.active_weight_w = 1.0;
+    o.F = F;
+    o.K = F * std::exp(k);
+    o.df = 1.0;
+    obs.push_back(o);
+  }
+
+  const auto res = essvi_fit_slice(obs, T, F, hinge_quad_opts());
+  ASSERT_TRUE(res.has_value());
+
+  auto surf_res = VolSurface::create(1u, Parametrization::Essvi, 1u);
+  ASSERT_TRUE(surf_res.has_value());
+  VolSurface surface = *surf_res;
+  ASSERT_TRUE(surface.set_slice_essvi(0u, *res).has_value());
+
+  const auto bf = atx::vol::arb_check_butterfly(surface, -0.5, 0.5, 129u);
+  ASSERT_TRUE(bf.has_value());
+  EXPECT_TRUE(bf->empty()) << bf->size() << " butterfly violations, first at k = "
+                           << (bf->empty() ? 0.0 : bf->front().k_log);
+}
+
+// R1, part 3 — the production failure, end to end. Two fitted slices whose
+// BACKBONES are calendar-ordered by construction (shared phi/rho, theta scaled),
+// with the upper slice's put wing quoted below anything eSSVI can reach. The
+// shipped `run_surface_parity` order is project-then-repair
+// (`surface_parity.cpp:542-543`); the repair must not refuse the board.
+TEST(EssviWingResidual, TwoSliceSurfaceSurvivesTheShippedProjectThenRepair) {
+  const double F = 100.0;
+  const double phi = 1.5;
+  const double rho = -0.30;
+  const std::array<double, 2> ts{0.25, 0.50};
+  const std::array<double, 2> thetas{0.030, 0.036};  // ordered, +20 %
+
+  auto surf_res = VolSurface::create(1u, Parametrization::Essvi, 2u);
+  ASSERT_TRUE(surf_res.has_value());
+  VolSurface surface = *surf_res;
+
+  for (std::size_t si = 0; si < 2u; ++si) {
+    const EssviParams truth = backbone(thetas[si], phi, rho, ts[si]);
+    // Lower slice: both wings bent UP. Upper slice: only its DEEPEST put quotes
+    // bent down, so the backbone barely reacts (the projection still orders the
+    // two backbones inside its 10 % budget) and the miss lands in the residual.
+    const std::vector<FitObs> obs =
+        (si == 0u)
+            ? bent_wing_obs(truth, ts[si], F, 0.10, 0.10)
+            : bent_wing_obs(truth, ts[si], F, -3.0, 0.10, /*bend_start=*/0.40);
+    const auto res = essvi_fit_slice(obs, ts[si], F, hinge_quad_opts());
+    ASSERT_TRUE(res.has_value());
+    ASSERT_TRUE(surface.set_slice_essvi(si, *res).has_value());
+  }
+
+  // The certified band and grid `run_surface_parity` actually repairs over.
+  const auto proj = atx::vol::arb_project_calendar_essvi(surface, -0.5, 0.5, 25u);
+  ASSERT_TRUE(proj.has_value()) << proj.error().to_string();
+  const auto rep = atx::vol::arb_repair_calendar_residual(surface, -0.5, 0.5, 25u);
+  EXPECT_TRUE(rep.has_value())
+      << "build refused: " << (rep.has_value() ? "" : rep.error().to_string());
+}
+
+// (N1), the OTHER half of the BUILD-stage refusals — 12 lqbench + 11 sp100
+// boards where `arb_project_calendar_essvi` reports "needs a cumulative ATM
+// level scale of X, beyond the fidelity budget 1.100000". That is the fitted
+// theta term structure inverting by more than 10 %, and it is a CORRECTIVE
+// failure for the same reason R1 was: on the production path
+// (`CalendarRepair::Project`, pricer_fitter.cpp:1250) every slice is fit
+// independently — `run_surface_parity` calls `essvi_fit_slice` with the
+// DEFAULT `theta_floor = 0` (surface_parity.cpp:426) — and the inversion is
+// only discovered afterwards, when a level scale is the only tool left.
+//
+// The constructive seam for (N1) already exists — `essvi_fit_slice`'s
+// `theta_floor`, which the production caller leaves at its 0 default. This test
+// MEASURES what closing that one seam is worth, and records that it is not
+// enough on its own: with theta pinned equal, the fitted (phi, rho) are still
+// free, so the WINGS cross and the projection is still asked for a level scale
+// beyond its budget. That is plan §2.1's (N2) — the wing-slope ordering
+// `psi_2 +/- chi_2 >= psi_1 +/- chi_1` — and it needs the previous slice's
+// (psi, chi), which `essvi_fit_slice` has no parameter for.
+TEST(EssviCalendarOrdering, ThetaFloorShrinksButDoesNotCloseTheProjectionGap) {
+  const double F = 100.0;
+  const double phi = 1.5;
+  const double rho = -0.30;
+  const std::array<double, 2> ts{0.25, 0.50};
+  // The quotes themselves invert at the ATM level by ~20 % — twice the 10 %
+  // fidelity budget `arb_project_calendar_essvi` will spend on a level scale.
+  const std::array<double, 2> thetas{0.050, 0.040};
+
+  // Worst w_lower/w_upper over the certified band == the `max_ratio` the
+  // projection must pay for, so it is directly comparable to its 1.10 budget.
+  const auto worst_backbone_ratio = [&](bool floored) {
+    std::array<EssviParams, 2> fitted{};
+    double theta_floor = 0.0;
+    for (std::size_t si = 0; si < 2u; ++si) {
+      const EssviParams truth = backbone(thetas[si], phi, rho, ts[si]);
+      const std::vector<FitObs> obs = bent_wing_obs(truth, ts[si], F, 0.0, 0.0);
+      const auto res = essvi_fit_slice(obs, ts[si], F, calib_default_opts(),
+                                       nullptr, floored ? theta_floor : 0.0);
+      EXPECT_TRUE(res.has_value());
+      fitted[si] = *res;
+      theta_floor = res->theta;
+    }
+    double worst = 1.0;
+    for (int i = 0; i <= 200; ++i) {
+      const double k = -0.5 + 1.0 * static_cast<double>(i) / 200.0;
+      const double w_lo = essvi_backbone_w(fitted[0], k);
+      const double w_hi = essvi_backbone_w(fitted[1], k);
+      if (w_hi > 1.0e-15) {
+        worst = std::max(worst, w_lo / w_hi);
+      }
+    }
+    return worst;
+  };
+
+  const double unfloored = worst_backbone_ratio(false);
+  const double floored = worst_backbone_ratio(true);
+
+  // (N1) unwired — today's production path (surface_parity.cpp:426).
+  EXPECT_GT(unfloored, 1.0 + atx::vol::kCalendarRepairMaxAtmShiftFrac)
+      << "fixture no longer reproduces the production BUILD refusal";
+  // (N1) wired: strictly better, and the ATM level itself is repaired...
+  EXPECT_LT(floored, unfloored);
+  // ...but the wings are not, so the board is still refused. (N2) is required.
+  EXPECT_GT(floored, 1.0 + atx::vol::kCalendarRepairMaxAtmShiftFrac)
+      << "theta floor alone now suffices on this fixture — re-derive the (N2) "
+         "sizing before quoting this test as evidence for it";
+}
+
 // ── Warm-start (tick-to-quote incremental refit) ─────────────────────────
 
 namespace {
