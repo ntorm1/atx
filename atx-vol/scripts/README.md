@@ -20,3 +20,8 @@ python -m pytest atx-vol/scripts/ -q
   across a (run x tenor) grid, sequential (the driver is already internally
   threaded via its own `--threads`). See the module docstring for the CLI
   and manifest JSON schema.
+- `bev_label_qa.py` -- markdown QA report over one or more `bev_label_factory`
+  label TSVs: row accounting by flag/snapped, `log_ratio` distribution by
+  tenor x delta bucket, feature-column NaN coverage, cross-file
+  duplicate-key detection, and a report-only leakage tripwire. See the
+  module docstring for the CLI and exit codes.

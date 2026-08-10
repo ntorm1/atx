@@ -34,12 +34,12 @@ grounded in a literature sweep (2024–2026 emphasis) summarized in §2.
 
 | # | Gap | Consequence |
 |---|---|---|
-| G1 | **No feature producer.** Label TSV carries target + join keys only. `rv_21d/rv_63d` have no real-data producer at corpus scale; `n_events_to_expiry` has no producer at all (no earnings calendar in the C++ corpus) | Cannot train anything beyond degenerate models |
+| G1 | **CLOSED (feature-factory sprint, 2026-08-09/10).** `bev_label_factory` now emits the full `kFairVolFeatureSchemaV1` block beside the target — label TSV grows 14 → 22 columns. Two caveats remain, both by design: `rv_21d/rv_63d` are close-to-close only (real OHLC bars are still a §5 acquisition item; YZ/GK/RS stay dormant); `n_events_to_expiry` comes from a hand-supplied, day-resolution (midnight-UTC) `--events` TSV, not a point-in-time vendor calendar (also §5) | A trainer can run against a real label corpus today, subject to the CtC-only and day-resolution-events caveats above |
 | G2 | **No trained model.** Linear v1 loader exists; nothing has ever been fit | The seam is empty |
 | G3 | **Band is a placeholder** (`0.5·|dvol|`; RV-blend reports 0 → served band is the config floor) | No uncertainty signal → no principled sizing |
 | G4 | **No cost model.** Backtest is frictionless by construction in the probe example | §2.2 says this is the difference between publishable and tradeable |
 | G5 | **No portfolio layer.** Signals are recorded, never converted to positions | No P&L, no Sharpe, no falsification |
-| G6 | **Single-name, single-underlier corpus wiring** (SPY 2019 in examples) | Cross-sectional strategies need a panel |
+| G6 | **Tooling half-closed (feature-factory sprint).** `bev_corpus_run.py` (manifest-driven fan-out across a run x tenor grid) and `bev_label_qa.py` (row accounting, target distribution, feature-coverage, dedup, leakage tripwire) ship the corpus-scale machinery. The corpus itself is still single-name, single-underlier (SPY 2019 in examples) — running the actual multi-year, multi-name panel is an ops action blocked on real calendars/OHLC (§5), not on missing tooling | Cross-sectional strategies still need the panel itself; the tooling to build and QA one no longer needs writing |
 | G7 | **No validation harness** (purged CV / embargo lives Python-side, unbuilt) | Any fit result is untrustworthy |
 
 ---
