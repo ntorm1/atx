@@ -493,6 +493,52 @@ bool osi_root_matches_ticker(std::string_view root, std::string_view ticker) noe
   return i == root.size();
 }
 
+InstrumentConventions us_listed_conventions(std::string_view root) noexcept {
+  struct ClassEntry {
+    std::string_view root;
+    ExpiryCloseConvention expiry_close;
+    ExerciseStyle exercise_style;
+  };
+  // Cash-settled U.S. index option classes, from their published contract
+  // specifications. Ordering is alphabetical for review, not for lookup.
+  //
+  // The AM/PM split is per CLASS, not per index: the traditional third-Friday
+  // contract on a broad-based index settles against the constituents' OPENING
+  // prints (`UsIndexAmOpen`), while the weekly / end-of-month class listed on the
+  // SAME index — the trailing `W`/`P` roots — settles PM. They are separate OSI
+  // roots, which is exactly why keying on the root works and keying on the index
+  // would not.
+  //
+  // OEX/XEO are the pair that forbids inferring style from "is it an index":
+  // same underlying index, different exercise right.
+  static constexpr ClassEntry kCashIndexClasses[] = {
+      {"DJX", ExpiryCloseConvention::UsEquityPmClose, ExerciseStyle::European},
+      {"MXEA", ExpiryCloseConvention::UsIndexAmOpen, ExerciseStyle::European},
+      {"MXEF", ExpiryCloseConvention::UsIndexAmOpen, ExerciseStyle::European},
+      {"NANOS", ExpiryCloseConvention::UsEquityPmClose, ExerciseStyle::European},
+      {"NDX", ExpiryCloseConvention::UsIndexAmOpen, ExerciseStyle::European},
+      {"NDXP", ExpiryCloseConvention::UsEquityPmClose, ExerciseStyle::European},
+      {"OEX", ExpiryCloseConvention::UsIndexAmOpen, ExerciseStyle::American},
+      {"RUT", ExpiryCloseConvention::UsIndexAmOpen, ExerciseStyle::European},
+      {"RUTW", ExpiryCloseConvention::UsEquityPmClose, ExerciseStyle::European},
+      {"SPX", ExpiryCloseConvention::UsIndexAmOpen, ExerciseStyle::European},
+      {"SPXW", ExpiryCloseConvention::UsEquityPmClose, ExerciseStyle::European},
+      {"VIX", ExpiryCloseConvention::UsIndexAmOpen, ExerciseStyle::European},
+      {"VIXW", ExpiryCloseConvention::UsIndexAmOpen, ExerciseStyle::European},
+      {"XEO", ExpiryCloseConvention::UsIndexAmOpen, ExerciseStyle::European},
+      {"XSP", ExpiryCloseConvention::UsEquityPmClose, ExerciseStyle::European},
+  };
+  for (const ClassEntry &entry : kCashIndexClasses) {
+    if (entry.root == root) {
+      return InstrumentConventions{entry.expiry_close, entry.exercise_style};
+    }
+  }
+  // Every equity, ETF and ETN: PM-settled, American-exercise. This is the value
+  // the loader used unconditionally before the registry existed, so an unlisted
+  // board loads bit-identically.
+  return InstrumentConventions{};
+}
+
 Result<OpraPanel> load_opra_cbbo_parquet(const OpraLoadSpec &spec) {
   // ── Projected read (W4.3) ─────────────────────────────────────────────────
   // Decode ONLY the columns panel construction consumes (verified against every
@@ -781,9 +827,36 @@ Result<OpraPanel> panel_from_scan(const OpraTableScan &scan, const OpraLoadSpec 
   std::size_t n_dropped = 0;
   std::string first_underlying;
   std::string first_root;
-  const SettlementSession settlement = spec.expiry_close == ExpiryCloseConvention::UsIndexAmOpen
-                                           ? SettlementSession::Am
-                                           : SettlementSession::Pm;
+
+  // The board's convention key. A load is always ONE underlier — the multi-symbol
+  // guard rejects an empty filter over a multi-underlying table — so a single
+  // lookup describes every row: the caller's `underlying` filter when it named
+  // one, else the first parseable row's OSI root. Unfiltered loads pay one extra
+  // symbol parse; the production (filtered) path pays nothing.
+  std::string board_key{filter};
+  for (std::size_t t = 0; board_key.empty() && t < n_visit; ++t) {
+    const Result<OsiSymbol> probe = parse_osi_symbol(symbols[row_at(t)]);
+    if (probe.has_value()) {
+      board_key = probe->root;
+    }
+  }
+  // Settlement instant and exercise right are properties of the option CLASS, not
+  // of a loader default. Historical OPRA definitions can omit both, so they come
+  // from the curated registry keyed on the board's own identity, with an explicit
+  // spec value — a caller stating the convention itself — always winning.
+  const InstrumentConventions conventions = [&spec, &board_key]() noexcept {
+    InstrumentConventions resolved = us_listed_conventions(board_key);
+    if (spec.expiry_close.has_value()) {
+      resolved.expiry_close = *spec.expiry_close;
+    }
+    if (spec.exercise_style.has_value()) {
+      resolved.exercise_style = *spec.exercise_style;
+    }
+    return resolved;
+  }();
+  const SettlementSession settlement =
+      conventions.expiry_close == ExpiryCloseConvention::UsIndexAmOpen ? SettlementSession::Am
+                                                                       : SettlementSession::Pm;
 
   for (std::size_t t = 0; t < n_visit; ++t) {
     const std::size_t i = row_at(t);
@@ -893,7 +966,7 @@ Result<OpraPanel> panel_from_scan(const OpraTableScan &scan, const OpraLoadSpec 
     row.strike = osi->strike;
     row.side = osi->side;
     row.settle = settlement;
-    row.exercise_style = spec.exercise_style;
+    row.exercise_style = conventions.exercise_style;
     row.expiry_ns = expiry_instant;
     row.bid = bid;
     row.ask = ask;

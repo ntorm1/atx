@@ -1,9 +1,12 @@
 #include "atx/vol/opra_batch.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
+#include <limits>
 #include <memory>
 #include <span>
 #include <string>
@@ -13,14 +16,14 @@
 #include <gtest/gtest.h>
 
 #include "atx/core/io/parquet_writer.hpp"
-#include "atx/vol/american.hpp"     // american_price
-#include "atx/vol/chain.hpp"        // OptionChain
-#include "atx/vol/data.hpp"         // QuoteFrame
-#include "atx/vol/market_env.hpp"   // MarketEnv
-#include "atx/vol/panel.hpp"        // make_synthetic_american_panel
-#include "atx/vol/pricer_fitter.hpp"   // PricerFitter
+#include "atx/vol/american.hpp"        // american_price
+#include "atx/vol/chain.hpp"           // OptionChain
+#include "atx/vol/data.hpp"            // QuoteFrame
+#include "atx/vol/market_env.hpp"      // MarketEnv
 #include "atx/vol/opra_hive.hpp"       // OpraHiveSpec, load_opra_hive (shared date gate)
-#include "atx/vol/rates_curve.hpp"  // YieldCurve
+#include "atx/vol/panel.hpp"           // make_synthetic_american_panel
+#include "atx/vol/pricer_fitter.hpp"   // PricerFitter
+#include "atx/vol/rates_curve.hpp"     // YieldCurve
 #include "atx/vol/spy_fixture.hpp"     // make_spy_synthetic_spec
 #include "atx/vol/surface_archive.hpp" // SurfaceArchive
 
@@ -763,6 +766,265 @@ TEST(OpraBatch, TermRatesReachFitLiveQueryAndArchivedQuery) {
   const auto archived = reloaded->fair_value(strike, expiry.T, atx::vol::Side::Call);
   ASSERT_TRUE(archived.has_value()) << archived.error().to_string();
   EXPECT_NEAR(*archived, *live, 1.0e-11);
+}
+
+// ── T8: the two wirings, exercised through the PRODUCTION batch entry point ──
+//
+// `load_opra_daterange` is what `universe_autofit` and the dispersion corpus
+// builder call. Asserting on it rather than on `load_opra_cbbo_parquet` is what
+// makes these reachability tests rather than unit tests: nothing below sets a
+// convention or a spot on the load spec, so anything that arrives had to come
+// from the loader resolving it.
+
+// Write a synthetic board with NO two-sided co-terminal pair: every put is
+// bid-only (ask unset). This is the GNK / ATAI shape in the live lqbench corpus,
+// and it is the shape whose spot put-call parity cannot imply.
+void write_one_sided_board(const fs::path &path, const std::string &symbol,
+                           const std::string &yymmdd) {
+  constexpr i64 kUnset = (std::numeric_limits<i64>::min)();
+  const auto to_px = [](double d) { return static_cast<i64>(std::llround(d * 1e9)); };
+  const i64 snap_ns = atx::vol::iso_to_ns(path.stem().string() + "T19:55:00Z");
+  std::vector<i64> ts_col, bidpx, askpx, bidsz, asksz;
+  std::vector<std::string> und_col, sym_col;
+  for (const double k : {20.0, 22.5, 25.0, 27.5, 30.0}) {
+    // Two-sided calls...
+    ts_col.push_back(snap_ns);
+    und_col.push_back(symbol);
+    sym_col.push_back(osi_sym(symbol, yymmdd, 'C', k));
+    bidpx.push_back(to_px(std::max(0.10, 26.0 - k)));
+    askpx.push_back(to_px(std::max(0.10, 26.0 - k) + 1.5));
+    bidsz.push_back(5);
+    asksz.push_back(5);
+    // ...and puts with no ask at all, so no strike carries a two-sided pair.
+    ts_col.push_back(snap_ns);
+    und_col.push_back(symbol);
+    sym_col.push_back(osi_sym(symbol, yymmdd, 'P', k));
+    bidpx.push_back(to_px(std::max(0.05, k - 26.0)));
+    askpx.push_back(kUnset);
+    bidsz.push_back(5);
+    asksz.push_back(0);
+  }
+  const std::vector<io::WriteColumn> cols = {
+      {"ts", std::span<const i64>(ts_col)},
+      {"underlying", std::span<const std::string>(und_col)},
+      {"symbol", std::span<const std::string>(sym_col)},
+      {"bid_px", std::span<const i64>(bidpx)},
+      {"ask_px", std::span<const i64>(askpx)},
+      {"bid_sz", std::span<const i64>(bidsz)},
+      {"ask_sz", std::span<const i64>(asksz)},
+  };
+  fs::create_directories(path.parent_path());
+  fs::remove(path);
+  ASSERT_TRUE(io::write_parquet(cols, path.string()).has_value());
+}
+
+void write_text(const fs::path &path, const std::string &text) {
+  fs::create_directories(path.parent_path());
+  std::ofstream out(path, std::ios::binary | std::ios::trunc);
+  out << text;
+  ASSERT_TRUE(out.good());
+}
+
+TEST(OpraBatch, ProductionPathLoadsACashIndexBoardEuropean) {
+  const fs::path root = fs::temp_directory_path() / "atx_opra_batch_index_conventions";
+  fs::remove_all(root);
+  // A 2019-09-20 expiry against a 2019-08-26 snapshot: far enough out that the
+  // PCP spot back-out is well conditioned, so nothing here needs an override.
+  write_pair(root / "SPX" / "2019-08-26.parquet", "SPX", "190920", 2870.0, 2871.0);
+  write_pair(root / "AAPL" / "2019-08-26.parquet", "AAPL", "190920", 200.0, 201.0);
+
+  OpraBatchSpec spec;
+  spec.symbols = {"SPX", "AAPL"};
+  spec.date_lo = "2019-08-26";
+  spec.date_hi = "2019-08-26";
+  spec.root_dir = root.string();
+  ASSERT_EQ(spec.snapshot_suffix, "T19:55:00Z");
+
+  const auto loaded = load_opra_daterange(spec);
+  ASSERT_TRUE(loaded.has_value()) << loaded.error().to_string();
+  const OpraBatchEntry *spx = find_entry(*loaded, "SPX", "2019-08-26");
+  const OpraBatchEntry *aapl = find_entry(*loaded, "AAPL", "2019-08-26");
+  ASSERT_NE(spx, nullptr);
+  ASSERT_NE(aapl, nullptr);
+  ASSERT_TRUE(spx->panel.has_value()) << spx->panel.error().to_string();
+  ASSERT_TRUE(aapl->panel.has_value()) << aapl->panel.error().to_string();
+
+  const std::int64_t am =
+      atx::vol::expiry_instant_ns("2019-09-20", atx::vol::SettlementSession::Am);
+  const std::int64_t pm =
+      atx::vol::expiry_instant_ns("2019-09-20", atx::vol::SettlementSession::Pm);
+  ASSERT_FALSE(spx->panel->frame.rows.empty());
+  for (const auto &row : spx->panel->frame.rows) {
+    EXPECT_EQ(row.exercise_style, atx::vol::ExerciseStyle::European);
+    EXPECT_EQ(row.settle, atx::vol::SettlementSession::Am);
+    EXPECT_EQ(row.expiry_ns, am);
+  }
+  // The equity board on the same run is untouched — the registry is not a global
+  // switch.
+  ASSERT_FALSE(aapl->panel->frame.rows.empty());
+  for (const auto &row : aapl->panel->frame.rows) {
+    EXPECT_EQ(row.exercise_style, atx::vol::ExerciseStyle::American);
+    EXPECT_EQ(row.settle, atx::vol::SettlementSession::Pm);
+    EXPECT_EQ(row.expiry_ns, pm);
+  }
+  fs::remove_all(root);
+}
+
+TEST(OpraBatch, SpotInputsArtifactParsesValidatesAndOverlays) {
+  const fs::path root = fs::temp_directory_path() / "atx_opra_spot_inputs";
+  fs::remove_all(root);
+  const fs::path artifact = root / "spots.tsv";
+
+  write_text(artifact, "ATX_CORPUS_SPOTS\t1\n"
+                       "date\tsymbol\tspot\tsource\tas_of\n"
+                       "2026-06-01\tgnk\t25.40\tequity_nbbo\t2026-06-01T19:55:00Z\n"
+                       "\n"
+                       "2026-06-01\tXOM\t111.0\tequity_nbbo\t2026-06-01T19:55:00Z\r\n");
+  const auto table = atx::vol::read_corpus_spot_inputs(artifact.string());
+  ASSERT_TRUE(table.has_value()) << table.error().to_string();
+  ASSERT_EQ(table->cells().size(), 2u);
+  const CorpusMarketInputCell *gnk = table->find("2026-06-01", "GNK");
+  ASSERT_NE(gnk, nullptr); // symbol canonicalized to upper case
+  ASSERT_TRUE(gnk->spot_override.has_value());
+  EXPECT_DOUBLE_EQ(*gnk->spot_override, 25.40);
+  EXPECT_EQ(gnk->provenance.spot.source, "equity_nbbo");
+  EXPECT_NE(table->fingerprint(), 0u);
+
+  // Overlay onto a base table: the base cell keeps its dividends and gains a spot.
+  CorpusMarketInputCell base_cell = market_cell("2026-06-01", "XOM", "2026-05-31T20:00:00Z");
+  base_cell.cash_divs = {{1782864000000000000LL, 0.50}};
+  const auto base = CorpusMarketInputTable::create({base_cell});
+  ASSERT_TRUE(base.has_value()) << base.error().to_string();
+  const auto merged = atx::vol::read_corpus_spot_inputs(artifact.string(), *base);
+  ASSERT_TRUE(merged.has_value()) << merged.error().to_string();
+  const CorpusMarketInputCell *xom = merged->find("2026-06-01", "XOM");
+  ASSERT_NE(xom, nullptr);
+  ASSERT_TRUE(xom->spot_override.has_value());
+  EXPECT_DOUBLE_EQ(*xom->spot_override, 111.0);
+  ASSERT_EQ(xom->cash_divs.size(), 1u);
+  EXPECT_DOUBLE_EQ(xom->cash_divs.front().amount, 0.50);
+
+  // A spot already present in the base is a conflict, not a silent overwrite.
+  base_cell.spot_override = 99.0;
+  const auto conflicting = CorpusMarketInputTable::create({base_cell});
+  ASSERT_TRUE(conflicting.has_value()) << conflicting.error().to_string();
+  const auto collided = atx::vol::read_corpus_spot_inputs(artifact.string(), *conflicting);
+  ASSERT_FALSE(collided.has_value());
+  EXPECT_EQ(collided.error().code(), atx::vol::ErrorCode::AlreadyExists);
+
+  // Rejections: wrong magic, wrong header, malformed value, non-positive spot, a
+  // blank column, a look-ahead as_of, and a duplicate cell.
+  const std::string header = "ATX_CORPUS_SPOTS\t1\ndate\tsymbol\tspot\tsource\tas_of\n";
+  const std::pair<std::string, atx::vol::ErrorCode> bad[] = {
+      {"ATX_CORPUS_SPOT\t1\ndate\tsymbol\tspot\tsource\tas_of\n", atx::vol::ErrorCode::ParseError},
+      {"ATX_CORPUS_SPOTS\t1\ndate\tsymbol\tspot\n", atx::vol::ErrorCode::ParseError},
+      {header + "2026-06-01\tXOM\tabc\tsrc\t2026-06-01T00:00:00Z\n",
+       atx::vol::ErrorCode::ParseError},
+      {header + "2026-06-01\tXOM\t0\tsrc\t2026-06-01T00:00:00Z\n", atx::vol::ErrorCode::ParseError},
+      {header + "2026-06-01\tXOM\t-1.0\tsrc\t2026-06-01T00:00:00Z\n",
+       atx::vol::ErrorCode::ParseError},
+      {header + "2026-06-01\tXOM\t111.0\t\t2026-06-01T00:00:00Z\n",
+       atx::vol::ErrorCode::ParseError},
+      {header + "2026-06-01\tXOM\t111.0\tsrc\t2026-06-02T00:00:00Z\n",
+       atx::vol::ErrorCode::InvalidArgument},
+      {header + "2026-06-01\tXOM\t111.0\tsrc\t2026-06-01T00:00:00Z\n2026-06-01\tXOM\t112.0\tsrc\t"
+                "2026-06-01T00:00:00Z\n",
+       atx::vol::ErrorCode::AlreadyExists},
+  };
+  for (const auto &[text, code] : bad) {
+    write_text(artifact, text);
+    const auto rejected = atx::vol::read_corpus_spot_inputs(artifact.string());
+    ASSERT_FALSE(rejected.has_value()) << text;
+    EXPECT_EQ(rejected.error().code(), code) << text;
+  }
+  const auto absent = atx::vol::read_corpus_spot_inputs((root / "nope.tsv").string());
+  ASSERT_FALSE(absent.has_value());
+  EXPECT_EQ(absent.error().code(), atx::vol::ErrorCode::InvalidArgument);
+
+  fs::remove_all(root);
+}
+
+TEST(OpraBatch, SpotFeedAdmitsABoardWithNoTwoSidedPair) {
+  const fs::path root = fs::temp_directory_path() / "atx_opra_spot_feed_admits";
+  fs::remove_all(root);
+  write_one_sided_board(root / "GNK" / "2026-06-01.parquet", "GNK", "260918");
+
+  OpraBatchSpec spec;
+  spec.symbols = {"GNK"};
+  spec.date_lo = "2026-06-01";
+  spec.date_hi = "2026-06-01";
+  spec.root_dir = root.string();
+  spec.r = 0.043;
+
+  // Without a spot source the loader falls back to put-call parity, and this
+  // board has no pair to imply it from. This is the live GNK / ATAI refusal.
+  const auto without = load_opra_daterange(spec);
+  ASSERT_TRUE(without.has_value()) << without.error().to_string();
+  ASSERT_EQ(without->entries.size(), 1u);
+  ASSERT_FALSE(without->entries.front().panel.has_value());
+  EXPECT_EQ(without->entries.front().panel.error().code(), atx::vol::ErrorCode::Unavailable);
+  EXPECT_NE(without->entries.front().panel.error().to_string().find(
+                "no strike carries a two-sided call and a two-sided put"),
+            std::string::npos);
+  EXPECT_EQ(without->n_error, 1u);
+
+  // With the artifact the same board loads, at exactly the supplied spot.
+  const fs::path artifact = root / "spots.tsv";
+  write_text(artifact, "ATX_CORPUS_SPOTS\t1\n"
+                       "date\tsymbol\tspot\tsource\tas_of\n"
+                       "2026-06-01\tGNK\t26.00\tequity_nbbo\t2026-06-01T19:55:00Z\n");
+  const auto table = atx::vol::read_corpus_spot_inputs(artifact.string());
+  ASSERT_TRUE(table.has_value()) << table.error().to_string();
+  spec.market_inputs = *table;
+
+  const auto with = load_opra_daterange(spec);
+  ASSERT_TRUE(with.has_value()) << with.error().to_string();
+  ASSERT_EQ(with->entries.size(), 1u);
+  const OpraBatchEntry &entry = with->entries.front();
+  ASSERT_TRUE(entry.panel.has_value()) << entry.panel.error().to_string();
+  EXPECT_EQ(with->n_error, 0u);
+  EXPECT_EQ(with->n_loaded, 1u);
+  EXPECT_DOUBLE_EQ(entry.panel->implied_spot, 26.00);
+  EXPECT_DOUBLE_EQ(entry.panel->frame.spot, 26.00);
+  EXPECT_FALSE(entry.used_market_input_fallback);
+
+  fs::remove_all(root);
+}
+
+// A symbol the artifact does not cover keeps its PCP spot bit-for-bit, so a
+// PARTIAL feed cannot perturb the boards it says nothing about.
+TEST(OpraBatch, SpotFeedLeavesUncoveredBoardsBitIdentical) {
+  const fs::path root = fs::temp_directory_path() / "atx_opra_spot_feed_partial";
+  fs::remove_all(root);
+  write_pair(root / "XOM" / "2026-06-01.parquet", "XOM", "260918", 110.0, kXomFwd);
+
+  OpraBatchSpec spec;
+  spec.symbols = {"XOM"};
+  spec.date_lo = "2026-06-01";
+  spec.date_hi = "2026-06-01";
+  spec.root_dir = root.string();
+  const auto baseline = load_opra_daterange(spec);
+  ASSERT_TRUE(baseline.has_value()) << baseline.error().to_string();
+  ASSERT_TRUE(baseline->entries.front().panel.has_value());
+  const double pcp_spot = baseline->entries.front().panel->implied_spot;
+  const std::uint64_t pcp_fingerprint = baseline->entries.front().panel->source_fingerprint;
+
+  const fs::path artifact = root / "spots.tsv";
+  write_text(artifact, "ATX_CORPUS_SPOTS\t1\n"
+                       "date\tsymbol\tspot\tsource\tas_of\n"
+                       "2026-06-01\tGNK\t26.00\tequity_nbbo\t2026-06-01T19:55:00Z\n");
+  const auto table = atx::vol::read_corpus_spot_inputs(artifact.string());
+  ASSERT_TRUE(table.has_value()) << table.error().to_string();
+  spec.market_inputs = *table;
+
+  const auto covered = load_opra_daterange(spec);
+  ASSERT_TRUE(covered.has_value()) << covered.error().to_string();
+  ASSERT_TRUE(covered->entries.front().panel.has_value());
+  EXPECT_DOUBLE_EQ(covered->entries.front().panel->implied_spot, pcp_spot);
+  EXPECT_EQ(covered->entries.front().panel->source_fingerprint, pcp_fingerprint);
+  EXPECT_TRUE(covered->entries.front().used_market_input_fallback);
+
+  fs::remove_all(root);
 }
 
 } // namespace

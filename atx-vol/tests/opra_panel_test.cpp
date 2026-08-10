@@ -1207,4 +1207,184 @@ TEST(OpraPanel, ExplicitIndexSemanticsStampEuropeanAmContracts) {
   fs::remove_all(dir);
 }
 
+// ── B4 row 2: instrument conventions come from the INSTRUMENT ───────────────
+//
+// `OpraLoadSpec` used to carry PM-close / American as plain DEFAULT VALUES and no
+// production caller assigned either (only two files under examples/ did). So on
+// every real board `chain.exercise_style` was American, the European branches
+// downstream — deamer.cpp:814, prepared_fitting.cpp:247, parity.cpp:123 — could
+// not execute, and a cash-settled index board ran the American early-exercise
+// machinery on options that cannot be exercised early. These pin the resolution,
+// both directions of the override, and the equity no-op.
+
+TEST(OpraPanel, UsListedConventionsSeparatesClassNotIndex) {
+  using atx::vol::InstrumentConventions;
+  using atx::vol::us_listed_conventions;
+  constexpr InstrumentConventions kEquity{ExpiryCloseConvention::UsEquityPmClose,
+                                          ExerciseStyle::American};
+
+  // Unlisted => the historical equity default, so nothing in today's universe moves.
+  for (const char *equity : {"AAPL", "SPY", "QQQ", "VXX", "BRKB", "", "SPXQ"}) {
+    EXPECT_EQ(us_listed_conventions(equity), kEquity) << equity;
+  }
+  // Third-Friday index class: AM-settled, European.
+  EXPECT_EQ(us_listed_conventions("SPX"),
+            (InstrumentConventions{ExpiryCloseConvention::UsIndexAmOpen, ExerciseStyle::European}));
+  // Its weekly sibling on the SAME index is a different class and settles PM.
+  EXPECT_EQ(
+      us_listed_conventions("SPXW"),
+      (InstrumentConventions{ExpiryCloseConvention::UsEquityPmClose, ExerciseStyle::European}));
+  // The pair that forbids "index implies European": OEX is cash-settled and
+  // AMERICAN, XEO is the European contract on the same index.
+  EXPECT_EQ(us_listed_conventions("OEX").exercise_style, ExerciseStyle::American);
+  EXPECT_EQ(us_listed_conventions("XEO").exercise_style, ExerciseStyle::European);
+  // Case-sensitive: both namespaces are upper-case by construction, and a
+  // lower-case key must not silently acquire index semantics.
+  EXPECT_EQ(us_listed_conventions("spx"), kEquity);
+}
+
+TEST(OpraPanel, DefaultSpecLoadsACashIndexBoardAsEuropeanAmSettled) {
+  const std::vector<RawRow> rows = {
+      {"SPX", osi_sym("SPX", "190920", 'C', 2870.0), 54.5, 55.0},
+      {"SPX", osi_sym("SPX", "190920", 'P', 2870.0), 55.0, 55.5},
+  };
+  const std::string snapshot = "2019-08-26T19:30:00Z";
+  const std::string path =
+      write_slice("spx_default_spec.parquet", rows, true, {}, iso_to_ns(snapshot));
+
+  // A DEFAULT spec — exactly what every production caller builds. Nothing here
+  // names a convention.
+  OpraLoadSpec spec;
+  spec.path = path;
+  spec.underlying = "SPX";
+  spec.snapshot_iso = snapshot;
+  spec.r = 0.02;
+  spec.spot_override = 2869.0;
+  EXPECT_FALSE(spec.expiry_close.has_value());
+  EXPECT_FALSE(spec.exercise_style.has_value());
+
+  const auto loaded = load_opra_cbbo_parquet(spec);
+  ASSERT_TRUE(loaded.has_value()) << loaded.error().to_string();
+  ASSERT_EQ(loaded->frame.rows.size(), std::size_t{2});
+  const std::int64_t am_instant = expiry_instant_ns("2019-09-20", SettlementSession::Am);
+  for (const auto &row : loaded->frame.rows) {
+    EXPECT_EQ(row.exercise_style, ExerciseStyle::European);
+    EXPECT_EQ(row.settle, SettlementSession::Am);
+    EXPECT_EQ(row.expiry_ns, am_instant);
+  }
+  atx::vol::Universe u;
+  const auto uid = atx::vol::data_install(u, loaded->frame);
+  ASSERT_TRUE(uid.has_value()) << uid.error().to_string();
+  const auto under = u.get_underlying(*uid);
+  ASSERT_TRUE(under.has_value());
+  ASSERT_EQ((*under)->chains.size(), std::size_t{1});
+  // The reachability claim as an assertion: the European consumers downstream
+  // read exactly this field off the chain.
+  EXPECT_EQ((*under)->chains.front().exercise_style, ExerciseStyle::European);
+
+  const fs::path spx_dir = fs::temp_directory_path() / "atx_opra_p2_test";
+  fs::remove_all(spx_dir);
+}
+
+TEST(OpraPanel, DefaultSpecLeavesAnEquityBoardAmericanPmSettled) {
+  const std::vector<RawRow> rows = {
+      {"AAPL", osi_sym("AAPL", "260918", 'C', 250.0), 12.0, 12.2},
+      {"AAPL", osi_sym("AAPL", "260918", 'P', 250.0), 10.0, 10.2},
+  };
+  const std::string snapshot = "2026-08-03T19:55:00Z";
+  const std::string path =
+      write_slice("aapl_default_spec.parquet", rows, true, {}, iso_to_ns(snapshot));
+  OpraLoadSpec spec;
+  spec.path = path;
+  spec.underlying = "AAPL";
+  spec.snapshot_iso = snapshot;
+  spec.r = 0.043;
+  spec.spot_override = 252.0;
+
+  const auto loaded = load_opra_cbbo_parquet(spec);
+  ASSERT_TRUE(loaded.has_value()) << loaded.error().to_string();
+  ASSERT_EQ(loaded->frame.rows.size(), std::size_t{2});
+  const std::int64_t pm_instant = expiry_instant_ns("2026-09-18", SettlementSession::Pm);
+  for (const auto &row : loaded->frame.rows) {
+    EXPECT_EQ(row.exercise_style, ExerciseStyle::American);
+    EXPECT_EQ(row.settle, SettlementSession::Pm);
+    EXPECT_EQ(row.expiry_ns, pm_instant);
+  }
+
+  const fs::path equity_dir = fs::temp_directory_path() / "atx_opra_p2_test";
+  fs::remove_all(equity_dir);
+}
+
+TEST(OpraPanel, ExplicitSpecConventionsStillOverrideTheRegistry) {
+  const std::vector<RawRow> rows = {
+      {"SPX", osi_sym("SPX", "190920", 'C', 2870.0), 54.5, 55.0},
+      {"SPX", osi_sym("SPX", "190920", 'P', 2870.0), 55.0, 55.5},
+  };
+  const std::string snapshot = "2019-08-26T19:30:00Z";
+  const std::string path = write_slice("spx_override.parquet", rows, true, {}, iso_to_ns(snapshot));
+
+  // Force an index board back onto the equity conventions: an explicit value
+  // wins, which is what keeps a caller that already states its own convention
+  // bit-identical.
+  OpraLoadSpec spec;
+  spec.path = path;
+  spec.underlying = "SPX";
+  spec.snapshot_iso = snapshot;
+  spec.r = 0.02;
+  spec.spot_override = 2869.0;
+  spec.expiry_close = ExpiryCloseConvention::UsEquityPmClose;
+  spec.exercise_style = ExerciseStyle::American;
+
+  const auto loaded = load_opra_cbbo_parquet(spec);
+  ASSERT_TRUE(loaded.has_value()) << loaded.error().to_string();
+  const std::int64_t pm_instant = expiry_instant_ns("2019-09-20", SettlementSession::Pm);
+  for (const auto &row : loaded->frame.rows) {
+    EXPECT_EQ(row.exercise_style, ExerciseStyle::American);
+    EXPECT_EQ(row.settle, SettlementSession::Pm);
+    EXPECT_EQ(row.expiry_ns, pm_instant);
+  }
+
+  // MidnightUtc is a historical spelling that now resolves to the same PM close;
+  // pinned so the header's correction cannot drift from the code.
+  spec.expiry_close = ExpiryCloseConvention::MidnightUtc;
+  const auto midnight = load_opra_cbbo_parquet(spec);
+  ASSERT_TRUE(midnight.has_value()) << midnight.error().to_string();
+  for (const auto &row : midnight->frame.rows) {
+    EXPECT_EQ(row.settle, SettlementSession::Pm);
+    EXPECT_EQ(row.expiry_ns, pm_instant);
+  }
+
+  const fs::path override_dir = fs::temp_directory_path() / "atx_opra_p2_test";
+  fs::remove_all(override_dir);
+}
+
+// An unfiltered load has no `underlying` to key on, so the conventions must come
+// off the rows' own OSI root — otherwise a whole-file index load silently reverts
+// to equity semantics.
+TEST(OpraPanel, UnfilteredLoadResolvesConventionsFromTheOsiRoot) {
+  const std::vector<RawRow> rows = {
+      {"SPX", osi_sym("SPX", "190920", 'C', 2870.0), 54.5, 55.0},
+      {"SPX", osi_sym("SPX", "190920", 'P', 2870.0), 55.0, 55.5},
+  };
+  const std::string snapshot = "2019-08-26T19:30:00Z";
+  const std::string path =
+      write_slice("spx_unfiltered.parquet", rows, false, {}, iso_to_ns(snapshot));
+  OpraLoadSpec spec;
+  spec.path = path; // no `underlying` filter, no `underlying` column
+  spec.snapshot_iso = snapshot;
+  spec.r = 0.02;
+  spec.spot_override = 2869.0;
+
+  const auto loaded = load_opra_cbbo_parquet(spec);
+  ASSERT_TRUE(loaded.has_value()) << loaded.error().to_string();
+  ASSERT_EQ(loaded->frame.rows.size(), std::size_t{2});
+  for (const auto &row : loaded->frame.rows) {
+    EXPECT_EQ(row.exercise_style, ExerciseStyle::European);
+    EXPECT_EQ(row.settle, SettlementSession::Am);
+  }
+
+  const fs::path unfiltered_dir = fs::temp_directory_path() / "atx_opra_p2_test";
+  fs::remove_all(unfiltered_dir);
+}
+
 } // namespace
