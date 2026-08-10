@@ -5,9 +5,85 @@ that silently changes a NUMBER a caller already depends on belongs in this file.
 
 ## 1.1.0
 
-Vol-derivatives production sprint, Phase 1 (correctness) and Phase 2
-(performance). Grows only with changes that move a number a caller could
-already be marking with.
+Vol-derivatives production sprint, Phase 1 (correctness), Phase 2
+(performance), and Phase 3 (features). Grows only with changes that move a
+number a caller could already be marking with.
+
+### Added — `DerivConfig::wing_mode`: Lee-consistent wing extrapolation, `LeeSlopeExtrapolation` (FIT-F1 / PV-6 / LIT-6, Task F-1)
+
+The variance strip's flat-vol wing clamp (`DerivConfig::wing_clamp_k`) is
+Jiang-Tian-standard, desk-stable, and the v1.1 default — but freezing every
+node beyond the certified band at the band-edge vol systematically
+UNDERSTATES `K_var` whenever the band sits inside the smile's own real
+curvature (roughly `sigma_atm*sqrt(T) gtrsim 0.083`). The fitting side has
+never had this problem: eSSVI's phi ceiling caps total-variance slope at
+`<= 2` by construction (Lee 2004's moment-formula bound), and ConvexDense's
+tails are power-law, not flat — the strip simply never trusted either.
+
+New `enum class StripWingMode { FlatClamp = 0, LeeSlopeExtrapolation = 1, Raw
+= 2 }` and appended `DerivConfig::wing_mode` (arity pin raised 13 -> 14)
+select what a node beyond the band serves:
+
+* `FlatClamp` (v1.1 DEFAULT, unchanged) — freeze at the band-edge vol.
+* `LeeSlopeExtrapolation` — continue TOTAL VARIANCE at the fitted slice's OWN
+  slope at the band edge (`w(k) = w(k_band) + beta*(|k| - k_band)`), `beta`
+  a central difference of the surface's own `iv()` clamped to Lee's
+  `[0, 2-eps]` bound (`eps = 1e-3`) before use — an ill-behaved or
+  misconfigured fit can never smuggle a moment-violating wing through this
+  path, even though a Lee-compliant fit never needs the clamp to bind.
+  Continuous AND slope-matched (C1) at the band edge whenever the clamp does
+  not bind, which also means the C-3 quadrature split no longer needs to cut
+  a panel boundary there (see `var_swap_fair_strike`'s `split_wing_band`,
+  derivatives.cpp) — FlatClamp still does, unchanged.
+* `Raw` — no clamp anywhere, identical to `wing_clamp_k < 0` regardless of
+  `wing_clamp_k`'s own value (an explicit alternative spelling of that sign
+  convention, not a second knob that composes with it).
+
+New appended `DerivFlags::WingExtrapolated = 1u << 14`: `WingClamped`'s
+sibling under `LeeSlopeExtrapolation`, same structural condition (the
+resolved span extended beyond the trust band) fired on that mode instead.
+
+**Measured** (skew fixture — eSSVI phi=4.0, rho=-0.7, sigma_atm=0.20, 6M
+tenor, Standard tier, Balanced 0.5 mode-blind band):
+`K_var(FlatClamp) < K_var(LeeSlope) <= K_var(Raw)`, with the
+`LeeSlope`-to-`Raw` gap at 0.8-2.4% of the `FlatClamp`-to-`Raw` gap across
+the fixture matrix this task's tests cover — LeeSlope recovers nearly the
+entire understatement on a fit whose own wing is already close to its
+asymptotic slope by the certified band edge (`WingMode.OrderingUnderSkew`,
+derivatives_test.cpp). Lee's clamp is exercised (not merely present in code)
+by a HINGE_QUAD wing-residual fixture (Task C-8's residual basis) whose
+band-edge slope is engineered to 2.53, correctly served at `2 - eps`
+(`WingMode.SlopeClampBinds`).
+
+**P-4 interaction**: `deriv_greeks`'s `DerivGreekMethod::AnalyticStrip`
+closed form (Task P-4) hard-codes the FlatClamp/Raw "clamp the grid position
+once, then shift" wing identity and has no chain-rule term for a band-edge
+slope that is itself a finite difference of the surface — `wing_mode ==
+LeeSlopeExtrapolation` is excluded from `analytic_in_scope` at both call
+sites (`deriv_greeks`, and P-6's shared-block builder
+`ensure_var_swap_greeks_block`) and falls back to `FiniteDifference`
+SILENTLY, the same fallback shape as every other out-of-scope case that knob
+already had.
+
+**P-6 interaction**: audited against the book-level `VarSwapMemo` key
+(`deriv_book.cpp`) and found PROVABLY IRRELEVANT to it, on the SAME grounds
+the key's own comment already established for the rest of `DerivConfig`:
+`cfg` (and so `wing_mode`) is one value for the entire `price_deriv_book`
+call, the memo is a local variable scoped to that one call, and every row a
+given memo instance ever serves reads the identical `wing_mode` by
+construction — there is no cross-row or cross-call path for a block built
+under one mode to reach a caller expecting another.
+
+**Migration**: `wing_mode` defaults to `FlatClamp` (enumerator 0), the same
+value a value-initialized `DerivConfig{}` already carried before this field
+existed — every construction site in this codebase uses designated-field
+`DerivConfig{}` initialization (never positional brace-init), so the append
+changes zero existing behavior and zero existing marks. Verified by re-running
+every pre-existing `WingClamp.*`/`VarStrip.*`/`StripQuadrature.*`/`CarrLee.*`
+test unmodified (31/31 green) plus the full `AnalyticGreeks.*`/`DerivGreeks.*`
+(38/38) and `VarSwapMemo.*`/`PreparedPortfolio.*` (42/42, including the
+bit-identity and fingerprint-pinned suites) regression surfaces — the diff is
+the evidence, not a tolerance.
 
 ### Changed — ConvexDense served `iv()` now within 1e-11 (not bit-identical) of the pre-P-5 value (FIT-P1, Task P-5)
 

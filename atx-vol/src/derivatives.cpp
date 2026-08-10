@@ -286,6 +286,12 @@ std::atomic<bool> g_bump_read_cache_disabled{env_flag_enabled("ATX_VOL_DISABLE_B
 // when it carries one, else the mode-blind certified validation band; > 0 ->
 // the caller's own band; < 0 -> 0.0 (clamp off). The <= 0 encoding of "off"
 // lets every consumer test one condition (`band > 0.0`).
+//
+// Task F-1: `StripWingMode::Raw` forces the same 0.0 ("off") answer
+// UNCONDITIONALLY, regardless of `wing_clamp_k`'s own value -- it is an
+// explicit alternative spelling of `wing_clamp_k < 0`, not a second knob that
+// composes with it, so a caller does not have to fight the two fields against
+// each other to get the raw-everywhere reads `StripWingMode::Raw` promises.
 [[nodiscard]] double resolve_wing_clamp(const DerivConfig& cfg,
                                         std::optional<double> surface_band) noexcept {
   static_assert(strip::kCertifiedWingHalfBand == RiskSurfaceValidationConfig{}.k_max,
@@ -294,6 +300,9 @@ std::atomic<bool> g_bump_read_cache_disabled{env_flag_enabled("ATX_VOL_DISABLE_B
   static_assert(certified_wing_half_band(FitQualityMode::Balanced) == strip::kCertifiedWingHalfBand,
                 "surface_policy's mode-keyed certified band must agree with the strip's own "
                 "mode-blind default at Balanced quality");
+  if (cfg.wing_mode == StripWingMode::Raw) {
+    return 0.0;
+  }
   if (cfg.wing_clamp_k == 0.0) {
     // FIT-C7: a Latency/Accuracy-mode surface certifies a NARROWER/WIDER band
     // than this mode-blind default -- trusting 0.5 for a surface only
@@ -1281,6 +1290,33 @@ Result<DerivQuote> var_swap_fair_strike(const SurfaceT& surface,
   const bool wing_clamped =
       wing_band > 0.0 && (grid.k_min_log < -wing_band || grid.k_max_log > wing_band);
 
+  // Task F-1: exhaustive over `StripWingMode` (no `default:`, so a future
+  // enumerator turns this into a compiler error under /W4 /WX rather than
+  // silently falling through) -- resolved ONCE here and reused by every
+  // downstream consumer (the C-3 split below, the node-read loops, the
+  // provenance flag) instead of re-testing `cfg.wing_mode` at each site.
+  bool use_lee_slope = false;
+  switch (cfg.wing_mode) {
+  case StripWingMode::FlatClamp:
+  case StripWingMode::Raw:
+    use_lee_slope = false;
+    break;
+  case StripWingMode::LeeSlopeExtrapolation:
+    use_lee_slope = true;
+    break;
+  }
+
+  // C-3 / LIT-10: the band edge is only a genuine C1 KINK under FlatClamp
+  // (d(iv)/dk drops to zero across it) -- LeeSlopeExtrapolation is
+  // continuous AND slope-matched there by construction (see the
+  // `LeeWingSlope`/`lee_slope_sigma` block below), so no panel boundary is
+  // needed to keep composite Simpson's O(h^4) law (and the Richardson
+  // estimate that assumes it) valid across it. `Raw`'s `wing_band` is already
+  // 0.0 above, so this is a no-op for that mode; written as its own gate so
+  // the LeeSlope case is explicit rather than riding along on wing_band
+  // happening to be positive.
+  const double split_wing_band = use_lee_slope ? 0.0 : wing_band;
+
   // C-2 / PV-2: the MIRROR rule. The rescale above only widens the span for a
   // high-vol/long-dated tenor; a short-tenor/low-vol quote can still resolve
   // too coarsely even at (or below) the tier's own floor span, because the
@@ -1297,7 +1333,7 @@ Result<DerivQuote> var_swap_fair_strike(const SurfaceT& surface,
   const double dk_max = strip::dk_ceiling(sigma_atm, T);
   const double resolved_span = grid.k_max_log - grid.k_min_log;
   const std::size_t n_panels =
-      strip::strip_panel_count(grid.k_min_log, grid.k_max_log, wing_band);
+      strip::strip_panel_count(grid.k_min_log, grid.k_max_log, split_wing_band);
   bool low_t = false;
   if (cfg.strip_nodes == 0u) {
     const std::size_t raised =
@@ -1311,15 +1347,19 @@ Result<DerivQuote> var_swap_fair_strike(const SurfaceT& surface,
   const std::size_t n = grid.n_nodes;
 
   // C-3 / LIT-10: the integrand is piecewise smooth, not smooth — it kinks at
-  // k = 0 (put-call parity) and at ±wing_band when the clamp binds. Split the
-  // composite Simpson at every interior kink so each one is a PANEL BOUNDARY
-  // for any span, symmetric or not, and the O(h⁴) law (and with it the
-  // Richardson estimate below) holds on every panel. See `plan_strip_split`
-  // for the budget apportionment and its degradation ladder; the total node
-  // count and the reported span are unchanged by the split.
+  // k = 0 (put-call parity) and, under `StripWingMode::FlatClamp`, at
+  // ±wing_band when the clamp binds (Task F-1: `split_wing_band` above is
+  // 0.0 under LeeSlopeExtrapolation/Raw, so this split only ever cuts k = 0
+  // for those modes -- see the split_wing_band comment for why no edge kink
+  // exists to cut there). Split the composite Simpson at every interior kink
+  // so each one is a PANEL BOUNDARY for any span, symmetric or not, and the
+  // O(h⁴) law (and with it the Richardson estimate below) holds on every
+  // panel. See `plan_strip_split` for the budget apportionment and its
+  // degradation ladder; the total node count and the reported span are
+  // unchanged by the split.
   assert(n >= 3u && "composite Simpson needs at least one panel of 3 nodes");
   const strip::StripSplit split =
-      strip::plan_strip_split(grid.k_min_log, grid.k_max_log, n, wing_band);
+      strip::plan_strip_split(grid.k_min_log, grid.k_max_log, n, split_wing_band);
 
   // LowT, decided on the grid actually integrated. For the unpinned path the
   // floor above has already provisioned every panel under the ceiling, so this
@@ -1445,13 +1485,104 @@ Result<DerivQuote> var_swap_fair_strike(const SurfaceT& surface,
     }
   };
 
+  // Task F-1: the fitted slice's OWN total-variance slope at each band edge,
+  // resolved ONCE per call (not per node) from a central difference of the
+  // RAW surface straddling ±wing_band -- the surface is continuous there (the
+  // band is a validation-sampling artifact, not a kink in the fit itself), so
+  // this is genuinely the slope the certified region's own curve is heading
+  // at, not an artifact of the clamp. `beta` is d(total variance)/d|k|, i.e.
+  // already sign-corrected for the LEFT edge (where d w/dk < 0 under the
+  // usual negative-skew convention -- Lee's bound is stated on the RATE OF
+  // GROWTH as |k| increases, a quantity that must be >= 0 on both sides, not
+  // on the signed derivative), and clamped to [0, 2-eps] per Lee's moment
+  // bound BEFORE it is used for anything -- an ill-behaved or misconfigured
+  // fit can never smuggle a moment-violating wing through this path, even
+  // though every Lee-compliant fit (eSSVI's phi ceiling, ConvexDense's
+  // power-law tails) already clears it without the clamp ever binding.
+  struct LeeWingSlope {
+    double w_edge_left = 0.0;
+    double w_edge_right = 0.0;
+    double beta_left = 0.0;
+    double beta_right = 0.0;
+  };
+  // Step for the central difference. Small enough that the fitted slice's own
+  // curvature does not contaminate a FIRST-derivative read (O(h^2) truncation
+  // error at h = 1e-4 is ~1e-8 relative on a curve whose second derivative is
+  // O(1) in k -- far below anything this task's tolerances can see), large
+  // enough to stay well clear of the ULP-scale cancellation a much smaller h
+  // would risk in `(w(edge+h) - w(edge-h))`.
+  constexpr double kLeeSlopeH = 1.0e-4;
+  constexpr double kLeeMomentEps = 1.0e-3;  // Lee 2004 moment bound: beta in [0, 2-eps]
+  const auto total_w_at = [&](double k) noexcept {
+    const double s = surface.iv(k, T);
+    return s * s * T;
+  };
+  // NaN-safe clamp to [0, 2-eps]: `!(beta > 0.0)` is true for both a
+  // non-positive slope and a NaN one (a bad surface read straddling the
+  // edge), and folds either down to 0 -- the same "a bad node contributes
+  // nothing" convention `price_node` uses below, rather than propagating a
+  // NaN into every extrapolated node past this edge.
+  const auto clamp_lee_slope = [](double beta) noexcept {
+    if (!(beta > 0.0)) {
+      return 0.0;
+    }
+    return beta > (2.0 - kLeeMomentEps) ? (2.0 - kLeeMomentEps) : beta;
+  };
+  LeeWingSlope lee_slope{};
+  if (use_lee_slope && wing_band > 0.0) {
+    lee_slope.w_edge_right = total_w_at(wing_band);
+    const double slope_r =
+        (total_w_at(wing_band + kLeeSlopeH) - total_w_at(wing_band - kLeeSlopeH)) /
+        (2.0 * kLeeSlopeH);
+    lee_slope.beta_right = clamp_lee_slope(slope_r);
+
+    lee_slope.w_edge_left = total_w_at(-wing_band);
+    // Sign flip: Lee's beta is d w / d|k|, and |k| = -k on the left side, so
+    // d w/d|k| = -(d w/dk) there.
+    const double slope_l =
+        -(total_w_at(-wing_band + kLeeSlopeH) - total_w_at(-wing_band - kLeeSlopeH)) /
+        (2.0 * kLeeSlopeH);
+    lee_slope.beta_left = clamp_lee_slope(slope_l);
+  }
+  // Serves total variance w(k_band) + beta*(|k| - k_band) beyond the band,
+  // converted back to vol at T -- continuous by construction (the (|k| -
+  // k_band) term is exactly 0 at the edge) and additionally slope-matched
+  // (C1) whenever `clamp_lee_slope` did not need to bind.
+  const auto lee_slope_sigma = [&](double x) noexcept {
+    if (std::fabs(x) <= wing_band) {
+      return surface.iv(x, T);
+    }
+    const bool right = x > 0.0;
+    const double beta = right ? lee_slope.beta_right : lee_slope.beta_left;
+    if (beta == 0.0) {
+      // No slope to extrapolate: the served vol is exactly the band-edge
+      // vol, mathematically identical to what FlatClamp's clamped read
+      // computes at this node -- skip the iv -> w -> iv round trip (whose
+      // sqrt/square pair is not guaranteed to be an exact inverse) so a
+      // surface with a genuinely flat wing agrees with FlatClamp to the bit,
+      // not merely to a quadrature-noise tolerance.
+      return surface.iv(right ? wing_band : -wing_band, T);
+    }
+    const double w_edge = right ? lee_slope.w_edge_right : lee_slope.w_edge_left;
+    const double w = w_edge + beta * (std::fabs(x) - wing_band);
+    return std::sqrt(w / T);
+  };
+
   // Untouched pre-P-3 single-pass semantics: one surface read per distinct
   // node, interleaved with the Simpson accumulation via `accumulate_strip`.
   // This is the ONLY path for any SurfaceT without a batched read (VolSurface
   // /EssviSurface/SviSurface, SurfaceRefStripView) -- see `has_strip_iv_batch`
   // below -- and it is also what `Strip.BatchedMatchesScalar*` compares the
   // batched path against via `detail::set_strip_batch_disabled_for_test`.
+  // Task F-1: under LeeSlopeExtrapolation with an engaged band, every node
+  // read routes through `lee_slope_sigma` instead -- the FlatClamp/Raw branch
+  // below is otherwise byte-for-byte the pre-F-1 expression, so that mode's
+  // reads are unchanged in every particular, not merely in aggregate result.
   const auto run_scalar_node_loop = [&]() noexcept {
+    if (use_lee_slope && wing_band > 0.0) {
+      accumulate_strip([&](double x) noexcept { return lee_slope_sigma(x); });
+      return;
+    }
     accumulate_strip([&](double x) noexcept {
       const double x_read = wing_band > 0.0 ? std::clamp(x, -wing_band, wing_band) : x;
       return surface.iv(x_read, T);
@@ -1505,7 +1636,16 @@ Result<DerivQuote> var_swap_fair_strike(const SurfaceT& surface,
   // loop's by construction, not merely by observation.
   bool used_batched_path = false;
   if constexpr (has_strip_iv_batch<SurfaceT>()) {
-    if (!strip_batch_disabled_for_test() && n <= strip::kMaxStripNodes) {
+    // Task F-1: the gather pass below writes one clamped x per node and
+    // resolves sigma from a single raw `iv_batch` read -- it has no way to
+    // represent the Lee-slope extrapolation formula (which needs the
+    // band-edge slope, not just a clamped position), so that mode falls back
+    // to the scalar loop above instead of gathering wrong values. Correctness
+    // over performance for a brand-new opt-in mode; FlatClamp/Raw are
+    // unaffected (`use_lee_slope` is false for both, so this condition is
+    // identical to the pre-F-1 one for them).
+    if (!strip_batch_disabled_for_test() && n <= strip::kMaxStripNodes &&
+        !(use_lee_slope && wing_band > 0.0)) {
       used_batched_path = true;
 
       // Review fix round 1, I-2: no `{}` value-init on either buffer -- every
@@ -1606,7 +1746,11 @@ Result<DerivQuote> var_swap_fair_strike(const SurfaceT& surface,
     flags |= DerivFlags::StripTruncatedRight;
   }
   if (wing_clamped) {
-    flags |= DerivFlags::WingClamped;
+    // Task F-1: same STRUCTURAL condition, mode-routed -- `use_lee_slope` is
+    // false for `Raw` too, but `wing_clamped` is always false there (its
+    // `wing_band` resolves to 0.0), so this expression is unreachable for
+    // that mode and the choice of flag on this line never matters for it.
+    flags |= use_lee_slope ? DerivFlags::WingExtrapolated : DerivFlags::WingClamped;
   }
   if (low_t) {
     flags |= DerivFlags::LowT;
@@ -2526,6 +2670,17 @@ Result<DerivGreeks> deriv_greeks(const SurfaceT& surface, const CurveSet& curves
   //   - `wing_clamp_k`: same reasoning -- the resolved band travels as
   //     `center.resolved_wing_clamp`, already threaded into the analytic
   //     call. Not separately scope-relevant.
+  //   - `wing_mode` (Task F-1): IS separately scope-relevant, unlike
+  //     `wing_clamp_k` above. `analytic_strip_greeks` (deriv_analytic_
+  //     greeks.hpp) hard-codes the FlatClamp/Raw "clamp the grid position
+  //     once, then shift" wing identity -- every clamped node's sigma'/
+  //     sigma'' equals the band-edge node's, by construction -- which is
+  //     simply the WRONG differentiation target under
+  //     `StripWingMode::LeeSlopeExtrapolation` (a node past the band there
+  //     tracks `w_edge + beta*(|k|-k_band)`, whose own sensitivity to a spot/
+  //     vol bump the closed form has no term for: beta is itself a finite
+  //     difference of the surface, not a value the surface hands back
+  //     directly). Gated below, alongside `discrete_correction_mode`.
   //   - `vol_of_vol`/`carr_lee_form`: both drive only the RV distribution
   //     model (mid-life VolSwap, both capped kinds) and the standalone
   //     Carr-Lee K_vol entry -- `price_var_swap` never reads either field.
@@ -2535,7 +2690,8 @@ Result<DerivGreeks> deriv_greeks(const SurfaceT& surface, const CurveSet& curves
   //     before any of this runs). Not scope-relevant.
   const bool analytic_in_scope = bumps.method == DerivGreekMethod::AnalyticStrip &&
                                  contract.kind == DerivKind::VarSwap &&
-                                 cfg.discrete_correction_mode == DerivDiscreteCorrection::None;
+                                 cfg.discrete_correction_mode == DerivDiscreteCorrection::None &&
+                                 cfg.wing_mode != StripWingMode::LeeSlopeExtrapolation;
 
   ATX_TRY(const BumpPvs p,
           eval_bump_table(surface, curves, contract, cfg_pinned, bumps, analytic_in_scope));
@@ -2766,7 +2922,19 @@ void ensure_var_swap_greeks_block(VarSwapSharedBlock& block, const SurfaceT& sur
   block.pinned_center_raw = resolve_var_swap_strip_raw(surface, curves, T, block.cfg_pinned);
 
   if (block.pinned_center_raw.has_value()) {
-    const bool analytic_in_scope = bumps.method == DerivGreekMethod::AnalyticStrip;
+    // `kind == VarSwap` and `discrete_correction_mode == None` are already
+    // guaranteed by the caller's memo-eligibility gate (`var_swap_memo_
+    // eligible`, deriv_book.cpp) before a row ever reaches this shared-block
+    // builder -- unlike `deriv_greeks`'s own `analytic_in_scope` above, this
+    // one does not need to re-check them. `wing_mode` is NOT gated upstream
+    // (the memo key/eligibility audit never needed it -- wing_mode changes
+    // what the strip serves, not whether this group qualifies for the memo),
+    // so it is re-checked here, identically to the other site: Task F-1,
+    // `LeeSlopeExtrapolation` falls back to FD for the same reason given
+    // there (the closed form has no term for a band-edge slope that is
+    // itself a finite difference of the surface).
+    const bool analytic_in_scope = bumps.method == DerivGreekMethod::AnalyticStrip &&
+                                   cfg.wing_mode != StripWingMode::LeeSlopeExtrapolation;
     if (analytic_in_scope) {
       block.have_analytic = true;
       const double f_at_t = resolve_forward(curves, T);

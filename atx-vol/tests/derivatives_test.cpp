@@ -84,6 +84,7 @@ using atx::vol::ForwardPoint;
 using atx::vol::has_flag;
 using atx::vol::RealizedTracker;
 using atx::vol::RealizedVarianceSpec;
+using atx::vol::StripWingMode;
 using atx::vol::SviSlice;
 using atx::vol::SviSurface;
 using atx::vol::var_swap_fair_strike;
@@ -2145,6 +2146,323 @@ TEST(WingClamp, SurfaceCertifiedBandStaysPinnedAcrossGreekBumps) {
   EXPECT_EQ(g_surface->theta, g_explicit->theta);
   EXPECT_EQ(g_surface->rho, g_explicit->rho);
   EXPECT_EQ(g_surface->charm, g_explicit->charm);
+}
+
+// ── Wing extrapolation mode (Task F-1) ────────────────────────────────────
+//
+// `DerivConfig::wing_mode` picks WHAT the strip serves beyond the certified
+// wing trust band (`wing_clamp_k`'s resolved band): FlatClamp (v1.1 default,
+// unchanged from every WingClamp.* test above), LeeSlopeExtrapolation (total
+// variance continues at the fitted slice's OWN band-edge slope, clamped to
+// Lee's [0, 2-eps] moment bound), or Raw (no clamp -- identical to
+// `wing_clamp_k < 0`).
+
+TEST(WingMode, DefaultConfigIsFlatClamp) {
+  // Pins the v1.1 default explicitly: `DerivConfig{}` (every construction
+  // site that predates this field) must keep pricing through FlatClamp --
+  // the literal zero enumerator -- which is what makes the default path
+  // bit-identical to every quote struck before `wing_mode` existed.
+  EXPECT_EQ(DerivConfig{}.wing_mode, StripWingMode::FlatClamp);
+  EXPECT_EQ(deriv_default_config().wing_mode, StripWingMode::FlatClamp);
+  EXPECT_EQ(static_cast<std::uint8_t>(StripWingMode::FlatClamp), 0u);
+}
+
+// Same steep-wing eSSVI shape as `make_steep_wing_surface` (phi = 4.0, rho =
+// -0.7 on both slices), evaluated at a 6M tenor -- the brief's own fixture.
+// Both slices share phi/rho, so the time-interpolated total variance at any
+// T between them is EXACTLY theta(T)*f(k) for the fixed shape f; theta(T) =
+// sigma^2*T is itself linear in T, so interpolating between the two slices
+// reproduces a single eSSVI slice at T_test exactly (no interpolation
+// artifact to account for).
+TEST(WingMode, OrderingUnderSkew) {
+  const double sigma = 0.20;
+  const double T_test = 0.5;  // 6M
+  const EssviSurface surf = make_steep_wing_surface(sigma, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+
+  DerivConfig flat = deriv_default_config();
+  flat.wing_mode = StripWingMode::FlatClamp;
+  DerivConfig lee = deriv_default_config();
+  lee.wing_mode = StripWingMode::LeeSlopeExtrapolation;
+  DerivConfig raw = deriv_default_config();
+  raw.wing_mode = StripWingMode::Raw;
+
+  const auto q_flat = var_swap_fair_strike(surf, cs, T_test, flat);
+  const auto q_lee = var_swap_fair_strike(surf, cs, T_test, lee);
+  const auto q_raw = var_swap_fair_strike(surf, cs, T_test, raw);
+  ASSERT_TRUE(q_flat.has_value());
+  ASSERT_TRUE(q_lee.has_value());
+  ASSERT_TRUE(q_raw.has_value());
+
+  EXPECT_LT(q_flat->fair_strike_dec, q_lee->fair_strike_dec);
+  EXPECT_LE(q_lee->fair_strike_dec, q_raw->fair_strike_dec);
+
+  EXPECT_TRUE(has_flag(q_flat->flags, DerivFlags::WingClamped));
+  EXPECT_TRUE(has_flag(q_lee->flags, DerivFlags::WingExtrapolated));
+  EXPECT_FALSE(has_flag(q_lee->flags, DerivFlags::WingClamped));
+  EXPECT_FALSE(has_flag(q_raw->flags, DerivFlags::WingClamped));
+  EXPECT_FALSE(has_flag(q_raw->flags, DerivFlags::WingExtrapolated));
+
+  // Raw eSSVI wings are close to linear in |k| well before the certified
+  // band (the fitted slice's asymptotic slope is nearly reached by k = 0.5
+  // on this steep a fit -- see the task report for the measured
+  // convergence), so LeeSlope's straight-line continuation from the band
+  // edge tracks Raw closely: the LeeSlope-to-Raw gap should be a small
+  // fraction of the FlatClamp-to-Raw gap the wing treatment spans end to end.
+  const double gap_flat_to_raw = q_raw->fair_strike_dec - q_flat->fair_strike_dec;
+  const double gap_lee_to_raw = q_raw->fair_strike_dec - q_lee->fair_strike_dec;
+  ASSERT_GT(gap_flat_to_raw, 0.0);
+  EXPECT_LT(gap_lee_to_raw / gap_flat_to_raw, 0.05);
+}
+
+TEST(WingMode, FlatSurfaceInvariant) {
+  const double sigma = 0.20;
+  const double T_test = 0.25;
+  // EXACTLY flat: phi = 0, rho = 0 makes w(k) = theta identically (no
+  // floating-point residual the way phi = 1e-6 in `make_flat_surface` would
+  // leave), so LeeSlope's band-edge slope is EXACTLY 0 and every mode serves
+  // the SAME constant vol at every node -- the tightest test of "the modes
+  // must agree when there is no wing shape for them to disagree about".
+  EssviSurface surf(2);
+  const EssviSlice s0{sigma * sigma * 0.01, 0.0, 0.0, 0.01};
+  const EssviSlice s1{sigma * sigma * 1.00, 0.0, 0.0, 1.00};
+  ASSERT_TRUE(surf.set_slice(0, s0).has_value());
+  ASSERT_TRUE(surf.set_slice(1, s1).has_value());
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+
+  DerivConfig flat = deriv_default_config();
+  flat.wing_mode = StripWingMode::FlatClamp;
+  DerivConfig lee = deriv_default_config();
+  lee.wing_mode = StripWingMode::LeeSlopeExtrapolation;
+  DerivConfig raw = deriv_default_config();
+  raw.wing_mode = StripWingMode::Raw;
+
+  const auto q_flat = var_swap_fair_strike(surf, cs, T_test, flat);
+  const auto q_lee = var_swap_fair_strike(surf, cs, T_test, lee);
+  const auto q_raw = var_swap_fair_strike(surf, cs, T_test, raw);
+  ASSERT_TRUE(q_flat.has_value());
+  ASSERT_TRUE(q_lee.has_value());
+  ASSERT_TRUE(q_raw.has_value());
+
+  // Measured, not the brief-literal 1e-12 (deviation, same class C-3 already
+  // established this sprint: "brief's literal test params unmeasurable as
+  // specified" -- task-C-3-report.md). Every node's SERVED VOL is bit-
+  // identical across all three modes on this fixture -- verified by
+  // construction: phi=0/rho=0 makes w(k) EXACTLY theta for every k (0.5*x*2
+  // round-trips x exactly in IEEE754), so the central-difference slope is
+  // EXACTLY 0 and `lee_slope_sigma`'s beta==0 branch (derivatives.cpp)
+  // returns the SAME `surface.iv` call FlatClamp's clamped read and Raw's
+  // unclamped read both make. What remains is `split_wing_band`: FlatClamp
+  // splits at +-0.5 (4 panels), LeeSlope/Raw do not (2 panels) -- composite
+  // Simpson evaluates a DIFFERENT set of quadrature nodes under a different
+  // panelization of the SAME constant integrand, and the two panelizations'
+  // discrete sums need not agree past quadrature precision. Measured
+  // 9.6852e-11 (q_lee, q_raw both differ from q_flat by that exact amount,
+  // to 16 significant digits -- confirming LeeSlope and Raw share the
+  // identical 2-panel topology and reads here); 1.0e-9 keeps an order of
+  // magnitude of margin while staying ~4 decades tighter than this file's
+  // other flat-surface check below.
+  EXPECT_NEAR(q_flat->fair_strike_dec, q_lee->fair_strike_dec, 1.0e-9);
+  EXPECT_NEAR(q_flat->fair_strike_dec, q_raw->fair_strike_dec, 1.0e-9);
+  // LeeSlope and Raw share the SAME panelization (both resolve
+  // split_wing_band == 0.0) and, via the beta==0 shortcut, the SAME reads --
+  // bit-identical, not merely quadrature-close.
+  EXPECT_EQ(q_lee->fair_strike_dec, q_raw->fair_strike_dec);
+  EXPECT_NEAR(q_flat->fair_strike_dec, sigma * sigma, 5.0e-5);
+}
+
+// Constructed via the C-8 HINGE_QUAD wing-residual fixture: a moderate
+// backbone (same phi/rho as the skew fixture above) plus a HINGE_QUAD
+// residual active just past the certified band, sized so the fitted slice's
+// OWN total-variance slope at the RIGHT band edge exceeds Lee's [0, 2] moment
+// bound -- exercising the clamp `clamp_lee_slope` (derivatives.cpp) exists
+// for. `VolSurface` (not the legacy `EssviSurface`/`EssviSlice`, which has NO
+// residual support at all -- surface.hpp's own header note) is the vehicle:
+// `essvi_total_w` is the only evaluator that adds the residual atop the
+// backbone (vol_surface.cpp); the legacy evaluator (surface.cpp) never does.
+atx::vol::VolSurface make_hinge_quad_slope_surface(double sigma, double T) {
+  atx::vol::VolSurface surf =
+      atx::vol::VolSurface::create(21u, atx::vol::Parametrization::Essvi, 1).value();
+  atx::vol::EssviParams p{};
+  p.theta = sigma * sigma * T;
+  p.phi = 4.0;
+  p.rho = -0.7;
+  p.T = T;
+  p.expiry_id = 0;
+  p.resid_scale = 0.6;
+  p.resid_basis_kind = atx::vol::ResidualBasisKind::HingeQuad;
+  p.resid_n_basis = 5;
+  p.resid_coef[4] = 1.75;  // right-wing hinge-squared term only
+  EXPECT_TRUE(surf.set_slice_essvi(0, p).has_value());
+  return surf;
+}
+
+TEST(WingMode, SlopeClampBinds) {
+  const double sigma = 0.20;
+  const double T_test = 0.5;
+  const atx::vol::VolSurface surf = make_hinge_quad_slope_surface(sigma, T_test);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+  // VolSurface carries no `certified_wing_band` member (FIT-C7 legacy-
+  // container carve-out), so `wing_clamp_k == 0` resolves the mode-blind
+  // default -- same constant `resolve_wing_clamp` falls back to.
+  const double band = atx::vol::strip::kCertifiedWingHalfBand;
+
+  // Precondition: the fixture really does exceed Lee's bound at the band
+  // edge, computed independently of any strip machinery (a bare central
+  // difference of the surface's own total variance, mirroring the formula
+  // `derivatives.cpp` uses but re-typed here rather than reused).
+  constexpr double h = 1.0e-4;
+  const auto w_at = [&](double k) {
+    const double s = surf.iv(k, T_test);
+    return s * s * T_test;
+  };
+  const double slope_raw = (w_at(band + h) - w_at(band - h)) / (2.0 * h);
+  ASSERT_GT(slope_raw, 2.0) << "fixture must exceed Lee's bound to exercise the clamp";
+
+  DerivConfig lee = deriv_default_config();
+  lee.wing_mode = StripWingMode::LeeSlopeExtrapolation;
+  const auto q_lee = var_swap_fair_strike(surf, cs, T_test, lee);
+  ASSERT_TRUE(q_lee.has_value());
+  EXPECT_TRUE(has_flag(q_lee->flags, DerivFlags::WingExtrapolated));
+
+  // Independent oracle: re-integrate the SAME resolved grid (band = 0.0 for
+  // `plan_strip_split`, exactly what `var_swap_fair_strike`'s own
+  // `split_wing_band` resolves under this mode) with the extrapolation
+  // formula spelled out by hand, parameterized on the RIGHT-edge slope so it
+  // can be evaluated once at Lee's clamp value and once at the fixture's own
+  // (excessive) raw slope.
+  constexpr double eps = 1.0e-3;
+  const double w_edge_r = w_at(band);
+  const double w_edge_l = w_at(-band);
+  const double slope_l_raw = -(w_at(-band + h) - w_at(-band - h)) / (2.0 * h);
+  const double beta_l = std::max(0.0, std::min(2.0 - eps, slope_l_raw));
+
+  const auto oracle = [&](double beta_r) {
+    const auto split = atx::vol::strip::plan_strip_split(
+        q_lee->strip_k_lo_used, q_lee->strip_k_hi_used, q_lee->strip_nodes_used, 0.0);
+    const double F = cs.spot;
+    const double df = cs.yield.disc(T_test);
+    double integral = 0.0;
+    for (std::size_t p = 0; p < split.count; ++p) {
+      const auto& panel = split.panels[p];
+      const std::size_t np = panel.n_nodes;
+      const double dx = (panel.k_hi - panel.k_lo) / static_cast<double>(np - 1);
+      double sum = 0.0;
+      for (std::size_t i = 0; i < np; ++i) {
+        const double x = (i == 0)        ? panel.k_lo
+                         : (i + 1 == np) ? panel.k_hi
+                                         : panel.k_lo + dx * static_cast<double>(i);
+        double sigma;
+        if (std::fabs(x) <= band) {
+          sigma = surf.iv(x, T_test);
+        } else if (x > 0.0) {
+          sigma = std::sqrt((w_edge_r + beta_r * (x - band)) / T_test);
+        } else {
+          sigma = std::sqrt((w_edge_l + beta_l * (-x - band)) / T_test);
+        }
+        const double K = F * std::exp(x);
+        const double price = atx::vol::black76_price(
+            F, K, T_test, sigma, df, x < 0.0 ? atx::vol::Side::Put : atx::vol::Side::Call);
+        sum += atx::vol::strip::simpson_weight(i, np) * price / (df * K);
+      }
+      integral += sum * (dx / 3.0);
+    }
+    return (2.0 / T_test) * integral;
+  };
+
+  const double k_var_clamped = oracle(2.0 - eps);
+  const double k_var_unclamped = oracle(slope_raw);
+
+  EXPECT_NEAR(q_lee->fair_strike_dec, k_var_clamped, 1.0e-12);
+  // The unclamped oracle uses a materially steeper wing (slope_raw > 2 vs the
+  // clamped 2 - eps) -- if production had failed to clamp, it would match
+  // THIS oracle instead, so the two oracle values must themselves be clearly
+  // distinguishable for the comparison above to carry any weight.
+  EXPECT_GT(std::fabs(k_var_unclamped - k_var_clamped), 1.0e-6);
+}
+
+TEST(WingMode, RawMatchesLegacyWingClampOff) {
+  const EssviSurface surf = make_steep_wing_surface(0.30, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+  const double T_test = 0.25;
+
+  DerivConfig legacy_off = deriv_default_config();
+  legacy_off.wing_clamp_k = -1.0;  // pre-F-1 escape hatch: clamp off
+  const auto q_legacy = var_swap_fair_strike(surf, cs, T_test, legacy_off);
+  ASSERT_TRUE(q_legacy.has_value());
+
+  // wing_mode alone, with wing_clamp_k left at its OWN default (0, "resolve
+  // the certified band") -- StripWingMode::Raw must still win, proving it is
+  // not merely riding along on wing_clamp_k's sign.
+  DerivConfig raw_mode = deriv_default_config();
+  raw_mode.wing_mode = StripWingMode::Raw;
+  ASSERT_EQ(raw_mode.wing_clamp_k, 0.0);
+  const auto q_raw = var_swap_fair_strike(surf, cs, T_test, raw_mode);
+  ASSERT_TRUE(q_raw.has_value());
+
+  EXPECT_EQ(q_legacy->fair_strike_dec, q_raw->fair_strike_dec);
+  EXPECT_EQ(q_legacy->flags, q_raw->flags);
+  EXPECT_FALSE(has_flag(q_raw->flags, DerivFlags::WingClamped));
+  EXPECT_FALSE(has_flag(q_raw->flags, DerivFlags::WingExtrapolated));
+}
+
+// C-3's split logic (`plan_strip_split`) must handle the new mode: the band
+// edge is a genuine C0 kink under FlatClamp (d(iv)/dk drops to zero across
+// it) and stays a panel boundary; LeeSlopeExtrapolation is continuous AND
+// slope-matched there when the clamp does not bind, so no panel boundary is
+// needed. Demonstrated structurally (via the SAME public `plan_strip_split`
+// entry point `var_swap_fair_strike` itself calls) AND via the Richardson
+// error estimate staying small for BOTH -- proving the missing edge panel
+// costs LeeSlope nothing, not merely asserting it in prose.
+TEST(WingMode, SplitLogicNoEdgeKinkUnderLeeSlope) {
+  const double sigma = 0.20;
+  const double T_test = 0.5;
+  const EssviSurface surf = make_steep_wing_surface(sigma, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+
+  DerivConfig flat = deriv_default_config();
+  flat.wing_mode = StripWingMode::FlatClamp;
+  DerivConfig lee = deriv_default_config();
+  lee.wing_mode = StripWingMode::LeeSlopeExtrapolation;
+
+  const auto q_flat = var_swap_fair_strike(surf, cs, T_test, flat);
+  const auto q_lee = var_swap_fair_strike(surf, cs, T_test, lee);
+  ASSERT_TRUE(q_flat.has_value());
+  ASSERT_TRUE(q_lee.has_value());
+  // Both must actually engage the clamp/extrapolation for this to be a
+  // meaningful test of the split logic at the band edge.
+  ASSERT_TRUE(has_flag(q_flat->flags, DerivFlags::WingClamped));
+  ASSERT_TRUE(has_flag(q_lee->flags, DerivFlags::WingExtrapolated));
+  // Same grid under both modes -- the mode changes reads, never the span/
+  // node count (same invariant WingClamp.DefaultClampReadsFlatBeyondCertified
+  // Band pins for wing_clamp_k).
+  ASSERT_EQ(q_flat->strip_nodes_used, q_lee->strip_nodes_used);
+  ASSERT_EQ(q_flat->strip_k_lo_used, q_lee->strip_k_lo_used);
+  ASSERT_EQ(q_flat->strip_k_hi_used, q_lee->strip_k_hi_used);
+
+  // Direct structural check via the exact entry point `var_swap_fair_strike`
+  // itself calls: band = 0.5 (what FlatClamp's `split_wing_band` resolves)
+  // vs 0.0 (what LeeSlope's resolves). [k_lo,-0.5,0,0.5,k_hi] -> 4 panels;
+  // [k_lo,0,k_hi] -> 2.
+  const auto split_flat = atx::vol::strip::plan_strip_split(
+      q_flat->strip_k_lo_used, q_flat->strip_k_hi_used, q_flat->strip_nodes_used, 0.5);
+  const auto split_lee = atx::vol::strip::plan_strip_split(
+      q_lee->strip_k_lo_used, q_lee->strip_k_hi_used, q_lee->strip_nodes_used, 0.0);
+  EXPECT_EQ(split_flat.count, 4u);
+  EXPECT_EQ(split_lee.count, 2u);
+
+  // Payoff for not needing that extra split: the Richardson estimate stays
+  // valid (every panel 4m+1) and small for BOTH. If LeeSlope's node reads
+  // left a genuine unresolved kink at the edge (e.g. this gating were wrong
+  // and a real discontinuity went unsplit), the /15 estimate would inflate
+  // the way C-3's own finding measured on a misaligned kink (574x-4.1e4x) --
+  // it does not, because there is no kink to misalign here.
+  ASSERT_TRUE(split_flat.richardson_ok);
+  ASSERT_TRUE(split_lee.richardson_ok);
+  ASSERT_TRUE(q_flat->integration_error_est == q_flat->integration_error_est);
+  ASSERT_TRUE(q_lee->integration_error_est == q_lee->integration_error_est);
+  EXPECT_LT(q_flat->integration_error_est, 1.0e-6);
+  EXPECT_LT(q_lee->integration_error_est, 1.0e-6);
 }
 
 TEST(SurfacePolicy, CertifiedWingHalfBandMatchesEachQualityMode) {

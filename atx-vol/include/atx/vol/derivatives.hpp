@@ -222,6 +222,60 @@ enum class CarrLeeForm : std::uint8_t {
   Refined = 1,
 };
 
+// How the variance strip serves reads BEYOND the surface's certified wing
+// trust band (Task F-1, FIT-F1 / PV-6 / LIT-6). `DerivConfig::wing_clamp_k`
+// resolves WHERE the band sits; this selects WHAT gets served past it.
+//
+// BACKGROUND. Jiang & Tian (2007) document flat-vol wing extrapolation --
+// freezing the read at the band-edge vol -- as standard index-methodology
+// practice (LIT-1; also CBOE's VIX convention), and it is what `FlatClamp`
+// below does. It is deliberately CONSERVATIVE: on a name with material equity
+// skew, JT's own numbers put a smile-consistent (non-flat) wing treatment
+// versus flat extrapolation at roughly -198bp to +79bp on a VIX-style index,
+// the SIGN depending on the regime (a steep near-the-money skew whose wings
+// keep rising understates K_var under flat truncation; a wing that flattens
+// or reverses can overstate it) -- flat clamp is not a bug, it is one
+// defensible point on that range, and this sprint's own desk ruling (sp100
+// XOM, Task C-6) kept it the v1.1 default for mark stability. On the specific
+// regime this knob targets -- sigma_atm*sqrt(T) large enough that the
+// certified band sits inside roughly 2 standard deviations of the smile
+// (sigma_atm*sqrt(T) gtrsim 0.083, i.e. the band edge at |k|=0.5 is within
+// ~2sigma) -- flat clamp's understatement is the systematic, predictable
+// side of that range, because the strip's own fitted wings (eSSVI's phi
+// ceiling caps total-variance slope at <= 2 by construction -- Lee 2004's
+// moment-formula bound, LIT-6; ConvexDense's tails are power-law, not flat)
+// are already Lee-consistent and have never been allowed to say so.
+//
+//   FlatClamp -> beyond the band, freeze the read at the band-edge vol (JT
+//               practice, unchanged from pre-F-1 behaviour). v1.1 DEFAULT --
+//               bit-identical to every quote struck before this knob
+//               existed; see the header note on `DerivConfig::wing_mode`.
+//   LeeSlopeExtrapolation -> beyond the band, serve TOTAL VARIANCE
+//               continuing at the fitted slice's OWN slope at the band edge,
+//               clamped to Lee's [0, 2-eps] moment bound (eps = 1e-3) so an
+//               ill-behaved or misconfigured fit can never smuggle a
+//               moment-violating wing through this path even though the
+//               reads it starts from are already almost always compliant.
+//               Continuous AND slope-matched (C1) at the band edge whenever
+//               the clamp does not bind -- no band-edge kink for the C-3
+//               quadrature split to worry about in this mode (see
+//               `var_swap_fair_strike`, derivatives.cpp). This is the
+//               mode that recovers part of the JT understatement above by
+//               trusting the fit exactly as far as Lee's own bound allows.
+//   Raw       -> no clamp: read the raw (possibly uncertified) surface at
+//               every node, exactly as `wing_clamp_k < 0` has always meant.
+//               Provided as an explicit alternative to that sign convention;
+//               behaves identically to it regardless of `wing_clamp_k`'s own
+//               value (see `resolve_wing_clamp`, derivatives.cpp).
+//
+// Per-caller, not global: this makes the level-fidelity trade a CHOICE a
+// caller states, rather than a fixed desk-wide ruling every book inherits.
+enum class StripWingMode : std::uint8_t {
+  FlatClamp = 0,
+  LeeSlopeExtrapolation = 1,
+  Raw = 2,
+};
+
 // Which numerical scheme `deriv_greeks` uses for delta / gamma / vega / vanna
 // / volga (Task P-4, GK-P). Theta / theta_carry / theta_zero_fixing are
 // UNAFFECTED by this knob -- each rolls `contract.maturity_t` and so prices
@@ -248,14 +302,24 @@ enum class CarrLeeForm : std::uint8_t {
 //               `Diffusion1OverN` discrete-monitoring correction ON (its
 //               addend is QUADRATIC in K_var, so the raw-strip closed form
 //               this file differentiates does not reproduce it -- Review
-//               fix round 1, C-1) falls back to FiniteDifference SILENTLY:
-//               the fallback only ever picks which NUMERICAL METHOD computes
-//               a greek, and never changes what dispatch error a given
-//               (kind, engine) combination raises -- an invalid engine/kind
-//               pairing fails exactly the same way under either method
-//               (PV-5's dispatch matrix, `deriv_price`, runs identically
-//               either way; only `deriv_greeks`'s POST-price greek
-//               computation branches on this).
+//               fix round 1, C-1) OR with `DerivConfig::wing_mode ==
+//               StripWingMode::LeeSlopeExtrapolation` (Task F-1: the closed
+//               form's wing term hard-codes the FlatClamp/Raw "clamp the grid
+//               position once, then shift" identity -- `deriv_analytic_
+//               greeks.hpp`'s own header note -- and has no chain-rule term
+//               for a band-edge slope that is ITSELF resolved by a finite
+//               difference of the surface; extending it is new derivation
+//               work, not this task's scope, so LeeSlope falls back to FD
+//               like the other excluded cases rather than silently
+//               differentiate the wrong wing shape) falls back to
+//               FiniteDifference SILENTLY: the fallback only ever picks
+//               which NUMERICAL METHOD computes a greek, and never changes
+//               what dispatch error a given (kind, engine) combination
+//               raises -- an invalid engine/kind pairing fails exactly the
+//               same way under either method (PV-5's dispatch matrix,
+//               `deriv_price`, runs identically either way; only
+//               `deriv_greeks`'s POST-price greek computation branches on
+//               this).
 enum class DerivGreekMethod : std::uint8_t {
   FiniteDifference = 0,
   AnalyticStrip = 1,
@@ -311,7 +375,11 @@ enum class DerivFlags : std::uint32_t {
   // it says "flat-vol tails were in effect", not "the value moved" — on a flat
   // smile the clamp moves nothing and the flag still fires. Absent whenever the
   // clamp is disabled (wing_clamp_k < 0) or the whole span fits inside the
-  // band. atx extension: not mirrored in AtsVolDerivFlags.
+  // band. Task F-1: fires under `DerivConfig::wing_mode ==
+  // StripWingMode::FlatClamp` (the v1.1 default) exactly as it always has;
+  // `LeeSlopeExtrapolation` raises `WingExtrapolated` instead on the same
+  // structural condition, never this one. atx extension: not mirrored in
+  // AtsVolDerivFlags.
   WingClamped = 1u << 12,
   // Set when the variance strip's quadrature read a non-finite or non-
   // positive surface IV at one or more nodes STRICTLY INSIDE the grid (PV-4)
@@ -324,6 +392,18 @@ enum class DerivFlags : std::uint32_t {
   // surface with that many holes across its middle is broken, not sparse.
   // atx extension: not mirrored in AtsVolDerivFlags.
   InteriorBadNodes = 1u << 13,
+  // Task F-1: the `WingClamped` sibling for `DerivConfig::wing_mode ==
+  // StripWingMode::LeeSlopeExtrapolation` -- same STRUCTURAL condition (the
+  // resolved span extended beyond the wing trust band, so nodes beyond it
+  // contributed under the Lee-slope extrapolation formula rather than the raw
+  // surface), fired on that mode instead of `WingClamped`. Says nothing about
+  // whether the band-edge slope itself needed clamping to Lee's [0, 2-eps]
+  // bound -- that has no flag of its own; a caller who needs to know can
+  // compare the served K_var against a `Raw` quote on the same inputs. Absent
+  // under `FlatClamp`/`Raw` (those raise `WingClamped` or nothing,
+  // respectively), and absent whenever the whole span fits inside the band.
+  // atx extension: not mirrored in AtsVolDerivFlags.
+  WingExtrapolated = 1u << 14,
 };
 
 [[nodiscard]] constexpr DerivFlags operator|(DerivFlags a, DerivFlags b) noexcept {
@@ -498,11 +578,14 @@ struct DerivConfig {
   // turns that fiction into fair-strike level and daily mark noise (the
   // sp100-2026 XOM 3M strike read ~38 vol against a ~30 ATM, with ~98% of its
   // day-to-day variance sourced beyond |k| = 0.25). Nodes beyond the band keep
-  // their true strikes but read the BAND-EDGE vol — flat-vol tails, the
-  // standard desk discipline for un-quoted wings — so the strip stays
-  // complete (no truncation bias) while the uncertified region loses its say.
-  // The span, node count, and truncation flags are untouched: this clamps
-  // reads, not the grid. `DerivFlags::WingClamped` records that tails were in
+  // their true strikes but read the BAND-EDGE vol under the v1.1 default --
+  // flat-vol tails, the standard desk discipline for un-quoted wings -- so
+  // the strip stays complete (no truncation bias) while the uncertified
+  // region loses its say. What exactly gets served past the band is
+  // `wing_mode`'s decision (Task F-1); THIS field only decides where the band
+  // itself sits. The span, node count, and truncation flags are untouched:
+  // this clamps reads, not the grid. `DerivFlags::WingClamped` (FlatClamp) /
+  // `WingExtrapolated` (LeeSlopeExtrapolation) record that tails were in
   // effect.
   //
   //   0    -> the SURFACE's own certified band when the caller states one --
@@ -523,18 +606,28 @@ struct DerivConfig {
   //           Wins over any surface-carried band.
   //   NaN  -> InvalidArgument.
   double wing_clamp_k = 0.0;
+  // Task F-1 (FIT-F1 / PV-6 / LIT-6): what the variance strip serves for a
+  // node beyond `wing_clamp_k`'s resolved band -- see `StripWingMode`'s own
+  // doc for the full FlatClamp / LeeSlopeExtrapolation / Raw contract and the
+  // Jiang-Tian bias framing. `FlatClamp` is the v1.1 DEFAULT: every quote
+  // struck before this field existed keeps pricing bit-for-bit identically,
+  // because it is the literal zero value a value-initialized `DerivConfig{}`
+  // (or any struct predating this field) already carries. `Raw` behaves
+  // identically to `wing_clamp_k < 0` regardless of this field's own value --
+  // see `resolve_wing_clamp`, derivatives.cpp.
+  StripWingMode wing_mode = StripWingMode::FlatClamp;
   // Reserved — must be left at 0.
   double abs_price_tol = 0.0;
   double rel_price_tol = 0.0;
   std::uint32_t flags_request = 0;
 };
 
-// Drift pin: DerivConfig has exactly THIRTEEN fields (v1.1 appended
-// carr_lee_form, task C-5). Adding, removing, or splitting one breaks this
+// Drift pin: DerivConfig has exactly FOURTEEN fields (v1.1 appended
+// wing_mode, task F-1). Adding, removing, or splitting one breaks this
 // line -- update the count, and confirm every construction site still uses
 // `DerivConfig{}` + designated field assignment (the only form used anywhere
 // in this codebase today; there is no positional brace-init to protect).
-static_assert(detail::aggregate_arity_is_v<DerivConfig, 13>,
+static_assert(detail::aggregate_arity_is_v<DerivConfig, 14>,
               "DerivConfig field count changed: update this pin.");
 
 // The default config: STANDARD quality, AUTO engine, no discrete correction,

@@ -153,6 +153,23 @@ constexpr double kNaN = kPriceColumnNaN;
 //                  already -- a scope predicate that ignored this same field,
 //                  CHANGELOG.md). `FullMc` is reserved (`NotImplemented`)
 //                  regardless of memo. Book-wide, so gated ONCE, not per row.
+//                  Task F-1 (`DerivConfig::wing_mode`) audited against this
+//                  SAME "cfg is one book-wide value" proof and found
+//                  PROVABLY IRRELEVANT to the key: `wing_mode` changes WHAT
+//                  VALUE the shared block's strip serves (FlatClamp vs
+//                  LeeSlopeExtrapolation vs Raw), never WHETHER two rows may
+//                  share one -- every row this memo ever serves reads the
+//                  SAME `cfg.wing_mode`, so the block it gets is built under
+//                  that mode by construction, and the memo itself is a local
+//                  variable scoped to one `price_deriv_book` call (built
+//                  fresh, never persisted across calls -- see the file
+//                  comment above), so there is no cross-call contamination
+//                  path either. Unlike `discrete_correction_mode`, wing_mode
+//                  needed NO eligibility gate: `Diffusion1OverN` changes
+//                  which VALUE is linear in what the shared block caches
+//                  (excluded above), but every `StripWingMode` still resolves
+//                  to one well-defined K_var(T) the affine per-row combine
+//                  can share identically.
 //   bumps (whole)  NOT IN KEY, same reasoning as `cfg`: one value for the
 //                  whole call. `bumps.method` (FiniteDifference vs
 //                  AnalyticStrip) selects WHICH shared sub-block
