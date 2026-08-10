@@ -18,8 +18,12 @@
 //       [--v2-fields none|quality|outputs|both] [--outputs risk|mark|both]
 //       [--risk-admission required|na] [--fallback lkg|none]
 //       [--publish-floor on|off] [--symbol-knobs on|off]
+//       [--attempts-out attempts.csv]
 //
 // Output CSV: one row per symbol with load/fit/value status + diagnostics.
+// `--attempts-out` additionally writes a SECOND csv, one row per (symbol,
+// build attempt), joinable to the first on `symbol` — the fallback ladder's
+// per-rung rejection evidence, which cannot fit one row per board.
 // Summary to stdout: status counts, curve-family histogram, profile histogram,
 // error-code breakdown, timing percentiles, slowest boards.
 
@@ -95,6 +99,112 @@ const char *preset_name(FitPreset p) {
   case FitPreset::Bulk: return "bulk";
   }
   return "?";
+}
+
+// `SurfaceAdmissionReason`, `SurfaceBuildStage` and `ParityDiagnosticState` have
+// no library `to_string`; naming them here follows the same example-local
+// convention as `profile_name`/`source_name` above rather than growing the API.
+const char *admission_reason_name(SurfaceAdmissionReason reason) {
+  switch (reason) {
+  case SurfaceAdmissionReason::None: return "none";
+  case SurfaceAdmissionReason::BuildFailed: return "BuildFailed";
+  case SurfaceAdmissionReason::InsufficientFittedExpiries: return "InsufficientFittedExpiries";
+  case SurfaceAdmissionReason::InsufficientExpiryCoverage: return "InsufficientExpiryCoverage";
+  case SurfaceAdmissionReason::InsufficientQuoteCoverage: return "InsufficientQuoteCoverage";
+  case SurfaceAdmissionReason::FrontExpiryMissing: return "FrontExpiryMissing";
+  case SurfaceAdmissionReason::ConsecutiveExpiryGap: return "ConsecutiveExpiryGap";
+  case SurfaceAdmissionReason::NonFiniteDiagnostics: return "NonFiniteDiagnostics";
+  case SurfaceAdmissionReason::CalendarArbitrage: return "CalendarArbitrage";
+  case SurfaceAdmissionReason::QualityBelowFloor: return "QualityBelowFloor";
+  case SurfaceAdmissionReason::ImpossibleEvidence: return "ImpossibleEvidence";
+  case SurfaceAdmissionReason::DuplicateMaturity: return "DuplicateMaturity";
+  case SurfaceAdmissionReason::FiniteIvDomain: return "FiniteIvDomain";
+  case SurfaceAdmissionReason::EuropeanPriceBounds: return "EuropeanPriceBounds";
+  case SurfaceAdmissionReason::StrikeMonotonicity: return "StrikeMonotonicity";
+  case SurfaceAdmissionReason::StrikeConvexity: return "StrikeConvexity";
+  case SurfaceAdmissionReason::CalendarTotalVariance: return "CalendarTotalVariance";
+  case SurfaceAdmissionReason::ForwardVariance: return "ForwardVariance";
+  case SurfaceAdmissionReason::RequiredTenorBucket: return "RequiredTenorBucket";
+  case SurfaceAdmissionReason::DiagnosticsUnavailable: return "DiagnosticsUnavailable";
+  }
+  return "?";
+}
+
+const char *build_stage_name(SurfaceBuildStage stage) {
+  switch (stage) {
+  case SurfaceBuildStage::Selection: return "Selection";
+  case SurfaceBuildStage::InputValidation: return "InputValidation";
+  case SurfaceBuildStage::Build: return "Build";
+  case SurfaceBuildStage::Admission: return "Admission";
+  case SurfaceBuildStage::Publication: return "Publication";
+  }
+  return "?";
+}
+
+const char *parity_state_name(ParityDiagnosticState state) {
+  switch (state) {
+  case ParityDiagnosticState::NotScored: return "NotScored";
+  case ParityDiagnosticState::Disabled: return "Disabled";
+  case ParityDiagnosticState::Failed: return "Failed";
+  case ParityDiagnosticState::Valid: return "Valid";
+  }
+  return "?";
+}
+
+// ── The ValidationDigest CSV contract, in ONE place ─────────────────────────
+//
+// The served surface exports it under `oracle_`, every build attempt under
+// `att_`. `digest_header` and `format_digest` are written adjacent and MUST be
+// edited together: a second hand-written copy of this projection would diverge
+// the first time `ValidationDigest` gains a counter, and the two column blocks
+// would silently stop meaning the same thing.
+[[nodiscard]] std::string digest_header(std::string_view prefix) {
+  static constexpr std::string_view kFields[] = {"n_slices",
+                                                 "n_strike_samples",
+                                                 "n_calendar_samples",
+                                                 "n_non_finite",
+                                                 "n_price_bound_violations",
+                                                 "n_strike_monotonicity_violations",
+                                                 "n_butterfly_violations",
+                                                 "n_calendar_violations",
+                                                 "n_wing_violations",
+                                                 "max_calendar_slack",
+                                                 "max_butterfly_slack",
+                                                 "max_price_bound_slack",
+                                                 "max_wing_slope_excess",
+                                                 "first_calendar_k",
+                                                 "first_butterfly_k"};
+  std::string out;
+  for (const std::string_view field : kFields) {
+    if (!out.empty()) out += ',';
+    out += prefix;
+    out += field;
+  }
+  return out;
+}
+
+// ValidationDigest counters are std::uint32_t, not std::size_t: `%u`, never
+// `%zu`. A mismatched conversion specifier is undefined behaviour, and the two
+// types differ in width on this target.
+[[nodiscard]] std::string format_digest(const ValidationDigest &v) {
+  char buf[256];
+  std::snprintf(buf, sizeof(buf), "%u,%u,%u,%u,%u,%u,%u,%u,%u,%.6g,%.6g,%.6g,%.6g,%.6g,%.6g",
+                v.n_slices, v.n_strike_samples, v.n_calendar_samples, v.n_non_finite,
+                v.n_price_bound_violations, v.n_strike_monotonicity_violations,
+                v.n_butterfly_violations, v.n_calendar_violations, v.n_wing_violations,
+                v.max_calendar_slack, v.max_butterfly_slack, v.max_price_bound_slack,
+                v.max_wing_slope_excess, v.first_calendar_k, v.first_butterfly_k);
+  return buf;
+}
+
+// An absent optional is written as an EMPTY cell, never as 0 — same reason
+// `oracle_ran` exists: a number that was never measured must not read as a
+// measurement that came out zero.
+[[nodiscard]] std::string format_optional(const std::optional<double> &v) {
+  if (!v.has_value()) return {};
+  char buf[32];
+  std::snprintf(buf, sizeof(buf), "%.6g", *v);
+  return buf;
 }
 
 FitPreset parse_preset(std::string_view name) {
@@ -298,21 +408,9 @@ struct Row {
   std::uint32_t oracle_reasons{0}; // ValidationFailure bitmask, as an integer
   std::uint64_t oracle_candidate_generation{0};
   std::uint64_t oracle_served_generation{0};
-  std::uint32_t o_n_slices{0};
-  std::uint32_t o_n_strike_samples{0};
-  std::uint32_t o_n_calendar_samples{0};
-  std::uint32_t o_n_non_finite{0};
-  std::uint32_t o_n_price_bound_violations{0};
-  std::uint32_t o_n_strike_monotonicity_violations{0};
-  std::uint32_t o_n_butterfly_violations{0};
-  std::uint32_t o_n_calendar_violations{0};
-  std::uint32_t o_n_wing_violations{0};
-  double o_max_calendar_slack{0.0};
-  double o_max_butterfly_slack{0.0};
-  double o_max_price_bound_slack{0.0};
-  double o_max_wing_slope_excess{0.0};
-  double o_first_calendar_k{0.0};
-  double o_first_butterfly_k{0.0};
+  // Held whole rather than unpacked into scalars so the served surface and each
+  // build attempt are formatted by the same `format_digest`.
+  ValidationDigest oracle_digest{};
   // The market-mark surface's state, exported alongside the risk state so a
   // reader can tell WHICH surface `PricerFitter::surface()` handed back rather
   // than inferring it from the config.
@@ -361,28 +459,211 @@ void record_decision(Row &row, const FitDecision &d) {
 // before the risk stage, leaves the default-constructed value 0.
 void record_oracle(Row &row, const SurfaceBundle &bundle) {
   const SurfaceHealth &health = bundle.risk_health;
-  const ValidationDigest &v = health.validation;
   row.oracle_ran = health.candidate_generation != 0;
   row.oracle_state = std::string(to_string(health.state));
   row.oracle_reasons = static_cast<std::uint32_t>(health.reasons);
   row.oracle_candidate_generation = health.candidate_generation;
   row.oracle_served_generation = health.served_generation;
-  row.o_n_slices = v.n_slices;
-  row.o_n_strike_samples = v.n_strike_samples;
-  row.o_n_calendar_samples = v.n_calendar_samples;
-  row.o_n_non_finite = v.n_non_finite;
-  row.o_n_price_bound_violations = v.n_price_bound_violations;
-  row.o_n_strike_monotonicity_violations = v.n_strike_monotonicity_violations;
-  row.o_n_butterfly_violations = v.n_butterfly_violations;
-  row.o_n_calendar_violations = v.n_calendar_violations;
-  row.o_n_wing_violations = v.n_wing_violations;
-  row.o_max_calendar_slack = v.max_calendar_slack;
-  row.o_max_butterfly_slack = v.max_butterfly_slack;
-  row.o_max_price_bound_slack = v.max_price_bound_slack;
-  row.o_max_wing_slope_excess = v.max_wing_slope_excess;
-  row.o_first_calendar_k = v.first_calendar_k;
-  row.o_first_butterfly_k = v.first_butterfly_k;
+  row.oracle_digest = health.validation;
   row.mm_state = std::string(to_string(bundle.market_mark_health.state));
+}
+
+// ── One build attempt (T1c) ─────────────────────────────────────────────────
+//
+// The served digest describes the surface that SURVIVED the fallback ladder. On
+// the production path eSSVI is the primary on nearly every board and is rejected
+// on most of them, so `oracle_*` measures the SUBSTITUTE and is silent about why
+// the intended fit was refused. That evidence is per attempt, and attempts are
+// variable in number — hence a second CSV keyed on `symbol`.
+struct AttemptRow {
+  std::string symbol;
+  std::uint32_t attempt_index{0};
+  std::uint32_t n_attempts{0};
+  const char *report_source{"none"}; // published | last_attempt
+  bool report_published{false};
+  bool report_used_fallback{false};
+  std::string primary_kind;
+  std::string published_kind;
+  std::string curve_kind;
+  const char *stage{"?"};
+  bool build_succeeded{false};
+  // The FitAdmissionPolicy verdict for THIS attempt. It is one of the two gates
+  // a candidate must pass; `admission_failed_checks` is the complete mask over
+  // SurfaceAdmissionReason, not just the primary reason.
+  bool admitted{false};
+  const char *admission_reason{"none"};
+  std::uint32_t admission_failed_checks{0};
+  std::string failure;
+  // Admission evidence that names WHERE the invariant broke, when it did.
+  std::size_t ev_attempted_expiries{0};
+  std::size_t ev_fitted_expiries{0};
+  std::size_t ev_attempted_quotes{0};
+  std::size_t ev_fitted_quotes{0};
+  double ev_worst_in_band{0.0};
+  bool ev_calendar_arb_free{false};
+  const char *ev_first_invariant_failure{"none"};
+  std::optional<double> ev_first_failure_maturity{};
+  std::optional<double> ev_first_failure_k{};
+  std::optional<double> ev_first_failure_value{};
+  const char *ev_parity_state{"?"};
+  double ev_grid_k_min{0.0};
+  double ev_grid_k_max{0.0};
+  std::size_t ev_grid_points{0};
+  // The independent oracle's verdict on THIS candidate — see `probe_health`.
+  // `probe_ran` is the per-attempt equivalent of `oracle_ran`: a digest that was
+  // never computed is all-zero and byte-identical to a validated-clean one, so
+  // the zeros are meaningless unless this is 1.
+  bool probe_ran{false};
+  const char *probe_source{"none"}; // probe | not_built | pin_refused
+  std::string probe_state;
+  std::uint32_t probe_reasons{0};
+  std::uint32_t probe_failures{0};
+  // 1/0 when this attempt's family is the one that was published (the probe must
+  // then reproduce the served digest exactly); empty otherwise.
+  std::optional<double> probe_id_matches_served{};
+  // The probe's OWN admission mask for its first (pinned) attempt, and 1/0 for
+  // whether it equals `admission_failed_checks` — the mask production recorded
+  // for this same candidate. `probe_id_matches_served` can only certify the
+  // PUBLISHED family; this certifies every probed attempt, including the
+  // rejected primary whose rejection reason is the whole point of this CSV.
+  std::optional<double> probe_admission_matches{};
+  ValidationDigest probe_digest{};
+};
+
+// What one pinned refit yields: the oracle's verdict plus the probe's own
+// admission mask for the pinned candidate, kept together so the caller cannot
+// read one without the other's provenance.
+struct ProbeResult {
+  SurfaceHealth health{};
+  bool has_attempt{false};
+  std::uint32_t admission_failed_checks{0};
+};
+
+// Re-measure one attempt's candidate with the independent oracle.
+//
+// LIBRARY LIMIT, read not assumed: `SurfaceBuildAttemptReport` carries the
+// admission verdict and its evidence but NOT a `ValidationDigest` — the digest
+// is a local in the risk build (`pricer_fitter.cpp:1548/1596/1684`) and only the
+// PUBLISHED one survives, on `SurfaceHealth`. Rather than widen the library,
+// refit with this attempt's own `CurveConfig` pinned: a pin clears `auto_routed`
+// (`:1451`), so neither fallback ladder can fire and the candidate the oracle
+// judges is exactly this one. The refusal IS the measurement — `risk_health_` is
+// stamped at `:1715` before the Err returns.
+//
+// The pin costs fidelity in exactly one place, and it is compensated: a pinned
+// request skips the profile-calib override at `:1355-1363`. The overlay restores
+// it from `curve.parametric`, which is that override's own result (`:1369`,
+// `:1394`). `att_probe_id_matches_served` and `att_probe_admission_matches` are
+// the empirical checks on all of this.
+//
+// ONE FAMILY IS NOT MEASURED BARE, and a reader must know which. Strict recovery
+// (`:1645`) is gated on `auto_routed || rejected_primary_curve.kind ==
+// ConvexDense`. A pin clears `auto_routed`, so for every family EXCEPT
+// ConvexDense the probe measures this candidate alone. For a ConvexDense pin the
+// second disjunct still fires, so `att_probe_*` describes the ConvexDense
+// candidate AFTER up to three convex-repair rounds — the family's outcome, not
+// this attempt's raw geometry. Read ConvexDense probe counters as a floor on the
+// violations that candidate had, never as its measured total. eSSVI and SVI, the
+// families this CSV exists to explain, are unaffected.
+[[nodiscard]] ProbeResult probe_health(const PricerConfig &base, const OptionChain &chain,
+                                       const CurveConfig &curve) {
+  PricerConfig cfg = base;
+  cfg.curve = curve;
+  PricerFitter fitter{cfg};
+  const CalibOpts calib = curve.parametric;
+  // SAFETY: the Status is deliberately discarded. A rejected candidate is the
+  // expected outcome here and returns Err; the verdict wanted is the health it
+  // stamped on the way out, read below.
+  static_cast<void>(fitter.fit(chain, [calib](SessionInputs &in) { in.calib = calib; }));
+  ProbeResult out;
+  out.health = fitter.bundle().risk_health;
+  // Attempt 0 is the pinned candidate on every route: the pin is resolved before
+  // the first build, and a pinned request cannot reach the auto-routed ladder.
+  const std::optional<SurfaceBuildReport> &report = fitter.published_report().has_value()
+                                                        ? fitter.published_report()
+                                                        : fitter.last_attempt_report();
+  if (report.has_value() && !report->attempts.empty()) {
+    out.has_attempt = true;
+    out.admission_failed_checks = report->attempts.front().admission.failed_checks;
+  }
+  return out;
+}
+
+void collect_attempts(std::vector<AttemptRow> &out, const std::string &symbol,
+                      const PricerFitter &fitter, const PricerConfig &cfg,
+                      const OptionChain &chain) {
+  const bool from_published = fitter.published_report().has_value();
+  const std::optional<SurfaceBuildReport> &maybe =
+      from_published ? fitter.published_report() : fitter.last_attempt_report();
+  if (!maybe.has_value()) {
+    return;
+  }
+  const SurfaceBuildReport &report = *maybe;
+  const ValidationDigest &served = fitter.bundle().risk_health.validation;
+  const std::size_t n = report.attempts.size();
+  for (std::size_t i = 0; i < n; ++i) {
+    const SurfaceBuildAttemptReport &a = report.attempts[i];
+    AttemptRow r;
+    r.symbol = symbol;
+    r.attempt_index = static_cast<std::uint32_t>(i);
+    r.n_attempts = static_cast<std::uint32_t>(n);
+    r.report_source = from_published ? "published" : "last_attempt";
+    r.report_published = report.published;
+    r.report_used_fallback = report.used_fallback;
+    r.primary_kind = std::string(to_string(report.primary_curve.kind));
+    r.published_kind = std::string(to_string(report.published_curve.kind));
+    r.curve_kind = std::string(to_string(a.curve.kind));
+    r.stage = build_stage_name(a.stage);
+    r.build_succeeded = a.build_succeeded;
+    r.admitted = a.admission.admitted;
+    r.admission_reason = admission_reason_name(a.admission.primary_reason);
+    r.admission_failed_checks = a.admission.failed_checks;
+    if (a.failure.has_value())
+      r.failure = a.failure->to_string();
+    const SurfaceAdmissionEvidence &e = a.evidence;
+    r.ev_attempted_expiries = e.attempted_expiries;
+    r.ev_fitted_expiries = e.fitted_expiries;
+    r.ev_attempted_quotes = e.attempted_quotes;
+    r.ev_fitted_quotes = e.fitted_quotes;
+    r.ev_worst_in_band = e.worst_frac_within_bidask;
+    r.ev_calendar_arb_free = e.calendar_arb_free;
+    r.ev_first_invariant_failure = admission_reason_name(e.first_invariant_failure);
+    r.ev_first_failure_maturity = e.first_failure_maturity;
+    r.ev_first_failure_k = e.first_failure_log_moneyness;
+    r.ev_first_failure_value = e.first_failure_value;
+    r.ev_parity_state = parity_state_name(e.parity_state);
+    r.ev_grid_k_min = e.invariant_grid_k_min;
+    r.ev_grid_k_max = e.invariant_grid_k_max;
+    r.ev_grid_points = e.invariant_grid_points;
+
+    // A candidate that never built has no geometry to certify; a LinearVariance
+    // PIN is hard-refused as an invalid risk request (`pricer_fitter.cpp:1211`),
+    // so probing one would measure the pin instead of the candidate. Both keep
+    // `probe_ran = false` and are named, not silently zeroed.
+    if (!a.build_succeeded) {
+      r.probe_source = "not_built";
+    } else if (a.curve.kind == VolCurveKind::LinearVariance) {
+      r.probe_source = "pin_refused";
+    } else {
+      const ProbeResult probe = probe_health(cfg, chain, a.curve);
+      const SurfaceHealth &health = probe.health;
+      r.probe_ran = health.candidate_generation != 0;
+      r.probe_source = "probe";
+      r.probe_state = std::string(to_string(health.state));
+      r.probe_reasons = static_cast<std::uint32_t>(health.reasons);
+      r.probe_failures = static_cast<std::uint32_t>(health.validation.failures);
+      r.probe_digest = health.validation;
+      if (probe.has_attempt) {
+        r.probe_admission_matches =
+            probe.admission_failed_checks == a.admission.failed_checks ? 1.0 : 0.0;
+      }
+      if (report.published && a.curve.kind == report.published_curve.kind) {
+        r.probe_id_matches_served =
+            health.validation.validation_id == served.validation_id ? 1.0 : 0.0;
+      }
+    }
+    out.push_back(std::move(r));
+  }
 }
 
 std::vector<std::string> read_symbols_file(const std::string &path) {
@@ -447,6 +728,9 @@ int main(int argc, char **argv) {
   std::string fit_path_arg = "production";
   std::optional<std::string> v2_fields_arg, outputs_arg, risk_admission_arg, fallback_arg,
       publish_floor_arg, symbol_knobs_arg;
+  // T1c. Unset => no second CSV and no probe refits: the default run's cost and
+  // output stay exactly what T1b measured.
+  std::string attempts_csv;
 
   for (int i = 1; i < argc; ++i) {
     const std::string_view a = argv[i];
@@ -478,6 +762,7 @@ int main(int argc, char **argv) {
     else if (a == "--fallback") fallback_arg = nv();
     else if (a == "--publish-floor") publish_floor_arg = nv();
     else if (a == "--symbol-knobs") symbol_knobs_arg = nv();
+    else if (a == "--attempts-out") attempts_csv = nv();
     else {
       std::fprintf(stderr, "unknown arg: %s\n", argv[i]);
       return 2;
@@ -492,7 +777,8 @@ int main(int argc, char **argv) {
                  "[--min-direct-confidence X] [--path-template T] "
                  "[--fit-path production|legacy] [--v2-fields none|quality|outputs|both] "
                  "[--outputs risk|mark|both] [--risk-admission required|na] "
-                 "[--fallback lkg|none] [--publish-floor on|off] [--symbol-knobs on|off]\n");
+                 "[--fallback lkg|none] [--publish-floor on|off] [--symbol-knobs on|off] "
+                 "[--attempts-out FILE]\n");
     return 2;
   }
 
@@ -633,6 +919,10 @@ int main(int argc, char **argv) {
 
   // ── Boards + rows (parallel array; entry i <-> rows[i]) ───────────────────
   std::vector<Row> rows(batch->entries.size());
+  // Per board, so workers write disjoint slots exactly as they do for `rows`;
+  // flattened in board order at write time.
+  std::vector<std::vector<AttemptRow>> attempt_rows(batch->entries.size());
+  const bool want_attempts = !attempts_csv.empty();
   std::vector<const OpraBatchEntry *> entries(batch->entries.size());
   for (std::size_t i = 0; i < batch->entries.size(); ++i) entries[i] = &batch->entries[i];
 
@@ -725,6 +1015,11 @@ int main(int argc, char **argv) {
           record_decision(row, *fitter.decision());
         }
         row.selector_error = selection_refusal(fitter);
+        // A board that served nothing is exactly where the ladder history is
+        // most informative, so it is collected on this path too.
+        if (want_attempts) {
+          collect_attempts(attempt_rows[i], row.symbol, fitter, cfg, chain.value());
+        }
         return;
       }
 
@@ -750,6 +1045,9 @@ int main(int argc, char **argv) {
       row.n_slices = dg.n_slices;
       row.n_quotes_used = dg.n_quotes;
       record_oracle(row, fitter.bundle());
+      if (want_attempts) {
+        collect_attempts(attempt_rows[i], row.symbol, fitter, cfg, chain.value());
+      }
 
       if (do_value) {
         const auto t3 = SteadyClock::now();
@@ -788,15 +1086,14 @@ int main(int argc, char **argv) {
            "f_atm_quotes,f_ident_expiries,f_max_nm_strikes,f_median_spread,f_front_expiries,"
            "f_weeklies,selector_error,"
            // Appended block: independent risk oracle. Existing columns and their
-           // order are frozen so previously-written analysis scripts keep working.
+           // order are frozen so previously-written analysis scripts keep working
+           // — `digest_header` reproduces exactly the names T1 wrote, and is used
+           // here rather than a second literal so the projection cannot drift
+           // from `format_digest`, which emits this row's values.
            "oracle_ran,oracle_state,oracle_reasons,oracle_candidate_generation,"
-           "oracle_served_generation,oracle_n_slices,oracle_n_strike_samples,"
-           "oracle_n_calendar_samples,oracle_n_non_finite,oracle_n_price_bound_violations,"
-           "oracle_n_strike_monotonicity_violations,oracle_n_butterfly_violations,"
-           "oracle_n_calendar_violations,oracle_n_wing_violations,oracle_max_calendar_slack,"
-           "oracle_max_butterfly_slack,oracle_max_price_bound_slack,"
-           "oracle_max_wing_slope_excess,oracle_first_calendar_k,oracle_first_butterfly_k,"
-           "mm_state,"
+           "oracle_served_generation,"
+        << digest_header("oracle_")
+        << ",mm_state,"
            // T1b: which fit contract produced this row. Constant within a run;
            // per-row so a concatenation of two runs stays self-describing.
            "fit_path,fit_config\n";
@@ -811,35 +1108,79 @@ int main(int argc, char **argv) {
                     w.primary_kind.c_str(), w.used_fallback ? 1 : 0, w.selector_ran ? 1 : 0,
                     w.selector_oos_vw, w.worst_in_band, w.mean_in_band, w.mean_chi2,
                     w.mean_rmse_vol, w.calendar_arb_free ? 1 : 0, w.n_calendar_viol,
-                    w.n_price_bound_viol, w.n_slices, w.n_quotes_used,
-                    w.n_valued, w.n_price_nan, w.n_bidiv_nan, w.n_askiv_nan, w.load_ms, w.chain_ms,
-                    w.fit_ms, w.value_ms, w.selector_fallback ? 1 : 0);
+                    w.n_price_bound_viol, w.n_slices, w.n_quotes_used, w.n_valued, w.n_price_nan,
+                    w.n_bidiv_nan, w.n_askiv_nan, w.load_ms, w.chain_ms, w.fit_ms, w.value_ms,
+                    w.selector_fallback ? 1 : 0);
       char fbuf[256];
       std::snprintf(fbuf, sizeof(fbuf), "%u,%u,%u,%u,%u,%u,%.6g,%u,%d,", w.f_live_quotes,
                     w.f_live_expiries, w.f_quoted_expiries, w.f_atm_quotes, w.f_ident_expiries,
                     w.f_max_nm_strikes, w.f_median_spread, w.f_front_expiries,
                     w.f_weeklies ? 1 : 0);
-      // ValidationDigest counters are std::uint32_t, not std::size_t: `%u`, never
-      // `%zu`. A mismatched conversion specifier is undefined behaviour, and the
-      // two types differ in width on this target. The 64-bit generation stamps
-      // are cast to `unsigned long long` so `%llu` is exact by construction
-      // rather than by assuming what std::uint64_t maps to.
-      char obuf[512];
-      std::snprintf(obuf, sizeof(obuf),
-                    ",%d,%s,%u,%llu,%llu,%u,%u,%u,%u,%u,%u,%u,%u,%u,"
-                    "%.6g,%.6g,%.6g,%.6g,%.6g,%.6g,%s",
-                    w.oracle_ran ? 1 : 0, w.oracle_state.c_str(), w.oracle_reasons,
+      // The 64-bit generation stamps are cast to `unsigned long long` so `%llu`
+      // is exact by construction rather than by assuming what std::uint64_t maps
+      // to. The digest itself goes through `format_digest`, the one projection
+      // shared with the per-attempt CSV.
+      char obuf[128];
+      std::snprintf(obuf, sizeof(obuf), ",%d,%s,%u,%llu,%llu,", w.oracle_ran ? 1 : 0,
+                    w.oracle_state.c_str(), w.oracle_reasons,
                     static_cast<unsigned long long>(w.oracle_candidate_generation),
-                    static_cast<unsigned long long>(w.oracle_served_generation), w.o_n_slices,
-                    w.o_n_strike_samples, w.o_n_calendar_samples, w.o_n_non_finite,
-                    w.o_n_price_bound_violations, w.o_n_strike_monotonicity_violations,
-                    w.o_n_butterfly_violations, w.o_n_calendar_violations, w.o_n_wing_violations,
-                    w.o_max_calendar_slack, w.o_max_butterfly_slack, w.o_max_price_bound_slack,
-                    w.o_max_wing_slope_excess, w.o_first_calendar_k, w.o_first_butterfly_k,
-                    w.mm_state.c_str());
+                    static_cast<unsigned long long>(w.oracle_served_generation));
       out << csv_escape(w.symbol) << ',' << w.status << ',' << csv_escape(w.error) << buf << fbuf
-          << csv_escape(w.selector_error) << obuf << ',' << fit_path_name << ','
-          << csv_escape(fit_config) << '\n';
+          << csv_escape(w.selector_error) << obuf << format_digest(w.oracle_digest) << ','
+          << w.mm_state << ',' << fit_path_name << ',' << csv_escape(fit_config) << '\n';
+    }
+  }
+
+  // ── Per-attempt CSV (T1c) ──────────────────────────────────────────────────
+  //
+  // Written only on request. One row per (symbol, attempt), keyed on `symbol` so
+  // it joins to the main CSV — board shape, routing and the served digest stay
+  // there and are not duplicated here.
+  std::size_t n_attempt_rows = 0;
+  if (want_attempts) {
+    std::ofstream out(attempts_csv, std::ios::trunc);
+    out << "symbol,attempt_index,n_attempts,report_source,report_published,report_used_fallback,"
+           "primary_kind,published_kind,curve_kind,stage,build_succeeded,admitted,"
+           "admission_reason,admission_failed_checks,failure,"
+           "ev_attempted_expiries,ev_fitted_expiries,ev_attempted_quotes,ev_fitted_quotes,"
+           "ev_worst_in_band,ev_calendar_arb_free,ev_first_invariant_failure,"
+           "ev_first_failure_maturity,ev_first_failure_k,ev_first_failure_value,ev_parity_state,"
+           "ev_grid_k_min,ev_grid_k_max,ev_grid_points,"
+        // `att_probe_ran` is this CSV's `oracle_ran`: every counter below is 0 on
+        // a digest that was never computed, which is byte-identical to a
+        // validated-clean one. Read the counters only where it is 1.
+        << "att_probe_ran,att_probe_source,att_probe_state,att_probe_reasons,att_probe_failures,"
+           "att_probe_id_matches_served,att_probe_admission_matches,"
+        << digest_header("att_") << '\n';
+    for (const std::vector<AttemptRow> &board : attempt_rows) {
+      for (const AttemptRow &a : board) {
+        char head[512];
+        std::snprintf(head, sizeof(head), ",%u,%u,%s,%d,%d,%s,%s,%s,%s,%d,%d,%s,%u,",
+                      a.attempt_index, a.n_attempts, a.report_source, a.report_published ? 1 : 0,
+                      a.report_used_fallback ? 1 : 0, a.primary_kind.c_str(),
+                      a.published_kind.c_str(), a.curve_kind.c_str(), a.stage,
+                      a.build_succeeded ? 1 : 0, a.admitted ? 1 : 0, a.admission_reason,
+                      a.admission_failed_checks);
+        char ev[256];
+        std::snprintf(ev, sizeof(ev), ",%zu,%zu,%zu,%zu,%.6f,%d,%s,", a.ev_attempted_expiries,
+                      a.ev_fitted_expiries, a.ev_attempted_quotes, a.ev_fitted_quotes,
+                      a.ev_worst_in_band, a.ev_calendar_arb_free ? 1 : 0,
+                      a.ev_first_invariant_failure);
+        char ev2[192];
+        std::snprintf(ev2, sizeof(ev2), ",%s,%.6g,%.6g,%zu,", a.ev_parity_state, a.ev_grid_k_min,
+                      a.ev_grid_k_max, a.ev_grid_points);
+        char probe[192];
+        std::snprintf(probe, sizeof(probe), "%d,%s,%s,%u,%u,", a.probe_ran ? 1 : 0, a.probe_source,
+                      a.probe_state.c_str(), a.probe_reasons, a.probe_failures);
+        out << csv_escape(a.symbol) << head << csv_escape(a.failure) << ev
+            << format_optional(a.ev_first_failure_maturity) << ','
+            << format_optional(a.ev_first_failure_k) << ','
+            << format_optional(a.ev_first_failure_value) << ev2 << probe
+            << format_optional(a.probe_id_matches_served) << ','
+            << format_optional(a.probe_admission_matches) << ',' << format_digest(a.probe_digest)
+            << '\n';
+        ++n_attempt_rows;
+      }
     }
   }
 
@@ -901,5 +1242,8 @@ int main(int argc, char **argv) {
                   slow[i]->profile.c_str());
   }
   std::printf("\nresults: %s\n", out_csv.c_str());
+  if (want_attempts) {
+    std::printf("attempts: %s (%zu rows)\n", attempts_csv.c_str(), n_attempt_rows);
+  }
   return 0;
 }
