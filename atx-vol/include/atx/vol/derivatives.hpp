@@ -86,6 +86,15 @@
 //     scale, the surface is re-read at the original absolute strike); an
 //     auto-calibrated vol-of-vol is resolved once at the center and pinned
 //     into the bumps; fully-aged contracts skip bumping entirely.
+//   - Gamma swap (Task F-2, PV-F1 / LIT-7, DerivKind::GammaSwap): Lee's
+//     weighted-variance strip, sharing the SAME grid/span/clamp/kink
+//     resolution as the variance strip (the 1/K weight cancels against the
+//     log-strike Jacobian, so the per-node integrand is just the undiscounted
+//     OTM price -- see `strip_fair_value_core`, derivatives.cpp). Aged blend,
+//     PV, and FD greeks dispatch identically to VarSwap; analytic greeks are
+//     deferred (P-4's `AnalyticStrip` scope stays VarSwap-only). Exact under
+//     zero carry only; see `DerivKind::GammaSwap`'s own doc for the
+//     first-order-in-(r-q)*T approximation this ships for r != q.
 //
 // Reserved for follow-on work. Two flavors:
 //   - ACTIVELY REJECTED (return ErrorCode::NotImplemented, mirroring the C's
@@ -138,12 +147,37 @@ class PricedSurface;
 
 // Product kind. CappedVarSwap is priced via the lognormal RV distribution
 // model (Task 4); CappedVolSwap via the same model's split-domain quadrature
-// (Task 5).
+// (Task 5). GammaSwap (Task F-2, PV-F1 / LIT-7) is a WEIGHTED-variance swap
+// -- Lee's w(y) = y/Y0 weight function, lambda_yy = 2/(Y0*K) -- priced via
+// the SAME model-free OTM-strip machinery as VarSwap (shared grid/span/
+// clamp/kink resolution; the 1/K weight cancels against the log-strike
+// Jacobian, so the strip's per-node integrand is just the undiscounted OTM
+// price, not price/K). See `var_swap_fair_strike`'s doc and
+// `strip_fair_value_core` (derivatives.cpp) for the shared strip, and the
+// EXACTNESS CAVEAT below.
+//
+// EXACTNESS CAVEAT (Lee, "Weighted Variance Swaps," EQF 2010): the vanilla
+// (single-expiry) OTM-strip replication of a weighted-variance claim is
+// EXACT only under zero carry (r == q) -- see `GammaSwap.FlatZeroCarryExact`.
+// Under r - q != 0 the log-contract's usual "delta term vanishes" identity
+// (the reason VarSwap's own strip is carry-independent) no longer holds for
+// a NON-log weight, and the true model-free hedge needs a continuum of
+// expiries, not this task's scope. This library ships the standard
+// single-expiry form (what every desk actually trades), which is a FIRST-
+// ORDER-IN-(r-q)*T approximation to the exact weighted-variance expectation
+// -- `K_gamma_shipped - K_gamma_exact ~= sigma_atm^2 * (r-q) * T / 2` for a
+// flat surface (closed-form re-derivation, `GammaSwap.CarryApproximation
+// ClosedForm`, derivatives_test.cpp); `GammaSwap.MCOracle` quantifies the
+// same gap against an independent seeded-MC oracle. Analytic greeks are
+// DEFERRED for this kind (P-4's `AnalyticStrip` scope stays VarSwap-only,
+// unchanged by this task) -- `DerivGreekMethod::FiniteDifference` (the
+// default) is correct and unaffected.
 enum class DerivKind : std::uint8_t {
   VarSwap = 1,
   VolSwap = 2,
   CappedVarSwap = 3,
   CappedVolSwap = 4,
+  GammaSwap = 5,
 };
 
 // Pricing engine selector. Values >= RvDistributionAffine are reserved;
@@ -434,7 +468,35 @@ struct RealizedVarianceSpec {
   double sum_sq_log_returns_done = 0.0;       // raw running Sigma r_i^2
   double rv_done_dec = 0.0;                    // annualized decimal variance to date
   bool include_dividend_adjustment = false;   // reserved; unused in this port
+  // Task F-2 (PV-F1 / LIT-7): the gamma-swap (weighted-variance) accrued-leg
+  // accumulator, appended -- Lee's w(y) = y/Y0 weight applied to each daily
+  // realized return: raw running Sigma (S_i/S0)*r_i^2, S0 the tracker's own
+  // seed spot (the first observe() call), S_i the spot AT the return i was
+  // measured. Written by `RealizedTracker::observe` alongside the plain
+  // accumulator above; a hand-built spec (tests, swap_leg.cpp's strategy-side
+  // mirror) that never populates this leaves it at 0.0, exactly like
+  // `sum_sq_log_returns_done`'s own "not populated" convention.
+  double sum_weighted_sq_log_returns_done = 0.0;
+  // Annualized decimal gamma-weighted variance to date: annualization *
+  // sum_weighted_sq_log_returns_done / n_obs_done. `price_gamma_swap`
+  // (derivatives.cpp) reads THIS field for the accrued leg, exactly as
+  // `price_var_swap` reads `rv_done_dec` -- the two are NOT interchangeable
+  // (the same "meaning is per-kind" convention DerivQuote::uncapped_var_dec
+  // documents).
+  double rv_gamma_done_dec = 0.0;
 };
+
+// Drift pin: RealizedVarianceSpec has exactly EIGHT fields (v1.1 appended
+// sum_weighted_sq_log_returns_done / rv_gamma_done_dec, Task F-2). This is
+// the FIRST arity pin for this struct -- established now because this is the
+// first time it has grown since v1.0 -- following the same
+// `aggregate_arity_is_v` convention as `DerivConfig`/`DerivQuote` above.
+// Every construction site in this codebase already uses `RealizedVarianceSpec{}`
+// plus designated/named-field assignment (never positional brace-init), so
+// this raises no migration burden; it only catches a FUTURE append that
+// forgets to update this line.
+static_assert(detail::aggregate_arity_is_v<RealizedVarianceSpec, 8>,
+              "RealizedVarianceSpec field count changed: update this pin.");
 
 // Mutable realized-variance accumulator. Caller owns; not thread-safe.
 //
@@ -449,7 +511,9 @@ public:
                                                        std::uint32_t n_obs_total);
 
   // Observe a single spot. The first call records the seed (no return
-  // computed); each subsequent call updates Sigma r^2, n_done, and rv_done_dec.
+  // computed) AND anchors the gamma-weight S0 (Task F-2) at that same spot;
+  // each subsequent call updates Sigma r^2, n_done, rv_done_dec, and the
+  // gamma-weighted Sigma (S_i/S0)*r^2 / rv_gamma_done_dec alongside it.
   //
   // @return InvalidArgument for spot <= 0, or when all n_obs_total returns have
   //         already been observed.
@@ -485,6 +549,12 @@ private:
   RealizedTracker() = default;  // via create()
 
   double prev_spot_ = 0.0;
+  // Task F-2: the gamma-weight anchor S0 -- set once, at the same seed call
+  // that sets prev_spot_, and never touched again. Not part of
+  // RealizedVarianceSpec: it is accumulation-time-only state (needed to form
+  // S_i/S0 at each subsequent observe()), not a value a pricer ever reads
+  // back off the snapshot.
+  double s0_ = 0.0;
   bool have_prev_ = false;
   RealizedVarianceSpec rv_{};
   std::int64_t last_fixing_ts_ns_ = std::numeric_limits<std::int64_t>::min();

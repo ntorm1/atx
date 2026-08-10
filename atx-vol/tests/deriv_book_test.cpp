@@ -139,6 +139,17 @@ namespace ledger = atx::vol::counters::ledger;
   return c;
 }
 
+// Task F-2: the gamma-swap sibling of `var_swap_at` above.
+[[nodiscard]] DerivContract gamma_swap_at(double T) {
+  DerivContract c{};
+  c.kind = DerivKind::GammaSwap;
+  c.maturity_t = T;
+  c.notional = 1e6;
+  c.rv_spec.annualization = 252.0;
+  c.rv_spec.n_obs_total = 88u;
+  return c;
+}
+
 TEST(DerivBook, PricesVarAndVolSwapAgainstSurfaceSet) {
   const atx::vol::PricedSurface ps = atx::vol::testkit::make_flat_surface(7, 100.0, 100.0, 0.30);
   const atx::vol::PricedSurface *arr[] = {&ps};
@@ -176,6 +187,97 @@ TEST(DerivBook, PricesVarAndVolSwapAgainstSurfaceSet) {
   EXPECT_EQ(f->n_ok(), 2u);
   // qty scaling: row0 vega is 2x the single-contract vega, roughly 2*2*sigma*N*df
   EXPECT_GT(f->rows[0].greeks.vega, 0.0);
+}
+
+// Task F-2 (deriv_book plumbing / "kind passthrough"): a GammaSwap row prices
+// correctly through the SAME public entry point VarSwap/VolSwap already do --
+// `var_swap_memo_eligible` (deriv_book.cpp) whitelists `kind ==
+// DerivKind::VarSwap` only, so this row falls straight through to the generic
+// unmemoized `deriv_price_on_ref`/`deriv_greeks_on_ref` path, which dispatches
+// on `contract.kind` exactly as the templated `deriv_price` does. No
+// deriv_book.cpp code change was needed for this kind (see the task report's
+// exhaustiveness audit); this is the positive proof.
+TEST(DerivBook, PricesGammaSwapAgainstSurfaceSet) {
+  const atx::vol::PricedSurface ps = atx::vol::testkit::make_flat_surface(7, 100.0, 100.0, 0.30);
+  const atx::vol::PricedSurface *arr[] = {&ps};
+  auto ss = SurfaceSet::create(arr);
+  ASSERT_TRUE(ss.has_value());
+
+  DerivPosition p0{};
+  p0.id = 21;
+  p0.uid = 7;
+  p0.qty = 2.0;
+  p0.contract = gamma_swap_at(0.35);
+
+  const DerivPosition book[] = {p0};
+  const auto f = price_deriv_book(*ss, book);
+  ASSERT_TRUE(f.has_value()) << f.error().to_string();
+  ASSERT_EQ(f->rows.size(), 1u);
+  EXPECT_EQ(f->rows[0].status, PriceStatus::Ok);
+  // sigma == 0.30 flat, ZERO carry on this fixture (testkit::make_flat_surface
+  // has no q/r differential -- see FixtureActuallyRollsItsForward's own note
+  // on the OTHER fixture builder above), so K_gamma == K_var == sigma^2 here
+  // exactly, same closed-form identity `GammaSwap.FlatZeroCarryExact`
+  // (derivatives_test.cpp) pins.
+  EXPECT_NEAR(f->rows[0].fair_strike_dec, 0.09, 5e-4);  // sigma^2
+  EXPECT_GT(f->rows[0].pv, 0.0);  // struck at 0, qty > 0
+  EXPECT_GT(f->rows[0].greeks.vega, 0.0);
+}
+
+// Task F-2 audit point (deriv_book.cpp's key-field audit,
+// `var_swap_memo_eligible`): GammaSwap rows must NEVER share the VarSwap
+// book-level memo, and must bump the SEPARATE GammaSwapStripEvals counter
+// (never VarSwapStripEvals -- folding the two would silently corrupt what
+// VarSwapMemo.EvalCountIsPerDistinctTenorNotPerRow measures, see
+// counters.hpp's own doc on that enumerator). Proven by BOTH directions at
+// once: L=5 GammaSwap rows sharing one (uid,T) bump GammaSwapStripEvals
+// exactly 5 times (O(L), no memo collapse to O(1)) and bump
+// VarSwapStripEvals exactly 0 times.
+//
+// MARKS-ONLY (greeks=false), same reason `VarSwapMemo.MarksOnlyEvalCount
+// IsAlsoPerDistinctTenor` above uses it: `deriv_greeks`'s OWN FD bump table
+// (unrelated to this task, pre-existing) issues MANY strip evaluations per
+// contract (center, spot/vol bumps, second-order cross terms, and -- the one
+// that actually explains an early draft of this test measuring 75, not 5 --
+// the carry-theta diagnostic's `var_swap_fair_strike` call for the injected-
+// fixing rate, which `eval_bump_table` runs for EVERY DerivKind, not just
+// VarSwap; see the header comment on `DerivGreeks::theta_carry`). That
+// multiplicity is real and orthogonal to what this test checks (memo
+// eligibility, not per-contract FD cost), so marks-only pricing (one strip
+// call per row, exactly `price_gamma_swap`'s own contract) isolates it.
+TEST(DerivBook, GammaSwapNeverUsesTheVarSwapMemo) {
+  const PricedSurface ps = make_carry_skew_surface(7, 100.0, 0.30, 0.02);
+  const PricedSurface *arr[] = {&ps};
+  auto ss = SurfaceSet::create(arr);
+  ASSERT_TRUE(ss.has_value());
+
+  std::vector<DerivPosition> book;
+  for (std::uint32_t i = 0; i < 5u; ++i) {
+    DerivPosition p{};
+    p.id = i;
+    p.uid = 7;
+    p.qty = 1.0;
+    p.contract = gamma_swap_at(0.35);
+    p.contract.strike_dec = 0.01 * static_cast<double>(i);
+    p.contract.rv_spec.n_obs_done = i;  // mid-life: not fully aged, needs the strip
+    book.push_back(p);
+  }
+
+  ledger::reset();
+  const auto f = price_deriv_book(*ss, book, DerivConfig{}, /*greeks=*/false);
+  ASSERT_TRUE(f.has_value()) << f.error().to_string();
+  ASSERT_EQ(f->rows.size(), 5u);
+  for (const auto &row : f->rows) {
+    EXPECT_EQ(row.status, PriceStatus::Ok);
+  }
+  // THE assertion that carries this test: O(L), not O(1) -- if GammaSwap ever
+  // accidentally became memo-eligible (e.g. a future edit widening `kind ==
+  // DerivKind::VarSwap` to something looser), this count would collapse to 1
+  // instead of 5.
+  EXPECT_EQ(ledger::snapshot().get(ledger::Solve::GammaSwapStripEvals), 5u);
+  // And the two counters never cross-contaminate: this book has NO VarSwap
+  // rows at all.
+  EXPECT_EQ(ledger::snapshot().get(ledger::Solve::VarSwapStripEvals), 0u);
 }
 
 // FIT-C7 / Task C-6, review round 1 CRITICAL-1: `price_deriv_book` is the

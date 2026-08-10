@@ -61,6 +61,20 @@ namespace atx::vol {
 // `qty` (sized to the caller's target vega).
 struct CycleSwapRequest {
   std::uint32_t uid{0};
+  // Task F-2: `DerivKind::GammaSwap` passes through this field, `swap_
+  // contract_for_lot`, and `solve_cycle_swap` identically to every other
+  // kind -- none of this file's own logic branches on `kind` (it reads
+  // `DerivGreeks::vega` and `DerivQuote::fair_strike_dec` generically,
+  // whichever pricer produced them), so a gamma-swap entry solve works today
+  // with no code change here. The one gap this does NOT close: `backtest.cpp`
+  // 's `valid_deriv_kind` (out of this task's file list) does not yet admit
+  // `GammaSwap` into a live `SwapLot`, so a strategy that hands a solved
+  // gamma-swap lot to the ENGINE's book still fails loud at that boundary
+  // (`validate_swap_lot_economics`) -- wiring the live backtest engine for
+  // gamma swaps is a separate, future task. `solve_cycle_swap` itself (a
+  // standalone fair-strike/vega solve against a `SurfaceRef`, no engine
+  // involved) has no such gap; see `SwapLeg.GammaSwapKindPassesThrough`
+  // (swap_leg_test.cpp).
   DerivKind kind{DerivKind::VarSwap};
   double cap_dec{0.0}; // > 0 required on a capped kind; must be 0 otherwise
   // Sizing rides entirely on `qty`, so notional stays a constant the reader

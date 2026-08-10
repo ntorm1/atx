@@ -23,6 +23,7 @@ using atx::vol::deriv_testkit::kFixturePillarsT;
 using atx::vol::deriv_testkit::make_curves;
 using atx::vol::deriv_testkit::make_flat_surface;
 using atx::vol::deriv_testkit::make_skew_surface;
+using atx::vol::deriv_testkit::mc_gamma_realized_variance;
 using atx::vol::deriv_testkit::mc_realized_variance;
 using atx::vol::deriv_testkit::McModelParams;
 using atx::vol::deriv_testkit::McRvResult;
@@ -185,6 +186,45 @@ TEST(DerivFixtures, McHarness_RecoversFlatBsExpectedRealizedVariance) {
   EXPECT_NEAR(q.mean_rv, truth, 3.0 * q.stderr_rv)
       << "mean_rv=" << q.mean_rv << " truth=" << truth
       << " stderr=" << q.stderr_rv;
+}
+
+// ── MC gamma-weighted realized-variance oracle (Task F-2) ─────────────────
+
+TEST(DerivFixtures, McGammaHarness_DeterministicUnderTheSameSeed) {
+  const McModelParams p{100.0, 0.03, 0.01, 0.25, 0.5};
+  const McRvResult a = mc_gamma_realized_variance(p, 2000, 8, 42);
+  const McRvResult b = mc_gamma_realized_variance(p, 2000, 8, 42);
+  EXPECT_EQ(a.mean_rv, b.mean_rv);
+  EXPECT_EQ(a.stderr_rv, b.stderr_rv);
+  EXPECT_EQ(a.n_paths, b.n_paths);
+
+  const McRvResult c = mc_gamma_realized_variance(p, 2000, 8, 43);
+  EXPECT_NE(a.mean_rv, c.mean_rv);
+}
+
+// Independent closed-form re-derivation (discrete monitoring, ZERO carry: r ==
+// q makes the M = E[e^{dlog_S}] moment-generating-function factor exactly 1,
+// so E[S_i/S0] == 1 for every step i, collapsing the algebra to a form hand-
+// checkable without a geometric-series sum). Per step, dlog_S ~
+// N(mu, v), mu = -0.5*sigma^2*dt, v = sigma^2*dt (r == q): E[(S_i/S0)*r_i^2]
+// = E[e^{dlog_S} * dlog_S^2] = e^{mu+v/2} * (v + (mu+v)^2) = 1 * (sigma^2*dt +
+// (0.5*sigma^2*dt)^2) -- summing n steps and dividing by T gives
+// E[RV_gamma] = sigma^2 + 0.25*sigma^4*(T/n_steps), a DIFFERENT discrete-
+// monitoring correction than the plain estimator's own (T/n)*mu^2 term
+// (McHarness_RecoversFlatBsExpectedRealizedVariance above) -- expected, since
+// the two estimators are different statistics of the same path.
+TEST(DerivFixtures, McGammaHarness_RecoversFlatBsExpectedGammaWeightedVarianceAtZeroCarry) {
+  const McModelParams p{100.0, 0.03, 0.03, 0.20, 1.0};  // r == q: zero carry
+  const std::uint32_t n_steps = 12;
+  const McRvResult q = mc_gamma_realized_variance(p, 200000, n_steps, 7);
+
+  const double truth =
+      p.sigma * p.sigma +
+      0.25 * p.sigma * p.sigma * p.sigma * p.sigma * (p.T / static_cast<double>(n_steps));
+
+  ASSERT_GT(q.stderr_rv, 0.0);
+  EXPECT_NEAR(q.mean_rv, truth, 3.0 * q.stderr_rv)
+      << "mean_rv=" << q.mean_rv << " truth=" << truth << " stderr=" << q.stderr_rv;
 }
 
 } // namespace

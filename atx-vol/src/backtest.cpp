@@ -429,6 +429,19 @@ using detail::StepMarkMemo;
   case DerivKind::CappedVarSwap:
   case DerivKind::CappedVolSwap:
     return true;
+  case DerivKind::GammaSwap:
+    // Task F-2: GammaSwap is NOT yet admitted to the LIVE backtest engine.
+    // derivatives.cpp/deriv_book.cpp price it correctly through every OTHER
+    // entry point (deriv_price, deriv_greeks, price_deriv_book, solve_cycle_
+    // swap) -- see that task's report for the full exhaustiveness audit --
+    // but this engine's own per-lot accrual state (SwapAccrual below) still
+    // mirrors ONLY the plain realized-variance estimator; wiring the S_i/S0-
+    // weighted accumulator through the live daily-fixing loop is a separate,
+    // future task, out of F-2's file list. Falls through to the same `return
+    // false` an unknown/out-of-range kind gets: a strategy that tries to open
+    // a GammaSwap SwapLot fails the WHOLE run loud
+    // (validate_swap_lot_economics, below), never silently mis-accrues one.
+    break;
   }
   return false;
 }

@@ -874,6 +874,17 @@ enum class Solve : unsigned {
   // `deriv_ref_bridge.hpp`'s `VarSwapSharedBlock`); only each row's own cheap
   // aged-blend/discount/strike-offset combine (no strip work) runs per row.
   VarSwapStripEvals,
+  // Task F-2 (append-only, mirrors VarSwapStripEvals's own precedent above --
+  // a SEPARATE counter, not a shared one, because P-6's book-memo O(K)-not-
+  // O(L) gate reads VarSwapStripEvals specifically and a gamma-swap eval
+  // folded into that same counter would silently corrupt what that gate
+  // measures). One bump per actual gamma-weighted strip quadrature
+  // (`strip_fair_value_core`'s shared body, `DerivKind::GammaSwap` branch),
+  // counted after the same cheap validation guards VarSwapStripEvals is.
+  // GammaSwap has no book-memo participation (`var_swap_memo_eligible`,
+  // deriv_book.cpp, whitelists VarSwap only), so this is O(L) for a book of L
+  // gamma-swap rows -- expected, and not itself a gate this task adds.
+  GammaSwapStripEvals,
   Count_
 };
 
@@ -882,9 +893,10 @@ inline constexpr unsigned kCount = static_cast<unsigned>(Solve::Count_);
 // Stable machine-readable names (bench JSON keys). `sl_` distinguishes the always-on
 // solve ledger from the gated `cnt_` exact counters.
 inline constexpr const char *kNames[kCount] = {
-    "sl_al_boundary_solves", "sl_al_premium_evals",     "sl_greeks_fd",
-    "sl_greeks_analytic",    "sl_greeks_adjoint",       "sl_iv_newton_iters",
-    "sl_duplicate_mark_solves", "sl_cache_carry_drift", "sl_var_swap_strip_evals",
+    "sl_al_boundary_solves",    "sl_al_premium_evals",       "sl_greeks_fd",
+    "sl_greeks_analytic",       "sl_greeks_adjoint",         "sl_iv_newton_iters",
+    "sl_duplicate_mark_solves", "sl_cache_carry_drift",      "sl_var_swap_strip_evals",
+    "sl_gamma_swap_strip_evals",
 };
 
 // A merged, point-in-time copy. Plain values (not atomics) so it is trivially

@@ -9,6 +9,65 @@ Vol-derivatives production sprint, Phase 1 (correctness), Phase 2
 (performance), and Phase 3 (features). Grows only with changes that move a
 number a caller could already be marking with.
 
+### Added — `DerivKind::GammaSwap`: gamma (weighted-variance) swaps (PV-F1 / LIT-7, Task F-2)
+
+New `DerivKind::GammaSwap = 5` (appended, additive-only) prices Lee's
+weighted-variance swap (weight `w(y) = y/Y0`) through the SAME model-free
+OTM-strip machinery `VarSwap` already uses -- identical grid/span/wing-clamp/
+kink resolution (`strip_fair_value_core`, derivatives.cpp, factored out of
+what used to be `var_swap_fair_strike`'s own body; the VarSwap path through it
+is bit-for-bit unchanged). The two kinds differ in exactly two places: the
+per-node integrand (VarSwap divides by `K`; GammaSwap's `1/K` weight cancels
+against the log-strike Jacobian, leaving the raw undiscounted OTM price), and
+the outer scale (`2/T` for VarSwap; `2/(T*S0)` for GammaSwap).
+
+* Fair strike, aged blend, PV, and finite-difference greeks dispatch through
+  `deriv_price`/`deriv_greeks`/`price_deriv_book`/`solve_cycle_swap` exactly
+  like `VarSwap` -- no new public entry point.
+* `RealizedVarianceSpec` gains two appended fields (arity pin raised, newly
+  established at 8 -- this is the first time the struct has grown since v1.0):
+  `sum_weighted_sq_log_returns_done` (raw running `Sigma (S_i/S0)*r_i^2`) and
+  `rv_gamma_done_dec` (its annualized decimal form). `RealizedTracker::observe`
+  populates both alongside the pre-existing plain accumulator, anchoring `S0`
+  at the tracker's own seed spot.
+* `DerivGreekMethod::AnalyticStrip` is NOT extended to `GammaSwap` -- P-4's
+  scope predicate (`kind == DerivKind::VarSwap`, a whitelist) already excludes
+  it, so a caller requesting the closed form on a gamma swap silently falls
+  back to `FiniteDifference`, bit-identical to requesting it explicitly
+  (`GammaSwap.AnalyticStripMethodFallsBackToFiniteDifference`).
+* `DerivDiscreteCorrection::Diffusion1OverN` is REJECTED (`NotImplemented`) on
+  `GammaSwap`: Broadie-Jain's addend is derived for the plain realized-
+  variance estimator, and there is no re-derivation for the `S_i/S0`-weighted
+  one in this task's scope. Rejected loudly rather than silently ignored or
+  misapplied.
+* EXACTNESS CAVEAT: the single-expiry OTM-strip replication this ships is
+  EXACT only under zero carry (`r == q`) -- under `r - q != 0` the true
+  weighted-variance hedge needs a continuum of expiries (Lee, "Weighted
+  Variance Swaps," EQF), out of this task's scope. The shipped strike is a
+  FIRST-ORDER-IN-`(r-q)*T` approximation to the true expectation: for a flat
+  surface, `K_gamma_shipped = sigma^2 * e^{(r-q)*T}` against a true continuous-
+  monitoring expectation of `sigma^2 * (e^{(r-q)*T}-1)/((r-q)*T)`, a measured
+  gap of `sigma^2*(r-q)*T/2` to leading order (`GammaSwap.CarryApproximation
+  ClosedForm`: ~5.09e-4 decimal variance units at sigma=20%, r-q=5%, T=0.5Y --
+  1.8% from the leading-order estimate).
+* New ledger counter `counters::ledger::Solve::GammaSwapStripEvals`, separate
+  from `VarSwapStripEvals` (folding the two would corrupt what P-6's book-memo
+  O(K)-not-O(L) gate measures against `VarSwapStripEvals` specifically).
+  `var_swap_memo_eligible` (deriv_book.cpp) is NOT extended to `GammaSwap` --
+  it whitelists `kind == DerivKind::VarSwap` only, so a gamma-swap row always
+  takes the generic unmemoized path (`DerivBook.GammaSwapNeverUsesTheVarSwap
+  Memo`).
+* `backtest.cpp`'s `valid_deriv_kind` (the live backtest engine's swap-lot
+  gate) deliberately does NOT admit `GammaSwap` yet -- the engine's own
+  per-lot accrual state (`SwapAccrual`) still mirrors only the plain
+  estimator, so wiring the `S_i/S0`-weighted accumulator through the live
+  daily-fixing loop is separate, future work. A strategy that tries to open a
+  live `GammaSwap` `SwapLot` fails the WHOLE run loud
+  (`validate_swap_lot_economics`), never silently mis-accrues one.
+  `swap_leg.cpp`'s `solve_cycle_swap`/`swap_contract_for_lot` (a standalone
+  fair-strike/vega solve against a `SurfaceRef`, no engine involved) has no
+  such gap and works today (`SwapLeg.GammaSwapKindPassesThrough`).
+
 ### Added — `DerivConfig::wing_mode`: Lee-consistent wing extrapolation, `LeeSlopeExtrapolation` (FIT-F1 / PV-6 / LIT-6, Task F-1)
 
 The variance strip's flat-vol wing clamp (`DerivConfig::wing_clamp_k`) is

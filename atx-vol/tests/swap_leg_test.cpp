@@ -270,6 +270,50 @@ TEST(SwapLeg, SolveCycleSwapStrikesFairAndSizesToTargetVega) {
   EXPECT_NEAR(q->pv, 0.0, 1e-12);
 }
 
+// Task F-2: `DerivKind::GammaSwap` kind passthrough. Same recipe as
+// `SolveCycleSwapStrikesFairAndSizesToTargetVega` above, with `req.kind =
+// GammaSwap` -- this exercises `swap_contract_for_lot`/`solve_cycle_swap`'s
+// generic (kind-blind) plumbing against a REAL DerivKind other than VarSwap
+// for the first time in this file. Non-vacuous: if `deriv_price_on_ref`'s
+// GammaSwap dispatch were missing or broken, the fair-strike solve inside
+// `solve_cycle_swap` would return Err and `ASSERT_TRUE(lot.has_value())`
+// would fail outright, not merely produce a wrong number.
+TEST(SwapLeg, GammaSwapKindPassesThrough) {
+  const fs::path dir = fresh_dir("solve-gamma");
+  const PricedSurface s0 = make_surface(kUid, 100.0, kBaseNow);
+  const Result<MarketSnapshot> snap = MarketSnapshot::load(write_one(dir, "2026-08-01", s0));
+  ASSERT_TRUE(snap.has_value());
+  const SurfaceRef surface = snap->find(kUid);
+  ASSERT_NE(surface, nullptr);
+
+  std::vector<std::int64_t> sessions;
+  for (int i = 0; i < 5; ++i) {
+    sessions.push_back(kBaseNow + i * kStepNs);
+  }
+  CycleSwapRequest req = make_request(sessions);
+  req.kind = DerivKind::GammaSwap;
+  constexpr double kTarget = 2500.0;
+
+  const Result<SwapLot> lot = solve_cycle_swap(surface, req, kTarget);
+  ASSERT_TRUE(lot.has_value()) << lot.error().to_string();
+  EXPECT_EQ(lot->kind, DerivKind::GammaSwap);
+  EXPECT_GT(lot->strike_dec, 0.0);
+
+  RealizedVarianceSpec staged{};
+  staged.annualization = 252.0;
+  staged.n_obs_total = lot->n_obs_total;
+  const Result<DerivGreeks> g = detail::deriv_greeks_on_ref(
+      surface, swap_contract_for_lot(*lot, lot->start_ts_ns, staged), req.deriv_cfg,
+      DerivGreekBumps{});
+  ASSERT_TRUE(g.has_value());
+  EXPECT_NEAR(lot->qty * g->vega, kTarget, 1e-6 * kTarget);
+
+  const Result<DerivQuote> q = detail::deriv_price_on_ref(
+      surface, swap_contract_for_lot(*lot, lot->start_ts_ns, staged), req.deriv_cfg);
+  ASSERT_TRUE(q.has_value());
+  EXPECT_NEAR(q->pv, 0.0, 1e-12);
+}
+
 // FIT-C7 / Task C-6, review round 1 CRITICAL-1/2: the production wiring.
 // `solve_cycle_swap` is `swap_leg.cpp`'s (and, through it, every
 // DeclarativeStrategy swap leg's) fair-strike and entry-vega solve; before

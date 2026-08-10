@@ -255,4 +255,60 @@ struct McRvResult {
   return McRvResult{mean, std::sqrt(sample_var / n), n_paths};
 }
 
+// Task F-2 (PV-F1 / LIT-7): the gamma-swap sibling of `mc_realized_variance`
+// above -- IDENTICAL GBM path simulation (same exact-transition-density
+// increments, same seed/determinism contract), extended with Lee's w(y) =
+// y/Y0 weight: RV_gamma = (1/T) * sum_i (S_i/S0) * r_i^2, S0 the path's own
+// starting spot (`params.spot`, which THIS function actually reads, unlike
+// the plain estimator above where it is scale-free and unused) and S_i the
+// spot immediately AFTER the i-th return -- the same "weight applies to the
+// return just realized" convention `RealizedTracker::observe` (derivatives.
+// cpp) uses.
+//
+// Closed form this reproduces in the CONTINUOUS-MONITORING (n_steps -> inf)
+// limit, for FLAT Black-Scholes: E[RV_gamma] = sigma^2 * (e^{(r-q)T} - 1) /
+// ((r-q)*T), collapsing to sigma^2 exactly at r == q (l'Hopital) -- see
+// `GammaSwap.CarryApproximationClosedForm` (derivatives_test.cpp) for the
+// from-scratch re-derivation and its comparison against the strip's own
+// single-expiry K_gamma.
+[[nodiscard]] inline McRvResult mc_gamma_realized_variance(const McModelParams &params,
+                                                            std::uint64_t n_paths,
+                                                            std::uint32_t n_steps,
+                                                            std::uint64_t seed) {
+  assert(params.T > 0.0 && "mc_gamma_realized_variance: T must be positive");
+  assert(params.sigma > 0.0 && "mc_gamma_realized_variance: sigma must be positive");
+  assert(params.spot > 0.0 && "mc_gamma_realized_variance: spot must be positive");
+  assert(n_paths > 0 && "mc_gamma_realized_variance: n_paths must be positive");
+  assert(n_steps > 0 && "mc_gamma_realized_variance: n_steps must be positive");
+
+  const double dt = params.T / static_cast<double>(n_steps);
+  const double drift = (params.r - params.q - 0.5 * params.sigma * params.sigma) * dt;
+  const double vol_dt = params.sigma * std::sqrt(dt);
+
+  std::mt19937_64 rng(seed);
+  std::normal_distribution<double> z(0.0, 1.0);
+
+  double mean = 0.0;
+  double m2 = 0.0;
+  for (std::uint64_t p = 1; p <= n_paths; ++p) {
+    double log_ratio = 0.0;  // running ln(S_i / S0)
+    double sum_weighted_sq_ret = 0.0;
+    for (std::uint32_t i = 0; i < n_steps; ++i) {
+      const double dlog_s = drift + vol_dt * z(rng);
+      log_ratio += dlog_s;
+      const double weight = std::exp(log_ratio);  // S_i / S0
+      sum_weighted_sq_ret += weight * dlog_s * dlog_s;
+    }
+    const double rv = sum_weighted_sq_ret / params.T;
+    const double delta = rv - mean;
+    mean += delta / static_cast<double>(p);
+    const double delta2 = rv - mean;
+    m2 += delta * delta2;
+  }
+
+  const double n = static_cast<double>(n_paths);
+  const double sample_var = (n_paths > 1) ? m2 / (n - 1.0) : 0.0;
+  return McRvResult{mean, std::sqrt(sample_var / n), n_paths};
+}
+
 } // namespace atx::vol::deriv_testkit

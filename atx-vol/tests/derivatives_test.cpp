@@ -2720,6 +2720,62 @@ TEST(Dispatch, EngineKindMatrixEnforced) {
     ASSERT_FALSE(q.has_value());
     EXPECT_EQ(q.error().code(), ErrorCode::InvalidArgument);
   }
+  // Task F-2: GammaSwap joins the matrix at the exact same cells VarSwap
+  // occupies (both are strip-only kinds with no VolCarrLee/RvDistribution*
+  // formula of their own).
+  {
+    DerivConfig cfg = deriv_default_config();
+    cfg.engine = DerivEngine::VolCarrLee;
+
+    DerivContract c{};
+    c.kind = DerivKind::GammaSwap;
+    c.maturity_t = 0.25;
+    c.strike_dec = 0.04;
+    c.notional = 1.0;
+
+    const auto q = deriv_price(surf, cs, c, cfg);
+    ASSERT_FALSE(q.has_value());
+    EXPECT_EQ(q.error().code(), ErrorCode::InvalidArgument);
+  }
+  {
+    // RvDistributionProxy is reserved for GammaSwap: the reserved-engine
+    // switch's allow-list (CappedVarSwap/CappedVolSwap/VolSwap only) was
+    // deliberately NOT extended for this task -- GammaSwap has no
+    // distribution-model formula, wired or otherwise.
+    DerivConfig cfg = deriv_default_config();
+    cfg.engine = DerivEngine::RvDistributionProxy;
+
+    DerivContract c{};
+    c.kind = DerivKind::GammaSwap;
+    c.maturity_t = 0.25;
+    c.strike_dec = 0.04;
+    c.notional = 1.0;
+
+    const auto q = deriv_price(surf, cs, c, cfg);
+    ASSERT_FALSE(q.has_value());
+    EXPECT_EQ(q.error().code(), ErrorCode::NotImplemented);
+  }
+  {
+    // The two legal engines both reach the SAME strip (price_gamma_swap never
+    // reads cfg.engine, exactly like price_var_swap) -- Auto and
+    // StripLogContract must price identically.
+    DerivContract c{};
+    c.kind = DerivKind::GammaSwap;
+    c.maturity_t = 0.25;
+    c.strike_dec = 0.04;
+    c.notional = 1.0;
+
+    DerivConfig cfg_auto = deriv_default_config();
+    cfg_auto.engine = DerivEngine::Auto;
+    DerivConfig cfg_strip = deriv_default_config();
+    cfg_strip.engine = DerivEngine::StripLogContract;
+
+    const auto q_auto = deriv_price(surf, cs, c, cfg_auto);
+    const auto q_strip = deriv_price(surf, cs, c, cfg_strip);
+    ASSERT_TRUE(q_auto.has_value());
+    ASSERT_TRUE(q_strip.has_value());
+    EXPECT_DOUBLE_EQ(q_auto->fair_strike_dec, q_strip->fair_strike_dec);
+  }
 }
 
 // ── Interior bad-node accounting (PV-4) ───────────────────────────────────
@@ -3021,6 +3077,347 @@ TEST(CarrLee, RefinedPropagatesStripFailure) {
   const auto q = vol_swap_fair_strike(surf, cs, T_test, cfg);
   ASSERT_FALSE(q.has_value());
   EXPECT_EQ(q.error().code(), ErrorCode::Internal);
+}
+
+// ── Gamma swap (Task F-2, PV-F1 / LIT-7) ────────────────────────────────────
+//
+// Lee's weighted-variance strip (w(y) = y/Y0): DerivKind::GammaSwap shares the
+// SAME grid/span/wing-clamp/kink resolution as VarSwap's own strip
+// (`strip_fair_value_core`, derivatives.cpp) but its per-node integrand is the
+// raw undiscounted OTM price (the 1/K weight cancels against the log-strike
+// Jacobian) and its outer scale is 2/(T*S0) rather than 2/T.
+//
+// Three mandated oracles, in the brief's own order:
+//   FlatZeroCarryExact — flat sigma, r=q=0: K_gamma == sigma^2 exactly
+//     (E[S_t/S0] == 1 under zero carry, so Y0 cancels the whole weight).
+//   SkewOrdering — negative skew: K_gamma < K_var (Lee's price-weighting
+//     downweights the rich put wing relative to VarSwap's own 1/K weight).
+//   MCOracle — Task-0 MC harness extended with the S_i/S0 weight, BS with
+//     drift, 3-SE agreement.
+// Plus supporting tests. `CarryApproximationClosedForm` re-derives, from
+// scratch (Carr-Madan spanning, h(K) = K*ln(K) - K so h''(K) = 1/K matches
+// the strip's own price/df integrand exactly), the closed form the flat-
+// surface strip evaluates to under NONZERO carry, and uses it to MEASURE the
+// O((r-q)*T) approximation the header doc promises a number for.
+
+TEST(GammaSwap, FlatZeroCarryExact) {
+  const double spot = 100.0;  // != 1: see this test's own note below
+  const double sigma = 0.20;
+  const double T_test = 0.10;
+  const EssviSurface surf = make_flat_surface(sigma, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(spot, 0.01, 1.00);  // zero rate: r == q == 0
+
+  DerivConfig cfg = deriv_default_config();
+  cfg.quality = DerivQuality::High;  // tighter quadrature; see the tolerance note below
+
+  DerivContract c{};
+  c.kind = DerivKind::GammaSwap;
+  c.maturity_t = T_test;
+  c.notional = 1.0;
+  c.strike_dec = 0.0;
+  // rv_spec left at n_obs_total == 0: unaged, pure future leg.
+
+  const auto q = deriv_price(surf, cs, c, cfg);
+  ASSERT_TRUE(q.has_value()) << q.error().to_string();
+
+  // THE assertion that carries this oracle. An UNIMPLEMENTED GammaSwap
+  // dispatch fails ASSERT_TRUE above outright (the pre-F-2 `deriv_price`
+  // switch has no GammaSwap case and returns InvalidArgument). A wrong OUTER
+  // SCALE (a missing /S0, or a leftover VarSwap 2/T) misses by a factor of
+  // `spot` == 100 here, not by quadrature noise -- `spot` is deliberately
+  // != 1 so that whole bug class cannot hide behind a coincidental S0 == 1.
+  // What this test does NOT, by itself, discriminate: a strip that computed
+  // K_var instead of K_gamma (i.e. reused VarSwap's own 1/K-weighted
+  // integrand AND its 2/T scale) would ALSO land on sigma^2 here, because
+  // K_var is itself carry-independent and equals sigma^2 under this exact
+  // fixture -- the two formulas coincide at zero carry on a flat surface by
+  // construction (see the file derivation this test's own numbers were
+  // checked against). `SkewOrdering` below is what specifically rules out
+  // that failure mode.
+  const double k_gamma_expected = sigma * sigma;
+  EXPECT_NEAR(q->fair_strike_dec, k_gamma_expected, 1.0e-6 * k_gamma_expected);
+  EXPECT_GT(q->fair_strike_dec, 0.0);
+}
+
+TEST(GammaSwap, SkewOrdering) {
+  using atx::vol::deriv_testkit::kSkewRefT;
+  using atx::vol::deriv_testkit::make_curves;
+  using atx::vol::deriv_testkit::make_skew_surface;
+
+  const double atm_vol = 0.20;
+  const double skew_slope = -0.60;  // steep negative skew (rho fixed at -0.7)
+  const double convexity = 0.5;
+  const EssviSurface surf = make_skew_surface(atm_vol, skew_slope, convexity);
+  const CurveSet cs = make_curves(100.0, 0.0, 0.0);  // zero carry: isolate the skew mechanism
+
+  DerivConfig cfg = deriv_default_config();
+  cfg.quality = DerivQuality::High;
+
+  const auto q_var = var_swap_fair_strike(surf, cs, kSkewRefT, cfg);
+  ASSERT_TRUE(q_var.has_value());
+
+  DerivContract c{};
+  c.kind = DerivKind::GammaSwap;
+  c.maturity_t = kSkewRefT;
+  c.notional = 1.0;
+  c.strike_dec = 0.0;
+  const auto q_gamma = deriv_price(surf, cs, c, cfg);
+  ASSERT_TRUE(q_gamma.has_value());
+
+  // THE assertion that carries this oracle: a STRICT inequality against the
+  // production VarSwap value, same skewed surface, same T, same cfg. A
+  // GammaSwap dispatch that -- by a kind-routing bug, a reverted price_node,
+  // or an accidental alias -- actually computed K_var would make the two
+  // EQUAL, failing this EXPECT_LT outright (not a tolerance question, a
+  // strict-ordering one). This is the discriminator FlatZeroCarryExact's own
+  // comment above says it cannot be: at zero carry on a FLAT surface the two
+  // formulas coincide by construction, but under skew they provably diverge
+  // (VarSwap's extra 1/K weight amplifies the rich, low-strike put wing under
+  // negative skew more than GammaSwap's flat-in-K weighting does).
+  EXPECT_LT(q_gamma->fair_strike_dec, q_var->fair_strike_dec);
+  EXPECT_GT(q_gamma->fair_strike_dec, 0.0);
+}
+
+TEST(GammaSwap, MCOracle) {
+  using atx::vol::deriv_testkit::make_curves;
+  using atx::vol::deriv_testkit::make_flat_surface;
+  using atx::vol::deriv_testkit::mc_gamma_realized_variance;
+  using atx::vol::deriv_testkit::McModelParams;
+
+  const double sigma = 0.20;
+  const double r = 0.021;
+  const double q = 0.020;  // r-q = 0.001: small enough that the genuine
+                           // O((r-q)*T) shipped-vs-true approximation gap
+                           // (see CarryApproximationClosedForm below, whose
+                           // r-q=0.05 fixture measures ~5.09e-4 at T=0.5) sits
+                           // well inside this MC's own 3-SE band -- MEASURED
+                           // at ~1.3e-5 against a 3-SE band of ~2.8e-5 (~2.2x
+                           // margin) -- while any real dispatch/weighting bug
+                           // (O(sigma^2) ~ 0.04 scale) would still miss by
+                           // several hundred multiples of that same band.
+  const double T = 0.5;   // 6M fixture pillar
+  const double spot = 100.0;
+
+  const EssviSurface surf = make_flat_surface(sigma);
+  const CurveSet cs = make_curves(spot, r, q);
+
+  DerivConfig cfg = deriv_default_config();
+  cfg.quality = DerivQuality::High;
+
+  DerivContract c{};
+  c.kind = DerivKind::GammaSwap;
+  c.maturity_t = T;
+  c.notional = 1.0;
+  c.strike_dec = 0.0;
+  const auto q_gamma = deriv_price(surf, cs, c, cfg);
+  ASSERT_TRUE(q_gamma.has_value()) << q_gamma.error().to_string();
+
+  const McModelParams p{spot, r, q, sigma, T};
+  const auto mc = mc_gamma_realized_variance(p, 200000, 252u, 11);
+  ASSERT_GT(mc.stderr_rv, 0.0);
+
+  // THE assertion that carries this oracle: production K_gamma (the real
+  // dispatch, `deriv_price` -> `price_gamma_swap` -> `strip_fair_value_core`,
+  // not a re-implementation) against an INDEPENDENT seeded-MC simulation
+  // extended with the S_i/S0 weight (deriv_fixtures.hpp, never calls into
+  // derivatives.cpp). A wrong weight, wrong scale, or mis-dispatched kind all
+  // move this by O(sigma^2) ~ 0.04, dwarfing 3*mc.stderr_rv; the (r-q) chosen
+  // above keeps the genuine O((r-q)*T) single-expiry approximation this task
+  // ships comfortably inside the same band (see the parameter comment above).
+  EXPECT_NEAR(q_gamma->fair_strike_dec, mc.mean_rv, 3.0 * mc.stderr_rv)
+      << "fair_strike=" << q_gamma->fair_strike_dec << " mc_mean=" << mc.mean_rv
+      << " mc_stderr=" << mc.stderr_rv;
+}
+
+// Supporting test: re-derives, from scratch, the closed form
+// `strip_fair_value_core` evaluates to for a FLAT surface under nonzero
+// carry (Carr-Madan spanning against h(K) = K*ln(K) - K, h''(K) = 1/K, the
+// SAME weight the strip's price/df integrand carries for GammaSwap) --
+// K_gamma_shipped = sigma^2 * F/S0 = sigma^2 * e^{(r-q)*T} -- and measures
+// the gap against the TRUE continuous-monitoring expectation of the
+// gamma-weighted realized variance under the same flat-BS model,
+// E[RV_gamma] = sigma^2 * (e^{(r-q)*T} - 1) / ((r-q)*T) (a SEPARATE
+// derivation: (sigma^2/T) * integral_0^T E[S_t/S0] dt with E[S_t/S0] =
+// e^{(r-q)*t}).
+TEST(GammaSwap, CarryApproximationClosedForm) {
+  const double spot = 100.0;
+  const double sigma = 0.20;
+  const double r = 0.05;
+  const double q = 0.00;
+  const double T_test = 0.5;
+  const EssviSurface surf = make_flat_surface(sigma, 0.01, 1.00);
+  const CurveSet cs = atx::vol::deriv_testkit::make_curves(spot, r, q);
+
+  DerivConfig cfg = deriv_default_config();
+  cfg.quality = DerivQuality::High;
+
+  DerivContract c{};
+  c.kind = DerivKind::GammaSwap;
+  c.maturity_t = T_test;
+  c.notional = 1.0;
+  c.strike_dec = 0.0;
+  const auto q_gamma = deriv_price(surf, cs, c, cfg);
+  ASSERT_TRUE(q_gamma.has_value());
+
+  const double carry = (r - q) * T_test;
+  const double k_gamma_shipped = sigma * sigma * std::exp(carry);
+  // THE assertion that carries the closed-form half of this test: production
+  // matches an INDEPENDENTLY re-derived formula (not copied from
+  // derivatives.cpp) to near machine precision -- the strip's own quadrature
+  // error at High quality on a perfectly smooth flat-vol integrand.
+  EXPECT_NEAR(q_gamma->fair_strike_dec, k_gamma_shipped, 1.0e-6 * k_gamma_shipped);
+
+  // The exactness-caveat measurement (report deliverable): the shipped
+  // single-expiry strike vs. the TRUE continuous-monitoring expectation.
+  // expm1/carry is the numerically stable form of (e^carry - 1)/carry.
+  const double k_gamma_true = sigma * sigma * std::expm1(carry) / carry;
+  const double approx_gap = k_gamma_shipped - k_gamma_true;
+  const double leading_order = sigma * sigma * carry / 2.0;
+  // Within 15% of the leading-order term: loose enough to allow the genuine
+  // O(carry^2) next term (measured ~1.8% away at this fixture's carry, well
+  // inside this bound), tight enough that a wrong-order or sign-flipped
+  // approximation would fail it.
+  EXPECT_NEAR(approx_gap, leading_order, 0.15 * std::fabs(leading_order));
+  EXPECT_GT(approx_gap, 0.0);  // shipped strike OVERSTATES the true expectation here
+}
+
+// P-4 audit: `DerivGreekMethod::AnalyticStrip` on a GammaSwap contract must
+// fall back to FiniteDifference SILENTLY (bit-identical output), never
+// differentiate VarSwap's closed form against a GammaSwap center. Carries the
+// audit by BIT-IDENTITY, not a tolerance: `deriv_greeks`'s own
+// `analytic_in_scope` is `bumps.method == AnalyticStrip && contract.kind ==
+// DerivKind::VarSwap && analytic_scope_from_cfg(cfg)` -- a WHITELIST, so
+// GammaSwap can never satisfy it regardless of any other field. A regression
+// that widened the whitelist (e.g. testing `kind != DerivKind::VolSwap`
+// instead of `kind == DerivKind::VarSwap`) would route GammaSwap through the
+// VarSwap closed form and break this identity.
+TEST(GammaSwap, AnalyticStripMethodFallsBackToFiniteDifference) {
+  const double sigma = 0.20;
+  const double T_test = 0.25;
+  const EssviSurface surf = make_flat_surface(sigma, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+
+  DerivContract c{};
+  c.kind = DerivKind::GammaSwap;
+  c.maturity_t = T_test;
+  c.notional = 1.0;
+  c.strike_dec = sigma * sigma;
+
+  const DerivConfig cfg = deriv_default_config();
+
+  atx::vol::DerivGreekBumps bumps_fd{};
+  bumps_fd.method = atx::vol::DerivGreekMethod::FiniteDifference;
+  const auto g_fd = atx::vol::deriv_greeks(surf, cs, c, cfg, bumps_fd);
+  ASSERT_TRUE(g_fd.has_value());
+
+  atx::vol::DerivGreekBumps bumps_an{};
+  bumps_an.method = atx::vol::DerivGreekMethod::AnalyticStrip;
+  const auto g_an = atx::vol::deriv_greeks(surf, cs, c, cfg, bumps_an);
+  ASSERT_TRUE(g_an.has_value());
+
+  EXPECT_DOUBLE_EQ(g_fd->delta, g_an->delta);
+  EXPECT_DOUBLE_EQ(g_fd->gamma, g_an->gamma);
+  EXPECT_DOUBLE_EQ(g_fd->vega, g_an->vega);
+  EXPECT_DOUBLE_EQ(g_fd->volga, g_an->volga);
+  EXPECT_DOUBLE_EQ(g_fd->vanna, g_an->vanna);
+  EXPECT_DOUBLE_EQ(g_fd->pv, g_an->pv);
+}
+
+// Scope decision (see price_gamma_swap's own comment, derivatives.cpp):
+// Diffusion1OverN has no derivation for the gamma-weighted estimator, so it
+// is REJECTED, not silently ignored or silently misapplied.
+TEST(GammaSwap, DiffusionOneOverNRejected) {
+  const double sigma = 0.20;
+  const EssviSurface surf = make_flat_surface(sigma, 0.01, 1.00);
+  const CurveSet cs = atx::vol::deriv_testkit::make_curves(100.0, 0.06, 0.01);
+
+  DerivContract c{};
+  c.kind = DerivKind::GammaSwap;
+  c.maturity_t = 1.0;
+  c.notional = 1.0;
+  c.rv_spec.annualization = 252.0;
+  c.rv_spec.n_obs_total = 252u;
+
+  DerivConfig cfg = deriv_default_config();
+  cfg.discrete_correction_mode = DerivDiscreteCorrection::Diffusion1OverN;
+
+  const auto q = deriv_price(surf, cs, c, cfg);
+  ASSERT_FALSE(q.has_value());
+  EXPECT_EQ(q.error().code(), ErrorCode::NotImplemented);
+}
+
+// price_gamma_swap must blend `rv.rv_gamma_done_dec` (the S_i/S0-weighted
+// accrual), never `rv.rv_done_dec` (the plain one) -- the two coexist on the
+// SAME RealizedVarianceSpec since Task F-2 appended the gamma field beside
+// the pre-existing plain one, so a field mix-up is a real, reachable defect
+// class, not a hypothetical one.
+TEST(GammaSwap, AgedBlendReadsGammaWeightedAccrualNotPlain) {
+  const double sigma = 0.20;
+  const EssviSurface surf = make_flat_surface(sigma, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+
+  DerivContract c{};
+  c.kind = DerivKind::GammaSwap;
+  c.maturity_t = 0.5;
+  c.notional = 1.0;
+  c.strike_dec = 0.0;
+  c.rv_spec.annualization = 252.0;
+  c.rv_spec.n_obs_total = 100u;
+  c.rv_spec.n_obs_done = 40u;
+  c.rv_spec.rv_gamma_done_dec = 0.09;  // heavy accrued leg
+  c.rv_spec.rv_done_dec = 0.01;        // deliberately different; must NOT be read
+
+  const auto q = deriv_price(surf, cs, c, deriv_default_config());
+  ASSERT_TRUE(q.has_value());
+
+  const double w_done = 40.0 / 100.0;
+  const double w_future = 60.0 / 100.0;
+  const double k_gamma_future = q->future_component_dec / w_future;
+  const double expected_total = w_done * 0.09 + w_future * k_gamma_future;
+  // THE assertion that carries this test: reading rv_done_dec (0.01) instead
+  // of rv_gamma_done_dec (0.09) would move fair_strike_dec by
+  // w_done*(0.09-0.01) == 0.032 -- far past this tolerance.
+  EXPECT_NEAR(q->fair_strike_dec, expected_total, 1.0e-10);
+  EXPECT_NEAR(q->accrued_component_dec, w_done * 0.09, 1.0e-12);
+  EXPECT_TRUE(has_flag(q->flags, DerivFlags::Aged));
+}
+
+// RealizedTracker's gamma accumulator (Task F-2, appended field + observe
+// path), tested directly against an independent hand-recomputation of
+// Sigma (S_i/S0)*r_i^2.
+TEST(RealizedTrackerGamma, AccumulatesWeightedVariance) {
+  auto t = RealizedTracker::create(252.0, 3);
+  ASSERT_TRUE(t.has_value());
+
+  const double s0 = 100.0;
+  ASSERT_TRUE(t->observe(s0).has_value());  // seed: anchors S0 too
+
+  const double s1 = 101.0;
+  const double s2 = 99.0;
+  const double s3 = 102.0;
+  ASSERT_TRUE(t->observe(s1).has_value());
+  ASSERT_TRUE(t->observe(s2).has_value());
+  ASSERT_TRUE(t->observe(s3).has_value());
+
+  const double r1 = std::log(s1 / s0);
+  const double r2 = std::log(s2 / s1);
+  const double r3 = std::log(s3 / s2);
+  const double sum_weighted = (s1 / s0) * r1 * r1 + (s2 / s0) * r2 * r2 + (s3 / s0) * r3 * r3;
+  const double expected_rv_gamma = 252.0 * sum_weighted / 3.0;
+  const double sum_plain = r1 * r1 + r2 * r2 + r3 * r3;
+
+  const RealizedVarianceSpec spec = t->snapshot();
+  // THE assertion that carries this test: an independent, from-scratch
+  // recomputation of Sigma (S_i/S0)*r_i^2 against the tracker's own
+  // accumulator -- a tracker that never populated rv_gamma_done_dec (a
+  // reverted/unimplemented gamma accumulator) would leave both new fields at
+  // their struct default 0.0, failing this outright.
+  EXPECT_NEAR(spec.sum_weighted_sq_log_returns_done, sum_weighted, 1.0e-15);
+  EXPECT_NEAR(spec.rv_gamma_done_dec, expected_rv_gamma, 1.0e-13);
+  // Non-regression: the pre-existing plain accumulator is untouched by this
+  // task, same tracker, same call sequence.
+  EXPECT_NEAR(spec.sum_sq_log_returns_done, sum_plain, 1.0e-15);
+  EXPECT_NEAR(spec.rv_done_dec, 252.0 * sum_plain / 3.0, 1.0e-13);
 }
 
 }  // namespace

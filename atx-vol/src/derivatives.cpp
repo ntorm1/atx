@@ -1167,12 +1167,39 @@ template <class SurfaceT>
 
 // ── Variance strip ─────────────────────────────────────────────────────────
 
+namespace {
+
+// Task F-2 (PV-F1 / LIT-7): shared strip core for the two model-free OTM-
+// strip products this file ships -- VarSwap's K_var(T) and GammaSwap's
+// K_gamma(T) (Lee's weighted-variance strip, w(y) = y/Y0). Every
+// grid/span/wing-clamp/Lee-slope/C-3-split resolution step below is
+// IDENTICAL between the two kinds (none of it reads anything but the
+// surface, curves, T, and cfg -- `kind` is not consulted until the
+// integrand and the outer scale, both marked `kind ==` at their one site
+// each); "share the resolved-grid path" per the task brief. The two kinds
+// differ in EXACTLY two places:
+//   - the per-node integrand (`price_node` below): VarSwap divides by K (the
+//     model-free variance strip's own 1/K^2 weight, one K absorbed by the
+//     log-strike Jacobian dK = K dx); GammaSwap does not (Lee's weight gives
+//     lambda_yy = 2/(Y0*K), and THAT 1/K cancels the Jacobian entirely,
+//     leaving the raw undiscounted OTM price -- see `DerivKind::GammaSwap`'s
+//     own header doc for the from-paper derivation).
+//   - the outer scale (just above `out.fair_strike_dec` below): 2/T for
+//     VarSwap; 2/(T*S0) for GammaSwap (Y0 = S0 = `curves.spot`), which is
+//     why GammaSwap alone needs `curves.spot > 0`.
+// `var_swap_fair_strike` (the public template just below this one) is a
+// one-line forward with `kind = DerivKind::VarSwap` -- every VarSwap-path
+// line in this function is textually UNCHANGED from the pre-F-2 body that
+// used to live directly in `var_swap_fair_strike` itself, so the VarSwap
+// path is bit-for-bit identical to before this task. `price_gamma_swap`
+// (this file's GammaSwap dispatcher, mirroring `price_var_swap`) calls this
+// with `kind = DerivKind::GammaSwap`.
 template <class SurfaceT>
-Result<DerivQuote> var_swap_fair_strike(const SurfaceT& surface,
-                                        const CurveSet& curves, double T,
-                                        const DerivConfig& cfg) {
+[[nodiscard]] Result<DerivQuote> strip_fair_value_core(const SurfaceT& surface,
+                                                        const CurveSet& curves, double T,
+                                                        const DerivConfig& cfg, DerivKind kind) {
   if (!(T > 0.0)) {
-    return Err(ErrorCode::InvalidArgument, "var strip needs T > 0");
+    return Err(ErrorCode::InvalidArgument, "strip needs T > 0");
   }
   if (!reserved_fields_clean(cfg)) {
     return Err(ErrorCode::NotImplemented, "reserved config field is non-zero");
@@ -1183,10 +1210,16 @@ Result<DerivQuote> var_swap_fair_strike(const SurfaceT& surface,
   if (!wing_clamp_valid(cfg)) {
     return Err(ErrorCode::InvalidArgument, "wing_clamp_k must not be NaN");
   }
-  // Task P-6: one bump per actual strip quadrature attempt, counted past the
-  // cheap up-front validation (a caller error above never touches the grid,
-  // so it is not "an evaluation") -- see Solve::VarSwapStripEvals's own doc.
-  counters::ledger::bump(counters::ledger::Solve::VarSwapStripEvals);
+  // Task P-6 (VarSwap) / Task F-2 (GammaSwap): one bump per actual strip
+  // quadrature attempt, counted past the cheap up-front validation (a caller
+  // error above never touches the grid, so it is not "an evaluation") -- see
+  // Solve::VarSwapStripEvals/GammaSwapStripEvals's own doc. TWO SEPARATE
+  // counters, not one shared one: P-6's book-memo O(K)-not-O(L) gate reads
+  // VarSwapStripEvals specifically, and folding GammaSwap evals into it would
+  // silently corrupt what that gate measures.
+  counters::ledger::bump(kind == DerivKind::GammaSwap
+                              ? counters::ledger::Solve::GammaSwapStripEvals
+                              : counters::ledger::Solve::VarSwapStripEvals);
   // Review fix I-4: resolved ONCE here (reused at the resolve_wing_clamp call
   // below) and validated eagerly -- a non-finite/non-positive supplied band
   // fails the call instead of silently widening trust to the mode-blind
@@ -1228,6 +1261,14 @@ Result<DerivQuote> var_swap_fair_strike(const SurfaceT& surface,
   const double df = curves.yield.disc(T);
   if (!(F > 0.0) || !(df > 0.0)) {
     return Err(ErrorCode::OutOfRange, "forward/discount unavailable at T");
+  }
+  // Task F-2: GammaSwap's fair-strike formula divides by S0 (Y0 in Lee's
+  // notation, curves.spot here). VarSwap's own formula never reads
+  // curves.spot at all, so this check is scoped to the one kind that needs
+  // it -- checked here, right beside F/df, so a bad spot fails before any
+  // grid work rather than after a full quadrature.
+  if (kind == DerivKind::GammaSwap && !(curves.spot > 0.0)) {
+    return Err(ErrorCode::OutOfRange, "gamma strip needs curves.spot > 0");
   }
 
   // ── E2 / AN-P1-2: adaptive wings ────────────────────────────────────────
@@ -1494,7 +1535,11 @@ Result<DerivQuote> var_swap_fair_strike(const SurfaceT& surface,
     const Side side = (x < 0.0) ? Side::Put : Side::Call;
     const bool bad = !std::isfinite(sigma) || sigma <= 0.0;
     const double price = bad ? 0.0 : black76_price(F, K, T, sigma, df, side);
-    return std::pair<double, bool>{price / (df * K), bad};
+    // Task F-2: the 1/K weight is VarSwap-only -- see this function's own
+    // header comment for the Jacobian-cancellation argument that drops it
+    // for GammaSwap (whose per-node value is just the undiscounted price).
+    const double weighted = (kind == DerivKind::GammaSwap) ? (price / df) : (price / (df * K));
+    return std::pair<double, bool>{weighted, bad};
   };
 
   double integral = 0.0;
@@ -1755,7 +1800,13 @@ Result<DerivQuote> var_swap_fair_strike(const SurfaceT& surface,
     return Err(ErrorCode::Internal, "variance strip has too many interior bad nodes");
   }
 
-  const double k_var = (2.0 / T) * integral;
+  // Task F-2: the outer scale is the SECOND (and last) kind-dependent
+  // quantity -- see this function's own header comment. Resolved once and
+  // reused for both the fair strike and the Richardson error estimate below,
+  // so the two can never disagree about which scale was actually integrated.
+  const double outer_scale =
+      (kind == DerivKind::GammaSwap) ? (2.0 / (T * curves.spot)) : (2.0 / T);
+  const double k_out = outer_scale * integral;
 
   // Composite-Simpson error is O(h^4): halving h (doubling the node density)
   // shrinks it ~16x, so the difference between the two estimates is ~15/16 of
@@ -1767,7 +1818,7 @@ Result<DerivQuote> var_swap_fair_strike(const SurfaceT& surface,
   // says "not estimated" rather than claiming a zero error nothing checked.
   double err_est = kNaN;
   if (halvable) {
-    err_est = std::fabs((2.0 / T) * (integral - integral_half)) / 15.0;
+    err_est = std::fabs(outer_scale * (integral - integral_half)) / 15.0;
   }
 
   // E2 / AN-P1-2: truncation is a COVERAGE property, not a NaN property. The
@@ -1802,13 +1853,13 @@ Result<DerivQuote> var_swap_fair_strike(const SurfaceT& surface,
   }
 
   DerivQuote out{};
-  out.fair_strike_dec = k_var;
-  out.fair_strike_points = 1.0e4 * k_var;
+  out.fair_strike_dec = k_out;
+  out.fair_strike_points = 1.0e4 * k_out;
   out.pv = 0.0;
-  out.undiscounted_expectation_dec = k_var;
-  out.uncapped_var_dec = k_var;
+  out.undiscounted_expectation_dec = k_out;
+  out.uncapped_var_dec = k_out;
   out.accrued_component_dec = 0.0;
-  out.future_component_dec = k_var;
+  out.future_component_dec = k_out;
   out.convexity_adjustment_dec = 0.0;
   out.integration_error_est = err_est;
   // The grid this quote was actually integrated on, so a caller (deriv_greeks)
@@ -1823,6 +1874,110 @@ Result<DerivQuote> var_swap_fair_strike(const SurfaceT& surface,
   out.flags = flags;
   return Ok(out);
 }
+
+}  // namespace
+
+template <class SurfaceT>
+Result<DerivQuote> var_swap_fair_strike(const SurfaceT& surface,
+                                        const CurveSet& curves, double T,
+                                        const DerivConfig& cfg) {
+  return strip_fair_value_core(surface, curves, T, cfg, DerivKind::VarSwap);
+}
+
+namespace {
+
+// Task F-2 (PV-F1 / LIT-7): gamma-swap aged-blend dispatch. Mirrors
+// `price_var_swap` above field for field -- the brief's "identical dispatch
+// structure to VarSwap" -- with exactly three differences:
+//   - the strip call goes straight to `strip_fair_value_core(..., DerivKind::
+//     GammaSwap)` (no public `gamma_swap_fair_strike` entry point exists;
+//     see the header note on `DerivKind::GammaSwap`), rather than through a
+//     public wrapper.
+//   - the accrued leg reads `rv.rv_gamma_done_dec` (the S_i/S0-weighted
+//     accumulator, Task F-2's `RealizedVarianceSpec` append), not
+//     `rv.rv_done_dec` -- `aged_total_variance_dec` itself is unchanged and
+//     unaware which "variance" it is blending, exactly as the brief states
+//     ("the linear-in-variance blend applies to the gamma-weighted variance
+//     identically").
+//   - `DerivDiscreteCorrection::Diffusion1OverN` is REJECTED (NotImplemented)
+//     rather than silently applied or silently ignored: Broadie-Jain's
+//     addend is derived for the PLAIN realized-variance estimator VarSwap's
+//     future leg is, and there is no re-derivation of the analogous
+//     discrete-monitoring correction for the S_i/S0-weighted gamma estimator
+//     in this task's scope. Silently applying VarSwap's addend to K_gamma's
+//     future leg would be a wrong number; silently ignoring the caller's
+//     request would be the P-4-class defect this sprint keeps finding. A
+//     loud, explicit NotImplemented is the same remedy this sprint already
+//     chose for an analogous scope gap (P-4's AnalyticStrip exclusion).
+template <class SurfaceT>
+[[nodiscard]] Result<DerivQuote> price_gamma_swap(const SurfaceT& surface,
+                                                   const CurveSet& curves,
+                                                   const DerivContract& contract,
+                                                   const DerivConfig& cfg) {
+  const RealizedVarianceSpec& rv = contract.rv_spec;
+  const double T = contract.maturity_t;
+
+  if (cfg.discrete_correction_mode == DerivDiscreteCorrection::FullMc) {
+    return Err(ErrorCode::NotImplemented, "FULL_MC discrete correction reserved");
+  }
+  if (cfg.discrete_correction_mode == DerivDiscreteCorrection::Diffusion1OverN) {
+    return Err(ErrorCode::NotImplemented,
+               "Diffusion1OverN discrete correction is not derived for gamma swaps");
+  }
+
+  double k_gamma_future_dec = 0.0;
+  DerivQuote strip_quote{};
+  bool strip_ran = false;
+  DerivFlags flags = DerivFlags::None;
+
+  if (rv.n_obs_total == 0u || rv.n_obs_done < rv.n_obs_total) {
+    if (!(T > 0.0)) {
+      return Err(ErrorCode::InvalidArgument,
+                 "gamma swap needs T > 0 to price the future leg");
+    }
+    ATX_TRY(auto sq, strip_fair_value_core(surface, curves, T, cfg, DerivKind::GammaSwap));
+    strip_quote = sq;
+    k_gamma_future_dec = strip_quote.fair_strike_dec;
+    strip_ran = true;
+  }
+
+  const double total = aged_total_variance_dec(rv.rv_gamma_done_dec, k_gamma_future_dec,
+                                               rv.n_obs_done, rv.n_obs_total);
+
+  const double df = deriv_df_at_T(curves, T, flags);
+  const double pv = df * contract.notional * (total - contract.strike_dec);
+
+  flags |= strip_quote.flags;
+  if (rv.n_obs_done > 0u) {
+    flags |= DerivFlags::Aged;
+  }
+  if (rv.n_obs_total > 0u && rv.n_obs_done >= rv.n_obs_total) {
+    flags |= DerivFlags::FullyAged;
+  }
+
+  double w_done = 0.0;
+  double w_future = 1.0;
+  if (rv.n_obs_total > 0u) {
+    w_done = static_cast<double>(rv.n_obs_done) / static_cast<double>(rv.n_obs_total);
+    w_future = 1.0 - w_done;
+  }
+
+  DerivQuote out{};
+  out.fair_strike_dec = total;  // fair strike that prices the contract to PV = 0
+  out.fair_strike_points = 1.0e4 * total;
+  out.pv = pv;
+  out.undiscounted_expectation_dec = total;
+  out.uncapped_var_dec = strip_ran ? strip_quote.uncapped_var_dec : 0.0;
+  out.accrued_component_dec = w_done * rv.rv_gamma_done_dec;
+  out.future_component_dec = w_future * k_gamma_future_dec;
+  out.convexity_adjustment_dec = 0.0;
+  out.integration_error_est = strip_quote.integration_error_est;
+  carry_strip_grid(out, strip_quote);
+  out.flags = flags;
+  return Ok(out);
+}
+
+}  // namespace
 
 // ── Carr-Lee volatility strike ─────────────────────────────────────────────
 
@@ -1982,6 +2137,15 @@ Result<DerivQuote> deriv_price(const SurfaceT& surface, const CurveSet& curves,
       return Err(ErrorCode::InvalidArgument, "engine cannot price capped kinds");
     }
     return price_capped_vol_swap(surface, curves, contract, cfg);
+  case DerivKind::GammaSwap:
+    // Task F-2: same engine matrix as VarSwap (Auto/StripLogContract legal;
+    // VolCarrLee has no gamma-swap formula; RvDistributionProxy/Affine/McQe
+    // already NotImplemented from the reserved-engine switch above, since
+    // GammaSwap is deliberately NOT added to that switch's allow-list).
+    if (cfg.engine == DerivEngine::VolCarrLee) {
+      return Err(ErrorCode::InvalidArgument, "engine cannot price a gamma swap");
+    }
+    return price_gamma_swap(surface, curves, contract, cfg);
   }
   // Defends against an out-of-enum kind (matches the C default's ERR_INVALID).
   return Err(ErrorCode::InvalidArgument, "unknown derivative kind");
@@ -3333,8 +3497,11 @@ Status RealizedTracker::observe(double spot) {
   }
 
   if (!have_prev_) {
-    // First observation seeds the previous spot. No return yet.
+    // First observation seeds the previous spot AND the gamma-weight anchor
+    // S0 (Task F-2) -- both at the same seed spot, and neither touched
+    // again. No return yet.
     prev_spot_ = spot;
+    s0_ = spot;
     have_prev_ = true;
     return Ok();
   }
@@ -3346,11 +3513,17 @@ Status RealizedTracker::observe(double spot) {
 
   const double r = std::log(spot / prev_spot_);
   rv_.sum_sq_log_returns_done += r * r;
+  // Task F-2 (PV-F1 / LIT-7): Lee's w(y) = y/Y0 weight, S_i the spot AT this
+  // return (the just-observed `spot`, matching the discrete estimator's own
+  // convention -- the weight applies to the return just realized, not the
+  // spot it started from).
+  rv_.sum_weighted_sq_log_returns_done += (spot / s0_) * r * r;
   rv_.n_obs_done += 1u;
   prev_spot_ = spot;
 
   const double n = static_cast<double>(rv_.n_obs_done);
   rv_.rv_done_dec = rv_.annualization * rv_.sum_sq_log_returns_done / n;
+  rv_.rv_gamma_done_dec = rv_.annualization * rv_.sum_weighted_sq_log_returns_done / n;
   return Ok();
 }
 
