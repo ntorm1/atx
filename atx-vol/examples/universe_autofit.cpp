@@ -43,6 +43,7 @@
 #include "atx/vol/pricer_fitter.hpp" // PricerFitter, PricerConfig, OutputField
 #include "atx/vol/profile.hpp"       // ProfileKind
 #include "atx/vol/session.hpp"       // FitPreset, SessionDiagnostics
+#include "atx/vol/surface_policy.hpp" // SurfaceHealth, ValidationDigest, SurfaceState
 #include "atx/vol/types.hpp"         // Result
 #include "atx/vol/vol_curve.hpp"     // VolCurveKind, to_string
 
@@ -139,8 +140,51 @@ struct Row {
   double mean_chi2{0.0};
   double mean_rmse_vol{0.0};
   bool calendar_arb_free{false};
+  // The boolean conflates "the check ran and found violations" with "the check
+  // itself failed" — a failed check is stamped with the sentinel count 1 so the
+  // `calendar_arb_free == (n_calendar_viol_pre == 0)` invariant holds. Exporting
+  // the raw count is what separates the two, and a count above the sentinel is
+  // unambiguously real arbitrage.
+  std::size_t n_calendar_viol{0};
+  std::size_t n_price_bound_viol{0};
   std::size_t n_slices{0};
   std::size_t n_quotes_used{0};
+  // ── Independent risk oracle (SurfaceHealth / ValidationDigest) ──────────────
+  // Deliberately `oracle_`-prefixed and kept apart from the SessionDiagnostics
+  // fields above: the two measure different things. The legacy booleans are
+  // written per-lane over lane-specific bands (eSSVI |k| <= 3.0, polymorphic
+  // |k| <= 0.6); the oracle certifies one band, |k| <= 0.5 at 1e-8, for every
+  // board that reaches the risk stage. Confusing the two is what produced the
+  // sprint plan's two withdrawn conclusions.
+  //
+  // `oracle_ran` is NOT redundant with the counters. A default-constructed
+  // SurfaceHealth is {state=Rejected, reasons=InsufficientData, all counters 0},
+  // so a board whose risk stage never executed is byte-identical to a board the
+  // oracle inspected and found clean. Only the generation stamp separates them.
+  bool oracle_ran{false};
+  std::string oracle_state;       // to_string(SurfaceState)
+  std::uint32_t oracle_reasons{0}; // ValidationFailure bitmask, as an integer
+  std::uint64_t oracle_candidate_generation{0};
+  std::uint64_t oracle_served_generation{0};
+  std::uint32_t o_n_slices{0};
+  std::uint32_t o_n_strike_samples{0};
+  std::uint32_t o_n_calendar_samples{0};
+  std::uint32_t o_n_non_finite{0};
+  std::uint32_t o_n_price_bound_violations{0};
+  std::uint32_t o_n_strike_monotonicity_violations{0};
+  std::uint32_t o_n_butterfly_violations{0};
+  std::uint32_t o_n_calendar_violations{0};
+  std::uint32_t o_n_wing_violations{0};
+  double o_max_calendar_slack{0.0};
+  double o_max_butterfly_slack{0.0};
+  double o_max_price_bound_slack{0.0};
+  double o_max_wing_slope_excess{0.0};
+  double o_first_calendar_k{0.0};
+  double o_first_butterfly_k{0.0};
+  // The market-mark surface's state, exported alongside the risk state so a
+  // reader can tell WHICH surface `PricerFitter::surface()` handed back rather
+  // than inferring it from the config.
+  std::string mm_state;
   // valuation
   std::size_t n_valued{0};
   std::size_t n_price_nan{0};
@@ -171,6 +215,42 @@ void record_decision(Row &row, const FitDecision &d) {
   row.f_median_spread = d.features.median_spread_pct;
   row.f_front_expiries = d.features.n_front_expiries;
   row.f_weeklies = d.features.has_weeklies;
+}
+
+// Copy the independent risk oracle's verdict out of the publication snapshot.
+//
+// `oracle_ran` is derived from `candidate_generation`, not from the counters,
+// because the counters cannot distinguish "inspected, clean" from "never
+// inspected" — see the Row comment. `PricerFitter` pre-increments its monotone
+// generation counter on entry to `fit` and stamps it into every admission
+// decision it takes, so a non-zero `candidate_generation` on `risk_health` is
+// exactly the condition "a risk admission decision was reached for this board".
+// A board whose policy omitted Risk from `outputs`, or whose build refused
+// before the risk stage, leaves the default-constructed value 0.
+void record_oracle(Row &row, const SurfaceBundle &bundle) {
+  const SurfaceHealth &health = bundle.risk_health;
+  const ValidationDigest &v = health.validation;
+  row.oracle_ran = health.candidate_generation != 0;
+  row.oracle_state = std::string(to_string(health.state));
+  row.oracle_reasons = static_cast<std::uint32_t>(health.reasons);
+  row.oracle_candidate_generation = health.candidate_generation;
+  row.oracle_served_generation = health.served_generation;
+  row.o_n_slices = v.n_slices;
+  row.o_n_strike_samples = v.n_strike_samples;
+  row.o_n_calendar_samples = v.n_calendar_samples;
+  row.o_n_non_finite = v.n_non_finite;
+  row.o_n_price_bound_violations = v.n_price_bound_violations;
+  row.o_n_strike_monotonicity_violations = v.n_strike_monotonicity_violations;
+  row.o_n_butterfly_violations = v.n_butterfly_violations;
+  row.o_n_calendar_violations = v.n_calendar_violations;
+  row.o_n_wing_violations = v.n_wing_violations;
+  row.o_max_calendar_slack = v.max_calendar_slack;
+  row.o_max_butterfly_slack = v.max_butterfly_slack;
+  row.o_max_price_bound_slack = v.max_price_bound_slack;
+  row.o_max_wing_slope_excess = v.max_wing_slope_excess;
+  row.o_first_calendar_k = v.first_calendar_k;
+  row.o_first_butterfly_k = v.first_butterfly_k;
+  row.mm_state = std::string(to_string(bundle.market_mark_health.state));
 }
 
 std::vector<std::string> read_symbols_file(const std::string &path) {
@@ -419,8 +499,11 @@ int main(int argc, char **argv) {
       row.mean_chi2 = dg.mean_chi2_reduced;
       row.mean_rmse_vol = dg.mean_rmse_vol;
       row.calendar_arb_free = dg.calendar_arb_free;
+      row.n_calendar_viol = dg.n_calendar_viol_pre;
+      row.n_price_bound_viol = dg.n_price_bound_violations;
       row.n_slices = dg.n_slices;
       row.n_quotes_used = dg.n_quotes;
+      record_oracle(row, fitter.bundle());
 
       if (do_value) {
         const auto t3 = Clock::now();
@@ -452,21 +535,34 @@ int main(int argc, char **argv) {
     std::ofstream out(out_csv, std::ios::trunc);
     out << "symbol,status,error,n_rows,n_options,spot,profile,profile_conf,decision_source,"
            "effective_preset,chosen_kind,primary_kind,used_fallback,selector_ran,selector_oos_vw,"
-           "worst_in_band,mean_in_band,mean_chi2,mean_rmse_vol,calendar_arb_free,n_slices,"
+           "worst_in_band,mean_in_band,mean_chi2,mean_rmse_vol,calendar_arb_free,"
+           "n_calendar_viol,n_price_bound_viol,n_slices,"
            "n_quotes_used,n_valued,n_price_nan,n_bidiv_nan,n_askiv_nan,load_ms,chain_ms,fit_ms,"
            "value_ms,selector_fallback,f_live_quotes,f_live_expiries,f_quoted_expiries,"
            "f_atm_quotes,f_ident_expiries,f_max_nm_strikes,f_median_spread,f_front_expiries,"
-           "f_weeklies,selector_error\n";
+           "f_weeklies,selector_error,"
+           // Appended block: independent risk oracle. Existing columns and their
+           // order are frozen so previously-written analysis scripts keep working.
+           "oracle_ran,oracle_state,oracle_reasons,oracle_candidate_generation,"
+           "oracle_served_generation,oracle_n_slices,oracle_n_strike_samples,"
+           "oracle_n_calendar_samples,oracle_n_non_finite,oracle_n_price_bound_violations,"
+           "oracle_n_strike_monotonicity_violations,oracle_n_butterfly_violations,"
+           "oracle_n_calendar_violations,oracle_n_wing_violations,oracle_max_calendar_slack,"
+           "oracle_max_butterfly_slack,oracle_max_price_bound_slack,"
+           "oracle_max_wing_slope_excess,oracle_first_calendar_k,oracle_first_butterfly_k,"
+           "mm_state\n";
     for (const Row &w : rows) {
       char buf[512];
       std::snprintf(buf, sizeof(buf),
                     ",%zu,%zu,%.6f,%s,%.6f,%s,%s,%s,%s,%d,%d,%.4f,%.4f,%.4f,%.4f,%.6f,%d,%zu,%zu,"
+                    "%zu,%zu,"
                     "%zu,%zu,%zu,%zu,%.3f,%.3f,%.3f,%.3f,%d,",
                     w.n_rows, w.n_options, w.spot, w.profile.c_str(), w.profile_conf,
                     w.decision_source.c_str(), w.effective_preset.c_str(), w.chosen_kind.c_str(),
                     w.primary_kind.c_str(), w.used_fallback ? 1 : 0, w.selector_ran ? 1 : 0,
                     w.selector_oos_vw, w.worst_in_band, w.mean_in_band, w.mean_chi2,
-                    w.mean_rmse_vol, w.calendar_arb_free ? 1 : 0, w.n_slices, w.n_quotes_used,
+                    w.mean_rmse_vol, w.calendar_arb_free ? 1 : 0, w.n_calendar_viol,
+                    w.n_price_bound_viol, w.n_slices, w.n_quotes_used,
                     w.n_valued, w.n_price_nan, w.n_bidiv_nan, w.n_askiv_nan, w.load_ms, w.chain_ms,
                     w.fit_ms, w.value_ms, w.selector_fallback ? 1 : 0);
       char fbuf[256];
@@ -474,8 +570,26 @@ int main(int argc, char **argv) {
                     w.f_live_expiries, w.f_quoted_expiries, w.f_atm_quotes, w.f_ident_expiries,
                     w.f_max_nm_strikes, w.f_median_spread, w.f_front_expiries,
                     w.f_weeklies ? 1 : 0);
+      // ValidationDigest counters are std::uint32_t, not std::size_t: `%u`, never
+      // `%zu`. A mismatched conversion specifier is undefined behaviour, and the
+      // two types differ in width on this target. The 64-bit generation stamps
+      // are cast to `unsigned long long` so `%llu` is exact by construction
+      // rather than by assuming what std::uint64_t maps to.
+      char obuf[512];
+      std::snprintf(obuf, sizeof(obuf),
+                    ",%d,%s,%u,%llu,%llu,%u,%u,%u,%u,%u,%u,%u,%u,%u,"
+                    "%.6g,%.6g,%.6g,%.6g,%.6g,%.6g,%s",
+                    w.oracle_ran ? 1 : 0, w.oracle_state.c_str(), w.oracle_reasons,
+                    static_cast<unsigned long long>(w.oracle_candidate_generation),
+                    static_cast<unsigned long long>(w.oracle_served_generation), w.o_n_slices,
+                    w.o_n_strike_samples, w.o_n_calendar_samples, w.o_n_non_finite,
+                    w.o_n_price_bound_violations, w.o_n_strike_monotonicity_violations,
+                    w.o_n_butterfly_violations, w.o_n_calendar_violations, w.o_n_wing_violations,
+                    w.o_max_calendar_slack, w.o_max_butterfly_slack, w.o_max_price_bound_slack,
+                    w.o_max_wing_slope_excess, w.o_first_calendar_k, w.o_first_butterfly_k,
+                    w.mm_state.c_str());
       out << csv_escape(w.symbol) << ',' << w.status << ',' << csv_escape(w.error) << buf << fbuf
-          << csv_escape(w.selector_error) << '\n';
+          << csv_escape(w.selector_error) << obuf << '\n';
     }
   }
 
