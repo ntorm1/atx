@@ -155,12 +155,20 @@ TEST(VolCurve, SviPairProjectionStillRepairsInsideTheOverlap) {
 
 TEST(VolCurve, SviProjectMmRepairsLeeViolation) {
   // The gate PROJECTS an inadmissible fit before rejecting; verify that repair
-  // primitive directly. A steep-wing slice (b*(1+|rho|) past the T-free Lee bound
-  // of 4) is Lee-inadmissible; svi_project_mm must move it back into the polytope.
-  // FT-C3: the bound is T-free, so b*(1+|rho|)=6 > 4 is inadmissible at any T.
+  // primitive directly. A steep-wing slice must be moved back into the polytope.
+  //
+  // The ceiling here is `kSviWingSlopeGate` == 4, which is what the gate and
+  // `mm_project_admissible` both enforce today. It is NOT Lee's raw-SVI bound:
+  // that is 2, and the 2x gap is plan defect D3 — the derivation and the
+  // measured cost of closing it live above `kSviWingSlopeGate` in arb.hpp, and
+  // `ArbSviMm.TheEssviCeilingOfFourIsLeesRawSviBoundOfTwo` pins the algebra.
+  // b*(1+|rho|) = 6 is inadmissible under EITHER convention and at any T (the
+  // bound is T-free, per FT-C3), so this case tests the projector, not the
+  // number. Whichever value the coordinated fix lands on, this test must keep
+  // passing with b chosen above it.
   SviParams s{};
   s.a = 0.04;
-  s.b = 6.0;  // b*(1+|rho|) = 6 > 4 (T-free Lee bound)
+  s.b = 6.0;  // b*(1+|rho|) = 6, past both 4 and Lee's 2
   s.rho = 0.0;
   s.m = 0.0;
   s.sigma = 0.1;

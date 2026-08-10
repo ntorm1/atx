@@ -423,18 +423,54 @@ struct SviMmAdmissibility {
   double max_slack{};            // worst absolute slack across the breached set
 };
 
+// ── Lee wing slope: the derivation, and the value actually enforced ──────
+//
+// Lee's moment formula bounds the asymptotic slope of TOTAL variance on each
+// wing: limsup_{k -> +/-inf} w(k)/|k| <= 2. For raw SVI,
+//     w = a + b*( rho*(k - m) + sqrt((k - m)^2 + sigma^2) ),
+// the radical is asymptotically |k - m|, so the right wing has slope b*(1+rho)
+// and the left b*(1-rho); the binding one is b*(1+|rho|), and Lee therefore
+// says exactly
+//     b*(1 + |rho|) <= 2.
+//
+// eSSVI carries a theta/2 PREFACTOR that raw SVI does not:
+//     w = (theta/2)*( 1 + rho*phi*k + sqrt((phi*k + rho)^2 + 1 - rho^2) ),
+// whose wing slope is (theta*phi/2)*(1 + |rho|). Its ceiling of 4 is a bound on
+// theta*phi*(1 + |rho|) — see `essvi_phi_max`, min(4/s, 2/sqrt(s)) with
+// s = theta*(1 + |rho|) — and pulling theta*phi/2 out of eSSVI's w gives raw-SVI
+// b = theta*phi/2 exactly. So eSSVI's 4 IS Lee's 2, written in a
+// parametrization that carries a factor of two inside it.
+//
+// The constant below is what this library enforces on raw SVI TODAY, and it is
+// the eSSVI number rather than the raw-SVI one: the gate is loose by exactly 2x
+// (plan D3), and the independent risk oracle already uses the correct 2.0
+// (`detail/risk_surface_validation.hpp`, max_abs_wing_total_variance_slope).
+//
+// It is NOT corrected here. `mm_project_admissible` (svi_calib.cpp:529-543)
+// clamps b to the same 4, and `fit_slice_curve` (vol_curve.cpp:553-561) runs
+// gate -> project -> re-gate; tightening only the gate makes the projector's own
+// output fail the re-check, so every slice with b*(1+|rho|) in (2, 4] is DROPPED
+// instead of repaired — strictly worse than the current consistent-but-wrong
+// state. Measured, gate at 2.0 with the projector left at 4.0, raw SVI pinned on
+// every board: 18 of 1619 served slices lost on lqbench 2026-08-03 (17 boards)
+// and 2 of 1277 on the S&P 100 2026-07-22 control (2 boards); 0 boards lost, and
+// 0 slices lost on either corpus under normal family auto-selection. The two
+// files must move together, and both should then read this constant.
+inline constexpr double kSviWingSlopeGate = 4.0;
+
 // Verify the Martini-Mingone admissible-polytope inequalities on a raw-SVI
 // slice (arXiv:2005.03340 §6.3 + Lee 2004):
 //
 //   1.  b > 0
 //   2.  sigma > 0
 //   3.  |rho| < 1
-//   4.  a + b*sigma*sqrt(1 - rho^2) >= 0     (global w >= 0; Lemma 3.2)
-//   5.  b * (1 + |rho|) <= 4 / T             (Lee wing-slope butterfly bound)
+//   4.  a + b*sigma*sqrt(1 - rho^2) >= 0        (global w >= 0; Lemma 3.2)
+//   5.  b * (1 + |rho|) <= kSviWingSlopeGate    (Lee wing-slope bound, T-free)
 //
 // A 1e-12 tolerance absorbs FP noise on a boundary-touching iterate. Inequality
 // (4) is skipped when (3) already fired (the radical is not real). Inequality
-// (5) is skipped for a non-positive `T`. Closed-form — no FD sampling.
+// (5) is skipped for a non-positive `T` — the bound itself is T-free, but a
+// slice with no maturity is not a slice. Closed-form — no FD sampling.
 [[nodiscard]] SviMmAdmissibility
 arb_check_butterfly_svi_mm(const SviParams &slice, double T) noexcept;
 

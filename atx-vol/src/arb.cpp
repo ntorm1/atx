@@ -1281,13 +1281,16 @@ SviMmAdmissibility arb_check_butterfly_svi_mm(const SviParams &slice,
       }
     }
   }
-  // (5) Lee wing-slope bound. FT-C3: with w = TOTAL variance this bound is T-FREE
-  // (b*(1+|rho|) <= 4), matching the eSSVI/Mingone-cube convention and the
-  // svi_project_mm projector. The previous 4/T form was over-tight for T>1 and
-  // vacuous for short T (moment-exploding short-dated wings passed the gate).
+  // (5) Lee wing-slope bound. FT-C3 correctly made it T-FREE (the previous 4/T
+  // form was over-tight for T > 1 and vacuous for short T, so moment-exploding
+  // short-dated wings passed untouched) but ported the eSSVI ceiling of 4 across
+  // a parametrization boundary that changes it by exactly 2x. Raw SVI's Lee
+  // bound is 2, not 4 — the derivation, the measured cost of correcting it, and
+  // why it cannot be corrected here alone are all in arb.hpp above
+  // `kSviWingSlopeGate`.
   if (T > 0.0) {
     const double lee_lhs = slice.b * (1.0 + std::fabs(slice.rho));
-    const double lee_rhs = 4.0;
+    const double lee_rhs = kSviWingSlopeGate;
     if (!(lee_lhs <= lee_rhs + kTol)) {
       ++n_viol;
       const double slack = lee_lhs - lee_rhs;

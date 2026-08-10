@@ -1166,8 +1166,44 @@ TEST(ArbSviMm, AdmissibleSlice_NoViolations) {
   EXPECT_NEAR(adm.max_slack, 0.0, 1.0e-15);
 }
 
+// D3, pinned as a derivation rather than as a number. `essvi_phi_max` caps
+// theta*phi*(1+|rho|) at 4 (and tighter, at 2/sqrt(s) for s = theta*(1+|rho|)
+// below 4). Pulling theta*phi/2 out of eSSVI's w gives raw-SVI b = theta*phi/2
+// exactly, so a phi-MAXIMAL eSSVI slice — the loosest wing the eSSVI lane will
+// ever admit — sits at b*(1+|rho|) = min(2, sqrt(s)) <= 2, which is Lee's bound
+// for raw SVI verbatim. The raw-SVI gate enforces twice that. If someone
+// re-derives the raw-SVI ceiling and gets 4, this test says where the factor of
+// two went.
+TEST(ArbSviMm, TheEssviCeilingOfFourIsLeesRawSviBoundOfTwo) {
+  for (const double theta : {0.004, 0.05, 0.4, 2.0, 8.0, 40.0}) {
+    for (const double rho : {-0.95, -0.5, 0.0, 0.3, 0.9}) {
+      const double phi_max = atx::vol::essvi_phi_max(theta, rho);
+      ASSERT_GT(phi_max, 0.0) << "theta=" << theta << " rho=" << rho;
+      EssviParams p{};
+      p.theta = theta;
+      p.phi = phi_max;
+      p.rho = rho;
+      p.T = 1.0;
+      const std::optional<SviCrossingSlice> cs =
+          SviCrossingSlice::from_essvi_backbone(p);
+      ASSERT_TRUE(cs.has_value());
+      const double s = theta * (1.0 + std::fabs(rho));
+      EXPECT_NEAR(cs->b() * (1.0 + std::fabs(rho)), std::min(2.0, std::sqrt(s)),
+                  1.0e-12)
+          << "theta=" << theta << " rho=" << rho;
+      EXPECT_LE(cs->b() * (1.0 + std::fabs(rho)), 2.0 + 1.0e-12);
+    }
+  }
+  // The raw-SVI gate is the OTHER number, and that is the open defect: it
+  // admits an asymptotic wing slope of 4 where Lee permits 2.
+  EXPECT_DOUBLE_EQ(atx::vol::kSviWingSlopeGate, 4.0);
+}
+
 TEST(ArbSviMm, LeeBoundViolation_OneViolationWithSlack) {
-  // b*(1+|rho|) = 5*1.4 = 7 > 4/T = 4; slack = 3. w_min stays >= 0.
+  // b*(1+|rho|) = 5*1.4 = 7, past the enforced (T-free) ceiling of 4; slack = 3.
+  // 7 also exceeds Lee's actual raw-SVI bound of 2, so this case fires under
+  // either convention and does NOT pin the ceiling's value — the derivation
+  // above does. w_min stays >= 0.
   SviParams s{};
   s.a = 0.04;
   s.b = 5.0;
