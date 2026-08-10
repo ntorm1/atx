@@ -373,6 +373,15 @@ PricedSurfaceView::create_over_record(std::span<const std::byte> record) {
       if (need > avail) {
         return Err(ErrorCode::ParseError, "PricedSurfaceView: essvi payload out of bounds");
       }
+      // Validate at the boundary, same contract as reconstruct_v2: rho_R /
+      // rho_scale are retired reserved-zero wire fields (vol_surface.hpp,
+      // `essvi_rho_blend_armed`). This view evaluates the payload IN PLACE at
+      // `slice_w`, so refusing here is the only chance to name the defect —
+      // otherwise the whole surface just answers NaN with no diagnosis.
+      if (essvi_rho_blend_armed(load_pod<EssviParams>(p))) {
+        return Err(ErrorCode::ParseError,
+                   "PricedSurfaceView: essvi payload arms the retired asymmetric-rho blend");
+      }
       break;
     case VolCurveKind::Svi:
       need = sizeof(SviParams);

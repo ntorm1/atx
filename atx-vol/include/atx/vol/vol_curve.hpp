@@ -52,6 +52,7 @@
 #include <mutex>
 #include <optional>
 #include <span>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -74,7 +75,35 @@ struct CalendarPairProjection;
 //
 // The selectable curve types. ConvexDense is the penny-dense arb-free fit (SPY);
 // Essvi/Svi are the parsimonious parametric backbones (single-name / sparse
-// boards). C8 / CStar are deferred (their evaluators are partial/unported).
+// boards); C8 is the event smile and is fully wired (calibrator `c8_calib.cpp`,
+// selector candidate, archive payload, `fit_policy.cpp` event route).
+//
+// CStar is deliberately NOT here, and stays that way (T9 decision). It is
+// neither dead code nor a missing tag; it is a SEPARATE API with its own
+// consumers, and this enum boundary is the point:
+//
+//   * live and tested — `src/cstar.cpp` (42 KB) + `src/cstar_calib.cpp` (25 KB)
+//     build into the `atx-vol` library (CMakeLists.txt:49-50), covered by
+//     `tests/cstar_test.cpp` + `tests/cstar_calib_test.cpp`
+//     (tests/CMakeLists.txt:35-36).
+//   * consumed directly, never through this enum — `bench/cstar_bench.cpp`
+//     (target `atx-vol-cstar-bench`), `examples/cstar_panel.cpp` (target
+//     `atx-vol-cstar-panel`), `examples/amzn_earnings_fit.hpp`, `s3.hpp`,
+//     `detail/legacy_cstar_surface.hpp`, `tests/amzn_earnings_test.cpp`.
+//
+// DELETING it would therefore drop 67 KB of tested code with six consumers and
+// two binary targets. ADDING a tag does not work either: every enumerator here
+// needs an `IVolCurve` implementation to dispatch to, and there is no
+// `CStarCurve` — the six classes below map one-to-one onto the six enumerators.
+// A tag is also an on-disk ABI change (`kind_bits` is `1u << VolCurveKind`,
+// `v2_payload_size` needs a case, `sizeof(CStarParams)` needs pinning plus a
+// schema-salt bump in `schema_hash_v2`) — a feature with a migration, not a
+// cleanup. Adding one WITHOUT that work would recreate the exact hazard T9
+// removed from eSSVI: a selectable switch with no certified evaluator behind it.
+//
+// (The `CStar16M` that does exist is in the separate legacy `Parametrization`
+// enum in vol_surface.hpp, where it is a tag-only marker; the CurveSurface
+// pipeline does not read that enum.)
 enum class VolCurveKind : std::uint8_t {
   ConvexDense = 0,
   Essvi = 1,
@@ -95,6 +124,31 @@ enum class VolCurveKind : std::uint8_t {
 
 // Human-readable tag (for diagnostics / bench output). Never nullptr.
 [[nodiscard]] const char *to_string(VolCurveKind kind) noexcept;
+
+// Exact inverse of `to_string`: the canonical spelling of every enumerator maps
+// back to that enumerator, and NOTHING else parses. Anything unrecognized is an
+// InvalidArgument, never a silent default — the ad-hoc chain this replaces
+// (`examples/universe_autofit.cpp`) folded every typo into ConvexDense, so
+// `--pin-kind essvii` silently fitted a 40-node dense curve.
+//
+// Defined inline beside `to_string` on purpose: the round-trip contract is only
+// checkable at a glance while the two spelling tables sit next to each other,
+// and a six-way `string_view` compare pulls in no dependency the header does not
+// already have.
+[[nodiscard]] inline Result<VolCurveKind> parse_curve_kind(std::string_view text) {
+  constexpr VolCurveKind kAll[] = {VolCurveKind::ConvexDense, VolCurveKind::Essvi,
+                                   VolCurveKind::Svi,         VolCurveKind::LinearVariance,
+                                   VolCurveKind::C8,          VolCurveKind::SplineVol};
+  for (const VolCurveKind kind : kAll) {
+    if (text == to_string(kind)) {
+      return atx::core::Ok(kind);
+    }
+  }
+  return atx::core::Err(ErrorCode::InvalidArgument,
+                        "parse_curve_kind: unrecognized curve kind '" + std::string(text) +
+                            "' (expected one of convex-dense, essvi, svi, linear-variance, "
+                            "c8-event, spline-vol)");
+}
 
 // ── The uniform per-slice curve ─────────────────────────────────────────────
 //
@@ -181,7 +235,7 @@ private:
   mutable std::atomic<const FiniteAnchors *> finite_anchors_published_{nullptr};
 };
 
-// eSSVI backbone (3 DoF, or 4 with asymmetric rho). Owns an EssviParams slice.
+// eSSVI backbone (3 DoF: theta, phi, rho). Owns an EssviParams slice.
 class EssviCurve final : public IVolCurve {
 public:
   EssviCurve(const EssviParams &slice, double df) noexcept;
@@ -190,9 +244,12 @@ public:
     return essvi_total_w(slice_, k_log);
   }
   [[nodiscard]] VolCurveKind kind() const noexcept override { return VolCurveKind::Essvi; }
-  [[nodiscard]] std::size_t dof() const noexcept override {
-    return slice_.rho_scale > 0.0 ? 4u : 3u;
-  }
+  // Always 3. This used to report 4 when `rho_scale > 0`, i.e. when the retired
+  // asymmetric-rho blend was armed; with the blend gone (vol_surface.hpp,
+  // `essvi_rho_blend_armed`) an armed slice has no extra fitted parameter, it
+  // has no evaluation at all, so a 4 here would only mislead the selector's
+  // parsimony tie-break.
+  [[nodiscard]] std::size_t dof() const noexcept override { return 3u; }
   [[nodiscard]] std::unique_ptr<IVolCurve> clone() const override {
     return std::make_unique<EssviCurve>(slice_, df_);
   }

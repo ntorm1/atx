@@ -11,16 +11,16 @@
 //
 // Ported from the C `ats-vol` library (ats_vol_svi.c, ats_vol_essvi.c,
 // ats_vol_surface.c/.h). Relative to `surface.hpp`, the eSSVI slice here
-// additionally carries the Sprint-15 asymmetric-rho blend (`rho_R`/
-// `rho_scale`), the Sprint-11/12 wing residual (`resid_coef`/`resid_scale`/
-// `resid_basis_kind`), and the Mingone cube reparametrization coordinates
-// (`psi`/`p`/`lambda`/`lambda_R`) — the calibration-adjacent extensions that
-// `surface.hpp` intentionally omits. The closed-form evaluators are:
+// additionally carries the Sprint-11/12 wing residual (`resid_coef`/
+// `resid_scale`/`resid_basis_kind`) and the Mingone cube reparametrization
+// coordinates (`psi`/`p`/`lambda`) — the calibration-adjacent extensions that
+// `surface.hpp` intentionally omits. It also still carries the retired
+// Sprint-15 asymmetric-rho fields (`rho_R`/`rho_scale`/`lambda_R`) as
+// reserved-zero wire vocabulary; see `essvi_rho_blend_armed`. The closed-form
+// evaluators are:
 //
-//   Backbone eSSVI (base Gatheral-Jacquier form):
+//   Backbone eSSVI (Gatheral-Jacquier form), one scalar rho per slice:
 //     w(k) = (theta/2) * (1 + rho*phi*k + sqrt((phi*k + rho)^2 + (1 - rho^2)))
-//   with rho replaced by an asymmetric left/right blend rho_eff(k) when
-//   rho_scale > 0.
 //
 //   Wing residual (added to the backbone when resid_scale > 0), HINGE_QUAD
 //   basis: a symmetric pair of clamped-hinge + hinge-squared terms outside a
@@ -92,22 +92,31 @@ enum class ResidualBasisKind : std::uint8_t {
 
 // ── Full eSSVI slice (ports the C `AtsVolSliceESSVI`) ────────────────────
 //
-// The backbone shape lives in (theta, phi, rho); rho_R/rho_scale add the
-// asymmetric left/right skew blend; psi/p/lambda/lambda_R are the Mingone
+// The backbone shape lives in (theta, phi, rho); psi/p/lambda are the Mingone
 // cube coordinates the optimizer works in; resid_* carry the additive wing
 // residual. T/F/expiry_* place the slice on the surface's time axis.
+//
+// RETIRED FIELDS — rho_R / rho_scale / lambda_R. These once drove a
+// strike-dependent left/right rho blend. They are no longer evaluated (see
+// `essvi_rho_blend_armed`) but MUST stay in place: `sizeof(EssviParams)` is
+// folded into the ATXVSA2 schema fingerprint (`schema_hash_v2`,
+// src/surface_archive.cpp) and every member offset is pinned by
+// `detail/surface_archive_payload.hpp`, so removing them would reject every
+// archive ever written, with no migration path. Same treatment as the
+// unimplemented `ResidualBasisKind` tags below: persisted vocabulary, rejected
+// rather than reinterpreted.
 //
 // Aggregate; trivially copyable; all members value-initialized.
 struct EssviParams {
   double theta{};                   // ATM total variance (> 0)
   double phi{};                     // curvature (> 0)
-  double rho{};                     // base / left-wing skew, in (-1, 1)
-  double rho_R{};                   // right-wing skew target for the blend
-  double rho_scale{};               // blend width; <= 0 disables the blend
+  double rho{};                     // slice skew, in (-1, 1); ONE rho per slice
+  double rho_R{};                   // RETIRED (reserved zero) — see above
+  double rho_scale{};               // RETIRED (reserved zero) — see above
   double psi{};                     // Mingone cube: theta level, in [0, 1]
   double p{};                       // Mingone cube: phi fraction, in [0, 1]
   double lambda{};                  // Mingone cube: rho position, in [0, 1]
-  double lambda_R{};                // Mingone cube: right-wing rho position
+  double lambda_R{};                // RETIRED (reserved zero) — see above
   double T{};                       // year-fraction to expiry (time axis)
   double F{};                       // forward level at expiry
   std::int64_t expiry_ns{};         // expiry timestamp (epoch ns)
@@ -152,11 +161,35 @@ struct EssviCube {
   double lambda{};
 };
 
+// ── The retired asymmetric-rho blend ─────────────────────────────────────
+//
+// True iff `slice` carries the retired strike-dependent rho blend in an
+// ACTIVE configuration: rho_scale > 0 AND rho_R != rho. (rho_scale <= 0, or
+// rho_R == rho, always collapsed to the plain rho and stays legal.)
+//
+// WHY the blend is gone rather than constrained: every published butterfly and
+// calendar condition for SSVI/eSSVI — Gatheral-Jacquier Thm 4.2, Hendriks-
+// Martini, Mingone's admissible box — is derived for a slice with ONE scalar
+// rho. A rho(k) puts w(k) in a different function class that none of them
+// cover, so an armed slice silently voids every no-arbitrage guarantee the
+// calibrator and the served-surface gates rely on. There is also nothing to
+// preserve: no fitter in this library has ever written rho_R or rho_scale
+// (`essvi_calib.cpp` sets only `rho`), so every slice it produces carries
+// rho_R == 0 while rho is typically ~-0.4 — arming the blend on one would not
+// tilt a wing, it would drag the right wing toward zero correlation. The
+// switch is wrong on its own terms for every slice this codebase can produce.
+//
+// Consequently the evaluators below REFUSE an armed slice (NaN) rather than
+// quietly serving it at the base rho, which would be a different curve served
+// with no signal. Archive readers reject an armed payload at parse time; this
+// is the defence-in-depth backstop behind that boundary check.
+[[nodiscard]] bool essvi_rho_blend_armed(const EssviParams& slice) noexcept;
+
 // ── eSSVI closed-form evaluators ─────────────────────────────────────────
 
-// eSSVI backbone total variance at log-moneyness `k_log` (asymmetric-rho
-// blend applied when rho_scale > 0). ~12 FLOPs; no domain checks (bare
-// arithmetic evaluator, matches the C). NaN in => NaN out.
+// eSSVI backbone total variance at log-moneyness `k_log`. ~12 FLOPs; no domain
+// checks (bare arithmetic evaluator, matches the C). NaN in => NaN out, and
+// NaN for an `essvi_rho_blend_armed` slice.
 [[nodiscard]] double essvi_backbone_w(const EssviParams& slice,
                                       double k_log) noexcept;
 
@@ -174,14 +207,15 @@ struct EssviCube {
 
 // Gradient of the BACKBONE total variance w.r.t. (theta, phi, rho) at fixed
 // k_log — the closed form the IRLS/Newton calibrator consumes. Returned as
-// {dtheta, dphi, drho}.
+// {dtheta, dphi, drho}; all-NaN for an `essvi_rho_blend_armed` slice.
 [[nodiscard]] std::array<double, 3> essvi_w_grad3(const EssviParams& slice,
                                                   double k_log) noexcept;
 
-// Gradient of the BACKBONE w.r.t. (theta, phi, rho_L, rho_R) — the chain
-// rule through the asymmetric-rho blend. Returned as {dtheta, dphi, drhoL,
-// drhoR}; drhoR == 0 in symmetric mode (rho_scale <= 0), collapsing to
-// essvi_w_grad3 on the first three components.
+// Gradient of the BACKBONE w.r.t. (theta, phi, rho_L, rho_R). With the rho
+// blend retired there is only one rho, so this is exactly `essvi_w_grad3` with
+// a fourth component that is identically 0. Kept as a compatibility shim for
+// the out-of-tree Python bindings (python/src/bindings/surface.cpp), which
+// export it by name; no C++ caller uses it. All-NaN for an armed slice.
 [[nodiscard]] std::array<double, 4> essvi_w_grad4(const EssviParams& slice,
                                                   double k_log) noexcept;
 

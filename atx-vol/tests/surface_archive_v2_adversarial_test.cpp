@@ -828,3 +828,81 @@ TEST(SurfaceArchiveV2Adversarial, WriteRejectsHealthyProvenanceWithValidationFai
   EXPECT_NE(built.error().to_string().find("invalid surface provenance"), std::string::npos)
       << built.error().to_string();
 }
+
+// ── T9: the retired asymmetric-rho blend is refused at the archive boundary ───
+//
+// `rho_R`/`rho_scale` are retired reserved-zero wire fields (vol_surface.hpp,
+// `essvi_rho_blend_armed`): still on the wire because `sizeof(EssviParams)` is
+// folded into the schema fingerprint, no longer evaluated because a
+// strike-dependent rho voids every published SSVI butterfly/calendar condition.
+// The evaluators answer NaN for an armed slice, but a NaN surface names no
+// defect — so BOTH parsers must refuse the payload instead, which is what these
+// pin. Offsets are the ones `detail/surface_archive_payload.hpp` pins as the
+// on-disk ABI.
+namespace {
+constexpr std::uint64_t kEssviRhoOff = 16;      // offsetof(EssviParams, rho)
+constexpr std::uint64_t kEssviRhoROff = 24;     // offsetof(EssviParams, rho_R)
+constexpr std::uint64_t kEssviRhoScaleOff = 32; // offsetof(EssviParams, rho_scale)
+
+// make_essvi leaves rho_R at 0 while rho is negative, so a non-zero rho_scale
+// ALONE arms the blend — the minimal single-field corruption, exactly the shape
+// a pre-retirement Python writer could have produced.
+[[nodiscard]] double first_slice_rho(const std::vector<std::byte> &rec, std::uint64_t payload) {
+  double rho = 0.0;
+  std::memcpy(&rho, rec.data() + payload + kEssviRhoOff, sizeof rho);
+  return rho;
+}
+} // namespace
+
+TEST(SurfaceArchiveV2Adversarial, ViewRejectsEssviPayloadArmingRetiredRhoBlend) {
+  ExtractedRecord r = extract_record(make_essvi(1, 4), "sym");
+  const std::uint64_t payload = peek_u64(r.bytes, r.header.col_payload_off_off);
+  ASSERT_LT(first_slice_rho(r.bytes, payload), 0.0); // rho != rho_R(0) => scale arms it
+  poke_f64(r.bytes, payload + kEssviRhoScaleOff, 0.5);
+
+  const auto view = PricedSurfaceView::create_over_record(r.bytes);
+  ASSERT_FALSE(view.has_value());
+  EXPECT_EQ(view.error().code(), ErrorCode::ParseError);
+  EXPECT_NE(view.error().to_string().find("asymmetric-rho blend"), std::string::npos)
+      << view.error().to_string();
+}
+
+TEST(SurfaceArchiveV2Adversarial, ReconstructRejectsEssviPayloadArmingRetiredRhoBlend) {
+  ArchiveWithRecord a = build_archive_with_record(make_essvi(1, 4), "sym");
+  const std::uint64_t payload = peek_u64(a.bytes, a.record_offset + a.header.col_payload_off_off);
+  poke_f64(a.bytes, a.record_offset + payload + kEssviRhoScaleOff, 0.5);
+
+  auto arch = SurfaceArchiveV2::open(std::move(a.bytes));
+  ASSERT_TRUE(arch.has_value()) << arch.error().to_string(); // lazy: body untouched at open
+  const auto rec = arch->reconstruct_all();
+  ASSERT_FALSE(rec.has_value());
+  EXPECT_EQ(rec.error().code(), ErrorCode::ParseError);
+  EXPECT_NE(rec.error().to_string().find("asymmetric-rho blend"), std::string::npos)
+      << rec.error().to_string();
+}
+
+// The guard must be the ARMED predicate, not "any slice that touches the retired
+// fields". rho_R == rho collapsed to the plain rho even when the blend ran, so
+// such a payload is a legal constant-rho curve and MUST still load — this is the
+// property that keeps the boundary check from turning historical archives into
+// load failures. (Measured 2026-08-10: 162,793 persisted eSSVI slices, zero with
+// a non-zero rho_scale or rho_R, so no real archive exercises either branch; this
+// test is what stops the check from widening later.)
+TEST(SurfaceArchiveV2Adversarial, BothParsersAcceptScaleWithoutADistinctRightRho) {
+  ExtractedRecord r = extract_record(make_essvi(1, 4), "sym");
+  const std::uint64_t payload = peek_u64(r.bytes, r.header.col_payload_off_off);
+  const double rho = first_slice_rho(r.bytes, payload);
+  poke_f64(r.bytes, payload + kEssviRhoROff, rho); // rho_R == rho => NOT armed
+  poke_f64(r.bytes, payload + kEssviRhoScaleOff, 0.5);
+  EXPECT_TRUE(PricedSurfaceView::create_over_record(r.bytes).has_value());
+
+  ArchiveWithRecord a = build_archive_with_record(make_essvi(1, 4), "sym");
+  const std::uint64_t apayload =
+      peek_u64(a.bytes, a.record_offset + a.header.col_payload_off_off);
+  poke_f64(a.bytes, a.record_offset + apayload + kEssviRhoROff, rho);
+  poke_f64(a.bytes, a.record_offset + apayload + kEssviRhoScaleOff, 0.5);
+  auto arch = SurfaceArchiveV2::open(std::move(a.bytes));
+  ASSERT_TRUE(arch.has_value()) << arch.error().to_string();
+  const auto rec = arch->reconstruct_all();
+  EXPECT_TRUE(rec.has_value()) << (rec.has_value() ? "" : rec.error().to_string());
+}

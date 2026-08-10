@@ -3,8 +3,10 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <functional>
+#include <iterator>
 #include <span>
 #include <vector>
 
@@ -413,4 +415,69 @@ TEST(VolCurve, ConvexRepairSpecInvalidSpecRejected) {
   const auto inverted = fit_slice_curve(cfg, obs, F, T, df);
   ASSERT_FALSE(inverted.has_value());
   EXPECT_EQ(inverted.error().code(), atx::core::ErrorCode::InvalidArgument);
+}
+
+// ── VolCurveKind <-> string round-trip (T9) ─────────────────────────────────
+//
+// `parse_curve_kind` replaces an ad-hoc if/else chain that folded every
+// unrecognized string into ConvexDense. These pin the two properties that chain
+// lacked: EVERY enumerator round-trips through to_string, and an unknown string
+// is a typed failure rather than a silent default.
+
+// Every enumerator, listed explicitly. A new curve kind that is not added here
+// fails the exhaustiveness check below, which is the point.
+constexpr atx::vol::VolCurveKind kAllCurveKinds[] = {
+    atx::vol::VolCurveKind::ConvexDense,    atx::vol::VolCurveKind::Essvi,
+    atx::vol::VolCurveKind::Svi,            atx::vol::VolCurveKind::LinearVariance,
+    atx::vol::VolCurveKind::C8,             atx::vol::VolCurveKind::SplineVol};
+
+TEST(ParseCurveKind, EveryEnumeratorRoundTripsThroughToString) {
+  for (const atx::vol::VolCurveKind kind : kAllCurveKinds) {
+    const char *text = atx::vol::to_string(kind);
+    ASSERT_NE(text, nullptr);
+    const auto parsed = atx::vol::parse_curve_kind(text);
+    ASSERT_TRUE(parsed.has_value()) << "no parse for to_string(" << text << ")";
+    EXPECT_EQ(*parsed, kind) << "round-trip changed the kind for '" << text << "'";
+  }
+}
+
+// Guards the list above against a newly added enumerator: the underlying values
+// are dense from 0, so the count and the max value pin the enum's extent. If
+// this fires, add the new kind to kAllCurveKinds (and to to_string).
+TEST(ParseCurveKind, EnumeratorListIsExhaustive) {
+  constexpr std::size_t kExpectedCount = 6;
+  static_assert(std::size(kAllCurveKinds) == kExpectedCount);
+  EXPECT_EQ(static_cast<std::uint8_t>(atx::vol::VolCurveKind::SplineVol), kExpectedCount - 1);
+  for (std::size_t i = 0; i < kExpectedCount; ++i) {
+    EXPECT_EQ(static_cast<std::uint8_t>(kAllCurveKinds[i]), static_cast<std::uint8_t>(i));
+  }
+}
+
+TEST(ParseCurveKind, EveryToStringSpellingIsDistinct) {
+  for (const atx::vol::VolCurveKind a : kAllCurveKinds) {
+    for (const atx::vol::VolCurveKind b : kAllCurveKinds) {
+      if (a == b) {
+        continue;
+      }
+      EXPECT_STRNE(atx::vol::to_string(a), atx::vol::to_string(b));
+    }
+  }
+}
+
+TEST(ParseCurveKind, UnknownStringIsATypedFailureNotADefault) {
+  // "c8" is the spelling examples/universe_autofit.cpp's chain accepts;
+  // to_string says "c8-event". It must NOT silently parse -- that mismatch is a
+  // caller bug to fix at the call site, not something to paper over here.
+  for (const char *bad : {"", " ", "essvii", "c8", "ESSVI", "convex_dense", "unknown",
+                          "spline-vol "}) {
+    const auto parsed = atx::vol::parse_curve_kind(bad);
+    ASSERT_FALSE(parsed.has_value()) << "unexpectedly parsed '" << bad << "'";
+    EXPECT_EQ(parsed.error().code(), atx::core::ErrorCode::InvalidArgument);
+  }
+}
+
+TEST(ParseCurveKind, RejectsTheToStringFallbackSpelling) {
+  // to_string returns "unknown" only for an out-of-range enumerator value; that
+  // sentinel must never parse back into a real kind.
+  EXPECT_FALSE(atx::vol::parse_curve_kind("unknown").has_value());
 }

@@ -1321,6 +1321,24 @@ namespace {
       }
       EssviParams e{};
       std::memcpy(&e, p, sizeof e);
+      // Validate at the boundary (agent profile §4): rho_R/rho_scale are retired
+      // reserved-zero wire fields, so an armed blend can only come from a
+      // hand-written payload or the pre-retirement Python setters. Refuse it here
+      // rather than let the evaluator's NaN backstop surface a whole dead surface
+      // with no diagnosis.
+      //
+      // This rejection is only safe because NO persisted archive is armed, which
+      // was MEASURED before it shipped (2026-08-10), not assumed: every surface
+      // archive on the build host was parsed in BINARY mode straight from these
+      // pinned offsets — 5,981 files (5,913 ATXVSA20 + 68 legacy ATXVSA03),
+      // 54,470 surfaces, 842,441 slices, of which 162,793 are eSSVI. Armed: 0.
+      // Non-zero rho_scale: 0. Non-zero rho_R: 0. Non-zero lambda_R: 0. Had the
+      // count been non-zero this check would be a load-time regression on
+      // historical data, not a boundary guard.
+      if (essvi_rho_blend_armed(e)) {
+        return Err(ErrorCode::ParseError,
+                   "reconstruct_v2: essvi payload arms the retired asymmetric-rho blend");
+      }
       curve = std::make_unique<EssviCurve>(e, df);
       break;
     }
