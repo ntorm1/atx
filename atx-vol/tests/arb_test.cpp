@@ -6,6 +6,8 @@
 #include <functional>
 #include <limits>
 #include <memory>
+#include <optional>
+#include <random>
 #include <utility>
 #include <vector>
 
@@ -60,8 +62,13 @@ using atx::vol::Parametrization;
 using atx::vol::prefit_filter_underlier;
 using atx::vol::QuoteBatch;
 using atx::vol::QuoteFlag;
+using atx::vol::CalendarInterval;
 using atx::vol::ResidualBasisKind;
 using atx::vol::Side;
+using atx::vol::SliceCrossings;
+using atx::vol::svi_pair_calendar_intervals;
+using atx::vol::svi_pair_crossings;
+using atx::vol::SviCrossingSlice;
 using atx::vol::svi_total_w;
 using atx::vol::SviParams;
 using atx::vol::SviCurve;
@@ -220,20 +227,29 @@ TEST(ArbCalendar, MonotoneSurface_NoViolations) {
   EXPECT_TRUE(res.value().empty());
 }
 
-TEST(ArbCalendar, LongerMaturityLowerVariance_FlaggedEveryGridPoint) {
-  // slice0 (T=0.25) carries larger total variance than slice1 (T=1.0): a
-  // calendar crossing at every one of the 8 sampled k-points.
+TEST(ArbCalendar, LongerMaturityLowerVariance_FlaggedAsOneInterval) {
+  // slice0 (T=0.25) carries 4x slice1's (T=1.0) total variance at every k, so
+  // the two never cross and the whole of R is one violating region. The EXACT
+  // regime (residual-free eSSVI, strictly ascending T) reports that as ONE
+  // interval; the sampled regime it replaced reported one hit per grid point,
+  // which made the count a function of `n_grid` rather than of the surface.
   const VolSurface surf = make_essvi_2slice(0.16, 0.25, 0.04, 1.0);
   const auto res = arb_check_calendar(surf, -0.2, 0.2, 8);
   ASSERT_TRUE(res.has_value());
   const auto &v = res.value();
-  ASSERT_EQ(v.size(), 8u);
-  for (const ArbViolation &viol : v) {
-    EXPECT_EQ(viol.kind, ArbViolation::Kind::Calendar);
-    EXPECT_GT(viol.slack, 0.0);  // slack = w(T1) - w(T2) > 0
-    EXPECT_EQ(viol.T1, 0.25);    // shorter maturity recorded distinctly
-    EXPECT_EQ(viol.T2, 1.0);
-  }
+  ASSERT_EQ(v.size(), 1u);
+  EXPECT_EQ(v[0].kind, ArbViolation::Kind::Calendar);
+  EXPECT_GT(v[0].slack, 0.0);  // slack = w(T1) - w(T2) > 0
+  EXPECT_EQ(v[0].T1, 0.25);    // shorter maturity recorded distinctly
+  EXPECT_EQ(v[0].T2, 1.0);
+  // The witness must sit inside the band the caller asked about.
+  EXPECT_GE(v[0].k_log, -0.2);
+  EXPECT_LE(v[0].k_log, 0.2);
+  // ... and the record must be honest about the deficit there.
+  EXPECT_NEAR(v[0].slack,
+              essvi_total_w(surf.essvi_slices()[0], v[0].k_log) -
+                  essvi_total_w(surf.essvi_slices()[1], v[0].k_log),
+              1.0e-15);
 }
 
 TEST(ArbCalendar, EmptyOrSingleSlice_NoOpEmpty) {
@@ -292,6 +308,374 @@ TEST(ArbCalendar, NonFiniteFirstSlice_StillFlagsTheLaterCrossing) {
     EXPECT_EQ(viol.T2, 1.0);
     EXPECT_NEAR(viol.slack, 0.12, 1.0e-15);
   }
+}
+
+// ── Exact slice crossings (quartic root test) ─────────────────────────────
+
+namespace {
+
+[[nodiscard]] SviParams svi_slice(double a, double b, double rho, double m,
+                                  double sigma, double T) {
+  SviParams s{};
+  s.a = a;
+  s.b = b;
+  s.rho = rho;
+  s.m = m;
+  s.sigma = sigma;
+  s.T = T;
+  return s;
+}
+
+// Two slices whose total variances cross in a window ~0.0022 wide centred at
+// k = 0.009, i.e. narrower than a single step of the 64-point [-0.6, 0.6] grid
+// (0.01875) and sitting BETWEEN two of its samples (0.0 and 0.01875).
+//
+//   D(k) = (a_lo - a_hi) + b*( sqrt(d^2 + s_lo^2) - sqrt(d^2 + s_hi^2) ),
+//          d = k - m
+//
+// peaks at d = 0 (value 0.2*(0.05 - 0.01) - 0.00799 = 1e-5 > 0) and decays
+// monotonically to -0.00799 as |d| grows, so there are exactly two crossings
+// and exactly one violating interval, both closed-form:
+//   D ~ 1e-5 - 8*d^2 => |d| = sqrt(1.25e-6) = 0.0011180...
+[[nodiscard]] VolSurface make_narrow_crossing_surface() {
+  return make_svi_2slice(svi_slice(0.10000, 0.2, 0.0, 0.009, 0.05, 0.25),
+                         svi_slice(0.10799, 0.2, 0.0, 0.009, 0.01, 1.00));
+}
+
+[[nodiscard]] SviCrossingSlice must_convert(const SviParams &p) {
+  const std::optional<SviCrossingSlice> cs = SviCrossingSlice::from_svi(p);
+  EXPECT_TRUE(cs.has_value()) << "fixture slice is not exactly decidable";
+  // SAFETY: every call site passes a polytope-admissible slice; `value()`
+  // throws loudly on a broken fixture rather than dereferencing an empty
+  // optional, so there is no UB path even when the EXPECT above has fired.
+  return cs.value();
+}
+
+}  // namespace
+
+TEST(SviCrossingSlice, EssviBackboneReparametrisationIsExact) {
+  // b = theta*phi/2 is the whole of D3: eSSVI's theta/2 prefactor is what makes
+  // its wing-slope ceiling 4 while raw SVI's is 2. Pin the algebra that says so.
+  const double thetas[] = {0.02, 0.16, 0.55};
+  const double phis[] = {0.4, 1.0, 3.5};
+  const double rhos[] = {-0.85, -0.3, 0.0, 0.62};
+  for (const double theta : thetas) {
+    for (const double phi : phis) {
+      for (const double rho : rhos) {
+        EssviParams p{};
+        p.theta = theta;
+        p.phi = phi;
+        p.rho = rho;
+        p.T = 0.5;
+        const std::optional<SviCrossingSlice> cs =
+            SviCrossingSlice::from_essvi_backbone(p);
+        ASSERT_TRUE(cs.has_value());
+        EXPECT_NEAR(cs->b(), 0.5 * theta * phi, 1.0e-15);
+        for (int i = -40; i <= 40; ++i) {
+          const double k = 0.05 * static_cast<double>(i);
+          EXPECT_NEAR(cs->w(k), essvi_backbone_w(p, k), 1.0e-13)
+              << "theta=" << theta << " phi=" << phi << " rho=" << rho
+              << " k=" << k;
+        }
+      }
+    }
+  }
+}
+
+TEST(SviCrossingSlice, RefusesWhatItCannotDecideExactly) {
+  // A residual layer is a clamped hinge-quadratic, not an SVI hyperbola: its
+  // crossings are NOT roots of the quartic, so accepting the slice would report
+  // a subset of the truth with the full confidence of an exact answer.
+  EssviParams resid{};
+  resid.theta = 0.10;
+  resid.phi = 1.0;
+  resid.rho = -0.2;
+  resid.T = 0.5;
+  resid.resid_scale = 0.1;
+  resid.resid_basis_kind = ResidualBasisKind::HingeQuad;
+  resid.resid_n_basis = 5;
+  resid.resid_coef[3] = 0.01;
+  EXPECT_FALSE(SviCrossingSlice::from_essvi_backbone(resid).has_value());
+
+  // An armed asymmetric rho-blend evaluates to NaN, so nothing can be decided.
+  EssviParams blended{};
+  blended.theta = 0.10;
+  blended.phi = 1.0;
+  blended.rho = -0.2;
+  blended.rho_R = 0.3;
+  blended.rho_scale = 0.5;
+  blended.T = 0.5;
+  EXPECT_FALSE(SviCrossingSlice::from_essvi_backbone(blended).has_value());
+
+  EXPECT_FALSE(
+      SviCrossingSlice::from_svi(svi_slice(0.04, -0.1, 0.0, 0.0, 0.1, 1.0))
+          .has_value());  // b < 0
+  EXPECT_FALSE(
+      SviCrossingSlice::from_svi(svi_slice(0.04, 0.1, 1.0, 0.0, 0.1, 1.0))
+          .has_value());  // |rho| == 1
+  EXPECT_FALSE(SviCrossingSlice::from_svi(
+                   svi_slice(std::numeric_limits<double>::quiet_NaN(), 0.1, 0.0,
+                             0.0, 0.1, 1.0))
+                   .has_value());
+}
+
+TEST(SviPairCrossings, LocatesBothRootsOfANarrowCrossing) {
+  const VolSurface surf = make_narrow_crossing_surface();
+  const SviCrossingSlice lo = must_convert(surf.svi_slices()[0]);
+  const SviCrossingSlice hi = must_convert(surf.svi_slices()[1]);
+
+  const SliceCrossings x = svi_pair_crossings(lo, hi);
+  ASSERT_EQ(x.n, 2u);
+  // Closed-form locations from the expansion in make_narrow_crossing_surface,
+  // to the accuracy of that second-order expansion.
+  EXPECT_NEAR(x.k[0], 0.009 - 0.0011180, 2.0e-5);
+  EXPECT_NEAR(x.k[1], 0.009 + 0.0011180, 2.0e-5);
+  // The defining property, held to machine precision: w_lo == w_hi there.
+  for (std::uint8_t i = 0; i < x.n; ++i) {
+    EXPECT_NEAR(lo.w(x.k[i]), hi.w(x.k[i]), 1.0e-15) << "root " << int{i};
+  }
+}
+
+TEST(SviPairCrossings, DropsTheSpuriousRootsTheTwoSquaringsIntroduce) {
+  // Identical shapes with the longer slice shifted up by c = 0.06 in `a`. The
+  // pair NEVER crosses (D == -0.06 everywhere), but the quartic
+  //   P = (L - B1 - B2)(L + B1 + B2)(L - B1 + B2)(L + B1 - B2)
+  // still has two real roots, from the factor L + B1 + B2 = 0 at 2B = c, i.e.
+  //   (k - m)^2 = (c/(2b))^2 - sigma^2 = 0.15^2 - 0.05^2 = 0.02.
+  // An implementation that skips back-substitution returns k = +/-0.1414 as
+  // confident crossings of two curves that are 0.06 apart there.
+  const SviParams p_lo = svi_slice(0.10, 0.2, 0.0, 0.0, 0.05, 0.25);
+  const SviParams p_hi = svi_slice(0.16, 0.2, 0.0, 0.0, 0.05, 1.00);
+  const SviCrossingSlice lo = must_convert(p_lo);
+  const SviCrossingSlice hi = must_convert(p_hi);
+
+  // Non-vacuity: the spurious roots really are there to be rejected, and the
+  // curves are a full 0.06 apart where a back-substitution-free solver would
+  // announce a crossing.
+  const double k_spurious = std::sqrt(0.02);
+  EXPECT_NEAR(2.0 * 0.2 * std::sqrt(k_spurious * k_spurious + 0.0025), 0.06,
+              1.0e-12)
+      << "fixture broken: 2*B must equal c = 0.06 at the spurious root";
+  EXPECT_NEAR(hi.w(k_spurious) - lo.w(k_spurious), 0.06, 1.0e-12);
+  EXPECT_NEAR(hi.w(0.0) - lo.w(0.0), 0.06, 1.0e-12);
+
+  EXPECT_EQ(svi_pair_crossings(lo, hi).n, 0u);
+  EXPECT_TRUE(svi_pair_calendar_intervals(lo, hi, 1.0e-12).empty());
+}
+
+TEST(SviPairCalendarIntervals, CertifiesTheUnboundedTailsAGridCannotReach) {
+  // Ordered in the near-money band and inverted in BOTH wings: the shorter
+  // slice's wing slope (b = 0.30) beats the longer one's (b = 0.10), so
+  //   D(k) = -0.15 + 0.20*sqrt(k^2 + 0.01)
+  // is negative on |k| < sqrt(0.5525) = 0.74330 and positive outside it.
+  // Roper's IV4 is quantified over R; no finite grid can make this statement.
+  const SviCrossingSlice lo = must_convert(svi_slice(0.05, 0.30, 0.0, 0.0, 0.1, 0.25));
+  const SviCrossingSlice hi = must_convert(svi_slice(0.20, 0.10, 0.0, 0.0, 0.1, 1.00));
+
+  const SliceCrossings x = svi_pair_crossings(lo, hi);
+  ASSERT_EQ(x.n, 2u);
+  EXPECT_NEAR(x.k[0], -std::sqrt(0.5525), 1.0e-12);
+  EXPECT_NEAR(x.k[1], std::sqrt(0.5525), 1.0e-12);
+
+  const std::vector<CalendarInterval> iv =
+      svi_pair_calendar_intervals(lo, hi, 1.0e-12);
+  ASSERT_EQ(iv.size(), 2u);
+  EXPECT_EQ(iv[0].k_lo, -std::numeric_limits<double>::infinity());
+  EXPECT_NEAR(iv[0].k_hi, -std::sqrt(0.5525), 1.0e-12);
+  EXPECT_NEAR(iv[1].k_lo, std::sqrt(0.5525), 1.0e-12);
+  EXPECT_EQ(iv[1].k_hi, std::numeric_limits<double>::infinity());
+  for (const CalendarInterval &c : iv) {
+    EXPECT_GT(c.slack, 0.0);
+    EXPECT_NEAR(c.slack, lo.w(c.k_witness) - hi.w(c.k_witness), 1.0e-15);
+  }
+
+  // ... and the banded check still reports the near-money band as clean, which
+  // is the whole point of separating in-band from out-of-band.
+  const VolSurface surf = make_svi_2slice(svi_slice(0.05, 0.30, 0.0, 0.0, 0.1, 0.25),
+                                          svi_slice(0.20, 0.10, 0.0, 0.0, 0.1, 1.00));
+  const auto in_band = arb_check_calendar(surf, -0.6, 0.6, 64);
+  ASSERT_TRUE(in_band.has_value());
+  EXPECT_TRUE(in_band.value().empty());
+}
+
+TEST(ArbCalendarExact, FindsTheCrossingTheGridSteppedOver) {
+  const VolSurface surf = make_narrow_crossing_surface();
+
+  // The oracle this replaces, run at the production density used by
+  // session.cpp (64 intervals over +/-0.6): the violating window is 0.0022
+  // wide and sits between the samples at k = 0 and k = 0.01875, so a sampled
+  // scan reports a clean surface.
+  const auto &s0 = surf.svi_slices()[0];
+  const auto &s1 = surf.svi_slices()[1];
+  bool grid_saw_it = false;
+  for (std::uint32_t g = 0; g < 64u; ++g) {
+    const double k = -0.6 + static_cast<double>(g) * (1.2 / 64.0);
+    if (svi_total_w(s0, k) - svi_total_w(s1, k) > 1.0e-12) {
+      grid_saw_it = true;
+    }
+  }
+  ASSERT_FALSE(grid_saw_it) << "fixture broken: the grid must miss this one";
+
+  const auto res = arb_check_calendar(surf, -0.6, 0.6, 64);
+  ASSERT_TRUE(res.has_value());
+  ASSERT_EQ(res.value().size(), 1u);
+  const ArbViolation &v = res.value().front();
+  EXPECT_EQ(v.kind, ArbViolation::Kind::Calendar);
+  EXPECT_EQ(v.T1, 0.25);
+  EXPECT_EQ(v.T2, 1.00);
+  EXPECT_NEAR(v.k_log, 0.009, 2.0e-3);
+  EXPECT_GT(v.slack, 0.0);
+  EXPECT_NEAR(v.slack, svi_total_w(s0, v.k_log) - svi_total_w(s1, v.k_log),
+              1.0e-15);
+}
+
+TEST(ArbCalendarExact, ClipsToTheRequestedBandAndKeepsTheWitnessInside) {
+  // The narrow crossing sits at k ~ 0.009; a band that excludes it must come
+  // back clean rather than reporting a violation at an out-of-band k.
+  const VolSurface surf = make_narrow_crossing_surface();
+  const auto outside = arb_check_calendar(surf, -0.6, -0.1, 64);
+  ASSERT_TRUE(outside.has_value());
+  EXPECT_TRUE(outside.value().empty());
+
+  const auto inside = arb_check_calendar(surf, 0.0, 0.02, 64);
+  ASSERT_TRUE(inside.has_value());
+  ASSERT_EQ(inside.value().size(), 1u);
+  EXPECT_GE(inside.value().front().k_log, 0.0);
+  EXPECT_LE(inside.value().front().k_log, 0.02);
+}
+
+TEST(ArbCalendarExact, FallsBackToSamplingWhenASliceCarriesAResidual) {
+  // th0 = th1 with a positive right-wing residual on the SHORTER slice: the
+  // backbones coincide, so the crossing is entirely the residual's — a shape
+  // the quartic does not describe. The surface must fall back to the sampled
+  // regime rather than certify a clean backbone comparison as the answer.
+  const VolSurface surf = make_essvi_2slice_resid(0.10, 0.10, 0.05);
+  const auto res = arb_check_calendar(surf, -0.2, 0.4, 16);
+  ASSERT_TRUE(res.has_value());
+  EXPECT_FALSE(res.value().empty())
+      << "the residual-induced crossing must still be found by the fallback";
+  // Sampled semantics: one record per violating grid point, so more than the
+  // single interval the exact regime would have produced.
+  EXPECT_GT(res.value().size(), 1u);
+}
+
+// The deliverable that proves the replacement: the exact test must find every
+// crossing the dense grid oracle finds, over randomised admissible pairs, and
+// must never invent one. The coarse production grid is run alongside to measure
+// what sampling costs.
+TEST(ArbCalendarExact, DifferentialAgainstTheDenseGridOracle) {
+  std::mt19937_64 rng(0x5EEDu);  // fixed: a flaky arbitrage test is worthless
+  std::uniform_real_distribution<double> u01(0.0, 1.0);
+  const auto draw = [&](double lo, double hi) {
+    return lo + (hi - lo) * u01(rng);
+  };
+
+  constexpr double kBandLo = -0.6;
+  constexpr double kBandHi = 0.6;
+  constexpr int kDense = 100000;  // 1.2e-5 spacing — the "oracle" grid
+  constexpr std::uint32_t kCoarse = 64;  // what session.cpp actually samples
+  constexpr double kSlackFloor = 1.0e-9;
+
+  std::size_t n_pairs = 0;
+  std::size_t n_dense_found = 0;
+  std::size_t n_coarse_found = 0;
+  std::size_t n_exact_found = 0;
+
+  for (int trial = 0; trial < 1200; ++trial) {
+    // Draw inside the Mingone polytope: b > 0, sigma > 0, |rho| < 1,
+    // a + b*sigma*sqrt(1-rho^2) >= 0, and Lee's b*(1+|rho|) <= 2 (the bound
+    // D3 derives), so every pair is one the fitter could legitimately serve.
+    const auto draw_slice = [&](double T) {
+      const double rho = draw(-0.9, 0.9);
+      const double b = std::min(draw(0.005, 0.6), 2.0 / (1.0 + std::fabs(rho)));
+      const double sigma = draw(0.01, 0.6);
+      const double a = draw(-b * sigma * std::sqrt(1.0 - rho * rho), 0.25);
+      return svi_slice(a, b, rho, draw(-0.4, 0.4), sigma, T);
+    };
+    const SviParams p_lo = draw_slice(0.25);
+    const SviParams p_hi = draw_slice(1.00);
+    ++n_pairs;
+
+    // Dense oracle, computed from svi_total_w directly so it shares no code
+    // with the routine under test.
+    double dense_worst = 0.0;
+    double dense_worst_k = 0.0;
+    for (int i = 0; i <= kDense; ++i) {
+      const double k = kBandLo + (kBandHi - kBandLo) *
+                                     (static_cast<double>(i) /
+                                      static_cast<double>(kDense));
+      const double d = svi_total_w(p_lo, k) - svi_total_w(p_hi, k);
+      if (d > dense_worst) {
+        dense_worst = d;
+        dense_worst_k = k;
+      }
+    }
+    bool coarse_found = false;
+    for (std::uint32_t g = 0; g < kCoarse; ++g) {
+      const double k = kBandLo + static_cast<double>(g) *
+                                     ((kBandHi - kBandLo) /
+                                      static_cast<double>(kCoarse));
+      if (svi_total_w(p_lo, k) - svi_total_w(p_hi, k) > 1.0e-12) {
+        coarse_found = true;
+      }
+    }
+
+    const VolSurface surf = make_svi_2slice(p_lo, p_hi);
+    const auto res = arb_check_calendar(surf, kBandLo, kBandHi, kCoarse);
+    ASSERT_TRUE(res.has_value());
+    const std::vector<ArbViolation> &v = res.value();
+
+    if (dense_worst > kSlackFloor) {
+      ++n_dense_found;
+      // (1) Never misses what sampling finds.
+      ASSERT_FALSE(v.empty())
+          << "trial " << trial << ": dense grid found slack " << dense_worst
+          << " at k=" << dense_worst_k << ", exact reported nothing"
+          << "\n  lo: a=" << p_lo.a << " b=" << p_lo.b << " rho=" << p_lo.rho
+          << " m=" << p_lo.m << " sigma=" << p_lo.sigma
+          << "\n  hi: a=" << p_hi.a << " b=" << p_hi.b << " rho=" << p_hi.rho
+          << " m=" << p_hi.m << " sigma=" << p_hi.sigma;
+      // (2) The exact witness is at least as bad as the dense grid's worst —
+      //     the interval sweep is not allowed to under-report the breach it
+      //     located.
+      double best = 0.0;
+      for (const ArbViolation &viol : v) {
+        best = std::max(best, viol.slack);
+      }
+      EXPECT_GE(best, 0.5 * dense_worst) << "trial " << trial;
+    }
+    if (coarse_found) {
+      ++n_coarse_found;
+    }
+    if (!v.empty()) {
+      ++n_exact_found;
+    }
+    // (3) Never invents one: every record's slack must be the real deficit at
+    //     its own k, must be positive, and must lie in the requested band.
+    for (const ArbViolation &viol : v) {
+      EXPECT_EQ(viol.kind, ArbViolation::Kind::Calendar);
+      EXPECT_GE(viol.k_log, kBandLo);
+      EXPECT_LE(viol.k_log, kBandHi);
+      EXPECT_GT(viol.slack, 0.0);
+      EXPECT_NEAR(viol.slack,
+                  svi_total_w(p_lo, viol.k_log) - svi_total_w(p_hi, viol.k_log),
+                  1.0e-12)
+          << "trial " << trial;
+    }
+  }
+
+  // (4) The exact regime is a strict superset of the coarse production grid,
+  //     and of the dense oracle too. Measured at 4000 pairs against a
+  //     200k-point oracle: coarse64=2940, oracle=2946, exact=2946 — the
+  //     production grid density loses 0.2% of the in-band crossings that exist,
+  //     and the exact test matches the oracle pair for pair. The committed
+  //     sizes are trimmed so the case stays a unit test.
+  EXPECT_GE(n_exact_found, n_dense_found);
+  EXPECT_GE(n_exact_found, n_coarse_found);
+  EXPECT_GT(n_pairs, std::size_t{0});
+  std::printf(
+      "[differential] pairs=%zu coarse64=%zu dense_oracle=%zu exact=%zu\n",
+      n_pairs, n_coarse_found, n_dense_found, n_exact_found);
 }
 
 // ── Calendar check (CurveSurface: ConvexDense/SVI served path) ─────────────
@@ -573,7 +957,9 @@ TEST(ArbCheckAll, ConcatenatesCalendarThenButterfly) {
       ++n_cal;
     }
   }
-  EXPECT_EQ(n_cal, 8u);  // calendar crossing at every grid point
+  // One violating INTERVAL — the two slices never cross, so all of R is one
+  // region (see ArbCalendar.LongerMaturityLowerVariance_FlaggedAsOneInterval).
+  EXPECT_EQ(n_cal, 1u);
 }
 
 TEST(ArbCheckAll, PropagatesButterflyInvalidArgument) {

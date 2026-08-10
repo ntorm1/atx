@@ -43,8 +43,10 @@
 // exclusive ownership of the surface for the call duration — the caller
 // fences them against any concurrent reader.
 
+#include <array>
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -107,19 +109,145 @@ struct ArbViolation {
   Kind kind{Kind::Calendar};
 };
 
+// ── Exact slice-crossing detection (Gatheral & Jacquier Lemma 3.3 / eq. 3.7) ─
+//
+// Two raw-SVI slices in TOTAL variance,
+//     w_i(k) = a_i + b_i*( rho_i*(k - m_i) + sqrt((k - m_i)^2 + sigma_i^2) ),
+// are equal exactly where a quartic in k has a real root. Writing
+// D = w_1 - w_2 = L + B_1 - B_2 with L(k) linear and B_i(k) = b_i*R_i(k) >= 0
+// the two radical terms, D = 0 <=> L = B_2 - B_1; squaring twice clears both
+// radicals and leaves
+//     P(k) = (L^2 - B_1^2 - B_2^2)^2 - 4*B_1^2*B_2^2,
+// of degree <= 4 because L^2, B_1^2 and B_2^2 are all quadratics. P factors as
+//     P = (L - B_1 - B_2)(L + B_1 + B_2)(L - B_1 + B_2)(L + B_1 - B_2),
+// which is the whole price of the two squarings: only the LAST factor is the
+// equation that was asked, so three quarters of P's roots are SPURIOUS. Every
+// root is therefore BACK-SUBSTITUTED into D and dropped unless D vanishes
+// there. Skipping that step manufactures confident false crossings, and no test
+// that feeds the solver only genuine crossings can detect the omission.
+//
+// Because crossings are LOCATED rather than sampled, the comparison they
+// support is decided over ALL of R: between two consecutive crossings D has no
+// zero, so a single evaluation settles its sign on that entire interval, and
+// the same argument covers both unbounded tails. Roper's IV4 is quantified over
+// R and anything reading Dupire local vol off the surface needs it there, so
+// this is the statement the check actually owes. It also cannot miss a crossing
+// for being narrower than a grid step — the failure a sampled scan has no
+// defence against.
+
+// A raw-SVI slice the exact solver is TOTAL on. The only ways to obtain one are
+// the factories below, each of which returns nullopt for anything it cannot
+// decide exactly, so a value of this type cannot represent an undecidable
+// slice and every member below is total and noexcept.
+class SviCrossingSlice {
+public:
+  // Refuses non-finite parameters, b < 0, sigma < 0 and |rho| >= 1 — outside
+  // that set w is either not real-valued or not a hyperbola in k.
+  [[nodiscard]] static std::optional<SviCrossingSlice>
+  from_svi(const SviParams &p) noexcept;
+
+  // eSSVI BACKBONE, via the exact reparametrisation obtained by pulling
+  // theta*phi/2 out of eSSVI's w:
+  //   a = theta*(1 - rho^2)/2,  b = theta*phi/2,
+  //   m = -rho/phi,             sigma = sqrt(1 - rho^2)/phi.
+  // Refuses a slice carrying a wing RESIDUAL layer (`resid_scale > 0`): the
+  // residual is a clamped piecewise hinge-quadratic, not an SVI hyperbola, so
+  // its crossings are NOT roots of the quartic and treating it as exact would
+  // silently under-report. Also refuses an armed asymmetric rho-blend, whose
+  // evaluator is NaN by construction.
+  [[nodiscard]] static std::optional<SviCrossingSlice>
+  from_essvi_backbone(const EssviParams &p) noexcept;
+
+  [[nodiscard]] double w(double k) const noexcept;
+  [[nodiscard]] double dw_dk(double k) const noexcept;
+  // Asymptotic limsup w(k)/|k| on each wing; Lee bounds both by 2.
+  [[nodiscard]] double wing_slope_right() const noexcept { return b_ * (1.0 + rho_); }
+  [[nodiscard]] double wing_slope_left() const noexcept { return b_ * (1.0 - rho_); }
+  [[nodiscard]] double T() const noexcept { return T_; }
+  [[nodiscard]] double a() const noexcept { return a_; }
+  [[nodiscard]] double b() const noexcept { return b_; }
+  [[nodiscard]] double rho() const noexcept { return rho_; }
+  [[nodiscard]] double m() const noexcept { return m_; }
+  [[nodiscard]] double sigma() const noexcept { return sigma_; }
+
+private:
+  SviCrossingSlice() = default;
+  double a_{};
+  double b_{};
+  double rho_{};
+  double m_{};
+  double sigma_{};
+  double T_{};
+};
+
+// The log-moneyness points where two slices' total variances are equal.
+// Capacity 4 with no allocation: P has degree <= 4, so four is the hard
+// maximum and a heap vector would only add a failure mode. Entries [0, n) are
+// finite and strictly ascending.
+struct SliceCrossings {
+  std::array<double, 4> k{};
+  std::uint8_t n{};
+};
+
+// Exact crossings of `lo` and `hi`, spurious quartic roots removed. Total and
+// allocation-free; a pair that never crosses yields n == 0.
+[[nodiscard]] SliceCrossings
+svi_pair_crossings(const SviCrossingSlice &lo, const SviCrossingSlice &hi) noexcept;
+
+// One maximal interval on which w_lo > w_hi — a calendar violation when `lo` is
+// the shorter maturity. `k_lo`/`k_hi` are the bounding crossings, infinite on
+// the unbounded tails. `k_witness` is a finite interior point and `slack` is
+// `w_lo - w_hi > 0` there.
+//
+// CONTRACT: the DECOMPOSITION is exact — no violating interval is missed and
+// none is invented. `slack` is a witness value sampled inside the interval,
+// hence a LOWER BOUND on the supremum of the deficit rather than the supremum
+// itself: locating that would need the roots of D', which is not a polynomial
+// system of workable degree. Callers gating on "is there a violation" get an
+// exact answer; callers gating on a slack THRESHOLD must read it as a bound.
+struct CalendarInterval {
+  double k_lo{};
+  double k_hi{};
+  double k_witness{};
+  double slack{};
+};
+
+// Every interval of R on which w_lo exceeds w_hi by more than `tol`. At most
+// three intervals: four crossings cut R into five pieces of alternating sign.
+[[nodiscard]] std::vector<CalendarInterval>
+svi_pair_calendar_intervals(const SviCrossingSlice &lo, const SviCrossingSlice &hi,
+                            double tol);
+
 // ── Calendar / butterfly checks ──────────────────────────────────────────
 
-// Sample `n_grid` equispaced log-moneyness points in [k_min, k_max] and check
-// that total variance w(k, T) is monotone non-decreasing in T at each point.
-// An empty result means "no calendar arbitrage". No-op (empty) when the
-// surface carries fewer than two slices or `n_grid == 0`.
+// Check that total variance w(k, T) is monotone non-decreasing in T across
+// consecutive slices over [k_min, k_max]. An empty result means "no calendar
+// arbitrage". No-op (empty) when the surface carries fewer than two slices or
+// `n_grid == 0`.
 //
-// A grid point where `VolSurface::w` is non-finite is SKIPPED: no violation is
-// recorded for it, and it does not become the baseline the next slice is
-// compared against — the last finite (w, T) does, so a violation straddling
-// the unusable slice is still reported, carrying the maturities of the two
-// FINITE slices it spans. There is no status channel for "this slice was not
-// evaluatable"; callers that need to know must probe `w` themselves.
+// TWO REGIMES, and which one ran is observable from the records themselves:
+//
+//  * EXACT (raw-SVI / SVI-MM surfaces, and eSSVI surfaces whose slices carry no
+//    residual layer, with strictly increasing slice maturities). Crossings are
+//    located by the quartic above and one violation is recorded per violating
+//    INTERVAL, at a witness point inside it. `n_grid` is unused. This is what
+//    changed in T4: the previous behaviour recorded one violation per violating
+//    GRID POINT, so a count was a function of the sampling density and a
+//    crossing narrower than one step was reported as no crossing at all.
+//
+//  * SAMPLED (everything else) — `n_grid` equispaced points in [k_min, k_max),
+//    one violation per violating point, exactly as before. A point where
+//    `VolSurface::w` is non-finite is SKIPPED: it is not a violation, and — the
+//    defect this guards — not a BASELINE either. The last finite (w, T) stays
+//    the baseline, so a violation straddling the unusable slice is still
+//    reported, carrying the maturities of the two FINITE slices it spans.
+//
+// Callers reading only `empty()` (the `calendar_arb_free` flag and every repair
+// gate in surface_parity.cpp) are unaffected in meaning and strictly better
+// served: the exact regime cannot miss a narrow crossing. Callers reading
+// `size()` as a count must read it as "violating intervals", not grid hits.
+// There is still NO error path — every returned `false`/non-empty is a found
+// crossing, never a failed check.
 [[nodiscard]] Result<std::vector<ArbViolation>>
 arb_check_calendar(const VolSurface &s, double k_min, double k_max,
                    std::uint32_t n_grid);
