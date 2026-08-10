@@ -11,10 +11,10 @@
 // The scalar loop calls the exact per-strike kernels in atx/vol/vol_surface.hpp
 // (essvi_backbone_w / svi_total_w), so it is the numerical source of truth; the
 // AVX2 path is pure arithmetic + one sqrt and reproduces it per strike to ~1e-12
-// (combined abs+rel). The eSSVI backbone's asymmetric-rho blend (rho_scale > 0
-// AND rho_R != rho) needs a transcendental (tanh) with no bit-exact 4-lane form,
-// so that regime falls the WHOLE batch back to the scalar kernel; the common
-// symmetric backbone (a constant effective rho) is fully vectorized.
+// (combined abs+rel). An ARMED asymmetric-rho blend (rho_scale > 0 AND
+// rho_R != rho) routes the WHOLE batch to the scalar kernel, which REFUSES it
+// with NaN: the blend was retired (T9), so both lanes decline the same slices.
+// rho_R / rho_scale are reserved-zero wire vocabulary, not an evaluated feature.
 //
 // Layout: a single slice by value, plus an array of `n` contiguous doubles of
 // log-moneyness `k_log`; the length-`n` output must not alias the input. Passing
@@ -41,14 +41,14 @@ void essvi_backbone_w_batch(const EssviParams& slice, const double* k_log,
 //                = essvi_w_grad3(slice, k_log[i])  == {[0], [1], [2]}
 // The LM residual/Jacobian build needs both w (for the residual) and the natural
 // gradient (mapped into cube coords by the caller) at every quote strike; this
-// kernel shares the backbone subexpressions (rho_eff / pk / inner / sqrt) between
+// kernel shares the backbone subexpressions (pk / inner / sqrt) between
 // w and the three partials — one evaluation tree, not the scalar path's two
 // (essvi_backbone_w THEN essvi_w_grad3, each recomputing the same tree). The
 // scalar fallback composes those exact two source-of-truth calls per element, so
 // a non-AVX2 host reproduces today's numbers bit-for-bit; the AVX2 path matches
-// them to ~1e-12 (combined abs+rel). The asymmetric-rho blend (rho_scale > 0 AND
-// rho_R != rho) falls the WHOLE batch back to the scalar kernels (no bit-exact
-// 4-lane tanh), exactly like essvi_backbone_w_batch. The four length-`n` outputs
+// them to ~1e-12 (combined abs+rel). An ARMED asymmetric-rho blend routes the
+// WHOLE batch to the scalar kernels, which refuse it with NaN, exactly like
+// essvi_backbone_w_batch. The four length-`n` outputs
 // must not alias each other or the input; n == 0 is a no-op.
 void essvi_backbone_w_grad_batch(const EssviParams& slice, const double* k_log,
                                  double* w_out, double* dw_dtheta,
