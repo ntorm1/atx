@@ -379,3 +379,43 @@ TEST(BevLabelFactoryGate, LoadDividendsTsvParsesValidRowsAndRejectsMalformedLine
   const Result<std::vector<DividendEvent>> bad = load_dividends_tsv(bad_path);
   EXPECT_FALSE(bad.has_value());
 }
+
+// Task F-1: --events calendar. (h) load_events_tsv parses dates + comments and
+// count_events_at semantics reach the rows; (i) malformed date rejected;
+// (j) empty path => nullopt (feature column NaN handled in Task F-3's test).
+TEST(BevLabelFactoryGate, EventsTsvParsesAndCounts) {
+  const std::string events_path =
+      (fs::temp_directory_path() / "atx-bev-label-factory-events.tsv").string();
+  {
+    std::ofstream f(events_path, std::ios::binary | std::ios::trunc);
+    f << "# uid=SPY\n2026-03-05\n\n2026-06-04\r\n";
+  }
+  const Result<std::optional<EventSchedule>> sched = load_events_tsv(events_path);
+  ASSERT_TRUE(sched.has_value()) << sched.error().to_string();
+  ASSERT_TRUE(sched->has_value());
+  const Result<std::int64_t> d1_r = iso_date_to_ns("2026-03-05");
+  ASSERT_TRUE(d1_r.has_value()) << d1_r.error().to_string();
+  const std::int64_t d1 = *d1_r;
+  // 2026-03-05 00:00 UTC == 1772668800 * 1e9 exactly (civil-days check).
+  EXPECT_EQ(d1, 1772668800LL * 1000000000LL);
+  EXPECT_EQ((*sched)->count_between(d1 - 1, d1), std::size_t{1}); // (now, expiry] includes expiry
+  EXPECT_EQ((*sched)->count_between(d1, d1), std::size_t{0});     // event at now excluded
+}
+
+TEST(BevLabelFactoryGate, EventsTsvRejectsMalformedDate) {
+  const std::string bad_events_path =
+      (fs::temp_directory_path() / "atx-bev-label-factory-bad-events.tsv").string();
+  {
+    std::ofstream f(bad_events_path, std::ios::binary | std::ios::trunc);
+    f << "2026-13-40\n";
+  }
+  const Result<std::optional<EventSchedule>> sched = load_events_tsv(bad_events_path);
+  ASSERT_FALSE(sched.has_value());
+  EXPECT_EQ(sched.error().code(), ErrorCode::ParseError);
+}
+
+TEST(BevLabelFactoryGate, EventsPathEmptyMeansNoCalendar) {
+  const Result<std::optional<EventSchedule>> sched = load_events_tsv("");
+  ASSERT_TRUE(sched.has_value());
+  EXPECT_FALSE(sched->has_value());
+}

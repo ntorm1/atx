@@ -12,7 +12,15 @@
 //
 //   bev_label_factory --db <root> --uid <symbol> --entry-start <date>
 //       --entry-end <date> --tenor-days <n> --delta-lo 0.05 --delta-hi 0.95
-//       --dividends <tsv> --out labels.tsv [--threads N]
+//       --dividends <tsv> --out labels.tsv [--threads N] [--events <tsv>]
+//
+// --events <tsv> is OPTIONAL and, in this task, feature-only: one ISO
+// (YYYY-MM-DD) announcement date per line, `#` comment lines and blank lines
+// skipped, CR tolerated. Timestamps are midnight UTC of the announcement
+// date -- a deliberate day-resolution approximation. When omitted (or the
+// path is empty), no calendar is loaded and the per-candidate event count is
+// NaN. The label TSV's row schema is UNCHANGED by this flag; the event count
+// is only stamped onto the in-memory `PendingJob` for a later consumer.
 //
 // Flow, per entry date in [--entry-start, --entry-end]:
 //   1. Open that date's partition and reconstruct an OWNED PricedSurface for
@@ -47,6 +55,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <limits>
 #include <optional>
 #include <span>
 #include <string>
@@ -57,6 +66,7 @@
 #include "atx/vol/backtest.hpp"         // Clock
 #include "atx/vol/breakeven.hpp"        // BevDayState/Spec/Job/LabelFrame, solve_breakeven_batch,
                                         // load_bev_path, BevExpirySnap
+#include "atx/vol/event_vol.hpp"        // EventSchedule, count_events_at
 #include "atx/vol/portfolio_pricer.hpp" // kNsPerYear, SurfaceRef
 #include "atx/vol/priced_surface.hpp"   // PricedSurface
 #include "atx/vol/rates_curve.hpp"      // DividendEvent
@@ -94,6 +104,7 @@ struct BevFactoryArgs {
   double delta_lo{0.05};
   double delta_hi{0.95};
   std::string dividends;
+  std::string events; // optional; empty = no events calendar (Task F-1)
   std::string out;
   unsigned n_threads{0}; // 0 = auto (atx_auto_worker_count())
 };
@@ -104,7 +115,7 @@ struct BevFactoryArgs {
 [[maybe_unused]] void usage() {
   std::fprintf(stderr, "usage: bev_label_factory --db ROOT --uid SYMBOL --entry-start DATE "
                        "--entry-end DATE\n    --tenor-days N --delta-lo X --delta-hi X "
-                       "--dividends TSV --out FILE\n    [--threads N]\n");
+                       "--dividends TSV --out FILE\n    [--threads N] [--events TSV]\n");
 }
 
 // argv -> BevFactoryArgs, plus the required-field and range validation. Left
@@ -138,6 +149,8 @@ bool parse_args(int argc, char **argv, BevFactoryArgs &args) {
       args.delta_hi = std::atof(v.c_str());
     } else if (flag == "--dividends" && next(v)) {
       args.dividends = v;
+    } else if (flag == "--events" && next(v)) {
+      args.events = v;
     } else if (flag == "--out" && next(v)) {
       args.out = v;
     } else if (flag == "--threads" && next(v)) {
@@ -222,6 +235,100 @@ bool parse_args(int argc, char **argv, BevFactoryArgs &args) {
   return Ok(std::move(events));
 }
 
+// ── Events-calendar TSV loader (Task F-1) ────────────────────────────────
+//
+// `days_from_civil`/`civil_from_days` mirror databento_spy_dispersion_
+// definitions.cpp's own local, self-contained copies of Howard Hinnant's
+// civil-days algorithm (rather than pulling in atx/core/datetime.hpp) --
+// same precedent, same reason: this driver is deliberately header-free (see
+// the file banner) and that example keeps its own local date kernel even
+// though it separately depends on atx/core/datetime.hpp for other things.
+
+[[nodiscard]] std::int64_t days_from_civil(int year, unsigned month, unsigned day) noexcept {
+  year -= month <= 2U;
+  const std::int64_t era = (year >= 0 ? year : year - 399) / 400;
+  const unsigned yoe = static_cast<unsigned>(year - era * 400);
+  const unsigned doy = (153U * (month > 2U ? month - 3U : month + 9U) + 2U) / 5U + day - 1U;
+  const unsigned doe = yoe * 365U + yoe / 4U - yoe / 100U + doy;
+  return era * 146097 + static_cast<std::int64_t>(doe) - 719468;
+}
+
+struct Civil {
+  int year{0};
+  unsigned month{0};
+  unsigned day{0};
+};
+
+[[nodiscard]] Civil civil_from_days(std::int64_t serial) noexcept {
+  serial += 719468;
+  const std::int64_t era = (serial >= 0 ? serial : serial - 146096) / 146097;
+  const unsigned doe = static_cast<unsigned>(serial - era * 146097);
+  const unsigned yoe = (doe - doe / 1460U + doe / 36524U - doe / 146096U) / 365U;
+  const int year = static_cast<int>(yoe) + static_cast<int>(era) * 400;
+  const unsigned doy = doe - (365U * yoe + yoe / 4U - yoe / 100U);
+  const unsigned mp = (5U * doy + 2U) / 153U;
+  const unsigned day = doy - (153U * mp + 2U) / 5U + 1U;
+  const unsigned month = mp < 10U ? mp + 3U : mp - 9U;
+  return Civil{year + static_cast<int>(month <= 2U), month, day};
+}
+
+// `YYYY-MM-DD` -> epoch ns at 00:00 UTC. Rejects out-of-range months/days AND
+// calendar-invalid combinations (e.g. 2026-02-30) via a civil-days round-trip
+// (parse -> serial -> parse back, compare fields).
+[[nodiscard]] Result<std::int64_t> iso_date_to_ns(std::string_view iso) {
+  if (iso.size() != 10 || iso[4] != '-' || iso[7] != '-') {
+    return Err(ErrorCode::ParseError, "iso_date_to_ns: bad date '" + std::string{iso} + "'");
+  }
+  const auto number = [](std::string_view field, int &value) {
+    const auto [end, ec] = std::from_chars(field.data(), field.data() + field.size(), value);
+    return ec == std::errc{} && end == field.data() + field.size();
+  };
+  int year = 0;
+  int month = 0;
+  int day = 0;
+  if (!number(iso.substr(0, 4), year) || !number(iso.substr(5, 2), month) ||
+      !number(iso.substr(8, 2), day) || month < 1 || month > 12 || day < 1 || day > 31) {
+    return Err(ErrorCode::ParseError, "iso_date_to_ns: bad date '" + std::string{iso} + "'");
+  }
+  const std::int64_t serial =
+      days_from_civil(year, static_cast<unsigned>(month), static_cast<unsigned>(day));
+  const Civil round_trip = civil_from_days(serial);
+  if (round_trip.year != year || round_trip.month != static_cast<unsigned>(month) ||
+      round_trip.day != static_cast<unsigned>(day)) {
+    return Err(ErrorCode::ParseError, "iso_date_to_ns: bad date '" + std::string{iso} + "'");
+  }
+  return Ok(serial * 86400LL * 1000000000LL);
+}
+
+// Empty `path` => Ok(nullopt): no calendar, feature-column NaN downstream
+// (this task only stamps the count onto PendingJob -- see the file banner).
+// A zero-date file (all comments/blank) is a VALID, empty calendar for an
+// underlier with no scheduled events, not an error.
+[[nodiscard]] Result<std::optional<EventSchedule>> load_events_tsv(std::string_view path) {
+  if (path.empty()) {
+    return Ok(std::optional<EventSchedule>{std::nullopt});
+  }
+  std::ifstream in{std::string{path}, std::ios::binary};
+  if (!in) {
+    return Err(ErrorCode::IoError, "load_events_tsv: cannot open '" + std::string{path} + "'");
+  }
+  std::vector<std::int64_t> event_ts_ns;
+  std::string line;
+  // Bounded by the file's own line count -- std::getline terminates at EOF.
+  while (std::getline(in, line)) {
+    const std::string_view raw = trim(rstrip_cr(line));
+    if (raw.empty() || raw.front() == '#') {
+      continue;
+    }
+    const Result<std::int64_t> ns = iso_date_to_ns(raw);
+    if (!ns.has_value()) {
+      return Err(ErrorCode::ParseError, "load_events_tsv: bad date '" + line + "'");
+    }
+    event_ts_ns.push_back(*ns);
+  }
+  return Ok(std::optional<EventSchedule>{EventSchedule{std::move(event_ts_ns)}});
+}
+
 // ── Job accumulation ─────────────────────────────────────────────────────
 
 // A5% delta lattice step: the CLI exposes only the [delta-lo, delta-hi]
@@ -249,6 +356,12 @@ struct PendingJob {
   double sigma_entry_iv{0.0};
   bool snapped{false};
   std::size_t path_idx{0};
+  // Scheduled-events count in (entry_ts_ns, entry_ts_ns + T] (Task F-1's
+  // count_events_at). NaN when no --events calendar was loaded. Same value
+  // across the whole candidate lattice for one entry date -- it depends only
+  // on entry_ts_ns/T, never on strike/side. File-local; a later task (F-3)
+  // consumes it as a feature column.
+  double n_events{0.0};
 };
 
 struct RunCounters {
@@ -292,10 +405,20 @@ struct RunCounters {
 // whole run.
 void collect_entry_date_jobs(const Clock &full_clock, const BevFactoryArgs &args,
                              const PricedSurface &surf, std::int64_t entry_ts_ns, double T,
+                             const std::optional<EventSchedule> &events,
                              std::string_view entry_date, RunCounters &counters,
                              std::vector<PendingJob> &pending, std::vector<BevPath> &owned_paths) {
   const auto nominal_expiry_ns =
       entry_ts_ns + static_cast<std::int64_t>(std::llround(T * kNsPerYear));
+
+  // Task F-1: same value for every candidate below (depends only on
+  // entry_ts_ns/T, never strike/side) -- computed once per entry date rather
+  // than once per surviving candidate. NaN (not 0) when no calendar was
+  // loaded, so a downstream consumer can distinguish "zero events" from "no
+  // calendar" rather than silently treating them the same.
+  const double n_events = events.has_value()
+                              ? static_cast<double>(count_events_at(*events, entry_ts_ns, T))
+                              : std::numeric_limits<double>::quiet_NaN();
 
   // I1: every argument to load_bev_path below (full_clock aside) is invariant
   // across the whole delta*side candidate lattice below -- target/side never
@@ -369,7 +492,8 @@ void collect_entry_date_jobs(const Clock &full_clock, const BevFactoryArgs &args
                                    .side = side,
                                    .sigma_entry_iv = sigma_entry_iv,
                                    .snapped = loaded.snapped,
-                                   .path_idx = *path_idx});
+                                   .path_idx = *path_idx,
+                                   .n_events = n_events});
     }
   }
 }
@@ -499,6 +623,7 @@ std::string fmt_num(double v) {
 // without going through argv/exit). See the file banner for the full flow.
 [[nodiscard]] Result<int> run_bev_label_factory(const BevFactoryArgs &args) {
   ATX_TRY(const std::vector<DividendEvent> dividends, load_dividends_tsv(args.dividends));
+  ATX_TRY(const std::optional<EventSchedule> events, load_events_tsv(args.events));
 
   ATX_TRY(SurfaceDb db, SurfaceDb::open(args.db));
   ATX_TRY(const Clock full_clock, Clock::from_surface_db(db));
@@ -527,8 +652,8 @@ std::string fmt_num(double v) {
       ++counters.n_entry_dates_skipped;
       continue;
     }
-    collect_entry_date_jobs(full_clock, args, *surf, *entry_ts_ns, *T, ref.date, counters, pending,
-                            owned_paths);
+    collect_entry_date_jobs(full_clock, args, *surf, *entry_ts_ns, *T, events, ref.date, counters,
+                            pending, owned_paths);
   }
 
   // Build the batch's job spans only once every path is stable in
@@ -623,6 +748,7 @@ std::string fmt_num(double v) {
       {"delta_lo", fmt_num(args.delta_lo)},
       {"delta_hi", fmt_num(args.delta_hi)},
       {"dividends", args.dividends},
+      {"events", args.events},
       {"threads", std::to_string(args.n_threads)},
       {"n_entry_dates", std::to_string(counters.n_entry_dates)},
       {"n_entry_dates_skipped", std::to_string(counters.n_entry_dates_skipped)},
