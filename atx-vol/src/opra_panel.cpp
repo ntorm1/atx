@@ -825,6 +825,7 @@ Result<OpraPanel> panel_from_scan(const OpraTableScan &scan, const OpraLoadSpec 
   kept_instrument_ids.reserve(n_visit);
   std::map<std::uint32_t, std::string> kept_mappings;
   std::size_t n_dropped = 0;
+  std::size_t n_one_sided = 0;
   std::string first_underlying;
   std::string first_root;
 
@@ -864,7 +865,12 @@ Result<OpraPanel> panel_from_scan(const OpraTableScan &scan, const OpraLoadSpec 
     if (!filter.empty() && und != filter) {
       continue; // filtered out (not a drop)
     }
-    if (bid_px[i] == kUnsetPx || ask_px[i] == kUnsetPx || bid_null[i] != 0 || ask_null[i] != 0) {
+    // T6: an unset ASK is still a hard drop — a bid alone bounds nothing from
+    // above. An unset BID is kept (as `bid = 0`) when the caller admits
+    // one-sided quotes; see `OpraLoadSpec::admit_one_sided_quotes`.
+    const bool bid_missing = bid_px[i] == kUnsetPx || bid_null[i] != 0;
+    const bool ask_missing = ask_px[i] == kUnsetPx || ask_null[i] != 0;
+    if (ask_missing || (bid_missing && !spec.admit_one_sided_quotes)) {
       ++n_dropped;
       continue;
     }
@@ -893,9 +899,14 @@ Result<OpraPanel> panel_from_scan(const OpraTableScan &scan, const OpraLoadSpec 
       ++n_dropped;
       continue;
     }
-    const double bid = static_cast<double>(bid_px[i]) * kPxScale;
+    const double bid = bid_missing ? 0.0 : static_cast<double>(bid_px[i]) * kPxScale;
     const double ask = static_cast<double>(ask_px[i]) * kPxScale;
     if (bid > ask) { // crossed
+      ++n_dropped;
+      continue;
+    }
+    // A bid-less row whose ask is also non-positive brackets nothing.
+    if (bid_missing && !(ask > 0.0)) {
       ++n_dropped;
       continue;
     }
@@ -977,8 +988,11 @@ Result<OpraPanel> panel_from_scan(const OpraTableScan &scan, const OpraLoadSpec 
       return Err(ErrorCode::OutOfRange,
                  "OPRA displayed size exceeds nonnegative int32 contract range");
     }
-    row.bid_size = static_cast<std::int32_t>(bid_sz[i]);
+    // No bid means no size behind one, whatever the source column happens to
+    // carry in that cell.
+    row.bid_size = bid_missing ? 0 : static_cast<std::int32_t>(bid_sz[i]);
     row.ask_size = static_cast<std::int32_t>(ask_sz[i]);
+    n_one_sided += bid_missing ? 1u : 0u;
     rows.push_back(std::move(row));
     if (has_instrument_id && instrument_ids[i] > 0 &&
         instrument_ids[i] <= static_cast<std::int64_t>(std::numeric_limits<std::uint32_t>::max()) &&
@@ -1116,6 +1130,7 @@ Result<OpraPanel> panel_from_scan(const OpraTableScan &scan, const OpraLoadSpec 
   panel.n_contracts = n_contracts;
   panel.n_expiries = n_expiries;
   panel.n_dropped = n_dropped;
+  panel.n_one_sided = n_one_sided;
   panel.source_schema_version = has_instrument_id ? 2u : 1u;
   panel.source_fingerprint = source_fingerprint(panel.frame, kept_instrument_ids, kept_mappings,
                                                 panel.source_schema_version);

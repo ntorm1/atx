@@ -258,6 +258,23 @@ struct OpraLoadSpec {
   // SPX example, the AMZN earnings report) bit-identical.
   std::optional<ExpiryCloseConvention> expiry_close{};
   std::optional<ExerciseStyle> exercise_style{};
+  // T6 — keep a quote that has an offer but no bid.
+  //
+  // The OPRA pull writes an unset-price sentinel for a side nobody is showing.
+  // Historically ANY unset side dropped the whole row, which threw away 9.54% of
+  // the lqbench 2026-08-03 corpus (24,465 of 256,576 rows). That population is
+  // not noise: it is entirely bid-missing-with-a-positive-ask (zero rows are
+  // ask-missing, zero have both sides missing), so every one of them carries a
+  // hard UPPER bound on its contract's price, and it concentrates precisely on
+  // the thin boards that starve (ANVS 75% of rows, GNK 43%, KPTI 39%, ROKU 31%).
+  //
+  // Kept, such a row arrives with `bid = 0`, so it is invisible to every
+  // consumer that demands a two-sided market — the PCP spot implication, the
+  // carry solver's `leg_quote_valid`, the legacy prep's `quote_valid` — and
+  // visible only to the observation cascade, which admits it as a BOUND under
+  // `CalibOpts::one_sided_bounds`. A row with no ASK is still dropped: it bounds
+  // nothing from above, and none exist in either corpus.
+  bool admit_one_sided_quotes{true};
   FitContext fit_context{};
   OpraMarketInputProvenance market_input_provenance{};
   // T convention governing every year-fraction this loader computes: the PCP
@@ -284,6 +301,10 @@ struct OpraPanel {
   std::size_t n_contracts = 0;            // rows kept
   std::size_t n_expiries = 0;             // distinct expiries kept
   std::size_t n_dropped = 0;              // rows skipped (bad symbol / unset px / crossed)
+  // T6: rows kept with an offer but no bid (`admit_one_sided_quotes`). Counted
+  // separately from `n_contracts` so a board's one-sided share stays visible
+  // rather than dissolving into the two-sided total.
+  std::size_t n_one_sided = 0;
   std::uint32_t source_schema_version{1}; // 1=legacy, 2=instrument_id
   // Content hash of the source rows/identities only; intentionally
   // TimeSpec-independent (see opra_panel.cpp's `source_fingerprint`) -- two

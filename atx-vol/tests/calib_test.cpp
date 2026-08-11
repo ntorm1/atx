@@ -472,6 +472,441 @@ TEST(BuildObservations, ItmFallbackRefusalNamesTheItmLegsOwnRejection) {
       << res.error().to_string();
 }
 
+// ── build_observations: one-sided quotes as bounds (T6) ─────────────────
+//
+// A leg quoted `0.00 x a` is not a missing observation: the ask is a hard upper
+// bound on that strike's price and no-arbitrage supplies the lower one. These
+// pin the admitted band, the width it is weighted at, and — just as importantly
+// — every shape that must still be refused.
+
+// Withdraw the bid the way a venue does when nobody is bidding: the ask stands,
+// the bid reads 0, and the loader's mid = 0.5*(bid + ask) halves with it.
+void unbid_leg(Chain &c, std::uint16_t strike_index, Side side) {
+  const std::size_t idx = chain_index(strike_index, side);
+  c.bids[idx] = 0.0;
+  c.mids[idx] = 0.5 * c.asks[idx];
+}
+
+// A bid-less quote is admitted over its WHOLE ask, so its width in vol units is
+// of order the strike's own implied vol — an order of magnitude above the
+// half-spread of a two-sided row. That is why the absolute gate, not the
+// relative one, decides these rows, and why the tests that expect admission run
+// at the loose end of the shipped `max_spread_vol` range (VolProduct 0.35,
+// OrdinarySingleName / IlliquidSmallCap 0.25) rather than at the SPY-tuned 0.05.
+constexpr double kBoundStrike = 130.0;
+constexpr double kLooseSpreadVol = 0.30;
+const std::vector<double> kBoundStrikes{110.0, 115.0, 120.0, 125.0, kBoundStrike, 135.0};
+
+// Bound admission is a LAST RESORT: it runs only after the two-sided population
+// has already left the slice below the five-row floor. Every test that expects a
+// bound to be ADMITTED therefore has to start from a starved slice — four
+// two-sided calls at 110-125, and bid-less ones from 130 out. `kBoundStrike`
+// (130) is the first bid-less strike in both fixtures, so the shape assertions
+// read the same row in each.
+const std::vector<double> kStarvedStrikes{110.0, 115.0, 120.0, 125.0,
+                                          kBoundStrike, 135.0, 140.0, 145.0};
+constexpr std::uint16_t kFirstBidless = 4u;
+
+Chain make_starved_bidless_chain() {
+  Chain c = make_priced_chain(kStarvedStrikes);
+  for (std::uint16_t s = kFirstBidless; s < kStarvedStrikes.size(); ++s) {
+    const std::size_t idx = chain_index(s, Side::Call);
+    c.bids[idx] = 0.0;
+    c.mids[idx] = 0.5 * c.asks[idx];
+  }
+  return c;
+}
+
+CalibOpts bounds_off_opts() {
+  CalibOpts o = calib_default_opts();
+  o.one_sided_bounds = false;
+  return o;
+}
+
+TEST(BuildObservations, BidlessOtmLegs_WithoutBounds_StarveTheSlice) {
+  const Chain c = make_starved_bidless_chain();
+  CalibOpts opts = bounds_off_opts();
+  opts.max_spread_vol = kLooseSpreadVol;
+
+  // Only the four two-sided 110-125 calls survive, one short of the floor, so
+  // the whole expiry is lost — the exact shape T6 exists to recover.
+  const auto res = build_observations(c, kF, kT, kDf, opts);
+  ASSERT_FALSE(res.has_value());
+  EXPECT_EQ(res.error().code(), ErrorCode::NotFound);
+  EXPECT_NE(res.error().to_string().find("kept=4 of 8"), std::string::npos)
+      << res.error().to_string();
+  EXPECT_NE(res.error().to_string().find("InvalidBidAsk x4"), std::string::npos)
+      << res.error().to_string();
+}
+
+TEST(BuildObservations, BoundsAreRefusedWhileTheTwoSidedPopulationClearsTheFloor) {
+  // The gate that keeps this change out of every board that already works: one
+  // bid-less strike on an otherwise-quotable slice recovers nothing, because the
+  // five two-sided rows already prepare it. Same chain, same flag, no bound.
+  Chain c = make_priced_chain(kBoundStrikes);
+  unbid_leg(c, kFirstBidless, Side::Call);
+  CalibOpts opts = calib_default_opts();
+  opts.max_spread_vol = kLooseSpreadVol;
+
+  const auto off = build_observations(c, kF, kT, kDf, bounds_off_opts());
+  const auto on = build_observations(c, kF, kT, kDf, opts);
+  ASSERT_TRUE(off.has_value()) << off.error().to_string();
+  ASSERT_TRUE(on.has_value()) << on.error().to_string();
+  EXPECT_EQ(on->obs.size(), 5u);
+  EXPECT_EQ(on->n_bound_admitted, 0u);
+  ASSERT_EQ(off->obs.size(), on->obs.size());
+  for (std::size_t i = 0; i < off->obs.size(); ++i) {
+    EXPECT_DOUBLE_EQ(off->obs[i].K, on->obs[i].K);
+    EXPECT_DOUBLE_EQ(off->obs[i].mid, on->obs[i].mid);
+    EXPECT_DOUBLE_EQ(off->obs[i].weight_w, on->obs[i].weight_w);
+  }
+}
+
+TEST(BuildObservations, BidlessOtmLeg_AdmittedAsAnUpperBoundOnTheStrikePrice) {
+  Chain c = make_starved_bidless_chain();
+  const std::size_t idx = chain_index(kFirstBidless, Side::Call);
+  const double ask = c.asks[idx];
+  CalibOpts opts = calib_default_opts();
+  opts.max_spread_vol = kLooseSpreadVol;
+  // Observe the weight the row EARNS. `max_weight` (1e3) is a saturating clip
+  // that this synthetic board's every row exceeds; it is order-preserving, but
+  // it compresses the degradation this assertion is about. See the weight test
+  // below, which pins that the clip cannot promote a bound row.
+  opts.max_weight = 1.0e12;
+
+  const auto res = build_observations(c, kF, kT, kDf, opts);
+  ASSERT_TRUE(res.has_value()) << res.error().to_string();
+  ASSERT_EQ(res->obs.size(), kStarvedStrikes.size());
+  EXPECT_EQ(res->n_bound_admitted, 4u);
+
+  // Rows stay in ascending source-strike order, so the first bound row is the
+  // first bid-less strike.
+  const FitObs &bound = res->obs[kFirstBidless];
+  ASSERT_NEAR(bound.K, kBoundStrike, 1e-12);
+  EXPECT_EQ(bound.side, Side::Call);
+  // K > F, so the call's Black-76 lower bound is 0: the admitted band is the
+  // whole of [0, ask], its reference the midpoint, its width the entire ask.
+  EXPECT_DOUBLE_EQ(bound.mid, 0.5 * ask);
+  EXPECT_DOUBLE_EQ(bound.spread, ask);
+  // The band's width is what the row is weighted at — 1/spread degradation, not
+  // the half-spread a two-sided quote of the same ask would have earned.
+  const double expected_weight = (bound.vega * bound.vega) / (ask * ask + 1.0e-18) /
+                                 (4.0 * bound.sigma_mkt * bound.sigma_mkt * kT * kT + 1.0e-18);
+  EXPECT_NEAR(bound.weight_w, expected_weight, 1e-9 * std::fabs(expected_weight));
+  EXPECT_DOUBLE_EQ(bound.active_weight_w, bound.weight_w);
+  // Half the true premium inverts to a materially lower vol than the board's
+  // 20%: the row is admitted as a BOUND, never as a mark.
+  EXPECT_GT(bound.sigma_mkt, 0.0);
+  EXPECT_LT(bound.sigma_mkt, kVol);
+}
+
+TEST(BuildObservations, BoundRowIsWeightedFarBelowTheTwoSidedRowItReplaces) {
+  // The whole claim of admitting a bound is that it enters the objective at the
+  // weight its WIDTH earns, so a starved slice gains evidence without a marked
+  // strike being outvoted by a guess. Same strike, same vega, two markets.
+  const Chain two_sided = make_priced_chain(kStarvedStrikes);
+  const Chain bidless = make_starved_bidless_chain();
+  CalibOpts opts = calib_default_opts();
+  opts.max_spread_vol = kLooseSpreadVol;
+  // The far two-sided rows are penny-wide against a sub-dime mid, so the
+  // RELATIVE gate (which bound rows skip by design) would otherwise remove them
+  // and leave the two populations incomparable.
+  opts.max_spread_to_mid_pct = 3.0;
+  opts.max_weight = 1.0e12; // see above: the shipped clip saturates this board
+
+  const auto marked = build_observations(two_sided, kF, kT, kDf, opts);
+  const auto bounded = build_observations(bidless, kF, kT, kDf, opts);
+  ASSERT_TRUE(marked.has_value()) << marked.error().to_string();
+  ASSERT_TRUE(bounded.has_value()) << bounded.error().to_string();
+  ASSERT_EQ(marked->obs.size(), kStarvedStrikes.size());
+  ASSERT_EQ(bounded->obs.size(), kStarvedStrikes.size());
+  EXPECT_LT(bounded->obs[kFirstBidless].weight_w, 0.02 * marked->obs[kFirstBidless].weight_w);
+
+  // And the shipped clip cannot invert that: `min(w, max_weight)` is monotone,
+  // so a bound row can be compressed onto the ceiling but never lifted past a
+  // row that earned more. Pin it, because a clip applied where weights are
+  // RE-DERIVED (the de-Am builder) would collapse every row onto the ceiling
+  // and erase exactly this degradation.
+  CalibOpts clipped = opts;
+  clipped.max_weight = 1.0e3;
+  const auto marked_clipped = build_observations(two_sided, kF, kT, kDf, clipped);
+  const auto bounded_clipped = build_observations(bidless, kF, kT, kDf, clipped);
+  ASSERT_TRUE(marked_clipped.has_value());
+  ASSERT_TRUE(bounded_clipped.has_value());
+  EXPECT_LE(bounded_clipped->obs[kFirstBidless].weight_w,
+            marked_clipped->obs[kFirstBidless].weight_w);
+}
+
+TEST(BuildObservations, BoundAdmissionIsInertOnAFullyTwoSidedBoard) {
+  // Every leg is quotable, so no bid is ever projected and the population must
+  // be bit-identical to the historical two-sided-only rule.
+  const std::vector<double> strikes{85.0, 90.0, 95.0, 100.0, 105.0, 110.0};
+  const Chain c = make_priced_chain(strikes);
+
+  const auto off = build_observations(c, kF, kT, kDf, bounds_off_opts());
+  const auto on = build_observations(c, kF, kT, kDf, calib_default_opts());
+  ASSERT_TRUE(off.has_value());
+  ASSERT_TRUE(on.has_value());
+  ASSERT_EQ(off->obs.size(), on->obs.size());
+  EXPECT_EQ(on->n_bound_admitted, 0u);
+  EXPECT_EQ(off->n_dropped, on->n_dropped);
+  for (std::size_t i = 0; i < off->obs.size(); ++i) {
+    EXPECT_EQ(off->obs[i].side, on->obs[i].side);
+    EXPECT_DOUBLE_EQ(off->obs[i].K, on->obs[i].K);
+    EXPECT_DOUBLE_EQ(off->obs[i].mid, on->obs[i].mid);
+    EXPECT_DOUBLE_EQ(off->obs[i].spread, on->obs[i].spread);
+    EXPECT_DOUBLE_EQ(off->obs[i].sigma_mkt, on->obs[i].sigma_mkt);
+    EXPECT_DOUBLE_EQ(off->obs[i].weight_w, on->obs[i].weight_w);
+  }
+}
+
+TEST(BuildObservations, AbsentLegBoundsNothingAndIsStillRejected) {
+  // bid = ask = 0 is how an unquoted side arrives. It carries no upper bound,
+  // so there is nothing to admit and the strike must stay dead.
+  Chain c = make_starved_bidless_chain();
+  unquote_leg(c, 5u, Side::Call); // K = 135: no ask either
+  CalibOpts opts = calib_default_opts();
+  opts.max_spread_vol = kLooseSpreadVol;
+
+  const auto res = build_observations(c, kF, kT, kDf, opts);
+  ASSERT_TRUE(res.has_value()) << res.error().to_string();
+  EXPECT_EQ(res->obs.size(), kStarvedStrikes.size() - 1u);
+  EXPECT_EQ(res->n_bound_admitted, 3u);
+  for (const FitObs &o : res->obs) {
+    EXPECT_GT(std::fabs(o.K - 135.0), 1e-9);
+  }
+}
+
+TEST(BuildObservations, LockedAndCrossedMarketsAreNeverAdmittedAsBounds) {
+  // Two sides that contradict each other do not bracket a price. Both shapes
+  // keep a positive bid, which is exactly what the projection refuses to touch.
+  const std::size_t idx = chain_index(5u, Side::Call); // K = 135
+  Chain locked = make_starved_bidless_chain();
+  locked.bids[idx] = locked.asks[idx];
+  locked.mids[idx] = locked.asks[idx];
+  Chain crossed = make_starved_bidless_chain();
+  crossed.bids[idx] = crossed.asks[idx] + 0.01;
+  crossed.mids[idx] = 0.5 * (crossed.bids[idx] + crossed.asks[idx]);
+  CalibOpts opts = calib_default_opts();
+  opts.max_spread_vol = kLooseSpreadVol;
+
+  for (const Chain *c : {&locked, &crossed}) {
+    const auto res = build_observations(*c, kF, kT, kDf, opts);
+    ASSERT_TRUE(res.has_value()) << res.error().to_string();
+    EXPECT_EQ(res->obs.size(), kStarvedStrikes.size() - 1u);
+    EXPECT_EQ(res->n_bound_admitted, 3u);
+    for (const FitObs &o : res->obs) {
+      EXPECT_GT(std::fabs(o.K - 135.0), 1e-9);
+    }
+  }
+}
+
+// The floor only bites in the money, which on this builder means the leg the
+// ITM-leg fallback reaches for: the preferred leg is OTM by construction and
+// its arbitrage bound is identically zero. K = 88 sits one strike below the
+// forward, so its call carries a ~11.8 intrinsic that a 0.00 bid contradicts.
+// FIVE strikes, not six: with the 88 put unquoted the remaining four two-sided
+// puts leave the slice one row under the floor, which is what lets the bound
+// pass run at all.
+const std::vector<double> kItmFloorStrikes{88.0, 90.0, 92.0, 94.0, 96.0};
+
+CalibOpts itm_floor_opts() {
+  CalibOpts o = calib_default_opts();
+  o.itm_leg_fallback = true;
+  // A deep-ITM leg admitted over [intrinsic, ask] is wide in vol units by
+  // construction; this test is about WHERE the floor lands, not about the
+  // budget, so give it room and let the dedicated gate test own that question.
+  o.max_spread_vol = 100.0;
+  o.min_vega_weight = 0.0;
+  return o;
+}
+
+TEST(BuildObservations, AskBelowTheArbitrageFloorIsRejectedNotAdmitted) {
+  // An ask under the strike's own lower arbitrage bound leaves an EMPTY band.
+  // Admitting it would fabricate a price no arbitrage-free model can produce.
+  Chain c = make_priced_chain(kItmFloorStrikes);
+  const std::size_t call_idx = chain_index(0u, Side::Call);
+  c.bids[call_idx] = 0.0;
+  c.asks[call_idx] = 0.5 * kDf * (kF - 88.0); // an ask beneath intrinsic
+  c.mids[call_idx] = 0.5 * c.asks[call_idx];
+  unquote_leg(c, 0u, Side::Put); // force the fallback to consider the call
+
+  // Four two-sided puts remain and the incoherent call cannot make a fifth row,
+  // so the slice stays starved — the sharpest statement of the refusal.
+  const auto res = build_observations(c, kF, kT, kDf, itm_floor_opts());
+  ASSERT_FALSE(res.has_value()) << "the incoherent call must never be admitted";
+  EXPECT_EQ(res.error().code(), ErrorCode::NotFound);
+}
+
+TEST(BuildObservations, BidlessItmLegProjectsOntoTheTickRoundedArbitrageFloor) {
+  Chain c = make_priced_chain(kItmFloorStrikes);
+  const std::size_t call_idx = chain_index(0u, Side::Call);
+  const double ask = c.asks[call_idx];
+  c.bids[call_idx] = 0.0;
+  c.mids[call_idx] = 0.5 * ask;
+  unquote_leg(c, 0u, Side::Put); // no OTM put at all -> the fallback must run
+
+  const auto res = build_observations(c, kF, kT, kDf, itm_floor_opts());
+  ASSERT_TRUE(res.has_value()) << res.error().to_string();
+  ASSERT_EQ(res->obs.size(), kItmFloorStrikes.size());
+  const FitObs &bound = res->obs.front();
+  ASSERT_NEAR(bound.K, 88.0, 1e-12);
+  EXPECT_EQ(bound.side, Side::Call);
+  EXPECT_EQ(res->n_bound_admitted, 1u);
+  EXPECT_EQ(res->n_itm_fallback, 1u) << "the ITM leg is the one that was used";
+
+  const double raw_floor = kDf * (kF - 88.0);
+  const double expected_floor = std::ceil(raw_floor / 0.01) * 0.01;
+  EXPECT_GT(expected_floor, 0.0);
+  EXPECT_DOUBLE_EQ(bound.spread, ask - expected_floor);
+  EXPECT_DOUBLE_EQ(bound.mid, 0.5 * (expected_floor + ask));
+  EXPECT_GT(bound.mid, raw_floor) << "the reference price must clear the arbitrage floor";
+}
+
+TEST(BuildObservations, TwoSidedItmLegOutranksAOneSidedOtmBound) {
+  // Both legs of a strike share a vega, so the narrower band is the sharper
+  // observation. A real ITM market must displace the OTM bound, not lose to it.
+  Chain c = make_priced_chain(kBoundStrikes);
+  unbid_leg(c, 4u, Side::Call);
+  CalibOpts opts = calib_default_opts();
+  opts.itm_leg_fallback = true;
+  opts.max_spread_vol = kLooseSpreadVol;
+
+  const auto res = build_observations(c, kF, kT, kDf, opts);
+  ASSERT_TRUE(res.has_value()) << res.error().to_string();
+  ASSERT_EQ(res->obs.size(), 6u);
+  EXPECT_EQ(res->n_itm_fallback, 1u);
+  EXPECT_EQ(res->n_bound_admitted, 0u);
+  const FitObs &row = res->obs[4];
+  EXPECT_NEAR(row.K, kBoundStrike, 1e-12);
+  EXPECT_EQ(row.side, Side::Put);
+  EXPECT_NEAR(row.sigma_mkt, kVol, 1e-4);
+}
+
+TEST(BuildObservations, BidlessOtmLegStillArmsTheItmFallbackWhenTheBoundIsFiltered) {
+  // Regression guard. The fallback asks "does this strike have an OTM market?",
+  // which bound admission must not answer by renaming the rejection: the K=130
+  // bound is thrown out by the default vol-width budget, and the two-sided ITM
+  // put must still rescue the strike exactly as it did before T6.
+  Chain c = make_priced_chain(kBoundStrikes);
+  unbid_leg(c, 4u, Side::Call);
+  CalibOpts opts = calib_default_opts(); // max_spread_vol 0.05 rejects the bound
+  opts.itm_leg_fallback = true;
+
+  const auto res = build_observations(c, kF, kT, kDf, opts);
+  ASSERT_TRUE(res.has_value()) << res.error().to_string();
+  ASSERT_EQ(res->obs.size(), 6u);
+  EXPECT_EQ(res->n_itm_fallback, 1u);
+  EXPECT_EQ(res->n_bound_admitted, 0u);
+  EXPECT_EQ(res->obs[4].side, Side::Put);
+}
+
+TEST(BuildObservations, ATwoSidedItmLegOutranksABoundEvenInsideTheLastResortPass) {
+  // The ranking has to survive into the pass where bounds are actually admitted,
+  // and that pass is the only place it can be observed: while the preferred leg
+  // is merely REJECTED the pre-T6 trigger already fires, but once the same leg
+  // is ACCEPTED as a bound only `one_sided` still reports "this strike has no
+  // OTM market". Read the rejection reason instead and the bound silently
+  // outranks a real two-sided market on the strike's other leg.
+  //
+  // Shape: every OTM call is offered but not bid. The first four strikes carry a
+  // two-sided ITM put, which is exactly four rows — one short of the floor — so
+  // the bound pass runs, and those four strikes must KEEP their marked puts.
+  Chain c = make_priced_chain(kStarvedStrikes);
+  for (std::uint16_t i = 0; i < kStarvedStrikes.size(); ++i) {
+    const std::size_t call = chain_index(i, Side::Call);
+    c.bids[call] = 0.0;
+    c.mids[call] = 0.5 * c.asks[call];
+    if (i >= kFirstBidless) {
+      unquote_leg(c, i, Side::Put); // no ITM market out here either
+    }
+  }
+  CalibOpts opts = calib_default_opts();
+  opts.itm_leg_fallback = true;
+  opts.max_spread_vol = kLooseSpreadVol;
+
+  const auto res = build_observations(c, kF, kT, kDf, opts);
+  ASSERT_TRUE(res.has_value()) << res.error().to_string();
+  ASSERT_EQ(res->obs.size(), kStarvedStrikes.size());
+  EXPECT_EQ(res->n_itm_fallback, 4u);
+  EXPECT_EQ(res->n_bound_admitted, 4u);
+  for (std::size_t i = 0; i < res->obs.size(); ++i) {
+    if (i < kFirstBidless) {
+      EXPECT_EQ(res->obs[i].side, Side::Put) << "strike " << res->obs[i].K;
+      EXPECT_NEAR(res->obs[i].sigma_mkt, kVol, 1e-4);
+    } else {
+      EXPECT_EQ(res->obs[i].side, Side::Call) << "strike " << res->obs[i].K;
+    }
+  }
+}
+
+TEST(BuildObservations, BoundRowStillFacesTheAbsoluteVolWidthGate) {
+  // The relative spread-to-mid gate is skipped for bound rows because it is a
+  // pure function of one-sidedness. The absolute vol-space gate is not, and it
+  // is what keeps an uninformative bid-less quote out: the same chain that
+  // admits the bounds at 0.30 vol points refuses every one at the SPY-tuned 0.05
+  // and lets the slice stay starved.
+  const Chain c = make_starved_bidless_chain();
+
+  CalibOpts loose = calib_default_opts();
+  loose.max_spread_vol = kLooseSpreadVol;
+  const auto admitted = build_observations(c, kF, kT, kDf, loose);
+  ASSERT_TRUE(admitted.has_value()) << admitted.error().to_string();
+  EXPECT_EQ(admitted->n_bound_admitted, 4u);
+
+  // At the SPY budget the widest bound (130, whose ask alone is ~8.8 vol points
+  // against its vega) is refused outright while the cheaper ones survive: the
+  // gate reads each row's own width, not the fact that it is one-sided.
+  const auto res = build_observations(c, kF, kT, kDf, calib_default_opts());
+  ASSERT_TRUE(res.has_value()) << res.error().to_string();
+  EXPECT_EQ(res->n_bound_admitted, 3u);
+  for (const FitObs &o : res->obs) {
+    EXPECT_GT(std::fabs(o.K - kBoundStrike), 1e-9);
+  }
+}
+
+TEST(BuildObservations, BoundAdmissionRescuesASliceTheTwoSidedRuleWouldStarve) {
+  // The starvation shape: four marked calls, one short of the floor, and every
+  // strike beyond them offered but not bid. Under the two-sided rule the whole
+  // expiry is lost; the bounds complete it.
+  const Chain c = make_starved_bidless_chain();
+  CalibOpts opts = calib_default_opts();
+  opts.max_spread_vol = kLooseSpreadVol;
+  CalibOpts off = opts;
+  off.one_sided_bounds = false;
+
+  const auto starved = build_observations(c, kF, kT, kDf, off);
+  ASSERT_FALSE(starved.has_value());
+  EXPECT_EQ(starved.error().code(), ErrorCode::NotFound);
+
+  const auto rescued = build_observations(c, kF, kT, kDf, opts);
+  ASSERT_TRUE(rescued.has_value()) << rescued.error().to_string();
+  EXPECT_EQ(rescued->obs.size(), kStarvedStrikes.size());
+  EXPECT_EQ(rescued->n_bound_admitted, 4u);
+  for (const FitObs &o : rescued->obs) {
+    EXPECT_EQ(o.side, Side::Call);
+    EXPECT_GT(o.spread, 0.0);
+  }
+}
+
+TEST(BuildObservations, BoundsNeverBuildASliceThatNoMarketAnchors) {
+  // The other half of the last-resort rule. Upper bounds alone fix only an
+  // ENVELOPE; fitting their midpoints as marks would invent a level no market
+  // supports, and a level invented per expiry is free to cross its neighbour in
+  // total variance. A slice more than one row short of the floor on real
+  // evidence therefore stays starved, however many bounds it could supply.
+  Chain c = make_starved_bidless_chain();
+  unquote_leg(c, 3u, Side::Call); // drop one marked call: three anchors left
+  CalibOpts opts = calib_default_opts();
+  opts.max_spread_vol = kLooseSpreadVol;
+
+  const auto res = build_observations(c, kF, kT, kDf, opts);
+  ASSERT_FALSE(res.has_value());
+  EXPECT_EQ(res.error().code(), ErrorCode::NotFound);
+  EXPECT_NE(res.error().to_string().find("kept=3 of 8"), std::string::npos)
+      << res.error().to_string();
+}
+
 TEST(BuildObservations, NonPositiveForward_ReturnsInvalidArgument) {
   const Chain c = make_priced_chain({90.0, 95.0, 100.0, 105.0, 110.0});
   const auto res = build_observations(c, 0.0, kT, kDf, calib_default_opts());

@@ -336,10 +336,13 @@ TEST(OpraPanel, Load_SyntheticXomSlice_CountsAndImpliedSpot) {
               to_px(put_mid + 0.05));
     }
   }
-  // Dropped: unset-price sentinel on bid_px.
+  // T6: KEPT as a one-sided quote (unset bid, real ask) — the ask bounds the
+  // contract's price from above, so the row is admitted with bid = 0.
   add_row(pad_root("XOM") + "260619C00120000", std::numeric_limits<i64>::min(), to_px(1.0));
   // Dropped: crossed quote (bid > ask).
   add_row(pad_root("XOM") + "260619P00120000", to_px(5.0), to_px(4.0));
+  // Dropped: unset ASK. A bid alone bounds nothing from above.
+  add_row(pad_root("XOM") + "260619C00125000", to_px(1.0), std::numeric_limits<i64>::min());
 
   const std::vector<io::WriteColumn> cols = {
       {"ts", std::span<const i64>(ts_col)},
@@ -366,18 +369,43 @@ TEST(OpraPanel, Load_SyntheticXomSlice_CountsAndImpliedSpot) {
   const auto loaded = load_opra_cbbo_parquet(spec);
   ASSERT_TRUE(loaded.has_value()) << loaded.error().to_string();
 
-  EXPECT_EQ(loaded->n_contracts, std::size_t{12});
+  EXPECT_EQ(loaded->n_contracts, std::size_t{13});
   EXPECT_EQ(loaded->n_expiries, std::size_t{2});
-  EXPECT_EQ(loaded->n_dropped, std::size_t{2});
+  EXPECT_EQ(loaded->n_dropped, std::size_t{2}); // the crossed put + the ask-less call
+  EXPECT_EQ(loaded->n_one_sided, std::size_t{1});
   EXPECT_EQ(loaded->frame.uid, "XOM");
-  EXPECT_EQ(loaded->frame.rows.size(), std::size_t{12});
+  EXPECT_EQ(loaded->frame.rows.size(), std::size_t{13});
   EXPECT_TRUE(loaded->bid_size_available);
   EXPECT_TRUE(loaded->ask_size_available);
   EXPECT_FALSE(loaded->volume_available);
   EXPECT_FALSE(loaded->open_interest_available);
 
-  // The dropped strike (120) must not have entered the frame.
+  // The crossed 120 PUT and the ask-less 125 call stay out; the bid-less 120
+  // CALL enters as a bound, carrying bid = 0 and no bid size so every consumer
+  // that requires a two-sided market still refuses it.
+  std::size_t n_120_call = 0;
   for (const auto &row : loaded->frame.rows) {
+    EXPECT_NE(row.strike, 125.0);
+    if (row.strike == 120.0) {
+      EXPECT_EQ(row.side, atx::vol::Side::Call);
+      EXPECT_DOUBLE_EQ(row.bid, 0.0);
+      EXPECT_GT(row.ask, 0.0);
+      EXPECT_EQ(row.bid_size, 0);
+      ++n_120_call;
+    }
+  }
+  EXPECT_EQ(n_120_call, std::size_t{1});
+
+  // And the load is byte-for-byte the historical one when the caller refuses
+  // one-sided quotes, so nothing about this change is implicit.
+  OpraLoadSpec strict = spec;
+  strict.admit_one_sided_quotes = false;
+  const auto two_sided_only = load_opra_cbbo_parquet(strict);
+  ASSERT_TRUE(two_sided_only.has_value()) << two_sided_only.error().to_string();
+  EXPECT_EQ(two_sided_only->n_contracts, std::size_t{12});
+  EXPECT_EQ(two_sided_only->n_dropped, std::size_t{3});
+  EXPECT_EQ(two_sided_only->n_one_sided, std::size_t{0});
+  for (const auto &row : two_sided_only->frame.rows) {
     EXPECT_NE(row.strike, 120.0);
   }
 
