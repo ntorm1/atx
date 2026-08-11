@@ -22,8 +22,13 @@ against the log-strike Jacobian, leaving the raw undiscounted OTM price), and
 the outer scale (`2/T` for VarSwap; `2/(T*S0)` for GammaSwap).
 
 * Fair strike, aged blend, PV, and finite-difference greeks dispatch through
-  `deriv_price`/`deriv_greeks`/`price_deriv_book`/`solve_cycle_swap` exactly
-  like `VarSwap` -- no new public entry point.
+  the SAME functions VarSwap uses -- `deriv_price`/`deriv_greeks`/
+  `price_deriv_book`/`solve_cycle_swap` -- no new public entry point. This is
+  a dispatch-STRUCTURE claim only (m-8, review fix round 2): the aged blend
+  and carry-theta injection are NOT numerically "exactly like VarSwap" once
+  `gamma_seed_spot` differs from `curves.spot` -- see the anchor-rescale
+  bullets below, which VarSwap's own dispatch never needs (its future leg
+  carries no S/S0 weight to anchor).
 * `RealizedVarianceSpec` gains two appended fields (arity pin raised, newly
   established at 8 -- this is the first time the struct has grown since v1.0):
   `sum_weighted_sq_log_returns_done` (raw running `Sigma (S_i/S0)*r_i^2`) and
@@ -52,6 +57,24 @@ the outer scale (`2/T` for VarSwap; `2/(T*S0)` for GammaSwap).
   observation (`n_obs_done == 0` before injection -- the shape
   `solve_cycle_swap` produces) (`GammaSwap.CarryThetaDiffersFromZeroFixing
   ThetaMidLife`, `GammaSwap.CarryThetaFiniteAndDiffersAtZeroObservationsDone`).
+* **Review fix round 2, C-3/C-4 (Critical):** round 1 closed C-1/C-2 on the
+  `genuinely_mixing` REGIME predicate (`0 < n_obs_done < n_obs_total`)
+  instead of the anchor INVARIANT itself, and the same defect resurfaced in
+  the regimes that predicate excludes, at LARGER magnitude. C-3: a
+  tracker-seeded contract with `n_obs_done == 0` (the state between the seed
+  `observe()` call and the first return fixing) has a live `gamma_seed_spot`
+  that the old predicate, being false there, never inspected -- silent error
+  up to 33.3% of the strike / $20,000 on a 1e6-notional contract at spot 150
+  (`w_future == 1.0` here, larger than C-1's 0.6), `theta_carry` wrong by
+  4.13e9x. C-4: `inject_carry_fixing` added the injected fixing (anchored at
+  today's spot) directly into `rv_gamma_done_dec` (seed-anchored) with no
+  rescale -- `theta_carry` sign-flipped and ~8.4e7x wrong whenever
+  `gamma_seed_spot != curves.spot`. Fixed by stating the anchor invariant
+  once (`gamma_anchor_rescale`, derivatives.cpp) and routing both the blend
+  and the injection through it UNCONDITIONALLY -- rescale whenever an anchor
+  exists, never gated on `n_obs_done`
+  (`GammaSwap.AgedBlendRescalesUnaccruedAnchorAtZeroObservationsDone`,
+  `GammaSwap.CarryThetaRescalesInjectedFixingOntoSeedAnchor`).
 * `DerivGreekMethod::AnalyticStrip` is NOT extended to `GammaSwap` -- P-4's
   scope predicate (`kind == DerivKind::VarSwap`, a whitelist) already excludes
   it, so a caller requesting the closed form on a gamma swap silently falls

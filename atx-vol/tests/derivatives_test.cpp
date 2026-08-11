@@ -3500,7 +3500,11 @@ TEST(GammaSwap, AgedBlendRescalesFutureLegOntoAccrualAnchor) {
   ASSERT_DOUBLE_EQ(accrued.gamma_seed_spot, seed_spot);
 
   const EssviSurface surf = make_flat_surface(sigma, 0.01, 1.00);
-  const CurveSet cs = make_flat_curves(end_spot, 0.01, 1.00);  // zero carry: r == q == 0.01
+  // m-7 (fix round 2): `make_flat_curves`'s 2nd/3rd args are yield-curve
+  // TENOR PILLARS (T_lo, T_hi -- see this file's own local helper at
+  // :106-119), not a rate; it hard-codes r == 0.0 always. Zero carry here
+  // because that hard-coding, not because these args encode a rate.
+  const CurveSet cs = make_flat_curves(end_spot, 0.01, 1.00);  // zero carry (r == q == 0, always)
 
   DerivContract c{};
   c.kind = DerivKind::GammaSwap;
@@ -3536,15 +3540,125 @@ TEST(GammaSwap, AgedBlendRescalesFutureLegOntoAccrualAnchor) {
   const double gap = correct - shipped_buggy;
   EXPECT_GT(std::fabs(q->fair_strike_dec - shipped_buggy), 0.5 * std::fabs(gap));
 
-  // The gap itself is (S_t/S_seed - 1) * w_future * K_gamma_future --
-  // independent of the accrued leg's value, so it depends only on the
-  // fixture's endpoints/weights, not on this test's own (undisclosed-in-the-
-  // review) path shape. Pins the review's reported magnitude: 0.6 * 0.2 *
-  // ~0.04 ~= 0.0048 decimal on a ~1e6 notional ~= $4,800, matching the
-  // review's own "$4,800 PV, 15.43% of the strike" to the precision that
-  // magnitude claim needs.
-  EXPECT_NEAR(gap, 0.0048, 2.0e-4);
-  EXPECT_GT(gap / correct, 0.10);  // "far past tolerance", not a rounding-order effect
+  // Round-2 fix (V-8, task-F-2-fix-round-1-review.md): the two magnitude
+  // assertions this comment used to make (`EXPECT_NEAR(gap, 0.0048, ...)`,
+  // `EXPECT_GT(gap / correct, 0.10)`) were VACUOUS -- `gap` and `correct` are
+  // both computed here from test-local quantities, never from `q`, so they
+  // passed unchanged under every reversion. Rewritten to read PRODUCTION's
+  // own deviation from the buggy value instead of the test's own local
+  // arithmetic; both now fail if `q->fair_strike_dec` collapses toward
+  // `shipped_buggy`. The gap itself is (S_t/S_seed - 1) * w_future *
+  // K_gamma_future -- independent of the accrued leg's value, so it depends
+  // only on the fixture's endpoints/weights, not on this test's own
+  // (undisclosed-in-the-review) path shape. Pins the review's reported
+  // magnitude: 0.6 * 0.2 * ~0.04 ~= 0.0048 decimal on a ~1e6 notional ~=
+  // $4,800, matching the review's own "$4,800 PV, 15.43% of the strike" to
+  // the precision that magnitude claim needs.
+  EXPECT_NEAR(q->fair_strike_dec - shipped_buggy, 0.0048, 2.0e-4);
+  EXPECT_GT((q->fair_strike_dec - shipped_buggy) / q->fair_strike_dec, 0.10);
+  // Sanity: the local `gap`/`correct` computation the test uses to derive
+  // `correct` above agrees with what the two now-live assertions just
+  // measured off production -- i.e. this test's own arithmetic and
+  // production's answer are the SAME number, not coincidentally close.
+  EXPECT_NEAR(gap, q->fair_strike_dec - shipped_buggy, 1.0e-9);
+}
+
+// C-3 Critical (Task F-2 fix round 2, review .../task-F-2-fix-round-1-review.md):
+// round 1's `AgedBlendRescalesFutureLegOntoAccrualAnchor` above walks a
+// tracker PAST n_obs_done == 0 before ever pricing it, so it -- like every
+// other GammaSwap fixture in the tree at round 1 -- never exercised a live
+// `gamma_seed_spot` at `n_obs_done == 0` (I-3's exact finding: the suite
+// could not distinguish 24d0342 from a corrected build). This test prices
+// EXACTLY that state: a real `RealizedTracker` seeded once and nothing more
+// (`gamma_seed_spot` recorded, `n_obs_done` still 0 -- the state a
+// tracker-driven contract occupies between inception and its first return
+// fixing), at a `curves.spot` that has moved since the seed.
+TEST(GammaSwap, AgedBlendRescalesUnaccruedAnchorAtZeroObservationsDone) {
+  const double sigma = 0.20;
+  const double T = 0.5;
+  const double notional = 1.0e6;
+  const std::uint32_t n_total = 100u;
+  const double seed_spot = 100.0;
+  const double today_spot = 120.0;  // spot has moved since inception; nothing accrued yet
+
+  auto tracker = RealizedTracker::create(252.0, n_total);
+  ASSERT_TRUE(tracker.has_value());
+  ASSERT_TRUE(tracker->observe(seed_spot).has_value());  // seed only -- n_obs_done stays 0
+  const RealizedVarianceSpec seeded = tracker->snapshot();
+  ASSERT_EQ(seeded.n_obs_done, 0u);
+  ASSERT_DOUBLE_EQ(seeded.gamma_seed_spot, seed_spot);  // C-3's exact "known and ignored" state
+
+  const EssviSurface surf = make_flat_surface(sigma, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(today_spot, 0.01, 1.00);  // zero carry (r == q == 0, always)
+
+  DerivContract c{};
+  c.kind = DerivKind::GammaSwap;
+  c.maturity_t = T;
+  c.notional = notional;
+  c.strike_dec = 0.0;
+  c.rv_spec = seeded;
+
+  const auto q = deriv_price(surf, cs, c, deriv_default_config());
+  ASSERT_TRUE(q.has_value()) << q.error().to_string();
+
+  // Independently reconstruct the future leg via the production strip
+  // directly (zero carry, flat surface: K_gamma == K_var, FlatZeroCarryExact).
+  const auto strip = var_swap_fair_strike(surf, cs, T, deriv_default_config());
+  ASSERT_TRUE(strip.has_value());
+  const double k_gamma_future = strip->fair_strike_dec;
+
+  const double correct = (today_spot / seed_spot) * k_gamma_future;
+  const double shipped_buggy = k_gamma_future;  // 24d0342's unrescaled value at n_obs_done == 0
+
+  // THE assertion that carries this test: production matches the RESCALED
+  // future leg. 24d0342 (round 1) returns `k_gamma_future_dec` UNRESCALED
+  // whenever n_obs_done == 0, even with a live anchor recorded -- C-3.
+  EXPECT_NEAR(q->fair_strike_dec, correct, 1.0e-9);
+  EXPECT_GT(std::fabs(q->fair_strike_dec - shipped_buggy), 0.5 * std::fabs(correct - shipped_buggy));
+  // Non-vacuity: the gap between correct and buggy is a real 20% of the
+  // strike at this fixture (today_spot/seed_spot - 1 == 0.2), not a
+  // rounding-order effect the tolerance above could satisfy by accident.
+  EXPECT_GT(std::fabs(correct - shipped_buggy) / correct, 0.15);
+}
+
+// C-4 Critical (Task F-2 fix round 2): reproduces the review's own C-4
+// fixture -- mid-life 40/100, rv_gamma_done_dec = 0.09, curves.spot = 100,
+// zero rates (theta_carry's own documented meaning, "isolates the pure
+// discounting drift", puts the truth near 0 here) -- with gamma_seed_spot =
+// 80, spot having risen 25% since inception, an ORDINARY mid-life state, not
+// an edge case. Round 1's `CarryThetaDiffersFromZeroFixingThetaMidLife`
+// deliberately pinned `gamma_seed_spot == curves.spot` to isolate C-2 from
+// C-1; that isolation choice is exactly what hid C-4 (I-3's finding).
+TEST(GammaSwap, CarryThetaRescalesInjectedFixingOntoSeedAnchor) {
+  const double sigma = 0.20;
+  const EssviSurface surf = make_flat_surface(sigma, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);  // zero carry (r == q == 0, always)
+
+  DerivContract c{};
+  c.kind = DerivKind::GammaSwap;
+  c.maturity_t = 0.5;
+  c.notional = 1.0e6;
+  c.strike_dec = 0.0;
+  c.rv_spec.annualization = 252.0;
+  c.rv_spec.n_obs_total = 100u;
+  c.rv_spec.n_obs_done = 40u;
+  c.rv_spec.rv_gamma_done_dec = 0.09;
+  c.rv_spec.gamma_seed_spot = 80.0;  // spot has risen 25% since inception -- C-4's exact fixture
+
+  const atx::vol::DerivGreekBumps bumps{};
+  const auto g = atx::vol::deriv_greeks(surf, cs, c, deriv_default_config(), bumps);
+  ASSERT_TRUE(g.has_value()) << g.error().to_string();
+
+  // THE assertion that carries this test: at zero rates, theta_carry's own
+  // documented meaning puts the truth near 0. 24d0342 (rounds 1) added the
+  // injected fixing (anchored at curves.spot == 100) directly into
+  // rv_gamma_done_dec (anchored at gamma_seed_spot == 80) with no rescale,
+  // reporting -36524.999922309376 (wrong sign, ~8.4e7x) instead of a number
+  // near 0. Bound generously (1.0) since the true value is a small residual
+  // (T-vs-T-dt strip/roll noise), not exactly 0.
+  EXPECT_LT(std::fabs(g->theta_carry), 1.0);
+  // The "must differ" contract still holds with a real (not no-op) anchor.
+  EXPECT_NE(g->theta_carry, g->theta_zero_fixing);
 }
 
 // RealizedTracker's gamma accumulator (Task F-2, appended field + observe
@@ -3599,7 +3713,10 @@ TEST(RealizedTrackerGamma, AccumulatesWeightedVariance) {
 TEST(GammaSwap, CarryThetaDiffersFromZeroFixingThetaMidLife) {
   const double sigma = 0.20;
   const EssviSurface surf = make_flat_surface(sigma, 0.01, 1.00);
-  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);  // zero carry, r == q == 0
+  // m-7 (fix round 2): 0.01/1.00 are yield-curve tenor pillars (T_lo, T_hi),
+  // not a rate -- see make_flat_curves's own local helper, :106-119, which
+  // takes no rate argument and hard-codes r == 0.0 always.
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);  // zero carry (r == q == 0, always)
 
   DerivContract c{};
   c.kind = DerivKind::GammaSwap;

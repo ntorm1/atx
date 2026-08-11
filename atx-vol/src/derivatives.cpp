@@ -1894,6 +1894,34 @@ Result<DerivQuote> var_swap_fair_strike(const SurfaceT& surface,
 
 namespace {
 
+// Task F-2 fix round 2 (C-3/C-4 Critical): THE anchor invariant, stated once.
+// `RealizedVarianceSpec::rv_gamma_done_dec` is denominated in SEED-ANCHORED
+// units -- Lee's weight w(y) = S_i/S_seed, S_seed = `gamma_seed_spot`. A
+// quantity `k_other_anchored` computed or realized at some OTHER spot (the
+// future-leg strip, evaluated at `curves.spot`; an injected synthetic
+// fixing, evaluated at whatever spot resolved it) is expressed in THAT
+// spot's units and is not commensurable with the gamma leg until rescaled by
+// `other_spot / seed_spot`.
+//
+// This is PREDICATE-FREE: the conversion holds regardless of n_obs_done or
+// n_obs_total. Fix round 1 closed C-1/C-2 by gating the rescale on
+// `genuinely_mixing` (0 < n_obs_done < n_obs_total), a REGIME predicate --
+// which excluded n_obs_done == 0 with a live anchor (C-3, the state a
+// tracker-driven contract occupies between its seed observe() and its first
+// return fixing) and the injected carry-theta fixing itself (C-4). Every
+// site in this file that combines an other-anchored quantity with the
+// seed-anchored gamma leg must route through this function -- grep this
+// name, not `genuinely_mixing`, before adding a new one.
+//
+// Pure conversion, no validation: callers own their own error handling,
+// since one (`price_gamma_swap`) can fail loud (`Result<DerivQuote>`) and
+// the other (`inject_carry_fixing`) cannot (`noexcept`, returns by value --
+// its malformed-anchor case is left for the downstream reprice to reject).
+[[nodiscard]] double gamma_anchor_rescale(double k_other_anchored, double other_spot,
+                                          double seed_spot) noexcept {
+  return (other_spot / seed_spot) * k_other_anchored;
+}
+
 // Task F-2 (PV-F1 / LIT-7): gamma-swap aged-blend dispatch. Mirrors
 // `price_var_swap` above field for field -- the brief's "identical dispatch
 // structure to VarSwap" -- with exactly three differences:
@@ -1949,37 +1977,48 @@ template <class SurfaceT>
     strip_ran = true;
   }
 
-  // C-1 Critical (Task F-2 fix round 1): `rv.rv_gamma_done_dec` is anchored
-  // at the tracker's SEED spot (`rv.gamma_seed_spot`, the first observe()
-  // call); `k_gamma_future_dec` (the strip just above) is anchored at TODAY's
-  // spot (`curves.spot`). `aged_total_variance_dec` only genuinely MIXES the
-  // two legs when 0 < n_obs_done < n_obs_total -- it returns one leg verbatim
-  // otherwise, in which case the anchor mismatch cannot bite (there is
-  // nothing to blend against). In the genuine-mixing case, rescale the future
-  // leg onto the accrued leg's own anchor by S_t / S_seed before blending;
-  // reviewer's fixture (seed 100 -> 120 over 40/100 fixings, sigma=20%, zero
-  // carry, T=0.5, N=1e6): unrescaled blend priced fair_strike_dec =
-  // 0.026302491308752986, correct = 0.031102491355704916 -- 15.43% of the
-  // strike, $4,800 PV, silently. FAIL LOUD rather than guess when the anchor
-  // is missing (0.0, a hand-built spec that never populates it, or curves.spot
-  // <= 0): a wrong number here is exactly what this file otherwise refuses to
-  // ship, and there is no safe default absent a real seed spot to rescale by.
-  double k_gamma_for_blend = k_gamma_future_dec;
-  const bool genuinely_mixing =
+  // C-1/C-3 Critical (Task F-2 fix rounds 1-2): FAIL LOUD, unchanged in
+  // spirit from round 1 -- when the accrued leg has genuine nonzero weight
+  // (0 < n_obs_done < n_obs_total, so `aged_total_variance_dec` will actually
+  // read `rv.rv_gamma_done_dec`) there MUST be an anchor to interpret it, or
+  // blending is a guess. This predicate is legitimately regime-gated: only
+  // real accrual creates the NEED for an anchor. It does NOT gate the
+  // rescale below -- round 1's bug was using this same predicate for that
+  // too (see C-3, task-F-2-fix-round-1-review.md): a tracker-seeded contract
+  // with n_obs_done == 0 has a LIVE anchor (RealizedTracker::observe's seed
+  // call writes it before any return is realized) that this guard, being
+  // false there, never even inspects.
+  const bool needs_anchor_to_blend =
       rv.n_obs_done > 0u && rv.n_obs_total > 0u && rv.n_obs_done < rv.n_obs_total;
-  if (genuinely_mixing) {
-    if (!(rv.gamma_seed_spot > 0.0)) {
-      return Err(ErrorCode::InvalidArgument,
-                 "aged gamma swap needs rv_spec.gamma_seed_spot > 0 to blend "
-                 "the accrued leg (anchored at the seed spot) with the future "
-                 "leg (anchored at curves.spot) on a common anchor");
-    }
-    if (!(curves.spot > 0.0)) {
-      return Err(ErrorCode::InvalidArgument,
-                 "aged gamma swap needs curves.spot > 0 to blend the future "
-                 "leg onto the accrued leg's seed-spot anchor");
-    }
-    k_gamma_for_blend = (curves.spot / rv.gamma_seed_spot) * k_gamma_future_dec;
+  if (needs_anchor_to_blend && !(std::isfinite(rv.gamma_seed_spot) && rv.gamma_seed_spot > 0.0)) {
+    return Err(ErrorCode::InvalidArgument,
+               "aged gamma swap needs a finite rv_spec.gamma_seed_spot > 0 to "
+               "blend the accrued leg (anchored at the seed spot) with the "
+               "future leg (anchored at curves.spot) on a common anchor");
+  }
+
+  // C-1/C-3: the invariant (`gamma_anchor_rescale`'s own comment), applied
+  // WITHOUT a regime gate -- whenever the future leg ran (`strip_ran`) and an
+  // anchor exists (`rv.gamma_seed_spot > 0`), rescale it onto that anchor,
+  // regardless of n_obs_done. This is what covers n_obs_done == 0 with a live
+  // anchor (C-3): reviewer's fixture (seed 100, `RealizedTracker::observe`
+  // called once, zero returns realized yet, priced at spot 120, sigma=20%,
+  // zero carry, T=0.5, N=1e6) -- unrescaled fair_strike_dec =
+  // 0.040000000391266097, correct = 0.048000000469519320, a SILENT 16.67% /
+  // $8,000 error at spot 120 (33.3% / $20,000 at spot 150), larger than the
+  // original C-1 because w_future is 1.0 here, not 0.6. When no anchor
+  // exists (a truly virgin contract, gamma_seed_spot == 0.0), there is
+  // nothing to rescale onto and none is needed: the future leg IS the whole
+  // answer in that state (`aged_total_variance_dec`'s own n_done == 0 /
+  // n_total == 0 branches already return it verbatim).
+  //
+  // `curves.spot > 0` is guaranteed here already (m-5, round-1 review):
+  // `strip_ran` implies `strip_fair_value_core` already rejected
+  // `!(curves.spot > 0.0)` before returning, so re-checking it here was dead
+  // code -- removed rather than kept as a defensive no-op.
+  double k_gamma_for_blend = k_gamma_future_dec;
+  if (strip_ran && std::isfinite(rv.gamma_seed_spot) && rv.gamma_seed_spot > 0.0) {
+    k_gamma_for_blend = gamma_anchor_rescale(k_gamma_future_dec, curves.spot, rv.gamma_seed_spot);
   }
 
   const double total = aged_total_variance_dec(rv.rv_gamma_done_dec, k_gamma_for_blend,
@@ -2539,46 +2578,57 @@ template <class SurfaceT>
           ? out.rv_done_dec * static_cast<double>(out.n_obs_done) / rv.annualization
           : 0.0;
 
-  // C-2 Critical (Task F-2 fix round 1): this function's header comment above
-  // claimed pricing consumes only rv_done_dec / sum_sq_log_returns_done --
-  // true until F-2 gave RealizedVarianceSpec a SECOND, per-kind accrued leg
-  // (rv_gamma_done_dec / sum_weighted_sq_log_returns_done) that
-  // price_gamma_swap reads instead. Leaving those two fields untouched here
-  // made theta_carry and theta_zero_fixing bitwise IDENTICAL on every
-  // scheduled gamma swap -- this file documents that pair as "must differ" --
-  // wrong by 305x/364x with sign flips on the reviewer's own fixtures. The
-  // SAME running-mean update, applied to the gamma leg, restores this
-  // function's ORIGINAL "regardless of DerivKind" contract: write BOTH legs
-  // unconditionally rather than branch on kind, since a VarSwap contract
-  // never reads rv_gamma_done_dec back (a harmless no-op for it) and a
-  // GammaSwap contract needs exactly this. The injected fixing's own gamma
-  // WEIGHT (S_new/S_seed) is treated as 1: this is a one-step synthetic
-  // diagnostic fixing (the calendar roll is bumps.time_years, typically one
-  // day), not a real spot draw to form a genuine ratio from, and the
-  // departure of a real one-day S_new/S_seed from 1 is second-order next to
-  // what this diagnostic already is -- a leading-order calendar/carry
-  // decomposition, not a precision forecast -- exactly mirroring how the
-  // plain formula above treats the injected fixing as landing directly at its
-  // ANNUALIZED RATE, not as a weighted quantity of its own.
-  out.rv_gamma_done_dec = (n0 * rv.rv_gamma_done_dec + fixing_dec) / (n0 + 1.0);
+  // C-2/C-4 Critical (Task F-2 fix rounds 1-2): this function's header
+  // comment above claimed pricing consumes only rv_done_dec /
+  // sum_sq_log_returns_done -- true until F-2 gave RealizedVarianceSpec a
+  // SECOND, per-kind accrued leg (rv_gamma_done_dec /
+  // sum_weighted_sq_log_returns_done) that price_gamma_swap reads instead.
+  // Leaving those two fields untouched here made theta_carry and
+  // theta_zero_fixing bitwise IDENTICAL on every scheduled gamma swap (C-2).
+  // Write BOTH legs unconditionally rather than branch on kind -- restoring
+  // this function's ORIGINAL "regardless of DerivKind" contract -- since a
+  // VarSwap contract never reads rv_gamma_done_dec back (a harmless no-op).
+  //
+  // C-4 (round 2): `fixing_dec` is resolved at TODAY's spot (`anchor_spot` --
+  // it is `k_var_future`, the strip's own future-leg value, or 0.0), but
+  // `rv.rv_gamma_done_dec` is denominated at `rv.gamma_seed_spot`. Adding
+  // `fixing_dec` in RAW made round 1's own justification here -- "S_new/
+  // S_seed treated as 1, a one-step diagnostic" -- wrong: it named the right
+  // symbol (S_new/S_seed) and reasoned about a DIFFERENT one (S_new/S_prev,
+  // which genuinely is ~1 over one day). S_new/S_seed is the inception-to-
+  // today ratio C-1 exists to correct, and is NOT close to 1 whenever spot
+  // has moved since inception (0.80-1.25 in the review's own fixture).
+  // Route through `gamma_anchor_rescale` (this file's stated invariant)
+  // whenever an anchor already exists, regardless of n_obs_done -- covering
+  // BOTH the ordinary mid-life case AND a tracker-seeded n_obs_done == 0
+  // contract (RealizedTracker::observe's seed call writes gamma_seed_spot
+  // before any return is realized, so this injection can land on a LIVE
+  // anchor even at n_obs_done == 0).
+  const double fixing_for_gamma =
+      (rv.gamma_seed_spot > 0.0) ? gamma_anchor_rescale(fixing_dec, anchor_spot, rv.gamma_seed_spot)
+                                  : fixing_dec;
+  out.rv_gamma_done_dec = (n0 * rv.rv_gamma_done_dec + fixing_for_gamma) / (n0 + 1.0);
   out.sum_weighted_sq_log_returns_done =
       (rv.annualization > 0.0)
           ? out.rv_gamma_done_dec * static_cast<double>(out.n_obs_done) / rv.annualization
           : 0.0;
-  // C-1's anchor (gamma_seed_spot) is what a mid-life re-price of this
-  // injected contract needs. A real mid-life contract already has one
-  // (RealizedTracker::observe's seed call), copied through by `out = rv`
-  // above and left untouched here. The one case that does not is
-  // rv.n_obs_done == 0 -- exactly the shape solve_cycle_swap produces, a
-  // hand-built spec never seeded through a tracker -- where THIS injection
-  // effectively IS the contract's first-ever fixing. `anchor_spot` (the
-  // caller's curves.spot; a theta/carry roll never bumps spot, so it is
-  // identical to what the center evaluation itself sees) is what a real seed
-  // observe() at this same moment would have recorded. Deliberately NOT
-  // applied when rv.n_obs_done > 0: a mid-life spec with real accrual and no
-  // anchor is a genuine caller error, and this function leaves it that way so
-  // price_gamma_swap's own C-1 guard fails loud on it, rather than silently
-  // papering over it here.
+  // The anchor itself: a real mid-life OR tracker-seeded-but-unfixed contract
+  // already has one (copied through by `out = rv` above, untouched -- and
+  // just used, rescaled, immediately above). The one case that does not is a
+  // hand-built spec that was never seeded through a tracker at all (the
+  // shape `solve_cycle_swap` produces: n_obs_done == 0 AND gamma_seed_spot ==
+  // 0.0) -- where THIS injection effectively IS the contract's first-ever
+  // fixing, so it establishes the anchor at `anchor_spot` (the caller's
+  // curves.spot; a theta/carry roll never bumps spot, so it is identical to
+  // what the center evaluation itself sees -- exactly what a real seed
+  // observe() at this same moment would have recorded). Note the rescale
+  // above is then a no-op by construction here (`fixing_dec` was resolved AT
+  // `anchor_spot`, and this branch only fires when `gamma_seed_spot` was NOT
+  // already positive, so the ternary above took the unrescaled path).
+  // Deliberately NOT applied when rv.n_obs_done > 0 with no anchor: a
+  // mid-life spec with real accrual and no anchor is a genuine caller error,
+  // left that way so price_gamma_swap's own guard fails loud on it, rather
+  // than silently papering over it here.
   if (rv.n_obs_done == 0u && !(out.gamma_seed_spot > 0.0) && anchor_spot > 0.0) {
     out.gamma_seed_spot = anchor_spot;
   }
