@@ -416,14 +416,21 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
 
     // 3. Fit the eSSVI slice (natural form, T/F stamped in). MonotoneFit adds a
     //    calendar floor vs. the previous fitted slice (theta floor + active-set
-    //    w-floor over the data range); every other mode is the plain fit.
+    //    w-floor over the data range); Project constrains the fit CONSTRUCTIVELY
+    //    instead, with plan §2.1's (N1)+(N2) backbone ordering against the
+    //    previous slice, so its post-hoc projection (step 6) is left a residual
+    //    inside its fidelity budget rather than a term structure that inverted.
+    //    `None` stays the historical independent per-slice fit, byte for byte.
     const double t_fit = time_stages ? now_ns() : 0.0;
     FitDiag diag{};
+    const EssviParams *const calendar_prev =
+        (in.repair == CalendarRepair::Project && has_prev) ? &prev_slice : nullptr;
     Result<EssviParams> slice_res =
         (in.repair == CalendarRepair::MonotoneFit)
             ? fit_slice_calendar_floored(prepared, T, F, in.calib, &diag,
                                          has_prev ? &prev_slice : nullptr, df)
-            : essvi_fit_slice(prepared.fit_observations(), T, F, in.calib, &diag);
+            : essvi_fit_slice(prepared.fit_observations(), T, F, in.calib, &diag,
+                              /*theta_floor=*/0.0, /*warm=*/nullptr, calendar_prev);
     if (time_stages)
       ms_fit += now_ns() - t_fit;
     if (!slice_res) {

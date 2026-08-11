@@ -107,12 +107,33 @@ struct DeAmOptions;
 //              Tikhonov term shrinks the cube toward `warm` (scaled to the
 //              dataset weight), stabilising thin / noisy tick updates; with a
 //              null `warm` that field is inert.
+// @param calendar_prev  optional PREVIOUS (shorter-T) fitted slice this one must
+//              not calendar-cross. Null (default) is byte-identical to the
+//              historical fit. Non-null imposes plan §2.1's two NECESSARY
+//              cross-slice conditions, in the coordinates psi := theta*phi and
+//              chi := rho*psi (w(0) == theta; the asymptotic wing slopes are
+//              (psi +/- chi)/2, Gatheral-Jacquier Remark 4.3):
+//                (N1)  theta_2 >= theta_1                 -- the ATM level
+//                (N2)  psi_2 +/- chi_2 >= psi_1 +/- chi_1 -- the wing slopes
+//              (N1) is the same theta-band floor `theta_floor` raises; the two
+//              compose by MAX, so passing both cannot contradict. (N2) is, at a
+//              fixed (theta, rho), exactly a lower bound on phi, so it is a
+//              floor on the cube's `p` axis and the fit stays inside its box.
+//              (N1) alone pins the pair only AT the money and leaves the wings
+//              free to cross inside the certified band (see
+//              EssviCalendarOrdering.ThetaFloorShrinksButDoesNotCloseTheProjectionGap);
+//              (N1)+(N2) are NECESSARY but NOT sufficient (Pasquazzi 2023 Prop
+//              4.14), so a residual in-band crossing is still left to
+//              `arb_project_calendar_essvi` — inside its fidelity budget.
+//              A slice whose free fit already satisfies both keeps its
+//              historical parameters BIT for BIT.
 // @return InvalidArgument if `obs` is empty or T <= 0; Unavailable if the LM
 //         produced a non-finite / degenerate slice; otherwise Ok(slice).
 [[nodiscard]] Result<EssviParams> essvi_fit_slice(
     std::span<const FitObs> obs, double T, double F, const CalibOpts& opts,
     FitDiag* out_diag = nullptr, double theta_floor = 0.0,
-    const EssviParams* warm = nullptr);
+    const EssviParams* warm = nullptr,
+    const EssviParams* calendar_prev = nullptr);
 
 // Gradient of the eSSVI backbone total variance w.r.t. the Mingone cube
 // coordinates ∂w/∂(psi, p, lambda) at log-moneyness `k_log`, evaluated at the

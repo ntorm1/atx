@@ -132,6 +132,157 @@ void clamp_cube(double& psi, double& p, double& lambda) noexcept {
   lambda = std::clamp(lambda, kCubeEdge, 1.0 - kCubeEdge);
 }
 
+// ── (N2) cross-slice wing-slope ordering ─────────────────────────────────
+//
+// Plan §2.1 poses the calendar conditions in (theta, psi := theta·phi,
+// chi := rho·psi), the coordinates in which the eSSVI backbone reads
+//
+//   w(k) = ½[ theta + chi·k + sqrt(psi²k² + 2·theta·chi·k + theta²) ]
+//
+// so w(0) == theta exactly and the asymptotic wing slopes are (psi ± chi)/2
+// (Gatheral-Jacquier Remark 4.3). For consecutive slices 1 (near) and 2 (far)
+// the two NECESSARY conditions are
+//
+//   (N1)  theta_2 >= theta_1                  — the theta band floor above
+//   (N2)  psi_2 ± chi_2 >= psi_1 ± chi_1      — this block
+//
+// (N1) pins the pair only AT the money; with theta equal the fitted (phi, rho)
+// are still free, the wings cross INSIDE the certified ±0.50 band, and
+// `arb_project_calendar_essvi` is then asked for a level scale beyond its 10 %
+// fidelity budget — measured in
+// EssviCalendarOrdering.ThetaFloorShrinksButDoesNotCloseTheProjectionGap.
+//
+// At a fixed (theta_2, rho_2), (N2) is exactly a LOWER BOUND on phi_2:
+//
+//   phi_2 >= max( A_r / (theta_2(1+rho_2)), A_l / (theta_2(1−rho_2)) )
+//   A_r = psi_1(1+rho_1),   A_l = psi_1(1−rho_1)
+//
+// i.e. a floor on the Mingone cube's `p` axis, so the constrained point stays
+// inside the same box the LM already searches.
+//
+// NOT SUFFICIENT, deliberately: Pasquazzi (2023) Prop 4.14 settles the
+// Corbetta-vs-Mingone disagreement against sufficiency, and the backbone is
+// indeed not jointly monotone — dw/dchi = (k/2)(1 + theta/R) flips sign at
+// k = 0, so ordering the right wing costs a little on the left. (N1)+(N2)
+// order the wings; whatever in-band crossing survives is left to the
+// projection, now within budget.
+struct WingFloor {
+  double right{0.0};        // A_r = psi_1(1+rho_1)
+  double left{0.0};         // A_l = psi_1(1−rho_1)
+  double lambda_prev{0.0};  // cube lambda of rho_1 — the always-reachable rho
+  [[nodiscard]] bool active() const noexcept {
+    return right > 0.0 && left > 0.0;
+  }
+};
+
+// (N2) floors from the previous slice. A degenerate previous slice (non-finite,
+// non-positive psi, |rho| >= 1) yields an INERT floor rather than a hard error:
+// this is a fit-quality coupling, not an input contract, and a slice that
+// cannot state its own wings must not veto its successor.
+[[nodiscard]] WingFloor wing_floor_from(const EssviParams& prev) noexcept {
+  WingFloor wf{};
+  const double psi_wing = prev.theta * prev.phi;  // plan psi, NOT the cube psi
+  if (!std::isfinite(psi_wing) || !(psi_wing > 0.0) ||
+      !std::isfinite(prev.rho) || !(std::fabs(prev.rho) < 1.0)) {
+    return wf;
+  }
+  wf.right = psi_wing * (1.0 + prev.rho);
+  wf.left = psi_wing * (1.0 - prev.rho);
+  wf.lambda_prev = std::clamp((prev.rho + kRhoMax) / (2.0 * kRhoMax), 0.0, 1.0);
+  return wf;
+}
+
+// Smallest phi satisfying (N2) at this (theta, rho); 0 when the floor is inert.
+[[nodiscard]] double n2_phi_required(const WingFloor& wf, double theta,
+                                     double rho) noexcept {
+  if (!(theta > 0.0)) {
+    return 0.0;
+  }
+  const double gr = 1.0 + rho;
+  const double gl = 1.0 - rho;
+  double req = 0.0;
+  if (gr > 0.0) {
+    req = std::max(req, wf.right / (theta * gr));
+  }
+  if (gl > 0.0) {
+    req = std::max(req, wf.left / (theta * gl));
+  }
+  return req;
+}
+
+// Raise the cube onto the (N2) floor in place; same contract as `lee_project`
+// (returns true iff it moved the cube, and a cube already on the admissible
+// side is left BIT for BIT alone).
+//
+// Only ever RAISES phi, through `p`. `lambda` (rho) is pulled back TOWARD the
+// previous slice's rho — never past it — and only when the floor is out of
+// reach of the butterfly cap at the current rho.
+//
+// Reachability. The largest psi the cap allows is theta·phi_max(theta,rho) =
+// min(4/(1+|rho|), sqrt(4·theta/(1+|rho|))), non-decreasing in theta. At
+// rho == rho_1 the requirement collapses to theta_1·phi_1/theta_2 <=
+// phi_max(theta_2, rho_1), which holds for every theta_2 >= theta_1. So with
+// the (N1) band floor applied, rho_1 is ALWAYS a reachable endpoint and the
+// bisection has a bracket. If the band could not carry the floor at all
+// (theta_1 above the band's own ceiling — a sub-hour expiry against a fat
+// neighbour), we take the most-ordered point the box allows rather than fail
+// the slice: fail safe, and the projection still gets its say downstream.
+bool n2_project(double psi_cube, double& p, double& lambda,
+                const ThetaBand& band, const WingFloor& wf) noexcept {
+  if (!wf.active()) {
+    return false;
+  }
+  const EssviNatural at = cube_to_natural(psi_cube, p, lambda, band);
+  if (!(at.theta > 0.0)) {
+    return false;
+  }
+  if (at.phi >= n2_phi_required(wf, at.theta, at.rho)) {
+    return false;  // already ordered
+  }
+
+  // theta depends only on `psi_cube` and rho only on `lambda`, so the `p` this
+  // probe passes is irrelevant to the answer.
+  const auto reachable = [&](double lam) noexcept {
+    const EssviNatural n = cube_to_natural(psi_cube, 0.0, lam, band);
+    return n2_phi_required(wf, n.theta, n.rho) <=
+           essvi_phi_max(n.theta, n.rho);
+  };
+  if (!reachable(lambda)) {
+    double lam_far = lambda;           // unreachable
+    double lam_near = wf.lambda_prev;  // reachable whenever (N1) holds
+    if (reachable(lam_near)) {
+      // Keep the LAST reachable point, so the fit gives up the least skew that
+      // still buys an ordered pair.
+      for (int it = 0; it < 32; ++it) {
+        const double mid = 0.5 * (lam_near + lam_far);
+        if (reachable(mid)) {
+          lam_near = mid;
+        } else {
+          lam_far = mid;
+        }
+      }
+      lambda = lam_near;
+    }
+    // else: nothing in the box orders this pair — fall through to the cap.
+  }
+
+  const EssviNatural n = cube_to_natural(psi_cube, p, lambda, band);
+  const double phi_hi = essvi_phi_max(n.theta, n.rho);
+  const double span = phi_hi - kPhiMin;
+  if (!(span > 0.0)) {
+    return false;  // degenerate cap: the p axis has nothing to give
+  }
+  const double req = std::min(n2_phi_required(wf, n.theta, n.rho), phi_hi);
+  const double p_req = (req - kPhiMin) / span;
+  const double p_new =
+      std::clamp(std::max(p, p_req), kCubeEdge, 1.0 - kCubeEdge);
+  if (!(p_new > p)) {
+    return false;
+  }
+  p = p_new;
+  return true;
+}
+
 // Weighted SSE of the w-domain residual Σ w_i (w_model(k_i) − w_mkt_i)².
 // ── Warm-start cube prior (Tikhonov shrinkage toward a previous fit) ──────
 //
@@ -272,9 +423,20 @@ void residuals_and_jac(std::span<const FitObs> obs, const ThetaBand& band,
 // diagonal), g = JᵀWr, solve (H_damped) δ = −g via the atx-core SPD Cholesky,
 // accept on SSE decrease (else grow the damping and retry). Returns the new
 // SSE, `prev_sse` if no trial improved, or −1 on an unrecoverable solve.
+//
+// PROJECTED LM when `wf` is active: each trial cube is pushed onto the (N2)
+// feasible set BEFORE its SSE is scored, so the step the LM accepts is the one
+// it will actually keep. Projecting only AFTER the fit converges is measurably
+// worse and not a subtlety: the free LM tunes rho for an unconstrained phi,
+// the projection then raises phi without letting rho respond, and on the
+// fixture below that shipped a WORSE pair than the theta floor alone (a
+// required level scale of 1.499 against 1.131). The Jacobian is left as the
+// unprojected one — it only proposes directions; feasibility and the accept
+// test are both decided on the projected point.
 [[nodiscard]] double lm_step(std::span<const FitObs> obs,
                              std::span<const double> weights,
-                             const ThetaBand& band, double T, double& psi,
+                             const ThetaBand& band, const WingFloor& wf,
+                             double T, double& psi,
                              double& p, double& lambda, double prev_sse,
                              double& lambda_lm, std::span<const double> kbuf,
                              std::span<double> wbuf, std::span<double> dth,
@@ -350,6 +512,7 @@ void residuals_and_jac(std::span<const FitObs> obs, const ThetaBand& band,
     double p_new = p + step(1);
     double lambda_new = lambda + step(2);
     clamp_cube(psi_new, p_new, lambda_new);
+    (void)n2_project(psi_new, p_new, lambda_new, band, wf);
 
     const double new_sse = cube_sse(obs, weights, band, T, psi_new, p_new,
                                     lambda_new, kbuf, wbuf, prior);
@@ -883,6 +1046,7 @@ struct FitScratch {
 [[nodiscard]] Result<EssviParams> fit_core(std::span<const FitObs> obs, double T,
                                            double F, const CalibOpts& opts,
                                            const ThetaBand& band,
+                                           const WingFloor& wf,
                                            FitDiag* out_diag, FitScratch& scratch,
                                            const EssviParams* warm = nullptr) {
   if (obs.empty() || !(T > 0.0)) {
@@ -934,6 +1098,10 @@ struct FitScratch {
     }
   }
   clamp_cube(psi, p, lambda);
+  // Start the LM ON the (N2) feasible set. An infeasible seed would be scored
+  // against PROJECTED trials inside `lm_step`, so its (lower, inadmissible) SSE
+  // would reject every admissible step and strand the fit at the seed.
+  (void)n2_project(psi, p, lambda, band, wf);
 
   // Optional warm-start Tikhonov prior. Enabled only when a warm slice is given
   // AND opts.prior_strength > 0. The user-facing strength (0..1, "fraction of
@@ -1011,7 +1179,7 @@ struct FitScratch {
       const double p_old = p;
       const double lambda_old = lambda;
       const double new_sse =
-          lm_step(obs, active, band, T, psi, p, lambda, sse, lambda_lm, kbuf,
+          lm_step(obs, active, band, wf, T, psi, p, lambda, sse, lambda_lm, kbuf,
                   wbuf, dth, dphi, drho, r, jpsi, jp, jl, prior);
       ++inner_total;
       if (new_sse < 0.0) {
@@ -1037,6 +1205,10 @@ struct FitScratch {
     if (opts.lee_bound_project) {
       (void)lee_project(psi, p, lambda, band, T);
     }
+    // (N2) inside the loop so the IRLS reweight and the next inner LM both see
+    // the ordered cube, not an unordered one they would have to be re-projected
+    // off. Inert (and bit-identical) when no previous slice was supplied.
+    (void)n2_project(psi, p, lambda, band, wf);
     if (std::fabs(prev_outer_sse - sse) < kOuterStallSse) {
       break;
     }
@@ -1055,6 +1227,13 @@ struct FitScratch {
       active[i] = base_w[i] * hw[i];
     }
   }
+
+  // (N2) is a CONTRACT of the RETURNED slice, not merely a per-iteration nudge:
+  // the last inner LM can walk `p` back below the floor after the in-loop
+  // projection, and both early-outs above (Morozov, outer stall) skip that pass
+  // entirely. Project once more so the caller's ordering guarantee holds on
+  // every exit path.
+  (void)n2_project(psi, p, lambda, band, wf);
 
   // Map cube -> natural and populate the slice.
   const EssviNatural nat = cube_to_natural(psi, p, lambda, band);
@@ -1217,8 +1396,13 @@ struct ChainFitResult {
   const EssviParams* warm = find_warm_seed(prior, T);
 
   FitDiag diag{};
-  const Result<EssviParams> fit = fit_core(
-      std::span<const FitObs>{os.obs}, T, F, opts, band, &diag, scratch, warm);
+  // The sequential driver couples slices through (N1) only — its documented
+  // contract (essvi_calib.hpp) is a theta-monotone term structure. (N2) is
+  // driven by the production `run_surface_parity` seam, which passes the whole
+  // previous slice to `essvi_fit_slice`.
+  const Result<EssviParams> fit =
+      fit_core(std::span<const FitObs>{os.obs}, T, F, opts, band, WingFloor{},
+               &diag, scratch, warm);
   if (!fit.has_value()) {
     return res;  // LM failure: skip (fallback machinery deferred, see PORT NOTE)
   }
@@ -1416,25 +1600,39 @@ struct ChainFitResult {
 Result<EssviParams> essvi_fit_slice(std::span<const FitObs> obs, double T,
                                     double F, const CalibOpts& opts,
                                     FitDiag* out_diag, double theta_floor,
-                                    const EssviParams* warm) {
+                                    const EssviParams* warm,
+                                    const EssviParams* calendar_prev) {
   const Status option_status = validate_calib_options(opts);
   if (!option_status.has_value()) {
     return Err(option_status.error());
+  }
+  // Level floors COMPOSE BY MAX: `theta_floor` is a bare (N1) floor, while
+  // `calendar_prev` carries the previous slice's whole ordering contract
+  // ((N1) theta + (N2) wings). Taking the larger means the two can never
+  // contradict each other, whichever the caller supplies.
+  double theta_lo_req = theta_floor;
+  WingFloor wf{};
+  if (calendar_prev != nullptr) {
+    if (std::isfinite(calendar_prev->theta) &&
+        calendar_prev->theta > theta_lo_req) {
+      theta_lo_req = calendar_prev->theta;
+    }
+    wf = wing_floor_from(*calendar_prev);
   }
   ThetaBand band = default_band(T);
   // Raise the cube's theta_lo to the floor (calendar-monotone seam), exactly as
   // calib_surface_impl does for the sequential driver. 0 / <= band.lo is a no-op.
   // Relative margin keeps theta_lo < theta_hi strictly even for a near-zero
   // theta_hi (see calib_surface_impl).
-  if (theta_floor > band.lo) {
+  if (theta_lo_req > band.lo) {
     const double margin = std::max(2.0e-12, 1.0e-9 * band.hi);
-    band.lo = std::min(theta_floor, band.hi - margin);
+    band.lo = std::min(theta_lo_req, band.hi - margin);
   }
   // A per-call scratch arena: this public single-slice entry point is a pure
   // read of its inputs (safe to call concurrently), so it owns its own arena.
   // The surface drivers reuse ONE arena per worker across many slices instead.
   FitScratch scratch;
-  return fit_core(obs, T, F, opts, band, out_diag, scratch, warm);
+  return fit_core(obs, T, F, opts, band, wf, out_diag, scratch, warm);
 }
 
 std::array<double, 3> essvi_w_cube_grad(const EssviParams& slice,
