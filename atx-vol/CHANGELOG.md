@@ -1117,3 +1117,63 @@ Extrapolated` is declared but never set (no surface extrapolation predicate
 exposed yet); label storage is TSV-only (no Parquet — house rule, revisit
 with the lakehouse); dividend/borrow inputs for single names and purged-CV/
 embargo tooling stay Python-side; the theo signal probe assumes a SPY corpus.
+
+### NEW — BEV label factory emits the full fair-vol feature schema; corpus batch runner and QA report (feature-factory sprint)
+
+**What shipped.** `bev_label_factory` (`examples/bev_label_factory.cpp`)
+closes roadmap gap G1 (`docs/research/2026-08-09-theo-ml-alpha-iteration-
+plan.md` §1), with the close-to-close and day-resolution-events caveats
+below: an optional `--events <tsv>` calendar input (`iso_date_to_ns`,
+midnight-UTC epoch ns per announcement date; `load_events_tsv`; an empty
+or omitted path means no calendar loaded, `n_events_to_expiry` NaN for
+every row — never conflated with a loaded-and-empty calendar's `0`); a
+one-time spot-history pre-pass (`load_spot_history`) feeding a
+per-entry-date trailing realized-vol panel (`RvEstimator::CloseToClose`,
+252.0 annualization, up to `kRvHistoryBars = 253` spot-mirror closes,
+tallied by a new `n_entry_dates_rv_short` counter when the trailing window
+is too short); and the full `kFairVolFeatureSchemaV1` eight-column feature
+block (`theo.hpp`) appended to every label row, assembled by the driver
+itself rather than left to an offline trainer join (`theo.hpp`'s ML-seam
+banner is updated to match). The label TSV grows from 14 to 22
+tab-separated columns: `entry_ts_ns, uid, strike, expiry_ns, side,
+sigma_be, sigma_entry_iv, log_ratio, premium, vega, n_days, iters, flag,
+snapped, log_moneyness, tenor_years, market_vol, rv_21d, rv_63d,
+iv_minus_rv, n_events_to_expiry, delta_abs`; the header gains `#
+feature_schema=1` and an `# events=<path>` meta echo. A non-finite/
+non-positive `surf.forward_at(T)` now skips a whole entry date's candidate
+lattice up front (new `n_entry_dates_forward_invalid` counter), since
+`log_moneyness` is undefined for every candidate that date could produce.
+
+Two new Python scripts under `atx-vol/scripts/` (stdlib-only, no CMake/C++
+build relationship — see that directory's README): `bev_corpus_run.py`
+fans one driver invocation out per (run x tenor) pair in a JSON manifest,
+sequentially, capturing per-invocation stdout/stderr plus the parsed `#
+key=value` meta header into a byte-stable `manifest_out.json`;
+`bev_label_qa.py` reads one or more label TSVs and writes a single
+markdown QA report over their union — row accounting by flag/snapped,
+`log_ratio` distribution overall and by tenor x delta bucket,
+per-feature-column NaN coverage, a cross-file duplicate-key check
+(nonzero exit on a hit), and a report-only Pearson leakage tripwire that
+never affects the exit code.
+
+**Two data-quality caveats, both by design, both documented in the
+driver's own banner and in `theo.hpp`'s ML-seam banner.** `rv_21d`/
+`rv_63d` are close-to-close over spot-mirror bars (`O=H=L=C=spot`), not
+real OHLC — Parkinson/Garman-Klass/Rogers-Satchell/Yang-Zhang stay dormant
+until real bars land in the corpus (roadmap §5). `n_events_to_expiry` is
+day-resolution (midnight UTC per announcement date, from a hand-supplied
+TSV), not an intraday-timestamped, point-in-time vendor calendar.
+
+**Effect on existing callers.** None. `bev_label_factory` is an
+`ATX_BUILD_EXAMPLES`-gated example driver, off by default, with no served
+library caller; its label-TSV schema changing (14 → 22 columns) affects
+only files it itself writes. The one library header touched (`theo.hpp`)
+gains a comment-only update to its ML-seam banner — no signature,
+default, or served number changes.
+
+**Not shipped (see the sprint summary's residual-work register for the
+full list).** Real OHLC bars and a point-in-time earnings-calendar
+vendor feed (both data-acquisition items, roadmap §5 — the `--events` TSV
+format and the RV panel exist, but nothing produces either input from a
+real source yet); the S3 trainer and purged-CV/embargo validation harness
+(Python-side, unbuilt).

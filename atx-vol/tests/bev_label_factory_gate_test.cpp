@@ -379,3 +379,300 @@ TEST(BevLabelFactoryGate, LoadDividendsTsvParsesValidRowsAndRejectsMalformedLine
   const Result<std::vector<DividendEvent>> bad = load_dividends_tsv(bad_path);
   EXPECT_FALSE(bad.has_value());
 }
+
+// Task F-1: --events calendar. (h) load_events_tsv parses dates + comments and
+// count_events_at semantics reach the rows; (i) malformed date rejected;
+// (j) empty path => nullopt (feature column NaN handled in Task F-3's test).
+TEST(BevLabelFactoryGate, EventsTsvParsesAndCounts) {
+  const std::string events_path =
+      (fs::temp_directory_path() / "atx-bev-label-factory-events.tsv").string();
+  {
+    std::ofstream f(events_path, std::ios::binary | std::ios::trunc);
+    f << "# uid=SPY\n2026-03-05\n\n2026-06-04\r\n";
+  }
+  const Result<std::optional<EventSchedule>> sched = load_events_tsv(events_path);
+  ASSERT_TRUE(sched.has_value()) << sched.error().to_string();
+  ASSERT_TRUE(sched->has_value());
+  const Result<std::int64_t> d1_r = iso_date_to_ns("2026-03-05");
+  ASSERT_TRUE(d1_r.has_value()) << d1_r.error().to_string();
+  const std::int64_t d1 = *d1_r;
+  // 2026-03-05 00:00 UTC == 1772668800 * 1e9 exactly (civil-days check).
+  EXPECT_EQ(d1, 1772668800LL * 1000000000LL);
+  EXPECT_EQ((*sched)->count_between(d1 - 1, d1), std::size_t{1}); // (now, expiry] includes expiry
+  EXPECT_EQ((*sched)->count_between(d1, d1), std::size_t{0});     // event at now excluded
+}
+
+TEST(BevLabelFactoryGate, EventsTsvRejectsMalformedDate) {
+  const std::string bad_events_path =
+      (fs::temp_directory_path() / "atx-bev-label-factory-bad-events.tsv").string();
+  {
+    std::ofstream f(bad_events_path, std::ios::binary | std::ios::trunc);
+    f << "2026-13-40\n";
+  }
+  const Result<std::optional<EventSchedule>> sched = load_events_tsv(bad_events_path);
+  ASSERT_FALSE(sched.has_value());
+  EXPECT_EQ(sched.error().code(), ErrorCode::ParseError);
+}
+
+TEST(BevLabelFactoryGate, EventsPathEmptyMeansNoCalendar) {
+  const Result<std::optional<EventSchedule>> sched = load_events_tsv("");
+  ASSERT_TRUE(sched.has_value());
+  EXPECT_FALSE(sched->has_value());
+}
+
+// Task F-2: spot pre-pass. (k) bars come out ascending, one per session,
+// close == the fixture's own spot for that date; (l) a 3-bar history yields
+// finite (fallback, not NaN) 21d/63d slots (realized_vol_panel per-slot
+// contract) -- asserted at the panel level here, at the TSV level in Task
+// F-3's test. Builds its own small SurfaceDb corpus (same helpers as (a)-(d)
+// above, `make_surface`/`spot_for_day`/`date_for_day`) under a distinct temp
+// root so it has no data dependency on that test.
+TEST(BevLabelFactoryGate, SpotHistoryMirrorsSessionSpots) {
+  const std::string root =
+      (fs::temp_directory_path() / "atx-bev-label-factory-spot-history-db").string();
+  std::error_code ec;
+  fs::remove_all(root, ec);
+  auto db = SurfaceDb::create(root);
+  ASSERT_TRUE(db.has_value()) << db.error().to_string();
+
+  for (int d = 0; d < kNDates; ++d) {
+    const double S = spot_for_day(d);
+    const double vol_bump = 0.001 * static_cast<double>(d);
+    const PricedSurface spy =
+        make_surface(S, kBaseNow + static_cast<std::int64_t>(d) * kDayNs, vol_bump);
+    const SurfaceArchiveItem item{"SPY", &spy};
+    const std::span<const SurfaceArchiveItem> items(&item, 1);
+    const Status st = db->write_partition(date_for_day(d), items);
+    ASSERT_TRUE(st.has_value()) << st.error().to_string();
+  }
+
+  const Result<Clock> clock_r = Clock::from_surface_db(*db);
+  ASSERT_TRUE(clock_r.has_value()) << clock_r.error().to_string();
+  const Clock &clock = *clock_r;
+
+  const Result<std::vector<OhlcBar>> bars =
+      load_spot_history(clock, "SPY", 0, clock.refs().size() - 1);
+  ASSERT_TRUE(bars.has_value()) << bars.error().to_string();
+  ASSERT_EQ(bars->size(), clock.refs().size());
+  for (std::size_t i = 1; i < bars->size(); ++i) {
+    EXPECT_LT((*bars)[i - 1].ts_ns, (*bars)[i].ts_ns);
+  }
+  for (const OhlcBar &b : *bars) { // spot-mirror invariant: O==H==L==C, all > 0
+    EXPECT_GT(b.close, 0.0);
+    EXPECT_EQ(b.open, b.close);
+    EXPECT_EQ(b.high, b.close);
+    EXPECT_EQ(b.low, b.close);
+  }
+  // Panel over the first 3 bars: 5d slot falls back to whole span (valid),
+  // 21d/63d/252d slots fall back to the same 3-bar span too (window > size
+  // falls back to whole span, >= 2 bars, so they are NUMBERS not NaN) --
+  // assert the documented fallback, not an imagined NaN.
+  const Result<RvPanel> p3 =
+      realized_vol_panel(std::span{bars->data(), 3}, RvEstimator::CloseToClose, 252.0);
+  ASSERT_TRUE(p3.has_value()) << p3.error().to_string();
+  EXPECT_TRUE(std::isfinite(p3->vol[1]));
+  // 1-bar history: every slot NaN.
+  const Result<RvPanel> p1 =
+      realized_vol_panel(std::span{bars->data(), 1}, RvEstimator::CloseToClose, 252.0);
+  ASSERT_TRUE(p1.has_value()) << p1.error().to_string();
+  EXPECT_TRUE(std::isnan(p1->vol[1]));
+}
+
+namespace {
+
+// Splits one TSV line on '\t'. Local to this test (not shared with
+// `parse_rows` above, which only extracts two columns for (a)-(d)'s narrower
+// needs) -- the ~5-line helper the brief anticipated.
+[[nodiscard]] std::vector<std::string_view> split_tsv_line(std::string_view line) {
+  std::vector<std::string_view> cols;
+  std::size_t start = 0;
+  for (std::size_t i = 0; i <= line.size(); ++i) {
+    if (i == line.size() || line[i] == '\t') {
+      cols.push_back(line.substr(start, i - start));
+      start = i + 1;
+    }
+  }
+  return cols;
+}
+
+// Reads `path`, splits it into the column-header line and every data row's
+// columns (comment lines skipped, same shape as `parse_rows`'s own walk but
+// keeping every column rather than just log_ratio/flag). `content_out` must
+// outlive the returned string_views (they point into it).
+void parse_full_tsv(const std::string &path, std::string &content_out, std::string_view &header,
+                    std::vector<std::vector<std::string_view>> &data_rows) {
+  const std::vector<char> bytes = read_whole_file(path);
+  content_out.assign(bytes.begin(), bytes.end());
+  std::size_t pos = 0;
+  bool header_seen = false;
+  // Bounded by content_out.size(): each pass advances `pos` past the newline
+  // it just found (or the loop terminates).
+  while (pos <= content_out.size()) {
+    const std::size_t nl = content_out.find('\n', pos);
+    const std::string_view line(content_out.data() + pos,
+                                (nl == std::string::npos ? content_out.size() : nl) - pos);
+    pos = (nl == std::string::npos) ? content_out.size() + 1 : nl + 1;
+    if (line.empty() || line.front() == '#') {
+      if (nl == std::string::npos) {
+        break;
+      }
+      continue;
+    }
+    if (!header_seen) {
+      header_seen = true;
+      header = line;
+      continue;
+    }
+    data_rows.push_back(split_tsv_line(line));
+  }
+}
+
+} // namespace
+
+// Task F-3: (m) header carries the schema block, names and ORDER frozen to
+// kFairVolFeatureSchemaV1; (n) per-row spot-check: log_moneyness/tenor/
+// market_vol/delta_abs recomputed from the fixture surface match the emitted
+// values; iv_minus_rv == market_vol - rv_21d exactly; (o) no --events =>
+// n_events_to_expiry column is "nan"; with a one-event calendar between entry
+// and expiry it is "1"; (p) determinism gate still holds with all new columns
+// (covered by re-running (a)-(d) unchanged -- parse_rows's `cols.size() < 14`
+// check already tolerates the eight appended columns, so no fix was needed
+// there).
+TEST(BevLabelFactoryGate, FeatureBlockHeaderAndValues) {
+  static_assert(kFairVolFeatureCount == 8); // schema drift tripwire
+
+  const std::string root =
+      (fs::temp_directory_path() / "atx-bev-label-factory-feature-block-db").string();
+  std::error_code ec;
+  fs::remove_all(root, ec);
+  auto db = SurfaceDb::create(root);
+  ASSERT_TRUE(db.has_value()) << db.error().to_string();
+
+  for (int d = 0; d < kNDates; ++d) {
+    const double S = spot_for_day(d);
+    const double vol_bump = 0.001 * static_cast<double>(d);
+    const PricedSurface spy =
+        make_surface(S, kBaseNow + static_cast<std::int64_t>(d) * kDayNs, vol_bump);
+    const SurfaceArchiveItem item{"SPY", &spy};
+    const std::span<const SurfaceArchiveItem> items(&item, 1);
+    const Status st = db->write_partition(date_for_day(d), items);
+    ASSERT_TRUE(st.has_value()) << st.error().to_string();
+  }
+
+  const std::string dividends_path =
+      (fs::temp_directory_path() / "atx-bev-label-factory-feature-block-divs.tsv").string();
+  {
+    std::ofstream divs(dividends_path, std::ios::binary | std::ios::trunc);
+    divs << "# no dividends for this fixture\n";
+  }
+
+  // Entry day 10 (not day 0, unlike (a)-(d)): the spot pre-pass then has 11
+  // trailing bars, enough for realized_vol_panel's 21d/63d slots to come out
+  // FINITE (fallback-to-whole-span, per (l)'s own documented contract) rather
+  // than NaN -- this test needs a converged row with a non-degenerate
+  // iv_minus_rv to exercise the real subtraction, not just NaN propagation.
+  constexpr int kEntryDay = 10;
+  BevFactoryArgs args;
+  args.db = root;
+  args.uid = "SPY";
+  args.entry_start = date_for_day(kEntryDay);
+  args.entry_end = date_for_day(kEntryDay);
+  args.tenor_days = 18; // closest to the T=0.05 pillar (~18.26 calendar days)
+  args.delta_lo = 0.05;
+  args.delta_hi = 0.95;
+  args.dividends = dividends_path;
+  args.n_threads = 2;
+
+  // (o) part 1: no --events => n_events_to_expiry column is the literal
+  // "nan" for every row.
+  const std::string out_no_events =
+      (fs::temp_directory_path() / "atx-bev-label-factory-feature-block-noev.tsv").string();
+  args.events.clear();
+  args.out = out_no_events;
+  const Result<int> rc_no_events = run_bev_label_factory(args);
+  ASSERT_TRUE(rc_no_events.has_value()) << rc_no_events.error().to_string();
+  EXPECT_EQ(*rc_no_events, 0);
+
+  std::string content;
+  std::string_view header;
+  std::vector<std::vector<std::string_view>> rows;
+  parse_full_tsv(out_no_events, content, header, rows);
+
+  // (m) header tail: exact names, exact order.
+  const std::string expected_tail =
+      "log_moneyness\ttenor_years\tmarket_vol\trv_21d\trv_63d\tiv_minus_rv\t"
+      "n_events_to_expiry\tdelta_abs";
+  EXPECT_NE(header.find(expected_tail), std::string_view::npos) << header;
+
+  ASSERT_FALSE(rows.empty());
+  const std::vector<std::string_view> *converged = nullptr;
+  for (const auto &row : rows) {
+    ASSERT_GE(row.size(), 22u) << "expected 14 existing + 8 schema columns";
+    if (row[12] == "0") { // flag column, 0-based -- BevFlag::Ok
+      converged = &row;
+      break;
+    }
+  }
+  ASSERT_NE(converged, nullptr) << "expected at least one converged (flag==0) row";
+
+  // (o) part 1 cont'd: n_events_to_expiry (column 20) is literal "nan".
+  EXPECT_EQ((*converged)[20], "nan");
+
+  const auto parse_col = [](std::string_view col) {
+    double v = 0.0;
+    std::from_chars(col.data(), col.data() + col.size(), v);
+    return v;
+  };
+  const double strike = parse_col((*converged)[2]);
+  const double sigma_entry_iv = parse_col((*converged)[6]);
+  const double log_moneyness = parse_col((*converged)[14]);
+  const double tenor_years = parse_col((*converged)[15]);
+  const double market_vol = parse_col((*converged)[16]);
+  const double rv_21d = parse_col((*converged)[17]);
+  const double iv_minus_rv = parse_col((*converged)[19]);
+  const double delta_abs = parse_col((*converged)[21]);
+
+  // (n) spot-check against the fixture surface for kEntryDay, reconstructed
+  // exactly as the driver itself would have (same S/now_ts/vol_bump).
+  ASSERT_FALSE(std::isnan(rv_21d)) << "kEntryDay was chosen to make rv_21d finite";
+  const PricedSurface fixture = make_surface(
+      spot_for_day(kEntryDay), kBaseNow + static_cast<std::int64_t>(kEntryDay) * kDayNs,
+      0.001 * static_cast<double>(kEntryDay));
+  const double forward = fixture.forward_at(tenor_years);
+  EXPECT_NEAR(log_moneyness, std::log(strike / forward), 1e-12);
+  EXPECT_DOUBLE_EQ(market_vol, sigma_entry_iv); // same surf.iv(K,T) read, bit-equal
+  EXPECT_DOUBLE_EQ(iv_minus_rv, market_vol - rv_21d);
+  EXPECT_GE(delta_abs, args.delta_lo);
+  EXPECT_LE(delta_abs, args.delta_hi);
+
+  // (o) part 2: a one-event calendar strictly between entry and expiry =>
+  // n_events_to_expiry is "1".
+  const std::string events_path =
+      (fs::temp_directory_path() / "atx-bev-label-factory-feature-block-events.tsv").string();
+  {
+    std::ofstream f(events_path, std::ios::binary | std::ios::trunc);
+    f << date_for_day(kEntryDay + 10) << "\n"; // well inside (entry, entry+T]
+  }
+  const std::string out_with_events =
+      (fs::temp_directory_path() / "atx-bev-label-factory-feature-block-withev.tsv").string();
+  args.events = events_path;
+  args.out = out_with_events;
+  const Result<int> rc_with_events = run_bev_label_factory(args);
+  ASSERT_TRUE(rc_with_events.has_value()) << rc_with_events.error().to_string();
+  EXPECT_EQ(*rc_with_events, 0);
+
+  std::string content2;
+  std::string_view header2;
+  std::vector<std::vector<std::string_view>> rows2;
+  parse_full_tsv(out_with_events, content2, header2, rows2);
+  ASSERT_FALSE(rows2.empty());
+  bool saw_one_event_row = false;
+  for (const auto &row : rows2) {
+    ASSERT_GE(row.size(), 22u);
+    if (row[20] == "1") {
+      saw_one_event_row = true;
+      break;
+    }
+  }
+  EXPECT_TRUE(saw_one_event_row) << "expected n_events_to_expiry==1 for the one-event calendar";
+}
