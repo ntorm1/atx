@@ -125,6 +125,7 @@ add_executable(atx-vol-tests
     backtest_real_test.cpp
     spy_strangle_backtest_test.cpp
     surface_db_backtest_test.cpp
+    structure_panel_test.cpp
     surface_db_dispersion_backtest_test.cpp
     surface_db_populate_test.cpp
     surface_db_build_test.cpp

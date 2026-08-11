@@ -162,6 +162,8 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/breakeven.cpp
     # THEO-7: theo vocabulary + TheoEngine (identity semantics beside the served mark)
     src/theo.cpp
+    # Structure-selector ML: one-day-hold delta-neutral structure PnL + feature panel
+    src/structure_panel.cpp
 )
 add_library(atx::vol ALIAS atx-vol)
 
@@ -769,6 +771,13 @@ if(ATX_BUILD_TOOLS)
     # (python/src/atxvol/report/dispersion.py) are written for.
     add_executable(atxvol_spy_dispersion_backtest tools/spy_dispersion_backtest.cpp)
     target_link_libraries(atxvol_spy_dispersion_backtest PRIVATE atx::vol atx::core atx_warnings)
+
+    # Structure-selector ML panel CLI: streams yearly SurfaceDb roots through
+    # StructurePanelBuilder (structure_panel.hpp) and emits the feature +
+    # one-day-hold delta-neutral label TSV the selection model trains on.
+    # Gate test: StructurePanel (tests/structure_panel_test.cpp).
+    add_executable(atx-vol-structure-panel tools/structure_panel_main.cpp)
+    target_link_libraries(atx-vol-structure-panel PRIVATE atx::vol atx::core atx_warnings)
 
     # D2: track_compact -- folds staging/ into the hive-partitioned zstd
     # Parquet tracks/ lakehouse (atx::vol::compact(), track_store.hpp). Only
