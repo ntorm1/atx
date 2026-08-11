@@ -236,6 +236,108 @@ bindings. The coverage numbers in this document gate the **research layer**, not
 a live signal path. Engine integration is a real gap and this plan does not
 address it.
 
+### 1.9 Execution log — what each landed task actually measured
+
+Written after execution. Every number here was produced on the **production fit
+path** (`--fit-path production`, both `quality_mode` and `outputs` named) against
+the two corpora this document uses: `lqbench-auto` and `sp100-auto`. Figures are
+quoted as *lqbench / sp100* where they differ. Nothing in this section is a
+projection.
+
+**T1c — where eSSVI's primary fit actually dies.** Primary rejection 63.1% /
+67.6%. Split: BUILD 29.7% / 49.3%, ADMISSION 70.3% / 50.7%. Oracle bits on the
+rejected population: `CarryGap` 100% / 97.1%, `InversionResidual` 82.2% / 31.4%,
+`Butterfly` 30% / 80%, `StrikeMono` 12.2% / 34.3%, `Calendar` 7.8% / 34.3%,
+**`Wing` 0.0% / 2.9%**. The two corpora are different regimes, not two samples of
+one: median slices per board 4 (lqbench) vs 10 (sp100).
+
+**T3 — residual layer is add-only.** The residual correction may now only *add*
+variance (closed-form KKT on a block-diagonal normal system, `assert`-checked),
+plus the deferred Lee–Roper density projection. `arb_repair_calendar_residual`
+failures 14 → 0 / 23 → 0. Survival 36.9% → 41.9%.
+
+**T3b — (N1)+(N2) as a projected LM, not a post-fit repair.** `essvi_fit_slice`
+takes `const EssviParams* calendar_prev`; trial cubes are pushed onto the
+feasible set *before* SSE scoring. `arb_project_calendar_essvi` failures 12 → 1 /
+11 → 0; survival 32.4% → 51.0%; build+admission survival 90.6% / 95.1%. Two
+premises of the brief were falsified in the doing: (N2) is not expressible as a
+post-fit projection, and (N1)+(N2) are not jointly sufficient — (S1) is bilinear
+and was deferred to T3c. In-band calendar violations were zero before and after,
+which is exactly why §1.7's restatement of the acceptance criterion mattered.
+
+**T4 — exact crossing detection.** The pairwise crossing test reduces to a
+quartic. Over 4,000 slice pairs: sampled grid found 2,940 crossings, a 200k-point
+oracle 2,946, the quartic 2,946 — the grid misses 6 and the closed form is
+exact. One board (COIN) had `calendar_arb_free` flip 1 → 0 under the exact test.
+The magnitude is term-structure-driven: the crossing delta at k = +0.60 is
+1.6e-14 at 1 week against 0.084 at 2 years.
+
+**T5c — the target moved a second time.** Boards ok 192 → **203**, zero lost;
+slices/expiries 1,425/2,524 → 1,468/2,626. Serving boards bit-identical,
+`mean_rmse_vol` ratio 1.0000; sp100 byte-identical. Carry confidence
+distribution: `Solved` 70.6%, `TermStructureExtrap` 15.9%, `TermStructureInterp`
+13.1%, `MoneynessBounded` 0.5%. The new absolute round-trip metric (de-Am → fit →
+re-Americanize → vol points) reads CORZ mean 0.0388 / worst **0.550** at 100%
+in-band against SPY 0.0158 / 0.169 at 8.1% in-band. Three premises of the brief
+died here: the "29 of 29 lost boards" carry story, the 42%-slice-loss story, and
+the attribution of the 177 degraded boards. What replaced them: **preparation
+starvation** — `Starved` on 30.2% of 2,707 chain outcomes, with `CarryFailed`
+exactly 0 on a 40-board serving sample. That is what T6 attacks.
+
+**T9 — the ρ-blend was already dead.** Binary scan of 5,981 archive files,
+162,793 eSSVI slices, cross-checked against file size: **0 armed** (`rho_scale >
+0 && rho_R != rho`). Retired rather than fixed.
+
+**T10 — D3 closed, gate and projector together.** `kSviWingSlopeGate` 4.0 → 2.0
+in both `arb.cpp` and `svi_calib.cpp`'s `mm_project_admissible`. The projector is
+provably still unconditionally admissible: `rho` is clamped into
+(−1+1e-4, 1−1e-4) *before* the Lee clamp, so `lee_max = (2−1e-9)/(1+|ρ|) ≥ 1 >
+edge_b` always. Zero slices lost; 221/221 and 104/104 bit-identical on
+auto-selection.
+
+**A trap this sprint nearly walked into.** D3's derivation is that eSSVI's
+`essvi_phi_max` bound of 4 and Lee's bound of 2 are the same number: factoring φ
+out of eSSVI's evaluator with `m = −ρ/φ`, `σ = √(1−ρ²)/φ` gives raw SVI with
+`b = θφ/2` *exactly*, under which `θφ(1+|ρ|) ≤ 4` is `b(1+|ρ|) ≤ 2`. Raw SVI's
+gate was loose by exactly 2×. That argument covers the **SVI-only** constant.
+`RiskSurfaceValidationConfig::max_abs_wing_total_variance_slope`
+(`risk_surface_validation.hpp:67`, enforced `risk_surface_validation.cpp:384`) is
+already 2.0 and is **family-agnostic** — it runs on the sampled variance grid
+with no knowledge of which family produced it, binding eSSVI, SVI and
+convex-dense alike. Anyone "harmonising" that knob on the D3 derivation would be
+applying an argument that does not cover the families it would hit. Corroborating
+measurement: eSSVI never trips the `Wing` bit across 296 served boards (0/90 and
+1/35 at baseline; 0 and 0 after T3).
+
+**Two methodological failures worth recording**, both caught, both now standing
+requirements in every brief:
+
+1. *A poisoned baseline.* T4's `base_*.csv` was not at the commit it appeared to
+   be — it differed on 7 lqbench and 1 sp100 board. Rule: **do not inherit a
+   baseline you did not generate.**
+2. *A test that could not fail.* T10's first projector test passed with the
+   projection assignment deleted; its fixture never tripped the gate. Rule:
+   **mutation-check every behavioural test** — delete the production line it
+   pins, confirm red, restore.
+
+**Open decision — T5d, the units of the carry gate.** `max_carry_leave_one_out =
+0.005` is an annualized *rate* applied flat, but a borrow error `db` displaces
+`k = ln(K/F)` by `db·T`. At 4 days a `db` of 0.005 moves `k` by 5.5e-5; at 18
+months by 7.5e-3 — a factor of ~137, which matches T5c's measured spread. That
+reads as a units correction, but it changes what `require_carry_confidence`
+certifies, so it is not taken on the algebra alone. **Acceptance test, fixed in
+advance:** slices admitted under the invariant `db·T` gate but refused under the
+rate gate are measured on T5c's absolute round-trip metric. Comparable error ⇒ it
+is a correction and it ships. Worse error ⇒ it is a relaxation and the gate
+stays. `MoneynessBounded` already exists and is calibrated to coincide with
+today's gate at the 1-year / 50-vol pillar.
+
+**Standing prohibitions for the rest of this sprint.** Setting
+`require_carry_confidence = false`, disabling `audit_fit_inversions`, and
+widening `max_certified_deam_drop_fraction` are all forbidden. Every recovery in
+this sprint must come from carry or nodes becoming *known*, never from a check
+being removed.
+
 ---
 
 ## 2. Root cause of the calendar crossings
@@ -618,7 +720,7 @@ pass, O(n) on sorted strikes.
 (weak or model-independent arbitrage) vs *fitter limitation*. This re-scopes B3
 and the tier-D gap. Report the split; do not change routing yet.
 
-### T3 — Cross-slice wing-slope ordering in the eSSVI fit *(L, ~5–8 days)*
+### T3 — Cross-slice wing-slope ordering in the eSSVI fit *(L, ~5–8 days)* — **LANDED** `3e1663e` (add-only residual) + `5c9e3d3` (projected LM); (S1) split out to T3c. Acceptance criterion replaced per §1.7; results in §1.9.
 
 **Owns:** `atx-vol/src/essvi_calib.cpp`, `atx-vol/include/atx/vol/essvi_calib.hpp`, `atx-vol/tests/essvi_calib_test.cpp`
 
@@ -640,7 +742,7 @@ like-for-like; fit CPU within 1.3×. Corbetta report 1.2 s in Python for 12
 maturities × ~98 options, ~0.01 s estimated in C#, so this should be cheap.
 **Do not start before T1.**
 
-### T4 — Exact crossing detection; state the certified band *(M, ~3 days)*
+### T4 — Exact crossing detection; state the certified band *(M, ~3 days)* — **LANDED** `3f475f3`..`a97c2c2`; quartic is exact against a 200k oracle (§1.9). Banded in/out-of-band counters escalated to a follow-on.
 
 **Owns:** `atx-vol/src/arb.cpp`, `atx-vol/include/atx/vol/arb.hpp`, `atx-vol/tests/arb_test.cpp`
 
@@ -722,7 +824,7 @@ B4 rows 1–2 (0DTE PM close, European index exercise style) and B3(i)
 Conflicts with T6 on `opra_panel.cpp` — sequence them or split the file
 ownership by function.
 
-### T9 — Decide the ρ-blend, prune the dead *(S, ~2 days)*
+### T9 — Decide the ρ-blend, prune the dead *(S, ~2 days)* — **LANDED** `be727d0`; 0 armed slices in 162,793, retired (§1.9).
 
 **Owns:** `atx-vol/include/atx/vol/vol_surface.hpp`, `atx-vol/src/vol_surface.cpp`, `atx-vol/include/atx/vol/vol_curve.hpp`
 
@@ -732,7 +834,7 @@ T3's guarantees is the worst of the three options. Also: fix the stale comment
 at `vol_curve.hpp:77`, add a real `parse_curve_kind` that round-trips
 `to_string`, and decide whether CStar gets a `VolCurveKind` tag or gets deleted.
 
-### T10 — Diagnostics out-param on the serving path *(M, ~3 days)*
+### T10 — Diagnostics out-param on the serving path *(M, ~3 days)* — **LANDED** `b8e8825` (D3 gate+projector) + `ef8e2a1` (FitDiag out-param, cold path). D4 and the three `nullptr` production sites are T10b.
 
 **Owns:** `atx-vol/include/atx/vol/vol_curve.hpp`, `atx-vol/src/vol_curve.cpp`, `atx-vol/src/svi_calib.cpp`, `atx-vol/src/c8_calib.cpp`
 
