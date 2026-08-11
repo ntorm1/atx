@@ -965,8 +965,12 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
     const ProfileClock::time_point t_slice0 =
         time_stages ? ProfileClock::now() : ProfileClock::time_point{};
     bool used_linear_fallback = false; // W3.4: FittedFallbackCurve vs Fitted taxonomy
+    // T10b (D5): the primary fit's own verdict. `fit_slice_curve` clears this on
+    // entry, so a slice that fails leaves it default ("not known") rather than
+    // carrying the previous expiry's — this struct is reused across the walk.
+    FitDiag slice_diag{};
     auto slice_res = fit_slice_curve(cfg, prepared.fit_observations(), F, T, df, w_prev,
-                                     calendar_floor_knots, prev_data_k_range);
+                                     calendar_floor_knots, prev_data_k_range, &slice_diag);
     if (time_stages) {
       ms_fit_slice += elapsed_ms(t_slice0, ProfileClock::now());
     }
@@ -1008,8 +1012,17 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
         }
         const ProfileClock::time_point t_fb0 =
             time_stages ? ProfileClock::now() : ProfileClock::time_point{};
+        // T10b (D5): the fallback OVERWRITES the primary's verdict, and only on
+        // success below. A recovered slice serves the LinearVariance curve, so
+        // the diagnostic that describes it must be the fallback's; keeping the
+        // failed primary's would attribute one family's fit to another's curve.
+        FitDiag fb_diag{};
         auto fb_res = fit_slice_curve(fallback_cfg, prepared.fit_observations(), F, T, df, w_prev,
-                                      std::span<const double>{fb_floor_knots});
+                                      std::span<const double>{fb_floor_knots},
+                                      std::pair<double, double>{
+                                          -std::numeric_limits<double>::infinity(),
+                                          std::numeric_limits<double>::infinity()},
+                                      &fb_diag);
         if (time_stages) {
           ms_fit_slice += elapsed_ms(t_fb0, ProfileClock::now());
         }
@@ -1017,6 +1030,7 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
           // Recovered: adopt the linear slice and fall through to the normal
           // commit path (parity scoring + w_prev carry for the next expiry).
           slice_res = std::move(fb_res);
+          slice_diag = fb_diag;
           ++out.n_slice_linear_fallback;
           used_linear_fallback = true;
         }
@@ -1131,6 +1145,19 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
                         : ExpiryFitOutcome::Fitted;
       rep.carry_source = pre.carry_source; // Decision B: Solved / TermStructureInterp/Extrap
       out.expiry_reports.push_back(rep);
+    }
+    {
+      // T10b (D5): park the fit's own verdict alongside the committed slice.
+      // `kind` comes from the CURVE, not from `cfg` — a slice recovered by the
+      // LinearVariance fallback is served as a LinearVariance curve, and the
+      // per-family coverage table is only readable against the family that
+      // actually produced the diagnostic.
+      SliceFitDiagnostics sd{};
+      sd.chain_index = ci;
+      sd.maturity = T;
+      sd.kind = slice->kind();
+      sd.diag = slice_diag;
+      out.slice_diagnostics.push_back(sd);
     }
     out.surface.push(std::move(*slice_res));
     out.context.push_back(SliceContext{T, F, pre.borrow, q_eff, prepared.fit_observations().size(),

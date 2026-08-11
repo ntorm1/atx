@@ -62,6 +62,55 @@ struct SliceInputCertification {
   std::vector<std::int64_t> chain_ts;
 };
 
+// T10b (plan D5): what the per-slice FIT itself reported, for one committed
+// slice. Parallel to `context` / `per_expiry` (one entry per committed slice,
+// ascending T) — the same shape `input_certification` already uses.
+//
+// D5 is "served-but-bad surfaces are structurally unreportable". T10 built the
+// `FitDiag` out-param that makes a fit describable and stated plainly that no
+// production call site passed one, so the switch was inert. This is the sink
+// that makes it observable: `fit_curve_surface` now passes a real struct on both
+// the primary and the LinearVariance-fallback fit and parks the result here, on
+// the same public report `context` / `per_expiry` / `expiry_reports` ride out on.
+//
+// READ THE FAMILY BEFORE READING THE VERDICT. Coverage is deliberately PARTIAL
+// and differs per family, because only what a fitter actually computes is
+// reported. Every unpopulated field keeps its "not known" default — never a
+// value that reads as success — but those defaults are only honest if the reader
+// knows which family produced them, which is why `kind` is stored beside the
+// diagnostic instead of being left to be inferred from the CurveConfig:
+//
+//   ConvexDense     termination = Converged (the one family that fails closed,
+//                   so a returned fit is certified), final_grad_norm = its
+//                   scaled KKT stationarity norm, n_quotes_used, outer_iters
+//   Svi             the fitter's own FitDiag, plus termination from its IRLS
+//                   stop and projection from the Mingone/Lee gate
+//   C8              termination + final_grad_norm from the LM optimality
+//                   certificate (T10b), n_quotes_used, inner_iters_total,
+//                   reverted_to_seed
+//   Essvi           the fitter's own FitDiag ONLY. `essvi_fit_slice` populates
+//                   five fields and none of the T10 ones, so `termination` reads
+//                   Unknown and `projection` reads NotRun on EVERY eSSVI slice.
+//                   That is a reporting gap in the eSSVI fitter, NOT a
+//                   converged-clean verdict, and must not be counted as one.
+//   LinearVariance
+//   / SplineVol     n_quotes_used only
+//
+// So `Unknown` never means "failed to converge", and a disengaged
+// `final_grad_norm` never means "zero gradient". Both mean the fitter was not
+// asked, or does not know.
+struct SliceFitDiagnostics {
+  std::size_t chain_index{0};
+  double maturity{0.0};
+  // The family ACTUALLY served for this slice, which is not always
+  // `CurveConfig::kind`: an expiry recovered by the opt-in per-slice fallback is
+  // a LinearVariance curve under a different configured kind, and reading its
+  // diagnostic against the configured family would misattribute the table above.
+  VolCurveKind kind{VolCurveKind::ConvexDense};
+  FitDiag diag{};
+
+};
+
 // The assembled polymorphic-surface bundle. `surface` OWNS the fitted curves;
 // the vectors are parallel per fitted slice (ascending T), mirroring
 // `SurfaceParityReport` so `VolaSession` consumes either interchangeably.
@@ -124,6 +173,10 @@ struct CurveSurfaceReport {
   // `VolaSession::build` construct `SessionSliceDiagnostics` + the incremental
   // observation cache directly, without a second serial de-Am pass.
   std::vector<SliceInputCertification> input_certification;
+  // T10b (D5): per-committed-slice fit diagnostics, ‖ `context` / `per_expiry`.
+  // Empty only when no slice was committed. See `SliceFitDiagnostics` for the
+  // per-family coverage table — the defaults are "not known", never "clean".
+  std::vector<SliceFitDiagnostics> slice_diagnostics;
   // W3.4 (F4): per-expiry build outcome for EVERY chain walked (‖ under.chains,
   // in chain order — NOT the fitted-slice order of context/per_expiry). Always
   // populated so admission can distinguish a thin/absent expiry from a defect

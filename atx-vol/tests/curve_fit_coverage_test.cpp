@@ -221,6 +221,67 @@ TEST(CurveFitCoverage, WellCoveredBoardIsUntouched) {
   }
 }
 
+// ── T10b (plan D5) — the served path can now REPORT what its fits did ──────
+//
+// T10 built the `FitDiag` out-param and stated plainly that no production call
+// site passed one, so D5 stayed unobservable. These pin the sink: the driver
+// passes a real struct and parks the result on the public report.
+
+TEST(CurveFitDiagnostics, EveryCommittedSliceCarriesAFitDiagnostic) {
+  Underlying under;
+  under.spot = kSpot;
+  under.chains.push_back(make_two_sided_chain(0.25));
+  under.chains.push_back(make_two_sided_chain(0.50));
+
+  const auto rep = fit_curve_surface(under, coverage_inputs(), CurveConfig{});
+  ASSERT_TRUE(rep.has_value()) << rep.error().to_string();
+  ASSERT_EQ(rep->n_slices, 2u);
+
+  // Parallel to `context` / `per_expiry` is the whole contract — a consumer
+  // indexes all three together, so a length mismatch is a silent misattribution
+  // of one slice's fit to another slice's curve.
+  ASSERT_EQ(rep->slice_diagnostics.size(), rep->context.size());
+  ASSERT_EQ(rep->slice_diagnostics.size(), rep->per_expiry.size());
+
+  for (std::size_t i = 0; i < rep->slice_diagnostics.size(); ++i) {
+    const auto &sd = rep->slice_diagnostics[i];
+    // The recorded family must be the SERVED curve's, not the configured one.
+    EXPECT_EQ(sd.kind, rep->surface.slices()[i]->kind());
+    EXPECT_DOUBLE_EQ(sd.maturity, rep->context[i].T);
+    // Non-vacuous: the diagnostic must carry real fit content, not a
+    // default-constructed struct that merely occupies the slot.
+    EXPECT_GT(sd.diag.n_quotes_used, 0u);
+  }
+}
+
+// The default ConvexDense board is the one family that fails closed, so a
+// returned fit is certified — it must say `Converged` and carry an ENGAGED
+// optimality residual. This is the assertion that would catch the sink being
+// wired to a struct nobody populates.
+TEST(CurveFitDiagnostics, ConvexDenseReportsACertifiedTerminationAndGradient) {
+  Underlying under;
+  under.spot = kSpot;
+  under.chains.push_back(make_two_sided_chain(0.25));
+  under.chains.push_back(make_two_sided_chain(0.50));
+
+  CurveConfig cfg{};
+  cfg.kind = atx::vol::VolCurveKind::ConvexDense;
+  const auto rep = fit_curve_surface(under, coverage_inputs(), cfg);
+  ASSERT_TRUE(rep.has_value()) << rep.error().to_string();
+  ASSERT_FALSE(rep->slice_diagnostics.empty());
+
+  for (const auto &sd : rep->slice_diagnostics) {
+    EXPECT_EQ(sd.kind, atx::vol::VolCurveKind::ConvexDense);
+    EXPECT_EQ(sd.diag.termination, atx::vol::FitTermination::Converged);
+    ASSERT_TRUE(sd.diag.final_grad_norm.has_value())
+        << "a disengaged gradient here means the sink is inert";
+    EXPECT_GE(*sd.diag.final_grad_norm, 0.0);
+    // COLD entry point: `fit_slice_curve` takes no prior curve, so a warm-start
+    // claim here would be false.
+    EXPECT_FALSE(sd.diag.warm_started);
+  }
+}
+
 // ── Task 6 — D1: a coverage-admissible committed prev keeps FULL floor
 // authority. The calm-day shape (narrow COVERED front whose extrapolated wing
 // overshoots the next slice's bare fit at out-of-support k) must be FLOORED

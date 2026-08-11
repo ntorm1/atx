@@ -143,6 +143,11 @@ struct Accum {
   std::vector<double> iv_model, iv_mkt, bid, ask, vega;
   std::uint32_t n_butterfly_viol{0u};
   bool disqualified{false};
+  // T10b (D5): fit-diagnostic census, reported not ranked (CandidateScore).
+  std::uint32_t n_slices_converged{0u};
+  std::uint32_t n_slices_termination_unknown{0u};
+  std::uint32_t n_slices_projection_moved{0u};
+  std::uint32_t n_slices_reverted_to_seed{0u};
 
   void reserve(std::size_t count) {
     iv_model.reserve(count);
@@ -165,6 +170,10 @@ struct Accum {
     vega.clear();
     n_butterfly_viol = 0u;
     disqualified = false;
+    n_slices_converged = 0u;
+    n_slices_termination_unknown = 0u;
+    n_slices_projection_moved = 0u;
+    n_slices_reverted_to_seed = 0u;
   }
 };
 
@@ -591,14 +600,44 @@ Result<SelectorResult> select_curve(const Underlying &under, const SurfaceParity
     accum.reset();
     for (const PreparedExpiry &expiry : prepared) {
       const std::span<const FitObs> rows = expiry.slice.fit_observations();
-      Result<std::unique_ptr<IVolCurve>> fitted = fit_slice_curve(
-          candidate, expiry.fit_rows, expiry.slice.forward(), expiry.slice.maturity(), expiry.df);
+      // T10b (D5): the selector fits every family on every sampled expiry and
+      // used to discard everything the fit said about ITSELF, keeping only how
+      // well the result repriced. Collect the fit's own verdict so a family that
+      // hit its iteration cap, was repaired by the admissibility projection, or
+      // fell back to its seed is distinguishable from one that converged.
+      FitDiag cand_diag{};
+      Result<std::unique_ptr<IVolCurve>> fitted =
+          fit_slice_curve(candidate, expiry.fit_rows, expiry.slice.forward(),
+                          expiry.slice.maturity(), expiry.df, {}, {},
+                          {-std::numeric_limits<double>::infinity(),
+                           std::numeric_limits<double>::infinity()},
+                          &cand_diag);
       if (!fitted) {
         continue;
       }
       const IVolCurve &curve = **fitted;
       accum.dof_sum += curve.dof();
       ++accum.n_slices;
+      // Counted only for a slice that FIT — a failed fit is already counted by
+      // expiry_coverage, and folding it in here would let "did not run" and
+      // "ran without reporting" share a bucket.
+      switch (cand_diag.termination) {
+      case FitTermination::Converged:
+        ++accum.n_slices_converged;
+        break;
+      case FitTermination::Unknown:
+        ++accum.n_slices_termination_unknown;
+        break;
+      case FitTermination::IterationCap:
+      case FitTermination::Stalled:
+        break;
+      }
+      if (cand_diag.projection == SliceProjection::Moved) {
+        ++accum.n_slices_projection_moved;
+      }
+      if (cand_diag.reverted_to_seed) {
+        ++accum.n_slices_reverted_to_seed;
+      }
 
       // Butterfly disqualification (Task C2.5 fit-metrics selection signal): a
       // family with any butterfly-violating fitted slice scores as a
@@ -685,6 +724,10 @@ Result<SelectorResult> select_curve(const Underlying &under, const SurfaceParity
                      score.holdout_coverage >= sel.min_holdout_coverage;
     score.n_butterfly_viol = accum.n_butterfly_viol;
     score.disqualified = accum.disqualified;
+    score.n_slices_converged = accum.n_slices_converged;
+    score.n_slices_termination_unknown = accum.n_slices_termination_unknown;
+    score.n_slices_projection_moved = accum.n_slices_projection_moved;
+    score.n_slices_reverted_to_seed = accum.n_slices_reverted_to_seed;
     // Reduced chi-square (and companion metrics) over the held-out sample. Needs
     // N > dof for a positive denominator; otherwise the metrics stay invalid and
     // chi2_reduced does not participate in the tie-break.
