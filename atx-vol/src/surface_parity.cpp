@@ -91,6 +91,96 @@ static_assert(kRepairKMax == strip::kCertifiedWingHalfBand,
   return code == ErrorCode::NotFound || code == ErrorCode::Unavailable;
 }
 
+// ── Decision B on the eSSVI lane: board-level term-structure carry ────────
+//
+// `require_carry_confidence` is a BOARD policy that this driver applied
+// PER EXPIRY. `prepare_expiry` resolves its own carry, so a non-confident
+// expiry came back as an `Unavailable` carry failure and the whole chain was
+// discarded — while `fit_curve_surface`, running the SAME policy on the SAME
+// board, probes carry with the gate disarmed and re-applies it at board level
+// (curve_fit.cpp:570-577 and its phase-1.5 repair at :737-810), admitting the
+// expiry on a borrow read off the term structure of the board's CONFIDENT
+// expiries. Measured on VZ-lqbench, 15 chains offered to both lanes:
+// convex-dense fitted 14 (1 `PrepStarved`, 0 `CarryFailed`); eSSVI fitted 5 and
+// lost 10, every one of them `CarryFailed`. Same policy, same data, opposite
+// treatment of the same condition — so the asymmetry is this driver's, and this
+// is where it is closed.
+//
+// The gate is NOT relaxed. A non-confident expiry still never contributes its
+// own solve, is never an anchor, and is never stamped `Solved` or `confident`;
+// it is admitted only where confident neighbours can price its carry, and it
+// carries `TermStructureInterp`/`Extrap` provenance out to admission.
+//
+// DUPLICATION, declared. `CarryAnchor` / `CarryFallback` /
+// `term_structure_fallback_borrow` mirror `curve_fit.cpp:344-391` line for line
+// — that file is the SOURCE OF TRUTH for the interpolation rule and its
+// citations (van Binsbergen–Diamond–Grotteria 2022 for the PCP-identified
+// per-maturity carry; Hagan–West 2006 §3 for linear-on-rates with flat
+// extension past the extreme nodes). They are duplicated rather than shared
+// because a shared home would have to be carved out of `curve_fit.cpp`, which
+// this task does not own. Unifying them is a follow-up, and until then a change
+// to one is a change owed to the other.
+struct CarryAnchor {
+  double T{0.0};
+  double borrow{0.0};
+};
+
+struct CarryFallback {
+  double borrow{0.0};
+  CarrySource source{CarrySource::Solved};
+};
+
+// INTERIOR (bracketed by confident anchors): linear interpolation of the borrow
+// in maturity. EDGE: flat extension of the nearest confident borrow. `anchors`
+// MUST be non-empty and ascending in T (guaranteed: chains load ascending-T).
+[[nodiscard]] CarryFallback term_structure_fallback_borrow(double T,
+                                                           std::span<const CarryAnchor> anchors) {
+  if (T <= anchors.front().T) {
+    return CarryFallback{anchors.front().borrow, CarrySource::TermStructureExtrap};
+  }
+  if (T >= anchors.back().T) {
+    return CarryFallback{anchors.back().borrow, CarrySource::TermStructureExtrap};
+  }
+  std::size_t hi = 0;
+  while (hi < anchors.size() && anchors[hi].T <= T) {
+    ++hi; // first anchor strictly beyond T (exists: T < anchors.back().T here)
+  }
+  const CarryAnchor &a_lo = anchors[hi - 1];
+  const CarryAnchor &a_hi = anchors[hi];
+  const double span = a_hi.T - a_lo.T;
+  const double alpha = span > 0.0 ? (T - a_lo.T) / span : 0.0;
+  return CarryFallback{a_lo.borrow + alpha * (a_hi.borrow - a_lo.borrow),
+                       CarrySource::TermStructureInterp};
+}
+
+// The expiry-specific continuously-compounded rate. `run_surface_parity` has
+// already validated that `expiry_rate_T[i] == chains[i].T` for every i when the
+// vectors are present, so the chain index IS the rate index — the same lookup
+// `prepare_expiry` performs internally.
+[[nodiscard]] double expiry_rate_for(const SurfaceParityInputs &in, std::size_t i) noexcept {
+  return in.expiry_rates.empty() ? in.r : in.expiry_rates[i];
+}
+
+// Re-stamp a repaired expiry's certification carry: keep the raw solve's
+// tallies (they describe what the board actually offered) but record that the
+// borrow used was BORROWED from the term structure. A fallback carry must never
+// be laundered as a solved or a confident one.
+[[nodiscard]] CarryDiagnostics as_fallback_carry(const CarryDiagnostics &raw, CarrySource source) {
+  CarryDiagnostics out;
+  out.n_candidates = raw.n_candidates;
+  out.n_attempted = raw.n_attempted;
+  out.n_solved = raw.n_solved;
+  out.n_retained = raw.n_retained;
+  out.effective_pair_count = raw.effective_pair_count;
+  out.dispersion = raw.dispersion;
+  out.max_leave_one_out_shift = raw.max_leave_one_out_shift;
+  out.confidence_half_width = raw.confidence_half_width;
+  out.max_pcp_residual = raw.max_pcp_residual;
+  out.confident = false;
+  out.source = source;
+  return out;
+}
+
 // ── Calendar-floor-constrained slice fit (active-set) ────────────────────
 //
 // Fit this slice subject to a calendar floor w(k) >= w_prev(k) over the slice's
@@ -339,6 +429,14 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
   struct PreppedSlot {
     std::optional<Result<CanonicalPreparedExpiry>> result; // nullopt => T<=0 skip
     PrepareExpiryDiagnostics prep_diag{};
+    // Decision B state. `confident` + `borrow` make this expiry an ANCHOR of the
+    // board's borrow term structure; `needs_carry_repair` marks one the board
+    // gate DEFERRED (its own solve exists but is not trusted, so it is neither
+    // used nor an anchor) awaiting a borrowed carry.
+    bool carry_confident{false};
+    double borrow{0.0};
+    bool needs_carry_repair{false};
+    CarrySource carry_source{CarrySource::Solved};
   };
   std::vector<PreppedSlot> slots(n_chains);
   parallel_for_dynamic(n_chains, in.fit_workers, [&](std::size_t i, unsigned) {
@@ -355,7 +453,145 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
       slots[i].result.emplace(
           Err(ErrorCode::Internal, "run_surface_parity: prepare_expiry threw"));
     }
+    PreppedSlot &slot = slots[i];
+    if (slot.result->has_value()) {
+      // A confident expiry anchors the term structure even if it is the only one
+      // that fits; `prepare_expiry` cannot succeed under the gate without it.
+      slot.carry_confident = slot.prep_diag.carry.confident;
+      slot.borrow = (*slot.result)->borrow;
+      return;
+    }
+    if (!in.deam.require_carry_confidence || !slot.prep_diag.carry_failed) {
+      return; // starved / hard defect / gate off: nothing for Decision B to do
+    }
+    // The gate refused, but `prepare_expiry` cannot say whether the carry was
+    // merely UNTRUSTED or genuinely unresolvable, and only the first is
+    // repairable. Re-probe THIS expiry with the gate disarmed — a solve the
+    // current code pays for and then discards outright, so it is spent only
+    // where an expiry is otherwise lost, and a board with no carry drops runs
+    // bit-identically and at bit-identical cost.
+    DeAmOptions probe = in.deam;
+    probe.require_carry_confidence = false;
+    const Result<ChainForward> probed = resolve_chain_forward(
+        under.chains[i], in.S, expiry_rate_for(in, i), in.cash_divs, in.now_ts_ns, probe);
+    if (!probed.has_value() || !(probed->forward > 0.0) || !std::isfinite(probed->forward)) {
+      return; // a REAL carry failure: not the gate, and not repairable
+    }
+    slot.prep_diag.carry = probed->carry; // raw tallies, re-stamped after repair
+    slot.needs_carry_repair = true;
   });
+
+  // ── Phase 1.5: the board-level term-structure carry repair ────────────────
+  // A deferred expiry is admitted on a borrow DERIVED from the confident
+  // expiries' borrow-vs-T structure and then de-Americanized/prepared like any
+  // other slice. With ZERO confident anchors nothing is fabricated: the deferred
+  // expiries stay dropped and the board behaves exactly as it did before.
+  {
+    std::vector<CarryAnchor> anchors; // ascending T (chains load ascending-T)
+    for (std::size_t i = 0; i < n_chains; ++i) {
+      if (slots[i].carry_confident) {
+        anchors.push_back(CarryAnchor{under.chains[i].T, slots[i].borrow});
+      }
+    }
+    std::vector<std::size_t> repair_idx;
+    std::vector<double> repair_borrow;
+    if (!anchors.empty()) {
+      for (std::size_t i = 0; i < n_chains; ++i) {
+        if (!slots[i].needs_carry_repair) {
+          continue;
+        }
+        const CarryFallback fb = term_structure_fallback_borrow(under.chains[i].T, anchors);
+        if (!std::isfinite(fb.borrow)) {
+          continue; // leave the expiry on its existing carry failure
+        }
+        slots[i].carry_source = fb.source;
+        repair_idx.push_back(i);
+        repair_borrow.push_back(fb.borrow);
+      }
+    }
+    // Same disjoint-slot fan-out as phase 1. `imply_borrow = false` is how the
+    // borrowed carry is injected: `resolve_chain_forward` then returns
+    // hybrid_forward(S, r, borrow_fixed, T, ...) — bit-identical to what the
+    // curve lane computes at curve_fit.cpp:766 — and validates it is positive
+    // and finite, so an unusable fallback forward fails safe into the existing
+    // carry-skip path rather than fitting garbage. A slice too thin even with a
+    // valid carry still starves truthfully.
+    parallel_for_dynamic(repair_idx.size(), in.fit_workers, [&](std::size_t task, unsigned) {
+      const std::size_t i = repair_idx[task];
+      PreppedSlot &slot = slots[i];
+      SurfaceParityInputs repair_in = in;
+      repair_in.deam.imply_borrow = false;
+      repair_in.deam.borrow_fixed = repair_borrow[task];
+      // `require_carry_confidence` is deliberately LEFT AS THE CALLER SET IT.
+      // It does not need clearing and must not be cleared: with `imply_borrow`
+      // false both carry solvers return the fixed-borrow forward before the
+      // confidence gate is reached (deamer.cpp:523 and :688, against the gate at
+      // :790), so the flag is unreachable on this path. Clearing it would change
+      // nothing except how this code reads.
+      const CarryDiagnostics raw = slot.prep_diag.carry;
+      PrepareExpiryDiagnostics repair_diag{};
+      std::optional<Result<CanonicalPreparedExpiry>> repaired;
+      try {
+        repaired = prepare_expiry(under.chains[i], static_cast<std::uint32_t>(i), repair_in,
+                                  prep_policy, &repair_diag);
+      } catch (...) {
+        // Defensive only, as in phase 1: a worker escape would terminate.
+      }
+      if (!repaired.has_value() || !repaired->has_value()) {
+        // The borrowed carry did not rescue this expiry. Keep the ORIGINAL
+        // outcome — the repair may add slices, never re-label a failure.
+        return;
+      }
+      // CERTIFIABILITY IS A PRECONDITION OF SERVING, and this is the one place
+      // the eSSVI lane must NOT copy the curve lane, which commits blind.
+      //
+      // MEASURED, not assumed. The eSSVI lane FITS under the permissive
+      // predicate but its inversion certificate is recomputed under the
+      // CONFIGURED cascade (`collect_input_diagnostics`, session.cpp:526-541 —
+      // the C1 reuse is disabled precisely when `audit_fit_inversions` is on,
+      // session.cpp:1542). A slice only the permissive predicate can build
+      // therefore has no certificate at all: the recompute returns `NotFound`,
+      // `inversion_available` stays false, and `inversion_certified` is
+      // ALL-slices-or-nothing (session.cpp:603), so ONE such slice sets
+      // `InversionResidual` for the whole board. Combined with the `CarryGap`
+      // the fallback itself raises, that turns a Degraded-but-published
+      // candidate into a rejected one. On HBAN-lqbench the repair added three
+      // expiries whose own de-Am audit was clean (0 drops) but whose Configured
+      // recompute kept 1, 3 and 4 rows of 22, 17 and 13 — and the board fell
+      // from 3 served eSSVI slices to a 1-slice SVI.
+      //
+      // So the repaired slice is asked, HERE, the same question admission will
+      // ask later, with the same call: a repaired expiry that cannot be
+      // certified stays dropped exactly as it was. That makes the repair
+      // strictly additive — a board can gain expiries, never lose its
+      // certification grade. It costs one extra Configured de-Am per repaired
+      // expiry, on boards that have carry drops at all; the expiry currently
+      // yields nothing, so the pass is spent only where there is something to
+      // win. When the audit is not armed nothing can certify on any path and the
+      // question is meaningless, so it is asked only under
+      // `audit_fit_inversions`.
+      if (in.deam.audit_fit_inversions) {
+        const Result<ObsSet> cert_obs = build_observations_european(
+            under.chains[i], in.S, (*repaired)->rate, (*repaired)->slice.forward(),
+            under.chains[i].T, (*repaired)->df, in.calib, in.deam.caches, in.deam.al_opts,
+            in.deam.iv_tol, in.deam.iv_max_iter, in.deam.method);
+        if (!cert_obs.has_value() ||
+            !deam_inversion_certified(cert_obs->deam_audit,
+                                      in.calib.max_certified_deam_drop_fraction)) {
+          return;
+        }
+      }
+      // Retain the fallback's own timings; the carry provenance is re-stamped so
+      // certification and admission see a borrowed carry for what it is.
+      repair_diag.carry_solve_ms += slot.prep_diag.carry_solve_ms;
+      repair_diag.carry = as_fallback_carry(raw, slot.carry_source);
+      repair_diag.carry_available = true;
+      repair_diag.carry_failed = false;
+      slot.prep_diag = std::move(repair_diag);
+      slot.result.reset();
+      slot.result.emplace(std::move(*repaired));
+    });
+  }
 
   // Chains are stored ascending in T; consume them in that order so slices land
   // in the surface ascending as set_slice_essvi requires. This pass is serial:
@@ -445,9 +681,13 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
       }
       continue; // a slice that fails to fit contributes no slice
     }
+    // Decision B provenance: `Solved` for a directly-inferred carry, a
+    // TermStructure* value for one this board borrowed from its confident
+    // expiries. Admission reads this to tell the two apart.
     expiry_reports.push_back(ExpiryFitReport{chain_index, T, ExpiryFitOutcome::Fitted,
                                              prepared.fit_observations().size(),
-                                             ErrorCode::Unknown});
+                                             ErrorCode::Unknown,
+                                             slots[chain_index].carry_source});
 
     // Stamp this slice's real listed-expiry instant (+ its dense surface
     // write index) so downstream event-bucketing (solve_implied_emove,

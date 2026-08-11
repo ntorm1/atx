@@ -97,6 +97,76 @@ struct PanelBuild {
   return pb;
 }
 
+// ── Carry-confidence fixtures (T3c) ─────────────────────────────────────────
+//
+// `resolve_chain_forward`'s confidence verdict is
+// `n_retained >= min_confident_borrow_pairs && dispersion <= .. && loo <= ..`
+// (deamer.cpp:787). A co-terminal PAIR needs BOTH legs valid at one strike, so
+// deleting a chain's ITM legs starves the carry solve of pairs while leaving the
+// OTM population — the rows the fit actually consumes — completely intact. That
+// is a slice that CAN be fit and whose own borrow cannot be trusted, which is
+// precisely the population the board confidence gate governs.
+//
+// `keep_pairs` strikes retain both legs, so `n_retained <= keep_pairs`.
+void starve_carry_pairs(atx::vol::QuoteFrame& frame, const std::string& expiry_iso, double spot,
+                        std::size_t keep_pairs) {
+  // Strikes nearest the money are the ones `select_carry_pairs` reaches for, so
+  // the retained pairs must be the nearest ones or the fallback simply picks a
+  // different (still valid) triple further out.
+  std::vector<double> strikes;
+  for (const atx::vol::QuoteRow& row : frame.rows) {
+    if (row.expiry_iso == expiry_iso) {
+      strikes.push_back(row.strike);
+    }
+  }
+  std::sort(strikes.begin(), strikes.end());
+  strikes.erase(std::unique(strikes.begin(), strikes.end()), strikes.end());
+  std::stable_sort(strikes.begin(), strikes.end(), [spot](double a, double b) {
+    return std::fabs(a - spot) < std::fabs(b - spot);
+  });
+  const std::vector<double> keep(strikes.begin(),
+                                 strikes.begin() + static_cast<std::ptrdiff_t>(
+                                                       std::min(keep_pairs, strikes.size())));
+
+  std::vector<atx::vol::QuoteRow> kept;
+  kept.reserve(frame.rows.size());
+  for (const atx::vol::QuoteRow& row : frame.rows) {
+    const bool itm = (row.side == atx::vol::Side::Call) ? row.strike < spot : row.strike > spot;
+    const bool exempt = std::find(keep.begin(), keep.end(), row.strike) != keep.end();
+    if (row.expiry_iso == expiry_iso && itm && !exempt) {
+      continue; // ITM leg dropped: the strike can no longer form a carry pair
+    }
+    kept.push_back(row);
+  }
+  frame.rows = std::move(kept);
+}
+
+// Three expiries with a rising ATM term structure — the shape the borrow term
+// structure is read off. Strikes span 70..130 so both legs are quoted well
+// outside the near-ATM carry band.
+[[nodiscard]] SynthPanelSpec make_three_expiry_spec(const std::string& snapshot,
+                                                    const std::vector<std::string>& isos) {
+  SynthPanelSpec spec;
+  spec.uid = "CARRY";
+  spec.snapshot_iso = snapshot;
+  spec.spot = 100.0;
+  spec.r = 0.03;
+  spec.borrow = 0.012;
+  const std::vector<S3Params> truths = {
+      S3Params{0.34, -0.30, 0.60},
+      S3Params{0.30, -0.28, 0.55},
+      S3Params{0.28, -0.26, 0.50},
+  };
+  for (std::size_t i = 0; i < isos.size(); ++i) {
+    spec.expiries.push_back(SynthExpiry{isos[i], year_fraction(snapshot, isos[i]), truths[i]});
+  }
+  for (double K = 70.0; K <= 130.0 + 1e-9; K += 4.0) {
+    spec.strikes.push_back(K);
+  }
+  spec.half_spread_frac = 0.02;
+  return spec;
+}
+
 }  // namespace
 
 // ── The SurfaceParityReport construction contract (S4-T19, plan item 4.2) ────
@@ -489,6 +559,234 @@ TEST(SurfaceParity, MonotoneFit_ClearsNearMoneyCrossingAtHeldQuality) {
   for (std::size_t i = 1; i < r_mono->expiry_T.size(); ++i) {
     EXPECT_LT(r_mono->expiry_T[i - 1], r_mono->expiry_T[i]);
   }
+}
+
+// ── Decision B on the eSSVI lane (T3c) ──────────────────────────────────────
+//
+// Same `require_carry_confidence` policy, same board, two drivers, and until
+// T3c two different outcomes: `fit_curve_surface` probes carry with the gate
+// disarmed and re-applies it at BOARD level (curve_fit.cpp:570-577, 737-810),
+// admitting a non-confident expiry on a borrow interpolated from the confident
+// ones; `run_surface_parity` hard-dropped it inside `prepare_expiry`. Measured
+// on VZ-lqbench (both lanes offered the same 15 chains): the curve lane fitted
+// 14 and lost 1 to `PrepStarved`; the eSSVI lane fitted 5 and lost 10, ALL to
+// `CarryFailed`.
+TEST(SurfaceParityCarry, NonConfidentExpiryIsRepairedFromTheConfidentTermStructure) {
+  const std::string snapshot = "2026-06-19";
+  const std::vector<std::string> isos = {"2026-07-26", "2026-10-06", "2027-01-24"};
+  SynthPanelSpec spec = make_three_expiry_spec(snapshot, isos);
+
+  auto panel = make_synthetic_american_panel(spec);
+  ASSERT_TRUE(panel.has_value()) << panel.error().to_string();
+  // Only the MIDDLE expiry loses its carry pairs, so it is bracketed by two
+  // confident anchors and its repaired borrow is an INTERPOLATION.
+  starve_carry_pairs(panel->frame, isos[1], spec.spot, /*keep_pairs=*/1);
+
+  Universe u;
+  const auto uid = atx::vol::data_install(u, panel->frame);
+  ASSERT_TRUE(uid.has_value()) << uid.error().to_string();
+  const auto under = u.get_underlying(*uid);
+  ASSERT_TRUE(under.has_value());
+  ASSERT_EQ((*under)->chains.size(), std::size_t{3});
+
+  SurfaceParityInputs in;
+  in.S = spec.spot;
+  in.r = spec.r;
+  in.now_ts_ns = iso_to_ns(snapshot);
+  in.deam.imply_borrow = true;
+  in.deam.n_atm = 3;
+  in.deam.require_carry_confidence = true;
+
+  const auto res = run_surface_parity(**under, in);
+  ASSERT_TRUE(res.has_value()) << res.error().to_string();
+  const SurfaceParityReport& rep = *res;
+
+  // The crippled expiry is SERVED, not dropped.
+  EXPECT_EQ(rep.n_slices, std::size_t{3});
+  EXPECT_EQ(rep.n_carry_skipped, std::size_t{0});
+  ASSERT_EQ(rep.expiry_reports.size(), std::size_t{3});
+  for (const atx::vol::ExpiryFitReport& r : rep.expiry_reports) {
+    EXPECT_EQ(r.outcome, atx::vol::ExpiryFitOutcome::Fitted) << "chain " << r.chain_index;
+  }
+
+  // ...and its carry is never LAUNDERED. Provenance says interpolated, the
+  // certification carry says not confident. The two confident neighbours keep
+  // `Solved`, so the fallback is applied where it is needed and nowhere else.
+  EXPECT_EQ(rep.expiry_reports[0].carry_source, atx::vol::CarrySource::Solved);
+  EXPECT_EQ(rep.expiry_reports[1].carry_source, atx::vol::CarrySource::TermStructureInterp);
+  EXPECT_EQ(rep.expiry_reports[2].carry_source, atx::vol::CarrySource::Solved);
+  ASSERT_EQ(rep.carry.size(), std::size_t{3});
+  EXPECT_TRUE(rep.carry[0].confident);
+  EXPECT_FALSE(rep.carry[1].confident);
+  EXPECT_TRUE(rep.carry[2].confident);
+  EXPECT_EQ(rep.carry[1].source, atx::vol::CarrySource::TermStructureInterp);
+}
+
+TEST(SurfaceParityCarry, ConfidentBoardIsUntouchedByTheRepairPass) {
+  // The repair may not change a board that never needed it. With every expiry
+  // confident, the gated run must reproduce the ungated one slice for slice and
+  // bit for bit, and stamp `Solved` everywhere.
+  const std::string snapshot = "2026-06-19";
+  const std::vector<std::string> isos = {"2026-07-26", "2026-10-06", "2027-01-24"};
+  const SynthPanelSpec spec = make_three_expiry_spec(snapshot, isos);
+
+  const auto panel = make_synthetic_american_panel(spec);
+  ASSERT_TRUE(panel.has_value()) << panel.error().to_string();
+  Universe u;
+  const auto uid = atx::vol::data_install(u, panel->frame);
+  ASSERT_TRUE(uid.has_value()) << uid.error().to_string();
+  const auto under = u.get_underlying(*uid);
+  ASSERT_TRUE(under.has_value());
+
+  SurfaceParityInputs base;
+  base.S = spec.spot;
+  base.r = spec.r;
+  base.now_ts_ns = iso_to_ns(snapshot);
+  base.deam.imply_borrow = true;
+  base.deam.n_atm = 3;
+
+  SurfaceParityInputs ungated = base;
+  ungated.deam.require_carry_confidence = false;
+  SurfaceParityInputs gated = base;
+  gated.deam.require_carry_confidence = true;
+
+  const auto r_ungated = run_surface_parity(**under, ungated);
+  ASSERT_TRUE(r_ungated.has_value()) << r_ungated.error().to_string();
+  const auto r_gated = run_surface_parity(**under, gated);
+  ASSERT_TRUE(r_gated.has_value()) << r_gated.error().to_string();
+
+  ASSERT_EQ(r_gated->n_slices, std::size_t{3});
+  ASSERT_EQ(r_gated->n_slices, r_ungated->n_slices);
+  EXPECT_EQ(r_gated->n_carry_skipped, std::size_t{0});
+  for (std::size_t i = 0; i < r_gated->n_slices; ++i) {
+    const std::uint16_t s = static_cast<std::uint16_t>(i);
+    // Bit-identical served levels: same fitted backbone, read off the surface.
+    EXPECT_DOUBLE_EQ(r_gated->surface.iv_on_slice(s, 0.0), r_ungated->surface.iv_on_slice(s, 0.0));
+    EXPECT_DOUBLE_EQ(r_gated->surface.iv_on_slice(s, -0.2),
+                     r_ungated->surface.iv_on_slice(s, -0.2));
+    EXPECT_DOUBLE_EQ(r_gated->surface.iv_on_slice(s, 0.2), r_ungated->surface.iv_on_slice(s, 0.2));
+  }
+  for (const atx::vol::ExpiryFitReport& r : r_gated->expiry_reports) {
+    EXPECT_EQ(r.carry_source, atx::vol::CarrySource::Solved);
+  }
+}
+
+TEST(SurfaceParityCarry, UncertifiableRepairedExpiryStaysDropped) {
+  // The eSSVI lane FITS under the permissive predicate but its inversion
+  // certificate is recomputed under the CONFIGURED cascade
+  // (collect_input_diagnostics, session.cpp:526-541), and
+  // `inversion_certified` is all-slices-or-nothing. So an expiry only the
+  // permissive predicate can build has no certificate, and committing one would
+  // set `InversionResidual` for the WHOLE board — turning a
+  // Degraded-but-published candidate into a rejected one (measured: HBAN,
+  // lqbench 2026-08-03, 3 served eSSVI slices -> a 1-slice SVI). The repair must
+  // therefore refuse what it cannot certify.
+  const std::string snapshot = "2026-06-19";
+  const std::vector<std::string> isos = {"2026-07-26", "2026-10-06", "2027-01-24"};
+  SynthPanelSpec spec = make_three_expiry_spec(snapshot, isos);
+
+  auto panel = make_synthetic_american_panel(spec);
+  ASSERT_TRUE(panel.has_value()) << panel.error().to_string();
+  starve_carry_pairs(panel->frame, isos[1], spec.spot, /*keep_pairs=*/1);
+
+  Universe u;
+  const auto uid = atx::vol::data_install(u, panel->frame);
+  ASSERT_TRUE(uid.has_value()) << uid.error().to_string();
+  const auto under = u.get_underlying(*uid);
+  ASSERT_TRUE(under.has_value());
+  ASSERT_EQ((*under)->chains.size(), std::size_t{3});
+
+  // Blow out every spread on the deferred expiry, MIDS UNTOUCHED. The permissive
+  // predicate keeps the rows and de-Americanizes the same mids; the Configured
+  // cascade's spread filters reject all of them. That is exactly the
+  // uncertifiable shape above — a slice this lane can fit and the certificate
+  // recompute cannot see. (Flagging the quotes instead does not work: the
+  // permissive predicate still requires a VALID quote, so a flag starves both
+  // paths and would test nothing.)
+  atx::vol::Chain& mid_chain = (*under)->chains[1];
+  ASSERT_EQ(mid_chain.bids.size(), mid_chain.asks.size());
+  ASSERT_EQ(mid_chain.bids.size(), mid_chain.mids.size());
+  for (std::size_t q = 0; q < mid_chain.bids.size(); ++q) {
+    const double m = mid_chain.mids[q];
+    if (!(m > 0.0)) {
+      continue;
+    }
+    mid_chain.bids[q] = m * 0.10;
+    mid_chain.asks[q] = m * 1.90;
+  }
+
+  SurfaceParityInputs base;
+  base.S = spec.spot;
+  base.r = spec.r;
+  base.now_ts_ns = iso_to_ns(snapshot);
+  base.deam.imply_borrow = true;
+  base.deam.n_atm = 3;
+  base.deam.require_carry_confidence = true;
+
+  // Audit ARMED (the risk-serving policy): the repair refuses the slice.
+  SurfaceParityInputs audited = base;
+  audited.deam.audit_fit_inversions = true;
+  const auto r_audited = run_surface_parity(**under, audited);
+  ASSERT_TRUE(r_audited.has_value()) << r_audited.error().to_string();
+  EXPECT_EQ(r_audited->n_slices, std::size_t{2});
+  EXPECT_EQ(r_audited->n_carry_skipped, std::size_t{1});
+  ASSERT_EQ(r_audited->expiry_reports.size(), std::size_t{3});
+  EXPECT_EQ(r_audited->expiry_reports[1].outcome, atx::vol::ExpiryFitOutcome::CarryFailed);
+
+  // Audit NOT armed: no slice on any path can be certified, so the question is
+  // meaningless and the guard must not fire — the expiry is served.
+  SurfaceParityInputs unaudited = base;
+  unaudited.deam.audit_fit_inversions = false;
+  const auto r_unaudited = run_surface_parity(**under, unaudited);
+  ASSERT_TRUE(r_unaudited.has_value()) << r_unaudited.error().to_string();
+  EXPECT_EQ(r_unaudited->n_slices, std::size_t{3});
+  EXPECT_EQ(r_unaudited->n_carry_skipped, std::size_t{0});
+  ASSERT_EQ(r_unaudited->expiry_reports.size(), std::size_t{3});
+  std::string dump;
+  for (const atx::vol::ExpiryFitReport& r : r_unaudited->expiry_reports) {
+    dump += " [" + std::to_string(r.chain_index) + " o=" +
+            std::to_string(static_cast<int>(r.outcome)) + " cs=" +
+            std::to_string(static_cast<int>(r.carry_source)) + "]";
+  }
+  EXPECT_EQ(r_unaudited->expiry_reports[1].carry_source,
+            atx::vol::CarrySource::TermStructureInterp)
+      << dump;
+}
+
+TEST(SurfaceParityCarry, NoConfidentAnchorFabricatesNothing) {
+  // The repair reads a term structure off the board's OWN confident expiries.
+  // With none, there is nothing to read and nothing may be invented: the
+  // deferred expiries stay dropped, exactly as before T3c.
+  const std::string snapshot = "2026-06-19";
+  const std::vector<std::string> isos = {"2026-07-26", "2026-10-06", "2027-01-24"};
+  SynthPanelSpec spec = make_three_expiry_spec(snapshot, isos);
+
+  auto panel = make_synthetic_american_panel(spec);
+  ASSERT_TRUE(panel.has_value()) << panel.error().to_string();
+  for (const std::string& iso : isos) {
+    starve_carry_pairs(panel->frame, iso, spec.spot, /*keep_pairs=*/1);
+  }
+
+  Universe u;
+  const auto uid = atx::vol::data_install(u, panel->frame);
+  ASSERT_TRUE(uid.has_value()) << uid.error().to_string();
+  const auto under = u.get_underlying(*uid);
+  ASSERT_TRUE(under.has_value());
+
+  SurfaceParityInputs in;
+  in.S = spec.spot;
+  in.r = spec.r;
+  in.now_ts_ns = iso_to_ns(snapshot);
+  in.deam.imply_borrow = true;
+  in.deam.n_atm = 3;
+  in.deam.require_carry_confidence = true;
+
+  const auto res = run_surface_parity(**under, in);
+  // Zero slices is a board refusal, and it must stay one.
+  ASSERT_FALSE(res.has_value());
+  EXPECT_EQ(res.error().code(), atx::vol::ErrorCode::NotFound);
+  EXPECT_NE(res.error().to_string().find("carry_failed=3"), std::string::npos)
+      << res.error().to_string();
 }
 
 TEST(SurfaceParity, NoChains_ReturnsErr) {
