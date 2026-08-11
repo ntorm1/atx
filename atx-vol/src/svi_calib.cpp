@@ -890,6 +890,11 @@ Result<SviParams> svi_fit_slice(std::span<const FitObs> obs, double T, double F,
     qe_scratch.k[i] = work[i].k;
   }
 
+  // T10 (D5): which of the IRLS loop's three exits fired. Without this the
+  // caller cannot tell a fit that met its tolerance from one that simply ran out
+  // of outer passes — both return Ok with a plausible-looking iteration count.
+  FitTermination termination = FitTermination::IterationCap;
+
   for (std::uint16_t outer = 0; outer < max_outer; ++outer) {
     // The (u, v) box scales with the current sigma; be generous (the real
     // butterfly bound is enforced post-hoc).
@@ -903,6 +908,7 @@ Result<SviParams> svi_fit_slice(std::span<const FitObs> obs, double T, double F,
     inner_total_iters =
         static_cast<std::uint16_t>(inner_total_iters + nm_iters_this_pass);
     if (!std::isfinite(nm_best_sse)) {
+      termination = FitTermination::Stalled;
       break;  // nothing to refine: no vertex had a usable objective
     }
 
@@ -945,6 +951,7 @@ Result<SviParams> svi_fit_slice(std::span<const FitObs> obs, double T, double F,
       sse_sigma += work[i].weight_w * r * r;
     }
     if (std::fabs(prev_sse - sse_sigma) < 1.0e-15) {
+      termination = FitTermination::Converged;
       break;
     }
     prev_sse = sse_sigma;
@@ -1021,6 +1028,11 @@ Result<SviParams> svi_fit_slice(std::span<const FitObs> obs, double T, double F,
     diag->outer_iters = outer_total_iters;
     diag->inner_iters_total = inner_total_iters;
     diag->n_quotes_used = static_cast<std::uint32_t>(n);
+    diag->termination = termination;
+    // `final_grad_norm` stays DISENGAGED: the quasi-explicit fit is a
+    // Nelder-Mead search over (m, sigma) wrapping a bounded linear least
+    // squares, and no gradient of the objective is formed anywhere in it. A
+    // zero here would assert perfect first-order optimality on every slice.
   }
 
   return Ok(out);

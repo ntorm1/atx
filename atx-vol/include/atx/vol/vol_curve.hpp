@@ -571,13 +571,42 @@ struct CurveConfig {
 // previous slice's data-supported log-moneyness range; SplineVol intersects it
 // with its own so the calendar projection acts only where BOTH slices carry
 // quotes (a non-tradeable wing crossing is left to the extrapolation).
+//
+// `diag` (optional, T10 / plan D5): non-owning out-param, mirroring the one
+// `refit_slice_curve` takes. Pass nullptr to opt out entirely — the fit is
+// bit-identical either way, and observing it must never perturb it. When
+// non-null it is CLEARED to a default `FitDiag` on entry, ahead of any input
+// validation, so a caller reusing one struct across slices can never read a
+// previous slice's verdict and a struct inspected after an Err reports nothing
+// rather than something stale.
+//
+// What gets populated is family-dependent and deliberately PARTIAL — only what
+// the underlying fitter actually computes is reported:
+//
+//   ConvexDense     n_quotes_used, outer_iters (active-set iterations),
+//                   rmse_vol_vega_weighted, final_grad_norm (its scaled KKT
+//                   stationarity norm), termination = Converged — the QP is the
+//                   one family that fails closed, so a returned fit is certified
+//   Svi             the raw-SVI fitter's own FitDiag, plus `termination` from
+//                   its IRLS stop and `projection` from the Mingone/Lee gate
+//   Essvi           the eSSVI fitter's own FitDiag
+//   C8              n_quotes_used, inner_iters_total, reverted_to_seed
+//   LinearVariance
+//   / SplineVol     n_quotes_used only
+//
+// Everything a family does not report keeps its default, and every default is
+// the "not known" state rather than a value that reads as success. Do NOT infer
+// `Converged` from `Unknown`, nor a zero gradient from a disengaged
+// `final_grad_norm`. `warm_started` is always false here — this is the COLD
+// entry point and takes no prior curve.
 [[nodiscard]] Result<std::unique_ptr<IVolCurve>>
 fit_slice_curve(const CurveConfig &cfg, std::span<const FitObs> obs_eu, double F, double T,
                 double df, const std::function<double(double)> &w_prev = {},
                 std::span<const double> calendar_floor_knots = {},
                 std::pair<double, double> prev_data_k_range = {
                     -std::numeric_limits<double>::infinity(),
-                    std::numeric_limits<double>::infinity()});
+                    std::numeric_limits<double>::infinity()},
+                FitDiag *diag = nullptr);
 
 // Local/warm analogue of fit_slice_curve. Reuses the current curve's state where
 // the family supports it: eSSVI/C8 parameters seed LM directly and ConvexDense

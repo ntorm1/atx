@@ -380,6 +380,37 @@ struct ObsProvenance {
   ObsRejectionReason rejection{ObsRejectionReason::None};
 };
 
+// ── T10 / D5: serving-path fit outcome vocabulary ───────────────────────────
+//
+// How a per-slice fit TERMINATED. `Unknown` is the honest default for a fitter
+// that exposes no termination signal — most of them simply return Ok at the
+// iteration cap — and it must never be read as `Converged`. A
+// default-constructed diagnostic that reads as a clean result is the exact
+// defect class this sprint withdrew two measurements over: "0 violations" from
+// a validator that never ran is indistinguishable from "verified clean".
+enum class FitTermination : std::uint8_t {
+  Unknown = 0,   // the fitter reports no termination signal at all
+  Converged,     // a tolerance test or optimality certificate fired
+  IterationCap,  // exhausted the iteration budget with no tolerance hit
+  Stalled,       // no step could be accepted (damping past its ceiling, or a
+                 // non-finite objective at every trial point)
+};
+
+// Outcome of the per-slice ADMISSIBILITY projection (the Martini-Mingone
+// polytope / Lee wing clamp). Three states rather than a bool, because "the
+// projector never ran" and "the projector ran and found nothing to do" are
+// different facts about a served slice and a bool cannot hold both. Only
+// `Moved` means the served parameters are NOT the ones the fit chose.
+//
+// Load-bearing since the raw-SVI Lee gate moved to 2 (`kSviWingSlopeGate`): a
+// slice with b*(1+|rho|) in (2, 4] is now repaired at the serving seam rather
+// than served as fit, and that substitution has to be visible to the caller.
+enum class SliceProjection : std::uint8_t {
+  NotRun = 0,    // no admissibility projection was invoked
+  RanUnchanged,  // invoked; every coordinate was already inside the polytope
+  Moved,         // invoked; at least one coordinate was clamped
+};
+
 // Diagnostics returned by a per-slice fit (ports `AtsVolSviFitDiag`).
 struct FitDiag {
   double rmse_vol_vega_weighted{0.0};
@@ -393,6 +424,31 @@ struct FitDiag {
   // is a DIAGNOSTIC COUNT ONLY — the surface drivers do not reject on it (the
   // per-slice serving gates in `fit_slice_curve` do the rejecting).
   std::uint32_t n_butterfly_viol{0};
+
+  // ── T10 (plan D5): signals the serving path could not previously report ──
+  //
+  // WHICH of these a given fit populates is family-dependent, and every one
+  // defaults to its "not known" state rather than to a value that reads as
+  // success. Consult the producing entry point's contract before drawing a
+  // conclusion from a default; in particular `Unknown` is not `Converged` and
+  // a disengaged `final_grad_norm` is not a zero gradient.
+  FitTermination termination{FitTermination::Unknown};
+  SliceProjection projection{SliceProjection::NotRun};
+  // The fit was DISCARDED and a seed served in its place — the served curve is
+  // not the fitted one. C8's admissibility/butterfly revert is the only
+  // producer today (`fit_slice_curve`, VolCurveKind::C8).
+  bool reverted_to_seed{false};
+  // The fit was seeded from an existing curve rather than cold. `fit_slice_curve`
+  // is the COLD entry point and always leaves this false; `refit_slice_curve`
+  // and the eSSVI prior-surface route are where it can become true.
+  bool warm_started{false};
+  // Final first-order optimality residual in the fitter's own units — for
+  // ConvexDense, the scaled KKT stationarity norm its active-set solver
+  // certifies with. DISENGAGED means the fitter computes no such quantity, NOT
+  // that it reached zero: zero is the strongest convergence claim available and
+  // a zero-initialised double would assert it on every fit that has no gradient
+  // at all (raw SVI's Nelder-Mead + BLLS, for one).
+  std::optional<double> final_grad_norm{};
 };
 
 struct InversionRouteDiagnostics {
