@@ -17,6 +17,7 @@
 #include "atx/vol/pricer_fitter.hpp"  // merge_session_failure_context, ValidationDigest
 #include "atx/vol/session.hpp"        // SessionDiagnostics
 #include "atx/vol/surface_parity.hpp" // SurfaceParityInputs, ExpiryFitOutcome
+#include "atx/vol/surface_policy.hpp"  // decide_risk_surface_admission, SurfaceState
 #include "atx/vol/types.hpp"          // Side
 #include "atx/vol/universe.hpp"       // Underlying, Chain, chain_index
 #include "atx/vol/vol_curve.hpp"      // CurveConfig, IVolCurve
@@ -419,4 +420,56 @@ TEST(CarryFallbackAdmission, FallbackCarryPublishesDegradedNotInsufficientData) 
   ValidationDigest dh;
   merge_session_failure_context(hole, dh);
   EXPECT_TRUE(has_validation_failure(dh.failures, ValidationFailure::InsufficientData));
+}
+
+// T6 (session admission gate). PREPARATION starvation is the largest class of
+// lost expiry on this corpus and was the only one with no route into the
+// published failure context: a board could lose a third of its expiries to it
+// and still admit as Healthy, because the carry gate and the fit-inversion
+// audit — the two gaps that DID reach the digest — had not fired.
+TEST(CarryFallbackAdmission, PrepStarvedExpiriesPublishDegradedNotHealthy) {
+  using atx::vol::decide_risk_surface_admission;
+  using atx::vol::FitQualityMode;
+  using atx::vol::has_validation_failure;
+  using atx::vol::merge_session_failure_context;
+  using atx::vol::SessionDiagnostics;
+  using atx::vol::SurfaceFallback;
+  using atx::vol::SurfaceState;
+  using atx::vol::ValidationDigest;
+  using atx::vol::ValidationFailure;
+
+  // A board with a perfect carry and a certified inversion that nonetheless
+  // lost expiries to a starved preparation.
+  SessionDiagnostics starved;
+  starved.n_slices = 4;
+  starved.carry_confident = true;
+  starved.inversion_certified = true;
+  starved.n_prep_starved_expiries = 3;
+  ValidationDigest ds;
+  merge_session_failure_context(starved, ds);
+  EXPECT_TRUE(has_validation_failure(ds.failures, ValidationFailure::CarryGap));
+  EXPECT_FALSE(has_validation_failure(ds.failures, ValidationFailure::InsufficientData));
+
+  // ... and it must still SERVE. Over-rejecting a thin board would destroy the
+  // very coverage the rest of T6 recovers, so starvation reuses the one
+  // publish-with-Degraded bit: Degraded alone, rejecting only in combination.
+  const auto decision = decide_risk_surface_admission(
+      ds, FitQualityMode::Balanced, /*candidate_generation=*/7u,
+      /*last_admitted_generation=*/0u, SurfaceFallback::None);
+  EXPECT_TRUE(decision.publish_candidate);
+  EXPECT_EQ(decision.health.state, SurfaceState::Degraded);
+  EXPECT_TRUE(has_validation_failure(decision.health.reasons, ValidationFailure::CarryGap));
+
+  // A board that lost NOTHING keeps its clean Healthy admission.
+  SessionDiagnostics whole;
+  whole.n_slices = 4;
+  whole.carry_confident = true;
+  whole.inversion_certified = true;
+  ValidationDigest dw;
+  merge_session_failure_context(whole, dw);
+  EXPECT_TRUE(dw.admitted());
+  const auto healthy = decide_risk_surface_admission(
+      dw, FitQualityMode::Balanced, /*candidate_generation=*/7u,
+      /*last_admitted_generation=*/0u, SurfaceFallback::None);
+  EXPECT_EQ(healthy.health.state, SurfaceState::Healthy);
 }

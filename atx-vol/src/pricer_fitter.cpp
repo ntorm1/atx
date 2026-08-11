@@ -99,11 +99,19 @@ void merge_session_failure_context(const SessionDiagnostics &diagnostics,
     digest.failures |= ValidationFailure::InversionResidual;
   }
   if (diagnostics.n_carry_skipped_expiries > 0 || diagnostics.n_audit_starved_expiries > 0 ||
-      diagnostics.n_carry_fallback_expiries > 0) {
+      diagnostics.n_prep_starved_expiries > 0 || diagnostics.n_carry_fallback_expiries > 0) {
     // §5.2 + Decision B: expiries dropped by the carry gate, starved by the fit
-    // audit, OR admitted with a term-structure-fallback carry all surface as the
-    // one publish-with-Degraded reason. CarryGap (decide_risk_surface_admission);
-    // combined with any other failure it still rejects.
+    // audit, starved by PREPARATION (T6), OR admitted with a term-structure-
+    // fallback carry all surface as the one publish-with-Degraded reason.
+    // CarryGap (decide_risk_surface_admission); combined with any other failure
+    // it still rejects.
+    //
+    // T6 added the preparation term, and it is the BIGGEST of the four: 30.2%
+    // of chain outcomes on the whole lqbench corpus are starved against 4.7%
+    // carry-failed, and on a 40-board serving sample the carry failures are
+    // exactly zero. Until it was merged here a board could lose a third of its
+    // expiries and still publish Healthy — the same hidden gap this bit exists
+    // to close, arriving through a different field.
     digest.failures |= ValidationFailure::CarryGap;
   }
   if (diagnostics.n_price_bound_violations > 0) {

@@ -572,6 +572,23 @@ collect_input_diagnostics(const Underlying &under, const SessionInputs &in,
   return out;
 }
 
+// T6 (§5.2). Expiries the driver walked and lost to PREPARATION starvation.
+//
+// Derived from `expiry_reports` — which both drivers populate for EVERY chain,
+// fitted or not — rather than from a per-driver scalar, so the two build paths
+// cannot report a different number for the same board and neither report struct
+// has to grow a field. Only `PrepStarved` is counted: a carry failure is already
+// surfaced by `n_carry_skipped_expiries`, a hard preparation/fit error is a
+// defect that raises its own failure, and `Skipped` is a degenerate maturity
+// rather than a lost expiry.
+[[nodiscard]] std::size_t count_prep_starved(std::span<const ExpiryFitReport> reports) noexcept {
+  std::size_t n = 0;
+  for (const ExpiryFitReport &report : reports) {
+    n += (report.outcome == ExpiryFitOutcome::PrepStarved) ? 1u : 0u;
+  }
+  return n;
+}
+
 void aggregate_input_diagnostics(std::span<const SessionSliceDiagnostics> slices,
                                  SessionDiagnostics &diag) noexcept {
   double min_effective = std::numeric_limits<double>::infinity();
@@ -1405,6 +1422,7 @@ Result<VolaSession> VolaSession::build(const Underlying &under, const SessionInp
     }
     aggregate_input_diagnostics(slice_diag, cdiag);
     cdiag.n_carry_skipped_expiries = crep.n_carry_skipped;
+    cdiag.n_prep_starved_expiries = count_prep_starved(crep.expiry_reports);
     retain_fitted_term_rates(eff, crep.context);
     release_build_time_cache_borrow(eff);
     VolaSession session{std::move(placeholder),
@@ -1598,6 +1616,7 @@ Result<VolaSession> VolaSession::build(const Underlying &under, const SessionInp
   aggregate_input_diagnostics(slice_diag, diag);
   diag.n_carry_skipped_expiries = rep.n_carry_skipped;
   diag.n_audit_starved_expiries = rep.n_audit_starved;
+  diag.n_prep_starved_expiries = count_prep_starved(rep.expiry_reports);
 
   retain_fitted_term_rates(eff, rep.context);
   release_build_time_cache_borrow(eff);

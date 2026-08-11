@@ -428,6 +428,31 @@ struct SessionDiagnostics {
   // deam.audit_fit_inversions). The audit-created analogue of a carry skip;
   // risk admission surfaces it through the same CarryGap reason.
   std::size_t n_audit_starved_expiries{0};
+  // T6 (§5.2). Expiries the fit dropped because PREPARATION starved the slice
+  // below the usable-row floor even after every armed rescue
+  // (`ExpiryFitOutcome::PrepStarved`).
+  //
+  // This is the largest of the expiry-loss classes and it was the only one with
+  // no route to admission. Measured over 2,707 chain outcomes on the whole
+  // lqbench corpus, 30.2% were starved against 4.7% carry-failed, and on a
+  // 40-board SERVING sample the carry failures were exactly zero. So a board
+  // could lose a third of its expiries to thin preparation and still publish
+  // `Healthy`, because the two gaps that DID reach the digest — the carry gate
+  // and the fit-inversion audit — had not fired. That is precisely the hidden-
+  // gap class `CarryGap` exists to close, one field over.
+  //
+  // It merges onto the SAME `CarryGap` bit rather than a new one, for the two
+  // reasons that bit already documents (`pricer_fitter.cpp`): the fact is
+  // identical in kind — the served surface is missing expiries the board has,
+  // while the surviving slices passed the full geometric contract — and a new
+  // bit would invalidate every persisted Degraded+CarryGap provenance in the
+  // archive and the surface DB. The established semantics therefore apply
+  // unchanged: alone it publishes Degraded and still serves; combined with any
+  // other failure it rejects. Measured to add ZERO rejections on lqbench
+  // 2026-08-03, where the served reason mask takes exactly two values —
+  // CarryGap on 188 boards and empty on 15 — so no board can acquire the
+  // "CarryGap plus something else" combination from this change.
+  std::size_t n_prep_starved_expiries{0};
   // ConvexDense-served call-price bound self-check violations (oracle finding
   // I-2): the independent risk-surface oracle only reconstructs prices from
   // w=sigma^2*T via Black, which is always in-bounds by construction and
