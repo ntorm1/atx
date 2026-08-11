@@ -75,3 +75,44 @@ surfaces (convex-dense), 2019-01-02 → 2026-07-31, spot/r inside each archive's
 ## Status log
 
 - 2026-08-11: recon + design complete; implementation start.
+- 2026-08-11 (loop 1): `structure_panel` lib + CLI landed (commit 3d285ca);
+  panel built over 1,887 SPY sessions (2019-01-02..2026-07-31), 1,886 rows,
+  zero invalid labels. Walk-forward results (OOS 2020-01-09..2026-07-30,
+  1,634 days, $1k-vega structures, frictionless):
+
+  | run | total $ | Sharpe | worst day |
+  |-----|--------:|-------:|----------:|
+  | always long_gamma_1m | −36 | −0.02 | −385 |
+  | always long_vega_1y  | +384 | **0.89** | −48 |
+  | always fwd_vol       | +420 | 0.23 | −327 |
+  | ridge v1 (expanding, raw) | −310 | −0.16 | −385 |
+  | ridge v2 (winsor .01, roll 756) | +663 | 0.35 | −327 |
+  | **ridge v2 + crisis gate .95** | **+709** | **0.54** | **−90** |
+  | oracle | +13,307 | 7.22 | 0 |
+
+  Findings:
+  * Back-leg (1Y vega) direction has genuine rank signal (rank-IC ≈ +0.10);
+    front-leg direction is ~unpredictable (rank-IC ≈ 0.02) — Pearson IC there
+    is vol-clustering, not direction.
+  * Tail decomposition: every catastrophic model day was fwd_vol (short 1M
+    straddle) held into a gap (2025-04-09 −327 while long_gamma made +375).
+    The crisis gate (front IV above its 252d 95th percentile ⇒ short-straddle
+    strategies off-menu) removed the tail wholesale: worst −327 → −90,
+    Sharpe 0.35 → 0.54, robust to threshold ∈ [0.85, 0.95].
+  * Winsorizing TRAIN targets at q=0.01 and a 756d rolling window are both
+    load-bearing; q=0.02 over-clips and kills the edge.
+  * HGB (any capacity tried) and ridge×HGB ensembles underperform ridge —
+    ~750-row windows favor the linear prior. Interaction features hurt too.
+  * Risk-adjusted picking (pred/vol, mean−λ·vol) and anchor-margin policies
+    all reduced total AND Sharpe vs plain argmax + crisis gate.
+  * Vol-targeted variant of the game (every structure sized to constant
+    trailing PnL vol): always-long-vega dominates (Sharpe 1.34 vs model 1.08)
+    — the carry strategy self-deleverages in storms. The raw vega-normalized
+    game is the goal's game; model beats every always-on baseline on total
+    PnL there and is second on Sharpe behind the long-vega carry.
+
+  Champion config: `--model ridge --winsor 0.01 --train-window 756
+  --crisis-gate 0.95` (script `scripts/structure_selector_train.py`).
+
+  Next: panel v2 features (1w tenor, var-swap strip vols, vanna/volga of the
+  unit structures), PBO/robustness stats, possibly pre-2019 corpus extension.

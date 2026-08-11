@@ -67,18 +67,37 @@ def add_derived_features(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def add_interaction_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Regime-interaction products a linear model cannot form on its own —
+    the tail decomposition showed the front-leg payoff flips sign with the
+    gap-risk state, so give ridge those hinge directions explicitly."""
+    out = df.copy()
+    pairs = (
+        ("iv_1m_rank", "gap_z"),
+        ("iv_1m_rank", "vov_rank"),
+        ("ivrv_rank", "gap_z"),
+        ("slope_rank", "iv_1m_rank"),
+        ("vov_rank", "gap_z"),
+        ("ivrv_rank", "vov_rank"),
+    )
+    for a, b in pairs:
+        out[f"x_{a}_{b}"] = out[a] * out[b]
+    return out
+
+
 def strategy_pnls(front: np.ndarray, back: np.ndarray) -> np.ndarray:
     """(n, 4) realized/predicted PnL per strategy from the two base series."""
     return np.column_stack([front, back, back - front, front - back])
 
 
-def make_model(kind: str, seed: int):
+def make_model(kind: str, seed: int, hgb_iters: int = 120, hgb_lr: float = 0.1):
     if kind == "hgb":
         from sklearn.ensemble import HistGradientBoostingRegressor
 
         return HistGradientBoostingRegressor(
-            max_iter=300,
-            learning_rate=0.05,
+            max_iter=hgb_iters,
+            learning_rate=hgb_lr,
+            max_depth=4,
             min_samples_leaf=20,
             early_stopping=False,
             random_state=seed,
@@ -92,7 +111,26 @@ def make_model(kind: str, seed: int):
         return make_pipeline(
             SimpleImputer(strategy="median"), StandardScaler(), Ridge(alpha=10.0)
         )
+    if kind == "ens":
+        return _Ensemble(
+            [make_model("ridge", seed), make_model("hgb", seed, hgb_iters=60, hgb_lr=0.1)]
+        )
     raise ValueError(f"unknown model kind: {kind}")
+
+
+class _Ensemble:
+    """Equal-weight average of member predictions (fit on the same window)."""
+
+    def __init__(self, members):
+        self.members = members
+
+    def fit(self, x, y):
+        for m in self.members:
+            m.fit(x, y)
+        return self
+
+    def predict(self, x):
+        return np.mean([m.predict(x) for m in self.members], axis=0)
 
 
 @dataclass
@@ -124,6 +162,11 @@ def walk_forward(
     winsor: float = 0.0,
     risk_adjust: int = 0,
     risk_lambda: float = 0.0,
+    anchor: int = -1,
+    anchor_margin: float = 0.0,
+    banned: tuple[int, ...] = (),
+    crisis_gate: float = 0.0,
+    vol_target: int = 0,
 ) -> WalkForwardResult:
     feats = feature_columns(df)
     x = df[feats].to_numpy(dtype=float)
@@ -133,16 +176,26 @@ def walk_forward(
 
     # Per-strategy trailing PnL vol for the risk-adjusted pick. shift(1) keeps
     # it strictly past-only: the label of day t-1 is realized by day t's close.
-    if risk_adjust > 0:
+    if risk_adjust > 0 or vol_target > 0:
+        window = vol_target if vol_target > 0 else risk_adjust
         vol_scale = (
             pd.DataFrame(realized_all)
             .shift(1)
-            .rolling(risk_adjust, min_periods=risk_adjust)
+            .rolling(window, min_periods=window)
             .std()
             .to_numpy()
         )
     else:
         vol_scale = np.ones_like(realized_all)
+
+    if vol_target > 0:
+        # Vol-target the STRUCTURES: each strategy is sized daily to a constant
+        # trailing PnL vol (median across the panel keeps dollar-ish units).
+        # Same transform applies to realized PnL, predictions' training targets
+        # stay raw — the model still predicts raw PnL; scores divide by vol.
+        ref = np.nanmedian(vol_scale)
+        unit = np.where(np.isfinite(vol_scale) & (vol_scale > 0.0), ref / vol_scale, np.nan)
+        realized_all = realized_all * unit
 
     n = len(df)
     keys: list[str] = []
@@ -167,11 +220,29 @@ def walk_forward(
         if risk_lambda > 0.0:
             # mean-variance style penalty: keeps PnL units, damps tail-chasing
             score = np.where(ok, pred - risk_lambda * scale, pred)
-        elif risk_adjust > 0:
+        elif risk_adjust > 0 or vol_target > 0:
             score = np.where(ok, pred / scale, pred)
         else:
             score = pred
+        if banned:
+            score = score.copy()
+            score[:, list(banned)] = -np.inf
+        if crisis_gate > 0.0 and "iv_1m_rank" in df.columns:
+            # Stress gate: with front IV in its top tail, the short-front-gamma
+            # calendar's loss distribution is dominated by gap days — take the
+            # short-gamma structures off the menu rather than trust a point
+            # forecast of a fat tail.
+            rank = df["iv_1m_rank"].to_numpy(dtype=float)[fold_start:test_end]
+            stressed = np.isfinite(rank) & (rank > crisis_gate)
+            score = score.copy()
+            score[stressed, 2] = -np.inf  # fwd_vol (short front straddle)
+            score[stressed, 3] = -np.inf  # rev_fwd_vol (short back straddle)
         pick = np.argmax(score, axis=1)
+        if anchor >= 0:
+            # deviate from the anchor strategy only when the predicted edge
+            # clears the margin — hysteresis against selection noise
+            edge = score[np.arange(len(pick)), pick] - score[:, anchor]
+            pick = np.where(edge > anchor_margin, pick, anchor)
         for j, i in enumerate(range(fold_start, test_end)):
             keys.append(df["key"].iloc[i])
             picks.append(int(pick[j]))
@@ -244,7 +315,8 @@ def report(res: WalkForwardResult, seed: int) -> str:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--panel", required=True)
-    ap.add_argument("--model", default="hgb", choices=("hgb", "ridge"))
+    ap.add_argument("--model", default="hgb", choices=("hgb", "ridge", "ens"))
+    ap.add_argument("--interactions", action="store_true", help="add regime product features")
     ap.add_argument("--min-train", type=int, default=252)
     ap.add_argument("--retrain-every", type=int, default=21)
     ap.add_argument("--embargo", type=int, default=1)
@@ -265,12 +337,36 @@ def main() -> None:
         default=0.0,
         help="mean-variance pick: argmax(pred - lambda * trailing vol); needs --risk-adjust window",
     )
+    ap.add_argument(
+        "--anchor",
+        default=None,
+        choices=STRATEGIES,
+        help="default strategy; deviate only when predicted edge > --anchor-margin",
+    )
+    ap.add_argument("--anchor-margin", type=float, default=0.0)
+    ap.add_argument(
+        "--ban", action="append", default=[], choices=STRATEGIES, help="exclude from selection"
+    )
+    ap.add_argument(
+        "--crisis-gate",
+        type=float,
+        default=0.0,
+        help="iv_1m 252d percentile above which short-straddle strategies are off-menu",
+    )
+    ap.add_argument(
+        "--vol-target",
+        type=int,
+        default=0,
+        help="size every strategy to constant trailing N-day PnL vol (rescales the whole game)",
+    )
     ap.add_argument("--tag", default=None, help="suffix for the eval TSV name")
     args = ap.parse_args()
 
     df = load_panel(args.panel)
     if not args.no_derived:
         df = add_derived_features(df)
+    if args.interactions:
+        df = add_interaction_features(df)
     print(f"panel: {len(df)} valid rows, {len(feature_columns(df))} features")
     res = walk_forward(
         df,
@@ -283,6 +379,11 @@ def main() -> None:
         winsor=args.winsor,
         risk_adjust=args.risk_adjust,
         risk_lambda=args.risk_lambda,
+        anchor=STRATEGIES.index(args.anchor) if args.anchor else -1,
+        anchor_margin=args.anchor_margin,
+        banned=tuple(STRATEGIES.index(b) for b in args.ban),
+        crisis_gate=args.crisis_gate,
+        vol_target=args.vol_target,
     )
     print(report(res, seed=args.seed))
 
