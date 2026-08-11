@@ -372,6 +372,12 @@ enum class ObsRejectionReason : std::uint8_t {
   ObservationCap,
   Deamericanization,
   EuropeanPrice,
+  // T5 (D6 / Burkovska Remark 4.1): the quote sits within 1% of its American
+  // intrinsic, where the price is flat in sigma and the inversion is
+  // multi-valued — the row carries no identifiable vol. A CANDIDATE screen, not
+  // an inversion failure: it is stamped BEFORE the de-Am row ledger, so it never
+  // counts against the certified-drop fraction. APPEND-ONLY.
+  IntrinsicIllPosed,
 };
 
 struct ObsProvenance {

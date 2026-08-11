@@ -33,6 +33,23 @@ namespace {
 
 constexpr double kMinSpread = 1.0e-8;
 
+// T5 item 2 (D6). The band a de-Americanized observation must land in to be a
+// FIT row, mirroring the Configured builder's identical open interval
+// (calib.cpp `kObsIvMin` / `kObsIvMax`). The Legacy/eSSVI builder below checked
+// only `has_value()`, and `american_implied_vol` returns Ok(0.005) — the vol
+// FLOOR, a clamp rather than a root — for a price at or below intrinsic. So the
+// two builders disagreed on exactly the population that needs them to agree: a
+// deep-ITM leg admitted by the ITM-leg rescue and quoted at intrinsic entered
+// the fit as a 0.5%-vol observation. `kFitIvMax` is 5.0 rather than the pricing
+// kernel's kIvMax (10.0) for the same reason calib.cpp keeps a local bound: a
+// 1000% observation is a data defect, not a smile.
+constexpr double kFitIvMin = 0.005;
+constexpr double kFitIvMax = 5.0;
+
+[[nodiscard]] bool fit_iv_in_band(double iv) noexcept {
+  return std::isfinite(iv) && iv > kFitIvMin && iv < kFitIvMax;
+}
+
 [[nodiscard]] bool inputs_valid(const Chain &chain, const PreparedSliceInputs &inputs) noexcept {
   constexpr std::size_t kMaxIndexedStrikes =
       static_cast<std::size_t>(std::numeric_limits<std::uint16_t>::max()) + 1u;
@@ -433,7 +450,8 @@ Result<PreparedSlice> PreparedSliceBuilder::prepare_legacy(const Chain &chain,
       const Side side = prepared_leg_side(chain, index, std::log(strike / inputs.F),
                                           inputs.calib.itm_leg_fallback);
       const std::size_t quote_index = chain_index(static_cast<std::uint16_t>(index), side);
-      if (!quote_valid(chain, quote_index) || (!cap_dropped.empty() && cap_dropped[index] != 0)) {
+      if (!quote_valid(chain, quote_index) || (!cap_dropped.empty() && cap_dropped[index] != 0) ||
+          !deam_inversion_well_posed(chain.mids[quote_index], inputs.S, strike, side)) {
         continue;
       }
       FitObs seed;
@@ -486,6 +504,16 @@ Result<PreparedSlice> PreparedSliceBuilder::prepare_legacy(const Chain &chain,
       // the expensive inversion. `cap_dropped` is only non-empty when the cap
       // strictly binds, so the uncapped path never reaches this branch.
       observation.rejection = ObservationRejectionReason::ObservationCap;
+    } else if (!deam_inversion_well_posed(chain.mids[quote_index], inputs.S, strike, side)) {
+      // T5 item 1 (D6 / Burkovska Remark 4.1). The quote sits within 1% of its
+      // American intrinsic, where the price is flat in sigma and the inversion is
+      // MULTI-VALUED. Screened HERE, alongside the other candidate screens and
+      // BEFORE `n_deam_rows`, deliberately: this row has no recoverable vol at
+      // all, so it is not an inversion the audit had to reject. Counting it as
+      // one would inflate the certified-drop fraction that gates
+      // `deam_inversion_certified` and turn a correctness guard into an
+      // admission regression.
+      observation.rejection = ObservationRejectionReason::IntrinsicIllPosed;
     } else {
       // C1: this valid candidate enters the de-Am inversion stage — count it in
       // the row ledger the reused certification consumes (guardrail: the audit
@@ -536,6 +564,16 @@ Result<PreparedSlice> PreparedSliceBuilder::prepare_legacy(const Chain &chain,
             ++n_audit_dropped;
           }
         }
+      }
+      // T5 item 2 (D6): a recovered vol outside the fit band is NOT an
+      // observation, whichever route proposed it. The historical check was
+      // `has_value()` alone, so the vol-floor CLAMP `american_implied_vol`
+      // returns for a price at/below intrinsic was fitted as a real 0.5%-vol
+      // quote. `fit_iv_in_band` is the same open interval the Configured builder
+      // applies (calib.cpp), so the two builders now admit the same population.
+      if (market_iv.has_value() && !fit_iv_in_band(*market_iv)) {
+        market_iv = Err(ErrorCode::OutOfRange,
+                        "prepare_legacy: recovered European-equivalent vol outside the fit band");
       }
       if (!market_iv.has_value()) {
         observation.rejection = ObservationRejectionReason::Deamericanization;

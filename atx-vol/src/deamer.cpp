@@ -88,11 +88,37 @@ constexpr double kMinSpread = 1.0e-8;
 
 // ── Single-quote European-equivalent IV ─────────────────────────────────
 
+bool deam_inversion_well_posed(double american_mid, double S, double K, Side side,
+                               double margin) noexcept {
+  if (!std::isfinite(american_mid) || !std::isfinite(S) || !std::isfinite(K) ||
+      !std::isfinite(margin) || margin < 0.0) {
+    return false;
+  }
+  const double intrinsic = (side == Side::Put) ? std::fmax(K - S, 0.0) : std::fmax(S - K, 0.0);
+  if (!(intrinsic > 0.0)) {
+    return true; // no intrinsic to hide behind: the price is all time value
+  }
+  return american_mid > intrinsic * (1.0 + margin);
+}
+
 Result<double> european_equiv_iv(double american_mid, double S, double K, double T, double r,
                                  double q_eff, Side side, AmericanMethod method,
                                  const std::optional<AlOpts> &opts,
                                  const CorrectionCache *correction, double tol,
                                  std::uint16_t max_iter) noexcept {
+  // T5 item 1 (D6 / Burkovska Remark 4.1). Refuse the inversion outright when
+  // the quote sits within kDeepItmInversionMargin of intrinsic: the map from
+  // sigma to price is flat there, so the root a bracket happens to land on is an
+  // artefact of the bracket. The historical behaviour was worse than inaccurate
+  // — `american_implied_vol` CLAMPS a price at/below intrinsic to the 0.5% vol
+  // floor and returns Ok, so a deep-ITM leg quoted at intrinsic entered the fit
+  // as a confident 0.5%-vol observation and repriced its own mid exactly, hence
+  // passed every downstream repricing audit.
+  if (!deam_inversion_well_posed(american_mid, S, K, side)) {
+    return Err(ErrorCode::OutOfRange,
+               "european_equiv_iv: quote within 1% of intrinsic — the American inversion is "
+               "multi-valued there (Burkovska et al. Remark 4.1)");
+  }
   // The recovered lognormal sigma IS the European-equivalent vol. `tol`/`max_iter`
   // default to the american_implied_vol defaults (1e-7 / 64) so a caller with the
   // defaults gets a bit-identical result. `correction` (when it matches `side`)

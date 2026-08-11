@@ -264,10 +264,18 @@ TEST(PreparedFitting, LegacyCompatibilityPreservesHistoricalPermissiveRowsAndWei
 // uses 1.0. noise_sigma feeds the C8 spread_w (2*sigma*T*max(noise_sigma,1e-7));
 // a 0.0 noise makes that ~1e4x smaller than a normal row -> ~1e8x the LM weight,
 // so one dead deep-wing quote can own the objective. The two builders must agree.
-// A deep low-vol board floors the de-Am IV so black76 vega underflows to exactly
-// 0.0 on the far wings — a deterministic vega==0 row that still survives Legacy's
-// permissive admission.
-TEST(PreparedFitting, LegacyVegaZeroRowNoiseSigmaMatchesConfiguredFallback) {
+//
+// T5 item 2 UPDATE. This test used to reach the vega <= 0 branch through a deep
+// low-vol board: the far-wing quotes are worth almost nothing, the de-Am
+// inversion CLAMPED them to the 0.5% vol floor, and Black-76 vega at 0.5% vol
+// two decades out of the money underflows to exactly 0. Those rows were the D6
+// hole itself — a clamp is not a measurement — and the band check now refuses
+// them, so the branch is no longer reachable through admission on this fixture
+// (measured: 11 of the 13 quotable strikes are now band-rejected). The fallback
+// assertion is therefore conditional; what this test now PINS is the refusal,
+// which is the stronger property: no admitted row may sit at the vol floor, and
+// the Legacy builder must agree with the Configured one about that.
+TEST(PreparedFitting, LegacyFarWingVolFloorRowsAreRefusedNotFitted) {
   constexpr double T = 0.25, r = 0.01, q = 0.0;
   const double F = 100.0 * std::exp((r - q) * T);
   const double df = std::exp(-r * T);
@@ -288,21 +296,34 @@ TEST(PreparedFitting, LegacyVegaZeroRowNoiseSigmaMatchesConfiguredFallback) {
   in.policy = PreparedObservationPolicy::LegacyEssviCompatibility;
   in.calib = CalibOpts{};
   const auto prep = PreparedSlice::create(chain, in);
-  ASSERT_TRUE(prep.has_value()) << prep.error().to_string();
+  // Only two strikes on this board carry a recoverable vol, which is below the
+  // usable-row floor — the honest outcome for a board whose wings are pure
+  // artefact. Before T5 item 2 the same board "fitted" on eleven floor rows.
+  ASSERT_FALSE(prep.has_value());
+  EXPECT_EQ(prep.error().code(), atx::core::ErrorCode::NotFound);
 
-  int n_vega_zero = 0;
-  for (const auto &o : prep->fit_observations()) {
-    if (o.vega == 0.0) {
-      ++n_vega_zero;
-      // The unified fallback (matching the Configured builder, calib.cpp:198) is
-      // 1.0, NOT 0.0. Pre-fix: noise_sigma == 0.0 (RED).
-      EXPECT_DOUBLE_EQ(o.noise_sigma, 1.0)
-          << "Legacy vega<=0 noise_sigma must match the Configured builder's 1.0 "
-             "fallback (K="
-          << o.K << ")";
+  // The Configured builder always applied this band, so it starves identically:
+  // the two builders now admit the same population.
+  PreparedSliceInputs configured = in;
+  configured.policy = PreparedObservationPolicy::Configured;
+  const auto configured_prep = PreparedSlice::create(chain, configured);
+  EXPECT_FALSE(configured_prep.has_value());
+
+  // A healthy board at the same maturity still prepares, and no admitted row
+  // sits at the floor — the guard removes artefacts, not the wing population.
+  const Chain healthy = make_american_board({85.0, 90.0, 95.0, 100.0, 105.0, 110.0, 115.0}, T, r, q,
+                                            0.30);
+  const auto healthy_prep = PreparedSlice::create(healthy, in);
+  ASSERT_TRUE(healthy_prep.has_value()) << healthy_prep.error().to_string();
+  for (const auto &o : healthy_prep->fit_observations()) {
+    EXPECT_GT(o.sigma_mkt, 0.005) << "K=" << o.K;
+    // FT-C6 still holds wherever the vega-underflow branch is reached: the
+    // unified fallback is 1.0, never 0.0 (a 0.0 noise gives one dead quote
+    // ~1e8x the LM weight of a normal row).
+    if (!(o.vega > 1.0e-12)) {
+      EXPECT_DOUBLE_EQ(o.noise_sigma, 1.0) << "K=" << o.K;
     }
   }
-  ASSERT_GT(n_vega_zero, 0) << "fixture must produce at least one vega==0 row";
 }
 
 TEST(PreparedFitting, LegacySharedBoundaryDeamMatchesScalarWithinEconomicBound) {
@@ -569,13 +590,69 @@ TEST(PreparedFitting, LegacyPrepAlsoFallsBackToTheItmLegWhenTheOtmLegIsUnquoted)
   inputs.calib.itm_leg_fallback = true;
   const auto with = PreparedSlice::create(chain, inputs);
   ASSERT_TRUE(with.has_value()) << with.error().to_string();
-  // Six of the eight ITM puts invert; the two deepest do not, because the
-  // fixture's mids are European prices and a European put below its American
-  // intrinsic has no American-equivalent vol. That rejection is the de-Am
-  // contract doing its job — the fallback offers the leg, it does not force it.
-  EXPECT_EQ(with->fit_observations().size(), 6u);
+  // Five of the eight ITM puts invert. The fixture's mids are European prices,
+  // so the deepest puts sit at or below their AMERICAN intrinsic and carry no
+  // American-equivalent vol: two are outright below intrinsic, and T5 item 1
+  // adds the third, which is inside the 1% margin where the inversion is
+  // multi-valued (Burkovska Remark 4.1). That rejection is the de-Am contract
+  // doing its job — the fallback offers the leg, it does not force it.
+  EXPECT_EQ(with->fit_observations().size(), 5u);
   for (const atx::vol::FitObs &row : with->fit_observations()) {
     EXPECT_EQ(row.side, Side::Put);
+  }
+}
+
+// T5 items 1+2 (de-Am review D6). A deep-ITM leg quoted AT its American
+// intrinsic carries no identifiable vol: the American price is flat in sigma
+// there and the inversion is multi-valued (Burkovska et al. Remark 4.1). The
+// legacy builder used to admit it anyway, because `american_implied_vol` clamps
+// a price at/below intrinsic to the 0.5% vol FLOOR and returns Ok — so the row
+// entered the fit as a confident 0.5%-vol observation AND repriced its own mid
+// exactly, which is why no downstream repricing audit ever caught it.
+TEST(PreparedFitting, IntrinsicPricedItmLegIsRefusedNotFittedAtTheVolFloor) {
+  Chain chain = make_itm_only_chain();
+  // Re-price every ITM put AT its American intrinsic (K - S), the degenerate
+  // shape; keep the quote otherwise impeccable so nothing else can reject it.
+  for (std::size_t s = 0; s < chain.strikes.size(); ++s) {
+    const std::size_t idx = chain_index(static_cast<std::uint16_t>(s), Side::Put);
+    const double intrinsic = chain.strikes[s] - kS;
+    chain.mids[idx] = intrinsic;
+    chain.bids[idx] = intrinsic - 0.02;
+    chain.asks[idx] = intrinsic + 0.02;
+  }
+
+  PreparedSliceInputs inputs = configured_inputs();
+  inputs.policy = PreparedObservationPolicy::LegacyEssviCompatibility;
+  inputs.calib.itm_leg_fallback = true;
+
+  const auto prepared = PreparedSlice::create(chain, inputs);
+  // Every row is ill-posed, so the slice starves rather than being fitted on a
+  // strip of vol-floor artefacts.
+  ASSERT_FALSE(prepared.has_value());
+  EXPECT_EQ(prepared.error().code(), atx::core::ErrorCode::NotFound);
+
+  // Control: the guard refuses the DEGENERATE quote, not the ITM leg. Re-price
+  // the same legs as genuine American premia at 24 vol — comfortably above
+  // intrinsic — and the identical inputs prepare a full strip of real rows, none
+  // of them anywhere near the vol floor.
+  Chain live = make_itm_only_chain();
+  for (std::size_t s = 0; s < live.strikes.size(); ++s) {
+    const std::size_t idx = chain_index(static_cast<std::uint16_t>(s), Side::Put);
+    const auto px = atx::vol::american_price(kS, live.strikes[s], kT, 0.24, kR,
+                                             /*q=*/kR, Side::Put);
+    ASSERT_TRUE(px.has_value()) << px.error().to_string();
+    live.mids[idx] = *px;
+    live.bids[idx] = *px - 0.02;
+    live.asks[idx] = *px + 0.02;
+  }
+  const auto live_prepared = PreparedSlice::create(live, inputs);
+  ASSERT_TRUE(live_prepared.has_value()) << live_prepared.error().to_string();
+  // The two deepest strikes (K = 135, 140 against S = 100) are still within the
+  // 1% margin even at a live 24-vol premium — genuinely ill-posed, not a fixture
+  // artefact — so six of the eight survive, every one carrying a real vol.
+  EXPECT_EQ(live_prepared->fit_observations().size(), 6u);
+  for (const atx::vol::FitObs &row : live_prepared->fit_observations()) {
+    EXPECT_GT(row.sigma_mkt, 0.05) << "an admitted row must carry a real vol, not the floor";
   }
 }
 

@@ -37,6 +37,7 @@ using atx::vol::carry_moneyness_bounded;
 using atx::vol::Chain;
 using atx::vol::chain_index;
 using atx::vol::de_americanize_chain;
+using atx::vol::deam_inversion_well_posed;
 using atx::vol::DeAmOptions;
 using atx::vol::DeAmResult;
 using atx::vol::DividendEvent;
@@ -620,6 +621,54 @@ TEST(DeAmer, RobustCarrySupportsHardToBorrowStrip) {
   EXPECT_NEAR(result->borrow, b_true, 1e-4);
   EXPECT_TRUE(result->carry.confident);
   EXPECT_GE(result->carry.effective_pair_count, 3.0);
+}
+
+// ── Deep-ITM well-posedness (T5 item 1) ──────────────────────────────────
+
+// Burkovska, Glau, Mahlstedt & Wohlmuth Remark 4.1, verbatim: S0 = 100, K = 120,
+// r = 1%, an American put at P_Am = 20.00 — exactly intrinsic — admits two roots
+// whose European equivalents are 18.81 and 19.69. Which one comes back is a
+// property of the bracket, so the inversion must be REFUSED, not answered.
+TEST(DeAmer, DeepItmQuoteWithinOnePercentOfIntrinsicIsRefusedAsIllPosed) {
+  constexpr double S = 100.0, K = 120.0, T = 1.0, r = 0.01, q = 0.0;
+  constexpr double intrinsic = K - S; // 20.0, the American put's intrinsic
+
+  EXPECT_FALSE(deam_inversion_well_posed(intrinsic, S, K, Side::Put));
+  EXPECT_FALSE(deam_inversion_well_posed(intrinsic * 1.005, S, K, Side::Put));
+  EXPECT_TRUE(deam_inversion_well_posed(intrinsic * 1.02, S, K, Side::Put));
+
+  // The seam refuses rather than answering. Before this guard
+  // `american_implied_vol` CLAMPED a price at/below intrinsic to the 0.5% vol
+  // floor and returned Ok — a confident-looking answer to an unanswerable
+  // question, which then repriced its own mid exactly and passed every audit.
+  const auto at_intrinsic = european_equiv_iv(intrinsic, S, K, T, r, q, Side::Put);
+  ASSERT_FALSE(at_intrinsic.has_value());
+  EXPECT_EQ(at_intrinsic.error().code(), ErrorCode::OutOfRange);
+
+  const auto inside_margin = european_equiv_iv(intrinsic * 1.005, S, K, T, r, q, Side::Put);
+  ASSERT_FALSE(inside_margin.has_value());
+  EXPECT_EQ(inside_margin.error().code(), ErrorCode::OutOfRange);
+
+  // Comfortably above intrinsic the problem is well posed and still inverts —
+  // the guard must not amputate the ITM population, only its degenerate tail.
+  const double priced =
+      value_or_fail(american_price(S, K, T, 0.25, r, q, Side::Put, AmericanMethod::AndersenLake,
+                                   std::nullopt));
+  ASSERT_GT(priced, intrinsic * 1.01);
+  const auto recovered = european_equiv_iv(priced, S, K, T, r, q, Side::Put);
+  ASSERT_TRUE(recovered.has_value()) << recovered.error().to_string();
+  EXPECT_NEAR(*recovered, 0.25, 1.0e-4);
+}
+
+// An out-of-the-money quote has no intrinsic to hide behind, so the guard is a
+// strict no-op there — the OTM legs the de-Am strip normally uses are untouched.
+TEST(DeAmer, WellPosednessGuardIsANoOpOnOutOfTheMoneyLegs) {
+  EXPECT_TRUE(deam_inversion_well_posed(0.01, 100.0, 120.0, Side::Call));
+  EXPECT_TRUE(deam_inversion_well_posed(0.01, 100.0, 80.0, Side::Put));
+  EXPECT_TRUE(deam_inversion_well_posed(1.0, 100.0, 100.0, Side::Call));
+  // A non-finite or negative-margin request is refused, never silently accepted.
+  EXPECT_FALSE(deam_inversion_well_posed(std::nan(""), 100.0, 120.0, Side::Put));
+  EXPECT_FALSE(deam_inversion_well_posed(25.0, 100.0, 120.0, Side::Put, -1.0));
 }
 
 // ── Carry uncertainty in the unit the fit consumes (T5c) ─────────────────

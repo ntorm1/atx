@@ -89,6 +89,8 @@ inline constexpr std::size_t kMinObs = 5;
     return "Deamericanization";
   case ObsRejectionReason::EuropeanPrice:
     return "EuropeanPrice";
+  case ObsRejectionReason::IntrinsicIllPosed:
+    return "IntrinsicIllPosed";
   }
   return "Unknown";
 }

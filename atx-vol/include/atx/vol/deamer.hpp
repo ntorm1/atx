@@ -81,6 +81,40 @@ namespace atx::vol {
   return (k_log >= 0.0) ? Side::Call : Side::Put;
 }
 
+// ── Well-posedness of the American inversion ────────────────────────────
+
+// Relative margin above intrinsic below which the American price-to-vol
+// inversion is ILL-POSED rather than merely inaccurate.
+//
+// Burkovska, Glau, Mahlstedt & Wohlmuth, "Complexity reduction for calibration
+// to American options" (Journal of Computational Finance 23(1), 2019),
+// Remark 4.1: for S0 = 100, K = 120, r = 1% an American put priced at
+// P_Am = 20.00 admits TWO roots, u ~ 1.036 and u ~ 1.112, whose European
+// equivalents are 18.81 and 19.69. Which one an inverter returns is decided by
+// its bracket, not by the market. Their guard is `P_Am > (K - S0)^+ * 1.01`,
+// i.e. a 1% margin over intrinsic, and it is this constant.
+//
+// The failure is asymmetric and silent: near intrinsic the American price is
+// almost flat in sigma, so a root-find that lands anywhere in the flat region
+// reprices the mid to machine precision and PASSES a repricing audit while the
+// recovered sigma is arbitrary.
+inline constexpr double kDeepItmInversionMargin = 0.01;
+
+// Is inverting `american_mid` at (S, K, side) a WELL-POSED problem?
+//
+// False iff the quote sits at or within `margin` of its American intrinsic
+// value — max(K - S, 0) for a put, max(S - K, 0) for a call — where sigma is not
+// identified from the price (see kDeepItmInversionMargin). A zero-intrinsic
+// (out-of-the-money or at-the-money-forward) quote is always well posed, so this
+// is a no-op on the OTM legs the de-Am strip normally uses; it bites exactly on
+// the deep-in-the-money legs an ITM-leg rescue admits.
+//
+// This is a WELL-POSEDNESS screen, not an accuracy gate: a row it rejects has no
+// recoverable vol at all, so callers should drop it BEFORE the inversion stage
+// rather than counting it as an inversion the audit had to reject.
+[[nodiscard]] bool deam_inversion_well_posed(double american_mid, double S, double K, Side side,
+                                             double margin = kDeepItmInversionMargin) noexcept;
+
 // ── Single-quote conversions ────────────────────────────────────────────
 
 // European-equivalent implied vol of a single American quote.
