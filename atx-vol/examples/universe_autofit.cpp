@@ -19,6 +19,7 @@
 //       [--risk-admission required|na] [--fallback lkg|none]
 //       [--publish-floor on|off] [--symbol-knobs on|off]
 //       [--attempts-out attempts.csv] [--expiries-out expiries.csv]
+//       [--slices-out slices.csv]
 //
 // Output CSV: one row per symbol with load/fit/value status + diagnostics.
 // `--attempts-out` additionally writes a SECOND csv, one row per (symbol,
@@ -27,6 +28,9 @@
 // `--expiries-out` writes a THIRD csv, one row per (symbol, build attempt,
 // chain) — the fit driver's own per-expiry census, which is the only place a
 // DROPPED expiry names its own cause (T3c).
+// `--slices-out` writes a FOURTH csv, one row per (symbol, SERVED slice) —
+// per-slice tenor, quote density and re-Americanized quality, which is the only
+// place the board aggregates' composition can be decomposed (T3d).
 // Summary to stdout: status counts, curve-family histogram, profile histogram,
 // error-code breakdown, timing percentiles, slowest boards.
 
@@ -622,6 +626,78 @@ void collect_expiries(std::vector<ExpiryRow> &out, const std::string &symbol,
   }
 }
 
+// ── One SERVED slice of the published surface (T3d) ─────────────────────────
+//
+// `--expiries-out` (T3c) is the ATTEMPT census: it names why a chain the board
+// offered never became a slice. It carries no quality column, so the one
+// question it cannot answer is what the slices that DID get served are worth.
+// Board-level `mean_in_band`/`worst_in_band` cannot answer it either -- they
+// are a mean and a min over exactly this population, and a coverage change
+// moves the population, so the aggregate confounds "the surface got worse" with
+// "we started serving harder expiries". Separating those two is the whole of
+// this task's Part 1, and it needs the per-slice terms.
+//
+// `VolaSession::parity()` (‖ `expiries()`, both ascending T) is that population,
+// already computed and retained by the build. Reading it costs no refit.
+//
+// GUARD COLUMN, for the reason T3c wrote one: `SessionInputs::score_parity`
+// exists and zeroes per-expiry parity intentionally (session.hpp:138-143), so a
+// `frac_in_band` of 0.0 is either a genuinely terrible slice or an opt-out, and
+// nothing in the value separates them. `parity_scored` does: it is 1 only when
+// the session's own `parity_state` is `Valid` AND the parity span is ‖ the
+// context span. Read `frac_in_band`/`n_scored`/`rmse_vol`/`chi2` where, and only
+// where, it is 1.
+struct SliceRow {
+  std::string symbol;
+  std::string curve_kind; // the family actually SERVED for this board
+  std::size_t slice_index{0};
+  double T{0.0};
+  double forward{0.0};
+  std::size_t n_used{0};    // strikes that survived to the fit
+  std::size_t n_dropped{0}; // strikes skipped (bad quote / failed invert)
+  double frac_in_band{0.0};
+  std::size_t n_scored{0};
+  std::size_t n_within{0};
+  double rmse_vol{0.0};
+  double chi2{0.0};
+  bool parity_scored{false};
+};
+
+// Flatten the published session's per-slice context + parity. Reads only what
+// the build already retained; never refits.
+void collect_slices(std::vector<SliceRow> &out, const std::string &symbol,
+                    const std::string &kind, const PricerFitter &fitter) {
+  const FittedSurface *surf = fitter.surface();
+  if (surf == nullptr) {
+    return;
+  }
+  const VolaSession &sess = surf->session();
+  const std::span<const SliceContext> ctx = sess.expiries();
+  const std::span<const ParityReport> par = sess.parity();
+  // The exact condition under which a parity term means what it says.
+  const bool scored =
+      sess.diagnostics().parity_state == ParityDiagnosticState::Valid && par.size() == ctx.size();
+  for (std::size_t i = 0; i < ctx.size(); ++i) {
+    SliceRow r;
+    r.symbol = symbol;
+    r.curve_kind = kind;
+    r.slice_index = i;
+    r.T = ctx[i].T;
+    r.forward = ctx[i].forward;
+    r.n_used = ctx[i].n_used;
+    r.n_dropped = ctx[i].n_dropped;
+    r.parity_scored = scored;
+    if (scored) {
+      r.frac_in_band = par[i].frac_fv_within_bidask;
+      r.n_scored = par[i].n;
+      r.n_within = par[i].n_within;
+      r.rmse_vol = par[i].rmse_mid_vol;
+      r.chi2 = par[i].chi2_reduced;
+    }
+    out.push_back(std::move(r));
+  }
+}
+
 // What one pinned refit yields: the oracle's verdict plus the probe's own
 // admission mask for the pinned candidate, kept together so the caller cannot
 // read one without the other's provenance.
@@ -826,6 +902,9 @@ int main(int argc, char **argv) {
   // T3c. Unset => no third CSV. Costs no refit either way — it only flattens the
   // census the build already recorded.
   std::string expiries_csv;
+  // T3d. Unset => no fourth CSV. Same deal: reads the published session's
+  // retained per-slice parity, never refits.
+  std::string slices_csv;
 
   for (int i = 1; i < argc; ++i) {
     const std::string_view a = argv[i];
@@ -859,6 +938,7 @@ int main(int argc, char **argv) {
     else if (a == "--symbol-knobs") symbol_knobs_arg = nv();
     else if (a == "--attempts-out") attempts_csv = nv();
     else if (a == "--expiries-out") expiries_csv = nv();
+    else if (a == "--slices-out") slices_csv = nv();
     else {
       std::fprintf(stderr, "unknown arg: %s\n", argv[i]);
       return 2;
@@ -874,7 +954,7 @@ int main(int argc, char **argv) {
                  "[--fit-path production|legacy] [--v2-fields none|quality|outputs|both] "
                  "[--outputs risk|mark|both] [--risk-admission required|na] "
                  "[--fallback lkg|none] [--publish-floor on|off] [--symbol-knobs on|off] "
-                 "[--attempts-out FILE] [--expiries-out FILE]\n");
+                 "[--attempts-out FILE] [--expiries-out FILE] [--slices-out FILE]\n");
     return 2;
   }
 
@@ -1019,8 +1099,10 @@ int main(int argc, char **argv) {
   // flattened in board order at write time.
   std::vector<std::vector<AttemptRow>> attempt_rows(batch->entries.size());
   std::vector<std::vector<ExpiryRow>> expiry_rows(batch->entries.size());
+  std::vector<std::vector<SliceRow>> slice_rows(batch->entries.size());
   const bool want_attempts = !attempts_csv.empty();
   const bool want_expiries = !expiries_csv.empty();
+  const bool want_slices = !slices_csv.empty();
   std::vector<const OpraBatchEntry *> entries(batch->entries.size());
   for (std::size_t i = 0; i < batch->entries.size(); ++i) entries[i] = &batch->entries[i];
 
@@ -1151,6 +1233,9 @@ int main(int argc, char **argv) {
       }
       if (want_expiries) {
         collect_expiries(expiry_rows[i], row.symbol, fitter);
+      }
+      if (want_slices) {
+        collect_slices(slice_rows[i], row.symbol, row.chosen_kind, fitter);
       }
 
       if (do_value) {
@@ -1310,6 +1395,30 @@ int main(int argc, char **argv) {
     }
   }
 
+  // ── Per-served-slice census CSV (T3d) ──────────────────────────────────────
+  //
+  // One row per (symbol, served slice), keyed on `symbol` + `slice_index`. This
+  // is the SERVED population, so a coverage change is visible here as rows
+  // appearing — which is exactly what makes a board's aggregate movable without
+  // any individual slice moving. `parity_scored` gates the quality columns.
+  std::size_t n_slice_rows = 0;
+  if (want_slices) {
+    std::ofstream out(slices_csv, std::ios::trunc);
+    out << "symbol,curve_kind,slice_index,T,forward,n_used,n_dropped,"
+           "frac_in_band,n_scored,n_within,rmse_vol,chi2,parity_scored\n";
+    for (const std::vector<SliceRow> &board : slice_rows) {
+      for (const SliceRow &s : board) {
+        char buf[320];
+        std::snprintf(buf, sizeof(buf), ",%s,%zu,%.9g,%.9g,%zu,%zu,%.9g,%zu,%zu,%.9g,%.9g,%d\n",
+                      s.curve_kind.c_str(), s.slice_index, s.T, s.forward, s.n_used, s.n_dropped,
+                      s.frac_in_band, s.n_scored, s.n_within, s.rmse_vol, s.chi2,
+                      s.parity_scored ? 1 : 0);
+        out << csv_escape(s.symbol) << buf;
+        ++n_slice_rows;
+      }
+    }
+  }
+
   // ── Summary ────────────────────────────────────────────────────────────────
   std::map<std::string, std::size_t> by_status, by_kind, by_profile, by_error;
   std::vector<double> fit_times;
@@ -1373,6 +1482,9 @@ int main(int argc, char **argv) {
   }
   if (want_expiries) {
     std::printf("expiries: %s (%zu rows)\n", expiries_csv.c_str(), n_expiry_rows);
+  }
+  if (want_slices) {
+    std::printf("slices: %s (%zu rows)\n", slices_csv.c_str(), n_slice_rows);
   }
   return 0;
 }
