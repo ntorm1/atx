@@ -702,6 +702,111 @@ TEST(EssviCalendarOrdering, AlreadyOrderedPrev_IsBitIdentical) {
   EXPECT_EQ(constrained->lambda, plain->lambda);
 }
 
+// ── (S1), the closer ─────────────────────────────────────────────────────
+//
+// T3c. (N1)+(N2) are NECESSARY, not sufficient (Pasquazzi 2023 Prop 4.14), and
+// T3b measured the gap: a 400k-draw search over pairs satisfying (N1)+(N2) plus
+// the butterfly cap finds in-band w_1/w_2 up to 133x, while adding
+// (S1) psi_2/theta_2 <= psi_1/theta_1 bounds it at 1.0 over 200k feasible draws.
+// With psi := theta*phi that ratio IS phi, so (S1) reads phi_2 <= phi_1.
+//
+// The mechanism, in closed form: as rho -> -1 the backbone
+// w(k) = 1/2[theta + chi*k + sqrt(psi^2 k^2 + 2 theta chi k + theta^2)] collapses
+// toward 0 for k > theta/psi. Two slices with rho near -1 both collapse; (N2)
+// only orders the ASYMPTOTIC slopes and happily admits a far slice that
+// collapses EARLIER (smaller theta/psi) than the near one, which is exactly a
+// finite-k in-band crossing. (S1) is theta_2/psi_2 >= theta_1/psi_1 — precisely
+// the statement that the far slice may not collapse first.
+namespace {
+
+// A pair from that search: (N1), both (N2) wings and the butterfly cap all hold,
+// yet the worst in-band w_prev/w_cur is 3.10. Capping phi_2 at phi_1 takes it to
+// exactly 1.0.
+constexpr double kS1PrevTheta = 1.3768023970676702;
+constexpr double kS1PrevPhi = 0.08843717750445117;
+constexpr double kS1PrevRho = 0.7794126898568101;
+constexpr double kS1CurTheta = 1.4897394941338273;
+constexpr double kS1CurPhi = 1.765062179540711;
+constexpr double kS1CurRho = -0.9083205515270472;
+
+double worst_band_ratio(const EssviParams& prev, const EssviParams& cur) {
+  double worst = 1.0;
+  for (int i = 0; i < 25; ++i) {
+    const double k = -0.5 + 1.0 * static_cast<double>(i) / 24.0;
+    const double w_lo = essvi_backbone_w(prev, k);
+    const double w_hi = essvi_backbone_w(cur, k);
+    if (w_hi > 1.0e-15) {
+      worst = std::max(worst, w_lo / w_hi);
+    }
+  }
+  return worst;
+}
+
+}  // namespace
+
+TEST(EssviCalendarOrdering, S1ClosesTheInBandCrossingN1N2Admit) {
+  const double F = 100.0;
+  const double t_prev = 1.00;
+  const double t_cur = 1.20;
+  const EssviParams prev =
+      backbone(kS1PrevTheta, kS1PrevPhi, kS1PrevRho, t_prev);
+  const EssviParams truth = backbone(kS1CurTheta, kS1CurPhi, kS1CurRho, t_cur);
+
+  // The fixture must be one (N1)+(N2) ADMIT and a real in-band crossing, or the
+  // test proves nothing about (S1).
+  ASSERT_GE(truth.theta, prev.theta) << "(N1) must already hold on the truth";
+  ASSERT_GE(wing_right(truth), wing_right(prev) * (1.0 - 1.0e-12));
+  ASSERT_GE(wing_left(truth), wing_left(prev) * (1.0 - 1.0e-12));
+  ASSERT_GT(worst_band_ratio(prev, truth), 1.5)
+      << "fixture no longer crosses in band under (N1)+(N2)";
+
+  const std::vector<FitObs> obs = bent_wing_obs(truth, t_cur, F, 0.0, 0.0);
+  const auto fit = essvi_fit_slice(obs, t_cur, F, calib_default_opts(), nullptr,
+                                   0.0, nullptr, &prev);
+  ASSERT_TRUE(fit.has_value()) << fit.error().to_string();
+
+  // The closer did its job: no crossing anywhere in the certified band.
+  EXPECT_DOUBLE_EQ(worst_band_ratio(prev, *fit), 1.0);
+  // ...by the stated mechanism, not by accident.
+  EXPECT_LE(fit->phi, prev.phi * (1.0 + 1.0e-9)) << "(S1) phi_2 <= phi_1";
+  // ...and the NECESSARY conditions are still honoured. (S1) is a ceiling on the
+  // same cube axis (N2) floors, and necessary must beat sufficient.
+  EXPECT_GE(fit->theta, prev.theta * (1.0 - 1.0e-12));
+  EXPECT_GE(wing_right(*fit), wing_right(prev) * (1.0 - 1.0e-5));
+  EXPECT_GE(wing_left(*fit), wing_left(prev) * (1.0 - 1.0e-5));
+}
+
+// (S1) is EARNED, never free. A pair the necessary conditions already order
+// inside the band must keep its (N1)+(N2) fit BIT for BIT — the sufficient
+// condition costs fit quality and may only be paid where it buys something.
+TEST(EssviCalendarOrdering, S1IsNotAppliedToAnAlreadyOrderedPair) {
+  const double F = 100.0;
+  const double t_prev = 0.25;
+  const double t_cur = 0.50;
+  // `prev` has a SMALL phi, so an unconditional (S1) would cap this slice hard;
+  // it does not cross in band, so nothing may be capped at all.
+  const EssviParams prev = backbone(0.030, 0.35, -0.30, t_prev);
+  const EssviParams truth = backbone(0.070, 1.20, -0.30, t_cur);
+  ASSERT_GT(truth.phi, prev.phi) << "fixture must VIOLATE (S1) to be a test of it";
+
+  const std::vector<FitObs> obs = bent_wing_obs(truth, t_cur, F, 0.0, 0.0);
+  const auto with_prev = essvi_fit_slice(obs, t_cur, F, calib_default_opts(),
+                                         nullptr, 0.0, nullptr, &prev);
+  ASSERT_TRUE(with_prev.has_value()) << with_prev.error().to_string();
+  ASSERT_DOUBLE_EQ(worst_band_ratio(prev, *with_prev), 1.0)
+      << "fixture must not cross in band, or this tests the wrong branch";
+
+  // The observable signature of "(S1) was not applied": phi is left FREE to
+  // exceed the predecessor's, which the cap would have forbidden outright.
+  // (Bit-identity itself is pinned by `AlreadyOrderedPrev_IsBitIdentical`, whose
+  // `tiny_prev` carries phi = 1e-2 — two orders below the fit's — so that test
+  // is red the moment (S1) is applied unconditionally. It cannot be re-used
+  // here: this fixture's predecessor DOES bind (N2), so the (N1)+(N2)
+  // projection legitimately moves the cube by ulps.)
+  EXPECT_GT(with_prev->phi, prev.phi)
+      << "(S1) was applied to a pair that did not need it";
+}
+
 // ── Warm-start (tick-to-quote incremental refit) ─────────────────────────
 
 namespace {
