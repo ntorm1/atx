@@ -8,7 +8,7 @@
 
 #include "atx/core/error.hpp"
 #include "atx/vol/arb.hpp" // butterfly gates + shared-k pair projection + independent shape check
-#include "atx/vol/c8_calib.hpp"    // c8_fit_slice_lm
+#include "atx/vol/c8_calib.hpp"    // c8_fit_slice_lm, C8LmDiag
 #include "atx/vol/detail/counters.hpp" // ConvexDense wing-anchor observability
 #include "atx/vol/essvi_calib.hpp" // essvi_fit_slice
 #include "atx/vol/svi_calib.hpp"   // svi_fit_slice, svi_project_mm
@@ -717,7 +717,9 @@ Result<std::unique_ptr<IVolCurve>> fit_slice_curve(const CurveConfig &cfg,
     }
     const double seed_sse = c8_residual_sse(seed, k, target_w, spread_w, 1.0e-9);
     const int max_inner = std::max<int>(4, cfg.parametric.max_inner_iter);
-    const Status status = c8_fit_slice_lm(fitted, k, target_w, spread_w, max_inner, 1.0e-9);
+    C8LmDiag c8_lm{};
+    const Status status =
+        c8_fit_slice_lm(fitted, k, target_w, spread_w, max_inner, 1.0e-9, &c8_lm);
     const double fit_sse = status ? c8_residual_sse(fitted, k, target_w, spread_w, 1.0e-9)
                                   : std::numeric_limits<double>::infinity();
     // Admissibility gate (mirrors c8_apply_quality_gate's slice_ok plus the
@@ -772,17 +774,22 @@ Result<std::unique_ptr<IVolCurve>> fit_slice_curve(const CurveConfig &cfg,
         (void)projection;
       }
     }
-    // `termination` stays Unknown: c8_fit_slice_lm reports only an accepted-step
-    // count, and its loop exits either at the cap or when damping blows past
-    // 1e8 with no tolerance test between them, so neither Converged nor
-    // IterationCap can be asserted from outside it without guessing. Reporting
-    // the real signal it does expose (accepted LM steps) and leaving the rest
-    // Unknown is the honest split; widening c8_fit_slice_lm's own contract is a
-    // separate change to c8_calib.hpp.
     if (diag != nullptr) {
       diag->n_quotes_used = static_cast<std::uint32_t>(k.size());
       diag->inner_iters_total =
           static_cast<std::uint16_t>(std::clamp(fitted.n_lm_iters, 0, 65535));
+      // T10b: C8 can now state a termination reason. `c8_fit_slice_lm` gained a
+      // scale-free first-order optimality certificate, so its three exits are
+      // distinguishable from outside instead of collapsing to Unknown.
+      //
+      // Both fields describe the point the LM REACHED. That is before the Roper
+      // projection, before the admissibility/butterfly gate above, and before
+      // any revert — so on a reverted slice they describe a fit that was
+      // discarded, and `reverted_to_seed` (set above) is what tells the caller
+      // the served curve is not this one. Reporting both is strictly more
+      // information than suppressing either.
+      diag->termination = c8_lm.termination;
+      diag->final_grad_norm = c8_lm.final_grad_norm;
     }
     std::unique_ptr<IVolCurve> curve = std::make_unique<C8Curve>(fitted, df);
     ATX_TRY_VOID(validate_parametric_risk_shape(*curve));
