@@ -877,8 +877,12 @@ namespace {
 }
 
 // Worst deficit over a FINITE sub-range of a violating interval, with the k it
-// occurs at. The whole interval violates, so any probe is a valid witness; the
-// sweep only sharpens the reported number (documented as a lower bound).
+// occurs at. The interior of the interval violates, so any interior probe is a
+// valid witness and the sweep only sharpens the reported number (documented as
+// a lower bound). The sub-range may however be a single point ON a crossing --
+// a violating interval that touches the band only at its endpoint -- where the
+// deficit is zero; callers must drop a record whose slack is not above
+// tolerance rather than emit a violation with no breach.
 [[nodiscard]] ArbViolation witness_over(const SviCrossingSlice &lo,
                                         const SviCrossingSlice &hi, double k_lo,
                                         double k_hi) noexcept {
@@ -952,26 +956,35 @@ Result<CalendarBandReport> arb_check_calendar_banded(const VolSurface &s,
           const double a = std::max(iv.k_lo, band.k_lo);
           const double b = std::min(iv.k_hi, band.k_hi);
           if (b >= a) {
-            out.in_band.push_back(witness_over(lo, hi, a, b));
+            const ArbViolation v = witness_over(lo, hi, a, b);
+            if (v.slack > kCalendarExactTol) {
+              out.in_band.push_back(v);
+            }
           }
         }
         // Left and right out-of-band pieces. With NO usable band the whole
         // interval is out of band: refusing to certify anything is the only
         // honest reading of "this slice has no tradeable window".
+        const auto record_out_of_band = [&](double a_end, double b_end) {
+          const ArbViolation v = witness_over(lo, hi, a_end, b_end);
+          if (v.slack > kCalendarExactTol) {
+            out.out_of_band.push_back(v);
+          }
+        };
         if (!band.usable()) {
           const FiniteRange r = finite_range(iv.k_lo, iv.k_hi, span);
-          out.out_of_band.push_back(witness_over(lo, hi, r.lo, r.hi));
+          record_out_of_band(r.lo, r.hi);
           continue;
         }
         const double left_hi = std::min(iv.k_hi, band.k_lo);
         if (left_hi > iv.k_lo) {
           const FiniteRange r = finite_range(iv.k_lo, left_hi, span);
-          out.out_of_band.push_back(witness_over(lo, hi, r.lo, r.hi));
+          record_out_of_band(r.lo, r.hi);
         }
         const double right_lo = std::max(iv.k_lo, band.k_hi);
         if (right_lo < iv.k_hi) {
           const FiniteRange r = finite_range(right_lo, iv.k_hi, span);
-          out.out_of_band.push_back(witness_over(lo, hi, r.lo, r.hi));
+          record_out_of_band(r.lo, r.hi);
         }
       }
     }
