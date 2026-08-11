@@ -167,8 +167,16 @@ class PricedSurface;
 // ORDER-IN-(r-q)*T approximation to the exact weighted-variance expectation
 // -- `K_gamma_shipped - K_gamma_exact ~= sigma_atm^2 * (r-q) * T / 2` for a
 // flat surface (closed-form re-derivation, `GammaSwap.CarryApproximation
-// ClosedForm`, derivatives_test.cpp); `GammaSwap.MCOracle` quantifies the
-// same gap against an independent seeded-MC oracle. Analytic greeks are
+// ClosedForm`, derivatives_test.cpp). `GammaSwap.SkewOrdering` is the other
+// discriminator (fails at exactly K_gamma - K_var == 0 under reversion).
+// `GammaSwap.MCOracle` (an independent seeded-MC oracle) does NOT quantify
+// this gap: at GBM/flat-vol precision the gamma-vs-variance discrimination
+// signal and the single-expiry approximation bias above are the SAME order,
+// O((r-q)*T)*sigma^2, so "passes" and "discriminates" cannot both hold at any
+// feasible path count (Task F-2 fix round 1 / I-2 -- see MCOracle's own
+// comment in derivatives_test.cpp). It is kept as a coarse calibration check
+// only -- a wrong outer scale or broken quadrature still fails it. Analytic
+// greeks are
 // DEFERRED for this kind (P-4's `AnalyticStrip` scope stays VarSwap-only,
 // unchanged by this task) -- `DerivGreekMethod::FiniteDifference` (the
 // default) is correct and unaffected.
@@ -484,18 +492,33 @@ struct RealizedVarianceSpec {
   // (the same "meaning is per-kind" convention DerivQuote::uncapped_var_dec
   // documents).
   double rv_gamma_done_dec = 0.0;
+  // Task F-2 fix round 1 (C-1 Critical): the seed spot S0 that anchors the
+  // weight above -- Lee's w(y) = y/Y0 -- so a consumer that must combine
+  // `rv_gamma_done_dec` (anchored at S0, the tracker's FIRST observe() call)
+  // with a future leg anchored at TODAY's spot (`curves.spot`) has the factor
+  // it needs to put both legs on the same anchor before combining them:
+  // `curves.spot / gamma_seed_spot`. Before this field existed, S0 was
+  // accumulation-time-only state private to RealizedTracker (see its old
+  // `s0_` member) on the theory that "no pricer reads it back off the
+  // snapshot" -- `price_gamma_swap`'s aged blend (derivatives.cpp) falsified
+  // that theory: it silently mixed a same-count-weighted blend of two
+  // DIFFERENT anchors, which is only equal to the correct blend at
+  // `gamma_seed_spot == curves.spot`. 0.0 means "no accrual yet recorded"
+  // (RealizedTracker before its first observe(), or a hand-built spec that
+  // never populates this), exactly like `rv_gamma_done_dec`'s own
+  // "not populated" convention.
+  double gamma_seed_spot = 0.0;
 };
 
-// Drift pin: RealizedVarianceSpec has exactly EIGHT fields (v1.1 appended
-// sum_weighted_sq_log_returns_done / rv_gamma_done_dec, Task F-2). This is
-// the FIRST arity pin for this struct -- established now because this is the
-// first time it has grown since v1.0 -- following the same
+// Drift pin: RealizedVarianceSpec has exactly NINE fields (v1.1 appended
+// sum_weighted_sq_log_returns_done / rv_gamma_done_dec, Task F-2; v1.2
+// appended gamma_seed_spot, Task F-2 fix round 1 / C-1). Following the same
 // `aggregate_arity_is_v` convention as `DerivConfig`/`DerivQuote` above.
 // Every construction site in this codebase already uses `RealizedVarianceSpec{}`
 // plus designated/named-field assignment (never positional brace-init), so
 // this raises no migration burden; it only catches a FUTURE append that
 // forgets to update this line.
-static_assert(detail::aggregate_arity_is_v<RealizedVarianceSpec, 8>,
+static_assert(detail::aggregate_arity_is_v<RealizedVarianceSpec, 9>,
               "RealizedVarianceSpec field count changed: update this pin.");
 
 // Mutable realized-variance accumulator. Caller owns; not thread-safe.
@@ -511,8 +534,10 @@ public:
                                                        std::uint32_t n_obs_total);
 
   // Observe a single spot. The first call records the seed (no return
-  // computed) AND anchors the gamma-weight S0 (Task F-2) at that same spot;
-  // each subsequent call updates Sigma r^2, n_done, rv_done_dec, and the
+  // computed) AND anchors the gamma-weight S0 (Task F-2) at that same spot,
+  // writing it to the snapshot's `gamma_seed_spot` (Task F-2 fix round 1 /
+  // C-1) so a caller can rescale a future leg onto this same anchor; each
+  // subsequent call updates Sigma r^2, n_done, rv_done_dec, and the
   // gamma-weighted Sigma (S_i/S0)*r^2 / rv_gamma_done_dec alongside it.
   //
   // @return InvalidArgument for spot <= 0, or when all n_obs_total returns have
@@ -549,12 +574,11 @@ private:
   RealizedTracker() = default;  // via create()
 
   double prev_spot_ = 0.0;
-  // Task F-2: the gamma-weight anchor S0 -- set once, at the same seed call
-  // that sets prev_spot_, and never touched again. Not part of
-  // RealizedVarianceSpec: it is accumulation-time-only state (needed to form
-  // S_i/S0 at each subsequent observe()), not a value a pricer ever reads
-  // back off the snapshot.
-  double s0_ = 0.0;
+  // Task F-2 fix round 1 (C-1 Critical): the gamma-weight anchor S0 used to
+  // live here, private, on the theory that "no pricer reads it back off the
+  // snapshot" -- `price_gamma_swap`'s aged blend needed exactly this value to
+  // combine the accrued and future legs on a common anchor, so it now lives
+  // in the snapshot itself as `rv_.gamma_seed_spot`; see that field's comment.
   bool have_prev_ = false;
   RealizedVarianceSpec rv_{};
   std::int64_t last_fixing_ts_ns_ = std::numeric_limits<std::int64_t>::min();

@@ -3178,6 +3178,24 @@ TEST(GammaSwap, SkewOrdering) {
   EXPECT_GT(q_gamma->fair_strike_dec, 0.0);
 }
 
+// I-2 (Task F-2 fix round 1, review .../task-F-2-review.md): this oracle was
+// ORIGINALLY presented as a discriminator against VarSwap. It is not one --
+// under reversion (GammaSwap silently computing K_var instead of K_gamma) it
+// PASSES with a BETTER margin than production does (review's 8-point drift
+// scan: 14.626x vs 1.840x here), because at GBM/flat-vol precision the
+// gamma-vs-variance discrimination signal and the single-expiry
+// approximation bias this oracle must tolerate are the SAME order,
+// O((r-q)*T)*sigma^2 -- "passes" and "discriminates" cannot both hold at any
+// feasible path count (this is the same shape as this sprint's earlier
+// `>=2x`-and-`<=1e-11` ruling). The real discriminators are `SkewOrdering`
+// above (fails at exactly K_gamma - K_var == 0 under reversion) and
+// `CarryApproximationClosedForm` below (an independent closed-form
+// re-derivation). This test is kept as a CALIBRATION check only: it still
+// catches a wrong outer scale or broken quadrature against an independent
+// seeded-MC path simulation, which is worth having, but its passing is not
+// evidence GammaSwap and VarSwap were computed differently -- the strict
+// EXPECT_LT below (a same-fixture VarSwap comparison) is what actually
+// checks that, in this test.
 TEST(GammaSwap, MCOracle) {
   using atx::vol::deriv_testkit::make_curves;
   using atx::vol::deriv_testkit::make_flat_surface;
@@ -3186,15 +3204,24 @@ TEST(GammaSwap, MCOracle) {
 
   const double sigma = 0.20;
   const double r = 0.021;
-  const double q = 0.020;  // r-q = 0.001: small enough that the genuine
-                           // O((r-q)*T) shipped-vs-true approximation gap
-                           // (see CarryApproximationClosedForm below, whose
-                           // r-q=0.05 fixture measures ~5.09e-4 at T=0.5) sits
-                           // well inside this MC's own 3-SE band -- MEASURED
-                           // at ~1.3e-5 against a 3-SE band of ~2.8e-5 (~2.2x
-                           // margin) -- while any real dispatch/weighting bug
-                           // (O(sigma^2) ~ 0.04 scale) would still miss by
-                           // several hundred multiples of that same band.
+  const double q = 0.020;  // r-q = 0.001: measured (not the originally
+                           // reported, non-reproducing digits) at
+                           // |diff| = 1.7770e-05 against a 3*mc.stderr_rv
+                           // band of 3.26931e-05 (~1.840x margin) -- see this
+                           // test's own header comment above for why that
+                           // margin is a calibration bound, not evidence of
+                           // discrimination. A real dispatch/weighting bug
+                           // (O(sigma^2) ~ 0.04 scale) still misses by several
+                           // hundred multiples of that same band.
+                           //
+                           // An earlier r-q=0.005 attempt at this fixture was
+                           // REJECTED: reviewer independently measured
+                           // 5.7352e-05 against a 3.2748e-05 band at that
+                           // config (this file's prior comment's
+                           // 6.4225710546005066e-05 / 2.790575118117747e-05
+                           // did not reproduce -- same verdict, i.e. still a
+                           // fail, just different digits; corrected here
+                           // rather than left standing).
   const double T = 0.5;   // 6M fixture pillar
   const double spot = 100.0;
 
@@ -3212,18 +3239,31 @@ TEST(GammaSwap, MCOracle) {
   const auto q_gamma = deriv_price(surf, cs, c, cfg);
   ASSERT_TRUE(q_gamma.has_value()) << q_gamma.error().to_string();
 
+  // I-2: a same-fixture VarSwap comparison, strict inequality -- THIS is what
+  // actually rules out "GammaSwap silently computed K_var", the failure mode
+  // the review found this oracle's 3-SE band cannot discriminate. Under
+  // reversion (aliased to K_var) this collapses to K_gamma == K_var, failing
+  // outright. Direction here is GT, not SkewOrdering's LT: on a FLAT surface
+  // (this fixture, no skew) the ordering is set by carry sign, not skew --
+  // K_var is carry-independent (sigma^2 exactly, the log-contract's "delta
+  // term vanishes" identity) while K_gamma ~= sigma^2*e^{(r-q)T}
+  // (CarryApproximationClosedForm below), and this fixture's r=0.021 >
+  // q=0.020 makes that strictly > sigma^2 = K_var.
+  const auto q_var = var_swap_fair_strike(surf, cs, T, cfg);
+  ASSERT_TRUE(q_var.has_value());
+  EXPECT_GT(q_gamma->fair_strike_dec, q_var->fair_strike_dec);
+
   const McModelParams p{spot, r, q, sigma, T};
   const auto mc = mc_gamma_realized_variance(p, 200000, 252u, 11);
   ASSERT_GT(mc.stderr_rv, 0.0);
 
-  // THE assertion that carries this oracle: production K_gamma (the real
-  // dispatch, `deriv_price` -> `price_gamma_swap` -> `strip_fair_value_core`,
-  // not a re-implementation) against an INDEPENDENT seeded-MC simulation
-  // extended with the S_i/S0 weight (deriv_fixtures.hpp, never calls into
-  // derivatives.cpp). A wrong weight, wrong scale, or mis-dispatched kind all
-  // move this by O(sigma^2) ~ 0.04, dwarfing 3*mc.stderr_rv; the (r-q) chosen
-  // above keeps the genuine O((r-q)*T) single-expiry approximation this task
-  // ships comfortably inside the same band (see the parameter comment above).
+  // Calibration assertion (NOT a discriminator -- see this test's header
+  // comment): production K_gamma (the real dispatch, `deriv_price` ->
+  // `price_gamma_swap` -> `strip_fair_value_core`, not a re-implementation)
+  // against an INDEPENDENT seeded-MC simulation extended with the S_i/S0
+  // weight (deriv_fixtures.hpp, never calls into derivatives.cpp). A wrong
+  // outer scale or broken quadrature still misses by O(sigma^2) ~ 0.04,
+  // dwarfing 3*mc.stderr_rv.
   EXPECT_NEAR(q_gamma->fair_strike_dec, mc.mean_rv, 3.0 * mc.stderr_rv)
       << "fair_strike=" << q_gamma->fair_strike_dec << " mc_mean=" << mc.mean_rv
       << " mc_stderr=" << mc.stderr_rv;
@@ -3366,6 +3406,13 @@ TEST(GammaSwap, AgedBlendReadsGammaWeightedAccrualNotPlain) {
   c.rv_spec.n_obs_done = 40u;
   c.rv_spec.rv_gamma_done_dec = 0.09;  // heavy accrued leg
   c.rv_spec.rv_done_dec = 0.01;        // deliberately different; must NOT be read
+  // C-1 fix round 1: the mid-life blend now requires a seed-spot anchor to
+  // rescale the future leg onto (see AgedBlendRescalesFutureLegOntoAccrual
+  // Anchor below for the rescale itself). Anchored at the SAME spot `cs`
+  // uses (100.0) so the rescale factor is exactly 1.0 and this test's
+  // original point -- which FIELD gets read, not the anchor mechanics --
+  // stays isolated and its pre-existing assertions stay valid unchanged.
+  c.rv_spec.gamma_seed_spot = 100.0;
 
   const auto q = deriv_price(surf, cs, c, deriv_default_config());
   ASSERT_TRUE(q.has_value());
@@ -3380,6 +3427,124 @@ TEST(GammaSwap, AgedBlendReadsGammaWeightedAccrualNotPlain) {
   EXPECT_NEAR(q->fair_strike_dec, expected_total, 1.0e-10);
   EXPECT_NEAR(q->accrued_component_dec, w_done * 0.09, 1.0e-12);
   EXPECT_TRUE(has_flag(q->flags, DerivFlags::Aged));
+}
+
+// C-1 Critical (Task F-2 fix round 1, review .../task-F-2-review.md): the
+// aged blend above combines `rv.rv_gamma_done_dec` -- anchored at the
+// tracker's SEED spot -- with a future leg the strip anchors at TODAY's spot
+// (`curves.spot`). A hand-built mid-life spec (0 < n_obs_done < n_obs_total)
+// that never populates `gamma_seed_spot` has no way to supply that anchor,
+// so `price_gamma_swap` must FAIL LOUD rather than silently blend two
+// mismatched anchors (the exact defect this fix round closes -- see
+// AgedBlendRescalesFutureLegOntoAccrualAnchor below for the correctly-
+// anchored case, and its measured before/after gap).
+TEST(GammaSwap, AgedBlendFailsLoudWithoutSeedSpotAnchor) {
+  const double sigma = 0.20;
+  const EssviSurface surf = make_flat_surface(sigma, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(120.0, 0.01, 1.00);  // spot moved since inception
+
+  DerivContract c{};
+  c.kind = DerivKind::GammaSwap;
+  c.maturity_t = 0.5;
+  c.notional = 1.0e6;
+  c.strike_dec = 0.0;
+  c.rv_spec.annualization = 252.0;
+  c.rv_spec.n_obs_total = 100u;
+  c.rv_spec.n_obs_done = 40u;
+  c.rv_spec.rv_gamma_done_dec = 0.09;
+  // c.rv_spec.gamma_seed_spot left at its 0.0 default: no anchor recorded.
+
+  const auto q = deriv_price(surf, cs, c, deriv_default_config());
+  // THE assertion that carries this test: before the fix this silently
+  // priced a wrong number (fair_strike_dec still populated, no flag, no
+  // error) -- the exact "silent" outcome the review called the one thing
+  // this file otherwise refuses to ship. After the fix it is a loud,
+  // explicit InvalidArgument.
+  ASSERT_FALSE(q.has_value());
+  EXPECT_EQ(q.error().code(), ErrorCode::InvalidArgument);
+}
+
+// C-1 Critical (Task F-2 fix round 1): reproduces the reviewer's fixture
+// shape -- a REAL RealizedTracker seeded at spot 100, walked to spot 120
+// over 40 of 100 scheduled daily fixings, sigma=20%, ZERO carry (r == q),
+// T=0.5, notional=1e6 -- through the actual accrual path (RealizedTracker::
+// observe), not a hand-set rv_gamma_done_dec, so the anchor this bug needs is
+// populated exactly the way production code populates it. The review's own
+// walk was not specified beyond its endpoints/count (only "walked to 120
+// over 40/100 fixings"); this test uses an explicit linear-in-price walk and
+// checks the result against an INDEPENDENTLY reconstructed expected value --
+// not a golden number copied from the review -- the same "closed-form, not
+// copied" standard `CarryApproximationClosedForm` above already holds this
+// file to. See this test's own two assertions below for what pins it, and
+// this file's own disclosure in the fix-round report for how closely the
+// measured gap tracks the review's reported 15.43% / $4,800 figure despite
+// the differing path.
+TEST(GammaSwap, AgedBlendRescalesFutureLegOntoAccrualAnchor) {
+  const double sigma = 0.20;
+  const double T = 0.5;
+  const double notional = 1.0e6;
+  const std::uint32_t n_total = 100u;
+  const std::uint32_t n_done = 40u;
+  const double seed_spot = 100.0;
+  const double end_spot = 120.0;
+
+  auto tracker = RealizedTracker::create(252.0, n_total);
+  ASSERT_TRUE(tracker.has_value());
+  ASSERT_TRUE(tracker->observe(seed_spot).has_value());  // seeds gamma_seed_spot
+  for (std::uint32_t i = 1; i <= n_done; ++i) {
+    const double s = seed_spot + (end_spot - seed_spot) * (static_cast<double>(i) / n_done);
+    ASSERT_TRUE(tracker->observe(s).has_value());
+  }
+  const RealizedVarianceSpec accrued = tracker->snapshot();
+  ASSERT_EQ(accrued.n_obs_done, n_done);
+  ASSERT_DOUBLE_EQ(accrued.gamma_seed_spot, seed_spot);
+
+  const EssviSurface surf = make_flat_surface(sigma, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(end_spot, 0.01, 1.00);  // zero carry: r == q == 0.01
+
+  DerivContract c{};
+  c.kind = DerivKind::GammaSwap;
+  c.maturity_t = T;
+  c.notional = notional;
+  c.strike_dec = 0.0;
+  c.rv_spec = accrued;
+
+  const auto q = deriv_price(surf, cs, c, deriv_default_config());
+  ASSERT_TRUE(q.has_value()) << q.error().to_string();
+
+  // Independently reconstruct the future leg by calling the production strip
+  // directly (not re-implementing it), then build BOTH the buggy (unrescaled)
+  // and correct (rescaled) blends from first principles here in the test.
+  const auto strip = var_swap_fair_strike(surf, cs, T, deriv_default_config());
+  ASSERT_TRUE(strip.has_value());
+  const double k_gamma_future = strip->fair_strike_dec;  // == K_gamma at zero carry, flat
+                                                          // surface (FlatZeroCarryExact).
+
+  const double w_done = static_cast<double>(n_done) / n_total;
+  const double w_future = 1.0 - w_done;
+  const double shipped_buggy = w_done * accrued.rv_gamma_done_dec + w_future * k_gamma_future;
+  const double correct = w_done * accrued.rv_gamma_done_dec +
+                         w_future * (end_spot / seed_spot) * k_gamma_future;
+
+  // THE assertion that carries this test: production matches the correctly
+  // ANCHOR-RESCALED blend, not the unrescaled one a reversion of the fix
+  // would ship. `shipped_buggy` is the exact quantity price_gamma_swap
+  // computed before this fix round; asserting q is FAR from it (not just
+  // close to `correct`) is what makes this test fail under reversion, not
+  // merely under some other unrelated regression.
+  EXPECT_NEAR(q->fair_strike_dec, correct, 1.0e-9);
+  const double gap = correct - shipped_buggy;
+  EXPECT_GT(std::fabs(q->fair_strike_dec - shipped_buggy), 0.5 * std::fabs(gap));
+
+  // The gap itself is (S_t/S_seed - 1) * w_future * K_gamma_future --
+  // independent of the accrued leg's value, so it depends only on the
+  // fixture's endpoints/weights, not on this test's own (undisclosed-in-the-
+  // review) path shape. Pins the review's reported magnitude: 0.6 * 0.2 *
+  // ~0.04 ~= 0.0048 decimal on a ~1e6 notional ~= $4,800, matching the
+  // review's own "$4,800 PV, 15.43% of the strike" to the precision that
+  // magnitude claim needs.
+  EXPECT_NEAR(gap, 0.0048, 2.0e-4);
+  EXPECT_GT(gap / correct, 0.10);  // "far past tolerance", not a rounding-order effect
 }
 
 // RealizedTracker's gamma accumulator (Task F-2, appended field + observe
@@ -3418,6 +3583,112 @@ TEST(RealizedTrackerGamma, AccumulatesWeightedVariance) {
   // task, same tracker, same call sequence.
   EXPECT_NEAR(spec.sum_sq_log_returns_done, sum_plain, 1.0e-15);
   EXPECT_NEAR(spec.rv_done_dec, 252.0 * sum_plain / 3.0, 1.0e-13);
+}
+
+// C-2 Critical (Task F-2 fix round 1, review .../task-F-2-review.md):
+// `inject_carry_fixing` (derivatives.cpp) wrote only `rv_done_dec` /
+// `sum_sq_log_returns_done` -- true up through Task F-2's own commit, since
+// nothing read the gamma leg back yet -- but `price_gamma_swap` reads
+// `rv_gamma_done_dec` for its accrued leg instead. Left unfixed, the carry
+// and zero-fixing repricings below both silently fall back to the SAME
+// (never-updated) `rv_gamma_done_dec`, making `theta_carry` and
+// `theta_zero_fixing` bitwise IDENTICAL -- this file documents that pair as
+// "must differ" -- and wrong by 305x/364x with a sign flip against a
+// same-shape VarSwap control (review's own measurement). Mid-life regime
+// (0 < n_obs_done < n_obs_total); see the next test for n_obs_done == 0.
+TEST(GammaSwap, CarryThetaDiffersFromZeroFixingThetaMidLife) {
+  const double sigma = 0.20;
+  const EssviSurface surf = make_flat_surface(sigma, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);  // zero carry, r == q == 0
+
+  DerivContract c{};
+  c.kind = DerivKind::GammaSwap;
+  c.maturity_t = 0.5;
+  c.notional = 1.0e6;
+  c.strike_dec = 0.0;
+  c.rv_spec.annualization = 252.0;
+  c.rv_spec.n_obs_total = 100u;
+  c.rv_spec.n_obs_done = 40u;
+  c.rv_spec.rv_gamma_done_dec = 0.09;
+  c.rv_spec.gamma_seed_spot = 100.0;  // anchored at curves.spot: C-1 rescale is a no-op here,
+                                       // isolating this test's point to C-2 alone.
+
+  const atx::vol::DerivGreekBumps bumps{};  // defaults: carry_theta = true
+  const auto g = atx::vol::deriv_greeks(surf, cs, c, deriv_default_config(), bumps);
+  ASSERT_TRUE(g.has_value()) << g.error().to_string();
+  ASSERT_TRUE(std::isfinite(g->theta_carry));
+  ASSERT_TRUE(std::isfinite(g->theta_zero_fixing));
+
+  // Control: the IDENTICAL contract shape priced as a VarSwap (rv_done_dec in
+  // place of rv_gamma_done_dec, same numeric value). Zero carry + flat
+  // surface makes GammaSwap's and VarSwap's future legs coincide
+  // (FlatZeroCarryExact's own point), so a correctly-anchored gamma carry-
+  // theta pair should land close to this control, not off by two orders of
+  // magnitude the way the review's own bug measurement was.
+  DerivContract c_var = c;
+  c_var.kind = DerivKind::VarSwap;
+  c_var.rv_spec.rv_done_dec = c.rv_spec.rv_gamma_done_dec;
+  const auto g_var = atx::vol::deriv_greeks(surf, cs, c_var, deriv_default_config(), bumps);
+  ASSERT_TRUE(g_var.has_value()) << g_var.error().to_string();
+
+  // THE assertion that carries this test: the "must differ" contract itself
+  // -- a bitwise-equal pair is exactly what exposed C-2 (inject_carry_fixing
+  // updating only the plain accumulator, never the gamma one price_gamma_swap
+  // actually reads, so both injected repricings silently collapsed to the
+  // same wrong number).
+  EXPECT_NE(g->theta_carry, g->theta_zero_fixing);
+  // Magnitude check: within an order of magnitude of the VarSwap control --
+  // a bound the review's own 305x/364x-off bug would have failed outright.
+  ASSERT_NE(g_var->theta_carry, 0.0);
+  EXPECT_LT(std::fabs(g->theta_carry - g_var->theta_carry), 10.0 * std::fabs(g_var->theta_carry));
+  ASSERT_NE(g_var->theta_zero_fixing, 0.0);
+  EXPECT_LT(std::fabs(g->theta_zero_fixing - g_var->theta_zero_fixing),
+            10.0 * std::fabs(g_var->theta_zero_fixing));
+}
+
+// C-2 Critical (Task F-2 fix round 1): the n_obs_done == 0 regime -- exactly
+// the shape `solve_cycle_swap` produces (a freshly-struck, scheduled
+// contract, never routed through RealizedTracker, so `rv_gamma_done_dec` and
+// `gamma_seed_spot` sit at their struct defaults). Review measured
+// theta_carry ~= -144,977 against a correct ~= +398 on this shape. C-1's
+// auto-anchor (inject_carry_fixing establishes gamma_seed_spot at
+// curves.spot exactly when this injection IS the contract's first-ever
+// fixing -- see that function's own comment) is what keeps this FINITE
+// rather than erroring: a never-accrued contract's inception and "now"
+// genuinely coincide.
+TEST(GammaSwap, CarryThetaFiniteAndDiffersAtZeroObservationsDone) {
+  const double sigma = 0.20;
+  const EssviSurface surf = make_flat_surface(sigma, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+
+  DerivContract c{};
+  c.kind = DerivKind::GammaSwap;
+  c.maturity_t = 0.5;
+  c.notional = 1.0e6;
+  c.strike_dec = 0.0;
+  c.rv_spec.annualization = 252.0;
+  c.rv_spec.n_obs_total = 100u;
+  // n_obs_done / rv_gamma_done_dec / gamma_seed_spot left at their struct
+  // defaults (0u / 0.0 / 0.0) -- the solve_cycle_swap shape described above.
+
+  const atx::vol::DerivGreekBumps bumps{};
+  const auto g = atx::vol::deriv_greeks(surf, cs, c, deriv_default_config(), bumps);
+  ASSERT_TRUE(g.has_value()) << g.error().to_string();
+
+  // THE assertion that carries this test: finiteness. Isolating C-2's own
+  // defect (C-1's guard already in place) turns this from "wrong number"
+  // into "NaN" -- a mid-life reprice with no anchor -- since the un-fixed
+  // inject_carry_fixing never sets gamma_seed_spot either; still a
+  // regression this test catches, just via a different failure mode than the
+  // review's combined-bug measurement (see this fix round's report for the
+  // full before/after chain). Reverting BOTH C-1 and C-2 together reproduces
+  // the review's actual wrong-finite-number shape instead.
+  EXPECT_TRUE(std::isfinite(g->theta_carry));
+  EXPECT_TRUE(std::isfinite(g->theta_zero_fixing));
+  // The "must differ" contract, pinned directly: a bitwise-equal pair is
+  // exactly what exposed this bug (fixing_dec = k_var_future for one branch,
+  // 0.0 for the other, must produce different repricings).
+  EXPECT_NE(g->theta_carry, g->theta_zero_fixing);
 }
 
 }  // namespace

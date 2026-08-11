@@ -527,6 +527,21 @@ struct SwapAccrual {
 
   // RealizedVarianceSpec is a C-ABI mirror with no comparison operator, so this
   // is spelled out rather than defaulted.
+  //
+  // WARNING (Task F-2 fix round 1, m-2): this compares only SIX of
+  // RealizedVarianceSpec's NINE fields -- it predates, and was never updated
+  // for, Task F-2's three appended gamma-leg fields
+  // (sum_weighted_sq_log_returns_done / rv_gamma_done_dec / gamma_seed_spot).
+  // Currently harmless: `backtest.cpp`'s `valid_deriv_kind` does not admit
+  // `GammaSwap` yet, so every live `SwapAccrual` keeps those three fields at
+  // their 0.0 default and this omission cannot bite. It is NOT theoretical --
+  // C-1 and C-2 (this same fix round) are exactly this defect class, a struct
+  // consumer that reads/writes only a SUBSET of RealizedVarianceSpec's fields
+  // silently diverging when a new field is appended -- proven live in two
+  // OTHER call sites this round. Whoever wires `GammaSwap` through this
+  // engine (the CHANGELOG's own "separate, future work") must extend this
+  // operator to all nine fields first, or a snapshot/replay diff here will
+  // silently ignore genuine gamma-leg drift.
   [[nodiscard]] bool operator==(const SwapAccrual &other) const noexcept {
     return lot_id == other.lot_id && rv.annualization == other.rv.annualization &&
            rv.n_obs_total == other.rv.n_obs_total && rv.n_obs_done == other.rv.n_obs_done &&

@@ -30,6 +30,28 @@ the outer scale (`2/T` for VarSwap; `2/(T*S0)` for GammaSwap).
   `rv_gamma_done_dec` (its annualized decimal form). `RealizedTracker::observe`
   populates both alongside the pre-existing plain accumulator, anchoring `S0`
   at the tracker's own seed spot.
+* **Review fix round 1, C-1 (Critical):** the aged blend mixed two anchors --
+  `rv_gamma_done_dec` at the tracker's SEED spot, the future leg at TODAY's
+  `curves.spot` -- silently, with no error and no flag (measured: 15.43% of
+  the strike, $4,800 PV on a mid-life 1e6-notional contract). Arity raised
+  again to 9: a third appended field, `gamma_seed_spot`, carries the anchor so
+  `price_gamma_swap` can rescale the future leg by `curves.spot /
+  gamma_seed_spot` before blending; a mid-life contract missing the anchor now
+  fails loud (`InvalidArgument`) instead of pricing silently
+  (`GammaSwap.AgedBlendRescalesFutureLegOntoAccrualAnchor`,
+  `GammaSwap.AgedBlendFailsLoudWithoutSeedSpotAnchor`).
+* **Review fix round 1, C-2 (Critical):** `inject_carry_fixing` (the
+  carry-theta / theta-zero-fixing finite-difference stencil) updated only the
+  plain accumulator, never `rv_gamma_done_dec` -- `price_gamma_swap` reads the
+  latter, so `theta_carry` and `theta_zero_fixing` were bitwise IDENTICAL on
+  every scheduled gamma swap (this file's own "must differ" contract),
+  wrong by 305x/364x with a sign flip. Now updates both accumulators
+  unconditionally (a VarSwap contract never reads the gamma one back, so this
+  is a no-op for it), and auto-anchors `gamma_seed_spot` at the injection's own
+  `curves.spot` exactly when the injected fixing is a contract's first-ever
+  observation (`n_obs_done == 0` before injection -- the shape
+  `solve_cycle_swap` produces) (`GammaSwap.CarryThetaDiffersFromZeroFixing
+  ThetaMidLife`, `GammaSwap.CarryThetaFiniteAndDiffersAtZeroObservationsDone`).
 * `DerivGreekMethod::AnalyticStrip` is NOT extended to `GammaSwap` -- P-4's
   scope predicate (`kind == DerivKind::VarSwap`, a whitelist) already excludes
   it, so a caller requesting the closed form on a gamma swap silently falls
@@ -49,7 +71,14 @@ the outer scale (`2/T` for VarSwap; `2/(T*S0)` for GammaSwap).
   monitoring expectation of `sigma^2 * (e^{(r-q)*T}-1)/((r-q)*T)`, a measured
   gap of `sigma^2*(r-q)*T/2` to leading order (`GammaSwap.CarryApproximation
   ClosedForm`: ~5.09e-4 decimal variance units at sigma=20%, r-q=5%, T=0.5Y --
-  1.8% from the leading-order estimate).
+  1.68% from the leading-order estimate, ratio 1.016824). The real
+  discriminators against `VarSwap` are `GammaSwap.SkewOrdering` (above) and
+  `CarryApproximationClosedForm` itself; `GammaSwap.MCOracle` (review fix
+  round 1, I-2) is a calibration check only, kept for catching a wrong outer
+  scale or broken quadrature -- it cannot discriminate a gamma swap from a
+  variance swap at GBM/flat-vol MC precision, since the discrimination signal
+  and this task's own single-expiry approximation bias are the same order,
+  `O((r-q)*T)*sigma^2`.
 * New ledger counter `counters::ledger::Solve::GammaSwapStripEvals`, separate
   from `VarSwapStripEvals` (folding the two would corrupt what P-6's book-memo
   O(K)-not-O(L) gate measures against `VarSwapStripEvals` specifically).

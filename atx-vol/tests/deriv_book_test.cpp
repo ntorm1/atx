@@ -260,6 +260,12 @@ TEST(DerivBook, GammaSwapNeverUsesTheVarSwapMemo) {
     p.contract = gamma_swap_at(0.35);
     p.contract.strike_dec = 0.01 * static_cast<double>(i);
     p.contract.rv_spec.n_obs_done = i;  // mid-life: not fully aged, needs the strip
+    // C-1 fix round 1: mid-life (0 < n_obs_done < n_obs_total) now requires a
+    // seed-spot anchor to blend against (see GammaSwap.AgedBlendFailsLoud
+    // WithoutSeedSpotAnchor, derivatives_test.cpp). Anchored at the surface's
+    // own spot (100.0) so the rescale is a no-op and this test's point --
+    // memo bypass / strip-eval counting -- stays isolated from C-1.
+    p.contract.rv_spec.gamma_seed_spot = 100.0;
     book.push_back(p);
   }
 
