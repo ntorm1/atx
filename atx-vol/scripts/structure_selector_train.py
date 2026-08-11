@@ -90,7 +90,9 @@ def strategy_pnls(front: np.ndarray, back: np.ndarray) -> np.ndarray:
     return np.column_stack([front, back, back - front, front - back])
 
 
-def make_model(kind: str, seed: int, hgb_iters: int = 120, hgb_lr: float = 0.1):
+def make_model(
+    kind: str, seed: int, hgb_iters: int = 120, hgb_lr: float = 0.1, ridge_alpha: float = 10.0
+):
     if kind == "hgb":
         from sklearn.ensemble import HistGradientBoostingRegressor
 
@@ -109,7 +111,7 @@ def make_model(kind: str, seed: int, hgb_iters: int = 120, hgb_lr: float = 0.1):
         from sklearn.preprocessing import StandardScaler
 
         return make_pipeline(
-            SimpleImputer(strategy="median"), StandardScaler(), Ridge(alpha=10.0)
+            SimpleImputer(strategy="median"), StandardScaler(), Ridge(alpha=ridge_alpha)
         )
     if kind == "ens":
         return _Ensemble(
@@ -167,6 +169,8 @@ def walk_forward(
     banned: tuple[int, ...] = (),
     crisis_gate: float = 0.0,
     vol_target: int = 0,
+    ridge_alpha: float = 10.0,
+    score_ema: float = 0.0,
 ) -> WalkForwardResult:
     feats = feature_columns(df)
     x = df[feats].to_numpy(dtype=float)
@@ -204,17 +208,30 @@ def walk_forward(
     preds: list[np.ndarray] = []
     realized: list[np.ndarray] = []
 
+    ema_state: np.ndarray | None = None
     for fold_start in range(min_train, n, retrain_every):
         train_end = max(1, fold_start - embargo)
         train_lo = max(0, train_end - train_window) if train_window > 0 else 0
         test_end = min(n, fold_start + retrain_every)
-        mf = make_model(model_kind, seed)
-        mb = make_model(model_kind, seed + 1)
+        mf = make_model(model_kind, seed, ridge_alpha=ridge_alpha)
+        mb = make_model(model_kind, seed + 1, ridge_alpha=ridge_alpha)
         mf.fit(x[train_lo:train_end], winsorize_to(y_front[train_lo:train_end], winsor))
         mb.fit(x[train_lo:train_end], winsorize_to(y_back[train_lo:train_end], winsor))
         pf = mf.predict(x[fold_start:test_end])
         pb = mb.predict(x[fold_start:test_end])
         pred = strategy_pnls(pf, pb)
+        if score_ema > 0.0:
+            # causal EWMA of predictions across sessions (fold-spanning state):
+            # damps day-to-day forecast noise before the argmax
+            sm = np.empty_like(pred)
+            for j in range(pred.shape[0]):
+                ema_state = (
+                    pred[j]
+                    if ema_state is None
+                    else score_ema * pred[j] + (1.0 - score_ema) * ema_state
+                )
+                sm[j] = ema_state
+            pred = sm
         scale = vol_scale[fold_start:test_end]
         ok = np.isfinite(scale) & (scale > 0.0)
         if risk_lambda > 0.0:
@@ -257,6 +274,27 @@ def walk_forward(
         pred=np.vstack(preds),
         realized=np.vstack(realized),
     )
+
+
+def block_bootstrap_stats(
+    model: np.ndarray, base: np.ndarray, n_boot: int, block: int, seed: int
+) -> tuple[float, float, tuple[float, float]]:
+    """Circular block bootstrap of the daily PnL series. Returns
+    (P[model total > 0], P[model total > base total], model Sharpe 5-95% CI)."""
+    rng = np.random.default_rng(seed)
+    n = len(model)
+    n_blocks = int(np.ceil(n / block))
+    pos = beat = 0
+    sharpes = np.empty(n_boot)
+    for b in range(n_boot):
+        starts = rng.integers(0, n, size=n_blocks)
+        idx = (starts[:, None] + np.arange(block)[None, :]).ravel()[:n] % n
+        m = model[idx]
+        pos += m.sum() > 0.0
+        beat += m.sum() > base[idx].sum()
+        sharpes[b] = ann_sharpe(m)
+    lo, hi = np.quantile(sharpes, [0.05, 0.95])
+    return pos / n_boot, beat / n_boot, (float(lo), float(hi))
 
 
 def ann_sharpe(daily: np.ndarray) -> float:
@@ -360,6 +398,10 @@ def main() -> None:
         help="size every strategy to constant trailing N-day PnL vol (rescales the whole game)",
     )
     ap.add_argument("--tag", default=None, help="suffix for the eval TSV name")
+    ap.add_argument("--bootstrap", type=int, default=0, help="block-bootstrap draws (0=off)")
+    ap.add_argument("--drop-regex", default=None, help="drop feature columns matching this regex")
+    ap.add_argument("--ridge-alpha", type=float, default=10.0)
+    ap.add_argument("--score-ema", type=float, default=0.0, help="EWMA alpha for prediction smoothing")
     args = ap.parse_args()
 
     df = load_panel(args.panel)
@@ -367,6 +409,13 @@ def main() -> None:
         df = add_derived_features(df)
     if args.interactions:
         df = add_interaction_features(df)
+    if args.drop_regex:
+        import re
+
+        rx = re.compile(args.drop_regex)
+        drop = [c for c in feature_columns(df) if rx.search(c)]
+        df = df.drop(columns=drop)
+        print(f"dropped {len(drop)} features: {', '.join(drop)}")
     print(f"panel: {len(df)} valid rows, {len(feature_columns(df))} features")
     res = walk_forward(
         df,
@@ -384,8 +433,20 @@ def main() -> None:
         banned=tuple(STRATEGIES.index(b) for b in args.ban),
         crisis_gate=args.crisis_gate,
         vol_target=args.vol_target,
+        ridge_alpha=args.ridge_alpha,
+        score_ema=args.score_ema,
     )
     print(report(res, seed=args.seed))
+
+    if args.bootstrap > 0:
+        base = res.realized[:, STRATEGIES.index("long_vega_1y")]
+        p_pos, p_beat, (s_lo, s_hi) = block_bootstrap_stats(
+            res.pick_pnl, base, n_boot=args.bootstrap, block=21, seed=args.seed
+        )
+        print(
+            f"bootstrap({args.bootstrap}, block=21): P(total>0)={p_pos:.3f}  "
+            f"P(beats always-long-vega)={p_beat:.3f}  sharpe 5-95% [{s_lo:.2f}, {s_hi:.2f}]"
+        )
 
     if args.out_dir:
         out = pd.DataFrame(

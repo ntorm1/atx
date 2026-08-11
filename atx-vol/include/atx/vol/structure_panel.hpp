@@ -54,6 +54,8 @@ struct ResolvedStructure {
   double entry_gamma{0.0};
   double entry_vega{0.0}; // == sign · vega_target by construction
   double entry_theta{0.0};
+  double entry_vanna{0.0};
+  double entry_volga{0.0};
 };
 
 // Resolve an ATM-forward straddle at `target_T`, both legs at K = F(T), sized
@@ -93,9 +95,14 @@ struct PanelRow {
   // entry-day surface state
   double spot{0.0};
   double r{0.0};
+  double iv_1w{0.0};
   double iv_1m{0.0};
   double iv_3m{0.0};
   double iv_1y{0.0};
+  double short_slope{0.0}; // iv_1m − iv_1w (short-end steepness)
+  double vsw_1m{0.0};      // model-free var-swap vol at 1m (NaN on strip failure)
+  double vsw_1y{0.0};
+  double vsw_conv_1m{0.0}; // vsw_1m − iv_1m (smile-convexity content)
   double term_slope{0.0};         // iv_1y − iv_1m
   double fwd_vol_front_back{0.0}; // forward vol between the structure tenors
   double fwd_minus_front{0.0};    // fwd_vol_front_back − atmf_vol(front_T)
@@ -128,8 +135,14 @@ struct PanelRow {
   // unit-structure entry greeks (diagnostics / features)
   double front_gamma{0.0};
   double front_theta{0.0};
+  double front_delta{0.0};
+  double front_vanna{0.0};
+  double front_volga{0.0};
   double back_gamma{0.0};
   double back_theta{0.0};
+  double back_delta{0.0};
+  double back_vanna{0.0};
+  double back_volga{0.0};
 
   // labels: 1-day delta-neutral PnL of the vega-normalized structures entered
   // on `key` and marked on the NEXT pushed session. NaN when pnl_valid is false.

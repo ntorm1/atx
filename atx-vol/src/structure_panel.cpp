@@ -24,6 +24,7 @@ using atx::core::Ok;
 namespace {
 
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
+constexpr double kTenor1w = 7.0 / 365.25;
 constexpr double kTenor1m = 30.0 / 365.25;
 constexpr double kTenor3m = 91.0 / 365.25;
 constexpr double kTenor1y = 1.0;
@@ -124,9 +125,14 @@ struct NumCol {
 constexpr NumCol kNumCols[] = {
     {"spot", &PanelRow::spot},
     {"r", &PanelRow::r},
+    {"iv_1w", &PanelRow::iv_1w},
     {"iv_1m", &PanelRow::iv_1m},
     {"iv_3m", &PanelRow::iv_3m},
     {"iv_1y", &PanelRow::iv_1y},
+    {"short_slope", &PanelRow::short_slope},
+    {"vsw_1m", &PanelRow::vsw_1m},
+    {"vsw_1y", &PanelRow::vsw_1y},
+    {"vsw_conv_1m", &PanelRow::vsw_conv_1m},
     {"term_slope", &PanelRow::term_slope},
     {"fwd_vol_front_back", &PanelRow::fwd_vol_front_back},
     {"fwd_minus_front", &PanelRow::fwd_minus_front},
@@ -155,8 +161,14 @@ constexpr NumCol kNumCols[] = {
     {"vrp_mean_63", &PanelRow::vrp_mean_63},
     {"front_gamma", &PanelRow::front_gamma},
     {"front_theta", &PanelRow::front_theta},
+    {"front_delta", &PanelRow::front_delta},
+    {"front_vanna", &PanelRow::front_vanna},
+    {"front_volga", &PanelRow::front_volga},
     {"back_gamma", &PanelRow::back_gamma},
     {"back_theta", &PanelRow::back_theta},
+    {"back_delta", &PanelRow::back_delta},
+    {"back_vanna", &PanelRow::back_vanna},
+    {"back_volga", &PanelRow::back_volga},
     {"pnl_front", &PanelRow::pnl_front},
     {"pnl_back", &PanelRow::pnl_back},
 };
@@ -204,6 +216,8 @@ Result<ResolvedStructure> resolve_atmf_straddle(const PricedSurface &entry, doub
   rs.entry_gamma = qty * (call->gamma + put->gamma);
   rs.entry_vega = qty * vega_sum;
   rs.entry_theta = qty * (call->theta + put->theta);
+  rs.entry_vanna = qty * (call->vanna + put->vanna);
+  rs.entry_volga = qty * (call->volga + put->volga);
   return Ok(std::move(rs));
 }
 
@@ -308,9 +322,14 @@ Result<std::optional<PanelRow>> StructurePanelBuilder::push(const std::string &k
   row.key = key;
   row.spot = S;
   row.r = surf.pricing().r;
+  row.iv_1w = atmf_vol(surf, kTenor1w);
   row.iv_1m = iv1m;
   row.iv_3m = iv3m;
   row.iv_1y = iv1y;
+  row.short_slope = iv1m - row.iv_1w;
+  row.vsw_1m = value_or_nan(var_swap_vol(surf, kTenor1m));
+  row.vsw_1y = value_or_nan(var_swap_vol(surf, kTenor1y));
+  row.vsw_conv_1m = row.vsw_1m - iv1m;
   row.term_slope = iv1y - iv1m;
   row.fwd_vol_front_back = forward_vol(surf, cfg_.front_T, cfg_.back_T);
   row.fwd_minus_front = row.fwd_vol_front_back - atmf_vol(surf, cfg_.front_T);
@@ -358,18 +377,30 @@ Result<std::optional<PanelRow>> StructurePanelBuilder::push(const std::string &k
   if (front.has_value()) {
     row.front_gamma = front->entry_gamma;
     row.front_theta = front->entry_theta;
+    row.front_delta = front->entry_delta;
+    row.front_vanna = front->entry_vanna;
+    row.front_volga = front->entry_volga;
     pending.front = std::move(*front);
   } else {
     row.front_gamma = kNaN;
     row.front_theta = kNaN;
+    row.front_delta = kNaN;
+    row.front_vanna = kNaN;
+    row.front_volga = kNaN;
   }
   if (back.has_value()) {
     row.back_gamma = back->entry_gamma;
     row.back_theta = back->entry_theta;
+    row.back_delta = back->entry_delta;
+    row.back_vanna = back->entry_vanna;
+    row.back_volga = back->entry_volga;
     pending.back = std::move(*back);
   } else {
     row.back_gamma = kNaN;
     row.back_theta = kNaN;
+    row.back_delta = kNaN;
+    row.back_vanna = kNaN;
+    row.back_volga = kNaN;
   }
   pending.row = std::move(row);
   prev_ = std::move(pending);

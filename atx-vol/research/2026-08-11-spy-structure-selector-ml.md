@@ -116,3 +116,27 @@ surfaces (convex-dense), 2019-01-02 → 2026-07-31, spot/r inside each archive's
 
   Next: panel v2 features (1w tenor, var-swap strip vols, vanna/volga of the
   unit structures), PBO/robustness stats, possibly pre-2019 corpus extension.
+
+- 2026-08-11 (loop 2): panel v2 adds 14 columns (iv_1w, short_slope, model-free
+  var-swap vols vsw_1m/1y + convexity spread, unit-structure delta/vanna/volga).
+  Findings:
+  * Block-bootstrap (2000 draws, 21d blocks) on the loop-1 champion:
+    P(total>0)=0.94, P(beats always-long-vega)=0.78, Sharpe 5–95% CI
+    [−0.04, 1.02] — positive edge, not yet decisive.
+  * Feature ablation on panel v2 (drop-regex): sanity drop-all reproduces +709
+    exactly; short-end group neutral (699); vsw group hurts (523); structure
+    greeks hurt badly (274). Ridge dilutes with every added collinear column —
+    champion FEATURE SET stays the v1 columns
+    (`--drop-regex "iv_1w|short_slope|vsw_|_delta|_vanna|_volga"`); v2 columns
+    stay in the panel for nonlinear models later.
+  * Ridge alpha curve smooth, peak at 10 (3→300, 30→612, 100→533).
+  * EWMA-smoothing predictions destroys the edge (α=.3 → −5): the signal
+    lives in fast features (1-day gap/IV-change), not slow regimes.
+  * Retraining every 5d much worse than 21d (344, worst −385 readmitted).
+  * OPRA hive on disk starts 2019-01-02 — pre-2019 corpus extension needs new
+    raw pulls; deferred.
+
+  Loop-3 direction: physics-informed decomposition. pnl_front ≈ θ_f·dt +
+  ½Γ_f S²·ret² + V_f·Δσ_1m with (θ, Γ, V) KNOWN at entry — predict ret²
+  (HAR-style variance forecast) and Δσ (IV mean-reversion/pull) instead of
+  noisy dollar PnL, then assemble structure forecasts from entry greeks.

@@ -193,12 +193,22 @@ TEST(StructurePanel, Builder_EmitsRowPerCompletedDay) {
   EXPECT_TRUE(std::isfinite(row.pnl_front));
   EXPECT_TRUE(std::isfinite(row.pnl_back));
   EXPECT_DOUBLE_EQ(row.spot, 500.0);
+  EXPECT_GT(row.iv_1w, 0.0);
   EXPECT_GT(row.iv_1m, 0.0);
   EXPECT_GT(row.iv_1y, 0.0);
+  EXPECT_TRUE(std::isfinite(row.short_slope));
   EXPECT_TRUE(std::isfinite(row.term_slope));
   EXPECT_TRUE(std::isfinite(row.fwd_vol_front_back));
+  // Model-free strip vols on the smooth synthetic surface: finite, near ATM.
+  EXPECT_GT(row.vsw_1m, 0.0);
+  EXPECT_GT(row.vsw_1y, 0.0);
+  EXPECT_LT(std::abs(row.vsw_conv_1m), 0.25);
   EXPECT_GT(row.front_gamma, 0.0);
   EXPECT_LT(row.front_theta, 0.0);
+  EXPECT_TRUE(std::isfinite(row.front_delta));
+  EXPECT_TRUE(std::isfinite(row.front_vanna));
+  EXPECT_TRUE(std::isfinite(row.front_volga));
+  EXPECT_TRUE(std::isfinite(row.back_delta));
   // One-day-old history: momentum/RV windows are not yet observable.
   EXPECT_TRUE(std::isnan(row.ret_1d));
   EXPECT_TRUE(std::isnan(row.rv5));
