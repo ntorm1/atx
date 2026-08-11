@@ -145,15 +145,31 @@ int main(int argc, char** argv) {
 
     // ── Fit quality (from the cached surface) ──────────────────────────────
     std::printf("=== Fit quality per expiry (cached surface) ===\n");
-    std::printf("  %-8s %10s %10s %10s %10s %8s %6s\n", "T(yr)", "forward",
-                "borrow", "rmse_vol", "chi2_red", "in_ba%", "n");
+    // `rt_vol` is the ABSOLUTE round trip (T5 item 3): de-Am -> fit ->
+    // re-Americanize -> compare to the ORIGINAL American mid, restated in vol
+    // points. Read it next to `in_ba%`: that column is spread-normalised, so it
+    // reads 100% on any board wide enough by construction, while this one does
+    // not scale with the spread and is the number that says whether serving a
+    // thin board is honest.
+    std::printf("  %-8s %10s %10s %10s %10s %10s %8s %6s\n", "T(yr)", "forward",
+                "borrow", "rmse_vol", "rt_vol", "chi2_red", "in_ba%", "n");
     const auto ctx = cached->expiries();
     const auto par = cached->parity();
+    std::size_t n_rt_expiries = 0;
     for (std::size_t i = 0; i < ctx.size(); ++i) {
-      std::printf("  %-8.4f %10.4f %10.5f %10.5f %10.4f %7.1f%% %6zu\n",
-                  ctx[i].T, ctx[i].forward, ctx[i].borrow, par[i].rmse_mid_vol,
-                  par[i].chi2_reduced, 100.0 * par[i].frac_fv_within_bidask,
-                  ctx[i].n_used);
+      // An expiry whose every quote sits below the one-tick-per-vol-point vega
+      // floor has NO vol-space verdict; print "n/a" rather than a 0.00000 that
+      // would read as a perfect round trip.
+      char rt[16];
+      if (par[i].n_round_trip > 0) {
+        std::snprintf(rt, sizeof(rt), "%10.5f", par[i].rmse_round_trip_vol);
+        ++n_rt_expiries;
+      } else {
+        std::snprintf(rt, sizeof(rt), "%10s", "n/a");
+      }
+      std::printf("  %-8.4f %10.4f %10.5f %10.5f %s %10.4f %7.1f%% %6zu\n", ctx[i].T,
+                  ctx[i].forward, ctx[i].borrow, par[i].rmse_mid_vol, rt, par[i].chi2_reduced,
+                  100.0 * par[i].frac_fv_within_bidask, ctx[i].n_used);
     }
 
     std::printf("\n=== Aggregate parity (cached) ===\n");
@@ -164,6 +180,9 @@ int main(int argc, char** argv) {
                 100.0 * d.mean_frac_within_bidask);
     std::printf("  mean reduced chi2    : %.4f\n", d.mean_chi2_reduced);
     std::printf("  mean vol RMSE        : %.5f\n", d.mean_rmse_vol);
+    std::printf("  round-trip vol (abs) : mean %.5f   worst quote %.5f   (%zu of %zu expiries "
+                "carry a vol-space verdict)\n",
+                d.mean_round_trip_vol, d.max_round_trip_vol, n_rt_expiries, ctx.size());
     std::printf("  calendar arb-free    : %s\n",
                 d.calendar_arb_free ? "yes" : "NO");
 

@@ -151,6 +151,60 @@ TEST(Parity, LargeVolBias_TightSpread_FairValuesEscapeBand) {
   EXPECT_LT(r.n_within, r.n);
 }
 
+// ── The ABSOLUTE round trip in vol points (T5 item 3) ────────────────────────
+
+// The point of the metric (de-Am review D6): every other acceptance number here
+// is spread-normalised, so on a WIDE board it cannot report a problem. The same
+// 3-vol-point error reads as a perfect 100% in-band score at a 40% spread and as
+// a failure at a 1% spread — while the absolute round trip reports the SAME
+// three vol points in both, because it does not divide by the spread.
+TEST(Parity, AbsoluteRoundTripVolSeesTheErrorTheSpreadNormalisedGateCannot) {
+  constexpr double kBias = 0.03; // 3 vol pts of model error
+  const auto market = flat_vol(5, kSigmaGen);
+  const auto model = flat_vol(5, kSigmaGen + kBias);
+  const ParityInputs in{kSpot, kRate, kQeff, kT};
+
+  SyntheticChain wide;
+  build_chain(kSigmaGen, /*spread_frac=*/0.40, wide);
+  const auto wide_res =
+      chain_parity(wide.strike, wide.bid, wide.ask, wide.mid, wide.side, model, market, in);
+  ASSERT_TRUE(wide_res.has_value()) << wide_res.error().to_string();
+
+  SyntheticChain tight;
+  build_chain(kSigmaGen, /*spread_frac=*/0.01, tight);
+  const auto tight_res =
+      chain_parity(tight.strike, tight.bid, tight.ask, tight.mid, tight.side, model, market, in);
+  ASSERT_TRUE(tight_res.has_value()) << tight_res.error().to_string();
+
+  // The spread-normalised verdict flips entirely with the spread.
+  EXPECT_DOUBLE_EQ(wide_res->frac_fv_within_bidask, 1.0);
+  EXPECT_LT(tight_res->frac_fv_within_bidask, 1.0);
+
+  // The absolute one does not: both report the true error, to first order in
+  // vega, and the two boards agree with each other.
+  EXPECT_EQ(wide_res->n_round_trip, wide_res->n);
+  EXPECT_NEAR(wide_res->rmse_round_trip_vol, kBias, 5.0e-3);
+  EXPECT_NEAR(tight_res->rmse_round_trip_vol, kBias, 5.0e-3);
+  EXPECT_NEAR(wide_res->rmse_round_trip_vol, tight_res->rmse_round_trip_vol, 1.0e-12);
+  EXPECT_GE(wide_res->max_round_trip_vol, wide_res->rmse_round_trip_vol);
+}
+
+// A model that reproduces the generating vol round-trips to the original
+// American mid exactly, so the absolute metric is zero — it measures error, not
+// a floor.
+TEST(Parity, AbsoluteRoundTripVolIsZeroForAPerfectModel) {
+  SyntheticChain c;
+  build_chain(kSigmaGen, /*spread_frac=*/0.02, c);
+  const auto flat = flat_vol(c.strike.size(), kSigmaGen);
+  const ParityInputs in{kSpot, kRate, kQeff, kT};
+
+  const auto res = chain_parity(c.strike, c.bid, c.ask, c.mid, c.side, flat, flat, in);
+  ASSERT_TRUE(res.has_value()) << res.error().to_string();
+  EXPECT_NEAR(res->rmse_round_trip_vol, 0.0, 1.0e-9);
+  EXPECT_NEAR(res->max_round_trip_vol, 0.0, 1.0e-9);
+  EXPECT_EQ(res->n_round_trip, res->n);
+}
+
 // ── Error band ───────────────────────────────────────────────────────────────
 
 TEST(Parity, IdenticalVols_AllWithinEdgeBand) {

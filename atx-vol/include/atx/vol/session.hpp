@@ -352,6 +352,14 @@ struct SessionDiagnostics {
   double mean_frac_within_bidask{0.0};  // mean over expiries
   double mean_chi2_reduced{0.0};        // mean reduced chi-square (vol space)
   double mean_rmse_vol{0.0};            // mean RMSE(model vol - mkt vol)
+  // T5 item 3 — the ABSOLUTE de-Am -> fit -> re-Americanize round trip, in vol
+  // points, against the raw American mid (ParityReport::rmse_round_trip_vol).
+  // `mean` is over scored expiries, `max` is the board's worst single quote.
+  // Every other quality number on this struct is spread-normalised and so
+  // cannot report a large error on a wide board; these two can, which is why
+  // they are the ones to read on a thin board.
+  double mean_round_trip_vol{0.0};
+  double max_round_trip_vol{0.0};
   bool calendar_arb_free{false};        // surface calendar no-arb check
   std::size_t n_calendar_viol_pre{0};   // calendar violations BEFORE any repair;
                                         // on a FAILED check, stamped with sentinel
