@@ -58,6 +58,24 @@
     "followup_manager_positions": 2047
   },
   "signals": {
+    "amendment_type_cohorts": [
+      {
+        "cohort": "MIXED",
+        "completed_47d_trades": 100,
+        "mean_47d_net_short_return": -0.022964232447394217,
+        "median_47d_net_short_return": -0.008833542570189423,
+        "selected_signals": 393,
+        "win_rate_47d": 0.48
+      },
+      {
+        "cohort": "RESTATEMENT_ONLY",
+        "completed_47d_trades": 23,
+        "mean_47d_net_short_return": 0.03412588444720753,
+        "median_47d_net_short_return": 0.019965382740126936,
+        "selected_signals": 163,
+        "win_rate_47d": 0.5652173913043478
+      }
+    ],
     "candidate_count": 78077,
     "mapped_signals": 278,
     "maximum_rank_per_quarter": 20,

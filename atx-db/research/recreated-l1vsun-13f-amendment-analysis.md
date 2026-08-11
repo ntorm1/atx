@@ -10,7 +10,8 @@ sets](https://www.sec.gov/data-research/sec-markets-data/form-13f-data-sets). It
 
 - A RESTATEMENT replaces the prior information table; ADD NEW HOLDINGS
   supplements the latest full table, consistent with the [official Form 13F
-  instructions](https://www.sec.gov/files/form13f.pdf).
+  instructions](https://www.sec.gov/files/form13f.pdf) and [SEC amendment FAQ](https://www.sec.gov/rules-regulations/staff-guidance/division-investment-management-frequently-asked-questions/frequently-asked-questions-about-form-13f). The
+  pooled result follows the post literally by including both filing types.
 - Manager-quarter amendment rate is distinct corrected position keys divided by
   the final filed position count.
 - The z-score uses only the manager's prior 24 reported quarters. A spike is at
@@ -79,6 +80,28 @@ alone.
 ## Stress-regime split
 
 - Quiet: 123 completed trades, -1.23% mean net short return.
+
+## Amendment-type audit
+
+RESTATEMENT corrects and supersedes a filing. ADD NEW HOLDINGS supplements it and can disclose
+positions after confidential treatment expires or is denied. Pooling them therefore mixes distinct
+events even though both use `13F-HR/A`.
+
+| Cohort | Selected signals | Complete 47d trades | Mean net short | Median | Win rate |
+|---|---:|---:|---:|---:|---:|
+| MIXED | 393 | 100 | -2.30% | -0.88% | 48.00% |
+| RESTATEMENT_ONLY | 163 | 23 | 3.41% | 2.00% | 56.52% |
+
+The restatement-only result is exploratory: it was examined after the pooled claim failed and has
+only 23 complete trades. It is a hypothesis for a separately pre-registered test, not evidence for
+the post's pooled 3.1-Sharpe claim.
+
+## Mega-alpha decision
+
+**Reject.** The post's pooled signal has negative 47-day return, approximately random directional
+accuracy, no identifiable 47-day institutional-exit timestamp, and no disclosed sizing methodology
+from which to reconstruct the claimed Sharpe. No production router or mega-alpha registry change is
+authorized by this result.
 
 ## Interpretation
 

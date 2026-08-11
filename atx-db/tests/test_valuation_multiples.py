@@ -7,9 +7,9 @@ import pandas as pd
 import pytest
 
 from atx_db.valuation_multiples import (
+    VALUATION_FORMULA_DEFS,
     MarketCapDataset,
     MarketCapOptions,
-    VALUATION_FORMULA_DEFS,
     ValuationMultiplesDataset,
     ValuationMultiplesOptions,
     compute_market_cap_rows,
@@ -459,6 +459,38 @@ def test_compute_market_cap_uses_raw_close_times_pit_shares() -> None:
     assert row["market_cap"] == 1230.0
     assert row["available_at"] == pd.Timestamp(dt.datetime(2020, 1, 2, 22))
     assert row["run_id"] == "market-run"
+
+
+def test_compute_market_cap_rejects_zero_price_and_zero_shares() -> None:
+    prices = pd.DataFrame(
+        [
+            _price("GOOD", "GOOD", dt.date(2020, 1, 2), 10.0, dt.datetime(2020, 1, 2, 22)),
+            _price("ZERO-P", "ZERO-P", dt.date(2020, 1, 2), 0.0, dt.datetime(2020, 1, 2, 22)),
+            _price("ZERO-S", "ZERO-S", dt.date(2020, 1, 2), 10.0, dt.datetime(2020, 1, 2, 22)),
+        ]
+    )
+    shares = pd.DataFrame(
+        [
+            _share(
+                security_id,
+                security_id,
+                "shares_outstanding",
+                dt.date(2019, 12, 31),
+                dt.datetime(2020, 1, 2, 10),
+                share_count,
+                share_history_id=f"{security_id}-shares",
+            )
+            for security_id, share_count in (
+                ("GOOD", 100.0),
+                ("ZERO-P", 100.0),
+                ("ZERO-S", 0.0),
+            )
+        ]
+    )
+
+    rows = compute_market_cap_rows(prices, shares)
+
+    assert rows["security_id"].tolist() == ["GOOD"]
 
 
 def test_compute_market_cap_prefers_instant_shares_over_diluted_fallback() -> None:

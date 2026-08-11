@@ -8,9 +8,10 @@ back-adjusted return series.
 """
 from __future__ import annotations
 
-import hashlib
 import datetime as dt
+import hashlib
 import json
+import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -477,6 +478,12 @@ def compute_market_cap_rows(
     out = out.dropna(
         subset=["security_id", "trade_date", "close", "share_count", "price_available_at", "share_available_at"]
     )
+    out = out[
+        (out["close"] > 0)
+        & (out["share_count"] > 0)
+        & out["close"].map(math.isfinite)
+        & out["share_count"].map(math.isfinite)
+    ].copy()
     if out.empty:
         return pd.DataFrame(columns=MARKET_CAP_COLUMNS)
 
@@ -489,7 +496,9 @@ def compute_market_cap_rows(
     out["run_id"] = run_id
     out["market_cap_id"] = [
         _market_cap_id(source, security_id, trade_date)
-        for security_id, trade_date in zip(out["security_id"], out["trade_date"])
+        for security_id, trade_date in zip(
+            out["security_id"], out["trade_date"], strict=True
+        )
     ]
     out["input_codes_json"] = out.apply(
         lambda row: json_dumps(
@@ -591,7 +600,7 @@ def load_market_cap_inputs(store: DuckDBStore, options: MarketCapOptions) -> pd.
              AND s.effective_date <= p.trade_date
              AND s.as_of_date <= p.trade_date
              AND s.share_count IS NOT NULL
-             AND s.share_count >= 0
+             AND s.share_count > 0
         )
         SELECT * EXCLUDE (share_rn)
         FROM share_candidates
@@ -666,7 +675,7 @@ def refresh_market_cap(store: DuckDBStore, options: MarketCapOptions | None = No
         _delete_market_cap_scope(store, options, rows)
         if not rows.empty:
             insert_frame(store, rows, "market_cap", "market_cap_insert")
-    return int(len(rows))
+    return len(rows)
 
 
 class MarketCapDataset(Dataset):
@@ -843,7 +852,7 @@ def _select_latest_valuation_inputs(inputs: pd.DataFrame) -> pd.DataFrame:
         return out
     key_columns = ["market_cap_source", "security_id", "trade_date"]
     out = out.sort_values(
-        key_columns + ["period_end", "fundamental_available_at", "fundamental_sort_key"],
+        [*key_columns, "period_end", "fundamental_available_at", "fundamental_sort_key"],
         ascending=[True, True, True, False, False, False],
         kind="mergesort",
     )
@@ -1936,7 +1945,7 @@ def refresh_valuation_multiples(
         _delete_valuation_multiples_scope(store, options)
         if not rows.empty:
             insert_frame(store, rows, "valuation_multiples", "valuation_multiples_insert")
-    return int(len(rows))
+    return len(rows)
 
 
 class ValuationMultiplesDataset(Dataset):

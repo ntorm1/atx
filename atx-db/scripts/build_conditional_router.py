@@ -29,6 +29,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--start-date", type=_date)
     parser.add_argument("--end-date", type=_date)
     parser.add_argument("--minimum-names-per-date", type=int, default=20)
+    parser.add_argument("--universe-id", default="us_common_equity_liquid_v1")
     parser.add_argument("--run-id")
     return parser.parse_args()
 
@@ -39,6 +40,7 @@ def main() -> int:
         start_date=args.start_date,
         end_date=args.end_date,
         minimum_names_per_date=args.minimum_names_per_date,
+        universe_id=args.universe_id,
         run_id=args.run_id,
     )
     with DuckDBStore(args.db_path) as store:

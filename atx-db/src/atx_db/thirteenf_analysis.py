@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +15,11 @@ from .thirteenf_signals import DEFAULT_MAX_SIGNAL_RANK_PER_QUARTER
 ORIGINAL_ANALYSIS_URL = "https://x.com/L1vsun/status/2085445915897176101"
 SEC_DATASETS_URL = "https://www.sec.gov/data-research/sec-markets-data/form-13f-data-sets"
 SEC_FORM_URL = "https://www.sec.gov/files/form13f.pdf"
+SEC_FAQ_URL = (
+    "https://www.sec.gov/rules-regulations/staff-guidance/"
+    "division-investment-management-frequently-asked-questions/"
+    "frequently-asked-questions-about-form-13f"
+)
 OPENFIGI_DOCS_URL = "https://www.openfigi.com/api/documentation"
 
 
@@ -70,6 +77,65 @@ def thirteenf_analysis_summary(store: DuckDBStore) -> dict[str, Any]:
           AND EXISTS (SELECT 1 FROM v_thirteenf_signal_instruments m WHERE m.cusip = s.cusip)
         """,
     )[0]
+    amendment_type_rows = store.con.execute(
+        f"""
+        WITH selected AS (
+            SELECT signal_id, report_period, cusip
+            FROM thirteenf_consensus_amendment_signals
+            WHERE is_latest_revision
+              AND signal_rank <= {DEFAULT_MAX_SIGNAL_RANK_PER_QUARTER}
+              AND NOT is_stress_quarter
+        ),
+        typed AS (
+            SELECT
+                s.signal_id,
+                bool_or(upper(c.amendment_type) LIKE '%RESTATEMENT%') AS has_restatement,
+                bool_or(upper(c.amendment_type) NOT LIKE '%RESTATEMENT%') AS has_add_new
+            FROM selected s
+            JOIN thirteenf_amendment_corrections c
+              ON c.report_period = s.report_period
+             AND c.cusip = s.cusip
+             AND c.is_latest_revision
+            JOIN thirteenf_amendment_rates r
+              ON r.manager_cik = c.manager_cik
+             AND r.report_period = c.report_period
+             AND r.is_latest_revision
+             AND r.is_spike
+            GROUP BY s.signal_id
+        ),
+        classified AS (
+            SELECT
+                signal_id,
+                CASE
+                    WHEN has_restatement AND has_add_new THEN 'MIXED'
+                    WHEN has_restatement THEN 'RESTATEMENT_ONLY'
+                    ELSE 'ADD_NEW_ONLY'
+                END AS amendment_cohort
+            FROM typed
+        )
+        SELECT
+            c.amendment_cohort,
+            count(DISTINCT c.signal_id) AS selected_signals,
+            count(*) FILTER (
+                WHERE b.horizon_trading_days = 47 AND b.is_complete
+            ) AS complete_47d,
+            avg(b.net_short_return) FILTER (
+                WHERE b.horizon_trading_days = 47 AND b.is_complete
+            ) AS mean_47d,
+            median(b.net_short_return) FILTER (
+                WHERE b.horizon_trading_days = 47 AND b.is_complete
+            ) AS median_47d,
+            avg((b.net_short_return > 0)::INTEGER) FILTER (
+                WHERE b.horizon_trading_days = 47 AND b.is_complete
+            ) AS win_47d
+        FROM classified c
+        LEFT JOIN thirteenf_amendment_backtest_trades b
+          ON b.signal_id = c.signal_id
+         AND b.is_latest_revision
+        GROUP BY c.amendment_cohort
+        ORDER BY c.amendment_cohort
+        """
+    ).fetchall()
     followups, disclosed_exits, within_47 = _one(
         store,
         f"""
@@ -149,6 +215,17 @@ def thirteenf_analysis_summary(store: DuckDBStore) -> dict[str, Any]:
             "mapped_signals": int(mapped_signals),
             "maximum_rank_per_quarter": DEFAULT_MAX_SIGNAL_RANK_PER_QUARTER,
             "stress_quarters_excluded": True,
+            "amendment_type_cohorts": [
+                {
+                    "cohort": str(row[0]),
+                    "selected_signals": int(row[1]),
+                    "completed_47d_trades": int(row[2]),
+                    "mean_47d_net_short_return": None if row[3] is None else float(row[3]),
+                    "median_47d_net_short_return": None if row[4] is None else float(row[4]),
+                    "win_rate_47d": None if row[5] is None else float(row[5]),
+                }
+                for row in amendment_type_rows
+            ],
         },
         "disclosed_exits": {
             "followup_manager_positions": int(followups),
@@ -220,6 +297,14 @@ def render_thirteenf_analysis_report(summary: dict[str, Any]) -> str:
         f"{_percent(row['short_win_rate'])} |"
         for row in horizons
     )
+    amendment_type_lines = "\n".join(
+        f"| {row['cohort']} | {row['selected_signals']:,} | "
+        f"{row['completed_47d_trades']:,} | "
+        f"{_percent(row['mean_47d_net_short_return'])} | "
+        f"{_percent(row['median_47d_net_short_return'])} | "
+        f"{_percent(row['win_rate_47d'])} |"
+        for row in signals["amendment_type_cohorts"]
+    )
     return f"""# Recreated 13F amendment-spike analysis
 
 Status: **{status}**
@@ -232,7 +317,8 @@ sets]({SEC_DATASETS_URL}). It does not assume the post's reported outcomes.
 
 - A RESTATEMENT replaces the prior information table; ADD NEW HOLDINGS
   supplements the latest full table, consistent with the [official Form 13F
-  instructions]({SEC_FORM_URL}).
+  instructions]({SEC_FORM_URL}) and [SEC amendment FAQ]({SEC_FAQ_URL}). The
+  pooled result follows the post literally by including both filing types.
 - Manager-quarter amendment rate is distinct corrected position keys divided by
   the final filed position count.
 - The z-score uses only the manager's prior 24 reported quarters. A spike is at
@@ -299,6 +385,27 @@ alone.
 
 {regime_lines}
 
+## Amendment-type audit
+
+RESTATEMENT corrects and supersedes a filing. ADD NEW HOLDINGS supplements it and can disclose
+positions after confidential treatment expires or is denied. Pooling them therefore mixes distinct
+events even though both use `13F-HR/A`.
+
+| Cohort | Selected signals | Complete 47d trades | Mean net short | Median | Win rate |
+|---|---:|---:|---:|---:|---:|
+{amendment_type_lines}
+
+The restatement-only result is exploratory: it was examined after the pooled claim failed and has
+only 23 complete trades. It is a hypothesis for a separately pre-registered test, not evidence for
+the post's pooled 3.1-Sharpe claim.
+
+## Mega-alpha decision
+
+**Reject.** The post's pooled signal has negative 47-day return, approximately random directional
+accuracy, no identifiable 47-day institutional-exit timestamp, and no disclosed sizing methodology
+from which to reconstruct the claimed Sharpe. No production router or mega-alpha registry change is
+authorized by this result.
+
 ## Interpretation
 
 The backtest is point-in-time with respect to public filing and price
@@ -319,9 +426,26 @@ def write_thirteenf_analysis_report(
     json_path: Path | None = None,
 ) -> dict[str, Any]:
     summary = thirteenf_analysis_summary(store)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(render_thirteenf_analysis_report(summary), encoding="utf-8")
+    _atomic_write_text(output_path, render_thirteenf_analysis_report(summary))
     if json_path is not None:
-        json_path.parent.mkdir(parents=True, exist_ok=True)
-        json_path.write_text(json.dumps(summary, default=str, indent=2, sort_keys=True), encoding="utf-8")
+        _atomic_write_text(
+            json_path,
+            json.dumps(summary, default=str, indent=2, sort_keys=True) + "\n",
+        )
     return summary
+
+
+def _atomic_write_text(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent, text=True
+    )
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_name, path)
+    finally:
+        if os.path.exists(temporary_name):
+            os.unlink(temporary_name)
