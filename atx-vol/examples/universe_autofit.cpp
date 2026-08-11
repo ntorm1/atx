@@ -18,12 +18,15 @@
 //       [--v2-fields none|quality|outputs|both] [--outputs risk|mark|both]
 //       [--risk-admission required|na] [--fallback lkg|none]
 //       [--publish-floor on|off] [--symbol-knobs on|off]
-//       [--attempts-out attempts.csv]
+//       [--attempts-out attempts.csv] [--expiries-out expiries.csv]
 //
 // Output CSV: one row per symbol with load/fit/value status + diagnostics.
 // `--attempts-out` additionally writes a SECOND csv, one row per (symbol,
 // build attempt), joinable to the first on `symbol` — the fallback ladder's
 // per-rung rejection evidence, which cannot fit one row per board.
+// `--expiries-out` writes a THIRD csv, one row per (symbol, build attempt,
+// chain) — the fit driver's own per-expiry census, which is the only place a
+// DROPPED expiry names its own cause (T3c).
 // Summary to stdout: status counts, curve-family histogram, profile histogram,
 // error-code breakdown, timing percentiles, slowest boards.
 
@@ -137,6 +140,31 @@ const char *build_stage_name(SurfaceBuildStage stage) {
   case SurfaceBuildStage::Build: return "Build";
   case SurfaceBuildStage::Admission: return "Admission";
   case SurfaceBuildStage::Publication: return "Publication";
+  }
+  return "?";
+}
+
+const char *expiry_build_outcome_name(ExpiryBuildOutcome outcome) {
+  switch (outcome) {
+  case ExpiryBuildOutcome::Missing: return "Missing";
+  case ExpiryBuildOutcome::Fitted: return "Fitted";
+  case ExpiryBuildOutcome::DuplicateMaturity: return "DuplicateMaturity";
+  }
+  return "?";
+}
+
+const char *expiry_fit_outcome_name(ExpiryFitOutcome outcome) {
+  switch (outcome) {
+  case ExpiryFitOutcome::Fitted: return "Fitted";
+  case ExpiryFitOutcome::FittedFallbackCurve: return "FittedFallbackCurve";
+  case ExpiryFitOutcome::FittedLegacyPrep: return "FittedLegacyPrep";
+  case ExpiryFitOutcome::CarryFailed: return "CarryFailed";
+  case ExpiryFitOutcome::PrepStarved: return "PrepStarved";
+  case ExpiryFitOutcome::PrepFailed: return "PrepFailed";
+  case ExpiryFitOutcome::FitFailed: return "FitFailed";
+  case ExpiryFitOutcome::Skipped: return "Skipped";
+  case ExpiryFitOutcome::PrepUncovered: return "PrepUncovered";
+  case ExpiryFitOutcome::FitRefusedCalendar: return "FitRefusedCalendar";
   }
   return "?";
 }
@@ -530,6 +558,70 @@ struct AttemptRow {
   ValidationDigest probe_digest{};
 };
 
+// ── One expiry of one build attempt (T3c) ───────────────────────────────────
+//
+// `SurfaceBuildAttemptReport::expiries` is the per-chain census the FIT DRIVER
+// built (`run_surface_parity` / `fit_curve_surface` -> `ExpiryFitReport`, then
+// `completed_attempt_report`). It is the only record that names why a chain the
+// board offered never became a slice. Nothing exported it, so "the eSSVI lane
+// prepares half as many expiries" was measurable only as a ratio with no cause
+// attached.
+//
+// `fit_outcome_known` is the guard column, and it is not decoration: this sprint
+// has twice shipped a metric whose "not populated" was byte-identical to a
+// clean zero (a default-constructed `ValidationDigest` reading as 0 violations;
+// the `n_calendar_viol` sentinel). `ExpiryBuildReport::fit_outcome` has exactly
+// that shape — it defaults to `ExpiryFitOutcome::Fitted` (the enum's 0) and is
+// populated ONLY on a `Missing` expiry of an attempt that reached
+// `completed_attempt_report` (pricer_fitter.hpp:300-318). A `Fitted` in this
+// column is therefore either a real fit or an unpopulated default, and only the
+// guard separates them. Read `fit_outcome` where, and only where, it is 1.
+struct ExpiryRow {
+  std::string symbol;
+  std::uint32_t attempt_index{0};
+  std::string curve_kind;
+  bool build_succeeded{false};
+  std::size_t chain_index{0};
+  double maturity{0.0};
+  const char *build_outcome{"?"};
+  std::size_t n_used{0};
+  const char *fit_outcome{"?"};
+  bool fit_outcome_known{false};
+};
+
+// Flatten every attempt's per-chain census. Independent of `collect_attempts`:
+// this reads only what the build already recorded and never refits, so it costs
+// nothing beyond the walk and can be requested without the probe.
+void collect_expiries(std::vector<ExpiryRow> &out, const std::string &symbol,
+                      const PricerFitter &fitter) {
+  const std::optional<SurfaceBuildReport> &maybe = fitter.published_report().has_value()
+                                                       ? fitter.published_report()
+                                                       : fitter.last_attempt_report();
+  if (!maybe.has_value()) {
+    return;
+  }
+  const SurfaceBuildReport &report = *maybe;
+  for (std::size_t i = 0; i < report.attempts.size(); ++i) {
+    const SurfaceBuildAttemptReport &a = report.attempts[i];
+    for (const ExpiryBuildReport &e : a.expiries) {
+      ExpiryRow r;
+      r.symbol = symbol;
+      r.attempt_index = static_cast<std::uint32_t>(i);
+      r.curve_kind = std::string(to_string(a.curve.kind));
+      r.build_succeeded = a.build_succeeded;
+      r.chain_index = e.expiry_index;
+      r.maturity = e.maturity;
+      r.build_outcome = expiry_build_outcome_name(e.outcome);
+      r.n_used = e.n_used;
+      // The exact population contract from pricer_fitter.hpp:300-318 — a rich
+      // outcome exists only for a Missing expiry of an attempt that BUILT.
+      r.fit_outcome_known = a.build_succeeded && e.outcome == ExpiryBuildOutcome::Missing;
+      r.fit_outcome = expiry_fit_outcome_name(e.fit_outcome);
+      out.push_back(std::move(r));
+    }
+  }
+}
+
 // What one pinned refit yields: the oracle's verdict plus the probe's own
 // admission mask for the pinned candidate, kept together so the caller cannot
 // read one without the other's provenance.
@@ -731,6 +823,9 @@ int main(int argc, char **argv) {
   // T1c. Unset => no second CSV and no probe refits: the default run's cost and
   // output stay exactly what T1b measured.
   std::string attempts_csv;
+  // T3c. Unset => no third CSV. Costs no refit either way — it only flattens the
+  // census the build already recorded.
+  std::string expiries_csv;
 
   for (int i = 1; i < argc; ++i) {
     const std::string_view a = argv[i];
@@ -763,6 +858,7 @@ int main(int argc, char **argv) {
     else if (a == "--publish-floor") publish_floor_arg = nv();
     else if (a == "--symbol-knobs") symbol_knobs_arg = nv();
     else if (a == "--attempts-out") attempts_csv = nv();
+    else if (a == "--expiries-out") expiries_csv = nv();
     else {
       std::fprintf(stderr, "unknown arg: %s\n", argv[i]);
       return 2;
@@ -778,7 +874,7 @@ int main(int argc, char **argv) {
                  "[--fit-path production|legacy] [--v2-fields none|quality|outputs|both] "
                  "[--outputs risk|mark|both] [--risk-admission required|na] "
                  "[--fallback lkg|none] [--publish-floor on|off] [--symbol-knobs on|off] "
-                 "[--attempts-out FILE]\n");
+                 "[--attempts-out FILE] [--expiries-out FILE]\n");
     return 2;
   }
 
@@ -922,7 +1018,9 @@ int main(int argc, char **argv) {
   // Per board, so workers write disjoint slots exactly as they do for `rows`;
   // flattened in board order at write time.
   std::vector<std::vector<AttemptRow>> attempt_rows(batch->entries.size());
+  std::vector<std::vector<ExpiryRow>> expiry_rows(batch->entries.size());
   const bool want_attempts = !attempts_csv.empty();
+  const bool want_expiries = !expiries_csv.empty();
   std::vector<const OpraBatchEntry *> entries(batch->entries.size());
   for (std::size_t i = 0; i < batch->entries.size(); ++i) entries[i] = &batch->entries[i];
 
@@ -1020,6 +1118,9 @@ int main(int argc, char **argv) {
         if (want_attempts) {
           collect_attempts(attempt_rows[i], row.symbol, fitter, cfg, chain.value());
         }
+        if (want_expiries) {
+          collect_expiries(expiry_rows[i], row.symbol, fitter);
+        }
         return;
       }
 
@@ -1047,6 +1148,9 @@ int main(int argc, char **argv) {
       record_oracle(row, fitter.bundle());
       if (want_attempts) {
         collect_attempts(attempt_rows[i], row.symbol, fitter, cfg, chain.value());
+      }
+      if (want_expiries) {
+        collect_expiries(expiry_rows[i], row.symbol, fitter);
       }
 
       if (do_value) {
@@ -1184,6 +1288,28 @@ int main(int argc, char **argv) {
     }
   }
 
+  // ── Per-expiry census CSV (T3c) ────────────────────────────────────────────
+  //
+  // One row per (symbol, attempt, chain), keyed on `symbol` + `attempt_index` so
+  // it joins to the attempts CSV. `fit_outcome` is meaningful only where
+  // `fit_outcome_known` is 1 — see `ExpiryRow`.
+  std::size_t n_expiry_rows = 0;
+  if (want_expiries) {
+    std::ofstream out(expiries_csv, std::ios::trunc);
+    out << "symbol,attempt_index,curve_kind,build_succeeded,chain_index,maturity,"
+           "build_outcome,n_used,fit_outcome,fit_outcome_known\n";
+    for (const std::vector<ExpiryRow> &board : expiry_rows) {
+      for (const ExpiryRow &e : board) {
+        char buf[320];
+        std::snprintf(buf, sizeof(buf), ",%u,%s,%d,%zu,%.9g,%s,%zu,%s,%d\n", e.attempt_index,
+                      e.curve_kind.c_str(), e.build_succeeded ? 1 : 0, e.chain_index, e.maturity,
+                      e.build_outcome, e.n_used, e.fit_outcome, e.fit_outcome_known ? 1 : 0);
+        out << csv_escape(e.symbol) << buf;
+        ++n_expiry_rows;
+      }
+    }
+  }
+
   // ── Summary ────────────────────────────────────────────────────────────────
   std::map<std::string, std::size_t> by_status, by_kind, by_profile, by_error;
   std::vector<double> fit_times;
@@ -1244,6 +1370,9 @@ int main(int argc, char **argv) {
   std::printf("\nresults: %s\n", out_csv.c_str());
   if (want_attempts) {
     std::printf("attempts: %s (%zu rows)\n", attempts_csv.c_str(), n_attempt_rows);
+  }
+  if (want_expiries) {
+    std::printf("expiries: %s (%zu rows)\n", expiries_csv.c_str(), n_expiry_rows);
   }
   return 0;
 }
