@@ -1171,7 +1171,7 @@ TEST(ArbSviMm, AdmissibleSlice_NoViolations) {
 // below 4). Pulling theta*phi/2 out of eSSVI's w gives raw-SVI b = theta*phi/2
 // exactly, so a phi-MAXIMAL eSSVI slice — the loosest wing the eSSVI lane will
 // ever admit — sits at b*(1+|rho|) = min(2, sqrt(s)) <= 2, which is Lee's bound
-// for raw SVI verbatim. The raw-SVI gate enforces twice that. If someone
+// for raw SVI verbatim. The raw-SVI gate now enforces that same 2. If someone
 // re-derives the raw-SVI ceiling and gets 4, this test says where the factor of
 // two went.
 TEST(ArbSviMm, TheEssviCeilingOfFourIsLeesRawSviBoundOfTwo) {
@@ -1194,16 +1194,13 @@ TEST(ArbSviMm, TheEssviCeilingOfFourIsLeesRawSviBoundOfTwo) {
       EXPECT_LE(cs->b() * (1.0 + std::fabs(rho)), 2.0 + 1.0e-12);
     }
   }
-  // The raw-SVI gate is the OTHER number, and that is the open defect: it
-  // admits an asymptotic wing slope of 4 where Lee permits 2.
-  EXPECT_DOUBLE_EQ(atx::vol::kSviWingSlopeGate, 4.0);
+  // And the raw-SVI gate now enforces that same number directly.
+  EXPECT_DOUBLE_EQ(atx::vol::kSviWingSlopeGate, 2.0);
 }
 
 TEST(ArbSviMm, LeeBoundViolation_OneViolationWithSlack) {
-  // b*(1+|rho|) = 5*1.4 = 7, past the enforced (T-free) ceiling of 4; slack = 3.
-  // 7 also exceeds Lee's actual raw-SVI bound of 2, so this case fires under
-  // either convention and does NOT pin the ceiling's value — the derivation
-  // above does. w_min stays >= 0.
+  // b*(1+|rho|) = 5*1.4 = 7, past Lee's raw-SVI ceiling of 2; slack = 5.
+  // w_min stays >= 0, so exactly one inequality fires.
   SviParams s{};
   s.a = 0.04;
   s.b = 5.0;
@@ -1213,7 +1210,7 @@ TEST(ArbSviMm, LeeBoundViolation_OneViolationWithSlack) {
   s.T = 1.0;
   const auto adm = arb_check_butterfly_svi_mm(s, 1.0);
   EXPECT_EQ(adm.n_violations, 1u);
-  EXPECT_NEAR(adm.max_slack, 3.0, 1.0e-9);
+  EXPECT_NEAR(adm.max_slack, 5.0, 1.0e-9);
 }
 
 TEST(ArbSviMm, NonPositiveB_FlaggedByFirstInequality) {
@@ -1249,10 +1246,11 @@ TEST(ArbSviMm, SurfaceWalker_SumsPerSliceViolations) {
   (void)surf.set_slice_svi(0, good);
   (void)surf.set_slice_svi(1, bad);
 
+  // `bad` has b*(1+|rho|) = 5*1.4 = 7 against Lee's raw-SVI ceiling of 2.
   const auto res_adm = arb_check_butterfly_svi_mm_surface(surf);
   ASSERT_TRUE(res_adm.has_value());
   EXPECT_EQ(res_adm.value().n_violations, 1u);
-  EXPECT_NEAR(res_adm.value().max_slack, 3.0, 1.0e-9);
+  EXPECT_NEAR(res_adm.value().max_slack, 5.0, 1.0e-9);
 }
 
 TEST(ArbSviMm, SurfaceWalker_NonSviMm_NoOpZero) {

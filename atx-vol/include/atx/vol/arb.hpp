@@ -441,22 +441,30 @@ struct SviMmAdmissibility {
 // b = theta*phi/2 exactly. So eSSVI's 4 IS Lee's 2, written in a
 // parametrization that carries a factor of two inside it.
 //
-// The constant below is what this library enforces on raw SVI TODAY, and it is
-// the eSSVI number rather than the raw-SVI one: the gate is loose by exactly 2x
-// (plan D3), and the independent risk oracle already uses the correct 2.0
-// (`detail/risk_surface_validation.hpp`, max_abs_wing_total_variance_slope).
+// Until T10 this constant read 4.0 — the eSSVI number, carried across the
+// parametrization boundary above, so the raw-SVI gate was loose by exactly 2x
+// (plan D3). The independent risk oracle always used the correct 2.0
+// (`detail/risk_surface_validation.hpp`, max_abs_wing_total_variance_slope);
+// the two now agree.
 //
-// It is NOT corrected here. `mm_project_admissible` (svi_calib.cpp:529-543)
-// clamps b to the same 4, and `fit_slice_curve` (vol_curve.cpp:553-561) runs
-// gate -> project -> re-gate; tightening only the gate makes the projector's own
-// output fail the re-check, so every slice with b*(1+|rho|) in (2, 4] is DROPPED
-// instead of repaired — strictly worse than the current consistent-but-wrong
-// state. Measured, gate at 2.0 with the projector left at 4.0, raw SVI pinned on
-// every board: 18 of 1619 served slices lost on lqbench 2026-08-03 (17 boards)
-// and 2 of 1277 on the S&P 100 2026-07-22 control (2 boards); 0 boards lost, and
-// 0 slices lost on either corpus under normal family auto-selection. The two
-// files must move together, and both should then read this constant.
-inline constexpr double kSviWingSlopeGate = 4.0;
+// It could not be corrected in this file alone. `mm_project_admissible`
+// (svi_calib.cpp) clamps b to this same ceiling, and every serving path runs
+// gate -> project -> re-gate — `fit_slice_curve` (vol_curve.cpp) plus both SVI
+// surface drivers (svi_calib.cpp) — DROPPING whatever still fails the re-check.
+// Tightening only the gate would have made the projector's own output fail that
+// re-check, so every slice with b*(1+|rho|) in (2, 4] would be DROPPED instead
+// of repaired: strictly worse than the consistent-but-wrong state it replaced.
+// Measured that way (gate 2.0, projector 4.0, raw SVI pinned on every board):
+// 18 of 1619 served slices lost on lqbench 2026-08-03 and 2 of 1277 on the
+// S&P 100 2026-07-22 control. With BOTH moved, the totals are UNCHANGED —
+// 1619 -> 1619 and 1277 -> 1277 slices, 218/218 and 104/104 boards — and under
+// normal family auto-selection every board is bit-identical (2609 and 1650
+// slices), consistent with T1c measuring wing violations at 0.0%/2.9% of
+// rejected eSSVI primaries: this is a latent-correctness fix, not a breadth
+// lever. Anyone changing this value must change the projector in the SAME
+// commit; `VolCurve.SviProjectMmRepairsTheFormerlyAdmittedWingSlopeBand` is the
+// regression that fails if they do not.
+inline constexpr double kSviWingSlopeGate = 2.0;
 
 // Verify the Martini-Mingone admissible-polytope inequalities on a raw-SVI
 // slice (arXiv:2005.03340 §6.3 + Lee 2004):

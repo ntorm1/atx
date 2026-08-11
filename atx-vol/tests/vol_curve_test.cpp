@@ -8,6 +8,7 @@
 #include <functional>
 #include <iterator>
 #include <span>
+#include <string>
 #include <vector>
 
 #include "atx/vol/arb.hpp"          // arb_check_butterfly_svi_mm, arb_check_butterfly_slice
@@ -156,16 +157,10 @@ TEST(VolCurve, SviPairProjectionStillRepairsInsideTheOverlap) {
 TEST(VolCurve, SviProjectMmRepairsLeeViolation) {
   // The gate PROJECTS an inadmissible fit before rejecting; verify that repair
   // primitive directly. A steep-wing slice must be moved back into the polytope.
-  //
-  // The ceiling here is `kSviWingSlopeGate` == 4, which is what the gate and
-  // `mm_project_admissible` both enforce today. It is NOT Lee's raw-SVI bound:
-  // that is 2, and the 2x gap is plan defect D3 — the derivation and the
-  // measured cost of closing it live above `kSviWingSlopeGate` in arb.hpp, and
-  // `ArbSviMm.TheEssviCeilingOfFourIsLeesRawSviBoundOfTwo` pins the algebra.
-  // b*(1+|rho|) = 6 is inadmissible under EITHER convention and at any T (the
-  // bound is T-free, per FT-C3), so this case tests the projector, not the
-  // number. Whichever value the coordinated fix lands on, this test must keep
-  // passing with b chosen above it.
+  // b*(1+|rho|) = 6 is inadmissible at any T (the bound is T-free, per FT-C3)
+  // and under either the historical ceiling of 4 or Lee's raw-SVI 2, so this
+  // case tests the projector, not the number. The number is pinned by
+  // `ArbSviMm.TheEssviCeilingOfFourIsLeesRawSviBoundOfTwo`.
   SviParams s{};
   s.a = 0.04;
   s.b = 6.0;  // b*(1+|rho|) = 6, past both 4 and Lee's 2
@@ -178,6 +173,39 @@ TEST(VolCurve, SviProjectMmRepairsLeeViolation) {
   const bool moved = svi_project_mm(s, s.T);
   EXPECT_TRUE(moved);
   EXPECT_EQ(arb_check_butterfly_svi_mm(s, s.T).n_violations, 0u);
+}
+
+// D3, the coordination invariant. The gate (`arb_check_butterfly_svi_mm`, via
+// `kSviWingSlopeGate`) and the repair (`svi_project_mm` -> `mm_project_admissible`)
+// must enforce the SAME ceiling, because every serving path runs
+// gate -> project -> re-gate and DROPS whatever still fails the re-check
+// (vol_curve.cpp SVI branch; svi_calib.cpp's two surface drivers). If only the
+// gate had been tightened to Lee's 2, a slice with b*(1+|rho|) in (2, 4] — a
+// band the projector would have left alone — would be REFUSED rather than
+// repaired: strictly worse than serving it. Sweep that band and assert repair.
+TEST(VolCurve, SviProjectMmRepairsTheFormerlyAdmittedWingSlopeBand) {
+  for (const double rho : {-0.9, -0.4, 0.0, 0.25, 0.8}) {
+    for (const double target : {2.0 + 1.0e-6, 2.5, 3.0, 3.9, 4.0}) {
+      SviParams s{};
+      s.a = 0.04;
+      s.b = target / (1.0 + std::fabs(rho));
+      s.rho = rho;
+      s.m = 0.0;
+      s.sigma = 0.1;
+      s.T = 0.25;
+      const std::string ctx =
+          "rho=" + std::to_string(rho) + " target=" + std::to_string(target);
+
+      // Inadmissible under the corrected gate...
+      ASSERT_GT(arb_check_butterfly_svi_mm(s, s.T).n_violations, 0u) << ctx;
+      // ...and the projector must reach the constraint, not merely run.
+      EXPECT_TRUE(svi_project_mm(s, s.T)) << ctx;
+      EXPECT_EQ(arb_check_butterfly_svi_mm(s, s.T).n_violations, 0u) << ctx;
+      EXPECT_LE(s.b * (1.0 + std::fabs(s.rho)),
+                atx::vol::kSviWingSlopeGate + 1.0e-12)
+          << ctx;
+    }
+  }
 }
 
 // A permissive CalibOpts that disables the observation-builder spread filters and
