@@ -341,7 +341,7 @@ TEST(VolUmbrella, TierCountsMatchTheReadmeTable) {
   // Tier-B = every top-level header minus the Tier-A ones minus vol.hpp itself.
   ASSERT_GT(top_level_headers, std::size(kTierA) + 1u);
   const std::size_t tier_b = top_level_headers - std::size(kTierA) - 1u;
-  EXPECT_EQ(tier_b, std::size_t{44})
+  EXPECT_EQ(tier_b, std::size_t{45})
       << "Tier-B count drifted -- update the README table (## Versioning) "
          "alongside this literal";
 

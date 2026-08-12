@@ -164,6 +164,8 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/theo.cpp
     # Structure-selector ML: one-day-hold delta-neutral structure PnL + feature panel
     src/structure_panel.cpp
+    # Cross-sectional vega panel: ATMF strangle resolve + h-day rehedged hold labels
+    src/vega_panel.cpp
 )
 add_library(atx::vol ALIAS atx-vol)
 
@@ -778,6 +780,13 @@ if(ATX_BUILD_TOOLS)
     # Gate test: StructurePanel (tests/structure_panel_test.cpp).
     add_executable(atx-vol-structure-panel tools/structure_panel_main.cpp)
     target_link_libraries(atx-vol-structure-panel PRIVATE atx::vol atx::core atx_warnings)
+
+    # Cross-sectional vega panel CLI: streams multi-year SurfaceDb roots
+    # through one VegaPanelBuilder per symbol (vega_panel.hpp) and emits the
+    # feature + h-day daily-rehedged ATMF-strangle label TSV.
+    # Gate test: VegaPanel (tests/vega_panel_test.cpp).
+    add_executable(atx-vol-vega-panel tools/vega_panel_main.cpp)
+    target_link_libraries(atx-vol-vega-panel PRIVATE atx::vol atx::core atx_warnings)
 
     # D2: track_compact -- folds staging/ into the hive-partitioned zstd
     # Parquet tracks/ lakehouse (atx::vol::compact(), track_store.hpp). Only
