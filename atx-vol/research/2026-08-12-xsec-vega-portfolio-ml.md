@@ -62,3 +62,32 @@ decile, and the realized-oracle decile.
 
 - 2026-08-12: recon complete (SP100 run record, BEV label factory, thin-board
   autofit sprint). Candidate universe built (1,039). Screen pull launched.
+- 2026-08-12 (universe): screen over 2 sessions × 1,039 candidates ($0.0000
+  preflights): 1,021 had data, **616 survivors** (gates: two-sided rows ≥100
+  both sessions, listed expiry ≥300d, ≥4 expiries, median rel spread ≤0.60).
+  Dominant kill = no ≥300d expiry (≈380 names) — you cannot buy 1y vega where
+  no 1y option trades. Top decile of 616 ≈ 62-name portfolio.
+- 2026-08-12 (vega_panel): commit 14119cd — `resolve_atmf_strangle`
+  (delta-targeted legs via `resolve_strike_by_delta`), `hedged_daily_pnls`
+  (daily-rehedged, frictionless, no financing), `VegaPanelBuilder` (incremental
+  pending-entry marking, fail-soft), `atx-vol-vega-panel` tool. 9 tests +
+  umbrella tier bump 44→45. SPY smoke: 392 rows, labels bounded ±160/$1k vega.
+- 2026-08-12 (SP100 pilot, 24,206 rows, 141 OOS days, commit 07f2539):
+  * ridge: rank-IC **+0.139** (NW t 5.09); top-decile mean **+29.7**/$1k-vega
+    per 21d vs always-all +15.2, random +9.7, bottom −11.6, best single
+    factor ivrv_1y_63 +27.4, oracle +140.
+  * HGB: IC +0.132 (t 5.78), top-decile **+36.2** — beats ridge here (unlike
+    the SPY time-series selector: cross-section has ~100 names/day of data).
+  * Decile monotonicity: signal lives in the tails (dec1 +29.7 … dec10 −12.9,
+    middle flat) — exactly what a top-decile portfolio wants.
+  * Univariate ICs: strongest are NEGATIVE carry/richness — ivrv_1y_63
+    −0.157, ivrv_1y_21 −0.122, div_1y_21 −0.117, iv_ratio_1y_1m −0.100,
+    term_slope_1m_1y −0.094 (buy vega where IV is cheap vs RV, term slope
+    flat/inverted, IV recently fell — Goyal-Saretto / mean-reversion family);
+    positive: rv_21 +0.075, iv_3m +0.060.
+  * Caveat: whole window long-vol-positive (2026 regime); cross-sectional
+    spread (top−bottom ≈ 42) is the robust object, absolute levels are not.
+- 2026-08-12 (production pull): free window verified from **2025-08-11**
+  (tail-free salvage of the boundary month). 616 names × 13 months resuming
+  via 4 month-workers, 50-symbol chunks, per-session $0 preflight gate,
+  disk-gated (soft 8G prune+pause / hard 4G abort), `_dbn` pruned per chunk.

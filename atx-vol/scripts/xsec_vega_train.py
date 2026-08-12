@@ -157,11 +157,36 @@ def walk_forward(df: pd.DataFrame, args) -> tuple[pd.DataFrame, pd.DataFrame]:
             rec[f"{name}_mean"] = float(np.mean(y[m]))
         rec["picked"] = ",".join(sorted(day["symbol"].to_numpy()[picks["model"]]))
         daily.append(rec)
+        # decile means by predicted rank (1 = best) for monotonicity evidence
+        order = np.argsort(-yhat)
+        edges = np.array_split(order, 10)
+        for di, idx in enumerate(edges, start=1):
+            rec[f"dec{di}_mean"] = float(np.mean(y[idx])) if len(idx) else float("nan")
         m = picks["model"]
         for j, (s, p, yy) in enumerate(zip(day["symbol"], yhat, y)):
             rows.append({"key": d, "symbol": s, "pred": p, "label": yy,
                          "picked": bool(m[j])})
     return pd.DataFrame(daily), pd.DataFrame(rows)
+
+
+def feature_ics(df: pd.DataFrame, feats: list[str]) -> pd.DataFrame:
+    """Per-date Spearman IC of each raw feature vs the label, univariate."""
+    valid = df[df["label_valid"] == 1]
+    out = []
+    for c in feats:
+        ics = []
+        for _, day in valid.groupby("key"):
+            x = day[c].to_numpy(dtype=float)
+            y = day["label_pnl_h"].to_numpy(dtype=float)
+            ok = np.isfinite(x) & np.isfinite(y)
+            if ok.sum() >= 10:
+                ics.append(sstats.spearmanr(x[ok], y[ok]).statistic)
+        if len(ics) > 10:
+            a = np.asarray(ics)
+            out.append({"feature": c, "mean_ic": float(a.mean()),
+                        "t_naive": float(a.mean() / (a.std(ddof=1) / math.sqrt(len(a)))),
+                        "n_days": len(a)})
+    return pd.DataFrame(out).sort_values("mean_ic", ascending=False)
 
 
 def summarize(daily: pd.DataFrame, args) -> dict:
@@ -188,6 +213,25 @@ def summarize(daily: pd.DataFrame, args) -> dict:
                 "total": float(np.sum(s)),
                 "p_mean_pos": p_pos, "ci5": lo, "ci95": hi,
             }
+    out["decile_means"] = {
+        f"dec{i}": float(daily[f"dec{i}_mean"].mean())
+        for i in range(1, 11) if f"dec{i}_mean" in daily.columns
+    }
+    # staggered 1/h book: each entry date's decile PnL realizes spread evenly
+    # over the h sessions after entry (proxy — per-day marks not in the panel)
+    if "model_mean" in daily.columns:
+        h = args.horizon
+        s = daily["model_mean"].fillna(0.0).to_numpy() / h
+        n = len(s)
+        book = np.zeros(n + h)
+        for i, v in enumerate(s):
+            book[i + 1:i + 1 + h] += v
+        # NOTE: even-spreading is a PROXY — it smooths away intra-hold vol, so
+        # no Sharpe is quoted from it (a proxy Sharpe here is wildly inflated).
+        out["staggered_book_proxy"] = {
+            "daily_mean": float(book[h:n].mean()) if n > h else float("nan"),
+            "cum_total": float(book[h:n].sum()) if n > h else float("nan"),
+        }
     return out
 
 
@@ -209,12 +253,21 @@ def main():
     ap.add_argument("--drop-regex", default="")
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--tag", default="run")
+    ap.add_argument("--feature-ics", action="store_true",
+                    help="emit univariate per-feature IC table before training")
     args = ap.parse_args()
 
     df = load_panel(args.panel)
     n_sym = df["symbol"].nunique()
     print(f"panel rows={len(df)} symbols={n_sym} dates={df['key'].nunique()} "
           f"valid={int((df['label_valid'] == 1).sum())}", flush=True)
+    if args.feature_ics:
+        feats = [c for c in BASE_FEATURES + DERIVED if c in df.columns]
+        fic = feature_ics(df, feats)
+        os.makedirs(args.out_dir, exist_ok=True)
+        fic.to_csv(os.path.join(args.out_dir, f"xsec_featic_{args.tag}.tsv"),
+                   sep="\t", index=False)
+        print(fic.to_string(index=False), flush=True)
     daily, per_name = walk_forward(df, args)
     if daily.empty:
         print("no OOS days — not enough history", flush=True)
