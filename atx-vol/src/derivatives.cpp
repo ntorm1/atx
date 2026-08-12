@@ -1922,6 +1922,23 @@ namespace {
   return (other_spot / seed_spot) * k_other_anchored;
 }
 
+// Task F-2 cleanup round (m-9): the PREDICATE half of the same invariant --
+// is `spot` usable as a gamma-leg anchor at all (a divisor `gamma_anchor_
+// rescale` can safely take, or a value `RealizedVarianceSpec::gamma_seed_
+// spot` can safely hold)? Named once, alongside `gamma_anchor_rescale`, for
+// the identical reason that function was: three call sites had each grown
+// their OWN copy of "is this a valid anchor" (`price_gamma_swap`'s guard,
+// its rescale condition, and `inject_carry_fixing`'s injection), and one of
+// the three copies -- the injection -- disagreed, checking `> 0.0` alone
+// and admitting `+Inf` (whose rescale factor divides to 0.0, silently
+// zeroing the injected fixing instead of being caught here, at the one
+// place that should decide). A round whose whole thesis is "state the
+// invariant once, route every site through it" cannot leave its own
+// predicate stated three different ways.
+[[nodiscard]] bool gamma_anchor_valid(double spot) noexcept {
+  return std::isfinite(spot) && spot > 0.0;
+}
+
 // Task F-2 (PV-F1 / LIT-7): gamma-swap aged-blend dispatch. Mirrors
 // `price_var_swap` above field for field -- the brief's "identical dispatch
 // structure to VarSwap" -- with exactly three differences:
@@ -1990,7 +2007,7 @@ template <class SurfaceT>
   // false there, never even inspects.
   const bool needs_anchor_to_blend =
       rv.n_obs_done > 0u && rv.n_obs_total > 0u && rv.n_obs_done < rv.n_obs_total;
-  if (needs_anchor_to_blend && !(std::isfinite(rv.gamma_seed_spot) && rv.gamma_seed_spot > 0.0)) {
+  if (needs_anchor_to_blend && !gamma_anchor_valid(rv.gamma_seed_spot)) {
     return Err(ErrorCode::InvalidArgument,
                "aged gamma swap needs a finite rv_spec.gamma_seed_spot > 0 to "
                "blend the accrued leg (anchored at the seed spot) with the "
@@ -1999,8 +2016,9 @@ template <class SurfaceT>
 
   // C-1/C-3: the invariant (`gamma_anchor_rescale`'s own comment), applied
   // WITHOUT a regime gate -- whenever the future leg ran (`strip_ran`) and an
-  // anchor exists (`rv.gamma_seed_spot > 0`), rescale it onto that anchor,
-  // regardless of n_obs_done. This is what covers n_obs_done == 0 with a live
+  // anchor exists (`gamma_anchor_valid`, m-9 cleanup round -- isfinite, not
+  // just `> 0.0`), rescale it onto that anchor, regardless of n_obs_done.
+  // This is what covers n_obs_done == 0 with a live
   // anchor (C-3): reviewer's fixture (seed 100, `RealizedTracker::observe`
   // called once, zero returns realized yet, priced at spot 120, sigma=20%,
   // zero carry, T=0.5, N=1e6) -- unrescaled fair_strike_dec =
@@ -2017,7 +2035,7 @@ template <class SurfaceT>
   // `!(curves.spot > 0.0)` before returning, so re-checking it here was dead
   // code -- removed rather than kept as a defensive no-op.
   double k_gamma_for_blend = k_gamma_future_dec;
-  if (strip_ran && std::isfinite(rv.gamma_seed_spot) && rv.gamma_seed_spot > 0.0) {
+  if (strip_ran && gamma_anchor_valid(rv.gamma_seed_spot)) {
     k_gamma_for_blend = gamma_anchor_rescale(k_gamma_future_dec, curves.spot, rv.gamma_seed_spot);
   }
 
@@ -2603,10 +2621,16 @@ template <class SurfaceT>
   // BOTH the ordinary mid-life case AND a tracker-seeded n_obs_done == 0
   // contract (RealizedTracker::observe's seed call writes gamma_seed_spot
   // before any return is realized, so this injection can land on a LIVE
-  // anchor even at n_obs_done == 0).
-  const double fixing_for_gamma =
-      (rv.gamma_seed_spot > 0.0) ? gamma_anchor_rescale(fixing_dec, anchor_spot, rv.gamma_seed_spot)
-                                  : fixing_dec;
+  // anchor even at n_obs_done == 0). "Exists" is `gamma_anchor_valid` (m-9
+  // cleanup round), not a bare `> 0.0` -- this site used to check `> 0.0`
+  // alone, admitting `+Inf` (whose rescale factor divides to 0.0, silently
+  // zeroing the injected fixing instead of falling back to the unrescaled
+  // path below, which is what a genuinely-absent anchor gets). The other
+  // two sites this invariant touches (`price_gamma_swap`'s guard and its own
+  // rescale condition) already required finiteness; this one now agrees.
+  const double fixing_for_gamma = gamma_anchor_valid(rv.gamma_seed_spot)
+                                       ? gamma_anchor_rescale(fixing_dec, anchor_spot, rv.gamma_seed_spot)
+                                       : fixing_dec;
   out.rv_gamma_done_dec = (n0 * rv.rv_gamma_done_dec + fixing_for_gamma) / (n0 + 1.0);
   out.sum_weighted_sq_log_returns_done =
       (rv.annualization > 0.0)

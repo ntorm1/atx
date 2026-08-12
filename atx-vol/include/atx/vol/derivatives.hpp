@@ -749,6 +749,19 @@ struct DerivQuote {
   //     Diffusion1OverN correction. That is the model's own input, and the
   //     number `convexity_adjustment_dec` beside it is formed from
   //     (sqrt(a+b*m) - fair_strike_dec).
+  //   * GammaSwap dispatch (Task F-2 cleanup round, m-13) carries the
+  //     strip's RAW, TODAY-ANCHORED future-leg value K_gamma(T) -- like
+  //     var-swap dispatch above, no accrued leg, no rescale. This is the
+  //     ONE field on a GammaSwap quote that is NOT seed-anchored:
+  //     `fair_strike_dec`, `undiscounted_expectation_dec`, and
+  //     `future_component_dec` are all rescaled onto
+  //     `RealizedVarianceSpec::gamma_seed_spot` when an anchor exists
+  //     (`price_gamma_swap`, derivatives.cpp -- the C-1/C-3 anchor
+  //     invariant), but this field deliberately is not, mirroring var-swap
+  //     dispatch's own "raw future leg, not part of the blend" convention.
+  //     A consumer that combines `uncapped_var_dec` with any of those three
+  //     on a GammaSwap quote is mixing anchors -- the same defect class as
+  //     C-1/C-3/C-4, one level out in the quote rather than the spec.
   // 0.0 means NO STRIP RAN -- fully-aged legs, cap pins, and the standalone
   // Carr-Lee vol-strike entry -- never "the strip integrated to zero".
   double uncapped_var_dec = 0.0;

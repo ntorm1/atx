@@ -75,6 +75,28 @@ the outer scale (`2/T` for VarSwap; `2/(T*S0)` for GammaSwap).
   exists, never gated on `n_obs_done`
   (`GammaSwap.AgedBlendRescalesUnaccruedAnchorAtZeroObservationsDone`,
   `GammaSwap.CarryThetaRescalesInjectedFixingOntoSeedAnchor`).
+* **Review cleanup round, m-9/m-12/m-13 (Minor):** `inject_carry_fixing`'s
+  anchor check disagreed with `price_gamma_swap`'s two (`> 0.0` alone,
+  admitting `+Inf`, whose rescale factor divides to 0.0 and silently zeroes
+  the injected fixing) -- named the shared predicate once
+  (`gamma_anchor_valid`, alongside `gamma_anchor_rescale`) and routed all
+  three sites through it; moves only the `+Inf`/non-finite-anchor path, no
+  other number changes. **Undisclosed behaviour change from fix round 2,
+  disclosed here (m-12):** `n_obs_total == 0` with a positive
+  `gamma_seed_spot` now ALSO rescales the future leg (previously returned it
+  raw, matching `n_obs_total == 0`'s own "fully unaged, no accrual concept"
+  reading) -- e.g. `done=0 tot=0 anchor=100` at spot 120 now prices
+  `0.048000000469519313` where `24d0342` priced `0.040000000391266097`. This
+  follows from stating the rescale condition on anchor existence rather than
+  on a regime predicate (the same fix that closed C-3), is unreachable
+  through `RealizedTracker` (`create` rejects `n_obs_total == 0`, so only a
+  hand-built spec can reach it), and is arguably more correct -- but it is a
+  numeric change on a path fix round 2's own change list did not name.
+  `DerivQuote::uncapped_var_dec`'s doc (`derivatives.hpp`) now states its
+  GammaSwap meaning explicitly (m-13): unlike `fair_strike_dec`/
+  `undiscounted_expectation_dec`/`future_component_dec`, it is the RAW,
+  today-anchored future leg, never rescaled -- combining it with any of the
+  other three on a GammaSwap quote mixes anchors.
 * `DerivGreekMethod::AnalyticStrip` is NOT extended to `GammaSwap` -- P-4's
   scope predicate (`kind == DerivKind::VarSwap`, a whitelist) already excludes
   it, so a caller requesting the closed form on a gamma swap silently falls
