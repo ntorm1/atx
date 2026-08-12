@@ -1090,6 +1090,11 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
     //    `infinity` init and `worst_frac_within_bidask` resolves to 0.0 -- the
     //    intended "no diagnostic" sentinel.
     ParityReport parity{};
+    // D4: the dof the reduced chi-square was scored against, and whether the
+    // scored population could actually support it. Surfaced on the slice's
+    // diagnostic so a blanked chi2 is distinguishable from a measured zero.
+    std::size_t scored_chi2_dof = 0;
+    bool chi2_dof_underdetermined = false;
     if (in.score_parity) {
       const ProfileClock::time_point t_parity0 =
           time_stages ? ProfileClock::now() : ProfileClock::time_point{};
@@ -1109,13 +1114,64 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
         pin.method = in.deam.method;
         pin.al_opts = in.deam.al_opts;
         pin.band_k = in.band_k;
-        pin.n_curve_params = 3; // nominal chi2 dof (informational for dense fits)
+        // D4: the FITTED family's own dof, not a nominal 3. chi2_reduced is
+        // chi2/(N - dof), so a dof that is too small inflates the denominator and
+        // makes the served number systematically OPTIMISTIC. The constant 3 was
+        // right only for eSSVI; raw SVI has 5, and the node-based families have
+        // as many as their node count. `curve_selector.cpp` already scores itself
+        // off `curve.dof()`, so this brings the served path in line with the
+        // correct caller rather than inventing a convention.
+        const std::size_t curve_dof = slice->dof();
+        pin.n_curve_params = curve_dof;
         // Re-Americanize through the same cache policy that produced the one
         // canonical European row. A cold fit must not score against a cached
         // inverse map (or vice versa).
         pin.caches = allow_fit_cache(in, cfg.kind) ? in.deam.caches : AmericanCorrectionCaches{};
         auto pr = chain_parity(score.strike, score.bid, score.ask, score.mid, score.side, model_iv,
                                score.market_iv, pin);
+        // Witness the dof that was ACTUALLY scored by reading it back off the
+        // struct that was passed, rather than recomputing it alongside. A
+        // reported dof derived independently of the call can drift from the dof
+        // the call used, and then it documents an intention instead of a fact.
+        scored_chi2_dof = pin.n_curve_params;
+        if (!pr) {
+          // The ONLY dof-dependent failure `chain_parity` has is
+          // `reduced_chi_square`'s N > dof precondition (fit_metrics.cpp:95), so
+          // reaching here with a dof that just grew means the scored population
+          // cannot support the true dof. An INTERPOLATING family hits this by
+          // construction -- LinearVariance's dof IS its node count -- and for
+          // those the reduced statistic is genuinely undefined, not merely
+          // unavailable.
+          //
+          // The BAND evidence is a different matter: it does not depend on dof
+          // at all, and dropping it is not free. `session.cpp` averages over
+          // EVERY per_expiry entry and takes `worst = min(worst, ...)`, so a
+          // default-constructed report publishes frac_fv_within_bidask == 0 --
+          // indistinguishable from a surface that reprices nothing in band --
+          // while `parity_state` stays Valid because the entry count still
+          // matches. That is the D1 defect shape: no measurement laundered as a
+          // measured failure. Measured on lqbench, letting that happen cost 9 of
+          // 240 boards their in-band evidence and moved the corpus mean from
+          // 0.9652 to 0.9293.
+          //
+          // So re-score with dof = 0. That keeps the band evidence AND leaves a
+          // DEFINED goodness-of-fit number (chi2 per observation) in
+          // chi2_reduced.
+          //
+          // Deliberately NOT blanked to 0. An exact zero chi-square reads as a
+          // PERFECT fit — the same misleading-default defect one field over —
+          // and W3-A exists precisely to stop this route publishing all-zero
+          // diagnostics (pricer_fitter_test's
+          // AutoRoutedLinearVarianceMarkAlwaysScoresParity asserts
+          // mean_chi2_reduced > 0 on exactly the auto-routed LinearVariance
+          // board). The under-determined MARKER on `SliceFitDiagnostics` is what
+          // tells a reader this is chi2/N and not a true reduced chi-square;
+          // that is the distinction a bare zero could not carry.
+          pin.n_curve_params = 0;
+          pr = chain_parity(score.strike, score.bid, score.ask, score.mid, score.side, model_iv,
+                            score.market_iv, pin);
+          chi2_dof_underdetermined = true;
+        }
         if (pr) {
           parity = *pr;
         }
@@ -1157,6 +1213,8 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
       sd.maturity = T;
       sd.kind = slice->kind();
       sd.diag = slice_diag;
+      sd.chi2_dof = scored_chi2_dof;
+      sd.chi2_dof_underdetermined = chi2_dof_underdetermined;
       out.slice_diagnostics.push_back(sd);
     }
     out.surface.push(std::move(*slice_res));

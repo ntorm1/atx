@@ -282,6 +282,96 @@ TEST(CurveFitDiagnostics, ConvexDenseReportsACertifiedTerminationAndGradient) {
   }
 }
 
+// ── T10b (plan D4) — the served reduced chi-square uses the fitted family's
+// own dof, not a hardcoded 3 ────────────────────────────────────────────────
+
+// chi2_reduced is chi2/(N - dof). Hardcoding dof = 3 was right only for eSSVI
+// and inflated every other family's denominator, making the SERVED quality
+// number systematically optimistic. Raw SVI carries 5.
+TEST(CurveFitDiagnostics, ServedChiSquareIsScoredAgainstTheFittedFamilysOwnDof) {
+  Underlying under;
+  under.spot = kSpot;
+  under.chains.push_back(make_two_sided_chain(0.25));
+  under.chains.push_back(make_two_sided_chain(0.50));
+
+  CurveConfig cfg{};
+  cfg.kind = atx::vol::VolCurveKind::Svi;
+  const auto rep = fit_curve_surface(under, coverage_inputs(), cfg);
+  ASSERT_TRUE(rep.has_value()) << rep.error().to_string();
+  ASSERT_FALSE(rep->slice_diagnostics.empty());
+
+  for (std::size_t i = 0; i < rep->slice_diagnostics.size(); ++i) {
+    const auto &sd = rep->slice_diagnostics[i];
+    ASSERT_EQ(sd.kind, atx::vol::VolCurveKind::Svi);
+    // The curve's own dof, and specifically NOT the retired constant 3.
+    EXPECT_EQ(sd.chi2_dof, rep->surface.slices()[i]->dof());
+    EXPECT_EQ(sd.chi2_dof, 5u);
+    EXPECT_NE(sd.chi2_dof, 3u);
+    // A 5-parameter fit on this board has ample rows, so the statistic is
+    // well-posed and must NOT be blanked.
+    EXPECT_FALSE(sd.chi2_dof_underdetermined);
+    EXPECT_GT(rep->per_expiry[i].chi2_reduced, 0.0);
+  }
+}
+
+// The other half, and the one with teeth. An INTERPOLATING family's dof is its
+// node count, so N <= dof by construction and the reduced chi-square is
+// genuinely undefined. What must NOT happen is losing the BAND evidence that
+// shares the same ParityReport: it does not depend on dof, and losing it is not
+// free —
+// session.cpp averages over every per_expiry entry and mins into `worst`, so a
+// dropped report publishes "reprices 0% in band" while parity_state stays Valid.
+// Measured cost of getting this wrong on lqbench: 9 of 240 boards, corpus
+// mean_in_band 0.9652 -> 0.9293.
+TEST(CurveFitDiagnostics, UnderdeterminedChiSquareIsFlaggedAndBandEvidenceSurvives) {
+  Underlying under;
+  under.spot = kSpot;
+  under.chains.push_back(make_two_sided_chain(0.25));
+  under.chains.push_back(make_two_sided_chain(0.50));
+
+  CurveConfig cfg{};
+  cfg.kind = atx::vol::VolCurveKind::LinearVariance;
+  const auto rep = fit_curve_surface(under, coverage_inputs(), cfg);
+  ASSERT_TRUE(rep.has_value()) << rep.error().to_string();
+  ASSERT_FALSE(rep->slice_diagnostics.empty());
+  ASSERT_EQ(rep->slice_diagnostics.size(), rep->per_expiry.size());
+
+  bool saw_underdetermined = false;
+  for (std::size_t i = 0; i < rep->slice_diagnostics.size(); ++i) {
+    const auto &sd = rep->slice_diagnostics[i];
+    const auto &par = rep->per_expiry[i];
+    EXPECT_EQ(sd.chi2_dof, rep->surface.slices()[i]->dof());
+    if (!sd.chi2_dof_underdetermined) {
+      continue;
+    }
+    saw_underdetermined = true;
+    // chi2/(N - dof) has no positive denominator here, so what is published is
+    // chi2/N and the FLAG is what says so. It must NOT be blanked to zero: an
+    // exact zero chi-square reads as a PERFECT fit, and zeroing it re-creates the
+    // W3-A all-zero diagnostics blackout on exactly this route
+    // (pricer_fitter_test's AutoRoutedLinearVarianceMarkAlwaysScoresParity
+    // asserts mean_chi2_reduced > 0 for an auto-routed LinearVariance Mark).
+    EXPECT_TRUE(std::isfinite(par.chi2_reduced));
+    EXPECT_GE(par.chi2_reduced, 0.0);
+    // The band evidence is fully measured and MUST survive. These are
+    // the assertions that fail if the dof-0 re-score is removed: without it the
+    // whole ParityReport is dropped and n collapses to 0.
+    //
+    // NOT asserted here: rmse_mid_vol > 0. This fixture is noiseless, and a
+    // LinearVariance curve INTERPOLATES its nodes, so it reproduces the market
+    // vol exactly and a zero RMSE is the correct answer rather than a missing
+    // measurement. `n` and the in-band fraction are what separate the two.
+    EXPECT_GT(par.n, 0u);
+    EXPECT_GT(par.frac_fv_within_bidask, 0.0);
+    EXPECT_TRUE(std::isfinite(par.rmse_mid_vol));
+  }
+  // Fixture guard: an interpolating family on this board must actually REACH
+  // the under-determined case, or the assertions above never ran and this test
+  // silently proves nothing.
+  ASSERT_TRUE(saw_underdetermined)
+      << "fixture no longer exercises the N <= dof path; the test is vacuous";
+}
+
 // ── Task 6 — D1: a coverage-admissible committed prev keeps FULL floor
 // authority. The calm-day shape (narrow COVERED front whose extrapolated wing
 // overshoots the next slice's bare fit at out-of-support k) must be FLOORED

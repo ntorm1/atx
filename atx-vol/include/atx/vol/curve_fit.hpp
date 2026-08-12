@@ -109,6 +109,29 @@ struct SliceFitDiagnostics {
   VolCurveKind kind{VolCurveKind::ConvexDense};
   FitDiag diag{};
 
+  // ── D4: what the served reduced chi-square was actually scored against ───
+  //
+  // The dof handed to `reduced_chi_square` for this slice — the fitted curve's
+  // own `IVolCurve::dof()`. It used to be hardcoded to 3, which was right only
+  // for eSSVI and made every other family's served chi2 optimistic, because
+  // chi2_reduced is chi2/(N - dof) and too small a dof inflates the denominator.
+  // Zero when parity was not scored for this slice.
+  std::size_t chi2_dof{0};
+  // True when the scored population could NOT support that dof (N <= dof), so a
+  // TRUE reduced chi-square is undefined for this slice. An INTERPOLATING family
+  // reaches this by construction — LinearVariance's dof is its node count.
+  //
+  // When set, `ParityReport::chi2_reduced` holds chi2/N (re-scored with dof = 0),
+  // NOT chi2/(N - dof). It is deliberately not blanked to zero: an exact zero
+  // chi-square reads as a PERFECT fit, and zeroing it would re-create the W3-A
+  // all-zero diagnostics blackout on exactly the auto-routed LinearVariance
+  // route that invariant was written to close.
+  //
+  // THIS IS THE FLAG THAT KEEPS THAT NUMBER HONEST. Without it chi2/N is
+  // indistinguishable from a genuine reduced chi-square and silently flatters an
+  // interpolating curve. The band evidence in the same `ParityReport` does not
+  // depend on dof and is fully measured either way.
+  bool chi2_dof_underdetermined{false};
 };
 
 // The assembled polymorphic-surface bundle. `surface` OWNS the fitted curves;
