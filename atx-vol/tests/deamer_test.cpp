@@ -33,6 +33,7 @@ using atx::vol::american_price;
 using atx::vol::AmericanMethod;
 using atx::vol::audit_european_equiv_iv;
 using atx::vol::audit_european_equiv_iv_batch;
+using atx::vol::carry_confidence_gate;
 using atx::vol::carry_moneyness_bounded;
 using atx::vol::Chain;
 using atx::vol::chain_index;
@@ -756,6 +757,113 @@ TEST(DeAmer, MoneynessBoundedTracksTheBudgetAndNeverImpliesConfidence) {
   DeAmOptions disabled = opts;
   disabled.max_carry_moneyness_shift = 0.0;
   EXPECT_FALSE(carry_moneyness_bounded(result->carry, disabled));
+}
+
+// ── Carry confidence gate: units re-basing (T5d) ──────────────────────────
+//
+// These drive the predicate directly rather than a chain solve, because the
+// property under test is the UNIT the budget is expressed in, and a synthetic
+// chain cannot be steered to a chosen (T, sigma, leave-one-out) triple.
+namespace {
+
+// A carry that clears the pair floor and carries a slice width, with the two
+// rate-unit statistics and their moneyness mirrors stamped consistently — i.e.
+// exactly what `stamp_carry_moneyness` would have produced for this (T, sigma).
+[[nodiscard]] atx::vol::CarryDiagnostics carry_at(double T, double atm_sigma, double loo_rate,
+                                                  double dispersion_rate) {
+  atx::vol::CarryDiagnostics carry;
+  carry.n_retained = 3;
+  carry.atm_sigma = atm_sigma;
+  carry.dispersion = dispersion_rate;
+  carry.max_leave_one_out_shift = loo_rate;
+  const double scale = std::sqrt(T) / atm_sigma;
+  carry.dispersion_moneyness = dispersion_rate * scale;
+  carry.max_leave_one_out_moneyness = loo_rate * scale;
+  return carry;
+}
+
+// The rate-unit budget restated in the moneyness unit through the pillar — the
+// number the re-based gate actually compares against (0.005 * sqrt(1)/0.50 = 0.01).
+[[nodiscard]] double pillar_budget(double rate_budget) {
+  return rate_budget * std::sqrt(atx::vol::kCarryPillarT) / atx::vol::kCarryPillarSigma;
+}
+
+} // namespace
+
+// At the stated pillar the re-based gate must accept and refuse EXACTLY what the
+// rate gate did. This is what makes the change a re-basing rather than a move:
+// if this drifts, every downstream certificate silently changed meaning.
+TEST(DeAmer, CarryConfidenceGateIsNeutralAtTheStatedPillar) {
+  const DeAmOptions opts;
+  const double T = atx::vol::kCarryPillarT;
+  const double sigma = atx::vol::kCarryPillarSigma;
+
+  // Just inside the rate budget at the pillar -> confident under both readings.
+  EXPECT_TRUE(carry_confidence_gate(carry_at(T, sigma, opts.max_carry_leave_one_out * 0.99, 0.0),
+                                    opts));
+  // Just outside it -> refused under both readings.
+  EXPECT_FALSE(carry_confidence_gate(carry_at(T, sigma, opts.max_carry_leave_one_out * 1.01, 0.0),
+                                     opts));
+  // The dispersion companion is neutral at the SAME pillar, so the 4:1 ratio the
+  // rate knobs carry survives the re-basing untouched.
+  EXPECT_TRUE(
+      carry_confidence_gate(carry_at(T, sigma, 0.0, opts.max_carry_dispersion * 0.99), opts));
+  EXPECT_FALSE(
+      carry_confidence_gate(carry_at(T, sigma, 0.0, opts.max_carry_dispersion * 1.01), opts));
+}
+
+// Short-dated: inferring a rate from prices divides by T, so the SAME quote noise
+// reads as an enormous borrow error at four days. In the coordinate the fit
+// consumes it is negligible, and the re-based gate admits it.
+TEST(DeAmer, CarryConfidenceGateAdmitsShortDatedCarryTheRateGateOverConstrains) {
+  const DeAmOptions opts;
+  const double T = 4.0 / 252.0;
+  const double sigma = 0.50;
+  // 6x the rate budget, yet only 0.0076 of a slice standard deviation -- inside
+  // the 0.01 the pillar admits.
+  const auto carry = carry_at(T, sigma, opts.max_carry_leave_one_out * 6.0, 0.0);
+  ASSERT_GT(carry.max_leave_one_out_shift, opts.max_carry_leave_one_out);
+  ASSERT_LT(carry.max_leave_one_out_moneyness, pillar_budget(opts.max_carry_leave_one_out));
+  EXPECT_TRUE(carry_confidence_gate(carry, opts));
+}
+
+// The other side, and the one that proves this is not a relaxation: past the
+// pillar the re-based gate is STRICTER than the rate gate, and refuses a carry
+// today's gate accepts.
+TEST(DeAmer, CarryConfidenceGateRefusesLongDatedCarryTheRateGateAccepts) {
+  const DeAmOptions opts;
+  const double T = 4.0;   // four years
+  const double sigma = 0.20; // a low-vol index name
+  // Inside the rate budget, but 0.0495 of a slice standard deviation -- nearly
+  // five times the displacement the pillar admits.
+  const auto carry = carry_at(T, sigma, opts.max_carry_leave_one_out * 0.99, 0.0);
+  ASSERT_LT(carry.max_leave_one_out_shift, opts.max_carry_leave_one_out);
+  ASSERT_GT(carry.max_leave_one_out_moneyness, pillar_budget(opts.max_carry_leave_one_out));
+  EXPECT_FALSE(carry_confidence_gate(carry, opts));
+}
+
+// Without a slice width there is no moneyness unit, so the rate-unit gate stands
+// verbatim. This is what keeps the European parity route bit-identical.
+TEST(DeAmer, CarryConfidenceGateFallsBackToRateUnitsWithoutASliceWidth) {
+  const DeAmOptions opts;
+  atx::vol::CarryDiagnostics carry;
+  carry.n_retained = 3;
+  carry.atm_sigma = 0.0; // European route never inverts a leg
+  carry.max_leave_one_out_shift = opts.max_carry_leave_one_out * 0.99;
+  carry.dispersion = opts.max_carry_dispersion * 0.99;
+  EXPECT_TRUE(carry_confidence_gate(carry, opts));
+
+  carry.max_leave_one_out_shift = opts.max_carry_leave_one_out * 1.01;
+  EXPECT_FALSE(carry_confidence_gate(carry, opts));
+}
+
+// The pair floor outranks both readings: a solve with too few retained pairs is
+// refused however flattering its (undisputed) dispersion looks.
+TEST(DeAmer, CarryConfidenceGateKeepsThePairFloor) {
+  const DeAmOptions opts;
+  auto carry = carry_at(atx::vol::kCarryPillarT, atx::vol::kCarryPillarSigma, 0.0, 0.0);
+  carry.n_retained = opts.min_confident_borrow_pairs - 1;
+  EXPECT_FALSE(carry_confidence_gate(carry, opts));
 }
 
 // ── Single-quote consistency ─────────────────────────────────────────────

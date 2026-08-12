@@ -13,9 +13,24 @@
 // atx libraries, so it may use printf / try-catch freely (examples are not held
 // to the library no-exception rule).
 //
-// Usage: opra_parity_bench [PARQUET] [UNDERLYING] [SNAPSHOT_ISO] [RATE]
+// Usage: opra_parity_bench [PARQUET] [UNDERLYING] [SNAPSHOT_ISO] [RATE] [CARRY_MODE]
 //   defaults: data/xom_opra_cbbo1m_2026-06-05T1955Z.parquet  XOM
-//             2026-06-05T19:55:00Z  0.043
+//             2026-06-05T19:55:00Z  0.043  default
+//
+// CARRY_MODE selects whether the per-expiry CARRY CONFIDENCE GATE is armed:
+//   `default` — `require_carry_confidence` stays false, so every expiry keeps its
+//               OWN solved borrow whatever its confidence. Bit-identical to the
+//               historical bench.
+//   `risk`    — arms `require_carry_confidence`, the flag the served risk build
+//               sets (pricer_fitter's risk policy). A non-confident expiry is then
+//               DEFERRED to the board-level term-structure repair pass and serves a
+//               borrow DERIVED from the confident expiries instead of its own. This
+//               is the only mode in which the carry gate has any observable effect,
+//               and therefore the only one in which a change to the gate can be
+//               measured on the round trip.
+// Deliberately arms ONLY that flag, not the rest of the risk policy (calendar
+// Project, parity scoring, audited inversions): those move node admission too, and
+// would confound a measurement whose subject is the carry gate alone.
 // If the Parquet file is absent the bench prints a skip notice and exits 0
 // (mirroring the C fixtures' skip-when-absent convention).
 
@@ -62,6 +77,13 @@ int main(int argc, char** argv) {
   const std::string underlying = argc > 2 ? argv[2] : "XOM";
   const std::string snapshot = argc > 3 ? argv[3] : "2026-06-05T19:55:00Z";
   const double rate = argc > 4 ? std::atof(argv[4]) : 0.043;
+  const std::string carry_mode = argc > 5 ? argv[5] : "default";
+  if (carry_mode != "default" && carry_mode != "risk") {
+    std::fprintf(stderr, "unknown CARRY_MODE '%s' (expected 'default' or 'risk')\n",
+                 carry_mode.c_str());
+    return 2;
+  }
+  const bool require_carry_confidence = (carry_mode == "risk");
 
   if (!std::filesystem::exists(path)) {
     std::printf(
@@ -105,6 +127,7 @@ int main(int argc, char** argv) {
     base.S = panel.implied_spot;
     base.r = rate;
     base.now_ts_ns = panel.frame.snapshot_ts_ns;
+    base.deam.require_carry_confidence = require_carry_confidence;
 
     // ── Throughput: cold Andersen-Lake vs cached hot path ──────────────────
     SessionInputs cold_in = base;
@@ -155,6 +178,10 @@ int main(int argc, char** argv) {
                 "borrow", "rmse_vol", "rt_vol", "chi2_red", "in_ba%", "n");
     const auto ctx = cached->expiries();
     const auto par = cached->parity();
+    // Parallel to expiries(): carries the per-slice carry PROVENANCE, which is what
+    // distinguishes a slice serving its own solved borrow from one serving a borrow
+    // derived from the board term structure.
+    const auto sdiag = cached->slice_diagnostics();
     std::size_t n_rt_expiries = 0;
     for (std::size_t i = 0; i < ctx.size(); ++i) {
       // An expiry whose every quote sits below the one-tick-per-vol-point vega
@@ -170,6 +197,19 @@ int main(int argc, char** argv) {
       std::printf("  %-8.4f %10.4f %10.5f %10.5f %s %10.4f %7.1f%% %6zu\n", ctx[i].T,
                   ctx[i].forward, ctx[i].borrow, par[i].rmse_mid_vol, rt, par[i].chi2_reduced,
                   100.0 * par[i].frac_fv_within_bidask, ctx[i].n_used);
+      // Machine-readable mirror of the same row, joined to the carry provenance.
+      // `src` is the CarrySource ordinal (0 Solved, 1 TermStructureInterp,
+      // 2 TermStructureExtrap, 3 MoneynessBounded); `rt` is -1 where the expiry
+      // carries no vol-space verdict at all.
+      const bool has_carry = i < sdiag.size();
+      std::printf("RTROW sym=%s mode=%s T=%.6f borrow=%.8f src=%d conf=%d avail=%d "
+                  "rt=%.6f nrt=%zu rmse=%.6f n=%zu\n",
+                  underlying.c_str(), carry_mode.c_str(), ctx[i].T, ctx[i].borrow,
+                  has_carry ? static_cast<int>(sdiag[i].carry.source) : -1,
+                  (has_carry && sdiag[i].carry.confident) ? 1 : 0,
+                  (has_carry && sdiag[i].carry.available) ? 1 : 0,
+                  par[i].n_round_trip > 0 ? par[i].rmse_round_trip_vol : -1.0,
+                  par[i].n_round_trip, par[i].rmse_mid_vol, ctx[i].n_used);
     }
 
     std::printf("\n=== Aggregate parity (cached) ===\n");
