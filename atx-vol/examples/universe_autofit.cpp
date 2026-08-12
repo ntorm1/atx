@@ -206,7 +206,21 @@ const char *parity_state_name(ParityDiagnosticState state) {
                                                  "max_price_bound_slack",
                                                  "max_wing_slope_excess",
                                                  "first_calendar_k",
-                                                 "first_butterfly_k"};
+                                                 "first_butterfly_k",
+                                                 // T3e. The butterfly slack is a difference of two
+                                                 // ADJACENT-CELL price slopes on a forward-
+                                                 // normalised grid, so on its own it is not a
+                                                 // quantity anyone can judge. It becomes money
+                                                 // only with the slice it sits on (that slice's
+                                                 // forward, and its cell width). The slice index
+                                                 // supplies that join; the two slopes let a reader
+                                                 // reconstruct the slack rather than trust the
+                                                 // reported maximum. All four already exist on the
+                                                 // digest and were simply not being written out.
+                                                 "first_butterfly_slice",
+                                                 "first_butterfly_slope_left",
+                                                 "first_butterfly_slope_right",
+                                                 "first_calendar_long_slice"};
   std::string out;
   for (const std::string_view field : kFields) {
     if (!out.empty()) out += ',';
@@ -219,14 +233,22 @@ const char *parity_state_name(ParityDiagnosticState state) {
 // ValidationDigest counters are std::uint32_t, not std::size_t: `%u`, never
 // `%zu`. A mismatched conversion specifier is undefined behaviour, and the two
 // types differ in width on this target.
+// T3e widened the slack/slope columns from %.6g to %.9g. A butterfly slack is
+// order 1e-4 and the economic question asked of it — what bid-ask width would
+// this arbitrage have to beat to be harvestable — divides it by a cell width of
+// order 1e-2, so six significant digits was discarding the answer's precision,
+// not the noise.
 [[nodiscard]] std::string format_digest(const ValidationDigest &v) {
-  char buf[256];
-  std::snprintf(buf, sizeof(buf), "%u,%u,%u,%u,%u,%u,%u,%u,%u,%.6g,%.6g,%.6g,%.6g,%.6g,%.6g",
+  char buf[384];
+  std::snprintf(buf, sizeof(buf),
+                "%u,%u,%u,%u,%u,%u,%u,%u,%u,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%u,%.9g,%.9g,%u",
                 v.n_slices, v.n_strike_samples, v.n_calendar_samples, v.n_non_finite,
                 v.n_price_bound_violations, v.n_strike_monotonicity_violations,
                 v.n_butterfly_violations, v.n_calendar_violations, v.n_wing_violations,
                 v.max_calendar_slack, v.max_butterfly_slack, v.max_price_bound_slack,
-                v.max_wing_slope_excess, v.first_calendar_k, v.first_butterfly_k);
+                v.max_wing_slope_excess, v.first_calendar_k, v.first_butterfly_k,
+                v.first_butterfly_slice, v.first_butterfly_slope_left,
+                v.first_butterfly_slope_right, v.first_calendar_long_slice);
   return buf;
 }
 
