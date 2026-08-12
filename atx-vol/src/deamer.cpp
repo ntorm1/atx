@@ -727,7 +727,9 @@ struct CarryPairSelection {
     }
     stamp_carry_moneyness(diag, T, (sigma_w > 0.0) ? (sigma_ws / sigma_w) : 0.0);
   }
-  diag.confident = carry_confidence_gate(diag, opts);
+  diag.confident = diag.n_retained >= opts.min_confident_borrow_pairs &&
+                   diag.dispersion <= opts.max_carry_dispersion &&
+                   diag.max_leave_one_out_shift <= opts.max_carry_leave_one_out;
   if (opts.require_carry_confidence && !diag.confident) {
     return Err(ErrorCode::Unavailable, "de_americanize_chain: robust carry confidence gate failed");
   }
@@ -853,7 +855,9 @@ resolve_european_chain_carry(const Chain &chain, double S, double r,
   // European chain is never admitted as a moneyness-bounded fallback anchor. It
   // does not need to be: European parity is an exact equality, so its carry
   // either clears the (unchanged) confidence gate or is genuinely unresolved.
-  diag.confident = carry_confidence_gate(diag, opts);
+  diag.confident = diag.n_retained >= opts.min_confident_borrow_pairs &&
+                   diag.dispersion <= opts.max_carry_dispersion &&
+                   diag.max_leave_one_out_shift <= opts.max_carry_leave_one_out;
   if (opts.require_carry_confidence && !diag.confident) {
     return Err(ErrorCode::Unavailable,
                "resolve_chain_forward: robust European carry confidence gate failed");
@@ -868,24 +872,6 @@ resolve_european_chain_carry(const Chain &chain, double S, double r,
 }
 
 } // namespace
-
-bool carry_confidence_gate(const CarryDiagnostics &carry, const DeAmOptions &opts) noexcept {
-  if (carry.n_retained < opts.min_confident_borrow_pairs) {
-    return false;
-  }
-  // No slice width => no moneyness unit to re-base into. Keep the rate-unit gate
-  // verbatim so the European parity route stays bit-identical (see the European
-  // solve: it never inverts a leg, so it has no near-ATM vol to divide by).
-  if (!(carry.atm_sigma > 0.0) || !std::isfinite(carry.atm_sigma)) {
-    return carry.dispersion <= opts.max_carry_dispersion &&
-           carry.max_leave_one_out_shift <= opts.max_carry_leave_one_out;
-  }
-  const double to_moneyness = std::sqrt(kCarryPillarT) / kCarryPillarSigma;
-  return std::isfinite(carry.max_leave_one_out_moneyness) &&
-         std::isfinite(carry.dispersion_moneyness) &&
-         carry.max_leave_one_out_moneyness <= opts.max_carry_leave_one_out * to_moneyness &&
-         carry.dispersion_moneyness <= opts.max_carry_dispersion * to_moneyness;
-}
 
 bool carry_moneyness_bounded(const CarryDiagnostics &carry, const DeAmOptions &opts) noexcept {
   if (carry.n_retained < opts.min_confident_borrow_pairs) {

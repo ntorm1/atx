@@ -368,52 +368,6 @@ resolve_chain_forward(const Chain &chain, double S, double r,
 [[nodiscard]] bool carry_moneyness_bounded(const CarryDiagnostics &carry,
                                            const DeAmOptions &opts) noexcept;
 
-// ── The pillar at which the carry confidence gate is exactly NEUTRAL (T5d) ──
-//
-// `max_carry_leave_one_out` / `max_carry_dispersion` are quoted in ANNUALIZED
-// RATE units, but the fit never consumes a rate — it consumes `k = ln(K/F)` and
-// compares it against the slice width `sigma*sqrt(T)`. A borrow error `db` moves
-// k by `db*T`, i.e. by `db*sqrt(T)/sigma` slice standard deviations. Applying a
-// flat RATE budget across a board therefore applies a budget that varies by two
-// orders of magnitude in the coordinate that actually matters.
-//
-// The gate is re-based by converting those same two knobs into the moneyness
-// unit through ONE pillar, stated here rather than folded into a magic number:
-//
-//     budget_moneyness = budget_rate * sqrt(kCarryPillarT) / kCarryPillarSigma
-//
-// At the pillar the re-based gate accepts and refuses EXACTLY what the rate gate
-// did; away from it the two disagree in both directions. The new bound on the
-// admissible rate error is `budget_rate * (sigma / kCarryPillarSigma) /
-// sqrt(T / kCarryPillarT)`, so the gate LOOSENS where `sigma > kCarryPillarSigma
-// * sqrt(T / kCarryPillarT)` and TIGHTENS where it is below. That two-sidedness
-// is the point: a re-basing that loosened at every tenor at once would be a
-// relaxation wearing a units argument.
-//
-// The pillar is not a fresh guess — it is the one T5c already calibrated
-// `max_carry_moneyness_shift = 0.01` against (0.005 * sqrt(1.0) / 0.50 = 0.01),
-// so the re-based first tier lands on the second tier's existing number and the
-// 4:1 dispersion:leave-one-out ratio carries over untouched (0.02 -> 0.04).
-inline constexpr double kCarryPillarT = 1.0;      // one year
-inline constexpr double kCarryPillarSigma = 0.50; // 50 vol
-
-// The per-expiry carry confidence verdict — `CarryDiagnostics::confident`.
-//
-// True iff the solve retained at least `min_confident_borrow_pairs` pairs AND its
-// dispersion and leave-one-out shift are inside the configured budgets, measured
-// in SLICE-STANDARD-DEVIATION MONEYNESS via the pillar above.
-//
-// Without a slice width there is no moneyness unit to re-base into (the European
-// parity route solves on raw mids and never inverts a leg, so it reports
-// `atm_sigma == 0`). That case keeps the rate-unit comparison verbatim, so the
-// European route and any width-less solve are bit-identical to the pre-T5d gate.
-//
-// This is a UNITS re-basing, not a strictness change: `max_carry_leave_one_out`
-// and `max_carry_dispersion` remain the only knobs, they keep their meaning at
-// the pillar, and driving either to zero still refuses everything.
-[[nodiscard]] bool carry_confidence_gate(const CarryDiagnostics &carry,
-                                         const DeAmOptions &opts) noexcept;
-
 // Strike indices of the co-terminal pairs ELIGIBLE for the robust carry solve
 // — exactly the selection `resolve_chain_forward` makes (both legs quotable,
 // the k nearest to spot with k = min(max(n_atm, in-band count),
