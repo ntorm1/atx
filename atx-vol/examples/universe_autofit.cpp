@@ -62,6 +62,7 @@
 #include "atx/vol/tools/surface_db_populate.hpp" // populate_admission_policy
 #include "atx/vol/types.hpp"         // Result
 #include "atx/vol/vol_curve.hpp"     // VolCurveKind, to_string
+#include "atx/vol/vol_surface.hpp"   // EssviParams, VolSurface::essvi_slices
 
 using namespace atx::vol;
 using SteadyClock = std::chrono::steady_clock;
@@ -661,6 +662,32 @@ struct SliceRow {
   double rmse_vol{0.0};
   double chi2{0.0};
   bool parity_scored{false};
+  // eSSVI BACKBONE PARAMETERS, and the guard that says they mean anything (T3e).
+  //
+  // WHY: (N1)/(N2)/(S1) are not post-hoc projections — they are bounds on the
+  // fit's own search domain (`essvi_calib.cpp`: (N1) raises the theta band's
+  // floor to the previous slice's theta, (N2) is a lower bound on phi, (S1) an
+  // upper cap on phi). So "was the OLD parameter vector still admissible once a
+  // new neighbour was inserted ahead of it?" is decidable as arithmetic on
+  // (theta, phi, rho) pairs — no refit, no solver — PROVIDED both runs' vectors
+  // are on record. That is the only thing this block adds.
+  //
+  // The plan-space the sprint reasons in is (theta, psi = theta*phi,
+  // chi = rho*psi); it is recoverable from these three, so store the natural
+  // triple the surface actually holds rather than a derived form.
+  //
+  // GUARD, in T3d's sense: `essvi_params` is 1 only when the served surface
+  // carries one `EssviParams` per `SliceContext`. A ConvexDense or SVI board
+  // has no eSSVI backbone at all, and a zeroed theta is not distinguishable
+  // from a genuinely tiny one in the value alone.
+  bool essvi_params{false};
+  double essvi_theta{0.0};
+  double essvi_phi{0.0};
+  double essvi_rho{0.0};
+  // The backbone is what the constraints bind; the wing residual rides on top
+  // and moves w(k) without moving (N1)/(N2)/(S1). Recorded so a reader can see
+  // when SSE and feasibility are being read off different functions.
+  double essvi_resid_scale{0.0};
 };
 
 // Flatten the published session's per-slice context + parity. Reads only what
@@ -677,6 +704,10 @@ void collect_slices(std::vector<SliceRow> &out, const std::string &symbol,
   // The exact condition under which a parity term means what it says.
   const bool scored =
       sess.diagnostics().parity_state == ParityDiagnosticState::Valid && par.size() == ctx.size();
+  // Parallel to `scored`: the eSSVI backbone is present only for an eSSVI
+  // board, and only usable when it is index-parallel to the context span.
+  const std::span<const EssviParams> ess = sess.surface().essvi_slices();
+  const bool has_essvi = ess.size() == ctx.size();
   for (std::size_t i = 0; i < ctx.size(); ++i) {
     SliceRow r;
     r.symbol = symbol;
@@ -693,6 +724,13 @@ void collect_slices(std::vector<SliceRow> &out, const std::string &symbol,
       r.n_within = par[i].n_within;
       r.rmse_vol = par[i].rmse_mid_vol;
       r.chi2 = par[i].chi2_reduced;
+    }
+    r.essvi_params = has_essvi;
+    if (has_essvi) {
+      r.essvi_theta = ess[i].theta;
+      r.essvi_phi = ess[i].phi;
+      r.essvi_rho = ess[i].rho;
+      r.essvi_resid_scale = ess[i].resid_scale;
     }
     out.push_back(std::move(r));
   }
@@ -1405,14 +1443,18 @@ int main(int argc, char **argv) {
   if (want_slices) {
     std::ofstream out(slices_csv, std::ios::trunc);
     out << "symbol,curve_kind,slice_index,T,forward,n_used,n_dropped,"
-           "frac_in_band,n_scored,n_within,rmse_vol,chi2,parity_scored\n";
+           "frac_in_band,n_scored,n_within,rmse_vol,chi2,parity_scored,"
+           "essvi_params,essvi_theta,essvi_phi,essvi_rho,essvi_resid_scale\n";
     for (const std::vector<SliceRow> &board : slice_rows) {
       for (const SliceRow &s : board) {
-        char buf[320];
-        std::snprintf(buf, sizeof(buf), ",%s,%zu,%.9g,%.9g,%zu,%zu,%.9g,%zu,%zu,%.9g,%.9g,%d\n",
+        char buf[448];
+        std::snprintf(buf, sizeof(buf),
+                      ",%s,%zu,%.9g,%.9g,%zu,%zu,%.9g,%zu,%zu,%.9g,%.9g,%d,%d,%.17g,%.17g,%.17g,"
+                      "%.17g\n",
                       s.curve_kind.c_str(), s.slice_index, s.T, s.forward, s.n_used, s.n_dropped,
                       s.frac_in_band, s.n_scored, s.n_within, s.rmse_vol, s.chi2,
-                      s.parity_scored ? 1 : 0);
+                      s.parity_scored ? 1 : 0, s.essvi_params ? 1 : 0, s.essvi_theta, s.essvi_phi,
+                      s.essvi_rho, s.essvi_resid_scale);
         out << csv_escape(s.symbol) << buf;
         ++n_slice_rows;
       }
