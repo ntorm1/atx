@@ -582,6 +582,96 @@ TEST(PricerFitterRefitThinBoard, UnderdeterminedRefitKeepsBandEvidenceAndFlags) 
   EXPECT_GT(parity[refit_index].frac_fv_within_bidask, 0.0);  // band evidence survives
 }
 
+// T4 escalation (T10c): SessionDiagnostics carries banded parity-evidence
+// counters equal to the sums over the session's published per-expiry reports,
+// on the cold eSSVI build AND after an incremental refit. The refit half also
+// pins that refresh_refit_diagnostics RECOMPUTES the counters from this
+// refit's reports (B-I1: never inherit / never accumulate across refits).
+//
+// Mutation checks (both performed): removing the eSSVI-lane accumulation in
+// VolaSession::build reds the cold half (counters 0 against nonzero sums);
+// removing the reset in refresh_refit_diagnostics reds the refit half
+// (double-counted totals).
+TEST_F(PricerFitterTest, SessionDiagnosticsCarryBandedParityEvidenceCounters) {
+  SynthPanelSpec changed_spec = make_spy_synthetic_spec();
+  changed_spec.expiries.back().truth.sigma0 *= 1.01;
+  auto changed_chain = make_chain_from_spec(changed_spec);
+  ASSERT_TRUE(changed_chain.has_value()) << changed_chain.error().to_string();
+
+  PricerFitter fitter{essvi_config()};
+  ASSERT_TRUE(fitter.fit(*chain_).has_value());
+
+  const auto expect_counters_match = [&](const char *when) {
+    const VolaSession &session = fitter.surface()->session();
+    const atx::vol::SessionDiagnostics &diag = session.diagnostics();
+    std::size_t sum_scored = 0;
+    std::size_t sum_in_band = 0;
+    for (const atx::vol::ParityReport &parity : session.parity()) {
+      sum_scored += parity.n;
+      sum_in_band += parity.n_within;
+    }
+    EXPECT_EQ(diag.n_parity_scored, sum_scored) << when;
+    EXPECT_EQ(diag.n_parity_in_band, sum_in_band) << when;
+    EXPECT_EQ(diag.n_parity_out_of_band, sum_scored - sum_in_band) << when;
+    // FIXTURE GUARD: the SPY board must present as evidence-present.
+    ASSERT_GT(diag.n_parity_scored, std::size_t{0}) << when;
+  };
+  expect_counters_match("cold build");
+
+  const atx::vol::ExpiryId target =
+      static_cast<atx::vol::ExpiryId>(chain_->underlying().chains.size() - 1u);
+  replace_expiry_quotes(*chain_, *changed_chain, target);
+  const auto refitted = fitter.refit_expiry(*chain_, target);
+  ASSERT_TRUE(refitted.has_value()) << refitted.error().to_string();
+  ASSERT_TRUE(refitted->admission.admitted);
+  expect_counters_match("after refit");
+}
+
+// T4 escalation (T10c), curve lane: the polymorphic-override (ConvexDense)
+// route aggregates the same counters from ITS per-expiry reports, and the
+// scoring-disabled configuration reads n_parity_scored == 0 WITH parity_state
+// Disabled — absence of evidence, correctly labeled as such, not a measured
+// zero.
+//
+// Mutation check (performed): removing the curve-lane accumulation in
+// VolaSession::build reds the scored half.
+TEST_F(PricerFitterTest, CurveLaneSessionCarriesBandedParityEvidenceCounters) {
+  PricerConfig config;
+  config.preset = FitPreset::Fast;
+  config.curve = atx::vol::CurveConfig{atx::vol::VolCurveKind::ConvexDense};
+  config.use_deam_cache_for_fit = false;
+  config.score_parity = true;
+
+  PricerFitter fitter{config};
+  ASSERT_TRUE(fitter.fit(*chain_).has_value());
+  ASSERT_NE(fitter.surface(), nullptr);
+  const VolaSession &session = fitter.surface()->session();
+  const atx::vol::SessionDiagnostics &diag = session.diagnostics();
+  std::size_t sum_scored = 0;
+  std::size_t sum_in_band = 0;
+  for (const atx::vol::ParityReport &parity : session.parity()) {
+    sum_scored += parity.n;
+    sum_in_band += parity.n_within;
+  }
+  EXPECT_EQ(diag.n_parity_scored, sum_scored);
+  EXPECT_EQ(diag.n_parity_in_band, sum_in_band);
+  EXPECT_EQ(diag.n_parity_out_of_band, sum_scored - sum_in_band);
+  ASSERT_GT(diag.n_parity_scored, std::size_t{0});  // fixture guard
+
+  // Scoring disabled: nothing measured, and the counters SAY so, in the same
+  // breath as the state that labels it an opt-out rather than a failure.
+  PricerConfig disabled_config = config;
+  disabled_config.score_parity = false;
+  PricerFitter disabled_fitter{disabled_config};
+  ASSERT_TRUE(disabled_fitter.fit(*chain_).has_value());
+  const atx::vol::SessionDiagnostics &disabled_diag =
+      disabled_fitter.surface()->session().diagnostics();
+  EXPECT_EQ(disabled_diag.parity_state, atx::vol::ParityDiagnosticState::Disabled);
+  EXPECT_EQ(disabled_diag.n_parity_scored, std::size_t{0});
+  EXPECT_EQ(disabled_diag.n_parity_in_band, std::size_t{0});
+  EXPECT_EQ(disabled_diag.n_parity_out_of_band, std::size_t{0});
+}
+
 TEST_F(PricerFitterTest, IncrementalEssviAgreesWithColdFitOnUpdatedBoard) {
   SynthPanelSpec changed_spec = make_spy_synthetic_spec();
   changed_spec.expiries.back().truth.sigma0 *= 1.01;

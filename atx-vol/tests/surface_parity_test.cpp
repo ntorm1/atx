@@ -144,6 +144,11 @@ TEST(SurfaceParityReportContract, DesignatedInitBindsByName) {
   EXPECT_EQ(rep.n_audit_starved, std::size_t{0});
   EXPECT_FALSE(rep.fit_timings.collected);
   EXPECT_DOUBLE_EQ(rep.fit_timings.total_wall_ms, 0.0);
+  // T4 escalation (T10c): the banded evidence counters are appended fields;
+  // omitted here, they must read their own zero defaults.
+  EXPECT_EQ(rep.n_scored, std::size_t{0});
+  EXPECT_EQ(rep.n_in_band, std::size_t{0});
+  EXPECT_EQ(rep.n_out_of_band, std::size_t{0});
 }
 
 TEST(SurfaceParity, FourExpiryPanel_Essvi_InterpolatesAndCalendarArbFree) {
@@ -585,6 +590,53 @@ TEST(SurfaceParity, ServedChiSquareIsScoredAgainstTheServedSlicesOwnDof) {
         << "fixture no longer arms the HingeQuad residual on any slice; the "
            "dof correction is not being exercised";
   }
+}
+
+// T4 escalation (T10c): the report's banded evidence counters are exactly the
+// sums over the per-expiry reports it publishes — so ABSENCE OF EVIDENCE
+// (n_scored == 0) is structurally distinguishable from EVIDENCE OF ALL-OUT
+// (n_scored > 0, n_in_band == 0), the two states a frac of 0.0 conflates.
+// Additive observability only: the corpus proof that nothing else moved is the
+// bit-identical-except-new-columns diff in this lane's measurement commit.
+//
+// Mutation check (performed): removing the accumulation in run_surface_parity's
+// scoring loop reds this test with counters at 0 against nonzero sums.
+TEST(SurfaceParity, BandedEvidenceCountersMatchThePublishedReports) {
+  const PanelBuild pb = make_panel_build();
+  const auto panel = make_synthetic_american_panel(pb.spec);
+  ASSERT_TRUE(panel.has_value()) << panel.error().to_string();
+
+  Universe u;
+  const auto uid = atx::vol::data_install(u, panel->frame);
+  ASSERT_TRUE(uid.has_value()) << uid.error().to_string();
+  const auto under = u.get_underlying(*uid);
+  ASSERT_TRUE(under.has_value());
+
+  SurfaceParityInputs in;
+  in.S = pb.spec.spot;
+  in.r = pb.spec.r;
+  in.cash_divs = pb.spec.cash_divs;
+  in.now_ts_ns = iso_to_ns(pb.snapshot);
+  in.deam.hyb = pb.spec.hyb;
+  in.deam.imply_borrow = true;
+  in.deam.n_atm = 3;
+
+  const auto res = run_surface_parity(**under, in);
+  ASSERT_TRUE(res.has_value()) << res.error().to_string();
+
+  std::size_t sum_scored = 0;
+  std::size_t sum_in_band = 0;
+  for (const atx::vol::ParityReport& parity : res->per_expiry) {
+    sum_scored += parity.n;
+    sum_in_band += parity.n_within;
+  }
+  EXPECT_EQ(res->n_scored, sum_scored);
+  EXPECT_EQ(res->n_in_band, sum_in_band);
+  EXPECT_EQ(res->n_out_of_band, sum_scored - sum_in_band);
+  // FIXTURE GUARD: a healthy scored board must present as evidence-present —
+  // if this reads 0 the counters (or the fixture) stopped measuring anything.
+  ASSERT_GT(res->n_scored, std::size_t{0});
+  EXPECT_GT(res->n_in_band, std::size_t{0});
 }
 
 // D4 (T10c), under-determined half. A residual-armed slice serves 7 fitted

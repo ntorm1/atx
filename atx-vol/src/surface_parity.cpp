@@ -565,6 +565,11 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
   //    the model IV is read back via iv_on_slice, so the number scored is the
   //    one the surface actually serves.
   const double t_parity = time_stages ? now_ns() : 0.0;
+  // T4 escalation (T10c): banded evidence counters over the same population the
+  // per_expiry reports score. Additive observability — nothing below feeds an
+  // admission, a score, or the family selection.
+  std::size_t n_scored_quotes = 0;
+  std::size_t n_in_band_quotes = 0;
   for (const PendingSlice &ps : pending) {
     const PreparedScoreColumns &score = ps.prepared.score_columns();
     std::vector<double> model_iv;
@@ -616,6 +621,8 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
     ATX_TRY(ParityReport parity, std::move(scored));
     parity.chi2_dof_underdetermined = chi2_dof_underdetermined;
     worst = std::min(worst, parity.frac_fv_within_bidask);
+    n_scored_quotes += parity.n;
+    n_in_band_quotes += parity.n_within;
     per_expiry.push_back(parity);
   }
   const double ms_parity = time_stages ? (now_ns() - t_parity) : 0.0;
@@ -653,6 +660,9 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
       .n_calendar_viol_pre = n_calendar_viol_pre,
       .n_carry_skipped = n_carry_skipped,
       .n_audit_starved = n_audit_starved,
+      .n_scored = n_scored_quotes,
+      .n_in_band = n_in_band_quotes,
+      .n_out_of_band = n_scored_quotes - n_in_band_quotes,
   };
   if (in.collect_stage_timings) {
     out.fit_timings.carry_solve_ms = ms_carry;

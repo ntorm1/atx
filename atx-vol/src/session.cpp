@@ -1310,6 +1310,12 @@ Result<VolaSession> VolaSession::build(const Underlying &under, const SessionInp
       double sum_frac = 0.0, sum_chi2 = 0.0, sum_rmse = 0.0;
       std::size_t np_scored = 0;
       for (const ParityReport &p : crep.per_expiry) {
+        // T4 escalation (T10c): banded evidence counters. Accumulated BEFORE
+        // the n == 0 skip below (an unscored report contributes zero to each,
+        // so the placement is arithmetic-neutral — but the counters must count
+        // the population as published, not the population as averaged).
+        cdiag.n_parity_scored += p.n;
+        cdiag.n_parity_in_band += p.n_within;
         if (p.n == 0) {
           continue;
         }
@@ -1322,6 +1328,7 @@ Result<VolaSession> VolaSession::build(const Underlying &under, const SessionInp
         cdiag.max_prc_err = std::max(cdiag.max_prc_err, p.band.max_prc_err);
         ++np_scored;
       }
+      cdiag.n_parity_out_of_band = cdiag.n_parity_scored - cdiag.n_parity_in_band;
       if (np_scored > 0) {
         const double dn = static_cast<double>(np_scored);
         cdiag.worst_frac_within_bidask = worst;
@@ -1449,7 +1456,15 @@ Result<VolaSession> VolaSession::build(const Underlying &under, const SessionInp
     diag.n_bid_miss += p.band.n_bid_miss;
     diag.n_ask_miss += p.band.n_ask_miss;
     diag.max_prc_err = std::max(diag.max_prc_err, p.band.max_prc_err);
+    // T4 escalation (T10c): banded evidence counters. This loop averages EVERY
+    // report in — a default-constructed one (n == 0) enters as
+    // frac_fv_within_bidask == 0 and reads like a measured all-out — so the
+    // counters are what lets a consumer tell that state apart: an unscored
+    // report contributes nothing to n_parity_scored.
+    diag.n_parity_scored += p.n;
+    diag.n_parity_in_band += p.n_within;
   }
+  diag.n_parity_out_of_band = diag.n_parity_scored - diag.n_parity_in_band;
   const std::size_t np = rep.per_expiry.size();
   if (np > 0) {
     const double dnp = static_cast<double>(np);
@@ -2331,7 +2346,16 @@ Status VolaSession::refresh_refit_diagnostics() {
   double sum_chi2 = 0.0;
   double sum_rmse = 0.0;
   std::size_t scored = 0u;
+  // T4 escalation (T10c): recompute the banded evidence counters from THIS
+  // refit's reports — `diag_` is carried across refits, so accumulating into
+  // the stale values would double-count (the same B-I1 never-inherit rule the
+  // parity_state recomputation below follows).
+  diag_.n_parity_scored = 0u;
+  diag_.n_parity_in_band = 0u;
+  diag_.n_parity_out_of_band = 0u;
   for (const ParityReport &report : parity_) {
+    diag_.n_parity_scored += report.n;
+    diag_.n_parity_in_band += report.n_within;
     if (report.n == 0u) {
       continue;
     }
@@ -2341,6 +2365,7 @@ Status VolaSession::refresh_refit_diagnostics() {
     sum_rmse += report.rmse_mid_vol;
     ++scored;
   }
+  diag_.n_parity_out_of_band = diag_.n_parity_scored - diag_.n_parity_in_band;
   // Recompute parity_state from THIS refit's actual scoring; never inherit the
   // cold build's value (B-I1). The legacy eSSVI refit always re-scores its
   // target slice, so a healthy refit resolves Valid; a partial score resolves

@@ -141,6 +141,12 @@ struct Row {
   bool calendar_arb_free{false};
   std::size_t n_slices{0};
   std::size_t n_quotes_used{0};
+  // T4 escalation (T10c): banded parity-evidence counters (SessionDiagnostics
+  // n_parity_*). Appended as the LAST CSV columns so the shared-column prefix
+  // of a pre-counter baseline stays byte-comparable.
+  std::size_t n_parity_scored{0};
+  std::size_t n_parity_in_band{0};
+  std::size_t n_parity_out_of_band{0};
   // valuation
   std::size_t n_valued{0};
   std::size_t n_price_nan{0};
@@ -421,6 +427,9 @@ int main(int argc, char **argv) {
       row.calendar_arb_free = dg.calendar_arb_free;
       row.n_slices = dg.n_slices;
       row.n_quotes_used = dg.n_quotes;
+      row.n_parity_scored = dg.n_parity_scored;
+      row.n_parity_in_band = dg.n_parity_in_band;
+      row.n_parity_out_of_band = dg.n_parity_out_of_band;
 
       if (do_value) {
         const auto t3 = Clock::now();
@@ -456,7 +465,7 @@ int main(int argc, char **argv) {
            "n_quotes_used,n_valued,n_price_nan,n_bidiv_nan,n_askiv_nan,load_ms,chain_ms,fit_ms,"
            "value_ms,selector_fallback,f_live_quotes,f_live_expiries,f_quoted_expiries,"
            "f_atm_quotes,f_ident_expiries,f_max_nm_strikes,f_median_spread,f_front_expiries,"
-           "f_weeklies,selector_error\n";
+           "f_weeklies,selector_error,n_parity_scored,n_parity_in_band,n_parity_out_of_band\n";
     for (const Row &w : rows) {
       char buf[512];
       std::snprintf(buf, sizeof(buf),
@@ -475,7 +484,8 @@ int main(int argc, char **argv) {
                     w.f_max_nm_strikes, w.f_median_spread, w.f_front_expiries,
                     w.f_weeklies ? 1 : 0);
       out << csv_escape(w.symbol) << ',' << w.status << ',' << csv_escape(w.error) << buf << fbuf
-          << csv_escape(w.selector_error) << '\n';
+          << csv_escape(w.selector_error) << ',' << w.n_parity_scored << ',' << w.n_parity_in_band
+          << ',' << w.n_parity_out_of_band << '\n';
     }
   }
 
