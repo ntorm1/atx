@@ -216,6 +216,17 @@ TEST(StructurePanel, Builder_EmitsRowPerCompletedDay) {
   // Keys must be strictly ascending.
   auto bad = b.push("2026-01-04", make_surface(506.0, kT0 + 2 * kDayNs, 0.0));
   EXPECT_FALSE(bad.has_value());
+
+  // finish() surrenders the pending final session: features intact, labels
+  // NaN, pnl_valid false; second call is empty.
+  auto last = b.finish();
+  ASSERT_TRUE(last.has_value());
+  EXPECT_EQ(last->key, "2026-01-05");
+  EXPECT_FALSE(last->pnl_valid);
+  EXPECT_TRUE(std::isnan(last->pnl_front));
+  EXPECT_TRUE(std::isnan(last->pnl_back));
+  EXPECT_GT(last->iv_1m, 0.0);
+  EXPECT_FALSE(b.finish().has_value());
 }
 
 TEST(StructurePanel, Builder_WindowedFeaturesFillIn) {

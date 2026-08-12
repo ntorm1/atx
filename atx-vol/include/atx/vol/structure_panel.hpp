@@ -175,6 +175,14 @@ public:
   // Sessions whose labels could not be computed (resolve or mark failure).
   [[nodiscard]] std::uint64_t skipped() const noexcept { return skipped_; }
 
+  // End-of-stream: surrender the final pending session's row — features
+  // complete, labels NaN, pnl_valid false (its next-day mark never arrived).
+  // The operational predict path needs exactly this row: the latest session's
+  // features ARE the live decision input. Idempotent: nullopt when nothing is
+  // pending. Does not count toward `skipped()` — an unfinished label at the
+  // corpus edge is not a failure.
+  [[nodiscard]] std::optional<PanelRow> finish();
+
 private:
   struct Pending {
     PanelRow row;

@@ -268,6 +268,18 @@ std::string to_tsv_line(const PanelRow &row) {
 
 StructurePanelBuilder::StructurePanelBuilder(StructurePanelConfig cfg) : cfg_(cfg) {}
 
+std::optional<PanelRow> StructurePanelBuilder::finish() {
+  if (!prev_.has_value()) {
+    return std::nullopt;
+  }
+  PanelRow row = std::move(prev_->row);
+  row.pnl_front = kNaN;
+  row.pnl_back = kNaN;
+  row.pnl_valid = false;
+  prev_.reset();
+  return row;
+}
+
 Result<std::optional<PanelRow>> StructurePanelBuilder::push(const std::string &key,
                                                             const PricedSurface &surf) {
   if (!(cfg_.front_T > 0.0) || !(cfg_.back_T > cfg_.front_T) || !(cfg_.vega_target > 0.0) ||

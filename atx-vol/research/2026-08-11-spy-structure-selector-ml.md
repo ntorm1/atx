@@ -140,3 +140,38 @@ surfaces (convex-dense), 2019-01-02 → 2026-07-31, spot/r inside each archive's
   ½Γ_f S²·ret² + V_f·Δσ_1m with (θ, Γ, V) KNOWN at entry — predict ret²
   (HAR-style variance forecast) and Δσ (IV mean-reversion/pull) instead of
   noisy dollar PnL, then assemble structure forecasts from entry greeks.
+
+- 2026-08-11 (loop 3): decomposition tested and REJECTED for selection.
+  * Attribution identity validated: θ·dt + ½ΓS²R² + V·Δσ_atm alone explains
+    only 47%/−34% (front/back) — the missing piece is the STICKY-STRIKE
+    skew-ride term V·(−skew·R) (fixed-K vol ≠ ATM vol under spot moves).
+    With it: identity R² 0.92 (front) / 0.85 (back), fitted 0.96/0.94.
+  * But assembling E[pnl] from forecast E[R²] + E[Δσ] underperforms direct
+    PnL regression: decomp 374, decomp+direct blend 394, direct 709. The
+    ½ΓS² lever amplifies small variance-forecast errors, and the direct
+    model keeps residual covariance information the assembly discards.
+  * `finish()` added to the builder + tool: the final pending session now
+    emits a features-only row (pnl_valid=0) — the live decision input.
+    `--predict-latest` fits on all completed rows and prints the structure
+    to hold next session (2026-07-31 decision: fwd_vol, +1.56 pred).
+
+## Final model card (as of 2026-08-11)
+
+- Data: `atx-vol-structure-panel` TSV over surface-db-r2 SPY, 2019-2026.
+- Model: per-leg ridge (α=10) on 35 v1 features + 9 derived (ranks/ratios/
+  gap-z), targets winsorized at q=0.01, 756-session rolling window, refit
+  every 21 sessions, 1-session embargo.
+- Decision: argmax over {p̂1, p̂2, p̂2−p̂1, p̂1−p̂2}; crisis gate: iv_1m above
+  its trailing-252d 95th percentile ⇒ both calendars off-menu.
+- OOS 2020-01..2026-07: total +709 (best always-on +420), Sharpe 0.54,
+  worst day −90, oracle capture 5.3%, hit rate 0.38.
+- Bootstrap (2000×21d blocks): P(total>0)=0.94, P(beats always-long-vega)=0.78.
+- Reproduce:
+  `atx-vol-structure-panel --out spy_panel.tsv --year-lo 2019 --year-hi 2026`
+  `python scripts/structure_selector_train.py --panel spy_panel.tsv
+   --model ridge --winsor 0.01 --train-window 756 --crisis-gate 0.95
+   --drop-regex "iv_1w|short_slope|vsw_|_delta|_vanna|_volga" [--predict-latest]`
+- Known limits: frictionless, fixed entry-delta hedge, vega-normalized
+  sizing convention, single-underlier; corpus starts 2019 (no earlier OPRA
+  on disk); Sharpe still below the always-long-vega carry (0.89) — the
+  model wins on total PnL, not risk-adjusted, in the raw game.

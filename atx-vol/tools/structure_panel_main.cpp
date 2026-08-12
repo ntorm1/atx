@@ -171,6 +171,13 @@ int main(int argc, char **argv) {
     std::fprintf(stderr, "%s: done (%zu sessions cumulative)\n", root.c_str(), n_pushed);
   }
 
+  // Final pending session: features only (labels NaN, pnl_valid 0) — the live
+  // decision row for the operational predict path.
+  if (auto last = builder.finish(); last.has_value()) {
+    out << to_tsv_line(*last) << '\n';
+    ++n_rows;
+  }
+
   std::fprintf(stderr,
                "panel complete: %zu sessions pushed, %zu rows written, %zu invalid labels, "
                "%zu load failures, builder skipped %llu\n",

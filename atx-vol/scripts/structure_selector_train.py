@@ -35,9 +35,10 @@ META_COLS = ("key", "pnl_valid")
 STRATEGIES = ("long_gamma_1m", "long_vega_1y", "fwd_vol", "rev_fwd_vol")
 
 
-def load_panel(path: str) -> pd.DataFrame:
+def load_panel(path: str, keep_invalid: bool = False) -> pd.DataFrame:
     df = pd.read_csv(path, sep="\t")
-    df = df[df["pnl_valid"] == 1].reset_index(drop=True)
+    if not keep_invalid:
+        df = df[df["pnl_valid"] == 1].reset_index(drop=True)
     df["key"] = df["key"].astype(str)
     return df
 
@@ -171,8 +172,9 @@ def walk_forward(
     vol_target: int = 0,
     ridge_alpha: float = 10.0,
     score_ema: float = 0.0,
+    exclude: tuple[str, ...] = (),
 ) -> WalkForwardResult:
-    feats = feature_columns(df)
+    feats = [c for c in feature_columns(df) if c not in exclude]
     x = df[feats].to_numpy(dtype=float)
     y_front = df["pnl_front"].to_numpy(dtype=float)
     y_back = df["pnl_back"].to_numpy(dtype=float)
@@ -208,17 +210,66 @@ def walk_forward(
     preds: list[np.ndarray] = []
     realized: list[np.ndarray] = []
 
+    if model_kind in ("decomp", "blend"):
+        # Physics-informed assembly: pnl ≈ θ·dt + ½ΓS²·R² + V·Δσ_atm (validated
+        # identity R² 0.92/0.85 with the skew-ride term, whose expectation ≈ 0).
+        # Forecast the two stochastic pieces — next-day variance and ATM vol
+        # change per tenor — and assemble expected PnL from KNOWN entry greeks.
+        date = pd.to_datetime(df["key"])
+        decomp_dt = ((date.shift(-1) - date).dt.days / 365.25).to_numpy()
+        r_next = np.log(df["spot"].shift(-1) / df["spot"]).to_numpy()
+        tgt_ret2 = r_next**2
+        tgt_ds1m = (df["iv_1m"].shift(-1) - df["iv_1m"]).to_numpy()
+        tgt_ds1y = (df["iv_1y"].shift(-1) - df["iv_1y"]).to_numpy()
+        spot2 = df["spot"].to_numpy() ** 2
+        g_front = df["front_gamma"].to_numpy()
+        th_front = df["front_theta"].to_numpy()
+        g_back = df["back_gamma"].to_numpy()
+        th_back = df["back_theta"].to_numpy()
+        vega_unit = 1000.0  # entry_vega == vega_target by construction
+
     ema_state: np.ndarray | None = None
     for fold_start in range(min_train, n, retrain_every):
         train_end = max(1, fold_start - embargo)
         train_lo = max(0, train_end - train_window) if train_window > 0 else 0
         test_end = min(n, fold_start + retrain_every)
-        mf = make_model(model_kind, seed, ridge_alpha=ridge_alpha)
-        mb = make_model(model_kind, seed + 1, ridge_alpha=ridge_alpha)
-        mf.fit(x[train_lo:train_end], winsorize_to(y_front[train_lo:train_end], winsor))
-        mb.fit(x[train_lo:train_end], winsorize_to(y_back[train_lo:train_end], winsor))
-        pf = mf.predict(x[fold_start:test_end])
-        pb = mb.predict(x[fold_start:test_end])
+        if model_kind in ("decomp", "blend"):
+
+            def fit_predict(target: np.ndarray, s: int) -> np.ndarray:
+                m = make_model("ridge", s, ridge_alpha=ridge_alpha)
+                t = target[train_lo:train_end]
+                mask = np.isfinite(t)
+                m.fit(x[train_lo:train_end][mask], winsorize_to(t[mask], winsor))
+                return m.predict(x[fold_start:test_end])
+
+            e_ret2 = np.maximum(fit_predict(tgt_ret2, seed), 0.0)
+            e_ds1m = fit_predict(tgt_ds1m, seed + 1)
+            e_ds1y = fit_predict(tgt_ds1y, seed + 2)
+            sl = slice(fold_start, test_end)
+            pf = (
+                th_front[sl] * decomp_dt[sl]
+                + 0.5 * g_front[sl] * spot2[sl] * e_ret2
+                + vega_unit * e_ds1m
+            )
+            pb = (
+                th_back[sl] * decomp_dt[sl]
+                + 0.5 * g_back[sl] * spot2[sl] * e_ret2
+                + vega_unit * e_ds1y
+            )
+            if model_kind == "blend":
+                mf = make_model("ridge", seed, ridge_alpha=ridge_alpha)
+                mb = make_model("ridge", seed + 1, ridge_alpha=ridge_alpha)
+                mf.fit(x[train_lo:train_end], winsorize_to(y_front[train_lo:train_end], winsor))
+                mb.fit(x[train_lo:train_end], winsorize_to(y_back[train_lo:train_end], winsor))
+                pf = 0.5 * (pf + mf.predict(x[fold_start:test_end]))
+                pb = 0.5 * (pb + mb.predict(x[fold_start:test_end]))
+        else:
+            mf = make_model(model_kind, seed, ridge_alpha=ridge_alpha)
+            mb = make_model(model_kind, seed + 1, ridge_alpha=ridge_alpha)
+            mf.fit(x[train_lo:train_end], winsorize_to(y_front[train_lo:train_end], winsor))
+            mb.fit(x[train_lo:train_end], winsorize_to(y_back[train_lo:train_end], winsor))
+            pf = mf.predict(x[fold_start:test_end])
+            pb = mb.predict(x[fold_start:test_end])
         pred = strategy_pnls(pf, pb)
         if score_ema > 0.0:
             # causal EWMA of predictions across sessions (fold-spanning state):
@@ -297,6 +348,49 @@ def block_bootstrap_stats(
     return pos / n_boot, beat / n_boot, (float(lo), float(hi))
 
 
+def predict_latest(
+    df: pd.DataFrame,
+    model_kind: str,
+    train_window: int,
+    winsor: float,
+    seed: int,
+    ridge_alpha: float,
+    crisis_gate: float,
+    exclude: tuple[str, ...],
+) -> None:
+    """Operational mode: fit on everything available, print the structure to
+    hold from the LAST panel session to the next one. The last row's labels are
+    for yesterday->today; its FEATURES are today's state, which is exactly the
+    decision input."""
+    feats = [c for c in feature_columns(df) if c not in exclude]
+    x = df[feats].to_numpy(dtype=float)
+    n = len(df)
+    lo = max(0, n - train_window) if train_window > 0 else 0
+    # train on all completed rows; the last row is the decision row
+    mf = make_model(model_kind, seed, ridge_alpha=ridge_alpha)
+    mb = make_model(model_kind, seed + 1, ridge_alpha=ridge_alpha)
+    valid = (df["pnl_valid"].to_numpy() == 1)[lo : n - 1]
+    xt = x[lo : n - 1][valid]
+    mf.fit(xt, winsorize_to(df["pnl_front"].to_numpy()[lo : n - 1][valid], winsor))
+    mb.fit(xt, winsorize_to(df["pnl_back"].to_numpy()[lo : n - 1][valid], winsor))
+    pf = float(mf.predict(x[n - 1 : n])[0])
+    pb = float(mb.predict(x[n - 1 : n])[0])
+    score = strategy_pnls(np.array([pf]), np.array([pb]))[0]
+    gated = ""
+    if crisis_gate > 0.0 and "iv_1m_rank" in df.columns:
+        rank = float(df["iv_1m_rank"].iloc[-1])
+        if np.isfinite(rank) and rank > crisis_gate:
+            score = score.copy()
+            score[2] = score[3] = -np.inf
+            gated = f"  [crisis gate ACTIVE: iv_1m_rank {rank:.2f} > {crisis_gate}]"
+    pick = int(np.argmax(score))
+    print(f"decision date: {df['key'].iloc[-1]}{gated}")
+    for s, name in enumerate(STRATEGIES):
+        marker = " <== HOLD" if s == pick else ""
+        val = score[s] if np.isfinite(score[s]) else float("-inf")
+        print(f"  {name:>14}: predicted 1-day PnL {val:>8.2f}{marker}")
+
+
 def ann_sharpe(daily: np.ndarray) -> float:
     sd = daily.std(ddof=1)
     if not np.isfinite(sd) or sd == 0.0:
@@ -353,7 +447,9 @@ def report(res: WalkForwardResult, seed: int) -> str:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--panel", required=True)
-    ap.add_argument("--model", default="hgb", choices=("hgb", "ridge", "ens"))
+    ap.add_argument(
+        "--model", default="hgb", choices=("hgb", "ridge", "ens", "decomp", "blend")
+    )
     ap.add_argument("--interactions", action="store_true", help="add regime product features")
     ap.add_argument("--min-train", type=int, default=252)
     ap.add_argument("--retrain-every", type=int, default=21)
@@ -402,21 +498,40 @@ def main() -> None:
     ap.add_argument("--drop-regex", default=None, help="drop feature columns matching this regex")
     ap.add_argument("--ridge-alpha", type=float, default=10.0)
     ap.add_argument("--score-ema", type=float, default=0.0, help="EWMA alpha for prediction smoothing")
+    ap.add_argument(
+        "--predict-latest",
+        action="store_true",
+        help="fit on all data, print the recommended structure for the next session",
+    )
     args = ap.parse_args()
 
-    df = load_panel(args.panel)
+    df = load_panel(args.panel, keep_invalid=args.predict_latest)
     if not args.no_derived:
         df = add_derived_features(df)
     if args.interactions:
         df = add_interaction_features(df)
+    exclude: tuple[str, ...] = ()
     if args.drop_regex:
         import re
 
         rx = re.compile(args.drop_regex)
-        drop = [c for c in feature_columns(df) if rx.search(c)]
-        df = df.drop(columns=drop)
-        print(f"dropped {len(drop)} features: {', '.join(drop)}")
+        exclude = tuple(c for c in feature_columns(df) if rx.search(c))
+        print(f"excluded {len(exclude)} features: {', '.join(exclude)}")
     print(f"panel: {len(df)} valid rows, {len(feature_columns(df))} features")
+
+    if args.predict_latest:
+        predict_latest(
+            df,
+            model_kind=args.model,
+            train_window=args.train_window,
+            winsor=args.winsor,
+            seed=args.seed,
+            ridge_alpha=args.ridge_alpha,
+            crisis_gate=args.crisis_gate,
+            exclude=exclude,
+        )
+        return
+
     res = walk_forward(
         df,
         model_kind=args.model,
@@ -435,6 +550,7 @@ def main() -> None:
         vol_target=args.vol_target,
         ridge_alpha=args.ridge_alpha,
         score_ema=args.score_ema,
+        exclude=exclude,
     )
     print(report(res, seed=args.seed))
 
