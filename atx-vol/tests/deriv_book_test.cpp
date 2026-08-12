@@ -150,6 +150,22 @@ namespace ledger = atx::vol::counters::ledger;
   return c;
 }
 
+// Task F-3: the corridor sibling. The corridor is deliberately NARROWER than
+// the resolved span (the fixture's spot is 100.0), never the unbounded 0/0 --
+// a corridor at its no-op value would make this contract price identically to
+// `var_swap_at` and hide any routing mistake.
+[[nodiscard]] DerivContract corridor_var_swap_at(double T) {
+  DerivContract c{};
+  c.kind = DerivKind::CorridorVarSwap;
+  c.maturity_t = T;
+  c.notional = 1e6;
+  c.rv_spec.annualization = 252.0;
+  c.rv_spec.n_obs_total = 88u;
+  c.corridor_lo = 85.0;
+  c.corridor_hi = 120.0;
+  return c;
+}
+
 TEST(DerivBook, PricesVarAndVolSwapAgainstSurfaceSet) {
   const atx::vol::PricedSurface ps = atx::vol::testkit::make_flat_surface(7, 100.0, 100.0, 0.30);
   const atx::vol::PricedSurface *arr[] = {&ps};
@@ -284,6 +300,85 @@ TEST(DerivBook, GammaSwapNeverUsesTheVarSwapMemo) {
   // And the two counters never cross-contaminate: this book has NO VarSwap
   // rows at all.
   EXPECT_EQ(ledger::snapshot().get(ledger::Solve::VarSwapStripEvals), 0u);
+}
+
+// Task F-3, the exact sibling of the test above and for the same reason.
+// `var_swap_memo_eligible` (deriv_book.cpp) is a `kind ==` WHITELIST, and
+// `-Wswitch -WX` does NOT police those -- a silently-widened whitelist is the
+// recurring defect of this whole sprint (P-4 C-1, F-2 C-1..C-4), and it is
+// precisely the class a compiler cannot catch. So it is checked by TEST.
+//
+// A corridor row sharing the VarSwap memo would be a WRONG NUMBER, not merely
+// a lost optimization: the memo caches the FULL-SPAN strip keyed on
+// (uid, T-bits, wing band), and `corridor_lo`/`corridor_hi` are NOT in that
+// key, so five corridor rows would all be served one full-span K_var with
+// their corridors silently discarded -- and two rows with DIFFERENT corridors
+// would be served the same number.
+//
+// Marks-only for the same isolation reason the GammaSwap sibling documents.
+TEST(DerivBook, CorridorVarSwapNeverUsesTheVarSwapMemo) {
+  const PricedSurface ps = make_carry_skew_surface(7, 100.0, 0.30, 0.02);
+  const PricedSurface *arr[] = {&ps};
+  auto ss = SurfaceSet::create(arr);
+  ASSERT_TRUE(ss.has_value());
+
+  std::vector<DerivPosition> book;
+  for (std::uint32_t i = 0; i < 5u; ++i) {
+    DerivPosition p{};
+    p.id = i;
+    p.uid = 7;
+    p.qty = 1.0;
+    p.contract = corridor_var_swap_at(0.35);
+    p.contract.strike_dec = 0.01 * static_cast<double>(i);
+    p.contract.rv_spec.n_obs_done = i;  // mid-life: not fully aged, needs the strip
+    // NON-TRIVIAL corridor accrual, per this sprint's standing lesson: the
+    // in-corridor count is strictly below n_obs_done for every row past the
+    // first, so a blend reading the plain leg would move these rows' totals.
+    p.contract.rv_spec.n_obs_in_corridor = i / 2u;
+    p.contract.rv_spec.rv_corridor_done_dec = (i / 2u) > 0u ? 0.02 : 0.0;
+    p.contract.rv_spec.rv_done_dec = 0.05;
+    book.push_back(p);
+  }
+
+  ledger::reset();
+  const auto f = price_deriv_book(*ss, book, DerivConfig{}, /*greeks=*/false);
+  ASSERT_TRUE(f.has_value()) << f.error().to_string();
+  ASSERT_EQ(f->rows.size(), 5u);
+  for (const auto &row : f->rows) {
+    EXPECT_EQ(row.status, PriceStatus::Ok);
+  }
+  // THE assertion that carries this test: O(L), not O(1). A widened memo
+  // whitelist collapses this to 1.
+  EXPECT_EQ(ledger::snapshot().get(ledger::Solve::CorridorVarSwapStripEvals), 5u);
+  // No cross-contamination in either direction: the P-6 book-memo gate reads
+  // VarSwapStripEvals, and a corridor eval folded into it would corrupt what
+  // that gate measures.
+  EXPECT_EQ(ledger::snapshot().get(ledger::Solve::VarSwapStripEvals), 0u);
+  EXPECT_EQ(ledger::snapshot().get(ledger::Solve::GammaSwapStripEvals), 0u);
+
+  // The corridor genuinely bound: two rows differing ONLY in corridor would be
+  // served the same cached number if the memo had swallowed them. Priced
+  // against the same (uid, T), a strictly narrower corridor is worth strictly
+  // less -- which a shared full-span block could not reproduce.
+  std::vector<DerivPosition> pair;
+  DerivPosition wide{};
+  wide.id = 100;
+  wide.uid = 7;
+  wide.qty = 1.0;
+  wide.contract = corridor_var_swap_at(0.35);
+  DerivPosition narrow = wide;
+  narrow.id = 101;
+  narrow.contract.corridor_lo = 95.0;
+  narrow.contract.corridor_hi = 106.0;
+  pair.push_back(wide);
+  pair.push_back(narrow);
+
+  const auto g = price_deriv_book(*ss, pair, DerivConfig{}, /*greeks=*/false);
+  ASSERT_TRUE(g.has_value()) << g.error().to_string();
+  ASSERT_EQ(g->rows.size(), 2u);
+  EXPECT_EQ(g->rows[0].status, PriceStatus::Ok);
+  EXPECT_EQ(g->rows[1].status, PriceStatus::Ok);
+  EXPECT_LT(g->rows[1].fair_strike_dec, g->rows[0].fair_strike_dec);
 }
 
 // FIT-C7 / Task C-6, review round 1 CRITICAL-1: `price_deriv_book` is the

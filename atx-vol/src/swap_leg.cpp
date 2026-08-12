@@ -69,6 +69,26 @@ Result<SwapLot> solve_cycle_swap(const SurfaceRef &surface, const CycleSwapReque
   if (surface == nullptr) {
     return Err(ErrorCode::Unavailable, "solve_cycle_swap: no surface for the underlier");
   }
+  // Task F-3: `SwapLot` (and `CycleSwapRequest`) carry no corridor bounds, so
+  // `swap_contract_for_lot` below can only ever build a contract with
+  // corridor_lo == corridor_hi == 0 -- the UNBOUNDED corridor, which prices
+  // and accrues identically to a plain variance swap. Solving such a lot would
+  // hand back a lot labelled CorridorVarSwap and struck at the all-strike
+  // K_var: a wrong strike for every real corridor, produced silently. Refuse
+  // instead. This is deliberately NOT the fail-soft `Unavailable` the causes
+  // below use -- those are market/schedule conditions a later cycle may clear,
+  // whereas this one can only be fixed by changing `kind`, so it is reported
+  // as the caller error it is. (The engine would refuse the lot one step later
+  // anyway: `valid_deriv_kind`, backtest.cpp. Refusing here means no wrong
+  // number is ever computed en route.) Adding corridor fields to `SwapLot` is
+  // a real option, but it is worthless until `SwapAccrual`'s own fixing loop
+  // can test fixings against them -- see that gate's comment.
+  if (req.kind == DerivKind::CorridorVarSwap) {
+    return Err(ErrorCode::InvalidArgument,
+               "solve_cycle_swap: DerivKind::CorridorVarSwap needs corridor bounds, "
+               "which SwapLot does not carry; a solved lot would silently be an "
+               "unbounded corridor");
+  }
 
   // The fixing schedule the ENGINE will actually observe. The swap pass runs on
   // the SHIFTED snapshot, so the first session after the open merely SEEDS the

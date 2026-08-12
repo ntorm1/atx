@@ -442,6 +442,18 @@ using detail::StepMarkMemo;
     // a GammaSwap SwapLot fails the WHOLE run loud
     // (validate_swap_lot_economics, below), never silently mis-accrues one.
     break;
+  case DerivKind::CorridorVarSwap:
+    // Task F-3: refused for the same reason, twice over. (1) `SwapAccrual`'s
+    // transcribed accrual (observe_swap_fixing, below) maintains only the
+    // plain estimator, so a corridor lot would blend a corridor FUTURE leg
+    // with a non-corridor REALIZED one -- a wrong number, not a missing
+    // feature. (2) `SwapLot` carries no corridor bounds at all, so even a
+    // corridor-aware accrual would have nothing to test fixings against; the
+    // lot would necessarily mean the UNBOUNDED corridor, i.e. a plain var swap
+    // wearing a corridor label. Wiring both is a separate task with its own
+    // schema decision (SwapLot is a checkpointed engine type). Fails loud at
+    // validate_swap_lot_economics below, exactly like GammaSwap.
+    break;
   }
   return false;
 }

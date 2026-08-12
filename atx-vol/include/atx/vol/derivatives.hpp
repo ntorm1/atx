@@ -180,12 +180,45 @@ class PricedSurface;
 // DEFERRED for this kind (P-4's `AnalyticStrip` scope stays VarSwap-only,
 // unchanged by this task) -- `DerivGreekMethod::FiniteDifference` (the
 // default) is correct and unaffected.
+//
+// CORRIDOR VARIANCE SWAP (Task F-3, PV-F3 / LIT-7, DerivKind::CorridorVarSwap).
+// The same model-free variance strip, with the replicating weight
+// 1{K in C}/K^2 instead of 1/K^2 -- so the ONLY difference from `VarSwap` is
+// the INTEGRATION DOMAIN: the strip integrates over
+// [ln(corridor_lo/F), ln(corridor_hi/F)] intersected with the span the tier /
+// adaptive-wing policy resolved, and the corridor edges are therefore Simpson
+// PANEL BOUNDARIES (C-3's split machinery, run on the restricted interval --
+// see `strip_fair_value_core`, derivatives.cpp) rather than points a panel
+// straddles. Both bounds are ABSOLUTE STRIKES on `DerivContract`, and `0` on a
+// side means UNBOUNDED there, so `corridor_lo == corridor_hi == 0` reproduces
+// `VarSwap`'s own quote on the same nodes with the same weights
+// (`Corridor.FullCorridorIdentity`).
+//
+// REALIZED LEG (the convention this kind's acceptance criteria require stated
+// in the header). Fixing i counts toward the corridor accrual iff its
+// PREVIOUS CLOSE -- S_{i-1}, the spot the return r_i = ln(S_i/S_{i-1}) is
+// measured FROM, not the spot it ends at -- lies in [corridor_lo,
+// corridor_hi], CLOSED on both ends. That is the standard listed convention
+// (the barrier is tested on information available before the return is
+// realized, so the indicator is predictable and the accrual is a martingale
+// increment); it is deliberately NOT the gamma swap's own convention, which
+// weights by the spot AT the return (`RealizedVarianceSpec::sum_weighted_sq_
+// log_returns_done`). `RealizedTracker::create_corridor` applies it;
+// `RealizedVarianceSpec::n_obs_in_corridor` / `sum_sq_log_returns_in_corridor`
+// / `rv_corridor_done_dec` carry the result.
+//
+// The CONDITIONAL variant (normalize by the in-corridor count rather than by
+// the contract's total fixing count) is NOT a separate kind: one accrual
+// yields both numbers, and the conditional one is published as
+// `DerivQuote::conditional_corridor_var_dec`. See that field's own doc for
+// exactly which quantity it is and, as importantly, which it is not.
 enum class DerivKind : std::uint8_t {
   VarSwap = 1,
   VolSwap = 2,
   CappedVarSwap = 3,
   CappedVolSwap = 4,
   GammaSwap = 5,
+  CorridorVarSwap = 6,
 };
 
 // Pricing engine selector. Values >= RvDistributionAffine are reserved;
@@ -508,17 +541,49 @@ struct RealizedVarianceSpec {
   // never populates this), exactly like `rv_gamma_done_dec`'s own
   // "not populated" convention.
   double gamma_seed_spot = 0.0;
+  // Task F-3 (PV-F3 / LIT-7): the corridor-variance accrued leg, appended as a
+  // THIRD per-kind accumulator alongside the plain and gamma ones above. THE
+  // MEMBERSHIP RULE, stated once and shared by every writer: fixing i counts
+  // iff its PREVIOUS CLOSE S_{i-1} lies in the contract's
+  // [corridor_lo, corridor_hi] (closed both ends; 0 on a side means unbounded
+  // there) -- see `DerivKind::CorridorVarSwap`'s own doc for why the
+  // predictable, previous-close convention is the right one and how it differs
+  // from the gamma weight beside it.
+  //
+  // How many of the `n_obs_done` fixings passed that test. Needed by the
+  // CONDITIONAL corridor variance (`DerivQuote::conditional_corridor_var_dec`),
+  // which normalizes by this count instead of by `n_obs_done`; the two numbers
+  // come from ONE accrual, which is why the conditional variant is a quote
+  // field and not a second DerivKind. Never exceeds `n_obs_done`
+  // (`price_corridor_var_swap` rejects a spec where it does).
+  std::uint32_t n_obs_in_corridor = 0;
+  // Raw running Sigma r_i^2 restricted to those fixings. Same "written by the
+  // tracker, read back only by its own writers" role
+  // `sum_sq_log_returns_done` has: no pricer reads it.
+  double sum_sq_log_returns_in_corridor = 0.0;
+  // Annualized decimal corridor variance to date, on the CONTRACT's clock:
+  // annualization * sum_sq_log_returns_in_corridor / n_obs_done -- the
+  // denominator is the count of fixings OBSERVED, not the count that passed
+  // the corridor test, so that the ordinary n_done/n_total aged blend lands
+  // exactly on annualization * Sigma_{in C} r^2 / n_total. This is the field
+  // `price_corridor_var_swap` (derivatives.cpp) reads for the accrued leg,
+  // exactly as `price_var_swap` reads `rv_done_dec`; the three are NOT
+  // interchangeable. 0.0 with `n_obs_in_corridor == 0` is a REAL value ("no
+  // fixing has been inside the corridor yet"), not "not populated".
+  double rv_corridor_done_dec = 0.0;
 };
 
-// Drift pin: RealizedVarianceSpec has exactly NINE fields (v1.1 appended
+// Drift pin: RealizedVarianceSpec has exactly TWELVE fields (v1.1 appended
 // sum_weighted_sq_log_returns_done / rv_gamma_done_dec, Task F-2; v1.2
-// appended gamma_seed_spot, Task F-2 fix round 1 / C-1). Following the same
+// appended gamma_seed_spot, Task F-2 fix round 1 / C-1; v1.3 appended
+// n_obs_in_corridor / sum_sq_log_returns_in_corridor / rv_corridor_done_dec,
+// Task F-3). Following the same
 // `aggregate_arity_is_v` convention as `DerivConfig`/`DerivQuote` above.
 // Every construction site in this codebase already uses `RealizedVarianceSpec{}`
 // plus designated/named-field assignment (never positional brace-init), so
 // this raises no migration burden; it only catches a FUTURE append that
 // forgets to update this line.
-static_assert(detail::aggregate_arity_is_v<RealizedVarianceSpec, 9>,
+static_assert(detail::aggregate_arity_is_v<RealizedVarianceSpec, 12>,
               "RealizedVarianceSpec field count changed: update this pin.");
 
 // Mutable realized-variance accumulator. Caller owns; not thread-safe.
@@ -529,9 +594,27 @@ static_assert(detail::aggregate_arity_is_v<RealizedVarianceSpec, 9>,
 class RealizedTracker {
 public:
   // Build a tracker. @return InvalidArgument if annualization <= 0 or
-  // n_obs_total == 0 (mirrors ats_vol_realized_tracker_init).
+  // n_obs_total == 0 (mirrors ats_vol_realized_tracker_init). The corridor is
+  // UNBOUNDED on both sides, so every fixing counts toward the corridor
+  // accumulators too and they track the plain ones exactly -- the same
+  // identity `Corridor.FullCorridorIdentity` pins on the pricing side.
   [[nodiscard]] static Result<RealizedTracker> create(double annualization,
                                                        std::uint32_t n_obs_total);
+
+  // Task F-3: build a tracker that maintains the CORRIDOR accumulators against
+  // [corridor_lo, corridor_hi] (absolute strikes; 0 on a side means unbounded
+  // there, exactly as on `DerivContract`). A separate named entry rather than
+  // a defaulted-argument overload, so a caller that means "corridor" has to
+  // say so and a caller that does not cannot acquire one by accident.
+  //
+  // @return everything `create` does, plus InvalidArgument for a non-finite or
+  //         negative bound, or for a bounded pair with lo >= hi (a zero- or
+  //         negative-width corridor accrues identically nothing, which is a
+  //         caller error rather than a product).
+  [[nodiscard]] static Result<RealizedTracker> create_corridor(double annualization,
+                                                                std::uint32_t n_obs_total,
+                                                                double corridor_lo,
+                                                                double corridor_hi);
 
   // Observe a single spot. The first call records the seed (no return
   // computed) AND anchors the gamma-weight S0 (Task F-2) at that same spot,
@@ -539,6 +622,16 @@ public:
   // C-1) so a caller can rescale a future leg onto this same anchor; each
   // subsequent call updates Sigma r^2, n_done, rv_done_dec, and the
   // gamma-weighted Sigma (S_i/S0)*r^2 / rv_gamma_done_dec alongside it.
+  //
+  // Task F-3: each subsequent call also tests the return's PREVIOUS CLOSE (the
+  // spot the PREVIOUS call recorded, not the one being passed now) against the
+  // corridor and, when it is inside, adds r^2 to
+  // `sum_sq_log_returns_in_corridor` and one to `n_obs_in_corridor`. Note the
+  // deliberate asymmetry with the gamma weight on the line beside it, which
+  // reads the spot AT the return: the two conventions differ because one is a
+  // WEIGHT (Lee's y/Y0, evaluated where the variance is earned) and the other
+  // is a PREDICTABLE INDICATOR (the corridor test must not peek at the return
+  // it gates).
   //
   // @return InvalidArgument for spot <= 0, or when all n_obs_total returns have
   //         already been observed.
@@ -582,6 +675,17 @@ private:
   bool have_prev_ = false;
   RealizedVarianceSpec rv_{};
   std::int64_t last_fixing_ts_ns_ = std::numeric_limits<std::int64_t>::min();
+  // Task F-3: the corridor this tracker tests each fixing's previous close
+  // against, in absolute strikes with 0 == unbounded (validated once, in
+  // `create_corridor`). Accumulation-time-only state -- unlike F-2's seed
+  // spot, no pricer needs to read it back off the snapshot, because the
+  // corridor a quote is priced under comes from the CONTRACT
+  // (`DerivContract::corridor_lo/corridor_hi`), which is the authority. A
+  // tracker configured against one corridor and a contract priced against
+  // another is a caller-side mismatch this class cannot detect and does not
+  // pretend to.
+  double corridor_lo_ = 0.0;
+  double corridor_hi_ = 0.0;
 };
 
 // ── Contract / config / quote ────────────────────────────────────────────
@@ -605,6 +709,19 @@ private:
 // changes maturity_t but not n_obs_total/n_obs_done to match -- is entirely
 // the caller's responsibility; nothing here cross-validates n_future against
 // maturity_t.
+//
+// CORRIDOR NOTE (Task F-3): `corridor_lo`/`corridor_hi` activate for
+// CorridorVarSwap and must be left at 0 on every other kind (else
+// InvalidArgument -- the same "a knob that does nothing here is a caller
+// error, not a silent no-op" rule `cap_dec` already follows). They are
+// ABSOLUTE STRIKES, so their log-moneyness image ln(bound/F) is RE-RESOLVED
+// at every pricing against that pricing's own forward: a corridor is a fixed
+// barrier in price space, and a spot move genuinely changes how much of the
+// contract's variance is inside it. That is the economically right reading
+// AND what makes `deriv_greeks`' spot bumps carry the corridor's own
+// sensitivity instead of freezing it (see `strip_fair_value_core`'s note on
+// why `DerivQuote::strip_k_lo_used` reports the PRE-corridor span for this
+// kind).
 struct DerivContract {
   DerivKind kind = DerivKind::VarSwap;
   double maturity_t = 0.0;   // years until expiry
@@ -613,7 +730,22 @@ struct DerivContract {
   double notional = 0.0;     // N_var or N_vol
   RealizedVarianceSpec rv_spec{};
   DerivMarkingConvention marking = DerivMarkingConvention::Otc;
+  // CorridorVarSwap only; absolute strikes, 0 == unbounded on that side. See
+  // the CORRIDOR NOTE above and `DerivKind::CorridorVarSwap`.
+  double corridor_lo = 0.0;
+  double corridor_hi = 0.0;
 };
+
+// Drift pin: DerivContract has exactly NINE fields (v1.3 appended
+// corridor_lo / corridor_hi, Task F-3). This struct had no pin before F-3 --
+// P-4's fix round audited its 7 fields by hand against the analytic-greek
+// scope predicate, and a hand audit is exactly what a pin makes unnecessary
+// the next time. Same contract as the `DerivConfig` pin above.
+static_assert(detail::aggregate_arity_is_v<DerivContract, 9>,
+              "DerivContract field count changed: update this pin, and re-audit "
+              "every predicate that projects a contract onto a scope decision "
+              "(analytic_scope_from_cfg / var_swap_memo_eligible / "
+              "validate_var_swap_dispatch).");
 
 // Pricing configuration (AtsVolDerivConfig). The reserved fields
 // (abs_price_tol / rel_price_tol / flags_request) must be left at 0; a
@@ -841,12 +973,36 @@ struct DerivQuote {
   // dispatch path that runs a strip.
   double resolved_wing_clamp = kQuietNaN;
   DerivFlags flags = DerivFlags::None;
+  // Task F-3 (PV-F3): the CONDITIONAL corridor variance -- the realized
+  // corridor variance to date normalized by the number of fixings that were
+  // actually INSIDE the corridor rather than by the number observed:
+  //
+  //   annualization * Sigma_{i in C} r_i^2 / n_obs_in_corridor
+  //   == rv_corridor_done_dec * n_obs_done / n_obs_in_corridor
+  //
+  // Published as a field rather than as a second `DerivKind` because both
+  // numbers come from ONE accrual: `fair_strike_dec` blends the
+  // n_done/n_total-weighted (UNCONDITIONAL) accrual with the corridor strip,
+  // and this is the same accrual re-normalized. Populated ONLY on
+  // CorridorVarSwap dispatch; NaN, not 0, everywhere else and whenever
+  // `n_obs_in_corridor == 0` (nothing to condition on) -- a caller gates on
+  // (x == x), the same convention `vol_of_vol_used` uses.
+  //
+  // WHAT IT IS NOT, stated because the difference is easy to miss: this is a
+  // PURELY REALIZED quantity. It is NOT a forward-looking conditional fair
+  // strike -- that would need E[corridor variance] / E[time in corridor], and
+  // the denominator is an expected OCCUPATION TIME, which no single-expiry
+  // option strip replicates (unlike the numerator, which is exactly what this
+  // kind's strip prices). Dividing this quote's `fair_strike_dec` by a
+  // corridor-time estimate is the caller's own modelling decision, not
+  // something this library has done for them.
+  double conditional_corridor_var_dec = kQuietNaN;
 };
 
-// Drift pin: DerivQuote has exactly SIXTEEN fields (v1.1 appended
-// resolved_wing_clamp, Task C-6). See the DerivConfig pin above for the
-// contract this protects.
-static_assert(detail::aggregate_arity_is_v<DerivQuote, 16>,
+// Drift pin: DerivQuote has exactly SEVENTEEN fields (v1.1 appended
+// resolved_wing_clamp, Task C-6; v1.3 appended conditional_corridor_var_dec,
+// Task F-3). See the DerivConfig pin above for the contract this protects.
+static_assert(detail::aggregate_arity_is_v<DerivQuote, 17>,
               "DerivQuote field count changed: update this pin.");
 
 // ── Carr-Lee convexity refinement (detail) ─────────────────────────────────

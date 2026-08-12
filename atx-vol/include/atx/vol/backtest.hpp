@@ -528,37 +528,50 @@ struct SwapAccrual {
   // RealizedVarianceSpec is a C-ABI mirror with no comparison operator, so this
   // is spelled out rather than defaulted.
   //
-  // WARNING (Task F-2 fix round 1, m-2 / fix round 2, m-6): this compares
-  // only SIX of RealizedVarianceSpec's NINE fields -- it predates, and was
-  // never updated for, Task F-2's three appended gamma-leg fields
-  // (sum_weighted_sq_log_returns_done / rv_gamma_done_dec / gamma_seed_spot).
-  // Currently harmless: `backtest.cpp`'s `valid_deriv_kind` does not admit
-  // `GammaSwap` yet, so every live `SwapAccrual` keeps those three fields at
-  // their 0.0 default and this omission cannot bite. It is NOT theoretical --
-  // C-1/C-2/C-3/C-4 (this struct's own field, across two fix rounds) are
-  // exactly this defect class, a struct consumer that reads/writes only a
-  // SUBSET of RealizedVarianceSpec's fields silently diverging when a new
-  // field is appended -- proven live in production call sites, twice.
-  // Whoever wires `GammaSwap` through this engine (the CHANGELOG's own
-  // "separate, future work") must extend this operator to all nine fields
-  // first, or a snapshot/replay diff here will silently ignore genuine
-  // gamma-leg drift. m-6 (fix round 2): a comment NARRATES, it does not
-  // PREVENT -- the arity pin at `derivatives.hpp` (this struct's own field
-  // count) never routes a future append to THIS site, so a static_assert on
-  // the same type is placed here too, the same enforcing idiom already used
-  // 400 lines below at `RunConfig` (see its own pin's blind-spot comment for
-  // what this mechanism does and does not catch: field COUNT only, not
-  // reorder).
-  static_assert(detail::aggregate_arity_is_v<RealizedVarianceSpec, 9>,
+  // THE PIN BELOW FIRED ON TASK F-3, WHICH IS WHAT IT WAS INSTALLED FOR (Task
+  // F-2 fix round 2, m-6). The decision it forced, recorded here rather than
+  // in a report that gets deleted: this comparator now compares ALL TWELVE
+  // RealizedVarianceSpec fields, not the six it used to.
+  //
+  // WHY THE APPENDED FIELDS BELONG IN IT. This operator answers "is this the
+  // same accrual state?" for snapshot/replay diffs, and a per-kind accrued leg
+  // IS accrual state -- as load-bearing as `rv_done_dec` for any kind that
+  // reads it. The old defence was DORMANCY ("`valid_deriv_kind` admits neither
+  // GammaSwap nor CorridorVarSwap, so those fields are always 0"), which is
+  // still true today and is still the wrong thing to rest on: dormancy is
+  // exactly the argument F-2's C-1..C-4 falsified twice, each time at a larger
+  // error than the last, and it makes the comparator's correctness a property
+  // of a DIFFERENT file's whitelist rather than of this expression.
+  //
+  // WHY EXTENDING IT IS SAFE TO DO NOW. It is provably inert on every
+  // reachable input, not merely "expected to be": `SwapAccrual` is never
+  // deserialized (backtest_db.cpp refuses outright to persist the swap lane --
+  // "the stored checkpoint format does not persist the swap lane"), the only
+  // constructor is `accrual_for`'s value-initialized `SwapAccrual fresh;`, and
+  // the only mutator is `observe_swap_fixing`, which writes the plain leg
+  // alone. All six appended fields are therefore 0.0/0u on both sides of every
+  // comparison this engine can perform, so no existing comparison outcome can
+  // change.
+  //
+  // WHAT THE PIN STILL DOES NOT CATCH: field COUNT only, never a reorder --
+  // see `RunConfig`'s own pin's blind-spot comment 400 lines below.
+  static_assert(detail::aggregate_arity_is_v<RealizedVarianceSpec, 12>,
                 "RealizedVarianceSpec field count changed: SwapAccrual::operator== "
-                "compares a SUBSET of its fields (six of nine as of this pin) -- "
-                "re-audit which fields belong in that comparison before raising this.");
+                "compares all twelve of its fields as of this pin -- add the new "
+                "field to that comparison, or record why it does not belong, "
+                "before raising this.");
   [[nodiscard]] bool operator==(const SwapAccrual &other) const noexcept {
     return lot_id == other.lot_id && rv.annualization == other.rv.annualization &&
            rv.n_obs_total == other.rv.n_obs_total && rv.n_obs_done == other.rv.n_obs_done &&
            rv.sum_sq_log_returns_done == other.rv.sum_sq_log_returns_done &&
            rv.rv_done_dec == other.rv.rv_done_dec &&
            rv.include_dividend_adjustment == other.rv.include_dividend_adjustment &&
+           rv.sum_weighted_sq_log_returns_done == other.rv.sum_weighted_sq_log_returns_done &&
+           rv.rv_gamma_done_dec == other.rv.rv_gamma_done_dec &&
+           rv.gamma_seed_spot == other.rv.gamma_seed_spot &&
+           rv.n_obs_in_corridor == other.rv.n_obs_in_corridor &&
+           rv.sum_sq_log_returns_in_corridor == other.rv.sum_sq_log_returns_in_corridor &&
+           rv.rv_corridor_done_dec == other.rv.rv_corridor_done_dec &&
            prev_spot == other.prev_spot && prev_ts_ns == other.prev_ts_ns &&
            have_prev == other.have_prev && prev_pv == other.prev_pv;
   }

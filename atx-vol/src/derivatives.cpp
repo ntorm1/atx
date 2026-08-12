@@ -339,6 +339,82 @@ std::atomic<bool> g_bump_read_cache_disabled{env_flag_enabled("ATX_VOL_DISABLE_B
   return w_done * rv_done_dec + w_future * k_var_future_dec;
 }
 
+// ── Task F-3 (PV-F3 / LIT-7): THE corridor invariant, stated once ──────────
+//
+// A corridor variance swap differs from a plain one in exactly one way: a
+// contribution counts only when the underlying's reference level is INSIDE
+// [corridor_lo, corridor_hi]. That single rule has to hold in two very
+// different-looking places -- the replicating strip (where the "level" is an
+// option STRIKE and the rule becomes an integration domain) and the realized
+// leg (where the "level" is a fixing's PREVIOUS CLOSE and the rule becomes an
+// indicator on the accrual). F-2's C-1..C-4 are this sprint's standing lesson
+// on what happens when such a rule is re-expressed per site: a correction
+// applied where a PREDICATE says it is needed, rather than where the INVARIANT
+// holds, relocates the bug instead of closing it, twice landing at a LARGER
+// error than the original. So the rule is written here, once, and every site
+// -- `strip_fair_value_core`'s window, `RealizedTracker::observe`,
+// `inject_carry_fixing` -- routes through these three functions. Grep
+// `corridor_contains` / `corridor_valid` / `corridor_log_window` before adding
+// a fourth.
+struct StrikeCorridor {
+  double lo = 0.0;  // absolute strike; 0 == unbounded below
+  double hi = 0.0;  // absolute strike; 0 == unbounded above
+};
+
+// The PREDICATE half. `0` is OVERLOADED as "unbounded on this side", so 0
+// cannot also mean "invalid" -- which forces every OTHER unusable value to be
+// named explicitly rather than caught by a `> 0.0` test. In particular
+// `isfinite` is required, not implied: `+Inf` passes `x > 0.0` (F-2 shipped
+// exactly that mistake in `gamma_anchor_valid`'s predecessor and had to fix it
+// in a cleanup round) and would otherwise read as a bound at infinity, which
+// is "unbounded" spelled a second, undocumented way.
+[[nodiscard]] bool corridor_bound_valid(double bound) noexcept {
+  return std::isfinite(bound) && bound >= 0.0;
+}
+
+// A corridor is usable iff both bounds are, and -- when BOTH are bounded --
+// they are strictly ordered. `lo == hi` is rejected rather than treated as a
+// degenerate zero-width corridor that accrues and replicates identically
+// nothing: a contract that can only ever be worth zero is a caller error, and
+// returning 0.0 for it silently is the failure mode this sprint keeps finding.
+[[nodiscard]] bool corridor_valid(const StrikeCorridor& c) noexcept {
+  return corridor_bound_valid(c.lo) && corridor_bound_valid(c.hi) &&
+         (!(c.lo > 0.0) || !(c.hi > 0.0) || c.lo < c.hi);
+}
+
+// The MEMBERSHIP half: is `level` inside the corridor? CLOSED on both ends
+// (the boundary is a measure-zero event for a continuous spot, and a closed
+// test makes the unbounded encoding a strict special case of the bounded one
+// rather than a separate branch). Precondition: `corridor_valid(c)` -- callers
+// validate at their own boundary, which is why this stays a pure predicate.
+[[nodiscard]] bool corridor_contains(double level, const StrikeCorridor& c) noexcept {
+  return (!(c.lo > 0.0) || level >= c.lo) && (!(c.hi > 0.0) || level <= c.hi);
+}
+
+// The STRIP half: the same membership rule expressed in the log-forward-
+// moneyness coordinate the strip integrates in, k = ln(K/F). An unbounded side
+// maps to an infinite endpoint DELIBERATELY, so that intersecting it with the
+// resolved span (`fmax`/`fmin`) is exactly the identity on that side -- which
+// is what makes a fully-unbounded corridor bit-for-bit identical to no
+// corridor at all, on the same nodes with the same weights, with no
+// "is there a corridor?" branch anywhere downstream.
+struct CorridorLogWindow {
+  double k_lo = -std::numeric_limits<double>::infinity();
+  double k_hi = std::numeric_limits<double>::infinity();
+};
+
+[[nodiscard]] CorridorLogWindow corridor_log_window(const StrikeCorridor& c,
+                                                     double forward) noexcept {
+  CorridorLogWindow w{};
+  if (c.lo > 0.0) {
+    w.k_lo = std::log(c.lo / forward);
+  }
+  if (c.hi > 0.0) {
+    w.k_hi = std::log(c.hi / forward);
+  }
+  return w;
+}
+
 // Carry the strip's resolved grid onto a product quote. Every dispatch path
 // that runs a strip owes its caller this, because reproducing a quote's exact
 // quadrature (deriv_greeks' bump pinning) is only possible if the grid travels
@@ -1169,6 +1245,49 @@ template <class SurfaceT>
 
 namespace {
 
+// Task F-3: the per-DerivKind constants of `strip_fair_value_core`'s shared
+// body, in ONE exhaustive switch instead of scattered `kind ==` tests. Kinds
+// with no OTM-strip form of their own return `has_strip_form == false` rather
+// than silently inheriting VarSwap's -- no call site can reach that today
+// (each of the three strip dispatchers names its own kind), which is exactly
+// why it must fail loud if one ever does.
+struct StripKindTraits {
+  // VarSwap's model-free 1/K^2 weight, one K absorbed by the log-strike
+  // Jacobian dK = K dx; false only for GammaSwap, whose Lee weight
+  // lambda_yy = 2/(Y0*K) cancels the Jacobian entirely.
+  bool weight_by_strike = true;
+  bool scale_by_spot = false;  // GammaSwap's 1/S0 (Y0) in the outer scale
+  bool has_strip_form = true;
+  const char* t_error = "var strip needs T > 0";
+  counters::ledger::Solve counter = counters::ledger::Solve::VarSwapStripEvals;
+};
+
+[[nodiscard]] StripKindTraits strip_kind_traits(DerivKind kind) noexcept {
+  StripKindTraits t{};
+  switch (kind) {
+  case DerivKind::VarSwap:
+    return t;
+  case DerivKind::CorridorVarSwap:
+    // Same integrand and same outer scale as VarSwap -- a corridor swap
+    // differs ONLY in the integration window (see `corridor_log_window`).
+    t.t_error = "corridor strip needs T > 0";
+    t.counter = counters::ledger::Solve::CorridorVarSwapStripEvals;
+    return t;
+  case DerivKind::GammaSwap:
+    t.weight_by_strike = false;
+    t.scale_by_spot = true;
+    t.t_error = "gamma strip needs T > 0";
+    t.counter = counters::ledger::Solve::GammaSwapStripEvals;
+    return t;
+  case DerivKind::VolSwap:
+  case DerivKind::CappedVarSwap:
+  case DerivKind::CappedVolSwap:
+    break;  // priced through a nonlinear model layer, never through this body
+  }
+  t.has_strip_form = false;
+  return t;
+}
+
 // Task F-2 (PV-F1 / LIT-7): shared strip core for the two model-free OTM-
 // strip products this file ships -- VarSwap's K_var(T) and GammaSwap's
 // K_gamma(T) (Lee's weighted-variance strip, w(y) = y/Y0). Every
@@ -1194,10 +1313,28 @@ namespace {
 // path is bit-for-bit identical to before this task. `price_gamma_swap`
 // (this file's GammaSwap dispatcher, mirroring `price_var_swap`) calls this
 // with `kind = DerivKind::GammaSwap`.
+//
+// Task F-3 adds a THIRD kind, `CorridorVarSwap`, which differs from VarSwap in
+// neither of the two places above (same 1/K integrand, same 2/T outer scale)
+// but in a third: the INTEGRATION WINDOW, restricted to the corridor. See the
+// `corridor` parameter and the window block below.
 template <class SurfaceT>
 [[nodiscard]] Result<DerivQuote> strip_fair_value_core(const SurfaceT& surface,
                                                         const CurveSet& curves, double T,
-                                                        const DerivConfig& cfg, DerivKind kind) {
+                                                        const DerivConfig& cfg, DerivKind kind,
+                                                        const StrikeCorridor& corridor) {
+  // Task F-3: every kind-dependent quantity in this body, resolved ONCE
+  // through an EXHAUSTIVE switch. F-2 left them as two inline `kind ==
+  // GammaSwap` tests, each of which routes a NEW enumerator onto the VarSwap
+  // branch SILENTLY -- which happens to be right for CorridorVarSwap and would
+  // have been wrong for the next kind, with nothing to say so. `-Wswitch -WX`
+  // makes this site refuse to compile instead (empirically confirmed on this
+  // tree at F-2: `backtest.cpp`'s own DerivKind switch did exactly that).
+  const StripKindTraits traits = strip_kind_traits(kind);
+  if (!traits.has_strip_form) {
+    return Err(ErrorCode::InvalidArgument,
+               "strip core: this DerivKind has no OTM-strip form of its own");
+  }
   if (!(T > 0.0)) {
     // m-1 (Task F-2 fix round 1): restores VarSwap's original, kind-specific
     // message -- collapsed to the generic "strip needs T > 0" by the
@@ -1205,9 +1342,7 @@ template <class SurfaceT>
     // body, the one line of that refactor that was NOT bit-for-bit despite
     // the commit claiming it was. GammaSwap gets its own equally specific
     // message rather than inheriting VarSwap's exact wording.
-    return Err(ErrorCode::InvalidArgument, kind == DerivKind::GammaSwap
-                                                ? "gamma strip needs T > 0"
-                                                : "var strip needs T > 0");
+    return Err(ErrorCode::InvalidArgument, traits.t_error);
   }
   if (!reserved_fields_clean(cfg)) {
     return Err(ErrorCode::NotImplemented, "reserved config field is non-zero");
@@ -1224,10 +1359,9 @@ template <class SurfaceT>
   // Solve::VarSwapStripEvals/GammaSwapStripEvals's own doc. TWO SEPARATE
   // counters, not one shared one: P-6's book-memo O(K)-not-O(L) gate reads
   // VarSwapStripEvals specifically, and folding GammaSwap evals into it would
-  // silently corrupt what that gate measures.
-  counters::ledger::bump(kind == DerivKind::GammaSwap
-                              ? counters::ledger::Solve::GammaSwapStripEvals
-                              : counters::ledger::Solve::VarSwapStripEvals);
+  // silently corrupt what that gate measures. Task F-3 adds a third counter on
+  // the same reasoning, resolved in `strip_kind_traits` with the rest.
+  counters::ledger::bump(traits.counter);
   // Review fix I-4: resolved ONCE here (reused at the resolve_wing_clamp call
   // below) and validated eagerly -- a non-finite/non-positive supplied band
   // fails the call instead of silently widening trust to the mode-blind
@@ -1275,9 +1409,18 @@ template <class SurfaceT>
   // curves.spot at all, so this check is scoped to the one kind that needs
   // it -- checked here, right beside F/df, so a bad spot fails before any
   // grid work rather than after a full quadrature.
-  if (kind == DerivKind::GammaSwap && !(curves.spot > 0.0)) {
+  if (traits.scale_by_spot && !(curves.spot > 0.0)) {
     return Err(ErrorCode::OutOfRange, "gamma strip needs curves.spot > 0");
   }
+  // Task F-3: the corridor's k-image at THIS call's forward. Resolved here,
+  // beside F, because it is a pure function of (corridor, F) and every use
+  // below wants the same value. Validation is the CALLER's (each dispatcher
+  // rejects a malformed corridor before it can reach a quadrature); this
+  // asserts the contract rather than re-deriving it, because a bad bound
+  // reaching here would silently produce a NaN window that `fmax`/`fmin`
+  // propagate into the span.
+  assert(corridor_valid(corridor) && "strip core: caller must validate the corridor");
+  const CorridorLogWindow corridor_k = corridor_log_window(corridor, F);
 
   // ── E2 / AN-P1-2: adaptive wings ────────────────────────────────────────
   //
@@ -1329,15 +1472,54 @@ template <class SurfaceT>
     }
   }
 
+  // ── Task F-3: the corridor restricts the INTEGRATION WINDOW ───────────────
+  //
+  // Everything above resolved the SPAN [grid.k_min_log, grid.k_max_log] and
+  // the node budget `n`. The corridor now cuts the interval that budget is
+  // actually spent on, and from here down `integ_k_lo`/`integ_k_hi` -- not the
+  // span -- are what the split, the resolution floor, the wing-clamp verdict
+  // and the quadrature see.
+  //
+  // RESTRICT, do not indicate. The alternative (keep the full span, multiply
+  // the integrand by 1{K in C}) would put the corridor edges mid-panel, which
+  // is a JUMP discontinuity -- worse than the C1 kinks C-3 exists to isolate --
+  // and would apportion the node budget in proportion to LENGTH, so a corridor
+  // spanning 1/60th of the span would be integrated on ~4 nodes. Restricting
+  // spends the whole budget inside the corridor and makes both edges panel
+  // boundaries by construction, which is what the brief's "corridor edges
+  // become composite-Simpson split points" buys.
+  //
+  // BIT-IDENTITY FOR EVERY OTHER KIND, BY CONSTRUCTION, NOT BY TESTING. An
+  // unbounded side of the corridor is -/+ infinity (`corridor_log_window`), and
+  // fmax(x, -inf) == x / fmin(x, +inf) == x exactly for every finite x, so a
+  // VarSwap or GammaSwap call -- which always passes `StrikeCorridor{}` --
+  // computes the same two doubles the span already held. Every substitution
+  // below is therefore a no-op on those paths at the bit level.
+  const double integ_k_lo = std::fmax(grid.k_min_log, corridor_k.k_lo);
+  const double integ_k_hi = std::fmin(grid.k_max_log, corridor_k.k_hi);
+  if (!(integ_k_hi > integ_k_lo)) {
+    // The corridor and the resolved span do not overlap (or touch at a single
+    // point). There is no strip to integrate, and 0.0 would be a plausible-
+    // looking wrong number: the true corridor variance over a region the grid
+    // never reaches is small but not zero, and the caller would have no signal.
+    return Err(ErrorCode::OutOfRange,
+               "corridor does not intersect the resolved strip span");
+  }
+
   // Wing trust band for the surface READS (see DerivConfig::wing_clamp_k): a
   // node beyond the band prices at its true strike under the BAND-EDGE vol —
   // flat-vol tails over the uncertified extrapolation region, never a
   // truncated span. band <= 0 means the clamp is off. Resolved BEFORE the
   // resolution floor below, which has to know how many panels the C-3 split
   // will cut — and that depends on where this band falls inside the span.
+  //
+  // Task F-3: judged on the INTEGRATION WINDOW, not the span. The flag's
+  // documented meaning is "flat-vol tails were in effect"; a corridor that
+  // keeps every node inside the band means they were not, and saying otherwise
+  // would be a false provenance claim.
   const double wing_band = resolve_wing_clamp(cfg, cert_wing_band);
   const bool wing_clamped =
-      wing_band > 0.0 && (grid.k_min_log < -wing_band || grid.k_max_log > wing_band);
+      wing_band > 0.0 && (integ_k_lo < -wing_band || integ_k_hi > wing_band);
 
   // Task F-1: exhaustive over `StripWingMode` (no `default:`, so a future
   // enumerator turns this into a compiler error under /W4 /WX rather than
@@ -1481,9 +1663,9 @@ template <class SurfaceT>
   // The ceiling binds the spacing the strip ACTUALLY integrates on, which
   // after C-3 is per-panel, not one uniform dk — hence the panel count.
   const double dk_max = strip::dk_ceiling(sigma_atm, T);
-  const double resolved_span = grid.k_max_log - grid.k_min_log;
+  const double resolved_span = integ_k_hi - integ_k_lo;
   const std::size_t n_panels =
-      strip::strip_panel_count(grid.k_min_log, grid.k_max_log, split_wing_band);
+      strip::strip_panel_count(integ_k_lo, integ_k_hi, split_wing_band);
   bool low_t = false;
   if (cfg.strip_nodes == 0u) {
     const std::size_t raised =
@@ -1509,8 +1691,14 @@ template <class SurfaceT>
   // budget apportionment and its degradation ladder; the total node count and
   // the reported span are unchanged by the split.
   assert(n >= 3u && "composite Simpson needs at least one panel of 3 nodes");
+  // Task F-3: planned on the corridor-restricted window, which is what makes
+  // both corridor edges panel boundaries -- they are this interval's own
+  // endpoints. `strip_panel_bounds`'s strict comparisons already dedup a k = 0
+  // or +-band kink that coincides with, or falls outside, an edge, so a
+  // corridor that swallows or abuts either interior kink degrades to fewer
+  // panels rather than producing a degenerate one.
   const strip::StripSplit split =
-      strip::plan_strip_split(grid.k_min_log, grid.k_max_log, n, split_wing_band);
+      strip::plan_strip_split(integ_k_lo, integ_k_hi, n, split_wing_band);
 
   // LowT, decided on the grid actually integrated. For the unpinned path the
   // floor above has already provisioned every panel under the ceiling, so this
@@ -1546,7 +1734,7 @@ template <class SurfaceT>
     // Task F-2: the 1/K weight is VarSwap-only -- see this function's own
     // header comment for the Jacobian-cancellation argument that drops it
     // for GammaSwap (whose per-node value is just the undiscounted price).
-    const double weighted = (kind == DerivKind::GammaSwap) ? (price / df) : (price / (df * K));
+    const double weighted = traits.weight_by_strike ? (price / (df * K)) : (price / df);
     return std::pair<double, bool>{weighted, bad};
   };
 
@@ -1812,8 +2000,7 @@ template <class SurfaceT>
   // quantity -- see this function's own header comment. Resolved once and
   // reused for both the fair strike and the Richardson error estimate below,
   // so the two can never disagree about which scale was actually integrated.
-  const double outer_scale =
-      (kind == DerivKind::GammaSwap) ? (2.0 / (T * curves.spot)) : (2.0 / T);
+  const double outer_scale = traits.scale_by_spot ? (2.0 / (T * curves.spot)) : (2.0 / T);
   const double k_out = outer_scale * integral;
 
   // Composite-Simpson error is O(h^4): halving h (doubling the node density)
@@ -1839,11 +2026,30 @@ template <class SurfaceT>
   const strip::WingCoverage cover =
       strip::wing_coverage(grid.k_min_log, grid.k_max_log, required);
 
+  // Task F-3: on a BOUNDED corridor side the coverage requirement is the
+  // CORRIDOR EDGE, not 6*sigma*sqrt(T). Two things would otherwise go wrong at
+  // once, in opposite directions. (a) A narrow corridor well inside the span
+  // would report BOTH wings truncated forever -- the strip covers everything
+  // the product is defined over, and the vol-scaled requirement is simply not
+  // the right question for it. (b) A corridor reaching PAST the span really is
+  // truncated (in-corridor variance the grid never integrated), and the
+  // vol-scaled test can easily say the span was fine. So: bounded side ->
+  // "did the span reach the edge?"; unbounded side -> the existing test,
+  // unchanged. `corridor_k` is -/+ infinity on an unbounded side, so a
+  // non-corridor call takes the `cover` branch on both sides and the flags are
+  // bit-identical to before this task.
+  const bool left_short = std::isfinite(corridor_k.k_lo)
+                              ? (grid.k_min_log > corridor_k.k_lo)
+                              : cover.left_short;
+  const bool right_short = std::isfinite(corridor_k.k_hi)
+                               ? (grid.k_max_log < corridor_k.k_hi)
+                               : cover.right_short;
+
   DerivFlags flags = DerivFlags::None;
-  if (bad_first || cover.left_short) {
+  if (bad_first || left_short) {
     flags |= DerivFlags::StripTruncatedLeft;
   }
-  if (bad_last || cover.right_short) {
+  if (bad_last || right_short) {
     flags |= DerivFlags::StripTruncatedRight;
   }
   if (wing_clamped) {
@@ -1872,6 +2078,20 @@ template <class SurfaceT>
   out.integration_error_est = err_est;
   // The grid this quote was actually integrated on, so a caller (deriv_greeks)
   // can pin it back and reproduce this exact quadrature.
+  //
+  // Task F-3, DELIBERATE AND LOAD-BEARING: for a corridor strip these report
+  // the span BEFORE the corridor cut it, not the window that was integrated.
+  // The field's contract is REPRODUCTION -- "feed these back as k_min_log /
+  // k_max_log / strip_nodes and get this quote again" -- and reproduction
+  // needs the pre-corridor span, because the corridor is re-derived from the
+  // CONTRACT (which the replaying caller also supplies) against that
+  // evaluation's OWN forward. Reporting the window instead would silently
+  // break `deriv_greeks`' spot bumps: the pinned span would clip the corridor
+  // on ONE side only (fmax(pinned_lo, ln(lo/F')) moves when F falls and does
+  // not when F rises), so the central difference would collect roughly half of
+  // the corridor edge's contribution to delta. The integrated window is
+  // [max(strip_k_lo_used, ln(corridor_lo/F)), min(strip_k_hi_used,
+  // ln(corridor_hi/F))] -- derivable by any caller that has the contract.
   out.strip_k_lo_used = grid.k_min_log;
   out.strip_k_hi_used = grid.k_max_log;
   out.strip_nodes_used = static_cast<std::uint32_t>(n);
@@ -1889,7 +2109,12 @@ template <class SurfaceT>
 Result<DerivQuote> var_swap_fair_strike(const SurfaceT& surface,
                                         const CurveSet& curves, double T,
                                         const DerivConfig& cfg) {
-  return strip_fair_value_core(surface, curves, T, cfg, DerivKind::VarSwap);
+  // Task F-3: the corridor is passed EXPLICITLY (rather than defaulted) at
+  // every one of the three call sites, so that adding a strip kind cannot
+  // acquire "no corridor" by accident -- the author has to write it down.
+  // `StrikeCorridor{}` is unbounded on both sides and provably a no-op: see
+  // the corridor-window block in `strip_fair_value_core`.
+  return strip_fair_value_core(surface, curves, T, cfg, DerivKind::VarSwap, StrikeCorridor{});
 }
 
 namespace {
@@ -1988,7 +2213,8 @@ template <class SurfaceT>
       return Err(ErrorCode::InvalidArgument,
                  "gamma swap needs T > 0 to price the future leg");
     }
-    ATX_TRY(auto sq, strip_fair_value_core(surface, curves, T, cfg, DerivKind::GammaSwap));
+    ATX_TRY(auto sq, strip_fair_value_core(surface, curves, T, cfg, DerivKind::GammaSwap,
+                                           StrikeCorridor{}));
     strip_quote = sq;
     k_gamma_future_dec = strip_quote.fair_strike_dec;
     strip_ran = true;
@@ -2075,6 +2301,148 @@ template <class SurfaceT>
   out.future_component_dec = w_future * k_gamma_for_blend;
   out.convexity_adjustment_dec = 0.0;
   out.integration_error_est = strip_quote.integration_error_est;
+  carry_strip_grid(out, strip_quote);
+  out.flags = flags;
+  return Ok(out);
+}
+
+// Task F-3: the CONDITIONAL corridor variance realized to date -- the same
+// accrual `rv_corridor_done_dec` holds, re-normalized by the number of fixings
+// that were actually inside the corridor instead of by the number observed.
+// See `DerivQuote::conditional_corridor_var_dec` for the full contract,
+// including what this deliberately is NOT (a forward-looking conditional
+// strike). NaN when nothing has been inside the corridor: there is no
+// conditional average of an empty set, and 0.0 would read as "flat in there".
+[[nodiscard]] double conditional_corridor_accrued_dec(const RealizedVarianceSpec& rv) noexcept {
+  if (rv.n_obs_in_corridor == 0u) {
+    return kNaN;
+  }
+  return rv.rv_corridor_done_dec * static_cast<double>(rv.n_obs_done) /
+         static_cast<double>(rv.n_obs_in_corridor);
+}
+
+// Cross-field consistency of the corridor accrual. Unlike the gamma leg -- for
+// which F-2 could demand a witness field (`gamma_seed_spot`) whose absence
+// proves the spec was never populated -- a corridor spec has NO value that
+// distinguishes "not populated" from the perfectly legitimate "spot never
+// entered the corridor": both are all-zeros. What CAN be checked is the
+// arithmetic relationship the tracker maintains, and these three are exactly
+// the ones a hand-built or half-migrated spec breaks:
+//   * n_obs_in_corridor <= n_obs_done -- a subset cannot outnumber the whole;
+//   * rv_corridor_done_dec finite and >= 0 -- it is annualization * a sum of
+//     squares / a positive count;
+//   * n_obs_in_corridor == 0 => rv_corridor_done_dec == 0 EXACTLY -- the sum
+//     is over an empty set, so nothing else is representable. This is the one
+//     that catches "the caller populated rv_done_dec and forgot the corridor
+//     fields, then set the corridor leg by hand".
+[[nodiscard]] Status validate_corridor_accrual(const RealizedVarianceSpec& rv) noexcept {
+  if (rv.n_obs_in_corridor > rv.n_obs_done) {
+    return Err(ErrorCode::InvalidArgument,
+               "corridor swap: rv_spec.n_obs_in_corridor exceeds n_obs_done");
+  }
+  if (!std::isfinite(rv.rv_corridor_done_dec) || rv.rv_corridor_done_dec < 0.0) {
+    return Err(ErrorCode::InvalidArgument,
+               "corridor swap: rv_spec.rv_corridor_done_dec must be finite and >= 0");
+  }
+  if (rv.n_obs_in_corridor == 0u && rv.rv_corridor_done_dec != 0.0) {
+    return Err(ErrorCode::InvalidArgument,
+               "corridor swap: rv_spec.rv_corridor_done_dec is non-zero with no "
+               "in-corridor observations");
+  }
+  return Ok();
+}
+
+// Task F-3 (PV-F3 / LIT-7): corridor-variance-swap dispatch. Mirrors
+// `price_var_swap` field for field, with exactly three differences:
+//   - the strip call carries the contract's corridor into
+//     `strip_fair_value_core`, which restricts the integration window to it
+//     (no public `corridor_var_swap_fair_strike` entry point exists, mirroring
+//     GammaSwap's own arrangement).
+//   - the accrued leg reads `rv.rv_corridor_done_dec`, the in-corridor
+//     accumulator, not `rv.rv_done_dec`. `aged_total_variance_dec` is unchanged
+//     and unaware which "variance" it blends -- the n_done/n_total weighting is
+//     correct for the corridor leg precisely BECAUSE the accumulator is
+//     normalized by n_done rather than by the in-corridor count (see that
+//     field's own doc).
+//   - `DerivDiscreteCorrection::Diffusion1OverN` is REJECTED, for the same
+//     reason GammaSwap rejects it: Broadie-Jain's addend is derived for the
+//     plain, always-counting realized-variance estimator, and no re-derivation
+//     for an indicator-gated estimator exists in this task's scope. Applying
+//     VarSwap's addend anyway would be a wrong number; ignoring the caller's
+//     request would be the silent-scope defect P-4 shipped once already.
+template <class SurfaceT>
+[[nodiscard]] Result<DerivQuote> price_corridor_var_swap(const SurfaceT& surface,
+                                                          const CurveSet& curves,
+                                                          const DerivContract& contract,
+                                                          const DerivConfig& cfg) {
+  const RealizedVarianceSpec& rv = contract.rv_spec;
+  const double T = contract.maturity_t;
+  const StrikeCorridor corridor{contract.corridor_lo, contract.corridor_hi};
+
+  if (cfg.discrete_correction_mode == DerivDiscreteCorrection::FullMc) {
+    return Err(ErrorCode::NotImplemented, "FULL_MC discrete correction reserved");
+  }
+  if (cfg.discrete_correction_mode == DerivDiscreteCorrection::Diffusion1OverN) {
+    return Err(ErrorCode::NotImplemented,
+               "Diffusion1OverN discrete correction is not derived for corridor swaps");
+  }
+  if (!corridor_valid(corridor)) {
+    return Err(ErrorCode::InvalidArgument,
+               "corridor swap needs finite corridor_lo/corridor_hi >= 0 (0 == "
+               "unbounded on that side) with corridor_lo < corridor_hi when both "
+               "are bounded");
+  }
+  ATX_TRY_VOID(validate_corridor_accrual(rv));
+
+  double k_corridor_future_dec = 0.0;
+  DerivQuote strip_quote{};
+  bool strip_ran = false;
+  DerivFlags flags = DerivFlags::None;
+
+  if (rv.n_obs_total == 0u || rv.n_obs_done < rv.n_obs_total) {
+    if (!(T > 0.0)) {
+      return Err(ErrorCode::InvalidArgument,
+                 "corridor swap needs T > 0 to price the future leg");
+    }
+    ATX_TRY(auto sq, strip_fair_value_core(surface, curves, T, cfg,
+                                           DerivKind::CorridorVarSwap, corridor));
+    strip_quote = sq;
+    k_corridor_future_dec = strip_quote.fair_strike_dec;
+    strip_ran = true;
+  }
+
+  const double total = aged_total_variance_dec(rv.rv_corridor_done_dec, k_corridor_future_dec,
+                                               rv.n_obs_done, rv.n_obs_total);
+
+  const double df = deriv_df_at_T(curves, T, flags);
+  const double pv = df * contract.notional * (total - contract.strike_dec);
+
+  flags |= strip_quote.flags;
+  if (rv.n_obs_done > 0u) {
+    flags |= DerivFlags::Aged;
+  }
+  if (rv.n_obs_total > 0u && rv.n_obs_done >= rv.n_obs_total) {
+    flags |= DerivFlags::FullyAged;
+  }
+
+  double w_done = 0.0;
+  double w_future = 1.0;
+  if (rv.n_obs_total > 0u) {
+    w_done = static_cast<double>(rv.n_obs_done) / static_cast<double>(rv.n_obs_total);
+    w_future = 1.0 - w_done;
+  }
+
+  DerivQuote out{};
+  out.fair_strike_dec = total;  // fair strike that prices the contract to PV = 0
+  out.fair_strike_points = 1.0e4 * total;
+  out.pv = pv;
+  out.undiscounted_expectation_dec = total;
+  out.uncapped_var_dec = strip_ran ? strip_quote.uncapped_var_dec : 0.0;
+  out.accrued_component_dec = w_done * rv.rv_corridor_done_dec;
+  out.future_component_dec = w_future * k_corridor_future_dec;
+  out.convexity_adjustment_dec = 0.0;
+  out.integration_error_est = strip_quote.integration_error_est;
+  out.conditional_corridor_var_dec = conditional_corridor_accrued_dec(rv);
   carry_strip_grid(out, strip_quote);
   out.flags = flags;
   return Ok(out);
@@ -2198,6 +2566,19 @@ Result<DerivQuote> deriv_price(const SurfaceT& surface, const CurveSet& curves,
     return Err(ErrorCode::InvalidArgument, "cap_dec is only valid on capped kinds");
   }
 
+  // Task F-3: the corridor bounds follow `cap_dec`'s rule exactly -- a knob
+  // that names nothing on this kind is a caller error, not a silent no-op.
+  // Without this, a corridor set on a VarSwap would price as a plain var swap
+  // and the caller would never learn the corridor was dropped, which is the
+  // same silent-scope class P-4's C-1 and F-2's C-2 both were. Behaviour-
+  // compatible by construction: both fields default to 0.0, so no contract
+  // written before they existed can trip it.
+  if (contract.kind != DerivKind::CorridorVarSwap &&
+      (contract.corridor_lo != 0.0 || contract.corridor_hi != 0.0)) {
+    return Err(ErrorCode::InvalidArgument,
+               "corridor_lo/corridor_hi are only valid on DerivKind::CorridorVarSwap");
+  }
+
   // Kind x engine dispatch matrix (PV-5), enforced in two stages: the
   // reserved-engine switch above (RvDistributionAffine/McQe always
   // NotImplemented; RvDistributionProxy NotImplemented except on the kinds
@@ -2249,6 +2630,16 @@ Result<DerivQuote> deriv_price(const SurfaceT& surface, const CurveSet& curves,
       return Err(ErrorCode::InvalidArgument, "engine cannot price a gamma swap");
     }
     return price_gamma_swap(surface, curves, contract, cfg);
+  case DerivKind::CorridorVarSwap:
+    // Task F-3: same engine matrix as VarSwap (Auto/StripLogContract legal;
+    // VolCarrLee has no corridor-variance formula; RvDistributionProxy/Affine/
+    // McQe are already NotImplemented from the reserved-engine switch above,
+    // since CorridorVarSwap is deliberately NOT added to that switch's
+    // allow-list).
+    if (cfg.engine == DerivEngine::VolCarrLee) {
+      return Err(ErrorCode::InvalidArgument, "engine cannot price a corridor var swap");
+    }
+    return price_corridor_var_swap(surface, curves, contract, cfg);
   }
   // Defends against an out-of-enum kind (matches the C default's ERR_INVALID).
   return Err(ErrorCode::InvalidArgument, "unknown derivative kind");
@@ -2576,9 +2967,12 @@ template <class SurfaceT>
 // curves.spot, needed only to seed `gamma_seed_spot` when this injection is
 // itself the contract's first-ever fixing -- see the comment on that field
 // below.
+// `corridor` (Task F-3, additive param): the contract's own corridor, needed
+// because the injected fixing has to be tested against it exactly as a real
+// one would be -- see the corridor block at the end of this function.
 [[nodiscard]] RealizedVarianceSpec inject_carry_fixing(const RealizedVarianceSpec& rv,
-                                                        double fixing_dec,
-                                                        double anchor_spot) noexcept {
+                                                        double fixing_dec, double anchor_spot,
+                                                        const StrikeCorridor& corridor) noexcept {
   RealizedVarianceSpec out = rv;
   const double n0 = static_cast<double>(rv.n_obs_done);
   out.n_obs_done = rv.n_obs_done + 1u;
@@ -2656,6 +3050,40 @@ template <class SurfaceT>
   if (rv.n_obs_done == 0u && !(out.gamma_seed_spot > 0.0) && anchor_spot > 0.0) {
     out.gamma_seed_spot = anchor_spot;
   }
+
+  // Task F-3: the THIRD accrued leg, written unconditionally for the same
+  // reason the gamma pair above is -- restoring this function's original
+  // "regardless of DerivKind" contract, since a VarSwap/GammaSwap contract
+  // never reads the corridor leg back (a harmless no-op) while a corridor
+  // contract that found these fields untouched would make theta_carry and
+  // theta_zero_fixing bitwise IDENTICAL, which is exactly the defect F-2's C-2
+  // was.
+  //
+  // The membership test is `corridor_contains` -- THE rule (see its own
+  // comment), not a second expression of it -- applied to the injected
+  // fixing's own PREVIOUS CLOSE. That close is `anchor_spot`: this injection
+  // models "one more session passes", i.e. tomorrow's return measured FROM
+  // today's spot, so today's spot is precisely the level the corridor
+  // indicator is predictable with respect to. No regime gate: an unbounded
+  // corridor (every non-corridor contract) makes `corridor_contains` true and
+  // the corridor leg simply tracks the plain one, which is what an unbounded
+  // corridor means.
+  //
+  // CONSEQUENCE WORTH STATING, because it looks like a bug and is not: when
+  // today's spot is OUTSIDE the corridor, both variants inject 0.0 into the
+  // corridor leg and theta_carry == theta_zero_fixing BITWISE on a corridor
+  // contract. That is the truth of the product -- a fixing outside the
+  // corridor contributes nothing no matter what the market does that day -- and
+  // not the C-2 symptom it superficially resembles. `Corridor.CarryTheta*`
+  // (derivatives_test.cpp) pins BOTH sides of it.
+  const bool fixing_in_corridor = corridor_contains(anchor_spot, corridor);
+  out.n_obs_in_corridor = rv.n_obs_in_corridor + (fixing_in_corridor ? 1u : 0u);
+  out.rv_corridor_done_dec =
+      (n0 * rv.rv_corridor_done_dec + (fixing_in_corridor ? fixing_dec : 0.0)) / (n0 + 1.0);
+  out.sum_sq_log_returns_in_corridor =
+      (rv.annualization > 0.0)
+          ? out.rv_corridor_done_dec * static_cast<double>(out.n_obs_done) / rv.annualization
+          : 0.0;
   return out;
 }
 
@@ -2837,6 +3265,18 @@ template <class SurfaceT>
         // the file header), so this does not need, and deliberately does not
         // read, any DerivKind-specific quote field.
         //
+        // Task F-3 tested that claim against the corridor kind and it
+        // SURVIVES, for a reason worth writing down because the obvious
+        // alternative is wrong. The PLAIN (all-strike) K_var is the right
+        // injection rate for a corridor contract too: this stencil injects ONE
+        // fixing whose previous close is today's KNOWN spot, so conditional on
+        // that fixing counting at all, its expected r^2 is the one-period
+        // forward variance -- not K_corridor, which is a TIME AVERAGE over
+        // sessions the spot may spend OUTSIDE the corridor and would
+        // understate a fixing already known to be inside it. WHETHER the
+        // fixing counts is `inject_carry_fixing`'s corridor indicator, not
+        // this rate's business.
+        //
         // Aggregate review fix (C-R Critical #1): this strip is the SAME
         // `var_swap_fair_strike` call that `price_vol_swap`'s unaged branch
         // (above, :635-637) already treats as best-effort -- and C-4 gave it
@@ -2857,13 +3297,17 @@ template <class SurfaceT>
             strip_q.has_value()) {
           const double k_var_future = strip_q->fair_strike_dec;
 
+          // Task F-3: the contract's own corridor -- unbounded (a no-op) for
+          // every kind but CorridorVarSwap, and for that kind the thing that
+          // decides whether the injected fixing counts at all.
+          const StrikeCorridor corridor{contract.corridor_lo, contract.corridor_hi};
           DerivContract rolled_carry = rolled;
-          rolled_carry.rv_spec = inject_carry_fixing(rv, k_var_future, curves.spot);
+          rolled_carry.rv_spec = inject_carry_fixing(rv, k_var_future, curves.spot, corridor);
           const Result<double> carry_pv =
               bumped_pv(surface, curves, rolled_carry, cfg, 0.0, 0.0, cache_c_tr);
 
           DerivContract rolled_zero = rolled;
-          rolled_zero.rv_spec = inject_carry_fixing(rv, 0.0, curves.spot);
+          rolled_zero.rv_spec = inject_carry_fixing(rv, 0.0, curves.spot, corridor);
           const Result<double> zero_pv =
               bumped_pv(surface, curves, rolled_zero, cfg, 0.0, 0.0, cache_c_tr);
 
@@ -3614,10 +4058,17 @@ template <class SurfaceT>
         pv_t_dn_zero_fixing = pv_t_dn;
       } else {
         const double k_var_future_at_T = block.pinned_center_raw->fair_strike_dec;
+        // Task F-3: the contract's own corridor, not a hard-coded unbounded
+        // one. This entry point is VarSwap-only (`validate_var_swap_shared_
+        // scope`) so the pair is 0.0/0.0 here today, but reading it from the
+        // contract keeps this site correct by construction rather than by a
+        // whitelist in a different function -- the exact coupling F-2's
+        // Criticals were made of.
+        const StrikeCorridor corridor{contract.corridor_lo, contract.corridor_hi};
         DerivContract rolled_carry = rolled;
-        rolled_carry.rv_spec = inject_carry_fixing(rv, k_var_future_at_T, curves.spot);
+        rolled_carry.rv_spec = inject_carry_fixing(rv, k_var_future_at_T, curves.spot, corridor);
         DerivContract rolled_zero = rolled;
-        rolled_zero.rv_spec = inject_carry_fixing(rv, 0.0, curves.spot);
+        rolled_zero.rv_spec = inject_carry_fixing(rv, 0.0, curves.spot, corridor);
         pv_t_dn_carry = assemble_at_tdt(rolled_carry, block.c_tdt_raw);
         pv_t_dn_zero_fixing = assemble_at_tdt(rolled_zero, block.c_tdt_raw);
       }
@@ -3657,6 +4108,25 @@ Result<RealizedTracker> RealizedTracker::create(double annualization,
   return Ok(std::move(t));
 }
 
+Result<RealizedTracker> RealizedTracker::create_corridor(double annualization,
+                                                          std::uint32_t n_obs_total,
+                                                          double corridor_lo,
+                                                          double corridor_hi) {
+  // Validated through the SAME predicate the pricer uses (`corridor_valid`),
+  // so a corridor a tracker will accumulate against is exactly a corridor a
+  // contract can be priced against -- there is no configuration that accrues
+  // here and fails there, or vice versa.
+  if (!corridor_valid(StrikeCorridor{corridor_lo, corridor_hi})) {
+    return Err(ErrorCode::InvalidArgument,
+               "corridor bounds must be finite and >= 0 (0 == unbounded on that "
+               "side), with corridor_lo < corridor_hi when both are bounded");
+  }
+  ATX_TRY(RealizedTracker t, create(annualization, n_obs_total));
+  t.corridor_lo_ = corridor_lo;
+  t.corridor_hi_ = corridor_hi;
+  return Ok(std::move(t));
+}
+
 Status RealizedTracker::observe(double spot) {
   if (!(spot > 0.0)) {
     return Err(ErrorCode::InvalidArgument, "spot must be > 0");
@@ -3688,12 +4158,30 @@ Status RealizedTracker::observe(double spot) {
   // convention -- the weight applies to the return just realized, not the
   // spot it started from).
   rv_.sum_weighted_sq_log_returns_done += (spot / rv_.gamma_seed_spot) * r * r;
+  // Task F-3 (PV-F3): THE corridor rule (`corridor_contains`, this file's one
+  // statement of it), applied to `prev_spot_` -- the PREVIOUS CLOSE, the spot
+  // this return was measured FROM. Note the deliberate contrast with the gamma
+  // weight one line above, which reads the just-observed `spot`: a WEIGHT is
+  // evaluated where the variance is earned, whereas a corridor INDICATOR must
+  // be predictable with respect to the return it gates (it is the barrier test
+  // a desk can actually run before the session, and it keeps the accrual a
+  // martingale increment). Getting these two the same way round would be a
+  // silent look-ahead in one of them.
+  if (corridor_contains(prev_spot_, StrikeCorridor{corridor_lo_, corridor_hi_})) {
+    rv_.sum_sq_log_returns_in_corridor += r * r;
+    rv_.n_obs_in_corridor += 1u;
+  }
   rv_.n_obs_done += 1u;
   prev_spot_ = spot;
 
   const double n = static_cast<double>(rv_.n_obs_done);
   rv_.rv_done_dec = rv_.annualization * rv_.sum_sq_log_returns_done / n;
   rv_.rv_gamma_done_dec = rv_.annualization * rv_.sum_weighted_sq_log_returns_done / n;
+  // Normalized by n_obs_done, NOT by n_obs_in_corridor -- see the field's own
+  // doc: this is the leg the n_done/n_total aged blend consumes, and the
+  // conditional (in-corridor-normalized) reading is recovered from it plus
+  // `n_obs_in_corridor` by `conditional_corridor_accrued_dec`.
+  rv_.rv_corridor_done_dec = rv_.annualization * rv_.sum_sq_log_returns_in_corridor / n;
   return Ok();
 }
 

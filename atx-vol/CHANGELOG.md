@@ -9,6 +9,67 @@ Vol-derivatives production sprint, Phase 1 (correctness), Phase 2
 (performance), and Phase 3 (features). Grows only with changes that move a
 number a caller could already be marking with.
 
+### Added — `DerivKind::CorridorVarSwap`: corridor variance swaps (PV-F3 / LIT-7, Task F-3)
+
+New `DerivKind::CorridorVarSwap = 6` (appended, additive-only) prices the
+model-free variance strip with the replicating weight `1{K in C}/K^2`. Same
+per-node integrand and same `2/T` outer scale as `VarSwap`; the ONE difference
+is the integration window, restricted to
+`[ln(corridor_lo/F), ln(corridor_hi/F)]` intersected with the resolved span, so
+the corridor edges are composite-Simpson PANEL BOUNDARIES (C-3's split
+machinery, invoked on the restricted interval -- not reimplemented).
+
+* `DerivContract` gains `corridor_lo` / `corridor_hi` (APPENDED; arity pin
+  added at 9 -- this struct had none before). ABSOLUTE STRIKES, with `0`
+  meaning UNBOUNDED on that side, so `0/0` reproduces `VarSwap` on the same
+  nodes with the same weights (`Corridor.FullCorridorIdentity`, pinned
+  BIT-EXACT plus a ledger-counter dispatch witness). Non-zero on any other
+  kind is `InvalidArgument`, exactly as `cap_dec` already behaves -- a knob
+  that names nothing on a kind is a caller error, not a silent no-op.
+* THE CORRIDOR IS RE-RESOLVED PER PRICING against that pricing's own forward,
+  not frozen at inception: a corridor is a fixed barrier in price space.
+  Consequence: for this kind `DerivQuote::strip_k_lo_used`/`strip_k_hi_used`
+  report the PRE-corridor span, because their contract is reproduction and a
+  replaying caller re-derives the corridor itself. Reporting the window would
+  make `deriv_greeks`' pinned grid clip the corridor on one side only under a
+  spot bump and lose roughly half the edge's contribution to delta.
+* `RealizedVarianceSpec` gains THREE appended fields (arity pin 9 -> 12):
+  `n_obs_in_corridor`, `sum_sq_log_returns_in_corridor`,
+  `rv_corridor_done_dec`. REALIZED-LEG CONVENTION: a fixing counts iff its
+  PREVIOUS CLOSE `S_{i-1}` lies in the corridor (closed both ends) -- a
+  predictable indicator, deliberately NOT the gamma weight's own
+  spot-at-the-return convention. `RealizedTracker::create_corridor` applies it.
+* `DerivQuote` gains `conditional_corridor_var_dec` (arity pin 16 -> 17): the
+  realized corridor variance normalized by the IN-CORRIDOR count instead of the
+  observed count. A quote field, not a second `DerivKind` -- both numbers come
+  from one accrual. It is a REALIZED quantity, NOT a forward-looking
+  conditional strike (that needs an expected occupation time, which no
+  single-expiry strip replicates). NaN, not 0, when nothing has been inside.
+* `DerivDiscreteCorrection::Diffusion1OverN` is REJECTED (`NotImplemented`) on
+  this kind: Broadie-Jain's addend is derived for the plain, always-counting
+  estimator and has no re-derivation for an indicator-gated one.
+* `DerivGreekMethod::AnalyticStrip` is NOT extended -- the closed form
+  differentiates the full-span strip and has no term for a moving integration
+  boundary, so it falls back to finite differences (bit-identical greeks,
+  `Corridor.AnalyticStripMethodFallsBackToFiniteDifference`).
+* New ledger counter `counters::ledger::Solve::CorridorVarSwapStripEvals`,
+  separate from `VarSwapStripEvals` for the same reason `GammaSwapStripEvals`
+  is: P-6's book-memo gate reads `VarSwapStripEvals` specifically. The Python
+  `SOLVE_LEDGER_KEYS` tuple grows 10 -> 11.
+* NOT admitted to the live backtest engine (`valid_deriv_kind`) nor to
+  `solve_cycle_swap`: `SwapLot` carries no corridor bounds, so a solved lot
+  would silently be an UNBOUNDED corridor struck at the all-strike `K_var`.
+  Both refuse loudly rather than compute a wrong number.
+* `SwapAccrual::operator==` (backtest.hpp) now compares ALL TWELVE
+  `RealizedVarianceSpec` fields, up from six of nine. Provably inert today
+  (the checkpoint format refuses the swap lane, so every appended field is 0 on
+  both sides), but it retires a correctness argument that rested on another
+  file's kind whitelist.
+
+No existing mark moves: every appended field defaults to its no-op value, and
+the corridor intersection is `fmax(x, -inf)` / `fmin(x, +inf)` -- exactly the
+identity -- on every non-corridor path.
+
 ### Added — `DerivKind::GammaSwap`: gamma (weighted-variance) swaps (PV-F1 / LIT-7, Task F-2)
 
 New `DerivKind::GammaSwap = 5` (appended, additive-only) prices Lee's

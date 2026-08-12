@@ -12,6 +12,7 @@
 
 #include "atx/vol/black76.hpp"              // WingClamp oracle repricing
 #include "atx/vol/derivatives.hpp"
+#include "atx/vol/detail/counters.hpp"      // ledger:: (Corridor dispatch witness)
 #include "atx/vol/detail/strip_grid.hpp"    // strip::simpson_weight (WingClamp oracle)
 #include "atx/vol/detail/legacy_surface.hpp"  // EssviSurface (demoted, S4-T21)
 #include "atx/vol/detail/risk_surface_validation.hpp" // RiskSurfaceValidationConfig (MUST-FIX 2)
@@ -3806,6 +3807,1022 @@ TEST(GammaSwap, CarryThetaFiniteAndDiffersAtZeroObservationsDone) {
   // exactly what exposed this bug (fixing_dec = k_var_future for one branch,
   // 0.0 for the other, must produce different repricings).
   EXPECT_NE(g->theta_carry, g->theta_zero_fixing);
+}
+
+// ── Corridor variance swap (Task F-3, PV-F3 / LIT-7) ────────────────────────
+//
+// `DerivKind::CorridorVarSwap` is VarSwap with the replicating weight
+// 1{K in C}/K^2: same integrand, same 2/T outer scale, and ONE difference --
+// the integration window is [ln(corridor_lo/F), ln(corridor_hi/F)] intersected
+// with the resolved span, which makes the corridor edges Simpson panel
+// boundaries (C-3's machinery, run on the restricted interval).
+//
+// Three mandated oracles, in the brief's own order:
+//   FullCorridorIdentity  -- a corridor spanning the whole grid reproduces
+//     K_var on the SAME nodes with the SAME weights.
+//   SubCorridorOrdering   -- on a negative-skew fixture, a down-corridor is
+//     worth strictly more than an up-corridor of the same log-width.
+//   EdgeSplitAccuracy     -- a corridor edge landing mid-grid still converges
+//     at the composite-Simpson rate (Standard vs Audit agree to < 1e-6 rel).
+// Plus the realized-leg, degenerate-input, dispatch-matrix and split-collision
+// coverage; and, per this sprint's standing lesson, at least one fixture in
+// which EACH appended field genuinely differs from its trivial value.
+
+// Corridor bound at log-moneyness `k` off forward `F`. Written as a helper so
+// every fixture below states its corridor in the coordinate the strip actually
+// reasons in, and the absolute-strike conversion happens in exactly one place.
+[[nodiscard]] double corridor_strike_at_k(double F, double k) {
+  return F * std::exp(k);
+}
+
+TEST(Corridor, FullCorridorIdentity) {
+  const double spot = 100.0;
+  const double sigma = 0.20;
+  const double T_test = 0.5;
+  const EssviSurface surf = make_flat_surface(sigma, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(spot, 0.01, 1.00);
+
+  DerivConfig cfg = deriv_default_config();
+
+  const auto q_var = var_swap_fair_strike(surf, cs, T_test, cfg);
+  ASSERT_TRUE(q_var.has_value()) << q_var.error().to_string();
+
+  DerivContract c{};
+  c.kind = DerivKind::CorridorVarSwap;
+  c.maturity_t = T_test;
+  c.notional = 1.0;
+  c.strike_dec = 0.0;
+  // rv_spec left unaged: this compares the FUTURE leg, which is the strip.
+
+  // (a) The UNBOUNDED encoding (0 on both sides).
+  //
+  // VACUITY GUARD, and the reason this oracle needs one more than the other
+  // two. "A corridor spanning the whole grid reproduces K_var" is satisfied
+  // just as well by a build in which the corridor path NEVER RAN -- a routing
+  // mistake that sent this contract to `price_var_swap` would pass every value
+  // assertion below for the wrong reason. So the DISPATCH itself is witnessed:
+  // `CorridorVarSwapStripEvals` is bumped only inside `strip_fair_value_core`
+  // under `DerivKind::CorridorVarSwap`, so a non-zero count is direct evidence
+  // the corridor body executed, and a zero `VarSwapStripEvals` is evidence it
+  // did not silently take the var-swap route instead.
+  namespace ledger = atx::vol::counters::ledger;
+  ledger::reset();
+  const auto q_unbounded = deriv_price(surf, cs, c, cfg);
+  ASSERT_TRUE(q_unbounded.has_value()) << q_unbounded.error().to_string();
+  EXPECT_EQ(ledger::snapshot().get(ledger::Solve::CorridorVarSwapStripEvals), 1u);
+  EXPECT_EQ(ledger::snapshot().get(ledger::Solve::VarSwapStripEvals), 0u);
+
+  // (b) The brief's literal reading: FINITE bounds that strictly contain the
+  // whole resolved grid, so the corridor code path runs with real numbers in
+  // it and the fmax/fmin intersection still has to select the span's own
+  // endpoints. `strip_k_lo_used`/`strip_k_hi_used` report the resolved span,
+  // so a bound one full unit outside each is unambiguously outside.
+  ASSERT_TRUE(std::isfinite(q_var->strip_k_lo_used));
+  ASSERT_TRUE(std::isfinite(q_var->strip_k_hi_used));
+  DerivContract c_wide = c;
+  c_wide.corridor_lo = corridor_strike_at_k(spot, q_var->strip_k_lo_used - 1.0);
+  c_wide.corridor_hi = corridor_strike_at_k(spot, q_var->strip_k_hi_used + 1.0);
+  ledger::reset();
+  const auto q_wide = deriv_price(surf, cs, c_wide, cfg);
+  ASSERT_TRUE(q_wide.has_value()) << q_wide.error().to_string();
+  EXPECT_EQ(ledger::snapshot().get(ledger::Solve::CorridorVarSwapStripEvals), 1u);
+  EXPECT_EQ(ledger::snapshot().get(ledger::Solve::VarSwapStripEvals), 0u);
+
+  // THE assertions that carry this oracle. The brief asks for 1e-12; both are
+  // pinned BIT-EXACT instead, which is the honest strength of the claim: the
+  // corridor intersection is fmax(span_lo, -inf) / fmin(span_hi, +inf) in case
+  // (a) and fmax(span_lo, something strictly smaller) in case (b), so the
+  // window IS the span in both -- same nodes, same panel plan, same weights,
+  // same summation order. Anything weaker than equality here would mean the
+  // corridor path had perturbed the quadrature it is supposed to leave alone.
+  EXPECT_EQ(q_unbounded->fair_strike_dec, q_var->fair_strike_dec);
+  EXPECT_EQ(q_wide->fair_strike_dec, q_var->fair_strike_dec);
+  // "same nodes, same weights", pinned directly rather than inferred from the
+  // value agreeing.
+  EXPECT_EQ(q_unbounded->strip_nodes_used, q_var->strip_nodes_used);
+  EXPECT_EQ(q_wide->strip_nodes_used, q_var->strip_nodes_used);
+  EXPECT_EQ(q_wide->strip_k_lo_used, q_var->strip_k_lo_used);
+  EXPECT_EQ(q_wide->strip_k_hi_used, q_var->strip_k_hi_used);
+  EXPECT_EQ(q_wide->integration_error_est, q_var->integration_error_est);
+  // Flat 20-vol surface, zero carry: the strip's own closed-form answer.
+  EXPECT_NEAR(q_unbounded->fair_strike_dec, sigma * sigma, 1.0e-6 * sigma * sigma);
+}
+
+TEST(Corridor, SubCorridorOrdering) {
+  using atx::vol::deriv_testkit::kSkewRefT;
+  using atx::vol::deriv_testkit::make_curves;
+  using atx::vol::deriv_testkit::make_skew_surface;
+
+  const double spot = 100.0;
+  const double atm_vol = 0.20;
+  const double skew_slope = -0.60;  // steep negative skew (rho fixed at -0.7)
+  const double convexity = 0.5;
+  const EssviSurface surf = make_skew_surface(atm_vol, skew_slope, convexity);
+  const CurveSet cs = make_curves(spot, 0.0, 0.0);  // zero carry: isolate skew
+
+  DerivConfig cfg = deriv_default_config();
+  cfg.quality = DerivQuality::High;
+
+  // EQUAL WIDTH IN LOG-MONEYNESS, which is the coordinate the strip integrates
+  // in, so the two corridors get identical node budgets over identical-length
+  // intervals and the only thing that differs is WHICH side of the smile they
+  // sit on. F == spot here (make_curves is zero-carry), so k = 0 is exactly
+  // the shared edge.
+  constexpr double kHalfWidth = 0.30;
+
+  DerivContract down{};
+  down.kind = DerivKind::CorridorVarSwap;
+  down.maturity_t = kSkewRefT;
+  down.notional = 1.0;
+  down.corridor_lo = corridor_strike_at_k(spot, -kHalfWidth);
+  down.corridor_hi = corridor_strike_at_k(spot, 0.0);
+
+  DerivContract up = down;
+  up.corridor_lo = corridor_strike_at_k(spot, 0.0);
+  up.corridor_hi = corridor_strike_at_k(spot, kHalfWidth);
+
+  const auto q_down = deriv_price(surf, cs, down, cfg);
+  ASSERT_TRUE(q_down.has_value()) << q_down.error().to_string();
+  const auto q_up = deriv_price(surf, cs, up, cfg);
+  ASSERT_TRUE(q_up.has_value()) << q_up.error().to_string();
+
+  // THE assertion that carries this oracle: a STRICT inequality between two
+  // corridors of identical width on the same surface, same T, same cfg. It is
+  // the corridor analogue of GammaSwap.SkewOrdering, and it is what rules out
+  // the whole "the corridor was ignored" family: a dispatch that integrated
+  // the full span for both would make these EQUAL (both would be K_var), and
+  // one that got the window's SIGN or direction wrong would order them the
+  // other way. Under negative skew the put wing carries richer implied vol, so
+  // the OTM prices the down-corridor integrates are strictly larger.
+  EXPECT_GT(q_down->fair_strike_dec, q_up->fair_strike_dec);
+  EXPECT_GT(q_up->fair_strike_dec, 0.0);
+
+  // Both are STRICT sub-corridors -- each is worth strictly less than the
+  // whole strip, which is the other half of "the corridor did something". A
+  // corridor covering only part of the span cannot reach the full K_var: the
+  // integrand is strictly positive on the excluded region.
+  const auto q_var = var_swap_fair_strike(surf, cs, kSkewRefT, cfg);
+  ASSERT_TRUE(q_var.has_value());
+  EXPECT_LT(q_down->fair_strike_dec, q_var->fair_strike_dec);
+  EXPECT_LT(q_up->fair_strike_dec, q_var->fair_strike_dec);
+  // ... and the two halves plus the excluded wings must not exceed it either
+  // (additivity of the integral over disjoint sub-intervals).
+  EXPECT_LT(q_down->fair_strike_dec + q_up->fair_strike_dec, q_var->fair_strike_dec);
+}
+
+TEST(Corridor, EdgeSplitAccuracy) {
+  using atx::vol::deriv_testkit::kSkewRefT;
+  using atx::vol::deriv_testkit::make_curves;
+  using atx::vol::deriv_testkit::make_skew_surface;
+
+  const double spot = 100.0;
+  const EssviSurface surf = make_skew_surface(0.20, -0.60, 0.5);
+  const CurveSet cs = make_curves(spot, 0.0, 0.0);
+
+  DerivContract c{};
+  c.kind = DerivKind::CorridorVarSwap;
+  c.maturity_t = kSkewRefT;
+  c.notional = 1.0;
+  // Edges deliberately MID-GRID and off any round fraction of the tier
+  // spacing, so neither lands on a node of either tier by luck: Standard's
+  // 257-node span here is +-1.5 (dk ~= 0.0117) and Audit's is 2049 nodes
+  // (dk ~= 0.00146). Both edges also straddle k = 0, so the split has to keep
+  // the put-call parity kink AND both corridor edges as panel boundaries at
+  // once.
+  c.corridor_lo = corridor_strike_at_k(spot, -0.3717);
+  c.corridor_hi = corridor_strike_at_k(spot, 0.2341);
+
+  DerivConfig std_cfg = deriv_default_config();
+  std_cfg.quality = DerivQuality::Standard;
+  DerivConfig audit_cfg = deriv_default_config();
+  audit_cfg.quality = DerivQuality::Audit;
+
+  const auto q_std = deriv_price(surf, cs, c, std_cfg);
+  ASSERT_TRUE(q_std.has_value()) << q_std.error().to_string();
+  const auto q_audit = deriv_price(surf, cs, c, audit_cfg);
+  ASSERT_TRUE(q_audit.has_value()) << q_audit.error().to_string();
+
+  ASSERT_GT(q_audit->fair_strike_dec, 0.0);
+  const double rel =
+      std::fabs(q_std->fair_strike_dec - q_audit->fair_strike_dec) / q_audit->fair_strike_dec;
+
+  // THE assertion that carries this oracle, and what it actually proves. If
+  // either corridor edge were left INSIDE a Simpson panel -- which is what the
+  // rejected "keep the full span, multiply by an indicator" design would do --
+  // the integrand would have a JUMP there, the panel straddling it would
+  // contribute an O(h) error rather than O(h^4), and Standard (dk ~ 0.0117)
+  // versus Audit (dk ~ 0.00146) would disagree at the 1e-3 level, not 1e-6.
+  // The edges being the restricted interval's own ENDPOINTS is what buys this.
+  EXPECT_LT(rel, 1.0e-6);
+
+  // Mechanism, not just outcome: the Richardson estimate is only populated
+  // when EVERY panel of the split landed on the 4m+1 lattice, so a finite
+  // value here is direct evidence the corridor-restricted split preserved the
+  // even-panel-count invariant composite Simpson needs (and that the F-1 /
+  // C-3 error estimate is still meaningful on this grid).
+  EXPECT_TRUE(std::isfinite(q_std->integration_error_est));
+  EXPECT_TRUE(std::isfinite(q_audit->integration_error_est));
+  // The observed gap must also sit inside the two grids' own reported error
+  // budget -- an anchored bound (F-1's I-3 precedent) rather than a magic
+  // constant, so it tightens automatically when the quadrature improves.
+  EXPECT_LE(std::fabs(q_std->fair_strike_dec - q_audit->fair_strike_dec),
+            q_std->integration_error_est + q_audit->integration_error_est);
+}
+
+// The corridor is stated in ABSOLUTE STRIKES but resolved through F, and the
+// three oracles above run on zero-carry fixtures where F == spot, so none of
+// them can tell an F-conversion from a spot-conversion. This one can: under
+// r - q = 6% at a 3M tenor the two differ by ln(F/S) = 0.015, and the slab of
+// integrand that width sits right at the ATM peak.
+//
+// The oracle is EXACT rather than approximate. A corridor whose lower bound is
+// placed at the forward itself, on a span pinned to [-1.2, +1.2], integrates
+// exactly [0, 1.2]; the plain variance strip with its SPAN pinned to [0, 1.2]
+// and the same node count integrates the identical interval. `plan_strip_split`
+// is a pure function of (k_lo, k_hi, n, wing_band) and all four agree, so the
+// two runs share panels, nodes, weights and summation order. A spot-conversion
+// would instead integrate [0.015, 1.2] and lose ~10% of the value.
+TEST(Corridor, BoundsResolveThroughTheForwardNotTheSpot) {
+  using atx::vol::deriv_testkit::kSkewRefT;
+  using atx::vol::deriv_testkit::make_curves;
+  using atx::vol::deriv_testkit::make_skew_surface;
+
+  const double spot = 100.0;
+  const double r = 0.06;
+  const double q_div = 0.0;
+  const EssviSurface surf = make_skew_surface(0.20, -0.60, 0.5);
+  const CurveSet cs = make_curves(spot, r, q_div);
+  // `make_curves` builds its forward pillars as spot*exp((r-q)*T_i) and
+  // `kSkewRefT` IS one of those pillars, so this is the forward the pricer
+  // resolves, not an approximation of it.
+  const double forward = spot * std::exp((r - q_div) * kSkewRefT);
+  ASSERT_GT(forward, spot * 1.01);  // the conversions are far apart here
+
+  constexpr double kHalfSpan = 1.2;
+  constexpr std::uint32_t kNodes = 1025u;
+
+  DerivConfig ref_cfg = deriv_default_config();
+  ref_cfg.k_min_log = 0.0;  // pinned: k_max_log below is non-zero
+  ref_cfg.k_max_log = kHalfSpan;
+  ref_cfg.strip_nodes = kNodes;
+  const auto ref = var_swap_fair_strike(surf, cs, kSkewRefT, ref_cfg);
+  ASSERT_TRUE(ref.has_value()) << ref.error().to_string();
+
+  DerivConfig cor_cfg = deriv_default_config();
+  cor_cfg.k_min_log = -kHalfSpan;
+  cor_cfg.k_max_log = kHalfSpan;
+  cor_cfg.strip_nodes = kNodes;
+
+  DerivContract c{};
+  c.kind = DerivKind::CorridorVarSwap;
+  c.maturity_t = kSkewRefT;
+  c.notional = 1.0;
+  c.corridor_lo = forward;  // k_lo == ln(F/F) == 0 under an F-conversion
+  c.corridor_hi = 0.0;      // unbounded above
+  const auto cor = deriv_price(surf, cs, c, cor_cfg);
+  ASSERT_TRUE(cor.has_value()) << cor.error().to_string();
+
+  // THE assertion, with its tolerance EXPLAINED rather than tuned. The two
+  // runs are not bit-identical, and the reason is measurable: the corridor run
+  // opens its window at ln(F_resolved/F_fixture), which `resolve_forward`'s
+  // log-blend leaves at ~1e-16 rather than exactly 0. That sub-ulp endpoint
+  // offset is enough to move `apportion_units`' largest-remainder split by one
+  // Simpson unit between the two panels, which is an O(h^4) requantization,
+  // and the observed gap is 1.1437378821810285e-13 absolute
+  // (8.1e-12 relative). It is NOT a difference in what was integrated.
+  //
+  // Two bounds, so this is not a magic constant: an ANCHORED one against the
+  // grids' own Richardson estimates (F-1's I-3 precedent -- it tightens by
+  // itself when the quadrature improves), and a 1e-9 relative backstop that
+  // still sits seven decades below the ~2%+ effect the control below measures
+  // for the spot-conversion this test exists to exclude.
+  const double gap = std::fabs(cor->fair_strike_dec - ref->fair_strike_dec);
+  ASSERT_TRUE(std::isfinite(ref->integration_error_est));
+  ASSERT_TRUE(std::isfinite(cor->integration_error_est));
+  EXPECT_LE(gap, ref->integration_error_est + cor->integration_error_est);
+  EXPECT_LT(gap, 1.0e-9 * ref->fair_strike_dec);
+
+  // The control that MEASURES how far apart the two conversions are, so the
+  // 1e-12 tolerance above is not merely a tight number on an untested claim.
+  // A spot-conversion of `corridor_lo == forward` would open the window at
+  // k = ln(F/S) = 0.015 instead of 0; this contract reproduces exactly that
+  // window through the (correct) F-conversion, by placing its bound at
+  // F*exp(ln(F/S)).
+  DerivContract shifted_window = c;
+  shifted_window.corridor_lo = forward * (forward / spot);
+  const auto shifted = deriv_price(surf, cs, shifted_window, cor_cfg);
+  ASSERT_TRUE(shifted.has_value()) << shifted.error().to_string();
+  EXPECT_LT(shifted->fair_strike_dec, 0.98 * ref->fair_strike_dec);
+}
+
+// ── Realized leg: the previous-close convention, and the non-trivial fixtures
+//
+// THE SPRINT'S STANDING LESSON (F-2's I-3, proven by construction there): a
+// green suite proves nothing if every fixture pins the new field at its
+// no-op value. F-2's reviewer built a fully-corrected TU and got 21/21
+// passing BITWISE IDENTICAL to the broken one, because every gamma fixture
+// had gamma_seed_spot == curves.spot. The three oracles above leave `rv_spec`
+// unaged and are blind to this whole half of the task by construction, so the
+// fixtures below deliberately put each appended field at a value where a wrong
+// implementation changes an assertion:
+//   * `n_obs_in_corridor` STRICTLY LESS than `n_obs_done`, never equal;
+//   * `sum_sq_log_returns_in_corridor` pinned to the PREVIOUS-CLOSE return's
+//     square and asserted DIFFERENT from the current-close alternative's;
+//   * `rv_corridor_done_dec` STRICTLY DIFFERENT from `rv_done_dec`;
+//   * `corridor_lo`/`corridor_hi` genuinely narrower than the resolved span.
+
+TEST(Corridor, TrackerCountsOnlyPreviousCloseInsideTheCorridor) {
+  // Corridor [95, 105] around a 100 spot. The walk is chosen so the
+  // PREVIOUS-CLOSE convention and the (wrong) current-close convention pick
+  // DIFFERENT return sets -- the only construction that distinguishes the
+  // documented convention from its alternative.
+  //
+  //   seed 100                       -- no return
+  //   100 -> 110   prev 100 IN   cur 110 OUT   -> counts under prev-close only
+  //   110 -> 108   prev 110 OUT  cur 108 OUT   -> counts under neither
+  //   108 -> 100   prev 108 OUT  cur 100 IN    -> counts under cur-close only
+  //
+  // Both conventions give n_obs_in_corridor == 1, so a COUNT assertion alone
+  // cannot separate them; the accumulated Sigma r^2 is what discriminates, and
+  // the two candidate returns differ by ~19%.
+  auto tracker = RealizedTracker::create_corridor(252.0, 10u, 95.0, 105.0);
+  ASSERT_TRUE(tracker.has_value()) << tracker.error().to_string();
+
+  const double path[] = {100.0, 110.0, 108.0, 100.0};
+  for (const double s : path) {
+    const auto st = tracker->observe(s);
+    ASSERT_TRUE(st.has_value()) << st.error().to_string();
+  }
+  const RealizedVarianceSpec rv = tracker->snapshot();
+
+  ASSERT_EQ(rv.n_obs_done, 3u);
+  // NON-TRIVIAL BY CONSTRUCTION: 1 != 3. A corridor admitting everything (the
+  // field at its no-op value) would read 3 and collapse every assertion below
+  // onto the plain leg.
+  EXPECT_EQ(rv.n_obs_in_corridor, 1u);
+
+  const double r1 = std::log(110.0 / 100.0);
+  const double r3 = std::log(100.0 / 108.0);
+  // THE assertion that carries the convention.
+  EXPECT_DOUBLE_EQ(rv.sum_sq_log_returns_in_corridor, r1 * r1);
+  EXPECT_NE(rv.sum_sq_log_returns_in_corridor, r3 * r3);
+  // Normalized by n_obs_done (3), NOT by n_obs_in_corridor (1) -- the field's
+  // documented contract, and what makes the n_done/n_total aged blend land on
+  // annualization * Sigma_{in C} r^2 / n_total.
+  EXPECT_DOUBLE_EQ(rv.rv_corridor_done_dec, 252.0 * (r1 * r1) / 3.0);
+  EXPECT_NE(rv.rv_corridor_done_dec, rv.rv_done_dec);
+  EXPECT_LT(rv.rv_corridor_done_dec, rv.rv_done_dec);
+}
+
+TEST(Corridor, TrackerUnboundedCorridorTracksThePlainLegExactly) {
+  // The realized-leg half of FullCorridorIdentity: an unbounded corridor
+  // admits every fixing, so the corridor accumulators must shadow the plain
+  // ones BIT-EXACTLY. That is what lets a caller read the corridor fields off
+  // ANY tracker without first asking whether one was configured.
+  auto plain = RealizedTracker::create(252.0, 10u);
+  ASSERT_TRUE(plain.has_value());
+  auto wide = RealizedTracker::create_corridor(252.0, 10u, 0.0, 0.0);
+  ASSERT_TRUE(wide.has_value());
+
+  const double path[] = {100.0, 110.0, 108.0, 100.0, 91.0};
+  for (const double s : path) {
+    ASSERT_TRUE(plain->observe(s).has_value());
+    ASSERT_TRUE(wide->observe(s).has_value());
+  }
+  const RealizedVarianceSpec a = plain->snapshot();
+  const RealizedVarianceSpec b = wide->snapshot();
+
+  EXPECT_EQ(a.n_obs_in_corridor, a.n_obs_done);
+  EXPECT_EQ(a.sum_sq_log_returns_in_corridor, a.sum_sq_log_returns_done);
+  EXPECT_EQ(a.rv_corridor_done_dec, a.rv_done_dec);
+  EXPECT_EQ(b.n_obs_in_corridor, a.n_obs_in_corridor);
+  EXPECT_EQ(b.sum_sq_log_returns_in_corridor, a.sum_sq_log_returns_in_corridor);
+  EXPECT_EQ(b.rv_corridor_done_dec, a.rv_corridor_done_dec);
+}
+
+TEST(Corridor, AgedBlendReadsTheCorridorAccrualNotThePlainOne) {
+  const EssviSurface surf = make_flat_surface(0.20, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+
+  DerivContract c{};
+  c.kind = DerivKind::CorridorVarSwap;
+  c.maturity_t = 0.5;
+  c.notional = 1.0;
+  c.strike_dec = 0.0;
+  c.corridor_lo = 90.0;
+  c.corridor_hi = 115.0;
+  c.rv_spec.annualization = 252.0;
+  c.rv_spec.n_obs_total = 100u;
+  c.rv_spec.n_obs_done = 40u;
+  // The two accrued legs are DELIBERATELY different, and the corridor count is
+  // DELIBERATELY below the observed count: reading `rv_done_dec` (VarSwap's
+  // field) instead of `rv_corridor_done_dec` moves the fair strike by
+  // w_done * (0.09 - 0.03) = 0.024, some 40x any quadrature noise here.
+  c.rv_spec.rv_done_dec = 0.09;
+  c.rv_spec.rv_corridor_done_dec = 0.03;
+  c.rv_spec.n_obs_in_corridor = 25u;
+
+  const auto q = deriv_price(surf, cs, c, deriv_default_config());
+  ASSERT_TRUE(q.has_value()) << q.error().to_string();
+
+  const double w_done = 0.40;
+  const double w_future = 0.60;
+  EXPECT_DOUBLE_EQ(q->accrued_component_dec, w_done * 0.03);
+  EXPECT_NE(q->accrued_component_dec, w_done * 0.09);
+  EXPECT_DOUBLE_EQ(q->fair_strike_dec, q->accrued_component_dec + q->future_component_dec);
+  EXPECT_NEAR(q->future_component_dec, w_future * q->uncapped_var_dec,
+              1.0e-12 * std::fabs(q->uncapped_var_dec));
+  EXPECT_TRUE(has_flag(q->flags, DerivFlags::Aged));
+}
+
+TEST(Corridor, ConditionalVariantComesFromTheSameAccrualAsTheUnconditionalOne) {
+  const EssviSurface surf = make_flat_surface(0.20, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+
+  DerivContract c{};
+  c.kind = DerivKind::CorridorVarSwap;
+  c.maturity_t = 0.5;
+  c.notional = 1.0;
+  c.corridor_lo = 90.0;
+  c.corridor_hi = 115.0;
+  c.rv_spec.annualization = 252.0;
+  c.rv_spec.n_obs_total = 100u;
+  c.rv_spec.n_obs_done = 40u;
+  c.rv_spec.rv_corridor_done_dec = 0.03;
+  // 25 != 40: the conditional field IS the ratio between these two, so a
+  // fixture with them equal would be blind to it.
+  c.rv_spec.n_obs_in_corridor = 25u;
+
+  const auto q = deriv_price(surf, cs, c, deriv_default_config());
+  ASSERT_TRUE(q.has_value()) << q.error().to_string();
+
+  // "Both numbers from ONE accrual", pinned as an identity between the two
+  // published fields rather than as two independent expected constants: the
+  // unconditional accrued component and the conditional reading are the same
+  // accrual scaled by n_done/n_in_corridor, which is only true if one pass
+  // produced both.
+  EXPECT_DOUBLE_EQ(q->conditional_corridor_var_dec, 0.03 * 40.0 / 25.0);
+  EXPECT_DOUBLE_EQ(q->conditional_corridor_var_dec * 25.0 / 100.0,
+                   q->accrued_component_dec);
+  EXPECT_NE(q->conditional_corridor_var_dec, c.rv_spec.rv_corridor_done_dec);
+
+  // Nothing in the corridor yet -> NaN ("no conditional average of an empty
+  // set"), never 0.0, which would read as "flat in there".
+  DerivContract empty = c;
+  empty.rv_spec.n_obs_in_corridor = 0u;
+  empty.rv_spec.rv_corridor_done_dec = 0.0;  // forced by the same invariant
+  const auto q_empty = deriv_price(surf, cs, empty, deriv_default_config());
+  ASSERT_TRUE(q_empty.has_value()) << q_empty.error().to_string();
+  EXPECT_TRUE(std::isnan(q_empty->conditional_corridor_var_dec));
+
+  // ... and never populated on another kind: a VarSwap quote must not carry a
+  // number a caller could mistake for a corridor reading.
+  DerivContract var = c;
+  var.kind = DerivKind::VarSwap;
+  var.corridor_lo = 0.0;
+  var.corridor_hi = 0.0;
+  const auto q_var = deriv_price(surf, cs, var, deriv_default_config());
+  ASSERT_TRUE(q_var.has_value()) << q_var.error().to_string();
+  EXPECT_TRUE(std::isnan(q_var->conditional_corridor_var_dec));
+}
+
+// C-2/C-4 class regression guard (F-2's own Criticals were exactly this shape
+// on the gamma leg): if `inject_carry_fixing` had no corridor arm, the corridor
+// accrual would be IDENTICAL in both injected repricings and theta_carry would
+// equal theta_zero_fixing bitwise for every corridor swap. Spot sits INSIDE the
+// corridor here, which is the regime where the two genuinely must differ.
+TEST(Corridor, CarryThetaDiffersFromZeroFixingWhenSpotIsInsideTheCorridor) {
+  const EssviSurface surf = make_flat_surface(0.20, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+
+  DerivContract c{};
+  c.kind = DerivKind::CorridorVarSwap;
+  c.maturity_t = 0.5;
+  c.notional = 1.0e6;
+  c.strike_dec = 0.0;
+  c.corridor_lo = 90.0;  // spot 100 is INSIDE
+  c.corridor_hi = 115.0;
+  c.rv_spec.annualization = 252.0;
+  c.rv_spec.n_obs_total = 100u;
+  c.rv_spec.n_obs_done = 40u;
+  c.rv_spec.rv_done_dec = 0.05;
+  c.rv_spec.rv_corridor_done_dec = 0.03;
+  c.rv_spec.n_obs_in_corridor = 25u;
+
+  const atx::vol::DerivGreekBumps bumps{};
+  const auto g = atx::vol::deriv_greeks(surf, cs, c, deriv_default_config(), bumps);
+  ASSERT_TRUE(g.has_value()) << g.error().to_string();
+
+  EXPECT_TRUE(std::isfinite(g->theta_carry));
+  EXPECT_TRUE(std::isfinite(g->theta_zero_fixing));
+  EXPECT_NE(g->theta_carry, g->theta_zero_fixing);
+}
+
+// The other half of the same contract, and a TEST rather than a footnote: on a
+// corridor swap whose spot is OUTSIDE the corridor, theta_carry ==
+// theta_zero_fixing BITWISE is CORRECT. A fixing that cannot count contributes
+// nothing whatever the market does, so both injections add 0.0 to the corridor
+// leg. Pinning it stops a later reader from "fixing" the equality away.
+TEST(Corridor, CarryThetaEqualsZeroFixingWhenSpotIsOutsideTheCorridor) {
+  const EssviSurface surf = make_flat_surface(0.20, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+
+  DerivContract c{};
+  c.kind = DerivKind::CorridorVarSwap;
+  c.maturity_t = 0.5;
+  c.notional = 1.0e6;
+  c.strike_dec = 0.0;
+  c.corridor_lo = 120.0;  // spot 100 is OUTSIDE (below the corridor)
+  c.corridor_hi = 140.0;
+  c.rv_spec.annualization = 252.0;
+  c.rv_spec.n_obs_total = 100u;
+  c.rv_spec.n_obs_done = 40u;
+  c.rv_spec.rv_done_dec = 0.05;
+  c.rv_spec.rv_corridor_done_dec = 0.01;
+  c.rv_spec.n_obs_in_corridor = 8u;
+
+  const atx::vol::DerivGreekBumps bumps{};
+  const auto g = atx::vol::deriv_greeks(surf, cs, c, deriv_default_config(), bumps);
+  ASSERT_TRUE(g.has_value()) << g.error().to_string();
+
+  EXPECT_TRUE(std::isfinite(g->theta_carry));
+  EXPECT_EQ(g->theta_carry, g->theta_zero_fixing);
+}
+
+// ── Degenerate corridor inputs: the contract, stated as tests ───────────────
+
+TEST(Corridor, RejectsMalformedCorridorBounds) {
+  const EssviSurface surf = make_flat_surface(0.20, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+  const double inf = std::numeric_limits<double>::infinity();
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+
+  DerivContract base{};
+  base.kind = DerivKind::CorridorVarSwap;
+  base.maturity_t = 0.5;
+  base.notional = 1.0;
+
+  struct Case {
+    double lo;
+    double hi;
+    const char *why;
+  };
+  // `0` is OVERLOADED as "unbounded on this side", so it cannot ALSO mean
+  // "invalid" -- which forces every other unusable value to be named. +Inf is
+  // here deliberately: it passes a bare `x > 0.0` (the exact check F-2 shipped
+  // in the gamma anchor guard and had to correct in a cleanup round) and would
+  // otherwise read as "unbounded" spelled a second, undocumented way.
+  const Case bad[] = {
+      {-1.0, 0.0, "negative lower bound"},
+      {0.0, -1.0, "negative upper bound"},
+      {inf, 0.0, "+Inf lower bound is not a second spelling of unbounded"},
+      {0.0, inf, "+Inf upper bound is not a second spelling of unbounded"},
+      {-inf, 0.0, "-Inf lower bound"},
+      {nan, 0.0, "NaN lower bound"},
+      {0.0, nan, "NaN upper bound"},
+      {120.0, 80.0, "inverted corridor"},
+      {100.0, 100.0, "zero-width corridor accrues and replicates nothing"},
+  };
+  for (const Case &k : bad) {
+    DerivContract c = base;
+    c.corridor_lo = k.lo;
+    c.corridor_hi = k.hi;
+    const auto quote = deriv_price(surf, cs, c, deriv_default_config());
+    EXPECT_FALSE(quote.has_value()) << k.why;
+    if (!quote.has_value()) {
+      EXPECT_EQ(quote.error().code(), ErrorCode::InvalidArgument) << k.why;
+    }
+  }
+
+  // The LEGAL degenerate encodings, for contrast: fully unbounded, and each
+  // one-sided half. None is an error -- 0 means unbounded, and a half-corridor
+  // is an ordinary product.
+  const Case good[] = {
+      {0.0, 0.0, "both sides unbounded"},
+      {90.0, 0.0, "lower half only"},
+      {0.0, 115.0, "upper half only"},
+  };
+  for (const Case &k : good) {
+    DerivContract c = base;
+    c.corridor_lo = k.lo;
+    c.corridor_hi = k.hi;
+    const auto quote = deriv_price(surf, cs, c, deriv_default_config());
+    EXPECT_TRUE(quote.has_value()) << k.why;
+  }
+}
+
+TEST(Corridor, RejectsCorridorBoundsOnNonCorridorKinds) {
+  const EssviSurface surf = make_flat_surface(0.20, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+
+  // Same rule `cap_dec` already follows: a knob that names nothing on this
+  // kind is a caller error, not a silent no-op. Without it, a corridor set on
+  // a VarSwap prices as a plain var swap and the caller never learns the
+  // corridor was dropped -- the silent-scope class P-4's C-1 and F-2's C-2
+  // both were.
+  for (const DerivKind kind : {DerivKind::VarSwap, DerivKind::VolSwap, DerivKind::GammaSwap}) {
+    DerivContract c{};
+    c.kind = kind;
+    c.maturity_t = 0.5;
+    c.notional = 1.0;
+    c.corridor_lo = 90.0;
+    c.corridor_hi = 115.0;
+    const auto quote = deriv_price(surf, cs, c, deriv_default_config());
+    ASSERT_FALSE(quote.has_value()) << static_cast<int>(kind);
+    EXPECT_EQ(quote.error().code(), ErrorCode::InvalidArgument);
+  }
+}
+
+TEST(Corridor, EmptyIntersectionWithTheResolvedSpanFailsLoud) {
+  const EssviSurface surf = make_flat_surface(0.20, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+
+  DerivContract c{};
+  c.kind = DerivKind::CorridorVarSwap;
+  c.maturity_t = 0.5;
+  c.notional = 1.0;
+  // Far below anything the resolved span reaches. Returning 0.0 would be a
+  // plausible-looking wrong number -- the true corridor variance out there is
+  // small but not zero, and the caller would get no signal at all.
+  c.corridor_lo = corridor_strike_at_k(100.0, -20.0);
+  c.corridor_hi = corridor_strike_at_k(100.0, -19.0);
+
+  const auto quote = deriv_price(surf, cs, c, deriv_default_config());
+  ASSERT_FALSE(quote.has_value());
+  EXPECT_EQ(quote.error().code(), ErrorCode::OutOfRange);
+}
+
+TEST(Corridor, RejectsInternallyInconsistentCorridorAccrual) {
+  const EssviSurface surf = make_flat_surface(0.20, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+
+  DerivContract base{};
+  base.kind = DerivKind::CorridorVarSwap;
+  base.maturity_t = 0.5;
+  base.notional = 1.0;
+  base.corridor_lo = 90.0;
+  base.corridor_hi = 115.0;
+  base.rv_spec.annualization = 252.0;
+  base.rv_spec.n_obs_total = 100u;
+  base.rv_spec.n_obs_done = 40u;
+
+  // A corridor spec has NO witness field whose absence proves "never
+  // populated" -- unlike F-2's gamma_seed_spot, all-zeros is ALSO the entirely
+  // legitimate "spot never entered the corridor". What CAN be checked is the
+  // arithmetic the tracker maintains; these are the three relations a
+  // hand-built or half-migrated spec breaks.
+  {
+    DerivContract c = base;
+    c.rv_spec.n_obs_in_corridor = 41u;  // > n_obs_done
+    const auto quote = deriv_price(surf, cs, c, deriv_default_config());
+    ASSERT_FALSE(quote.has_value());
+    EXPECT_EQ(quote.error().code(), ErrorCode::InvalidArgument);
+  }
+  {
+    DerivContract c = base;
+    c.rv_spec.n_obs_in_corridor = 10u;
+    c.rv_spec.rv_corridor_done_dec = -0.01;  // a sum of squares cannot be < 0
+    const auto quote = deriv_price(surf, cs, c, deriv_default_config());
+    ASSERT_FALSE(quote.has_value());
+    EXPECT_EQ(quote.error().code(), ErrorCode::InvalidArgument);
+  }
+  {
+    // Catches "the caller set the corridor leg by hand and forgot the count":
+    // nothing counted, yet a non-zero corridor variance. The sum is over an
+    // empty set, so nothing but 0.0 is representable.
+    DerivContract c = base;
+    c.rv_spec.n_obs_in_corridor = 0u;
+    c.rv_spec.rv_corridor_done_dec = 0.03;
+    const auto quote = deriv_price(surf, cs, c, deriv_default_config());
+    ASSERT_FALSE(quote.has_value());
+    EXPECT_EQ(quote.error().code(), ErrorCode::InvalidArgument);
+  }
+  {
+    DerivContract c = base;
+    c.rv_spec.n_obs_in_corridor = 0u;
+    c.rv_spec.rv_corridor_done_dec = 0.0;
+    const auto quote = deriv_price(surf, cs, c, deriv_default_config());
+    EXPECT_TRUE(quote.has_value());
+  }
+}
+
+TEST(Corridor, TrackerCreateCorridorValidatesThroughTheSamePredicate) {
+  const double inf = std::numeric_limits<double>::infinity();
+  EXPECT_FALSE(RealizedTracker::create_corridor(252.0, 10u, -1.0, 0.0).has_value());
+  EXPECT_FALSE(RealizedTracker::create_corridor(252.0, 10u, 0.0, inf).has_value());
+  EXPECT_FALSE(RealizedTracker::create_corridor(252.0, 10u, inf, 0.0).has_value());
+  EXPECT_FALSE(RealizedTracker::create_corridor(252.0, 10u, 120.0, 80.0).has_value());
+  EXPECT_FALSE(RealizedTracker::create_corridor(252.0, 10u, 100.0, 100.0).has_value());
+  // ... and `create`'s own validation still applies through it.
+  EXPECT_FALSE(RealizedTracker::create_corridor(0.0, 10u, 90.0, 110.0).has_value());
+  EXPECT_FALSE(RealizedTracker::create_corridor(252.0, 0u, 90.0, 110.0).has_value());
+  EXPECT_TRUE(RealizedTracker::create_corridor(252.0, 10u, 90.0, 110.0).has_value());
+}
+
+// ── Dispatch matrix + the `kind ==` whitelists -Wswitch cannot reach ────────
+
+TEST(Corridor, DispatchMatrix) {
+  const EssviSurface surf = make_flat_surface(0.20, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+
+  DerivContract c{};
+  c.kind = DerivKind::CorridorVarSwap;
+  c.maturity_t = 0.5;
+  c.notional = 1.0;
+  c.corridor_lo = 90.0;
+  c.corridor_hi = 115.0;
+
+  for (const DerivEngine e : {DerivEngine::Auto, DerivEngine::StripLogContract}) {
+    DerivConfig cfg = deriv_default_config();
+    cfg.engine = e;
+    const auto quote = deriv_price(surf, cs, c, cfg);
+    EXPECT_TRUE(quote.has_value()) << static_cast<int>(e);
+  }
+  {
+    DerivConfig cfg = deriv_default_config();
+    cfg.engine = DerivEngine::VolCarrLee;  // names no corridor-variance formula
+    const auto quote = deriv_price(surf, cs, c, cfg);
+    ASSERT_FALSE(quote.has_value());
+    EXPECT_EQ(quote.error().code(), ErrorCode::InvalidArgument);
+  }
+  // The reserved engines stay reserved: CorridorVarSwap is deliberately NOT
+  // added to the reserved-engine switch's allow-list.
+  for (const DerivEngine e : {DerivEngine::RvDistributionProxy, DerivEngine::RvDistributionAffine,
+                              DerivEngine::McQe}) {
+    DerivConfig cfg = deriv_default_config();
+    cfg.engine = e;
+    const auto quote = deriv_price(surf, cs, c, cfg);
+    ASSERT_FALSE(quote.has_value()) << static_cast<int>(e);
+    EXPECT_EQ(quote.error().code(), ErrorCode::NotImplemented);
+  }
+  {
+    DerivContract capped = c;
+    capped.cap_dec = 0.25;  // uncapped kind, unchanged by the corridor
+    const auto quote = deriv_price(surf, cs, capped, deriv_default_config());
+    ASSERT_FALSE(quote.has_value());
+    EXPECT_EQ(quote.error().code(), ErrorCode::InvalidArgument);
+  }
+}
+
+TEST(Corridor, Diffusion1OverNRejected) {
+  const EssviSurface surf = make_flat_surface(0.20, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+
+  DerivContract c{};
+  c.kind = DerivKind::CorridorVarSwap;
+  c.maturity_t = 0.5;
+  c.notional = 1.0;
+  c.corridor_lo = 90.0;
+  c.corridor_hi = 115.0;
+  c.rv_spec.annualization = 252.0;
+  c.rv_spec.n_obs_total = 100u;
+
+  // Broadie-Jain's addend is derived for the plain, ALWAYS-COUNTING estimator.
+  // Applying it to an indicator-gated one would be a wrong number; ignoring the
+  // caller's request silently is the P-4 C-1 defect. Loud NotImplemented, the
+  // same remedy GammaSwap chose.
+  DerivConfig cfg = deriv_default_config();
+  cfg.discrete_correction_mode = DerivDiscreteCorrection::Diffusion1OverN;
+  const auto quote = deriv_price(surf, cs, c, cfg);
+  ASSERT_FALSE(quote.has_value());
+  EXPECT_EQ(quote.error().code(), ErrorCode::NotImplemented);
+}
+
+// P-4 scope audit, corridor edition: `analytic_scope_from_cfg` /
+// `analytic_in_scope` are `kind ==` WHITELISTS, which -Wswitch cannot police --
+// the recurring silent-miss class of this sprint. A corridor contract must fall
+// back to finite differences: the closed form differentiates the FULL-span
+// strip and has no term for a moving integration boundary. Verified BY TEST,
+// not by reading the predicate.
+TEST(Corridor, AnalyticStripMethodFallsBackToFiniteDifference) {
+  const EssviSurface surf = make_flat_surface(0.20, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+
+  DerivContract c{};
+  c.kind = DerivKind::CorridorVarSwap;
+  c.maturity_t = 0.5;
+  c.notional = 1.0e6;
+  c.corridor_lo = 90.0;
+  c.corridor_hi = 115.0;
+
+  atx::vol::DerivGreekBumps fd{};
+  fd.method = atx::vol::DerivGreekMethod::FiniteDifference;
+  atx::vol::DerivGreekBumps analytic{};
+  analytic.method = atx::vol::DerivGreekMethod::AnalyticStrip;
+
+  const auto g_fd = atx::vol::deriv_greeks(surf, cs, c, deriv_default_config(), fd);
+  ASSERT_TRUE(g_fd.has_value()) << g_fd.error().to_string();
+  const auto g_an = atx::vol::deriv_greeks(surf, cs, c, deriv_default_config(), analytic);
+  ASSERT_TRUE(g_an.has_value()) << g_an.error().to_string();
+
+  // Bit-identical: the fallback picks the same NUMERICAL METHOD, so every
+  // greek must match exactly. A predicate admitting CorridorVarSwap into the
+  // analytic path would differentiate VarSwap's full-span closed form against
+  // a corridor center and diverge here.
+  EXPECT_DOUBLE_EQ(g_an->delta, g_fd->delta);
+  EXPECT_DOUBLE_EQ(g_an->gamma, g_fd->gamma);
+  EXPECT_DOUBLE_EQ(g_an->vega, g_fd->vega);
+  EXPECT_DOUBLE_EQ(g_an->volga, g_fd->volga);
+  EXPECT_DOUBLE_EQ(g_an->vanna, g_fd->vanna);
+}
+
+// ── Split-point collisions, and the reported-grid decision ──────────────────
+
+// F-1's clamp-gated wing-band boundaries and C-3's k = 0 parity kink now share
+// one panelization with the corridor edges. `strip_panel_bounds`' strict
+// comparisons are what keep every collision safe, but "safe" has to be
+// MEASURED: each case must price, must stay on the Richardson lattice (a
+// finite `integration_error_est` means every panel is 4m+1, which is the
+// even-interval-count invariant composite Simpson needs), and must agree with
+// a much finer grid.
+TEST(Corridor, EdgeCollisionsWithTheKinkAndTheWingBand) {
+  using atx::vol::deriv_testkit::kSkewRefT;
+  using atx::vol::deriv_testkit::make_curves;
+  using atx::vol::deriv_testkit::make_skew_surface;
+
+  const double spot = 100.0;
+  const EssviSurface surf = make_skew_surface(0.20, -0.60, 0.5);
+  const CurveSet cs = make_curves(spot, 0.0, 0.0);  // zero carry: F == spot
+
+  DerivConfig cfg = deriv_default_config();
+  cfg.wing_clamp_k = 0.5;  // explicit band, so the collisions below are exact
+  DerivConfig fine = cfg;
+  fine.quality = DerivQuality::Audit;
+
+  // Standard's span here is +-1.5 over 257 nodes, so one node spacing is
+  // ~0.0117; `kNodeStep` places an edge deliberately within one node of
+  // another split point.
+  constexpr double kNodeStep = 0.0117;
+
+  struct Case {
+    double k_lo;
+    double k_hi;
+    const char *why;
+  };
+  const Case cases[] = {
+      {-0.5, 0.5, "both edges EXACTLY on the wing band"},
+      {-0.5, 0.0, "lower edge on the band, upper EXACTLY on the k = 0 kink"},
+      {0.0, 0.5, "lower edge exactly on k = 0, upper on the band"},
+      {-0.5 - 1.0e-9, 0.4, "one nanounit OUTSIDE the band: a near-zero-width panel"},
+      {-0.5 + 1.0e-9, 0.4, "one nanounit INSIDE the band: the band kink is dropped"},
+      {-1.0e-9, 0.4, "lower edge one nanounit below the k = 0 kink"},
+      {-0.4, 1.0e-9, "upper edge one nanounit above the k = 0 kink"},
+      {-0.5 - kNodeStep, 0.4, "lower edge exactly one node outside the band"},
+      {-kNodeStep, 0.4, "lower edge exactly one node below the k = 0 kink"},
+      {-0.37, 0.23, "both edges strictly interior, no collision (control)"},
+  };
+
+  for (const Case &k : cases) {
+    DerivContract c{};
+    c.kind = DerivKind::CorridorVarSwap;
+    c.maturity_t = kSkewRefT;
+    c.notional = 1.0;
+    c.corridor_lo = corridor_strike_at_k(spot, k.k_lo);
+    c.corridor_hi = corridor_strike_at_k(spot, k.k_hi);
+
+    const auto quote = deriv_price(surf, cs, c, cfg);
+    ASSERT_TRUE(quote.has_value()) << k.why << ": " << quote.error().to_string();
+    ASSERT_TRUE(std::isfinite(quote->fair_strike_dec)) << k.why;
+    EXPECT_GT(quote->fair_strike_dec, 0.0) << k.why;
+    // Even panel counts survived every collision: a degenerate or odd-interval
+    // panel would drop the Richardson estimate to NaN.
+    EXPECT_TRUE(std::isfinite(quote->integration_error_est)) << k.why;
+
+    const auto q_fine = deriv_price(surf, cs, c, fine);
+    ASSERT_TRUE(q_fine.has_value()) << k.why << ": " << q_fine.error().to_string();
+    // Converged, INCLUDING the near-zero-width-panel cases: a panel of width
+    // 1e-9 contributes ~1e-9 * integrand and steals only its 4 mandated
+    // intervals from the others.
+    EXPECT_LT(std::fabs(quote->fair_strike_dec - q_fine->fair_strike_dec),
+              1.0e-6 * q_fine->fair_strike_dec)
+        << k.why;
+  }
+}
+
+// The reported-grid decision, pinned so it cannot be "tidied" into reporting
+// the integration window. `strip_k_lo_used`/`strip_k_hi_used` must stay the
+// PRE-corridor span, because their contract is REPRODUCTION and a replaying
+// caller re-derives the corridor from the contract against its own forward.
+// Reporting the window instead would let `deriv_greeks`' pinned grid clip the
+// corridor on ONE side only under a spot bump, halving the corridor edge's
+// contribution to delta.
+TEST(Corridor, ReportedGridIsThePreCorridorSpanAndReproducesTheQuote) {
+  using atx::vol::deriv_testkit::kSkewRefT;
+  using atx::vol::deriv_testkit::make_curves;
+  using atx::vol::deriv_testkit::make_skew_surface;
+
+  const double spot = 100.0;
+  const EssviSurface surf = make_skew_surface(0.20, -0.60, 0.5);
+  const CurveSet cs = make_curves(spot, 0.0, 0.0);  // zero carry: F == spot
+
+  DerivContract c{};
+  c.kind = DerivKind::CorridorVarSwap;
+  c.maturity_t = kSkewRefT;
+  c.notional = 1.0;
+  c.corridor_lo = corridor_strike_at_k(spot, -0.37);
+  c.corridor_hi = corridor_strike_at_k(spot, 0.23);
+
+  const auto quote = deriv_price(surf, cs, c, deriv_default_config());
+  ASSERT_TRUE(quote.has_value()) << quote.error().to_string();
+
+  // THE assertion pinning the decision: the reported span STRICTLY CONTAINS
+  // the corridor window, i.e. it is the pre-corridor span, not the window.
+  EXPECT_LT(quote->strip_k_lo_used, -0.37);
+  EXPECT_GT(quote->strip_k_hi_used, 0.23);
+
+  // ... and the reproduction contract those fields exist for still holds:
+  // feeding them back with the SAME contract reproduces the quote bit-exactly.
+  DerivConfig pinned = deriv_default_config();
+  pinned.k_min_log = quote->strip_k_lo_used;
+  pinned.k_max_log = quote->strip_k_hi_used;
+  pinned.strip_nodes = quote->strip_nodes_used;
+  const auto replay = deriv_price(surf, cs, c, pinned);
+  ASSERT_TRUE(replay.has_value()) << replay.error().to_string();
+  EXPECT_EQ(replay->fair_strike_dec, quote->fair_strike_dec);
+  EXPECT_EQ(replay->strip_nodes_used, quote->strip_nodes_used);
+}
+
+// Truncation is a COVERAGE verdict, and for a corridor swap the thing that
+// must be covered is the CORRIDOR, not 6*sigma*sqrt(T). Both directions are
+// pinned because the naive reading gets each wrong in the opposite way: a
+// narrow interior corridor would be reported truncated forever, and a corridor
+// reaching past the span would be reported complete.
+TEST(Corridor, TruncationFollowsTheCorridorNotTheVolScale) {
+  const double spot = 100.0;
+  const EssviSurface surf = make_flat_surface(0.20, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(spot, 0.01, 1.00);  // zero carry: F == spot
+
+  DerivConfig cfg = deriv_default_config();
+
+  DerivContract inside{};
+  inside.kind = DerivKind::CorridorVarSwap;
+  inside.maturity_t = 0.5;
+  inside.notional = 1.0;
+  inside.corridor_lo = corridor_strike_at_k(spot, -0.30);
+  inside.corridor_hi = corridor_strike_at_k(spot, 0.30);
+  const auto q_inside = deriv_price(surf, cs, inside, cfg);
+  ASSERT_TRUE(q_inside.has_value()) << q_inside.error().to_string();
+  EXPECT_FALSE(has_flag(q_inside->flags, DerivFlags::StripTruncatedLeft));
+  EXPECT_FALSE(has_flag(q_inside->flags, DerivFlags::StripTruncatedRight));
+
+  // The same tenor as a plain VarSwap: the vol-scaled requirement is
+  // 6*0.20*sqrt(0.5) ~= 0.85, comfortably inside the Standard span, so the
+  // plain quote is untruncated too -- which is what makes the corridor result
+  // above a statement about the corridor rule rather than a coincidence.
+  const auto q_var = var_swap_fair_strike(surf, cs, 0.5, cfg);
+  ASSERT_TRUE(q_var.has_value());
+  ASSERT_TRUE(std::isfinite(q_var->strip_k_lo_used));
+
+  DerivContract beyond = inside;
+  beyond.corridor_lo = corridor_strike_at_k(spot, q_var->strip_k_lo_used - 0.5);
+  beyond.corridor_hi = corridor_strike_at_k(spot, q_var->strip_k_hi_used + 0.5);
+  const auto q_beyond = deriv_price(surf, cs, beyond, cfg);
+  ASSERT_TRUE(q_beyond.has_value()) << q_beyond.error().to_string();
+  // In-corridor variance the grid never integrated: genuinely truncated on
+  // both sides, even though the vol-scaled test says the span was ample.
+  EXPECT_TRUE(has_flag(q_beyond->flags, DerivFlags::StripTruncatedLeft));
+  EXPECT_TRUE(has_flag(q_beyond->flags, DerivFlags::StripTruncatedRight));
+}
+
+// The corridor is RE-RESOLVED per pricing against that pricing's own forward,
+// not frozen at inception -- the design decision the brief leaves open. A
+// corridor is a fixed barrier in PRICE space, so a forward move genuinely
+// changes how much of the contract's variance falls inside it. This test is
+// that decision in executable form.
+TEST(Corridor, WindowIsReResolvedAgainstEachPricingsOwnForward) {
+  const EssviSurface surf = make_flat_surface(0.20, 0.01, 1.00);
+
+  DerivContract c{};
+  c.kind = DerivKind::CorridorVarSwap;
+  c.maturity_t = 0.5;
+  c.notional = 1.0;
+  c.corridor_lo = 100.0;  // an UP-corridor: everything at or above 100
+  c.corridor_hi = 0.0;
+
+  const CurveSet cs_low = make_flat_curves(80.0, 0.01, 1.00);
+  const CurveSet cs_high = make_flat_curves(125.0, 0.01, 1.00);
+
+  DerivConfig cfg = deriv_default_config();
+  const auto q_low = deriv_price(surf, cs_low, c, cfg);
+  ASSERT_TRUE(q_low.has_value()) << q_low.error().to_string();
+  const auto q_high = deriv_price(surf, cs_high, c, cfg);
+  ASSERT_TRUE(q_high.has_value()) << q_high.error().to_string();
+
+  // THE assertion: the SAME contract on the SAME flat surface prices
+  // differently at two forwards, because the corridor's log-moneyness image
+  // ln(100/F) moved. A corridor frozen at inception -- or one specified in
+  // moneyness rather than absolute strikes -- would make these EQUAL: the
+  // surface is flat in k and the tenor identical, so nothing else here can
+  // separate them.
+  EXPECT_NE(q_low->fair_strike_dec, q_high->fair_strike_dec);
+  // Direction: at F = 125 the barrier sits at k = ln(100/125) < 0, so the
+  // corridor covers the ATM region and beyond and captures MORE variance than
+  // at F = 80, where it starts at k = ln(100/80) > 0 and catches only the
+  // upper wing.
+  EXPECT_GT(q_high->fair_strike_dec, q_low->fair_strike_dec);
+  const auto full_high = var_swap_fair_strike(surf, cs_high, 0.5, cfg);
+  ASSERT_TRUE(full_high.has_value());
+  EXPECT_LT(q_high->fair_strike_dec, full_high->fair_strike_dec);
 }
 
 }  // namespace

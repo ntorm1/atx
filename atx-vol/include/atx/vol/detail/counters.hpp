@@ -885,6 +885,17 @@ enum class Solve : unsigned {
   // deriv_book.cpp, whitelists VarSwap only), so this is O(L) for a book of L
   // gamma-swap rows -- expected, and not itself a gate this task adds.
   GammaSwapStripEvals,
+  // Task F-3 (append-only), for the SAME reason GammaSwapStripEvals is
+  // separate: P-6's book-memo O(K)-not-O(L) gate reads VarSwapStripEvals
+  // specifically, and a corridor-strip eval folded into it would corrupt what
+  // that gate measures. One bump per actual corridor-strip quadrature
+  // (`strip_fair_value_core`'s shared body, `DerivKind::CorridorVarSwap`
+  // branch), counted after the same cheap validation guards the other two are.
+  // CorridorVarSwap has no book-memo participation (`var_swap_memo_eligible`,
+  // deriv_book.cpp, whitelists VarSwap only), so this is O(L) for a book of L
+  // corridor rows -- expected, and pinned by
+  // `DerivBook.CorridorVarSwapNeverUsesTheVarSwapMemo`.
+  CorridorVarSwapStripEvals,
   Count_
 };
 
@@ -896,7 +907,7 @@ inline constexpr const char *kNames[kCount] = {
     "sl_al_boundary_solves",    "sl_al_premium_evals",       "sl_greeks_fd",
     "sl_greeks_analytic",       "sl_greeks_adjoint",         "sl_iv_newton_iters",
     "sl_duplicate_mark_solves", "sl_cache_carry_drift",      "sl_var_swap_strip_evals",
-    "sl_gamma_swap_strip_evals",
+    "sl_gamma_swap_strip_evals", "sl_corridor_var_swap_strip_evals",
 };
 
 // A merged, point-in-time copy. Plain values (not atomics) so it is trivially

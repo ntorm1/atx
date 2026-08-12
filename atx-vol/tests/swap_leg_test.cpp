@@ -314,6 +314,43 @@ TEST(SwapLeg, GammaSwapKindPassesThrough) {
   EXPECT_NEAR(q->pv, 0.0, 1e-12);
 }
 
+// Task F-3: `DerivKind::CorridorVarSwap` does NOT pass through, deliberately,
+// and this is the opposite verdict from the GammaSwap sibling above for a
+// concrete reason. `SwapLot` and `CycleSwapRequest` carry no corridor bounds,
+// so `swap_contract_for_lot` can only ever build corridor_lo == corridor_hi ==
+// 0 -- the UNBOUNDED corridor, which prices exactly like a plain variance
+// swap. A solved lot would therefore come back labelled CorridorVarSwap and
+// struck at the ALL-STRIKE K_var: silently the wrong strike for every real
+// corridor. GammaSwap has no such gap (its extra state is an rv_spec field a
+// freshly-struck contract legitimately leaves unset), which is why one passes
+// through and the other is refused.
+//
+// InvalidArgument, not the fail-soft `Unavailable` the market/schedule causes
+// use: this one cannot be cleared by a later cycle, only by changing `kind`.
+TEST(SwapLeg, CorridorVarSwapIsRefusedBecauseSwapLotCarriesNoCorridor) {
+  const fs::path dir = fresh_dir("solve-corridor");
+  const PricedSurface s0 = make_surface(kUid, 100.0, kBaseNow);
+  const Result<MarketSnapshot> snap = MarketSnapshot::load(write_one(dir, "2026-08-01", s0));
+  ASSERT_TRUE(snap.has_value());
+  const SurfaceRef surface = snap->find(kUid);
+  ASSERT_NE(surface, nullptr);
+
+  std::vector<std::int64_t> sessions;
+  for (int i = 0; i < 5; ++i) {
+    sessions.push_back(kBaseNow + i * kStepNs);
+  }
+  CycleSwapRequest req = make_request(sessions);
+  req.kind = DerivKind::CorridorVarSwap;
+
+  const Result<SwapLot> lot = solve_cycle_swap(surface, req, 2500.0);
+  ASSERT_FALSE(lot.has_value());
+  EXPECT_EQ(lot.error().code(), atx::core::ErrorCode::InvalidArgument);
+  // Refused BEFORE any pricing work: the point is that no wrong number is
+  // computed en route, not merely that the lot is dropped later at the
+  // engine's own `valid_deriv_kind` boundary.
+  EXPECT_NE(lot.error().to_string().find("corridor"), std::string::npos);
+}
+
 // FIT-C7 / Task C-6, review round 1 CRITICAL-1/2: the production wiring.
 // `solve_cycle_swap` is `swap_leg.cpp`'s (and, through it, every
 // DeclarativeStrategy swap leg's) fair-strike and entry-vega solve; before

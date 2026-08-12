@@ -109,6 +109,13 @@ SOLVE_LEDGER_KEYS = (
     # directly, not by reading the C++ source alone -- see this fix round's
     # report for the probe's output.
     "sl_gamma_swap_strip_evals",
+    # Task F-3 (CorridorVarSwap strip evals): appended after
+    # `sl_gamma_swap_strip_evals`, matching `ledger::Solve`'s own
+    # `CorridorVarSwapStripEvals` (counters.hpp) appended right before
+    # `Count_`. `av.solve_ledger()` now returns an 11-key dict. Order verified
+    # against `counters::ledger::kNames` by an executed source-level index
+    # comparison -- see this task's report.
+    "sl_corridor_var_swap_strip_evals",
 )
 
 
