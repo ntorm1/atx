@@ -111,6 +111,30 @@ double essvi_total_w(const EssviParams& s, double k_log) noexcept {
   return w;
 }
 
+std::size_t essvi_slice_dof(const EssviParams& s) noexcept {
+  // Backbone: one Mingone cube (psi, p, lambda) per slice — 3 fitted numbers.
+  std::size_t dof = 3u;
+  if (!(s.resid_scale > 0.0)) {
+    return dof;  // residual disarmed: `essvi_total_w` serves the backbone only
+  }
+  if (s.resid_basis_kind == ResidualBasisKind::C2Bspline) {
+    // `fit_dense_residual` writes exactly `resid_n_basis` fitted bump
+    // coefficients; mirror `essvi_residual_w`'s 0 => 5 default and clamp so a
+    // corrupted count can never explode the dof past the coefficient storage.
+    const std::size_t n_basis = (s.resid_n_basis != 0u)
+                                    ? static_cast<std::size_t>(s.resid_n_basis)
+                                    : std::size_t{5u};
+    dof += std::min<std::size_t>(n_basis, s.resid_coef.size());
+  } else {
+    // HingeQuad (and the legacy tags that evaluate through its branch): the
+    // fitter writes slots 1..4 ({yp, yp^2, yc, yc^2}); slot 0 is structurally
+    // zero in the evaluator, so `resid_n_basis == 5` carries FOUR fitted
+    // coefficients, not five.
+    dof += 4u;
+  }
+  return dof;
+}
+
 std::array<double, 3> essvi_w_grad3(const EssviParams& s, double k_log) noexcept {
   if (essvi_rho_blend_armed(s)) {
     return {kNaN, kNaN, kNaN};

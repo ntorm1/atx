@@ -205,6 +205,21 @@ struct EssviCube {
 [[nodiscard]] double essvi_total_w(const EssviParams& slice,
                                    double k_log) noexcept;
 
+// D4 (T10c): the number of FITTED parameters behind the curve this slice
+// actually serves through `essvi_total_w` — the dof a reduced chi-square of
+// that curve must be scored against. The backbone is one Mingone cube (psi, p,
+// lambda) <-> (theta, phi, rho): 3. An ARMED residual layer (resid_scale > 0)
+// adds its fitted coefficients: HingeQuad fits slots 1..4 of resid_coef (slot
+// 0 is structurally zero in the evaluator above, so `resid_n_basis == 5`
+// carries only FOUR fitted numbers); C2Bspline fits exactly `resid_n_basis`
+// bump coefficients (the fitter always writes it; 0 falls back to the
+// evaluator's default of 5). The legacy tags (Chebyshev / WingBspline /
+// Fengler) evaluate through the HingeQuad branch and are counted like it.
+// A disarmed residual contributes nothing — this returns 3 for every slice a
+// residual-off profile fits, which is the value the historical hardcode was
+// accidentally right about.
+[[nodiscard]] std::size_t essvi_slice_dof(const EssviParams& slice) noexcept;
+
 // Gradient of the BACKBONE total variance w.r.t. (theta, phi, rho) at fixed
 // k_log — the closed form the IRLS/Newton calibrator consumes. Returned as
 // {dtheta, dphi, drho}; all-NaN for an `essvi_rho_blend_armed` slice.

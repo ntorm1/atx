@@ -457,6 +457,131 @@ TEST_F(PricerFitterTest, RefitRecomputesParityStateConsistentWithReports) {
   EXPECT_DOUBLE_EQ(fitter.surface()->diagnostics().worst_frac_within_bidask, worst);
 }
 
+// D4 (T10c): the incremental eSSVI refit (`apply_prepared_essvi_refit`) used to
+// hardcode `n_curve_params = 3u` — right for a backbone-only slice, wrong for a
+// residual-armed one, whose served curve is 3 backbone + 4 HingeQuad
+// coefficients. The refit now scores against `essvi_slice_dof` of the slice the
+// surface slot actually serves, and the published report witnesses the dof
+// `chain_parity` consumed (`ParityReport::chi2_dof`). The cold build's scoring
+// (run_surface_parity) uses the same served-slice dof, so refit and cold build
+// can no longer disagree about the denominator of the same statistic.
+//
+// Mutation check (performed): hardcoding the refit pin back to 3u reds the
+// refit slice's equality below while the cold-built slices stay at the served
+// dof — pinning the SESSION site specifically.
+TEST_F(PricerFitterTest, RefitScoresChiSquareAgainstTheServedSlicesOwnDof) {
+  SynthPanelSpec changed_spec = make_spy_synthetic_spec();
+  changed_spec.expiries.back().truth.sigma0 *= 1.01;
+  auto changed_chain = make_chain_from_spec(changed_spec);
+  ASSERT_TRUE(changed_chain.has_value()) << changed_chain.error().to_string();
+
+  PricerFitter fitter{essvi_config()};
+  const auto arm_residual = [](atx::vol::SessionInputs &inputs) {
+    inputs.calib.residual_disable = false;
+    inputs.calib.residual_basis_kind = atx::vol::ResidualBasisKind::HingeQuad;
+    inputs.calib.residual_n_basis_terms = 5;
+  };
+  ASSERT_TRUE(fitter.fit(*chain_, arm_residual).has_value());
+
+  const atx::vol::ExpiryId target =
+      static_cast<atx::vol::ExpiryId>(chain_->underlying().chains.size() - 1u);
+  replace_expiry_quotes(*chain_, *changed_chain, target);
+  const auto refitted = fitter.refit_expiry(*chain_, target);
+  ASSERT_TRUE(refitted.has_value()) << refitted.error().to_string();
+  ASSERT_TRUE(refitted->admission.admitted);
+
+  const VolaSession &session = fitter.surface()->session();
+  const std::span<const atx::vol::EssviParams> slices = session.surface().essvi_slices();
+  const std::span<const atx::vol::ParityReport> parity = session.parity();
+  ASSERT_EQ(parity.size(), session.diagnostics().n_slices);
+  ASSERT_EQ(parity.size(), chain_->underlying().chains.size());
+  const std::size_t refit_index = parity.size() - 1u;  // target == the last chain; all fit
+
+  // FIXTURE GUARD: the refit slice must actually carry an armed residual, or
+  // the equality below degenerates to the dof-3 case the old hardcode was
+  // accidentally right about and the mutation check cannot fire.
+  ASSERT_GT(atx::vol::essvi_slice_dof(slices[refit_index]), std::size_t{3})
+      << "fixture no longer arms the HingeQuad residual on the refit slice";
+
+  for (std::size_t i = 0; i < parity.size(); ++i) {
+    EXPECT_EQ(parity[i].chi2_dof, atx::vol::essvi_slice_dof(slices[i])) << "slice " << i;
+    EXPECT_FALSE(parity[i].chi2_dof_underdetermined) << "slice " << i;
+    EXPECT_GT(parity[i].chi2_reduced, 0.0) << "slice " << i;  // W3-A: never blanked
+  }
+}
+
+// D4 (T10c), under-determined half at the refit site. A 6-strike board scores
+// ~6 quotes per expiry against a residual-armed slice's 7 fitted parameters,
+// so N <= dof and the true reduced chi-square is undefined. The pre-D4 refit
+// shape — chain_parity's error propagating through ATX_TRY — failed the WHOLE
+// refit, discarding band evidence that does not depend on dof. The site now
+// re-scores with dof = 0 (chi2 per observation), keeps the band evidence, and
+// marks `chi2_dof_underdetermined` instead of blanking chi2 to a
+// perfect-looking 0.0 (W3-A).
+//
+// Mutation check (performed): removing the refit's dof-0 re-score reds this
+// test at `refit_expiry` (the under-determined scoring error propagates).
+TEST(PricerFitterRefitThinBoard, UnderdeterminedRefitKeepsBandEvidenceAndFlags) {
+  SynthPanelSpec spec = make_spy_synthetic_spec();
+  // Thin the board to 6 near-money strikes: enough to clear the 5-row prepared
+  // fit floor, too few to support 7 fitted parameters at scoring.
+  spec.strikes = {560.0, 580.0, 600.0, 620.0, 640.0, 660.0};
+  auto chain = make_chain_from_spec(spec);
+  ASSERT_TRUE(chain.has_value()) << chain.error().to_string();
+
+  PricerFitter fitter{essvi_config()};
+  const auto arm_residual = [](atx::vol::SessionInputs &inputs) {
+    inputs.calib.residual_disable = false;
+    inputs.calib.residual_basis_kind = atx::vol::ResidualBasisKind::HingeQuad;
+    inputs.calib.residual_n_basis_terms = 5;
+  };
+  ASSERT_TRUE(fitter.fit(*chain, arm_residual).has_value());
+
+  SynthPanelSpec changed_spec = spec;
+  changed_spec.expiries.back().truth.sigma0 *= 1.01;
+  auto changed_chain = make_chain_from_spec(changed_spec);
+  ASSERT_TRUE(changed_chain.has_value()) << changed_chain.error().to_string();
+
+  const atx::vol::ExpiryId target =
+      static_cast<atx::vol::ExpiryId>(chain->underlying().chains.size() - 1u);
+  replace_expiry_quotes(*chain, *changed_chain, target);
+  const auto refitted = fitter.refit_expiry(*chain, target);
+  ASSERT_TRUE(refitted.has_value()) << refitted.error().to_string();
+  // The refit must have APPLIED (an unadmitted refit rolls back and would leave
+  // the cold report in place, making every assertion below vacuous).
+  ASSERT_TRUE(refitted->admission.admitted);
+
+  const VolaSession &session = fitter.surface()->session();
+  const std::span<const atx::vol::EssviParams> slices = session.surface().essvi_slices();
+  const std::span<const atx::vol::ParityReport> parity = session.parity();
+  // The thin board may starve an expiry (5 of 6 fit), so locate the refit
+  // slice by the TARGET CHAIN's maturity rather than assuming chain order.
+  const double target_T = chain->underlying().chains[target].T;
+  const std::span<const atx::vol::SliceContext> fitted = session.expiries();
+  ASSERT_EQ(fitted.size(), parity.size());
+  std::size_t refit_index = fitted.size();
+  for (std::size_t i = 0; i < fitted.size(); ++i) {
+    if (fitted[i].T == target_T) {
+      refit_index = i;
+      break;
+    }
+  }
+  ASSERT_LT(refit_index, fitted.size()) << "target expiry did not fit on the thin board";
+
+  // FIXTURE GUARD: the refit slice must be genuinely under-determined — an
+  // armed residual (dof > 3) with a scored population at or below it.
+  ASSERT_GT(atx::vol::essvi_slice_dof(slices[refit_index]), std::size_t{3})
+      << "fixture no longer arms the HingeQuad residual on the refit slice";
+  ASSERT_LE(parity[refit_index].n, atx::vol::essvi_slice_dof(slices[refit_index]))
+      << "fixture no longer exercises the N <= dof path; thin the board";
+
+  EXPECT_TRUE(parity[refit_index].chi2_dof_underdetermined);
+  EXPECT_EQ(parity[refit_index].chi2_dof, std::size_t{0});
+  EXPECT_GT(parity[refit_index].chi2_reduced, 0.0);  // chi2/N: defined, never blanked
+  EXPECT_GT(parity[refit_index].n, std::size_t{0});
+  EXPECT_GT(parity[refit_index].frac_fv_within_bidask, 0.0);  // band evidence survives
+}
+
 TEST_F(PricerFitterTest, IncrementalEssviAgreesWithColdFitOnUpdatedBoard) {
   SynthPanelSpec changed_spec = make_spy_synthetic_spec();
   changed_spec.expiries.back().truth.sigma0 *= 1.01;

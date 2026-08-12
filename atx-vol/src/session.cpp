@@ -2277,11 +2277,33 @@ Result<FitDiag> VolaSession::apply_prepared_essvi_refit(std::size_t slice_idx,
   parity_inputs.method = in_.deam.method;
   parity_inputs.al_opts = in_.deam.al_opts;
   parity_inputs.band_k = in_.band_k;
-  parity_inputs.n_curve_params = 3u;
+  // D4 (T10c): score chi2 against the refitted slice's own fitted parameter
+  // count, read off the surface slot `set_slice_essvi` just wrote — the same
+  // slice `iv_on_slice` evaluated above — not a nominal 3. `essvi_fit_slice`
+  // with a residual-armed profile (in_.calib.residual_disable == false) serves
+  // 3 backbone + 4 HingeQuad coefficients through `essvi_total_w`, and a dof
+  // that is too small makes the refreshed chi2 systematically OPTIMISTIC
+  // relative to the cold build, whose scoring (run_surface_parity) uses the
+  // same served-slice dof.
+  parity_inputs.n_curve_params = essvi_slice_dof(surface_.essvi_slices()[slice_idx]);
   parity_inputs.caches = correction_caches_at(context.T);
-  ATX_TRY(const ParityReport refreshed,
-          chain_parity(score.strike, score.bid, score.ask, score.mid, score.side, model_iv,
-                       score.market_iv, parity_inputs));
+  Result<ParityReport> rescored =
+      chain_parity(score.strike, score.bid, score.ask, score.mid, score.side, model_iv,
+                   score.market_iv, parity_inputs);
+  bool chi2_dof_underdetermined = false;
+  if (!rescored) {
+    // D4: the only dof-dependent failure is `reduced_chi_square`'s N > dof
+    // precondition. Failing the refit here would throw away band evidence that
+    // does not depend on dof; re-score with dof = 0 (chi2 per observation,
+    // marked, never blanked to a perfect-looking 0.0 — W3-A). A failure the
+    // re-score does not fix was never about dof and propagates as before.
+    parity_inputs.n_curve_params = 0;
+    rescored = chain_parity(score.strike, score.bid, score.ask, score.mid, score.side, model_iv,
+                            score.market_iv, parity_inputs);
+    chi2_dof_underdetermined = true;
+  }
+  ATX_TRY(ParityReport refreshed, std::move(rescored));
+  refreshed.chi2_dof_underdetermined = chi2_dof_underdetermined;
   parity_[slice_idx] = refreshed;
   ATX_TRY_VOID(refresh_refit_diagnostics());
   return Ok(fit_diag);

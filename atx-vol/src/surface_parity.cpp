@@ -582,10 +582,39 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
     pin.method = in.deam.method;
     pin.al_opts = in.deam.al_opts;
     pin.band_k = in.band_k;
-    pin.n_curve_params = 3;
+    // D4 (T10c): score chi2 against the SERVED slice's own fitted parameter
+    // count, read off the FINAL (possibly repaired) surface — the same object
+    // `iv_on_slice` just evaluated — not a nominal 3. The hardcode was right
+    // only for a backbone-only slice; a residual-armed profile (SPY-like /
+    // LiquidSingleName keep `residual_disable = false`) serves 3 + 4 HingeQuad
+    // coefficients through `essvi_total_w`, and a too-small dof inflates the
+    // (N - dof) denominator, making the served number systematically
+    // OPTIMISTIC. Per-slice, not per-surface: `fit_slice_calendar_floored`
+    // strips the residual on a floored refit, so dof can differ slice to slice
+    // within one board.
+    pin.n_curve_params = essvi_slice_dof(surface.essvi_slices()[ps.slice_idx]);
     pin.caches = in.deam.caches; // re-Am through the same hot-path caches
-    ATX_TRY(const ParityReport parity, chain_parity(score.strike, score.bid, score.ask, score.mid,
-                                                    score.side, model_iv, score.market_iv, pin));
+    Result<ParityReport> scored = chain_parity(score.strike, score.bid, score.ask, score.mid,
+                                               score.side, model_iv, score.market_iv, pin);
+    bool chi2_dof_underdetermined = false;
+    if (!scored) {
+      // The ONLY dof-dependent failure `chain_parity` has is
+      // `reduced_chi_square`'s N > dof precondition, so a failure that a dof-0
+      // re-score fixes means the scored population cannot support the true
+      // dof. Failing the WHOLE board here (the pre-D4 ATX_TRY) would discard
+      // the band evidence, which does not depend on dof at all — the D1 shape:
+      // no measurement laundered as a measured failure. Re-score with dof = 0:
+      // the band evidence survives and `chi2_reduced` stays a DEFINED number
+      // (chi2 per observation), marked by `chi2_dof_underdetermined` rather
+      // than blanked to a perfect-looking 0.0 (W3-A). A failure the re-score
+      // does NOT fix was never about dof; it propagates exactly as before.
+      pin.n_curve_params = 0;
+      scored = chain_parity(score.strike, score.bid, score.ask, score.mid, score.side, model_iv,
+                            score.market_iv, pin);
+      chi2_dof_underdetermined = true;
+    }
+    ATX_TRY(ParityReport parity, std::move(scored));
+    parity.chi2_dof_underdetermined = chi2_dof_underdetermined;
     worst = std::min(worst, parity.frac_fv_within_bidask);
     per_expiry.push_back(parity);
   }
