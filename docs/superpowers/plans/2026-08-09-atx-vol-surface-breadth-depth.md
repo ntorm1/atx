@@ -338,6 +338,164 @@ widening `max_certified_deam_drop_fraction` are all forbidden. Every recovery in
 this sprint must come from carry or nodes becoming *known*, never from a check
 being removed.
 
+### 1.10 Execution log, continued — the half where the premises kept dying
+
+Same conventions as §1.9: production fit path, lqbench / sp100, nothing
+projected. This half of the sprint is distinguished by how often the measured
+answer contradicted the brief that commissioned it. Every such contradiction is
+recorded as the result.
+
+**T3c — the eSSVI gap was carry policy, not preparation.** Board-level census
+plus board-level carry decision for the eSSVI lane, plus (S1) as the bilinear
+cap it is. eSSVI expiry fit rate 0.492 → 0.766 / 0.653 → 0.926; served slices
+1,384 → 1,813 / 1,202 → 1,448; `arb_project_calendar_essvi` failures 1 → 0 /
+0 → 0; in-band calendar violations 0/105,365 and 0/87,360; zero boards lost
+slices. Not met as stated: `mean_in_band` 0.9724 → 0.9690 / 0.9624 → 0.9526 and
+survival 90.6 → 89.2% / 95.1 → 94.1% — new slices are thinner than incumbents.
+Two artifacts died here: `attempted_quotes` accumulated only over expiries that
+fitted (`pricer_fitter.cpp:446-453`), so the quote evidence behind the
+starvation story was an accounting artifact; and `require_carry_confidence` is a
+*board* policy applied per *expiry* in `run_surface_parity` — the eSSVI gap was
+`CarryFailed`, not `PrepStarved`. The sprint's target moved a third time.
+
+**T3d — the 0.35 worst-slice floor is vindicated, and the honest cost of
+breadth is decomposed.** The floor sits inside an empty band: highest rejected
+worst 0.3415 vs lowest served 0.3636 (lq), 0.2667 vs 0.3846 (sp100); zero
+served boards lie below it; admitting all five rejected primaries would need
+≤ 0.2581. The `mean_in_band` cost of T3c decomposes on sp100 (−0.0079 total):
+43% new-slice dilution, 33% family switch, 25% retained-slice degradation —
+and retained degradation is 0/842 and 0/684 on boards whose slice count did not
+change. New ≤ 7-day slices average 0.8082 in-band vs 0.9473 for retained.
+
+**T10b — D4's naive fix was a regression; what shipped is dof honesty with the
+evidence kept.** The one-line fix (score against the fitted family's dof,
+refuse when n ≤ dof) lost in-band evidence on 9/240 boards and moved corpus
+`mean_in_band` 0.9652 → 0.9293. Worse, blanking chi2 to 0.0 on refusal
+re-created the exact W3-A blackout this plan's §4 documents — an exact zero
+chi-square reads as a *perfect* fit. Shipped instead: under-determined slices
+re-score at dof 0 (chi2/N), keep their band evidence, and set
+`chi2_dof_underdetermined`. Measured: `chosen_kind` unchanged on 344/344
+boards, `mean_in_band` bit-identical, only `mean_chi2` moves (17 / 4 boards),
+well-posed SVI rising by exactly (N−3)/(N−5). The framing correction matters:
+the selector was never dof-wrong (`curve_selector.cpp:600` already accumulated
+`curve.dof()`); the hardcoded 3 fed `chain_parity`'s published `mean_chi2`.
+Alongside: FitDiag wired at the three production sites (bit-identical on 344
+boards) and C8's LM given a real termination verdict — it exhausts damping at
+an optimality cosine of 0.177, i.e. it stops *near* optima, not *at* them.
+
+**T5d — the carry-gate units correction is measured and rejected.** §1.9's
+pre-registered test was run: slices admitted under the invariant `db·T` unit
+but refused under the flat rate gate (n = 93, round-trip median 0.02619) are
+indistinguishable from the still-refused population (n = 278, median 0.02311),
+and both are ~70% worse than slices both gates admit (n = 214, median 0.01547).
+The algebra was right and the gate change would still have been a relaxation —
+85 of the 93 new admissions were under three months, because the *measured*
+`db = −log(F_pair/F_base)/T` amplifies quote noise by 1/T; the units argument
+cuts both ways. Reverted byte-clean. Two premises died in the doing:
+`OrdinarySingleName` caps `max_spread_vol` at 0.12 (not 0.25), and the profile
+feedback loop is open, not closed.
+
+**T6 — one-sided quotes as bounds, and the starvation number re-based.** T5c's
+30.2% `Starved` did not reproduce: the true baseline is 600/4,647 = 12.91%,
+falling to 12.35% with bounds admitted. Only 8 bound legs are admitted from 94
+armings; boards 203 → 203, slices 1,468 → 1,482; healthy-with-gaps boards
+15 → 0. Of the 14 recovered slices, 11 were IREN — which T6d then showed was
+profile reclassification, not bounds at all.
+
+**T6d — the asserted loader defect does not exist; the real one was the
+sampler.** The brief asserted a last-wins clobber at `data.cpp:508-521`
+(a `bid == 0` row overwriting a two-sided quote). Direct corpus probe: **zero**
+duplicate (expiry, strike, side) keys across all 225 lqbench boards and 105,347
+sp100 rows — the collision class is unpopulated. The real mechanism: admitting
+bounds *permutes* the quote stream, and the 256-cap stride median over spreads
+was order-dependent — pure permutation (two-sided multiset bit-identical) moved
+the estimate on 104 boards and pushed IREN and PLTR across classifier edges.
+Sharper: IREN's *true* median is the post-T6 value — the pre-T6 baseline was
+subsampling error (the stride sample misclassified 12/225 boards before T6, 10
+after). Fixed with an exact histogram median (2,000 bins on the bounded (0,2)
+domain; every classifier edge is a bin boundary; order-invariant by
+construction), plus a defensive install-rank guard (two-sided outranks
+one-sided; corpus-neutral since the class is unpopulated). Honest re-basing:
+T6's lqbench headline falls **+14 → +10** (1,482 → 1,478; AVGO and STLD were
+also sampled-median errors, in the tight direction); bounds proper are worth +3
+lqbench slices and are a byte-identical no-op on sp100. sp100 improves
+outright: rmse ×0.952, GM/NKE/SPGI +8 slices. UPS's ×1.71 rmse degradation —
+Part 2's whole question — was the same defect (a spurious hop across the 0.15
+classifier edge) and resolves to rmse 0.008863 with no special case. Two
+lqbench boards get *worse* by being correctly classified (AVGO ×4.7, ETSY
+×7.6): the bucket definition being honored, recorded not hidden.
+
+**T3e — the calendar instrument is honest, and the oracle's rejections are not
+harvestable at the tick.** Q1: all 27 wing degradations under T3b/T3c are
+*forced* by (N2) — old wings sit a median 21.3% below the (N2) floor
+(range 1.8%–68.7%); 0/27 changed `forward` or `n_used`; (S1) never armed; 16/27
+inherit the binding predecessor through chain propagation. The instrument
+verifies: (N1) violations 0/443 and 0/459, worst (N2) residual 1.6e-16. Q2: of
+mark-admitted primaries, **99/185 (lq) and 50/98 (sp100) are oracle-rejected
+and silently substituted** — all eSSVI. Split: `InversionResidual` 73 / 9,
+`Butterfly` 26 / 40, `Calendar` 2 / 4. All 66 butterfly rejections are
+economically unharvestable: the oracle grid recovers as Δk = 1/96, break-even
+full width is `slack·h·F/2`, and the violations sit at a median ~3% of a penny
+tick, with 62/66 needing tighter than a tenth of a tick. The cost of
+substitution is coverage: obs/slice 36.5 → 20.5 (sp100) and 25.8 → 13.4 (lq),
+and on **20/20** sp100 boards where the substitute's *worst* improved, coverage
+fell — the min improved by fitting less. That is the defect T7a attacks: the
+substitution decision (`pricer_fitter.cpp:1601-1606`) is made with both records
+live and no comparison between them.
+
+**T5e — the term-structure fallback borrow is exonerated.** On the strongest
+control — same expiry, same board, served under fabricated borrow vs its own
+gate-rejected solve, deferral set held identical — 723 paired lqbench expiries
+show rmse ratio 1.001 (paired median +9e-06); the 431-pair sp100 control is not
+significant. The motivating 45× deltas (ACHR, SRPT) were admission-set
+composition on boards where the fallback **never executed** — both have zero
+confident anchors, so nothing was ever fabricated. Mechanism of the null: a
+borrow error shifts every observation's k by ~db·T nearly uniformly and the
+slice is refit in k, so served fit quality is largely invariant to the
+coordinate shift. Recorded for the future: the 1/T amplification law is
+confirmed on 870 leave-one-out expiries (unbiased; median |db·T| 0.0008 at
+T/T_a < 1 rising to 0.009 at 5–20×) — it just doesn't damage the served
+metric. Scoping fact integration must know: Decision B is unreachable for ~92%
+of boards, because dispatch (`session.cpp:1268`) sends eSSVI to a driver with
+no fallback at all — non-confident expiries are hard-dropped
+(`deamer.cpp:668/790`).
+
+**T10c — D4 extended to the eSSVI lane, where dof varies within one surface.**
+The remaining `n_curve_params = 3` hardcodes (`surface_parity.cpp:585`,
+`session.cpp:2280`) were wrong twice over: eSSVI calibration is per-slice
+(3 backbone parameters), but the *served* curve adds an armed wing residual —
+HingeQuad carries 4 fitted coefficients, C2Bspline `resid_n_basis` — and
+calendar-floored slices are refit residual-off, so one surface legitimately
+serves dof-7 and dof-3 slices side by side. Shipped as `essvi_slice_dof` read
+off the served `EssviParams`. Measured: `mean_chi2` is the only column that
+moves — 48 / 54 boards, every one on a residual-armed profile, all upward (the
+removed optimism, typically 1.1–1.8×). Zero admission or gate flips: no
+production config sets `corpus.cpp:322`'s ceiling and no board crosses the
+reference 3.0 (closest: INTC 2.2802 → 2.2902); the gate itself remains
+un-re-based per the standing decision. Banded parity-evidence counters
+(`n_parity_scored` / `n_parity_in_band` / `n_parity_out_of_band`) now flow
+through both lanes and the refit path, proven additive by a
+bit-identical-except-new-columns corpus diff — closing the W3-A hole where a
+default-zeroed report was indistinguishable from verified-clean.
+
+**Methodological additions this half forced into every brief.**
+(3) *Confirm the mutation build succeeded* before believing red or green — a
+`-Werror` failure produced a false green once. (4) *No timing claims without a
+bit-identical control arm* — ambient load produced 1.212× and 0.693× on
+provably bit-identical work. (5) *Pin the served artifact, not a parallel
+re-derivation* — a chi2 test passed under mutation because it recomputed the
+value it claimed to pin. (6) *Pre-register the acceptance test before
+measuring* — T5d and T5e both ended as measured rejections of their own briefs,
+and both were correct outcomes.
+
+**Known pre-existing reds** (both confirmed by stash-and-rebuild at multiple
+commits, neither introduced by this sprint):
+`SurfaceDbPopulate.PropagatesStoredSurfacePolicyAndPersistsServedProvenance`
+(`surface_db_populate_test.cpp:1364`, n_ok 0 vs 1) and
+`SurfaceV2Provenance.ValidationFallbackAdmissionRecordsTheServedFamily`
+(red at 547a466 with all lane-C work absent). The second names provenance at
+exactly T7a's seam and is assigned to it.
+
 ---
 
 ## 2. Root cause of the calendar crossings
@@ -763,7 +921,7 @@ Two changes:
 
 **Acceptance:** one metric, one band, documented; the two lanes comparable.
 
-### T5 — Deep-ITM de-Am guard and a real round-trip metric *(M, ~3 days)*
+### T5 — Deep-ITM de-Am guard and a real round-trip metric *(M, ~3 days)* — **LANDED** as T5c `2e6163c..3e1d0dc`; follow-ups T5d (units re-base, measured and REJECTED, reverted) and T5e (fallback borrow, exonerated on control) in §1.10
 
 **Owns:** `atx-vol/src/deamer.cpp`, `atx-vol/include/atx/vol/deamer.hpp`, `atx-vol/src/prepared_fitting.cpp`, `atx-vol/tests/deamer_test.cpp`
 
@@ -778,7 +936,7 @@ Two changes:
 **Acceptance:** the round-trip error is reported per board on the benchmark, and
 the thin-board population is measured rather than assumed clean.
 
-### T6 — One-sided quotes as bounds, not discards *(M, ~4 days)*
+### T6 — One-sided quotes as bounds, not discards *(M, ~4 days)* — **LANDED** `e8f09c5`+`01040c0`; headline re-based +14 → +10 by T6d (`8ea0605..544bf60`, exact-median sampler fix) in §1.10
 
 **Owns:** `atx-vol/src/calib.cpp`, `atx-vol/include/atx/vol/calib.hpp`, `atx-vol/src/opra_panel.cpp`, `atx-vol/tests/calib_test.cpp`
 
