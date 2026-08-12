@@ -999,6 +999,24 @@ namespace {
     if (!(std::isfinite(leg.annualization) && leg.annualization > 0.0)) {
       return Err(ErrorCode::InvalidArgument, tag + " needs a finite positive annualization");
     }
+    // Task F-3 fix round 1 (I-3): validate `kind` HERE, at the boundary where
+    // the caller wrote it. Nothing used to, and the two engine-unsupported
+    // kinds then failed in two very different ways: a GammaSwap leg solved
+    // into a lot and failed the WHOLE run at the engine's own
+    // `valid_deriv_kind`, while a CorridorVarSwap leg was refused by
+    // `solve_cycle_swap` and folded into `++skipped_swap_cycles_` below --
+    // completing the run at exit 0 with the swap lane silently absent,
+    // evidenced only by an aggregate counter that also counts dark boards and
+    // one-legged cycles. F-3's own refusal is what made that outcome the
+    // quieter one. `engine_supports_swap_kind` (backtest.hpp) is the ENGINE's
+    // own admission list, called rather than re-listed, so this gate cannot
+    // drift from the boundary it is protecting.
+    if (!engine_supports_swap_kind(leg.kind)) {
+      return Err(ErrorCode::InvalidArgument,
+                 tag + " names a kind the backtest engine cannot carry as a live "
+                       "swap lot (kind=" +
+                     std::to_string(static_cast<int>(leg.kind)) + ")");
+    }
     const bool capped =
         leg.kind == DerivKind::CappedVarSwap || leg.kind == DerivKind::CappedVolSwap;
     if (capped && !(std::isfinite(leg.cap_dec) && leg.cap_dec > 0.0)) {

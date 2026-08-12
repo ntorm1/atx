@@ -2519,10 +2519,50 @@ Result<DerivQuote> vol_swap_fair_strike(const SurfaceT& surface,
 
 // ── Unified dispatch ───────────────────────────────────────────────────────
 
-template <class SurfaceT>
-Result<DerivQuote> deriv_price(const SurfaceT& surface, const CurveSet& curves,
-                               const DerivContract& contract,
-                               const DerivConfig& cfg) {
+namespace {
+
+// Task F-3 fix round 1 (C-1 Critical, "instance nine"): THE dispatch-level
+// validation, stated ONCE.
+//
+// WHY THIS FUNCTION EXISTS AT ALL. It used to be two hand-synchronised copies:
+// this logic inline in `deriv_price`, and `validate_var_swap_dispatch` (below)
+// re-deriving it for the P-6 book-memo lane, held together by a comment
+// declaring that it "mirrors" the original. F-3 added a new dispatch-level
+// rule -- corridor bounds are illegal on a non-corridor kind -- to the first
+// copy only, and the review measured the consequence: the SAME VarSwap
+// contract carrying `corridor_lo`/`corridor_hi` is InvalidArgument through
+// `deriv_price_on_ref` and a silently-uncorridored 0.093403309340219273
+// through `price_deriv_book`'s memo lane, against 0.036525125893640986 for
+// the bounds it names -- 2.56x, with WHICH behaviour you get decided by
+// `cfg.discrete_correction_mode`, a book-wide knob unrelated to corridors.
+//
+// PASTING THE MISSING RULE INTO THE SECOND COPY WOULD HAVE BEEN THE WRONG FIX.
+// That is the predicate-not-invariant move F-2 made twice, and both times it
+// relocated the defect into the regime the predicate excluded rather than
+// closing it. Two copies is what produced this bug; three lines of pasted
+// agreement leaves the same trap armed for F-4..F-9. So the two lanes now
+// CALL THE SAME FUNCTION, which makes divergence impossible by construction
+// rather than merely detectable -- strictly stronger than the compile-time
+// tripwire the m-6 arity pin gave us, because there is no second expression
+// left that could drift.
+//
+// SCOPE, precisely. Everything here is a pure function of `(contract.kind,
+// contract's scope-gated fields, cfg)` -- no surface, no curves, no
+// quadrature. That is exactly the set both lanes owe, and it is why the leaf
+// entries (`strip_fair_value_core`, `vol_swap_fair_strike`) are NOT part of
+// this mirror: they take no `DerivContract` at all, so the contract-field
+// rules are inapplicable to them by signature, not by inspection. They keep
+// their own `reserved_fields_clean`/`vol_of_vol_valid` checks because they are
+// separately reachable as public entry points.
+//
+// ORDERING NOTE (a deliberate, tiny behaviour change): the corridor rule now
+// runs BEFORE the per-kind engine rejection on the memo lane, matching
+// `deriv_price`'s own precedence. A VarSwap contract that is malformed in BOTH
+// ways at once -- a corridor AND `VolCarrLee` -- now reports the corridor
+// error on both lanes instead of two different ones. Making the two lanes
+// agree is the entire point.
+[[nodiscard]] Status validate_deriv_dispatch(const DerivContract& contract,
+                                              const DerivConfig& cfg) {
   // Reserved engines fail clean before any work. RvDistributionProxy is the
   // one exception: Task 4 wires it up (alongside Auto) as the distribution
   // model's entry point for CappedVarSwap, Task 5 adds CappedVolSwap, and
@@ -2555,7 +2595,8 @@ Result<DerivQuote> deriv_price(const SurfaceT& surface, const CurveSet& curves,
 
   // cap_dec validation applies uniformly to both capped kinds: a malformed
   // contract should fail the same way regardless of which capped product it
-  // names. Uncapped kinds (VarSwap/VolSwap) must leave cap_dec at 0.
+  // names. Uncapped kinds (VarSwap/VolSwap/GammaSwap/CorridorVarSwap) must
+  // leave cap_dec at 0.
   const bool is_capped_kind = contract.kind == DerivKind::CappedVarSwap ||
                               contract.kind == DerivKind::CappedVolSwap;
   if (is_capped_kind) {
@@ -2579,66 +2620,83 @@ Result<DerivQuote> deriv_price(const SurfaceT& surface, const CurveSet& curves,
                "corridor_lo/corridor_hi are only valid on DerivKind::CorridorVarSwap");
   }
 
-  // Kind x engine dispatch matrix (PV-5), enforced in two stages: the
-  // reserved-engine switch above (RvDistributionAffine/McQe always
-  // NotImplemented; RvDistributionProxy NotImplemented except on the kinds
-  // it is wired up for) narrows cfg.engine to what each kind's own case below
-  // can still misuse, and each case rejects the one engine value that
-  // survives narrowing but still names no pricing formula for that kind.
+  // Kind x engine dispatch matrix (PV-5), second stage. The reserved-engine
+  // switch above narrowed `cfg.engine` to what each kind's own arm below can
+  // still misuse; each arm rejects the one engine value that survives
+  // narrowing but still names no pricing formula for that kind. Exhaustive, no
+  // `default:` -- a future DerivKind turns this into a compile error under
+  // /W4 /WX rather than silently inheriting someone else's engine matrix.
   // Full matrix: VarSwap -> {Auto, StripLogContract}; VolSwap -> {Auto,
   // VolCarrLee (unaged only -- price_vol_swap itself checks that), Rv
   // DistributionProxy}; CappedVarSwap/CappedVolSwap -> {Auto,
-  // RvDistributionProxy}. Everything else is InvalidArgument.
+  // RvDistributionProxy}; GammaSwap/CorridorVarSwap -> {Auto,
+  // StripLogContract}.
   switch (contract.kind) {
   case DerivKind::VarSwap:
-    // Kind x engine matrix (PV-5): VarSwap only ever runs the strip --
-    // price_var_swap never reads cfg.engine at all, so an explicit
-    // VolCarrLee here used to silently price the strip anyway (VolCarrLee
-    // has no variance-swap formula of its own to run instead). RvDistribution
-    // Proxy/RvDistributionAffine/McQe on VarSwap are already NotImplemented
-    // from the reserved-engine switch above; VolCarrLee is the one gap.
+    // VarSwap only ever runs the strip -- price_var_swap never reads
+    // cfg.engine at all, so an explicit VolCarrLee here used to silently price
+    // the strip anyway (VolCarrLee has no variance-swap formula of its own to
+    // run instead).
     if (cfg.engine == DerivEngine::VolCarrLee) {
       return Err(ErrorCode::InvalidArgument, "engine cannot price a var swap");
     }
-    return price_var_swap(surface, curves, contract, cfg);
+    break;
   case DerivKind::VolSwap:
-    // Kind x engine matrix (PV-5): an explicit StripLogContract here used to
-    // silently fall through to price_vol_swap's unaged Carr-Lee branch --
-    // the same branch Auto/VolCarrLee take -- because that branch only tests
-    // `cfg.engine != RvDistributionProxy`, not which engine it actually is.
-    // StripLogContract has no vol-swap formula of its own to run instead.
+    // An explicit StripLogContract here used to silently fall through to
+    // price_vol_swap's unaged Carr-Lee branch -- the same branch Auto/
+    // VolCarrLee take -- because that branch only tests `cfg.engine !=
+    // RvDistributionProxy`, not which engine it actually is.
     if (cfg.engine == DerivEngine::StripLogContract) {
       return Err(ErrorCode::InvalidArgument, "engine cannot price a vol swap");
     }
-    return price_vol_swap(surface, curves, contract, cfg);
+    break;
   case DerivKind::CappedVarSwap:
-    if (cfg.engine == DerivEngine::StripLogContract || cfg.engine == DerivEngine::VolCarrLee) {
-      return Err(ErrorCode::InvalidArgument, "engine cannot price capped kinds");
-    }
-    return price_capped_var_swap(surface, curves, contract, cfg);
   case DerivKind::CappedVolSwap:
     if (cfg.engine == DerivEngine::StripLogContract || cfg.engine == DerivEngine::VolCarrLee) {
       return Err(ErrorCode::InvalidArgument, "engine cannot price capped kinds");
     }
-    return price_capped_vol_swap(surface, curves, contract, cfg);
+    break;
   case DerivKind::GammaSwap:
-    // Task F-2: same engine matrix as VarSwap (Auto/StripLogContract legal;
-    // VolCarrLee has no gamma-swap formula; RvDistributionProxy/Affine/McQe
-    // already NotImplemented from the reserved-engine switch above, since
-    // GammaSwap is deliberately NOT added to that switch's allow-list).
     if (cfg.engine == DerivEngine::VolCarrLee) {
       return Err(ErrorCode::InvalidArgument, "engine cannot price a gamma swap");
     }
-    return price_gamma_swap(surface, curves, contract, cfg);
+    break;
   case DerivKind::CorridorVarSwap:
-    // Task F-3: same engine matrix as VarSwap (Auto/StripLogContract legal;
-    // VolCarrLee has no corridor-variance formula; RvDistributionProxy/Affine/
-    // McQe are already NotImplemented from the reserved-engine switch above,
-    // since CorridorVarSwap is deliberately NOT added to that switch's
-    // allow-list).
     if (cfg.engine == DerivEngine::VolCarrLee) {
       return Err(ErrorCode::InvalidArgument, "engine cannot price a corridor var swap");
     }
+    break;
+  }
+  return Ok();
+}
+
+}  // namespace
+
+template <class SurfaceT>
+Result<DerivQuote> deriv_price(const SurfaceT& surface, const CurveSet& curves,
+                               const DerivContract& contract,
+                               const DerivConfig& cfg) {
+  // Task F-3 fix round 1 (C-1): every dispatch-level rule -- reserved engines,
+  // reserved cfg fields, vol_of_vol, the cap_dec and corridor scope rules, and
+  // the per-kind engine matrix -- now lives in ONE place that the book-memo
+  // lane calls too. See `validate_deriv_dispatch` for why that mattered.
+  ATX_TRY_VOID(validate_deriv_dispatch(contract, cfg));
+
+  // Routing only. `validate_deriv_dispatch` above has already rejected every
+  // (kind, engine, scope-gated field) combination that names no formula, so
+  // each arm here is a pure hand-off to its pricer.
+  switch (contract.kind) {
+  case DerivKind::VarSwap:
+    return price_var_swap(surface, curves, contract, cfg);
+  case DerivKind::VolSwap:
+    return price_vol_swap(surface, curves, contract, cfg);
+  case DerivKind::CappedVarSwap:
+    return price_capped_var_swap(surface, curves, contract, cfg);
+  case DerivKind::CappedVolSwap:
+    return price_capped_vol_swap(surface, curves, contract, cfg);
+  case DerivKind::GammaSwap:
+    return price_gamma_swap(surface, curves, contract, cfg);
+  case DerivKind::CorridorVarSwap:
     return price_corridor_var_swap(surface, curves, contract, cfg);
   }
   // Defends against an out-of-enum kind (matches the C default's ERR_INVALID).
@@ -3678,43 +3736,27 @@ Result<DerivGreeks> deriv_greeks(const SurfaceT& surface, const CurveSet& curves
 
 using detail::VarSwapSharedBlock;
 
-// Mirrors `deriv_price<SurfaceT>`'s OWN dispatch-level validation for the
-// VarSwap case (the reserved-engine switch, `reserved_fields_clean`,
-// `vol_of_vol_valid`, the uncapped-kind `cap_dec == 0` rule, and VarSwap's own
-// "VolCarrLee cannot price a var swap" rejection) -- reproduced here because
-// the shared-block path calls `var_swap_fair_strike` directly for a
-// NOT-fully-aged row (bypassing `deriv_price`'s dispatch) and never reaches
-// it AT ALL for a fully-aged one, so a fully-aged row with a malformed `cfg`
-// must still fail exactly as `deriv_price` would have. `wing_clamp_valid` /
-// `surface_certified_wing_band_valid` are deliberately NOT duplicated here --
-// `deriv_price`'s dispatch never checks them either; only
+// The book-memo lane's dispatch validation. This exists at all because the
+// shared-block path calls `var_swap_fair_strike` directly for a NOT-fully-aged
+// row (bypassing `deriv_price`'s dispatch) and never reaches it AT ALL for a
+// fully-aged one, so a fully-aged row with a malformed `cfg` or contract must
+// still fail exactly as `deriv_price` would have.
+//
+// Task F-3 fix round 1 (C-1 Critical): it used to RE-DERIVE that validation --
+// a hand-synchronised second copy whose own comment claimed it "mirrors" the
+// original. It does not re-derive anything now; it calls the same
+// `validate_deriv_dispatch` `deriv_price` does, so the mirror is STRUCTURAL
+// and the two lanes cannot disagree about any dispatch-level rule, present or
+// future. See that function's comment for the measured failure this closes.
+//
+// `wing_clamp_valid` / `surface_certified_wing_band_valid` are still not part
+// of it -- `deriv_price`'s dispatch never checked them either; only
 // `var_swap_fair_strike` itself does, which is why a fully-aged row is
-// unaffected by a bad wing-clamp band under the UNMEMOIZED path too.
+// unaffected by a bad wing-clamp band under the UNMEMOIZED path too. That is a
+// property of the shared function now, so it too cannot drift between lanes.
 [[nodiscard]] Status validate_var_swap_dispatch(const DerivContract& contract,
                                                  const DerivConfig& cfg) {
-  switch (cfg.engine) {
-  case DerivEngine::RvDistributionProxy:
-  case DerivEngine::RvDistributionAffine:
-  case DerivEngine::McQe:
-    return Err(ErrorCode::NotImplemented, "reserved pricing engine");
-  case DerivEngine::Auto:
-  case DerivEngine::StripLogContract:
-  case DerivEngine::VolCarrLee:
-    break;
-  }
-  if (!reserved_fields_clean(cfg)) {
-    return Err(ErrorCode::NotImplemented, "reserved config field is non-zero");
-  }
-  if (!vol_of_vol_valid(cfg)) {
-    return Err(ErrorCode::InvalidArgument, "vol_of_vol must be >= 0");
-  }
-  if (contract.cap_dec != 0.0) {
-    return Err(ErrorCode::InvalidArgument, "cap_dec is only valid on capped kinds");
-  }
-  if (cfg.engine == DerivEngine::VolCarrLee) {
-    return Err(ErrorCode::InvalidArgument, "engine cannot price a var swap");
-  }
-  return Ok();
+  return validate_deriv_dispatch(contract, cfg);
 }
 
 // Resolve `df_at_T` -- cheap (no quadrature), and every row wants it

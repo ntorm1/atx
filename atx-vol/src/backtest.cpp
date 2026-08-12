@@ -422,40 +422,22 @@ using detail::StepMarkMemo;
          lhs.cohort == rhs.cohort && same_double_bits(lhs.entry_price, rhs.entry_price);
 }
 
+// Task F-3 fix round 1 (I-3): the admission LIST now lives in `backtest.hpp`
+// as `engine_supports_swap_kind`, so the strategy layer's swap-leg spec
+// validation reaches the identical verdict instead of carrying a second
+// hand-written copy of it -- the same two-copies hazard that produced F-3's
+// own C-1. This wrapper is kept because it names the engine-boundary question
+// at the two call sites below.
+//
+// Why the two refused kinds are refused (unchanged from F-2 / F-3): GammaSwap
+// needs the S_i/S0-weighted accumulator wired through the live daily-fixing
+// loop, and CorridorVarSwap needs BOTH a corridor-aware accrual and corridor
+// bounds on `SwapLot`, which that struct does not carry -- so a corridor lot
+// would blend a corridor FUTURE leg with a non-corridor REALIZED one. Both
+// fail the WHOLE run loud at `validate_swap_lot_economics` below rather than
+// silently mis-accruing a live position.
 [[nodiscard]] bool valid_deriv_kind(DerivKind kind) noexcept {
-  switch (kind) {
-  case DerivKind::VarSwap:
-  case DerivKind::VolSwap:
-  case DerivKind::CappedVarSwap:
-  case DerivKind::CappedVolSwap:
-    return true;
-  case DerivKind::GammaSwap:
-    // Task F-2: GammaSwap is NOT yet admitted to the LIVE backtest engine.
-    // derivatives.cpp/deriv_book.cpp price it correctly through every OTHER
-    // entry point (deriv_price, deriv_greeks, price_deriv_book, solve_cycle_
-    // swap) -- see that task's report for the full exhaustiveness audit --
-    // but this engine's own per-lot accrual state (SwapAccrual below) still
-    // mirrors ONLY the plain realized-variance estimator; wiring the S_i/S0-
-    // weighted accumulator through the live daily-fixing loop is a separate,
-    // future task, out of F-2's file list. Falls through to the same `return
-    // false` an unknown/out-of-range kind gets: a strategy that tries to open
-    // a GammaSwap SwapLot fails the WHOLE run loud
-    // (validate_swap_lot_economics, below), never silently mis-accrues one.
-    break;
-  case DerivKind::CorridorVarSwap:
-    // Task F-3: refused for the same reason, twice over. (1) `SwapAccrual`'s
-    // transcribed accrual (observe_swap_fixing, below) maintains only the
-    // plain estimator, so a corridor lot would blend a corridor FUTURE leg
-    // with a non-corridor REALIZED one -- a wrong number, not a missing
-    // feature. (2) `SwapLot` carries no corridor bounds at all, so even a
-    // corridor-aware accrual would have nothing to test fixings against; the
-    // lot would necessarily mean the UNBOUNDED corridor, i.e. a plain var swap
-    // wearing a corridor label. Wiring both is a separate task with its own
-    // schema decision (SwapLot is a checkpointed engine type). Fails loud at
-    // validate_swap_lot_economics below, exactly like GammaSwap.
-    break;
-  }
-  return false;
+  return engine_supports_swap_kind(kind);
 }
 
 // True for the two kinds whose terminal value is a VOL (sqrt of the accrued

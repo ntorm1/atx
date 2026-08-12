@@ -381,6 +381,85 @@ TEST(DerivBook, CorridorVarSwapNeverUsesTheVarSwapMemo) {
   EXPECT_LT(g->rows[1].fair_strike_dec, g->rows[0].fair_strike_dec);
 }
 
+// Task F-3 fix round 1 (C-1 Critical, "instance nine"). The corridor-scope
+// rule -- corridor bounds are illegal on a non-corridor kind -- must hold on
+// the BOOK-MEMO lane, not only through `deriv_price`.
+//
+// `Corridor.RejectsCorridorBoundsOnNonCorridorKinds` (derivatives_test.cpp)
+// exercises the `deriv_price` lane only and was structurally blind to this:
+// `price_deriv_book` routes a VarSwap row with `discrete_correction_mode ==
+// None` through `deriv_price_var_swap_on_ref_shared`, which never reaches
+// `deriv_price`'s switch at all. Before the fix that lane ACCEPTED a VarSwap
+// carrying `corridor_lo/hi` and returned the uncorridored strike --
+// 0.093403309340219273 against 0.036525125893640986 for the bounds named,
+// 2.56x -- while the unmemoized lane rejected the identical position, and
+// WHICH behaviour a caller got depended on `cfg.discrete_correction_mode`, a
+// book-wide knob with nothing to do with corridors.
+//
+// Both lanes now call one `validate_deriv_dispatch`, so the primary assertion
+// here is an EQUALITY BETWEEN LANES rather than a hard-coded verdict: that
+// cannot be satisfied by re-pasting the rule into one lane and getting it
+// subtly different, which is the failure mode this fix exists to retire.
+TEST(DerivBook, CorridorBoundsOnAVarSwapAreRejectedOnBothLanes) {
+  const PricedSurface ps = make_carry_skew_surface(7, 100.0, 0.30, 0.02);
+  const PricedSurface *arr[] = {&ps};
+  auto ss = SurfaceSet::create(arr);
+  ASSERT_TRUE(ss.has_value());
+
+  DerivPosition p{};
+  p.id = 1;
+  p.uid = 7;
+  p.qty = 1.0;
+  p.contract = var_swap_at(0.35);  // a VarSwap illegally carrying a corridor
+  p.contract.corridor_lo = 95.0;
+  p.contract.corridor_hi = 106.0;
+  const std::vector<DerivPosition> book{p};
+
+  // Lane 1: memo ENGAGED -- `discrete_correction_mode == None` is the memo
+  // eligibility gate, so the default config takes the shared block.
+  DerivConfig memo_cfg{};
+  ASSERT_EQ(memo_cfg.discrete_correction_mode, atx::vol::DerivDiscreteCorrection::None);
+  const auto memo = price_deriv_book(*ss, book, memo_cfg, /*greeks=*/false);
+  ASSERT_TRUE(memo.has_value()) << memo.error().to_string();
+  ASSERT_EQ(memo->rows.size(), 1u);
+
+  // Lane 2: memo DISENGAGED through that same knob, routing the identical row
+  // through the unmemoized `deriv_price` dispatch.
+  DerivConfig unmemo_cfg{};
+  unmemo_cfg.discrete_correction_mode = atx::vol::DerivDiscreteCorrection::Diffusion1OverN;
+  const auto unmemo = price_deriv_book(*ss, book, unmemo_cfg, /*greeks=*/false);
+  ASSERT_TRUE(unmemo.has_value()) << unmemo.error().to_string();
+  ASSERT_EQ(unmemo->rows.size(), 1u);
+
+  // THE assertion that carries this test: the two lanes reach the SAME verdict
+  // on the SAME position.
+  EXPECT_EQ(memo->rows[0].status, unmemo->rows[0].status);
+  // ... and the shared verdict is rejection, not a silently-uncorridored
+  // number.
+  EXPECT_EQ(memo->rows[0].status, PriceStatus::InvalidContract);
+  EXPECT_TRUE(std::isnan(memo->rows[0].fair_strike_dec));
+
+  // The greeks path uses its OWN shared-block entry point
+  // (`deriv_greeks_var_swap_on_ref_shared`), so it is checked rather than
+  // assumed to follow.
+  const auto memo_greeks = price_deriv_book(*ss, book, memo_cfg, /*greeks=*/true);
+  ASSERT_TRUE(memo_greeks.has_value()) << memo_greeks.error().to_string();
+  ASSERT_EQ(memo_greeks->rows.size(), 1u);
+  EXPECT_EQ(memo_greeks->rows[0].status, PriceStatus::InvalidContract);
+
+  // CONTROL, and the load-bearing half: with the bounds removed the very same
+  // row prices Ok on the memo lane. Without it, the assertions above would
+  // also pass if the book had simply stopped pricing VarSwap rows at all.
+  DerivPosition clean = p;
+  clean.contract.corridor_lo = 0.0;
+  clean.contract.corridor_hi = 0.0;
+  const std::vector<DerivPosition> clean_book{clean};
+  const auto ok_memo = price_deriv_book(*ss, clean_book, memo_cfg, /*greeks=*/false);
+  ASSERT_TRUE(ok_memo.has_value());
+  EXPECT_EQ(ok_memo->rows[0].status, PriceStatus::Ok);
+  EXPECT_GT(ok_memo->rows[0].fair_strike_dec, 0.0);
+}
+
 // FIT-C7 / Task C-6, review round 1 CRITICAL-1: `price_deriv_book` is the
 // umbrella-exported public entry point (deriv_book.hpp); before this fix
 // landed no caller of it could supply a certified band at all, so every row

@@ -488,6 +488,39 @@ struct SwapLot {
   [[nodiscard]] bool operator==(const SwapLot &) const = default;
 };
 
+// THE list of `DerivKind`s this engine can carry as a live `SwapLot`, stated
+// ONCE (Task F-3 fix round 1, I-3).
+//
+// It is a property of the ENGINE, not of the pricers: `derivatives.cpp` prices
+// GammaSwap and CorridorVarSwap correctly through every other entry point, but
+// `SwapAccrual`'s transcribed daily-fixing loop maintains only the plain
+// realized-variance estimator, and `SwapLot` carries no corridor bounds for a
+// corridor contract to be tested against. Admitting either would mis-accrue a
+// live position rather than merely miss a feature.
+//
+// Lives in the header, and is exhaustive over `DerivKind` with no `default:`,
+// for two reasons that F-3 learned the hard way. (1) `-Wswitch -WX` turns a
+// future enumerator into a compile error here, so a new kind cannot be
+// silently admitted OR silently refused -- the author has to choose. (2) The
+// STRATEGY layer needs the same verdict when it validates a swap-leg spec
+// (`validate_restrike_spec`, strategy.cpp), and a second hand-written copy of
+// this list is exactly the two-copies hazard that produced F-3's own C-1: the
+// spec validator and the engine boundary would drift, and a leg would be
+// accepted by one and refused by the other.
+[[nodiscard]] constexpr bool engine_supports_swap_kind(DerivKind kind) noexcept {
+  switch (kind) {
+  case DerivKind::VarSwap:
+  case DerivKind::VolSwap:
+  case DerivKind::CappedVarSwap:
+  case DerivKind::CappedVolSwap:
+    return true;
+  case DerivKind::GammaSwap:
+  case DerivKind::CorridorVarSwap:
+    return false;
+  }
+  return false;  // out-of-enum value: refuse, matching the C default
+}
+
 // The open book across all cohorts. Plain for B0 (no cash/shares ledger yet);
 // `swap_lots` is the additive vol-derivative lane and defaults to empty.
 class PortfolioState {

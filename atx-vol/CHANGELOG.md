@@ -25,7 +25,15 @@ machinery, invoked on the restricted interval -- not reimplemented).
   nodes with the same weights (`Corridor.FullCorridorIdentity`, pinned
   BIT-EXACT plus a ledger-counter dispatch witness). Non-zero on any other
   kind is `InvalidArgument`, exactly as `cap_dec` already behaves -- a knob
-  that names nothing on a kind is a caller error, not a silent no-op.
+  that names nothing on a kind is a caller error, not a silent no-op. Enforced
+  in `validate_deriv_dispatch`, the ONE dispatch validator that BOTH the
+  `deriv_price` lane and the P-6 book-memo lane call. Review fix round 1 (C-1)
+  found this rule had gone into what was then a hand-synchronised SECOND copy
+  of that validation, so the memo lane silently priced such a contract at 2.56x
+  the corridored value while the other lane rejected it; the two copies are now
+  one function, which is what makes the "exactly as `cap_dec` behaves" claim
+  true on every lane rather than only on the one it was written against
+  (`DerivBook.CorridorBoundsOnAVarSwapAreRejectedOnBothLanes`).
 * THE CORRIDOR IS RE-RESOLVED PER PRICING against that pricing's own forward,
   not frozen at inception: a corridor is a fixed barrier in price space.
   Consequence: for this kind `DerivQuote::strip_k_lo_used`/`strip_k_hi_used`
@@ -56,10 +64,21 @@ machinery, invoked on the restricted interval -- not reimplemented).
   separate from `VarSwapStripEvals` for the same reason `GammaSwapStripEvals`
   is: P-6's book-memo gate reads `VarSwapStripEvals` specifically. The Python
   `SOLVE_LEDGER_KEYS` tuple grows 10 -> 11.
-* NOT admitted to the live backtest engine (`valid_deriv_kind`) nor to
-  `solve_cycle_swap`: `SwapLot` carries no corridor bounds, so a solved lot
-  would silently be an UNBOUNDED corridor struck at the all-strike `K_var`.
-  Both refuse loudly rather than compute a wrong number.
+* NOT admitted to the live backtest engine nor to `solve_cycle_swap`:
+  `SwapLot` carries no corridor bounds, so a solved lot would silently be an
+  UNBOUNDED corridor struck at the all-strike `K_var`. The engine's admission
+  list now lives in `backtest.hpp` as `engine_supports_swap_kind` (exhaustive
+  over `DerivKind`, so `-Wswitch -WX` forces a future kind to be explicitly
+  admitted or refused), and `backtest.cpp`'s `valid_deriv_kind` plus the
+  STRATEGY layer's swap-leg spec validation both call it rather than each
+  listing kinds. Review fix round 1 (I-3): `validate_restrike_spec`
+  (strategy.cpp) never checked `leg.kind` at all, so an engine-unsupported kind
+  reached `solve_cycle_swap` and -- for CorridorVarSwap specifically, because
+  F-3 added a refusal there -- was folded into `++skipped_swap_cycles_`,
+  completing the run at exit 0 with the swap lane silently absent, where a
+  GammaSwap leg failed the whole run. Both now fail identically and loudly at
+  spec validation, where the caller wrote the mistake
+  (`StrategyRestrikeValidation.RejectsEngineUnsupportedSwapKinds`).
 * `SwapAccrual::operator==` (backtest.hpp) now compares ALL TWELVE
   `RealizedVarianceSpec` fields, up from six of nine. Provably inert today
   (the checkpoint format refuses the swap lane, so every appended field is 0 on

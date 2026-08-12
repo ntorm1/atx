@@ -741,11 +741,23 @@ struct DerivContract {
 // P-4's fix round audited its 7 fields by hand against the analytic-greek
 // scope predicate, and a hand audit is exactly what a pin makes unnecessary
 // the next time. Same contract as the `DerivConfig` pin above.
+//
+// A SCOPE-GATED field -- one meaningful on some kinds that must be zero on
+// others, as `cap_dec` and the corridor bounds both are -- belongs in exactly
+// ONE place: `validate_deriv_dispatch` (derivatives.cpp), which BOTH the
+// `deriv_price` lane and the P-6 book-memo lane call. F-3's review measured
+// what not knowing that costs: the corridor rule went into what was then a
+// hand-synchronised copy of that validation, and the memo lane silently priced
+// a contract the other lane rejected, at 2.56x. This pin is what routes the
+// next appender to the single validator instead of to a second copy.
 static_assert(detail::aggregate_arity_is_v<DerivContract, 9>,
-              "DerivContract field count changed: update this pin, and re-audit "
-              "every predicate that projects a contract onto a scope decision "
+              "DerivContract field count changed: update this pin. If the new field is "
+              "SCOPE-GATED (legal on some kinds, must be zero on others), enforce it in "
+              "validate_deriv_dispatch -- the ONE validator both the deriv_price and the "
+              "book-memo lane call -- never in a per-lane copy. Also re-audit every "
+              "predicate that projects a contract onto a scope decision "
               "(analytic_scope_from_cfg / var_swap_memo_eligible / "
-              "validate_var_swap_dispatch).");
+              "validate_var_swap_shared_scope).");
 
 // Pricing configuration (AtsVolDerivConfig). The reserved fields
 // (abs_price_tol / rel_price_tol / flags_request) must be left at 0; a

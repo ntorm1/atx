@@ -3865,6 +3865,13 @@ TEST(Corridor, FullCorridorIdentity) {
   // under `DerivKind::CorridorVarSwap`, so a non-zero count is direct evidence
   // the corridor body executed, and a zero `VarSwapStripEvals` is evidence it
   // did not silently take the var-swap route instead.
+  //
+  // SCOPE OF THE WITNESS, stated so it is not over-read: it witnesses ROUTING
+  // -- that this contract entered the corridor body -- and NOT that the window
+  // was applied. It survives a reversion in which the corridor never restricts
+  // anything, which is correct and expected; this oracle is an identity, so no
+  // assertion in it can discriminate that reversion. `SubCorridorOrdering` and
+  // `EdgeSplitAccuracy` are where the window itself is measured.
   namespace ledger = atx::vol::counters::ledger;
   ledger::reset();
   const auto q_unbounded = deriv_price(surf, cs, c, cfg);
@@ -3897,8 +3904,21 @@ TEST(Corridor, FullCorridorIdentity) {
   // corridor path had perturbed the quadrature it is supposed to leave alone.
   EXPECT_EQ(q_unbounded->fair_strike_dec, q_var->fair_strike_dec);
   EXPECT_EQ(q_wide->fair_strike_dec, q_var->fair_strike_dec);
-  // "same nodes, same weights", pinned directly rather than inferred from the
-  // value agreeing.
+  // PROVENANCE CONSISTENCY, and NOT a node-level witness -- said plainly
+  // because an earlier version of this comment claimed the opposite and the
+  // review measured it false. These four fields CANNOT discriminate a corridor
+  // that bound: `strip_k_lo_used`/`strip_k_hi_used` are the PRE-corridor span
+  // by explicit design (see `strip_fair_value_core`'s note on why reproduction
+  // requires that), and `strip_nodes_used` is the node BUDGET, which a
+  // narrower window only makes the `dk_floor_nodes` floor LESS likely to
+  // raise. Measured: a corridor 1/150th the span's width reports the identical
+  // -1.5 / 1.5 / 257 while its value is 9.3x smaller.
+  //
+  // So these assert only that the corridor path left the reported grid alone,
+  // which is worth pinning but is not evidence about the window. As this quote
+  // is currently specified there is NO node-level witness available to this
+  // oracle at all. What carries it is `fair_strike_dec` bit-equality above and
+  // the ledger-counter ROUTING witness below.
   EXPECT_EQ(q_unbounded->strip_nodes_used, q_var->strip_nodes_used);
   EXPECT_EQ(q_wide->strip_nodes_used, q_var->strip_nodes_used);
   EXPECT_EQ(q_wide->strip_k_lo_used, q_var->strip_k_lo_used);
