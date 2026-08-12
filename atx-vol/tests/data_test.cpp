@@ -214,6 +214,121 @@ TEST(DataInstall, SyntheticFrame_MidsAreHalfBidPlusAsk) {
   EXPECT_DOUBLE_EQ(c.mids[call_idx], 0.5 * (2.0 + 2.2));
 }
 
+// ── Install: rank rule at one (expiry, strike, side) slot ───────────────────
+//
+// T6 admits bid-less rows (bid = 0, ask > 0) as upper bounds. A frame may then
+// carry a bound AND a genuine two-sided quote at the same key, and the install
+// used to be last-wins unconditionally -- so row order decided whether the
+// two-sided quote survived. The rule pinned here: an install may never DECREASE
+// a slot's informational rank (two-sided, bid > 0, outranks one-sided); within
+// equal rank last-wins is unchanged, keeping the freshest quote.
+//
+// Neither OPRA corpus currently populates this collision class (measured
+// 2026-08-03 lqbench + 2026-07-22 sp100: zero duplicate keys among 256,576 and
+// 105,347 kept rows) -- the guard exists because `data_install` is a public
+// boundary and nothing upstream promises key uniqueness.
+
+QuoteFrame make_single_slot_frame() {
+  QuoteFrame f;
+  f.uid = "FAKE";
+  f.snapshot_iso = "2026-05-01";
+  f.snapshot_ts_ns = iso_to_ns(f.snapshot_iso);
+  f.spot = 100.0;
+  f.spot_ts_ns = f.snapshot_ts_ns;
+  f.yc_pillar_t = {0.05, 1.0};
+  f.yc_pillar_r = {0.05, 0.05};
+  return f;
+}
+
+QuoteRow make_call_row(double bid, double ask, std::int32_t bid_size, std::int64_t ts_ns) {
+  QuoteRow row;
+  row.uid = "FAKE";
+  row.expiry_iso = "2026-06-19";
+  row.strike = 100.0;
+  row.side = Side::Call;
+  row.bid = bid;
+  row.ask = ask;
+  row.bid_size = bid_size;
+  row.ask_size = 7;
+  row.ts_ns = ts_ns;
+  row.under_spot = 100.0;
+  return row;
+}
+
+TEST(DataInstall, OneSidedRow_CannotDisplaceTwoSidedQuoteAtSameSlot) {
+  QuoteFrame f = make_single_slot_frame();
+  f.rows.push_back(make_call_row(/*bid=*/1.0, /*ask=*/1.2, /*bid_size=*/10, /*ts_ns=*/111));
+  f.rows.push_back(make_call_row(/*bid=*/0.0, /*ask=*/2.0, /*bid_size=*/0, /*ts_ns=*/222));
+
+  Universe u;
+  const auto uid = data_install(u, f);
+  ASSERT_TRUE(uid.has_value()) << uid.error().to_string();
+  const auto under = u.get_underlying(*uid);
+  ASSERT_TRUE(under.has_value());
+  const Chain &c = (*under)->chains[0];
+  const std::size_t ix = atx::vol::chain_index(0u, Side::Call);
+  // The whole slot survives -- price, mid, size and timestamp -- because a
+  // partially-overwritten slot would be worse than either row alone.
+  EXPECT_DOUBLE_EQ(c.bids[ix], 1.0);
+  EXPECT_DOUBLE_EQ(c.asks[ix], 1.2);
+  EXPECT_DOUBLE_EQ(c.mids[ix], 1.1);
+  EXPECT_EQ(c.bid_sizes[ix], 10);
+  EXPECT_EQ(c.ts_ns[ix], std::int64_t{111});
+}
+
+TEST(DataInstall, TwoSidedRow_UpgradesAOneSidedSlot) {
+  QuoteFrame f = make_single_slot_frame();
+  f.rows.push_back(make_call_row(/*bid=*/0.0, /*ask=*/2.0, /*bid_size=*/0, /*ts_ns=*/111));
+  f.rows.push_back(make_call_row(/*bid=*/1.0, /*ask=*/1.2, /*bid_size=*/10, /*ts_ns=*/222));
+
+  Universe u;
+  const auto uid = data_install(u, f);
+  ASSERT_TRUE(uid.has_value()) << uid.error().to_string();
+  const auto under = u.get_underlying(*uid);
+  ASSERT_TRUE(under.has_value());
+  const Chain &c = (*under)->chains[0];
+  const std::size_t ix = atx::vol::chain_index(0u, Side::Call);
+  EXPECT_DOUBLE_EQ(c.bids[ix], 1.0);
+  EXPECT_DOUBLE_EQ(c.asks[ix], 1.2);
+  EXPECT_EQ(c.ts_ns[ix], std::int64_t{222});
+}
+
+TEST(DataInstall, EqualRank_LastWins_BothOneSidedAndBothTwoSided) {
+  // One-sided vs one-sided: the later bound is the freshest evidence.
+  {
+    QuoteFrame f = make_single_slot_frame();
+    f.rows.push_back(make_call_row(/*bid=*/0.0, /*ask=*/2.0, /*bid_size=*/0, /*ts_ns=*/111));
+    f.rows.push_back(make_call_row(/*bid=*/0.0, /*ask=*/3.0, /*bid_size=*/0, /*ts_ns=*/222));
+    Universe u;
+    const auto uid = data_install(u, f);
+    ASSERT_TRUE(uid.has_value()) << uid.error().to_string();
+    const auto under = u.get_underlying(*uid);
+    ASSERT_TRUE(under.has_value());
+    const Chain &c = (*under)->chains[0];
+    const std::size_t ix = atx::vol::chain_index(0u, Side::Call);
+    EXPECT_DOUBLE_EQ(c.bids[ix], 0.0);
+    EXPECT_DOUBLE_EQ(c.asks[ix], 3.0);
+    EXPECT_EQ(c.ts_ns[ix], std::int64_t{222});
+  }
+  // Two-sided vs two-sided: unchanged last-wins.
+  {
+    QuoteFrame f = make_single_slot_frame();
+    f.rows.push_back(make_call_row(/*bid=*/1.0, /*ask=*/1.2, /*bid_size=*/10, /*ts_ns=*/111));
+    f.rows.push_back(make_call_row(/*bid=*/1.1, /*ask=*/1.3, /*bid_size=*/20, /*ts_ns=*/222));
+    Universe u;
+    const auto uid = data_install(u, f);
+    ASSERT_TRUE(uid.has_value()) << uid.error().to_string();
+    const auto under = u.get_underlying(*uid);
+    ASSERT_TRUE(under.has_value());
+    const Chain &c = (*under)->chains[0];
+    const std::size_t ix = atx::vol::chain_index(0u, Side::Call);
+    EXPECT_DOUBLE_EQ(c.bids[ix], 1.1);
+    EXPECT_DOUBLE_EQ(c.asks[ix], 1.3);
+    EXPECT_EQ(c.bid_sizes[ix], 20);
+    EXPECT_EQ(c.ts_ns[ix], std::int64_t{222});
+  }
+}
+
 // ── Install: multi-uid (install_multi_uid_rows_into_universe) ────────────────
 
 TEST(DataInstall, MultiUidRows_SplitInto_SeparateUnderlyings) {
