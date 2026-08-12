@@ -583,6 +583,28 @@ struct AttemptRow {
   // rejected primary whose rejection reason is the whole point of this CSV.
   std::optional<double> probe_admission_matches{};
   ValidationDigest probe_digest{};
+  // ── What the served surface cost, relative to THIS attempt (T3e) ──────────
+  //
+  // The reject-and-substitute path never asks whether the substitute is better
+  // than the candidate it replaced: adoption is "the first rung whose
+  // publish_candidate is true" (pricer_fitter.cpp:1601, :1689), and by the time
+  // a rung is adopted the rejected candidate's session has already been dropped
+  // (:1716-1725), so nothing downstream CAN score it. The only quality scalar
+  // that survives on the attempt is SurfaceAdmissionEvidence::
+  // worst_frac_within_bidask -- and "worst" is a MIN, the one statistic a
+  // substitute improves by declining to fit the slice that made it hard.
+  //
+  // These three deltas are that missing comparison, at the sink. On the
+  // rejected primary's row they read directly as "what serving the substitute
+  // instead of this cost the board". Empty on the published attempt's own row
+  // (comparing it to itself says nothing) and whenever no attempt was published.
+  //
+  // They are a MEASUREMENT, not a gate: nothing here feeds the decision. The
+  // decision seam is pricer_fitter.cpp:1601-1606, where both records are live
+  // simultaneously and where a real comparison would have to be made.
+  std::optional<double> served_d_worst_in_band{};
+  std::optional<double> served_d_fitted_quotes{};
+  std::optional<double> served_d_fitted_expiries{};
 };
 
 // ── One expiry of one build attempt (T3c) ───────────────────────────────────
@@ -829,6 +851,22 @@ void collect_attempts(std::vector<AttemptRow> &out, const std::string &symbol,
   const SurfaceBuildReport &report = *maybe;
   const ValidationDigest &served = fitter.bundle().risk_health.validation;
   const std::size_t n = report.attempts.size();
+
+  // The attempt that actually got served, found the same way the existing
+  // `probe_id_matches_served` column finds it (family match against
+  // `published_curve`), taking the LAST such attempt because the strict-recovery
+  // rung can re-enter the same family after an earlier one was refused. Absent
+  // when nothing was published — and then the deltas below stay empty rather
+  // than silently comparing against attempt 0.
+  std::optional<std::size_t> served_idx;
+  if (report.published) {
+    for (std::size_t i = 0; i < n; ++i) {
+      if (report.attempts[i].curve.kind == report.published_curve.kind &&
+          report.attempts[i].build_succeeded) {
+        served_idx = i;
+      }
+    }
+  }
   for (std::size_t i = 0; i < n; ++i) {
     const SurfaceBuildAttemptReport &a = report.attempts[i];
     AttemptRow r;
@@ -863,6 +901,18 @@ void collect_attempts(std::vector<AttemptRow> &out, const std::string &symbol,
     r.ev_grid_k_min = e.invariant_grid_k_min;
     r.ev_grid_k_max = e.invariant_grid_k_max;
     r.ev_grid_points = e.invariant_grid_points;
+
+    // What serving the published surface cost, measured against THIS attempt.
+    // Skipped on the served attempt's own row: a self-comparison is always zero
+    // and would dilute any aggregate taken over the column.
+    if (served_idx.has_value() && *served_idx != i && a.build_succeeded) {
+      const SurfaceAdmissionEvidence &s = report.attempts[*served_idx].evidence;
+      r.served_d_worst_in_band = s.worst_frac_within_bidask - e.worst_frac_within_bidask;
+      r.served_d_fitted_quotes = static_cast<double>(s.fitted_quotes) -
+                                 static_cast<double>(e.fitted_quotes);
+      r.served_d_fitted_expiries = static_cast<double>(s.fitted_expiries) -
+                                   static_cast<double>(e.fitted_expiries);
+    }
 
     // A candidate that never built has no geometry to certify; a LinearVariance
     // PIN is hard-refused as an invalid risk request (`pricer_fitter.cpp:1211`),
@@ -1400,7 +1450,11 @@ int main(int argc, char **argv) {
         // validated-clean one. Read the counters only where it is 1.
         << "att_probe_ran,att_probe_source,att_probe_state,att_probe_reasons,att_probe_failures,"
            "att_probe_id_matches_served,att_probe_admission_matches,"
-        << digest_header("att_") << '\n';
+        << digest_header("att_")
+        // T3e. Empty on the served attempt's own row and when nothing was
+        // published — an absent comparison is not a zero one.
+        << ",att_served_d_worst_in_band,att_served_d_fitted_quotes,"
+           "att_served_d_fitted_expiries\n";
     for (const std::vector<AttemptRow> &board : attempt_rows) {
       for (const AttemptRow &a : board) {
         char head[512];
@@ -1427,7 +1481,9 @@ int main(int argc, char **argv) {
             << format_optional(a.ev_first_failure_value) << ev2 << probe
             << format_optional(a.probe_id_matches_served) << ','
             << format_optional(a.probe_admission_matches) << ',' << format_digest(a.probe_digest)
-            << '\n';
+            << ',' << format_optional(a.served_d_worst_in_band) << ','
+            << format_optional(a.served_d_fitted_quotes) << ','
+            << format_optional(a.served_d_fitted_expiries) << '\n';
         ++n_attempt_rows;
       }
     }
