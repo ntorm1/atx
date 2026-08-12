@@ -473,3 +473,41 @@ TEST(CarryFallbackAdmission, PrepStarvedExpiriesPublishDegradedNotHealthy) {
       /*last_admitted_generation=*/0u, SurfaceFallback::None);
   EXPECT_EQ(healthy.health.state, SurfaceState::Healthy);
 }
+
+// T6d. `PrepUncovered` is the same hidden-gap class as `PrepStarved` -- the
+// served surface is missing expiries the board has, while every surviving
+// slice passed the full geometric contract -- and it was the last expiry-loss
+// class with no route into the published failure context: a ConvexDense board
+// could lose expiries to the k-coverage refusal and still admit Healthy.
+TEST(CarryFallbackAdmission, PrepUncoveredExpiriesPublishDegradedNotHealthy) {
+  using atx::vol::decide_risk_surface_admission;
+  using atx::vol::FitQualityMode;
+  using atx::vol::has_validation_failure;
+  using atx::vol::merge_session_failure_context;
+  using atx::vol::SessionDiagnostics;
+  using atx::vol::SurfaceFallback;
+  using atx::vol::SurfaceState;
+  using atx::vol::ValidationDigest;
+  using atx::vol::ValidationFailure;
+
+  // A board with a perfect carry and a certified inversion that nonetheless
+  // lost expiries to the coverage refusal.
+  SessionDiagnostics uncovered;
+  uncovered.n_slices = 4;
+  uncovered.carry_confident = true;
+  uncovered.inversion_certified = true;
+  uncovered.n_prep_uncovered_expiries = 2;
+  ValidationDigest du;
+  merge_session_failure_context(uncovered, du);
+  EXPECT_TRUE(has_validation_failure(du.failures, ValidationFailure::CarryGap));
+  EXPECT_FALSE(has_validation_failure(du.failures, ValidationFailure::InsufficientData));
+
+  // Same established CarryGap semantics: alone it publishes Degraded and still
+  // serves; a refused-coverage expiry must not hard-reject the board.
+  const auto decision = decide_risk_surface_admission(
+      du, FitQualityMode::Balanced, /*candidate_generation=*/7u,
+      /*last_admitted_generation=*/0u, SurfaceFallback::None);
+  EXPECT_TRUE(decision.publish_candidate);
+  EXPECT_EQ(decision.health.state, SurfaceState::Degraded);
+  EXPECT_TRUE(has_validation_failure(decision.health.reasons, ValidationFailure::CarryGap));
+}

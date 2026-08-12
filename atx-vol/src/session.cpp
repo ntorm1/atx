@@ -589,6 +589,18 @@ collect_input_diagnostics(const Underlying &under, const SessionInputs &in,
   return n;
 }
 
+// T6d. Same derivation and rationale as count_prep_starved one comment up, for
+// the Task 1 k-coverage refusal (`ExpiryFitOutcome::PrepUncovered`): produced
+// by the ConvexDense driver only today, but counted on both build paths so the
+// two cannot diverge if another family ever grows a coverage refusal.
+[[nodiscard]] std::size_t count_prep_uncovered(std::span<const ExpiryFitReport> reports) noexcept {
+  std::size_t n = 0;
+  for (const ExpiryFitReport &report : reports) {
+    n += (report.outcome == ExpiryFitOutcome::PrepUncovered) ? 1u : 0u;
+  }
+  return n;
+}
+
 void aggregate_input_diagnostics(std::span<const SessionSliceDiagnostics> slices,
                                  SessionDiagnostics &diag) noexcept {
   double min_effective = std::numeric_limits<double>::infinity();
@@ -1423,6 +1435,7 @@ Result<VolaSession> VolaSession::build(const Underlying &under, const SessionInp
     aggregate_input_diagnostics(slice_diag, cdiag);
     cdiag.n_carry_skipped_expiries = crep.n_carry_skipped;
     cdiag.n_prep_starved_expiries = count_prep_starved(crep.expiry_reports);
+    cdiag.n_prep_uncovered_expiries = count_prep_uncovered(crep.expiry_reports);
     retain_fitted_term_rates(eff, crep.context);
     release_build_time_cache_borrow(eff);
     VolaSession session{std::move(placeholder),
@@ -1617,6 +1630,7 @@ Result<VolaSession> VolaSession::build(const Underlying &under, const SessionInp
   diag.n_carry_skipped_expiries = rep.n_carry_skipped;
   diag.n_audit_starved_expiries = rep.n_audit_starved;
   diag.n_prep_starved_expiries = count_prep_starved(rep.expiry_reports);
+  diag.n_prep_uncovered_expiries = count_prep_uncovered(rep.expiry_reports);
 
   retain_fitted_term_rates(eff, rep.context);
   release_build_time_cache_borrow(eff);

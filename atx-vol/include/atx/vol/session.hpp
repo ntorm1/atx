@@ -453,6 +453,18 @@ struct SessionDiagnostics {
   // CarryGap on 188 boards and empty on 15 — so no board can acquire the
   // "CarryGap plus something else" combination from this change.
   std::size_t n_prep_starved_expiries{0};
+  // T6d. Expiries the fit dropped because the admitted rows fail Task 1's
+  // k-coverage predicate (`ExpiryFitOutcome::PrepUncovered`) -- enough rows to
+  // clear the count floor, but all on one wing or with a central hole, so a
+  // fit would serve the missing region extrapolated. The same hidden-gap class
+  // as `n_prep_starved_expiries` one comment up: the served surface is missing
+  // expiries the board has while every surviving slice passed the full
+  // geometric contract. It therefore merges onto the SAME CarryGap bit, for
+  // the same two reasons (identical in kind; a new bit would invalidate every
+  // persisted Degraded+CarryGap provenance). Produced by the ConvexDense
+  // driver only -- every other family's admission has no coverage refusal, so
+  // this stays 0 there and the merge term is inert.
+  std::size_t n_prep_uncovered_expiries{0};
   // ConvexDense-served call-price bound self-check violations (oracle finding
   // I-2): the independent risk-surface oracle only reconstructs prices from
   // w=sigma^2*T via Black, which is always in-bounds by construction and
