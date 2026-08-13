@@ -590,6 +590,116 @@ admission_reason_name(SurfaceAdmissionReason reason) noexcept {
   return inputs;
 }
 
+// ── T7a: score a rejected primary and its adopted substitute on the SAME
+// quote population (contract: FallbackComparisonRecord, pricer_fitter.hpp).
+//
+// Called at fit()'s two risk-stage adoption sites BEFORE the substitute
+// replaces the primary — the only moment both fitted records are live. Instrumentation
+// only: both sessions are read through their const serving API (`fair_value`),
+// and the record rides the build report; serving behaviour is unchanged.
+//
+// Population choice (vs the primary's parity-scored rows): the session retains
+// only per-slice parity AGGREGATES (ParityReport.n/n_within), so the primary's
+// exact scored rows are not recoverable without re-running preparation — a
+// parallel re-derivation this comparison must not be built on. Instead the
+// population is defined once from the chain (the band-shape screen of
+// parity.cpp's quote_scorable, no model terms) restricted to the slices the
+// primary fitted. That is the primary's support at slice granularity, and it
+// is prep-independent: neither candidate's own filtering can shape the
+// population it is judged on. The substitute is charged for slices it dropped
+// (scored through its served, interpolating surface) — exactly the support-
+// shrinkage question the record exists to measure.
+[[nodiscard]] FallbackComparisonRecord
+fallback_comparison_on_primary_support(const Underlying &under, const VolaSession &primary,
+                                       const VolaSession &substitute) {
+  FallbackComparisonRecord record;
+  const std::span<const SliceContext> primary_fitted = primary.expiries();
+  const std::span<const SliceContext> substitute_fitted = substitute.expiries();
+  for (const SliceContext &ctx : primary_fitted) {
+    record.primary_obs_total += ctx.n_used;
+  }
+  for (const SliceContext &ctx : substitute_fitted) {
+    record.substitute_obs_total += ctx.n_used;
+  }
+
+  // Mirror completed_attempt_report's chain matching: each fitted slice is
+  // consumed by at most one chain (exact-T match, first unconsumed).
+  std::vector<bool> consumed(primary_fitted.size(), false);
+  double primary_worst = 1.0;
+  double substitute_worst = 1.0;
+  bool any_scored_slice = false;
+  for (const Chain &chain : under.chains) {
+    if (!std::isfinite(chain.T) || !(chain.T > 0.0)) {
+      continue;
+    }
+    const auto context =
+        std::find_if(primary_fitted.begin(), primary_fitted.end(), [&](const SliceContext &slice) {
+          const std::size_t index = static_cast<std::size_t>(&slice - primary_fitted.data());
+          return !consumed[index] && slice.T == chain.T;
+        });
+    if (context == primary_fitted.end()) {
+      continue; // outside the primary's support
+    }
+    consumed[static_cast<std::size_t>(context - primary_fitted.begin())] = true;
+
+    FallbackComparisonSlice slice;
+    slice.maturity = chain.T;
+    slice.primary_obs = context->n_used;
+    const auto substitute_context = std::find_if(
+        substitute_fitted.begin(), substitute_fitted.end(),
+        [&](const SliceContext &candidate) { return candidate.T == chain.T; });
+    slice.substitute_obs =
+        substitute_context != substitute_fitted.end() ? substitute_context->n_used : 0u;
+
+    // The inclusive in-band predicate of parity.cpp (chain_parity), through the
+    // candidate's own serving API. A non-finite or failed price is NOT within.
+    const auto within_band = [&](const VolaSession &candidate, double K, double T, Side side,
+                                 double bid, double ask) {
+      const Result<double> fair_value = candidate.fair_value(K, T, side);
+      return fair_value.has_value() && std::isfinite(*fair_value) && *fair_value >= bid &&
+             *fair_value <= ask;
+    };
+    for (std::size_t strike_idx = 0u; strike_idx < chain.n_strikes(); ++strike_idx) {
+      const double strike = chain.strikes[strike_idx];
+      if (!std::isfinite(strike) || !(strike > 0.0)) {
+        continue;
+      }
+      for (const Side side : {Side::Call, Side::Put}) {
+        const std::size_t quote_idx = chain_index(static_cast<std::uint16_t>(strike_idx), side);
+        const double bid = chain.bids[quote_idx];
+        const double ask = chain.asks[quote_idx];
+        if (!std::isfinite(bid) || !std::isfinite(ask) || !(bid > 0.0) || !(ask > 0.0) ||
+            ask < bid) {
+          continue; // not a well-formed two-sided quote — outside the population
+        }
+        ++slice.n_scored;
+        if (within_band(primary, strike, chain.T, side, bid, ask)) {
+          ++slice.primary_within;
+        }
+        if (within_band(substitute, strike, chain.T, side, bid, ask)) {
+          ++slice.substitute_within;
+        }
+      }
+    }
+    record.n_scored += slice.n_scored;
+    record.primary_within += slice.primary_within;
+    record.substitute_within += slice.substitute_within;
+    if (slice.n_scored > 0u) {
+      const double dn = static_cast<double>(slice.n_scored);
+      primary_worst = std::min(primary_worst, static_cast<double>(slice.primary_within) / dn);
+      substitute_worst =
+          std::min(substitute_worst, static_cast<double>(slice.substitute_within) / dn);
+      any_scored_slice = true;
+    }
+    record.slices.push_back(slice);
+  }
+  // No scored slice leaves the worsts at 0.0 alongside n_scored == 0: a record
+  // that measured nothing must not read as two perfect surfaces (W3-A).
+  record.primary_worst_slice_frac = any_scored_slice ? primary_worst : 0.0;
+  record.substitute_worst_slice_frac = any_scored_slice ? substitute_worst : 0.0;
+  return record;
+}
+
 } // namespace detail
 
 using detail::admission_detail;
@@ -1613,6 +1723,21 @@ Status PricerFitter::fit(const OptionChain &chain,
       report.attempts.push_back(std::move(retry_attempt));
       if (!retry_admission.publish_candidate)
         continue;
+      // T7a: both records are live exactly here — the rejected primary (`sess`,
+      // whose digest/policy_verdict are still the primary's) and the admitted
+      // substitute (`*retry`). Score them on the same quote population before
+      // one replaces the other; the record rides the build report.
+      {
+        FallbackComparisonRecord comparison =
+            detail::fallback_comparison_on_primary_support(under, sess, *retry);
+        comparison.path = FallbackAdoptionPath::ValidationLadder;
+        comparison.primary_curve = rejected_primary_curve;
+        comparison.substitute_curve = in.curve;
+        comparison.primary_failures = digest.failures;
+        comparison.primary_admission = policy_verdict;
+        comparison.substitute_served = true;
+        report.validation_fallback_comparison = std::move(comparison);
+      }
       sess = std::move(*retry);
       digest = retry_digest;
       policy_verdict = report.attempts.back().admission; // I2: stays paired with `digest`
@@ -1701,6 +1826,20 @@ Status PricerFitter::fit(const OptionChain &chain,
       report.attempts.push_back(std::move(strict_attempt));
       if (strict_admission.publish_candidate) {
         ATX_VOL_COUNT(RiskStrictRecoveryAdmitted);
+        // T7a: same comparison contract as the ladder adoption above — `sess`
+        // still holds the rejected primary and `digest`/`policy_verdict` its
+        // verdicts until the assignments below.
+        {
+          FallbackComparisonRecord comparison =
+              detail::fallback_comparison_on_primary_support(under, sess, *strict);
+          comparison.path = FallbackAdoptionPath::StrictRecovery;
+          comparison.primary_curve = rejected_primary_curve;
+          comparison.substitute_curve = in.curve;
+          comparison.primary_failures = digest.failures;
+          comparison.primary_admission = policy_verdict;
+          comparison.substitute_served = true;
+          report.validation_fallback_comparison = std::move(comparison);
+        }
         // Same provenance contract as the ladder adoption above: the first
         // rejected primary of this fit stays authoritative.
         sess = std::move(*strict);

@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <optional>
@@ -683,6 +684,123 @@ TEST(SurfaceV2Provenance, ValidationFallbackAdmissionRecordsTheServedFamily) {
   ASSERT_TRUE(priced.has_value()) << priced.error().to_string();
   ASSERT_GT(priced->n_slices(), 0u);
   EXPECT_EQ(priced->kind_at(0), decision.curve.kind);
+}
+
+// T7a Stage 1: adopting a substitute after independent admission rejected the
+// BUILT primary must publish the two candidates' comparison on a COMMON quote
+// population (FallbackComparisonRecord) — the seam previously served the
+// substitute with no comparison ever made, while downstream admission scores
+// the gameable own-support min (worst_frac_within_bidask). Instrumentation
+// only: the record rides the build report; the same fixture's serving
+// assertions live in ValidationFallbackAdmissionRecordsTheServedFamily above.
+TEST(SurfaceV2Provenance, ValidationFallbackAdoptionPublishesCommonSupportComparison) {
+  auto chain = make_event_c8_reject_chain();
+  ASSERT_TRUE(chain.has_value());
+  // Make every term of the population screen load-bearing: cross one deep-wing
+  // quote (bid > ask) and one-side another (bid == 0). Both must fall OUT of
+  // the common-support population — the independent recomputation below drops
+  // them, so a production screen that silently admits either drifts the counts
+  // and fails the population pin.
+  {
+    const std::vector<OptionId> ids = chain->ids();
+    ASSERT_GE(ids.size(), 2u);
+    const std::array<OptionId, 2> touched{ids.front(), ids.back()};
+    const std::array<double, 2> bids{2.0, 0.0};
+    const std::array<double, 2> asks{1.0, 0.05};
+    ASSERT_TRUE(chain
+                    ->update_quotes(std::span<const OptionId>(touched),
+                                    std::span<const double>(bids), std::span<const double>(asks))
+                    .has_value());
+  }
+  PricerConfig config = config_for(FitQualityMode::Balanced);
+  config.admission = atx::vol::risk_admission_policy();
+  config.context.profile_override = atx::vol::ProfileKind::MegaCapEvent;
+  config.context.event_phase = atx::vol::EventPhase::PreAnnouncement;
+  config.context.event_distance_days = 2u;
+  config.policy.sparse_validation_floor = 0;
+  PricerFitter fitter{config};
+  ASSERT_TRUE(fitter.fit(*chain).has_value());
+  ASSERT_TRUE(fitter.published_report().has_value());
+  const auto &report = *fitter.published_report();
+  ASSERT_TRUE(report.validation_fallback_comparison.has_value());
+  const atx::vol::FallbackComparisonRecord &record = *report.validation_fallback_comparison;
+
+  EXPECT_EQ(record.path, atx::vol::FallbackAdoptionPath::ValidationLadder);
+  EXPECT_EQ(record.primary_curve.kind, VolCurveKind::C8);
+  ASSERT_TRUE(fitter.decision().has_value());
+  EXPECT_EQ(record.substitute_curve.kind, fitter.decision()->curve.kind);
+  EXPECT_TRUE(record.substitute_served);
+  // The oracle verdict that killed the primary is carried, not defaulted.
+  EXPECT_NE(record.primary_failures, ValidationFailure::None);
+  EXPECT_FALSE(record.primary_admission.admitted);
+
+  // The record scored the primary's support: one slice row per fitted primary
+  // expiry, each row's own-support obs matching the primary attempt's census.
+  const auto &primary_attempt = report.attempts.front();
+  ASSERT_EQ(record.slices.size(), primary_attempt.evidence.fitted_expiries);
+  ASSERT_GT(record.slices.size(), 0u);
+
+  // Population pin: on each primary-fitted slice the common support is EXACTLY
+  // the chain's well-formed two-sided quotes (finite strike/bid/ask, bid > 0,
+  // ask > 0, uncrossed), recomputed here independently from the installed
+  // underlying. Both candidates are scored on that same denominator.
+  const atx::vol::Underlying &under = chain->underlying();
+  std::size_t total_scored = 0u;
+  std::size_t total_primary_within = 0u;
+  std::size_t total_substitute_within = 0u;
+  double worst_primary = 1.0;
+  double worst_substitute = 1.0;
+  for (const atx::vol::FallbackComparisonSlice &slice : record.slices) {
+    const auto matching =
+        std::find_if(under.chains.begin(), under.chains.end(),
+                     [&](const atx::vol::Chain &expiry) { return expiry.T == slice.maturity; });
+    ASSERT_NE(matching, under.chains.end());
+    std::size_t expected = 0u;
+    for (std::size_t strike_idx = 0u; strike_idx < matching->n_strikes(); ++strike_idx) {
+      if (!std::isfinite(matching->strikes[strike_idx]) || !(matching->strikes[strike_idx] > 0.0))
+        continue;
+      for (const Side side : {Side::Call, Side::Put}) {
+        const std::size_t quote_idx =
+            atx::vol::chain_index(static_cast<std::uint16_t>(strike_idx), side);
+        const double bid = matching->bids[quote_idx];
+        const double ask = matching->asks[quote_idx];
+        if (std::isfinite(bid) && std::isfinite(ask) && bid > 0.0 && ask > 0.0 && ask >= bid)
+          ++expected;
+      }
+    }
+    EXPECT_EQ(slice.n_scored, expected) << "maturity " << slice.maturity;
+    ASSERT_GT(slice.n_scored, 0u);
+    EXPECT_LE(slice.primary_within, slice.n_scored);
+    EXPECT_LE(slice.substitute_within, slice.n_scored);
+    EXPECT_GT(slice.primary_obs, 0u);
+    total_scored += slice.n_scored;
+    total_primary_within += slice.primary_within;
+    total_substitute_within += slice.substitute_within;
+    const double dn = static_cast<double>(slice.n_scored);
+    worst_primary = std::min(worst_primary, static_cast<double>(slice.primary_within) / dn);
+    worst_substitute =
+        std::min(worst_substitute, static_cast<double>(slice.substitute_within) / dn);
+  }
+  EXPECT_EQ(record.n_scored, total_scored);
+  EXPECT_EQ(record.primary_within, total_primary_within);
+  EXPECT_EQ(record.substitute_within, total_substitute_within);
+  EXPECT_DOUBLE_EQ(record.primary_worst_slice_frac, worst_primary);
+  EXPECT_DOUBLE_EQ(record.substitute_worst_slice_frac, worst_substitute);
+  EXPECT_GT(record.primary_obs_total, 0u);
+  EXPECT_GT(record.substitute_obs_total, 0u);
+}
+
+// W3-A: a fit that never substituted must publish NO comparison record —
+// absence is structural, never a zeroed record masquerading as measurement.
+TEST(SurfaceV2Provenance, NoSubstitutionPublishesNoComparisonRecord) {
+  auto chain = make_known_truth_chain();
+  ASSERT_TRUE(chain.has_value());
+  PricerFitter fitter{config_for(FitQualityMode::Balanced)};
+  ASSERT_TRUE(fitter.fit(*chain).has_value());
+  ASSERT_TRUE(fitter.published_report().has_value());
+  EXPECT_FALSE(fitter.published_report()->validation_fallback_comparison.has_value());
+  ASSERT_TRUE(fitter.decision().has_value());
+  EXPECT_FALSE(fitter.decision()->used_fallback);
 }
 
 // T7a companion to the fixture history above: the calendar-arb board whose
