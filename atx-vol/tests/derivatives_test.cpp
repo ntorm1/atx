@@ -4909,13 +4909,14 @@ atx::vol::PricedSurface make_term_variance_priced_surface(
 // TIER, AND THE BRIEF'S 1e-10. The tolerance is met at High and Audit but NOT
 // at the Standard default: the strip's Simpson error in TOTAL variance is
 // almost -- not exactly -- tenor-independent, so most of it cancels in
-// (w2 - w1) and what survives is the drift. Measured on this fixture: the
-// per-leg w error is 8.176e-12 at High and 7.93e-13 at Audit, constant across
-// all six tenors to the digits printed, leaving a max |K_fwd - sigma^2| of
-// 4.2e-17 (High) and 1.2e-13 (Audit) over the fifteen pairs; at Standard the
-// w error drifts from 1.853e-10 (T=0.10) to 2.683e-10 (T=1.00) and the max
-// residual is 1.51e-10, i.e. 1.5x past the brief's bar. Both tiers are
-// asserted, each at what it actually achieves plus headroom.
+// (w2 - w1) and what survives is the drift. Measured on THIS fixture (r =
+// 4.3%, the rate these tests actually run at), the per-leg w error across the
+// six tenors spans [8.17619e-12, 8.17620e-12] at High -- constant to six
+// significant figures, hence near-total cancellation -- against
+// [7.93e-13, 8.60e-13] at Audit and [1.853e-10, 2.683e-10] at Standard. Max
+// |K_fwd - sigma^2| over the fifteen ordered pairs: 4.16e-17 (High),
+// 1.20e-13 (Audit), 1.51e-10 (Standard, i.e. 1.5x past the brief's bar). All
+// three tiers are asserted, each at what it actually achieves plus headroom.
 TEST(ForwardVar, FlatSurfaceExact) {
   const double sigma = 0.20;
   const double sigma2 = sigma * sigma;
@@ -5050,9 +5051,10 @@ TEST(ForwardVar, NegativeForwardFailsLoud) {
 // library's own fit-side calendar checks use, so a surface can PASS those and
 // still carry a w-decrease that size. The detector's dead band is 2x that
 // floor plus both legs' measured Richardson estimates -- 2.00016e-07 on this
-// fixture at High tier, the quadrature terms contributing 1.6e-12 of it.
-// Measured outcomes at drops of 1e-7 / 2e-7 / 4e-7 / 1e-6 / 1e-3: served as
-// 0.0 / served as 0.0 / Internal / Internal / Internal.
+// fixture at High tier, the two quadrature terms contributing 1.63522e-11 of
+// it (8.17611e-12 from each leg). Measured outcomes at ABSOLUTE total-variance
+// drops of 1e-7 / 2e-7 / 4e-7 / 1e-6 / 1e-3 (the first being the floor
+// itself): served as 0.0 / served as 0.0 / Internal / Internal / Internal.
 TEST(ForwardVar, CalendarDetectorRespectsTheFitAccuracyFloor) {
   DerivConfig cfg = deriv_default_config();
   cfg.quality = atx::vol::DerivQuality::High;
@@ -5183,11 +5185,12 @@ TEST(ForwardVar, ProbeWitnessGridProvenanceIsTheT2Leg) {
 
 // R3: the cancellation guard. The numerator differences two nearly-equal total
 // variances and the denominator vanishes, so the noise floor is amplified by
-// 1/(T2 - T1). Measured at Audit tier on a flat sigma = 0.20 surface: the
-// floor is 2.0000e-07 (the quadrature terms contribute ~1e-12), so the gate at
-// `kFwdVarNoiseCeilingVar` = 1e-3 bites at dT = 2.0e-4 years -- about 1.75
-// hours. dT = 1e-4 refuses (noise 2.0e-3), dT = 1e-3 serves (noise 2.0e-4, and
-// the served K_fwd is 0.040000000000095, i.e. 9.5e-14 from truth).
+// 1/(T2 - T1). Measured at Audit tier on THIS fixture: the floor is
+// 2.00002e-07 in total variance (the two quadrature terms contribute 2e-12 of
+// it), so the gate at `kFwdVarNoiseCeilingVar` = 1e-3 bites at
+// dT = 2.00002e-4 years -- about 1.75 hours. dT = 1e-4 refuses (amplified
+// floor 2.00002e-3), dT = 1e-3 serves (2.00002e-4, and the served K_fwd is
+// 0.040000000000088541, i.e. 8.9e-14 from truth).
 //
 // The refusal is DELIBERATELY conservative: 2e-7 of that floor is the
 // library's stated calendar accuracy, which this synthetic fixture beats by
