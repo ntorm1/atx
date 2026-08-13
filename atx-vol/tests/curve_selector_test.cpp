@@ -401,6 +401,51 @@ TEST(CurveSelector, NoScorableCandidateReturnsZero) {
   EXPECT_EQ(select_best_candidate(scores, kMargin), 0u);
 }
 
+// ── T10b (plan D5) — the selector records what each candidate's fits did ────
+//
+// `select_curve` fits every candidate family on every sampled expiry and used to
+// discard everything the fit said about ITSELF, keeping only how well the result
+// repriced. A family that hit its iteration cap on every slice scored the same
+// as one that converged cleanly. The census is that missing evidence.
+TEST(CurveSelectorDiagnostics, CandidateScoreCarriesTheFitDiagnosticCensus) {
+  const Underlying under = make_bumpy_underlying();
+  const SurfaceParityInputs in = bumpy_inputs();
+
+  CurveConfig convex;
+  convex.kind = VolCurveKind::ConvexDense;
+  CurveConfig essvi;
+  essvi.kind = VolCurveKind::Essvi;
+  SelectorConfig config;
+  config.candidates = {convex, essvi};
+
+  const auto selected = select_curve(under, in, config);
+  ASSERT_TRUE(selected.has_value()) << selected.error().to_string();
+  ASSERT_EQ(selected->scores.size(), 2u);
+
+  const CandidateScore &convex_score = selected->scores[0];
+  const CandidateScore &essvi_score = selected->scores[1];
+  ASSERT_GT(convex_score.n_slices, 0u);
+  ASSERT_GT(essvi_score.n_slices, 0u);
+
+  // Every counted slice is a slice that FIT, so no bucket may exceed n_slices.
+  EXPECT_LE(convex_score.n_slices_converged, convex_score.n_slices);
+  EXPECT_LE(convex_score.n_slices_termination_unknown, convex_score.n_slices);
+
+  // ConvexDense fails closed: a returned fit is certified, so every fitted slice
+  // reports Converged and NONE reports Unknown.
+  EXPECT_EQ(convex_score.n_slices_converged, convex_score.n_slices);
+  EXPECT_EQ(convex_score.n_slices_termination_unknown, 0u);
+
+  // eSSVI is the coverage GAP, and this is the assertion that keeps it visible.
+  // `essvi_fit_slice` populates five FitDiag fields and none of T10's, so every
+  // eSSVI slice reads Unknown. That is the fitter declining to report — NOT a
+  // failure to converge, and critically NOT a clean convergence either. If eSSVI
+  // ever learns to report, this flips and the gap closes on purpose rather than
+  // by accident.
+  EXPECT_EQ(essvi_score.n_slices_termination_unknown, essvi_score.n_slices);
+  EXPECT_EQ(essvi_score.n_slices_converged, 0u);
+}
+
 TEST(SelectorBudget, UnlimitedDefaultEvaluatesEveryCandidate) {
   const Underlying under = make_bumpy_underlying();
   const SurfaceParityInputs in = bumpy_inputs();

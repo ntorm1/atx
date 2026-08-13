@@ -179,12 +179,57 @@ struct NormalEq {
   return dx;
 }
 
+// Scale-free first-order optimality residual at a point, from normal equations
+// already built for that point: max_j |g_j| / sqrt(H_jj * SSE). Each term is the
+// cosine of the angle between the residual vector and Jacobian column j (this is
+// MINPACK's `gtol` test), so the result is dimensionless, lies in [0, 1], and is
+// invariant to how the residuals were scaled — which matters here because the
+// caller's `sd` weighting is arbitrary.
+//
+// A gradient-DEAD direction (H_jj == 0, every row for that column zeroed by a
+// failed analytic gradient) is skipped rather than scored 0: an undetermined
+// direction is not a stationary one, and counting it as stationary would let a
+// rank-deficient fit certify itself. `c8_grad_underdetermined` is the guard that
+// rejects that case outright.
+[[nodiscard]] double lm_optimality_cosine(const NormalEq& ne) noexcept {
+  // SSE == 0 is an exact interpolation: stationary by construction, and the
+  // cosine's denominator vanishes, so report exact stationarity directly.
+  if (!std::isfinite(ne.sse) || ne.sse <= 0.0) {
+    return 0.0;
+  }
+  double worst = 0.0;
+  for (std::size_t j = 0; j < 8; ++j) {
+    const double hjj = ne.H[j][j];
+    if (!std::isfinite(hjj) || hjj <= 0.0) {
+      continue;
+    }
+    const double denom = std::sqrt(hjj * ne.sse);
+    if (!std::isfinite(denom) || denom <= 0.0) {
+      continue;
+    }
+    const double c = std::fabs(ne.g[j]) / denom;
+    if (std::isfinite(c) && c > worst) {
+      worst = c;
+    }
+  }
+  return worst;
+}
+
+// Optimality tolerance for the cosine test above. Dimensionless, so one constant
+// is valid across every slice scaling.
+constexpr double kLmOptimalityTol = 1e-8;
+
 // Inner Levenberg-Marquardt loop over the 8-DoF x-vector. Mutates `s` to the
 // best point found; returns the number of accepted steps.
+//
+// `lm` (optional): termination verdict for the loop. PURELY OBSERVATIONAL — the
+// certificate is evaluated at the point the loop already exits on, and no
+// tolerance test gates the iteration, so the returned `s` is bit-identical
+// whether or not a sink is supplied.
 int fit_lm_inner(C8Params& s, std::span<const double> k,
                  std::span<const double> mid, std::span<const double> sd,
                  std::span<const double> weights, int max_inner_iters,
-                 double eps_floor) {
+                 double eps_floor, C8LmDiag* lm = nullptr) {
   const std::size_t n = k.size();
   // De-saturate a (near-)degenerate v_min == v seed before packing. Two
   // saturation mechanisms make such a seed un-fittable as-is:
@@ -219,6 +264,7 @@ int fit_lm_inner(C8Params& s, std::span<const double> k,
   double best_sse = ne_cur.sse;
 
   int it_done = 0;
+  bool damping_exhausted = false;
   for (int it = 0; it < max_inner_iters; ++it) {
     const std::optional<std::array<double, 8>> dx = solve_lm_step(ne_cur, lambda);
     if (!dx.has_value()) {
@@ -247,9 +293,25 @@ int fit_lm_inner(C8Params& s, std::span<const double> k,
     } else {
       lambda *= 4.0;
       if (lambda > 1e8) {
+        damping_exhausted = true;
         break;
       }
     }
+  }
+  if (lm != nullptr) {
+    // `ne_cur` is the normal system AT the point `s` now holds: it is carried
+    // forward on every accepted step and never rebuilt for a rejected trial, so
+    // the certificate describes exactly the iterate being returned.
+    const double cos_opt = lm_optimality_cosine(ne_cur);
+    lm->final_grad_norm = cos_opt;
+    lm->accepted_steps = it_done;
+    // Convergence is checked FIRST and beats a damping give-up: running the
+    // damping to its ceiling because no step can improve a point that is
+    // ALREADY stationary is convergence, not a stall. Ordering it the other way
+    // would mislabel the best possible outcome as the worst one.
+    lm->termination = (cos_opt <= kLmOptimalityTol) ? FitTermination::Converged
+                      : damping_exhausted           ? FitTermination::Stalled
+                                                    : FitTermination::IterationCap;
   }
   return it_done;
 }
@@ -309,14 +371,20 @@ double c8_residual_sse(const C8Params& s, std::span<const double> k,
 Status c8_fit_slice_lm(C8Params& s, std::span<const double> k,
                        std::span<const double> mid,
                        std::span<const double> spread, int max_inner_iters,
-                       double eps_floor) {
+                       double eps_floor, C8LmDiag* lm) {
+  // Clear AHEAD of validation: a sink reused across a chain of slices must not
+  // report the previous slice's verdict, and a struct inspected after an Err
+  // must report nothing rather than something stale.
+  if (lm != nullptr) {
+    *lm = C8LmDiag{};
+  }
   const std::size_t n = k.size();
   if (n == 0 || mid.size() != n || spread.size() != n || max_inner_iters <= 0) {
     return Err(ErrorCode::InvalidArgument,
                "c8_fit_slice_lm: empty/mismatched spans or non-positive iters");
   }
   (void)fit_lm_inner(s, k, mid, spread, std::span<const double>{},
-                     max_inner_iters, eps_floor);
+                     max_inner_iters, eps_floor, lm);
   // Gradient-rank guard: fail rather than accept a gradient-blind fit whose
   // 8x8 normal system was under-determined (too many gradient failures).
   if (c8_grad_underdetermined(s, k, mid, spread, std::span<const double>{},
@@ -396,10 +464,15 @@ Result<C8SliceFit> c8_calib_slice(const C8Params& seed, const Chain& chain,
   std::vector<double> r_abs(n, 0.0);
   int inner_total = 0;
   std::uint16_t outer_used = 0;
+  // Verdict of the LAST inner solve. Each IRLS reweight changes the objective,
+  // so only the final pass describes the returned point; an earlier pass's
+  // `Converged` says nothing about the weights actually served.
+  C8LmDiag last_lm{};
   for (std::uint16_t outer = 0; outer < opts.max_outer_iter; ++outer) {
     inner_total += fit_lm_inner(params, ks, mids, sds,
                                 std::span<const double>{weights},
-                                static_cast<int>(opts.max_inner_iter), kSdFloor);
+                                static_cast<int>(opts.max_inner_iter), kSdFloor,
+                                &last_lm);
     outer_used = static_cast<std::uint16_t>(outer + 1);
     params.n_irls_iters = outer_used;
     for (std::size_t i = 0; i < n; ++i) {
@@ -439,6 +512,13 @@ Result<C8SliceFit> c8_calib_slice(const C8Params& seed, const Chain& chain,
   out.diag.outer_iters = outer_used;
   out.diag.inner_iters_total = static_cast<std::uint16_t>(inner_total);
   out.diag.n_quotes_used = static_cast<std::uint32_t>(n);
+  // T10b: the LM's own verdict on the final IRLS pass. Both fields describe the
+  // point the LM reached, which is BEFORE `c8_arb_project` and the quality gate
+  // above; `reverted_to_seed` is the field that says whether that point is the
+  // one being served.
+  out.diag.termination = last_lm.termination;
+  out.diag.final_grad_norm = last_lm.final_grad_norm;
+  out.diag.reverted_to_seed = !params.bumps_active;
   return Ok(std::move(out));
 }
 

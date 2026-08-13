@@ -214,6 +214,11 @@ TEST(SurfaceParityReportContract, DesignatedInitBindsByName) {
   EXPECT_EQ(rep.n_audit_starved, std::size_t{0});
   EXPECT_FALSE(rep.fit_timings.collected);
   EXPECT_DOUBLE_EQ(rep.fit_timings.total_wall_ms, 0.0);
+  // T4 escalation (T10c): the banded evidence counters are appended fields;
+  // omitted here, they must read their own zero defaults.
+  EXPECT_EQ(rep.n_scored, std::size_t{0});
+  EXPECT_EQ(rep.n_in_band, std::size_t{0});
+  EXPECT_EQ(rep.n_out_of_band, std::size_t{0});
 }
 
 TEST(SurfaceParity, FourExpiryPanel_Essvi_InterpolatesAndCalendarArbFree) {
@@ -800,4 +805,208 @@ TEST(SurfaceParity, NoChains_ReturnsErr) {
   const auto res = run_surface_parity(under, in);
   ASSERT_FALSE(res.has_value());
   EXPECT_EQ(res.error().code(), atx::vol::ErrorCode::NotFound);
+}
+
+// ── D4 (T10c): served chi2 dof at the eSSVI-lane scoring site ───────────────
+
+// The per-expiry parity score used to hardcode `n_curve_params = 3` — right for
+// a backbone-only eSSVI slice, wrong for a residual-armed one (SPY-like /
+// LiquidSingleName profiles keep `residual_disable = false`), whose served
+// curve is 3 backbone + 4 HingeQuad coefficients. The dof is now read off the
+// SLICE THE FINAL SURFACE SERVES (`essvi_slice_dof`), and the published report
+// carries the dof `chain_parity` ACTUALLY consumed (`ParityReport::chi2_dof`,
+// stamped inside chain_parity from the ParityInputs it was given) — so this
+// test pins the served artifact, not a parallel re-derivation.
+//
+// Mutation checks (both performed): hardcoding the pin back to 3 reds the
+// residual-armed half (chi2_dof reads 3 while the served slice carries 7);
+// reading the dof anywhere but off the served slice cannot stay green for both
+// the residual-off and residual-armed halves at once.
+TEST(SurfaceParity, ServedChiSquareIsScoredAgainstTheServedSlicesOwnDof) {
+  const PanelBuild pb = make_panel_build();
+  const auto panel = make_synthetic_american_panel(pb.spec);
+  ASSERT_TRUE(panel.has_value()) << panel.error().to_string();
+
+  Universe u;
+  const auto uid = atx::vol::data_install(u, panel->frame);
+  ASSERT_TRUE(uid.has_value()) << uid.error().to_string();
+  const auto under = u.get_underlying(*uid);
+  ASSERT_TRUE(under.has_value());
+
+  SurfaceParityInputs in;
+  in.S = pb.spec.spot;
+  in.r = pb.spec.r;
+  in.cash_divs = pb.spec.cash_divs;
+  in.now_ts_ns = iso_to_ns(pb.snapshot);
+  in.deam.hyb = pb.spec.hyb;
+  in.deam.imply_borrow = true;
+  in.deam.n_atm = 3;
+
+  // Residual OFF (the CalibOpts default): every served slice is backbone-only,
+  // dof 3 — the value the old hardcode was accidentally right about. This half
+  // is the regression guard that residual-off boards score bit-identically.
+  {
+    const auto res = run_surface_parity(**under, in);
+    ASSERT_TRUE(res.has_value()) << res.error().to_string();
+    ASSERT_EQ(res->per_expiry.size(), res->n_slices);
+    for (std::size_t i = 0; i < res->per_expiry.size(); ++i) {
+      EXPECT_EQ(atx::vol::essvi_slice_dof(res->surface.essvi_slices()[i]), std::size_t{3})
+          << "slice " << i;
+      EXPECT_EQ(res->per_expiry[i].chi2_dof, std::size_t{3}) << "slice " << i;
+      EXPECT_FALSE(res->per_expiry[i].chi2_dof_underdetermined) << "slice " << i;
+    }
+  }
+
+  // Residual ARMED (the SPY-like / LiquidSingleName production shape): the
+  // served curve carries 4 extra fitted HingeQuad coefficients, and the score
+  // must say so.
+  {
+    SurfaceParityInputs armed = in;
+    armed.calib.residual_disable = false;
+    armed.calib.residual_basis_kind = atx::vol::ResidualBasisKind::HingeQuad;
+    armed.calib.residual_n_basis_terms = 5;
+    const auto res = run_surface_parity(**under, armed);
+    ASSERT_TRUE(res.has_value()) << res.error().to_string();
+    ASSERT_EQ(res->per_expiry.size(), res->n_slices);
+    std::size_t n_armed = 0;
+    for (std::size_t i = 0; i < res->per_expiry.size(); ++i) {
+      const atx::vol::EssviParams &served = res->surface.essvi_slices()[i];
+      // The served artifact vs the served slice: equality per slice, whatever
+      // the residual fit decided for that slice.
+      EXPECT_EQ(res->per_expiry[i].chi2_dof, atx::vol::essvi_slice_dof(served)) << "slice " << i;
+      EXPECT_FALSE(res->per_expiry[i].chi2_dof_underdetermined) << "slice " << i;
+      EXPECT_GT(res->per_expiry[i].chi2_reduced, 0.0) << "slice " << i;  // W3-A: never blanked
+      if (served.resid_scale > 0.0) {
+        ++n_armed;
+        EXPECT_EQ(res->per_expiry[i].chi2_dof, std::size_t{7}) << "slice " << i;
+      }
+    }
+    // FIXTURE GUARD: at least one slice must actually arm the residual, or the
+    // armed half degenerates to the dof-3 case and the mutation check above
+    // could pass vacuously.
+    ASSERT_GT(n_armed, std::size_t{0})
+        << "fixture no longer arms the HingeQuad residual on any slice; the "
+           "dof correction is not being exercised";
+  }
+}
+
+// T4 escalation (T10c): the report's banded evidence counters are exactly the
+// sums over the per-expiry reports it publishes — so ABSENCE OF EVIDENCE
+// (n_scored == 0) is structurally distinguishable from EVIDENCE OF ALL-OUT
+// (n_scored > 0, n_in_band == 0), the two states a frac of 0.0 conflates.
+// Additive observability only: the corpus proof that nothing else moved is the
+// bit-identical-except-new-columns diff in this lane's measurement commit.
+//
+// Mutation check (performed): removing the accumulation in run_surface_parity's
+// scoring loop reds this test with counters at 0 against nonzero sums.
+TEST(SurfaceParity, BandedEvidenceCountersMatchThePublishedReports) {
+  const PanelBuild pb = make_panel_build();
+  const auto panel = make_synthetic_american_panel(pb.spec);
+  ASSERT_TRUE(panel.has_value()) << panel.error().to_string();
+
+  Universe u;
+  const auto uid = atx::vol::data_install(u, panel->frame);
+  ASSERT_TRUE(uid.has_value()) << uid.error().to_string();
+  const auto under = u.get_underlying(*uid);
+  ASSERT_TRUE(under.has_value());
+
+  SurfaceParityInputs in;
+  in.S = pb.spec.spot;
+  in.r = pb.spec.r;
+  in.cash_divs = pb.spec.cash_divs;
+  in.now_ts_ns = iso_to_ns(pb.snapshot);
+  in.deam.hyb = pb.spec.hyb;
+  in.deam.imply_borrow = true;
+  in.deam.n_atm = 3;
+
+  const auto res = run_surface_parity(**under, in);
+  ASSERT_TRUE(res.has_value()) << res.error().to_string();
+
+  std::size_t sum_scored = 0;
+  std::size_t sum_in_band = 0;
+  for (const atx::vol::ParityReport& parity : res->per_expiry) {
+    sum_scored += parity.n;
+    sum_in_band += parity.n_within;
+  }
+  EXPECT_EQ(res->n_scored, sum_scored);
+  EXPECT_EQ(res->n_in_band, sum_in_band);
+  EXPECT_EQ(res->n_out_of_band, sum_scored - sum_in_band);
+  // FIXTURE GUARD: a healthy scored board must present as evidence-present —
+  // if this reads 0 the counters (or the fixture) stopped measuring anything.
+  ASSERT_GT(res->n_scored, std::size_t{0});
+  EXPECT_GT(res->n_in_band, std::size_t{0});
+}
+
+// D4 (T10c), under-determined half. A residual-armed slice serves 7 fitted
+// parameters; a thin (6-strike) expiry scores ~6 quotes, so N <= dof and a
+// true reduced chi-square is undefined. The pre-D4 shape — chain_parity's
+// error propagating through ATX_TRY — failed the WHOLE BOARD, discarding band
+// evidence that does not depend on dof at all (the D1 defect: no measurement
+// laundered as a measured failure). The site now RE-SCORES with dof = 0
+// (chi2 per observation), keeps the band evidence, and marks the report
+// `chi2_dof_underdetermined` instead of blanking chi2 to a perfect-looking
+// 0.0 (W3-A).
+//
+// Mutation checks (both performed): hardcoding the pin back to 3 reds this
+// test (6 > 3 scores "fine", so the flag never sets); removing the dof-0
+// re-score reds it harder (run_surface_parity fails outright).
+TEST(SurfaceParity, UnderdeterminedChiSquareIsFlaggedAndBandEvidenceSurvives) {
+  PanelBuild pb = make_panel_build();
+  // Thin the board to 6 strikes per expiry: enough to clear the 5-row prepared
+  // fit floor, too few to support 7 fitted parameters at scoring.
+  pb.spec.strikes.clear();
+  for (double K = 88.0; K <= 108.0 + 1e-9; K += 4.0) {
+    pb.spec.strikes.push_back(K);  // 88, 92, 96, 100, 104, 108
+  }
+  const auto panel = make_synthetic_american_panel(pb.spec);
+  ASSERT_TRUE(panel.has_value()) << panel.error().to_string();
+
+  Universe u;
+  const auto uid = atx::vol::data_install(u, panel->frame);
+  ASSERT_TRUE(uid.has_value()) << uid.error().to_string();
+  const auto under = u.get_underlying(*uid);
+  ASSERT_TRUE(under.has_value());
+
+  SurfaceParityInputs in;
+  in.S = pb.spec.spot;
+  in.r = pb.spec.r;
+  in.cash_divs = pb.spec.cash_divs;
+  in.now_ts_ns = iso_to_ns(pb.snapshot);
+  in.deam.hyb = pb.spec.hyb;
+  in.deam.imply_borrow = true;
+  in.deam.n_atm = 3;
+  in.calib.residual_disable = false;
+  in.calib.residual_basis_kind = atx::vol::ResidualBasisKind::HingeQuad;
+  in.calib.residual_n_basis_terms = 5;
+
+  const auto res = run_surface_parity(**under, in);
+  ASSERT_TRUE(res.has_value()) << res.error().to_string();
+  ASSERT_GT(res->n_slices, std::size_t{0});
+  ASSERT_EQ(res->per_expiry.size(), res->n_slices);
+
+  std::size_t n_underdetermined = 0;
+  for (std::size_t i = 0; i < res->per_expiry.size(); ++i) {
+    const atx::vol::ParityReport &parity = res->per_expiry[i];
+    const std::size_t served_dof = atx::vol::essvi_slice_dof(res->surface.essvi_slices()[i]);
+    if (parity.chi2_dof_underdetermined) {
+      ++n_underdetermined;
+      // FIXTURE COHERENCE: the flag may only fire when the scored population
+      // truly cannot support the served dof.
+      EXPECT_LE(parity.n, served_dof) << "slice " << i;
+      // Re-scored with dof 0 — chi2 is chi2/N, defined, and NOT blanked.
+      EXPECT_EQ(parity.chi2_dof, std::size_t{0}) << "slice " << i;
+      EXPECT_GT(parity.chi2_reduced, 0.0) << "slice " << i;
+    } else {
+      EXPECT_EQ(parity.chi2_dof, served_dof) << "slice " << i;
+    }
+    // The band evidence survives either way: the population scored, and the
+    // fraction is a real measurement on this clean synthetic board.
+    EXPECT_GT(parity.n, std::size_t{0}) << "slice " << i;
+    EXPECT_GT(parity.frac_fv_within_bidask, 0.0) << "slice " << i;
+  }
+  // FIXTURE GUARD: the thin board must actually exercise the N <= dof path, or
+  // this test quietly becomes the well-posed test above.
+  ASSERT_GT(n_underdetermined, std::size_t{0})
+      << "fixture no longer produces an under-determined slice; thin the board "
+         "or re-arm the residual";
 }

@@ -85,6 +85,19 @@ struct ParityReport {
   // SpiderRock-style surface/quote band-violation stats for this expiry
   // (model price vs bid/ask): miss counts, worst premium violation, signed bias.
   BandViolationStats band{};
+  // D4 (T10c): the dof `chi2_reduced` was ACTUALLY scored against — stamped by
+  // `chain_parity` from the `ParityInputs::n_curve_params` it consumed, so the
+  // published report witnesses the served scoring, not a caller's intention.
+  // 0 on a default-constructed report (which also has n == 0: no scoring ran).
+  std::size_t chi2_dof{0};
+  // D4 (T10c): true iff the scored population could not support the fitted
+  // family's own dof (n <= dof), so the caller RE-SCORED with dof = 0 and
+  // `chi2_reduced` is chi2 per observation (chi2/N), not a true reduced
+  // chi-square. Deliberately never signalled by blanking chi2 to 0.0 — an
+  // exact zero reads as a PERFECT fit (the W3-A all-zero-diagnostics defect).
+  // Set by the scoring call SITE (only it knows a dof-0 re-score happened);
+  // `chain_parity` itself cannot distinguish a retry from an honest dof of 0.
+  bool chi2_dof_underdetermined{false};
 };
 
 // Score a chain of quotes against a fitted surface.

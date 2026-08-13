@@ -8,7 +8,7 @@
 
 #include "atx/core/error.hpp"
 #include "atx/vol/arb.hpp" // butterfly gates + shared-k pair projection + independent shape check
-#include "atx/vol/c8_calib.hpp"    // c8_fit_slice_lm
+#include "atx/vol/c8_calib.hpp"    // c8_fit_slice_lm, C8LmDiag
 #include "atx/vol/detail/counters.hpp" // ConvexDense wing-anchor observability
 #include "atx/vol/essvi_calib.hpp" // essvi_fit_slice
 #include "atx/vol/svi_calib.hpp"   // svi_fit_slice, svi_project_mm
@@ -384,7 +384,19 @@ Result<std::unique_ptr<IVolCurve>> fit_slice_curve(const CurveConfig &cfg,
                                                    double T, double df,
                                                    const std::function<double(double)> &w_prev,
                                                    std::span<const double> calendar_floor_knots,
-                                                   std::pair<double, double> prev_data_k_range) {
+                                                   std::pair<double, double> prev_data_k_range,
+                                                   FitDiag *diag) {
+  // Clear BEFORE validating: a caller that reuses one struct across a chain of
+  // slices, or that inspects it after an Err, must never read the previous
+  // slice's verdict. Every early return below therefore reports "nothing known"
+  // rather than something stale.
+  if (diag != nullptr) {
+    *diag = FitDiag{};
+  }
+  // `warm_started` stays false for every branch: this is the COLD entry point
+  // and holds no prior curve to seed from. It is left as an explicit statement
+  // of that fact rather than omitted, so the warm/cold distinction D5 calls out
+  // is answerable from the diagnostic instead of from the call site.
   if (!(F > 0.0) || !(T > 0.0) || !(df > 0.0)) {
     return Err(ErrorCode::InvalidArgument, "fit_slice_curve: F/T/df must be positive");
   }
@@ -453,6 +465,21 @@ Result<std::unique_ptr<IVolCurve>> fit_slice_curve(const CurveConfig &cfg,
       context.floor_support_k = {floor_lo, floor_hi};
       ATX_TRY(ConvexSliceFit fit,
               fit_convex_slice(obs_eu, F, T, df, risk_opts, w_prev, context));
+      // The active-set QP is the ONE family that fails closed: it returns
+      // Internal rather than a point it could not certify, so a fit in hand is
+      // a fit whose KKT conditions were checked. Report the certificate itself
+      // (`qp_stationarity` IS the scaled dual/gradient residual) rather than a
+      // bare boolean, and report it BEFORE the calendar-refit loop can `continue`
+      // so the reported iteration count belongs to the pass that produced the
+      // curve actually returned.
+      if (diag != nullptr) {
+        diag->n_quotes_used = static_cast<std::uint32_t>(fit.n_obs);
+        diag->outer_iters = static_cast<std::uint16_t>(
+            std::min<std::size_t>(fit.qp_iterations, 65535u));
+        diag->rmse_vol_vega_weighted = fit.rmse_price;
+        diag->final_grad_norm = fit.qp_stationarity;
+        diag->termination = FitTermination::Converged;
+      }
 
       if (!w_prev) {
         std::unique_ptr<IVolCurve> curve =
@@ -529,7 +556,8 @@ Result<std::unique_ptr<IVolCurve>> fit_slice_curve(const CurveConfig &cfg,
   // on the same shared-k lattice, then pass an independent served-value Roper
   // check. A model's own successful projection never certifies itself.
   case VolCurveKind::Essvi: {
-    ATX_TRY(EssviParams slice, essvi_fit_slice(obs_eu, T, F, cfg.parametric));
+    ATX_TRY(EssviParams slice,
+            essvi_fit_slice(obs_eu, T, F, cfg.parametric, diag));
     if (w_prev) {
       const PairBand band = tradeable_pair_band(obs_eu, prev_data_k_range);
       if (band.usable) {
@@ -544,14 +572,24 @@ Result<std::unique_ptr<IVolCurve>> fit_slice_curve(const CurveConfig &cfg,
     return Ok(std::move(curve));
   }
   case VolCurveKind::Svi: {
-    ATX_TRY(SviParams slice, svi_fit_slice(obs_eu, T, F, cfg.parametric));
+    ATX_TRY(SviParams slice, svi_fit_slice(obs_eu, T, F, cfg.parametric, diag));
     // Butterfly serving gate: the quasi-explicit raw-SVI fit does NOT promise
     // the Mingone polytope, so validate the fitted slice with the closed-form
     // Martini-Mingone admissibility tally. On a violation, project onto the
     // polytope (the same repair svi_mm_fit_slice applies to every iterate) and
     // re-check; if it STILL violates, refuse to serve an arbitrageable slice.
     if (arb_check_butterfly_svi_mm(slice, T).n_violations > 0) {
-      (void)svi_project_mm(slice, T);
+      // D5: this return value used to be discarded at all six call sites, so a
+      // slice pinned at the Lee cap, at b = 1e-8 or at |rho| = 1 - 1e-4 was
+      // served as an ordinary fit. Since kSviWingSlopeGate moved to Lee's 2 the
+      // (2, 4] band is repaired here rather than refused, which makes the
+      // distinction load-bearing: `Moved` says the served parameters are not
+      // the ones the fit chose.
+      const bool touched = svi_project_mm(slice, T);
+      if (diag != nullptr) {
+        diag->projection =
+            touched ? SliceProjection::Moved : SliceProjection::RanUnchanged;
+      }
       const auto adm = arb_check_butterfly_svi_mm(slice, T);
       if (adm.n_violations > 0) {
         return Err(ErrorCode::Unavailable,
@@ -634,6 +672,12 @@ Result<std::unique_ptr<IVolCurve>> fit_slice_curve(const CurveConfig &cfg,
         w.push_back(std::isfinite(floor) ? std::max(market, floor) : market);
       }
     }
+    if (diag != nullptr) {
+      // Nodes retained, not observations supplied: LinearVariance interpolates
+      // one node per distinct strike (plus any calendar floor knots), so this is
+      // the count that describes the served curve.
+      diag->n_quotes_used = static_cast<std::uint32_t>(k.size());
+    }
     std::unique_ptr<IVolCurve> curve =
         std::make_unique<LinearVarianceCurve>(T, F, df, std::move(k), std::move(w));
     return Ok(std::move(curve));
@@ -673,7 +717,9 @@ Result<std::unique_ptr<IVolCurve>> fit_slice_curve(const CurveConfig &cfg,
     }
     const double seed_sse = c8_residual_sse(seed, k, target_w, spread_w, 1.0e-9);
     const int max_inner = std::max<int>(4, cfg.parametric.max_inner_iter);
-    const Status status = c8_fit_slice_lm(fitted, k, target_w, spread_w, max_inner, 1.0e-9);
+    C8LmDiag c8_lm{};
+    const Status status =
+        c8_fit_slice_lm(fitted, k, target_w, spread_w, max_inner, 1.0e-9, &c8_lm);
     const double fit_sse = status ? c8_residual_sse(fitted, k, target_w, spread_w, 1.0e-9)
                                   : std::numeric_limits<double>::infinity();
     // Admissibility gate (mirrors c8_apply_quality_gate's slice_ok plus the
@@ -702,6 +748,11 @@ Result<std::unique_ptr<IVolCurve>> fit_slice_curve(const CurveConfig &cfg,
     const bool fit_butterfly_ok = fit_bf.has_value() && fit_bf->empty();
     if (!fit_admissible || !std::isfinite(fit_sse) || fit_sse > seed_sse * 1.05 ||
         !fit_butterfly_ok) {
+      // D5: the caller used to see a "C8 curve" that is a plain SVI-JW smile,
+      // with nothing in the result distinguishing the two. Say so.
+      if (diag != nullptr) {
+        diag->reverted_to_seed = true;
+      }
       fitted = seed;
       fitted.bumps_active = false;
       // The reverted seed is the backbone-only SVI-JW smile; if even it trips
@@ -722,6 +773,23 @@ Result<std::unique_ptr<IVolCurve>> fit_slice_curve(const CurveConfig &cfg,
                                              kRiskCalendarIntervals));
         (void)projection;
       }
+    }
+    if (diag != nullptr) {
+      diag->n_quotes_used = static_cast<std::uint32_t>(k.size());
+      diag->inner_iters_total =
+          static_cast<std::uint16_t>(std::clamp(fitted.n_lm_iters, 0, 65535));
+      // T10b: C8 can now state a termination reason. `c8_fit_slice_lm` gained a
+      // scale-free first-order optimality certificate, so its three exits are
+      // distinguishable from outside instead of collapsing to Unknown.
+      //
+      // Both fields describe the point the LM REACHED. That is before the Roper
+      // projection, before the admissibility/butterfly gate above, and before
+      // any revert — so on a reverted slice they describe a fit that was
+      // discarded, and `reverted_to_seed` (set above) is what tells the caller
+      // the served curve is not this one. Reporting both is strictly more
+      // information than suppressing either.
+      diag->termination = c8_lm.termination;
+      diag->final_grad_norm = c8_lm.final_grad_norm;
     }
     std::unique_ptr<IVolCurve> curve = std::make_unique<C8Curve>(fitted, df);
     ATX_TRY_VOID(validate_parametric_risk_shape(*curve));
@@ -750,6 +818,9 @@ Result<std::unique_ptr<IVolCurve>> fit_slice_curve(const CurveConfig &cfg,
     if (static_cast<const SplineVolCurve *>(curve.get())->params().n_butterfly_viol > 0) {
       return Err(ErrorCode::Unavailable,
                  "fit_slice_curve: pinned SplineVol slice butterfly-inadmissible");
+    }
+    if (diag != nullptr) {
+      diag->n_quotes_used = static_cast<std::uint32_t>(obs_eu.size());
     }
     return Ok(std::move(curve));
   }
@@ -793,9 +864,19 @@ Result<std::unique_ptr<IVolCurve>> refit_slice_curve(
     // documents VolaSession::refit_slice as compatibility-only/unsafe). Thread
     // the previous slice's data-supported k-range through this arm BEFORE ever
     // exposing ConvexDense via a live-refit facade.
+    // T10: forward the caller's diag rather than hand-filling one field. The
+    // cold path now reports this arm's active-set iteration count, weighted
+    // RMSE and KKT stationarity norm, none of which were reachable before.
     ATX_TRY(std::unique_ptr<IVolCurve> curve,
-            fit_slice_curve(cfg, obs_eu, F, T, df, w_prev, warm_k));
+            fit_slice_curve(cfg, obs_eu, F, T, df, w_prev, warm_k,
+                            {-std::numeric_limits<double>::infinity(),
+                             std::numeric_limits<double>::infinity()},
+                            diag));
     if (diag != nullptr) {
+      // This arm reuses the warm curve's knot lattice, so the underlying fit is
+      // seeded even though the cold entry point it delegates to cannot know
+      // that. Correct the one field the callee is not in a position to set.
+      diag->warm_started = true;
       diag->n_quotes_used = static_cast<std::uint32_t>(obs_eu.size());
     }
     return Ok(std::move(curve));

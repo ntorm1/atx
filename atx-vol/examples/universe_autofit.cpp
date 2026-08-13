@@ -470,6 +470,12 @@ struct Row {
   // reader can tell WHICH surface `PricerFitter::surface()` handed back rather
   // than inferring it from the config.
   std::string mm_state;
+  // T4 escalation (T10c): banded parity-evidence counters (SessionDiagnostics
+  // n_parity_*). Appended as the LAST CSV columns so the shared-column prefix
+  // of a pre-counter baseline stays byte-comparable.
+  std::size_t n_parity_scored{0};
+  std::size_t n_parity_in_band{0};
+  std::size_t n_parity_out_of_band{0};
   // valuation
   std::size_t n_valued{0};
   std::size_t n_price_nan{0};
@@ -1337,6 +1343,9 @@ int main(int argc, char **argv) {
       row.n_price_bound_viol = dg.n_price_bound_violations;
       row.n_slices = dg.n_slices;
       row.n_quotes_used = dg.n_quotes;
+      row.n_parity_scored = dg.n_parity_scored;
+      row.n_parity_in_band = dg.n_parity_in_band;
+      row.n_parity_out_of_band = dg.n_parity_out_of_band;
       record_oracle(row, fitter.bundle());
       if (want_attempts) {
         collect_attempts(attempt_rows[i], row.symbol, fitter, cfg, chain.value());
@@ -1395,7 +1404,11 @@ int main(int argc, char **argv) {
         << ",mm_state,"
            // T1b: which fit contract produced this row. Constant within a run;
            // per-row so a concatenation of two runs stays self-describing.
-           "fit_path,fit_config\n";
+           "fit_path,fit_config,"
+           // T4 escalation (T10c): banded parity-evidence counters. Kept as the
+           // LAST CSV columns so the shared-column prefix of a pre-counter
+           // baseline stays byte-comparable.
+           "n_parity_scored,n_parity_in_band,n_parity_out_of_band\n";
     for (const Row &w : rows) {
       char buf[512];
       std::snprintf(buf, sizeof(buf),
@@ -1426,7 +1439,9 @@ int main(int argc, char **argv) {
                     static_cast<unsigned long long>(w.oracle_served_generation));
       out << csv_escape(w.symbol) << ',' << w.status << ',' << csv_escape(w.error) << buf << fbuf
           << csv_escape(w.selector_error) << obuf << format_digest(w.oracle_digest) << ','
-          << w.mm_state << ',' << fit_path_name << ',' << csv_escape(fit_config) << '\n';
+          << w.mm_state << ',' << fit_path_name << ',' << csv_escape(fit_config) << ','
+          << w.n_parity_scored << ',' << w.n_parity_in_band << ',' << w.n_parity_out_of_band
+          << '\n';
     }
   }
 

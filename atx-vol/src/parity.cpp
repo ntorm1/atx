@@ -196,6 +196,10 @@ Result<ParityReport> chain_parity(std::span<const double> strike, std::span<cons
   out.n = n_scored;
   out.n_within = n_within;
   out.band = band;
+  // D4 (T10c): witness the dof this report's chi2 was scored against by reading
+  // it off the SAME input `reduced_chi_square` consumed above — the published
+  // number and its denominator can no longer drift apart silently.
+  out.chi2_dof = in.n_curve_params;
   return Ok(out);
 }
 

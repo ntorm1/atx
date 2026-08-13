@@ -26,6 +26,7 @@ using atx::vol::essvi_natural_to_reparam;
 using atx::vol::essvi_phi_max;
 using atx::vol::essvi_reparam_to_natural;
 using atx::vol::essvi_residual_w;
+using atx::vol::essvi_rho_blend_armed;
 using atx::vol::essvi_rho_from_lambda;
 using atx::vol::essvi_total_w;
 using atx::vol::essvi_w_grad3;
@@ -60,28 +61,101 @@ TEST(EssviBackbone, SymmetricRho_OffAtm_MatchesHandComputedValue) {
   EXPECT_NEAR(essvi_backbone_w(s, 0.2), 0.040396078054371138, 1.0e-12);
 }
 
-TEST(EssviBackbone, AsymmetricRhoBlend_MatchesConstantRhoEff) {
-  // With rho_scale > 0 the effective rho blends toward rho_R via the
-  // tanh factor; evaluating that blend must equal a plain slice whose
-  // constant rho equals rho_eff(k).
-  EssviParams s_blend{};
-  s_blend.theta = 0.04;
-  s_blend.phi = 1.0;
-  s_blend.rho = -0.4;
-  s_blend.rho_R = 0.0;
-  s_blend.rho_scale = 0.5;
+// ── The retired asymmetric-rho blend ─────────────────────────────────────
+//
+// rho_R / rho_scale stay on the archive wire (sizeof(EssviParams) is folded
+// into the ATXVSA2 schema fingerprint) but are no longer evaluated. An ARMED
+// slice — rho_scale > 0 AND rho_R != rho — has no defined total variance,
+// because every published SSVI/eSSVI butterfly and calendar condition assumes
+// one scalar rho per slice. These pin "refuse", not "quietly use the base rho".
 
-  const double k = 0.3;
-  const double bf = 0.5 * (1.0 + std::tanh(k / s_blend.rho_scale));
-  const double rho_eff = s_blend.rho + (s_blend.rho_R - s_blend.rho) * bf;
+// A slice shaped like the ones essvi_calib.cpp actually produces: rho fitted,
+// rho_R left at its default zero. Arming the blend on one of these drags the
+// right wing toward zero correlation — the switch is wrong on its own terms.
+EssviParams make_calibrator_shaped_slice() {
+  EssviParams s{};
+  s.theta = 0.04;
+  s.phi = 1.0;
+  s.rho = -0.4;  // rho_R stays 0.0, exactly as the calibrator leaves it
+  return s;
+}
 
-  EssviParams s_plain{};
-  s_plain.theta = 0.04;
-  s_plain.phi = 1.0;
-  s_plain.rho = rho_eff;  // rho_scale == 0 => no blend
+TEST(EssviRhoBlend, DefaultSlice_IsNotArmed) {
+  EXPECT_FALSE(essvi_rho_blend_armed(EssviParams{}));
+  EXPECT_FALSE(essvi_rho_blend_armed(make_calibrator_shaped_slice()));
+}
 
-  EXPECT_NEAR(essvi_backbone_w(s_blend, k), essvi_backbone_w(s_plain, k),
-              1.0e-14);
+TEST(EssviRhoBlend, ScaleWithoutDistinctRightRho_IsNotArmed) {
+  // rho_R == rho always collapsed to the plain rho even when the blend ran, so
+  // this configuration is still legal and must evaluate normally.
+  EssviParams s = make_calibrator_shaped_slice();
+  s.rho_R = s.rho;
+  s.rho_scale = 0.5;
+  EXPECT_FALSE(essvi_rho_blend_armed(s));
+
+  EssviParams plain = make_calibrator_shaped_slice();
+  EXPECT_EQ(essvi_backbone_w(s, 0.3), essvi_backbone_w(plain, 0.3));
+}
+
+TEST(EssviRhoBlend, NonPositiveScale_IsNotArmed) {
+  EssviParams s = make_calibrator_shaped_slice();
+  s.rho_R = 0.2;  // distinct from rho, but the scale disables the blend
+  s.rho_scale = 0.0;
+  EXPECT_FALSE(essvi_rho_blend_armed(s));
+  EXPECT_TRUE(std::isfinite(essvi_backbone_w(s, 0.3)));
+
+  s.rho_scale = -1.0;
+  EXPECT_FALSE(essvi_rho_blend_armed(s));
+  EXPECT_TRUE(std::isfinite(essvi_backbone_w(s, 0.3)));
+}
+
+TEST(EssviRhoBlend, ArmedSlice_RefusesEveryEvaluator) {
+  EssviParams s = make_calibrator_shaped_slice();
+  s.rho_R = 0.0;
+  s.rho_scale = 0.5;
+  ASSERT_TRUE(essvi_rho_blend_armed(s));
+
+  for (const double k : {-1.0, -0.3, 0.0, 0.3, 1.0}) {
+    EXPECT_TRUE(std::isnan(essvi_backbone_w(s, k))) << "k=" << k;
+    EXPECT_TRUE(std::isnan(essvi_total_w(s, k))) << "k=" << k;
+    const auto g3 = essvi_w_grad3(s, k);
+    const auto g4 = essvi_w_grad4(s, k);
+    for (const double v : g3) {
+      EXPECT_TRUE(std::isnan(v)) << "grad3 k=" << k;
+    }
+    for (const double v : g4) {
+      EXPECT_TRUE(std::isnan(v)) << "grad4 k=" << k;
+    }
+  }
+}
+
+TEST(EssviRhoBlend, ArmedSlice_RefusalSurvivesTheWingResidual) {
+  // essvi_total_w must not let a residual layer paper over the refusal: the
+  // backbone's NaN propagates rather than being floored by the positivity net.
+  EssviParams s = make_calibrator_shaped_slice();
+  s.rho_R = 0.25;
+  s.rho_scale = 0.5;
+  s.resid_scale = 0.5;
+  s.resid_basis_kind = ResidualBasisKind::HingeQuad;
+  s.resid_n_basis = 5;
+  s.resid_coef[3] = 2.0;
+  ASSERT_TRUE(essvi_rho_blend_armed(s));
+  EXPECT_TRUE(std::isnan(essvi_total_w(s, 0.4)));
+}
+
+TEST(EssviRhoBlend, ArmedSlice_MakesTheWholeSurfaceRefuse) {
+  EssviParams s = make_calibrator_shaped_slice();
+  s.rho_R = 0.0;
+  s.rho_scale = 0.5;
+  s.T = 0.5;
+  s.F = 100.0;
+
+  auto surf = VolSurface::create(1, Parametrization::Essvi, 1);
+  ASSERT_TRUE(surf.has_value());
+  ASSERT_TRUE(surf->set_slice_essvi(0, s).has_value());
+  EXPECT_TRUE(std::isnan(surf->w(0.1, 0.5)));
+  EXPECT_TRUE(std::isnan(surf->iv(0.1, 0.5)));
+  EXPECT_TRUE(std::isnan(surf->iv_on_slice(0, 0.1)));
 }
 
 // ── eSSVI wing residual (HINGE_QUAD) ─────────────────────────────────────
@@ -186,20 +260,22 @@ TEST(EssviGrad, Grad3_MatchesCentralFiniteDifferenceOfBackbone) {
   EXPECT_NEAR(g[2], d_rho, 1.0e-6);
 }
 
-TEST(EssviGrad, Grad4_SymmetricMode_CollapsesToGrad3WithZeroRightWing) {
+TEST(EssviGrad, Grad4_IsGrad3WithAStructurallyZeroRightWing) {
+  // A slice has ONE rho, so the rho_R partial is not "zero in symmetric mode",
+  // it is zero always — including when rho_R differs from rho (blend disabled).
   EssviParams s{};
   s.theta = 0.05;
   s.phi = 1.2;
   s.rho = -0.25;
-  s.rho_scale = 0.0;  // symmetric => bf == 0
+  s.rho_R = 0.4;  // distinct, but rho_scale == 0 keeps the slice unarmed
 
   const double k = 0.15;
   const auto g3 = essvi_w_grad3(s, k);
   const auto g4 = essvi_w_grad4(s, k);
-  EXPECT_NEAR(g4[0], g3[0], 1.0e-15);
-  EXPECT_NEAR(g4[1], g3[1], 1.0e-15);
-  EXPECT_NEAR(g4[2], g3[2], 1.0e-15);
-  EXPECT_EQ(g4[3], 0.0);  // no right-wing sensitivity in symmetric mode
+  EXPECT_EQ(g4[0], g3[0]);
+  EXPECT_EQ(g4[1], g3[1]);
+  EXPECT_EQ(g4[2], g3[2]);
+  EXPECT_EQ(g4[3], 0.0);
 }
 
 // ── Mingone cube reparametrization ───────────────────────────────────────

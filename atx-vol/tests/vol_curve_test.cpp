@@ -3,9 +3,12 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <functional>
+#include <iterator>
 #include <span>
+#include <string>
 #include <vector>
 
 #include "atx/vol/arb.hpp"          // arb_check_butterfly_svi_mm, arb_check_butterfly_slice
@@ -153,12 +156,14 @@ TEST(VolCurve, SviPairProjectionStillRepairsInsideTheOverlap) {
 
 TEST(VolCurve, SviProjectMmRepairsLeeViolation) {
   // The gate PROJECTS an inadmissible fit before rejecting; verify that repair
-  // primitive directly. A steep-wing slice (b*(1+|rho|) past the T-free Lee bound
-  // of 4) is Lee-inadmissible; svi_project_mm must move it back into the polytope.
-  // FT-C3: the bound is T-free, so b*(1+|rho|)=6 > 4 is inadmissible at any T.
+  // primitive directly. A steep-wing slice must be moved back into the polytope.
+  // b*(1+|rho|) = 6 is inadmissible at any T (the bound is T-free, per FT-C3)
+  // and under either the historical ceiling of 4 or Lee's raw-SVI 2, so this
+  // case tests the projector, not the number. The number is pinned by
+  // `ArbSviMm.TheEssviCeilingOfFourIsLeesRawSviBoundOfTwo`.
   SviParams s{};
   s.a = 0.04;
-  s.b = 6.0;  // b*(1+|rho|) = 6 > 4 (T-free Lee bound)
+  s.b = 6.0;  // b*(1+|rho|) = 6, past both 4 and Lee's 2
   s.rho = 0.0;
   s.m = 0.0;
   s.sigma = 0.1;
@@ -168,6 +173,39 @@ TEST(VolCurve, SviProjectMmRepairsLeeViolation) {
   const bool moved = svi_project_mm(s, s.T);
   EXPECT_TRUE(moved);
   EXPECT_EQ(arb_check_butterfly_svi_mm(s, s.T).n_violations, 0u);
+}
+
+// D3, the coordination invariant. The gate (`arb_check_butterfly_svi_mm`, via
+// `kSviWingSlopeGate`) and the repair (`svi_project_mm` -> `mm_project_admissible`)
+// must enforce the SAME ceiling, because every serving path runs
+// gate -> project -> re-gate and DROPS whatever still fails the re-check
+// (vol_curve.cpp SVI branch; svi_calib.cpp's two surface drivers). If only the
+// gate had been tightened to Lee's 2, a slice with b*(1+|rho|) in (2, 4] — a
+// band the projector would have left alone — would be REFUSED rather than
+// repaired: strictly worse than serving it. Sweep that band and assert repair.
+TEST(VolCurve, SviProjectMmRepairsTheFormerlyAdmittedWingSlopeBand) {
+  for (const double rho : {-0.9, -0.4, 0.0, 0.25, 0.8}) {
+    for (const double target : {2.0 + 1.0e-6, 2.5, 3.0, 3.9, 4.0}) {
+      SviParams s{};
+      s.a = 0.04;
+      s.b = target / (1.0 + std::fabs(rho));
+      s.rho = rho;
+      s.m = 0.0;
+      s.sigma = 0.1;
+      s.T = 0.25;
+      const std::string ctx =
+          "rho=" + std::to_string(rho) + " target=" + std::to_string(target);
+
+      // Inadmissible under the corrected gate...
+      ASSERT_GT(arb_check_butterfly_svi_mm(s, s.T).n_violations, 0u) << ctx;
+      // ...and the projector must reach the constraint, not merely run.
+      EXPECT_TRUE(svi_project_mm(s, s.T)) << ctx;
+      EXPECT_EQ(arb_check_butterfly_svi_mm(s, s.T).n_violations, 0u) << ctx;
+      EXPECT_LE(s.b * (1.0 + std::fabs(s.rho)),
+                atx::vol::kSviWingSlopeGate + 1.0e-12)
+          << ctx;
+    }
+  }
 }
 
 // A permissive CalibOpts that disables the observation-builder spread filters and
@@ -180,6 +218,225 @@ TEST(VolCurve, SviProjectMmRepairsLeeViolation) {
   o.max_spread_to_mid_pct = 0.0;
   o.max_post_fit_sigma = 0.0;
   return o;
+}
+
+// ── T10 / D5: the serving-path diagnostics out-param ───────────────────────
+//
+// Nothing in D5 ("served-but-bad surfaces are structurally unreportable") is
+// observable until `fit_slice_curve` can report. These tests pin the contract:
+// the out-param is optional, it is CLEARED on entry so a reused struct cannot
+// leak a previous slice's verdict, and — critically — it never fabricates. A
+// signal a fitter does not expose stays at its "not known" state rather than
+// defaulting to a value that reads as success.
+
+TEST(VolCurve, FitDiagIsOptionalAndDoesNotChangeTheFit) {
+  constexpr double T = 0.5;
+  constexpr double F = 100.0;
+  constexpr double df = 0.99;
+  const std::vector<FitObs> obs = make_smile_obs(T, F, df, 15);
+
+  CurveConfig cfg;
+  cfg.kind = VolCurveKind::Svi;
+  const auto without = fit_slice_curve(cfg, obs, F, T, df);
+  ASSERT_TRUE(without.has_value()) << without.error().to_string();
+
+  atx::vol::FitDiag diag{};
+  const auto with = fit_slice_curve(cfg, obs, F, T, df, {}, {},
+                                    {-std::numeric_limits<double>::infinity(),
+                                     std::numeric_limits<double>::infinity()},
+                                    &diag);
+  ASSERT_TRUE(with.has_value()) << with.error().to_string();
+  // Observing a fit must not perturb it.
+  for (int i = 0; i <= 20; ++i) {
+    const double k = -0.20 + 0.40 * static_cast<double>(i) / 20.0;
+    EXPECT_DOUBLE_EQ((*without)->w(k), (*with)->w(k)) << "k=" << k;
+  }
+  EXPECT_EQ(diag.n_quotes_used, obs.size());
+  EXPECT_GT(diag.rmse_vol_vega_weighted, 0.0);
+}
+
+TEST(VolCurve, FitDiagIsClearedOnEntrySoAReusedStructCannotLeak) {
+  constexpr double T = 0.5;
+  constexpr double F = 100.0;
+  constexpr double df = 0.99;
+  const std::vector<FitObs> obs = make_smile_obs(T, F, df, 15);
+
+  atx::vol::FitDiag diag{};
+  diag.n_quotes_used = 999u;
+  diag.reverted_to_seed = true;
+  diag.projection = atx::vol::SliceProjection::Moved;
+  diag.termination = atx::vol::FitTermination::Stalled;
+  diag.final_grad_norm = 12345.0;
+
+  CurveConfig cfg;
+  cfg.kind = VolCurveKind::Svi;
+  const auto curve = fit_slice_curve(cfg, obs, F, T, df, {}, {},
+                                     {-std::numeric_limits<double>::infinity(),
+                                      std::numeric_limits<double>::infinity()},
+                                     &diag);
+  ASSERT_TRUE(curve.has_value()) << curve.error().to_string();
+  EXPECT_EQ(diag.n_quotes_used, obs.size());
+  EXPECT_FALSE(diag.reverted_to_seed);
+  // This admissible smile needs no repair, so the projector is never invoked.
+  EXPECT_EQ(diag.projection, atx::vol::SliceProjection::NotRun);
+  EXPECT_NE(diag.termination, atx::vol::FitTermination::Stalled);
+}
+
+TEST(VolCurve, FitDiagIsAlsoClearedWhenTheFitIsRefused) {
+  // A refused slice must not leave a stale verdict behind either: the caller
+  // reads `diag` after an Err to learn WHY, and a leaked field is worse than
+  // an empty one.
+  constexpr double T = 0.5;
+  constexpr double F = 100.0;
+  constexpr double df = 0.99;
+  atx::vol::FitDiag diag{};
+  diag.n_quotes_used = 999u;
+  diag.projection = atx::vol::SliceProjection::Moved;
+
+  CurveConfig cfg;
+  cfg.kind = VolCurveKind::Svi;
+  const auto refused = fit_slice_curve(cfg, {}, F, T, df, {}, {},
+                                       {-std::numeric_limits<double>::infinity(),
+                                        std::numeric_limits<double>::infinity()},
+                                       &diag);
+  ASSERT_FALSE(refused.has_value());
+  EXPECT_EQ(diag.n_quotes_used, 0u);
+  EXPECT_EQ(diag.projection, atx::vol::SliceProjection::NotRun);
+}
+
+TEST(VolCurve, FitDiagDistinguishesProjectorMovedFromProjectorNotRun) {
+  // D3 made this load-bearing. A raw-SVI slice with b*(1+|rho|) above
+  // `kSviWingSlopeGate` is REPAIRED at the serving gate rather than served as
+  // fit, so the served parameters are not the ones the fit chose — and that has
+  // to be visible. The steep-wing truth below (b*(1+|rho|) = 8.4) is reproduced
+  // by the quasi-explicit fitter and lands outside the Mingone polytope.
+  const double a = 0.04, b = 6.0, rho = -0.40, m = 0.0, sigma = 0.06;
+  const double T = 1.0, F = 100.0, df = 1.0;
+  const auto wt = [&](double k) {
+    const double dk = k - m;
+    return a + b * (rho * dk + std::sqrt(dk * dk + sigma * sigma));
+  };
+  std::vector<FitObs> obs;
+  const int n = 41;
+  for (int i = 0; i < n; ++i) {
+    const double k = -0.55 + 1.10 * static_cast<double>(i) / (n - 1);
+    const double w = wt(k);
+    const double sig = std::sqrt(w / T);
+    const double K = F * std::exp(k);
+    const Side side = (k >= 0.0) ? Side::Call : Side::Put;
+    const auto vv = black76_value_and_vega(F, K, T, sig, df, side);
+    FitObs o{};
+    o.k = k; o.sigma_mkt = sig; o.w_mkt = w; o.K = K; o.F = F; o.df = df;
+    o.mid = vv.price; o.spread = std::max(0.001, 0.01 * vv.price); o.vega = vv.vega;
+    o.side = side; o.weight_w = 1.0; o.active_weight_w = 1.0;
+    obs.push_back(o);
+  }
+  CurveConfig cfg;
+  cfg.kind = VolCurveKind::Svi;
+  cfg.parametric = vc_permissive_opts();
+  cfg.parametric.max_post_fit_sigma = 0.0;  // let the steep slice reach the gate
+
+  // NON-VACUITY, asserted rather than assumed: run the gate's own primitive on
+  // the same fit the served path will produce and require that it BOTH fires
+  // and moves the slice. Without this the test would pass on a fixture that
+  // never reaches the projector, which is exactly how the first draft of it
+  // silently tested nothing.
+  const auto raw = atx::vol::svi_fit_slice(std::span<const FitObs>(obs), T, F,
+                                           cfg.parametric);
+  ASSERT_TRUE(raw.has_value()) << raw.error().to_string();
+  SviParams probe = raw.value();
+  ASSERT_GT(arb_check_butterfly_svi_mm(probe, T).n_violations, 0u)
+      << "fixture no longer trips the Mingone gate; the projector is never "
+         "invoked and this test would assert nothing";
+  ASSERT_TRUE(svi_project_mm(probe, T)) << "projector left the slice alone";
+
+  atx::vol::FitDiag diag{};
+  const auto served = fit_slice_curve(cfg, obs, F, T, df, {}, {},
+                                      {-std::numeric_limits<double>::infinity(),
+                                       std::numeric_limits<double>::infinity()},
+                                      &diag);
+  (void)served;  // repaired or refused downstream; either way the diag reports.
+  EXPECT_EQ(diag.projection, atx::vol::SliceProjection::Moved);
+
+  // And the contrasting outcome: an ordinary admissible smile never invokes the
+  // projector at all, which must NOT read as the same value.
+  const std::vector<FitObs> clean = make_smile_obs(0.5, F, 0.99, 15);
+  CurveConfig clean_cfg;
+  clean_cfg.kind = VolCurveKind::Svi;
+  atx::vol::FitDiag clean_diag{};
+  const auto clean_curve =
+      fit_slice_curve(clean_cfg, clean, F, 0.5, 0.99, {}, {},
+                      {-std::numeric_limits<double>::infinity(),
+                       std::numeric_limits<double>::infinity()},
+                      &clean_diag);
+  ASSERT_TRUE(clean_curve.has_value()) << clean_curve.error().to_string();
+  EXPECT_EQ(clean_diag.projection, atx::vol::SliceProjection::NotRun);
+}
+
+TEST(VolCurve, FitDiagNeverFabricatesAGradientNormOrConvergence) {
+  // The defect class this sprint withdrew two measurements over: a
+  // default-constructed diagnostic that reads as a clean result. A fitter that
+  // exposes no first-order optimality residual must leave `final_grad_norm`
+  // DISENGAGED, not 0.0 — zero gradient is the strongest possible convergence
+  // claim, and it is exactly what a zero-initialised double asserts.
+  constexpr double T = 0.5;
+  constexpr double F = 100.0;
+  constexpr double df = 0.99;
+  const std::vector<FitObs> obs = make_smile_obs(T, F, df, 15);
+
+  {  // raw SVI: quasi-explicit NM + BLLS, no gradient anywhere in the solver.
+    CurveConfig cfg;
+    cfg.kind = VolCurveKind::Svi;
+    atx::vol::FitDiag diag{};
+    const auto curve = fit_slice_curve(cfg, obs, F, T, df, {}, {},
+                                       {-std::numeric_limits<double>::infinity(),
+                                        std::numeric_limits<double>::infinity()},
+                                       &diag);
+    ASSERT_TRUE(curve.has_value()) << curve.error().to_string();
+    EXPECT_FALSE(diag.final_grad_norm.has_value())
+        << "raw SVI reported a gradient norm it does not compute";
+    // It DOES have a tolerance-based IRLS stop, so termination is knowable.
+    EXPECT_NE(diag.termination, atx::vol::FitTermination::Unknown);
+  }
+  {  // ConvexDense: the one family with a real KKT certificate.
+    CurveConfig cfg;
+    cfg.kind = VolCurveKind::ConvexDense;
+    atx::vol::FitDiag diag{};
+    const auto curve = fit_slice_curve(cfg, obs, F, T, df, {}, {},
+                                       {-std::numeric_limits<double>::infinity(),
+                                        std::numeric_limits<double>::infinity()},
+                                       &diag);
+    ASSERT_TRUE(curve.has_value()) << curve.error().to_string();
+    ASSERT_TRUE(diag.final_grad_norm.has_value())
+        << "ConvexDense certifies stationarity and must report it";
+    EXPECT_GE(*diag.final_grad_norm, 0.0);
+    EXPECT_EQ(diag.termination, atx::vol::FitTermination::Converged);
+    EXPECT_GT(diag.outer_iters, 0u);
+  }
+}
+
+TEST(VolCurve, FitDiagWarmStartedIsAlwaysFalseOnTheColdEntryPoint) {
+  // `fit_slice_curve` is the COLD path; it takes no prior curve. Reporting
+  // anything else here would be a fabricated field, so pin it. The flag exists
+  // for `refit_slice_curve` and the eSSVI prior-surface route.
+  constexpr double T = 0.5;
+  constexpr double F = 100.0;
+  constexpr double df = 0.99;
+  const std::vector<FitObs> obs = make_smile_obs(T, F, df, 15);
+  for (const VolCurveKind kind :
+       {VolCurveKind::Svi, VolCurveKind::ConvexDense, VolCurveKind::Essvi}) {
+    CurveConfig cfg;
+    cfg.kind = kind;
+    atx::vol::FitDiag diag{};
+    const auto curve = fit_slice_curve(cfg, obs, F, T, df, {}, {},
+                                       {-std::numeric_limits<double>::infinity(),
+                                        std::numeric_limits<double>::infinity()},
+                                       &diag);
+    if (!curve.has_value()) {
+      continue;  // family unavailable on this fixture; the flag is still false
+    }
+    EXPECT_FALSE(diag.warm_started) << "kind=" << static_cast<int>(kind);
+  }
 }
 
 // FT-C2 (B2a): the SVI served-path butterfly admission is necessary-conditions-
@@ -413,4 +670,69 @@ TEST(VolCurve, ConvexRepairSpecInvalidSpecRejected) {
   const auto inverted = fit_slice_curve(cfg, obs, F, T, df);
   ASSERT_FALSE(inverted.has_value());
   EXPECT_EQ(inverted.error().code(), atx::core::ErrorCode::InvalidArgument);
+}
+
+// ── VolCurveKind <-> string round-trip (T9) ─────────────────────────────────
+//
+// `parse_curve_kind` replaces an ad-hoc if/else chain that folded every
+// unrecognized string into ConvexDense. These pin the two properties that chain
+// lacked: EVERY enumerator round-trips through to_string, and an unknown string
+// is a typed failure rather than a silent default.
+
+// Every enumerator, listed explicitly. A new curve kind that is not added here
+// fails the exhaustiveness check below, which is the point.
+constexpr atx::vol::VolCurveKind kAllCurveKinds[] = {
+    atx::vol::VolCurveKind::ConvexDense,    atx::vol::VolCurveKind::Essvi,
+    atx::vol::VolCurveKind::Svi,            atx::vol::VolCurveKind::LinearVariance,
+    atx::vol::VolCurveKind::C8,             atx::vol::VolCurveKind::SplineVol};
+
+TEST(ParseCurveKind, EveryEnumeratorRoundTripsThroughToString) {
+  for (const atx::vol::VolCurveKind kind : kAllCurveKinds) {
+    const char *text = atx::vol::to_string(kind);
+    ASSERT_NE(text, nullptr);
+    const auto parsed = atx::vol::parse_curve_kind(text);
+    ASSERT_TRUE(parsed.has_value()) << "no parse for to_string(" << text << ")";
+    EXPECT_EQ(*parsed, kind) << "round-trip changed the kind for '" << text << "'";
+  }
+}
+
+// Guards the list above against a newly added enumerator: the underlying values
+// are dense from 0, so the count and the max value pin the enum's extent. If
+// this fires, add the new kind to kAllCurveKinds (and to to_string).
+TEST(ParseCurveKind, EnumeratorListIsExhaustive) {
+  constexpr std::size_t kExpectedCount = 6;
+  static_assert(std::size(kAllCurveKinds) == kExpectedCount);
+  EXPECT_EQ(static_cast<std::uint8_t>(atx::vol::VolCurveKind::SplineVol), kExpectedCount - 1);
+  for (std::size_t i = 0; i < kExpectedCount; ++i) {
+    EXPECT_EQ(static_cast<std::uint8_t>(kAllCurveKinds[i]), static_cast<std::uint8_t>(i));
+  }
+}
+
+TEST(ParseCurveKind, EveryToStringSpellingIsDistinct) {
+  for (const atx::vol::VolCurveKind a : kAllCurveKinds) {
+    for (const atx::vol::VolCurveKind b : kAllCurveKinds) {
+      if (a == b) {
+        continue;
+      }
+      EXPECT_STRNE(atx::vol::to_string(a), atx::vol::to_string(b));
+    }
+  }
+}
+
+TEST(ParseCurveKind, UnknownStringIsATypedFailureNotADefault) {
+  // "c8" is the spelling examples/universe_autofit.cpp's chain accepts;
+  // to_string says "c8-event". It must NOT silently parse -- that mismatch is a
+  // caller bug to fix at the call site, not something to paper over here.
+  for (const char *bad : {"", " ", "essvii", "c8", "ESSVI", "convex_dense", "unknown",
+                          "spline-vol "}) {
+    const auto parsed = atx::vol::parse_curve_kind(bad);
+    ASSERT_FALSE(parsed.has_value()) << "unexpectedly parsed '" << bad << "'";
+    EXPECT_EQ(parsed.error().code(), atx::core::ErrorCode::InvalidArgument);
+  }
+}
+
+TEST(ParseCurveKind, RejectsTheToStringFallbackSpelling) {
+  // to_string returns "unknown" only for an out-of-range enumerator value; that
+  // sentinel must never parse back into a real kind.
+  EXPECT_FALSE(atx::vol::parse_curve_kind("unknown").has_value());
 }

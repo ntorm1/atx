@@ -52,6 +52,7 @@
 #include <mutex>
 #include <optional>
 #include <span>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -74,7 +75,35 @@ struct CalendarPairProjection;
 //
 // The selectable curve types. ConvexDense is the penny-dense arb-free fit (SPY);
 // Essvi/Svi are the parsimonious parametric backbones (single-name / sparse
-// boards). C8 / CStar are deferred (their evaluators are partial/unported).
+// boards); C8 is the event smile and is fully wired (calibrator `c8_calib.cpp`,
+// selector candidate, archive payload, `fit_policy.cpp` event route).
+//
+// CStar is deliberately NOT here, and stays that way (T9 decision). It is
+// neither dead code nor a missing tag; it is a SEPARATE API with its own
+// consumers, and this enum boundary is the point:
+//
+//   * live and tested — `src/cstar.cpp` (42 KB) + `src/cstar_calib.cpp` (25 KB)
+//     build into the `atx-vol` library (CMakeLists.txt:49-50), covered by
+//     `tests/cstar_test.cpp` + `tests/cstar_calib_test.cpp`
+//     (tests/CMakeLists.txt:35-36).
+//   * consumed directly, never through this enum — `bench/cstar_bench.cpp`
+//     (target `atx-vol-cstar-bench`), `examples/cstar_panel.cpp` (target
+//     `atx-vol-cstar-panel`), `examples/amzn_earnings_fit.hpp`, `s3.hpp`,
+//     `detail/legacy_cstar_surface.hpp`, `tests/amzn_earnings_test.cpp`.
+//
+// DELETING it would therefore drop 67 KB of tested code with six consumers and
+// two binary targets. ADDING a tag does not work either: every enumerator here
+// needs an `IVolCurve` implementation to dispatch to, and there is no
+// `CStarCurve` — the six classes below map one-to-one onto the six enumerators.
+// A tag is also an on-disk ABI change (`kind_bits` is `1u << VolCurveKind`,
+// `v2_payload_size` needs a case, `sizeof(CStarParams)` needs pinning plus a
+// schema-salt bump in `schema_hash_v2`) — a feature with a migration, not a
+// cleanup. Adding one WITHOUT that work would recreate the exact hazard T9
+// removed from eSSVI: a selectable switch with no certified evaluator behind it.
+//
+// (The `CStar16M` that does exist is in the separate legacy `Parametrization`
+// enum in vol_surface.hpp, where it is a tag-only marker; the CurveSurface
+// pipeline does not read that enum.)
 enum class VolCurveKind : std::uint8_t {
   ConvexDense = 0,
   Essvi = 1,
@@ -95,6 +124,31 @@ enum class VolCurveKind : std::uint8_t {
 
 // Human-readable tag (for diagnostics / bench output). Never nullptr.
 [[nodiscard]] const char *to_string(VolCurveKind kind) noexcept;
+
+// Exact inverse of `to_string`: the canonical spelling of every enumerator maps
+// back to that enumerator, and NOTHING else parses. Anything unrecognized is an
+// InvalidArgument, never a silent default — the ad-hoc chain this replaces
+// (`examples/universe_autofit.cpp`) folded every typo into ConvexDense, so
+// `--pin-kind essvii` silently fitted a 40-node dense curve.
+//
+// Defined inline beside `to_string` on purpose: the round-trip contract is only
+// checkable at a glance while the two spelling tables sit next to each other,
+// and a six-way `string_view` compare pulls in no dependency the header does not
+// already have.
+[[nodiscard]] inline Result<VolCurveKind> parse_curve_kind(std::string_view text) {
+  constexpr VolCurveKind kAll[] = {VolCurveKind::ConvexDense, VolCurveKind::Essvi,
+                                   VolCurveKind::Svi,         VolCurveKind::LinearVariance,
+                                   VolCurveKind::C8,          VolCurveKind::SplineVol};
+  for (const VolCurveKind kind : kAll) {
+    if (text == to_string(kind)) {
+      return atx::core::Ok(kind);
+    }
+  }
+  return atx::core::Err(ErrorCode::InvalidArgument,
+                        "parse_curve_kind: unrecognized curve kind '" + std::string(text) +
+                            "' (expected one of convex-dense, essvi, svi, linear-variance, "
+                            "c8-event, spline-vol)");
+}
 
 // ── The uniform per-slice curve ─────────────────────────────────────────────
 //
@@ -181,7 +235,7 @@ private:
   mutable std::atomic<const FiniteAnchors *> finite_anchors_published_{nullptr};
 };
 
-// eSSVI backbone (3 DoF, or 4 with asymmetric rho). Owns an EssviParams slice.
+// eSSVI backbone (3 DoF: theta, phi, rho). Owns an EssviParams slice.
 class EssviCurve final : public IVolCurve {
 public:
   EssviCurve(const EssviParams &slice, double df) noexcept;
@@ -190,9 +244,12 @@ public:
     return essvi_total_w(slice_, k_log);
   }
   [[nodiscard]] VolCurveKind kind() const noexcept override { return VolCurveKind::Essvi; }
-  [[nodiscard]] std::size_t dof() const noexcept override {
-    return slice_.rho_scale > 0.0 ? 4u : 3u;
-  }
+  // Always 3. This used to report 4 when `rho_scale > 0`, i.e. when the retired
+  // asymmetric-rho blend was armed; with the blend gone (vol_surface.hpp,
+  // `essvi_rho_blend_armed`) an armed slice has no extra fitted parameter, it
+  // has no evaluation at all, so a 4 here would only mislead the selector's
+  // parsimony tie-break.
+  [[nodiscard]] std::size_t dof() const noexcept override { return 3u; }
   [[nodiscard]] std::unique_ptr<IVolCurve> clone() const override {
     return std::make_unique<EssviCurve>(slice_, df_);
   }
@@ -514,13 +571,42 @@ struct CurveConfig {
 // previous slice's data-supported log-moneyness range; SplineVol intersects it
 // with its own so the calendar projection acts only where BOTH slices carry
 // quotes (a non-tradeable wing crossing is left to the extrapolation).
+//
+// `diag` (optional, T10 / plan D5): non-owning out-param, mirroring the one
+// `refit_slice_curve` takes. Pass nullptr to opt out entirely — the fit is
+// bit-identical either way, and observing it must never perturb it. When
+// non-null it is CLEARED to a default `FitDiag` on entry, ahead of any input
+// validation, so a caller reusing one struct across slices can never read a
+// previous slice's verdict and a struct inspected after an Err reports nothing
+// rather than something stale.
+//
+// What gets populated is family-dependent and deliberately PARTIAL — only what
+// the underlying fitter actually computes is reported:
+//
+//   ConvexDense     n_quotes_used, outer_iters (active-set iterations),
+//                   rmse_vol_vega_weighted, final_grad_norm (its scaled KKT
+//                   stationarity norm), termination = Converged — the QP is the
+//                   one family that fails closed, so a returned fit is certified
+//   Svi             the raw-SVI fitter's own FitDiag, plus `termination` from
+//                   its IRLS stop and `projection` from the Mingone/Lee gate
+//   Essvi           the eSSVI fitter's own FitDiag
+//   C8              n_quotes_used, inner_iters_total, reverted_to_seed
+//   LinearVariance
+//   / SplineVol     n_quotes_used only
+//
+// Everything a family does not report keeps its default, and every default is
+// the "not known" state rather than a value that reads as success. Do NOT infer
+// `Converged` from `Unknown`, nor a zero gradient from a disengaged
+// `final_grad_norm`. `warm_started` is always false here — this is the COLD
+// entry point and takes no prior curve.
 [[nodiscard]] Result<std::unique_ptr<IVolCurve>>
 fit_slice_curve(const CurveConfig &cfg, std::span<const FitObs> obs_eu, double F, double T,
                 double df, const std::function<double(double)> &w_prev = {},
                 std::span<const double> calendar_floor_knots = {},
                 std::pair<double, double> prev_data_k_range = {
                     -std::numeric_limits<double>::infinity(),
-                    std::numeric_limits<double>::infinity()});
+                    std::numeric_limits<double>::infinity()},
+                FitDiag *diag = nullptr);
 
 // Local/warm analogue of fit_slice_curve. Reuses the current curve's state where
 // the family supports it: eSSVI/C8 parameters seed LM directly and ConvexDense

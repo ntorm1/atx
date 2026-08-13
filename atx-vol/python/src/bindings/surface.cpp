@@ -121,12 +121,17 @@ void bind_surface(py::module_ &m) {
       .def_readwrite("theta", &EssviParams::theta)
       .def_readwrite("phi", &EssviParams::phi)
       .def_readwrite("rho", &EssviParams::rho)
-      .def_readwrite("rho_R", &EssviParams::rho_R)
-      .def_readwrite("rho_scale", &EssviParams::rho_scale)
+      // READ-ONLY on purpose. rho_R / rho_scale / lambda_R are the retired
+      // asymmetric-rho blend's fields: still on the archive wire (the schema
+      // fingerprint folds sizeof(EssviParams)), no longer evaluated, and an
+      // armed slice is rejected by the archive readers and NaN'd by the
+      // evaluators. Python was the last writer that could arm one.
+      .def_readonly("rho_R", &EssviParams::rho_R)
+      .def_readonly("rho_scale", &EssviParams::rho_scale)
       .def_readwrite("psi", &EssviParams::psi)
       .def_readwrite("p", &EssviParams::p)
       .def_readwrite("lambda_", &EssviParams::lambda)
-      .def_readwrite("lambda_R", &EssviParams::lambda_R)
+      .def_readonly("lambda_R", &EssviParams::lambda_R)
       .def_readwrite("T", &EssviParams::T)
       .def_readwrite("F", &EssviParams::F)
       .def_readwrite("expiry_ns", &EssviParams::expiry_ns)

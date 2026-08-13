@@ -360,6 +360,20 @@ struct SessionDiagnostics {
   std::size_t n_slices{0};              // fitted slice count
   std::size_t n_quotes{0};              // sum of per-slice n_used
   ParityDiagnosticState parity_state{ParityDiagnosticState::NotScored};
+  // T4 escalation (T10c): banded parity-evidence counters, rolled up from each
+  // expiry's ParityReport (n_parity_scored = Σ n, n_parity_in_band = Σ
+  // n_within, n_parity_out_of_band = their difference). The averaging above
+  // cannot tell ABSENCE OF EVIDENCE from EVIDENCE OF ALL-OUT: a
+  // default-constructed ParityReport (n == 0) enters mean/worst as
+  // frac_fv_within_bidask == 0 while parity_state can stay Valid, reading
+  // exactly like a surface that reprices nothing in band. With the counters,
+  // n_parity_scored == 0 says "nothing was measured" and n_parity_scored > 0
+  // with n_parity_in_band == 0 says "everything measured missed" — structurally
+  // different states. Additive observability only: no admission, score, or
+  // chosen_kind reads them.
+  std::size_t n_parity_scored{0};
+  std::size_t n_parity_in_band{0};
+  std::size_t n_parity_out_of_band{0};
   // SpiderRock-style band-violation stats, rolled up from each expiry's
   // ParityReport::band (record-only; not used to gate slice selection).
   std::size_t n_bid_miss{};             // sum over slices

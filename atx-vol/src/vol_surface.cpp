@@ -35,19 +35,6 @@ constexpr double kResidInnerY = 0.4;
 // trading year.
 constexpr double kExactTTol = 1.0 / (252.0 * 6.5 * 60.0);
 
-// Asymmetric left/right skew blend. Reduces to the base rho when the blend
-// is disabled (scale <= 0) or when the two rho targets coincide.
-[[nodiscard]] double rho_eff(const EssviParams& s, double k_log) noexcept {
-  if (!(s.rho_scale > 0.0)) {
-    return s.rho;
-  }
-  if (s.rho_R == s.rho) {
-    return s.rho;
-  }
-  const double bf = 0.5 * (1.0 + std::tanh(k_log / s.rho_scale));
-  return s.rho + (s.rho_R - s.rho) * bf;
-}
-
 // T with the "degenerate expiry" default the C applies before scaling theta.
 [[nodiscard]] double effective_T(double T) noexcept {
   return (T > 0.0) ? T : kDefaultT;
@@ -57,10 +44,17 @@ constexpr double kExactTTol = 1.0 / (252.0 * 6.5 * 60.0);
 
 // ── eSSVI evaluators ─────────────────────────────────────────────────────
 
+bool essvi_rho_blend_armed(const EssviParams& s) noexcept {
+  return (s.rho_scale > 0.0) && (s.rho_R != s.rho);
+}
+
 double essvi_backbone_w(const EssviParams& s, double k_log) noexcept {
+  if (essvi_rho_blend_armed(s)) {
+    return kNaN;
+  }
   const double theta = s.theta;
   const double phi = s.phi;
-  const double rho = rho_eff(s, k_log);
+  const double rho = s.rho;
   const double pk = phi * k_log;
   const double inner = (pk + rho) * (pk + rho) + (1.0 - rho * rho);
   return 0.5 * theta * (1.0 + rho * pk + std::sqrt(inner));
@@ -117,10 +111,37 @@ double essvi_total_w(const EssviParams& s, double k_log) noexcept {
   return w;
 }
 
+std::size_t essvi_slice_dof(const EssviParams& s) noexcept {
+  // Backbone: one Mingone cube (psi, p, lambda) per slice — 3 fitted numbers.
+  std::size_t dof = 3u;
+  if (!(s.resid_scale > 0.0)) {
+    return dof;  // residual disarmed: `essvi_total_w` serves the backbone only
+  }
+  if (s.resid_basis_kind == ResidualBasisKind::C2Bspline) {
+    // `fit_dense_residual` writes exactly `resid_n_basis` fitted bump
+    // coefficients; mirror `essvi_residual_w`'s 0 => 5 default and clamp so a
+    // corrupted count can never explode the dof past the coefficient storage.
+    const std::size_t n_basis = (s.resid_n_basis != 0u)
+                                    ? static_cast<std::size_t>(s.resid_n_basis)
+                                    : std::size_t{5u};
+    dof += std::min<std::size_t>(n_basis, s.resid_coef.size());
+  } else {
+    // HingeQuad (and the legacy tags that evaluate through its branch): the
+    // fitter writes slots 1..4 ({yp, yp^2, yc, yc^2}); slot 0 is structurally
+    // zero in the evaluator, so `resid_n_basis == 5` carries FOUR fitted
+    // coefficients, not five.
+    dof += 4u;
+  }
+  return dof;
+}
+
 std::array<double, 3> essvi_w_grad3(const EssviParams& s, double k_log) noexcept {
+  if (essvi_rho_blend_armed(s)) {
+    return {kNaN, kNaN, kNaN};
+  }
   const double theta = s.theta;
   const double phi = s.phi;
-  const double rho = rho_eff(s, k_log);
+  const double rho = s.rho;
   const double pk = phi * k_log;
   const double a = pk + rho;
   const double inner = a * a + (1.0 - rho * rho);
@@ -132,22 +153,13 @@ std::array<double, 3> essvi_w_grad3(const EssviParams& s, double k_log) noexcept
 }
 
 std::array<double, 4> essvi_w_grad4(const EssviParams& s, double k_log) noexcept {
-  const double theta = s.theta;
-  const double phi = s.phi;
-  const double rho = rho_eff(s, k_log);
-  const double pk = phi * k_log;
-  const double a = pk + rho;
-  const double inner = a * a + (1.0 - rho * rho);
-  const double r = std::sqrt(inner);
-  const double dwdth = 0.5 * (1.0 + rho * pk + r);
-  const double dwdphi = 0.5 * theta * (rho * k_log + (a * k_log) / r);
-  const double dwdrhoe = 0.5 * theta * (pk + (a - rho) / r);
-  // Split the effective-rho sensitivity onto the (rho_L, rho_R) pair through
-  // the blend factor. bf == 0 in symmetric mode => all weight on rho_L.
-  const double bf = (s.rho_scale > 0.0)
-                        ? 0.5 * (1.0 + std::tanh(k_log / s.rho_scale))
-                        : 0.0;
-  return {dwdth, dwdphi, dwdrhoe * (1.0 - bf), dwdrhoe * bf};
+  if (essvi_rho_blend_armed(s)) {
+    return {kNaN, kNaN, kNaN, kNaN};
+  }
+  const std::array<double, 3> g = essvi_w_grad3(s, k_log);
+  // A slice has ONE rho, so all of the rho sensitivity sits on rho_L and the
+  // rho_R partial is structurally zero — not "zero in the symmetric case".
+  return {g[0], g[1], g[2], 0.0};
 }
 
 // ── Raw SVI ──────────────────────────────────────────────────────────────

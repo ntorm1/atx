@@ -43,8 +43,10 @@
 // exclusive ownership of the surface for the call duration — the caller
 // fences them against any concurrent reader.
 
+#include <array>
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -107,22 +109,223 @@ struct ArbViolation {
   Kind kind{Kind::Calendar};
 };
 
+// ── Exact slice-crossing detection (Gatheral & Jacquier Lemma 3.3 / eq. 3.7) ─
+//
+// Two raw-SVI slices in TOTAL variance,
+//     w_i(k) = a_i + b_i*( rho_i*(k - m_i) + sqrt((k - m_i)^2 + sigma_i^2) ),
+// are equal exactly where a quartic in k has a real root. Writing
+// D = w_1 - w_2 = L + B_1 - B_2 with L(k) linear and B_i(k) = b_i*R_i(k) >= 0
+// the two radical terms, D = 0 <=> L = B_2 - B_1; squaring twice clears both
+// radicals and leaves
+//     P(k) = (L^2 - B_1^2 - B_2^2)^2 - 4*B_1^2*B_2^2,
+// of degree <= 4 because L^2, B_1^2 and B_2^2 are all quadratics. P factors as
+//     P = (L - B_1 - B_2)(L + B_1 + B_2)(L - B_1 + B_2)(L + B_1 - B_2),
+// which is the whole price of the two squarings: only the LAST factor is the
+// equation that was asked, so three quarters of P's roots are SPURIOUS. Every
+// root is therefore BACK-SUBSTITUTED into D and dropped unless D vanishes
+// there. Skipping that step manufactures confident false crossings, and no test
+// that feeds the solver only genuine crossings can detect the omission.
+//
+// Because crossings are LOCATED rather than sampled, the comparison they
+// support is decided over ALL of R: between two consecutive crossings D has no
+// zero, so a single evaluation settles its sign on that entire interval, and
+// the same argument covers both unbounded tails. Roper's IV4 is quantified over
+// R and anything reading Dupire local vol off the surface needs it there, so
+// this is the statement the check actually owes. It also cannot miss a crossing
+// for being narrower than a grid step — the failure a sampled scan has no
+// defence against.
+
+// A raw-SVI slice the exact solver is TOTAL on. The only ways to obtain one are
+// the factories below, each of which returns nullopt for anything it cannot
+// decide exactly, so a value of this type cannot represent an undecidable
+// slice and every member below is total and noexcept.
+class SviCrossingSlice {
+public:
+  // Refuses non-finite parameters, b < 0, sigma < 0 and |rho| >= 1 — outside
+  // that set w is either not real-valued or not a hyperbola in k.
+  [[nodiscard]] static std::optional<SviCrossingSlice>
+  from_svi(const SviParams &p) noexcept;
+
+  // eSSVI BACKBONE, via the exact reparametrisation obtained by pulling
+  // theta*phi/2 out of eSSVI's w:
+  //   a = theta*(1 - rho^2)/2,  b = theta*phi/2,
+  //   m = -rho/phi,             sigma = sqrt(1 - rho^2)/phi.
+  // Refuses a slice carrying a wing RESIDUAL layer (`resid_scale > 0`): the
+  // residual is a clamped piecewise hinge-quadratic, not an SVI hyperbola, so
+  // its crossings are NOT roots of the quartic and treating it as exact would
+  // silently under-report. Also refuses an armed asymmetric rho-blend, whose
+  // evaluator is NaN by construction.
+  [[nodiscard]] static std::optional<SviCrossingSlice>
+  from_essvi_backbone(const EssviParams &p) noexcept;
+
+  [[nodiscard]] double w(double k) const noexcept;
+  [[nodiscard]] double dw_dk(double k) const noexcept;
+  // Asymptotic limsup w(k)/|k| on each wing; Lee bounds both by 2.
+  [[nodiscard]] double wing_slope_right() const noexcept { return b_ * (1.0 + rho_); }
+  [[nodiscard]] double wing_slope_left() const noexcept { return b_ * (1.0 - rho_); }
+  [[nodiscard]] double T() const noexcept { return T_; }
+  [[nodiscard]] double a() const noexcept { return a_; }
+  [[nodiscard]] double b() const noexcept { return b_; }
+  [[nodiscard]] double rho() const noexcept { return rho_; }
+  [[nodiscard]] double m() const noexcept { return m_; }
+  [[nodiscard]] double sigma() const noexcept { return sigma_; }
+
+private:
+  SviCrossingSlice() = default;
+  double a_{};
+  double b_{};
+  double rho_{};
+  double m_{};
+  double sigma_{};
+  double T_{};
+};
+
+// The log-moneyness points where two slices' total variances are equal.
+// Capacity 4 with no allocation: P has degree <= 4, so four is the hard
+// maximum and a heap vector would only add a failure mode. Entries [0, n) are
+// finite and strictly ascending.
+struct SliceCrossings {
+  std::array<double, 4> k{};
+  std::uint8_t n{};
+};
+
+// Exact crossings of `lo` and `hi`, spurious quartic roots removed. Total and
+// allocation-free; a pair that never crosses yields n == 0.
+[[nodiscard]] SliceCrossings
+svi_pair_crossings(const SviCrossingSlice &lo, const SviCrossingSlice &hi) noexcept;
+
+// One maximal interval on which w_lo > w_hi — a calendar violation when `lo` is
+// the shorter maturity. `k_lo`/`k_hi` are the bounding crossings, infinite on
+// the unbounded tails. `k_witness` is a finite interior point and `slack` is
+// `w_lo - w_hi > 0` there.
+//
+// CONTRACT: the DECOMPOSITION is exact — no violating interval is missed and
+// none is invented. `slack` is a witness value sampled inside the interval,
+// hence a LOWER BOUND on the supremum of the deficit rather than the supremum
+// itself: locating that would need the roots of D', which is not a polynomial
+// system of workable degree. Callers gating on "is there a violation" get an
+// exact answer; callers gating on a slack THRESHOLD must read it as a bound.
+struct CalendarInterval {
+  double k_lo{};
+  double k_hi{};
+  double k_witness{};
+  double slack{};
+};
+
+// Every interval of R on which w_lo exceeds w_hi by more than `tol`. At most
+// three intervals: four crossings cut R into five pieces of alternating sign.
+[[nodiscard]] std::vector<CalendarInterval>
+svi_pair_calendar_intervals(const SviCrossingSlice &lo, const SviCrossingSlice &hi,
+                            double tol);
+
 // ── Calendar / butterfly checks ──────────────────────────────────────────
 
-// Sample `n_grid` equispaced log-moneyness points in [k_min, k_max] and check
-// that total variance w(k, T) is monotone non-decreasing in T at each point.
-// An empty result means "no calendar arbitrage". No-op (empty) when the
-// surface carries fewer than two slices or `n_grid == 0`.
+// Check that total variance w(k, T) is monotone non-decreasing in T across
+// consecutive slices over [k_min, k_max]. An empty result means "no calendar
+// arbitrage". No-op (empty) when the surface carries fewer than two slices or
+// `n_grid == 0`.
 //
-// A grid point where `VolSurface::w` is non-finite is SKIPPED: no violation is
-// recorded for it, and it does not become the baseline the next slice is
-// compared against — the last finite (w, T) does, so a violation straddling
-// the unusable slice is still reported, carrying the maturities of the two
-// FINITE slices it spans. There is no status channel for "this slice was not
-// evaluatable"; callers that need to know must probe `w` themselves.
+// TWO REGIMES, and which one ran is observable from the records themselves:
+//
+//  * EXACT (raw-SVI / SVI-MM surfaces, and eSSVI surfaces whose slices carry no
+//    residual layer, with strictly increasing slice maturities). Crossings are
+//    located by the quartic above and one violation is recorded per violating
+//    INTERVAL, at a witness point inside it. `n_grid` is unused. This is what
+//    changed in T4: the previous behaviour recorded one violation per violating
+//    GRID POINT, so a count was a function of the sampling density and a
+//    crossing narrower than one step was reported as no crossing at all.
+//
+//  * SAMPLED (everything else) — `n_grid` equispaced points in [k_min, k_max),
+//    one violation per violating point, exactly as before. A point where
+//    `VolSurface::w` is non-finite is SKIPPED: it is not a violation, and — the
+//    defect this guards — not a BASELINE either. The last finite (w, T) stays
+//    the baseline, so a violation straddling the unusable slice is still
+//    reported, carrying the maturities of the two FINITE slices it spans.
+//
+// Callers reading only `empty()` (the `calendar_arb_free` flag and every repair
+// gate in surface_parity.cpp) are unaffected in meaning and strictly better
+// served: the exact regime cannot miss a narrow crossing. Callers reading
+// `size()` as a count must read it as "violating intervals", not grid hits.
+// There is still NO error path — every returned `false`/non-empty is a found
+// crossing, never a failed check.
 [[nodiscard]] Result<std::vector<ArbViolation>>
 arb_check_calendar(const VolSurface &s, double k_min, double k_max,
                    std::uint32_t n_grid);
+
+// ── The certified band, stated once ──────────────────────────────────────
+//
+// A fixed |k| <= 0.60 window is delta-INHOMOGENEOUS across a board by about
+// eleven orders of magnitude: at 1 week / 35 vol the forward call delta at
+// k = +0.60 is zero to machine precision; at 2 years it is 0.084. "Violations
+// inside the band" counted over a fixed k window therefore means something
+// different on every slice of the same surface, and the number is not
+// comparable between two tenors, two boards, or the two fit lanes.
+//
+// The band below is Wystup's 1%-99% DELTA band mapped into log-moneyness in
+// closed form. With forward call delta = Phi(d_1) and
+// d_1 = -k/sqrt(w) + sqrt(w)/2, the delta levels 1-p and p sit at
+//     k = w/2 -/+ z*sqrt(w),      z = Phi^{-1}(1 - p),
+// so the band is centred at k = w/2 with half-width z*sqrt(w). It scales with
+// sqrt(w) exactly as the slice's own moneyness scale does, which is precisely
+// what makes it comparable across tenors.
+//
+// `w` is the slice's ATM total variance. A skew-exact delta band is implicit in
+// k — the w at the edge is the w being solved for — so pinning it at ATM keeps
+// the band a closed-form monotone interval, which is the standard flat-vol
+// reading of a delta quote and is what a trader means by "25 delta".
+//
+// `z` is a parameter rather than a tail probability so the number is auditable
+// at the call site and this header needs no inverse normal CDF.
+inline constexpr double kWystupTailQuantile = 2.3263478740408408;  // Phi^-1(0.99)
+
+struct DeltaBand {
+  double k_lo{};
+  double k_hi{};
+  [[nodiscard]] bool contains(double k) const noexcept {
+    return k >= k_lo && k <= k_hi;
+  }
+  [[nodiscard]] bool usable() const noexcept { return k_hi > k_lo; }
+};
+
+// Empty (k_lo == k_hi == 0) for a non-positive or non-finite `w_atm`, which is
+// not a band and must not silently read as one.
+[[nodiscard]] DeltaBand delta_band_from_atm_w(double w_atm, double z) noexcept;
+
+// Calendar violations split by whether they fall inside the certified band.
+//
+// OUT-OF-BAND IS NOT A DEFECT unless something evaluates there. It is reported
+// rather than dropped because Roper's IV4 is quantified over all of R and
+// anything computing Dupire local vol off this surface needs it there — so the
+// unbounded check is kept as an internal invariant and surfaced as its own
+// counter, instead of being folded into the number a gate reads.
+//
+// `certified_over_r()` is the honest half of that promise: the exact regime
+// decides both tails, the sampled fallback cannot, and the caller can tell
+// which it got instead of having to assume.
+struct CalendarBandReport {
+  std::vector<ArbViolation> in_band;
+  std::vector<ArbViolation> out_of_band;
+  std::uint32_t n_pairs_exact{};
+  std::uint32_t n_pairs_sampled{};
+  [[nodiscard]] bool certified_over_r() const noexcept {
+    return n_pairs_sampled == 0;
+  }
+};
+
+// Outer window the SAMPLED fallback can see at all. Matches the +/-3.0
+// diagnostic grid the eSSVI lane already used, so a sampled out-of-band count
+// stays comparable with what that lane reported before.
+inline constexpr double kSampledOuterK = 3.0;
+
+// One metric, one band, both fit lanes. The band for a slice PAIR is the
+// intersection of the two slices' delta bands: a strike outside either slice's
+// 1%-99% window is not tradeable on that pair, so a crossing there is not
+// economically realisable and belongs in the out-of-band counter.
+//
+// No error path, matching `arb_check_calendar`: a surface with fewer than two
+// slices reports two zero counters and two empty vectors.
+[[nodiscard]] Result<CalendarBandReport>
+arb_check_calendar_banded(const VolSurface &s, double z, std::uint32_t n_grid);
 
 // Calendar check for a polymorphic CurveSurface (ConvexDense/SVI served path).
 // Sample n_grid equispaced log-moneyness points in [k_min,k_max]; record a
@@ -220,18 +423,62 @@ struct SviMmAdmissibility {
   double max_slack{};            // worst absolute slack across the breached set
 };
 
+// ── Lee wing slope: the derivation, and the value actually enforced ──────
+//
+// Lee's moment formula bounds the asymptotic slope of TOTAL variance on each
+// wing: limsup_{k -> +/-inf} w(k)/|k| <= 2. For raw SVI,
+//     w = a + b*( rho*(k - m) + sqrt((k - m)^2 + sigma^2) ),
+// the radical is asymptotically |k - m|, so the right wing has slope b*(1+rho)
+// and the left b*(1-rho); the binding one is b*(1+|rho|), and Lee therefore
+// says exactly
+//     b*(1 + |rho|) <= 2.
+//
+// eSSVI carries a theta/2 PREFACTOR that raw SVI does not:
+//     w = (theta/2)*( 1 + rho*phi*k + sqrt((phi*k + rho)^2 + 1 - rho^2) ),
+// whose wing slope is (theta*phi/2)*(1 + |rho|). Its ceiling of 4 is a bound on
+// theta*phi*(1 + |rho|) — see `essvi_phi_max`, min(4/s, 2/sqrt(s)) with
+// s = theta*(1 + |rho|) — and pulling theta*phi/2 out of eSSVI's w gives raw-SVI
+// b = theta*phi/2 exactly. So eSSVI's 4 IS Lee's 2, written in a
+// parametrization that carries a factor of two inside it.
+//
+// Until T10 this constant read 4.0 — the eSSVI number, carried across the
+// parametrization boundary above, so the raw-SVI gate was loose by exactly 2x
+// (plan D3). The independent risk oracle always used the correct 2.0
+// (`detail/risk_surface_validation.hpp`, max_abs_wing_total_variance_slope);
+// the two now agree.
+//
+// It could not be corrected in this file alone. `mm_project_admissible`
+// (svi_calib.cpp) clamps b to this same ceiling, and every serving path runs
+// gate -> project -> re-gate — `fit_slice_curve` (vol_curve.cpp) plus both SVI
+// surface drivers (svi_calib.cpp) — DROPPING whatever still fails the re-check.
+// Tightening only the gate would have made the projector's own output fail that
+// re-check, so every slice with b*(1+|rho|) in (2, 4] would be DROPPED instead
+// of repaired: strictly worse than the consistent-but-wrong state it replaced.
+// Measured that way (gate 2.0, projector 4.0, raw SVI pinned on every board):
+// 18 of 1619 served slices lost on lqbench 2026-08-03 and 2 of 1277 on the
+// S&P 100 2026-07-22 control. With BOTH moved, the totals are UNCHANGED —
+// 1619 -> 1619 and 1277 -> 1277 slices, 218/218 and 104/104 boards — and under
+// normal family auto-selection every board is bit-identical (2609 and 1650
+// slices), consistent with T1c measuring wing violations at 0.0%/2.9% of
+// rejected eSSVI primaries: this is a latent-correctness fix, not a breadth
+// lever. Anyone changing this value must change the projector in the SAME
+// commit; `VolCurve.SviProjectMmRepairsTheFormerlyAdmittedWingSlopeBand` is the
+// regression that fails if they do not.
+inline constexpr double kSviWingSlopeGate = 2.0;
+
 // Verify the Martini-Mingone admissible-polytope inequalities on a raw-SVI
 // slice (arXiv:2005.03340 §6.3 + Lee 2004):
 //
 //   1.  b > 0
 //   2.  sigma > 0
 //   3.  |rho| < 1
-//   4.  a + b*sigma*sqrt(1 - rho^2) >= 0     (global w >= 0; Lemma 3.2)
-//   5.  b * (1 + |rho|) <= 4 / T             (Lee wing-slope butterfly bound)
+//   4.  a + b*sigma*sqrt(1 - rho^2) >= 0        (global w >= 0; Lemma 3.2)
+//   5.  b * (1 + |rho|) <= kSviWingSlopeGate    (Lee wing-slope bound, T-free)
 //
 // A 1e-12 tolerance absorbs FP noise on a boundary-touching iterate. Inequality
 // (4) is skipped when (3) already fired (the radical is not real). Inequality
-// (5) is skipped for a non-positive `T`. Closed-form — no FD sampling.
+// (5) is skipped for a non-positive `T` — the bound itself is T-free, but a
+// slice with no maturity is not a slice. Closed-form — no FD sampling.
 [[nodiscard]] SviMmAdmissibility
 arb_check_butterfly_svi_mm(const SviParams &slice, double T) noexcept;
 

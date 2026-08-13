@@ -812,6 +812,11 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
   //    the model IV is read back via iv_on_slice, so the number scored is the
   //    one the surface actually serves.
   const double t_parity = time_stages ? now_ns() : 0.0;
+  // T4 escalation (T10c): banded evidence counters over the same population the
+  // per_expiry reports score. Additive observability — nothing below feeds an
+  // admission, a score, or the family selection.
+  std::size_t n_scored_quotes = 0;
+  std::size_t n_in_band_quotes = 0;
   for (const PendingSlice &ps : pending) {
     const PreparedScoreColumns &score = ps.prepared.score_columns();
     std::vector<double> model_iv;
@@ -829,11 +834,42 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
     pin.method = in.deam.method;
     pin.al_opts = in.deam.al_opts;
     pin.band_k = in.band_k;
-    pin.n_curve_params = 3;
+    // D4 (T10c): score chi2 against the SERVED slice's own fitted parameter
+    // count, read off the FINAL (possibly repaired) surface — the same object
+    // `iv_on_slice` just evaluated — not a nominal 3. The hardcode was right
+    // only for a backbone-only slice; a residual-armed profile (SPY-like /
+    // LiquidSingleName keep `residual_disable = false`) serves 3 + 4 HingeQuad
+    // coefficients through `essvi_total_w`, and a too-small dof inflates the
+    // (N - dof) denominator, making the served number systematically
+    // OPTIMISTIC. Per-slice, not per-surface: `fit_slice_calendar_floored`
+    // strips the residual on a floored refit, so dof can differ slice to slice
+    // within one board.
+    pin.n_curve_params = essvi_slice_dof(surface.essvi_slices()[ps.slice_idx]);
     pin.caches = in.deam.caches; // re-Am through the same hot-path caches
-    ATX_TRY(const ParityReport parity, chain_parity(score.strike, score.bid, score.ask, score.mid,
-                                                    score.side, model_iv, score.market_iv, pin));
+    Result<ParityReport> scored = chain_parity(score.strike, score.bid, score.ask, score.mid,
+                                               score.side, model_iv, score.market_iv, pin);
+    bool chi2_dof_underdetermined = false;
+    if (!scored) {
+      // The ONLY dof-dependent failure `chain_parity` has is
+      // `reduced_chi_square`'s N > dof precondition, so a failure that a dof-0
+      // re-score fixes means the scored population cannot support the true
+      // dof. Failing the WHOLE board here (the pre-D4 ATX_TRY) would discard
+      // the band evidence, which does not depend on dof at all — the D1 shape:
+      // no measurement laundered as a measured failure. Re-score with dof = 0:
+      // the band evidence survives and `chi2_reduced` stays a DEFINED number
+      // (chi2 per observation), marked by `chi2_dof_underdetermined` rather
+      // than blanked to a perfect-looking 0.0 (W3-A). A failure the re-score
+      // does NOT fix was never about dof; it propagates exactly as before.
+      pin.n_curve_params = 0;
+      scored = chain_parity(score.strike, score.bid, score.ask, score.mid, score.side, model_iv,
+                            score.market_iv, pin);
+      chi2_dof_underdetermined = true;
+    }
+    ATX_TRY(ParityReport parity, std::move(scored));
+    parity.chi2_dof_underdetermined = chi2_dof_underdetermined;
     worst = std::min(worst, parity.frac_fv_within_bidask);
+    n_scored_quotes += parity.n;
+    n_in_band_quotes += parity.n_within;
     per_expiry.push_back(parity);
   }
   const double ms_parity = time_stages ? (now_ns() - t_parity) : 0.0;
@@ -871,6 +907,9 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
       .n_calendar_viol_pre = n_calendar_viol_pre,
       .n_carry_skipped = n_carry_skipped,
       .n_audit_starved = n_audit_starved,
+      .n_scored = n_scored_quotes,
+      .n_in_band = n_in_band_quotes,
+      .n_out_of_band = n_scored_quotes - n_in_band_quotes,
   };
   if (in.collect_stage_timings) {
     out.fit_timings.carry_solve_ms = ms_carry;
