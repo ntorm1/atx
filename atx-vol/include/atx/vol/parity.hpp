@@ -98,6 +98,42 @@ struct ParityReport {
   // Set by the scoring call SITE (only it knows a dof-0 re-score happened);
   // `chain_parity` itself cannot distinguish a retry from an honest dof of 0.
   bool chi2_dof_underdetermined{false};
+
+  // ── The ABSOLUTE round trip, in vol points (T5 item 3) ─────────────────
+  //
+  // de-Americanize -> fit -> re-Americanize -> compare to the ORIGINAL American
+  // mid, expressed as the vol displacement that price gap represents:
+  //
+  //     round_trip_vol_i = |fair_value_i - mid_i| / vega_i
+  //
+  // with `vega_i` the Black-76 vega already used for this quote's error bar.
+  // `rmse_round_trip_vol` is the RMS over the scored population and
+  // `max_round_trip_vol` its worst quote.
+  //
+  // WHY IT IS NEEDED (de-Am review D6). Every other acceptance number on this
+  // path is SPREAD-NORMALISED — `frac_fv_within_bidask` here, and the de-Am
+  // audit's `residual_half_spreads` upstream (budget 0.25, i.e. spread/8). A
+  // spread-normalised gate cannot produce a large number on a wide board BY
+  // CONSTRUCTION, which is how "zero de-Am rejections on thin boards" and a
+  // large silent error coexist. Thin, wide-spread boards are exactly the
+  // population breadth work is trying to serve, so the metric that decides
+  // whether serving them is honest must not scale with their spread.
+  //
+  // Distinct from `rmse_mid_vol`, which compares the model vol to the recovered
+  // MARKET vol and therefore cannot see any error the de-Am inversion itself
+  // introduced: it is measured against the inversion's own output. This is
+  // measured against the raw quote, so it carries the whole chain — de-Am
+  // inversion error, fit error, and re-Americanization error together.
+  //
+  // A quote whose vega is below one tick per vol point (a dead deep wing) has no
+  // vol interpretation and contributes nothing: it is excluded from these two
+  // statistics only, leaving the rest of the report's population untouched.
+  // `n_round_trip` is how many contributed, so `n_round_trip < n` is the visible
+  // signal that part of the slice carries no vol-space verdict, and
+  // `n_round_trip == 0` means NOT MEASURED — never "measured as zero".
+  double rmse_round_trip_vol{0.0};
+  double max_round_trip_vol{0.0};
+  std::size_t n_round_trip{0};
 };
 
 // Score a chain of quotes against a fitted surface.

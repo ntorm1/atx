@@ -93,10 +93,12 @@ encode_surface_policy(const SurfacePolicy &policy,
       (record.outputs & static_cast<std::uint8_t>(SurfaceOutputs::Risk)) != 0u;
   const bool mandatory_risk_admission =
       !requests_risk || record.risk_admission == static_cast<std::uint8_t>(RiskAdmission::Required);
-  // Bits 0..11 — includes ValidationFailure::CarryGap (1u << 11), the
-  // publish-with-Degraded reason: a Degraded+CarryGap provenance is a
-  // routinely SERVED state and must round-trip the db record.
-  constexpr std::uint32_t kKnownFailures = (1u << 12) - 1u;
+  // Bits 0..12 — includes both publish-with-Degraded reasons,
+  // ValidationFailure::CarryGap (1u << 11) and
+  // ValidationFailure::SubstituteUnderserve (1u << 12, T7a): a Degraded
+  // provenance carrying either is a routinely SERVED state and must
+  // round-trip the db record.
+  constexpr std::uint32_t kKnownFailures = (1u << 13) - 1u;
   const bool provenance_valid =
       record.has_provenance <= 1u &&
       (record.has_provenance == 0u ||

@@ -572,6 +572,35 @@ collect_input_diagnostics(const Underlying &under, const SessionInputs &in,
   return out;
 }
 
+// T6 (§5.2). Expiries the driver walked and lost to PREPARATION starvation.
+//
+// Derived from `expiry_reports` — which both drivers populate for EVERY chain,
+// fitted or not — rather than from a per-driver scalar, so the two build paths
+// cannot report a different number for the same board and neither report struct
+// has to grow a field. Only `PrepStarved` is counted: a carry failure is already
+// surfaced by `n_carry_skipped_expiries`, a hard preparation/fit error is a
+// defect that raises its own failure, and `Skipped` is a degenerate maturity
+// rather than a lost expiry.
+[[nodiscard]] std::size_t count_prep_starved(std::span<const ExpiryFitReport> reports) noexcept {
+  std::size_t n = 0;
+  for (const ExpiryFitReport &report : reports) {
+    n += (report.outcome == ExpiryFitOutcome::PrepStarved) ? 1u : 0u;
+  }
+  return n;
+}
+
+// T6d. Same derivation and rationale as count_prep_starved one comment up, for
+// the Task 1 k-coverage refusal (`ExpiryFitOutcome::PrepUncovered`): produced
+// by the ConvexDense driver only today, but counted on both build paths so the
+// two cannot diverge if another family ever grows a coverage refusal.
+[[nodiscard]] std::size_t count_prep_uncovered(std::span<const ExpiryFitReport> reports) noexcept {
+  std::size_t n = 0;
+  for (const ExpiryFitReport &report : reports) {
+    n += (report.outcome == ExpiryFitOutcome::PrepUncovered) ? 1u : 0u;
+  }
+  return n;
+}
+
 void aggregate_input_diagnostics(std::span<const SessionSliceDiagnostics> slices,
                                  SessionDiagnostics &diag) noexcept {
   double min_effective = std::numeric_limits<double>::infinity();
@@ -1307,8 +1336,9 @@ Result<VolaSession> VolaSession::build(const Underlying &under, const SessionInp
     }
     {
       double worst = std::numeric_limits<double>::infinity();
-      double sum_frac = 0.0, sum_chi2 = 0.0, sum_rmse = 0.0;
+      double sum_frac = 0.0, sum_chi2 = 0.0, sum_rmse = 0.0, sum_round_trip = 0.0;
       std::size_t np_scored = 0;
+      std::size_t n_round_trip_scored = 0;
       for (const ParityReport &p : crep.per_expiry) {
         // T4 escalation (T10c): banded evidence counters. Accumulated BEFORE
         // the n == 0 skip below (an unscored report contributes zero to each,
@@ -1323,6 +1353,14 @@ Result<VolaSession> VolaSession::build(const Underlying &under, const SessionInp
         sum_frac += p.frac_fv_within_bidask;
         sum_chi2 += p.chi2_reduced;
         sum_rmse += p.rmse_mid_vol;
+        // T5 item 3 (absolute, vol points). An expiry whose quotes all fall
+        // below the one-tick-per-vol-point vega floor was NOT measured, so it is
+        // left out of the mean rather than folded in as a reassuring zero.
+        if (p.n_round_trip > 0) {
+          sum_round_trip += p.rmse_round_trip_vol;
+          cdiag.max_round_trip_vol = std::max(cdiag.max_round_trip_vol, p.max_round_trip_vol);
+          ++n_round_trip_scored;
+        }
         cdiag.n_bid_miss += p.band.n_bid_miss;
         cdiag.n_ask_miss += p.band.n_ask_miss;
         cdiag.max_prc_err = std::max(cdiag.max_prc_err, p.band.max_prc_err);
@@ -1335,6 +1373,9 @@ Result<VolaSession> VolaSession::build(const Underlying &under, const SessionInp
         cdiag.mean_frac_within_bidask = sum_frac / dn;
         cdiag.mean_chi2_reduced = sum_chi2 / dn;
         cdiag.mean_rmse_vol = sum_rmse / dn;
+      }
+      if (n_round_trip_scored > 0) {
+        cdiag.mean_round_trip_vol = sum_round_trip / static_cast<double>(n_round_trip_scored);
       }
       if (!eff.score_parity) {
         cdiag.parity_state = ParityDiagnosticState::Disabled;
@@ -1400,6 +1441,8 @@ Result<VolaSession> VolaSession::build(const Underlying &under, const SessionInp
     }
     aggregate_input_diagnostics(slice_diag, cdiag);
     cdiag.n_carry_skipped_expiries = crep.n_carry_skipped;
+    cdiag.n_prep_starved_expiries = count_prep_starved(crep.expiry_reports);
+    cdiag.n_prep_uncovered_expiries = count_prep_uncovered(crep.expiry_reports);
     retain_fitted_term_rates(eff, crep.context);
     release_build_time_cache_borrow(eff);
     VolaSession session{std::move(placeholder),
@@ -1448,11 +1491,20 @@ Result<VolaSession> VolaSession::build(const Underlying &under, const SessionInp
   double sum_frac = 0.0;
   double sum_chi2 = 0.0;
   double sum_rmse = 0.0;
+  double sum_round_trip = 0.0;
+  std::size_t n_round_trip_scored = 0;
   for (const ParityReport &p : rep.per_expiry) {
     worst = std::min(worst, p.frac_fv_within_bidask);
     sum_frac += p.frac_fv_within_bidask;
     sum_chi2 += p.chi2_reduced;
     sum_rmse += p.rmse_mid_vol;
+    // T5 item 3 (absolute, vol points); see the curve-driver site for why an
+    // unmeasured expiry is skipped rather than averaged in as zero.
+    if (p.n_round_trip > 0) {
+      sum_round_trip += p.rmse_round_trip_vol;
+      diag.max_round_trip_vol = std::max(diag.max_round_trip_vol, p.max_round_trip_vol);
+      ++n_round_trip_scored;
+    }
     diag.n_bid_miss += p.band.n_bid_miss;
     diag.n_ask_miss += p.band.n_ask_miss;
     diag.max_prc_err = std::max(diag.max_prc_err, p.band.max_prc_err);
@@ -1472,6 +1524,9 @@ Result<VolaSession> VolaSession::build(const Underlying &under, const SessionInp
     diag.mean_frac_within_bidask = sum_frac / dnp;
     diag.mean_chi2_reduced = sum_chi2 / dnp;
     diag.mean_rmse_vol = sum_rmse / dnp;
+  }
+  if (n_round_trip_scored > 0) {
+    diag.mean_round_trip_vol = sum_round_trip / static_cast<double>(n_round_trip_scored);
   }
   // The legacy eSSVI compatibility driver intentionally always scores parity,
   // even when the generic-family opt-out is false. State records what actually
@@ -1589,6 +1644,8 @@ Result<VolaSession> VolaSession::build(const Underlying &under, const SessionInp
   aggregate_input_diagnostics(slice_diag, diag);
   diag.n_carry_skipped_expiries = rep.n_carry_skipped;
   diag.n_audit_starved_expiries = rep.n_audit_starved;
+  diag.n_prep_starved_expiries = count_prep_starved(rep.expiry_reports);
+  diag.n_prep_uncovered_expiries = count_prep_uncovered(rep.expiry_reports);
 
   retain_fitted_term_rates(eff, rep.context);
   release_build_time_cache_borrow(eff);
@@ -2345,6 +2402,9 @@ Status VolaSession::refresh_refit_diagnostics() {
   double sum_frac = 0.0;
   double sum_chi2 = 0.0;
   double sum_rmse = 0.0;
+  double sum_round_trip = 0.0;
+  double max_round_trip = 0.0;
+  std::size_t n_round_trip_scored = 0u;
   std::size_t scored = 0u;
   // T4 escalation (T10c): recompute the banded evidence counters from THIS
   // refit's reports — `diag_` is carried across refits, so accumulating into
@@ -2363,6 +2423,12 @@ Status VolaSession::refresh_refit_diagnostics() {
     sum_frac += report.frac_fv_within_bidask;
     sum_chi2 += report.chi2_reduced;
     sum_rmse += report.rmse_mid_vol;
+    // T5 item 3 (absolute, vol points); an unmeasured expiry is skipped.
+    if (report.n_round_trip > 0) {
+      sum_round_trip += report.rmse_round_trip_vol;
+      max_round_trip = std::max(max_round_trip, report.max_round_trip_vol);
+      ++n_round_trip_scored;
+    }
     ++scored;
   }
   diag_.n_parity_out_of_band = diag_.n_parity_scored - diag_.n_parity_in_band;
@@ -2385,6 +2451,8 @@ Status VolaSession::refresh_refit_diagnostics() {
     diag_.mean_frac_within_bidask = 0.0;
     diag_.mean_chi2_reduced = 0.0;
     diag_.mean_rmse_vol = 0.0;
+    diag_.mean_round_trip_vol = 0.0;
+    diag_.max_round_trip_vol = 0.0;
     return Ok();
   }
   const double denominator = static_cast<double>(scored);
@@ -2392,6 +2460,9 @@ Status VolaSession::refresh_refit_diagnostics() {
   diag_.mean_frac_within_bidask = sum_frac / denominator;
   diag_.mean_chi2_reduced = sum_chi2 / denominator;
   diag_.mean_rmse_vol = sum_rmse / denominator;
+  diag_.mean_round_trip_vol =
+      (n_round_trip_scored > 0) ? (sum_round_trip / static_cast<double>(n_round_trip_scored)) : 0.0;
+  diag_.max_round_trip_vol = max_round_trip;
   return Ok();
 }
 

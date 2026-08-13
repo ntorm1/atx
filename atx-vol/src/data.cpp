@@ -506,6 +506,16 @@ Result<Uid> data_install(Universe &u, const QuoteFrame &frame) {
     // add_strike grows the chain's SoA in place (no reallocation of the chains
     // vector), so `chain` still refers to the same object.
     const std::size_t idx = chain_index(strike_idx, row.side);
+    // Rank rule: an install may never DECREASE a slot's informational rank. A
+    // two-sided quote (bid > 0) outranks a one-sided bound (bid = 0, ask > 0 --
+    // the shape T6's loader admits); within equal rank last-wins keeps the
+    // freshest row, unchanged. Skipping the WHOLE write matters: a slot half
+    // overwritten by a bound would be worse than either row alone. A virgin
+    // slot has bids[idx] == 0 (add_strike value-initializes), so a bound always
+    // lands in an empty slot.
+    if (!(row.bid > 0.0) && chain.bids[idx] > 0.0) {
+      continue;
+    }
     chain.bids[idx] = row.bid;
     chain.asks[idx] = row.ask;
     chain.bid_sizes[idx] = row.bid_size;

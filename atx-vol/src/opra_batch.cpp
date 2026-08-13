@@ -7,8 +7,11 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
+#include <cstdlib>
 #include <ctime>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <limits>
 #include <string>
 #include <string_view>
@@ -233,6 +236,116 @@ CorpusMarketInputTable::create(std::vector<CorpusMarketInputCell> cells) {
   table.cells_ = std::move(cells);
   table.fingerprint_ = stable_hash(table_bytes);
   return Ok(std::move(table));
+}
+
+namespace {
+
+// Split on `sep`, KEEPING empty fields: a blank column is a malformed row, not
+// an absent one, and the caller must be able to say so.
+[[nodiscard]] std::vector<std::string_view> split_keep_empty(std::string_view text, char sep) {
+  std::vector<std::string_view> out;
+  std::size_t begin = 0;
+  while (true) {
+    const std::size_t at = text.find(sep, begin);
+    if (at == std::string_view::npos) {
+      out.push_back(text.substr(begin));
+      return out;
+    }
+    out.push_back(text.substr(begin, at - begin));
+    begin = at + 1u;
+  }
+}
+
+// Strip a trailing CR so a CRLF-written artifact parses identically to an LF one.
+[[nodiscard]] std::string_view strip_cr(std::string_view line) noexcept {
+  if (!line.empty() && line.back() == '\r') {
+    line.remove_suffix(1u);
+  }
+  return line;
+}
+
+// Whole-field finite-double parse. `from_chars`'s floating-point overload is not
+// available in every standard library this repo builds against; `strtod` over a
+// NUL-terminated copy is, and this runs once per artifact row, never per quote.
+[[nodiscard]] bool parse_finite_double(std::string_view text, double &out) {
+  const std::string owned(text);
+  char *end = nullptr;
+  const double parsed = std::strtod(owned.c_str(), &end);
+  if (owned.empty() || end != owned.c_str() + owned.size() || !std::isfinite(parsed)) {
+    return false;
+  }
+  out = parsed;
+  return true;
+}
+
+} // namespace
+
+Result<CorpusMarketInputTable> read_corpus_spot_inputs(const std::string &path,
+                                                       CorpusMarketInputTable base) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in) {
+    return Err(ErrorCode::InvalidArgument, "cannot open spot inputs '" + path + "'");
+  }
+  const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  const std::vector<std::string_view> lines = split_keep_empty(text, '\n');
+  if (lines.size() < 2u) {
+    return Err(ErrorCode::ParseError, "spot inputs are missing magic/header");
+  }
+  if (strip_cr(lines[0]) != "ATX_CORPUS_SPOTS\t1" ||
+      strip_cr(lines[1]) != "date\tsymbol\tspot\tsource\tas_of") {
+    return Err(ErrorCode::ParseError, "spot inputs magic/header mismatch");
+  }
+
+  // Start from `base`'s cells so the overlay is a field write on an existing cell
+  // rather than a second table every consumer would have to learn to consult.
+  std::vector<CorpusMarketInputCell> cells(base.cells().begin(), base.cells().end());
+  const auto find_cell = [&cells](std::string_view date,
+                                  std::string_view symbol) -> CorpusMarketInputCell * {
+    for (CorpusMarketInputCell &cell : cells) {
+      if (cell.date == date && cell.symbol == symbol) {
+        return &cell;
+      }
+    }
+    return nullptr;
+  };
+
+  for (std::size_t i = 2u; i < lines.size(); ++i) {
+    const std::string_view line = strip_cr(lines[i]);
+    if (line.empty()) {
+      continue;
+    }
+    const std::vector<std::string_view> fields = split_keep_empty(line, '\t');
+    double spot = 0.0;
+    if (fields.size() != 5u || fields[0].empty() || fields[1].empty() ||
+        !parse_finite_double(fields[2], spot) || !(spot > 0.0) || fields[3].empty() ||
+        fields[4].empty()) {
+      return Err(ErrorCode::ParseError, "malformed spot input row: '" + std::string(line) + "'");
+    }
+    const std::string date(fields[0]);
+    const std::string symbol = canonical_market_symbol(fields[1]);
+    CorpusMarketInputCell *cell = find_cell(date, symbol);
+    if (cell == nullptr) {
+      CorpusMarketInputCell fresh;
+      fresh.date = date;
+      fresh.symbol = symbol;
+      // The three tags this artifact does not speak for. `create` requires all
+      // four present and non-look-ahead; these mirror the dividend artifact's
+      // fillers so the two produce comparable provenance.
+      const std::string as_of_date = date + "T00:00:00Z";
+      fresh.provenance.rates = {"run_spec.flat_rate", as_of_date};
+      fresh.provenance.dividends = {"run_spec.no_dividends", as_of_date};
+      fresh.provenance.fit_context = {"run_spec.default", as_of_date};
+      cells.push_back(std::move(fresh));
+      cell = &cells.back();
+    } else if (cell->spot_override.has_value()) {
+      return Err(ErrorCode::AlreadyExists, "spot input for " + date + " " + symbol +
+                                               " collides with a spot already supplied by the "
+                                               "base market-input table");
+    }
+    cell->spot_override = spot;
+    cell->provenance.spot = {std::string(fields[3]), std::string(fields[4])};
+  }
+  return CorpusMarketInputTable::create(std::move(cells));
 }
 
 const CorpusMarketInputCell *CorpusMarketInputTable::find(std::string_view date,

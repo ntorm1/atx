@@ -98,6 +98,43 @@ private:
   std::uint64_t fingerprint_{0};
 };
 
+// Read a point-in-time SPOT artifact and overlay it onto `base`.
+//
+// WHY A TSV AND NOT A NEW FORMAT. `CorpusMarketInputTable` is already the repo's
+// one seam for point-in-time external inputs per (date, symbol), and it is
+// already fed from a magic-header TSV — `read_corpus_dividend_inputs`. Spot was
+// the one field of that cell with no producer: `OpraLoadSpec::spot_override` is
+// consumed by the loader and plumbed through the batch layer, and nothing in
+// production filled it, so every board's spot came from put-call parity on its
+// own quotes. That fails exactly where it is least affordable — a board with no
+// two-sided co-terminal pair refuses to load at all. This reuses the existing
+// artifact shape rather than adding a second one.
+//
+//   line 0   ATX_CORPUS_SPOTS<TAB>1
+//   line 1   date<TAB>symbol<TAB>spot<TAB>source<TAB>as_of
+//   line 2+  2026-08-03<TAB>GNK<TAB>25.40<TAB>equity_nbbo<TAB>2026-08-03T19:55:00Z
+//
+// Blank lines are skipped; `\r\n` is tolerated. `spot` must be finite and > 0 —
+// a zero is NOT "no opinion", it is a malformed row, because the loader reads
+// `spot_override > 0.0` as the presence test. Rows are validated by
+// `CorpusMarketInputTable::create`, so a duplicate (date, symbol) or an `as_of`
+// later than the cell's own date is rejected there.
+//
+// OVERLAY SEMANTICS. `base` is typically the dividend table; each spot row is
+// merged into the matching cell (creating it when absent) by setting
+// `spot_override` and `provenance.spot` and touching nothing else. A cell that
+// already carries a `spot_override` is a genuine conflict — two sources
+// disagreeing about one number — and is rejected rather than silently resolved.
+// Cells of `base` with no spot row keep their PCP-implied spot. Defaulting `base`
+// makes the spots-only case a one-liner.
+//
+// @return InvalidArgument if the file cannot be read; ParseError on a missing or
+//         wrong magic/header line or a malformed row; AlreadyExists when a spot
+//         row collides with a spot already present in `base`; plus every error
+//         `CorpusMarketInputTable::create` raises over the merged cells.
+[[nodiscard]] Result<CorpusMarketInputTable>
+read_corpus_spot_inputs(const std::string &path, CorpusMarketInputTable base = {});
+
 // Spec for `load_opra_daterange`.
 struct OpraBatchSpec {
   std::vector<std::string> symbols;   // underliers to load (one file per symbol/date)

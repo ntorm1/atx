@@ -22,15 +22,19 @@ AdmissionDecision decide_risk_surface_admission(const ValidationDigest &validati
     return out;
   }
 
-  // Degraded-but-served: a candidate whose ONLY defect is a carry-coverage
-  // gap (expiries dropped by the carry confidence gate) is published with the
-  // gap surfaced — Degraded state, CarryGap reason retained — never silently
-  // as Healthy and never rejected outright: the surviving slices passed the
-  // full geometric/certification contract (§5.2). Any other failure bit still
-  // rejects below.
+  // Degraded-but-served: a candidate whose ONLY defects are a carry-coverage
+  // gap (expiries dropped by the carry confidence gate) and/or a measured
+  // substitute-underserve verdict (T7a: the adopted validation-fallback
+  // substitute reprices fewer common-support quotes in-band than the rejected
+  // primary did) is published with those defects surfaced — Degraded state,
+  // reasons retained — never silently as Healthy and never rejected outright:
+  // the surviving slices passed the full geometric/certification contract
+  // (§5.2), and refusing them would serve nothing. Any other failure bit
+  // still rejects below.
   {
     constexpr auto kDegradedOnly =
-        static_cast<std::uint32_t>(ValidationFailure::CarryGap);
+        static_cast<std::uint32_t>(ValidationFailure::CarryGap) |
+        static_cast<std::uint32_t>(ValidationFailure::SubstituteUnderserve);
     const auto raw = static_cast<std::uint32_t>(validation.failures);
     if (candidate_generation != 0 && raw != 0u && (raw & ~kDegradedOnly) == 0u) {
       out.publish_candidate = true;

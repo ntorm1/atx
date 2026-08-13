@@ -284,6 +284,192 @@ TEST(ProfileClassifier, ClassifierInputs_SpreadMedian_SpansEveryExpiry) {
   EXPECT_GT(in.median_spread_pct, 0.5) << "the board median is wide; only the front is tight";
 }
 
+// ── median_spread_pct is a statistic of the board, not of its row order ─────
+//
+// A leg quoted bid = 0.95 / ask = 1.05 has mid exactly 1.0, so its relative
+// spread is exactly `ask - bid`. The two widths below are therefore exact
+// decimal values and every expectation in this block is an equality, not a
+// tolerance.
+constexpr double kTightBid = 0.95;
+constexpr double kTightAsk = 1.05; // relative spread 0.10
+constexpr double kWideBid = 0.75;
+constexpr double kWideAsk = 1.25; // relative spread 0.50
+
+struct Leg {
+  double strike;
+  double bid;
+  double ask;
+};
+
+// A chain whose strike axis is exactly `legs`, IN THE GIVEN ORDER -- the axis
+// the loader builds is in first-seen row order, not sorted, which is the degree
+// of freedom these tests exercise. Both sides of a strike carry its quote.
+Chain make_chain_from_legs(double T, const std::vector<Leg>& legs) {
+  Chain c;
+  c.uid = 1u;
+  c.expiry_id = 0u;
+  c.T = T;
+  const std::size_t n2 = legs.size() * 2u;
+  c.strikes.reserve(legs.size());
+  c.bids.assign(n2, 0.0);
+  c.asks.assign(n2, 0.0);
+  c.bid_sizes.assign(n2, 1);
+  c.ask_sizes.assign(n2, 1);
+  c.mids.assign(n2, 0.0);
+  c.ivs.assign(n2, std::numeric_limits<double>::quiet_NaN());
+  c.ts_ns.assign(n2, 0);
+  c.flags.assign(n2, std::uint8_t{0});
+  for (std::size_t i = 0; i < legs.size(); ++i) {
+    c.strikes.push_back(legs[i].strike);
+    for (std::size_t side = 0; side < 2u; ++side) {
+      const std::size_t ix = i * 2u + side;
+      c.bids[ix] = legs[i].bid;
+      c.asks[ix] = legs[i].ask;
+      c.mids[ix] = 0.5 * (legs[i].bid + legs[i].ask);
+    }
+  }
+  return c;
+}
+
+// 299 wide strikes then 301 tight ones, one expiry. Both sides quoted, so the
+// leg stream is 598 wide values followed by 602 tight ones: 1200 legs whose
+// EXACT median is the tight width, because the tight legs are the majority.
+std::vector<Leg> make_wide_then_tight_legs() {
+  std::vector<Leg> legs;
+  legs.reserve(600);
+  for (int i = 0; i < 299; ++i) {
+    legs.push_back(Leg{50.0 + 0.1 * static_cast<double>(i), kWideBid, kWideAsk});
+  }
+  for (int i = 0; i < 301; ++i) {
+    legs.push_back(Leg{100.0 + 0.1 * static_cast<double>(i), kTightBid, kTightAsk});
+  }
+  return legs;
+}
+
+// The estimator must answer with the board's median, not with the median of the
+// ~256-entry decimated sample it can afford to keep. Those differ here by
+// construction: of 1200 legs, 602 are tight and 598 wide, so the exact median is
+// TIGHT -- but a sample that keeps every k-th leg of a stream whose wide legs
+// come first splits the sample evenly between the two widths and lands on the
+// WIDE value instead.
+TEST(ProfileClassifier, ClassifierInputs_SpreadMedian_IsTheBoardMedianNotADecimatedSample) {
+  Underlying u;
+  u.uid = 1u;
+  u.ticker = "ZZZZ";
+  u.spot = 100.0;
+  u.chains.push_back(make_chain_from_legs(0.05, make_wide_then_tight_legs()));
+
+  const auto in = atx::vol::classifier_inputs_from_underlier(u);
+  ASSERT_EQ(in.n_live_quotes, 1200u);
+  // One bin of slack: the statistic is the true median quantised DOWN to the bin
+  // grid, and 0.10 sits on a bin boundary that a leg's floating-point width can
+  // land either side of. The decimated sample this replaces answered 0.50 here,
+  // so the assertion has 400 bins of headroom over the behaviour it pins.
+  EXPECT_NEAR(in.median_spread_pct, 0.10, 0.0011)
+      << "602 of 1200 legs are tight, so the median leg is a tight one";
+}
+
+// Rank, not just membership: the statistic must be the MEDIAN of the widths
+// present, not the narrowest or the widest of them. Three equally-sized groups
+// put the answer strictly between the extremes, so an off-by-rank estimator
+// lands on 0.05 or 0.60 rather than 0.20.
+TEST(ProfileClassifier, ClassifierInputs_SpreadMedian_SelectsTheMiddleRankNotAnExtreme) {
+  std::vector<Leg> legs;
+  legs.reserve(300);
+  for (int i = 0; i < 100; ++i) {
+    const double k = 50.0 + 0.1 * static_cast<double>(i);
+    legs.push_back(Leg{k, 0.975, 1.025}); // width 0.05
+  }
+  for (int i = 0; i < 100; ++i) {
+    const double k = 100.0 + 0.1 * static_cast<double>(i);
+    legs.push_back(Leg{k, 0.90, 1.10}); // width 0.20
+  }
+  for (int i = 0; i < 100; ++i) {
+    const double k = 150.0 + 0.1 * static_cast<double>(i);
+    legs.push_back(Leg{k, 0.70, 1.30}); // width 0.60
+  }
+
+  Underlying u;
+  u.uid = 1u;
+  u.ticker = "ZZZZ";
+  u.spot = 100.0;
+  u.chains.push_back(make_chain_from_legs(0.05, legs));
+
+  const auto in = atx::vol::classifier_inputs_from_underlier(u);
+  ASSERT_EQ(in.n_live_quotes, 600u);
+  EXPECT_NEAR(in.median_spread_pct, 0.20, 0.0011)
+      << "200 legs below and 200 above -- the median group is the 0.20 one";
+}
+
+// The same 1200 legs, presented in two different strike-axis orders. The board
+// is the same board; the statistic must not move. A decimated sample cannot
+// satisfy this -- which order the legs arrive in decides which of them the
+// sample keeps.
+TEST(ProfileClassifier, ClassifierInputs_SpreadMedian_IsInvariantToStrikeAxisOrder) {
+  std::vector<Leg> forward = make_wide_then_tight_legs();
+  std::vector<Leg> reversed(forward.rbegin(), forward.rend());
+
+  Underlying a;
+  a.uid = 1u;
+  a.ticker = "ZZZZ";
+  a.spot = 100.0;
+  a.chains.push_back(make_chain_from_legs(0.05, forward));
+
+  Underlying b;
+  b.uid = 1u;
+  b.ticker = "ZZZZ";
+  b.spot = 100.0;
+  b.chains.push_back(make_chain_from_legs(0.05, reversed));
+
+  const auto in_a = atx::vol::classifier_inputs_from_underlier(a);
+  const auto in_b = atx::vol::classifier_inputs_from_underlier(b);
+  ASSERT_EQ(in_a.n_live_quotes, in_b.n_live_quotes);
+  EXPECT_DOUBLE_EQ(in_a.median_spread_pct, in_b.median_spread_pct)
+      << "same legs, same board, different arrival order";
+}
+
+// The T6 regression, in the shape the loader actually produces it.
+//
+// Admitting a one-sided row (bid = 0, ask > 0) installs it at a strike that may
+// be NEW to the chain, which appends that strike to the axis and pushes every
+// later strike along -- so the two-sided legs are reordered even though not one
+// of them changed. The classifier skips a bid = 0 leg outright, so the board's
+// two-sided population is bit-identical between the two arms and the statistic
+// over it must be too.
+TEST(ProfileClassifier, ClassifierInputs_SpreadMedian_UnmovedByAdmittedOneSidedLegs) {
+  const std::vector<Leg> two_sided = make_wide_then_tight_legs();
+
+  Underlying without;
+  without.uid = 1u;
+  without.ticker = "ZZZZ";
+  without.spot = 100.0;
+  without.chains.push_back(make_chain_from_legs(0.05, two_sided));
+
+  // Same two-sided legs, but each one now sits behind a bid-less strike that the
+  // loader admitted ahead of it -- the axis order every two-sided leg sees is
+  // different, and 600 extra strikes carry no bid at all.
+  std::vector<Leg> with_bounds;
+  with_bounds.reserve(two_sided.size() * 2u);
+  for (std::size_t i = 0; i < two_sided.size(); ++i) {
+    with_bounds.push_back(Leg{1000.0 + static_cast<double>(i), 0.0, 0.40});
+    with_bounds.push_back(two_sided[two_sided.size() - 1u - i]);
+  }
+
+  Underlying with;
+  with.uid = 1u;
+  with.ticker = "ZZZZ";
+  with.spot = 100.0;
+  with.chains.push_back(make_chain_from_legs(0.05, with_bounds));
+
+  const auto in_without = atx::vol::classifier_inputs_from_underlier(without);
+  const auto in_with = atx::vol::classifier_inputs_from_underlier(with);
+
+  EXPECT_EQ(in_with.n_live_quotes, in_without.n_live_quotes)
+      << "a bid = 0 leg is not a live quote";
+  EXPECT_DOUBLE_EQ(in_with.median_spread_pct, in_without.median_spread_pct)
+      << "admitting bounds must not move a statistic computed over two-sided legs";
+}
+
 // ── Registry (ports the default-profile cases) ────────────────────────────
 
 TEST(ProfileRegistry, ProfileDefault_NoArg_ReturnsOrdinary) {

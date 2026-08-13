@@ -328,6 +328,90 @@ struct SurfaceBuildAttemptReport {
   std::optional<atx::core::Error> failure{};
 };
 
+// ── T7a: the substitution seam's missing comparison ─────────────────────────
+//
+// When independent risk admission rejects a BUILT primary and the
+// validation-rejection ladder (or the strict convex-dense recovery rung)
+// adopts a substitute, both fitted records are live at the adoption site — and
+// until this record existed, one was served without the two ever being
+// compared. Downstream admission scores boards on worst_frac_within_bidask, a
+// MIN over each candidate's OWN fitted slices, and a min is gameable by
+// fitting less: drop the hard slices and the worst improves (measured: on the
+// sp100 corpus, every substituted board whose worst improved also lost quote
+// coverage, 20/20). This record scores both candidates on the SAME quote
+// population so that claim is measurable per board.
+//
+// POPULATION (common support): every well-formed two-sided quote — finite
+// strike/bid/ask, bid > 0, ask > 0, ask >= bid, the band-shape screen of
+// parity.cpp's `quote_scorable` with no model/vol terms — on the slices the
+// PRIMARY fitted. It is the primary's support at slice granularity, defined
+// from the CHAIN rather than either session's prepared observations, so
+// neither candidate's own preparation can shape the population it is judged
+// on. A candidate that cannot price a population quote (e.g. its build dropped
+// the slice; the served surface would still be queried there through
+// interpolation) scores NOT within band: an unpriceable serve is a failure,
+// not an exclusion. In-band uses the parity harness's inclusive predicate
+// (bid <= fair_value <= ask) via the session's own serving API `fair_value` —
+// the same artifact fit() goes on to publish, not a re-derivation.
+struct FallbackComparisonSlice {
+  double maturity{0.0};
+  std::size_t n_scored{0u};          // common-support quotes on this slice
+  std::size_t primary_within{0u};    // primary's in-band count on them
+  std::size_t substitute_within{0u}; // substitute's in-band count on the SAME quotes
+  std::size_t primary_obs{0u};       // primary's own fit support (SliceContext::n_used)
+  std::size_t substitute_obs{0u};    // substitute's; 0 == it dropped this slice
+};
+
+enum class FallbackAdoptionPath : std::uint8_t {
+  ValidationLadder = 0, // family-substitution rung (fallback_curve_rungs)
+  StrictRecovery = 1,   // strict convex-dense refit rung
+};
+
+struct FallbackComparisonRecord {
+  FallbackAdoptionPath path{FallbackAdoptionPath::ValidationLadder};
+  CurveConfig primary_curve{};    // the oracle-rejected candidate
+  CurveConfig substitute_curve{}; // the admitted, adopted candidate
+  // The oracle verdict bits that killed the primary (its ValidationDigest
+  // failure mask at rejection; InvalidDomain carries a folded policy refusal)
+  // and the publish-gate verdict paired with it (I2).
+  ValidationFailure primary_failures{ValidationFailure::None};
+  SurfaceAdmissionDecision primary_admission{};
+  // Which record fit() served. Today adoption always serves the substitute;
+  // the field exists so any future policy at this seam (demotion, refusal)
+  // remains distinguishable in persisted provenance.
+  bool substitute_served{true};
+  // Board-level tallies over the common support (sums of the slice rows).
+  std::size_t n_scored{0u};
+  std::size_t primary_within{0u};
+  std::size_t substitute_within{0u};
+  // The gameable statistic, recomputed honestly: min over scored slices of
+  // within/n_scored — BOTH candidates on the SAME denominator.
+  double primary_worst_slice_frac{0.0};
+  double substitute_worst_slice_frac{0.0};
+  // Own-support obs totals (support shrinkage is visible here and per slice).
+  std::size_t primary_obs_total{0u};
+  std::size_t substitute_obs_total{0u};
+  std::vector<FallbackComparisonSlice> slices{};
+};
+
+// T7a stage 3 (pre-registered, shipped): the adopted substitute measurably
+// under-serves the primary it replaced --- strictly fewer common-support quotes
+// repriced inside bid/ask. Deliberately count-based (equal counts are NOT
+// underserving) and fail-open on an empty population: a comparison that
+// measured nothing must not demote (W3-A --- absence of evidence is not a
+// verdict). When true, fit() merges ValidationFailure::SubstituteUnderserve
+// into the adopted candidate's digest before publication; the bit is a
+// publish-with-Degraded reason (surface_policy.cpp), so it can only demote
+// the served substitute's state --- never reject it, and never resurrect the
+// oracle-rejected primary. Measured basis (lqbench+sp100, robust/production):
+// 143/179 adopted substitutes were worse on common support (median in-band
+// loss 6.2%), and 75.9% of substitutes whose own-support min "improved" did
+// not improve on common support.
+[[nodiscard]] constexpr bool
+substitute_underserves(const FallbackComparisonRecord &record) noexcept {
+  return record.n_scored > 0u && record.substitute_within < record.primary_within;
+}
+
 // Complete primary + fallback history for one `fit` call. A report moves to
 // `published_report()` atomically with the admitted surface. Failed calls are
 // visible only through `last_attempt_report()` and cannot mutate published state.
@@ -341,6 +425,12 @@ struct SurfaceBuildReport {
   std::optional<ExpiryId> refit_expiry{};
   std::optional<std::uint64_t> source_quote_revision{};
   bool warm_started{false};
+  // T7a. Present IFF this fit adopted a substitute after independent risk
+  // admission rejected a BUILT primary (see FallbackComparisonRecord above).
+  // Absent means no such substitution happened — never a zeroed record, so
+  // absence of a comparison is structurally distinguishable from a comparison
+  // that scored zero (W3-A).
+  std::optional<FallbackComparisonRecord> validation_fallback_comparison{};
 };
 
 struct FitSnapshotProvenance {
