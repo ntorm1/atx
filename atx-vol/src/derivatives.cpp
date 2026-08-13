@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "atx/core/error.hpp"
+#include "atx/vol/arb.hpp"      // Task F-4: kCalendarTotalVarianceTol (THE calendar floor)
 #include "atx/vol/black76.hpp"
 #include "atx/vol/detail/counters.hpp" // Task P-6: ledger::Solve::VarSwapStripEvals
 #include "atx/vol/detail/deriv_ref_bridge.hpp" // Task 9: SurfaceRef-native entry points
@@ -2115,6 +2116,190 @@ Result<DerivQuote> var_swap_fair_strike(const SurfaceT& surface,
   // `StrikeCorridor{}` is unbounded on both sides and provably a no-op: see
   // the corridor-window block in `strip_fair_value_core`.
   return strip_fair_value_core(surface, curves, T, cfg, DerivKind::VarSwap, StrikeCorridor{});
+}
+
+namespace {
+
+// ── Task F-4 (PV-F4 / FIT-F2 / LIT-7): forward-start variance ────────────
+//
+// THE rule, in ONE function that both public entries route through. The two
+// entries differ only in how they obtain a CurveSet and a surface adapter;
+// neither of them owns a line of the forward-variance arithmetic, the
+// tolerance policy, or the calendar verdict, so there is no second copy that
+// could drift from this one.
+
+// The numerator's noise floor, in TOTAL-VARIANCE units -- the amount by which
+// w2 may fall short of w1 while still being indistinguishable from a flat term
+// structure. Stated ONCE and consumed by BOTH consumers below (the
+// resolvability gate and the calendar verdict), so those two can never
+// disagree about what "within accuracy" means.
+//
+// Two contributions, both named rather than lumped into one magic number:
+//   * 2x the library's own calendar accuracy floor (`kCalendarTotalVarianceTol`,
+//     arb.hpp -- the SAME constant the fit-side no-arb checks measure against,
+//     not a second literal). Two legs, either of which may sit AT that floor in
+//     the adverse direction, so a surface the fit side calls clean cannot trip
+//     the detector here. A tighter bar would fire on good surfaces (FIT-F3).
+//   * each leg's OWN reported Richardson quadrature estimate, converted to
+//     total-variance units (err*T). MEASURED per call, so a coarse tier widens
+//     the band and a fine tier narrows it -- Task F-1's "anchor the gate to
+//     integration_error_est, not to a magic constant" rule.
+//
+// A leg that reported NO estimate (NaN -- a caller-pinned node count off the
+// 4m+1 lattice) contributes 0 rather than NaN: the fit term still stands, and
+// a NaN floor would poison both consumers into unconditional refusal.
+// The forward-start tenor contract, stated ONCE. Called by `forward_var_core`
+// below and, before it, by the PricedSurface entry -- which has to reject a
+// bad tenor pair BEFORE `carry_from` gets to answer the same question with its
+// own (different, and for +Inf wrong-coded) message. A pure function of two
+// doubles, so calling it twice cannot produce two answers.
+//
+// Finiteness is tested FIRST so the `> 0.0` tests below it cannot admit +Inf,
+// the exact mistake this sprint shipped once already. 0 carries exactly one
+// meaning on these arguments -- an invalid tenor -- so unlike the corridor
+// bounds beside them, rejecting it is unambiguous.
+[[nodiscard]] Status validate_forward_var_tenors(double T1, double T2) noexcept {
+  if (!std::isfinite(T1) || !std::isfinite(T2)) {
+    return Err(ErrorCode::InvalidArgument, "forward var: T1 and T2 must be finite");
+  }
+  if (!(T1 > 0.0)) {
+    return Err(ErrorCode::InvalidArgument, "forward var: T1 must be > 0");
+  }
+  if (!(T2 > T1)) {
+    return Err(ErrorCode::InvalidArgument, "forward var: T2 must be > T1");
+  }
+  return Ok();
+}
+
+[[nodiscard]] double forward_var_noise_floor_w(const DerivQuote& leg1, double T1,
+                                               const DerivQuote& leg2, double T2) noexcept {
+  const auto quad_w = [](const DerivQuote& q, double T) noexcept {
+    const double err = q.integration_error_est;
+    return std::isfinite(err) ? std::fabs(err) * T : 0.0;
+  };
+  return 2.0 * kCalendarTotalVarianceTol + quad_w(leg1, T1) + quad_w(leg2, T2);
+}
+
+// `Leg1`/`Leg2` are the two surface adapters. They are DIFFERENT types on no
+// path today but are kept separate on purpose: the PricedSurface entry builds
+// one strip view PER TENOR (each caches its own forward and carry at its own
+// T), and collapsing them to one parameter would invite a future caller to
+// hand the same T-cached view to both legs -- which reads correctly and prices
+// the far leg through the view's slow fallback.
+//
+// `shared_cfg` is the SINGLE policy resolution the brief demands: one object,
+// named twice, reaching two strips. There is no per-leg config to construct,
+// so there is nothing for a second resolution to diverge from. What differs
+// per tenor is only what `strip_fair_value_core` derives from T itself -- the
+// adaptive span and the node budget -- which is exactly right.
+template <class Leg1, class Leg2>
+[[nodiscard]] Result<DerivQuote>
+forward_var_core(const Leg1& leg1_surface, const Leg2& leg2_surface, const CurveSet& curves,
+                 double T1, double T2, const DerivConfig& shared_cfg,
+                 DerivQuote* diagnostic_out) {
+  // The out-parameter contract (see the header): assigned on EVERY return
+  // path. Default-constructing it here is what makes that true for the
+  // argument-validation returns below without repeating the write at each one.
+  if (diagnostic_out != nullptr) {
+    *diagnostic_out = DerivQuote{};
+  }
+  ATX_TRY_VOID(validate_forward_var_tenors(T1, T2));
+
+  // ONE config object, both legs. Not two configs asserted equal.
+  ATX_TRY(const DerivQuote leg1, var_swap_fair_strike(leg1_surface, curves, T1, shared_cfg));
+  ATX_TRY(const DerivQuote leg2, var_swap_fair_strike(leg2_surface, curves, T2, shared_cfg));
+
+  // Total variance is additive in time (LIT-7): w(T) = K_var(T)*T.
+  const double w1 = leg1.fair_strike_dec * T1;
+  const double w2 = leg2.fair_strike_dec * T2;
+  const double dT = T2 - T1;
+  const double dw = w2 - w1;
+  const double noise_w = forward_var_noise_floor_w(leg1, T1, leg2, T2);
+  // The floor propagated into K_fwd's own units -- what the caller reads as
+  // this quote's `integration_error_est`, and the yardstick both the gate
+  // immediately below and the calendar verdict after it are stated against.
+  const double noise_var = noise_w / dT;
+
+  DerivQuote out{};
+  out.leg_T1_var_dec = leg1.fair_strike_dec;
+  out.leg_T2_var_dec = leg2.fair_strike_dec;
+  out.flags = leg1.flags | leg2.flags;
+  out.integration_error_est = noise_var;
+  // Grid provenance is the T2 LEG's: the two legs genuinely resolve different
+  // grids (that is the point of per-tenor node budgets), so there is no single
+  // grid to report. `leg_T2_var_dec` plus a direct `var_swap_fair_strike` at
+  // T2 with the same config reproduces this leg exactly; the T1 leg is
+  // recovered the same way.
+  out.strip_k_lo_used = leg2.strip_k_lo_used;
+  out.strip_k_hi_used = leg2.strip_k_hi_used;
+  out.strip_nodes_used = leg2.strip_nodes_used;
+  out.resolved_wing_clamp = leg2.resolved_wing_clamp;
+
+  const auto publish = [&](const DerivQuote& q) noexcept {
+    if (diagnostic_out != nullptr) {
+      *diagnostic_out = q;
+    }
+  };
+
+  // A leg can return Ok and still carry a non-finite strike only through a
+  // surface pathology the strip's own guards did not name; if that ever
+  // happens, `dw` is NaN and BOTH tests below are false, so the clamp branch
+  // would serve a plausible-looking 0.0. Refuse instead -- the same reasoning
+  // as the corridor's "0.0 would be a plausible wrong number" refusal.
+  if (!std::isfinite(w1) || !std::isfinite(w2)) {
+    publish(out);
+    return Err(ErrorCode::Internal,
+               "forward var: a leg strip produced a non-finite total variance");
+  }
+
+  // Catastrophic cancellation, guarded where it bites: `dw` subtracts two
+  // nearly-equal totals and `dT` divides by a small number, so the floor above
+  // is amplified by exactly 1/dT. Refuse when the amplified floor passes what
+  // this entry is willing to call a variance. `!(x <= y)` rather than `x > y`
+  // so a NaN noise floor refuses instead of sailing through.
+  if (!(noise_var <= kFwdVarNoiseCeilingVar)) {
+    publish(out);
+    return Err(ErrorCode::OutOfRange,
+               "forward var: tenor separation too small to resolve K_fwd above the "
+               "legs' own accuracy");
+  }
+
+  if (dw < -noise_w) {
+    // Calendar-arbitrageable at STRIP level: the T2 smile prices less total
+    // variance than the T1 smile by more than either leg's accuracy explains.
+    // Fail loud, and publish the raw (negative) quotient rather than a clamped
+    // one -- on this path the number IS the evidence.
+    out.flags |= DerivFlags::CalendarInconsistent;
+    out.fair_strike_dec = dw / dT;
+    out.fair_strike_points = 1.0e4 * out.fair_strike_dec;
+    out.undiscounted_expectation_dec = out.fair_strike_dec;
+    out.uncapped_var_dec = dw;
+    publish(out);
+    return Err(ErrorCode::Internal,
+               "forward var: negative forward variance (calendar-inconsistent surface)");
+  }
+
+  // Within the floor a negative numerator is indistinguishable from a flat
+  // term structure, and a flat long end genuinely yields ZERO forward variance
+  // (FIT-C8) -- so serve exactly 0.0 rather than a small negative variance no
+  // caller can take a square root of. Continuous at dw == 0, and the two
+  // published legs let a caller recompute the raw quotient if it wants it.
+  const double k_fwd = dw > 0.0 ? dw / dT : 0.0;
+  out.fair_strike_dec = k_fwd;
+  out.fair_strike_points = 1.0e4 * k_fwd;
+  out.undiscounted_expectation_dec = k_fwd;
+  out.uncapped_var_dec = k_fwd * dT;  // the forward TOTAL variance over [T1, T2]
+  publish(out);
+  return Ok(out);
+}
+
+}  // namespace
+
+template <class SurfaceT>
+Result<DerivQuote> forward_var_fair_strike(const SurfaceT& surface, const CurveSet& curves,
+                                           double T1, double T2, const DerivConfig& cfg,
+                                           DerivQuote* diagnostic_out) {
+  return forward_var_core(surface, surface, curves, T1, T2, cfg, diagnostic_out);
 }
 
 namespace {
@@ -4284,6 +4469,8 @@ template Result<DerivQuote> deriv_price<VolSurface>(
 template Result<DerivGreeks> deriv_greeks<VolSurface>(
     const VolSurface&, const CurveSet&, const DerivContract&, const DerivConfig&,
     const DerivGreekBumps&);
+template Result<DerivQuote> forward_var_fair_strike<VolSurface>(
+    const VolSurface&, const CurveSet&, double, double, const DerivConfig&, DerivQuote*);
 
 template Result<DerivQuote> var_swap_fair_strike<EssviSurface>(
     const EssviSurface&, const CurveSet&, double, const DerivConfig&);
@@ -4303,6 +4490,10 @@ template Result<DerivGreeks> deriv_greeks<EssviSurface>(
 template Result<DerivGreeks> deriv_greeks<SviSurface>(
     const SviSurface&, const CurveSet&, const DerivContract&, const DerivConfig&,
     const DerivGreekBumps&);
+template Result<DerivQuote> forward_var_fair_strike<EssviSurface>(
+    const EssviSurface&, const CurveSet&, double, double, const DerivConfig&, DerivQuote*);
+template Result<DerivQuote> forward_var_fair_strike<SviSurface>(
+    const SviSurface&, const CurveSet&, double, double, const DerivConfig&, DerivQuote*);
 
 // ── E6 / AN-W: PricedSurface-native entry points ───────────────────────────
 
@@ -4322,8 +4513,15 @@ namespace {
 // forward fix) so the roll interpolates on the surface's own economically-
 // extrapolated carry instead of clamping flat at T's -- see the call site in
 // the `deriv_greeks(PricedSurface, ...)` overload.
+// `also_admit_t` (Task F-4, NaN default = "no second tenor") is a SECOND
+// maturity this same CurveSet must serve. `forward_var_fair_strike` prices two
+// strips off ONE carry, and both of their tenors have to clear the
+// fitted-range gate below -- naming the second one here keeps that a single
+// gate expression against a single pillar set, instead of two carry
+// resolutions whose agreement would have to be argued.
 [[nodiscard]] Result<CurveSet> carry_from(const PricedSurface& ps, double T,
-                                          double roll_dt = 0.0) {
+                                          double roll_dt = 0.0,
+                                          double also_admit_t = kNaN) {
   const std::span<const SliceContext> pillars = ps.context();
   if (pillars.empty()) {
     return Err(ErrorCode::InvalidArgument, "deriv: surface carries no fitted pillar");
@@ -4376,7 +4574,9 @@ namespace {
   // "admitted" and "interpolated rather than clamped" become the same
   // condition by construction. (`ps.context()` is ascending in T, and the
   // filter preserves order, so front/back of `ts` are its min/max.)
-  if (T < ts.front() || T > ts.back()) {
+  const bool second_out_of_range =
+      std::isfinite(also_admit_t) && (also_admit_t < ts.front() || also_admit_t > ts.back());
+  if (T < ts.front() || T > ts.back() || second_out_of_range) {
     return Err(ErrorCode::OutOfRange,
                "deriv: T is outside the surface's usable fitted pillar range; the "
                "PricedSurface overloads do not extrapolate carry");
@@ -4553,6 +4753,30 @@ Result<DerivQuote> vol_swap_fair_strike(const PricedSurface& surface, double T,
   ATX_TRY(const CurveSet curves, carry_from(surface, T));
   const PricedSurfaceStripView view{&surface, &curves, T, surface_certified_wing_band};
   return vol_swap_fair_strike(view, curves, T, cfg);
+}
+
+Result<DerivQuote> forward_var_fair_strike(const PricedSurface& surface, double T1, double T2,
+                                          const DerivConfig& cfg,
+                                          std::optional<double> surface_certified_wing_band,
+                                          DerivQuote* diagnostic_out) {
+  // The tenor contract is checked HERE, not left to `carry_from`, because
+  // `carry_from` answers a different question and would answer this one with
+  // the wrong code (a +Inf T1 clears its `> 0.0` guard and then trips its
+  // fitted-range gate as OutOfRange). Same helper `forward_var_core` uses --
+  // it is a pure function of the two doubles, so the second call inside the
+  // core cannot disagree with this one; and the out-parameter reset is
+  // likewise idempotent.
+  if (diagnostic_out != nullptr) {
+    *diagnostic_out = DerivQuote{};
+  }
+  ATX_TRY_VOID(validate_forward_var_tenors(T1, T2));
+  // `carry_from` owns the fitted-range gate; naming T2 as the second admitted
+  // tenor makes ONE carry resolution serve both legs and gate both of them.
+  ATX_TRY(const CurveSet curves, carry_from(surface, T1, /*roll_dt=*/0.0, /*also_admit_t=*/T2));
+  // ONE band value reaching both views, exactly as ONE cfg reaches both legs.
+  const PricedSurfaceStripView leg1{&surface, &curves, T1, surface_certified_wing_band};
+  const PricedSurfaceStripView leg2{&surface, &curves, T2, surface_certified_wing_band};
+  return forward_var_core(leg1, leg2, curves, T1, T2, cfg, diagnostic_out);
 }
 
 Result<DerivQuote> deriv_price(const PricedSurface& surface, const DerivContract& contract,

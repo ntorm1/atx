@@ -479,6 +479,25 @@ enum class DerivFlags : std::uint32_t {
   // respectively), and absent whenever the whole span fits inside the band.
   // atx extension: not mirrored in AtsVolDerivFlags.
   WingExtrapolated = 1u << 14,
+  // Task F-4 (PV-F4 / LIT-7): `forward_var_fair_strike` found the T2 strip's
+  // total variance BELOW the T1 strip's by more than the two legs' own
+  // combined accuracy -- a calendar-arbitrageable surface at the strip level,
+  // where the forward variance the caller asked for does not exist.
+  //
+  // DELIVERY. This flag is raised on an ERROR path (`ErrorCode::Internal`),
+  // and an `Err` carries no `DerivQuote` to read it off. It is therefore
+  // delivered through `forward_var_fair_strike`'s `diagnostic_out`
+  // out-parameter, which that entry fills on EVERY return path -- see its doc
+  // for the full ruling. A caller that passes `nullptr` gets the `Internal`
+  // status and no flag; there is no other channel, and in particular the
+  // error MESSAGE is not one (this sprint has twice been burned by treating an
+  // error string as a machine-readable signal).
+  //
+  // Never set on a successful quote: a surface whose forward variance is
+  // merely negative WITHIN that accuracy is served as exactly 0.0 with no
+  // flag, because at that magnitude "inverted" and "flat" are the same
+  // observation. atx extension: not mirrored in AtsVolDerivFlags.
+  CalendarInconsistent = 1u << 15,
 };
 
 [[nodiscard]] constexpr DerivFlags operator|(DerivFlags a, DerivFlags b) noexcept {
@@ -1009,12 +1028,35 @@ struct DerivQuote {
   // corridor-time estimate is the caller's own modelling decision, not
   // something this library has done for them.
   double conditional_corridor_var_dec = kQuietNaN;
+  // Task F-4 (PV-F4): the two var-swap legs `forward_var_fair_strike`
+  // differenced, in ANNUALIZED decimal variance -- K_var(T1) and K_var(T2),
+  // each as its own strip reported it, under the SHARED policy resolution both
+  // legs were priced with.
+  //
+  // Appended rather than folded onto `accrued_component_dec` /
+  // `future_component_dec`, which mean "realized leg" / "implied leg of an
+  // aged blend" on every other kind: a forward-start strike has no accrued
+  // leg, and overloading those two would have made the same double mean two
+  // incompatible things depending on how the quote was produced -- the exact
+  // defect class this sprint's C-1..C-4 spent four Criticals on.
+  //
+  // NaN, not 0, on every quote no forward-start entry produced (the same
+  // convention `vol_of_vol_used` and `conditional_corridor_var_dec` use; a
+  // caller gates on (x == x)). On a forward-start quote both are finite and
+  // the identity
+  //     fair_strike_dec == (leg_T2_var_dec*T2 - leg_T1_var_dec*T1)/(T2 - T1)
+  // holds exactly as computed, EXCEPT on the documented clamp branch where a
+  // within-accuracy negative numerator is served as 0.0 -- publishing both
+  // legs is what lets a caller recompute the raw quotient and see that.
+  double leg_T1_var_dec = kQuietNaN;
+  double leg_T2_var_dec = kQuietNaN;
 };
 
-// Drift pin: DerivQuote has exactly SEVENTEEN fields (v1.1 appended
+// Drift pin: DerivQuote has exactly NINETEEN fields (v1.1 appended
 // resolved_wing_clamp, Task C-6; v1.3 appended conditional_corridor_var_dec,
-// Task F-3). See the DerivConfig pin above for the contract this protects.
-static_assert(detail::aggregate_arity_is_v<DerivQuote, 17>,
+// Task F-3; v1.3 appended leg_T1_var_dec + leg_T2_var_dec, Task F-4). See the
+// DerivConfig pin above for the contract this protects.
+static_assert(detail::aggregate_arity_is_v<DerivQuote, 19>,
               "DerivQuote field count changed: update this pin.");
 
 // ── Carr-Lee convexity refinement (detail) ─────────────────────────────────
@@ -1125,6 +1167,103 @@ template <class SurfaceT>
 [[nodiscard]] Result<DerivQuote>
 vol_swap_fair_strike(const SurfaceT& surface, const CurveSet& curves, double T,
                      const DerivConfig& cfg = DerivConfig{});
+
+// ── Forward-start variance (Task F-4: PV-F4 / FIT-F2 / LIT-7) ────────────
+
+// The coarsest K_fwd `forward_var_fair_strike` will serve, in ANNUALIZED
+// decimal variance units: 1e-3 is 0.25 vol points at a 20% forward vol (0.5 at
+// 10%). When the two legs' combined noise floor divided by (T2 - T1) exceeds
+// this, the call refuses rather than returning a number whose leading digits
+// are quadrature and fit error. See the entry's TENOR SEPARATION note.
+inline constexpr double kFwdVarNoiseCeilingVar = 1.0e-3;
+
+// THE CANONICAL FORWARD-VARIANCE CONVENTION FOR THIS LIBRARY. Total variance
+// is additive in time (LIT-7), so the fair strike of a variance swap starting
+// at T1 and ending at T2 is the difference of the two strips' total variances
+// per unit of elapsed time:
+//
+//     K_fwd = (K_var(T2)*T2 - K_var(T1)*T1) / (T2 - T1)
+//
+// with each K_var(T) the FULL-SMILE model-free strip this file already
+// prices. That "full smile" is the whole point, and it is what makes this the
+// canonical convention rather than one of two: `atx::vol::forward_vol`
+// (analytics.hpp) answers the same question from the ATM total variance
+// ALONE, which is a different quantity on any surface with skew -- the
+// tradeable forward variance is an integral over the smile, not an ATM read.
+// `forward_vol` is retained unchanged for its term-structure-diagnostic
+// callers (analytics_aggregate's `forward_vol_segments`) and is documented
+// there as the ATM diagnostic, NOT the pricing convention; it is not removed
+// in 1.x (additive-only API).
+//
+// SHARED POLICY, PER-TENOR GRIDS. Both legs are priced under ONE resolution of
+// the pricing policy: one `DerivConfig` object and one certified-wing-band
+// argument reach both strips, so wing mode, wing trust band and `width_sigmas`
+// are the same by construction -- there is no second resolution that could
+// drift from the first, which is the only way the difference of two strips
+// means anything. What DOES differ per tenor is the resolved grid: each leg's
+// adaptive span and node budget follow its own sigma_atm*sqrt(T), exactly as a
+// standalone `var_swap_fair_strike` at that tenor would. That is correct;
+// forcing one grid on both legs would under-resolve one of them.
+//
+// ACCURACY FLOOR AND THE CALENDAR DETECTOR (FIT-F3). The numerator differences
+// two nearly-equal total variances, so the answer is only as good as the legs
+// are. Two error sources are named explicitly and combined into ONE noise
+// floor in total-variance units:
+//   * the library's calendar accuracy floor, `kCalendarTotalVarianceTol`
+//     (arb.hpp) -- the same 1e-7 in w the fit-side no-arb checks measure
+//     against. A surface can PASS every fit-side calendar check and still
+//     carry a w-decrease of that size; a detector with a tighter bar would
+//     fire on good surfaces.
+//   * each leg's OWN reported quadrature error, `integration_error_est`,
+//     converted to total-variance units (err*T). Measured per call rather
+//     than assumed, so a coarse tier widens the band and a fine one narrows
+//     it (the same "anchor the gate to the reported error estimate, not to a
+//     magic constant" rule Task F-1 established).
+// Below that floor a negative numerator is indistinguishable from a flat term
+// structure and is served as K_fwd == 0.0. Beyond it the surface is genuinely
+// calendar-arbitrageable at strip level and the call FAILS LOUD with
+// `ErrorCode::Internal` plus `DerivFlags::CalendarInconsistent`. This is the
+// strip-level detector the fit-side lattice check cannot be: the fit checks
+// w(k,T) pointwise on a sampled lattice, while a variance swap trades the
+// whole integral, and the integral can invert while every sampled point holds.
+//
+// HOW THE ERROR-PATH FLAG REACHES YOU. `Result<DerivQuote>` carries no quote
+// on an `Err`, so a flag "on the error-path diagnostic" has no channel in the
+// return type. `diagnostic_out` is that channel: when non-null it is ASSIGNED
+// ON EVERY RETURN PATH -- success, calendar failure, and every argument or
+// leg failure -- so a caller reads the flag off it after any outcome. Paths
+// that never priced a leg leave it default-constructed (`DerivFlags::None`,
+// both leg fields NaN); paths that priced both legs fill the legs and the
+// flags whether or not the call then succeeded. Passing `nullptr` (the
+// default) is supported and simply forgoes the diagnostic.
+//
+// TENOR SEPARATION. T2 -> T1 divides the noise floor above by a vanishing
+// number, so past some separation K_fwd is noise. Rather than a magic minimum
+// gap, the entry refuses (`OutOfRange`) exactly when the noise floor divided
+// by (T2 - T1) exceeds `kFwdVarNoiseCeilingVar` decimal variance units --
+// i.e. when the answer cannot be resolved to that accuracy at this tenor
+// separation, whatever combination of gap, tier and surface produced it.
+//
+// @return InvalidArgument when T1/T2 are not finite, T1 <= 0, or T2 <= T1
+//         (0 has exactly one meaning here -- an invalid tenor -- and +Inf is
+//         rejected, not admitted, by the finiteness test);
+//         OutOfRange when the tenor separation cannot resolve K_fwd to
+//         `kFwdVarNoiseCeilingVar`; Internal + `CalendarInconsistent` on a
+//         genuinely inverted term structure; otherwise whatever error the
+//         first failing leg's `var_swap_fair_strike` returned, unchanged.
+//
+// Quote fields: `fair_strike_dec`/`fair_strike_points` carry K_fwd;
+// `leg_T1_var_dec`/`leg_T2_var_dec` carry the two legs; `flags` is the OR of
+// both legs' provenance; `uncapped_var_dec` carries the forward TOTAL variance
+// (K_fwd*(T2-T1)). `pv` stays 0: this is a fair strike, not a contract.
+// Grid-provenance fields (`strip_k_lo_used` and siblings) report the T2 LEG's
+// grid, since the two legs' grids genuinely differ -- `leg_T*_var_dec` plus a
+// direct `var_swap_fair_strike` call is how a caller recovers the other.
+template <class SurfaceT>
+[[nodiscard]] Result<DerivQuote>
+forward_var_fair_strike(const SurfaceT& surface, const CurveSet& curves, double T1,
+                        double T2, const DerivConfig& cfg = DerivConfig{},
+                        DerivQuote* diagnostic_out = nullptr);
 
 // ── Unified product price (handles aged + dispatch) ──────────────────────
 
@@ -1478,6 +1617,30 @@ vol_swap_fair_strike(const PricedSurface& surface, double T,
 deriv_price(const PricedSurface& surface, const DerivContract& contract,
            const DerivConfig& cfg = DerivConfig{},
            std::optional<double> surface_certified_wing_band = std::nullopt);
+
+// Forward-start variance on the modern fitted container -- the entry Task F-4's
+// spec names, and the one to reach for. Full contract (canonical convention,
+// shared policy resolution, accuracy floor, calendar detector, and how
+// `diagnostic_out` delivers `DerivFlags::CalendarInconsistent` on the error
+// path) is on the templated declaration above; only the PricedSurface-specific
+// parts are restated here.
+//
+// BOTH tenors are gated against the surface's fitted pillar range by the SAME
+// carry resolution -- one `CurveSet` built once from the surface's own pillars
+// serves both legs, so the two strips cannot end up reading different forwards
+// for the same T. `T1` below the front pillar or `T2` past the back one
+// returns `OutOfRange`, for the reason the sibling overloads' FITTED-RANGE
+// ONLY note gives: past the pillars the strip's flat-clamped forward and
+// `PricedSurface::forward_at`'s economic extrapolation disagree, and a
+// mis-centred k = 0 biases K_var silently.
+//
+// `surface_certified_wing_band` is resolved ONCE and applied to both legs --
+// it is part of the shared policy, not a per-leg knob.
+[[nodiscard]] Result<DerivQuote>
+forward_var_fair_strike(const PricedSurface& surface, double T1, double T2,
+                        const DerivConfig& cfg = DerivConfig{},
+                        std::optional<double> surface_certified_wing_band = std::nullopt,
+                        DerivQuote* diagnostic_out = nullptr);
 
 // Same contract as the templated `deriv_greeks` above, differentiating the
 // PricedSurface-native `deriv_price`. The fitted-range gate runs ONCE, on

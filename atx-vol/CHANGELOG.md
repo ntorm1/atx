@@ -9,6 +9,67 @@ Vol-derivatives production sprint, Phase 1 (correctness), Phase 2
 (performance), and Phase 3 (features). Grows only with changes that move a
 number a caller could already be marking with.
 
+### Added — `forward_var_fair_strike`: forward-start variance + calendar diagnostic (PV-F4 / FIT-F2 / LIT-7, Task F-4)
+
+New entry `forward_var_fair_strike` (a `PricedSurface`-native overload plus a
+templated sibling over the usual `SurfaceT` set) prices the forward-start
+variance strike between two tenors from total-variance additivity:
+`K_fwd = (K_var(T2)*T2 - K_var(T1)*T1)/(T2 - T1)`, with each leg the FULL-SMILE
+model-free strip this file already prices.
+
+* ONE CONVENTION IS NOW CANONICAL. `atx::vol::forward_vol` (analytics.hpp)
+  derives forward variance from the ATMF total variance ALONE, which is a
+  different number on any surface with skew, and it returned a bare NaN on an
+  inverted term structure -- indistinguishable from its NaN for a bad argument.
+  It is NOT removed (1.x is additive-only) and stays correct for what it is,
+  the ATM term-structure DIAGNOSTIC behind `SurfaceAnalytics::
+  forward_vol_segments`; its declaration now says so and points at the new
+  entry as the pricing convention.
+* BOTH LEGS ARE PRICED UNDER ONE POLICY RESOLUTION -- one `DerivConfig` object
+  and one certified-wing-band argument reach both strips, so wing mode, wing
+  trust band and `width_sigmas` cannot differ between them. Only the GRID is
+  per-tenor (each leg's adaptive span and node budget follow its own
+  `sigma_atm*sqrt(T)`), which is what makes the difference meaningful.
+* NEW `DerivFlags::CalendarInconsistent = 1u << 15` (appended; bit 15 was free,
+  the previous high bit being `WingExtrapolated = 1u << 14`). A T2 strip
+  pricing LESS total variance than the T1 strip, by more than the two legs'
+  combined accuracy, returns `ErrorCode::Internal` with this flag. Because an
+  `Err` carries no `DerivQuote`, the flag is delivered through the entry's
+  `diagnostic_out` out-parameter, which is assigned on EVERY return path; a
+  caller passing `nullptr` gets the status and no flag. The error MESSAGE is
+  not a channel.
+* THE DETECTOR'S DEAD BAND IS ANCHORED TO THE LIBRARY'S OWN CALENDAR ACCURACY
+  FLOOR, not to a new magic number: `2 * kCalendarTotalVarianceTol` plus both
+  legs' MEASURED `integration_error_est` (times their tenors). A surface merely
+  at the limit of fit precision is served as `K_fwd == 0.0` with no flag; a
+  genuinely arbitrageable one fails loud. Measured at High tier on the test
+  fixture: dead band 2.00016e-07 in total variance, of which the quadrature
+  terms are 1.6e-12.
+* NEW EXPORTED CONSTANT `atx::vol::kCalendarTotalVarianceTol` (arb.hpp) =
+  1.0e-7 in total-variance units, THE calendar tolerance. It previously existed
+  as five hand-kept copies of that literal (arb.cpp x2, projection.cpp,
+  vol_curve.cpp, spline_curve.cpp -- two of them carrying comments asking the
+  reader to keep them in sync). All five now name the constant. The value is
+  unchanged, so this is bit-identical by construction; what changes is that it
+  can no longer drift between the fit-side checks, the calendar projectors and
+  this new detector.
+* NEW EXPORTED CONSTANT `atx::vol::kFwdVarNoiseCeilingVar` = 1.0e-3 decimal
+  variance. `K_fwd` differences two nearly-equal totals and divides by a small
+  number, so the dead band above is amplified by `1/(T2 - T1)`; the entry
+  returns `OutOfRange` when that amplified floor passes this ceiling rather
+  than serving a number whose leading digits are error. Measured boundary at
+  Audit tier: `T2 - T1` below 2.0e-4 years (~1.75 hours) refuses.
+* `DerivQuote` gains `leg_T1_var_dec` / `leg_T2_var_dec` (arity pin 17 -> 19),
+  each carrying its leg's `K_var` bit-identically. `accrued_component_dec` /
+  `future_component_dec` are deliberately NOT reused: they mean "realized leg"
+  and "implied leg of an aged blend" everywhere else, and a forward-start
+  strike has no accrued leg. NaN, not 0, on every quote no forward-start entry
+  produced. Grid-provenance fields report the T2 leg's grid (the two legs
+  resolve different grids by design).
+* NO EXISTING NUMBER MOVES. This is an additive entry plus two appended quote
+  fields with a NaN default and one appended flag bit; the five tolerance sites
+  above keep the same value.
+
 ### Added — `DerivKind::CorridorVarSwap`: corridor variance swaps (PV-F3 / LIT-7, Task F-3)
 
 New `DerivKind::CorridorVarSwap = 6` (appended, additive-only) prices the

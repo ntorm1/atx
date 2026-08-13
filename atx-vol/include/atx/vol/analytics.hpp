@@ -380,6 +380,26 @@ struct SurfaceDiff {
 
 // Forward (calendar) vol between two tenors: sqrt((w2 − w1)/(T2 − T1)) on ATMF
 // total variance w = σ²·T. NaN if T2 ≤ T1 or w2 ≤ w1 (calendar arb / numerical).
+//
+// DEPRECATED AS A PRICING CONVENTION (Task F-4, finding FIT-F2 — NOT removed;
+// this is a 1.x additive-only API and the term-structure diagnostic below is a
+// legitimate use). This function reads the ATMF total variance ALONE. The
+// TRADEABLE forward variance is an integral over the whole smile, so on any
+// surface with skew these are different numbers, and having both in the
+// library was a second, inconsistent convention with nothing saying which one
+// priced.
+//
+// The CANONICAL convention is `atx::vol::forward_var_fair_strike`
+// (derivatives.hpp): the same additivity identity applied to the full-smile
+// model-free variance strips, K_fwd = (K_var(T2)·T2 − K_var(T1)·T1)/(T2 − T1).
+// It is also the only one of the two that DETECTS a calendar-inconsistent
+// surface — this helper returns a bare NaN when w2 ≤ w1, which is
+// indistinguishable from its NaN for "T2 ≤ T1" and from its NaN for an
+// unusable surface read, so a caller cannot tell arbitrage from a bad argument.
+//
+// Keep using this one for: ATM term-structure DIAGNOSTICS (that is what
+// `SurfaceAnalytics::forward_vol_segments` is). Do not use it to price or mark
+// a forward-start contract.
 [[nodiscard]] double forward_vol(const PricedSurface &ps, double T1, double T2) noexcept;
 
 // Model-free implied vol sqrt(K_var(T)) via the OTM log-strip on the served

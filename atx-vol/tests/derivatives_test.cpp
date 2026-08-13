@@ -10,6 +10,7 @@
 #include <utility>
 #include <vector>
 
+#include "atx/vol/arb.hpp"                  // Task F-4: kCalendarTotalVarianceTol
 #include "atx/vol/black76.hpp"              // WingClamp oracle repricing
 #include "atx/vol/derivatives.hpp"
 #include "atx/vol/detail/counters.hpp"      // ledger:: (Corridor dispatch witness)
@@ -4843,6 +4844,496 @@ TEST(Corridor, WindowIsReResolvedAgainstEachPricingsOwnForward) {
   const auto full_high = var_swap_fair_strike(surf, cs_high, 0.5, cfg);
   ASSERT_TRUE(full_high.has_value());
   EXPECT_LT(q_high->fair_strike_dec, full_high->fair_strike_dec);
+}
+
+// ── Task F-4: forward-start variance (PV-F4 / FIT-F2 / LIT-7) ────────────
+//
+// Coverage in this block: the three brief oracles (FlatSurfaceExact,
+// TermStructureExact, NegativeForwardFailsLoud); the R4 detector threshold
+// tested on BOTH sides of the fit accuracy floor; the R1 shared-policy proof
+// (one config + one band reaching both legs, discriminating against a leg that
+// ignored either); the R3 cancellation boundary; the R2 out-parameter contract
+// on every return path; degenerate tenors including the +Inf case; and a
+// fixture in which BOTH appended quote fields differ from every trivial value
+// and from each other.
+//
+// FIXTURE NOTE (the F-3 make_flat_curves lesson): the builder below takes an
+// explicit `rate` and puts it in the discount factor, the pricing context AND
+// the pillar forwards (F = S*e^{rT}, so q_eff == 0 stays consistent). Every
+// fixture here except the FlatSurfaceExact sweep runs at r = 4.3%, so nothing
+// in this block is structurally blind to a rate the way a hard-coded r = 0
+// helper would make it.
+
+// eSSVI PricedSurface with an EXPLICIT per-pillar total variance. phi = 0 and
+// rho = 0 make the eSSVI backbone w(k) = (theta/2)(1 + sqrt(1)) = theta for
+// every k -- a perfectly flat smile -- so K_var(T_i) == theta_i/T_i up to the
+// strip's own quadrature and every oracle below has a closed form. `phi`/`rho`
+// are exposed for the one fixture that needs a genuine smile (the wing-band
+// discrimination test, where a flat smile would make the clamp a no-op).
+atx::vol::PricedSurface make_term_variance_priced_surface(
+    std::uint32_t uid, double spot, double rate,
+    const std::vector<std::pair<double, double>>& pillars, double phi = 0.0,
+    double rho = 0.0) {
+  atx::vol::CurveSurface cs;
+  std::vector<atx::vol::SliceContext> ctx;
+  std::uint16_t i = 0;
+  for (const auto& tp : pillars) {
+    const double T = tp.first;
+    atx::vol::EssviParams e{};
+    e.theta = tp.second;
+    e.phi = phi;
+    e.rho = rho;
+    e.psi = 0.5;
+    e.p = 0.5;
+    e.lambda = 0.5;
+    e.T = T;
+    e.F = spot * std::exp(rate * T);
+    e.expiry_id = i;
+    cs.push(std::make_unique<atx::vol::EssviCurve>(e, std::exp(-rate * T)));
+    ctx.push_back(atx::vol::SliceContext{T, e.F, 0.0, 0.0, 250, 7});
+    ++i;
+  }
+  atx::vol::PricingContext pc;
+  pc.S = spot;
+  pc.r = rate;
+  pc.now_ts_ns = atx::vol::testkit::kFixtureNow;
+  pc.method = atx::vol::AmericanMethod::AndersenLake;
+  pc.al_opts = atx::vol::al_fast_opts();
+  pc.uid = uid;
+  return atx::vol::testkit::unwrap_surface(
+      atx::vol::PricedSurface::create(std::move(cs), std::move(ctx), pc));
+}
+
+// Flat sigma, six pillars, every ordered tenor pair: K_fwd == sigma^2.
+//
+// TIER, AND THE BRIEF'S 1e-10. The tolerance is met at High and Audit but NOT
+// at the Standard default: the strip's Simpson error in TOTAL variance is
+// almost -- not exactly -- tenor-independent, so most of it cancels in
+// (w2 - w1) and what survives is the drift. Measured on this fixture: the
+// per-leg w error is 8.176e-12 at High and 7.93e-13 at Audit, constant across
+// all six tenors to the digits printed, leaving a max |K_fwd - sigma^2| of
+// 4.2e-17 (High) and 1.2e-13 (Audit) over the fifteen pairs; at Standard the
+// w error drifts from 1.853e-10 (T=0.10) to 2.683e-10 (T=1.00) and the max
+// residual is 1.51e-10, i.e. 1.5x past the brief's bar. Both tiers are
+// asserted, each at what it actually achieves plus headroom.
+TEST(ForwardVar, FlatSurfaceExact) {
+  const double sigma = 0.20;
+  const double sigma2 = sigma * sigma;
+  const std::vector<double> Ts{0.10, 0.25, 0.35, 0.50, 0.75, 1.00};
+  std::vector<std::pair<double, double>> pillars;
+  for (const double T : Ts) {
+    pillars.emplace_back(T, sigma2 * T);
+  }
+  const atx::vol::PricedSurface ps =
+      make_term_variance_priced_surface(7401, 100.0, 0.043, pillars);
+
+  struct Case {
+    atx::vol::DerivQuality quality;
+    double tol;
+  };
+  for (const Case c : {Case{atx::vol::DerivQuality::High, 1.0e-10},
+                       Case{atx::vol::DerivQuality::Audit, 1.0e-10},
+                       Case{atx::vol::DerivQuality::Standard, 5.0e-10}}) {
+    DerivConfig cfg = deriv_default_config();
+    cfg.quality = c.quality;
+    for (std::size_t a = 0; a + 1 < Ts.size(); ++a) {
+      for (std::size_t b = a + 1; b < Ts.size(); ++b) {
+        const auto f = atx::vol::forward_var_fair_strike(ps, Ts[a], Ts[b], cfg);
+        ASSERT_TRUE(f.has_value()) << f.error().to_string();
+        EXPECT_NEAR(f->fair_strike_dec, sigma2, c.tol)
+            << "quality=" << static_cast<int>(c.quality) << " T1=" << Ts[a] << " T2=" << Ts[b];
+        // The forward TOTAL variance over the window, and the legs, come along.
+        EXPECT_NEAR(f->uncapped_var_dec, sigma2 * (Ts[b] - Ts[a]), c.tol);
+        EXPECT_NEAR(f->leg_T1_var_dec, sigma2, 1.0e-8);
+        EXPECT_NEAR(f->leg_T2_var_dec, sigma2, 1.0e-8);
+        EXPECT_FALSE(has_flag(f->flags, DerivFlags::CalendarInconsistent));
+      }
+    }
+  }
+}
+
+// NOT AN EXACTNESS ORACLE ON ITS OWN -- read the block above. On a flat
+// surface K_var(T1) == K_var(T2) == K_fwd == sigma^2, so FlatSurfaceExact
+// CANNOT distinguish the two appended leg fields from each other, from
+// `fair_strike_dec`, or from a build that simply copied one into the others.
+// That is the F-2 blindness shape, and this is the fixture that closes it: a
+// term structure on which all three numbers are DIFFERENT.
+//
+// w(T) is constructed linear in T between the outer pillars (theta = 0.010 /
+// 0.0275 / 0.045 at T = 0.25 / 0.50 / 0.75), so the analytic forward variance
+// is (0.045 - 0.010)/(0.75 - 0.25) = 0.07 over the whole window AND over every
+// sub-window, including one whose endpoints are interpolated rather than
+// pillars. K_var(0.25) = 0.04 and K_var(0.75) = 0.06 -- so the two legs and
+// K_fwd are three distinct numbers, none of them 0, none NaN, and no two
+// interchangeable.
+TEST(ForwardVar, TermStructureExact) {
+  DerivConfig cfg = deriv_default_config();
+  cfg.quality = atx::vol::DerivQuality::High;
+  const atx::vol::PricedSurface ps = make_term_variance_priced_surface(
+      7410, 100.0, 0.043, {{0.25, 0.010}, {0.50, 0.0275}, {0.75, 0.045}});
+
+  const std::vector<std::pair<double, double>> windows{
+      {0.25, 0.75}, {0.25, 0.50}, {0.50, 0.75}, {0.30, 0.70}};
+  for (const auto& w : windows) {
+    const auto f = atx::vol::forward_var_fair_strike(ps, w.first, w.second, cfg);
+    ASSERT_TRUE(f.has_value()) << f.error().to_string();
+    EXPECT_NEAR(f->fair_strike_dec, 0.07, 1.0e-12)
+        << "T1=" << w.first << " T2=" << w.second;
+    // Total-variance additivity (LIT-7) as an identity on the served numbers.
+    EXPECT_NEAR(f->leg_T1_var_dec * w.first + f->fair_strike_dec * (w.second - w.first),
+                f->leg_T2_var_dec * w.second, 1.0e-13);
+  }
+
+  // The three-distinct-numbers assertion, on the full window.
+  const auto f = atx::vol::forward_var_fair_strike(ps, 0.25, 0.75, cfg);
+  ASSERT_TRUE(f.has_value());
+  EXPECT_NEAR(f->leg_T1_var_dec, 0.04, 1.0e-9);
+  EXPECT_NEAR(f->leg_T2_var_dec, 0.06, 1.0e-9);
+  EXPECT_NE(f->leg_T1_var_dec, f->leg_T2_var_dec);
+  EXPECT_NE(f->leg_T1_var_dec, f->fair_strike_dec);
+  EXPECT_NE(f->leg_T2_var_dec, f->fair_strike_dec);
+  EXPECT_NE(f->leg_T1_var_dec, 0.0);
+  EXPECT_NE(f->leg_T2_var_dec, 0.0);
+  EXPECT_FALSE(std::isnan(f->leg_T1_var_dec));
+  EXPECT_FALSE(std::isnan(f->leg_T2_var_dec));
+
+  // Each leg is BIT-IDENTICAL to a standalone strip at the same tenor under
+  // the same config -- the legs are the strips, not a re-derivation of them.
+  const auto l1 = var_swap_fair_strike(ps, 0.25, cfg);
+  const auto l2 = var_swap_fair_strike(ps, 0.75, cfg);
+  ASSERT_TRUE(l1.has_value());
+  ASSERT_TRUE(l2.has_value());
+  EXPECT_EQ(f->leg_T1_var_dec, l1->fair_strike_dec);
+  EXPECT_EQ(f->leg_T2_var_dec, l2->fair_strike_dec);
+
+  // Fields no forward-start entry populates keep their "not computed" NaN, and
+  // a quote from any OTHER entry keeps NaN in the two appended leg fields.
+  EXPECT_TRUE(std::isnan(f->conditional_corridor_var_dec));
+  EXPECT_EQ(f->pv, 0.0);
+  EXPECT_TRUE(std::isnan(l1->leg_T1_var_dec));
+  EXPECT_TRUE(std::isnan(l1->leg_T2_var_dec));
+}
+
+// A theta-inverted surface -- the C-8 shape: total variance DECREASING in T,
+// so the forward variance the caller asked for does not exist. Must fail loud,
+// and the flag must reach the caller through the out-parameter (there is no
+// quote on an Err to read it off).
+TEST(ForwardVar, NegativeForwardFailsLoud) {
+  DerivConfig cfg = deriv_default_config();
+  cfg.quality = atx::vol::DerivQuality::High;
+  // theta halves between the two pillars: w(0.75) = 0.007 < w(0.35) = 0.014.
+  const atx::vol::PricedSurface inverted = make_term_variance_priced_surface(
+      7420, 100.0, 0.043, {{0.35, 0.014}, {0.75, 0.007}});
+
+  atx::vol::DerivQuote diag{};
+  const auto f = atx::vol::forward_var_fair_strike(inverted, 0.35, 0.75, cfg, std::nullopt, &diag);
+  ASSERT_FALSE(f.has_value());
+  EXPECT_EQ(f.error().code(), ErrorCode::Internal);
+  EXPECT_TRUE(has_flag(diag.flags, DerivFlags::CalendarInconsistent));
+  // The error-path diagnostic carries the EVIDENCE, not a zeroed placeholder:
+  // both legs, and the raw (negative) quotient rather than a clamped one.
+  EXPECT_NEAR(diag.leg_T1_var_dec, 0.04, 1.0e-9);
+  EXPECT_NEAR(diag.leg_T2_var_dec, 0.007 / 0.75, 1.0e-9);
+  EXPECT_NEAR(diag.fair_strike_dec, (0.007 - 0.014) / 0.40, 1.0e-9);
+  EXPECT_LT(diag.fair_strike_dec, 0.0);
+
+  // The same surface read the other way round is perfectly fine, so the
+  // failure is about the term structure and not about the fixture.
+  const auto ok = var_swap_fair_strike(inverted, 0.75, cfg);
+  ASSERT_TRUE(ok.has_value());
+  EXPECT_FALSE(has_flag(ok->flags, DerivFlags::CalendarInconsistent));
+}
+
+// R4: the detector's threshold against the fit accuracy floor, BOTH SIDES.
+//
+// `kCalendarTotalVarianceTol` (arb.hpp, 1e-7 in total variance) is the bar the
+// library's own fit-side calendar checks use, so a surface can PASS those and
+// still carry a w-decrease that size. The detector's dead band is 2x that
+// floor plus both legs' measured Richardson estimates -- 2.00016e-07 on this
+// fixture at High tier, the quadrature terms contributing 1.6e-12 of it.
+// Measured outcomes at drops of 1e-7 / 2e-7 / 4e-7 / 1e-6 / 1e-3: served as
+// 0.0 / served as 0.0 / Internal / Internal / Internal.
+TEST(ForwardVar, CalendarDetectorRespectsTheFitAccuracyFloor) {
+  DerivConfig cfg = deriv_default_config();
+  cfg.quality = atx::vol::DerivQuality::High;
+
+  // (a) AT the fit floor: fit noise, not arbitrage. Must NOT fire, and must
+  // serve exactly 0.0 rather than a small negative variance.
+  const atx::vol::PricedSurface noisy = make_term_variance_priced_surface(
+      7430, 100.0, 0.043,
+      {{0.35, 0.014}, {0.75, 0.014 - atx::vol::kCalendarTotalVarianceTol}});
+  atx::vol::DerivQuote noisy_diag{};
+  const auto q_noisy =
+      atx::vol::forward_var_fair_strike(noisy, 0.35, 0.75, cfg, std::nullopt, &noisy_diag);
+  ASSERT_TRUE(q_noisy.has_value()) << q_noisy.error().to_string();
+  EXPECT_EQ(q_noisy->fair_strike_dec, 0.0);
+  EXPECT_EQ(q_noisy->uncapped_var_dec, 0.0);
+  EXPECT_FALSE(has_flag(q_noisy->flags, DerivFlags::CalendarInconsistent));
+  // The raw numerator IS negative -- so this is a real inversion being
+  // absorbed, not a fixture that failed to invert.
+  EXPECT_LT(q_noisy->leg_T2_var_dec * 0.75 - q_noisy->leg_T1_var_dec * 0.35, 0.0);
+  // ... and it is the DEAD BAND absorbing it, at the size the floor predicts.
+  EXPECT_NEAR(q_noisy->integration_error_est * 0.40, 2.0e-7, 1.0e-9);
+
+  // (b) 4x the fit floor: past anything either leg's accuracy explains.
+  const atx::vol::PricedSurface arbed = make_term_variance_priced_surface(
+      7431, 100.0, 0.043,
+      {{0.35, 0.014}, {0.75, 0.014 - 4.0 * atx::vol::kCalendarTotalVarianceTol}});
+  atx::vol::DerivQuote arb_diag{};
+  const auto q_arb =
+      atx::vol::forward_var_fair_strike(arbed, 0.35, 0.75, cfg, std::nullopt, &arb_diag);
+  ASSERT_FALSE(q_arb.has_value());
+  EXPECT_EQ(q_arb.error().code(), ErrorCode::Internal);
+  EXPECT_TRUE(has_flag(arb_diag.flags, DerivFlags::CalendarInconsistent));
+  EXPECT_NEAR(arb_diag.fair_strike_dec, -4.0e-7 / 0.40, 1.0e-11);
+}
+
+// R1: ONE config resolution and ONE certified band reach BOTH legs, while the
+// GRID is resolved per tenor. Needs a genuine smile (phi > 0, rho < 0), since
+// on a flat smile the wing clamp moves nothing and the test would pass for a
+// build that dropped the band entirely.
+//
+// Measured on this fixture at High tier: the T1 = 0.10 leg resolves 769 nodes
+// over +-2.0 and the T2 = 1.00 leg 1269 nodes over +-3.3 (6*sigma*sqrt(T)
+// widening bites only on the long leg), so per-tenor budgets are real here and
+// not an untested claim.
+TEST(ForwardVar, SharedPolicyReachesBothLegsWhileGridsResolvePerTenor) {
+  DerivConfig cfg = deriv_default_config();
+  cfg.quality = atx::vol::DerivQuality::High;
+  const double sigma = 0.55;
+  const atx::vol::PricedSurface ps = make_term_variance_priced_surface(
+      7440, 100.0, 0.043, {{0.10, sigma * sigma * 0.10}, {1.00, sigma * sigma * 1.00}},
+      /*phi=*/1.5, /*rho=*/-0.4);
+
+  const auto l1 = var_swap_fair_strike(ps, 0.10, cfg);
+  const auto l2 = var_swap_fair_strike(ps, 1.00, cfg);
+  ASSERT_TRUE(l1.has_value());
+  ASSERT_TRUE(l2.has_value());
+  EXPECT_NE(l1->strip_nodes_used, l2->strip_nodes_used);
+  EXPECT_NE(l1->strip_k_hi_used, l2->strip_k_hi_used);
+
+  const auto wide = atx::vol::forward_var_fair_strike(ps, 0.10, 1.00, cfg);
+  ASSERT_TRUE(wide.has_value()) << wide.error().to_string();
+  EXPECT_EQ(wide->leg_T1_var_dec, l1->fair_strike_dec);
+  EXPECT_EQ(wide->leg_T2_var_dec, l2->fair_strike_dec);
+  // Grid provenance is documented as the T2 leg's.
+  EXPECT_EQ(wide->strip_nodes_used, l2->strip_nodes_used);
+  EXPECT_EQ(wide->strip_k_hi_used, l2->strip_k_hi_used);
+
+  // A NARROWER certified band must move BOTH legs. A build that resolved the
+  // band once and applied it to one leg only would leave the other equal to
+  // its wide-band value, so each of these two EXPECT_NEs is a separate,
+  // discriminating witness that this leg saw the shared band.
+  const auto narrow = atx::vol::forward_var_fair_strike(ps, 0.10, 1.00, cfg,
+                                                        std::optional<double>{0.35});
+  ASSERT_TRUE(narrow.has_value()) << narrow.error().to_string();
+  EXPECT_NE(narrow->leg_T1_var_dec, wide->leg_T1_var_dec);
+  EXPECT_NE(narrow->leg_T2_var_dec, wide->leg_T2_var_dec);
+  EXPECT_NE(narrow->fair_strike_dec, wide->fair_strike_dec);
+  // ... and each narrow-band leg equals a standalone strip at that same band,
+  // which pins WHICH band reached it rather than merely that something moved.
+  const auto n1 = var_swap_fair_strike(ps, 0.10, cfg, std::optional<double>{0.35});
+  const auto n2 = var_swap_fair_strike(ps, 1.00, cfg, std::optional<double>{0.35});
+  ASSERT_TRUE(n1.has_value());
+  ASSERT_TRUE(n2.has_value());
+  EXPECT_EQ(narrow->leg_T1_var_dec, n1->fair_strike_dec);
+  EXPECT_EQ(narrow->leg_T2_var_dec, n2->fair_strike_dec);
+
+  // The same argument for the OTHER shared knobs: a config change has to move
+  // both legs, never one. `width_sigmas < 0` turns vol scaling off, which
+  // shrinks the long leg's span back to the tier default.
+  DerivConfig no_scale = cfg;
+  no_scale.width_sigmas = -1.0;
+  const auto unscaled = atx::vol::forward_var_fair_strike(ps, 0.10, 1.00, no_scale);
+  ASSERT_TRUE(unscaled.has_value()) << unscaled.error().to_string();
+  EXPECT_NE(unscaled->leg_T2_var_dec, wide->leg_T2_var_dec);
+}
+
+// The documented grid-provenance rule, on its own: a forward-start quote
+// reports the T2 LEG's grid, because the two legs genuinely resolve different
+// ones and there is no single grid to report.
+//
+// This assertion is ALSO the override witness for the out-of-tree reversion
+// probes (Task F-4 report, non-vacuity section). It is deliberately isolated
+// in its own test and depends on NONE of the behaviours those probes revert,
+// so "the substituted translation unit is the one linked" and "the reverted
+// behaviour was detected" are two independent observations rather than one
+// circular one. It is a value-level witness, not an error string: this sprint
+// has twice had a string sentinel go identical or unreachable between rounds.
+TEST(ForwardVar, ProbeWitnessGridProvenanceIsTheT2Leg) {
+  DerivConfig cfg = deriv_default_config();
+  cfg.quality = atx::vol::DerivQuality::High;
+  const double sigma = 0.55;
+  const atx::vol::PricedSurface ps = make_term_variance_priced_surface(
+      7480, 100.0, 0.043, {{0.10, sigma * sigma * 0.10}, {1.00, sigma * sigma * 1.00}},
+      /*phi=*/1.5, /*rho=*/-0.4);
+  const auto l1 = var_swap_fair_strike(ps, 0.10, cfg);
+  const auto l2 = var_swap_fair_strike(ps, 1.00, cfg);
+  ASSERT_TRUE(l1.has_value());
+  ASSERT_TRUE(l2.has_value());
+  // The two legs' node counts must actually DIFFER, or this witness could not
+  // tell them apart and would silently stop witnessing anything.
+  ASSERT_NE(l1->strip_nodes_used, l2->strip_nodes_used);
+
+  const auto f = atx::vol::forward_var_fair_strike(ps, 0.10, 1.00, cfg);
+  ASSERT_TRUE(f.has_value()) << f.error().to_string();
+  EXPECT_EQ(f->strip_nodes_used, l2->strip_nodes_used);
+  EXPECT_NE(f->strip_nodes_used, l1->strip_nodes_used);
+}
+
+// R3: the cancellation guard. The numerator differences two nearly-equal total
+// variances and the denominator vanishes, so the noise floor is amplified by
+// 1/(T2 - T1). Measured at Audit tier on a flat sigma = 0.20 surface: the
+// floor is 2.0000e-07 (the quadrature terms contribute ~1e-12), so the gate at
+// `kFwdVarNoiseCeilingVar` = 1e-3 bites at dT = 2.0e-4 years -- about 1.75
+// hours. dT = 1e-4 refuses (noise 2.0e-3), dT = 1e-3 serves (noise 2.0e-4, and
+// the served K_fwd is 0.040000000000095, i.e. 9.5e-14 from truth).
+//
+// The refusal is DELIBERATELY conservative: 2e-7 of that floor is the
+// library's stated calendar accuracy, which this synthetic fixture beats by
+// five orders of magnitude. The gate cannot know that, and must not assume it.
+TEST(ForwardVar, TenorSeparationBelowResolutionRefuses) {
+  DerivConfig cfg = deriv_default_config();
+  cfg.quality = atx::vol::DerivQuality::Audit;
+  const double sigma2 = 0.04;
+  const atx::vol::PricedSurface ps = make_term_variance_priced_surface(
+      7450, 100.0, 0.043,
+      {{0.50, sigma2 * 0.50}, {0.5001, sigma2 * 0.5001}, {0.501, sigma2 * 0.501},
+       {0.51, sigma2 * 0.51}, {0.75, sigma2 * 0.75}});
+
+  atx::vol::DerivQuote tight_diag{};
+  const auto tight =
+      atx::vol::forward_var_fair_strike(ps, 0.50, 0.5001, cfg, std::nullopt, &tight_diag);
+  ASSERT_FALSE(tight.has_value());
+  EXPECT_EQ(tight.error().code(), ErrorCode::OutOfRange);
+  // The diagnostic still carries both legs on this path -- they were priced.
+  EXPECT_FALSE(std::isnan(tight_diag.leg_T1_var_dec));
+  EXPECT_FALSE(std::isnan(tight_diag.leg_T2_var_dec));
+  EXPECT_GT(tight_diag.integration_error_est, atx::vol::kFwdVarNoiseCeilingVar);
+
+  const auto ok = atx::vol::forward_var_fair_strike(ps, 0.50, 0.501, cfg);
+  ASSERT_TRUE(ok.has_value()) << ok.error().to_string();
+  EXPECT_NEAR(ok->fair_strike_dec, sigma2, 1.0e-11);
+  EXPECT_LE(ok->integration_error_est, atx::vol::kFwdVarNoiseCeilingVar);
+}
+
+// Degenerate tenors. Note +Inf specifically: `T > 0.0` ADMITS it, so the
+// finiteness test has to run first, and the code must be InvalidArgument
+// rather than the OutOfRange a fitted-range gate would have produced.
+TEST(ForwardVar, DegenerateTenorsRejected) {
+  DerivConfig cfg = deriv_default_config();
+  const atx::vol::PricedSurface ps = make_term_variance_priced_surface(
+      7460, 100.0, 0.043, {{0.25, 0.010}, {0.75, 0.045}});
+  const double inf = std::numeric_limits<double>::infinity();
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+
+  const std::vector<std::pair<double, double>> bad{
+      {0.0, 0.75},    // T1 == 0
+      {-0.25, 0.75},  // T1 < 0
+      {0.25, 0.25},   // T2 == T1
+      {0.75, 0.25},   // T2 < T1
+      {nan, 0.75},   {0.25, nan}, {inf, 0.75}, {0.25, inf}, {-inf, 0.75}, {0.25, -inf},
+  };
+  for (const auto& p : bad) {
+    atx::vol::DerivQuote diag{};
+    diag.fair_strike_dec = 12345.0;  // pre-dirtied: must be overwritten
+    const auto f =
+        atx::vol::forward_var_fair_strike(ps, p.first, p.second, cfg, std::nullopt, &diag);
+    ASSERT_FALSE(f.has_value()) << "T1=" << p.first << " T2=" << p.second;
+    EXPECT_EQ(f.error().code(), ErrorCode::InvalidArgument)
+        << "T1=" << p.first << " T2=" << p.second;
+    // Out-parameter contract on a path that never priced a leg: reset, not
+    // left holding the caller's stale bytes.
+    EXPECT_EQ(diag.fair_strike_dec, 0.0);
+    EXPECT_TRUE(std::isnan(diag.leg_T1_var_dec));
+    EXPECT_EQ(diag.flags, DerivFlags::None);
+  }
+
+  // Both tenors are gated against the fitted pillar range, by ONE resolution.
+  EXPECT_EQ(atx::vol::forward_var_fair_strike(ps, 0.10, 0.75, cfg).error().code(),
+            ErrorCode::OutOfRange);  // T1 below the front pillar
+  EXPECT_EQ(atx::vol::forward_var_fair_strike(ps, 0.25, 1.50, cfg).error().code(),
+            ErrorCode::OutOfRange);  // T2 past the back pillar
+}
+
+// R2: the out-parameter is the ONLY channel for an error-path flag, so its
+// contract ("assigned on every return path") is itself load-bearing. nullptr
+// must also be safe -- it is the default.
+TEST(ForwardVar, DiagnosticOutIsWrittenOnEveryReturnPath) {
+  DerivConfig cfg = deriv_default_config();
+  cfg.quality = atx::vol::DerivQuality::High;
+  const atx::vol::PricedSurface good = make_term_variance_priced_surface(
+      7470, 100.0, 0.043, {{0.25, 0.010}, {0.75, 0.045}});
+  const atx::vol::PricedSurface bad = make_term_variance_priced_surface(
+      7471, 100.0, 0.043, {{0.25, 0.045}, {0.75, 0.010}});
+
+  // Success path: the diagnostic equals the returned quote field for field.
+  atx::vol::DerivQuote diag{};
+  const auto ok = atx::vol::forward_var_fair_strike(good, 0.25, 0.75, cfg, std::nullopt, &diag);
+  ASSERT_TRUE(ok.has_value()) << ok.error().to_string();
+  EXPECT_EQ(diag.fair_strike_dec, ok->fair_strike_dec);
+  EXPECT_EQ(diag.leg_T1_var_dec, ok->leg_T1_var_dec);
+  EXPECT_EQ(diag.leg_T2_var_dec, ok->leg_T2_var_dec);
+  EXPECT_EQ(diag.flags, ok->flags);
+
+  // Calendar-failure path: this is the case the flag exists for, and the only
+  // way a caller can see it.
+  atx::vol::DerivQuote fail_diag{};
+  const auto err =
+      atx::vol::forward_var_fair_strike(bad, 0.25, 0.75, cfg, std::nullopt, &fail_diag);
+  ASSERT_FALSE(err.has_value());
+  EXPECT_TRUE(has_flag(fail_diag.flags, DerivFlags::CalendarInconsistent));
+
+  // nullptr: same status, no crash, and the flag is simply not delivered.
+  const auto err_null = atx::vol::forward_var_fair_strike(bad, 0.25, 0.75, cfg);
+  ASSERT_FALSE(err_null.has_value());
+  EXPECT_EQ(err_null.error().code(), err.error().code());
+  const auto ok_null = atx::vol::forward_var_fair_strike(good, 0.25, 0.75, cfg);
+  ASSERT_TRUE(ok_null.has_value());
+  EXPECT_EQ(ok_null->fair_strike_dec, ok->fair_strike_dec);
+}
+
+// The templated sibling over the Tier-A container plus an explicit CurveSet.
+// One CurveSet serves both tenors there, exactly as one carry does on the
+// PricedSurface path.
+TEST(ForwardVar, TemplatedSiblingSharesTheSameRule) {
+  const double sigma = 0.20;
+  const EssviSurface surf = make_flat_surface(sigma, 0.01, 1.00);
+  const atx::vol::VolSurface tier_a = make_flat_vol_surface(sigma, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+  DerivConfig cfg = deriv_default_config();
+  cfg.quality = atx::vol::DerivQuality::High;
+
+  atx::vol::DerivQuote diag{};
+  const auto f =
+      atx::vol::forward_var_fair_strike(surf, cs, 0.25, 0.75, cfg, &diag);
+  ASSERT_TRUE(f.has_value()) << f.error().to_string();
+  const auto l1 = var_swap_fair_strike(surf, cs, 0.25, cfg);
+  const auto l2 = var_swap_fair_strike(surf, cs, 0.75, cfg);
+  ASSERT_TRUE(l1.has_value());
+  ASSERT_TRUE(l2.has_value());
+  EXPECT_EQ(f->leg_T1_var_dec, l1->fair_strike_dec);
+  EXPECT_EQ(f->leg_T2_var_dec, l2->fair_strike_dec);
+  EXPECT_DOUBLE_EQ(f->fair_strike_dec,
+                   (l2->fair_strike_dec * 0.75 - l1->fair_strike_dec * 0.25) / 0.50);
+  EXPECT_NEAR(f->fair_strike_dec, sigma * sigma, 1.0e-3);
+  EXPECT_EQ(diag.fair_strike_dec, f->fair_strike_dec);
+
+  // The Tier-A instantiation links and agrees with the demoted container.
+  const auto f_tier_a = atx::vol::forward_var_fair_strike(tier_a, cs, 0.25, 0.75, cfg);
+  ASSERT_TRUE(f_tier_a.has_value()) << f_tier_a.error().to_string();
+  EXPECT_NEAR(f_tier_a->fair_strike_dec, f->fair_strike_dec, 1.0e-12);
+
+  // Argument validation is the SAME rule on this path (one helper, two
+  // callers), not a second copy that could drift.
+  EXPECT_EQ(
+      atx::vol::forward_var_fair_strike(surf, cs, 0.75, 0.25, cfg).error().code(),
+      ErrorCode::InvalidArgument);
+  EXPECT_EQ(atx::vol::forward_var_fair_strike(surf, cs, std::numeric_limits<double>::infinity(),
+                                              0.75, cfg)
+                .error()
+                .code(),
+            ErrorCode::InvalidArgument);
 }
 
 }  // namespace

@@ -286,10 +286,11 @@ SplineVolCurve::project_calendar(const std::function<double(double)> &w_prev,
                "spline calendar pair projection: degenerate slice");
   }
 
-  // Matches arb.cpp's file-local kCalendarPairTol (1e-7) used by every sibling
-  // pair projection. Replicated (it is not exported) so the spline agrees on the
-  // same convergence bar.
-  constexpr double kCalendarPairTol = 1.0e-7;
+  // Task F-4: this WAS a replicated literal, with a comment asking the reader
+  // to keep it matching arb.cpp's file-local copy. It is now THE constant
+  // (arb.hpp), which arb.cpp's own pair projections name too, so "agrees on
+  // the same convergence bar" holds by construction rather than by upkeep.
+  constexpr double kCalendarPairTol = kCalendarTotalVarianceTol;
   constexpr double kLiftEps = 1.0e-9;  // strict-clearance inflation (siblings' +1e-9)
 
   const double atm = p_.atm_vol;

@@ -26,7 +26,9 @@ using atx::core::Ok;
 namespace {
 
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
-constexpr double kCalendarPairTol = 1.0e-7;
+// Task F-4: was a local `1.0e-7` literal; now THE constant (arb.hpp), which
+// every sibling calendar rule in the library also names.
+constexpr double kCalendarPairTol = kCalendarTotalVarianceTol;
 
 // Wing-residual coefficient width — mirrors the C `ATS_VOL_ESSVI_RESID_N`.
 constexpr int kEssviResidN = 16;
@@ -352,7 +354,7 @@ Result<std::vector<ArbViolation>> arb_check_calendar(const CurveSurface &s,
   if (slices.size() < 2 || n_grid == 0 || !(k_max > k_min)) {
     return Ok(std::move(out));
   }
-  constexpr double kCalendarTol = 1.0e-7;  // total-variance units
+  constexpr double kCalendarTol = kCalendarTotalVarianceTol;  // total-variance units
   const double dk = (k_max - k_min) / static_cast<double>(n_grid);
   for (std::size_t i = 1; i < slices.size(); ++i) {
     const IVolCurve &prev = *slices[i - 1];

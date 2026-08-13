@@ -407,7 +407,8 @@ Result<std::unique_ptr<IVolCurve>> fit_slice_curve(const CurveConfig &cfg,
     // price-shape cone and the calendar cone: every iterate remains bounded,
     // monotone and convex because calendar repair happens inside the QP, never
     // by mutating total variance after the fit.
-    constexpr double kCalendarTol = 1.0e-7;
+    // Task F-4: THE calendar tolerance (arb.hpp), not a local literal.
+    constexpr double kCalendarTol = kCalendarTotalVarianceTol;
     constexpr int kMaxCalendarRefits = 4;
 
     const ConvexRepairSpec* repair =
