@@ -1736,6 +1736,18 @@ Status PricerFitter::fit(const OptionChain &chain,
         comparison.primary_failures = digest.failures;
         comparison.primary_admission = policy_verdict;
         comparison.substitute_served = true;
+        // Stage 3 (shipped): a substitute that loses the common-support
+        // comparison is served DEGRADED, never silently — merge the verdict
+        // into the adopted candidate's digest, re-stamp the deterministic id,
+        // and re-decide. The bit is publish-with-Degraded (surface_policy
+        // .cpp), so the re-decision can only demote the state; it cannot
+        // reject the substitute or resurrect the rejected primary.
+        if (substitute_underserves(comparison)) {
+          retry_digest.failures |= ValidationFailure::SubstituteUnderserve;
+          finalize_validation_digest(retry_digest, validation_config);
+          retry_admission = decide_risk_surface_admission(
+              retry_digest, quality_mode, candidate_generation_, prior, cfg_.fallback);
+        }
         report.validation_fallback_comparison = std::move(comparison);
       }
       sess = std::move(*retry);
@@ -1838,6 +1850,14 @@ Status PricerFitter::fit(const OptionChain &chain,
           comparison.primary_failures = digest.failures;
           comparison.primary_admission = policy_verdict;
           comparison.substitute_served = true;
+          // Stage 3 (shipped): same demote-on-loss contract as the ladder
+          // adoption above.
+          if (substitute_underserves(comparison)) {
+            strict_digest.failures |= ValidationFailure::SubstituteUnderserve;
+            finalize_validation_digest(strict_digest, validation_config);
+            strict_admission = decide_risk_surface_admission(
+                strict_digest, quality_mode, candidate_generation_, prior, cfg_.fallback);
+          }
           report.validation_fallback_comparison = std::move(comparison);
         }
         // Same provenance contract as the ladder adoption above: the first

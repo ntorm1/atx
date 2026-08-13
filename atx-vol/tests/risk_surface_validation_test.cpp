@@ -373,6 +373,39 @@ TEST(RiskSurfaceAdmission, CarryGapOnlyPublishesDegradedWithReasonRetained) {
   EXPECT_TRUE(rejected.health.using_fallback());
 }
 
+// T7a stage 3: SubstituteUnderserve is the second publish-with-Degraded
+// reason — an adopted validation-fallback substitute that repriced fewer
+// common-support quotes in-band than the rejected primary is served with that
+// verdict surfaced, alone or alongside CarryGap. Combined with any real
+// geometric/certification failure it still rejects (fail-closed unchanged).
+TEST(RiskSurfaceAdmission, SubstituteUnderserveOnlyPublishesDegradedWithReasonRetained) {
+  ValidationDigest underserving;
+  underserving.failures = ValidationFailure::SubstituteUnderserve;
+  const AdmissionDecision decision = decide_risk_surface_admission(
+      underserving, FitQualityMode::Balanced, 7, 6, SurfaceFallback::LastKnownGood);
+  EXPECT_TRUE(decision.publish_candidate);
+  EXPECT_EQ(decision.health.state, SurfaceState::Degraded);
+  EXPECT_EQ(decision.health.reasons, ValidationFailure::SubstituteUnderserve);
+  EXPECT_EQ(decision.health.served_generation, 7u);
+  EXPECT_TRUE(decision.health.serving_candidate());
+  EXPECT_FALSE(decision.health.using_fallback());
+
+  ValidationDigest with_gap;
+  with_gap.failures = ValidationFailure::SubstituteUnderserve | ValidationFailure::CarryGap;
+  const AdmissionDecision both = decide_risk_surface_admission(
+      with_gap, FitQualityMode::Balanced, 7, 6, SurfaceFallback::LastKnownGood);
+  EXPECT_TRUE(both.publish_candidate);
+  EXPECT_EQ(both.health.state, SurfaceState::Degraded);
+  EXPECT_EQ(both.health.reasons, with_gap.failures);
+
+  ValidationDigest with_defect;
+  with_defect.failures = ValidationFailure::SubstituteUnderserve | ValidationFailure::Butterfly;
+  const AdmissionDecision rejected = decide_risk_surface_admission(
+      with_defect, FitQualityMode::Balanced, 7, 6, SurfaceFallback::LastKnownGood);
+  EXPECT_FALSE(rejected.publish_candidate);
+  EXPECT_TRUE(rejected.health.using_fallback());
+}
+
 TEST(RiskSurfaceAdmission, RejectedFirstGenerationLeavesRiskUnavailable) {
   ValidationDigest rejected;
   rejected.failures = ValidationFailure::NonFinite;

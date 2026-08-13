@@ -788,6 +788,37 @@ TEST(SurfaceV2Provenance, ValidationFallbackAdoptionPublishesCommonSupportCompar
   EXPECT_DOUBLE_EQ(record.substitute_worst_slice_frac, worst_substitute);
   EXPECT_GT(record.primary_obs_total, 0u);
   EXPECT_GT(record.substitute_obs_total, 0u);
+  // T7a stage 3, no-false-positive direction: on THIS board the adopted eSSVI
+  // substitute genuinely out-serves the rejected C8 primary on common support
+  // (measured 108/108 vs 86/108), so the demote-on-loss rule must NOT fire —
+  // no SubstituteUnderserve reason, and the served state stays whatever the
+  // substitute's own digest earned. (The fires-when-worse direction is pinned
+  // by SubstituteUnderservePredicateBoundaries + RiskSurfaceAdmission.
+  // SubstituteUnderserveOnlyPublishesDegradedWithReasonRetained, and end to
+  // end by the pre-registered corpus control: 143/179 production substitutes
+  // gain exactly this reason bit and nothing else changes.)
+  EXPECT_GT(record.substitute_within, record.primary_within);
+  EXPECT_FALSE(atx::vol::substitute_underserves(record));
+  EXPECT_FALSE(has_validation_failure(fitter.bundle().risk_health.reasons,
+                                      ValidationFailure::SubstituteUnderserve));
+}
+
+// T7a stage 3: the demote-on-loss trigger, at its boundaries. Fail-open on an
+// unmeasured comparison (W3-A), inactive on ties, active only on a strict
+// in-band deficit.
+TEST(SurfaceV2Provenance, SubstituteUnderservePredicateBoundaries) {
+  atx::vol::FallbackComparisonRecord record;
+  EXPECT_FALSE(atx::vol::substitute_underserves(record)); // measured nothing
+  record.n_scored = 10u;
+  record.primary_within = 5u;
+  record.substitute_within = 5u;
+  EXPECT_FALSE(atx::vol::substitute_underserves(record)); // tie is not a loss
+  record.substitute_within = 6u;
+  EXPECT_FALSE(atx::vol::substitute_underserves(record)); // substitute better
+  record.substitute_within = 4u;
+  EXPECT_TRUE(atx::vol::substitute_underserves(record)); // strict deficit
+  record.n_scored = 0u;
+  EXPECT_FALSE(atx::vol::substitute_underserves(record)); // W3-A guard wins
 }
 
 // W3-A: a fit that never substituted must publish NO comparison record —

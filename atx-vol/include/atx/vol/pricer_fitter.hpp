@@ -394,6 +394,24 @@ struct FallbackComparisonRecord {
   std::vector<FallbackComparisonSlice> slices{};
 };
 
+// T7a stage 3 (pre-registered, shipped): the adopted substitute measurably
+// under-serves the primary it replaced --- strictly fewer common-support quotes
+// repriced inside bid/ask. Deliberately count-based (equal counts are NOT
+// underserving) and fail-open on an empty population: a comparison that
+// measured nothing must not demote (W3-A --- absence of evidence is not a
+// verdict). When true, fit() merges ValidationFailure::SubstituteUnderserve
+// into the adopted candidate's digest before publication; the bit is a
+// publish-with-Degraded reason (surface_policy.cpp), so it can only demote
+// the served substitute's state --- never reject it, and never resurrect the
+// oracle-rejected primary. Measured basis (lqbench+sp100, robust/production):
+// 143/179 adopted substitutes were worse on common support (median in-band
+// loss 6.2%), and 75.9% of substitutes whose own-support min "improved" did
+// not improve on common support.
+[[nodiscard]] constexpr bool
+substitute_underserves(const FallbackComparisonRecord &record) noexcept {
+  return record.n_scored > 0u && record.substitute_within < record.primary_within;
+}
+
 // Complete primary + fallback history for one `fit` call. A report moves to
 // `published_report()` atomically with the admitted surface. Failed calls are
 // visible only through `last_attempt_report()` and cannot mutate published state.
