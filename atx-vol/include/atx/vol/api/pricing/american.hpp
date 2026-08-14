@@ -760,9 +760,6 @@ enum class ExerciseRegime : std::uint8_t { European, Unsupported, American };
   return (rate <= yield) ? ExerciseRegime::European : ExerciseRegime::Unsupported;
 }
 
-// P2.2b spike seed for al_boundary_jn_sweeps_to_converge.
-enum class AlSeedMode : std::uint8_t { Baw = 0, QdPlus = 1, Oracle = 2 };
-
 } // namespace detail
 
 } // namespace atx::vol

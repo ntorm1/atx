@@ -21,6 +21,7 @@
 #include <optional>
 
 #include "atx/vol/api/pricing/american.hpp"  // AlOpts (scheme_from_opts input)
+#include "pricing/american_detail.hpp"        // detail::AlSeedMode (AlScheme::seed default)
 
 namespace atx::vol::amer {
 

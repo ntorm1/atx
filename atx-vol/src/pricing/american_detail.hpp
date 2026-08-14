@@ -72,6 +72,9 @@ struct AlBaryHoistAudit {
                                                    double q,
                                                    const std::optional<AlOpts> &opts) noexcept;
 
+// P2.2b spike seed for al_boundary_jn_sweeps_to_converge.
+enum class AlSeedMode : std::uint8_t { Baw = 0, QdPlus = 1, Oracle = 2 };
+
 // Test/measurement-only (P2.2b). Cold-solve the put boundary for (K,T,sigma,r,q)
 // with the requested seed, then count Jacobi-Newton sweeps until the boundary
 // residual (max |Δy|) first falls to <= tol, capped at max_sweeps. Returns the
