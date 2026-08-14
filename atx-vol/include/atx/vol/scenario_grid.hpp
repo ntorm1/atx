@@ -71,6 +71,7 @@
 // the first pricing call builds it, after which configuration is refused with
 // AlreadyExists.
 
+#include <cmath> // std::isfinite: the deriv leg's NaN gating
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -202,8 +203,21 @@ struct ScenarioGridResult {
   // routed by the SAME radii as the option leg.
   std::vector<double> deriv_pnl;
   std::vector<std::uint8_t> deriv_route;
-  std::size_t n_deriv_ok{0};      // deriv positions whose base greek solve succeeded
-  std::size_t n_deriv_failed{0};  // deriv positions excluded from every cell
+  std::size_t n_deriv_ok{0};      // deriv positions contributing to every cell
+  std::size_t n_deriv_failed{0};  // deriv positions whose base greek solve failed
+  // Deriv positions that PRICED but carry "not computed" (NaN) in a sensitivity
+  // this grid's own shocks would read -- a contract too short to roll against a
+  // non-zero `dt`, or a smile shock against a book priced without
+  // `smile_greeks`. Excluded from every cell and counted HERE rather than in
+  // `n_deriv_failed`, because the two have different fixes: a failed solve is a
+  // broken position, this is a grid asking for an axis nothing measured.
+  //
+  // Counted rather than contributed as 0.0. A zero would read as "measured, and
+  // this position has no exposure to that axis", which is exactly the confusion
+  // Task F-7 round 1 removed one layer down.
+  //
+  // ok + failed + missing_sensitivity == deriv_book.size(), always.
+  std::size_t n_deriv_missing_sensitivity{0};
   // (cell x position) Exact reprices that Erred or went non-finite and fell
   // back to that position's Taylor leg for that cell. The cell's route stays
   // Exact, mirroring the option leg's own fallback accounting.
@@ -269,38 +283,78 @@ struct ScenarioDerivSpec {
 //
 // The first eight terms are `scenario_taylor_leg`'s, in ITS left-to-right order,
 // so the two legs of one grid reconstruct the same expansion; the two smile
-// terms are appended, and are exactly zero when the smile shocks are. `g.pv`
-// and the carry-theta fields are ignored -- this is a market-move expansion, and
-// the fixing rollover a swap also earns over `dt` is `DerivPnlExplain`'s job,
-// not a scenario cell's.
+// terms are appended. `g.pv` and the carry-theta fields are ignored -- this is a
+// market-move expansion, and the fixing rollover a swap also earns over `dt` is
+// `DerivPnlExplain`'s job, not a scenario cell's.
+//
+// ── EVERY TERM IS SHOCK-GATED, AND THAT IS ONE RULE, NOT TEN ───────────────
+//
+// A term whose SHOCK is exactly zero contributes exactly zero WITHOUT READING
+// its sensitivity. `NaN * 0.0` is NaN, not 0, and a `DerivGreeks` legitimately
+// carries "not computed" as NaN in SIX of these ten slots on documented
+// conditions:
+//
+//   theta, charm             a contract shorter than `bumps.time_years`
+//   vanna, charm             `DerivGreekBumps::second_order` off
+//   skew_vega, convexity_vega`DerivGreekBumps::smile_greeks` off (the default)
+//
+// so an unguarded product poisons the WHOLE cell -- all ten terms -- on a grid
+// that never asked for that axis. Task F-7 round 1 guarded the two smile terms
+// after `price_deriv_book` stopped fabricating a 0.0 skew vega for memoized
+// VarSwap rows. That guard was correct and incomplete: the same argument covers
+// theta, charm and vanna verbatim, and a rule applied to two of six slots is
+// the shape this sprint keeps re-finding. It is now the single rule for all
+// ten, expressed identically at each term rather than as a special case beside
+// eight bare multiplies.
+//
+// This is bit-identical to an unguarded product whenever the sensitivity is
+// finite: the only value it changes is a `-0.0` term (a negative sensitivity
+// times a zero shock) into `+0.0`, which can only alter a sum in which EVERY
+// term is `-0.0` -- and that sum is zero either way.
+//
+// A NON-ZERO shock against a NaN sensitivity still propagates NaN, deliberately.
+// The caller asked for an axis nothing measured, and there is no answer to give;
+// `scenario_grid`'s deriv leg detects that case BEFORE pricing and excludes the
+// position rather than letting the NaN reach a cell (see
+// `ScenarioGridResult::n_deriv_missing_sensitivity`).
 [[nodiscard]] inline double scenario_deriv_taylor_leg(const DerivGreeks &g, double dS, double dvol,
                                                       double dt, double dr, double d_skew,
                                                       double d_convexity) noexcept {
-  const double pd = g.delta * dS;
-  const double pg = 0.5 * g.gamma * dS * dS;
-  const double pv = g.vega * dvol;
-  const double pvol = 0.5 * g.volga * dvol * dvol;
-  const double pvanna = g.vanna * dS * dvol;
-  const double pth = g.theta * dt;
-  const double prho = g.rho * dr;
-  const double pcharm = g.charm * dS * dt;
-  // Task F-7 fix round 1. Guarded, not a bare multiply: `skew_vega` /
-  // `convexity_vega` are NaN whenever `DerivGreekBumps::smile_greeks` was off,
-  // and `NaN * 0.0` is NaN, not 0 -- so an unguarded product poisons the WHOLE
-  // cell (all ten terms) on a grid that never asked for a smile shock. That
-  // makes this function's own promise above -- "exactly zero when the smile
-  // shocks are" -- true for every input rather than only for the rows that
-  // happened to carry a finite value.
-  //
-  // This was always reachable: `price_deriv_book` memoizes VarSwap rows ONLY,
-  // so any VolSwap / GammaSwap / Corridor / Capped / VarianceCall row already
-  // arrived here with NaN smile greeks. It became reachable for VarSwap rows
-  // too when F-7 fixed the memoized path to report "not computed" as NaN
-  // instead of a fabricated 0.0 (that 0.0 was the bug, not the thing to
-  // preserve -- it read as "measured, and this book has no skew exposure").
+  const double pd = (dS == 0.0) ? 0.0 : g.delta * dS;
+  const double pg = (dS == 0.0) ? 0.0 : 0.5 * g.gamma * dS * dS;
+  const double pv = (dvol == 0.0) ? 0.0 : g.vega * dvol;
+  const double pvol = (dvol == 0.0) ? 0.0 : 0.5 * g.volga * dvol * dvol;
+  const double pvanna = (dS == 0.0 || dvol == 0.0) ? 0.0 : g.vanna * dS * dvol;
+  const double pth = (dt == 0.0) ? 0.0 : g.theta * dt;
+  const double prho = (dr == 0.0) ? 0.0 : g.rho * dr;
+  const double pcharm = (dS == 0.0 || dt == 0.0) ? 0.0 : g.charm * dS * dt;
   const double pskew = (d_skew == 0.0) ? 0.0 : g.skew_vega * d_skew;
   const double pconv = (d_convexity == 0.0) ? 0.0 : g.convexity_vega * d_convexity;
   return pd + pg + pv + pvol + pvanna + pth + prho + pcharm + pskew + pconv;
+}
+
+// Which `DerivGreeks` slots a grid carrying these shocks will actually read.
+// The mirror of the gating above, and deliberately the same disjunctions: a
+// term is read iff its shock is non-zero, so this is the exact predicate under
+// which a NaN sensitivity would reach a cell.
+//
+// `any_spot` / `any_vol` are "does ANY cell on that axis carry a non-zero
+// shock", because one grid shares one included/excluded verdict across all its
+// cells -- a position that contributes to some cells and not others would make
+// the matrix unreadable as a surface.
+[[nodiscard]] inline bool scenario_deriv_greeks_sufficient(const DerivGreeks &g, bool any_spot,
+                                                           bool any_vol, bool has_dt, bool has_dr,
+                                                           const ScenarioDerivSpec &d) noexcept {
+  const auto ok = [](double v) noexcept { return std::isfinite(v); };
+  if (any_spot && !(ok(g.delta) && ok(g.gamma))) return false;
+  if (any_vol && !(ok(g.vega) && ok(g.volga))) return false;
+  if (any_spot && any_vol && !ok(g.vanna)) return false;
+  if (has_dt && !ok(g.theta)) return false;
+  if (any_spot && has_dt && !ok(g.charm)) return false;
+  if (has_dr && !ok(g.rho)) return false;
+  if (d.d_skew != 0.0 && !ok(g.skew_vega)) return false;
+  if (d.d_convexity != 0.0 && !ok(g.convexity_vega)) return false;
+  return true;
 }
 
 // The same grid over an option book AND a vol-derivative book.

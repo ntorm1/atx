@@ -5527,10 +5527,34 @@ Result<DerivQuote> deriv_price_on_ref(const SurfaceRef& ref, const DerivContract
 // does not see the discount curve at all (`rho = -T*pv`, unconditionally, on
 // all four assembly paths), so `pv * exp(-dr*T')` IS the repriced value under a
 // parallel shift, not an approximation of it.
+//
+// ── CENTRE-THEN-PIN, FOR THE SAME REASON `deriv_greeks` DOES IT ────────────
+//
+// The shocked reprice runs under `pin_center_scheme(cfg, centre)`, never under
+// the raw `cfg`. Without it, a shocked evaluation re-resolves its own strip
+// grid, re-reads its own wing band, and -- the one that actually bites --
+// RE-CALIBRATES the vol-of-vol at the shocked point, so the difference against
+// the base carries a change of MODEL rather than a change of price.
+//
+// MEASURED on the scenario leg before this pin was added: the Taylor-vs-Exact
+// gap converged at O(h) rather than O(h^3) for every kind whose payoff runs
+// through the distribution model -- VolSwap 89.03 -> 44.34 -> 22.13 as the shock
+// halved twice (ratio 2, i.e. a first-order disagreement worth ~1% of the cell),
+// and the same for both capped kinds and VariancePut. VarSwap, CorridorVarSwap
+// and VarianceCall converged at ratio ~8 throughout and hid it completely.
+//
+// This is the sequence `deriv_greeks` and `deriv_pv_skew_shifted_for_test`
+// already run. It belongs here rather than at the call site so the rule has one
+// home instead of three.
+//
+// `centre` is the caller's already-priced unbumped quote when it has one --
+// `DerivPriceRow::greeks.quote` is exactly that, so a book-driven caller pays
+// nothing extra. Pass nullptr and this prices the centre itself: correct
+// standalone, at the cost of one extra strip.
 Result<DerivQuote> deriv_price_shocked_on_ref(const SurfaceRef& ref, const DerivContract& contract,
                                               const DerivConfig& cfg,
                                               std::optional<double> surface_certified_wing_band,
-                                              const DerivShock& shock) {
+                                              const DerivShock& shock, const DerivQuote* centre) {
   if (!ref.valid()) {
     return Err(ErrorCode::InvalidArgument, "deriv: null surface handle");
   }
@@ -5551,6 +5575,17 @@ Result<DerivQuote> deriv_price_shocked_on_ref(const SurfaceRef& ref, const Deriv
                "deriv_price_shocked_on_ref: time_roll consumes the whole tenor");
   }
 
+  // The centre is resolved at the UNROLLED, UNSHOCKED contract -- that is the
+  // evaluation the shocked one is differenced against, and pinning off anything
+  // else would reintroduce the drift this pin exists to remove.
+  DerivQuote owned_centre{};
+  if (centre == nullptr) {
+    ATX_TRY(owned_centre,
+            deriv_price_on_ref(ref, contract, cfg, surface_certified_wing_band));
+    centre = &owned_centre;
+  }
+  const DerivConfig cfg_pinned = pin_center_scheme(cfg, *centre);
+
   // The carry snapshot is taken at the ROLLED tenor, because that is the tenor
   // being priced; asking for a roll on top would carry a pillar nothing reads.
   ATX_TRY(const CurveSet base_curves, carry_from_ref(ref, rolled.maturity_t, 0.0));
@@ -5563,7 +5598,7 @@ Result<DerivQuote> deriv_price_shocked_on_ref(const SurfaceRef& ref, const Deriv
       .skew_shift = shock.skew_shift,
       .convexity_shift = shock.convexity_shift,
       .k_shift = sticky_k_shift(StickyMode::StickyStrike, shock.spot_rel)};
-  ATX_TRY(DerivQuote q, deriv_price(view, curves, rolled, cfg));
+  ATX_TRY(DerivQuote q, deriv_price(view, curves, rolled, cfg_pinned));
   const double df_shift = std::exp(-shock.rate_shift * rolled.maturity_t);
   q.pv *= df_shift;
   return Ok(q);

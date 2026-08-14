@@ -4,8 +4,12 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <optional>
+#include <utility>
 
 #include "atx/vol/deriv_pnl.hpp"
+#include "atx/vol/detail/deriv_ref_bridge.hpp" // I-3: a PRICED smile rotation
+#include "atx/vol/portfolio_pricer.hpp"        // SurfaceSet / SurfaceRef
 #include "atx/vol/priced_surface.hpp"
 #include "support/analytics_fixture.hpp"
 
@@ -542,4 +546,109 @@ TEST(DerivPnlExplain, VolLevelMoveLeavesOnlyTheSecondOrderTerm) {
   EXPECT_NEAR(e->residual, second_order, 0.05 * std::abs(second_order))
       << "residual=" << e->residual << " 0.5*volga*dsigma^2=" << second_order
       << " vol_level=" << e->vol_level << " d_pv=" << e->d_pv;
+}
+
+// I-3 (review round 1): the vega leg of this file's oracle was attacked and
+// held, but `skew_vega` was checked only against ITSELF -- multiplied by a
+// slope move in `SkewMoveIsAttributedToSkewNotLevel`, never against a move the
+// pricer actually produced. A skew_vega wrong by a constant factor, or carrying
+// the wrong sign convention for k, would pass every test in this file.
+//
+// This closes it with the same instrument that made the vega leg credible: the
+// move comes from a DIFFERENT entry point (`deriv_price_shocked_on_ref`, which
+// reprices the contract with the smile rotated by exactly `s`), the
+// sensitivity comes from `deriv_greeks`' smile stencil, and the claim is about
+// the SHAPE of the residual rather than its size -- halve the rotation and the
+// first-order explain must improve fourfold.
+//
+// The two conventions are the same object by construction and that is what
+// makes the comparison legitimate rather than a coincidence: `DerivGreeks::
+// skew_vega` differentiates `iv(k,T) -> max(iv(k,T) + s*k, 1e-4)`, and
+// `SurfaceOverlay::skew_shift` IS that `+ s*k`, floored identically. So a
+// rotation of `s` is a `skew_slope` move of exactly `s`.
+TEST(DerivPnlExplain, SkewVegaExplainsAPricedSmileRotation) {
+  const atx::vol::PricedSurface ps =
+      atx::vol::testkit::make_skewed_surface(72, 100.0, 100.0);
+  const atx::vol::PricedSurface *arr[] = {&ps};
+  auto ss = atx::vol::SurfaceSet::create(arr);
+  ASSERT_TRUE(ss.has_value());
+  const atx::vol::SurfaceRef ref = ss->find(72u);
+  ASSERT_NE(ref, nullptr);
+
+  DerivContract c{};
+  c.kind = DerivKind::VarSwap;
+  c.maturity_t = 0.35;
+  c.notional = kN;
+  c.rv_spec.annualization = 252.0;
+  c.rv_spec.n_obs_total = 63u;
+  c.rv_spec.n_obs_done = 20u;
+  c.rv_spec.rv_done_dec = 0.048;
+
+  atx::vol::DerivGreekBumps bumps{};
+  bumps.smile_greeks = true;
+  const auto g0 = atx::vol::deriv_greeks(ps, c, atx::vol::deriv_default_config(), bumps);
+  ASSERT_TRUE(g0.has_value()) << g0.error().to_string();
+  ASSERT_TRUE(std::isfinite(g0->skew_vega));
+  // Pinned on DerivGreeks::skew_vega: a long var swap loses as the skew
+  // flattens, so this is negative. Asserted here because the residual-shape
+  // check below is insensitive to an overall sign flip.
+  ASSERT_LT(g0->skew_vega, 0.0);
+
+  const auto q0 = atx::vol::deriv_price(ps, c);
+  ASSERT_TRUE(q0.has_value()) << q0.error().to_string();
+
+  // The residual of the first-order explain, as a function of the rotation.
+  const auto residual_at = [&](double s) {
+    atx::vol::detail::DerivShock shock{};
+    shock.skew_shift = s;
+    const auto q1 = atx::vol::detail::deriv_price_shocked_on_ref(
+        ref, c, atx::vol::deriv_default_config(), std::nullopt, shock, &g0->quote);
+    EXPECT_TRUE(q1.has_value());
+    if (!q1.has_value()) {
+      return std::pair<double, double>{kNaN, kNaN};
+    }
+
+    DerivPnlInputs in{};
+    in.greeks = *g0;
+    in.dt_years = 0.0;
+    in.realized_var_dec = 0.0;
+    in.fixing_weight = var_swap_fixing_weight(c, 1.0);
+    in.from = mark_at(q0->pv);
+    in.to = mark_at(q1->pv);
+    in.from.skew_slope = 0.0;
+    in.to.skew_slope = s;  // the rotation IS the slope move, see above
+
+    const auto e = deriv_pnl_explain(in);
+    EXPECT_TRUE(e.has_value());
+    if (!e.has_value()) {
+      return std::pair<double, double>{kNaN, kNaN};
+    }
+    EXPECT_EQ(e->flags, DerivPnlFlags::None);
+    EXPECT_EQ(e->vol_level, 0.0);
+    EXPECT_EQ(e->carry, 0.0);
+    EXPECT_EQ(e->convexity, 0.0);
+    return std::pair<double, double>{std::abs(e->residual), std::abs(e->d_pv)};
+  };
+
+  const double s = 0.01;  // one vol point of rotation per unit k
+  const auto [res_s, move_s] = residual_at(s);
+  const auto [res_half, move_half] = residual_at(s / 2.0);
+  ASSERT_TRUE(std::isfinite(res_s) && std::isfinite(res_half));
+
+  // The rotation must actually move the mark, or none of this measures anything.
+  ASSERT_GT(move_s, 0.0);
+  EXPECT_GT(move_half, 0.0);
+
+  // The skew term carries nearly all of it -- this is what a wrong SCALE on
+  // skew_vega would break, and what no previous test in this file checked.
+  EXPECT_LT(res_s, 0.05 * move_s)
+      << "skew_vega=" << g0->skew_vega << " residual=" << res_s << " move=" << move_s;
+
+  // And the leftover is second-order in the rotation: halving `s` must shrink
+  // it by at least 3x (a pure O(s^2) remainder gives 4x). A skew_vega scaled by
+  // a constant factor leaves a FIRST-order residual, which shrinks by only 2x
+  // and fails here -- the same discrimination the volga witness provides for
+  // vega, and the reason this is a shape test rather than a tolerance.
+  EXPECT_LT(res_half, res_s / 3.0)
+      << "residual did not shrink second-order: " << res_s << " -> " << res_half;
 }

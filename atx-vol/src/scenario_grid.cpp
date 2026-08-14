@@ -18,6 +18,7 @@
 #include <limits>
 #include <optional>
 #include <span>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -555,12 +556,42 @@ namespace {
     pos_spot[p] = surf->pricing().S;
   }
 
+  // Which axes this grid will actually read. A position that priced but carries
+  // "not computed" in one of those slots cannot be scenario'd along it, and is
+  // excluded HERE -- before any cell is touched -- rather than allowed to
+  // propagate a NaN into a total this result promises is finite. See
+  // `scenario_deriv_greeks_sufficient` for why the predicate is the exact
+  // mirror of the Taylor kernel's own shock gating.
+  bool any_spot = false;
+  for (const double s : spec.spot_pct) {
+    any_spot = any_spot || (s != 0.0);
+  }
+  bool any_vol = false;
+  for (const double v : spec.vol_bump) {
+    any_vol = any_vol || (v != 0.0);
+  }
+  const bool has_dt = spec.dt != 0.0;
+  const bool has_dr = spec.dr != 0.0;
+
+  std::size_t n_missing = 0;
+  for (std::size_t p = 0; p < n_pos; ++p) {
+    if (pos_ok[p] == 0u) {
+      continue;
+    }
+    if (!scenario_deriv_greeks_sufficient(frame.rows[p].greeks, any_spot, any_vol, has_dt, has_dr,
+                                          deriv_spec)) {
+      pos_ok[p] = 0u;
+      ++n_missing;
+    }
+  }
+
   std::size_t n_ok = 0;
   for (const std::uint8_t v : pos_ok) {
     n_ok += v;
   }
   out.n_deriv_ok = n_ok;
-  out.n_deriv_failed = n_pos - n_ok;
+  out.n_deriv_failed = n_pos - n_ok - n_missing;
+  out.n_deriv_missing_sensitivity = n_missing;
 
   out.deriv_pnl.assign(n_cells, 0.0);
   out.deriv_route.assign(n_cells, static_cast<std::uint8_t>(ScenarioRoute::Taylor));
@@ -605,8 +636,12 @@ namespace {
       shock.rate_shift = spec.dr;
       shock.time_roll = spec.dt;
       const SurfaceRef surf = base.find(deriv_book[p].uid);
-      const auto q = detail::deriv_price_shocked_on_ref(surf, deriv_book[p].contract, cfg,
-                                                        std::nullopt, shock);
+      // The row's own centre quote is the pin source, so the shocked reprice
+      // differs from the base by a change of price rather than by a re-resolved
+      // grid or a re-calibrated vol-of-vol -- and the grid pays nothing for it,
+      // because `price_deriv_book` already computed that quote.
+      const auto q = detail::deriv_price_shocked_on_ref(
+          surf, deriv_book[p].contract, cfg, std::nullopt, shock, &frame.rows[p].greeks.quote);
       // A shocked solve that Erred or went non-finite falls back to this
       // position's Taylor leg for this cell; the cell's route STAYS Exact, and
       // the substitution is counted rather than absorbed -- same accounting the
@@ -617,6 +652,18 @@ namespace {
         continue;
       }
       total += deriv_book[p].qty * q->pv - frame.rows[p].pv;
+    }
+    // The header promises no NaN reaches a cell total. That promise was FALSE
+    // before this round -- a VolSwap row under the default `ScenarioDerivSpec{}`
+    // returned nine NaN cells alongside `n_deriv_ok = 1` -- so it is now
+    // enforced rather than asserted. Every path into `total` is guarded above
+    // (unusable sensitivities excluded before the loop, non-finite Exact
+    // reprices falling back to Taylor), so this can only fire on a defect in
+    // that guarding, which is exactly when a caller should hear about it loudly
+    // instead of receiving a NaN matrix stamped Ok.
+    if (!std::isfinite(total)) {
+      return Err(ErrorCode::Internal,
+                 "scenario_grid: deriv cell " + std::to_string(c) + " went non-finite");
     }
     out.deriv_pnl[c] = total;
   }

@@ -205,6 +205,15 @@ struct DerivShock {
 // documents (scenario_grid.hpp) and the same `SurfaceOverlay` composition every
 // greek bump prices under.
 //
+// Runs under `pin_center_scheme`, exactly as `deriv_greeks`' own bump table
+// does, so the difference against the base is a change of PRICE and not a
+// re-resolved grid, a re-read wing band or a re-calibrated vol-of-vol. See the
+// definition's own comment for the measurement that forced this.
+//
+// @param centre the caller's already-priced unbumped quote, used as the pin
+//               source. `DerivPriceRow::greeks.quote` is exactly that, so a
+//               book-driven caller pays nothing extra. nullptr prices the
+//               centre here instead, at the cost of one extra strip.
 // @pre `ref.valid()`.
 // @return InvalidArgument for a non-finite shock, a `spot_rel <= -1`, or a
 //         `time_roll` that consumes the whole tenor; otherwise the same error
@@ -213,7 +222,7 @@ struct DerivShock {
 deriv_price_shocked_on_ref(const SurfaceRef &ref, const DerivContract &contract,
                            const DerivConfig &cfg,
                            std::optional<double> surface_certified_wing_band,
-                           const DerivShock &shock);
+                           const DerivShock &shock, const DerivQuote *centre = nullptr);
 
 } // namespace detail
 } // namespace atx::vol

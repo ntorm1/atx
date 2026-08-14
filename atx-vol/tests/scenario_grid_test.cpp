@@ -1059,15 +1059,26 @@ TEST(ScenarioGrid, ExactCellsMatchColdPerCellOracleBitwise) {
 
 namespace {
 
-// A variance swap on `uid`, struck mid-life so the accrued and future legs are
-// both live -- a fully-unaged swap would hide any error in the future-leg
-// weighting, and a fully-aged one has no market risk left to shock.
-[[nodiscard]] DerivPosition var_swap_on(std::uint32_t uid, double qty, double T = 0.35) {
+// A deriv position of ANY kind on `uid`, struck mid-life so the accrued and
+// future legs are both live -- a fully-unaged swap would hide an error in the
+// future-leg weighting, and a fully-aged one has no market risk left to shock.
+//
+// KIND-PARAMETERISED ON PURPOSE. Round 1 of this leg shipped six tests that all
+// used a VarSwap fixture, and `price_deriv_book` memoizes VarSwap rows ONLY --
+// so the entire non-memoised half of the kind space (VolSwap, GammaSwap, both
+// capped kinds, corridor, both variance options) was unreachable by every gate
+// here. The NaN-poisoning Critical this file now pins lived in exactly that
+// blind spot, and VarSwap escaped it only because the memo lane was
+// fabricating a 0.0 skew vega at the time. A guard whose fixture cannot reach
+// the failing kinds pins nothing, so the fixture is the fix as much as the
+// arithmetic is.
+[[nodiscard]] DerivPosition deriv_pos_on(DerivKind kind, std::uint32_t uid, double qty,
+                                         double T = 0.35) {
   DerivPosition p{};
   p.id = 100u + uid;
   p.uid = uid;
   p.qty = qty;
-  p.contract.kind = DerivKind::VarSwap;
+  p.contract.kind = kind;
   p.contract.maturity_t = T;
   p.contract.notional = 1.0e6;
   p.contract.strike_dec = 0.04;
@@ -1075,7 +1086,69 @@ namespace {
   p.contract.rv_spec.n_obs_total = 63u;
   p.contract.rv_spec.n_obs_done = 20u;
   p.contract.rv_spec.rv_done_dec = 0.048;
+  if (kind == DerivKind::CappedVarSwap) {
+    p.contract.cap_dec = 0.10;
+  }
+  if (kind == DerivKind::CappedVolSwap) {
+    p.contract.cap_dec = 0.40;
+  }
+  if (kind == DerivKind::CorridorVarSwap) {
+    p.contract.corridor_lo = 85.0;
+    p.contract.corridor_hi = 120.0;
+  }
+  if (kind == DerivKind::VolSwap || kind == DerivKind::CappedVolSwap) {
+    p.contract.strike_dec = 0.20;  // a VOL strike, not a variance one
+  }
+  if (kind == DerivKind::VarianceCall) {
+    p.contract.strike_dec = 0.03;  // below the fixture's fair variance: live
+  }
+  if (kind == DerivKind::VariancePut) {
+    // ABOVE the fair variance, deliberately. At the call's 0.03 strike this put
+    // is worth 0.0022 on a 1e6 notional -- so far out of the money that its
+    // whole grid lives at ~1e-3 and every RELATIVE comparison against it is
+    // ill-conditioned by construction. A worthless position exercises nothing;
+    // this one carries real value and real curvature.
+    p.contract.strike_dec = 0.06;
+  }
+  if (kind == DerivKind::GammaSwap) {
+    // An AGED gamma swap needs its own seed spot to rescale the future leg into
+    // the accrued leg's units (Lee's w(y) = S_i/S_seed); `price_gamma_swap`
+    // refuses the contract without it. That refusal is how the first draft of
+    // this sweep found its GammaSwap lane reporting `n_deriv_failed = 1` and an
+    // all-zero grid -- passing every finiteness check while exercising nothing.
+    p.contract.rv_spec.gamma_seed_spot = kS;
+  }
   return p;
+}
+
+[[nodiscard]] DerivPosition var_swap_on(std::uint32_t uid, double qty, double T = 0.35) {
+  return deriv_pos_on(DerivKind::VarSwap, uid, qty, T);
+}
+
+// Every kind `DerivKind` names. Enumerated once so a ninth kind breaks the
+// static_assert below rather than silently going untested -- the same drift-pin
+// idiom the struct arity checks use, applied to an enum.
+constexpr DerivKind kAllDerivKinds[] = {
+    DerivKind::VarSwap,       DerivKind::VolSwap,         DerivKind::CappedVarSwap,
+    DerivKind::CappedVolSwap, DerivKind::GammaSwap,       DerivKind::CorridorVarSwap,
+    DerivKind::VarianceCall,  DerivKind::VariancePut,
+};
+static_assert(std::size(kAllDerivKinds) == 8u,
+              "DerivKind gained a value: add it here so the deriv scenario leg's NaN gates "
+              "still cover every kind, then confirm the sweep below still passes");
+
+[[nodiscard]] const char *kind_name(DerivKind k) noexcept {
+  switch (k) {
+  case DerivKind::VarSwap: return "VarSwap";
+  case DerivKind::VolSwap: return "VolSwap";
+  case DerivKind::CappedVarSwap: return "CappedVarSwap";
+  case DerivKind::CappedVolSwap: return "CappedVolSwap";
+  case DerivKind::GammaSwap: return "GammaSwap";
+  case DerivKind::CorridorVarSwap: return "CorridorVarSwap";
+  case DerivKind::VarianceCall: return "VarianceCall";
+  case DerivKind::VariancePut: return "VariancePut";
+  }
+  return "?";
 }
 
 [[nodiscard]] ScenarioGridSpec small_deriv_spec() {
@@ -1307,5 +1380,312 @@ TEST(ScenarioGridDeriv, FailedDerivPositionIsExcludedEverywhere) {
   for (std::size_t c = 0; c < only_good->deriv_pnl.size(); ++c) {
     EXPECT_TRUE(std::isfinite(with_bad->deriv_pnl[c]));
     EXPECT_TRUE(bits_equal(only_good->deriv_pnl[c], with_bad->deriv_pnl[c])) << "cell " << c;
+  }
+}
+
+// ── The NaN gates (Task F-8 review round 1, Critical) ───────────────────────
+//
+// `DerivGreeks` carries "not computed" as NaN in SIX of the ten slots the
+// Taylor kernel reads, on documented conditions the DEFAULT configuration hits.
+// `NaN * 0.0` is NaN, so an unguarded product poisons all ten terms. Round 1 of
+// this leg shipped exactly that: a VolSwap under the documented default
+// `ScenarioDerivSpec{}` returned nine NaN cells while reporting
+// `n_deriv_ok = 1, n_deriv_failed = 0` -- success, and nothing but NaN.
+//
+// The three tests below are the gate. The first is the kernel's own rule,
+// checked slot by slot with a deliberately-poisoned `DerivGreeks`; the second
+// sweeps EVERY kind through the real grid under the real default; the third
+// covers the case a zero shock cannot rescue -- a shock on an axis whose
+// sensitivity genuinely was not computed.
+
+// Each of the six NaN-capable slots, one at a time, with its own shock zero.
+// Every other term must survive: a guard that returned 0.0 for the whole cell
+// would pass a naive "is it finite" check while destroying the answer, so the
+// non-poisoned terms are asserted against their exact hand-written products.
+TEST(ScenarioGridDeriv, EveryNaNCapableTermIsGatedByItsOwnShock) {
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+
+  DerivGreeks g{};
+  g.delta = 3.0;
+  g.gamma = 5.0;
+  g.vega = 7.0;
+  g.volga = 11.0;
+  g.vanna = 13.0;
+  g.theta = 17.0;
+  g.rho = 19.0;
+  g.charm = 23.0;
+  g.skew_vega = 29.0;
+  g.convexity_vega = 31.0;
+
+  // Baseline: everything finite, every shock live.
+  const double dS = 2.0, dvol = 0.5, dt = 0.25, dr = 0.125, dsk = 0.0625, dcv = 0.03125;
+  const double full = scenario_deriv_taylor_leg(g, dS, dvol, dt, dr, dsk, dcv);
+  ASSERT_TRUE(std::isfinite(full));
+
+  // theta NaN (a contract shorter than the roll) + dt == 0.
+  {
+    DerivGreeks p = g;
+    p.theta = nan;
+    p.charm = nan;
+    const double v = scenario_deriv_taylor_leg(p, dS, dvol, 0.0, dr, dsk, dcv);
+    EXPECT_TRUE(std::isfinite(v)) << "theta/charm NaN with dt == 0 must not poison the cell";
+    EXPECT_DOUBLE_EQ(v, scenario_deriv_taylor_leg(g, dS, dvol, 0.0, dr, dsk, dcv));
+  }
+  // vanna/charm NaN (second_order off) + dvol == 0 kills vanna, dt == 0 kills charm.
+  {
+    DerivGreeks p = g;
+    p.vanna = nan;
+    p.charm = nan;
+    const double v = scenario_deriv_taylor_leg(p, dS, 0.0, 0.0, dr, dsk, dcv);
+    EXPECT_TRUE(std::isfinite(v)) << "vanna/charm NaN with their shocks 0 must not poison";
+    EXPECT_DOUBLE_EQ(v, scenario_deriv_taylor_leg(g, dS, 0.0, 0.0, dr, dsk, dcv));
+  }
+  // The two smile vegas (smile_greeks off -- the DEFAULT) + zero smile shocks.
+  {
+    DerivGreeks p = g;
+    p.skew_vega = nan;
+    p.convexity_vega = nan;
+    const double v = scenario_deriv_taylor_leg(p, dS, dvol, dt, dr, 0.0, 0.0);
+    EXPECT_TRUE(std::isfinite(v)) << "smile vegas NaN with no smile shock must not poison";
+    EXPECT_DOUBLE_EQ(v, scenario_deriv_taylor_leg(g, dS, dvol, dt, dr, 0.0, 0.0));
+  }
+  // ALL SIX at once, every corresponding shock zero -- the real default grid.
+  {
+    DerivGreeks p = g;
+    p.theta = nan;
+    p.charm = nan;
+    p.vanna = nan;
+    p.skew_vega = nan;
+    p.convexity_vega = nan;
+    const double v = scenario_deriv_taylor_leg(p, dS, 0.0, 0.0, dr, 0.0, 0.0);
+    EXPECT_TRUE(std::isfinite(v));
+    // Only the two surviving terms, hand-written.
+    EXPECT_DOUBLE_EQ(v, g.delta * dS + 0.5 * g.gamma * dS * dS + g.rho * dr);
+  }
+  // And the honest converse: a NON-ZERO shock against a NaN sensitivity still
+  // propagates. There is no answer to give, and manufacturing a 0.0 would read
+  // as "measured, no exposure".
+  {
+    DerivGreeks p = g;
+    p.skew_vega = nan;
+    EXPECT_TRUE(std::isnan(scenario_deriv_taylor_leg(p, dS, dvol, dt, dr, dsk, dcv)));
+    DerivGreeks q = g;
+    q.theta = nan;
+    EXPECT_TRUE(std::isnan(scenario_deriv_taylor_leg(q, dS, dvol, dt, dr, dsk, dcv)));
+  }
+  // Gating is bit-identical to the bare product whenever the sensitivity is
+  // finite -- the guard must not have changed any number that was already right.
+  EXPECT_TRUE(bits_equal(full, g.delta * dS + 0.5 * g.gamma * dS * dS + g.vega * dvol +
+                                   0.5 * g.volga * dvol * dvol + g.vanna * dS * dvol +
+                                   g.theta * dt + g.rho * dr + g.charm * dS * dt +
+                                   g.skew_vega * dsk + g.convexity_vega * dcv));
+}
+
+// THE REGRESSION THIS ROUND EXISTS FOR. Every kind, through the real grid,
+// under the documented default `ScenarioDerivSpec{}` -- the configuration that
+// returned nine NaN cells stamped Ok.
+//
+// VarSwap is in the sweep but is not what makes it a gate: `price_deriv_book`
+// memoizes VarSwap rows only, so VarSwap took a different path from the other
+// seven kinds and was the one kind round 1's fixture could see.
+TEST(ScenarioGridDeriv, EveryKindProducesFiniteCellsUnderTheDefaultSpec) {
+  const PricedSurface ps = make_essvi(1, 4);
+  const SurfaceSet ss = set_of({&ps});
+  const ScenarioGridSpec spec = small_deriv_spec();
+
+  for (const DerivKind kind : kAllDerivKinds) {
+    const std::vector<DerivPosition> derivs = {deriv_pos_on(kind, 1u, 2.0)};
+    const auto r = scenario_grid({}, derivs, ss, spec);  // DEFAULT ScenarioDerivSpec
+    ASSERT_TRUE(r.has_value()) << kind_name(kind) << ": " << r.error().to_string();
+    ASSERT_EQ(r->deriv_pnl.size(), 9u) << kind_name(kind);
+
+    // The accounting identity: every position lands in exactly one bucket.
+    EXPECT_EQ(r->n_deriv_ok + r->n_deriv_failed + r->n_deriv_missing_sensitivity, derivs.size())
+        << kind_name(kind);
+
+    for (std::size_t c = 0; c < r->deriv_pnl.size(); ++c) {
+      EXPECT_TRUE(std::isfinite(r->deriv_pnl[c]))
+          << kind_name(kind) << " cell " << c << " = " << r->deriv_pnl[c];
+    }
+    // A kind that priced must actually MOVE somewhere on the grid. An
+    // all-finite matrix of zeros would pass the check above while saying
+    // nothing, and is what excluding the position would produce.
+    if (r->n_deriv_ok > 0u) {
+      bool any_nonzero = false;
+      for (const double v : r->deriv_pnl) {
+        any_nonzero = any_nonzero || (v != 0.0);
+      }
+      EXPECT_TRUE(any_nonzero) << kind_name(kind) << " contributed nothing to any cell";
+    } else {
+      // If it did NOT price, say which bucket -- silence here is what let the
+      // Critical through.
+      EXPECT_GT(r->n_deriv_failed + r->n_deriv_missing_sensitivity, 0u) << kind_name(kind);
+    }
+  }
+}
+
+// THE CASE THAT WAS STILL LIVE AT HEAD, and the narrowest statement of why the
+// guard had to be generalised rather than extended by one more special case.
+//
+// A contract SHORTER than `DerivGreekBumps::time_years` (default 1/365.25) gets
+// theta AND charm NaN. Task F-7 round 1 guarded the two smile terms, which
+// closed the door the reviewer came through; this one stayed open. Measured
+// out-of-tree against 39c934c with the reviewed `scenario_grid.hpp`/`.cpp`
+// linked ahead of the library: 9/9 NaN cells with `n_deriv_ok = 1`, on a grid
+// whose `dt` is ZERO -- the caller asked for no time roll at all and got a
+// matrix of NaN stamped Ok.
+//
+// The position must come back INCLUDED, not excluded: with `dt == 0` no theta
+// is ever read, so nothing is missing and contributing the position in full is
+// the correct answer rather than a lenient one.
+TEST(ScenarioGridDeriv, AShortContractDoesNotPoisonAGridThatAsksForNoTimeRoll) {
+  const PricedSurface ps = make_essvi(1, 4);
+  const SurfaceSet ss = set_of({&ps});
+
+  ScenarioGridSpec spec = small_deriv_spec();
+  ASSERT_EQ(spec.dt, 0.0) << "the point of this test is a grid with no time roll";
+
+  for (const DerivKind kind : kAllDerivKinds) {
+    DerivPosition p = deriv_pos_on(kind, 1u, 2.0);
+    p.contract.maturity_t = 0.001;  // ~0.37 days, under the default roll
+    const std::vector<DerivPosition> derivs = {p};
+
+    const auto r = scenario_grid({}, derivs, ss, spec);
+    ASSERT_TRUE(r.has_value()) << kind_name(kind) << ": " << r.error().to_string();
+    for (std::size_t c = 0; c < r->deriv_pnl.size(); ++c) {
+      EXPECT_TRUE(std::isfinite(r->deriv_pnl[c]))
+          << kind_name(kind) << " cell " << c << " = " << r->deriv_pnl[c];
+    }
+    EXPECT_EQ(r->n_deriv_ok + r->n_deriv_failed + r->n_deriv_missing_sensitivity, 1u)
+        << kind_name(kind);
+    // A NaN theta must not cost the position its place in a grid that never
+    // reads theta.
+    if (r->n_deriv_failed == 0u) {
+      EXPECT_EQ(r->n_deriv_missing_sensitivity, 0u)
+          << kind_name(kind) << ": excluded over a sensitivity this grid never reads";
+    }
+  }
+}
+
+// The case a zero shock cannot rescue: a smile shock against a book whose
+// greeks were solved WITHOUT smile_greeks is impossible by construction (the
+// grid turns the flag on when the shock is set), but a `dt` roll against a
+// contract SHORTER than the roll is not -- `theta` and `charm` come back NaN
+// and no flag can fix it. That position is excluded from every cell and counted
+// in its own bucket, never contributed as a 0.0.
+TEST(ScenarioGridDeriv, AContractTooShortToRollIsExcludedAndCountedNotZeroed) {
+  const PricedSurface ps = make_essvi(1, 4);
+  const SurfaceSet ss = set_of({&ps});
+
+  ScenarioGridSpec spec = small_deriv_spec();
+  spec.dt = 0.02;  // ~7 days
+  spec.taylor_radius_spot = kInf;
+  spec.taylor_radius_vol = kInf;
+
+  const DerivPosition rollable = deriv_pos_on(DerivKind::VolSwap, 1u, 2.0, 0.35);
+  const DerivPosition too_short = deriv_pos_on(DerivKind::VolSwap, 1u, 3.0, 0.01);
+
+  const auto solo = scenario_grid({}, {rollable}, ss, spec);
+  ASSERT_TRUE(solo.has_value()) << solo.error().to_string();
+  ASSERT_EQ(solo->n_deriv_ok, 1u);
+
+  const auto mixed = scenario_grid({}, {rollable, too_short}, ss, spec);
+  ASSERT_TRUE(mixed.has_value()) << mixed.error().to_string();
+
+  EXPECT_EQ(mixed->n_deriv_ok, 1u);
+  EXPECT_EQ(mixed->n_deriv_ok + mixed->n_deriv_failed + mixed->n_deriv_missing_sensitivity, 2u);
+  EXPECT_GE(mixed->n_deriv_missing_sensitivity + mixed->n_deriv_failed, 1u);
+
+  // Excluded means excluded: the surviving book prices exactly as if the
+  // unshockable position were absent, on the bits, with no NaN anywhere.
+  for (std::size_t c = 0; c < solo->deriv_pnl.size(); ++c) {
+    EXPECT_TRUE(std::isfinite(mixed->deriv_pnl[c])) << "cell " << c;
+    EXPECT_TRUE(bits_equal(solo->deriv_pnl[c], mixed->deriv_pnl[c])) << "cell " << c;
+  }
+}
+
+// The smile terms must work on a NON-memoised kind too. Round 1 checked
+// `skew_vega` only on a VarSwap, which is the one kind that reaches
+// `price_deriv_book`'s shared block -- and F-7 round 1 found that block serving
+// a fabricated 0.0 there. A VolSwap takes the unmemoised path, so this is the
+// same claim measured through different code.
+TEST(ScenarioGridDeriv, SmileShockLandsOnTheSmileTermsForANonMemoisedKind) {
+  const PricedSurface ps = make_essvi(1, 4);
+  const SurfaceSet ss = set_of({&ps});
+  const std::vector<DerivPosition> derivs = {deriv_pos_on(DerivKind::VolSwap, 1u, 2.0)};
+
+  ScenarioGridSpec spec;
+  spec.spot_pct = {0.0};
+  spec.vol_bump = {0.0};
+  spec.taylor_radius_spot = kInf;
+  spec.taylor_radius_vol = kInf;
+  ScenarioDerivSpec dspec;
+  dspec.d_skew = -0.002;
+
+  const auto r = scenario_grid({}, derivs, ss, spec, dspec);
+  ASSERT_TRUE(r.has_value()) << r.error().to_string();
+  ASSERT_EQ(r->n_deriv_ok, 1u) << "a VolSwap must be shockable on the smile axis";
+
+  DerivGreekBumps bumps{};
+  bumps.smile_greeks = true;
+  const auto frame =
+      price_deriv_book(ss, std::span<const DerivPosition>{derivs}, DerivConfig{}, true, bumps);
+  ASSERT_TRUE(frame.has_value()) << frame.error().to_string();
+  const double skew_vega = frame->rows[0].greeks.skew_vega;
+  ASSERT_TRUE(std::isfinite(skew_vega)) << "smile_greeks must produce a finite skew vega here";
+  ASSERT_NE(skew_vega, 0.0);
+
+  EXPECT_NEAR(r->deriv_pnl[0], skew_vega * dspec.d_skew,
+              1.0e-9 * std::abs(skew_vega * dspec.d_skew));
+}
+
+// The Taylor-vs-Exact agreement claim, re-run on the non-memoised kinds. The
+// acceptance test above uses a VarSwap; the O(h^3) convergence argument is a
+// statement about the EXPANSION, so it has to hold for every kind that has one.
+TEST(ScenarioGridDeriv, TaylorAndExactAgreeAcrossTheKindSpace) {
+  const PricedSurface ps = make_essvi(1, 4);
+  const SurfaceSet ss = set_of({&ps});
+
+  for (const DerivKind kind : kAllDerivKinds) {
+    const std::vector<DerivPosition> derivs = {deriv_pos_on(kind, 1u, 2.0)};
+
+    const auto gap_at = [&](double scale) {
+      ScenarioGridSpec t_spec;
+      t_spec.spot_pct = {-0.01 * scale, 0.0, 0.01 * scale};
+      t_spec.vol_bump = {-0.005 * scale, 0.0, 0.005 * scale};
+      t_spec.taylor_radius_spot = kInf;
+      t_spec.taylor_radius_vol = kInf;
+      ScenarioGridSpec e_spec = t_spec;
+      e_spec.taylor_radius_spot = -1.0;
+      e_spec.taylor_radius_vol = -1.0;
+
+      const auto t = scenario_grid({}, derivs, ss, t_spec);
+      const auto e = scenario_grid({}, derivs, ss, e_spec);
+      EXPECT_TRUE(t.has_value()) << kind_name(kind);
+      EXPECT_TRUE(e.has_value()) << kind_name(kind);
+      double gap = 0.0;
+      double mag = 0.0;
+      for (std::size_t c = 0; c < t->deriv_pnl.size(); ++c) {
+        gap = std::max(gap, std::abs(t->deriv_pnl[c] - e->deriv_pnl[c]));
+        mag = std::max(mag, std::abs(e->deriv_pnl[c]));
+      }
+      return std::pair<double, double>{gap, mag};
+    };
+
+    const auto [gap_h, mag_h] = gap_at(1.0);
+    const auto [gap_half, mag_half] = gap_at(0.5);
+    (void)mag_half;
+    ASSERT_GT(mag_h, 0.0) << kind_name(kind) << ": the Exact route produced a flat grid";
+    // MEASURED after the centre-pin fix: the worst kind is CorridorVarSwap at
+    // 0.105% of its cell, and every kind's ratio is 8.02-8.40. Both bounds sit
+    // an order of magnitude off what holds, so this is a regression guard on
+    // the expansion staying third-order, not a pin on a number. Before the pin,
+    // VolSwap sat at 0.99% with a ratio of 2.008 -- inside a naive relative
+    // bound, and caught only by the ratio.
+    EXPECT_LT(gap_h, 0.005 * mag_h)
+        << kind_name(kind) << ": gap=" << gap_h << " magnitude=" << mag_h;
+    EXPECT_LT(gap_half, gap_h / 4.0 + 1.0e-12)
+        << kind_name(kind) << ": remainder did not shrink super-quadratically, " << gap_h
+        << " -> " << gap_half;
   }
 }
