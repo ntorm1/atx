@@ -20,7 +20,7 @@
 // boundary batch (the T13 kernel that consults use_avx2()) honors it directly, and
 // the bound test / bakeoff bench drive the vector transcendentals through it.
 //
-// BAKEOFF OUTCOME (see .superpowers/sdd/at-task-14-report.md): vector_math.hpp is the
+// BAKEOFF OUTCOME: vector_math.hpp is the
 // chosen FastDeterministic implementation. SLEEF was DECLINED — it documents parity
 // with SVML (not a speedup over libm), the 4-lane win is already captured by
 // vector_math.hpp, and the one kernel that could benefit (the boundary solve) is

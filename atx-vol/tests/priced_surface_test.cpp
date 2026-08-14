@@ -12,7 +12,7 @@
 // Reference bracket scan written out below. The reference is not the
 // new code path, so a bit-identical match across a (K, T, side) grid proves the
 // refactor preserved every bit. The reference tests were captured and made green
-// against the PRE-change source first (see at-task-4-report.md).
+// against the PRE-change source first.
 
 #include <gtest/gtest.h>
 
@@ -524,9 +524,10 @@ TEST(PricedSurface, QueryMethodsBitIdenticalToReference) {
   }
 }
 
-// Prints a small set of pre-change hex anchors so at-task-4-report.md can pin the
-// literal bit patterns captured on the unchanged source (belt-and-suspenders on
-// top of the reference sweep). Always passes; the values are read from stdout.
+// Prints a small set of pre-change hex anchors, which is how the literal bit
+// patterns in `PricedSurface.PinnedPreChangeAnchors` below were captured on the
+// unchanged source (belt-and-suspenders on top of the reference sweep). Always
+// passes; the values are read from stdout.
 TEST(PricedSurface, PrintHexAnchors) {
   const PricedSurface s = make_essvi_varycarry(1);
   const double K = 104.0;
@@ -554,7 +555,7 @@ TEST(PricedSurface, PrintHexAnchors) {
 }
 
 // The literal pre-change bit patterns, captured on the UNCHANGED source (before
-// any P1.1 edit — see PrintHexAnchors output recorded in at-task-4-report.md).
+// any P1.1 edit — from the `PricedSurface.PrintHexAnchors` output above).
 // This is the belt-and-suspenders absolute anchor on top of the reference sweep:
 // even if the in-test reference and the implementation drifted TOGETHER, these
 // fixed constants would catch it. make_essvi_varycarry(1), K=104, T=0.29, Call.

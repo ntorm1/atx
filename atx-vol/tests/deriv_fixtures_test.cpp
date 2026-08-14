@@ -48,7 +48,7 @@ TEST(DerivFixtures, FlatSurface_IvEqualsSigmaAtEveryPillar) {
 // documented in deriv_fixtures.hpp), independent of skew_slope/convexity --
 // pinned first as a structural invariant. The off-ATM values encode the
 // actual skew/convexity shape and are pinned to the literal doubles this
-// build produced (recorded once, see task-0-report.md), so any future change
+// build produced (recorded once, at the fixture's introduction), so any future change
 // to the fixture's internal formula is caught here rather than silently
 // drifting every downstream oracle.
 

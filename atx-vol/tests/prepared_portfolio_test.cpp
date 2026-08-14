@@ -626,8 +626,8 @@ TEST(PreparedPortfolio, GroupedPriceEqualsIndependentOracleAndPinnedFingerprint)
   // fall through to a Release-captured number.
   //
   // P-5 POST-CLOSE RE-PIN (Task P-5 review, regression reopened after close; P-6
-  // reviewer's full-suite run caught this as its own M-4; independently re-adjudicated
-  // in task-P-5-review.md's "Post-close regression adjudication"). Root cause: P-5's
+  // reviewer's full-suite run caught this as its own M-4, then independently
+  // re-adjudicated). Root cause: P-5's
   // ConvexSliceFit::iv() bisection early-exit (src/dense_slice.cpp). NOT the
   // calendar-scan half of P-5 (src/vol_curve.cpp's scan_k): make_convex() above
   // hand-constructs ConvexSliceFit/ConvexDenseCurve directly and never calls
@@ -685,9 +685,10 @@ TEST(PreparedPortfolio, GroupedPriceEqualsIndependentOracleAndPinnedFingerprint)
   // orthogonal to this class of change and is noted here only for completeness, not
   // as evidence for this re-pin.
   //
-  // This is a benign re-pin, not a numerical defect — see task-P-5-report.md's
-  // "Post-close regression" section (and task-P-5-review.md's "Post-close regression
-  // adjudication") for the full diagnosis.
+  // This is a benign re-pin, not a numerical defect — the diagnosis is the
+  // root-cause paragraph above: P-5's iv() bisection early exit moved the
+  // fingerprint, and the calendar-scan half of P-5 provably cannot reach this
+  // fixture.
   //
   // Re-measured dev (Debug, SSE2) directly: 718570745730299145 -> 10976559059648513121.
   // This is the ONLY cell actually re-measured; the other two are addressed below.
@@ -729,7 +730,7 @@ TEST(PreparedPortfolio, GroupedPriceEqualsIndependentOracleAndPinnedFingerprint)
   // above — with the pin left at its CURRENTLY STORED value, run under `=1` first. An
   // exact recovery of the stored golden proves the entire delta is one sanctioned seam
   // and re-pinning to the unset-run hash is safe; anything else means stop and report,
-  // not re-pin. See task-P-R-fixes-report.md for the full record of this round.
+  // not re-pin.
 #if defined(NDEBUG)
   constexpr std::uint64_t kGoldenFingerprintSse2 = 10792185469627952234ULL;
 #else

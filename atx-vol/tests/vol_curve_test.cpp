@@ -611,8 +611,8 @@ TEST(VolCurve, ConvexRepairSpecDefaultsAreTheNullOptLattice) {
 //
 // `kPreP5*` are served w(k) at 9 representative k's (both wings, the
 // kink/repair regions, and ATM) captured from the UNMODIFIED (pre-P-5,
-// iv()-inversion) scan -- see task-P-5-report.md for the capture method and
-// the full 41-point / 4-case comparison (max observed drift ~8e-13, driven
+// iv()-inversion) scan -- revert d283efe to reproduce the capture. The full
+// 41-point / 4-case comparison ran at max observed drift ~8e-13, driven
 // entirely by the UNRELATED iv() bisection early-exit task P-5 also lands,
 // not by a different floor being chosen). 1e-9 here is ~1e4x that noise
 // floor and ~1e6x below the ~1e-3 scale a genuinely different floor

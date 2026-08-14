@@ -924,9 +924,10 @@ TEST(CarryTheta, FairSwapCarryIsDiscountingOnly) {
   // one fixing's worth of future-leg weight moves from K_var to a realized
   // zero, annualized by the SAME dt the stencil rolls T by
   // (DerivGreekBumps::time_years -- NOT rv_spec.annualization; the two need
-  // not agree, and here time_years = 1/365.25 while annualization = 252, see
-  // task-C-10-report.md for the derivation of why the code (and this test)
-  // divide by time_years, not a hardcoded 252).
+  // not agree, and here time_years = 1/365.25 while annualization = 252). The
+  // divisor has to be the stencil's OWN roll, because that is the dt this
+  // difference quotient is taken over; a hardcoded 252 would silently rescale
+  // theta whenever a caller rolled by anything else.
   const DerivGreekBumps bumps{};
   EXPECT_NEAR(g->theta_zero_fixing, -one_fixing_pv / bumps.time_years,
               0.05 * (one_fixing_pv / bumps.time_years));
@@ -935,7 +936,8 @@ TEST(CarryTheta, FairSwapCarryIsDiscountingOnly) {
 // Pins theta_carry against theta_zero_fixing (and the aged-blend arithmetic
 // both ride) via a closed-form difference that is exact by construction,
 // independent of n_done, strike_dec, and even the rolled future leg's own
-// value -- see task-C-10-report.md for the full derivation. Deliberately
+// value -- `DerivGreeks::theta_carry`'s doc comment carries the full
+// derivation. Deliberately
 // AGED and OFF-FAIR (unlike the unaged/fair fixture above) so this exercises
 // the general blend, not the n_done == 0 degenerate case.
 TEST(CarryTheta, SumIdentity) {
@@ -1087,8 +1089,8 @@ TEST(CarryTheta, FullyAgedIgnoresCarryThetaOptOut) {
 // variants momentarily difference PVs from two DIFFERENT pricers, unlike
 // `theta` (which never touches `rv_spec` and so never leaves Carr-Lee).
 //
-// Reference derivation (also recorded on `DerivGreeks::theta_carry` and in
-// task-C-10-report.md's "Fix round 1" section): both variants inject the SAME
+// Reference derivation (also recorded on `DerivGreeks::theta_carry`; the fix
+// round that established it landed in f148f83): both variants inject the SAME
 // b = w_future and share the SAME lognormal W (same rolled T, same
 // auto-calibrated xi -- `resolve_vol_of_vol` depends only on the surface/T,
 // not on `a`), differing only in `a_carry = K_var_future/n_total` vs

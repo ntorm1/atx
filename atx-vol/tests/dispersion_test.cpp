@@ -301,7 +301,7 @@ TEST(Dispersion, Book_IsVegaNeutral) {
 // Prints the exact-bit anchors of the Book_IsVegaNeutral fixture's leg fields so
 // C1.7's pinned bit-identity test (below) can be captured against the PRE-change
 // `resolve_leg` (two full greeks_analytic bundles). Always succeeds; the values
-// are read from stdout. See task-c1.7-report.md for the capture record.
+// are read from stdout.
 TEST(Dispersion, PrintBookHexAnchors_C1_7) {
   const std::vector<PricedSurface> surfaces = build_surfaces();
   auto set = SurfaceSet::create(as_ptrs(surfaces));

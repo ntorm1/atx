@@ -155,7 +155,7 @@ TEST(VolOfVol, AutoCalibrationReproducesCarrLee) {
 // DELIBERATE DEVIATION from the brief's literal "refined K_vol => larger xi
 // => richer caps" wording -- verified against resolve_vol_of_vol's own
 // (pre-existing, un-modified-by-this-task) closed form and confirmed by this
-// test's first failing run; task-C-5-report.md has the full derivation.
+// test's first failing run. The derivation is the Summary immediately below.
 // Summary: xi solves s^2 = -8*ln(k_vol_target / sqrt(K_var)), i.e.
 // xi = f(ratio) for a ratio = k_vol_target/sqrt(K_var) STRICTLY DECREASING
 // in k_vol_target (d(xi)/dk < 0 for every k_vol_target in (0, sqrt(K_var)) --

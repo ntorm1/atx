@@ -585,7 +585,7 @@ TEST(Strip, BatchedPathFallsBackAboveMaxStripNodes) {
 // calls for -- the quadrature error this starves is dominated by the near-
 // ATM curvature the strip integrates through, not by truncated wings (the
 // coverage test above already covers that failure mode). Fast tier measured
-// +6.06e-2 relative error pre-fix (task-C-2-report.md).
+// +6.06e-2 relative error pre-fix.
 //
 // Truth for a flat-vol lognormal surface is K_var == sigma^2 exactly.
 TEST(StripResolution, OneDayTenorAccurateAtAllTiers) {
@@ -1481,8 +1481,9 @@ TEST(Marquee, VolSwap_PnlIdentity_HoldsAtExpiry) {
 // to the true VOL0 (>40 vol bp at 6M in the paper's own Heston BCC example,
 // Sec. 6.5). `DerivConfig::carr_lee_form == Refined` recovers part of that
 // gap via the Remark 6.4/6.5 refinement against the strip's own K_var --
-// task-C-5-report.md has the from-paper (re-)derivation, including the
-// annualization fix the paper's un-annualized statement needs.
+// Carr & Lee (2009) Remarks 6.4/6.5 and `detail::refine_carr_lee_k_vol`'s doc
+// comment in derivatives.hpp carry the from-paper (re-)derivation, including
+// the annualization fix the paper's un-annualized statement needs.
 
 TEST(CarrLee, RefinementVanishesOnFlat) {
   // Idealized "flat vol" case: K_var == K_vol_naive^2 exactly, so there is no
@@ -2422,7 +2423,7 @@ TEST(CarrLee, StripFlagsPropagateThroughDerivPriceUnderBothForms) {
 // `DeclarativeStrategy` swap leg) and
 // `DerivBook.WingBandResolverAppliesTheCallersCertifiedBandPerRow`
 // (deriv_book_test.cpp — `price_deriv_book`'s public API). Review round 1
-// (task-C-6-review.md, CRITICAL-1/2) found the first delivery had ONLY this
+// (CRITICAL-1/2, closed in 346e255) found the first delivery had ONLY this
 // half: the mechanism existed but no call site used it, and this file's
 // `q_default` case below was mislabeled in a way that read as "the fix" when
 // it was actually still reproducing the pre-fix number for a Latency surface.
@@ -2698,7 +2699,7 @@ TEST(WingMode, FlatSurfaceInvariant) {
 
   // Measured, not the brief-literal 1e-12 (deviation, same class C-3 already
   // established this sprint: "brief's literal test params unmeasurable as
-  // specified" -- task-C-3-report.md). The SERVED VOL is bit-identical
+  // specified"). The SERVED VOL is bit-identical
   // across all three modes on this fixture -- verified by construction:
   // phi=0/rho=0 makes w(k) EXACTLY theta for every k (0.5*x*2 round-trips x
   // exactly in IEEE754), so the central-difference slope is EXACTLY 0 and
@@ -2857,8 +2858,8 @@ TEST(WingMode, SlopeClampBinds) {
   // instead of unconditionally `0.0` (see the comment on that call), so a
   // bit-tight match here requires production to have made the SAME
   // clamp-bound split decision the oracle now assumes. Confirmed non-vacuous
-  // by an independent reversion probe (task-F-1-fix-round-1-review.md
-  // section 2): reverting only the gate back to
+  // by an independent reversion probe (the gate landed in efc7652):
+  // reverting only the gate back to
   // `use_lee_slope ? 0.0 : wing_band` moves `q_lee->fair_strike_dec` away
   // from this oracle by 8.247e-09 -- about 8,247x (roughly four orders of
   // magnitude) past the 1.0e-12 tolerance.
@@ -2953,7 +2954,7 @@ TEST(WingMode, SlopeFoldsToZeroKeepsTheEdgeSplitAndTheErrorEstimateHonest) {
   // reverting only the gate back to `use_lee_slope ? 0.0 : wing_band` makes
   // the bound below fail: err_est_lee/err_est_flat measured at 43.9x under
   // reversion (2.5586e-07 vs 5.8210e-09), ~22x past the 2x bound this
-  // assertion requires (task-F-1-fix-round-1-review.md section 2).
+  // assertion requires (the same reversion probe; the gate landed in efc7652).
   //
   // The payoff: LeeSlope's error estimate is back to the SAME ORDER OF
   // MAGNITUDE as FlatClamp's own on the identical grid -- measured
@@ -3679,7 +3680,7 @@ TEST(GammaSwap, SkewOrdering) {
   EXPECT_GT(q_gamma->fair_strike_dec, 0.0);
 }
 
-// I-2 (Task F-2 fix round 1, review .../task-F-2-review.md): this oracle was
+// I-2 (Task F-2 fix round 1, closed in 24d0342): this oracle was
 // ORIGINALLY presented as a discriminator against VarSwap. It is not one --
 // under reversion (GammaSwap silently computing K_var instead of K_gamma) it
 // PASSES with a BETTER margin than production does (review's 8-point drift
@@ -3930,7 +3931,7 @@ TEST(GammaSwap, AgedBlendReadsGammaWeightedAccrualNotPlain) {
   EXPECT_TRUE(has_flag(q->flags, DerivFlags::Aged));
 }
 
-// C-1 Critical (Task F-2 fix round 1, review .../task-F-2-review.md): the
+// C-1 Critical (Task F-2 fix round 1, closed in 24d0342): the
 // aged blend above combines `rv.rv_gamma_done_dec` -- anchored at the
 // tracker's SEED spot -- with a future leg the strip anchors at TODAY's spot
 // (`curves.spot`). A hand-built mid-life spec (0 < n_obs_done < n_obs_total)
@@ -4041,7 +4042,7 @@ TEST(GammaSwap, AgedBlendRescalesFutureLegOntoAccrualAnchor) {
   const double gap = correct - shipped_buggy;
   EXPECT_GT(std::fabs(q->fair_strike_dec - shipped_buggy), 0.5 * std::fabs(gap));
 
-  // Round-2 fix (V-8, task-F-2-fix-round-1-review.md): the two magnitude
+  // Round-2 fix (V-8, landed in e9646d6): the two magnitude
   // assertions this comment used to make (`EXPECT_NEAR(gap, 0.0048, ...)`,
   // `EXPECT_GT(gap / correct, 0.10)`) were VACUOUS -- `gap` and `correct` are
   // both computed here from test-local quantities, never from `q`, so they
@@ -4064,7 +4065,7 @@ TEST(GammaSwap, AgedBlendRescalesFutureLegOntoAccrualAnchor) {
   EXPECT_NEAR(gap, q->fair_strike_dec - shipped_buggy, 1.0e-9);
 }
 
-// C-3 Critical (Task F-2 fix round 2, review .../task-F-2-fix-round-1-review.md):
+// C-3 Critical (Task F-2 fix round 2, landed in e9646d6):
 // round 1's `AgedBlendRescalesFutureLegOntoAccrualAnchor` above walks a
 // tracker PAST n_obs_done == 0 before ever pricing it, so it -- like every
 // other GammaSwap fixture in the tree at round 1 -- never exercised a live
@@ -4200,7 +4201,7 @@ TEST(RealizedTrackerGamma, AccumulatesWeightedVariance) {
   EXPECT_NEAR(spec.rv_done_dec, 252.0 * sum_plain / 3.0, 1.0e-13);
 }
 
-// C-2 Critical (Task F-2 fix round 1, review .../task-F-2-review.md):
+// C-2 Critical (Task F-2 fix round 1, closed in 24d0342):
 // `inject_carry_fixing` (derivatives.cpp) wrote only `rv_done_dec` /
 // `sum_sq_log_returns_done` -- true up through Task F-2's own commit, since
 // nothing read the gamma leg back yet -- but `price_gamma_swap` reads

@@ -3005,8 +3005,8 @@ TEST(SurfaceDbPopulate, NarrowerRerunSkipsTheDateRatherThanDroppingAnAbsentSymbo
 //
 // This test PINS CURRENT BEHAVIOUR, INCLUDING A REAL DEFECT. It is not an
 // aspiration and it must not be "made to pass" by preserving the bytes without
-// first reading the argument below (and `.superpowers/sdd/surface-db-prod/
-// fixF-report.md`). Two facts are asserted, and the second is why the obvious
+// first reading the argument below, which is stated here in full precisely so
+// that it survives. Two facts are asserted, and the second is why the obvious
 // fix is REFUSED rather than merely unwritten.
 //
 // FACT 1 (the defect, legs 1-2). A cell that fitted ONCE and later DEGRADES

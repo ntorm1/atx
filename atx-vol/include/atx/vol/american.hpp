@@ -237,8 +237,9 @@ static_assert(detail::aggregate_arity_is_v<AlOpts, 5>,
 // the scalar reference. With the flag ON, strikes whose σ clears the box + guards
 // take the interpolant; any strike outside the σ box, below the small-σ guard, or
 // (whole slice) below the near-expiry τ guard takes the cold solve, tagged
-// ColdFallback (bit-identical to the direct solve). See at-task-11-report.md for
-// the measured accuracy/throughput and the ship/flag decision.
+// ColdFallback (bit-identical to the direct solve). The measured
+// accuracy/throughput and the ship decision are on `use_sigma_boundary_interp`
+// immediately below, which carries the §P2.5 gate numbers it shipped on.
 struct SigmaInterpOptions {
   // Master flag. SHIPPED default ON (Task 11): the interpolant cleared the §P2.5
   // ship gate on a real SPY board — 8.1x board-price throughput, all §9 gates

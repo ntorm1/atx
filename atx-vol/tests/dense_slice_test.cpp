@@ -132,8 +132,8 @@ constexpr double kP5F = 100.0, kP5T = 0.25, kP5Df = 0.98;
 
 // Served iv() at kP5F/kP5T/kP5Df's fixture, captured from the UNMODIFIED
 // (pre-P-5, fixed 64-iteration bisection, no early exit) code, at k from
-// -0.60 to 0.60 in steps of 0.03 -- see task-P-5-report.md's characterization
-// section for the capture method.
+// -0.60 to 0.60 in steps of 0.03. That sentence IS the capture method: revert
+// d283efe and re-read the same grid.
 constexpr double kPreP5Iv[41] = {
     0.38306620209843278, 0.36585647544632593, 0.34854766705012208, 0.33113476990919311,
     0.31361215772259232, 0.29597346148127623, 0.27821141126176629, 0.26031763012829434,
@@ -1075,10 +1075,10 @@ TEST(ConvexSliceFit, FeasibleStartWithTinyIterationCapStillSucceeds) {
 // last ulp of the returned midpoint can move once the loop stops as soon as
 // the bracket is near-machine width instead of always halving 64 times).
 // `kPreP5Iv` (file scope, above) is the served iv() at this exact
-// fixture/k-grid captured from the UNMODIFIED (pre-P-5) bisection -- see
-// task-P-5-report.md's characterization section for the capture method.
+// fixture/k-grid captured from the UNMODIFIED (pre-P-5) bisection -- revert
+// d283efe to reproduce the capture.
 // Every point must still agree within 1e-11 (the acceptance bound; measured
-// drift maxes out far below it, ~2.8e-13, see the report).
+// drift maxes out far below it, ~2.8e-13).
 TEST(ConvexSliceFit, IvBisectionEarlyExitMatchesPreP5BaselineWithin1e11) {
   using namespace atx::vol;
   std::vector<FitObs> obs;
@@ -1116,9 +1116,8 @@ TEST(ConvexSliceFit, IvBisectionEarlyExitMatchesPreP5BaselineWithin1e11) {
 // reached), so if the break is ever silently reverted, every one of these
 // 41 points becomes bit-identical to the pre-P-5 `kPreP5Iv` again --
 // verified BOTH ways below by actually deleting the break, rebuilding, and
-// observing this exact test fail (see task-P-5-report.md's fix-round
-// section for the captured failure output), then restoring it and observing
-// green again. Skipped when `detail::iv_early_exit_disabled_for_test()`
+// observing this exact test fail, then restoring it and observing green
+// again. Skipped when `detail::iv_early_exit_disabled_for_test()`
 // reports the intentional bench-only override that restores pre-P-5
 // arithmetic -- bit-identity is the CORRECT behavior there, not a
 // regression. Task P-5 review N-1: this used to re-derive "is the override

@@ -1024,9 +1024,10 @@ TEST(ListedDefinitionsCache, CachedSeamChargesADefinitionsCachePhaseWithHitMissC
 // alone — the weakened key Task 8's brief calls for as a deliberate RED
 // check — would still resolve to the SAME filename and would still pass
 // GUARD 2, so the stale (pre-mutation) table would be SERVED. Only a
-// content-derived key forces a miss here. See task-8-report.md for the
-// observed failure when the key was temporarily weakened to prove this test
-// is a real gate (Step 2) rather than vacuously green.
+// content-derived key forces a miss here. Shown non-vacuous rather than
+// assumed: temporarily weakening the key to `(source_size, format_version)`
+// makes this test FAIL (it serves the stale table), which is the check to
+// re-run if it is ever suspected of being vacuously green.
 TEST(ListedDefinitionsCache, CachedSeamRejectsAndReparsesASameSizeContentMutation) {
   const fs::path dir = scratch_dir("stale_samesize");
   const fs::path tsv = dir / "definitions.tsv";
