@@ -357,7 +357,8 @@ if(Python3_Interpreter_FOUND)
         TIMEOUT 900)
 endif()
 
-# PR-C2 non-AVX2 CI leg: run the pricing correctness suites with the whole process
+# PR-C2 non-AVX2 scalar leg: a registered ctest lane (`atx-vol-pricing-forcescalar`,
+# selectable with -R) that runs the pricing correctness suites with the whole process
 # pinned to the scalar ISA (ATX_SIMD_ISA=ForceScalar), keeping the scalar
 # patch-paths honest against the Auto-ON AVX2 marks. The filter runs only scalar
 # VALUE suites plus the ScalarLegEnv self-check that PROVES the env diverted the

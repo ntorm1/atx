@@ -36,7 +36,11 @@
 // "what is Tier-A", and any tier change is a deliberate edit to this list.
 #include "atx/vol/vol.hpp"
 
+#include "support/test_paths.hpp" // testkit::repo_file, tests_root
+
 namespace {
+
+namespace testkit = atx::vol::testkit;
 
 namespace fs = std::filesystem;
 
@@ -145,7 +149,18 @@ std::vector<std::string> direct_atx_vol_includes(const fs::path& path) {
 }
 
 // ATX_VOL_INCLUDE_ROOT / ATX_VOL_UMBRELLA_HPP are baked in by tests/CMakeLists
-// (same pattern as ATX_AMZN_FIXTURE) so the contract holds under any ctest CWD.
+// so the contract holds under any ctest CWD.
+//
+// DELIBERATELY NOT testkit::test_paths, and the boundary is worth stating since
+// "one resolver" is claimed for this tree. test_paths resolves REPO RESOURCES:
+// give it a relative name, get the file. These two name the LIBRARY'S PUBLIC
+// INCLUDE ROOT and its umbrella header -- a build-configuration fact that the
+// tier contract below exists to check, not a resource lookup. Routing them
+// through repo_file("atx-vol/include") would restate the build layout in the
+// test and let the two drift apart silently, which is the failure this whole
+// area is about; the answer would be to derive them from the atx-vol target's
+// include property, which is a build-system change, not a path-helper one.
+// Two anchors, two rules, on purpose.
 fs::path include_root() { return fs::path{ATX_VOL_INCLUDE_ROOT}; }
 fs::path umbrella_path() { return fs::path{ATX_VOL_UMBRELLA_HPP}; }
 
@@ -331,9 +346,11 @@ struct ReadmeCount {
   std::string error;  // set iff !ok; phrased as something to go fix
 };
 
-// The README sits one level above the include root the other contract tests
-// already resolve, so no new build-system wiring is needed to find it.
-fs::path readme_path() { return include_root() / ".." / "README.md"; }
+// atx-vol/README.md. This IS a repo-resource lookup -- unlike include_root()
+// above, which is why it goes through the shared resolver and that does not.
+// It was `include_root() / ".." / "README.md"`: a second spelling of the same
+// rule, riding on an anchor that means something else.
+fs::path readme_path() { return testkit::repo_file("atx-vol/README.md"); }
 
 std::string trim_cell(std::string_view s) {
   const std::size_t b = s.find_first_not_of(" \t\r\n");
@@ -526,6 +543,96 @@ TEST(VolUmbrella, DemotedSurfaceContainersAreNotNamedInPublicHeaders) {
     }
   }
   EXPECT_GT(headers_scanned, 50u) << "public header scan found almost nothing";
+}
+
+// ── No second way to resolve a fixture path ─────────────────────────────────
+//
+// FRI-072 retired six hand-pasted relative "ladders" onto testkit::test_paths.
+// TestPathing pins that those resolvers are CWD-independent -- but NOT that this
+// tree resolves through them, so pasting a fresh ladder into any *_test.cpp
+// leaves TestPathing green. The property that was actually defective is "a
+// second mechanism exists", and that is what this checks.
+//
+// Same mechanism as TierCountsMatchTheReadmeTable above: read the real files
+// back off disk at run time rather than trusting a list someone maintains by
+// hand. A ladder rung is a string literal opening with "../", and the other
+// retired shape derived a path from __FILE__, which is not reliably absolute
+// under ninja/clang-cl and was wrong in every copy that used it.
+//
+// Two things are deliberately NOT failures:
+//   * `#include "../src/foo.hpp"` -- a compile-time include path, resolved by
+//     the preprocessor against the source directory, never against the CWD.
+//   * kPathLiteralExempt -- files that pass "../" to code as DATA rather than
+//     using it as a path. Adding to this list is the loud, deliberate step: it
+//     is where a reviewer gets asked whether a new ladder is really data.
+constexpr std::string_view kPathLiteralExempt[] = {
+    // Feeds "../escape" to a partition-name validator to prove it is REJECTED.
+    // The literal is the adversary, not a lookup.
+    "surface_db_test.cpp",
+};
+
+TEST(VolUmbrella, NoFixturePathResolvedOutsideTheSharedResolver) {
+  const fs::path root = testkit::tests_root();
+  ASSERT_TRUE(fs::is_directory(root)) << "tests root does not resolve: " << root.string();
+
+  // Both needles are ASSEMBLED rather than written, so this file does not match
+  // its own patterns. Exempting it by name instead would stop it policing
+  // itself, and it is a *_test.cpp like any other.
+  const std::string ladder = std::string("\"..") + "/";
+  const std::string file_macro = std::string("__FI") + "LE__";
+
+  std::size_t files_scanned = 0;
+  std::size_t include_lines_skipped = 0;
+
+  for (const fs::directory_entry& entry : fs::recursive_directory_iterator(root)) {
+    if (!entry.is_regular_file()) continue;
+    const fs::path& p = entry.path();
+    const std::string ext = p.extension().string();
+    if (ext != ".cpp" && ext != ".hpp") continue;
+
+    const std::string name = p.filename().string();
+    bool exempt = false;
+    for (const std::string_view e : kPathLiteralExempt) {
+      if (name == e) exempt = true;
+    }
+
+    ++files_scanned;
+    std::ifstream in(p);
+    std::string line;
+    for (std::size_t n = 1; std::getline(in, line); ++n) {
+      const std::size_t first = line.find_first_not_of(" \t");
+      if (first == std::string::npos) continue;
+      if (line.compare(first, 2, "//") == 0) continue;  // prose, not code
+      if (line[first] == '#') {
+        if (line.find("include", first) != std::string::npos &&
+            line.find(ladder, first) != std::string::npos) {
+          ++include_lines_skipped;
+        }
+        continue;
+      }
+      if (!exempt) {
+        EXPECT_EQ(line.find(ladder), std::string::npos)
+            << name << ":" << n << " opens a path literal with a parent-directory rung ("
+            << ladder << "), which resolves against the process working directory -- so it "
+            << "names a different file depending on where the binary was launched from. "
+            << "Resolve it through tests/support/test_paths.hpp instead (test_fixture / "
+            << "test_data / market_data / repo_file / artifact_cache_root). If the literal "
+            << "is DATA rather than a path, add this file to kPathLiteralExempt and say why.";
+      }
+      EXPECT_EQ(line.find(file_macro), std::string::npos)
+          << name << ":" << n << " derives a path from the " << file_macro << " macro, which "
+          << "ninja/clang-cl does not reliably make absolute. Use tests/support/test_paths.hpp.";
+    }
+  }
+
+  // Non-vacuity, both directions: the walk must have reached real content, and
+  // the #include exclusion must actually have fired -- otherwise a scanner that
+  // silently matched nothing would report this contract as satisfied, which is
+  // the exact failure shape the tier-table comment above exists to prevent.
+  EXPECT_GT(files_scanned, 100u) << "test-tree scan found almost nothing; the walk is broken";
+  EXPECT_GT(include_lines_skipped, 0u)
+      << "no #include line carrying a parent-directory rung was seen, so the exclusion is "
+         "untested and this contract may be passing because the scan matched nothing";
 }
 
 }  // namespace
