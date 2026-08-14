@@ -149,6 +149,13 @@ arb_check_calendar(const CurveSurface &s, double k_min, double k_max,
 // native representation instead by requiring non-decreasing call-price slopes
 // over the exact in-domain QP nodes plus the requested-domain endpoints. Price
 // bounds remain the separate `arb_check_price_bounds` responsibility.
+//
+// This overload is a GATE, so it does not stay silent about a grid point it
+// could not evaluate: where the curve's total variance is non-positive or
+// non-finite across the stencil, it records one Butterfly violation with
+// INFINITE slack rather than skipping. Every other butterfly entry here runs the
+// identical finite-difference rule but skips such a point; that is the single
+// documented difference between them.
 [[nodiscard]] Result<std::vector<ArbViolation>>
 arb_check_butterfly(const IVolCurve &curve, double k_min, double k_max,
                     std::uint32_t n_grid);
@@ -182,9 +189,11 @@ arb_check_butterfly(const VolSurface &s, double k_min, double k_max,
                     std::uint32_t n_grid);
 
 // Grid Durrleman g(k) >= 0 density-positivity check for ONE slice given a
-// total-variance callable `w_of_k`. Uses the SAME finite-difference scheme as
-// the surface-level `arb_check_butterfly` (which delegates to the shared
-// file-local helper this front-ends), so the two agree pointwise on a slice.
+// total-variance callable `w_of_k`. Every butterfly entry in this header — this
+// one, both `arb_check_butterfly` overloads and `arb_check_total_surface_all` —
+// calls ONE implementation of the finite-difference rule
+// (`detail/butterfly_density.hpp`), so they agree pointwise on a slice by
+// construction rather than by upkeep.
 // `T` labels the violation records only (`T1 == T2 == T`); the density math is
 // scale-free in T. Empty result means "no butterfly arbitrage". No-op (empty)
 // when `n_grid < 4`.
