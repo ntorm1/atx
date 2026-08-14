@@ -91,3 +91,27 @@ decile, and the realized-oracle decile.
   (tail-free salvage of the boundary month). 616 names × 13 months resuming
   via 4 month-workers, 50-symbol chunks, per-session $0 preflight gate,
   disk-gated (soft 8G prune+pause / hard 4G abort), `_dbn` pruned per chunk.
+  Later re-chunked to 100-symbol × 6 workers (~3× throughput; >100 syms/request
+  504s at the gateway, 100 verified safe).
+- 2026-08-13 (small-set verify, pre-scale): 21-name subset spanning liquidity
+  ranks 1..615 (QQQ→COUR, all non-SP100 except index) × 5 full-breadth sessions
+  (2025-08-25..29, 612 underlyings on disk). Fit: **102/105 cells ok (97%)** —
+  fails only DHT (rank-588 tanker, 2 cells: no usable eSSVI slice / inversion
+  failed) and one QQQ convex-dense QualityBelowFloor cell. max_T 2.3y (LEAPS
+  present). Panel: 97 rows, every entry column finite, vega pinned at $1k,
+  entries delta-neutral, per-name IV levels sane (RKLB 0.80, D 0.13). Missing
+  surfaces skip fail-soft. Labels all-nan by design (<21 forward marks; builder
+  only writes labels on rows that graduate the full horizon). Conclusion:
+  autofit + panel generalize off SP100; proceed to incremental per-month fits
+  as the pull lands months, rather than one big-bang fit at the end.
+- 2026-08-13 (full-breadth slice fit): all 616 names × same 5 sessions into
+  production `surface-db/xsec-2025`: **2,864/3,055 cells ok (93.7%)**, 605/611
+  configured names produce ≥1 session. Failure anatomy: 140 NotFound (thin
+  eSSVI slice / carry_failed on every chain — concentrated in low-priced names;
+  11 names fail all 5 sessions: AMCR AMG AVT BYND CLOV CMPS CORZ FBIN PLUG
+  SNDX SPCE), 51 Unavailable (18 inversion-failed + quality-floor/admission).
+  5 universe names absent from the 2025-08 hive entirely (BNY ECHO FISV MRSH
+  P — renames/new listings; appear later in the window). Verdict: acceptable —
+  failed names drop fail-soft from the cross-section; the cheap-name family is
+  the known thin-board frontier (breadth-depth lanes, unmerged), not a
+  pipeline defect.
