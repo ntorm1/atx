@@ -1975,6 +1975,22 @@ std::span<const BacktestExplainColumn> swap_explain_columns() noexcept {
   return std::span<const BacktestExplainColumn>{kSwapExplainColumns};
 }
 
+SwapExplainShape swap_explain_shape(const BacktestResult &result) noexcept {
+  bool any_populated = false;
+  bool any_empty = false;
+  for (const BacktestExplainColumn &column : kSwapExplainColumns) {
+    if ((result.*(column.member)).empty()) {
+      any_empty = true;
+    } else {
+      any_populated = true;
+    }
+  }
+  if (any_populated && any_empty) {
+    return SwapExplainShape::Mixed;
+  }
+  return any_populated ? SwapExplainShape::Present : SwapExplainShape::Absent;
+}
+
 // ── Clock ─────────────────────────────────────────────────────────────────
 
 Result<Clock> Clock::from_manifest(const CorpusManifest &manifest) {
@@ -2545,6 +2561,20 @@ Status BacktestResult::validate() const {
   // both, a pre-existing gap this task did not widen but did not close.
   for (const BacktestExplainColumn &column : swap_explain_columns()) {
     ATX_TRY_VOID(check_column(std::string(column.name), this->*column.member, rows));
+  }
+  // The SET-level question, which the per-column loop above structurally cannot
+  // ask: each column is independently allowed to be empty, so eight
+  // individually-legal columns can still form an illegal set. Populated
+  // together or not at all -- `push_row` writes all eight under one `if`, so a
+  // partial set never came from this engine and always came from a hand-built
+  // result or a bad concatenation. Rejecting it HERE is what lets
+  // `append_backtest_results` ask `swap_explain_shape` instead of sampling one
+  // column and asserting in a comment that this check had run.
+  if (swap_explain_shape(*this) == SwapExplainShape::Mixed) {
+    return Err(ErrorCode::InvalidArgument,
+               "BacktestResult: the swap-explain columns are partially populated; they are "
+               "written together or not at all, so a mix of empty and row-parallel columns is "
+               "malformed rather than a shorter explain");
   }
 
   // `step_pnl_total` is EXEMPT: length == refs-1 by contract, not parallel to

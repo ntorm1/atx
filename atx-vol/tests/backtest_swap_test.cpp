@@ -1215,3 +1215,108 @@ TEST(BacktestSwapExplain, CarryDoesNotScaleWithStepLengthOnAnIrregularCalendar) 
       << "`theta_zero_fixing` is being multiplied by an interval other than the one it "
       << "was bumped over -- which is C-1.";
 }
+
+
+// ── The partially-populated explain set (fix round 6) ───────────────────────
+//
+// The explain columns are written together or not at all -- `push_row` fills all
+// eight under one `if`. Nothing enforced that. Both shape validators checked
+// every column INDEPENDENTLY (`empty || row-parallel`), so eight individually
+// legal columns could form an illegal SET, and `append_backtest_results` decided
+// the set's shape by reading `swap_explain_columns().front()` -- one column
+// sampled for a property of all eight -- justified by a comment asserting the
+// validators had already rejected a partial set.
+//
+// MEASURED before the fix: a result with `swap_explain_carry` populated and the
+// other seven empty passed `validate()`, passed the append, and emerged with
+// `carry` at 3 rows and `skew` at 1. `combined.validate()` refused it only
+// afterwards, by which point the ragged result had already escaped.
+//
+// The fix is `swap_explain_shape`, which cannot answer from fewer than all eight
+// columns, plus both validators rejecting `Mixed`. These tests pin each half.
+
+TEST(BacktestSwapExplain, APartiallyPopulatedExplainSetIsMalformed) {
+  BacktestResult r = make_result(/*first_index=*/0u, /*n_rows=*/2u, /*swap=*/true,
+                                 /*swap_value=*/0.0);
+  EXPECT_EQ(swap_explain_shape(r), SwapExplainShape::Absent);
+  EXPECT_TRUE(r.validate().has_value());
+
+  // All eight -> Present, and legal.
+  for (const BacktestExplainColumn &column : swap_explain_columns()) {
+    (r.*(column.member)).assign(r.size(), 0.0);
+  }
+  EXPECT_EQ(swap_explain_shape(r), SwapExplainShape::Present);
+  EXPECT_TRUE(r.validate().has_value());
+
+  // Exactly one emptied -> Mixed, and refused. Every column is individually
+  // legal here (empty is always allowed per column); only the SET is wrong,
+  // which is precisely the question the per-column loop cannot ask.
+  r.swap_explain_skew.clear();
+  EXPECT_EQ(swap_explain_shape(r), SwapExplainShape::Mixed);
+  const Status refused = r.validate();
+  ASSERT_FALSE(refused.has_value())
+      << "a set with seven populated columns and one empty must be refused; before fix "
+         "round 6 this returned OK and the ragged result escaped the append";
+  EXPECT_NE(refused.error().message().find("partially populated"), std::string::npos)
+      << refused.error().to_string();
+
+  // And the mirror case: exactly one populated.
+  BacktestResult one = make_result(0u, 2u, /*swap=*/true, /*swap_value=*/0.0);
+  one.swap_explain_carry.assign(one.size(), 0.0);
+  EXPECT_EQ(swap_explain_shape(one), SwapExplainShape::Mixed);
+  EXPECT_FALSE(one.validate().has_value());
+}
+
+// The escape itself, end to end. This is the reproduction from the round-6
+// audit, asserted as a refusal.
+TEST(BacktestSwapExplain, AppendRefusesAPartiallyPopulatedExplainRatherThanRaggedIt) {
+  // dst: carry populated but ALL ZERO, so `result_has_explain_data` is false and
+  // the round-2 I-3 refusal does NOT fire. That is what made this reachable.
+  BacktestResult dst = make_result(0u, 2u, /*swap=*/true, /*swap_value=*/0.0);
+  dst.swap_explain_carry.assign(dst.size(), 0.0);
+
+  BacktestResult src = make_result(2u, 1u, /*swap=*/true, /*swap_value=*/0.0);
+  for (const BacktestExplainColumn &column : swap_explain_columns()) {
+    (src.*(column.member)).assign(src.size(), 0.0);
+  }
+
+  const Status refused = append_backtest_results(dst, src);
+  ASSERT_FALSE(refused.has_value())
+      << "before fix round 6 this returned OK and produced carry=3, skew=1 -- a ragged "
+         "result that only the NEXT validate() would have caught";
+  EXPECT_EQ(refused.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_NE(refused.error().message().find("partially populated"), std::string::npos)
+      << refused.error().to_string();
+
+  // The append refused rather than half-applied: `dst` still has its own rows.
+  EXPECT_EQ(dst.size(), 2u);
+}
+
+// The property the whole round rests on: no accessor answers the set question
+// from one column. A single populated column must NOT read as Present, which is
+// exactly what the deleted `.front()` sample did whenever `carry` was the
+// populated one.
+TEST(BacktestSwapExplain, TheShapeAccessorReadsEveryColumnNotTheFirst) {
+  const std::span<const BacktestExplainColumn> roster = swap_explain_columns();
+  ASSERT_GT(roster.size(), 1u);
+
+  for (std::size_t i = 0; i < roster.size(); ++i) {
+    BacktestResult only_one = make_result(0u, 2u, /*swap=*/true, /*swap_value=*/0.0);
+    (only_one.*(roster[i].member)).assign(only_one.size(), 0.0);
+    EXPECT_EQ(swap_explain_shape(only_one), SwapExplainShape::Mixed)
+        << "column " << roster[i].name
+        << " populated alone must read as Mixed; a first-column sample would have called "
+           "index 0 Present and every other index Absent";
+
+    BacktestResult all_but_one = make_result(0u, 2u, /*swap=*/true, /*swap_value=*/0.0);
+    for (std::size_t j = 0; j < roster.size(); ++j) {
+      if (j != i) {
+        (all_but_one.*(roster[j].member)).assign(all_but_one.size(), 0.0);
+      }
+    }
+    EXPECT_EQ(swap_explain_shape(all_but_one), SwapExplainShape::Mixed)
+        << "column " << roster[i].name
+        << " empty alone must read as Mixed; a first-column sample would have called this "
+           "Present for every index except 0";
+  }
+}

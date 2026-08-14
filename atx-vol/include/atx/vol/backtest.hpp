@@ -1393,11 +1393,19 @@ struct BacktestExplainColumn {
 // non-application this sprint has been chasing -- but it is detection, not
 // impossibility, and a reader should not trust this table further than that.
 //
-// Two things the build DOES make impossible, added in fix round 4 so the reader
-// knows where the line is: the per-index `static_assert`s beside the table pin
-// each roster row to its own member, so a REORDER cannot compile; and every
-// consumer is a loop over this span, so none of them can fall behind it. What
-// remains hand-checked is the NAME STRING beside each member -- C++ has no
+// What the build DOES make impossible: the per-index `static_assert`s beside the
+// table pin each roster row to its own member, so a REORDER cannot compile.
+//
+// "Every consumer is a loop over this span, so none of them can fall behind it"
+// stood here from fix round 4 until round 6, and was FALSE.
+// `append_backtest_results` read `swap_explain_columns().front()` -- one column
+// sampled to decide a property of all eight -- and a comment two files away
+// asserted that a partial set had already been rejected, which nothing did. A
+// result with one column populated passed `validate()`, passed the append, and
+// came out ragged. `swap_explain_shape` below exists so that question can no
+// longer be asked of one column.
+//
+// What remains hand-checked is the NAME STRING beside each member -- C++ has no
 // reflection, and `roster_columns` in
 // python/tests/test_render_strangle_vs_varswap.py is the check for it.
 //
@@ -1409,6 +1417,33 @@ struct BacktestExplainColumn {
 // idiom for single-sourcing a column roster, and adding a second idiom to
 // remove a duplicated list is a duplicated rule one level up.
 [[nodiscard]] std::span<const BacktestExplainColumn> swap_explain_columns() noexcept;
+
+// The shape of a result's explain column SET -- ONE answer computed over all
+// eight, never sampled from one.
+//
+// This type exists because of a specific defect (fix round 6). The columns are
+// populated together or not at all, and two places needed to know which: the
+// append path, and the shape validators. The append path asked
+// `swap_explain_columns().front()` and a comment justified it by asserting the
+// validators had already rejected a partial set -- which they had not, because
+// each validator checked every column INDEPENDENTLY (`empty || row-parallel`)
+// and nothing ever asked whether the SET was coherent. Measured: a result with
+// `swap_explain_carry` populated and the other seven empty passed `validate()`,
+// passed `append_backtest_results`, and emerged with `carry` at 3 rows and
+// `skew` at 1.
+//
+// `Mixed` is the state that was unrepresentable before and is therefore the
+// point of the enum: it is always malformed, both validators reject it by name,
+// and a caller comparing against `Present` cannot silently treat it as such.
+// The guarantee is mechanical rather than asserted -- there is no accessor that
+// answers this question from fewer than all eight columns.
+enum class SwapExplainShape : std::uint8_t {
+  Absent,  // every column empty: the run did not compute the explain
+  Present, // every column non-empty
+  Mixed,   // some but not all: malformed, and the reason this enum has three values
+};
+
+[[nodiscard]] SwapExplainShape swap_explain_shape(const BacktestResult &result) noexcept;
 
 // One entry in the engine's insertion-ordered delta-hedge share ledger. Order is
 // economically significant: share P&L, financing, and subsequent hedge trades

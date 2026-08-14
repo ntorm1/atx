@@ -1467,6 +1467,17 @@ namespace {
                  "backtest_db: optional backtest column row count mismatch");
     }
   }
+  // Fix round 6. The loop above checks each column in ISOLATION, and every
+  // column is independently allowed to be empty -- so eight individually-legal
+  // columns can still form an illegal SET. This is the question it cannot ask,
+  // and its absence is what let a partially-populated result reach the append
+  // and come out ragged. A comment thirty lines below used to assert this check
+  // existed; now it does.
+  if (swap_explain_shape(result) == SwapExplainShape::Mixed) {
+    return Err(ErrorCode::InvalidArgument,
+               "backtest_db: the swap-explain columns are partially populated; they are "
+               "written together or not at all");
+  }
   if (!result.step_pnl_total.empty() &&
       result.step_pnl_total.size() != (rows == 0 ? 0 : rows - 1) &&
       result.step_pnl_total.size() != rows) {
@@ -1675,11 +1686,24 @@ Status append_backtest_results(BacktestResult &dst, const BacktestResult &src) {
   // The same rule for the explain, on its own shape (Task F-8 fix round 2, I-3).
   // A shape mismatch collapses to "absent" below, which is lossless only when
   // neither side has attribution to lose; if either does, refuse rather than
-  // discard it. Every explain column shares one shape, so testing the first is
-  // testing all of them -- `validate_result_shape` has already rejected a
-  // partially-populated set by this point.
-  const bool dst_explain_shape = !(dst.*(swap_explain_columns().front().member)).empty();
-  const bool src_explain_shape = !(src.*(swap_explain_columns().front().member)).empty();
+  // discard it.
+  //
+  // Fix round 6: this read `swap_explain_columns().front()` -- ONE column
+  // sampled to decide a property of all eight -- justified by a comment claiming
+  // `validate_result_shape` had already rejected a partial set. It had not, and
+  // a result with one column populated came out of this function ragged. Both
+  // validators now reject `Mixed`, and the question is asked through
+  // `swap_explain_shape`, which has no way to answer it from fewer than all
+  // eight. The guarantee is the accessor, not the comment.
+  const SwapExplainShape dst_explain = swap_explain_shape(dst);
+  const SwapExplainShape src_explain = swap_explain_shape(src);
+  if (dst_explain == SwapExplainShape::Mixed || src_explain == SwapExplainShape::Mixed) {
+    return Err(ErrorCode::InvalidArgument,
+               "backtest_db: cannot append a result whose swap-explain columns are partially "
+               "populated");
+  }
+  const bool dst_explain_shape = dst_explain == SwapExplainShape::Present;
+  const bool src_explain_shape = src_explain == SwapExplainShape::Present;
   if (dst_explain_shape != src_explain_shape &&
       (result_has_explain_data(dst) || result_has_explain_data(src))) {
     return Err(ErrorCode::InvalidArgument,
