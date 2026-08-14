@@ -928,6 +928,24 @@ struct RunConfig {
   // ADDITIVE to this; a run using real quote-side fills normally sets
   // `half_spread_bps`/`vol_tick` to 0 so the spread is not paid twice.
   bool book_entry_fill_slippage{false};
+  // Task F-8 (GK-G5): emit the swap lane's P&L EXPLAIN beside `swap_pnl` --
+  // carry, realized-vs-implied, vol level, skew, convexity, discount and the
+  // residual, per recorded row (see `BacktestResult::swap_explain_*`).
+  //
+  // OFF BY DEFAULT, and the default is behaviour-compatible in both senses. The
+  // columns are then EMPTY rather than zero-filled, exactly like
+  // `nav_liquidation` -- and, more to the point, the whole path is skipped: the
+  // mark stays the single `deriv_price_on_ref` it has always been, so no NAV
+  // column can move. That is the reason the flag exists rather than an argument
+  // for it; `BacktestSwapExplain.NavIsUnmovedByTheExplain` measures NAV with the
+  // flag ON as well, since an opt-in that perturbed the run when enabled would
+  // be worse than none.
+  //
+  // ON, each live lot additionally costs one `deriv_greeks_on_ref` per step --
+  // up to 20 repricings where the mark alone is one -- plus three surface reads
+  // for the smile observables. A run that does not read the explain should not
+  // pay that.
+  bool swap_pnl_explain{false};
   // Absolute drift tolerance for `reconcile_nav`. The two quantities are the same
   // flows summed in different orders, so the honest floor is rounding
   // (~|cash|*eps per row), not zero. Must be finite and positive.
@@ -1019,7 +1037,7 @@ struct RunConfig {
 // multi-argument positional brace list; `git grep -n "RunConfig cfg"` sites
 // build via `RunConfig cfg;` plus `cfg.field = ...` assignment, which is
 // order-independent by construction.
-static_assert(detail::aggregate_arity_is_v<RunConfig, 17>,
+static_assert(detail::aggregate_arity_is_v<RunConfig, 18>,
               "RunConfig field count changed: update this pin, and confirm every "
               "construction site still initializes by field name.");
 
@@ -1129,6 +1147,41 @@ struct BacktestResult {
   // (and `backtest_db` refuses to persist a run that carries swap state at all
   // rather than dropping it silently).
   std::vector<double> swap_pv, swap_pnl;
+  // Task F-8 (GK-G5): the swap lane's P&L EXPLAIN, decomposing exactly the
+  // `swap_pnl` above. EVERY ONE IS A FLOW COLUMN, block-summed identically at
+  // `record_every_n > 1` -- the identity
+  //
+  //   carry + realized + vol_level + skew + convexity + discount + residual
+  //     == swap_pnl
+  //
+  // holds row by row AND under downsampling only because all eight are summed
+  // the same way. A component accumulated as STATE would break it silently at
+  // any stride above 1, which is the trap `swap_pv`'s own comment warns about
+  // from the other side.
+  //
+  // The components are `deriv_pnl_explain`'s (deriv_pnl.hpp), evaluated per live
+  // lot against the START of each step and summed over the lane in fixed lot
+  // order. `residual` carries everything a first-order explain leaves out --
+  // gamma against the spot move, second-order vol, a lot whose sensitivities
+  // were not computable, and every settling lot's payoff (a settlement is not a
+  // market move and is deliberately not attributed).
+  //
+  // EMPTY unless `RunConfig::swap_pnl_explain` is set, and always empty on the
+  // fixed-book overload. Like `swap_pv`/`swap_pnl` these are NOT part of the
+  // frozen `kBacktestSeriesColumns` / RunArchive registry, so `ra_schema_hash()`
+  // and every golden are untouched.
+  std::vector<double> swap_explain_carry, swap_explain_realized;
+  std::vector<double> swap_explain_vol_level, swap_explain_skew;
+  std::vector<double> swap_explain_convexity, swap_explain_discount;
+  std::vector<double> swap_explain_residual;
+  // Live lots on this row whose explain could not be computed at all -- no prior
+  // step to difference against (the lot's first mark, or the first step after a
+  // checkpoint resume), a greek solve that failed, or a sensitivity the pricer
+  // reported as "not computed". Their whole mark move lands in
+  // `swap_explain_residual`, so the identity still closes; this column is how a
+  // reader tells a genuinely unexplained day from an unattributed one. A FLOW
+  // column like the rest (it counts lot-steps, not lots).
+  std::vector<double> swap_explain_unattributed;
   // Open lots at this row. USUALLY the size of the engine's book, but not by
   // definition: under `UnpricedLotPolicy::ExcludeAndReport` a lot whose expiry step
   // had no board is DEFERRED, and a deferred lot has left the engine's `lots`

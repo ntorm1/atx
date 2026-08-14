@@ -224,5 +224,31 @@ deriv_price_shocked_on_ref(const SurfaceRef &ref, const DerivContract &contract,
                            std::optional<double> surface_certified_wing_band,
                            const DerivShock &shock, const DerivQuote *centre = nullptr);
 
+// Task F-8 S4: the four market observables `DerivPnlExplain` differences
+// between two dates, read off a borrowed surface at one tenor.
+//
+// IN THE SAME CONVENTIONS THE SENSITIVITIES USE, which is the whole point of
+// putting this here rather than letting each caller sample its own smile.
+// `k = ln(K/F)` with F the tenor's own resolved forward -- not spot -- so
+// `skew_slope` pairs with `DerivGreeks::skew_vega` and `smile_curvature` with
+// `convexity_vega` term for term. In particular `smile_curvature` is the
+// COEFFICIENT c in `iv ~ a + b*k + c*k^2`, i.e. HALF the second derivative,
+// because that is what `SurfaceOverlay::convexity_shift` adds.
+struct SurfaceSmileSample {
+  double sigma_atm{0.0};        // iv at k = 0
+  double skew_slope{0.0};       // b, central over +-h
+  double smile_curvature{0.0};  // c, central over +-h
+  double zero_rate{0.0};        // continuously-compounded zero to T
+};
+
+// @param h  half-width in log-moneyness of the central differences. The default
+//           is wide enough to step clear of a fitted smile's own node spacing
+//           and narrow enough to stay inside any sane wing band.
+// @return InvalidArgument on a null handle or a non-positive T/h; NaN in any
+//         field the surface had no opinion about (a caller differencing two
+//         dates then gets a flagged component rather than a fabricated zero).
+[[nodiscard]] Result<SurfaceSmileSample> sample_smile_on_ref(const SurfaceRef &ref, double T,
+                                                             double h = 0.05);
+
 } // namespace detail
 } // namespace atx::vol

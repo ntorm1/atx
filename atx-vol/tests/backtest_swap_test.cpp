@@ -23,6 +23,7 @@
 
 #include <gtest/gtest.h>
 
+#include <bit> // Task F-8: the NAV gate compares on the bits, not near-equal
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -803,4 +804,235 @@ TEST(BacktestSwap, AppendRefusesToLaunderSwapLaneAway) {
   ASSERT_EQ(both_live.swap_pnl.size(), 2u);
   EXPECT_EQ(both_live.swap_pnl[0], 3.0);
   EXPECT_EQ(both_live.swap_pnl[1], 12.5);
+}
+
+// ── Task F-8 S4: the swap lane's P&L explain ────────────────────────────────
+//
+// `RunConfig::swap_pnl_explain` adds seven attribution columns and an
+// unattributed counter beside `swap_pnl`. The gates below are, in order of what
+// they protect: the sprint's NAV invariant, the identity the columns exist to
+// satisfy, its survival under downsampling, and the "empty, not zero" contract.
+
+// THE NAV GATE. The sprint treats an unexplained backtest NAV move as
+// stop-the-sprint, so this is the first thing the feature has to prove -- and it
+// proves it with the flag ON, not merely off. An opt-in diagnostic that
+// perturbed the run when enabled would be worse than no diagnostic: it would
+// make every measurement taken with it untrustworthy.
+//
+// Asserted on the BITS of every NAV-lane column, not near-equal. The explain
+// only ever READS (one extra `deriv_greeks_on_ref` and three surface reads per
+// live lot per step); if any of it ever fed back into a mark, this is where that
+// shows up.
+TEST(BacktestSwapExplain, NavIsUnmovedByTheExplain) {
+  const fs::path dir = fresh_dir("explain_nav");
+  const std::vector<double> spots = {100.0, 101.0, 99.0, 102.0, 101.5, 103.0};
+  const Corpus c = make_spot_corpus(dir, "SPX", spots);
+  auto clock = Clock::from_manifest(c.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  const std::int64_t expiry = kBaseNow + 5LL * kStepNs;
+  SwapOnlyStrategy off_strat{var_swap_proto(kUid, expiry, /*n_obs_total=*/4u)};
+  SwapOnlyStrategy on_strat{var_swap_proto(kUid, expiry, /*n_obs_total=*/4u)};
+
+  RunConfig off_cfg;
+  const auto off = run_backtest(*clock, off_strat, off_cfg);
+  ASSERT_TRUE(off.has_value()) << off.error().to_string();
+
+  RunConfig on_cfg;
+  on_cfg.swap_pnl_explain = true;
+  const auto on = run_backtest(*clock, on_strat, on_cfg);
+  ASSERT_TRUE(on.has_value()) << on.error().to_string();
+
+  ASSERT_EQ(off->size(), on->size());
+  ASSERT_GT(off->size(), 1u);
+  const auto bits = [](double v) { return std::bit_cast<std::uint64_t>(v); };
+  for (std::size_t i = 0; i < off->size(); ++i) {
+    EXPECT_EQ(bits(off->nav[i]), bits(on->nav[i])) << "nav row " << i;
+    EXPECT_EQ(bits(off->cash[i]), bits(on->cash[i])) << "cash row " << i;
+    EXPECT_EQ(bits(off->pnl_total[i]), bits(on->pnl_total[i])) << "pnl_total row " << i;
+    EXPECT_EQ(bits(off->swap_pv[i]), bits(on->swap_pv[i])) << "swap_pv row " << i;
+    EXPECT_EQ(bits(off->swap_pnl[i]), bits(on->swap_pnl[i])) << "swap_pnl row " << i;
+    EXPECT_EQ(bits(off->pnl_settlement[i]), bits(on->pnl_settlement[i]))
+        << "pnl_settlement row " << i;
+  }
+  // And the flag really did something, or the comparison above is vacuous.
+  ASSERT_EQ(on->swap_explain_residual.size(), on->size());
+  EXPECT_TRUE(off->swap_explain_residual.empty());
+}
+
+// THE IDENTITY, row by row. `swap_pnl` is the number being explained, so the
+// seven components must sum to it exactly -- to floating-point rounding on the
+// per-lot sums, not to a modelling tolerance, because `residual` is defined as
+// whatever is left over and therefore absorbs every real modelling gap.
+//
+// A test that only checked "the columns are finite" would pass on an explain
+// that attributed nothing; the `unattributed` column is asserted too, so a run
+// that silently gave up on every lot cannot masquerade as an explained one.
+TEST(BacktestSwapExplain, ComponentsSumToSwapPnlOnEveryRow) {
+  const fs::path dir = fresh_dir("explain_identity");
+  const std::vector<double> spots = {100.0, 101.0, 99.0, 102.0, 101.5, 103.0};
+  const Corpus c = make_spot_corpus(dir, "SPX", spots);
+  auto clock = Clock::from_manifest(c.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  const std::int64_t expiry = kBaseNow + 5LL * kStepNs;
+  SwapOnlyStrategy strat{var_swap_proto(kUid, expiry, /*n_obs_total=*/4u)};
+
+  RunConfig cfg;
+  cfg.swap_pnl_explain = true;
+  const auto result = run_backtest(*clock, strat, cfg);
+  ASSERT_TRUE(result.has_value()) << result.error().to_string();
+  const BacktestResult &r = *result;
+
+  ASSERT_EQ(r.swap_explain_carry.size(), r.size());
+  ASSERT_EQ(r.swap_explain_unattributed.size(), r.size());
+
+  double total_unattributed = 0.0;
+  for (std::size_t i = 0; i < r.size(); ++i) {
+    const double summed = r.swap_explain_carry[i] + r.swap_explain_realized[i] +
+                          r.swap_explain_vol_level[i] + r.swap_explain_skew[i] +
+                          r.swap_explain_convexity[i] + r.swap_explain_discount[i] +
+                          r.swap_explain_residual[i];
+    EXPECT_TRUE(std::isfinite(summed)) << "row " << i;
+    // The scale is the row's own move; an absolute floor keeps a row whose move
+    // is legitimately ~0 from being compared relatively against itself.
+    const double tol = 1.0e-9 * std::abs(r.swap_pnl[i]) + 1.0e-6;
+    EXPECT_NEAR(summed, r.swap_pnl[i], tol)
+        << "row " << i << " components=" << summed << " swap_pnl=" << r.swap_pnl[i];
+    total_unattributed += r.swap_explain_unattributed[i];
+  }
+
+  // Rows 0 (inception) and 1 (the lot's first mark, no prior state) are
+  // unattributed by construction, and the expiry row settles. Everything in
+  // between must actually attribute, or this feature explains nothing.
+  EXPECT_GT(r.size(), 3u);
+  bool any_attributed = false;
+  for (std::size_t i = 2; i + 1 < r.size(); ++i) {
+    any_attributed = any_attributed || (r.swap_explain_unattributed[i] == 0.0);
+  }
+  EXPECT_TRUE(any_attributed) << "every step was unattributed; total=" << total_unattributed;
+
+  // Carry is the deterministic "nothing happened" leg and is the largest named
+  // component on a swap that is not moving much -- a sign flip here would still
+  // satisfy the identity above, because the residual would absorb it.
+  bool any_carry = false;
+  for (std::size_t i = 0; i < r.size(); ++i) {
+    any_carry = any_carry || (r.swap_explain_carry[i] != 0.0);
+  }
+  EXPECT_TRUE(any_carry) << "carry was zero on every row";
+}
+
+// The identity has to survive DOWNSAMPLING, which is the whole reason every
+// component is a flow. At `record_every_n > 1` each recorded row is a block sum;
+// if any component were accumulated as state (like `swap_pv` legitimately is)
+// its column would report a level against six summed flows and the identity
+// would silently stop closing.
+TEST(BacktestSwapExplain, IdentitySurvivesRecordEveryN) {
+  const fs::path dir = fresh_dir("explain_stride");
+  const std::vector<double> spots = {100.0, 101.0, 99.0, 102.0, 101.5, 103.0, 102.0};
+  const Corpus c = make_spot_corpus(dir, "SPX", spots);
+  auto clock = Clock::from_manifest(c.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  const std::int64_t expiry = kBaseNow + 6LL * kStepNs;
+  SwapOnlyStrategy strat{var_swap_proto(kUid, expiry, /*n_obs_total=*/5u)};
+
+  RunConfig cfg;
+  cfg.swap_pnl_explain = true;
+  cfg.record_every_n = 2;
+  const auto result = run_backtest(*clock, strat, cfg);
+  ASSERT_TRUE(result.has_value()) << result.error().to_string();
+  const BacktestResult &r = *result;
+  ASSERT_EQ(r.swap_explain_residual.size(), r.size());
+
+  for (std::size_t i = 0; i < r.size(); ++i) {
+    const double summed = r.swap_explain_carry[i] + r.swap_explain_realized[i] +
+                          r.swap_explain_vol_level[i] + r.swap_explain_skew[i] +
+                          r.swap_explain_convexity[i] + r.swap_explain_discount[i] +
+                          r.swap_explain_residual[i];
+    const double tol = 1.0e-9 * std::abs(r.swap_pnl[i]) + 1.0e-6;
+    EXPECT_NEAR(summed, r.swap_pnl[i], tol) << "downsampled row " << i;
+  }
+}
+
+// EMPTY, not zero-filled, when the flag is off -- the same distinction
+// `nav_liquidation` makes, and the one that lets a reader tell "not measured"
+// from "measured as flat". `validate()` accepts both shapes and rejects a
+// partially-filled one.
+TEST(BacktestSwapExplain, ColumnsAreEmptyRatherThanZeroFilledWhenOff) {
+  const fs::path dir = fresh_dir("explain_off");
+  const std::vector<double> spots = {100.0, 101.0, 99.0, 102.0};
+  const Corpus c = make_spot_corpus(dir, "SPX", spots);
+  auto clock = Clock::from_manifest(c.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  const std::int64_t expiry = kBaseNow + 3LL * kStepNs;
+  SwapOnlyStrategy strat{var_swap_proto(kUid, expiry, /*n_obs_total=*/2u)};
+
+  RunConfig cfg;  // flag OFF (the default)
+  const auto result = run_backtest(*clock, strat, cfg);
+  ASSERT_TRUE(result.has_value()) << result.error().to_string();
+  EXPECT_TRUE(result->swap_explain_carry.empty());
+  EXPECT_TRUE(result->swap_explain_realized.empty());
+  EXPECT_TRUE(result->swap_explain_vol_level.empty());
+  EXPECT_TRUE(result->swap_explain_skew.empty());
+  EXPECT_TRUE(result->swap_explain_convexity.empty());
+  EXPECT_TRUE(result->swap_explain_discount.empty());
+  EXPECT_TRUE(result->swap_explain_residual.empty());
+  EXPECT_TRUE(result->swap_explain_unattributed.empty());
+  // But the run is still a valid, shape-checked result.
+  EXPECT_TRUE(result->validate().has_value());
+
+  // A hand-built result with a half-length explain column is refused, which is
+  // what registering them in `validate()` buys.
+  BacktestResult broken = *result;
+  broken.swap_explain_carry.assign(broken.size() - 1u, 0.0);
+  EXPECT_FALSE(broken.validate().has_value());
+}
+
+// The explain columns concatenate or clear on THEIR OWN shape test, not the
+// swap lane's. They are opt-in, so a stored prefix without them meeting a
+// continuation with them is an ordinary shape change -- and reusing the swap
+// lane's verdict would clear a perfectly good pair of explain columns whenever
+// the swap shapes happened to differ, which is a silent data loss rather than a
+// refusal.
+TEST(BacktestSwapExplain, AppendClearsExplainOnItsOwnShapeChange) {
+  BacktestResult a = make_result(/*first_index=*/0u, /*n_rows=*/2u, /*swap=*/true,
+                                 /*swap_value=*/0.0);
+  BacktestResult b = make_result(2u, 1u, /*swap=*/true, /*swap_value=*/0.0);
+  a.swap_explain_carry.assign(a.size(), 1.0);
+  a.swap_explain_realized.assign(a.size(), 0.0);
+  a.swap_explain_vol_level.assign(a.size(), 0.0);
+  a.swap_explain_skew.assign(a.size(), 0.0);
+  a.swap_explain_convexity.assign(a.size(), 0.0);
+  a.swap_explain_discount.assign(a.size(), 0.0);
+  a.swap_explain_residual.assign(a.size(), 0.0);
+  a.swap_explain_unattributed.assign(a.size(), 0.0);
+  // `b` carries no explain columns: one side has them, the other does not.
+
+  BacktestResult combined = a;
+  ASSERT_TRUE(append_backtest_results(combined, b).has_value());
+  EXPECT_EQ(combined.size(), 3u);
+  EXPECT_TRUE(combined.swap_explain_carry.empty())
+      << "a half-present explain must collapse to absent, not to a ragged column";
+  EXPECT_TRUE(combined.swap_explain_residual.empty());
+  EXPECT_TRUE(combined.validate().has_value());
+
+  // Both sides present => genuine concatenation, nothing dropped.
+  BacktestResult b_full = b;
+  b_full.swap_explain_carry.assign(b_full.size(), 2.0);
+  b_full.swap_explain_realized.assign(b_full.size(), 0.0);
+  b_full.swap_explain_vol_level.assign(b_full.size(), 0.0);
+  b_full.swap_explain_skew.assign(b_full.size(), 0.0);
+  b_full.swap_explain_convexity.assign(b_full.size(), 0.0);
+  b_full.swap_explain_discount.assign(b_full.size(), 0.0);
+  b_full.swap_explain_residual.assign(b_full.size(), 0.0);
+  b_full.swap_explain_unattributed.assign(b_full.size(), 0.0);
+
+  BacktestResult both = a;
+  ASSERT_TRUE(append_backtest_results(both, b_full).has_value());
+  ASSERT_EQ(both.swap_explain_carry.size(), 3u);
+  EXPECT_EQ(both.swap_explain_carry[0], 1.0);
+  EXPECT_EQ(both.swap_explain_carry[2], 2.0);
+  EXPECT_TRUE(both.validate().has_value());
 }

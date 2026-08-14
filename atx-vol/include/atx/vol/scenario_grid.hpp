@@ -79,6 +79,7 @@
 
 #include "atx/vol/american.hpp"         // AmericanGreeks
 #include "atx/vol/deriv_book.hpp"       // DerivPosition (Tier-A, closure-safe)
+#include "atx/vol/detail/aggregate_arity.hpp" // the three drift pins below
 #include "atx/vol/portfolio_pricer.hpp" // Position, SurfaceSet
 #include "atx/vol/types.hpp"            // Result
 
@@ -226,6 +227,26 @@ struct ScenarioGridResult {
   [[nodiscard]] std::size_t n_cells() const noexcept { return pnl.size(); }
 };
 
+// Drift pins: FOURTEEN fields on the result, TWO on the deriv spec, EIGHT on the
+// spec. These three had NO pin at all until Task F-8 round 1, which is how the
+// deriv leg appended five fields to the result without one to update.
+//
+// The pin is not a substitute for care about ORDER -- `aggregate_arity_is_v`
+// counts brace initializers and is blind to a reorder, and `ScenarioGridResult`
+// / `ScenarioGridSpec` are aggregates a caller may brace-initialize. A reorder
+// silently re-associates every such call site and passes this line.
+//
+// It IS the guard against the failure this file already suffered: several sites
+// enumerate these structs by hand (the impl's cell fill, the deriv leg's
+// accounting, `scenario_grid_test.cpp`'s comparisons), and an appended field
+// that some of them miss is exactly how a sixth hand-enumerated list goes stale
+// unnoticed.
+static_assert(detail::aggregate_arity_is_v<ScenarioGridResult, 14>,
+              "ScenarioGridResult field count changed: update this pin, and check every site "
+              "that enumerates the struct by hand.");
+static_assert(detail::aggregate_arity_is_v<ScenarioGridSpec, 8>,
+              "ScenarioGridSpec field count changed: update this pin.");
+
 // Second-order Taylor P&L for ONE leg whose greeks `g` are POSITION-SCALED
 // (qty * multiplier * per-share), under a shock of (dS absolute spot move, dvol
 // absolute vol points, dt years, dr rate). The `price` field of `g` is ignored.
@@ -276,6 +297,13 @@ struct ScenarioDerivSpec {
   double d_skew{0.0};       // absolute smile-slope shift, vol per unit k = ln(K/F)
   double d_convexity{0.0};  // absolute smile-curvature shift, vol per unit k^2
 };
+
+// Drift pin: TWO fields. A third smile shock is a third Taylor term AND a third
+// entry in `scenario_deriv_greeks_sufficient` -- both must move with it, or a
+// grid will read a sensitivity it never checked was computed.
+static_assert(detail::aggregate_arity_is_v<ScenarioDerivSpec, 2>,
+              "ScenarioDerivSpec field count changed: update this pin, the Taylor kernel, and "
+              "the sufficiency predicate together.");
 
 // Second-order Taylor P&L for ONE deriv position whose greeks `g` are
 // POSITION-SCALED, under the same shock the option kernel takes plus the two

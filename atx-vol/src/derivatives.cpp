@@ -2625,7 +2625,7 @@ template <class SurfaceT>
   // blending is a guess. This predicate is legitimately regime-gated: only
   // real accrual creates the NEED for an anchor. It does NOT gate the
   // rescale below -- round 1's bug was using this same predicate for that
-  // too (see C-3, task-F-2-fix-round-1-review.md): a tracker-seeded contract
+  // too (C-3, closed in 24d0342): a tracker-seeded contract
   // with n_obs_done == 0 has a LIVE anchor (RealizedTracker::observe's seed
   // call writes it before any return is realized) that this guard, being
   // false there, never even inspects.
@@ -3200,8 +3200,11 @@ namespace {
 // calls `finish_recording()` once, exactly when it knows the slot's one
 // recording evaluation has completed, sorting by key ONCE (O(n log n));
 // every subsequent read for that slot is then an O(log n) binary search over
-// contiguous memory -- see the paired A/B in task-P-3-report.md for the
-// measured recovery.
+// contiguous memory. What that bought is a RECOVERY, not a win: re-measured
+// paired with the cache toggled as the only variable (6 pairs, same preset),
+// cache_off and cache_on both median 4167us -- parity, inside the noise band.
+// So this cache earns its place by removing the regression above, and the
+// honest claim for it is "no longer slower", NOT "faster".
 struct BumpReadCache {
   struct Entry {
     std::uint64_t x_bits;  // bit_cast of the shifted log-moneyness query
@@ -3369,7 +3372,7 @@ struct CachedBumpView {
   // wrapped, so only the center quote (unwrapped `PricedSurfaceStripView`)
   // ever took the batched node loop -- the 13 bumped strips a full second-
   // order greek block prices took the scalar loop every time, which is why
-  // the first paired A/B (task-P-3-report.md, Fix round 0) measured no
+  // the first paired A/B over Task P-3 (commit 0a63305) measured no
   // significant speedup: the strip batching this task exists to deliver was
   // wired to the ONE evaluation out of 14 that costs least to batch.
   //
@@ -5602,6 +5605,43 @@ Result<DerivQuote> deriv_price_shocked_on_ref(const SurfaceRef& ref, const Deriv
   const double df_shift = std::exp(-shock.rate_shift * rolled.maturity_t);
   q.pv *= df_shift;
   return Ok(q);
+}
+
+// Task F-8 S4. Three surface reads and one curve read, in the k = ln(K/F)
+// convention every smile sensitivity in this file already differentiates -- see
+// the declaration for why that matching matters more than the sampling scheme.
+Result<SurfaceSmileSample> sample_smile_on_ref(const SurfaceRef& ref, double T, double h) {
+  if (!ref.valid()) {
+    return Err(ErrorCode::InvalidArgument, "sample_smile_on_ref: null surface handle");
+  }
+  if (!(T > 0.0) || !std::isfinite(T) || !(h > 0.0) || !std::isfinite(h)) {
+    return Err(ErrorCode::InvalidArgument,
+               "sample_smile_on_ref: T and h must be finite and positive");
+  }
+  ATX_TRY(const CurveSet curves, carry_from_ref(ref, T, 0.0));
+  const double F = resolve_forward(curves, T);
+  if (!(F > 0.0)) {
+    return Err(ErrorCode::InvalidArgument, "sample_smile_on_ref: non-positive forward");
+  }
+
+  const SurfaceStripCarry carry = ref->strip_carry_at(T);
+  const double s_dn = ref->iv_with_carry(F * std::exp(-h), carry);
+  const double s_0 = ref->iv_with_carry(F, carry);
+  const double s_up = ref->iv_with_carry(F * std::exp(h), carry);
+
+  SurfaceSmileSample out{};
+  out.sigma_atm = s_0;
+  out.skew_slope = (s_up - s_dn) / (2.0 * h);
+  // HALF the second derivative: `convexity_shift` adds `c*k^2`, so the
+  // observable that pairs with it is c, and the central second difference is
+  // 2c. A factor of two here would silently halve or double every convexity
+  // attribution while leaving the identity intact.
+  out.smile_curvature = (s_up - 2.0 * s_0 + s_dn) / (2.0 * h * h);
+  // The same accessor `deriv_greeks`' own theta leg reads (`g.theta =
+  // curves.yield.zero(T) * center.pv`), so the rate this differences is the
+  // rate `rho` was derived against.
+  out.zero_rate = curves.yield.zero(T);
+  return Ok(out);
 }
 
 Result<DerivGreeks> deriv_greeks_on_ref(const SurfaceRef& ref, const DerivContract& contract,

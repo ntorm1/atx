@@ -26,6 +26,7 @@
 #include "atx/core/error.hpp"
 #include "atx/vol/detail/backtest_series_columns.hpp" // the 25 {name, member} series columns
 #include "atx/vol/detail/counters.hpp"      // counters::ledger — V1 always-on solve ledger (per-step scrape)
+#include "atx/vol/deriv_pnl.hpp"               // Task F-8: the swap lane's P&L explain
 #include "atx/vol/detail/deriv_ref_bridge.hpp" // detail::deriv_price_on_ref — swap-lot marks
 #include "atx/vol/detail/phase_profile.hpp"
 #include "atx/vol/strategy.hpp"        // IStrategy
@@ -927,7 +928,50 @@ struct SwapStepResult {
   double swap_pnl{0.0};        // Σ (mark - prev mark) over live lots + settlements
   double swap_pv{0.0};         // Σ live marks AFTER the pass (a state quantity)
   double settlement_cash{0.0}; // Σ settled payoffs, to be added to the ledger
+  // Task F-8: the explain, summed over the lane in fixed lot order. All FLOWS,
+  // like `swap_pnl` and unlike `swap_pv` -- see BacktestResult::swap_explain_*
+  // for why treating any one of them as state breaks the identity under
+  // `record_every_n > 1`. All exactly 0.0 when `RunConfig::swap_pnl_explain` is
+  // off, at which point nothing here is ever written.
+  double ex_carry{0.0};
+  double ex_realized{0.0};
+  double ex_vol_level{0.0};
+  double ex_skew{0.0};
+  double ex_convexity{0.0};
+  double ex_discount{0.0};
+  double ex_residual{0.0};
+  double ex_unattributed{0.0}; // lot-steps whose whole move went to the residual
 };
+
+// Task F-8: one live lot's start-of-step state, held ENGINE-LOCAL rather than on
+// `SwapAccrual`.
+//
+// `SwapAccrual` is checkpoint state -- it round-trips through
+// `Checkpoint::swap_accruals` and carries a hand-written twelve-field
+// comparator with its own drift pin. The explain needs a `DerivGreeks` and four
+// smile observables per lot, none of which affect a single mark, so putting
+// them there would widen a serialized, compared, pinned type for a diagnostic.
+// The cost of keeping them here is that a RESUMED run cannot attribute its
+// first step (there is no prior state to difference against); that step is
+// counted in `swap_explain_unattributed` and its move lands in the residual,
+// which is the same treatment a lot's own first mark already gets.
+struct SwapExplainPrior {
+  std::uint64_t lot_id{0};
+  bool have{false};
+  DerivGreeks greeks{};
+  detail::SurfaceSmileSample smile{};
+};
+
+[[nodiscard]] SwapExplainPrior &explain_prior_for(std::vector<SwapExplainPrior> &priors,
+                                                  std::uint64_t lot_id) {
+  for (SwapExplainPrior &p : priors) {
+    if (p.lot_id == lot_id) {
+      return p;
+    }
+  }
+  priors.push_back(SwapExplainPrior{lot_id, false, DerivGreeks{}, detail::SurfaceSmileSample{}});
+  return priors.back();
+}
 
 // The accrual for `lot`, seeded from the lot's contract terms on first sight.
 // First-sight order is `swap_lots` order, which the engine never reorders.
@@ -1016,10 +1060,92 @@ struct SwapStepResult {
 // settles, it does not mark) OR mark through `deriv_price` at the residual
 // tenor. Crossing an expiry without an exact observation is NotFound, exactly as
 // it is for an option lot.
+// Task F-8: one live lot's contribution to the explain, evaluated against its
+// START-of-step state. Returns false when the lot cannot be attributed at all,
+// in which case the caller books the whole move to the residual and counts it.
+//
+// The prior is REPLACED on every call, attributed or not, so the next step
+// differences against this step rather than against a stale one.
+[[nodiscard]] bool accumulate_swap_explain(SwapStepResult &out, SwapExplainPrior &prior,
+                                           const SurfaceRef &surface, const SwapLot &lot,
+                                           const DerivContract &contract,
+                                           const DerivConfig &deriv_cfg,
+                                           std::optional<double> wing_band, double pv_scaled,
+                                           double prev_pv, double dt_years, double realized_var,
+                                           bool attributable) {
+  // Called even when the step is NOT attributable, because refreshing the prior
+  // is unconditional: skipping it would leave the next attributable step
+  // differencing this step's dt against a state two steps old.
+  const bool had_prior = prior.have;
+  const DerivGreeks prior_greeks = prior.greeks;
+  const detail::SurfaceSmileSample prior_smile = prior.smile;
+
+  // Refresh the prior for the NEXT step first, so an early return below cannot
+  // leave a stale one behind. `bumps.time_years` is this step's own length, so
+  // `theta_zero_fixing` rolls exactly the interval it will be multiplied by.
+  prior.have = false;
+  DerivGreekBumps bumps{};
+  bumps.smile_greeks = true; // the two smile components are the point of this
+  if (dt_years > 0.0 && std::isfinite(dt_years)) {
+    bumps.time_years = dt_years;
+  }
+  const auto g = detail::deriv_greeks_on_ref(surface, contract, deriv_cfg, bumps, wing_band);
+  const auto smile = detail::sample_smile_on_ref(surface, contract.maturity_t);
+  if (g.has_value() && smile.has_value()) {
+    prior.greeks = *g;
+    prior.smile = *smile;
+    prior.have = true;
+  }
+  if (!attributable || !had_prior || !smile.has_value()) {
+    return false;
+  }
+
+  DerivPnlInputs in{};
+  in.greeks = prior_greeks;
+  in.dt_years = (dt_years > 0.0 && std::isfinite(dt_years)) ? dt_years : 0.0;
+  in.realized_var_dec = realized_var;
+  // The weight is qty-scaled because every column on this lane is: `pv_scaled`
+  // and `prev_pv` are qty-scaled marks, so the fixing sensitivity differenced
+  // against them must be too.
+  in.fixing_weight = lot.qty * var_swap_fixing_weight(contract, 1.0);
+  in.from.pv = prev_pv;
+  in.from.sigma_atm = prior_smile.sigma_atm;
+  in.from.skew_slope = prior_smile.skew_slope;
+  in.from.smile_curvature = prior_smile.smile_curvature;
+  in.from.zero_rate = prior_smile.zero_rate;
+  in.to.pv = pv_scaled;
+  in.to.sigma_atm = smile->sigma_atm;
+  in.to.skew_slope = smile->skew_slope;
+  in.to.smile_curvature = smile->smile_curvature;
+  in.to.zero_rate = smile->zero_rate;
+
+  const auto e = deriv_pnl_explain(in);
+  if (!e.has_value()) {
+    return false;
+  }
+  // A component the pricer could not compute makes the whole lot unattributed
+  // rather than partially attributed: booking five of six terms and calling the
+  // sixth a residual would report a clean-looking explain for a day nobody
+  // measured.
+  if (e->flags != DerivPnlFlags::None || !std::isfinite(e->residual)) {
+    return false;
+  }
+  out.ex_carry += e->carry;
+  out.ex_realized += e->realized;
+  out.ex_vol_level += e->vol_level;
+  out.ex_skew += e->skew;
+  out.ex_convexity += e->convexity;
+  out.ex_discount += e->discount;
+  out.ex_residual += e->residual;
+  return true;
+}
+
 [[nodiscard]] Result<SwapStepResult> step_swap_lots(const MarketSnapshot &shifted,
                                                     PortfolioState &book,
                                                     std::vector<SwapAccrual> &accruals,
-                                                    const DerivConfig &deriv_cfg) {
+                                                    const DerivConfig &deriv_cfg,
+                                                    bool want_explain,
+                                                    std::vector<SwapExplainPrior> &priors) {
   SwapStepResult out;
   if (book.swap_lots.empty()) {
     return Ok(out); // zero-swap books never price, allocate, or touch NAV
@@ -1047,6 +1173,15 @@ struct SwapStepResult {
                      " swap lot id=" + std::to_string(lot.id) + " uid=" + std::to_string(lot.uid));
     }
     SwapAccrual &acc = accrual_for(accruals, lot);
+    // Task F-8: the explain differences the interval the mark move came from, so
+    // it needs the accrual's state BEFORE this step's fixing lands.
+    // `observe_swap_fixing` advances `prev_ts_ns`/`prev_spot`/`n_obs_done` in
+    // place, so reading them afterwards would report a zero-length step and a
+    // fixing that had already been folded in.
+    const bool had_prev_fixing = acc.have_prev;
+    const std::int64_t prev_ts = acc.prev_ts_ns;
+    const std::uint32_t prev_n_done = acc.rv.n_obs_done;
+    const double prev_spot = acc.prev_spot;
     ATX_TRY_VOID(observe_swap_fixing(acc, ts, surface->pricing().S));
     if (expiring) {
       // `rv_done_dec` is the Sigma r^2 / n_done estimator, so a SHORT fixing
@@ -1065,6 +1200,17 @@ struct SwapStepResult {
           lot.qty * lot.notional * (swap_terminal_value(lot, acc) - lot.strike_dec);
       out.settlement_cash += payoff;
       out.swap_pnl += payoff - acc.prev_pv;
+      if (want_explain) {
+        // A SETTLEMENT IS NOT A MARKET MOVE. The lot stops existing and pays its
+        // terminal value; there is no surface state to difference and no
+        // sensitivity that describes it. It goes to the residual whole -- which
+        // keeps the identity exact -- and is counted, so a big residual on an
+        // expiry date reads as "a lot settled" rather than as a modelling gap.
+        out.ex_residual += payoff - acc.prev_pv;
+        out.ex_unattributed += 1.0;
+        std::erase_if(priors,
+                      [id = lot.id](const SwapExplainPrior &p) { return p.lot_id == id; });
+      }
       std::erase_if(accruals, [id = lot.id](const SwapAccrual &a) { return a.lot_id == id; });
       book.swap_lots.erase(book.swap_lots.begin() + static_cast<std::ptrdiff_t>(i));
       continue; // `i` now indexes the next lot
@@ -1087,6 +1233,35 @@ struct SwapStepResult {
     const double pv_scaled = lot.qty * quote.pv;
     out.swap_pnl += pv_scaled - acc.prev_pv;
     out.swap_pv += pv_scaled;
+    if (want_explain) {
+      // Attribute only a step in which a fixing actually LANDED. `carry` is
+      // `theta_zero_fixing * dt`, which prices one more fixing arriving at a
+      // zero return -- so on a step where the series was already closed, or the
+      // lot was only being seeded, that term describes an event that did not
+      // happen. Those steps are counted as unattributed rather than explained
+      // with a term that does not apply.
+      const bool fixing_landed = had_prev_fixing && acc.rv.n_obs_done > prev_n_done;
+      const double dt_years =
+          fixing_landed ? static_cast<double>(ts - prev_ts) / kNsPerYear : 0.0;
+      // The annualized rate of THIS step's fixing, in `inject_carry_fixing`'s
+      // own units (`rv_done_dec = annualization * sum r^2 / n_done`, so one
+      // fixing's rate is `annualization * r^2`).
+      double realized = kQuietNaN;
+      if (fixing_landed && prev_spot > 0.0) {
+        const double r = std::log(surface->pricing().S / prev_spot);
+        realized = acc.rv.annualization * r * r;
+      }
+      const bool attributed = accumulate_swap_explain(
+          out, explain_prior_for(priors, lot.id), surface, lot, contract, deriv_cfg, wing_band,
+          pv_scaled, acc.prev_pv, dt_years, realized, fixing_landed);
+      if (!attributed) {
+        // Nothing was measured, so the whole move IS the residual and the
+        // identity still closes exactly. Counted so a reader can tell this from
+        // a day that genuinely resisted explanation.
+        out.ex_residual += pv_scaled - acc.prev_pv;
+        out.ex_unattributed += 1.0;
+      }
+    }
     acc.prev_pv = pv_scaled;
     ++i;
   }
@@ -2270,6 +2445,18 @@ Status BacktestResult::validate() const {
   // the frozen wire registry (see their member comments).
   ATX_TRY_VOID(check_column("gross_vega_abs", gross_vega_abs, rows));
   ATX_TRY_VOID(check_column("nav_liquidation", nav_liquidation, rows));
+  // Task F-8: eight more empty-or-row-parallel extras, on the same footing.
+  // NOTE these join `gross_vega_abs`/`nav_liquidation` rather than the frozen
+  // registry above -- and note also that `swap_pv`/`swap_pnl` are STILL absent
+  // from both, a pre-existing gap this task did not widen but did not close.
+  ATX_TRY_VOID(check_column("swap_explain_carry", swap_explain_carry, rows));
+  ATX_TRY_VOID(check_column("swap_explain_realized", swap_explain_realized, rows));
+  ATX_TRY_VOID(check_column("swap_explain_vol_level", swap_explain_vol_level, rows));
+  ATX_TRY_VOID(check_column("swap_explain_skew", swap_explain_skew, rows));
+  ATX_TRY_VOID(check_column("swap_explain_convexity", swap_explain_convexity, rows));
+  ATX_TRY_VOID(check_column("swap_explain_discount", swap_explain_discount, rows));
+  ATX_TRY_VOID(check_column("swap_explain_residual", swap_explain_residual, rows));
+  ATX_TRY_VOID(check_column("swap_explain_unattributed", swap_explain_unattributed, rows));
 
   // `step_pnl_total` is EXEMPT: length == refs-1 by contract, not parallel to
   // the downsampled `date`.
@@ -2367,6 +2554,10 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
     // so these stay row-parallel and exactly zero.
     out.swap_pv.push_back(0.0);
     out.swap_pnl.push_back(0.0);
+    // Task F-8's explain columns are deliberately NOT pushed here: this is the
+    // fixed-book overload, which refuses swap lots outright, so they stay EMPTY
+    // rather than zero-filled -- the same distinction `nav_liquidation` makes on
+    // this same overload.
     out.n_open_lots.push_back(static_cast<double>(n_lots));
     out.n_unpriced_lots.push_back(n_unpriced);
     out.n_unpriced_greeks.push_back(n_unpriced_greeks);
@@ -2649,12 +2840,13 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
   };
 
   const auto push_row =
-      [&out](const std::string &date, std::int64_t ts, double p_total, double p_delta,
+      [&out, &cfg](const std::string &date, std::int64_t ts, double p_total, double p_delta,
              double p_gamma, double p_vega, double p_vanna, double p_volga, double p_theta,
              double p_rho, double p_charm, double p_unexpl, double p_settle, double p_shares,
              double p_fin, double p_cost, double nav_v, double cash_v, double g_delta,
              const PriceTotals &g, double turn_notl, double turn_vega, double swap_pv_v,
-             double swap_pnl_v, std::size_t n_lots, double n_unpriced, double n_unpriced_greeks) {
+             double swap_pnl_v, const SwapStepResult &ex, std::size_t n_lots,
+             double n_unpriced, double n_unpriced_greeks) {
         out.date.push_back(date);
         out.ts_ns.push_back(ts);
         out.pnl_total.push_back(p_total);
@@ -2682,6 +2874,18 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
         out.turnover_vega.push_back(turn_vega);
         out.swap_pv.push_back(swap_pv_v);   // STATE: live swap marks at this row
         out.swap_pnl.push_back(swap_pnl_v); // FLOW: block-summed like every other
+        if (cfg.swap_pnl_explain) {
+          // Every one a FLOW, pushed from the same block accumulator `swap_pnl_v`
+          // came from, so the identity survives `record_every_n > 1`.
+          out.swap_explain_carry.push_back(ex.ex_carry);
+          out.swap_explain_realized.push_back(ex.ex_realized);
+          out.swap_explain_vol_level.push_back(ex.ex_vol_level);
+          out.swap_explain_skew.push_back(ex.ex_skew);
+          out.swap_explain_convexity.push_back(ex.ex_convexity);
+          out.swap_explain_discount.push_back(ex.ex_discount);
+          out.swap_explain_residual.push_back(ex.ex_residual);
+          out.swap_explain_unattributed.push_back(ex.ex_unattributed);
+        }
         out.n_open_lots.push_back(static_cast<double>(n_lots));
         out.n_unpriced_lots.push_back(n_unpriced);
         out.n_unpriced_greeks.push_back(n_unpriced_greeks);
@@ -2708,6 +2912,10 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
   // this row's `swap_pv` column, and the swap lane's liquidation term. Exactly
   // 0.0 (and therefore liquidation-neutral) for a book with no swap lots.
   double swap_pv_state = 0.0;
+  // Task F-8: per-lot start-of-step explain state. Engine-local and NOT part of
+  // the checkpoint (see `SwapExplainPrior`), so a resumed run's first step is
+  // unattributed rather than differenced against state it does not have.
+  std::vector<SwapExplainPrior> swap_explain_priors;
   const auto liquidation_value = [&](const MarketSnapshot &snap,
                                      const PriceTotals &book_totals) -> double {
     double shares_mtm = 0.0;
@@ -3046,8 +3254,8 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
     // (entry economics v1 — a swap opens at zero cost).
     push_row(refs[0].date, base->ts_ns(), nav, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
              0.0, 0.0, ex->cost, nav, cash, g_delta, g->total, ex->turnover_notional,
-             ex->turnover_vega, 0.0, 0.0, book.lots.size(), static_cast<double>(ex->n_unpriced_hedges),
-             static_cast<double>(g->n_unpriced));
+             ex->turnover_vega, 0.0, 0.0, SwapStepResult{}, book.lots.size(),
+             static_cast<double>(ex->n_unpriced_hedges), static_cast<double>(g->n_unpriced));
     ATX_TRY_VOID(reconcile_row(refs[0].date, nav, g->total, *base));
     record_signals(*base);
   }
@@ -3060,6 +3268,7 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
   double b_theta = 0.0, b_rho = 0.0, b_charm = 0.0, b_unexpl = 0.0, b_settle = 0.0;
   double b_shares = 0.0, b_fin = 0.0, b_cost = 0.0, b_turn_notl = 0.0, b_turn_vega = 0.0;
   double b_nunpriced = 0.0, b_swap_pnl = 0.0;
+  SwapStepResult b_explain{}; // Task F-8: the explain's own block accumulator
 
   // Deferred expiry settlements (ExcludeAndReport only); see the fixed-book loop.
   DeferredSettlementBook deferrals;
@@ -3216,7 +3425,8 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
     //     no-op — no pricing, no allocation, exactly 0.0 into every column — on
     //     a book with no swap lots.
     ATX_TRY(const SwapStepResult swap_step,
-            step_swap_lots(*shifted, book, swap_accruals, swap_price_cfg));
+            step_swap_lots(*shifted, book, swap_accruals, swap_price_cfg,
+                           cfg.swap_pnl_explain, swap_explain_priors));
     cash += swap_step.settlement_cash; // settled payoffs hit the ledger
     swap_pv_state = swap_step.swap_pv; // live marks after this pass
 
@@ -3301,6 +3511,14 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
     b_settle += settlement;
     b_shares += shares_pnl;
     b_swap_pnl += swap_step.swap_pnl;
+    b_explain.ex_carry += swap_step.ex_carry;
+    b_explain.ex_realized += swap_step.ex_realized;
+    b_explain.ex_vol_level += swap_step.ex_vol_level;
+    b_explain.ex_skew += swap_step.ex_skew;
+    b_explain.ex_convexity += swap_step.ex_convexity;
+    b_explain.ex_discount += swap_step.ex_discount;
+    b_explain.ex_residual += swap_step.ex_residual;
+    b_explain.ex_unattributed += swap_step.ex_unattributed;
     b_fin += financing;
     b_cost += ex->cost;
     b_turn_notl += ex->turnover_notional;
@@ -3335,7 +3553,7 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
       // loop's note on why they cannot live in `book.lots`.
       push_row(refs[i].date, base->ts_ns(), b_total, b_delta, b_gamma, b_vega, b_vanna, b_volga,
                b_theta, b_rho, b_charm, b_unexpl, b_settle, b_shares, b_fin, b_cost, nav, cash,
-               g_delta, g->total, b_turn_notl, b_turn_vega, swap_pv_state, b_swap_pnl,
+               g_delta, g->total, b_turn_notl, b_turn_vega, swap_pv_state, b_swap_pnl, b_explain,
                book.lots.size() + deferrals.size(), b_nunpriced,
                static_cast<double>(g->n_unpriced));
       ATX_TRY_VOID(reconcile_row(refs[i].date, nav, g->total, *base));
@@ -3344,6 +3562,7 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
       b_theta = b_rho = b_charm = b_unexpl = b_settle = 0.0;
       b_shares = b_fin = b_cost = b_turn_notl = b_turn_vega = b_nunpriced = 0.0;
       b_swap_pnl = 0.0;
+      b_explain = SwapStepResult{};
     }
   }
 

@@ -1575,9 +1575,22 @@ template <class T> void append_vector(std::vector<T> &dst, const std::vector<T> 
   // run still HOLDING swap lots; this catches the run whose swaps all settled
   // before the last row, leaving a clean checkpoint. Zero-swap runs carry
   // exactly 0.0 in both columns and store unchanged.
+  // Task F-8 extends the same guard to the explain columns. They are populated
+  // only when `RunConfig::swap_pnl_explain` is on, and a run with them populated
+  // is by construction a run with a swap lane -- but a caller can hand-build a
+  // result, and a NEW column that slipped past this loop would be dropped
+  // silently on store, which is exactly what this guard exists to refuse.
+  const std::vector<double> *const explain_cols[] = {
+      &data.backtest.swap_explain_carry,     &data.backtest.swap_explain_realized,
+      &data.backtest.swap_explain_vol_level, &data.backtest.swap_explain_skew,
+      &data.backtest.swap_explain_convexity, &data.backtest.swap_explain_discount,
+      &data.backtest.swap_explain_residual,  &data.backtest.swap_explain_unattributed};
   for (std::size_t i = 0; i < data.backtest.size(); ++i) {
-    const bool live = (i < data.backtest.swap_pv.size() && data.backtest.swap_pv[i] != 0.0) ||
-                      (i < data.backtest.swap_pnl.size() && data.backtest.swap_pnl[i] != 0.0);
+    bool live = (i < data.backtest.swap_pv.size() && data.backtest.swap_pv[i] != 0.0) ||
+                (i < data.backtest.swap_pnl.size() && data.backtest.swap_pnl[i] != 0.0);
+    for (const std::vector<double> *const column : explain_cols) {
+      live = live || (i < column->size() && (*column)[i] != 0.0);
+    }
     if (live) {
       return Err(ErrorCode::InvalidArgument,
                  "backtest_db: the stored series schema does not carry the swap lane");
@@ -1662,6 +1675,35 @@ Status append_backtest_results(BacktestResult &dst, const BacktestResult &src) {
   } else {
     combined.swap_pv.clear();
     combined.swap_pnl.clear();
+  }
+  // Task F-8: the explain columns concatenate or clear TOGETHER with each
+  // other, on their own shape test rather than on the swap lane's. They are
+  // opt-in, so a run with `swap_pv`/`swap_pnl` present and these absent is a
+  // normal result, not a malformed one -- reusing `dst_swap_shape` would clear
+  // a perfectly good pair of explain columns whenever the swap shapes happened
+  // to differ, and vice versa.
+  {
+    std::vector<double> *const dst_ex[] = {
+        &combined.swap_explain_carry,     &combined.swap_explain_realized,
+        &combined.swap_explain_vol_level, &combined.swap_explain_skew,
+        &combined.swap_explain_convexity, &combined.swap_explain_discount,
+        &combined.swap_explain_residual,  &combined.swap_explain_unattributed};
+    const std::vector<double> *const src_ex[] = {
+        &src.swap_explain_carry,     &src.swap_explain_realized,
+        &src.swap_explain_vol_level, &src.swap_explain_skew,
+        &src.swap_explain_convexity, &src.swap_explain_discount,
+        &src.swap_explain_residual,  &src.swap_explain_unattributed};
+    bool both = true;
+    for (std::size_t i = 0; i < std::size(dst_ex); ++i) {
+      both = both && !dst_ex[i]->empty() && !src_ex[i]->empty();
+    }
+    for (std::size_t i = 0; i < std::size(dst_ex); ++i) {
+      if (both) {
+        append_vector(*dst_ex[i], *src_ex[i]);
+      } else {
+        dst_ex[i]->clear();
+      }
+    }
   }
   append_vector(combined.step_pnl_total, src.step_pnl_total);
   for (std::size_t i = 0; i < combined.signals.size(); ++i) {
