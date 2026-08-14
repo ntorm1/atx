@@ -799,21 +799,38 @@ TEST(VarOption, PutCallParityThroughDispatch) {
 //
 // NON-VACUITY. This is an IDENTITY between two expressions in one file, so it
 // survives a reversion that aliases one pricer onto the other and CANNOT
-// demonstrate on its own that the new code path ran. Four independent witnesses
-// are therefore asserted alongside it, none of them an error-string sentinel:
+// demonstrate on its own that the new code path ran. Five witnesses are
+// asserted alongside it, none of them an error-string sentinel.
+//
+// READ W1-W4 FOR WHAT THEY ACTUALLY DISCRIMINATE, not as a count. Fix round 1
+// falsified the original claim that they were four INDEPENDENT witnesses:
+// injecting s = xi*T for xi*sqrt(T) into BOTH pricers left the identity, W1, W2
+// and W3 all green, and only W4 fired -- by luck of sign, since that particular
+// error shrank the value below its floor. The structural reason is that W1-W3
+// are every one of them computed DOWNSTREAM of the same (m, s) resolution the
+// identity itself depends on, so an error in that shared resolution moves them
+// together and none can see it. An identity oracle plus witnesses drawn from
+// the identity's own inputs cannot exceed the identity's own blind spot.
 //
 //   W1 DISPATCH-LEVEL. The solve ledger's VarSwapStripEvals must advance by
-//      exactly 1 across the variance-call price. A pricer that short-circuited,
-//      returned a constant, or handed back a cached capped quote would advance
-//      it by 0; one that ran the strip twice would advance it by 2.
-//   W2 VALUE-LEVEL, THIRD ARM. E[V] - E[min(V,C)] == E[(V-C)+] ties the call's
-//      premium to the plain VarSwap arm's fair strike, which `price_var_swap`
-//      computes and neither option nor capped pricer touches.
-//   W3 DISCRIMINATION. The identity must FAIL, by orders of magnitude more than
-//      its own tolerance, when the call is struck anywhere other than C. A
-//      premium that is not a genuine function of `strike_dec` cannot pass this.
-//   W4 NON-DEGENERACY. The shared value is bounded away from zero, so none of
-//      the above is 0 == 0.
+//      exactly 1 across the variance-call price. Catches a pricer that never
+//      priced (0) or double-priced (2). Does NOT catch aliasing: the capped
+//      pricer calls `var_swap_fair_strike` exactly once too.
+//   W2 CROSS-ARM CONSISTENCY. E[V] - E[min(V,C)] == E[(V-C)+] across the
+//      VarSwap, capped and option arms. Catches the three arms DISAGREEING
+//      about m, the blend weights or the discrete correction. It says nothing
+//      about the premium itself: substituting the arms reduces it to
+//      capopt == capopt, an algebraic restating, not an independent check.
+//   W3 STRIKE DISCRIMINATION. The identity must FAIL by orders of magnitude
+//      more than its own tolerance when the call is struck anywhere other than
+//      C, and the premium must fall in the strike. Catches a premium that
+//      ignores `strike_dec`. Does NOT catch a correct-shaped curve over wrong
+//      model parameters.
+//   W4 NON-DEGENERACY. A floor, so none of the above is 0 == 0. Not a designed
+//      discriminator; it caught round 1's injection only by accident of sign.
+//   W5 PARAMETER-INDEPENDENT. The one witness NOT downstream of the pricer's
+//      own (m, s) -- see its own block below for exactly what is rebuilt here
+//      and what is still shared.
 TEST(VarOption, CappedSwapIdentity) {
   const EssviSurface surf = make_flat_surface(0.20, 0.01, 1.00);
   const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
@@ -862,6 +879,81 @@ TEST(VarOption, CappedSwapIdentity) {
   ASSERT_TRUE(lo.has_value());
   ASSERT_TRUE(hi.has_value());
   EXPECT_GT(lo->fair_strike_dec, hi->fair_strike_dec);
+
+  // ── W5: the parameter-independent leg (fix round 2) ─────────────────────
+  //
+  // W1-W3 are all downstream of the pricer's own (m, s), which is why round 1's
+  // s = xi*T injection walked through them. This leg rebuilds the model's inputs
+  // HERE and prices the payoff by a DIFFERENT method, so it is not downstream of
+  // anything the identity uses.
+  //
+  // INDEPENDENCE, ITEM BY ITEM. The question for each is "could the pricer get
+  // this wrong without moving this assertion?" -- and the answer has to be no,
+  // or the item is not independent and is labelled as such.
+  //
+  //   a, b, k_w  LITERALS, re-derived from `mid_life_option`'s own fixture
+  //              constants. Nothing is read back off any quote.
+  //   s          0.80*sqrt(0.25) from LITERALS. `resolve_vol_of_vol` is never
+  //              called and no quote's `vol_of_vol_used` is read. This is the
+  //              item that catches round 1's injection.
+  //   payoff     GL-64 QUADRATURE of the smooth piece above the kink -- NOT
+  //              `lognormal_call`. A different computational route, so an error
+  //              inside the closed form is visible here. Same technique and same
+  //              1e-9*m tolerance `RvLognormal.CallMatchesQuadratureAndParity`
+  //              already uses to validate that closed form directly.
+  //   m          NOT INDEPENDENT on its own -- it comes from
+  //              `var_swap_fair_strike`, the same function the pricer calls.
+  //              Said plainly rather than glossed, because a witness that reads
+  //              as independent while sharing an input is the exact defect this
+  //              leg exists to correct. It is tied down SEPARATELY below,
+  //              against the flat fixture's analytic truth sigma^2 = 0.04, which
+  //              is what makes a broken strip visible here too.
+  //
+  // WHAT IT STILL SHARES, stated for the same reason: `lognormal_truncated_
+  // expect` and, beneath it, `norm_cdf`. Those are pinned independently by
+  // `TruncatedExpect.FullIntervalAndSplitRecoverMean` and
+  // `RvLognormal.NormCdfKnownValues`. W5 therefore does NOT subsume
+  // `VarOption.MCOracle`, which remains the only check that DRAWS from the
+  // distribution rather than integrating it.
+  const double w_done = 21.0 / 63.0;      // mid_life_option's own fixture
+  const double b_leg = 1.0 - w_done;
+  const double a_leg = w_done * 0.0324;   // ditto: rv_done_dec
+  const double s_leg = 0.80 * std::sqrt(0.25);  // cfg.vol_of_vol * sqrt(T)
+
+  const auto kv = var_swap_fair_strike(surf, cs, 0.25, cfg);
+  ASSERT_TRUE(kv.has_value()) << kv.error().to_string();
+  const double m_leg = kv->fair_strike_dec;
+  // m's own independent tie-down: on a flat sigma = 0.20 surface the model-free
+  // variance strip integrates to sigma^2 = 0.04 in the continuum, so the only
+  // gap is this strip's quadrature/truncation error. The tolerance is the
+  // MEASURED deviation with headroom, not a guess: tightening this assertion to
+  // failure reports 7.4132445321284379e-10 at Standard quality on this fixture,
+  // so 2e-9 is ~2.7x that -- tight enough that a strip returning the wrong LEVEL
+  // fails by orders of magnitude, loose enough not to pin quadrature noise.
+  EXPECT_NEAR(m_leg, 0.04, 2e-9);
+
+  const double k_w = (cap - a_leg) / b_leg;
+  // The kink's standard-normal coordinate: W(z) = m*exp(s*z - s^2/2) == k_w.
+  const double z_star = (std::log(k_w / m_leg) + 0.5 * s_leg * s_leg) / s_leg;
+  const double premium_quad =
+      b_leg * lognormal_truncated_expect(m_leg, s_leg, z_star, 8.0,
+                                         [k_w](double w) { return w - k_w; });
+  // Tolerance is again the MEASURED residual with headroom: tightening this to
+  // failure reports 3.7014662168655121e-16 -- essentially machine epsilon
+  // against a ~1.14e-3 premium, because GL-64 resolves this smooth integrand
+  // that well. 1e-14 is ~27x that. It is deliberately far TIGHTER than the
+  // 1e-9*m the sibling `RvLognormal.CallMatchesQuadratureAndParity` uses,
+  // because a loose tolerance here would blunt the one witness that can see a
+  // wrong (m, s).
+  //
+  // MEASURED DISCRIMINATION. Round 1's s = xi*T injection moves the priced
+  // premium from 1.1408537360273927e-3 to 6.6480398422724785e-05 while this
+  // leg's expected value -- built from s = 0.80*sqrt(0.25) HERE -- does not
+  // move at all. The gap W5 would report is 1.074373337604668e-3, i.e. 1.07e11
+  // times this tolerance. (Same measurement also confirms W4's catch was luck:
+  // the injected premium lands at 6.65e-5, just under W4's 1e-4 floor. An
+  // injection of the opposite sign raises the premium and W4 passes.)
+  EXPECT_NEAR(call->fair_strike_dec, premium_quad, 1e-14);
 }
 
 // ORACLE 3. Model-vs-MC on the LOGNORMAL's own terms: W is drawn directly from
