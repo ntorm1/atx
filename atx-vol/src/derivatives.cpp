@@ -4856,6 +4856,25 @@ Status RealizedTracker::observe_impl(double spot, double ex_div_cash) {
     return Err(ErrorCode::InvalidArgument,
                "ex_div_cash > 0 needs set_dividend_adjustment(true) (index legs are unadjusted)");
   }
+  // Fix round 1 (I-2), a PARTIAL guard against the transposed call
+  // `observe_dated(ts, div, spot)`: both parameters are `double`, so the
+  // compiler cannot catch the swap, and a transposition otherwise books a wildly
+  // wrong return AND poisons `prev_spot_` for every later fixing. A cash
+  // dividend larger than the price it is paid out of is economically absurd,
+  // whereas the legitimate case (D = 5 against a 94 close) clears it easily.
+  //
+  // WHAT THIS DOES NOT DO: it does not close the transposition hole. A swap in
+  // which BOTH values stay individually plausible -- a small dividend against a
+  // small price -- passes this check unchanged. It removes the absurd end of the
+  // range, nothing more; the structural fix is a distinct parameter type for
+  // cash amounts, which is a v1.x-additive decision this task does not take.
+  // The accepted cost is a liquidating distribution exceeding the residual
+  // price, which is refused here -- a case in which "the return" has no agreed
+  // meaning anyway.
+  if (ex_div_cash > spot) {
+    return Err(ErrorCode::InvalidArgument,
+               "ex_div_cash exceeds the observed close (arguments transposed?)");
+  }
 
   if (!have_prev_) {
     // No prior close exists yet, so there is nothing for a dividend to adjust.

@@ -1904,6 +1904,63 @@ TEST(RealizedTracker, RejectsDividendWhenTheAdjustmentIsOff) {
   EXPECT_TRUE(t.observe_dated(2000, 94.0, 0.0).has_value());
 }
 
+// Fix round 1 (I-2). The transposed call `observe_dated(ts, div, spot)` compiles
+// silently -- both parameters are `double`. These pin BOTH halves of what is
+// actually guarded; the test after them pins what deliberately is NOT.
+TEST(RealizedTracker, TransposedDividendAndSpotIsNarrowedNotClosed) {
+  // Half 1, free from the D > 0 ruling: on an INDEX tracker (the default) the
+  // transposition is refused outright, because the swap puts a positive value
+  // into ex_div_cash and an unadjusted tracker rejects that.
+  {
+    auto built = RealizedTracker::create(252.0, 10u);
+    ASSERT_TRUE(built.has_value());
+    RealizedTracker t = std::move(*built);
+    ASSERT_TRUE(t.observe_dated(1000, 100.0).has_value());
+    const auto swapped = t.observe_dated(2000, 5.0, 94.0);  // meant (2000, 94.0, 5.0)
+    ASSERT_FALSE(swapped.has_value());
+    EXPECT_EQ(swapped.error().code(), ErrorCode::InvalidArgument);
+    EXPECT_EQ(t.snapshot().n_obs_done, 0u);
+  }
+  // Half 2: on a dividend-adjusted tracker the same transposition is caught by
+  // ex_div_cash > spot -- a dividend larger than the price it is paid out of.
+  // Unguarded, this booked a ~1900x wrong variance and poisoned prev_spot_.
+  {
+    auto built = RealizedTracker::create(252.0, 10u);
+    ASSERT_TRUE(built.has_value());
+    RealizedTracker t = std::move(*built);
+    ASSERT_TRUE(t.set_dividend_adjustment(true).has_value());
+    ASSERT_TRUE(t.observe_dated(1000, 100.0).has_value());
+
+    const auto swapped = t.observe_dated(2000, 5.0, 94.0);
+    ASSERT_FALSE(swapped.has_value());
+    EXPECT_EQ(swapped.error().code(), ErrorCode::InvalidArgument);
+    // Nothing booked, and prev_spot_ is still the real close -- the poisoning
+    // this guard exists to prevent is what the NEXT fixing would inherit.
+    EXPECT_EQ(t.snapshot().n_obs_done, 0u);
+    EXPECT_DOUBLE_EQ(t.prev_spot(), 100.0);
+    EXPECT_EQ(t.last_fixing_ts_ns(), 1000);
+    // The correctly-ordered call still goes through untouched.
+    EXPECT_TRUE(t.observe_dated(2000, 94.0, 5.0).has_value());
+  }
+}
+
+// The honest limit of the guard above, pinned so nobody later reads it as a
+// closed hole: a transposition whose two values are BOTH individually plausible
+// passes silently. D = 40 against a 50 close is a legal dividend-adjusted
+// fixing, and so is the transposed reading of it. Only a distinct parameter
+// type separates those two, and this task does not introduce one.
+TEST(RealizedTracker, PlausibleTransposedValuesStillPassTheGuard) {
+  auto built = RealizedTracker::create(252.0, 10u);
+  ASSERT_TRUE(built.has_value());
+  RealizedTracker t = std::move(*built);
+  ASSERT_TRUE(t.set_dividend_adjustment(true).has_value());
+  ASSERT_TRUE(t.observe_dated(1000, 100.0).has_value());
+
+  // ex_div_cash (40) < spot (50), so the guard cannot fire on either ordering.
+  EXPECT_TRUE(t.observe_dated(2000, 50.0, 40.0).has_value());
+  EXPECT_EQ(t.snapshot().n_obs_done, 1u);
+}
+
 // The seeding call forms no return, so there is nothing for a dividend to
 // adjust; refused rather than dropped, same reasoning as above.
 TEST(RealizedTracker, RejectsDividendOnTheSeedingObservation) {
