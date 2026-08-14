@@ -274,6 +274,21 @@ if(ATX_VOL_PROFILE)
     target_compile_definitions(atx-vol PUBLIC ATX_VOL_PROFILE)
 endif()
 
+# FRI-072: the single absolute anchor every fixture/resource path in the test
+# tree resolves from (tests/support/test_paths.hpp). Carried by an INTERFACE
+# target rather than by a target_compile_definitions call repeated in tests/,
+# bench/ and beside the example targets: those three sit in different
+# directories, so three copies would each carry their own
+# ${CMAKE_CURRENT_SOURCE_DIR} and could drift apart independently -- which is
+# precisely the duplicated-rule defect test_paths.hpp exists to remove. One
+# definition, linked by every consumer. Not installed or exported: these are
+# test/bench-only targets.
+add_library(atx-vol-test-paths INTERFACE)
+target_compile_definitions(atx-vol-test-paths INTERFACE
+    "ATX_VOL_TESTS_ROOT=\"${CMAKE_CURRENT_SOURCE_DIR}/tests\""
+    "ATX_VOL_REPO_ROOT=\"${CMAKE_CURRENT_SOURCE_DIR}/..\""
+    "ATX_VOL_ARTIFACT_CACHE=\"${CMAKE_BINARY_DIR}/artifact-cache\"")
+
 if(ATX_BUILD_TESTS)
     add_subdirectory(tests)
 
@@ -356,7 +371,10 @@ if(ATX_BUILD_EXAMPLES)
     # Ten real Databento OPRA SPY snapshots spanning intraday/stress regimes:
     # cold fit latency distribution with a per-slice 98% clean in-band gate.
     add_executable(spy_fit_matrix_bench examples/spy_fit_matrix_bench.cpp)
-    target_link_libraries(spy_fit_matrix_bench PRIVATE atx::vol atx::core atx_warnings)
+    # Includes ../tests/support/spy_fit_fixture.hpp, which resolves fixtures from
+    # the baked absolute root rather than probing relative to the working directory.
+    target_link_libraries(spy_fit_matrix_bench
+        PRIVATE atx::vol atx::core atx_warnings atx-vol-test-paths)
 
     # Dump the SPY Dec-2026 vol smile + bid/ask IV bands over z in [-2,2] (CSV on
     # stdout) for plotting. See examples/spy_dec_curve.cpp.
@@ -376,7 +394,9 @@ if(ATX_BUILD_EXAMPLES)
     # Breadth: one PricerFitter auto-selects the curve per underlying (index SPY
     # vs single-name XOM) with no per-symbol config. See examples/vol_breadth_bench.cpp.
     add_executable(vol_breadth_bench examples/vol_breadth_bench.cpp)
-    target_link_libraries(vol_breadth_bench PRIVATE atx::vol atx::core atx_warnings)
+    # Includes ../tests/support/opra_fixture.hpp — same baked-absolute anchor.
+    target_link_libraries(vol_breadth_bench
+        PRIVATE atx::vol atx::core atx_warnings atx-vol-test-paths)
 
     # Surface-archive (ATXVSA2) deserialization throughput: fit -> serialize -> reload,
     # reporting ns/surface for single-symbol random access + full reconstruct_all.

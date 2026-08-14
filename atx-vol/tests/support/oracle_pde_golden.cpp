@@ -1,5 +1,7 @@
 #include "oracle_pde_golden.hpp"
 
+#include "test_paths.hpp"
+
 #include <gtest/gtest.h>
 
 #include <cstddef>
@@ -33,17 +35,19 @@ bool regen_enabled() noexcept {
 #endif
 }
 
-// The TSV sits next to the test sources; probe the same way opra_fixture.hpp
-// probes data/ so it works from any ctest working directory.
-fs::path golden_path() {
-  for (const char* p : {"../../../atx-vol/tests/support/oracle_pde_golden.tsv",
-                        "atx-vol/tests/support/oracle_pde_golden.tsv",
-                        "../atx-vol/tests/support/oracle_pde_golden.tsv",
-                        "C:/atx/atx-vol/tests/support/oracle_pde_golden.tsv"}) {
-    if (fs::exists(p)) return fs::path{p};
-  }
-  return fs::path{"C:/atx/atx-vol/tests/support/oracle_pde_golden.tsv"};
-}
+// The TSV sits next to the test sources, resolved from the configure-time
+// absolute root so it names the same file from every working directory.
+//
+// This previously probed relative candidates and, when none matched, returned a
+// hard-coded path into a DIFFERENT checkout. That was not merely untidy: the
+// regen path below opens this result in APPEND mode, so running the exe from
+// build/bin (which atx-vol/README.md recommends) with ATX_VOL_ORACLE_REGEN set
+// (which the failure message below recommends) appended to another worktree's
+// tracked golden. Neither instruction was wrong alone. Worse in the ordinary
+// case, the READ silently loaded another tree's oracle while the code under
+// test was this branch -- and it passed, because the two copies happened to
+// match. A thing that silently differs reads exactly like a thing that passed.
+fs::path golden_path() { return testkit::test_fixture("oracle_pde_golden.tsv"); }
 
 std::string key_of(double S, double K, double T, double sigma, double r,
                    double q, Side side, const OraclePdeOpts& o) {

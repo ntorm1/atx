@@ -20,6 +20,7 @@ add_executable(atx-vol-tests
     support/oracle_pricer_pde.cpp
     support/oracle_pde_golden.cpp
     support/cached_artifacts.cpp
+    test_paths_test.cpp
     arb_test.cpp
     risk_surface_validation_test.cpp
     surface_v2_qualification_test.cpp
@@ -238,6 +239,21 @@ target_compile_definitions(atx-vol-tests PRIVATE
 target_compile_definitions(atx-vol-tests PRIVATE
     "ATX_VOL_INCLUDE_ROOT=\"${CMAKE_CURRENT_SOURCE_DIR}/../include\""
     "ATX_VOL_UMBRELLA_HPP=\"${CMAKE_CURRENT_SOURCE_DIR}/../include/atx/vol/vol.hpp\"")
+
+# FRI-072: the single anchor every fixture/resource path in this test tree is
+# resolved from (tests/support/test_paths.hpp). Same intent as the three baked
+# paths above -- the contract must hold regardless of the working directory the
+# binary is launched from -- but defined ONCE on an INTERFACE target in
+# ../CMakeLists.txt, because bench/ and the example targets include the same
+# testkit headers and must agree with this tree about where a fixture lives.
+#
+# The artifact cache inside it is anchored on CMAKE_BINARY_DIR rather than the
+# repo root, and that difference is load-bearing: this repo is configured into
+# more than one build tree (build/ and build-rel-avx2/ both exist) and the cache
+# key carries a wire-format version and a fit-shape revision but NO
+# build-configuration component, so a repo-root-relative cache would let a
+# rel-avx2 run serve an archive fitted by the dev build.
+target_link_libraries(atx-vol-tests PRIVATE atx-vol-test-paths)
 
 # Plan 5.3: version_test.cpp compares the SHIPPED version against the build
 # system's declaration, so it needs `project(atx VERSION ...)` verbatim. Baked in
