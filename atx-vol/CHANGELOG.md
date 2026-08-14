@@ -29,21 +29,29 @@ predicate the same way, and it earns an entry below only because it adds two
 public NAMES, never because it moved a number. Judge a commit against the rule,
 not against this list.
 
-NUMBERS IN THIS FILE: A TRANSITION IS NOT A TALLY, and the two have opposite
-lifetimes. "`DerivQuote` gains `leg_T1_var_dec` / `leg_T2_var_dec` (arity pin
-17 -> 19)" describes what ONE commit did to ONE struct -- a fact fixed in time
-that no later edit can falsify, and the exact thing a reader migrating across
-that release needs. Entries like it are correct and STAY, including where the
-struct has since grown again. A present-tense tally is the opposite: "eight
-explain columns", "all ten Taylor terms", "the seven flows" describe the tree
-as it stands, and rot the moment a ninth column or an eleventh term lands, with
-nothing failing when they do. Those are retired here in favour of naming the
-thing -- the roster accessor, the `static_assert`, the field names themselves.
-Both rules were learned the hard way in this sprint, in both directions: an
-`arity pin 17 -> 18` was retired from this file as a rotting count when it was
-in fact an accurate transition and has been restored, while "eight columns"
-survived two rounds that deleted its twin from the source. If you are about to
-delete a number here, ask which of the two it is first.
+NUMBERS IN THIS FILE. Before writing or deleting one, ask the only question that
+decides it: CAN A LATER COMMIT MAKE THIS SENTENCE FALSE? If no, it is a
+TRANSITION -- a record of what one commit did to one struct, of the form
+`<struct> gains <field> (arity pin <before> -> <after>)`. Nothing a future edit
+does can falsify it, it is what a reader migrating across that release needs,
+and it STAYS, including where the struct has since grown again. If yes, it is a
+TALLY -- a present-tense census of the tree, of the form `<N> <things>`, true
+today and silently wrong the moment an `<N+1>`th lands. Tallies are retired here
+in favour of naming the thing itself: the roster accessor, the `static_assert`,
+the field names. The one question subsumes both cases and gives a tiebreak where
+a two-category rule would invite splitting the difference.
+
+That question exists because of a specific failure worth naming, since the
+instrument that produced it looked like it was working. A round of this sprint
+was told to retire counts, applied that faithfully, and destroyed an accurate
+transition while leaving a tally standing in the same entry -- the transition
+because it matched the rule as written, the tally because it fell outside the
+lines being edited. The two are not opposite errors needing separate warnings;
+they are ONE error, a filter applied without a classifier. That is the shape to
+watch for: not a check that under-detects, but A RULE WHOSE CORRECT APPLICATION
+IN ONE DIRECTION PRODUCES THE ERROR IN THE OTHER. Such a rule cannot be fixed by
+widening it -- widening makes both directions worse. It needs the classifier the
+question above supplies.
 
 ### Added — surface dynamics: `SurfaceOverlay` / `StickyMode`, `DerivPnlExplain`, and a scenario deriv leg (FIT-F4 / GK-G4 / GK-G5 / LIT-8, Task F-8)
 
@@ -228,12 +236,29 @@ settlement, and is what lets a resumed run attribute its first step.
 it now uses the to-date's own discount factor, which the smile sample already
 returned.
 
-MIGRATION for both: `swap_pnl`, NAV and every other column are unaffected --
-the residual absorbed the error, which is precisely why this needs stating
-rather than showing up as a NAV break. A stored `swap_explain_carry` /
-`_realized` series from an earlier build of this branch should be recomputed;
-on a regular calendar the carry error vanishes, so a run whose steps were all
-one day is unchanged.
+MIGRATION, and it is wider than the two columns named above. `swap_pnl`, NAV and
+every non-explain column are unaffected -- the residual absorbed the error,
+which is precisely why this needs stating rather than showing up as a NAV break.
+Within the explain, THE ATTRIBUTION BOUNDARY ITSELF MOVED, so more than carry
+and realized are affected:
+
+* `swap_explain_carry` and `_realized` move on any step whose length differs
+  from the one before it. On a strictly regular calendar the carry error
+  vanishes -- but that is a statement about THOSE TWO COLUMNS ONLY, and it does
+  not make a run unaffected.
+* THE SET OF STEPS THAT GET ATTRIBUTED AT ALL is different. The old gate
+  required carried prior state that was never checkpointed, so a resumed run
+  left each lot's first step unattributed; the new gate does not, and that step
+  is now attributed. Where that flips, `swap_explain_residual` and
+  `swap_explain_unattributed` both fall and `_vol_level`, `_skew`, `_convexity`
+  and `_discount` become populated where they read zero. THIS IS INDEPENDENT OF
+  STEP LENGTH: a resumed run on a perfectly regular one-day calendar is
+  affected, and a reader who stops at the carry clause above would wrongly
+  conclude otherwise.
+
+So: recompute any stored explain series from an earlier build of this branch.
+A run that was never resumed and whose steps were uniform is the one case that
+is genuinely unchanged.
 
 **A PARTIALLY-POPULATED EXPLAIN SET IS NOW REFUSED, BY NAME** (`c1771a6`). Both
 shape validators checked every explain column INDEPENDENTLY (`empty ||
@@ -298,41 +323,43 @@ shape rule.
   unchecked. A result produced by the engine is unaffected -- the columns are
   written row-parallel or not at all.
 
-### Fixed — a zero-surface subset load verifies its date instead of sampling one entry (Task F-8 round 7)
+### Fixed — a load verifies exactly the set of surfaces it loaded (Task F-8, rounds 7 and 8)
 
 `MarketSnapshot::load` had sample-then-verify and sample-and-trust in two
 branches of one function, ten lines apart. The full-load branch reads
 `pricing_at(0).now_ts_ns`, checks every loaded surface against it and errors on
-disagreement; the other branch mapped the directory's first entry and trusted
-it.
+disagreement; the other branch read the directory's first entry and treated that
+timestamp as a fact about the ARCHIVE.
 
-THE ASYMMETRY IS NARROWER THAN IT LOOKS, and the shape of the fix follows from
-that. The trusting branch is reached only when a subset was requested and
-matched NOTHING, so it owns zero surfaces -- a subset that matched anything
-falls through to the verifying branch. No loaded surface was ever unverified;
-what went unchecked was the DATE the resulting zero-surface snapshot carries.
-"Verify across what the subset loaded" is therefore vacuous here, so the branch
-now maps every directory entry and requires agreement: the same rule the sibling
-applies, over the only set this branch has.
+Both branches now answer to ONE rule: **a load verifies exactly the set of
+surfaces it LOADED.** The whole board verifies all of them. A subset that
+matched verifies what it matched. A subset that matched NOTHING owns zero
+surfaces, verifies the empty set vacuously, and reads one record purely to DATE
+an empty snapshot -- which is a property of that record, not of the archive, and
+now says so at the site.
 
-Measured against a two-surface archive stamped a day apart and loaded with a uid
-matching neither: pre-fix the zero-surface subset load was ACCEPTED while the
-whole-board load of the same archive was refused; post-fix both refuse. Both
-agreeing cases still load, and an empty-subset load still yields a zero-surface
-snapshot carrying the date's timestamp, which is the legitimate behaviour that
-path exists for
-(`BacktestSwapExplain.AZeroSurfaceSnapshotRefusesAnArchiveWhoseDatesDisagree`,
-`AZeroSurfaceSnapshotStillLoadsWhenTheArchiveAgrees` as its positive control).
+THE SAMPLE WAS NEVER THE DEFECT. A zero-match subset still samples one record,
+by the rule above and deliberately: what was wrong is that the sampled timestamp
+masqueraded as an archive-wide property. It is now documented and used as the
+first record's own timestamp, dating a snapshot that carries no surfaces to
+contradict it. An earlier cut of this entry described a whole-directory walk;
+that walk was reverted in round 8 with its cost recorded in the code -- at
+N = 512 it put the miss path at 91% of a whole-board load (3908µs vs 4282µs)
+against 71% for the sample (2282µs vs 3235µs) in the same process. Warm fault
+counts came out equal at 681, so that instrument did NOT isolate the cold delta,
+and the cold direction is argued structurally rather than measured.
 
-MIGRATION: CALLER-OBSERVABLE, and narrowly. An archive whose entries disagree on
-their date, loaded through a subset request that matched no uid, now errors
-where it previously returned a snapshot timestamped from whichever entry the
-directory happened to list first. Any caller that was relying on that
-acceptance was relying on an arbitrary choice. A second, smaller consequence of
-walking every entry rather than one: an entry whose metadata record fails to map
-now surfaces its own error on this branch, where previously only the first
-entry's could. The walk is header reads over the already-mapped archive rather
-than I/O, and runs only on that one branch.
+MIGRATION: CALLER-OBSERVABLE, and narrower than "mixed archives now refuse". A
+load naming a SUBSET of uids that MATCHES directory entries now verifies across
+everything it loaded, so **a subset naming two disagreeing uids refuses where it
+previously loaded**. Whole-board loads already refused such an archive, and
+zero-match subsets still do not refuse it -- by the rule above, they read no
+surface that could disagree. A caller that was loading a two-uid subset out of
+an archive whose entries carry different dates was being served a snapshot
+stamped from one of them, and should expect an error there now
+(`BacktestSwapExplain.EveryLoadThatReadsAMixedArchiveRefusesIt`,
+`ALoadThatReadsOneRecordOrNoneCannotSeeAMixedArchive` for the documented limit,
+`AZeroSurfaceSnapshotStillLoadsWhenTheArchiveAgrees` as the positive control).
 
 ### Fixed — the scenario grid's deriv leg returned NaN cells and differenced a model, not a price (Task F-8 round 1)
 
