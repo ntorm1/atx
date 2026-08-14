@@ -311,9 +311,14 @@ struct InsertedSliceHandle {
 // side-effect free apart from `no_arb_status` / that one flag bit). Sweep
 // convention, fixed and deliberately not caller-tunable at this seam: 128
 // intervals over k in [-h, +h], h = 4 * sqrt(w_atm) of the derived slice
-// clamped to [0.1, 1.5]; tolerances match `arb.cpp` (density > -1e-9, calendar
-// slack > 1e-7). Callers wanting a different domain/resolution call `arb.hpp`
-// directly against `w_on_inserted_slice`.
+// clamped to [0.1, 1.5]. Neither tolerance is restated here: the density floor
+// is `detail::kButterflyDensityFloor` (reached through
+// `arb_check_butterfly_slice`) and the calendar slack is
+// `kCalendarTotalVarianceTol` (types.hpp), each named once and read by every
+// site. Only the calendar TOLERANCE is shared with `arb.cpp` -- the calendar
+// TEST here is the parent-band rule at `kNoArbStatusCalendar` above, a
+// narrower question than `arb_check_calendar`'s. Callers wanting a different
+// domain/resolution call `arb.hpp` directly against `w_on_inserted_slice`.
 //
 // @return InvalidArgument on null-usable surface; NotFound on a zero-slice
 //         surface; OutOfRange when Forbid + T outside the slice range;
