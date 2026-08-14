@@ -661,6 +661,68 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
     FitDiag diag{};
     const EssviParams *const calendar_prev =
         (in.repair == CalendarRepair::Project && has_prev) ? &prev_slice : nullptr;
+    // (N1) fidelity budget — the same cumulative ATM-level scale contract
+    // `arb_project_calendar_essvi` enforces post-fit (arb.hpp,
+    // kCalendarRepairMaxAtmShiftFrac), applied to the level the in-fit floor
+    // is about to REQUIRE. The projected LM keeps every trial calendar-
+    // feasible, so a genuine market inversion at ATM would otherwise be
+    // "repaired" inside the fit — exactly the fabrication the projection's
+    // budget exists to refuse — with the budget never consulted (measured on
+    // the T7a unservable-board fixture: served 3/3 with worst_in_band 0.0 and
+    // mean_chi2 5.6e4 before this guard).
+    //
+    // TWO-STAGE, ON PURPOSE. The nearest-|k| observation's market total
+    // variance (the cold seed's own anchor) is only a cheap TRIGGER: one raw
+    // quote is deliberately NOT the budget denominator — measured on sp100/CL
+    // slice 3 it sat 26% below the slice's true fitted ATM level and refused a
+    // board whose floor never bound (adjacent fitted-theta ratio 1.19, served
+    // in-band 1.0). A triggered slice is confirmed with ONE unconstrained
+    // `essvi_fit_slice` (pure, deterministic): its theta is the slice's own
+    // pre-floor ATM level, the exact analogue of the projection's PRE-REPAIR
+    // theta that `arb_project_calendar_essvi` sizes its budget off. Within
+    // budget the constrained fit proceeds bit-identically; beyond it the
+    // BOARD is refused loudly with the projection's own error shape — never a
+    // quiet 2/3 drop — matching the pre-(N1) behavior where the post-fit
+    // projection's refusal failed the whole build. A failed probe fit falls
+    // through to the constrained fit: no new refusal class on probe failure.
+    if (calendar_prev != nullptr && calendar_prev->theta > 0.0) {
+      double atm_w = 0.0;
+      double atm_absk = std::numeric_limits<double>::infinity();
+      for (const FitObs &o : prepared.fit_observations()) {
+        if (std::fabs(o.k) < atm_absk) {
+          atm_absk = std::fabs(o.k);
+          atm_w = o.w_mkt;
+        }
+      }
+      const bool triggered =
+          atm_w > 0.0 &&
+          calendar_prev->theta / atm_w >
+              1.0 + std::max(kCalendarRepairMaxAtmShiftFrac, kCalendarRepairMinBudgetW / atm_w);
+      if (triggered) {
+        const Result<EssviParams> probe =
+            essvi_fit_slice(prepared.fit_observations(), T, F, in.calib);
+        if (probe.has_value() && probe->theta > 0.0) {
+          const double needed_scale = calendar_prev->theta / probe->theta;
+          const double budget = 1.0 + std::max(kCalendarRepairMaxAtmShiftFrac,
+                                               kCalendarRepairMinBudgetW / probe->theta);
+          detail::log_emitf(LogLevel::Info, LogStream::Stderr,
+                            "[n1-budget-probe] %s slice=%zu T=%.6f trigger_scale=%.6f "
+                            "floor_over_theta_unconstrained=%.6f budget=%.6f verdict=%s",
+                            under.ticker.c_str(), idx, T, calendar_prev->theta / atm_w,
+                            needed_scale, budget, needed_scale > budget ? "refuse" : "pass");
+          if (needed_scale > budget) {
+            return Err(ErrorCode::Unavailable,
+                       "run_surface_parity: slice " + std::to_string(idx) +
+                           " (T=" + std::to_string(T) +
+                           ") (N1) calendar floor needs an ATM level scale of " +
+                           std::to_string(needed_scale) + ", beyond the fidelity budget " +
+                           std::to_string(budget) +
+                           " (a genuine market inversion is not servable without fabricating "
+                           "the level)");
+          }
+        }
+      }
+    }
     Result<EssviParams> slice_res =
         (in.repair == CalendarRepair::MonotoneFit)
             ? fit_slice_calendar_floored(prepared, T, F, in.calib, &diag,
