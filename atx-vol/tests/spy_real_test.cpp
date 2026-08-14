@@ -7,11 +7,11 @@
 #include <string>
 #include <vector>
 
-#include "atx/vol/calib.hpp"
-#include "atx/vol/opra_panel.hpp"
-#include "atx/vol/session.hpp"
-#include "atx/vol/universe.hpp"
-#include "atx/vol/vol_curve.hpp"
+#include "atx/vol/api/fitting/calib.hpp"
+#include "atx/vol/api/marketdata/opra_panel.hpp"
+#include "atx/vol/api/fitting/session.hpp"
+#include "atx/vol/api/marketdata/universe.hpp"
+#include "atx/vol/api/fitting/vol_curve.hpp"
 
 // Real-data SOTA-accuracy acceptance on a cached SPY OPRA cbbo-1m (NBBO) slice.
 //

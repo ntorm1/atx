@@ -18,7 +18,7 @@
 #include <string>
 #include <vector>
 
-#include "atx/vol/surface_archive.hpp"
+#include "atx/vol/api/storage/surface_archive.hpp"
 
 using atx::vol::AmericanGreeks;
 using atx::vol::PricedSurface;

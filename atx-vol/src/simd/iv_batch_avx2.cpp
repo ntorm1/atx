@@ -27,8 +27,8 @@
 
 #include "iv_batch_avx2.hpp"
 
-#include "atx/vol/detail/vector_math.hpp"
-#include "atx/vol/implied_vol.hpp"
+#include "simd/vector_math.hpp"
+#include "atx/vol/api/pricing/implied_vol.hpp"
 
 #include <immintrin.h>
 

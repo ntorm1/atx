@@ -5,7 +5,7 @@
 #include <cstdint>
 #include <optional>
 
-#include "atx/vol/american.hpp"
+#include "atx/vol/api/pricing/american.hpp"
 
 // R-30 (Sub-Sprint A, Task A4): retained-geometry bind-key guardrail.
 //

@@ -19,7 +19,7 @@
 #include <string>
 #include <string_view>
 
-#include "atx/vol/opra_hive.hpp" // OpraHiveSpec (apply_snapshot_suffix_flag)
+#include "atx/vol/api/marketdata/opra_hive.hpp" // OpraHiveSpec (apply_snapshot_suffix_flag)
 
 namespace atx::vol {
 

@@ -2,8 +2,8 @@
 
 #include <cmath>
 
-#include "atx/vol/detail/legacy_surface.hpp"  // Surface<> (demoted, S4-T21)
-#include "atx/vol/surface.hpp"
+#include "fitting/legacy_surface.hpp"  // Surface<> (demoted, S4-T21)
+#include "atx/vol/api/fitting/surface.hpp"
 
 // Vol-surface evaluator + time-interpolation coverage, ported from the C
 // ats-vol test_vol_surface.c:

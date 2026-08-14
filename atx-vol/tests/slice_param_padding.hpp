@@ -27,8 +27,8 @@
 
 #include <cstring>
 
-#include "atx/vol/c8.hpp"          // C8Params
-#include "atx/vol/vol_surface.hpp" // EssviParams, SviParams
+#include "atx/vol/api/fitting/c8.hpp"          // C8Params
+#include "atx/vol/api/fitting/vol_surface.hpp" // EssviParams, SviParams
 
 namespace atx::vol::test {
 

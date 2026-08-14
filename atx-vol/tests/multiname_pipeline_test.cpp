@@ -41,19 +41,19 @@
 #include <system_error>
 #include <vector>
 
-#include "atx/vol/backtest.hpp"   // MarketSnapshot
-#include "atx/vol/corpus.hpp"     // build_corpus, CorpusBoard, CorpusManifest
-#include "atx/vol/data.hpp"       // iso_to_ns, year_fraction
-#include "atx/vol/dispersion.hpp" // DispersionUniverse, dispersion_signal, resolve_universe_uids
-#include "atx/vol/market_env.hpp" // MarketEnv
-#include "atx/vol/panel.hpp"      // make_synthetic_american_panel, SynthPanelSpec
-#include "atx/vol/portfolio_pricer.hpp" // Portfolio, PortfolioPricer, PriceStatus, PnlFrame
-#include "atx/vol/s3.hpp"               // S3Params
-#include "atx/vol/spy_fixture.hpp"      // make_spy_synthetic_spec
-#include "atx/vol/strategy.hpp"         // DispersionStrategy
+#include "atx/vol/api/backtest/backtest.hpp"   // MarketSnapshot
+#include "atx/vol/api/marketdata/corpus.hpp"     // build_corpus, CorpusBoard, CorpusManifest
+#include "atx/vol/api/marketdata/data.hpp"       // iso_to_ns, year_fraction
+#include "atx/vol/api/backtest/dispersion.hpp" // DispersionUniverse, dispersion_signal, resolve_universe_uids
+#include "atx/vol/api/core/market_env.hpp" // MarketEnv
+#include "atx/vol/api/backtest/panel.hpp"      // make_synthetic_american_panel, SynthPanelSpec
+#include "atx/vol/api/backtest/portfolio_pricer.hpp" // Portfolio, PortfolioPricer, PriceStatus, PnlFrame
+#include "atx/vol/api/storage/s3.hpp"               // S3Params
+#include "fitting/spy_fixture.hpp"      // make_spy_synthetic_spec
+#include "atx/vol/api/backtest/strategy.hpp"         // DispersionStrategy
 #include "atx/vol/tools/tearsheet.hpp"        // write_backtest_tsv
-#include "atx/vol/universe.hpp"         // uid_for_symbol
-#include "atx/vol/vol_curve.hpp"        // CurveConfig, VolCurveKind
+#include "atx/vol/api/marketdata/universe.hpp"         // uid_for_symbol
+#include "atx/vol/api/fitting/vol_curve.hpp"        // CurveConfig, VolCurveKind
 #include "support/cached_artifacts.hpp" // cached_corpus
 
 using namespace atx::vol;

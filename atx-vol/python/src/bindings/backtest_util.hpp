@@ -19,7 +19,7 @@
 
 #include <pybind11/pybind11.h>
 
-#include "atx/vol/backtest.hpp"
+#include "atx/vol/api/backtest/backtest.hpp"
 
 namespace atxvol::python {
 

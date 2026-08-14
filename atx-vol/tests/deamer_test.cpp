@@ -7,15 +7,15 @@
 #include <string>
 #include <vector>
 
-#include "atx/vol/american.hpp"
-#include "atx/vol/american_iv.hpp"
-#include "atx/vol/black76.hpp"
-#include "atx/vol/detail/counters.hpp" // counters::ledger — always-on AL boundary-solve gate
-#include "atx/vol/deamer.hpp"
-#include "atx/vol/dividend.hpp"
-#include "atx/vol/rates_curve.hpp"
-#include "atx/vol/types.hpp"
-#include "atx/vol/universe.hpp"
+#include "atx/vol/api/pricing/american.hpp"
+#include "atx/vol/api/pricing/american_iv.hpp"
+#include "atx/vol/api/pricing/black76.hpp"
+#include "fitting/counters.hpp" // counters::ledger — always-on AL boundary-solve gate
+#include "atx/vol/api/fitting/deamer.hpp"
+#include "atx/vol/api/pricing/dividend.hpp"
+#include "atx/vol/api/pricing/rates_curve.hpp"
+#include "atx/vol/api/core/types.hpp"
+#include "atx/vol/api/marketdata/universe.hpp"
 
 // De-Americanization pipeline coverage (atx/vol/deamer.hpp). The forward map is
 // the SAME American pricer used everywhere else, so a synthetic chain generated

@@ -12,8 +12,8 @@
 
 #include <gtest/gtest.h>
 
-#include "atx/vol/analytics.hpp"
-#include "atx/vol/priced_surface.hpp"
+#include "atx/vol/api/analytics/analytics.hpp"
+#include "atx/vol/api/backtest/priced_surface.hpp"
 #include "support/analytics_fixture.hpp"
 
 namespace atx::vol {

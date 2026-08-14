@@ -6,9 +6,9 @@
 #include <vector>
 
 #include "atx/core/datetime.hpp"
-#include "atx/vol/historical_projection.hpp"
-#include "atx/vol/surface_parity.hpp"
-#include "atx/vol/vol_curve.hpp"
+#include "analytics/historical_projection.hpp"
+#include "atx/vol/api/fitting/surface_parity.hpp"
+#include "atx/vol/api/fitting/vol_curve.hpp"
 
 namespace {
 

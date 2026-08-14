@@ -36,21 +36,21 @@
 #include <vector>
 
 #include "atx/core/error.hpp"                  // atx::core::Ok, ErrorCode
-#include "atx/vol/american.hpp"                // al_fast_opts, AmericanMethod
-#include "atx/vol/backtest.hpp"                // Clock, run_backtest, SwapLot, RunConfig
-#include "atx/vol/backtest_db.hpp"             // append_backtest_results
-#include "atx/vol/corpus.hpp"                  // CorpusManifest, CorpusEntry, CorpusFitStatus
-#include "atx/vol/derivatives.hpp"             // DerivKind, DerivContract, DerivConfig, DerivQuote
-#include "atx/vol/detail/deriv_ref_bridge.hpp" // detail::deriv_price_on_ref
-#include "atx/vol/portfolio_pricer.hpp"        // kNsPerYear, SurfaceRef
-#include "atx/vol/priced_surface.hpp"          // PricedSurface, PricingContext
-#include "atx/vol/strategy.hpp"                // IStrategy, DeclarativeStrategy, StrategySpec
-#include "atx/vol/surface_archive.hpp"         // write_surface_archive_v2_file
-#include "atx/vol/surface_parity.hpp"          // SliceContext
-#include "atx/vol/types.hpp"                   // Side, Result, Status
-#include "atx/vol/vol_curve.hpp"               // CurveSurface, EssviCurve
-#include "atx/vol/vol_surface.hpp"             // EssviParams
-#include "atx/vol/vol_time.hpp"                // VolTimeCalendar -- elapsed_weekdays oracle (Task A1)
+#include "atx/vol/api/pricing/american.hpp"                // al_fast_opts, AmericanMethod
+#include "atx/vol/api/backtest/backtest.hpp"                // Clock, run_backtest, SwapLot, RunConfig
+#include "storage/backtest_db.hpp"             // append_backtest_results
+#include "atx/vol/api/marketdata/corpus.hpp"                  // CorpusManifest, CorpusEntry, CorpusFitStatus
+#include "atx/vol/api/pricing/derivatives.hpp"             // DerivKind, DerivContract, DerivConfig, DerivQuote
+#include "pricing/deriv_ref_bridge.hpp" // detail::deriv_price_on_ref
+#include "atx/vol/api/backtest/portfolio_pricer.hpp"        // kNsPerYear, SurfaceRef
+#include "atx/vol/api/backtest/priced_surface.hpp"          // PricedSurface, PricingContext
+#include "atx/vol/api/backtest/strategy.hpp"                // IStrategy, DeclarativeStrategy, StrategySpec
+#include "atx/vol/api/storage/surface_archive.hpp"         // write_surface_archive_v2_file
+#include "atx/vol/api/fitting/surface_parity.hpp"          // SliceContext
+#include "atx/vol/api/core/types.hpp"                   // Side, Result, Status
+#include "atx/vol/api/fitting/vol_curve.hpp"               // CurveSurface, EssviCurve
+#include "atx/vol/api/fitting/vol_surface.hpp"             // EssviParams
+#include "atx/vol/api/core/vol_time.hpp"                // VolTimeCalendar -- elapsed_weekdays oracle (Task A1)
 
 using namespace atx::vol;
 using atx::core::ErrorCode;

@@ -32,11 +32,11 @@
 
 #include <benchmark/benchmark.h>
 
-#include "atx/vol/american.hpp"
-#include "atx/vol/american_iv.hpp"
-#include "atx/vol/simd/american_boundary_batch.hpp" // american_put_boundary_batch, SimdIsa/SimdRoute
-#include "atx/vol/simd/cpu.hpp"                      // have_avx2
-#include "atx/vol/types.hpp"
+#include "atx/vol/api/pricing/american.hpp"
+#include "atx/vol/api/pricing/american_iv.hpp"
+#include "atx/vol/api/simd/american_boundary_batch.hpp" // american_put_boundary_batch, SimdIsa/SimdRoute
+#include "atx/vol/api/simd/cpu.hpp"                      // have_avx2
+#include "atx/vol/api/core/types.hpp"
 
 #include "bench_util.hpp"
 

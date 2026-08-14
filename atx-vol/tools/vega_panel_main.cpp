@@ -27,8 +27,8 @@
 #include <utility>
 #include <vector>
 
-#include "atx/vol/surface_db.hpp"
-#include "atx/vol/vega_panel.hpp"
+#include "atx/vol/api/storage/surface_db.hpp"
+#include "backtest/vega_panel.hpp"
 
 namespace {
 

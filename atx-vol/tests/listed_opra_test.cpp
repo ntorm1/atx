@@ -11,8 +11,8 @@
 #include <vector>
 
 #include "atx/core/error.hpp"
-#include "atx/vol/data.hpp"
-#include "atx/vol/listed_opra.hpp"
+#include "atx/vol/api/marketdata/data.hpp"
+#include "marketdata/listed_opra.hpp"
 
 namespace {
 

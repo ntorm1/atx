@@ -2,7 +2,7 @@
 
 #include <string>
 
-#include "atx/vol/version.hpp"
+#include "atx/vol/api/core/version.hpp"
 
 // The library version has exactly ONE source of truth: `project(atx VERSION ...)`
 // in the root CMakeLists (plan 5.3). ATX_VOL_CMAKE_PROJECT_VERSION is that field

@@ -40,10 +40,10 @@
 
 #include <benchmark/benchmark.h>
 
-#include "atx/vol/backtest.hpp"          // Clock
-#include "atx/vol/backtest_template.hpp" // BacktestStrategyTemplate, make_40_delta_3_calendar_month_strangle_template
-#include "atx/vol/sweep_driver.hpp"      // SweepSpec, SweepConfig, SweepResult, run_sweep
-#include "atx/vol/track_store.hpp"       // TrackMeta
+#include "atx/vol/api/backtest/backtest.hpp"          // Clock
+#include "backtest/backtest_template.hpp" // BacktestStrategyTemplate, make_40_delta_3_calendar_month_strangle_template
+#include "backtest/sweep_driver.hpp"      // SweepSpec, SweepConfig, SweepResult, run_sweep
+#include "storage/track_store.hpp"       // TrackMeta
 
 #include "bench_util.hpp"
 #include "support/synth_corpus.hpp" // build_synth_corpus

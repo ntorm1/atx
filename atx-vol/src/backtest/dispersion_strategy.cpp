@@ -1,0 +1,454 @@
+// atx-vol DispersionStrategy (Phase B1) — an IStrategy adapter over the existing
+// `build_dispersion_book` (P4-1). It re-expresses the vega-neutral straddle
+// dispersion trade as a backtest strategy WITHOUT reimplementing its sizing:
+// on entry it calls `build_dispersion_book` (authoritative) and converts the
+// emitted `Position`s into engine `Lot`s, and it surfaces the implied-correlation
+// diagnostic through the `signals` hook so a backtest records it per row.
+
+#include "atx/vol/api/backtest/strategy.hpp" // DispersionStrategy, IStrategy, lifecycle_decide
+
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
+
+#include "atx/core/error.hpp"
+#include "atx/vol/api/backtest/backtest.hpp"   // MarketSnapshot, Lot, PortfolioState
+#include "atx/vol/api/backtest/dispersion.hpp" // build_dispersion_book, dispersion_signal
+#include "core/phase_profile.hpp"
+#include "atx/vol/api/backtest/portfolio_pricer.hpp" // OptionContract, kNsPerYear, Position
+#include "atx/vol/api/backtest/priced_surface.hpp"   // PricedSurface
+#include "atx/vol/api/core/types.hpp"            // Result, Status
+
+namespace atx::vol {
+
+using atx::core::Err;
+using atx::core::ErrorCode;
+using atx::core::Ok;
+
+namespace {
+
+struct CanonicalTenor {
+  std::int64_t expiry_ts_ns{0};
+  double T{0.0};
+};
+
+// M5 SYNTHETIC-EXPIRY / SETTLEMENT INVARIANT. When `cfg.projected_maturity` is
+// unset the entry expiry is SYNTHETIC — `valuation_ts_ns + round(target_T *
+// kNsPerYear)` — an instant that need NOT coincide with any later snapshot's
+// timestamp. The engine settles an expiring lot ONLY at a snapshot whose ts_ns
+// matches the lot's expiry EXACTLY (run_backtest hard-errors "no exact expiry
+// observation" otherwise — the guard is engine-side and never silent). Under the
+// canonical RollAtHorizon lifecycle a cohort is roll-CLOSED at marks once its
+// residual T falls below `roll_at_T` (= roll_dte), so it is retired BEFORE its
+// synthetic expiry and settlement is never reached. That safety holds only while
+// consecutive snapshots are spaced closer than `roll_at_T`: a clock GAP wider
+// than roll_dte can step a lot from residual-T > roll_at_T straight past its
+// synthetic expiry, skipping the roll window and tripping the engine's exact-ts
+// settlement guard. Keep roll_dte comfortably above the largest expected
+// inter-snapshot gap, or pin an exact projected expiry via `projected_maturity`
+// (which lands on a real snapshot instant) to remove the synthetic-expiry risk.
+
+[[nodiscard]] Result<CanonicalTenor> canonical_tenor(std::int64_t valuation_ts_ns,
+                                                     double requested_T) {
+  if (!std::isfinite(requested_T) || requested_T <= 0.0) {
+    return Err(ErrorCode::InvalidArgument,
+               "DispersionStrategy: target_T must be finite and positive");
+  }
+  const long double offset =
+      static_cast<long double>(requested_T) * static_cast<long double>(kNsPerYear);
+  constexpr std::int64_t kMax = std::numeric_limits<std::int64_t>::max();
+  if (!(offset >= 0.5L && offset < static_cast<long double>(kMax) - 0.5L)) {
+    return Err(ErrorCode::InvalidArgument,
+               "DispersionStrategy: target_T cannot be represented as an expiry");
+  }
+  const std::int64_t tenor_ns = static_cast<std::int64_t>(std::llround(offset));
+  if (tenor_ns <= 0 || valuation_ts_ns > kMax - tenor_ns) {
+    return Err(ErrorCode::InvalidArgument,
+               "DispersionStrategy: target expiry overflows timestamp range");
+  }
+  return Ok(CanonicalTenor{valuation_ts_ns + tenor_ns, static_cast<double>(tenor_ns) / kNsPerYear});
+}
+
+// ── X3 risk gate ────────────────────────────────────────────────────────────
+//
+// The dispersion book is LINEAR in `target_vega`: every leg quantity scales by
+// the same factor, so gross vega, gross premium notional and net premium outlay
+// are all proportional to the requested size. That linearity is what makes a
+// single probe build plus an analytic rescale EXACTLY equivalent to iterating a
+// pre-sizing solve — and far cheaper. So the gate measures the book the config
+// asked for, derives the binding scale, and applies it before the lots are
+// committed; no partially-sized book is ever written into the portfolio.
+
+struct RiskProbe {
+  double gross_vega{0.0};
+  double gross_notional{0.0};
+  double net_outlay{0.0};
+};
+
+// C-2 (pipeline-m production review). `gross_vega` is DOLLARS PER VOL POINT —
+// the unit `DispersionRiskLimits::max_gross_vega` is documented in (strategy.hpp)
+// and the unit `DispersionConfig::target_vega` is sized in. `straddle_vega` is a
+// PER-SHARE dP/dsigma per UNIT vol (dispersion.hpp), so the per-contract
+// conversion `contract_vega_per_vol_point` is mandatory here; this used to sum a
+// bare `straddle_vega * straddle_qty`, which discarded the `multiplier` argument
+// it was handed AND the vol-point scale. That product happens to equal the
+// correct quantity at multiplier == 100 and is off by exactly 100/multiplier
+// everywhere else, so the cap under-reported exposure 10x at a multiplier of
+// 1000 and over-clamped 10x at 10. `multiplier` is now a real typed run-spec
+// field (dispersion_run.cpp binds it; dispersion_backtest.cpp routes it), so
+// non-100 books are reachable from production.
+[[nodiscard]] RiskProbe measure_book(const DispersionBook &book,
+                                     std::span<const double> entry_marks, double multiplier) {
+  RiskProbe probe;
+  probe.gross_vega = std::fabs(
+      contract_vega_per_vol_point(book.index_leg.straddle_vega, multiplier) *
+      book.index_leg.straddle_qty);
+  for (const DispersionLeg &leg : book.name_legs) {
+    probe.gross_vega +=
+        std::fabs(contract_vega_per_vol_point(leg.straddle_vega, multiplier) * leg.straddle_qty);
+  }
+  for (std::size_t i = 0; i < book.positions.size() && i < entry_marks.size(); ++i) {
+    const double notional = book.positions[i].qty * multiplier * entry_marks[i];
+    probe.gross_notional += std::fabs(notional);
+    probe.net_outlay += notional;
+  }
+  return probe;
+}
+
+// Binding scale in (0, 1], plus which limit bound. `measured <= limit` => 1.0.
+struct BindingLimit {
+  double scale{1.0};
+  RiskBreachReason reason{RiskBreachReason::None};
+  double limit{0.0};
+  double requested{0.0};
+};
+
+[[nodiscard]] BindingLimit binding_limit(const RiskProbe &probe,
+                                         const DispersionRiskLimits &limits) {
+  BindingLimit binding;
+  const auto consider = [&](double measured, double limit, RiskBreachReason reason) {
+    if (!(limit > 0.0) || !(measured > limit)) {
+      return;
+    }
+    const double scale = limit / measured;
+    if (scale < binding.scale) {
+      binding.scale = scale;
+      binding.reason = reason;
+      binding.limit = limit;
+      binding.requested = measured;
+    }
+  };
+  consider(probe.gross_vega, limits.max_gross_vega, RiskBreachReason::GrossVega);
+  consider(probe.gross_notional, limits.max_gross_notional, RiskBreachReason::GrossNotional);
+  consider(std::fabs(probe.net_outlay), limits.capital, RiskBreachReason::Capital);
+  return binding;
+}
+
+} // namespace
+
+std::string_view to_string(RiskBreachReason reason) noexcept {
+  switch (reason) {
+  case RiskBreachReason::None:
+    return "none";
+  case RiskBreachReason::GrossVega:
+    return "max_gross_vega";
+  case RiskBreachReason::GrossNotional:
+    return "max_gross_notional";
+  case RiskBreachReason::Capital:
+    return "capital";
+  case RiskBreachReason::DrawdownStop:
+    return "drawdown_stop";
+  }
+  return "unknown";
+}
+
+Status DispersionStrategy::on_step(const MarketSnapshot &base, std::size_t step_index,
+                                   PortfolioState &book, std::uint64_t &next_lot_id) {
+  return on_step_impl(base, step_index, book, next_lot_id, nullptr);
+}
+
+Status DispersionStrategy::on_step(const MarketSnapshot &base, std::size_t step_index,
+                                   PortfolioState &book, std::uint64_t &next_lot_id,
+                                   const PriceOptions &price_options) {
+  return on_step_impl(base, step_index, book, next_lot_id, &price_options);
+}
+
+Status DispersionStrategy::on_step_impl(const MarketSnapshot &base, std::size_t step_index,
+                                        PortfolioState &book, std::uint64_t &next_lot_id,
+                                        const PriceOptions *price_options) {
+  last_entry_seeds_.clear();
+  // Per-step risk telemetry, reset each step so `signals()` reports THIS step.
+  last_risk_scale_ = 1.0;
+  last_risk_reason_ = RiskBreachReason::None;
+  // C1 POINT-IN-TIME UNIVERSE. Re-resolve the basket for THIS step's date before
+  // any sizing so a mid-backtest reconstitution is honored (the next roll rebuilds
+  // vega-flat legs from the fresh membership; a dropped name actually exits — this
+  // is also where C3's removals take effect end-to-end). A resolve failure (e.g. a
+  // date before the first effective block) keeps the last-known-good universe. With
+  // no resolver installed (the frozen ctor) this is a no-op and the run is
+  // bit-identical to pre-C1 — the reproducibility golden is unaffected.
+  if (pit_resolver_) {
+    Result<DispersionUniverse> pit = pit_resolver_(base.ts_ns());
+    if (pit) {
+      universe_ = std::move(*pit);
+    }
+  }
+  // X3 DRAWDOWN HALT. Armed by the run seam once it has seen the NAV track (a
+  // strategy is never shown its own NAV by the engine). Once halted we open no
+  // further risk; the existing book is left untouched and simply ages out.
+  if (step_index >= halt_from_step_) {
+    if (!halted_) {
+      halted_ = true;
+      risk_events_.push_back(RiskEvent{step_index, RiskBreachReason::DrawdownStop,
+                                       RiskBreachAction::Halt, limits_.drawdown_stop, 0.0, 0.0});
+    }
+    last_risk_scale_ = 0.0;
+    last_risk_reason_ = RiskBreachReason::DrawdownStop;
+    return Ok();
+  }
+  if (halted_) {
+    return Ok();
+  }
+
+  const LifecycleDecision d = lifecycle_decide(lifecycle_, step_index, book.lots.empty(),
+                                               base.ts_ns(), front_expiry_, have_front_);
+  if (!d.open) {
+    return Ok();
+  }
+
+  // Decide the WHOLE no-trade question BEFORE mutating any state. Resolve + size
+  // first; only once `build_dispersion_book` has returned Ok is this a real trading
+  // step where the roll (`d.clear`) and the fresh lots may be applied. On any
+  // no-trade / abort path above the mutation below, `book.lots`, `have_front_`,
+  // `front_expiry_` and `cohort_counter_` are left EXACTLY as found — the documented
+  // no-trade contract. (Pre-fix this cleared the book at the top of the roll branch,
+  // so a no-trade roll step force-closed the held basket; see
+  // NoTradeOnRollDateLeavesBookIntact.)
+  //
+  // Bind the (possibly symbol-only) universe to THIS snapshot's uid scheme before
+  // sizing, so one authored universe works across every date of a corpus. Under
+  // DropRenormalize a name absent from the snapshot is dropped here (not fatal);
+  // an unresolved INDEX or an authoring bug is still a hard error.
+  Result<ResolvedUniverse> ru = resolve_universe_uids(
+      universe_, [&](std::string_view s) { return base.uid_of(s); }, cfg_.missing);
+  if (!ru) {
+    return Err(ru.error());
+  }
+
+  DispersionConfig effective_cfg = cfg_;
+  std::int64_t expiry = 0;
+  if (!effective_cfg.projected_maturity.has_value()) {
+    ATX_TRY(const CanonicalTenor canonical, canonical_tenor(base.ts_ns(), effective_cfg.target_T));
+    if (price_options != nullptr) {
+      effective_cfg.target_T = canonical.T;
+    }
+    expiry = canonical.expiry_ts_ns;
+  }
+
+  Result<DispersionBook> built = [&]() {
+    ATX_VOL_PROFILE_SCOPE(StrategyBuildBook);
+    return price_options == nullptr
+               ? build_dispersion_book(ru->universe, base.set(), effective_cfg)
+               : build_dispersion_book(ru->universe, base.set(), effective_cfg, *price_options);
+  }();
+  if (!built) {
+    // NO-TRADE CONTRACT: under DropRenormalize an Unavailable book means too few
+    // names survived today => a flat / no-trade step. Open no lots, leave the
+    // existing book untouched, and continue. Any other code stays fatal.
+    if (cfg_.missing.policy == MissingNamePolicy::DropRenormalize &&
+        built.error().code() == ErrorCode::Unavailable) {
+      // A2 follow-up: mirrors DeclarativeStrategy's identically-named counter
+      // for the identically-shaped no-trade contract (see IStrategy::
+      // n_steps_entry_skipped's doc — every no-trade strategy must track this).
+      ++n_steps_entry_skipped_;
+      return Ok();
+    }
+    return Err(built.error());
+  }
+
+  // The build succeeded: this is a real trading step. NOW apply the roll (erase the
+  // prior cohort) and open the fresh lots. Applying `d.clear` here — after the build,
+  // not before — is what keeps a no-trade roll step from force-closing the held book.
+  if (built->entry_marks.size() != built->positions.size()) {
+    return Err(ErrorCode::Internal, "DispersionStrategy: entry mark count mismatch");
+  }
+  if (price_options != nullptr && built->entry_risk_seeds.size() != built->positions.size()) {
+    return Err(ErrorCode::Internal, "DispersionStrategy: entry seed count mismatch");
+  }
+  if (price_options == nullptr && !built->entry_risk_seeds.empty()) {
+    return Err(ErrorCode::Internal, "DispersionStrategy: legacy builder produced entry seeds");
+  }
+  if (built->positions.size() >
+      static_cast<std::size_t>(std::numeric_limits<std::uint64_t>::max() - next_lot_id)) {
+    return Err(ErrorCode::OutOfRange, "DispersionStrategy: lot id range overflow");
+  }
+  const std::int64_t projected_expiry = built->index_leg.call_definition.expiry_ts_ns;
+  if (projected_expiry != 0) {
+    expiry = projected_expiry;
+  }
+  if (expiry <= base.ts_ns()) {
+    return Err(ErrorCode::Internal, "DispersionStrategy: nonpositive entry expiry");
+  }
+
+  // X3 PRE-COMMIT RISK GATE. The book is sized but NOT yet in the portfolio, so
+  // this still runs before any risk is taken. Under the default (all-zero =
+  // unlimited) limits `any_sizing_limit()` is false and this whole block is
+  // skipped — the golden path never even measures.
+  double risk_scale = 1.0;
+  if (limits_.any_sizing_limit()) {
+    const RiskProbe probe = measure_book(*built, built->entry_marks, effective_cfg.multiplier);
+    const BindingLimit binding = binding_limit(probe, limits_);
+    if (binding.reason != RiskBreachReason::None) {
+      const bool halt = limits_.action == RiskBreachAction::Halt;
+      risk_scale = halt ? 0.0 : binding.scale;
+      risk_events_.push_back(RiskEvent{step_index, binding.reason, limits_.action, binding.limit,
+                                       binding.requested, risk_scale});
+      last_risk_scale_ = risk_scale;
+      last_risk_reason_ = binding.reason;
+      if (halt) {
+        // Halt means "take no more risk", not "liquidate": the held book is left
+        // exactly as found (the no-trade contract) and no new cohort is opened.
+        halted_ = true;
+        return Ok();
+      }
+    }
+  }
+
+  const std::uint32_t cohort = cohort_counter_;
+  std::vector<Lot> replacement;
+  replacement.reserve(built->positions.size());
+  std::uint64_t staged_next_lot_id = next_lot_id;
+  {
+    ATX_VOL_PROFILE_SCOPE(StrategyEntryMarks);
+    for (std::size_t i = 0; i < built->positions.size(); ++i) {
+      const Position &p = built->positions[i];
+      Lot lot;
+      lot.id = staged_next_lot_id++;
+      lot.contract = p.contract;
+      lot.qty = risk_scale == 1.0 ? p.qty : p.qty * risk_scale;
+      lot.multiplier = p.multiplier;
+      lot.expiry_ts_ns = expiry;
+      lot.cohort = cohort;
+      lot.entry_price = built->entry_marks[i];
+      replacement.push_back(lot);
+    }
+  }
+
+  if (d.clear) {
+    book.lots = std::move(replacement);
+  } else {
+    book.lots.reserve(book.lots.size() + replacement.size());
+    for (Lot &lot : replacement) {
+      book.lots.push_back(std::move(lot));
+    }
+  }
+  next_lot_id = staged_next_lot_id;
+  ++cohort_counter_;
+  front_expiry_ = expiry;
+  have_front_ = true;
+  last_entry_seeds_ = std::move(built->entry_risk_seeds);
+  return Ok();
+}
+
+std::vector<std::pair<std::string, double>>
+DispersionStrategy::signals(const MarketSnapshot &base) const {
+  // X3. Risk telemetry is emitted EXACTLY when a limit is configured. That
+  // conditionality is deliberate: signals become columns in the persisted track,
+  // so emitting these unconditionally would change the pinned golden's schema.
+  // With limits configured, every clamp and every halt lands in the output —
+  // `risk_clamp_scale` < 1 marks a clamped step, 0 marks a suppressed one, and
+  // `risk_breach_reason` names which limit bound (see `to_string`).
+  std::vector<std::pair<std::string, double>> risk;
+  if (limits_.any()) {
+    risk.emplace_back("risk_clamp_scale", last_risk_scale_);
+    risk.emplace_back("risk_breach_reason", static_cast<double>(last_risk_reason_));
+  }
+  if (!cfg_.record_diagnostics) {
+    return risk;
+  }
+  const Result<ResolvedUniverse> ru = resolve_universe_uids(
+      universe_, [&](std::string_view s) { return base.uid_of(s); }, cfg_.missing);
+  if (!ru) {
+    return risk; // universe can't bind (index missing / authoring bug): no signal, as pre-S1-3
+  }
+  const double n_resolve_dropped = static_cast<double>(ru->dropped.size());
+  const Result<DispersionSignal> sig =
+      dispersion_signal(ru->universe, base.set(), cfg_.target_T, cfg_.missing);
+  if (!sig) {
+    // No tradeable signal this snapshot (e.g. too few survivors => Unavailable):
+    // emit implied_corr as NaN but still surface the drops we know about, so the
+    // series stay full-length and the drop shows up in the run diagnostics.
+    risk.emplace_back("implied_corr", std::numeric_limits<double>::quiet_NaN());
+    risk.emplace_back("n_names_dropped", n_resolve_dropped);
+    // Keep the diagnostic block a FIXED width regardless of tradeability, so the
+    // persisted columns stay aligned across dates.
+    risk.emplace_back("corr_vega", std::numeric_limits<double>::quiet_NaN());
+    risk.emplace_back("corr_gamma", std::numeric_limits<double>::quiet_NaN());
+    return risk;
+  }
+  risk.emplace_back("implied_corr", sig->implied_corr);
+  risk.emplace_back("n_names_dropped",
+                    n_resolve_dropped + static_cast<double>(sig->dropped.size()));
+  // X4 CORRELATION GAMMA. A vega-neutral dispersion book is short correlation
+  // CONVEXITY, not correlation-flat — the exposure the headline implied-corr
+  // signal cannot show. The book's rho sensitivity runs entirely through the
+  // index leg, so both derivatives follow from the signal plus that leg's
+  // signed dollar vega.
+  //
+  // UNIT (FIX-E C-1). `correlation_vega`/`correlation_gamma` multiply
+  // `d sigma_idx / d rho`, which is per UNIT vol per unit rho, so the argument
+  // must be the index leg's dollar vega per UNIT vol. Since E1 `target_vega` is
+  // read as dollars per VOL POINT, and the leg the sizing actually builds
+  // carries
+  //
+  //     straddle_vega * |straddle_qty| * multiplier
+  //         == target_vega / kVegaPerVolPoint          (== 100 * target_vega)
+  //
+  // — the identity `ProjectedAndListedRoutesAgreeOnVegaUnit` pins. Passing
+  // `target_vega` raw therefore understated BOTH persisted telemetry columns by
+  // exactly 100x. Divide by `kVegaPerVolPoint` to get back to per-unit-vol
+  // dollars. Derived from the config rather than from the book because
+  // `signals` runs on every step, including steps that open no book; the
+  // equality with the built book is asserted by
+  // `Strategy.DispersionCorrelationTelemetryMatchesTheBuiltBook`.
+  const double index_signed_vega =
+      (cfg_.side == DispersionSide::ShortIndexLongNames ? -1.0 : 1.0) * cfg_.target_vega /
+      kVegaPerVolPoint;
+  risk.emplace_back("corr_vega", correlation_vega(*sig, index_signed_vega));
+  risk.emplace_back("corr_gamma", correlation_gamma(*sig, index_signed_vega, sig->T_used));
+  return risk;
+}
+
+Result<DispersionBook> DispersionStrategy::build_book(const MarketSnapshot &base) const {
+  const Result<ResolvedUniverse> ru = resolve_universe_uids(
+      universe_, [&](std::string_view s) { return base.uid_of(s); }, cfg_.missing);
+  if (!ru) {
+    return Err(ru.error());
+  }
+  return build_dispersion_book(ru->universe, base.set(), cfg_);
+}
+
+std::vector<DroppedName> DispersionStrategy::dropped_on(const MarketSnapshot &base) const {
+  std::vector<DroppedName> out;
+  const Result<ResolvedUniverse> ru = resolve_universe_uids(
+      universe_, [&](std::string_view s) { return base.uid_of(s); }, cfg_.missing);
+  if (!ru) {
+    return out; // universe can't bind: no per-name drop list
+  }
+  out = ru->dropped; // resolve-stage drops (symbol absent from the snapshot)
+  const Result<DispersionSignal> sig =
+      dispersion_signal(ru->universe, base.set(), cfg_.target_T, cfg_.missing);
+  if (sig) {
+    for (const DroppedName &d : sig->dropped) { // signal-stage drops (surface / unusable)
+      out.push_back(d);
+    }
+  }
+  return out;
+}
+
+} // namespace atx::vol

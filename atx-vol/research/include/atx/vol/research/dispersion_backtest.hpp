@@ -8,10 +8,10 @@
 #include <string_view>
 #include <vector>
 
-#include "atx/vol/backtest.hpp"
-#include "atx/vol/dispersion.hpp"
+#include "atx/vol/api/backtest/backtest.hpp"
+#include "atx/vol/api/backtest/dispersion.hpp"
 #include "atx/vol/research/dispersion_workflow.hpp" // UniverseRow (point-in-time schedule)
-#include "atx/vol/strategy.hpp"
+#include "atx/vol/api/backtest/strategy.hpp"
 
 namespace atx::vol {
 

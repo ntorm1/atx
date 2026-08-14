@@ -32,18 +32,18 @@
 #include <vector>
 
 #include "atx/core/error.hpp"                  // ErrorCode
-#include "atx/vol/american.hpp"                // al_fast_opts, AmericanMethod
-#include "atx/vol/backtest.hpp"                // SwapLot, PortfolioState, MarketSnapshot
-#include "atx/vol/derivatives.hpp"             // DerivContract, DerivKind, RealizedVarianceSpec
-#include "atx/vol/detail/deriv_ref_bridge.hpp" // detail::deriv_price_on_ref, deriv_greeks_on_ref
-#include "atx/vol/portfolio_pricer.hpp" // kNsPerYear
-#include "atx/vol/priced_surface.hpp"   // PricedSurface, PricingContext
-#include "atx/vol/surface_archive.hpp"  // write_surface_archive_v2_file
-#include "atx/vol/surface_parity.hpp"   // SliceContext
-#include "atx/vol/swap_leg.hpp"         // swap_contract_for_lot, SwapSignalProbe
-#include "atx/vol/types.hpp"            // Result, Status
-#include "atx/vol/vol_curve.hpp"        // CurveSurface, EssviCurve
-#include "atx/vol/vol_surface.hpp"      // EssviParams
+#include "atx/vol/api/pricing/american.hpp"                // al_fast_opts, AmericanMethod
+#include "atx/vol/api/backtest/backtest.hpp"                // SwapLot, PortfolioState, MarketSnapshot
+#include "atx/vol/api/pricing/derivatives.hpp"             // DerivContract, DerivKind, RealizedVarianceSpec
+#include "pricing/deriv_ref_bridge.hpp" // detail::deriv_price_on_ref, deriv_greeks_on_ref
+#include "atx/vol/api/backtest/portfolio_pricer.hpp" // kNsPerYear
+#include "atx/vol/api/backtest/priced_surface.hpp"   // PricedSurface, PricingContext
+#include "atx/vol/api/storage/surface_archive.hpp"  // write_surface_archive_v2_file
+#include "atx/vol/api/fitting/surface_parity.hpp"   // SliceContext
+#include "atx/vol/api/pricing/swap_leg.hpp"         // swap_contract_for_lot, SwapSignalProbe
+#include "atx/vol/api/core/types.hpp"            // Result, Status
+#include "atx/vol/api/fitting/vol_curve.hpp"        // CurveSurface, EssviCurve
+#include "atx/vol/api/fitting/vol_surface.hpp"      // EssviParams
 
 using namespace atx::vol;
 namespace fs = std::filesystem;

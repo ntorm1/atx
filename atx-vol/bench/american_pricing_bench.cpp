@@ -42,9 +42,9 @@
 
 #include <benchmark/benchmark.h>
 
-#include "atx/vol/american.hpp"
-#include "atx/vol/correction.hpp"
-#include "atx/vol/types.hpp"
+#include "atx/vol/api/pricing/american.hpp"
+#include "atx/vol/api/fitting/correction.hpp"
+#include "atx/vol/api/core/types.hpp"
 
 #include "bench_util.hpp"
 

@@ -8,13 +8,13 @@
 #include <utility>
 #include <vector>
 
-#include "atx/vol/arb.hpp"          // arb_check_butterfly_svi_mm
-#include "atx/vol/black76.hpp"      // black76_price, black76_value_and_vega
-#include "atx/vol/calib.hpp"        // FitObs, CalibOpts, calib_default_opts
-#include "atx/vol/rates_curve.hpp"  // CurveSet, ForwardPoint
-#include "atx/vol/svi_calib.hpp"    // fitters + JW conversions
-#include "atx/vol/universe.hpp"     // Underlying, Chain, chain_index
-#include "atx/vol/vol_surface.hpp"  // VolSurface, SviParams, Parametrization
+#include "atx/vol/api/fitting/arb.hpp"          // arb_check_butterfly_svi_mm
+#include "atx/vol/api/pricing/black76.hpp"      // black76_price, black76_value_and_vega
+#include "atx/vol/api/fitting/calib.hpp"        // FitObs, CalibOpts, calib_default_opts
+#include "atx/vol/api/pricing/rates_curve.hpp"  // CurveSet, ForwardPoint
+#include "fitting/svi_calib.hpp"    // fitters + JW conversions
+#include "atx/vol/api/marketdata/universe.hpp"     // Underlying, Chain, chain_index
+#include "atx/vol/api/fitting/vol_surface.hpp"  // VolSurface, SviParams, Parametrization
 
 // Coverage for the per-slice raw-SVI calibrators (svi_calib.hpp), ported
 // alongside the C ats-vol quasi-explicit SVI fitter (test_calibrate_svi.c) and

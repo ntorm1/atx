@@ -17,7 +17,7 @@
 #include <system_error>
 #include <vector>
 
-#include "atx/vol/analytics.hpp"
+#include "atx/vol/api/analytics/analytics.hpp"
 
 namespace atx::vol {
 namespace {

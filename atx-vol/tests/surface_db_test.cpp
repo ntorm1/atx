@@ -16,13 +16,13 @@
 #include <utility>
 #include <vector>
 
-#include "atx/vol/black76.hpp"
-#include "atx/vol/calib.hpp"
-#include "atx/vol/dense_slice.hpp"
-#include "atx/vol/detail/archive_util.hpp" // crc32c (test-side CRC repair)
-#include "atx/vol/priced_surface.hpp"
-#include "atx/vol/surface_db.hpp"
-#include "atx/vol/vol_curve.hpp"
+#include "atx/vol/api/pricing/black76.hpp"
+#include "atx/vol/api/fitting/calib.hpp"
+#include "atx/vol/api/fitting/dense_slice.hpp"
+#include "storage/archive_util.hpp" // crc32c (test-side CRC repair)
+#include "atx/vol/api/backtest/priced_surface.hpp"
+#include "atx/vol/api/storage/surface_db.hpp"
+#include "atx/vol/api/fitting/vol_curve.hpp"
 
 // ATXVDB v1 manifest suite. First: on-disk record layout pinning,
 // writer/parser round-trip (every SymbolFitConfig field preserved

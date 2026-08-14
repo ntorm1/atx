@@ -33,19 +33,19 @@
 #include <utility>
 #include <vector>
 
-#include "atx/vol/american.hpp"         // AmericanGreeks
-#include "atx/vol/chain.hpp"            // OptionChain
-#include "atx/vol/data.hpp"             // iso_to_ns, year_fraction
-#include "atx/vol/dispersion.hpp"       // DispersionUniverse, dispersion_signal, ...
-#include "atx/vol/market_env.hpp"       // MarketEnv
-#include "atx/vol/panel.hpp"            // make_synthetic_american_panel, SynthPanelSpec
-#include "atx/vol/portfolio_pricer.hpp" // Portfolio, SurfaceSet, PortfolioPricer
-#include "atx/vol/priced_surface.hpp"   // PricedSurface, SliceContext
-#include "atx/vol/pricer_fitter.hpp"    // PricerFitter, PricerConfig
-#include "atx/vol/s3.hpp"               // S3Params
-#include "atx/vol/session.hpp"          // VolaSession::to_priced_surface
-#include "atx/vol/surface_parity.hpp"   // SliceContext
-#include "atx/vol/types.hpp"            // Side, ErrorCode
+#include "atx/vol/api/pricing/american.hpp"         // AmericanGreeks
+#include "atx/vol/api/core/chain.hpp"            // OptionChain
+#include "atx/vol/api/marketdata/data.hpp"             // iso_to_ns, year_fraction
+#include "atx/vol/api/backtest/dispersion.hpp"       // DispersionUniverse, dispersion_signal, ...
+#include "atx/vol/api/core/market_env.hpp"       // MarketEnv
+#include "atx/vol/api/backtest/panel.hpp"            // make_synthetic_american_panel, SynthPanelSpec
+#include "atx/vol/api/backtest/portfolio_pricer.hpp" // Portfolio, SurfaceSet, PortfolioPricer
+#include "atx/vol/api/backtest/priced_surface.hpp"   // PricedSurface, SliceContext
+#include "atx/vol/api/fitting/pricer_fitter.hpp"    // PricerFitter, PricerConfig
+#include "atx/vol/api/storage/s3.hpp"               // S3Params
+#include "atx/vol/api/fitting/session.hpp"          // VolaSession::to_priced_surface
+#include "atx/vol/api/fitting/surface_parity.hpp"   // SliceContext
+#include "atx/vol/api/core/types.hpp"            // Side, ErrorCode
 
 using namespace atx::vol;
 

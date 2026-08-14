@@ -92,20 +92,20 @@
 #include <utility>
 #include <vector>
 
-#include "atx/vol/backtest.hpp"         // Clock
-#include "atx/vol/breakeven.hpp"        // BevDayState/Spec/Job/LabelFrame, solve_breakeven_batch,
+#include "atx/vol/api/backtest/backtest.hpp"         // Clock
+#include "analytics/breakeven.hpp"        // BevDayState/Spec/Job/LabelFrame, solve_breakeven_batch,
                                         // load_bev_path, BevExpirySnap
-#include "atx/vol/event_vol.hpp"        // EventSchedule, count_events_at
-#include "atx/vol/portfolio_pricer.hpp" // kNsPerYear, SurfaceRef
-#include "atx/vol/priced_surface.hpp"   // PricedSurface
-#include "atx/vol/rates_curve.hpp"      // DividendEvent
-#include "atx/vol/realized_vol.hpp"     // OhlcBar, RvEstimator, RvPanel, realized_vol_panel
-#include "atx/vol/strategy.hpp"         // resolve_strike_by_delta
-#include "atx/vol/surface_archive.hpp"  // SurfaceArchiveV2
-#include "atx/vol/surface_db.hpp"       // SurfaceDb
-#include "atx/vol/surface_parity.hpp"   // SliceContext
-#include "atx/vol/theo.hpp"             // kFairVolFeatureCount, kFairVolFeatureSchemaV1
-#include "atx/vol/types.hpp"            // Result, Status, Side, ErrorCode
+#include "atx/vol/api/analytics/event_vol.hpp"        // EventSchedule, count_events_at
+#include "atx/vol/api/backtest/portfolio_pricer.hpp" // kNsPerYear, SurfaceRef
+#include "atx/vol/api/backtest/priced_surface.hpp"   // PricedSurface
+#include "atx/vol/api/pricing/rates_curve.hpp"      // DividendEvent
+#include "analytics/realized_vol.hpp"     // OhlcBar, RvEstimator, RvPanel, realized_vol_panel
+#include "atx/vol/api/backtest/strategy.hpp"         // resolve_strike_by_delta
+#include "atx/vol/api/storage/surface_archive.hpp"  // SurfaceArchiveV2
+#include "atx/vol/api/storage/surface_db.hpp"       // SurfaceDb
+#include "atx/vol/api/fitting/surface_parity.hpp"   // SliceContext
+#include "pricing/theo.hpp"             // kFairVolFeatureCount, kFairVolFeatureSchemaV1
+#include "atx/vol/api/core/types.hpp"            // Result, Status, Side, ErrorCode
 
 using namespace atx::vol;
 using atx::core::Err;

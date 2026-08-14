@@ -37,20 +37,20 @@
 #include <string_view>
 #include <vector>
 
-#include "atx/vol/american.hpp"            // al_fast_opts, AmericanMethod
-#include "atx/vol/backtest.hpp"            // Clock, MarketSnapshot, run_backtest, RunConfig
-#include "atx/vol/dispersion.hpp"          // MissingNamePolicy, MissingNameSpec
-#include "atx/vol/dispersion_strangle.hpp" // DispersionStrangleConfig, make_dispersion_strangle_spec
-#include "atx/vol/priced_surface.hpp"      // PricedSurface, PricingContext
+#include "atx/vol/api/pricing/american.hpp"            // al_fast_opts, AmericanMethod
+#include "atx/vol/api/backtest/backtest.hpp"            // Clock, MarketSnapshot, run_backtest, RunConfig
+#include "atx/vol/api/backtest/dispersion.hpp"          // MissingNamePolicy, MissingNameSpec
+#include "atx/vol/api/backtest/dispersion_strangle.hpp" // DispersionStrangleConfig, make_dispersion_strangle_spec
+#include "atx/vol/api/backtest/priced_surface.hpp"      // PricedSurface, PricingContext
 #include "atx/vol/tools/run_report.hpp"          // MetaKv, write_* emitters
-#include "atx/vol/strategy.hpp"            // DeclarativeStrategy, resolve_spec_with_policy
-#include "atx/vol/surface_archive.hpp"     // SurfaceArchiveItem
-#include "atx/vol/surface_db.hpp"          // SurfaceDb
-#include "atx/vol/surface_parity.hpp"      // SliceContext
+#include "atx/vol/api/backtest/strategy.hpp"            // DeclarativeStrategy, resolve_spec_with_policy
+#include "atx/vol/api/storage/surface_archive.hpp"     // SurfaceArchiveItem
+#include "atx/vol/api/storage/surface_db.hpp"          // SurfaceDb
+#include "atx/vol/api/fitting/surface_parity.hpp"      // SliceContext
 #include "atx/vol/tools/tearsheet.hpp"           // TearSheet, tearsheet
-#include "atx/vol/types.hpp"               // Result, ErrorCode
-#include "atx/vol/vol_curve.hpp"           // CurveSurface, EssviCurve
-#include "atx/vol/vol_surface.hpp"         // EssviParams
+#include "atx/vol/api/core/types.hpp"               // Result, ErrorCode
+#include "atx/vol/api/fitting/vol_curve.hpp"           // CurveSurface, EssviCurve
+#include "atx/vol/api/fitting/vol_surface.hpp"         // EssviParams
 
 using namespace atx::vol;
 namespace fs = std::filesystem;

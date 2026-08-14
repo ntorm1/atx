@@ -10,9 +10,9 @@
 // owes the scalar loop BIT-identity, not a tolerance: a position's P&L must not
 // depend on the dispatched route or on its index within the batch (item 2.6).
 
-#include "atx/vol/simd/pnl_batch.hpp"
+#include "simd/pnl_batch.hpp"
 
-#include "atx/vol/simd/cpu.hpp"
+#include "atx/vol/api/simd/cpu.hpp"
 
 #include <cmath>
 #include <cstddef>

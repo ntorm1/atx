@@ -9,10 +9,10 @@
 // derives are the speedup evidence. A one-shot max-abs cross-check is surfaced as
 // a label so the run also documents that the two agree.
 
-#include "atx/vol/simd/essvi_batch.hpp"
+#include "simd/essvi_batch.hpp"
 
-#include "atx/vol/simd/cpu.hpp"
-#include "atx/vol/vol_surface.hpp"
+#include "atx/vol/api/simd/cpu.hpp"
+#include "atx/vol/api/fitting/vol_surface.hpp"
 
 #include <algorithm>
 #include <array>

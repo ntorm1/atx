@@ -14,10 +14,10 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
-#include "atx/vol/dispersion.hpp"
-#include "atx/vol/dispersion_strangle.hpp"
-#include "atx/vol/strategy.hpp"
-#include "atx/vol/universe.hpp"
+#include "atx/vol/api/backtest/dispersion.hpp"
+#include "atx/vol/api/backtest/dispersion_strangle.hpp"
+#include "atx/vol/api/backtest/strategy.hpp"
+#include "atx/vol/api/marketdata/universe.hpp"
 #include "result.hpp"
 
 namespace py = pybind11;

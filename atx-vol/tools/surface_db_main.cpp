@@ -197,13 +197,13 @@
 #include <string_view>
 #include <vector>
 
-#include "atx/vol/session.hpp"               // FitPreset
-#include "atx/vol/surface_db.hpp"            // SurfaceDb
+#include "atx/vol/api/fitting/session.hpp"               // FitPreset
+#include "atx/vol/api/storage/surface_db.hpp"            // SurfaceDb
 #include "atx/vol/tools/surface_db_admin.hpp"      // describe_*, query_surface, verify_db
 #include "atx/vol/tools/surface_db_exit_codes.hpp" // kSurfaceDbVerifyExit* (shared with the build CLI)
-#include "atx/vol/surface_policy.hpp"        // to_string(SurfacePurpose/FitQualityMode/SurfaceState)
-#include "atx/vol/types.hpp"                 // Result, Status
-#include "atx/vol/vol_curve.hpp"             // to_string(VolCurveKind)
+#include "atx/vol/api/fitting/surface_policy.hpp"        // to_string(SurfacePurpose/FitQualityMode/SurfaceState)
+#include "atx/vol/api/core/types.hpp"                 // Result, Status
+#include "atx/vol/api/fitting/vol_curve.hpp"             // to_string(VolCurveKind)
 
 using namespace atx::vol;
 

@@ -1,4 +1,4 @@
-#include "atx/vol/backtest_db.hpp"
+#include "storage/backtest_db.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -12,7 +12,7 @@
 
 #include <gtest/gtest.h>
 
-#include "atx/vol/detail/backtest_series_columns.hpp"
+#include "backtest/backtest_series_columns.hpp"
 
 namespace atx::vol {
 namespace {

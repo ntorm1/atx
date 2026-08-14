@@ -24,9 +24,9 @@
 
 #include <gtest/gtest.h>
 
-#include "atx/vol/backtest.hpp"             // BacktestResult
-#include "atx/vol/track_key.hpp"   // TrackKey
-#include "atx/vol/track_store.hpp" // TrackStore, TrackMeta, compact
+#include "atx/vol/api/backtest/backtest.hpp"             // BacktestResult
+#include "storage/track_key.hpp"   // TrackKey
+#include "storage/track_store.hpp" // TrackStore, TrackMeta, compact
 
 using namespace atx::vol;
 namespace fs = std::filesystem;

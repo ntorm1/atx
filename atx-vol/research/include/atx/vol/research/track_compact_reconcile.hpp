@@ -59,8 +59,8 @@
 #include <cstdint>
 #include <string_view>
 
-#include "atx/vol/catalog.hpp" // Catalog, TrackStatus
-#include "atx/vol/types.hpp"            // Result
+#include "marketdata/catalog.hpp" // Catalog, TrackStatus
+#include "atx/vol/api/core/types.hpp"            // Result
 
 namespace atx::vol {
 

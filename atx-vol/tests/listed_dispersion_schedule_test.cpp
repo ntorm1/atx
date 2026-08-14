@@ -9,14 +9,14 @@
 #include <vector>
 
 #include "atx/core/error.hpp"
-#include "atx/vol/american.hpp"
-#include "atx/vol/detail/counters.hpp"
-#include "atx/vol/dispersion.hpp"
-#include "atx/vol/listed_dispersion.hpp"
-#include "atx/vol/listed_dispersion_schedule.hpp"
-#include "atx/vol/priced_surface.hpp"
-#include "atx/vol/surface_parity.hpp"
-#include "atx/vol/vol_curve.hpp"
+#include "atx/vol/api/pricing/american.hpp"
+#include "fitting/counters.hpp"
+#include "atx/vol/api/backtest/dispersion.hpp"
+#include "atx/vol/api/backtest/listed_dispersion.hpp"
+#include "atx/vol/api/backtest/listed_dispersion_schedule.hpp"
+#include "atx/vol/api/backtest/priced_surface.hpp"
+#include "atx/vol/api/fitting/surface_parity.hpp"
+#include "atx/vol/api/fitting/vol_curve.hpp"
 
 using namespace atx::vol;
 

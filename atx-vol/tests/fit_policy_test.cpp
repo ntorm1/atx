@@ -5,8 +5,8 @@
 #include <string>
 #include <vector>
 
-#include "atx/vol/fit_policy.hpp"
-#include "atx/vol/universe.hpp"
+#include "atx/vol/api/fitting/fit_policy.hpp"
+#include "atx/vol/api/marketdata/universe.hpp"
 
 namespace {
 

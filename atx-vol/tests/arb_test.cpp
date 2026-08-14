@@ -11,11 +11,11 @@
 #include <utility>
 #include <vector>
 
-#include "atx/vol/arb.hpp"
+#include "atx/vol/api/fitting/arb.hpp"
 
-#include "atx/vol/black76.hpp"
-#include "atx/vol/dense_slice.hpp"
-#include "atx/vol/vol_curve.hpp"
+#include "atx/vol/api/pricing/black76.hpp"
+#include "atx/vol/api/fitting/dense_slice.hpp"
+#include "atx/vol/api/fitting/vol_curve.hpp"
 
 // Coverage for the static-arbitrage validators (arb.hpp), ported from the C
 // ats-vol library (ats_arb.c). Calendar / butterfly checks, SVI-MM

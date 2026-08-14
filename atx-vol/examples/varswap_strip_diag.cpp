@@ -21,12 +21,12 @@
 #include <vector>
 
 #include "atx/core/error.hpp"
-#include "atx/vol/backtest.hpp"        // Clock, SnapshotRef
-#include "atx/vol/derivatives.hpp"     // var_swap_fair_strike, DerivConfig
-#include "atx/vol/priced_surface.hpp"  // PricedSurface
-#include "atx/vol/surface_archive.hpp" // SurfaceArchiveV2
-#include "atx/vol/surface_db.hpp"      // SurfaceDb
-#include "atx/vol/types.hpp"
+#include "atx/vol/api/backtest/backtest.hpp"        // Clock, SnapshotRef
+#include "atx/vol/api/pricing/derivatives.hpp"     // var_swap_fair_strike, DerivConfig
+#include "atx/vol/api/backtest/priced_surface.hpp"  // PricedSurface
+#include "atx/vol/api/storage/surface_archive.hpp" // SurfaceArchiveV2
+#include "atx/vol/api/storage/surface_db.hpp"      // SurfaceDb
+#include "atx/vol/api/core/types.hpp"
 
 using namespace atx::vol;
 

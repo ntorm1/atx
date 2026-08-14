@@ -60,14 +60,14 @@
 
 #include <benchmark/benchmark.h>
 
-#include "atx/vol/american.hpp"
-#include "atx/vol/types.hpp"
+#include "atx/vol/api/pricing/american.hpp"
+#include "atx/vol/api/core/types.hpp"
 
 // Real-OPRA harvest (optional; falls back to a representative grid when the
 // parquet fixture is absent). Same testkit fixtures every tests/*.cpp and the
 // fitting bench use; ../tests is on this target's PRIVATE include path (CMake).
-#include "atx/vol/session.hpp"   // VolaSession, make_session_inputs, FitPreset
-#include "atx/vol/universe.hpp"  // Underlying
+#include "atx/vol/api/fitting/session.hpp"   // VolaSession, make_session_inputs, FitPreset
+#include "atx/vol/api/marketdata/universe.hpp"  // Underlying
 #include "support/spy_fit_fixture.hpp" // load_spy_fit_fixture, kSpyFitFixtures
 
 #include "bench_util.hpp"

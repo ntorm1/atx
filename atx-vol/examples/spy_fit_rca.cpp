@@ -14,15 +14,15 @@
 #include <string_view>
 #include <vector>
 
-#include "atx/vol/chain.hpp"
-#include "atx/vol/corpus.hpp"
-#include "atx/vol/fit_policy.hpp"
-#include "atx/vol/opra_batch.hpp"
-#include "atx/vol/pricer_fitter.hpp"
-#include "atx/vol/profile.hpp"
-#include "atx/vol/session.hpp"
-#include "atx/vol/surface_db.hpp"
-#include "atx/vol/vol_curve.hpp"
+#include "atx/vol/api/core/chain.hpp"
+#include "atx/vol/api/marketdata/corpus.hpp"
+#include "atx/vol/api/fitting/fit_policy.hpp"
+#include "atx/vol/api/marketdata/opra_batch.hpp"
+#include "atx/vol/api/fitting/pricer_fitter.hpp"
+#include "atx/vol/api/fitting/profile.hpp"
+#include "atx/vol/api/fitting/session.hpp"
+#include "atx/vol/api/storage/surface_db.hpp"
+#include "atx/vol/api/fitting/vol_curve.hpp"
 
 using namespace atx::vol;
 

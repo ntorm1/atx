@@ -25,13 +25,13 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
-#include "atx/vol/backtest.hpp"
-#include "atx/vol/dispersion.hpp"
+#include "atx/vol/api/backtest/backtest.hpp"
+#include "atx/vol/api/backtest/dispersion.hpp"
 #include "atx/vol/research/dispersion_backtest.hpp"
 #include "atx/vol/research/dispersion_workflow.hpp"
-#include "atx/vol/listed_dispersion_schedule.hpp"
-#include "atx/vol/listed_dispersion_strategy.hpp"
-#include "atx/vol/strategy.hpp"
+#include "atx/vol/api/backtest/listed_dispersion_schedule.hpp"
+#include "atx/vol/api/backtest/listed_dispersion_strategy.hpp"
+#include "atx/vol/api/backtest/strategy.hpp"
 #include "result.hpp"
 
 namespace py = pybind11;

@@ -4,11 +4,11 @@
 #include <span>
 #include <vector>
 
-#include "atx/vol/calib.hpp"
-#include "atx/vol/dense_slice.hpp"
-#include "atx/vol/types.hpp"
-#include "atx/vol/universe.hpp"
-#include "atx/vol/vol_curve.hpp"
+#include "atx/vol/api/fitting/calib.hpp"
+#include "atx/vol/api/fitting/dense_slice.hpp"
+#include "atx/vol/api/core/types.hpp"
+#include "atx/vol/api/marketdata/universe.hpp"
+#include "atx/vol/api/fitting/vol_curve.hpp"
 
 namespace atx::vol::spx_wilmott {
 

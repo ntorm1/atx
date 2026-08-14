@@ -1,4 +1,4 @@
-#include "atx/vol/adjusted_greeks.hpp"
+#include "atx/vol/api/pricing/adjusted_greeks.hpp"
 
 #include <cmath>
 #include <limits>
@@ -6,9 +6,9 @@
 
 #include <gtest/gtest.h>
 
-#include "atx/vol/greeks.hpp"
-#include "atx/vol/vol_curve.hpp"
-#include "atx/vol/vol_surface.hpp"
+#include "atx/vol/api/pricing/greeks.hpp"
+#include "atx/vol/api/fitting/vol_curve.hpp"
+#include "atx/vol/api/fitting/vol_surface.hpp"
 
 // Coverage for SpiderRock's skew-adjusted delta: Adjusted Delta = Delta +
 // VegaSlope * Vega, VegaSlope = (1 - omega) * (-dSigma/dk) / S. Test 2

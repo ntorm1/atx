@@ -17,11 +17,11 @@
 #include <string>
 #include <vector>
 
-#include "atx/vol/arb.hpp"
-#include "atx/vol/calib.hpp"
-#include "atx/vol/opra_panel.hpp"
-#include "atx/vol/session.hpp"
-#include "atx/vol/universe.hpp"
+#include "atx/vol/api/fitting/arb.hpp"
+#include "atx/vol/api/fitting/calib.hpp"
+#include "atx/vol/api/marketdata/opra_panel.hpp"
+#include "atx/vol/api/fitting/session.hpp"
+#include "atx/vol/api/marketdata/universe.hpp"
 
 using namespace atx::vol;
 

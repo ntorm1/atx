@@ -19,10 +19,10 @@
 
 #include <gtest/gtest.h>
 
-#include "atx/vol/pricer_fitter.hpp"
-#include "atx/vol/session.hpp"
-#include "atx/vol/surface_archive.hpp"
-#include "atx/vol/vol_curve.hpp"
+#include "atx/vol/api/fitting/pricer_fitter.hpp"
+#include "atx/vol/api/fitting/session.hpp"
+#include "atx/vol/api/storage/surface_archive.hpp"
+#include "atx/vol/api/fitting/vol_curve.hpp"
 #include "support/cached_artifacts.hpp"
 #include "support/opra_fixture.hpp"
 

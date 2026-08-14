@@ -6,14 +6,14 @@
 #include <memory>
 #include <vector>
 
-#include "atx/vol/american.hpp" // al_fast_opts, AmericanMethod
-#include "atx/vol/deriv_book.hpp"
-#include "atx/vol/derivatives.hpp" // deriv_greeks (PricedSurface overload) — the reference
-#include "atx/vol/portfolio_pricer.hpp"
-#include "atx/vol/priced_surface.hpp"    // PricedSurface, PricingContext
-#include "atx/vol/surface_parity.hpp"    // SliceContext
-#include "atx/vol/vol_curve.hpp"         // CurveSurface, EssviCurve
-#include "atx/vol/vol_surface.hpp"       // EssviParams
+#include "atx/vol/api/pricing/american.hpp" // al_fast_opts, AmericanMethod
+#include "atx/vol/api/backtest/deriv_book.hpp"
+#include "atx/vol/api/pricing/derivatives.hpp" // deriv_greeks (PricedSurface overload) — the reference
+#include "atx/vol/api/backtest/portfolio_pricer.hpp"
+#include "atx/vol/api/backtest/priced_surface.hpp"    // PricedSurface, PricingContext
+#include "atx/vol/api/fitting/surface_parity.hpp"    // SliceContext
+#include "atx/vol/api/fitting/vol_curve.hpp"         // CurveSurface, EssviCurve
+#include "atx/vol/api/fitting/vol_surface.hpp"       // EssviParams
 #include "support/analytics_fixture.hpp" // testkit::make_flat_surface (PricedSurface)
 
 // Task 9: DerivBook — portfolio-layer pricing of vol-derivative (swap) books

@@ -1,4 +1,4 @@
-#include "atx/vol/opra_panel.hpp"
+#include "atx/vol/api/marketdata/opra_panel.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -15,9 +15,9 @@
 
 #include "atx/core/io/parquet.hpp"
 #include "atx/core/io/parquet_writer.hpp"
-#include "atx/vol/data.hpp"      // year_fraction, find_expiry_inputs, ExpiryInputs
-#include "atx/vol/rates_curve.hpp"     // YieldCurve
-#include "atx/vol/vol_time.hpp"  // TimeSpec, TimeConvention, vol_time_years
+#include "atx/vol/api/marketdata/data.hpp"      // year_fraction, find_expiry_inputs, ExpiryInputs
+#include "atx/vol/api/pricing/rates_curve.hpp"     // YieldCurve
+#include "atx/vol/api/core/vol_time.hpp"  // TimeSpec, TimeConvention, vol_time_years
 
 // Loader/parser coverage for the OPRA cbbo-1m (NBBO) Parquet ingestion path.
 //

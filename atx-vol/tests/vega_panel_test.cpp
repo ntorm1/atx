@@ -36,13 +36,13 @@
 #include <string>
 #include <vector>
 
-#include "atx/vol/american.hpp"       // al_fast_opts, AmericanMethod
-#include "atx/vol/priced_surface.hpp" // PricedSurface, PricingContext
-#include "atx/vol/surface_parity.hpp" // SliceContext
-#include "atx/vol/types.hpp"          // Result, Side
-#include "atx/vol/vega_panel.hpp"
-#include "atx/vol/vol_curve.hpp"   // CurveSurface, EssviCurve
-#include "atx/vol/vol_surface.hpp" // EssviParams
+#include "atx/vol/api/pricing/american.hpp"       // al_fast_opts, AmericanMethod
+#include "atx/vol/api/backtest/priced_surface.hpp" // PricedSurface, PricingContext
+#include "atx/vol/api/fitting/surface_parity.hpp" // SliceContext
+#include "atx/vol/api/core/types.hpp"          // Result, Side
+#include "backtest/vega_panel.hpp"
+#include "atx/vol/api/fitting/vol_curve.hpp"   // CurveSurface, EssviCurve
+#include "atx/vol/api/fitting/vol_surface.hpp" // EssviParams
 
 using namespace atx::vol;
 

@@ -9,16 +9,16 @@
 #include <utility>
 #include <vector>
 
-#include "atx/vol/backtest.hpp"
-#include "atx/vol/corpus.hpp"
+#include "atx/vol/api/backtest/backtest.hpp"
+#include "atx/vol/api/marketdata/corpus.hpp"
 #include "atx/vol/research/listed_dispersion_reconciliation.hpp"
-#include "atx/vol/listed_dispersion_strategy.hpp"
-#include "atx/vol/portfolio_pricer.hpp"
-#include "atx/vol/priced_surface.hpp"
-#include "atx/vol/surface_archive.hpp"
-#include "atx/vol/surface_parity.hpp"
-#include "atx/vol/vol_curve.hpp"
-#include "atx/vol/vol_surface.hpp"
+#include "atx/vol/api/backtest/listed_dispersion_strategy.hpp"
+#include "atx/vol/api/backtest/portfolio_pricer.hpp"
+#include "atx/vol/api/backtest/priced_surface.hpp"
+#include "atx/vol/api/storage/surface_archive.hpp"
+#include "atx/vol/api/fitting/surface_parity.hpp"
+#include "atx/vol/api/fitting/vol_curve.hpp"
+#include "atx/vol/api/fitting/vol_surface.hpp"
 
 using namespace atx::vol;
 namespace fs = std::filesystem;

@@ -1,6 +1,6 @@
-#include "atx/vol/simd/cpu.hpp"
+#include "atx/vol/api/simd/cpu.hpp"
 
-#include "atx/vol/simd/math_mode.hpp"
+#include "simd/math_mode.hpp"
 
 #include <atomic>
 #include <cstddef> // std::size_t

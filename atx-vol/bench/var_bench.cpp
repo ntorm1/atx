@@ -36,17 +36,17 @@
 
 #include <benchmark/benchmark.h>
 
-#include "atx/vol/backtest.hpp"
-#include "atx/vol/corpus.hpp"
-#include "atx/vol/detail/pricing_executor.hpp"
-#include "atx/vol/dispersion.hpp"
-#include "atx/vol/dispersion_surface_db.hpp"
+#include "atx/vol/api/backtest/backtest.hpp"
+#include "atx/vol/api/marketdata/corpus.hpp"
+#include "pricing/pricing_executor.hpp"
+#include "atx/vol/api/backtest/dispersion.hpp"
+#include "storage/dispersion_surface_db.hpp"
 #include "atx/vol/research/dispersion_backtest.hpp"
-#include "atx/vol/strategy.hpp"
-#include "atx/vol/surface_db.hpp"
-#include "atx/vol/universe.hpp"
-#include "atx/vol/var.hpp"
-#include "atx/vol/var_report.hpp"
+#include "atx/vol/api/backtest/strategy.hpp"
+#include "atx/vol/api/storage/surface_db.hpp"
+#include "atx/vol/api/marketdata/universe.hpp"
+#include "analytics/var.hpp"
+#include "analytics/var_report.hpp"
 
 #include "bench_util.hpp"
 

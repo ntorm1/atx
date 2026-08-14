@@ -1,4 +1,4 @@
-#include "atx/vol/earnings_repro.hpp"
+#include "analytics/earnings_repro.hpp"
 
 #include <gtest/gtest.h>
 
@@ -8,10 +8,10 @@
 #include <filesystem>
 #include <string>
 
-#include "atx/vol/earnings_forecast_loader.hpp" // load_earnings_events (Task 5)
-#include "atx/vol/event_vol.hpp"                // EventSchedule
-#include "atx/vol/opra_panel.hpp"                // OpraLoadSpec, load_opra_cbbo_parquet
-#include "atx/vol/session.hpp"                   // VolaSession, make_session_inputs
+#include "analytics/earnings_forecast_loader.hpp" // load_earnings_events (Task 5)
+#include "atx/vol/api/analytics/event_vol.hpp"                // EventSchedule
+#include "atx/vol/api/marketdata/opra_panel.hpp"                // OpraLoadSpec, load_opra_cbbo_parquet
+#include "atx/vol/api/fitting/session.hpp"                   // VolaSession, make_session_inputs
 
 // Task 7 end-to-end smoke test: real OPRA parquet -> fitted VolaSession ->
 // Task 5 earnings schedule -> run_earnings_repro's per-expiry censoring +

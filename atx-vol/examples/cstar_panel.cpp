@@ -44,17 +44,17 @@
 #include <string>
 #include <vector>
 
-#include "atx/vol/arb.hpp"          // arb_check_butterfly_slice
-#include "atx/vol/black76.hpp"      // black76_price
-#include "atx/vol/calib.hpp"        // CalibOpts, FitObs, ObsSet, build_observations
-#include "atx/vol/cstar.hpp"        // CStarParams, cstar_slice_iv, cstar_min_roper_g
-#include "atx/vol/cstar_calib.hpp"  // cstar_calibrate_slice
-#include "atx/vol/data.hpp"         // data_install
-#include "atx/vol/essvi_calib.hpp"  // essvi_fit_slice
-#include "atx/vol/opra_panel.hpp"   // OpraLoadSpec, load_opra_cbbo_parquet
-#include "atx/vol/session.hpp"      // VolaSession, make_session_inputs, FitPreset
-#include "atx/vol/universe.hpp"     // Chain, Universe, Underlying, chain_index
-#include "atx/vol/vol_surface.hpp"  // EssviParams, essvi_total_w
+#include "atx/vol/api/fitting/arb.hpp"          // arb_check_butterfly_slice
+#include "atx/vol/api/pricing/black76.hpp"      // black76_price
+#include "atx/vol/api/fitting/calib.hpp"        // CalibOpts, FitObs, ObsSet, build_observations
+#include "fitting/cstar.hpp"        // CStarParams, cstar_slice_iv, cstar_min_roper_g
+#include "fitting/cstar_calib.hpp"  // cstar_calibrate_slice
+#include "atx/vol/api/marketdata/data.hpp"         // data_install
+#include "fitting/essvi_calib.hpp"  // essvi_fit_slice
+#include "atx/vol/api/marketdata/opra_panel.hpp"   // OpraLoadSpec, load_opra_cbbo_parquet
+#include "atx/vol/api/fitting/session.hpp"      // VolaSession, make_session_inputs, FitPreset
+#include "atx/vol/api/marketdata/universe.hpp"     // Chain, Universe, Underlying, chain_index
+#include "atx/vol/api/fitting/vol_surface.hpp"  // EssviParams, essvi_total_w
 
 namespace {
 

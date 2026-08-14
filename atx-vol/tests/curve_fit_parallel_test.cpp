@@ -12,16 +12,16 @@
 #include <string>
 #include <vector>
 
-#include "atx/vol/american.hpp"            // american_price, al_fast_opts, AlOpts
-#include "atx/vol/arb.hpp"                 // QuoteFlag, to_u8 (kill-mask rescue probe)
-#include "atx/vol/curve_fit.hpp"           // fit_curve_surface, CurveSurfaceReport
-#include "atx/vol/detail/parallel_for.hpp" // atx_auto_worker_count
-#include "atx/vol/dividend.hpp"            // hybrid_forward, HybridDivParams
-#include "atx/vol/opra_panel.hpp"          // load_opra_cbbo_parquet, OpraLoadSpec
-#include "atx/vol/surface_parity.hpp"      // SurfaceParityInputs, SliceContext, CalendarRepair
-#include "atx/vol/types.hpp"               // Side
-#include "atx/vol/universe.hpp"            // Underlying, Chain, chain_index, Universe, data_install
-#include "atx/vol/vol_curve.hpp"           // CurveConfig, IVolCurve
+#include "atx/vol/api/pricing/american.hpp"            // american_price, al_fast_opts, AlOpts
+#include "atx/vol/api/fitting/arb.hpp"                 // QuoteFlag, to_u8 (kill-mask rescue probe)
+#include "atx/vol/api/fitting/curve_fit.hpp"           // fit_curve_surface, CurveSurfaceReport
+#include "core/parallel_for.hpp" // atx_auto_worker_count
+#include "atx/vol/api/pricing/dividend.hpp"            // hybrid_forward, HybridDivParams
+#include "atx/vol/api/marketdata/opra_panel.hpp"          // load_opra_cbbo_parquet, OpraLoadSpec
+#include "atx/vol/api/fitting/surface_parity.hpp"      // SurfaceParityInputs, SliceContext, CalendarRepair
+#include "atx/vol/api/core/types.hpp"               // Side
+#include "atx/vol/api/marketdata/universe.hpp"            // Underlying, Chain, chain_index, Universe, data_install
+#include "atx/vol/api/fitting/vol_curve.hpp"           // CurveConfig, IVolCurve
 
 // S0-1 gate: `fit_curve_surface`'s per-chain de-Am pre-pass fans out over
 // `in.fit_workers` (parallel_for block-partition), but the fit itself stays

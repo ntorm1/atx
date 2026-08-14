@@ -8,10 +8,10 @@
 // Benchmark derives are the speedup evidence. A one-shot max-abs cross-check is
 // printed via a label so the run also documents that the two agree.
 
-#include "atx/vol/simd/black76_batch.hpp"
+#include "simd/black76_batch.hpp"
 
-#include "atx/vol/black76.hpp"
-#include "atx/vol/simd/cpu.hpp"
+#include "atx/vol/api/pricing/black76.hpp"
+#include "atx/vol/api/simd/cpu.hpp"
 
 #include <cmath>
 #include <cstddef>

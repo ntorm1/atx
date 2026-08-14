@@ -17,13 +17,13 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
-#include "atx/vol/backtest.hpp"
-#include "atx/vol/corpus.hpp"
-#include "atx/vol/detail/counters.hpp"
-#include "atx/vol/portfolio_pricer.hpp"
-#include "atx/vol/query_pricing.hpp"
-#include "atx/vol/strategy.hpp"
-#include "atx/vol/surface_db.hpp"
+#include "atx/vol/api/backtest/backtest.hpp"
+#include "atx/vol/api/marketdata/corpus.hpp"
+#include "fitting/counters.hpp"
+#include "atx/vol/api/backtest/portfolio_pricer.hpp"
+#include "atx/vol/api/backtest/query_pricing.hpp"
+#include "atx/vol/api/backtest/strategy.hpp"
+#include "atx/vol/api/storage/surface_db.hpp"
 #include "backtest_util.hpp"
 #include "result.hpp"
 

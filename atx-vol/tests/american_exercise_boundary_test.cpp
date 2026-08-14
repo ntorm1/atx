@@ -4,7 +4,7 @@
 #include <cmath>
 #include <optional>
 
-#include "atx/vol/american.hpp"
+#include "atx/vol/api/pricing/american.hpp"
 
 // G4 (gaps-review finding 5): public early-exercise boundary + assignment-risk
 // screen. Validates exercise_boundary() against:

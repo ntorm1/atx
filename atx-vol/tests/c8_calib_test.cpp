@@ -6,12 +6,12 @@
 #include <limits>
 #include <vector>
 
-#include "atx/vol/black76.hpp"      // black76_price
-#include "atx/vol/c8.hpp"
-#include "atx/vol/c8_calib.hpp"
-#include "atx/vol/calib.hpp"        // CalibOpts, calib_default_opts
-#include "atx/vol/universe.hpp"     // Chain, chain_index
-#include "atx/vol/vol_surface.hpp"  // EssviParams, essvi_backbone_w
+#include "atx/vol/api/pricing/black76.hpp"      // black76_price
+#include "atx/vol/api/fitting/c8.hpp"
+#include "fitting/c8_calib.hpp"
+#include "atx/vol/api/fitting/calib.hpp"        // CalibOpts, calib_default_opts
+#include "atx/vol/api/marketdata/universe.hpp"     // Chain, chain_index
+#include "atx/vol/api/fitting/vol_surface.hpp"  // EssviParams, essvi_backbone_w
 
 // Coverage for the C8 calibrator (pack/unpack, vol-domain residual + LM,
 // quality gate, chain-level fit) and the KEY capability proof: C8 fits a

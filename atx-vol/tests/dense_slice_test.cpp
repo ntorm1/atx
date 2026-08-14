@@ -10,12 +10,12 @@
 #include <utility>
 #include <vector>
 
-#include "atx/vol/arb.hpp"          // arb_check_calendar
-#include "atx/vol/black76.hpp"      // black76_price, black76_value_and_vega
-#include "atx/vol/calib.hpp"        // FitObs
-#include "atx/vol/dense_slice.hpp"  // fit_convex_slice, ConvexSliceFit, kMaxIntervalSlackRows
-#include "atx/vol/types.hpp"        // Side
-#include "atx/vol/vol_curve.hpp"    // fit_slice_curve, CurveSurface
+#include "atx/vol/api/fitting/arb.hpp"          // arb_check_calendar
+#include "atx/vol/api/pricing/black76.hpp"      // black76_price, black76_value_and_vega
+#include "atx/vol/api/fitting/calib.hpp"        // FitObs
+#include "atx/vol/api/fitting/dense_slice.hpp"  // fit_convex_slice, ConvexSliceFit, kMaxIntervalSlackRows
+#include "atx/vol/api/core/types.hpp"        // Side
+#include "atx/vol/api/fitting/vol_curve.hpp"    // fit_slice_curve, CurveSurface
 
 // Phase 1 of the arbitrage-constrained dense surface: the per-slice convex
 // call-price QP. These tests pin the two properties the whole approach rests on:

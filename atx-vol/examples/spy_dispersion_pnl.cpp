@@ -36,17 +36,17 @@
 #include <vector>
 
 #include "atx/core/error.hpp"              // Err, Ok, ATX_TRY
-#include "atx/vol/backtest.hpp"            // Clock, RunConfig, SnapshotCache
+#include "atx/vol/api/backtest/backtest.hpp"            // Clock, RunConfig, SnapshotCache
 #include "atx/vol/research/backtest_driver.hpp"     // run_timed (the timed-run + tearsheet + stats spine)
-#include "atx/vol/track_key.hpp"  // kBacktestEconomicsRev
-#include "atx/vol/corpus.hpp"              // CorpusManifest, CorpusEntry (windowed clock)
-#include "atx/vol/dispersion.hpp"          // MissingNamePolicy, MissingNameSpec
-#include "atx/vol/dispersion_strangle.hpp" // DispersionStrangleConfig, make_dispersion_strangle_spec
-#include "atx/vol/strategy.hpp"            // DeclarativeStrategy
-#include "atx/vol/surface_db.hpp"          // SurfaceDb
+#include "storage/track_key.hpp"  // kBacktestEconomicsRev
+#include "atx/vol/api/marketdata/corpus.hpp"              // CorpusManifest, CorpusEntry (windowed clock)
+#include "atx/vol/api/backtest/dispersion.hpp"          // MissingNamePolicy, MissingNameSpec
+#include "atx/vol/api/backtest/dispersion_strangle.hpp" // DispersionStrangleConfig, make_dispersion_strangle_spec
+#include "atx/vol/api/backtest/strategy.hpp"            // DeclarativeStrategy
+#include "atx/vol/api/storage/surface_db.hpp"          // SurfaceDb
 #include "atx/vol/tools/tearsheet.hpp"           // TearSheet, write_backtest_pnl_tsv
-#include "atx/vol/types.hpp"               // Result, Status
-#include "atx/vol/universe.hpp"            // canonical_symbol
+#include "atx/vol/api/core/types.hpp"               // Result, Status
+#include "atx/vol/api/marketdata/universe.hpp"            // canonical_symbol
 #include "dispersion_realism_flags.hpp"    // Task E1: friction/financing/policy CLI flags
 
 using namespace atx::vol;

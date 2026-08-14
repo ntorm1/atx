@@ -8,24 +8,24 @@
 #include <string>
 #include <vector>
 
-#include "atx/vol/backtest.hpp"                   // MarketSnapshot
-#include "atx/vol/contract_projection.hpp"        // ProjectedMaturitySpec, ProjectedOption
-#include "atx/vol/corpus.hpp"                     // CorpusManifest, CorpusEntry (engine-driven clock)
-#include "atx/vol/dispersion.hpp"                 // DispersionMember, DispersionBook, build_dispersion_book
-#include "atx/vol/historical_projection.hpp"      // HistoricalProjectionScenario/Frame/Config, ProjectedHistoricalVar
-#include "atx/vol/listed_dispersion.hpp"          // ListedOptionQuote
+#include "atx/vol/api/backtest/backtest.hpp"                   // MarketSnapshot
+#include "atx/vol/api/analytics/contract_projection.hpp"        // ProjectedMaturitySpec, ProjectedOption
+#include "atx/vol/api/marketdata/corpus.hpp"                     // CorpusManifest, CorpusEntry (engine-driven clock)
+#include "atx/vol/api/backtest/dispersion.hpp"                 // DispersionMember, DispersionBook, build_dispersion_book
+#include "analytics/historical_projection.hpp"      // HistoricalProjectionScenario/Frame/Config, ProjectedHistoricalVar
+#include "atx/vol/api/backtest/listed_dispersion.hpp"          // ListedOptionQuote
 #include "atx/vol/research/listed_dispersion_pipeline.hpp" // module under test
 #include "atx/vol/research/listed_dispersion_reconciliation.hpp" // ListedReconciliationSnapshot, reconcile_listed_dispersion
-#include "atx/vol/listed_dispersion_schedule.hpp" // ListedRiskLookup, ListedOptionRisk
-#include "atx/vol/listed_dispersion_strategy.hpp" // ListedDispersionStrategy, ScheduleMarkPolicy, MarkDivergence
-#include "atx/vol/portfolio_pricer.hpp"           // SurfaceSet, kNsPerYear
-#include "atx/vol/priced_surface.hpp"             // PricedSurface
-#include "atx/vol/query_pricing.hpp"              // QueryExecution
-#include "atx/vol/strategy.hpp"                   // IStrategy (the foreign-strategy stub)
-#include "atx/vol/surface_archive.hpp"            // write_surface_archive_v2_file
-#include "atx/vol/types.hpp"                      // ErrorCode, Side, Status
-#include "atx/vol/vol_curve.hpp"
-#include "atx/vol/vol_surface.hpp"
+#include "atx/vol/api/backtest/listed_dispersion_schedule.hpp" // ListedRiskLookup, ListedOptionRisk
+#include "atx/vol/api/backtest/listed_dispersion_strategy.hpp" // ListedDispersionStrategy, ScheduleMarkPolicy, MarkDivergence
+#include "atx/vol/api/backtest/portfolio_pricer.hpp"           // SurfaceSet, kNsPerYear
+#include "atx/vol/api/backtest/priced_surface.hpp"             // PricedSurface
+#include "atx/vol/api/backtest/query_pricing.hpp"              // QueryExecution
+#include "atx/vol/api/backtest/strategy.hpp"                   // IStrategy (the foreign-strategy stub)
+#include "atx/vol/api/storage/surface_archive.hpp"            // write_surface_archive_v2_file
+#include "atx/vol/api/core/types.hpp"                      // ErrorCode, Side, Status
+#include "atx/vol/api/fitting/vol_curve.hpp"
+#include "atx/vol/api/fitting/vol_surface.hpp"
 
 using namespace atx::vol;
 namespace fs = std::filesystem;

@@ -28,8 +28,8 @@
 #include <thread>
 #include <vector>
 
-#include "atx/vol/detail/counters.hpp"
-#include "atx/vol/detail/pricing_executor.hpp"
+#include "fitting/counters.hpp"
+#include "pricing/pricing_executor.hpp"
 
 using namespace atx::vol;
 

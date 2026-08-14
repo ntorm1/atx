@@ -24,8 +24,8 @@
 #include "atx/core/types.hpp"
 #include "atx/engine/data/dataset.hpp"
 #include "atx/engine/loop/types.hpp"
-#include "atx/vol/research_validation.hpp"
-#include "atx/vol/types.hpp"
+#include "atx/vol/api/backtest/research_validation.hpp"
+#include "atx/vol/api/core/types.hpp"
 
 namespace atx::options::research {
 

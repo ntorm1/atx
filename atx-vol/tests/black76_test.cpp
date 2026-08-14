@@ -4,8 +4,8 @@
 #include <limits>
 #include <string>
 
-#include "atx/vol/black76.hpp"
-#include "atx/vol/greeks.hpp" // black76_greeks — F8 vega bit-parity guard
+#include "atx/vol/api/pricing/black76.hpp"
+#include "atx/vol/api/pricing/greeks.hpp" // black76_greeks — F8 vega bit-parity guard
 
 // Black-76 pricer coverage, ported from the C ats-vol test_pricer_b76.c:
 // put-call parity, intrinsic collapse, the aux/lnfk/value+vega variants

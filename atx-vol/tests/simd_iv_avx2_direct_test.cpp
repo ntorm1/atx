@@ -7,9 +7,9 @@
 // keep its 4-lane path covered: accepted lanes must track the scalar inverter and
 // degenerate/failure lanes must flag ok == 0 exactly as scalar errors.
 
-#include "atx/vol/black76.hpp"
-#include "atx/vol/implied_vol.hpp"
-#include "atx/vol/simd/cpu.hpp"
+#include "atx/vol/api/pricing/black76.hpp"
+#include "atx/vol/api/pricing/implied_vol.hpp"
+#include "atx/vol/api/simd/cpu.hpp"
 
 #include <cmath>
 #include <cstddef>

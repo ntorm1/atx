@@ -36,13 +36,13 @@
 #include <vector>
 
 #include "amzn_earnings_fit.hpp"        // the shared two-pass fit (WS-1)
-#include "atx/vol/data.hpp"            // iso_to_ns
-#include "atx/vol/earnings_repro.hpp"  // run_earnings_repro, EarningsReproResult
-#include "atx/vol/event_vol.hpp"       // EventSchedule
-#include "atx/vol/implied_vol.hpp"     // implied_vol (bid/ask IV inversion)
-#include "atx/vol/opra_panel.hpp"      // OpraLoadSpec, load_opra_cbbo_parquet
-#include "atx/vol/session.hpp"         // VolaSession
-#include "atx/vol/sr_tenor_grid.hpp"   // SrTenorGrid::kTradingDays
+#include "atx/vol/api/marketdata/data.hpp"            // iso_to_ns
+#include "analytics/earnings_repro.hpp"  // run_earnings_repro, EarningsReproResult
+#include "atx/vol/api/analytics/event_vol.hpp"       // EventSchedule
+#include "atx/vol/api/pricing/implied_vol.hpp"     // implied_vol (bid/ask IV inversion)
+#include "atx/vol/api/marketdata/opra_panel.hpp"      // OpraLoadSpec, load_opra_cbbo_parquet
+#include "atx/vol/api/fitting/session.hpp"         // VolaSession
+#include "atx/vol/api/fitting/sr_tenor_grid.hpp"   // SrTenorGrid::kTradingDays
 
 namespace {
 

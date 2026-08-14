@@ -3,8 +3,8 @@
 #include <cmath>
 #include <limits>
 
-#include "atx/vol/black76.hpp"
-#include "atx/vol/greeks.hpp"
+#include "atx/vol/api/pricing/black76.hpp"
+#include "atx/vol/api/pricing/greeks.hpp"
 
 // Analytic Black-76 Greeks vs centred finite differences of the price,
 // ported from the C ats-vol test_greeks_b76.c. Step sizes balance truncation

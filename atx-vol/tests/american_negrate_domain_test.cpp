@@ -3,9 +3,9 @@
 #include <cmath>
 #include <optional>
 
-#include "atx/vol/american.hpp"
-#include "atx/vol/american_iv.hpp"
-#include "atx/vol/black76.hpp"
+#include "atx/vol/api/pricing/american.hpp"
+#include "atx/vol/api/pricing/american_iv.hpp"
+#include "atx/vol/api/pricing/black76.hpp"
 #include "support/oracle_pricer_pde.hpp"
 
 // Sub-Sprint A, Task A5 — negative-rate / double-boundary (Healy) domain map.

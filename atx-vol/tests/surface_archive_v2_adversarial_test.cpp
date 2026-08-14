@@ -14,13 +14,13 @@
 #include <string_view>
 #include <vector>
 
-#include "atx/vol/american.hpp"
-#include "atx/vol/detail/archive_util.hpp" // crc32c / crc32c_update (metadata restamp)
-#include "atx/vol/priced_surface.hpp"
-#include "atx/vol/priced_surface_view.hpp"
-#include "atx/vol/surface_archive.hpp"
-#include "atx/vol/vol_curve.hpp"
-#include "atx/vol/vol_surface.hpp"
+#include "atx/vol/api/pricing/american.hpp"
+#include "storage/archive_util.hpp" // crc32c / crc32c_update (metadata restamp)
+#include "atx/vol/api/backtest/priced_surface.hpp"
+#include "atx/vol/api/backtest/priced_surface_view.hpp"
+#include "atx/vol/api/storage/surface_archive.hpp"
+#include "atx/vol/api/fitting/vol_curve.hpp"
+#include "atx/vol/api/fitting/vol_surface.hpp"
 
 // WS-C adversarial suite for ATXVSA2 (v2). Under the lazy-CRC design the reader
 // never checks a record's payload CRC on the price path, so the zero-copy

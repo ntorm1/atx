@@ -18,7 +18,7 @@
 // round-trips of the inputs; any drift in inputs is a MISS, never a stale
 // hit. Duplicate appended keys are ignored (first wins).
 
-#include "atx/vol/types.hpp"
+#include "atx/vol/api/core/types.hpp"
 #include "oracle_pricer_pde.hpp"
 
 namespace atx::vol::test {

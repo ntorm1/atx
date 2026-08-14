@@ -51,17 +51,17 @@
 #include <string_view>
 #include <vector>
 
-#include "atx/vol/chain.hpp"         // OptionChain
-#include "atx/vol/corpus.hpp"        // CorpusBoard, corpus_board_from_opra
-#include "atx/vol/opra_batch.hpp"    // OpraBatchSpec, load_opra_daterange
-#include "atx/vol/detail/parallel_for.hpp"  // parallel_for, atx_auto_worker_count
-#include "atx/vol/detail/prepared_policy.hpp" // PreparedObservationPolicy
-#include "atx/vol/pricer_fitter.hpp" // PricerFitter, PricerConfig, OutputField
-#include "atx/vol/session.hpp"       // FitPreset, SessionDiagnostics, SessionInputs
-#include "atx/vol/surface_parity.hpp" // CalendarRepair
-#include "atx/vol/american.hpp"      // al_fast_opts, al_default_opts
-#include "atx/vol/types.hpp"         // Result
-#include "atx/vol/vol_curve.hpp"     // VolCurveKind, CurveConfig, to_string
+#include "atx/vol/api/core/chain.hpp"         // OptionChain
+#include "atx/vol/api/marketdata/corpus.hpp"        // CorpusBoard, corpus_board_from_opra
+#include "atx/vol/api/marketdata/opra_batch.hpp"    // OpraBatchSpec, load_opra_daterange
+#include "core/parallel_for.hpp"  // parallel_for, atx_auto_worker_count
+#include "fitting/prepared_policy.hpp" // PreparedObservationPolicy
+#include "atx/vol/api/fitting/pricer_fitter.hpp" // PricerFitter, PricerConfig, OutputField
+#include "atx/vol/api/fitting/session.hpp"       // FitPreset, SessionDiagnostics, SessionInputs
+#include "atx/vol/api/fitting/surface_parity.hpp" // CalendarRepair
+#include "atx/vol/api/pricing/american.hpp"      // al_fast_opts, al_default_opts
+#include "atx/vol/api/core/types.hpp"         // Result
+#include "atx/vol/api/fitting/vol_curve.hpp"     // VolCurveKind, CurveConfig, to_string
 
 using namespace atx::vol;
 using Clock = std::chrono::steady_clock;

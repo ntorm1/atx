@@ -22,9 +22,9 @@
 // scalar row additionally emits a Halley-step-count histogram per moneyness ×
 // maturity regime (via the library implied_vol_traced measurement seam).
 
-#include "atx/vol/black76.hpp"
-#include "atx/vol/implied_vol.hpp"
-#include "atx/vol/simd/cpu.hpp"
+#include "atx/vol/api/pricing/black76.hpp"
+#include "atx/vol/api/pricing/implied_vol.hpp"
+#include "atx/vol/api/simd/cpu.hpp"
 
 #include <algorithm>
 #include <cmath>

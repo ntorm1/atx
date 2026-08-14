@@ -12,7 +12,7 @@
 // fitting the SPY fixture through a fast tier is unnecessary machinery for
 // that.
 
-#include "atx/vol/theo.hpp"
+#include "pricing/theo.hpp"
 
 #include <algorithm>
 #include <array>
@@ -35,18 +35,18 @@
 
 #include <gtest/gtest.h>
 
-#include "atx/vol/american.hpp"  // al_fast_opts, AmericanMethod
-#include "atx/vol/event_vol.hpp" // EventSchedule, count_events_at
-#include "atx/vol/panel.hpp"     // make_synthetic_american_panel, SynthPanelSpec
-#include "atx/vol/priced_surface.hpp"
-#include "atx/vol/query_pricing.hpp"  // QueryPricingTier
-#include "atx/vol/realized_vol.hpp"   // RvPanel
-#include "atx/vol/session.hpp"        // VolaSession, SessionInputs, FitPreset
-#include "atx/vol/spy_fixture.hpp"    // make_spy_synthetic_spec, make_spy_session_inputs
-#include "atx/vol/surface_parity.hpp" // SliceContext
-#include "atx/vol/types.hpp"          // Side
-#include "atx/vol/vol_curve.hpp"      // CurveSurface, EssviParams, EssviCurve
-#include "atx/vol/vol_time.hpp"       // ns_from_year_fraction
+#include "atx/vol/api/pricing/american.hpp"  // al_fast_opts, AmericanMethod
+#include "atx/vol/api/analytics/event_vol.hpp" // EventSchedule, count_events_at
+#include "atx/vol/api/backtest/panel.hpp"     // make_synthetic_american_panel, SynthPanelSpec
+#include "atx/vol/api/backtest/priced_surface.hpp"
+#include "atx/vol/api/backtest/query_pricing.hpp"  // QueryPricingTier
+#include "analytics/realized_vol.hpp"   // RvPanel
+#include "atx/vol/api/fitting/session.hpp"        // VolaSession, SessionInputs, FitPreset
+#include "fitting/spy_fixture.hpp"    // make_spy_synthetic_spec, make_spy_session_inputs
+#include "atx/vol/api/fitting/surface_parity.hpp" // SliceContext
+#include "atx/vol/api/core/types.hpp"          // Side
+#include "atx/vol/api/fitting/vol_curve.hpp"      // CurveSurface, EssviParams, EssviCurve
+#include "atx/vol/api/core/vol_time.hpp"       // ns_from_year_fraction
 
 namespace atx::vol {
 namespace {

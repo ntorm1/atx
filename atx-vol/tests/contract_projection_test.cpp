@@ -13,14 +13,14 @@
 #include <vector>
 
 #include "atx/core/datetime.hpp"
-#include "atx/vol/contract_projection.hpp"
-#include "atx/vol/portfolio_pricer.hpp"
-#include "atx/vol/priced_surface.hpp"
-#include "atx/vol/simd/cpu.hpp"
-#include "atx/vol/strategy.hpp"
-#include "atx/vol/surface_parity.hpp"
-#include "atx/vol/vol_curve.hpp"
-#include "atx/vol/vol_surface.hpp"
+#include "atx/vol/api/analytics/contract_projection.hpp"
+#include "atx/vol/api/backtest/portfolio_pricer.hpp"
+#include "atx/vol/api/backtest/priced_surface.hpp"
+#include "atx/vol/api/simd/cpu.hpp"
+#include "atx/vol/api/backtest/strategy.hpp"
+#include "atx/vol/api/fitting/surface_parity.hpp"
+#include "atx/vol/api/fitting/vol_curve.hpp"
+#include "atx/vol/api/fitting/vol_surface.hpp"
 
 namespace {
 

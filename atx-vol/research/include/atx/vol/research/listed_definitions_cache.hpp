@@ -147,8 +147,8 @@
 // did. Neither is synchronized: concurrent calls interleave their records, and a
 // `PhaseTimer` must not be shared across threads.
 
-#include "atx/vol/listed_opra.hpp" // ListedDefinitionTable, ListedContractDefinition
-#include "atx/vol/types.hpp"       // Result / Status
+#include "marketdata/listed_opra.hpp" // ListedDefinitionTable, ListedContractDefinition
+#include "atx/vol/api/core/types.hpp"       // Result / Status
 
 #include <cstddef>
 #include <cstdint>

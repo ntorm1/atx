@@ -15,9 +15,9 @@
 #include <optional>
 #include <vector>
 
-#include "atx/vol/american.hpp"
-#include "atx/vol/simd/american_boundary_batch.hpp"
-#include "atx/vol/types.hpp"
+#include "atx/vol/api/pricing/american.hpp"
+#include "atx/vol/api/simd/american_boundary_batch.hpp"
+#include "atx/vol/api/core/types.hpp"
 
 using namespace atx::vol;
 

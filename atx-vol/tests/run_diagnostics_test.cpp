@@ -9,7 +9,7 @@
 #include "atx/vol/research/run_diagnostics.hpp"
 
 #include "atx/vol/research/run_archive.hpp"
-#include "atx/vol/detail/run_archive_schema.hpp"
+#include "storage/run_archive_schema.hpp"
 
 #include <gtest/gtest.h>
 

@@ -32,25 +32,25 @@
 #include <thread>
 #include <vector>
 
-#include "atx/vol/american.hpp" // AlOpts, al_fast_opts, al_default_opts
-#include "atx/vol/corpus.hpp"
-#include "atx/vol/detail/counters.hpp" // F1: AlBoundarySolves ledger (fast-AL tier quantification)
-#include "atx/vol/data.hpp" // iso_to_ns, year_fraction
-#include "atx/vol/market_env.hpp"
-#include "atx/vol/opra_batch.hpp" // load_opra_daterange, corpus_board_from_opra (F-c real hive)
-#include "atx/vol/panel.hpp" // SynthPanelSpec, make_synthetic_american_panel
-#include "atx/vol/priced_surface.hpp"
-#include "atx/vol/priced_surface_view.hpp" // PricedSurfaceView (S5 map_surface)
+#include "atx/vol/api/pricing/american.hpp" // AlOpts, al_fast_opts, al_default_opts
+#include "atx/vol/api/marketdata/corpus.hpp"
+#include "fitting/counters.hpp" // F1: AlBoundarySolves ledger (fast-AL tier quantification)
+#include "atx/vol/api/marketdata/data.hpp" // iso_to_ns, year_fraction
+#include "atx/vol/api/core/market_env.hpp"
+#include "atx/vol/api/marketdata/opra_batch.hpp" // load_opra_daterange, corpus_board_from_opra (F-c real hive)
+#include "atx/vol/api/backtest/panel.hpp" // SynthPanelSpec, make_synthetic_american_panel
+#include "atx/vol/api/backtest/priced_surface.hpp"
+#include "atx/vol/api/backtest/priced_surface_view.hpp" // PricedSurfaceView (S5 map_surface)
 #include "atx/vol/tools/run_report.hpp" // MetaKv
-#include "atx/vol/s3.hpp"         // S3Params
-#include "atx/vol/session.hpp"    // FitPreset
-#include "atx/vol/surface_archive.hpp"
-#include "atx/vol/surface_db.hpp"
+#include "atx/vol/api/storage/s3.hpp"         // S3Params
+#include "atx/vol/api/fitting/session.hpp"    // FitPreset
+#include "atx/vol/api/storage/surface_archive.hpp"
+#include "atx/vol/api/storage/surface_db.hpp"
 #include "atx/vol/tools/surface_db_build.hpp" // is_total_fit_failure (FIX-D exit-code shape)
-#include "atx/vol/detail/fit_scheduler.hpp" // performance_core_count (C4 wave-2 scaling diagnostic)
+#include "fitting/fit_scheduler.hpp" // performance_core_count (C4 wave-2 scaling diagnostic)
 #include "atx/vol/tools/surface_db_populate.hpp"
-#include "atx/vol/types.hpp"
-#include "atx/vol/vol_curve.hpp"
+#include "atx/vol/api/core/types.hpp"
+#include "atx/vol/api/fitting/vol_curve.hpp"
 
 namespace atx::vol {
 namespace {

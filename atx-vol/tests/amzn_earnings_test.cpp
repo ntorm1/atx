@@ -24,8 +24,8 @@
 #include <vector>
 
 #include "amzn_earnings_fit.hpp"   // atx::vol::amzn::amzn_earnings_fit, SliceFit
-#include "atx/vol/cstar.hpp"       // cstar_slice_w
-#include "atx/vol/opra_panel.hpp"  // OpraLoadSpec, load_opra_cbbo_parquet
+#include "fitting/cstar.hpp"       // cstar_slice_w
+#include "atx/vol/api/marketdata/opra_panel.hpp"  // OpraLoadSpec, load_opra_cbbo_parquet
 
 namespace {
 

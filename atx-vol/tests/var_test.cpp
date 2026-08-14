@@ -16,14 +16,14 @@
 #include <vector>
 
 #include "atx/core/datetime.hpp"
-#include "atx/vol/contract_projection.hpp"
-#include "atx/vol/simd/cpu.hpp"
-#include "atx/vol/surface_archive.hpp"
-#include "atx/vol/surface_db.hpp"
-#include "atx/vol/surface_parity.hpp"
-#include "atx/vol/universe.hpp"
-#include "atx/vol/var.hpp"
-#include "atx/vol/vol_curve.hpp"
+#include "atx/vol/api/analytics/contract_projection.hpp"
+#include "atx/vol/api/simd/cpu.hpp"
+#include "atx/vol/api/storage/surface_archive.hpp"
+#include "atx/vol/api/storage/surface_db.hpp"
+#include "atx/vol/api/fitting/surface_parity.hpp"
+#include "atx/vol/api/marketdata/universe.hpp"
+#include "analytics/var.hpp"
+#include "atx/vol/api/fitting/vol_curve.hpp"
 
 namespace {
 
@@ -1028,7 +1028,7 @@ TEST(Var, GenuineSolverRowFailureDowngradesWholeScenarioToScalarRoute) {
 //
 // Counter observability: the brief asks this test to assert the fallback
 // counter if one is observable in the default build. contract_projection.cpp
-// does not `#include "atx/vol/detail/counters.hpp"` and never calls
+// does not `#include "fitting/counters.hpp"` and never calls
 // ATX_VOL_COUNT/ATX_VOL_COUNT_N anywhere -- confirmed by grep -- so no
 // counter is wired to this code path in ANY build configuration, not even
 // under -DATX_VOL_COUNTERS=ON (counters.hpp's own

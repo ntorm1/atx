@@ -1,7 +1,7 @@
 // Tests for the SplineVol (SpiderRock SRCubic-style) vol-multiple cubic
 // spline curve family + fitter (atx/vol/spline_curve.hpp).
 
-#include "atx/vol/spline_curve.hpp"
+#include "atx/vol/api/fitting/spline_curve.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -10,10 +10,10 @@
 
 #include <gtest/gtest.h>
 
-#include "atx/vol/arb.hpp"  // CalendarPairProjection (project_calendar result)
-#include "atx/vol/calib.hpp"
-#include "atx/vol/vol_curve.hpp"
-#include "atx/vol/vol_surface.hpp"
+#include "atx/vol/api/fitting/arb.hpp"  // CalendarPairProjection (project_calendar result)
+#include "atx/vol/api/fitting/calib.hpp"
+#include "atx/vol/api/fitting/vol_curve.hpp"
+#include "atx/vol/api/fitting/vol_surface.hpp"
 
 namespace {
 

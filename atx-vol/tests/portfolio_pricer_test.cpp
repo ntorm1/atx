@@ -30,16 +30,16 @@
 #include <utility>
 #include <vector>
 
-#include "atx/vol/american.hpp" // american_greeks_fd — G1 kernel-defect probe
-#include "atx/vol/black76.hpp"
-#include "atx/vol/detail/adjoint_greeks.hpp" // american_greeks_adjoint — FIX-5/I1 probe
-#include "atx/vol/detail/counters.hpp"
-#include "atx/vol/portfolio_pricer.hpp"
-#include "atx/vol/priced_surface.hpp"
-#include "atx/vol/simd/cpu.hpp"  // simd::have_avx2 — ship-gate route expectations
+#include "atx/vol/api/pricing/american.hpp" // american_greeks_fd — G1 kernel-defect probe
+#include "atx/vol/api/pricing/black76.hpp"
+#include "pricing/adjoint_greeks.hpp" // american_greeks_adjoint — FIX-5/I1 probe
+#include "fitting/counters.hpp"
+#include "atx/vol/api/backtest/portfolio_pricer.hpp"
+#include "atx/vol/api/backtest/priced_surface.hpp"
+#include "atx/vol/api/simd/cpu.hpp"  // simd::have_avx2 — ship-gate route expectations
 #include "support/isa_golden_tol.hpp"
-#include "atx/vol/vol_curve.hpp"
-#include "atx/vol/vol_surface.hpp"
+#include "atx/vol/api/fitting/vol_curve.hpp"
+#include "atx/vol/api/fitting/vol_surface.hpp"
 
 using namespace atx::vol;
 

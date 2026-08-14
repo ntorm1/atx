@@ -26,19 +26,19 @@
 
 #include <benchmark/benchmark.h>
 
-#include "atx/vol/backtest.hpp"
-#include "atx/vol/chain.hpp"
-#include "atx/vol/corpus.hpp"
-#include "atx/vol/detail/counters.hpp"       // counters::timing — stage attribution (M3)
-#include "atx/vol/data.hpp"           // year_fraction (synthetic attribution panel)
-#include "atx/vol/panel.hpp"          // SynthPanelSpec, make_synthetic_american_panel
-#include "atx/vol/priced_surface.hpp" // PricedSurface (deserialized price stage)
-#include "atx/vol/pricer_fitter.hpp"
-#include "atx/vol/query_pricing.hpp"
-#include "atx/vol/s3.hpp"             // S3Params (synthetic truth)
-#include "atx/vol/strategy.hpp"
-#include "atx/vol/surface_archive.hpp" // write_surface_archive_v2 / SurfaceArchiveV2
-#include "atx/vol/types.hpp"           // Side
+#include "atx/vol/api/backtest/backtest.hpp"
+#include "atx/vol/api/core/chain.hpp"
+#include "atx/vol/api/marketdata/corpus.hpp"
+#include "fitting/counters.hpp"       // counters::timing — stage attribution (M3)
+#include "atx/vol/api/marketdata/data.hpp"           // year_fraction (synthetic attribution panel)
+#include "atx/vol/api/backtest/panel.hpp"          // SynthPanelSpec, make_synthetic_american_panel
+#include "atx/vol/api/backtest/priced_surface.hpp" // PricedSurface (deserialized price stage)
+#include "atx/vol/api/fitting/pricer_fitter.hpp"
+#include "atx/vol/api/backtest/query_pricing.hpp"
+#include "atx/vol/api/storage/s3.hpp"             // S3Params (synthetic truth)
+#include "atx/vol/api/backtest/strategy.hpp"
+#include "atx/vol/api/storage/surface_archive.hpp" // write_surface_archive_v2 / SurfaceArchiveV2
+#include "atx/vol/api/core/types.hpp"           // Side
 
 #include "bench_util.hpp"
 #include "support/opra_fixture.hpp"

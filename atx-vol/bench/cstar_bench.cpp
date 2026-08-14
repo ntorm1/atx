@@ -22,7 +22,7 @@
 
 #include <benchmark/benchmark.h>
 
-#include "atx/vol/cstar.hpp"
+#include "fitting/cstar.hpp"
 
 #include "bench_util.hpp"
 

@@ -49,25 +49,25 @@
 #include <thread>
 #include <vector>
 
-#include "atx/vol/american.hpp"             // AmericanGreeks
-#include "atx/vol/backtest.hpp"             // Clock, MarketSnapshot, run_backtest
-#include "atx/vol/chain.hpp"                // OptionChain
-#include "atx/vol/corpus.hpp"               // build_corpus, CorpusManifest, ...
-#include "atx/vol/data.hpp"                 // iso_to_ns, year_fraction
-#include "atx/vol/detail/fit_scheduler.hpp" // run_bounded_fit_tasks
-#include "atx/vol/dispersion.hpp"           // DispersionUniverse, DroppedName
+#include "atx/vol/api/pricing/american.hpp"             // AmericanGreeks
+#include "atx/vol/api/backtest/backtest.hpp"             // Clock, MarketSnapshot, run_backtest
+#include "atx/vol/api/core/chain.hpp"                // OptionChain
+#include "atx/vol/api/marketdata/corpus.hpp"               // build_corpus, CorpusManifest, ...
+#include "atx/vol/api/marketdata/data.hpp"                 // iso_to_ns, year_fraction
+#include "fitting/fit_scheduler.hpp" // run_bounded_fit_tasks
+#include "atx/vol/api/backtest/dispersion.hpp"           // DispersionUniverse, DroppedName
 #include "atx/vol/research/dispersion_run.hpp"       // format_corpus_phase_line (T-I4 probe gate)
-#include "atx/vol/market_env.hpp"           // MarketEnv
-#include "atx/vol/panel.hpp"                // make_synthetic_american_panel, SynthPanelSpec
-#include "atx/vol/priced_surface.hpp"       // PricedSurface
-#include "atx/vol/priced_surface_view.hpp"  // PricedSurfaceView (v2 zero-copy view)
-#include "atx/vol/pricer_fitter.hpp"        // PricerFitter, PricerConfig
-#include "atx/vol/session.hpp"              // VolaSession::to_priced_surface
-#include "atx/vol/spy_fixture.hpp"          // make_spy_synthetic_spec
-#include "atx/vol/strategy.hpp"             // DispersionStrategy
-#include "atx/vol/surface_archive.hpp"      // SurfaceArchive
-#include "atx/vol/types.hpp"                // Side
-#include "atx/vol/vol_curve.hpp"            // CurveConfig, VolCurveKind, to_string
+#include "atx/vol/api/core/market_env.hpp"           // MarketEnv
+#include "atx/vol/api/backtest/panel.hpp"                // make_synthetic_american_panel, SynthPanelSpec
+#include "atx/vol/api/backtest/priced_surface.hpp"       // PricedSurface
+#include "atx/vol/api/backtest/priced_surface_view.hpp"  // PricedSurfaceView (v2 zero-copy view)
+#include "atx/vol/api/fitting/pricer_fitter.hpp"        // PricerFitter, PricerConfig
+#include "atx/vol/api/fitting/session.hpp"              // VolaSession::to_priced_surface
+#include "fitting/spy_fixture.hpp"          // make_spy_synthetic_spec
+#include "atx/vol/api/backtest/strategy.hpp"             // DispersionStrategy
+#include "atx/vol/api/storage/surface_archive.hpp"      // SurfaceArchive
+#include "atx/vol/api/core/types.hpp"                // Side
+#include "atx/vol/api/fitting/vol_curve.hpp"            // CurveConfig, VolCurveKind, to_string
 
 #include "support/isa_golden_tol.hpp" // kLanedGreeksRelBand (WS-P1a route band)
 

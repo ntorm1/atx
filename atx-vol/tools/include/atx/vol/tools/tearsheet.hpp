@@ -32,8 +32,8 @@
 #include <utility>
 #include <vector>
 
-#include "atx/vol/backtest.hpp"  // BacktestResult
-#include "atx/vol/types.hpp"     // Status
+#include "atx/vol/api/backtest/backtest.hpp"  // BacktestResult
+#include "atx/vol/api/core/types.hpp"     // Status
 
 namespace atx::vol {
 

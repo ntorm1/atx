@@ -53,16 +53,16 @@
 #include <benchmark/benchmark.h>
 
 #include "atx/core/io/parquet_writer.hpp"  // write_parquet, WriteColumn
-#include "atx/vol/black76.hpp"             // black76_price
-#include "atx/vol/chain.hpp"              // OptionChain
-#include "atx/vol/corpus.hpp"            // CorpusBoard
-#include "atx/vol/opra_batch.hpp"        // load_opra_daterange, corpus_board_from_opra
-#include "atx/vol/pricer_fitter.hpp"     // PricerFitter, PricerConfig
-#include "atx/vol/session.hpp"           // FitPreset
-#include "atx/vol/surface_archive.hpp"   // write_surface_archive_v2_file
-#include "atx/vol/surface_db.hpp"        // SurfaceDb, symbol_config_from_preset
+#include "atx/vol/api/pricing/black76.hpp"             // black76_price
+#include "atx/vol/api/core/chain.hpp"              // OptionChain
+#include "atx/vol/api/marketdata/corpus.hpp"            // CorpusBoard
+#include "atx/vol/api/marketdata/opra_batch.hpp"        // load_opra_daterange, corpus_board_from_opra
+#include "atx/vol/api/fitting/pricer_fitter.hpp"     // PricerFitter, PricerConfig
+#include "atx/vol/api/fitting/session.hpp"           // FitPreset
+#include "atx/vol/api/storage/surface_archive.hpp"   // write_surface_archive_v2_file
+#include "atx/vol/api/storage/surface_db.hpp"        // SurfaceDb, symbol_config_from_preset
 #include "atx/vol/tools/surface_db_populate.hpp"  // populate_surface_db (U1-U4 + E2)
-#include "atx/vol/vol_curve.hpp"         // CurveConfig
+#include "atx/vol/api/fitting/vol_curve.hpp"         // CurveConfig
 
 namespace {
 

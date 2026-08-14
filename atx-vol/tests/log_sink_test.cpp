@@ -13,9 +13,9 @@
 //   GATE             — the assertion fails against unguarded code.
 //   POSITIVE CONTROL — holds by construction; locks a value, cannot fail open.
 
-#include "atx/vol/log.hpp"
+#include "core/log.hpp"
 
-#include "atx/vol/detail/log_emit.hpp"
+#include "core/log_emit.hpp"
 #include "atx/vol/research/listed_definitions_cache.hpp" // a real routed call site
 
 #include "log_sink_probe.hpp" // CapturingSink / ScopedSink / StreamCapture

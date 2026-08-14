@@ -8,14 +8,14 @@
 #include <string>
 #include <vector>
 
-#include "atx/vol/american.hpp" // american_price, AmericanMethod
-#include "atx/vol/chain.hpp"
-#include "atx/vol/curve_selector.hpp" // CandidateScore, select_candidate_index, select_curve
-#include "atx/vol/dividend.hpp"       // hybrid_forward, HybridDivParams, DividendEvent
-#include "atx/vol/fit_policy.hpp"
-#include "atx/vol/panel.hpp"
-#include "atx/vol/spy_fixture.hpp"
-#include "atx/vol/vol_curve.hpp" // VolCurveKind, CurveConfig
+#include "atx/vol/api/pricing/american.hpp" // american_price, AmericanMethod
+#include "atx/vol/api/core/chain.hpp"
+#include "atx/vol/api/fitting/curve_selector.hpp" // CandidateScore, select_candidate_index, select_curve
+#include "atx/vol/api/pricing/dividend.hpp"       // hybrid_forward, HybridDivParams, DividendEvent
+#include "atx/vol/api/fitting/fit_policy.hpp"
+#include "atx/vol/api/backtest/panel.hpp"
+#include "fitting/spy_fixture.hpp"
+#include "atx/vol/api/fitting/vol_curve.hpp" // VolCurveKind, CurveConfig
 
 namespace {
 

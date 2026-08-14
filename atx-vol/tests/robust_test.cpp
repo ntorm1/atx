@@ -4,7 +4,7 @@
 #include <span>
 #include <vector>
 
-#include "atx/vol/detail/robust.hpp"
+#include "fitting/robust.hpp"
 
 // Robust-statistics helper coverage, ported from the C ats-vol Huber helper
 // (ats_vol_huber.c) plus the textbook Huber M-estimator primitives:

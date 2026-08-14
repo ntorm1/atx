@@ -9,9 +9,9 @@
 #include <string_view>
 #include <vector>
 
-#include "atx/vol/dispersion.hpp"
-#include "atx/vol/opra_batch.hpp"
-#include "atx/vol/types.hpp"
+#include "atx/vol/api/backtest/dispersion.hpp"
+#include "atx/vol/api/marketdata/opra_batch.hpp"
+#include "atx/vol/api/core/types.hpp"
 
 namespace atx::vol {
 

@@ -17,9 +17,9 @@
 
 #include <gtest/gtest.h>
 
-#include "atx/vol/detail/legacy_surface.hpp"  // EssviSurface (demoted, S4-T21)
-#include "atx/vol/rates_curve.hpp"
-#include "atx/vol/surface.hpp"
+#include "fitting/legacy_surface.hpp"  // EssviSurface (demoted, S4-T21)
+#include "atx/vol/api/pricing/rates_curve.hpp"
+#include "atx/vol/api/fitting/surface.hpp"
 
 namespace atx::vol::testsupport {
 

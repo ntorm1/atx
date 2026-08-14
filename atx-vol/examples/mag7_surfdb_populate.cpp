@@ -21,15 +21,15 @@
 #include <string_view>
 #include <vector>
 
-#include "atx/vol/corpus.hpp"              // CorpusBoard
-#include "atx/vol/opra_batch.hpp"          // OpraBatchSpec, load_opra_daterange, corpus_board_from_opra
-#include "atx/vol/detail/parallel_for.hpp"        // atx_auto_worker_count
+#include "atx/vol/api/marketdata/corpus.hpp"              // CorpusBoard
+#include "atx/vol/api/marketdata/opra_batch.hpp"          // OpraBatchSpec, load_opra_daterange, corpus_board_from_opra
+#include "core/parallel_for.hpp"        // atx_auto_worker_count
 #include "atx/vol/tools/run_report.hpp"          // MetaKv
-#include "atx/vol/session.hpp"             // FitPreset
-#include "atx/vol/surface_db.hpp"          // SurfaceDb, symbol_config_from_preset
+#include "atx/vol/api/fitting/session.hpp"             // FitPreset
+#include "atx/vol/api/storage/surface_db.hpp"          // SurfaceDb, symbol_config_from_preset
 #include "atx/vol/tools/surface_db_populate.hpp" // populate_surface_db, write_populate_stats_csv
-#include "atx/vol/types.hpp"               // Result, Status
-#include "atx/vol/vol_curve.hpp"           // CurveConfig
+#include "atx/vol/api/core/types.hpp"               // Result, Status
+#include "atx/vol/api/fitting/vol_curve.hpp"           // CurveConfig
 
 using namespace atx::vol;
 

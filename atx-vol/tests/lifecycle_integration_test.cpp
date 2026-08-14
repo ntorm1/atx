@@ -38,19 +38,19 @@
 #include <utility>
 #include <vector>
 
-#include "atx/vol/american.hpp"          // AmericanGreeks
-#include "atx/vol/chain.hpp"             // OptionChain
-#include "atx/vol/data.hpp"              // iso_to_ns
-#include "atx/vol/market_env.hpp"        // MarketEnv
-#include "atx/vol/panel.hpp"             // make_synthetic_american_panel, SynthPanelSpec
-#include "atx/vol/portfolio_pricer.hpp"  // Portfolio, SurfaceSet, PortfolioPricer, ...
-#include "atx/vol/pricer_fitter.hpp"     // PricerFitter, PricerConfig, FittedSurface
-#include "atx/vol/priced_surface.hpp"    // PricedSurface, PricingContext, SliceContext
-#include "atx/vol/session.hpp"           // VolaSession, FitPreset
-#include "atx/vol/spy_fixture.hpp"       // make_spy_synthetic_spec
-#include "atx/vol/surface_archive.hpp"   // write_surface_archive_v2, SurfaceArchiveV2
-#include "atx/vol/types.hpp"             // Side
-#include "atx/vol/vol_curve.hpp"         // CurveConfig, VolCurveKind, CurveSurface
+#include "atx/vol/api/pricing/american.hpp"          // AmericanGreeks
+#include "atx/vol/api/core/chain.hpp"             // OptionChain
+#include "atx/vol/api/marketdata/data.hpp"              // iso_to_ns
+#include "atx/vol/api/core/market_env.hpp"        // MarketEnv
+#include "atx/vol/api/backtest/panel.hpp"             // make_synthetic_american_panel, SynthPanelSpec
+#include "atx/vol/api/backtest/portfolio_pricer.hpp"  // Portfolio, SurfaceSet, PortfolioPricer, ...
+#include "atx/vol/api/fitting/pricer_fitter.hpp"     // PricerFitter, PricerConfig, FittedSurface
+#include "atx/vol/api/backtest/priced_surface.hpp"    // PricedSurface, PricingContext, SliceContext
+#include "atx/vol/api/fitting/session.hpp"           // VolaSession, FitPreset
+#include "fitting/spy_fixture.hpp"       // make_spy_synthetic_spec
+#include "atx/vol/api/storage/surface_archive.hpp"   // write_surface_archive_v2, SurfaceArchiveV2
+#include "atx/vol/api/core/types.hpp"             // Side
+#include "atx/vol/api/fitting/vol_curve.hpp"         // CurveConfig, VolCurveKind, CurveSurface
 #include "support/isa_golden_tol.hpp"    // golden_accum_close (per-ISA FMA band)
 
 using namespace atx::vol;

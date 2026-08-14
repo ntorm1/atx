@@ -8,13 +8,13 @@
 #include <string>
 #include <vector>
 
-#include "atx/vol/data.hpp"             // data_install, iso_to_ns, year_fraction
-#include "atx/vol/earnings_term_fit.hpp" // fit_earnings_term, EarningsFitConfig (FIX-E I-2)
-#include "atx/vol/event_vol.hpp"
-#include "atx/vol/panel.hpp"     // SynthPanelSpec, make_synthetic_american_panel
-#include "atx/vol/session.hpp"   // VolaSession, SessionInputs (production seam)
-#include "atx/vol/universe.hpp"  // Universe, Underlying
-#include "atx/vol/vol_time.hpp"  // kCalendarYearNs
+#include "atx/vol/api/marketdata/data.hpp"             // data_install, iso_to_ns, year_fraction
+#include "atx/vol/api/analytics/earnings_term_fit.hpp" // fit_earnings_term, EarningsFitConfig (FIX-E I-2)
+#include "atx/vol/api/analytics/event_vol.hpp"
+#include "atx/vol/api/backtest/panel.hpp"     // SynthPanelSpec, make_synthetic_american_panel
+#include "atx/vol/api/fitting/session.hpp"   // VolaSession, SessionInputs (production seam)
+#include "atx/vol/api/marketdata/universe.hpp"  // Universe, Underlying
+#include "atx/vol/api/core/vol_time.hpp"  // kCalendarYearNs
 
 // Coverage for the SpiderRock-style earnings event-variance model: censored
 // total variance, FLEX recombination, implied per-event move (eMove), and

@@ -27,10 +27,10 @@
 #include <string>
 #include <vector>
 
-#include "atx/vol/priced_surface.hpp"
-#include "atx/vol/surface_archive.hpp"
-#include "atx/vol/vol_curve.hpp"
-#include "atx/vol/vol_surface.hpp"
+#include "atx/vol/api/backtest/priced_surface.hpp"
+#include "atx/vol/api/storage/surface_archive.hpp"
+#include "atx/vol/api/fitting/vol_curve.hpp"
+#include "atx/vol/api/fitting/vol_surface.hpp"
 
 using namespace atx::vol;
 

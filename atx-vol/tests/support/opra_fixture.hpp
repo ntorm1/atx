@@ -21,14 +21,14 @@
 #include <string>
 #include <vector>
 
-#include "atx/vol/american.hpp"   // american_price, AmericanMethod, al_fast_opts
-#include "atx/vol/calib.hpp"      // FitObs, build_observations, CalibOpts
-#include "atx/vol/data.hpp"       // data_install
-#include "atx/vol/market_env.hpp" // MarketEnv
-#include "atx/vol/opra_panel.hpp" // OpraLoadSpec, load_opra_cbbo_parquet
-#include "atx/vol/session.hpp"    // VolaSession
-#include "atx/vol/types.hpp"      // Side
-#include "atx/vol/universe.hpp"   // Universe, Underlying, Chain
+#include "atx/vol/api/pricing/american.hpp"   // american_price, AmericanMethod, al_fast_opts
+#include "atx/vol/api/fitting/calib.hpp"      // FitObs, build_observations, CalibOpts
+#include "atx/vol/api/marketdata/data.hpp"       // data_install
+#include "atx/vol/api/core/market_env.hpp" // MarketEnv
+#include "atx/vol/api/marketdata/opra_panel.hpp" // OpraLoadSpec, load_opra_cbbo_parquet
+#include "atx/vol/api/fitting/session.hpp"    // VolaSession
+#include "atx/vol/api/core/types.hpp"      // Side
+#include "atx/vol/api/marketdata/universe.hpp"   // Universe, Underlying, Chain
 
 namespace atx::vol::testkit {
 

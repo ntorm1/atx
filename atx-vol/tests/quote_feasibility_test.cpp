@@ -14,7 +14,7 @@
 
 #include <gtest/gtest.h>
 
-#include "atx/vol/detail/quote_feasibility.hpp"
+#include "fitting/quote_feasibility.hpp"
 
 namespace {
 

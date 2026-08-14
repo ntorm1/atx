@@ -27,10 +27,10 @@
 #include <utility>
 #include <vector>
 
-#include "atx/vol/chain.hpp"
-#include "atx/vol/opra_panel.hpp"
-#include "atx/vol/detail/parallel_for.hpp"
-#include "atx/vol/pricer_fitter.hpp"
+#include "atx/vol/api/core/chain.hpp"
+#include "atx/vol/api/marketdata/opra_panel.hpp"
+#include "core/parallel_for.hpp"
+#include "atx/vol/api/fitting/pricer_fitter.hpp"
 
 using namespace atx::vol;
 

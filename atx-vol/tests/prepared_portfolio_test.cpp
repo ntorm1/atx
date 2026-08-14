@@ -24,12 +24,12 @@
 #include <set>
 #include <vector>
 
-#include "atx/vol/black76.hpp"
-#include "atx/vol/portfolio_pricer.hpp"
-#include "atx/vol/detail/prepared_portfolio.hpp"
-#include "atx/vol/priced_surface.hpp"
-#include "atx/vol/vol_curve.hpp"
-#include "atx/vol/vol_surface.hpp"
+#include "atx/vol/api/pricing/black76.hpp"
+#include "atx/vol/api/backtest/portfolio_pricer.hpp"
+#include "backtest/prepared_portfolio.hpp"
+#include "atx/vol/api/backtest/priced_surface.hpp"
+#include "atx/vol/api/fitting/vol_curve.hpp"
+#include "atx/vol/api/fitting/vol_surface.hpp"
 #include "support/isa_golden_tol.hpp"
 
 using namespace atx::vol;

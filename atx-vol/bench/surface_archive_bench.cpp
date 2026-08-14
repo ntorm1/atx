@@ -52,15 +52,15 @@
 
 #include <benchmark/benchmark.h>
 
-#include "atx/vol/american.hpp"        // al_fast_opts, AmericanMethod, AlOpts
-#include "atx/vol/black76.hpp"         // black76_price (ConvexDense node prices)
-#include "atx/vol/dense_slice.hpp"     // ConvexSliceFit
-#include "atx/vol/priced_surface.hpp"  // PricedSurface, PricingContext
-#include "atx/vol/surface_archive.hpp" // write_surface_archive_v2, SurfaceArchiveV2
-#include "atx/vol/surface_parity.hpp"  // SliceContext
-#include "atx/vol/types.hpp"           // Side
-#include "atx/vol/vol_curve.hpp"       // CurveSurface, EssviCurve, ConvexDenseCurve
-#include "atx/vol/vol_surface.hpp"     // EssviParams
+#include "atx/vol/api/pricing/american.hpp"        // al_fast_opts, AmericanMethod, AlOpts
+#include "atx/vol/api/pricing/black76.hpp"         // black76_price (ConvexDense node prices)
+#include "atx/vol/api/fitting/dense_slice.hpp"     // ConvexSliceFit
+#include "atx/vol/api/backtest/priced_surface.hpp"  // PricedSurface, PricingContext
+#include "atx/vol/api/storage/surface_archive.hpp" // write_surface_archive_v2, SurfaceArchiveV2
+#include "atx/vol/api/fitting/surface_parity.hpp"  // SliceContext
+#include "atx/vol/api/core/types.hpp"           // Side
+#include "atx/vol/api/fitting/vol_curve.hpp"       // CurveSurface, EssviCurve, ConvexDenseCurve
+#include "atx/vol/api/fitting/vol_surface.hpp"     // EssviParams
 
 #include "bench_util.hpp"
 

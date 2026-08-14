@@ -34,7 +34,7 @@
 //
 // The manifest below is therefore the single, reviewable source of truth for
 // "what is Tier-A", and any tier change is a deliberate edit to this list.
-#include "atx/vol/vol.hpp"
+#include "atx/vol/api/vol.hpp"
 
 namespace {
 
@@ -128,7 +128,7 @@ std::vector<std::string> direct_atx_vol_includes(const fs::path& path) {
     const std::size_t first = line.find_first_not_of(" \t");
     if (first == std::string::npos) continue;
     // A commented-out or documented include is prose, not a dependency: the
-    // umbrella's own header comment quotes `#include "atx/vol/vol.hpp"`.
+    // umbrella's own header comment quotes `#include "atx/vol/api/vol.hpp"`.
     if (line.compare(first, 2, "//") == 0) continue;
     if (line[first] != '#') continue;
     const std::size_t inc = line.find("include", first);

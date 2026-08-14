@@ -7,14 +7,14 @@
 #include <string>
 #include <vector>
 
-#include "atx/vol/american.hpp"
-#include "atx/vol/data.hpp"
-#include "atx/vol/dividend.hpp"
-#include "atx/vol/panel.hpp"
-#include "atx/vol/rates_curve.hpp"
-#include "atx/vol/s3.hpp"
-#include "atx/vol/universe.hpp"
-#include "atx/vol/vol_time.hpp"
+#include "atx/vol/api/pricing/american.hpp"
+#include "atx/vol/api/marketdata/data.hpp"
+#include "atx/vol/api/pricing/dividend.hpp"
+#include "atx/vol/api/backtest/panel.hpp"
+#include "atx/vol/api/pricing/rates_curve.hpp"
+#include "atx/vol/api/storage/s3.hpp"
+#include "atx/vol/api/marketdata/universe.hpp"
+#include "atx/vol/api/core/vol_time.hpp"
 
 // Option-chain PANEL fixture coverage: the deterministic known-truth synthetic
 // American-equity generator and the self-contained CSV chain loader. Together

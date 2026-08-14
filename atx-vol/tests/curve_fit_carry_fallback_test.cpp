@@ -10,17 +10,17 @@
 #include <string>
 #include <vector>
 
-#include "atx/vol/american.hpp"       // american_price, AmericanMethod
-#include "atx/vol/curve_fit.hpp"      // fit_curve_surface, CurveSurfaceReport
-#include "atx/vol/deamer.hpp"         // CarrySource, DeAmOptions
-#include "atx/vol/dividend.hpp"       // hybrid_forward, HybridDivParams
-#include "atx/vol/pricer_fitter.hpp"  // merge_session_failure_context, ValidationDigest
-#include "atx/vol/session.hpp"        // SessionDiagnostics
-#include "atx/vol/surface_parity.hpp" // SurfaceParityInputs, ExpiryFitOutcome
-#include "atx/vol/surface_policy.hpp"  // decide_risk_surface_admission, SurfaceState
-#include "atx/vol/types.hpp"          // Side
-#include "atx/vol/universe.hpp"       // Underlying, Chain, chain_index
-#include "atx/vol/vol_curve.hpp"      // CurveConfig, IVolCurve
+#include "atx/vol/api/pricing/american.hpp"       // american_price, AmericanMethod
+#include "atx/vol/api/fitting/curve_fit.hpp"      // fit_curve_surface, CurveSurfaceReport
+#include "atx/vol/api/fitting/deamer.hpp"         // CarrySource, DeAmOptions
+#include "atx/vol/api/pricing/dividend.hpp"       // hybrid_forward, HybridDivParams
+#include "atx/vol/api/fitting/pricer_fitter.hpp"  // merge_session_failure_context, ValidationDigest
+#include "atx/vol/api/fitting/session.hpp"        // SessionDiagnostics
+#include "atx/vol/api/fitting/surface_parity.hpp" // SurfaceParityInputs, ExpiryFitOutcome
+#include "atx/vol/api/fitting/surface_policy.hpp"  // decide_risk_surface_admission, SurfaceState
+#include "atx/vol/api/core/types.hpp"          // Side
+#include "atx/vol/api/marketdata/universe.hpp"       // Underlying, Chain, chain_index
+#include "atx/vol/api/fitting/vol_curve.hpp"      // CurveConfig, IVolCurve
 
 // Decision B — term-structure carry fallback (bt-hotpath sprint).
 //

@@ -18,9 +18,9 @@
 #include <cstdio>
 #include <string>
 
-#include "atx/vol/pricer_fitter.hpp"
-#include "atx/vol/session.hpp"
-#include "atx/vol/vol_curve.hpp"
+#include "atx/vol/api/fitting/pricer_fitter.hpp"
+#include "atx/vol/api/fitting/session.hpp"
+#include "atx/vol/api/fitting/vol_curve.hpp"
 
 #include "../tests/support/opra_fixture.hpp"
 

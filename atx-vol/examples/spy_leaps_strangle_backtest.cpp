@@ -42,14 +42,14 @@
 #include <utility>
 #include <vector>
 
-#include "atx/vol/backtest.hpp"        // Clock, RunConfig, SnapshotCache, run_backtest
-#include "atx/vol/corpus.hpp"          // CorpusManifest, CorpusEntry
-#include "atx/vol/realized_vol.hpp"    // OhlcBar, RvPanel, RvEstimator, realized_vol_panel
-#include "atx/vol/strategy.hpp"        // StrategySpec, DeclarativeStrategy
-#include "atx/vol/surface_db.hpp"      // SurfaceDb
-#include "atx/vol/theo.hpp"            // TheoEngine, TheoContext, TheoQuery, make_rv_blend_overlay
+#include "atx/vol/api/backtest/backtest.hpp"        // Clock, RunConfig, SnapshotCache, run_backtest
+#include "atx/vol/api/marketdata/corpus.hpp"          // CorpusManifest, CorpusEntry
+#include "analytics/realized_vol.hpp"    // OhlcBar, RvPanel, RvEstimator, realized_vol_panel
+#include "atx/vol/api/backtest/strategy.hpp"        // StrategySpec, DeclarativeStrategy
+#include "atx/vol/api/storage/surface_db.hpp"      // SurfaceDb
+#include "pricing/theo.hpp"            // TheoEngine, TheoContext, TheoQuery, make_rv_blend_overlay
 #include "atx/vol/tools/tearsheet.hpp" // TearSheet, tearsheet, write_backtest_* TSV
-#include "atx/vol/types.hpp"           // Result, Status
+#include "atx/vol/api/core/types.hpp"           // Result, Status
 
 using namespace atx::vol;
 namespace fs = std::filesystem;

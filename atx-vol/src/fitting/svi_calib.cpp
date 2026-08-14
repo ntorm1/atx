@@ -1,0 +1,1707 @@
+#include "fitting/svi_calib.hpp"
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <span>
+#include <utility>
+#include <vector>
+
+#include "atx/core/error.hpp"
+#include "atx/core/linalg/linalg.hpp"  // MatX, VecX
+#include "atx/core/linalg/solve.hpp"   // solve_spd
+#include "atx/vol/api/fitting/arb.hpp"             // arb_project_calendar_svi, kSviWingSlopeGate
+#include "atx/vol/api/pricing/black76.hpp"         // black76_price, black76_value_and_vega
+#include "atx/vol/api/fitting/calib.hpp"           // CalibOpts, FitObs, FitDiag, build_observations
+#include "fitting/calib_shared.hpp"  // detail::outer_cap + shared LM constants
+#include "simd/essvi_batch.hpp"      // svi_qe_basis_batch, svi_total_w_batch
+
+// Per-slice raw-SVI calibrators — implementation.
+//
+// The quasi-explicit fitter (De Marco & Martini, Zeliade WP zwp-0005, 2009)
+// substitutes y = (k - m)/sigma, z = sqrt(y^2 + 1) and rotates 45 degrees into
+// (u, v) so the SVI total-variance form becomes linear in (a, d_uv, c_uv) at
+// fixed (m, sigma); the box |rho| <= 1 / Lee butterfly bound become simple
+// coordinate bounds. The inner step is a bounded linear least squares (active
+// set over 4 box constraints, normal equations backed by
+// `atx::core::linalg::solve_spd`); the outer step is a 2-D Nelder-Mead on
+// (m, sigma); the outer-outer loop is IRLS Huber reweighting. See
+// ats_calibrate_svi.c for the full derivation and references.
+//
+// The Martini-Mingone fitter (arXiv:2005.03340 §6.3) is a 5-DoF price-domain
+// Levenberg-Marquardt that projects every iterate onto the admissible polytope;
+// see ats_calibrate_svi_mm.c.
+
+namespace atx::vol {
+
+using atx::core::Err;
+using atx::core::ErrorCode;
+using atx::core::Ok;
+
+namespace {
+
+// ── Numeric constants (no M_PI / magic literals on the hot path) ─────────
+constexpr double kInvSqrt2 = 0.70710678118654752440;  // 1/sqrt(2)
+constexpr double kSqrt2 = 1.41421356237309504880;      // sqrt(2)
+
+// Below this year-fraction a slice has no useful Newton signal (same-day /
+// intra-day slivers); the surface driver skips it (~30 minutes floor).
+constexpr double kTMinFit = 1.0 / (365.25 * 24.0 * 2.0);
+
+// Mingone projector edge pads (ats_calibrate_svi_mm.c MM_EDGE_*).
+constexpr double kMmEdgeB = 1.0e-8;
+constexpr double kMmEdgeSigma = 1.0e-6;
+constexpr double kMmEdgeRho = 1.0e-4;
+constexpr double kMmEdgeLee = 1.0e-9;
+constexpr double kMmSigmaFloor = 0.05;  // physical sigma floor (1 vol point band)
+
+// ── Small dense SPD solve backed by atx-core ─────────────────────────────
+
+// Solve the symmetric positive-definite system H x = rhs for `n` in {3, 5},
+// where `H` is row-major length n*n and already symmetric. Returns false when
+// atx-core reports the matrix is not positive-definite (the caller then falls
+// back to a degenerate handling exactly as the C did).
+[[nodiscard]] bool solve_spd_dense(const double *H, const double *rhs, int n,
+                                   double *out) {
+  // FT-P: reuse the small dense system storage across LM steps instead of
+  // allocating MatX(n,n)/VecX(n) every call. thread_local => race-free under the
+  // parallel per-slice fit fan-out; Eigen::resize is a no-op when the size is
+  // unchanged (n is constant within a given LM loop), and every entry is
+  // overwritten below, so the atx-core solve is bit-identical.
+  thread_local atx::core::linalg::MatX A;
+  thread_local atx::core::linalg::VecX b;
+  A.resize(n, n);
+  b.resize(n);
+  for (int i = 0; i < n; ++i) {
+    b(i) = rhs[i];
+    for (int j = 0; j < n; ++j) {
+      A(i, j) = H[i * n + j];
+    }
+  }
+  const auto res = atx::core::linalg::solve_spd(A, b);
+  if (!res.has_value()) {
+    return false;
+  }
+  for (int i = 0; i < n; ++i) {
+    out[i] = (*res)(i);
+  }
+  return true;
+}
+
+// ── SVI raw evaluators (self-contained; no SviParams temporaries) ────────
+
+[[nodiscard]] double svi_w_raw(double a, double b, double rho, double m,
+                               double sigma, double k) noexcept {
+  const double dk = k - m;
+  return a + b * (rho * dk + std::sqrt(dk * dk + sigma * sigma));
+}
+
+// Post-fit positivity gate. A converged raw-SVI slice must have STRICTLY
+// positive total variance everywhere the surface consumes it, else pricing it
+// yields garbage IVs silently. The closed-form global minimum of w(k) is
+// w_min = a + b*sigma*sqrt(1-rho^2); if that is > 0 the whole curve is > 0. The
+// quasi-explicit fitter's non-negativity box and the SVI-MM admissibility
+// projection already guarantee this, so this is a defense-in-depth check that
+// pins the invariant against a future fitter change (the surface driver rejects
+// the expiry on violation, mirroring the post-fit max-sigma clamp). Also spot-
+// checks each observed strike so a non-finite param cannot slip through.
+[[nodiscard]] bool svi_slice_variance_positive(
+    const SviParams &s, std::span<const FitObs> obs) noexcept {
+  const double disc = 1.0 - s.rho * s.rho;
+  const double w_min = s.a + s.b * s.sigma * std::sqrt(disc > 0.0 ? disc : 0.0);
+  if (!std::isfinite(w_min) || !(w_min > 0.0)) {
+    return false;
+  }
+  for (const FitObs &o : obs) {
+    const double w = svi_w_raw(s.a, s.b, s.rho, s.m, s.sigma, o.k);
+    if (!std::isfinite(w) || !(w > 0.0)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// ── Inner: bounded linear least squares over (a, d_uv, c_uv) ─────────────
+
+// Reusable per-slice scratch for the quasi-explicit inner solve. `k` is the
+// gathered log-moneyness (CONSTANT across the whole fit); `u`/`v` hold the
+// rotated basis, recomputed ONCE per (m, sigma) evaluation (via
+// simd::svi_qe_basis_batch) and read by every active-set re-solve + SSE at that
+// same (m, sigma) — the ≤7 recomputations at a fixed (m, sigma) collapse to 1.
+// Sized once in svi_fit_slice so no NM evaluation allocates. `u[i]`/`v[i]`
+// correspond to obs[i] by index (both derived from the same `work` array).
+struct QeBasisScratch {
+  std::vector<double> k;
+  std::vector<double> u;
+  std::vector<double> v;
+};
+
+// Weighted SSE of the reduced linear model at coordinates `x = (a, d_uv, c_uv)`
+// (ports the SSE recompute blocks in svi_blls_inner / build_and_solve_normal).
+// Reads the PRE-COMPUTED basis (sc.u / sc.v) for the current (m, sigma) — the
+// per-strike loop stays in original order (values-only batching).
+[[nodiscard]] double svi_qe_sse(std::span<const FitObs> obs,
+                                const QeBasisScratch &sc,
+                                const std::array<double, 3> &x) noexcept {
+  double sse = 0.0;
+  for (std::size_t i = 0; i < obs.size(); ++i) {
+    const double w_pred = x[0] + x[1] * sc.u[i] + x[2] * sc.v[i];
+    const double r = w_pred - obs[i].w_mkt;
+    sse += obs[i].active_weight_w * r * r;
+  }
+  return sse;
+}
+
+// Build the weighted normal equations A^T W A x = A^T W w for the free
+// variables (`free_mask[i]` == true) at fixed (m, sigma), solve, and write the
+// free entries of `x` (pinned entries are read for the reduced rhs). Returns
+// the SSE at the resulting x, or +inf when the full 3x3 system is not
+// positive-definite — see the note on that branch. Mirrors
+// `build_and_solve_normal`. The basis
+// `ai = {1, u_i, v_i}` is READ from the pre-computed `sc` (see QeBasisScratch);
+// the H/g accumulation below is UNCHANGED — a scalar loop over i in the original
+// order, so the fit's summation is bit-for-bit what it was (values-only rule).
+[[nodiscard]] double build_and_solve_normal(std::span<const FitObs> obs,
+                                            const QeBasisScratch &sc,
+                                            const std::array<bool, 3> &free_mask,
+                                            std::array<double, 3> &x) {
+  std::array<double, 9> H{};
+  std::array<double, 3> g{};
+  for (std::size_t i = 0; i < obs.size(); ++i) {
+    const std::array<double, 3> ai{1.0, sc.u[i], sc.v[i]};
+    const double w_i = obs[i].active_weight_w;
+    const double t_i = obs[i].w_mkt;
+    for (int p = 0; p < 3; ++p) {
+      g[static_cast<std::size_t>(p)] += w_i * ai[static_cast<std::size_t>(p)] * t_i;
+      for (int q = 0; q <= p; ++q) {
+        H[static_cast<std::size_t>(p * 3 + q)] +=
+            w_i * ai[static_cast<std::size_t>(p)] * ai[static_cast<std::size_t>(q)];
+      }
+    }
+  }
+  // Mirror the symmetric upper triangle.
+  H[1] = H[3];
+  H[2] = H[6];
+  H[5] = H[7];
+
+  // Reduced rhs: substitute pinned variables.
+  std::array<double, 3> rhs{};
+  for (int p = 0; p < 3; ++p) {
+    double v = g[static_cast<std::size_t>(p)];
+    for (int q = 0; q < 3; ++q) {
+      if (!free_mask[static_cast<std::size_t>(q)]) {
+        v -= H[static_cast<std::size_t>(p * 3 + q)] * x[static_cast<std::size_t>(q)];
+      }
+    }
+    rhs[static_cast<std::size_t>(p)] = v;
+  }
+
+  std::array<int, 3> free_idx{};
+  int n_free = 0;
+  for (int p = 0; p < 3; ++p) {
+    if (free_mask[static_cast<std::size_t>(p)]) {
+      free_idx[static_cast<std::size_t>(n_free++)] = p;
+    }
+  }
+
+  if (n_free == 0) {
+    // All pinned — nothing to solve.
+  } else if (n_free == 1) {
+    const int p = free_idx[0];
+    const double hpp = H[static_cast<std::size_t>(p * 3 + p)];
+    x[static_cast<std::size_t>(p)] =
+        (hpp > 1.0e-14) ? rhs[static_cast<std::size_t>(p)] / hpp : 0.0;
+  } else if (n_free == 2) {
+    const int p = free_idx[0];
+    const int q = free_idx[1];
+    const double aa = H[static_cast<std::size_t>(p * 3 + p)];
+    const double bb = H[static_cast<std::size_t>(p * 3 + q)];
+    const double dd = H[static_cast<std::size_t>(q * 3 + q)];
+    const double det = aa * dd - bb * bb;
+    const double rp = rhs[static_cast<std::size_t>(p)];
+    const double rq = rhs[static_cast<std::size_t>(q)];
+    if (det > 1.0e-14) {
+      x[static_cast<std::size_t>(p)] = (dd * rp - bb * rq) / det;
+      x[static_cast<std::size_t>(q)] = (-bb * rp + aa * rq) / det;
+    } else {
+      x[static_cast<std::size_t>(p)] = (aa > 1.0e-14) ? rp / aa : 0.0;
+      x[static_cast<std::size_t>(q)] = (dd > 1.0e-14) ? rq / dd : 0.0;
+    }
+  } else {
+    // Full 3x3: back the Cholesky solve with atx-core (rhs == g here, since no
+    // variable is pinned). A non positive-definite matrix means this (m, sigma)
+    // has NO linear least-squares solution — the design rows do not span the
+    // three coefficients (a single usable quote, coincident strikes, or an
+    // all-zero weight vector). Report it as an UNUSABLE candidate (+inf) and
+    // leave `x` alone. The C zeroed the coordinates and returned the ordinary
+    // finite SSE at that all-zero point; since every Nelder-Mead vertex is
+    // rank-deficient in the same way, that let the degenerate a = b = rho = 0
+    // point win the search and be returned Ok as a slice with identically zero
+    // total variance — which then displaced the SVI-MM fitter's healthy
+    // hardcoded seed.
+    std::array<double, 3> sol{};
+    if (!solve_spd_dense(H.data(), g.data(), 3, sol.data())) {
+      return std::numeric_limits<double>::infinity();
+    }
+    x = sol;
+  }
+
+  return svi_qe_sse(obs, sc, x);
+}
+
+// Active-set bounded LSQ for (a, d_uv, c_uv) at fixed (m, sigma). Box:
+// 0 <= a <= a_max, 0 <= d_uv, c_uv <= duvc_max. Returns SSE; writes `out`.
+//
+// Returns +inf (and leaves `out` at the last iterate, which the caller MUST NOT
+// use) when the normal equations have no positive-definite solution at this
+// (m, sigma) — the objective is not a comparable number there, so the caller
+// must treat the vertex as unusable rather than score it. The final SSE
+// recompute below would otherwise launder the fallback point into an ordinary
+// finite score.
+// Mirrors `svi_blls_inner`. The rotated basis (u, v) depends only on (m, sigma,
+// k) — LOOP-INVARIANT across the ≤7 active-set passes below (the active set
+// only pins x entries / flips free_mask; it never touches the basis) — so it is
+// computed ONCE here and reused by every build_and_solve_normal + the final SSE.
+[[nodiscard]] double svi_blls_inner(std::span<const FitObs> obs, double m,
+                                    double sigma, double a_max, double duvc_max,
+                                    QeBasisScratch &sc,
+                                    std::array<double, 3> &out) {
+  simd::svi_qe_basis_batch(m, sigma, sc.k.data(), sc.u.data(), sc.v.data(),
+                           obs.size());
+
+  std::array<bool, 3> free_mask{true, true, true};
+  std::array<double, 3> x{0.0, 0.0, 0.0};
+  const std::array<double, 3> upper{a_max, duvc_max, duvc_max};
+  const std::array<double, 3> lower{0.0, 0.0, 0.0};
+
+  double sse = build_and_solve_normal(obs, sc, free_mask, x);
+  if (!std::isfinite(sse)) {
+    out = x;
+    return sse;
+  }
+
+  for (int it = 0; it < 6; ++it) {
+    int worst_idx = -1;
+    double worst_violation = 0.0;
+    bool worst_at_upper = false;
+    for (int p = 0; p < 3; ++p) {
+      const auto up = static_cast<std::size_t>(p);
+      if (!free_mask[up]) {
+        continue;
+      }
+      const double v_lo = lower[up] - x[up];  // > 0 if x[p] < lo
+      const double v_hi = x[up] - upper[up];  // > 0 if x[p] > hi
+      if (v_lo > worst_violation) {
+        worst_violation = v_lo;
+        worst_idx = p;
+        worst_at_upper = false;
+      }
+      if (v_hi > worst_violation) {
+        worst_violation = v_hi;
+        worst_idx = p;
+        worst_at_upper = true;
+      }
+    }
+    if (worst_idx < 0) {
+      break;  // feasible
+    }
+    const auto uw = static_cast<std::size_t>(worst_idx);
+    x[uw] = worst_at_upper ? upper[uw] : lower[uw];
+    free_mask[uw] = false;
+    sse = build_and_solve_normal(obs, sc, free_mask, x);
+    if (!std::isfinite(sse)) {
+      out = x;
+      return sse;
+    }
+  }
+
+  // Final clamp + SSE recompute (the last solve may not have reached feasibility).
+  for (int p = 0; p < 3; ++p) {
+    const auto up = static_cast<std::size_t>(p);
+    if (x[up] < lower[up]) {
+      x[up] = lower[up];
+    }
+    if (x[up] > upper[up]) {
+      x[up] = upper[up];
+    }
+  }
+  sse = svi_qe_sse(obs, sc, x);
+  out = x;
+  return sse;
+}
+
+// ── Outer: 2-D Nelder-Mead on (m, sigma) ─────────────────────────────────
+
+struct NmCtx {
+  std::span<const FitObs> obs;
+  double a_max{0.0};
+  double duvc_max{0.0};
+  double sigma_min{0.0};
+  double sigma_max{0.0};
+  double m_min{0.0};
+  double m_max{0.0};
+};
+
+[[nodiscard]] double nm_eval(const NmCtx &c, double m, double sigma,
+                             QeBasisScratch &sc, std::array<double, 3> &linear) {
+  if (sigma < c.sigma_min) {
+    sigma = c.sigma_min;
+  }
+  if (sigma > c.sigma_max) {
+    sigma = c.sigma_max;
+  }
+  if (m < c.m_min) {
+    m = c.m_min;
+  }
+  if (m > c.m_max) {
+    m = c.m_max;
+  }
+  return svi_blls_inner(c.obs, m, sigma, c.a_max, c.duvc_max, sc, linear);
+}
+
+// Nelder-Mead simplex search over (m, sigma). Writes the best vertex back into
+// (*m, *sigma) and its inner linear optimum into `linear`. Mirrors `nm_search`.
+//
+// `out_best_sse` receives the winning vertex's objective. It is non-finite iff
+// EVERY vertex the simplex visited was unusable (see `svi_blls_inner`), in which
+// case `linear` is meaningless and the caller must not fit from it.
+void nm_search(const NmCtx &c, double &m, double &sigma, QeBasisScratch &sc,
+               std::array<double, 3> &linear, std::uint16_t max_iter, double tol,
+               std::uint16_t &out_iters_used, double &out_best_sse) {
+  std::array<std::array<double, 2>, 3> v{};
+  std::array<double, 3> f{};
+  std::array<std::array<double, 3>, 3> lin{};
+
+  v[0] = {m, sigma};
+  v[1] = {m + 0.05, sigma};
+  v[2] = {m, sigma * 1.5};
+  for (int i = 0; i < 3; ++i) {
+    const auto ui = static_cast<std::size_t>(i);
+    f[ui] = nm_eval(c, v[ui][0], v[ui][1], sc, lin[ui]);
+  }
+
+  std::uint16_t iters_used = 0;
+  for (std::uint16_t it = 0; it < max_iter; ++it) {
+    iters_used = static_cast<std::uint16_t>(it + 1);
+    // Sort ascending by f (bubble, n = 3).
+    for (int i = 0; i < 3; ++i) {
+      for (int j = i + 1; j < 3; ++j) {
+        const auto ui = static_cast<std::size_t>(i);
+        const auto uj = static_cast<std::size_t>(j);
+        if (f[uj] < f[ui]) {
+          std::swap(f[ui], f[uj]);
+          std::swap(v[ui], v[uj]);
+          std::swap(lin[ui], lin[uj]);
+        }
+      }
+    }
+    const double f_range = f[2] - f[0];
+    const double v_range =
+        std::fabs(v[2][0] - v[0][0]) + std::fabs(v[2][1] - v[0][1]);
+    if (f_range < tol && v_range < 1.0e-7) {
+      break;
+    }
+
+    const double cm = 0.5 * (v[0][0] + v[1][0]);
+    const double cs = 0.5 * (v[0][1] + v[1][1]);
+
+    // Reflection.
+    const double rm = cm + (cm - v[2][0]);
+    const double rs = cs + (cs - v[2][1]);
+    std::array<double, 3> rlin{};
+    const double rf = nm_eval(c, rm, rs, sc, rlin);
+
+    if (rf < f[0]) {
+      // Expansion.
+      const double em = cm + 2.0 * (cm - v[2][0]);
+      const double es = cs + 2.0 * (cs - v[2][1]);
+      std::array<double, 3> elin{};
+      const double ef = nm_eval(c, em, es, sc, elin);
+      if (ef < rf) {
+        v[2] = {em, es};
+        f[2] = ef;
+        lin[2] = elin;
+      } else {
+        v[2] = {rm, rs};
+        f[2] = rf;
+        lin[2] = rlin;
+      }
+    } else if (rf < f[1]) {
+      v[2] = {rm, rs};
+      f[2] = rf;
+      lin[2] = rlin;
+    } else {
+      // Contraction toward the centroid.
+      const double km = cm + 0.5 * (v[2][0] - cm);
+      const double ks = cs + 0.5 * (v[2][1] - cs);
+      std::array<double, 3> klin{};
+      const double kf = nm_eval(c, km, ks, sc, klin);
+      if (kf < f[2]) {
+        v[2] = {km, ks};
+        f[2] = kf;
+        lin[2] = klin;
+      } else {
+        // Shrink toward the best vertex.
+        for (int i = 1; i < 3; ++i) {
+          const auto ui = static_cast<std::size_t>(i);
+          v[ui][0] = v[0][0] + 0.5 * (v[ui][0] - v[0][0]);
+          v[ui][1] = v[0][1] + 0.5 * (v[ui][1] - v[0][1]);
+          f[ui] = nm_eval(c, v[ui][0], v[ui][1], sc, lin[ui]);
+        }
+      }
+    }
+  }
+
+  int best = 0;
+  if (f[1] < f[static_cast<std::size_t>(best)]) {
+    best = 1;
+  }
+  if (f[2] < f[static_cast<std::size_t>(best)]) {
+    best = 2;
+  }
+  const auto ub = static_cast<std::size_t>(best);
+  // FT-C1: clamp the winning vertex into the (m, sigma) box before writing it
+  // back. `nm_eval` clamps (m, sigma) BY VALUE before the inner BLLS solve, so
+  // `lin[ub]` (the linear optimum) belongs to the CLAMPED point. Writing the raw,
+  // possibly out-of-box vertex would pair that clamped linear solution with an
+  // out-of-box sigma; the downstream (u,v)->(a,b,rho) map (b = c_raw / sigma)
+  // then flips b's sign or blows it up when a reflection/expansion step drove
+  // sigma below sigma_min (or negative). Store the clamped coordinates so the
+  // map is consistent with the objective actually minimized.
+  double best_m = v[ub][0];
+  double best_sigma = v[ub][1];
+  if (best_sigma < c.sigma_min) {
+    best_sigma = c.sigma_min;
+  }
+  if (best_sigma > c.sigma_max) {
+    best_sigma = c.sigma_max;
+  }
+  if (best_m < c.m_min) {
+    best_m = c.m_min;
+  }
+  if (best_m > c.m_max) {
+    best_m = c.m_max;
+  }
+  m = best_m;
+  sigma = best_sigma;
+  linear = lin[ub];
+  out_iters_used = iters_used;
+  out_best_sse = f[ub];
+}
+
+// ── Mingone admissible-polytope projector ────────────────────────────────
+
+// w_min slack a + b*sigma*sqrt(1-rho^2) (>= 0 iff admissible).
+[[nodiscard]] double mm_w_min_slack(double a, double b, double rho,
+                                    double sigma) noexcept {
+  return a + b * sigma * std::sqrt(1.0 - rho * rho);
+}
+
+// Project (a, b, rho, m, sigma) onto the Mingone admissible polytope with the
+// given edge pads. Returns true if any coordinate moved. `m` has no Mingone
+// constraint. Mirrors `mm_project_admissible`.
+bool mm_project_admissible(double T, double &a, double &b, double &rho,
+                           double &sigma, double edge_b, double edge_sigma,
+                           double edge_rho, double edge_a, double edge_lee) {
+  bool touched = false;
+  if (!(T > 0.0)) {
+    return false;
+  }
+  if (b < edge_b) {
+    b = edge_b;
+    touched = true;
+  }
+  if (sigma < edge_sigma) {
+    sigma = edge_sigma;
+    touched = true;
+  }
+  if (rho > 1.0 - edge_rho) {
+    rho = 1.0 - edge_rho;
+    touched = true;
+  }
+  if (rho < -1.0 + edge_rho) {
+    rho = -1.0 + edge_rho;
+    touched = true;
+  }
+  // Lee: shrink b if b*(1+|rho|) exceeds kSviWingSlopeGate - edge_lee.
+  // FT-C3: with w = TOTAL variance the wing-slope bound is T-FREE. The old 4/T
+  // form was a no-op for T>1 and vacuous for short T (T=1wk => bound ~208), so
+  // moment-exploding short-dated wings passed the "Lee" gate untouched.
+  // T10/D3: the ceiling is the raw-SVI bound of 2, not eSSVI's 4 — see the
+  // derivation above `kSviWingSlopeGate` in arb.hpp. This projector and that
+  // gate MUST hold the same number: every serving path runs
+  // gate -> project -> re-gate and drops what the re-check still refuses, so a
+  // projector looser than the gate turns repair into rejection.
+  {
+    const double lee_max = (kSviWingSlopeGate - edge_lee) / (1.0 + std::fabs(rho));
+    if (lee_max > 0.0 && b > lee_max) {
+      b = lee_max;
+      touched = true;
+      if (b < edge_b) {
+        b = edge_b;
+      }
+    }
+  }
+  // w_min >= edge_a: bump `a` by the deficit.
+  {
+    const double slack = mm_w_min_slack(a, b, rho, sigma);
+    if (slack < edge_a) {
+      a += (edge_a - slack);
+      touched = true;
+    }
+  }
+  return touched;
+}
+
+// Project with the production edge pads (edge_a scaled so the smile floor is
+// sigma_floor^2 * T).
+bool mm_project_default(double T, double &a, double &b, double &rho,
+                        double &sigma) {
+  return mm_project_admissible(T, a, b, rho, sigma, kMmEdgeB, kMmEdgeSigma,
+                               kMmEdgeRho, kMmSigmaFloor * kMmSigmaFloor * T,
+                               kMmEdgeLee);
+}
+
+// ── SVI-MM: price + analytic 5-column Jacobian ───────────────────────────
+
+// d w / d(a, b, rho, m, sigma) at (b, rho, m, sigma) — closed form.
+void svi_w_grad_at(double k, double b, double rho, double m, double sigma,
+                   std::array<double, 5> &g) noexcept {
+  const double dk = k - m;
+  const double r = std::sqrt(dk * dk + sigma * sigma);
+  const double inv_r = (r > 1.0e-300) ? 1.0 / r : 0.0;
+  g[0] = 1.0;                           // d w / d a
+  g[1] = rho * dk + r;                  // d w / d b
+  g[2] = b * dk;                        // d w / d rho
+  g[3] = -b * rho - b * dk * inv_r;     // d w / d m
+  g[4] = b * sigma * inv_r;             // d w / d sigma
+}
+
+// Per-observation LM workspace: base residuals + 5 Jacobian columns, plus the
+// batched-w_pred scratch. `k` is the gathered log-moneyness (CONSTANT across the
+// fit); `w_pred` receives one `simd::svi_total_w_batch` sweep per parameter
+// evaluation (values-only — the Black-76 price/vega + Jacobian chain stays a
+// scalar per-strike loop reading w_pred[i], so accumulation order is unchanged).
+struct LmWorkspaceMm {
+  std::vector<double> r0;
+  std::array<std::vector<double>, 5> jcol;
+  std::vector<double> k;
+  std::vector<double> w_pred;
+};
+
+// Weighted price-domain SSE (pure European Black-76 prediction — see the PORT
+// NOTE on the American-correction cache). Mirrors `svi_mm_sse`. The w_pred sweep
+// is one `simd::svi_total_w_batch` call into `ws.w_pred` (svi_total_w is
+// op-for-op svi_w_raw); the floor + Black-76 price loop stays scalar per strike.
+//
+// A candidate whose model price is non-finite ANYWHERE is POISONED — the whole
+// objective returns +inf, and every caller's accept test (`isfinite(new_sse) &&
+// new_sse < prev_sse`) then rejects it. Given finite quote geometry (F, K, df),
+// `black76_price` is non-finite only when sig_pred is, i.e. only when the
+// candidate's own total variance has overflowed, so a non-finite price is direct
+// evidence that the parameter step diverged. Skipping those rows instead (the
+// previous behavior) left the accumulator at its 0.0 seed once EVERY row was
+// poisoned, handing a diverging Inf/NaN step a perfect SSE of zero that beat the
+// finite incumbent and was accepted. Skipping also makes the objective
+// incomparable across candidates: two candidates that drop different rows are
+// scored on different data.
+[[nodiscard]] double svi_mm_sse(std::span<const FitObs> obs, double T, double a,
+                                double b, double rho, double m, double sigma,
+                                LmWorkspaceMm &ws) {
+  SviParams sp{};
+  sp.a = a;
+  sp.b = b;
+  sp.rho = rho;
+  sp.m = m;
+  sp.sigma = sigma;
+  simd::svi_total_w_batch(sp, ws.k.data(), ws.w_pred.data(), obs.size());
+
+  double s = 0.0;
+  for (std::size_t i = 0; i < obs.size(); ++i) {
+    const FitObs &o = obs[i];
+    double w_pred = ws.w_pred[i];
+    if (w_pred < 1.0e-12) {
+      w_pred = 1.0e-12;
+    }
+    const double sig_pred = std::sqrt(w_pred / T);
+    const double p_pred = black76_price(o.F, o.K, T, sig_pred, o.df, o.side);
+    if (!std::isfinite(p_pred)) {
+      return std::numeric_limits<double>::infinity();  // poisoned candidate
+    }
+    const double r = p_pred - o.mid;
+    s += o.active_weight_w * r * r;
+  }
+  return s;
+}
+
+// Residuals + analytic 5-column price Jacobian at (a, b, rho, m, sigma).
+// Mirrors `svi_mm_residuals_and_jac` with corr == NULL.
+void svi_mm_residuals_and_jac(std::span<const FitObs> obs, double T, double a,
+                              double b, double rho, double m, double sigma,
+                              LmWorkspaceMm &ws) {
+  SviParams sp{};
+  sp.a = a;
+  sp.b = b;
+  sp.rho = rho;
+  sp.m = m;
+  sp.sigma = sigma;
+  simd::svi_total_w_batch(sp, ws.k.data(), ws.w_pred.data(), obs.size());
+
+  for (std::size_t i = 0; i < obs.size(); ++i) {
+    const FitObs &o = obs[i];
+    double w_pred = ws.w_pred[i];
+    if (w_pred < 1.0e-12) {
+      w_pred = 1.0e-12;
+    }
+    const double sig_p = std::sqrt(w_pred / T);
+
+    const Black76ValueVega bv =
+        black76_value_and_vega(o.F, o.K, T, sig_p, o.df, o.side);
+    const double p_pred = bv.price;
+    ws.r0[i] = std::isfinite(p_pred) ? (p_pred - o.mid) : 0.0;
+
+    // d Price / d sigma = B76 vega (no American correction term here).
+    const double dprice_dsigma = bv.vega;
+
+    // sigma chain rule: d sigma / d x = (1 / (2 sigma T)) d w / d x.
+    std::array<double, 5> wg{};
+    svi_w_grad_at(o.k, b, rho, m, sigma, wg);
+    const double f = dprice_dsigma / (2.0 * sig_p * T);
+    for (int j = 0; j < 5; ++j) {
+      ws.jcol[static_cast<std::size_t>(j)][i] = f * wg[static_cast<std::size_t>(j)];
+    }
+  }
+}
+
+// Assemble H = J^T W J and g = J^T W r. Mirrors `build_normal_eqs_5`.
+void build_normal_eqs_5(std::span<const FitObs> obs, const LmWorkspaceMm &ws,
+                        std::array<double, 25> &H, std::array<double, 5> &g) {
+  H.fill(0.0);
+  g.fill(0.0);
+  for (std::size_t i = 0; i < obs.size(); ++i) {
+    const double wi = obs[i].active_weight_w;
+    std::array<double, 5> j{};
+    for (int p = 0; p < 5; ++p) {
+      j[static_cast<std::size_t>(p)] = ws.jcol[static_cast<std::size_t>(p)][i];
+    }
+    const double r = ws.r0[i];
+    for (int p = 0; p < 5; ++p) {
+      g[static_cast<std::size_t>(p)] += wi * j[static_cast<std::size_t>(p)] * r;
+      for (int q = 0; q <= p; ++q) {
+        H[static_cast<std::size_t>(p * 5 + q)] +=
+            wi * j[static_cast<std::size_t>(p)] * j[static_cast<std::size_t>(q)];
+      }
+    }
+  }
+  for (int p = 0; p < 5; ++p) {
+    for (int q = 0; q < p; ++q) {
+      H[static_cast<std::size_t>(q * 5 + p)] = H[static_cast<std::size_t>(p * 5 + q)];
+    }
+  }
+}
+
+// One projected-LM step. Returns the post-step SSE if a step is accepted, or
+// `prev_sse` when every backtrack is rejected. Mirrors `svi_mm_lm_step`.
+[[nodiscard]] double svi_mm_lm_step(std::span<const FitObs> obs, double T,
+                                    double &a, double &b, double &rho, double &m,
+                                    double &sigma, double prev_sse,
+                                    double &lambda_lm, LmWorkspaceMm &ws) {
+  svi_mm_residuals_and_jac(obs, T, a, b, rho, m, sigma, ws);
+
+  std::array<double, 25> H{};
+  std::array<double, 5> g{};
+  build_normal_eqs_5(obs, ws, H, g);
+
+  for (int trial = 0; trial < detail::kLmTrialCap; ++trial) {
+    std::array<double, 25> hd = H;
+    const double damp = 1.0 + lambda_lm;
+    hd[0] *= damp;
+    hd[6] *= damp;
+    hd[12] *= damp;
+    hd[18] *= damp;
+    hd[24] *= damp;
+
+    const std::array<double, 5> neg_g{-g[0], -g[1], -g[2], -g[3], -g[4]};
+    std::array<double, 5> step{};
+    if (!solve_spd_dense(hd.data(), neg_g.data(), 5, step.data())) {
+      lambda_lm *= detail::kLambdaGrow;
+      if (lambda_lm > detail::kLambdaLmMax) {
+        return prev_sse;
+      }
+      continue;
+    }
+
+    double frac = 1.0;
+    double a_new = 0.0;
+    double b_new = 0.0;
+    double rho_new = 0.0;
+    double m_new = 0.0;
+    double sigma_new = 0.0;
+    double new_sse = prev_sse;
+    bool accepted = false;
+    for (int bt = 0; bt < 6; ++bt) {
+      a_new = a + frac * step[0];
+      b_new = b + frac * step[1];
+      rho_new = rho + frac * step[2];
+      m_new = m + frac * step[3];
+      sigma_new = sigma + frac * step[4];
+
+      (void)mm_project_default(T, a_new, b_new, rho_new, sigma_new);
+
+      new_sse = svi_mm_sse(obs, T, a_new, b_new, rho_new, m_new, sigma_new, ws);
+      if (std::isfinite(new_sse) && new_sse < prev_sse) {
+        accepted = true;
+        break;
+      }
+      frac *= 0.5;
+    }
+
+    if (accepted) {
+      a = a_new;
+      b = b_new;
+      rho = rho_new;
+      m = m_new;
+      sigma = sigma_new;
+      lambda_lm *= detail::kLambdaShrink;
+      if (lambda_lm < detail::kLambdaLmMin) {
+        lambda_lm = detail::kLambdaLmMin;
+      }
+      return new_sse;
+    }
+    lambda_lm *= detail::kLambdaGrow;
+    if (lambda_lm > detail::kLambdaLmMax) {
+      return prev_sse;
+    }
+  }
+  return prev_sse;
+}
+
+// ── Working-copy helper ──────────────────────────────────────────────────
+
+// The C fitters mutate the observation array (active_weight_w, and the SVI
+// wing-floor overwrites weight_w). The public API takes a `const` span, so the
+// fitters run on a private copy.
+[[nodiscard]] std::vector<FitObs> copy_obs(std::span<const FitObs> obs) {
+  return std::vector<FitObs>(obs.begin(), obs.end());
+}
+
+}  // namespace
+
+// ── Quasi-explicit SVI fit ───────────────────────────────────────────────
+
+Result<SviParams> svi_fit_slice(std::span<const FitObs> obs, double T, double F,
+                                const CalibOpts &opts, FitDiag *diag) {
+  if (obs.empty() || !(T > 0.0)) {
+    return Err(ErrorCode::InvalidArgument,
+               "svi_fit_slice: empty observations or non-positive T");
+  }
+
+  std::vector<FitObs> work = copy_obs(obs);
+  const std::size_t n = work.size();
+
+  // Wing-floor weight (Sprint 07 B2): floor each obs weight at
+  // alpha * max(weight) so OTM rows keep a non-zero gradient.
+  if (opts.wing_floor_alpha > 0.0) {
+    double max_weight = 0.0;
+    for (const FitObs &o : work) {
+      if (o.weight_w > max_weight) {
+        max_weight = o.weight_w;
+      }
+    }
+    const double weight_floor = opts.wing_floor_alpha * max_weight;
+    for (FitObs &o : work) {
+      if (o.weight_w < weight_floor) {
+        o.weight_w = weight_floor;
+      }
+    }
+  }
+
+  for (FitObs &o : work) {
+    o.active_weight_w = o.weight_w;
+  }
+
+  // Bounds: m within the data span (a touch wider); sigma in [tiny, span].
+  double k_min = work[0].k;
+  double k_max = work[0].k;
+  double w_max = work[0].w_mkt;
+  for (const FitObs &o : work) {
+    if (o.k < k_min) {
+      k_min = o.k;
+    }
+    if (o.k > k_max) {
+      k_max = o.k;
+    }
+    if (o.w_mkt > w_max) {
+      w_max = o.w_mkt;
+    }
+  }
+  const double kspan = k_max - k_min;
+  const double a_max = w_max * 1.5 + 1.0e-3;
+  double sigma_max = (kspan > 0.05) ? kspan : 0.5;
+  if (sigma_max < 0.05) {
+    sigma_max = 0.05;
+  }
+  const double sigma_min = 1.0e-3;
+
+  double m_cur = 0.0;
+  double sigma_cur = 0.10;
+
+  NmCtx nm{};
+  nm.obs = std::span<const FitObs>(work);
+  nm.a_max = a_max;
+  nm.duvc_max = 2.0 * kSqrt2 * sigma_max;
+  nm.sigma_min = sigma_min;
+  nm.sigma_max = sigma_max;
+  nm.m_min = k_min - 0.5 * (kspan + 0.1);
+  nm.m_max = k_max + 0.5 * (kspan + 0.1);
+
+  std::array<double, 3> linear{};
+  double nm_best_sse = std::numeric_limits<double>::infinity();
+  std::uint16_t outer_total_iters = 0;
+  std::uint16_t inner_total_iters = 0;
+
+  const std::uint16_t max_outer = detail::outer_cap(opts);
+  // The quasi-explicit (m, sigma) search is a 2-D Nelder-Mead simplex, NOT the
+  // Newton/LM inner loop that opts.max_inner_iter (default 12) is sized for.
+  // Sizing this NM budget at 12 collapses the simplex to ~12 moves per outer
+  // pass, truncating the search on wide/skewed smiles far from the optimum
+  // (review M4); the C reference runs 200 moves. The simplex is cheap (each eval
+  // is a strided BLLS solve) and hard-bounded, so restore the 200-move C-parity
+  // budget instead of double-duty-ing the LM inner count here.
+  constexpr std::uint16_t kQuasiExplicitNmMaxIter = 200u;
+  const std::uint16_t max_inner = kQuasiExplicitNmMaxIter;
+  const double tol = (opts.tol_residual > 0.0) ? opts.tol_residual : 1.0e-10;
+
+  std::vector<double> resid_scratch(n, 0.0);
+  std::vector<double> rabs_scratch(n, 0.0);  // |resid| copy for the q90 scale
+  double prev_sse = std::numeric_limits<double>::infinity();
+
+  // Quasi-explicit inner-solve scratch: gather k ONCE (it is constant across the
+  // whole fit); u/v are (re)computed once per (m, sigma) NM evaluation inside
+  // svi_blls_inner. Sized here so no NM/inner call allocates.
+  QeBasisScratch qe_scratch;
+  qe_scratch.k.resize(n);
+  qe_scratch.u.resize(n);
+  qe_scratch.v.resize(n);
+  for (std::size_t i = 0; i < n; ++i) {
+    qe_scratch.k[i] = work[i].k;
+  }
+
+  // T10 (D5): which of the IRLS loop's three exits fired. Without this the
+  // caller cannot tell a fit that met its tolerance from one that simply ran out
+  // of outer passes — both return Ok with a plausible-looking iteration count.
+  FitTermination termination = FitTermination::IterationCap;
+
+  for (std::uint16_t outer = 0; outer < max_outer; ++outer) {
+    // The (u, v) box scales with the current sigma; be generous (the real
+    // butterfly bound is enforced post-hoc).
+    nm.duvc_max = 2.0 * kSqrt2 * ((sigma_cur > sigma_min) ? sigma_cur : sigma_min);
+    nm.duvc_max *= 4.0;
+
+    std::uint16_t nm_iters_this_pass = 0;
+    nm_search(nm, m_cur, sigma_cur, qe_scratch, linear, max_inner, tol,
+              nm_iters_this_pass, nm_best_sse);
+    ++outer_total_iters;
+    inner_total_iters =
+        static_cast<std::uint16_t>(inner_total_iters + nm_iters_this_pass);
+    if (!std::isfinite(nm_best_sse)) {
+      termination = FitTermination::Stalled;
+      break;  // nothing to refine: no vertex had a usable objective
+    }
+
+    // Sigma-space residuals for this IRLS pass.
+    for (std::size_t i = 0; i < n; ++i) {
+      const FitObs &o = work[i];
+      const double yi = (o.k - m_cur) / sigma_cur;
+      const double zi = std::sqrt(yi * yi + 1.0);
+      const double ui = (yi + zi) * kInvSqrt2;
+      const double vi = (zi - yi) * kInvSqrt2;
+      double w_pred = linear[0] + linear[1] * ui + linear[2] * vi;
+      if (w_pred < 1.0e-12) {
+        w_pred = 1.0e-12;
+      }
+      const double sig_pred = std::sqrt(w_pred / T);
+      resid_scratch[i] = sig_pred - o.sigma_mkt;
+    }
+
+    // Robust IRLS scale: anchor the Huber threshold on the q90 order statistic of
+    // the |residual| distribution, NOT a weighted RMS. A weighted-RMS scale is
+    // itself inflated by the very outliers Huber is meant to down-weight, so a few
+    // bad quotes weaken the whole slice's rejection (review M5). The q90 anchor is
+    // the same robust scale the SVI-MM (svi_mm_fit_slice) and eSSVI/C8 reweighters
+    // use. nth_element yields the exact lower-index q90 in O(n).
+    for (std::size_t i = 0; i < n; ++i) {
+      rabs_scratch[i] = std::fabs(resid_scratch[i]);
+    }
+    std::size_t q_idx = static_cast<std::size_t>(0.90 * static_cast<double>(n));
+    if (q_idx >= n) {
+      q_idx = n - 1;
+    }
+    std::nth_element(rabs_scratch.begin(),
+                     rabs_scratch.begin() + static_cast<std::ptrdiff_t>(q_idx),
+                     rabs_scratch.end());
+    const double sigma_resid = rabs_scratch[q_idx];
+
+    double sse_sigma = 0.0;
+    for (std::size_t i = 0; i < n; ++i) {
+      const double r = resid_scratch[i];
+      sse_sigma += work[i].weight_w * r * r;
+    }
+    if (std::fabs(prev_sse - sse_sigma) < 1.0e-15) {
+      termination = FitTermination::Converged;
+      break;
+    }
+    prev_sse = sse_sigma;
+
+    if (sigma_resid > 1.0e-12) {
+      const double huber = (opts.huber_k > 0.0) ? opts.huber_k : 1.5;
+      for (std::size_t i = 0; i < n; ++i) {
+        const double r_norm = std::fabs(resid_scratch[i]) / sigma_resid;
+        work[i].active_weight_w = (r_norm <= huber)
+                                      ? work[i].weight_w
+                                      : work[i].weight_w * (huber / r_norm);
+      }
+    }
+  }
+
+  // Reject rather than launder a rank-deficient fit. A non-finite winning
+  // objective means every (m, sigma) the simplex visited had unusable normal
+  // equations (see `svi_blls_inner`), so `linear` is the all-zero fallback, not
+  // a least-squares solution — mapping it yields a = b = rho = 0, a slice with
+  // identically zero total variance. Returning that as Ok let it displace the
+  // healthy hardcoded seed in `svi_mm_fit_slice`.
+  if (!std::isfinite(nm_best_sse)) {
+    return Err(ErrorCode::Unavailable,
+               "svi_fit_slice: no usable linear least-squares solution at any "
+               "(m, sigma) — rank-deficient observation set");
+  }
+
+  // Map (a, d_uv, c_uv) -> (a, b, rho).
+  const double a_fit = linear[0];
+  const double d_uv = linear[1];
+  const double c_uv = linear[2];
+  const double c_raw = (d_uv + c_uv) * kInvSqrt2;  // b * sigma
+  const double d_raw = (d_uv - c_uv) * kInvSqrt2;  // b * rho * sigma
+  const double b_fit = c_raw / sigma_cur;
+  double rho_fit = (c_raw > 1.0e-12) ? d_raw / c_raw : 0.0;
+  if (rho_fit > 0.999) {
+    rho_fit = 0.999;
+  }
+  if (rho_fit < -0.999) {
+    rho_fit = -0.999;
+  }
+
+  // Final vega-weighted RMSE in sigma space.
+  double s = 0.0;
+  double w_acc = 0.0;
+  double mx = 0.0;
+  for (const FitObs &o : work) {
+    double w_pred = svi_w_raw(a_fit, b_fit, rho_fit, m_cur, sigma_cur, o.k);
+    if (w_pred < 1.0e-12) {
+      w_pred = 1.0e-12;
+    }
+    const double sig_pred = std::sqrt(w_pred / T);
+    const double r = sig_pred - o.sigma_mkt;
+    s += o.weight_w * r * r;
+    w_acc += o.weight_w;
+    if (std::fabs(r) > mx) {
+      mx = std::fabs(r);
+    }
+  }
+  const double rmse = (w_acc > 1.0e-15) ? std::sqrt(s / w_acc) : 0.0;
+
+  SviParams out{};
+  out.a = a_fit;
+  out.b = b_fit;
+  out.rho = rho_fit;
+  out.m = m_cur;
+  out.sigma = sigma_cur;
+  out.T = T;
+  out.F = F;
+
+  if (diag != nullptr) {
+    diag->rmse_vol_vega_weighted = rmse;
+    diag->max_residual_vol = mx;
+    diag->outer_iters = outer_total_iters;
+    diag->inner_iters_total = inner_total_iters;
+    diag->n_quotes_used = static_cast<std::uint32_t>(n);
+    diag->termination = termination;
+    // `final_grad_norm` stays DISENGAGED: the quasi-explicit fit is a
+    // Nelder-Mead search over (m, sigma) wrapping a bounded linear least
+    // squares, and no gradient of the objective is formed anywhere in it. A
+    // zero here would assert perfect first-order optimality on every slice.
+  }
+
+  return Ok(out);
+}
+
+// ── Martini-Mingone constrained fit ──────────────────────────────────────
+
+Result<SviParams> svi_mm_fit_slice(std::span<const FitObs> obs, double T,
+                                   double F, const CalibOpts &opts,
+                                   FitDiag *diag) {
+  if (obs.empty() || !(T > 0.0)) {
+    return Err(ErrorCode::InvalidArgument,
+               "svi_mm_fit_slice: empty observations or non-positive T");
+  }
+
+  // Seed from the quasi-explicit fit on the ORIGINAL IV-domain weights (before
+  // the price-domain weight overwrite below). svi_fit_slice copies the span, so
+  // the caller's observations are untouched.
+  //
+  // The hardcoded values below are the FALLBACK seed and are only displaced by a
+  // seed the quasi-explicit fitter vouches for: on a rank-deficient observation
+  // set that fitter now returns Err rather than an a = b = rho = 0 slice, so the
+  // degenerate point can no longer outrank this one (the admissibility projector
+  // would otherwise pin b at its 1e-8 edge pad and start the LM on a flat smile).
+  double a = 0.0;
+  double b = 0.1;
+  double rho = -0.20;
+  double m = 0.0;
+  double sigma = 0.10;
+  {
+    const Result<SviParams> seed = svi_fit_slice(obs, T, F, opts, nullptr);
+    if (seed.has_value()) {
+      a = seed->a;
+      b = seed->b;
+      rho = seed->rho;
+      m = seed->m;
+      sigma = seed->sigma;
+    }
+  }
+
+  std::vector<FitObs> work = copy_obs(obs);
+  const std::size_t n = work.size();
+
+  // Price-domain weight 1 / (spread^2 + (0.1*tick*vega)^2) (Sprint 13b).
+  {
+    constexpr double kTick = 0.01;
+    constexpr double kTickFloor = 0.1;
+    for (FitObs &o : work) {
+      const double sp = (o.spread > 0.0) ? o.spread : 0.0;
+      const double v = (o.vega > 0.0) ? o.vega : 0.0;
+      const double floor_term = kTickFloor * kTick * v;
+      const double denom2 = sp * sp + floor_term * floor_term + 1.0e-18;
+      o.weight_w = 1.0 / denom2;
+      o.active_weight_w = o.weight_w;
+    }
+  }
+
+  // Wing-floor weight on the price-domain weight (Sprint 07 B2; alpha 0 = off).
+  if (opts.wing_floor_alpha > 0.0) {
+    double max_weight = 0.0;
+    for (const FitObs &o : work) {
+      if (o.weight_w > max_weight) {
+        max_weight = o.weight_w;
+      }
+    }
+    const double weight_floor = opts.wing_floor_alpha * max_weight;
+    for (FitObs &o : work) {
+      if (o.weight_w < weight_floor) {
+        o.weight_w = weight_floor;
+      }
+      o.active_weight_w = o.weight_w;
+    }
+  }
+
+  // Project the seed onto the admissible polytope.
+  (void)mm_project_default(T, a, b, rho, sigma);
+
+  const std::span<const FitObs> wspan{work};
+  const std::uint16_t max_outer = detail::outer_cap(opts);
+  const std::uint16_t max_inner = static_cast<std::uint16_t>(
+      (opts.max_inner_iter > 0) ? opts.max_inner_iter : detail::kLmInnerDefault);
+  const double tol_param =
+      (opts.tol_param > 0.0) ? opts.tol_param : detail::kTolParamDefault;
+
+  LmWorkspaceMm ws{};
+  ws.r0.assign(n, 0.0);
+  for (auto &col : ws.jcol) {
+    col.assign(n, 0.0);
+  }
+  // Batched-w_pred scratch: gather k ONCE (constant across the fit); w_pred is
+  // filled by simd::svi_total_w_batch on each residual/SSE pass.
+  ws.k.assign(n, 0.0);
+  ws.w_pred.assign(n, 0.0);
+  for (std::size_t i = 0; i < n; ++i) {
+    ws.k[i] = work[i].k;
+  }
+
+  std::uint16_t outer_iters = 0;
+  std::uint16_t inner_total = 0;
+  double prev_outer_sse = std::numeric_limits<double>::infinity();
+
+  // Morozov noise-floor stop in price-domain SSE units (Sprint 07 B6).
+  double morozov_floor = 0.0;
+  if (opts.morozov_stop) {
+    double sum = 0.0;
+    std::size_t cnt = 0;
+    for (const FitObs &o : work) {
+      if (o.spread > 0.0) {
+        const double hs = 0.5 * o.spread;
+        sum += o.active_weight_w * hs * hs;
+        ++cnt;
+      }
+    }
+    if (cnt > 0) {
+      const double tau = (opts.morozov_tau > 0.0) ? opts.morozov_tau : 1.1;
+      morozov_floor = tau * tau * sum;
+    }
+  }
+
+  std::vector<double> resid_scratch(n, 0.0);
+
+  for (std::uint16_t outer = 0; outer < max_outer; ++outer) {
+    double sse = svi_mm_sse(wspan, T, a, b, rho, m, sigma, ws);
+    double lambda_lm = detail::kLambdaLmInit;
+
+    for (std::uint16_t inner = 0; inner < max_inner; ++inner) {
+      const double a_old = a;
+      const double b_old = b;
+      const double rho_old = rho;
+      const double m_old = m;
+      const double sigma_old = sigma;
+
+      const double new_sse =
+          svi_mm_lm_step(wspan, T, a, b, rho, m, sigma, sse, lambda_lm, ws);
+      ++inner_total;
+      const double da = a - a_old;
+      const double db = b - b_old;
+      const double dr = rho - rho_old;
+      const double dm = m - m_old;
+      const double ds = sigma - sigma_old;
+      const double step_norm2 = da * da + db * db + dr * dr + dm * dm + ds * ds;
+      sse = new_sse;
+      if (step_norm2 < tol_param * tol_param) {
+        break;
+      }
+      if (morozov_floor > 0.0 && sse <= morozov_floor) {
+        break;
+      }
+    }
+    if (morozov_floor > 0.0 && sse <= morozov_floor) {
+      outer_iters = static_cast<std::uint16_t>(outer + 1);
+      break;
+    }
+    outer_iters = static_cast<std::uint16_t>(outer + 1);
+
+    // IRLS Huber reweight on price residuals normalized by half-spread (q90).
+    double sumw = 0.0;
+    double sumwr2 = 0.0;
+    for (std::size_t i = 0; i < n; ++i) {
+      const FitObs &o = work[i];
+      double w_pred = svi_w_raw(a, b, rho, m, sigma, o.k);
+      if (w_pred < 1.0e-12) {
+        w_pred = 1.0e-12;
+      }
+      const double sig_pred = std::sqrt(w_pred / T);
+      const double p_pred = black76_price(o.F, o.K, T, sig_pred, o.df, o.side);
+      // Scoring a non-finite model price as a ZERO residual is the 1.8(a)
+      // defect class (see the svi_mm_sse note above): an observation the
+      // candidate CANNOT price is recorded as a perfect fit, which both hands
+      // that row full Huber weight and deflates rms_resid_px, shifting the
+      // threshold for every other row. It is left as a mask rather than turned
+      // into a fail-closed guard because the 1.8(a) fix already makes the
+      // damaging state unreachable, and the guard would be untestable:
+      //
+      //  * black76_price is non-finite here only if sig_pred is (F, K, df are
+      //    finite quote geometry and T > 0), i.e. only if w_pred is: v^2 IS
+      //    w_pred, so d1 = (ln(F/K) + w_pred/2)/sqrt(w_pred) stays finite for
+      //    every finite w_pred, and the floor above keeps w_pred positive.
+      //  * svi_w_raw is non-finite for SOME k but not all only if `b` has
+      //    escaped mm_project_default's Lee cap b*(1+|rho|) <= 2 — which
+      //    every LM-accepted iterate and the projected seed have passed.
+      //  * If it is non-finite for ALL rows, sumwr2 stays 0, rms_resid_px is 0,
+      //    and the `rms_resid_px > 1e-12` gate below skips the whole reweight,
+      //    so the fabricated zeros never reach a Huber weight at all.
+      //
+      // Distorting the reweight therefore requires defeating the projector. If
+      // that cap is ever relaxed, restore fail-closed behaviour by leaving the
+      // outer loop on a non-finite `sse`: svi_mm_sse already returns +inf for
+      // exactly this condition. The final RMSE loop below carries the same mask
+      // and the same reasoning.
+      const double r_px = std::isfinite(p_pred) ? (p_pred - o.mid) : 0.0;
+      resid_scratch[i] = r_px;
+      sumw += o.weight_w;
+      sumwr2 += o.weight_w * r_px * r_px;
+    }
+    const double rms_resid_px = (sumw > 1.0e-15) ? std::sqrt(sumwr2 / sumw) : 0.0;
+    if (std::fabs(prev_outer_sse - sse) < detail::kOuterStallSse) {
+      break;
+    }
+    prev_outer_sse = sse;
+
+    if (rms_resid_px > 1.0e-12) {
+      bool have_spread = false;
+      for (const FitObs &o : work) {
+        if (o.spread > 1.0e-9) {
+          have_spread = true;
+          break;
+        }
+      }
+      if (have_spread) {
+        // q90 of half-spread-normalized residuals, floored at 1.5.
+        std::vector<double> rnorm(n, 0.0);
+        for (std::size_t i = 0; i < n; ++i) {
+          const double hs =
+              (work[i].spread > 1.0e-9) ? 0.5 * work[i].spread : 1.0e-9;
+          rnorm[i] = std::fabs(resid_scratch[i]) / hs;
+        }
+        std::size_t q_idx = static_cast<std::size_t>(0.90 * static_cast<double>(n));
+        if (q_idx >= n) {
+          q_idx = n - 1;
+        }
+        // q90 via nth_element: rnorm[q_idx] becomes exactly the element a full
+        // sort would place there — the SAME value the old O(n^2) partial
+        // selection sort returned (identical downstream Huber weights), in O(n).
+        // SviCalib.NthElementQ90MatchesSelectionSort pins this equivalence.
+        std::nth_element(rnorm.begin(),
+                         rnorm.begin() + static_cast<std::ptrdiff_t>(q_idx),
+                         rnorm.end());
+        double huber_threshold = rnorm[q_idx];
+        if (huber_threshold < 1.5) {
+          huber_threshold = 1.5;
+        }
+        for (std::size_t i = 0; i < n; ++i) {
+          const double hs =
+              (work[i].spread > 1.0e-9) ? 0.5 * work[i].spread : 1.0e-9;
+          const double r_norm = std::fabs(resid_scratch[i]) / hs;
+          work[i].active_weight_w =
+              (r_norm <= huber_threshold)
+                  ? work[i].weight_w
+                  : work[i].weight_w * (huber_threshold / r_norm);
+        }
+      } else {
+        const double huber = (opts.huber_k > 0.0) ? opts.huber_k : 1.5;
+        for (std::size_t i = 0; i < n; ++i) {
+          const double r_norm = std::fabs(resid_scratch[i]) / rms_resid_px;
+          work[i].active_weight_w = (r_norm <= huber)
+                                        ? work[i].weight_w
+                                        : work[i].weight_w * (huber / r_norm);
+        }
+      }
+    }
+  }
+
+  // Final defensive projection (belt-and-braces; every accepted iterate already
+  // passed through the projector).
+  (void)mm_project_default(T, a, b, rho, sigma);
+
+  // Final RMSE in vol-bps-equivalent of the price residual (r_px / vega).
+  double sumw = 0.0;
+  double sumwr2 = 0.0;
+  double max_res = 0.0;
+  for (const FitObs &o : work) {
+    double w_pred = svi_w_raw(a, b, rho, m, sigma, o.k);
+    if (w_pred < 1.0e-12) {
+      w_pred = 1.0e-12;
+    }
+    const double sig_pred = std::sqrt(w_pred / T);
+    const double p_pred = black76_price(o.F, o.K, T, sig_pred, o.df, o.side);
+    const double r_px = std::isfinite(p_pred) ? (p_pred - o.mid) : 0.0;
+    const double v = (o.vega > 1.0e-12) ? o.vega : 1.0e-12;
+    const double r = r_px / v;
+    sumw += o.weight_w;
+    sumwr2 += o.weight_w * r * r;
+    if (std::fabs(r) > max_res) {
+      max_res = std::fabs(r);
+    }
+  }
+  const double rmse = (sumw > 1.0e-15) ? std::sqrt(sumwr2 / sumw) : 0.0;
+
+  SviParams out{};
+  out.a = a;
+  out.b = b;
+  out.rho = rho;
+  out.m = m;
+  out.sigma = sigma;
+  out.T = T;
+  out.F = F;
+
+  if (diag != nullptr) {
+    diag->rmse_vol_vega_weighted = rmse;
+    diag->max_residual_vol = max_res;
+    diag->outer_iters = outer_iters;
+    diag->inner_iters_total = inner_total;
+    diag->n_quotes_used = static_cast<std::uint32_t>(n);
+  }
+
+  return Ok(out);
+}
+
+// ── Raw <-> Jump-Wings ───────────────────────────────────────────────────
+
+SviJwParams svi_raw_to_jw(const SviParams &raw) noexcept {
+  const double a = raw.a;
+  const double b = raw.b;
+  const double rho = raw.rho;
+  const double m = raw.m;
+  const double sigma = raw.sigma;
+  const double T = raw.T;
+
+  SviJwParams jw{};
+  jw.T = T;
+
+  const double m2_plus_s2 = m * m + sigma * sigma;
+  const double sq_ms = std::sqrt(m2_plus_s2);
+  const double w0 = a + b * (sq_ms - rho * m);
+  const double v = (T > 0.0) ? (w0 / T) : 0.0;
+  jw.v = v;
+
+  const double sqrt_vt = std::sqrt(v * T);
+  const double inv_sq_ms = (sq_ms > 1.0e-15) ? 1.0 / sq_ms : 0.0;
+  jw.psi = (sqrt_vt > 1.0e-15) ? 0.5 * b * (rho - m * inv_sq_ms) / sqrt_vt : 0.0;
+  jw.p = (sqrt_vt > 1.0e-15) ? b * (1.0 - rho) / sqrt_vt : 0.0;
+  jw.c = (sqrt_vt > 1.0e-15) ? b * (1.0 + rho) / sqrt_vt : 0.0;
+
+  const double w_min = a + b * sigma * std::sqrt(1.0 - rho * rho);
+  jw.v_min = (T > 0.0) ? (w_min / T) : 0.0;
+  return jw;
+}
+
+Result<SviParams> svi_jw_to_raw(const SviJwParams &jw) {
+  const double v = jw.v;
+  const double psi = jw.psi;
+  const double p = jw.p;
+  const double c = jw.c;
+  const double v_min = jw.v_min;
+  const double T = jw.T;
+
+  if (!(T > 0.0) || !(v > 0.0) || !(v_min > 0.0)) {
+    return Err(ErrorCode::OutOfRange, "svi_jw_to_raw: non-positive T / v / v_min");
+  }
+  if (!(p > 0.0) || !(c > 0.0)) {
+    return Err(ErrorCode::OutOfRange, "svi_jw_to_raw: non-positive wing slope");
+  }
+  if (v_min > v) {
+    return Err(ErrorCode::OutOfRange, "svi_jw_to_raw: v_min exceeds v");
+  }
+
+  const double sqrt_vt = std::sqrt(v * T);
+  const double b = 0.5 * sqrt_vt * (c + p);
+  const double rho = 1.0 - 2.0 * p / (p + c);
+  if (std::fabs(rho) >= 1.0) {
+    return Err(ErrorCode::OutOfRange, "svi_jw_to_raw: |rho| >= 1");
+  }
+
+  const double beta = rho - 2.0 * psi * sqrt_vt / b;
+  if (std::fabs(beta) > 1.0) {
+    return Err(ErrorCode::OutOfRange, "svi_jw_to_raw: |beta| > 1");
+  }
+
+  SviParams out{};
+  out.T = T;
+
+  // Symmetric smile (m = 0).
+  if (std::fabs(beta) < 1.0e-12) {
+    const double sigma =
+        (v - v_min) * T / (b * (1.0 - std::sqrt(1.0 - rho * rho)) + 1.0e-18);
+    // FT-C5: reject sigma <= 0 (matches the asymmetric branch). With v == v_min
+    // the numerator is zero => sigma == 0, a total-variance kink at k=m with
+    // infinite density; the pre-fix symmetric branch laundered it out as Ok.
+    if (!(sigma > 0.0)) {
+      return Err(ErrorCode::OutOfRange,
+                 "svi_jw_to_raw: non-positive sigma (symmetric branch)");
+    }
+    out.a = v_min * T - b * sigma * std::sqrt(1.0 - rho * rho);
+    out.b = b;
+    out.rho = rho;
+    out.m = 0.0;
+    out.sigma = sigma;
+    return Ok(out);
+  }
+
+  const double alpha2 = 1.0 / (beta * beta) - 1.0;
+  if (alpha2 < 0.0) {
+    return Err(ErrorCode::OutOfRange, "svi_jw_to_raw: negative alpha^2");
+  }
+  const double alpha = ((beta > 0.0) ? 1.0 : -1.0) * std::sqrt(alpha2);
+
+  const double sgn_a = (alpha >= 0.0) ? 1.0 : -1.0;
+  const double d = -rho + sgn_a * std::sqrt(1.0 + alpha2) -
+                   alpha * std::sqrt(1.0 - rho * rho);
+  if (std::fabs(d) < 1.0e-15) {
+    return Err(ErrorCode::OutOfRange, "svi_jw_to_raw: degenerate denominator");
+  }
+
+  const double m = (v - v_min) * T / (b * d);
+  const double sigma = alpha * m;
+  if (sigma <= 0.0) {
+    return Err(ErrorCode::OutOfRange, "svi_jw_to_raw: non-positive sigma");
+  }
+
+  out.a = v_min * T - b * sigma * std::sqrt(1.0 - rho * rho);
+  out.b = b;
+  out.rho = rho;
+  out.m = m;
+  out.sigma = sigma;
+  return Ok(out);
+}
+
+bool svi_project_mm(SviParams &slice, double T) noexcept {
+  // Reuse the production Mingone projector (edge pads + Lee wing-slope + w_min
+  // floor) — the same repair applied to every LM iterate in svi_mm_fit_slice.
+  return mm_project_default(T, slice.a, slice.b, slice.rho, slice.sigma);
+}
+
+// ── Surface drivers ──────────────────────────────────────────────────────
+
+namespace {
+
+// Shared aggregation across the per-slice fits for both surface drivers.
+struct SurfaceAccum {
+  std::uint32_t total_used{0};
+  std::uint32_t total_dropped{0};
+  double sum_sse{0.0};
+  double sum_w{0.0};
+  double max_res{0.0};
+  std::uint32_t agg_outer{0};
+  std::uint32_t agg_inner{0};
+  std::uint16_t n_fit_ok{0};
+  std::uint32_t n_butterfly_viol{0};  // summed closed-form MM violations (diag)
+};
+
+void stamp_surface(VolSurface &surface, const SurfaceAccum &acc, FitDiag *diag) {
+  const double rmse_global =
+      (acc.sum_w > 0.0) ? std::sqrt(acc.sum_sse / acc.sum_w) : 0.0;
+  VolSurface::Diagnostics d{};
+  d.rmse_vol = rmse_global;
+  d.max_residual_vol = acc.max_res;
+  d.n_quotes_used = acc.total_used;
+  d.n_quotes_dropped = acc.total_dropped;
+  surface.set_diagnostics(d);
+
+  if (diag != nullptr) {
+    diag->rmse_vol_vega_weighted = rmse_global;
+    diag->max_residual_vol = acc.max_res;
+    diag->outer_iters = static_cast<std::uint16_t>(
+        (acc.agg_outer > 0xFFFFu) ? 0xFFFFu : acc.agg_outer);
+    diag->inner_iters_total = static_cast<std::uint16_t>(
+        (acc.agg_inner > 0xFFFFu) ? 0xFFFFu : acc.agg_inner);
+    diag->n_quotes_used = acc.total_used;
+    diag->n_butterfly_viol = acc.n_butterfly_viol;
+  }
+}
+
+}  // namespace
+
+Status svi_calib_surface(VolSurface &surface, const Underlying &under,
+                         const CurveSet &cs, const CalibOpts &opts,
+                         FitDiag *diag) {
+  if (surface.param() != Parametrization::Svi) {
+    return Err(ErrorCode::InvalidArgument,
+               "svi_calib_surface: surface is not SVI-parametrized");
+  }
+  if (under.chains.empty()) {
+    return Err(ErrorCode::NotFound, "svi_calib_surface: underlying has no chains");
+  }
+
+  SurfaceAccum acc{};
+
+  for (const Chain &c : under.chains) {
+    if (static_cast<std::size_t>(acc.n_fit_ok) >= surface.capacity()) {
+      break;
+    }
+    const double T = c.T;
+    if (!(T > kTMinFit)) {
+      continue;
+    }
+    const double F = cs.forward.forward_at(c.expiry_id);
+    if (!std::isfinite(F)) {
+      continue;
+    }
+    const double df = cs.yield.disc(T);
+
+    const Result<ObsSet> obs_res = build_observations(c, F, T, df, opts);
+    if (!obs_res.has_value()) {
+      // NotFound => too few quotes; drops are tallied inside build_observations
+      // only on the success path, so nothing to add here (matches the C, which
+      // still adds n_drop — see PORT NOTE). Skip this chain.
+      continue;
+    }
+    const ObsSet &os = obs_res.value();
+    acc.total_dropped += os.n_dropped;
+
+    // Decline-to-fit on insufficient signal (Sprint 24 Phase B).
+    if (opts.min_obs_per_slice > 0 &&
+        static_cast<std::uint32_t>(os.obs.size()) < opts.min_obs_per_slice) {
+      continue;
+    }
+
+    FitDiag sd{};
+    const Result<SviParams> fit_res =
+        svi_fit_slice(std::span<const FitObs>(os.obs), T, F, opts, &sd);
+    if (!fit_res.has_value()) {
+      continue;
+    }
+    SviParams slice = fit_res.value();
+
+    // Post-fit sigma clamp (Sprint 24 Phase B + Sprint 26).
+    const double w_atm = slice.a + slice.b * (-slice.rho * slice.m +
+                                              std::sqrt(slice.m * slice.m +
+                                                        slice.sigma * slice.sigma));
+    if (w_atm > 0.0) {
+      const double sigma_atm = std::sqrt(w_atm / T);
+      if (opts.max_post_fit_sigma > 0.0 && sigma_atm > opts.max_post_fit_sigma) {
+        continue;
+      }
+      if (c.source_atm_vol_present && std::isfinite(c.source_atm_vol) &&
+          c.source_atm_vol > 0.0 && sigma_atm > 2.5 * c.source_atm_vol) {
+        continue;
+      }
+    }
+
+    // Post-fit positivity gate: reject a converged slice with non-positive total
+    // variance rather than store a silent garbage fit (see the helper).
+    if (!svi_slice_variance_positive(slice, std::span<const FitObs>(os.obs))) {
+      continue;
+    }
+
+    // Butterfly no-arb gate (moved here from the fit_slice_curve serving seam,
+    // vol_curve.cpp). The quasi-explicit raw-SVI fit only promises w >= 0, NOT
+    // the Martini-Mingone butterfly polytope. This driver writes the slice into a
+    // VolSurface that a caller can serve DIRECTLY (VolSurface::w evaluates the
+    // stored SVI slice via svi_total_w), so a smile stored here reaches
+    // pricing/risk without ever passing through fit_slice_curve's gate. Enforce
+    // admissibility at the source: on a violation, project onto the polytope (the
+    // same repair svi_mm_fit_slice applies to every LM iterate) and re-check; if
+    // it STILL violates, DROP the slice rather than serve a static-arb smile.
+    const auto adm_raw = arb_check_butterfly_svi_mm(slice, T);
+    if (adm_raw.n_violations > 0) {
+      acc.n_butterfly_viol += adm_raw.n_violations;  // pre-repair demand (diag)
+      (void)svi_project_mm(slice, T);
+      if (arb_check_butterfly_svi_mm(slice, T).n_violations > 0) {
+        continue;  // unrepairable — refuse to serve an arbitrageable slice
+      }
+    }
+
+    slice.F = F;
+    slice.expiry_id = c.expiry_id;
+    slice.expiry_ns = c.expiry_ns;
+    slice.T = T;
+    const Status set_rc = surface.set_slice_svi(acc.n_fit_ok, slice);
+    if (!set_rc.has_value()) {
+      continue;
+    }
+
+    acc.total_used += sd.n_quotes_used;
+    acc.sum_sse += sd.rmse_vol_vega_weighted * sd.rmse_vol_vega_weighted *
+                   static_cast<double>(sd.n_quotes_used);
+    acc.sum_w += static_cast<double>(sd.n_quotes_used);
+    if (sd.max_residual_vol > acc.max_res) {
+      acc.max_res = sd.max_residual_vol;
+    }
+    acc.agg_outer += sd.outer_iters;
+    acc.agg_inner += sd.inner_iters_total;
+    ++acc.n_fit_ok;
+  }
+
+  if (acc.n_fit_ok >= 2 && opts.validate_no_arb) {
+    const Status proj = arb_project_calendar_svi(surface, -1.5, 1.5, 64u);
+    (void)proj;  // non-fatal; only fails on k_max <= k_min (not the case here)
+  }
+
+  stamp_surface(surface, acc, diag);
+  return (acc.n_fit_ok > 0)
+             ? Ok()
+             : Err(ErrorCode::NotFound, "svi_calib_surface: no slice fit");
+}
+
+Status svi_mm_calib_surface(VolSurface &surface, const Underlying &under,
+                            const CurveSet &cs, const CalibOpts &opts,
+                            FitDiag *diag) {
+  if (surface.param() != Parametrization::SviMm) {
+    return Err(ErrorCode::InvalidArgument,
+               "svi_mm_calib_surface: surface is not SVI-MM-parametrized");
+  }
+  if (under.chains.empty()) {
+    return Err(ErrorCode::NotFound,
+               "svi_mm_calib_surface: underlying has no chains");
+  }
+
+  SurfaceAccum acc{};
+
+  for (const Chain &c : under.chains) {
+    if (static_cast<std::size_t>(acc.n_fit_ok) >= surface.capacity()) {
+      break;
+    }
+    const double T = c.T;
+    if (!(T > kTMinFit)) {
+      continue;
+    }
+    const double F = cs.forward.forward_at(c.expiry_id);
+    if (!std::isfinite(F)) {
+      continue;
+    }
+    const double df = cs.yield.disc(T);
+
+    const Result<ObsSet> obs_res = build_observations(c, F, T, df, opts);
+    if (!obs_res.has_value()) {
+      continue;
+    }
+    const ObsSet &os = obs_res.value();
+    acc.total_dropped += os.n_dropped;
+
+    FitDiag sd{};
+    const Result<SviParams> fit_res =
+        svi_mm_fit_slice(std::span<const FitObs>(os.obs), T, F, opts, &sd);
+    if (!fit_res.has_value()) {
+      continue;
+    }
+    SviParams slice = fit_res.value();
+    // Post-fit positivity gate (defense-in-depth; the MM projection already
+    // guarantees w_min >= edge_a > 0 — see the helper).
+    if (!svi_slice_variance_positive(slice, std::span<const FitObs>(os.obs))) {
+      continue;
+    }
+    // Butterfly no-arb gate (same source-side enforcement as svi_calib_surface).
+    // svi_mm_fit_slice projects every LM iterate onto the Mingone polytope, so a
+    // converged SVI-MM slice is admissible by construction; this is defense-in-
+    // depth making the served VolSurface admissible independent of the fit path
+    // (a caller can serve it directly). A residual violation is repaired-or-dropped
+    // rather than tallied-and-served.
+    const auto adm_raw = arb_check_butterfly_svi_mm(slice, T);
+    if (adm_raw.n_violations > 0) {
+      acc.n_butterfly_viol += adm_raw.n_violations;  // pre-repair demand (diag)
+      (void)svi_project_mm(slice, T);
+      if (arb_check_butterfly_svi_mm(slice, T).n_violations > 0) {
+        continue;  // unrepairable — refuse to serve an arbitrageable slice
+      }
+    }
+
+    slice.F = F;
+    slice.expiry_id = c.expiry_id;
+    slice.expiry_ns = c.expiry_ns;
+    slice.T = T;
+    const Status set_rc = surface.set_slice_svi(acc.n_fit_ok, slice);
+    if (!set_rc.has_value()) {
+      continue;
+    }
+
+    acc.total_used += sd.n_quotes_used;
+    acc.sum_sse += sd.rmse_vol_vega_weighted * sd.rmse_vol_vega_weighted *
+                   static_cast<double>(sd.n_quotes_used);
+    acc.sum_w += static_cast<double>(sd.n_quotes_used);
+    if (sd.max_residual_vol > acc.max_res) {
+      acc.max_res = sd.max_residual_vol;
+    }
+    acc.agg_outer += sd.outer_iters;
+    acc.agg_inner += sd.inner_iters_total;
+    ++acc.n_fit_ok;
+  }
+
+  if (acc.n_fit_ok >= 2 && opts.validate_no_arb) {
+    const Status proj = arb_project_calendar_svi(surface, -1.5, 1.5, 64u);
+    (void)proj;
+  }
+
+  stamp_surface(surface, acc, diag);
+  return (acc.n_fit_ok > 0)
+             ? Ok()
+             : Err(ErrorCode::NotFound, "svi_mm_calib_surface: no slice fit");
+}
+
+}  // namespace atx::vol

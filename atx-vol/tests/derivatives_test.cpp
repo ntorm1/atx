@@ -7,14 +7,14 @@
 #include <utility>
 #include <vector>
 
-#include "atx/vol/black76.hpp"              // WingClamp oracle repricing
-#include "atx/vol/derivatives.hpp"
-#include "atx/vol/detail/strip_grid.hpp"    // strip::simpson_weight (WingClamp oracle)
-#include "atx/vol/detail/legacy_surface.hpp"  // EssviSurface (demoted, S4-T21)
-#include "atx/vol/priced_surface.hpp"  // E6: PricedSurface-native overloads
-#include "atx/vol/rates_curve.hpp"
-#include "atx/vol/surface.hpp"
-#include "atx/vol/vol_surface.hpp" // Tier-A instantiation set (closeout 1.2)
+#include "atx/vol/api/pricing/black76.hpp"              // WingClamp oracle repricing
+#include "atx/vol/api/pricing/derivatives.hpp"
+#include "pricing/strip_grid.hpp"    // strip::simpson_weight (WingClamp oracle)
+#include "fitting/legacy_surface.hpp"  // EssviSurface (demoted, S4-T21)
+#include "atx/vol/api/backtest/priced_surface.hpp"  // E6: PricedSurface-native overloads
+#include "atx/vol/api/pricing/rates_curve.hpp"
+#include "atx/vol/api/fitting/surface.hpp"
+#include "atx/vol/api/fitting/vol_surface.hpp" // Tier-A instantiation set (closeout 1.2)
 #include "support/analytics_fixture.hpp" // E6: testkit::make_flat_surface
 
 // Vol-derivatives coverage, ported from the C ats-vol Sprint-22 tests:

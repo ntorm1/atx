@@ -19,7 +19,7 @@
 #include "atx/core/error.hpp"
 #include "atx/engine/loop/types.hpp"
 #include "atx/options/option_research_panel.hpp"
-#include "atx/vol/surface_archive.hpp"
+#include "atx/vol/api/storage/surface_archive.hpp"
 
 namespace atx::options::execution {
 

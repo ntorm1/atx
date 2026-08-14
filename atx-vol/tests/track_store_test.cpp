@@ -11,7 +11,7 @@
 // Only built when ATX_VOL_LAKEHOUSE is ON (tests/CMakeLists.txt) -- the
 // library entry points this file exercises do not exist in the OFF build.
 
-#include "atx/vol/track_store.hpp"
+#include "storage/track_store.hpp"
 
 #include <arrow/array.h>
 #include <arrow/io/file.h>
@@ -30,7 +30,7 @@
 #include <gtest/gtest.h>
 
 #include "atx/core/datetime.hpp" // time::days_from_civil (independent date-epoch oracle)
-#include "atx/vol/backtest.hpp"  // BacktestResult
+#include "atx/vol/api/backtest/backtest.hpp"  // BacktestResult
 
 using namespace atx::vol;
 namespace fs = std::filesystem;

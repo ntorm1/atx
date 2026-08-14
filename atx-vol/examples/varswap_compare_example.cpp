@@ -20,14 +20,14 @@
 #include <utility>
 #include <vector>
 
-#include "atx/vol/backtest.hpp"                 // Clock, RunConfig, UnpricedLotPolicy
-#include "atx/vol/corpus.hpp"                   // CorpusManifest, CorpusEntry
+#include "atx/vol/api/backtest/backtest.hpp"                 // Clock, RunConfig, UnpricedLotPolicy
+#include "atx/vol/api/marketdata/corpus.hpp"                   // CorpusManifest, CorpusEntry
 #include "atx/vol/research/backtest_driver.hpp" // run_timed
-#include "atx/vol/strategy.hpp"                 // StrategySpec, DeclarativeStrategy
-#include "atx/vol/surface_archive.hpp"          // SurfaceArchiveV2
-#include "atx/vol/surface_db.hpp"               // SurfaceDb
+#include "atx/vol/api/backtest/strategy.hpp"                 // StrategySpec, DeclarativeStrategy
+#include "atx/vol/api/storage/surface_archive.hpp"          // SurfaceArchiveV2
+#include "atx/vol/api/storage/surface_db.hpp"               // SurfaceDb
 #include "atx/vol/tools/tearsheet.hpp"          // write_backtest_tsv
-#include "atx/vol/types.hpp"                    // Result, Status
+#include "atx/vol/api/core/types.hpp"                    // Result, Status
 
 using namespace atx::vol;
 

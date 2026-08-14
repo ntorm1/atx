@@ -24,8 +24,8 @@
 
 #include "american_boundary_avx2_kernel.hpp"
 
-#include "atx/vol/american.hpp" // AmericanGreeks, classify_regime, ExerciseRegime
-#include "atx/vol/detail/counters.hpp" // BoundarySolves + always-on SIMD-invariant solve ledger
+#include "atx/vol/api/pricing/american.hpp" // AmericanGreeks, classify_regime, ExerciseRegime
+#include "fitting/counters.hpp" // BoundarySolves + always-on SIMD-invariant solve ledger
 
 #include <cstddef>
 #include <cstdint>

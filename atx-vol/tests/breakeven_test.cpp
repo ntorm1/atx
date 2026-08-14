@@ -1,4 +1,4 @@
-#include "atx/vol/breakeven.hpp"
+#include "analytics/breakeven.hpp"
 
 #include <cmath>
 #include <cstdint>
@@ -10,13 +10,13 @@
 
 #include <gtest/gtest.h>
 
-#include "atx/vol/backtest.hpp"    // Clock, MarketSnapshot
-#include "atx/vol/corpus.hpp"      // CorpusBoard, build_corpus, CorpusManifest, read_manifest_file
-#include "atx/vol/data.hpp"        // iso_to_ns
-#include "atx/vol/market_env.hpp"  // MarketEnv
-#include "atx/vol/panel.hpp"       // make_synthetic_american_panel, SynthPanelSpec
-#include "atx/vol/spy_fixture.hpp" // make_spy_synthetic_spec
-#include "atx/vol/vol_curve.hpp"   // CurveConfig, VolCurveKind
+#include "atx/vol/api/backtest/backtest.hpp"    // Clock, MarketSnapshot
+#include "atx/vol/api/marketdata/corpus.hpp"      // CorpusBoard, build_corpus, CorpusManifest, read_manifest_file
+#include "atx/vol/api/marketdata/data.hpp"        // iso_to_ns
+#include "atx/vol/api/core/market_env.hpp"  // MarketEnv
+#include "atx/vol/api/backtest/panel.hpp"       // make_synthetic_american_panel, SynthPanelSpec
+#include "fitting/spy_fixture.hpp" // make_spy_synthetic_spec
+#include "atx/vol/api/fitting/vol_curve.hpp"   // CurveConfig, VolCurveKind
 #include "support/cached_artifacts.hpp" // cached_corpus
 
 namespace atx::vol {

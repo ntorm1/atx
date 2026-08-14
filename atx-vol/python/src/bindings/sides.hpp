@@ -48,7 +48,7 @@
 #include <pybind11/pybind11.h>
 
 #include "atx/core/error.hpp"
-#include "atx/vol/types.hpp"
+#include "atx/vol/api/core/types.hpp"
 #include "result.hpp"
 
 namespace atxvol::python {

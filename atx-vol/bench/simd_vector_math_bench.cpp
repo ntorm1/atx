@@ -20,11 +20,11 @@
 // items/s = transcendental evaluations per second. The one-shot max-error label
 // documents the accuracy the speed is bought at (the bound test asserts it).
 
-#include "atx/vol/simd/math_mode.hpp"
-#include "atx/vol/simd/vector_math_probe.hpp"
+#include "simd/math_mode.hpp"
+#include "simd/vector_math_probe.hpp"
 
 #include "atx/core/math.hpp"
-#include "atx/vol/simd/cpu.hpp"
+#include "atx/vol/api/simd/cpu.hpp"
 
 #include <cmath>
 #include <cstddef>

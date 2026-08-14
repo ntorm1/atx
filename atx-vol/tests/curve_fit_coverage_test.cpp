@@ -18,13 +18,13 @@
 #include <optional>
 #include <vector>
 
-#include "atx/vol/american.hpp"       // american_price, AmericanMethod
-#include "atx/vol/curve_fit.hpp"      // fit_curve_surface, CurveSurfaceReport
-#include "atx/vol/dividend.hpp"       // hybrid_forward, HybridDivParams
-#include "atx/vol/surface_parity.hpp" // SurfaceParityInputs, ExpiryFitOutcome
-#include "atx/vol/types.hpp"          // Side
-#include "atx/vol/universe.hpp"       // Underlying, Chain, chain_index
-#include "atx/vol/vol_curve.hpp"      // CurveConfig
+#include "atx/vol/api/pricing/american.hpp"       // american_price, AmericanMethod
+#include "atx/vol/api/fitting/curve_fit.hpp"      // fit_curve_surface, CurveSurfaceReport
+#include "atx/vol/api/pricing/dividend.hpp"       // hybrid_forward, HybridDivParams
+#include "atx/vol/api/fitting/surface_parity.hpp" // SurfaceParityInputs, ExpiryFitOutcome
+#include "atx/vol/api/core/types.hpp"          // Side
+#include "atx/vol/api/marketdata/universe.hpp"       // Underlying, Chain, chain_index
+#include "atx/vol/api/fitting/vol_curve.hpp"      // CurveConfig
 
 namespace {
 

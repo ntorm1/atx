@@ -23,8 +23,8 @@
 #include "atx/core/error.hpp"
 #include "atx/options/option_pretrade_risk.hpp"
 #include "atx/options/option_research_panel.hpp"
-#include "atx/vol/backtest.hpp"
-#include "atx/vol/surface_archive.hpp"
+#include "atx/vol/api/backtest/backtest.hpp"
+#include "atx/vol/api/storage/surface_archive.hpp"
 
 namespace atx::options::risk {
 

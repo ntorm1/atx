@@ -8,16 +8,16 @@
 #include <vector>
 
 #include "atx/core/error.hpp"
-#include "atx/vol/american.hpp"
-#include "atx/vol/arb.hpp"
-#include "atx/vol/black76.hpp"
-#include "atx/vol/correction.hpp"
-#include "atx/vol/curve_fit.hpp"
-#include "atx/vol/essvi_calib.hpp"
-#include "atx/vol/detail/prepared_fitting.hpp"
-#include "atx/vol/surface_parity.hpp"
-#include "atx/vol/universe.hpp"
-#include "atx/vol/vol_curve.hpp"
+#include "atx/vol/api/pricing/american.hpp"
+#include "atx/vol/api/fitting/arb.hpp"
+#include "atx/vol/api/pricing/black76.hpp"
+#include "atx/vol/api/fitting/correction.hpp"
+#include "atx/vol/api/fitting/curve_fit.hpp"
+#include "fitting/essvi_calib.hpp"
+#include "fitting/prepared_fitting.hpp"
+#include "atx/vol/api/fitting/surface_parity.hpp"
+#include "atx/vol/api/marketdata/universe.hpp"
+#include "atx/vol/api/fitting/vol_curve.hpp"
 
 namespace {
 

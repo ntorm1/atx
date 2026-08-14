@@ -5,7 +5,7 @@
 
 #include <gtest/gtest.h>
 
-#include "atx/vol/black76.hpp"
+#include "atx/vol/api/pricing/black76.hpp"
 #include "spx_wilmott_repro_support.hpp"
 
 namespace atx::vol::spx_wilmott {

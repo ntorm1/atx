@@ -11,7 +11,7 @@
 #include <optional>
 #include <string>
 
-#include "atx/vol/fit_policy.hpp"
+#include "atx/vol/api/fitting/fit_policy.hpp"
 #include "opra_fixture.hpp"
 
 namespace atx::vol::testkit {

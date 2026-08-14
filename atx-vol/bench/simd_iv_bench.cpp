@@ -10,9 +10,9 @@
 // speedup evidence. A one-shot max-abs σ cross-check is printed via a label so
 // the run also documents that the two agree.
 
-#include "atx/vol/black76.hpp"
-#include "atx/vol/implied_vol.hpp"
-#include "atx/vol/simd/cpu.hpp"
+#include "atx/vol/api/pricing/black76.hpp"
+#include "atx/vol/api/pricing/implied_vol.hpp"
+#include "atx/vol/api/simd/cpu.hpp"
 
 #include <cmath>
 #include <cstddef>

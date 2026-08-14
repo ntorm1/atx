@@ -28,8 +28,8 @@
 
 #include <benchmark/benchmark.h>
 
-#include "atx/vol/backtest.hpp" // Clock, MarketSnapshot, run_backtest, BacktestResult
-#include "atx/vol/strategy.hpp" // DeclarativeStrategy, StrategySpec
+#include "atx/vol/api/backtest/backtest.hpp" // Clock, MarketSnapshot, run_backtest, BacktestResult
+#include "atx/vol/api/backtest/strategy.hpp" // DeclarativeStrategy, StrategySpec
 
 #include "bench_util.hpp"
 #include "support/synth_corpus.hpp" // build_synth_corpus — the per-date archive Clock

@@ -10,19 +10,19 @@
 #include <optional>
 #include <vector>
 
-#include "atx/vol/calib.hpp"          // CalibOpts, calib_default_opts
-#include "atx/vol/chain.hpp"          // OptionChain
-#include "atx/vol/correction.hpp"     // CorrectionCache, AmericanCorrectionCaches
-#include "atx/vol/data.hpp"           // iso_to_ns
-#include "atx/vol/deamer.hpp"         // DeAmOptions
-#include "atx/vol/essvi_calib.hpp"    // the unit under test
-#include "atx/vol/market_env.hpp"     // MarketEnv
-#include "atx/vol/panel.hpp"          // make_synthetic_american_panel, SynthPanelSpec
-#include "atx/vol/rates_curve.hpp"    // CurveSet, ForwardPoint
-#include "atx/vol/s3.hpp"             // s3_iv
-#include "atx/vol/spy_fixture.hpp"    // make_spy_synthetic_spec
-#include "atx/vol/universe.hpp"       // Underlying, Chain
-#include "atx/vol/vol_surface.hpp"    // VolSurface, EssviParams, Parametrization
+#include "atx/vol/api/fitting/calib.hpp"          // CalibOpts, calib_default_opts
+#include "atx/vol/api/core/chain.hpp"          // OptionChain
+#include "atx/vol/api/fitting/correction.hpp"     // CorrectionCache, AmericanCorrectionCaches
+#include "atx/vol/api/marketdata/data.hpp"           // iso_to_ns
+#include "atx/vol/api/fitting/deamer.hpp"         // DeAmOptions
+#include "fitting/essvi_calib.hpp"    // the unit under test
+#include "atx/vol/api/core/market_env.hpp"     // MarketEnv
+#include "atx/vol/api/backtest/panel.hpp"          // make_synthetic_american_panel, SynthPanelSpec
+#include "atx/vol/api/pricing/rates_curve.hpp"    // CurveSet, ForwardPoint
+#include "atx/vol/api/storage/s3.hpp"             // s3_iv
+#include "fitting/spy_fixture.hpp"    // make_spy_synthetic_spec
+#include "atx/vol/api/marketdata/universe.hpp"       // Underlying, Chain
+#include "atx/vol/api/fitting/vol_surface.hpp"    // VolSurface, EssviParams, Parametrization
 
 // De-Americanization routing coverage for the eSSVI surface driver (Task C2.3).
 //

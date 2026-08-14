@@ -18,9 +18,9 @@
 // The math is a line-for-line port of american_boundary_avx2.cpp's steps 1-4; the
 // ONLY difference is the price spot became a parameter (was the contract's own S).
 
-#include "../american_boundary.hpp" // amer:: seam (AlScheme/AlBoundary/al_init_put_boundary...)
-#include "atx/vol/american.hpp"     // classify_regime, ExerciseRegime
-#include "atx/vol/detail/vector_math.hpp" // log_pd/exp_pd/norm_cdf_erfc_pd2/norm_pdf_pd (+ __AVX2__ guard)
+#include "pricing/american_boundary.hpp" // amer:: seam (AlScheme/AlBoundary/al_init_put_boundary...)
+#include "atx/vol/api/pricing/american.hpp"     // classify_regime, ExerciseRegime
+#include "simd/vector_math.hpp" // log_pd/exp_pd/norm_cdf_erfc_pd2/norm_pdf_pd (+ __AVX2__ guard)
 
 #include <cstddef>
 #include <cmath>

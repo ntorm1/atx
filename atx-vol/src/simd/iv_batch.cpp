@@ -1,6 +1,6 @@
-#include "atx/vol/simd/iv_batch.hpp"
+#include "simd/iv_batch.hpp"
 
-#include "atx/vol/implied_vol.hpp"
+#include "atx/vol/api/pricing/implied_vol.hpp"
 
 #include <limits>
 #include <new> // std::bad_alloc (per-lane noexcept containment)

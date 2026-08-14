@@ -30,12 +30,12 @@
 #include <utility>
 #include <vector>
 
-#include "atx/vol/american.hpp"
-#include "atx/vol/detail/counters.hpp" // A7: the always-on sl_al_boundary_solves ledger
-#include "atx/vol/portfolio_pricer.hpp"
-#include "atx/vol/priced_surface.hpp"
-#include "atx/vol/scenario_grid.hpp"
-#include "atx/vol/vol_curve.hpp"
+#include "atx/vol/api/pricing/american.hpp"
+#include "fitting/counters.hpp" // A7: the always-on sl_al_boundary_solves ledger
+#include "atx/vol/api/backtest/portfolio_pricer.hpp"
+#include "atx/vol/api/backtest/priced_surface.hpp"
+#include "atx/vol/api/analytics/scenario_grid.hpp"
+#include "atx/vol/api/fitting/vol_curve.hpp"
 
 using namespace atx::vol;
 

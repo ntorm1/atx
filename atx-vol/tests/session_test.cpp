@@ -12,20 +12,20 @@
 #include <utility>
 #include <vector>
 
-#include "atx/vol/american.hpp"
-#include "atx/vol/arb.hpp" // QuoteFlag (carry-skip diagnostics test)
-#include "atx/vol/calib.hpp"
-#include "atx/vol/detail/counters.hpp"
-#include "atx/vol/data.hpp"
-#include "atx/vol/detail/deam_pass_counter.hpp" // C1 duplicate-de-Am proof
-#include "atx/vol/opra_panel.hpp"               // OpraLoadSpec (C1 real-OPRA characterization)
-#include "atx/vol/panel.hpp"
-#include "atx/vol/query_pricing.hpp"
-#include "atx/vol/rates_curve.hpp"
-#include "atx/vol/s3.hpp"
-#include "atx/vol/session.hpp"
-#include "atx/vol/types.hpp"
-#include "atx/vol/universe.hpp"
+#include "atx/vol/api/pricing/american.hpp"
+#include "atx/vol/api/fitting/arb.hpp" // QuoteFlag (carry-skip diagnostics test)
+#include "atx/vol/api/fitting/calib.hpp"
+#include "fitting/counters.hpp"
+#include "atx/vol/api/marketdata/data.hpp"
+#include "fitting/deam_pass_counter.hpp" // C1 duplicate-de-Am proof
+#include "atx/vol/api/marketdata/opra_panel.hpp"               // OpraLoadSpec (C1 real-OPRA characterization)
+#include "atx/vol/api/backtest/panel.hpp"
+#include "atx/vol/api/backtest/query_pricing.hpp"
+#include "atx/vol/api/pricing/rates_curve.hpp"
+#include "atx/vol/api/storage/s3.hpp"
+#include "atx/vol/api/fitting/session.hpp"
+#include "atx/vol/api/core/types.hpp"
+#include "atx/vol/api/marketdata/universe.hpp"
 
 // VolaSession composable-facade acceptance harness (atx/vol/session.hpp).
 //

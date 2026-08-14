@@ -7,7 +7,7 @@
 
 #include <cstddef>
 
-#include "atx/vol/simd/pnl_batch.hpp" // PnlExplainInputs / PnlExplainOutputs
+#include "simd/pnl_batch.hpp" // PnlExplainInputs / PnlExplainOutputs
 
 namespace atx::vol::simd::detail {
 

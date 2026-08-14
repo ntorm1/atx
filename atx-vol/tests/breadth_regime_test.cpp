@@ -19,10 +19,10 @@
 
 #include <gtest/gtest.h>
 
-#include "atx/vol/panel.hpp"
-#include "atx/vol/pricer_fitter.hpp"
-#include "atx/vol/spy_fixture.hpp"
-#include "atx/vol/vol_curve.hpp"
+#include "atx/vol/api/backtest/panel.hpp"
+#include "atx/vol/api/fitting/pricer_fitter.hpp"
+#include "fitting/spy_fixture.hpp"
+#include "atx/vol/api/fitting/vol_curve.hpp"
 #include "support/opra_fixture.hpp"
 
 using namespace atx::vol;

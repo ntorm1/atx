@@ -8,15 +8,15 @@
 #include <utility>
 #include <vector>
 
-#include "atx/vol/arb.hpp"
-#include "atx/vol/data.hpp"
-#include "atx/vol/panel.hpp"
-#include "atx/vol/rates_curve.hpp"
-#include "atx/vol/s3.hpp"
-#include "atx/vol/surface_parity.hpp"
-#include "atx/vol/types.hpp"
-#include "atx/vol/universe.hpp"
-#include "atx/vol/vol_surface.hpp"
+#include "atx/vol/api/fitting/arb.hpp"
+#include "atx/vol/api/marketdata/data.hpp"
+#include "atx/vol/api/backtest/panel.hpp"
+#include "atx/vol/api/pricing/rates_curve.hpp"
+#include "atx/vol/api/storage/s3.hpp"
+#include "atx/vol/api/fitting/surface_parity.hpp"
+#include "atx/vol/api/core/types.hpp"
+#include "atx/vol/api/marketdata/universe.hpp"
+#include "atx/vol/api/fitting/vol_surface.hpp"
 
 // MULTI-EXPIRY de-Americanized volatility-SURFACE parity acceptance harness
 // (atx/vol/surface_parity.hpp). The primary test drives the whole surface

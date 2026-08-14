@@ -1,4 +1,4 @@
-#include "atx/vol/opra_batch.hpp"
+#include "atx/vol/api/marketdata/opra_batch.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -16,21 +16,21 @@
 #include <gtest/gtest.h>
 
 #include "atx/core/io/parquet_writer.hpp"
-#include "atx/vol/american.hpp"        // american_price
-#include "atx/vol/chain.hpp"           // OptionChain
-#include "atx/vol/data.hpp"            // QuoteFrame
-#include "atx/vol/market_env.hpp"      // MarketEnv
-#include "atx/vol/opra_hive.hpp"       // OpraHiveSpec, load_opra_hive (shared date gate)
-#include "atx/vol/panel.hpp"           // make_synthetic_american_panel
-#include "atx/vol/pricer_fitter.hpp"   // PricerFitter
-#include "atx/vol/rates_curve.hpp"     // YieldCurve
-#include "atx/vol/spy_fixture.hpp"     // make_spy_synthetic_spec
-#include "atx/vol/surface_archive.hpp" // SurfaceArchive
+#include "atx/vol/api/pricing/american.hpp"        // american_price
+#include "atx/vol/api/core/chain.hpp"           // OptionChain
+#include "atx/vol/api/marketdata/data.hpp"            // QuoteFrame
+#include "atx/vol/api/core/market_env.hpp"      // MarketEnv
+#include "atx/vol/api/marketdata/opra_hive.hpp"       // OpraHiveSpec, load_opra_hive (shared date gate)
+#include "atx/vol/api/backtest/panel.hpp"           // make_synthetic_american_panel
+#include "atx/vol/api/fitting/pricer_fitter.hpp"   // PricerFitter
+#include "atx/vol/api/pricing/rates_curve.hpp"     // YieldCurve
+#include "fitting/spy_fixture.hpp"     // make_spy_synthetic_spec
+#include "atx/vol/api/storage/surface_archive.hpp" // SurfaceArchive
 
 // R1-c (review C-07): `parse_civil` is the src-private civil-date kernel BOTH
 // loaders gate their date range on, and it had no test of its own. Everything in
 // the header is `inline`, so including it costs no TU and no link surface.
-#include "../src/opra_batch_detail.hpp"
+#include "marketdata/opra_batch_detail.hpp"
 
 // Coverage for the P2-4 date-range batch loader (`load_opra_daterange`) and the
 // term-curve -> MarketEnv bridge (`market_env_from_frame`).

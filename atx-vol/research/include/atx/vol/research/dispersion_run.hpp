@@ -82,18 +82,18 @@
 #include <string_view>
 #include <vector>
 
-#include "atx/vol/backtest.hpp"           // Clock, BacktestResult
-#include "atx/vol/corpus.hpp"             // QualifiedCorpusConfig
-#include "atx/vol/dispersion.hpp"         // DispersionUniverse
+#include "atx/vol/api/backtest/backtest.hpp"           // Clock, BacktestResult
+#include "atx/vol/api/marketdata/corpus.hpp"             // QualifiedCorpusConfig
+#include "atx/vol/api/backtest/dispersion.hpp"         // DispersionUniverse
 #include "atx/vol/research/dispersion_backtest.hpp"// DispersionBacktestConfig, run_dispersion_backtest
 #include "atx/vol/research/dispersion_workflow.hpp"// RunSpec
-#include "atx/vol/listed_dispersion.hpp"  // ListedQuoteQualityConfig (F6)
+#include "atx/vol/api/backtest/listed_dispersion.hpp"  // ListedQuoteQualityConfig (F6)
 #include "atx/vol/research/listed_dispersion_pipeline.hpp" // ListedScheduleSpec (REV-MTIDY I-1)
-#include "atx/vol/listed_dispersion_strategy.hpp" // ScheduleFillPolicy (F2)
-#include "atx/vol/session.hpp"            // FitPreset
+#include "atx/vol/api/backtest/listed_dispersion_strategy.hpp" // ScheduleFillPolicy (F2)
+#include "atx/vol/api/fitting/session.hpp"            // FitPreset
 #include "atx/vol/tools/tearsheet.hpp"          // TearSheet
-#include "atx/vol/types.hpp"              // Result, Status
-#include "atx/vol/vol_surface.hpp"        // VolCurveKind
+#include "atx/vol/api/core/types.hpp"              // Result, Status
+#include "atx/vol/api/fitting/vol_surface.hpp"        // VolCurveKind
 
 namespace atx::vol {
 

@@ -5,7 +5,7 @@
 #include <iterator>
 #include <vector>
 
-#include "atx/vol/rates_curve.hpp"
+#include "atx/vol/api/pricing/rates_curve.hpp"
 
 // Curve-set coverage, ported from the C ats-vol tests:
 //   test_curve_cubic.c      -> YieldCurve (Fritsch-Carlson cubic Hermite)

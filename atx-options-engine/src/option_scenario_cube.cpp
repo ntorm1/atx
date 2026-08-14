@@ -18,12 +18,12 @@
 #include <vector>
 
 #include "atx/core/sha256.hpp"
-#include "atx/vol/american.hpp"
-#include "atx/vol/black76.hpp"
-#include "atx/vol/greeks.hpp"
-#include "atx/vol/portfolio_pricer.hpp"
-#include "atx/vol/detail/pricing_executor.hpp"
-#include "atx/vol/surface_policy.hpp"
+#include "atx/vol/api/pricing/american.hpp"
+#include "atx/vol/api/pricing/black76.hpp"
+#include "atx/vol/api/pricing/greeks.hpp"
+#include "atx/vol/api/backtest/portfolio_pricer.hpp"
+#include "pricing/pricing_executor.hpp"
+#include "atx/vol/api/fitting/surface_policy.hpp"
 
 namespace atx::options::risk {
 namespace {

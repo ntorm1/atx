@@ -9,10 +9,10 @@
 // cross-check (over delta) is printed via a label so the run also documents that
 // the two agree.
 
-#include "atx/vol/simd/greeks_batch.hpp"
+#include "atx/vol/api/simd/greeks_batch.hpp"
 
-#include "atx/vol/greeks.hpp"
-#include "atx/vol/simd/cpu.hpp"
+#include "atx/vol/api/pricing/greeks.hpp"
+#include "atx/vol/api/simd/cpu.hpp"
 
 #include <cmath>
 #include <cstddef>

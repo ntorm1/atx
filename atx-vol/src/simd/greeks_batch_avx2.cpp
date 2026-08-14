@@ -31,9 +31,9 @@
 
 #include "greeks_batch_avx2.hpp"
 
-#include "atx/vol/detail/vector_math.hpp"
-#include "atx/vol/greeks.hpp"
-#include "atx/vol/simd/greeks_batch.hpp"
+#include "simd/vector_math.hpp"
+#include "atx/vol/api/pricing/greeks.hpp"
+#include "atx/vol/api/simd/greeks_batch.hpp"
 
 #include <immintrin.h>
 

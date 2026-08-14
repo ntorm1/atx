@@ -1,6 +1,6 @@
-#include "atx/vol/earnings_term_fit.hpp"
-#include "atx/vol/sr_tenor_grid.hpp"
-#include "atx/vol/vol_time.hpp"
+#include "atx/vol/api/analytics/earnings_term_fit.hpp"
+#include "atx/vol/api/fitting/sr_tenor_grid.hpp"
+#include "atx/vol/api/core/vol_time.hpp"
 
 #include <gtest/gtest.h>
 

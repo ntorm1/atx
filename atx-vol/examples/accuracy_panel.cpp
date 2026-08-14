@@ -27,15 +27,15 @@
 #include <utility>
 #include <vector>
 
-#include "atx/vol/chain.hpp"
-#include "atx/vol/opra_batch.hpp"
-#include "atx/vol/opra_panel.hpp"
-#include "atx/vol/pricer_fitter.hpp"
-#include "atx/vol/query_pricing.hpp"
-#include "atx/vol/session.hpp"
-#include "atx/vol/surface_policy.hpp"
-#include "atx/vol/types.hpp"
-#include "atx/vol/vol_curve.hpp"
+#include "atx/vol/api/core/chain.hpp"
+#include "atx/vol/api/marketdata/opra_batch.hpp"
+#include "atx/vol/api/marketdata/opra_panel.hpp"
+#include "atx/vol/api/fitting/pricer_fitter.hpp"
+#include "atx/vol/api/backtest/query_pricing.hpp"
+#include "atx/vol/api/fitting/session.hpp"
+#include "atx/vol/api/fitting/surface_policy.hpp"
+#include "atx/vol/api/core/types.hpp"
+#include "atx/vol/api/fitting/vol_curve.hpp"
 
 namespace {
 

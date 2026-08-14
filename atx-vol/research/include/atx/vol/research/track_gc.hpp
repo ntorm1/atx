@@ -73,7 +73,7 @@
 #include <cstdint>
 #include <string_view>
 
-#include "atx/vol/types.hpp" // Result
+#include "atx/vol/api/core/types.hpp" // Result
 
 namespace atx::vol {
 

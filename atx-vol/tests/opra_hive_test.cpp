@@ -13,9 +13,9 @@
 #include <gtest/gtest.h>
 
 #include "atx/core/io/parquet.hpp" // read_parquet, ParquetTable
-#include "atx/vol/opra_batch.hpp"  // OpraBatchSpec/Result, load_opra_daterange (parity ref)
-#include "atx/vol/opra_hive.hpp"   // OpraHiveSpec, load_opra_hive
-#include "atx/vol/opra_panel.hpp"  // OpraLoadSpec, load_opra_cbbo_from_table
+#include "atx/vol/api/marketdata/opra_batch.hpp"  // OpraBatchSpec/Result, load_opra_daterange (parity ref)
+#include "atx/vol/api/marketdata/opra_hive.hpp"   // OpraHiveSpec, load_opra_hive
+#include "atx/vol/api/marketdata/opra_panel.hpp"  // OpraLoadSpec, load_opra_cbbo_from_table
 
 // Self-tests for the synthetic multi-symbol OPRA hive fixture (Task 2). These
 // prove the fixture is loader-consumable BEFORE Tasks 3/5 build the C++ loader

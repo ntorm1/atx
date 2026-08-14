@@ -16,157 +16,157 @@
 # README.md and docs/superpowers/specs/2026-07-04-atx-vol-vola-parity-design.md.
 
 add_library(atx-vol ${ATX_LIB_TYPE}
-    src/version.cpp
-    src/log.cpp
-    src/instrumentation_abi.cpp
-    src/black76.cpp
-    src/greeks.cpp
-    src/implied_vol.cpp
-    src/surface.cpp
-    src/rates_curve.cpp
-    src/universe.cpp
-    src/derivatives.cpp
-    src/deriv_book.cpp
-    src/detail/rv_lognormal.cpp
-    src/vol_surface.cpp
-    src/al_probe.cpp
-    src/american.cpp
-    src/american_batch.cpp
-    src/detail/adjoint_greeks.cpp
-    src/boundary_interp.cpp
-    src/correction.cpp
-    src/arb.cpp
-    src/surface_policy.cpp
-    src/risk_surface_validation.cpp
-    src/convex_recovery.cpp
-    src/quote_feasibility.cpp
-    src/calib.cpp
-    src/prepared_fitting.cpp
-    src/c8.cpp
-    src/c8_calib.cpp
-    src/essvi_calib.cpp
-    src/svi_calib.cpp
-    src/cstar.cpp
-    src/cstar_calib.cpp
-    src/dense_slice.cpp
-    src/profile.cpp
-    src/fit_policy.cpp
-    src/data.cpp
-    src/detail/archive_util.cpp
+    src/core/version.cpp
+    src/core/log.cpp
+    src/core/instrumentation_abi.cpp
+    src/pricing/black76.cpp
+    src/pricing/greeks.cpp
+    src/pricing/implied_vol.cpp
+    src/fitting/surface.cpp
+    src/pricing/rates_curve.cpp
+    src/marketdata/universe.cpp
+    src/pricing/derivatives.cpp
+    src/backtest/deriv_book.cpp
+    src/analytics/rv_lognormal.cpp
+    src/fitting/vol_surface.cpp
+    src/pricing/al_probe.cpp
+    src/pricing/american.cpp
+    src/pricing/american_batch.cpp
+    src/pricing/adjoint_greeks.cpp
+    src/pricing/boundary_interp.cpp
+    src/fitting/correction.cpp
+    src/fitting/arb.cpp
+    src/fitting/surface_policy.cpp
+    src/fitting/risk_surface_validation.cpp
+    src/fitting/convex_recovery.cpp
+    src/fitting/quote_feasibility.cpp
+    src/fitting/calib.cpp
+    src/fitting/prepared_fitting.cpp
+    src/fitting/c8.cpp
+    src/fitting/c8_calib.cpp
+    src/fitting/essvi_calib.cpp
+    src/fitting/svi_calib.cpp
+    src/fitting/cstar.cpp
+    src/fitting/cstar_calib.cpp
+    src/fitting/dense_slice.cpp
+    src/fitting/profile.cpp
+    src/fitting/fit_policy.cpp
+    src/marketdata/data.cpp
+    src/storage/archive_util.cpp
     # D3: cross-process manifest writer lock, used unconditionally by
     # BacktestDb::persist_locked (backtest_db.cpp) and SurfaceDb::
     # persist_locked (surface_db.cpp) -- both core atx-vol, so this joins
     # the always-built list beside archive_util.cpp rather than the
     # ATX_VOL_LAKEHOUSE-gated block below (that block is for the SQLite
     # catalog, which is genuinely lakehouse-only).
-    src/detail/writer_lock.cpp
-    src/surface_archive.cpp
-    src/run_archive.cpp
-    src/run_diagnostics.cpp
-    src/surface_db.cpp
-    src/batch.cpp
-    src/projection.cpp
-    src/contract_projection.cpp
-    src/historical_projection.cpp
-    src/var.cpp
-    src/var_report.cpp
-    src/var_validation.cpp
-    src/american_iv.cpp
-    src/dividend.cpp
-    src/s3.cpp
-    src/fit_metrics.cpp
-    src/adjusted_greeks.cpp
-    src/vol_time.cpp
-    src/event_vol.cpp
-    src/deamer.cpp
-    src/parity.cpp
-    src/panel.cpp
-    src/surface_parity.cpp
-    src/opra_panel.cpp
-    src/opra_batch.cpp
-    src/opra_hive.cpp
-    src/session.cpp
-    src/chain.cpp
-    src/pricer_fitter.cpp
-    src/vol_curve.cpp
-    src/spline_curve.cpp
-    src/curve_fit.cpp
-    src/curve_selector.cpp
-    src/priced_surface.cpp
-    src/priced_surface_view.cpp
-    src/prepared_portfolio.cpp
-    src/pricing_executor.cpp
-    src/portfolio_pricer.cpp
-    src/fit_scheduler.cpp
-    src/corpus_board_fit.cpp
-    src/scenario_grid.cpp
-    src/margin.cpp
-    src/pnl_attribution.cpp
-    src/corpus.cpp
-    src/surface_db_populate.cpp
-    src/surface_db_build.cpp
-    src/surface_db_admin.cpp
-    src/dispersion.cpp
-    src/dispersion_strangle.cpp
-    src/dispersion_backtest.cpp
-    src/dispersion_surface_db.cpp
-    src/backtest_driver.cpp
-    src/dispersion_workflow.cpp
-    src/listed_dispersion.cpp
-    src/listed_opra.cpp
-    src/listed_definitions_cache.cpp
-    src/occ_ess.cpp
-    src/listed_dispersion_schedule.cpp
-    src/listed_dispersion_reconciliation.cpp
-    src/listed_dispersion_strategy.cpp
-    src/dispersion_run.cpp
-    src/listed_dispersion_pipeline.cpp
-    src/backtest.cpp
-    src/backtest_template.cpp
-    src/backtest_db.cpp
-    src/backtest_db_build.cpp
-    src/research_db.cpp
-    src/research_validation.cpp
-    src/strategy_pipeline.cpp
-    src/quant_pipeline.cpp
-    src/snapshot_cache.cpp
+    src/storage/writer_lock.cpp
+    src/storage/surface_archive.cpp
+    src/storage/run_archive.cpp
+    src/storage/run_diagnostics.cpp
+    src/storage/surface_db.cpp
+    src/pricing/batch.cpp
+    src/fitting/projection.cpp
+    src/analytics/contract_projection.cpp
+    src/analytics/historical_projection.cpp
+    src/analytics/var.cpp
+    src/analytics/var_report.cpp
+    src/analytics/var_validation.cpp
+    src/pricing/american_iv.cpp
+    src/pricing/dividend.cpp
+    src/storage/s3.cpp
+    src/fitting/fit_metrics.cpp
+    src/pricing/adjusted_greeks.cpp
+    src/core/vol_time.cpp
+    src/analytics/event_vol.cpp
+    src/fitting/deamer.cpp
+    src/fitting/parity.cpp
+    src/backtest/panel.cpp
+    src/fitting/surface_parity.cpp
+    src/marketdata/opra_panel.cpp
+    src/marketdata/opra_batch.cpp
+    src/marketdata/opra_hive.cpp
+    src/fitting/session.cpp
+    src/core/chain.cpp
+    src/fitting/pricer_fitter.cpp
+    src/fitting/vol_curve.cpp
+    src/fitting/spline_curve.cpp
+    src/fitting/curve_fit.cpp
+    src/fitting/curve_selector.cpp
+    src/backtest/priced_surface.cpp
+    src/backtest/priced_surface_view.cpp
+    src/backtest/prepared_portfolio.cpp
+    src/pricing/pricing_executor.cpp
+    src/backtest/portfolio_pricer.cpp
+    src/fitting/fit_scheduler.cpp
+    src/marketdata/corpus_board_fit.cpp
+    src/analytics/scenario_grid.cpp
+    src/backtest/margin.cpp
+    src/analytics/pnl_attribution.cpp
+    src/marketdata/corpus.cpp
+    src/storage/surface_db_populate.cpp
+    src/storage/surface_db_build.cpp
+    src/storage/surface_db_admin.cpp
+    src/backtest/dispersion.cpp
+    src/backtest/dispersion_strangle.cpp
+    src/backtest/dispersion_backtest.cpp
+    src/storage/dispersion_surface_db.cpp
+    src/backtest/backtest_driver.cpp
+    src/backtest/dispersion_workflow.cpp
+    src/backtest/listed_dispersion.cpp
+    src/marketdata/listed_opra.cpp
+    src/marketdata/listed_definitions_cache.cpp
+    src/marketdata/occ_ess.cpp
+    src/backtest/listed_dispersion_schedule.cpp
+    src/backtest/listed_dispersion_reconciliation.cpp
+    src/backtest/listed_dispersion_strategy.cpp
+    src/backtest/dispersion_run.cpp
+    src/backtest/listed_dispersion_pipeline.cpp
+    src/backtest/backtest.cpp
+    src/backtest/backtest_template.cpp
+    src/storage/backtest_db.cpp
+    src/storage/backtest_db_build.cpp
+    src/storage/research_db.cpp
+    src/backtest/research_validation.cpp
+    src/backtest/strategy_pipeline.cpp
+    src/backtest/quant_pipeline.cpp
+    src/storage/snapshot_cache.cpp
     # C2: process-wide sealed snapshot pool. Header is Tier-B
     # (include/atx/vol/snapshot_pool.hpp, promoted from research/include by
     # Task E2); the translation unit compiles into atx-vol like every other
     # research-adjacent .cpp (dispersion_run.cpp, run_archive.cpp,
     # backtest_driver.cpp above).
-    src/snapshot_pool.cpp
+    src/storage/snapshot_pool.cpp
     # D1: content-addressed track identity (TrackKey) + economics-rev
     # tripwire pairing. Same Tier-B header placement (E2 promotion) and
     # same-library compilation as snapshot_pool.cpp immediately above.
-    src/track_key.cpp
-    # D2's src/track_store.cpp joins conditionally below (ATX_VOL_LAKEHOUSE) --
+    src/storage/track_key.cpp
+    # D2's src/storage/track_store.cpp joins conditionally below (ATX_VOL_LAKEHOUSE) --
     # it is the one atx-vol source that needs Arrow/Parquet, so it is not
     # listed unconditionally here the way track_key.cpp above is.
-    src/strategy.cpp
-    src/dispersion_strategy.cpp
-    src/tearsheet.cpp
-    src/run_report.cpp
-    src/analytics_primitives.cpp
-    src/analytics_density.cpp
-    src/analytics_aggregate.cpp
-    src/analytics_io.cpp
-    src/earnings_term_fit.cpp
-    src/sr_tenor_grid.cpp
-    src/earnings_forecast_loader.cpp
-    src/earnings_repro.cpp
+    src/backtest/strategy.cpp
+    src/backtest/dispersion_strategy.cpp
+    src/backtest/tearsheet.cpp
+    src/storage/run_report.cpp
+    src/analytics/analytics_primitives.cpp
+    src/analytics/analytics_density.cpp
+    src/analytics/analytics_aggregate.cpp
+    src/analytics/analytics_io.cpp
+    src/analytics/earnings_term_fit.cpp
+    src/fitting/sr_tenor_grid.cpp
+    src/analytics/earnings_forecast_loader.cpp
+    src/analytics/earnings_repro.cpp
     # declarative swap-lane DSL
-    src/swap_leg.cpp
+    src/pricing/swap_leg.cpp
     # THEO-1: OHLC realized-vol estimator suite (Tier-B, not on the umbrella)
-    src/realized_vol.cpp
+    src/analytics/realized_vol.cpp
     # THEO-3: breakeven-vol root-find, layered over bev_replay_pnl (backtest.cpp)
-    src/breakeven.cpp
+    src/analytics/breakeven.cpp
     # THEO-7: theo vocabulary + TheoEngine (identity semantics beside the served mark)
-    src/theo.cpp
+    src/pricing/theo.cpp
     # Structure-selector ML: one-day-hold delta-neutral structure PnL + feature panel
-    src/structure_panel.cpp
+    src/backtest/structure_panel.cpp
     # Cross-sectional vega panel: ATMF strangle resolve + h-day rehedged hold labels
-    src/vega_panel.cpp
+    src/backtest/vega_panel.cpp
 )
 add_library(atx::vol ALIAS atx-vol)
 
@@ -218,6 +218,24 @@ target_include_directories(atx-vol
         $<BUILD_INTERFACE:${ATX_VOL_GENERATED_INCLUDE}>
         $<INSTALL_INTERFACE:include>
 )
+
+# ---- api/ restructure (2026-08-14): PRIVATE src/ include root ---------------
+# Headers demoted off the public surface now live at src/<module>/ instead of
+# include/atx/vol/detail/, and every internal quoted include was rewritten to
+# the "<module>/<name>.hpp" spelling (atx-vol/scripts/api_restructure_apply.py).
+# That spelling resolves via this root: PRIVATE on the library itself, and
+# directory-scoped below (covers every add_executable() in THIS file --
+# tools/examples -- plus the tests/ and bench/ subdirectories add_subdirectory'd
+# later in this same file) so it reaches every INTERNAL consumer. The two
+# external-only out-of-tree consumers, python/CMakeLists.txt and
+# test-package/CMakeLists.txt, are deliberately NOT covered here -- they must
+# only ever see the public api/ surface -- and get their own explicit PRIVATE
+# include dir added only where genuinely needed (python/CMakeLists.txt, for
+# parity with the other internal targets; test-package never touches src/ at
+# all, consistent with it being one of the three external reachability roots
+# the placement measurement itself was computed from).
+target_include_directories(atx-vol PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 target_compile_features(atx-vol PUBLIC cxx_std_20)
 
@@ -295,7 +313,7 @@ target_link_libraries(atx-vol
 
 # ---- D2: research Parquet track store (backtest-production-lakehouse sprint) ----
 # ATX_VOL_LAKEHOUSE (root CMakeLists.txt) gates the ONE atx-vol translation
-# unit that touches Arrow/Parquet directly (src/track_store.cpp -- its header,
+# unit that touches Arrow/Parquet directly (src/storage/track_store.cpp -- its header,
 # include/atx/vol/track_store.hpp, is Arrow-free and always declared, and is
 # Tier-B public surface since the E2 promotion -- the tier lives on the header
 # alone; this gate is unaffected). Linked PRIVATE: track_store.cpp's own TU needs Arrow/Parquet
@@ -309,12 +327,12 @@ target_link_libraries(atx-vol
 if(ATX_VOL_LAKEHOUSE)
     find_package(Arrow CONFIG REQUIRED)
     find_package(Parquet CONFIG REQUIRED)
-    target_sources(atx-vol PRIVATE src/track_store.cpp)
+    target_sources(atx-vol PRIVATE src/storage/track_store.cpp)
     target_link_libraries(atx-vol PRIVATE Arrow::arrow_shared Parquet::parquet_shared)
     target_compile_definitions(atx-vol PRIVATE ATX_VOL_LAKEHOUSE)
 
     # D3: SQLite catalog (include/atx/vol/catalog.hpp, Tier-B since the E2
-    # promotion; src/catalog.cpp) -- tracks/
+    # promotion; src/marketdata/catalog.cpp) -- tracks/
     # trials over catalog.sqlite. NOT a new third-party dependency: it is
     # built entirely on atx::core::db::Database (atx/core/db/sqlite.hpp),
     # which already wraps atx-core's vendored SQLite amalgamation
@@ -329,10 +347,10 @@ if(ATX_VOL_LAKEHOUSE)
     # though the underlying SQLite object code is already present in every
     # atx-vol build via atx::core regardless of this flag (see the D3 report
     # for the full dependency-story writeup on that pre-existing fact).
-    target_sources(atx-vol PRIVATE src/catalog.cpp)
+    target_sources(atx-vol PRIVATE src/marketdata/catalog.cpp)
 
     # C3: cache-first variant sweep driver (include/atx/vol/sweep_driver.hpp,
-    # Tier-B since the E2 promotion; src/sweep_driver.cpp) -- enumerates a
+    # Tier-B since the E2 promotion; src/backtest/sweep_driver.cpp) -- enumerates a
     # BacktestStrategyTemplate grid, dedupes to TrackKey, probes D3's Catalog
     # cache-first, and publishes misses through D2's TrackStore. Gated the
     # same way as track_store.cpp/catalog.cpp immediately above: the driver's
@@ -341,23 +359,23 @@ if(ATX_VOL_LAKEHOUSE)
     # SQLite-free types -- Catalog/TrackStore/TrackKey -- so it stays declared
     # unconditionally, same as track_store.hpp/
     # catalog.hpp; only this .cpp needs the gate).
-    target_sources(atx-vol PRIVATE src/sweep_driver.cpp)
+    target_sources(atx-vol PRIVATE src/backtest/sweep_driver.cpp)
 
     # D5 fix-round: track_compact's crash-recovery reconcile pass
-    # (research/track_compact_reconcile.hpp, src/track_compact_reconcile.cpp)
+    # (research/track_compact_reconcile.hpp, src/storage/track_compact_reconcile.cpp)
     # -- needs BOTH Arrow/Parquet reading (to relocate a track directly in
     # the lake) AND catalog.hpp, so it cannot live in track_store.cpp
     # (deliberately Catalog-free, see catalog.hpp's own doc comment) and
     # gets its own TU, gated the same way as the three sources immediately
     # above (its header only names already-unconditionally-declared types,
     # same as sweep_driver.hpp).
-    target_sources(atx-vol PRIVATE src/track_compact_reconcile.cpp)
+    target_sources(atx-vol PRIVATE src/storage/track_compact_reconcile.cpp)
 
     # Task D6: last_access_ts-driven retention/GC (research/track_gc.hpp,
-    # src/track_gc.cpp) -- needs BOTH Arrow/Parquet reading+writing (to
+    # src/storage/track_gc.cpp) -- needs BOTH Arrow/Parquet reading+writing (to
     # rewrite/delete batch files) AND catalog.hpp, same gate and same reason
-    # as src/track_compact_reconcile.cpp immediately above.
-    target_sources(atx-vol PRIVATE src/track_gc.cpp)
+    # as src/storage/track_compact_reconcile.cpp immediately above.
+    target_sources(atx-vol PRIVATE src/storage/track_gc.cpp)
 endif()
 
 # ---- Algorithm counters (P0.2) ----

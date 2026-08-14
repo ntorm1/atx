@@ -34,7 +34,7 @@
 
 #include <benchmark/benchmark.h>
 
-#include "atx/vol/analytics.hpp" // AnalyticsConfig, compute_surface_analytics, risk_neutral_density, var_swap_vol, compute_surface_diff
+#include "atx/vol/api/analytics/analytics.hpp" // AnalyticsConfig, compute_surface_analytics, risk_neutral_density, var_swap_vol, compute_surface_diff
 
 #include "bench_util.hpp"
 #include "support/analytics_fixture.hpp" // testkit::make_skewed_surface, kFixtureNow
