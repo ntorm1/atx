@@ -1716,6 +1716,58 @@ TEST(RealizedTracker, DividendAdjustedReturn) {
   // The dividend adjusts the RETURN only. `prev_spot()` reports the raw close,
   // so the next return is not charged the same dividend twice.
   EXPECT_DOUBLE_EQ(adjusted->prev_spot(), 94.0);
+
+  // F-6 GAMMA-WEIGHT RULING, pinned here because nothing else in the tree can
+  // catch it: Lee's w = y/Y0 reads the POST-dividend close, so the weight is
+  // 94/100, NOT the cum-dividend (94+5)/100 the competing reading would use.
+  // Both are arithmetically available at this fixture and differ by 5.3%, and
+  // `ex_div_cash > 0` is unreachable outside these cases -- fix round 1 (I-1)
+  // established that reversing this ruling left 75/75 tests across 6 suites
+  // green, i.e. the ruling was documented but unpinned.
+  const double r2 = kDivAdjustedReturn * kDivAdjustedReturn;
+  const double w_post_dividend = 94.0 / 100.0;   // the ruling
+  const double w_cum_dividend = (94.0 + 5.0) / 100.0;  // the reading it rejects
+  EXPECT_NEAR(a.sum_weighted_sq_log_returns_done, w_post_dividend * r2, 1.0e-15);
+  EXPECT_NEAR(a.rv_gamma_done_dec, 252.0 * w_post_dividend * r2, 1.0e-13);
+  // Stated as its own assertion so the rejected alternative is named in the
+  // failure output, not merely excluded by a tolerance.
+  EXPECT_GT(std::fabs(a.sum_weighted_sq_log_returns_done - w_cum_dividend * r2), 1.0e-6 * r2);
+
+  // The gamma leg's own anchor is untouched by the dividend: S0 is the seed.
+  EXPECT_DOUBLE_EQ(a.gamma_seed_spot, 100.0);
+}
+
+// Fix round 1 (Minor): every other dividend fixture runs exactly ONE return, so
+// nothing exercised the running-mean normalization across a dividend, back-to-
+// back ex-div days, or -- the one that matters -- `prev_spot_` carrying the RAW
+// close into the NEXT return. A tracker that stored the adjusted close would
+// agree with every single-return test and disagree here.
+TEST(RealizedTracker, DividendAdjustedAccrualAcrossConsecutiveFixings) {
+  auto built = RealizedTracker::create(252.0, 10u);
+  ASSERT_TRUE(built.has_value());
+  RealizedTracker t = std::move(*built);
+  ASSERT_TRUE(t.set_dividend_adjustment(true).has_value());
+
+  ASSERT_TRUE(t.observe_dated(1000, 100.0).has_value());        // seed, S0 = 100
+  ASSERT_TRUE(t.observe_dated(2000, 94.0, 5.0).has_value());    // prev raw 100 -> adj 95
+  ASSERT_TRUE(t.observe_dated(3000, 97.0, 2.0).has_value());    // prev raw 94  -> adj 92
+
+  // Each denominator names the close it adjusts, so a regression that carried
+  // the ADJUSTED close forward (95 instead of 94) fails on r2 alone.
+  const double r1 = std::log(94.0 / (100.0 - 5.0));
+  const double r2 = std::log(97.0 / (94.0 - 2.0));
+  const RealizedVarianceSpec s = t.snapshot();
+
+  ASSERT_EQ(s.n_obs_done, 2u);
+  EXPECT_NEAR(s.sum_sq_log_returns_done, r1 * r1 + r2 * r2, 1.0e-15);
+  // Normalized by n_obs_done == 2, not 1 -- the running mean, under dividends.
+  EXPECT_NEAR(s.rv_done_dec, 252.0 * (r1 * r1 + r2 * r2) / 2.0, 1.0e-13);
+  // Gamma weights read each return's own post-dividend close against the seed.
+  EXPECT_NEAR(s.sum_weighted_sq_log_returns_done,
+              (94.0 / 100.0) * r1 * r1 + (97.0 / 100.0) * r2 * r2, 1.0e-15);
+  EXPECT_DOUBLE_EQ(s.gamma_seed_spot, 100.0);
+  EXPECT_DOUBLE_EQ(t.prev_spot(), 97.0);
+  EXPECT_EQ(t.last_fixing_ts_ns(), 3000);
 }
 
 // Structural-blindness guard. Every one of the pre-F-6 tracker constructions in
