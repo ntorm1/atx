@@ -6,7 +6,7 @@
 // (Task 4 `fit_earnings_term`) -> the 12-point SR tenor grid's (Task 2
 // `sr_tenor_grid.hpp`) PRIMARY reproduction target, `atmCenI_{Nd}`.
 //
-// ## CONTROLLER DESIGN DECISION (Option B, task-7-context.md)
+// ## DESIGN DECISION — one library entry point, not a CLI shell-out
 //
 // The plan's Task 7 file list is only the CLI + CMake; the smoke test was
 // described as "running the pipeline". Shelling a slow test out to a built
@@ -20,7 +20,7 @@
 // (parquet load, TSV load) stays in the CLI; this module is pure computation
 // over an already-built `VolaSession` + `EventSchedule`.
 //
-// ## Pipeline (exact recipe, task-7-context.md)
+// ## Pipeline (exact recipe)
 //
 //   1. Per LISTED expiry `k` (the fitted eSSVI slices, `sess.surface().
 //      essvi_slices()`, ascending T): forward-ATM total variance `w_dirty_k =
@@ -41,8 +41,12 @@
 //      atm_cen` (sampled at `cfg.tenor_T` by `fit_earnings_term` itself) is
 //      the SECONDARY parametric read, retained on the result's `.fit` but
 //      NOT the reproduction target below.
-//   4. PRIMARY `atmCenI_{Nd}` (the reproduction target, task-7-context.md
-//      "NOTE on atmCenI PRIMARY target"): for each of the 12 grid tenors
+//   4. PRIMARY `atmCenI_{Nd}` (the reproduction target: RAW censored-space
+//      interpolation, deliberately NOT the parametric-model read — the
+//      acceptance argument for that choice is in
+//      `sprints/2026-07-18-earnings-censored-atmvol-reproduction-sprint.md`,
+//      and `EarningsReproResult::atm_cen_i` below carries the same split):
+//      for each of the 12 grid tenors
 //      `T_i`, bracket the listed expiries by `T` and reuse the EXISTING
 //      `event_aware_w` (event_vol.hpp) with `n_query = 0` to censor both
 //      bracketing pillars with THEIR OWN `n` and linearly interpolate the

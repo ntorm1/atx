@@ -967,8 +967,10 @@ struct PriceOptions {
   // pnl_totals/pnl_explain requires the stamped needs to be full() before a P&L
   // Taylor decomposition (which reads all eight base greeks) may reuse it. A narrowed
   // base therefore NEVER silently feeds a full P&L attribution — it forces a fresh
-  // full solve. So narrowing a frame that a later P&L reuses (L1) is a NET LOSS; only
-  // narrow frames whose bundle no P&L reuses (see loop-stage3.md §economy).
+  // full solve. So narrowing a frame that a later P&L reuses (L1) is a NET LOSS, and
+  // the arithmetic is the whole argument: you pay the narrowed solves AND the full 5
+  // the reuse guard then forces, where not narrowing would have paid 5 once. Only
+  // narrow frames whose bundle no P&L reuses.
   PricedSurface::GreekNeeds greek_needs{};
 };
 
