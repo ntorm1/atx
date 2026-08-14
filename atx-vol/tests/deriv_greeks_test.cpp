@@ -4,6 +4,7 @@
 #include <cmath>
 
 #include "atx/vol/rates_curve.hpp"
+#include "atx/vol/deriv_book.hpp"  // DerivPriceFrame::vega_by_tenor (Task F-7)
 #include "atx/vol/derivatives.hpp"
 #include "atx/vol/detail/legacy_surface.hpp"  // EssviSurface (demoted, S4-T21)
 #include "atx/vol/priced_surface.hpp"     // PricedSurface-native greeks overload
@@ -26,6 +27,23 @@ namespace atx::vol::detail {
 // below uses it to run the SAME contract through both the cached and
 // uncached tables and assert exact bit equality on every output greek.
 void set_bump_read_cache_disabled_for_test(bool disabled) noexcept;
+
+// Task F-7 seams (see their own doc in derivatives.cpp for why each exists and
+// what independence it buys): a repricing counter, and two probes that expose
+// the smile-shifted VIEW and one smile-shifted REPRICING separately, so
+// `SmileGreeks.*` below can check the stencil against something other than the
+// stencil.
+void reset_deriv_greeks_reprice_count_for_test() noexcept;
+[[nodiscard]] std::uint64_t deriv_greeks_reprice_count_for_test() noexcept;
+[[nodiscard]] double skew_shifted_iv_for_test(const atx::vol::EssviSurface& surface, double k_log,
+                                              double T, double slope) noexcept;
+[[nodiscard]] double convex_shifted_iv_for_test(const atx::vol::EssviSurface& surface, double k_log,
+                                                double T, double curvature) noexcept;
+[[nodiscard]] atx::core::Result<double>
+deriv_pv_skew_shifted_for_test(const atx::vol::EssviSurface& surface,
+                               const atx::vol::CurveSet& curves,
+                               const atx::vol::DerivContract& contract,
+                               const atx::vol::DerivConfig& cfg, double slope);
 }  // namespace atx::vol::detail
 
 namespace {
@@ -1413,6 +1431,320 @@ TEST(AnalyticGreeks, DoesNotSwallowDispatchMatrixErrors) {
   ASSERT_FALSE(g_an.has_value());
   EXPECT_EQ(g_fd.error().code(), g_an.error().code());
   EXPECT_EQ(g_fd.error().code(), ErrorCode::InvalidArgument);
+}
+
+// ── Task F-7: smile greeks ─────────────────────────────────────────────────
+
+// What the two views do to ONE surface read, checked against the surface's own
+// public `iv` plus a shift written out by hand here.
+//
+// This is the only check in the file that does not run through the pricer at
+// all, and it is deliberately the FIRST one: every other smile assertion below
+// prices under these views, so a bug INSIDE a view would move the production
+// number and its repricing oracle together and hide in both. Comparing against
+// `surf.iv(k,T)` -- which this test calls directly, on the same public API any
+// caller has -- is the one comparison that cannot.
+TEST(SmileGreeks, ViewsShiftTheSurfaceByExactlyTheCoefficient) {
+  const EssviSurface surf = make_skewed_surface();
+  const double T = 0.25;
+  const double s = 0.5;
+
+  // Spread across both wings and ATM. k = 0 is the load-bearing one: BOTH
+  // shifts vanish there (s*0 and c*0*0), so a view that perturbed the ATM vol
+  // would not be measuring smile SHAPE at all -- it would be a second, badly
+  // scaled parallel vega.
+  for (const double k : {-0.4, -0.1, 0.0, 0.25, 0.6}) {
+    const double base = surf.iv(k, T);
+    ASSERT_TRUE(std::isfinite(base)) << "fixture must have an opinion at k=" << k;
+    EXPECT_DOUBLE_EQ(atx::vol::detail::skew_shifted_iv_for_test(surf, k, T, s), base + s * k)
+        << "at k=" << k;
+    EXPECT_DOUBLE_EQ(atx::vol::detail::convex_shifted_iv_for_test(surf, k, T, s),
+                     base + s * k * k)
+        << "at k=" << k;
+  }
+
+  // The floor. At k = -0.4 a unit slope drives iv to about -0.163, which the
+  // strip would otherwise integrate as a negative vol.
+  EXPECT_LT(surf.iv(-0.4, T) + 1.0 * (-0.4), 0.0);  // the fixture really is that far under
+  EXPECT_DOUBLE_EQ(atx::vol::detail::skew_shifted_iv_for_test(surf, -0.4, T, 1.0), 1.0e-4);
+
+  // The floor must NOT rescue a NaN. `std::fmax(NaN, floor)` returns the
+  // floor, which would fabricate a usable vol where the surface had no opinion
+  // and silently defeat the strip's own bad-node accounting; the comparison
+  // form used in `floor_smile_iv` passes NaN through. T = 0.001 is below the
+  // legacy eSSVI short-T extrapolation guard, where every read is non-finite.
+  ASSERT_TRUE(std::isnan(surf.iv(-0.4, 0.001)));
+  EXPECT_TRUE(std::isnan(atx::vol::detail::skew_shifted_iv_for_test(surf, -0.4, 0.001, 1.0)));
+}
+
+// skew_vega's SIGN on the standard skew fixture, plus its magnitude against an
+// independent two-sided full-repricing finite difference taken at a DIFFERENT
+// bump size -- the same two-properties-in-one-check shape
+// `DerivGreeks.VegaIsBumpSizeIndependentOnSkewedSurface` uses for vega.
+//
+// Why the oracle is genuinely independent, which is the whole point (a sibling
+// task shipped an identity test whose four "witnesses" were all computed
+// downstream of the same resolution the identity depended on, and three stayed
+// green under an injected error): `deriv_pv_skew_shifted_for_test` reprices
+// ONCE under the smile-shifted view and the same pinned centre scheme, and
+// stops there. It shares the view and `deriv_price` with production -- it must,
+// or it would be differencing a different function -- but it shares NONE of the
+// bump table: not which slot holds the up bump, not the sign convention on the
+// down one, not the 2*skew_abs divisor, not the `smile_greeks` gating. A
+// swapped up/down, a halved or doubled divisor, or a bump wired to the wrong
+// coefficient all survive a same-implementation bump-size comparison and all
+// fail this one.
+//
+// SIGN. s < 0 raises downside vols and lowers upside ones (k = ln(K/F)), which
+// is the equity-skew direction. A long variance swap is long every strike, so
+// richer puts raise K_var: PV rises as s falls, so dPV/ds < 0. Measured
+// -7644.55 on this fixture, about 1.9% of `vega` (406110) per 1.00 of slope.
+TEST(SmileGreeks, SkewSignOnSkewFixture) {
+  const EssviSurface surf = make_skewed_surface();
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+  const DerivContract c = var_swap_at(0.25);
+
+  DerivGreekBumps smile{};
+  smile.smile_greeks = true;  // default skew_abs = 1e-3
+  const auto g = deriv_greeks(surf, cs, c, deriv_default_config(), smile);
+  ASSERT_TRUE(g.has_value()) << g.error().to_string();
+
+  EXPECT_LT(g->skew_vega, 0.0);
+  // Economically visible, not a rounding residue: a var swap on a -0.6-rho
+  // eSSVI genuinely cares about the smile's slope.
+  EXPECT_GT(std::fabs(g->skew_vega), 1.0e-3 * std::fabs(g->vega));
+
+  // Independent oracle at 10x the production bump.
+  const double s_ref = 1.0e-2;
+  const auto pv_up =
+      atx::vol::detail::deriv_pv_skew_shifted_for_test(surf, cs, c, deriv_default_config(), s_ref);
+  const auto pv_dn =
+      atx::vol::detail::deriv_pv_skew_shifted_for_test(surf, cs, c, deriv_default_config(), -s_ref);
+  ASSERT_TRUE(pv_up.has_value()) << pv_up.error().to_string();
+  ASSERT_TRUE(pv_dn.has_value()) << pv_dn.error().to_string();
+  const double fd_ref = (*pv_up - *pv_dn) / (2.0 * s_ref);
+
+  // Measured agreement is 2.6e-4 relative (-7644.548 production vs -7646.515
+  // oracle); 5e-3 leaves ~20x margin for the two bump sizes' own truncation
+  // while still catching any sign, divisor or wiring error.
+  //
+  // 10x, not 100x, deliberately: at skew_abs = 1e-1 the same comparison drifts
+  // to 2.6% (-7844.45), because a 0.1 slope moves the wing by a full 5 vol
+  // points once the wing clamp saturates it at s*0.5 and the response is no
+  // longer linear. That is a real property of the perturbation, not a stencil
+  // fault, and pinning it at 3% would leave almost no margin.
+  EXPECT_NEAR(g->skew_vega, fd_ref, 5.0e-3 * std::fabs(fd_ref));
+}
+
+// Both smile greeks against a CLOSED FORM on a flat surface -- the strongest
+// oracle available anywhere in this file, and derived from first principles
+// rather than from anything the implementation computes.
+//
+// Under a flat vol sigma, the DDKZ strip weights the OTM option at strike K by
+// (2/T)*dK/K^2, so its sensitivity to the implied vol AT log-moneyness k is
+//   rho(k) dk  ~  (2/T) * (1/K) * vega_BS(K) * dk
+// and vega_BS = F*sqrt(T)*phi(d1)*df with the standard identity
+// phi(d1) = e^k * phi(d2) collapses that to rho(k) ~ phi(d2): a GAUSSIAN in k
+// with mean -sigma^2*T/2 and standard deviation sigma*sqrt(T), normalized so
+// that its total mass is dK_var/dsigma, i.e. the parallel vega. Therefore
+//   skew_vega      = vega * E[k]   = vega * (-sigma^2*T/2)
+//   convexity_vega = vega * E[k^2] = vega * (sigma^2*T + (sigma^2*T/2)^2)
+// with vega = 2*sigma*df*N, the same closed form
+// `DerivGreeks.VarSwapFlatSurfaceAnalyticTruths` already pins.
+//
+// Nothing above reads the implementation. Measured agreement is 1.9e-6
+// (skew) and 8.8e-7 (convexity) relative -- so this pins the SCALE of both
+// greeks, not just their signs. It is that sharp because at sigma*sqrt(T) = 0.1
+// the wing clamp sits 5 standard deviations out and truncates essentially no
+// mass; at a longer tenor the clamp WOULD bite and the closed form would stop
+// describing what the strip prices (see DerivGreeks::skew_vega's own caveat).
+//
+// The sign the test's name names: c > 0 raises both wings and lowers nothing,
+// so it raises K_var unambiguously -- convexity_vega > 0 for a long var swap.
+// Note that skew_vega is NOT zero here despite the flat fixture: the density
+// above is centred at -sigma^2*T/2, not at 0, so a linear-in-k tilt has
+// something to act on. A "flat surface => zero skew vega" assertion would have
+// been a plausible-sounding falsehood.
+TEST(SmileGreeks, FlatSurfaceConvexityPositive) {
+  const double sigma = 0.20, T = 0.25, N = 1e6;
+  const EssviSurface flat = make_flat_surface(sigma, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+  const DerivContract c = var_swap_at(T);
+
+  DerivGreekBumps smile{};
+  smile.smile_greeks = true;
+  const auto g = deriv_greeks(flat, cs, c, deriv_default_config(), smile);
+  ASSERT_TRUE(g.has_value()) << g.error().to_string();
+
+  const double df = cs.yield.disc(T);
+  const double vega_cf = 2.0 * sigma * df * N;
+  const double mean_k = -sigma * sigma * T / 2.0;
+  const double var_k = sigma * sigma * T;
+
+  EXPECT_GT(g->convexity_vega, 0.0);
+  EXPECT_NEAR(g->convexity_vega, vega_cf * (var_k + mean_k * mean_k),
+              1.0e-3 * vega_cf * (var_k + mean_k * mean_k));
+  EXPECT_LT(g->skew_vega, 0.0);
+  EXPECT_NEAR(g->skew_vega, vega_cf * mean_k, 1.0e-3 * std::fabs(vega_cf * mean_k));
+}
+
+// `smile_greeks = false` must cost exactly nothing -- neither repricings nor a
+// change to any number that was already being computed.
+//
+// The count is MEASURED through a seam, not counted by eye: three doc comments
+// in this library claimed "up to 7 / 13 / 17" evaluations for years after Task
+// P-2 deleted the FD rate bump without re-counting, which is precisely what an
+// eye-counted number does. Task F-7 replaced all three with the figures this
+// test pins.
+TEST(SmileGreeks, OffByDefaultCostsNothing) {
+  const EssviSurface surf = make_skewed_surface();
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+  const DerivContract c = var_swap_at(0.25);
+
+  // A maximal default call: second_order and carry_theta both on, the contract
+  // long enough to roll, and a fixing schedule to inject into. 16 = 14
+  // bump-table repricings + the centre + carry_theta's own fair-strike resolve.
+  atx::vol::detail::reset_deriv_greeks_reprice_count_for_test();
+  const auto g_off = deriv_greeks(surf, cs, c);
+  ASSERT_TRUE(g_off.has_value()) << g_off.error().to_string();
+  EXPECT_EQ(atx::vol::detail::deriv_greeks_reprice_count_for_test(), 16u);
+
+  DerivGreekBumps smile{};
+  smile.smile_greeks = true;
+  atx::vol::detail::reset_deriv_greeks_reprice_count_for_test();
+  const auto g_on = deriv_greeks(surf, cs, c, deriv_default_config(), smile);
+  ASSERT_TRUE(g_on.has_value()) << g_on.error().to_string();
+  EXPECT_EQ(atx::vol::detail::deriv_greeks_reprice_count_for_test(), 20u);  // exactly +4
+
+  // Off => NaN, never a 0.0 that would read as a measured smile-neutrality.
+  EXPECT_TRUE(std::isnan(g_off->skew_vega));
+  EXPECT_TRUE(std::isnan(g_off->convexity_vega));
+  EXPECT_TRUE(std::isfinite(g_on->skew_vega));
+  EXPECT_TRUE(std::isfinite(g_on->convexity_vega));
+
+  // ...and turning it ON perturbs nothing else, BIT for bit. This is the half
+  // that a pure count cannot see: the smile bumps read through the same
+  // `cache_c_t0` slot the centre records, and enabling them changes that
+  // slot's recording mode, so "costs nothing" has to mean the existing numbers
+  // are untouched as well as un-repriced.
+  EXPECT_EQ(g_on->pv, g_off->pv);
+  EXPECT_EQ(g_on->delta, g_off->delta);
+  EXPECT_EQ(g_on->gamma, g_off->gamma);
+  EXPECT_EQ(g_on->vega, g_off->vega);
+  EXPECT_EQ(g_on->volga, g_off->volga);
+  EXPECT_EQ(g_on->vanna, g_off->vanna);
+  EXPECT_EQ(g_on->theta, g_off->theta);
+  EXPECT_EQ(g_on->rho, g_off->rho);
+  EXPECT_EQ(g_on->charm, g_off->charm);
+  EXPECT_EQ(g_on->theta_carry, g_off->theta_carry);
+  EXPECT_EQ(g_on->theta_zero_fixing, g_off->theta_zero_fixing);
+}
+
+// The book layer scales every computed greek by `qty` and NaNs every greek on
+// a lane that did not price -- through two HAND-ENUMERATED field lists
+// (`scaled_greeks` / `nan_greeks`, deriv_book.cpp) that no arity pin can see an
+// omission from. A new greek left out of either ships silently wrong: unscaled
+// on every qty != 1 position, or reading as a measured 0.0 on a dead lane.
+// That omission is this sprint's most-repeated defect, so it gets a test rather
+// than a promise.
+TEST(SmileGreeks, BookRowsScaleByQtyAndNaNOnFailedLanes) {
+  const atx::vol::PricedSurface ps = atx::vol::testkit::make_flat_surface(7, 100.0, 100.0, 0.30);
+  const atx::vol::PricedSurface *arr[] = {&ps};
+  const auto ss = atx::vol::SurfaceSet::create(arr);
+  ASSERT_TRUE(ss.has_value());
+
+  atx::vol::DerivPosition one{};
+  one.id = 1;
+  one.uid = 7;
+  one.qty = 1.0;
+  one.contract = var_swap_at(0.25);
+  atx::vol::DerivPosition two = one;  // IDENTICAL contract, twice the size
+  two.id = 2;
+  two.qty = 2.0;
+  atx::vol::DerivPosition missing = one;  // uid the SurfaceSet does not know
+  missing.id = 3;
+  missing.uid = 999;
+
+  DerivGreekBumps smile{};
+  smile.smile_greeks = true;
+  const atx::vol::DerivPosition book[] = {one, two, missing};
+  const auto f = atx::vol::price_deriv_book(*ss, book, atx::vol::DerivConfig{}, true, smile);
+  ASSERT_TRUE(f.has_value()) << f.error().to_string();
+  ASSERT_EQ(f->rows.size(), 3u);
+  ASSERT_EQ(f->rows[0].status, atx::vol::PriceStatus::Ok);
+  ASSERT_EQ(f->rows[1].status, atx::vol::PriceStatus::Ok);
+  ASSERT_EQ(f->rows[2].status, atx::vol::PriceStatus::ModelUnavailable);
+
+  // Both smile greeks must be present at all (a book row that quietly lost
+  // them would pass a pure scaling ratio of NaN == NaN otherwise).
+  ASSERT_TRUE(std::isfinite(f->rows[0].greeks.skew_vega));
+  ASSERT_TRUE(std::isfinite(f->rows[0].greeks.convexity_vega));
+  // qty = 2 is exactly representable, so the scaling is bit-exact.
+  EXPECT_DOUBLE_EQ(f->rows[1].greeks.skew_vega, 2.0 * f->rows[0].greeks.skew_vega);
+  EXPECT_DOUBLE_EQ(f->rows[1].greeks.convexity_vega, 2.0 * f->rows[0].greeks.convexity_vega);
+
+  // A lane that never priced claims nothing -- NaN, not the struct's own 0.0
+  // default, which at the portfolio layer is indistinguishable from a measured
+  // smile-neutral position.
+  EXPECT_TRUE(std::isnan(f->rows[2].greeks.skew_vega));
+  EXPECT_TRUE(std::isnan(f->rows[2].greeks.convexity_vega));
+}
+
+// Task F-7 term-bucket vega: `DerivPriceFrame::vega_by_tenor` is `totals.vega`
+// split by expiry, which is the exposure a single net number hides.
+TEST(TermVega, LadderSplitsNetVegaByMaturity) {
+  const atx::vol::PricedSurface ps = atx::vol::testkit::make_flat_surface(7, 100.0, 100.0, 0.30);
+  const atx::vol::PricedSurface *arr[] = {&ps};
+  const auto ss = atx::vol::SurfaceSet::create(arr);
+  ASSERT_TRUE(ss.has_value());
+
+  // Deliberately near-vega-NEUTRAL overall: long two front-tenor lots, short
+  // one back-tenor lot of a longer contract. The net can be close to nothing
+  // while each bucket is large -- the whole reason the ladder exists.
+  atx::vol::DerivPosition front{};
+  front.id = 1;
+  front.uid = 7;
+  front.qty = 2.0;
+  front.contract = var_swap_at(0.25);
+  atx::vol::DerivPosition front2 = front;
+  front2.id = 2;
+  front2.qty = 1.0;  // SAME tenor as `front` -- must land in the SAME bucket
+  atx::vol::DerivPosition back{};
+  back.id = 3;
+  back.uid = 7;
+  back.qty = -1.0;
+  back.contract = var_swap_at(0.75);
+
+  const atx::vol::DerivPosition book[] = {front, front2, back};
+  const auto f = atx::vol::price_deriv_book(*ss, book);
+  ASSERT_TRUE(f.has_value()) << f.error().to_string();
+  ASSERT_EQ(f->rows.size(), 3u);
+  for (const auto &r : f->rows) {
+    ASSERT_EQ(r.status, atx::vol::PriceStatus::Ok);
+  }
+
+  // Two distinct tenors, ordered front to back by `std::map` itself.
+  ASSERT_EQ(f->vega_by_tenor.size(), 2u);
+  EXPECT_DOUBLE_EQ(f->vega_by_tenor.begin()->first, 0.25);
+  EXPECT_DOUBLE_EQ(f->vega_by_tenor.rbegin()->first, 0.75);
+
+  // Each bucket is the qty-weighted sum of exactly its own rows' vegas, and
+  // the two same-tenor lots merged rather than overwriting one another.
+  EXPECT_DOUBLE_EQ(f->vega_by_tenor.at(0.25),
+                   f->rows[0].greeks.vega + f->rows[1].greeks.vega);
+  EXPECT_DOUBLE_EQ(f->vega_by_tenor.at(0.75), f->rows[2].greeks.vega);
+
+  // The ladder reconstitutes the net total, and the buckets are individually
+  // far larger than it -- i.e. the split is carrying real information.
+  EXPECT_DOUBLE_EQ(f->vega_by_tenor.at(0.25) + f->vega_by_tenor.at(0.75), f->totals.vega);
+  EXPECT_GT(f->vega_by_tenor.at(0.25), 0.0);
+  EXPECT_LT(f->vega_by_tenor.at(0.75), 0.0);
+
+  // Marks-only leaves it EMPTY, not a map of zeros: no vega was computed, and
+  // a zeroed ladder would read as a genuinely vega-flat book.
+  const auto marks = atx::vol::price_deriv_book(*ss, book, atx::vol::DerivConfig{}, false);
+  ASSERT_TRUE(marks.has_value()) << marks.error().to_string();
+  EXPECT_TRUE(marks->vega_by_tenor.empty());
 }
 
 }  // namespace

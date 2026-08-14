@@ -26,10 +26,16 @@ constexpr double kNaN = kPriceColumnNaN;
 // default-initializes its sensitivities to 0.0 (Task 7's convention, where a
 // fully-aged contract genuinely HAS zero market greeks), which at the portfolio
 // layer would be indistinguishable from a measured zero. Every numeric field --
-// the eleven sensitivities (the original nine plus Task C-10's theta_carry /
-// theta_zero_fixing) AND the embedded centre quote's -- is therefore
-// overwritten with the frame's "not computed" sentinel. `strip_nodes_used == 0`
-// and `flags == None` are already exactly "no strip ran".
+// the thirteen sensitivities (the original nine, plus Task C-10's theta_carry /
+// theta_zero_fixing and Task F-7's skew_vega / convexity_vega) AND the embedded
+// centre quote's -- is therefore overwritten with the frame's "not computed"
+// sentinel. `strip_nodes_used == 0` and `flags == None` are already exactly
+// "no strip ran".
+//
+// THIS LIST IS HAND-ENUMERATED and `DerivGreeks`' arity pin cannot see an
+// omission from it -- a new sensitivity left out here ships un-NaN'd on every
+// failed lane, reading as a measured zero. Extend it in the same commit that
+// appends the field.
 [[nodiscard]] DerivGreeks nan_greeks() noexcept {
   DerivGreeks g{};
   g.pv = kNaN;
@@ -43,6 +49,8 @@ constexpr double kNaN = kPriceColumnNaN;
   g.charm = kNaN;
   g.theta_carry = kNaN;
   g.theta_zero_fixing = kNaN;
+  g.skew_vega = kNaN;
+  g.convexity_vega = kNaN;
   g.quote.fair_strike_dec = kNaN;
   g.quote.fair_strike_points = kNaN;
   g.quote.pv = kNaN;
@@ -59,14 +67,19 @@ constexpr double kNaN = kPriceColumnNaN;
   return g;
 }
 
-// Position-scale a computed greek block. The nine sensitivities, the pv, AND
-// the two carry-theta diagnostics (Task C-10: theta_carry / theta_zero_fixing
-// are cash-amounts-per-year exactly like theta, not per-contract rates) are
-// cash amounts and scale; `quote` is the per-contract centre diagnostic and is
-// carried through VERBATIM (see deriv_book.hpp "Scaling" -- "every numeric
-// output of a row is qty-scaled exactly once", which already covers these two
-// by that general wording, not just the field list this function happened to
-// enumerate before Task C-10 added them to DerivGreeks).
+// Position-scale a computed greek block. The nine sensitivities, the pv, the
+// two carry-theta diagnostics (Task C-10: theta_carry / theta_zero_fixing are
+// cash-amounts-per-year exactly like theta, not per-contract rates) AND the two
+// smile greeks (Task F-7) are cash amounts and scale; `quote` is the
+// per-contract centre diagnostic and is carried through VERBATIM (see
+// deriv_book.hpp "Scaling" -- "every numeric output of a row is qty-scaled
+// exactly once", which already covers the appended fields by that general
+// wording, not just the field list this function happened to enumerate before
+// Task C-10 added to DerivGreeks).
+//
+// SAME HAND-ENUMERATION HAZARD as `nan_greeks` above: `out = g` copies the new
+// field through UNSCALED, so an omission here is a silent mark bug on every
+// qty != 1 position rather than a compile error. Extend both lists together.
 [[nodiscard]] DerivGreeks scaled_greeks(const DerivGreeks &g, double qty) noexcept {
   DerivGreeks out = g;
   out.pv = qty * g.pv;
@@ -80,6 +93,10 @@ constexpr double kNaN = kPriceColumnNaN;
   out.charm = qty * g.charm;
   out.theta_carry = qty * g.theta_carry;
   out.theta_zero_fixing = qty * g.theta_zero_fixing;
+  // Task F-7: dPV/ds and dPV/dc are cash amounts per unit of smile
+  // coefficient, exactly like vega is per unit of vol -- so they scale.
+  out.skew_vega = qty * g.skew_vega;
+  out.convexity_vega = qty * g.convexity_vega;
   return out;
 }
 
@@ -293,7 +310,19 @@ using VarSwapMemo = std::map<VarSwapMemoKey, detail::VarSwapSharedBlock>;
   // mode-blind default, unchanged prior behaviour.
   const std::optional<double> wing_band = wing_band_of ? wing_band_of(p.uid) : std::nullopt;
 
-  const bool use_memo = var_swap_memo_eligible(p.contract, discrete_correction_ok);
+  // Task F-7: `VarSwapSharedBlock` carries no smile-bump slots, so a greeks row
+  // that asks for `skew_vega`/`convexity_vega` takes the UNMEMOIZED path, which
+  // computes them. The alternative -- letting the memo serve the row and
+  // silently returning NaN for a greek the caller explicitly requested -- is
+  // the "missing key" failure this codebase keeps paying for, and a second
+  // bit-identical smile implementation inside the shared block is a cost worth
+  // paying only once there is a book workload that needs it. Nothing existing
+  // is affected: `smile_greeks` is off by default, so every prior caller keeps
+  // the memo on exactly the rows it already had it on. Marks-only rows ignore
+  // `bumps` entirely (see `price_deriv_book`'s own @param doc) and so keep the
+  // memo regardless.
+  const bool use_memo = var_swap_memo_eligible(p.contract, discrete_correction_ok) &&
+                        !(greeks && bumps.smile_greeks);
 
   if (greeks) {
     const Result<DerivGreeks> g =
@@ -358,7 +387,19 @@ using VarSwapMemo = std::map<VarSwapMemoKey, detail::VarSwapSharedBlock>;
 // presented as complete is the failure mode being avoided. That NaN-poisoning
 // is unchanged; GK-C9b adds the count of WHICH Ok rows caused it, per column,
 // so a NaN total names its own cause instead of going silent.
-void accumulate(DerivPriceFrame &frame, const DerivPriceRow &row, bool greeks) noexcept {
+//
+// Task F-7: `maturity_t` is passed in rather than read off the row because
+// neither `DerivPriceRow` nor the `DerivQuote` it embeds carries a tenor --
+// the driver loop's own `p.contract` is the only place it exists at this
+// point.
+//
+// NO LONGER `noexcept` (Task F-7): inserting a new tenor bucket ALLOCATES, so
+// the old marking would have turned an out-of-memory into `std::terminate`
+// instead of an exception. `price_deriv_book`, this function's only caller,
+// already allocates freely (`rows.reserve`/`push_back`) and is not noexcept
+// either, so propagating matches what the layer around it already does.
+void accumulate(DerivPriceFrame &frame, const DerivPriceRow &row, bool greeks,
+                double maturity_t) {
   if (row.status != PriceStatus::Ok) {
     return;
   }
@@ -371,6 +412,15 @@ void accumulate(DerivPriceFrame &frame, const DerivPriceRow &row, bool greeks) n
     const double leg_vega = g.vega;
     t.vega += leg_vega;
     t.abs_vega += std::fabs(leg_vega);
+    // Term-bucket vega (Task F-7). A non-finite maturity is not a bucket any
+    // caller could look up again, so such a lane is left out of the ladder
+    // rather than allowed to create a NaN KEY -- which `std::map`'s `<` orders
+    // inconsistently and would corrupt the whole container's invariants, not
+    // just its own entry. `totals.vega` still carries the lane, so the ladder
+    // summing short of the net total is the visible, honest signal.
+    if (std::isfinite(maturity_t)) {
+      frame.vega_by_tenor[maturity_t] += leg_vega;
+    }
     t.theta += g.theta;
     frame.n_theta_excluded += std::isfinite(g.theta) ? 0u : 1u;
     t.rho += g.rho;
@@ -419,7 +469,7 @@ Result<DerivPriceFrame> price_deriv_book(const SurfaceSet &surfaces,
   for (const DerivPosition &p : book) {
     frame.rows.push_back(
         price_one(surfaces, p, cfg, greeks, bumps, wing_band_of, discrete_correction_ok, var_swap_memo));
-    accumulate(frame, frame.rows.back(), greeks);
+    accumulate(frame, frame.rows.back(), greeks, p.contract.maturity_t);
   }
   return Ok(std::move(frame));
 }

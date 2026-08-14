@@ -67,6 +67,53 @@ double refine_carr_lee_k_vol(double k_vol_naive, double k_var, double T) noexcep
 void set_strip_batch_disabled_for_test(bool disabled) noexcept;
 void set_bump_read_cache_disabled_for_test(bool disabled) noexcept;
 
+// Task F-7 test seam. Counts the PRICING EVALUATIONS the templated
+// `deriv_greeks` itself issues: its one center `deriv_price`, every
+// `bumped_pv` its bump table runs, and the standalone `var_swap_fair_strike`
+// that resolves the carry-theta fixing rate. Exists because there is no other
+// way to assert a repricing COUNT from a test -- `deriv_greeks`'s body is
+// explicitly instantiated for a fixed surface set, so a test cannot substitute
+// a counting `SurfaceT` of its own (see the instantiation list at the bottom
+// of this file). `SmileGreeks.OffByDefaultCostsNothing` uses it to pin that
+// `smile_greeks = false` costs exactly nothing.
+//
+// Deliberately NOT instrumented: the P-6 book memo path
+// (`deriv_greeks_var_swap_shared`), whose whole purpose is to issue a
+// different, shared number of evaluations. Counting both through one counter
+// would make the number mean neither thing.
+void reset_deriv_greeks_reprice_count_for_test() noexcept;
+[[nodiscard]] std::uint64_t deriv_greeks_reprice_count_for_test() noexcept;
+
+// Task F-7 oracle seams. `deriv_greeks`' own smile stencil cannot be checked
+// against a reference built from `deriv_greeks` -- that is the circular oracle
+// this sprint keeps rediscovering -- and a test cannot build its own view,
+// because `deriv_price`'s body is explicitly instantiated for a fixed surface
+// set (bottom of this file). These expose the two ingredients SEPARATELY so a
+// test can re-derive the answer along a different route:
+//
+//   *_shifted_iv_for_test  -- what the view does to ONE surface read. The test
+//     compares it against `surface.iv(k,T)` plus its own hand-written `s*k`,
+//     which is genuinely independent: the surface's `iv` is public API the
+//     test already calls directly, and nothing about the comparison passes
+//     through the greeks path.
+//   deriv_pv_skew_shifted_for_test -- one full repricing under the smile-
+//     shifted view and the SAME pinned centre scheme, but with NO bump table,
+//     NO stencil and NO divisor. The test builds its own two-sided difference
+//     at its own bump size, so a wrong sign, a wrong divisor, a swapped
+//     up/down slot or a mis-wired bump would all show up as disagreement.
+//
+// Monomorphic in `EssviSurface` deliberately: it is the skew-carrying fixture
+// type the greeks tests already use, and keeping the seam concrete avoids
+// exporting yet another template from this TU.
+[[nodiscard]] double skew_shifted_iv_for_test(const EssviSurface& surface, double k_log, double T,
+                                              double slope) noexcept;
+[[nodiscard]] double convex_shifted_iv_for_test(const EssviSurface& surface, double k_log, double T,
+                                                double curvature) noexcept;
+[[nodiscard]] Result<double> deriv_pv_skew_shifted_for_test(const EssviSurface& surface,
+                                                            const CurveSet& curves,
+                                                            const DerivContract& contract,
+                                                            const DerivConfig& cfg, double slope);
+
 }  // namespace detail
 
 namespace {
@@ -281,6 +328,17 @@ std::atomic<bool> g_bump_read_cache_disabled{env_flag_enabled("ATX_VOL_DISABLE_B
 
 [[nodiscard]] bool bump_read_cache_disabled_for_test() noexcept {
   return g_bump_read_cache_disabled.load(std::memory_order_relaxed);
+}
+
+// Task F-7 repricing counter -- see the seam's own doc in `detail` above for
+// what it counts and what it deliberately does not. Always live rather than
+// compiled out under a test macro: this file has no test-only build, and one
+// relaxed increment per full contract repricing (a strip integration at
+// minimum) is not measurable against what it counts.
+std::atomic<std::uint64_t> g_deriv_greeks_reprices{0};
+
+void count_deriv_greeks_reprice() noexcept {
+  g_deriv_greeks_reprices.fetch_add(1u, std::memory_order_relaxed);
 }
 
 // Resolve the wing trust half-band: 0 -> the surface's own certified band
@@ -3364,6 +3422,108 @@ struct CachedBumpView {
   }
 };
 
+// ── Task F-7: smile-shape bump views ───────────────────────────────────────
+//
+// Floor for any smile-shifted vol. The two views below multiply their
+// coefficient by k, which the strip evaluates out to the resolved wing band,
+// so a large caller-set bump can drive a wing node's vol to zero or below --
+// the same silent corruption `bumps_valid`'s `vol_abs < sigma_atm` check
+// exists to prevent for the PARALLEL shift. That check cannot be reused here
+// (it reads k = 0, where the linear term is identically zero and the
+// quadratic one is too), so the guard is a floor at the point of use instead.
+// Small enough to be far below any economically meaningful vol, so it never
+// binds on a sanely-sized bump and the stencil stays a clean central
+// difference.
+inline constexpr double kMinSmileShiftedIv = 1.0e-4;
+
+// NOT `std::fmax`: fmax(NaN, floor) returns FLOOR, which would silently
+// manufacture a usable vol out of a surface read that had no opinion at all
+// and defeat the NaN propagation every layer above depends on ("NaN =
+// not computed", and the strip's own bad-node accounting). The comparison
+// form is false for a NaN left operand, so NaN passes straight through
+// unchanged -- exactly what `CachedBumpView::iv`'s `sigma + vol_shift`
+// already guarantees for the parallel shift.
+[[nodiscard]] constexpr double floor_smile_iv(double v) noexcept {
+  return v < kMinSmileShiftedIv ? kMinSmileShiftedIv : v;
+}
+
+// `iv(k,T) + s*k`, composed on top of the ordinary bump view so a smile bump
+// still gets the sticky-strike respot, the shared read cache and -- through
+// `eval_bump_table`'s caller -- the SAME pinned grid every other bump prices
+// under. Wrapping `CachedBumpView` rather than duplicating it is what keeps
+// the cache's subtle recording/replay contract single-sourced.
+//
+// THE k THIS RECEIVES IS ALREADY WING-CLAMPED. `var_swap_fair_strike` clamps
+// each node into the resolved trust band BEFORE calling `iv` (both the scalar
+// loop and the gather buffer the batched path fills), so `s*k` saturates at
+// `s*wing_band` rather than growing across the wings. That is a real modelling
+// decision, documented for callers on `DerivGreeks::skew_vega`; it is also the
+// self-consistent one, since the clamped surface is precisely what produced
+// the PV being differentiated.
+//
+// Re-exposing `is_bumped_greek_view` and `iv_batch` is LOAD-BEARING, not
+// tidiness: both are detected structurally by `requires`-expression
+// (`is_bumped_greek_view` / `has_strip_iv_batch` at the top of this file), so
+// a wrapper that dropped either would compile perfectly and silently switch
+// the detection off -- exactly the regression P-3's review fix I-7 found, where
+// a lost `iv_batch` quietly put 13 of 14 bumped evaluations back on the scalar
+// read path. No `certified_wing_band` member, deliberately, matching
+// `CachedBumpView`: the center's resolved band travels through
+// `cfg.wing_clamp_k` via `pin_center_scheme` instead.
+template <class SurfaceT>
+struct SkewShiftView {
+  CachedBumpView<SurfaceT> inner;
+  double slope;  // vol per unit k = ln(K/F); s < 0 steepens the equity skew
+
+  static constexpr bool is_bumped_greek_view = true;
+
+  [[nodiscard]] double iv(double k_log, double T) const noexcept {
+    return floor_smile_iv(inner.iv(k_log, T) + slope * k_log);
+  }
+
+  // `x` and `out` are distinct buffers at the only call site (the strip's
+  // `x_read_buf` / `sigma_buf`), which `CachedBumpView::iv_batch` already
+  // requires -- it uses `out` as scratch for its own shifted reads -- so
+  // reading `x[i]` back after `inner` has written `out[i]` is sound.
+  void iv_batch(std::span<const double> x, double T, std::span<double> out) const noexcept
+      requires requires(const CachedBumpView<SurfaceT>& s, std::span<const double> xs, double t,
+                        std::span<double> o) { s.iv_batch(xs, t, o); }
+  {
+    const std::size_t n = std::min(x.size(), out.size());
+    inner.iv_batch(x.first(n), T, out.first(n));
+    for (std::size_t i = 0; i < n; ++i) {
+      out[i] = floor_smile_iv(out[i] + slope * x[i]);
+    }
+  }
+};
+
+// `iv(k,T) + c*k*k` -- the symmetric counterpart of `SkewShiftView`, raising
+// (c > 0) or lowering both wings at once while leaving ATM untouched. Every
+// note on that struct applies verbatim, including the wing-clamp saturation
+// (here at `c*wing_band^2`) and why the two detection members are re-exposed.
+template <class SurfaceT>
+struct ConvexShiftView {
+  CachedBumpView<SurfaceT> inner;
+  double curvature;  // vol per unit k^2
+
+  static constexpr bool is_bumped_greek_view = true;
+
+  [[nodiscard]] double iv(double k_log, double T) const noexcept {
+    return floor_smile_iv(inner.iv(k_log, T) + curvature * k_log * k_log);
+  }
+
+  void iv_batch(std::span<const double> x, double T, std::span<double> out) const noexcept
+      requires requires(const CachedBumpView<SurfaceT>& s, std::span<const double> xs, double t,
+                        std::span<double> o) { s.iv_batch(xs, t, o); }
+  {
+    const std::size_t n = std::min(x.size(), out.size());
+    inner.iv_batch(x.first(n), T, out.first(n));
+    for (std::size_t i = 0; i < n; ++i) {
+      out[i] = floor_smile_iv(out[i] + curvature * x[i] * x[i]);
+    }
+  }
+};
+
 // Spot bump: the reference spot and every fitted forward scale together, so the
 // bumped world is the same carry seen from a different spot. Yield and
 // dividends are untouched.
@@ -3387,13 +3547,45 @@ struct CachedBumpView {
 // shares with every other bump in the table that reads the same shifted
 // nodes at the same T -- see `CachedBumpView` and `eval_bump_table`'s own
 // six-slot layout below.
+// The one place a bump-table evaluation actually reprices, whatever view it
+// prices under -- so the Task F-7 repricing counter has exactly one site to
+// increment and cannot drift out of step with the table below.
+template <class ViewT>
+[[nodiscard]] Result<double> pv_under_view(const ViewT& view, const CurveSet& curves,
+                                           const DerivContract& contract, const DerivConfig& cfg) {
+  count_deriv_greeks_reprice();
+  ATX_TRY(const DerivQuote q, deriv_price(view, curves, contract, cfg));
+  return Ok(q.pv);
+}
+
 template <class SurfaceT>
 [[nodiscard]] Result<double> bumped_pv(const SurfaceT& surface, const CurveSet& curves,
                                        const DerivContract& contract, const DerivConfig& cfg,
                                        double k_shift, double vol_shift, BumpReadCache& cache) {
   const CachedBumpView<SurfaceT> view{&surface, k_shift, vol_shift, &cache};
-  ATX_TRY(const DerivQuote q, deriv_price(view, curves, contract, cfg));
-  return Ok(q.pv);
+  return pv_under_view(view, curves, contract, cfg);
+}
+
+// Task F-7: one smile-shape repricing. Both smile bumps run at ZERO spot and
+// vol shift, so the inner `CachedBumpView` is the identity-shift one whose
+// reads `cache_c_t0` already recorded for the center -- the four extra
+// evaluations therefore cost four strip INTEGRATIONS but no additional
+// surface reads at all.
+template <class SurfaceT>
+[[nodiscard]] Result<double> skew_bumped_pv(const SurfaceT& surface, const CurveSet& curves,
+                                            const DerivContract& contract, const DerivConfig& cfg,
+                                            double slope, BumpReadCache& cache) {
+  const SkewShiftView<SurfaceT> view{CachedBumpView<SurfaceT>{&surface, 0.0, 0.0, &cache}, slope};
+  return pv_under_view(view, curves, contract, cfg);
+}
+
+template <class SurfaceT>
+[[nodiscard]] Result<double> convex_bumped_pv(const SurfaceT& surface, const CurveSet& curves,
+                                              const DerivContract& contract, const DerivConfig& cfg,
+                                              double curvature, BumpReadCache& cache) {
+  const ConvexShiftView<SurfaceT> view{CachedBumpView<SurfaceT>{&surface, 0.0, 0.0, &cache},
+                                       curvature};
+  return pv_under_view(view, curves, contract, cfg);
 }
 
 // Injects one additional fixing (n_done -> n_done+1) into a COPY of `rv`,
@@ -3592,15 +3784,27 @@ struct BumpPvs {
   double sv_pp = kNaN, sv_pm = kNaN;    // (S+, sigma+), (S+, sigma-)
   double sv_mp = kNaN, sv_mm = kNaN;    // (S-, sigma+), (S-, sigma-)
   double t_s_up = kNaN, t_s_dn = kNaN;  // S(1 +/- h) at T - dt
+  double sk_up = kNaN, sk_dn = kNaN;    // iv + (+/-)s*k        (Task F-7)
+  double cx_up = kNaN, cx_dn = kNaN;    // iv + (+/-)c*k^2      (Task F-7)
 };
 
-// Up to 7 evaluations, 13 with second_order (one fewer / three fewer when the
-// contract cannot roll), plus 3 more when `bumps.carry_theta` is on (one
+// Up to 6 evaluations here, 12 with second_order (one fewer / three fewer when
+// the contract cannot roll), plus 3 more when `bumps.carry_theta` is on (one
 // var_swap_fair_strike call to resolve K_var_future, then the two carry-theta
 // reprices above) -- skipped entirely (no extra evaluation) when
 // `contract.rv_spec.n_obs_total == 0`, where there is no fixing schedule to
-// inject into. Every failure propagates: a bumped contract that will not
-// price is a real failure, not a missing greek.
+// inject into -- plus 4 more when `bumps.smile_greeks` is on. Every failure
+// propagates: a bumped contract that will not price is a real failure, not a
+// missing greek.
+//
+// Task F-7 recount: this said "7 / 13" and had done since Task P-2 deleted the
+// FD rate bump without re-counting. The maximum is 14 `bumped_pv` calls (18
+// with smile_greeks), and `deriv_greeks` adds its own center `deriv_price`
+// and, on the carry-theta path, one `var_swap_fair_strike` -- 16 pricing
+// evaluations for a maximal default call, 20 with smile_greeks. Those totals
+// are MEASURED, not counted by eye: `SmileGreeks.OffByDefaultCostsNothing`
+// (deriv_greeks_test.cpp) pins them through
+// `deriv_greeks_reprice_count_for_test`.
 //
 // The center is repriced HERE, under the same pinned config as the bumps,
 // rather than reusing the caller's center quote: a stencil must difference
@@ -3672,16 +3876,22 @@ template <class SurfaceT>
                             : strip::kMaxStripNodes;
 
   BumpPvs pv{};
-  if (skip_market_bumps) {
-    // I-3's existing "single-use slot" mode (no `begin_recording`): nothing
-    // will ever replay `cache_c_t0` once v_up/v_dn are skipped too, so
-    // `CachedBumpView` just reads live and the reserve()+sort() a recording
-    // slot pays for is not spent on zero readers.
-    ATX_TRY(pv.c, bumped_pv(surface, curves, contract, cfg, 0.0, 0.0, cache_c_t0));
-  } else {
+  // I-3's "single-use slot" rule, restated now that TWO groups can replay this
+  // slot: record `cache_c_t0` iff something later actually reads it back --
+  // the vol bumps (skipped under `skip_market_bumps`) or Task F-7's smile
+  // bumps, which price at zero spot AND zero vol shift and so query exactly
+  // the nodes the center just recorded. With neither, `CachedBumpView` reads
+  // live and the reserve()+sort() a recording slot pays for is not spent on
+  // zero readers.
+  const bool c_t0_has_replayer = !skip_market_bumps || bumps.smile_greeks;
+  if (c_t0_has_replayer) {
     cache_c_t0.begin_recording(reserve_hint);
-    ATX_TRY(pv.c, bumped_pv(surface, curves, contract, cfg, 0.0, 0.0, cache_c_t0));
-    cache_c_t0.finish_recording();  // replayed by pv.v_up, pv.v_dn below
+  }
+  ATX_TRY(pv.c, bumped_pv(surface, curves, contract, cfg, 0.0, 0.0, cache_c_t0));
+  if (c_t0_has_replayer) {
+    cache_c_t0.finish_recording();  // replayed by pv.v_up/v_dn and/or the smile bumps
+  }
+  if (!skip_market_bumps) {
     cache_up_t0.begin_recording(reserve_hint);
     ATX_TRY(pv.s_up, bumped_pv(surface, cs_up, contract, cfg, ks_up, 0.0, cache_up_t0));
     cache_up_t0.finish_recording();  // replayed by pv.sv_pp, pv.sv_pm below
@@ -3691,6 +3901,22 @@ template <class SurfaceT>
     ATX_TRY(pv.v_up, bumped_pv(surface, curves, contract, cfg, 0.0, dv, cache_c_t0));
     ATX_TRY(pv.v_dn, bumped_pv(surface, curves, contract, cfg, 0.0, -dv, cache_c_t0));
   }
+
+  // Task F-7 smile bumps. Run for EVERY method, including AnalyticStrip
+  // (`skip_market_bumps`): the closed form has no skew/convexity term, so
+  // finite difference is the only construction available, and silently
+  // returning NaN for a greek the caller explicitly asked for would be the
+  // worse outcome. Both are pure central differences with no dependence on
+  // `pv.c`, so they are correct whether or not the market bumps ran.
+  if (bumps.smile_greeks) {
+    const double sk = bumps.skew_abs;
+    const double cx = bumps.convexity_abs;
+    ATX_TRY(pv.sk_up, skew_bumped_pv(surface, curves, contract, cfg, sk, cache_c_t0));
+    ATX_TRY(pv.sk_dn, skew_bumped_pv(surface, curves, contract, cfg, -sk, cache_c_t0));
+    ATX_TRY(pv.cx_up, convex_bumped_pv(surface, curves, contract, cfg, cx, cache_c_t0));
+    ATX_TRY(pv.cx_dn, convex_bumped_pv(surface, curves, contract, cfg, -cx, cache_c_t0));
+  }
+
   if (can_roll) {
     cache_c_tr.begin_recording(reserve_hint);
     ATX_TRY(pv.t_dn, bumped_pv(surface, curves, rolled, cfg, 0.0, 0.0, cache_c_tr));
@@ -3751,6 +3977,7 @@ template <class SurfaceT>
         // degrade immediately above. "Not computed" is the honest reading;
         // the CENTER quote's fail-loud contract (C-4) is untouched, since
         // this stencil pair never feeds it.
+        count_deriv_greeks_reprice();  // Task F-7 seam: a strip is an evaluation
         if (const Result<DerivQuote> strip_q =
                 var_swap_fair_strike(surface, curves, contract.maturity_t, cfg);
             strip_q.has_value()) {
@@ -3807,8 +4034,14 @@ template <class SurfaceT>
 template <class SurfaceT>
 [[nodiscard]] bool bumps_valid(const DerivGreekBumps& b, const SurfaceT& surface,
                                 double T) noexcept {
+  // Task F-7: the two smile bumps are validated UNCONDITIONALLY, not only when
+  // `smile_greeks` is set -- the same convention `rate_abs` already follows
+  // now that nothing reads it. Every bump size is a caller input validated
+  // once at the boundary, so which knob happens to consume it is not this
+  // predicate's business, and a caller cannot leave a zero divisor parked in
+  // the struct waiting for the day someone flips the flag on.
   if (!(b.spot_rel > 0.0 && b.spot_rel < 1.0 && b.vol_abs > 0.0 && b.rate_abs > 0.0 &&
-        b.time_years > 0.0)) {
+        b.time_years > 0.0 && b.skew_abs > 0.0 && b.convexity_abs > 0.0)) {
     return false;
   }
   const double sigma_atm = surface.iv(0.0, T);
@@ -3904,6 +4137,7 @@ Result<DerivGreeks> deriv_greeks(const SurfaceT& surface, const CurveSet& curves
     return Err(ErrorCode::InvalidArgument, "greeks need curves.spot > 0 (delta's divisor)");
   }
 
+  count_deriv_greeks_reprice();  // Task F-7 seam: the center is a repricing too
   ATX_TRY(const DerivQuote center, deriv_price(surface, curves, contract, cfg));
   DerivGreeks g{};
   g.pv = center.pv;
@@ -4043,6 +4277,16 @@ Result<DerivGreeks> deriv_greeks(const SurfaceT& surface, const CurveSet& curves
     g.volga = (p.v_up - 2.0 * p.c + p.v_dn) / (dv * dv);
     g.vanna = (p.sv_pp - p.sv_pm - p.sv_mp + p.sv_mm) / (4.0 * ds * dv);
   }
+  // Task F-7 smile greeks. UNCONDITIONAL arithmetic, exactly like vanna's
+  // above: `sk_*`/`cx_*` stay at `BumpPvs`' own kNaN default when
+  // `smile_greeks` is off, so both fields become NaN by PROPAGATION rather
+  // than by an explicit assignment -- which is what keeps the NaN payload
+  // bit-identical to the P-6 memoized path (see `deriv_greeks_var_swap_shared`
+  // for the same reasoning applied to theta/charm). Central differences, so
+  // each is dPV per 1.00 of the coefficient; see `DerivGreeks::skew_vega` for
+  // the k convention and the expected signs.
+  g.skew_vega = (p.sk_up - p.sk_dn) / (2.0 * bumps.skew_abs);
+  g.convexity_vega = (p.cx_up - p.cx_dn) / (2.0 * bumps.convexity_abs);
   g.theta = (p.t_dn - p.c) / bumps.time_years;
   // Task C-10 / GK-C2: same one-sided roll and divisor as theta above, just
   // against a T - dt reprice that also carries one injected fixing (see
@@ -5023,6 +5267,46 @@ void set_strip_batch_disabled_for_test(bool disabled) noexcept {
 }
 void set_bump_read_cache_disabled_for_test(bool disabled) noexcept {
   g_bump_read_cache_disabled.store(disabled, std::memory_order_relaxed);
+}
+void reset_deriv_greeks_reprice_count_for_test() noexcept {
+  g_deriv_greeks_reprices.store(0u, std::memory_order_relaxed);
+}
+std::uint64_t deriv_greeks_reprice_count_for_test() noexcept {
+  return g_deriv_greeks_reprices.load(std::memory_order_relaxed);
+}
+
+// A default-constructed `BumpReadCache` is in I-3's "single-use slot" mode
+// (`recording == false`, never sorted), so every read goes straight to the
+// surface -- which is what these probes want: the view's arithmetic, with no
+// cache state to reason about.
+double skew_shifted_iv_for_test(const EssviSurface& surface, double k_log, double T,
+                                double slope) noexcept {
+  BumpReadCache cache;
+  const SkewShiftView<EssviSurface> view{
+      CachedBumpView<EssviSurface>{&surface, 0.0, 0.0, &cache}, slope};
+  return view.iv(k_log, T);
+}
+
+double convex_shifted_iv_for_test(const EssviSurface& surface, double k_log, double T,
+                                  double curvature) noexcept {
+  BumpReadCache cache;
+  const ConvexShiftView<EssviSurface> view{
+      CachedBumpView<EssviSurface>{&surface, 0.0, 0.0, &cache}, curvature};
+  return view.iv(k_log, T);
+}
+
+// Mirrors `deriv_greeks`' own centre-then-pin sequence exactly, because a
+// difference taken on an UNPINNED grid would differ from the production
+// stencil by a change of quadrature rather than a change of price -- the very
+// contamination `pin_center_scheme` exists to prevent. Everything past the pin
+// is deliberately NOT shared with the bump table.
+Result<double> deriv_pv_skew_shifted_for_test(const EssviSurface& surface, const CurveSet& curves,
+                                              const DerivContract& contract,
+                                              const DerivConfig& cfg, double slope) {
+  ATX_TRY(const DerivQuote center, deriv_price(surface, curves, contract, cfg));
+  const DerivConfig cfg_pinned = pin_center_scheme(cfg, center);
+  BumpReadCache cache;
+  return skew_bumped_pv(surface, curves, contract, cfg_pinned, slope, cache);
 }
 } // namespace detail
 

@@ -93,6 +93,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <map>       // DerivPriceFrame::vega_by_tenor (ordered = the ladder)
 #include <optional>
 #include <span>
 #include <vector>
@@ -156,19 +157,42 @@ struct DerivPriceFrame {
   std::uint32_t n_vanna_excluded{0};
   std::uint32_t n_charm_excluded{0};
 
+  // Task F-7 term-bucket vega: `contract.maturity_t` -> the sum of that
+  // tenor's qty-scaled `greeks.vega` over the Ok rows, i.e. `totals.vega`
+  // split by expiry. A vol desk hedges a term STRUCTURE, and a single net vega
+  // hides the commonest real exposure -- long front, short back, flat overall.
+  //
+  // Keyed by the raw maturity in years, so `std::map`'s ordering IS the ladder,
+  // front to back. Exact double equality is the bucketing rule: two positions
+  // land together iff they carry the identical `maturity_t`, which is what a
+  // caller who built the book off one calendar gets. Callers wanting coarser
+  // buckets (1M / 3M / 6M) round before building the book, or re-bucket this
+  // map -- deliberately no rounding policy here, which would have to guess.
+  //
+  // Same NaN discipline as `totals.vega`: an Ok lane whose own vega is NaN
+  // poisons ITS bucket only, leaving the other tenors readable. A row that did
+  // not price at all contributes nothing (it is not an Ok row). EMPTY when
+  // `price_deriv_book`'s `greeks` argument was false -- no vega was computed,
+  // and an empty ladder says that, where a map of zeros would read as a
+  // genuinely vega-flat book.
+  //
+  // Costs no extra repricing: it is a plain reduction over the same per-row
+  // vegas `totals.vega` already sums.
+  std::map<double, double> vega_by_tenor;
+
   // Number of rows that priced. Equals `totals.n_ok` by construction; counted
   // from `rows` so the frame stays self-describing if it is ever rebuilt or
   // filtered by a caller.
   [[nodiscard]] std::size_t n_ok() const noexcept;
 };
 
-// Drift pin: DerivPriceFrame has exactly FIVE fields (v1.1 appended
-// n_theta_excluded/n_vanna_excluded/n_charm_excluded, GK-C9b). Adding,
-// removing, or splitting one breaks this line -- update the count, and
-// confirm every construction site still default-constructs plus
-// designated/member assignment (there is no positional brace-init of this
-// type anywhere in this codebase today).
-static_assert(detail::aggregate_arity_is_v<DerivPriceFrame, 5>,
+// Drift pin: DerivPriceFrame has exactly SIX fields (v1.1 appended
+// n_theta_excluded/n_vanna_excluded/n_charm_excluded in GK-C9b, then
+// vega_by_tenor in Task F-7). Adding, removing, or splitting one breaks this
+// line -- update the count, and confirm every construction site still
+// default-constructs plus designated/member assignment (there is no positional
+// brace-init of this type anywhere in this codebase today).
+static_assert(detail::aggregate_arity_is_v<DerivPriceFrame, 6>,
               "DerivPriceFrame field count changed: update this pin.");
 
 // Price every position in `book` against its uid's surface.
@@ -179,9 +203,15 @@ static_assert(detail::aggregate_arity_is_v<DerivPriceFrame, 5>,
 //                 valid and yields an empty frame with zeroed totals.
 // @param cfg      pricing config, applied to every position.
 // @param greeks   false prices MARKS ONLY: one `deriv_price` per position
-//                 instead of the ~8-17 repricings a greek block costs (up to
-//                 17 with `bumps.carry_theta` on, Task C-10). Every
-//                 greek field (rows and totals) is then NaN.
+//                 instead of the up-to-16 repricings a greek block costs (14
+//                 bump-table evaluations, the centre, and `carry_theta`'s own
+//                 fair-strike resolve), or up-to-20 with `bumps.smile_greeks`.
+//                 Task F-7 recount: this said "~8-17 / up to 17", stale since
+//                 Task P-2 removed the FD rate bump without re-counting; the
+//                 replacement figures are the ones
+//                 `SmileGreeks.OffByDefaultCostsNothing` measures. Every greek
+//                 field (rows and totals) is then NaN, and `vega_by_tenor` is
+//                 empty.
 // @param bumps    finite-difference bump sizes; ignored when `greeks` is false.
 //                 A non-positive bump is rejected by the pricer PER POSITION,
 //                 so a malformed `bumps` shows up as every row reporting

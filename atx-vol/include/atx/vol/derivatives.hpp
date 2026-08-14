@@ -1719,13 +1719,58 @@ struct DerivGreeks {
   // unaged VolSwap should treat these two fields as approximate, not exact.
   double theta_carry = kQuietNaN;
   double theta_zero_fixing = kQuietNaN;
+  // Smile greeks (Task F-7, GK-G1/G2). `vega` above is a PARALLEL shift only,
+  // but a variance swap's defining risk is the SHAPE of the smile: the strip
+  // integrates every strike, so a rotation or a steepening of the smile moves
+  // K_var even when the ATM vol does not budge. These two name that exposure.
+  //
+  // MONEYNESS CONVENTION. k = ln(K/F), the same log-forward-moneyness the
+  // strip integrates in (detail/strip_grid.hpp) and the same coordinate
+  // `SurfaceAnalytics::skew_slope` (analytics.hpp) reports d(sigma)/dk in. So
+  // a perturbation of `s` here shifts the surface's OWN skew_slope by exactly
+  // +s, in identical units.
+  //   skew_vega       dPV/ds under  iv(k,T) -> max(iv(k,T) + s*k,       1e-4)
+  //   convexity_vega  dPV/dc under  iv(k,T) -> max(iv(k,T) + c*k*k,     1e-4)
+  // Both are PV per 1.00 of the coefficient (a full vol point of extra slope
+  // per unit log-moneyness), which is a large perturbation -- a typical index
+  // skew_slope is O(0.1) -- so a desk figure is `skew_vega * 0.01` for a
+  // 1-vol-point-per-unit-k rotation. Both are notional-scaled like every other
+  // field here.
+  //
+  // SIGN. s < 0 is the equity-like direction: it RAISES downside vols (k < 0)
+  // and lowers upside ones, i.e. steepens the familiar equity skew. A long
+  // variance swap is long every strike, so richer puts raise K_var and raise
+  // PV -- PV rises as s falls, hence skew_vega < 0 on a long var swap. Pinned
+  // and independently cross-checked by `SmileGreeks.SkewSignOnSkewFixture`
+  // (deriv_greeks_test.cpp). c > 0 raises BOTH wings and lowers nothing, so it
+  // raises K_var unambiguously: convexity_vega > 0 on a long var swap.
+  //
+  // WING-CLAMP SATURATION -- a modelling limit to read before using these.
+  // The strip CLAMPS k into the resolved wing trust band before it ever calls
+  // `iv` (see the wing-clamp discussion above `DerivConfig::wing_clamp_k`), so
+  // the perturbation a node past the band actually receives is s*band, not
+  // s*k: the linear term SATURATES at the band edge instead of growing. With
+  // the default certified half-band of 0.5 and a 1Y 20-vol strip spanning
+  // roughly +-1.2 in k, the outer wings therefore all receive the SAME shift.
+  // These two numbers are consequently sensitivities of the CLAMPED surface
+  // the strip actually prices -- which is the honest target, since that is the
+  // surface `pv` came from -- and NOT of an unclamped analytic smile. A caller
+  // wanting the unsaturated figure must widen `DerivConfig::wing_clamp_k` (or
+  // select `StripWingMode::Raw`) for the greek call as well as the mark.
+  //
+  // NaN unless `DerivGreekBumps::smile_greeks` is on (4 extra repricings);
+  // like every market greek here, both are exactly 0 on a fully-aged contract,
+  // where nothing is left to realize for the smile to act on.
+  double skew_vega = 0.0;
+  double convexity_vega = 0.0;
   DerivQuote quote{};  // the center (unbumped) quote
 };
 
-// Drift pin: DerivGreeks has exactly TWELVE fields (v1.1 appended theta_carry
-// / theta_zero_fixing, Task C-10). See the DerivConfig pin above for the
-// contract this protects.
-static_assert(detail::aggregate_arity_is_v<DerivGreeks, 12>,
+// Drift pin: DerivGreeks has exactly FOURTEEN fields (v1.1 appended
+// theta_carry / theta_zero_fixing in Task C-10, then skew_vega /
+// convexity_vega in Task F-7). See the DerivConfig pin above for the contract
+// this protects.
+static_assert(detail::aggregate_arity_is_v<DerivGreeks, 14>,
               "DerivGreeks field count changed: update this pin.");
 
 // Bump sizes for `deriv_greeks`. The defaults are the ones the whole test
@@ -1754,7 +1799,10 @@ struct DerivGreekBumps {
   // implied variance rate the injected fixing is struck at -- see the header
   // note above DerivGreeks::theta_carry) plus TWO extra deriv_price
   // repricings (the T - dt roll with one fixing injected at that rate, and
-  // again at a zero return), on top of the block's existing up-to-13. Skipped
+  // again at a zero return), on top of the block's existing up-to-12 (Task
+  // F-7: was written as 13 here, stale since Task P-2 removed the FD rate
+  // bump without re-counting -- the measured bump-table count is pinned by
+  // `SmileGreeks.OffByDefaultCostsNothing`, deriv_greeks_test.cpp). Skipped
   // for free (no extra evaluation at all) when `contract.rv_spec.n_obs_total
   // == 0` -- no fixing schedule exists to inject into, so both fields just
   // equal `theta`. Default true: theta_zero_fixing is the number a daily P&L
@@ -1768,12 +1816,40 @@ struct DerivGreekBumps {
   // `CarrLeeForm::Refined`'s own "planned 2.0 default" precedent, not a
   // commitment that 2.0 makes it).
   DerivGreekMethod method = DerivGreekMethod::FiniteDifference;
+  // Task F-7 smile bumps -- the coefficients of the two shape perturbations
+  // `DerivGreeks::skew_vega` / `convexity_vega` differentiate (see those
+  // fields for the k = ln(K/F) convention, the signs, and the wing-clamp
+  // saturation caveat). Both are absolute vol per unit k / per unit k^2, and
+  // both are CENTRAL differences, so each costs two repricings.
+  //
+  // 1e-3 rather than `vol_abs`'s 1e-4: these multiply k, and the strip's own
+  // trusted band is |k| <= 0.5 by default, so a 1e-4 slope moves the far wing
+  // by only 5e-5 vol -- within the strip quadrature's own noise on a Debug
+  // build, which shows up as a stencil that fails to converge rather than as a
+  // visibly wrong number. 1e-3 keeps the perturbation comfortably above that
+  // floor while staying far inside the linear regime (verified by
+  // `SmileGreeks.SkewSignOnSkewFixture`'s 100x bump-size independence check).
+  double skew_abs = 1.0e-3;
+  double convexity_abs = 1.0e-3;
+  // OFF BY DEFAULT, unlike `second_order`/`carry_theta`. Costs FOUR extra
+  // repricings (skew +/-, convexity +/-, all at zero spot and vol shift), and
+  // unlike the carry thetas these are a portfolio-shaping diagnostic rather
+  // than a number a daily P&L predict needs -- so a caller opts in. Both
+  // fields are NaN when this is off, by the same arithmetic NaN propagation
+  // `vanna` uses under `second_order == false`, never a false 0.0.
+  //
+  // Honoured under `DerivGreekMethod::AnalyticStrip` too: the closed form
+  // (deriv_analytic_greeks.hpp) has no skew/convexity term, so these two are
+  // computed by finite difference either way. An explicitly requested greek
+  // silently coming back NaN because an unrelated method knob was set is the
+  // worse failure; the cost is the same 4 repricings.
+  bool smile_greeks = false;
 };
 
-// Drift pin: DerivGreekBumps has exactly SEVEN fields (v1.1 appended
-// method, Task P-4). See the DerivConfig pin above for the contract this
-// protects.
-static_assert(detail::aggregate_arity_is_v<DerivGreekBumps, 7>,
+// Drift pin: DerivGreekBumps has exactly TEN fields (v1.1 appended method in
+// Task P-4, then skew_abs / convexity_abs / smile_greeks in Task F-7). See
+// the DerivConfig pin above for the contract this protects.
+static_assert(detail::aggregate_arity_is_v<DerivGreekBumps, 10>,
               "DerivGreekBumps field count changed: update this pin.");
 
 // Finite-difference greeks for any vol-derivative contract.
@@ -1790,6 +1866,11 @@ static_assert(detail::aggregate_arity_is_v<DerivGreekBumps, 7>,
 //     vol is re-read at the ORIGINAL absolute strike. `curves.spot` is the
 //     divisor, so it must be > 0.
 //   - Vol is a PARALLEL additive shift of `iv(k,T)`; the curves are untouched.
+//   - SMILE SHAPE (opt-in, `DerivGreekBumps::smile_greeks`) adds two more
+//     surface perturbations at zero spot and vol shift: `iv(k,T) + s*k` and
+//     `iv(k,T) + c*k*k`, each floored at 1e-4 so a large bump cannot drive a
+//     wing node non-positive. See `DerivGreeks::skew_vega` for the k = ln(K/F)
+//     convention, the sign, and the wing-clamp saturation caveat.
 //   - Theta rolls `contract.maturity_t` down by dt with the realized spec
 //     untouched, i.e. calendar time passes and nothing new is realized.
 //   - Rate has NO bump: rho is the closed form below, not a stencil.
