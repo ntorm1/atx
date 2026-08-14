@@ -16,16 +16,16 @@
 // offsetof is pinned by static_assert — this is an on-disk ABI, so a field
 // reorder that preserved sizeof would still silently corrupt readers.
 
-#include "atx/vol/detail/run_archive_schema.hpp"
-#include "atx/vol/types.hpp" // Result / Status
+#include "storage/run_archive_schema.hpp"
+#include "atx/vol/api/core/types.hpp" // Result / Status
 
 // RunDir (below) returns these by value in Result<...>, so their full
 // definitions are needed here (a Result<T> instantiation needs a complete T).
 // This is the one place run_archive.hpp is not "light" — the encoders above stay
 // forward-declared; only the run-directory handle pulls the input types in.
-#include "atx/vol/backtest.hpp"                   // Clock (RunDir::clock)
+#include "atx/vol/api/backtest/backtest.hpp"                   // Clock (RunDir::clock)
 #include "atx/vol/research/dispersion_workflow.hpp"        // RunSpec (RunDir::spec)
-#include "atx/vol/listed_dispersion_schedule.hpp" // ListedDispersionSchedule (RunDir::schedule)
+#include "atx/vol/api/backtest/listed_dispersion_schedule.hpp" // ListedDispersionSchedule (RunDir::schedule)
 
 #include <cstddef>
 #include <cstdint>

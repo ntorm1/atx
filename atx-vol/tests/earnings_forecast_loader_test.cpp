@@ -1,4 +1,4 @@
-#include "atx/vol/earnings_forecast_loader.hpp"
+#include "analytics/earnings_forecast_loader.hpp"
 
 #include <gtest/gtest.h>
 

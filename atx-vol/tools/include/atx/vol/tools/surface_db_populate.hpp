@@ -51,12 +51,12 @@
 #include <string_view>
 #include <vector>
 
-#include "atx/vol/corpus.hpp"     // CorpusBoard
-#include "atx/vol/fit_policy.hpp" // FitAdmissionPolicy (Task 2: populate publish floor)
-#include "atx/vol/pricer_fitter.hpp" // ExpiryBuildOutcome, ExpiryFitOutcome (SliceDropCell, Task 3)
+#include "atx/vol/api/marketdata/corpus.hpp"     // CorpusBoard
+#include "atx/vol/api/fitting/fit_policy.hpp" // FitAdmissionPolicy (Task 2: populate publish floor)
+#include "atx/vol/api/fitting/pricer_fitter.hpp" // ExpiryBuildOutcome, ExpiryFitOutcome (SliceDropCell, Task 3)
 #include "atx/vol/tools/run_report.hpp" // MetaKv
-#include "atx/vol/surface_db.hpp" // SurfaceDb, SymbolFitConfig
-#include "atx/vol/types.hpp"      // Result, Status
+#include "atx/vol/api/storage/surface_db.hpp" // SurfaceDb, SymbolFitConfig
+#include "atx/vol/api/core/types.hpp"      // Result, Status
 
 namespace atx::vol {
 

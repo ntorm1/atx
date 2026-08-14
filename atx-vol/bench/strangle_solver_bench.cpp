@@ -29,13 +29,13 @@
 
 #include <benchmark/benchmark.h>
 
-#include "atx/vol/american.hpp"        // al_fast_opts, AmericanMethod, AmericanGreeks
-#include "atx/vol/priced_surface.hpp"  // PricedSurface, PricingContext
-#include "atx/vol/strategy.hpp"        // resolve_strike_by_delta
-#include "atx/vol/surface_parity.hpp"  // SliceContext
-#include "atx/vol/types.hpp"           // Side, Result
-#include "atx/vol/vol_curve.hpp"       // CurveSurface, EssviCurve
-#include "atx/vol/vol_surface.hpp"     // EssviParams
+#include "atx/vol/api/pricing/american.hpp"        // al_fast_opts, AmericanMethod, AmericanGreeks
+#include "atx/vol/api/backtest/priced_surface.hpp"  // PricedSurface, PricingContext
+#include "atx/vol/api/backtest/strategy.hpp"        // resolve_strike_by_delta
+#include "atx/vol/api/fitting/surface_parity.hpp"  // SliceContext
+#include "atx/vol/api/core/types.hpp"           // Side, Result
+#include "atx/vol/api/fitting/vol_curve.hpp"       // CurveSurface, EssviCurve
+#include "atx/vol/api/fitting/vol_surface.hpp"     // EssviParams
 
 #include "bench_util.hpp"
 

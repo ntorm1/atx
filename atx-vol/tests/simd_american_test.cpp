@@ -17,10 +17,10 @@
 // On a non-AVX2 host the AVX2-specific tests SKIP; the ForceScalar test still
 // runs (identity check) so the scalar route is always exercised.
 
-#include "atx/vol/simd/american_boundary_batch.hpp"
+#include "atx/vol/api/simd/american_boundary_batch.hpp"
 
-#include "atx/vol/american.hpp"
-#include "atx/vol/simd/cpu.hpp"
+#include "atx/vol/api/pricing/american.hpp"
+#include "atx/vol/api/simd/cpu.hpp"
 #include "support/oracle_pricer_pde.hpp"
 
 #include <chrono>

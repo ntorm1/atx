@@ -75,7 +75,7 @@ _KIND = {"ScalarKV": 0, "TimeSeries": 1, "SubTable": 2}
 _GOLDEN_SCHEMA_HASH = 0xDCCE47781AC8390D
 
 _HERE = pathlib.Path(__file__).resolve()
-_HEADER = _HERE.parents[1] / "include" / "atx" / "vol" / "detail" / "run_archive_schema.hpp"
+_HEADER = _HERE.parents[1] / "src" / "storage" / "run_archive_schema.hpp"
 _OUT = _HERE.parents[1] / "python" / "src" / "atxvol" / "report" / "_schema.py"
 
 # The region markers. ASCII only and matched on the whole stripped line, so a

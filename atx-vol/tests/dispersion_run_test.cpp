@@ -31,22 +31,22 @@
 #include <utility>
 #include <vector>
 
-#include "atx/vol/american.hpp"            // al_fast_opts, AmericanMethod
-#include "atx/vol/backtest.hpp"            // Clock, MarketSnapshot
-#include "atx/vol/corpus.hpp"              // CorpusManifest, CorpusEntry, write_manifest_file
-#include "atx/vol/dispersion.hpp"          // DispersionConfig, build_dispersion_book
+#include "atx/vol/api/pricing/american.hpp"            // al_fast_opts, AmericanMethod
+#include "atx/vol/api/backtest/backtest.hpp"            // Clock, MarketSnapshot
+#include "atx/vol/api/marketdata/corpus.hpp"              // CorpusManifest, CorpusEntry, write_manifest_file
+#include "atx/vol/api/backtest/dispersion.hpp"          // DispersionConfig, build_dispersion_book
 #include "atx/vol/research/dispersion_backtest.hpp" // DispersionBacktestConfig, dispersion_config_from
 #include "atx/vol/research/dispersion_run.hpp"
 #include "atx/vol/research/dispersion_workflow.hpp" // universe_at, utc_date_from_ns
-#include "atx/vol/listed_dispersion_schedule.hpp" // build_listed_dispersion_roll (S3-T16 fixture)
-#include "atx/vol/listed_opra.hpp"         // ListedDefinitionTable, write_listed_definitions_file
-#include "atx/vol/occ_ess.hpp"             // read_occ_ess_report_file
-#include "atx/vol/priced_surface.hpp"      // PricedSurface, PricingContext
+#include "atx/vol/api/backtest/listed_dispersion_schedule.hpp" // build_listed_dispersion_roll (S3-T16 fixture)
+#include "marketdata/listed_opra.hpp"         // ListedDefinitionTable, write_listed_definitions_file
+#include "marketdata/occ_ess.hpp"             // read_occ_ess_report_file
+#include "atx/vol/api/backtest/priced_surface.hpp"      // PricedSurface, PricingContext
 #include "atx/vol/research/run_archive.hpp"         // RunDir, RunArchive (S3-T16 .atxrun default path)
-#include "atx/vol/surface_archive.hpp"     // write_surface_archive_v2_file
-#include "atx/vol/surface_parity.hpp"      // SliceContext
-#include "atx/vol/vol_curve.hpp"           // CurveSurface, EssviCurve
-#include "atx/vol/vol_surface.hpp"         // EssviParams
+#include "atx/vol/api/storage/surface_archive.hpp"     // write_surface_archive_v2_file
+#include "atx/vol/api/fitting/surface_parity.hpp"      // SliceContext
+#include "atx/vol/api/fitting/vol_curve.hpp"           // CurveSurface, EssviCurve
+#include "atx/vol/api/fitting/vol_surface.hpp"         // EssviParams
 
 using namespace atx::vol;
 namespace fs = std::filesystem;

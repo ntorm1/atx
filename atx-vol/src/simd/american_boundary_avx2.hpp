@@ -9,7 +9,7 @@
 #include <cstddef>
 #include <optional>
 
-#include "atx/vol/american.hpp"
+#include "atx/vol/api/pricing/american.hpp"
 
 namespace atx::vol::simd::detail {
 

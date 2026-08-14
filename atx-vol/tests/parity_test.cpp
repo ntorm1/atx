@@ -3,11 +3,11 @@
 #include <cstddef>
 #include <vector>
 
-#include "atx/vol/american.hpp"
-#include "atx/vol/black76.hpp"
-#include "atx/vol/detail/counters.hpp"
-#include "atx/vol/parity.hpp"
-#include "atx/vol/types.hpp"
+#include "atx/vol/api/pricing/american.hpp"
+#include "atx/vol/api/pricing/black76.hpp"
+#include "fitting/counters.hpp"
+#include "atx/vol/api/fitting/parity.hpp"
+#include "atx/vol/api/core/types.hpp"
 
 // Coverage for the American-equity PARITY acceptance metrics. Every synthetic
 // mid is generated in-test by `american_price` at a known generating vol, with a

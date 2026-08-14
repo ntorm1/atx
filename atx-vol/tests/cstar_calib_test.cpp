@@ -7,11 +7,11 @@
 #include <span>
 #include <vector>
 
-#include "atx/vol/black76.hpp"      // black76_price (synthetic chain mids)
-#include "atx/vol/cstar.hpp"
-#include "atx/vol/cstar_calib.hpp"
-#include "atx/vol/universe.hpp"     // Chain, chain_index
-#include "atx/vol/vol_surface.hpp"  // EssviParams, essvi_total_w
+#include "atx/vol/api/pricing/black76.hpp"      // black76_price (synthetic chain mids)
+#include "fitting/cstar.hpp"
+#include "fitting/cstar_calib.hpp"
+#include "atx/vol/api/marketdata/universe.hpp"     // Chain, chain_index
+#include "atx/vol/api/fitting/vol_surface.hpp"  // EssviParams, essvi_total_w
 
 // CStar calibration coverage. Mirrors the C ats-vol test
 // test_calibrate_cstar_lm.c: synthetic w-targets from a known-truth slice,

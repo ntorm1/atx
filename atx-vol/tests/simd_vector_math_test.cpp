@@ -19,13 +19,13 @@
 // AVX2-specific expectations SKIP on a non-AVX2 host; the mode-mapping + Reference
 // bit-identity checks always run (they need no AVX2).
 
-#include "atx/vol/simd/math_mode.hpp"
-#include "atx/vol/simd/vector_math_probe.hpp"
+#include "simd/math_mode.hpp"
+#include "simd/vector_math_probe.hpp"
 
 #include "atx/core/math.hpp"                       // atx::core::norm_cdf (Reference Φ)
-#include "atx/vol/american.hpp"                    // andersen_lake
-#include "atx/vol/simd/american_boundary_batch.hpp"
-#include "atx/vol/simd/cpu.hpp"
+#include "atx/vol/api/pricing/american.hpp"                    // andersen_lake
+#include "atx/vol/api/simd/american_boundary_batch.hpp"
+#include "atx/vol/api/simd/cpu.hpp"
 
 #include <cmath>
 #include <cstddef>

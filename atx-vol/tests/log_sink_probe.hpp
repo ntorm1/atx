@@ -7,7 +7,7 @@
 // while cancelling a running backtest). Test support only — never shipped, never
 // included by library code.
 
-#include "atx/vol/log.hpp"
+#include "core/log.hpp"
 
 #include <cstdio>
 #include <filesystem>

@@ -10,12 +10,13 @@
 #include <utility>
 #include <vector>
 
-#include "atx/vol/american.hpp"
-#include "atx/vol/arb.hpp"     // QuoteFlag, to_u8
-#include "atx/vol/black76.hpp" // black76_price, black76_value_and_vega
-#include "atx/vol/calib.hpp"
-#include "atx/vol/detail/counters.hpp"
-#include "atx/vol/universe.hpp" // Chain, chain_index
+#include "atx/vol/api/pricing/american.hpp"
+#include "atx/vol/api/fitting/arb.hpp"     // QuoteFlag, to_u8
+#include "atx/vol/api/pricing/black76.hpp" // black76_price, black76_value_and_vega
+#include "atx/vol/api/fitting/calib.hpp"
+#include "fitting/calib_detail.hpp" // SharedLaneBracket, shared_lane_residual_within_budget
+#include "fitting/counters.hpp"
+#include "atx/vol/api/marketdata/universe.hpp" // Chain, chain_index
 
 // Shared calibration-infrastructure coverage, ported from the C ats-vol tests
 // that exercised `ats_vol_svi_build_observations` /

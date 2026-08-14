@@ -31,7 +31,7 @@
 //                                 landed two different files at the same
 //                                 generation number.
 
-#include "atx/vol/detail/writer_lock.hpp"
+#include "storage/writer_lock.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -44,8 +44,8 @@
 
 #include <gtest/gtest.h>
 
-#include "atx/vol/backtest_db.hpp"
-#include "atx/vol/surface_db.hpp"
+#include "storage/backtest_db.hpp"
+#include "atx/vol/api/storage/surface_db.hpp"
 
 namespace atx::vol {
 namespace {

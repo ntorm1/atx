@@ -10,8 +10,8 @@
 
 #include <benchmark/benchmark.h>
 
-#include "atx/vol/contract_projection.hpp"
-#include "atx/vol/historical_projection.hpp"
+#include "atx/vol/api/analytics/contract_projection.hpp"
+#include "analytics/historical_projection.hpp"
 
 #include "bench_util.hpp"
 #include "support/synth_book.hpp"

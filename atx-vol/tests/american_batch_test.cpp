@@ -14,11 +14,11 @@
 // per-contract loop. Its analytic route groups both puts and calls into their
 // side-native SIMD bundles while preserving public order and per-lane status.
 
-#include "atx/vol/american_batch.hpp"
+#include "atx/vol/api/pricing/american_batch.hpp"
 
-#include "atx/vol/american.hpp"
-#include "atx/vol/detail/counters.hpp"
-#include "atx/vol/simd/cpu.hpp"
+#include "atx/vol/api/pricing/american.hpp"
+#include "fitting/counters.hpp"
+#include "atx/vol/api/simd/cpu.hpp"
 
 #include <atomic>
 #include <barrier>

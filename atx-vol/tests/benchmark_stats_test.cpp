@@ -26,7 +26,7 @@
 #include <string>
 #include <vector>
 
-#include "atx/vol/backtest.hpp"  // BacktestResult
+#include "atx/vol/api/backtest/backtest.hpp"  // BacktestResult
 #include "atx/vol/tools/tearsheet.hpp" // BenchmarkStats, benchmark_stats, tearsheet
 
 using namespace atx::vol;

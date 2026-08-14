@@ -21,19 +21,19 @@
 #include <string_view>
 #include <vector>
 
-#include "atx/vol/backtest.hpp"                   // MarketSnapshot, QueryExecution (via query_pricing.hpp)
-#include "atx/vol/contract_projection.hpp"        // ProjectedMaturitySpec, ProjectedOption
-#include "atx/vol/corpus.hpp"                     // CorpusAdmissionRule
-#include "atx/vol/dispersion.hpp"                 // DispersionBook
+#include "atx/vol/api/backtest/backtest.hpp"                   // MarketSnapshot, QueryExecution (via query_pricing.hpp)
+#include "atx/vol/api/analytics/contract_projection.hpp"        // ProjectedMaturitySpec, ProjectedOption
+#include "atx/vol/api/marketdata/corpus.hpp"                     // CorpusAdmissionRule
+#include "atx/vol/api/backtest/dispersion.hpp"                 // DispersionBook
 #include "atx/vol/research/dispersion_workflow.hpp"        // RunSpec, batch_spec
-#include "atx/vol/historical_projection.hpp"      // HistoricalProjection{Scenario,Frame,Config}, ProjectedHistoricalVar
-#include "atx/vol/listed_dispersion.hpp"          // ListedForwardLookup, DispersionMember, ListedOptionQuote
+#include "analytics/historical_projection.hpp"      // HistoricalProjection{Scenario,Frame,Config}, ProjectedHistoricalVar
+#include "atx/vol/api/backtest/listed_dispersion.hpp"          // ListedForwardLookup, DispersionMember, ListedOptionQuote
 #include "atx/vol/research/listed_dispersion_reconciliation.hpp" // ListedReconciliationSnapshot, reconcile_listed_dispersion
-#include "atx/vol/listed_dispersion_schedule.hpp" // ListedRiskLookup, ListedOptionRisk
-#include "atx/vol/listed_dispersion_strategy.hpp" // ListedDispersionStrategy, MarkDivergence
-#include "atx/vol/listed_opra.hpp"                // ListedDefinitionTable, MissingDefinitionPolicy
-#include "atx/vol/listed_quote_key.hpp"           // ListedQuoteKey
-#include "atx/vol/types.hpp"                      // Result
+#include "atx/vol/api/backtest/listed_dispersion_schedule.hpp" // ListedRiskLookup, ListedOptionRisk
+#include "atx/vol/api/backtest/listed_dispersion_strategy.hpp" // ListedDispersionStrategy, MarkDivergence
+#include "marketdata/listed_opra.hpp"                // ListedDefinitionTable, MissingDefinitionPolicy
+#include "core/listed_quote_key.hpp"           // ListedQuoteKey
+#include "atx/vol/api/core/types.hpp"                      // Result
 
 namespace atx::vol {
 

@@ -31,10 +31,10 @@
 #include <gtest/gtest.h>
 
 #include "atx/core/db/sqlite.hpp"
-#include "atx/vol/backtest.hpp"             // BacktestResult
-#include "atx/vol/catalog.hpp"     // Catalog, TrackRow, TrackStatus
-#include "atx/vol/track_key.hpp"   // TrackKey
-#include "atx/vol/track_store.hpp" // TrackStore, TrackMeta, compact
+#include "atx/vol/api/backtest/backtest.hpp"             // BacktestResult
+#include "marketdata/catalog.hpp"     // Catalog, TrackRow, TrackStatus
+#include "storage/track_key.hpp"   // TrackKey
+#include "storage/track_store.hpp" // TrackStore, TrackMeta, compact
 
 using namespace atx::vol;
 namespace fs = std::filesystem;

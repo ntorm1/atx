@@ -7,9 +7,9 @@
 #include <vector>
 
 #include "atx/core/error.hpp"
-#include "atx/vol/dispersion.hpp"
-#include "atx/vol/listed_dispersion.hpp"
-#include "atx/vol/types.hpp"
+#include "atx/vol/api/backtest/dispersion.hpp"
+#include "atx/vol/api/backtest/listed_dispersion.hpp"
+#include "atx/vol/api/core/types.hpp"
 
 using namespace atx::vol;
 

@@ -147,12 +147,12 @@
 #include <string_view>
 #include <vector>
 
-#include "atx/vol/detail/counters.hpp"            // counters::ledger (ATX_VOL_SOLVE_LEDGER dump)
-#include "atx/vol/opra_hive.hpp"           // OpraHiveSpec
-#include "atx/vol/session.hpp"             // FitPreset
+#include "fitting/counters.hpp"            // counters::ledger (ATX_VOL_SOLVE_LEDGER dump)
+#include "atx/vol/api/marketdata/opra_hive.hpp"           // OpraHiveSpec
+#include "atx/vol/api/fitting/session.hpp"             // FitPreset
 #include "atx/vol/tools/surface_db_build.hpp"    // SurfaceDbBuildSpec, build_surface_db, write_build_report_csv
 #include "atx/vol/tools/surface_db_populate.hpp" // PopulateSymbolStats
-#include "atx/vol/types.hpp"               // Result, Status
+#include "atx/vol/api/core/types.hpp"               // Result, Status
 
 #include "surface_db_build_cli.hpp" // is_valid_snapshot_suffix (Task 4 addendum §B)
 

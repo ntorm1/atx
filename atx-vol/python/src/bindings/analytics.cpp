@@ -13,7 +13,7 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
-#include "atx/vol/backtest.hpp"
+#include "atx/vol/api/backtest/backtest.hpp"
 #include "atx/vol/tools/tearsheet.hpp"
 #include "backtest_util.hpp"
 #include "result.hpp"

@@ -17,7 +17,7 @@
 
 #include <gtest/gtest.h>
 
-#include "atx/vol/backtest.hpp"
+#include "atx/vol/api/backtest/backtest.hpp"
 #include "dispersion_backtest_regime.hpp"
 
 using namespace atx::vol;

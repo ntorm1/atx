@@ -9,9 +9,9 @@
 // the speedup evidence. A one-shot max-abs cross-check on `total` is surfaced via
 // a label so the run also documents that the two paths agree.
 
-#include "atx/vol/simd/pnl_batch.hpp"
+#include "simd/pnl_batch.hpp"
 
-#include "atx/vol/simd/cpu.hpp"
+#include "atx/vol/api/simd/cpu.hpp"
 
 #include <cmath>
 #include <cstddef>

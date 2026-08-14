@@ -10,9 +10,9 @@
 #include <string>
 #include <vector>
 
-#include "atx/vol/american.hpp"
-#include "atx/vol/black76.hpp"
-#include "atx/vol/detail/adjoint_greeks.hpp"
+#include "atx/vol/api/pricing/american.hpp"
+#include "atx/vol/api/pricing/black76.hpp"
+#include "pricing/adjoint_greeks.hpp"
 
 using atx::vol::american_greeks_fd;
 using atx::vol::andersen_lake;

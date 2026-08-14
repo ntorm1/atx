@@ -14,11 +14,11 @@
 #include <utility>
 #include <vector>
 
-#include "atx/vol/american.hpp"
-#include "atx/vol/american_iv.hpp"
-#include "atx/vol/correction.hpp"
-#include "atx/vol/detail/counters.hpp"
-#include "atx/vol/types.hpp"
+#include "atx/vol/api/pricing/american.hpp"
+#include "atx/vol/api/pricing/american_iv.hpp"
+#include "atx/vol/api/fitting/correction.hpp"
+#include "fitting/counters.hpp"
+#include "atx/vol/api/core/types.hpp"
 
 // American implied-vol inverter coverage.
 //   - price->sigma round-trip across a moneyness/maturity/vol grid for both

@@ -14,11 +14,11 @@
 // If AVX2 is absent the batch runs the scalar loop and these become identity
 // checks — still valid, just trivially exact.
 
-#include "atx/vol/simd/iv_batch.hpp"
+#include "simd/iv_batch.hpp"
 
-#include "atx/vol/black76.hpp"
-#include "atx/vol/implied_vol.hpp"
-#include "atx/vol/simd/cpu.hpp"
+#include "atx/vol/api/pricing/black76.hpp"
+#include "atx/vol/api/pricing/implied_vol.hpp"
+#include "atx/vol/api/simd/cpu.hpp"
 
 #include <cmath>
 #include <cstddef>

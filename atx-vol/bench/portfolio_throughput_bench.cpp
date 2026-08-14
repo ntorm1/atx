@@ -44,12 +44,12 @@
 
 #include <benchmark/benchmark.h>
 
-#include "atx/vol/american.hpp"
-#include "atx/vol/pnl_attribution.hpp"
-#include "atx/vol/portfolio_pricer.hpp"
-#include "atx/vol/priced_surface.hpp"
-#include "atx/vol/scenario_grid.hpp"
-#include "atx/vol/types.hpp"
+#include "atx/vol/api/pricing/american.hpp"
+#include "atx/vol/api/analytics/pnl_attribution.hpp"
+#include "atx/vol/api/backtest/portfolio_pricer.hpp"
+#include "atx/vol/api/backtest/priced_surface.hpp"
+#include "atx/vol/api/analytics/scenario_grid.hpp"
+#include "atx/vol/api/core/types.hpp"
 
 #include "bench_util.hpp"
 #include "support/synth_book.hpp"

@@ -34,7 +34,7 @@
 //
 // The manifest below is therefore the single, reviewable source of truth for
 // "what is Tier-A", and any tier change is a deliberate edit to this list.
-#include "atx/vol/vol.hpp"
+#include "atx/vol/api/vol.hpp"
 
 namespace {
 
@@ -45,75 +45,86 @@ namespace fs = std::filesystem;
 // Tier-A = the shipped, frozen v1 surface, and exactly what `vol.hpp` includes.
 // It is CLOSED UNDER INCLUSION (TierAIsClosedUnderInclusion below): if a Tier-A
 // header includes another `atx/vol/` header, that header is Tier-A too, or it
-// is internal (`detail/`, `simd/`). Several entries here are on the list for
-// precisely that reason rather than because a caller reaches for them directly
-// — e.g. query_pricing.hpp is pulled in by backtest / portfolio_pricer /
-// priced_surface / session, so its declarations are frozen whether or not it is
-// named. Pretending otherwise would be the dishonest tiering.
+// is one of the test's permitted escapes (the one generated `detail/` header,
+// a Tier-B `api/simd/` kernel, or one of the two promoted-public auxiliaries
+// in `kTierBEscapeAuxiliaries` — see that test). Several entries here are on
+// the list for precisely the closure reason rather than because a caller
+// reaches for them directly — e.g. query_pricing.hpp is pulled in by backtest
+// / portfolio_pricer / priced_surface / session, so its declarations are
+// frozen whether or not it is named. Pretending otherwise would be the
+// dishonest tiering.
 //
-// Everything else under include/atx/vol/ is Tier-B: public and includable, but
-// deliberately OUTSIDE the frozen umbrella (advanced calibrators, the SoA/SIMD
-// batch kernels, the dispersion domain vocabulary, harness-facing
-// panels/fixtures).
+// ── api/ is the whole public surface; src/ is private (api-restructure, 2026-08-14) ──
+//
+// The public surface lives entirely under include/atx/vol/api/, an 8-module
+// tree (analytics, backtest, core, fitting, marketdata, pricing, simd,
+// storage) plus the umbrella api/vol.hpp itself. Everything under
+// include/atx/vol/api/ that is NOT in the manifest below is Tier-B: public and
+// includable, but deliberately OUTSIDE the frozen umbrella (advanced
+// calibrators, the SoA/SIMD batch kernels, the dispersion domain vocabulary,
+// harness-facing panels/fixtures). Everything under src/<module>/ is PRIVATE —
+// no include/ path, no stability promise, not installed — which replaces the
+// old flat include/atx/vol/*.hpp + detail/ + simd/ layout this manifest used
+// to describe; that layout no longer exists.
 constexpr std::string_view kTierA[] = {
-    "atx/vol/adjusted_greeks.hpp",
-    "atx/vol/american.hpp",
-    "atx/vol/american_iv.hpp",
-    "atx/vol/analytics.hpp",
-    "atx/vol/arb.hpp",
-    "atx/vol/backtest.hpp",
-    "atx/vol/black76.hpp",
-    "atx/vol/c8.hpp",
-    "atx/vol/calib.hpp",
-    "atx/vol/chain.hpp",
-    "atx/vol/contract_projection.hpp",
-    "atx/vol/corpus.hpp",
-    "atx/vol/correction.hpp",
-    "atx/vol/curve_fit.hpp",
-    "atx/vol/curve_selector.hpp",
-    "atx/vol/data.hpp",
-    "atx/vol/deamer.hpp",
-    "atx/vol/dense_slice.hpp",
-    "atx/vol/deriv_book.hpp", // vol-derivatives sprint: swap-book pricing joined the umbrella
-    "atx/vol/derivatives.hpp",
-    "atx/vol/dispersion.hpp",
-    "atx/vol/dispersion_strangle.hpp",
-    "atx/vol/dividend.hpp",
-    "atx/vol/earnings_term_fit.hpp",
-    "atx/vol/event_vol.hpp",
-    "atx/vol/fit_metrics.hpp",
-    "atx/vol/fit_policy.hpp",
-    "atx/vol/greeks.hpp",
-    "atx/vol/implied_vol.hpp",
-    "atx/vol/market_env.hpp",
-    "atx/vol/opra_panel.hpp",
-    "atx/vol/parity.hpp",
-    "atx/vol/pnl_attribution.hpp",
-    "atx/vol/portfolio_pricer.hpp",
-    "atx/vol/priced_surface.hpp",
-    "atx/vol/priced_surface_view.hpp",
-    "atx/vol/pricer_fitter.hpp",
-    "atx/vol/profile.hpp",
-    "atx/vol/projection.hpp",
-    "atx/vol/query_pricing.hpp",
-    "atx/vol/rates_curve.hpp",
-    "atx/vol/scenario_grid.hpp",
-    "atx/vol/session.hpp",
-    "atx/vol/spline_curve.hpp",
-    "atx/vol/sr_tenor_grid.hpp",
-    "atx/vol/strategy.hpp",
-    "atx/vol/surface.hpp",
-    "atx/vol/surface_archive.hpp",
-    "atx/vol/surface_db.hpp",
-    "atx/vol/surface_parity.hpp",
-    "atx/vol/surface_policy.hpp",
-    "atx/vol/swap_leg.hpp",
-    "atx/vol/types.hpp",
-    "atx/vol/universe.hpp",
-    "atx/vol/version.hpp",
-    "atx/vol/vol_curve.hpp",
-    "atx/vol/vol_surface.hpp",
-    "atx/vol/vol_time.hpp",
+    "atx/vol/api/pricing/adjusted_greeks.hpp",
+    "atx/vol/api/pricing/american.hpp",
+    "atx/vol/api/pricing/american_iv.hpp",
+    "atx/vol/api/analytics/analytics.hpp",
+    "atx/vol/api/fitting/arb.hpp",
+    "atx/vol/api/backtest/backtest.hpp",
+    "atx/vol/api/pricing/black76.hpp",
+    "atx/vol/api/fitting/c8.hpp",
+    "atx/vol/api/fitting/calib.hpp",
+    "atx/vol/api/core/chain.hpp",
+    "atx/vol/api/analytics/contract_projection.hpp",
+    "atx/vol/api/marketdata/corpus.hpp",
+    "atx/vol/api/fitting/correction.hpp",
+    "atx/vol/api/fitting/curve_fit.hpp",
+    "atx/vol/api/fitting/curve_selector.hpp",
+    "atx/vol/api/marketdata/data.hpp",
+    "atx/vol/api/fitting/deamer.hpp",
+    "atx/vol/api/fitting/dense_slice.hpp",
+    "atx/vol/api/backtest/deriv_book.hpp", // vol-derivatives sprint: swap-book pricing joined the umbrella
+    "atx/vol/api/pricing/derivatives.hpp",
+    "atx/vol/api/backtest/dispersion.hpp",
+    "atx/vol/api/backtest/dispersion_strangle.hpp",
+    "atx/vol/api/pricing/dividend.hpp",
+    "atx/vol/api/analytics/earnings_term_fit.hpp",
+    "atx/vol/api/analytics/event_vol.hpp",
+    "atx/vol/api/fitting/fit_metrics.hpp",
+    "atx/vol/api/fitting/fit_policy.hpp",
+    "atx/vol/api/pricing/greeks.hpp",
+    "atx/vol/api/pricing/implied_vol.hpp",
+    "atx/vol/api/core/market_env.hpp",
+    "atx/vol/api/marketdata/opra_panel.hpp",
+    "atx/vol/api/fitting/parity.hpp",
+    "atx/vol/api/analytics/pnl_attribution.hpp",
+    "atx/vol/api/backtest/portfolio_pricer.hpp",
+    "atx/vol/api/backtest/priced_surface.hpp",
+    "atx/vol/api/backtest/priced_surface_view.hpp",
+    "atx/vol/api/fitting/pricer_fitter.hpp",
+    "atx/vol/api/fitting/profile.hpp",
+    "atx/vol/api/fitting/projection.hpp",
+    "atx/vol/api/backtest/query_pricing.hpp",
+    "atx/vol/api/pricing/rates_curve.hpp",
+    "atx/vol/api/analytics/scenario_grid.hpp",
+    "atx/vol/api/fitting/session.hpp",
+    "atx/vol/api/fitting/spline_curve.hpp",
+    "atx/vol/api/fitting/sr_tenor_grid.hpp",
+    "atx/vol/api/backtest/strategy.hpp",
+    "atx/vol/api/fitting/surface.hpp",
+    "atx/vol/api/storage/surface_archive.hpp",
+    "atx/vol/api/storage/surface_db.hpp",
+    "atx/vol/api/fitting/surface_parity.hpp",
+    "atx/vol/api/fitting/surface_policy.hpp",
+    "atx/vol/api/pricing/swap_leg.hpp",
+    "atx/vol/api/core/types.hpp",
+    "atx/vol/api/marketdata/universe.hpp",
+    "atx/vol/api/core/version.hpp",
+    "atx/vol/api/fitting/vol_curve.hpp",
+    "atx/vol/api/fitting/vol_surface.hpp",
+    "atx/vol/api/core/vol_time.hpp",
 };
 
 // Direct `atx/vol/...` includes of `path`, in source order, skipping comment
@@ -128,7 +139,7 @@ std::vector<std::string> direct_atx_vol_includes(const fs::path& path) {
     const std::size_t first = line.find_first_not_of(" \t");
     if (first == std::string::npos) continue;
     // A commented-out or documented include is prose, not a dependency: the
-    // umbrella's own header comment quotes `#include "atx/vol/vol.hpp"`.
+    // umbrella's own header comment quotes `#include "atx/vol/api/vol.hpp"`.
     if (line.compare(first, 2, "//") == 0) continue;
     if (line[first] != '#') continue;
     const std::size_t inc = line.find("include", first);
@@ -281,19 +292,46 @@ TEST(VolUmbrella, UmbrellaAdmitsNoNonShippedTier) {
   }
 }
 
+// Header-only, dependency-free auxiliaries that api_restructure_measure.py's
+// `PROMOTED_PUBLIC` moved from `detail/` straight to `api/fitting/` on
+// 2026-08-14 (Task 2 review, fix round 1) — NOT because a consumer reaches for
+// them by name, but because several Tier-A headers below (american.hpp,
+// backtest.hpp, session.hpp, surface_parity.hpp, pricer_fitter.hpp) already
+// bare-`#include`d them with the private `"fitting/<name>.hpp"` spelling, and
+// atx-options-engine (an external root) reaches them transitively through
+// those same Tier-A headers. Pre-restructure they were under `detail/` and
+// silently exempted by that tier's blanket escape; the promotion to `api/`
+// (required for external reachability) took away that escape without
+// changing what they are: no `.cpp`, no ODR/linkage surface, nothing but std
+// includes of their own (docs/api-placement.md). Tier-B and public, but — like
+// `api/simd/` — carrying no stability promise of their own, so a Tier-A header
+// depending on either does not smuggle a frozen promise onto it.
+constexpr std::string_view kTierBEscapeAuxiliaries[] = {
+    "atx/vol/api/fitting/aggregate_arity.hpp",
+    "atx/vol/api/fitting/prepared_policy.hpp",
+};
+
 // Tier-A is closed under inclusion: a frozen header's dependencies are frozen
-// too, whether or not a caller names them. The only permitted escape is
-// downward into the internal tiers (detail/, simd/), which carry no stability
-// promise and are not part of the umbrella.
+// too, whether or not a caller names them. The only permitted escapes are the
+// one generated detail/ header (version_generated.hpp, configure_file'd from
+// project(VERSION) and included by version.hpp), the public api/simd/
+// dispatch/kernel headers (e.g. priced_surface.hpp / priced_surface_view.hpp
+// resolve their SIMD route through simd/cpu.hpp), and the two promoted-public
+// auxiliaries in kTierBEscapeAuxiliaries above — none of which carries a
+// stability promise of its own, so depending on any of them does not smuggle
+// a Tier-B declaration into a frozen signature.
 TEST(VolUmbrella, TierAIsClosedUnderInclusion) {
   const std::set<std::string> tier_a(std::begin(kTierA), std::end(kTierA));
+  const std::set<std::string_view> escape_auxiliaries(std::begin(kTierBEscapeAuxiliaries),
+                                                       std::end(kTierBEscapeAuxiliaries));
 
   for (const std::string& header : tier_a) {
     const fs::path path = include_root() / header;
     ASSERT_TRUE(fs::exists(path)) << "Tier-A header does not exist: " << header;
     for (const std::string& dep : direct_atx_vol_includes(path)) {
       if (dep.rfind("atx/vol/detail/", 0) == 0) continue;
-      if (dep.rfind("atx/vol/simd/", 0) == 0) continue;
+      if (dep.rfind("atx/vol/api/simd/", 0) == 0) continue;
+      if (escape_auxiliaries.count(dep) == 1) continue;
       EXPECT_TRUE(tier_a.count(dep) == 1)
           << header << " is Tier-A but depends on non-Tier-A " << dep
           << " — either promote " << dep << " to Tier-A, demote " << header
@@ -302,58 +340,62 @@ TEST(VolUmbrella, TierAIsClosedUnderInclusion) {
   }
 }
 
-// The README's tier table (`## Versioning`) states the Tier-A/Tier-B/`detail/`
-// counts as prose, and says so itself: "Three of the five digits above had
-// rotted by v1, and the first three no longer can."
+// The README's tier table (`## API stability policy (1.x)`, the `| Tier | ... |`
+// table) states the Tier-A/Tier-B header counts as prose.
 // `UmbrellaIsExactlyTierA` above pins the Tier-A *set* against `kTierA`, but
-// nothing pinned `kTierA`'s own SIZE, nor Tier-B's or `detail/`'s -- so a
-// fourth silent drift (after Tier-A 56->57, Tier-B 23->31, `detail/` 25->28,
-// then Tier-B 31->32 when Task B2's margin.hpp landed as new Tier-B surface,
-// then Tier-B 32->37 when Task E2 promoted `sweep_driver.hpp`, `track_key.hpp`,
-// `track_store.hpp`, `catalog.hpp` and `snapshot_pool.hpp` out of `research/`
-// -- see the README's "## Versioning" table) would again go uncaught until the
-// next manual audit. The 2026-08-09 backtest-lakehouse merge is exactly such
-// an audit: `main` (theo-module + VaR sprints) had independently reconciled
-// its own Tier-B to 37 via a disjoint set of headers (`breakeven.hpp`,
-// `realized_vol.hpp`, `theo.hpp`, `var.hpp`, `var_report.hpp`,
-// `var_validation.hpp`), so the union of both sides' Tier-B is 37+6=43, not
-// either side's 37; `detail/` gains the lakehouse sprint's `writer_lock.hpp`
-// alone (`main` added nothing under `detail/`), 29->30. Re-derive the same way
-// the README tells a human to: Tier-B is every top-level header minus Tier-A
-// minus `vol.hpp` itself; `detail/` is counted in the SOURCE tree only (the
-// README's "+1 generated" `detail/version_generated.hpp` is configure_file'd
-// into the install prefix, not `include_root()`, so it never appears here).
+// nothing pins `kTierA`'s own SIZE, nor Tier-B's -- so a silent drift would go
+// uncaught until the next manual audit, exactly the failure mode a string of
+// README re-derivations (2026-07 through 2026-08-09, narrated in the README
+// against the flat pre-restructure layout) kept finding by hand.
 //
-// UPDATE PROCEDURE when a header is deliberately added/removed/promoted:
-// update the affected literal(s) below AND the README table (`## Versioning`)
-// in the same commit, and confirm `UmbrellaIsExactlyTierA` /
-// `TierAIsClosedUnderInclusion` still pass.
+// api-restructure (2026-08-14): the flat include/atx/vol/*.hpp + detail/ +
+// simd/ layout this test used to walk is GONE. The public surface is now
+// include/atx/vol/api/, an 8-module tree (analytics, backtest, core, fitting,
+// marketdata, pricing, simd, storage) plus the umbrella api/vol.hpp itself;
+// the private implementation moved to src/<module>/, off the include/ tree
+// entirely -- walking it here would be meaningless, since it carries no path
+// under include/atx/vol/ at all. The model therefore collapses to two rows
+// counted off the SAME tree: Tier-A (`kTierA`, machine-checked above) and
+// Tier-B (every other public header under api/). `s3.hpp` moved
+// storage -> fitting in this same commit (Klassen S3/SSVI is a fitting-family
+// curve, not AWS storage); a module reassignment changes no header's tier or
+// any count below.
+//
+// UPDATE PROCEDURE when a header is deliberately added/removed/promoted/
+// demoted, or moved between modules: update the affected literal(s) below AND
+// the README table (`## API stability policy (1.x)`) in the same commit, and
+// confirm `UmbrellaIsExactlyTierA` / `TierAIsClosedUnderInclusion` still pass.
 TEST(VolUmbrella, TierCountsMatchTheReadmeTable) {
   EXPECT_EQ(std::size(kTierA), std::size_t{58})
-      << "Tier-A count drifted -- update the README table (## Versioning) "
-         "alongside this literal";
+      << "Tier-A count drifted -- update the README table (## API stability "
+         "policy) alongside this literal";
 
-  std::size_t top_level_headers = 0;
-  for (const fs::directory_entry& entry :
-       fs::directory_iterator(include_root() / "atx" / "vol")) {
-    if (entry.is_regular_file() && entry.path().extension() == ".hpp") ++top_level_headers;
+  // Recursive: the public surface is an 8-module tree under api/, not a flat
+  // directory -- a non-recursive scan would silently undercount to just the
+  // umbrella header itself.
+  std::size_t api_headers = 0;
+  std::size_t module_dirs = 0;
+  const fs::path api_root = include_root() / "atx" / "vol" / "api";
+  for (const fs::directory_entry& entry : fs::recursive_directory_iterator(api_root)) {
+    if (entry.is_directory()) {
+      if (entry.path().parent_path() == api_root) ++module_dirs;
+      continue;
+    }
+    if (entry.is_regular_file() && entry.path().extension() == ".hpp") ++api_headers;
   }
-  // Tier-B = every top-level header minus the Tier-A ones minus vol.hpp itself.
-  ASSERT_GT(top_level_headers, std::size(kTierA) + 1u);
-  const std::size_t tier_b = top_level_headers - std::size(kTierA) - 1u;
-  EXPECT_EQ(tier_b, std::size_t{45})
-      << "Tier-B count drifted -- update the README table (## Versioning) "
+  EXPECT_EQ(module_dirs, std::size_t{8})
+      << "api/ module-directory count drifted -- update the README table "
          "alongside this literal";
+  EXPECT_EQ(api_headers, std::size_t{75})
+      << "api/ public header count drifted -- update the README table (## API "
+         "stability policy) alongside this literal";
 
-  std::size_t detail_headers = 0;
-  for (const fs::directory_entry& entry :
-       fs::directory_iterator(include_root() / "atx" / "vol" / "detail")) {
-    if (entry.is_regular_file() && entry.path().extension() == ".hpp") ++detail_headers;
-  }
-  EXPECT_EQ(detail_headers, std::size_t{30})
-      << "detail/ count drifted -- update the README table (## Versioning) "
-         "alongside this literal (the install-tree '+1 generated' header does "
-         "not live under include_root() and is not counted here)";
+  // Tier-B = every public header minus the Tier-A ones minus vol.hpp itself.
+  ASSERT_GT(api_headers, std::size(kTierA) + 1u);
+  const std::size_t tier_b = api_headers - std::size(kTierA) - 1u;
+  EXPECT_EQ(tier_b, std::size_t{16})
+      << "Tier-B count drifted -- update the README table (## API stability "
+         "policy) alongside this literal";
 }
 
 // ── The demoted legacy surface containers (S4-T21 / plan 4.4) ───────────────
@@ -366,8 +408,8 @@ TEST(VolUmbrella, TierCountsMatchTheReadmeTable) {
 // carry no stability promise.
 //
 // The demotion is at the TYPE level, and this is where it is enforced: a public
-// header under include/atx/vol/ may not NAME them at all, in code or in prose.
-// Internal code (src/, detail/, tests) may keep using them; that is what the
+// header under include/atx/vol/api/ may not NAME them at all, in code or in
+// prose. Internal code (src/, tests) may keep using them; that is what the
 // demotion means. Naming one in a public header again — even in a comment —
 // re-exposes it to a caller reading the shipped API and fails here.
 constexpr std::string_view kDemotedSurfaceTypes[] = {
@@ -385,13 +427,17 @@ std::string read_file(const fs::path& path) {
 }
 
 TEST(VolUmbrella, DemotedSurfaceContainersAreNotNamedInPublicHeaders) {
-  const fs::path public_dir = include_root() / "atx" / "vol";
+  const fs::path public_dir = include_root() / "atx" / "vol" / "api";
   ASSERT_TRUE(fs::is_directory(public_dir)) << public_dir.string();
 
-  // Non-recursive on purpose: detail/ and simd/ are the internal tiers and are
-  // exactly where the demoted containers are allowed to live.
+  // Recursive: the public surface is an 8-module tree under api/ (analytics,
+  // backtest, core, fitting, marketdata, pricing, simd, storage), not a flat
+  // directory -- a non-recursive scan here finds 0 files and silently
+  // unenforces the ban entirely. Private implementation lives under
+  // src/<module>/, off this tree, which is exactly where the demoted
+  // containers are allowed to live now (the old detail/ tier's role).
   std::size_t headers_scanned = 0;
-  for (const fs::directory_entry& entry : fs::directory_iterator(public_dir)) {
+  for (const fs::directory_entry& entry : fs::recursive_directory_iterator(public_dir)) {
     if (!entry.is_regular_file()) continue;
     if (entry.path().extension() != ".hpp") continue;
     ++headers_scanned;
@@ -399,13 +445,15 @@ TEST(VolUmbrella, DemotedSurfaceContainersAreNotNamedInPublicHeaders) {
     for (const std::string_view type : kDemotedSurfaceTypes) {
       EXPECT_EQ(text.find(type), std::string::npos)
           << entry.path().filename().string() << " names the demoted container `"
-          << type << "` — plan 4.4 moved it to include/atx/vol/detail/. Use the "
+          << type << "` — plan 4.4 moved it to src/<module>/ (internal). Use the "
              "canonical pipeline (CurveSurface -> PricedSurface / "
              "PricedSurfaceView -> SurfaceSet) in the public API, and reach for "
              "the demoted type from internal code only.";
     }
   }
-  EXPECT_GT(headers_scanned, 50u) << "public header scan found almost nothing";
+  EXPECT_EQ(headers_scanned, 75u)
+      << "public header scan did not walk the full api/ tree (expected all 75 "
+         "public headers)";
 }
 
 }  // namespace

@@ -7,9 +7,9 @@
 // stack buffer so the final (<4) lanes still take the vector path — i.e. the timed
 // / graded values are exactly what the batch kernels would compute, tail included.
 
-#include "atx/vol/simd/vector_math_probe.hpp"
+#include "simd/vector_math_probe.hpp"
 
-#include "atx/vol/detail/vector_math.hpp" // log_pd/exp_pd/norm_cdf_erfc_pd (+ __AVX2__ guard)
+#include "simd/vector_math.hpp" // log_pd/exp_pd/norm_cdf_erfc_pd (+ __AVX2__ guard)
 
 #include <cstddef>
 

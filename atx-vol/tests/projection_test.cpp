@@ -7,10 +7,10 @@
 #include <vector>
 
 #include "atx/core/math.hpp"
-#include "atx/vol/event_vol.hpp"
-#include "atx/vol/projection.hpp"
-#include "atx/vol/rates_curve.hpp"
-#include "atx/vol/vol_surface.hpp"
+#include "atx/vol/api/analytics/event_vol.hpp"
+#include "atx/vol/api/fitting/projection.hpp"
+#include "atx/vol/api/pricing/rates_curve.hpp"
+#include "atx/vol/api/fitting/vol_surface.hpp"
 #include "support/isa_golden_tol.hpp"
 
 // Surface projection spine, ported from the C ats-vol test_vol_projection.c.

@@ -33,16 +33,16 @@
 #include <utility>
 #include <vector>
 
-#include "atx/vol/calib.hpp"        // CalibOpts, FitObs, build_observations
-#include "atx/vol/cstar.hpp"        // CStarParams, cstar_slice_iv/_w/_w_derivs
-#include "atx/vol/cstar_calib.hpp"  // cstar_calibrate_slice, cstar_seed_from_essvi
-#include "atx/vol/data.hpp"         // data_install, QuoteFrame
-#include "atx/vol/essvi_calib.hpp"  // essvi_fit_slice
-#include "atx/vol/opra_panel.hpp"   // OpraPanel
-#include "atx/vol/session.hpp"      // VolaSession, make_session_inputs, FitPreset
-#include "atx/vol/types.hpp"        // Result, Status
-#include "atx/vol/universe.hpp"     // Universe, Underlying, Chain
-#include "atx/vol/vol_surface.hpp"  // EssviParams
+#include "atx/vol/api/fitting/calib.hpp"        // CalibOpts, FitObs, build_observations
+#include "fitting/cstar.hpp"        // CStarParams, cstar_slice_iv/_w/_w_derivs
+#include "fitting/cstar_calib.hpp"  // cstar_calibrate_slice, cstar_seed_from_essvi
+#include "atx/vol/api/marketdata/data.hpp"         // data_install, QuoteFrame
+#include "fitting/essvi_calib.hpp"  // essvi_fit_slice
+#include "atx/vol/api/marketdata/opra_panel.hpp"   // OpraPanel
+#include "atx/vol/api/fitting/session.hpp"      // VolaSession, make_session_inputs, FitPreset
+#include "atx/vol/api/core/types.hpp"        // Result, Status
+#include "atx/vol/api/marketdata/universe.hpp"     // Universe, Underlying, Chain
+#include "atx/vol/api/fitting/vol_surface.hpp"  // EssviParams
 
 namespace atx::vol::amzn {
 

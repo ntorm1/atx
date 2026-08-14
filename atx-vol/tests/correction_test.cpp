@@ -10,11 +10,12 @@
 #include <utility>
 #include <vector>
 
-#include "atx/vol/american.hpp"
-#include "atx/vol/black76.hpp"
-#include "atx/vol/correction.hpp"
-#include "atx/vol/detail/counters.hpp"
-#include "atx/vol/greeks.hpp"
+#include "atx/vol/api/pricing/american.hpp"
+#include "atx/vol/api/pricing/black76.hpp"
+#include "atx/vol/api/fitting/correction.hpp"
+#include "fitting/correction_detail.hpp" // Chebyshev primitives (kChebMaxNodes, cheb_*)
+#include "fitting/counters.hpp"
+#include "atx/vol/api/pricing/greeks.hpp"
 #include "support/isa_golden_tol.hpp"
 
 // American-correction cache coverage, ported from the C ats-vol tests

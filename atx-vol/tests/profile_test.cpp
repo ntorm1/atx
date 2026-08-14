@@ -6,12 +6,12 @@
 #include <string_view>
 #include <vector>
 
-#include "atx/vol/calib.hpp"        // OptimizationLevel, CalibLossKind
-#include "atx/vol/fit_policy.hpp"   // FitPolicyConfig (the routing gate under test)
-#include "atx/vol/profile.hpp"
-#include "atx/vol/types.hpp"        // ErrorCode
-#include "atx/vol/universe.hpp"     // Underlying, Chain
-#include "atx/vol/vol_surface.hpp"  // Parametrization, ResidualBasisKind
+#include "atx/vol/api/fitting/calib.hpp"        // OptimizationLevel, CalibLossKind
+#include "atx/vol/api/fitting/fit_policy.hpp"   // FitPolicyConfig (the routing gate under test)
+#include "atx/vol/api/fitting/profile.hpp"
+#include "atx/vol/api/core/types.hpp"        // ErrorCode
+#include "atx/vol/api/marketdata/universe.hpp"     // Underlying, Chain
+#include "atx/vol/api/fitting/vol_surface.hpp"  // Parametrization, ResidualBasisKind
 
 // Underlier-profile-registry coverage, ported from the C ats-vol tests
 // test_profile_classifier.c (classifier + default registry + tick-size) and the

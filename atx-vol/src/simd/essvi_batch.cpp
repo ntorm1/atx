@@ -1,11 +1,11 @@
-#include "atx/vol/simd/essvi_batch.hpp"
+#include "simd/essvi_batch.hpp"
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 
-#include "atx/vol/simd/cpu.hpp"
-#include "atx/vol/vol_surface.hpp"
+#include "atx/vol/api/simd/cpu.hpp"
+#include "atx/vol/api/fitting/vol_surface.hpp"
 
 #include "essvi_batch_avx2.hpp"
 

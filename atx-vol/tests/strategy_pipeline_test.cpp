@@ -8,8 +8,8 @@
 
 #include <gtest/gtest.h>
 
-#include "atx/vol/scenario_grid.hpp"
-#include "atx/vol/strategy_pipeline.hpp"
+#include "atx/vol/api/analytics/scenario_grid.hpp"
+#include "backtest/strategy_pipeline.hpp"
 
 namespace atx::vol {
 namespace {

@@ -23,11 +23,15 @@ gate/tolerance/validation-constant edits.
    examples, bench, tools, python bindings, atx-options-engine, install
    rules, test-package) is updated in the same migration.
 3. **Curated minimal surface.** A header is public iff transitively needed
-   by an out-of-library consumer: atx-options-engine, python bindings,
-   tools, examples, bench, or the install smoke package. Headers included
-   only by atx-vol src + tests are demoted to private. Borderline calls
-   resolve to PRIVATE (promotion later is cheap; demotion of a published
-   header is the expensive direction).
+   by a TRUE EXTERNAL consumer: atx-options-engine, the python bindings,
+   or the install smoke package. (Decision 2026-08-14, measured: the
+   original six-root rule produced 106 public headers vs the ~100 stop
+   line; the user chose external-only roots, ~79 public.) atx-vol's own
+   tools/, examples/, and bench/ are internal programs: like tests, their
+   targets get the private include dir and may include src/ headers
+   freely. Headers not reachable from an external root are private.
+   Borderline calls resolve to PRIVATE (promotion later is cheap; demotion
+   of a published header is the expensive direction).
 
 ## Target layout
 

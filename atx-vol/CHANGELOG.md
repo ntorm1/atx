@@ -3,6 +3,65 @@
 Breaking behavioural changes are recorded here with their migration. Anything
 that silently changes a NUMBER a caller already depends on belongs in this file.
 
+## 1.2.0
+
+The public-surface api-restructure. Every public header moved from the flat
+`include/atx/vol/*.hpp` layout to an 8-module tree,
+`include/atx/vol/api/<module>/*.hpp` — `analytics`, `backtest`, `core`,
+`fitting`, `marketdata`, `pricing`, `simd`, `storage` — with the umbrella at
+`include/atx/vol/api/vol.hpp`. This is a path rename plus a re-derived
+public/private split, not a Tier-A/Tier-B promotion or demotion: the SET of
+frozen Tier-A headers is unchanged (see README.md's "API stability policy"
+table), and every header that stays public keeps its existing tier. Every
+consumer's `#include` line changes regardless.
+
+### BREAKING — public header include paths moved under `atx/vol/api/<module>/`; non-public headers are no longer shipped at all
+
+**Spelling rule.** `atx/vol/X.hpp` → `atx/vol/api/<module>/X.hpp` for the 75
+headers that stayed public. Examples:
+
+```
+atx/vol/vol.hpp        -> atx/vol/api/vol.hpp
+atx/vol/american.hpp   -> atx/vol/api/pricing/american.hpp
+atx/vol/session.hpp    -> atx/vol/api/fitting/session.hpp
+atx/vol/data.hpp       -> atx/vol/api/marketdata/data.hpp
+atx/vol/backtest.hpp   -> atx/vol/api/backtest/backtest.hpp
+atx/vol/surface_db.hpp -> atx/vol/api/storage/surface_db.hpp
+```
+
+The full 75-entry old-path -> new-path mapping is
+`atx-vol/scripts/api_restructure_measure.py`'s generated
+`tmp/api-restructure/rewrite_map.csv` (regenerate with that script; see
+`atx-vol/docs/api-placement.md`).
+
+**The external-only public-surface rule.** A header is public iff it is
+transitively `#include`d, directly or indirectly, from a translation unit
+under one of the three EXTERNAL-ONLY roots — `atx-options-engine`,
+`atx-vol/python`, `atx-vol/test-package`. Everything else — including the
+per-family calibrators (`svi_calib.hpp`, `essvi_calib.hpp`, `cstar.hpp`,
+`cstar_calib.hpp`, `c8_calib.hpp`; the shared vocabulary `c8.hpp`/`calib.hpp`
+stays public), the whole former `detail/` tree bar one generated header, and
+every fixture-only header (`spy_fixture.hpp`) — moved to `src/<module>/` and
+is **private**: no `include/` path, not installed, not includable by an
+external consumer at all. A caller that included one of these directly gets a
+missing-header compile error, not a moved-header one; there is no forwarding
+shim.
+
+**Install change.** `cmake/atx-vol-install.cmake` narrowed its header install
+from the old blanket `install(DIRECTORY .../include/atx/vol/ ...)` (which
+shipped whatever sat under `include/atx/vol/`, `api/` subtree or not) to
+exactly `install(DIRECTORY .../include/atx/vol/api/ DESTINATION
+.../atx/vol/api)`. The one non-`api/` header that still ships is the
+generated `atx/vol/detail/version_generated.hpp` (configure_file'd from
+`project(VERSION)`, included by `version.hpp`); nothing else under the old
+`detail/` path, and nothing under `src/`, is reachable from an installed
+prefix.
+
+**Migration.** Update every `#include "atx/vol/...hpp"` line to its
+`atx/vol/api/<module>/...hpp` spelling per the mapping above. There is no
+compatibility flag: the old paths do not exist in the source tree, the
+install tree, or a forwarding header.
+
 ## 1.1.0
 
 The backtest-production-lakehouse sprint. Adds a content-addressed track

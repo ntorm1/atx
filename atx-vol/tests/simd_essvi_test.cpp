@@ -18,10 +18,10 @@
 // as agreement and NaN-vs-finite as a failure — a lane that quietly produced a
 // number where the other refused is the exact defect this file guards.
 
-#include "atx/vol/simd/essvi_batch.hpp"
+#include "simd/essvi_batch.hpp"
 
-#include "atx/vol/simd/cpu.hpp"
-#include "atx/vol/vol_surface.hpp"
+#include "atx/vol/api/simd/cpu.hpp"
+#include "atx/vol/api/fitting/vol_surface.hpp"
 
 #include <algorithm>
 #include <array>

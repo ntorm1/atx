@@ -10,14 +10,14 @@
 #include <utility>
 
 #include "atx/ui/vol_workspace_model.hpp"
-#include "atx/vol/american_iv.hpp"
-#include "atx/vol/calib.hpp"
-#include "atx/vol/chain.hpp"
-#include "atx/vol/data.hpp"
-#include "atx/vol/opra_panel.hpp"
-#include "atx/vol/pricer_fitter.hpp"
-#include "atx/vol/session.hpp"
-#include "atx/vol/universe.hpp"
+#include "atx/vol/api/pricing/american_iv.hpp"
+#include "atx/vol/api/fitting/calib.hpp"
+#include "atx/vol/api/core/chain.hpp"
+#include "atx/vol/api/marketdata/data.hpp"
+#include "atx/vol/api/marketdata/opra_panel.hpp"
+#include "atx/vol/api/fitting/pricer_fitter.hpp"
+#include "atx/vol/api/fitting/session.hpp"
+#include "atx/vol/api/marketdata/universe.hpp"
 
 namespace atx::ui {
 namespace {

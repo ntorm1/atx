@@ -31,11 +31,11 @@
 #include <optional>
 #include <span>
 
-#include "atx/vol/american.hpp"
-#include "atx/vol/priced_surface.hpp"
-#include "atx/vol/simd/american_boundary_batch.hpp"
+#include "atx/vol/api/pricing/american.hpp"
+#include "atx/vol/api/backtest/priced_surface.hpp"
+#include "atx/vol/api/simd/american_boundary_batch.hpp"
 
-#include "../src/laned_greek_run.hpp"
+#include "backtest/laned_greek_run.hpp"
 
 namespace atx::vol {
 namespace {

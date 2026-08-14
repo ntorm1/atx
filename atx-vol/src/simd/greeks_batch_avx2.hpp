@@ -7,9 +7,9 @@
 
 #include <cstddef>
 
-#include "atx/vol/greeks.hpp"
-#include "atx/vol/simd/greeks_batch.hpp" // GreeksBatchSoA
-#include "atx/vol/types.hpp"
+#include "atx/vol/api/pricing/greeks.hpp"
+#include "atx/vol/api/simd/greeks_batch.hpp" // GreeksBatchSoA
+#include "atx/vol/api/core/types.hpp"
 
 namespace atx::vol::simd::detail {
 

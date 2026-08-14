@@ -153,12 +153,12 @@
 #include <string_view>
 #include <vector>
 
-#include "atx/vol/session.hpp"        // FitPreset
-#include "atx/vol/surface_archive.hpp" // SurfaceProvenance
-#include "atx/vol/surface_db.hpp"     // SurfaceDb, SymbolFitConfig
-#include "atx/vol/surface_policy.hpp" // SurfacePolicy
-#include "atx/vol/types.hpp"          // Result, Status
-#include "atx/vol/vol_curve.hpp"      // VolCurveKind
+#include "atx/vol/api/fitting/session.hpp"        // FitPreset
+#include "atx/vol/api/storage/surface_archive.hpp" // SurfaceProvenance
+#include "atx/vol/api/storage/surface_db.hpp"     // SurfaceDb, SymbolFitConfig
+#include "atx/vol/api/fitting/surface_policy.hpp" // SurfacePolicy
+#include "atx/vol/api/core/types.hpp"          // Result, Status
+#include "atx/vol/api/fitting/vol_curve.hpp"      // VolCurveKind
 
 namespace atx::vol {
 

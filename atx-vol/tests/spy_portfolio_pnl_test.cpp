@@ -29,13 +29,13 @@
 #include <utility>
 #include <vector>
 
-#include "atx/vol/data.hpp"             // data_install
-#include "atx/vol/portfolio_pricer.hpp"
-#include "atx/vol/priced_surface.hpp"
-#include "atx/vol/session.hpp"
-#include "atx/vol/surface_archive.hpp"
-#include "atx/vol/universe.hpp"
-#include "atx/vol/vol_curve.hpp"
+#include "atx/vol/api/marketdata/data.hpp"             // data_install
+#include "atx/vol/api/backtest/portfolio_pricer.hpp"
+#include "atx/vol/api/backtest/priced_surface.hpp"
+#include "atx/vol/api/fitting/session.hpp"
+#include "atx/vol/api/storage/surface_archive.hpp"
+#include "atx/vol/api/marketdata/universe.hpp"
+#include "atx/vol/api/fitting/vol_curve.hpp"
 #include "support/cached_artifacts.hpp"
 #include "support/opra_fixture.hpp"
 

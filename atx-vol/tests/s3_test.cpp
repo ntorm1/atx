@@ -4,7 +4,7 @@
 #include <cmath>
 #include <vector>
 
-#include "atx/vol/s3.hpp"
+#include "atx/vol/api/fitting/s3.hpp"
 
 // S3 / SSVI three-parameter shape curve (Vola Dynamics, Klassen 2017):
 //   - c2 = 0 "takeover-for-cash" kink: sigma^2 = sigma0^2 * max(1 + s2*z, 0);

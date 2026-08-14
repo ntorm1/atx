@@ -50,25 +50,25 @@
 
 #include <benchmark/benchmark.h>
 
-#include "atx/vol/american.hpp"    // AmericanMethod, american_price
-#include "atx/vol/american_iv.hpp" // american_implied_vol
-#include "atx/vol/calib.hpp" // CalibOpts, FitObs, calib_default_opts, build_observations_european
-#include "atx/vol/chain.hpp" // OptionChain
-#include "atx/vol/correction.hpp"     // CorrectionCache, AmericanCorrectionCaches
-#include "atx/vol/data.hpp"           // iso_to_ns
-#include "atx/vol/deamer.hpp"         // DeAmOptions
-#include "atx/vol/dividend.hpp"       // hybrid_forward, HybridDivParams (real-board forward)
-#include "atx/vol/essvi_calib.hpp"    // essvi_fit_slice, essvi_calib_surface
-#include "atx/vol/market_env.hpp"     // MarketEnv
-#include "atx/vol/panel.hpp"          // make_synthetic_american_panel, SynthPanelSpec
-#include "atx/vol/pricer_fitter.hpp"  // PricerFitter, PricerConfig
-#include "atx/vol/rates_curve.hpp"    // CurveSet, ForwardPoint
-#include "atx/vol/spy_fixture.hpp"    // make_spy_synthetic_spec
-#include "atx/vol/surface_policy.hpp" // explicit v2 purpose/admission policy
-#include "atx/vol/svi_calib.hpp"      // svi_fit_slice (quasi-explicit raw-SVI)
-#include "atx/vol/types.hpp"          // Side
-#include "atx/vol/universe.hpp"       // Underlying, Chain
-#include "atx/vol/vol_surface.hpp"    // VolSurface, EssviParams, Parametrization
+#include "atx/vol/api/pricing/american.hpp"    // AmericanMethod, american_price
+#include "atx/vol/api/pricing/american_iv.hpp" // american_implied_vol
+#include "atx/vol/api/fitting/calib.hpp" // CalibOpts, FitObs, calib_default_opts, build_observations_european
+#include "atx/vol/api/core/chain.hpp" // OptionChain
+#include "atx/vol/api/fitting/correction.hpp"     // CorrectionCache, AmericanCorrectionCaches
+#include "atx/vol/api/marketdata/data.hpp"           // iso_to_ns
+#include "atx/vol/api/fitting/deamer.hpp"         // DeAmOptions
+#include "atx/vol/api/pricing/dividend.hpp"       // hybrid_forward, HybridDivParams (real-board forward)
+#include "fitting/essvi_calib.hpp"    // essvi_fit_slice, essvi_calib_surface
+#include "atx/vol/api/core/market_env.hpp"     // MarketEnv
+#include "atx/vol/api/backtest/panel.hpp"          // make_synthetic_american_panel, SynthPanelSpec
+#include "atx/vol/api/fitting/pricer_fitter.hpp"  // PricerFitter, PricerConfig
+#include "atx/vol/api/pricing/rates_curve.hpp"    // CurveSet, ForwardPoint
+#include "fitting/spy_fixture.hpp"    // make_spy_synthetic_spec
+#include "atx/vol/api/fitting/surface_policy.hpp" // explicit v2 purpose/admission policy
+#include "fitting/svi_calib.hpp"      // svi_fit_slice (quasi-explicit raw-SVI)
+#include "atx/vol/api/core/types.hpp"          // Side
+#include "atx/vol/api/marketdata/universe.hpp"       // Underlying, Chain
+#include "atx/vol/api/fitting/vol_surface.hpp"    // VolSurface, EssviParams, Parametrization
 
 #include "bench_util.hpp"
 #include "support/spy_fit_fixture.hpp" // kSpyFitFixtures, find_spy_fit_parquet, load_spy_fit_fixture

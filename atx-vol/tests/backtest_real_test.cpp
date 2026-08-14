@@ -35,17 +35,17 @@
 
 #include <process.h>  // _getpid — private temp dir per test process (parallel gate)
 
-#include "atx/vol/backtest.hpp"        // Clock, run_backtest, RunConfig, BacktestResult, MarketSnapshot
-#include "atx/vol/corpus.hpp"          // CorpusBoard, CorpusConfig, build_corpus, CorpusManifest
-#include "atx/vol/market_env.hpp"      // MarketEnv
-#include "atx/vol/opra_batch.hpp"      // market_env_from_frame
-#include "atx/vol/opra_panel.hpp"      // load_opra_cbbo_parquet, OpraLoadSpec
-#include "atx/vol/pricer_fitter.hpp"   // PricerConfig
-#include "atx/vol/priced_surface.hpp"  // PricedSurface
-#include "atx/vol/session.hpp"         // FitPreset
-#include "atx/vol/strategy.hpp"        // DeclarativeStrategy, StrategySpec, resolve_strike_by_delta
+#include "atx/vol/api/backtest/backtest.hpp"        // Clock, run_backtest, RunConfig, BacktestResult, MarketSnapshot
+#include "atx/vol/api/marketdata/corpus.hpp"          // CorpusBoard, CorpusConfig, build_corpus, CorpusManifest
+#include "atx/vol/api/core/market_env.hpp"      // MarketEnv
+#include "atx/vol/api/marketdata/opra_batch.hpp"      // market_env_from_frame
+#include "atx/vol/api/marketdata/opra_panel.hpp"      // load_opra_cbbo_parquet, OpraLoadSpec
+#include "atx/vol/api/fitting/pricer_fitter.hpp"   // PricerConfig
+#include "atx/vol/api/backtest/priced_surface.hpp"  // PricedSurface
+#include "atx/vol/api/fitting/session.hpp"         // FitPreset
+#include "atx/vol/api/backtest/strategy.hpp"        // DeclarativeStrategy, StrategySpec, resolve_strike_by_delta
 #include "atx/vol/tools/tearsheet.hpp"       // TearSheet, tearsheet, write_backtest_tsv
-#include "atx/vol/types.hpp"           // Side, Result, Status
+#include "atx/vol/api/core/types.hpp"           // Side, Result, Status
 
 using namespace atx::vol;
 namespace fs = std::filesystem;

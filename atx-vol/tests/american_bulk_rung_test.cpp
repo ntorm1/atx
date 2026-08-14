@@ -5,9 +5,10 @@
 #include <optional>
 #include <vector>
 
-#include "atx/vol/american.hpp"
-#include "atx/vol/session.hpp"
-#include "atx/vol/surface_db.hpp"
+#include "atx/vol/api/pricing/american.hpp"
+#include "pricing/american_detail.hpp"
+#include "atx/vol/api/fitting/session.hpp"
+#include "atx/vol/api/storage/surface_db.hpp"
 #include "support/oracle_pricer_pde.hpp"
 
 // Perf Phase 2b — the `al_bulk_opts` (`ql_fast`) Andersen-Lake rung and the

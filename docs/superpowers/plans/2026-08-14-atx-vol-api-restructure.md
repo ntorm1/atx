@@ -63,11 +63,10 @@ VOL = REPO / "atx-vol"
 INC = VOL / "include" / "atx" / "vol"
 
 ROOT_DIRS = [
+    # External-only roots (user decision 2026-08-14): tools/examples/bench
+    # are internal programs and get the private include dir like tests.
     REPO / "atx-options-engine",
     VOL / "python",
-    VOL / "tools",
-    VOL / "examples",
-    VOL / "bench",
     VOL / "test-package",
 ]
 
@@ -279,7 +278,7 @@ Expected: exit 0; `git status` shows renames (R) not delete+add pairs (spot-chec
 
 - [ ] **Step 3: Patch CMake source paths (mechanical)**
 
-In `atx-vol/CMakeLists.txt` and `atx-vol/tests/CMakeLists.txt` and `atx-vol/python/CMakeLists.txt`: update every `src/foo.cpp` reference to `src/<module>/foo.cpp` per the move map (scriptable: same dict). Add `target_include_directories(<lib> PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)` and the same PRIVATE dir on the test target so `#include "<module>/<name>.hpp"` resolves. Do NOT restructure lists yet.
+In `atx-vol/CMakeLists.txt` and `atx-vol/tests/CMakeLists.txt` and `atx-vol/python/CMakeLists.txt`: update every `src/foo.cpp` reference to `src/<module>/foo.cpp` per the move map (scriptable: same dict). Add `target_include_directories(<lib> PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)` and the same PRIVATE dir on the test target AND on the tools/examples/bench targets (internal programs per the external-only roots decision) so `#include "<module>/<name>.hpp"` resolves everywhere internal. Do NOT restructure lists yet.
 
 - [ ] **Step 4: Build until green**
 

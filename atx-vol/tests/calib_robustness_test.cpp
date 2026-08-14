@@ -8,17 +8,17 @@
 #include <span>
 #include <vector>
 
-#include "atx/vol/black76.hpp"       // black76_price, black76_value_and_vega
-#include "atx/vol/c8.hpp"           // C8Params, c8_slice_w
-#include "atx/vol/c8_calib.hpp"     // c8_fit_slice_lm, c8_calib_slice
-#include "atx/vol/calib.hpp"        // CalibOpts, calib_default_opts, FitObs
-#include "atx/vol/correction.hpp"   // CorrectionCache
-#include "atx/vol/essvi_calib.hpp"  // essvi_fit_slice, essvi_calib_surface_sequential
-#include "atx/vol/rates_curve.hpp"  // CurveSet, ForwardPoint
-#include "atx/vol/svi_calib.hpp"    // svi_calib_surface, svi_mm_calib_surface
-#include "atx/vol/universe.hpp"     // Underlying, Chain, chain_index
-#include "atx/vol/vol_curve.hpp"    // fit_slice_curve, CurveConfig, C8Curve
-#include "atx/vol/vol_surface.hpp"  // VolSurface, EssviParams, SviParams
+#include "atx/vol/api/pricing/black76.hpp"       // black76_price, black76_value_and_vega
+#include "atx/vol/api/fitting/c8.hpp"           // C8Params, c8_slice_w
+#include "fitting/c8_calib.hpp"     // c8_fit_slice_lm, c8_calib_slice
+#include "atx/vol/api/fitting/calib.hpp"        // CalibOpts, calib_default_opts, FitObs
+#include "atx/vol/api/fitting/correction.hpp"   // CorrectionCache
+#include "fitting/essvi_calib.hpp"  // essvi_fit_slice, essvi_calib_surface_sequential
+#include "atx/vol/api/pricing/rates_curve.hpp"  // CurveSet, ForwardPoint
+#include "fitting/svi_calib.hpp"    // svi_calib_surface, svi_mm_calib_surface
+#include "atx/vol/api/marketdata/universe.hpp"     // Underlying, Chain, chain_index
+#include "atx/vol/api/fitting/vol_curve.hpp"    // fit_slice_curve, CurveConfig, C8Curve
+#include "atx/vol/api/fitting/vol_surface.hpp"  // VolSurface, EssviParams, SviParams
 
 // Robustness-hardening regression coverage (sprint P0-3 / P0-4). Each test
 // engineers a degenerate / sparse input at one hardened site and pins the

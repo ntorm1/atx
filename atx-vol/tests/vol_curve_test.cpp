@@ -11,14 +11,14 @@
 #include <string>
 #include <vector>
 
-#include "atx/vol/arb.hpp"          // arb_check_butterfly_svi_mm, arb_check_butterfly_slice
-#include "atx/vol/black76.hpp"      // black76_value_and_vega
-#include "atx/vol/calib.hpp"        // CalibOpts, FitObs
-#include "atx/vol/spline_curve.hpp" // fit_spline_vol_slice
-#include "atx/vol/svi_calib.hpp"    // svi_project_mm
-#include "atx/vol/types.hpp"        // Side
-#include "atx/vol/vol_curve.hpp"    // fit_slice_curve, CurveConfig, SviCurve, C8Curve
-#include "atx/vol/vol_surface.hpp"  // SviParams
+#include "atx/vol/api/fitting/arb.hpp"          // arb_check_butterfly_svi_mm, arb_check_butterfly_slice
+#include "atx/vol/api/pricing/black76.hpp"      // black76_value_and_vega
+#include "atx/vol/api/fitting/calib.hpp"        // CalibOpts, FitObs
+#include "atx/vol/api/fitting/spline_curve.hpp" // fit_spline_vol_slice
+#include "fitting/svi_calib.hpp"    // svi_project_mm
+#include "atx/vol/api/core/types.hpp"        // Side
+#include "atx/vol/api/fitting/vol_curve.hpp"    // fit_slice_curve, CurveConfig, SviCurve, C8Curve
+#include "atx/vol/api/fitting/vol_surface.hpp"  // SviParams
 
 // Task C2.5: the raw-SVI and C8 serving seams (fit_slice_curve) must never
 // hand back a butterfly-arbitrageable slice. These tests fit a standard

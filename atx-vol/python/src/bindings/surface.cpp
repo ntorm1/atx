@@ -7,10 +7,10 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
-#include "atx/vol/batch.hpp"
-#include "atx/vol/detail/legacy_surface.hpp" // Svi/EssviSurface (demoted, S4-T21)
-#include "atx/vol/surface.hpp"
-#include "atx/vol/vol_surface.hpp"
+#include "atx/vol/api/pricing/batch.hpp"
+#include "fitting/legacy_surface.hpp" // Svi/EssviSurface (demoted, S4-T21)
+#include "atx/vol/api/fitting/surface.hpp"
+#include "atx/vol/api/fitting/vol_surface.hpp"
 #include "result.hpp"
 
 namespace py = pybind11;

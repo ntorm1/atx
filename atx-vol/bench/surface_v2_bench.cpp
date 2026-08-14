@@ -27,13 +27,13 @@
 #include <utility>
 #include <vector>
 
-#include "atx/vol/chain.hpp"
-#include "atx/vol/data.hpp"
-#include "atx/vol/panel.hpp"
-#include "atx/vol/pricer_fitter.hpp"
-#include "atx/vol/s3.hpp"
-#include "atx/vol/surface_policy.hpp"
-#include "atx/vol/vol_curve.hpp"
+#include "atx/vol/api/core/chain.hpp"
+#include "atx/vol/api/marketdata/data.hpp"
+#include "atx/vol/api/backtest/panel.hpp"
+#include "atx/vol/api/fitting/pricer_fitter.hpp"
+#include "atx/vol/api/fitting/s3.hpp"
+#include "atx/vol/api/fitting/surface_policy.hpp"
+#include "atx/vol/api/fitting/vol_curve.hpp"
 
 namespace atx::vol::bench {
 namespace {

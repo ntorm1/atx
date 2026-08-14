@@ -29,12 +29,12 @@
 #include <windows.h>
 #endif
 
-#include "atx/vol/american.hpp"
-#include "atx/vol/detail/archive_util.hpp"
-#include "atx/vol/priced_surface.hpp"
-#include "atx/vol/surface_archive.hpp"
-#include "atx/vol/vol_curve.hpp"
-#include "atx/vol/vol_surface.hpp"
+#include "atx/vol/api/pricing/american.hpp"
+#include "storage/archive_util.hpp"
+#include "atx/vol/api/backtest/priced_surface.hpp"
+#include "atx/vol/api/storage/surface_archive.hpp"
+#include "atx/vol/api/fitting/vol_curve.hpp"
+#include "atx/vol/api/fitting/vol_surface.hpp"
 
 // WS-C C3: durable atomic publish (SE-P2-1 fsync-before-rename, SE-P2-2 Windows
 // rename-under-reader retry + preserve-temp-on-failure). fsync PRESENCE is

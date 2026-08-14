@@ -11,10 +11,10 @@
 // If AVX2 is absent the batch runs the scalar loop and these become identity
 // checks — still valid, just trivially exact.
 
-#include "atx/vol/simd/greeks_batch.hpp"
+#include "atx/vol/api/simd/greeks_batch.hpp"
 
-#include "atx/vol/greeks.hpp"
-#include "atx/vol/simd/cpu.hpp"
+#include "atx/vol/api/pricing/greeks.hpp"
+#include "atx/vol/api/simd/cpu.hpp"
 
 #include <chrono>
 #include <cmath>

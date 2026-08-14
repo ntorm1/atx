@@ -8,7 +8,7 @@
 #include <cstddef>
 #include <optional>
 
-#include "atx/vol/american.hpp" // AmericanGreeks, AlOpts
+#include "atx/vol/api/pricing/american.hpp" // AmericanGreeks, AlOpts
 
 namespace atx::vol::simd::detail {
 

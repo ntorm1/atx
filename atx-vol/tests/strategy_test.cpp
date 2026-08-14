@@ -33,22 +33,22 @@
 #include <utility>
 #include <vector>
 
-#include "atx/vol/american.hpp" // al_fast_opts, AmericanMethod, AmericanGreeks
-#include "atx/vol/backtest.hpp" // MarketSnapshot, Clock, run_backtest
-#include "atx/vol/corpus.hpp"   // CorpusManifest, CorpusEntry, CorpusFitStatus
-#include "atx/vol/detail/counters.hpp"
-#include "atx/vol/dispersion.hpp" // DispersionUniverse, dispersion_signal
+#include "atx/vol/api/pricing/american.hpp" // al_fast_opts, AmericanMethod, AmericanGreeks
+#include "atx/vol/api/backtest/backtest.hpp" // MarketSnapshot, Clock, run_backtest
+#include "atx/vol/api/marketdata/corpus.hpp"   // CorpusManifest, CorpusEntry, CorpusFitStatus
+#include "fitting/counters.hpp"
+#include "atx/vol/api/backtest/dispersion.hpp" // DispersionUniverse, dispersion_signal
 #include "atx/vol/research/dispersion_backtest.hpp"
-#include "atx/vol/portfolio_pricer.hpp" // Portfolio, SurfaceSet, PortfolioPricer, Position
-#include "atx/vol/priced_surface.hpp"   // PricedSurface, PricingContext
-#include "atx/vol/detail/deriv_ref_bridge.hpp" // detail::deriv_greeks_on_ref (swap-lane oracle)
-#include "atx/vol/strategy.hpp"  // the DSL + DeclarativeStrategy/DispersionStrategy
-#include "atx/vol/swap_leg.hpp"  // swap_contract_for_lot
-#include "atx/vol/surface_archive.hpp"  // write_surface_archive_v2_file, SurfaceArchiveItem
-#include "atx/vol/surface_parity.hpp"   // SliceContext
-#include "atx/vol/types.hpp"            // Side, Result, Status, ErrorCode
-#include "atx/vol/vol_curve.hpp"        // CurveSurface, EssviCurve
-#include "atx/vol/vol_surface.hpp"      // EssviParams
+#include "atx/vol/api/backtest/portfolio_pricer.hpp" // Portfolio, SurfaceSet, PortfolioPricer, Position
+#include "atx/vol/api/backtest/priced_surface.hpp"   // PricedSurface, PricingContext
+#include "pricing/deriv_ref_bridge.hpp" // detail::deriv_greeks_on_ref (swap-lane oracle)
+#include "atx/vol/api/backtest/strategy.hpp"  // the DSL + DeclarativeStrategy/DispersionStrategy
+#include "atx/vol/api/pricing/swap_leg.hpp"  // swap_contract_for_lot
+#include "atx/vol/api/storage/surface_archive.hpp"  // write_surface_archive_v2_file, SurfaceArchiveItem
+#include "atx/vol/api/fitting/surface_parity.hpp"   // SliceContext
+#include "atx/vol/api/core/types.hpp"            // Side, Result, Status, ErrorCode
+#include "atx/vol/api/fitting/vol_curve.hpp"        // CurveSurface, EssviCurve
+#include "atx/vol/api/fitting/vol_surface.hpp"      // EssviParams
 
 #include "support/isa_golden_tol.hpp" // laned_greeks_close (WS-P1a route band)
 

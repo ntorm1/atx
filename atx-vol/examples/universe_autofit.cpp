@@ -49,20 +49,20 @@
 #include <string_view>
 #include <vector>
 
-#include "atx/vol/chain.hpp"         // OptionChain
-#include "atx/vol/corpus.hpp"        // CorpusBoard
-#include "atx/vol/fit_policy.hpp"    // FitDecision
-#include "atx/vol/opra_batch.hpp"    // OpraBatchSpec, load_opra_daterange, corpus_board_from_opra
-#include "atx/vol/detail/parallel_for.hpp"  // parallel_for, atx_auto_worker_count
-#include "atx/vol/pricer_fitter.hpp" // PricerFitter, PricerConfig, OutputField
-#include "atx/vol/profile.hpp"       // ProfileKind
-#include "atx/vol/session.hpp"       // FitPreset, SessionDiagnostics
-#include "atx/vol/surface_db.hpp"    // SymbolFitConfig, symbol_config_from_preset
-#include "atx/vol/surface_policy.hpp" // SurfaceHealth, ValidationDigest, SurfaceState
+#include "atx/vol/api/core/chain.hpp"         // OptionChain
+#include "atx/vol/api/marketdata/corpus.hpp"        // CorpusBoard
+#include "atx/vol/api/fitting/fit_policy.hpp"    // FitDecision
+#include "atx/vol/api/marketdata/opra_batch.hpp"    // OpraBatchSpec, load_opra_daterange, corpus_board_from_opra
+#include "core/parallel_for.hpp"  // parallel_for, atx_auto_worker_count
+#include "atx/vol/api/fitting/pricer_fitter.hpp" // PricerFitter, PricerConfig, OutputField
+#include "atx/vol/api/fitting/profile.hpp"       // ProfileKind
+#include "atx/vol/api/fitting/session.hpp"       // FitPreset, SessionDiagnostics
+#include "atx/vol/api/storage/surface_db.hpp"    // SymbolFitConfig, symbol_config_from_preset
+#include "atx/vol/api/fitting/surface_policy.hpp" // SurfaceHealth, ValidationDigest, SurfaceState
 #include "atx/vol/tools/surface_db_populate.hpp" // populate_admission_policy
-#include "atx/vol/types.hpp"         // Result
-#include "atx/vol/vol_curve.hpp"     // VolCurveKind, to_string
-#include "atx/vol/vol_surface.hpp"   // EssviParams, VolSurface::essvi_slices
+#include "atx/vol/api/core/types.hpp"         // Result
+#include "atx/vol/api/fitting/vol_curve.hpp"     // VolCurveKind, to_string
+#include "atx/vol/api/fitting/vol_surface.hpp"   // EssviParams, VolSurface::essvi_slices
 
 using namespace atx::vol;
 using SteadyClock = std::chrono::steady_clock;

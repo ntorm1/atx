@@ -58,11 +58,11 @@
 // delete data under a default threshold no caller asked for. The default
 // (no subcommand) invocation's behavior is completely unchanged.
 
-#include "atx/vol/catalog.hpp"
+#include "marketdata/catalog.hpp"
 #include "atx/vol/research/track_compact_reconcile.hpp"
 #include "atx/vol/research/track_gc.hpp"
-#include "atx/vol/track_key.hpp"
-#include "atx/vol/track_store.hpp"
+#include "storage/track_key.hpp"
+#include "storage/track_store.hpp"
 
 #include <cstdio>
 #include <cstdlib>

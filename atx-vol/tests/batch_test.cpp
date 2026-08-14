@@ -8,12 +8,12 @@
 #include <span>
 #include <vector>
 
-#include "atx/vol/batch.hpp"
-#include "atx/vol/black76.hpp"
-#include "atx/vol/greeks.hpp"
-#include "atx/vol/implied_vol.hpp"
-#include "atx/vol/surface.hpp"
-#include "atx/vol/types.hpp"
+#include "atx/vol/api/pricing/batch.hpp"
+#include "atx/vol/api/pricing/black76.hpp"
+#include "atx/vol/api/pricing/greeks.hpp"
+#include "atx/vol/api/pricing/implied_vol.hpp"
+#include "atx/vol/api/fitting/surface.hpp"
+#include "atx/vol/api/core/types.hpp"
 
 // Public batch API parity tests, ported from the C ats-vol test_pricer_simd.c.
 // Interior lanes may take the runtime-dispatched AVX2 kernels, whose vector

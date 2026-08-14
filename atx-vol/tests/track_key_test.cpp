@@ -12,7 +12,7 @@
 // Plus the Step 5 economics tripwire (TrackKeyGoldenReplay), corpus-gated and
 // GTEST_SKIP-clean in every worktree today -- see golden_pin.hpp.
 
-#include "atx/vol/track_key.hpp"
+#include "storage/track_key.hpp"
 
 #include <array>
 #include <cstdint>
@@ -27,8 +27,8 @@
 
 #include <gtest/gtest.h>
 
-#include "atx/vol/backtest.hpp"
-#include "atx/vol/backtest_template.hpp"
+#include "atx/vol/api/backtest/backtest.hpp"
+#include "backtest/backtest_template.hpp"
 #include "atx/vol/research/golden_pin.hpp"
 
 using namespace atx::vol;

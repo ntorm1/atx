@@ -45,15 +45,15 @@
 #include <unordered_map>
 #include <vector>
 
-#include "atx/vol/american.hpp"          // AmericanGreeks
-#include "atx/vol/backtest.hpp"          // MarketSnapshot
-#include "atx/vol/corpus.hpp"            // CorpusManifest, read_manifest_file, CorpusFitStatus
-#include "atx/vol/data.hpp"             // QuoteFrame/Row, year_fraction
-#include "atx/vol/opra_batch.hpp"        // OpraBatchSpec, load_opra_daterange
-#include "atx/vol/portfolio_pricer.hpp"  // kNsPerYear
-#include "atx/vol/priced_surface.hpp"    // PricedSurface
-#include "atx/vol/strategy.hpp"          // StrategySpec, resolve_spec, SizedLeg
-#include "atx/vol/types.hpp"             // Side, Result
+#include "atx/vol/api/pricing/american.hpp"          // AmericanGreeks
+#include "atx/vol/api/backtest/backtest.hpp"          // MarketSnapshot
+#include "atx/vol/api/marketdata/corpus.hpp"            // CorpusManifest, read_manifest_file, CorpusFitStatus
+#include "atx/vol/api/marketdata/data.hpp"             // QuoteFrame/Row, year_fraction
+#include "atx/vol/api/marketdata/opra_batch.hpp"        // OpraBatchSpec, load_opra_daterange
+#include "atx/vol/api/backtest/portfolio_pricer.hpp"  // kNsPerYear
+#include "atx/vol/api/backtest/priced_surface.hpp"    // PricedSurface
+#include "atx/vol/api/backtest/strategy.hpp"          // StrategySpec, resolve_spec, SizedLeg
+#include "atx/vol/api/core/types.hpp"             // Side, Result
 
 using namespace atx::vol;
 

@@ -11,9 +11,9 @@
 
 #include <gtest/gtest.h>
 
-#include "atx/vol/chain.hpp"
-#include "atx/vol/corpus.hpp"
-#include "atx/vol/pricer_fitter.hpp"
+#include "atx/vol/api/core/chain.hpp"
+#include "atx/vol/api/marketdata/corpus.hpp"
+#include "atx/vol/api/fitting/pricer_fitter.hpp"
 #include "support/breadth_fit_fixture.hpp"
 
 namespace {

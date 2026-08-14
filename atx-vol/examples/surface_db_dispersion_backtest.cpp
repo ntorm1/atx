@@ -22,15 +22,15 @@
 #include <string_view>
 #include <vector>
 
-#include "atx/vol/backtest.hpp"              // BacktestResult
+#include "atx/vol/api/backtest/backtest.hpp"              // BacktestResult
 #include "atx/vol/research/backtest_driver.hpp"       // RunOutcome, EngineRunStats
 #include "atx/vol/research/dispersion_backtest.hpp"   // DispersionBacktestConfig
-#include "atx/vol/dispersion_surface_db.hpp" // SurfaceDbDispersionSpec, the one-call entry
+#include "storage/dispersion_surface_db.hpp" // SurfaceDbDispersionSpec, the one-call entry
 #include "atx/vol/research/dispersion_workflow.hpp"   // read_universe, all_symbols
 #include "atx/vol/tools/run_report.hpp"            // MetaKv, write_* emitters
-#include "atx/vol/surface_db.hpp"            // SurfaceDb (meta: root + generation)
+#include "atx/vol/api/storage/surface_db.hpp"            // SurfaceDb (meta: root + generation)
 #include "atx/vol/tools/tearsheet.hpp"             // TearSheet
-#include "atx/vol/types.hpp"                 // Result, Status
+#include "atx/vol/api/core/types.hpp"                 // Result, Status
 
 using namespace atx::vol;
 namespace fs = std::filesystem;

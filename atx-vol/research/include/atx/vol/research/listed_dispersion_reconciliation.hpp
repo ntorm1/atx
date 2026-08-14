@@ -6,11 +6,11 @@
 #include <string_view>
 #include <vector>
 
-#include "atx/vol/backtest.hpp"
-#include "atx/vol/listed_dispersion.hpp"
-#include "atx/vol/listed_dispersion_schedule.hpp"
-#include "atx/vol/portfolio_pricer.hpp"
-#include "atx/vol/types.hpp"
+#include "atx/vol/api/backtest/backtest.hpp"
+#include "atx/vol/api/backtest/listed_dispersion.hpp"
+#include "atx/vol/api/backtest/listed_dispersion_schedule.hpp"
+#include "atx/vol/api/backtest/portfolio_pricer.hpp"
+#include "atx/vol/api/core/types.hpp"
 
 namespace atx::vol {
 

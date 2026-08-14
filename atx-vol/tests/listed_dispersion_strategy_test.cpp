@@ -9,21 +9,21 @@
 #include <utility>
 #include <vector>
 
-#include "atx/vol/american.hpp"
-#include "atx/vol/backtest.hpp"
-#include "atx/vol/corpus.hpp"
+#include "atx/vol/api/pricing/american.hpp"
+#include "atx/vol/api/backtest/backtest.hpp"
+#include "atx/vol/api/marketdata/corpus.hpp"
 #include "atx/vol/research/dispersion_run.hpp" // make_listed_replay_run_config (F5 guard, FIX-F N2)
-#include "atx/vol/listed_dispersion.hpp"
+#include "atx/vol/api/backtest/listed_dispersion.hpp"
 #include "atx/vol/research/listed_dispersion_reconciliation.hpp" // ListedReconciliationConfig (shared tol)
-#include "atx/vol/listed_dispersion_schedule.hpp"
-#include "atx/vol/listed_dispersion_strategy.hpp"
-#include "atx/vol/portfolio_pricer.hpp"
-#include "atx/vol/priced_surface.hpp"
-#include "atx/vol/surface_archive.hpp"
-#include "atx/vol/surface_parity.hpp"
-#include "atx/vol/types.hpp"
-#include "atx/vol/vol_curve.hpp"
-#include "atx/vol/vol_surface.hpp"
+#include "atx/vol/api/backtest/listed_dispersion_schedule.hpp"
+#include "atx/vol/api/backtest/listed_dispersion_strategy.hpp"
+#include "atx/vol/api/backtest/portfolio_pricer.hpp"
+#include "atx/vol/api/backtest/priced_surface.hpp"
+#include "atx/vol/api/storage/surface_archive.hpp"
+#include "atx/vol/api/fitting/surface_parity.hpp"
+#include "atx/vol/api/core/types.hpp"
+#include "atx/vol/api/fitting/vol_curve.hpp"
+#include "atx/vol/api/fitting/vol_surface.hpp"
 
 using namespace atx::vol;
 namespace fs = std::filesystem;

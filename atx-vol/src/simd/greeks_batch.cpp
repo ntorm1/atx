@@ -1,7 +1,7 @@
-#include "atx/vol/simd/greeks_batch.hpp"
+#include "atx/vol/api/simd/greeks_batch.hpp"
 
-#include "atx/vol/greeks.hpp"
-#include "atx/vol/simd/cpu.hpp"
+#include "atx/vol/api/pricing/greeks.hpp"
+#include "atx/vol/api/simd/cpu.hpp"
 
 #include "greeks_batch_avx2.hpp"
 

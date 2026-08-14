@@ -1,5 +1,5 @@
 // atx-vol/tests/realized_vol_test.cpp
-#include "atx/vol/realized_vol.hpp"
+#include "analytics/realized_vol.hpp"
 #include <gtest/gtest.h>
 #include <cmath>
 #include <random>

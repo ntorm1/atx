@@ -20,11 +20,11 @@
 #include <utility>
 #include <vector>
 
-#include "atx/vol/corpus.hpp"      // CorpusBoard, CorpusConfig, build_corpus, CorpusManifest
-#include "atx/vol/opra_batch.hpp"  // OpraBatchSpec, load_opra_daterange, market_env_from_frame
-#include "atx/vol/session.hpp"     // FitPreset
-#include "atx/vol/types.hpp"       // Result
-#include "atx/vol/vol_curve.hpp"   // CurveConfig, VolCurveKind (pin the curve family)
+#include "atx/vol/api/marketdata/corpus.hpp"      // CorpusBoard, CorpusConfig, build_corpus, CorpusManifest
+#include "atx/vol/api/marketdata/opra_batch.hpp"  // OpraBatchSpec, load_opra_daterange, market_env_from_frame
+#include "atx/vol/api/fitting/session.hpp"     // FitPreset
+#include "atx/vol/api/core/types.hpp"       // Result
+#include "atx/vol/api/fitting/vol_curve.hpp"   // CurveConfig, VolCurveKind (pin the curve family)
 
 using namespace atx::vol;
 

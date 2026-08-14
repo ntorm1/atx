@@ -1,4 +1,4 @@
-#include "atx/vol/var_report.hpp"
+#include "analytics/var_report.hpp"
 
 #include <gtest/gtest.h>
 
@@ -7,7 +7,7 @@
 #include <string>
 #include <vector>
 
-#include "atx/vol/var.hpp"
+#include "analytics/var.hpp"
 
 namespace {
 

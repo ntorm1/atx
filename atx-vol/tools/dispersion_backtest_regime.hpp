@@ -17,7 +17,7 @@
 
 #include <string_view>
 
-#include "atx/vol/backtest.hpp" // FrictionRegime
+#include "atx/vol/api/backtest/backtest.hpp" // FrictionRegime
 
 namespace atx::vol {
 

@@ -59,6 +59,13 @@ pybind11_add_module(_core
     src/bindings/fit.cpp
 )
 target_include_directories(_core PRIVATE src/bindings)
+# api/ restructure (2026-08-14): PRIVATE src/ include root, for parity with
+# the other internal targets (atx-vol/CMakeLists.txt). Not architecturally
+# required -- python/ is one of the three external reachability roots the
+# placement measurement itself was computed from, so _core should only ever
+# need the public atx/vol/api/ surface -- but added per the restructure's own
+# decision to give every internal-facing target this root uniformly.
+target_include_directories(_core PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 # S5-T24 resolved the S4-T18 carried finding: src/bindings/fit.cpp exposes the
 # deterministic SPY known-truth fixture (`make_spy_synthetic_spec`) to Python as
 # `make_spy_synthetic_panel`, and it used to reach it through an extra

@@ -30,7 +30,7 @@
 #include "essvi_batch_avx2.hpp"
 
 #include "atx/core/macro.hpp" // ATX_FORCE_INLINE
-#include "atx/vol/vol_surface.hpp"
+#include "atx/vol/api/fitting/vol_surface.hpp"
 
 #include <algorithm>
 #include <array>

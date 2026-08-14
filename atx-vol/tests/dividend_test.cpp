@@ -5,10 +5,10 @@
 #include <limits>
 #include <vector>
 
-#include "atx/vol/black76.hpp"
-#include "atx/vol/dividend.hpp"
-#include "atx/vol/rates_curve.hpp"
-#include "atx/vol/types.hpp"
+#include "atx/vol/api/pricing/black76.hpp"
+#include "atx/vol/api/pricing/dividend.hpp"
+#include "atx/vol/api/pricing/rates_curve.hpp"
+#include "atx/vol/api/core/types.hpp"
 
 // Coverage for the hybrid dividend forward + European put-call-parity borrow
 // implication (atx/vol/dividend.hpp). The escrowed-cash reference is

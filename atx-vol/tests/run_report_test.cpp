@@ -24,12 +24,12 @@
 #include <string>
 #include <vector>
 
-#include "atx/vol/priced_surface.hpp"  // PricedSurface, PricingContext
+#include "atx/vol/api/backtest/priced_surface.hpp"  // PricedSurface, PricingContext
 #include "atx/vol/tools/run_report.hpp"
-#include "atx/vol/surface_archive.hpp" // SurfaceArchiveItem
-#include "atx/vol/surface_db.hpp"      // SurfaceDb
-#include "atx/vol/vol_curve.hpp"       // CurveSurface, EssviCurve
-#include "atx/vol/vol_surface.hpp"     // EssviParams
+#include "atx/vol/api/storage/surface_archive.hpp" // SurfaceArchiveItem
+#include "atx/vol/api/storage/surface_db.hpp"      // SurfaceDb
+#include "atx/vol/api/fitting/vol_curve.hpp"       // CurveSurface, EssviCurve
+#include "atx/vol/api/fitting/vol_surface.hpp"     // EssviParams
 
 using namespace atx::vol;
 namespace fs = std::filesystem;

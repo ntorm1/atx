@@ -25,11 +25,11 @@
 #include <utility>
 #include <vector>
 
-#include "atx/vol/black76.hpp"
-#include "atx/vol/portfolio_pricer.hpp"
-#include "atx/vol/priced_surface.hpp"
-#include "atx/vol/surface_archive.hpp"
-#include "atx/vol/vol_curve.hpp"
+#include "atx/vol/api/pricing/black76.hpp"
+#include "atx/vol/api/backtest/portfolio_pricer.hpp"
+#include "atx/vol/api/backtest/priced_surface.hpp"
+#include "atx/vol/api/storage/surface_archive.hpp"
+#include "atx/vol/api/fitting/vol_curve.hpp"
 #include "support/cached_artifacts.hpp"
 
 using namespace atx::vol;

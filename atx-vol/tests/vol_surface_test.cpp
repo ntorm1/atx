@@ -7,7 +7,7 @@
 #include <utility>
 #include <vector>
 
-#include "atx/vol/vol_surface.hpp"
+#include "atx/vol/api/fitting/vol_surface.hpp"
 
 // Coverage for the calibration-grade vol-surface representation
 // (vol_surface.hpp), ported alongside the C ats-vol eSSVI/SVI evaluators and

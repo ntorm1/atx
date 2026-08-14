@@ -3,8 +3,8 @@
 #include <cstddef>
 #include <cstdio>
 
-#include "atx/vol/arb.hpp"             // arb_check_calendar(CurveSurface, ...)
-#include "atx/vol/surface_archive.hpp" // SurfaceArchive
+#include "atx/vol/api/fitting/arb.hpp"             // arb_check_calendar(CurveSurface, ...)
+#include "atx/vol/api/storage/surface_archive.hpp" // SurfaceArchive
 #include "support/cached_artifacts.hpp"
 
 // By-construction calendar no-arb gate for the SERVED dense surface.

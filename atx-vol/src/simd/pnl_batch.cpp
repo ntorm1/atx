@@ -1,6 +1,6 @@
-#include "atx/vol/simd/pnl_batch.hpp"
+#include "simd/pnl_batch.hpp"
 
-#include "atx/vol/simd/cpu.hpp"
+#include "atx/vol/api/simd/cpu.hpp"
 
 #include "pnl_batch_avx2.hpp"
 

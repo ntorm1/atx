@@ -16,19 +16,19 @@
 // teeth). The whole suite is skipped on a non-AVX2 host, where use_avx2() is always
 // false and there is nothing to divert.
 
-#include "atx/vol/batch.hpp"
-#include "atx/vol/black76.hpp"
-#include "atx/vol/greeks.hpp"
-#include "atx/vol/surface.hpp"     // EssviSlice, essvi_w
-#include "atx/vol/types.hpp"
-#include "atx/vol/vol_surface.hpp" // EssviParams, SviParams, essvi_backbone_w, svi_total_w, essvi_w_grad3
+#include "atx/vol/api/pricing/batch.hpp"
+#include "atx/vol/api/pricing/black76.hpp"
+#include "atx/vol/api/pricing/greeks.hpp"
+#include "atx/vol/api/fitting/surface.hpp"     // EssviSlice, essvi_w
+#include "atx/vol/api/core/types.hpp"
+#include "atx/vol/api/fitting/vol_surface.hpp" // EssviParams, SviParams, essvi_backbone_w, svi_total_w, essvi_w_grad3
 
-#include "atx/vol/simd/black76_batch.hpp"
-#include "atx/vol/simd/cpu.hpp"
-#include "atx/vol/simd/essvi_batch.hpp"
-#include "atx/vol/simd/greeks_batch.hpp"
-#include "atx/vol/simd/math_mode.hpp"
-#include "atx/vol/simd/pnl_batch.hpp"
+#include "simd/black76_batch.hpp"
+#include "atx/vol/api/simd/cpu.hpp"
+#include "simd/essvi_batch.hpp"
+#include "atx/vol/api/simd/greeks_batch.hpp"
+#include "simd/math_mode.hpp"
+#include "simd/pnl_batch.hpp"
 
 #include <array>
 #include <cmath>

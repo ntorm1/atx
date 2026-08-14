@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "atx/vol/detail/phase_profile.hpp"
+#include "core/phase_profile.hpp"
 
 namespace {
 

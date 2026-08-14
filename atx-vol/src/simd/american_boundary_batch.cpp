@@ -1,7 +1,7 @@
-#include "atx/vol/simd/american_boundary_batch.hpp"
+#include "atx/vol/api/simd/american_boundary_batch.hpp"
 
-#include "atx/vol/american.hpp"
-#include "atx/vol/simd/cpu.hpp"
+#include "atx/vol/api/pricing/american.hpp"
+#include "atx/vol/api/simd/cpu.hpp"
 
 #include "american_boundary_avx2.hpp"
 #include "american_greeks_avx2.hpp"

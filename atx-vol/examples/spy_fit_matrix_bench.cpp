@@ -9,8 +9,8 @@
 #include <vector>
 
 #include "../tests/support/spy_fit_fixture.hpp"
-#include "atx/vol/chain.hpp"
-#include "atx/vol/pricer_fitter.hpp"
+#include "atx/vol/api/core/chain.hpp"
+#include "atx/vol/api/fitting/pricer_fitter.hpp"
 
 namespace {
 

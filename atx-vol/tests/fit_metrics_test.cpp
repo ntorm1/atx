@@ -5,7 +5,7 @@
 #include <limits>
 #include <vector>
 
-#include "atx/vol/fit_metrics.hpp"
+#include "atx/vol/api/fitting/fit_metrics.hpp"
 
 // Coverage for the Vola-style fit-quality metrics: per-quote vol error bars,
 // reduced chi-square, minimum-edge verdicts, avE5, and the end-to-end slice

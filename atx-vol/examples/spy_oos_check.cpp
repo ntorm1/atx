@@ -14,12 +14,12 @@
 #include <cstdio>
 #include <vector>
 
-#include "atx/vol/american.hpp"
-#include "atx/vol/calib.hpp"
-#include "atx/vol/dense_slice.hpp"
-#include "atx/vol/opra_panel.hpp"
-#include "atx/vol/session.hpp"
-#include "atx/vol/universe.hpp"
+#include "atx/vol/api/pricing/american.hpp"
+#include "atx/vol/api/fitting/calib.hpp"
+#include "atx/vol/api/fitting/dense_slice.hpp"
+#include "atx/vol/api/marketdata/opra_panel.hpp"
+#include "atx/vol/api/fitting/session.hpp"
+#include "atx/vol/api/marketdata/universe.hpp"
 
 using namespace atx::vol;
 

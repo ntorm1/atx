@@ -24,9 +24,9 @@
 #include <vector>
 
 #include "atx/core/math.hpp"
-#include "atx/vol/black76.hpp"
-#include "atx/vol/detail/scalar_erfc.hpp"
-#include "atx/vol/implied_vol.hpp"
+#include "atx/vol/api/pricing/black76.hpp"
+#include "pricing/scalar_erfc.hpp"
+#include "atx/vol/api/pricing/implied_vol.hpp"
 
 namespace atx::vol {
 namespace {

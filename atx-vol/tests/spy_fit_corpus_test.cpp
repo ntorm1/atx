@@ -13,12 +13,12 @@
 
 #include <gtest/gtest.h>
 
-#include "atx/vol/american.hpp"
-#include "atx/vol/calib.hpp"
-#include "atx/vol/chain.hpp"
-#include "atx/vol/pricer_fitter.hpp"
-#include "atx/vol/surface_archive.hpp"
-#include "atx/vol/universe.hpp"
+#include "atx/vol/api/pricing/american.hpp"
+#include "atx/vol/api/fitting/calib.hpp"
+#include "atx/vol/api/core/chain.hpp"
+#include "atx/vol/api/fitting/pricer_fitter.hpp"
+#include "atx/vol/api/storage/surface_archive.hpp"
+#include "atx/vol/api/marketdata/universe.hpp"
 #include "support/cached_artifacts.hpp"
 #include "support/spy_fit_fixture.hpp"
 

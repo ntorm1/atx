@@ -23,7 +23,7 @@
 
 #include <benchmark/benchmark.h>
 
-#include "atx/vol/detail/counters.hpp"
+#include "fitting/counters.hpp"
 
 namespace atx::vol::bench {
 

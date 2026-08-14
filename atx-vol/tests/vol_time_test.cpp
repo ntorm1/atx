@@ -1,4 +1,4 @@
-#include "atx/vol/vol_time.hpp"
+#include "atx/vol/api/core/vol_time.hpp"
 
 #include <gtest/gtest.h>
 
@@ -9,11 +9,11 @@
 #include <string>
 
 #include "atx/core/datetime.hpp"
-#include "atx/vol/data.hpp"
-#include "atx/vol/panel.hpp"
-#include "atx/vol/s3.hpp"
-#include "atx/vol/session.hpp"
-#include "atx/vol/universe.hpp"
+#include "atx/vol/api/marketdata/data.hpp"
+#include "atx/vol/api/backtest/panel.hpp"
+#include "atx/vol/api/fitting/s3.hpp"
+#include "atx/vol/api/fitting/session.hpp"
+#include "atx/vol/api/marketdata/universe.hpp"
 
 // Coverage for the SpiderRock-style hybrid volatility-time clock: the ET
 // civil-date/DST conversion (exercised indirectly through the public API),

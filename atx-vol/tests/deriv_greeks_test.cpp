@@ -2,11 +2,11 @@
 
 #include <cmath>
 
-#include "atx/vol/rates_curve.hpp"
-#include "atx/vol/derivatives.hpp"
-#include "atx/vol/detail/legacy_surface.hpp"  // EssviSurface (demoted, S4-T21)
-#include "atx/vol/priced_surface.hpp"     // PricedSurface-native greeks overload
-#include "atx/vol/surface.hpp"
+#include "atx/vol/api/pricing/rates_curve.hpp"
+#include "atx/vol/api/pricing/derivatives.hpp"
+#include "fitting/legacy_surface.hpp"  // EssviSurface (demoted, S4-T21)
+#include "atx/vol/api/backtest/priced_surface.hpp"     // PricedSurface-native greeks overload
+#include "atx/vol/api/fitting/surface.hpp"
 #include "support/analytics_fixture.hpp"  // testkit::make_flat_surface (PricedSurface)
 #include "support/deriv_test_fixture.hpp" // testsupport::make_flat_surface / make_flat_curves
 

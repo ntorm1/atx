@@ -12,7 +12,7 @@
 #include <thread>
 #include <vector>
 
-#include "atx/vol/detail/parallel_for.hpp"  // atx_auto_worker_count, parallel_for
+#include "core/parallel_for.hpp"  // atx_auto_worker_count, parallel_for
 
 // S0-4': `atx_auto_worker_count()` resolves the auto (0) worker count for
 // `parallel_for` -- ATX_VOL_FIT_WORKERS if set to a positive integer, else

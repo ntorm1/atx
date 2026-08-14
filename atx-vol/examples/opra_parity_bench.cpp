@@ -45,15 +45,15 @@
 #include <utility>
 #include <vector>
 
-#include "atx/vol/arb.hpp"     // arb_check_calendar (crossing localization)
-#include "atx/vol/calib.hpp"       // build_observations, CalibOpts, FitObs/FitDiag
-#include "atx/vol/data.hpp"        // data_install
-#include "atx/vol/essvi_calib.hpp"  // essvi_fit_slice (warm vs cold refit)
-#include "atx/vol/opra_panel.hpp"
-#include "atx/vol/session.hpp"
-#include "atx/vol/types.hpp"  // Side
-#include "atx/vol/universe.hpp"     // Universe, Underlying (chains for refit)
-#include "atx/vol/vol_surface.hpp"  // EssviParams
+#include "atx/vol/api/fitting/arb.hpp"     // arb_check_calendar (crossing localization)
+#include "atx/vol/api/fitting/calib.hpp"       // build_observations, CalibOpts, FitObs/FitDiag
+#include "atx/vol/api/marketdata/data.hpp"        // data_install
+#include "fitting/essvi_calib.hpp"  // essvi_fit_slice (warm vs cold refit)
+#include "atx/vol/api/marketdata/opra_panel.hpp"
+#include "atx/vol/api/fitting/session.hpp"
+#include "atx/vol/api/core/types.hpp"  // Side
+#include "atx/vol/api/marketdata/universe.hpp"     // Universe, Underlying (chains for refit)
+#include "atx/vol/api/fitting/vol_surface.hpp"  // EssviParams
 
 namespace {
 

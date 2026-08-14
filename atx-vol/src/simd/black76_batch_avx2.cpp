@@ -25,8 +25,8 @@
 
 #include "black76_batch_avx2.hpp"
 
-#include "atx/vol/black76.hpp"
-#include "atx/vol/detail/vector_math.hpp"
+#include "atx/vol/api/pricing/black76.hpp"
+#include "simd/vector_math.hpp"
 
 #include <cmath>
 #include <immintrin.h>

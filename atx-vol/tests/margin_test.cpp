@@ -31,13 +31,13 @@
 #include <vector>
 
 #include "atx/core/error.hpp"
-#include "atx/vol/backtest.hpp" // Task B2 commit 2: RunConfig::margin_breach, BacktestResult::margin_required
-#include "atx/vol/corpus.hpp"
-#include "atx/vol/margin.hpp"
-#include "atx/vol/portfolio_pricer.hpp"
-#include "atx/vol/scenario_grid.hpp"
-#include "atx/vol/strategy.hpp"
-#include "atx/vol/surface_archive.hpp"
+#include "atx/vol/api/backtest/backtest.hpp" // Task B2 commit 2: RunConfig::margin_breach, BacktestResult::margin_required
+#include "atx/vol/api/marketdata/corpus.hpp"
+#include "backtest/margin.hpp"
+#include "atx/vol/api/backtest/portfolio_pricer.hpp"
+#include "atx/vol/api/analytics/scenario_grid.hpp"
+#include "atx/vol/api/backtest/strategy.hpp"
+#include "atx/vol/api/storage/surface_archive.hpp"
 #include "support/analytics_fixture.hpp" // testkit::make_flat_surface
 
 using namespace atx::vol;

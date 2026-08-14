@@ -34,7 +34,7 @@ faithfully and mirror the upstream test tolerances.
 | Rates curves | `rates_curve.hpp` | Yield (Fritsch–Carlson) / forward / dividend / borrow (HTB) curve set |
 | Universe | `universe.hpp` | Ticker↔uid interning, SoA per-(uid,expiry) chain registry, quote ingest, LRU eviction |
 | Arbitrage | `arb.hpp` | Calendar + butterfly (Roper density) checks, SVI-MM admissibility, calendar projection/repair, quote pre-fit filters |
-| Robust math | `detail/robust.hpp` | Huber loss/weight, strided Huber weights, order-statistic quantile |
+| Robust math | `src/fitting/robust.hpp` (internal) | Huber loss/weight, strided Huber weights, order-statistic quantile |
 | Calibration infra | `calib.hpp` | `CalibOpts`, `FitObs`, observation builder (IV-inversion + vega-spread weighting + filter cascade), accept-predicate |
 | eSSVI calibrator | `essvi_calib.hpp` | Cube-space Levenberg–Marquardt (analytic Mingone Jacobian) + IRLS-Huber + wing residual + sequential driver + calendar projection |
 | SVI calibrators | `svi_calib.hpp` | Zeliade quasi-explicit (BLLS + Nelder–Mead), Martini–Mingone constrained LM, raw↔JW |
@@ -42,8 +42,8 @@ faithfully and mirror the upstream test tolerances.
 | CStar family | `cstar.hpp`, `cstar_calib.hpp` | C16M modal parametrization (base + 11 modal coeffs, C5/C8/C12/C16 tiers), block LM, calendar/butterfly arb |
 | Calibration pool | `calib_pool.hpp` | Cadence priority queue + deterministic multi-underlier fan-out (`std::jthread`) |
 | Vol derivatives | `derivatives.hpp` | Variance/vol-swap strip + Carr–Lee vol swap, aged-trade dispatch, capped variance/vol swaps + mid-life vol-swap dispatch (lognormal RV distribution engine, auto Carr–Lee-consistent vol-of-vol calibration), finite-difference greeks for every kind, dated idempotent fixings on the realized-vol tracker, Richardson strip quadrature-error estimate, wing trust band on strip reads (flat-vol tails beyond the certified ±0.5 fit band, `DerivConfig::wing_clamp_k`) |
-| Vol-derivative book | `deriv_book.hpp` | Portfolio-layer pricing of variance/vol-swap position books against a `SurfaceSet` — the additive companion to `portfolio_pricer.hpp` for swap legs; SurfaceRef carry bridge (`detail/deriv_ref_bridge.hpp`), row-level failure + NaN-if-not-computed `PriceTotals` shared with the option pricer, `combine_totals` for one desk-level number; tenor hygiene is the caller's |
-| RV distribution kernel | `detail/rv_lognormal.hpp` | Gauss-Hermite (order 21) + split-domain Gauss-Legendre (order 64) quadrature, lognormal expectation / truncated-expectation / call / sqrt-moment identities backing the capped and mid-life vol-derivative pricers |
+| Vol-derivative book | `deriv_book.hpp` | Portfolio-layer pricing of variance/vol-swap position books against a `SurfaceSet` — the additive companion to `portfolio_pricer.hpp` for swap legs; SurfaceRef carry bridge (`src/pricing/deriv_ref_bridge.hpp`, internal), row-level failure + NaN-if-not-computed `PriceTotals` shared with the option pricer, `combine_totals` for one desk-level number; tenor hygiene is the caller's |
+| RV distribution kernel | `src/analytics/rv_lognormal.hpp` (internal) | Gauss-Hermite (order 21) + split-domain Gauss-Legendre (order 64) quadrature, lognormal expectation / truncated-expectation / call / sqrt-moment identities backing the capped and mid-life vol-derivative pricers |
 | Swap-leg toolkit | `swap_leg.hpp` | The reusable pieces every swap-carrying strategy shares: `swap_contract_for_lot` (the engine's `SwapLot`→`DerivContract` transcription), `solve_cycle_swap` (fixing-schedule count + bridge-priced fair strike + vega-targeted qty, fail-soft), and `SwapSignalProbe` (the engine-accrual mirror behind the per-row `swap_*` greek signal columns, NaN discipline included). With `LifecycleSpec::Holding::FixedExpiryRestrike` + `StrategySpec::swap_legs` (strategy.hpp) it expresses the whole strangle-vs-varswap comparison declaratively — `examples/varswap_compare_example.cpp` → `tools/render_strangle_vs_varswap.py` |
 | Profile registry | `profile.hpp` | Underlier classification, per-profile calib/filter knobs, optimization-level + refit cadence + tier priority |
 | Unified fit policy | `fit_policy.hpp` | Board/profile/session/event routing to an effective preset + curve; direct high-confidence routes and held-out ambiguity fallback |
@@ -155,7 +155,7 @@ from a clean checkout of this repository:
   described there and the numbers become reproducible; without it they are a
   record of a past measurement, not a claim you can check.
 - **The synthetic-fixture figures are reproducible** — the known-truth SPY
-  oracle (`atx/vol/spy_fixture.hpp`), `examples/spy_surface_bench`,
+  oracle (`src/fitting/spy_fixture.hpp`, internal), `examples/spy_surface_bench`,
   `examples/american_iv_bench` and the benchmark targets in `bench/` need no
   vendor data.
 - **Absolute numbers are pinned to one host** (i7-1260P / clang-cl 18; see
@@ -247,7 +247,7 @@ inversion and re-pricing through the cached pricer (Black-76 + correction). The
 same cache prices both legs, so the invert/re-price round-trip stays
 self-consistent; a null/failed cache degrades transparently to cold Andersen-Lake.
 
-**One-include API + named presets.** `#include "atx/vol/vol.hpp"` pulls the whole
+**One-include API + named presets.** `#include "atx/vol/api/vol.hpp"` pulls the whole
 public surface (grouped, with a 10-line quickstart in the header). Fit policy is a
 single choice via `FitPreset {Fast, Accurate, Robust, Hft}` +
 `make_session_inputs(preset, S, r, now)` / `apply_fit_preset(in, preset)` — no
@@ -368,10 +368,10 @@ Two findings the SPY slice forced, both documented rather than papered over:
   event wings, so it stays off (matching the pre-existing `profile.cpp` note). Ultra-short
   (< ~1wk) and the deepest tails (|k| > 1.5) are separate regimes, reported separately.
 
-A deterministic **synthetic** SPY known-truth oracle (`atx/vol/spy_fixture.hpp` —
-Tier-B and installed, so a consumer can build the same board without vendoring a
-copy of the test tree — plus `examples/spy_surface_bench`) complements the real
-slice: with no quote noise the fit
+A deterministic **synthetic** SPY known-truth oracle (`src/fitting/spy_fixture.hpp`
+— internal, shared by tests/examples/bench and not installed, but checked in so
+a consumer can build the same board from source — plus
+`examples/spy_surface_bench`) complements the real slice: with no quote noise the fit
 recovers the truth exactly (0.0 bp ATM, 100% in-bid-ask, calendar-arb-free) — a zero-bias
 round-trip check, where the real slice supplies the noisy-data accuracy number above.
 
@@ -469,7 +469,7 @@ which change the numerical results of the shipped paths:
   sentence used to claim the opposite ("stay scalar-backed"). It was wrong:
   `black76_price_batch`, `black76_value_and_vega_batch`, `black76_greeks_batch`
   and `essvi_w_batch` all take the 4-lane AVX2 route under the default `Auto`
-  (`src/batch.cpp`) — at `n ≥ 4`, or `n ≥ 16` for eSSVI-w, whose per-lane cost is
+  (`src/pricing/batch.cpp`) — at `n ≥ 4`, or `n ≥ 16` for eSSVI-w, whose per-lane cost is
   small enough that the setup only pays on large grids — patching only
   degenerate / deep-wing / tail lanes through the scalar kernel. Their agreement
   with the scalar source of truth is the SIMD gate — which is what
@@ -524,8 +524,10 @@ are held into the next stored date. Stock shares are likewise resized on the
 base date and held across the transition, so stock hedges retain nonzero P&L.
 
 ```cpp
-#include "atx/vol/surface_db.hpp"
-#include "atx/vol/var.hpp"
+#include "atx/vol/api/storage/surface_db.hpp"
+#include "atx/vol/var.hpp"  // internal (src/analytics/var.hpp) -- not part of
+                             // the installed api/ surface; example/reference
+                             // code, not a public-consumer include
 
 using namespace atx::vol;
 
@@ -747,17 +749,17 @@ the property that makes this table short.
 
 | Knob | Effect | Default | Scope | v1 status |
 |---|---|---|---|---|
-| `ATX_VOL_FIT_WORKERS` | Resolves the auto (`0`) worker count for `parallel_for` fan-outs. An explicitly requested non-zero count is honoured as-is and is *not* capped by it | `hardware_concurrency()` (min 1) | library — `detail/parallel_for.hpp` | **keep** |
+| `ATX_VOL_FIT_WORKERS` | Resolves the auto (`0`) worker count for `parallel_for` fan-outs. An explicitly requested non-zero count is honoured as-is and is *not* capped by it | `hardware_concurrency()` (min 1) | library — `src/core/parallel_for.hpp` | **keep** |
 | `ATX_SIMD_ISA` | Seeds the process-global SIMD override at load: `Auto`, `ForceScalar` or `ForceAvx2`. An in-process `set_simd_isa_override()` still wins | `Auto` | library — `src/simd/cpu.cpp` | **keep** |
-| `ATX_VOL_FIT_ECORE_TIER` | Arms the E-core second scheduling tier. `2` arms it *without* the below-normal priority drop; any other non-zero value arms it *with* the drop | unset = off | library — `src/fit_scheduler.cpp` | **keep**, deprecation candidate |
-| `ATX_VOL_CORPUS_DATE_BATCH` | Dates per corpus fan-out call. Scheduling only — output bytes do not depend on it | `8` | library — `src/dispersion_run.cpp` | **keep**, belongs in a config struct |
-| `ATX_VOL_CORPUS_PHASE_TIMING` | Prints the corpus build's phase split. Collection is unconditional and cheap; only the report is gated | unset = off | library — `src/dispersion_run.cpp` | **keep** |
-| `ATX_VOL_PROFILE` | Prints per-phase fit timings from `curve_fit` and `surface_parity`. **Not** the CMake option of the same name — see the collision note below | unset = off | library — `src/curve_fit.cpp`, `src/surface_parity.cpp` | **keep**, rename candidate |
-| `ATX_SLICE_DEBUG` | Prints `curve_fit`'s per-slice fit-preparation outcome (why a chain did or did not become a fittable slice) | unset = off | library — `src/curve_fit.cpp` | **keep** |
-| `ATX_VOL_ZC_BORROW` | `0` forces the owned-reconstruct archive path instead of the zero-copy borrow. Read once per process, so it cannot make a run non-deterministic | unset = borrow allowed | library — `src/backtest.cpp` | **keep**, deprecation candidate |
-| `ATX_VOL_ZC_BACKING` | `map` or `copy` overrides the caller-declared `ArchiveBacking` on the borrow path. Read once per process | unset = the caller's choice stands | library — `src/backtest.cpp` | **keep**, deprecation candidate |
-| `ATX_VOL_AL_PROBE` | Arms the Andersen-Lake zone cycle-attribution probe, read once into `g_mode` at process load. Any non-empty value turns it on; a value containing `s`/`S` additionally records each cold boundary solve's normalized query state. Attribution only — the priced values it counts around are unaffected | unset = off | library — `src/al_probe.cpp` | **keep** |
-| `ATX_VOL_AL_PROBE_OUT` | File path for the per-state binary trace `ATX_VOL_AL_PROBE`'s `s`/`S` flag records; the human-readable `alprobe.*` summary itself always goes to the stream `dump()` was called with, not this path. Unset just skips writing the trace file. Meaningless unless `ATX_VOL_AL_PROBE` is set | unset = trace not written | library — `src/al_probe.cpp` | **keep** |
+| `ATX_VOL_FIT_ECORE_TIER` | Arms the E-core second scheduling tier. `2` arms it *without* the below-normal priority drop; any other non-zero value arms it *with* the drop | unset = off | library — `src/fitting/fit_scheduler.cpp` | **keep**, deprecation candidate |
+| `ATX_VOL_CORPUS_DATE_BATCH` | Dates per corpus fan-out call. Scheduling only — output bytes do not depend on it | `8` | library — `src/backtest/dispersion_run.cpp` | **keep**, belongs in a config struct |
+| `ATX_VOL_CORPUS_PHASE_TIMING` | Prints the corpus build's phase split. Collection is unconditional and cheap; only the report is gated | unset = off | library — `src/backtest/dispersion_run.cpp` | **keep** |
+| `ATX_VOL_PROFILE` | Prints per-phase fit timings from `curve_fit` and `surface_parity`. **Not** the CMake option of the same name — see the collision note below | unset = off | library — `src/fitting/curve_fit.cpp`, `src/fitting/surface_parity.cpp` | **keep**, rename candidate |
+| `ATX_SLICE_DEBUG` | Prints `curve_fit`'s per-slice fit-preparation outcome (why a chain did or did not become a fittable slice) | unset = off | library — `src/fitting/curve_fit.cpp` | **keep** |
+| `ATX_VOL_ZC_BORROW` | `0` forces the owned-reconstruct archive path instead of the zero-copy borrow. Read once per process, so it cannot make a run non-deterministic | unset = borrow allowed | library — `src/backtest/backtest.cpp` | **keep**, deprecation candidate |
+| `ATX_VOL_ZC_BACKING` | `map` or `copy` overrides the caller-declared `ArchiveBacking` on the borrow path. Read once per process | unset = the caller's choice stands | library — `src/backtest/backtest.cpp` | **keep**, deprecation candidate |
+| `ATX_VOL_AL_PROBE` | Arms the Andersen-Lake zone cycle-attribution probe, read once into `g_mode` at process load. Any non-empty value turns it on; a value containing `s`/`S` additionally records each cold boundary solve's normalized query state. Attribution only — the priced values it counts around are unaffected | unset = off | library — `src/pricing/al_probe.cpp` | **keep** |
+| `ATX_VOL_AL_PROBE_OUT` | File path for the per-state binary trace `ATX_VOL_AL_PROBE`'s `s`/`S` flag records; the human-readable `alprobe.*` summary itself always goes to the stream `dump()` was called with, not this path. Unset just skips writing the trace file. Meaningless unless `ATX_VOL_AL_PROBE` is set | unset = trace not written | library — `src/pricing/al_probe.cpp` | **keep** |
 | `ATX_VOL_CACHE` | Default for the dispersion CLI's `--cache DIR`; an explicit `--cache` overrides it. Empty means disabled, which is the default behaviour | unset = disabled | tool — `tools/spy_dispersion_backtest.cpp` | **keep** |
 | `ATX_VOL_PREFETCH_DEPTH` | Overrides the projected replay's snapshot look-ahead depth (`projected_prefetch_depth()`). Malformed or out-of-range (cap `64`) falls back to the default rather than failing the run. Scheduling only — output is bit-identical at any depth | `2`, cap `64` | tool — `tools/spy_dispersion_backtest.cpp` | **keep** |
 | `ATX_VOL_SOLVE_LEDGER` | Same env-gated shape as `ATX_VOL_PROFILE`: any non-empty value dumps the always-on solve ledger (AL boundary solves / premium evals / IV Newton iterations) as `ledger.<name> <count>` lines to stderr; the stdout build report shape is untouched | unset = off | tool — `tools/surface_db_build_main.cpp` | **keep** |
@@ -796,7 +798,7 @@ implicit:
 **`ATX_VOL_PROFILE` means two unrelated things, and the collision is real.** As a
 **CMake option** (`-DATX_VOL_PROFILE=ON`) it compiles the library with the
 `ATX_VOL_PROFILE` macro defined, arming the compile-time phase-timer plane
-(`detail/phase_profile.hpp`). As an **environment variable** it is read at
+(`src/core/phase_profile.hpp`). As an **environment variable** it is read at
 runtime by `curve_fit.cpp` and `surface_parity.cpp` to turn on two unrelated
 timing printouts, and it works whether or not the macro was ever defined. Neither
 mechanism observes the other. Renaming the environment side (say to
@@ -812,7 +814,7 @@ read only by tests and benchmarks, neither of which ships.
 
 The version is single-sourced from `project(atx VERSION ...)` and reaches C++ as
 `atx::vol::version()`, `atx::vol::kVersion{Major,Minor,Patch,String}` and the
-`ATX_VOL_VERSION*` macros (`atx/vol/version.hpp`). Feature-gate with the numeric
+`ATX_VOL_VERSION*` macros (`atx/vol/api/core/version.hpp`). Feature-gate with the numeric
 form, which is preprocessor-usable:
 
 ```cpp
@@ -825,11 +827,24 @@ form, which is preprocessor-usable:
 each is a directory and, where it matters, its own CMake target — so "is this
 frozen?" is answered by where the header lives, not by judgement:
 
+**api-restructure (2026-08-14).** The tiers below describe the CURRENT tree.
+The public surface is `include/atx/vol/api/`, an 8-module tree (`analytics`,
+`backtest`, `core`, `fitting`, `marketdata`, `pricing`, `simd`, `storage`)
+plus the umbrella `api/vol.hpp`; everything not shipped lives under
+`src/<module>/`, off the `include/` tree entirely — there is no longer an
+installed-but-unstable `detail/` tier of its own. (One exception: the single
+generated `atx/vol/detail/version_generated.hpp`, configure_file'd from
+`project(VERSION)` and installed alongside the API tree purely because
+`version.hpp` includes it; it carries no stability promise and is not part of
+any counted tier below.) The historical re-derivation log further down this
+section narrates the tiers as they existed under the pre-restructure flat
+`include/atx/vol/*.hpp` layout — read those counts as history, not as the
+current tree.
+
 | Tier | Where | Count | Promise |
 |---|---|---|---|
-| **Tier-A** | exactly the headers `atx/vol/vol.hpp` includes | 58 | **Frozen for 1.x.** Closed under inclusion |
-| **Tier-B** | other headers directly under `include/atx/vol/`, plus `simd/` | 45 + 9 | Public and supported to include; **not** frozen |
-| `detail/` | `include/atx/vol/detail/` | 30 (+1 generated) | **No stability promise.** Installed because Tier-A reaches it |
+| **Tier-A** | exactly the headers `atx/vol/api/vol.hpp` includes | 58 | **Frozen for 1.x.** Closed under inclusion |
+| **Tier-B** | other public headers under `include/atx/vol/api/<module>/` | 16 | Public and supported to include; **not** frozen |
 | `tools/` | `tools/include/atx/vol/tools/` — target `atx::vol::tools` | 6 | CLI support. Not part of the shipped library surface |
 | `research/` | `research/include/atx/vol/research/` — target `atx::vol::research` | 12 | Run orchestration. Not part of the shipped library surface |
 
@@ -890,18 +905,20 @@ surface. Tier-A's own forward-declaration of `SnapshotPool` in
 `#include`d) precisely so Tier-A's closed-under-inclusion rule does not pull
 this newly-Tier-B header into Tier-A.
 
-That drift is now caught by a test rather than by a reader, for the two
-digits that can be.
+That drift is now caught by a test rather than by a reader, for the counts
+that can be.
 `VolUmbrella.TierCountsMatchTheReadmeTable` (`tests/vol_umbrella_test.cpp`)
-asserts all three of **58 / 43 / 30** against the live header tree — Tier-A from
-the umbrella manifest, Tier-B and `detail/` by counting `.hpp` files in the
-directories this table names — and each failure message says to update this
-table. Previously the Tier-A *set* was machine-checked but no **count** was, and
-nothing compared any of them to this table at all, which is how three rows rotted
-undetected. `simd/` 9, `tools/` 6 and `research/` 12 remain prose: they are
-outside `include/atx/vol/` and are not covered by that test, so re-derive those
-three by hand. The `+1 generated` on `detail/` is likewise uncovered — it does
-not exist in the source tree the test walks.
+asserts **58 / 16** against the live header tree — Tier-A from the umbrella
+manifest, Tier-B by counting every `.hpp` file recursively under
+`include/atx/vol/api/` and subtracting Tier-A and the umbrella itself — plus
+the api/ tree's own module-directory count (8) and total public header count
+(75), and each failure message says to update this table. `tools/` 6 and
+`research/` 12 remain prose: they live under wholly separate include roots
+(`tools/include/`, `research/include/`) and are not covered by that test, so
+re-derive those two by hand. The one generated header,
+`atx/vol/detail/version_generated.hpp`, is likewise uncovered: it is
+configure_file'd into the install prefix only, and does not exist in the
+source tree the test walks.
 
 **2026-08-08 re-derivation:** Tier-B drifted again, 31 → **34**, across three
 headers that landed without updating this table: `var.hpp` (predates the
@@ -936,20 +953,29 @@ list — and `research/` (12) is unaffected: `main` added no `research/`
 headers of its own.
 
 **Re-derive rather than trust any digit here.** The commands are one line each:
-`grep -c '^#include "atx/vol/' include/atx/vol/vol.hpp` is Tier-A; each remaining
-row is `ls` over the directory the row names, minus (for Tier-B) Tier-A and
-`vol.hpp` itself. The `+1 generated` on `detail/` is
-`detail/version_generated.hpp`, configure_file'd from `project(atx VERSION ...)`,
-so an install prefix carries 29 there and the source tree 28.
+`grep -c '^#include "atx/vol/' include/atx/vol/api/vol.hpp` is Tier-A; Tier-B is
+`find include/atx/vol/api -name '*.hpp' | wc -l`, minus Tier-A and `vol.hpp`
+itself. `tools/` and `research/` are each `find <root>/include -name '*.hpp' |
+wc -l` over their own include roots. The one generated header exists only in
+an install prefix (`<prefix>/include/atx/vol/detail/version_generated.hpp`,
+configure_file'd from `project(atx VERSION ...)`); it is never in the source
+tree, so no `find` over `include/` ever counts it.
 
 *Closed under inclusion* is the load-bearing rule: a header named in a frozen
 signature is frozen whether or not callers reach for it directly, so if a Tier-A
 header includes another `atx/vol/` header, that header is Tier-A too. The only
-permitted escape is downward into `detail/` or `simd/`, which promise nothing.
+permitted escapes are the one generated `detail/` header, the public
+`api/simd/` dispatch/kernel headers, and two header-only `api/fitting/`
+auxiliaries promoted from `detail/` purely for external reachability
+(`aggregate_arity.hpp`, `prepared_policy.hpp`) — none of which promises
+anything on its own (see `TierAIsClosedUnderInclusion` in
+`tests/vol_umbrella_test.cpp`).
 
-Tier-B is where the advanced per-family calibrators, the SoA/SIMD batch kernels,
-the listed-dispersion vocabulary and the harness panels/fixtures live. They are
-public and you may include them; they are simply outside what 1.x will not break.
+Tier-B is where the SoA/SIMD batch kernels, the listed-dispersion vocabulary
+and the harness panels/fixtures live (the per-family calibrators —
+`svi_calib`/`essvi_calib`/`cstar`/`cstar_calib`/`c8_calib` — are private now,
+`src/fitting/`, not Tier-B; see above). Tier-B headers are public and you may
+include them; they are simply outside what 1.x will not break.
 
 **The manifest is `kTierA` in `atx-vol/tests/vol_umbrella_test.cpp`**, and it is
 machine-checked, not documentation. Four contract tests fail the build on drift:
@@ -982,8 +1008,8 @@ That is a decision made on evidence, not an unfinished item.
 A DLL build of the atx libraries (`-DATX_SHARED_LIBS=ON`, the `dev-shared`
 preset) links and runs, but it is not *correct* for this library. Every
 instrumentation plane atx-vol carries is a header-inline global — the always-on
-solve ledger and the lightweight sampler in `atx/vol/detail/counters.hpp`, the
-phase timers in `atx/vol/detail/phase_profile.hpp` — and on Windows a C++17
+solve ledger and the lightweight sampler in `src/fitting/counters.hpp`, the
+phase timers in `src/core/phase_profile.hpp` — and on Windows a C++17
 inline variable gets **one instance per image**. The consumer scrapes its own
 copy while the DLL increments the DLL's. This was measured on 2026-07-22 and is
 why `dev-shared`'s own preset description says it is never the test gate.
@@ -1010,11 +1036,11 @@ The same reasoning is why the opt-in `ATX_VOL_COUNTERS` / `ATX_VOL_PROFILE`
 instrumentation names its build configuration in an inline namespace: a
 consumer compiled with a different view of those options than the library now
 fails to **link**, naming the mismatch, instead of silently reading a plane
-nobody writes. See the header comments in `atx/vol/detail/counters.hpp`.
+nobody writes. See the header comments in `src/fitting/counters.hpp`.
 
 ## Conventions
 
 Follows `.agents/cpp/agent.md`: C++20, no UB, `enum class`, `const`/`noexcept`/
 `[[nodiscard]]` by default, expected failures via `atx::core::Result<T>` (not
 exceptions), Rule of Zero, `/W4 /permissive- /WX` clean. Public headers live
-under `include/atx/vol/`; the namespace is `atx::vol`.
+under `include/atx/vol/api/`; the namespace is `atx::vol`.

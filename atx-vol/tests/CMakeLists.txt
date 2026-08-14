@@ -283,7 +283,8 @@ endif()
 # arg loop -- so add tools/ as a PRIVATE quoted-include root too (same pattern
 # as the examples/ root two lines above).
 target_include_directories(atx-vol-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../examples
-                                                  ${CMAKE_CURRENT_SOURCE_DIR}/../tools)
+                                                  ${CMAKE_CURRENT_SOURCE_DIR}/../tools
+                                                  ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 target_compile_definitions(atx-vol-tests PRIVATE
     "ATX_AMZN_FIXTURE=\"${CMAKE_CURRENT_SOURCE_DIR}/data/amzn_earnings_2018/amzn_opra_cbbo1m_2018-04-26T1945Z.parquet\"")
 # Same baked-absolute-path trick for the SHIPPED example config that operators
@@ -300,7 +301,7 @@ target_compile_definitions(atx-vol-tests PRIVATE
 # regardless of the ctest working directory.
 target_compile_definitions(atx-vol-tests PRIVATE
     "ATX_VOL_INCLUDE_ROOT=\"${CMAKE_CURRENT_SOURCE_DIR}/../include\""
-    "ATX_VOL_UMBRELLA_HPP=\"${CMAKE_CURRENT_SOURCE_DIR}/../include/atx/vol/vol.hpp\"")
+    "ATX_VOL_UMBRELLA_HPP=\"${CMAKE_CURRENT_SOURCE_DIR}/../include/atx/vol/api/vol.hpp\"")
 
 # Plan 5.3: version_test.cpp compares the SHIPPED version against the build
 # system's declaration, so it needs `project(atx VERSION ...)` verbatim. Baked in

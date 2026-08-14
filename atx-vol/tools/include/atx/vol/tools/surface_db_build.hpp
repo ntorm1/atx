@@ -55,12 +55,12 @@
 #include <string_view>
 #include <vector>
 
-#include "atx/vol/corpus.hpp"                // CorpusBoard
-#include "atx/vol/opra_hive.hpp"             // OpraHiveSpec
-#include "atx/vol/surface_db.hpp"            // SurfaceDb, SymbolFitConfig, FitPreset
+#include "atx/vol/api/marketdata/corpus.hpp"                // CorpusBoard
+#include "atx/vol/api/marketdata/opra_hive.hpp"             // OpraHiveSpec
+#include "atx/vol/api/storage/surface_db.hpp"            // SurfaceDb, SymbolFitConfig, FitPreset
 #include "atx/vol/tools/surface_db_exit_codes.hpp" // kSurfaceDbBuildExit* (shared with the admin CLI)
 #include "atx/vol/tools/surface_db_populate.hpp"   // UniversePopulateCoverage, PopulateSymbolStats
-#include "atx/vol/types.hpp"                 // Result, Status
+#include "atx/vol/api/core/types.hpp"                 // Result, Status
 
 namespace atx::vol {
 

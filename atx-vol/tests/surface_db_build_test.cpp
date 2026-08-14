@@ -32,18 +32,18 @@
 
 #include <gtest/gtest.h>
 
-#include "atx/vol/corpus.hpp"           // CorpusBoard
-#include "atx/vol/data.hpp"             // iso_to_ns (snapshot-stamp assertions)
-#include "atx/vol/opra_batch.hpp"       // corpus_board_from_opra
-#include "atx/vol/opra_hive.hpp"        // OpraHiveSpec, load_opra_hive
-#include "atx/vol/profile.hpp"          // ProfileKind (FitContext::profile_override)
-#include "atx/vol/session.hpp"          // FitPreset
-#include "atx/vol/surface_db.hpp"       // SurfaceDb, SymbolFitConfig
+#include "atx/vol/api/marketdata/corpus.hpp"           // CorpusBoard
+#include "atx/vol/api/marketdata/data.hpp"             // iso_to_ns (snapshot-stamp assertions)
+#include "atx/vol/api/marketdata/opra_batch.hpp"       // corpus_board_from_opra
+#include "atx/vol/api/marketdata/opra_hive.hpp"        // OpraHiveSpec, load_opra_hive
+#include "atx/vol/api/fitting/profile.hpp"          // ProfileKind (FitContext::profile_override)
+#include "atx/vol/api/fitting/session.hpp"          // FitPreset
+#include "atx/vol/api/storage/surface_db.hpp"       // SurfaceDb, SymbolFitConfig
 #include "atx/vol/tools/surface_db_build.hpp" // AutoConfigSpec, AutoConfigReport, generate_symbol_configs
 #include "atx/vol/tools/surface_db_populate.hpp" // UniversePopulateSpec, populate_universe_streaming
-#include "atx/vol/surface_policy.hpp"      // has_output, SurfacePurpose
-#include "atx/vol/types.hpp"
-#include "atx/vol/vol_curve.hpp" // VolCurveKind
+#include "atx/vol/api/fitting/surface_policy.hpp"      // has_output, SurfacePurpose
+#include "atx/vol/api/core/types.hpp"
+#include "atx/vol/api/fitting/vol_curve.hpp" // VolCurveKind
 
 #include "surface_db_build_cli.hpp" // is_valid_snapshot_suffix (Task 4 addendum §B seam)
 

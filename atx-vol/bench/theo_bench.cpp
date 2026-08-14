@@ -44,13 +44,13 @@
 
 #include <benchmark/benchmark.h>
 
-#include "atx/vol/american.hpp" // al_fast_opts, AmericanMethod
-#include "atx/vol/breakeven.hpp"
-#include "atx/vol/priced_surface.hpp" // PricedSurface, PricingContext
-#include "atx/vol/surface_parity.hpp" // SliceContext
-#include "atx/vol/theo.hpp"           // TheoEngine, compute_theo_sheet (Task 10)
-#include "atx/vol/vol_curve.hpp"      // CurveSurface, EssviCurve
-#include "atx/vol/vol_surface.hpp"    // EssviParams
+#include "atx/vol/api/pricing/american.hpp" // al_fast_opts, AmericanMethod
+#include "analytics/breakeven.hpp"
+#include "atx/vol/api/backtest/priced_surface.hpp" // PricedSurface, PricingContext
+#include "atx/vol/api/fitting/surface_parity.hpp" // SliceContext
+#include "pricing/theo.hpp"           // TheoEngine, compute_theo_sheet (Task 10)
+#include "atx/vol/api/fitting/vol_curve.hpp"      // CurveSurface, EssviCurve
+#include "atx/vol/api/fitting/vol_surface.hpp"    // EssviParams
 
 #include "bench_util.hpp"
 

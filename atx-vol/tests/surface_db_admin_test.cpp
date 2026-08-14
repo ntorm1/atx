@@ -34,17 +34,17 @@
 
 #include <gtest/gtest.h>
 
-#include "atx/vol/corpus.hpp"                // CorpusBoard
-#include "atx/vol/detail/archive_util.hpp"   // crc32c (test-side record CRC repair)
-#include "atx/vol/opra_batch.hpp"            // corpus_board_from_opra
-#include "atx/vol/opra_hive.hpp"             // OpraHiveSpec, load_opra_hive
-#include "atx/vol/session.hpp"               // FitPreset
-#include "atx/vol/surface_archive.hpp"       // ArchiveV2SurfaceHeader, ArchiveV2DirEntry
-#include "atx/vol/surface_db.hpp"            // SurfaceDb
+#include "atx/vol/api/marketdata/corpus.hpp"                // CorpusBoard
+#include "storage/archive_util.hpp"   // crc32c (test-side record CRC repair)
+#include "atx/vol/api/marketdata/opra_batch.hpp"            // corpus_board_from_opra
+#include "atx/vol/api/marketdata/opra_hive.hpp"             // OpraHiveSpec, load_opra_hive
+#include "atx/vol/api/fitting/session.hpp"               // FitPreset
+#include "atx/vol/api/storage/surface_archive.hpp"       // ArchiveV2SurfaceHeader, ArchiveV2DirEntry
+#include "atx/vol/api/storage/surface_db.hpp"            // SurfaceDb
 #include "atx/vol/tools/surface_db_admin.hpp"      // the unit under test
 #include "atx/vol/tools/surface_db_build.hpp"      // build_surface_db, generate_symbol_configs
-#include "atx/vol/types.hpp"
-#include "atx/vol/vol_curve.hpp"             // VolCurveKind
+#include "atx/vol/api/core/types.hpp"
+#include "atx/vol/api/fitting/vol_curve.hpp"             // VolCurveKind
 
 namespace atx::vol {
 namespace {

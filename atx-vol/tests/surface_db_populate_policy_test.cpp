@@ -5,7 +5,7 @@
 
 #include <gtest/gtest.h>
 
-#include "atx/vol/fit_policy.hpp"
+#include "atx/vol/api/fitting/fit_policy.hpp"
 #include "atx/vol/tools/surface_db_populate.hpp"
 
 namespace {

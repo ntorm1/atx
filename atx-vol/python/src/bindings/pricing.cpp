@@ -12,14 +12,14 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
-#include "atx/vol/american.hpp"
-#include "atx/vol/american_batch.hpp"
-#include "atx/vol/american_iv.hpp"
-#include "atx/vol/batch.hpp"
-#include "atx/vol/black76.hpp"
-#include "atx/vol/greeks.hpp"
-#include "atx/vol/implied_vol.hpp"
-#include "atx/vol/types.hpp"
+#include "atx/vol/api/pricing/american.hpp"
+#include "atx/vol/api/pricing/american_batch.hpp"
+#include "atx/vol/api/pricing/american_iv.hpp"
+#include "atx/vol/api/pricing/batch.hpp"
+#include "atx/vol/api/pricing/black76.hpp"
+#include "atx/vol/api/pricing/greeks.hpp"
+#include "atx/vol/api/pricing/implied_vol.hpp"
+#include "atx/vol/api/core/types.hpp"
 #include "batch_status.hpp"
 #include "result.hpp"
 #include "sides.hpp"

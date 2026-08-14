@@ -20,12 +20,12 @@
 #include <stdexcept>
 #include <vector>
 
-#include "atx/vol/american.hpp"       // al_fast_opts, AmericanMethod
-#include "atx/vol/event_vol.hpp"      // EventSchedule
-#include "atx/vol/priced_surface.hpp" // PricedSurface, PricingContext
-#include "atx/vol/surface_parity.hpp" // SliceContext
-#include "atx/vol/vol_curve.hpp"      // CurveSurface, EssviCurve
-#include "atx/vol/vol_surface.hpp"    // EssviParams
+#include "atx/vol/api/pricing/american.hpp"       // al_fast_opts, AmericanMethod
+#include "atx/vol/api/analytics/event_vol.hpp"      // EventSchedule
+#include "atx/vol/api/backtest/priced_surface.hpp" // PricedSurface, PricingContext
+#include "atx/vol/api/fitting/surface_parity.hpp" // SliceContext
+#include "atx/vol/api/fitting/vol_curve.hpp"      // CurveSurface, EssviCurve
+#include "atx/vol/api/fitting/vol_surface.hpp"    // EssviParams
 
 namespace atx::vol::testkit {
 

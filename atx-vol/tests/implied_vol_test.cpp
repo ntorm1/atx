@@ -4,9 +4,9 @@
 #include <limits>
 #include <string>
 
-#include "atx/vol/black76.hpp"
-#include "atx/vol/implied_vol.hpp"
-#include "atx/vol/types.hpp" // kIvMin, kIvResidNoiseFloor
+#include "atx/vol/api/pricing/black76.hpp"
+#include "atx/vol/api/pricing/implied_vol.hpp"
+#include "atx/vol/api/core/types.hpp" // kIvMin, kIvResidNoiseFloor
 
 // Implied-vol round-trip coverage, ported from the C ats-vol test_pricer_iv.c:
 // price with B76, invert, expect σ recovered to near-machine precision across

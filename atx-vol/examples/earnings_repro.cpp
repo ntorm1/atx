@@ -17,13 +17,13 @@
 #include <string>
 #include <string_view>
 
-#include "atx/vol/earnings_forecast_loader.hpp" // load_earnings_events
-#include "atx/vol/earnings_repro.hpp"           // run_earnings_repro
-#include "atx/vol/event_vol.hpp"                // EventSchedule
-#include "atx/vol/opra_panel.hpp"                // OpraLoadSpec, load_opra_cbbo_parquet
-#include "atx/vol/session.hpp"                   // VolaSession, make_session_inputs
-#include "atx/vol/sr_tenor_grid.hpp"             // SrTenorGrid::kTradingDays
-#include "atx/vol/vol_time.hpp"                  // TimeSpec, TimeConvention
+#include "analytics/earnings_forecast_loader.hpp" // load_earnings_events
+#include "analytics/earnings_repro.hpp"           // run_earnings_repro
+#include "atx/vol/api/analytics/event_vol.hpp"                // EventSchedule
+#include "atx/vol/api/marketdata/opra_panel.hpp"                // OpraLoadSpec, load_opra_cbbo_parquet
+#include "atx/vol/api/fitting/session.hpp"                   // VolaSession, make_session_inputs
+#include "atx/vol/api/fitting/sr_tenor_grid.hpp"             // SrTenorGrid::kTradingDays
+#include "atx/vol/api/core/vol_time.hpp"                  // TimeSpec, TimeConvention
 
 using namespace atx::vol;
 

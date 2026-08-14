@@ -32,15 +32,15 @@
 #include <utility>
 #include <vector>
 
-#include "atx/vol/american.hpp"
-#include "atx/vol/black76.hpp"
-#include "atx/vol/detail/counters.hpp"
-#include "atx/vol/priced_surface.hpp"
-#include "atx/vol/detail/pricing_executor.hpp" // the bank build's dispatch seam (2.11)
-#include "atx/vol/simd/american_boundary_batch.hpp"
-#include "atx/vol/surface_archive.hpp" // archive-backed PricedSurfaceView fixture (tenor-domain mirror)
-#include "atx/vol/surface_parity.hpp"
-#include "atx/vol/vol_curve.hpp"
+#include "atx/vol/api/pricing/american.hpp"
+#include "atx/vol/api/pricing/black76.hpp"
+#include "fitting/counters.hpp"
+#include "atx/vol/api/backtest/priced_surface.hpp"
+#include "atx/vol/api/pricing/pricing_executor.hpp" // the bank build's dispatch seam (2.11)
+#include "atx/vol/api/simd/american_boundary_batch.hpp"
+#include "atx/vol/api/storage/surface_archive.hpp" // archive-backed PricedSurfaceView fixture (tenor-domain mirror)
+#include "atx/vol/api/fitting/surface_parity.hpp"
+#include "atx/vol/api/fitting/vol_curve.hpp"
 #include "support/isa_golden_tol.hpp" // golden_close (per-ISA FMA band)
 
 using namespace atx::vol;

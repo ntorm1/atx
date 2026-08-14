@@ -11,12 +11,12 @@
 // (simd_batch_test documents its ~1e-6 abs / ~1e-9 approximation): a regression
 // back to the Chebyshev Φ would fail these bounds.
 
-#include "atx/vol/simd/black76_batch.hpp"
-#include "atx/vol/simd/iv_batch.hpp"
+#include "simd/black76_batch.hpp"
+#include "simd/iv_batch.hpp"
 
-#include "atx/vol/black76.hpp"
-#include "atx/vol/implied_vol.hpp"
-#include "atx/vol/simd/cpu.hpp"
+#include "atx/vol/api/pricing/black76.hpp"
+#include "atx/vol/api/pricing/implied_vol.hpp"
+#include "atx/vol/api/simd/cpu.hpp"
 
 #include <cmath>
 #include <cstddef>

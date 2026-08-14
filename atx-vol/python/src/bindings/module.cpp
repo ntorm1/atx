@@ -2,7 +2,7 @@
 
 #include <pybind11/pybind11.h>
 
-#include "atx/vol/version.hpp"
+#include "atx/vol/api/core/version.hpp"
 #include "result.hpp"
 
 namespace py = pybind11;

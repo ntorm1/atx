@@ -15,7 +15,7 @@
 // single-writer-fails-fast under real cross-connection contention (bounded,
 // not an indefinite block), and the rest of the CRUD/validation surface.
 
-#include "atx/vol/catalog.hpp"
+#include "marketdata/catalog.hpp"
 
 #include <atomic>
 #include <chrono>

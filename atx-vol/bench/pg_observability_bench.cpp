@@ -49,17 +49,17 @@
 
 #include <benchmark/benchmark.h>
 
-#include "atx/vol/american.hpp"     // american_price, american_price_cached, AlOpts, al_fast_opts
-#include "atx/vol/american_iv.hpp"  // american_implied_vol
-#include "atx/vol/correction.hpp"   // CorrectionCache
-#include "atx/vol/detail/counters.hpp"     // counters::ledger (always-on solve ledger)
-#include "atx/vol/deamer.hpp"       // resolve_chain_forward, DeAmOptions
-#include "atx/vol/dividend.hpp"     // HybridDivParams, hybrid_forward
-#include "atx/vol/portfolio_pricer.hpp" // Position
-#include "atx/vol/rates_curve.hpp"  // DividendEvent
-#include "atx/vol/scenario_grid.hpp"    // scenario_grid, ScenarioGridSpec, ScenarioRoute (A7)
-#include "atx/vol/types.hpp"        // Side
-#include "atx/vol/universe.hpp"     // Chain, chain_index
+#include "atx/vol/api/pricing/american.hpp"     // american_price, american_price_cached, AlOpts, al_fast_opts
+#include "atx/vol/api/pricing/american_iv.hpp"  // american_implied_vol
+#include "atx/vol/api/fitting/correction.hpp"   // CorrectionCache
+#include "fitting/counters.hpp"     // counters::ledger (always-on solve ledger)
+#include "atx/vol/api/fitting/deamer.hpp"       // resolve_chain_forward, DeAmOptions
+#include "atx/vol/api/pricing/dividend.hpp"     // HybridDivParams, hybrid_forward
+#include "atx/vol/api/backtest/portfolio_pricer.hpp" // Position
+#include "atx/vol/api/pricing/rates_curve.hpp"  // DividendEvent
+#include "atx/vol/api/analytics/scenario_grid.hpp"    // scenario_grid, ScenarioGridSpec, ScenarioRoute (A7)
+#include "atx/vol/api/core/types.hpp"        // Side
+#include "atx/vol/api/marketdata/universe.hpp"     // Chain, chain_index
 
 #include "bench_util.hpp"        // apply_common, dump_counters
 #include "support/synth_book.hpp" // build_market, make_book (A7 scenario-grid fixture)

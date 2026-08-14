@@ -19,14 +19,14 @@
 #include <optional>
 #include <string>
 
-#include "atx/vol/american_iv.hpp"
-#include "atx/vol/calib.hpp"        // build_observations, CalibOpts, FitObs
-#include "atx/vol/chain.hpp"
-#include "atx/vol/data.hpp"         // ns_to_iso_date
-#include "atx/vol/dense_slice.hpp"  // fit_convex_slice, ConvexFitOpts, ConvexSliceFit
-#include "atx/vol/opra_panel.hpp"
-#include "atx/vol/pricer_fitter.hpp"
-#include "atx/vol/universe.hpp"     // Chain
+#include "atx/vol/api/pricing/american_iv.hpp"
+#include "atx/vol/api/fitting/calib.hpp"        // build_observations, CalibOpts, FitObs
+#include "atx/vol/api/core/chain.hpp"
+#include "atx/vol/api/marketdata/data.hpp"         // ns_to_iso_date
+#include "atx/vol/api/fitting/dense_slice.hpp"  // fit_convex_slice, ConvexFitOpts, ConvexSliceFit
+#include "atx/vol/api/marketdata/opra_panel.hpp"
+#include "atx/vol/api/fitting/pricer_fitter.hpp"
+#include "atx/vol/api/marketdata/universe.hpp"     // Chain
 
 using namespace atx::vol;
 

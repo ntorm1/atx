@@ -18,8 +18,8 @@
 #include <string_view>
 #include <vector>
 
-#include "atx/vol/structure_panel.hpp"
-#include "atx/vol/surface_db.hpp"
+#include "backtest/structure_panel.hpp"
+#include "atx/vol/api/storage/surface_db.hpp"
 
 namespace {
 

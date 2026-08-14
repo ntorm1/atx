@@ -21,8 +21,8 @@
 #include <cmath>
 #include <vector>
 
-#include "atx/vol/black76.hpp"
-#include "atx/vol/implied_vol.hpp"
+#include "atx/vol/api/pricing/black76.hpp"
+#include "atx/vol/api/pricing/implied_vol.hpp"
 
 namespace atx::vol {
 

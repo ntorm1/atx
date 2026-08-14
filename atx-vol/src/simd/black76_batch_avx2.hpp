@@ -7,7 +7,7 @@
 
 #include <cstddef>
 
-#include "atx/vol/types.hpp"
+#include "atx/vol/api/core/types.hpp"
 
 namespace atx::vol::simd::detail {
 

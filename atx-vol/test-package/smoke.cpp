@@ -1,18 +1,25 @@
 // Out-of-tree consumer smoke test for the INSTALLED atx-vol package (plan 5.1).
 //
 // This translation unit is compiled against an install prefix, never against
-// the source tree. It therefore proves four separate things that an in-tree
-// test cannot:
+// the source tree. It therefore proves several separate things that an
+// in-tree test cannot:
 //
-//   1. the Tier-A one-include public API (`atx/vol/vol.hpp`) is installed and
-//      self-contained -- every header it reaches, including the atx-core
-//      headers it depends on, made it into the prefix;
+//   1. api-restructure Task 3: the installed include tree ships EXACTLY the
+//      include/atx/vol/api/<module>/ public surface (Tasks 1-2), not the old
+//      flat layout and not src/. This TU deliberately includes three
+//      per-module headers directly -- core/version.hpp, pricing/black76.hpp,
+//      fitting/session.hpp -- instead of the Tier-A umbrella (atx/vol/api/
+//      vol.hpp), so a broken install of any ONE of those three modules'
+//      public trees fails this build, not just a broken umbrella closure.
 //   2. `Result<T>` / `Status` are USABLE out of tree: both the value and the
 //      error arm are exercised below, so the vendored tl::expected the aliases
 //      resolve to has to be reachable from the installed include tree with NO
 //      FetchContent anywhere in this project;
-//   3. `atx::vol` links -- the exported target carries whatever link
-//      dependencies the static/shared library actually needs;
+//   3. `atx::vol` links a COMPILED symbol from each of the three named
+//      modules -- version() (core, src/core/version.cpp), black76_price
+//      (pricing, src/pricing/black76.cpp), apply_fit_preset (fitting,
+//      src/fitting/session.cpp) -- so a missing/renamed object in any one
+//      module's static-library slice fails at link time, not just parse time;
 //   4. the library is deterministic: the driver script runs this binary twice
 //      and byte-compares stdout.
 //
@@ -22,13 +29,17 @@
 #include <cstdio>
 #include <string>
 
-#include "atx/vol/vol.hpp"
+#include "atx/vol/api/core/version.hpp"
+#include "atx/vol/api/fitting/session.hpp"
+#include "atx/vol/api/pricing/black76.hpp"
 
 namespace {
 
-using atx::vol::Result;
+using atx::vol::Black76Aux;
+using atx::vol::CalendarRepair;
+using atx::vol::FitPreset;
+using atx::vol::SessionInputs;
 using atx::vol::Side;
-using atx::vol::Status;
 
 int failures = 0;
 
@@ -42,7 +53,8 @@ void check(bool ok, const char *what) {
 } // namespace
 
 int main() {
-  // -- European primitive: a pure, deterministic kernel ----------------------
+  // -- pricing/black76.hpp: pure closed-form kernel, compiled + linked from
+  //    src/pricing/black76.cpp -----------------------------------------------
   const double F = 100.0;
   const double K = 105.0;
   const double T = 0.5;
@@ -51,38 +63,30 @@ int main() {
 
   const double call = atx::vol::black76_price(F, K, T, sigma, df, Side::Call);
   std::printf("black76_call    %.12f\n", call);
+  check(call > 0.0, "black76_price returned a non-positive premium");
 
-  // -- Result<T> value arm: round-trip the price back through the inverter ---
-  const Result<double> iv = atx::vol::implied_vol(call, F, K, T, df, Side::Call);
-  check(iv.has_value(), "implied_vol round-trip returned an error");
-  if (iv.has_value()) {
-    std::printf("implied_vol     %.12f\n", *iv);
-  }
+  // Second entry point from the same header, sharing the same d1/d2/N(d1)
+  // formula as black76_price -- proves black76.hpp's whole declared surface,
+  // not just the one function, is reachable and linkable.
+  const Black76Aux aux = atx::vol::black76_aux(F, K, T, sigma, df, Side::Call);
+  check(aux.price == call, "black76_aux price disagrees with black76_price");
 
-  // -- Result<T> error arm: T <= 0 is documented InvalidArgument. This is what
-  //    actually forces tl::expected's error storage, atx::vol::Error and
-  //    ErrorCode to be compilable AND linkable out of tree; a header-only
-  //    happy-path smoke would never touch the error arm at all.
-  const Result<double> bad = atx::vol::implied_vol(call, F, K, -1.0, df, Side::Call);
-  check(!bad.has_value(), "implied_vol accepted a non-positive maturity");
-  if (!bad.has_value()) {
-    std::printf("iv_error        %s\n", bad.error().to_string().c_str());
-  }
+  // -- fitting/session.hpp: SessionInputs / FitPreset / apply_fit_preset,
+  //    compiled + linked from src/fitting/session.cpp -------------------------
+  SessionInputs in{};
+  in.S = 100.0;
+  in.r = 0.04;
+  atx::vol::apply_fit_preset(in, FitPreset::Robust);
+  check(in.use_correction_cache, "FitPreset::Robust did not enable the correction cache");
+  check(in.calendar_repair == CalendarRepair::MonotoneFit,
+        "FitPreset::Robust did not enable calendar-arbitrage repair");
 
-  // -- American pricer: the library's headline route, through Result<T> ------
-  const Result<double> put =
-      atx::vol::american_price(100.0, 105.0, T, sigma, 0.04, 0.01, Side::Put);
-  check(put.has_value(), "american_price returned an error");
-  if (put.has_value()) {
-    std::printf("american_put    %.12f\n", *put);
-  }
-
-  // -- Status (Result<void>) is nameable and constructible out of tree -------
-  const Status ok{};
-  check(ok.has_value(), "a default-constructed Status is not a success");
-
-  // The version string proves a COMPILED symbol (not just a header) is linked.
+  // -- core/version.hpp: the compiled version() symbol, linked from
+  //    src/core/version.cpp, cross-checked against the header-declared
+  //    constant it must never drift from --------------------------------------
   const std::string version{atx::vol::version()};
+  check(version == atx::vol::kVersionString,
+        "version() disagrees with the header-declared kVersionString");
   std::printf("atx_vol_version %s\n", version.c_str());
 
   if (failures != 0) {

@@ -21,11 +21,11 @@
 #include <utility>
 #include <vector>
 
-#include "atx/vol/arb.hpp"
-#include "atx/vol/black76.hpp"
-#include "atx/vol/data.hpp"
-#include "atx/vol/implied_vol.hpp"
-#include "atx/vol/opra_panel.hpp"
+#include "atx/vol/api/fitting/arb.hpp"
+#include "atx/vol/api/pricing/black76.hpp"
+#include "atx/vol/api/marketdata/data.hpp"
+#include "atx/vol/api/pricing/implied_vol.hpp"
+#include "atx/vol/api/marketdata/opra_panel.hpp"
 
 namespace atx::vol::spx_wilmott {
 namespace {

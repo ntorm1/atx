@@ -12,7 +12,7 @@
 // Convergence: O(dt² + dx²); the defaults (n_t = 2000, n_x = 4000) give ~6-7
 // sig figs. A few ms per call.
 
-#include "atx/vol/types.hpp"
+#include "atx/vol/api/core/types.hpp"
 
 namespace atx::vol::test {
 

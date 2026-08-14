@@ -16,19 +16,19 @@
 #include <type_traits>
 #include <vector>
 
-#include "atx/vol/american.hpp"
-#include "atx/vol/black76.hpp"
-#include "atx/vol/calib.hpp" // FitObs
-#include "atx/vol/detail/counters.hpp"
-#include "atx/vol/dense_slice.hpp"
-#include "atx/vol/detail/archive_util.hpp" // crc32c (C2 prior-salt fixture)
-#include "atx/vol/detail/surface_archive_payload.hpp"
-#include "atx/vol/priced_surface.hpp"
-#include "atx/vol/priced_surface_view.hpp"
-#include "atx/vol/spline_curve.hpp" // SplineVolParams, fit_spline_vol_slice
-#include "atx/vol/surface_archive.hpp"
-#include "atx/vol/vol_curve.hpp"
-#include "atx/vol/vol_surface.hpp"
+#include "atx/vol/api/pricing/american.hpp"
+#include "atx/vol/api/pricing/black76.hpp"
+#include "atx/vol/api/fitting/calib.hpp" // FitObs
+#include "fitting/counters.hpp"
+#include "atx/vol/api/fitting/dense_slice.hpp"
+#include "storage/archive_util.hpp" // crc32c (C2 prior-salt fixture)
+#include "storage/surface_archive_payload.hpp"
+#include "atx/vol/api/backtest/priced_surface.hpp"
+#include "atx/vol/api/backtest/priced_surface_view.hpp"
+#include "atx/vol/api/fitting/spline_curve.hpp" // SplineVolParams, fit_spline_vol_slice
+#include "atx/vol/api/storage/surface_archive.hpp"
+#include "atx/vol/api/fitting/vol_curve.hpp"
+#include "atx/vol/api/fitting/vol_surface.hpp"
 
 // ATXVSA2 (v2) zero-copy suite. The economic-correctness gate: a PricedSurfaceView
 // over the mapped v2 record serves BIT-IDENTICAL theo (iv / total variance /

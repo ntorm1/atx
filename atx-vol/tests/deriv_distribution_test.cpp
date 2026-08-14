@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 #include <cmath>
-#include "atx/vol/derivatives.hpp"
-#include "atx/vol/detail/rv_lognormal.hpp"
+#include "atx/vol/api/pricing/derivatives.hpp"
+#include "analytics/rv_lognormal.hpp"
 #include "support/deriv_test_fixture.hpp"
 
 namespace {

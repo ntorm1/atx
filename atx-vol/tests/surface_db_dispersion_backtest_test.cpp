@@ -155,19 +155,19 @@
 #include <utility>
 #include <vector>
 
-#include "atx/vol/american.hpp"              // al_fast_opts, AmericanMethod
-#include "atx/vol/backtest.hpp"              // Clock, MarketSnapshot, FrictionModel
-#include "atx/vol/dispersion.hpp"            // DispersionSide, WeightingScheme, StrikeRule
+#include "atx/vol/api/pricing/american.hpp"              // al_fast_opts, AmericanMethod
+#include "atx/vol/api/backtest/backtest.hpp"              // Clock, MarketSnapshot, FrictionModel
+#include "atx/vol/api/backtest/dispersion.hpp"            // DispersionSide, WeightingScheme, StrikeRule
 #include "atx/vol/research/dispersion_backtest.hpp"   // DispersionBacktestConfig
-#include "atx/vol/dispersion_surface_db.hpp" // read_dispersion_backtest_config
-#include "atx/vol/priced_surface.hpp"        // PricedSurface, PricingContext
-#include "atx/vol/strategy.hpp"              // HedgeSpec
-#include "atx/vol/surface_archive.hpp"       // SurfaceArchiveItem
-#include "atx/vol/surface_db.hpp"            // SurfaceDb
-#include "atx/vol/surface_parity.hpp"        // SliceContext
-#include "atx/vol/types.hpp"                 // Result, ErrorCode
-#include "atx/vol/vol_curve.hpp"             // CurveSurface, EssviCurve
-#include "atx/vol/vol_surface.hpp"           // EssviParams
+#include "storage/dispersion_surface_db.hpp" // read_dispersion_backtest_config
+#include "atx/vol/api/backtest/priced_surface.hpp"        // PricedSurface, PricingContext
+#include "atx/vol/api/backtest/strategy.hpp"              // HedgeSpec
+#include "atx/vol/api/storage/surface_archive.hpp"       // SurfaceArchiveItem
+#include "atx/vol/api/storage/surface_db.hpp"            // SurfaceDb
+#include "atx/vol/api/fitting/surface_parity.hpp"        // SliceContext
+#include "atx/vol/api/core/types.hpp"                 // Result, ErrorCode
+#include "atx/vol/api/fitting/vol_curve.hpp"             // CurveSurface, EssviCurve
+#include "atx/vol/api/fitting/vol_surface.hpp"           // EssviParams
 
 using namespace atx::vol;
 namespace fs = std::filesystem;

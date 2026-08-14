@@ -45,7 +45,7 @@
 //       absent) to independently verify atxpy.tracks reads it correctly --
 //       D4's own tests only ever read Python-built fixtures.
 
-#include "atx/vol/sweep_driver.hpp"
+#include "backtest/sweep_driver.hpp"
 
 #include <array>
 #include <cstdint>
@@ -74,17 +74,17 @@
 #endif
 
 #include "atx/core/db/sqlite.hpp"       // raw connection -- set_last_access_ts_raw backdoor below
-#include "atx/vol/american.hpp"        // al_fast_opts, AmericanMethod
-#include "atx/vol/backtest_template.hpp" // BacktestStrategyTemplate, ProjectedTemplateStrategy
-#include "atx/vol/corpus.hpp"           // CorpusManifest, CorpusEntry, CorpusFitStatus
-#include "atx/vol/priced_surface.hpp"   // PricedSurface, PricingContext
+#include "atx/vol/api/pricing/american.hpp"        // al_fast_opts, AmericanMethod
+#include "backtest/backtest_template.hpp" // BacktestStrategyTemplate, ProjectedTemplateStrategy
+#include "atx/vol/api/marketdata/corpus.hpp"           // CorpusManifest, CorpusEntry, CorpusFitStatus
+#include "atx/vol/api/backtest/priced_surface.hpp"   // PricedSurface, PricingContext
 #include "atx/vol/research/track_gc.hpp" // gc() -- Critical-1 fix-round: sweep<->gc composition test
-#include "atx/vol/snapshot_pool.hpp" // SnapshotPool
-#include "atx/vol/track_key.hpp" // track_key_from_hex
-#include "atx/vol/surface_archive.hpp"  // write_surface_archive_v2_file, SurfaceArchiveItem
-#include "atx/vol/surface_parity.hpp"   // SliceContext
-#include "atx/vol/vol_curve.hpp"        // CurveSurface, EssviCurve
-#include "atx/vol/vol_surface.hpp"      // EssviParams
+#include "storage/snapshot_pool.hpp" // SnapshotPool
+#include "storage/track_key.hpp" // track_key_from_hex
+#include "atx/vol/api/storage/surface_archive.hpp"  // write_surface_archive_v2_file, SurfaceArchiveItem
+#include "atx/vol/api/fitting/surface_parity.hpp"   // SliceContext
+#include "atx/vol/api/fitting/vol_curve.hpp"        // CurveSurface, EssviCurve
+#include "atx/vol/api/fitting/vol_surface.hpp"      // EssviParams
 
 using namespace atx::vol;
 namespace fs = std::filesystem;

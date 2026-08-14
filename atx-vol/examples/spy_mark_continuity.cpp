@@ -21,8 +21,8 @@
 #include <string>
 #include <vector>
 
-#include "atx/vol/priced_surface.hpp"
-#include "atx/vol/surface_db.hpp"
+#include "atx/vol/api/backtest/priced_surface.hpp"
+#include "atx/vol/api/storage/surface_db.hpp"
 
 using namespace atx::vol;
 namespace fs = std::filesystem;

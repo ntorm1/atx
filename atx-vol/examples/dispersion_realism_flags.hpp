@@ -37,7 +37,7 @@
 #include <string>
 #include <string_view>
 
-#include "atx/vol/backtest.hpp" // RunConfig, FrictionModel, FinancingConfig, UnpricedLotPolicy, ExercisePolicy, MarginBreachPolicy, FrictionRegime
+#include "atx/vol/api/backtest/backtest.hpp" // RunConfig, FrictionModel, FinancingConfig, UnpricedLotPolicy, ExercisePolicy, MarginBreachPolicy, FrictionRegime
 
 namespace atx::vol {
 

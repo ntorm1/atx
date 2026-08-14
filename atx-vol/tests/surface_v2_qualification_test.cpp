@@ -8,16 +8,16 @@
 #include <string>
 #include <vector>
 
-#include "atx/vol/american.hpp" // al_default_opts (accurate reference AL preset)
-#include "atx/vol/chain.hpp"
-#include "atx/vol/data.hpp" // year_fraction
-#include "atx/vol/panel.hpp"
-#include "atx/vol/pricer_fitter.hpp"
-#include "atx/vol/s3.hpp" // S3Params (crossed-wing fixture truth)
-#include "atx/vol/session.hpp"
-#include "atx/vol/spy_fixture.hpp"
-#include "atx/vol/surface_policy.hpp"
-#include "atx/vol/vol_curve.hpp"
+#include "atx/vol/api/pricing/american.hpp" // al_default_opts (accurate reference AL preset)
+#include "atx/vol/api/core/chain.hpp"
+#include "atx/vol/api/marketdata/data.hpp" // year_fraction
+#include "atx/vol/api/backtest/panel.hpp"
+#include "atx/vol/api/fitting/pricer_fitter.hpp"
+#include "atx/vol/api/fitting/s3.hpp" // S3Params (crossed-wing fixture truth)
+#include "atx/vol/api/fitting/session.hpp"
+#include "fitting/spy_fixture.hpp"
+#include "atx/vol/api/fitting/surface_policy.hpp"
+#include "atx/vol/api/fitting/vol_curve.hpp"
 
 // V2 release qualification over a deterministic, known-truth SPY-like board.
 // These are deliberately black-box product tests: every assertion reads the
