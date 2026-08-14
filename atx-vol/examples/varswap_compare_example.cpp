@@ -39,15 +39,35 @@ constexpr double kDelta = 0.40;
 constexpr double kTenorT = 91.0 / 365.25;
 constexpr double kContracts = 100.0;
 
-// swap_pv / swap_pnl ride out through the TSV's dynamic signal tail (they are
-// deliberately not part of the frozen series-column registry).
+// The swap lane's columns ride out through the TSV's dynamic signal tail (they
+// are deliberately not part of the frozen series-column registry). THE COLUMN
+// NAME IS THE FIELD NAME on every row: the renderer
+// (tools/render_strangle_vs_varswap.py) finds the P&L-explain tail by its
+// `swap_explain_` prefix, and its gate test parses this table against
+// backtest.hpp's own declarations, so a column that lands on one side only is a
+// red test rather than a column silently missing from every report.
 [[nodiscard]] Status attach_swap_columns(BacktestResult &r) {
-  if (r.swap_pv.size() != r.size() || r.swap_pnl.size() != r.size()) {
-    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
-                          "swap columns are not row-parallel");
+  const std::pair<const char *, const std::vector<double> *> columns[] = {
+      {"swap_pv", &r.swap_pv},
+      {"swap_pnl", &r.swap_pnl},
+      {"swap_explain_carry", &r.swap_explain_carry},
+      {"swap_explain_realized", &r.swap_explain_realized},
+      {"swap_explain_vol_level", &r.swap_explain_vol_level},
+      {"swap_explain_skew", &r.swap_explain_skew},
+      {"swap_explain_convexity", &r.swap_explain_convexity},
+      {"swap_explain_discount", &r.swap_explain_discount},
+      {"swap_explain_residual", &r.swap_explain_residual},
+      {"swap_explain_unattributed", &r.swap_explain_unattributed},
+  };
+  for (const auto &[name, column] : columns) {
+    if (column->size() != r.size()) {
+      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                            std::string("swap column ") + name +
+                                " is not row-parallel (an EMPTY column means the run "
+                                "did not compute it; see RunConfig::swap_pnl_explain)");
+    }
+    r.signals.emplace_back(name, *column);
   }
-  r.signals.emplace_back("swap_pv", r.swap_pv);
-  r.signals.emplace_back("swap_pnl", r.swap_pnl);
   return atx::core::Ok();
 }
 
@@ -127,6 +147,11 @@ int main(int argc, char **argv) {
   rc.snapshot_cache = std::make_shared<SnapshotCache>();
   rc.unpriced = UnpricedLotPolicy::ExcludeAndReport;
   rc.reconcile_nav = true;
+  // OFF by default in the library — it costs up to 20 repricings per live lot
+  // per step — but this example exists to produce the comparison report, and
+  // attributing `swap_pnl` is what separates a bad day from a bad model there.
+  // One swap lot is live per cycle, so the bill is one lot's worth of repricing.
+  rc.swap_pnl_explain = true;
   auto outcome = run_timed(*clock, strat, rc);
   if (!outcome) {
     std::fprintf(stderr, "run_timed: %s\n", outcome.error().to_string().c_str());
