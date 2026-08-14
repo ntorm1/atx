@@ -2803,6 +2803,27 @@ namespace {
                "corridor_lo/corridor_hi are only valid on DerivKind::CorridorVarSwap");
   }
 
+  // Task F-5 (folded): `marking` is the FOURTH instance of the silent-scope
+  // class the rule directly above names, and the worst of them, because it was
+  // not merely dropped -- it was answered. `DerivMarkingConvention::Cboe
+  // VarianceFuture` shipped as a field no executable code anywhere read, so a
+  // contract naming CBOE variance-future conventions priced through the
+  // parametric OTC strip and returned a confident OTC number. A caller hedging
+  // LISTED variance got the wrong marks with no error, no flag, and a header
+  // that documented the gap only in prose ("DECLARED, UNENFORCED").
+  //
+  // NOT kind-gated, unlike `cap_dec` and the corridor bounds above: no kind
+  // reads `marking`, so the reserved value is refused on all of them.
+  // `NotImplemented`, not `InvalidArgument`, because the contract is well
+  // formed and the enumerator is a legal value the library RESERVES -- the same
+  // code, message shape, and reasoning as the reserved pricing engines at the
+  // top of this function. Behaviour-compatible by construction: the field
+  // defaults to `Otc` and no contract that ever priced correctly set anything
+  // else.
+  if (contract.marking != DerivMarkingConvention::Otc) {
+    return Err(ErrorCode::NotImplemented, "reserved marking convention");
+  }
+
   // Kind x engine dispatch matrix (PV-5), second stage. The reserved-engine
   // switch above narrowed `cfg.engine` to what each kind's own arm below can
   // still misuse; each arm rejects the one engine value that survives

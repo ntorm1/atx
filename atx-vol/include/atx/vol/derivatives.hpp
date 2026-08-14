@@ -99,16 +99,18 @@
 // Reserved for follow-on work. Two flavors:
 //   - ACTIVELY REJECTED (return ErrorCode::NotImplemented, mirroring the C's
 //     ATS_VOL_ERR_UNSUPPORTED): the RV distribution-affine / Monte-Carlo QE
-//     pricing engines (DerivEngine::RvDistributionAffine / McQe), and the
+//     pricing engines (DerivEngine::RvDistributionAffine / McQe), the
 //     discrete-monitoring full-Monte-Carlo correction
-//     (DerivDiscreteCorrection::FullMc) -- checked up front by every pricer,
-//     regardless of aging state.
-//   - DECLARED, UNENFORCED: DerivMarkingConvention::CboeVarianceFuture. The
-//     enum value and the DerivContract::marking field it lives on both exist,
-//     but no pricing path reads `marking` yet -- a CboeVarianceFuture contract
-//     prices identically to an Otc one today rather than failing loud. A
-//     caller relying on CBOE variance-future conventions must not assume this
-//     field does anything yet.
+//     (DerivDiscreteCorrection::FullMc), and DerivMarkingConvention::Cboe
+//     VarianceFuture -- all checked up front by every pricer, regardless of
+//     aging state.
+//
+// The marking convention moved into that list in Task F-5, and the move is a
+// BEHAVIOUR CHANGE worth stating: it used to be "DECLARED, UNENFORCED", i.e.
+// a CboeVarianceFuture-marked contract priced identically to an Otc one and
+// returned a confident OTC number instead of failing loud. A caller who was
+// relying on that (there is no correct reason to have been) now gets
+// NotImplemented from validate_deriv_dispatch on every kind and both lanes.
 //
 // Conventions (unchanged from the C):
 //   - Decimal variance internally: 0.04 <-> 20 vol <-> 400 variance points.
@@ -322,10 +324,14 @@ enum class DerivDiscreteCorrection : std::uint8_t {
   FullMc = 2,  // reserved
 };
 
-// Marking convention. CBOE variance-future marking is reserved.
+// Marking convention. CBOE variance-future marking is reserved, and ENFORCED
+// as reserved since Task F-5: `validate_deriv_dispatch` (derivatives.cpp)
+// returns NotImplemented for it on every kind, through both the `deriv_price`
+// lane and the book-memo lane. Before F-5 nothing read this field at all, so
+// the listed convention silently priced as OTC.
 enum class DerivMarkingConvention : std::uint8_t {
   Otc = 1,
-  CboeVarianceFuture = 2,  // reserved
+  CboeVarianceFuture = 2,  // reserved: NotImplemented, never priced as Otc
 };
 
 // Which Carr-Lee K_vol approximation the ATMF-straddle formula (and the

@@ -177,7 +177,7 @@ constexpr double kNaN = kPriceColumnNaN;
 //                  every row in ONE memo instance sees the SAME `bumps`, so
 //                  there is no cross-row contamination risk to key against --
 //                  see the P-4 interaction note below.
-//   contract.strike_dec / notional / rv_spec / marking / id
+//   contract.strike_dec / notional / rv_spec / id
 //                  NOT IN KEY, by design: these are exactly what the affine
 //                  per-row combine (`assemble_var_swap_quote`,
 //                  derivatives.cpp) applies AFTER the shared block, so two
@@ -186,6 +186,15 @@ constexpr double kNaN = kPriceColumnNaN;
 //                  (deriv_book_test.cpp) pins that changing each of these
 //                  alone still changes the row's OWN total while the shared
 //                  block's build count stays flat.
+//   contract.marking
+//                  NOT IN KEY, but for the SAME reason `cap_dec` below is, not
+//                  the reason above it. Task F-5 made `CboeVarianceFuture` a
+//                  hard `NotImplemented` in `validate_deriv_dispatch`, so `Otc`
+//                  is now the only value that reaches a shared block at all and
+//                  two rows CANNOT differ in it. This line used to list it
+//                  alongside the affine-combine fields, which was true only
+//                  because nothing read the field: rows differing in `marking`
+//                  did share one block, and were all silently priced OTC.
 //   contract.cap_dec
 //                  NOT IN KEY. For a VarSwap this must be exactly 0.0 (a
 //                  nonzero cap_dec on an uncapped kind is a malformed

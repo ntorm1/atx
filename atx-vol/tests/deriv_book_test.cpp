@@ -460,6 +460,70 @@ TEST(DerivBook, CorridorBoundsOnAVarSwapAreRejectedOnBothLanes) {
   EXPECT_GT(ok_memo->rows[0].fair_strike_dec, 0.0);
 }
 
+// Task F-5 (folded correctness hole), the same two-lane question for
+// `DerivContract::marking`. Before this task NEITHER lane read the field, so a
+// `CboeVarianceFuture`-marked VarSwap was served the parametric OTC strike on
+// both. Structured exactly like the corridor test above rather than as a single
+// `deriv_price` assertion, because "one rule, both lanes" is the property the
+// F-3 Critical bought and each new dispatch-level rule has to demonstrate it
+// still holds -- the memo lane never enters `deriv_price`'s switch.
+//
+// The book-lane status is `NumericError`, not `InvalidContract`: `status_for`
+// (deriv_book.cpp) buckets everything that is not `InvalidArgument` there, and
+// `NotImplemented` is deliberately the code this rule returns (a reserved,
+// well-formed value -- see `validate_deriv_dispatch`). That is the SAME bucket
+// every reserved engine already lands in, not a special case for this rule.
+TEST(DerivBook, CboeVarianceFutureMarkingIsRejectedOnBothLanes) {
+  const PricedSurface ps = make_carry_skew_surface(7, 100.0, 0.30, 0.02);
+  const PricedSurface *arr[] = {&ps};
+  auto ss = SurfaceSet::create(arr);
+  ASSERT_TRUE(ss.has_value());
+
+  DerivPosition p{};
+  p.id = 1;
+  p.uid = 7;
+  p.qty = 1.0;
+  p.contract = var_swap_at(0.35);
+  p.contract.marking = atx::vol::DerivMarkingConvention::CboeVarianceFuture;
+  const std::vector<DerivPosition> book{p};
+
+  // Lane 1: memo ENGAGED (discrete_correction_mode == None is the eligibility
+  // gate), so this row takes the shared block and never enters deriv_price.
+  DerivConfig memo_cfg{};
+  ASSERT_EQ(memo_cfg.discrete_correction_mode, atx::vol::DerivDiscreteCorrection::None);
+  const auto memo = price_deriv_book(*ss, book, memo_cfg, /*greeks=*/false);
+  ASSERT_TRUE(memo.has_value()) << memo.error().to_string();
+  ASSERT_EQ(memo->rows.size(), 1u);
+
+  // Lane 2: memo DISENGAGED through that same knob -> the unmemoized dispatch.
+  DerivConfig unmemo_cfg{};
+  unmemo_cfg.discrete_correction_mode = atx::vol::DerivDiscreteCorrection::Diffusion1OverN;
+  const auto unmemo = price_deriv_book(*ss, book, unmemo_cfg, /*greeks=*/false);
+  ASSERT_TRUE(unmemo.has_value()) << unmemo.error().to_string();
+  ASSERT_EQ(unmemo->rows.size(), 1u);
+
+  EXPECT_EQ(memo->rows[0].status, unmemo->rows[0].status);
+  EXPECT_EQ(memo->rows[0].status, PriceStatus::NumericError);
+  EXPECT_TRUE(std::isnan(memo->rows[0].fair_strike_dec));
+
+  // The greeks path has its own shared-block entry point, so it is checked.
+  const auto memo_greeks = price_deriv_book(*ss, book, memo_cfg, /*greeks=*/true);
+  ASSERT_TRUE(memo_greeks.has_value()) << memo_greeks.error().to_string();
+  ASSERT_EQ(memo_greeks->rows.size(), 1u);
+  EXPECT_EQ(memo_greeks->rows[0].status, PriceStatus::NumericError);
+
+  // CONTROL: the identical row under the default Otc marking prices Ok on the
+  // memo lane. Without it these assertions would also pass if the book had
+  // stopped pricing VarSwap rows for any unrelated reason.
+  DerivPosition clean = p;
+  clean.contract.marking = atx::vol::DerivMarkingConvention::Otc;
+  const std::vector<DerivPosition> clean_book{clean};
+  const auto ok_memo = price_deriv_book(*ss, clean_book, memo_cfg, /*greeks=*/false);
+  ASSERT_TRUE(ok_memo.has_value());
+  EXPECT_EQ(ok_memo->rows[0].status, PriceStatus::Ok);
+  EXPECT_GT(ok_memo->rows[0].fair_strike_dec, 0.0);
+}
+
 // FIT-C7 / Task C-6, review round 1 CRITICAL-1: `price_deriv_book` is the
 // umbrella-exported public entry point (deriv_book.hpp); before this fix
 // landed no caller of it could supply a certified band at all, so every row

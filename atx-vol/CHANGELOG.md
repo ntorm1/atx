@@ -9,6 +9,34 @@ Vol-derivatives production sprint, Phase 1 (correctness), Phase 2
 (performance), and Phase 3 (features). Grows only with changes that move a
 number a caller could already be marking with.
 
+### Changed — `DerivMarkingConvention::CboeVarianceFuture` now fails loud instead of pricing as OTC (Task F-5)
+
+`DerivContract::marking` shipped as a field **no executable code read**. A
+contract carrying `DerivMarkingConvention::CboeVarianceFuture` fell straight
+through `validate_deriv_dispatch` into the parametric OTC strip and returned a
+successful `DerivQuote` — a confident OTC number for a listed-variance
+convention. The header documented the gap in prose ("DECLARED, UNENFORCED")
+and nothing enforced it.
+
+* NOW: `validate_deriv_dispatch` returns `ErrorCode::NotImplemented`
+  ("reserved marking convention") for any `marking != Otc`, on **every**
+  `DerivKind` (the field is not kind-scoped — no kind reads it) and through
+  **both** lanes, because `deriv_price` and the P-6 book-memo lane call that
+  one validator. On the book lane the row's `PriceStatus` is `NumericError`,
+  the same bucket every other reserved value already lands in
+  (`status_for`, deriv_book.cpp, sends everything but `InvalidArgument` there).
+* MIGRATION: none for anyone whose quotes were right. `marking` defaults to
+  `Otc`, every construction site in this repo and every test assigns only
+  `Otc`, so no quote that was correct before changes value. A caller who WAS
+  setting `CboeVarianceFuture` was receiving an OTC mark under a listed label;
+  they now get an error instead of a wrong number. There is no
+  behaviour-preserving migration for that case by design — the old behaviour
+  was the defect.
+* `NotImplemented` rather than `InvalidArgument`: the contract is well formed
+  and the enumerator is a legal value the library reserves, matching
+  `DerivEngine::RvDistributionAffine`/`McQe` and
+  `DerivDiscreteCorrection::FullMc`.
+
 ### Added — `forward_var_fair_strike`: forward-start variance + calendar diagnostic (PV-F4 / FIT-F2 / LIT-7, Task F-4)
 
 New entry `forward_var_fair_strike` (a `PricedSurface`-native overload plus a

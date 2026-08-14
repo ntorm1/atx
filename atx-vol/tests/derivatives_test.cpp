@@ -2780,6 +2780,59 @@ TEST(Dispatch, EngineKindMatrixEnforced) {
   }
 }
 
+// Task F-5 (folded correctness hole). `DerivMarkingConvention::CboeVarianceFuture`
+// shipped as a field on `DerivContract` that NO executable code read -- verified
+// by the F-5 census (zero hits for `.marking` across src/, include/, bindings/).
+// A CboeVarianceFuture-marked VarSwap therefore fell straight through
+// `validate_deriv_dispatch` to `price_var_swap` and came back as a confident
+// OTC quote, so a caller hedging LISTED variance silently got the wrong
+// numbers. The header even documented the hole in prose ("DECLARED,
+// UNENFORCED") without anything enforcing it.
+//
+// The rule is NOT kind-gated, unlike `cap_dec` and the corridor bounds beside
+// it: no kind reads `marking`, so the non-Otc value is refused on every one of
+// them. The sweep below is what says so -- a rule written against VarSwap alone
+// would pass a one-kind test just as well.
+TEST(Dispatch, CboeVarianceFutureMarkingRefusedOnEveryKind) {
+  const EssviSurface surf = make_flat_surface(0.20, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+
+  for (const DerivKind kind : {DerivKind::VarSwap, DerivKind::VolSwap, DerivKind::CappedVarSwap,
+                               DerivKind::CappedVolSwap, DerivKind::GammaSwap,
+                               DerivKind::CorridorVarSwap}) {
+    DerivContract c{};
+    c.kind = kind;
+    c.maturity_t = 0.25;
+    c.strike_dec = 0.04;
+    c.notional = 1.0;
+    c.rv_spec.annualization = 252.0;
+    c.rv_spec.n_obs_total = 63u;
+    if (kind == DerivKind::CappedVarSwap) {
+      c.cap_dec = 0.09;
+    } else if (kind == DerivKind::CappedVolSwap) {
+      c.cap_dec = 0.30;
+    }
+
+    // CONTROL FIRST, and it is the load-bearing half: the identical contract
+    // under the default Otc marking must PRICE. Without it the rejections
+    // below would also pass if the contract were malformed for some unrelated
+    // reason, or if dispatch had simply stopped pricing this kind.
+    c.marking = DerivMarkingConvention::Otc;
+    const auto ok = deriv_price(surf, cs, c, deriv_default_config());
+    ASSERT_TRUE(ok.has_value()) << "kind=" << static_cast<int>(kind) << " "
+                                << ok.error().to_string();
+
+    c.marking = DerivMarkingConvention::CboeVarianceFuture;
+    const auto refused = deriv_price(surf, cs, c, deriv_default_config());
+    ASSERT_FALSE(refused.has_value()) << "kind=" << static_cast<int>(kind);
+    // NotImplemented, not InvalidArgument: the contract is well formed and the
+    // enumerator is a legal value -- the library reserves it. Same code and
+    // same shape as the reserved pricing engines two rules above.
+    EXPECT_EQ(refused.error().code(), ErrorCode::NotImplemented)
+        << "kind=" << static_cast<int>(kind);
+  }
+}
+
 // ── Interior bad-node accounting (PV-4) ───────────────────────────────────
 //
 // Before this task only the two grid ENDPOINTS were checked for a non-
