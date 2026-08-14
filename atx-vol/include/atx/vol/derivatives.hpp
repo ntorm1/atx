@@ -23,6 +23,12 @@
 //     ts_ns returns AlreadyExists and mutates nothing, including
 //     last_fixing_ts_ns() -- so a re-delivered snapshot can never double-count
 //     a fixing.
+//   - Single-name dividend adjustment (Task F-6): the ISDA/MCA convention
+//     r_i = ln(S_i / (S_{i-1} - D_i)), selected per tracker through
+//     RealizedTracker::set_dividend_adjustment and fed through the three-argument
+//     observe_dated. Index legs keep the raw close-to-close return, which stays
+//     the default. This is what `RealizedVarianceSpec::include_dividend_adjustment`
+//     now means; it was a reserved, unsettable field before F-6.
 //   - Variance-swap fair strike via the model-free OTM option-strip formula
 //     K_var(T) = (2/T) integral OTM(K) / (df K^2) dK (Demeterfi-Derman-Kamal-Zou
 //     in log-strike form, composite Simpson), with a Richardson half-grid
@@ -678,7 +684,28 @@ struct RealizedVarianceSpec {
   std::uint32_t n_obs_done = 0;               // observations realized so far
   double sum_sq_log_returns_done = 0.0;       // raw running Sigma r_i^2
   double rv_done_dec = 0.0;                    // annualized decimal variance to date
-  bool include_dividend_adjustment = false;   // reserved; unused in this port
+  // Task F-6 (PV feature list / LIT-9): the SINGLE-NAME return convention.
+  // false (the default) is the INDEX convention -- r_i = ln(S_i / S_{i-1}),
+  // the raw close-to-close return, which is what every index variance swap
+  // pays and what this accumulator has always computed. true is the
+  // single-name convention -- r_i = ln(S_i / (S_{i-1} - D_i)), the prior close
+  // reduced by the cash dividend going ex on day i, so a stock's mechanical
+  // ex-div drop is not booked as realized variance (ISDA/MCA; the JPM worked
+  // example is ln(94/95), not ln(94/100)).
+  //
+  // WHY THIS FIELD CARRIES THE INDEX-VS-SINGLE-NAME DISTINCTION: nothing else
+  // in the deriv types does. `DerivContract` has no underlier-class
+  // discriminator and `DerivKind` enumerates PRODUCTS, not underliers, so this
+  // boolean is the whole of that convention. It travels on the snapshot into
+  // `DerivContract::rv_spec` precisely so a consumer of an accrued leg can see
+  // which convention produced it.
+  //
+  // Set it through `RealizedTracker::set_dividend_adjustment` (which refuses
+  // once accrual has started -- see there); a hand-built spec sets it directly
+  // and owns the consistency of whatever produced its sums. It was declared
+  // "reserved; unused in this port" from the C port until F-6, during which
+  // time NO code path could set it on a tracker at all.
+  bool include_dividend_adjustment = false;
   // Task F-2 (PV-F1 / LIT-7): the gamma-swap (weighted-variance) accrued-leg
   // accumulator, appended -- Lee's w(y) = y/Y0 weight applied to each daily
   // realized return: raw running Sigma (S_i/S0)*r_i^2, S0 the tracker's own
@@ -803,8 +830,13 @@ public:
   // is a PREDICTABLE INDICATOR (the corridor test must not peek at the return
   // it gates).
   //
-  // @return InvalidArgument for spot <= 0, or when all n_obs_total returns have
-  //         already been observed.
+  // @return InvalidArgument for spot <= 0, when all n_obs_total returns have
+  //         already been observed, or -- Task F-6 -- when this tracker is
+  //         dividend-adjusted (see `set_dividend_adjustment`), because this
+  //         entry has no channel to carry a dividend and would silently accrue
+  //         the INDEX convention onto a snapshot advertising the single-name
+  //         one. A dividend-adjusted tracker is driven through the three-argument
+  //         `observe_dated` only.
   [[nodiscard]] Status observe(double spot);
 
   // Feed spots in order; stops early on the first invalid spot and propagates
@@ -819,6 +851,68 @@ public:
   // leaves every field (including last_fixing_ts_ns()) untouched, even when
   // the underlying observe(spot) would itself have failed.
   [[nodiscard]] Status observe_dated(std::int64_t ts_ns, double spot);
+
+  // Task F-6 (PV feature list / LIT-9): the same dated observe, additionally
+  // carrying the CASH DIVIDEND going ex on this fixing's day. On a
+  // dividend-adjusted tracker the return is formed against the reduced prior
+  // close, r_i = ln(S_i / (S_{i-1} - D_i)), so the mechanical ex-div drop is
+  // not booked as realized variance; `ex_div_cash == 0` reproduces the
+  // two-argument entry bit for bit, and that is exactly what the two-argument
+  // entry forwards.
+  //
+  // A SEPARATE OVERLOAD, never a defaulted third argument on the declaration
+  // above: a default would make every existing two-argument call ambiguous
+  // against it, and folding the two declarations into one defaulted signature
+  // would change an already-published signature under the v1.x additive-only
+  // freeze.
+  //
+  // ONLY the return's DENOMINATOR moves. The gamma weight still reads the
+  // just-observed close and the corridor indicator still tests the RAW previous
+  // close (`Corridor.TrackerCountsTheRawPreviousCloseUnderADividend` pins
+  // this): a corridor is a barrier in traded price space, and the dividend
+  // adjustment is a return-construction device, not a restatement of where the
+  // stock traded. `prev_spot()` likewise keeps reporting the raw close -- the
+  // adjustment is per-return, so folding it into the stored mark would
+  // double-count it on the NEXT return.
+  //
+  // @return everything the two-argument entry does, plus InvalidArgument when:
+  //         ex_div_cash is negative or non-finite; ex_div_cash > 0 on a tracker
+  //         that is NOT dividend-adjusted (a knob that would do nothing here is
+  //         a caller error, not a silent no-op -- the rule `cap_dec` and the
+  //         corridor bounds already follow); ex_div_cash > 0 on the SEEDING
+  //         call, which forms no return for it to adjust; or ex_div_cash >=
+  //         prev_spot(), which would make the adjusted prior close zero or
+  //         negative and the return undefined.
+  //
+  // NOT WIRED TO THE BACKTEST. The swap lane's fixing driver
+  // (`observe_swap_fixing`, backtest.cpp) is a separate transcription of this
+  // arithmetic and passes no dividend at all; it stays on the index convention
+  // until a corporate-actions feed exists to source D from. `FinancingConfig::
+  // share_dividends` (backtest.hpp) is the OPTION lane's hedge-share cash
+  // ledger and is not that feed.
+  [[nodiscard]] Status observe_dated(std::int64_t ts_ns, double spot, double ex_div_cash);
+
+  // Task F-6: select the SINGLE-NAME return convention on this tracker, i.e.
+  // set `snapshot().include_dividend_adjustment`. Until this entry existed the
+  // flag had no writer anywhere in the tree and was unreachable through the
+  // public API despite shipping as a documented field.
+  //
+  // WHY A MODE SETTER AND NOT A `create_single_name` FACTORY. `create_corridor`
+  // is a factory because it VALIDATES -- its bounds have an invariant that must
+  // be checked once at the boundary. A boolean convention has no invariant to
+  // validate, so the factory's whole rationale is absent, and a factory per
+  // mode would multiply combinatorially against the corridor entry (the
+  // corridor x single-name product is real and is reachable here by
+  // composition, at no API cost). What a factory WOULD have bought -- the
+  // convention being immutable for the tracker's accumulating lifetime -- is
+  // bought instead by the refusal below, which closes the only window in which
+  // a flip could corrupt anything.
+  //
+  // @return InvalidArgument once this tracker has observed ANYTHING (`have_prev()`),
+  //         because a mid-stream flip would leave Sigma r^2 an undecomposable mix
+  //         of adjusted and unadjusted returns while the snapshot advertised a
+  //         single convention for all of them. Configure, then accumulate.
+  [[nodiscard]] Status set_dividend_adjustment(bool on);
 
   // Timestamp of the last accepted observe_dated() call, or
   // numeric_limits<int64_t>::min() before the first one.
@@ -835,6 +929,11 @@ public:
 
 private:
   RealizedTracker() = default;  // via create()
+
+  // Task F-6: the ONE place a return is formed, so the dividend-adjusted and
+  // unadjusted paths cannot drift apart -- every public observe entry funnels
+  // here, the unadjusted ones passing ex_div_cash = 0.
+  [[nodiscard]] Status observe_impl(double spot, double ex_div_cash);
 
   double prev_spot_ = 0.0;
   // Task F-2 fix round 1 (C-1 Critical): the gamma-weight anchor S0 used to

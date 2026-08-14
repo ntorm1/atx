@@ -568,9 +568,16 @@ library API, and `atx-vol-backtest-db-build` workflow.
 (`run_backtest(Clock, IStrategy, ...)`) additionally carries an OTC
 variance/vol-swap book (`PortfolioState::swap_lots`), additive to the option
 lane: a book with no swap lots prices, accrues and settles exactly as before
-the lane existed. Every step a lot is alive takes a dated fixing
-(`RealizedTracker::observe_dated`) against that step's spot; a lot settles at
+the lane existed. Every step a lot is alive takes a dated fixing against that
+step's spot — through the lane's own `observe_swap_fixing` (`backtest.cpp`),
+which transcribes `RealizedTracker`'s accrual arithmetic rather than calling it,
+for the two deliberate deviations documented on `SwapAccrual` (`backtest.hpp`);
+the tracker has no production caller. A lot settles at
 its exact-match expiry off the accrued realized rate, no re-pricing needed.
+Fixings are booked on the INDEX convention (raw close-to-close returns): the
+driver passes no dividend, and `RealizedTracker`'s single-name adjustment
+(Task F-6) is not reachable from this lane until a corporate-actions feed
+exists to source ex-dividend cash from.
 No early close in v1 — a strategy that erases a live swap lot gets
 `InvalidArgument`, not a close. `swap_pv` / `swap_pnl` report per-row state and
 flow columns. **`BacktestDb` does not yet persist the swap lane** — its

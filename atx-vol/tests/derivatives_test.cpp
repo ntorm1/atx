@@ -1646,6 +1646,269 @@ TEST(RealizedTracker, ObserveDated_MatchesUndatedArithmetic) {
                    b->snapshot().sum_sq_log_returns_done);
 }
 
+// ── Single-name dividend adjustment (Task F-6, LIT-9) ────────────────────
+//
+// THE HAND ORACLE, and a correction to the one the task text carried. Prior
+// close 100, cash dividend 5 going ex on the fixing day, close 94:
+//
+//   adjusted   r = ln(94 / (100 - 5)) = ln(94/95) = -0.010582109330536972
+//   unadjusted r = ln(94 / 100)                   = -0.061875403718087529
+//
+// The sprint text (`sprints/2026-08-05-...md:936`) quotes ln(94/95) as
+// -0.0105361, which is wrong by 4.6e-5 (0.43% relative) -- ln(94/95) is
+// -0.0105821..., verified independently before these tests were written. The
+// tolerances below are tight enough to REFUSE the task text's value, which is
+// the point of pinning a hand constant at all.
+constexpr double kDivAdjustedReturn = -0.010582109330536972;
+constexpr double kUnadjustedReturn = -0.061875403718087529;
+
+// The reachability witness this task turns on. Before F-6,
+// `include_dividend_adjustment` shipped as a documented field that NO public
+// entry point could set: `create`/`create_corridor` build `rv_` field by field
+// from annualization and n_obs_total only, and there was no setter. This test
+// fails to compile, not merely to pass, if that regresses -- and it asserts
+// through `snapshot()`, the same public copy-out a contract's `rv_spec` is
+// built from, rather than through any test-only access.
+TEST(RealizedTracker, SetDividendAdjustment_ReachesTheSpecFlagThroughThePublicApi) {
+  auto built = RealizedTracker::create(252.0, 10u);
+  ASSERT_TRUE(built.has_value());
+  RealizedTracker t = std::move(*built);
+  EXPECT_FALSE(t.snapshot().include_dividend_adjustment);  // index convention by default
+
+  ASSERT_TRUE(t.set_dividend_adjustment(true).has_value());
+  EXPECT_TRUE(t.snapshot().include_dividend_adjustment);
+
+  ASSERT_TRUE(t.set_dividend_adjustment(false).has_value());
+  EXPECT_FALSE(t.snapshot().include_dividend_adjustment);
+}
+
+TEST(RealizedTracker, DividendAdjustedReturn) {
+  auto adjusted = RealizedTracker::create(252.0, 10u);
+  auto plain = RealizedTracker::create(252.0, 10u);
+  ASSERT_TRUE(adjusted.has_value());
+  ASSERT_TRUE(plain.has_value());
+  ASSERT_TRUE(adjusted->set_dividend_adjustment(true).has_value());
+
+  // Same spot path through both; only the dividend differs.
+  ASSERT_TRUE(adjusted->observe_dated(1000, 100.0).has_value());
+  ASSERT_TRUE(adjusted->observe_dated(2000, 94.0, 5.0).has_value());
+  ASSERT_TRUE(plain->observe_dated(1000, 100.0).has_value());
+  ASSERT_TRUE(plain->observe_dated(2000, 94.0).has_value());
+
+  const RealizedVarianceSpec a = adjusted->snapshot();
+  const RealizedVarianceSpec p = plain->snapshot();
+  ASSERT_EQ(a.n_obs_done, 1u);
+  ASSERT_EQ(p.n_obs_done, 1u);
+
+  // Both returns are negative, so sqrt(Sigma r^2) over one return recovers |r|
+  // and the hand constants stay readable AS RETURNS rather than as squares.
+  EXPECT_NEAR(std::sqrt(a.sum_sq_log_returns_done), -kDivAdjustedReturn, 1.0e-15);
+  EXPECT_NEAR(std::sqrt(p.sum_sq_log_returns_done), -kUnadjustedReturn, 1.0e-15);
+
+  // The adjustment is what this task is for: it must MOVE the answer, and by
+  // the amount the convention says, not merely by something.
+  EXPECT_GT(p.sum_sq_log_returns_done, a.sum_sq_log_returns_done);
+
+  // Accrual math through rv_done_dec = annualization * Sigma r^2 / n_obs_done.
+  EXPECT_NEAR(a.rv_done_dec, 252.0 * kDivAdjustedReturn * kDivAdjustedReturn, 1.0e-15);
+  EXPECT_NEAR(p.rv_done_dec, 252.0 * kUnadjustedReturn * kUnadjustedReturn, 1.0e-15);
+
+  // The dividend adjusts the RETURN only. `prev_spot()` reports the raw close,
+  // so the next return is not charged the same dividend twice.
+  EXPECT_DOUBLE_EQ(adjusted->prev_spot(), 94.0);
+}
+
+// Structural-blindness guard. Every one of the pre-F-6 tracker constructions in
+// this file passes the literal 252.0, so a tracker that hard-coded 252 instead
+// of reading `rv_.annualization` would pass all of them -- and the task text's
+// own oracle ("accrual math checks through rv_done_dec at annualization 252")
+// inherits exactly that blindness. This carries the dividend path at a
+// NON-252 annualization and pins the multiplier by ratio, so it cannot be
+// satisfied by any hard-coded constant.
+TEST(RealizedTracker, DividendAdjustedAccrualReadsTheAnnualization) {
+  auto monthly = RealizedTracker::create(12.0, 10u);
+  auto daily = RealizedTracker::create(252.0, 10u);
+  ASSERT_TRUE(monthly.has_value());
+  ASSERT_TRUE(daily.has_value());
+  ASSERT_TRUE(monthly->set_dividend_adjustment(true).has_value());
+  ASSERT_TRUE(daily->set_dividend_adjustment(true).has_value());
+
+  for (RealizedTracker* t : {&*monthly, &*daily}) {
+    ASSERT_TRUE(t->observe_dated(1000, 100.0).has_value());
+    ASSERT_TRUE(t->observe_dated(2000, 94.0, 5.0).has_value());
+  }
+
+  const RealizedVarianceSpec m = monthly->snapshot();
+  const RealizedVarianceSpec d = daily->snapshot();
+  EXPECT_DOUBLE_EQ(m.annualization, 12.0);
+
+  // Same raw sum on both -- the annualization is a pure multiplier and must not
+  // reach the return arithmetic.
+  EXPECT_DOUBLE_EQ(m.sum_sq_log_returns_done, d.sum_sq_log_returns_done);
+  EXPECT_NEAR(m.rv_done_dec, 12.0 * kDivAdjustedReturn * kDivAdjustedReturn, 1.0e-16);
+  EXPECT_NEAR(d.rv_done_dec / m.rv_done_dec, 21.0, 1.0e-12);  // 252/12, no constant survives this
+}
+
+// F-6's idempotency step. The replay guard is evaluated BEFORE any value
+// validation, so a re-delivered fixing that also carries a dividend is refused
+// on ordering alone and mutates nothing -- including the dividend-carrying
+// accumulators.
+TEST(RealizedTracker, ObserveDated_DividendReplayRefusedWithNoMutation) {
+  auto built = RealizedTracker::create(252.0, 10u);
+  ASSERT_TRUE(built.has_value());
+  RealizedTracker t = std::move(*built);
+  ASSERT_TRUE(t.set_dividend_adjustment(true).has_value());
+  ASSERT_TRUE(t.observe_dated(1000, 100.0).has_value());
+  ASSERT_TRUE(t.observe_dated(2000, 94.0, 5.0).has_value());
+  const RealizedVarianceSpec before = t.snapshot();
+
+  // Exact replay, dividend and all.
+  const auto replay = t.observe_dated(2000, 94.0, 5.0);
+  ASSERT_FALSE(replay.has_value());
+  EXPECT_EQ(replay.error().code(), ErrorCode::AlreadyExists);
+  // Backdated, with a DIFFERENT dividend -- still ordering, still no mutation.
+  const auto backdate = t.observe_dated(1500, 99.0, 1.0);
+  ASSERT_FALSE(backdate.has_value());
+  EXPECT_EQ(backdate.error().code(), ErrorCode::AlreadyExists);
+
+  const RealizedVarianceSpec after = t.snapshot();
+  EXPECT_EQ(after.n_obs_done, before.n_obs_done);
+  EXPECT_DOUBLE_EQ(after.sum_sq_log_returns_done, before.sum_sq_log_returns_done);
+  EXPECT_DOUBLE_EQ(after.rv_done_dec, before.rv_done_dec);
+  EXPECT_DOUBLE_EQ(after.sum_weighted_sq_log_returns_done,
+                   before.sum_weighted_sq_log_returns_done);
+  EXPECT_EQ(t.last_fixing_ts_ns(), 2000);
+  EXPECT_DOUBLE_EQ(t.prev_spot(), 94.0);
+  // And the tracker is still live at a forward timestamp.
+  EXPECT_TRUE(t.observe_dated(3000, 95.0).has_value());
+}
+
+// The three-argument entry with D = 0 IS the two-argument entry -- pinned so the
+// forwarding cannot silently acquire a different code path.
+TEST(RealizedTracker, ObserveDated_ZeroDividendMatchesTheTwoArgumentEntry) {
+  auto two = RealizedTracker::create(252.0, 10u);
+  auto three = RealizedTracker::create(252.0, 10u);
+  ASSERT_TRUE(two.has_value());
+  ASSERT_TRUE(three.has_value());
+  const double spots[] = {100.0, 101.0, 99.0, 102.0};
+  std::int64_t ts = 1;
+  for (const double s : spots) {
+    ASSERT_TRUE(two->observe_dated(ts, s).has_value());
+    ASSERT_TRUE(three->observe_dated(ts, s, 0.0).has_value());
+    ++ts;
+  }
+  EXPECT_EQ(two->snapshot().n_obs_done, three->snapshot().n_obs_done);
+  EXPECT_DOUBLE_EQ(two->snapshot().sum_sq_log_returns_done,
+                   three->snapshot().sum_sq_log_returns_done);
+  EXPECT_DOUBLE_EQ(two->snapshot().rv_gamma_done_dec, three->snapshot().rv_gamma_done_dec);
+}
+
+TEST(RealizedTracker, RejectsDividendAtOrAboveThePreviousClose) {
+  auto built = RealizedTracker::create(252.0, 10u);
+  ASSERT_TRUE(built.has_value());
+  RealizedTracker t = std::move(*built);
+  ASSERT_TRUE(t.set_dividend_adjustment(true).has_value());
+  ASSERT_TRUE(t.observe_dated(1000, 100.0).has_value());
+
+  // D == prev close -> adjusted close 0, ln undefined.
+  const auto at = t.observe_dated(2000, 94.0, 100.0);
+  ASSERT_FALSE(at.has_value());
+  EXPECT_EQ(at.error().code(), ErrorCode::InvalidArgument);
+  // D > prev close -> adjusted close negative.
+  const auto above = t.observe_dated(2000, 94.0, 101.0);
+  ASSERT_FALSE(above.has_value());
+  EXPECT_EQ(above.error().code(), ErrorCode::InvalidArgument);
+  // Negative dividend is not a "negative adjustment", it is a caller error.
+  const auto negative = t.observe_dated(2000, 94.0, -1.0);
+  ASSERT_FALSE(negative.has_value());
+  EXPECT_EQ(negative.error().code(), ErrorCode::InvalidArgument);
+
+  // Nothing accrued, and the timestamp stayed retryable -- a rejected fixing
+  // does not consume its slot in the schedule.
+  EXPECT_EQ(t.snapshot().n_obs_done, 0u);
+  EXPECT_EQ(t.last_fixing_ts_ns(), 1000);
+  EXPECT_TRUE(t.observe_dated(2000, 94.0, 5.0).has_value());
+}
+
+// A dividend handed to an INDEX-convention tracker is refused, not ignored.
+// This follows the rule `cap_dec` and the corridor bounds already state on
+// `DerivContract`: a knob that would do nothing here is a caller error, not a
+// silent no-op. Silently dropping it would hand back ln(94/100) to a caller who
+// asked for ln(94/95) -- the exact failure this task exists to remove.
+TEST(RealizedTracker, RejectsDividendWhenTheAdjustmentIsOff) {
+  auto built = RealizedTracker::create(252.0, 10u);
+  ASSERT_TRUE(built.has_value());
+  RealizedTracker t = std::move(*built);
+  ASSERT_FALSE(t.snapshot().include_dividend_adjustment);
+  ASSERT_TRUE(t.observe_dated(1000, 100.0).has_value());
+
+  const auto res = t.observe_dated(2000, 94.0, 5.0);
+  ASSERT_FALSE(res.has_value());
+  EXPECT_EQ(res.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_EQ(t.snapshot().n_obs_done, 0u);
+
+  // Zero is always fine on an unadjusted tracker -- that is the neutral value
+  // the two-argument entry forwards.
+  EXPECT_TRUE(t.observe_dated(2000, 94.0, 0.0).has_value());
+}
+
+// The seeding call forms no return, so there is nothing for a dividend to
+// adjust; refused rather than dropped, same reasoning as above.
+TEST(RealizedTracker, RejectsDividendOnTheSeedingObservation) {
+  auto built = RealizedTracker::create(252.0, 10u);
+  ASSERT_TRUE(built.has_value());
+  RealizedTracker t = std::move(*built);
+  ASSERT_TRUE(t.set_dividend_adjustment(true).has_value());
+
+  const auto res = t.observe_dated(1000, 100.0, 5.0);
+  ASSERT_FALSE(res.has_value());
+  EXPECT_EQ(res.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_FALSE(t.have_prev());
+  EXPECT_EQ(t.last_fixing_ts_ns(), std::numeric_limits<std::int64_t>::min());
+}
+
+// Dispatch-level witness: the UNDATED entries cannot carry a dividend, so on a
+// single-name tracker they would accrue index-convention returns under a
+// snapshot advertising the single-name one. `observe_batch` inherits the
+// refusal through its own loop.
+TEST(RealizedTracker, RejectsUndatedObserveOnADividendAdjustedTracker) {
+  auto built = RealizedTracker::create(252.0, 10u);
+  ASSERT_TRUE(built.has_value());
+  RealizedTracker t = std::move(*built);
+  ASSERT_TRUE(t.set_dividend_adjustment(true).has_value());
+
+  const auto one = t.observe(100.0);
+  ASSERT_FALSE(one.has_value());
+  EXPECT_EQ(one.error().code(), ErrorCode::InvalidArgument);
+
+  const double spots[] = {100.0, 101.0};
+  const auto batch = t.observe_batch(spots);
+  ASSERT_FALSE(batch.has_value());
+  EXPECT_EQ(batch.error().code(), ErrorCode::InvalidArgument);
+
+  EXPECT_FALSE(t.have_prev());
+  EXPECT_EQ(t.snapshot().n_obs_done, 0u);
+  // The dated entry is the supported driver and still works.
+  EXPECT_TRUE(t.observe_dated(1000, 100.0).has_value());
+}
+
+// The convention is immutable for the tracker's accumulating lifetime. A
+// mid-stream flip would leave Sigma r^2 an undecomposable mix of two
+// conventions while the snapshot advertised one flag for all of it.
+TEST(RealizedTracker, SetDividendAdjustmentRefusedOnceAccrualHasStarted) {
+  auto built = RealizedTracker::create(252.0, 10u);
+  ASSERT_TRUE(built.has_value());
+  RealizedTracker t = std::move(*built);
+  // The SEEDING call alone is enough to close the window: it fixes the prior
+  // close the next return is measured from.
+  ASSERT_TRUE(t.observe_dated(1000, 100.0).has_value());
+
+  const auto res = t.set_dividend_adjustment(true);
+  ASSERT_FALSE(res.has_value());
+  EXPECT_EQ(res.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_FALSE(t.snapshot().include_dividend_adjustment);  // unchanged, not partially applied
+}
+
 // ── Reserved-field validation (test_deriv_reserved_validation.c) ─────────
 
 TEST(ReservedValidation, VarStrip_ZeroReserved_Succeeds) {
@@ -4272,6 +4535,38 @@ TEST(Corridor, TrackerUnboundedCorridorTracksThePlainLegExactly) {
   EXPECT_EQ(b.n_obs_in_corridor, a.n_obs_in_corridor);
   EXPECT_EQ(b.sum_sq_log_returns_in_corridor, a.sum_sq_log_returns_in_corridor);
   EXPECT_EQ(b.rv_corridor_done_dec, a.rv_corridor_done_dec);
+}
+
+// Task F-6: the corridor INDICATOR tests the RAW previous close, never the
+// dividend-adjusted one. A corridor is a barrier in traded price space; the
+// dividend adjustment is a return-construction device and has no business
+// restating where the underlying traded.
+//
+// Corridor [96, 105] with prior close 100 and a 5 dividend discriminates the
+// two readings by construction: raw prev 100 is INSIDE, adjusted prev 95 is
+// OUTSIDE. So the count alone separates them here.
+//
+// This test also exercises the composition the mechanism choice buys: a
+// corridor tracker that is ALSO dividend-adjusted. A `create_single_name`
+// factory could not have built this one without a fourth create entry.
+TEST(Corridor, TrackerCountsTheRawPreviousCloseUnderADividend) {
+  auto tracker = RealizedTracker::create_corridor(252.0, 10u, 96.0, 105.0);
+  ASSERT_TRUE(tracker.has_value()) << tracker.error().to_string();
+  ASSERT_TRUE(tracker->set_dividend_adjustment(true).has_value());
+
+  ASSERT_TRUE(tracker->observe_dated(1000, 100.0).has_value());
+  ASSERT_TRUE(tracker->observe_dated(2000, 94.0, 5.0).has_value());
+
+  const RealizedVarianceSpec rv = tracker->snapshot();
+  ASSERT_EQ(rv.n_obs_done, 1u);
+  // Raw prev 100 in [96, 105] -> counted. Under the adjusted reading, prev
+  // would be 95, outside, and this would read 0.
+  EXPECT_EQ(rv.n_obs_in_corridor, 1u);
+  // The RETURN that gets counted is still the dividend-adjusted one: the
+  // indicator and the return arithmetic answer different questions.
+  const double r = std::log(94.0 / 95.0);
+  EXPECT_DOUBLE_EQ(rv.sum_sq_log_returns_in_corridor, r * r);
+  EXPECT_DOUBLE_EQ(rv.sum_sq_log_returns_in_corridor, rv.sum_sq_log_returns_done);
 }
 
 TEST(Corridor, AgedBlendReadsTheCorridorAccrualNotThePlainOne) {

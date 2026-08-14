@@ -4563,15 +4563,58 @@ Result<RealizedTracker> RealizedTracker::create_corridor(double annualization,
   return Ok(std::move(t));
 }
 
+Status RealizedTracker::set_dividend_adjustment(bool on) {
+  // Refused once ANY observation has landed -- including the seeding one, which
+  // forms no return but does fix the prior close the next return is measured
+  // from. Flipping mid-stream would leave the accumulators a mix of two
+  // conventions that no consumer of the snapshot could decompose, since the
+  // snapshot carries ONE flag for the whole of Sigma r^2.
+  if (have_prev_) {
+    return Err(ErrorCode::InvalidArgument,
+               "dividend adjustment must be selected before the first observation");
+  }
+  rv_.include_dividend_adjustment = on;
+  return Ok();
+}
+
 Status RealizedTracker::observe(double spot) {
+  // This entry cannot carry a dividend, so on a single-name tracker it would
+  // accrue INDEX-convention returns under a snapshot advertising the
+  // single-name one. Refuse rather than accrue a lie; observe_batch inherits
+  // this through its own loop below.
+  if (rv_.include_dividend_adjustment) {
+    return Err(ErrorCode::InvalidArgument,
+               "dividend-adjusted tracker requires observe_dated(ts_ns, spot, ex_div_cash)");
+  }
+  return observe_impl(spot, 0.0);
+}
+
+Status RealizedTracker::observe_impl(double spot, double ex_div_cash) {
   if (!(spot > 0.0)) {
     return Err(ErrorCode::InvalidArgument, "spot must be > 0");
   }
   if (!(rv_.annualization > 0.0)) {
     return Err(ErrorCode::InvalidArgument, "tracker not initialized");
   }
+  // `!(x >= 0.0)` rather than `x < 0.0` so a NaN dividend is rejected here
+  // instead of silently poisoning every accumulator downstream.
+  if (!(ex_div_cash >= 0.0)) {
+    return Err(ErrorCode::InvalidArgument, "ex_div_cash must be finite and >= 0");
+  }
+  if (ex_div_cash > 0.0 && !rv_.include_dividend_adjustment) {
+    return Err(ErrorCode::InvalidArgument,
+               "ex_div_cash > 0 needs set_dividend_adjustment(true) (index legs are unadjusted)");
+  }
 
   if (!have_prev_) {
+    // No prior close exists yet, so there is nothing for a dividend to adjust.
+    // Rejected rather than dropped, for the same reason a dividend on an
+    // unadjusted tracker is: a silently ignored corporate action is exactly the
+    // failure this task exists to remove.
+    if (ex_div_cash > 0.0) {
+      return Err(ErrorCode::InvalidArgument,
+                 "ex_div_cash > 0 on the seeding observation, which forms no return");
+    }
     // First observation seeds the previous spot AND the gamma-weight anchor
     // S0 (Task F-2), written to the snapshot as `rv_.gamma_seed_spot` (Task
     // F-2 fix round 1 / C-1, so a pricer can read it back) -- both at the
@@ -4587,12 +4630,21 @@ Status RealizedTracker::observe(double spot) {
     return Err(ErrorCode::InvalidArgument, "all observations already recorded");
   }
 
-  const double r = std::log(spot / prev_spot_);
+  // Task F-6 (LIT-9, ISDA/MCA): the ONLY thing a dividend moves is this
+  // denominator. `ex_div_cash` is 0 on every index-convention path, so that
+  // case is bit-for-bit the `prev_spot_` this line always used.
+  const double prev_adjusted = prev_spot_ - ex_div_cash;
+  if (!(prev_adjusted > 0.0)) {
+    return Err(ErrorCode::InvalidArgument, "ex_div_cash must be < the previous close");
+  }
+  const double r = std::log(spot / prev_adjusted);
   rv_.sum_sq_log_returns_done += r * r;
   // Task F-2 (PV-F1 / LIT-7): Lee's w(y) = y/Y0 weight, S_i the spot AT this
   // return (the just-observed `spot`, matching the discrete estimator's own
   // convention -- the weight applies to the return just realized, not the
-  // spot it started from).
+  // spot it started from). Task F-6 ruling: the dividend does NOT enter this
+  // weight. Lee's y is the price LEVEL where the variance is earned, and on an
+  // ex-div day that level is the post-drop close -- which is `spot`, already.
   rv_.sum_weighted_sq_log_returns_done += (spot / rv_.gamma_seed_spot) * r * r;
   // Task F-3 (PV-F3): THE corridor rule (`corridor_contains`, this file's one
   // statement of it), applied to `prev_spot_` -- the PREVIOUS CLOSE, the spot
@@ -4603,11 +4655,21 @@ Status RealizedTracker::observe(double spot) {
   // a desk can actually run before the session, and it keeps the accrual a
   // martingale increment). Getting these two the same way round would be a
   // silent look-ahead in one of them.
+  //
+  // Task F-6 ruling: `prev_spot_`, NOT `prev_adjusted`. A corridor is a barrier
+  // in TRADED PRICE space -- the desk's pre-session test is "where did the stock
+  // actually close", and a dividend does not move that. The adjustment above is
+  // a return-construction device for stripping a mechanical drop out of measured
+  // variance, and it has no business restating where the underlying was.
   if (corridor_contains(prev_spot_, StrikeCorridor{corridor_lo_, corridor_hi_})) {
     rv_.sum_sq_log_returns_in_corridor += r * r;
     rv_.n_obs_in_corridor += 1u;
   }
   rv_.n_obs_done += 1u;
+  // Task F-6 ruling: the RAW close, not `prev_adjusted`. The adjustment is
+  // per-return and is consumed by the return just formed; folding it into the
+  // stored mark would subtract the same dividend a second time from TOMORROW's
+  // return. This also keeps `prev_spot()` a truthful report of the last close.
   prev_spot_ = spot;
 
   const double n = static_cast<double>(rv_.n_obs_done);
@@ -4629,14 +4691,23 @@ Status RealizedTracker::observe_batch(std::span<const double> spots) {
 }
 
 Status RealizedTracker::observe_dated(std::int64_t ts_ns, double spot) {
+  // Task F-6: forwards with D = 0 rather than duplicating the guard, so the two
+  // entries cannot drift on ordering semantics. "No dividend today" is the
+  // ordinary day on a single-name tracker too, so this entry stays usable there
+  // -- unlike the UNDATED `observe`, which is refused outright because it also
+  // gives up the replay protection a corporate-actions-driven leg needs.
+  return observe_dated(ts_ns, spot, 0.0);
+}
+
+Status RealizedTracker::observe_dated(std::int64_t ts_ns, double spot, double ex_div_cash) {
   // Ordering validated FIRST and unconditionally: a stale/replayed ts_ns
-  // mutates nothing, even when observe(spot) would itself have rejected the
-  // spot (e.g. non-positive) -- the caller learns "not ascending", not a
-  // spot-validation error that implies the timestamp was otherwise fine.
+  // mutates nothing, even when observe_impl would itself have rejected the spot
+  // (e.g. non-positive) or the dividend -- the caller learns "not ascending",
+  // not a value-validation error that implies the timestamp was otherwise fine.
   if (ts_ns <= last_fixing_ts_ns_) {
     return Err(ErrorCode::AlreadyExists, "fixing timestamp not ascending");
   }
-  ATX_TRY_VOID(observe(spot));
+  ATX_TRY_VOID(observe_impl(spot, ex_div_cash));
   last_fixing_ts_ns_ = ts_ns;
   return Ok();
 }
