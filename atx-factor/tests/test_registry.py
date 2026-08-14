@@ -47,7 +47,11 @@ def test_registry_atomically_upserts_accepted_candidate(tmp_path) -> None:
         {
             "factor_id": "candidate",
             "allocation": 0.3,
+            "allocation_semantics": "capital_weight",
             "baseline_id": "baseline",
+            "selected_variant": "externally_frozen",
+            "selected_combination_mode": "sleeve_mix",
+            "integrated_score_model": None,
             "evidence_sha256": "a" * 64,
             "accepted_at": payload["signals"][0]["accepted_at"],
         }

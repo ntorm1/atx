@@ -1,0 +1,83 @@
+{
+  "candidates": [
+    {
+      "baseline_id": "composite_operating_profitability_or_net_issuance",
+      "candidate_deflated_sharpe_probability": 0.2264379146347711,
+      "candidate_probabilistic_sharpe": 0.993561515935949,
+      "candidate_sharpe": 1.0149868924971086,
+      "combined_sharpe": 1.0104573445866887,
+      "committed_trials": 396,
+      "evidence_sha256": "6ed54544b8ba13e0a4ba4597a5805f42ab0e8cb81cfcb149a8b556560ddb8b13",
+      "factor_id": "efficiency_quarterly_asset_turnover_trend_8q",
+      "marginal_sharpe": 0.37950189270019674,
+      "positive_fold_fraction": 1.0,
+      "promotion_policy": "rerun the frozen construction only after new untouched formation dates; promotion still requires every production gate",
+      "selected_allocation": 0.3,
+      "selected_variant": "top_quintile_vs_universe",
+      "shadowed_at": "2026-08-13T00:15:45.906781+00:00",
+      "validation_start": "2021-05-28"
+    },
+    {
+      "baseline_id": "composite_operating_profitability_or_net_issuance",
+      "candidate_deflated_sharpe_probability": 0.28382542888713647,
+      "candidate_probabilistic_sharpe": 0.9736548712953261,
+      "candidate_sharpe": 0.97051290882707,
+      "combined_sharpe": 1.023373164153056,
+      "committed_trials": 288,
+      "evidence_sha256": "339ed1ebfa5d73573f8bb509ee454d624f40a5020b222fd55b47664182cfbf02",
+      "factor_id": "investment_low_abnormal_inventory_growth",
+      "marginal_sharpe": 0.31108054242730443,
+      "positive_fold_fraction": 0.8333333333333334,
+      "promotion_policy": "rerun the frozen construction only after new untouched formation dates; promotion still requires every production gate",
+      "selected_allocation": 0.3,
+      "selected_variant": "continuous_rank",
+      "shadowed_at": "2026-08-12T23:04:30.054965+00:00",
+      "validation_start": "2021-02-26"
+    },
+    {
+      "baseline_id": "composite_operating_profitability_or_net_issuance",
+      "candidate_deflated_sharpe_probability": 0.11855523948040997,
+      "candidate_probabilistic_sharpe": 0.973538480594518,
+      "candidate_sharpe": 0.6712611336582339,
+      "combined_sharpe": 0.6497785601663078,
+      "committed_trials": 108,
+      "evidence_sha256": "2364e9270f5e5ab595c4c30c7dfe040e5088bf6450cb13e45d4c4b73cb808524",
+      "factor_id": "quality_net_operating_assets",
+      "marginal_sharpe": 0.21862370805133513,
+      "positive_fold_fraction": 0.6666666666666666,
+      "promotion_policy": "rerun the frozen construction only after new untouched formation dates; promotion still requires every production gate",
+      "selected_allocation": 0.2,
+      "selected_variant": "top_quintile_vs_universe",
+      "shadowed_at": "2026-08-12T22:21:09.383740+00:00",
+      "validation_start": "2020-10-30"
+    }
+  ],
+  "revocations": [
+    {
+      "factor_id": "profitability_quarterly_gross_profitability_trend_8q",
+      "original_candidate": {
+        "baseline_id": "composite_operating_profitability_or_net_issuance",
+        "candidate_deflated_sharpe_probability": 0.25766981055963933,
+        "candidate_probabilistic_sharpe": 0.9932359634310378,
+        "candidate_sharpe": 1.0406620812291334,
+        "combined_sharpe": 0.7115080912993413,
+        "committed_trials": 378,
+        "evidence_sha256": "6475773bd41a3f3358a1a460e0e6640b4b4214efaddb3239c3ef69e0a1c8acb3",
+        "factor_id": "profitability_quarterly_gross_profitability_trend_8q",
+        "marginal_sharpe": 0.11404823575536482,
+        "positive_fold_fraction": 0.6666666666666666,
+        "promotion_policy": "rerun the frozen construction only after new untouched formation dates; promotion still requires every production gate",
+        "selected_allocation": 0.1,
+        "selected_variant": "top_quintile_vs_universe",
+        "shadowed_at": "2026-08-13T00:02:54.886902+00:00",
+        "validation_start": "2021-04-30"
+      },
+      "original_evidence_sha256": "6475773bd41a3f3358a1a460e0e6640b4b4214efaddb3239c3ef69e0a1c8acb3",
+      "reason": "selection_no_feasible_construction",
+      "revoked_at": "2026-08-13T00:16:21.143211+00:00",
+      "superseding_evidence_sha256": "33592a70c4c0f6b7c2053351586ce779badf35152e77d8adc8c0b71de2db22b3"
+    }
+  ],
+  "schema_version": 2,
+  "updated_at": "2026-08-13T00:16:21.143211+00:00"
+}

@@ -1,0 +1,1335 @@
+{
+  "experiments": [
+    {
+      "committed_at": "2026-08-12T22:06:35.168741+00:00",
+      "configuration_trials": 12,
+      "spec": {
+        "allocations": [
+          0.1,
+          0.2,
+          0.3
+        ],
+        "baseline_id": "composite_operating_profitability_or_net_issuance",
+        "candidate_id": "composite_cash_profitability_level_growth",
+        "embargo_periods": 1,
+        "horizon_days": 21,
+        "selection_fraction": 0.6,
+        "variants": [
+          {
+            "rank_signal": true,
+            "tail_fraction": null,
+            "variant_id": "continuous_rank"
+          },
+          {
+            "rank_signal": true,
+            "tail_fraction": 0.2,
+            "variant_id": "quintile_tails"
+          },
+          {
+            "rank_signal": true,
+            "tail_fraction": 0.1,
+            "variant_id": "decile_tails"
+          },
+          {
+            "rank_signal": false,
+            "tail_fraction": null,
+            "variant_id": "continuous_raw"
+          }
+        ]
+      },
+      "spec_sha256": "c44ecbd509d61a3f793777a2892f7e2103c1461106ea97035837a16415a6953a"
+    },
+    {
+      "committed_at": "2026-08-12T22:11:00.518801+00:00",
+      "configuration_trials": 12,
+      "spec": {
+        "allocations": [
+          0.1,
+          0.2,
+          0.3
+        ],
+        "baseline_id": "composite_operating_profitability_or_net_issuance",
+        "candidate_id": "profitability_cash_operating_profitability",
+        "embargo_periods": 1,
+        "horizon_days": 21,
+        "selection_fraction": 0.6,
+        "variants": [
+          {
+            "rank_signal": true,
+            "tail_fraction": null,
+            "variant_id": "continuous_rank"
+          },
+          {
+            "rank_signal": true,
+            "tail_fraction": 0.2,
+            "variant_id": "quintile_tails"
+          },
+          {
+            "rank_signal": true,
+            "tail_fraction": 0.1,
+            "variant_id": "decile_tails"
+          },
+          {
+            "rank_signal": false,
+            "tail_fraction": null,
+            "variant_id": "continuous_raw"
+          }
+        ]
+      },
+      "spec_sha256": "cac75d740d9ca338a54937291f0af73491927a0b3cd3b56ca35bccbacc94a170"
+    },
+    {
+      "committed_at": "2026-08-12T22:15:22.581787+00:00",
+      "configuration_trials": 18,
+      "spec": {
+        "allocations": [
+          0.1,
+          0.2,
+          0.3
+        ],
+        "baseline_id": "composite_operating_profitability_or_net_issuance",
+        "candidate_id": "quality_net_operating_assets",
+        "embargo_periods": 1,
+        "horizon_days": 21,
+        "selection_fraction": 0.6,
+        "variants": [
+          {
+            "construction": "symmetric",
+            "rank_signal": true,
+            "tail_fraction": null,
+            "variant_id": "continuous_rank"
+          },
+          {
+            "construction": "symmetric",
+            "rank_signal": true,
+            "tail_fraction": 0.2,
+            "variant_id": "quintile_tails"
+          },
+          {
+            "construction": "symmetric",
+            "rank_signal": true,
+            "tail_fraction": 0.1,
+            "variant_id": "decile_tails"
+          },
+          {
+            "construction": "symmetric",
+            "rank_signal": false,
+            "tail_fraction": null,
+            "variant_id": "continuous_raw"
+          },
+          {
+            "construction": "long_tail_vs_universe",
+            "rank_signal": true,
+            "tail_fraction": 0.2,
+            "variant_id": "top_quintile_vs_universe"
+          },
+          {
+            "construction": "universe_vs_short_tail",
+            "rank_signal": true,
+            "tail_fraction": 0.2,
+            "variant_id": "universe_vs_bottom_quintile"
+          }
+        ]
+      },
+      "spec_sha256": "5f6cf2f2265f6857a41dac0f8f56c9b75b9662a5641cd9bd4ff893a1062c1af5"
+    },
+    {
+      "committed_at": "2026-08-12T22:24:59.950656+00:00",
+      "configuration_trials": 18,
+      "spec": {
+        "allocations": [
+          0.1,
+          0.2,
+          0.3
+        ],
+        "baseline_id": "composite_operating_profitability_or_net_issuance",
+        "candidate_id": "quality_low_quarterly_operating_working_capital_accruals",
+        "embargo_periods": 1,
+        "horizon_days": 21,
+        "selection_fraction": 0.6,
+        "variants": [
+          {
+            "construction": "symmetric",
+            "rank_signal": true,
+            "tail_fraction": null,
+            "variant_id": "continuous_rank"
+          },
+          {
+            "construction": "symmetric",
+            "rank_signal": true,
+            "tail_fraction": 0.2,
+            "variant_id": "quintile_tails"
+          },
+          {
+            "construction": "symmetric",
+            "rank_signal": true,
+            "tail_fraction": 0.1,
+            "variant_id": "decile_tails"
+          },
+          {
+            "construction": "symmetric",
+            "rank_signal": false,
+            "tail_fraction": null,
+            "variant_id": "continuous_raw"
+          },
+          {
+            "construction": "long_tail_vs_universe",
+            "rank_signal": true,
+            "tail_fraction": 0.2,
+            "variant_id": "top_quintile_vs_universe"
+          },
+          {
+            "construction": "universe_vs_short_tail",
+            "rank_signal": true,
+            "tail_fraction": 0.2,
+            "variant_id": "universe_vs_bottom_quintile"
+          }
+        ]
+      },
+      "spec_sha256": "6b3cd8cbcdc0fd8fd129d4e016ce3220bda675472d86c2ac32787926472b9897"
+    },
+    {
+      "committed_at": "2026-08-12T22:27:13.768821+00:00",
+      "configuration_trials": 18,
+      "spec": {
+        "allocations": [
+          0.1,
+          0.2,
+          0.3
+        ],
+        "baseline_id": "composite_operating_profitability_or_net_issuance",
+        "candidate_id": "earnings_sue_revenue_agreement",
+        "embargo_periods": 1,
+        "horizon_days": 21,
+        "selection_fraction": 0.6,
+        "variants": [
+          {
+            "construction": "symmetric",
+            "rank_signal": true,
+            "tail_fraction": null,
+            "variant_id": "continuous_rank"
+          },
+          {
+            "construction": "symmetric",
+            "rank_signal": true,
+            "tail_fraction": 0.2,
+            "variant_id": "quintile_tails"
+          },
+          {
+            "construction": "symmetric",
+            "rank_signal": true,
+            "tail_fraction": 0.1,
+            "variant_id": "decile_tails"
+          },
+          {
+            "construction": "symmetric",
+            "rank_signal": false,
+            "tail_fraction": null,
+            "variant_id": "continuous_raw"
+          },
+          {
+            "construction": "long_tail_vs_universe",
+            "rank_signal": true,
+            "tail_fraction": 0.2,
+            "variant_id": "top_quintile_vs_universe"
+          },
+          {
+            "construction": "universe_vs_short_tail",
+            "rank_signal": true,
+            "tail_fraction": 0.2,
+            "variant_id": "universe_vs_bottom_quintile"
+          }
+        ]
+      },
+      "spec_sha256": "a03f654444a12da06849f6de98775694b1b7c083b59a593be5c50249e22496e2"
+    },
+    {
+      "committed_at": "2026-08-12T22:33:19.276224+00:00",
+      "configuration_trials": 18,
+      "spec": {
+        "allocations": [
+          0.1,
+          0.2,
+          0.3
+        ],
+        "baseline_id": "composite_operating_profitability_or_net_issuance",
+        "candidate_id": "quality_continuous_financial_strength",
+        "embargo_periods": 1,
+        "horizon_days": 21,
+        "selection_fraction": 0.6,
+        "variants": [
+          {
+            "construction": "symmetric",
+            "rank_signal": true,
+            "tail_fraction": null,
+            "variant_id": "continuous_rank"
+          },
+          {
+            "construction": "symmetric",
+            "rank_signal": true,
+            "tail_fraction": 0.2,
+            "variant_id": "quintile_tails"
+          },
+          {
+            "construction": "symmetric",
+            "rank_signal": true,
+            "tail_fraction": 0.1,
+            "variant_id": "decile_tails"
+          },
+          {
+            "construction": "symmetric",
+            "rank_signal": false,
+            "tail_fraction": null,
+            "variant_id": "continuous_raw"
+          },
+          {
+            "construction": "long_tail_vs_universe",
+            "rank_signal": true,
+            "tail_fraction": 0.2,
+            "variant_id": "top_quintile_vs_universe"
+          },
+          {
+            "construction": "universe_vs_short_tail",
+            "rank_signal": true,
+            "tail_fraction": 0.2,
+            "variant_id": "universe_vs_bottom_quintile"
+          }
+        ]
+      },
+      "spec_sha256": "4cfd5d17361d0372e68cddb7fe4ccf12e2dd7e3271caf46392997e6013852872"
+    },
+    {
+      "committed_at": "2026-08-12T22:36:17.602303+00:00",
+      "configuration_trials": 18,
+      "spec": {
+        "allocations": [
+          0.1,
+          0.2,
+          0.3
+        ],
+        "baseline_id": "composite_operating_profitability_or_net_issuance",
+        "candidate_id": "profitability_operating_profitability",
+        "embargo_periods": 1,
+        "horizon_days": 21,
+        "selection_fraction": 0.6,
+        "variants": [
+          {
+            "construction": "symmetric",
+            "rank_signal": true,
+            "tail_fraction": null,
+            "variant_id": "continuous_rank"
+          },
+          {
+            "construction": "symmetric",
+            "rank_signal": true,
+            "tail_fraction": 0.2,
+            "variant_id": "quintile_tails"
+          },
+          {
+            "construction": "symmetric",
+            "rank_signal": true,
+            "tail_fraction": 0.1,
+            "variant_id": "decile_tails"
+          },
+          {
+            "construction": "symmetric",
+            "rank_signal": false,
+            "tail_fraction": null,
+            "variant_id": "continuous_raw"
+          },
+          {
+            "construction": "long_tail_vs_universe",
+            "rank_signal": true,
+            "tail_fraction": 0.2,
+            "variant_id": "top_quintile_vs_universe"
+          },
+          {
+            "construction": "universe_vs_short_tail",
+            "rank_signal": true,
+            "tail_fraction": 0.2,
+            "variant_id": "universe_vs_bottom_quintile"
+          }
+        ]
+      },
+      "spec_sha256": "95a91f9bd36f8d4f0b20fa41e762af9b55c55f1001d89a19e4a6084afb6605d5"
+    },
+    {
+      "committed_at": "2026-08-12T22:39:13.057004+00:00",
+      "configuration_trials": 18,
+      "spec": {
+        "allocations": [
+          0.1,
+          0.2,
+          0.3
+        ],
+        "baseline_id": "composite_operating_profitability_or_net_issuance",
+        "candidate_id": "profitability_ball_operating_profitability",
+        "embargo_periods": 1,
+        "horizon_days": 21,
+        "selection_fraction": 0.6,
+        "variants": [
+          {
+            "construction": "symmetric",
+            "rank_signal": true,
+            "tail_fraction": null,
+            "variant_id": "continuous_rank"
+          },
+          {
+            "construction": "symmetric",
+            "rank_signal": true,
+            "tail_fraction": 0.2,
+            "variant_id": "quintile_tails"
+          },
+          {
+            "construction": "symmetric",
+            "rank_signal": true,
+            "tail_fraction": 0.1,
+            "variant_id": "decile_tails"
+          },
+          {
+            "construction": "symmetric",
+            "rank_signal": false,
+            "tail_fraction": null,
+            "variant_id": "continuous_raw"
+          },
+          {
+            "construction": "long_tail_vs_universe",
+            "rank_signal": true,
+            "tail_fraction": 0.2,
+            "variant_id": "top_quintile_vs_universe"
+          },
+          {
+            "construction": "universe_vs_short_tail",
+            "rank_signal": true,
+            "tail_fraction": 0.2,
+            "variant_id": "universe_vs_bottom_quintile"
+          }
+        ]
+      },
+      "spec_sha256": "dbdfb90786cbc3204888bbf2b8ed9d789cc0bf08dc4747db792931fb36a4417d"
+    },
+    {
+      "committed_at": "2026-08-12T22:43:36.680992+00:00",
+      "configuration_trials": 18,
+      "spec": {
+        "allocations": [
+          0.1,
+          0.2,
+          0.3
+        ],
+        "baseline_id": "composite_operating_profitability_or_net_issuance",
+        "candidate_id": "profitability_quarterly_cash_operating_profitability_lagged_assets",
+        "embargo_periods": 1,
+        "horizon_days": 21,
+        "selection_fraction": 0.6,
+        "variants": [
+          {
+            "construction": "symmetric",
+            "rank_signal": true,
+            "tail_fraction": null,
+            "variant_id": "continuous_rank"
+          },
+          {
+            "construction": "symmetric",
+            "rank_signal": true,
+            "tail_fraction": 0.2,
+            "variant_id": "quintile_tails"
+          },
+          {
+            "construction": "symmetric",
+            "rank_signal": true,
+            "tail_fraction": 0.1,
+            "variant_id": "decile_tails"
+          },
+          {
+            "construction": "symmetric",
+            "rank_signal": false,
+            "tail_fraction": null,
+            "variant_id": "continuous_raw"
+          },
+          {
+            "construction": "long_tail_vs_universe",
+            "rank_signal": true,
+            "tail_fraction": 0.2,
+            "variant_id": "top_quintile_vs_universe"
+          },
+          {
+            "construction": "universe_vs_short_tail",
+            "rank_signal": true,
+            "tail_fraction": 0.2,
+            "variant_id": "universe_vs_bottom_quintile"
+          }
+        ]
+      },
+      "spec_sha256": "51fd6456e2e44d08f08fbb571ed795b42fa955513ad9727e7b7565fd9d3d5e75"
+    },
+    {
+      "committed_at": "2026-08-12T22:46:52.001962+00:00",
+      "configuration_trials": 18,
+      "spec": {
+        "allocations": [
+          0.1,
+          0.2,
+          0.3
+        ],
+        "baseline_id": "composite_operating_profitability_or_net_issuance",
+        "candidate_id": "earnings_sue_filing_confirmation",
+        "embargo_periods": 1,
+        "horizon_days": 21,
+        "selection_fraction": 0.6,
+        "variants": [
+          {
+            "construction": "symmetric",
+            "rank_signal": true,
+            "tail_fraction": null,
+            "variant_id": "continuous_rank"
+          },
+          {
+            "construction": "symmetric",
+            "rank_signal": true,
+            "tail_fraction": 0.2,
+            "variant_id": "quintile_tails"
+          },
+          {
+            "construction": "symmetric",
+            "rank_signal": true,
+            "tail_fraction": 0.1,
+            "variant_id": "decile_tails"
+          },
+          {
+            "construction": "symmetric",
+            "rank_signal": false,
+            "tail_fraction": null,
+            "variant_id": "continuous_raw"
+          },
+          {
+            "construction": "long_tail_vs_universe",
+            "rank_signal": true,
+            "tail_fraction": 0.2,
+            "variant_id": "top_quintile_vs_universe"
+          },
+          {
+            "construction": "universe_vs_short_tail",
+            "rank_signal": true,
+            "tail_fraction": 0.2,
+            "variant_id": "universe_vs_bottom_quintile"
+          }
+        ]
+      },
+      "spec_sha256": "a0201c42c8bb0c26ef2429dfd6a232bce4cd8887e7bb0d8cbae127ecd6b7b886"
+    },
+    {
+      "committed_at": "2026-08-12T22:48:39.556751+00:00",
+      "configuration_trials": 18,
+      "spec": {
+        "allocations": [
+          0.1,
+          0.2,
+          0.3
+        ],
+        "baseline_id": "composite_operating_profitability_or_net_issuance",
+        "candidate_id": "distress_altman_z_score",
+        "embargo_periods": 1,
+        "horizon_days": 21,
+        "selection_fraction": 0.6,
+        "variants": [
+          {
+            "construction": "symmetric",
+            "rank_signal": true,
+            "tail_fraction": null,
+            "variant_id": "continuous_rank"
+          },
+          {
+            "construction": "symmetric",
+            "rank_signal": true,
+            "tail_fraction": 0.2,
+            "variant_id": "quintile_tails"
+          },
+          {
+            "construction": "symmetric",
+            "rank_signal": true,
+            "tail_fraction": 0.1,
+            "variant_id": "decile_tails"
+          },
+          {
+            "construction": "symmetric",
+            "rank_signal": false,
+            "tail_fraction": null,
+            "variant_id": "continuous_raw"
+          },
+          {
+            "construction": "long_tail_vs_universe",
+            "rank_signal": true,
+            "tail_fraction": 0.2,
+            "variant_id": "top_quintile_vs_universe"
+          },
+          {
+            "construction": "universe_vs_short_tail",
+            "rank_signal": true,
+            "tail_fraction": 0.2,
+            "variant_id": "universe_vs_bottom_quintile"
+          }
+        ]
+      },
+      "spec_sha256": "1a243dcc00211f4f8c9063fcf4409ae9261b5efc732cd72ac5d47277237ffa4c"
+    },
+    {
+      "committed_at": "2026-08-12T22:50:36.506622+00:00",
+      "configuration_trials": 18,
+      "spec": {
+        "allocations": [
+          0.1,
+          0.2,
+          0.3
+        ],
+        "baseline_id": "composite_operating_profitability_or_net_issuance",
+        "candidate_id": "investment_low_quarterly_inventory_change",
+        "embargo_periods": 1,
+        "horizon_days": 21,
+        "selection_fraction": 0.6,
+        "variants": [
+          {
+            "construction": "symmetric",
+            "rank_signal": true,
+            "tail_fraction": null,
+            "variant_id": "continuous_rank"
+          },
+          {
+            "construction": "symmetric",
+            "rank_signal": true,
+            "tail_fraction": 0.2,
+            "variant_id": "quintile_tails"
+          },
+          {
+            "construction": "symmetric",
+            "rank_signal": true,
+            "tail_fraction": 0.1,
+            "variant_id": "decile_tails"
+          },
+          {
+            "construction": "symmetric",
+            "rank_signal": false,
+            "tail_fraction": null,
+            "variant_id": "continuous_raw"
+          },
+          {
+            "construction": "long_tail_vs_universe",
+            "rank_signal": true,
+            "tail_fraction": 0.2,
+            "variant_id": "top_quintile_vs_universe"
+          },
+          {
+            "construction": "universe_vs_short_tail",
+            "rank_signal": true,
+            "tail_fraction": 0.2,
+            "variant_id": "universe_vs_bottom_quintile"
+          }
+        ]
+      },
+      "spec_sha256": "4420a5dc7ebb4fa81e845c770a9fb48ab6105b75a11ece4371088280654f5b3f"
+    },
+    {
+      "committed_at": "2026-08-12T23:04:19.891385+00:00",
+      "configuration_trials": 18,
+      "spec": {
+        "allocations": [
+          0.1,
+          0.2,
+          0.3
+        ],
+        "baseline_id": "composite_operating_profitability_or_net_issuance",
+        "candidate_id": "investment_low_abnormal_inventory_growth",
+        "embargo_periods": 1,
+        "horizon_days": 21,
+        "selection_fraction": 0.6,
+        "variants": [
+          {
+            "construction": "symmetric",
+            "rank_signal": true,
+            "tail_fraction": null,
+            "variant_id": "continuous_rank"
+          },
+          {
+            "construction": "symmetric",
+            "rank_signal": true,
+            "tail_fraction": 0.2,
+            "variant_id": "quintile_tails"
+          },
+          {
+            "construction": "symmetric",
+            "rank_signal": true,
+            "tail_fraction": 0.1,
+            "variant_id": "decile_tails"
+          },
+          {
+            "construction": "symmetric",
+            "rank_signal": false,
+            "tail_fraction": null,
+            "variant_id": "continuous_raw"
+          },
+          {
+            "construction": "long_tail_vs_universe",
+            "rank_signal": true,
+            "tail_fraction": 0.2,
+            "variant_id": "top_quintile_vs_universe"
+          },
+          {
+            "construction": "universe_vs_short_tail",
+            "rank_signal": true,
+            "tail_fraction": 0.2,
+            "variant_id": "universe_vs_bottom_quintile"
+          }
+        ]
+      },
+      "spec_sha256": "97df026e964fdeefd0d524736e672a5e7b80e7171899f96e6e88d61cabbc6827"
+    },
+    {
+      "committed_at": "2026-08-12T23:19:03.333409+00:00",
+      "configuration_trials": 18,
+      "spec": {
+        "allocations": [
+          0.1,
+          0.2,
+          0.3
+        ],
+        "baseline_id": "composite_operating_profitability_or_net_issuance",
+        "candidate_id": "profitability_quarterly_gross_margin_change_yoy",
+        "embargo_periods": 1,
+        "horizon_days": 21,
+        "selection_fraction": 0.6,
+        "variants": [
+          {
+            "construction": "symmetric",
+            "rank_signal": true,
+            "tail_fraction": null,
+            "variant_id": "continuous_rank"
+          },
+          {
+            "construction": "symmetric",
+            "rank_signal": true,
+            "tail_fraction": 0.2,
+            "variant_id": "quintile_tails"
+          },
+          {
+            "construction": "symmetric",
+            "rank_signal": true,
+            "tail_fraction": 0.1,
+            "variant_id": "decile_tails"
+          },
+          {
+            "construction": "symmetric",
+            "rank_signal": false,
+            "tail_fraction": null,
+            "variant_id": "continuous_raw"
+          },
+          {
+            "construction": "long_tail_vs_universe",
+            "rank_signal": true,
+            "tail_fraction": 0.2,
+            "variant_id": "top_quintile_vs_universe"
+          },
+          {
+            "construction": "universe_vs_short_tail",
+            "rank_signal": true,
+            "tail_fraction": 0.2,
+            "variant_id": "universe_vs_bottom_quintile"
+          }
+        ]
+      },
+      "spec_sha256": "23b722994e8e3e44aeeff855d2d8f2ac8b63b39bc32269f141cafe936767cf51"
+    },
+    {
+      "committed_at": "2026-08-12T23:32:09.690522+00:00",
+      "configuration_trials": 18,
+      "spec": {
+        "allocations": [
+          0.1,
+          0.2,
+          0.3
+        ],
+        "baseline_id": "composite_operating_profitability_or_net_issuance",
+        "candidate_id": "quality_low_abnormal_receivables_growth",
+        "embargo_periods": 1,
+        "horizon_days": 21,
+        "selection_fraction": 0.6,
+        "variants": [
+          {
+            "construction": "symmetric",
+            "rank_signal": true,
+            "tail_fraction": null,
+            "variant_id": "continuous_rank"
+          },
+          {
+            "construction": "symmetric",
+            "rank_signal": true,
+            "tail_fraction": 0.2,
+            "variant_id": "quintile_tails"
+          },
+          {
+            "construction": "symmetric",
+            "rank_signal": true,
+            "tail_fraction": 0.1,
+            "variant_id": "decile_tails"
+          },
+          {
+            "construction": "symmetric",
+            "rank_signal": false,
+            "tail_fraction": null,
+            "variant_id": "continuous_raw"
+          },
+          {
+            "construction": "long_tail_vs_universe",
+            "rank_signal": true,
+            "tail_fraction": 0.2,
+            "variant_id": "top_quintile_vs_universe"
+          },
+          {
+            "construction": "universe_vs_short_tail",
+            "rank_signal": true,
+            "tail_fraction": 0.2,
+            "variant_id": "universe_vs_bottom_quintile"
+          }
+        ]
+      },
+      "spec_sha256": "741f52fb186f05851940a7ae00958fdd7c2a769b45e5f8fb37d3de1cd2bf958e"
+    },
+    {
+      "committed_at": "2026-08-12T23:41:40.764969+00:00",
+      "configuration_trials": 18,
+      "spec": {
+        "allocations": [
+          0.1,
+          0.2,
+          0.3
+        ],
+        "baseline_id": "composite_operating_profitability_or_net_issuance",
+        "candidate_id": "earnings_quarterly_acceleration",
+        "embargo_periods": 1,
+        "horizon_days": 21,
+        "selection_fraction": 0.6,
+        "variants": [
+          {
+            "construction": "symmetric",
+            "rank_signal": true,
+            "tail_fraction": null,
+            "variant_id": "continuous_rank"
+          },
+          {
+            "construction": "symmetric",
+            "rank_signal": true,
+            "tail_fraction": 0.2,
+            "variant_id": "quintile_tails"
+          },
+          {
+            "construction": "symmetric",
+            "rank_signal": true,
+            "tail_fraction": 0.1,
+            "variant_id": "decile_tails"
+          },
+          {
+            "construction": "symmetric",
+            "rank_signal": false,
+            "tail_fraction": null,
+            "variant_id": "continuous_raw"
+          },
+          {
+            "construction": "long_tail_vs_universe",
+            "rank_signal": true,
+            "tail_fraction": 0.2,
+            "variant_id": "top_quintile_vs_universe"
+          },
+          {
+            "construction": "universe_vs_short_tail",
+            "rank_signal": true,
+            "tail_fraction": 0.2,
+            "variant_id": "universe_vs_bottom_quintile"
+          }
+        ]
+      },
+      "spec_sha256": "786befd1a5465a90c368a8ef798ed99512e19d5135b6023bfb0e7d63ca95a0ec"
+    },
+    {
+      "committed_at": "2026-08-12T23:47:19.482597+00:00",
+      "configuration_trials": 18,
+      "spec": {
+        "allocations": [
+          0.1,
+          0.2,
+          0.3
+        ],
+        "baseline_id": "composite_operating_profitability_or_net_issuance",
+        "candidate_id": "earnings_quarterly_acceleration",
+        "embargo_periods": 1,
+        "horizon_days": 21,
+        "selection_fraction": 0.6,
+        "sleeve_capacity_model": "allocation_scaled_aum_v1",
+        "variants": [
+          {
+            "construction": "symmetric",
+            "rank_signal": true,
+            "tail_fraction": null,
+            "variant_id": "continuous_rank"
+          },
+          {
+            "construction": "symmetric",
+            "rank_signal": true,
+            "tail_fraction": 0.2,
+            "variant_id": "quintile_tails"
+          },
+          {
+            "construction": "symmetric",
+            "rank_signal": true,
+            "tail_fraction": 0.1,
+            "variant_id": "decile_tails"
+          },
+          {
+            "construction": "symmetric",
+            "rank_signal": false,
+            "tail_fraction": null,
+            "variant_id": "continuous_raw"
+          },
+          {
+            "construction": "long_tail_vs_universe",
+            "rank_signal": true,
+            "tail_fraction": 0.2,
+            "variant_id": "top_quintile_vs_universe"
+          },
+          {
+            "construction": "universe_vs_short_tail",
+            "rank_signal": true,
+            "tail_fraction": 0.2,
+            "variant_id": "universe_vs_bottom_quintile"
+          }
+        ]
+      },
+      "spec_sha256": "3c449f0ae677649a93f019c0c26e89aab5d90b26cde4449587895bb7db8ddf17"
+    },
+    {
+      "committed_at": "2026-08-13T00:02:31.519468+00:00",
+      "configuration_trials": 18,
+      "spec": {
+        "allocations": [
+          0.1,
+          0.2,
+          0.3
+        ],
+        "baseline_id": "composite_operating_profitability_or_net_issuance",
+        "candidate_id": "profitability_quarterly_gross_profitability_trend_8q",
+        "embargo_periods": 1,
+        "horizon_days": 21,
+        "selection_fraction": 0.6,
+        "sleeve_capacity_model": "allocation_scaled_aum_v1",
+        "variants": [
+          {
+            "construction": "symmetric",
+            "rank_signal": true,
+            "tail_fraction": null,
+            "variant_id": "continuous_rank"
+          },
+          {
+            "construction": "symmetric",
+            "rank_signal": true,
+            "tail_fraction": 0.2,
+            "variant_id": "quintile_tails"
+          },
+          {
+            "construction": "symmetric",
+            "rank_signal": true,
+            "tail_fraction": 0.1,
+            "variant_id": "decile_tails"
+          },
+          {
+            "construction": "symmetric",
+            "rank_signal": false,
+            "tail_fraction": null,
+            "variant_id": "continuous_raw"
+          },
+          {
+            "construction": "long_tail_vs_universe",
+            "rank_signal": true,
+            "tail_fraction": 0.2,
+            "variant_id": "top_quintile_vs_universe"
+          },
+          {
+            "construction": "universe_vs_short_tail",
+            "rank_signal": true,
+            "tail_fraction": 0.2,
+            "variant_id": "universe_vs_bottom_quintile"
+          }
+        ]
+      },
+      "spec_sha256": "1b803ce8b1cae74c28d85c19955ad5b2e0a571b31a3a3a225ffd57ba06229074"
+    },
+    {
+      "committed_at": "2026-08-13T00:15:31.029572+00:00",
+      "configuration_trials": 18,
+      "spec": {
+        "acceptance_gate": {
+          "max_baseline_correlation": 0.7,
+          "max_drawdown": 0.25,
+          "max_turnover": 0.7,
+          "min_deflated_sharpe_probability": 0.95,
+          "min_gross_deployment": 0.95,
+          "min_marginal_mega_alpha_sharpe": 0.05,
+          "min_positive_fold_fraction": 0.5,
+          "min_shadow_probabilistic_sharpe": 0.95,
+          "min_stressed_combined_sharpe": 0.0,
+          "min_validation_candidate_sharpe": 0.5
+        },
+        "allocations": [
+          0.1,
+          0.2,
+          0.3
+        ],
+        "baseline_id": "composite_operating_profitability_or_net_issuance",
+        "candidate_id": "efficiency_quarterly_asset_turnover_trend_8q",
+        "embargo_periods": 1,
+        "horizon_days": 21,
+        "selection_fraction": 0.6,
+        "selection_support_model": "positive_candidate_selection_v1",
+        "sleeve_capacity_model": "allocation_scaled_aum_v1",
+        "variants": [
+          {
+            "construction": "symmetric",
+            "rank_signal": true,
+            "tail_fraction": null,
+            "variant_id": "continuous_rank"
+          },
+          {
+            "construction": "symmetric",
+            "rank_signal": true,
+            "tail_fraction": 0.2,
+            "variant_id": "quintile_tails"
+          },
+          {
+            "construction": "symmetric",
+            "rank_signal": true,
+            "tail_fraction": 0.1,
+            "variant_id": "decile_tails"
+          },
+          {
+            "construction": "symmetric",
+            "rank_signal": false,
+            "tail_fraction": null,
+            "variant_id": "continuous_raw"
+          },
+          {
+            "construction": "long_tail_vs_universe",
+            "rank_signal": true,
+            "tail_fraction": 0.2,
+            "variant_id": "top_quintile_vs_universe"
+          },
+          {
+            "construction": "universe_vs_short_tail",
+            "rank_signal": true,
+            "tail_fraction": 0.2,
+            "variant_id": "universe_vs_bottom_quintile"
+          }
+        ]
+      },
+      "spec_sha256": "d24f3daaee040e72909cabef207c7f4310aafae116b559f1ee89d5c510b354c6"
+    },
+    {
+      "committed_at": "2026-08-13T00:28:51.528350+00:00",
+      "configuration_trials": 18,
+      "spec": {
+        "acceptance_gate": {
+          "max_baseline_correlation": 0.7,
+          "max_drawdown": 0.25,
+          "max_turnover": 0.7,
+          "min_deflated_sharpe_probability": 0.95,
+          "min_gross_deployment": 0.95,
+          "min_marginal_mega_alpha_sharpe": 0.05,
+          "min_positive_fold_fraction": 0.5,
+          "min_shadow_median_signal_breadth": 100,
+          "min_shadow_probabilistic_sharpe": 0.95,
+          "min_stressed_combined_sharpe": 0.0,
+          "min_validation_candidate_sharpe": 0.5,
+          "min_validation_median_signal_breadth": 1000
+        },
+        "allocations": [
+          0.1,
+          0.2,
+          0.3
+        ],
+        "baseline_id": "composite_operating_profitability_or_net_issuance",
+        "candidate_id": "profitability_quarterly_gross_margin_trend_8q",
+        "embargo_periods": 1,
+        "horizon_days": 21,
+        "selection_fraction": 0.6,
+        "selection_support_model": "positive_candidate_selection_v1",
+        "sleeve_capacity_model": "allocation_scaled_aum_v1",
+        "variants": [
+          {
+            "construction": "symmetric",
+            "rank_signal": true,
+            "tail_fraction": null,
+            "variant_id": "continuous_rank"
+          },
+          {
+            "construction": "symmetric",
+            "rank_signal": true,
+            "tail_fraction": 0.2,
+            "variant_id": "quintile_tails"
+          },
+          {
+            "construction": "symmetric",
+            "rank_signal": true,
+            "tail_fraction": 0.1,
+            "variant_id": "decile_tails"
+          },
+          {
+            "construction": "symmetric",
+            "rank_signal": false,
+            "tail_fraction": null,
+            "variant_id": "continuous_raw"
+          },
+          {
+            "construction": "long_tail_vs_universe",
+            "rank_signal": true,
+            "tail_fraction": 0.2,
+            "variant_id": "top_quintile_vs_universe"
+          },
+          {
+            "construction": "universe_vs_short_tail",
+            "rank_signal": true,
+            "tail_fraction": 0.2,
+            "variant_id": "universe_vs_bottom_quintile"
+          }
+        ]
+      },
+      "spec_sha256": "4663c8891df9f86affacb1ce928bd70d62136182e40a809b751c39137f637607"
+    },
+    {
+      "committed_at": "2026-08-13T23:25:50.059808+00:00",
+      "configuration_trials": 36,
+      "spec": {
+        "acceptance_gate": {
+          "max_baseline_correlation": 0.7,
+          "max_drawdown": 0.25,
+          "max_turnover": 0.7,
+          "min_deflated_sharpe_probability": 0.95,
+          "min_gross_deployment": 0.95,
+          "min_marginal_mega_alpha_sharpe": 0.05,
+          "min_positive_fold_fraction": 0.5,
+          "min_shadow_median_signal_breadth": 100,
+          "min_shadow_probabilistic_sharpe": 0.95,
+          "min_stressed_combined_sharpe": 0.0,
+          "min_validation_candidate_sharpe": 0.5,
+          "min_validation_median_signal_breadth": 1000
+        },
+        "allocations": [
+          0.1,
+          0.2,
+          0.3
+        ],
+        "baseline_id": "composite_operating_profitability_or_net_issuance",
+        "candidate_id": "earnings_sue_price_momentum_residual_12_1",
+        "combination_modes": [
+          "sleeve_mix",
+          "integrated_rank"
+        ],
+        "embargo_periods": 1,
+        "horizon_days": 21,
+        "integrated_score_model": "neutral_missing_cross_sectional_rank_v1",
+        "selection_fraction": 0.6,
+        "selection_support_model": "positive_candidate_selection_v1",
+        "sleeve_capacity_model": "allocation_scaled_aum_v1",
+        "variants": [
+          {
+            "construction": "symmetric",
+            "rank_signal": true,
+            "tail_fraction": null,
+            "variant_id": "continuous_rank"
+          },
+          {
+            "construction": "symmetric",
+            "rank_signal": true,
+            "tail_fraction": 0.2,
+            "variant_id": "quintile_tails"
+          },
+          {
+            "construction": "symmetric",
+            "rank_signal": true,
+            "tail_fraction": 0.1,
+            "variant_id": "decile_tails"
+          },
+          {
+            "construction": "symmetric",
+            "rank_signal": false,
+            "tail_fraction": null,
+            "variant_id": "continuous_raw"
+          },
+          {
+            "construction": "long_tail_vs_universe",
+            "rank_signal": true,
+            "tail_fraction": 0.2,
+            "variant_id": "top_quintile_vs_universe"
+          },
+          {
+            "construction": "universe_vs_short_tail",
+            "rank_signal": true,
+            "tail_fraction": 0.2,
+            "variant_id": "universe_vs_bottom_quintile"
+          }
+        ]
+      },
+      "spec_sha256": "45f76ba1255d63bf1532bf77884903e6549f48ed9578f1a41f0080150a384fe4"
+    },
+    {
+      "committed_at": "2026-08-13T23:59:46.548160+00:00",
+      "configuration_trials": 36,
+      "spec": {
+        "acceptance_gate": {
+          "max_baseline_correlation": 0.7,
+          "max_drawdown": 0.25,
+          "max_turnover": 0.7,
+          "min_deflated_sharpe_probability": 0.95,
+          "min_gross_deployment": 0.95,
+          "min_marginal_mega_alpha_sharpe": 0.05,
+          "min_positive_fold_fraction": 0.5,
+          "min_shadow_median_signal_breadth": 100,
+          "min_shadow_probabilistic_sharpe": 0.95,
+          "min_stressed_combined_sharpe": 0.0,
+          "min_validation_candidate_sharpe": 0.5,
+          "min_validation_median_signal_breadth": 1000
+        },
+        "allocations": [
+          0.1,
+          0.2,
+          0.3
+        ],
+        "baseline_id": "composite_operating_profitability_or_net_issuance",
+        "candidate_id": "momentum_twin_profitability_trend_price_12_1",
+        "combination_modes": [
+          "sleeve_mix",
+          "integrated_rank"
+        ],
+        "embargo_periods": 1,
+        "horizon_days": 21,
+        "integrated_score_model": "neutral_missing_cross_sectional_rank_v1",
+        "selection_fraction": 0.6,
+        "selection_support_model": "positive_candidate_selection_v1",
+        "sleeve_capacity_model": "allocation_scaled_aum_v1",
+        "variants": [
+          {
+            "construction": "symmetric",
+            "rank_signal": true,
+            "tail_fraction": null,
+            "variant_id": "continuous_rank"
+          },
+          {
+            "construction": "symmetric",
+            "rank_signal": true,
+            "tail_fraction": 0.2,
+            "variant_id": "quintile_tails"
+          },
+          {
+            "construction": "symmetric",
+            "rank_signal": true,
+            "tail_fraction": 0.1,
+            "variant_id": "decile_tails"
+          },
+          {
+            "construction": "symmetric",
+            "rank_signal": false,
+            "tail_fraction": null,
+            "variant_id": "continuous_raw"
+          },
+          {
+            "construction": "long_tail_vs_universe",
+            "rank_signal": true,
+            "tail_fraction": 0.2,
+            "variant_id": "top_quintile_vs_universe"
+          },
+          {
+            "construction": "universe_vs_short_tail",
+            "rank_signal": true,
+            "tail_fraction": 0.2,
+            "variant_id": "universe_vs_bottom_quintile"
+          }
+        ]
+      },
+      "spec_sha256": "9817aab18ecfeed29f948b6d0f19936c037f5c299414ee51afd5403b40f4a8b5"
+    },
+    {
+      "committed_at": "2026-08-14T00:23:35.578080+00:00",
+      "configuration_trials": 36,
+      "spec": {
+        "acceptance_gate": {
+          "max_baseline_correlation": 0.7,
+          "max_drawdown": 0.25,
+          "max_turnover": 0.7,
+          "min_deflated_sharpe_probability": 0.95,
+          "min_gross_deployment": 0.95,
+          "min_marginal_mega_alpha_sharpe": 0.05,
+          "min_positive_fold_fraction": 0.5,
+          "min_shadow_median_signal_breadth": 100,
+          "min_shadow_probabilistic_sharpe": 0.95,
+          "min_stressed_combined_sharpe": 0.0,
+          "min_validation_candidate_sharpe": 0.5,
+          "min_validation_median_signal_breadth": 1000
+        },
+        "allocations": [
+          0.1,
+          0.2,
+          0.3
+        ],
+        "baseline_id": "composite_operating_profitability_or_net_issuance",
+        "candidate_id": "earnings_sue_low_volatility_persistence",
+        "combination_modes": [
+          "sleeve_mix",
+          "integrated_rank"
+        ],
+        "embargo_periods": 1,
+        "horizon_days": 21,
+        "integrated_score_model": "neutral_missing_cross_sectional_rank_v1",
+        "selection_fraction": 0.6,
+        "selection_support_model": "positive_candidate_selection_v1",
+        "sleeve_capacity_model": "allocation_scaled_aum_v1",
+        "variants": [
+          {
+            "construction": "symmetric",
+            "rank_signal": true,
+            "tail_fraction": null,
+            "variant_id": "continuous_rank"
+          },
+          {
+            "construction": "symmetric",
+            "rank_signal": true,
+            "tail_fraction": 0.2,
+            "variant_id": "quintile_tails"
+          },
+          {
+            "construction": "symmetric",
+            "rank_signal": true,
+            "tail_fraction": 0.1,
+            "variant_id": "decile_tails"
+          },
+          {
+            "construction": "symmetric",
+            "rank_signal": false,
+            "tail_fraction": null,
+            "variant_id": "continuous_raw"
+          },
+          {
+            "construction": "long_tail_vs_universe",
+            "rank_signal": true,
+            "tail_fraction": 0.2,
+            "variant_id": "top_quintile_vs_universe"
+          },
+          {
+            "construction": "universe_vs_short_tail",
+            "rank_signal": true,
+            "tail_fraction": 0.2,
+            "variant_id": "universe_vs_bottom_quintile"
+          }
+        ]
+      },
+      "spec_sha256": "e6cb3be79bda7e17e039eba368649c728b6d8d21ebd69d3944f3821332884469"
+    }
+  ],
+  "historical_trial_count": 66,
+  "schema_version": 1,
+  "updated_at": "2026-08-14T00:23:35.578080+00:00"
+}

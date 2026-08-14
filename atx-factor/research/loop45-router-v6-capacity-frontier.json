@@ -1,0 +1,91 @@
+{
+  "maximum_feasible_aum_usd": 50000000.0,
+  "maximum_participation": 0.1,
+  "minimum_gross_deployment": 0.95,
+  "points": [
+    {
+      "annualized_cost_drag": 0.002968555098402758,
+      "annualized_return": 0.012942451242030195,
+      "aum_usd": 1000000.0,
+      "average_gross_deployment": 1.0,
+      "average_turnover": 0.08216112850593768,
+      "feasible": true,
+      "maximum_participation": 0.006618033722475863,
+      "minimum_gross_deployment": 0.9999999999999987,
+      "sharpe": 0.3723376916556239,
+      "total_return": 0.2051850571910887
+    },
+    {
+      "annualized_cost_drag": 0.0029770354792112335,
+      "annualized_return": 0.01293391181096526,
+      "aum_usd": 2000000.0,
+      "average_gross_deployment": 1.0,
+      "average_turnover": 0.08216112850593767,
+      "feasible": true,
+      "maximum_participation": 0.013236067444951725,
+      "minimum_gross_deployment": 0.9999999999999989,
+      "sharpe": 0.372116531210937,
+      "total_return": 0.20503760855997055
+    },
+    {
+      "annualized_cost_drag": 0.0029936512730750846,
+      "annualized_return": 0.012837466429455713,
+      "aum_usd": 5000000.0,
+      "average_gross_deployment": 1.0,
+      "average_turnover": 0.08216112850593768,
+      "feasible": true,
+      "maximum_participation": 0.025,
+      "minimum_gross_deployment": 0.9999999999999994,
+      "sharpe": 0.3707497573325765,
+      "total_return": 0.20337347134828154
+    },
+    {
+      "annualized_cost_drag": 0.0030112554911768583,
+      "annualized_return": 0.012484503236434685,
+      "aum_usd": 10000000.0,
+      "average_gross_deployment": 1.0,
+      "average_turnover": 0.08217090257063184,
+      "feasible": true,
+      "maximum_participation": 0.04815106874769277,
+      "minimum_gross_deployment": 0.9999999999999994,
+      "sharpe": 0.36543010275947874,
+      "total_return": 0.19730142113806748
+    },
+    {
+      "annualized_cost_drag": 0.0030353330366635857,
+      "annualized_return": 0.012360781424165745,
+      "aum_usd": 20000000.0,
+      "average_gross_deployment": 1.0,
+      "average_turnover": 0.0827353040236637,
+      "feasible": true,
+      "maximum_participation": 0.07491757442892238,
+      "minimum_gross_deployment": 0.9999999999999996,
+      "sharpe": 0.36916737228686497,
+      "total_return": 0.19517978731887453
+    },
+    {
+      "annualized_cost_drag": 0.0030877851098679476,
+      "annualized_return": 0.012918004284933726,
+      "aum_usd": 50000000.0,
+      "average_gross_deployment": 1.0,
+      "average_turnover": 0.08579866009428075,
+      "feasible": true,
+      "maximum_participation": 0.09205096751935848,
+      "minimum_gross_deployment": 0.9999999999999997,
+      "sharpe": 0.39822001274011654,
+      "total_return": 0.20476298130864423
+    },
+    {
+      "annualized_cost_drag": 0.0031431175904396784,
+      "annualized_return": 0.013610022355726503,
+      "aum_usd": 100000000.0,
+      "average_gross_deployment": 0.9990534473548758,
+      "average_turnover": 0.09040647717175411,
+      "feasible": false,
+      "maximum_participation": 0.13124442292892577,
+      "minimum_gross_deployment": 0.8381394976837501,
+      "sharpe": 0.4458026892423321,
+      "total_return": 0.21676400172561205
+    }
+  ]
+}

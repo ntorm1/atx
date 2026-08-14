@@ -23,6 +23,8 @@ def _native_waterfill(
     cumulative_magnitude_column = f"{prefix}_cumulative_magnitude"
     lambda_candidate_column = f"{prefix}_lambda_candidate"
     lambda_column = f"{prefix}_lambda"
+    capacity_column = f"{prefix}_capacity"
+    at_capacity_column = f"{prefix}_at_capacity"
     frame = frame.with_columns(
         pl.when(pl.col(magnitude_column) > 0)
         .then(pl.col(cap_column) / pl.col(magnitude_column))
@@ -46,6 +48,18 @@ def _native_waterfill(
                 - pl.col(cumulative_magnitude_column)
             )
         ).alias(lambda_candidate_column)
+    ).with_columns(
+        pl.when(pl.col(magnitude_column) > 0)
+        .then(pl.col(cap_column))
+        .otherwise(0.0)
+        .sum()
+        .over("date")
+        .alias(capacity_column)
+    ).with_columns(
+        (
+            pl.col(target_column)
+            >= pl.col(capacity_column) - 1e-12
+        ).alias(at_capacity_column)
     )
     solved_lambda = (
         pl.when(
@@ -60,6 +74,8 @@ def _native_waterfill(
     )
     frame = frame.with_columns(
         pl.when(pl.col(target_column).abs() <= 1e-15)
+        .then(0.0)
+        .when(pl.col(at_capacity_column))
         .then(0.0)
         .otherwise(solved_lambda)
         .alias(lambda_column)
@@ -91,10 +107,15 @@ def _native_waterfill(
             f"for {magnitude_column}: {diagnostics}"
         )
     frame = frame.with_columns(
-        pl.min_horizontal(
-            pl.col(cap_column),
-            pl.col(lambda_column) * pl.col(magnitude_column),
-        ).alias(output_column)
+        pl.when(pl.col(at_capacity_column) & (pl.col(magnitude_column) > 0))
+        .then(pl.col(cap_column))
+        .otherwise(
+            pl.min_horizontal(
+                pl.col(cap_column),
+                pl.col(lambda_column) * pl.col(magnitude_column),
+            )
+        )
+        .alias(output_column)
     )
     error = frame.group_by("date").agg(
         (pl.col(output_column).sum() - pl.col(target_column).first())
@@ -109,6 +130,8 @@ def _native_waterfill(
         cumulative_magnitude_column,
         lambda_candidate_column,
         lambda_column,
+        capacity_column,
+        at_capacity_column,
     )
 
 
@@ -252,13 +275,36 @@ def build_target_weights(
     work = panel.sort("date", "asset_id")
     work = _attach_position_cap(work, config, costs)
     count_expr = pl.len().over("date")
-    if config.rank_signal:
+    percentile_expr = (
+        pl.col("signal").rank(method="average").over("date") / (count_expr + 1.0)
+    )
+    if config.construction == "long_tail_vs_universe":
+        assert config.tail_fraction is not None
         score_expr = (
-            pl.col("signal").rank(method="average").over("date") / (count_expr + 1.0)
-            - 0.5
+            pl.when(percentile_expr >= 1.0 - config.tail_fraction)
+            .then(1.0)
+            .otherwise(-config.tail_fraction / (1.0 - config.tail_fraction))
         )
+    elif config.construction == "universe_vs_short_tail":
+        assert config.tail_fraction is not None
+        score_expr = (
+            pl.when(percentile_expr <= config.tail_fraction)
+            .then(-1.0)
+            .otherwise(config.tail_fraction / (1.0 - config.tail_fraction))
+        )
+    elif config.rank_signal:
+        score_expr = percentile_expr - 0.5
     else:
         score_expr = pl.col("signal")
+    if config.tail_fraction is not None and config.construction == "symmetric":
+        score_expr = (
+            pl.when(
+                (percentile_expr <= config.tail_fraction)
+                | (percentile_expr >= 1.0 - config.tail_fraction)
+            )
+            .then(score_expr)
+            .otherwise(0.0)
+        )
     work = work.with_columns(score_expr.alias("_score"), count_expr.alias("_n_names"))
     work = work.filter(pl.col("_n_names") >= config.minimum_names)
     if config.neutralize_column:

@@ -10,6 +10,10 @@ from atx_factor.config import BacktestConfig, CostModel, PortfolioConfig, WalkFo
 from atx_factor.mega_alpha import AcceptanceGate, CandidateDecision, evaluate_candidate
 
 
+def test_default_gate_requires_95_percent_deflated_sharpe_probability() -> None:
+    assert AcceptanceGate().min_deflated_sharpe_probability == 0.95
+
+
 def _panels(*, reverse_candidate: bool = False) -> tuple[pl.DataFrame, pl.DataFrame]:
     rng = np.random.default_rng(19)
     candidate_rows: list[dict[str, object]] = []

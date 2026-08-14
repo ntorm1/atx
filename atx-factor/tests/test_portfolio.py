@@ -6,7 +6,7 @@ import polars as pl
 import pytest
 
 from atx_factor.config import PortfolioConfig
-from atx_factor.portfolio import build_target_weights
+from atx_factor.portfolio import _native_waterfill, build_target_weights
 
 
 def _cross_section() -> pl.DataFrame:
@@ -42,6 +42,26 @@ def test_name_cap_underdeploys_neutrally_when_full_gross_is_infeasible() -> None
     assert result.get_column("capacity_scale").unique().to_list() == pytest.approx([0.8])
 
 
+def test_waterfill_handles_target_equal_to_capacity_with_roundoff() -> None:
+    frame = pl.DataFrame(
+        {
+            "date": [dt.date(2025, 1, 31)] * 2,
+            "asset_id": ["A", "B"],
+            "magnitude": [1.0, 2.0],
+            "cap": [0.1, 0.2],
+            "target": [0.30000000000000004] * 2,
+        }
+    )
+    result = _native_waterfill(
+        frame,
+        magnitude_column="magnitude",
+        output_column="weight",
+        target_column="target",
+        cap_column="cap",
+    ).sort("asset_id")
+    assert result.get_column("weight").to_list() == pytest.approx([0.1, 0.2])
+
+
 def test_odd_rank_cross_section_drops_centering_residue_before_capacity_solve() -> None:
     names = 77
     panel = pl.DataFrame(
@@ -74,3 +94,76 @@ def test_flat_cross_section_produces_flat_book() -> None:
     result = build_target_weights(panel, PortfolioConfig(minimum_names=20))
     assert result.get_column("target_weight").abs().sum() == pytest.approx(0.0)
     assert result.get_column("capacity_scale").unique().to_list() == [0.0]
+
+
+def test_tail_book_keeps_only_predeclared_extremes() -> None:
+    names = 20
+    panel = pl.DataFrame(
+        {
+            "date": [dt.date(2025, 1, 31)] * names,
+            "asset_id": [f"A{index:02d}" for index in range(names)],
+            "signal": list(range(names)),
+            "forward_return": [0.0] * names,
+        }
+    )
+    result = build_target_weights(
+        panel,
+        PortfolioConfig(
+            minimum_names=names,
+            name_cap=0.25,
+            tail_fraction=0.20,
+        ),
+    )
+    nonzero = result.filter(pl.col("target_weight") != 0)
+    assert nonzero.height == 8
+    assert nonzero.get_column("asset_id").to_list() == [
+        "A00",
+        "A01",
+        "A02",
+        "A03",
+        "A16",
+        "A17",
+        "A18",
+        "A19",
+    ]
+    assert result.get_column("target_weight").sum() == pytest.approx(0.0)
+    assert result.get_column("target_weight").abs().sum() == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize(
+    ("construction", "tail_sign"),
+    [
+        ("long_tail_vs_universe", 1),
+        ("universe_vs_short_tail", -1),
+    ],
+)
+def test_asymmetric_tail_books_isolate_one_extreme_against_broad_universe(
+    construction: str,
+    tail_sign: int,
+) -> None:
+    names = 20
+    panel = pl.DataFrame(
+        {
+            "date": [dt.date(2025, 1, 31)] * names,
+            "asset_id": [f"A{index:02d}" for index in range(names)],
+            "signal": list(range(names)),
+            "forward_return": [0.0] * names,
+        }
+    )
+    result = build_target_weights(
+        panel,
+        PortfolioConfig(
+            minimum_names=names,
+            name_cap=0.25,
+            tail_fraction=0.20,
+            construction=construction,
+        ),
+    )
+    weights = result.get_column("target_weight")
+    tail = weights.tail(4) if tail_sign > 0 else weights.head(4)
+    broad = weights.head(16) if tail_sign > 0 else weights.tail(16)
+    assert (tail.sign() == tail_sign).all()
+    assert (broad.sign() == -tail_sign).all()
+    assert tail.sum() == pytest.approx(0.5 * tail_sign)
+    assert broad.sum() == pytest.approx(-0.5 * tail_sign)
+    assert weights.abs().sum() == pytest.approx(1.0)

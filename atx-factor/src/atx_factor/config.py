@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+from typing import Literal
 
 
 @dataclass(frozen=True)
@@ -15,6 +16,10 @@ class PortfolioConfig:
     rank_signal: bool = True
     dollar_neutral: bool = True
     neutralize_column: str | None = None
+    tail_fraction: float | None = None
+    construction: Literal[
+        "symmetric", "long_tail_vs_universe", "universe_vs_short_tail"
+    ] = "symmetric"
 
     def __post_init__(self) -> None:
         if self.gross_leverage <= 0:
@@ -23,6 +28,10 @@ class PortfolioConfig:
             raise ValueError("name_cap must be in (0, gross_leverage]")
         if self.minimum_names < 2:
             raise ValueError("minimum_names must be at least 2")
+        if self.tail_fraction is not None and not 0 < self.tail_fraction <= 0.5:
+            raise ValueError("tail_fraction must be in (0, 0.5] when supplied")
+        if self.construction != "symmetric" and self.tail_fraction is None:
+            raise ValueError("asymmetric constructions require tail_fraction")
 
 
 @dataclass(frozen=True)

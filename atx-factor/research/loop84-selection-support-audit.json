@@ -1,0 +1,11 @@
+{
+  "action": "revoke_shadow_candidate",
+  "audited_artifact": "research/loop83-profitability-trend-exploration.json",
+  "candidate_id": "profitability_quarterly_gross_profitability_trend_8q",
+  "new_disposition": "rejected",
+  "original_disposition": "shadow",
+  "original_evidence_sha256": "6475773bd41a3f3358a1a460e0e6640b4b4214efaddb3239c3ef69e0a1c8acb3",
+  "policy": "positive_candidate_selection_v1",
+  "reason": "selection_no_feasible_construction",
+  "selection_feasible_trial_count": 0
+}

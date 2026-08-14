@@ -27,29 +27,86 @@ def load_factor_panel(
         raise ValueError("factor_ids cannot be empty")
     if horizon_days < 1:
         raise ValueError("horizon_days must be positive")
-    predicates = [f"p.factor_id IN ({','.join('?' for _ in factors)})"]
-    params: list[object] = list(factors)
+    factor_placeholders = ",".join("?" for _ in factors)
+    predicates: list[str] = []
+    date_params: list[object] = []
     if start_date is not None:
         predicates.append("p.as_of_date >= ?")
-        params.append(start_date)
+        date_params.append(start_date)
     if end_date is not None:
         predicates.append("p.as_of_date <= ?")
-        params.append(end_date)
+        date_params.append(end_date)
+    date_sql = f"WHERE {' AND '.join(predicates)}" if predicates else ""
+    params: list[object] = [*factors, *factors, *date_params]
     connection = duckdb.connect(str(Path(db_path)), read_only=True)
     try:
         connection.execute(f"SET memory_limit='{memory_limit}'")
         connection.execute(f"SET threads={int(threads)}")
         result = connection.execute(
             f"""
-            WITH factor_rows AS (
+            WITH raw_factor_values AS (
                 SELECT
-                    p.security_id,
-                    p.as_of_date,
-                    p.factor_id,
-                    p.value AS signal,
-                    p.available_at
-                FROM v_factor_panel p
-                WHERE {' AND '.join(predicates)}
+                    security_id,as_of_date,factor_id,value,available_at,
+                    source_loaded_at,input_lineage_json
+                FROM fundamental_factor_values
+                WHERE is_latest_revision
+                  AND value IS NOT NULL
+                  AND factor_id IN ({factor_placeholders})
+                UNION ALL
+                SELECT
+                    security_id,as_of_date,factor_id,value,available_at,
+                    source_loaded_at,input_lineage_json
+                FROM cross_domain_factor_values
+                WHERE is_latest_revision
+                  AND value IS NOT NULL
+                  AND factor_id IN ({factor_placeholders})
+            ),
+            factor_values AS (
+                SELECT
+                    security_id,
+                    greatest(as_of_date,cast(available_at AS DATE)) AS as_of_date,
+                    factor_id,value,available_at,source_loaded_at,input_lineage_json
+                FROM raw_factor_values
+            ),
+            scoped_factors AS (
+                SELECT * FROM factor_values p
+                {date_sql}
+            ),
+            universe_filtered AS (
+                SELECT
+                    f.*,
+                    row_number() OVER (
+                        PARTITION BY f.security_id,f.as_of_date,f.factor_id
+                        ORDER BY u.valid_from DESC,u.available_at DESC NULLS LAST,
+                                 u.source_loaded_at DESC NULLS LAST,u.source DESC
+                    ) AS universe_rank
+                FROM scoped_factors f
+                JOIN universe_membership u
+                  ON u.universe_id='us_common_equity_liquid_v1'
+                 AND u.security_id=f.security_id
+                 AND u.valid_from<=f.as_of_date
+                 AND (u.valid_to IS NULL OR u.valid_to>=f.as_of_date)
+                 AND u.as_of_date<=f.as_of_date
+                 AND u.is_member
+                 AND u.is_latest_revision
+                 AND (u.available_at IS NULL OR cast(u.available_at AS DATE)<=f.as_of_date)
+            ),
+            ranked_factor_rows AS (
+                SELECT
+                    *,
+                    row_number() OVER (
+                        PARTITION BY security_id,as_of_date,factor_id
+                        ORDER BY available_at DESC,source_loaded_at DESC,
+                                 input_lineage_json DESC
+                    ) AS factor_rank
+                FROM universe_filtered
+                WHERE universe_rank=1
+                  AND cast(available_at AS DATE)<=as_of_date
+            ),
+            factor_rows AS (
+                SELECT security_id,as_of_date,factor_id,value AS signal,available_at
+                FROM ranked_factor_rows
+                WHERE factor_rank=1
             ),
             factor_securities AS (
                 SELECT DISTINCT security_id FROM factor_rows

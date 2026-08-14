@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import datetime as dt
-import hashlib
 import json
 import math
 from dataclasses import asdict, dataclass
@@ -12,27 +10,16 @@ import numpy as np
 import polars as pl
 
 from .config import BacktestConfig, WalkForwardConfig
+from .evidence import evidence_digest, json_safe
 from .portfolio import build_target_weights, normalize_weight_scores
 from .schema import validate_panel
 from .walk_forward import WalkForwardResult, walk_forward_weight_backtest
 
 
-def _json_safe(value: object) -> object:
-    if isinstance(value, float) and not math.isfinite(value):
-        return None
-    if isinstance(value, (dt.date, dt.datetime)):
-        return value.isoformat()
-    if isinstance(value, dict):
-        return {str(key): _json_safe(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_json_safe(item) for item in value]
-    return value
-
-
 @dataclass(frozen=True)
 class AcceptanceGate:
     min_candidate_oos_sharpe: float = 0.50
-    min_deflated_sharpe_probability: float = 0.90
+    min_deflated_sharpe_probability: float = 0.95
     min_marginal_mega_alpha_sharpe: float = 0.05
     min_cost_stress_sharpe: float = 0.0
     max_turnover: float = 0.70
@@ -75,7 +62,7 @@ class CandidateDecision:
     evidence_sha256: str
 
     def to_dict(self) -> dict[str, object]:
-        payload = _json_safe(asdict(self))
+        payload = json_safe(asdict(self))
         if not isinstance(payload, dict):
             raise TypeError("candidate decision did not serialize to an object")
         return payload
@@ -195,16 +182,6 @@ def _period_correlation(left: pl.DataFrame, right: pl.DataFrame) -> float:
         joined.get_column("right_return").to_numpy(),
     )[0, 1]
     return float(correlation)
-
-
-def _evidence_digest(payload: dict[str, object]) -> str:
-    serialized = json.dumps(
-        _json_safe(payload),
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    )
-    return hashlib.sha256(serialized.encode()).hexdigest()
 
 
 def evaluate_candidate(
@@ -348,5 +325,5 @@ def evaluate_candidate(
         candidate_folds=tuple(candidate_result.folds.to_dicts()),
         baseline_folds=tuple(baseline_result.folds.to_dicts()),
         combined_folds=tuple(combined_result.folds.to_dicts()),
-        evidence_sha256=_evidence_digest(payload),
+        evidence_sha256=evidence_digest(payload),
     )
