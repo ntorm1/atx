@@ -304,8 +304,10 @@ shape rule.
   `clear()` on every explain column and returned `Ok`, so appending an
   explain-carrying result onto an explain-less history DESTROYED the attribution
   and reported success. Round 1 pinned that loss in a test as though it were
-  intended. The sibling swap-lane rule twenty lines below had refused exactly
-  this shape all along, which is what made the asymmetry visible.
+  intended. The sibling swap-lane rule in the same function
+  ("cannot append across a swap-lane shape change while either side carries swap
+  data") had refused exactly this shape all along, which is what made the
+  asymmetry visible.
   MIGRATION: append explain-carrying onto explain-carrying, or explain-less onto
   explain-less; `swap_explain_shape` tells you which a result is BEFORE the
   call. A caller that was relying on the silent clear to normalise a mixed
@@ -349,17 +351,23 @@ against 71% for the sample (2282µs vs 3235µs) in the same process. Warm fault
 counts came out equal at 681, so that instrument did NOT isolate the cold delta,
 and the cold direction is argued structurally rather than measured.
 
-MIGRATION: CALLER-OBSERVABLE, and narrower than "mixed archives now refuse". A
-load naming a SUBSET of uids that MATCHES directory entries now verifies across
-everything it loaded, so **a subset naming two disagreeing uids refuses where it
-previously loaded**. Whole-board loads already refused such an archive, and
-zero-match subsets still do not refuse it -- by the rule above, they read no
-surface that could disagree. A caller that was loading a two-uid subset out of
-an archive whose entries carry different dates was being served a snapshot
-stamped from one of them, and should expect an error there now
-(`BacktestSwapExplain.EveryLoadThatReadsAMixedArchiveRefusesIt`,
-`ALoadThatReadsOneRecordOrNoneCannotSeeAMixedArchive` for the documented limit,
-`AZeroSurfaceSnapshotStillLoadsWhenTheArchiveAgrees` as the positive control).
+NOTHING HERE IS A MIGRATION, and the entry is worth reading precisely because
+an earlier cut of it claimed one. What round 8 adds to a load that READS
+something is a PIN, not a change: the loop that verifies every loaded surface
+against the first is byte-identical across `8454a32`, `c1771a6`, `c8bf271` and
+`ec7d3ae` (285 bytes, same SHA-256 at all four), and the predicate routing a
+matched subset into it -- `subset_missed = subset_requested && !loaded_subset`,
+with `loaded_subset` being `n_surfaces() != 0` -- is unchanged across the same
+four. So a subset naming two disagreeing uids has ALWAYS refused; no caller
+loading one has anything to do. What was missing was a test saying so, and that
+is what landed
+(`BacktestSwapExplain.EveryLoadThatReadsAMixedArchiveRefusesIt`, with
+`ALoadThatReadsOneRecordOrNoneCannotSeeAMixedArchive` pinning the documented
+limit and `AZeroSurfaceSnapshotStillLoadsWhenTheArchiveAgrees` as the positive
+control). The only thing that MOVED across rounds 7 and 8 is the zero-match
+branch, which went sample -> whole-directory walk -> sample again, landing where
+it started with the rule written down; a caller cannot observe that round trip,
+because that branch returns a snapshot holding no surfaces either way.
 
 ### Fixed — the scenario grid's deriv leg returned NaN cells and differenced a model, not a price (Task F-8 round 1)
 
