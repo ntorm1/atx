@@ -10,11 +10,11 @@ The upstream `ats-vol` (~65k LOC of C across ~90 translation units) has been
 ported in full to idiomatic, tested C++20, and then extended with a
 Vola-Dynamics American-equity parity layer (see below), a composable
 `VolaSession` handle, and a cached high-performance pricing hot path. It registers
-**2,892 GoogleTest cases across 429 suites** under `/W4 /permissive- /WX`
-(clang-cl). That number is *measured*, not maintained — re-derive it with
-`build/bin/atx-vol-tests.exe --gtest_list_tests` rather than trusting the prose,
-which is how a count in a README stops rotting silently (see *Build & test* for
-the ctest-side number and what the difference is).
+**several thousand GoogleTest cases** under `/W4 /permissive- /WX` (clang-cl).
+Deliberately not a digit: a precise count here is measured once and then rots
+silently, so get the current one from
+`build/bin/atx-vol-tests.exe --gtest_list_tests` (see *Build & test* for the
+ctest-side number and the fixed +13 that separates them).
 The C library's arena / SoA-slab / thread-local / hand-written-AVX2 machinery is
 re-expressed with `std::vector` + Rule of Zero + `atx::core` (error vocabulary,
 linear algebra, hashing) rather than transliterated; the numerics are ported
@@ -645,23 +645,27 @@ same population and a single hand-written number would hide that:
 
 | Count | Command | What it counts |
 |---|---|---|
-| **2,892** cases / **429** suites | `build/bin/atx-vol-tests.exe --gtest_list_tests` | GoogleTest cases in the atx-vol test binary, including the 8 `DISABLED_` ones |
-| **2,905** registered tests | `ctest --test-dir build -N -L atx_vol` | the 2,892 above, discovered by `gtest_discover_tests`, **plus 13** lanes that are not GoogleTest cases: `SpxWilmottReproUnit`, `atx-vol-reference-spy-dispersion`, `atx-vol-download-occ-ess`, `atx-vol-build-spy-top50-universe`, `Mag7DispersionReport`, `SpyDispersionPnlReport`, `atx-vol-python`, `atx-vol-pricing-forcescalar`, `atx-vol-e2e-benchmark-name-coverage`, `atx-vol-e2e-benchmark-name-checker-unit`, `atx-vol-american-shootout-name-coverage`, `atx-vol-compare-baseline-unit`, `atx-vol-pg-observability-name-coverage`. Registered by `add_test()` across three files, not one: `atx-vol/CMakeLists.txt` (`SpxWilmottReproUnit`), `tests/CMakeLists.txt` (the next seven) and `bench/CMakeLists.txt` (the five `*-name-coverage` / `*-unit` guards) |
+| cases / suites | `build/bin/atx-vol-tests.exe --gtest_list_tests` | GoogleTest cases in the atx-vol test binary, including the `DISABLED_` ones |
+| registered tests | `ctest --test-dir build -N -L atx_vol` | the cases above, discovered by `gtest_discover_tests`, **plus exactly 13** lanes that are not GoogleTest cases: `SpxWilmottReproUnit`, `atx-vol-reference-spy-dispersion`, `atx-vol-download-occ-ess`, `atx-vol-build-spy-top50-universe`, `Mag7DispersionReport`, `SpyDispersionPnlReport`, `atx-vol-python`, `atx-vol-pricing-forcescalar`, `atx-vol-e2e-benchmark-name-coverage`, `atx-vol-e2e-benchmark-name-checker-unit`, `atx-vol-american-shootout-name-coverage`, `atx-vol-compare-baseline-unit`, `atx-vol-pg-observability-name-coverage`. Registered by `add_test()` across three files, not one: `atx-vol/CMakeLists.txt` (`SpxWilmottReproUnit`), `tests/CMakeLists.txt` (the next seven) and `bench/CMakeLists.txt` (the five `*-name-coverage` / `*-unit` guards) |
 
-The two reconcile exactly: 2,892 + 13 = 2,905. Both were re-measured after the
-strategy-DSL merge landed on main (the first growth past the 1.0.0 numbers,
-which were 2,848 cases / 422 suites / 8 lanes): the DSL and convex-recovery
-suites added 44 cases across 7 suites, and the bench name-coverage guards added
-5 script lanes. The digits are the measurement, not a maintained invariant —
-which is the whole reason the command sits next to each one.
+**The invariant is the gap, not the totals: registered = cases + 13.** The
+absolute figures are deliberately not published here. They grow with every suite
+added and a written one goes stale silently, whereas the reconciliation is a
+structural property of how the suite is registered — `gtest_discover_tests`
+enumerates the binary, and the 13 named lanes above are the only `add_test()`
+registrations that are not GoogleTest cases. Run the two commands for current
+totals and check the difference is 13; if it is not, a lane was added or removed
+and the list above is what needs updating.
 
-Both figures are `cmake --preset dev`. **The `rel` and `rel-avx2` presets
-register 2,907**, not 2,905: they are configured with `-DATX_BUILD_EXAMPLES=ON`,
-which adds the two `accuracy_panel` determinism lanes (`AccuracyPanelDeterminism`,
-`AccuracyPanelFailureDeterminism`, `atx-vol/CMakeLists.txt`). The GoogleTest
-population is identical on all three presets — only the script lanes differ — so
-a gate log quoting the rel-side number is not a drift (the v1.0.0 gate logs quote
-2,856/2,858, the same two-lane split under the pre-merge counts).
+Both commands assume `cmake --preset dev`. **The `rel` and `rel-avx2` presets
+register exactly 2 more**, because they are configured with
+`-DATX_BUILD_EXAMPLES=ON`, which adds the two `accuracy_panel` determinism lanes
+(`AccuracyPanelDeterminism`, `AccuracyPanelFailureDeterminism`,
+`atx-vol/CMakeLists.txt`). The GoogleTest population is identical on all three
+presets — only the script lanes differ — so a gate log quoting a rel-side number
+two higher than a dev-side one is not drift, it is that split. Like the 13, the
+**+2 is the invariant**; the totals it applies to are whatever the commands
+report today.
 
 Every count in the section below comes from the same
 measurement, quoted once; the *skip* inventory needs a full matrix run to
@@ -675,10 +679,11 @@ Green means **every lane that can run, ran and passed**. It does not mean every
 registered lane ran, and the difference is stable, deliberate and enumerated
 below rather than being a backlog.
 
-Of the **2,905** registered above, ctest starts **2,897** — the other 8 are the
-`DISABLED_` cases — and **63** of those reported `SKIPPED` at the v1.0.0
-release-sprint measurement on an AVX2 host with `cmake --preset dev` and no
-market-data cache present. Every skip carries a reason string naming exactly
+Of the registered tests above, ctest starts all but the `DISABLED_` cases
+(`--gtest_list_tests` marks them; `ctest -N` counts what actually starts, and the
+difference between the two is exactly that set). **63** reported `SKIPPED` at the
+v1.0.0 release-sprint measurement on an AVX2 host with `cmake --preset dev` and no
+market-data cache present — a dated figure from that one run, not a current count. Every skip carries a reason string naming exactly
 what would let it run; the six skip classes below account for all 63 as of that
 measurement (the post-merge tree has not had a fresh full-matrix skip census).
 The last row is **not** a skip class and contributes none of the 63 — it is the
@@ -744,13 +749,22 @@ demonstrations stay behind `ATX_BUILD_EXAMPLES` (OFF by default).
 
 ## Configuration registry: the `ATX_*` environment variables
 
-atx-vol reads **fourteen** `ATX_*` environment variables in shipped code —
-eleven from the library, three from tools. None is required, and **none of them changes a
-fitted, priced or archived value.** The ones that touch parallelism select how
-much of the machine is used, and every atx-vol fan-out is documented
-bit-identical for any worker count; the rest decide only whether a diagnostic is
-printed. So an unset environment is a complete, correct configuration, which is
-the property that makes this table short.
+atx-vol reads the `ATX_*` environment variables below in shipped code. The table
+is the list — count its rows and read its `Scope` column rather than trusting a
+number in this sentence, because a hand-kept count is exactly the artifact that
+goes stale when a row is added. None is required, so **an unset environment is a
+complete, correct configuration**, which is the property that makes this table
+short.
+
+They fall into three kinds, and only the first two are result-neutral. The
+**parallelism** knobs select how much of the machine is used, and every atx-vol
+fan-out is documented bit-identical for any worker count. The **diagnostics**
+decide only whether something is printed. The **A/B seams** — the
+`ATX_VOL_DISABLE_*` rows at the bottom — exist so one binary can be measured with
+and without an optimisation, and they are the exception to result-neutrality:
+`ATX_VOL_DISABLE_IV_EARLY_EXIT` moves last-place bits **by design**, which is
+what makes it useful. The other two seams are pinned bit-identical by their own
+tests rather than merely asserted to be.
 
 | Knob | Effect | Default | Scope | v1 status |
 |---|---|---|---|---|
@@ -768,9 +782,9 @@ the property that makes this table short.
 | `ATX_VOL_CACHE` | Default for the dispersion CLI's `--cache DIR`; an explicit `--cache` overrides it. Empty means disabled, which is the default behaviour | unset = disabled | tool — `tools/spy_dispersion_backtest.cpp` | **keep** |
 | `ATX_VOL_PREFETCH_DEPTH` | Overrides the projected replay's snapshot look-ahead depth (`projected_prefetch_depth()`). Malformed or out-of-range (cap `64`) falls back to the default rather than failing the run. Scheduling only — output is bit-identical at any depth | `2`, cap `64` | tool — `tools/spy_dispersion_backtest.cpp` | **keep** |
 | `ATX_VOL_SOLVE_LEDGER` | Same env-gated shape as `ATX_VOL_PROFILE`: any non-empty value dumps the always-on solve ledger (AL boundary solves / premium evals / IV Newton iterations) as `ledger.<name> <count>` lines to stderr; the stdout build report shape is untouched | unset = off | tool — `tools/surface_db_build_main.cpp` | **keep** |
-| `ATX_VOL_DISABLE_STRIP_BATCH` | A/B seam: forces `var_swap_fair_strike` onto its per-node scalar surface-read loop even when `SurfaceT` exposes a batched `iv_batch`, so one binary can be measured both ways. `Strip.BatchedMatchesScalar*` pins the two as bit-identical, so this moves speed, not results | `1` enables; unset or any other value = off. Read **once at process load** into a static — setting it after start does nothing | library — `src/derivatives.cpp` | **keep** |
-| `ATX_VOL_DISABLE_BUMP_CACHE` | Same shape, orthogonal knob: disables the greek bump table's read-vector cache (`BumpReadCache`/`CachedBumpView`). Speed only | as above | library — `src/derivatives.cpp` | **keep** |
-| `ATX_VOL_DISABLE_IV_EARLY_EXIT` | Forces `ConvexSliceFit::iv()`'s bisection to run its full fixed 64 iterations (pre-P-5 behaviour) rather than stopping at tolerance. **Unlike the two above, this one moves last-place bits** — which is its use: it is how the superseded Release/SSE2 golden fingerprint `17305682487856730537` is reproduced after the P-R re-pin (see `prepared_portfolio_test.cpp`). Reach for it to attribute a golden-hash delta to that seam instead of to a regression | as above | library — `src/dense_slice.cpp` | **keep** |
+| `ATX_VOL_DISABLE_STRIP_BATCH` | A/B seam: forces `var_swap_fair_strike` onto its per-node scalar surface-read loop even when `SurfaceT` exposes a batched `iv_batch`, so one binary can be measured both ways. `Strip.BatchedMatchesScalar*` pins the two bit-identical (`bits_equal_or_both_nan` across six fields plus `EXPECT_EQ` on flags and node count, over four quality tiers on flat and skewed surfaces), so this moves speed, not results — note those tests drive the seam through the setter below, not through this variable | `1` enables; unset or anything else = off. The env var seeds a static **once at process load**; an in-process `detail::set_strip_batch_disabled_for_test()` overrides it afterwards and wins, same as `ATX_SIMD_ISA` above | library — `src/derivatives.cpp` | **keep** |
+| `ATX_VOL_DISABLE_BUMP_CACHE` | Same shape, orthogonal knob: disables the greek bump table's read-vector cache (`BumpReadCache`/`CachedBumpView`). Speed only | as above, overridden in-process by `detail::set_bump_read_cache_disabled_for_test()` | library — `src/derivatives.cpp` | **keep** |
+| `ATX_VOL_DISABLE_IV_EARLY_EXIT` | Forces `ConvexSliceFit::iv()`'s bisection to run its full fixed 64 iterations (pre-P-5 behaviour) rather than stopping at tolerance. **Unlike the two above, this one moves last-place bits** — which is its use: it is how the superseded Release/SSE2 golden fingerprint `17305682487856730537` is reproduced after the P-R re-pin (see `prepared_portfolio_test.cpp`). Reach for it to attribute a golden-hash delta to that seam instead of to a regression | `1` enables; unset or anything else = off. Read once at process load, and **unlike the two seams above there is no setter** — `dense_slice.cpp` exposes only the getter `iv_early_exit_disabled_for_test()`, so the environment is the only way in and this one genuinely cannot be toggled mid-process | library — `src/dense_slice.cpp` | **keep** |
 
 **Nothing is deleted at v1, because nothing here is dead.** Every row has a live
 read site and a live effect; the two knobs with real *consumers* outside their
