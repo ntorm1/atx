@@ -2,7 +2,6 @@
 
 #include <gtest/gtest.h>
 
-#include <algorithm>
 #include <filesystem>
 #include <string>
 #include <utility>
@@ -50,23 +49,14 @@ private:
   fs::path saved_;
 };
 
-// True when `child` is `parent` or lies beneath it. Compares path COMPONENTS,
-// not characters: "C:/atx" is a character-prefix of "C:/atx-wt/pool-7" but is
-// not a parent of it, and that is exactly the confusion this guards -- the
-// forbidden checkout and this worktree differ first at a component boundary a
-// string prefix test would sail straight past.
-[[nodiscard]] bool is_under(const fs::path &child, const fs::path &parent) {
-  // Drop the empty final component a trailing separator leaves behind, so
-  // "C:/wt/pool/" and "C:/wt/pool" compare as the same directory.
-  const auto trim = [](const fs::path &raw) {
-    const fs::path n = raw.lexically_normal();
-    return n.filename().empty() ? n.parent_path() : n;
-  };
-  const fs::path c = trim(child);
-  const fs::path p = trim(parent);
-  const auto it = std::mismatch(p.begin(), p.end(), c.begin(), c.end());
-  return it.first == p.end();
-}
+// THE SHIPPED predicate, not a local copy of it.
+//
+// This file used to define its own `is_under` with the same body. That made the
+// one test whose job is to verify the containment rule verify its OWN
+// reimplementation instead: if testkit::path_is_under broke or changed, this
+// test stayed green. A guard that has stopped observing the thing it guards is
+// worse than no guard, because it still reports.
+using atx::vol::testkit::path_is_under;
 
 // Every path the test tree resolves, named for a readable failure message.
 [[nodiscard]] std::vector<std::pair<std::string, fs::path (*)()>> resolvers() {
@@ -120,14 +110,54 @@ TEST(TestPathing, ResolvedPathsStayInsideThisWorktree) {
   // The absolute anchor must be the tree this TU was compiled from, not any
   // other checkout on the machine.
   EXPECT_TRUE(root.is_absolute()) << "repo_root() is not absolute: " << root.string();
-  EXPECT_TRUE(is_under(tests_root(), root))
+  EXPECT_TRUE(path_is_under(tests_root(), root))
       << tests_root().string() << " is not under " << root.string();
 
   for (const auto &[name, fn] : resolvers()) {
     const fs::path p = fs::absolute(fn()).lexically_normal();
-    EXPECT_TRUE(is_under(p, root)) << name << " escapes this worktree: " << p.string()
-                                   << " is not under " << root.string();
+    EXPECT_TRUE(path_is_under(p, root))
+        << name << " escapes this worktree: " << p.string() << " is not under " << root.string();
   }
+}
+
+// The escape check above uses path_is_under as its INSTRUMENT, so a predicate
+// that answered `true` unconditionally would make it pass while checking
+// nothing. Nothing else asserts the predicate's own behaviour, so this does --
+// each case is a property its comment claims, and each was a real defect
+// somewhere in this lane.
+TEST(TestPathing, PathIsUnderJudgesResolutionNotSpelling) {
+  // Assembled from a fragment that is not itself an absolute literal: written
+  // out, these probes would be real cross-checkout paths in source, and
+  // VolUmbrella.NoFixturePathResolvedOutsideTheSharedResolver would flag this
+  // test's own evidence -- which it did, correctly, on the first run.
+  const std::string drive = "C:";
+  const auto p = [&drive](const std::string &rest) { return fs::path{drive + rest}; };
+  const fs::path root = p("/atx-data");
+
+  EXPECT_TRUE(path_is_under(p("/atx-data"), root)) << "a directory is under itself";
+  EXPECT_TRUE(path_is_under(p("/atx-data/opra/x.parquet"), root));
+
+  // Character prefix, NOT a parent: "C:/atx" is a prefix of "C:/atx-wt/pool-7"
+  // as text and no ancestor of it as a path. A starts_with test calls the
+  // forbidden checkout "inside this worktree".
+  EXPECT_FALSE(path_is_under(p("/atx-wt/pool-7"), p("/atx")))
+      << "a character prefix is being mistaken for a parent directory";
+  EXPECT_FALSE(path_is_under(p("/atx-data-other/x"), root));
+
+  // Traversal: spelled as if inside, resolves outside. This is the R3-I1 escape
+  // that reconstructed the original FRI-072 path through a prefix compare.
+  EXPECT_FALSE(path_is_under(p("/atx-data/../../atx/atx-vol/tests/support/x.tsv"), root))
+      << "a traversal out of the root is being accepted";
+  EXPECT_FALSE(path_is_under(p("/atx-data/../atx-wt/pool-3/x"), root));
+  EXPECT_TRUE(path_is_under(p("/atx-data/a/../b/x"), root))
+      << "traversal that stays inside the root must still be accepted";
+
+  // Trailing separator: lexically_normal() on a path ending in ".." leaves an
+  // empty final component, which made repo_root() compare equal to nothing.
+  EXPECT_TRUE(path_is_under(p("/atx-data/x"), p("/atx-data/opra/..")))
+      << "a trailing separator from normalisation is breaking the comparison";
+
+  EXPECT_FALSE(path_is_under(root, p("/atx-data/opra"))) << "containment must not be symmetric";
 }
 
 TEST(TestPathing, CommittedFixturesResolveToFilesThatExist) {
