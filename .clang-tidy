@@ -2,8 +2,11 @@
 #
 # The previous broad profile made even small-looking translation units
 # prohibitively slow because umbrella headers pull in Eigen, Arrow/Parquet,
-# spdlog, SIMD, containers, concurrency, and stats. Keep verification on
-# build warnings, tests, sanitizers where configured, and clang-format.
+# spdlog, SIMD, containers, concurrency, and stats. Verification rests on
+# exactly two legs that exist: build warnings (/W4 /permissive- /WX, ATX_WERROR
+# ON) and tests (ctest). No sanitizer build is configured in this repo and
+# clang-format is not run either — do not cite either as a gate. See
+# .agents/cpp/agent.md section 8.
 ---
 Checks: '-*'
 WarningsAsErrors: ''

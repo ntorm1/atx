@@ -289,7 +289,8 @@ endif()
 # sccache cannot share first-party objects across worktrees (its cache keys embed
 # per-worktree absolute paths). Include-hygiene enforcement (every TU compiled with
 # its own includes, catching missing/unused ones) lives in the `hygiene` preset
-# (ATX_USE_PCH OFF) for CI/nightly, so the PCH never hides an include defect.
+# (ATX_USE_PCH OFF), run by hand — no CI or nightly job builds this tree — so
+# the PCH never hides an include defect.
 # The option default stays OFF so a bare `cmake` (no preset) gets the strict build.
 option(ATX_USE_PCH "Use precompiled headers on atx targets (dev speed; ON in ninja/dev presets, OFF in hygiene)" OFF)
 option(ATX_UNITY_BUILD "Unity/jumbo build atx test target (dev speed)" OFF)

@@ -55,18 +55,19 @@ A subagent that gets the brief reads ~0 files to orient. That's the whole point.
 [TDD]    write the failing GoogleTest first (boundaries + the load-bearing
          invariant proof; EXPECT_DEATH for ATX_ASSERT preconditions), watch
          it fail for the right reason, then implement ≤60-line fns.
-[GATE]   done = clang-format clean + /W4 /permissive- /WX + /fp:precise build
-         + ctest green + correct tests/<group>/ placement.
+[GATE]   done = /W4 /permissive- /WX + /fp:precise build + ctest green
+         + correct tests/<group>/ placement + 100-col limit held.
+         (Not clang-format: nothing runs it and it is not to be run.)
 [RETURN] the diff, the test names, ctest output, sccache stat. Not prose.
 ```
 
-Test placement: `*_test.cpp` → `tests/<group>/` matching the subsystem prefix (`risk_*`→`risk/`); groups: `alpha risk data factory parallel learn eval library combine fund book core`. Auto-globbed — never hand-edit CMakeLists.
+Test placement: `*_test.cpp` → `tests/<group>/` matching the subsystem prefix (`risk_*`→`risk/`). **Read the group list from `ATX_ALL_TEST_GROUPS` in `atx-engine/tests/CMakeLists.txt`; do not paste a copy into a brief.** A copy lived here and had drifted to 12 of 15 (missing `regime`, `store`, `quant`). Placement is silently unchecked: a file in the wrong existing group compiles into the wrong target, and a mistyped folder is never globbed at all — no error, no warning, the test just never runs. Auto-globbed — never hand-edit CMakeLists.
 
 ---
 
 ## Done-gate (enforce before you mark a unit complete — no exceptions)
 
-- [ ] clang-format clean; `/W4 /permissive- /WX` + `/fp:precise` build (any warning = fail).
+- [ ] `/W4 /permissive- /WX` + `/fp:precise` build (any warning = fail); 100-column limit held and surrounding style matched. Do not run clang-format or clang-tidy — neither is wired to anything.
 - [ ] ctest green for the group; tests written first, cover boundaries + the invariant.
 - [ ] Include hygiene: `cmake --preset hygiene && cmake --build --preset hygiene` (default PCH build masks missing includes).
 - [ ] Test file in the right `tests/<group>/` folder.

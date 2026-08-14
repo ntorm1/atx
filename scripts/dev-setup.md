@@ -178,7 +178,9 @@ PCH-consumer test TUs actually compile.
   symbols absorbed from PRIVATE static libs like `atx_miniz` — was fixed 2026-07-22 by linking
   `atx_miniz` into consumers unconditionally.)
 - `rel` / `rel-avx2` — Release benchmarks (own build dirs); see preset descriptions.
-- `hygiene`    — PCH **off** (strict per-TU includes) for CI/nightly; own `build-hygiene/` dir.
+- `hygiene`    — PCH **off** (strict per-TU includes); own `build-hygiene/` dir. Run it by hand
+  before claiming include-clean: no CI or nightly job builds the C++ tree (the repo's only
+  workflow, `.github/workflows/atx-db.yml`, is path-filtered to `atx-db/**`).
   Also the right preset for `-DATX_UNITY_BUILD=ON` cold cache-less builds.
 - `vs`         — Visual Studio 2022 MSBuild generator (IDE escape hatch).
 
