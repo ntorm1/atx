@@ -679,8 +679,11 @@ Of the **2,905** registered above, ctest starts **2,897** — the other 8 are th
 `DISABLED_` cases — and **63** of those reported `SKIPPED` at the v1.0.0
 release-sprint measurement on an AVX2 host with `cmake --preset dev` and no
 market-data cache present. Every skip carries a reason string naming exactly
-what would let it run; the six classes below account for all 63 as of that
+what would let it run; the six skip classes below account for all 63 as of that
 measurement (the post-merge tree has not had a fresh full-matrix skip census).
+The last row is **not** a skip class and contributes none of the 63 — it is the
+other opt-in that changes what a green run covers, listed here because this is
+where a reader looks for one.
 
 | Gate class | What gates it | Skips | Provisioning status |
 |---|---|---|---|
@@ -689,6 +692,7 @@ measurement (the post-merge tree has not had a fresh full-matrix skip census).
 | Cached real-market fixtures | Presence of OPRA `cbbo-1m` parquet boards, the SPY fit corpus, and the shared board cache under `C:/atx-data/spy-dispersion/opra/` | **30** | Permanently unprovisioned in-repo: this is licensed vendor market data, too large to commit and not ours to redistribute. Materialise it with the Databento pull + `opra_dbn_to_parquet` (see the real-data section above) and the whole class runs. |
 | Named external data (env) | `ATX_T7_DEFINITIONS_TSV` (5), `ATX_SP100_SURFACE_DB` (1) | **6** | Same reason as the row above, pointed at by an environment variable instead of a search path. All six are measurement harnesses / a real-database baseline, not correctness gates. |
 | Opt-in long sweep | `ATX_VOL_LONG_CORPUS=1` | **1** | By design — a 250 + 10,000 synthetic-board property sweep, too slow for every run. Deterministic and runnable on any host. |
+| Opt-in coverage widener (**not** a skip gate) | `ATX_VOL_SCOREBOARDS=1` | **0** | Skips nothing — it widens an assertion. Its one consumer is `SigmaInterpCorpus.RealBoard_WithinGates` (`spy_fit_corpus_test.cpp`), which runs in every default matrix; the flag takes that test's cold-Andersen-Lake reference comparison from **every 2nd strike to every strike** — a strict superset at the same tolerances. So an unset run is not a skipped test, it is half the reference cases. To widen it: set the variable, then `ctest -R SigmaInterpCorpus.RealBoard_WithinGates`. That test is in `ATX_VOL_SLOW_FILTER`, so it carries the `atx_vol_slow` label and an `-L atx_vol_fast` run never reaches it with or without the flag. There is no `nightly` preset — one was proposed in a 2026-07-11 plan and never added, so nothing sets this for you. |
 | Structurally not a standalone lane | `ProcessScratchChild.*` (3) run only when their driver test re-invokes the binary as a child; `ScalarLegEnv.ForceScalarEnvSeedsScalarOverride` (1) runs inside the `atx-vol-pricing-forcescalar` lane; `atx-vol-python` (1) exits ctest's `SKIP_RETURN_CODE` unless the standalone `atx-vol/python` extension is built | **5** | Four of the five ARE covered — by the lane that drives them. Only `atx-vol-python` is genuinely uncovered by a default build; build the standalone Python project to run it. |
 
 So a green matrix asserts: **every pure-computation, synthetic-fixture and
@@ -696,7 +700,10 @@ in-repo-fixture test passes, on the host's ISA, in the default build, plus the
 forced-scalar pricing leg.** It does not assert the real-market accuracy gates,
 the exact-counter gates, the long corpus sweep, or the Python binding suite —
 each of which is a documented opt-in with a named way to turn it on, not an
-unknown.
+unknown. Nor does it assert the *full-strike* cold-AL reference sweep: green
+covers `SigmaInterpCorpus.RealBoard_WithinGates` at every 2nd strike unless
+`ATX_VOL_SCOREBOARDS=1` is set. That one is a narrower result than a skip, and
+easier to miss, because the test reports **passed** either way.
 
 The Vola-parity harness alone: `atx-vol-tests.exe --gtest_filter='SurfaceParity.*:VolaSession.*:OpraPanel.*:DeAmer.*:Parity.*:AmericanIv.*:HybridDiv.*:S3.*:FitMetrics.*:Panel.*'`.
 
@@ -805,8 +812,16 @@ current name, so it is recorded here rather than done silently.
 
 Out of scope for this table, deliberately: `DATABENTO_API_KEY`, read by the
 Databento definition-export example and the OPRA puller scripts (not an `ATX_*`
-name, and gated behind a network/cost opt-in), and the 17 further `ATX_*` names
-read only by tests and benchmarks, neither of which ships.
+name, and gated behind a network/cost opt-in), and the further `ATX_*` names read
+only by tests and benchmarks, neither of which ships. That set is deliberately
+not enumerated here — a hand-kept count drifts as tests are added and nothing
+catches it. Enumerate it when you need it, from the read sites rather than from
+a naming pattern: `grep -rn 'getenv\|_dupenv_s\|GetEnvironmentVariable'` over
+`atx-vol/`, then resolve the call sites that read a *parameter* rather than a
+literal (`bench_main.cpp`, `universe_cycle_bench.cpp`, `al_probe.cpp`,
+`dense_slice.cpp`, `derivatives.cpp`, `surface_db_dispersion_backtest_test.cpp`
+and `process_scratch_test.cpp` all do). One exception is documented above rather
+than here because it changes what a green run asserts: `ATX_VOL_SCOREBOARDS`.
 
 ## API stability policy (1.x)
 
