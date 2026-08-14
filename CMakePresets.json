@@ -39,7 +39,7 @@
       "name": "dev",
       "inherits": "_base",
       "displayName": "dev: canonical fast-iterate preset (ccache + shared deps + PCH)",
-      "description": "The one preset agents and worktrees use (scripts/new-worktree.ps1 and scripts/atx-build.ps1 both target it). Compiler cache + shared FetchContent deps + shared vcpkg dir all come from _base/CMakeLists auto-detection. Unity stays OFF: stable per-TU objects are what the ccache cross-worktree cache keys on, and unity batches (16 test files merged per TU) were the slowest TUs in the ninja log. Opt back in with -DATX_UNITY_BUILD=ON for cache-less cold builds (CI).",
+      "description": "The one preset agents and worktrees use (scripts/new-worktree.ps1 and scripts/atx-build.ps1 both target it). Compiler cache + shared FetchContent deps + shared vcpkg dir all come from _base/CMakeLists auto-detection. Unity stays OFF: stable per-TU objects are what the ccache cross-worktree cache keys on, and unity batches (16 test files merged per TU) were the slowest TUs in the ninja log. Opt back in with -DATX_UNITY_BUILD=ON for a cache-less cold build — a manual escape hatch, not something a CI job does, because this repository has no CI.",
       "cacheVariables": {
         "ATX_UNITY_BUILD": "OFF"
       }
@@ -89,8 +89,8 @@
     {
       "name": "hygiene",
       "inherits": "_base",
-      "displayName": "Ninja + clang-cl, PCH OFF (include hygiene / CI nightly)",
-      "description": "Strict build: PCH OFF so every TU compiles with its own includes, catching any missing/unused include the PCH would otherwise mask. Slower (full per-TU header re-parse) — run on CI/nightly, not for local iteration.",
+      "displayName": "Ninja + clang-cl, PCH OFF (include-hygiene gate, run by hand)",
+      "description": "Strict build: PCH OFF so every TU compiles with its own includes, catching any missing/unused include the PCH would otherwise mask. Slower (full per-TU header re-parse) — run it by hand before claiming include-clean, not for local iteration. NOTHING RUNS THIS AUTOMATICALLY: there is no CI and no nightly job in this repository (no .github/, .gitlab-ci.yml, azure-pipelines.yml, .circleci/, Jenkinsfile or .buildkite/), so if you did not invoke this preset yourself, it did not run.",
       "binaryDir": "${sourceDir}/build-hygiene",
       "cacheVariables": {
         "ATX_USE_PCH": "OFF"
