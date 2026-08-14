@@ -859,10 +859,15 @@ then `deriv_pnl.hpp` — the two-date swap P&L attribution — so Tier-B 33 →
 
 That drift is now caught by a test rather than by a reader.
 `VolUmbrella.TierCountsMatchTheReadmeTable` (`tests/vol_umbrella_test.cpp`)
-asserts all three of **58 / 32 / 31** against the live header tree — Tier-A from
-the umbrella manifest, Tier-B and `detail/` by counting `.hpp` files in the
-directories this table names — and each failure message says to update this
-table. Previously the Tier-A *set* was machine-checked but no **count** was, and
+asserts the first three **Count** cells above against the live header tree —
+Tier-A from the umbrella manifest, Tier-B and `detail/` by counting `.hpp` files
+in the directories this table names — and each failure message says to update
+this table. It deliberately does not restate those digits: this sentence carried
+its own copy of the triple and had to be corrected at `222b379`, `1e0b708` and
+`738c9b4` before going stale a fourth time, because a lane updating the table
+four lines above never looked down here. Pointing at the cells is what retires
+that failure mode — the same move as the `+1 generated` relation below.
+Previously the Tier-A *set* was machine-checked but no **count** was, and
 nothing compared any of them to this table at all, which is how three rows rotted
 undetected. `simd/` 9, `tools/` 6 and `research/` 9 remain prose: they are
 outside `include/atx/vol/` and are not covered by that test, so re-derive those

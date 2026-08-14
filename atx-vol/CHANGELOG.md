@@ -1441,9 +1441,10 @@ installs into a prefix and can be depended on.
 those are is machine-checked (`kTierA` in `atx-vol/tests/vol_umbrella_test.cpp`).
 (The set said 56 until the release audit re-derived it. Since the release gate's
 pre-flight, the *count* is machine-checked too —
-`VolUmbrella.TierCountsMatchTheReadmeTable` asserts 57 against the live manifest,
+`VolUmbrella.TierCountsMatchTheReadmeTable` asserted 57 **as of this release**,
 alongside Tier-B 31 and `detail/` 28 — so this digit can no longer rot silently
-the way it did.)
+the way it did. Those three literals move as headers land; the live values are
+the README tier table, not this entry, which records only what 1.0.0 shipped.)
 Everything else — Tier-B, `detail/`, `tools/`, `research/` — is public-but-
 unfrozen or internal. The full policy, with the counts and the tests that
 enforce it, is the *API stability policy* section of `README.md`. Read it before
