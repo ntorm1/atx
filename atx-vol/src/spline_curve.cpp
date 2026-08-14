@@ -288,7 +288,7 @@ SplineVolCurve::project_calendar(const std::function<double(double)> &w_prev,
 
   // Task F-4: this WAS a replicated literal, with a comment asking the reader
   // to keep it matching arb.cpp's file-local copy. It is now THE constant
-  // (arb.hpp), which arb.cpp's own pair projections name too, so "agrees on
+  // (types.hpp), which arb.cpp's own pair projections name too, so "agrees on
   // the same convergence bar" holds by construction rather than by upkeep.
   constexpr double kCalendarPairTol = kCalendarTotalVarianceTol;
   constexpr double kLiftEps = 1.0e-9;  // strict-clearance inflation (siblings' +1e-9)

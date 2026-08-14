@@ -42,17 +42,32 @@ model-free strip this file already prices.
   FLOOR, not to a new magic number: `2 * kCalendarTotalVarianceTol` plus both
   legs' MEASURED `integration_error_est` (times their tenors). A surface merely
   at the limit of fit precision is served as `K_fwd == 0.0` with no flag; a
-  genuinely arbitrageable one fails loud. Measured at High tier on the test
-  fixture: dead band 2.00016e-07 in total variance, of which the quadrature
-  terms are 1.6e-12.
-* NEW EXPORTED CONSTANT `atx::vol::kCalendarTotalVarianceTol` (arb.hpp) =
+  genuinely arbitrageable one fails loud. Measured at High tier on the
+  `CalendarDetectorRespectsTheFitAccuracyFloor` fixture: dead band 2.00016e-07
+  in total variance, of which the two quadrature terms are 1.63522e-11
+  (8.17611e-12 from each leg).
+* NEW EXPORTED CONSTANT `atx::vol::kCalendarTotalVarianceTol` (types.hpp) =
   1.0e-7 in total-variance units, THE calendar tolerance. It previously existed
-  as five hand-kept copies of that literal (arb.cpp x2, projection.cpp,
+  as SIX hand-kept copies of that literal (arb.cpp x2, projection.cpp,
   vol_curve.cpp, spline_curve.cpp -- two of them carrying comments asking the
-  reader to keep them in sync). All five now name the constant. The value is
-  unchanged, so this is bit-identical by construction; what changes is that it
-  can no longer drift between the fit-side checks, the calendar projectors and
-  this new detector.
+  reader to keep them in sync -- plus `ConvexRepairSpec::tolerance` in
+  vol_curve.hpp, which feeds the SAME variable as vol_curve.cpp's copy through
+  the other branch of one ternary). All six now name the constant. It lives in
+  `types.hpp` rather than `arb.hpp` because `arb.hpp` includes `vol_curve.hpp`,
+  so the sixth site could not have named it there. The value is unchanged, so
+  this is bit-identical by construction; what changes is that it can no longer
+  drift between the fit-side checks, the calendar projectors, the ConvexDense
+  repair loop and this new detector.
+* `ConvexRepairSpec`'s OTHER THREE defaults (`k_min`, `k_max`, `grid_points`)
+  were the same shape: hand-kept duplicates of `kRiskCalendarMin` /
+  `kRiskCalendarMax` / `kRiskCalendarIntervals`, which lived as literals in
+  vol_curve.cpp's anonymous namespace. All three are now
+  `atx::vol::kConvexCalendarLatticeKMin` / `...KMax` / `...Intervals`
+  (vol_curve.hpp), named by BOTH the spec defaults and the `nullopt` scan.
+  `VolCurve.ConvexRepairSpecDefaultsAreTheNullOptLattice` pins the four
+  compile-time identities AND that the two ternary branches produce the same
+  served curve on a fit carrying a sub-tolerance calendar crossing. Values
+  unchanged throughout.
 * NEW EXPORTED CONSTANT `atx::vol::kFwdVarNoiseCeilingVar` = 1.0e-3 decimal
   variance. `K_fwd` differences two nearly-equal totals and divides by a small
   number, so the dead band above is amplified by `1/(T2 - T1)`; the entry

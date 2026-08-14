@@ -1205,12 +1205,38 @@ inline constexpr double kFwdVarNoiseCeilingVar = 1.0e-3;
 // standalone `var_swap_fair_strike` at that tenor would. That is correct;
 // forcing one grid on both legs would under-resolve one of them.
 //
+// HOW ACCURATE K_fwd ACTUALLY IS, and the two knobs that move it. Both figures
+// below are measured on a flat-smile surface with six pillars from 0.10y to
+// 1.00y at r = 4.3%, over all fifteen ordered tenor pairs (the
+// `ForwardVar.FlatSurfaceExact` / `...DegradesAtHighVol` fixtures).
+//
+//   * NODE BUDGET, at ordinary vol (sigma = 0.20). The error here is Simpson
+//     quadrature and falls ~16x per node doubling. The `High` and `Audit` tier
+//     DEFAULTS reach 4.2e-17 and 1.2e-13. THE `Standard` TIER DEFAULT DOES NOT:
+//     257 nodes give ~1.5e-10. A caller who needs 1e-10 at `Standard` must set
+//     `DerivConfig::strip_nodes = 513`, which measures 9.4e-12. This is the one
+//     accuracy surprise in the entry and it is stated here rather than left for
+//     a caller to discover.
+//
+//   * VOLATILITY, and this one no budget fixes. The per-leg error also carries
+//     a SPAN-TRUNCATION term that scales with sigma*sqrt(T) against the
+//     resolved span. At low vol it is negligible and nearly tenor-invariant, so
+//     it cancels in (w2 - w1); as vol rises it grows and becomes strongly
+//     tenor-dependent -- partly because the 6*sigma*sqrt(T) widening engages on
+//     the LONG leg only, giving the two legs genuinely different spans -- so it
+//     stops cancelling. Measured worst case over the fifteen pairs at each
+//     tier's default budget: ~1.2e-10 (sigma = 0.55), ~3.3e-10 (0.70),
+//     ~1.1e-09 (0.90). TREAT ~1e-9 AS THE ACCURACY OF THIS ENTRY ON A REALISTIC
+//     HIGH-VOL SURFACE. Raising `strip_nodes` does not help: at sigma = 0.55 an
+//     8193-node strip lands within 8e-14 of a 4097-node one, both above 1e-10.
+//     Truncation is not a discretisation error.
+//
 // ACCURACY FLOOR AND THE CALENDAR DETECTOR (FIT-F3). The numerator differences
 // two nearly-equal total variances, so the answer is only as good as the legs
 // are. Two error sources are named explicitly and combined into ONE noise
 // floor in total-variance units:
 //   * the library's calendar accuracy floor, `kCalendarTotalVarianceTol`
-//     (arb.hpp) -- the same 1e-7 in w the fit-side no-arb checks measure
+//     (types.hpp) -- the same 1e-7 in w the fit-side no-arb checks measure
 //     against. A surface can PASS every fit-side calendar check and still
 //     carry a w-decrease of that size; a detector with a tighter bar would
 //     fire on good surfaces.

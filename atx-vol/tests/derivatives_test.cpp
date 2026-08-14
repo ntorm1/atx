@@ -10,7 +10,7 @@
 #include <utility>
 #include <vector>
 
-#include "atx/vol/arb.hpp"                  // Task F-4: kCalendarTotalVarianceTol
+#include "atx/vol/types.hpp"                // Task F-4: kCalendarTotalVarianceTol
 #include "atx/vol/black76.hpp"              // WingClamp oracle repricing
 #include "atx/vol/derivatives.hpp"
 #include "atx/vol/detail/counters.hpp"      // ledger:: (Corridor dispatch witness)
@@ -4904,19 +4904,35 @@ atx::vol::PricedSurface make_term_variance_priced_surface(
       atx::vol::PricedSurface::create(std::move(cs), std::move(ctx), pc));
 }
 
-// Flat sigma, six pillars, every ordered tenor pair: K_fwd == sigma^2.
+// Flat sigma, six pillars, every ordered tenor pair: K_fwd == sigma^2 to the
+// brief's 1e-10, at EVERY tier this test runs.
 //
-// TIER, AND THE BRIEF'S 1e-10. The tolerance is met at High and Audit but NOT
-// at the Standard default: the strip's Simpson error in TOTAL variance is
-// almost -- not exactly -- tenor-independent, so most of it cancels in
-// (w2 - w1) and what survives is the drift. Measured on THIS fixture (r =
-// 4.3%, the rate these tests actually run at), the per-leg w error across the
-// six tenors spans [8.17619e-12, 8.17620e-12] at High -- constant to six
-// significant figures, hence near-total cancellation -- against
-// [7.93e-13, 8.60e-13] at Audit and [1.853e-10, 2.683e-10] at Standard. Max
-// |K_fwd - sigma^2| over the fifteen ordered pairs: 4.16e-17 (High),
-// 1.20e-13 (Audit), 1.51e-10 (Standard, i.e. 1.5x past the brief's bar). All
-// three tiers are asserted, each at what it actually achieves plus headroom.
+// THE STANDARD ROW NEEDS A NODE BUDGET, AND THAT IS A QUADRATURE FACT, NOT A
+// CANCELLATION ONE. Round 0 asserted 5.0e-10 at the Standard default and called
+// the miss inherent; it is not. Measured on THIS fixture (r = 4.3%, sigma =
+// 0.20 -- the configuration this test runs), sweeping `cfg.strip_nodes` at
+// Standard over the max across all fifteen ordered pairs:
+//
+//     129 -> 8.973517e-09    257 (tier default) -> 1.509462e-10
+//     513 -> 9.427785e-12   1025 -> 1.508030e-13   2049 -> 9.055257e-15
+//
+// A factor of ~16 per node doubling: textbook Simpson O(h^4). The Standard-tier
+// miss is QUADRATURE-dominated, one doubling of a budget `DerivConfig` already
+// exposes clears the bar with 10x margin, so the Standard row is kept and
+// pinned at 513 rather than deleted or relaxed. The default budgets reach
+// 4.163336e-17 (High) and 1.202580e-13 (Audit).
+//
+// Cancellation is a real effect but only at High, where the per-leg w error is
+// [8.17619e-12, 8.17620e-12] across the six tenors -- constant to six
+// significant figures, so it very nearly all cancels in (w2 - w1). At Standard
+// the pair error 1.509462e-10 sits at 0.56x the raw per-leg max w error
+// 2.683e-10, i.e. cancellation buys essentially nothing there. Do not read the
+// High number as an accuracy claim about the strips: they are only good to
+// 8.18e-12 in w.
+//
+// SIGMA IS PINNED AT 0.20 HERE and that is a real limit of this oracle, not an
+// oversight -- see ForwardVar.FlatSurfaceAccuracyDegradesAtHighVol below, which
+// covers the regime this one cannot.
 TEST(ForwardVar, FlatSurfaceExact) {
   const double sigma = 0.20;
   const double sigma2 = sigma * sigma;
@@ -4930,27 +4946,130 @@ TEST(ForwardVar, FlatSurfaceExact) {
 
   struct Case {
     atx::vol::DerivQuality quality;
-    double tol;
+    std::uint32_t strip_nodes;  // 0 = the tier's own default budget
   };
-  for (const Case c : {Case{atx::vol::DerivQuality::High, 1.0e-10},
-                       Case{atx::vol::DerivQuality::Audit, 1.0e-10},
-                       Case{atx::vol::DerivQuality::Standard, 5.0e-10}}) {
+  for (const Case c : {Case{atx::vol::DerivQuality::High, 0u},
+                       Case{atx::vol::DerivQuality::Audit, 0u},
+                       Case{atx::vol::DerivQuality::Standard, 513u}}) {
     DerivConfig cfg = deriv_default_config();
     cfg.quality = c.quality;
+    cfg.strip_nodes = c.strip_nodes;
     for (std::size_t a = 0; a + 1 < Ts.size(); ++a) {
       for (std::size_t b = a + 1; b < Ts.size(); ++b) {
         const auto f = atx::vol::forward_var_fair_strike(ps, Ts[a], Ts[b], cfg);
         ASSERT_TRUE(f.has_value()) << f.error().to_string();
-        EXPECT_NEAR(f->fair_strike_dec, sigma2, c.tol)
-            << "quality=" << static_cast<int>(c.quality) << " T1=" << Ts[a] << " T2=" << Ts[b];
+        EXPECT_NEAR(f->fair_strike_dec, sigma2, 1.0e-10)
+            << "quality=" << static_cast<int>(c.quality) << " nodes=" << c.strip_nodes
+            << " T1=" << Ts[a] << " T2=" << Ts[b];
         // The forward TOTAL variance over the window, and the legs, come along.
-        EXPECT_NEAR(f->uncapped_var_dec, sigma2 * (Ts[b] - Ts[a]), c.tol);
+        EXPECT_NEAR(f->uncapped_var_dec, sigma2 * (Ts[b] - Ts[a]), 1.0e-10);
         EXPECT_NEAR(f->leg_T1_var_dec, sigma2, 1.0e-8);
         EXPECT_NEAR(f->leg_T2_var_dec, sigma2, 1.0e-8);
         EXPECT_FALSE(has_flag(f->flags, DerivFlags::CalendarInconsistent));
       }
     }
   }
+
+  // The Standard TIER DEFAULT does NOT reach the bar, and that is the
+  // user-facing fact the header doc block records. Pinned here so the
+  // documented number cannot go stale silently: a change that made the default
+  // budget good enough would fail this, and a change that made it worse than
+  // the recorded 1.509462e-10 would fail it too.
+  DerivConfig defaulted = deriv_default_config();
+  defaulted.quality = atx::vol::DerivQuality::Standard;
+  const auto worst = atx::vol::forward_var_fair_strike(ps, 0.75, 1.00, defaulted);
+  ASSERT_TRUE(worst.has_value()) << worst.error().to_string();
+  const double default_err = std::fabs(worst->fair_strike_dec - sigma2);
+  EXPECT_GT(default_err, 1.0e-10) << "the documented Standard-default shortfall is gone";
+  EXPECT_LT(default_err, 2.0e-10) << "the Standard default got worse than documented";
+}
+
+// F4 (fix round 1): the regime FlatSurfaceExact structurally cannot reach.
+//
+// TWO SEPARATE FACTS, and they must not be confused with the Standard-tier
+// shortfall above. That one is quadrature and one node doubling fixes it. This
+// one is SPAN TRUNCATION and no budget fixes it.
+//
+// (a) Accuracy degrades with sigma at EVERY tier. Same fixture shape, same
+//     fifteen pairs, max |K_fwd - sigma^2| measured on the shipped library:
+//
+//       sigma   High         Audit        Standard(default)
+//       0.10    4.8572e-17   2.0123e-16   1.0187e-09
+//       0.20    4.1633e-17   1.2025e-13   1.5095e-10
+//       0.30    5.9378e-13   2.7092e-13   3.3903e-10
+//       0.40    5.8698e-11   4.2585e-13   5.3334e-10
+//       0.55    1.2451e-10   2.8867e-10   2.4859e-10
+//       0.70    3.3352e-10   3.3194e-10   8.5999e-10
+//       0.90    1.0696e-09   1.0686e-09   1.0415e-09
+//
+//     Mechanism: the per-leg error carries a span-truncation term that scales
+//     with sigma*sqrt(T) against the resolved span. At sigma = 0.20 that term
+//     is negligible and, crucially, nearly tenor-INVARIANT, so it cancels in
+//     (w2 - w1). As sigma rises it grows AND becomes strongly tenor-dependent
+//     -- partly because the 6*sigma*sqrt(T) widening engages on the long leg
+//     only, giving the two legs genuinely different spans -- so it stops
+//     cancelling. At sigma = 0.55 / High the legs resolve 769 nodes over +-2.0
+//     and 1269 over +-3.3.
+//
+// (b) It is NOT reachable by node budget, which is what makes it a documented
+//     limit rather than a defect to chase. Single pair (0.35, 0.75), sigma =
+//     0.55, High, `cfg.strip_nodes` swept: 1025 -> 8.198509e-11,
+//     2049 -> 1.053657e-10, 4097 -> 1.066113e-10, 8193 -> 1.066890e-10. The
+//     last doubling moves the answer by 7.8e-14 while it sits above 1e-10 --
+//     a plateau, not a convergence sequence. (Note it approaches the floor from
+//     BELOW: at small budgets quadrature error partly offsets truncation, which
+//     is why "more nodes made it worse" is expected here.)
+TEST(ForwardVar, FlatSurfaceAccuracyDegradesAtHighVol) {
+  const double sigma = 0.55;
+  const double sigma2 = sigma * sigma;
+  const std::vector<double> Ts{0.10, 0.25, 0.35, 0.50, 0.75, 1.00};
+  std::vector<std::pair<double, double>> pillars;
+  for (const double T : Ts) {
+    pillars.emplace_back(T, sigma2 * T);
+  }
+  const atx::vol::PricedSurface ps =
+      make_term_variance_priced_surface(7502, 100.0, 0.043, pillars);
+
+  // (a) the envelope, at each tier's own default budget. Asserted as a BAND:
+  // the upper bound is the accuracy contract this regime actually offers, and
+  // the lower bound pins that the brief's 1e-10 is genuinely NOT reached here,
+  // so the documented limit cannot rot into a stale claim.
+  for (const atx::vol::DerivQuality q :
+       {atx::vol::DerivQuality::High, atx::vol::DerivQuality::Audit,
+        atx::vol::DerivQuality::Standard}) {
+    DerivConfig cfg = deriv_default_config();
+    cfg.quality = q;
+    double worst = 0.0;
+    for (std::size_t a = 0; a + 1 < Ts.size(); ++a) {
+      for (std::size_t b = a + 1; b < Ts.size(); ++b) {
+        const auto f = atx::vol::forward_var_fair_strike(ps, Ts[a], Ts[b], cfg);
+        ASSERT_TRUE(f.has_value()) << f.error().to_string();
+        worst = std::fmax(worst, std::fabs(f->fair_strike_dec - sigma2));
+      }
+    }
+    EXPECT_GT(worst, 1.0e-10) << "tier " << static_cast<int>(q)
+                              << " now reaches the brief's bar at sigma=0.55";
+    EXPECT_LT(worst, 5.0e-10) << "tier " << static_cast<int>(q) << " degraded past the "
+                                 "documented high-vol envelope";
+  }
+
+  // (b) the truncation floor: 2x the nodes moves the answer by < 1e-12 while it
+  // stays above 1e-10. A quadrature-dominated error would have fallen ~16x.
+  DerivConfig coarse = deriv_default_config();
+  coarse.quality = atx::vol::DerivQuality::High;
+  coarse.strip_nodes = 4097u;
+  DerivConfig fine = coarse;
+  fine.strip_nodes = 8193u;
+  const auto f_coarse = atx::vol::forward_var_fair_strike(ps, 0.35, 0.75, coarse);
+  const auto f_fine = atx::vol::forward_var_fair_strike(ps, 0.35, 0.75, fine);
+  ASSERT_TRUE(f_coarse.has_value());
+  ASSERT_TRUE(f_fine.has_value());
+  const double e_coarse = std::fabs(f_coarse->fair_strike_dec - sigma2);
+  const double e_fine = std::fabs(f_fine->fair_strike_dec - sigma2);
+  EXPECT_GT(e_fine, 1.0e-10);
+  EXPECT_LT(std::fabs(e_fine - e_coarse), 1.0e-12)
+      << "the high-vol error is no longer a node-budget-insensitive plateau: "
+      << "4097 -> " << e_coarse << ", 8193 -> " << e_fine;
 }
 
 // NOT AN EXACTNESS ORACLE ON ITS OWN -- read the block above. On a flat
@@ -5047,7 +5166,7 @@ TEST(ForwardVar, NegativeForwardFailsLoud) {
 
 // R4: the detector's threshold against the fit accuracy floor, BOTH SIDES.
 //
-// `kCalendarTotalVarianceTol` (arb.hpp, 1e-7 in total variance) is the bar the
+// `kCalendarTotalVarianceTol` (types.hpp, 1e-7 in total variance) is the bar the
 // library's own fit-side calendar checks use, so a surface can PASS those and
 // still carry a w-decrease that size. The detector's dead band is 2x that
 // floor plus both legs' measured Richardson estimates -- 2.00016e-07 on this

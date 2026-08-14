@@ -525,6 +525,66 @@ TEST(VolCurve, ConvexRepairSpecInvalidSpecRejected) {
   EXPECT_EQ(inverted.error().code(), atx::core::ErrorCode::InvalidArgument);
 }
 
+// Task F-4 fix round 1, finding F1. `ConvexRepairSpec{}` exists to reproduce
+// the `convex_repair == nullopt` path's fixed lattice, and all FOUR of its
+// defaults were hand-kept duplicates of that path's own constants -- three
+// literals living in vol_curve.cpp's anonymous namespace, plus a sixth copy of
+// the library's calendar tolerance. They feed the SAME variable through the two
+// branches of one ternary (`calendar_tol`, vol_curve.cpp), so a drift in either
+// direction changes which crossings a fit accepts, selected by nothing but
+// whether an `optional` is engaged.
+//
+// Both halves are pinned here, because either alone is insufficient: the
+// compile-time half would pass if the shared constants were themselves wrong,
+// and the behavioural half would pass today on equal-but-unlinked literals.
+TEST(VolCurve, ConvexRepairSpecDefaultsAreTheNullOptLattice) {
+  const ConvexRepairSpec spec{};
+
+  // (a) Compile-time: every default NAMES its source. `EXPECT_EQ` on doubles is
+  // deliberate -- these must be the same constant, not merely close.
+  EXPECT_EQ(spec.k_min, atx::vol::kConvexCalendarLatticeKMin);
+  EXPECT_EQ(spec.k_max, atx::vol::kConvexCalendarLatticeKMax);
+  EXPECT_EQ(spec.grid_points, atx::vol::kConvexCalendarLatticeIntervals + 1u);
+  EXPECT_EQ(spec.tolerance, atx::vol::kCalendarTotalVarianceTol);
+
+  // (b) Behavioural: the two branches of the ternary agree on a real fit. The
+  // fixture carries a calendar crossing of +9e-8 at k = -0.45 -- deliberately
+  // sized BELOW the 1e-7 acceptance, so both branches must SERVE it. A branch
+  // whose tolerance had drifted tighter would instead promote a node and refit,
+  // moving the served curve; one that had drifted looser, or whose band or grid
+  // had moved off the lattice, would stop sampling k = -0.45 at all.
+  constexpr double T = 0.10;
+  constexpr double F = 100.0;
+  constexpr double df = 0.999;
+  const std::vector<FitObs> obs = make_smile_obs(T, F, df, 15);
+
+  CurveConfig cfg;
+  cfg.kind = VolCurveKind::ConvexDense;
+  const auto base = fit_slice_curve(cfg, obs, F, T, df);
+  ASSERT_TRUE(base.has_value()) << base.error().to_string();
+  const IVolCurve& base_curve = **base;
+  const auto w_prev = [&base_curve](double k) {
+    const double z = (k + 0.45) / 3.0e-3;
+    return base_curve.w(k) - 1.0e-9 + 9.0e-8 * std::exp(-z * z);
+  };
+
+  const auto null_opt = fit_slice_curve(cfg, obs, F, T, df, w_prev);
+  ASSERT_TRUE(null_opt.has_value()) << null_opt.error().to_string();
+
+  cfg.convex_repair = ConvexRepairSpec{};
+  const auto defaulted = fit_slice_curve(cfg, obs, F, T, df, w_prev);
+  ASSERT_TRUE(defaulted.has_value()) << defaulted.error().to_string();
+
+  // The crossing must actually be present, or (b) is vacuous.
+  const double crossing = w_prev(-0.45) - (*null_opt)->w(-0.45);
+  EXPECT_GT(crossing, 1.0e-8) << "fixture must carry a sub-tolerance crossing";
+
+  for (const double k : {-0.60, -0.45, -0.25, 0.0, 0.25, 0.60}) {
+    EXPECT_NEAR((*null_opt)->w(k), (*defaulted)->w(k), 1.0e-12)
+        << "nullopt and ConvexRepairSpec{} disagree at k=" << k;
+  }
+}
+
 // Task P-5 (FIT-P1): the calendar-admission scan_k (fit_slice_curve's
 // ConvexDense branch) used to invert the fitted node price to an implied vol
 // via ConvexSliceFit::iv() and square it back to a total variance just to

@@ -92,32 +92,13 @@ constexpr QuoteFlag &operator|=(QuoteFlag &a, QuoteFlag b) noexcept {
   return static_cast<std::uint8_t>(f);
 }
 
-// ── The calendar tolerance, stated ONCE ──────────────────────────────────
-
-// THE tolerance every calendar-spread rule in this library measures against,
-// in TOTAL-VARIANCE units: a total-variance decrease of at most this much
-// across two maturities is fit noise, not arbitrage. It is simultaneously the
-// library's ACCURACY FLOOR for a calendar statement -- no consumer can resolve
-// a w-difference finer than this, so no consumer may set a tighter bar and
-// call the result a violation.
-//
-// Task F-4 single-sources it. It previously existed as FIVE hand-kept copies
-// of the literal `1.0e-7` -- arb.cpp's file-local `kCalendarPairTol` and
-// `arb_check_calendar`'s own `kCalendarTol`, projection.cpp's
-// `kNoArbCalendarTol` (comment: "matches arb.cpp"), vol_curve.cpp's
-// ConvexDense refit default, and spline_curve.cpp's, whose comment stated the
-// duplication outright ("Replicated (it is not exported) so the spline agrees
-// on the same convergence bar"). Two hand-synchronised copies of one rule is
-// what produced this sprint's F-3 Critical; five is the same trap with more
-// surface. Every one of those sites now names THIS constant, so the value
-// cannot drift between the detector, the projector and the fit.
-//
-// A consumer that needs a LOOSER bar (Task F-4's forward-variance detector
-// does: it differences two independently quadratured strips, so it carries
-// quadrature error on top of the fit's) states its own multiple OF THIS
-// CONSTANT rather than a second literal, so the relationship survives a change
-// here.
-inline constexpr double kCalendarTotalVarianceTol = 1.0e-7;
+// `kCalendarTotalVarianceTol` -- THE calendar tolerance every rule in this
+// header measures against -- lives in `types.hpp` (included above), NOT here.
+// Task F-4 first put it in this header; F-4's review then found a sixth copy at
+// `ConvexRepairSpec::tolerance` (vol_curve.hpp), and this header INCLUDES
+// vol_curve.hpp, so the constant had to move below that cycle for the site that
+// needed it most to be able to name it. Same namespace, same spelling, still
+// reachable through this header by every existing caller.
 
 // ── Violation record ─────────────────────────────────────────────────────
 

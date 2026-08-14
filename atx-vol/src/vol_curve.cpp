@@ -23,9 +23,13 @@ using atx::core::Ok;
 
 namespace {
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
-constexpr double kRiskCalendarMin = -0.60;
-constexpr double kRiskCalendarMax = 0.60;
-constexpr std::uint32_t kRiskCalendarIntervals = 64;
+// Task F-4 fix round 1 (F1): these three WERE literals here, hand-kept equal to
+// `ConvexRepairSpec`'s member defaults in vol_curve.hpp. Both now name the one
+// declaration there, so `ConvexRepairSpec{}` cannot drift away from the lattice
+// this branch scans.
+constexpr double kRiskCalendarMin = kConvexCalendarLatticeKMin;
+constexpr double kRiskCalendarMax = kConvexCalendarLatticeKMax;
+constexpr std::uint32_t kRiskCalendarIntervals = kConvexCalendarLatticeIntervals;
 constexpr std::uint32_t kRiskShapeIntervals = 256;
 
 // The tradeable pair band for a parametric calendar projection: the risk band
@@ -407,7 +411,10 @@ Result<std::unique_ptr<IVolCurve>> fit_slice_curve(const CurveConfig &cfg,
     // price-shape cone and the calendar cone: every iterate remains bounded,
     // monotone and convex because calendar repair happens inside the QP, never
     // by mutating total variance after the fit.
-    // Task F-4: THE calendar tolerance (arb.hpp), not a local literal.
+    // Task F-4: THE calendar tolerance (types.hpp), not a local literal. Its
+    // sibling on the other branch of the ternary below,
+    // `ConvexRepairSpec::tolerance`, names the SAME constant (F-4 fix round 1,
+    // finding F1) -- so the two branches of `calendar_tol` cannot diverge.
     constexpr double kCalendarTol = kCalendarTotalVarianceTol;
     constexpr int kMaxCalendarRefits = 4;
 

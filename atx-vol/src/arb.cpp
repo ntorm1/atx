@@ -26,7 +26,7 @@ using atx::core::Ok;
 namespace {
 
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
-// Task F-4: was a local `1.0e-7` literal; now THE constant (arb.hpp), which
+// Task F-4: was a local `1.0e-7` literal; now THE constant (types.hpp), which
 // every sibling calendar rule in the library also names.
 constexpr double kCalendarPairTol = kCalendarTotalVarianceTol;
 

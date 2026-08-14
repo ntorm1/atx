@@ -25,6 +25,34 @@ using atx::core::ErrorCode;
 using atx::core::Result;
 using atx::core::Status;
 
+// ── The calendar tolerance, stated ONCE ─────────────────────────────────────
+
+// THE tolerance every calendar-spread rule in this library measures against, in
+// TOTAL-VARIANCE units: a total-variance decrease of at most this much across
+// two maturities is fit noise, not arbitrage. It is simultaneously the
+// library's ACCURACY FLOOR for a calendar statement -- no consumer can resolve a
+// w-difference finer than this, so no consumer may set a tighter bar and call
+// the result a violation.
+//
+// Task F-4 single-sourced it out of FIVE hand-kept copies of the literal
+// `1.0e-7` -- arb.cpp's `kCalendarPairTol` and `arb_check_calendar`'s own
+// `kCalendarTol`, projection.cpp's `kNoArbCalendarTol` (comment: "matches
+// arb.cpp"), vol_curve.cpp's ConvexDense refit default, and spline_curve.cpp's,
+// whose comment stated the duplication outright. F-4's review found a SIXTH,
+// `ConvexRepairSpec::tolerance` (vol_curve.hpp), which feeds the SAME variable
+// as vol_curve.cpp's copy through the other branch of one ternary; closing it is
+// why this constant lives in `types.hpp` rather than in `arb.hpp` where F-4
+// first put it -- `arb.hpp` includes `vol_curve.hpp`, so the header that needed
+// the constant most could not reach it without a cycle. `types.hpp` is the
+// common ancestor of both, and `arb.hpp` includes it, so every existing
+// `atx::vol::kCalendarTotalVarianceTol` spelling is unchanged.
+//
+// A consumer that needs a LOOSER bar (Task F-4's forward-variance detector does:
+// it differences two independently quadratured strips, so it carries quadrature
+// error on top of the fit's) states its own multiple OF THIS CONSTANT rather
+// than a second literal, so the relationship survives a change here.
+inline constexpr double kCalendarTotalVarianceTol = 1.0e-7;
+
 // ── Cooperative cancellation (v1 plan item 5.5) ─────────────────────────────
 //
 // A `stop_token`-shaped, non-owning view of a caller-owned stop flag. The long-

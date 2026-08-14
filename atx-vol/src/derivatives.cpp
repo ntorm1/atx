@@ -19,7 +19,7 @@
 #include <vector>
 
 #include "atx/core/error.hpp"
-#include "atx/vol/arb.hpp"      // Task F-4: kCalendarTotalVarianceTol (THE calendar floor)
+#include "atx/vol/types.hpp"    // Task F-4: kCalendarTotalVarianceTol (THE calendar floor)
 #include "atx/vol/black76.hpp"
 #include "atx/vol/detail/counters.hpp" // Task P-6: ledger::Solve::VarSwapStripEvals
 #include "atx/vol/detail/deriv_ref_bridge.hpp" // Task 9: SurfaceRef-native entry points
@@ -2136,7 +2136,7 @@ namespace {
 //
 // Two contributions, both named rather than lumped into one magic number:
 //   * 2x the library's own calendar accuracy floor (`kCalendarTotalVarianceTol`,
-//     arb.hpp -- the SAME constant the fit-side no-arb checks measure against,
+//     types.hpp -- the SAME constant the fit-side no-arb checks measure against,
 //     not a second literal). Two legs, either of which may sit AT that floor in
 //     the adverse direction, so a surface the fit side calls clean cannot trip
 //     the detector here. A tighter bar would fire on good surfaces (FIT-F3).
