@@ -101,6 +101,7 @@
 #include "atx/vol/priced_surface_view.hpp" // PricedSurfaceView (WS-ZC1 borrowed surfaces)
 #include "atx/vol/query_pricing.hpp"       // QueryExecution
 #include "atx/vol/types.hpp"               // Result, Status, Side
+#include "atx/vol/vol_time.hpp"            // kCalendarYearNs (THE T convention)
 
 namespace atx::vol {
 
@@ -120,10 +121,12 @@ reduce_risk_buckets(const PriceFrame &frame, const Portfolio &pf, RiskBucketKey 
 reduce_pnl_risk_buckets(const PnlFrame &frame, const Portfolio &pf, RiskBucketKey by,
                         PnlTotals *grand);
 
-// Calendar year length in nanoseconds — the library's T convention
-// (data.cpp `year_fraction`: 365.25 * 86400 * 1e9). Used to convert a
-// base->shifted valuation-timestamp gap into the theta/charm time-roll dt.
-inline constexpr double kNsPerYear = 365.25 * 86400.0 * 1.0e9;
+// Calendar year length in nanoseconds — the library's T convention. Used to
+// convert a base->shifted valuation-timestamp gap into the theta/charm time-roll
+// dt. This spelling is public API with many callers, so it stays; it is now an
+// ALIAS rather than a second statement of the value, which is where it used to
+// restate `365.25 * 86400.0 * 1.0e9` in its own right.
+inline constexpr double kNsPerYear = kCalendarYearNs;
 
 // ── Position / contract model ────────────────────────────────────────────
 

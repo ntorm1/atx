@@ -269,17 +269,23 @@ enum class SettlementSession : std::uint8_t {
 
 // ── Production T convention ─────────────────────────────────────────────────
 
-// Calendar-365 year length in nanoseconds (365.25 * 86400s) — the CANONICAL
-// copy of this constant in atx-vol (`portfolio_pricer.hpp`'s `kNsPerYear` and
-// a literal in `forward_div_corrected`, rates_curve.cpp, mirror the same value;
-// they are not aliased to this one, out of scope here). Both mirrors still exist
-// at HEAD: the S4-T22 portfolio-engine deletion left `kNsPerYear` in place (it
-// belongs to the canonical `PortfolioPricer`, not the engine that was removed),
-// and S4-T21's rename carried the rates TU from `curve.cpp` to `rates_curve.cpp`
-// without touching the literal. `data.cpp`'s `year_fraction` delegates to
-// `time_to_expiry_years` (default `TimeSpec`) rather than re-deriving it, so
-// `Calendar365` and the legacy ISO-string `year_fraction` can never drift
-// apart.
+// Calendar-365 year length in nanoseconds (365.25 * 86400s) — THE definition of
+// this constant in atx-vol, and now the only one. It used to be the "canonical"
+// copy among four: `portfolio_pricer.hpp`'s `kNsPerYear` restated the same
+// expression, and `rates_curve.cpp`'s `forward_div_corrected` and
+// `dividend.cpp`'s `hybrid_forward_div_jacobian` each carried a bare
+// `(1.0e9 * 365.25 * 86400.0)` literal. All three now name this one:
+// `kNsPerYear` is an alias (its spelling is public API and stays), and the two
+// literals are gone. `data.cpp`'s `year_fraction` already delegated to
+// `time_to_expiry_years` (default `TimeSpec`) rather than re-deriving, so
+// `Calendar365` and the legacy ISO-string `year_fraction` could never drift.
+//
+// The mirrors' two spellings rounded to the SAME double, so replacing them was
+// bit-exact rather than merely near: 365.25 * 86400 = 31'557'600 and
+// 1e9 * 365.25 = 3.6525e11 are each exactly representable, and their common
+// product 3.15576e16 = 2^14 * 39447 * 48828125 is itself exactly representable,
+// so neither association order rounds at all. The assert below keeps that true
+// if the value is ever re-derived into something order-sensitive.
 //
 // KNOWN NAME/VALUE DISCREPANCY — INTENTIONALLY LEFT AS 365.25 (core-review
 // finding 10, A9 item 2). The `Calendar365` name promises an ACT/365 year, but
@@ -291,13 +297,16 @@ enum class SettlementSession : std::uint8_t {
 // earnings pipeline: a 0.07% T shift repins hundreds of bit/tight-tolerance
 // values (earnings-repro ATM vols, surface-archive CRCs, backtest PnL, fitted
 // slices) — far beyond the ~dozen-pin budget the A9 task set for an in-batch
-// change — AND it would desync this copy from the mirrored 365.25 in
-// portfolio_pricer.hpp/rates_curve.cpp (explicitly out of scope), creating a NEW
-// internal inconsistency worse than the naming one. A deliberate re-derivation is
-// a standalone coordinated sweep (change all three mirrored constants together,
-// or rename the convention to Julian365, then full-corpus repin), tracked for the
-// PM — not this cleanup batch.
+// change. Note what the unification above DID retire from that rationale: the
+// old text also warned that changing this copy would desync it from the mirrors,
+// creating a new internal inconsistency. That hazard is gone — a re-derivation is
+// now a one-line change here that every consumer inherits. What still defers it
+// is the repin cost alone, so the follow-up is a full-corpus repin sweep (or a
+// rename to Julian365), tracked for the PM — not this cleanup batch.
 inline constexpr double kCalendarYearNs = 365.25 * 86400.0 * 1.0e9;
+static_assert(kCalendarYearNs == 1.0e9 * 365.25 * 86400.0,
+              "calendar-year ns must not depend on multiplication order — the "
+              "mirrors this replaced used the other spelling");
 
 // Which clock governs a maturity's year-fraction.
 enum class TimeConvention : std::uint8_t {
