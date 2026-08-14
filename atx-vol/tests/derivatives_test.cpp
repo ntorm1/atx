@@ -1730,7 +1730,13 @@ TEST(RealizedTracker, DividendAdjustedReturn) {
   EXPECT_NEAR(a.sum_weighted_sq_log_returns_done, w_post_dividend * r2, 1.0e-15);
   EXPECT_NEAR(a.rv_gamma_done_dec, 252.0 * w_post_dividend * r2, 1.0e-13);
   // Stated as its own assertion so the rejected alternative is named in the
-  // failure output, not merely excluded by a tolerance.
+  // failure output, not merely excluded by a tolerance. The threshold is what
+  // makes this a real witness in BOTH directions: under the ruling the distance
+  // is 0.05*r^2 == 5.6e-6, far ABOVE it, while a reversed ruling puts the
+  // distance far BELOW it. (Round 3 phrasing fix: the load-bearing fact is
+  // "far below the threshold", not "exactly zero" -- the impl and this test
+  // associate the multiply differently, so a 1-ulp gap was always permissible
+  // and would still have failed the assertion.)
   EXPECT_GT(std::fabs(a.sum_weighted_sq_log_returns_done - w_cum_dividend * r2), 1.0e-6 * r2);
 
   // The gamma leg's own anchor is untouched by the dividend: S0 is the seed.
@@ -1738,10 +1744,16 @@ TEST(RealizedTracker, DividendAdjustedReturn) {
 }
 
 // Fix round 1 (Minor): every other dividend fixture runs exactly ONE return, so
-// nothing exercised the running-mean normalization across a dividend, back-to-
-// back ex-div days, or -- the one that matters -- `prev_spot_` carrying the RAW
-// close into the NEXT return. A tracker that stored the adjusted close would
-// agree with every single-return test and disagree here.
+// nothing exercised the running-mean normalization across a dividend or
+// back-to-back ex-div days. This covers both, and covers `prev_spot_` carrying
+// the RAW close into the NEXT return.
+//
+// Round 3 correction: this test is NOT the unique detector of an adjusted-close
+// regression, as its first version claimed. Storing `prev_adjusted` instead of
+// the raw close was measured to fail four tests, including the single-return
+// `DividendAdjustedReturn` (via `prev_spot()`) and even the dividend-free
+// `ObserveBatch_HandComputedThreeReturns`. The value here is the multi-fixing
+// COVERAGE above, not exclusivity.
 TEST(RealizedTracker, DividendAdjustedAccrualAcrossConsecutiveFixings) {
   auto built = RealizedTracker::create(252.0, 10u);
   ASSERT_TRUE(built.has_value());
@@ -1904,10 +1916,15 @@ TEST(RealizedTracker, RejectsDividendWhenTheAdjustmentIsOff) {
   EXPECT_TRUE(t.observe_dated(2000, 94.0, 0.0).has_value());
 }
 
-// Fix round 1 (I-2). The transposed call `observe_dated(ts, div, spot)` compiles
-// silently -- both parameters are `double`. These pin BOTH halves of what is
-// actually guarded; the test after them pins what deliberately is NOT.
-TEST(RealizedTracker, TransposedDividendAndSpotIsNarrowedNotClosed) {
+// Fix round 1 (I-2), renamed in round 3. The transposed call
+// `observe_dated(ts, div, spot)` compiles silently -- both parameters are
+// `double`. This pins BOTH mechanisms that refuse it, one per tracker kind.
+// (The old name said "IsNarrowedNotClosed", which round 3 retired along with
+// the claim: the guard closes the hazard for every fixing the API accepts --
+// see TransposedFixingIsRefusedWheneverTheOriginalIsAccepted for the swept
+// property, and RejectedFixingCanTransposeIntoAnAcceptedOne for the one
+// genuine residue.)
+TEST(RealizedTracker, TransposedDividendAndSpotIsRefusedOnBothTrackerKinds) {
   // Half 1, free from the D > 0 ruling: on an INDEX tracker (the default) the
   // transposition is refused outright, because the swap puts a positive value
   // into ex_div_cash and an unadjusted tracker rejects that.
@@ -1944,21 +1961,69 @@ TEST(RealizedTracker, TransposedDividendAndSpotIsNarrowedNotClosed) {
   }
 }
 
-// The honest limit of the guard above, pinned so nobody later reads it as a
-// closed hole: a transposition whose two values are BOTH individually plausible
-// passes silently. D = 40 against a 50 close is a legal dividend-adjusted
-// fixing, and so is the transposed reading of it. Only a distinct parameter
-// type separates those two, and this task does not introduce one.
-TEST(RealizedTracker, PlausibleTransposedValuesStillPassTheGuard) {
+// Fix round 3. REPLACES a round-2 test named
+// `PlausibleTransposedValuesStillPassTheGuard`, which asserted a residue that
+// does not exist and -- worse -- could not have detected its own claim becoming
+// false: its fixture (50, 40) is an ordinary accepted fixing, not a pair whose
+// BOTH orderings are accepted, so it passed for reasons unrelated to its name.
+//
+// The real property, forced rather than empirical: acceptance requires D <= S,
+// so both orderings being accepted needs D <= S AND S <= D, i.e. S == D -- the
+// same call twice. Hence for every accepted fixing with S != D, the transposed
+// call is refused. Swept rather than sampled, so no single lucky pair carries it.
+TEST(RealizedTracker, TransposedFixingIsRefusedWheneverTheOriginalIsAccepted) {
+  const double values[] = {0.5, 1.0, 2.0, 5.0, 12.5, 40.0, 50.0, 94.0, 99.0, 100.0};
+  // Seeded high so `D < prev_spot` never binds: the ONLY rule that can
+  // discriminate the two orderings here is the ex_div_cash > spot guard.
+  const double seed = 1000.0;
+  int accepted = 0;
+  int both_orderings_accepted = 0;
+
+  for (const double s : values) {
+    for (const double d : values) {
+      auto forward = RealizedTracker::create(252.0, 4u);
+      auto reverse = RealizedTracker::create(252.0, 4u);
+      ASSERT_TRUE(forward.has_value());
+      ASSERT_TRUE(reverse.has_value());
+      ASSERT_TRUE(forward->set_dividend_adjustment(true).has_value());
+      ASSERT_TRUE(reverse->set_dividend_adjustment(true).has_value());
+      ASSERT_TRUE(forward->observe_dated(1000, seed).has_value());
+      ASSERT_TRUE(reverse->observe_dated(1000, seed).has_value());
+
+      const bool ok_fwd = forward->observe_dated(2000, s, d).has_value();
+      const bool ok_rev = reverse->observe_dated(2000, d, s).has_value();
+      if (ok_fwd) ++accepted;
+      if (ok_fwd && ok_rev) {
+        ++both_orderings_accepted;
+        // The only way through: the two orderings are literally the same call.
+        EXPECT_DOUBLE_EQ(s, d) << "both orderings accepted for distinct S=" << s
+                               << " D=" << d;
+      }
+    }
+  }
+  // Non-vacuous by construction: the sweep must actually accept fixings, or the
+  // property would hold trivially for an API that rejected everything.
+  EXPECT_GT(accepted, 0);
+  EXPECT_EQ(both_orderings_accepted, 10);  // exactly the S == D diagonal
+}
+
+// The residue that DOES exist, pinned so the closure claim stays honest: an
+// intended fixing this API already REJECTS can transpose into an accepted one.
+// Nothing correct-and-accepted is at risk; only a fixing that was never going
+// to be booked as intended.
+TEST(RealizedTracker, RejectedFixingCanTransposeIntoAnAcceptedOne) {
   auto built = RealizedTracker::create(252.0, 10u);
   ASSERT_TRUE(built.has_value());
   RealizedTracker t = std::move(*built);
   ASSERT_TRUE(t.set_dividend_adjustment(true).has_value());
   ASSERT_TRUE(t.observe_dated(1000, 100.0).has_value());
 
-  // ex_div_cash (40) < spot (50), so the guard cannot fire on either ordering.
+  // Intended spot 40 with a 50 dividend: refused, D > S.
+  const auto intended = t.observe_dated(2000, 40.0, 50.0);
+  ASSERT_FALSE(intended.has_value());
+  EXPECT_EQ(intended.error().code(), ErrorCode::InvalidArgument);
+  // Typed transposed, it is accepted -- the residue.
   EXPECT_TRUE(t.observe_dated(2000, 50.0, 40.0).has_value());
-  EXPECT_EQ(t.snapshot().n_obs_done, 1u);
 }
 
 // The seeding call forms no return, so there is nothing for a dividend to

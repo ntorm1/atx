@@ -136,7 +136,6 @@
 // RealizedTracker is "single thread (mutates internal state)": a daily update
 // takes exclusive access.
 
-#include <bit>       // std::has_single_bit (DerivFlags distinct-single-bit pin)
 #include <cstdint>
 #include <limits>
 #include <optional>
@@ -705,66 +704,82 @@ constexpr DerivFlags& operator|=(DerivFlags& a, DerivFlags b) noexcept {
 }
 
 namespace detail {
-// Every DerivFlags enumerator except None, listed once, for the pin below.
-inline constexpr DerivFlags kDerivFlagEnumerators[] = {
-    DerivFlags::Aged,          DerivFlags::FullyAged,
-    DerivFlags::ModelProxy,    DerivFlags::StripTruncatedLeft,
-    DerivFlags::StripTruncatedRight, DerivFlags::VolCarrLee,
-    DerivFlags::DiscreteCorrApplied, DerivFlags::LowT,
-    DerivFlags::DfFallback,    DerivFlags::VolOfVolCalibrated,
-    DerivFlags::CapApplied,    DerivFlags::CapPinned,
-    DerivFlags::WingClamped,   DerivFlags::InteriorBadNodes,
-    DerivFlags::WingExtrapolated, DerivFlags::CalendarInconsistent,
-    DerivFlags::OptionPinned,
-};
-
-[[nodiscard]] constexpr bool deriv_flags_are_distinct_single_bits() noexcept {
-  std::uint32_t seen = 0u;
-  for (const DerivFlags f : kDerivFlagEnumerators) {
-    const std::uint32_t v = static_cast<std::uint32_t>(f);
-    if (!std::has_single_bit(v)) return false;  // not a lone bit
-    if ((seen & v) != 0u) return false;         // collides with an earlier one
-    seen |= v;
+// THE enumeration of DerivFlags, and the reason the pin below is CLOSED rather
+// than best-effort. There is no `default:`, and `-Wswitch` is an ERROR under
+// this project's /W4 /WX, so adding an enumerator to DerivFlags without adding
+// it here fails the build outright. That is the whole difference between a
+// switch and a hand-maintained array: an array can silently omit an entry, and
+// a switch cannot. Fix round 3 replaced the array this started as, which is why
+// the "C++ has no reflection over enumerators" gap this block used to document
+// no longer exists -- reflection is not what was needed, exhaustiveness was.
+[[nodiscard]] constexpr bool deriv_flag_is_enumerator(DerivFlags f) noexcept {
+  switch (f) {
+  case DerivFlags::None:
+  case DerivFlags::Aged:
+  case DerivFlags::FullyAged:
+  case DerivFlags::ModelProxy:
+  case DerivFlags::StripTruncatedLeft:
+  case DerivFlags::StripTruncatedRight:
+  case DerivFlags::VolCarrLee:
+  case DerivFlags::DiscreteCorrApplied:
+  case DerivFlags::LowT:
+  case DerivFlags::DfFallback:
+  case DerivFlags::VolOfVolCalibrated:
+  case DerivFlags::CapApplied:
+  case DerivFlags::CapPinned:
+  case DerivFlags::WingClamped:
+  case DerivFlags::InteriorBadNodes:
+  case DerivFlags::WingExtrapolated:
+  case DerivFlags::CalendarInconsistent:
+  case DerivFlags::OptionPinned:
+    return true;
   }
-  return true;
+  return false;  // a value that is not any enumerator
 }
 
+// The union of every single-bit enumerator, DERIVED from the switch above by
+// probing all 32 bit positions rather than from a second list -- so there is
+// nothing here that can drift out of step with the enum.
 [[nodiscard]] constexpr std::uint32_t deriv_flags_union() noexcept {
   std::uint32_t m = 0u;
-  for (const DerivFlags f : kDerivFlagEnumerators) {
-    m |= static_cast<std::uint32_t>(f);
+  for (std::uint32_t i = 0u; i < 32u; ++i) {
+    const std::uint32_t bit = 1u << i;
+    if (deriv_flag_is_enumerator(static_cast<DerivFlags>(bit))) {
+      m |= bit;
+    }
   }
   return m;
 }
 }  // namespace detail
 
-// Drift pin: every DerivFlags enumerator is a DISTINCT SINGLE BIT.
+// Drift pin: DerivFlags is exactly 17 contiguous, distinct, single bits.
 //
 // WHY THIS SHAPE rather than the kNames table `DerivKind` carries (Task F-5):
 // that pin exists because an ORDINAL CONSUMER reads the table, and a missing
 // entry reaches py::str/printf as a null pointer. DerivFlags has no ordinal
-// consumer anywhere -- nothing indexes it, there is no to_string, no name
-// table, and no exhaustive switch in any file that names it. Its realistic
-// silent failure is therefore BIT COLLISION: two enumerators sharing a shift
-// alias perfectly, every has_flag() test for one silently answers for the
-// other, and no diagnostic fires anywhere. The pin follows the failure mode
-// rather than copying the shape of a pin written for a different one.
+// consumer anywhere -- nothing indexes it, and there is no to_string and no
+// name table. Its realistic silent failure is therefore BIT COLLISION: two
+// enumerators sharing a shift alias perfectly, every has_flag() test for one
+// silently answers for the other, and no diagnostic fires anywhere. The pin
+// follows the failure mode rather than copying the shape of a pin written for
+// a different one. The enum grew twice this sprint with nothing checking it
+// (F-4's CalendarInconsistent at 1u<<15, F-5's OptionPinned at 1u<<16).
 //
-// The enum grew twice this sprint with nothing checking it (F-4's
-// CalendarInconsistent at 1u<<15, F-5's OptionPinned at 1u<<16).
-//
-// WHAT IT DOES NOT CATCH, stated plainly: an enumerator added to the enum but
-// NOT added to `kDerivFlagEnumerators` is invisible to both assertions -- C++
-// has no reflection over enumerators, so the list is a second copy and carries
-// that copy's usual risk. The mask assertion below is what makes the omission
-// self-correcting in practice rather than permanent: any append that IS listed
-// changes the union and trips it, routing the appender to this block
-// deliberately instead of silently.
-static_assert(detail::deriv_flags_are_distinct_single_bits(),
-              "DerivFlags: an enumerator is not a lone bit, or two share a shift.");
+// HOW ONE ASSERTION COVERS ALL THREE FAILURES. The union is probed bit by bit
+// through the exhaustive switch above, so, the enum being contiguous:
+//   - a COLLISION (FullyAged moved onto Aged's shift) vacates bit 1, so the
+//     union loses it and no longer equals the mask;
+//   - a MULTI-BIT enumerator (LowT as 3u<<7) is never probed as itself and
+//     vacates its old bit, likewise breaking the mask;
+//   - an APPEND that reaches the switch widens the union past the mask.
+// And an append that does NOT reach the switch cannot compile at all, because
+// `-Wswitch` is an error here. There is no remaining "documented gap": fix
+// round 2 claimed one on the grounds that C++ lacks reflection over
+// enumerators, which is true but was the wrong requirement -- exhaustiveness,
+// not reflection, is what closes it.
 static_assert(detail::deriv_flags_union() == 0x0001FFFFu,
               "DerivFlags bit set changed: 17 contiguous bits (1u<<0 .. 1u<<16) expected. "
-              "Add the new enumerator to detail::kDerivFlagEnumerators and update this "
+              "Add the new enumerator to detail::deriv_flag_is_enumerator and update this "
               "mask in the SAME commit.");
 static_assert(static_cast<std::uint32_t>(DerivFlags::None) == 0u,
               "DerivFlags::None must stay the empty set: has_flag's != None test needs it.");
@@ -981,25 +996,43 @@ public:
   //         negative and the return undefined; or ex_div_cash > spot (see the
   //         transposition note below).
   //
-  // TRANSPOSITION, and exactly how far the guarding goes. `spot` and
-  // `ex_div_cash` are both `double`, so `observe_dated(ts, div, spot)` compiles
-  // silently. Two things narrow that, and NEITHER of them closes it:
+  // ACCEPTED COST of that last rule, so a caller meeting it is not surprised: a
+  // LIQUIDATING DISTRIBUTION larger than the residual price is refused here even
+  // though it is a real corporate action. Such a fixing has no agreed return in
+  // this convention anyway -- the adjusted prior close it implies is not a price
+  // the stock ever traded at -- so it is refused rather than booked at a number
+  // nobody would defend. A leg carrying one needs handling above this class.
+  //
+  // TRANSPOSITION. `spot` and `ex_div_cash` are both `double`, so
+  // `observe_dated(ts, div, spot)` compiles silently. Two rules cover it:
   //
   //   1. On an INDEX tracker (the default) a transposition is REFUSED outright,
   //      because the swapped call puts a positive value in `ex_div_cash` and
   //      this entry rejects that unless the adjustment was explicitly selected.
   //      A caller that never calls `set_dividend_adjustment` is fully covered.
   //   2. On a dividend-adjusted tracker, `ex_div_cash > spot` is rejected -- a
-  //      dividend larger than the price it is paid out of. That catches the
-  //      ABSURD end of the range (the reviewed case booked a ~1900x wrong
-  //      variance and left `prev_spot_` poisoned for every later fixing), and
-  //      it catches nothing else.
+  //      dividend larger than the price it is paid out of.
   //
-  // A transposition in which BOTH values stay individually plausible -- a small
-  // dividend against a small price -- still passes, silently, exactly as before.
-  // The structural fix is a distinct parameter type for cash amounts rather than
-  // a bare `double`; that is a v1.x-additive decision left deliberately open,
-  // and it is NOT what these two guards accomplish.
+  // TOGETHER THOSE CLOSE IT for every fixing this API accepts, and the argument
+  // is forced rather than empirical: acceptance requires D <= S, so BOTH
+  // orderings of a pair being acceptable would require D <= S and S <= D, i.e.
+  // S == D -- in which case the two orderings are the same call and there is
+  // nothing to confuse. Hence for any accepted fixing with S != D, its
+  // transposition is rejected. Pinned by
+  // `RealizedTracker.TransposedFixingIsRefusedWheneverTheOriginalIsAccepted`,
+  // which sweeps the property rather than sampling one pair.
+  //
+  // THE RESIDUE, stated precisely because it is not nothing: an intended fixing
+  // that this API ALREADY REJECTS can transpose into an accepted one (intending
+  // S = 40 with D = 50 is refused; typing it as (50, 40) is accepted). No
+  // correct-and-accepted fixing is at risk, only one that was never going to be
+  // booked as intended. Fix round 2 documented a wider residue -- "a small
+  // dividend against a small price still passes" -- which does not exist; that
+  // claim was corrected in round 3 after the property above was checked.
+  //
+  // A distinct parameter type for cash amounts remains worth considering, but
+  // on ERGONOMICS (call sites reading unambiguously) rather than on safety: the
+  // hazard it would have closed is closed.
   //
   // NOT WIRED TO THE BACKTEST. The swap lane's fixing driver
   // (`observe_swap_fixing`, backtest.cpp) is a separate transcription of this
