@@ -440,14 +440,12 @@ using detail::StepMarkMemo;
   return engine_supports_swap_kind(kind);
 }
 
-// True for the two kinds whose terminal value is a VOL (sqrt of the accrued
-// variance) rather than a variance, and true for the two whose `cap_dec` binds.
-[[nodiscard]] constexpr bool is_vol_kind(DerivKind kind) noexcept {
-  return kind == DerivKind::VolSwap || kind == DerivKind::CappedVolSwap;
-}
-[[nodiscard]] constexpr bool is_capped_kind(DerivKind kind) noexcept {
-  return kind == DerivKind::CappedVarSwap || kind == DerivKind::CappedVolSwap;
-}
+// Task F-5 (pre-feature refactor): the two payoff-shape predicates that used
+// to live here as `kind ==` chains -- `is_vol_kind` and `is_capped_kind` --
+// now live beside the enum itself as `deriv_kind_settles_in_vol` /
+// `deriv_kind_is_capped` (derivatives.hpp). The capped one had THREE
+// hand-written copies across three translation units; see that header for the
+// full rationale and for why both are now exhaustive switches.
 
 // Boundary validation for one swap lot. `base_ts` is present whenever the lot
 // must still be live (a strategy's post-step book, a checkpoint's), absent for a
@@ -473,7 +471,7 @@ using detail::StepMarkMemo;
   if (!std::isfinite(lot.cap_dec) || lot.cap_dec < 0.0) {
     return invalid("cap_dec");
   }
-  if (is_capped_kind(lot.kind) != (lot.cap_dec > 0.0)) {
+  if (deriv_kind_is_capped(lot.kind) != (lot.cap_dec > 0.0)) {
     return invalid("cap_dec (required by a capped kind, forbidden otherwise)");
   }
   if (!std::isfinite(lot.notional) || lot.notional <= 0.0) {
@@ -985,8 +983,8 @@ struct SwapStepResult {
 // off the accrual — settlement needs no surface.
 [[nodiscard]] double swap_terminal_value(const SwapLot &lot, const SwapAccrual &acc) noexcept {
   const double terminal =
-      is_vol_kind(lot.kind) ? std::sqrt(acc.rv.rv_done_dec) : acc.rv.rv_done_dec;
-  return is_capped_kind(lot.kind) ? std::min(terminal, lot.cap_dec) : terminal;
+      deriv_kind_settles_in_vol(lot.kind) ? std::sqrt(acc.rv.rv_done_dec) : acc.rv.rv_done_dec;
+  return deriv_kind_is_capped(lot.kind) ? std::min(terminal, lot.cap_dec) : terminal;
 }
 
 // Fix, mark and settle every swap lot against the newly loaded `shifted`

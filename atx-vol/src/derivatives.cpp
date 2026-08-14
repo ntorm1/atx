@@ -2782,9 +2782,7 @@ namespace {
   // contract should fail the same way regardless of which capped product it
   // names. Uncapped kinds (VarSwap/VolSwap/GammaSwap/CorridorVarSwap) must
   // leave cap_dec at 0.
-  const bool is_capped_kind = contract.kind == DerivKind::CappedVarSwap ||
-                              contract.kind == DerivKind::CappedVolSwap;
-  if (is_capped_kind) {
+  if (deriv_kind_is_capped(contract.kind)) {
     if (!(contract.cap_dec > 0.0)) {
       return Err(ErrorCode::InvalidArgument, "capped kind needs cap_dec > 0");
     }

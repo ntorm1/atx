@@ -1017,8 +1017,13 @@ namespace {
                        "swap lot (kind=" +
                      std::to_string(static_cast<int>(leg.kind)) + ")");
     }
-    const bool capped =
-        leg.kind == DerivKind::CappedVarSwap || leg.kind == DerivKind::CappedVolSwap;
+    // Task F-5 (pre-feature refactor): this used to be a third hand-written
+    // copy of the capped-kind disjunction, alongside `validate_deriv_dispatch`
+    // (derivatives.cpp) and `is_capped_kind` (backtest.cpp). Same reason
+    // `engine_supports_swap_kind` is CALLED on the line above rather than
+    // re-listed: the spec validator and the engine boundary must not be able
+    // to reach different verdicts about one leg.
+    const bool capped = deriv_kind_is_capped(leg.kind);
     if (capped && !(std::isfinite(leg.cap_dec) && leg.cap_dec > 0.0)) {
       return Err(ErrorCode::InvalidArgument, tag + " is a capped kind and needs cap_dec > 0");
     }

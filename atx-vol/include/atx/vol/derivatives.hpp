@@ -221,6 +221,67 @@ enum class DerivKind : std::uint8_t {
   CorridorVarSwap = 6,
 };
 
+// THE two per-kind payoff-shape questions, each stated ONCE (Task F-5, pre-
+// feature refactor). Both used to be hand-written `kind ==` chains, and the
+// capped one had THREE independent copies of the same disjunction:
+// `validate_deriv_dispatch` (derivatives.cpp, the cap_dec scope rule),
+// `is_capped_kind` (backtest.cpp, the swap-lot cap_dec rule AND the settlement
+// haircut), and an inline expression in `validate_restrike_spec`
+// (strategy.cpp). Three copies of one rule is the shape that produced F-3's
+// own Critical C-1: two lanes reaching different verdicts about one contract.
+// They now CALL one function, so divergence is impossible by construction
+// rather than merely detectable.
+//
+// They live HERE, beside the enum, rather than in `backtest.hpp` beside
+// `engine_supports_swap_kind`, because they answer a question about the
+// PRODUCT (what does this contract's payoff look like) and not about the
+// ENGINE (can the backtest loop carry one). `derivatives.cpp` is also the
+// lowest layer that needs them, and it cannot include `backtest.hpp` without
+// inverting the dependency.
+//
+// Both are exhaustive `switch`es with NO `default:`, for exactly the reason
+// `engine_supports_swap_kind`'s own doc gives: a `kind ==` chain assigns a
+// future enumerator to the negated branch SILENTLY, whereas `-Wswitch -WX`
+// turns this into a compile error and forces the author to choose. The
+// trailing `return false;` covers an out-of-enum value only, matching what the
+// `==` chains these replace already did for one.
+
+// True for the kinds whose `cap_dec` is meaningful (and required > 0); false
+// for every other kind, which must leave `cap_dec` at 0.
+[[nodiscard]] constexpr bool deriv_kind_is_capped(DerivKind kind) noexcept {
+  switch (kind) {
+  case DerivKind::CappedVarSwap:
+  case DerivKind::CappedVolSwap:
+    return true;
+  case DerivKind::VarSwap:
+  case DerivKind::VolSwap:
+  case DerivKind::GammaSwap:
+  case DerivKind::CorridorVarSwap:
+    return false;
+  }
+  return false;  // out-of-enum value: refuse, matching the `==` chains replaced
+}
+
+// True for the kinds whose settled terminal rate is a VOL -- sqrt of the
+// accrued variance -- rather than a variance. Read by the backtest engine's
+// `swap_terminal_value`, which settles `qty * notional * (terminal -
+// strike_dec)`: a LINEAR payoff in the terminal rate. A kind whose payoff is
+// not linear in it has no honest answer here, and must be refused by
+// `engine_supports_swap_kind` (backtest.hpp) before it can reach that code.
+[[nodiscard]] constexpr bool deriv_kind_settles_in_vol(DerivKind kind) noexcept {
+  switch (kind) {
+  case DerivKind::VolSwap:
+  case DerivKind::CappedVolSwap:
+    return true;
+  case DerivKind::VarSwap:
+  case DerivKind::CappedVarSwap:
+  case DerivKind::GammaSwap:
+  case DerivKind::CorridorVarSwap:
+    return false;
+  }
+  return false;  // out-of-enum value: refuse, matching the `==` chains replaced
+}
+
 // Pricing engine selector. Values >= RvDistributionAffine are reserved;
 // RvDistributionProxy is also reserved EXCEPT as the distribution-model
 // dispatch target for DerivKind::CappedVarSwap (Task 4),
