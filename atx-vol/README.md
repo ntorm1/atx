@@ -828,7 +828,7 @@ frozen?" is answered by where the header lives, not by judgement:
 | Tier | Where | Count | Promise |
 |---|---|---|---|
 | **Tier-A** | exactly the headers `atx/vol/vol.hpp` includes | 58 | **Frozen for 1.x.** Closed under inclusion |
-| **Tier-B** | other headers directly under `include/atx/vol/`, plus `simd/` | 33 + 9 | Public and supported to include; **not** frozen |
+| **Tier-B** | other headers directly under `include/atx/vol/`, plus `simd/` | 34 + 9 | Public and supported to include; **not** frozen |
 | `detail/` | `include/atx/vol/detail/` | 31 (+1 generated) | **No stability promise.** Installed because Tier-A reaches it |
 | `tools/` | `tools/include/atx/vol/tools/` — target `atx::vol::tools` | 6 | CLI support. Not part of the shipped library surface |
 | `research/` | `research/include/atx/vol/research/` — target `atx::vol::research` | 9 | Run orchestration. Not part of the shipped library surface |
@@ -854,7 +854,8 @@ density stencil and its violation floor, previously hand-copied at four call
 sites — so `detail/` 30 → **31**, no Tier-A/Tier-B change. Task F-8 (same
 sprint) added `surface_overlay.hpp` — the smile-shift/sticky-mode algebra
 hoisted out of `derivatives.cpp`'s private bump views — so Tier-B 32 → **33**,
-no Tier-A/`detail/` change.
+then `deriv_pnl.hpp` — the two-date swap P&L attribution — so Tier-B 33 →
+**34**, neither touching Tier-A or `detail/`.
 
 That drift is now caught by a test rather than by a reader.
 `VolUmbrella.TierCountsMatchTheReadmeTable` (`tests/vol_umbrella_test.cpp`)

@@ -182,6 +182,7 @@ add_executable(atx-vol-tests
     cboe_strip_test.cpp
     # vol-derivs production sprint Task F-8: the shared smile-shift overlay
     surface_overlay_test.cpp
+    deriv_pnl_test.cpp               # Task F-8: two-date swap P&L attribution
 )
 # backtest_bench_test.cpp was relocated to bench/backtest_throughput_bench.cpp
 # (it is a throughput benchmark, not a correctness gate).

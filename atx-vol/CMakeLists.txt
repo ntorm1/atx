@@ -29,6 +29,7 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/deriv_analytic_greeks.cpp
     src/deriv_book.cpp
     src/surface_overlay.cpp
+    src/deriv_pnl.cpp
     src/cboe_strip.cpp
     src/detail/rv_lognormal.cpp
     src/vol_surface.cpp
