@@ -18,11 +18,16 @@ sentence would mean deleting most of what is here, so the sentence goes
 instead. What actually governs is the preamble's rule -- a change that moves a
 number a caller depends on MUST be recorded, with its migration -- widened by
 long practice to also record PUBLIC API a 1.x caller can newly reach. A change
-that moves no number and adds no public name is still out, and this sprint
-landed two: `b1558f7` (one shared butterfly FD stencil in place of four
-hand-written copies, established bit-for-bit against the pre-unification
-arithmetic) and `8cf6951` (one ns-per-year constant in place of four,
-bit-exact and now `static_assert`ed). Neither has an entry, deliberately.
+that moves no number and adds no public name is still out. `b1558f7` (one
+shared butterfly FD stencil in place of four hand-written copies, established
+bit-for-bit against the pre-unification arithmetic) and `8cf6951` (one
+ns-per-year constant in place of four, bit-exact and now `static_assert`ed) are
+worth naming because each looks at a glance like it should have an entry; both
+deliberately have none. THAT IS TWO EXAMPLES, NOT A COUNT. Read as "exactly two
+such commits landed", the sentence was already stale: `331f86f` unified a third
+predicate the same way, and it earns an entry below only because it adds two
+public NAMES, never because it moved a number. Judge a commit against the rule,
+not against this list.
 
 ### Added — surface dynamics: `SurfaceOverlay` / `StickyMode`, `DerivPnlExplain`, and a scenario deriv leg (FIT-F4 / GK-G4 / GK-G5 / LIT-8, Task F-8)
 
@@ -58,10 +63,125 @@ no constant one. An unavailable sensitivity yields a NaN component, a
 **`scenario_grid` deriv overload.** Takes a `DerivPosition` book alongside the
 option book and fills `ScenarioGridResult::deriv_pnl` / `deriv_route` /
 `n_deriv_*`. `ScenarioDerivSpec` adds `d_skew` / `d_convexity` scalars applied
-to every cell. `ScenarioGridResult` gained five fields, all EMPTY or zero on the
-option-only overload, whose per-cell output is byte-identical to before.
-`detail::deriv_price_shocked_on_ref` (+ `detail::DerivShock`) is the Exact
-cell's repricing: a sticky-strike respot with no smile roll.
+to every cell. `ScenarioGridResult` gained `deriv_pnl`, `deriv_route`,
+`n_deriv_ok`, `n_deriv_failed` and `n_deriv_exact_fallback_lanes` here, plus
+`n_deriv_missing_sensitivity` in the round-1 entry below -- all EMPTY or zero on
+the option-only overload, whose per-cell output is byte-identical to before. The
+struct's TOTAL is deliberately not restated here: it is a `static_assert`
+(`detail::aggregate_arity_is_v<ScenarioGridResult, ...>`, scenario_grid.hpp,
+added by `f505225` -- the struct had no pin at all, which is how this leg landed
+without one to update), so the count lives where a build breaks if it drifts
+rather than in prose nothing checks. `detail::deriv_price_shocked_on_ref`
+(+ `detail::DerivShock`) is the Exact cell's repricing: a sticky-strike respot
+with no smile roll, with the centre scheme pinned as of the round-1 entry below.
+
+### Added — the backtest swap lane emits its P&L explain: `RunConfig::swap_pnl_explain` (GK-G5, Task F-8)
+
+NO EXISTING NUMBER MOVES, and that is measured with the feature ON rather than
+argued from the flag being off. `swap_pnl` reported the number and nothing about
+where it came from, so a bad day and a bad model looked identical.
+
+`BacktestResult` gains seven attribution columns -- `swap_explain_carry`,
+`_realized`, `_vol_level`, `_skew`, `_convexity`, `_discount`, `_residual` --
+plus a `swap_explain_unattributed` counter, decomposing exactly the `swap_pnl`
+beside them through `deriv_pnl_explain` (above), evaluated per live lot against
+the START of each step and summed over the lane.
+
+* OFF BY DEFAULT (`RunConfig::swap_pnl_explain`, arity pin 17 -> 18). Not
+  timidity about the numbers: ON, each live lot costs one extra
+  `deriv_greeks_on_ref` per step -- up to 20 repricings where the mark alone is
+  one -- plus three surface reads for the smile observables. A run that does not
+  read the explain should not pay for it.
+* OFF, THE COLUMNS ARE EMPTY RATHER THAN ZERO-FILLED -- the distinction
+  `nav_liquidation` already makes, and the one that separates "not measured"
+  from "measured flat". Also always empty on the fixed-book overload
+  (`BacktestSwapExplain.ColumnsAreEmptyRatherThanZeroFilledWhenOff`).
+* EVERY COMPONENT IS A FLOW, block-summed exactly like `swap_pnl`, so
+  `carry + realized + vol_level + skew + convexity + discount + residual ==
+  swap_pnl` holds row by row AND under `record_every_n > 1`. A component
+  accumulated as STATE would have broken that silently at any stride above 1,
+  which is why it is pinned rather than trusted
+  (`BacktestSwapExplain.ComponentsSumToSwapPnlOnEveryRow`,
+  `IdentitySurvivesRecordEveryN`).
+* WHAT IS DELIBERATELY NOT ATTRIBUTED, and counted instead of hidden: a lot's
+  first mark and the first step after a checkpoint resume (no prior state to
+  difference), a step where no fixing landed (carry prices a fixing arriving at
+  a zero return, so on a closed series that term describes an event that did not
+  happen), a lot whose sensitivities came back "not computed", and every
+  settlement (a payoff is not a market move). Each books its whole move to
+  `swap_explain_residual`, so the identity stays exact, and increments
+  `swap_explain_unattributed` -- so a large residual on an expiry date reads as
+  a settlement rather than as a modelling gap.
+* THE CONVEXITY COLUMN'S SCALE. The smile observables are read in the same
+  `k = ln(K/F)` convention the sensitivities differentiate, and the curvature
+  read is the coefficient `c` in `a + b*k + c*k^2` -- HALF the second difference
+  -- because that is what `SurfaceOverlay::convexity_shift` adds. The other
+  choice halves or doubles every convexity attribution while leaving the
+  identity intact, so the identity alone would not have caught it.
+* THE PRIOR-STEP STATE IS ENGINE-LOCAL, not on `SwapAccrual`. That struct
+  round-trips through checkpoints and carries a hand-written twelve-field
+  comparator with its own drift pin; widening it for a diagnostic that moves no
+  mark would be the wrong trade. The cost is that a RESUMED RUN CANNOT ATTRIBUTE
+  ITS FIRST STEP, which is the same treatment a lot's own first mark gets.
+
+MIGRATION: none. With the flag ON, `nav`, `cash`, `pnl_total`, `swap_pv`,
+`swap_pnl` and `pnl_settlement` are bit-identical across every row of the same
+book (`BacktestSwapExplain.NavIsUnmovedByTheExplain`, which runs the book twice
+and compares on the bits) -- the explain only ever reads. The new columns are
+NOT part of the frozen `kBacktestSeriesColumns` / RunArchive registry, so
+`ra_schema_hash()` and every golden are untouched. Landed in `f505225`.
+
+### Fixed — the scenario grid's deriv leg returned NaN cells and differenced a model, not a price (Task F-8 round 1)
+
+Both defects are in the deriv leg this same release adds (the `scenario_grid`
+overload above, `1f04a01`), so nothing a pre-1.1.0 caller reads moves -- but
+every number that leg produced before `8d2f5de` was affected, on the kinds named
+below.
+
+**NaN poisoning, and what a caller now gets instead.** `DerivGreeks` carries
+"not computed" as NaN in six of the ten slots the deriv Taylor kernel reads, and
+`NaN * 0.0` is NaN, so an unguarded product destroyed all ten terms over an axis
+the caller never asked about. Only the two smile terms were gated; theta, charm
+and vanna were bare multiplies. MEASURED: a contract shorter than the default
+roll (`1/365.25`) on a grid whose `dt` is ZERO returned 9 of 9 NaN cells while
+reporting `n_deriv_ok = 1`. All ten terms are now gated on their own shock, once
+and in the same form (`ScenarioGridDeriv.EveryNaNCapableTermIsGatedByItsOwnShock`).
+
+A NON-ZERO shock against a NaN sensitivity has no answer to give, so the grid
+now detects that case BEFORE pricing and EXCLUDES the position, counting it in
+a new `ScenarioGridResult::n_deriv_missing_sensitivity`. It is kept separate
+from `n_deriv_failed` because the two have different fixes -- a failed solve is
+a broken position, this is a grid asking for an axis nothing measured -- and it
+is counted rather than contributed as `0.0`, which would read as "measured, and
+this position has no exposure". `n_deriv_ok + n_deriv_failed +
+n_deriv_missing_sensitivity == deriv_book.size()`, always. The header's promise
+that no NaN enters a cell total was prose; a non-finite cell total is now
+`ErrorCode::Internal` rather than a NaN matrix stamped `Ok`
+(`ScenarioGridDeriv.AContractTooShortToRollIsExcludedAndCountedNotZeroed`,
+`AShortContractDoesNotPoisonAGridThatAsksForNoTimeRoll`).
+
+**The Exact cell differenced a change of MODEL.**
+`detail::deriv_price_shocked_on_ref` did not pin the centre scheme, so a shocked
+reprice re-resolved its grid, re-read its wing band and RE-CALIBRATED the
+vol-of-vol; the difference against the base then carried a model change rather
+than a price change. This was the third site of a rule `deriv_greeks` and
+`deriv_pv_skew_shifted_for_test` already applied. Measured across the kind
+space, the Taylor-vs-Exact gap converged at O(h) instead of O(h^3) for VolSwap,
+both capped kinds and VariancePut: VolSwap `89.03 -> 44.34 -> 22.13` as the
+shock halved twice, and after the pin `0.115 -> 0.0143 -> 0.00178` (ratio 8.02,
+a 776x reduction). VarSwap, Corridor and VarianceCall were unaffected and hid it
+completely (`ScenarioGridDeriv.TaylorAndExactAgreeAcrossTheKindSpace`).
+
+MIGRATION: none for the option-only overload -- its per-cell output is
+byte-identical and none of these fields exist on it. A caller of the deriv
+overload that reads `n_deriv_ok` alone must now ALSO read
+`n_deriv_missing_sensitivity` to account for the whole book; a grid that
+previously returned NaN cells alongside a healthy `n_deriv_ok` now returns
+finite cells and a non-zero exclusion count. Every pre-existing greek is
+unmoved: the F-8 bit-identity probe byte-matches its pre-task baseline on 6052
+of 6084 values, and the 32 that differ are exactly `39c934c`'s own smile-vega
+fix (`0.0 -> NaN` on 16 deriv-book memo rows), which this probe independently
+confirms landed only there. Landed in `8d2f5de`.
 
 ### Added — smile greeks (`skew_vega` / `convexity_vega`) and a per-tenor vega ladder (GK-G1 / GK-G2 / LIT-8, Task F-7)
 
@@ -164,11 +284,32 @@ default, remains the INDEX convention this accumulator has always computed.
   `!(x >= 0.0)`, so a NaN is caught at the boundary instead of poisoning every
   accumulator downstream), when it is positive on a tracker that is NOT
   dividend-adjusted, when it is positive on the SEEDING observation (which
-  forms no return for it to adjust), and when it is not strictly below the
+  forms no return for it to adjust), when it is not strictly below the
   previous close (which would make the adjusted denominator zero or negative
-  and the return undefined). Silently dropping `D` instead would hand back
+  and the return undefined), and when it exceeds the OBSERVED CLOSE `spot`
+  (the transposition rule below). Silently dropping `D` instead would hand back
   `ln(94/100)` to a caller who asked for `ln(94/95)` -- the exact failure this
   task exists to remove.
+* THE TRANSPOSED CALL IS REFUSED, and the argument is forced rather than
+  empirical. `spot` and `ex_div_cash` are both `double`, so
+  `observe_dated(ts, div, spot)` compiles silently and, unguarded, booked a
+  ~1900x wrong variance and left `prev_spot()` poisoned for every later fixing.
+  Two rules close it. On an INDEX tracker -- the default, and every caller who
+  never calls `set_dividend_adjustment` -- the swapped call puts a positive
+  value in `ex_div_cash`, which the rule above already rejects outright. On a
+  dividend-adjusted tracker, `ex_div_cash > spot` is the fifth refusal listed
+  above. Together they cover every fixing this API accepts: acceptance requires
+  `D <= S`, so both orderings of a pair being acceptable would need `D <= S` and
+  `S <= D`, i.e. `S == D`, in which case the two orderings are the SAME call.
+  `RealizedTracker.TransposedFixingIsRefusedWheneverTheOriginalIsAccepted`
+  sweeps that property rather than sampling a pair. THE RESIDUE, which is not
+  nothing: a fixing this API ALREADY REJECTS can transpose into an accepted one
+  (intending `S = 40, D = 50` is refused; typing it as `(50, 40)` is accepted).
+  No correct-and-accepted fixing is at risk. ACCEPTED COST of the fifth
+  refusal, so a caller meeting it is not surprised: a LIQUIDATING DISTRIBUTION
+  larger than the residual price is refused even though it is a real corporate
+  action -- such a fixing has no agreed return in this convention anyway, and a
+  leg carrying one needs handling above this class.
 * THREE RULINGS THE SPEC LEFT OPEN, decided at the site and pinned. The
   gamma-swap weight keeps reading the RAW just-observed close: Lee's `y` is the
   price LEVEL at which the variance is earned, and on an ex-div day that level
@@ -723,6 +864,72 @@ test unmodified (31/31 green) plus the full `AnalyticGreeks.*`/`DerivGreeks.*`
 bit-identity and fingerprint-pinned suites) regression surfaces — the diff is
 the evidence, not a tolerance.
 
+### Added — public entry points from the performance and dispatch work, every one bit-identical (Tasks P-1, P-3, F-5)
+
+NO EXISTING NUMBER MOVES on any of these. They are here because this file
+records PUBLIC API a 1.x caller can newly reach, not because a mark moved —
+each was added to make an existing computation cheaper or a rule single-sourced,
+and each is pinned bit-identical to what it replaced.
+
+**Strip-carry hoisting: `SurfaceStripCarry`, `PricedSurface::strip_carry_at` /
+`iv_with_carry` (`priced_surface.hpp`, Task P-1, `3bfce2f`).** `iv(K, T)`
+re-derives `interp_forward(T)` and `CurveSurface::bracket(T)` on every call, and
+a quadrature strip pays that 97–2049 times for one CONSTANT `T`. The new pair
+resolves the forward/carry and the T-bracket once and reuses it;
+`PricedSurfaceView` mirrors the pair and `SurfaceRef` (`portfolio_pricer.hpp`)
+forwards it. `iv_with_carry(K, carry)` is bit-identical to `iv(K, carry.T)` —
+both resolutions are pure functions of `T` over the surface's immutable state —
+and returns NaN on the same domain `iv` does. `SurfaceStripCarry` is an OPAQUE
+token: construct it with `strip_carry_at`, consume it with `iv_with_carry`, and
+do not compare, mutate, or reuse one across a different `T` or a different
+surface instance. Measured on the consumer that motivated it: paired A/B
+(dev/Debug preset, 10 alternating pairs,
+`BM_DerivGreeks_Standard_PricedSurface`) median **3.32x**, range 2.71x–3.97x,
+10/10 pairs favouring the hoist.
+
+**`PricedSurface::iv_batch(K, T, out)` (Task P-3, `0a63305`).** The batched
+sibling of `iv(K, T)`: the same one-time bracket/carry resolution applied to a
+whole strike vector, bit-identical to calling `iv(K[i], T)` for each `i`, NaN
+wherever `iv` would be, and requiring `K.size() == out.size()` (asserted in
+debug; degrades to the shorter length in release rather than running off the
+end). `var_swap_fair_strike` uses it for `PricedSurface`-backed strips only —
+every other surface type keeps the per-node scalar loop — behind the
+`ATX_VOL_DISABLE_STRIP_BATCH` bench-only seam, and `black76_price_batch` was
+deliberately NOT wired into the pricing pass because its AVX2 result is a
+documented ~1e-9..1e-12 approximation that would break the bit-identity gate.
+
+**IT IS NOT A MEASURED SPEEDUP, and the name should not be read as promising
+one.** On this repo's Debug/SSE2 preset the paired A/B ran 0.90x before the
+review fix round and 1.09x after it (`deriv/greeks/standard_priced_surface`,
+1988µs → 1826µs), with `deriv/price/audit_priced_surface` at 977µs → 977µs,
+exact parity; both series sit above the repo's 5% CV noise gate, so those are
+directional readings and not bounds (`ba5916f`). The greek bump table's read
+dedup that shipped alongside it has the same shape: its first cut, an
+`std::unordered_map`, measured SLOWER than no caching at all under
+`_ITERATOR_DEBUG_LEVEL=2`, and the sorted-vector replacement is what brought it
+back to parity — it was never faster than no cache on this preset. What the
+batch entry buys is a single resolution per call that a caller can invoke
+directly; a Release re-measure is a separate exercise and has not been done.
+
+**`deriv_kind_is_capped` / `deriv_kind_settles_in_vol` (`derivatives.hpp`, Task
+F-5 pre-feature refactor, `331f86f`).** The two per-kind payoff-shape questions,
+each now stated ONCE beside `DerivKind`. "Which kind carries a `cap_dec`" had
+three independent hand-written disjunctions — the `cap_dec` scope rule in
+`validate_deriv_dispatch`, `is_capped_kind` in `backtest.cpp` (feeding both the
+swap-lot boundary check and the settlement haircut), and an inline expression in
+`validate_restrike_spec` — which is exactly the shape that produced F-3's own
+Critical C-1, two lanes reaching different verdicts about one contract. They
+live beside the enum rather than beside `engine_supports_swap_kind` because they
+answer a question about the PRODUCT's payoff, not about what the engine can
+carry. Both are exhaustive `switch`es with NO `default:`, so `-Wswitch -WX`
+turns a future enumerator into a compile error instead of a silent assignment to
+the negated branch. Behaviour-preserving: each returns what the disjunction it
+replaces returned for every in-enum input, and `false` for an out-of-enum one,
+exactly as the `==` chains already did.
+
+**Migration**: none for any of the three. Every pre-existing entry point keeps
+its signature and its number; nothing here is on a path a caller must adopt.
+
 ### Changed — ConvexDense served `iv()` now within 1e-11 (not bit-identical) of the pre-P-5 value (FIT-P1, Task P-5)
 
 `ConvexSliceFit::iv()`'s Black-76 inversion was a fixed 64-iteration
@@ -829,6 +1036,16 @@ a one-sided finite difference (`(price(r+dr) - price(r)) / dr`, `dr =
 DerivGreekBumps::rate_abs`), which only ever recovered the same number to
 the stencil's own truncation error.
 
+**The shipped formula is `-max(T, 0) * PV`, not `-T * PV`.** `deriv_df_at_T`
+returns `df = 1.0` unconditionally for `T <= 0` — no rate dependence at all —
+so the true `dPV/dr` past maturity is 0, and an unclamped multiply sign-flips
+a negative `T` into a fabricated POSITIVE rho. Two entry paths reach a
+successful quote at `T <= 0`: a `FullyAged` lot past its own maturity (the
+PV-9 bullet below), and a cap-pinned PARTIALLY-aged contract, whose cap-pin
+exit returns successfully for ANY `T` without setting `DerivFlags::FullyAged`
+(`c3bab3f`). Both are clamped by the same `std::fmax(contract.maturity_t,
+0.0)`.
+
 **This moves `rho` by the FD truncation this deletes** — on the order of
 `(rate_abs * T / 2)` relative (e.g. ~1.25e-5 relative, ~0.001%, at the
 default `rate_abs = 1.0e-4` and `T = 0.25`; grows linearly with `T` and with
@@ -839,8 +1056,8 @@ harmless) but is no longer consumed by anything; see its own field doc.
 unaged VarSwap greeks: 14 → 13 evaluations).
 
 **Migration**: any test or downstream number pinning `rho` to FD precision
-against the OLD one-sided stencil should re-pin against `-T*PV` (now exact,
-not approximate) instead; every other greek is bit-identical
+against the OLD one-sided stencil should re-pin against `-max(T, 0)*PV` (now
+exact, not approximate) instead; every other greek is bit-identical
 (`Rho.AnalyticMatchesFD`, `deriv_greeks_test.cpp`, pins the identity against
 the FD bump this replaced, across every `DerivKind` and aging state, before
 and after the deletion).
@@ -1294,8 +1511,14 @@ under the ceiling cleared the check while a panel breached it. `dk_floor_nodes`
 now provisions the excess analytically — the apportionment bound is
 `dk_i < span/(intervals - 4*n_panels)`, so requiring
 `intervals >= span/dk_max + 4*n_panels` makes `dk_i < dk_max` hold for **every**
-panel, exactly. `DerivFlags::LowT` is likewise decided on the widest panel
-rather than the nominal `dk`, which is what makes it honest for a
+panel, exactly — **up to a ceiling.** That demand grows without bound as
+`sigma_atm*sqrt(T) -> 0`, since the tier SPAN floor does not shrink with `T`, so
+it is capped at `kMaxStripNodes` (2049, the Audit tier's own node count;
+`e883930`). Where the cap binds — short-tenor, near-zero-vol quotes — the floor
+is NOT met and `DerivFlags::LowT` says so, which is the honest report; without
+the cap those quotes resolved hundreds of thousands of nodes per evaluation,
+with no error and no flag. `DerivFlags::LowT` is likewise decided on the widest
+panel rather than the nominal `dk`, which is what makes it honest for a
 caller-pinned count (never overridden, so flagging is all it can do).
 
 Cost: at most 16 intervals (`kMaxStripPanels == 4`). At ordinary tenors it is
