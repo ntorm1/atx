@@ -48,10 +48,7 @@ inline constexpr std::array<SpyFitFixture, 10> kSpyFitFixtures{{
 }};
 
 [[nodiscard]] inline std::string find_spy_fit_parquet(const SpyFitFixture &fixture) {
-  const std::filesystem::path p =
-      market_data(std::string("spy_fit_slices/") + fixture.filename);
-  std::error_code ec;
-  return std::filesystem::exists(p, ec) ? p.string() : std::string{};
+  return market_data_if_present(std::string("spy_fit_slices/") + fixture.filename).string();
 }
 
 [[nodiscard]] inline std::optional<OpraBoard> load_spy_fit_fixture(const SpyFitFixture &fixture,

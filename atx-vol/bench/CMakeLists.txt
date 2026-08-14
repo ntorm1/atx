@@ -343,6 +343,12 @@ target_link_libraries(atx-vol-cstar-panel
         atx::core
         atx_warnings
         Threads::Threads
+        atx-vol-test-paths   # --data-root now defaults to this worktree's data/
+)
+# For "support/test_paths.hpp": same extra quoted-include root as the benches above.
+target_include_directories(atx-vol-cstar-panel
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../tests
 )
 
 # ── WS-0 M1 (infra-measure) — bench-gate unit test ────────────────────────

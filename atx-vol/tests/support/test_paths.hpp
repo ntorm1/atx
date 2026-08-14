@@ -30,6 +30,7 @@
 
 #include <filesystem>
 #include <string>
+#include <system_error>
 
 #if !defined(ATX_VOL_TESTS_ROOT) || !defined(ATX_VOL_REPO_ROOT) || !defined(ATX_VOL_ARTIFACT_CACHE)
 #error "test_paths.hpp needs ATX_VOL_TESTS_ROOT / ATX_VOL_REPO_ROOT / ATX_VOL_ARTIFACT_CACHE. \
@@ -73,11 +74,28 @@ namespace detail {
   return tests_root() / "data" / rel;
 }
 
-// A path under the repo-root data/ tree. This is licensed vendor market data,
-// gitignored and NOT committed (see .gitignore:115-119), so callers must treat
-// a missing file as the normal case and GTEST_SKIP rather than fail.
+// Root of the repo-level data/ tree: licensed vendor market data, gitignored
+// and NOT committed (.gitignore:115-119).
+[[nodiscard]] inline std::filesystem::path data_root() { return repo_root() / "data"; }
+
+// A path under data/, whether or not it exists.
 [[nodiscard]] inline std::filesystem::path market_data(const std::string &rel) {
-  return repo_root() / "data" / rel;
+  return data_root() / rel;
+}
+
+// `rel` under data/ when it is present, else an EMPTY path.
+//
+// Absence is reported as a value rather than an error because absence is the
+// NORMAL case here: the data is licensed, deliberately uncommitted, and every
+// caller turns an empty result into a skip. Callers must keep treating it so.
+//
+// One predicate, because it was open-coded identically at nine call sites --
+// six of which I introduced myself while unifying the path resolution. A
+// duplicated predicate is the same defect as a duplicated ladder, one layer up.
+[[nodiscard]] inline std::filesystem::path market_data_if_present(const std::string &rel) {
+  const std::filesystem::path p = market_data(rel);
+  std::error_code ec;
+  return std::filesystem::exists(p, ec) ? p : std::filesystem::path{};
 }
 
 // A path anywhere else in the repository, e.g. a shipped example config.

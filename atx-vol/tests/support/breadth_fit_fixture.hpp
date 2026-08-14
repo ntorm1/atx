@@ -87,10 +87,7 @@ inline constexpr std::array<BreadthFitFixture, 14> kBreadthFitFixtures{{
 }};
 
 [[nodiscard]] inline std::string find_breadth_fit_parquet(const BreadthFitFixture &fixture) {
-  const std::filesystem::path p =
-      market_data(std::string("vol_breadth_slices/") + fixture.filename);
-  std::error_code ec;
-  return std::filesystem::exists(p, ec) ? p.string() : std::string{};
+  return market_data_if_present(std::string("vol_breadth_slices/") + fixture.filename).string();
 }
 
 [[nodiscard]] inline std::optional<OpraBoard>

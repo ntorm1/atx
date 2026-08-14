@@ -46,10 +46,8 @@ using atx::vol::VolCurveKind;
 // Locate the cached SPY parquet. Empty when absent (caller GTEST_SKIPs) -- the
 // fixture is licensed vendor data and is not committed.
 [[nodiscard]] std::string find_spy_parquet() {
-  const std::filesystem::path p =
-      atx::vol::testkit::market_data("spy_opra_cbbo1m_2026-06-05T1955Z.parquet");
-  std::error_code ec;
-  return std::filesystem::exists(p, ec) ? p.string() : std::string{};
+  return atx::vol::testkit::market_data_if_present("spy_opra_cbbo1m_2026-06-05T1955Z.parquet")
+      .string();
 }
 
 }  // namespace

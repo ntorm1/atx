@@ -38,9 +38,7 @@ namespace atx::vol::testkit {
 // is lowercase (matching the on-disk filename, e.g. "spy" / "xom"). Empty result
 // => not found (caller should GTEST_SKIP).
 [[nodiscard]] inline std::string find_opra_parquet(const std::string &symbol) {
-  const std::filesystem::path p = market_data(symbol + "_opra_cbbo1m_2026-06-05T1955Z.parquet");
-  std::error_code ec;
-  return std::filesystem::exists(p, ec) ? p.string() : std::string{};
+  return market_data_if_present(symbol + "_opra_cbbo1m_2026-06-05T1955Z.parquet").string();
 }
 
 // An installed OPRA board: everything the fitter needs, resolved once.

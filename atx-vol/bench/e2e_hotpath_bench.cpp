@@ -43,6 +43,7 @@
 #include "bench_util.hpp"
 #include "support/opra_fixture.hpp"
 #include "support/spy_fit_fixture.hpp"
+#include "support/test_paths.hpp"
 
 namespace atx::vol::bench {
 namespace {
@@ -94,16 +95,6 @@ constexpr std::string_view kUniverseSnapshot = "2026-07-01T19:55:00Z";
   return ok ? value : kGateDefault;
 }
 
-[[nodiscard]] fs::path first_existing(std::initializer_list<fs::path> candidates) {
-  for (const fs::path &candidate : candidates) {
-    std::error_code error;
-    if (fs::exists(candidate, error) && !error) {
-      return candidate;
-    }
-  }
-  return {};
-}
-
 struct FitCorpus {
   std::vector<testkit::OpraBoard> boards{};
   std::size_t declared_boards{0u};
@@ -127,9 +118,7 @@ struct FitCorpus {
 
 [[nodiscard]] FitCorpus load_universe_fit_corpus() {
   FitCorpus corpus;
-  const fs::path list_path =
-      first_existing({"data/universe/smoke100.txt", "../data/universe/smoke100.txt",
-                      "../../data/universe/smoke100.txt", "C:/atx/data/universe/smoke100.txt"});
+  const fs::path list_path = testkit::market_data_if_present("universe/smoke100.txt");
   if (list_path.empty()) {
     corpus.error = "100-name universe list is unavailable";
     return corpus;
@@ -143,10 +132,7 @@ struct FitCorpus {
     }
     ++corpus.declared_boards;
     const fs::path parquet =
-        first_existing({fs::path{"data/opra_universe"} / symbol / "2026-07-01.parquet",
-                        fs::path{"../data/opra_universe"} / symbol / "2026-07-01.parquet",
-                        fs::path{"../../data/opra_universe"} / symbol / "2026-07-01.parquet",
-                        fs::path{"C:/atx/data/opra_universe"} / symbol / "2026-07-01.parquet"});
+        testkit::market_data_if_present("opra_universe/" + symbol + "/2026-07-01.parquet");
     std::optional<testkit::OpraBoard> board = testkit::load_opra_board_path(
         parquet.generic_string(), symbol, std::string{kUniverseSnapshot}, kRate);
     if (!board.has_value()) {
@@ -399,9 +385,8 @@ struct BacktestFixture {
 
 [[nodiscard]] BacktestFixture load_backtest_fixture() {
   BacktestFixture fixture;
-  const fs::path manifest_path = first_existing(
-      {"data/spy_ytd/archives/manifest.tsv", "../data/spy_ytd/archives/manifest.tsv",
-       "../../data/spy_ytd/archives/manifest.tsv", "C:/atx/data/spy_ytd/archives/manifest.tsv"});
+  const fs::path manifest_path =
+      testkit::market_data_if_present("spy_ytd/archives/manifest.tsv");
   if (manifest_path.empty()) {
     fixture.error = "real SPY backtest manifest is unavailable";
     return fixture;
