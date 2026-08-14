@@ -53,6 +53,23 @@ IN ONE DIRECTION PRODUCES THE ERROR IN THE OTHER. Such a rule cannot be fixed by
 widening it -- widening makes both directions worse. It needs the classifier the
 question above supplies.
 
+COMPARISONS NAME THEIR BASELINE. Every `previously`, `used to`, `no longer` and
+comparative `now` in this file states WHAT IT IS RELATIVE TO -- `1.0.0` for a
+change a released caller will meet, or an explicit SHA where the baseline is an
+earlier commit of the development branch. This is not stylistic. A comparison
+carries a frame the sentence does not otherwise name, and the frame is exactly
+what inverts when the sentence is moved: this release shipped a MIGRATION for a
+refusal that was real against one mid-branch commit and false against `1.0.0`,
+where every released caller stands, and the entry read as fact until the two
+frames were separated. The same defect has a spatial form -- a phrase like "the
+rule twenty lines below", lifted between documents, reverses direction while
+reading as though it had not moved. Both are fixed the same way: REPLACE THE
+RELATIVE REFERENCE WITH AN ABSOLUTE ONE. Prefer it because of what it forces,
+not what it warns: "refuses, where `1.0.0` loaded" is a sentence that cannot be
+composed without performing the check that would have caught the migration, and
+a convention that makes an error uncomposable is worth more than one that
+cautions against it.
+
 ### Added — surface dynamics: `SurfaceOverlay` / `StickyMode`, `DerivPnlExplain`, and a scenario deriv leg (FIT-F4 / GK-G4 / GK-G5 / LIT-8, Task F-8)
 
 NO EXISTING NUMBER MOVES. Three new public surfaces, one of them a refactor of
@@ -199,12 +216,17 @@ NOT part of the frozen `kBacktestSeriesColumns` / RunArchive registry, so
 signal tail, which is why the example could grow them without a schema bump.
 Landed in `f505225`, carried to the Python lane in `5cbbc55`.
 
-### Fixed — the swap explain's carry and realized columns moved, and calls that used to succeed on a malformed or shape-changing explain now error (Task F-8, review rounds 2 and 6)
+### Fixed — the swap explain's carry and realized columns moved, and calls that succeeded at `f505225` on a malformed or shape-changing explain now error (Task F-8, review rounds 2 and 6)
 
 Both defects are in the explain this same release adds, so no number that
-existed before 1.1.0 moves. Both are worth reading anyway: the first changes
-numbers anyone who took the explain off this branch early has already looked at,
-and the second turns a call that used to succeed into an error.
+existed at `1.0.0` moves and no released caller has a migration here. THE
+BASELINE FOR EVERYTHING IN THIS ENTRY IS AN EARLIER COMMIT OF THIS BRANCH, named
+per item below, NOT `1.0.0` -- which is the distinction that matters, because a
+refusal that is new against a mid-branch commit and absent against the release
+reads as a migration to exactly the readers who do not have one. Both items are
+worth reading anyway: the first changes numbers anyone who took the explain off
+this branch early has already looked at, and the second turns a call that
+succeeded at `f505225` into an error.
 
 **THE CARRY COLUMN WAS SCALED BY THE WRONG INTERVAL** (`96a3c70`).
 `theta_zero_fixing` is a RATE obtained by rolling `bumps.time_years` while
@@ -275,17 +297,20 @@ result had already escaped.
 New public `enum class SwapExplainShape { Absent, Present, Mixed }` and
 `swap_explain_shape(const BacktestResult &)` answer that question over EVERY
 column, and there is no accessor that answers it from fewer. `Mixed` is the
-state that was previously unrepresentable and is the reason the enum has three
-values: it is always malformed, and a caller comparing against `Present` cannot
+state that was unrepresentable before `c1771a6` and is the reason the enum has
+three values: it is always malformed, and a caller comparing against `Present`
+cannot
 silently treat it as such. `Mixed` is rejected BY NAME at each surface that can
 see a whole result -- the result's own `BacktestResult::validate()`,
 `backtest_db`'s store guard, and `append_backtest_results` -- rather than at one
 of them with the others trusting a comment, which is the arrangement that let it
 through.
 
-MIGRATION: CALLER-OBSERVABLE at all three. A `BacktestResult::validate()`,
-store, or `append_backtest_results` call that used to succeed on a partial
-explain set now returns an error naming the shape. A caller assembling a
+MIGRATION: OBSERVABLE AT ALL THREE, RELATIVE TO `f505225` -- not to `1.0.0`,
+which had no explain columns to populate partially, so no released caller is
+affected. A `BacktestResult::validate()`, store, or `append_backtest_results`
+call that succeeded on a partial explain set at `f505225` now returns an error
+naming the shape. A caller assembling a
 `BacktestResult` by
 hand must populate the whole roster or none of it -- `swap_explain_shape` is how
 to check before calling. No caller that was populating the columns together, or
@@ -321,14 +346,15 @@ shape rule.
   call it. The new loop is driven off `swap_explain_columns()` rather than
   re-listing the roster. MIGRATION: a hand-built result carrying an explain
   column whose length is neither zero nor the row count is now
-  `InvalidArgument` at store, where it previously passed this boundary
-  unchecked. A result produced by the engine is unaffected -- the columns are
+  `InvalidArgument` at store, where at `f505225` it passed this boundary
+  unchecked. Relative to `1.0.0` there is nothing here: the columns did not
+  exist to be ragged. A result produced by the engine is unaffected -- the columns are
   written row-parallel or not at all.
 
 ### Fixed — a load verifies exactly the set of surfaces it loaded (Task F-8, rounds 7 and 8)
 
-`MarketSnapshot::load` had sample-then-verify and sample-and-trust in two
-branches of one function, ten lines apart. The full-load branch reads
+`MarketSnapshot::load` had sample-then-verify and sample-and-trust in the two
+branches of a single `if (subset_missed)`. The full-load branch reads
 `pricing_at(0).now_ts_ns`, checks every loaded surface against it and errors on
 disagreement; the other branch read the directory's first entry and treated that
 timestamp as a fact about the ARCHIVE.
@@ -345,11 +371,20 @@ by the rule above and deliberately: what was wrong is that the sampled timestamp
 masqueraded as an archive-wide property. It is now documented and used as the
 first record's own timestamp, dating a snapshot that carries no surfaces to
 contradict it. An earlier cut of this entry described a whole-directory walk;
-that walk was reverted in round 8 with its cost recorded in the code -- at
-N = 512 it put the miss path at 91% of a whole-board load (3908µs vs 4282µs)
-against 71% for the sample (2282µs vs 3235µs) in the same process. Warm fault
-counts came out equal at 681, so that instrument did NOT isolate the cold delta,
-and the cold direction is argued structurally rather than measured.
+that walk was reverted in `ec7d3ae` with its cost recorded in the code.
+
+THAT COST IS A STANDING PROPERTY, NOT A TRANSITION, so it is fenced accordingly.
+Measured at `ec7d3ae` on an N = 512 archive, the walk put the miss path at 91%
+of a whole-board load (3908µs vs 4282µs) against 71% for the sample (2282µs vs
+3235µs) in the same process. Unlike a before/after figure, which compares
+against a tree that no longer exists and cannot be falsified, this is a ratio
+between two things that BOTH still exist -- so a later commit can move it, and
+the SHA gives provenance but not falsifiability. IT HAS NOT BEEN RE-VERIFIED
+SINCE `ec7d3ae`, no benchmark regenerates it, and a reader relying on the
+proportion should re-measure rather than cite this line. The qualification the
+measuring commit made carries too: warm page-fault counts came out equal at 681,
+so that instrument did NOT isolate the cold delta, and the cold direction is
+argued structurally rather than measured.
 
 NOTHING HERE IS A MIGRATION, and the entry is worth reading precisely because
 an earlier cut of it claimed one. What round 8 adds to a load that READS
@@ -419,12 +454,14 @@ shock halved twice, and after the pin `0.115 -> 0.0143 -> 0.00178` (ratio 8.02,
 a 776x reduction). VarSwap, Corridor and VarianceCall were unaffected and hid it
 completely (`ScenarioGridDeriv.TaylorAndExactAgreeAcrossTheKindSpace`).
 
-MIGRATION: none for the option-only overload -- its per-cell output is
-byte-identical and none of these fields exist on it. A caller of the deriv
-overload that reads `n_deriv_ok` alone must now ALSO read
-`n_deriv_missing_sensitivity` to account for the whole book; a grid that
-previously returned NaN cells alongside a healthy `n_deriv_ok` now returns
-finite cells and a non-zero exclusion count. Every pre-existing greek is
+MIGRATION: none against `1.0.0`, which had no deriv leg at all -- the baseline
+for everything below is `1f04a01`, the mid-branch commit that added one. None
+either for the option-only overload: its per-cell output is byte-identical and
+none of these fields exist on it. A caller of the deriv overload that reads
+`n_deriv_ok` alone must now ALSO read `n_deriv_missing_sensitivity` to account
+for the whole book; a grid that at `1f04a01` returned NaN cells alongside a
+healthy `n_deriv_ok` returns finite cells and a non-zero exclusion count here.
+Every pre-existing greek is
 unmoved: the F-8 bit-identity probe byte-matches its pre-task baseline on 6052
 of 6084 values, and the 32 that differ are exactly `39c934c`'s own smile-vega
 fix (`0.0 -> NaN` on 16 deriv-book memo rows), which this probe independently
