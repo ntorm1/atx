@@ -96,10 +96,12 @@ public:
   CorrectionCache() = default;
 
   // Build and populate the cache in one shot. Chebyshev node counts are bounded
-  // by kChebMaxNodes; the box must be strictly ordered with T_min, sigma_min > 0.
-  // `opts` selects the Andersen-Lake accuracy preset used to sample the grid.
+  // by the compile-time node bound (see correction_detail.hpp); the box must be
+  // strictly ordered with T_min, sigma_min > 0. `opts` selects the Andersen-Lake
+  // accuracy preset used to sample the grid.
   //
-  // @return OutOfRange      — a node count exceeds kChebMaxNodes
+  // @return OutOfRange      — a node count exceeds the compile-time node bound
+  //                           (see correction_detail.hpp)
   //         InvalidArgument — a zero node count, or an inverted / non-positive box
   [[nodiscard]] static Result<CorrectionCache>
   build(std::uint16_t n_log_moneyness, std::uint16_t n_T_nodes, std::uint16_t n_sigma_nodes,

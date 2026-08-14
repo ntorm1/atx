@@ -65,7 +65,7 @@
 #include "atx/vol/api/marketdata/data.hpp"            // iso_to_ns, ns_to_iso_date, year_fraction, QuoteFrame
 #include "atx/vol/api/backtest/panel.hpp" // make_synthetic_american_panel, SynthPanelSpec, load_chain_csv
 #include "atx/vol/api/backtest/priced_surface.hpp" // PricedSurface, PricingContext
-#include "atx/vol/api/storage/s3.hpp"             // S3Params
+#include "atx/vol/api/fitting/s3.hpp"             // S3Params
 #include "atx/vol/api/backtest/strategy.hpp"       // DeclarativeStrategy, StrategySpec
 #include "atx/vol/api/storage/surface_archive.hpp" // write_surface_archive_v2_file, SurfaceArchiveItem, SurfaceArchiveV2
 #include "atx/vol/api/fitting/surface_parity.hpp" // SliceContext

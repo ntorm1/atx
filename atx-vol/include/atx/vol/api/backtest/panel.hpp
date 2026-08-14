@@ -52,7 +52,7 @@
 #include "atx/vol/api/marketdata/data.hpp"        // QuoteFrame, QuoteRow, iso_to_ns, build_expiry_inputs
 #include "atx/vol/api/pricing/dividend.hpp"    // hybrid_forward, HybridDivParams
 #include "atx/vol/api/pricing/rates_curve.hpp" // DividendEvent
-#include "atx/vol/api/storage/s3.hpp"          // S3Params, s3_iv
+#include "atx/vol/api/fitting/s3.hpp"          // S3Params, s3_iv
 #include "atx/vol/api/core/types.hpp"       // Result, Side
 
 namespace atx::vol {

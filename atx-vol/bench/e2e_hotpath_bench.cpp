@@ -35,7 +35,7 @@
 #include "atx/vol/api/backtest/priced_surface.hpp" // PricedSurface (deserialized price stage)
 #include "atx/vol/api/fitting/pricer_fitter.hpp"
 #include "atx/vol/api/backtest/query_pricing.hpp"
-#include "atx/vol/api/storage/s3.hpp"             // S3Params (synthetic truth)
+#include "atx/vol/api/fitting/s3.hpp"             // S3Params (synthetic truth)
 #include "atx/vol/api/backtest/strategy.hpp"
 #include "atx/vol/api/storage/surface_archive.hpp" // write_surface_archive_v2 / SurfaceArchiveV2
 #include "atx/vol/api/core/types.hpp"           // Side

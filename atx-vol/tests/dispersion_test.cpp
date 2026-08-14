@@ -42,7 +42,7 @@
 #include "atx/vol/api/backtest/portfolio_pricer.hpp" // Portfolio, SurfaceSet, PortfolioPricer
 #include "atx/vol/api/backtest/priced_surface.hpp"   // PricedSurface, SliceContext
 #include "atx/vol/api/fitting/pricer_fitter.hpp"    // PricerFitter, PricerConfig
-#include "atx/vol/api/storage/s3.hpp"               // S3Params
+#include "atx/vol/api/fitting/s3.hpp"               // S3Params
 #include "atx/vol/api/fitting/session.hpp"          // VolaSession::to_priced_surface
 #include "atx/vol/api/fitting/surface_parity.hpp"   // SliceContext
 #include "atx/vol/api/core/types.hpp"            // Side, ErrorCode

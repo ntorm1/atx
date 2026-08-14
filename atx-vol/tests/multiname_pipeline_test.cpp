@@ -48,7 +48,7 @@
 #include "atx/vol/api/core/market_env.hpp" // MarketEnv
 #include "atx/vol/api/backtest/panel.hpp"      // make_synthetic_american_panel, SynthPanelSpec
 #include "atx/vol/api/backtest/portfolio_pricer.hpp" // Portfolio, PortfolioPricer, PriceStatus, PnlFrame
-#include "atx/vol/api/storage/s3.hpp"               // S3Params
+#include "atx/vol/api/fitting/s3.hpp"               // S3Params
 #include "fitting/spy_fixture.hpp"      // make_spy_synthetic_spec
 #include "atx/vol/api/backtest/strategy.hpp"         // DispersionStrategy
 #include "atx/vol/tools/tearsheet.hpp"        // write_backtest_tsv

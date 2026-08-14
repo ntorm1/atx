@@ -39,7 +39,7 @@
 #include "atx/vol/api/marketdata/data.hpp"     // iso_to_ns, year_fraction
 #include "atx/vol/api/backtest/panel.hpp"    // SynthPanelSpec, SynthExpiry
 #include "atx/vol/api/pricing/rates_curve.hpp"    // DividendEvent
-#include "atx/vol/api/storage/s3.hpp"       // S3Params
+#include "atx/vol/api/fitting/s3.hpp"       // S3Params
 #include "atx/vol/api/fitting/session.hpp"  // SessionInputs, FitPreset, make/apply preset
 
 namespace atx::vol {

@@ -13,7 +13,7 @@
 #include "atx/vol/api/marketdata/data.hpp" // year_fraction
 #include "atx/vol/api/backtest/panel.hpp"
 #include "atx/vol/api/fitting/pricer_fitter.hpp"
-#include "atx/vol/api/storage/s3.hpp" // S3Params (crossed-wing fixture truth)
+#include "atx/vol/api/fitting/s3.hpp" // S3Params (crossed-wing fixture truth)
 #include "atx/vol/api/fitting/session.hpp"
 #include "fitting/spy_fixture.hpp"
 #include "atx/vol/api/fitting/surface_policy.hpp"

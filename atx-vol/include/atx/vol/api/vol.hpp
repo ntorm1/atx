@@ -82,22 +82,37 @@
 // surface_policy.hpp). Freezing a signature freezes its vocabulary; hiding that
 // would make the promise unenforceable.
 //
-// The four tiers that are NOT here, and where to find them:
+// The tiers that are NOT here, and where to find them (api-restructure,
+// 2026-08-14: the public surface is include/atx/vol/api/, an 8-module tree —
+// analytics, backtest, core, fitting, marketdata, pricing, simd, storage —
+// plus this umbrella; the flat include/atx/vol/*.hpp + detail/ layout it used
+// to be is gone, and everything not shipped now lives under src/<module>/,
+// off the include/ tree entirely rather than in an installed-but-unstable
+// detail/ tier):
 //
-//   Tier-B  include/atx/vol/*.hpp  — public and includable, outside the freeze.
-//           Advanced calibrators (svi/essvi/cstar/c8_calib), the SoA + SIMD
-//           batch kernels (batch.hpp, american_batch.hpp, simd/), the
-//           listed-dispersion domain vocabulary, OPRA hive/batch loaders,
-//           harness panels and fixtures, and the earnings-reproduction harness.
-//   detail  include/atx/vol/detail/ — internal machinery, no stability promise.
+//   Tier-B  include/atx/vol/api/<module>/*.hpp — public and includable,
+//           outside the freeze. Advanced calibrators (svi/essvi/cstar/c8_calib
+//           are PRIVATE now — see below; c8.hpp's curve-family type and
+//           registry name stay Tier-A), the SoA + SIMD batch kernels
+//           (batch.hpp, american_batch.hpp, api/simd/), the listed-dispersion
+//           domain vocabulary, OPRA hive/batch loaders, harness panels and
+//           fixtures, and the earnings-reproduction harness.
+//   private src/<module>/ — internal machinery: no include/ path, no
+//           stability promise, not installed. This is where the per-family
+//           calibrators live now (svi_calib.hpp, essvi_calib.hpp, cstar.hpp,
+//           cstar_calib.hpp, c8_calib.hpp all in src/fitting/), alongside
+//           spy_fixture.hpp (src/fitting/spy_fixture.hpp — a shared
+//           tests/examples/bench fixture, never shipped).
 //   tools   tools/include/atx/vol/tools/  (target atx-vol-tools) — surface-db
 //           CLI support, run-report writers, the tearsheet.
 //   research research/include/atx/vol/research/ (target atx-vol-research) —
 //           dispersion run orchestration and the run artifacts it emits.
 //   tests   tests/support/ — test fixtures, among them analytics_fixture,
 //           opra_fixture, spy_fit_fixture and breadth_fit_fixture.
-//           spy_fixture.hpp is NOT among them any more: it was promoted to
-//           Tier-B include/atx/vol/.
+//
+// Consumers should only ever include from api/ — the module headers above and
+// this umbrella. Nothing under src/, tools/, research/ or tests/support/ is a
+// stable, or even reachable, public entry point.
 //
 // ── Coordinate + pricing conventions (used everywhere in the library) ──────────
 //
@@ -135,9 +150,13 @@
 // ── Calibration vocabulary ──────────────────────────────────────────────────
 //
 // The per-family CALIBRATORS (svi_calib, essvi_calib, cstar/cstar_calib,
-// c8_calib) are Tier-B — include them directly when you drive a family by hand.
-// What is frozen here is the shared calibration vocabulary every fit speaks,
-// plus the C8 curve family the arb validator and the curve registry name.
+// c8_calib) are PRIVATE (src/fitting/) as of the api-restructure — driving a
+// family fitter by hand is internal-code work, not a public entry point; a
+// consumer that needs curve-family control uses fit_policy.hpp /
+// curve_selector.hpp / curve_fit.hpp instead. What is frozen here is the
+// shared calibration vocabulary every fit speaks (calib.hpp), plus the C8
+// curve family's public type, the arb validator and the curve registry name
+// (c8.hpp — the type, distinct from the now-private c8_calib.hpp fitter).
 #include "atx/vol/api/fitting/c8.hpp"
 #include "atx/vol/api/fitting/calib.hpp" // CalibOpts, FitObs/FitDiag, build_observations
 

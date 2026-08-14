@@ -44,6 +44,10 @@ MODULE = {
     "dense_slice": "fitting", "spline_curve": "fitting",
     "fit_metrics": "fitting", "sr_tenor_grid": "fitting",
     "correction": "fitting", "projection": "fitting", "spy_fixture": "fitting",
+    # S3 / SSVI three-parameter curve (Klassen 2017) -- a fitting-family
+    # sibling of c8/cstar above, not storage. Misfiled under storage until the
+    # 2026-08-14 contract-layer fix wave (see docs/api-placement.md).
+    "s3": "fitting",
     # marketdata
     "listed_opra": "marketdata", "opra_batch": "marketdata",
     "opra_hive": "marketdata", "opra_panel": "marketdata",
@@ -53,7 +57,7 @@ MODULE = {
     "surface_db": "storage", "surface_archive": "storage",
     "backtest_db": "storage", "backtest_db_build": "storage",
     "research_db": "storage", "track_key": "storage", "track_store": "storage",
-    "dispersion_surface_db": "storage", "s3": "storage",
+    "dispersion_surface_db": "storage",
     "snapshot_pool": "storage",
     # analytics
     "analytics": "analytics", "var": "analytics", "var_report": "analytics",

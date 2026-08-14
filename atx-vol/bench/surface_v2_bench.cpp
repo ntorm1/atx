@@ -31,7 +31,7 @@
 #include "atx/vol/api/marketdata/data.hpp"
 #include "atx/vol/api/backtest/panel.hpp"
 #include "atx/vol/api/fitting/pricer_fitter.hpp"
-#include "atx/vol/api/storage/s3.hpp"
+#include "atx/vol/api/fitting/s3.hpp"
 #include "atx/vol/api/fitting/surface_policy.hpp"
 #include "atx/vol/api/fitting/vol_curve.hpp"
 

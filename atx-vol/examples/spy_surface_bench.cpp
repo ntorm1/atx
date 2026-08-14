@@ -18,7 +18,7 @@
 #include <vector>
 
 #include "atx/vol/api/fitting/arb.hpp"          // arb_check_calendar
-#include "atx/vol/api/storage/s3.hpp"           // s3_iv (truth ATM vol)
+#include "atx/vol/api/fitting/s3.hpp"           // s3_iv (truth ATM vol)
 #include "atx/vol/api/fitting/session.hpp"
 #include "fitting/spy_fixture.hpp"  // make_spy_synthetic_spec, make_spy_session_inputs
 #include "atx/vol/api/core/types.hpp"        // Side

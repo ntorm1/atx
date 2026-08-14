@@ -19,7 +19,7 @@
 #include "atx/vol/api/core/market_env.hpp"     // MarketEnv
 #include "atx/vol/api/backtest/panel.hpp"          // make_synthetic_american_panel, SynthPanelSpec
 #include "atx/vol/api/pricing/rates_curve.hpp"    // CurveSet, ForwardPoint
-#include "atx/vol/api/storage/s3.hpp"             // s3_iv
+#include "atx/vol/api/fitting/s3.hpp"             // s3_iv
 #include "fitting/spy_fixture.hpp"    // make_spy_synthetic_spec
 #include "atx/vol/api/marketdata/universe.hpp"       // Underlying, Chain
 #include "atx/vol/api/fitting/vol_surface.hpp"    // VolSurface, EssviParams, Parametrization

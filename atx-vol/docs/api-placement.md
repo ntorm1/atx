@@ -22,15 +22,28 @@ declaration from the spec taxonomy, independent of reachability.
 | analytics | 6 | 10 | 16 |
 | backtest | 14 | 9 | 23 |
 | core | 6 | 5 | 11 |
-| fitting | 24 | 19 | 43 |
+| fitting | 25 | 19 | 44 |
 | marketdata | 6 | 3 | 9 |
 | pricing | 13 | 5 | 18 |
 | simd | 3 | 7 | 10 |
-| storage | 3 | 11 | 14 |
+| storage | 2 | 11 | 13 |
 | **TOTAL** | **75** | **69** | **144** |
 
 (`core` also includes the umbrella header `vol.hpp`, which lands at `api/vol.hpp`
 outside any module subdirectory; it is counted under `core` above.)
+
+**2026-08-14 fix round 2 (final review, contract layer):** `s3.hpp` /
+`s3.cpp` are reassigned `storage` -> `fitting` in `MODULE` -- S3/SSVI is a
+three-parameter volatility curve family (Klassen 2017), a fitting-family
+sibling of `c8.hpp` / `cstar.hpp`, not AWS storage. `git mv`'d to
+`include/atx/vol/api/fitting/s3.hpp` and `src/fitting/s3.cpp`; the ~20
+includers (tests, bench, examples, `src/fitting/spy_fixture.hpp`,
+`src/backtest/panel.cpp`, `include/atx/vol/api/backtest/panel.hpp`) and the
+two `atx-vol/CMakeLists.txt` source-list lines were updated in the same
+commit. Public/private visibility and the module's own header count are
+unaffected -- this is a module reassignment, not a promotion/demotion -- so
+`fitting` gains one public header (24 -> 25) and `storage` loses the one it
+never should have kept (3 -> 2); the TOTAL row does not move.
 
 **2026-08-14 fix round 1 (Task 2 review):** three `detail/` headers are promoted
 public — `PROMOTED_PUBLIC` in `api_restructure_measure.py`:
@@ -86,7 +99,7 @@ three promotions (72/72 → 75/69); the per-module lists below do too.
 - vol.hpp
 - vol_time.hpp
 
-### fitting (24)
+### fitting (25)
 - aggregate_arity.hpp (promoted from detail/, 2026-08-14 fix round 1 — see note above)
 - arb.hpp
 - c8.hpp
@@ -103,6 +116,7 @@ three promotions (72/72 → 75/69); the per-module lists below do too.
 - prepared_policy.hpp (promoted from detail/, 2026-08-14 fix round 1 — see note above)
 - profile.hpp
 - projection.hpp
+- s3.hpp (reassigned from storage, 2026-08-14 fix round 2 -- see note above)
 - session.hpp
 - spline_curve.hpp
 - sr_tenor_grid.hpp
@@ -140,7 +154,6 @@ three promotions (72/72 → 75/69); the per-module lists below do too.
 - cpu.hpp
 - greeks_batch.hpp
 
-### storage (3)
-- s3.hpp
+### storage (2)
 - surface_archive.hpp
 - surface_db.hpp

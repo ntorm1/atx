@@ -19,7 +19,7 @@
 #include "atx/vol/api/marketdata/data.hpp"
 #include "atx/vol/api/pricing/dividend.hpp"
 #include "atx/vol/api/pricing/rates_curve.hpp"
-#include "atx/vol/api/storage/s3.hpp"
+#include "atx/vol/api/fitting/s3.hpp"
 #include "atx/vol/api/core/types.hpp"
 
 namespace atx::vol {

@@ -42,7 +42,7 @@
 #include "atx/vol/api/backtest/priced_surface.hpp"
 #include "atx/vol/api/backtest/priced_surface_view.hpp" // PricedSurfaceView (S5 map_surface)
 #include "atx/vol/tools/run_report.hpp" // MetaKv
-#include "atx/vol/api/storage/s3.hpp"         // S3Params
+#include "atx/vol/api/fitting/s3.hpp"         // S3Params
 #include "atx/vol/api/fitting/session.hpp"    // FitPreset
 #include "atx/vol/api/storage/surface_archive.hpp"
 #include "atx/vol/api/storage/surface_db.hpp"

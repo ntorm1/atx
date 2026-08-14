@@ -22,7 +22,7 @@
 #include "atx/vol/api/backtest/panel.hpp"
 #include "atx/vol/api/backtest/query_pricing.hpp"
 #include "atx/vol/api/pricing/rates_curve.hpp"
-#include "atx/vol/api/storage/s3.hpp"
+#include "atx/vol/api/fitting/s3.hpp"
 #include "atx/vol/api/fitting/session.hpp"
 #include "atx/vol/api/core/types.hpp"
 #include "atx/vol/api/marketdata/universe.hpp"

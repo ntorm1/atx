@@ -54,7 +54,7 @@
 #include "atx/vol/api/marketdata/data.hpp"               // iso_to_ns, year_fraction
 #include "atx/vol/api/core/market_env.hpp"         // MarketEnv
 #include "atx/vol/api/backtest/panel.hpp"             // make_synthetic_american_panel, SynthPanelSpec
-#include "atx/vol/api/storage/s3.hpp"                // S3Params
+#include "atx/vol/api/fitting/s3.hpp"                // S3Params
 #include "atx/vol/api/storage/surface_db.hpp"        // SurfaceDb
 #include "atx/vol/tools/surface_db_populate.hpp" // populate_surface_db (U1 streaming)
 

@@ -73,6 +73,10 @@ set(ATX_VOL_FITTING_SOURCES
     src/fitting/svi_calib.cpp
     src/fitting/cstar.cpp
     src/fitting/cstar_calib.cpp
+    # S3 / SSVI three-parameter curve (Klassen 2017): a fitting-family sibling
+    # of c8 / cstar above, not storage -- misfiled there until the api/
+    # restructure's contract-layer fix wave moved it here (2026-08-14).
+    src/fitting/s3.cpp
     src/fitting/dense_slice.cpp
     src/fitting/profile.cpp
     src/fitting/fit_policy.cpp
@@ -117,7 +121,6 @@ set(ATX_VOL_STORAGE_SOURCES
     src/storage/run_archive.cpp
     src/storage/run_diagnostics.cpp
     src/storage/surface_db.cpp
-    src/storage/s3.cpp
     src/storage/surface_db_populate.cpp
     src/storage/surface_db_build.cpp
     src/storage/surface_db_admin.cpp
