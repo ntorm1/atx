@@ -35,7 +35,7 @@ at gate time. Never build the whole graph out of habit.
 | `ninja` | alias of the same `_base` behavior; same `build/` dir |
 | `dev-shared` | `dev` + atx libs as **DLLs** — smallest artifacts, fastest relinks. **Iteration only, NEVER the test gate**: header-inline instrumentation globals (`atx/vol/counters.hpp` solve ledger) split per DLL image → SolveLedger/BacktestExec observer suites fail deterministically (verified 2026-07-22) |
 | `rel` / `rel-avx2` | Release benchmarks (`build-rel*/`); `rel-avx2` adds global `/arch:AVX2`, never `/fp:fast` |
-| `hygiene` | PCH **OFF** — strict per-TU includes; the include-clean gate (CI/nightly), own `build-hygiene/` |
+| `hygiene` | PCH **OFF** — strict per-TU includes; the include-clean gate, run by hand — there is no CI here (§8) — own `build-hygiene/` |
 | `vs` | Visual Studio MSBuild generator (IDE escape hatch) |
 
 **Worktree POOL first (2026-07-22): lease a warm tree, don't create a fresh one.**
@@ -62,7 +62,7 @@ clangd works immediately (committed `.clangd` reads each worktree's own `build/c
 
 1. **Manual `git worktree add` skips submodules** — `atx-core/third-party/databento-cpp` arrives empty and configure dies. `new-worktree.ps1` handles it; otherwise run `git submodule update --init --recursive`.
 2. **Don't build with raw `cmake --build`/ninja outside `atx-build.ps1` or `--preset`** — preset `environment` (the `CCACHE_*` keys) doesn't apply to raw invocations; the global ccache config covers most of it, but `CCACHE_BASEDIR` only comes from the preset or the script.
-3. **`-DATX_UNITY_BUILD=ON` (opt-in, cold CI builds only) collides on some test groups** — identically-named file-local helpers merge into one TU (`factory`, `parallel` groups). Unity is OFF in `dev`; leave it off for iteration — per-TU objects are what the cache keys on.
+3. **`-DATX_UNITY_BUILD=ON` (opt-in; only worth it on a cold from-scratch build) collides on some test groups** — identically-named file-local helpers merge into one TU (`factory`, `parallel` groups). Unity is OFF in `dev`; leave it off for iteration — per-TU objects are what the cache keys on.
 4. **ProcessExecutor tests need `atx-shm-worker` built beside the test exe** — building only `atx-engine-<group>-tests` omits the worker the multi-process executor spawns; `*SeqParallel` suites then fault (SEH `0xc000001d`). Build both: `... build atx-engine-<group>-tests atx-shm-worker`.
 5. **`pwsh` is not always installed** — use `powershell` (5.1) for the `*.ps1` helpers.
 6. **Pool leases are advisory** (`.atx-lease` marker, git-ignored) — one agent per leased tree; `-Release` refuses a dirty tree, so commit/stash before releasing. Release detaches at the base branch so your feature branch stays mergeable elsewhere while `build/` stays warm.
@@ -133,7 +133,7 @@ clangd works immediately (committed `.clangd` reads each worktree's own `build/c
 - Prefer immutability and message passing to shared mutable state. Shared state is guilty until proven safe.
 - Guard each shared mutable datum with one clearly-owned mutex; `lock_guard`/`scoped_lock` (RAII), never manual lock/unlock. Document lock order; acquire in a global order to prevent deadlock.
 - `std::atomic` for lock-free counters/flags; default `seq_cst` until a relaxed ordering is *proven* correct and commented.
-- No data races (UB). Run **TSan**. `jthread`/`stop_token` over raw `thread`. Never detach without a lifetime argument.
+- No data races (UB). **There is no TSan build in this repo** (§8), so race-freedom rests on the ownership and lock discipline above plus review — write the argument down in a comment instead of deferring to a tool that will not run. `jthread`/`stop_token` over raw `thread`. Never detach without a lifetime argument.
 - Don't hold a lock across a callback or blocking call.
 
 ---
@@ -162,12 +162,14 @@ clangd works immediately (committed `.clangd` reads each worktree's own `build/c
 
 ---
 
-## 8. Tooling & build (non-negotiable gates)
+## 8. Tooling & build (which gates are real, and which are not built)
 
 - **Warnings are errors.** `-Wall -Wextra -Wpedantic -Wconversion -Wshadow -Werror` (Clang/GCC) / `/W4 /permissive- /WX` (MSVC).
-- **Sanitizers in CI:** ASan + UBSan on every test run; TSan for threaded code. A sanitizer hit fails the build.
+- **Sanitizers: NOT BUILT. Nothing here has ever been run under one — there is no sanitizer box to tick.** There is no CI in this repository at all (no `.github/`, `.gitlab-ci.yml`, `azure-pipelines.yml`, `.circleci/`, `Jenkinsfile`, or `.buildkite/`), and no sanitizer build: `CMakePresets.json` defines exactly `_base, ninja, dev, dev-counters, dev-shared, rel, rel-avx2, hygiene, vs`; root `CMakeLists.txt` declares no `option(ATX_*SAN*)`; `cmake/` holds only the install/version/config templates; `scripts/atx-build.ps1` has no sanitizer verb or flag. The `-fsanitize` wiring that does exist in the tree is the vendored `atx-core/third-party/databento-cpp/cmake/Sanitizers.cmake`, and it is inert — its `DATABENTO_ENABLE_{ASAN,TSAN,UBSAN}` options default OFF and nothing first-party sets them. This entry records an unimplemented intention so it stops reading as a gate that passed; it is not licence to write UB, which §0 forbids on its own authority.
+- **If a sanitizer build is ever added, add exactly this** (costed and ruled 2026-08-14): one preset inheriting the **static** `dev` shape — never `dev-shared` — carrying `-fsanitize=float-cast-overflow,integer-divide-by-zero -fno-sanitize=vptr,alignment,function` through the `CFLAGS`/`CXXFLAGS` environment mechanism `rel-avx2` already uses, plus a per-worktree `-DFETCHCONTENT_BASE_DIR=...` that is **mandatory, not tidiness**: root `CMakeLists.txt:182-183` adopts `$ENV{ATX_DEPS_DIR}` as the FetchContent base, that cache is keyed by dependency and not by build configuration, every pool worktree shares it, and it has already produced two `_ITERATOR_DEBUG_LEVEL` ABI collisions — an instrumented build written into it breaks the other trees' links. `float-cast-overflow` earns its place because the shape is live here: `atx-vol/include/atx/vol/detail/strip_grid.hpp:211-216` caps `intervals` before a `ceil()`→`size_t` cast *because* the out-of-range cast is UB, and node counts get derived from doubles in more than one place. `float-divide-by-zero` is deliberately **excluded** — guard expressions here rely on `log(0) == -inf`, so it would fire on correct code. `alignment` and `vptr` are off because deliberate unaligned SIMD loads and RTTI-free numeric types trip them without finding anything.
+- **ASan and full UBSan were declined on the evidence, not deferred by accident.** Allocation is container/RAII-mediated (`alloca` appears zero times under `atx-vol/src` + `atx-vol/include`), so ASan has no manual buffer-arithmetic layer to protect; the 23 hand-written files under `atx-vol/src/simd/` use the masked-tail idiom that reads a vector width past the logical end, which ASan reports as `heap-buffer-overflow`, so the expected yield is benign findings each needing a human to adjudicate; and an instrumented `atx-vol` over uninstrumented `atx::core`/`atx::tsdb` cannot see overflows in the buffers those layers own, which is most of the container and SIMD machinery. Reverse this the day a defect lands that a sanitizer would have caught — the defect classes fixed on this branch do not qualify, because NaN propagation, a stale memoized value, an inverted sign, a convergence-order collapse, a duplicated predicate and a missing map key are all **defined** behaviour, and no sanitizer has a NaN check.
 - **clang-tidy is disabled in this repo.** Do not run it or treat it as a gate unless the user explicitly re-enables it. The root `.clang-tidy` intentionally sets `Checks: '-*'` because the broad profile is prohibitively slow on umbrella-header translation units. **clang-format** remains enforced; formatting is not a review topic.
-- Static analysis (clang-analyzer / cppcheck) in CI. Treat findings as defects.
+- **Standalone static analysis: also NOT BUILT.** No clang-analyzer or cppcheck run is wired anywhere first-party; the `cppcheck` references in the tree amount to `atx-core/CMakeLists.txt:57` forcing the vendored `DATABENTO_ENABLE_CPPCHECK` OFF. With clang-tidy deliberately off as well (above), what actually runs on every build is the compiler's own `/W4 /permissive- /WX` (`ATX_WERROR`, ON by default at root `CMakeLists.txt:257`) — treat *its* findings as defects, and don't record a second analyser as enforced until one exists.
 - **Build presets** (full table + worktree workflow in the Quick start above): `dev` is the canonical iterate preset (ccache + shared deps + PCH + LLD); `hygiene` (PCH OFF — strict per-TU include build) is the include-clean gate. PCH parses Eigen+gtest once but **hides missing/unused includes** — run `cmake --preset hygiene && cmake --build --preset hygiene` before claiming include-clean. Don't add volatile (frequently-edited) headers to `pch.hpp` — it invalidates the shared PCH and forces a full rebuild.
 - Reproducible builds; dependencies are pinned via the **vcpkg manifest** (`vcpkg.json` + `builtin-baseline`), incl. GoogleTest — restored from the vcpkg binary cache, not rebuilt per build dir. Header-only deps (Eigen, spdlog, xsimd) come via pinned `FetchContent` tags. No build-time network beyond those pinned fetches.
 
@@ -189,7 +191,7 @@ clangd works immediately (committed `.clangd` reads each worktree's own `build/c
 - [ ] `const`/`constexpr`/`noexcept`/`[[nodiscard]]` applied where they hold.
 - [ ] Ownership & lifetimes unambiguous; no dangling refs/spans; Rule of Zero/Five satisfied.
 - [ ] Every `switch`/branch exhaustive; loops bounded; functions small.
-- [ ] Tests written first, cover boundaries + failures, pass under ASan/UBSan/TSan.
+- [ ] Tests written first, cover boundaries + failures, and pass under the `dev` preset. No sanitizer box — §8 records why none exists and what would have to be built.
 - [ ] Warnings clean at `/W4 -Werror`; clang-format clean. Do not run clang-tidy.
 - [ ] Includes verified under the `hygiene` preset (PCH-on default build masks missing/unused includes); new `*_test.cpp` placed in the correct `tests/<group>/` folder.
 - [ ] Public API documents contract; deviations carry `// SAFETY:` rationale.
