@@ -81,13 +81,17 @@ NO EXISTING NUMBER MOVES, and that is measured with the feature ON rather than
 argued from the flag being off. `swap_pnl` reported the number and nothing about
 where it came from, so a bad day and a bad model looked identical.
 
-`BacktestResult` gains seven attribution columns -- `swap_explain_carry`,
-`_realized`, `_vol_level`, `_skew`, `_convexity`, `_discount`, `_residual` --
-plus a `swap_explain_unattributed` counter, decomposing exactly the `swap_pnl`
-beside them through `deriv_pnl_explain` (above), evaluated per live lot against
-the START of each step and summed over the lane.
+`BacktestResult` gains the attribution columns `swap_explain_carry`,
+`_realized`, `_vol_level`, `_skew`, `_convexity`, `_discount` and
+`_residual`, plus a `swap_explain_unattributed` counter, decomposing exactly the
+`swap_pnl` beside them through `deriv_pnl_explain` (above), evaluated per live
+lot against the START of each step and summed over the lane. The roster is
+single-sourced as `swap_explain_columns()`, with a per-index `static_assert`
+pinning each row to its own member, so a reorder cannot compile; `backtest.hpp`
+names the sites a new column still has to touch, and what stops the build at
+each, rather than restating a tally here.
 
-* OFF BY DEFAULT (`RunConfig::swap_pnl_explain`, arity pin 17 -> 18). Not
+* OFF BY DEFAULT (`RunConfig::swap_pnl_explain`). Not
   timidity about the numbers: ON, each live lot costs one extra
   `deriv_greeks_on_ref` per step -- up to 20 repricings where the mark alone is
   one -- plus three surface reads for the smile observables. A run that does not
@@ -103,11 +107,11 @@ the START of each step and summed over the lane.
   which is why it is pinned rather than trusted
   (`BacktestSwapExplain.ComponentsSumToSwapPnlOnEveryRow`,
   `IdentitySurvivesRecordEveryN`).
-* WHAT IS DELIBERATELY NOT ATTRIBUTED, and counted instead of hidden: a lot's
-  first mark and the first step after a checkpoint resume (no prior state to
-  difference), a step where no fixing landed (carry prices a fixing arriving at
-  a zero return, so on a closed series that term describes an event that did not
-  happen), a lot whose sensitivities came back "not computed", and every
+* WHAT IS DELIBERATELY NOT ATTRIBUTED, and counted instead of hidden: a step
+  where no fixing landed -- which covers a lot's own first mark, and a closed
+  series, because carry prices a fixing arriving at a zero return and on such a
+  step that term describes an event that did not happen -- a lot whose
+  sensitivities came back "not computed", and every
   settlement (a payoff is not a market move). Each books its whole move to
   `swap_explain_residual`, so the identity stays exact, and increments
   `swap_explain_unattributed` -- so a large residual on an expiry date reads as
@@ -118,20 +122,24 @@ the START of each step and summed over the lane.
   -- because that is what `SurfaceOverlay::convexity_shift` adds. The other
   choice halves or doubles every convexity attribution while leaving the
   identity intact, so the identity alone would not have caught it.
-* THE PRIOR-STEP STATE IS ENGINE-LOCAL, not on `SwapAccrual`. That struct
-  round-trips through checkpoints and carries a hand-written twelve-field
-  comparator with its own drift pin; widening it for a diagnostic that moves no
-  mark would be the wrong trade. The cost is that a RESUMED RUN CANNOT ATTRIBUTE
-  ITS FIRST STEP, which is the same treatment a lot's own first mark gets.
+* NO PRIOR-STEP STATE IS CARRIED AT ALL, and `SwapAccrual` was not widened for
+  the explain either -- that struct round-trips through checkpoints and carries a
+  hand-written comparator with its own drift pin, and widening it for a
+  diagnostic that moves no mark would be the wrong trade. The start-of-step
+  sensitivities resolve against the snapshot the step is measured FROM, which
+  the engine already holds. A RESUMED RUN THEREFORE ATTRIBUTES ITS FIRST STEP;
+  see the round-2 entry below, which is where that stopped being a limitation.
 
-**THE SHIPPED EXAMPLE'S TSV GAINS EIGHT COLUMNS** (`5cbbc55`), so this is
-visible in a report and not only through the C++ API.
+**THE SHIPPED EXAMPLE'S TSV GAINS THE EXPLAIN COLUMNS** (`5cbbc55`, `2cc386f`),
+so this is visible in a report and not only through the C++ API.
 `examples/varswap_compare_example.cpp` turns the explain ON -- one swap lot is
 live per cycle there, so the bill is one lot's worth of repricing, and
 attributing `swap_pnl` is the whole point of the report it feeds -- and attaches
-the seven flows plus the counter beside the `swap_pv` / `swap_pnl` it already
-emitted. THE COLUMN NAME IS THE FIELD NAME on every one, so a reader parsing
-that TSV BY POSITION rather than by header name must re-read it.
+the whole roster beside the `swap_pv` / `swap_pnl` it already emitted, by
+ITERATING `swap_explain_columns()` rather than hand-listing anything, so a
+column added to the roster reaches the TSV with no edit to the example. THE
+COLUMN NAME IS THE FIELD NAME on every one, so a reader parsing that TSV BY
+POSITION rather than by header name must re-read it.
 `tools/render_strangle_vs_varswap.py` grows the matching attribution panel,
 DISCOVERING the components off the track's own header row by the
 `swap_explain_` prefix rather than from a roster written down a second time.
@@ -165,6 +173,112 @@ NOT part of the frozen `kBacktestSeriesColumns` / RunArchive registry, so
 signal tail, which is why the example could grow them without a schema bump.
 Landed in `f505225`, carried to the Python lane in `5cbbc55`.
 
+### Fixed — the swap explain's carry and realized columns moved, and a partial explain set is now refused (Task F-8, review rounds 2 and 6)
+
+Both defects are in the explain this same release adds, so no number that
+existed before 1.1.0 moves. Both are worth reading anyway: the first changes
+numbers anyone who took the explain off this branch early has already looked at,
+and the second turns a call that used to succeed into an error.
+
+**THE CARRY COLUMN WAS SCALED BY THE WRONG INTERVAL** (`96a3c70`).
+`theta_zero_fixing` is a RATE obtained by rolling `bumps.time_years` while
+injecting exactly ONE fixing -- independent of the roll's length -- so
+`theta_zero_fixing * h` is the deterministic move over `h` INCLUDING that
+fixing. The first cut resolved the sensitivities one step early and multiplied
+them by the NEXT step's `dt`, scaling the fixing leg by `dt_this / dt_prev`. On
+a real calendar a Friday-to-Monday step follows a one-day step and OVER-STATES
+carry 3x, with the following step under-stating it by the same ratio. The
+residual absorbed all of it, so the identity closed and NAV never moved: it read
+exactly like a thing that passed, which is how it cleared five tests, a NAV gate
+and a review.
+
+Fixed by DELETING the carried state rather than correcting the arithmetic
+applied to it -- the start-of-step sensitivities now resolve against the
+snapshot the step is measured FROM, so the interval a greek is bumped over and
+the interval it is multiplied by are the same number by construction. Pinned by
+SHAPE rather than by value, on a 1/3/1/7/1-day calendar: carry is one fixing
+(independent of step length) plus a dt-proportional roll, so it must not track
+the step-length ratio. Against the old arithmetic that test reports a 6.97x
+spread and fails
+(`BacktestSwapExplain.CarryDoesNotScaleWithStepLengthOnAnIrregularCalendar`;
+`IdentityHoldsOnAnIrregularCalendar` stays green throughout, which is the point
+-- the identity could not see this). Deleting the state also retired a per-lot
+entry that leaked for every lot leaving the book by a path other than
+settlement, and is what lets a resumed run attribute its first step.
+
+**THE REALIZED COLUMN WAS UNDISCOUNTED** against discounted marks (`96a3c70`);
+it now uses the to-date's own discount factor, which the smile sample already
+returned.
+
+MIGRATION for both: `swap_pnl`, NAV and every other column are unaffected --
+the residual absorbed the error, which is precisely why this needs stating
+rather than showing up as a NAV break. A stored `swap_explain_carry` /
+`_realized` series from an earlier build of this branch should be recomputed;
+on a regular calendar the carry error vanishes, so a run whose steps were all
+one day is unchanged.
+
+**A PARTIALLY-POPULATED EXPLAIN SET IS NOW REFUSED, BY NAME** (`c1771a6`). Both
+shape validators checked every explain column INDEPENDENTLY (`empty ||
+row-parallel`), and every column is independently allowed to be empty -- so a
+result with one column populated and the rest empty was a collection of
+individually-legal columns forming an illegal SET that nothing asked about. The
+append path then decided the set's shape by reading the FIRST column, justified
+by a comment asserting the validators had already rejected a partial set. They
+had not. Measured: such a result passed `validate()`, passed
+`append_backtest_results`, and came out ragged -- carry at 3 rows, skew at 1 --
+with the combined result refusing only afterwards, by which point the malformed
+result had already escaped.
+
+New public `enum class SwapExplainShape { Absent, Present, Mixed }` and
+`swap_explain_shape(const BacktestResult &)` answer that question over EVERY
+column, and there is no accessor that answers it from fewer. `Mixed` is the
+state that was previously unrepresentable and is the reason the enum has three
+values: it is always malformed, both validators reject it by name, and a caller
+comparing against `Present` cannot silently treat it as such.
+
+MIGRATION: CALLER-OBSERVABLE. A `BacktestResult::validate()` or
+`append_backtest_results` call that used to succeed on a partial explain set now
+returns an error naming the shape. A caller assembling a `BacktestResult` by
+hand must populate the whole roster or none of it -- `swap_explain_shape` is how
+to check before calling. No caller that was populating the columns together, or
+leaving them all empty, is affected
+(`BacktestSwapExplain.TheShapeAccessorReadsEveryColumnNotTheFirst`,
+`AppendRefusesAPartiallyPopulatedExplainRatherThanRaggedIt`).
+
+### Fixed — a zero-surface subset load verifies its date instead of sampling one entry (Task F-8 round 7)
+
+`MarketSnapshot::load` had sample-then-verify and sample-and-trust in two
+branches of one function, ten lines apart. The full-load branch reads
+`pricing_at(0).now_ts_ns`, checks every loaded surface against it and errors on
+disagreement; the other branch mapped the directory's first entry and trusted
+it.
+
+THE ASYMMETRY IS NARROWER THAN IT LOOKS, and the shape of the fix follows from
+that. The trusting branch is reached only when a subset was requested and
+matched NOTHING, so it owns zero surfaces -- a subset that matched anything
+falls through to the verifying branch. No loaded surface was ever unverified;
+what went unchecked was the DATE the resulting zero-surface snapshot carries.
+"Verify across what the subset loaded" is therefore vacuous here, so the branch
+now maps every directory entry and requires agreement: the same rule the sibling
+applies, over the only set this branch has.
+
+Measured against a two-surface archive stamped a day apart and loaded with a uid
+matching neither: pre-fix the zero-surface subset load was ACCEPTED while the
+whole-board load of the same archive was refused; post-fix both refuse. Both
+agreeing cases still load, and an empty-subset load still yields a zero-surface
+snapshot carrying the date's timestamp, which is the legitimate behaviour that
+path exists for
+(`BacktestSwapExplain.AZeroSurfaceSnapshotRefusesAnArchiveWhoseDatesDisagree`,
+`AZeroSurfaceSnapshotStillLoadsWhenTheArchiveAgrees` as its positive control).
+
+MIGRATION: CALLER-OBSERVABLE, and narrowly. An archive whose entries disagree on
+their date, loaded through a subset request that matched no uid, now errors
+where it previously returned a snapshot timestamped from whichever entry the
+directory happened to list first. Any caller that was relying on that
+acceptance was relying on an arbitrary choice. The added walk is header reads
+over the already-mapped archive rather than I/O, and runs only on that one
+branch.
+
 ### Fixed — the scenario grid's deriv leg returned NaN cells and differenced a model, not a price (Task F-8 round 1)
 
 Both defects are in the deriv leg this same release adds (the `scenario_grid`
@@ -173,13 +287,22 @@ every number that leg produced before `8d2f5de` was affected, on the kinds named
 below.
 
 **NaN poisoning, and what a caller now gets instead.** `DerivGreeks` carries
-"not computed" as NaN in six of the ten slots the deriv Taylor kernel reads, and
-`NaN * 0.0` is NaN, so an unguarded product destroyed all ten terms over an axis
+"not computed" as NaN in the slots a caller did not ask for, and `NaN * 0.0` is
+NaN, so an unguarded product destroyed EVERY term of a Taylor cell over an axis
 the caller never asked about. Only the two smile terms were gated; theta, charm
 and vanna were bare multiplies. MEASURED: a contract shorter than the default
 roll (`1/365.25`) on a grid whose `dt` is ZERO returned 9 of 9 NaN cells while
-reporting `n_deriv_ok = 1`. All ten terms are now gated on their own shock, once
-and in the same form (`ScenarioGridDeriv.EveryNaNCapableTermIsGatedByItsOwnShock`).
+reporting `n_deriv_ok = 1`. Every NaN-capable term is now gated on its own
+shock, once and in the same form
+(`ScenarioGridDeriv.EveryNaNCapableTermIsGatedByItsOwnShock`). The artifact that
+stands behind the GENERAL claim is
+`ScenarioGridDeriv.ASufficientVerdictAlwaysYieldsAFiniteKernel`, whose slot list
+names every `double` member of `DerivGreeks` rather than the ones the kernel
+reads today -- a list of what is read today is definitionally unable to catch a
+kernel that starts reading something new. Its sibling equality over the shock
+combinations is a gate-set agreement check and is NOT an exhaustiveness proof;
+the round that added it called it one, and its own comment now names a mutant it
+misses.
 
 A NON-ZERO shock against a NaN sensitivity has no answer to give, so the grid
 now detects that case BEFORE pricing and EXCLUDES the position, counting it in
