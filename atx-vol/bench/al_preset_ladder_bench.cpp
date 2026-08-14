@@ -61,6 +61,7 @@
 #include <benchmark/benchmark.h>
 
 #include "atx/vol/api/pricing/american.hpp"
+#include "pricing/american_detail.hpp"
 #include "atx/vol/api/core/types.hpp"
 
 // Real-OPRA harvest (optional; falls back to a representative grid when the

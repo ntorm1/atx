@@ -1,5 +1,7 @@
 #include "atx/vol/api/pricing/american.hpp"
 
+#include "pricing/american_detail.hpp"
+
 #include <array>
 #include <atomic>
 #include <bit>

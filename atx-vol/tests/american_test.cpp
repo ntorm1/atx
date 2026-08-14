@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "atx/vol/api/pricing/american.hpp"
+#include "pricing/american_detail.hpp"
 #include "atx/vol/api/pricing/black76.hpp"
 #include "atx/vol/api/fitting/correction.hpp"
 #include "fitting/counters.hpp"

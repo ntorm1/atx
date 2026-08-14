@@ -33,6 +33,7 @@
 #include <benchmark/benchmark.h>
 
 #include "atx/vol/api/pricing/american.hpp"
+#include "pricing/american_detail.hpp"
 #include "atx/vol/api/pricing/american_iv.hpp"
 #include "atx/vol/api/simd/american_boundary_batch.hpp" // american_put_boundary_batch, SimdIsa/SimdRoute
 #include "atx/vol/api/simd/cpu.hpp"                      // have_avx2

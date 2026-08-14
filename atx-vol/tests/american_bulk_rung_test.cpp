@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "atx/vol/api/pricing/american.hpp"
+#include "pricing/american_detail.hpp"
 #include "atx/vol/api/fitting/session.hpp"
 #include "atx/vol/api/storage/surface_db.hpp"
 #include "support/oracle_pricer_pde.hpp"
