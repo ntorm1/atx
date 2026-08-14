@@ -760,6 +760,19 @@ TEST(VarOption, PutCallParityThroughDispatch) {
   DerivConfig cfg = deriv_default_config();
   cfg.vol_of_vol = 0.80;  // explicit xi: no calibration variance between arms
 
+  // LOAD-BEARING SWEEP MEMBER, do not narrow (Task F-5 fix round 1). The
+  // fixture's accrued leg is a = (21/63)*0.0324 = 0.0108, and `k = 0.005` is the
+  // only strike below it. There the call is deep in the money, so its premium is
+  // the LINEAR a + b*m - K -- which is what makes this test measure the future
+  // leg b*m directly rather than merely observe that some option was priced.
+  //
+  // Round 1's review established that by execution: patching in the WRONG
+  // "call pins to a - K at a >= K" behaviour the task brief specified makes
+  // three tests fail here, and the quantity dropped measures 0.0266666671 --
+  // exactly b*m -- against a 0.01 intrinsic. Drop 0.005 from this list and that
+  // catch disappears silently, leaving b*m pinned only by the call's T == 0
+  // refusal in `PutPinsWhenAccruedPassesTheStrikeButCallDoesNot`, which is a
+  // strictly weaker statement.
   for (const double k : {0.005, 0.02, 0.036, 0.05, 0.12}) {
     const auto call = deriv_price(surf, cs, mid_life_option(DerivKind::VarianceCall, k), cfg);
     const auto put = deriv_price(surf, cs, mid_life_option(DerivKind::VariancePut, k), cfg);
@@ -971,6 +984,10 @@ TEST(VarOption, FullyAgedPaysIntrinsic) {
     EXPECT_NEAR(q->pv, 1e5 * cs_i.expect, 1e-9);
     EXPECT_TRUE(has_flag(q->flags, DerivFlags::FullyAged));
     EXPECT_FALSE(has_flag(q->flags, DerivFlags::ModelProxy));
+    // FullyAged is its OWN exit, not the put pin: `OptionPinned` must stay
+    // clear here even for the put rows, or the two deterministic paths become
+    // indistinguishable and the flag stops meaning "a >= K mid-life".
+    EXPECT_FALSE(has_flag(q->flags, DerivFlags::OptionPinned));
     EXPECT_TRUE(std::isnan(q->vol_of_vol_used));  // no distribution model ran
   }
 }
@@ -1001,6 +1018,14 @@ TEST(VarOption, PutPinsWhenAccruedPassesTheStrikeButCallDoesNot) {
   EXPECT_EQ(pq->fair_strike_dec, 0.0);
   EXPECT_EQ(pq->pv, 0.0);
   EXPECT_FALSE(has_flag(pq->flags, DerivFlags::ModelProxy));
+  // Fix round 1: the pin is OBSERVABLE, not merely correct. A caller must be
+  // able to tell "dead by accrual" from "cheap by model" -- both quote ~0.
+  EXPECT_TRUE(has_flag(pq->flags, DerivFlags::OptionPinned));
+  EXPECT_FALSE(has_flag(pq->flags, DerivFlags::FullyAged));  // genuinely mid-life
+  // And the flag marks the one path where E[V] != accrued + future: no strip
+  // ran, so the future leg is 0 in the NOT-COMPUTED sense while b > 0.
+  EXPECT_EQ(pq->future_component_dec, 0.0);
+  EXPECT_GT(pq->accrued_component_dec, 0.0);
 
   // The call on the identical contract fails at T == 0 -- it genuinely needs
   // the future leg it cannot price. That refusal IS the asymmetry.
@@ -1017,6 +1042,9 @@ TEST(VarOption, PutPinsWhenAccruedPassesTheStrikeButCallDoesNot) {
   ASSERT_TRUE(cq.has_value()) << cq.error().to_string();
   EXPECT_GT(cq->fair_strike_dec, 0.03 - 0.02);
   EXPECT_TRUE(has_flag(cq->flags, DerivFlags::ModelProxy));
+  // The call at a >= K is NOT pinned -- that is the whole asymmetry, and the
+  // flag has to say so or it would be recording "a >= K" rather than "pinned".
+  EXPECT_FALSE(has_flag(cq->flags, DerivFlags::OptionPinned));
   // Deep in the money by construction, so it is exactly the linear value.
   EXPECT_NEAR(cq->fair_strike_dec,
               cq->accrued_component_dec + cq->future_component_dec - 0.02, 1e-12);

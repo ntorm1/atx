@@ -1181,6 +1181,13 @@ template <class SurfaceT>
   }
 
   if (!is_call && a >= k_opt) {
+    // Fix round 1: stamp the pin. Without a flag, "dead by accrual" and "cheap
+    // by model" both quote ~0 and are separable only by inference across three
+    // other fields. The flag also marks the ONE path where this file's usual
+    // E[V] == accrued_component_dec + future_component_dec reading fails: no
+    // strip ran, so the future leg is 0 in the NOT-COMPUTED sense while the
+    // true E[V] is a + b*m with b > 0.
+    flags |= DerivFlags::OptionPinned;
     const double df = deriv_df_at_T(curves, T, flags);
     return Ok(variance_option_quote(0.0, a, 0.0, df, contract, flags));
   }

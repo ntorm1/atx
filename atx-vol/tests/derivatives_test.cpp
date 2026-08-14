@@ -3056,13 +3056,22 @@ TEST(Dispatch, EngineKindMatrixEnforced) {
 // it: no kind reads `marking`, so the non-Otc value is refused on every one of
 // them. The sweep below is what says so -- a rule written against VarSwap alone
 // would pass a one-kind test just as well.
+//
+// F-5 fix round 1 (I-1): the list must stay EXHAUSTIVE over `DerivKind`, and it
+// did not. `b4643fc` added the two option kinds, fixed the identical
+// six-of-eight over-claim in `DerivGreeks.AllKindsMidLifeFinite`, and left this
+// list at six -- the partial-fix pattern, inside the very commit whose message
+// invoked the rule against it. A kind added without a row here is silently
+// uncovered, and the test name goes on claiming otherwise. Keep the list and
+// the enum in step.
 TEST(Dispatch, CboeVarianceFutureMarkingRefusedOnEveryKind) {
   const EssviSurface surf = make_flat_surface(0.20, 0.01, 1.00);
   const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
 
   for (const DerivKind kind : {DerivKind::VarSwap, DerivKind::VolSwap, DerivKind::CappedVarSwap,
                                DerivKind::CappedVolSwap, DerivKind::GammaSwap,
-                               DerivKind::CorridorVarSwap}) {
+                               DerivKind::CorridorVarSwap, DerivKind::VarianceCall,
+                               DerivKind::VariancePut}) {
     DerivContract c{};
     c.kind = kind;
     c.maturity_t = 0.25;

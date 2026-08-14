@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <atomic>
 #include <bit>
+#include <cassert>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -981,7 +982,26 @@ struct SwapStepResult {
 // The settled terminal rate: annualized realized VARIANCE for the var kinds, its
 // square root for the vol kinds, each capped where the product caps. Read purely
 // off the accrual — settlement needs no surface.
+//
+// PRECONDITION, and the reason it is asserted rather than left to a comment
+// (Task F-5 fix round 1). The caller multiplies this by `qty * notional` and
+// subtracts `strike_dec` — a payoff LINEAR in the returned rate. Every kind
+// `engine_supports_swap_kind` admits has that shape; F-5's option kinds do not
+// (their payoff is kinked), which is why that list refuses them. The assert
+// re-states the boundary contract at the point that DEPENDS on it, so a path
+// that reaches settlement without passing `validate_swap_lot_economics` fails
+// loudly in debug instead of paying a swap's linear P&L on an option.
+//
+// It deliberately CALLS the admission list rather than re-listing the linear
+// kinds: a second copy of that membership is the exact hazard Task F-5's own
+// unification commit existed to remove. What it therefore cannot catch is a
+// future author WIDENING `engine_supports_swap_kind` without teaching this
+// function the new payoff shape — that coupling is not expressible as a check,
+// and is carried by the cross-reference on that function's own arms.
 [[nodiscard]] double swap_terminal_value(const SwapLot &lot, const SwapAccrual &acc) noexcept {
+  assert(engine_supports_swap_kind(lot.kind) &&
+         "swap_terminal_value settles a payoff LINEAR in the terminal rate; see "
+         "engine_supports_swap_kind (backtest.hpp) for which kinds have that shape");
   const double terminal =
       deriv_kind_settles_in_vol(lot.kind) ? std::sqrt(acc.rv.rv_done_dec) : acc.rv.rv_done_dec;
   return deriv_kind_is_capped(lot.kind) ? std::min(terminal, lot.cap_dec) : terminal;

@@ -249,20 +249,32 @@ class PricedSurface;
 // no strike that prices an option to PV = 0, so "fair strike" has no meaning
 // for these two kinds; the premium is the headline number a quote carries and
 // it keeps `fair_strike_dec == undiscounted_expectation_dec`, the invariant
-// every other kind already satisfies. E[V] itself remains readable as
-// `accrued_component_dec + future_component_dec`.
+// every other kind already satisfies.
+//
+// E[V] is readable as `accrued_component_dec + future_component_dec` ON THE
+// PATHS THAT RESOLVED A FUTURE LEG -- the model path (where it is a + b*m) and
+// the fully-aged path (where b == 0 and E[V] == a exactly). It is NOT readable
+// that way on the PUT-PIN path below: no strip runs there, so
+// `future_component_dec` is 0 in this file's standing "0.0 means NOT COMPUTED"
+// sense (the same convention `uncapped_var_dec` and `cap_option_value_dec`
+// already use), while the true E[V] is a + b*m with b > 0. A caller that needs
+// E[V] on a pinned put must price the underlying variance separately; gate on
+// `DerivFlags::OptionPinned`.
 //
 // EXITS mirror the capped-variance structure, with one asymmetry worth stating
 // because it is easy to get backwards. FULLY AGED (b == 0) is deterministic
 // for both: V == a exactly, so the payoff is max(a-K,0) / max(K-a,0) with no
 // strip and no model. A PUT additionally pins when a >= K even mid-life --
 // V >= a >= K makes the payoff identically 0, so it is a valid quote request
-// at T == 0 and must not pay for (or fail on) a strip it does not need, the
-// same argument `DerivFlags::CapPinned` records for the capped kinds. A CALL
-// has NO corresponding pin: a >= K makes exercise certain but the VALUE is
-// still a + b*m - K, which needs the strip's m. `lognormal_call` already
-// returns m - k for k <= 0, so that case needs no branch at all -- it is the
-// ordinary model path with a negative effective strike.
+// at T == 0 and must not pay for (or fail on) a strip it does not need. That is
+// the same structure `DerivFlags::CapPinned` records for the capped kinds, and
+// it gets its own flag for the same reason: `DerivFlags::OptionPinned`.
+// (`CapPinned` itself is NOT reused -- it is documented as always accompanied
+// by `CapApplied` and names a cap these kinds do not carry.) A CALL has NO
+// corresponding pin: a >= K makes exercise certain but the VALUE is still
+// a + b*m - K, which needs the strip's m. `lognormal_call` already returns
+// m - k for k <= 0, so that case needs no branch at all -- it is the ordinary
+// model path with a negative effective strike.
 //
 // MODEL RISK (LIT-5), stated in the header because a caller cannot see it in
 // the numbers. Realized variance has a right tail materially FATTER than
@@ -655,6 +667,24 @@ enum class DerivFlags : std::uint32_t {
   // flag, because at that magnitude "inverted" and "flat" are the same
   // observation. atx extension: not mirrored in AtsVolDerivFlags.
   CalendarInconsistent = 1u << 15,
+  // Task F-5 fix round 1: a variance PUT whose accrued leg alone already reached
+  // its strike (a >= K). V >= a >= K makes (K-V)+ identically 0, so the quote is
+  // pinned at premium 0 with no strip call and no T > 0 requirement -- exactly
+  // the structure `CapPinned` records for the capped kinds, which is why that
+  // flag is NOT reused here: `CapPinned` is documented as always accompanied by
+  // `CapApplied` and names a cap these kinds do not carry.
+  //
+  // WHY IT NEEDS A FLAG AT ALL, rather than the header simply saying no flag is
+  // set: a pinned put and a genuinely near-worthless one both quote ~0, and
+  // distinguishing them otherwise takes an inference across three fields
+  // (`ModelProxy` absent, `FullyAged` absent, `vol_of_vol_used` NaN). "Dead by
+  // accrual" and "cheap by model" are different facts for anything marking or
+  // risking the position, and the first one is knowable exactly.
+  //
+  // Never set on a CALL: a >= K makes exercise certain but leaves the value
+  // a + b*m - K, which still needs the strip -- see DerivKind::VarianceCall.
+  // atx extension: not mirrored in AtsVolDerivFlags.
+  OptionPinned = 1u << 16,
 };
 
 [[nodiscard]] constexpr DerivFlags operator|(DerivFlags a, DerivFlags b) noexcept {
@@ -1158,7 +1188,10 @@ struct DerivQuote {
   // does not exist for those two kinds. The invariant
   // `fair_strike_dec == undiscounted_expectation_dec` holds on all of them
   // regardless; E[V] on an option quote is
-  // `accrued_component_dec + future_component_dec`.
+  // `accrued_component_dec + future_component_dec` EXCEPT on the put-pin path,
+  // where no strip ran and `future_component_dec` is 0 in the "not computed"
+  // sense -- gate on `DerivFlags::OptionPinned`, and see
+  // `DerivKind::VarianceCall`'s own doc.
   double fair_strike_dec = 0.0;
   double fair_strike_points = 0.0;        // var pts or vol pts
   double pv = 0.0;                        // contract PV today

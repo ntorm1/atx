@@ -530,6 +530,17 @@ struct SwapLot {
   // MARKING would already be correct (deriv_price prices both kinds), which is
   // precisely why this refusal has to be explicit: the half that works is not
   // the half that decides.
+  //
+  // IF YOU ARE HERE TO ADMIT A KIND (Task F-5 fix round 1): moving an arm from
+  // `false` to `true` is NOT sufficient on its own. `swap_terminal_value`
+  // (backtest.cpp) returns a terminal RATE that its caller multiplies by
+  // `qty * notional` after subtracting `strike_dec`, so every kind admitted
+  // above must have a payoff LINEAR in that rate. Teach that function the new
+  // shape FIRST. Its assert CALLS this list rather than re-listing the linear
+  // kinds -- deliberately, because a second copy of this membership is the
+  // hazard F-5's own unification commit existed to remove -- so it cannot catch
+  // a widening here. That coupling is not expressible as a check and therefore
+  // lives at this line, which is the one an author actually edits.
   case DerivKind::VarianceCall:
   case DerivKind::VariancePut:
     return false;

@@ -27,7 +27,22 @@ come from two different engines.
   option's undiscounted PREMIUM, and `pv == df * notional * fair_strike_dec`
   with NO strike subtraction, because K is already inside the payoff. No strike
   prices an option to PV = 0, so a break-even level does not exist here. E[V]
-  stays readable as `accrued_component_dec + future_component_dec`.
+  stays readable as `accrued_component_dec + future_component_dec` on every path
+  that resolved a future leg — but NOT on the put-pin path below.
+* NEW `DerivFlags::OptionPinned = 1u << 16` (appended; bit 16 was free, the
+  previous high bit being `CalendarInconsistent = 1u << 15`). Set on a variance
+  PUT whose accrued leg alone already reached its strike (`a >= K`), where
+  `V >= a >= K` makes the payoff identically 0 — deterministic, no strip, valid
+  at `T == 0`. It is the option analogue of `CapPinned`, which is deliberately
+  NOT reused: that flag is documented as always accompanied by `CapApplied` and
+  names a cap these kinds do not carry. Never set on a CALL — `a >= K` makes
+  exercise certain but leaves the value `a + b*m - K`, which still needs the
+  strip. The flag exists because a pinned put and a genuinely near-worthless one
+  both quote ~0, and "dead by accrual" vs "cheap by model" are different facts
+  for anything marking or risking the position. It also marks the ONE path where
+  `E[V] == accrued_component_dec + future_component_dec` fails: no strip ran, so
+  the future leg is 0 in this library's standing "0.0 means NOT COMPUTED" sense
+  while `b > 0`.
 * NOT CARRYABLE BY THE BACKTEST ENGINE. `engine_supports_swap_kind` refuses
   both kinds. Marking would have worked; SETTLEMENT would not — the swap-lot
   settle path pays `qty * notional * (terminal - strike_dec)`, linear in the
