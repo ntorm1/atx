@@ -648,14 +648,21 @@ same population and a single hand-written number would hide that:
 | cases / suites | `build/bin/atx-vol-tests.exe --gtest_list_tests` | GoogleTest cases in the atx-vol test binary, including the `DISABLED_` ones |
 | registered tests | `ctest --test-dir build -N -L atx_vol` | the cases above, discovered by `gtest_discover_tests`, **plus exactly 13** lanes that are not GoogleTest cases: `SpxWilmottReproUnit`, `atx-vol-reference-spy-dispersion`, `atx-vol-download-occ-ess`, `atx-vol-build-spy-top50-universe`, `Mag7DispersionReport`, `SpyDispersionPnlReport`, `atx-vol-python`, `atx-vol-pricing-forcescalar`, `atx-vol-e2e-benchmark-name-coverage`, `atx-vol-e2e-benchmark-name-checker-unit`, `atx-vol-american-shootout-name-coverage`, `atx-vol-compare-baseline-unit`, `atx-vol-pg-observability-name-coverage`. Registered by `add_test()` across three files, not one: `atx-vol/CMakeLists.txt` (`SpxWilmottReproUnit`), `tests/CMakeLists.txt` (the next seven) and `bench/CMakeLists.txt` (the five `*-name-coverage` / `*-unit` guards) |
 
-**The invariant is the gap, not the totals: registered = cases + 13.** The
-absolute figures are deliberately not published here. They grow with every suite
-added and a written one goes stale silently, whereas the reconciliation is a
-structural property of how the suite is registered — `gtest_discover_tests`
-enumerates the binary, and the 13 named lanes above are the only `add_test()`
-registrations that are not GoogleTest cases. Run the two commands for current
-totals and check the difference is 13; if it is not, a lane was added or removed
-and the list above is what needs updating.
+**The stable thing is the gap, not the totals — and it is stable only per
+configuration.** Absolute figures are deliberately not published: they grow with
+every suite added, and a written one goes stale silently. The gap is
+`registered − cases = the non-GoogleTest lanes`, which is **13 under
+`cmake --preset dev`** and **15 under `rel` / `rel-avx2`**, because those two
+configure `-DATX_BUILD_EXAMPLES=ON` and pick up the two `accuracy_panel` lanes.
+A number that changes with the preset is not an invariant, so treat it as what it
+is: the size of the enumerated list above, under a stated configuration.
+
+**Nothing enforces it.** No test or CMake assertion checks the count; a
+fourteenth `add_test()` would change the gap silently and this list would simply
+be wrong. So verify it by set difference, not by subtraction — subtracting two
+totals can return the expected number for compensating reasons and cannot tell
+you which lanes are in the gap. Run both commands, diff the two name sets, and
+confirm the difference is exactly the lanes named above.
 
 Both commands assume `cmake --preset dev`. **The `rel` and `rel-avx2` presets
 register exactly 2 more**, because they are configured with
@@ -679,11 +686,15 @@ Green means **every lane that can run, ran and passed**. It does not mean every
 registered lane ran, and the difference is stable, deliberate and enumerated
 below rather than being a backlog.
 
-Of the registered tests above, ctest starts all but the `DISABLED_` cases
-(`--gtest_list_tests` marks them; `ctest -N` counts what actually starts, and the
-difference between the two is exactly that set). **63** reported `SKIPPED` at the
-v1.0.0 release-sprint measurement on an AVX2 host with `cmake --preset dev` and no
-market-data cache present — a dated figure from that one run, not a current count. Every skip carries a reason string naming exactly
+`DISABLED_` cases appear in **both** listings — `--gtest_list_tests` prints them
+with their `DISABLED_` prefix, and `gtest_discover_tests` registers them with ctest
+renamed `… (Disabled)` — so they are not what separates the two commands, and
+neither command's total excludes them. ctest declines to *run* them; both still
+*count* them. (An earlier version of this paragraph said the opposite, and quoted
+a figure for them that was wrong in the same breath.) **63** reported `SKIPPED` at
+the v1.0.0 release-sprint measurement on an AVX2 host with `cmake --preset dev`
+and no market-data cache present — a dated figure from that one run, not a current
+count. Every skip carries a reason string naming exactly
 what would let it run; the six skip classes below account for all 63 as of that
 measurement (the post-merge tree has not had a fresh full-matrix skip census).
 The last row is **not** a skip class and contributes none of the 63 — it is the
@@ -756,35 +767,38 @@ goes stale when a row is added. None is required, so **an unset environment is a
 complete, correct configuration**, which is the property that makes this table
 short.
 
-They fall into three kinds, and only the first two are result-neutral. The
-**parallelism** knobs select how much of the machine is used, and every atx-vol
-fan-out is documented bit-identical for any worker count. The **diagnostics**
-decide only whether something is printed. The **A/B seams** — the
-`ATX_VOL_DISABLE_*` rows at the bottom — exist so one binary can be measured with
-and without an optimisation, and they are the exception to result-neutrality:
-`ATX_VOL_DISABLE_IV_EARLY_EXIT` moves last-place bits **by design**, which is
-what makes it useful. The other two seams are pinned bit-identical by their own
-tests rather than merely asserted to be.
+The **Result** column carries the safety claim: whether the knob can change a
+fitted, priced or archived value. Read it per row. A prose taxonomy summarising
+this table used to sit here and drifted from it three times — each new row landed
+outside whatever buckets the paragraph had named — so the classification lives in
+the table, where a new row cannot be added without filling it in.
 
-| Knob | Effect | Default | Scope | v1 status |
-|---|---|---|---|---|
-| `ATX_VOL_FIT_WORKERS` | Resolves the auto (`0`) worker count for `parallel_for` fan-outs. An explicitly requested non-zero count is honoured as-is and is *not* capped by it | `hardware_concurrency()` (min 1) | library — `detail/parallel_for.hpp` | **keep** |
-| `ATX_SIMD_ISA` | Seeds the process-global SIMD override at load: `Auto`, `ForceScalar` or `ForceAvx2`. An in-process `set_simd_isa_override()` still wins | `Auto` | library — `src/simd/cpu.cpp` | **keep** |
-| `ATX_VOL_FIT_ECORE_TIER` | Arms the E-core second scheduling tier. `2` arms it *without* the below-normal priority drop; any other non-zero value arms it *with* the drop | unset = off | library — `src/fit_scheduler.cpp` | **keep**, deprecation candidate |
-| `ATX_VOL_CORPUS_DATE_BATCH` | Dates per corpus fan-out call. Scheduling only — output bytes do not depend on it | `8` | library — `src/dispersion_run.cpp` | **keep**, belongs in a config struct |
-| `ATX_VOL_CORPUS_PHASE_TIMING` | Prints the corpus build's phase split. Collection is unconditional and cheap; only the report is gated | unset = off | library — `src/dispersion_run.cpp` | **keep** |
-| `ATX_VOL_PROFILE` | Prints per-phase fit timings from `curve_fit` and `surface_parity`. **Not** the CMake option of the same name — see the collision note below | unset = off | library — `src/curve_fit.cpp`, `src/surface_parity.cpp` | **keep**, rename candidate |
-| `ATX_SLICE_DEBUG` | Prints `curve_fit`'s per-slice fit-preparation outcome (why a chain did or did not become a fittable slice) | unset = off | library — `src/curve_fit.cpp` | **keep** |
-| `ATX_VOL_ZC_BORROW` | `0` forces the owned-reconstruct archive path instead of the zero-copy borrow. Read once per process, so it cannot make a run non-deterministic | unset = borrow allowed | library — `src/backtest.cpp` | **keep**, deprecation candidate |
-| `ATX_VOL_ZC_BACKING` | `map` or `copy` overrides the caller-declared `ArchiveBacking` on the borrow path. Read once per process | unset = the caller's choice stands | library — `src/backtest.cpp` | **keep**, deprecation candidate |
-| `ATX_VOL_AL_PROBE` | Arms the Andersen-Lake zone cycle-attribution probe, read once into `g_mode` at process load. Any non-empty value turns it on; a value containing `s`/`S` additionally records each cold boundary solve's normalized query state. Attribution only — the priced values it counts around are unaffected | unset = off | library — `src/al_probe.cpp` | **keep** |
-| `ATX_VOL_AL_PROBE_OUT` | File path for the per-state binary trace `ATX_VOL_AL_PROBE`'s `s`/`S` flag records; the human-readable `alprobe.*` summary itself always goes to the stream `dump()` was called with, not this path. Unset just skips writing the trace file. Meaningless unless `ATX_VOL_AL_PROBE` is set | unset = trace not written | library — `src/al_probe.cpp` | **keep** |
-| `ATX_VOL_CACHE` | Default for the dispersion CLI's `--cache DIR`; an explicit `--cache` overrides it. Empty means disabled, which is the default behaviour | unset = disabled | tool — `tools/spy_dispersion_backtest.cpp` | **keep** |
-| `ATX_VOL_PREFETCH_DEPTH` | Overrides the projected replay's snapshot look-ahead depth (`projected_prefetch_depth()`). Malformed or out-of-range (cap `64`) falls back to the default rather than failing the run. Scheduling only — output is bit-identical at any depth | `2`, cap `64` | tool — `tools/spy_dispersion_backtest.cpp` | **keep** |
-| `ATX_VOL_SOLVE_LEDGER` | Same env-gated shape as `ATX_VOL_PROFILE`: any non-empty value dumps the always-on solve ledger (AL boundary solves / premium evals / IV Newton iterations) as `ledger.<name> <count>` lines to stderr; the stdout build report shape is untouched | unset = off | tool — `tools/surface_db_build_main.cpp` | **keep** |
-| `ATX_VOL_DISABLE_STRIP_BATCH` | A/B seam: forces `var_swap_fair_strike` onto its per-node scalar surface-read loop even when `SurfaceT` exposes a batched `iv_batch`, so one binary can be measured both ways. `Strip.BatchedMatchesScalar*` pins the two bit-identical (`bits_equal_or_both_nan` across six fields plus `EXPECT_EQ` on flags and node count, over four quality tiers on flat and skewed surfaces), so this moves speed, not results — note those tests drive the seam through the setter below, not through this variable | `1` enables; unset or anything else = off. The env var seeds a static **once at process load**; an in-process `detail::set_strip_batch_disabled_for_test()` overrides it afterwards and wins, same as `ATX_SIMD_ISA` above | library — `src/derivatives.cpp` | **keep** |
-| `ATX_VOL_DISABLE_BUMP_CACHE` | Same shape, orthogonal knob: disables the greek bump table's read-vector cache (`BumpReadCache`/`CachedBumpView`). Speed only | as above, overridden in-process by `detail::set_bump_read_cache_disabled_for_test()` | library — `src/derivatives.cpp` | **keep** |
-| `ATX_VOL_DISABLE_IV_EARLY_EXIT` | Forces `ConvexSliceFit::iv()`'s bisection to run its full fixed 64 iterations (pre-P-5 behaviour) rather than stopping at tolerance. **Unlike the two above, this one moves last-place bits** — which is its use: it is how the superseded Release/SSE2 golden fingerprint `17305682487856730537` is reproduced after the P-R re-pin (see `prepared_portfolio_test.cpp`). Reach for it to attribute a golden-hash delta to that seam instead of to a regression | `1` enables; unset or anything else = off. Read once at process load, and **unlike the two seams above there is no setter** — `dense_slice.cpp` exposes only the getter `iv_early_exit_disabled_for_test()`, so the environment is the only way in and this one genuinely cannot be toggled mid-process | library — `src/dense_slice.cpp` | **keep** |
+One distinction the column cannot make on its own: `ATX_SIMD_ISA` is neutral
+because the *runtime* dispatch is pinned bit-identical to scalar
+(`AmericanPriceBatch.MatchesScalarBitIdentical` and the `*MatchesScalar*` family).
+Last-place bits do differ between SSE2 and FMA builds, but that is
+`kFmaContraction`, a **compile-time** `__FMA__` constant driven by `rel-avx2`'s
+`/arch:AVX2`, not by this variable.
+
+| Knob | Result | Effect | Default | Scope | v1 status |
+|---|---|---|---|---|---|
+| `ATX_VOL_FIT_WORKERS` | neutral | Resolves the auto (`0`) worker count for `parallel_for` fan-outs. An explicitly requested non-zero count is honoured as-is and is *not* capped by it | `hardware_concurrency()` (min 1) | library — `detail/parallel_for.hpp` | **keep** |
+| `ATX_SIMD_ISA` | neutral | Seeds the process-global SIMD override at load: `Auto`, `ForceScalar` or `ForceAvx2`. An in-process `set_simd_isa_override()` still wins | `Auto` | library — `src/simd/cpu.cpp` | **keep** |
+| `ATX_VOL_FIT_ECORE_TIER` | neutral | Arms the E-core second scheduling tier. `2` arms it *without* the below-normal priority drop; any other non-zero value arms it *with* the drop | unset = off | library — `src/fit_scheduler.cpp` | **keep**, deprecation candidate |
+| `ATX_VOL_CORPUS_DATE_BATCH` | neutral | Dates per corpus fan-out call. Scheduling only — output bytes do not depend on it | `8` | library — `src/dispersion_run.cpp` | **keep**, belongs in a config struct |
+| `ATX_VOL_CORPUS_PHASE_TIMING` | neutral | Prints the corpus build's phase split. Collection is unconditional and cheap; only the report is gated | unset = off | library — `src/dispersion_run.cpp` | **keep** |
+| `ATX_VOL_PROFILE` | neutral | Prints per-phase fit timings from `curve_fit` and `surface_parity`. **Not** the CMake option of the same name — see the collision note below | unset = off | library — `src/curve_fit.cpp`, `src/surface_parity.cpp` | **keep**, rename candidate |
+| `ATX_SLICE_DEBUG` | neutral | Prints `curve_fit`'s per-slice fit-preparation outcome (why a chain did or did not become a fittable slice) | unset = off | library — `src/curve_fit.cpp` | **keep** |
+| `ATX_VOL_ZC_BORROW` | neutral | `0` forces the owned-reconstruct archive path instead of the zero-copy borrow. Read once per process, so it cannot make a run non-deterministic | unset = borrow allowed | library — `src/backtest.cpp` | **keep**, deprecation candidate |
+| `ATX_VOL_ZC_BACKING` | neutral | `map` or `copy` overrides the caller-declared `ArchiveBacking` on the borrow path. Read once per process | unset = the caller's choice stands | library — `src/backtest.cpp` | **keep**, deprecation candidate |
+| `ATX_VOL_AL_PROBE` | neutral | Arms the Andersen-Lake zone cycle-attribution probe, read once into `g_mode` at process load. Any non-empty value turns it on; a value containing `s`/`S` additionally records each cold boundary solve's normalized query state. Attribution only — the priced values it counts around are unaffected | unset = off | library — `src/al_probe.cpp` | **keep** |
+| `ATX_VOL_AL_PROBE_OUT` | neutral | File path for the per-state binary trace `ATX_VOL_AL_PROBE`'s `s`/`S` flag records; the human-readable `alprobe.*` summary itself always goes to the stream `dump()` was called with, not this path. Unset just skips writing the trace file. Meaningless unless `ATX_VOL_AL_PROBE` is set | unset = trace not written | library — `src/al_probe.cpp` | **keep** |
+| `ATX_VOL_CACHE` | neutral | Default for the dispersion CLI's `--cache DIR`; an explicit `--cache` overrides it. Empty means disabled, which is the default behaviour | unset = disabled | tool — `tools/spy_dispersion_backtest.cpp` | **keep** |
+| `ATX_VOL_PREFETCH_DEPTH` | neutral | Overrides the projected replay's snapshot look-ahead depth (`projected_prefetch_depth()`). Malformed or out-of-range (cap `64`) falls back to the default rather than failing the run. Scheduling only — output is bit-identical at any depth | `2`, cap `64` | tool — `tools/spy_dispersion_backtest.cpp` | **keep** |
+| `ATX_VOL_SOLVE_LEDGER` | neutral | Same env-gated shape as `ATX_VOL_PROFILE`: any non-empty value dumps the always-on solve ledger (AL boundary solves / premium evals / IV Newton iterations) as `ledger.<name> <count>` lines to stderr; the stdout build report shape is untouched | unset = off | tool — `tools/surface_db_build_main.cpp` | **keep** |
+| `ATX_VOL_DISABLE_STRIP_BATCH` | neutral (pinned) | A/B seam: forces `var_swap_fair_strike` onto its per-node scalar surface-read loop even when `SurfaceT` exposes a batched `iv_batch`, so one binary can be measured both ways. `Strip.BatchedMatchesScalar*` pins the two bit-identical (`bits_equal_or_both_nan` across six fields plus `EXPECT_EQ` on flags and node count, over four quality tiers on flat and skewed surfaces), so this moves speed, not results — note those tests drive the seam through the setter below, not through this variable | `1` enables; unset or anything else = off. The env var seeds a static **once at process load**; an in-process `detail::set_strip_batch_disabled_for_test()` overrides it afterwards and wins, same as `ATX_SIMD_ISA` above | library — `src/derivatives.cpp` | **keep** |
+| `ATX_VOL_DISABLE_BUMP_CACHE` | neutral (pinned) | Same shape, orthogonal knob: disables the greek bump table's read-vector cache (`BumpReadCache`/`CachedBumpView`). Speed only | as above, overridden in-process by `detail::set_bump_read_cache_disabled_for_test()` | library — `src/derivatives.cpp` | **keep** |
+| `ATX_VOL_DISABLE_IV_EARLY_EXIT` | **MOVES BITS** | Forces `ConvexSliceFit::iv()`'s bisection to run its full fixed 64 iterations (pre-P-5 behaviour) rather than stopping at tolerance. **Unlike the two above, this one moves last-place bits** — which is its use: it is how the superseded Release/SSE2 golden fingerprint `17305682487856730537` is reproduced after the P-R re-pin (see `prepared_portfolio_test.cpp`). Reach for it to attribute a golden-hash delta to that seam instead of to a regression | `1` enables; unset or anything else = off. Read once at process load, and **unlike the two seams above there is no setter** — `dense_slice.cpp` exposes only the getter `iv_early_exit_disabled_for_test()`, so the environment is the only way in and this one genuinely cannot be toggled mid-process | library — `src/dense_slice.cpp` | **keep** |
 
 **Nothing is deleted at v1, because nothing here is dead.** Every row has a live
 read site and a live effect; the two knobs with real *consumers* outside their
