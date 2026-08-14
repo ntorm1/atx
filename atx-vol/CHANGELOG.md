@@ -124,12 +124,46 @@ the START of each step and summed over the lane.
   mark would be the wrong trade. The cost is that a RESUMED RUN CANNOT ATTRIBUTE
   ITS FIRST STEP, which is the same treatment a lot's own first mark gets.
 
+**THE SHIPPED EXAMPLE'S TSV GAINS EIGHT COLUMNS** (`5cbbc55`), so this is
+visible in a report and not only through the C++ API.
+`examples/varswap_compare_example.cpp` turns the explain ON -- one swap lot is
+live per cycle there, so the bill is one lot's worth of repricing, and
+attributing `swap_pnl` is the whole point of the report it feeds -- and attaches
+the seven flows plus the counter beside the `swap_pv` / `swap_pnl` it already
+emitted. THE COLUMN NAME IS THE FIELD NAME on every one, so a reader parsing
+that TSV BY POSITION rather than by header name must re-read it.
+`tools/render_strangle_vs_varswap.py` grows the matching attribution panel,
+DISCOVERING the components off the track's own header row by the
+`swap_explain_` prefix rather than from a roster written down a second time.
+
+* `swap_explain_unattributed` IS NOT A TERM IN THE IDENTITY. It is block-summed
+  the same way the seven flows are, but it counts LOT-STEPS rather than dollars,
+  and the moves it counts already sit inside `swap_explain_residual` -- so the
+  renderer sums every `swap_explain_` column EXCEPT this one. Aiming that single
+  exclusion at a stale name folds the counter into the attribution and moves the
+  measured identity gap from $0.00 to $2.00 on the example's own fixture, which
+  is what the Python lane's gate test measures rather than asserts.
+* A TRACK WITHOUT THESE COLUMNS READS AS NOT MEASURED, NEVER AS ZERO, and that
+  holds at each layer for its own reason. The engine leaves the vectors EMPTY
+  with the flag off, never zero-filled. The example refuses to emit a
+  half-populated track at all: a column that is not row-parallel is
+  `InvalidArgument` NAMING the column and pointing at
+  `RunConfig::swap_pnl_explain`, not a zero-filled stand-in. And the renderer's
+  derived summaries are NaN rather than 0.0 on a track that never carried the
+  columns -- `Legs.total_unattributed` deliberately does NOT forward to pandas'
+  `.sum()`, which answers 0.0 for an all-NaN series and would report "every
+  lot-step was attributed" for a run that never looked. Inside a column that IS
+  present, a NaN cell stays NaN and gaps its line. This is the same "not
+  computed" vs "computed as zero" distinction the round-1 entry below turns on.
+
 MIGRATION: none. With the flag ON, `nav`, `cash`, `pnl_total`, `swap_pv`,
 `swap_pnl` and `pnl_settlement` are bit-identical across every row of the same
 book (`BacktestSwapExplain.NavIsUnmovedByTheExplain`, which runs the book twice
 and compares on the bits) -- the explain only ever reads. The new columns are
 NOT part of the frozen `kBacktestSeriesColumns` / RunArchive registry, so
-`ra_schema_hash()` and every golden are untouched. Landed in `f505225`.
+`ra_schema_hash()` and every golden are untouched; they ride the TSV's dynamic
+signal tail, which is why the example could grow them without a schema bump.
+Landed in `f505225`, carried to the Python lane in `5cbbc55`.
 
 ### Fixed — the scenario grid's deriv leg returned NaN cells and differenced a model, not a price (Task F-8 round 1)
 
