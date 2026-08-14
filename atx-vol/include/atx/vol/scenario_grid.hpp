@@ -112,14 +112,15 @@ namespace detail {
 // The defaults below are the MEASURED PER-AXIS radii: the largest PURE-spot (resp.
 // PURE-vol) bump at which the worst-case per-share Taylor residual over the synthetic
 // eSSVI board stays <= $0.005 (both land at 3% / 3 vol-pts; the residual jumps past
-// the band at the next step — see task-c3.2-report.md req 4). They are pinned by
-// ScenarioGrid.DefaultRadiiPinned so a silent change fails a test. NOTE: the bound is
-// per-axis — a Taylor cell at the DOUBLE CORNER (|spot| and |vol| both at the radius)
+// the band at the next step). The measurement itself is `ScenarioGrid.MeasureTaylorRadius`
+// in scenario_grid_test.cpp — a live test, not a written-down conclusion — and the values
+// are pinned by ScenarioGrid.DefaultRadiiPinned so a silent change fails. NOTE: the bound
+// is per-axis — a Taylor cell at the DOUBLE CORNER (|spot| and |vol| both at the radius)
 // combines both residuals plus the vanna cross-term and, measured over the FULL eSSVI
 // board (wing strikes 80/120, tenor extremes 0.05/0.45 — the same board
-// MeasureTaylorRadius uses), can reach ~$0.0111. $0.0125 (worst + ~13% headroom,
-// rounded) is the pinned §9.3 gate tolerance (ScenarioGrid.TaylorExactAgreeInsideRadius
-// — see task-c3.2-report.md, "Fix: M1 gate board widening"). Setting a radius to
+// MeasureTaylorRadius uses), reaches $0.011063. $0.0125 (worst + ~13% headroom,
+// rounded) is the gate tolerance ScenarioGrid.TaylorExactAgreeInsideRadius asserts, and
+// that test states the derivation at the assertion. Setting a radius to
 // `std::numeric_limits<double>::infinity()` DISABLES routing on that axis: `|x| > inf`
 // is always false, so an inf/inf spec reproduces the C3.1 all-Taylor grid BYTE-for-byte
 // (pinned by ScenarioGrid.InfiniteRadiusIsByteIdenticalToTaylorOnly).
@@ -150,8 +151,9 @@ namespace detail {
 // corner surfaced by dr, or a boundary collapse) FALLS BACK to its Taylor leg for
 // that cell — the cell's route STAYS Exact — and is counted once in
 // ScenarioGridResult::n_exact_fallback_lanes. No NaN ever enters a cell total.
-inline constexpr double kDefaultTaylorRadiusSpot = 0.03; // fraction of spot (MEASURED, req 4)
-inline constexpr double kDefaultTaylorRadiusVol = 0.03;  // absolute vol points (MEASURED, req 4)
+// Both MEASURED by ScenarioGrid.MeasureTaylorRadius (scenario_grid_test.cpp).
+inline constexpr double kDefaultTaylorRadiusSpot = 0.03; // fraction of spot
+inline constexpr double kDefaultTaylorRadiusVol = 0.03;  // absolute vol points
 
 // The scenario shocks. `spot_pct` / `vol_bump` are the two grid axes; `dr` / `dt`
 // are scalars applied to every cell (see the header conventions).
@@ -413,9 +415,21 @@ static_assert(detail::aggregate_arity_is_v<ScenarioDerivSpec, 2>,
 // shock is non-zero, because a NaN `skew_vega` would otherwise poison the whole
 // Taylor cell rather than the term the caller asked for.
 //
-// @return the same error contract as the overload above. A deriv position whose
-//         greek solve fails is excluded from every cell and counted in
-//         `n_deriv_failed`; no NaN enters a cell total.
+// @return the same error contract as the overload above, plus `Internal` if a
+//         cell total ever goes non-finite (see `fill_deriv_leg`) -- that cannot
+//         happen through the exclusions below and exists to make the "no NaN"
+//         promise enforced rather than asserted.
+//
+//         A deriv position is excluded from EVERY cell for either of two
+//         reasons, counted separately because they have different fixes:
+//         `n_deriv_failed` if its base greek solve failed, and
+//         `n_deriv_missing_sensitivity` if it priced but carries "not computed"
+//         in a slot this grid's own shocks would read. A caller wanting
+//         "positions that contributed" must use `n_deriv_ok`, NOT
+//         `book.size() - n_deriv_failed`: that subtraction was correct before
+//         the second bucket existed and is silently wrong now.
+//         `n_deriv_ok + n_deriv_failed + n_deriv_missing_sensitivity ==
+//         deriv_book.size()`, always. No NaN enters a cell total.
 [[nodiscard]] Result<ScenarioGridResult> scenario_grid(const std::vector<Position> &book,
                                                        const std::vector<DerivPosition> &deriv_book,
                                                        const SurfaceSet &base,

@@ -1002,24 +1002,30 @@ struct RunConfig {
   std::size_t prefetch_depth{2};
 };
 
-// Drift pin (plan item 4.2). RunConfig has exactly SEVENTEEN fields. Adding,
-// removing or splitting one breaks this line, which is the point: it forces
-// whoever changes the struct to read the construction contract above instead of
-// appending a knob "for compatibility" with positional initializers that are no
-// longer part of the API.
+// Drift pin (plan item 4.2). Adding, removing or splitting a field breaks the
+// line below, which is the point: it forces whoever changes the struct to read
+// the construction contract above instead of appending a knob "for
+// compatibility" with positional initializers that are no longer part of the
+// API.
 //
-// 15 -> 16 (plan item 5.5): `cancel` was INSERTED beside `step_observer`, its
-// semantic group, not appended at the end. That is exactly the move the old
-// convention forbade and this one requires — and it is safe only because there
-// are no positional initializers left in-tree to rebind.
+// THE COUNT LIVES IN THE `static_assert` AND NOWHERE ELSE, deliberately. This
+// paragraph used to open "RunConfig has exactly SEVENTEEN fields" and carry a
+// hand-kept transition log (15 -> 16, 16 -> 17) directly above an assertion that
+// already knew the answer. Task F-8 took it to 18 and the prose stayed at 17 --
+// a second copy of a machine-checked fact, sitting close enough to read as
+// authoritative and far enough to rot on its own. The sprint's own precedent is
+// the tier-count triple, which went stale FOUR times while being dutifully
+// corrected each time and only stopped when the literals were deleted and the
+// test was made to read the source of truth. So the number and the log are gone
+// rather than corrected; `git log -L` on the assert line recovers the history
+// with dates and authorship the log never had.
 //
-// 16 -> 17 (main merge): `prefetch_depth` APPENDED at the end — the pipelined
-// snapshot look-ahead depth main's backtest-replay work introduced. Appending is
-// the form this convention prescribes for a new knob, and it is what supersedes
-// the branch's earlier `kPrefetchLookahead` file-scope constant in backtest.cpp.
-// Output is bit-identical at any depth
-// (`Backtest.PrefetchDepthIsBitIdenticalToSingleStepLookAhead` pins it), so the
-// addition moves no number a caller already depends on.
+// One thing the log did carry that the assert cannot, kept because it is a
+// RULING and not a count: `cancel` (15 -> 16) and `swap_pnl_explain` (17 -> 18)
+// were both INSERTED beside their semantic group rather than appended, which the
+// old convention forbade and this one requires. Both are safe for the same
+// reason, and it is a property of the tree rather than of the struct: there are
+// no positional `RunConfig{...}` initializers left to rebind.
 //
 // BLIND SPOT: this probe pins the field COUNT, nothing else. It cannot see a
 // REORDER that leaves the count at 17 -- `aggregate_arity_is_v` (see
@@ -1030,8 +1036,8 @@ struct RunConfig {
 // initializers only" contract above (a named initializer binds by field, so a
 // reorder cannot mis-target it) -- this assert only proves the contract is not
 // being silently defeated by an APPEND, and a reorder still needs the contract
-// upheld EVERYWHERE to be safe. UPDATE DISCIPLINE for a reorder: before
-// landing one, confirm every construction site still names its fields --
+// upheld EVERYWHERE to be safe. UPDATE DISCIPLINE for a reorder OR AN INSERT:
+// before landing one, confirm every construction site still names its fields --
 // `git grep -n "RunConfig{"` across src/, tests/, bench/ and the python
 // bindings should turn up only empty `RunConfig{}` (or none) with no
 // multi-argument positional brace list; `git grep -n "RunConfig cfg"` sites
@@ -1282,6 +1288,79 @@ struct BacktestResult {
   // @return InvalidArgument naming the first offending column and both lengths.
   [[nodiscard]] Status validate() const;
 };
+
+// Drift pin: FORTY-ONE fields. Added in Task F-8 fix round 2 (I-5), late for a
+// struct this widely enumerated -- and no longer merely hygiene, because these
+// DECLARATIONS are now parsed by another language.
+// `atx-vol/python/tests/test_render_strangle_vs_varswap.py` derives the
+// example's attach table and the renderer's column roster by reading the
+// `std::vector<double>` lines above; a field added or reordered here propagates
+// silently into that lane, whose build cannot catch it.
+//
+// THE NUMBER ABOVE CAME FROM THE COMPILER, AND THAT IS THE POINT. Before this
+// line existed, THREE independent careful counts of this struct disagreed: a
+// reviewer said Task F-8 added 8 fields, a second lane said 9, and the author's
+// own script said the struct held 31 in total. The truth is 41 total and 8
+// added -- the "9th" was `RunConfig::swap_pnl_explain`, a different struct in
+// the same file's diff, and the script silently dropped 11 fields because a
+// trailing `// comment` after a `;` broke its statement split. Three ways of
+// counting by hand, three different answers, and the build settles it in one
+// compile.
+//
+// WHEN THIS FIRES, three places need the new column, not one:
+//   1. `kSwapExplainColumns` (src/backtest.cpp) if it is a `swap_explain_*`
+//      column -- that table drives `validate()`, `push_row`, and both
+//      `backtest_db.cpp` rosters, and nothing ties it to these declarations
+//      except this pin.
+//   2. `validate()`'s own column checks, for any other optional column.
+//   3. Nothing on the Python side needs editing for an APPENDED `swap_explain_*`
+//      column -- it derives -- but a RENAME or a REORDER breaks
+//      `test_the_example_attaches_every_explain_column_the_header_declares`,
+//      which is that test working, not that test being wrong.
+//
+// `aggregate_arity_is_v` counts brace initializers and is BLIND TO A REORDER, so
+// this pin is not a substitute for care about field order.
+static_assert(detail::aggregate_arity_is_v<BacktestResult, 41>,
+              "BacktestResult field count changed: update this pin, add the column to "
+              "swap_explain_columns() (src/backtest.cpp) if it is a swap_explain_* column, and "
+              "to BacktestResult::validate(); note atx-vol/python parses these declarations.");
+
+// One {name, member} binding for a `swap_explain_*` column (Task F-8 fix round
+// 2, I-2/I-3). Deliberately the SAME idiom as `BacktestSeriesColumn`
+// (detail/backtest_series_columns.hpp), which already earned its place in this
+// subsystem by replacing two hand-kept `dbl_cols[]` arrays "kept in lockstep
+// only by convention" -- the same defect this table closes, one registry over.
+struct BacktestExplainColumn {
+  std::string_view name;
+  std::vector<double> BacktestResult::*member;
+};
+
+// The eight explain columns, in declaration order. THE only roster: it drives
+// `BacktestResult::validate()`, `push_row`, `backtest_db`'s store guard and
+// `backtest_db`'s append/clear, each of which carried its own hand-written copy
+// before this round -- three copies plus the declarations, which is how the
+// store guard and the shape validator came to disagree about whether a ragged
+// explain column was legal.
+//
+// ── THE LIMIT, STATED HERE RATHER THAN ONLY IN A REPORT ────────────────────
+//
+// This is ONE list, not zero. The field declarations above and this table are
+// two adjacent lists, and nothing in the language ties them together: declare a
+// ninth column and forget this table and the code still compiles.
+//
+// What catches that is the arity pin directly above, whose message names this
+// function. That is a real, build-time detection -- not the silent
+// non-application this sprint has been chasing -- but it is detection, not
+// impossibility, and a reader should not trust this table further than that.
+//
+// An X-macro over the declarations WOULD make it impossible, and was declined
+// for two reasons. First, `atx-vol/python` derives its roster by scanning these
+// declarations for lines beginning `std::vector<double>`; an X-macro repoints
+// that cross-language coupling at macro syntax, which is a less stable shape to
+// parse, not a more stable one. Second, this codebase already has exactly one
+// idiom for single-sourcing a column roster, and adding a second idiom to
+// remove a duplicated list is a duplicated rule one level up.
+[[nodiscard]] std::span<const BacktestExplainColumn> swap_explain_columns() noexcept;
 
 // One entry in the engine's insertion-ordered delta-hedge share ledger. Order is
 // economically significant: share P&L, financing, and subsequent hedge trades

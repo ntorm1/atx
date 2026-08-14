@@ -178,6 +178,42 @@ struct Corpus {
   return c;
 }
 
+// Task F-8 fix round 2 (C-1): the same corpus on an IRREGULAR timeline.
+//
+// `make_spot_corpus` places every snapshot `kStepNs` apart, so `dt_this /
+// dt_prev == 1` on every step of every fixture built from it. That single
+// uniformity is what hid C-1 — a carry column mis-scaled by exactly that ratio —
+// through five explain tests, a NAV gate, and a review. A real trading calendar
+// is not uniform: a Friday-to-Monday step follows a one-day step, which is the
+// 3x case.
+//
+// `gaps[d]` is the spacing in DAYS from snapshot d-1 to snapshot d (the first
+// entry is ignored). Dates are still emitted in ascending order and still one
+// archive per spot, so everything else about the fixture is unchanged and any
+// difference between the two corpora is attributable to step length alone.
+[[nodiscard]] Corpus make_irregular_spot_corpus(const fs::path &dir, const std::string &symbol,
+                                                const std::vector<double> &spots,
+                                                const std::vector<int> &gaps) {
+  EXPECT_EQ(spots.size(), gaps.size());
+  std::vector<std::pair<std::string, std::string>> dp;
+  std::int64_t now = kBaseNow;
+  int day_of_month = 1;
+  for (std::size_t d = 0; d < spots.size(); ++d) {
+    if (d > 0) {
+      now += static_cast<std::int64_t>(gaps[d]) * kDayNs;
+      day_of_month += gaps[d];
+    }
+    const PricedSurface s = make_surface(kUid, spots[d], spots[d], now);
+    char buf[16];
+    std::snprintf(buf, sizeof buf, "2026-08-%02d", day_of_month);
+    dp.emplace_back(std::string(buf), write_one(dir, buf, symbol, s));
+  }
+  Corpus c;
+  c.dp = std::move(dp);
+  c.manifest = make_manifest(c.dp, symbol);
+  return c;
+}
+
 // Opens exactly ONE swap lot at inception and never trades options. The lot's
 // id is drawn from the engine's monotonic watermark, exactly as an option lot's
 // would be.
@@ -991,12 +1027,18 @@ TEST(BacktestSwapExplain, ColumnsAreEmptyRatherThanZeroFilledWhenOff) {
 }
 
 // The explain columns concatenate or clear on THEIR OWN shape test, not the
-// swap lane's. They are opt-in, so a stored prefix without them meeting a
-// continuation with them is an ordinary shape change -- and reusing the swap
-// lane's verdict would clear a perfectly good pair of explain columns whenever
-// the swap shapes happened to differ, which is a silent data loss rather than a
-// refusal.
-TEST(BacktestSwapExplain, AppendClearsExplainOnItsOwnShapeChange) {
+// swap lane's -- they are opt-in, so a stored prefix without them meeting a
+// continuation with them is an ordinary shape change.
+//
+// FIX ROUND 2 (I-3): the collapse is legal ONLY when neither side has
+// attribution to lose. Round 1 implemented the collapse without that condition,
+// where the sibling swap-lane rule thirty lines above refuses exactly the same
+// thing -- and this test pinned the loss as if it were intended, asserting that
+// a column carrying 1.0 came back empty. A test that pins a defect is worse than
+// no test, because it converts the next person's correct fix into a red suite.
+// It now pins the refusal, and the collapse is checked on the all-zero case
+// where it is genuinely lossless.
+TEST(BacktestSwapExplain, AppendRefusesToDiscardExplainAcrossAShapeChange) {
   BacktestResult a = make_result(/*first_index=*/0u, /*n_rows=*/2u, /*swap=*/true,
                                  /*swap_value=*/0.0);
   BacktestResult b = make_result(2u, 1u, /*swap=*/true, /*swap_value=*/0.0);
@@ -1010,13 +1052,32 @@ TEST(BacktestSwapExplain, AppendClearsExplainOnItsOwnShapeChange) {
   a.swap_explain_unattributed.assign(a.size(), 0.0);
   // `b` carries no explain columns: one side has them, the other does not.
 
+  // `a` carries REAL attribution (a 1.0) and `b` carries none. Collapsing would
+  // discard it silently, so this must be refused rather than performed.
   BacktestResult combined = a;
-  ASSERT_TRUE(append_backtest_results(combined, b).has_value());
-  EXPECT_EQ(combined.size(), 3u);
-  EXPECT_TRUE(combined.swap_explain_carry.empty())
-      << "a half-present explain must collapse to absent, not to a ragged column";
-  EXPECT_TRUE(combined.swap_explain_residual.empty());
-  EXPECT_TRUE(combined.validate().has_value());
+  const Status refused = append_backtest_results(combined, b);
+  ASSERT_FALSE(refused.has_value())
+      << "appending across an explain shape change while one side carries attribution "
+         "would discard it; the swap lane refuses the same shape thirty lines up";
+  EXPECT_EQ(refused.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_NE(refused.error().message().find("swap-explain shape change"), std::string::npos)
+      << refused.error().to_string();
+
+  // The lossless case: same shape change, but no side carries attribution. That
+  // IS the DB-extension case (a decoded prefix reports the explain absent, a
+  // fresh continuation reports it present and all-zero) and collapsing to absent
+  // loses nothing.
+  BacktestResult zeroed = a;
+  for (const BacktestExplainColumn &column : swap_explain_columns()) {
+    (zeroed.*(column.member)).assign(zeroed.size(), 0.0);
+  }
+  BacktestResult collapsed = zeroed;
+  ASSERT_TRUE(append_backtest_results(collapsed, b).has_value());
+  EXPECT_EQ(collapsed.size(), 3u);
+  EXPECT_TRUE(collapsed.swap_explain_carry.empty())
+      << "a half-present all-zero explain collapses to absent, not to a ragged column";
+  EXPECT_TRUE(collapsed.swap_explain_residual.empty());
+  EXPECT_TRUE(collapsed.validate().has_value());
 
   // Both sides present => genuine concatenation, nothing dropped.
   BacktestResult b_full = b;
@@ -1035,4 +1096,122 @@ TEST(BacktestSwapExplain, AppendClearsExplainOnItsOwnShapeChange) {
   EXPECT_EQ(both.swap_explain_carry[0], 1.0);
   EXPECT_EQ(both.swap_explain_carry[2], 2.0);
   EXPECT_TRUE(both.validate().has_value());
+}
+
+
+// ── C-1: carry on an irregular calendar ─────────────────────────────────────
+//
+// `theta_zero_fixing` is a RATE from a roll of `bumps.time_years` carrying
+// exactly ONE injected fixing, so `theta_zero_fixing * h` is the deterministic
+// move over `h` INCLUDING that fixing. Round 1 resolved the greeks one step
+// early and multiplied them by the NEXT step's `dt`, scaling the fixing leg by
+// `dt_this / dt_prev`. Every committed fixture used `make_spot_corpus`, whose
+// snapshots are uniformly `kStepNs` apart, so that ratio was 1.000 everywhere
+// and nothing could see it. The residual absorbed the error, the identity
+// closed, and NAV never moved.
+//
+// The fix removes the coupling rather than correcting for it: start-of-step
+// sensitivities now resolve against `base`, so the interval the greek is bumped
+// over and the interval it is multiplied by are the same number by construction.
+//
+// This fixture is the other half. A 1/3/1/7/1-day gap sequence puts
+// `dt_this/dt_prev` at 3, 1/3, 7 and 1/7 on consecutive steps, which is the
+// shape a real calendar produces around weekends and holidays.
+
+// The identity must hold on an irregular calendar exactly as it does on a
+// uniform one -- necessary but NOT sufficient, since the residual absorbs a
+// mis-scaled carry and closes the identity anyway. That is precisely why round 1
+// passed. The real assertion is the next test.
+TEST(BacktestSwapExplain, IdentityHoldsOnAnIrregularCalendar) {
+  const fs::path dir = fresh_dir("explain_irregular");
+  const std::vector<double> spots = {100.0, 101.0, 99.5, 102.0, 101.0, 103.5};
+  const std::vector<int> gaps = {0, 1, 3, 1, 7, 1};
+  const Corpus c = make_irregular_spot_corpus(dir, "SPX", spots, gaps);
+  auto clock = Clock::from_manifest(c.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  const std::int64_t expiry = kBaseNow + 13LL * kDayNs; // the last snapshot
+  SwapOnlyStrategy strat{var_swap_proto(kUid, expiry, /*n_obs_total=*/4u)};
+
+  RunConfig cfg;
+  cfg.swap_pnl_explain = true;
+  const auto result = run_backtest(*clock, strat, cfg);
+  ASSERT_TRUE(result.has_value()) << result.error().to_string();
+  const BacktestResult &r = *result;
+  ASSERT_EQ(r.swap_explain_carry.size(), r.size());
+
+  for (std::size_t i = 0; i < r.size(); ++i) {
+    const double summed = r.swap_explain_carry[i] + r.swap_explain_realized[i] +
+                          r.swap_explain_vol_level[i] + r.swap_explain_skew[i] +
+                          r.swap_explain_convexity[i] + r.swap_explain_discount[i] +
+                          r.swap_explain_residual[i];
+    const double tol = 1.0e-9 * std::abs(r.swap_pnl[i]) + 1.0e-6;
+    EXPECT_NEAR(summed, r.swap_pnl[i], tol) << "irregular row " << i;
+  }
+}
+
+// THE TEST THAT WOULD HAVE CAUGHT C-1.
+//
+// `carry` is `theta_zero_fixing * dt`, and `theta_zero_fixing` is a rate whose
+// fixing leg does NOT scale with the interval -- one fixing lands per step
+// regardless of how long the step is. So carry is NOT proportional to `dt`: it
+// is (one fixing) + (a calendar roll proportional to dt). On a variance swap the
+// fixing leg dominates by orders of magnitude, so carry should be roughly
+// CONSTANT per step across wildly different step lengths.
+//
+// Round 1's bug made carry scale by `dt_this / dt_prev`, which on this fixture's
+// 1/3/1/7/1-day sequence would swing consecutive carry values by 3x, 1/3, 7x and
+// 1/7. That is the signature this test refuses.
+//
+// Stated as a ratio rather than a value so it pins the SHAPE and not a number
+// that would need re-deriving whenever the fixture moves.
+TEST(BacktestSwapExplain, CarryDoesNotScaleWithStepLengthOnAnIrregularCalendar) {
+  const fs::path dir = fresh_dir("explain_carry_scale");
+  // Flat spots: every step realizes exactly zero variance, so `realized` is 0
+  // and carry is the only live component. That isolates the column under test.
+  const std::vector<double> spots = {100.0, 100.0, 100.0, 100.0, 100.0, 100.0};
+  const std::vector<int> gaps = {0, 1, 3, 1, 7, 1};
+  const Corpus c = make_irregular_spot_corpus(dir, "SPX", spots, gaps);
+  auto clock = Clock::from_manifest(c.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  const std::int64_t expiry = kBaseNow + 13LL * kDayNs;
+  SwapOnlyStrategy strat{var_swap_proto(kUid, expiry, /*n_obs_total=*/4u)};
+
+  RunConfig cfg;
+  cfg.swap_pnl_explain = true;
+  const auto result = run_backtest(*clock, strat, cfg);
+  ASSERT_TRUE(result.has_value()) << result.error().to_string();
+  const BacktestResult &r = *result;
+  ASSERT_EQ(r.swap_explain_carry.size(), r.size());
+
+  // The attributed rows: skip inception (row 0) and the lot's first mark (row 1,
+  // which seeds the fixing series and lands no fixing), and skip the expiry row,
+  // which settles rather than marks.
+  std::vector<double> carries;
+  for (std::size_t i = 2; i + 1 < r.size(); ++i) {
+    if (r.swap_explain_unattributed[i] == 0.0) {
+      carries.push_back(r.swap_explain_carry[i]);
+    }
+  }
+  ASSERT_GE(carries.size(), 3u) << "need several attributed steps of differing length";
+
+  double lo = std::abs(carries.front());
+  double hi = lo;
+  for (const double v : carries) {
+    lo = std::min(lo, std::abs(v));
+    hi = std::max(hi, std::abs(v));
+  }
+  ASSERT_GT(lo, 0.0) << "carry must be non-zero, or this test measures nothing";
+
+  // The step lengths here span 1 to 7 days -- a 7x range. A carry that tracked
+  // `dt_this/dt_prev` would spread by at least 3x across these rows. One fixing
+  // per step plus a small dt-proportional roll spreads far less; the bound is
+  // deliberately loose because the roll leg IS allowed to vary with dt.
+  EXPECT_LT(hi / lo, 2.0)
+      << "carry spread " << lo << " .. " << hi << " across steps of 1, 3, 7 and 1 days. "
+      << "carry is one fixing (independent of step length) plus a dt-proportional roll, "
+      << "so it must not track the step-length ratio. A spread near 3x or 7x means "
+      << "`theta_zero_fixing` is being multiplied by an interval other than the one it "
+      << "was bumped over -- which is C-1.";
 }

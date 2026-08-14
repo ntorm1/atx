@@ -31,7 +31,9 @@
 #include <vector>
 
 #include "atx/vol/american.hpp"
+#include "atx/vol/detail/aggregate_arity.hpp" // the DerivGreeks pin the 2^6 test carries
 #include "atx/vol/detail/counters.hpp" // A7: the always-on sl_al_boundary_solves ledger
+#include "atx/vol/detail/deriv_ref_bridge.hpp" // I-7: DerivShock / deriv_price_shocked_on_ref
 #include "atx/vol/portfolio_pricer.hpp"
 #include "atx/vol/priced_surface.hpp"
 #include "atx/vol/scenario_grid.hpp"
@@ -561,7 +563,7 @@ TEST(ScenarioGrid, BaseRepriceMatchesFairValue) {
   }
 }
 
-// ── C3.2-5. Taylor and Exact agree INSIDE the declared radii (§9.3 gate). ─────
+// ── C3.2-5. Taylor and Exact agree INSIDE the declared radii. ──────────────
 TEST(ScenarioGrid, TaylorExactAgreeInsideRadius) {
   const PricedSurface base = make_essvi(1, 5);
   const SurfaceSet bset = set_of({&base});
@@ -598,15 +600,18 @@ TEST(ScenarioGrid, TaylorExactAgreeInsideRadius) {
     }
   }
   std::printf("[TaylorExactAgreeInsideRadius] worst per-share |Taylor-Exact| = %.6f\n", worst);
-  // The MEASURED (req 4) $0.005 band is a PER-AXIS bound (pure-spot / pure-vol sweeps).
+  // The MEASURED $0.005 band -- see `ScenarioGrid.MeasureTaylorRadius` in this file,
+  // which performs that sweep rather than restating its result -- is a PER-AXIS bound
+  // (pure-spot / pure-vol sweeps).
   // With OR routing, the worst Taylor cell inside the radii is the DOUBLE CORNER
   // (|spot|=rad AND |vol|=rad simultaneously), whose combined higher-order + vanna
   // cross-term residual reaches ~$0.0091 on the friendlier {90..110}/{0.15..0.35} board
   // — above the per-axis band. On the FULL board (wing strikes 80/120, tenor extremes
   // 0.05/0.45 — same board as MeasureTaylorRadius) the double-corner residual is worse,
-  // measuring $0.011063 (reviewer finding M1). $0.0125 (worst + ~13% headroom, rounded)
-  // is the declared §9.3 agreement tolerance, pinned here — see task-c3.2-report.md,
-  // "Fix: M1 gate board widening".
+  // measuring $0.011063. $0.0125 is that worst case plus ~13% headroom, rounded -- which
+  // is the whole derivation of this number, stated here so the bound can be re-derived
+  // from the line above it rather than from a document. The board widening that produced
+  // the $0.011063 figure landed in 7856019.
   EXPECT_LE(worst, 1.25e-2);
 }
 
@@ -737,14 +742,19 @@ TEST(ScenarioGrid, DtClampAndFallbackCounted) {
 
 // ── C3.2-9. The measured default radii are pinned (silent change fails). ─────
 TEST(ScenarioGrid, DefaultRadiiPinned) {
-  EXPECT_EQ(kDefaultTaylorRadiusSpot, 0.03); // MEASURED (req 4) — see task-c3.2-report.md
-  EXPECT_EQ(kDefaultTaylorRadiusVol, 0.03);  // MEASURED (req 4)
+  // MEASURED by `ScenarioGrid.MeasureTaylorRadius` in this file: the largest pure-axis
+  // bump whose worst per-share Taylor residual stays within $0.005. Both axes land on
+  // 3%, and the residual jumps past the band at the next step up.
+  EXPECT_EQ(kDefaultTaylorRadiusSpot, 0.03);
+  EXPECT_EQ(kDefaultTaylorRadiusVol, 0.03);
   ScenarioGridSpec s;
   EXPECT_EQ(s.taylor_radius_spot, kDefaultTaylorRadiusSpot);
   EXPECT_EQ(s.taylor_radius_vol, kDefaultTaylorRadiusVol);
 }
 
-// ── C3.2-10. Measure the Taylor-valid radius (informational; answers req 4). ──
+// ── C3.2-10. Measure the Taylor-valid radius. This test IS the source of the
+// two `kDefaultTaylorRadius*` constants and of the $0.005 per-axis band every
+// comment above cites; it sweeps rather than restating a recorded conclusion. ──
 // Prints max per-share |Taylor - Exact| over the eSSVI board for a spot and a vol
 // bump sweep. The declared radius (baked into kDefaultTaylorRadius*) is the largest
 // bump whose worst-case per-share deviation stays <= $0.005.
@@ -1594,7 +1604,18 @@ TEST(ScenarioGridDeriv, AContractTooShortToRollIsExcludedAndCountedNotZeroed) {
 
   EXPECT_EQ(mixed->n_deriv_ok, 1u);
   EXPECT_EQ(mixed->n_deriv_ok + mixed->n_deriv_failed + mixed->n_deriv_missing_sensitivity, 2u);
-  EXPECT_GE(mixed->n_deriv_missing_sensitivity + mixed->n_deriv_failed, 1u);
+  // NAMED, not disjunctive. Round 1 asserted `missing + failed >= 1`, which
+  // passes whichever bucket fills -- so the distinction the second Tier-A field
+  // exists to carry ("a failed solve and an unmeasured axis have different
+  // fixes") was unpinned, and moving the sufficiency check to before the
+  // `pos_ok` assignment would have counted every exclusion as `failed` with the
+  // whole suite still green. This lot PRICED; its theta is NaN because the
+  // contract is shorter than the roll. That is the missing-sensitivity bucket
+  // and nothing else.
+  EXPECT_EQ(mixed->n_deriv_missing_sensitivity, 1u)
+      << "a lot that priced but cannot be rolled belongs in the missing-sensitivity "
+         "bucket, not in n_deriv_failed";
+  EXPECT_EQ(mixed->n_deriv_failed, 0u) << "the base greek solve succeeded for both lots";
 
   // Excluded means excluded: the surviving book prices exactly as if the
   // unshockable position were absent, on the bits, with no NaN anywhere.
@@ -1687,5 +1708,333 @@ TEST(ScenarioGridDeriv, TaylorAndExactAgreeAcrossTheKindSpace) {
     EXPECT_LT(gap_half, gap_h / 4.0 + 1.0e-12)
         << kind_name(kind) << ": remainder did not shrink super-quadratically, " << gap_h
         << " -> " << gap_half;
+  }
+}
+
+// ── Is the ten-term enumeration exhaustive BY CONSTRUCTION? ─────────────────
+//
+// It was not. `scenario_deriv_taylor_leg` and `scenario_deriv_greeks_sufficient`
+// are two hand-written copies of one rule, 25 lines apart, defended in prose
+// ("deliberately the same disjunctions"). Nothing ran them against each other,
+// so an eleventh term keyed off an EXISTING sensitivity and an EXISTING shock --
+// `theta_carry` on the `dt` axis, say, which sits two lines from `theta` in the
+// same struct and is `kQuietNaN`-defaulted -- would have fired no pin and no
+// test. Three partial patches had already been applied to this promise.
+//
+// This is the artifact that makes a fourth partial patch impossible rather than
+// unlikely. With an ALL-NaN `DerivGreeks`, the kernel is finite iff it reads
+// NOTHING, and the predicate is true iff it demands NOTHING. So over the 64
+// on/off combinations of the six shocks, `isfinite(kernel) == sufficient` is an
+// equality between "what the kernel actually touched" and "what the predicate
+// claims it touches" -- a statement the compiler evaluates over every branch of
+// both, in both directions, with no list of field names anywhere in it.
+//
+// WHAT FAILS IF SOMEONE ADDS AN ELEVENTH TERM, stated as a mechanism:
+//   * ungated term reading an existing NaN-capable field -> the kernel returns
+//     NaN on some combination where the predicate still says "sufficient", and
+//     the EXPECT_EQ below fails on that combination.
+//   * a term gated in the kernel but missing from the predicate -> the predicate
+//     says "sufficient" while the kernel reads; same failure, same line.
+//   * a term in the predicate but not the kernel -> the predicate refuses a
+//     combination the kernel handles fine; the equality fails the other way.
+//   * a term needing a NEW shock field -> `ScenarioDerivSpec`'s arity pin fires.
+//   * a term needing a NEW `DerivGreeks` field -> the static_assert in this file
+//     fires, and its message points here.
+// The only surviving hole is a term whose sensitivity is never NaN under any
+// configuration, which cannot poison a cell and is therefore not what any of
+// this is defending against.
+TEST(ScenarioGridDeriv, TheKernelAndItsSufficiencyPredicateAgreeOnAll64ShockCombinations) {
+  // If `DerivGreeks` grows a sensitivity, decide whether the deriv Taylor kernel
+  // reads it. This assert is the only thing that asks.
+  static_assert(atx::vol::detail::aggregate_arity_is_v<DerivGreeks, 14>,
+                "DerivGreeks gained a field: decide whether scenario_deriv_taylor_leg reads it, "
+                "gate it in scenario_deriv_greeks_sufficient if so, extend kNaNSlots below, "
+                "then update this pin.");
+
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  DerivGreeks all_nan{};
+  all_nan.delta = nan;
+  all_nan.gamma = nan;
+  all_nan.vega = nan;
+  all_nan.volga = nan;
+  all_nan.vanna = nan;
+  all_nan.theta = nan;
+  all_nan.rho = nan;
+  all_nan.charm = nan;
+  all_nan.skew_vega = nan;
+  all_nan.convexity_vega = nan;
+
+  // Deliberately NOT all 1.0: a shock of 1.0 on every axis would let a missing
+  // multiplication hide. These are distinct, none is a power of two, and none
+  // divides another.
+  constexpr double kOn[6] = {2.0, 0.5, 0.25, 0.125, 0.0625, 0.03125};
+
+  std::size_t agreed = 0;
+  std::size_t sufficient_count = 0;
+  for (unsigned mask = 0; mask < 64u; ++mask) {
+    const double dS = (mask & 1u) ? kOn[0] : 0.0;
+    const double dvol = (mask & 2u) ? kOn[1] : 0.0;
+    const double dt = (mask & 4u) ? kOn[2] : 0.0;
+    const double dr = (mask & 8u) ? kOn[3] : 0.0;
+    ScenarioDerivSpec dspec;
+    dspec.d_skew = (mask & 16u) ? kOn[4] : 0.0;
+    dspec.d_convexity = (mask & 32u) ? kOn[5] : 0.0;
+
+    const double v =
+        scenario_deriv_taylor_leg(all_nan, dS, dvol, dt, dr, dspec.d_skew, dspec.d_convexity);
+    const bool kernel_reads_nothing = std::isfinite(v);
+    const bool demands_nothing = scenario_deriv_greeks_sufficient(
+        all_nan, dS != 0.0, dvol != 0.0, dt != 0.0, dr != 0.0, dspec);
+
+    EXPECT_EQ(kernel_reads_nothing, demands_nothing)
+        << "shock mask " << mask << " (dS=" << dS << " dvol=" << dvol << " dt=" << dt
+        << " dr=" << dr << " d_skew=" << dspec.d_skew << " d_convexity=" << dspec.d_convexity
+        << "): the Taylor kernel " << (kernel_reads_nothing ? "read nothing" : "read a NaN slot")
+        << " but the sufficiency predicate says it "
+        << (demands_nothing ? "needs nothing" : "needs a slot") << ". The two are hand-written "
+        << "copies of one rule; one of them was changed without the other.";
+    agreed += static_cast<std::size_t>(kernel_reads_nothing == demands_nothing);
+    sufficient_count += static_cast<std::size_t>(demands_nothing);
+  }
+  EXPECT_EQ(agreed, 64u);
+  // Non-vacuity: exactly ONE combination demands nothing (all shocks zero). If a
+  // future edit made the predicate trivially true or trivially false, the
+  // equality above could still pass while checking nothing.
+  EXPECT_EQ(sufficient_count, 1u)
+      << "only the all-zero shock should need no sensitivity; a predicate that is "
+         "constant makes the agreement check vacuous";
+}
+
+// The equality above is symmetric, so it cannot say WHICH side is permissive.
+// This one can, and it is the direction that matters: the promise is that no NaN
+// reaches a cell, so a predicate that says "sufficient" while the kernel reads a
+// NaN is the failure that ships. One slot NaN at a time, every shock combination.
+TEST(ScenarioGridDeriv, ASufficientVerdictAlwaysYieldsAFiniteKernel) {
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  // Every slot the kernel reads. Incompleteness here only weakens the test, and
+  // the arity pin in the sibling test above is what notices a new one.
+  const struct {
+    const char *name;
+    double DerivGreeks::*slot;
+  } kNaNSlots[] = {
+      {"delta", &DerivGreeks::delta},   {"gamma", &DerivGreeks::gamma},
+      {"vega", &DerivGreeks::vega},     {"volga", &DerivGreeks::volga},
+      {"vanna", &DerivGreeks::vanna},   {"theta", &DerivGreeks::theta},
+      {"rho", &DerivGreeks::rho},       {"charm", &DerivGreeks::charm},
+      {"skew_vega", &DerivGreeks::skew_vega},
+      {"convexity_vega", &DerivGreeks::convexity_vega},
+  };
+
+  for (const auto &slot : kNaNSlots) {
+    DerivGreeks g{};
+    g.delta = 1.0;
+    g.gamma = 1.0;
+    g.vega = 1.0;
+    g.volga = 1.0;
+    g.vanna = 1.0;
+    g.theta = 1.0;
+    g.rho = 1.0;
+    g.charm = 1.0;
+    g.skew_vega = 1.0;
+    g.convexity_vega = 1.0;
+    g.*(slot.slot) = nan;
+
+    for (unsigned mask = 0; mask < 64u; ++mask) {
+      const double dS = (mask & 1u) ? 2.0 : 0.0;
+      const double dvol = (mask & 2u) ? 0.5 : 0.0;
+      const double dt = (mask & 4u) ? 0.25 : 0.0;
+      const double dr = (mask & 8u) ? 0.125 : 0.0;
+      ScenarioDerivSpec dspec;
+      dspec.d_skew = (mask & 16u) ? 0.0625 : 0.0;
+      dspec.d_convexity = (mask & 32u) ? 0.03125 : 0.0;
+
+      if (!scenario_deriv_greeks_sufficient(g, dS != 0.0, dvol != 0.0, dt != 0.0, dr != 0.0,
+                                            dspec)) {
+        continue; // correctly refused; the grid excludes this position
+      }
+      const double v =
+          scenario_deriv_taylor_leg(g, dS, dvol, dt, dr, dspec.d_skew, dspec.d_convexity);
+      EXPECT_TRUE(std::isfinite(v))
+          << slot.name << " is NaN and the predicate admitted shock mask " << mask
+          << ", but the kernel read it. That is a NaN in a cell total with the grid "
+             "reporting success -- the exact failure the predicate exists to prevent.";
+    }
+  }
+}
+
+// ── I-7 / the axis-narrow fixture: dt, dr, and the centre-resolving default ──
+//
+// Round 1's two convergence sweeps both ran with `dr = 0`, `dt = 0` and a
+// default `ScenarioDerivSpec{}`, so the Exact deriv route was compared against
+// Taylor on the two cheapest axes only. `DerivShock::time_roll`,
+// `DerivShock::rate_shift`, the `pv *= exp(-dr*T')` rescale, the
+// "time_roll consumes the whole tenor" guard, and the entire
+// `centre == nullptr` default branch were executed by NOTHING in the tree --
+// while the centre-scheme pin whose 776x win round 1 reported applies to those
+// axes too, and `dt` is the axis where the shocked reprice changes the
+// contract's own tenor and the pin therefore does the most work.
+//
+// That is the same shape as round 0 (kind-narrow) and round 1 (axis-narrow),
+// one dimension over, which is why these tests exercise the axes rather than
+// the entry point.
+
+// The rate shock's exact-rescale claim, checked rather than asserted. The header
+// says `pv * exp(-dr*T')` IS the reprice under a parallel shift, because every
+// kind here is a discounted expectation whose undiscounted leg never sees the
+// discount curve (`rho = -T*pv` analytically, on all four assembly paths). So a
+// pure rate shock must move the mark by EXACTLY that factor -- not to a
+// tolerance, to the ratio.
+TEST(ScenarioGridDeriv, ARateShockIsExactlyADiscountRescale) {
+  const PricedSurface ps = make_essvi(1, 4);
+  const SurfaceSet ss = set_of({&ps});
+  const SurfaceRef ref = ss.find(1u);
+  ASSERT_NE(ref, nullptr);
+
+  for (const DerivKind kind : kAllDerivKinds) {
+    const DerivPosition p = deriv_pos_on(kind, 1u, 1.0);
+    detail::DerivShock none{};
+    const auto base_q =
+        detail::deriv_price_shocked_on_ref(ref, p.contract, DerivConfig{}, std::nullopt, none);
+    ASSERT_TRUE(base_q.has_value()) << kind_name(kind) << ": " << base_q.error().to_string();
+
+    for (const double dr : {0.0025, -0.0025}) {
+      detail::DerivShock shock{};
+      shock.rate_shift = dr;
+      const auto q =
+          detail::deriv_price_shocked_on_ref(ref, p.contract, DerivConfig{}, std::nullopt, shock);
+      ASSERT_TRUE(q.has_value()) << kind_name(kind) << ": " << q.error().to_string();
+      const double expected = base_q->pv * std::exp(-dr * p.contract.maturity_t);
+      EXPECT_NEAR(q->pv, expected, 1.0e-12 * std::abs(expected) + 1.0e-12)
+          << kind_name(kind) << " dr=" << dr;
+    }
+  }
+}
+
+// The `dt` axis, where the shocked reprice changes the contract's TENOR -- the
+// axis the centre-scheme pin does the most work on and the one round 1 never
+// compared. Same O(h^3) convergence claim as the spot/vol sweep, on the axis
+// that was untested.
+TEST(ScenarioGridDeriv, TaylorAndExactAgreeOnTheTimeAndRateAxesToo) {
+  const PricedSurface ps = make_essvi(1, 4);
+  const SurfaceSet ss = set_of({&ps});
+  const std::vector<DerivPosition> derivs = {deriv_pos_on(DerivKind::VarSwap, 1u, 2.0),
+                                             deriv_pos_on(DerivKind::VolSwap, 1u, -1.0)};
+
+  // A grid whose only shocks are dt and dr. `spot_pct`/`vol_bump` carry a single
+  // zero so the routing predicate is driven purely by the radii.
+  const auto gap_at = [&](double scale) {
+    ScenarioGridSpec t_spec;
+    t_spec.spot_pct = {0.0};
+    t_spec.vol_bump = {0.0};
+    t_spec.dt = 0.02 * scale;
+    t_spec.dr = 0.001 * scale;
+    t_spec.taylor_radius_spot = kInf; // never route
+    t_spec.taylor_radius_vol = kInf;
+    ScenarioGridSpec e_spec = t_spec;
+    e_spec.taylor_radius_spot = -1.0; // always route
+    e_spec.taylor_radius_vol = -1.0;
+
+    const auto t = scenario_grid({}, derivs, ss, t_spec);
+    const auto e = scenario_grid({}, derivs, ss, e_spec);
+    EXPECT_TRUE(t.has_value());
+    EXPECT_TRUE(e.has_value());
+    if (!t.has_value() || !e.has_value()) {
+      return std::pair<double, double>{0.0, 0.0};
+    }
+    EXPECT_EQ(e->deriv_route[0], static_cast<std::uint8_t>(ScenarioRoute::Exact));
+    EXPECT_EQ(e->n_deriv_exact_fallback_lanes, 0u) << "every shocked reprice must have solved";
+    return std::pair<double, double>{std::abs(t->deriv_pnl[0] - e->deriv_pnl[0]),
+                                     std::abs(e->deriv_pnl[0])};
+  };
+
+  const auto [gap_h, mag_h] = gap_at(1.0);
+  const auto [gap_half, mag_half] = gap_at(0.5);
+  (void)mag_half;
+  ASSERT_GT(mag_h, 0.0) << "a dt/dr-only grid must still move the book";
+  ASSERT_GT(gap_h, 0.0) << "an exactly-zero gap would mean the Exact route never repriced";
+  EXPECT_LT(gap_h, 0.02 * mag_h) << "gap=" << gap_h << " magnitude=" << mag_h;
+  EXPECT_LT(gap_half, gap_h / 3.0)
+      << "the time/rate remainder must shrink super-linearly as the shock halves: " << gap_h
+      << " -> " << gap_half;
+}
+
+// `time_roll` consuming the whole tenor is a guard with an error message and no
+// caller. Reach it, and reach the neighbouring "shock must be finite" refusals,
+// so the validation is a tested contract rather than a written one.
+TEST(ScenarioGridDeriv, TheShockedRepriceRefusesAnUndefinedShock) {
+  const PricedSurface ps = make_essvi(1, 4);
+  const SurfaceSet ss = set_of({&ps});
+  const SurfaceRef ref = ss.find(1u);
+  ASSERT_NE(ref, nullptr);
+  const DerivPosition p = deriv_pos_on(DerivKind::VarSwap, 1u, 1.0);
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+
+  const auto refused = [&](const detail::DerivShock &s) {
+    return !detail::deriv_price_shocked_on_ref(ref, p.contract, DerivConfig{}, std::nullopt, s)
+                .has_value();
+  };
+
+  detail::DerivShock roll_past_expiry{};
+  roll_past_expiry.time_roll = p.contract.maturity_t; // exactly consumes the tenor
+  EXPECT_TRUE(refused(roll_past_expiry));
+  roll_past_expiry.time_roll = p.contract.maturity_t + 1.0;
+  EXPECT_TRUE(refused(roll_past_expiry));
+
+  detail::DerivShock bad_spot{};
+  bad_spot.spot_rel = -1.0; // the forward would collapse to zero
+  EXPECT_TRUE(refused(bad_spot));
+  bad_spot.spot_rel = nan;
+  EXPECT_TRUE(refused(bad_spot));
+
+  for (double detail::DerivShock::*field :
+       {&detail::DerivShock::vol_shift, &detail::DerivShock::skew_shift,
+        &detail::DerivShock::convexity_shift, &detail::DerivShock::rate_shift,
+        &detail::DerivShock::time_roll}) {
+    detail::DerivShock s{};
+    s.*field = nan;
+    EXPECT_TRUE(refused(s)) << "a non-finite shock component must be refused, not priced";
+  }
+
+  // A roll that leaves tenor is fine, and is the positive control for the guard
+  // above -- otherwise "refuses everything" would pass every assertion here.
+  detail::DerivShock ok_roll{};
+  ok_roll.time_roll = p.contract.maturity_t * 0.5;
+  EXPECT_FALSE(refused(ok_roll));
+}
+
+// The `centre == nullptr` DEFAULT branch: the path a caller who omits the
+// argument takes, and the only one that resolves its own centre at the cost of
+// an extra strip. Nothing in the tree reached it. It must agree with the
+// explicit-centre form to the bit -- they pin off the same centre, one just
+// prices it first.
+TEST(ScenarioGridDeriv, TheDefaultCentreBranchMatchesAnExplicitlyPassedCentre) {
+  const PricedSurface ps = make_essvi(1, 4);
+  const SurfaceSet ss = set_of({&ps});
+  const SurfaceRef ref = ss.find(1u);
+  ASSERT_NE(ref, nullptr);
+
+  DerivGreekBumps bumps{};
+  bumps.smile_greeks = true;
+
+  for (const DerivKind kind : kAllDerivKinds) {
+    const DerivPosition p = deriv_pos_on(kind, 1u, 1.0);
+    const auto g = detail::deriv_greeks_on_ref(ref, p.contract, DerivConfig{}, bumps, std::nullopt);
+    ASSERT_TRUE(g.has_value()) << kind_name(kind) << ": " << g.error().to_string();
+
+    detail::DerivShock shock{};
+    shock.spot_rel = 0.02;
+    shock.vol_shift = 0.01;
+    shock.time_roll = 0.01;
+    shock.rate_shift = 0.0005;
+
+    const auto with_centre = detail::deriv_price_shocked_on_ref(ref, p.contract, DerivConfig{},
+                                                                std::nullopt, shock, &g->quote);
+    const auto defaulted =
+        detail::deriv_price_shocked_on_ref(ref, p.contract, DerivConfig{}, std::nullopt, shock);
+    ASSERT_TRUE(with_centre.has_value()) << kind_name(kind);
+    ASSERT_TRUE(defaulted.has_value()) << kind_name(kind);
+    EXPECT_TRUE(bits_equal(with_centre->pv, defaulted->pv))
+        << kind_name(kind) << ": passing the centre must be an optimisation, not a semantic "
+        << "choice -- " << with_centre->pv << " vs " << defaulted->pv;
   }
 }
