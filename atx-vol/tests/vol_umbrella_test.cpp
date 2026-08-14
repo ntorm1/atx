@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <cctype>
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
@@ -565,71 +566,234 @@ TEST(VolUmbrella, DemotedSurfaceContainersAreNotNamedInPublicHeaders) {
 //   * kPathLiteralExempt -- files that pass "../" to code as DATA rather than
 //     using it as a path. Adding to this list is the loud, deliberate step: it
 //     is where a reviewer gets asked whether a new ladder is really data.
+//
+// WHAT THIS GUARD CANNOT SEE -- stated because the first version of it could not
+// see EITHER defect that motivated it, and a guard documenting only its
+// deliberate non-failures is claiming completeness by omission:
+//
+//   * A BARE-RELATIVE root: `fs::path{"artifact-cache"}`, `"data/spy_ytd/opra"`.
+//     This is the exact shape that forked the artifact cache five ways, and a
+//     text scan cannot separate it from any other short string. Nothing here
+//     will catch it; only TestPathing's CWD flip and a hostile-directory run
+//     will.
+//   * A path assembled at run time from fragments, or read from a variable.
+//   * `std::filesystem::current_path()` OUTSIDE atx-vol/tests (checked within).
+//   * Non-.cpp/.hpp/.h/.cc files -- CMake, Python, scripts.
+//   * The ladder/macro needles are scoped to atx-vol/tests only, deliberately:
+//     a relative CLI default in examples/ is sanctioned behaviour, not a defect,
+//     so a repo-wide rung rule would be wrong. The ABSOLUTE-literal needle is
+//     repo-wide, because a path into another checkout is never acceptable
+//     anywhere -- that asymmetry is the point, and it is what lets this catch
+//     the third-checkout absolute that lived in examples/.
 constexpr std::string_view kPathLiteralExempt[] = {
     // Feeds "../escape" to a partition-name validator to prove it is REJECTED.
     // The literal is the adversary, not a lookup.
     "surface_db_test.cpp",
 };
 
+// Files permitted to call current_path(). Only the test that exists to flip the
+// working directory and flip it back.
+constexpr std::string_view kCurrentPathExempt[] = {
+    "test_paths_test.cpp",
+};
+
+// THE EXEMPTIONS ARE ASYMMETRIC, AND THAT IS THE GUARD'S STRONGEST PROPERTY.
+// Only the rung and current_path() needles have an exemption path at all. There
+// is NO list that can silence the compiler-file-macro needle or the
+// absolute-literal needle -- not for any file, including this one. So the two
+// rules with no legitimate exception in this repository cannot be opted out of
+// by adding a name to an array, which is the cheapest way a guard normally dies.
+
+// Needles ASSEMBLED rather than written, so this file does not match its own
+// patterns. Self-non-matching rests on TWO mechanisms and both are load-bearing:
+// this assembly, and the comment-skip in scan_source_line -- the prose above
+// carries every one of these patterns verbatim. Remove the comment-skip and this
+// file starts flagging its own explanation.
+//
+// Exempting this file by name instead would be worse: it is a *_test.cpp like
+// any other and must be policed like one.
+struct PathNeedles {
+  std::string ladder;       // a parent-directory rung opening a literal
+  std::string file_macro;   // a path derived from the compiler's file macro
+  std::string cwd_call;     // an explicit working-directory read/change
+  std::string accepted_abs; // the ONE blessed absolute root (see below)
+
+  static PathNeedles make() {
+    PathNeedles n;
+    n.ladder = std::string("\"..") + "/";
+    n.file_macro = std::string("__FI") + "LE__";
+    n.cwd_call = std::string("current_") + "path(";
+    // Every absolute literal in atx-vol today names this external vendor hive,
+    // which sits OUTSIDE any checkout. Stated as a positive allowance rather
+    // than a per-file allowlist so that a path into a *sibling worktree* fails
+    // wherever it is written. The previous sweeps searched for "C:/atx/" WITH
+    // the trailing slash, which is precisely what excluded C:/atx-wt/... --
+    // a pattern shaped by the last defect inherits that defect's blind spot.
+    n.accepted_abs = std::string("\"C:") + "/atx-data/";
+    return n;
+  }
+};
+
+// True when a string literal beginning at `q` (the opening quote) is an
+// absolute path: a drive-letter root (`"C:/`, `"D:\`) or a rooted/UNC backslash
+// (`"\\` in source, i.e. an escaped backslash). Names no particular drive or
+// checkout, so it cannot inherit one's blind spot.
+[[nodiscard]] bool literal_is_absolute(const std::string& line, std::size_t q) {
+  if (q + 3 < line.size() && std::isalpha(static_cast<unsigned char>(line[q + 1])) != 0 &&
+      line[q + 2] == ':' && (line[q + 3] == '/' || line[q + 3] == '\\')) {
+    return true;
+  }
+  return q + 2 < line.size() && line[q + 1] == '\\' && line[q + 2] == '\\';
+}
+
+struct LineScan {
+  std::vector<std::string> violations;      // empty => clean
+  bool include_with_ladder = false;         // for the non-vacuity check
+};
+
+// Which path-origin rules one line of C++ source breaks. Shared by the file walk
+// and by the self-test below, so the detector proven in the self-test is the
+// same code that polices the tree.
+[[nodiscard]] LineScan scan_source_line(const std::string& line, const PathNeedles& n,
+                                        bool check_ladder, bool check_macro,
+                                        bool check_cwd) {
+  LineScan out;
+  const std::size_t first = line.find_first_not_of(" \t");
+  if (first == std::string::npos) return out;
+  if (line.compare(first, 2, "//") == 0) return out;  // prose, not code
+  if (line[first] == '#') {
+    out.include_with_ladder = line.find("include", first) != std::string::npos &&
+                              line.find(n.ladder, first) != std::string::npos;
+    return out;
+  }
+
+  if (check_ladder && line.find(n.ladder) != std::string::npos) {
+    out.violations.emplace_back("parent-directory rung");
+  }
+  if (check_macro && line.find(n.file_macro) != std::string::npos) {
+    out.violations.emplace_back("path derived from the compiler file macro");
+  }
+  if (check_cwd && line.find(n.cwd_call) != std::string::npos) {
+    out.violations.emplace_back("working-directory call");
+  }
+  for (std::size_t i = 0; i + 1 < line.size(); ++i) {
+    if (line[i] != '"' || !literal_is_absolute(line, i)) continue;
+    if (line.compare(i, n.accepted_abs.size(), n.accepted_abs) == 0) continue;
+    out.violations.emplace_back("absolute path literal outside the accepted data root");
+    break;
+  }
+  return out;
+}
+
+// The detector's own positive controls. Every needle is fired here on a
+// constructed line, so none of them can rot into a pattern that matches nothing
+// -- the failure mode a scan cannot report about itself. The `__FILE__` needle
+// especially: unlike the rung, it has NO in-tree instance left, so without this
+// it would have no evidence at all that it still works.
+//
+// The probe lines are assembled from the needles for the same reason the needles
+// are assembled: writing them out would make this file match itself.
+TEST(VolUmbrella, PathOriginDetectorCatchesWhatItClaimsTo) {
+  const PathNeedles n = PathNeedles::make();
+  const auto scan = [&n](const std::string& line) {
+    return scan_source_line(line, n, /*check_ladder=*/true, /*check_macro=*/true,
+                            /*check_cwd=*/true);
+  };
+
+  // Positives -- each must be caught.
+  EXPECT_EQ(scan("  const fs::path p{" + n.ladder + "data/x.tsv\"};").violations.size(), 1u)
+      << "the parent-directory rung needle no longer fires";
+  EXPECT_EQ(scan("  return fs::path(" + n.file_macro + ").parent_path();").violations.size(), 1u)
+      << "the compiler-file-macro needle no longer fires";
+  EXPECT_EQ(scan("  fs::" + n.cwd_call + "dir);").violations.size(), 1u)
+      << "the working-directory needle no longer fires";
+  EXPECT_EQ(scan(std::string("  const char* p = \"") + "C:" + "/atx-wt/other/x.parquet\";")
+                .violations.size(),
+            1u)
+      << "a cross-checkout absolute is not caught -- this is the I2 defect";
+  // The two backslashes come from a char, not from source text: any literal way
+  // of writing them right after a quote would make this line match itself.
+  const std::string bs(2, '\\');
+  EXPECT_EQ(scan(std::string("  const char* p = \"") + bs + "srv" + bs + "share\";")
+                .violations.size(),
+            1u)
+      << "a UNC/rooted-backslash absolute is not caught";
+
+  // Negatives -- each must be allowed, for a stated reason.
+  EXPECT_TRUE(scan("#include " + n.ladder + "src/foo.hpp\"").violations.empty())
+      << "an #include is a compile-time path, never resolved against the CWD";
+  EXPECT_TRUE(scan("#include " + n.ladder + "src/foo.hpp\"").include_with_ladder)
+      << "the #include exclusion did not register, so its own non-vacuity check is blind";
+  EXPECT_TRUE(scan("  // prose mentioning " + n.ladder + " and " + n.file_macro).violations.empty())
+      << "comments are prose; this file's own explanation names every needle";
+  EXPECT_TRUE(scan("  const char* p = " + n.accepted_abs + "spy-dispersion/opra\";")
+                  .violations.empty())
+      << "the external vendor hive is the one accepted absolute root";
+  EXPECT_TRUE(scan("  std::printf(\"two readings:\\n\");").violations.empty())
+      << "a printf escape is not a drive letter -- the structural sweep's false-positive class";
+  EXPECT_TRUE(scan("  const char* u = \"https://example.invalid/x\";").violations.empty())
+      << "a URL scheme is not a drive letter -- the other false-positive class";
+}
+
 TEST(VolUmbrella, NoFixturePathResolvedOutsideTheSharedResolver) {
-  const fs::path root = testkit::tests_root();
-  ASSERT_TRUE(fs::is_directory(root)) << "tests root does not resolve: " << root.string();
+  const fs::path tests = testkit::tests_root();
+  const fs::path scope = testkit::repo_file("atx-vol");
+  ASSERT_TRUE(fs::is_directory(tests)) << "tests root does not resolve: " << tests.string();
+  ASSERT_TRUE(fs::is_directory(scope)) << "atx-vol root does not resolve: " << scope.string();
 
-  // Both needles are ASSEMBLED rather than written, so this file does not match
-  // its own patterns. Exempting it by name instead would stop it policing
-  // itself, and it is a *_test.cpp like any other.
-  const std::string ladder = std::string("\"..") + "/";
-  const std::string file_macro = std::string("__FI") + "LE__";
-
+  const PathNeedles n = PathNeedles::make();
   std::size_t files_scanned = 0;
+  std::size_t tests_scanned = 0;
   std::size_t include_lines_skipped = 0;
 
-  for (const fs::directory_entry& entry : fs::recursive_directory_iterator(root)) {
+  for (const fs::directory_entry& entry : fs::recursive_directory_iterator(scope)) {
     if (!entry.is_regular_file()) continue;
     const fs::path& p = entry.path();
     const std::string ext = p.extension().string();
-    if (ext != ".cpp" && ext != ".hpp") continue;
+    if (ext != ".cpp" && ext != ".hpp" && ext != ".h" && ext != ".cc") continue;
+    // Vendored third-party: not ours to restyle, and it resolves nothing here.
+    if (p.generic_string().find("/bench/thirdparty/") != std::string::npos) continue;
 
     const std::string name = p.filename().string();
-    bool exempt = false;
+    const bool in_tests = p.generic_string().rfind(tests.generic_string(), 0) == 0;
+
+    bool ladder_exempt = false;
     for (const std::string_view e : kPathLiteralExempt) {
-      if (name == e) exempt = true;
+      if (name == e) ladder_exempt = true;
+    }
+    bool cwd_exempt = false;
+    for (const std::string_view e : kCurrentPathExempt) {
+      if (name == e) cwd_exempt = true;
     }
 
     ++files_scanned;
+    if (in_tests) ++tests_scanned;
+
     std::ifstream in(p);
     std::string line;
-    for (std::size_t n = 1; std::getline(in, line); ++n) {
-      const std::size_t first = line.find_first_not_of(" \t");
-      if (first == std::string::npos) continue;
-      if (line.compare(first, 2, "//") == 0) continue;  // prose, not code
-      if (line[first] == '#') {
-        if (line.find("include", first) != std::string::npos &&
-            line.find(ladder, first) != std::string::npos) {
-          ++include_lines_skipped;
-        }
-        continue;
+    for (std::size_t ln = 1; std::getline(in, line); ++ln) {
+      const LineScan s = scan_source_line(line, n, in_tests && !ladder_exempt, in_tests,
+                                          in_tests && !cwd_exempt);
+      if (s.include_with_ladder) ++include_lines_skipped;
+      for (const std::string& v : s.violations) {
+        ADD_FAILURE() << name << ":" << ln << " -- " << v
+                      << ". A path that resolves against the process working directory, or "
+                         "into another checkout, names a different file depending on where "
+                         "the binary was launched from. Resolve it through "
+                         "tests/support/test_paths.hpp (test_fixture / test_data / "
+                         "market_data / repo_file / artifact_cache_root). If the literal is "
+                         "DATA rather than a path, add the file to kPathLiteralExempt and "
+                         "say why.";
       }
-      if (!exempt) {
-        EXPECT_EQ(line.find(ladder), std::string::npos)
-            << name << ":" << n << " opens a path literal with a parent-directory rung ("
-            << ladder << "), which resolves against the process working directory -- so it "
-            << "names a different file depending on where the binary was launched from. "
-            << "Resolve it through tests/support/test_paths.hpp instead (test_fixture / "
-            << "test_data / market_data / repo_file / artifact_cache_root). If the literal "
-            << "is DATA rather than a path, add this file to kPathLiteralExempt and say why.";
-      }
-      EXPECT_EQ(line.find(file_macro), std::string::npos)
-          << name << ":" << n << " derives a path from the " << file_macro << " macro, which "
-          << "ninja/clang-cl does not reliably make absolute. Use tests/support/test_paths.hpp.";
     }
   }
 
-  // Non-vacuity, both directions: the walk must have reached real content, and
-  // the #include exclusion must actually have fired -- otherwise a scanner that
-  // silently matched nothing would report this contract as satisfied, which is
-  // the exact failure shape the tier-table comment above exists to prevent.
-  EXPECT_GT(files_scanned, 100u) << "test-tree scan found almost nothing; the walk is broken";
+  // Non-vacuity in three directions: the walk must have reached the wider scope
+  // AND the tests subtree AND actually exercised the #include exclusion.
+  // A scanner that silently matched nothing would otherwise report this contract
+  // satisfied -- the exact shape the tier-table comment above exists to prevent.
+  EXPECT_GT(files_scanned, 200u) << "atx-vol scan found almost nothing; the walk is broken";
+  EXPECT_GT(tests_scanned, 100u) << "the tests subtree was not reached by the walk";
   EXPECT_GT(include_lines_skipped, 0u)
       << "no #include line carrying a parent-directory rung was seen, so the exclusion is "
          "untested and this contract may be passing because the scan matched nothing";
