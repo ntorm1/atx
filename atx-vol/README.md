@@ -832,11 +832,15 @@ they read from `src/`, not from a test. That set is deliberately
 not enumerated here — a hand-kept count drifts as tests are added and nothing
 catches it. Enumerate it when you need it, from the read sites rather than from
 a naming pattern: `grep -rn 'getenv\|_dupenv_s\|GetEnvironmentVariable'` over
-`atx-vol/`, then resolve the call sites that read a *parameter* rather than a
-literal (`bench_main.cpp`, `universe_cycle_bench.cpp`, `al_probe.cpp`,
-`dense_slice.cpp`, `derivatives.cpp`, `surface_db_dispersion_backtest_test.cpp`
-and `process_scratch_test.cpp` all do). One exception is documented above rather
-than here because it changes what a green run asserts: `ATX_VOL_SCOREBOARDS`.
+`atx-vol/`, then resolve every call site that reads a **parameter** rather than a
+string literal back to the concrete names its callers pass. Several do, and a
+name-pattern grep silently misses all of them — which is the whole reason to
+enumerate by read site. Those three tokens are the complete set of env-access
+mechanisms in shipping code: `atx-core` reads the environment nowhere, and each
+`env_flag_enabled` helper is file-local to its own TU rather than a shared
+wrapper, so nothing reaches the environment by a route the grep cannot see. One
+exception is documented above rather than here because it changes what a green
+run asserts: `ATX_VOL_SCOREBOARDS`.
 
 ## API stability policy (1.x)
 
