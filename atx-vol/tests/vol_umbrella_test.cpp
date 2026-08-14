@@ -302,9 +302,9 @@ TEST(VolUmbrella, TierAIsClosedUnderInclusion) {
   }
 }
 
-// The README's tier table (`## Versioning`) states the Tier-A/Tier-B/`detail/`
-// counts as prose, and says so itself: "Three of the five digits above had
-// rotted by v1, and the first three no longer can."
+// The README's tier table (under `## API stability policy (1.x)`) states the
+// Tier-A/Tier-B/`detail/` counts as prose, and says so itself: "Three of the
+// five digits above had rotted by v1, and the first three no longer can."
 // `UmbrellaIsExactlyTierA` above pins the Tier-A *set* against `kTierA`, but
 // nothing pinned `kTierA`'s own SIZE, nor Tier-B's or `detail/`'s -- so a
 // fourth silent drift (after Tier-A 56->57, Tier-B 23->31, `detail/` 25->28)
@@ -315,13 +315,25 @@ TEST(VolUmbrella, TierAIsClosedUnderInclusion) {
 // into the install prefix, not `include_root()`, so it never appears here).
 //
 // UPDATE PROCEDURE when a header is deliberately added/removed/promoted:
-// update the affected literal(s) below AND the README table (`## Versioning`)
-// in the same commit, and confirm `UmbrellaIsExactlyTierA` /
-// `TierAIsClosedUnderInclusion` still pass.
+// update the affected literal(s) below AND the README table (under
+// `## API stability policy (1.x)`) in the same commit, and confirm
+// `UmbrellaIsExactlyTierA` / `TierAIsClosedUnderInclusion` still pass. That
+// section name is spelled out because this pointer said `## Versioning` for its
+// whole life -- a heading the README has never carried, so it cost the fixer who
+// closed the second drift a search.
+//
+// AND RUN `-R VolUmbrella`, WHATEVER YOUR TASK'S OWN FILTER IS. These counts are
+// a GLOBAL invariant that fires on any header addition, so no topical filter
+// covers them and every locally-correct verification misses them. That is how
+// this pin broke twice in one day: 3c28ffd took Tier-B 31 -> 32 behind
+// `-R CboeStrip`, b1558f7 took `detail/` 30 -> 31 behind
+// `-R "^(Arb|SplineVol|...)"`, each lane running precisely the filter it was
+// given. The instruction lives here rather than in a brief because a brief that
+// has to remember is a brief that will eventually forget.
 TEST(VolUmbrella, TierCountsMatchTheReadmeTable) {
   EXPECT_EQ(std::size(kTierA), std::size_t{58})
-      << "Tier-A count drifted -- update the README table (## Versioning) "
-         "alongside this literal";
+      << "Tier-A count drifted -- update the README tier table (under "
+         "'## API stability policy (1.x)') alongside this literal";
 
   std::size_t top_level_headers = 0;
   for (const fs::directory_entry& entry :
@@ -332,8 +344,8 @@ TEST(VolUmbrella, TierCountsMatchTheReadmeTable) {
   ASSERT_GT(top_level_headers, std::size(kTierA) + 1u);
   const std::size_t tier_b = top_level_headers - std::size(kTierA) - 1u;
   EXPECT_EQ(tier_b, std::size_t{32})
-      << "Tier-B count drifted -- update the README table (## Versioning) "
-         "alongside this literal";
+      << "Tier-B count drifted -- update the README tier table (under "
+         "'## API stability policy (1.x)') alongside this literal";
 
   std::size_t detail_headers = 0;
   for (const fs::directory_entry& entry :
@@ -341,9 +353,10 @@ TEST(VolUmbrella, TierCountsMatchTheReadmeTable) {
     if (entry.is_regular_file() && entry.path().extension() == ".hpp") ++detail_headers;
   }
   EXPECT_EQ(detail_headers, std::size_t{31})
-      << "detail/ count drifted -- update the README table (## Versioning) "
-         "alongside this literal (the install-tree '+1 generated' header does "
-         "not live under include_root() and is not counted here)";
+      << "detail/ count drifted -- update the README tier table (under "
+         "'## API stability policy (1.x)') alongside this literal (the "
+         "install-tree '+1 generated' header does not live under "
+         "include_root() and is not counted here)";
 }
 
 // ── The demoted legacy surface containers (S4-T21 / plan 4.4) ───────────────
