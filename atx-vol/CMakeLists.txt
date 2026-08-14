@@ -15,25 +15,50 @@
 # multi-expiry parity harness (surface_parity). See
 # README.md and docs/superpowers/specs/2026-07-04-atx-vol-vola-parity-design.md.
 
-add_library(atx-vol ${ATX_LIB_TYPE}
+# ---- Per-module source lists (api-restructure Task 3, 2026-08-14) -----------
+# One set(ATX_VOL_<MODULE>_SOURCES ...) block per src/<module>/ directory,
+# mirroring the include/atx/vol/api/<module>/ public split from Tasks 1-2.
+# Pure regrouping of the SAME 128 always-built .cpp files this target has
+# always compiled -- membership follows the directory a file already lives in;
+# nothing added, removed, or gated differently. The SIMD module (src/simd/) is
+# handled separately just below via its own CONFIGURE_DEPENDS glob (unchanged
+# from before this restructure -- new kernels still need no CMake edit), and
+# the five ATX_VOL_LAKEHOUSE-conditional sources stay in their own gated
+# target_sources() calls further down rather than joining a module set here,
+# since their membership in the build is itself conditional.
+set(ATX_VOL_CORE_SOURCES
     src/core/version.cpp
     src/core/log.cpp
     src/core/instrumentation_abi.cpp
+    src/core/vol_time.cpp
+    src/core/chain.cpp
+)
+
+set(ATX_VOL_PRICING_SOURCES
     src/pricing/black76.cpp
     src/pricing/greeks.cpp
     src/pricing/implied_vol.cpp
-    src/fitting/surface.cpp
     src/pricing/rates_curve.cpp
-    src/marketdata/universe.cpp
     src/pricing/derivatives.cpp
-    src/backtest/deriv_book.cpp
-    src/analytics/rv_lognormal.cpp
-    src/fitting/vol_surface.cpp
     src/pricing/al_probe.cpp
     src/pricing/american.cpp
     src/pricing/american_batch.cpp
     src/pricing/adjoint_greeks.cpp
     src/pricing/boundary_interp.cpp
+    src/pricing/batch.cpp
+    src/pricing/american_iv.cpp
+    src/pricing/dividend.cpp
+    src/pricing/adjusted_greeks.cpp
+    src/pricing/pricing_executor.cpp
+    # declarative swap-lane DSL
+    src/pricing/swap_leg.cpp
+    # THEO-7: theo vocabulary + TheoEngine (identity semantics beside the served mark)
+    src/pricing/theo.cpp
+)
+
+set(ATX_VOL_FITTING_SOURCES
+    src/fitting/surface.cpp
+    src/fitting/vol_surface.cpp
     src/fitting/correction.cpp
     src/fitting/arb.cpp
     src/fitting/surface_policy.cpp
@@ -51,7 +76,35 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/fitting/dense_slice.cpp
     src/fitting/profile.cpp
     src/fitting/fit_policy.cpp
+    src/fitting/projection.cpp
+    src/fitting/fit_metrics.cpp
+    src/fitting/deamer.cpp
+    src/fitting/parity.cpp
+    src/fitting/surface_parity.cpp
+    src/fitting/session.cpp
+    src/fitting/pricer_fitter.cpp
+    src/fitting/vol_curve.cpp
+    src/fitting/spline_curve.cpp
+    src/fitting/curve_fit.cpp
+    src/fitting/curve_selector.cpp
+    src/fitting/fit_scheduler.cpp
+    src/fitting/sr_tenor_grid.cpp
+)
+
+set(ATX_VOL_MARKETDATA_SOURCES
+    src/marketdata/universe.cpp
     src/marketdata/data.cpp
+    src/marketdata/opra_panel.cpp
+    src/marketdata/opra_batch.cpp
+    src/marketdata/opra_hive.cpp
+    src/marketdata/corpus_board_fit.cpp
+    src/marketdata/corpus.cpp
+    src/marketdata/listed_opra.cpp
+    src/marketdata/listed_definitions_cache.cpp
+    src/marketdata/occ_ess.cpp
+)
+
+set(ATX_VOL_STORAGE_SOURCES
     src/storage/archive_util.cpp
     # D3: cross-process manifest writer lock, used unconditionally by
     # BacktestDb::persist_locked (backtest_db.cpp) and SurfaceDb::
@@ -64,71 +117,14 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/storage/run_archive.cpp
     src/storage/run_diagnostics.cpp
     src/storage/surface_db.cpp
-    src/pricing/batch.cpp
-    src/fitting/projection.cpp
-    src/analytics/contract_projection.cpp
-    src/analytics/historical_projection.cpp
-    src/analytics/var.cpp
-    src/analytics/var_report.cpp
-    src/analytics/var_validation.cpp
-    src/pricing/american_iv.cpp
-    src/pricing/dividend.cpp
     src/storage/s3.cpp
-    src/fitting/fit_metrics.cpp
-    src/pricing/adjusted_greeks.cpp
-    src/core/vol_time.cpp
-    src/analytics/event_vol.cpp
-    src/fitting/deamer.cpp
-    src/fitting/parity.cpp
-    src/backtest/panel.cpp
-    src/fitting/surface_parity.cpp
-    src/marketdata/opra_panel.cpp
-    src/marketdata/opra_batch.cpp
-    src/marketdata/opra_hive.cpp
-    src/fitting/session.cpp
-    src/core/chain.cpp
-    src/fitting/pricer_fitter.cpp
-    src/fitting/vol_curve.cpp
-    src/fitting/spline_curve.cpp
-    src/fitting/curve_fit.cpp
-    src/fitting/curve_selector.cpp
-    src/backtest/priced_surface.cpp
-    src/backtest/priced_surface_view.cpp
-    src/backtest/prepared_portfolio.cpp
-    src/pricing/pricing_executor.cpp
-    src/backtest/portfolio_pricer.cpp
-    src/fitting/fit_scheduler.cpp
-    src/marketdata/corpus_board_fit.cpp
-    src/analytics/scenario_grid.cpp
-    src/backtest/margin.cpp
-    src/analytics/pnl_attribution.cpp
-    src/marketdata/corpus.cpp
     src/storage/surface_db_populate.cpp
     src/storage/surface_db_build.cpp
     src/storage/surface_db_admin.cpp
-    src/backtest/dispersion.cpp
-    src/backtest/dispersion_strangle.cpp
-    src/backtest/dispersion_backtest.cpp
     src/storage/dispersion_surface_db.cpp
-    src/backtest/backtest_driver.cpp
-    src/backtest/dispersion_workflow.cpp
-    src/backtest/listed_dispersion.cpp
-    src/marketdata/listed_opra.cpp
-    src/marketdata/listed_definitions_cache.cpp
-    src/marketdata/occ_ess.cpp
-    src/backtest/listed_dispersion_schedule.cpp
-    src/backtest/listed_dispersion_reconciliation.cpp
-    src/backtest/listed_dispersion_strategy.cpp
-    src/backtest/dispersion_run.cpp
-    src/backtest/listed_dispersion_pipeline.cpp
-    src/backtest/backtest.cpp
-    src/backtest/backtest_template.cpp
     src/storage/backtest_db.cpp
     src/storage/backtest_db_build.cpp
     src/storage/research_db.cpp
-    src/backtest/research_validation.cpp
-    src/backtest/strategy_pipeline.cpp
-    src/backtest/quant_pipeline.cpp
     src/storage/snapshot_cache.cpp
     # C2: process-wide sealed snapshot pool. Header is Tier-B
     # (include/atx/vol/snapshot_pool.hpp, promoted from research/include by
@@ -139,36 +135,81 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     # D1: content-addressed track identity (TrackKey) + economics-rev
     # tripwire pairing. Same Tier-B header placement (E2 promotion) and
     # same-library compilation as snapshot_pool.cpp immediately above.
-    src/storage/track_key.cpp
     # D2's src/storage/track_store.cpp joins conditionally below (ATX_VOL_LAKEHOUSE) --
     # it is the one atx-vol source that needs Arrow/Parquet, so it is not
-    # listed unconditionally here the way track_key.cpp above is.
-    src/backtest/strategy.cpp
-    src/backtest/dispersion_strategy.cpp
-    src/backtest/tearsheet.cpp
+    # listed unconditionally here the way track_key.cpp is.
+    src/storage/track_key.cpp
     src/storage/run_report.cpp
+)
+
+set(ATX_VOL_ANALYTICS_SOURCES
+    src/analytics/rv_lognormal.cpp
+    src/analytics/contract_projection.cpp
+    src/analytics/historical_projection.cpp
+    src/analytics/var.cpp
+    src/analytics/var_report.cpp
+    src/analytics/var_validation.cpp
+    src/analytics/event_vol.cpp
+    src/analytics/scenario_grid.cpp
+    src/analytics/pnl_attribution.cpp
     src/analytics/analytics_primitives.cpp
     src/analytics/analytics_density.cpp
     src/analytics/analytics_aggregate.cpp
     src/analytics/analytics_io.cpp
     src/analytics/earnings_term_fit.cpp
-    src/fitting/sr_tenor_grid.cpp
     src/analytics/earnings_forecast_loader.cpp
     src/analytics/earnings_repro.cpp
-    # declarative swap-lane DSL
-    src/pricing/swap_leg.cpp
     # THEO-1: OHLC realized-vol estimator suite (Tier-B, not on the umbrella)
     src/analytics/realized_vol.cpp
     # THEO-3: breakeven-vol root-find, layered over bev_replay_pnl (backtest.cpp)
     src/analytics/breakeven.cpp
-    # THEO-7: theo vocabulary + TheoEngine (identity semantics beside the served mark)
-    src/pricing/theo.cpp
+)
+
+set(ATX_VOL_BACKTEST_SOURCES
+    src/backtest/deriv_book.cpp
+    src/backtest/panel.cpp
+    src/backtest/priced_surface.cpp
+    src/backtest/priced_surface_view.cpp
+    src/backtest/prepared_portfolio.cpp
+    src/backtest/portfolio_pricer.cpp
+    src/backtest/margin.cpp
+    src/backtest/dispersion.cpp
+    src/backtest/dispersion_strangle.cpp
+    src/backtest/dispersion_backtest.cpp
+    src/backtest/backtest_driver.cpp
+    src/backtest/dispersion_workflow.cpp
+    src/backtest/listed_dispersion.cpp
+    src/backtest/listed_dispersion_schedule.cpp
+    src/backtest/listed_dispersion_reconciliation.cpp
+    src/backtest/listed_dispersion_strategy.cpp
+    src/backtest/dispersion_run.cpp
+    src/backtest/listed_dispersion_pipeline.cpp
+    src/backtest/backtest.cpp
+    src/backtest/backtest_template.cpp
+    src/backtest/research_validation.cpp
+    src/backtest/strategy_pipeline.cpp
+    src/backtest/quant_pipeline.cpp
+    src/backtest/strategy.cpp
+    src/backtest/dispersion_strategy.cpp
+    src/backtest/tearsheet.cpp
     # Structure-selector ML: one-day-hold delta-neutral structure PnL + feature panel
     src/backtest/structure_panel.cpp
     # Cross-sectional vega panel: ATMF strangle resolve + h-day rehedged hold labels
     src/backtest/vega_panel.cpp
 )
+
+add_library(atx-vol ${ATX_LIB_TYPE})
 add_library(atx::vol ALIAS atx-vol)
+
+target_sources(atx-vol PRIVATE
+    ${ATX_VOL_CORE_SOURCES}
+    ${ATX_VOL_PRICING_SOURCES}
+    ${ATX_VOL_FITTING_SOURCES}
+    ${ATX_VOL_MARKETDATA_SOURCES}
+    ${ATX_VOL_STORAGE_SOURCES}
+    ${ATX_VOL_ANALYTICS_SOURCES}
+    ${ATX_VOL_BACKTEST_SOURCES}
+)
 
 # ---- SIMD/AVX2 vectorized batch kernels (fastpath) ---------------------------
 # All src/simd/*.cpp join the library; the *_avx2.cpp translation units emit
@@ -178,9 +219,12 @@ add_library(atx::vol ALIAS atx-vol)
 # when the host supports them. Per-file -mavx2 also defines __AVX2__/__FMA__,
 # satisfying the compile-time guard in detail/vector_math.hpp and keeping clangd
 # green. CONFIGURE_DEPENDS re-globs on build so new kernels need no CMake edit.
-file(GLOB ATX_VOL_SIMD_SRC CONFIGURE_DEPENDS
+# The eighth per-module source list (ATX_VOL_SIMD_SOURCES) -- glob-based
+# rather than a literal set(), unlike the seven blocks above, so a new kernel
+# file needs no CMake edit at all.
+file(GLOB ATX_VOL_SIMD_SOURCES CONFIGURE_DEPENDS
     ${CMAKE_CURRENT_SOURCE_DIR}/src/simd/*.cpp)
-target_sources(atx-vol PRIVATE ${ATX_VOL_SIMD_SRC})
+target_sources(atx-vol PRIVATE ${ATX_VOL_SIMD_SOURCES})
 
 file(GLOB ATX_VOL_SIMD_AVX2 CONFIGURE_DEPENDS
     ${CMAKE_CURRENT_SOURCE_DIR}/src/simd/*_avx2.cpp)
@@ -223,19 +267,45 @@ target_include_directories(atx-vol
 # Headers demoted off the public surface now live at src/<module>/ instead of
 # include/atx/vol/detail/, and every internal quoted include was rewritten to
 # the "<module>/<name>.hpp" spelling (atx-vol/scripts/api_restructure_apply.py).
-# That spelling resolves via this root: PRIVATE on the library itself, and
-# directory-scoped below (covers every add_executable() in THIS file --
-# tools/examples -- plus the tests/ and bench/ subdirectories add_subdirectory'd
-# later in this same file) so it reaches every INTERNAL consumer. The two
-# external-only out-of-tree consumers, python/CMakeLists.txt and
-# test-package/CMakeLists.txt, are deliberately NOT covered here -- they must
-# only ever see the public api/ surface -- and get their own explicit PRIVATE
-# include dir added only where genuinely needed (python/CMakeLists.txt, for
-# parity with the other internal targets; test-package never touches src/ at
-# all, consistent with it being one of the three external reachability roots
-# the placement measurement itself was computed from).
+# That spelling resolves via this root: PRIVATE on the library itself, and --
+# via atx_vol_grant_src_include() below, called once per internal-target
+# directory -- on every tools/examples executable in THIS file plus the
+# tests/ and bench/ subdirectories add_subdirectory'd later in this same file,
+# so it reaches every INTERNAL consumer. The two external-only out-of-tree
+# consumers, python/CMakeLists.txt and test-package/CMakeLists.txt, are
+# deliberately NOT covered here -- they must only ever see the public api/
+# surface -- and get their own explicit PRIVATE include dir added only where
+# genuinely needed (python/CMakeLists.txt, for parity with the other internal
+# targets; test-package never touches src/ at all, consistent with it being
+# one of the three external reachability roots the placement measurement
+# itself was computed from).
 target_include_directories(atx-vol PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/src)
+
+# Task 3 (build-system restructure) replaced a directory-scoped
+# include_directories(${CMAKE_CURRENT_SOURCE_DIR}/src) here -- which silently
+# granted the src/ root to every target in this directory AND every
+# subdirectory add_subdirectory'd afterwards, tools/examples/bench alike, with
+# no per-target record of the grant -- with this function, called once per
+# directory of internal-only targets (see the two call sites below: one at the
+# bottom of this file for the executables defined directly here, one right
+# after add_subdirectory(bench)). It loops the DIRECTORY's own
+# BUILDSYSTEM_TARGETS property rather than a hand-maintained target-name list,
+# so it self-maintains the same way the SIMD/bench CONFIGURE_DEPENDS globs do:
+# adding a new example/tool/bench executable needs no edit here. INTERFACE
+# libraries (atx-vol-tools, atx-vol-research) are skipped -- they accept only
+# INTERFACE properties -- and the atx-vol library target itself is skipped
+# since it already has its own explicit grant immediately above.
+function(atx_vol_grant_src_include dir)
+    get_property(_atx_vol_targets DIRECTORY "${dir}" PROPERTY BUILDSYSTEM_TARGETS)
+    foreach(_atx_vol_t IN LISTS _atx_vol_targets)
+        if(NOT _atx_vol_t STREQUAL "atx-vol")
+            get_target_property(_atx_vol_t_type ${_atx_vol_t} TYPE)
+            if(NOT _atx_vol_t_type STREQUAL "INTERFACE_LIBRARY")
+                target_include_directories(${_atx_vol_t} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+            endif()
+        endif()
+    endforeach()
+endfunction()
 
 target_compile_features(atx-vol PUBLIC cxx_std_20)
 
@@ -415,6 +485,10 @@ endif()
 #   atx-vol-portfolio-bench  — PricedSurface queries + PortfolioPricer throughput
 if(ATX_BUILD_BENCH)
     add_subdirectory(bench)
+    # bench/ is its own directory scope, so the executables it defines are not
+    # in THIS listfile's BUILDSYSTEM_TARGETS -- grant them the same src/
+    # PRIVATE root separately, once add_subdirectory(bench) has fully run.
+    atx_vol_grant_src_include("${CMAKE_CURRENT_SOURCE_DIR}/bench")
 endif()
 
 # Real-data OPRA parity + throughput benchmark (opt-in via ATX_BUILD_EXAMPLES,
@@ -816,3 +890,13 @@ if(ATX_BUILD_TOOLS)
         target_link_libraries(track_compact PRIVATE atx::vol atx::core atx_warnings)
     endif()
 endif()
+
+# Grant every executable defined directly in THIS file (spx-wilmott-repro-tests
+# plus the full examples/tools set above, whichever of ATX_BUILD_TESTS /
+# ATX_BUILD_EXAMPLES / ATX_BUILD_TOOLS / ATX_VOL_LAKEHOUSE actually built them)
+# the same src/ PRIVATE root atx-vol itself has. Placed at end-of-file, after
+# every add_executable() above, so BUILDSYSTEM_TARGETS reflects the complete
+# set. tests/ is deliberately NOT covered here or by a second call: it is a
+# separate directory scope, and its one target (atx-vol-tests) already grants
+# itself this root explicitly in tests/CMakeLists.txt.
+atx_vol_grant_src_include("${CMAKE_CURRENT_SOURCE_DIR}")

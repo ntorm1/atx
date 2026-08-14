@@ -149,8 +149,21 @@ endif()
 # ---- Public headers ---------------------------------------------------------
 # atx-vol's three include roots plus the two first-party layers its exported
 # targets name. Nothing under tests/ or detail-of-another-module ships.
-install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/atx-vol/include/"
-        DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
+#
+# api-restructure Task 3 (2026-08-14): narrowed from the old blanket
+# `install(DIRECTORY .../atx-vol/include/ DESTINATION ...)` (which copied
+# whatever sat under atx-vol/include/atx/vol/, api/ or not) to exactly the
+# include/atx/vol/api/ subtree Tasks 1-2 made the module-split public surface.
+# The one non-api/ header that still ships is the generated version header
+# immediately below (its own atx/vol/detail/ install, untouched by this
+# narrowing); nothing under src/ or an old-layout atx/vol/detail/*.hpp is
+# reachable from this DIRECTORY root at all, so there is nothing to
+# accidentally leak. atx-vol/tools/include/ and atx-vol/research/include/
+# (further below) are a SEPARATE, pre-existing Tier-B tiering (S4-T18 / plan
+# 4.1, see atx-vol/CMakeLists.txt) outside the 8-module api/ split this task
+# restructures, and are deliberately left as their own install() calls.
+install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/atx-vol/include/atx/vol/api/"
+        DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/atx/vol/api")
 # The one atx-vol header that is generated rather than checked in: plan 5.3's
 # version_generated.hpp, configure_file'd from project(VERSION) into atx-vol's
 # binary dir (atx-vol/CMakeLists.txt). It lands in the same atx/vol/detail/
