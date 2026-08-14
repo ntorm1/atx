@@ -2296,10 +2296,25 @@ Result<MarketSnapshot> MarketSnapshot::load(std::string_view archive_path,
     return Err(ErrorCode::InvalidArgument, "MarketSnapshot::load: archive holds no surfaces");
   }
 
-  // Valuation timestamp: the surfaces of one date agree on now_ts_ns. Read through
-  // whichever backing was populated. A requested subset that matched no uid
-  // intentionally owns no surface; map only the first record to recover its timestamp
-  // without reconstructing/materializing the full board.
+  // Valuation timestamp: the surfaces of one date agree on now_ts_ns, and BOTH
+  // branches below enforce that rather than assume it.
+  //
+  // The two branches differ in WHAT they can read, and that difference is worth
+  // stating because it is not the one it looks like. `subset_missed` is not
+  // "a subset was loaded"; it is `subset_requested && !loaded_subset`, and
+  // `loaded_subset` is `n_surfaces() != 0` -- so this branch owns exactly ZERO
+  // surfaces. A subset that matched anything falls through to the `else`, where
+  // every surface it did load is checked. There is no path on which a loaded
+  // surface goes unverified.
+  //
+  // So the empty branch cannot verify "what it loaded" -- it loaded nothing --
+  // and its only source is the directory. It used to map `dir.front()` and trust
+  // it: one record sampled for a property of the whole archive, with the
+  // verifying loop sitting ten lines below in the sibling branch. It now maps
+  // every entry and requires them to agree, which is the same rule the `else`
+  // applies, over the only set this branch has. The records are views over the
+  // already-mapped archive, so the walk is header reads rather than I/O, and it
+  // runs only when a requested subset matched no uid at all.
   const auto pricing_at = [&](std::size_t i) -> const PricingContext & {
     return borrow ? views[i].pricing() : surfaces[i].pricing();
   };
@@ -2308,11 +2323,19 @@ Result<MarketSnapshot> MarketSnapshot::load(std::string_view archive_path,
     if (dir.empty()) {
       return Err(ErrorCode::InvalidArgument, "MarketSnapshot::load: archive holds no surfaces");
     }
-    auto metadata_record = archive->map_entry(dir.front());
-    if (!metadata_record) {
-      return Err(metadata_record.error());
+    for (std::size_t i = 0; i < dir.size(); ++i) {
+      auto metadata_record = archive->map_entry(dir[i]);
+      if (!metadata_record) {
+        return Err(metadata_record.error());
+      }
+      const std::int64_t entry_ts = metadata_record->view.pricing().now_ts_ns;
+      if (i == 0) {
+        ts = entry_ts;
+      } else if (entry_ts != ts) {
+        return Err(ErrorCode::InvalidArgument,
+                   "MarketSnapshot::load: surfaces disagree on now_ts_ns within a date");
+      }
     }
-    ts = metadata_record->view.pricing().now_ts_ns;
   } else {
     ts = pricing_at(0).now_ts_ns;
     for (std::size_t i = 0; i < n_surfaces(); ++i) {

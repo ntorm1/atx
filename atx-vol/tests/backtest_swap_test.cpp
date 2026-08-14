@@ -1320,3 +1320,92 @@ TEST(BacktestSwapExplain, TheShapeAccessorReadsEveryColumnNotTheFirst) {
            "Present for every index except 0";
   }
 }
+
+
+// ── The zero-surface snapshot's timestamp (fix round 7) ─────────────────────
+//
+// `MarketSnapshot::load` derives one valuation timestamp per date, and the rule
+// is that the surfaces of a date agree on `now_ts_ns`. Two branches produce it,
+// and the difference between them is narrower than it looks:
+//
+//   * `subset_missed` is `subset_requested && !loaded_subset`, and
+//     `loaded_subset` is `n_surfaces() != 0` -- so that branch owns exactly ZERO
+//     surfaces. A subset that matched anything falls through to the other
+//     branch, where every surface it loaded is checked. No LOADED surface has
+//     ever gone unverified.
+//   * The empty branch therefore cannot verify "what it loaded". Its only source
+//     is the archive directory, and it used to map `dir.front()` and trust it --
+//     one record sampled for a property of the whole archive, ten lines from the
+//     loop that verifies the same property properly.
+//
+// It now maps every entry and requires agreement. These tests pin both halves:
+// that a disagreeing archive is refused on the empty path, and that the ordinary
+// empty-subset load still succeeds and still reports the date's timestamp.
+
+namespace {
+
+// Two surfaces in ONE archive, with caller-chosen timestamps so the disagreeing
+// case is constructible through the ordinary writer rather than by corrupting
+// bytes.
+[[nodiscard]] std::string write_two(const fs::path &dir, const std::string &date,
+                                    std::int64_t now_a, std::int64_t now_b) {
+  std::error_code ec;
+  fs::create_directories(dir, ec);
+  const std::string path = (dir / (date + ".atxvsa")).string();
+  const PricedSurface a = make_surface(kUid, 100.0, 100.0, now_a);
+  const PricedSurface b = make_surface(kUid + 1u, 105.0, 105.0, now_b);
+  const SurfaceArchiveItem items[] = {SurfaceArchiveItem{"AAA", &a},
+                                      SurfaceArchiveItem{"BBB", &b}};
+  const Status st = write_surface_archive_v2_file(path, std::span<const SurfaceArchiveItem>{items});
+  EXPECT_TRUE(st.has_value()) << (st.has_value() ? std::string{} : st.error().to_string());
+  return path;
+}
+
+} // namespace
+
+TEST(BacktestSwapExplain, AZeroSurfaceSnapshotRefusesAnArchiveWhoseDatesDisagree) {
+  const fs::path dir = fresh_dir("r7-ts-disagree");
+  // The two surfaces are stamped a full day apart -- a corrupt or mixed archive.
+  const std::string path = write_two(dir, "2026-08-01", kBaseNow, kBaseNow + kDayNs);
+
+  // A uid matching NEITHER surface: `subset_requested && !loaded_subset`, the
+  // zero-surface branch. Before fix round 7 this sampled entry 0 and returned a
+  // snapshot stamped with whichever surface happened to be written first.
+  const std::uint32_t absent[] = {kUid + 9000u};
+  const auto missed = MarketSnapshot::load(path, QueryPricingTier::LegacyCompatible,
+                                           std::span<const std::uint32_t>{absent});
+  ASSERT_FALSE(missed.has_value())
+      << "an archive whose records disagree on now_ts_ns must be refused on the zero-surface "
+         "path too; sampling dir.front() accepted it silently";
+  EXPECT_NE(missed.error().message().find("disagree on now_ts_ns"), std::string::npos)
+      << missed.error().to_string();
+
+  // The sibling branch has always refused this; pinned here so the two are
+  // visibly held to ONE rule rather than to two that happen to agree today.
+  const auto whole = MarketSnapshot::load(path);
+  ASSERT_FALSE(whole.has_value());
+  EXPECT_NE(whole.error().message().find("disagree on now_ts_ns"), std::string::npos)
+      << whole.error().to_string();
+}
+
+TEST(BacktestSwapExplain, AZeroSurfaceSnapshotStillLoadsWhenTheArchiveAgrees) {
+  const fs::path dir = fresh_dir("r7-ts-agree");
+  const std::string path = write_two(dir, "2026-08-01", kBaseNow, kBaseNow);
+
+  // The positive control for the test above: same shape, same zero-surface path,
+  // agreeing timestamps. Without this, "refuses everything" would pass.
+  const std::uint32_t absent[] = {kUid + 9000u};
+  const auto missed = MarketSnapshot::load(path, QueryPricingTier::LegacyCompatible,
+                                           std::span<const std::uint32_t>{absent});
+  ASSERT_TRUE(missed.has_value()) << missed.error().to_string();
+  EXPECT_EQ(missed->n_surfaces(), 0u) << "a subset matching no uid owns no surface, by design";
+  EXPECT_EQ(missed->ts_ns(), kBaseNow) << "and still reports the date it was loaded for";
+
+  // A subset that DOES match goes through the other branch and is verified there.
+  const std::uint32_t present[] = {kUid + 1u};
+  const auto hit = MarketSnapshot::load(path, QueryPricingTier::LegacyCompatible,
+                                        std::span<const std::uint32_t>{present});
+  ASSERT_TRUE(hit.has_value()) << hit.error().to_string();
+  EXPECT_EQ(hit->n_surfaces(), 1u);
+  EXPECT_EQ(hit->ts_ns(), kBaseNow);
+}
