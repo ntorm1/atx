@@ -300,6 +300,59 @@ def roster_columns(source: str, where: str) -> list[str]:
     return found
 
 
+def example_derives_the_explain(source: str, where: str) -> bool:
+    """Does the example still DERIVE its explain tail from the roster?
+
+    THE OPERAND THE ROUND-4 DELETION LOST. Before round 4 this module asserted
+    that the example attached every declared column, and it did that by reading
+    the ten literal attach rows. Driving the loop removed the rows, so there was
+    nothing left to READ -- which is not the same as nothing left to CHECK, and
+    treating it as the same left the emission completely uncovered. Measured:
+    deleting the loop, or `continue`-ing one column inside it, left the whole
+    module green. Nothing else covers it -- the example has no `add_test`,
+    `attach_swap_columns` is in an anonymous namespace, and nothing runs the
+    binary.
+
+    So this reads the loop itself. It must iterate `swap_explain_columns()` and
+    attach every element it yields, with no early exit inside the body: a
+    `continue` or an `if` that skips a column is the same silent hole the literal
+    table had, arrived at from the other side.
+    """
+    lines = source.splitlines()
+    header = None
+    for i, line in enumerate(lines):
+        if "swap_explain_columns()" in line and line.strip().startswith("for "):
+            header = i
+            break
+    if header is None:
+        raise AssertionError(
+            f"{where}: no `for (... : swap_explain_columns())` loop in {len(lines)} lines "
+            "scanned. The explain tail must be DERIVED from the roster; a literal list "
+            "here is the fifth copy of it coming back, and an absent loop is a TSV with "
+            "no attribution at all."
+        )
+    body: list[str] = []
+    depth = 0
+    for line in lines[header:]:
+        depth += line.count("{") - line.count("}")
+        body.append(line.strip())
+        if depth <= 0 and len(body) > 1:
+            break
+    joined = " ".join(body)
+    if "attach_one" not in joined:
+        raise AssertionError(
+            f"{where}: the roster loop does not call `attach_one`, so it emits nothing: "
+            f"`{joined}`"
+        )
+    for escape in ("continue", "break", "return"):
+        if escape in joined:
+            raise AssertionError(
+                f"{where}: the roster loop body contains `{escape}`, so it can skip a "
+                f"column the roster yields and the TSV would silently lose it: `{joined}`"
+            )
+    return True
+
+
 def example_attached_columns(source: str, where: str) -> list[str]:
     """The signal columns the example HAND-LISTS, in emitted order.
 
@@ -348,6 +401,9 @@ def example_attached_columns(source: str, where: str) -> list[str]:
 EXPLAIN_COLUMNS = declared_explain_columns(_HEADER.read_text(encoding="utf-8"), str(_HEADER))
 EXPLAIN_FLOW_COLUMNS = identity_flow_columns(_HEADER.read_text(encoding="utf-8"), str(_HEADER))
 ROSTER_COLUMNS = roster_columns(_ROSTER.read_text(encoding="utf-8"), str(_ROSTER))
+EXAMPLE_DERIVES = example_derives_the_explain(
+    _EXAMPLE.read_text(encoding="utf-8"), str(_EXAMPLE)
+)
 # What the example HAND-LISTS. Since fix round 4 that is only the two lead
 # columns; the explain tail is a loop over the roster.
 DRIVER_SIGNAL_COLUMNS = example_attached_columns(
@@ -563,6 +619,15 @@ class ColumnDerivationTests(unittest.TestCase):
             "change; it is blind to a reorder, which is why this compares lists.",
         )
 
+    def test_the_example_still_derives_its_explain_tail_from_the_roster(self) -> None:
+        # C-1. The round-4 deletion removed an assertion whose OPERAND had gone
+        # away, and treated that as the property having gone away. It had not:
+        # nothing then covered whether the example emits the explain at all.
+        # Deleting the deriving loop, or skipping one column inside it, left this
+        # module green and silent. `example_derives_the_explain` raises by name
+        # on both, so this call IS the assertion.
+        self.assertTrue(EXAMPLE_DERIVES)
+
     def test_the_example_hand_lists_no_explain_column(self) -> None:
         # The unification's anti-regression. The example attaches the two lead
         # columns literally and derives the rest; a literal `swap_explain_*` row
@@ -659,6 +724,37 @@ class ColumnDerivationTests(unittest.TestCase):
             roster_columns(source, "fake.cpp")
 
         self.assertIn("roster names ['swap_explain_carry'] more than once", str(caught.exception))
+
+    def test_an_example_that_stops_deriving_the_explain_is_a_named_failure(self) -> None:
+        with self.assertRaises(AssertionError) as caught:
+            example_derives_the_explain("int main() { return 0; }\n", "fake.cpp")
+
+        self.assertIn("no `for (... : swap_explain_columns())` loop", str(caught.exception))
+
+    def test_a_roster_loop_that_can_skip_a_column_is_a_named_failure(self) -> None:
+        source = (
+            "  for (const BacktestExplainColumn &c : swap_explain_columns()) {\n"
+            '    if (c.name == "swap_explain_skew") { continue; }\n'
+            "    ATX_TRY_VOID(attach_one(r, c.name, r.*(c.member)));\n"
+            "  }\n"
+        )
+
+        with self.assertRaises(AssertionError) as caught:
+            example_derives_the_explain(source, "fake.cpp")
+
+        self.assertIn("contains `continue`", str(caught.exception))
+
+    def test_a_roster_loop_that_attaches_nothing_is_a_named_failure(self) -> None:
+        source = (
+            "  for (const BacktestExplainColumn &c : swap_explain_columns()) {\n"
+            "    (void)c;\n"
+            "  }\n"
+        )
+
+        with self.assertRaises(AssertionError) as caught:
+            example_derives_the_explain(source, "fake.cpp")
+
+        self.assertIn("does not call `attach_one`", str(caught.exception))
 
     def test_an_attach_row_whose_column_renames_its_field_is_a_named_failure(self) -> None:
         source = '  ATX_TRY_VOID(attach_one(r, "swap_explain_carry", r.swap_explain_realized));\n'

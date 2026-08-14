@@ -1316,30 +1316,44 @@ struct BacktestResult {
 // Three ways of counting by hand, three different answers, and the build settles
 // it in one compile.
 //
-// WHEN THIS FIRES, here is every site that needs the new column. Re-derived by
-// enumeration each round it changes -- it said "three places" in round 2 and was
-// wrong, and round 4 removed one of the sites entirely, so it is a list that has
-// to be re-walked rather than edited in place.
+// WHEN THIS FIRES: the HAND EDITS a ninth `swap_explain_*` column needs, and
+// what stops the build if you skip each. Seven, enumerated by walking the tree
+// rather than by editing the previous list -- which said three, then five, then
+// four, and the reviewer's diagnosis of that is worth keeping: those were never
+// one number drifting, they were three different questions being counted.
 //
-//   1. `kSwapExplainColumns` (src/backtest.cpp), for a `swap_explain_*` column,
-//      AND its `SwapExplainIx` enum. Everything else C++-side is driven from
-//      that roster -- `validate()`, `push_row`, both `backtest_db.cpp` shape
-//      rules, and the example's attach loop -- so those five need nothing. The
-//      per-index `static_assert`s beside the table pin each row to its own
-//      member, so a reorder is a build error; nothing ties the roster to THESE
-//      declarations except the pin below.
-//   2. `BacktestResult::validate()`'s own column checks, for any OTHER optional
-//      column (one not on the explain roster).
-//   3. `kNaNSlots` (tests/scenario_grid_test.cpp) if the new field is a `double`
-//      on `DerivGreeks` rather than a `BacktestResult` column -- different
-//      struct, same failure mode, and that list must name every double member
-//      whether the kernel reads it or not.
-//   4. Nothing on the Python side, and nothing in the example. Fix round 4 drove
-//      `attach_swap_columns` from the roster and repointed the gate's parser at
-//      the roster too, so an APPENDED column flows to the TSV untouched. A
-//      RENAME or a REORDER still breaks
-//      `test_the_roster_and_the_header_declare_the_same_explain_in_the_same_order`,
-//      which is that test working, not that test being wrong.
+//   1. The `std::vector<double>` declaration above.  -> nothing fires; this pin
+//      is what notices, which is why it exists.
+//   2. This pin's own count.                          -> the assert below.
+//   3. The identity comment above -- the one whose right-hand side is
+//      `swap_pnl` -- if the new column is a dollar flow rather than the counter.
+//      -> the Python renderer derives its summands from that comment, and
+//      `_explain_counter` fails by name if the leftover is not exactly one
+//      column. Worded WITHOUT quoting the identity operator on purpose:
+//      `identity_flow_columns` requires exactly one comment line carrying it,
+//      and an earlier draft of this bullet was a second one. It caught that.
+//   4. `SwapExplainIx` (src/backtest.cpp).            -> the roster/enum size
+//      `static_assert`.
+//   5. `kSwapExplainColumns` (src/backtest.cpp).      -> same size assert.
+//   6. `explain_member_for`'s switch (src/backtest.cpp). -> -Wswitch under /WX,
+//      AND `roster_rows_match_their_indices()`. Two stops; before fix round 5
+//      this was the SILENT one, because the per-index pins were eight
+//      hand-written asserts that said nothing about a ninth row.
+//   7. `accumulate_swap_explain` (src/backtest.cpp), to actually compute the new
+//      component, plus its field on `DerivPnlExplain`. -> `DerivPnlExplain`'s
+//      own arity pin.
+//
+// SEVEN FUNCTIONS CONSUME THE ROSTER AND NEED NOTHING, because each is a loop
+// over `swap_explain_columns()`: `BacktestResult::validate()`, `push_row`
+// (src/backtest.cpp), `validate_result_shape`, `result_has_explain_data`,
+// `validate_series_data`, `append_backtest_results` (src/backtest_db.cpp), and
+// `attach_swap_columns` (examples/varswap_compare_example.cpp). That is the
+// property the roster buys; it is NOT the same set as the list above, and
+// conflating the two is how the earlier counts disagreed.
+//
+// A `double` added to `DerivGreeks` instead is a different struct with the same
+// failure mode: `kNaNSlots` (tests/scenario_grid_test.cpp) must name every
+// double member, read by the scenario kernel or not.
 //
 // `aggregate_arity_is_v` counts brace initializers and is BLIND TO A REORDER, so
 // this pin is not a substitute for care about field order.
@@ -1395,15 +1409,6 @@ struct BacktestExplainColumn {
 // idiom for single-sourcing a column roster, and adding a second idiom to
 // remove a duplicated list is a duplicated rule one level up.
 [[nodiscard]] std::span<const BacktestExplainColumn> swap_explain_columns() noexcept;
-
-// The roster's size, as a CONSTANT EXPRESSION. `swap_explain_columns()` returns
-// a runtime span, so nothing that needs the count at compile time can get it
-// from there. Its original caller -- the example's hand-written mirror -- is
-// gone as of fix round 4, driven from the roster instead; this is kept because
-// `src/backtest.cpp` static_asserts the roster against it, which is what stops
-// the two views of the size drifting, and because a future compile-time consumer
-// should not have to reintroduce it.
-[[nodiscard]] constexpr std::size_t swap_explain_column_count() noexcept { return 8u; }
 
 // One entry in the engine's insertion-ordered delta-hedge share ledger. Order is
 // economically significant: share P&L, financing, and subsequent hedge trades

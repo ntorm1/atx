@@ -957,35 +957,53 @@ constexpr BacktestExplainColumn kSwapExplainColumns[] = {
 };
 static_assert(std::size(kSwapExplainColumns) == kSwapExplainCount,
               "the explain roster and its index enum must name the same columns");
-// The header's constant-expression view of the same size.
-static_assert(std::size(kSwapExplainColumns) == swap_explain_column_count(),
-              "swap_explain_column_count() must equal the roster it describes");
-
-// Each index pinned to its OWN member, which is the part a size check cannot
-// do. Member pointers are constant expressions, so this is free and total: swap
-// two rows of the table above without swapping the enum and the build stops
-// here, naming the index that moved.
+// Each index pinned to its OWN member, which is the part a size check cannot do.
+//
+// STRUCTURAL, not eight hand-written asserts (fix round 5, I-2). The eight-assert
+// version pinned the eight rows that existed and said nothing about a ninth: add
+// a row pointing at `&BacktestResult::swap_pv`, bump the count, and it compiled
+// clean at /WX. "A reorder cannot compile" was true of that table, not of the
+// rule -- the distinction this sprint keeps paying for.
+//
+// The `switch` is what makes it total. An enumerator with no case is a -Wswitch
+// diagnostic, which is an error under /WX, so a ninth column cannot reach the
+// roster without declaring which member it is; and if it somehow did,
+// `explain_member_for` returns nullptr for it and the walk below fails. Two
+// independent stops for one omission, neither needing anyone to remember to add
+// an assert.
 //
 // What this still cannot see is the NAME STRING beside each member -- C++ has no
 // reflection, so `{"swap_explain_skew", &BacktestResult::swap_explain_convexity}`
 // compiles and mislabels a TSV column. That one check is text, and it is the
-// reason the Python gate parses this table: see
-// `roster_columns` in python/tests/test_render_strangle_vs_varswap.py.
-static_assert(kSwapExplainColumns[kExCarry].member == &BacktestResult::swap_explain_carry, "");
-static_assert(kSwapExplainColumns[kExRealized].member == &BacktestResult::swap_explain_realized,
-              "");
-static_assert(kSwapExplainColumns[kExVolLevel].member == &BacktestResult::swap_explain_vol_level,
-              "");
-static_assert(kSwapExplainColumns[kExSkew].member == &BacktestResult::swap_explain_skew, "");
-static_assert(kSwapExplainColumns[kExConvexity].member == &BacktestResult::swap_explain_convexity,
-              "");
-static_assert(kSwapExplainColumns[kExDiscount].member == &BacktestResult::swap_explain_discount,
-              "");
-static_assert(kSwapExplainColumns[kExResidual].member == &BacktestResult::swap_explain_residual,
-              "");
-static_assert(kSwapExplainColumns[kExUnattributed].member ==
-                  &BacktestResult::swap_explain_unattributed,
-              "");
+// reason the Python gate parses this table: see `roster_columns` in
+// python/tests/test_render_strangle_vs_varswap.py.
+[[nodiscard]] constexpr std::vector<double> BacktestResult::*explain_member_for(
+    SwapExplainIx ix) noexcept {
+  switch (ix) {
+  case kExCarry: return &BacktestResult::swap_explain_carry;
+  case kExRealized: return &BacktestResult::swap_explain_realized;
+  case kExVolLevel: return &BacktestResult::swap_explain_vol_level;
+  case kExSkew: return &BacktestResult::swap_explain_skew;
+  case kExConvexity: return &BacktestResult::swap_explain_convexity;
+  case kExDiscount: return &BacktestResult::swap_explain_discount;
+  case kExResidual: return &BacktestResult::swap_explain_residual;
+  case kExUnattributed: return &BacktestResult::swap_explain_unattributed;
+  case kSwapExplainCount: break; // the sentinel, not a column
+  }
+  return nullptr;
+}
+
+[[nodiscard]] constexpr bool roster_rows_match_their_indices() noexcept {
+  for (std::size_t i = 0; i < kSwapExplainCount; ++i) {
+    if (kSwapExplainColumns[i].member != explain_member_for(static_cast<SwapExplainIx>(i))) {
+      return false;
+    }
+  }
+  return true;
+}
+static_assert(roster_rows_match_their_indices(),
+              "a roster row does not carry the member its SwapExplainIx names -- the table was "
+              "reordered without the enum, or a new row has no case in explain_member_for");
 
 // One step's swap-lane economics, in QTY-SCALED position dollars.
 struct SwapStepResult {

@@ -1726,8 +1726,12 @@ TEST(ScenarioGridDeriv, TaylorAndExactAgreeAcrossTheKindSpace) {
 //     the `has_dt -> theta` gate gives exactly 1 mismatch of 64, at mask 4.
 //   * a term in the predicate but not in the kernel; the equality fails the
 //     other way.
-//   * an UNGATED term on any field -- the kernel then reads at mask 0, where the
-//     predicate must say "demands nothing".
+//   * an UNGATED term on any `double` member of `DerivGreeks` -- the kernel then
+//     reads at mask 0, where the predicate must say "demands nothing". This is
+//     true only because the fixture below sets all THIRTEEN doubles to NaN; with
+//     the ten the kernel reads it was false for the three it does not, and
+//     measurably so (ungated-`pv`: 0/64). `quote`'s nested doubles are still
+//     outside it, for the same reason `kNaNSlots` cannot hold them.
 //   * a term needing a NEW shock field -> `ScenarioDerivSpec`'s arity pin.
 //   * a term needing a NEW `DerivGreeks` field -> the static_assert below.
 //
@@ -1770,6 +1774,19 @@ TEST(ScenarioGridDeriv, TheKernelAndItsSufficiencyPredicateAgreeOnAll64ShockComb
   all_nan.charm = nan;
   all_nan.skew_vega = nan;
   all_nan.convexity_vega = nan;
+  // EVERY double member, not just the ten the kernel reads -- the same
+  // correction `kNaNSlots` needed, applied here in fix round 5 after it was
+  // condemned ninety lines below and left standing here.
+  //
+  // With only the ten set, this harness inherited its reach from `DerivGreeks`'
+  // DEFAULTS: `theta_carry`/`theta_zero_fixing` are `kQuietNaN`-defaulted so an
+  // ungated term on them was caught, while `pv` defaults to `0.0` so an ungated
+  // term on IT was not. MEASURED: ungated-`pv` scored 0/64 (missed entirely),
+  // ungated-`theta_carry` scored 1/64 at mask 0. Setting all thirteen takes
+  // ungated-`pv` to 1/64 at mask 0 and leaves the shipped kernel at 0/64.
+  all_nan.pv = nan;
+  all_nan.theta_carry = nan;
+  all_nan.theta_zero_fixing = nan;
 
   // Deliberately NOT all 1.0: a shock of 1.0 on every axis would let a missing
   // multiplication hide. These are distinct, none is a power of two, and none
