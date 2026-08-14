@@ -24,6 +24,45 @@ hand-written copies, established bit-for-bit against the pre-unification
 arithmetic) and `8cf6951` (one ns-per-year constant in place of four,
 bit-exact and now `static_assert`ed). Neither has an entry, deliberately.
 
+### Added — surface dynamics: `SurfaceOverlay` / `StickyMode`, `DerivPnlExplain`, and a scenario deriv leg (FIT-F4 / GK-G4 / GK-G5 / LIT-8, Task F-8)
+
+NO EXISTING NUMBER MOVES. Three new public surfaces, one of them a refactor of
+shipped internals whose bit-identity is the entry's main content.
+
+**`atx/vol/surface_overlay.hpp` (Tier-B).** `SurfaceOverlay<SurfaceT>` is a
+non-owning view over any `iv(k, T)` source with
+`{vol_shift, skew_shift, convexity_shift, k_shift, term_scale}`, plus
+`StickyMode` and `sticky_k_shift(mode, spot_rel)`. Before this there was no way
+to say "the same surface, seen from 1% higher spot" without refitting, and
+`derivatives.cpp` carried three private views doing exactly that, kept in step
+by hand. Those three are now one composition over this type. Sticky-strike is
+`k_shift = +ln(1+h)`: with `k = ln(K/F)` a spot move scales `F` by `(1+h)`, so a
+fixed strike sits at `k - ln(1+h)` and reading its unchanged vol means
+evaluating the base at `k + ln(1+h)`.
+
+MIGRATION: none. `deriv_greeks` / `deriv_price` / `price_deriv_book` return
+bit-identical values across 6084 dumped bit patterns (all 14 `DerivGreeks`
+fields plus 14 centre-quote diagnostics, over 2 surfaces x 5 kinds x 4 bump
+configs x aged/fresh x cached/uncached, plus the deriv-book memo lane), byte-
+compared before and after. `kMinSmileShiftedIv` and `floor_smile_iv` moved from
+`derivatives.cpp`'s anonymous namespace into this header unchanged.
+
+**`atx/vol/deriv_pnl.hpp` (Tier-B).** `deriv_pnl_explain` decomposes a swap
+position's two-date mark move into carry, realized, vol level, skew, convexity
+and discount, leaving everything else in a visible residual. It holds no
+surface and calls no pricer; `var_swap_fixing_weight` supplies the linear
+variance leg's per-fixing sensitivity and returns NaN for every kind that has
+no constant one. An unavailable sensitivity yields a NaN component, a
+`DerivPnlFlags` bit naming it, and a poisoned residual -- never a zero.
+
+**`scenario_grid` deriv overload.** Takes a `DerivPosition` book alongside the
+option book and fills `ScenarioGridResult::deriv_pnl` / `deriv_route` /
+`n_deriv_*`. `ScenarioDerivSpec` adds `d_skew` / `d_convexity` scalars applied
+to every cell. `ScenarioGridResult` gained five fields, all EMPTY or zero on the
+option-only overload, whose per-cell output is byte-identical to before.
+`detail::deriv_price_shocked_on_ref` (+ `detail::DerivShock`) is the Exact
+cell's repricing: a sticky-strike respot with no smile roll.
+
 ### Added — the single-name return convention: `RealizedTracker::set_dividend_adjustment` and a three-argument `observe_dated` (PV feature list / LIT-9, Task F-6)
 
 `RealizedVarianceSpec::include_dividend_adjustment` shipped from the C port
