@@ -34,6 +34,7 @@
 #include "atx/vol/api/fitting/session.hpp"              // VolaSession::to_priced_surface
 #include "atx/vol/api/marketdata/universe.hpp"             // uid_for_symbol
 #include "marketdata/corpus_board_fit.hpp"             // FitSlot, fit_board (T5-extracted shared fit path)
+#include "marketdata/corpus_detail.hpp"                 // detail::CorpusFitTestHooks
 
 namespace atx::vol {
 
@@ -578,7 +579,7 @@ struct InnerBudgetTicket {
   const std::atomic<std::size_t> *unfinished{nullptr}; // outer tasks still running
   unsigned outer_budget{1};
   std::size_t board_index{0};
-  const CorpusFitTestHooks *hooks{nullptr};
+  const detail::CorpusFitTestHooks *hooks{nullptr};
   std::atomic<bool> reclaimed{false}; // this board was offered > 1 at least once
 };
 
@@ -710,10 +711,10 @@ build_corpus_core(std::span<const CorpusBoard> boards, std::string_view out_dir,
   std::atomic<std::size_t> unfinished_tasks{0};
   // Decrements `unfinished_tasks` on scope exit — after the task's fit has been
   // written to its slot, and even if that fit throws.
-  const CorpusFitTestHooks *const hooks = cfg.test_hooks; // null in production
+  const detail::CorpusFitTestHooks *const hooks = cfg.test_hooks; // null in production
   struct TaskDone {
     std::atomic<std::size_t> &counter;
-    const CorpusFitTestHooks *hooks;
+    const detail::CorpusFitTestHooks *hooks;
     std::size_t task_index;
     ~TaskDone() {
       const std::size_t left = counter.fetch_sub(1u, std::memory_order_acq_rel) - 1u;

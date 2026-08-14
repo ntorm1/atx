@@ -310,23 +310,13 @@ struct CorpusManifest {
 // (surface_db_populate.hpp): a raw, defaulted-null pointer on the config, never
 // dereferenced unless a test installs it, and never consulted on any path that
 // can reach an output byte. Production leaves it null.
-struct CorpusFitTestHooks {
-  // Once per INNER FAN-OUT of `boards[board_index]` on the across-board parallel
-  // arm — i.e. every time that board's inner fit-worker budget is resolved, not
-  // once per board. `unfinished` is the live outer unfinished-task count the
-  // budget was resolved against; `workers` is the budget offered.
-  //
-  // Called ON THE BOARD'S OWN FIT THREAD, so a test may block here to hold a
-  // board in flight while its siblings drain.
-  std::function<void(std::size_t board_index, std::size_t unfinished, unsigned workers)>
-      on_inner_fit_workers{};
-  // After `boards[board_index]`'s fit has completed and the outer unfinished
-  // counter has been decremented; `unfinished` is the post-decrement value, so
-  // `unfinished == 1` means this board's completion left exactly one task
-  // standing. Lets a test wait for a deterministic drain state instead of
-  // sleeping.
-  std::function<void(std::size_t board_index, std::size_t unfinished)> on_board_fit_done{};
-};
+//
+// Split out of this public header (Task 6, atx-vol API restructure): its
+// repo-wide production use is confined to corpus.cpp's own TU; see
+// src/marketdata/corpus_detail.hpp for the full definition.
+namespace detail {
+struct CorpusFitTestHooks;
+} // namespace detail
 
 // ── Build policy ────────────────────────────────────────────────────────────
 struct CorpusConfig {
@@ -375,8 +365,8 @@ struct CorpusConfig {
   // The referenced flag must outlive the build call.
   CancelToken cancel{};
   // Test-only; null in production. Non-owning — the pointee must outlive the
-  // build call. See CorpusFitTestHooks.
-  const CorpusFitTestHooks *test_hooks{nullptr};
+  // build call. See detail::CorpusFitTestHooks.
+  const detail::CorpusFitTestHooks *test_hooks{nullptr};
 };
 
 struct QualifiedCorpusConfig {

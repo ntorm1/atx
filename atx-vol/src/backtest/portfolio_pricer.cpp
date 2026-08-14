@@ -29,6 +29,7 @@
 #include "backtest/prepared_portfolio.hpp" // PreparedPortfolio (grouped exec substrate)
 #include "atx/vol/api/pricing/pricing_executor.hpp"   // pricing_executor(): the persistent P1.4 pool
 #include "atx/vol/api/simd/american_boundary_batch.hpp" // simd::avx2_boundary_selected (invariant tile-schedule gate)
+#include "backtest/portfolio_pricer_detail.hpp" // detail::portfolio_index_count_is_representable
 #include "simd/pnl_batch.hpp"     // simd::pnl_taylor_explain_batch (wiring finding 1)
 
 namespace atx::vol {

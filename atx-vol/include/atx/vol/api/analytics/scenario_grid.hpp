@@ -82,17 +82,10 @@
 
 namespace atx::vol {
 
-namespace detail {
-
-// Allocation-free sizing seam used by scenario_grid for every multiplied shape
-// (result cells, compact exact-price lanes, and executor tasks). Public only so
-// overflow boundaries can be pinned without attempting pathological allocations.
-[[nodiscard]] constexpr bool scenario_grid_product_is_representable(std::size_t lhs,
-                                                                    std::size_t rhs) noexcept {
-  return lhs == 0u || rhs <= (std::numeric_limits<std::size_t>::max)() / lhs;
-}
-
-} // namespace detail
+// scenario_grid_product_is_representable (the allocation-free sizing seam used
+// by scenario_grid for every multiplied shape) is split out of this public
+// header (Task 6, atx-vol API restructure): its repo-wide production use is
+// confined to scenario_grid.cpp's own TU. See src/analytics/scenario_grid_detail.hpp.
 
 // ── Taylor↔Exact routing (C3.2) ──────────────────────────────────────────────
 //

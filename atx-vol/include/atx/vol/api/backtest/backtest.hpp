@@ -30,7 +30,6 @@
 // each step's `Portfolio` at the BASE-date residual T = (expiry - base.ts)/year;
 // because the lot's `expiry_ts_ns` is fixed, `T_base - dt == T_shifted` exactly.
 
-#include <cmath> // std::isfinite — should_exercise_early
 #include <cstddef>
 #include <cstdint>
 #include <functional> // std::function — RunConfig::step_observer
@@ -641,11 +640,10 @@ enum class ExercisePolicy : std::uint8_t {
 // Exercise/assignment is optimal exactly when the remaining time value is
 // LESS than what early action would capture; a non-finite or non-positive
 // threshold never fires (there is nothing to capture).
-[[nodiscard]] inline bool should_exercise_early(double intrinsic, double extension_value,
-                                                double threshold) noexcept {
-  return intrinsic > 0.0 && std::isfinite(extension_value) && extension_value >= 0.0 &&
-         std::isfinite(threshold) && threshold > 0.0 && extension_value < threshold;
-}
+//
+// `should_exercise_early` is split out of this public header (Task 6, atx-vol
+// API restructure): its repo-wide production use is confined to backtest.cpp's
+// own TU. See src/backtest/backtest_detail.hpp.
 
 // ── Execution frictions + financing (Phase B2) ───────────────────────────────
 

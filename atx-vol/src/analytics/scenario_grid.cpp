@@ -25,6 +25,7 @@
 #include "atx/vol/api/backtest/priced_surface.hpp"   // PricedSurface, PricingContext
 #include "atx/vol/api/pricing/pricing_executor.hpp" // pricing_executor(): the shared P1.4 pool
 
+#include "analytics/scenario_grid_detail.hpp" // detail::scenario_grid_product_is_representable
 #include "pricing/american_boundary.hpp" // amer:: boundary seam (A7 spot-axis reuse)
 
 namespace atx::vol {

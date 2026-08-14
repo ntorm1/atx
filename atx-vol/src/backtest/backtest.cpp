@@ -25,6 +25,7 @@
 #include "atx/core/error.hpp"
 // BevDayState, BevSpec, BevReplayConfig, BevReplayResult, bev_replay_pnl (THEO-2)
 #include "analytics/breakeven.hpp"
+#include "backtest/backtest_detail.hpp" // detail::should_exercise_early
 #include "backtest/backtest_series_columns.hpp" // the 25 {name, member} series columns
 #include "fitting/counters.hpp"      // counters::ledger — V1 always-on solve ledger (per-step scrape)
 #include "pricing/deriv_ref_bridge.hpp" // detail::deriv_price_on_ref — swap-lot marks
@@ -2554,7 +2555,7 @@ apply_early_exercise(const MarketSnapshot &base, const MarketSnapshot &shifted,
       continue;
     }
     const double extension = *mark_res - intrinsic;
-    if (!should_exercise_early(intrinsic, extension, threshold)) {
+    if (!detail::should_exercise_early(intrinsic, extension, threshold)) {
       keep_lot(read);
       continue;
     }

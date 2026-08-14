@@ -35,6 +35,7 @@
 #include "pricing/adjoint_greeks.hpp" // american_greeks_adjoint — FIX-5/I1 probe
 #include "fitting/counters.hpp"
 #include "atx/vol/api/backtest/portfolio_pricer.hpp"
+#include "backtest/portfolio_pricer_detail.hpp" // detail::portfolio_index_count_is_representable
 #include "atx/vol/api/backtest/priced_surface.hpp"
 #include "atx/vol/api/simd/cpu.hpp"  // simd::have_avx2 — ship-gate route expectations
 #include "support/isa_golden_tol.hpp"

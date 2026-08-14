@@ -54,6 +54,7 @@
 #include "atx/vol/api/core/chain.hpp"                // OptionChain
 #include "atx/vol/api/marketdata/corpus.hpp"               // build_corpus, CorpusManifest, ...
 #include "atx/vol/api/marketdata/data.hpp"                 // iso_to_ns, year_fraction
+#include "marketdata/corpus_detail.hpp"                     // detail::CorpusFitTestHooks
 #include "fitting/fit_scheduler.hpp" // run_bounded_fit_tasks
 #include "atx/vol/api/backtest/dispersion.hpp"           // DispersionUniverse, DroppedName
 #include "atx/vol/research/dispersion_run.hpp"       // format_corpus_phase_line (T-I4 probe gate)
@@ -617,7 +618,7 @@ TEST(CorpusCancellation, CancelledBuildPublishesNoManifestAndTheRerunSucceeds) {
   // (corpus.cpp `resolve_inner_budget`), so a board whose fit task returned
   // before reaching `fit_board` contributes nothing to it.
   std::atomic<std::size_t> fits_started{0};
-  CorpusFitTestHooks hooks;
+  detail::CorpusFitTestHooks hooks;
   hooks.on_inner_fit_workers = [&fits_started](std::size_t, std::size_t, unsigned) {
     fits_started.fetch_add(1u, std::memory_order_relaxed);
   };
@@ -1917,7 +1918,7 @@ namespace {
 [[nodiscard]] Result<QualifiedCorpusManifest>
 build_batched(const fs::path &out, const std::vector<std::string> &dates, std::size_t per_flush,
               unsigned n_threads, std::int64_t created_ts = 1, bool scrub = true,
-              const CorpusFitTestHooks *hooks = nullptr) {
+              const detail::CorpusFitTestHooks *hooks = nullptr) {
   QualifiedCorpusConfig cfg;
   cfg.build.n_threads = n_threads;
   cfg.build.test_hooks = hooks;
@@ -2207,7 +2208,7 @@ TEST(CorpusBuildSession, StragglerReclaimsInnerWorkersWhileStillRunning) {
   std::vector<unsigned> straggler_offers; // guarded by mu
   std::vector<std::size_t> straggler_left;
 
-  CorpusFitTestHooks hooks;
+  detail::CorpusFitTestHooks hooks;
   hooks.on_board_fit_done = [&](std::size_t, std::size_t unfinished) {
     if (unfinished > 1u) {
       return; // somebody other than the straggler is still running
@@ -2277,7 +2278,7 @@ TEST(CorpusBuildSession, SaturatedFanOutOffersOneWorkerUntilItDrains) {
   std::mutex mu;
   std::vector<std::pair<std::size_t, unsigned>> offers; // (unfinished, workers)
   std::map<std::size_t, std::size_t> per_board;         // board -> resolutions
-  CorpusFitTestHooks hooks;
+  detail::CorpusFitTestHooks hooks;
   hooks.on_inner_fit_workers = [&](std::size_t board, std::size_t unfinished, unsigned workers) {
     const std::lock_guard<std::mutex> lk(mu);
     offers.emplace_back(unfinished, workers);

@@ -35,6 +35,7 @@
 #include "atx/vol/api/backtest/portfolio_pricer.hpp"
 #include "atx/vol/api/backtest/priced_surface.hpp"
 #include "atx/vol/api/analytics/scenario_grid.hpp"
+#include "analytics/scenario_grid_detail.hpp" // detail::scenario_grid_product_is_representable
 #include "atx/vol/api/fitting/vol_curve.hpp"
 
 using namespace atx::vol;
