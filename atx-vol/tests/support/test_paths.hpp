@@ -28,6 +28,7 @@
 // rather than probing from a call site; a second mechanism is how the first one
 // rotted.
 
+#include <algorithm>
 #include <filesystem>
 #include <string>
 #include <system_error>
@@ -53,6 +54,26 @@ namespace detail {
 }
 
 } // namespace detail
+
+// True when `child` is `parent` or resolves beneath it.
+//
+// NORMALISES FIRST, then compares COMPONENTS. Both halves are load-bearing and
+// both were learned from a defect:
+//
+//   * Normalise, because a path is recognised by where it RESOLVES, not by how
+//     it is spelled. "<root>/../../atx/x" is spelled as if it were under <root>
+//     and resolves outside it -- which is how a text-prefix check was talked
+//     into re-admitting the very cross-checkout path this sprint removed.
+//   * Compare components, because "C:/atx" is a CHARACTER-prefix of
+//     "C:/atx-wt/pool-7" while being no parent of it, so a starts_with test
+//     calls a forbidden checkout "inside this worktree".
+[[nodiscard]] inline bool path_is_under(const std::filesystem::path &child,
+                                        const std::filesystem::path &parent) {
+  const std::filesystem::path c = detail::normalized(child);
+  const std::filesystem::path p = detail::normalized(parent);
+  const auto it = std::mismatch(p.begin(), p.end(), c.begin(), c.end());
+  return it.first == p.end();
+}
 
 // Absolute path of atx-vol/tests/.
 [[nodiscard]] inline std::filesystem::path tests_root() {

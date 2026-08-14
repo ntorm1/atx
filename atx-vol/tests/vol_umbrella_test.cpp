@@ -3,6 +3,7 @@
 #include <cctype>
 #include <cstddef>
 #include <filesystem>
+#include <sstream>
 #include <fstream>
 #include <iterator>
 #include <set>
@@ -613,74 +614,213 @@ constexpr std::string_view kCurrentPathExempt[] = {
 // Exempting this file by name instead would be worse: it is a *_test.cpp like
 // any other and must be policed like one.
 struct PathNeedles {
-  std::string ladder;       // a parent-directory rung opening a literal
-  std::string file_macro;   // a path derived from the compiler's file macro
-  std::string cwd_call;     // an explicit working-directory read/change
-  std::string accepted_abs; // the ONE blessed absolute root (see below)
+  std::string file_macro;    // a path derived from the compiler's file macro
+  std::string cwd_call;      // an explicit working-directory read/change
+  std::string accepted_root; // the ONE blessed absolute root (see below)
 
   static PathNeedles make() {
     PathNeedles n;
-    n.ladder = std::string("\"..") + "/";
     n.file_macro = std::string("__FI") + "LE__";
     n.cwd_call = std::string("current_") + "path(";
-    // Every absolute literal in atx-vol today names this external vendor hive,
-    // which sits OUTSIDE any checkout. Stated as a positive allowance rather
-    // than a per-file allowlist so that a path into a *sibling worktree* fails
-    // wherever it is written. The previous sweeps searched for "C:/atx/" WITH
-    // the trailing slash, which is precisely what excluded C:/atx-wt/... --
-    // a pattern shaped by the last defect inherits that defect's blind spot.
-    n.accepted_abs = std::string("\"C:") + "/atx-data/";
+    // Every absolute literal in atx-vol today resolves inside this external
+    // vendor hive, which sits OUTSIDE any checkout. Stated as a positive
+    // allowance rather than a per-file allowlist so a path into a sibling
+    // worktree fails wherever it is written -- the earlier sweeps searched for
+    // "C:/atx/" WITH the trailing slash, and that slash is precisely what
+    // excluded C:/atx-wt/... . A pattern shaped by the last defect inherits
+    // that defect's blind spot.
+    //
+    // It is a ROOT, not a prefix: membership is decided by normalising the
+    // literal and comparing components (testkit::path_is_under), so a traversal
+    // out of it cannot be spelled back in.
+    n.accepted_root = std::string("C:") + "/atx-data";
     return n;
   }
 };
 
-// True when a string literal beginning at `q` (the opening quote) is an
-// absolute path: a drive-letter root (`"C:/`, `"D:\`) or a rooted/UNC backslash
-// (`"\\` in source, i.e. an escaped backslash). Names no particular drive or
-// checkout, so it cannot inherit one's blind spot.
-[[nodiscard]] bool literal_is_absolute(const std::string& line, std::size_t q) {
-  if (q + 3 < line.size() && std::isalpha(static_cast<unsigned char>(line[q + 1])) != 0 &&
-      line[q + 2] == ':' && (line[q + 3] == '/' || line[q + 3] == '\\')) {
+// One string literal as the COMPILER sees it: escapes decoded, adjacent
+// literals merged. Merging matters -- `"C:" "/atx-wt/..."` splits the drive
+// letter so no single fragment looks absolute, and the deleted defect was itself
+// split across two lines, caught only because the split fell after the drive.
+struct SourceLiteral {
+  std::string text;
+  std::size_t line = 0;
+  bool preprocessor = false;  // part of an #include etc.
+};
+
+// Extract string literals from C++ source.
+//
+// Comment-, char-literal- and raw-string-aware, because this tree contains all
+// three (21 files with raw strings, 5 with a quote inside a char literal) and a
+// scanner that desyncs on one silently stops reporting -- the failure mode that
+// has bitten five instruments on this task. Every hazard has a positive control
+// in PathOriginDetectorCatchesWhatItClaimsTo.
+[[nodiscard]] std::vector<SourceLiteral> extract_string_literals(const std::string& src) {
+  std::vector<SourceLiteral> out;
+  std::size_t line = 1;
+  bool at_line_start = true;
+  bool pp_line = false;
+  bool adjacent = false;  // previous token was a literal: the next one merges
+
+  for (std::size_t i = 0; i < src.size();) {
+    const char c = src[i];
+    if (c == '\n') {
+      ++line;
+      at_line_start = true;
+      pp_line = false;
+      ++i;
+      continue;
+    }
+    if (c == ' ' || c == '\t' || c == '\r') { ++i; continue; }
+    if (c == '/' && i + 1 < src.size() && src[i + 1] == '/') {
+      while (i < src.size() && src[i] != '\n') ++i;
+      continue;
+    }
+    if (c == '/' && i + 1 < src.size() && src[i + 1] == '*') {
+      i += 2;
+      while (i + 1 < src.size() && !(src[i] == '*' && src[i + 1] == '/')) {
+        if (src[i] == '\n') ++line;
+        ++i;
+      }
+      i = i + 2 < src.size() ? i + 2 : src.size();
+      continue;
+    }
+    if (at_line_start && c == '#') pp_line = true;
+
+    if (c == '\'') {
+      // A C++ DIGIT SEPARATOR (1'000'000), not a char literal. 67 files here use
+      // them, and treating one as a quote makes the scanner swallow everything
+      // to the next apostrophe: it under-counted one file's lines by 192 and
+      // still passed every threshold, because a desynced scanner reports fewer
+      // findings rather than an error. No prefixed char literals (L'x', u8'x')
+      // exist in this tree, so a preceding alphanumeric always means separator.
+      if (i > 0 && std::isalnum(static_cast<unsigned char>(src[i - 1])) != 0) {
+        adjacent = false;
+        at_line_start = false;
+        ++i;
+        continue;
+      }
+      // A char literal is at most a few characters. Bounding the scan makes any
+      // future desync self-limiting instead of silently eating the rest of a
+      // file, and newlines are counted so line attribution survives one.
+      const std::size_t limit = i + 8 < src.size() ? i + 8 : src.size();
+      std::size_t j = i + 1;
+      while (j < limit && src[j] != '\'') j += (src[j] == '\\') ? 2 : 1;
+      if (j < limit && src[j] == '\'') {
+        for (std::size_t k = i; k <= j; ++k) {
+          if (src[k] == '\n') ++line;
+        }
+        i = j + 1;
+      } else {
+        ++i;  // not a char literal after all: ordinary punctuation
+      }
+      adjacent = false;
+      at_line_start = false;
+      continue;
+    }
+    if (c == 'R' && i + 1 < src.size() && src[i + 1] == '"') {  // raw string
+      const std::size_t open = src.find('(', i + 2);
+      if (open == std::string::npos) break;
+      const std::string close = ")" + src.substr(i + 2, open - (i + 2)) + "\"";
+      const std::size_t end = src.find(close, open + 1);
+      const std::size_t stop = end == std::string::npos ? src.size() : end + close.size();
+      for (std::size_t k = i; k < stop; ++k) {
+        if (src[k] == '\n') ++line;
+      }
+      i = stop;
+      adjacent = false;
+      at_line_start = false;
+      continue;
+    }
+    if (c == '"') {
+      std::string text;
+      ++i;
+      while (i < src.size() && src[i] != '"') {
+        if (src[i] == '\\' && i + 1 < src.size()) {
+          text.push_back(src[i + 1]);  // \\ -> \ , \" -> " ; enough for paths
+          i += 2;
+        } else {
+          if (src[i] == '\n') ++line;
+          text.push_back(src[i]);
+          ++i;
+        }
+      }
+      ++i;
+      if (adjacent && !out.empty()) {
+        out.back().text += text;
+      } else {
+        out.push_back(SourceLiteral{text, line, pp_line});
+      }
+      adjacent = true;
+      at_line_start = false;
+      continue;
+    }
+    adjacent = false;
+    at_line_start = false;
+    ++i;
+  }
+  return out;
+}
+
+// True when a literal's CONTENT is an absolute path: a drive-letter root
+// (`C:/`, `D:\`) or a rooted/UNC backslash. Names no drive and no checkout.
+[[nodiscard]] bool literal_is_absolute(const std::string& t) {
+  if (t.size() >= 3 && std::isalpha(static_cast<unsigned char>(t[0])) != 0 && t[1] == ':' &&
+      (t[2] == '/' || t[2] == '\\')) {
     return true;
   }
-  return q + 2 < line.size() && line[q + 1] == '\\' && line[q + 2] == '\\';
+  return t.size() >= 2 && t[0] == '\\' && t[1] == '\\';
+}
+
+[[nodiscard]] bool literal_is_rung(const std::string& t) {
+  // Assembled like every other pattern here: written out, these two would be
+  // real rung literals in this file, and the whole-tree walk would flag the very
+  // rule that defines them.
+  static const std::string up_fwd = std::string("..") + "/";
+  static const std::string up_bck = std::string("..") + "\\";
+  return t.rfind(up_fwd, 0) == 0 || t.rfind(up_bck, 0) == 0;
 }
 
 struct LineScan {
-  std::vector<std::string> violations;      // empty => clean
-  bool include_with_ladder = false;         // for the non-vacuity check
+  std::vector<std::string> violations;  // empty => clean
 };
 
-// Which path-origin rules one line of C++ source breaks. Shared by the file walk
-// and by the self-test below, so the detector proven in the self-test is the
-// same code that polices the tree.
+// Token-level rules. These are identifiers, not literals, so they stay
+// line-based; the literal-level rules live in literal_violations below.
 [[nodiscard]] LineScan scan_source_line(const std::string& line, const PathNeedles& n,
-                                        bool check_ladder, bool check_macro,
-                                        bool check_cwd) {
+                                        bool check_macro, bool check_cwd) {
   LineScan out;
   const std::size_t first = line.find_first_not_of(" \t");
   if (first == std::string::npos) return out;
   if (line.compare(first, 2, "//") == 0) return out;  // prose, not code
-  if (line[first] == '#') {
-    out.include_with_ladder = line.find("include", first) != std::string::npos &&
-                              line.find(n.ladder, first) != std::string::npos;
-    return out;
-  }
-
-  if (check_ladder && line.find(n.ladder) != std::string::npos) {
-    out.violations.emplace_back("parent-directory rung");
-  }
   if (check_macro && line.find(n.file_macro) != std::string::npos) {
     out.violations.emplace_back("path derived from the compiler file macro");
   }
   if (check_cwd && line.find(n.cwd_call) != std::string::npos) {
     out.violations.emplace_back("working-directory call");
   }
-  for (std::size_t i = 0; i + 1 < line.size(); ++i) {
-    if (line[i] != '"' || !literal_is_absolute(line, i)) continue;
-    if (line.compare(i, n.accepted_abs.size(), n.accepted_abs) == 0) continue;
-    out.violations.emplace_back("absolute path literal outside the accepted data root");
-    break;
+  return out;
+}
+
+// Literal-level rules, asking WHERE A PATH RESOLVES rather than how it is
+// SPELLED -- and `..` is exactly where those two stop agreeing.
+//
+// The accepted external data root is compared after normalisation, so
+// "<root>/../../atx/x" -- spelled as if it were under the root, resolving
+// outside it -- is rejected. The previous text-prefix compare accepted exactly
+// that and reconstructed the original FRI-072 path straight through the guard
+// built to stop it: twelve characters of prefix authorising an unbounded suffix.
+// A per-file allowlist at least enumerates its escapes; that one was silent.
+[[nodiscard]] LineScan literal_violations(const SourceLiteral& lit, const fs::path& accepted_root,
+                                          bool check_ladder) {
+  LineScan out;
+  if (lit.preprocessor) return out;  // an #include is a compile-time path
+  if (check_ladder && literal_is_rung(lit.text)) {
+    out.violations.emplace_back("parent-directory rung");
+  }
+  if (literal_is_absolute(lit.text) &&
+      !testkit::path_is_under(fs::path{lit.text}, accepted_root)) {
+    out.violations.emplace_back("absolute path literal resolving outside the accepted data root");
   }
   return out;
 }
@@ -695,44 +835,104 @@ struct LineScan {
 // are assembled: writing them out would make this file match itself.
 TEST(VolUmbrella, PathOriginDetectorCatchesWhatItClaimsTo) {
   const PathNeedles n = PathNeedles::make();
-  const auto scan = [&n](const std::string& line) {
-    return scan_source_line(line, n, /*check_ladder=*/true, /*check_macro=*/true,
-                            /*check_cwd=*/true);
+  const fs::path root{n.accepted_root};
+  // Probe fragments that are NOT violations on their own. Every probe below is
+  // built from these, because a probe written out whole would be a real literal
+  // in this file and the whole-tree walk would flag this test's own evidence.
+  // `..` is not a rung until a separator follows; `C:` is not absolute until a
+  // separator follows; the backslashes come from a char, not from source text.
+  const std::string q = "\"";
+  const std::string dotdot = "..";
+  const std::string drive = "C:";
+  const std::string bs(2, '\\');  // source "\\" -> one backslash of content
+
+  // Literal-level rules. `src` is C++ source text; the verdict is on the merged,
+  // escape-decoded literals the compiler would see.
+  const auto lits = [&root](const std::string& src, bool ladder = true) {
+    std::size_t n_viol = 0;
+    for (const SourceLiteral& l : extract_string_literals(src)) {
+      n_viol += literal_violations(l, root, ladder).violations.size();
+    }
+    return n_viol;
+  };
+  const auto tokens = [&n](const std::string& line) {
+    return scan_source_line(line, n, /*check_macro=*/true, /*check_cwd=*/true).violations.size();
   };
 
-  // Positives -- each must be caught.
-  EXPECT_EQ(scan("  const fs::path p{" + n.ladder + "data/x.tsv\"};").violations.size(), 1u)
-      << "the parent-directory rung needle no longer fires";
-  EXPECT_EQ(scan("  return fs::path(" + n.file_macro + ").parent_path();").violations.size(), 1u)
-      << "the compiler-file-macro needle no longer fires";
-  EXPECT_EQ(scan("  fs::" + n.cwd_call + "dir);").violations.size(), 1u)
-      << "the working-directory needle no longer fires";
-  EXPECT_EQ(scan(std::string("  const char* p = \"") + "C:" + "/atx-wt/other/x.parquet\";")
-                .violations.size(),
-            1u)
-      << "a cross-checkout absolute is not caught -- this is the I2 defect";
-  // The two backslashes come from a char, not from source text: any literal way
-  // of writing them right after a quote would make this line match itself.
-  const std::string bs(2, '\\');
-  EXPECT_EQ(scan(std::string("  const char* p = \"") + bs + "srv" + bs + "share\";")
-                .violations.size(),
-            1u)
+  // ── Positives ──────────────────────────────────────────────────────────────
+  EXPECT_EQ(lits("  const fs::path p{" + q + dotdot + "/data/x.tsv" + q + "};"), 1u)
+      << "the parent-directory rung rule no longer fires";
+  EXPECT_EQ(tokens("  return fs::path(" + n.file_macro + ").parent_path();"), 1u)
+      << "the compiler-file-macro rule no longer fires";
+  EXPECT_EQ(tokens("  fs::" + n.cwd_call + "dir);"), 1u)
+      << "the working-directory rule no longer fires";
+  EXPECT_EQ(lits("  const char* p = " + q + drive + "/atx-wt/other/x.parquet" + q + ";"), 1u)
+      << "a cross-checkout absolute is not caught";
+  // Four source backslashes decode to the two that make a UNC root.
+  EXPECT_EQ(lits("  const char* p = " + q + bs + bs + "srv" + bs + "share" + q + ";"), 1u)
       << "a UNC/rooted-backslash absolute is not caught";
 
-  // Negatives -- each must be allowed, for a stated reason.
-  EXPECT_TRUE(scan("#include " + n.ladder + "src/foo.hpp\"").violations.empty())
+  // R3-I1: spelled as if under the accepted root, RESOLVES outside it. The
+  // second reconstructs the original FRI-072 path. A prefix compare passed both.
+  EXPECT_EQ(lits("  const char* p = " + q + n.accepted_root + "/../atx-wt/pool-3/x.tsv" + q + ";"),
+            1u)
+      << "traversal escape: one level out of the accepted root is not caught";
+  EXPECT_EQ(lits("  const char* p = " + q + n.accepted_root +
+                 "/../../atx/atx-vol/tests/support/oracle_pde_golden.tsv" + q + ";"),
+            1u)
+      << "traversal escape: the ORIGINAL FRI-072 path walks through the guard";
+
+  // R3-I2: the drive letter split across adjacent literals, which the compiler
+  // concatenates. Neither fragment looks absolute on its own.
+  EXPECT_EQ(lits("  const char* p = " + q + drive + q + " " + q + "/atx-wt/other/x" + q + ";"), 1u)
+      << "adjacent-literal concatenation hides the drive letter";
+  EXPECT_EQ(lits("  const char* p = " + q + "C" + q + " " + q + ":/atx-wt/other/x" + q + ";"), 1u)
+      << "adjacent-literal concatenation splitting after the drive letter alone";
+
+  // ── Negatives, each for a stated reason ────────────────────────────────────
+  EXPECT_EQ(lits("#include " + q + dotdot + "/src/foo.hpp" + q), 0u)
       << "an #include is a compile-time path, never resolved against the CWD";
-  EXPECT_TRUE(scan("#include " + n.ladder + "src/foo.hpp\"").include_with_ladder)
-      << "the #include exclusion did not register, so its own non-vacuity check is blind";
-  EXPECT_TRUE(scan("  // prose mentioning " + n.ladder + " and " + n.file_macro).violations.empty())
-      << "comments are prose; this file's own explanation names every needle";
-  EXPECT_TRUE(scan("  const char* p = " + n.accepted_abs + "spy-dispersion/opra\";")
-                  .violations.empty())
+  EXPECT_EQ(lits("  // prose naming ../ and " + n.accepted_root + "/../x"), 0u)
+      << "comments are prose; this file's own explanation names every pattern";
+  EXPECT_EQ(lits("  /* block prose naming ../ and a " + q + " quote */"), 0u)
+      << "block comments must not desync the extractor";
+  EXPECT_EQ(lits("  const char* p = " + q + n.accepted_root + "/spy-dispersion/opra" + q + ";"), 0u)
       << "the external vendor hive is the one accepted absolute root";
-  EXPECT_TRUE(scan("  std::printf(\"two readings:\\n\");").violations.empty())
-      << "a printf escape is not a drive letter -- the structural sweep's false-positive class";
-  EXPECT_TRUE(scan("  const char* u = \"https://example.invalid/x\";").violations.empty())
-      << "a URL scheme is not a drive letter -- the other false-positive class";
+  EXPECT_EQ(lits("  const char* p = " + q + n.accepted_root + "/a/../b/x" + q + ";"), 0u)
+      << "traversal that stays inside the accepted root is fine";
+  EXPECT_EQ(lits("  std::printf(" + q + "two readings:" + bs.substr(0, 1) + "n" + q + ");"), 0u)
+      << "a printf escape is not a drive letter";
+  EXPECT_EQ(lits("  const char* u = " + q + "https://example.invalid/x" + q + ";"), 0u)
+      << "a URL scheme is not a drive letter";
+  EXPECT_EQ(
+      lits("  const char c = '" + q + "'; const char* p = " + q + dotdot + "/x" + q + ";", false),
+      0u)
+      << "a quote inside a CHAR literal must not desync the extractor";
+  EXPECT_EQ(lits("  auto s = R" + q + "(raw with " + q + " and ../ inside)" + q + ";"), 0u)
+      << "a raw string must not desync the extractor";
+
+  // The extractor itself: merging and line attribution are what the rules ride
+  // on, so they are asserted directly rather than inferred from the verdicts.
+  const auto merged = extract_string_literals(q + drive + q + " " + q + "/x" + q + ";");
+  ASSERT_EQ(merged.size(), 1u) << "adjacent literals were not merged into one";
+  EXPECT_EQ(merged[0].text, drive + "/x");
+  const auto two_lines = extract_string_literals("int a;\nconst char* p = " + q + "x" + q + ";");
+  ASSERT_EQ(two_lines.size(), 1u);
+  EXPECT_EQ(two_lines[0].line, 2u) << "line attribution is off; failures would misreport";
+
+  // A C++ digit separator must not be read as a char literal. Mis-reading it
+  // swallowed everything to the next apostrophe and cost 192 lines of line
+  // attribution in a real file, while every count threshold still passed.
+  const auto sep = extract_string_literals("int x = 1'000'000;\nconst char* p = " + q + "y" + q +
+                                           ";");
+  ASSERT_EQ(sep.size(), 1u) << "a digit separator desynced the extractor and hid a literal";
+  EXPECT_EQ(sep[0].text, "y");
+  EXPECT_EQ(sep[0].line, 2u) << "a digit separator swallowed a newline";
+
+  // An unmatched apostrophe must not eat the rest of the file.
+  const auto stray = extract_string_literals("int a; ' \nconst char* p = " + q + "z" + q + ";");
+  ASSERT_EQ(stray.size(), 1u) << "a stray apostrophe swallowed the following literal";
+  EXPECT_EQ(stray[0].line, 2u);
 }
 
 TEST(VolUmbrella, NoFixturePathResolvedOutsideTheSharedResolver) {
@@ -742,9 +942,21 @@ TEST(VolUmbrella, NoFixturePathResolvedOutsideTheSharedResolver) {
   ASSERT_TRUE(fs::is_directory(scope)) << "atx-vol root does not resolve: " << scope.string();
 
   const PathNeedles n = PathNeedles::make();
+  const fs::path accepted_root{n.accepted_root};
   std::size_t files_scanned = 0;
   std::size_t tests_scanned = 0;
-  std::size_t include_lines_skipped = 0;
+  std::size_t literals_seen = 0;
+  std::size_t include_rungs_skipped = 0;
+
+  const auto report = [](const std::string& name, std::size_t ln, const std::string& v) {
+    ADD_FAILURE() << name << ":" << ln << " -- " << v
+                  << ". A path that resolves against the process working directory, or into "
+                     "another checkout, names a different file depending on where the binary "
+                     "was launched from. Resolve it through tests/support/test_paths.hpp "
+                     "(test_fixture / test_data / market_data / repo_file / "
+                     "artifact_cache_root). If the literal is DATA rather than a path, add "
+                     "the file to kPathLiteralExempt and say why.";
+  };
 
   for (const fs::directory_entry& entry : fs::recursive_directory_iterator(scope)) {
     if (!entry.is_regular_file()) continue;
@@ -770,33 +982,38 @@ TEST(VolUmbrella, NoFixturePathResolvedOutsideTheSharedResolver) {
     if (in_tests) ++tests_scanned;
 
     std::ifstream in(p);
+    const std::string src((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+
+    for (const SourceLiteral& lit : extract_string_literals(src)) {
+      ++literals_seen;
+      if (lit.preprocessor && literal_is_rung(lit.text)) ++include_rungs_skipped;
+      for (const std::string& v :
+           literal_violations(lit, accepted_root, in_tests && !ladder_exempt).violations) {
+        report(name, lit.line, v);
+      }
+    }
+
+    std::istringstream lines(src);
     std::string line;
-    for (std::size_t ln = 1; std::getline(in, line); ++ln) {
-      const LineScan s = scan_source_line(line, n, in_tests && !ladder_exempt, in_tests,
-                                          in_tests && !cwd_exempt);
-      if (s.include_with_ladder) ++include_lines_skipped;
-      for (const std::string& v : s.violations) {
-        ADD_FAILURE() << name << ":" << ln << " -- " << v
-                      << ". A path that resolves against the process working directory, or "
-                         "into another checkout, names a different file depending on where "
-                         "the binary was launched from. Resolve it through "
-                         "tests/support/test_paths.hpp (test_fixture / test_data / "
-                         "market_data / repo_file / artifact_cache_root). If the literal is "
-                         "DATA rather than a path, add the file to kPathLiteralExempt and "
-                         "say why.";
+    for (std::size_t ln = 1; std::getline(lines, line); ++ln) {
+      for (const std::string& v :
+           scan_source_line(line, n, in_tests, in_tests && !cwd_exempt).violations) {
+        report(name, ln, v);
       }
     }
   }
 
-  // Non-vacuity in three directions: the walk must have reached the wider scope
-  // AND the tests subtree AND actually exercised the #include exclusion.
-  // A scanner that silently matched nothing would otherwise report this contract
-  // satisfied -- the exact shape the tier-table comment above exists to prevent.
+  // Non-vacuity in four directions. A scanner that silently matched nothing --
+  // because the walk broke, or the extractor desynced and returned no literals --
+  // would otherwise report this contract satisfied, which is the exact shape the
+  // tier-table comment above exists to prevent, and the shape five instruments
+  // failed in on this task.
   EXPECT_GT(files_scanned, 200u) << "atx-vol scan found almost nothing; the walk is broken";
   EXPECT_GT(tests_scanned, 100u) << "the tests subtree was not reached by the walk";
-  EXPECT_GT(include_lines_skipped, 0u)
-      << "no #include line carrying a parent-directory rung was seen, so the exclusion is "
-         "untested and this contract may be passing because the scan matched nothing";
+  EXPECT_GT(literals_seen, 5000u) << "the literal extractor returned almost nothing; it desynced";
+  EXPECT_GT(include_rungs_skipped, 0u)
+      << "no #include carrying a parent-directory rung was seen, so the exclusion is untested "
+         "and this contract may be passing because the scan matched nothing";
 }
 
 }  // namespace
