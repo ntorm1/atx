@@ -6,8 +6,98 @@ that silently changes a NUMBER a caller already depends on belongs in this file.
 ## 1.1.0
 
 Vol-derivatives production sprint, Phase 1 (correctness), Phase 2
-(performance), and Phase 3 (features). Grows only with changes that move a
-number a caller could already be marking with.
+(performance), and Phase 3 (features).
+
+SCOPE, CORRECTED IN THIS RELEASE. This section used to say it "grows only with
+changes that move a number a caller could already be marking with". That has
+never been the rule this file follows. Every Phase-3 entry below is a purely
+ADDITIVE feature that states in its own text that it moves no existing number
+("MOVES NO EXISTING NUMBER", "NO EXISTING NUMBER MOVES", "No existing mark
+moves"), and 1.0.0's `### NEW` entries are the same shape. Keeping that
+sentence would mean deleting most of what is here, so the sentence goes
+instead. What actually governs is the preamble's rule -- a change that moves a
+number a caller depends on MUST be recorded, with its migration -- widened by
+long practice to also record PUBLIC API a 1.x caller can newly reach. A change
+that moves no number and adds no public name is still out, and this sprint
+landed two: `b1558f7` (one shared butterfly FD stencil in place of four
+hand-written copies, established bit-for-bit against the pre-unification
+arithmetic) and `8cf6951` (one ns-per-year constant in place of four,
+bit-exact and now `static_assert`ed). Neither has an entry, deliberately.
+
+### Added — the single-name return convention: `RealizedTracker::set_dividend_adjustment` and a three-argument `observe_dated` (PV feature list / LIT-9, Task F-6)
+
+`RealizedVarianceSpec::include_dividend_adjustment` shipped from the C port
+commented "reserved; unused in this port", and it had NO writer anywhere in the
+tree: `RealizedTracker::create`/`create_corridor` build `rv_` from
+`annualization` and `n_obs_total` alone, so nothing public could set it and the
+field's own "when the flag is set" precondition was unreachable. It now names
+the ISDA/MCA SINGLE-NAME return convention `r_i = ln(S_i / (S_{i-1} - D_i))` --
+the prior close reduced by the cash dividend going ex on day i -- so a stock's
+mechanical ex-div drop is not booked as realized variance. `false`, still the
+default, remains the INDEX convention this accumulator has always computed.
+
+* INDEX LEGS ARE BIT-FOR-BIT UNCHANGED, by construction rather than by
+  tolerance. One private `observe_impl(spot, ex_div_cash)` now forms every
+  return, and the only line a dividend moves is its denominator,
+  `prev_spot_ - ex_div_cash`; every unadjusted path passes `0.0`, so that
+  expression IS the `prev_spot_` the line always used. The two-argument
+  `observe_dated` forwards with `0.0` rather than duplicating the guard, and
+  keeps validating the timestamp FIRST, so a stale replay still mutates
+  nothing. Beyond that, no pre-existing tracker can even BE
+  dividend-adjusted: the flag had no writer before this task.
+* NO ARITY PIN MOVES. No field was appended -- the field already existed, it
+  merely became reachable -- and `SwapAccrual::operator==` already compared it.
+* TWO REAL OVERLOADS, never a defaulted third argument. A default would make
+  every existing two-argument `observe_dated` call ambiguous against the new
+  entry, and folding the two declarations into one defaulted signature would
+  change an already-published signature under the v1.x additive-only freeze.
+* NEW REFUSALS, ALL UNREACHABLE WITHOUT FIRST CALLING THE NEW SETTER, so no
+  call that was correct before this release returns an error now. On a
+  dividend-adjusted tracker the UNDATED `observe(double)` is `InvalidArgument`
+  outright, and `observe_batch` inherits that through its own loop: that entry
+  has no channel to carry `D`, so it would accrue INDEX-convention returns
+  under a snapshot advertising the single-name one. MIGRATION for anyone
+  opting in: drive a single-name leg through the three-argument
+  `observe_dated` only, passing `0.0` on the days with no dividend.
+  `set_dividend_adjustment` itself returns `InvalidArgument` once ANYTHING has
+  been observed (`have_prev()`, which the seeding call sets) -- configure,
+  then accumulate. A mid-stream flip would leave `Sigma r^2` an undecomposable
+  mix of two conventions under a snapshot carrying ONE flag for all of it.
+* A DIVIDEND THAT WOULD DO NOTHING IS REFUSED, NOT DROPPED -- the rule
+  `cap_dec` and the corridor bounds already follow. `ex_div_cash` is
+  `InvalidArgument` when it is negative or non-finite (tested as
+  `!(x >= 0.0)`, so a NaN is caught at the boundary instead of poisoning every
+  accumulator downstream), when it is positive on a tracker that is NOT
+  dividend-adjusted, when it is positive on the SEEDING observation (which
+  forms no return for it to adjust), and when it is not strictly below the
+  previous close (which would make the adjusted denominator zero or negative
+  and the return undefined). Silently dropping `D` instead would hand back
+  `ln(94/100)` to a caller who asked for `ln(94/95)` -- the exact failure this
+  task exists to remove.
+* THREE RULINGS THE SPEC LEFT OPEN, decided at the site and pinned. The
+  gamma-swap weight keeps reading the RAW just-observed close: Lee's `y` is the
+  price LEVEL at which the variance is earned, and on an ex-div day that level
+  IS the post-drop close. The corridor indicator keeps testing the RAW previous
+  close, because a corridor is a barrier in TRADED PRICE space while the
+  adjustment is a return-construction device with no business restating where
+  the stock traded (`Corridor.TrackerCountsTheRawPreviousCloseUnderADividend`).
+  And `prev_spot_` stores the RAW close, so `prev_spot()` stays a truthful
+  report of the last close and the same dividend is not charged a second time
+  to TOMORROW's return. Corridor x single-name is a real product, reachable
+  here by composition rather than by a second factory, and is pinned.
+* A MODE SETTER, NOT A `create_single_name` FACTORY. `create_corridor` is a
+  factory because it VALIDATES; a boolean convention has no invariant to
+  validate, so that rationale is absent, and a factory per mode would multiply
+  against the corridor entry. The one thing a factory would have bought --
+  immutability for the accumulating lifetime -- is bought by the refusal above.
+* NOT WIRED TO THE BACKTEST. The swap lane's fixing driver
+  (`observe_swap_fixing`, backtest.cpp) is a separate transcription of this
+  arithmetic that passes no dividend at all, and it stays on the index
+  convention until a corporate-actions feed exists to source `D` from.
+  `FinancingConfig::share_dividends` (backtest.hpp) is the OPTION lane's
+  hedge-share cash ledger and is not that feed. README's standing claim that
+  the backtest calls `RealizedTracker::observe_dated` was wrong and was
+  corrected in the same commit -- it does not.
 
 ### Added — options on realized variance: `DerivKind::VarianceCall` / `VariancePut` (PV-F5 / LIT-5, Task F-5)
 
@@ -85,6 +175,93 @@ and nothing enforced it.
   and the enumerator is a legal value the library reserves, matching
   `DerivEngine::RvDistributionAffine`/`McQe` and
   `DerivDiscreteCorrection::FullMc`.
+
+### Added — `cboe_var_strike` / `cboe_parametric_basis`: the Cboe discrete-strike variance strip, new header `atx/vol/cboe_strip.hpp` (PV-F2 / LIT-1, Task F-9)
+
+Everywhere else this library prices variance off a FITTED surface, quadratured
+on a synthetic log-strike grid. A LISTED variance future does not settle that
+way: it settles against the exchange's own finite sum over the strikes actually
+quoted at the settlement snapshot, with the exchange's own strike spacing, its
+own out-of-the-money selection and its own quote-exclusion rules. Before this
+there was no way to compute that second number, so there was no way to measure
+the BASIS a desk hedging OTC variance with listed variance actually carries
+(PV-F2). `cboe_var_strike` computes the listed number; `cboe_parametric_basis`
+reports the gap against a parametric strike in both variance and vol units.
+
+* NEW PUBLIC HEADER `atx/vol/cboe_strip.hpp`, Tier-B: `vol.hpp` does not
+  include it and no Tier-A header does, and it depends only on `types.hpp`
+  plus `detail/aggregate_arity.hpp`. It took the filesystem-counted Tier-B
+  total 31 -> 32; the README table and
+  `VolUmbrella.TierCountsMatchTheReadmeTable` followed one commit later in
+  `1e0b708`, which is the update procedure that pin asks for.
+* IT SHARES NO CODE WITH THE PARAMETRIC STRIP, deliberately, so a basis
+  measured between the two is a MEASUREMENT rather than a tautology. Same
+  reason `parametric_var_dec` is passed IN rather than computed here: the
+  parametric side is a template over surface type carrying a whole
+  wing/quality/corridor policy with it, and binding one instantiation into
+  this module would make the basis a statement about that policy rather than
+  about the board. `CboeVarStrip::var_strike_dec` is in the SAME units as
+  `DerivQuote::var_strike_dec` (0.04 <-> 20 vol), which is what makes the two
+  directly differenceable at all.
+* NEW AGGREGATES, all arity-pinned AT BIRTH rather than retrofitted:
+  `CboeStrikeQuote` (5), `CboeStripTerm` (5), `CboeVarStrip` (12) and
+  `CboeParametricBasis` (5), plus `enum class CboeStripLeg`.
+  `CboeVarStrip::terms` retains every published intermediate -- each `dK_i`,
+  each `Q(K_i)`, and which leg supplied it -- so a reader AUDITS the sum
+  instead of re-deriving it.
+* A NON-CALCULABLE BOARD RETURNS `ErrorCode::Unavailable`, NOT A NUMBER. The
+  methodology enumerates two such conditions and both are implemented: a K0
+  leg that is null (`0.00/0.00`) or that carries a bid above its ask with no
+  offer (`0.30/0.00`), and an empty out-of-the-money wing on either side (a
+  one-sided strip is not a cheaper answer, it is half the log contract).
+  `Unavailable` rather than `InvalidArgument` on purpose -- the board is well
+  formed and the caller did nothing wrong; this is the SNAPSHOT saying it
+  admits no index, which the exchange itself handles by republishing the last
+  valid value. WHAT A CALLER MUST DO WITH IT: treat `Unavailable` as "this
+  snapshot yields no settlement value" and carry the previous one forward;
+  treat `InvalidArgument` as a defect in the board it passed in. A caller that
+  collapses the two cannot implement the republish behaviour.
+* THE SPLIT AGAINST MALFORMED INPUT is deliberate and tested in both
+  directions. A K0 leg crossed with BOTH sides quoted (`0.30/0.20`) is
+  `InvalidArgument`, rejected board-wide before K0 is even resolved. A K0 leg
+  quoted `0.00/0.30` -- no bid but a REAL offer -- is neither null nor
+  bid-above-ask, so it is SERVED, contributing its genuine 0.15 midpoint. That
+  last case is the ONE question the source leaves open; it is recorded in the
+  header as open rather than answered, with `check_k0_quotable`
+  (cboe_strip.cpp) named as the single function to change if Cboe resolves it
+  the other way.
+* TWO PLACES THE PUBLISHED TEXT NEEDED A DECISION, both cited against the
+  current methodology and pinned by test rather than left re-derivable:
+  `K0 = max{K : K <= F}`, the inclusive reading (the 2009 edition said strictly
+  "below F" and the 2019 edition is internally inconsistent, which is how two
+  careful readers reach opposite conclusions -- the two readings differ by 5
+  vol points on this module's own fixture, so the tie is not negligible); and
+  `dK` resolved over the SELECTED strip's neighbours, not the board's, since a
+  midpoint rule exists so the widths tile the strike axis and only the
+  surviving strikes still tile it after exclusion.
+* `zero_quote_truncated_low` / `_high` are TRUE only when the
+  two-consecutive-zero-quote stop actually REFUSED a listed strike that was
+  still there -- not merely when the walk ran off the end of the board.
+  Defined the other way the flags would read TRUE constantly on an illiquid
+  wing and mean nothing; as defined, TRUE is a statement about QUOTE QUALITY,
+  while a short strip with the flag FALSE is one about LISTING COVERAGE.
+* `diagnostic_out` is ASSIGNED ON EVERY RETURN PATH, success and every
+  failure, so the caller who most needs the audit trail -- the one whose board
+  was refused -- can still read how far resolution got. Same channel
+  convention as `forward_var_fair_strike`'s own out-parameter below; paths
+  that failed before resolving anything leave it default-constructed.
+* THIS IS NOT THE PUBLISHED INDEX. It is a SINGLE-EXPIRY variance strike. The
+  two-expiry interpolation onto a fixed 30-day horizon and the scaling by 100
+  are an index construction rather than a settlement primitive and are not
+  here; the test performs that composition itself against Cboe's published
+  worked example.
+* NO EXISTING NUMBER MOVES. Nothing in the library calls this module and it
+  calls nothing -- a new header, four new aggregates plus an enum, and two new
+  entry points, with no ledger counter and no Python binding. It is NOT the
+  destination of the `### Changed` entry above: a contract marked
+  `DerivMarkingConvention::CboeVarianceFuture` is REFUSED by
+  `validate_deriv_dispatch`, not re-routed here. Wiring the marking convention
+  to this module is separate, future work.
 
 ### Added — `forward_var_fair_strike`: forward-start variance + calendar diagnostic (PV-F4 / FIT-F2 / LIT-7, Task F-4)
 
