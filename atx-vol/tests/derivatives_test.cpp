@@ -4984,11 +4984,17 @@ TEST(ForwardVar, FlatSurfaceExact) {
   EXPECT_LT(default_err, 2.0e-10) << "the Standard default got worse than documented";
 }
 
-// F4 (fix round 1): the regime FlatSurfaceExact structurally cannot reach.
+// F4 (fix round 1; conclusion corrected in fix round 2): the regime
+// FlatSurfaceExact structurally cannot reach.
 //
-// TWO SEPARATE FACTS, and they must not be confused with the Standard-tier
-// shortfall above. That one is quadrature and one node doubling fixes it. This
-// one is SPAN TRUNCATION and no budget fixes it.
+// EVERYTHING BELOW IS SCOPED TO THE DEFAULT CONFIGURATION: the config this
+// test builds is `deriv_default_config()` with only `quality` set. Every figure
+// here is a statement about the tier DEFAULTS, never about what this entry can
+// achieve when configured; (c) is where round 1 got that distinction wrong.
+//
+// THREE FACTS, and none of them is the Standard-tier shortfall above. That one
+// is quadrature and one node doubling fixes it. This one is SPAN TRUNCATION: no
+// NODE budget fixes it (b), and the SPAN knob does (c).
 //
 // (a) Accuracy degrades with sigma at EVERY tier. Same fixture shape, same
 //     fifteen pairs, max |K_fwd - sigma^2| measured on the shipped library:
@@ -5011,14 +5017,38 @@ TEST(ForwardVar, FlatSurfaceExact) {
 //     cancelling. At sigma = 0.55 / High the legs resolve 769 nodes over +-2.0
 //     and 1269 over +-3.3.
 //
-// (b) It is NOT reachable by node budget, which is what makes it a documented
-//     limit rather than a defect to chase. Single pair (0.35, 0.75), sigma =
+// (b) It is NOT reachable by NODE budget. Single pair (0.35, 0.75), sigma =
 //     0.55, High, `cfg.strip_nodes` swept: 1025 -> 8.198509e-11,
-//     2049 -> 1.053657e-10, 4097 -> 1.066113e-10, 8193 -> 1.066890e-10. The
+//     2049 -> 1.053657e-10, 4097 -> 1.066114e-10, 8193 -> 1.066890e-10. The
 //     last doubling moves the answer by 7.8e-14 while it sits above 1e-10 --
 //     a plateau, not a convergence sequence. (Note it approaches the floor from
 //     BELOW: at small budgets quadrature error partly offsets truncation, which
 //     is why "more nodes made it worse" is expected here.)
+//
+// (c) IT IS REACHABLE BY SPAN, and round 1 said otherwise. The header used to
+//     read "no budget fixes it ... treat ~1e-9 as the accuracy of this entry".
+//     That was inferred from the (b) node sweep ALONE, and a one-axis sweep
+//     cannot establish an inherent limit. `DerivConfig::width_sigmas` -- which
+//     this entry already threads to BOTH legs as part of its shared policy --
+//     lifts it, on THIS fixture at sigma = 0.55, on the DEFAULT node budget,
+//     max over the same fifteen pairs:
+//
+//       width_sigmas   High         Audit        Standard
+//       6 (default)    1.2451e-10   2.8867e-10   2.4859e-10
+//       8              2.7371e-11   1.0500e-12   9.7861e-10
+//       12             1.0283e-11   2.2873e-12   1.9633e-09
+//
+//     The mechanism is COVERAGE (half-span / sigma*sqrt(T)). At the default the
+//     legs are badly unequal -- 11.50 at T = 0.10 against 6.00 at T = 1.00,
+//     High -- and `width_sigmas = 12` equalizes them at 12.00/12.00. `Standard`
+//     is the exception: its 257-node default cannot pay for a wider span, so
+//     widening alone spreads the same nodes thinner and makes it WORSE; it
+//     needs both knobs (`width_sigmas = 8` with `strip_nodes = 2049` measures
+//     7.4729e-12).
+//
+//     So the band asserted below pins the DEFAULT CONFIG's envelope, which is
+//     what the header documents. It is NOT a claim that 1e-10 is out of reach
+//     at sigma = 0.55 -- one documented field reaches it at High and Audit.
 TEST(ForwardVar, FlatSurfaceAccuracyDegradesAtHighVol) {
   const double sigma = 0.55;
   const double sigma2 = sigma * sigma;
@@ -5031,9 +5061,11 @@ TEST(ForwardVar, FlatSurfaceAccuracyDegradesAtHighVol) {
       make_term_variance_priced_surface(7502, 100.0, 0.043, pillars);
 
   // (a) the envelope, at each tier's own default budget. Asserted as a BAND:
-  // the upper bound is the accuracy contract this regime actually offers, and
-  // the lower bound pins that the brief's 1e-10 is genuinely NOT reached here,
-  // so the documented limit cannot rot into a stale claim.
+  // the upper bound is the accuracy contract the DEFAULT CONFIG offers in this
+  // regime, and the lower bound pins that the brief's 1e-10 is genuinely NOT
+  // reached AT THE TIER DEFAULTS, so the documented limit cannot rot into a
+  // stale claim. Neither bound says anything about a configured call -- per (c),
+  // `width_sigmas` clears 1e-10 here at High and Audit.
   for (const atx::vol::DerivQuality q :
        {atx::vol::DerivQuality::High, atx::vol::DerivQuality::Audit,
         atx::vol::DerivQuality::Standard}) {

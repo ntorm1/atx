@@ -1205,10 +1205,11 @@ inline constexpr double kFwdVarNoiseCeilingVar = 1.0e-3;
 // standalone `var_swap_fair_strike` at that tenor would. That is correct;
 // forcing one grid on both legs would under-resolve one of them.
 //
-// HOW ACCURATE K_fwd ACTUALLY IS, and the two knobs that move it. Both figures
-// below are measured on a flat-smile surface with six pillars from 0.10y to
-// 1.00y at r = 4.3%, over all fifteen ordered tenor pairs (the
-// `ForwardVar.FlatSurfaceExact` / `...DegradesAtHighVol` fixtures).
+// HOW ACCURATE K_fwd ACTUALLY IS, and the two `DerivConfig` fields that move
+// it -- `strip_nodes` and `width_sigmas`. Every figure below is measured on a
+// flat-smile surface with six pillars from 0.10y to 1.00y at r = 4.3%, over all
+// fifteen ordered tenor pairs (the `ForwardVar.FlatSurfaceExact` /
+// `...DegradesAtHighVol` fixtures). Which field binds depends on the REGIME:
 //
 //   * NODE BUDGET, at ordinary vol (sigma = 0.20). The error here is Simpson
 //     quadrature and falls ~16x per node doubling. The `High` and `Audit` tier
@@ -1218,18 +1219,34 @@ inline constexpr double kFwdVarNoiseCeilingVar = 1.0e-3;
 //     accuracy surprise in the entry and it is stated here rather than left for
 //     a caller to discover.
 //
-//   * VOLATILITY, and this one no budget fixes. The per-leg error also carries
-//     a SPAN-TRUNCATION term that scales with sigma*sqrt(T) against the
-//     resolved span. At low vol it is negligible and nearly tenor-invariant, so
-//     it cancels in (w2 - w1); as vol rises it grows and becomes strongly
-//     tenor-dependent -- partly because the 6*sigma*sqrt(T) widening engages on
-//     the LONG leg only, giving the two legs genuinely different spans -- so it
-//     stops cancelling. Measured worst case over the fifteen pairs at each
-//     tier's default budget: ~1.2e-10 (sigma = 0.55), ~3.3e-10 (0.70),
-//     ~1.1e-09 (0.90). TREAT ~1e-9 AS THE ACCURACY OF THIS ENTRY ON A REALISTIC
-//     HIGH-VOL SURFACE. Raising `strip_nodes` does not help: at sigma = 0.55 an
-//     8193-node strip lands within 8e-14 of a 4097-node one, both above 1e-10.
-//     Truncation is not a discretisation error.
+//   * VOLATILITY, and the knob for it is the SPAN, not the node budget. The
+//     per-leg error also carries a SPAN-TRUNCATION term that scales with
+//     sigma*sqrt(T) against the resolved span. At low vol it is negligible and
+//     nearly tenor-invariant, so it cancels in (w2 - w1); as vol rises it grows
+//     and becomes strongly tenor-dependent -- because the
+//     `width_sigmas`*sigma*sqrt(T) widening engages on the LONG leg while the
+//     short one still sits on the tier's span FLOOR, so the two legs end up with
+//     very unequal COVERAGE (half-span / sigma*sqrt(T)): 11.50 short vs 6.00
+//     long at sigma = 0.55 / `High`. Worst case over the fifteen pairs at each
+//     tier's DEFAULT config: ~1.2e-10 (sigma = 0.55), ~3.3e-10 (0.70),
+//     ~1.1e-09 (0.90).
+//
+//     THAT IS THE ACCURACY OF THE TIER'S DEFAULT SPAN, NOT OF THIS ENTRY. The
+//     distinction is load-bearing because the two budgets behave oppositely:
+//       - `strip_nodes` does NOT lift it. Truncation is not a discretisation
+//         error, so the error plateaus: at sigma = 0.55 an 8193-node strip lands
+//         within 8e-14 of a 4097-node one, both above 1e-10, and the fifteen-pair
+//         worst case is 1.3245e-10 at BOTH 8193 and 16385 nodes.
+//       - `width_sigmas` DOES, because it is the knob that buys coverage.
+//         Measured at sigma = 0.55 on each tier's DEFAULT node budget:
+//         `High` 1.2451e-10 (default 6) -> 2.7371e-11 (8) -> 1.0283e-11 (12);
+//         `Audit` 2.8867e-10 -> 1.0500e-12 (8) -> 2.2873e-12 (12). One field,
+//         no extra nodes, and both clear the 1e-10 bar.
+//
+//     `Standard` IS THE EXCEPTION AND NEEDS BOTH KNOBS. Its 257-node default
+//     cannot pay for a wider span -- widening ALONE spreads the same nodes over
+//     more range and makes it WORSE (2.4859e-10 at the default 6, 9.7861e-10 at
+//     8). `width_sigmas = 8` WITH `strip_nodes = 2049` measures 7.4729e-12.
 //
 // ACCURACY FLOOR AND THE CALENDAR DETECTOR (FIT-F3). The numerator differences
 // two nearly-equal total variances, so the answer is only as good as the legs

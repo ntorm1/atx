@@ -549,10 +549,20 @@ TEST(VolCurve, ConvexRepairSpecDefaultsAreTheNullOptLattice) {
 
   // (b) Behavioural: the two branches of the ternary agree on a real fit. The
   // fixture carries a calendar crossing of +9e-8 at k = -0.45 -- deliberately
-  // sized BELOW the 1e-7 acceptance, so both branches must SERVE it. A branch
-  // whose tolerance had drifted tighter would instead promote a node and refit,
-  // moving the served curve; one that had drifted looser, or whose band or grid
-  // had moved off the lattice, would stop sampling k = -0.45 at all.
+  // sized BELOW the 1e-7 acceptance, so both branches must SERVE it.
+  //
+  // WHAT (b) DISCRIMINATES AGAINST, stated exactly (Task F-4 fix round 2, N3):
+  // a TIGHTENING tolerance drift, and a band or grid that moved off the
+  // lattice. Sweeping the drifted `tolerance` on this fixture: at 5e-8 and
+  // below the crossing stops being accepted, the branch promotes a node and
+  // refits, and the served curve moves by 4.499090e-03 -- 4.5e9x this gate. (A
+  // tight enough drift can instead make that refit fail KKT certification, in
+  // which case the ASSERT_TRUE above fires; either way (b) is loud.)
+  //
+  // A LOOSENING drift is INVISIBLE to (b): 8.9e-08 sits below 1e-7 and below
+  // 1e-6 alike, so both branches keep serving it identically and (b) passes.
+  // Half (a) is what covers loosening -- which is why both halves ship, and
+  // why neither is redundant.
   constexpr double T = 0.10;
   constexpr double F = 100.0;
   constexpr double df = 0.999;
