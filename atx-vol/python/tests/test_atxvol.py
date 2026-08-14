@@ -15,7 +15,19 @@ def test_version_and_black76_iv_roundtrip() -> None:
     # single-sources from `project(atx VERSION ...)`. Assert it against the wheel's
     # declared metadata rather than a literal, so this line can never become one
     # more copy of the version that has to be edited by hand.
-    assert atxvol.__version__ == importlib.metadata.version("atxvol")
+    #
+    # This is the LATER of two checks: `atx-vol/python/CMakeLists.txt` compares
+    # the same two numbers at CONFIGURE time, because this one can only run once
+    # a wheel has been built and installed -- which is how pyproject.toml sat at
+    # 1.0.0 through the 1.1.0 bump with an otherwise green tree. If this fires,
+    # the configure-time guard was bypassed (a pre-built wheel, say), so the
+    # message names the file to edit rather than leaving a bare inequality.
+    declared = importlib.metadata.version("atxvol")
+    assert atxvol.__version__ == declared, (
+        f"version mirror drifted: the compiled library reports {atxvol.__version__} but the "
+        f"wheel metadata declares {declared}. Bump the 'version =' line in "
+        f"atx-vol/python/pyproject.toml to {atxvol.__version__}."
+    )
     f, k, t, sigma, r = 102.0, 100.0, 0.5, 0.27, 0.04
     df = math.exp(-r * t)
     price = atxvol.black76_price(f, k, t, sigma, df, atxvol.Side.CALL)
