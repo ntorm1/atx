@@ -180,6 +180,8 @@ add_executable(atx-vol-tests
     deriv_fixtures_test.cpp
     # vol-derivs production sprint Task F-9: CBOE discrete-strike variance sum
     cboe_strip_test.cpp
+    # vol-derivs production sprint Task F-8: the shared smile-shift overlay
+    surface_overlay_test.cpp
 )
 # backtest_bench_test.cpp was relocated to bench/backtest_throughput_bench.cpp
 # (it is a throughput benchmark, not a correctness gate).

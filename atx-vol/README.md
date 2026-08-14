@@ -828,7 +828,7 @@ frozen?" is answered by where the header lives, not by judgement:
 | Tier | Where | Count | Promise |
 |---|---|---|---|
 | **Tier-A** | exactly the headers `atx/vol/vol.hpp` includes | 58 | **Frozen for 1.x.** Closed under inclusion |
-| **Tier-B** | other headers directly under `include/atx/vol/`, plus `simd/` | 32 + 9 | Public and supported to include; **not** frozen |
+| **Tier-B** | other headers directly under `include/atx/vol/`, plus `simd/` | 33 + 9 | Public and supported to include; **not** frozen |
 | `detail/` | `include/atx/vol/detail/` | 31 (+1 generated) | **No stability promise.** Installed because Tier-A reaches it |
 | `tools/` | `tools/include/atx/vol/tools/` — target `atx::vol::tools` | 6 | CLI support. Not part of the shipped library surface |
 | `research/` | `research/include/atx/vol/research/` — target `atx::vol::research` | 9 | Run orchestration. Not part of the shipped library surface |
@@ -851,7 +851,10 @@ production sprint, review fix round 1) added `detail/dense_slice_price.hpp`
 outside the umbrella — so Tier-B 31 → **32**, no Tier-A/`detail/` change. Task
 F-R (same sprint) added `detail/butterfly_density.hpp` — the one Lee/Roper
 density stencil and its violation floor, previously hand-copied at four call
-sites — so `detail/` 30 → **31**, no Tier-A/Tier-B change.
+sites — so `detail/` 30 → **31**, no Tier-A/Tier-B change. Task F-8 (same
+sprint) added `surface_overlay.hpp` — the smile-shift/sticky-mode algebra
+hoisted out of `derivatives.cpp`'s private bump views — so Tier-B 32 → **33**,
+no Tier-A/`detail/` change.
 
 That drift is now caught by a test rather than by a reader.
 `VolUmbrella.TierCountsMatchTheReadmeTable` (`tests/vol_umbrella_test.cpp`)

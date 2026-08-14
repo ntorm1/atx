@@ -29,6 +29,7 @@
 #include "atx/vol/portfolio_pricer.hpp" // Task 9: SurfaceRef (the borrowed-surface handle)
 #include "atx/vol/priced_surface.hpp" // E6: PricedSurface-native entry points
 #include "atx/vol/detail/strip_grid.hpp"
+#include "atx/vol/surface_overlay.hpp" // Task F-8: SurfaceOverlay/StickyMode (the bump algebra)
 #include "atx/vol/surface_parity.hpp" // SliceContext (E6 carry extraction)
 #include "atx/vol/surface_policy.hpp" // certified_wing_half_band (FIT-C7 / Task C-6)
 #include "atx/vol/vol_surface.hpp" // Tier-A calibration-grade surface container
@@ -3289,60 +3290,72 @@ struct BumpReadCache {
   }
 };
 
-// Combines the sticky-strike respot (bumped curves move the forward by
-// e^{k_shift}, so reading the base surface at k + k_shift keeps the vol tied
-// to the SAME absolute strike the bumped strip prices at) and the parallel
-// additive vol shift into ONE view, with the shifted read routed through a
-// shared `BumpReadCache` slot instead of a live surface call on every hit.
-// `vol_shift` is applied AFTER the cache lookup/store -- "the constant vol
-// offset applied at use site" (task brief) -- so sigma+-'s bumps reuse the
-// exact same cached read the center/spot-bump evaluations already populated
-// for their shared (k_shift, T), and a miss still computes and caches the
-// RAW (pre-vol-shift) read exactly once, never a vol-shifted one that a
-// later, differently-shifted bump could not reuse. NaN propagates through
-// `sigma + vol_shift` unchanged (NaN + x is always NaN), so no special case
-// is needed for an unusable read.
+// Task F-8: the ALGEBRA of every bump this file takes -- sticky-strike respot,
+// parallel vol shift, and the two smile-shape shifts -- now lives in the public
+// `SurfaceOverlay` (surface_overlay.hpp). What stays here is the part that is
+// not algebra at all: the shared `BumpReadCache` slot that turns the shifted
+// read into a memoized one, and the `is_bumped_greek_view` tag that marks an
+// evaluation as a bump. Keeping the cache private is the point of the split --
+// it is a three-state recording/replay machine with a `reserve` contract whose
+// `noexcept` honesty depends on `eval_bump_table` calling `begin_recording`
+// first, and exporting that onto a public view would make a caller able to
+// break it.
+//
+// The cache sits BETWEEN the overlay's two halves: `read_k`/`read_t` produce
+// the base query (and so the cache key), and `shift_iv` applies the vol offsets
+// AFTER the lookup/store. That ordering is what lets sigma+- share one cached
+// read with the centre and the spot bumps for their common (k_shift, T): a miss
+// caches the RAW pre-shift read, never a shifted one a differently-shifted bump
+// could not reuse. NaN propagates through the shift unchanged, so an unusable
+// read needs no special case.
+//
+// `is_bumped_greek_view` is read at exactly one place (`price_vol_swap`'s
+// best-effort convexity diagnostic, which a bumped evaluation skips). Losing it
+// would not move a single greek -- it would silently add up to 14 extra strip
+// integrations per `deriv_greeks` call on a VolSwap, and no test pins that
+// count. That is why it is declared on the type that reaches `deriv_price`
+// rather than inferred from the overlay.
 template <class SurfaceT>
 struct CachedBumpView {
-  const SurfaceT* base;  // non-owning, non-null
-  double k_shift;
-  double vol_shift;
+  SurfaceOverlay<SurfaceT> shift;
   BumpReadCache* cache;  // non-owning, non-null; shared across every bump
                          // evaluation querying this (k_shift, T) pair
 
   // Task P-2 / GK-P: structural marker `is_bumped_greek_view` (above) detects
-  // via `requires`. `bumped_pv` is the only call site that ever constructs a
-  // `CachedBumpView`, so this tag exactly identifies a bumped/rolled greek
-  // evaluation -- see `is_bumped_greek_view`'s own comment for why this beats
-  // a new `DerivConfig` field.
+  // via `requires`. Every construction site is a bump-table or shared-block
+  // evaluation (`bump_view`/`skew_bump_view`/`convex_bump_view` below are the
+  // only makers, and nothing outside this file can name the type), so the tag
+  // exactly identifies a bumped/rolled greek evaluation -- see
+  // `is_bumped_greek_view`'s own comment for why this beats a DerivConfig field.
   static constexpr bool is_bumped_greek_view = true;
 
   [[nodiscard]] double iv(double k_log, double T) const noexcept {
-    const double x = k_log + k_shift;
+    const double x = shift.read_k(k_log);
+    const double t = shift.read_t(T);
     // Task P-3 test/bench seam: forcing this off reproduces the pre-P-3
     // RespotView+VolShiftView composition exactly (always a live read), so
     // `DerivGreeks.ReadCacheMatchesUncached` can prove the cache changes
     // nothing but how many times the surface is actually read.
     if (bump_read_cache_disabled_for_test()) {
-      return base->iv(x, T) + vol_shift;
+      return shift.shift_iv(shift.base->iv(x, t), k_log);
     }
     const std::uint64_t x_bits = std::bit_cast<std::uint64_t>(x);
-    const std::uint64_t t_bits = std::bit_cast<std::uint64_t>(T);
+    const std::uint64_t t_bits = std::bit_cast<std::uint64_t>(t);
     if (cache->sorted) {
       const auto [found, sigma] = cache->find(x_bits, t_bits);
-      return (found ? sigma : base->iv(x, T)) + vol_shift;
+      return shift.shift_iv(found ? sigma : shift.base->iv(x, t), k_log);
     }
     if (!cache->recording) {
       // Review fix round 1, I-3: a slot nothing ever replays against -- read
       // live, do not bother appending to a vector no one will search.
-      return base->iv(x, T) + vol_shift;
+      return shift.shift_iv(shift.base->iv(x, t), k_log);
     }
     // Recording phase: append-only, no lookup -- see `BumpReadCache`'s own
     // comment for why. `push_back` lands in the capacity `begin_recording`
     // already reserved (Review fix round 1, I-5), so this cannot reallocate.
-    const double sigma = base->iv(x, T);
+    const double sigma = shift.base->iv(x, t);
     cache->entries.push_back(BumpReadCache::Entry{x_bits, t_bits, sigma});
-    return sigma + vol_shift;
+    return shift.shift_iv(sigma, k_log);
   }
 
   // Review fix round 1, I-7: forwards the strip's batched read through the
@@ -3372,157 +3385,84 @@ struct CachedBumpView {
   {
     const std::size_t n = std::min(x.size(), out.size());
     if (bump_read_cache_disabled_for_test()) {
-      for (std::size_t i = 0; i < n; ++i) {
-        out[i] = x[i] + k_shift;
-      }
-      base->iv_batch(out.first(n), T, out.first(n));
-      for (std::size_t i = 0; i < n; ++i) {
-        out[i] += vol_shift;
-      }
+      // The uncached path IS the overlay, unmediated -- which is what makes
+      // `ReadCacheMatchesUncached` a statement about the cache alone.
+      shift.iv_batch(x.first(n), T, out.first(n));
       return;
     }
-    const std::uint64_t t_bits = std::bit_cast<std::uint64_t>(T);
+    const std::uint64_t t_bits = std::bit_cast<std::uint64_t>(shift.read_t(T));
     if (cache->sorted) {
       // Replay: the pinned grid means every element is expected to hit, but
       // each is independently searched/verified rather than assumed --
       // never wrong even if that invariant were ever violated, just not
       // batched on a miss (see `BumpReadCache::find`'s own comment).
+      const double t = shift.read_t(T);
       for (std::size_t i = 0; i < n; ++i) {
-        const double shifted = x[i] + k_shift;
+        const double shifted = shift.read_k(x[i]);
         const auto [found, sigma] =
             cache->find(std::bit_cast<std::uint64_t>(shifted), t_bits);
-        out[i] = (found ? sigma : base->iv(shifted, T)) + vol_shift;
+        out[i] = shift.shift_iv(found ? sigma : shift.base->iv(shifted, t), x[i]);
       }
       return;
     }
     if (!cache->recording) {
       // I-3: single-use slot -- one batched live read, nothing cached.
-      for (std::size_t i = 0; i < n; ++i) {
-        out[i] = x[i] + k_shift;
-      }
-      base->iv_batch(out.first(n), T, out.first(n));
-      for (std::size_t i = 0; i < n; ++i) {
-        out[i] += vol_shift;
-      }
+      shift.iv_batch(x.first(n), T, out.first(n));
       return;
     }
     // Recording: ONE batched raw read via `base->iv_batch`, then cache each
     // (key recomputed from the ORIGINAL `x`/`k_shift`, bit-identical to what
-    // was written into `out` before the call below) and apply vol_shift.
+    // was written into `out` before the call below) and apply the shift.
     for (std::size_t i = 0; i < n; ++i) {
-      out[i] = x[i] + k_shift;
+      out[i] = shift.read_k(x[i]);
     }
-    base->iv_batch(out.first(n), T, out.first(n));  // out[i] is now raw sigma
+    shift.base->iv_batch(out.first(n), shift.read_t(T), out.first(n));  // out[i] is raw sigma
     for (std::size_t i = 0; i < n; ++i) {
-      const double shifted = x[i] + k_shift;
+      const double shifted = shift.read_k(x[i]);
       cache->entries.push_back(
           BumpReadCache::Entry{std::bit_cast<std::uint64_t>(shifted), t_bits, out[i]});
-      out[i] += vol_shift;
+      out[i] = shift.shift_iv(out[i], x[i]);
     }
   }
 };
 
-// ── Task F-7: smile-shape bump views ───────────────────────────────────────
-//
-// Floor for any smile-shifted vol. The two views below multiply their
-// coefficient by k, which the strip evaluates out to the resolved wing band,
-// so a large caller-set bump can drive a wing node's vol to zero or below --
-// the same silent corruption `bumps_valid`'s `vol_abs < sigma_atm` check
-// exists to prevent for the PARALLEL shift. That check cannot be reused here
-// (it reads k = 0, where the linear term is identically zero and the
-// quadratic one is too), so the guard is a floor at the point of use instead.
-// Small enough to be far below any economically meaningful vol, so it never
-// binds on a sanely-sized bump and the stencil stays a clean central
-// difference.
-inline constexpr double kMinSmileShiftedIv = 1.0e-4;
-
-// NOT `std::fmax`: fmax(NaN, floor) returns FLOOR, which would silently
-// manufacture a usable vol out of a surface read that had no opinion at all
-// and defeat the NaN propagation every layer above depends on ("NaN =
-// not computed", and the strip's own bad-node accounting). The comparison
-// form is false for a NaN left operand, so NaN passes straight through
-// unchanged -- exactly what `CachedBumpView::iv`'s `sigma + vol_shift`
-// already guarantees for the parallel shift.
-[[nodiscard]] constexpr double floor_smile_iv(double v) noexcept {
-  return v < kMinSmileShiftedIv ? kMinSmileShiftedIv : v;
+// The only makers of a `CachedBumpView`. `SurfaceOverlay`'s field ORDER is
+// {vol, skew, convexity, k, term}, which is not the order any of the bump call
+// sites think in, so they go through designated initializers here rather than
+// each spelling out a five-double brace-init that a future field append would
+// silently re-associate.
+template <class SurfaceT>
+[[nodiscard]] CachedBumpView<SurfaceT> bump_view(const SurfaceT& surface, double k_shift,
+                                                 double vol_shift,
+                                                 BumpReadCache& cache) noexcept {
+  return CachedBumpView<SurfaceT>{
+      SurfaceOverlay<SurfaceT>{.base = &surface, .vol_shift = vol_shift, .k_shift = k_shift},
+      &cache};
 }
 
-// `iv(k,T) + s*k`, composed on top of the ordinary bump view so a smile bump
-// still gets the sticky-strike respot, the shared read cache and -- through
-// `eval_bump_table`'s caller -- the SAME pinned grid every other bump prices
-// under. Wrapping `CachedBumpView` rather than duplicating it is what keeps
-// the cache's subtle recording/replay contract single-sourced.
+// Task F-7 smile bumps. Both run at ZERO spot and vol shift, so the cache slot
+// they take is the identity-shift one the centre already recorded.
 //
-// THE k THIS RECEIVES IS ALREADY WING-CLAMPED. `var_swap_fair_strike` clamps
+// THE k THESE RECEIVE IS ALREADY WING-CLAMPED. `var_swap_fair_strike` clamps
 // each node into the resolved trust band BEFORE calling `iv` (both the scalar
 // loop and the gather buffer the batched path fills), so `s*k` saturates at
 // `s*wing_band` rather than growing across the wings. That is a real modelling
 // decision, documented for callers on `DerivGreeks::skew_vega`; it is also the
-// self-consistent one, since the clamped surface is precisely what produced
-// the PV being differentiated.
-//
-// Re-exposing `is_bumped_greek_view` and `iv_batch` is LOAD-BEARING, not
-// tidiness: both are detected structurally by `requires`-expression
-// (`is_bumped_greek_view` / `has_strip_iv_batch` at the top of this file), so
-// a wrapper that dropped either would compile perfectly and silently switch
-// the detection off -- exactly the regression P-3's review fix I-7 found, where
-// a lost `iv_batch` quietly put 13 of 14 bumped evaluations back on the scalar
-// read path. No `certified_wing_band` member, deliberately, matching
-// `CachedBumpView`: the center's resolved band travels through
-// `cfg.wing_clamp_k` via `pin_center_scheme` instead.
+// self-consistent one, since the clamped surface is precisely what produced the
+// PV being differentiated.
 template <class SurfaceT>
-struct SkewShiftView {
-  CachedBumpView<SurfaceT> inner;
-  double slope;  // vol per unit k = ln(K/F); s < 0 steepens the equity skew
+[[nodiscard]] CachedBumpView<SurfaceT> skew_bump_view(const SurfaceT& surface, double slope,
+                                                      BumpReadCache& cache) noexcept {
+  return CachedBumpView<SurfaceT>{SurfaceOverlay<SurfaceT>{.base = &surface, .skew_shift = slope},
+                                  &cache};
+}
 
-  static constexpr bool is_bumped_greek_view = true;
-
-  [[nodiscard]] double iv(double k_log, double T) const noexcept {
-    return floor_smile_iv(inner.iv(k_log, T) + slope * k_log);
-  }
-
-  // `x` and `out` are distinct buffers at the only call site (the strip's
-  // `x_read_buf` / `sigma_buf`), which `CachedBumpView::iv_batch` already
-  // requires -- it uses `out` as scratch for its own shifted reads -- so
-  // reading `x[i]` back after `inner` has written `out[i]` is sound.
-  void iv_batch(std::span<const double> x, double T, std::span<double> out) const noexcept
-      requires requires(const CachedBumpView<SurfaceT>& s, std::span<const double> xs, double t,
-                        std::span<double> o) { s.iv_batch(xs, t, o); }
-  {
-    const std::size_t n = std::min(x.size(), out.size());
-    inner.iv_batch(x.first(n), T, out.first(n));
-    for (std::size_t i = 0; i < n; ++i) {
-      out[i] = floor_smile_iv(out[i] + slope * x[i]);
-    }
-  }
-};
-
-// `iv(k,T) + c*k*k` -- the symmetric counterpart of `SkewShiftView`, raising
-// (c > 0) or lowering both wings at once while leaving ATM untouched. Every
-// note on that struct applies verbatim, including the wing-clamp saturation
-// (here at `c*wing_band^2`) and why the two detection members are re-exposed.
 template <class SurfaceT>
-struct ConvexShiftView {
-  CachedBumpView<SurfaceT> inner;
-  double curvature;  // vol per unit k^2
-
-  static constexpr bool is_bumped_greek_view = true;
-
-  [[nodiscard]] double iv(double k_log, double T) const noexcept {
-    return floor_smile_iv(inner.iv(k_log, T) + curvature * k_log * k_log);
-  }
-
-  void iv_batch(std::span<const double> x, double T, std::span<double> out) const noexcept
-      requires requires(const CachedBumpView<SurfaceT>& s, std::span<const double> xs, double t,
-                        std::span<double> o) { s.iv_batch(xs, t, o); }
-  {
-    const std::size_t n = std::min(x.size(), out.size());
-    inner.iv_batch(x.first(n), T, out.first(n));
-    for (std::size_t i = 0; i < n; ++i) {
-      out[i] = floor_smile_iv(out[i] + curvature * x[i] * x[i]);
-    }
-  }
-};
+[[nodiscard]] CachedBumpView<SurfaceT> convex_bump_view(const SurfaceT& surface, double curvature,
+                                                        BumpReadCache& cache) noexcept {
+  return CachedBumpView<SurfaceT>{
+      SurfaceOverlay<SurfaceT>{.base = &surface, .convexity_shift = curvature}, &cache};
+}
 
 // Spot bump: the reference spot and every fitted forward scale together, so the
 // bumped world is the same carry seen from a different spot. Yield and
@@ -3562,30 +3502,25 @@ template <class SurfaceT>
 [[nodiscard]] Result<double> bumped_pv(const SurfaceT& surface, const CurveSet& curves,
                                        const DerivContract& contract, const DerivConfig& cfg,
                                        double k_shift, double vol_shift, BumpReadCache& cache) {
-  const CachedBumpView<SurfaceT> view{&surface, k_shift, vol_shift, &cache};
-  return pv_under_view(view, curves, contract, cfg);
+  return pv_under_view(bump_view(surface, k_shift, vol_shift, cache), curves, contract, cfg);
 }
 
 // Task F-7: one smile-shape repricing. Both smile bumps run at ZERO spot and
-// vol shift, so the inner `CachedBumpView` is the identity-shift one whose
-// reads `cache_c_t0` already recorded for the center -- the four extra
-// evaluations therefore cost four strip INTEGRATIONS but no additional
-// surface reads at all.
+// vol shift, so they take the identity-shift cache slot whose reads
+// `cache_c_t0` already recorded for the center -- the four extra evaluations
+// therefore cost four strip INTEGRATIONS but no additional surface reads.
 template <class SurfaceT>
 [[nodiscard]] Result<double> skew_bumped_pv(const SurfaceT& surface, const CurveSet& curves,
                                             const DerivContract& contract, const DerivConfig& cfg,
                                             double slope, BumpReadCache& cache) {
-  const SkewShiftView<SurfaceT> view{CachedBumpView<SurfaceT>{&surface, 0.0, 0.0, &cache}, slope};
-  return pv_under_view(view, curves, contract, cfg);
+  return pv_under_view(skew_bump_view(surface, slope, cache), curves, contract, cfg);
 }
 
 template <class SurfaceT>
 [[nodiscard]] Result<double> convex_bumped_pv(const SurfaceT& surface, const CurveSet& curves,
                                               const DerivContract& contract, const DerivConfig& cfg,
                                               double curvature, BumpReadCache& cache) {
-  const ConvexShiftView<SurfaceT> view{CachedBumpView<SurfaceT>{&surface, 0.0, 0.0, &cache},
-                                       curvature};
-  return pv_under_view(view, curves, contract, cfg);
+  return pv_under_view(convex_bump_view(surface, curvature, cache), curves, contract, cfg);
 }
 
 // Injects one additional fixing (n_done -> n_done+1) into a COPY of `rv`,
@@ -3829,8 +3764,8 @@ template <class SurfaceT>
                                               bool skip_market_bumps) {
   const double h = bumps.spot_rel;
   const double dv = bumps.vol_abs;
-  const double ks_up = std::log1p(h);
-  const double ks_dn = std::log1p(-h);
+  const double ks_up = sticky_k_shift(StickyMode::StickyStrike, h);
+  const double ks_dn = sticky_k_shift(StickyMode::StickyStrike, -h);
   const CurveSet cs_up = respot_curves(curves, 1.0 + h);
   const CurveSet cs_dn = respot_curves(curves, 1.0 - h);
 
@@ -4482,8 +4417,8 @@ void ensure_var_swap_greeks_block(VarSwapSharedBlock& block, const SurfaceT& sur
       block.have_second_order = bumps.second_order;
       const double h = bumps.spot_rel;
       const double dv = bumps.vol_abs;
-      const double ks_up = std::log1p(h);
-      const double ks_dn = std::log1p(-h);
+      const double ks_up = sticky_k_shift(StickyMode::StickyStrike, h);
+      const double ks_dn = sticky_k_shift(StickyMode::StickyStrike, -h);
       const CurveSet cs_up = respot_curves(curves, 1.0 + h);
       const CurveSet cs_dn = respot_curves(curves, 1.0 - h);
 
@@ -4496,19 +4431,19 @@ void ensure_var_swap_greeks_block(VarSwapSharedBlock& block, const SurfaceT& sur
       BumpReadCache no_cache_dn;
       BumpReadCache no_cache_c;
       {
-        const CachedBumpView<SurfaceT> view{&surface, ks_up, 0.0, &no_cache_up};
+        const CachedBumpView<SurfaceT> view = bump_view(surface, ks_up, 0.0, no_cache_up);
         block.s_up_raw = resolve_var_swap_strip_raw(view, cs_up, T, block.cfg_pinned);
       }
       {
-        const CachedBumpView<SurfaceT> view{&surface, ks_dn, 0.0, &no_cache_dn};
+        const CachedBumpView<SurfaceT> view = bump_view(surface, ks_dn, 0.0, no_cache_dn);
         block.s_dn_raw = resolve_var_swap_strip_raw(view, cs_dn, T, block.cfg_pinned);
       }
       {
-        const CachedBumpView<SurfaceT> view{&surface, 0.0, dv, &no_cache_c};
+        const CachedBumpView<SurfaceT> view = bump_view(surface, 0.0, dv, no_cache_c);
         block.v_up_raw = resolve_var_swap_strip_raw(view, curves, T, block.cfg_pinned);
       }
       {
-        const CachedBumpView<SurfaceT> view{&surface, 0.0, -dv, &no_cache_c};
+        const CachedBumpView<SurfaceT> view = bump_view(surface, 0.0, -dv, no_cache_c);
         block.v_dn_raw = resolve_var_swap_strip_raw(view, curves, T, block.cfg_pinned);
       }
       if (block.have_second_order) {
@@ -4517,19 +4452,19 @@ void ensure_var_swap_greeks_block(VarSwapSharedBlock& block, const SurfaceT& sur
         BumpReadCache no_cache_mp;
         BumpReadCache no_cache_mm;
         {
-          const CachedBumpView<SurfaceT> view{&surface, ks_up, dv, &no_cache_pp};
+          const CachedBumpView<SurfaceT> view = bump_view(surface, ks_up, dv, no_cache_pp);
           block.sv_pp_raw = resolve_var_swap_strip_raw(view, cs_up, T, block.cfg_pinned);
         }
         {
-          const CachedBumpView<SurfaceT> view{&surface, ks_up, -dv, &no_cache_pm};
+          const CachedBumpView<SurfaceT> view = bump_view(surface, ks_up, -dv, no_cache_pm);
           block.sv_pm_raw = resolve_var_swap_strip_raw(view, cs_up, T, block.cfg_pinned);
         }
         {
-          const CachedBumpView<SurfaceT> view{&surface, ks_dn, dv, &no_cache_mp};
+          const CachedBumpView<SurfaceT> view = bump_view(surface, ks_dn, dv, no_cache_mp);
           block.sv_mp_raw = resolve_var_swap_strip_raw(view, cs_dn, T, block.cfg_pinned);
         }
         {
-          const CachedBumpView<SurfaceT> view{&surface, ks_dn, -dv, &no_cache_mm};
+          const CachedBumpView<SurfaceT> view = bump_view(surface, ks_dn, -dv, no_cache_mm);
           block.sv_mm_raw = resolve_var_swap_strip_raw(view, cs_dn, T, block.cfg_pinned);
         }
       }
@@ -4546,18 +4481,18 @@ void ensure_var_swap_greeks_block(VarSwapSharedBlock& block, const SurfaceT& sur
     if (bumps.second_order) {
       block.have_tdt_spot_bumps = true;
       const double h = bumps.spot_rel;
-      const double ks_up = std::log1p(h);
-      const double ks_dn = std::log1p(-h);
+      const double ks_up = sticky_k_shift(StickyMode::StickyStrike, h);
+      const double ks_dn = sticky_k_shift(StickyMode::StickyStrike, -h);
       const CurveSet cs_up = respot_curves(curves, 1.0 + h);
       const CurveSet cs_dn = respot_curves(curves, 1.0 - h);
       BumpReadCache no_cache_up;
       BumpReadCache no_cache_dn;
       {
-        const CachedBumpView<SurfaceT> view{&surface, ks_up, 0.0, &no_cache_up};
+        const CachedBumpView<SurfaceT> view = bump_view(surface, ks_up, 0.0, no_cache_up);
         block.s_up_tdt_raw = resolve_var_swap_strip_raw(view, cs_up, block.t_minus_dt, block.cfg_pinned);
       }
       {
-        const CachedBumpView<SurfaceT> view{&surface, ks_dn, 0.0, &no_cache_dn};
+        const CachedBumpView<SurfaceT> view = bump_view(surface, ks_dn, 0.0, no_cache_dn);
         block.s_dn_tdt_raw = resolve_var_swap_strip_raw(view, cs_dn, block.t_minus_dt, block.cfg_pinned);
       }
     }
@@ -5301,17 +5236,13 @@ std::uint64_t deriv_greeks_reprice_count_for_test() noexcept {
 double skew_shifted_iv_for_test(const EssviSurface& surface, double k_log, double T,
                                 double slope) noexcept {
   BumpReadCache cache;
-  const SkewShiftView<EssviSurface> view{
-      CachedBumpView<EssviSurface>{&surface, 0.0, 0.0, &cache}, slope};
-  return view.iv(k_log, T);
+  return skew_bump_view(surface, slope, cache).iv(k_log, T);
 }
 
 double convex_shifted_iv_for_test(const EssviSurface& surface, double k_log, double T,
                                   double curvature) noexcept {
   BumpReadCache cache;
-  const ConvexShiftView<EssviSurface> view{
-      CachedBumpView<EssviSurface>{&surface, 0.0, 0.0, &cache}, curvature};
-  return view.iv(k_log, T);
+  return convex_bump_view(surface, curvature, cache).iv(k_log, T);
 }
 
 // Mirrors `deriv_greeks`' own centre-then-pin sequence exactly, because a
