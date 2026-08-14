@@ -302,26 +302,127 @@ TEST(VolUmbrella, TierAIsClosedUnderInclusion) {
   }
 }
 
-// The README's tier table (under `## API stability policy (1.x)`) states the
-// Tier-A/Tier-B/`detail/` counts as prose, and says so itself: "Three of the
-// five digits above had rotted by v1, and the first three no longer can."
-// `UmbrellaIsExactlyTierA` above pins the Tier-A *set* against `kTierA`, but
-// nothing pinned `kTierA`'s own SIZE, nor Tier-B's or `detail/`'s -- so a
-// fourth silent drift (after Tier-A 56->57, Tier-B 23->31, `detail/` 25->28)
-// would again go uncaught until the next manual audit. Re-derive the same way
-// the README tells a human to: Tier-B is every top-level header minus Tier-A
-// minus `vol.hpp` itself; `detail/` is counted in the SOURCE tree only (the
-// README's "+1 generated" `detail/version_generated.hpp` is configure_file'd
-// into the install prefix, not `include_root()`, so it never appears here).
+// ── The README tier table, parsed back off disk ─────────────────────────────
 //
-// UPDATE PROCEDURE when a header is deliberately added/removed/promoted:
-// update the affected literal(s) below AND the README table (under
-// `## API stability policy (1.x)`) in the same commit, and confirm
-// `UmbrellaIsExactlyTierA` / `TierAIsClosedUnderInclusion` still pass. That
-// section name is spelled out because this pointer said `## Versioning` for its
-// whole life -- a heading the README has never carried, so it cost the fixer who
-// closed the second drift a search.
+// `TierCountsMatchTheReadmeTable` below reads the three Count cells out of the
+// README's tier table (under `## API stability policy (1.x)`) and compares them
+// to the live header tree. The table is therefore the ONLY place each of those
+// numbers is written down, and it is machine-checked.
 //
+// It used to work the other way: three integer literals lived HERE, and the
+// failure messages asked the reader to go update the README. That is a request,
+// not a mechanism, and it failed every time it was tested. The README sentence
+// restating the same triple had to be corrected at 222b379, 1e0b708, 738c9b4
+// and once again after -- four times, always because someone fixed the copy
+// they were shown and never learned the other existed.
+//
+// These helpers exist to make every way the parse can go wrong a LOUD, SPECIFIC
+// failure, which matters more than it looks. The three literals had exactly one
+// virtue: when one was wrong, it was wrong in public. A parser that quietly
+// stops matching is strictly worse -- it reports success while checking
+// nothing, which is the same shape as a grep that asked the wrong question and
+// returned a clean all-clear. So there is no default, no "skip if absent" and
+// no partial match: an unreadable file, a missing row, a DUPLICATE row and a
+// cell with no integer are four distinct errors, each naming the file and what
+// to go look at.
+struct ReadmeCount {
+  bool ok = false;
+  std::size_t value = 0;
+  std::string error;  // set iff !ok; phrased as something to go fix
+};
+
+// The README sits one level above the include root the other contract tests
+// already resolve, so no new build-system wiring is needed to find it.
+fs::path readme_path() { return include_root() / ".." / "README.md"; }
+
+std::string trim_cell(std::string_view s) {
+  const std::size_t b = s.find_first_not_of(" \t\r\n");
+  if (b == std::string_view::npos) return std::string{};
+  return std::string{s.substr(b, s.find_last_not_of(" \t\r\n") - b + 1)};
+}
+
+// `| a | b | c |` -> {"a", "b", "c"}. The outer pipes yield empty leading and
+// trailing fields; dropping them makes cell indices match what a reader counts.
+std::vector<std::string> markdown_cells(std::string_view line) {
+  std::vector<std::string> cells;
+  std::size_t start = 0;
+  while (true) {
+    const std::size_t bar = line.find('|', start);
+    if (bar == std::string_view::npos) {
+      cells.push_back(trim_cell(line.substr(start)));
+      break;
+    }
+    cells.push_back(trim_cell(line.substr(start, bar - start)));
+    start = bar + 1;
+  }
+  if (!cells.empty() && cells.front().empty()) cells.erase(cells.begin());
+  if (!cells.empty() && cells.back().empty()) cells.pop_back();
+  return cells;
+}
+
+// LEADING integer only: "34 + 9" -> 34, "31 (+1 generated)" -> 31. Two of the
+// three cells deliberately carry a second number that is NOT in the source tree
+// this test walks -- `simd/` for Tier-B, and the configure_file'd
+// version_generated.hpp that exists only in an install prefix -- so consuming
+// the whole cell would be wrong, not merely fragile.
+bool leading_uint(std::string_view cell, std::size_t& out) {
+  const std::size_t p = cell.find_first_of("0123456789");
+  if (p == std::string_view::npos) return false;
+  std::size_t v = 0;
+  for (std::size_t i = p; i < cell.size() && cell[i] >= '0' && cell[i] <= '9'; ++i) {
+    v = v * 10 + static_cast<std::size_t>(cell[i] - '0');
+  }
+  out = v;
+  return true;
+}
+
+// The Count cell of the tier-table row whose FIRST cell names `label`.
+ReadmeCount readme_tier_count(std::string_view label) {
+  ReadmeCount out;
+  const fs::path path = readme_path();
+  std::ifstream in(path, std::ios::binary);
+  if (!in.good()) {
+    out.error = "cannot open " + path.string() + " to read the tier table";
+    return out;
+  }
+
+  std::string line;
+  std::vector<std::string> counts;  // one per matching row, to detect ambiguity
+  std::size_t table_rows = 0;
+  while (std::getline(in, line)) {
+    if (line.empty() || line.front() != '|') continue;
+    ++table_rows;
+    const std::vector<std::string> cells = markdown_cells(line);
+    if (cells.size() < 3) continue;
+    if (cells[0].find(label) == std::string::npos) continue;
+    counts.push_back(cells[2]);
+  }
+
+  const std::string what{label};
+  if (counts.empty()) {
+    out.error = "no table row in " + path.string() + " has a first cell naming `" + what +
+                "` (" + std::to_string(table_rows) +
+                " table rows scanned) -- the tier table moved, lost that row, or "
+                "renamed it; this test reads the count FROM that row, so it cannot "
+                "fall back to a literal";
+    return out;
+  }
+  if (counts.size() > 1) {
+    out.error = std::to_string(counts.size()) + " table rows in " + path.string() +
+                " have a first cell naming `" + what +
+                "`, so which one states the count is ambiguous -- make the tier-table "
+                "row the only one";
+    return out;
+  }
+  if (!leading_uint(counts.front(), out.value)) {
+    out.error = "the Count cell for `" + what + "` in " + path.string() + " is \"" +
+                counts.front() + "\", which has no leading integer";
+    return out;
+  }
+  out.ok = true;
+  return out;
+}
+
 // AND RUN `-R VolUmbrella`, WHATEVER YOUR TASK'S OWN FILTER IS. These counts are
 // a GLOBAL invariant that fires on any header addition, so no topical filter
 // covers them and every locally-correct verification misses them. That is how
@@ -330,10 +431,25 @@ TEST(VolUmbrella, TierAIsClosedUnderInclusion) {
 // `-R "^(Arb|SplineVol|...)"`, each lane running precisely the filter it was
 // given. The instruction lives here rather than in a brief because a brief that
 // has to remember is a brief that will eventually forget.
+//
+// There is no longer an UPDATE PROCEDURE to follow. Adding or promoting a header
+// means editing the README tier table, and that is the whole of it -- this test
+// has no literal left to keep in step with it.
 TEST(VolUmbrella, TierCountsMatchTheReadmeTable) {
-  EXPECT_EQ(std::size(kTierA), std::size_t{58})
-      << "Tier-A count drifted -- update the README tier table (under "
-         "'## API stability policy (1.x)') alongside this literal";
+  const ReadmeCount tier_a_row = readme_tier_count("Tier-A");
+  const ReadmeCount tier_b_row = readme_tier_count("Tier-B");
+  const ReadmeCount detail_row = readme_tier_count("detail/");
+
+  // ASSERT rather than EXPECT: with no table there is nothing to compare
+  // against, and the three EXPECTs below would each report the same one fault.
+  ASSERT_TRUE(tier_a_row.ok) << tier_a_row.error;
+  ASSERT_TRUE(tier_b_row.ok) << tier_b_row.error;
+  ASSERT_TRUE(detail_row.ok) << detail_row.error;
+
+  EXPECT_EQ(std::size(kTierA), tier_a_row.value)
+      << "the README tier table says Tier-A is " << tier_a_row.value
+      << " but the umbrella manifest `kTierA` holds " << std::size(kTierA)
+      << " -- they are the same promise, so fix whichever is wrong";
 
   std::size_t top_level_headers = 0;
   for (const fs::directory_entry& entry :
@@ -343,20 +459,21 @@ TEST(VolUmbrella, TierCountsMatchTheReadmeTable) {
   // Tier-B = every top-level header minus the Tier-A ones minus vol.hpp itself.
   ASSERT_GT(top_level_headers, std::size(kTierA) + 1u);
   const std::size_t tier_b = top_level_headers - std::size(kTierA) - 1u;
-  EXPECT_EQ(tier_b, std::size_t{34})
-      << "Tier-B count drifted -- update the README tier table (under "
-         "'## API stability policy (1.x)') alongside this literal";
+  EXPECT_EQ(tier_b, tier_b_row.value)
+      << "the README tier table says Tier-B is " << tier_b_row.value << " but include/atx/vol/ "
+      << "holds " << top_level_headers << " top-level .hpp, minus " << std::size(kTierA)
+      << " Tier-A minus vol.hpp = " << tier_b;
 
   std::size_t detail_headers = 0;
   for (const fs::directory_entry& entry :
        fs::directory_iterator(include_root() / "atx" / "vol" / "detail")) {
     if (entry.is_regular_file() && entry.path().extension() == ".hpp") ++detail_headers;
   }
-  EXPECT_EQ(detail_headers, std::size_t{31})
-      << "detail/ count drifted -- update the README tier table (under "
-         "'## API stability policy (1.x)') alongside this literal (the "
-         "install-tree '+1 generated' header does not live under "
-         "include_root() and is not counted here)";
+  EXPECT_EQ(detail_headers, detail_row.value)
+      << "the README tier table says detail/ is " << detail_row.value
+      << " but include/atx/vol/detail/ holds " << detail_headers
+      << " .hpp (the table's '+1 generated' header is install-tree only and is "
+         "deliberately not counted here)";
 }
 
 // ── The demoted legacy surface containers (S4-T21 / plan 4.4) ───────────────

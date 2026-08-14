@@ -859,14 +859,20 @@ then `deriv_pnl.hpp` — the two-date swap P&L attribution — so Tier-B 33 →
 
 That drift is now caught by a test rather than by a reader.
 `VolUmbrella.TierCountsMatchTheReadmeTable` (`tests/vol_umbrella_test.cpp`)
-asserts the first three **Count** cells above against the live header tree —
-Tier-A from the umbrella manifest, Tier-B and `detail/` by counting `.hpp` files
-in the directories this table names — and each failure message says to update
-this table. It deliberately does not restate those digits: this sentence carried
-its own copy of the triple and had to be corrected at `222b379`, `1e0b708` and
-`738c9b4` before going stale a fourth time, because a lane updating the table
-four lines above never looked down here. Pointing at the cells is what retires
-that failure mode — the same move as the `+1 generated` relation below.
+**parses the first three Count cells out of the table above** and compares them
+to the live header tree — Tier-A against the umbrella manifest, Tier-B and
+`detail/` by counting `.hpp` files in the directories this table names. **This
+table is the pin.** Editing a cell here changes what the test asserts, and a
+header landing without a matching edit fails it; there is no literal in the test
+to keep in step, and no update procedure to remember.
+
+That is the second fix of this rot, and the first one did not hold. The test
+originally held three integer literals and asked, in its failure text, for a
+human to update this table — which is a request, not a mechanism. This very
+sentence restated the triple as a fourth copy and had to be corrected at
+`222b379`, `1e0b708` and `738c9b4` before going stale once more, every time
+because a lane fixed the copy it was shown. Removing the restatement got the
+count down to two copies; parsing the table got it to one.
 Previously the Tier-A *set* was machine-checked but no **count** was, and
 nothing compared any of them to this table at all, which is how three rows rotted
 undetected. `simd/` 9, `tools/` 6 and `research/` 9 remain prose: they are
