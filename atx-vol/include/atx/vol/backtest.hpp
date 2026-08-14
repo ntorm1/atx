@@ -1021,14 +1021,16 @@ struct RunConfig {
 // with dates and authorship the log never had.
 //
 // One thing the log did carry that the assert cannot, kept because it is a
-// RULING and not a count: `cancel` (15 -> 16) and `swap_pnl_explain` (17 -> 18)
-// were both INSERTED beside their semantic group rather than appended, which the
-// old convention forbade and this one requires. Both are safe for the same
-// reason, and it is a property of the tree rather than of the struct: there are
-// no positional `RunConfig{...}` initializers left to rebind.
+// RULING and not a count: `cancel` and `swap_pnl_explain` were both INSERTED
+// beside their semantic group rather than appended, which the old convention
+// forbade and this one requires. Both are safe for the same reason, and it is a
+// property of the tree rather than of the struct: there are no positional
+// `RunConfig{...}` initializers left to rebind. (The transition numbers those
+// two used to carry are gone with the rest -- a ruling about WHICH fields were
+// inserted needs no arithmetic, and the arithmetic is the part that rots.)
 //
 // BLIND SPOT: this probe pins the field COUNT, nothing else. It cannot see a
-// REORDER that leaves the count at 17 -- `aggregate_arity_is_v` (see
+// REORDER that leaves the count unchanged -- `aggregate_arity_is_v` (see
 // detail/aggregate_arity.hpp) only checks how many brace-initializer slots
 // `RunConfig{...}` accepts, with no notion of field NAMES or TYPES, so swapping
 // two existing fields (e.g. two `bool`s, or two `std::size_t`s) still compiles
@@ -1289,32 +1291,54 @@ struct BacktestResult {
   [[nodiscard]] Status validate() const;
 };
 
-// Drift pin: FORTY-ONE fields. Added in Task F-8 fix round 2 (I-5), late for a
-// struct this widely enumerated -- and no longer merely hygiene, because these
-// DECLARATIONS are now parsed by another language.
+// Drift pin, added in Task F-8 fix round 2 (I-5) -- late for a struct this
+// widely enumerated, and no longer merely hygiene, because these DECLARATIONS
+// are now parsed by another language.
 // `atx-vol/python/tests/test_render_strangle_vs_varswap.py` derives the
 // example's attach table and the renderer's column roster by reading the
 // `std::vector<double>` lines above; a field added or reordered here propagates
 // silently into that lane, whose build cannot catch it.
 //
-// THE NUMBER ABOVE CAME FROM THE COMPILER, AND THAT IS THE POINT. Before this
-// line existed, THREE independent careful counts of this struct disagreed: a
-// reviewer said Task F-8 added 8 fields, a second lane said 9, and the author's
-// own script said the struct held 31 in total. The truth is 41 total and 8
-// added -- the "9th" was `RunConfig::swap_pnl_explain`, a different struct in
-// the same file's diff, and the script silently dropped 11 fields because a
-// trailing `// comment` after a `;` broke its statement split. Three ways of
-// counting by hand, three different answers, and the build settles it in one
-// compile.
+// THE COUNT IS IN THE `static_assert` AND NOWHERE ELSE, for the same reason it
+// was removed from `RunConfig`'s pin above -- including from this paragraph,
+// which opened with it until fix round 3 and would have been the fifth stale
+// count in this file's history.
 //
-// WHEN THIS FIRES, three places need the new column, not one:
-//   1. `kSwapExplainColumns` (src/backtest.cpp) if it is a `swap_explain_*`
-//      column -- that table drives `validate()`, `push_row`, and both
-//      `backtest_db.cpp` rosters, and nothing ties it to these declarations
-//      except this pin.
-//   2. `validate()`'s own column checks, for any other optional column.
-//   3. Nothing on the Python side needs editing for an APPENDED `swap_explain_*`
-//      column -- it derives -- but a RENAME or a REORDER breaks
+// WHY A HAND COUNT IS NOT AN OPTION HERE, which is the part worth keeping.
+// Before this pin existed, THREE independent careful counts of this struct
+// disagreed: a reviewer counted the fields Task F-8 added, a second lane counted
+// one more, and the author's own script counted the struct total. The reviewer
+// was right; the extra field was `RunConfig::swap_pnl_explain`, a DIFFERENT
+// struct that one `git show` presents in the same field of view; and the script
+// silently dropped eleven members because a trailing `// comment` after a `;`
+// broke its statement split -- returning a confident number from a broken
+// assumption, which is the shape of every sweep that reported clean this sprint.
+// Three ways of counting by hand, three different answers, and the build settles
+// it in one compile.
+//
+// WHEN THIS FIRES, here is every site that needs the new column. Re-derived by
+// enumeration in fix round 3, because the previous version said "three places"
+// and was wrong: it asserted the Python side derives, which is true of the
+// RENDERER and false of the example's attach table.
+//
+//   1. `kSwapExplainColumns` (src/backtest.cpp), for a `swap_explain_*` column.
+//      That roster drives `validate()`, `push_row`, and both `backtest_db.cpp`
+//      rosters, so those four need nothing. Nothing ties the roster to these
+//      declarations except this pin.
+//   2. `BacktestResult::validate()`'s own column checks, for any OTHER optional
+//      column (one not on the explain roster).
+//   3. `attach_swap_columns` (examples/varswap_compare_example.cpp) -- a
+//      hand-written mirror of the roster that CANNOT be driven from it, because
+//      atx-vol/python parses its literal rows. Its own `static_assert` against
+//      `swap_explain_column_count()` fires too, so this is a build error rather
+//      than a reminder.
+//   4. `kNaNSlots` (tests/scenario_grid_test.cpp) if the new field is a `double`
+//      on `DerivGreeks` rather than a `BacktestResult` column -- different
+//      struct, same failure mode, and that list must name every double member
+//      whether the kernel reads it or not.
+//   5. Nothing on the Python side for an APPENDED `swap_explain_*` column: the
+//      renderer and the gate both DERIVE from these declarations. A RENAME or a
+//      REORDER does break
 //      `test_the_example_attaches_every_explain_column_the_header_declares`,
 //      which is that test working, not that test being wrong.
 //
@@ -1361,6 +1385,14 @@ struct BacktestExplainColumn {
 // idiom for single-sourcing a column roster, and adding a second idiom to
 // remove a duplicated list is a duplicated rule one level up.
 [[nodiscard]] std::span<const BacktestExplainColumn> swap_explain_columns() noexcept;
+
+// The roster's size, as a CONSTANT EXPRESSION. `swap_explain_columns()` is a
+// runtime span, so a caller that mirrors the roster by hand -- there is one,
+// `attach_swap_columns` in examples/varswap_compare_example.cpp, which cannot be
+// driven from the roster because atx-vol/python parses its literal rows -- has
+// no way to `static_assert` against it. This gives it one, so a ninth column
+// breaks that mirror's build instead of only the cross-language gate.
+[[nodiscard]] constexpr std::size_t swap_explain_column_count() noexcept { return 8u; }
 
 // One entry in the engine's insertion-ordered delta-hedge share ledger. Order is
 // economically significant: share P&L, financing, and subsequent hedge trades

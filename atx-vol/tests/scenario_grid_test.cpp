@@ -1711,45 +1711,52 @@ TEST(ScenarioGridDeriv, TaylorAndExactAgreeAcrossTheKindSpace) {
   }
 }
 
-// ── Is the ten-term enumeration exhaustive BY CONSTRUCTION? ─────────────────
+// ── The SHOCK-GATING agreement, and precisely what it does not see ──────────
 //
-// It was not. `scenario_deriv_taylor_leg` and `scenario_deriv_greeks_sufficient`
-// are two hand-written copies of one rule, 25 lines apart, defended in prose
-// ("deliberately the same disjunctions"). Nothing ran them against each other,
-// so an eleventh term keyed off an EXISTING sensitivity and an EXISTING shock --
-// `theta_carry` on the `dt` axis, say, which sits two lines from `theta` in the
-// same struct and is `kQuietNaN`-defaulted -- would have fired no pin and no
-// test. Three partial patches had already been applied to this promise.
+// `scenario_deriv_taylor_leg` and `scenario_deriv_greeks_sufficient` are two
+// hand-written copies of one rule, 25 lines apart. This test runs them against
+// each other over all 64 on/off combinations of the six shocks, with an ALL-NaN
+// `DerivGreeks`: the kernel is then finite iff it read NOTHING and the predicate
+// is true iff it demands NOTHING, so `isfinite(kernel) == sufficient` compares
+// the two gate-sets directly, in both directions, over every branch of both.
 //
-// This is the artifact that makes a fourth partial patch impossible rather than
-// unlikely. With an ALL-NaN `DerivGreeks`, the kernel is finite iff it reads
-// NOTHING, and the predicate is true iff it demands NOTHING. So over the 64
-// on/off combinations of the six shocks, `isfinite(kernel) == sufficient` is an
-// equality between "what the kernel actually touched" and "what the predicate
-// claims it touches" -- a statement the compiler evaluates over every branch of
-// both, in both directions, with no list of field names anywhere in it.
+// WHAT THIS CATCHES:
+//   * a term gated in the kernel but missing from the predicate, WHEN the field
+//     it reads is one the predicate would otherwise have refused on -- deleting
+//     the `has_dt -> theta` gate gives exactly 1 mismatch of 64, at mask 4.
+//   * a term in the predicate but not in the kernel; the equality fails the
+//     other way.
+//   * an UNGATED term on any field -- the kernel then reads at mask 0, where the
+//     predicate must say "demands nothing".
+//   * a term needing a NEW shock field -> `ScenarioDerivSpec`'s arity pin.
+//   * a term needing a NEW `DerivGreeks` field -> the static_assert below.
 //
-// WHAT FAILS IF SOMEONE ADDS AN ELEVENTH TERM, stated as a mechanism:
-//   * ungated term reading an existing NaN-capable field -> the kernel returns
-//     NaN on some combination where the predicate still says "sufficient", and
-//     the EXPECT_EQ below fails on that combination.
-//   * a term gated in the kernel but missing from the predicate -> the predicate
-//     says "sufficient" while the kernel reads; same failure, same line.
-//   * a term in the predicate but not the kernel -> the predicate refuses a
-//     combination the kernel handles fine; the equality fails the other way.
-//   * a term needing a NEW shock field -> `ScenarioDerivSpec`'s arity pin fires.
-//   * a term needing a NEW `DerivGreeks` field -> the static_assert in this file
-//     fires, and its message points here.
-// The only surviving hole is a term whose sensitivity is never NaN under any
-// configuration, which cannot poison a cell and is therefore not what any of
-// this is defending against.
+// WHAT THIS CANNOT CATCH, AND THE REASON, BECAUSE THE ROUND THAT WROTE THIS TEST
+// CLAIMED OTHERWISE:
+//
+// The equality is SYMMETRIC and FIELD-BLIND. It compares "did the kernel touch
+// anything NaN" against "does the predicate demand anything" -- two booleans,
+// not two field sets. So it is blind to a term that reads a field the predicate
+// never checks, under a shock that already forces the predicate false for a
+// DIFFERENT field. Concretely:
+//
+//     const double pcarry = (dt == 0.0) ? 0.0 : g.theta_carry * dt;
+//
+// gated, unmirrored, on a field `scenario_deriv_greeks_sufficient` never names.
+// Measured: this mutant scores 0/64 here. It passes this test completely.
+// `ASufficientVerdictAlwaysYieldsAFiniteKernel` below is the artifact that
+// catches it, and its `kNaNSlots` list -- not this equality -- is what stands
+// between this codebase and that shape.
+//
+// This test's job is the gate-set agreement, which it does well and cheaply. It
+// is not the exhaustiveness proof the round that added it called it.
 TEST(ScenarioGridDeriv, TheKernelAndItsSufficiencyPredicateAgreeOnAll64ShockCombinations) {
-  // If `DerivGreeks` grows a sensitivity, decide whether the deriv Taylor kernel
-  // reads it. This assert is the only thing that asks.
+  // If `DerivGreeks` grows a field, decide whether the deriv Taylor kernel reads
+  // it. This assert is the only thing that asks.
   static_assert(atx::vol::detail::aggregate_arity_is_v<DerivGreeks, 14>,
                 "DerivGreeks gained a field: decide whether scenario_deriv_taylor_leg reads it, "
-                "gate it in scenario_deriv_greeks_sufficient if so, extend kNaNSlots below, "
-                "then update this pin.");
+                "gate it in scenario_deriv_greeks_sufficient if so, add it to kNaNSlots below "
+                "(which must name EVERY double member, read or not), then update this pin.");
 
   const double nan = std::numeric_limits<double>::quiet_NaN();
   DerivGreeks all_nan{};
@@ -1805,25 +1812,84 @@ TEST(ScenarioGridDeriv, TheKernelAndItsSufficiencyPredicateAgreeOnAll64ShockComb
          "constant makes the agreement check vacuous";
 }
 
-// The equality above is symmetric, so it cannot say WHICH side is permissive.
-// This one can, and it is the direction that matters: the promise is that no NaN
-// reaches a cell, so a predicate that says "sufficient" while the kernel reads a
-// NaN is the failure that ships. One slot NaN at a time, every shock combination.
+// THIS IS THE TEST THAT CLOSES THE GAP. The equality above is symmetric and
+// field-blind; this one is neither, and it is the direction that ships: a
+// predicate saying "sufficient" while the kernel reads a NaN puts a NaN in a
+// cell total with the grid reporting success.
+//
+// ── `kNaNSlots` MUST NAME EVERY `double` MEMBER OF `DerivGreeks` ───────────
+//
+// Not every slot the kernel reads TODAY. That distinction is the whole test.
+// A list of what the kernel currently reads is definitionally unable to catch a
+// kernel that STARTS reading something it did not before, which is exactly the
+// shape the sibling test cannot see either:
+//
+//     const double pcarry = (dt == 0.0) ? 0.0 : g.theta_carry * dt;
+//
+// gated, unmirrored, on a field the predicate never names. `theta_carry` and
+// `theta_zero_fixing` are `kQuietNaN`-DEFAULTED (derivatives.hpp), so before
+// this round they were left at NaN by the `DerivGreeks g{}` below and this test
+// caught that mutant BY ACCIDENT -- the strength came from a field initializer
+// in another header that no test named, and it evaporated if anyone ever
+// defaulted them to 0.0. It is now explicit: they are listed, set to 1.0 with
+// everything else, and NaN'd deliberately in their turn.
+//
+// So an omission from this list is a SILENT HOLE, not a weakening. The previous
+// comment here said "incompleteness only weakens the test"; that was false, and
+// it was false about the one list doing the real work.
+//
+// Enumerated against the struct rather than pattern-matched, because a fence
+// expressed as a name pattern has exactly the blind spot the pattern has. All 14
+// members of `DerivGreeks`: 13 doubles, all listed below; plus `quote`, a nested
+// `DerivQuote` this table's `double DerivGreeks::*` type CANNOT express -- the
+// kernel does not read it, and a future term reading `g.quote.anything` needs
+// this table's type widened, which is stated here because nothing else would say
+// it. The arity pin in the sibling test is what notices a 15th member.
 TEST(ScenarioGridDeriv, ASufficientVerdictAlwaysYieldsAFiniteKernel) {
   const double nan = std::numeric_limits<double>::quiet_NaN();
-  // Every slot the kernel reads. Incompleteness here only weakens the test, and
-  // the arity pin in the sibling test above is what notices a new one.
   const struct {
     const char *name;
     double DerivGreeks::*slot;
   } kNaNSlots[] = {
+      // Read by the kernel today, and gated in the predicate.
       {"delta", &DerivGreeks::delta},   {"gamma", &DerivGreeks::gamma},
       {"vega", &DerivGreeks::vega},     {"volga", &DerivGreeks::volga},
       {"vanna", &DerivGreeks::vanna},   {"theta", &DerivGreeks::theta},
       {"rho", &DerivGreeks::rho},       {"charm", &DerivGreeks::charm},
       {"skew_vega", &DerivGreeks::skew_vega},
       {"convexity_vega", &DerivGreeks::convexity_vega},
+      // NOT read by the kernel today, and therefore not gated -- which is
+      // precisely why they belong here. These three are where a gated-but-
+      // unmirrored eleventh term would land, and listing them is what turns
+      // catching it from an accident into a property.
+      {"theta_carry", &DerivGreeks::theta_carry},
+      {"theta_zero_fixing", &DerivGreeks::theta_zero_fixing},
+      {"pv", &DerivGreeks::pv},
   };
+  static_assert(std::size(kNaNSlots) == 13u,
+                "kNaNSlots must name every double member of DerivGreeks -- 13 of its 14 "
+                "members; the 14th, `quote`, is a nested aggregate this table cannot hold");
+
+  // ── POSITIVE CONTROL, MEASURED ────────────────────────────────────────────
+  //
+  // Non-vacuity demonstrated, not asserted -- it was accidental until this round
+  // and nothing recorded that. Compiled out-of-tree against a copy of
+  // scenario_grid.hpp carrying the gated-but-unmirrored term
+  // `pcarry = (dt == 0.0) ? 0.0 : g.theta_carry * dt`:
+  //
+  //     shipped :  sibling 0 leaks       2^6 equality 0/64
+  //     mutant  :  sibling 32 leaks      2^6 equality 0/64   <- the equality MISSES it
+  //                first leak: slot theta_carry, mask 4
+  //
+  // 32 is exactly the number of shock masks with `dt` set (2^5), all on
+  // `theta_carry`'s own pass -- so the catch is attributable to one listed slot
+  // rather than smeared across the table. That attributability IS the fix: an
+  // earlier review measured 152 leaks for the same mutant because
+  // `theta_carry`/`theta_zero_fixing`/`pv` were absent from the list and sat at
+  // their kQuietNaN defaults, poisoning every OTHER slot's pass as a side
+  // effect. Same mutant caught, but for a reason no test named and that a
+  // one-word change to a defaulted initializer in another header would have
+  // silently removed.
 
   for (const auto &slot : kNaNSlots) {
     DerivGreeks g{};
@@ -1837,6 +1903,12 @@ TEST(ScenarioGridDeriv, ASufficientVerdictAlwaysYieldsAFiniteKernel) {
     g.charm = 1.0;
     g.skew_vega = 1.0;
     g.convexity_vega = 1.0;
+    // The three the kernel does not read are set FINITE here too, so this test
+    // no longer inherits its strength from `DerivGreeks`' kQuietNaN defaults.
+    // Each is NaN'd only on its own pass through `kNaNSlots`.
+    g.theta_carry = 1.0;
+    g.theta_zero_fixing = 1.0;
+    g.pv = 1.0;
     g.*(slot.slot) = nan;
 
     for (unsigned mask = 0; mask < 64u; ++mask) {

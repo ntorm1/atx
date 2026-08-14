@@ -59,6 +59,27 @@ constexpr double kContracts = 100.0;
       {"swap_explain_residual", &r.swap_explain_residual},
       {"swap_explain_unattributed", &r.swap_explain_unattributed},
   };
+  // R2-I3, PARTIALLY addressed -- read this before assuming the table above is
+  // free-standing. It is a hand-written copy of `swap_explain_columns()`, and it
+  // could NOT be driven from that roster in fix round 3.
+  //
+  // Driving it was attempted and reverted, with the measurement:
+  // `test_render_strangle_vs_varswap.py` derives this fixture's signal tail by
+  // PARSING these `{"name", &r.field}` rows (`example_attached_columns`, which
+  // requires `text.startswith('{"')`). Replacing them with a loop over the
+  // roster leaves nothing to parse, and that module raises at IMPORT time -- all
+  // eight of its tests fail to collect, not one assertion. The gate is behaving
+  // exactly as designed; the fix belongs in the Python lane, repointing that
+  // parser at the roster, and is a two-lane change.
+  //
+  // What IS closed here: the size coupling. A ninth roster column now breaks
+  // THIS build rather than only the cross-language gate, so the copy cannot
+  // silently fall behind even if the Python lane is never run.
+  static_assert(std::size(columns) == swap_explain_column_count() + 2u,
+                "this attach table is a hand-written mirror of swap_explain_columns() plus "
+                "swap_pv/swap_pnl; the roster gained or lost a column, so add or remove the "
+                "matching {\"name\", &r.field} row here (it cannot be driven from the roster "
+                "-- atx-vol/python parses these rows, see the note above)");
   for (const auto &[name, column] : columns) {
     if (column->size() != r.size()) {
       return atx::core::Err(atx::core::ErrorCode::InvalidArgument,

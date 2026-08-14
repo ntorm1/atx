@@ -952,6 +952,12 @@ constexpr BacktestExplainColumn kSwapExplainColumns[] = {
 };
 static_assert(std::size(kSwapExplainColumns) == kSwapExplainCount,
               "the explain roster and its index enum must name the same columns");
+// And the header's constant-expression view of the same size, which the
+// example's hand-written mirror static_asserts against because it cannot be
+// driven from the roster -- see `swap_explain_column_count` (backtest.hpp) and
+// the note in `attach_swap_columns` (examples/varswap_compare_example.cpp).
+static_assert(std::size(kSwapExplainColumns) == swap_explain_column_count(),
+              "swap_explain_column_count() must equal the roster it describes");
 
 // One step's swap-lane economics, in QTY-SCALED position dollars.
 struct SwapStepResult {
