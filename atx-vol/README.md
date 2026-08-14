@@ -792,12 +792,17 @@ and "verified" look identical once written down:
   plus the `atx-vol-pricing-forcescalar` ctest lane).
 - **`· construction`** — neutral because of what the knob *does*: it gates a
   printout or names an output file, and no computed value reads it.
-- **`· asserted`** — reasoned, not verified. No test names the variable. These
-  are the cells to attack first if you doubt the column, and note that some of
-  their `Effect` cells argue for a *neighbouring* property: `ATX_VOL_ZC_BORROW`'s
-  reads "cannot make a run non-deterministic", which is determinism, not the
-  path-equivalence this column claims. A justification for an adjacent theorem
-  reads exactly like a justification for this one.
+- **`· asserted`** — reasoned, not verified. No test found for it. These are the
+  cells to attack first if you doubt the column. When reading their `Effect`
+  cells, check the justification proves *this* property: a cell arguing that a
+  knob "cannot make a run non-deterministic" has argued determinism, not the
+  path-equivalence this column claims, and a justification for an adjacent
+  theorem reads exactly like a justification for this one. `ATX_VOL_ZC_BORROW`
+  carried precisely that mismatch until a test was found for it.
+
+A qualifier in brackets narrows the evidence rather than decorating it —
+**`(real-data)`** means the test is gated on a market-data archive and
+`GTEST_SKIP`s without one, so it does not run in a stock checkout.
 
 The grades come from asking which files under `atx-vol/tests/` name each
 variable. That is a name-based instrument and this lane has twice shown name
@@ -820,7 +825,7 @@ Last-place bits do differ between SSE2 and FMA builds, but that is
 | `ATX_VOL_CORPUS_PHASE_TIMING` | neutral · construction | Prints the corpus build's phase split. Collection is unconditional and cheap; only the report is gated | unset = off | library — `src/dispersion_run.cpp` | **keep** |
 | `ATX_VOL_PROFILE` | neutral · construction | Prints per-phase fit timings from `curve_fit` and `surface_parity`. **Not** the CMake option of the same name — see the collision note below | unset = off | library — `src/curve_fit.cpp`, `src/surface_parity.cpp` | **keep**, rename candidate |
 | `ATX_SLICE_DEBUG` | neutral · construction | Prints `curve_fit`'s per-slice fit-preparation outcome (why a chain did or did not become a fittable slice) | unset = off | library — `src/curve_fit.cpp` | **keep** |
-| `ATX_VOL_ZC_BORROW` | neutral · asserted | `0` forces the owned-reconstruct archive path instead of the zero-copy borrow. Read once per process, so it cannot make a run non-deterministic | unset = borrow allowed | library — `src/backtest.cpp` | **keep**, deprecation candidate |
+| `ATX_VOL_ZC_BORROW` | neutral · test (real-data) | `0` forces the owned-reconstruct archive path instead of the zero-copy borrow. Path-equivalence of those two is pinned by `ZcViewParity` (`tests/zc_view_parity_diag_test.cpp`), which compares `reconstruct_entry` against `map_entry` under `std::bit_cast` and asserts four mismatch counters are zero, plus a second test through the hot batch seam — gated on a real-market archive, so it `GTEST_SKIP`s where that is absent | unset = borrow allowed | library — `src/backtest.cpp` | **keep**, deprecation candidate |
 | `ATX_VOL_ZC_BACKING` | neutral · asserted | `map` or `copy` overrides the caller-declared `ArchiveBacking` on the borrow path. Read once per process | unset = the caller's choice stands | library — `src/backtest.cpp` | **keep**, deprecation candidate |
 | `ATX_VOL_AL_PROBE` | neutral · construction | Arms the Andersen-Lake zone cycle-attribution probe, read once into `g_mode` at process load. Any non-empty value turns it on; a value containing `s`/`S` additionally records each cold boundary solve's normalized query state. Attribution only — the priced values it counts around are unaffected | unset = off | library — `src/al_probe.cpp` | **keep** |
 | `ATX_VOL_AL_PROBE_OUT` | neutral · construction | File path for the per-state binary trace `ATX_VOL_AL_PROBE`'s `s`/`S` flag records; the human-readable `alprobe.*` summary itself always goes to the stream `dump()` was called with, not this path. Unset just skips writing the trace file. Meaningless unless `ATX_VOL_AL_PROBE` is set | unset = trace not written | library — `src/al_probe.cpp` | **keep** |
