@@ -21,8 +21,11 @@
 //
 // ── GOVERNING SOURCE ────────────────────────────────────────────────────────
 //
-// Every rule below is implemented from, and cited against, the CURRENT Cboe
-// text -- not the retired white papers:
+// Every Cboe rule below is implemented from, and quoted against, the CURRENT
+// text -- not the retired white papers. (Two things below are NOT Cboe rules and
+// say so at the point of use: the negative-variance refusal, which is a
+// library-level guard against handing back a NaN vol, and the open question at
+// the end of the non-calculable section.)
 //
 //   [CUR-M]  Cboe Global Indices, "Cboe Volatility Index -- Mathematics
 //            Methodology", Version 5.0, revised 2026-02-26.
@@ -34,9 +37,23 @@
 //            https://cdn.cboe.com/api/global/us_indices/governance/
 //              Volatility_Index_Methodology_Cboe_Volatility_Index.pdf
 //
-// `cboe_strip_test.cpp` reproduces [CUR-V]'s published 268-row worked example
-// end to end, which is what pins the rules below to the source rather than to
-// this comment.
+// WHAT IS CITATION-BACKED, AND WHAT IS NOT. `cboe_strip_test.cpp`'s
+// `WhitePaper_*` cases reproduce [CUR-V]'s published worked example from
+// APPENDIX 5's per-strike MIDPOINTS Q(K) through to the published sigma^2 for
+// both expiries and the published index level of 13.93 -- all 268 published
+// strip rows, every published dK, both strip sums. That is the citation-backed
+// half, and it is what pins K_0, the dK convention, the OTM selection, the K_0
+// average and the Taylor term to the source rather than to this comment.
+//
+// It is NOT a reproduction from the raw board. Appendix 4's several-hundred-row
+// bid/ask board is not transcribed, so most strip members are fed as
+// bid == ask == Q. Raw published quotes are used at the exclusion boundaries
+// (Appendix 3's tables), which is what makes the truncation rule genuinely
+// exercised against published quotes at the strikes where it fires -- but the
+// midpoint convention across the rest of the board, and the 2025 zero-ask rule,
+// are pinned by this library's OWN fixtures, not by the citation. A reader
+// deciding how far to trust this module against exchange settlement should read
+// `cboe_strip_test.cpp`'s header, which enumerates those gaps precisely.
 //
 // THE FORMULA, [CUR-M] §3(a)(iv):
 //
@@ -93,8 +110,16 @@
 // excluded for quote quality (near-term 1400 / 1410 / 1420 puts and the 2100
 // call; next-term 1275 / 1325 puts). Re-deriving all 268 published dK values
 // from the SURVIVING strikes reproduces every one; re-deriving them from the
-// BOARD fails at exactly those six. `WhitePaper_*` in the test file asserts
-// them individually.
+// BOARD fails at exactly those six.
+//
+// Note which half of that a test enforces:
+// `WhitePaper_DeltaKUsesSurvivingStrikesNotBoardStrikes` asserts the six
+// surviving-strike values individually (and `WhitePaper_NearTermStrip` /
+// `_NextTermStrip` assert all 268). The "board derivation fails there" half is a
+// property of the published DATA, established off-tree and cross-checked
+// independently three times; no test re-derives the wrong reading, because
+// nothing in this module implements it. The six values are carried in the test's
+// comments so the contrast stays visible.
 //
 // ── Selection and exclusion, [CUR-M] §3(a)(iii) ─────────────────────────────
 //
@@ -311,6 +336,15 @@ static_assert(detail::aggregate_arity_is_v<CboeVarStrip, 12>,
 //               leave it default-constructed. `nullptr` (the default) simply
 //               forgoes it. Same channel convention as
 //               `forward_var_fair_strike`'s own `diagnostic_out`.
+//
+//               "Every" is a checkable claim, so it is checked:
+//               `Diagnostic_IsAssignedOnEveryReturnPath` drives all six returns
+//               this function has and fails if any leaves the caller's struct
+//               untouched. It cannot police a SEVENTH return added later --
+//               every return routes through one of two local helpers precisely
+//               so that bypassing them has to be deliberate, but that is a code
+//               convention, not an enforced one. A new early return needs a new
+//               case in that test.
 //
 // @return InvalidArgument when the INPUT is malformed: `forward`, `df` or
 //         `maturity_t` non-finite or non-positive; fewer than two board rows; a

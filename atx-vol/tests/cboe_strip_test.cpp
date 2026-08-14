@@ -17,7 +17,10 @@
 //    Hypothetical SPX calculation for 2022-09-27 10:45:15 ET. All 268 published
 //    strip rows (146 near-term, 122 next-term) with their published Q(K) and dK
 //    are below, and both published sigma^2 values are asserted. This is what
-//    pins this library against the exchange.
+//    pins K_0, the dK convention, the OTM selection, the K_0 average and the
+//    Taylor term against the exchange -- reading from Appendix 5's MIDPOINTS
+//    onward. It is NOT a reproduction from the raw board; the gaps below say
+//    exactly which rules therefore fall outside it and rest on our own fixtures.
 //
 // 2. `WorkedExample_HandDerived` is a SIX-STRIKE board with the whole derivation
 //    written out as arithmetic literals. It pins the formula against numbers a
@@ -722,6 +725,56 @@ TEST(CboeStrip, Degenerate_BadScalarArguments) {
     const auto got = cboe_var_strike(board, kF, kDf, bad_t);
     ASSERT_FALSE(got.has_value()) << "T " << bad_t;
     EXPECT_EQ(got.error().code(), ErrorCode::InvalidArgument);
+  }
+}
+
+// The header promises `diagnostic_out` is assigned on EVERY return path. That is
+// a checkable claim, so it is checked rather than asserted: this drives all six
+// returns `cboe_var_strike` has and fails if any leaves the caller's struct
+// untouched. A sentinel that no real path could produce distinguishes "assigned
+// a default-constructed strip" (correct for paths that failed before resolving
+// anything) from "never written".
+//
+// It cannot police a SEVENTH return added later -- see the note beside the
+// `publish`/`fail` helpers. A new early return needs a new case here.
+TEST(CboeStrip, Diagnostic_IsAssignedOnEveryReturnPath) {
+  const auto sentinel = [] {
+    CboeVarStrip s{};
+    s.k0 = -12345.0; // no resolved K0 is ever negative
+    return s;
+  };
+
+  struct Case {
+    const char *name;
+    std::vector<CboeStrikeQuote> board;
+    double forward;
+    double df;
+    double maturity_t;
+    bool expect_success;
+  };
+  std::vector<CboeStrikeQuote> null_k0 = worked_board();
+  null_k0[3].call_bid = 0.0;
+  null_k0[3].call_ask = 0.0;
+  std::vector<CboeStrikeQuote> empty_wing = worked_board();
+  empty_wing[4].call_bid = 0.0;
+  empty_wing[5].call_bid = 0.0;
+  std::vector<CboeStrikeQuote> thin = worked_board();
+  thin.push_back(row(260.0, 0.05, 0.15, 155.00, 156.00));
+
+  const std::vector<Case> cases = {
+      {"validate_board failure", worked_board(), kF, kDf, -1.0, false},
+      {"no K0 resolvable", worked_board(), 69.9, kDf, kT, false},
+      {"K0 not quotable", null_k0, kF, kDf, kT, false},
+      {"empty OTM wing", empty_wing, kF, kDf, kT, false},
+      {"negative variance", thin, 200.0, kDf, kT, false},
+      {"success", worked_board(), kF, kDf, kT, true},
+  };
+
+  for (const Case &c : cases) {
+    CboeVarStrip diag = sentinel();
+    const auto got = cboe_var_strike(c.board, c.forward, c.df, c.maturity_t, &diag);
+    EXPECT_EQ(got.has_value(), c.expect_success) << c.name;
+    EXPECT_NE(diag.k0, -12345.0) << c.name << ": diagnostic_out was never assigned";
   }
 }
 

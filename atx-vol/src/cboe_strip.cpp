@@ -1,7 +1,8 @@
 // cboe_strip.hpp implementation -- the published discrete-strike variance sum.
 //
-// The header states the formula, cites every rule to [CUR-M]/[CUR-V], and names
-// the two conditions under which the index cannot be calculated. This file is
+// The header states the formula, quotes each Cboe rule to [CUR-M]/[CUR-V], and
+// names the two conditions under which the index cannot be calculated, plus the
+// one refusal here that is NOT a Cboe rule (negative variance). This file is
 // the mechanical transcription: validate the board once at the boundary,
 // resolve K_0, walk each wing under the zero-quote exclusion rule, refuse the
 // board if either wing came back empty or K_0 is unquotable, resolve dK over the
@@ -182,8 +183,11 @@ constexpr std::size_t kExcludedRunToTruncate = 2;
 Result<CboeVarStrip> cboe_var_strike(std::span<const CboeStrikeQuote> board, double forward,
                                      double df, double maturity_t, CboeVarStrip *diagnostic_out) {
   CboeVarStrip out{};
-  // Every return below goes through one of these two, so the every-return-path
-  // guarantee `diagnostic_out` advertises cannot be broken by adding a branch.
+  // Every return below goes through one of these two. That is a convention, not
+  // an enforced invariant -- a future early return could bypass them -- so the
+  // header's every-return-path claim is backed by
+  // `Diagnostic_IsAssignedOnEveryReturnPath`, which drives all six. Route new
+  // returns through these and add a case there.
   const auto publish = [&]() {
     if (diagnostic_out != nullptr) {
       *diagnostic_out = out;
