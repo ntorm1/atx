@@ -27,6 +27,14 @@ tautology dressed as coverage. What is parsed instead:
     attaches — asserted to contain NO explain column, which is the
     anti-regression for the unification itself.
 
+THE COLUMN SET ITSELF IS NO LONGER THIS MODULE'S JOB, as of fix round 8.
+`tests/varswap_compare_columns_test.cpp` links the example's translation unit,
+calls the shipped attach, writes a real TSV and diffs its header against
+`swap_explain_columns()` — the artifact, not the source text. Three mutations
+that this module was measured to pass are red there; see
+`example_derives_the_explain` for the list and for what parsing still does buy.
+Do not answer a gap in that C++ test by sharpening a regex here.
+
 The fixture below is hand-built rather than produced by a run, and it encodes
 the four data facts the renderer has to survive:
 
@@ -301,22 +309,39 @@ def roster_columns(source: str, where: str) -> list[str]:
 
 
 def example_derives_the_explain(source: str, where: str) -> bool:
-    """Does the example still DERIVE its explain tail from the roster?
+    """Is there a roster-driven attach loop in the example's source TEXT?
 
-    THE OPERAND THE ROUND-4 DELETION LOST. Before round 4 this module asserted
-    that the example attached every declared column, and it did that by reading
-    the ten literal attach rows. Driving the loop removed the rows, so there was
-    nothing left to READ -- which is not the same as nothing left to CHECK, and
-    treating it as the same left the emission completely uncovered. Measured:
-    deleting the loop, or `continue`-ing one column inside it, left the whole
-    module green. Nothing else covers it -- the example has no `add_test`,
-    `attach_swap_columns` is in an anonymous namespace, and nothing runs the
-    binary.
+    THAT IS THE PREDICATE, and it is narrower than the property anyone wants.
+    Read the three checks below as the whole of what this function knows:
 
-    So this reads the loop itself. It must iterate `swap_explain_columns()` and
-    attach every element it yields, with no early exit inside the body: a
-    `continue` or an `if` that skips a column is the same silent hole the literal
-    table had, arrived at from the other side.
+      1. some line contains `swap_explain_columns()` and starts with `for`;
+      2. the brace-matched body after it mentions `attach_one`;
+      3. that body contains none of the tokens `continue`, `break`, `return`.
+
+    WHAT THAT MISSES, measured by mutating the example and re-running this
+    module against the round-7 version of these checks:
+
+      * `if (column.name != "swap_explain_skew") { attach_one(...); }` -- skips a
+        column with no early-exit TOKEN to find. Module stayed green.
+      * `swap_explain_columns().subspan(0, 4)` -- check 1 still matches, the body
+        is unconditional, and half the roster never reaches the TSV. Green.
+      * `attach_one(roster[i].name, r.*(roster[i + 1].member))` -- right names
+        over shifted data. Nothing here reads data at all. Green.
+
+    So this is a source-SHAPE check, not a column-SET check, and rounds 3-7 spent
+    themselves sharpening an approximation. THE COLUMN SET IS NOW OWNED BY A TEST
+    THAT READS THE ARTIFACT: tests/varswap_compare_columns_test.cpp compiles the
+    example's own TU (with `main` suppressed), calls the shipped
+    `attach_swap_columns`, writes a real TSV, and diffs that file's header
+    against `swap_explain_columns()`. All three mutations above fail it; the
+    third fails only its value assertion, which is how that assertion earns its
+    place.
+
+    This function stays because it guards something the artifact test cannot see:
+    that the tail is DERIVED rather than hand-listed. A literal eight-row table
+    that happens to be correct today emits the right header and passes the C++
+    gate -- and is the fifth copy of the roster coming back, one edit away from
+    drifting. Check 1 is what refuses it.
     """
     lines = source.splitlines()
     header = None

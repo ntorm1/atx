@@ -1322,25 +1322,30 @@ TEST(BacktestSwapExplain, TheShapeAccessorReadsEveryColumnNotTheFirst) {
 }
 
 
-// ── The zero-surface snapshot's timestamp (fix round 7) ─────────────────────
+// ── `MarketSnapshot::load` verifies what it LOADED (fix rounds 7-8) ─────────
 //
-// `MarketSnapshot::load` derives one valuation timestamp per date, and the rule
-// is that the surfaces of a date agree on `now_ts_ns`. Two branches produce it,
-// and the difference between them is narrower than it looks:
+// The rule, and it is one rule rather than a branch-by-branch habit: a load
+// checks `now_ts_ns` across exactly the surfaces it loaded, and promises nothing
+// about records it never read.
 //
-//   * `subset_missed` is `subset_requested && !loaded_subset`, and
-//     `loaded_subset` is `n_surfaces() != 0` -- so that branch owns exactly ZERO
-//     surfaces. A subset that matched anything falls through to the other
-//     branch, where every surface it loaded is checked. No LOADED surface has
-//     ever gone unverified.
-//   * The empty branch therefore cannot verify "what it loaded". Its only source
-//     is the archive directory, and it used to map `dir.front()` and trust it --
-//     one record sampled for a property of the whole archive, ten lines from the
-//     loop that verifies the same property properly.
+//   * whole board          -> every record loaded, every record checked
+//   * subset that MATCHED  -> checks the surfaces it loaded, not the ones it
+//                             skipped, and does not claim to
+//   * subset matching NONE -> owns zero surfaces (`subset_missed` is
+//                             `subset_requested && !loaded_subset`), so it
+//                             verifies the empty set and reads ONE record purely
+//                             to date an empty snapshot
 //
-// It now maps every entry and requires agreement. These tests pin both halves:
-// that a disagreeing archive is refused on the empty path, and that the ordinary
-// empty-subset load still succeeds and still reports the date's timestamp.
+// Round 7 made the last case verify the entire directory. Round 8 reverted that:
+// it contradicted the B1 cheap-miss argument in `MarketSnapshot::load` (measured
+// +71% on the miss path, taking it to 91% of a whole-board load at 512 surfaces)
+// AND it made the path returning NO data enforce more than the path returning
+// one surface, which is backwards.
+//
+// So these tests pin the rule including its deliberate limit: a mixed archive is
+// refused by every path that loads from it, and accepted by the path that loads
+// nothing. That asymmetry is a consequence of the rule rather than an exception
+// to it, and it is pinned so it cannot drift back into being silent.
 
 namespace {
 
@@ -1363,33 +1368,55 @@ namespace {
 
 } // namespace
 
-TEST(BacktestSwapExplain, AZeroSurfaceSnapshotRefusesAnArchiveWhoseDatesDisagree) {
-  const fs::path dir = fresh_dir("r7-ts-disagree");
+TEST(BacktestSwapExplain, EveryLoadThatReadsAMixedArchiveRefusesIt) {
+  const fs::path dir = fresh_dir("r8-ts-disagree");
   // The two surfaces are stamped a full day apart -- a corrupt or mixed archive.
   const std::string path = write_two(dir, "2026-08-01", kBaseNow, kBaseNow + kDayNs);
 
-  // A uid matching NEITHER surface: `subset_requested && !loaded_subset`, the
-  // zero-surface branch. Before fix round 7 this sampled entry 0 and returned a
-  // snapshot stamped with whichever surface happened to be written first.
+  // Whole board: loads both, so it sees the disagreement.
+  const auto whole = MarketSnapshot::load(path);
+  ASSERT_FALSE(whole.has_value()) << "a whole-board load reads both records and must refuse";
+  EXPECT_NE(whole.error().message().find("disagree on now_ts_ns"), std::string::npos)
+      << whole.error().to_string();
+
+  // A subset naming BOTH uids also loads both, so it must refuse identically --
+  // the rule is about what was loaded, not about which entry point was used.
+  const std::uint32_t both[] = {kUid, kUid + 1u};
+  const auto pair = MarketSnapshot::load(path, QueryPricingTier::LegacyCompatible,
+                                         std::span<const std::uint32_t>{both});
+  ASSERT_FALSE(pair.has_value()) << "a subset that loads both records must refuse them too";
+  EXPECT_NE(pair.error().message().find("disagree on now_ts_ns"), std::string::npos)
+      << pair.error().to_string();
+}
+
+// THE DELIBERATE LIMIT, pinned so it cannot become silent again. A load that
+// reads ONE record, or none, cannot see a disagreement -- and does not claim to.
+// This is the documented consequence of "verify what you loaded", not a gap in
+// it; round 7 tried to close it by walking the whole directory and paid 91% of a
+// whole-board load on the path that exists to be cheap.
+TEST(BacktestSwapExplain, ALoadThatReadsOneRecordOrNoneCannotSeeAMixedArchive) {
+  const fs::path dir = fresh_dir("r8-ts-partial");
+  const std::string path = write_two(dir, "2026-08-01", kBaseNow, kBaseNow + kDayNs);
+
+  // Zero-surface: verifies the empty set, dates the snapshot from one record.
   const std::uint32_t absent[] = {kUid + 9000u};
   const auto missed = MarketSnapshot::load(path, QueryPricingTier::LegacyCompatible,
                                            std::span<const std::uint32_t>{absent});
-  ASSERT_FALSE(missed.has_value())
-      << "an archive whose records disagree on now_ts_ns must be refused on the zero-surface "
-         "path too; sampling dir.front() accepted it silently";
-  EXPECT_NE(missed.error().message().find("disagree on now_ts_ns"), std::string::npos)
-      << missed.error().to_string();
+  ASSERT_TRUE(missed.has_value()) << missed.error().to_string();
+  EXPECT_EQ(missed->n_surfaces(), 0u);
 
-  // The sibling branch has always refused this; pinned here so the two are
-  // visibly held to ONE rule rather than to two that happen to agree today.
-  const auto whole = MarketSnapshot::load(path);
-  ASSERT_FALSE(whole.has_value());
-  EXPECT_NE(whole.error().message().find("disagree on now_ts_ns"), std::string::npos)
-      << whole.error().to_string();
+  // Exactly one surface: verifies that one against itself, trivially agrees.
+  const std::uint32_t one[] = {kUid + 1u};
+  const auto single = MarketSnapshot::load(path, QueryPricingTier::LegacyCompatible,
+                                           std::span<const std::uint32_t>{one});
+  ASSERT_TRUE(single.has_value()) << single.error().to_string();
+  EXPECT_EQ(single->n_surfaces(), 1u);
+  EXPECT_EQ(single->ts_ns(), kBaseNow + kDayNs)
+      << "a one-surface load reports ITS surface's date, not the archive's first record's";
 }
 
 TEST(BacktestSwapExplain, AZeroSurfaceSnapshotStillLoadsWhenTheArchiveAgrees) {
-  const fs::path dir = fresh_dir("r7-ts-agree");
+  const fs::path dir = fresh_dir("r8-ts-agree");
   const std::string path = write_two(dir, "2026-08-01", kBaseNow, kBaseNow);
 
   // The positive control for the test above: same shape, same zero-surface path,

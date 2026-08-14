@@ -1182,13 +1182,31 @@ struct BacktestResult {
   std::vector<double> swap_explain_vol_level, swap_explain_skew;
   std::vector<double> swap_explain_convexity, swap_explain_discount;
   std::vector<double> swap_explain_residual;
-  // Live lots on this row whose explain could not be computed at all -- no prior
-  // step to difference against (the lot's first mark, or the first step after a
-  // checkpoint resume), a greek solve that failed, or a sensitivity the pricer
-  // reported as "not computed". Their whole mark move lands in
-  // `swap_explain_residual`, so the identity still closes; this column is how a
-  // reader tells a genuinely unexplained day from an unattributed one. A FLOW
-  // column like the rest (it counts lot-steps, not lots).
+  // Live lots on this row whose explain could not be computed at all. The causes,
+  // enumerated from the lane that increments this (`run_swap_lane`, backtest.cpp):
+  //   * NO FIXING LANDED in the step -- the lot's first mark, or a step over a
+  //     series that has already closed. `carry` prices one more fixing arriving
+  //     at a zero return, so attributing such a step would book a term for an
+  //     event that did not happen;
+  //   * the START-OF-STEP snapshot holds no surface for the lot's uid;
+  //   * the pricer DECLINED A COMPONENT -- a greek solve that failed, or a
+  //     sensitivity reported as "not computed". That makes the whole lot
+  //     unattributed rather than partially attributed, because booking five of
+  //     six terms and calling the sixth a residual reports a clean-looking
+  //     explain for a day nobody measured.
+  // NOT a cause, since 96a3c70 (F-8 r2): the first step after a CHECKPOINT
+  // RESUME. The explain is resolved against `base` -- the snapshot the step is
+  // measured FROM, which the engine already holds -- instead of against carried
+  // prior state, and the accrual's `have_prev` round-trips through the
+  // checkpoint. A resumed run attributes its first step like any other. That
+  // commit changed the implementation and the comment above
+  // `accumulate_swap_explain` in backtest.cpp; this header kept the old text
+  // until F-8 r8, and a CHANGELOG bullet was sourced from the stale version.
+  //
+  // Their whole mark move lands in `swap_explain_residual`, so the identity
+  // still closes; this column is how a reader tells a genuinely unexplained day
+  // from an unattributed one. A FLOW column like the rest (it counts lot-steps,
+  // not lots).
   std::vector<double> swap_explain_unattributed;
   // Open lots at this row. USUALLY the size of the engine's book, but not by
   // definition: under `UnpricedLotPolicy::ExcludeAndReport` a lot whose expiry step

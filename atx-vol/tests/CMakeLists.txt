@@ -375,3 +375,26 @@ add_test(
 set_tests_properties(atx-vol-pricing-forcescalar PROPERTIES
     ENVIRONMENT "ATX_SIMD_ISA=ForceScalar"
     LABELS atx_vol)
+
+# Task F-8 fix round 8 (I-A): the P&L-explain column gate, moved off source-text
+# parsing and onto the emitted artifact. The example TU is compiled with its
+# `main` suppressed — the same shape as `spx-wilmott-repro-tests` in the parent
+# CMakeLists — so the test drives the exact `attach_swap_columns` the executable
+# ships, writes a real TSV, and diffs that file's header against
+# `swap_explain_columns()`.
+#
+# WHY A SEPARATE TARGET rather than another source in `atx-vol-tests`:
+# ATX_VARSWAP_COMPARE_NO_MAIN is a target-wide define, and the example TU opens
+# with a file-scope `using namespace atx::vol;`. Keeping it in its own binary
+# means neither reaches the main suite. It does NOT need ATX_BUILD_EXAMPLES —
+# the TU is compiled here directly, so the gate runs in the default test build
+# even though the example EXECUTABLE stays opt-in.
+add_executable(varswap-compare-columns-tests
+    varswap_compare_columns_test.cpp
+    ../examples/varswap_compare_example.cpp)
+target_compile_definitions(varswap-compare-columns-tests PRIVATE
+    ATX_VARSWAP_COMPARE_NO_MAIN)
+target_link_libraries(varswap-compare-columns-tests PRIVATE
+    atx::vol atx::core GTest::gtest_main atx_warnings)
+add_test(NAME VarswapCompareColumns COMMAND varswap-compare-columns-tests)
+set_tests_properties(VarswapCompareColumns PROPERTIES LABELS "atx_vol;atx_vol_fast")

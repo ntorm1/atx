@@ -32,13 +32,22 @@
 
 using namespace atx::vol;
 
-namespace {
-
-constexpr double kDelta = 0.40;
-// 91 calendar days (the retired driver's --tenor-days default): ~3M cycles,
-// ceil-snapped onto the session grid.
-constexpr double kTenorT = 91.0 / 365.25;
-constexpr double kContracts = 100.0;
+// THE EMISSION IS TESTED, so it lives in a named namespace rather than an
+// anonymous one -- exactly as examples/spx_wilmott_repro.cpp does for the
+// functions tests/spx_wilmott_repro_test.cpp drives. `main` below is suppressed
+// under ATX_VARSWAP_COMPARE_NO_MAIN so tests/varswap_compare_columns_test.cpp
+// can link THIS translation unit and call the shipped attach, then diff the
+// header of a TSV it really wrote against `swap_explain_columns()`.
+//
+// WHY THAT TEST EXISTS AND WHAT IT REPLACES. Until fix round 8 the only thing
+// standing between this file and a silently truncated attribution tail was a
+// Python module that READS THIS SOURCE AS TEXT
+// (python/tests/test_render_strangle_vs_varswap.py). A text predicate can only
+// ever approximate the property; the round-7 one missed `if (name != "x")` and
+// missed `swap_explain_columns().subspan(0, 4)`, both measured. The C++ gate
+// observes the artifact instead, so those two holes -- and the ones nobody has
+// thought of -- close together.
+namespace atx::vol::varswap_compare {
 
 [[nodiscard]] Status attach_one(BacktestResult &r, std::string_view name,
                                 const std::vector<double> &column) {
@@ -80,6 +89,21 @@ constexpr double kContracts = 100.0;
   }
   return atx::core::Ok();
 }
+
+} // namespace atx::vol::varswap_compare
+
+#ifndef ATX_VARSWAP_COMPARE_NO_MAIN
+
+// The strategy shape `main` drives. Inside the guard because it is `main`'s, not
+// the emission's: the test target compiles this TU without a `main`, and under
+// -Wunused-const-variable an unused constant there is an error.
+namespace {
+
+constexpr double kDelta = 0.40;
+// 91 calendar days (the retired driver's --tenor-days default): ~3M cycles,
+// ceil-snapped onto the session grid.
+constexpr double kTenorT = 91.0 / 365.25;
+constexpr double kContracts = 100.0;
 
 } // namespace
 
@@ -168,7 +192,7 @@ int main(int argc, char **argv) {
     return 1;
   }
   BacktestResult &r = outcome->result;
-  if (const Status st = attach_swap_columns(r); !st) {
+  if (const Status st = atx::vol::varswap_compare::attach_swap_columns(r); !st) {
     std::fprintf(stderr, "%s\n", st.error().to_string().c_str());
     return 1;
   }
@@ -192,3 +216,5 @@ int main(int argc, char **argv) {
   std::printf("wrote %s (%zu rows)\n", out_tsv.c_str(), r.size());
   return 0;
 }
+
+#endif // ATX_VARSWAP_COMPARE_NO_MAIN

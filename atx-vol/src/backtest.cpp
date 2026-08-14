@@ -2296,25 +2296,38 @@ Result<MarketSnapshot> MarketSnapshot::load(std::string_view archive_path,
     return Err(ErrorCode::InvalidArgument, "MarketSnapshot::load: archive holds no surfaces");
   }
 
-  // Valuation timestamp: the surfaces of one date agree on now_ts_ns, and BOTH
-  // branches below enforce that rather than assume it.
+  // Valuation timestamp. ONE RULE, stated once and applied by both branches
+  // below: a load verifies exactly the set of surfaces it LOADED, and promises
+  // nothing about records it never read.
   //
-  // The two branches differ in WHAT they can read, and that difference is worth
-  // stating because it is not the one it looks like. `subset_missed` is not
-  // "a subset was loaded"; it is `subset_requested && !loaded_subset`, and
-  // `loaded_subset` is `n_surfaces() != 0` -- so this branch owns exactly ZERO
-  // surfaces. A subset that matched anything falls through to the `else`, where
-  // every surface it did load is checked. There is no path on which a loaded
-  // surface goes unverified.
+  // Under that rule the branches are consistent, not asymmetric:
+  //   * whole board -- loaded every record, so every record is checked;
+  //   * a subset that MATCHED -- `subset_missed` is false, so it falls into the
+  //     same `else` and every surface it loaded is checked against the others it
+  //     loaded. It does NOT check the records it skipped, and does not claim to;
+  //   * a subset that matched NOTHING -- `subset_missed` is
+  //     `subset_requested && !loaded_subset` with `loaded_subset` being
+  //     `n_surfaces() != 0`, so this branch owns exactly ZERO surfaces. It
+  //     verifies the empty set, which is vacuous, and reads ONE record purely to
+  //     recover the date to stamp an empty snapshot with.
   //
-  // So the empty branch cannot verify "what it loaded" -- it loaded nothing --
-  // and its only source is the directory. It used to map `dir.front()` and trust
-  // it: one record sampled for a property of the whole archive, with the
-  // verifying loop sitting ten lines below in the sibling branch. It now maps
-  // every entry and requires them to agree, which is the same rule the `else`
-  // applies, over the only set this branch has. The records are views over the
-  // already-mapped archive, so the walk is header reads rather than I/O, and it
-  // runs only when a requested subset matched no uid at all.
+  // So `ts` here is the FIRST RECORD'S timestamp, not an archive-wide fact, and
+  // the code says so because that is the honest description. A mixed archive is
+  // caught the moment anything actually loads from it -- which is every path that
+  // returns data.
+  //
+  // FIX ROUND 7 TRIED VERIFYING ALL OF `dir` HERE AND ROUND 8 REVERTED IT, with
+  // the measurement, because it contradicted the B1 argument fifty lines above --
+  // "loading the full board on a miss turns the cheapest missing-name case into
+  // worst-case I/O". Measured on a 512-surface archive: the walk took the miss
+  // path from 71% to 91% of a whole-board load (2282 -> 3908 us against 4282 us
+  // whole-board, same process), i.e. +71% on the path whose whole purpose is to
+  // be cheap when a book names nothing in this partition. Warm page-fault counts
+  // were equal (681) because the pages were resident; cold they cannot be, since
+  // the walk touches one scattered record header per entry against this branch's
+  // one -- so cold widens that gap rather than closing it. Verifying a set this
+  // branch did not load also made the no-data path enforce MORE than the
+  // one-surface path did, which is backwards.
   const auto pricing_at = [&](std::size_t i) -> const PricingContext & {
     return borrow ? views[i].pricing() : surfaces[i].pricing();
   };
@@ -2323,19 +2336,11 @@ Result<MarketSnapshot> MarketSnapshot::load(std::string_view archive_path,
     if (dir.empty()) {
       return Err(ErrorCode::InvalidArgument, "MarketSnapshot::load: archive holds no surfaces");
     }
-    for (std::size_t i = 0; i < dir.size(); ++i) {
-      auto metadata_record = archive->map_entry(dir[i]);
-      if (!metadata_record) {
-        return Err(metadata_record.error());
-      }
-      const std::int64_t entry_ts = metadata_record->view.pricing().now_ts_ns;
-      if (i == 0) {
-        ts = entry_ts;
-      } else if (entry_ts != ts) {
-        return Err(ErrorCode::InvalidArgument,
-                   "MarketSnapshot::load: surfaces disagree on now_ts_ns within a date");
-      }
+    auto metadata_record = archive->map_entry(dir.front());
+    if (!metadata_record) {
+      return Err(metadata_record.error());
     }
+    ts = metadata_record->view.pricing().now_ts_ns;
   } else {
     ts = pricing_at(0).now_ts_ns;
     for (std::size_t i = 0; i < n_surfaces(); ++i) {
