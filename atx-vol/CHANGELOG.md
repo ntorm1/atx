@@ -29,6 +29,22 @@ predicate the same way, and it earns an entry below only because it adds two
 public NAMES, never because it moved a number. Judge a commit against the rule,
 not against this list.
 
+NUMBERS IN THIS FILE: A TRANSITION IS NOT A TALLY, and the two have opposite
+lifetimes. "`DerivQuote` gains `leg_T1_var_dec` / `leg_T2_var_dec` (arity pin
+17 -> 19)" describes what ONE commit did to ONE struct -- a fact fixed in time
+that no later edit can falsify, and the exact thing a reader migrating across
+that release needs. Entries like it are correct and STAY, including where the
+struct has since grown again. A present-tense tally is the opposite: "eight
+explain columns", "all ten Taylor terms", "the seven flows" describe the tree
+as it stands, and rot the moment a ninth column or an eleventh term lands, with
+nothing failing when they do. Those are retired here in favour of naming the
+thing -- the roster accessor, the `static_assert`, the field names themselves.
+Both rules were learned the hard way in this sprint, in both directions: an
+`arity pin 17 -> 18` was retired from this file as a rotting count when it was
+in fact an accurate transition and has been restored, while "eight columns"
+survived two rounds that deleted its twin from the source. If you are about to
+delete a number here, ask which of the two it is first.
+
 ### Added — surface dynamics: `SurfaceOverlay` / `StickyMode`, `DerivPnlExplain`, and a scenario deriv leg (FIT-F4 / GK-G4 / GK-G5 / LIT-8, Task F-8)
 
 NO EXISTING NUMBER MOVES. Three new public surfaces, one of them a refactor of
@@ -86,12 +102,14 @@ where it came from, so a bad day and a bad model looked identical.
 `_residual`, plus a `swap_explain_unattributed` counter, decomposing exactly the
 `swap_pnl` beside them through `deriv_pnl_explain` (above), evaluated per live
 lot against the START of each step and summed over the lane. The roster is
-single-sourced as `swap_explain_columns()`, with a per-index `static_assert`
-pinning each row to its own member, so a reorder cannot compile; `backtest.hpp`
-names the sites a new column still has to touch, and what stops the build at
-each, rather than restating a tally here.
+single-sourced as `swap_explain_columns()`, and `roster_rows_match_their_indices`
+(src/backtest.cpp) is `static_assert`ed, so a row that does not carry the member
+its own index names cannot compile -- a reordered table is caught by that walk,
+and a row with no case in `explain_member_for` by `-Wswitch` under /WX.
+`backtest.hpp` names the sites a new column still has to touch, and what stops
+the build at each, rather than restating a tally here.
 
-* OFF BY DEFAULT (`RunConfig::swap_pnl_explain`). Not
+* OFF BY DEFAULT (`RunConfig::swap_pnl_explain`, arity pin 17 -> 18). Not
   timidity about the numbers: ON, each live lot costs one extra
   `deriv_greeks_on_ref` per step -- up to 20 repricings where the mark alone is
   one -- plus three surface reads for the smile observables. A run that does not
@@ -145,7 +163,7 @@ DISCOVERING the components off the track's own header row by the
 `swap_explain_` prefix rather than from a roster written down a second time.
 
 * `swap_explain_unattributed` IS NOT A TERM IN THE IDENTITY. It is block-summed
-  the same way the seven flows are, but it counts LOT-STEPS rather than dollars,
+  the same way the dollar components are, but it counts LOT-STEPS, not dollars,
   and the moves it counts already sit inside `swap_explain_residual` -- so the
   renderer sums every `swap_explain_` column EXCEPT this one. Aiming that single
   exclusion at a stale name folds the counter into the attribution and moves the
@@ -173,7 +191,7 @@ NOT part of the frozen `kBacktestSeriesColumns` / RunArchive registry, so
 signal tail, which is why the example could grow them without a schema bump.
 Landed in `f505225`, carried to the Python lane in `5cbbc55`.
 
-### Fixed — the swap explain's carry and realized columns moved, and a partial explain set is now refused (Task F-8, review rounds 2 and 6)
+### Fixed — the swap explain's carry and realized columns moved, and calls that used to succeed on a malformed or shape-changing explain now error (Task F-8, review rounds 2 and 6)
 
 Both defects are in the explain this same release adds, so no number that
 existed before 1.1.0 moves. Both are worth reading anyway: the first changes
@@ -233,17 +251,52 @@ New public `enum class SwapExplainShape { Absent, Present, Mixed }` and
 `swap_explain_shape(const BacktestResult &)` answer that question over EVERY
 column, and there is no accessor that answers it from fewer. `Mixed` is the
 state that was previously unrepresentable and is the reason the enum has three
-values: it is always malformed, both validators reject it by name, and a caller
-comparing against `Present` cannot silently treat it as such.
+values: it is always malformed, and a caller comparing against `Present` cannot
+silently treat it as such. `Mixed` is rejected BY NAME at each surface that can
+see a whole result -- the result's own `BacktestResult::validate()`,
+`backtest_db`'s store guard, and `append_backtest_results` -- rather than at one
+of them with the others trusting a comment, which is the arrangement that let it
+through.
 
-MIGRATION: CALLER-OBSERVABLE. A `BacktestResult::validate()` or
-`append_backtest_results` call that used to succeed on a partial explain set now
-returns an error naming the shape. A caller assembling a `BacktestResult` by
+MIGRATION: CALLER-OBSERVABLE at all three. A `BacktestResult::validate()`,
+store, or `append_backtest_results` call that used to succeed on a partial
+explain set now returns an error naming the shape. A caller assembling a
+`BacktestResult` by
 hand must populate the whole roster or none of it -- `swap_explain_shape` is how
 to check before calling. No caller that was populating the columns together, or
 leaving them all empty, is affected
 (`BacktestSwapExplain.TheShapeAccessorReadsEveryColumnNotTheFirst`,
 `AppendRefusesAPartiallyPopulatedExplainRatherThanRaggedIt`).
+
+**THE PERSISTENCE BOUNDARY GAINED TWO MORE REFUSALS** (`96a3c70`, both in
+`backtest_db.cpp`), and NEITHER is the `Mixed` case above: these fire on results
+that are each individually coherent, so a caller cannot infer them from the
+shape rule.
+
+* `append_backtest_results` (`backtest_db.hpp`) now REFUSES a swap-explain shape
+  change when either side carries attribution. Before this it SUCCEEDED and
+  silently CLEARED the explain: on a shape mismatch the collapse branch called
+  `clear()` on every explain column and returned `Ok`, so appending an
+  explain-carrying result onto an explain-less history DESTROYED the attribution
+  and reported success. Round 1 pinned that loss in a test as though it were
+  intended. The sibling swap-lane rule twenty lines below had refused exactly
+  this shape all along, which is what made the asymmetry visible.
+  MIGRATION: append explain-carrying onto explain-carrying, or explain-less onto
+  explain-less; `swap_explain_shape` tells you which a result is BEFORE the
+  call. A caller that was relying on the silent clear to normalise a mixed
+  history must now do that explicitly, and should check whether it ever noticed
+  it was losing the columns
+  (`BacktestSwapExplain.AppendRefusesToDiscardExplainAcrossAShapeChange`).
+* THE STORE GUARD now rejects a RAGGED explain column. `backtest_db` applied its
+  optional-column row-count check to the other columns and never to these, so
+  the two boundaries disagreed about whether a ragged explain was legal --
+  `BacktestResult::validate()` is the first check and `backtest_db` does not
+  call it. The new loop is driven off `swap_explain_columns()` rather than
+  re-listing the roster. MIGRATION: a hand-built result carrying an explain
+  column whose length is neither zero nor the row count is now
+  `InvalidArgument` at store, where it previously passed this boundary
+  unchecked. A result produced by the engine is unaffected -- the columns are
+  written row-parallel or not at all.
 
 ### Fixed — a zero-surface subset load verifies its date instead of sampling one entry (Task F-8 round 7)
 
@@ -275,9 +328,11 @@ MIGRATION: CALLER-OBSERVABLE, and narrowly. An archive whose entries disagree on
 their date, loaded through a subset request that matched no uid, now errors
 where it previously returned a snapshot timestamped from whichever entry the
 directory happened to list first. Any caller that was relying on that
-acceptance was relying on an arbitrary choice. The added walk is header reads
-over the already-mapped archive rather than I/O, and runs only on that one
-branch.
+acceptance was relying on an arbitrary choice. A second, smaller consequence of
+walking every entry rather than one: an entry whose metadata record fails to map
+now surfaces its own error on this branch, where previously only the first
+entry's could. The walk is header reads over the already-mapped archive rather
+than I/O, and runs only on that one branch.
 
 ### Fixed — the scenario grid's deriv leg returned NaN cells and differenced a model, not a price (Task F-8 round 1)
 
