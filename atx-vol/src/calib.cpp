@@ -53,6 +53,25 @@ inline constexpr double kWeightEps = 1.0e-18;
 // The C returns ERR_NO_DATA (→ NotFound) unless at least this many rows survive.
 inline constexpr std::size_t kMinObs = 5;
 
+// T6. Bounds COMPLETE a slice that a real market has almost pinned; they never
+// BUILD one. A slice must therefore already be within one row of the
+// identifiability floor on genuinely two-sided evidence before a bid-less row
+// may top it up — this is `kMinObs - 1`, not a tuned constant: it is the floor
+// itself, minus the single row that bounds are allowed to supply.
+//
+// The reason is that a set of upper bounds determines only an upper ENVELOPE of
+// the price curve. Fitting band midpoints as if they were marks invents a level
+// no market anchors, and a level invented independently per expiry is free to
+// cross its neighbour in total variance. Measured on ROKU, which admits bounds
+// on slices carrying as few as two marked rows: two extra expiries came back,
+// the board-level family selection flipped from convex-dense to SVI, the risk
+// surface picked up 40 calendar violations (w = 0.0398 against its
+// predecessor's 0.0455 at k = -0.5) and the whole board was refused — a board
+// that served three slices before. At `kMinObs - 1` ROKU serves its three
+// slices again, unchanged. Same principle as the carry solver's
+// `min_confident_borrow_pairs`: evidence that nothing disputes is not evidence.
+inline constexpr std::size_t kMinBoundAnchorRows = kMinObs - 1u;
+
 // ── Starvation diagnostics (W2-B) ───────────────────────────────────────────
 // `ObsSet::provenance` records WHY each preferred leg was dropped, but the
 // builder discards the whole set when too few rows survive — losing the
@@ -89,6 +108,8 @@ inline constexpr std::size_t kMinObs = 5;
     return "Deamericanization";
   case ObsRejectionReason::EuropeanPrice:
     return "EuropeanPrice";
+  case ObsRejectionReason::IntrinsicIllPosed:
+    return "IntrinsicIllPosed";
   }
   return "Unknown";
 }
@@ -159,8 +180,53 @@ enum class RowOutcome : std::uint8_t { Accepted, Rejected, Skipped };
 struct RowResult {
   RowOutcome outcome{RowOutcome::Rejected};
   ObsRejectionReason rejection{ObsRejectionReason::InvalidStrike};
+  // T6: the leg carried no two-sided market — its bid was absent and had to be
+  // projected onto the lower arbitrage bound. Set at step 2 and INDEPENDENT of
+  // the outcome, because "this strike has no OTM market" is what arms the
+  // ITM-leg fallback and that fact must survive a later quality rejection.
+  bool one_sided{false};
+  // T6: the row exists only because such a leg was admitted as a bound.
+  // Meaningful only when `outcome == Accepted`; implies `one_sided`.
+  bool bound{false};
   FitObs obs{};
 };
+
+// Round `x` UP onto a multiple of `tick`. A non-positive/non-finite tick
+// disables the rounding rather than fabricating a grid. A value already within
+// a part-per-billion of a tick multiple counts as ON it, so binary
+// representation error cannot silently push a floor a whole tick higher.
+[[nodiscard]] double ceil_to_tick(double x, double tick) noexcept {
+  if (!std::isfinite(x) || !(x > 0.0)) {
+    return 0.0;
+  }
+  if (!std::isfinite(tick) || !(tick > 0.0)) {
+    return x;
+  }
+  const double ticks = x / tick;
+  const double nearest = std::round(ticks);
+  const double n = (std::fabs(ticks - nearest) <= 1.0e-9 * std::max(1.0, std::fabs(nearest)))
+                       ? nearest
+                       : std::ceil(ticks);
+  const double up = n * tick;
+  return (up >= x) ? up : (n + 1.0) * tick;
+}
+
+// T6: the price a bid-less leg's missing bid is projected onto — the Black-76
+// lower arbitrage bound, rounded up to a quotable tick.
+//
+// The EUROPEAN bound is used even when the chain is American, where immediate
+// exercise makes `max(0, S−K)` the true (higher) floor. That is deliberate and
+// conservative in the only direction that matters: this builder inverts the row
+// under Black-76 (`implied_vol(mid, F, K, T, df, side)`), so the bound it must
+// respect is Black-76's own. Claiming the American floor here would assert more
+// than the pricing model in use can support, and an American premium that is
+// still below its intrinsic after projection is caught downstream by the de-Am
+// inversion rather than laundered into a fit row.
+[[nodiscard]] double projected_bid_floor(double K, double F, double df, Side side,
+                                         double tick) noexcept {
+  const double intrinsic = (side == Side::Call) ? (F - K) : (K - F);
+  return ceil_to_tick(df * std::max(0.0, intrinsic), tick);
+}
 
 // Evaluate one (strike, side) tuple against the quote-filter cascade. Mirrors
 // exactly one iteration of the C `ats_vol_svi_build_observations` inner loop
@@ -172,9 +238,14 @@ struct RowResult {
 // which has already established that this strike's OTM leg carries no
 // two-sided quote — so the gate can no longer be choosing between two usable
 // legs, only discarding the one that is left.
+//
+// T6: `admit_bounds` arms the one-sided projection at step 2. The caller runs
+// the whole cascade once with it OFF and re-runs with it ON only when the
+// two-sided population left the slice below the usable-row floor, which is what
+// confines bound admission to the starvation it exists to fix.
 [[nodiscard]] RowResult evaluate_row(const Chain &chain, std::uint16_t strike_idx, Side side,
                                      double F, double T, double df, const CalibOpts &opts,
-                                     bool ignore_preference = false) {
+                                     bool ignore_preference = false, bool admit_bounds = false) {
   RowResult r{};
   const double K = chain.strikes[strike_idx];
   if (!(K > 0.0)) {
@@ -192,12 +263,29 @@ struct RowResult {
     return r; // Rejected
   }
 
-  // 2. Two-sided, positive, non-crossed quote.
-  const double bid = chain.bids[idx];
+  // 2. Two-sided, positive, non-crossed quote — or, under `one_sided_bounds`, a
+  //    bid-less one admitted as a BOUND with its bid projected onto the lower
+  //    arbitrage bound. The rescue is deliberately narrow: it fires ONLY when
+  //    the bid is absent (`bid <= 0`) and the ask is a real upper bound strictly
+  //    above the arbitrage floor. `bid = ask = 0` (an absent side) bounds
+  //    nothing; a locked or crossed market (`bid > 0`, `ask <= bid`) is two
+  //    sides contradicting each other, not a bracket, and is already killed by
+  //    the flag mask above on any loader-built chain.
+  const double raw_bid = chain.bids[idx];
   const double ask = chain.asks[idx];
-  if (!(bid > 0.0 && ask > bid)) {
-    r.rejection = ObsRejectionReason::InvalidBidAsk;
-    return r; // Rejected
+  double bid = raw_bid;
+  bool bound = false;
+  if (!(raw_bid > 0.0 && ask > raw_bid)) {
+    const bool bounds_armed = opts.one_sided_bounds && admit_bounds;
+    const double floor_bid =
+        bounds_armed ? projected_bid_floor(K, F, df, side, opts.price_tick) : 0.0;
+    r.one_sided = !(raw_bid > 0.0) && std::isfinite(ask) && ask > 0.0;
+    if (!bounds_armed || raw_bid > 0.0 || !std::isfinite(ask) || !(ask > floor_bid)) {
+      r.rejection = ObsRejectionReason::InvalidBidAsk;
+      return r; // Rejected
+    }
+    bid = floor_bid;
+    bound = true;
   }
 
   // Prefer-call heuristic: keep the call leg for K ≥ F, the put leg otherwise.
@@ -211,15 +299,22 @@ struct RowResult {
     return r;
   }
 
-  // 3. Positive mid.
-  const double mid = chain.mids[idx];
+  // 3. Positive mid. A bound row references the midpoint of its OWN admitted
+  //    band [floor, ask], which coincides with the loader's `0.5*(bid + ask)`
+  //    exactly when the arbitrage floor is zero (the OTM case) and lifts above
+  //    it otherwise. A non-bound row keeps the stored mid bit-identically.
+  const double mid = bound ? (0.5 * (bid + ask)) : chain.mids[idx];
   if (!(mid > 0.0)) {
     r.rejection = ObsRejectionReason::InvalidMid;
     return r; // Rejected
   }
 
   // 4. Wide-spread-to-mid filter (Sprint 24 Phase D); disabled when the cap ≤ 0.
-  if (opts.max_spread_to_mid_pct > 0.0) {
+  //    Skipped for a bound row: `(ask − floor)/mid` is a pure function of
+  //    one-sidedness (identically 2.0 whenever the floor is 0), so it cannot
+  //    discriminate a usable bid-less quote from an unusable one. The absolute
+  //    vol-space gate at step 6 does that job, on the FULL admitted width.
+  if (!bound && opts.max_spread_to_mid_pct > 0.0) {
     const double spread_pct = (ask - bid) / mid;
     if (spread_pct > opts.max_spread_to_mid_pct) {
       r.rejection = ObsRejectionReason::SpreadToMid;
@@ -290,6 +385,7 @@ struct RowResult {
   o.score_sigma_mkt = iv;
   r.outcome = RowOutcome::Accepted;
   r.rejection = ObsRejectionReason::None;
+  r.bound = bound;
   return r;
 }
 
@@ -1108,6 +1204,22 @@ Result<ObsSet> build_observations(const Chain &chain, double F, double T, double
   out.provenance.reserve(n);
   std::uint32_t n_drop = 0;
 
+  // T6: bound admission is a LAST RESORT, on the same design as the ITM-leg
+  // fallback above. `collect` runs the whole cascade once with bound rows
+  // refused; only if that leaves the slice below the usable-row floor does it
+  // run again with them admitted.
+  //
+  // Measured, not assumed. Admitting bounds unconditionally on lqbench
+  // 2026-08-03 moved boards that were ALREADY serving every expiry they could:
+  // +425 quotes but IWM's rmse_vol x1.44, MSFT x1.19, VZ x1.21, and one board
+  // (ROKU) lost outright. That is the wrong trade in both directions — a board
+  // with 1,500 marked quotes gains nothing from a guess, and a bound row is
+  // strictly weaker evidence than a two-sided quote at the same width because
+  // its reference price is the midpoint of a band whose floor is pure
+  // arbitrage. Gating on the floor makes the change provably inert wherever the
+  // two-sided population already prepares a slice, so the recovery is confined
+  // to expiries that were being LOST.
+  const auto collect = [&](bool admit_bounds) {
   for (std::size_t s = 0; s < n; ++s) {
     const double K = chain.strikes[s];
     if (!(K > 0.0)) {
@@ -1119,18 +1231,21 @@ Result<ObsSet> build_observations(const Chain &chain, double F, double T, double
     const auto sidx = static_cast<std::uint16_t>(s);
     const Side preferred = (K >= F) ? Side::Call : Side::Put;
     const Side other = (preferred == Side::Call) ? Side::Put : Side::Call;
-    ObsRejectionReason preferred_rejection = ObsRejectionReason::InvalidStrike;
+    // At most ONE leg per strike can be Accepted: the preference gate turns the
+    // non-preferred leg into `Skipped` before it can reach acceptance, so the
+    // chosen row can be settled after both legs have been judged rather than
+    // pushed inside the loop. That deferral is what lets the ITM-leg fallback
+    // below OUTRANK a bound row the preferred leg already produced.
+    RowResult preferred_row{};
     RowOutcome other_outcome = RowOutcome::Rejected;
     for (int side_i = 0; side_i < 2; ++side_i) {
       const Side side = static_cast<Side>(static_cast<std::uint8_t>(side_i));
-      const RowResult rr = evaluate_row(chain, sidx, side, F, T, df, opts);
-      if (rr.outcome == RowOutcome::Accepted) {
-        out.obs.push_back(rr.obs);
-      } else if (rr.outcome == RowOutcome::Rejected) {
+      const RowResult rr = evaluate_row(chain, sidx, side, F, T, df, opts, false, admit_bounds);
+      if (rr.outcome == RowOutcome::Rejected) {
         ++n_drop;
       }
       if (side == preferred) {
-        preferred_rejection = rr.rejection;
+        preferred_row = rr;
       } else {
         other_outcome = rr.outcome;
       }
@@ -1144,26 +1259,63 @@ Result<ObsSet> build_observations(const Chain &chain, double F, double T, double
     // special-cased: an ITM leg that cannot be inverted, is too wide in vol
     // units, or carries too little vega is rejected exactly as an OTM leg would
     // be, and the strike stays dead.
+    //
+    // T6 keeps the trigger meaning exactly what it always meant — "this strike
+    // has no OTM market" — by reading `one_sided`, which step 2 records BEFORE
+    // the quality cascade. Reading the rejection reason instead would silently
+    // disarm the rescue the moment bound admission renamed the rejection.
+    //
+    // What T6 adds is a ranking, because the fallback can now be offered two
+    // usable rows instead of one. Both legs of a strike share a vega, so the
+    // narrower band is the sharper observation in vol units: a two-sided ITM
+    // market always displaces a full-ask-wide OTM bound, while an ITM leg that
+    // is ITSELF bid-less only steps in when the OTM leg produced nothing at all.
+    const bool preferred_lacks_market =
+        preferred_row.one_sided || (preferred_row.outcome == RowOutcome::Rejected &&
+                                    preferred_row.rejection == ObsRejectionReason::InvalidBidAsk);
+    RowResult chosen = preferred_row;
     Side used_side = preferred;
-    ObsRejectionReason used_rejection = preferred_rejection;
-    if (opts.itm_leg_fallback && preferred_rejection == ObsRejectionReason::InvalidBidAsk &&
+    ObsRejectionReason used_rejection = preferred_row.rejection;
+    if (opts.itm_leg_fallback && preferred_lacks_market &&
         other_outcome == RowOutcome::Skipped) {
       const RowResult fb = evaluate_row(chain, sidx, other, F, T, df, opts,
-                                        /*ignore_preference=*/true);
-      used_side = other;
-      used_rejection = fb.rejection;
-      if (fb.outcome == RowOutcome::Accepted) {
-        out.obs.push_back(fb.obs);
+                                        /*ignore_preference=*/true, admit_bounds);
+      const bool preferred_accepted = preferred_row.outcome == RowOutcome::Accepted;
+      if (fb.outcome == RowOutcome::Accepted && (!fb.bound || !preferred_accepted)) {
+        chosen = fb;
+        used_side = other;
+        used_rejection = fb.rejection;
         ++out.n_itm_fallback;
-      } else {
+      } else if (!preferred_accepted) {
         // The strike is dead for a NEW reason — the ITM leg's own — which the
         // first pass never evaluated. Count it, so `n_dropped` still equals the
         // number of legs this builder judged and threw away.
+        used_side = other;
+        used_rejection = fb.rejection;
         ++n_drop;
+      }
+      // Otherwise the OTM bound stands: the ITM leg offered no sharper market.
+    }
+    if (chosen.outcome == RowOutcome::Accepted) {
+      out.obs.push_back(chosen.obs);
+      if (chosen.bound) {
+        ++out.n_bound_admitted;
       }
     }
     out.provenance.push_back(
         ObsProvenance{static_cast<std::uint32_t>(s), used_side, used_rejection});
+  }
+  };
+
+  collect(/*admit_bounds=*/false);
+  const std::size_t n_two_sided = out.obs.size();
+  if (opts.one_sided_bounds && n_two_sided >= kMinBoundAnchorRows && n_two_sided < kMinObs) {
+    out.obs.clear();
+    out.provenance.clear();
+    out.n_itm_fallback = 0u;
+    out.n_bound_admitted = 0u;
+    n_drop = 0u;
+    collect(/*admit_bounds=*/true);
   }
 
   out.n_dropped = n_drop;
@@ -1203,6 +1355,12 @@ Result<ObsSet> build_observations_european(const Chain &chain, double S, double 
   out.obs.reserve(am->obs.size());
   out.provenance = std::move(am->provenance);
   out.n_dropped = am->n_dropped;
+  // Admission tallies belong to the shared American cascade that produced this
+  // population, so they carry across the de-Americanization unchanged. They
+  // count legs the FILTER admitted; the de-Am audit below may still drop some,
+  // exactly as it may drop an ordinary two-sided row.
+  out.n_itm_fallback = am->n_itm_fallback;
+  out.n_bound_admitted = am->n_bound_admitted;
   // Chain strikes are ascending. Independent side seeds therefore follow a
   // nearby point on the smile without ever crossing call/put solver state. A
   // tolerance-terminated seed may move the last bits; the cold-reference gate
@@ -1493,6 +1651,16 @@ Result<ObsSet> build_observations_european(const Chain &chain, double S, double 
     // scale (vega²/(2σT)²) is many orders above the default clip, so applying it
     // here would collapse every observation to the ceiling and erase the vega
     // weighting the surface fit and its cold/cached parity are calibrated against.
+    //
+    // T6 makes that omission load-bearing rather than merely historical. A row
+    // admitted as a BOUND carries `o.spread` equal to its FULL band width — the
+    // whole ask, not a half-spread — and its entire justification is that it
+    // enters the objective at the small weight that width earns it. Clipping
+    // here would map that row and a penny-wide two-sided row onto the same
+    // ceiling, i.e. let a bid-less guess outvote a marked strike. The clip that
+    // DOES run, in the American builder, is `min(w, max_weight)`: monotone, so
+    // it can compress a bound row onto the ceiling but never lift it past a row
+    // that earned more.
     o.weight_w = obs_weight_w(vega, o.spread, sigma_eu, T);
     o.active_weight_w = o.weight_w;
     o.noise_sigma = (vega > kVegaFloor) ? (o.spread / vega) : 1.0;

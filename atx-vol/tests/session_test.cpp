@@ -164,6 +164,32 @@ using atx::vol::year_fraction;
   return under ? *under : nullptr;
 }
 
+// Zero every quote slot of `c` except BOTH sides of the strikes `keep` -- the
+// board-surgery half of the prep-loss population tests below. A zeroed slot is
+// exactly what data_install leaves for a never-quoted contract, so the chain
+// stays structurally valid; only its usable population shrinks.
+void keep_only_strikes(Chain &c, const std::vector<double> &keep) {
+  for (std::size_t s = 0; s < c.strikes.size(); ++s) {
+    const bool kept = std::any_of(keep.begin(), keep.end(), [&](double K) {
+      return std::fabs(c.strikes[s] - K) < 1e-9;
+    });
+    if (kept) {
+      continue;
+    }
+    for (int side = 0; side < 2; ++side) {
+      const std::size_t ix = atx::vol::chain_index(
+          static_cast<std::uint16_t>(s), static_cast<atx::vol::Side>(side));
+      c.bids[ix] = 0.0;
+      c.asks[ix] = 0.0;
+      c.mids[ix] = 0.0;
+      c.bid_sizes[ix] = 0;
+      c.ask_sizes[ix] = 0;
+      c.ts_ns[ix] = 0;
+      c.flags[ix] = 0;
+    }
+  }
+}
+
 } // namespace
 
 // ── The SessionInputs construction contract (S4-T19, plan item 4.2) ─────────
@@ -269,6 +295,106 @@ TEST(VolaSession, Build_KnownTruthPanel_SucceedsWithFourArbFreeSlices) {
   for (std::size_t i = 1; i < exps.size(); ++i) {
     EXPECT_LT(exps[i - 1].T, exps[i].T);
   }
+}
+
+// ── Prep-loss diagnostics POPULATION (T6d) ──────────────────────────────────
+//
+// The MERGE of these counters into the failure digest is unit-tested and
+// mutation-verified (curve_fit_carry_fallback_test.cpp). What was not tested
+// until now is the POPULATION: that a session built over a board which really
+// loses an expiry to preparation reports the loss in its diagnostics. Each test
+// drives the full build over a known-truth panel with one chain surgically
+// thinned, asserts the driver recorded the expected per-chain outcome, and then
+// asserts the diagnostics counter agrees -- so deleting either population line
+// in session.cpp turns exactly these tests red.
+
+// Starved through the DEFAULT (eSSVI / run_surface_parity) build path.
+TEST(VolaSession, Build_PrepStarvedExpiry_PopulatesDiagnosticsCount) {
+  const SynthPanelSpec spec = make_spec();
+  Universe u;
+  const Underlying *installed = install(spec, u);
+  ASSERT_NE(installed, nullptr);
+  const auto mut = u.get_underlying(installed->uid);
+  ASSERT_TRUE(mut.has_value());
+  Underlying *under = *mut;
+  ASSERT_EQ(under->chains.size(), std::size_t{4});
+  // Two strikes (both sides) = 4 usable rows: below the 5-row prepared floor,
+  // above the co-terminal-pair minimum, so carry resolves and the loss is
+  // attributable to PREPARATION alone.
+  keep_only_strikes(under->chains.back(), {100.0, 105.0});
+
+  const auto sess = VolaSession::build(*under, make_inputs(spec));
+  ASSERT_TRUE(sess.has_value()) << sess.error().to_string();
+
+  const auto reports = sess->expiry_fit_reports();
+  ASSERT_EQ(reports.size(), std::size_t{4});
+  EXPECT_EQ(reports.back().outcome, atx::vol::ExpiryFitOutcome::PrepStarved);
+
+  const auto &diag = sess->diagnostics();
+  EXPECT_EQ(diag.n_slices, std::size_t{3});
+  EXPECT_EQ(diag.n_prep_starved_expiries, std::size_t{1});
+  EXPECT_EQ(diag.n_prep_uncovered_expiries, std::size_t{0});
+}
+
+// Starved through the CURVE-family build path (fit_curve_surface), which
+// populates the same counter at a different call site.
+TEST(VolaSession, CurveBuild_PrepStarvedExpiry_PopulatesDiagnosticsCount) {
+  const SynthPanelSpec spec = make_spec();
+  Universe u;
+  const Underlying *installed = install(spec, u);
+  ASSERT_NE(installed, nullptr);
+  const auto mut = u.get_underlying(installed->uid);
+  ASSERT_TRUE(mut.has_value());
+  Underlying *under = *mut;
+  keep_only_strikes(under->chains.back(), {100.0, 105.0});
+
+  SessionInputs in = make_inputs(spec);
+  in.curve.kind = VolCurveKind::ConvexDense;
+  const auto sess = VolaSession::build(*under, in);
+  ASSERT_TRUE(sess.has_value()) << sess.error().to_string();
+
+  const auto reports = sess->expiry_fit_reports();
+  ASSERT_EQ(reports.size(), std::size_t{4});
+  EXPECT_EQ(reports.back().outcome, atx::vol::ExpiryFitOutcome::PrepStarved);
+
+  const auto &diag = sess->diagnostics();
+  EXPECT_EQ(diag.n_slices, std::size_t{3});
+  EXPECT_EQ(diag.n_prep_starved_expiries, std::size_t{1});
+  EXPECT_EQ(diag.n_prep_uncovered_expiries, std::size_t{0});
+}
+
+// Uncovered (Task 1 k-coverage refusal, ConvexDense only): enough rows to
+// clear the count floor, all on one wing, so the coverage predicate -- not
+// starvation -- refuses the slice. The population channel must keep the two
+// classes distinct.
+TEST(VolaSession, CurveBuild_PrepUncoveredExpiry_PopulatesDiagnosticsCount) {
+  const SynthPanelSpec spec = make_spec();
+  Universe u;
+  const Underlying *installed = install(spec, u);
+  ASSERT_NE(installed, nullptr);
+  const auto mut = u.get_underlying(installed->uid);
+  ASSERT_TRUE(mut.has_value());
+  Underlying *under = *mut;
+  // Five strikes below the forward (F ~ 101 for the 1y chain). The primary
+  // cascade admits one OTM PUT row per strike -- the calls there are ITM legs
+  // it refuses -- so the slice meets the 5-row prepared floor exactly, and
+  // every admitted k = ln(K/F) sits below -kCoverageAtmEps: the rows do not
+  // straddle the forward, so the loss is the COVERAGE refusal, not starvation.
+  keep_only_strikes(under->chains.back(), {75.0, 80.0, 85.0, 90.0, 95.0});
+
+  SessionInputs in = make_inputs(spec);
+  in.curve.kind = VolCurveKind::ConvexDense;
+  const auto sess = VolaSession::build(*under, in);
+  ASSERT_TRUE(sess.has_value()) << sess.error().to_string();
+
+  const auto reports = sess->expiry_fit_reports();
+  ASSERT_EQ(reports.size(), std::size_t{4});
+  EXPECT_EQ(reports.back().outcome, atx::vol::ExpiryFitOutcome::PrepUncovered);
+
+  const auto &diag = sess->diagnostics();
+  EXPECT_EQ(diag.n_slices, std::size_t{3});
+  EXPECT_EQ(diag.n_prep_starved_expiries, std::size_t{0});
+  EXPECT_EQ(diag.n_prep_uncovered_expiries, std::size_t{1});
 }
 
 // ── 2.12: a built session must not retain a build-time cache BORROW ──────────

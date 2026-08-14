@@ -144,6 +144,19 @@ struct ChainPrepass {
   bool carry_confident = false;
   bool needs_carry_repair = false;
   CarrySource carry_source = CarrySource::Solved;
+  // T5c. `carry_bounded` marks an expiry whose OWN solve succeeded and whose
+  // carry uncertainty is inside the standard-deviation-moneyness budget
+  // (`carry_moneyness_bounded`) although it missed the rate-unit confidence
+  // gate. Such an expiry is a SECOND-TIER anchor: used only when the board has
+  // no confident one, and never laundered as confident. `solved_borrow` retains
+  // that solve's borrow so the repair pass can commit it without a second
+  // resolve. `carry_solve_failed` distinguishes an expiry whose solve
+  // ERRORED (no quotable co-terminal pair, or every pair's solve failed) from
+  // one that merely missed the gate — the former has no borrow of its own but is
+  // still repairable from the board term structure.
+  bool carry_bounded = false;
+  bool carry_solve_failed = false;
+  double solved_borrow = 0.0;
   std::vector<double> source_mids;        // ‖ prepared fit rows; raw chain.mids at (K, side)
   std::vector<std::uint8_t> source_flags; // ‖ prepared fit rows; raw chain.flags at (K, side)
   std::vector<double> chain_mids;         // full-chain snapshot
@@ -601,8 +614,29 @@ void prepare_fit_slice_into_slot(const Chain &chain, const SurfaceParityInputs &
       slot.ms_forward_borrow = elapsed_ms(t_forward0, ProfileClock::now());
     }
     if (!d_res) {
-      // A real carry failure (no quotable co-terminal pair / degenerate forward /
-      // non-convergence) — NOT the confidence gate, which the probe disarmed.
+      // A real carry failure — NOT the confidence gate, which the probe disarmed.
+      // T5c (B3ii). Split the failure by kind. `Unavailable` is the DATA-shaped
+      // one — this expiry carries no quotable co-terminal pair, or every pair's
+      // fixed point failed — and it says nothing at all about the BOARD's carry,
+      // which the other expiries may pin down perfectly well. Historically it
+      // hard-dropped here, so an expiry with a one-sided strip was unreachable by
+      // the phase-1.5 term-structure repair even on a board with a dozen
+      // confident anchors: measured on lqbench 2026-08-03, 29 of the 211 expiries
+      // on the 28 carry-lost boards took this path. Defer it to the repair pass
+      // instead. Any other code (Internal / InvalidArgument — a degenerate
+      // forward base, a malformed chain) is a genuine defect for THIS expiry and
+      // still hard-drops: a fallback borrow cannot repair a broken forward.
+      //
+      // Deferral is armed by the same flag that arms the repair pass itself
+      // (`require_carry_confidence`), so every non-risk caller — market-mark,
+      // selector, backtest — keeps the historical hard-drop bit-for-bit.
+      if (in.deam.require_carry_confidence && d_res.error().code() == ErrorCode::Unavailable) {
+        slot.T = T;
+        slot.rate = rate;
+        slot.carry_solve_failed = true;
+        slot.needs_carry_repair = true;
+        return;
+      }
       slot.carry_failed = true;
       slot.prep_outcome = SlicePrepOutcome::CarryFailed;
       return;
@@ -627,6 +661,12 @@ void prepare_fit_slice_into_slot(const Chain &chain, const SurfaceParityInputs &
       slot.rate = rate;
       slot.carry = d_res->carry; // raw solve tallies, restamped as fallback later
       slot.needs_carry_repair = true;
+      // T5c: retain this solve so the repair pass can offer it as a SECOND-TIER
+      // anchor when the board has no confident expiry at all. Whether it may be
+      // is `carry_moneyness_bounded`'s decision, not this one, and a bounded
+      // carry is still never `confident`.
+      slot.carry_bounded = carry_moneyness_bounded(d_res->carry, in.deam);
+      slot.solved_borrow = d_res->borrow;
       return;
     }
 
@@ -742,11 +782,43 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
   // ZERO confident anchors nothing is fabricated: the deferred expiries stay
   // dropped (behaviour unchanged). This runs BEFORE the skip/starve tally below so
   // the counts reflect the post-repair board.
+  //
+  // T5c extends it on two axes, both measured on lqbench 2026-08-03 (the run
+  // that produced 28 boards losing EVERY expiry to carry):
+  //
+  //   (i) an expiry whose own solve returned `Unavailable` (no quotable
+  //       co-terminal pair) now arrives here too, instead of hard-dropping in
+  //       phase 1 where no repair could reach it — 29 of those 211 expiries;
+  //  (ii) when the board has NO confident expiry at all — true of all 28 boards,
+  //       0 confident expiries out of 211 — the anchor set falls back to the
+  //       expiries whose carry is MEASURED to inside the standard-deviation-
+  //       moneyness budget (`carry_moneyness_bounded`). That is a real second
+  //       measurement, not a relaxation of the first: it asks whether the forward
+  //       this expiry implies is pinned to inside 1% of the slice's own width,
+  //       which is the unit the fit consumes, and it keeps the same
+  //       `min_confident_borrow_pairs` floor so a single-pair solve — whose
+  //       dispersion and leave-one-out read 0 only because nothing disputes them
+  //       — can never anchor anything.
+  //
+  // A board with neither tier still fabricates nothing and stays dropped. Every
+  // expiry served off a second-tier anchor carries a non-Solved CarrySource and
+  // `confident = false`, so the session counts it in `n_carry_fallback_expiries`
+  // and admission publishes Degraded + CarryGap, never Healthy.
   {
     std::vector<CarryAnchor> anchors; // ascending T (chains load ascending-T)
     for (const ChainPrepass &pre : prepass) {
       if (pre.carry_confident) {
         anchors.push_back(CarryAnchor{pre.T, pre.borrow});
+      }
+    }
+    // Second tier, consulted ONLY when the first is empty, so a board with even
+    // one confident expiry is bit-identical to the pre-T5c path.
+    const bool second_tier = anchors.empty();
+    if (second_tier) {
+      for (const ChainPrepass &pre : prepass) {
+        if (pre.carry_bounded) {
+          anchors.push_back(CarryAnchor{pre.T, pre.solved_borrow});
+        }
       }
     }
     std::vector<std::size_t> repair_idx;
@@ -762,7 +834,13 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
       }
       const Chain &chain = under.chains[i];
       const double rate = expiry_rate(in, i);
-      const CarryFallback fb = term_structure_fallback_borrow(chain.T, anchors);
+      // A second-tier anchor commits its OWN solved borrow rather than reading
+      // itself off the interpolant it is a node of — same number either way, but
+      // the provenance is honest about where the carry came from.
+      const CarryFallback fb =
+          (second_tier && pre.carry_bounded)
+              ? CarryFallback{pre.solved_borrow, CarrySource::MoneynessBounded}
+              : term_structure_fallback_borrow(chain.T, anchors);
       const double F = hybrid_forward(in.S, rate, fb.borrow, chain.T, in.cash_divs, chain.expiry_ns,
                                       in.now_ts_ns, in.deam.hyb);
       if (!(F > 0.0) || !std::isfinite(F)) {
@@ -799,6 +877,10 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
       fb_carry.max_leave_one_out_shift = pre.carry.max_leave_one_out_shift;
       fb_carry.confidence_half_width = pre.carry.confidence_half_width;
       fb_carry.max_pcp_residual = pre.carry.max_pcp_residual;
+      fb_carry.atm_sigma = pre.carry.atm_sigma;
+      fb_carry.dispersion_moneyness = pre.carry.dispersion_moneyness;
+      fb_carry.max_leave_one_out_moneyness = pre.carry.max_leave_one_out_moneyness;
+      fb_carry.confidence_half_width_moneyness = pre.carry.confidence_half_width_moneyness;
       fb_carry.confident = false;
       fb_carry.source = pre.carry_source;
       pre.carry = std::move(fb_carry);
@@ -806,6 +888,18 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
       prepare_fit_slice_into_slot(under.chains[i], in, cfg.kind, use_fit_cache,
                                   in.per_slice_legacy_prep_fallback, in.per_slice_itm_leg_fallback,
                                   time_stages, i, pre);
+      // T5c: an expiry that reached here because its OWN carry solve FAILED, and
+      // that still produced no slice, must keep reporting the carry failure. The
+      // attempted repair changes what we TRIED, not what went wrong: a chain with
+      // no quotable co-terminal pair usually has no preparable strip either, and
+      // relabelling it `Starved` would drop it out of `n_carry_skipped` and hence
+      // out of the CarryGap reason — turning a surfaced gap into a silent one
+      // (§5.2). Expiries deferred by the confidence gate are unaffected: their
+      // carry solved, so `Starved` is already the truthful outcome for them.
+      if (pre.carry_solve_failed && !pre.usable) {
+        pre.carry_failed = true;
+        pre.prep_outcome = SlicePrepOutcome::CarryFailed;
+      }
     });
   }
 
@@ -965,8 +1059,12 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
     const ProfileClock::time_point t_slice0 =
         time_stages ? ProfileClock::now() : ProfileClock::time_point{};
     bool used_linear_fallback = false; // W3.4: FittedFallbackCurve vs Fitted taxonomy
+    // T10b (D5): the primary fit's own verdict. `fit_slice_curve` clears this on
+    // entry, so a slice that fails leaves it default ("not known") rather than
+    // carrying the previous expiry's — this struct is reused across the walk.
+    FitDiag slice_diag{};
     auto slice_res = fit_slice_curve(cfg, prepared.fit_observations(), F, T, df, w_prev,
-                                     calendar_floor_knots, prev_data_k_range);
+                                     calendar_floor_knots, prev_data_k_range, &slice_diag);
     if (time_stages) {
       ms_fit_slice += elapsed_ms(t_slice0, ProfileClock::now());
     }
@@ -1008,8 +1106,17 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
         }
         const ProfileClock::time_point t_fb0 =
             time_stages ? ProfileClock::now() : ProfileClock::time_point{};
+        // T10b (D5): the fallback OVERWRITES the primary's verdict, and only on
+        // success below. A recovered slice serves the LinearVariance curve, so
+        // the diagnostic that describes it must be the fallback's; keeping the
+        // failed primary's would attribute one family's fit to another's curve.
+        FitDiag fb_diag{};
         auto fb_res = fit_slice_curve(fallback_cfg, prepared.fit_observations(), F, T, df, w_prev,
-                                      std::span<const double>{fb_floor_knots});
+                                      std::span<const double>{fb_floor_knots},
+                                      std::pair<double, double>{
+                                          -std::numeric_limits<double>::infinity(),
+                                          std::numeric_limits<double>::infinity()},
+                                      &fb_diag);
         if (time_stages) {
           ms_fit_slice += elapsed_ms(t_fb0, ProfileClock::now());
         }
@@ -1017,6 +1124,7 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
           // Recovered: adopt the linear slice and fall through to the normal
           // commit path (parity scoring + w_prev carry for the next expiry).
           slice_res = std::move(fb_res);
+          slice_diag = fb_diag;
           ++out.n_slice_linear_fallback;
           used_linear_fallback = true;
         }
@@ -1076,6 +1184,11 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
     //    `infinity` init and `worst_frac_within_bidask` resolves to 0.0 -- the
     //    intended "no diagnostic" sentinel.
     ParityReport parity{};
+    // D4: the dof the reduced chi-square was scored against, and whether the
+    // scored population could actually support it. Surfaced on the slice's
+    // diagnostic so a blanked chi2 is distinguishable from a measured zero.
+    std::size_t scored_chi2_dof = 0;
+    bool chi2_dof_underdetermined = false;
     if (in.score_parity) {
       const ProfileClock::time_point t_parity0 =
           time_stages ? ProfileClock::now() : ProfileClock::time_point{};
@@ -1095,13 +1208,64 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
         pin.method = in.deam.method;
         pin.al_opts = in.deam.al_opts;
         pin.band_k = in.band_k;
-        pin.n_curve_params = 3; // nominal chi2 dof (informational for dense fits)
+        // D4: the FITTED family's own dof, not a nominal 3. chi2_reduced is
+        // chi2/(N - dof), so a dof that is too small inflates the denominator and
+        // makes the served number systematically OPTIMISTIC. The constant 3 was
+        // right only for eSSVI; raw SVI has 5, and the node-based families have
+        // as many as their node count. `curve_selector.cpp` already scores itself
+        // off `curve.dof()`, so this brings the served path in line with the
+        // correct caller rather than inventing a convention.
+        const std::size_t curve_dof = slice->dof();
+        pin.n_curve_params = curve_dof;
         // Re-Americanize through the same cache policy that produced the one
         // canonical European row. A cold fit must not score against a cached
         // inverse map (or vice versa).
         pin.caches = allow_fit_cache(in, cfg.kind) ? in.deam.caches : AmericanCorrectionCaches{};
         auto pr = chain_parity(score.strike, score.bid, score.ask, score.mid, score.side, model_iv,
                                score.market_iv, pin);
+        // Witness the dof that was ACTUALLY scored by reading it back off the
+        // struct that was passed, rather than recomputing it alongside. A
+        // reported dof derived independently of the call can drift from the dof
+        // the call used, and then it documents an intention instead of a fact.
+        scored_chi2_dof = pin.n_curve_params;
+        if (!pr) {
+          // The ONLY dof-dependent failure `chain_parity` has is
+          // `reduced_chi_square`'s N > dof precondition (fit_metrics.cpp:95), so
+          // reaching here with a dof that just grew means the scored population
+          // cannot support the true dof. An INTERPOLATING family hits this by
+          // construction -- LinearVariance's dof IS its node count -- and for
+          // those the reduced statistic is genuinely undefined, not merely
+          // unavailable.
+          //
+          // The BAND evidence is a different matter: it does not depend on dof
+          // at all, and dropping it is not free. `session.cpp` averages over
+          // EVERY per_expiry entry and takes `worst = min(worst, ...)`, so a
+          // default-constructed report publishes frac_fv_within_bidask == 0 --
+          // indistinguishable from a surface that reprices nothing in band --
+          // while `parity_state` stays Valid because the entry count still
+          // matches. That is the D1 defect shape: no measurement laundered as a
+          // measured failure. Measured on lqbench, letting that happen cost 9 of
+          // 240 boards their in-band evidence and moved the corpus mean from
+          // 0.9652 to 0.9293.
+          //
+          // So re-score with dof = 0. That keeps the band evidence AND leaves a
+          // DEFINED goodness-of-fit number (chi2 per observation) in
+          // chi2_reduced.
+          //
+          // Deliberately NOT blanked to 0. An exact zero chi-square reads as a
+          // PERFECT fit — the same misleading-default defect one field over —
+          // and W3-A exists precisely to stop this route publishing all-zero
+          // diagnostics (pricer_fitter_test's
+          // AutoRoutedLinearVarianceMarkAlwaysScoresParity asserts
+          // mean_chi2_reduced > 0 on exactly the auto-routed LinearVariance
+          // board). The under-determined MARKER on `SliceFitDiagnostics` is what
+          // tells a reader this is chi2/N and not a true reduced chi-square;
+          // that is the distinction a bare zero could not carry.
+          pin.n_curve_params = 0;
+          pr = chain_parity(score.strike, score.bid, score.ask, score.mid, score.side, model_iv,
+                            score.market_iv, pin);
+          chi2_dof_underdetermined = true;
+        }
         if (pr) {
           parity = *pr;
         }
@@ -1131,6 +1295,21 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
                         : ExpiryFitOutcome::Fitted;
       rep.carry_source = pre.carry_source; // Decision B: Solved / TermStructureInterp/Extrap
       out.expiry_reports.push_back(rep);
+    }
+    {
+      // T10b (D5): park the fit's own verdict alongside the committed slice.
+      // `kind` comes from the CURVE, not from `cfg` — a slice recovered by the
+      // LinearVariance fallback is served as a LinearVariance curve, and the
+      // per-family coverage table is only readable against the family that
+      // actually produced the diagnostic.
+      SliceFitDiagnostics sd{};
+      sd.chain_index = ci;
+      sd.maturity = T;
+      sd.kind = slice->kind();
+      sd.diag = slice_diag;
+      sd.chi2_dof = scored_chi2_dof;
+      sd.chi2_dof_underdetermined = chi2_dof_underdetermined;
+      out.slice_diagnostics.push_back(sd);
     }
     out.surface.push(std::move(*slice_res));
     out.context.push_back(SliceContext{T, F, pre.borrow, q_eff, prepared.fit_observations().size(),

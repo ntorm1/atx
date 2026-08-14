@@ -13,7 +13,7 @@
 #include "atx/core/error.hpp"
 #include "atx/core/linalg/linalg.hpp"  // MatX, VecX
 #include "atx/core/linalg/solve.hpp"   // solve_spd
-#include "atx/vol/arb.hpp"             // arb_project_calendar_svi
+#include "atx/vol/arb.hpp"             // arb_project_calendar_svi, kSviWingSlopeGate
 #include "atx/vol/black76.hpp"         // black76_price, black76_value_and_vega
 #include "atx/vol/calib.hpp"           // CalibOpts, FitObs, FitDiag, build_observations
 #include "atx/vol/detail/calib_shared.hpp"  // detail::outer_cap + shared LM constants
@@ -526,13 +526,17 @@ bool mm_project_admissible(double T, double &a, double &b, double &rho,
     rho = -1.0 + edge_rho;
     touched = true;
   }
-  // Lee: shrink b if b*(1+|rho|) exceeds the T-free bound 4 - edge_lee.
-  // FT-C3: with w = TOTAL variance the wing-slope bound is T-FREE (b*(1+|rho|) <=
-  // 4), matching the eSSVI/Mingone-cube convention. The old 4/T form was a no-op
-  // for T>1 and vacuous for short T (T=1wk => bound ~208), so moment-exploding
-  // short-dated wings passed the "Lee" gate untouched.
+  // Lee: shrink b if b*(1+|rho|) exceeds kSviWingSlopeGate - edge_lee.
+  // FT-C3: with w = TOTAL variance the wing-slope bound is T-FREE. The old 4/T
+  // form was a no-op for T>1 and vacuous for short T (T=1wk => bound ~208), so
+  // moment-exploding short-dated wings passed the "Lee" gate untouched.
+  // T10/D3: the ceiling is the raw-SVI bound of 2, not eSSVI's 4 — see the
+  // derivation above `kSviWingSlopeGate` in arb.hpp. This projector and that
+  // gate MUST hold the same number: every serving path runs
+  // gate -> project -> re-gate and drops what the re-check still refuses, so a
+  // projector looser than the gate turns repair into rejection.
   {
-    const double lee_max = (4.0 - edge_lee) / (1.0 + std::fabs(rho));
+    const double lee_max = (kSviWingSlopeGate - edge_lee) / (1.0 + std::fabs(rho));
     if (lee_max > 0.0 && b > lee_max) {
       b = lee_max;
       touched = true;
@@ -886,6 +890,11 @@ Result<SviParams> svi_fit_slice(std::span<const FitObs> obs, double T, double F,
     qe_scratch.k[i] = work[i].k;
   }
 
+  // T10 (D5): which of the IRLS loop's three exits fired. Without this the
+  // caller cannot tell a fit that met its tolerance from one that simply ran out
+  // of outer passes — both return Ok with a plausible-looking iteration count.
+  FitTermination termination = FitTermination::IterationCap;
+
   for (std::uint16_t outer = 0; outer < max_outer; ++outer) {
     // The (u, v) box scales with the current sigma; be generous (the real
     // butterfly bound is enforced post-hoc).
@@ -899,6 +908,7 @@ Result<SviParams> svi_fit_slice(std::span<const FitObs> obs, double T, double F,
     inner_total_iters =
         static_cast<std::uint16_t>(inner_total_iters + nm_iters_this_pass);
     if (!std::isfinite(nm_best_sse)) {
+      termination = FitTermination::Stalled;
       break;  // nothing to refine: no vertex had a usable objective
     }
 
@@ -941,6 +951,7 @@ Result<SviParams> svi_fit_slice(std::span<const FitObs> obs, double T, double F,
       sse_sigma += work[i].weight_w * r * r;
     }
     if (std::fabs(prev_sse - sse_sigma) < 1.0e-15) {
+      termination = FitTermination::Converged;
       break;
     }
     prev_sse = sse_sigma;
@@ -1017,6 +1028,11 @@ Result<SviParams> svi_fit_slice(std::span<const FitObs> obs, double T, double F,
     diag->outer_iters = outer_total_iters;
     diag->inner_iters_total = inner_total_iters;
     diag->n_quotes_used = static_cast<std::uint32_t>(n);
+    diag->termination = termination;
+    // `final_grad_norm` stays DISENGAGED: the quasi-explicit fit is a
+    // Nelder-Mead search over (m, sigma) wrapping a bounded linear least
+    // squares, and no gradient of the objective is formed anywhere in it. A
+    // zero here would assert perfect first-order optimality on every slice.
   }
 
   return Ok(out);
@@ -1196,7 +1212,7 @@ Result<SviParams> svi_mm_fit_slice(std::span<const FitObs> obs, double T,
       //    w_pred, so d1 = (ln(F/K) + w_pred/2)/sqrt(w_pred) stays finite for
       //    every finite w_pred, and the floor above keeps w_pred positive.
       //  * svi_w_raw is non-finite for SOME k but not all only if `b` has
-      //    escaped mm_project_default's Lee cap b*(1+|rho|) <= 4/T — which
+      //    escaped mm_project_default's Lee cap b*(1+|rho|) <= 2 — which
       //    every LM-accepted iterate and the projected seed have passed.
       //  * If it is non-finite for ALL rows, sumwr2 stays 0, rms_resid_px is 0,
       //    and the `rms_resid_px > 1e-12` gate below skips the whole reweight,

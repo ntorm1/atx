@@ -91,6 +91,96 @@ static_assert(kRepairKMax == strip::kCertifiedWingHalfBand,
   return code == ErrorCode::NotFound || code == ErrorCode::Unavailable;
 }
 
+// ── Decision B on the eSSVI lane: board-level term-structure carry ────────
+//
+// `require_carry_confidence` is a BOARD policy that this driver applied
+// PER EXPIRY. `prepare_expiry` resolves its own carry, so a non-confident
+// expiry came back as an `Unavailable` carry failure and the whole chain was
+// discarded — while `fit_curve_surface`, running the SAME policy on the SAME
+// board, probes carry with the gate disarmed and re-applies it at board level
+// (curve_fit.cpp:570-577 and its phase-1.5 repair at :737-810), admitting the
+// expiry on a borrow read off the term structure of the board's CONFIDENT
+// expiries. Measured on VZ-lqbench, 15 chains offered to both lanes:
+// convex-dense fitted 14 (1 `PrepStarved`, 0 `CarryFailed`); eSSVI fitted 5 and
+// lost 10, every one of them `CarryFailed`. Same policy, same data, opposite
+// treatment of the same condition — so the asymmetry is this driver's, and this
+// is where it is closed.
+//
+// The gate is NOT relaxed. A non-confident expiry still never contributes its
+// own solve, is never an anchor, and is never stamped `Solved` or `confident`;
+// it is admitted only where confident neighbours can price its carry, and it
+// carries `TermStructureInterp`/`Extrap` provenance out to admission.
+//
+// DUPLICATION, declared. `CarryAnchor` / `CarryFallback` /
+// `term_structure_fallback_borrow` mirror `curve_fit.cpp:344-391` line for line
+// — that file is the SOURCE OF TRUTH for the interpolation rule and its
+// citations (van Binsbergen–Diamond–Grotteria 2022 for the PCP-identified
+// per-maturity carry; Hagan–West 2006 §3 for linear-on-rates with flat
+// extension past the extreme nodes). They are duplicated rather than shared
+// because a shared home would have to be carved out of `curve_fit.cpp`, which
+// this task does not own. Unifying them is a follow-up, and until then a change
+// to one is a change owed to the other.
+struct CarryAnchor {
+  double T{0.0};
+  double borrow{0.0};
+};
+
+struct CarryFallback {
+  double borrow{0.0};
+  CarrySource source{CarrySource::Solved};
+};
+
+// INTERIOR (bracketed by confident anchors): linear interpolation of the borrow
+// in maturity. EDGE: flat extension of the nearest confident borrow. `anchors`
+// MUST be non-empty and ascending in T (guaranteed: chains load ascending-T).
+[[nodiscard]] CarryFallback term_structure_fallback_borrow(double T,
+                                                           std::span<const CarryAnchor> anchors) {
+  if (T <= anchors.front().T) {
+    return CarryFallback{anchors.front().borrow, CarrySource::TermStructureExtrap};
+  }
+  if (T >= anchors.back().T) {
+    return CarryFallback{anchors.back().borrow, CarrySource::TermStructureExtrap};
+  }
+  std::size_t hi = 0;
+  while (hi < anchors.size() && anchors[hi].T <= T) {
+    ++hi; // first anchor strictly beyond T (exists: T < anchors.back().T here)
+  }
+  const CarryAnchor &a_lo = anchors[hi - 1];
+  const CarryAnchor &a_hi = anchors[hi];
+  const double span = a_hi.T - a_lo.T;
+  const double alpha = span > 0.0 ? (T - a_lo.T) / span : 0.0;
+  return CarryFallback{a_lo.borrow + alpha * (a_hi.borrow - a_lo.borrow),
+                       CarrySource::TermStructureInterp};
+}
+
+// The expiry-specific continuously-compounded rate. `run_surface_parity` has
+// already validated that `expiry_rate_T[i] == chains[i].T` for every i when the
+// vectors are present, so the chain index IS the rate index — the same lookup
+// `prepare_expiry` performs internally.
+[[nodiscard]] double expiry_rate_for(const SurfaceParityInputs &in, std::size_t i) noexcept {
+  return in.expiry_rates.empty() ? in.r : in.expiry_rates[i];
+}
+
+// Re-stamp a repaired expiry's certification carry: keep the raw solve's
+// tallies (they describe what the board actually offered) but record that the
+// borrow used was BORROWED from the term structure. A fallback carry must never
+// be laundered as a solved or a confident one.
+[[nodiscard]] CarryDiagnostics as_fallback_carry(const CarryDiagnostics &raw, CarrySource source) {
+  CarryDiagnostics out;
+  out.n_candidates = raw.n_candidates;
+  out.n_attempted = raw.n_attempted;
+  out.n_solved = raw.n_solved;
+  out.n_retained = raw.n_retained;
+  out.effective_pair_count = raw.effective_pair_count;
+  out.dispersion = raw.dispersion;
+  out.max_leave_one_out_shift = raw.max_leave_one_out_shift;
+  out.confidence_half_width = raw.confidence_half_width;
+  out.max_pcp_residual = raw.max_pcp_residual;
+  out.confident = false;
+  out.source = source;
+  return out;
+}
+
 // ── Calendar-floor-constrained slice fit (active-set) ────────────────────
 //
 // Fit this slice subject to a calendar floor w(k) >= w_prev(k) over the slice's
@@ -339,6 +429,14 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
   struct PreppedSlot {
     std::optional<Result<CanonicalPreparedExpiry>> result; // nullopt => T<=0 skip
     PrepareExpiryDiagnostics prep_diag{};
+    // Decision B state. `confident` + `borrow` make this expiry an ANCHOR of the
+    // board's borrow term structure; `needs_carry_repair` marks one the board
+    // gate DEFERRED (its own solve exists but is not trusted, so it is neither
+    // used nor an anchor) awaiting a borrowed carry.
+    bool carry_confident{false};
+    double borrow{0.0};
+    bool needs_carry_repair{false};
+    CarrySource carry_source{CarrySource::Solved};
   };
   std::vector<PreppedSlot> slots(n_chains);
   parallel_for_dynamic(n_chains, in.fit_workers, [&](std::size_t i, unsigned) {
@@ -355,7 +453,145 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
       slots[i].result.emplace(
           Err(ErrorCode::Internal, "run_surface_parity: prepare_expiry threw"));
     }
+    PreppedSlot &slot = slots[i];
+    if (slot.result->has_value()) {
+      // A confident expiry anchors the term structure even if it is the only one
+      // that fits; `prepare_expiry` cannot succeed under the gate without it.
+      slot.carry_confident = slot.prep_diag.carry.confident;
+      slot.borrow = (*slot.result)->borrow;
+      return;
+    }
+    if (!in.deam.require_carry_confidence || !slot.prep_diag.carry_failed) {
+      return; // starved / hard defect / gate off: nothing for Decision B to do
+    }
+    // The gate refused, but `prepare_expiry` cannot say whether the carry was
+    // merely UNTRUSTED or genuinely unresolvable, and only the first is
+    // repairable. Re-probe THIS expiry with the gate disarmed — a solve the
+    // current code pays for and then discards outright, so it is spent only
+    // where an expiry is otherwise lost, and a board with no carry drops runs
+    // bit-identically and at bit-identical cost.
+    DeAmOptions probe = in.deam;
+    probe.require_carry_confidence = false;
+    const Result<ChainForward> probed = resolve_chain_forward(
+        under.chains[i], in.S, expiry_rate_for(in, i), in.cash_divs, in.now_ts_ns, probe);
+    if (!probed.has_value() || !(probed->forward > 0.0) || !std::isfinite(probed->forward)) {
+      return; // a REAL carry failure: not the gate, and not repairable
+    }
+    slot.prep_diag.carry = probed->carry; // raw tallies, re-stamped after repair
+    slot.needs_carry_repair = true;
   });
+
+  // ── Phase 1.5: the board-level term-structure carry repair ────────────────
+  // A deferred expiry is admitted on a borrow DERIVED from the confident
+  // expiries' borrow-vs-T structure and then de-Americanized/prepared like any
+  // other slice. With ZERO confident anchors nothing is fabricated: the deferred
+  // expiries stay dropped and the board behaves exactly as it did before.
+  {
+    std::vector<CarryAnchor> anchors; // ascending T (chains load ascending-T)
+    for (std::size_t i = 0; i < n_chains; ++i) {
+      if (slots[i].carry_confident) {
+        anchors.push_back(CarryAnchor{under.chains[i].T, slots[i].borrow});
+      }
+    }
+    std::vector<std::size_t> repair_idx;
+    std::vector<double> repair_borrow;
+    if (!anchors.empty()) {
+      for (std::size_t i = 0; i < n_chains; ++i) {
+        if (!slots[i].needs_carry_repair) {
+          continue;
+        }
+        const CarryFallback fb = term_structure_fallback_borrow(under.chains[i].T, anchors);
+        if (!std::isfinite(fb.borrow)) {
+          continue; // leave the expiry on its existing carry failure
+        }
+        slots[i].carry_source = fb.source;
+        repair_idx.push_back(i);
+        repair_borrow.push_back(fb.borrow);
+      }
+    }
+    // Same disjoint-slot fan-out as phase 1. `imply_borrow = false` is how the
+    // borrowed carry is injected: `resolve_chain_forward` then returns
+    // hybrid_forward(S, r, borrow_fixed, T, ...) — bit-identical to what the
+    // curve lane computes at curve_fit.cpp:766 — and validates it is positive
+    // and finite, so an unusable fallback forward fails safe into the existing
+    // carry-skip path rather than fitting garbage. A slice too thin even with a
+    // valid carry still starves truthfully.
+    parallel_for_dynamic(repair_idx.size(), in.fit_workers, [&](std::size_t task, unsigned) {
+      const std::size_t i = repair_idx[task];
+      PreppedSlot &slot = slots[i];
+      SurfaceParityInputs repair_in = in;
+      repair_in.deam.imply_borrow = false;
+      repair_in.deam.borrow_fixed = repair_borrow[task];
+      // `require_carry_confidence` is deliberately LEFT AS THE CALLER SET IT.
+      // It does not need clearing and must not be cleared: with `imply_borrow`
+      // false both carry solvers return the fixed-borrow forward before the
+      // confidence gate is reached (deamer.cpp:523 and :688, against the gate at
+      // :790), so the flag is unreachable on this path. Clearing it would change
+      // nothing except how this code reads.
+      const CarryDiagnostics raw = slot.prep_diag.carry;
+      PrepareExpiryDiagnostics repair_diag{};
+      std::optional<Result<CanonicalPreparedExpiry>> repaired;
+      try {
+        repaired = prepare_expiry(under.chains[i], static_cast<std::uint32_t>(i), repair_in,
+                                  prep_policy, &repair_diag);
+      } catch (...) {
+        // Defensive only, as in phase 1: a worker escape would terminate.
+      }
+      if (!repaired.has_value() || !repaired->has_value()) {
+        // The borrowed carry did not rescue this expiry. Keep the ORIGINAL
+        // outcome — the repair may add slices, never re-label a failure.
+        return;
+      }
+      // CERTIFIABILITY IS A PRECONDITION OF SERVING, and this is the one place
+      // the eSSVI lane must NOT copy the curve lane, which commits blind.
+      //
+      // MEASURED, not assumed. The eSSVI lane FITS under the permissive
+      // predicate but its inversion certificate is recomputed under the
+      // CONFIGURED cascade (`collect_input_diagnostics`, session.cpp:526-541 —
+      // the C1 reuse is disabled precisely when `audit_fit_inversions` is on,
+      // session.cpp:1542). A slice only the permissive predicate can build
+      // therefore has no certificate at all: the recompute returns `NotFound`,
+      // `inversion_available` stays false, and `inversion_certified` is
+      // ALL-slices-or-nothing (session.cpp:603), so ONE such slice sets
+      // `InversionResidual` for the whole board. Combined with the `CarryGap`
+      // the fallback itself raises, that turns a Degraded-but-published
+      // candidate into a rejected one. On HBAN-lqbench the repair added three
+      // expiries whose own de-Am audit was clean (0 drops) but whose Configured
+      // recompute kept 1, 3 and 4 rows of 22, 17 and 13 — and the board fell
+      // from 3 served eSSVI slices to a 1-slice SVI.
+      //
+      // So the repaired slice is asked, HERE, the same question admission will
+      // ask later, with the same call: a repaired expiry that cannot be
+      // certified stays dropped exactly as it was. That makes the repair
+      // strictly additive — a board can gain expiries, never lose its
+      // certification grade. It costs one extra Configured de-Am per repaired
+      // expiry, on boards that have carry drops at all; the expiry currently
+      // yields nothing, so the pass is spent only where there is something to
+      // win. When the audit is not armed nothing can certify on any path and the
+      // question is meaningless, so it is asked only under
+      // `audit_fit_inversions`.
+      if (in.deam.audit_fit_inversions) {
+        const Result<ObsSet> cert_obs = build_observations_european(
+            under.chains[i], in.S, (*repaired)->rate, (*repaired)->slice.forward(),
+            under.chains[i].T, (*repaired)->df, in.calib, in.deam.caches, in.deam.al_opts,
+            in.deam.iv_tol, in.deam.iv_max_iter, in.deam.method);
+        if (!cert_obs.has_value() ||
+            !deam_inversion_certified(cert_obs->deam_audit,
+                                      in.calib.max_certified_deam_drop_fraction)) {
+          return;
+        }
+      }
+      // Retain the fallback's own timings; the carry provenance is re-stamped so
+      // certification and admission see a borrowed carry for what it is.
+      repair_diag.carry_solve_ms += slot.prep_diag.carry_solve_ms;
+      repair_diag.carry = as_fallback_carry(raw, slot.carry_source);
+      repair_diag.carry_available = true;
+      repair_diag.carry_failed = false;
+      slot.prep_diag = std::move(repair_diag);
+      slot.result.reset();
+      slot.result.emplace(std::move(*repaired));
+    });
+  }
 
   // Chains are stored ascending in T; consume them in that order so slices land
   // in the surface ascending as set_slice_essvi requires. This pass is serial:
@@ -416,14 +652,83 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
 
     // 3. Fit the eSSVI slice (natural form, T/F stamped in). MonotoneFit adds a
     //    calendar floor vs. the previous fitted slice (theta floor + active-set
-    //    w-floor over the data range); every other mode is the plain fit.
+    //    w-floor over the data range); Project constrains the fit CONSTRUCTIVELY
+    //    instead, with plan §2.1's (N1)+(N2) backbone ordering against the
+    //    previous slice, so its post-hoc projection (step 6) is left a residual
+    //    inside its fidelity budget rather than a term structure that inverted.
+    //    `None` stays the historical independent per-slice fit, byte for byte.
     const double t_fit = time_stages ? now_ns() : 0.0;
     FitDiag diag{};
+    const EssviParams *const calendar_prev =
+        (in.repair == CalendarRepair::Project && has_prev) ? &prev_slice : nullptr;
+    // (N1) fidelity budget — the same cumulative ATM-level scale contract
+    // `arb_project_calendar_essvi` enforces post-fit (arb.hpp,
+    // kCalendarRepairMaxAtmShiftFrac), applied to the level the in-fit floor
+    // is about to REQUIRE. The projected LM keeps every trial calendar-
+    // feasible, so a genuine market inversion at ATM would otherwise be
+    // "repaired" inside the fit — exactly the fabrication the projection's
+    // budget exists to refuse — with the budget never consulted (measured on
+    // the T7a unservable-board fixture: served 3/3 with worst_in_band 0.0 and
+    // mean_chi2 5.6e4 before this guard).
+    //
+    // TWO-STAGE, ON PURPOSE. The nearest-|k| observation's market total
+    // variance (the cold seed's own anchor) is only a cheap TRIGGER: one raw
+    // quote is deliberately NOT the budget denominator — measured on sp100/CL
+    // slice 3 it sat 26% below the slice's true fitted ATM level and refused a
+    // board whose floor never bound (adjacent fitted-theta ratio 1.19, served
+    // in-band 1.0). A triggered slice is confirmed with ONE unconstrained
+    // `essvi_fit_slice` (pure, deterministic): its theta is the slice's own
+    // pre-floor ATM level, the exact analogue of the projection's PRE-REPAIR
+    // theta that `arb_project_calendar_essvi` sizes its budget off. Within
+    // budget the constrained fit proceeds bit-identically; beyond it the
+    // BOARD is refused loudly with the projection's own error shape — never a
+    // quiet 2/3 drop — matching the pre-(N1) behavior where the post-fit
+    // projection's refusal failed the whole build. A failed probe fit falls
+    // through to the constrained fit: no new refusal class on probe failure.
+    if (calendar_prev != nullptr && calendar_prev->theta > 0.0) {
+      double atm_w = 0.0;
+      double atm_absk = std::numeric_limits<double>::infinity();
+      for (const FitObs &o : prepared.fit_observations()) {
+        if (std::fabs(o.k) < atm_absk) {
+          atm_absk = std::fabs(o.k);
+          atm_w = o.w_mkt;
+        }
+      }
+      const bool triggered =
+          atm_w > 0.0 &&
+          calendar_prev->theta / atm_w >
+              1.0 + std::max(kCalendarRepairMaxAtmShiftFrac, kCalendarRepairMinBudgetW / atm_w);
+      if (triggered) {
+        const Result<EssviParams> probe =
+            essvi_fit_slice(prepared.fit_observations(), T, F, in.calib);
+        if (probe.has_value() && probe->theta > 0.0) {
+          const double needed_scale = calendar_prev->theta / probe->theta;
+          const double budget = 1.0 + std::max(kCalendarRepairMaxAtmShiftFrac,
+                                               kCalendarRepairMinBudgetW / probe->theta);
+          detail::log_emitf(LogLevel::Info, LogStream::Stderr,
+                            "[n1-budget-probe] %s slice=%zu T=%.6f trigger_scale=%.6f "
+                            "floor_over_theta_unconstrained=%.6f budget=%.6f verdict=%s",
+                            under.ticker.c_str(), idx, T, calendar_prev->theta / atm_w,
+                            needed_scale, budget, needed_scale > budget ? "refuse" : "pass");
+          if (needed_scale > budget) {
+            return Err(ErrorCode::Unavailable,
+                       "run_surface_parity: slice " + std::to_string(idx) +
+                           " (T=" + std::to_string(T) +
+                           ") (N1) calendar floor needs an ATM level scale of " +
+                           std::to_string(needed_scale) + ", beyond the fidelity budget " +
+                           std::to_string(budget) +
+                           " (a genuine market inversion is not servable without fabricating "
+                           "the level)");
+          }
+        }
+      }
+    }
     Result<EssviParams> slice_res =
         (in.repair == CalendarRepair::MonotoneFit)
             ? fit_slice_calendar_floored(prepared, T, F, in.calib, &diag,
                                          has_prev ? &prev_slice : nullptr, df)
-            : essvi_fit_slice(prepared.fit_observations(), T, F, in.calib, &diag);
+            : essvi_fit_slice(prepared.fit_observations(), T, F, in.calib, &diag,
+                              /*theta_floor=*/0.0, /*warm=*/nullptr, calendar_prev);
     if (time_stages)
       ms_fit += now_ns() - t_fit;
     if (!slice_res) {
@@ -438,9 +743,13 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
       }
       continue; // a slice that fails to fit contributes no slice
     }
+    // Decision B provenance: `Solved` for a directly-inferred carry, a
+    // TermStructure* value for one this board borrowed from its confident
+    // expiries. Admission reads this to tell the two apart.
     expiry_reports.push_back(ExpiryFitReport{chain_index, T, ExpiryFitOutcome::Fitted,
                                              prepared.fit_observations().size(),
-                                             ErrorCode::Unknown});
+                                             ErrorCode::Unknown,
+                                             slots[chain_index].carry_source});
 
     // Stamp this slice's real listed-expiry instant (+ its dense surface
     // write index) so downstream event-bucketing (solve_implied_emove,
@@ -565,6 +874,11 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
   //    the model IV is read back via iv_on_slice, so the number scored is the
   //    one the surface actually serves.
   const double t_parity = time_stages ? now_ns() : 0.0;
+  // T4 escalation (T10c): banded evidence counters over the same population the
+  // per_expiry reports score. Additive observability — nothing below feeds an
+  // admission, a score, or the family selection.
+  std::size_t n_scored_quotes = 0;
+  std::size_t n_in_band_quotes = 0;
   for (const PendingSlice &ps : pending) {
     const PreparedScoreColumns &score = ps.prepared.score_columns();
     std::vector<double> model_iv;
@@ -582,11 +896,42 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
     pin.method = in.deam.method;
     pin.al_opts = in.deam.al_opts;
     pin.band_k = in.band_k;
-    pin.n_curve_params = 3;
+    // D4 (T10c): score chi2 against the SERVED slice's own fitted parameter
+    // count, read off the FINAL (possibly repaired) surface — the same object
+    // `iv_on_slice` just evaluated — not a nominal 3. The hardcode was right
+    // only for a backbone-only slice; a residual-armed profile (SPY-like /
+    // LiquidSingleName keep `residual_disable = false`) serves 3 + 4 HingeQuad
+    // coefficients through `essvi_total_w`, and a too-small dof inflates the
+    // (N - dof) denominator, making the served number systematically
+    // OPTIMISTIC. Per-slice, not per-surface: `fit_slice_calendar_floored`
+    // strips the residual on a floored refit, so dof can differ slice to slice
+    // within one board.
+    pin.n_curve_params = essvi_slice_dof(surface.essvi_slices()[ps.slice_idx]);
     pin.caches = in.deam.caches; // re-Am through the same hot-path caches
-    ATX_TRY(const ParityReport parity, chain_parity(score.strike, score.bid, score.ask, score.mid,
-                                                    score.side, model_iv, score.market_iv, pin));
+    Result<ParityReport> scored = chain_parity(score.strike, score.bid, score.ask, score.mid,
+                                               score.side, model_iv, score.market_iv, pin);
+    bool chi2_dof_underdetermined = false;
+    if (!scored) {
+      // The ONLY dof-dependent failure `chain_parity` has is
+      // `reduced_chi_square`'s N > dof precondition, so a failure that a dof-0
+      // re-score fixes means the scored population cannot support the true
+      // dof. Failing the WHOLE board here (the pre-D4 ATX_TRY) would discard
+      // the band evidence, which does not depend on dof at all — the D1 shape:
+      // no measurement laundered as a measured failure. Re-score with dof = 0:
+      // the band evidence survives and `chi2_reduced` stays a DEFINED number
+      // (chi2 per observation), marked by `chi2_dof_underdetermined` rather
+      // than blanked to a perfect-looking 0.0 (W3-A). A failure the re-score
+      // does NOT fix was never about dof; it propagates exactly as before.
+      pin.n_curve_params = 0;
+      scored = chain_parity(score.strike, score.bid, score.ask, score.mid, score.side, model_iv,
+                            score.market_iv, pin);
+      chi2_dof_underdetermined = true;
+    }
+    ATX_TRY(ParityReport parity, std::move(scored));
+    parity.chi2_dof_underdetermined = chi2_dof_underdetermined;
     worst = std::min(worst, parity.frac_fv_within_bidask);
+    n_scored_quotes += parity.n;
+    n_in_band_quotes += parity.n_within;
     per_expiry.push_back(parity);
   }
   const double ms_parity = time_stages ? (now_ns() - t_parity) : 0.0;
@@ -624,6 +969,9 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
       .n_calendar_viol_pre = n_calendar_viol_pre,
       .n_carry_skipped = n_carry_skipped,
       .n_audit_starved = n_audit_starved,
+      .n_scored = n_scored_quotes,
+      .n_in_band = n_in_band_quotes,
+      .n_out_of_band = n_scored_quotes - n_in_band_quotes,
   };
   if (in.collect_stage_timings) {
     out.fit_timings.carry_solve_ms = ms_carry;

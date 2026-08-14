@@ -174,6 +174,55 @@ struct CalibOpts {
   // bit-identical to the historical one-leg rule; the drivers arm it as a
   // last resort (`SurfaceParityInputs::{per_slice,board_starved}_itm_leg_fallback`).
   bool itm_leg_fallback{false};
+
+  // T6 — one-sided quotes as BOUNDS, not discards.
+  //
+  // Step 2 of the cascade demands a two-sided market (`bid > 0 && ask > bid`).
+  // A leg quoted `0.00 x a` fails it and the strike contributes nothing, even
+  // though the ask is a hard UPPER bound on that strike's price and no-arbitrage
+  // supplies the matching lower one. Dropping it is not conservatism: it removes
+  // a usable row from the count that decides whether the expiry clears
+  // `kMinPreparedFitRows`, so one-sidedness converts directly into preparation
+  // STARVATION — the dominant slice loss on serving boards.
+  //
+  // Under this flag such a leg is admitted with its missing bid PROJECTED onto
+  // the Black-76 lower arbitrage bound (`df·max(0, F−K)` for a call,
+  // `df·max(0, K−F)` for a put), rounded up to `price_tick`
+  // (Echenim-Gobet-Maurice). The admitted band is therefore `[floor, ask]`, its
+  // reference price the midpoint, and its `spread` the FULL width — which is the
+  // honest price uncertainty of a bid-less quote and feeds the existing
+  // `vega²/spread²/(2σT)²` weight unchanged. That weight already IS the
+  // Cohen-Reisinger-Wang in-band penalty slope `ε₀/δ` up to the global constant
+  // ε₀, so no new solver arm is needed: a bound row enters the same convex
+  // Huber-clipped IRLS objective as every other row, at the weight its width
+  // earns it. Hard inequality constraints are deliberately NOT used — CRW warn
+  // that no arbitrage-free price need exist inside the bid-ask box, which would
+  // turn a fittable board into a refusing one.
+  //
+  // The projection is a strict subset of today's rejections: a leg that already
+  // passes step 2 is untouched, so an already-serving row cannot move. A leg
+  // with NO ask (`bid = ask = 0`, the shape an absent side arrives in) has no
+  // upper bound and is still rejected; so is a crossed or locked market, whose
+  // two sides contradict each other rather than bracketing a price.
+  //
+  // Cost, stated honestly: a bid-less quote's reference price is the midpoint of
+  // a band whose lower half is usually pure arbitrage floor, so it is a biased
+  // estimate of the traded price. What bounds the damage is the ABSOLUTE
+  // vol-space gate (step 6, `max_spread_vol`): the admitted width is the whole
+  // ask, so a row only survives when `ask/vega` is inside the profile's vol-point
+  // budget. The RELATIVE gate (step 4, `max_spread_to_mid_pct`) is skipped for
+  // bound rows and only for them, because `(ask − floor)/ref` is a pure function
+  // of one-sidedness (exactly 2.0 whenever the floor is 0) and so carries no
+  // information about the individual quote — the same reason this sprint judges
+  // the de-Am round trip on absolute vol points rather than on the
+  // spread-normalised in-band gate, which structurally cannot fail on a wide
+  // board.
+  bool one_sided_bounds{true};
+  // Minimum quotable price increment, used to round a projected bid UP onto a
+  // real quotable price. Non-positive or non-finite disables the rounding (the
+  // raw arbitrage bound is then used); it never disables the projection.
+  double price_tick{0.01};
+
   // 0 = use every surviving observation. Positive = cap the per-slice
   // de-Americanized fit population before the expensive American-IV inversion,
   // selecting adaptive knots by normalized total-variance interpolation error.
@@ -372,12 +421,49 @@ enum class ObsRejectionReason : std::uint8_t {
   ObservationCap,
   Deamericanization,
   EuropeanPrice,
+  // T5 (D6 / Burkovska Remark 4.1): the quote sits within 1% of its American
+  // intrinsic, where the price is flat in sigma and the inversion is
+  // multi-valued — the row carries no identifiable vol. A CANDIDATE screen, not
+  // an inversion failure: it is stamped BEFORE the de-Am row ledger, so it never
+  // counts against the certified-drop fraction. APPEND-ONLY.
+  IntrinsicIllPosed,
 };
 
 struct ObsProvenance {
   std::uint32_t source_strike_index{0};
   Side side{Side::Call};
   ObsRejectionReason rejection{ObsRejectionReason::None};
+};
+
+// ── T10 / D5: serving-path fit outcome vocabulary ───────────────────────────
+//
+// How a per-slice fit TERMINATED. `Unknown` is the honest default for a fitter
+// that exposes no termination signal — most of them simply return Ok at the
+// iteration cap — and it must never be read as `Converged`. A
+// default-constructed diagnostic that reads as a clean result is the exact
+// defect class this sprint withdrew two measurements over: "0 violations" from
+// a validator that never ran is indistinguishable from "verified clean".
+enum class FitTermination : std::uint8_t {
+  Unknown = 0,   // the fitter reports no termination signal at all
+  Converged,     // a tolerance test or optimality certificate fired
+  IterationCap,  // exhausted the iteration budget with no tolerance hit
+  Stalled,       // no step could be accepted (damping past its ceiling, or a
+                 // non-finite objective at every trial point)
+};
+
+// Outcome of the per-slice ADMISSIBILITY projection (the Martini-Mingone
+// polytope / Lee wing clamp). Three states rather than a bool, because "the
+// projector never ran" and "the projector ran and found nothing to do" are
+// different facts about a served slice and a bool cannot hold both. Only
+// `Moved` means the served parameters are NOT the ones the fit chose.
+//
+// Load-bearing since the raw-SVI Lee gate moved to 2 (`kSviWingSlopeGate`): a
+// slice with b*(1+|rho|) in (2, 4] is now repaired at the serving seam rather
+// than served as fit, and that substitution has to be visible to the caller.
+enum class SliceProjection : std::uint8_t {
+  NotRun = 0,    // no admissibility projection was invoked
+  RanUnchanged,  // invoked; every coordinate was already inside the polytope
+  Moved,         // invoked; at least one coordinate was clamped
 };
 
 // Diagnostics returned by a per-slice fit (ports `AtsVolSviFitDiag`).
@@ -393,6 +479,31 @@ struct FitDiag {
   // is a DIAGNOSTIC COUNT ONLY — the surface drivers do not reject on it (the
   // per-slice serving gates in `fit_slice_curve` do the rejecting).
   std::uint32_t n_butterfly_viol{0};
+
+  // ── T10 (plan D5): signals the serving path could not previously report ──
+  //
+  // WHICH of these a given fit populates is family-dependent, and every one
+  // defaults to its "not known" state rather than to a value that reads as
+  // success. Consult the producing entry point's contract before drawing a
+  // conclusion from a default; in particular `Unknown` is not `Converged` and
+  // a disengaged `final_grad_norm` is not a zero gradient.
+  FitTermination termination{FitTermination::Unknown};
+  SliceProjection projection{SliceProjection::NotRun};
+  // The fit was DISCARDED and a seed served in its place — the served curve is
+  // not the fitted one. C8's admissibility/butterfly revert is the only
+  // producer today (`fit_slice_curve`, VolCurveKind::C8).
+  bool reverted_to_seed{false};
+  // The fit was seeded from an existing curve rather than cold. `fit_slice_curve`
+  // is the COLD entry point and always leaves this false; `refit_slice_curve`
+  // and the eSSVI prior-surface route are where it can become true.
+  bool warm_started{false};
+  // Final first-order optimality residual in the fitter's own units — for
+  // ConvexDense, the scaled KKT stationarity norm its active-set solver
+  // certifies with. DISENGAGED means the fitter computes no such quantity, NOT
+  // that it reached zero: zero is the strongest convergence claim available and
+  // a zero-initialised double would assert it on every fit that has no gradient
+  // at all (raw SVI's Nelder-Mead + BLLS, for one).
+  std::optional<double> final_grad_norm{};
 };
 
 struct InversionRouteDiagnostics {
@@ -467,6 +578,10 @@ struct ObsSet {
   // Strikes whose OTM leg carried no two-sided quote and whose ITM leg was
   // admitted in its place. Always 0 unless `CalibOpts::itm_leg_fallback`.
   std::uint32_t n_itm_fallback{0};
+  // T6: legs admitted as a BOUND — a bid-less quote whose missing bid was
+  // projected onto the tick-rounded lower arbitrage bound. Always 0 unless
+  // `CalibOpts::one_sided_bounds`.
+  std::uint32_t n_bound_admitted{0};
   // Independent raw-mid American-IV inversions performed only for parity
   // scoring semantics (anchor, cap warm-start, or OTM shortcut).
   std::uint32_t n_score_inversions{0};
@@ -483,16 +598,23 @@ struct ObsSet {
 //   row when any of the following holds:
 //     1. any kill-mask flag is set
 //        (Locked/Crossed/Stale/Halted/WideSpread/Penny/LowVega);
-//     2. bid ≤ 0 or ask ≤ bid;
+//     2. bid ≤ 0 or ask ≤ bid — UNLESS `opts.one_sided_bounds` is set and the
+//        leg is merely bid-less (bid ≤ 0 < ask), in which case the bid is
+//        projected onto the tick-rounded lower arbitrage bound and the row is
+//        admitted as a BOUND over the band [floor, ask];
 //     3. mid ≤ 0;
-//     4. (ask − bid) / mid > max_spread_to_mid_pct   (when the cap > 0);
+//     4. (ask − bid) / mid > max_spread_to_mid_pct   (when the cap > 0; skipped
+//        for a bound row — see `CalibOpts::one_sided_bounds`);
 //     5. IV inversion of the raw mid fails, or the IV ∉ (0.005, 5.0);
 //     6. spread_vol = (ask − bid) / vega > max_spread_vol   (when vega > 1e-12);
 //     7. weight_sigma = vega² / spread² < min_vega_weight.
 //   The non-preferred leg is silently skipped (NOT counted as a drop) unless
-//   `opts.itm_leg_fallback` is set AND the preferred leg was rejected at (2),
-//   in which case the ITM leg is re-run through the same cascade and admitted
-//   in its place.
+//   `opts.itm_leg_fallback` is set AND the preferred leg carries no two-sided
+//   market — rejected at (2), or admitted only as a bound — in which case the
+//   ITM leg is re-run through the same cascade and, when it yields a genuinely
+//   two-sided row, admitted in its place. A two-sided ITM quote outranks a
+//   one-sided OTM bound: both legs share a vega, so the narrower band is the
+//   sharper observation in vol units.
 //
 // The stored `FitObs::mid` is the anchor target (bid / mid / ask per
 // `opts.anchor_kind`); the IV inversion always uses the raw symmetric mid.

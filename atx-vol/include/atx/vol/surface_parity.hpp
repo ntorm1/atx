@@ -417,14 +417,27 @@ struct SurfaceParityReport {
   // the audit-created analogue of a carry skip, surfaced the same way.
   std::size_t n_audit_starved{0};
   SurfaceFitStageTimings fit_timings{};
+  // T4 escalation (T10c): explicit banded evidence counters over the SAME
+  // scored population as `per_expiry` (n_scored = Σ n, n_in_band = Σ n_within,
+  // n_out_of_band = their difference). They exist so ABSENCE OF EVIDENCE
+  // (n_scored == 0: nothing was measured) is structurally distinguishable from
+  // EVIDENCE OF ALL-OUT (n_scored > 0 && n_in_band == 0: everything measured
+  // missed the band) — the two states a frac_fv_within_bidask of 0.0
+  // conflates, and exactly the ambiguity a default-constructed ParityReport
+  // (n == 0, frac == 0) exploits when it is averaged in as if it were a
+  // measured zero. Additive observability only: no admission, score, or
+  // selection reads them. Appended at the end per the Tier-A layout note above.
+  std::size_t n_scored{0};
+  std::size_t n_in_band{0};
+  std::size_t n_out_of_band{0};
 };
 
-// Drift pin (plan item 4.2). SurfaceParityReport has exactly FOURTEEN fields.
+// Drift pin (plan item 4.2). SurfaceParityReport has exactly SEVENTEEN fields.
 // Adding, removing or splitting one breaks this line, which is the point: it
 // forces whoever changes the struct to read the construction contract above
 // instead of appending a field "for compatibility" with a positional
 // initializer that no longer exists.
-static_assert(detail::aggregate_arity_is_v<SurfaceParityReport, 14>,
+static_assert(detail::aggregate_arity_is_v<SurfaceParityReport, 17>,
               "SurfaceParityReport field count changed: update this pin, and confirm "
               "run_surface_parity still initializes it by field name.");
 

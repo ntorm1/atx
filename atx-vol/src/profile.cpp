@@ -565,65 +565,84 @@ ProfileVerdict classify_profile(const ClassifierInputs &in) noexcept {
 
 namespace {
 
-// One-pass, allocation-free approximate median of an unbounded stream.
+// One-pass, allocation-free EXACT-BUCKET median of the board's relative spreads.
 //
-// Stride-decimated sample, in place of the reservoir that simply took the first
-// `kCap` two-sided legs. Chains arrive sorted ascending in T, so a prefix
-// reservoir measures the FRONT of a large board, not the board: measured over
-// 1,544 OPRA board-sessions the prefix median ran 20-35% WIDE of the true median
-// at every liquidity tier (mega 0.067 vs 0.050, small 0.312 vs 0.279), because a
-// front expiry is mostly cheap far-OTM legs whose relative spread is huge.
-// Keeping every `stride`-th value and doubling `stride` whenever the buffer fills
-// keeps the sample uniform over the whole stream in one pass, with no allocation
-// -- the only shape allowed here, because `classifier_inputs_from_underlier` is
-// `noexcept`, runs per board on the fit path, and SPY carries ~13k two-sided
-// legs, so a throwing allocation would std::terminate.
-class StrideMedian {
+// History, because both predecessors failed for the same underlying reason. The
+// first estimator kept the first `kCap` two-sided legs; chains arrive sorted
+// ascending in T, so that measured the FRONT of a large board, not the board --
+// over 1,544 OPRA board-sessions it ran 20-35% WIDE of the true median at every
+// liquidity tier (mega 0.067 vs 0.050, small 0.312 vs 0.279), because a front
+// expiry is mostly cheap far-OTM legs whose relative spread is huge. Its
+// replacement kept every `stride`-th leg and doubled `stride` on fill, which
+// spread the sample uniformly over the stream and removed that bias.
+//
+// It remained a SAMPLE, though: ~256 of a board's legs, so its answer was a
+// function of the ORDER the legs arrived in. That is not a hypothetical. On
+// lqbench 2026-08-03, admitting one-sided rows as bounds appends strikes to a
+// chain's axis and pushes every later strike along, permuting the leg stream
+// while changing no two-sided quote at all -- the two-sided multiset and
+// `n_live_quotes` are identical on all 225 boards. That permutation alone moved
+// the estimate on 104 of the 225 and moved two of them (IREN, PLTR) across a
+// classifier bucket edge. Against the exact median the sample misplaced 12 of
+// 225 boards before that change and 10 after; IREN's true median is 0.153846 and
+// the sample read it as 0.149533, one side of the 0.15 edge each.
+//
+// A histogram removes both faults at once, and it is available here only because
+// the quantity has a BOUNDED domain: for a two-sided leg 0 < bid < ask, so
+// (ask - bid)/mid = 2(ask - bid)/(ask + bid) lies strictly in (0, 2). A fixed bin
+// count therefore covers the whole range, which is what turns an estimate into a
+// decision procedure. Bin width 1/1000 makes every bucket edge the classifier
+// tests (0.02, 0.05, 0.15, 0.40) an exact bin boundary, so reporting a bin's
+// LOWER edge preserves each comparison exactly: for a threshold t on that grid,
+// floor(1000m)/1000 < t if and only if m < t. The reported value is thus the true
+// median rounded down to 0.001 and it votes the bucket the true median votes --
+// on all 225 boards, against 10 the sample misplaced.
+//
+// Still allocation-free (`classifier_inputs_from_underlier` is `noexcept` and
+// runs per board on the fit path, so a throwing allocation would std::terminate)
+// and still single-pass; the counter array is 8 KiB of stack.
+class HistogramMedian {
 public:
   void push(double v) noexcept {
-    if (seen_ % stride_ == 0u) {
-      if (n_ == kCap) {
-        // Halve the sample, keeping every second entry, and double the stride:
-        // the buffer again holds values 0, stride, 2*stride, ...
-        for (std::uint32_t i = 0u; 2u * i < n_; ++i) {
-          buf_[i] = buf_[2u * i];
-        }
-        n_ = (n_ + 1u) / 2u;
-        stride_ *= 2u;
-      }
-      if (seen_ % stride_ == 0u) {
-        buf_[n_] = v;
-        ++n_;
-      }
+    // SAFETY: the domain is (0, 2) for every leg the caller admits (it pushes
+    // only when bid > 0 && ask > bid), but clamp rather than trust it -- an
+    // out-of-domain value must degrade the statistic, never index out of bounds.
+    const double scaled = v * kBinsPerUnit;
+    std::size_t bin = 0u;
+    if (scaled >= static_cast<double>(kBins - 1u)) {
+      bin = kBins - 1u;
+    } else if (scaled > 0.0) {
+      bin = static_cast<std::size_t>(scaled);
     }
-    ++seen_;
+    ++counts_[bin];
+    ++n_;
   }
 
   // Sentinel when the stream was empty: `max()` so a board with nothing to
   // measure reads as maximally WIDE. 0.0 would be the tightest possible value
   // and would vote the most liquid bucket.
-  [[nodiscard]] double median() noexcept {
+  [[nodiscard]] double median() const noexcept {
     if (n_ == 0u) {
       return std::numeric_limits<double>::max();
     }
-    for (std::uint32_t i = 1u; i < n_; ++i) {
-      const double v = buf_[i];
-      std::uint32_t j = i;
-      while (j > 0u && buf_[j - 1u] > v) {
-        buf_[j] = buf_[j - 1u];
-        --j;
+    // Same rank convention as the sample estimators this replaces: the element
+    // at 0-based rank n/2 (the upper median when n is even).
+    const std::uint32_t target = n_ / 2u;
+    std::uint32_t cum = 0u;
+    for (std::size_t bin = 0; bin < kBins; ++bin) {
+      cum += counts_[bin];
+      if (cum > target) {
+        return static_cast<double>(bin) / kBinsPerUnit;
       }
-      buf_[j] = v;
     }
-    return buf_[n_ / 2u];
+    return static_cast<double>(kBins - 1u) / kBinsPerUnit;
   }
 
 private:
-  static constexpr std::size_t kCap = 256u;
-  std::array<double, kCap> buf_{};
+  static constexpr double kBinsPerUnit = 1000.0;
+  static constexpr std::size_t kBins = 2000u; // covers [0, 2), the whole domain
+  std::array<std::uint32_t, kBins> counts_{};
   std::uint32_t n_{0u};
-  std::uint32_t stride_{1u};
-  std::uint32_t seen_{0u};
 };
 
 } // namespace
@@ -638,7 +657,7 @@ ClassifierInputs classifier_inputs_from_underlier(const Underlying &under) noexc
   std::uint32_t n_front_expiries = 0u;
   bool has_weeklies = false;
 
-  StrideMedian board_spreads;
+  HistogramMedian board_spreads;
 
   const double S = (under.spot > 0.0) ? under.spot : 0.0;
   // Near-money band as a price interval, so the per-strike test stays two

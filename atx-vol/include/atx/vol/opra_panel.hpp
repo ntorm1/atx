@@ -30,6 +30,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -68,10 +69,14 @@ enum class OpraProvenanceMode : std::uint8_t {
 
 // Convention for turning a bare OSI expiry DATE into an expiry INSTANT.
 //
-//   MidnightUtc     — the historical behavior: the bare "YYYY-MM-DD" is parsed as
-//                     00:00:00Z, so a same-afternoon snapshot sees the front
-//                     expiry only a few hours out. DEFAULT (bit-identical to every
-//                     existing OPRA load / golden).
+//   MidnightUtc     — a HISTORICAL SPELLING THAT NO LONGER MEANS WHAT IT SAYS. It
+//                     named the pre-`7b402ae` behavior (parse "YYYY-MM-DD" as
+//                     00:00:00Z, which made every same-day expiry T <= 0 and hard-
+//                     dropped 0DTE). The loader now resolves it to the SAME
+//                     16:00-ET instant as `UsEquityPmClose`: `opra_panel.cpp` maps
+//                     everything except `UsIndexAmOpen` to `SettlementSession::Pm`.
+//                     Kept only so existing callers still compile; write
+//                     `UsEquityPmClose` when you mean a PM close.
 //   UsEquityPmClose — U.S. listed equity/ETF options are PM-settled: they expire
 //                     at 16:00 America/New_York on the expiry date. When selected,
 //                     the loader stamps each expiry ISO with the DST-correct
@@ -89,6 +94,45 @@ enum class ExpiryCloseConvention : std::uint8_t {
   UsEquityPmClose = 1,
   UsIndexAmOpen = 2,
 };
+
+// The settlement instant and exercise right of one listed U.S. option CLASS.
+//
+// These two travel together because they are two faces of the same fact — what
+// the contract is — and splitting them is how a board ends up half-right: a
+// cash-settled index board that keeps American exercise runs the early-exercise
+// de-Americanization on options that cannot be exercised early, and one that
+// keeps the 16:00-ET close prices an AM-settled expiry 6.5 hours too long.
+struct InstrumentConventions {
+  ExpiryCloseConvention expiry_close{ExpiryCloseConvention::UsEquityPmClose};
+  ExerciseStyle exercise_style{ExerciseStyle::American};
+
+  [[nodiscard]] bool operator==(const InstrumentConventions &) const = default;
+};
+
+// Conventions of the U.S. listed option class whose OSI root (equivalently, whose
+// `underlying` ticker — the two differ only by punctuation, which no entry here
+// contains) is `root`.
+//
+// A CURATED REGISTRY, NOT AN INFERENCE. OPRA definitions historically omit
+// settlement and exercise metadata, so there is nothing in the feed to read this
+// off; the alternative to a named list is a wrong default applied to every board.
+// The list is deliberately small and holds only classes whose convention is a
+// published contract specification.
+//
+// `OEX` is the reason this cannot be "index implies European": the S&P 100
+// contract is cash-settled AND American-exercise, while its sibling `XEO` on the
+// same index is European. A style inferred from "is it an index" gets one of the
+// two wrong every time.
+//
+// Anything not listed — every equity, ETF and ETN, which is the whole production
+// universe today — is American-exercise, PM-settled. That is the historical
+// behavior, so an unlisted board loads bit-identically to before this registry
+// existed.
+//
+// @param root the OSI root or underlying ticker, compared case-sensitively
+//        (both namespaces are upper-case by construction).
+// @return the class's conventions, or the equity default when `root` is unlisted.
+[[nodiscard]] InstrumentConventions us_listed_conventions(std::string_view root) noexcept;
 
 // One date-scoped Databento source identity. Raw OSI text is dictionary-owned
 // once per instrument id; observations carry only the aligned numeric id plane.
@@ -198,14 +242,39 @@ struct OpraLoadSpec {
   std::vector<double> yc_pillar_t; // pillar year-fractions (empty => flat r)
   std::vector<double> yc_pillar_r; // pillar zero rates (same length as _t)
   OpraProvenanceMode provenance_mode{OpraProvenanceMode::Compatibility};
-  // Expiry-instant convention (see ExpiryCloseConvention). Default MidnightUtc
-  // is bit-identical to every historical OPRA load; UsEquityPmClose stamps the
-  // DST-correct 16:00-ET close onto each expiry so near-dated slices carry their
-  // true (PM-settled) time-to-expiry.
-  ExpiryCloseConvention expiry_close{ExpiryCloseConvention::MidnightUtc};
-  // American preserves the historical equity/ETF path. Cash-index loaders
-  // explicitly select European; do not infer it from an absent CFI value.
-  ExerciseStyle exercise_style{ExerciseStyle::American};
+  // Instrument conventions, OVERRIDES ONLY.
+  //
+  // Absent (the default) the loader resolves each from the board's own identity
+  // via `us_listed_conventions` — the `underlying` filter when the caller named
+  // one, else the first row's OSI root. That is what makes the conventions a
+  // property of the INSTRUMENT rather than of whatever the last caller happened
+  // to leave in the spec: before this, both fields were plain values defaulting
+  // to PM-close / American, no production caller assigned either, and so every
+  // cash-settled index board in production was loaded as a PM-settled American
+  // equity board.
+  //
+  // Set one to force it. An explicit value always wins over the registry, which
+  // is what keeps a caller that already states its own convention (the Wilmott
+  // SPX example, the AMZN earnings report) bit-identical.
+  std::optional<ExpiryCloseConvention> expiry_close{};
+  std::optional<ExerciseStyle> exercise_style{};
+  // T6 — keep a quote that has an offer but no bid.
+  //
+  // The OPRA pull writes an unset-price sentinel for a side nobody is showing.
+  // Historically ANY unset side dropped the whole row, which threw away 9.54% of
+  // the lqbench 2026-08-03 corpus (24,465 of 256,576 rows). That population is
+  // not noise: it is entirely bid-missing-with-a-positive-ask (zero rows are
+  // ask-missing, zero have both sides missing), so every one of them carries a
+  // hard UPPER bound on its contract's price, and it concentrates precisely on
+  // the thin boards that starve (ANVS 75% of rows, GNK 43%, KPTI 39%, ROKU 31%).
+  //
+  // Kept, such a row arrives with `bid = 0`, so it is invisible to every
+  // consumer that demands a two-sided market — the PCP spot implication, the
+  // carry solver's `leg_quote_valid`, the legacy prep's `quote_valid` — and
+  // visible only to the observation cascade, which admits it as a BOUND under
+  // `CalibOpts::one_sided_bounds`. A row with no ASK is still dropped: it bounds
+  // nothing from above, and none exist in either corpus.
+  bool admit_one_sided_quotes{true};
   FitContext fit_context{};
   OpraMarketInputProvenance market_input_provenance{};
   // T convention governing every year-fraction this loader computes: the PCP
@@ -232,6 +301,10 @@ struct OpraPanel {
   std::size_t n_contracts = 0;            // rows kept
   std::size_t n_expiries = 0;             // distinct expiries kept
   std::size_t n_dropped = 0;              // rows skipped (bad symbol / unset px / crossed)
+  // T6: rows kept with an offer but no bid (`admit_one_sided_quotes`). Counted
+  // separately from `n_contracts` so a board's one-sided share stays visible
+  // rather than dissolving into the two-sided total.
+  std::size_t n_one_sided = 0;
   std::uint32_t source_schema_version{1}; // 1=legacy, 2=instrument_id
   // Content hash of the source rows/identities only; intentionally
   // TimeSpec-independent (see opra_panel.cpp's `source_fingerprint`) -- two

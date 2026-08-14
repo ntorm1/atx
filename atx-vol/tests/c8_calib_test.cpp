@@ -30,7 +30,9 @@ using atx::vol::c8_pack;
 using atx::vol::c8_residual_sse;
 using atx::vol::c8_slice_w;
 using atx::vol::c8_unpack;
+using atx::vol::C8LmDiag;
 using atx::vol::calib_default_opts;
+using atx::vol::FitTermination;
 using atx::vol::Chain;
 using atx::vol::chain_index;
 using atx::vol::EssviParams;
@@ -123,6 +125,168 @@ TEST(C8Calib, FitSliceLm_OnSyntheticSmile_Converges) {
   ASSERT_TRUE(rc.has_value());
   const double sse = c8_residual_sse(seed, k, mid, spread, 1e-6);
   EXPECT_LT(sse, 1e-3);
+}
+
+// ── LM termination reporting (T10b, plan D5) ───────────────────────────────
+
+// Seeded AT the optimum: every residual is exactly zero, so no step can improve
+// and the damping runs to its 1e8 ceiling. The loop therefore exits by the SAME
+// branch a genuine stall uses, and only the optimality certificate separates the
+// two. Reporting `Stalled` here would call the best possible outcome the worst
+// one — this is the test that pins Converged being checked BEFORE Stalled.
+TEST(C8Calib, FitSliceLm_WhenSeededAtTheOptimum_ReportsConvergedNotStalled) {
+  const C8Params truth =
+      mk_test_slice(0.25, 0.04, -0.02, 0.45, 0.40, 0.035, -0.003, 0.005, -0.005);
+  constexpr int N = 11;
+  std::array<double, N> k{};
+  std::array<double, N> mid{};
+  std::array<double, N> spread{};
+  for (int i = 0; i < N; ++i) {
+    k[static_cast<std::size_t>(i)] = -0.25 + 0.05 * static_cast<double>(i);
+    mid[static_cast<std::size_t>(i)] = c8_slice_w(truth, k[static_cast<std::size_t>(i)]);
+    spread[static_cast<std::size_t>(i)] = 0.0005;
+  }
+  C8Params seed = truth; // exact optimum, zero residual
+
+  C8LmDiag lm{};
+  const auto rc = c8_fit_slice_lm(seed, k, mid, spread, 200, 1e-6, &lm);
+  ASSERT_TRUE(rc.has_value());
+
+  // The certificate must be REPORTED, not merely reachable: a disengaged
+  // residual would mean the fitter still refuses to describe its own exit.
+  ASSERT_TRUE(lm.final_grad_norm.has_value());
+  EXPECT_GE(*lm.final_grad_norm, 0.0);
+  EXPECT_LE(*lm.final_grad_norm, 1.0); // it is a cosine
+  EXPECT_LE(*lm.final_grad_norm, 1e-8);
+  EXPECT_EQ(lm.termination, FitTermination::Converged);
+}
+
+// MEASURED, and the reason this diagnostic is worth having. On a smile that IS
+// exactly representable, seeded 10% off in v, the LM drives SSE down but then
+// exhausts its damping at a point whose optimality cosine is ~0.177 — about ten
+// degrees off orthogonal, nowhere near first-order stationary. So C8 does not
+// merely "run out of iterations": it stops at points it cannot certify, and
+// before T10b that was invisible from outside the fitter.
+//
+// The assertion is deliberately loose on the value (any residual this far above
+// tolerance makes the point) and exact on the verdict.
+TEST(C8Calib, FitSliceLm_WhenDampingExhaustsShortOfStationarity_ReportsStalled) {
+  const C8Params truth =
+      mk_test_slice(0.25, 0.04, -0.02, 0.45, 0.40, 0.035, -0.003, 0.005, -0.005);
+  constexpr int N = 11;
+  std::array<double, N> k{};
+  std::array<double, N> mid{};
+  std::array<double, N> spread{};
+  for (int i = 0; i < N; ++i) {
+    k[static_cast<std::size_t>(i)] = -0.25 + 0.05 * static_cast<double>(i);
+    mid[static_cast<std::size_t>(i)] = c8_slice_w(truth, k[static_cast<std::size_t>(i)]);
+    spread[static_cast<std::size_t>(i)] = 0.0005;
+  }
+  C8Params seed = truth;
+  seed.v *= 1.10;
+  seed.kappa = 0.0;
+  seed.q_L = 0.0;
+  seed.q_R = 0.0;
+
+  C8LmDiag lm{};
+  const auto rc = c8_fit_slice_lm(seed, k, mid, spread, 200, 1e-6, &lm);
+  ASSERT_TRUE(rc.has_value());
+
+  ASSERT_TRUE(lm.final_grad_norm.has_value());
+  EXPECT_GT(*lm.final_grad_norm, 1e-3); // demonstrably NOT stationary
+  EXPECT_LE(*lm.final_grad_norm, 1.0);
+  EXPECT_EQ(lm.termination, FitTermination::Stalled);
+  EXPECT_NE(lm.termination, FitTermination::Converged);
+  EXPECT_GT(lm.accepted_steps, 0); // it did make progress before stalling
+}
+
+// The other side of the same switch: a budget too small to reach optimality
+// must report IterationCap, NOT Converged. This is the assertion that fails if
+// the verdict is hardcoded rather than derived from the certificate.
+TEST(C8Calib, FitSliceLm_WhenBudgetEndsShortOfOptimality_ReportsIterationCap) {
+  const C8Params truth =
+      mk_test_slice(0.25, 0.04, -0.02, 0.45, 0.40, 0.035, -0.003, 0.005, -0.005);
+  constexpr int N = 11;
+  std::array<double, N> k{};
+  std::array<double, N> mid{};
+  std::array<double, N> spread{};
+  for (int i = 0; i < N; ++i) {
+    k[static_cast<std::size_t>(i)] = -0.25 + 0.05 * static_cast<double>(i);
+    mid[static_cast<std::size_t>(i)] = c8_slice_w(truth, k[static_cast<std::size_t>(i)]);
+    spread[static_cast<std::size_t>(i)] = 0.0005;
+  }
+  C8Params seed = truth;
+  seed.v *= 1.60; // far enough that one step cannot certify optimality
+  seed.psi = 0.25;
+  seed.kappa = 0.0;
+  seed.q_L = 0.0;
+  seed.q_R = 0.0;
+
+  C8LmDiag lm{};
+  const auto rc = c8_fit_slice_lm(seed, k, mid, spread, 1, 1e-6, &lm);
+  ASSERT_TRUE(rc.has_value());
+  ASSERT_TRUE(lm.final_grad_norm.has_value());
+  EXPECT_GT(*lm.final_grad_norm, 1e-8); // certificate genuinely unmet
+  EXPECT_EQ(lm.termination, FitTermination::IterationCap);
+  EXPECT_NE(lm.termination, FitTermination::Converged);
+}
+
+// Observing a fit must never perturb it. The diagnostic is evaluated at the
+// point the loop already returns; no tolerance test gates the iteration, so the
+// two runs must agree BIT-for-bit, not merely to a tolerance.
+TEST(C8Calib, FitSliceLm_DiagnosticSink_DoesNotPerturbTheFit) {
+  const C8Params truth =
+      mk_test_slice(0.25, 0.04, -0.02, 0.45, 0.40, 0.035, -0.003, 0.005, -0.005);
+  constexpr int N = 11;
+  std::array<double, N> k{};
+  std::array<double, N> mid{};
+  std::array<double, N> spread{};
+  for (int i = 0; i < N; ++i) {
+    k[static_cast<std::size_t>(i)] = -0.25 + 0.05 * static_cast<double>(i);
+    mid[static_cast<std::size_t>(i)] = c8_slice_w(truth, k[static_cast<std::size_t>(i)]);
+    spread[static_cast<std::size_t>(i)] = 0.0005;
+  }
+  C8Params base = truth;
+  base.v *= 1.10;
+  base.kappa = 0.0;
+  base.q_L = 0.0;
+  base.q_R = 0.0;
+
+  C8Params without = base;
+  C8Params with = base;
+  const auto rc_without = c8_fit_slice_lm(without, k, mid, spread, 40, 1e-6, nullptr);
+  C8LmDiag lm{};
+  const auto rc_with = c8_fit_slice_lm(with, k, mid, spread, 40, 1e-6, &lm);
+  ASSERT_TRUE(rc_without.has_value());
+  ASSERT_TRUE(rc_with.has_value());
+
+  EXPECT_EQ(with.v, without.v);
+  EXPECT_EQ(with.psi, without.psi);
+  EXPECT_EQ(with.p, without.p);
+  EXPECT_EQ(with.c, without.c);
+  EXPECT_EQ(with.v_min, without.v_min);
+  EXPECT_EQ(with.kappa, without.kappa);
+  EXPECT_EQ(with.q_L, without.q_L);
+  EXPECT_EQ(with.q_R, without.q_R);
+  EXPECT_EQ(with.n_lm_iters, without.n_lm_iters);
+}
+
+// Entry-clear: a sink reused across slices must never report the previous
+// slice's verdict, and a struct inspected after an Err must report nothing.
+TEST(C8Calib, FitSliceLm_OnRejectedInput_ClearsTheSinkRatherThanLeavingItStale) {
+  C8LmDiag lm{};
+  lm.termination = FitTermination::Converged;
+  lm.final_grad_norm = 0.0;
+  lm.accepted_steps = 99;
+
+  C8Params s = mk_test_slice(0.25, 0.04, -0.02, 0.4, 0.4, 0.035, 0.0, 0.0, 0.0);
+  const std::array<double, 0> empty{};
+  const auto rc = c8_fit_slice_lm(s, empty, empty, empty, 12, 1e-6, &lm);
+  EXPECT_FALSE(rc.has_value());
+
+  EXPECT_EQ(lm.termination, FitTermination::Unknown);
+  EXPECT_FALSE(lm.final_grad_norm.has_value());
+  EXPECT_EQ(lm.accepted_steps, 0);
 }
 
 // ── quality gate ───────────────────────────────────────────────────────────

@@ -1,11 +1,13 @@
 #include "atx/vol/arb.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <limits>
+#include <optional>
 #include <span>
 #include <string> // budget-refusal diagnostics (std::to_string)
 #include <vector>
@@ -283,6 +285,502 @@ template <class Eval>
   return out;
 }
 
+// ── Real roots of a polynomial of degree <= 4 ────────────────────────────
+//
+// Coefficients ASCENDING: p(x) = sum_{i=0}^{deg} c[i]*x^i.
+//
+// Isolation by critical points rather than Ferrari's closed form. The roots of
+// p' (one degree lower, found by the same routine) cut R into intervals on
+// which p is strictly monotone, so each holds at most one root and any sign
+// change across one brackets it; bisection inside a bracket then converges
+// unconditionally. That costs a few hundred flops rather than ~50 and buys the
+// property that matters here: no branch of it can silently return the wrong
+// root COUNT. Ferrari's resolvent cubic cancels worst exactly where this
+// quartic is worst conditioned — at a near-tangency, which is precisely the
+// narrow crossing a grid scan already misses.
+//
+// An exact double root is the one case not enumerated (p touches zero without
+// changing sign and the node value is not bit-exactly 0). For the calendar
+// question that is harmless: a tangency of w_lo - w_hi does not separate two
+// sign regimes, so the interval decomposition below is unaffected.
+
+constexpr std::size_t kMaxPolyDegree = 4;
+using PolyCoefs = std::array<double, kMaxPolyDegree + 1>;
+
+struct PolyRoots {
+  std::array<double, kMaxPolyDegree> r{};
+  std::uint8_t n{};
+  void push(double x) noexcept {
+    // A degree-<=4 polynomial has at most 4 distinct real roots, so the cap is
+    // unreachable; dropping rather than growing keeps the type allocation-free.
+    if (n < kMaxPolyDegree) {
+      r[n] = x;
+      ++n;
+    }
+  }
+};
+
+[[nodiscard]] double poly_eval(const PolyCoefs &c, std::size_t deg,
+                               double x) noexcept {
+  double v = c[deg];
+  for (std::size_t i = deg; i-- > 0;) {
+    v = v * x + c[i];
+  }
+  return v;
+}
+
+// Cauchy's bound: every real root satisfies |x| <= 1 + max_{i<deg}|c_i|/|c_deg|.
+[[nodiscard]] double poly_root_bound(const PolyCoefs &c, std::size_t deg) noexcept {
+  const double lead = std::fabs(c[deg]);
+  if (!(lead > 0.0)) {
+    return 0.0;
+  }
+  double worst = 0.0;
+  for (std::size_t i = 0; i < deg; ++i) {
+    worst = std::max(worst, std::fabs(c[i]));
+  }
+  const double bound = 1.0 + worst / lead;
+  return std::isfinite(bound) ? bound : 0.0;
+}
+
+[[nodiscard]] double poly_bisect(const PolyCoefs &c, std::size_t deg, double lo,
+                                 double hi, double f_lo) noexcept {
+  // Bounded: each pass halves the bracket and the adjacency test exits once
+  // `mid` can no longer sit strictly inside it (~60 passes for doubles).
+  for (int it = 0; it < 200; ++it) {
+    const double mid = 0.5 * (lo + hi);
+    if (!(mid > lo) || !(mid < hi)) {
+      break;
+    }
+    const double f_mid = poly_eval(c, deg, mid);
+    if (f_mid == 0.0) {
+      return mid;
+    }
+    if ((f_mid > 0.0) == (f_lo > 0.0)) {
+      lo = mid;
+      f_lo = f_mid;
+    } else {
+      hi = mid;
+    }
+  }
+  return 0.5 * (lo + hi);
+}
+
+// Recursion depth is statically bounded by kMaxPolyDegree — each level takes
+// one derivative — so this satisfies the bounded-recursion rule.
+void poly_real_roots(const PolyCoefs &c, std::size_t deg, PolyRoots &out) noexcept {
+  if (deg == 0) {
+    return;  // constant: no root, or identically zero — the caller's problem
+  }
+  if (deg == 1) {
+    if (std::fabs(c[1]) > 0.0) {
+      const double x = -c[0] / c[1];
+      if (std::isfinite(x)) {
+        out.push(x);
+      }
+    }
+    return;
+  }
+
+  PolyCoefs d{};
+  for (std::size_t i = 0; i < deg; ++i) {
+    d[i] = static_cast<double>(i + 1) * c[i + 1];
+  }
+  PolyRoots crit{};
+  poly_real_roots(d, deg - 1, crit);
+  std::sort(crit.r.begin(), crit.r.begin() + crit.n);
+
+  const double bound = poly_root_bound(c, deg);
+  if (!(bound > 0.0)) {
+    return;
+  }
+
+  std::array<double, kMaxPolyDegree + 2> node{};
+  std::size_t n_node = 0;
+  node[n_node++] = -bound;
+  for (std::uint8_t i = 0; i < crit.n; ++i) {
+    if (crit.r[i] > -bound && crit.r[i] < bound) {
+      node[n_node++] = crit.r[i];
+    }
+  }
+  node[n_node++] = bound;
+
+  double f_prev = poly_eval(c, deg, node[0]);
+  if (f_prev == 0.0) {
+    out.push(node[0]);
+  }
+  for (std::size_t i = 1; i < n_node; ++i) {
+    const double f_cur = poly_eval(c, deg, node[i]);
+    if (f_cur == 0.0) {
+      out.push(node[i]);
+    } else if (f_prev != 0.0 && ((f_prev > 0.0) != (f_cur > 0.0))) {
+      out.push(poly_bisect(c, deg, node[i - 1], node[i], f_prev));
+    }
+    f_prev = f_cur;
+  }
+}
+
+// Relative gate on |w_lo - w_hi| for accepting a quartic root as a genuine
+// crossing. The three spurious factors put D at 2*B_1, -2*B_2 or 2*(B_1 - B_2)
+// there; the first two are bounded below by 2*b_i*sigma_i and the third is
+// small only where L is small too, i.e. only where the pair really does nearly
+// meet. Orders of magnitude of separation, so the exact threshold is not
+// delicate — but it must exist, because a Newton-polished genuine root lands at
+// ~1e-16 relative and a spurious one does not move at all.
+constexpr double kCrossingResidualRelTol = 1.0e-7;
+
+}  // namespace
+
+std::optional<SviCrossingSlice>
+SviCrossingSlice::from_svi(const SviParams &p) noexcept {
+  if (!std::isfinite(p.a) || !std::isfinite(p.b) || !std::isfinite(p.rho) ||
+      !std::isfinite(p.m) || !std::isfinite(p.sigma)) {
+    return std::nullopt;
+  }
+  if (!(p.b >= 0.0) || !(p.sigma >= 0.0) || !(std::fabs(p.rho) < 1.0)) {
+    return std::nullopt;
+  }
+  SviCrossingSlice out;
+  out.a_ = p.a;
+  out.b_ = p.b;
+  out.rho_ = p.rho;
+  out.m_ = p.m;
+  out.sigma_ = p.sigma;
+  out.T_ = p.T;
+  return out;
+}
+
+std::optional<SviCrossingSlice>
+SviCrossingSlice::from_essvi_backbone(const EssviParams &p) noexcept {
+  if (essvi_rho_blend_armed(p) || p.resid_scale > 0.0) {
+    return std::nullopt;
+  }
+  if (!std::isfinite(p.theta) || !std::isfinite(p.phi) || !std::isfinite(p.rho)) {
+    return std::nullopt;
+  }
+  if (!(p.theta > 0.0) || !(p.phi > 0.0) || !(std::fabs(p.rho) < 1.0)) {
+    return std::nullopt;
+  }
+  const double one_minus_rho2 = 1.0 - p.rho * p.rho;
+  SviCrossingSlice out;
+  out.a_ = 0.5 * p.theta * one_minus_rho2;
+  out.b_ = 0.5 * p.theta * p.phi;
+  out.rho_ = p.rho;
+  out.m_ = -p.rho / p.phi;
+  out.sigma_ = std::sqrt(one_minus_rho2) / p.phi;
+  out.T_ = p.T;
+  return out;
+}
+
+double SviCrossingSlice::w(double k) const noexcept {
+  const double dk = k - m_;
+  return a_ + b_ * (rho_ * dk + std::sqrt(dk * dk + sigma_ * sigma_));
+}
+
+double SviCrossingSlice::dw_dk(double k) const noexcept {
+  const double dk = k - m_;
+  const double r = std::sqrt(dk * dk + sigma_ * sigma_);
+  // sigma_ == 0 gives a kink at k == m_ where the derivative does not exist;
+  // report the right-hand slope there rather than a NaN, which is all the
+  // Newton polish below needs (it is safeguarded on the residual).
+  const double u = (r > 0.0) ? (dk / r) : 1.0;
+  return b_ * (rho_ + u);
+}
+
+namespace {
+
+[[nodiscard]] double crossing_residual(const SviCrossingSlice &lo,
+                                       const SviCrossingSlice &hi,
+                                       double k) noexcept {
+  return lo.w(k) - hi.w(k);
+}
+
+// Newton on D itself. The quartic LOCATED the root; D is far better conditioned
+// than P near a near-tangency and is the function the answer is about, so the
+// last few digits are earned here rather than there. Safeguarded: a step that
+// does not reduce |D| is rejected and the iteration stops.
+[[nodiscard]] double polish_crossing(const SviCrossingSlice &lo,
+                                     const SviCrossingSlice &hi,
+                                     double k) noexcept {
+  double f = crossing_residual(lo, hi, k);
+  for (int it = 0; it < 8; ++it) {
+    const double g = lo.dw_dk(k) - hi.dw_dk(k);
+    if (!(std::fabs(g) > 1.0e-300)) {
+      break;
+    }
+    const double step = f / g;
+    const double k_next = k - step;
+    if (!std::isfinite(k_next)) {
+      break;
+    }
+    const double f_next = crossing_residual(lo, hi, k_next);
+    if (!(std::fabs(f_next) < std::fabs(f))) {
+      break;
+    }
+    k = k_next;
+    f = f_next;
+    if (std::fabs(step) <= 1.0e-16 * (1.0 + std::fabs(k))) {
+      break;
+    }
+  }
+  return k;
+}
+
+}  // namespace
+
+SliceCrossings svi_pair_crossings(const SviCrossingSlice &lo,
+                                  const SviCrossingSlice &hi) noexcept {
+  SliceCrossings out{};
+
+  // L(k) = p*k + q, the non-radical part of w_lo - w_hi.
+  const double p = lo.b() * lo.rho() - hi.b() * hi.rho();
+  const double q = (lo.a() - hi.a()) - lo.b() * lo.rho() * lo.m() +
+                   hi.b() * hi.rho() * hi.m();
+
+  // B_i^2 = u2*k^2 + u1*k + u0 (and v* for the second slice).
+  const double b1sq = lo.b() * lo.b();
+  const double b2sq = hi.b() * hi.b();
+  const double u2 = b1sq;
+  const double u1 = -2.0 * b1sq * lo.m();
+  const double u0 = b1sq * (lo.m() * lo.m() + lo.sigma() * lo.sigma());
+  const double v2 = b2sq;
+  const double v1 = -2.0 * b2sq * hi.m();
+  const double v0 = b2sq * (hi.m() * hi.m() + hi.sigma() * hi.sigma());
+
+  // Q = L^2 - B_1^2 - B_2^2.
+  const double Q2 = p * p - u2 - v2;
+  const double Q1 = 2.0 * p * q - u1 - v1;
+  const double Q0 = q * q - u0 - v0;
+
+  // P = Q^2 - 4*B_1^2*B_2^2.
+  PolyCoefs c{};
+  c[4] = Q2 * Q2 - 4.0 * u2 * v2;
+  c[3] = 2.0 * Q2 * Q1 - 4.0 * (u2 * v1 + u1 * v2);
+  c[2] = Q1 * Q1 + 2.0 * Q2 * Q0 - 4.0 * (u2 * v0 + u1 * v1 + u0 * v2);
+  c[1] = 2.0 * Q1 * Q0 - 4.0 * (u1 * v0 + u0 * v1);
+  c[0] = Q0 * Q0 - 4.0 * u0 * v0;
+
+  double scale = 0.0;
+  for (const double ci : c) {
+    if (!std::isfinite(ci)) {
+      return out;  // the pair is not exactly decidable; caller falls back
+    }
+    scale = std::max(scale, std::fabs(ci));
+  }
+  if (!(scale > 0.0)) {
+    return out;  // P is identically zero: the two slices coincide, no crossing
+  }
+  for (double &ci : c) {
+    ci /= scale;
+  }
+  // Strip a negligible leading coefficient: a root lost that way sits at
+  // |k| ~ 1/eps, past any log-moneyness a surface is defined on, and the
+  // back-substitution below would reject it in any case.
+  std::size_t deg = kMaxPolyDegree;
+  while (deg > 0 && std::fabs(c[deg]) <= 1.0e-14) {
+    --deg;
+  }
+
+  PolyRoots roots{};
+  poly_real_roots(c, deg, roots);
+  std::sort(roots.r.begin(), roots.r.begin() + roots.n);
+
+  // Accept into scratch first, then sort and dedupe GLOBALLY. Newton polish
+  // moves a root, and a SPURIOUS root can migrate onto a genuine crossing
+  // somewhere else entirely — measured on a randomised benchmark pair, the
+  // spurious root at k = -0.406 converged to the genuine crossing at k = +2.170
+  // and was (correctly) accepted there. So the accepted set is neither in the
+  // quartic's order nor duplicate-free, and comparing only against the previous
+  // entry both admits duplicates and leaves `out.k` unsorted — which the
+  // interval decomposition below reads as ascending and silently mis-partitions.
+  std::array<double, kMaxPolyDegree> accepted{};
+  std::uint8_t n_accepted = 0;
+  for (std::uint8_t i = 0; i < roots.n; ++i) {
+    const double k = polish_crossing(lo, hi, roots.r[i]);
+    if (!std::isfinite(k)) {
+      continue;
+    }
+    const double w_lo = lo.w(k);
+    const double w_hi = hi.w(k);
+    if (!std::isfinite(w_lo) || !std::isfinite(w_hi)) {
+      continue;
+    }
+    const double w_scale = std::max({1.0e-6, std::fabs(w_lo), std::fabs(w_hi)});
+    if (std::fabs(w_lo - w_hi) > kCrossingResidualRelTol * w_scale) {
+      continue;  // spurious: introduced by one of the three other sign factors
+    }
+    accepted[n_accepted] = k;
+    ++n_accepted;
+  }
+  std::sort(accepted.begin(), accepted.begin() + n_accepted);
+  for (std::uint8_t i = 0; i < n_accepted; ++i) {
+    const double k = accepted[i];
+    if (out.n > 0 &&
+        std::fabs(k - out.k[out.n - 1u]) <= 1.0e-9 * (1.0 + std::fabs(k))) {
+      continue;
+    }
+    out.k[out.n] = k;
+    ++out.n;
+  }
+  return out;
+}
+
+std::vector<CalendarInterval>
+svi_pair_calendar_intervals(const SviCrossingSlice &lo,
+                            const SviCrossingSlice &hi, double tol) {
+  std::vector<CalendarInterval> out;
+  const SliceCrossings x = svi_pair_crossings(lo, hi);
+  constexpr double kInf = std::numeric_limits<double>::infinity();
+
+  // One decisive probe per sign region: D has no zero strictly between two
+  // consecutive crossings (nor beyond the outermost ones), so its sign there is
+  // settled by a single evaluation. That is what makes the tails answerable at
+  // all — no finite grid can certify them.
+  const double span =
+      (x.n >= 2) ? std::max(1.0, x.k[x.n - 1u] - x.k[0]) : 1.0;
+
+  for (std::uint8_t i = 0; i <= x.n; ++i) {
+    const double k_lo = (i == 0) ? -kInf : x.k[i - 1u];
+    const double k_hi = (i == x.n) ? kInf : x.k[i];
+    double probe = 0.0;
+    if (i == 0 && i == x.n) {
+      probe = 0.0;  // no crossing anywhere: any point decides all of R
+    } else if (i == 0) {
+      probe = k_hi - span;
+    } else if (i == x.n) {
+      probe = k_lo + span;
+    } else {
+      probe = 0.5 * (k_lo + k_hi);
+    }
+    if (!(crossing_residual(lo, hi, probe) > tol)) {
+      continue;
+    }
+    // Sharpen the witness inside a BOUNDED interval — `slack` is documented as
+    // a lower bound, and a bounded sweep makes it a useful one. The tails keep
+    // their single decisive probe: the deficit there can grow without bound and
+    // "the worst point" is not a meaningful thing to report.
+    CalendarInterval iv{};
+    iv.k_lo = k_lo;
+    iv.k_hi = k_hi;
+    iv.k_witness = probe;
+    iv.slack = crossing_residual(lo, hi, probe);
+    if (std::isfinite(k_lo) && std::isfinite(k_hi)) {
+      constexpr int kWitnessSamples = 15;
+      for (int s = 1; s <= kWitnessSamples; ++s) {
+        const double t = static_cast<double>(s) /
+                         static_cast<double>(kWitnessSamples + 1);
+        const double ks = k_lo + t * (k_hi - k_lo);
+        const double d = crossing_residual(lo, hi, ks);
+        if (d > iv.slack) {
+          iv.slack = d;
+          iv.k_witness = ks;
+        }
+      }
+    }
+    out.push_back(iv);
+  }
+  return out;
+}
+
+namespace {
+
+// Every slice of `s` as an exactly-decidable crossing slice, or nullopt if any
+// slice refuses or the maturities are not strictly increasing. Decided ONCE per
+// surface so a single `arb_check_calendar` call never mixes exact and sampled
+// semantics across its pairs.
+[[nodiscard]] std::optional<std::vector<SviCrossingSlice>>
+exact_crossing_slices(const VolSurface &s) {
+  const std::size_t n = s.n_slices();
+  if (n < 2) {
+    return std::nullopt;
+  }
+  std::vector<SviCrossingSlice> out;
+  out.reserve(n);
+  switch (s.param()) {
+  case Parametrization::Svi:
+  case Parametrization::SviMm:
+    for (const SviParams &sl : s.svi_slices()) {
+      const std::optional<SviCrossingSlice> cs = SviCrossingSlice::from_svi(sl);
+      if (!cs.has_value()) {
+        return std::nullopt;
+      }
+      out.push_back(*cs);
+    }
+    break;
+  case Parametrization::Essvi:
+    for (const EssviParams &sl : s.essvi_slices()) {
+      const std::optional<SviCrossingSlice> cs =
+          SviCrossingSlice::from_essvi_backbone(sl);
+      if (!cs.has_value()) {
+        return std::nullopt;
+      }
+      out.push_back(*cs);
+    }
+    break;
+  case Parametrization::Wing:
+  case Parametrization::C8:
+  case Parametrization::CStar16M:
+    return std::nullopt;
+  }
+  for (std::size_t i = 0; i < out.size(); ++i) {
+    if (!(out[i].T() > 0.0) || !std::isfinite(out[i].T())) {
+      return std::nullopt;
+    }
+    if (i > 0 && !(out[i].T() > out[i - 1].T())) {
+      return std::nullopt;  // duplicate / unsorted T: pair order is not defined
+    }
+  }
+  return out;
+}
+
+// Absolute deficit below which a crossing is FP noise rather than arbitrage.
+// Same number the sampled regime has always used, so the two regimes agree on
+// what counts as a violation and only differ in how they look for one.
+constexpr double kCalendarExactTol = 1.0e-12;
+
+[[nodiscard]] std::vector<ArbViolation>
+exact_calendar_violations(const std::vector<SviCrossingSlice> &slices,
+                          double k_min, double k_max) {
+  std::vector<ArbViolation> out;
+  for (std::size_t i = 1; i < slices.size(); ++i) {
+    const SviCrossingSlice &prev = slices[i - 1];
+    const SviCrossingSlice &curr = slices[i];
+    for (const CalendarInterval &iv :
+         svi_pair_calendar_intervals(prev, curr, kCalendarExactTol)) {
+      const double lo = std::max(iv.k_lo, k_min);
+      const double hi = std::min(iv.k_hi, k_max);
+      if (!(hi >= lo)) {
+        continue;  // the violating interval lies wholly outside the band
+      }
+      // Re-witness inside the CLIPPED interval: the unclipped witness can sit
+      // outside the band, and a violation record whose k is not in the band the
+      // caller asked about is a lie about where the surface is broken.
+      double k_best = std::clamp(iv.k_witness, lo, hi);
+      double slack = prev.w(k_best) - curr.w(k_best);
+      constexpr int kClipSamples = 16;
+      for (int sidx = 0; sidx <= kClipSamples; ++sidx) {
+        const double t =
+            static_cast<double>(sidx) / static_cast<double>(kClipSamples);
+        // Clamped, not just computed: `lo + 1.0*(hi - lo)` rounds ABOVE `hi`,
+        // which would hand the caller a violation stamped at a k outside the
+        // band it asked about.
+        const double ks = std::clamp(lo + t * (hi - lo), lo, hi);
+        const double d = prev.w(ks) - curr.w(ks);
+        if (d > slack) {
+          slack = d;
+          k_best = ks;
+        }
+      }
+      if (!(slack > kCalendarExactTol)) {
+        continue;  // clipped away to nothing
+      }
+      out.push_back(ArbViolation{k_best, prev.T(), curr.T(), slack,
+                                 ArbViolation::Kind::Calendar});
+    }
+  }
+  return out;
+}
+
 [[nodiscard]] Result<CalendarPairProjection> validate_pair_projection_inputs(
     const std::function<double(double)> &w_prev, double k_min, double k_max,
     std::uint32_t n_grid) {
@@ -304,6 +802,17 @@ Result<std::vector<ArbViolation>> arb_check_calendar(const VolSurface &s,
   const std::size_t n = s.n_slices();
   if (n < 2 || n_grid == 0) {
     return Ok(std::move(out));
+  }
+
+  // EXACT regime when the surface admits it — see arb.hpp for the two regimes
+  // and what each records. Applicability is a property of the whole surface, so
+  // one call is never half exact and half sampled.
+  if (k_max > k_min) {
+    if (const std::optional<std::vector<SviCrossingSlice>> exact =
+            exact_crossing_slices(s);
+        exact.has_value()) {
+      return Ok(exact_calendar_violations(*exact, k_min, k_max));
+    }
   }
 
   const double dk = (k_max - k_min) / static_cast<double>(n_grid);
@@ -339,6 +848,161 @@ Result<std::vector<ArbViolation>> arb_check_calendar(const VolSurface &s,
       }
       w_prev = w;
       T_prev = T;
+    }
+  }
+  return Ok(std::move(out));
+}
+
+DeltaBand delta_band_from_atm_w(double w_atm, double z) noexcept {
+  if (!std::isfinite(w_atm) || !(w_atm > 0.0) || !std::isfinite(z) ||
+      !(z > 0.0)) {
+    return DeltaBand{};
+  }
+  const double half = z * std::sqrt(w_atm);
+  return DeltaBand{0.5 * w_atm - half, 0.5 * w_atm + half};
+}
+
+namespace {
+
+// The band a slice PAIR is certified on: the intersection of the two slices'
+// delta bands. Empty when either slice has no usable ATM variance.
+[[nodiscard]] DeltaBand pair_band(double w_atm_lo, double w_atm_hi,
+                                  double z) noexcept {
+  const DeltaBand a = delta_band_from_atm_w(w_atm_lo, z);
+  const DeltaBand b = delta_band_from_atm_w(w_atm_hi, z);
+  if (!a.usable() || !b.usable()) {
+    return DeltaBand{};
+  }
+  return DeltaBand{std::max(a.k_lo, b.k_lo), std::min(a.k_hi, b.k_hi)};
+}
+
+// Worst deficit over a FINITE sub-range of a violating interval, with the k it
+// occurs at. The interior of the interval violates, so any interior probe is a
+// valid witness and the sweep only sharpens the reported number (documented as
+// a lower bound). The sub-range may however be a single point ON a crossing --
+// a violating interval that touches the band only at its endpoint -- where the
+// deficit is zero; callers must drop a record whose slack is not above
+// tolerance rather than emit a violation with no breach.
+[[nodiscard]] ArbViolation witness_over(const SviCrossingSlice &lo,
+                                        const SviCrossingSlice &hi, double k_lo,
+                                        double k_hi) noexcept {
+  constexpr int kSamples = 16;
+  double k_best = k_lo;
+  double slack = lo.w(k_lo) - hi.w(k_lo);
+  for (int i = 1; i <= kSamples; ++i) {
+    const double t = static_cast<double>(i) / static_cast<double>(kSamples);
+    const double k = std::clamp(k_lo + t * (k_hi - k_lo), k_lo, k_hi);
+    const double d = lo.w(k) - hi.w(k);
+    if (d > slack) {
+      slack = d;
+      k_best = k;
+    }
+  }
+  return ArbViolation{k_best, lo.T(), hi.T(), slack,
+                      ArbViolation::Kind::Calendar};
+}
+
+struct FiniteRange {
+  double lo{};
+  double hi{};
+};
+
+// A finite stand-in for a possibly-unbounded violating interval. D has constant
+// sign across the whole interval, so any finite sub-range of it is a valid
+// witness range — this only decides where the record points, never whether one
+// is emitted. Both ends infinite (no crossing anywhere, the pair is inverted on
+// all of R) collapses to a symmetric window rather than to -inf/-inf, which
+// would evaluate w at infinity and produce NaN.
+[[nodiscard]] FiniteRange finite_range(double k_lo, double k_hi,
+                                       double span) noexcept {
+  const bool lo_inf = !std::isfinite(k_lo);
+  const bool hi_inf = !std::isfinite(k_hi);
+  if (lo_inf && hi_inf) {
+    return FiniteRange{-span, span};
+  }
+  if (lo_inf) {
+    return FiniteRange{k_hi - span, k_hi};
+  }
+  if (hi_inf) {
+    return FiniteRange{k_lo, k_lo + span};
+  }
+  return FiniteRange{k_lo, k_hi};
+}
+
+}  // namespace
+
+Result<CalendarBandReport> arb_check_calendar_banded(const VolSurface &s,
+                                                     double z,
+                                                     std::uint32_t n_grid) {
+  CalendarBandReport out{};
+  const std::size_t n = s.n_slices();
+  if (n < 2) {
+    return Ok(std::move(out));
+  }
+
+  if (const std::optional<std::vector<SviCrossingSlice>> exact =
+          exact_crossing_slices(s);
+      exact.has_value()) {
+    const std::vector<SviCrossingSlice> &slices = *exact;
+    for (std::size_t i = 1; i < slices.size(); ++i) {
+      const SviCrossingSlice &lo = slices[i - 1];
+      const SviCrossingSlice &hi = slices[i];
+      ++out.n_pairs_exact;
+      const DeltaBand band = pair_band(lo.w(0.0), hi.w(0.0), z);
+      for (const CalendarInterval &iv :
+           svi_pair_calendar_intervals(lo, hi, kCalendarExactTol)) {
+        const double span = std::max(1.0, band.k_hi - band.k_lo);
+        if (band.usable()) {
+          const double a = std::max(iv.k_lo, band.k_lo);
+          const double b = std::min(iv.k_hi, band.k_hi);
+          if (b >= a) {
+            const ArbViolation v = witness_over(lo, hi, a, b);
+            if (v.slack > kCalendarExactTol) {
+              out.in_band.push_back(v);
+            }
+          }
+        }
+        // Left and right out-of-band pieces. With NO usable band the whole
+        // interval is out of band: refusing to certify anything is the only
+        // honest reading of "this slice has no tradeable window".
+        const auto record_out_of_band = [&](double a_end, double b_end) {
+          const ArbViolation v = witness_over(lo, hi, a_end, b_end);
+          if (v.slack > kCalendarExactTol) {
+            out.out_of_band.push_back(v);
+          }
+        };
+        if (!band.usable()) {
+          const FiniteRange r = finite_range(iv.k_lo, iv.k_hi, span);
+          record_out_of_band(r.lo, r.hi);
+          continue;
+        }
+        const double left_hi = std::min(iv.k_hi, band.k_lo);
+        if (left_hi > iv.k_lo) {
+          const FiniteRange r = finite_range(iv.k_lo, left_hi, span);
+          record_out_of_band(r.lo, r.hi);
+        }
+        const double right_lo = std::max(iv.k_lo, band.k_hi);
+        if (right_lo < iv.k_hi) {
+          const FiniteRange r = finite_range(right_lo, iv.k_hi, span);
+          record_out_of_band(r.lo, r.hi);
+        }
+      }
+    }
+    return Ok(std::move(out));
+  }
+
+  // SAMPLED fallback: the same outer window for both lanes, split by the same
+  // band. `certified_over_r()` goes false so the caller cannot mistake this for
+  // the unbounded statement.
+  out.n_pairs_sampled = static_cast<std::uint32_t>(n - 1);
+  ATX_TRY(const std::vector<ArbViolation> viols,
+          arb_check_calendar(s, -kSampledOuterK, kSampledOuterK, n_grid));
+  for (const ArbViolation &v : viols) {
+    const DeltaBand band = pair_band(s.w(0.0, v.T1), s.w(0.0, v.T2), z);
+    if (band.usable() && band.contains(v.k_log)) {
+      out.in_band.push_back(v);
+    } else {
+      out.out_of_band.push_back(v);
     }
   }
   return Ok(std::move(out));
@@ -526,7 +1190,12 @@ Result<TotalSurfaceArbCounts> arb_check_total_surface_all(const VolSurface &s,
   TotalSurfaceArbCounts counts{};
   const std::size_t n = s.n_slices();
 
-  // Calendar: same sampling as arb_check_calendar, count-only.
+  // Calendar: count-only, and DELIBERATELY still sampled. This is the C's
+  // `ats_arb_check_total_surface_all` tally, whose contract is "violations per
+  // grid point" — callers compare it across runs at a fixed n_grid. T4 moved
+  // `arb_check_calendar` to the exact regime because its result feeds a
+  // BOOLEAN; this one feeds a number nothing gates on, so changing its units
+  // would only break the comparability it exists for.
   if (n >= 2 && n_grid > 0 && k_max > k_min) {
     const double dk = (k_max - k_min) / static_cast<double>(n_grid);
     for (std::uint32_t g = 0; g < n_grid; ++g) {
@@ -625,13 +1294,16 @@ SviMmAdmissibility arb_check_butterfly_svi_mm(const SviParams &slice,
       }
     }
   }
-  // (5) Lee wing-slope bound. FT-C3: with w = TOTAL variance this bound is T-FREE
-  // (b*(1+|rho|) <= 4), matching the eSSVI/Mingone-cube convention and the
-  // svi_project_mm projector. The previous 4/T form was over-tight for T>1 and
-  // vacuous for short T (moment-exploding short-dated wings passed the gate).
+  // (5) Lee wing-slope bound. FT-C3 correctly made it T-FREE (the previous 4/T
+  // form was over-tight for T > 1 and vacuous for short T, so moment-exploding
+  // short-dated wings passed untouched) but ported the eSSVI ceiling of 4 across
+  // a parametrization boundary that changes it by exactly 2x. Raw SVI's Lee
+  // bound is 2, not 4 — the derivation, the measured cost of correcting it, and
+  // why it cannot be corrected here alone are all in arb.hpp above
+  // `kSviWingSlopeGate`.
   if (T > 0.0) {
     const double lee_lhs = slice.b * (1.0 + std::fabs(slice.rho));
-    const double lee_rhs = 4.0;
+    const double lee_rhs = kSviWingSlopeGate;
     if (!(lee_lhs <= lee_rhs + kTol)) {
       ++n_viol;
       const double slack = lee_lhs - lee_rhs;

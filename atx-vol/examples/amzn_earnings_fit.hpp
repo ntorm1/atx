@@ -201,9 +201,20 @@ inline void fill_derived(SliceFit& row) {
 }
 
 // Interpolate a backbone eSSVI slice at maturity T from the two bracketing
-// well-quoted slices (ascending T), linear-in-T on theta/phi/rho/rho_R. theta is
+// well-quoted slices (ascending T), linear-in-T on theta/phi/rho. theta is
 // calendar-monotone because the source is, so the interpolant is a calendar-
 // consistent, cross-expiry-regularized seed. Residual layer stripped (backbone).
+//
+// The asymmetric-rho blend is RETIRED (T9) and `essvi_backbone_w` returns NaN
+// for an armed slice. This routine used to copy the left endpoint wholesale
+// (`EssviParams e = a`), inheriting its `rho_scale`, and then interpolate rho
+// and rho_R INDEPENDENTLY — so two endpoints that were each unarmed could
+// produce an armed interpolant the moment one carried rho_R != rho, and the
+// seed would evaluate to NaN at every strike with no diagnostic. Both endpoints
+// coming from the calibrator makes that unreachable today, which is an argument
+// about the callers rather than about this function. Refuse an armed endpoint
+// outright, and stamp the result unarmed by construction rather than by
+// inheritance.
 [[nodiscard]] inline std::optional<EssviParams> interp_surface_essvi(
     const std::vector<EssviParams>& surf, double T, double F) {
   if (surf.size() < 2) {
@@ -212,13 +223,19 @@ inline void fill_derived(SliceFit& row) {
   for (std::size_t i = 1; i < surf.size(); ++i) {
     const EssviParams& a = surf[i - 1];
     const EssviParams& b = surf[i];
+    if (atx::vol::essvi_rho_blend_armed(a) || atx::vol::essvi_rho_blend_armed(b)) {
+      continue;  // not evaluatable: interpolating it would launder a NaN slice
+    }
     if (a.T <= T && T <= b.T && b.T > a.T && a.theta > 0.0 && b.theta > 0.0) {
       const double v = (T - a.T) / (b.T - a.T);
-      EssviParams e = a;  // inherit rho_scale and structure
+      EssviParams e = a;  // inherit structure only; every blend field is reset
       e.theta = a.theta + v * (b.theta - a.theta);
       e.phi = a.phi + v * (b.phi - a.phi);
       e.rho = a.rho + v * (b.rho - a.rho);
-      e.rho_R = a.rho_R + v * (b.rho_R - a.rho_R);
+      // Reserved-zero wire vocabulary (vol_surface.hpp): rho_scale == 0 with
+      // rho_R == rho is the ONLY unarmed encoding, so write it explicitly.
+      e.rho_scale = 0.0;
+      e.rho_R = e.rho;
       e.T = T;
       e.F = F;
       e.resid_scale = 0.0;

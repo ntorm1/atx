@@ -46,6 +46,20 @@ using atx::core::Ok;
 
 namespace {
 
+// T5 item 3: the vega below which a price residual has NO vol interpretation.
+//
+// Black-76 vega is dPrice/dSigma in price per unit vol, so one vol point (0.01)
+// moves a quote by `0.01 * vega`. At vega = 1.0 that is exactly one cent — one
+// tick. Below it, a whole vol point does not move the quote by a displayable
+// increment, so `|dPrice| / vega` is not a vol displacement, it is a division by
+// something the market cannot resolve: on a real SPY board the 1-day deep wings
+// produce ratios of 1e13 "vol points" that describe nothing.
+//
+// Excluded quotes are counted out of `ParityReport::n_round_trip` (not silently
+// folded in at zero), so `n_round_trip < n` is the visible signal that part of
+// the slice carries no vol-space verdict.
+constexpr double kMinRoundTripVega = 1.0;
+
 // A quote is scorable when its bid-ask is a well-formed, positive, uncrossed
 // price band, its strike is positive, and both vols are finite. Screened-out
 // quotes are dropped from the scored population entirely (reflected in `n`).
@@ -110,6 +124,11 @@ Result<ParityReport> chain_parity(std::span<const double> strike, std::span<cons
   std::size_t n_scored = 0;
   std::size_t n_within = 0;      // fair value inside [bid, ask]
   std::size_t n_within_edge = 0; // no statistical edge (|edge| < band_k·σ_err)
+  // T5 item 3: Σ (|fair_value − mid| / vega)² and its worst quote — the absolute
+  // round trip in vol points (see ParityReport::rmse_round_trip_vol).
+  double sum_sq_round_trip = 0.0;
+  double max_round_trip = 0.0;
+  std::size_t n_round_trip = 0;
 
   for (std::size_t i = 0; i < n; ++i) {
     if (!quote_scorable(strike[i], bid[i], ask[i], mid[i], model_iv[i], market_iv[i])) {
@@ -159,6 +178,22 @@ Result<ParityReport> chain_parity(std::span<const double> strike, std::span<cons
     sum_sq_price += resid_p * resid_p;
     sum_sq_vol += resid_v * resid_v;
 
+    // T5 item 3: the ABSOLUTE round trip in vol points. `resid_p` is already the
+    // re-Americanized model fair value against the ORIGINAL American mid, so
+    // dividing by this quote's vega restates the whole de-Am -> fit ->
+    // re-Americanize chain as a vol displacement that does NOT scale with the
+    // board's spread (see ParityReport). A dead-wing quote (vega <= 0 or
+    // non-finite) has no vol interpretation and is excluded from THIS statistic
+    // only — the rest of the report keeps its full population.
+    if (std::isfinite(vega) && vega >= kMinRoundTripVega) {
+      const double round_trip_vol = std::fabs(resid_p) / vega;
+      if (std::isfinite(round_trip_vol)) {
+        sum_sq_round_trip += round_trip_vol * round_trip_vol;
+        max_round_trip = std::fmax(max_round_trip, round_trip_vol);
+        ++n_round_trip;
+      }
+    }
+
     const EdgeResult edge = minimum_edge(model_iv[i], market_iv[i], err, in.band_k);
     if (edge.within_band)
       ++n_within_edge;
@@ -196,6 +231,14 @@ Result<ParityReport> chain_parity(std::span<const double> strike, std::span<cons
   out.n = n_scored;
   out.n_within = n_within;
   out.band = band;
+  // D4 (T10c): witness the dof this report's chi2 was scored against by reading
+  // it off the SAME input `reduced_chi_square` consumed above — the published
+  // number and its denominator can no longer drift apart silently.
+  out.chi2_dof = in.n_curve_params;
+  out.n_round_trip = n_round_trip;
+  out.rmse_round_trip_vol =
+      (n_round_trip > 0) ? std::sqrt(sum_sq_round_trip / static_cast<double>(n_round_trip)) : 0.0;
+  out.max_round_trip_vol = max_round_trip;
   return Ok(out);
 }
 

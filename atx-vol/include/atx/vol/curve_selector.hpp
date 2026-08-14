@@ -94,6 +94,29 @@ struct CandidateScore {
   // fit-failure — excluded from the winner search.
   std::uint32_t n_butterfly_viol{0};
   bool disqualified{false};
+
+  // ── T10b (plan D5): fit-diagnostic census over this candidate's slices ────
+  //
+  // The selector fits every candidate family on every sampled expiry and, until
+  // now, threw away everything the fit said about ITSELF — it kept only how well
+  // the result repriced. So a family that hit its iteration cap on every slice,
+  // or was silently repaired by the admissibility projection, or fell back to
+  // its seed, scored identically to one that converged cleanly. These counters
+  // are that missing evidence.
+  //
+  // REPORTED ONLY — `select_candidate_index` does not read them and family
+  // choice is unchanged. Ranking on a signal whose per-family coverage is
+  // uneven (see `SliceFitDiagnostics`) would systematically favour the families
+  // that report least, which is precisely backwards.
+  //
+  // Denominator is `n_slices` (slices this candidate actually fitted). Because
+  // coverage is per-family, `n_slices_termination_unknown == n_slices` means
+  // "this fitter reports no termination signal", NOT "nothing converged" — eSSVI
+  // reads that way on every board.
+  std::uint32_t n_slices_converged{0};
+  std::uint32_t n_slices_termination_unknown{0};
+  std::uint32_t n_slices_projection_moved{0}; // served params != fitted params
+  std::uint32_t n_slices_reverted_to_seed{0}; // served curve is the seed
 };
 
 // The selection outcome. `chosen` is ready to drop into

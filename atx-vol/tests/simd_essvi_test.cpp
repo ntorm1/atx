@@ -5,11 +5,18 @@
 // result reproduces the scalar per-strike kernels in atx/vol/vol_surface.hpp
 // (essvi_backbone_w / svi_total_w) to near machine precision — the backbone is
 // pure arithmetic + one sqrt, so parity is essentially exact (the only slack is
-// the FMA-contracted inner term, ~1 ULP). Covered: symmetric eSSVI slices, the
-// asymmetric-rho blend (rho_scale > 0, rho_R != rho — whole-batch scalar
-// fallback), raw SVI, the derived backbone sigma, and every n % 4 tail residue.
+// the FMA-contracted inner term, ~1 ULP). Covered: symmetric eSSVI slices, a
+// slice ARMING the retired asymmetric-rho blend (rho_scale > 0, rho_R != rho —
+// whole-batch scalar fallback, and now a refusal in both lanes), raw SVI, the
+// derived backbone sigma, and every n % 4 tail residue.
 // If AVX2 is absent the batch runs the scalar loop and these become identity
 // checks — still valid, just trivially exact.
+//
+// PARITY INCLUDES REFUSALS. The scalar kernel returns NaN for an armed slice
+// (vol_surface.hpp, `essvi_rho_blend_armed`), so "SIMD == scalar" on such a
+// slice means "both lanes refuse". `expect_close` therefore treats NaN-vs-NaN
+// as agreement and NaN-vs-finite as a failure — a lane that quietly produced a
+// number where the other refused is the exact defect this file guards.
 
 #include "atx/vol/simd/essvi_batch.hpp"
 
@@ -60,8 +67,10 @@ std::vector<EssviParams> make_essvi_slices() {
     s.rho_scale = 0.3; s.T = 0.5; s.F = 50.0;
     v.push_back(s);
   }
-  // Asymmetric-rho blend active (rho_scale > 0 AND rho_R != rho) => scalar
-  // fallback path inside the AVX2 kernel.
+  // ARMED retired rho blend (rho_scale > 0 AND rho_R != rho) => scalar fallback
+  // path inside the AVX2 kernel, and the scalar kernel refuses with NaN. Kept in
+  // the fixture precisely because it is the state whose contract changed: both
+  // lanes must refuse, and refuse identically.
   {
     EssviParams s;
     s.theta = 0.06; s.phi = 1.8; s.rho = -0.45; s.rho_R = 0.10;
@@ -70,6 +79,9 @@ std::vector<EssviParams> make_essvi_slices() {
   }
   return v;
 }
+
+// The armed slice above, by itself.
+EssviParams make_armed_slice() { return make_essvi_slices().back(); }
 
 std::vector<SviParams> make_svi_slices() {
   std::vector<SviParams> v;
@@ -80,10 +92,18 @@ std::vector<SviParams> make_svi_slices() {
   return v;
 }
 
-// Combined abs+rel comparison; ~1e-12 given the arithmetic-only kernel.
+// Combined abs+rel comparison; ~1e-12 given the arithmetic-only kernel. A
+// refusal is a result: both-NaN agrees, one-NaN does not (a plain EXPECT_LE
+// would fail on NaN-vs-NaN and so could never express "both lanes refused").
 void expect_close(double got, double want, const char* ctx, std::size_t i) {
   constexpr double kAbs = 1e-12;
   constexpr double kRel = 1e-12;
+  if (std::isnan(got) || std::isnan(want)) {
+    EXPECT_TRUE(std::isnan(got) && std::isnan(want))
+        << ctx << " i=" << i << " got=" << got << " want=" << want
+        << " (one lane refused and the other did not)";
+    return;
+  }
   EXPECT_LE(std::abs(got - want), kAbs + kRel * std::abs(want))
       << ctx << " i=" << i << " got=" << got << " want=" << want;
 }
@@ -143,6 +163,53 @@ TEST(SimdEssviBatch, HandlesEveryTailResidue) {
         expect_close(got[i], essvi_backbone_w(s, k[i]), "tail", i);
       }
     }
+  }
+}
+
+// WHY an armed slice comes back all-NaN, for the reader who hits it: the
+// rho_R/rho_scale blend is retired (vol_surface.hpp, `essvi_rho_blend_armed`)
+// because a strike-dependent rho voids every published SSVI butterfly and
+// calendar condition. The refusal must be uniform — a vectorized lane that
+// answered with a number would serve an uncertified curve on exactly the slices
+// the refusal exists to stop.
+TEST(SimdEssviBatch, ArmedRhoBlendSliceRefusedByBothLanes) {
+  const EssviParams s = make_armed_slice();
+  ASSERT_TRUE(atx::vol::essvi_rho_blend_armed(s));
+
+  const std::vector<double> k = make_k_grid();
+  const std::size_t n = k.size();
+  std::vector<double> w(n, 0.0), sig(n, 0.0);
+  std::vector<double> dth(n, 0.0), dphi(n, 0.0), drho(n, 0.0);
+  simd::essvi_backbone_w_batch(s, k.data(), w.data(), n);
+  simd::essvi_backbone_sigma_batch(s, k.data(), sig.data(), n);
+  simd::essvi_backbone_w_grad_batch(s, k.data(), w.data(), dth.data(), dphi.data(), drho.data(),
+                                    n);
+  for (std::size_t i = 0; i < n; ++i) {
+    EXPECT_TRUE(std::isnan(essvi_backbone_w(s, k[i]))) << "scalar i=" << i;
+    EXPECT_TRUE(std::isnan(w[i])) << "batch w i=" << i;
+    EXPECT_TRUE(std::isnan(sig[i])) << "batch sigma i=" << i;
+    EXPECT_TRUE(std::isnan(dth[i])) << "batch dtheta i=" << i;
+    EXPECT_TRUE(std::isnan(dphi[i])) << "batch dphi i=" << i;
+    EXPECT_TRUE(std::isnan(drho[i])) << "batch drho i=" << i;
+  }
+}
+
+// An UNARMED slice that merely carries a non-zero rho_scale (rho_R == rho) is
+// still a legal, vectorizable, constant-rho curve — the refusal must not widen
+// into "any slice that touches the retired fields".
+TEST(SimdEssviBatch, ScaleWithoutDistinctRightRhoStillEvaluates) {
+  EssviParams s;
+  s.theta = 0.05; s.phi = 2.0; s.rho = -0.2; s.rho_R = -0.2;
+  s.rho_scale = 0.3; s.T = 0.5; s.F = 50.0;
+  ASSERT_FALSE(atx::vol::essvi_rho_blend_armed(s));
+
+  const std::vector<double> k = make_k_grid();
+  const std::size_t n = k.size();
+  std::vector<double> w(n, 0.0);
+  simd::essvi_backbone_w_batch(s, k.data(), w.data(), n);
+  for (std::size_t i = 0; i < n; ++i) {
+    ASSERT_TRUE(std::isfinite(w[i])) << "i=" << i;
+    expect_close(w[i], essvi_backbone_w(s, k[i]), "unarmed", i);
   }
 }
 

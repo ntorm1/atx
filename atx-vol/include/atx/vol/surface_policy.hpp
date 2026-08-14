@@ -86,6 +86,22 @@ enum class ValidationFailure : std::uint32_t {
   // carry it, so archives remain forward-compatible (the archive/db known-
   // failure masks include it).
   CarryGap = 1u << 11,
+  // T7a (stage 3, pre-registered): the candidate is a validation-fallback
+  // SUBSTITUTE that measurably under-serves the primary it replaced — on the
+  // COMMON quote population (FallbackComparisonRecord, pricer_fitter.hpp) it
+  // reprices strictly fewer quotes inside bid/ask than the oracle-rejected
+  // primary did. The oracle's rejection of the primary stands (a rejected
+  // primary is never served); this bit keeps the substitution honest instead
+  // of silent. Measured (lqbench+sp100, robust/production): 143/179 adopted
+  // substitutes were worse on common support, median in-band loss 6.2%, and
+  // 75.9% of the substitutes whose own-support min "improved" did NOT improve
+  // on common support — the min was gamed by fitting less. Like CarryGap, and
+  // only like CarryGap, this is a publish-with-Degraded reason: alone (or
+  // with CarryGap) it demotes, never rejects — refusing the substitute
+  // outright would serve nothing where something honest can serve. New bit
+  // value: persisted digests written before it never carry it (archive/db
+  // known-failure masks extended in lockstep).
+  SubstituteUnderserve = 1u << 12,
 };
 
 [[nodiscard]] constexpr ValidationFailure operator|(ValidationFailure lhs,

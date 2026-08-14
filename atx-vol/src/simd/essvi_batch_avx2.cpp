@@ -6,21 +6,22 @@
 // atx/vol/vol_surface.hpp, keeping the batch bit-for-bit with the scalar source
 // of truth on the tail.
 //
-// eSSVI backbone (symmetric effective rho), per strike k:
+// eSSVI backbone, per strike k, with a single slice-constant rho:
 //   pk    = phi·k
 //   inner = (pk + rho)² + (1 - rho²)
 //   w     = ½·theta·(1 + rho·pk + sqrt(inner))
-// This vectorizes with a constant effective rho == slice.rho, which is exactly
-// what the scalar rho_eff() returns whenever the asymmetric blend is inactive,
-// i.e. rho_scale <= 0 OR rho_R == rho. (1 - rho²) and ½·theta are strike-
-// independent, so they are broadcast once outside the loop.
+// (1 - rho²) and ½·theta are strike-independent, so they are broadcast once
+// outside the loop.
 //
-// Asymmetric-rho blend (rho_scale > 0 AND rho_R != rho): the scalar effective
-// rho is rho + (rho_R - rho)·½(1 + tanh(k/rho_scale)), i.e. rho becomes strike-
-// dependent through tanh. There is no bit-exact 4-lane tanh here (vector_math's
-// transcendentals are approximations and would break the ~1e-12 per-strike
-// parity), so the WHOLE batch falls back to the scalar essvi_backbone_w in that
-// regime. The common symmetric path stays fully vectorized.
+// ARMED asymmetric-rho blend (rho_scale > 0 AND rho_R != rho): the blend was
+// RETIRED (T9) -- there is no strike-dependent rho and no tanh anywhere in this
+// library any more, and `essvi_backbone_w` returns NaN for an armed slice
+// (`essvi_rho_blend_armed`, vol_surface.cpp:47-54). `blend_active` below is
+// therefore a REFUSAL predicate, not a vectorization-capability one: it routes
+// an armed slice to the scalar kernel precisely so this path refuses it
+// identically to the scalar one, instead of vectorizing a slice the scalar
+// source of truth declines to evaluate. rho_R / rho_scale survive only as
+// reserved-zero wire vocabulary (vol_surface.hpp:101).
 //
 // Raw SVI, per strike k:
 //   dk = k - m,  w = a + b·(rho·dk + sqrt(dk² + sigma²))
@@ -42,8 +43,9 @@ namespace atx::vol::simd::detail {
 
 namespace {
 
-// True iff the scalar rho_eff() would vary with strike (the tanh blend path).
-// Mirrors vol_surface.cpp: constant rho when rho_scale <= 0 or rho_R == rho.
+// True iff the slice carries an ARMED asymmetric-rho blend, which the scalar
+// evaluator refuses with NaN. Mirrors `essvi_rho_blend_armed` (vol_surface.cpp)
+// exactly so the two lanes agree on what they will not evaluate.
 [[nodiscard]] ATX_FORCE_INLINE bool blend_active(const EssviParams &s) noexcept {
   return (s.rho_scale > 0.0) && (s.rho_R != s.rho);
 }

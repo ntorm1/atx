@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <optional>
@@ -584,26 +585,72 @@ TEST(SurfaceV2LegacyCompat, LegacyRiskPresetsRouteThroughTheSharedMappingTable) 
   return std::optional<OptionChain>{std::move(*chain)};
 }
 
+// A deterministic board whose auto-routed PRIMARY is rejected by independent
+// risk admission while a fallback rung is admitted — the validation-rejection
+// ladder's adoption seam. Mirrors corpus_test's sparse AAPL event board: eleven
+// near-money strikes on a 200 spot with a hot (0.42 ATM), steeply-skewed smile
+// and a MegaCapEvent pre-announcement context routing the C8 event family as
+// the primary; C8's extra curvature freedom on this sparse ladder is exactly
+// what independent risk admission rejects, and the parsimonious eSSVI backbone
+// rung serves the same board admitted (the corpus qualification pipeline pins
+// the same rejected-C8 -> admitted-eSSVI transition on this board).
+[[nodiscard]] std::optional<OptionChain> make_event_c8_reject_chain() {
+  SynthPanelSpec spec;
+  spec.uid = "AAPL";
+  spec.snapshot_iso = "2026-06-15";
+  spec.spot = 200.0;
+  spec.r = 0.043;
+  for (const std::string_view expiry_iso :
+       {"2026-07-17", "2026-08-21", "2026-09-18", "2026-10-16", "2026-11-20", "2026-12-18"}) {
+    const double T = year_fraction(spec.snapshot_iso, expiry_iso);
+    spec.expiries.push_back(
+        SynthExpiry{std::string(expiry_iso), T, S3Params{0.42, -0.9 * std::sqrt(T), 0.8}});
+  }
+  spec.strikes = {160.0, 168.0, 176.0, 184.0, 192.0, 200.0,
+                  208.0, 216.0, 224.0, 232.0, 240.0};
+  spec.half_spread_frac = 0.03;
+  spec.min_half_spread = 0.05;
+  auto panel = make_synthetic_american_panel(spec);
+  if (!panel)
+    return std::nullopt;
+  auto chain = OptionChain::from_frame(panel->frame, spec.r, spec.spot);
+  if (!chain)
+    return std::nullopt;
+  return std::optional<OptionChain>{std::move(*chain)};
+}
+
 // Review finding I6: when the validation-rejection ladder admits a different
 // family, the served provenance must name that family — used_fallback set,
 // primary_curve preserving the rejected policy choice, and decision()->curve
 // equal to the model actually served.
+//
+// FIXTURE HISTORY (T7a). This test originally drove the ladder with
+// make_calendar_arb_dense_reject_chain: a ConvexDense primary dropping the
+// arb-conflicting expiry (2/3, InsufficientExpiryCoverage) with a parametric SVI
+// fallback expected to REPAIR the ~5x calendar inversion and serve 3/3. The
+// calendar-repair fidelity budget (arb.hpp) has since refused exactly that
+// fabrication: SVI now honestly drops the same expiry (2/3) and eSSVI refuses
+// to build ("needs a cumulative ATM level scale of 4.998, beyond the fidelity
+// budget 1.100"), so NO family can serve that board at min_expiry_coverage=1.0
+// and the fit fails loudly — the correct outcome, asserted by
+// UnservableCalendarArbBoardFailsLoudWithFullAttemptTrail below. The ladder
+// provenance contract this test guards is instead exercised on the sparse
+// event board above, whose C8 primary is rejected and whose eSSVI rung is
+// admitted — asserted through the v2 dual mark/risk request down to the
+// persisted priced-surface family.
 TEST(SurfaceV2Provenance, ValidationFallbackAdmissionRecordsTheServedFamily) {
-  auto chain = make_calendar_arb_dense_reject_chain();
+  auto chain = make_event_c8_reject_chain();
   ASSERT_TRUE(chain.has_value());
   PricerConfig config = config_for(FitQualityMode::Balanced);
-  // Opt into the strict risk-serving admission contract (min_expiry_coverage=1.0).
-  // This is the realistic policy for a risk consumer AND the source of a ROBUST,
-  // DISCRETE rejection: the ConvexDense dense model cannot node-wise repair the
-  // board's genuine 3m>4m calendar inversion, so it drops the 4m expiry and this
-  // gate rejects the 2-of-3 surface (InsufficientExpiryCoverage). The parametric
-  // SVI fallback repairs the calendar and serves all three -> admitted. See
-  // make_calendar_arb_dense_reject_chain for why a discrete expiry-count failure
-  // is used instead of a geometric convexity margin (the latter is a sub-1e-8
-  // seam artifact that A1/P2 kept flipping).
+  // Opt into the strict risk-serving admission contract (the mark-grade default
+  // admits the primary directly and would never fall back).
   config.admission = atx::vol::risk_admission_policy();
-  // Deterministic direct route: the SPY ticker prior pins the primary to the
-  // rewritten ConvexDense with no out-of-sample cross-validation pass.
+  // The event routing context that makes C8 the primary (corpus_test's AAPL
+  // event cell), pinned rather than inferred so the route is deterministic.
+  config.context.profile_override = atx::vol::ProfileKind::MegaCapEvent;
+  config.context.event_phase = atx::vol::EventPhase::PreAnnouncement;
+  config.context.event_distance_days = 2u;
+  // Deterministic direct route: no out-of-sample cross-validation pass.
   config.policy.sparse_validation_floor = 0;
   PricerFitter fitter{config};
   const auto fitted = fitter.fit(*chain);
@@ -611,42 +658,230 @@ TEST(SurfaceV2Provenance, ValidationFallbackAdmissionRecordsTheServedFamily) {
 
   const auto bundle = fitter.bundle();
   ASSERT_NE(bundle.risk, nullptr);
-  EXPECT_EQ(bundle.risk_health.state, SurfaceState::Healthy);
   EXPECT_TRUE(bundle.risk_health.validation.admitted());
 
   ASSERT_TRUE(fitter.decision().has_value());
   const FitDecision &decision = *fitter.decision();
   EXPECT_TRUE(decision.used_fallback);
-  EXPECT_EQ(decision.primary_curve.kind, VolCurveKind::ConvexDense);
-  EXPECT_NE(decision.curve.kind, VolCurveKind::ConvexDense);
+  EXPECT_EQ(decision.primary_curve.kind, VolCurveKind::C8);
+  EXPECT_NE(decision.curve.kind, VolCurveKind::C8);
 
-  // The fallback fired because the ConvexDense primary GENUINELY failed
-  // independent admission (not because the fallback was preferred). Assert the
-  // primary attempt is recorded, ConvexDense, and rejected for the SPECIFIC,
-  // drift-proof reason — dropping the arb-conflicting expiry — so a future
-  // fit/de-Am change that re-admits the primary fails this test LOUDLY instead of
-  // silently re-greening it.
+  // The fallback fired because the primary GENUINELY failed independent
+  // admission (not because the fallback was preferred): the primary attempt is
+  // recorded, C8, and rejected, and the served attempt is a different family
+  // that passed the complete admission contract.
   ASSERT_TRUE(fitter.published_report().has_value());
   ASSERT_GT(fitter.published_report()->attempts.size(), 1u);
   const auto &primary_attempt = fitter.published_report()->attempts.front();
-  EXPECT_EQ(primary_attempt.curve.kind, VolCurveKind::ConvexDense);
+  EXPECT_EQ(primary_attempt.curve.kind, VolCurveKind::C8);
   EXPECT_FALSE(primary_attempt.admission.admitted);
-  EXPECT_TRUE(atx::vol::has_admission_failure(
-      primary_attempt.admission, atx::vol::SurfaceAdmissionReason::InsufficientExpiryCoverage));
-  // The discrete margin: the dense primary served strictly fewer expiries than the
-  // board attempted (one WHOLE expiry short of the 1.0 floor), while the served
-  // fallback covers all of them.
-  EXPECT_LT(primary_attempt.evidence.fitted_expiries,
-            primary_attempt.evidence.attempted_expiries);
   const auto &served_attempt = fitter.published_report()->attempts.back();
   EXPECT_TRUE(served_attempt.admission.admitted);
-  EXPECT_EQ(served_attempt.evidence.fitted_expiries, served_attempt.evidence.attempted_expiries);
+  EXPECT_EQ(served_attempt.curve.kind, decision.curve.kind);
 
   // Persisted provenance must match the served model family.
   auto priced = bundle.risk->session().to_priced_surface();
   ASSERT_TRUE(priced.has_value()) << priced.error().to_string();
   ASSERT_GT(priced->n_slices(), 0u);
   EXPECT_EQ(priced->kind_at(0), decision.curve.kind);
+}
+
+// T7a Stage 1: adopting a substitute after independent admission rejected the
+// BUILT primary must publish the two candidates' comparison on a COMMON quote
+// population (FallbackComparisonRecord) — the seam previously served the
+// substitute with no comparison ever made, while downstream admission scores
+// the gameable own-support min (worst_frac_within_bidask). Instrumentation
+// only: the record rides the build report; the same fixture's serving
+// assertions live in ValidationFallbackAdmissionRecordsTheServedFamily above.
+TEST(SurfaceV2Provenance, ValidationFallbackAdoptionPublishesCommonSupportComparison) {
+  auto chain = make_event_c8_reject_chain();
+  ASSERT_TRUE(chain.has_value());
+  // Make every term of the population screen load-bearing: cross one deep-wing
+  // quote (bid > ask) and one-side another (bid == 0). Both must fall OUT of
+  // the common-support population — the independent recomputation below drops
+  // them, so a production screen that silently admits either drifts the counts
+  // and fails the population pin.
+  {
+    const std::vector<OptionId> ids = chain->ids();
+    ASSERT_GE(ids.size(), 2u);
+    const std::array<OptionId, 2> touched{ids.front(), ids.back()};
+    const std::array<double, 2> bids{2.0, 0.0};
+    const std::array<double, 2> asks{1.0, 0.05};
+    ASSERT_TRUE(chain
+                    ->update_quotes(std::span<const OptionId>(touched),
+                                    std::span<const double>(bids), std::span<const double>(asks))
+                    .has_value());
+  }
+  PricerConfig config = config_for(FitQualityMode::Balanced);
+  config.admission = atx::vol::risk_admission_policy();
+  config.context.profile_override = atx::vol::ProfileKind::MegaCapEvent;
+  config.context.event_phase = atx::vol::EventPhase::PreAnnouncement;
+  config.context.event_distance_days = 2u;
+  config.policy.sparse_validation_floor = 0;
+  PricerFitter fitter{config};
+  ASSERT_TRUE(fitter.fit(*chain).has_value());
+  ASSERT_TRUE(fitter.published_report().has_value());
+  const auto &report = *fitter.published_report();
+  ASSERT_TRUE(report.validation_fallback_comparison.has_value());
+  const atx::vol::FallbackComparisonRecord &record = *report.validation_fallback_comparison;
+
+  EXPECT_EQ(record.path, atx::vol::FallbackAdoptionPath::ValidationLadder);
+  EXPECT_EQ(record.primary_curve.kind, VolCurveKind::C8);
+  ASSERT_TRUE(fitter.decision().has_value());
+  EXPECT_EQ(record.substitute_curve.kind, fitter.decision()->curve.kind);
+  EXPECT_TRUE(record.substitute_served);
+  // The oracle verdict that killed the primary is carried, not defaulted.
+  EXPECT_NE(record.primary_failures, ValidationFailure::None);
+  EXPECT_FALSE(record.primary_admission.admitted);
+
+  // The record scored the primary's support: one slice row per fitted primary
+  // expiry, each row's own-support obs matching the primary attempt's census.
+  const auto &primary_attempt = report.attempts.front();
+  ASSERT_EQ(record.slices.size(), primary_attempt.evidence.fitted_expiries);
+  ASSERT_GT(record.slices.size(), 0u);
+
+  // Population pin: on each primary-fitted slice the common support is EXACTLY
+  // the chain's well-formed two-sided quotes (finite strike/bid/ask, bid > 0,
+  // ask > 0, uncrossed), recomputed here independently from the installed
+  // underlying. Both candidates are scored on that same denominator.
+  const atx::vol::Underlying &under = chain->underlying();
+  std::size_t total_scored = 0u;
+  std::size_t total_primary_within = 0u;
+  std::size_t total_substitute_within = 0u;
+  double worst_primary = 1.0;
+  double worst_substitute = 1.0;
+  for (const atx::vol::FallbackComparisonSlice &slice : record.slices) {
+    const auto matching =
+        std::find_if(under.chains.begin(), under.chains.end(),
+                     [&](const atx::vol::Chain &expiry) { return expiry.T == slice.maturity; });
+    ASSERT_NE(matching, under.chains.end());
+    std::size_t expected = 0u;
+    for (std::size_t strike_idx = 0u; strike_idx < matching->n_strikes(); ++strike_idx) {
+      if (!std::isfinite(matching->strikes[strike_idx]) || !(matching->strikes[strike_idx] > 0.0))
+        continue;
+      for (const Side side : {Side::Call, Side::Put}) {
+        const std::size_t quote_idx =
+            atx::vol::chain_index(static_cast<std::uint16_t>(strike_idx), side);
+        const double bid = matching->bids[quote_idx];
+        const double ask = matching->asks[quote_idx];
+        if (std::isfinite(bid) && std::isfinite(ask) && bid > 0.0 && ask > 0.0 && ask >= bid)
+          ++expected;
+      }
+    }
+    EXPECT_EQ(slice.n_scored, expected) << "maturity " << slice.maturity;
+    ASSERT_GT(slice.n_scored, 0u);
+    EXPECT_LE(slice.primary_within, slice.n_scored);
+    EXPECT_LE(slice.substitute_within, slice.n_scored);
+    EXPECT_GT(slice.primary_obs, 0u);
+    total_scored += slice.n_scored;
+    total_primary_within += slice.primary_within;
+    total_substitute_within += slice.substitute_within;
+    const double dn = static_cast<double>(slice.n_scored);
+    worst_primary = std::min(worst_primary, static_cast<double>(slice.primary_within) / dn);
+    worst_substitute =
+        std::min(worst_substitute, static_cast<double>(slice.substitute_within) / dn);
+  }
+  EXPECT_EQ(record.n_scored, total_scored);
+  EXPECT_EQ(record.primary_within, total_primary_within);
+  EXPECT_EQ(record.substitute_within, total_substitute_within);
+  EXPECT_DOUBLE_EQ(record.primary_worst_slice_frac, worst_primary);
+  EXPECT_DOUBLE_EQ(record.substitute_worst_slice_frac, worst_substitute);
+  EXPECT_GT(record.primary_obs_total, 0u);
+  EXPECT_GT(record.substitute_obs_total, 0u);
+  // T7a stage 3, no-false-positive direction: on THIS board the adopted eSSVI
+  // substitute genuinely out-serves the rejected C8 primary on common support
+  // (measured 108/108 vs 86/108), so the demote-on-loss rule must NOT fire —
+  // no SubstituteUnderserve reason, and the served state stays whatever the
+  // substitute's own digest earned. (The fires-when-worse direction is pinned
+  // by SubstituteUnderservePredicateBoundaries + RiskSurfaceAdmission.
+  // SubstituteUnderserveOnlyPublishesDegradedWithReasonRetained, and end to
+  // end by the pre-registered corpus control: 143/179 production substitutes
+  // gain exactly this reason bit and nothing else changes.)
+  EXPECT_GT(record.substitute_within, record.primary_within);
+  EXPECT_FALSE(atx::vol::substitute_underserves(record));
+  EXPECT_FALSE(has_validation_failure(fitter.bundle().risk_health.reasons,
+                                      ValidationFailure::SubstituteUnderserve));
+}
+
+// T7a stage 3: the demote-on-loss trigger, at its boundaries. Fail-open on an
+// unmeasured comparison (W3-A), inactive on ties, active only on a strict
+// in-band deficit.
+TEST(SurfaceV2Provenance, SubstituteUnderservePredicateBoundaries) {
+  atx::vol::FallbackComparisonRecord record;
+  EXPECT_FALSE(atx::vol::substitute_underserves(record)); // measured nothing
+  record.n_scored = 10u;
+  record.primary_within = 5u;
+  record.substitute_within = 5u;
+  EXPECT_FALSE(atx::vol::substitute_underserves(record)); // tie is not a loss
+  record.substitute_within = 6u;
+  EXPECT_FALSE(atx::vol::substitute_underserves(record)); // substitute better
+  record.substitute_within = 4u;
+  EXPECT_TRUE(atx::vol::substitute_underserves(record)); // strict deficit
+  record.n_scored = 0u;
+  EXPECT_FALSE(atx::vol::substitute_underserves(record)); // W3-A guard wins
+}
+
+// W3-A: a fit that never substituted must publish NO comparison record —
+// absence is structural, never a zeroed record masquerading as measurement.
+TEST(SurfaceV2Provenance, NoSubstitutionPublishesNoComparisonRecord) {
+  auto chain = make_known_truth_chain();
+  ASSERT_TRUE(chain.has_value());
+  PricerFitter fitter{config_for(FitQualityMode::Balanced)};
+  ASSERT_TRUE(fitter.fit(*chain).has_value());
+  ASSERT_TRUE(fitter.published_report().has_value());
+  EXPECT_FALSE(fitter.published_report()->validation_fallback_comparison.has_value());
+  ASSERT_TRUE(fitter.decision().has_value());
+  EXPECT_FALSE(fitter.decision()->used_fallback);
+}
+
+// T7a companion to the fixture history above: the calendar-arb board whose
+// genuine 3m>4m inversion needs a ~5x ATM variance fabrication to "repair" is
+// UNSERVABLE under min_expiry_coverage=1.0 now that the fidelity budget refuses
+// that fabrication — every family honestly drops or refuses the arb expiry, and
+// the fit fails LOUDLY with the complete attempt trail naming each family's own
+// verdict. If a future repair/fit change quietly re-serves this board 3/3, this
+// test fails and the fabrication question must be re-argued in the open.
+TEST(SurfaceV2Provenance, UnservableCalendarArbBoardFailsLoudWithFullAttemptTrail) {
+  auto chain = make_calendar_arb_dense_reject_chain();
+  ASSERT_TRUE(chain.has_value());
+  PricerConfig config = config_for(FitQualityMode::Balanced);
+  config.admission = atx::vol::risk_admission_policy();
+  // Deterministic direct route: the SPY ticker prior pins the primary to
+  // ConvexDense with no out-of-sample cross-validation pass.
+  config.policy.sparse_validation_floor = 0;
+  PricerFitter fitter{config};
+  const auto fitted = fitter.fit(*chain);
+  ASSERT_FALSE(fitted.has_value())
+      << "the arb-carrying board was served; the fidelity budget's refusal to fabricate "
+         "~5x ATM variance has been bypassed";
+  EXPECT_NE(fitted.error().to_string().find("InsufficientExpiryCoverage"), std::string::npos)
+      << fitted.error().to_string();
+
+  // The complete attempt trail: dense primary drops the arb expiry (2/3), the
+  // SVI rung honestly drops the same expiry instead of fabricating the repair,
+  // and the eSSVI rung refuses to build against the fidelity budget.
+  ASSERT_TRUE(fitter.last_attempt_report().has_value());
+  const auto &attempts = fitter.last_attempt_report()->attempts;
+  ASSERT_EQ(attempts.size(), 3u);
+  EXPECT_EQ(attempts[0].curve.kind, VolCurveKind::ConvexDense);
+  EXPECT_TRUE(attempts[0].build_succeeded);
+  EXPECT_FALSE(attempts[0].admission.admitted);
+  EXPECT_TRUE(atx::vol::has_admission_failure(
+      attempts[0].admission, atx::vol::SurfaceAdmissionReason::InsufficientExpiryCoverage));
+  EXPECT_LT(attempts[0].evidence.fitted_expiries, attempts[0].evidence.attempted_expiries);
+  EXPECT_EQ(attempts[1].curve.kind, VolCurveKind::Svi);
+  EXPECT_TRUE(attempts[1].build_succeeded);
+  EXPECT_FALSE(attempts[1].admission.admitted);
+  EXPECT_LT(attempts[1].evidence.fitted_expiries, attempts[1].evidence.attempted_expiries);
+  EXPECT_EQ(attempts[2].curve.kind, VolCurveKind::Essvi);
+  EXPECT_FALSE(attempts[2].build_succeeded);
+  ASSERT_TRUE(attempts[2].failure.has_value());
+  EXPECT_NE(attempts[2].failure->to_string().find("fidelity budget"), std::string::npos)
+      << attempts[2].failure->to_string();
+
+  // Nothing was published: a fresh fitter has no last-known-good to retain.
+  EXPECT_FALSE(fitter.published_report().has_value());
+  EXPECT_EQ(fitter.bundle().risk, nullptr);
 }
 
 } // namespace

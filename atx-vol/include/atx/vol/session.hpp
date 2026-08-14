@@ -352,6 +352,14 @@ struct SessionDiagnostics {
   double mean_frac_within_bidask{0.0};  // mean over expiries
   double mean_chi2_reduced{0.0};        // mean reduced chi-square (vol space)
   double mean_rmse_vol{0.0};            // mean RMSE(model vol - mkt vol)
+  // T5 item 3 — the ABSOLUTE de-Am -> fit -> re-Americanize round trip, in vol
+  // points, against the raw American mid (ParityReport::rmse_round_trip_vol).
+  // `mean` is over scored expiries, `max` is the board's worst single quote.
+  // Every other quality number on this struct is spread-normalised and so
+  // cannot report a large error on a wide board; these two can, which is why
+  // they are the ones to read on a thin board.
+  double mean_round_trip_vol{0.0};
+  double max_round_trip_vol{0.0};
   bool calendar_arb_free{false};        // surface calendar no-arb check
   std::size_t n_calendar_viol_pre{0};   // calendar violations BEFORE any repair;
                                         // on a FAILED check, stamped with sentinel
@@ -360,6 +368,20 @@ struct SessionDiagnostics {
   std::size_t n_slices{0};              // fitted slice count
   std::size_t n_quotes{0};              // sum of per-slice n_used
   ParityDiagnosticState parity_state{ParityDiagnosticState::NotScored};
+  // T4 escalation (T10c): banded parity-evidence counters, rolled up from each
+  // expiry's ParityReport (n_parity_scored = Σ n, n_parity_in_band = Σ
+  // n_within, n_parity_out_of_band = their difference). The averaging above
+  // cannot tell ABSENCE OF EVIDENCE from EVIDENCE OF ALL-OUT: a
+  // default-constructed ParityReport (n == 0) enters mean/worst as
+  // frac_fv_within_bidask == 0 while parity_state can stay Valid, reading
+  // exactly like a surface that reprices nothing in band. With the counters,
+  // n_parity_scored == 0 says "nothing was measured" and n_parity_scored > 0
+  // with n_parity_in_band == 0 says "everything measured missed" — structurally
+  // different states. Additive observability only: no admission, score, or
+  // chosen_kind reads them.
+  std::size_t n_parity_scored{0};
+  std::size_t n_parity_in_band{0};
+  std::size_t n_parity_out_of_band{0};
   // SpiderRock-style band-violation stats, rolled up from each expiry's
   // ParityReport::band (record-only; not used to gate slice selection).
   std::size_t n_bid_miss{};             // sum over slices
@@ -420,6 +442,43 @@ struct SessionDiagnostics {
   // deam.audit_fit_inversions). The audit-created analogue of a carry skip;
   // risk admission surfaces it through the same CarryGap reason.
   std::size_t n_audit_starved_expiries{0};
+  // T6 (§5.2). Expiries the fit dropped because PREPARATION starved the slice
+  // below the usable-row floor even after every armed rescue
+  // (`ExpiryFitOutcome::PrepStarved`).
+  //
+  // This is the largest of the expiry-loss classes and it was the only one with
+  // no route to admission. Measured over 2,707 chain outcomes on the whole
+  // lqbench corpus, 30.2% were starved against 4.7% carry-failed, and on a
+  // 40-board SERVING sample the carry failures were exactly zero. So a board
+  // could lose a third of its expiries to thin preparation and still publish
+  // `Healthy`, because the two gaps that DID reach the digest — the carry gate
+  // and the fit-inversion audit — had not fired. That is precisely the hidden-
+  // gap class `CarryGap` exists to close, one field over.
+  //
+  // It merges onto the SAME `CarryGap` bit rather than a new one, for the two
+  // reasons that bit already documents (`pricer_fitter.cpp`): the fact is
+  // identical in kind — the served surface is missing expiries the board has,
+  // while the surviving slices passed the full geometric contract — and a new
+  // bit would invalidate every persisted Degraded+CarryGap provenance in the
+  // archive and the surface DB. The established semantics therefore apply
+  // unchanged: alone it publishes Degraded and still serves; combined with any
+  // other failure it rejects. Measured to add ZERO rejections on lqbench
+  // 2026-08-03, where the served reason mask takes exactly two values —
+  // CarryGap on 188 boards and empty on 15 — so no board can acquire the
+  // "CarryGap plus something else" combination from this change.
+  std::size_t n_prep_starved_expiries{0};
+  // T6d. Expiries the fit dropped because the admitted rows fail Task 1's
+  // k-coverage predicate (`ExpiryFitOutcome::PrepUncovered`) -- enough rows to
+  // clear the count floor, but all on one wing or with a central hole, so a
+  // fit would serve the missing region extrapolated. The same hidden-gap class
+  // as `n_prep_starved_expiries` one comment up: the served surface is missing
+  // expiries the board has while every surviving slice passed the full
+  // geometric contract. It therefore merges onto the SAME CarryGap bit, for
+  // the same two reasons (identical in kind; a new bit would invalidate every
+  // persisted Degraded+CarryGap provenance). Produced by the ConvexDense
+  // driver only -- every other family's admission has no coverage refusal, so
+  // this stays 0 there and the merge term is inert.
+  std::size_t n_prep_uncovered_expiries{0};
   // ConvexDense-served call-price bound self-check violations (oracle finding
   // I-2): the independent risk-surface oracle only reconstructs prices from
   // w=sigma^2*T via Black, which is always in-bounds by construction and
