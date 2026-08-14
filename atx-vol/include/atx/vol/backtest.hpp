@@ -1317,29 +1317,28 @@ struct BacktestResult {
 // it in one compile.
 //
 // WHEN THIS FIRES, here is every site that needs the new column. Re-derived by
-// enumeration in fix round 3, because the previous version said "three places"
-// and was wrong: it asserted the Python side derives, which is true of the
-// RENDERER and false of the example's attach table.
+// enumeration each round it changes -- it said "three places" in round 2 and was
+// wrong, and round 4 removed one of the sites entirely, so it is a list that has
+// to be re-walked rather than edited in place.
 //
-//   1. `kSwapExplainColumns` (src/backtest.cpp), for a `swap_explain_*` column.
-//      That roster drives `validate()`, `push_row`, and both `backtest_db.cpp`
-//      rosters, so those four need nothing. Nothing ties the roster to these
-//      declarations except this pin.
+//   1. `kSwapExplainColumns` (src/backtest.cpp), for a `swap_explain_*` column,
+//      AND its `SwapExplainIx` enum. Everything else C++-side is driven from
+//      that roster -- `validate()`, `push_row`, both `backtest_db.cpp` shape
+//      rules, and the example's attach loop -- so those five need nothing. The
+//      per-index `static_assert`s beside the table pin each row to its own
+//      member, so a reorder is a build error; nothing ties the roster to THESE
+//      declarations except the pin below.
 //   2. `BacktestResult::validate()`'s own column checks, for any OTHER optional
 //      column (one not on the explain roster).
-//   3. `attach_swap_columns` (examples/varswap_compare_example.cpp) -- a
-//      hand-written mirror of the roster that CANNOT be driven from it, because
-//      atx-vol/python parses its literal rows. Its own `static_assert` against
-//      `swap_explain_column_count()` fires too, so this is a build error rather
-//      than a reminder.
-//   4. `kNaNSlots` (tests/scenario_grid_test.cpp) if the new field is a `double`
+//   3. `kNaNSlots` (tests/scenario_grid_test.cpp) if the new field is a `double`
 //      on `DerivGreeks` rather than a `BacktestResult` column -- different
 //      struct, same failure mode, and that list must name every double member
 //      whether the kernel reads it or not.
-//   5. Nothing on the Python side for an APPENDED `swap_explain_*` column: the
-//      renderer and the gate both DERIVE from these declarations. A RENAME or a
-//      REORDER does break
-//      `test_the_example_attaches_every_explain_column_the_header_declares`,
+//   4. Nothing on the Python side, and nothing in the example. Fix round 4 drove
+//      `attach_swap_columns` from the roster and repointed the gate's parser at
+//      the roster too, so an APPENDED column flows to the TSV untouched. A
+//      RENAME or a REORDER still breaks
+//      `test_the_roster_and_the_header_declare_the_same_explain_in_the_same_order`,
 //      which is that test working, not that test being wrong.
 //
 // `aggregate_arity_is_v` counts brace initializers and is BLIND TO A REORDER, so
@@ -1359,12 +1358,15 @@ struct BacktestExplainColumn {
   std::vector<double> BacktestResult::*member;
 };
 
-// The eight explain columns, in declaration order. THE only roster: it drives
-// `BacktestResult::validate()`, `push_row`, `backtest_db`'s store guard and
-// `backtest_db`'s append/clear, each of which carried its own hand-written copy
-// before this round -- three copies plus the declarations, which is how the
-// store guard and the shape validator came to disagree about whether a ragged
-// explain column was legal.
+// The eight explain columns, in declaration order. THE roster: it drives
+// `BacktestResult::validate()`, `push_row`, `backtest_db`'s store guard,
+// `backtest_db`'s append/clear, and `attach_swap_columns` in
+// examples/varswap_compare_example.cpp -- five sites, each of which carried its
+// own hand-written copy at some point. Three of them disagreeing is how the
+// store guard and the shape validator came to differ about whether a ragged
+// explain column was legal; the fifth (the example) survived a round longer
+// because the Python gate parsed its literal rows, and was driven in fix round 4
+// once that parser was repointed at this roster.
 //
 // ── THE LIMIT, STATED HERE RATHER THAN ONLY IN A REPORT ────────────────────
 //
@@ -1377,6 +1379,14 @@ struct BacktestExplainColumn {
 // non-application this sprint has been chasing -- but it is detection, not
 // impossibility, and a reader should not trust this table further than that.
 //
+// Two things the build DOES make impossible, added in fix round 4 so the reader
+// knows where the line is: the per-index `static_assert`s beside the table pin
+// each roster row to its own member, so a REORDER cannot compile; and every
+// consumer is a loop over this span, so none of them can fall behind it. What
+// remains hand-checked is the NAME STRING beside each member -- C++ has no
+// reflection, and `roster_columns` in
+// python/tests/test_render_strangle_vs_varswap.py is the check for it.
+//
 // An X-macro over the declarations WOULD make it impossible, and was declined
 // for two reasons. First, `atx-vol/python` derives its roster by scanning these
 // declarations for lines beginning `std::vector<double>`; an X-macro repoints
@@ -1386,12 +1396,13 @@ struct BacktestExplainColumn {
 // remove a duplicated list is a duplicated rule one level up.
 [[nodiscard]] std::span<const BacktestExplainColumn> swap_explain_columns() noexcept;
 
-// The roster's size, as a CONSTANT EXPRESSION. `swap_explain_columns()` is a
-// runtime span, so a caller that mirrors the roster by hand -- there is one,
-// `attach_swap_columns` in examples/varswap_compare_example.cpp, which cannot be
-// driven from the roster because atx-vol/python parses its literal rows -- has
-// no way to `static_assert` against it. This gives it one, so a ninth column
-// breaks that mirror's build instead of only the cross-language gate.
+// The roster's size, as a CONSTANT EXPRESSION. `swap_explain_columns()` returns
+// a runtime span, so nothing that needs the count at compile time can get it
+// from there. Its original caller -- the example's hand-written mirror -- is
+// gone as of fix round 4, driven from the roster instead; this is kept because
+// `src/backtest.cpp` static_asserts the roster against it, which is what stops
+// the two views of the size drifting, and because a future compile-time consumer
+// should not have to reintroduce it.
 [[nodiscard]] constexpr std::size_t swap_explain_column_count() noexcept { return 8u; }
 
 // One entry in the engine's insertion-ordered delta-hedge share ledger. Order is

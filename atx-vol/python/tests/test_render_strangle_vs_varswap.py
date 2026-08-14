@@ -7,14 +7,25 @@ comparison signals the strategy publishes plus the tail the example attaches
 (that tail is deliberately absent from the frozen serialized column set, so the
 example rides it in as signals rather than touching `kBacktestSeriesColumns`).
 
-THE ATTACHED TAIL IS NOT SPELLED OUT HERE. `DRIVER_SIGNAL_COLUMNS` is parsed at
-run time out of `examples/varswap_compare_example.cpp`'s attach table, and
-cross-checked against the `swap_explain_*` members `include/atx/vol/backtest.hpp`
-declares. A hand-copied list is exactly how task F-8 landed eight P&L-explain
-columns in the engine that never reached the TSV: the C++ lane emitted them, the
-Python lane did not know they existed, and nothing was red. A column that now
-lands on one side and not the other fails this module by name, in both
-directions.
+THE ATTACHED TAIL IS NOT SPELLED OUT HERE. It is parsed at run time out of the
+C++ that emits it, because a hand-copied list is exactly how task F-8 landed
+eight P&L-explain columns in the engine that never reached the TSV: the C++ lane
+emitted them, the Python lane did not know they existed, and nothing was red.
+
+WHICH FILE IS PARSED CHANGED IN FIX ROUND 4, and the reason is the point. The
+example used to hand-list all ten attaches, so this module read that table and
+compared it against `backtest.hpp`'s declarations. The example now DERIVES its
+explain tail from `swap_explain_columns()` — the engine's single roster — so the
+C++ compiler guarantees that comparison and re-asserting it here would be a
+tautology dressed as coverage. What is parsed instead:
+
+  * `ROSTER_COLUMNS` from `src/backtest.cpp`'s `kSwapExplainColumns`, checked
+    against the header's declarations. This is the pairing C++ cannot check:
+    there is no reflection, so a row naming one column beside another's member
+    compiles and ships a mislabelled TSV column.
+  * `DRIVER_SIGNAL_COLUMNS` from the example, now only its two literal lead
+    attaches — asserted to contain NO explain column, which is the
+    anti-regression for the unification itself.
 
 The fixture below is hand-built rather than produced by a run, and it encodes
 the four data facts the renderer has to survive:
@@ -132,6 +143,7 @@ STRATEGY_SIGNAL_COLUMNS = [
 
 _HEADER = _ATX_VOL_ROOT / "include" / "atx" / "vol" / "backtest.hpp"
 _EXAMPLE = _ATX_VOL_ROOT / "examples" / "varswap_compare_example.cpp"
+_ROSTER = _ATX_VOL_ROOT / "src" / "backtest.cpp"
 
 _EXPLAIN_PREFIX = "swap_explain_"
 
@@ -234,46 +246,110 @@ def identity_flow_columns(source: str, where: str) -> list[str]:
     return summands
 
 
-def example_attached_columns(source: str, where: str) -> list[str]:
-    """The signal columns the example rides into the TSV, in emitted order.
+def roster_columns(source: str, where: str) -> list[str]:
+    """The `swap_explain_*` columns `kSwapExplainColumns` names, in table order.
 
-    Each attach-table row reads `{"<name>", &r.<field>},`, and the two halves
-    must be the SAME identifier: the TSV column IS the result field, which is
-    what lets the renderer discover the explain tail by prefix.
+    THE ROSTER IS THE ENGINE'S SINGLE LIST, and everything C++-side is driven
+    from it: `validate()`, `push_row`, both `backtest_db` shape rules, and (since
+    fix round 4) the example's attach loop. What C++ CANNOT check about it is the
+    one thing this parser exists for -- the name STRING beside each member. C++
+    has no reflection, so
+    `{"swap_explain_skew", &BacktestResult::swap_explain_convexity}` compiles
+    happily and ships a TSV column labelled `skew` carrying convexity dollars.
+    Each row must name the same identifier twice.
+
+    Read from `src/backtest.cpp` rather than copied. Order matters: it is the
+    enum order, the TSV column order, and -- asserted below -- the declaration
+    order.
     """
     lines = source.splitlines()
-    attached: list[str] = []
+    found: list[str] = []
     for line in lines:
         text = line.strip()
         if not text.startswith('{"'):
             continue
         name, quote, rest = text[2:].partition('"')
         if not quote:
-            raise AssertionError(f"{where}: unterminated column name in attach row `{text}`.")
-        _, marker, tail = rest.partition("&r.")
+            raise AssertionError(f"{where}: unterminated column name in roster row `{text}`.")
+        if not name.startswith(_EXPLAIN_PREFIX):
+            continue
+        _, marker, tail = rest.partition("&BacktestResult::")
         if not marker:
             raise AssertionError(
-                f"{where}: attach row `{text}` names no `&r.<field>` member, so the "
-                "column cannot be tied back to the field it carries."
+                f"{where}: roster row `{text}` names no `&BacktestResult::<field>` "
+                "member, so the column cannot be tied back to the field it carries."
             )
         field = _leading_identifier(tail)
         if name != field:
             raise AssertionError(
-                f"{where}: attach row `{text}` emits column {name!r} from field "
-                f"{field!r}. They must match — the renderer finds the explain tail "
+                f"{where}: roster row `{text}` emits column {name!r} from field "
+                f"{field!r}. They must match - the renderer finds the explain tail "
+                "by the field-name prefix, and C++ cannot check this pairing."
+            )
+        found.append(name)
+    if not found:
+        raise AssertionError(
+            f"{where}: no `{_EXPLAIN_PREFIX}*` roster rows naming a "
+            f"`&BacktestResult::` member in {len(lines)} lines scanned. This test "
+            "reads the engine's own roster; if it moved, point this at the new home "
+            "rather than hand-copying the names back in."
+        )
+    duplicated = sorted({n for n in found if found.count(n) > 1})
+    if duplicated:
+        raise AssertionError(f"{where}: roster names {duplicated} more than once.")
+    return found
+
+
+def example_attached_columns(source: str, where: str) -> list[str]:
+    """The signal columns the example HAND-LISTS, in emitted order.
+
+    Since fix round 4 the example derives its explain tail from
+    `swap_explain_columns()`, so the only literal attaches left are the two lead
+    columns. Each reads `attach_one(r, "<name>", r.<field>)`, and the two halves
+    must be the SAME identifier: the TSV column IS the result field, which is
+    what lets the renderer discover the explain tail by prefix.
+
+    This parser therefore no longer derives the tail -- `roster_columns` does.
+    What it still establishes is that nothing has hand-listed an explain column
+    back into this file.
+    """
+    marker_text = 'attach_one(r, "'
+    lines = source.splitlines()
+    attached: list[str] = []
+    for line in lines:
+        _, marker, rest = line.partition(marker_text)
+        if not marker:
+            continue
+        name, quote, tail = rest.partition('"')
+        if not quote:
+            raise AssertionError(f"{where}: unterminated column name in attach `{line.strip()}`.")
+        _, member, member_tail = tail.partition("r.")
+        if not member:
+            raise AssertionError(
+                f"{where}: attach `{line.strip()}` names no `r.<field>` member, so the "
+                "column cannot be tied back to the field it carries."
+            )
+        field = _leading_identifier(member_tail)
+        if name != field:
+            raise AssertionError(
+                f"{where}: attach `{line.strip()}` emits column {name!r} from field "
+                f"{field!r}. They must match - the renderer finds the explain tail "
                 "by the field-name prefix, and a renamed column silently hides it."
             )
         attached.append(name)
     if not attached:
         raise AssertionError(
-            f'{where}: no `{{"name", &r.field}}` attach rows in {len(lines)} lines '
-            "scanned, so the signal tail this fixture writes cannot be derived."
+            f'{where}: no `attach_one(r, "name", r.field)` calls in {len(lines)} lines '
+            "scanned, so what this fixture hand-lists cannot be determined."
         )
     return attached
 
 
 EXPLAIN_COLUMNS = declared_explain_columns(_HEADER.read_text(encoding="utf-8"), str(_HEADER))
 EXPLAIN_FLOW_COLUMNS = identity_flow_columns(_HEADER.read_text(encoding="utf-8"), str(_HEADER))
+ROSTER_COLUMNS = roster_columns(_ROSTER.read_text(encoding="utf-8"), str(_ROSTER))
+# What the example HAND-LISTS. Since fix round 4 that is only the two lead
+# columns; the explain tail is a loop over the roster.
 DRIVER_SIGNAL_COLUMNS = example_attached_columns(
     _EXAMPLE.read_text(encoding="utf-8"), str(_EXAMPLE)
 )
@@ -299,9 +375,13 @@ def _explain_counter() -> str:
 
 EXPLAIN_COUNTER = _explain_counter()
 
-# The full dynamic tail, in TSV order: the strategy's signals, then the
-# example's attach table.
-SIGNAL_COLUMNS = STRATEGY_SIGNAL_COLUMNS + DRIVER_SIGNAL_COLUMNS
+# The full dynamic tail, in TSV order: the strategy's signals, then what the
+# example emits -- its two hand-listed lead columns followed by its loop over the
+# roster. Assembled from the two halves in that order because that is literally
+# what `attach_swap_columns` does; before fix round 4 the example hand-listed the
+# whole thing and this was one parse.
+EMITTED_SIGNAL_COLUMNS = DRIVER_SIGNAL_COLUMNS + ROSTER_COLUMNS
+SIGNAL_COLUMNS = STRATEGY_SIGNAL_COLUMNS + EMITTED_SIGNAL_COLUMNS
 
 DATES = ["2026-01-02", "2026-01-05", "2026-01-06", "2026-01-07", "2026-01-08"]
 BASE_TS = 1767398400000000000
@@ -447,17 +527,54 @@ class ColumnDerivationTests(unittest.TestCase):
     tests are the agreement.
     """
 
-    def test_the_example_attaches_every_explain_column_the_header_declares(self) -> None:
-        # Both directions: a column declared in backtest.hpp and never attached
-        # never reaches a report, and a column attached from a field the header
-        # does not declare cannot compile. Order matters too — it is the TSV's.
+    # ── WHAT THIS CLASS STILL TESTS, after fix round 4 ─────────────────────
+    #
+    # It used to assert that the EXAMPLE attaches exactly what the HEADER
+    # declares, because the two were independently hand-written. Round 4 drove
+    # the example's attach loop from `swap_explain_columns()`, so the C++
+    # compiler now guarantees that half. Re-asserting it here would be asserting
+    # a derived thing against the thing it was derived from -- a tautology that
+    # reads as coverage, which is worse than no test because it manufactures
+    # exactly the confidence the unification was supposed to earn. That
+    # assertion is DELETED, deliberately, and this paragraph is the record.
+    #
+    # What genuinely remains, and why C++ cannot do it:
+    #   1. ROSTER row pairing. `{"name", &BacktestResult::field}` -- C++ has no
+    #      reflection, so a transposed pairing compiles and mislabels a TSV
+    #      column. Only text can check it. (`roster_columns` does, per row.)
+    #   2. ROSTER order vs DECLARATION order. Round 4 pinned each roster index to
+    #      its own member in C++, so the enum/roster half is a build error now;
+    #      what stays here is the roster-against-declarations comparison, which
+    #      is what the renderer's prefix discovery and this TSV's column order
+    #      rest on.
+    #   3. The example hand-lists NO explain column. That is the anti-regression
+    #      for the unification itself -- someone re-adding a literal row would
+    #      silently reintroduce the fifth copy.
+    #   4. The renderer sums exactly the header's identity components (below).
+
+    def test_the_roster_and_the_header_declare_the_same_explain_in_the_same_order(self) -> None:
+        self.assertEqual(
+            ROSTER_COLUMNS,
+            EXPLAIN_COLUMNS,
+            f"{_ROSTER} names the explain roster as {ROSTER_COLUMNS}, but {_HEADER} "
+            f"declares {EXPLAIN_COLUMNS}. Everything C++-side is driven from the "
+            "roster, so a column declared and not rostered never reaches a report, "
+            "and the ORDER is the TSV's column order. The arity pin catches a count "
+            "change; it is blind to a reorder, which is why this compares lists.",
+        )
+
+    def test_the_example_hand_lists_no_explain_column(self) -> None:
+        # The unification's anti-regression. The example attaches the two lead
+        # columns literally and derives the rest; a literal `swap_explain_*` row
+        # reappearing here is the fifth roster copy coming back.
         self.assertEqual(
             DRIVER_SIGNAL_COLUMNS,
-            ["swap_pv", "swap_pnl"] + EXPLAIN_COLUMNS,
-            f"{_EXAMPLE} attaches {DRIVER_SIGNAL_COLUMNS}, but {_HEADER} declares "
-            f"the explain as {EXPLAIN_COLUMNS}. The TSV carries what the example "
-            "attaches, so a column present on one side only is invisible to every "
-            "reader of the Python lane.",
+            ["swap_pv", "swap_pnl"],
+            f"{_EXAMPLE} hand-lists {DRIVER_SIGNAL_COLUMNS}. Only swap_pv and "
+            "swap_pnl may be literal -- they are the quantity being explained, not "
+            "components of it. The explain tail must stay a loop over "
+            "swap_explain_columns(), or it becomes a hand-kept copy of the roster "
+            "again.",
         )
 
     def test_the_renderer_sums_exactly_the_headers_identity_and_excludes_the_counter(self) -> None:
@@ -515,8 +632,36 @@ class ColumnDerivationTests(unittest.TestCase):
 
         self.assertIn("'2 * residual' is not a bare component name", str(caught.exception))
 
+    def test_a_roster_row_whose_column_renames_its_field_is_a_named_failure(self) -> None:
+        # The one check C++ cannot make, so its negative control matters most.
+        source = '    {"swap_explain_skew", &BacktestResult::swap_explain_convexity},\n'
+
+        with self.assertRaises(AssertionError) as caught:
+            roster_columns(source, "fake.cpp")
+
+        self.assertIn("emits column 'swap_explain_skew' from field", str(caught.exception))
+        self.assertIn("'swap_explain_convexity'", str(caught.exception))
+
+    def test_a_roster_with_no_rows_is_a_named_failure(self) -> None:
+        with self.assertRaises(AssertionError) as caught:
+            roster_columns("int main() { return 0; }\n", "fake.cpp")
+
+        self.assertIn("roster rows naming a `&BacktestResult::` member", str(caught.exception))
+        self.assertIn("1 lines scanned", str(caught.exception))
+
+    def test_a_twice_rostered_column_is_a_named_failure(self) -> None:
+        source = (
+            '    {"swap_explain_carry", &BacktestResult::swap_explain_carry},\n'
+            '    {"swap_explain_carry", &BacktestResult::swap_explain_carry},\n'
+        )
+
+        with self.assertRaises(AssertionError) as caught:
+            roster_columns(source, "fake.cpp")
+
+        self.assertIn("roster names ['swap_explain_carry'] more than once", str(caught.exception))
+
     def test_an_attach_row_whose_column_renames_its_field_is_a_named_failure(self) -> None:
-        source = '    {"swap_explain_carry", &r.swap_explain_realized},\n'
+        source = '  ATX_TRY_VOID(attach_one(r, "swap_explain_carry", r.swap_explain_realized));\n'
 
         with self.assertRaises(AssertionError) as caught:
             example_attached_columns(source, "fake.cpp")
@@ -528,7 +673,7 @@ class ColumnDerivationTests(unittest.TestCase):
         with self.assertRaises(AssertionError) as caught:
             example_attached_columns("int main() { return 0; }\n", "fake.cpp")
 
-        self.assertIn('no `{"name", &r.field}` attach rows in 1 lines', str(caught.exception))
+        self.assertIn('no `attach_one(r, "name", r.field)` calls in 1 lines', str(caught.exception))
 
 
 class TrackReaderTests(unittest.TestCase):

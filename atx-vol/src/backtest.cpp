@@ -923,11 +923,16 @@ private:
 
 // ── Swap lane: accrual + mark + settlement ─────────────────────────────────
 
-// Task F-8 fix round 2: the ONE roster. `swap_explain_columns()`'s order is the
-// order of these indices and of `BacktestResult`'s declarations, and the
-// `static_assert` below is what keeps the three from drifting apart in COUNT.
-// Order itself is carried by the table literal sitting directly beside the enum:
-// a reorder compiles, so the mitigation is adjacency, not the assert.
+// Task F-8: the ONE roster. `swap_explain_columns()`'s order is the order of
+// these indices, of `BacktestResult`'s declarations, and of the TSV.
+//
+// Fix round 4 closed the ORDER hole that round 2 could only mitigate by
+// adjacency. `push_row` pairs `ex.ex[c]` with `roster[c].member`, and
+// `accumulate_swap_explain` writes `out.ex[kExCarry]` and friends by name -- so a
+// roster reordered without the enum silently writes carry's dollars into a
+// column labelled something else. It compiles, the identity still closes, and
+// nothing was checking it. The per-row asserts below pin each index to its own
+// member, so that reorder is now a build error rather than a mislabelled report.
 enum SwapExplainIx : std::size_t {
   kExCarry = 0,
   kExRealized,
@@ -952,12 +957,35 @@ constexpr BacktestExplainColumn kSwapExplainColumns[] = {
 };
 static_assert(std::size(kSwapExplainColumns) == kSwapExplainCount,
               "the explain roster and its index enum must name the same columns");
-// And the header's constant-expression view of the same size, which the
-// example's hand-written mirror static_asserts against because it cannot be
-// driven from the roster -- see `swap_explain_column_count` (backtest.hpp) and
-// the note in `attach_swap_columns` (examples/varswap_compare_example.cpp).
+// The header's constant-expression view of the same size.
 static_assert(std::size(kSwapExplainColumns) == swap_explain_column_count(),
               "swap_explain_column_count() must equal the roster it describes");
+
+// Each index pinned to its OWN member, which is the part a size check cannot
+// do. Member pointers are constant expressions, so this is free and total: swap
+// two rows of the table above without swapping the enum and the build stops
+// here, naming the index that moved.
+//
+// What this still cannot see is the NAME STRING beside each member -- C++ has no
+// reflection, so `{"swap_explain_skew", &BacktestResult::swap_explain_convexity}`
+// compiles and mislabels a TSV column. That one check is text, and it is the
+// reason the Python gate parses this table: see
+// `roster_columns` in python/tests/test_render_strangle_vs_varswap.py.
+static_assert(kSwapExplainColumns[kExCarry].member == &BacktestResult::swap_explain_carry, "");
+static_assert(kSwapExplainColumns[kExRealized].member == &BacktestResult::swap_explain_realized,
+              "");
+static_assert(kSwapExplainColumns[kExVolLevel].member == &BacktestResult::swap_explain_vol_level,
+              "");
+static_assert(kSwapExplainColumns[kExSkew].member == &BacktestResult::swap_explain_skew, "");
+static_assert(kSwapExplainColumns[kExConvexity].member == &BacktestResult::swap_explain_convexity,
+              "");
+static_assert(kSwapExplainColumns[kExDiscount].member == &BacktestResult::swap_explain_discount,
+              "");
+static_assert(kSwapExplainColumns[kExResidual].member == &BacktestResult::swap_explain_residual,
+              "");
+static_assert(kSwapExplainColumns[kExUnattributed].member ==
+                  &BacktestResult::swap_explain_unattributed,
+              "");
 
 // One step's swap-lane economics, in QTY-SCALED position dollars.
 struct SwapStepResult {

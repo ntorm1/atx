@@ -17,6 +17,7 @@
 #include <cstdio>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -39,55 +40,43 @@ constexpr double kDelta = 0.40;
 constexpr double kTenorT = 91.0 / 365.25;
 constexpr double kContracts = 100.0;
 
+[[nodiscard]] Status attach_one(BacktestResult &r, std::string_view name,
+                                const std::vector<double> &column) {
+  if (column.size() != r.size()) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "swap column " + std::string(name) +
+                              " is not row-parallel (an EMPTY column means the run "
+                              "did not compute it; see RunConfig::swap_pnl_explain)");
+  }
+  r.signals.emplace_back(std::string(name), column);
+  return atx::core::Ok();
+}
+
 // The swap lane's columns ride out through the TSV's dynamic signal tail (they
-// are deliberately not part of the frozen series-column registry). THE COLUMN
-// NAME IS THE FIELD NAME on every row: the renderer
-// (tools/render_strangle_vs_varswap.py) finds the P&L-explain tail by its
-// `swap_explain_` prefix, and its gate test parses this table against
-// backtest.hpp's own declarations, so a column that lands on one side only is a
-// red test rather than a column silently missing from every report.
+// are deliberately not part of the frozen series-column registry).
+//
+// Task F-8 fix round 4 (R2-I3): the explain tail is DRIVEN from
+// `swap_explain_columns()`. This used to be a hand-written table -- the fifth
+// copy of that roster, and it predated the header comment claiming there was
+// only one. Round 3 could not remove it, because the Python gate derived this
+// fixture's signal tail by PARSING the literal rows; round 4 repointed that
+// parser at the roster, which is where the names actually live. A ninth column
+// now reaches this TSV with no edit to this file.
+//
+// THE COLUMN NAME IS THE FIELD NAME, and that now holds by construction rather
+// than by a hand-kept pairing: `column.name` and `column.member` are the two
+// halves of one roster row. The renderer (tools/render_strangle_vs_varswap.py)
+// finds the P&L-explain tail by the `swap_explain_` prefix, which is why the
+// property matters.
+//
+// `swap_pv` / `swap_pnl` stay literal: they are the quantity being explained,
+// not components of it, they are not on the explain roster, and they lead the
+// signal tail in that order.
 [[nodiscard]] Status attach_swap_columns(BacktestResult &r) {
-  const std::pair<const char *, const std::vector<double> *> columns[] = {
-      {"swap_pv", &r.swap_pv},
-      {"swap_pnl", &r.swap_pnl},
-      {"swap_explain_carry", &r.swap_explain_carry},
-      {"swap_explain_realized", &r.swap_explain_realized},
-      {"swap_explain_vol_level", &r.swap_explain_vol_level},
-      {"swap_explain_skew", &r.swap_explain_skew},
-      {"swap_explain_convexity", &r.swap_explain_convexity},
-      {"swap_explain_discount", &r.swap_explain_discount},
-      {"swap_explain_residual", &r.swap_explain_residual},
-      {"swap_explain_unattributed", &r.swap_explain_unattributed},
-  };
-  // R2-I3, PARTIALLY addressed -- read this before assuming the table above is
-  // free-standing. It is a hand-written copy of `swap_explain_columns()`, and it
-  // could NOT be driven from that roster in fix round 3.
-  //
-  // Driving it was attempted and reverted, with the measurement:
-  // `test_render_strangle_vs_varswap.py` derives this fixture's signal tail by
-  // PARSING these `{"name", &r.field}` rows (`example_attached_columns`, which
-  // requires `text.startswith('{"')`). Replacing them with a loop over the
-  // roster leaves nothing to parse, and that module raises at IMPORT time -- all
-  // eight of its tests fail to collect, not one assertion. The gate is behaving
-  // exactly as designed; the fix belongs in the Python lane, repointing that
-  // parser at the roster, and is a two-lane change.
-  //
-  // What IS closed here: the size coupling. A ninth roster column now breaks
-  // THIS build rather than only the cross-language gate, so the copy cannot
-  // silently fall behind even if the Python lane is never run.
-  static_assert(std::size(columns) == swap_explain_column_count() + 2u,
-                "this attach table is a hand-written mirror of swap_explain_columns() plus "
-                "swap_pv/swap_pnl; the roster gained or lost a column, so add or remove the "
-                "matching {\"name\", &r.field} row here (it cannot be driven from the roster "
-                "-- atx-vol/python parses these rows, see the note above)");
-  for (const auto &[name, column] : columns) {
-    if (column->size() != r.size()) {
-      return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
-                            std::string("swap column ") + name +
-                                " is not row-parallel (an EMPTY column means the run "
-                                "did not compute it; see RunConfig::swap_pnl_explain)");
-    }
-    r.signals.emplace_back(name, *column);
+  ATX_TRY_VOID(attach_one(r, "swap_pv", r.swap_pv));
+  ATX_TRY_VOID(attach_one(r, "swap_pnl", r.swap_pnl));
+  for (const BacktestExplainColumn &column : swap_explain_columns()) {
+    ATX_TRY_VOID(attach_one(r, column.name, r.*(column.member)));
   }
   return atx::core::Ok();
 }
