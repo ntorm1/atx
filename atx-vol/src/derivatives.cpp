@@ -4710,6 +4710,32 @@ template <class SurfaceT>
   const double delta_rolled = (pv_t_s_up - pv_t_s_dn) / (2.0 * ds);
   g.charm = (delta_rolled - g.delta) / bumps.time_years;
 
+  // Task F-7 fix round 1, C-1. These two were previously not assigned at all
+  // here, so they kept `DerivGreeks`' struct default of 0.0 while the
+  // unmemoized `deriv_greeks` produced NaN for the SAME contract under the
+  // DEFAULT bumps -- a silent divergence between two paths this library
+  // promises are bit-identical, and on the worse side of it: NaN reads as "not
+  // computed", 0.0 reads as "measured, and this book has no skew exposure".
+  //
+  // Fixed the way every other conditional greek in this function is: locals
+  // that stay at `kNaN` feed the SAME unconditional stencil `deriv_greeks`
+  // runs, so the NaN arrives by arithmetic PROPAGATION and its payload matches
+  // bit for bit (an explicit `= kNaN` literal would not guarantee that -- see
+  // this function's own theta/charm comment above).
+  //
+  // Both locals are unconditionally NaN today because `smile_greeks` rows never
+  // reach this entry point at all: `validate_var_swap_shared_scope` now rejects
+  // them outright, and the book layer routes them to the unmemoized path before
+  // that. Written as the full stencil rather than collapsed to a constant so
+  // that wiring real smile slots into `VarSwapSharedBlock` later is a change of
+  // the four inputs and nothing else.
+  double pv_sk_up = kNaN;
+  double pv_sk_dn = kNaN;
+  double pv_cx_up = kNaN;
+  double pv_cx_dn = kNaN;
+  g.skew_vega = (pv_sk_up - pv_sk_dn) / (2.0 * bumps.skew_abs);
+  g.convexity_vega = (pv_cx_up - pv_cx_dn) / (2.0 * bumps.convexity_abs);
+
   g.rho = -std::fmax(T, 0.0) * center.pv;
   return Ok(g);
 }
@@ -5617,6 +5643,24 @@ Result<DerivGreeks> deriv_greeks_var_swap_on_ref_shared(const SurfaceRef& ref,
     return Err(ErrorCode::InvalidArgument, "deriv: null surface handle");
   }
   ATX_TRY_VOID(validate_var_swap_shared_scope(contract, cfg));
+  // Task F-7 fix round 1, C-1. `VarSwapSharedBlock` carries no smile-bump
+  // slots, so this entry point cannot serve `skew_vega`/`convexity_vega` and
+  // must not pretend to: silently returning NaN for a greek the caller
+  // explicitly asked for is the failure this whole review round is about.
+  // Enforced HERE, not in `validate_var_swap_shared_scope`, because that
+  // predicate is shared with the marks-only entry point, which legitimately
+  // ignores `bumps` entirely.
+  //
+  // `price_deriv_book` already routes such rows to the unmemoized path before
+  // reaching this line (deriv_book.cpp); this makes the bit-identity contract
+  // above true by CONSTRUCTION rather than by that routing staying correct --
+  // the same "close the door for the next caller" reasoning
+  // `validate_var_swap_shared_scope` itself was added for.
+  if (bumps.smile_greeks) {
+    return Err(ErrorCode::InvalidArgument,
+               "deriv: shared-block greeks cannot serve smile_greeks (no smile slots in the "
+               "shared block) -- use deriv_greeks_on_ref");
+  }
   ATX_TRY(const CurveSet curves, carry_from_ref(ref, contract.maturity_t, bumps.time_years));
   const SurfaceRefStripView view{&ref, &curves, contract.maturity_t, surface_certified_wing_band};
   return deriv_greeks_var_swap_shared(view, curves, contract, cfg, bumps, block);

@@ -2,10 +2,13 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <vector>
 
 #include "atx/vol/rates_curve.hpp"
 #include "atx/vol/deriv_book.hpp"  // DerivPriceFrame::vega_by_tenor (Task F-7)
 #include "atx/vol/derivatives.hpp"
+#include "atx/vol/detail/counters.hpp"  // ledger::Solve::VarSwapStripEvals (F-7 r1, I-1)
 #include "atx/vol/detail/legacy_surface.hpp"  // EssviSurface (demoted, S4-T21)
 #include "atx/vol/priced_surface.hpp"     // PricedSurface-native greeks overload
 #include "atx/vol/surface.hpp"
@@ -1640,6 +1643,60 @@ TEST(SmileGreeks, OffByDefaultCostsNothing) {
   EXPECT_EQ(g_on->theta_zero_fixing, g_off->theta_zero_fixing);
 }
 
+// Task F-7 fix round 1, M-1: `AnalyticStrip` + `smile_greeks` was documented as
+// working and never tested.
+//
+// The closed form (deriv_analytic_greeks.hpp) has no skew or convexity term, so
+// the two smile greeks fall back to finite difference even under a method knob
+// that exists to AVOID finite differences. That is deliberate -- silently
+// NaN-ing a greek the caller explicitly asked for because an unrelated knob was
+// set is the worse failure -- but "deliberate" is a claim until something
+// checks it. The interaction is easy to break: the smile bumps read through the
+// centre's cache slot, and `AnalyticStrip` is exactly the configuration that
+// SKIPS the market bumps and so changes that slot's recording mode.
+TEST(SmileGreeks, AnalyticStripStillComputesSmileGreeksByFiniteDifference) {
+  const EssviSurface surf = make_skewed_surface();
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+  const DerivContract c = var_swap_at(0.25);
+
+  DerivGreekBumps fd{};
+  fd.smile_greeks = true;
+  DerivGreekBumps an = fd;
+  an.method = DerivGreekMethod::AnalyticStrip;
+
+  const auto g_fd = deriv_greeks(surf, cs, c, deriv_default_config(), fd);
+  const auto g_an = deriv_greeks(surf, cs, c, deriv_default_config(), an);
+  ASSERT_TRUE(g_fd.has_value()) << g_fd.error().to_string();
+  ASSERT_TRUE(g_an.has_value()) << g_an.error().to_string();
+
+  // Present, not NaN -- the whole point of the fallback.
+  ASSERT_TRUE(std::isfinite(g_an->skew_vega));
+  ASSERT_TRUE(std::isfinite(g_an->convexity_vega));
+
+  // BIT-identical to the FD method's, because they are the same finite
+  // difference: `AnalyticStrip` replaces delta/gamma/vega/vanna/volga only, and
+  // the smile stencil reads slots the analytic branch never touches. Anything
+  // less than exact equality here would mean the recording-mode difference had
+  // leaked into the smile reads.
+  EXPECT_EQ(g_an->skew_vega, g_fd->skew_vega);
+  EXPECT_EQ(g_an->convexity_vega, g_fd->convexity_vega);
+
+  // ...while the analytic branch really did engage on the greeks it owns, so
+  // this is not accidentally just re-running the FD path.
+  EXPECT_NE(g_an->vega, g_fd->vega);
+
+  // The 4 smile repricings are still 4 -- `skip_market_bumps` removes market
+  // bumps, it does not remove these.
+  atx::vol::detail::reset_deriv_greeks_reprice_count_for_test();
+  (void)deriv_greeks(surf, cs, c, deriv_default_config(), an);
+  const std::uint64_t with_smile = atx::vol::detail::deriv_greeks_reprice_count_for_test();
+  DerivGreekBumps an_off = an;
+  an_off.smile_greeks = false;
+  atx::vol::detail::reset_deriv_greeks_reprice_count_for_test();
+  (void)deriv_greeks(surf, cs, c, deriv_default_config(), an_off);
+  EXPECT_EQ(with_smile, atx::vol::detail::deriv_greeks_reprice_count_for_test() + 4u);
+}
+
 // The book layer scales every computed greek by `qty` and NaNs every greek on
 // a lane that did not price -- through two HAND-ENUMERATED field lists
 // (`scaled_greeks` / `nan_greeks`, deriv_book.cpp) that no arity pin can see an
@@ -1688,6 +1745,66 @@ TEST(SmileGreeks, BookRowsScaleByQtyAndNaNOnFailedLanes) {
   // smile-neutral position.
   EXPECT_TRUE(std::isnan(f->rows[2].greeks.skew_vega));
   EXPECT_TRUE(std::isnan(f->rows[2].greeks.convexity_vega));
+}
+
+// Task F-7 fix round 1, I-1: the cost of asking for smile greeks on a BOOK.
+//
+// `smile_greeks` makes a row memo-INELIGIBLE (deriv_book.cpp), so a var-swap
+// book that sets it loses the P-6 per-(uid,T) strip memo on every row. Per
+// contract that is "+4 repricings"; per BOOK it is the memo's whole L-fold
+// saving, which is a completely different number and the one a caller actually
+// pays. Measured and pinned here rather than left in prose, because a
+// hand-written cost claim is exactly what went stale as "7 / 13 / 17".
+TEST(TermVega, SmileGreeksOnABookCostsTheWholeMemoSaving) {
+  const atx::vol::PricedSurface ps = atx::vol::testkit::make_flat_surface(7, 100.0, 100.0, 0.30);
+  const atx::vol::PricedSurface *arr[] = {&ps};
+  const auto ss = atx::vol::SurfaceSet::create(arr);
+  ASSERT_TRUE(ss.has_value());
+
+  // Ten rows, ONE (uid, tenor) group -- the shape the memo exists for. Rows
+  // differ in the fields the memo's key deliberately omits.
+  std::vector<atx::vol::DerivPosition> book;
+  for (std::uint32_t i = 0; i < 10u; ++i) {
+    atx::vol::DerivPosition p{};
+    p.id = i;
+    p.uid = 7;
+    p.qty = 1.0 + 0.25 * static_cast<double>(i);
+    p.contract = var_swap_at(0.35);
+    p.contract.strike_dec = 0.005 * static_cast<double>(i);
+    p.contract.rv_spec.n_obs_done = i;
+    book.push_back(p);
+  }
+
+  namespace ledger = atx::vol::counters::ledger;
+
+  ledger::reset();
+  const auto memoized = atx::vol::price_deriv_book(*ss, book);
+  ASSERT_TRUE(memoized.has_value()) << memoized.error().to_string();
+  const std::uint64_t evals_memo = ledger::snapshot().get(ledger::Solve::VarSwapStripEvals);
+
+  DerivGreekBumps smile{};
+  smile.smile_greeks = true;
+  ledger::reset();
+  const auto unmemoized =
+      atx::vol::price_deriv_book(*ss, book, atx::vol::DerivConfig{}, true, smile);
+  ASSERT_TRUE(unmemoized.has_value()) << unmemoized.error().to_string();
+  const std::uint64_t evals_smile = ledger::snapshot().get(ledger::Solve::VarSwapStripEvals);
+
+  for (const auto &r : unmemoized->rows) {
+    ASSERT_EQ(r.status, atx::vol::PriceStatus::Ok);
+  }
+  // The feature reaches the book path at all, and the memoized lane honestly
+  // reports "not computed" rather than a fabricated zero (fix round 1, C-1).
+  EXPECT_TRUE(std::isfinite(unmemoized->rows[0].greeks.skew_vega));
+  EXPECT_TRUE(std::isnan(memoized->rows[0].greeks.skew_vega));
+
+  // The cliff. Measured on this fixture: 13 -> 200 strip evaluations, a 15.4x
+  // step. Asserted as an order-of-magnitude relationship rather than the two
+  // literals, so it pins the fact a caller needs -- this is a book-wide cost,
+  // not the "+4 repricings" a per-contract reading suggests -- without turning
+  // an unrelated quadrature change into a failure.
+  EXPECT_GT(evals_memo, 0u);
+  EXPECT_GT(evals_smile, 8u * evals_memo);
 }
 
 // Task F-7 term-bucket vega: `DerivPriceFrame::vega_by_tenor` is `totals.vega`

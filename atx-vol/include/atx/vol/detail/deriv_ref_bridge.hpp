@@ -136,6 +136,24 @@ deriv_price_var_swap_on_ref_shared(const SurfaceRef &ref, const DerivContract &c
 // Full-greeks shared-block entry point. Bit-identical to
 // `deriv_greeks_on_ref` on an in-scope VarSwap contract, same enforced
 // scope as above.
+//
+// Task F-7 fix round 1 (C-1c): "in-scope" now also excludes
+// `DerivGreekBumps::smile_greeks`, and that exclusion is ENFORCED here
+// (`Err(InvalidArgument)`), not merely documented. The block holds no
+// smile-bump slots, so this path cannot produce `DerivGreeks::skew_vega` /
+// `convexity_vega` -- and the bit-identity claim in the sentence above was
+// briefly FALSE because of it: this path left both fields at the struct default
+// 0.0 while `deriv_greeks_on_ref` produced NaN for the same contract under the
+// DEFAULT bumps. `0.0` was the worse half of that divergence, reading as a
+// measured "no skew exposure" rather than "not computed". Both now produce the
+// identical NaN payload when `smile_greeks` is off, and this entry point
+// refuses the call outright when it is on, so the claim holds for every input
+// that can reach here.
+// `VarSwapMemo.RowsAreBitIdenticalToTheUnmemoizedPerRowPath`
+// (deriv_book_test.cpp) is what should have caught the regression and did not,
+// because its own hand-written field list -- the THIRD such list in this
+// codebase, after `scaled_greeks` and `nan_greeks` -- had not been extended
+// either. It compares both fields bitwise now.
 [[nodiscard]] Result<DerivGreeks>
 deriv_greeks_var_swap_on_ref_shared(const SurfaceRef &ref, const DerivContract &contract,
                                     const DerivConfig &cfg, const DerivGreekBumps &bumps,

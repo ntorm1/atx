@@ -216,6 +216,28 @@ static_assert(detail::aggregate_arity_is_v<DerivPriceFrame, 6>,
 //                 A non-positive bump is rejected by the pricer PER POSITION,
 //                 so a malformed `bumps` shows up as every row reporting
 //                 `InvalidContract` rather than as a call-level error.
+//
+//                 `bumps.smile_greeks` COSTS FAR MORE ON A BOOK THAN ITS
+//                 PER-CONTRACT PRICE SUGGESTS (Task F-7 fix round 1). Per
+//                 contract it is 4 extra repricings, 16 -> 20. But it also
+//                 makes a VarSwap row INELIGIBLE for the P-6 per-(uid,T) strip
+//                 memo (that shared block carries no smile slots -- see
+//                 detail/deriv_ref_bridge.hpp), so on a book the memo's whole
+//                 L-fold saving goes with it. MEASURED on a 10-row, single-
+//                 tenor var-swap book: 13 -> 200 strip evaluations, a 15.4x
+//                 step, not the ~25% "+4 repricings" reads as. Pinned by
+//                 `TermVega.SmileGreeksOnABookCostsTheWholeMemoSaving`
+//                 (deriv_greeks_test.cpp) so this figure cannot quietly rot.
+//
+//                 It is a deliberate correctness-over-performance choice, not
+//                 an oversight: the alternative was a second, independently
+//                 maintained smile implementation inside the shared block whose
+//                 bit-identity to this one nothing would have checked. Callers
+//                 who need the ladder cheaply on a large book should request
+//                 smile greeks on a SAMPLE of representative rows, or price the
+//                 book twice (once without, once with) rather than paying it on
+//                 every lane. Nothing changes for a caller who leaves the flag
+//                 off, which is the default.
 // @param wing_band_of  FIT-C7 / Task C-6: uid -> certified wing-band resolver
 //                 (see `WingBandResolver` above). Called once per position
 //                 when set; unset (the default) resolves the mode-blind band

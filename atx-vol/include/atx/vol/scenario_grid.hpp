@@ -284,8 +284,22 @@ struct ScenarioDerivSpec {
   const double pth = g.theta * dt;
   const double prho = g.rho * dr;
   const double pcharm = g.charm * dS * dt;
-  const double pskew = g.skew_vega * d_skew;
-  const double pconv = g.convexity_vega * d_convexity;
+  // Task F-7 fix round 1. Guarded, not a bare multiply: `skew_vega` /
+  // `convexity_vega` are NaN whenever `DerivGreekBumps::smile_greeks` was off,
+  // and `NaN * 0.0` is NaN, not 0 -- so an unguarded product poisons the WHOLE
+  // cell (all ten terms) on a grid that never asked for a smile shock. That
+  // makes this function's own promise above -- "exactly zero when the smile
+  // shocks are" -- true for every input rather than only for the rows that
+  // happened to carry a finite value.
+  //
+  // This was always reachable: `price_deriv_book` memoizes VarSwap rows ONLY,
+  // so any VolSwap / GammaSwap / Corridor / Capped / VarianceCall row already
+  // arrived here with NaN smile greeks. It became reachable for VarSwap rows
+  // too when F-7 fixed the memoized path to report "not computed" as NaN
+  // instead of a fabricated 0.0 (that 0.0 was the bug, not the thing to
+  // preserve -- it read as "measured, and this book has no skew exposure").
+  const double pskew = (d_skew == 0.0) ? 0.0 : g.skew_vega * d_skew;
+  const double pconv = (d_convexity == 0.0) ? 0.0 : g.convexity_vega * d_convexity;
   return pd + pg + pv + pvol + pvanna + pth + prho + pcharm + pskew + pconv;
 }
 

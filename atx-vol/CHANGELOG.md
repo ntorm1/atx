@@ -63,6 +63,62 @@ option-only overload, whose per-cell output is byte-identical to before.
 `detail::deriv_price_shocked_on_ref` (+ `detail::DerivShock`) is the Exact
 cell's repricing: a sticky-strike respot with no smile roll.
 
+### Added — smile greeks (`skew_vega` / `convexity_vega`) and a per-tenor vega ladder (GK-G1 / GK-G2 / LIT-8, Task F-7)
+
+NO EXISTING NUMBER MOVES. `DerivGreeks` gains `skew_vega` and `convexity_vega`
+(arity pin 12 -> 14), `DerivGreekBumps` gains `skew_abs` / `convexity_abs`
+(both 1e-3) and `smile_greeks` (arity 7 -> 10), and `DerivPriceFrame` gains
+`vega_by_tenor` (arity 5 -> 6).
+
+**Why.** `vega` is a PARALLEL shift, but a variance swap is long every strike:
+the strip integrates the whole smile, so a rotation or a steepening moves
+`K_var` while the ATM vol sits still. That exposure had no number.
+
+**Convention.** `k = ln(K/F)`, the same coordinate the strip integrates in and
+the same one `SurfaceAnalytics::skew_slope` reports in, so bumping `s` shifts
+the surface's own `skew_slope` by exactly `+s`. `skew_vega` is `dPV/ds` under
+`iv(k,T) -> max(iv + s*k, 1e-4)` and `convexity_vega` is `dPV/dc` under
+`iv(k,T) -> max(iv + c*k*k, 1e-4)`, both per 1.00 of coefficient — a large
+perturbation, so a desk figure is `skew_vega * 0.01`. `s < 0` is the equity
+direction (richer puts), which raises `K_var`, so **`skew_vega < 0` and
+`convexity_vega > 0` on a long var swap**. Both signs, and their SCALE, are
+pinned against a closed form: on a flat surface the strip's sensitivity density
+in `k` is Gaussian with mean `-sigma^2*T/2` and s.d. `sigma*sqrt(T)`, giving
+`skew_vega = vega*E[k]` and `convexity_vega = vega*E[k^2]` — matched to 1.9e-6
+and 8.8e-7 relative. Note this also means a FLAT surface does not give zero
+skew vega: the density is not centred at zero.
+
+**Wing-clamp saturation, a modelling limit to read before using these.** The
+strip clamps `k` into the resolved trust band BEFORE calling `iv`, so the shift
+a node past the band receives is `s*band`, not `s*k` — the linear term
+saturates. With the default certified half-band of 0.5 and a 1Y 20-vol strip
+spanning about +-1.2, the outer wings all receive the same shift. These are
+therefore sensitivities of the CLAMPED surface the strip actually prices, which
+is the honest target (it is the surface `pv` came from) but is NOT an unclamped
+analytic smile. Widen `DerivConfig::wing_clamp_k` for the greek call as well as
+the mark to change that.
+
+**Cost.** OFF BY DEFAULT. Per contract, 4 extra repricings, 16 -> 20 — and the
+maximal default count really is 16, not the "7 / 13 / 17" three doc comments
+claimed after Task P-2 removed the FD rate bump without re-counting; all three
+were corrected and are now pinned by a measured test rather than restated in
+prose. ON A BOOK the flag ALSO makes a VarSwap row ineligible for the P-6
+per-(uid,T) strip memo, since the shared block carries no smile slots: measured
+13 -> 200 strip evaluations on a 10-row single-tenor book, a 15.4x step, not
+the ~25% "+4 repricings" suggests. That trade is deliberate (the alternative was
+a second, independently maintained smile implementation whose bit-identity
+nothing would have checked) and is documented on `price_deriv_book` itself.
+
+**`vega_by_tenor`** is `totals.vega` split by `contract.maturity_t`, keyed by
+the raw maturity so `std::map`'s ordering is the ladder. A net vega hides the
+commonest real position — long front, short back, flat overall. It costs no
+extra repricing, is EMPTY (never a map of zeros) on a marks-only call, and
+NaN-poisons only its own bucket.
+
+MIGRATION: none. Every pre-existing greek is bit-identical with the flag on and
+off, which also covers the bump-cache recording-mode change the smile reads
+required.
+
 ### Added — the single-name return convention: `RealizedTracker::set_dividend_adjustment` and a three-argument `observe_dated` (PV feature list / LIT-9, Task F-6)
 
 `RealizedVarianceSpec::include_dividend_adjustment` shipped from the C port

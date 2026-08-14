@@ -1237,6 +1237,17 @@ TEST(VarSwapMemo, RowsAreBitIdenticalToTheUnmemoizedPerRowPath) {
         << "row " << i << " theta_carry";
     EXPECT_EQ(raw_bits(row.greeks.theta_zero_fixing), raw_bits(p.qty * g->theta_zero_fixing))
         << "row " << i << " theta_zero_fixing";
+    // Task F-7 fix round 1 (C-1/C-1b). These two were appended to DerivGreeks
+    // and NOT to this list, which is the third hand-enumerated field list in
+    // this codebase (after `scaled_greeks` / `nan_greeks`) that no arity pin
+    // can see an omission from -- and the omission is exactly why the memoized
+    // path shipped 0.0 here while the unmemoized one produced NaN, on the
+    // DEFAULT bumps every caller gets. `raw_bits` compares the NaN PAYLOAD, so
+    // this pins the propagation mechanism, not merely "both are some NaN".
+    EXPECT_EQ(raw_bits(row.greeks.skew_vega), raw_bits(p.qty * g->skew_vega))
+        << "row " << i << " skew_vega";
+    EXPECT_EQ(raw_bits(row.greeks.convexity_vega), raw_bits(p.qty * g->convexity_vega))
+        << "row " << i << " convexity_vega";
     ref_pv_sum += p.qty * g->pv;
   }
   // Totals: the SAME serial sum in book order the frame's own accumulate()
@@ -1299,6 +1310,12 @@ TEST(VarSwapMemo, AnalyticStripPathIsAlsoMemoizedAndBitIdentical) {
     EXPECT_EQ(raw_bits(f->rows[i].greeks.vanna), raw_bits(p.qty * g->vanna)) << "row " << i;
     EXPECT_EQ(raw_bits(f->rows[i].greeks.volga), raw_bits(p.qty * g->volga)) << "row " << i;
     EXPECT_EQ(raw_bits(f->rows[i].pv), raw_bits(p.qty * g->pv)) << "row " << i;
+    // Task F-7 fix round 1: same omission, same reason -- see the sibling test
+    // above. The analytic branch reaches the identical smile stencil.
+    EXPECT_EQ(raw_bits(f->rows[i].greeks.skew_vega), raw_bits(p.qty * g->skew_vega))
+        << "row " << i << " skew_vega";
+    EXPECT_EQ(raw_bits(f->rows[i].greeks.convexity_vega), raw_bits(p.qty * g->convexity_vega))
+        << "row " << i << " convexity_vega";
   }
 }
 
