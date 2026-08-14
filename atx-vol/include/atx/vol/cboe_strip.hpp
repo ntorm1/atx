@@ -125,9 +125,18 @@
 //
 //   1. §5(b)(1), from §3(a)(ii): "If quotes of the K_0 put option or the K_0
 //      call option are NULL or the bid price is higher than the ask price, then
-//      the Cboe volatility index cannot be calculated." A null quote arrives
-//      here as bid == 0 AND ask == 0 -- distinct from a real one-sided quote
-//      like 0.00/0.30, whose midpoint of 0.15 is a genuine price.
+//      the Cboe volatility index cannot be calculated." BOTH sub-clauses are
+//      implemented, and the second is why the two ORIENTATIONS of a one-sided
+//      K_0 quote are treated differently rather than collapsed together:
+//        0.00/0.00 -- null. Refused.
+//        0.30/0.00 -- a bid literally above its ask. The clause names it.
+//                     Refused.
+//        0.00/0.30 -- no bid but a REAL offer. Not null, bid not above ask;
+//                     served, and its midpoint of 0.15 is a genuine price.
+//      A K_0 leg crossed with BOTH sides quoted (0.30/0.20) never reaches this
+//      test: it is malformed input, rejected board-wide as `InvalidArgument`.
+//      See `cboe_var_strike`'s `@return` for that split, which is tested both
+//      ways.
 //   2. §5(b)(2): "if all out-of-the-money call options have been excluded OR all
 //      out-of-the-money put options have been excluded, then the volatility
 //      index spot value cannot be calculated." A one-sided strip is not a
@@ -139,21 +148,28 @@
 // republishing the last valid value. A caller that cannot tell the two apart
 // cannot implement that behaviour.
 //
-// ONE QUESTION THE SOURCE LEAVES OPEN, recorded rather than answered. §3(a)(ii)
-// covers a NULL K_0 leg, and §3(a)(iii)'s zero-bid-or-zero-ask exclusion governs
-// the WALK -- but the K_0 pair is selected outside the walk ("Finally, select
-// both the put and call options with strike price K_0"), and no text says
-// whether that exclusion reaches it. So: does a ONE-SIDED K_0 quote (0.00/0.30,
-// or 0.30/0.00) make the index non-calculable?
+// ONE QUESTION THE SOURCE LEAVES OPEN, recorded rather than answered, and it is
+// narrower than it first looks. §3(a)(ii) decides the null and bid-above-ask K_0
+// cases outright, so the ONLY undecided case is the remaining orientation:
 //
-// This module takes the NARROW reading -- only a null K_0 leg refuses, and a
-// one-sided K_0 quote contributes its genuine midpoint -- because that is what
-// the text actually says, and the broad reading would be this module inventing a
-// rule and then testing itself against it. A reader who can put the question to
-// Cboe should; if the answer is the broad reading, `check_k0_quotable`
-// (cboe_strip.cpp) is the one function to change and
-// `NotCalculable_OneSidedK0LegIsNotNull` is the test that records today's
-// choice. Nothing else above is in question.
+//   does a K_0 leg quoted 0.00/0.30 -- no bid, a real offer -- make the index
+//   non-calculable?
+//
+// §3(a)(iii)'s zero-bid-or-zero-ask exclusion would exclude it, but that
+// exclusion sits inside clauses scoped to K < K_0 and K > K_0, while K_0 is
+// picked up by an unconditional "Finally, select both the put and call options
+// with strike price K_0". So the walk's rule does not reach it and no other text
+// addresses it.
+//
+// This module takes the NARROW reading -- it is served, contributing its genuine
+// midpoint -- because that is what the text actually says, and the broad reading
+// would be this module inventing a rule and then testing itself against it. A
+// reader who can put the question to Cboe should; if the answer is the broad
+// reading, `check_k0_quotable` (cboe_strip.cpp) is the one function to change and
+// `NotCalculable_ZeroBidK0LegWithARealOfferIsServed` is the test that records
+// today's choice. Nothing else above is in question -- an earlier revision of
+// this paragraph named both orientations together, which merged a decided case
+// with an open one and is withdrawn.
 //
 // ── WHAT THIS MODULE IS NOT ─────────────────────────────────────────────────
 //
@@ -301,11 +317,16 @@ static_assert(detail::aggregate_arity_is_v<CboeVarStrip, 12>,
 //         strike non-finite, non-positive, or not strictly greater than its
 //         predecessor; any quote field non-finite or negative; or a genuinely
 //         crossed quote (ask < bid with BOTH non-zero -- note that bid > 0 with
-//         ask == 0 is a legitimate one-sided market, not a crossed quote, and is
-//         handled by the exclusion rule instead).
+//         ask == 0 is a legitimate one-sided market AWAY FROM K_0, not a crossed
+//         quote, and is handled by the exclusion rule instead). This applies at
+//         every strike INCLUDING K_0, and it fires before K_0 is resolved.
 //         Unavailable when the board is well-formed but admits no index, per
-//         [CUR-M] §5(b): a null or crossed K_0 leg, or an empty out-of-the-money
-//         wing. See the header's non-calculable section.
+//         [CUR-M] §5(b): a K_0 leg that is null (0.00/0.00) or carries a bid
+//         above its ask with no offer (0.30/0.00), or an empty out-of-the-money
+//         wing. The split against the line above is deliberate and tested both
+//         ways: a K_0 leg crossed with BOTH sides quoted is malformed INPUT,
+//         while a K_0 leg with no offer at all is a non-calculable SNAPSHOT.
+//         See the header's non-calculable section.
 //         OutOfRange when `forward` is below the lowest listed strike (no K_0
 //         exists), or when the resolved variance is negative -- which a real
 //         board cannot produce, and which would otherwise hand the caller a NaN

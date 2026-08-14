@@ -43,14 +43,6 @@ constexpr std::size_t kExcludedRunToTruncate = 2;
   return bid > 0.0 && ask > 0.0;
 }
 
-// A NULL quote -- no market at all on this leg. Distinct from a real one-sided
-// quote such as 0.00/0.30, whose midpoint of 0.15 is a genuine price. Only K_0
-// has to tell the two apart ([CUR-M] §3(a)(ii)); everywhere else both are simply
-// inadmissible.
-[[nodiscard]] bool is_null_quote(double bid, double ask) noexcept {
-  return bid <= 0.0 && ask <= 0.0;
-}
-
 [[nodiscard]] double mid_of(double bid, double ask) noexcept { return 0.5 * (bid + ask); }
 
 // Every board field must be finite and non-negative, and a two-sided quote may
@@ -145,26 +137,42 @@ constexpr std::size_t kExcludedRunToTruncate = 2;
 }
 
 // [CUR-M] §3(a)(ii) / §5(b)(1): a NULL or crossed K_0 leg means there is no
-// index. The crossed half is already rejected board-wide by `validate_leg` as a
-// malformed input; what remains for K_0 is the null half.
+// index -- BOTH sub-clauses, which is the whole point of this function. An
+// earlier revision implemented only the null half and justified it by saying
+// `validate_leg` caught the other. That claim was true when it was written and
+// was falsified by narrowing `validate_leg`'s crossed test to "both sides
+// quoted" -- a correct change that silently invalidated a comment leaning on the
+// old width.
 //
-// NULL only -- deliberately narrow. A one-sided K_0 quote (0.00/0.30, or
-// 0.30/0.00) is not null: it is a real quote with a real midpoint, and Cboe's
-// text does not say the walk's zero-bid-or-ask exclusion reaches the K_0 pair,
-// which §3(a)(iii) selects OUTSIDE the walk. Rejecting it here would be this
-// module inventing a rule. See the header's open-question paragraph.
+// After that narrowing the two sub-clauses reduce to ONE test at K_0: a null
+// quote is 0.00/0.00, and a bid above its ask can only reach here as bid/0.00
+// (the both-quoted inversion 0.30/0.20 is malformed input, rejected board-wide
+// by `validate_leg` before K_0 is ever resolved). Either way the ASK is missing
+// and there is no two-sided market to take a midpoint of.
+//
+// NOT symmetric in the two orientations, and the asymmetry IS the rule:
+//   0.00/0.30 -- no bid, a REAL offer. Genuinely open, not answered by the
+//                clause, and served: its midpoint of 0.15 is a real price.
+//   0.30/0.00 -- a bid above its ask, literally what the clause names. Refused.
 [[nodiscard]] Status check_k0_quotable(const CboeStrikeQuote &row) {
-  const char *bad = nullptr;
-  if (is_null_quote(row.put_bid, row.put_ask)) {
-    bad = "put";
-  } else if (is_null_quote(row.call_bid, row.call_ask)) {
-    bad = "call";
+  // Why this leg is unusable, or nullptr when it is fine.
+  const auto leg_fault = [](double bid, double ask) -> const char * {
+    if (ask > 0.0) {
+      return nullptr;
+    }
+    return bid > 0.0 ? "quote has a bid above its ask" : "quote is null";
+  };
+  const char *side = "put";
+  const char *why = leg_fault(row.put_bid, row.put_ask);
+  if (why == nullptr) {
+    side = "call";
+    why = leg_fault(row.call_bid, row.call_ask);
   }
-  if (bad != nullptr) {
+  if (why != nullptr) {
     return Err(ErrorCode::Unavailable,
-               std::string{"cboe_var_strike: the K0 "} + bad
-                   + " leg quote is null, so the index cannot be calculated (Cboe "
-                     "Mathematics Methodology v5.0 2026-02-26 s3(a)(ii))");
+               std::string{"cboe_var_strike: the K0 "} + side + " " + why
+                   + ", so the index cannot be calculated (Cboe Mathematics Methodology "
+                     "v5.0 2026-02-26 s3(a)(ii))");
   }
   return Ok();
 }

@@ -47,6 +47,14 @@
 // 0.00003337 = 0.01923363, but the published sigma^2 is 0.019233906). The strip
 // sum, which Appendix 5 prints to 10 dp, IS asserted tightly at 1e-10.
 //
+// One trap if you extend this oracle: 1e-10 holds for the strip sum as COMPUTED,
+// but NOT for a re-summation of Appendix 5's printed per-strike contribution
+// column. Those are each rounded to 10 dp, and the roundings accumulate over the
+// strip -- measured drift against the published totals is -4.0e-10 (near, 146
+// rows) and +2.0e-10 (next, 122 rows). Expect ~1e-9 if you add that check, and
+// do not "fix" the resulting failure by loosening the assertion below, which is
+// measuring something else.
+//
 // Other coverage:
 //   OtmSelection_*  puts below K0, calls above, the K0 average, wrong-side legs
 //                   proven unread, mid-not-bid.
@@ -594,16 +602,50 @@ TEST(CboeStrip, NotCalculable_NullK0PutLeg) {
   EXPECT_EQ(got.error().code(), ErrorCode::Unavailable);
 }
 
-// The NARROW reading, recorded so a future change of mind is a deliberate one: a
-// ONE-SIDED K0 quote is not a NULL quote. Cboe refuses only "null" at K0, and
-// §3(a)(iii)'s zero-bid-or-ask exclusion governs the walk, which does not select
-// K0. See cboe_strip.hpp's open-question paragraph.
-TEST(CboeStrip, NotCalculable_OneSidedK0LegIsNotNull) {
+// §3(a)(ii)'s SECOND sub-clause: "or the bid price is higher than the ask
+// price". A K0 leg quoted bid/0.00 has a bid literally above its ask, and the
+// board-wide crossed check deliberately does not catch it (bid > 0 with
+// ask == 0 is a legitimate one-sided market AWAY from K0). It must be refused
+// here, or the clause is only half implemented.
+TEST(CboeStrip, NotCalculable_K0LegWithABidAboveItsAskIsRefused) {
+  for (const bool poison_put : {true, false}) {
+    std::vector<CboeStrikeQuote> board = worked_board();
+    if (poison_put) {
+      board[3].put_bid = 0.30; // K0 put 0.30 / 0.00
+      board[3].put_ask = 0.00;
+    } else {
+      board[3].call_bid = 0.30; // K0 call 0.30 / 0.00
+      board[3].call_ask = 0.00;
+    }
+    const auto got = cboe_var_strike(board, kF, kDf, kT);
+    ASSERT_FALSE(got.has_value()) << (poison_put ? "put" : "call") << " leg";
+    EXPECT_EQ(got.error().code(), ErrorCode::Unavailable);
+  }
+}
+
+// The OTHER orientation, and it is a DIFFERENT case rather than the same one
+// mirrored: 0.00/0.30 is no bid with a REAL offer. Not null, and its bid is not
+// above its ask, so §3(a)(ii) does not reach it and it is SERVED with a genuine
+// midpoint. This is the narrow reading of the one question the source leaves
+// open (see cboe_strip.hpp), recorded so a future change of mind is deliberate.
+TEST(CboeStrip, NotCalculable_ZeroBidK0LegWithARealOfferIsServed) {
   std::vector<CboeStrikeQuote> board = worked_board();
   board[3].call_bid = 0.00; // K0 call quoted 0.00 / 6.60 -- a real mid of 3.30
   const auto got = cboe_var_strike(board, kF, kDf, kT);
   ASSERT_TRUE(got.has_value()) << got.error().to_string();
   EXPECT_DOUBLE_EQ(got->terms[3].mid, 0.5 * (2.60 + 3.30));
+}
+
+// A K0 leg crossed with BOTH sides quoted is malformed INPUT, not a
+// non-calculable snapshot, and the board-wide check catches it before K0 is even
+// resolved. Pinned so the `@return` split stays honest in both directions.
+TEST(CboeStrip, Degenerate_CrossedK0LegIsMalformedInput) {
+  std::vector<CboeStrikeQuote> board = worked_board();
+  board[3].put_bid = 0.30; // K0 put 0.30 / 0.20 -- inverted, both sides quoted
+  board[3].put_ask = 0.20;
+  const auto got = cboe_var_strike(board, kF, kDf, kT);
+  ASSERT_FALSE(got.has_value());
+  EXPECT_EQ(got.error().code(), ErrorCode::InvalidArgument);
 }
 
 // ── 8. Malformed boards ─────────────────────────────────────────────────────
