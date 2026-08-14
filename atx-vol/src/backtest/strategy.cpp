@@ -20,7 +20,7 @@
 
 #include "atx/core/error.hpp"
 #include "atx/vol/api/pricing/american.hpp"         // AmericanGreeks
-#include "pricing/pricing_executor.hpp" // WS-P P4: batched-basket strike resolve fan-out
+#include "atx/vol/api/pricing/pricing_executor.hpp" // WS-P P4: batched-basket strike resolve fan-out
 
 namespace atx::vol {
 

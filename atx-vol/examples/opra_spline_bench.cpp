@@ -55,7 +55,7 @@
 #include "atx/vol/api/marketdata/corpus.hpp"        // CorpusBoard, corpus_board_from_opra
 #include "atx/vol/api/marketdata/opra_batch.hpp"    // OpraBatchSpec, load_opra_daterange
 #include "core/parallel_for.hpp"  // parallel_for, atx_auto_worker_count
-#include "fitting/prepared_policy.hpp" // PreparedObservationPolicy
+#include "atx/vol/api/fitting/prepared_policy.hpp" // PreparedObservationPolicy
 #include "atx/vol/api/fitting/pricer_fitter.hpp" // PricerFitter, PricerConfig, OutputField
 #include "atx/vol/api/fitting/session.hpp"       // FitPreset, SessionDiagnostics, SessionInputs
 #include "atx/vol/api/fitting/surface_parity.hpp" // CalendarRepair

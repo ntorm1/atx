@@ -23,7 +23,7 @@
 #include "atx/core/error.hpp"                 // Result (used in bev_replay_pnl's return type)
 #include "atx/vol/api/pricing/american.hpp"               // AlOpts, al_fast_opts, Side, Result
 #include "atx/vol/api/backtest/backtest.hpp"               // Clock, MarketSnapshot (Task 5: path loader)
-#include "fitting/aggregate_arity.hpp" // BevReplayConfig field-count drift pin
+#include "atx/vol/api/fitting/aggregate_arity.hpp" // BevReplayConfig field-count drift pin
 #include "atx/vol/api/pricing/rates_curve.hpp"            // DividendEvent
 
 namespace atx::vol {

@@ -71,7 +71,7 @@
 #include <string_view>
 #include <vector>
 
-#include "fitting/aggregate_arity.hpp" // TheoConfig field-count drift pin
+#include "atx/vol/api/fitting/aggregate_arity.hpp" // TheoConfig field-count drift pin
 #include "atx/vol/api/core/types.hpp"                  // Side, Result, Status
 
 namespace atx::vol {

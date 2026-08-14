@@ -33,7 +33,7 @@
 #include <span>
 #include <vector>
 
-#include "fitting/aggregate_arity.hpp" // AlOpts field-count drift pin
+#include "atx/vol/api/fitting/aggregate_arity.hpp" // AlOpts field-count drift pin
 #include "atx/vol/api/core/types.hpp"
 
 namespace atx::vol {

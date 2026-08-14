@@ -49,7 +49,7 @@
 
 #include <benchmark/benchmark.h>
 
-#include "pricing/pricing_executor.hpp"
+#include "atx/vol/api/pricing/pricing_executor.hpp"
 
 #include "bench_util.hpp"
 

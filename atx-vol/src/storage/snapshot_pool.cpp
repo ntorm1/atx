@@ -16,7 +16,7 @@
 #include <utility>
 #include <vector>
 
-#include "pricing/pricing_executor.hpp" // pricing_executor() — the one persistent pool
+#include "atx/vol/api/pricing/pricing_executor.hpp" // pricing_executor() — the one persistent pool
 #include "atx/vol/api/storage/surface_archive.hpp"         // ArchiveV2Header, archive_v2_identity_from_header
 
 namespace atx::vol {

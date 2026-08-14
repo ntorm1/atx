@@ -29,7 +29,7 @@
 #include <vector>
 
 #include "fitting/counters.hpp"
-#include "pricing/pricing_executor.hpp"
+#include "atx/vol/api/pricing/pricing_executor.hpp"
 
 using namespace atx::vol;
 

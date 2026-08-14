@@ -22,7 +22,7 @@
 #include "atx/vol/api/backtest/panel.hpp"
 #include "core/parallel_for.hpp" // atx_auto_worker_count (ATX_VOL_FIT_WORKERS gate)
 #include "atx/vol/api/fitting/pricer_fitter.hpp"
-#include "pricing/pricing_executor.hpp"
+#include "atx/vol/api/pricing/pricing_executor.hpp"
 #include "fitting/risk_surface_validation.hpp"
 #include "atx/vol/api/fitting/session.hpp"
 #include "fitting/spy_fixture.hpp"

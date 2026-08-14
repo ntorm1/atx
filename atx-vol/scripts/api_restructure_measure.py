@@ -99,6 +99,35 @@ DETAIL_MODULE = {
 # Always-private regardless of reachability (test fixtures, probes).
 FORCE_PRIVATE = {"spy_fixture", "vector_math_probe"}
 
+# Promoted-to-public exceptions for detail/ headers. 2026-08-14 review finding
+# (Task 2 cutover, fix round 1): the `detail` branch in place() below returns
+# "private" unconditionally -- it never checks `rel not in public` the way the
+# `simd` branch and the general branch both do, so a detail/ header is placed
+# private even when a genuine external root includes it directly. That IS what
+# happened here: atx-options-engine/src/option_scenario_cube.cpp (a ROOT_DIRS
+# member) directly `#include`s "atx/vol/detail/pricing_executor.hpp", which
+# should have seeded it into `public` and made the general reachability check
+# moot -- but the detail branch's hardcoded "private" return ignores that set
+# entirely. Recorded as an explicit override (not a fix to the detail branch
+# itself) so re-running this script reproduces the shipped placement exactly;
+# fixing the branch's reachability check for the whole detail/ set is a
+# separate, broader change this override deliberately does not make.
+#
+# aggregate_arity / prepared_policy added same fix round, same root cause,
+# found by actually BUILDING atx-options-engine (the coordinator's own
+# verification step) rather than by grepping ROOT_DIRS: both are transitively
+# #include'd (bare private "fitting/..." spelling) from public headers
+# american.hpp/backtest.hpp/session.hpp/surface_parity.hpp/pricer_fitter.hpp
+# reachable from atx-options-engine's option_scenario_cube.cpp chain, so any
+# external consumer of those already-public headers needed them and could not
+# see them (no PRIVATE src/ include dir outside atx-vol). Both are header-only
+# (no .cpp, no ODR/linkage surface) and, after promotion, include nothing but
+# std headers -- confirmed by re-auditing every include/atx/vol/api/**/*.hpp
+# for a bare (non "atx/"-prefixed) quoted include, which returned zero hits
+# once these two moved. Same mechanical shape as pricing_executor above, so
+# folded into the same override set rather than opening a second one.
+PROMOTED_PUBLIC = {"pricing_executor", "aggregate_arity", "prepared_policy"}
+
 INC_RE = re.compile(r'#\s*include\s*[<"](atx/vol/[^>"]+)[>"]')
 
 def includes_of(path: Path):
@@ -141,6 +170,8 @@ def place(rel: str, public: set):
         mod = DETAIL_MODULE.get(stem)
         if mod is None:
             sys.exit(f"UNASSIGNED detail header: {rel}")
+        if stem in PROMOTED_PUBLIC:
+            return (f"atx-vol/include/atx/vol/api/{mod}/{parts[-1]}", "public", mod)
         return (f"atx-vol/src/{mod}/{parts[-1]}", "private", mod)
     if parts[2] == "simd":
         if stem in FORCE_PRIVATE or rel not in public:

@@ -54,10 +54,10 @@
 #include "atx/vol/api/fitting/correction.hpp"      // CorrectionCache, AmericanCorrectionCaches
 #include "atx/vol/api/marketdata/data.hpp"            // QuoteFrame (from_frame input)
 #include "atx/vol/api/fitting/deamer.hpp"          // DeAmOptions
-#include "fitting/aggregate_arity.hpp" // SessionInputs field-count drift pin
+#include "atx/vol/api/fitting/aggregate_arity.hpp" // SessionInputs field-count drift pin
 #include "atx/vol/api/analytics/event_vol.hpp"       // EventSchedule (SessionInputs::events), implied_emove
 #include "atx/vol/api/fitting/parity.hpp"          // ParityReport
-#include "fitting/prepared_policy.hpp" // PreparedObservationPolicy
+#include "atx/vol/api/fitting/prepared_policy.hpp" // PreparedObservationPolicy
 #include "atx/vol/api/backtest/priced_surface.hpp"  // PricedSurface, PricingContext (to_priced_surface)
 #include "atx/vol/api/fitting/projection.hpp"      // InterpMode (SessionInputs::interp, ShapeBlend eval)
 #include "atx/vol/api/backtest/query_pricing.hpp"   // QueryPricingTier

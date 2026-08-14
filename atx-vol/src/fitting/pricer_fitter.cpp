@@ -23,7 +23,7 @@
 #include "fitting/counters.hpp"         // ATX_VOL_COUNT (RiskStrictRecoveryRounds/Admitted)
 #include "core/parallel_for.hpp"     // atx_auto_worker_count
 #include "fitting/prepared_fitting.hpp" // prepare_expiry (canonical refit preparation)
-#include "pricing/pricing_executor.hpp" // persistent whole-chain task fan-out
+#include "atx/vol/api/pricing/pricing_executor.hpp" // persistent whole-chain task fan-out
 #include "fitting/risk_surface_validation.hpp"
 
 namespace atx::vol {

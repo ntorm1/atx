@@ -23,7 +23,7 @@
 
 #include "atx/vol/api/pricing/american.hpp"         // AmericanGreeks, american_price, AlOpts
 #include "atx/vol/api/backtest/priced_surface.hpp"   // PricedSurface, PricingContext
-#include "pricing/pricing_executor.hpp" // pricing_executor(): the shared P1.4 pool
+#include "atx/vol/api/pricing/pricing_executor.hpp" // pricing_executor(): the shared P1.4 pool
 
 #include "pricing/american_boundary.hpp" // amer:: boundary seam (A7 spot-axis reuse)
 

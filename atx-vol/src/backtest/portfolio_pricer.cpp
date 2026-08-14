@@ -27,7 +27,7 @@
 #include "fitting/counters.hpp"           // ATX_VOL_COUNT (opt-in P0.2; no-op when OFF)
 #include "pricing/adjoint_greeks.hpp" // WS-P P3: american_greeks_adjoint A/B route
 #include "backtest/prepared_portfolio.hpp" // PreparedPortfolio (grouped exec substrate)
-#include "pricing/pricing_executor.hpp"   // pricing_executor(): the persistent P1.4 pool
+#include "atx/vol/api/pricing/pricing_executor.hpp"   // pricing_executor(): the persistent P1.4 pool
 #include "atx/vol/api/simd/american_boundary_batch.hpp" // simd::avx2_boundary_selected (invariant tile-schedule gate)
 #include "simd/pnl_batch.hpp"     // simd::pnl_taylor_explain_batch (wiring finding 1)
 

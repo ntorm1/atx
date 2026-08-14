@@ -23,7 +23,7 @@
 
 #include "atx/vol/api/fitting/calib.hpp"
 #include "atx/vol/api/fitting/deamer.hpp"
-#include "fitting/prepared_policy.hpp" // PreparedObservationPolicy (leaf definition)
+#include "atx/vol/api/fitting/prepared_policy.hpp" // PreparedObservationPolicy (leaf definition)
 #include "atx/vol/api/core/types.hpp"
 #include "atx/vol/api/marketdata/universe.hpp"
 

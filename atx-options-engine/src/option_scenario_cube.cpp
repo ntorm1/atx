@@ -22,7 +22,7 @@
 #include "atx/vol/api/pricing/black76.hpp"
 #include "atx/vol/api/pricing/greeks.hpp"
 #include "atx/vol/api/backtest/portfolio_pricer.hpp"
-#include "pricing/pricing_executor.hpp"
+#include "atx/vol/api/pricing/pricing_executor.hpp"
 #include "atx/vol/api/fitting/surface_policy.hpp"
 
 namespace atx::options::risk {

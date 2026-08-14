@@ -22,17 +22,37 @@ declaration from the spec taxonomy, independent of reachability.
 | analytics | 6 | 10 | 16 |
 | backtest | 14 | 9 | 23 |
 | core | 6 | 5 | 11 |
-| fitting | 22 | 21 | 43 |
+| fitting | 24 | 19 | 43 |
 | marketdata | 6 | 3 | 9 |
-| pricing | 12 | 6 | 18 |
+| pricing | 13 | 5 | 18 |
 | simd | 3 | 7 | 10 |
 | storage | 3 | 11 | 14 |
-| **TOTAL** | **72** | **72** | **144** |
+| **TOTAL** | **75** | **69** | **144** |
 
 (`core` also includes the umbrella header `vol.hpp`, which lands at `api/vol.hpp`
 outside any module subdirectory; it is counted under `core` above.)
 
-## Public headers by module (72)
+**2026-08-14 fix round 1 (Task 2 review):** three `detail/` headers are promoted
+public — `PROMOTED_PUBLIC` in `api_restructure_measure.py`:
+`pricing_executor.hpp` (module `pricing`), `aggregate_arity.hpp` and
+`prepared_policy.hpp` (module `fitting`). The measurement's `detail` branch
+returns "private" unconditionally without checking the reachability set the
+`simd` and general branches both check, so it missed that
+`atx-options-engine/src/option_scenario_cube.cpp` (an external ROOT_DIRS
+consumer) includes `pricing_executor.hpp` directly, and transitively needs
+`aggregate_arity.hpp`/`prepared_policy.hpp` through five already-public headers
+(`american.hpp`, `backtest.hpp`, `session.hpp`, `surface_parity.hpp`,
+`pricer_fitter.hpp`) that bare-`#include` them with the private
+`"fitting/<name>.hpp"` spelling. The second pair was found by actually
+building `atx-options-engine` (the fix round's own verification step), then
+confirmed complete by auditing every `include/atx/vol/api/**/*.hpp` for a bare,
+non-`"atx/..."` quoted include (zero hits after the move). All three are
+recorded as explicit overrides rather than a fix to the `detail` branch's
+reachability check itself, which would need auditing the rest of `detail/` too
+and is out of this fix round's scope. The counts above already reflect all
+three promotions (72/72 → 75/69); the per-module lists below do too.
+
+## Public headers by module (75)
 
 ### analytics (6)
 - analytics.hpp
@@ -66,7 +86,8 @@ outside any module subdirectory; it is counted under `core` above.)
 - vol.hpp
 - vol_time.hpp
 
-### fitting (22)
+### fitting (24)
+- aggregate_arity.hpp (promoted from detail/, 2026-08-14 fix round 1 — see note above)
 - arb.hpp
 - c8.hpp
 - calib.hpp
@@ -79,6 +100,7 @@ outside any module subdirectory; it is counted under `core` above.)
 - fit_policy.hpp
 - parity.hpp
 - pricer_fitter.hpp
+- prepared_policy.hpp (promoted from detail/, 2026-08-14 fix round 1 — see note above)
 - profile.hpp
 - projection.hpp
 - session.hpp
@@ -98,7 +120,7 @@ outside any module subdirectory; it is counted under `core` above.)
 - opra_panel.hpp
 - universe.hpp
 
-### pricing (12)
+### pricing (13)
 - adjusted_greeks.hpp
 - american.hpp
 - american_batch.hpp
@@ -109,6 +131,7 @@ outside any module subdirectory; it is counted under `core` above.)
 - dividend.hpp
 - greeks.hpp
 - implied_vol.hpp
+- pricing_executor.hpp (promoted from detail/, 2026-08-14 fix round 1 — see note above)
 - rates_curve.hpp
 - swap_leg.hpp
 

@@ -36,7 +36,7 @@
 #include "atx/vol/api/pricing/black76.hpp"
 #include "fitting/counters.hpp"
 #include "atx/vol/api/backtest/priced_surface.hpp"
-#include "pricing/pricing_executor.hpp" // the bank build's dispatch seam (2.11)
+#include "atx/vol/api/pricing/pricing_executor.hpp" // the bank build's dispatch seam (2.11)
 #include "atx/vol/api/simd/american_boundary_batch.hpp"
 #include "atx/vol/api/storage/surface_archive.hpp" // archive-backed PricedSurfaceView fixture (tenor-domain mirror)
 #include "atx/vol/api/fitting/surface_parity.hpp"

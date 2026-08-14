@@ -45,7 +45,7 @@
 #include "atx/vol/api/core/chain.hpp"           // OptionChain, OptionId
 #include "atx/vol/api/fitting/curve_selector.hpp"  // SelectorConfig, SelectorResult
 #include "atx/vol/api/fitting/fit_policy.hpp"      // FitContext, FitPolicyConfig, FitDecision
-#include "fitting/prepared_policy.hpp" // PreparedObservationPolicy
+#include "atx/vol/api/fitting/prepared_policy.hpp" // PreparedObservationPolicy
 #include "atx/vol/api/pricing/rates_curve.hpp"     // DividendEvent
 #include "atx/vol/api/fitting/session.hpp"         // VolaSession, FitPreset, SessionDiagnostics
 #include "atx/vol/api/fitting/surface_policy.hpp"  // explicit mark/risk purpose and quality policy

@@ -19,7 +19,7 @@
 #include "atx/core/datetime.hpp"
 #include "atx/core/error.hpp"
 #include "atx/core/hash.hpp"
-#include "pricing/pricing_executor.hpp"
+#include "atx/vol/api/pricing/pricing_executor.hpp"
 #include "atx/vol/api/storage/surface_db.hpp"
 #include "atx/vol/api/marketdata/universe.hpp"
 

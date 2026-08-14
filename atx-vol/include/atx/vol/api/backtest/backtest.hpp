@@ -44,7 +44,7 @@
 
 #include "atx/vol/api/marketdata/corpus.hpp"           // CorpusManifest
 #include "atx/vol/api/pricing/derivatives.hpp"      // DerivKind, RealizedVarianceSpec (the swap lane)
-#include "fitting/aggregate_arity.hpp" // RunConfig field-count drift pin
+#include "atx/vol/api/fitting/aggregate_arity.hpp" // RunConfig field-count drift pin
 #include "atx/vol/api/backtest/portfolio_pricer.hpp" // OptionContract, SurfaceSet, PriceOptions, PriceTotals
 #include "atx/vol/api/backtest/priced_surface.hpp"   // PricedSurface
 #include "atx/vol/api/backtest/query_pricing.hpp"    // QueryPricingTier

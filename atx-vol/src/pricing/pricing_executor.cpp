@@ -1,7 +1,7 @@
 // PricingExecutor — the one process-wide persistent pricing thread pool (P1.4).
 // See pricing_executor.hpp for the model, determinism argument, and sizing story.
 
-#include "pricing/pricing_executor.hpp"
+#include "atx/vol/api/pricing/pricing_executor.hpp"
 
 #include <algorithm>
 #include <atomic>

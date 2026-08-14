@@ -39,9 +39,9 @@
 #include "atx/vol/api/fitting/calib.hpp"           // CalibOpts
 #include "atx/vol/api/fitting/correction.hpp"      // AmericanCorrectionCaches (cert-carry resolve)
 #include "atx/vol/api/fitting/deamer.hpp"          // DeAmOptions
-#include "fitting/aggregate_arity.hpp" // SurfaceParityReport field-count drift pin
+#include "atx/vol/api/fitting/aggregate_arity.hpp" // SurfaceParityReport field-count drift pin
 #include "atx/vol/api/fitting/parity.hpp"          // ParityReport
-#include "fitting/prepared_policy.hpp" // PreparedObservationPolicy
+#include "atx/vol/api/fitting/prepared_policy.hpp" // PreparedObservationPolicy
 #include "atx/vol/api/pricing/rates_curve.hpp"     // DividendEvent
 #include "atx/vol/api/core/types.hpp"           // Result
 #include "atx/vol/api/marketdata/universe.hpp"        // Underlying

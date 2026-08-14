@@ -44,7 +44,7 @@
 #include "atx/vol/api/backtest/backtest.hpp"          // Clock, run_backtest, RunConfig, FrictionModel, ...
 #include "atx/vol/api/marketdata/corpus.hpp"            // CorpusManifest, CorpusEntry, CorpusFitStatus
 #include "fitting/counters.hpp"          // counters::ledger — L1 solve-economy gate
-#include "pricing/pricing_executor.hpp"  // pricing_executor() — C2 warm() fan-out gate
+#include "atx/vol/api/pricing/pricing_executor.hpp"  // pricing_executor() — C2 warm() fan-out gate
 #include "atx/vol/api/backtest/portfolio_pricer.hpp"  // OptionContract, kNsPerYear
 #include "atx/vol/api/backtest/priced_surface.hpp"    // PricedSurface, PricingContext
 #include "storage/snapshot_pool.hpp"  // C2: SnapshotPool, SnapshotPoolStats

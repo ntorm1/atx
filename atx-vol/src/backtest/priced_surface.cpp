@@ -3,7 +3,7 @@
 #include "atx/vol/api/pricing/american_batch.hpp" // exact resolved price-only batch
 #include "atx/vol/api/fitting/correction.hpp"
 #include "fitting/counters.hpp"
-#include "pricing/pricing_executor.hpp" // the ONE bounded pricing pool (accelerator build)
+#include "atx/vol/api/pricing/pricing_executor.hpp" // the ONE bounded pricing pool (accelerator build)
 #include "backtest/laned_greek_run.hpp" // WS-P1v: the shared laned analytic-Greek batch driver
 #include "backtest/term_carry.hpp"
 

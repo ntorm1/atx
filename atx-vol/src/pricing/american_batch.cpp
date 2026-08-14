@@ -5,7 +5,7 @@
                                          // definition FIX-1/2/3 established
 #include "atx/vol/api/pricing/american.hpp"          // andersen_lake, american_greeks_fd/al, classify_regime
 #include "fitting/counters.hpp"          // exact resolved-route diagnostics
-#include "pricing/pricing_executor.hpp"  // PricingExecutor
+#include "atx/vol/api/pricing/pricing_executor.hpp"  // PricingExecutor
 #include "atx/vol/api/simd/american_boundary_batch.hpp"
 #include "atx/vol/api/simd/cpu.hpp"
 
