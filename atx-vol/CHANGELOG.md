@@ -744,8 +744,10 @@ brief's optimistic "~1/3 of iterations" reading; paired A/B on a
 ~4097-node Audit-strip `iv()` sweep (Debug/dev preset, 10 alternating
 pairs) measured a **1.40x** median speedup, matching the 65-vs-45
 Black-76-call-count ratio almost exactly and falling short of the sprint
-plan's 2x target — see `task-P-5-report.md` for the full measurement and
-diagnosis.
+plan's 2x target. The shortfall is not mysterious and needs no external
+document: the early exit removes bisection iterations only, so the speedup is
+bounded by the Black-76 call-count ratio quoted above, and 65/45 is 1.44 —
+the 2x target assumed iterations the fit never performed. Landed in `d283efe`.
 
 The ConvexDense calendar-admission scan (`fit_slice_curve`'s shared-k
 refit loop, `src/vol_curve.cpp`) also no longer inverts the fitted node
@@ -805,9 +807,12 @@ decision, not this task's.
 can opt in with `bumps.method = DerivGreekMethod::AnalyticStrip`; parity
 against FD is gated at `|Δ| <= max(1e-8*scale, 5*FD-noise-floor)` per greek,
 flat and skewed surfaces, unaged and mid-life contracts (`AnalyticGreeks.*`,
-`deriv_greeks_test.cpp`). See `task-P-4-report.md` for the measured parity
-deltas and the paired A/B timing (Debug/SSE2 preset — a Release re-measure is
-scheduled separately).
+`deriv_greeks_test.cpp`) — that test IS the parity record, and re-running it
+reproduces the deltas. The paired A/B (Debug/SSE2 preset, 10 same-invocation-
+order pairs) measured a **1.65x** median-of-medians speedup, pairwise median
+1.76x over a 1.26x–2.45x range, with every one of the 10 pairs favouring the
+analytic path; a Release re-measure is scheduled separately. Landed in
+`337158b`.
 
 ### Changed — `deriv_greeks`'s rho is now the closed form `-T*PV`, not a finite difference (GK-C3, Task P-2)
 

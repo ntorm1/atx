@@ -476,8 +476,9 @@ Result<std::unique_ptr<IVolCurve>> fit_slice_curve(const CurveConfig &cfg,
       // characterization: comparing the raw node price flagged spurious wing
       // violations a slack floor never triggered against the pinned
       // pre-change baseline -- see VolCurve.
-      // CalendarScanPriceSpaceSelectsIdenticalFloorsAsPreP5Baseline and
-      // task-P-5-report.md Sec.2). Not a bit-for-bit-identical arithmetic
+      // CalendarScanPriceSpaceSelectsIdenticalFloorsAsPreP5Baseline, which
+      // pins that agreement and is what fails if this ever moves).
+      // Not a bit-for-bit-identical arithmetic
       // path (one black76_price call instead of bisecting fit.iv() ~64
       // times), but the same SOURCE decision, so the set of flagged k's is
       // unchanged. Task P-5 review I-1: the projection itself now lives in
