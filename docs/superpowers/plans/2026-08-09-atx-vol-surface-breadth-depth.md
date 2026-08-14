@@ -496,6 +496,97 @@ commits, neither introduced by this sprint):
 (red at 547a466 with all lane-C work absent). The second names provenance at
 exactly T7a's seam and is assigned to it.
 
+### 1.11 Execution log, final pass (2026-08-14) — integration and the A×C contradiction
+
+Written at sprint close. Every number in this section was measured on the
+integration branch `feat/vol-sbd-integration` @ `4fe0ca7` — lane A (`7220fbc`),
+lane B (`2f77217`) and lane C (`24ebd62`) merged, in worktree
+`c:\atx-wt\pool-9`, local only, not pushed — fresh release build, `--fit-path
+production`, both corpora. Same conventions as §1.9–§1.10: figures are quoted
+as *lqbench / sp100* where they differ, and nothing here is a projection. The
+final gate roll-call is recorded against each gate in §7.
+
+**T7a — the substitution decision now compares its records, and the estimate
+missed for the right reason.** On the production benchmark, 83 lqbench and 48
+sp100 boards gain validation-failure bit 4096 (`SubstituteUnderserve`) against
+the ≈85 + 58 estimate. The shortfall is not slippage — it is lane A's goal
+working: eSSVI primaries now survive admission, so there is less substitution
+left to flag. 8/10 lqbench and 12/15 sp100 boards moved fallback → primary
+(`used_fallback` 1 → 0). On sp100, WMT's failure reasons equal 4096 exactly,
+so the new bit isolates cleanly. Demote-on-loss and the attempt-trail
+provenance assertions are all live.
+
+**Integration — every drift explained by cause.** The merge needed zero
+changes to the arity pins (`SurfaceParityReport` = 17 was lane B's own bump;
+`SessionInputs` = 24 unchanged). Suites: 83 suites / 648 tests — 633 pass, 13
+skipped, one documented pre-existing `SurfaceDbPopulate` red (§1.10), and one
+red from the A×C contradiction, below. Benchmark reconciliation closed with
+every drift attributed: lqbench 203/240 boards ok, an exact match to lane
+expectation; 1,882 slices — lane A's T3c expansion composing on lane C's base;
+UPS rmse 0.008863 exact (the T6d value, §1.10); and the sp100 rmse rise is
+pure mix-shift — the same-slice/same-kind rmse ratio is 1.000 across 58 sp100
+boards (lqbench 1.006). T10c's dof honesty holds through the merge:
+`mean_chi2` is the only non-timing column that differs (127 lqbench / 69 sp100
+boards), with zero admission, kind or counter changes, and
+`out = scored − in_band` holds on every row. T3c at integration: expiry fit
+rate 0.790 / 0.924, in-band calendar violations 0/109,135 and 0/87,100.
+
+**The A×C contradiction — a fabrication class neither lane could see alone.**
+Lane A's T3c gave the projected LM an (N1) floor, and that floor can fabricate
+ATM variance level *inside the fit* — a region where `arb.cpp`'s
+calendar-repair projection budget is never consulted, because that budget only
+guards the post-fit projection's own displacement. Lane C's T7a guard test
+(`UnservableCalendarArbBoardFailsLoudWithFullAttemptTrail`; fixture a ~5.4×
+ATM calendar inversion, needing a cumulative level scale of ≈5.0 against a
+fidelity budget of 1.100) goes red only when lane A is present: the eSSVI rung
+served 3/3 admitted with `worst_in_band` 0.0000 and `mean_chi2` 5.6e4.
+Demote-on-loss could not catch it, because the fabricated expiry lies outside
+the primary's common support. Adjudication: apply the same ATM-level fidelity
+budget to the (N1) floor displacement in-fit (option 1). Re-baselining the
+test was rejected — it would bless exactly the silent-fabrication class the
+guards exist to prevent — and dropping every budget-exceeding floored slice
+was rejected as over-broad.
+
+**Fix cycle 1 stopped itself, and was right to.** The pre-registered
+corpus-neutrality gate failed on one board — CL — and the failure is a
+measured false positive: the guard's level estimator (a single nearest-|k| raw
+quote, w = 0.00436) sat 26% below the slice's true fitted ATM level (0.00592),
+tripping the budget at 1.1405 vs 1.1000 on a slice whose fitted thetas were
+strictly increasing with the floor never binding. The lesson: the projection
+budgets against a whole-slice fitted theta, and a single raw quote is not a
+faithful stand-in for one. Tree reverted, nothing committed, no re-base.
+
+**Fix cycle 2 — probe-confirm, freshly pre-registered.** The anchor quote is
+demoted to a cheap trigger; on trigger, one extra unconstrained
+`essvi_fit_slice` measures the true pre-floor level, and the budget compares
+`floor / theta_unconstrained`. Measured firings across both corpora: exactly
+three — MO slice 4 at 0.842, CL slice 3 at 0.818, PYPL slice 9 at 0.933 — all
+pass and serve identically. The guard-test fixture measures 4.163 against the
+1.100 budget and refuses loudly with the full attempt trail.
+
+**Final disposition.** All five pre-registered gates passed (guard test green
+with every assertion live; 634/648 suites with only the documented
+`SurfaceDbPopulate` red; zero non-timing changes on all 240 lqbench and 104
+sp100 boards, CL included, byte-identical; BUILD_EXIT=0 throughout; three
+probe firings, all pass, every firing logged). Committed locally as `47ba297`
+on `feat/vol-sbd-integration` — a 62-line addition to `surface_parity.cpp`
+only. Gate 8's test half is thereby MET; the branch stays local, unpushed.
+
+**Carried forward to the next sprint**, explicitly, so it is inherited rather
+than rediscovered:
+
+- The `InversionResidual` de-Americanization audit thread (73 lqbench / 9
+  sp100 boards flagged, §1.10 T3e) is not yet root-caused.
+- The shape (c) candidate requires a pre-registered material-shrinkage
+  threshold before any attempt is made.
+- A `corpus.cpp:322` sampling-distribution study is required before any
+  re-base of corpus expectations.
+- Gate 3 remains OPEN on the tier-D number.
+- Gate 6: `universe_autofit` CSV export of the per-board diagnostic column is
+  a one-line addition, deliberately deferred.
+- The 416-board control corpus was not re-run this sprint; gate 4's claim
+  extends only to the corpora actually run.
+
 ---
 
 ## 2. Root cause of the calendar crossings
@@ -1041,40 +1132,60 @@ Everything else parallelises with the ownership above.
    → **MET on the production path before any depth work landed** (§1.5): 0
    violations across 155,285 calendar samples. Restated so it cannot be read as
    a win this sprint earned. The live version of this gate is **1′** below.
+   → **Final (2026-08-14, `4fe0ca7`): MET** — in-band violations 0/109,135 and
+   0/87,100 at integration (§1.11).
 2. **Butterfly measured.** A surface-level butterfly counter exists and is
    exported for both lanes. Currently it is structurally zero on 92–96% of
    boards and we cannot say anything about it. → **MET** by T1 (`91904d3`): the
    oracle's strike/butterfly counters are exported with an `oracle_ran` guard so
    "not computed" is distinguishable from "computed and clean". 0 violations
-   across 308,817 strike samples.
+   across 308,817 strike samples. → **Final: MET** — butterfly 0; strike
+   0/203,795 and 0/160,563 at `4fe0ca7` (§1.11).
 3. **Tier D fit success ≥ 95%**, or a Davis–Hobson classification showing the
    residual is infeasible data rather than a fitter limitation. Either outcome
    closes the gate; a bare number does not. → T2 classified **0 of 4** as
    infeasible data, so this gate must be closed on the number. Baseline is
-   1.8% refusing (§1.5 (6)), not 9.3%.
+   1.8% refusing (§1.5 (6)), not 9.3%. → **Final: OPEN** on the tier-D number;
+   carried forward (§1.11).
 
 **Rebaselined gates, added after measurement:**
 
 - **1′. eSSVI survives as PRIMARY.** The primary-rejection rate falls from
   60% (lqbench) / 68% (control). This replaces T3's vacuous stated criterion
-  (§1.7). Scope set by T1c.
+  (§1.7). Scope set by T1c. → **Final: MET** — 57.9% / 57.0% vs the required
+  60% / 68% thresholds, at `4fe0ca7`.
 - **9. Carry breadth.** Of the 29 boards lost to carry, the count recovered
   **with a known, confidence-stamped carry** is reported — never by relaxing
   `require_carry_confidence`. The 42% slice / 47% quote loss and the 177/192
   `degraded`-on-`CarryGap` population are reported before and after.
+  → **Final: MET** — 192 → 203 boards, zero lost, probe-only disarm, and zero
+  confident anchors on the recovered boards, so nothing was fabricated.
 - **10. Carry confidence is distributional, not binary.** A recovered board
   reports *which* fallback source supplied its carry and at what confidence. A
   board that returns with a fabricated carry is worse than a board that refuses.
+  → **Final: MET structurally.**
 4. **Control corpus holds:** 416/416, eSSVI in-band median ≥ 0.94, and
-   like-for-like `rmse_vol` no worse than 1.05×.
+   like-for-like `rmse_vol` no worse than 1.05×. → **Final: holds on the
+   corpora run** — 104/104, eSSVI in-band median 0.9757 / 0.9859 ≥ 0.94,
+   like-for-like rmse ratio 1.000. The 416-board control corpus was **not**
+   re-run this sprint; the claim extends only to the corpora actually run
+   (§1.11).
 5. **Fit CPU ≤ 1.3×** the current 0.50× baseline, load-normalised. Do not
    divide the fit ratio by the load ratio — see the predecessor plan's method
-   notes.
+   notes. → **Final: not evaluated** — no bit-identical timing control arm
+   existed, per §1.10's standing rule (4).
 6. **De-Am round-trip** reported in absolute vol points on every benchmark
-   board, not only as a spread-normalised ratio.
+   board, not only as a spread-normalised ratio. → **Final: PARTIAL** —
+   computed per board in diagnostics, but `universe_autofit` does not export
+   the column; a one-line addition, deliberately deferred (§1.11).
 7. **No served surface is silently degraded:** projection-touched,
    reverted-to-seed, and iteration-capped all reach the caller.
-8. Targeted tests pass; `hygiene` preset clean.
+   → **Final: MET.**
+8. Targeted tests pass; `hygiene` preset clean. → **Final: MET** at `47ba297`
+   (§1.11 fix cycle 2) — 634/648 pass, 13 skipped, the single remaining red is
+   the documented pre-existing `SurfaceDbPopulate` failure; hygiene half
+   verified at `4fe0ca7`, and the guard is source-local to a TU whose include
+   set was already hygiene-verified.
 
 ---
 
