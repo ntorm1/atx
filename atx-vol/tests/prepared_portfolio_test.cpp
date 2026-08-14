@@ -604,8 +604,11 @@ TEST(PreparedPortfolio, GroupedPriceEqualsIndependentOracleAndPinnedFingerprint)
   // rehashes everything). The axis is now explicit.
   //
   // Precedent for keying on config: the NAV determinism anchors are already per-preset,
-  // `american_test.cpp:2686` splits BoundaryHoist's ATM put on NDEBUG, and
-  // `multiname_pipeline_test.cpp:923` splits its E1 baselines the same way.
+  // `BoundaryHoist.PriceBitIdenticalToPrechange` (american_test.cpp) splits its ATM put
+  // on NDEBUG, and `MultinamePipeline.HeldLotWithoutSurfaceIsCountedNotHidden`
+  // (multiname_pipeline_test.cpp) splits its E1 baselines the same way. Cited by test
+  // name rather than line: a line number drifts on the next edit above it, silently, and
+  // nothing in the build catches a stale one.
   //
   // PROVENANCE — measured on THIS tree (branch feat/vol-v1-release, 56df9cc, 2026-08-02),
   // twice per preset, with the grouped==independent-oracle parity and worker-count
@@ -619,9 +622,11 @@ TEST(PreparedPortfolio, GroupedPriceEqualsIndependentOracleAndPinnedFingerprint)
   // which verified the SSE2 pin above (`17305682487856730537`) bit-identical
   // LTO-on vs LTO-off on `rel`, so it did not need re-measuring.
   //
-  // The FMA branch carries ONE value deliberately: `rel-avx2` is the only preset that
-  // injects /arch:AVX2 (CMakePresets.json:84-85) and it inherits `rel`, so __FMA__
-  // implies NDEBUG in the shipped preset set and a Debug+FMA cell is unreachable. If a
+  // The FMA branch carries ONE value deliberately: `rel-avx2` injects /arch:AVX2 via the
+  // CFLAGS/CXXFLAGS entries in its own `environment` block in CMakePresets.json, and no
+  // other preset injects it (grep the flag there to confirm — the flag is stable, the
+  // line it sits on is not). It inherits `rel`, so __FMA__ implies NDEBUG in the shipped
+  // preset set and a Debug+FMA cell is unreachable. If a
   // Debug+AVX2 preset is ever added, SPLIT this branch and capture it — do not let it
   // fall through to a Release-captured number.
   //
@@ -722,10 +727,12 @@ TEST(PreparedPortfolio, GroupedPriceEqualsIndependentOracleAndPinnedFingerprint)
   // Re-pinned both cells to the unset-run values above. A repo-wide grep confirms this
   // file holds the only kGoldenFingerprint* family in the tree; the other config-split
   // pins were checked and are not exposed to this class of change —
-  // session_test.cpp:1566 is eSSVI and tolerance-based (EXPECT_NEAR, not a hash),
-  // american_test.cpp:2686 (BoundaryHoist) pins on explicit (S,K,T,sigma,r,q) with no
-  // vol surface, and multiname_pipeline_test.cpp:923's NDEBUG dispersion baselines were
-  // independently confirmed green (17/17, `rel-avx2`) — no re-pin owed there.
+  // `Session.InterpModeReachesEval` (session_test.cpp) is eSSVI and tolerance-based
+  // (EXPECT_NEAR, not a hash), `BoundaryHoist.PriceBitIdenticalToPrechange`
+  // (american_test.cpp) pins on explicit (S,K,T,sigma,r,q) with no vol surface, and
+  // `MultinamePipeline.HeldLotWithoutSurfaceIsCountedNotHidden`'s NDEBUG dispersion
+  // baselines were independently confirmed green (17/17, `rel-avx2`) — no re-pin owed
+  // there.
   // PROCEDURE for the next time either of these two cells turns red: same as dev
   // above — with the pin left at its CURRENTLY STORED value, run under `=1` first. An
   // exact recovery of the stored golden proves the entire delta is one sanctioned seam
