@@ -578,6 +578,13 @@ TEST(VolUmbrella, DemotedSurfaceContainersAreNotNamedInPublicHeaders) {
 //     will catch it; only TestPathing's CWD flip and a hostile-directory run
 //     will.
 //   * A path assembled at run time from fragments, or read from a variable.
+//   * A path inside a RAW STRING literal, R"(...)". The extractor is raw-string
+//     AWARE, which is not the same as raw-string COVERED: it recognises them so
+//     an embedded quote cannot desync the scan, then skips the contents
+//     entirely. Skipping is right -- raw strings here hold doc-strings and
+//     embedded scripts, not path lookups -- but an absolute path written inside
+//     one is invisible to every rule below. Awareness read as coverage is
+//     exactly the gap R3-I2 was, so it is listed rather than assumed.
 //   * `std::filesystem::current_path()` OUTSIDE atx-vol/tests (checked within).
 //   * Non-.cpp/.hpp/.h/.cc files -- CMake, Python, scripts.
 //   * The ladder/macro needles are scoped to atx-vol/tests only, deliberately:
@@ -651,10 +658,20 @@ struct SourceLiteral {
 // Extract string literals from C++ source.
 //
 // Comment-, char-literal- and raw-string-aware, because this tree contains all
-// three (21 files with raw strings, 5 with a quote inside a char literal) and a
-// scanner that desyncs on one silently stops reporting -- the failure mode that
-// has bitten five instruments on this task. Every hazard has a positive control
-// in PathOriginDetectorCatchesWhatItClaimsTo.
+// three, and a scanner that desyncs on one silently stops reporting -- the
+// failure mode that has bitten six instruments on this task. Every hazard has a
+// positive control in PathOriginDetectorCatchesWhatItClaimsTo, and those
+// controls, not this comment, are the evidence the handling works.
+//
+// This comment used to carry a census ("21 files with raw strings"). It was
+// wrong: that came from a loose `R"` substring, which matches the tail of
+// SYNTHATTR, CZR and AFTER. Requiring a non-identifier character before it
+// still counted this file's own probe -- a string ENDING in R. Only a pattern
+// requiring the `R"delim(` form is right, and the true answer is one file.
+// Three patterns, two wrong, in the lane that spent five rounds on precisely
+// this. So the counts are gone rather than corrected: a hand-kept census beside
+// the code it describes is the same defect as a hand-kept tier count, and the
+// remedy 481377e established is to machine-check a number or not state it.
 [[nodiscard]] std::vector<SourceLiteral> extract_string_literals(const std::string& src) {
   std::vector<SourceLiteral> out;
   std::size_t line = 1;
@@ -688,12 +705,18 @@ struct SourceLiteral {
     if (at_line_start && c == '#') pp_line = true;
 
     if (c == '\'') {
-      // A C++ DIGIT SEPARATOR (1'000'000), not a char literal. 67 files here use
-      // them, and treating one as a quote makes the scanner swallow everything
-      // to the next apostrophe: it under-counted one file's lines by 192 and
-      // still passed every threshold, because a desynced scanner reports fewer
-      // findings rather than an error. No prefixed char literals (L'x', u8'x')
-      // exist in this tree, so a preceding alphanumeric always means separator.
+      // A C++ DIGIT SEPARATOR (1'000'000), not a char literal. They are common
+      // throughout this tree, and treating one as a quote makes the scanner
+      // swallow everything to the next apostrophe: it under-counted one file's
+      // lines by 192 and still passed every threshold, because a desynced
+      // scanner reports fewer findings rather than an error. No prefixed char
+      // literals (L'x', u8'x') exist here, so a preceding alphanumeric always
+      // means separator.
+      //
+      // This said "67 files" when written and the true figure was 68 before the
+      // task finished -- a hand-kept census rotting inside the task that wrote
+      // it. The digit-separator control in PathOriginDetectorCatchesWhatItClaimsTo
+      // is what actually holds; a count in a comment never did.
       if (i > 0 && std::isalnum(static_cast<unsigned char>(src[i - 1])) != 0) {
         adjacent = false;
         at_line_start = false;
