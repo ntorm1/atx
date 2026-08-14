@@ -2,10 +2,16 @@
 
 // Precompiled-header payload for fast cold / fresh-worktree builds.
 //
-// OPT-IN ONLY (CMake option ATX_USE_PCH, default OFF; turned ON by the `dev`
-// preset). The canonical `ninja` / CI preset keeps it OFF, so the strict build
-// still compiles every TU with its own includes and catches any missing/unused
-// include — the PCH never hides an include hygiene defect from CI.
+// OPT-IN ONLY as a CMake option (ATX_USE_PCH, default OFF for a bare `cmake`),
+// but every preset inheriting `_base` — `ninja`, `dev`, `rel`, `rel-avx2` —
+// turns it ON, so the builds you normally run DO use this PCH.
+//
+// The `hygiene` preset is the one that forces ATX_USE_PCH=OFF, compiling every
+// TU with its own includes so a missing/unused one is caught. Nothing runs it
+// for you: no CI builds this tree, so until a human runs
+// `cmake --preset hygiene && cmake --build --preset hygiene`, this PCH IS
+// hiding include defects. That is why its OFF-ness matters, and why the
+// hygiene build is a real gate rather than a formality.
 //
 // Contents are the HEAVY + STABLE headers shared by nearly every engine TU:
 // Eigen (by far the dominant parse cost) plus the atx-core vocabulary and the

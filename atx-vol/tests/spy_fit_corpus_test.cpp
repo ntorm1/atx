@@ -30,10 +30,18 @@ using atx::vol::testkit::kSpyFitFixtures;
 using atx::vol::testkit::load_spy_fit_fixture;
 using atx::vol::testkit::price_in_band;
 
-// True when ATX_VOL_SCOREBOARDS is set non-empty and not "0" — the nightly
-// full-sweep preset (Task 7). Read with _dupenv_s under MSVC/clang-cl: plain
-// std::getenv trips /WX (-Wdeprecated-declarations); same pattern as
-// support/bench_gate.hpp.
+// True when ATX_VOL_SCOREBOARDS is set non-empty and not "0".
+//
+// THERE IS NO `nightly` PRESET. One was proposed in a 2026-07-11 test-speedup
+// plan and never added: CMakePresets.json defines no such testPreset, so
+// nothing sets this variable for you. Set it by hand to widen the sweep:
+//     $env:ATX_VOL_SCOREBOARDS = "1"
+//     powershell scripts\atx-build.ps1 -Ctest -R SigmaInterpCorpus.RealBoard_WithinGates
+// (that test carries the `atx_vol_slow` label, so a plain `-L atx_vol_fast`
+// run never reaches it either way).
+//
+// Read with _dupenv_s under MSVC/clang-cl: plain std::getenv trips /WX
+// (-Wdeprecated-declarations); same pattern as support/bench_gate.hpp.
 [[nodiscard]] bool scoreboards_enabled() noexcept {
 #if defined(_MSC_VER)
   char *e = nullptr;
@@ -105,8 +113,9 @@ TEST(SigmaInterpCorpus, RealBoard_WithinGates) {
   // Every parity ladder is still built, interpolant-priced, and asserted; the
   // default subsamples the cold-AL reference comparison to every 2nd strike
   // (deterministic: indices 0, 2, 4, ...) for wall-time. The full-strike sweep
-  // (a strict superset, same tolerances) runs under ATX_VOL_SCOREBOARDS=1
-  // (nightly preset, Task 7).
+  // (a strict superset, same tolerances) runs under ATX_VOL_SCOREBOARDS=1, which
+  // nothing sets for you — see the scoreboards_enabled() note above for the
+  // invocation. This test always runs either way; the flag only widens it.
   const std::size_t stride = scoreboards_enabled() ? 1 : 2;
   for (const auto &fixture : kSpyFitFixtures) {
     auto board = load_spy_fit_fixture(fixture);
