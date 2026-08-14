@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from ..lake import DEFAULT_EXPORT_OBJECTS
-
+from ..lake import DEFAULT_EXPORT_OBJECTS as DEFAULT_EXPORT_OBJECTS
 
 # security_identifier_history.internal_cusip is internal-only matching support
 # (see the field_catalog description seeded in migration 0079) and must never

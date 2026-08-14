@@ -1,0 +1,12 @@
+{
+  "archive": "C:\\Users\\natha\\Downloads\\tbltickerhistory3_10y.zip",
+  "chunks_scanned": 32,
+  "distinct_security_ids": 24959,
+  "distinct_symbols": 26240,
+  "elapsed_seconds": 230.9,
+  "latest_date": "2026-06-15",
+  "latest_date_security_ids": 12218,
+  "latest_date_symbols": 12282,
+  "rows_scanned": 31598499,
+  "status": "complete"
+}

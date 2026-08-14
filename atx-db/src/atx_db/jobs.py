@@ -33,7 +33,15 @@ from .fact_disagreement import FactDisagreementDataset, FactDisagreementOptions
 from .filer_alias import FilerAliasDataset, FilerAliasOptions
 from .finra import FinraShortInterestDataset, FinraShortInterestOptions, parse_date
 from .fundamental_ratios import FundamentalRatiosDataset, FundamentalRatiosOptions
+from .fundamental_reconciliation import (
+    FundamentalReconciliationDataset,
+    FundamentalReconciliationRefreshOptions,
+)
 from .metric_engine import FundamentalGrowthDataset, FundamentalGrowthOptions
+from .provider_coverage import (
+    ProviderCoverageDataset,
+    ProviderCoverageOptions,
+)
 from .standardization import FundamentalStandardizationDataset, FundamentalStandardizationOptions
 from .fundamental_xbrl_metrics import FundamentalXbrlMetricDataset, FundamentalXbrlMetricOptions
 from .segments import SegmentDataset, SegmentOptions
@@ -393,9 +401,7 @@ def _press_release_options(params: dict[str, Any]) -> PressReleaseOptions:
         source=params.get("source") or default.source,
         replace_source_file=_bool_param(params.get("replace_source_file"), default.replace_source_file),
         min_confidence=float(params.get("min_confidence", default.min_confidence)),
-        reconciliation_tolerance=float(
-            params.get("reconciliation_tolerance", default.reconciliation_tolerance)
-        ),
+        reconciliation_tolerance=float(params.get("reconciliation_tolerance", default.reconciliation_tolerance)),
         run_id=params.get("run_id") or default.run_id,
     )
 
@@ -507,12 +513,10 @@ def _identifier_decision_options(params: dict[str, Any]) -> IdentifierResolution
         min_accept_confidence=float(params.get("min_accept_confidence", default.min_accept_confidence)),
         min_review_confidence=float(params.get("min_review_confidence", default.min_review_confidence)),
         accept_candidate_statuses=(
-            _lower_tuple_or_none(params.get("accept_candidate_statuses"))
-            or default.accept_candidate_statuses
+            _lower_tuple_or_none(params.get("accept_candidate_statuses")) or default.accept_candidate_statuses
         ),
         review_candidate_statuses=(
-            _lower_tuple_or_none(params.get("review_candidate_statuses"))
-            or default.review_candidate_statuses
+            _lower_tuple_or_none(params.get("review_candidate_statuses")) or default.review_candidate_statuses
         ),
         apply_accepted=_bool_param(params.get("apply_accepted"), default.apply_accepted),
         decision_method=params.get("decision_method") or default.decision_method,
@@ -828,9 +832,7 @@ def _segment_options(params: dict[str, Any]) -> SegmentOptions:
     return SegmentOptions(
         source=params.get("source") or default.source,
         coverage_source=params.get("coverage_source") or default.coverage_source,
-        reconciliation_tolerance=float(
-            params.get("reconciliation_tolerance", default.reconciliation_tolerance)
-        ),
+        reconciliation_tolerance=float(params.get("reconciliation_tolerance", default.reconciliation_tolerance)),
         run_id=params.get("run_id") or default.run_id,
     )
 
@@ -850,6 +852,17 @@ def _fundamental_ratios_options(params: dict[str, Any]) -> FundamentalRatiosOpti
         basis=params.get("basis") or default.basis,
         symbols=_tuple_or_none(params.get("symbols")) or default.symbols,
         run_id=params.get("run_id") or default.run_id,
+    )
+
+
+def _provider_coverage_options(params: dict[str, Any]) -> ProviderCoverageOptions:
+    observed_at = params.get("observed_at")
+    if isinstance(observed_at, str):
+        observed_at = dt.datetime.fromisoformat(observed_at)
+    return ProviderCoverageOptions(
+        dataset_ids=_string_tuple_or_none(params.get("dataset_ids") or params.get("datasets")),
+        observed_at=observed_at,
+        run_id=params.get("run_id"),
     )
 
 
@@ -930,6 +943,16 @@ def _fundamental_standardization_options(params: dict[str, Any]) -> FundamentalS
     default = FundamentalStandardizationOptions()
     return FundamentalStandardizationOptions(
         source=params.get("source") or default.source,
+        symbols=_tuple_or_none(params.get("symbols")) or default.symbols,
+        run_id=params.get("run_id") or default.run_id,
+    )
+
+
+def _fundamental_reconciliation_options(
+    params: dict[str, Any],
+) -> FundamentalReconciliationRefreshOptions:
+    default = FundamentalReconciliationRefreshOptions()
+    return FundamentalReconciliationRefreshOptions(
         symbols=_tuple_or_none(params.get("symbols")) or default.symbols,
         run_id=params.get("run_id") or default.run_id,
     )
@@ -1096,10 +1119,15 @@ DATASET_REGISTRY: dict[str, tuple[type[Dataset], OptionFactory]] = {
     EquityDailyFeatureDataset.dataset_id: (EquityDailyFeatureDataset, _features_options),
     FundamentalFeatureDataset.dataset_id: (FundamentalFeatureDataset, _fundamental_features_options),
     FundamentalRatiosDataset.dataset_id: (FundamentalRatiosDataset, _fundamental_ratios_options),
+    ProviderCoverageDataset.dataset_id: (ProviderCoverageDataset, _provider_coverage_options),
     FundamentalGrowthDataset.dataset_id: (FundamentalGrowthDataset, _fundamental_growth_options),
     FundamentalStandardizationDataset.dataset_id: (
         FundamentalStandardizationDataset,
         _fundamental_standardization_options,
+    ),
+    FundamentalReconciliationDataset.dataset_id: (
+        FundamentalReconciliationDataset,
+        _fundamental_reconciliation_options,
     ),
     FundamentalXbrlMetricDataset.dataset_id: (FundamentalXbrlMetricDataset, _fundamental_xbrl_metric_options),
     SegmentDataset.dataset_id: (SegmentDataset, _segment_options),
@@ -1117,8 +1145,14 @@ DATASET_REGISTRY: dict[str, tuple[type[Dataset], OptionFactory]] = {
         ThirteenFConcentrationMetricsDataset,
         _thirteenf_concentration_metrics_options,
     ),
-    CorporateActionDividendMetricsDataset.dataset_id: (CorporateActionDividendMetricsDataset, _corporate_action_dividend_metrics_options),
-    CorporateActionSplitMetricsDataset.dataset_id: (CorporateActionSplitMetricsDataset, _corporate_action_split_metrics_options),
+    CorporateActionDividendMetricsDataset.dataset_id: (
+        CorporateActionDividendMetricsDataset,
+        _corporate_action_dividend_metrics_options,
+    ),
+    CorporateActionSplitMetricsDataset.dataset_id: (
+        CorporateActionSplitMetricsDataset,
+        _corporate_action_split_metrics_options,
+    ),
     CorporateActionFactorReconciliationDataset.dataset_id: (
         CorporateActionFactorReconciliationDataset,
         _corporate_action_factor_reconciliation_options,
@@ -1222,9 +1256,19 @@ DATASET_DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "filer_13f_cik_alias": ("sec_13f",),
     "form144_intent": ("sec_insider_ownership",),
     "form144_to_form4_link": ("form144_intent", "sec_insider_ownership"),
-    "fundamental_ratios": ("fundamental_xbrl_metric", "sec_company_facts"),
+    "fundamental_ratios": ("fundamental_standardized",),
+    "provider_schema_coverage": (
+        "fundamental_ratios",
+        "fundamental_reconciliation",
+        "fundamental_standardized",
+        "tbltickerhistory_daily",
+    ),
     "fundamental_growth": ("fundamental_xbrl_metric", "sec_company_facts"),
-    "fundamental_standardized": ("fundamental_xbrl_metric",),
+    "fundamental_standardized": ("fundamental_xbrl_metric", "sec_company_facts"),
+    "fundamental_reconciliation": (
+        "fundamental_standardized",
+        "xbrl_filing_contexts",
+    ),
     "fundamental_xbrl_metric": ("xbrl_filing_contexts",),
     "segments": ("fundamental_xbrl_metric", "xbrl_filing_contexts"),
     "footnotes": ("xbrl_filing_contexts",),
@@ -1397,11 +1441,7 @@ def _merge_orchestrator_job_params(
             continue
         current = merged[key]
         if key in _MERGED_SEQUENCE_PARAM_KEYS:
-            merged[key] = (
-                None
-                if current is None or value is None
-                else _merge_sequence_params(current, value)
-            )
+            merged[key] = None if current is None or value is None else _merge_sequence_params(current, value)
         elif isinstance(current, bool) and isinstance(value, bool):
             merged[key] = current or value
         elif current in (None, "") and value not in (None, ""):
@@ -1820,7 +1860,7 @@ class JobManager:
             job_name="fundamental_standardized",
             dataset_id="fundamental_standardized",
             params={"symbols": symbols},
-            dependencies=["fundamental_xbrl_metric"],
+            dependencies=["sec_company_facts", "fundamental_xbrl_metric"],
             **retry_policy,
         )
         self.register_job(
@@ -1844,7 +1884,25 @@ class JobManager:
         self.register_job(
             job_name="fundamental_ratios",
             dataset_id="fundamental_ratios",
-            dependencies=["sec_company_facts", "fundamental_xbrl_metric"],
+            dependencies=["fundamental_standardized"],
+            **retry_policy,
+        )
+        self.register_job(
+            job_name="fundamental_reconciliation",
+            dataset_id="fundamental_reconciliation",
+            params={"symbols": symbols},
+            dependencies=["fundamental_standardized", "xbrl_filing_contexts"],
+            **retry_policy,
+        )
+        self.register_job(
+            job_name="provider_schema_coverage",
+            dataset_id="provider_schema_coverage",
+            dependencies=[
+                "fundamental_ratios",
+                "fundamental_reconciliation",
+                "fundamental_standardized",
+                "daily_bars",
+            ],
             **retry_policy,
         )
         self.register_job(
@@ -1983,9 +2041,7 @@ class JobManager:
         )
         self.register_job(job_name="est_detail", dataset_id="est_detail", **retry_policy)
         self.register_job(job_name="est_guidance", dataset_id="est_guidance", **retry_policy)
-        self.register_job(
-            job_name="est_recommendation", dataset_id="est_recommendation", **retry_policy
-        )
+        self.register_job(job_name="est_recommendation", dataset_id="est_recommendation", **retry_policy)
         self.register_job(
             job_name="est_recommendation_summary",
             dataset_id="est_recommendation_summary",
@@ -2037,11 +2093,7 @@ class JobManager:
             params,
             job_name=job_name,
             max_retries=stored_max_retries if max_retries is None else max_retries,
-            retry_delay_seconds=(
-                stored_retry_delay_seconds
-                if retry_delay_seconds is None
-                else retry_delay_seconds
-            ),
+            retry_delay_seconds=(stored_retry_delay_seconds if retry_delay_seconds is None else retry_delay_seconds),
         )
 
     def run_dataset(
@@ -2244,10 +2296,7 @@ class JobManager:
         dataset_ids = [str(row[0]) for row in rows]
         missing = sorted(dataset_id for dataset_id in dataset_ids if dataset_id not in DATASET_REGISTRY)
         if missing:
-            raise KeyError(
-                "Orchestrator run references unknown dataset_id(s): "
-                + ", ".join(missing)
-            )
+            raise KeyError("Orchestrator run references unknown dataset_id(s): " + ", ".join(missing))
         return {dataset_id: DATASET_REGISTRY[dataset_id] for dataset_id in dataset_ids}
 
     def _orchestrator_params_for_run(self, run_id: str) -> dict[str, Any]:
@@ -2331,10 +2380,7 @@ class JobManager:
             ORDER BY created_at, job_name
             """
         ).fetchall()
-        dependencies = {
-            job_name: normalize_dependencies(dependencies_json)
-            for job_name, dependencies_json in rows
-        }
+        dependencies = {job_name: normalize_dependencies(dependencies_json) for job_name, dependencies_json in rows}
         missing = sorted(
             {
                 dependency

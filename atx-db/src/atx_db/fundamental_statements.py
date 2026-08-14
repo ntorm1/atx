@@ -7,7 +7,6 @@ import pandas as pd
 from .connection import DuckDBStore
 from .industry_templates import refresh_entity_industry_templates
 
-
 SOURCE_NAME = "SEC companyfacts"
 
 
@@ -371,6 +370,8 @@ FUNDAMENTAL_STATEMENT_MAP_ROWS: tuple[FundamentalStatementMapRow, ...] = (
     FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest","balance_sheet","equity","equity_incl_minority","Equity incl. non-controlling","instant","credit","monetary",1.0,10,False,True,"Total equity including non-controlling interest.",1222,"ALL",False,None),
     # 1223 Total Liab + Equity
     FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","LiabilitiesAndStockholdersEquity","balance_sheet","liabilities","liab_and_equity","Total liabilities and equity","instant","credit","monetary",1.0,10,False,True,"Total liabilities and stockholders equity; must equal total assets.",1223,"ALL",False,None),
+    # 1224 Temporary / mezzanine equity
+    FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","TemporaryEquityCarryingAmountIncludingPortionAttributableToNoncontrollingInterests","balance_sheet","equity","temporary_equity","Temporary equity including noncontrolling interests","instant","credit","monetary",1.0,10,False,True,"Optional DQC 0004 component between liabilities and permanent equity, including redeemable or mezzanine interests.",1224,"ALL",False,None),
     # CommonStocksIncludingAdditionalPaidInCapital — original row 4, item_id 1216
     FundamentalStatementMapRow(SOURCE_NAME,"us-gaap","CommonStocksIncludingAdditionalPaidInCapital","balance_sheet","equity","common_stock_and_apic","Common stock and additional paid-in capital","instant","credit","monetary",1.0,20,True,True,"Equity capital component available from SEC companyfacts.",1216,"ALL",False,None),
 
@@ -778,6 +779,7 @@ def _insert_derived_reit_statement_points(store: DuckDBStore) -> int:
             statement_type,
             statement_section,
             canonical_metric,
+            item_id,
             canonical_label,
             taxonomy,
             concept,
@@ -1110,6 +1112,12 @@ def _insert_derived_reit_statement_points(store: DuckDBStore) -> int:
             statement_type,
             statement_section,
             canonical_metric,
+            CASE canonical_metric
+                WHEN 'ffo' THEN 1701
+                WHEN 'ffo_per_share' THEN 1702
+                WHEN 'affo' THEN 1703
+                WHEN 'affo_per_share' THEN 1704
+            END AS item_id,
             canonical_label,
             taxonomy,
             concept,
@@ -1204,6 +1212,7 @@ def refresh_fundamental_statement_points(
                 statement_type,
                 statement_section,
                 canonical_metric,
+                item_id,
                 canonical_label,
                 taxonomy,
                 concept,
@@ -1286,6 +1295,7 @@ def refresh_fundamental_statement_points(
                     m.statement_type,
                     m.statement_section,
                     m.canonical_metric,
+                    m.item_id,
                     m.canonical_label,
                     r.taxonomy,
                     r.concept,
@@ -1380,6 +1390,7 @@ def refresh_fundamental_statement_points(
                 statement_type,
                 statement_section,
                 canonical_metric,
+                item_id,
                 canonical_label,
                 taxonomy,
                 concept,
@@ -1885,8 +1896,8 @@ def refresh_fundamental_ttm_points(
                     row_number() OVER (
                         PARTITION BY a.anchor_statement_point_id, q.period_start, q.period_end
                         ORDER BY
-                            q.quarter_source_priority,
                             q.availability_ts DESC,
+                            q.quarter_source_priority,
                             q.as_of_date DESC,
                             coalesce(q.source_loaded_at, TIMESTAMP '1970-01-01') DESC,
                             q.revision_sequence DESC,
@@ -1947,8 +1958,11 @@ def refresh_fundamental_ttm_points(
                     any_value(unit_type) AS unit_type,
                     min(period_start) AS ttm_start_date,
                     max(period_end) AS ttm_end_date,
-                    max(as_of_date) AS as_of_date,
-                    max(availability_ts) AS available_at,
+                    greatest(max(as_of_date), any_value(anchor_as_of_date)) AS as_of_date,
+                    greatest(
+                        max(availability_ts),
+                        any_value(anchor_available_at)
+                    ) AS available_at,
                     any_value(anchor_fiscal_year) AS fiscal_year,
                     any_value(anchor_fiscal_period) AS fiscal_period,
                     any_value(anchor_form) AS form,

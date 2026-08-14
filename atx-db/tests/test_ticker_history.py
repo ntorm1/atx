@@ -13,10 +13,14 @@ from __future__ import annotations
 import datetime as dt
 
 import pandas as pd
+import pytest
 
 from atx_db.ticker_history import (
+    TickerHistoryDataset,
     TickerHistoryOptions,
+    _apply_security_ids,
     _canonical_bars,
+    _normalize_chunk,
     _security_links,
     disambiguate_vendor_collisions,
 )
@@ -46,6 +50,7 @@ def _normalized_fixture() -> pd.DataFrame:
             "close": [10.5, 5.5],
             "close_pr": [10.5, 5.5],
             "volume": pd.array([1000, 2000], dtype="Int64"),
+            "shares": pd.array([1000, 2000], dtype="Int64"),
             "return_factor": [1.0, 1.0],
         }
     )
@@ -61,6 +66,98 @@ def test_canonical_bars_handles_blank_ticker_rows() -> None:
     assert "AAPL" in symbols
     # The blank-ticker row maps to an empty symbol, not a crash.
     assert "" in symbols
+    aapl = bars.loc[bars["symbol"] == "AAPL"].iloc[0]
+    assert aapl["shares_outstanding"] == 1000
+    assert aapl["market_cap_usd"] == pytest.approx(10_500.0)
+
+
+def test_price_projection_normalization_does_not_expand_vendor_width() -> None:
+    raw = pd.DataFrame(
+        {
+            "tradingDate": ["2012-04-02"],
+            "securityID": ["101"],
+            "ticker_tk": ["AAPL"],
+            "todayTicker": ["AAPL"],
+            "open": ["10"],
+            "high": ["11"],
+            "low": ["9"],
+            "close": ["10.5"],
+            "closePr": ["10.5"],
+            "volume": ["1000"],
+            "shares": ["1000000"],
+            "returnFactor": ["1"],
+        }
+    )
+
+    normalized = _normalize_chunk(
+        raw, TickerHistoryOptions(symbols=None, price_projection_only=True)
+    )
+
+    assert set(normalized.columns) == {
+        "trading_date",
+        "vendor_security_id",
+        "ticker_tk",
+        "today_ticker",
+        "open",
+        "high",
+        "low",
+        "close",
+        "close_pr",
+        "volume",
+        "shares",
+        "return_factor",
+        "source",
+        "run_id",
+        "_symbol_for_mapping",
+    }
+
+
+def test_security_id_resolution_vectorizes_known_and_vendor_fallbacks(
+    monkeypatch, tmp_store
+) -> None:
+    frame = pd.DataFrame(
+        {
+            "_symbol_for_mapping": ["AAPL", "NEW"],
+            "vendor_security_id": pd.array([101, 202], dtype="Int64"),
+        }
+    )
+    monkeypatch.setattr(
+        "atx_db.ticker_history.security_ids_for_symbols",
+        lambda _store, _symbols: {"AAPL": "SEC-AAPL"},
+    )
+
+    resolved = _apply_security_ids(
+        tmp_store, frame, TickerHistoryOptions(symbols=None)
+    )
+
+    assert resolved["security_id"].tolist() == [
+        "SEC-AAPL",
+        "TBLTICKERHISTORY-202",
+    ]
+
+
+def test_price_projection_load_is_canonical_only(tmp_store) -> None:
+    options = TickerHistoryOptions(
+        symbols=None,
+        price_projection_only=True,
+        run_id="canonical-only-test",
+    )
+    TickerHistoryDataset()._load_chunk(
+        tmp_store, _normalized_fixture().iloc[[0]].copy(), options
+    )
+
+    assert tmp_store.con.execute("SELECT count(*) FROM equity_daily_bars").fetchone()[0] == 1
+    assert tmp_store.con.execute(
+        """
+        SELECT count(*) FROM information_schema.tables
+        WHERE table_name='tbltickerhistory_daily'
+        """
+    ).fetchone()[0] == 0
+
+
+def test_ticker_history_resume_bounds_are_validated() -> None:
+    with pytest.raises(ValueError, match="max_chunks must exceed skip_chunks"):
+        TickerHistoryOptions(skip_chunks=20, max_chunks=20)
 
 
 def test_security_links_handles_blank_ticker_rows() -> None:

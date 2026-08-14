@@ -15,7 +15,14 @@ def _seed_security(store, security_id: str, symbol: str | None = None) -> None:
     )
 
 
-def _seed_sic_classification(store, security_id: str, sic_code: str) -> None:
+def _seed_sic_classification(
+    store,
+    security_id: str,
+    sic_code: str,
+    *,
+    valid_from: dt.date = dt.date(2020, 1, 1),
+    available_at: dt.datetime | None = None,
+) -> None:
     taxonomy_row = store.con.execute(
         "SELECT taxonomy_id FROM taxonomy WHERE code = 'SIC'"
     ).fetchone()
@@ -49,9 +56,19 @@ def _seed_sic_classification(store, security_id: str, sic_code: str) -> None:
             classification_id, security_id, taxonomy_id, node_id, node_code,
             is_primary, valid_from, valid_to, as_of_date, available_at, source_loaded_at, run_id, source
         )
-        VALUES (?, ?, ?, ?, ?, true, DATE '2020-01-01', NULL, DATE '2020-01-01', now(), now(), 'test', 'test')
+        VALUES (?, ?, ?, ?, ?, true, ?, NULL, ?, ?, ?, 'test', 'test')
         """,
-        [f"classification_{security_id}_{sic_code}", security_id, taxonomy_id, node_id, sic_code],
+        [
+            f"classification_{security_id}_{sic_code}",
+            security_id,
+            taxonomy_id,
+            node_id,
+            sic_code,
+            valid_from,
+            valid_from,
+            available_at or dt.datetime.now(),
+            available_at or dt.datetime.now(),
+        ],
     )
 
 
@@ -152,6 +169,93 @@ def test_refresh_entity_industry_templates_routes_six_profiles(tmp_store):
         "sec_utility": "UT",
         "sec_reit": "RT",
     }
+
+
+def test_industry_template_routes_retain_classification_revisions(tmp_store):
+    from atx_db.industry_templates import refresh_entity_industry_templates
+
+    security_id = "sec_route_revision"
+    _seed_security(tmp_store, security_id)
+    _seed_sic_classification(
+        tmp_store,
+        security_id,
+        "6022",
+        available_at=dt.datetime(2020, 1, 2, 12),
+    )
+    _seed_sic_classification(
+        tmp_store,
+        security_id,
+        "6311",
+        available_at=dt.datetime(2021, 1, 2, 12),
+    )
+
+    assert refresh_entity_industry_templates(tmp_store) == 2
+    rows = tmp_store.con.execute(
+        """
+        SELECT industry_template,revision_sequence,revision_count,
+               previous_industry_template,update_type,knowledge_valid_to,is_latest_revision
+        FROM entity_industry_template
+        WHERE security_id=?
+        ORDER BY available_at
+        """,
+        [security_id],
+    ).fetchall()
+    assert rows == [
+        ("BK", 1, 2, None, "original", dt.datetime(2021, 1, 2, 12), False),
+        ("IS", 2, 2, "BK", "restated", None, True),
+    ]
+
+
+def test_industry_template_backcasts_first_known_sic_to_fundamental_history(tmp_store):
+    from atx_db.industry_templates import refresh_entity_industry_templates
+
+    security_id = "sec_historical_bank"
+    _seed_security(tmp_store, security_id, "HBANK")
+    _seed_sic_classification(
+        tmp_store,
+        security_id,
+        "6022",
+        valid_from=dt.date(2024, 1, 1),
+        available_at=dt.datetime(2024, 1, 2, 12),
+    )
+    _insert_company_fact(
+        tmp_store,
+        security_id=security_id,
+        cik="0000006022",
+        concept="Assets",
+        period_start=None,
+        period_end=dt.date(2010, 12, 31),
+        value=100.0,
+        accession_number="0000006022-11-000001",
+        filed_date=dt.date(2011, 2, 15),
+    )
+
+    assert refresh_entity_industry_templates(tmp_store) == 2
+    routes = tmp_store.con.execute(
+        """
+        SELECT industry_template,valid_from,valid_to,available_at,match_reason
+        FROM entity_industry_template
+        WHERE security_id=?
+        ORDER BY valid_from
+        """,
+        [security_id],
+    ).fetchall()
+    assert routes == [
+        (
+            "BK",
+            dt.date(2010, 12, 31),
+            dt.date(2024, 1, 1),
+            dt.datetime(2024, 1, 2, 12),
+            "inferred_backcast_sic_6000_6199_bank",
+        ),
+        (
+            "BK",
+            dt.date(2024, 1, 1),
+            None,
+            dt.datetime(2024, 1, 2, 12),
+            "sic_6000_6199_bank",
+        ),
+    ]
 
 
 def test_statement_refresh_uses_materialized_routes_for_utility_and_broker(tmp_store):
@@ -366,14 +470,14 @@ def test_template_coverage_and_quality_gates(tmp_store):
     assert missing["industry_template_required_item_coverage"].observed_value == 1.0
 
 
-def test_migrations_0110_0113_catalog_industry_template_tables(tmp_store):
+def test_migrations_catalog_industry_template_tables_and_dynamic_view(tmp_store):
     versions = {
         row[0]
         for row in tmp_store.con.execute(
             "SELECT CAST(version AS INTEGER) FROM schema_migrations WHERE version ~ '^[0-9]+$'"
         ).fetchall()
     }
-    assert {110, 111, 112, 113} <= versions
+    assert {110, 111, 112, 113, 272} <= versions
 
     tables = {
         row[0]
@@ -413,6 +517,23 @@ def test_migrations_0110_0113_catalog_industry_template_tables(tmp_store):
         ).fetchall()
     }
     assert cataloged == tables
+    assert tmp_store.con.execute(
+        "SELECT count(*) FROM duckdb_views() WHERE view_name='v_fundamental_industry_standardized'"
+    ).fetchone()[0] == 1
+    route_columns = {
+        row[0]
+        for row in tmp_store.con.execute(
+            "SELECT column_name FROM duckdb_columns() WHERE table_name='entity_industry_template'"
+        ).fetchall()
+    }
+    assert {
+        "route_revision_group_id",
+        "revision_sequence",
+        "revision_count",
+        "previous_industry_template",
+        "update_type",
+        "knowledge_valid_to",
+    } <= route_columns
 
 
 def test_formula_registry_loads_industry_family_rows(tmp_store):

@@ -57,7 +57,7 @@ sets](https://www.sec.gov/data-research/sec-markets-data/form-13f-data-sets). It
 | Signals per year | 62 | 61.78 |
 | Signals / trades | ~1,700 over 11 years | 556 signals; 123 price-complete 47-day trades |
 | Position leaves portfolio | 71% within 47 trading days | 16.61% at next disclosed filing |
-| Net return per trade | 0.38% | -1.23% at 47 trading days |
+| Net return per trade | 0.38% | -2.60% at 47 trading days |
 | Sharpe ratio | 3.1 | Not identifiable without the post's portfolio sizing and return-series construction |
 | Average holding period | 9.4 days | Not reproducible from quarterly 13F disclosures; fixed horizons are used |
 
@@ -72,14 +72,14 @@ alone.
 
 | Trading days | Complete trades | Mean net short return | Median | Short win rate |
 |---:|---:|---:|---:|---:|
-| 5 | 128 | 0.30% | 0.83% | 53.12% |
-| 10 | 128 | 0.74% | 1.19% | 54.69% |
-| 21 | 127 | -0.03% | -0.07% | 49.61% |
-| 47 | 123 | -1.23% | -0.01% | 49.59% |
+| 5 | 128 | -0.87% | 0.46% | 53.12% |
+| 10 | 128 | -0.20% | 0.55% | 53.12% |
+| 21 | 127 | -0.72% | -0.22% | 49.61% |
+| 47 | 123 | -2.60% | -0.06% | 48.78% |
 
 ## Stress-regime split
 
-- Quiet: 123 completed trades, -1.23% mean net short return.
+- Quiet: 123 completed trades, -2.60% mean net short return.
 
 ## Amendment-type audit
 
@@ -89,8 +89,8 @@ events even though both use `13F-HR/A`.
 
 | Cohort | Selected signals | Complete 47d trades | Mean net short | Median | Win rate |
 |---|---:|---:|---:|---:|---:|
-| MIXED | 393 | 100 | -2.30% | -0.88% | 48.00% |
-| RESTATEMENT_ONLY | 163 | 23 | 3.41% | 2.00% | 56.52% |
+| MIXED | 393 | 100 | -3.87% | -0.50% | 47.00% |
+| RESTATEMENT_ONLY | 163 | 23 | 2.93% | 2.00% | 56.52% |
 
 The restatement-only result is exploratory: it was examined after the pooled claim failed and has
 only 23 complete trades. It is a hypothesis for a separately pre-registered test, not evidence for

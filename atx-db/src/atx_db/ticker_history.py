@@ -148,10 +148,19 @@ class TickerHistoryOptions:
     end_date: dt.date | None = None
     chunk_size: int = 200_000
     max_chunks: int | None = None
+    skip_chunks: int = 0
     price_projection_only: bool = False
     source: str = SOURCE_NAME
     compute_source_hash: bool = False
     run_id: str | None = field(default=None, compare=False)
+
+    def __post_init__(self) -> None:
+        if self.chunk_size < 1:
+            raise ValueError("chunk_size must be positive")
+        if self.skip_chunks < 0:
+            raise ValueError("skip_chunks cannot be negative")
+        if self.max_chunks is not None and self.max_chunks <= self.skip_chunks:
+            raise ValueError("max_chunks must exceed skip_chunks")
 
 
 @dataclass(frozen=True)
@@ -267,15 +276,30 @@ def _iter_raw_chunks(options: TickerHistoryOptions) -> Iterator[pd.DataFrame]:
         if len(names) != 1:
             raise RuntimeError(f"Expected one tbltickerhistory member, found {len(names)}")
         with archive.open(names[0]) as handle:
+            header = handle.readline().decode("utf-8-sig").rstrip("\r\n").split("\t")
+            for chunk_index in range(1, options.skip_chunks + 1):
+                rows_skipped = 0
+                while rows_skipped < options.chunk_size:
+                    if not handle.readline():
+                        return
+                    rows_skipped += 1
+                if chunk_index == 1 or chunk_index % 10 == 0 or chunk_index == options.skip_chunks:
+                    LOGGER.info(
+                        "skipped ticker-history chunk %s of %s while resuming",
+                        chunk_index,
+                        options.skip_chunks,
+                    )
             reader = pd.read_csv(
                 handle,
                 sep="\t",
                 dtype=str,
                 keep_default_na=False,
                 chunksize=options.chunk_size,
+                header=None,
+                names=header,
                 usecols=PRICE_PROJECTION_COLUMNS if options.price_projection_only else None,
             )
-            for index, chunk in enumerate(reader, start=1):
+            for index, chunk in enumerate(reader, start=options.skip_chunks + 1):
                 if options.max_chunks is not None and index > options.max_chunks:
                     break
                 yield chunk
@@ -299,13 +323,8 @@ def _normalize_chunk(chunk: pd.DataFrame, options: TickerHistoryOptions) -> pd.D
     missing = [column for column in required_columns if column not in chunk.columns]
     if missing:
         raise ValueError(f"tbltickerhistory missing expected columns: {missing}")
-    if options.price_projection_only:
-        chunk = chunk.copy()
-        for column in SOURCE_COLUMNS:
-            if column not in chunk.columns:
-                chunk[column] = ""
-
-    frame = chunk[SOURCE_COLUMNS].rename(columns=RENAMES)
+    selected_columns = PRICE_PROJECTION_COLUMNS if options.price_projection_only else SOURCE_COLUMNS
+    frame = chunk[list(selected_columns)].rename(columns=RENAMES)
     frame["source"] = options.source
     frame["run_id"] = options.run_id
     frame["trading_date"] = pd.to_datetime(frame["trading_date"], errors="coerce").dt.date
@@ -316,7 +335,8 @@ def _normalize_chunk(chunk: pd.DataFrame, options: TickerHistoryOptions) -> pd.D
         if column not in TEXT_COLUMNS and column not in DATE_COLUMNS and column not in INT_COLUMNS:
             frame[column] = pd.to_numeric(frame[column].replace("", pd.NA), errors="coerce")
     for column in ("ticker_tk", "today_ticker", "earn_flag", "gics"):
-        frame[column] = frame[column].replace("", pd.NA).astype("string")
+        if column in frame.columns:
+            frame[column] = frame[column].replace("", pd.NA).astype("string")
 
     symbol_for_mapping = frame["today_ticker"].fillna(frame["ticker_tk"]).fillna("").map(symbol_key)
     frame["_symbol_for_mapping"] = symbol_for_mapping
@@ -326,21 +346,32 @@ def _normalize_chunk(chunk: pd.DataFrame, options: TickerHistoryOptions) -> pd.D
 def _apply_security_ids(store: DuckDBStore, frame: pd.DataFrame, options: TickerHistoryOptions) -> pd.DataFrame:
     symbols = sorted(set(frame["_symbol_for_mapping"].dropna().tolist()))
     sec_map = security_ids_for_symbols(store, symbols)
-
-    def resolve(row: pd.Series) -> str:
-        symbol = row["_symbol_for_mapping"]
-        if symbol in sec_map:
-            return sec_map[symbol]
-        value = row["vendor_security_id"]
-        return vendor_security_id("tbltickerhistory", _vendor_identifier_value(symbol, value))
-
-    frame["security_id"] = frame.apply(resolve, axis=1)
+    resolved = frame["_symbol_for_mapping"].map(sec_map).astype("object")
+    missing = resolved.isna()
+    if missing.any():
+        unresolved = frame.loc[
+            missing, ["_symbol_for_mapping", "vendor_security_id"]
+        ]
+        resolved.loc[missing] = [
+            vendor_security_id(
+                "tbltickerhistory", _vendor_identifier_value(symbol, value)
+            )
+            for symbol, value in zip(
+                unresolved["_symbol_for_mapping"],
+                unresolved["vendor_security_id"],
+                strict=True,
+            )
+        ]
+    frame["security_id"] = resolved
     return frame.drop(columns=["_symbol_for_mapping"])
 
 
 def _canonical_bars(frame: pd.DataFrame, options: TickerHistoryOptions) -> pd.DataFrame:
     if frame.empty:
         return pd.DataFrame()
+    shares = frame.get(
+        "shares", pd.Series(pd.NA, index=frame.index, dtype="Int64")
+    )
     bars = pd.DataFrame(
         {
             "source": options.source,
@@ -360,6 +391,8 @@ def _canonical_bars(frame: pd.DataFrame, options: TickerHistoryOptions) -> pd.Da
             "is_adjusted": False,
             "available_at": pd.to_datetime(frame["trading_date"]) + pd.Timedelta(hours=22),
             "run_id": options.run_id,
+            "shares_outstanding": shares,
+            "market_cap_usd": shares * frame["close"],
         }
     )
     bars = bars.dropna(subset=["security_id", "symbol", "trade_date"]).reset_index(drop=True)
@@ -688,6 +721,7 @@ class TickerHistoryDataset(Dataset):
             end_date=options.end_date,
             chunk_size=options.chunk_size,
             max_chunks=options.max_chunks,
+            skip_chunks=options.skip_chunks,
             price_projection_only=options.price_projection_only,
             source=options.source,
             compute_source_hash=options.compute_source_hash,
@@ -699,12 +733,17 @@ class TickerHistoryDataset(Dataset):
             source_url=str(effective_options.zip_path),
             cache_path=effective_options.zip_path,
             status="available",
-            metadata={"symbols": effective_options.symbols, "max_chunks": effective_options.max_chunks},
+            metadata={
+                "symbols": effective_options.symbols,
+                "max_chunks": effective_options.max_chunks,
+                "skip_chunks": effective_options.skip_chunks,
+                "price_projection_only": effective_options.price_projection_only,
+            },
             compute_hash=effective_options.compute_source_hash,
         )
 
         total_rows = 0
-        chunks_seen = 0
+        chunks_seen = effective_options.skip_chunks
         chunks_with_matches = 0
         matched_symbols: set[str] = set()
         min_trading_date: dt.date | None = None
@@ -747,13 +786,19 @@ class TickerHistoryDataset(Dataset):
             "min_trading_date": min_trading_date,
             "max_trading_date": max_trading_date,
             "max_chunks": effective_options.max_chunks,
+            "skip_chunks": effective_options.skip_chunks,
             "chunk_size": effective_options.chunk_size,
+            "canonical_only": effective_options.price_projection_only,
             "vendor_collisions_rekeyed": rekeyed,
         }
         quality_check(
             store,
             dataset_id=self.dataset_id,
-            table_name="tbltickerhistory_daily",
+            table_name=(
+                "equity_daily_bars"
+                if effective_options.price_projection_only
+                else "tbltickerhistory_daily"
+            ),
             check_name="rows_loaded",
             status="passed" if total_rows > 0 else "warning",
             observed_value=float(total_rows),
@@ -768,27 +813,43 @@ class TickerHistoryDataset(Dataset):
         )
 
     def _load_chunk(self, store: DuckDBStore, frame: pd.DataFrame, options: TickerHistoryOptions) -> int:
-        raw_columns = ["source", "security_id", "run_id"] + [RENAMES[column] for column in SOURCE_COLUMNS] + ["available_at"]
-        raw = frame.copy()
-        raw["available_at"] = pd.to_datetime(raw["trading_date"]) + pd.Timedelta(hours=22)
-        raw = raw[raw_columns]
         bars = _canonical_bars(frame, options)
         securities, identifiers, listings = _security_links(frame, options)
 
-        store.con.register("tbltickerhistory_load", raw)
         store.con.register("equity_daily_bars_load", bars)
+        registered = ["equity_daily_bars_load"]
+        raw: pd.DataFrame | None = None
+        if not options.price_projection_only:
+            raw_columns = (
+                ["source", "security_id", "run_id"]
+                + [RENAMES[column] for column in SOURCE_COLUMNS]
+                + ["available_at"]
+            )
+            raw = frame.copy()
+            raw["available_at"] = pd.to_datetime(raw["trading_date"]) + pd.Timedelta(
+                hours=22
+            )
+            raw = raw[raw_columns]
+            store.con.register("tbltickerhistory_load", raw)
+            registered.append("tbltickerhistory_load")
         try:
             with store.transaction():
-                store.con.execute(
-                    """
-                    DELETE FROM tbltickerhistory_daily AS dst
-                    USING tbltickerhistory_load AS src
-                    WHERE dst.source = src.source
-                      AND dst.vendor_security_id = src.vendor_security_id
-                      AND dst.trading_date = src.trading_date
-                    """
-                )
-                insert_frame(store, raw, "tbltickerhistory_daily", "tbltickerhistory_insert")
+                if raw is not None:
+                    store.con.execute(
+                        """
+                        DELETE FROM tbltickerhistory_daily AS dst
+                        USING tbltickerhistory_load AS src
+                        WHERE dst.source = src.source
+                          AND dst.vendor_security_id = src.vendor_security_id
+                          AND dst.trading_date = src.trading_date
+                        """
+                    )
+                    insert_frame(
+                        store,
+                        raw,
+                        "tbltickerhistory_daily",
+                        "tbltickerhistory_insert",
+                    )
                 store.con.execute(
                     """
                     DELETE FROM equity_daily_bars AS dst
@@ -801,10 +862,10 @@ class TickerHistoryDataset(Dataset):
                 insert_frame(store, bars, "equity_daily_bars", "equity_daily_bars_insert")
                 self._upsert_links(store, securities, identifiers, listings)
         finally:
-            for relation in ("tbltickerhistory_load", "equity_daily_bars_load"):
+            for relation in registered:
                 with suppress(Exception):
                     store.con.unregister(relation)
-        return len(raw)
+        return len(bars)
 
     def _upsert_links(
         self,

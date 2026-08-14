@@ -7,7 +7,7 @@ from pathlib import Path
 
 
 def _load_warehouse_jobs_module():
-    script = Path(__file__).resolve().parents[2] / "scripts" / "warehouse_jobs.py"
+    script = Path(__file__).resolve().parents[1] / "scripts" / "warehouse_jobs.py"
     spec = importlib.util.spec_from_file_location("warehouse_jobs_cli", script)
     assert spec is not None
     module = importlib.util.module_from_spec(spec)
@@ -17,7 +17,7 @@ def _load_warehouse_jobs_module():
 
 
 def test_run_all_help_exposes_resume_and_full_rebuild_flags():
-    script = Path(__file__).resolve().parents[2] / "scripts" / "warehouse_jobs.py"
+    script = Path(__file__).resolve().parents[1] / "scripts" / "warehouse_jobs.py"
 
     completed = subprocess.run(
         [sys.executable, str(script), "run-all", "--help"],

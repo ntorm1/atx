@@ -78,6 +78,8 @@ def ensure_thirteenf_backtest_schema(store: DuckDBStore) -> None:
             trade_id VARCHAR PRIMARY KEY,
             signal_id VARCHAR NOT NULL,
             report_period DATE NOT NULL,
+            as_of_date DATE,
+            available_at TIMESTAMP,
             cusip VARCHAR NOT NULL,
             ticker VARCHAR NOT NULL,
             price_source VARCHAR NOT NULL,
@@ -102,6 +104,8 @@ def ensure_thirteenf_backtest_schema(store: DuckDBStore) -> None:
         )
         """
     )
+    store.con.execute("ALTER TABLE thirteenf_amendment_backtest_trades ADD COLUMN IF NOT EXISTS as_of_date DATE")
+    store.con.execute("ALTER TABLE thirteenf_amendment_backtest_trades ADD COLUMN IF NOT EXISTS available_at TIMESTAMP")
     store.con.execute(
         """
         CREATE INDEX IF NOT EXISTS idx_13f_backtest_horizon_period
@@ -166,7 +170,8 @@ def refresh_thirteenf_signal_backtest(
         con.execute(
             f"""
             INSERT INTO thirteenf_amendment_backtest_trades (
-                trade_id, signal_id, report_period, cusip, ticker, price_source,
+                trade_id, signal_id, report_period, as_of_date, available_at,
+                cusip, ticker, price_source,
                 price_security_id, signal_available_at, entry_date,
                 entry_available_at, entry_adjusted_close, entry_market_cap_usd,
                 horizon_trading_days,
@@ -196,7 +201,7 @@ def refresh_thirteenf_signal_backtest(
                     b.trade_date AS entry_date,
                     b.available_at AS entry_available_at,
                     coalesce(b.adjusted_close, b.close) AS entry_adjusted_close,
-                    raw.shares * coalesce(raw.close_pr, raw.close) AS entry_market_cap_usd,
+                    b.market_cap_usd AS entry_market_cap_usd,
                     row_number() OVER (
                         PARTITION BY s.signal_id
                         ORDER BY b.trade_date, coalesce(b.volume, 0) DESC, b.security_id
@@ -208,12 +213,7 @@ def refresh_thirteenf_signal_backtest(
                  AND b.trade_date > cast(s.signal_available_at AS DATE)
                  AND b.available_at > s.signal_available_at
                  AND coalesce(b.adjusted_close, b.close) > 0
-                JOIN tbltickerhistory_daily raw
-                  ON raw.source = b.source
-                 AND raw.security_id = b.security_id
-                 AND raw.trading_date = b.trade_date
-                 AND raw.shares > 0
-                 AND raw.shares * coalesce(raw.close_pr, raw.close) BETWEEN ? AND ?
+                WHERE b.market_cap_usd BETWEEN ? AND ?
             ),
             entries AS (
                 SELECT * FROM entry_candidates WHERE candidate_rank = 1
@@ -237,7 +237,10 @@ def refresh_thirteenf_signal_backtest(
             horizons(horizon) AS (VALUES {horizon_values})
             SELECT
                 md5(e.signal_id || '|' || e.price_source || '|' || cast(h.horizon AS VARCHAR)),
-                e.signal_id, e.report_period, e.cusip, e.ticker, e.price_source,
+                e.signal_id, e.report_period, e.entry_date,
+                greatest(e.signal_available_at, e.entry_available_at,
+                         coalesce(p.available_at, e.entry_available_at)),
+                e.cusip, e.ticker, e.price_source,
                 e.price_security_id, e.signal_available_at, e.entry_date,
                 e.entry_available_at, e.entry_adjusted_close, e.entry_market_cap_usd,
                 h.horizon,

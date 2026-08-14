@@ -15,7 +15,6 @@ import pandas as pd
 from .connection import DuckDBStore
 from .warehouse import quality_check
 
-
 SOURCE_NAME = "derived_industry_templates_v1"
 
 
@@ -188,7 +187,7 @@ def refresh_entity_industry_templates(
     store: DuckDBStore,
     options: IndustryTemplateOptions | None = None,
 ) -> int:
-    """Materialize current security -> industry-template routing from SIC classifications."""
+    """Materialize revision-complete security -> template routing from SIC history."""
 
     options = options or IndustryTemplateOptions()
     seed_industry_templates(store)
@@ -200,32 +199,73 @@ def refresh_entity_industry_templates(
                 route_id, source, security_id, symbol, industry_template,
                 matched_taxonomy, matched_node_code, match_reason,
                 valid_from, valid_to, as_of_date, available_at,
-                is_latest_revision, run_id, source_loaded_at
+                is_latest_revision, run_id, source_loaded_at,
+                route_revision_group_id, revision_sequence, revision_count,
+                previous_industry_template, update_type, knowledge_valid_to
             )
-            WITH sic AS (
+            WITH sic_raw AS (
                 SELECT
+                    ec.classification_id,
                     ec.security_id,
-                    arg_max(ec.node_code, ec.available_at) AS node_code,
-                    min(ec.valid_from) AS valid_from,
-                    max(ec.as_of_date) AS as_of_date,
-                    max(ec.available_at) AS available_at,
-                    max(ec.source_loaded_at) AS source_loaded_at
+                    ec.node_code,
+                    ec.valid_from,
+                    ec.valid_to,
+                    ec.as_of_date,
+                    coalesce(ec.available_at, ec.source_loaded_at) AS available_at,
+                    ec.source_loaded_at
                 FROM entity_classification ec
                 JOIN taxonomy tx
                   ON tx.taxonomy_id = ec.taxonomy_id
                  AND tx.code = 'SIC'
-                WHERE ec.valid_to IS NULL
-                GROUP BY ec.security_id
+                WHERE ec.is_primary
             ),
-            routed AS (
+            sic_boundaries AS (
                 SELECT
-                    s.security_id,
+                    security_id,
+                    valid_from,
+                    lead(valid_from) OVER (
+                        PARTITION BY security_id ORDER BY valid_from
+                    ) AS next_valid_from
+                FROM (
+                    SELECT DISTINCT security_id, valid_from
+                    FROM sic_raw
+                )
+            ),
+            bounded_sic AS (
+                SELECT
+                    raw.*,
+                    CASE
+                        WHEN raw.valid_to IS NULL THEN boundary.next_valid_from
+                        WHEN boundary.next_valid_from IS NULL THEN raw.valid_to
+                        ELSE least(raw.valid_to, boundary.next_valid_from)
+                    END AS effective_valid_to
+                FROM sic_raw raw
+                JOIN sic_boundaries boundary
+                  ON boundary.security_id = raw.security_id
+                 AND boundary.valid_from = raw.valid_from
+            ),
+            first_sic AS (
+                SELECT security_id,min(valid_from) AS first_valid_from
+                FROM bounded_sic
+                GROUP BY security_id
+            ),
+            fundamental_history AS (
+                SELECT security_id,min(period_end) AS first_period_end
+                FROM sec_company_facts
+                WHERE period_end IS NOT NULL
+                GROUP BY security_id
+            ),
+            routed_sic AS (
+                SELECT
+                    sic.classification_id,
+                    sic.security_id,
                     s.primary_symbol AS symbol,
                     sic.node_code,
-                    coalesce(sic.valid_from, DATE '1900-01-01') AS valid_from,
-                    coalesce(sic.as_of_date, current_date) AS as_of_date,
-                    coalesce(sic.available_at, now()) AS available_at,
-                    coalesce(sic.source_loaded_at, now()) AS source_loaded_at,
+                    sic.valid_from,
+                    sic.effective_valid_to AS valid_to,
+                    sic.as_of_date,
+                    sic.available_at,
+                    sic.source_loaded_at,
                     CASE
                         WHEN try_cast(sic.node_code AS INTEGER) BETWEEN 6000 AND 6199 THEN 'BK'
                         WHEN try_cast(sic.node_code AS INTEGER) BETWEEN 6200 AND 6299 THEN 'BD'
@@ -242,11 +282,84 @@ def refresh_entity_industry_templates(
                         WHEN try_cast(sic.node_code AS INTEGER) BETWEEN 4900 AND 4999 THEN 'sic_4900_4999_utility'
                         ELSE 'default_all'
                     END AS match_reason
+                FROM bounded_sic sic
+                LEFT JOIN securities s ON s.security_id = sic.security_id
+            ),
+            inferred_backcast_routes AS (
+                SELECT
+                    routed.* REPLACE (
+                        history.first_period_end AS valid_from,
+                        routed.valid_from AS valid_to,
+                        concat('inferred_backcast_',routed.match_reason) AS match_reason
+                    )
+                FROM routed_sic routed
+                JOIN first_sic first
+                  ON first.security_id=routed.security_id
+                 AND first.first_valid_from=routed.valid_from
+                JOIN fundamental_history history
+                  ON history.security_id=routed.security_id
+                 AND history.first_period_end<routed.valid_from
+            ),
+            fallback_routes AS (
+                SELECT
+                    CAST(NULL AS VARCHAR) AS classification_id,
+                    s.security_id,
+                    s.primary_symbol AS symbol,
+                    CAST(NULL AS VARCHAR) AS node_code,
+                    coalesce(
+                        max(sic.effective_valid_to) FILTER (
+                            WHERE sic.effective_valid_to <= current_date
+                        ),
+                        s.first_seen_date,
+                        DATE '1900-01-01'
+                    ) AS valid_from,
+                    min(sic.valid_from) FILTER (
+                        WHERE sic.valid_from > current_date
+                    ) AS valid_to,
+                    coalesce(s.first_seen_date, DATE '1900-01-01') AS as_of_date,
+                    s.source_loaded_at AS available_at,
+                    s.source_loaded_at,
+                    'ALL' AS industry_template,
+                    'default_all_no_current_sic' AS match_reason
                 FROM securities s
-                LEFT JOIN sic ON sic.security_id = s.security_id
+                LEFT JOIN bounded_sic sic ON sic.security_id = s.security_id
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM bounded_sic current_sic
+                    WHERE current_sic.security_id = s.security_id
+                      AND current_sic.valid_from <= current_date
+                      AND coalesce(current_sic.effective_valid_to, DATE '9999-12-31') > current_date
+                )
+                GROUP BY
+                    s.security_id,s.primary_symbol,s.first_seen_date,s.source_loaded_at
+            ),
+            base_routes AS (
+                SELECT * FROM routed_sic
+                UNION ALL BY NAME
+                SELECT * FROM inferred_backcast_routes
+                UNION ALL BY NAME
+                SELECT * FROM fallback_routes
+            ),
+            sequenced AS (
+                SELECT
+                    base_routes.*,
+                    sha256(concat_ws('|', ?, security_id, CAST(valid_from AS VARCHAR)))
+                        AS route_revision_group_id,
+                    row_number() OVER route_window AS revision_sequence,
+                    count(*) OVER route_window AS revision_count,
+                    lag(industry_template) OVER route_window AS previous_industry_template,
+                    lead(available_at) OVER route_window AS knowledge_valid_to
+                FROM base_routes
+                WINDOW route_window AS (
+                    PARTITION BY security_id,valid_from
+                    ORDER BY available_at,source_loaded_at,classification_id NULLS FIRST
+                    ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
+                )
             )
             SELECT
-                sha256(concat_ws('|', ?, security_id, industry_template, CAST(valid_from AS VARCHAR))) AS route_id,
+                sha256(concat_ws('|', ?, security_id, industry_template,
+                                 CAST(valid_from AS VARCHAR),CAST(available_at AS VARCHAR),
+                                 coalesce(classification_id,''))) AS route_id,
                 ? AS source,
                 security_id,
                 symbol,
@@ -255,22 +368,29 @@ def refresh_entity_industry_templates(
                 node_code AS matched_node_code,
                 match_reason,
                 valid_from,
-                NULL AS valid_to,
+                valid_to,
                 as_of_date,
                 available_at,
-                true AS is_latest_revision,
+                revision_sequence = revision_count AS is_latest_revision,
                 ? AS run_id,
-                source_loaded_at
-            FROM routed
+                source_loaded_at,
+                route_revision_group_id,
+                revision_sequence,
+                revision_count,
+                previous_industry_template,
+                CASE WHEN revision_sequence = 1 THEN 'original' ELSE 'restated' END AS update_type,
+                knowledge_valid_to
+            FROM sequenced
             """,
-            [options.source, options.source, options.run_id],
+            [options.source, options.source, options.source, options.run_id],
         )
-    return int(
-        store.con.execute(
-            "SELECT count(*) FROM entity_industry_template WHERE source = ?",
-            [options.source],
-        ).fetchone()[0]
-    )
+    row = store.con.execute(
+        "SELECT count(*) FROM entity_industry_template WHERE source = ?",
+        [options.source],
+    ).fetchone()
+    if row is None:
+        raise RuntimeError("industry-template route count query returned no row")
+    return int(row[0])
 
 
 def refresh_industry_template_coverage(
@@ -354,12 +474,13 @@ def refresh_industry_template_coverage(
             """,
             [options.source, options.source, options.source, options.run_id],
         )
-    return int(
-        store.con.execute(
-            "SELECT count(*) FROM industry_template_coverage WHERE source = ?",
-            [options.source],
-        ).fetchone()[0]
-    )
+    row = store.con.execute(
+        "SELECT count(*) FROM industry_template_coverage WHERE source = ?",
+        [options.source],
+    ).fetchone()
+    if row is None:
+        raise RuntimeError("industry-template coverage count query returned no row")
+    return int(row[0])
 
 
 def run_industry_template_refresh(

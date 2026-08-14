@@ -67,18 +67,25 @@ def test_persistent_but_fading_factor_has_monotone_decaying_ic() -> None:
         for s in secs:
             panel_rows.append({"security_id": s, "as_of_date": d, "factor_id": "fade", "value": base[s]})
             for h in IC_HORIZONS:
-                decay = 0.9 ** (IC_HORIZONS.index(h))         # weaker signal at longer horizons
-                fr_rows.append({"security_id": s, "as_of_date": d, "horizon": h,
-                                "forward_return": decay * base[s] + 0.25 * rng.normal()})
+                decay = 0.9 ** (IC_HORIZONS.index(h))  # weaker signal at longer horizons
+                fr_rows.append(
+                    {
+                        "security_id": s,
+                        "as_of_date": d,
+                        "horizon": h,
+                        "forward_return": decay * base[s] + 0.25 * rng.normal(),
+                    }
+                )
     decay = compute_information_coefficient(pd.DataFrame(panel_rows), pd.DataFrame(fr_rows)).ic_decay
     profile = decay.sort_values("ladder_position")["mean_rank_ic"].to_numpy()
-    assert np.all(np.diff(profile) <= 1e-9)                    # non-increasing rank-IC across the ladder
+    assert np.all(np.diff(profile) <= 1e-9)  # non-increasing rank-IC across the ladder
     assert profile[0] > profile[-1]
 
 
 def test_compute_ic_is_order_invariant() -> None:
     rng = np.random.default_rng(3)
-    dates = _dates(20); secs = [f"S{i}" for i in range(15)]
+    dates = _dates(20)
+    secs = [f"S{i}" for i in range(15)]
     panel_rows, fr_rows = [], []
     for d in dates:
         for s in secs:
@@ -88,8 +95,10 @@ def test_compute_ic_is_order_invariant() -> None:
                 fr_rows.append({"security_id": s, "as_of_date": d, "horizon": h, "forward_return": v + rng.normal()})
     p, fr = pd.DataFrame(panel_rows), pd.DataFrame(fr_rows)
     a = compute_information_coefficient(p, fr).ic
-    b = compute_information_coefficient(p.sample(frac=1.0, random_state=99).reset_index(drop=True),
-                                        fr.sample(frac=1.0, random_state=1).reset_index(drop=True)).ic
+    b = compute_information_coefficient(
+        p.sample(frac=1.0, random_state=99).reset_index(drop=True),
+        fr.sample(frac=1.0, random_state=1).reset_index(drop=True),
+    ).ic
     pd.testing.assert_frame_equal(a.reset_index(drop=True), b.reset_index(drop=True))
 
 
@@ -107,28 +116,29 @@ def test_compute_ic_handles_mixed_asof_dtypes() -> None:
             v = rng.normal()
             panel_rows.append({"security_id": s, "as_of_date": d, "factor_id": "mixed", "value": v})
             for h in IC_HORIZONS:
-                fr_rows.append({"security_id": s, "as_of_date": d, "horizon": h,
-                                "forward_return": v + rng.normal()})
+                fr_rows.append({"security_id": s, "as_of_date": d, "horizon": h, "forward_return": v + rng.normal()})
     panel = pd.DataFrame(panel_rows)
-    panel["as_of_date"] = pd.to_datetime(panel["as_of_date"])          # datetime64, like DuckDB .df()
-    forward_returns = pd.DataFrame(fr_rows)                            # as_of_date stays datetime.date (object)
+    panel["as_of_date"] = pd.to_datetime(panel["as_of_date"])  # datetime64, like DuckDB .df()
+    forward_returns = pd.DataFrame(fr_rows)  # as_of_date stays datetime.date (object)
     assert pd.api.types.is_datetime64_any_dtype(panel["as_of_date"])
     assert forward_returns["as_of_date"].dtype == object
-    result = compute_information_coefficient(panel, forward_returns)   # must not raise
+    result = compute_information_coefficient(panel, forward_returns)  # must not raise
     assert isinstance(result, IcResult)
     assert not result.ic.empty
     assert (result.ic["n_dates"] > 0).all()
 
 
 def test_compute_forward_returns_from_prices() -> None:
-    prices = pd.DataFrame({
-        "security_id": ["S"] * 5,
-        "as_of_date": _dates(5),
-        "close": [100.0, 110.0, 121.0, 133.1, 146.41],
-    })
+    prices = pd.DataFrame(
+        {
+            "security_id": ["S"] * 5,
+            "as_of_date": _dates(5),
+            "close": [100.0, 110.0, 121.0, 133.1, 146.41],
+        }
+    )
     fr = compute_forward_returns(prices, horizons=[1])
     r = fr.sort_values("as_of_date")["forward_return"].dropna().to_numpy()
-    assert np.allclose(r, [0.10, 0.10, 0.10, 0.10])           # 10% per step, last row NaN dropped
+    assert np.allclose(r, [0.10, 0.10, 0.10, 0.10])  # 10% per step, last row NaN dropped
 
 
 def test_warehouse_forward_returns_are_split_adjusted_and_panel_scoped(tmp_store) -> None:
@@ -363,17 +373,76 @@ def test_evaluate_panel_records_injected_return_target_in_manifest(tmp_store) ->
     assert params == [("injected",)]
 
 
+def test_evaluate_panel_screen_only_stops_after_ic(monkeypatch) -> None:
+    dates = _dates(4)
+    securities = [f"S{i}" for i in range(8)]
+    panel = pd.DataFrame(
+        [
+            {
+                "security_id": security_id,
+                "as_of_date": as_of_date,
+                "factor_id": "screen_factor",
+                "value": float(index),
+            }
+            for as_of_date in dates
+            for index, security_id in enumerate(securities)
+        ]
+    )
+    forward_returns = pd.DataFrame(
+        [
+            {
+                "security_id": security_id,
+                "as_of_date": as_of_date,
+                "horizon": 1,
+                "forward_return": float(index) / 100.0,
+            }
+            for as_of_date in dates
+            for index, security_id in enumerate(securities)
+        ]
+    )
+
+    monkeypatch.setattr(
+        "atx_db.signal_eval.persist_factor_ic",
+        lambda *args, **kwargs: {
+            "factor_eval_manifest": 1,
+            "factor_ic": 1,
+            "factor_ic_decay": 1,
+        },
+    )
+
+    def _unexpected_quantile_call(*args, **kwargs):
+        raise AssertionError("screen-only evaluation reached portfolio diagnostics")
+
+    monkeypatch.setattr(
+        "atx_db.signal_eval.compute_quantile_spread",
+        _unexpected_quantile_call,
+    )
+    counts = evaluate_panel(
+        object(),
+        panel=panel,
+        forward_returns=forward_returns,
+        horizons=(1,),
+        n_quantiles=4,
+        screen_only=True,
+        run_id="screen-only",
+    )
+
+    assert counts["factor_ic"] == 1
+    assert "factor_quantile_spread" not in counts
+
+
 def test_monotone_factor_has_monotone_deciles_and_positive_spread() -> None:
-    dates = _dates(50); secs = [f"S{i}" for i in range(50)]
+    dates = _dates(50)
+    secs = [f"S{i}" for i in range(50)]
     panel_rows, fr_rows = [], []
     for d in dates:
         for i, s in enumerate(secs):
-            v = float(i)                                    # perfectly ordered factor
+            v = float(i)  # perfectly ordered factor
             panel_rows.append({"security_id": s, "as_of_date": d, "factor_id": "mono", "value": v})
             fr_rows.append({"security_id": s, "as_of_date": d, "horizon": 1, "forward_return": v / 100.0})
     spread = compute_quantile_spread(pd.DataFrame(panel_rows), pd.DataFrame(fr_rows), n_quantiles=10, horizons=[1])
     deciles = spread.sort_values("quantile")["mean_forward_return"].to_numpy()
-    assert np.all(np.diff(deciles) > -1e-9)                 # monotone non-decreasing decile returns
+    assert np.all(np.diff(deciles) > -1e-9)  # monotone non-decreasing decile returns
     assert spread["long_short_spread"].iloc[0] > 0
     assert spread["long_short_hit_rate"].iloc[0] > 0.9
     assert spread["decile_monotonicity"].iloc[0] > 0.99
@@ -381,33 +450,39 @@ def test_monotone_factor_has_monotone_deciles_and_positive_spread() -> None:
 
 def test_random_walk_factor_has_flat_deciles_and_high_turnover() -> None:
     rng = np.random.default_rng(5)
-    dates = _dates(60); secs = [f"S{i}" for i in range(40)]
+    dates = _dates(60)
+    secs = [f"S{i}" for i in range(40)]
     panel_rows, fr_rows = [], []
     for d in dates:
         for s in secs:
-            v = rng.normal()                                # re-drawn each date -> unstable ranking
+            v = rng.normal()  # re-drawn each date -> unstable ranking
             panel_rows.append({"security_id": s, "as_of_date": d, "factor_id": "rw", "value": v})
             fr_rows.append({"security_id": s, "as_of_date": d, "horizon": 1, "forward_return": rng.normal()})
     p, fr = pd.DataFrame(panel_rows), pd.DataFrame(fr_rows)
     spread = compute_quantile_spread(p, fr, n_quantiles=10, horizons=[1])
     assert abs(spread["long_short_spread"].iloc[0]) < 0.05
     turnover = compute_turnover(p, n_quantiles=10)
-    assert turnover["top_decile_turnover"].iloc[0] > 0.5    # membership churns hard for a random walk
+    assert turnover["top_decile_turnover"].iloc[0] > 0.5  # membership churns hard for a random walk
     assert abs(turnover["mean_rank_autocorrelation"].iloc[0]) < 0.2
 
 
 def test_stable_factor_has_low_turnover() -> None:
-    dates = _dates(30); secs = [f"S{i}" for i in range(40)]
-    panel_rows = [{"security_id": s, "as_of_date": d, "factor_id": "stable", "value": float(i)}
-                  for d in dates for i, s in enumerate(secs)]
+    dates = _dates(30)
+    secs = [f"S{i}" for i in range(40)]
+    panel_rows = [
+        {"security_id": s, "as_of_date": d, "factor_id": "stable", "value": float(i)}
+        for d in dates
+        for i, s in enumerate(secs)
+    ]
     turnover = compute_turnover(pd.DataFrame(panel_rows), n_quantiles=10)
-    assert turnover["top_decile_turnover"].iloc[0] < 1e-9   # ranking never changes -> zero churn
+    assert turnover["top_decile_turnover"].iloc[0] < 1e-9  # ranking never changes -> zero churn
     assert turnover["mean_rank_autocorrelation"].iloc[0] > 0.99
 
 
 def test_compute_quantile_spread_is_order_invariant() -> None:
     rng = np.random.default_rng(21)
-    dates = _dates(15); secs = [f"S{i}" for i in range(30)]
+    dates = _dates(15)
+    secs = [f"S{i}" for i in range(30)]
     rows, fr = [], []
     for d in dates:
         for s in secs:
@@ -416,21 +491,28 @@ def test_compute_quantile_spread_is_order_invariant() -> None:
             fr.append({"security_id": s, "as_of_date": d, "horizon": 1, "forward_return": v + rng.normal()})
     p, f = pd.DataFrame(rows), pd.DataFrame(fr)
     a = compute_quantile_spread(p, f, n_quantiles=5, horizons=[1])
-    b = compute_quantile_spread(p.sample(frac=1.0, random_state=8).reset_index(drop=True),
-                                f.sample(frac=1.0, random_state=9).reset_index(drop=True), n_quantiles=5, horizons=[1])
+    b = compute_quantile_spread(
+        p.sample(frac=1.0, random_state=8).reset_index(drop=True),
+        f.sample(frac=1.0, random_state=9).reset_index(drop=True),
+        n_quantiles=5,
+        horizons=[1],
+    )
     pd.testing.assert_frame_equal(a.reset_index(drop=True), b.reset_index(drop=True))
 
 
 def test_near_duplicate_factors_are_mutually_crowded() -> None:
     rng = np.random.default_rng(2)
-    dates = _dates(30); secs = [f"S{i}" for i in range(40)]
+    dates = _dates(30)
+    secs = [f"S{i}" for i in range(40)]
     rows = []
     for d in dates:
         base = {s: rng.normal() for s in secs}
         for s in secs:
             rows.append({"security_id": s, "as_of_date": d, "factor_id": "value_a", "value": base[s]})
-            rows.append({"security_id": s, "as_of_date": d, "factor_id": "value_b", "value": base[s] + 0.01 * rng.normal()})
-            rows.append({"security_id": s, "as_of_date": d, "factor_id": "indep",   "value": rng.normal()})
+            rows.append(
+                {"security_id": s, "as_of_date": d, "factor_id": "value_b", "value": base[s] + 0.01 * rng.normal()}
+            )
+            rows.append({"security_id": s, "as_of_date": d, "factor_id": "indep", "value": rng.normal()})
     panel = pd.DataFrame(rows)
     corr = compute_factor_correlation(panel)
     ab = corr[(corr["factor_id_a"] == "value_a") & (corr["factor_id_b"] == "value_b")]["mean_abs_correlation"].iloc[0]
@@ -443,11 +525,12 @@ def test_near_duplicate_factors_are_mutually_crowded() -> None:
 
 
 def test_breadth_matches_known_fixture_coverage() -> None:
-    dates = _dates(3); secs = [f"S{i}" for i in range(10)]
+    dates = _dates(3)
+    secs = [f"S{i}" for i in range(10)]
     rows = []
     for d in dates:
         for i, s in enumerate(secs):
-            val = float(i) if i < 6 else None                # only 6 of 10 names defined
+            val = float(i) if i < 6 else None  # only 6 of 10 names defined
             rows.append({"security_id": s, "as_of_date": d, "factor_id": "sparse", "value": val})
     uni = pd.DataFrame({"as_of_date": dates, "universe_size": [10, 10, 10]})
     breadth = compute_breadth(pd.DataFrame(rows), uni)
@@ -462,10 +545,17 @@ def test_compute_breadth_available_at_is_max_of_inputs() -> None:
     secs = [f"S{i}" for i in range(5)]
     rows = []
     for i, s in enumerate(secs):
-        rows.append({"security_id": s, "as_of_date": d, "factor_id": "b", "value": float(i),
-                     "available_at": pd.Timestamp("2020-01-01") + pd.Timedelta(days=i)})
+        rows.append(
+            {
+                "security_id": s,
+                "as_of_date": d,
+                "factor_id": "b",
+                "value": float(i),
+                "available_at": pd.Timestamp("2020-01-01") + pd.Timedelta(days=i),
+            }
+        )
     breadth = compute_breadth(pd.DataFrame(rows))
-    assert breadth["available_at"].iloc[0] == pd.Timestamp("2020-01-05")   # max of the 5 inputs
+    assert breadth["available_at"].iloc[0] == pd.Timestamp("2020-01-05")  # max of the 5 inputs
     # Order-invariant: shuffling the input rows must not change the (deterministic) max.
     shuffled = compute_breadth(pd.DataFrame(rows).sample(frac=1.0, random_state=4).reset_index(drop=True))
     assert shuffled["available_at"].iloc[0] == pd.Timestamp("2020-01-05")
@@ -483,29 +573,29 @@ def test_persist_breadth_populates_pit_columns_without_exemption(tmp_store) -> N
         persist_breadth,
     )
 
-    dates = _dates(3); secs = [f"S{i}" for i in range(6)]
+    dates = _dates(3)
+    secs = [f"S{i}" for i in range(6)]
     avail = pd.Timestamp("2020-02-01 09:30:00")
     rows = []
     for d in dates:
         for i, s in enumerate(secs):
-            rows.append({"security_id": s, "as_of_date": d, "factor_id": "b", "value": float(i),
-                         "available_at": avail})
+            rows.append({"security_id": s, "as_of_date": d, "factor_id": "b", "value": float(i), "available_at": avail})
     panel = pd.DataFrame(rows)
     breadth = compute_breadth(panel)
-    manifest = _build_breadth_manifest(panel, breadth, universe_id=DEFAULT_UNIVERSE_ID,
-                                       source=SOURCE_NAME, run_id="rid-b")
-    counts = persist_breadth(tmp_store, manifest=manifest, breadth=breadth,
-                             universe_id=DEFAULT_UNIVERSE_ID, run_id="rid-b")
+    manifest = _build_breadth_manifest(
+        panel, breadth, universe_id=DEFAULT_UNIVERSE_ID, source=SOURCE_NAME, run_id="rid-b"
+    )
+    counts = persist_breadth(
+        tmp_store, manifest=manifest, breadth=breadth, universe_id=DEFAULT_UNIVERSE_ID, run_id="rid-b"
+    )
     assert counts["factor_breadth"] == 3
 
-    got = tmp_store.con.execute(
-        "SELECT available_at, source_loaded_at, is_latest_revision FROM factor_breadth"
-    ).df()
+    got = tmp_store.con.execute("SELECT available_at, source_loaded_at, is_latest_revision FROM factor_breadth").df()
     assert len(got) == 3
     assert got["available_at"].notna().all()
-    assert (pd.to_datetime(got["available_at"]) == avail).all()          # PIT-correct: max input
-    assert got["source_loaded_at"].notna().all()                         # auto-filled by insert
-    assert got["is_latest_revision"].astype(bool).all()                  # auto-filled true
+    assert (pd.to_datetime(got["available_at"]) == avail).all()  # PIT-correct: max input
+    assert got["source_loaded_at"].notna().all()  # auto-filled by insert
+    assert got["is_latest_revision"].astype(bool).all()  # auto-filled true
     # pit_column_presence_check must NOT flag factor_breadth (no exemption in play).
     result = pit_column_presence_check(tmp_store)
     assert "factor_breadth" not in result.details["tables_missing_pit_columns"]
@@ -513,7 +603,8 @@ def test_persist_breadth_populates_pit_columns_without_exemption(tmp_store) -> N
 
 def test_compute_correlation_is_order_invariant() -> None:
     rng = np.random.default_rng(31)
-    dates = _dates(12); secs = [f"S{i}" for i in range(20)]
+    dates = _dates(12)
+    secs = [f"S{i}" for i in range(20)]
     rows = []
     for d in dates:
         for s in secs:
@@ -538,27 +629,32 @@ from atx_db.signal_eval import (
 
 def test_planted_leaky_factor_is_red_and_lagged_is_green() -> None:
     rng = np.random.default_rng(4)
-    dates = _dates(40); secs = [f"S{i}" for i in range(30)]
+    dates = _dates(40)
+    secs = [f"S{i}" for i in range(30)]
     rows, sdr = [], []
     for d in dates:
         for s in secs:
             same_day = rng.normal()
             sdr.append({"security_id": s, "as_of_date": d, "same_day_return": same_day})
-            rows.append({"security_id": s, "as_of_date": d, "factor_id": "leaky", "value": same_day})       # dropped lag
-            rows.append({"security_id": s, "as_of_date": d, "factor_id": "lagged", "value": rng.normal()})  # independent
+            rows.append({"security_id": s, "as_of_date": d, "factor_id": "leaky", "value": same_day})  # dropped lag
+            rows.append(
+                {"security_id": s, "as_of_date": d, "factor_id": "lagged", "value": rng.normal()}
+            )  # independent
     res = compute_leakage(pd.DataFrame(rows), pd.DataFrame(sdr), threshold=0.10).set_index("factor_id")
     assert bool(res.loc["leaky", "is_leaky"]) is True
     assert bool(res.loc["lagged", "is_leaky"]) is False
 
 
 def test_sparse_factor_fails_coverage_and_dense_passes() -> None:
-    dates = _dates(10); secs = [f"S{i}" for i in range(20)]
+    dates = _dates(10)
+    secs = [f"S{i}" for i in range(20)]
     rows = []
     for d in dates:
         for i, s in enumerate(secs):
             rows.append({"security_id": s, "as_of_date": d, "factor_id": "dense", "value": float(i)})
-            rows.append({"security_id": s, "as_of_date": d, "factor_id": "sparse",
-                         "value": float(i) if i < 3 else None})    # 3/20 = 0.15 coverage
+            rows.append(
+                {"security_id": s, "as_of_date": d, "factor_id": "sparse", "value": float(i) if i < 3 else None}
+            )  # 3/20 = 0.15 coverage
     uni = pd.DataFrame({"as_of_date": dates, "universe_size": [20] * len(dates)})
     cov = compute_coverage(pd.DataFrame(rows), uni, min_fraction=0.50).set_index("factor_id")
     assert bool(cov.loc["sparse", "is_undercovered"]) is True
@@ -575,9 +671,14 @@ def test_leakage_check_is_registered_and_critical(tmp_store) -> None:
 
 def test_red_factor_dqc_routes_to_halt(tmp_store) -> None:
     red = QualityResult(
-        dataset_id="factor_panel", table_name="v_factor_panel",
-        check_name=LEAKAGE_DQC_CHECK_NAME, status="failed",
-        observed_value=1.0, threshold_value=0.0, details={"rows": []}, severity="critical",
+        dataset_id="factor_panel",
+        table_name="v_factor_panel",
+        check_name=LEAKAGE_DQC_CHECK_NAME,
+        status="failed",
+        observed_value=1.0,
+        threshold_value=0.0,
+        details={"rows": []},
+        severity="critical",
     )
     gate = evaluate_quality_gate(tmp_store, "factor_panel", additional_results=[red])
     assert gate.decision == "halt"
@@ -600,19 +701,19 @@ def test_persist_factor_dqc_is_idempotent(tmp_store) -> None:
     # own partition (distinct from a real run_id) while still being idempotent on its own.
     from atx_db.signal_eval import persist_factor_dqc
 
-    dates = _dates(6); secs = [f"S{i}" for i in range(12)]
+    dates = _dates(6)
+    secs = [f"S{i}" for i in range(12)]
     rows, sdr = [], []
     for d in dates:
         for i, s in enumerate(secs):
             same_day = float(i)
             sdr.append({"security_id": s, "as_of_date": d, "same_day_return": same_day})
             rows.append({"security_id": s, "as_of_date": d, "factor_id": "leaky", "value": same_day})
-            rows.append({"security_id": s, "as_of_date": d, "factor_id": "clean",
-                         "value": float(i) if i < 4 else None})
+            rows.append({"security_id": s, "as_of_date": d, "factor_id": "clean", "value": float(i) if i < 4 else None})
     panel = pd.DataFrame(rows)
-    leakage = compute_leakage(panel, pd.DataFrame(sdr), threshold=0.10)   # 2 factor rows
+    leakage = compute_leakage(panel, pd.DataFrame(sdr), threshold=0.10)  # 2 factor rows
     uni = pd.DataFrame({"as_of_date": dates, "universe_size": [12] * len(dates)})
-    coverage = compute_coverage(panel, uni, min_fraction=0.50)           # 2 factor rows
+    coverage = compute_coverage(panel, uni, min_fraction=0.50)  # 2 factor rows
     per_run = len(leakage) + len(coverage)
     assert per_run == 4
 
@@ -638,7 +739,8 @@ def test_persist_factor_dqc_is_idempotent(tmp_store) -> None:
     got = tmp_store.con.execute(
         "SELECT check_name, factor_id, status, run_id FROM factor_dqc_result ORDER BY run_id NULLS FIRST, check_name, factor_id"
     ).df()
-    assert set(got["run_id"].where(got["run_id"].notna(), None)) == {None, "rid-dqc"}
+    run_ids = {None if pd.isna(value) else str(value) for value in got["run_id"]}
+    assert run_ids == {None, "rid-dqc"}
     leaky_row = got[(got["check_name"] == LEAKAGE_DQC_CHECK_NAME) & (got["factor_id"] == "leaky")]
     assert (leaky_row["status"] == "failed").all()
 
@@ -655,9 +757,7 @@ def test_factor_dqc_existence_probes_are_lazy_for_unrelated_checks(tmp_store, mo
         raise AssertionError("factor-DQC existence probe ran for an unrelated check")
 
     monkeypatch.setattr(signal_eval, "_relation_exists", _boom)
-    results = run_warehouse_quality_checks(
-        tmp_store, check_names=["duplicate_equity_daily_bars"], record=False
-    )
+    results = run_warehouse_quality_checks(tmp_store, check_names=["duplicate_equity_daily_bars"], record=False)
     names = {r.check_name for r in results}
     assert LEAKAGE_DQC_CHECK_NAME not in names and COVERAGE_DQC_CHECK_NAME not in names
 
@@ -665,6 +765,7 @@ def test_factor_dqc_existence_probes_are_lazy_for_unrelated_checks(tmp_store, mo
 # ---------------------------------------------------------------------------
 # PF4-S1-4: closeout catalog sweep (clause E)
 # ---------------------------------------------------------------------------
+
 
 def test_signal_eval_tables_are_catalogued(tmp_store) -> None:
     # Every table migrations 0176-0179 create must be schema-as-contract catalogued:
@@ -696,7 +797,7 @@ def test_signal_eval_tables_are_catalogued(tmp_store) -> None:
         f"""
         SELECT table_name, count(*) AS n_fields
         FROM field_catalog
-        WHERE table_name IN ({','.join('?' for _ in tables)})
+        WHERE table_name IN ({",".join("?" for _ in tables)})
         GROUP BY table_name
         """,
         list(tables),

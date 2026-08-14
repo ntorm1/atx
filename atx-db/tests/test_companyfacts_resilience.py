@@ -11,7 +11,6 @@ import requests
 
 from atx_db.fundamentals import SecCompanyFactsDataset, SecCompanyFactsOptions
 
-
 _PAYLOAD = {
     "facts": {
         "us-gaap": {
@@ -133,6 +132,37 @@ def test_loaded_facts_dispatch_and_limit(tmp_store):
     assert len(limited) == 1
 
 
+def test_companyfacts_target_window_can_skip_already_loaded_ciks(tmp_store):
+    from atx_db.fundamentals import resolve_companyfacts_targets
+
+    _seed_loaded_facts(tmp_store)
+    tmp_store.con.execute(
+        "INSERT INTO sec_company_tickers (cik,ticker,title,security_id) VALUES "
+        "('0000000003','CCC','Gamma Inc','SEC-CIK-0000000003'),"
+        "('0000000004','DDD','Delta Inc','SEC-CIK-0000000004')"
+    )
+    first_unloaded = resolve_companyfacts_targets(
+        tmp_store,
+        SecCompanyFactsOptions(
+            symbol_source="sec_company_tickers",
+            skip_loaded_targets=True,
+            symbol_limit=1,
+        ),
+    )
+    second_unloaded = resolve_companyfacts_targets(
+        tmp_store,
+        SecCompanyFactsOptions(
+            symbol_source="sec_company_tickers",
+            skip_loaded_targets=True,
+            symbol_offset=1,
+            symbol_limit=1,
+        ),
+    )
+
+    assert [row[1] for row in first_unloaded] == ["0000000003"]
+    assert [row[1] for row in second_unloaded] == ["0000000004"]
+
+
 def test_normalize_drops_non_us_gaap_taxonomies():
     """IFRS (ifrs-full) facts are dropped at load — only us-gaap/dei are kept — so
     they neither leave catalog concepts unmapped nor collide on canonical metric names."""
@@ -148,7 +178,7 @@ def test_normalize_drops_non_us_gaap_taxonomies():
             ]}}},
         }
     }
-    facts, points = normalize_companyfacts(
+    facts, _points = normalize_companyfacts(
         payload, symbol="ZZZ", security_id="SEC-CIK-0000000009", cik="0000000009",
         source_url="https://data.sec.gov/", concepts={"Assets"}, run_id=None,
     )

@@ -2,7 +2,7 @@
 
 Groups:
 1. migration:     version 5 recorded; 4 new columns exist on fundamental_statement_map.
-2. seed coverage: exactly 143 authorized S4a item_ids after seeding.
+2. seed coverage: exactly 144 authorized S4a item_ids after seeding.
 2b. overlays:    exactly 47 S4b/S5 industry item_ids under the right templates.
 3. original 16:   all original canonical_metrics still present.
 4. item_ids:      all active rows have non-NULL item_id; multi-concept metrics share item_id
@@ -28,7 +28,7 @@ AUTHORIZED_S4A_ITEM_IDS = (
     set(range(1001, 1044))
     | set(range(1045, 1051))
     | set(range(1101, 1120))
-    | set(range(1201, 1224))
+    | set(range(1201, 1225))
     | set(range(1301, 1326))
     | set(range(1401, 1428))
 )
@@ -197,7 +197,7 @@ def test_seed_authorized_s4a_item_id_coverage(tmp_store):
             """
         ).fetchall()
     }
-    assert len(AUTHORIZED_S4A_ITEM_IDS) == 143
+    assert len(AUTHORIZED_S4A_ITEM_IDS) == 144
     assert actual == AUTHORIZED_S4A_ITEM_IDS, (
         "Seeded S4a item_ids differ from authorized cross-industry ranges; "
         f"missing={sorted(AUTHORIZED_S4A_ITEM_IDS - actual)}, "
@@ -483,10 +483,10 @@ def test_duration_fact_without_period_start_is_excluded(tmp_store):
     assert bad == 0
     # The valid duration fact still lands.
     good = tmp_store.con.execute(
-        "SELECT count(*) FROM fundamental_statement_points "
+        "SELECT count(*),min(item_id) FROM fundamental_statement_points "
         "WHERE canonical_metric = 'net_income' AND period_start = DATE '2023-01-01'"
-    ).fetchone()[0]
-    assert good == 1
+    ).fetchone()
+    assert good == (1, 1031)
 
 
 def test_scoped_revision_and_statement_refresh_preserves_other_concepts(tmp_store):

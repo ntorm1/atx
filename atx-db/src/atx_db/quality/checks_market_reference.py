@@ -12,6 +12,57 @@ def market_reference_check_specs(
 ) -> tuple[SqlQualityCheck, ...]:
     return (
         SqlQualityCheck(
+            dataset_id="provider_schema_coverage",
+            table_name="api_schema_coverage_snapshot",
+            check_name="bad_provider_schema_coverage_snapshots",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM api_schema_coverage_snapshot
+                WHERE coverage_snapshot_id IS NULL OR coverage_snapshot_id=''
+                   OR dataset_id IS NULL OR dataset_id=''
+                   OR schema_code IS NULL OR schema_code=''
+                   OR schema_version IS NULL OR schema_version=''
+                   OR source_relation IS NULL OR source_relation=''
+                   OR time_column IS NULL OR time_column=''
+                   OR record_count < 0
+                   OR security_count < 0
+                   OR item_count < 0
+                   OR basis_count < 0
+                   OR history_years < 0
+                   OR freshness_lag_days < 0
+                   OR condition NOT IN ('available','degraded','pending','missing')
+                   OR failed_slos_json IS NULL OR failed_slos_json=''
+                   OR (record_count > 0 AND (start_time IS NULL OR end_time IS NULL))
+                   OR (start_time IS NOT NULL AND end_time <= start_time)
+                   OR (condition='available' AND (record_count=0 OR failed_slos_json<>'[]'))
+                   OR (condition='degraded' AND (record_count=0 OR failed_slos_json='[]'))
+                   OR (condition IN ('pending','missing') AND record_count<>0)
+            """,
+            threshold=0.0,
+            required_tables=("api_schema_coverage_snapshot",),
+            severity="critical",
+        ),
+        SqlQualityCheck(
+            dataset_id="provider_schema_coverage",
+            table_name="api_schema_coverage_snapshot",
+            check_name="provider_schema_coverage_snapshot_without_slo",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM api_schema_coverage_snapshot snapshot
+                LEFT JOIN api_schema_coverage_slo slo
+                  ON slo.dataset_id=snapshot.dataset_id
+                 AND slo.schema_code=snapshot.schema_code
+                 AND slo.slo_version=snapshot.slo_version
+                WHERE slo.dataset_id IS NULL
+            """,
+            threshold=0.0,
+            required_tables=(
+                "api_schema_coverage_snapshot",
+                "api_schema_coverage_slo",
+            ),
+            severity="critical",
+        ),
+        SqlQualityCheck(
             dataset_id="fundamental_standardized",
             table_name="v_fundamental_standardization_coverage",
             check_name="fundamental_standardization_exception_rate",

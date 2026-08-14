@@ -36,6 +36,7 @@ def ensure_thirteenf_amendment_schema(store: DuckDBStore) -> None:
             position_id VARCHAR PRIMARY KEY,
             manager_cik VARCHAR NOT NULL,
             report_period DATE NOT NULL,
+            as_of_date DATE,
             position_key VARCHAR NOT NULL,
             security_id VARCHAR,
             cusip VARCHAR NOT NULL,
@@ -65,6 +66,7 @@ def ensure_thirteenf_amendment_schema(store: DuckDBStore) -> None:
             correction_id VARCHAR PRIMARY KEY,
             manager_cik VARCHAR NOT NULL,
             report_period DATE NOT NULL,
+            as_of_date DATE,
             amendment_accession VARCHAR NOT NULL,
             prior_accession VARCHAR,
             amendment_sequence INTEGER NOT NULL,
@@ -93,6 +95,7 @@ def ensure_thirteenf_amendment_schema(store: DuckDBStore) -> None:
             rate_id VARCHAR PRIMARY KEY,
             manager_cik VARCHAR NOT NULL,
             report_period DATE NOT NULL,
+            as_of_date DATE,
             available_at TIMESTAMP NOT NULL,
             filing_count INTEGER NOT NULL,
             amendment_count INTEGER NOT NULL,
@@ -110,6 +113,12 @@ def ensure_thirteenf_amendment_schema(store: DuckDBStore) -> None:
         )
         """
     )
+    for table in (
+        "thirteenf_effective_positions",
+        "thirteenf_amendment_corrections",
+        "thirteenf_amendment_rates",
+    ):
+        con.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS as_of_date DATE")
     for statement in (
         "CREATE INDEX IF NOT EXISTS idx_13f_effective_manager_period ON thirteenf_effective_positions(manager_cik, report_period)",
         "CREATE INDEX IF NOT EXISTS idx_13f_effective_cusip_period ON thirteenf_effective_positions(cusip, report_period)",
@@ -502,7 +511,7 @@ def refresh_thirteenf_amendments(
             con.execute(
                 """
                 INSERT INTO thirteenf_effective_positions (
-                position_id, manager_cik, report_period, position_key, security_id,
+                position_id, manager_cik, report_period, as_of_date, position_key, security_id,
                 cusip, name_of_issuer, title_of_class, share_quantity_type, put_call,
                 investment_discretion, other_manager, value_usd, share_quantity,
                 voting_auth_sole, voting_auth_shared, voting_auth_none,
@@ -510,7 +519,7 @@ def refresh_thirteenf_amendments(
             )
                 SELECT
                 md5(manager_cik || '|' || cast(report_period AS VARCHAR) || '|' || position_key),
-                manager_cik, report_period, position_key, security_id, cusip,
+                manager_cik, report_period, report_period, position_key, security_id, cusip,
                 name_of_issuer, title_of_class, share_quantity_type, put_call,
                 investment_discretion, other_manager, value_usd, share_quantity,
                 voting_auth_sole, voting_auth_shared, voting_auth_none,
@@ -522,7 +531,7 @@ def refresh_thirteenf_amendments(
         con.execute(
             """
             INSERT INTO thirteenf_amendment_corrections (
-                correction_id, manager_cik, report_period, amendment_accession,
+                correction_id, manager_cik, report_period, as_of_date, amendment_accession,
                 prior_accession, amendment_sequence, amendment_no, amendment_type,
                 filing_date, available_at, position_key, security_id, cusip,
                 change_type, old_value_usd, new_value_usd, old_share_quantity,
@@ -559,7 +568,7 @@ def refresh_thirteenf_amendments(
             )
             SELECT
                 md5(manager_cik || '|' || cast(report_period AS VARCHAR) || '|' || amendment_accession || '|' || position_key),
-                manager_cik, report_period, amendment_accession, prior_accession,
+                manager_cik, report_period, report_period, amendment_accession, prior_accession,
                 amendment_sequence, amendment_no, amendment_type, filing_date,
                 cast(filing_date AS TIMESTAMP), position_key, security_id, cusip,
                 CASE
@@ -579,7 +588,7 @@ def refresh_thirteenf_amendments(
         con.execute(
             f"""
             INSERT INTO thirteenf_amendment_rates (
-                rate_id, manager_cik, report_period, available_at, filing_count,
+                rate_id, manager_cik, report_period, as_of_date, available_at, filing_count,
                 amendment_count, position_count, corrected_position_count,
                 amendment_rate, trailing_history_quarters, trailing_24q_mean,
                 trailing_24q_stddev, amendment_rate_zscore, is_spike, run_id
@@ -666,7 +675,7 @@ def refresh_thirteenf_amendments(
             )
             SELECT
                 md5(manager_cik || '|' || cast(report_period AS VARCHAR)),
-                manager_cik, report_period, available_at, filing_count,
+                manager_cik, report_period, report_period, available_at, filing_count,
                 amendment_count, position_count, corrected_position_count,
                 amendment_rate, trailing_history_quarters, trailing_mean,
                 trailing_stddev, zscore, coalesce(zscore >= {float(spike_zscore)}, false), ?

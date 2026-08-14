@@ -43,6 +43,7 @@ _DUCKDB_TEST_THREADS = 1
 
 _SCHEMA_CACHE_DIR = _PROJECT_ROOT / ".pytest_cache" / "db_schema_templates"
 _SCHEMA_FINGERPRINT_FILES = (
+    _SOURCE_ROOT / "atx_db" / "api" / "catalog.py",
     _SOURCE_ROOT / "atx_db" / "connection.py",
     _SOURCE_ROOT / "atx_db" / "schema.py",
     _SOURCE_ROOT / "atx_db" / "schema_contract.py",

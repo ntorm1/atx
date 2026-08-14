@@ -116,6 +116,12 @@ from .fundamental_ratios import (
     compute_ratio_rows,
     refresh_fundamental_ratios,
 )
+from .fundamental_reconciliation import (
+    FundamentalReconciliationDataset,
+    FundamentalReconciliationRefreshOptions,
+    FundamentalReconciliationRefreshResult,
+    refresh_fundamental_reconciliation_serving,
+)
 from .pit_snapshot import (
     PitSnapshotDataset,
     PitSnapshotOptions,
@@ -516,6 +522,10 @@ __all__ = [
     "RATIO_DEFS",
     "compute_ratio_rows",
     "refresh_fundamental_ratios",
+    "FundamentalReconciliationDataset",
+    "FundamentalReconciliationRefreshOptions",
+    "FundamentalReconciliationRefreshResult",
+    "refresh_fundamental_reconciliation_serving",
     "fundamental_ratios_asof",
     "fundamental_ratios_asof_month",
     "PitSnapshotDataset",

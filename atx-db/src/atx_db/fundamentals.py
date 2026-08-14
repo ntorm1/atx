@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import json
+import logging
 import time
 import zipfile
 from dataclasses import dataclass
@@ -9,7 +11,6 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
-import requests
 
 from .connection import DuckDBStore
 from .dataset import Dataset, DatasetLoadResult
@@ -23,11 +24,9 @@ from .identifier_resolution import candidate_id_for
 from .security_master import (
     SEC_USER_AGENT,
     sec_session,
-    security_and_entity_ids_for_ciks_asof,
     security_ids_for_symbols,
 )
 from .warehouse import insert_frame, json_dumps, now_utc_naive, quality_check, record_source_file, symbol_key
-
 
 SEC_COMPANY_FACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
 SEC_COMPANY_FACTS_ZIP_URL = "https://www.sec.gov/Archives/edgar/daily-index/xbrl/companyfacts.zip"
@@ -53,6 +52,7 @@ DEFAULT_CONCEPTS = CANONICAL_CONCEPTS
 # non-supported taxonomies are dropped at load.
 SUPPORTED_FACT_TAXONOMIES = ("us-gaap", "dei")
 COMPANY_FACT_SYMBOL_SOURCES = ("symbols", "universe", "sec_company_tickers", "loaded_facts")
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -61,6 +61,8 @@ class SecCompanyFactsOptions:
     concepts: tuple[str, ...] = DEFAULT_CONCEPTS
     symbol_source: str = "symbols"
     symbol_limit: int | None = None
+    symbol_offset: int = 0
+    skip_loaded_targets: bool = False
     universe_id: str | None = None
     as_of_date: dt.date | None = None
     request_timeout: int = 120
@@ -75,6 +77,10 @@ class SecCompanyFactsOptions:
     # (companyfacts.zip) instead of the per-CIK network endpoint — one download replaces
     # N throttled round trips. The zip is a one-time operator download; never fetched in tests.
     companyfacts_zip: Path | None = None
+    # Large backfills can commit raw facts in bounded resumable batches and rebuild
+    # the global catalog/revision/statement/period surfaces once after all batches.
+    refresh_derived_surfaces: bool = True
+    progress_every_targets: int = 0
     run_id: str | None = None
 
 
@@ -304,24 +310,45 @@ def resolve_companyfacts_targets(
     store: DuckDBStore,
     options: SecCompanyFactsOptions,
 ) -> list[tuple[str, str, str]]:
+    if options.symbol_offset < 0:
+        raise ValueError("symbol_offset cannot be negative")
+    # Offset and skip-loaded are applied after deterministic resolution. Disable SQL
+    # limit pushdown in those modes so the requested window is not truncated first.
+    pushdown_limit = (
+        None
+        if options.symbol_offset or options.skip_loaded_targets
+        else options.symbol_limit
+    )
     source = options.symbol_source.lower()
     if source == "symbols":
-        return _apply_limit(ciks_for_symbols(store, options.symbols), options.symbol_limit)
-    if source == "universe":
-        return ciks_for_universe(
+        rows = ciks_for_symbols(store, options.symbols)
+    elif source == "universe":
+        rows = ciks_for_universe(
             store,
             universe_id=options.universe_id,
             as_of_date=options.as_of_date,
-            limit=options.symbol_limit,
+            limit=pushdown_limit,
         )
-    if source == "sec_company_tickers":
-        return ciks_from_sec_company_tickers(store, limit=options.symbol_limit)
-    if source == "loaded_facts":
-        return ciks_from_loaded_facts(store, limit=options.symbol_limit)
-    raise ValueError(
-        f"Unsupported SEC companyfacts symbol_source {options.symbol_source!r}; "
-        f"expected one of {', '.join(COMPANY_FACT_SYMBOL_SOURCES)}"
-    )
+    elif source == "sec_company_tickers":
+        rows = ciks_from_sec_company_tickers(store, limit=pushdown_limit)
+    elif source == "loaded_facts":
+        rows = ciks_from_loaded_facts(store, limit=pushdown_limit)
+    else:
+        raise ValueError(
+            f"Unsupported SEC companyfacts symbol_source {options.symbol_source!r}; "
+            f"expected one of {', '.join(COMPANY_FACT_SYMBOL_SOURCES)}"
+        )
+    if options.skip_loaded_targets:
+        loaded_ciks = {
+            str(row[0])
+            for row in store.con.execute(
+                "SELECT DISTINCT cik FROM sec_company_facts WHERE cik IS NOT NULL AND cik <> ''"
+            ).fetchall()
+        }
+        rows = [row for row in rows if str(row[1]) not in loaded_ciks]
+    start = options.symbol_offset
+    stop = None if options.symbol_limit is None else start + options.symbol_limit
+    return rows[start:stop]
 
 
 def _date(value: Any) -> dt.date | None:
@@ -360,50 +387,116 @@ def resolve_company_facts_identifiers(
     if "entity_id" not in out.columns:
         out["entity_id"] = pd.NA
 
+    out["__cik_key"] = out["cik"].astype("string").str.strip()
+    out["__available_key"] = pd.to_datetime(out["available_at"], errors="coerce")
+    valid = out["__cik_key"].notna() & out["__available_key"].notna() & out["__cik_key"].ne("")
+    lookup = (
+        out.loc[valid, ["__cik_key", "__available_key"]]
+        .drop_duplicates()
+        .reset_index(drop=True)
+        .rename(columns={"__cik_key": "cik", "__available_key": "available_at"})
+    )
+    lookup["resolution_id"] = range(len(lookup))
+    resolved_by_key: dict[tuple[str, pd.Timestamp], tuple[str, str | None]] = {}
+    if not lookup.empty:
+        store.con.register("companyfacts_resolution_lookup", lookup)
+        try:
+            resolved_rows = store.con.execute(
+                """
+                WITH cik_history_presence AS (
+                    SELECT DISTINCT id_value AS cik
+                    FROM security_identifier_history WHERE id_type='CIK'
+                ),
+                security_candidates AS (
+                    SELECT
+                        l.resolution_id,l.cik,l.available_at,h.security_id,
+                        1 AS priority,h.available_at AS mapping_available_at,
+                        h.valid_from,h.source_loaded_at
+                    FROM companyfacts_resolution_lookup l
+                    JOIN security_identifier_history h
+                      ON h.id_type='CIK' AND h.id_value=l.cik
+                     AND h.valid_from<=CAST(l.available_at AS DATE)
+                     AND coalesce(h.valid_to,DATE '9999-12-31')>CAST(l.available_at AS DATE)
+                     AND (h.available_at IS NULL OR h.available_at<=l.available_at)
+                    UNION ALL
+                    SELECT
+                        l.resolution_id,l.cik,l.available_at,t.security_id,
+                        2 AS priority,NULL AS mapping_available_at,
+                        DATE '1900-01-01' AS valid_from,t.source_loaded_at
+                    FROM companyfacts_resolution_lookup l
+                    JOIN sec_company_tickers t ON t.cik=l.cik
+                    LEFT JOIN cik_history_presence hp ON hp.cik=l.cik
+                    WHERE hp.cik IS NULL
+                      AND t.security_id IS NOT NULL AND t.security_id<>''
+                ),
+                resolved_security AS (
+                    SELECT resolution_id,cik,available_at,security_id
+                    FROM security_candidates
+                    QUALIFY row_number() OVER (
+                        PARTITION BY resolution_id
+                        ORDER BY priority,mapping_available_at DESC NULLS LAST,
+                                 valid_from DESC,source_loaded_at DESC NULLS LAST,security_id
+                    )=1
+                ),
+                entity_history_presence AS (
+                    SELECT DISTINCT security_id
+                    FROM security_identifier_history WHERE id_type='ENTITY_ID'
+                ),
+                entity_candidates AS (
+                    SELECT
+                        r.resolution_id,h.id_value AS entity_id,
+                        1 AS priority,h.available_at AS mapping_available_at,
+                        h.valid_from,h.source_loaded_at
+                    FROM resolved_security r
+                    JOIN security_identifier_history h
+                      ON h.security_id=r.security_id AND h.id_type='ENTITY_ID'
+                     AND h.valid_from<=CAST(r.available_at AS DATE)
+                     AND coalesce(h.valid_to,DATE '9999-12-31')>CAST(r.available_at AS DATE)
+                     AND (h.available_at IS NULL OR h.available_at<=r.available_at)
+                    UNION ALL
+                    SELECT
+                        r.resolution_id,s.entity_id,2 AS priority,NULL AS mapping_available_at,
+                        coalesce(s.first_seen_date,DATE '1900-01-01') AS valid_from,
+                        s.source_loaded_at
+                    FROM resolved_security r
+                    JOIN securities s ON s.security_id=r.security_id
+                    LEFT JOIN entity_history_presence hp ON hp.security_id=r.security_id
+                    WHERE hp.security_id IS NULL
+                      AND s.entity_id IS NOT NULL AND s.entity_id<>''
+                ),
+                resolved_entity AS (
+                    SELECT resolution_id,entity_id
+                    FROM entity_candidates
+                    QUALIFY row_number() OVER (
+                        PARTITION BY resolution_id
+                        ORDER BY priority,mapping_available_at DESC NULLS LAST,
+                                 valid_from DESC,source_loaded_at DESC NULLS LAST,entity_id
+                    )=1
+                )
+                SELECT r.cik,r.available_at,r.security_id,e.entity_id
+                FROM resolved_security r
+                LEFT JOIN resolved_entity e USING (resolution_id)
+                """
+            ).fetchall()
+        finally:
+            store.con.unregister("companyfacts_resolution_lookup")
+        resolved_by_key = {
+            (str(cik), pd.Timestamp(available_at)): (security_id, entity_id)
+            for cik, available_at, security_id, entity_id in resolved_rows
+        }
+
     unresolved_rows: list[dict[str, Any]] = []
-    # Facts sharing the exact same available_at resolve identically, so batch
-    # the spine lookup per distinct available_at instead of per fact row.
-    for available_at, group in out.groupby("available_at", sort=False, dropna=False):
-        if pd.isna(available_at):
-            # PF-S5 S5-3 fix: a fact with a null/NaT available_at has no known
-            # filing-availability time. Resolving it "as of now" would leak
-            # today's full identifier state into a fact whose true availability
-            # is unknown -- a lookahead violation of the warehouse's
-            # non-negotiable no-lookahead PIT invariant. Route it into the same
-            # unresolved-ledger path as an unresolvable CIK instead: the fact
-            # keeps flowing with its passthrough security_id, entity_id stays
-            # null, and the caller records it in identifier_resolution_candidates.
-            # (normalize_companyfacts always derives available_at from
-            # filed_date, so this branch should not be reached in practice --
-            # but it must be fail-safe, not fail-lookahead, if that ever changes.)
-            for idx in group.index:
-                cik = str(out.at[idx, "cik"]).strip()
-                unresolved_rows.append(
-                    {
-                        "cik": cik,
-                        "security_id": out.at[idx, "security_id"],
-                        "available_at": available_at,
-                    }
-                )
+    for idx in out.index:
+        cik = str(out.at[idx, "__cik_key"]).strip()
+        available_at = out.at[idx, "__available_key"]
+        match = None if pd.isna(available_at) else resolved_by_key.get((cik, pd.Timestamp(available_at)))
+        if match is None:
+            unresolved_rows.append(
+                {"cik": cik, "security_id": out.at[idx, "security_id"], "available_at": available_at}
+            )
             continue
-        as_of_ts = pd.Timestamp(available_at).to_pydatetime()
-        ciks = sorted({str(c).strip() for c in group["cik"] if str(c).strip()})
-        resolved = security_and_entity_ids_for_ciks_asof(store, ciks, as_of_ts=as_of_ts)
-        for idx in group.index:
-            cik = str(out.at[idx, "cik"]).strip()
-            match = resolved.get(cik)
-            if match is None:
-                unresolved_rows.append(
-                    {
-                        "cik": cik,
-                        "security_id": out.at[idx, "security_id"],
-                        "available_at": available_at,
-                    }
-                )
-                continue
-            resolved_security_id, resolved_entity_id = match
-            out.at[idx, "security_id"] = resolved_security_id
-            out.at[idx, "entity_id"] = resolved_entity_id
+        out.at[idx, "security_id"], out.at[idx, "entity_id"] = match
+    out = out.drop(columns=["__cik_key", "__available_key"])
 
     if unresolved_rows:
         unresolved = pd.DataFrame(unresolved_rows).drop_duplicates(subset=["cik"]).reset_index(drop=True)
@@ -624,7 +717,7 @@ def refresh_xbrl_concept_catalog(store: DuckDBStore) -> int:
                 "last_filed_date": group["filed_date"].max(),
                 "first_available_at": group["available_at"].min(),
                 "last_available_at": group["available_at"].max(),
-                "fact_count": int(len(group)),
+                "fact_count": len(group),
                 "security_count": int(group["security_id"].nunique()),
                 "accession_count": int(group["accession_number"].nunique()),
                 "latest_source_loaded_at": group["source_loaded_at"].max(),
@@ -654,7 +747,7 @@ def refresh_xbrl_concept_catalog(store: DuckDBStore) -> int:
             )
     finally:
         store.con.unregister("xbrl_concept_catalog_load")
-    return int(len(frame))
+    return len(frame)
 
 
 def refresh_fundamental_fact_revisions(
@@ -889,10 +982,8 @@ class _CompanyFactsZipFetcher:
         self._archive.close()
 
     def __del__(self) -> None:
-        try:
+        with contextlib.suppress(Exception):
             self.close()
-        except Exception:
-            pass
 
 
 def _make_companyfacts_zip_fetcher(path: str | Path):
@@ -968,6 +1059,15 @@ class SecCompanyFactsDataset(Dataset):
         unresolved_ciks: list[pd.DataFrame] = []
         attempts = max(1, options.max_attempts)
         for index, (symbol, cik, security_id) in enumerate(targets):
+            if options.progress_every_targets > 0 and index % options.progress_every_targets == 0:
+                LOGGER.info(
+                    "companyfacts progress processed=%d total=%d loaded=%d failed=%d rows=%d",
+                    index,
+                    len(targets),
+                    loaded_targets,
+                    len(failed_targets),
+                    rows_loaded,
+                )
             # Local zip reads need no throttle; only the network path is rate-limited.
             if zip_fetcher is None and options.request_delay_seconds > 0 and index > 0:
                 time.sleep(options.request_delay_seconds)
@@ -1068,14 +1168,26 @@ class SecCompanyFactsDataset(Dataset):
                         )
                 finally:
                     store.con.unregister("sec_company_facts_unresolved_candidates")
-                unresolved_candidate_rows = int(len(candidates))
-        concept_rows = refresh_xbrl_concept_catalog(store)
-        revision_rows = refresh_fundamental_fact_revisions(store)
-        statement_rows = refresh_fundamental_statement_points(store)
-        period_rows = refresh_fundamental_periods(store)
-        ttm_rows = refresh_fundamental_ttm_points(store)
+                unresolved_candidate_rows = len(candidates)
+        if options.refresh_derived_surfaces:
+            concept_rows = refresh_xbrl_concept_catalog(store)
+            revision_rows = refresh_fundamental_fact_revisions(store)
+            statement_rows = refresh_fundamental_statement_points(store)
+            period_rows = refresh_fundamental_periods(store)
+            ttm_rows = refresh_fundamental_ttm_points(store)
+        else:
+            concept_rows = revision_rows = statement_rows = period_rows = ttm_rows = 0
         if zip_fetcher is not None:
             zip_fetcher.close()
+        if options.progress_every_targets > 0:
+            LOGGER.info(
+                "companyfacts progress processed=%d total=%d loaded=%d failed=%d rows=%d complete=true",
+                len(targets),
+                len(targets),
+                loaded_targets,
+                len(failed_targets),
+                rows_loaded,
+            )
 
         quality_check(
             store,
@@ -1089,6 +1201,9 @@ class SecCompanyFactsDataset(Dataset):
                 "symbols": options.symbols,
                 "symbol_source": options.symbol_source,
                 "symbol_limit": options.symbol_limit,
+                "symbol_offset": options.symbol_offset,
+                "skip_loaded_targets": options.skip_loaded_targets,
+                "refresh_derived_surfaces": options.refresh_derived_surfaces,
                 "universe_id": options.universe_id,
                 "as_of_date": options.as_of_date.isoformat() if options.as_of_date else None,
                 "target_count": len(targets),
@@ -1111,6 +1226,9 @@ class SecCompanyFactsDataset(Dataset):
                 "symbols": options.symbols,
                 "symbol_source": options.symbol_source,
                 "symbol_limit": options.symbol_limit,
+                "symbol_offset": options.symbol_offset,
+                "skip_loaded_targets": options.skip_loaded_targets,
+                "refresh_derived_surfaces": options.refresh_derived_surfaces,
                 "universe_id": options.universe_id,
                 "as_of_date": options.as_of_date.isoformat() if options.as_of_date else None,
                 "target_count": len(targets),
@@ -1179,8 +1297,6 @@ class SecCompanyFactsDataset(Dataset):
                 insert_frame(store, points, "fundamental_points", "fundamental_points_insert")
         finally:
             for relation in ("sec_company_facts_load", "fundamental_points_load"):
-                try:
+                with contextlib.suppress(Exception):
                     store.con.unregister(relation)
-                except Exception:
-                    pass
-        return int(len(facts))
+        return len(facts)

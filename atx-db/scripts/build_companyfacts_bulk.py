@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
 from pathlib import Path
 
@@ -76,12 +77,25 @@ def parse_args() -> argparse.Namespace:
         help="Restrict targets to symbols with current observations for these factor IDs.",
     )
     parser.add_argument("--limit", type=int, default=None, help="Cap targets (debug/smoke).")
+    parser.add_argument("--offset", type=int, default=0, help="Skip this many deterministically ordered targets.")
+    parser.add_argument(
+        "--skip-loaded",
+        action="store_true",
+        help="Exclude CIKs already present in sec_company_facts before applying offset/limit.",
+    )
+    parser.add_argument(
+        "--defer-derived-surfaces",
+        action="store_true",
+        help="Commit raw facts only; rebuild global derived surfaces once after all batches.",
+    )
     parser.add_argument("--user-agent", default=SEC_USER_AGENT)
+    parser.add_argument("--progress-every", type=int, default=25)
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     if args.download:
         _download(args.companyfacts_zip, user_agent=args.user_agent)
     if not args.companyfacts_zip.exists():
@@ -118,8 +132,12 @@ def main() -> int:
             companyfacts_zip=args.companyfacts_zip,
             symbol_source=symbol_source,
             symbol_limit=args.limit,
+            symbol_offset=args.offset,
+            skip_loaded_targets=args.skip_loaded,
             universe_id=args.universe_id,
             skip_failed_targets=True,  # CIKs absent from the archive are recorded + skipped
+            refresh_derived_surfaces=not args.defer_derived_surfaces,
+            progress_every_targets=args.progress_every,
         )
         result = SecCompanyFactsDataset().run(store, options)
     details = dict(result.details)

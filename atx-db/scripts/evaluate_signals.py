@@ -64,6 +64,11 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Stable research run identifier; defaults to a UTC timestamp.",
     )
+    parser.add_argument(
+        "--screen-only",
+        action="store_true",
+        help="Persist IC/HAC and decay only; skip portfolio diagnostics for fast screening.",
+    )
     return parser.parse_args()
 
 
@@ -87,6 +92,7 @@ def main() -> int:
             neutralize_taxonomy=args.neutralize_taxonomy,
             neutralization_min_group_size=args.neutralization_min_group_size,
             neutralization_min_coverage=args.neutralization_min_coverage,
+            screen_only=args.screen_only,
             run_id=run_id,
         )
         store.con.register(
@@ -125,6 +131,7 @@ def main() -> int:
                 "horizons": list(horizons),
                 "return_target": args.return_target,
                 "neutralize_taxonomy": args.neutralize_taxonomy,
+                "screen_only": args.screen_only,
                 "rows_persisted": counts,
                 "information_coefficient": ic.to_dict(orient="records"),
             },

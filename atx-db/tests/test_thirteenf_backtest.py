@@ -18,9 +18,10 @@ def test_backtest_enters_after_signal_and_uses_trading_horizons() -> None:
         ensure_thirteenf_backtest_schema(store)
         store.con.execute(
             """
-            CREATE TABLE equity_daily_bars (
-                source VARCHAR, security_id VARCHAR, symbol VARCHAR, trade_date DATE,
-                available_at TIMESTAMP, adjusted_close DOUBLE, close DOUBLE, volume BIGINT
+                CREATE TABLE equity_daily_bars (
+                    source VARCHAR, security_id VARCHAR, symbol VARCHAR, trade_date DATE,
+                    available_at TIMESTAMP, adjusted_close DOUBLE, close DOUBLE, volume BIGINT,
+                    market_cap_usd DOUBLE
             )
             """
         )
@@ -63,7 +64,7 @@ def test_backtest_enters_after_signal_and_uses_trading_horizons() -> None:
                 'test_prices', 'price-security', 'AAPL',
                 DATE '2020-05-21' + i::INTEGER,
                 cast(DATE '2020-05-21' + i::INTEGER AS TIMESTAMP) + INTERVAL 22 HOUR,
-                100.0 - i, 100.0 - i, 1000000
+                    100.0 - i, 100.0 - i, 1000000, 50_000_000 * (100.0 - i)
             FROM range(0, 48) values_(i)
             """
         )

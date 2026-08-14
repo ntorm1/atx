@@ -95,14 +95,11 @@ def test_validate_catalog_rejects_undeclared_factor_input() -> None:
 
 
 def test_factor_definition_migration_seeds_catalog_rows(tmp_store) -> None:
-    # factor_definition is seeded from three authoritative sources, matching the
-    # migrations that populate it: legacy S7-0 rows (migration 0152), the S8
-    # definition-as-data seed CSV (migrations 0156-0159), and the S9 cross-domain
-    # specs (migrations 0160-0163).
+    # The original catalog from migrations 0152-0163 remains present. Later governed
+    # factor migrations extend that baseline, so the current table is intentionally
+    # a superset rather than an exact snapshot of these three seed sources.
     expected_count = (
-        len(legacy_factor_definitions())
-        + len(factor_seed_definitions())
-        + len(cross_domain_factor_definitions())
+        len(legacy_factor_definitions()) + len(factor_seed_definitions()) + len(cross_domain_factor_definitions())
     )
     count = tmp_store.con.execute("SELECT count(*) FROM factor_definition").fetchone()[0]
     ret = tmp_store.con.execute(
@@ -138,7 +135,7 @@ def test_factor_definition_migration_seeds_catalog_rows(tmp_store) -> None:
         ).fetchall()
     }
 
-    assert count == expected_count
+    assert count >= expected_count
     assert ret == ("returns", "ratio", "signed", "1", "features.FEATURE_DEFINITIONS")
     assert alpha[0] == "alpha_research"
     assert set(json.loads(alpha[1])) == {"factor:mom_21d", "factor:adv_21d"}
@@ -273,7 +270,7 @@ def test_compute_factor_rows_selects_one_latest_revision_per_key() -> None:
     )
 
 
-_MANIFEST_ID_PROBE_SOURCE = '''
+_MANIFEST_ID_PROBE_SOURCE = """
 import datetime as dt
 import json
 import sys
@@ -337,7 +334,7 @@ targets = tuple(sys.argv[1:])
 result = compute_factor_rows(input_values, rows, target_factor_ids=targets, run_id="factor-run")
 manifest = factor_build_manifest_frame(result)
 print(manifest.iloc[0]["manifest_id"])
-'''
+"""
 
 
 def test_factor_build_manifest_id_is_hashseed_independent(tmp_path) -> None:
@@ -476,10 +473,34 @@ def test_factor_operator_metadata_migration_seeds_pit_safe_operators(tmp_store) 
 def test_neutralize_residualizes_within_asof_sector_groups() -> None:
     frame = pd.DataFrame(
         [
-            {"factor_id": "value", "security_id": "A", "sector": "tech", "as_of_date": dt.date(2023, 1, 3), "value": 1.0},
-            {"factor_id": "value", "security_id": "B", "sector": "tech", "as_of_date": dt.date(2023, 1, 3), "value": 3.0},
-            {"factor_id": "value", "security_id": "C", "sector": "energy", "as_of_date": dt.date(2023, 1, 3), "value": 10.0},
-            {"factor_id": "value", "security_id": "D", "sector": "energy", "as_of_date": dt.date(2023, 1, 3), "value": 14.0},
+            {
+                "factor_id": "value",
+                "security_id": "A",
+                "sector": "tech",
+                "as_of_date": dt.date(2023, 1, 3),
+                "value": 1.0,
+            },
+            {
+                "factor_id": "value",
+                "security_id": "B",
+                "sector": "tech",
+                "as_of_date": dt.date(2023, 1, 3),
+                "value": 3.0,
+            },
+            {
+                "factor_id": "value",
+                "security_id": "C",
+                "sector": "energy",
+                "as_of_date": dt.date(2023, 1, 3),
+                "value": 10.0,
+            },
+            {
+                "factor_id": "value",
+                "security_id": "D",
+                "sector": "energy",
+                "as_of_date": dt.date(2023, 1, 3),
+                "value": 14.0,
+            },
         ]
     )
 

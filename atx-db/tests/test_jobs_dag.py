@@ -293,10 +293,7 @@ def test_dataset_registry_dag_has_expected_foundation_edges():
 
     dag = build_dataset_dag(DATASET_REGISTRY)
 
-    assert dag.dependencies_of("fundamental_ratios") == (
-        "fundamental_xbrl_metric",
-        "sec_company_facts",
-    )
+    assert dag.dependencies_of("fundamental_ratios") == ("fundamental_standardized",)
     assert dag.dependencies_of("xbrl_filing_contexts") == ("sec_submissions",)
     assert dag.dependencies_of("shares_outstanding_history") == ("sec_company_facts",)
     assert dag.dependencies_of("market_cap") == (
@@ -312,7 +309,14 @@ def test_dataset_registry_dag_has_expected_foundation_edges():
         "market_cap",
         "sec_company_facts",
     )
-    assert dag.dependencies_of("fundamental_standardized") == ("fundamental_xbrl_metric",)
+    assert dag.dependencies_of("fundamental_standardized") == (
+        "fundamental_xbrl_metric",
+        "sec_company_facts",
+    )
+    assert dag.dependencies_of("fundamental_reconciliation") == (
+        "fundamental_standardized",
+        "xbrl_filing_contexts",
+    )
     assert dag.dependencies_of("fact_disagreement") == ("fundamental_standardized",)
     assert dag.dependencies_of("short_interest_metrics") == (
         "finra_short_interest",

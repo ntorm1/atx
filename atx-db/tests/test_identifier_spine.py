@@ -396,6 +396,47 @@ def test_security_master_upsert_backfills_current_cik_entity(tmp_store):
     }
 
 
+def test_security_master_refresh_replaces_stale_current_ticker(tmp_store):
+    from atx_db.security_master import normalize_company_tickers, upsert_security_master_from_frame
+
+    old = normalize_company_tickers(
+        {"0": {"cik_str": 19617, "ticker": "AMJB", "title": "JPMorgan Chase & Co."}}
+    )
+    current = normalize_company_tickers(
+        {"0": {"cik_str": 19617, "ticker": "JPM", "title": "JPMorgan Chase & Co."}}
+    )
+    upsert_security_master_from_frame(tmp_store, old, source="fixture-security-master")
+    first_seen = tmp_store.con.execute(
+        "SELECT first_seen_date FROM securities WHERE security_id='SEC-CIK-0000019617'"
+    ).fetchone()[0]
+
+    upsert_security_master_from_frame(tmp_store, current, source="fixture-security-master")
+
+    assert tmp_store.con.execute(
+        "SELECT ticker FROM sec_company_tickers WHERE cik='0000019617'"
+    ).fetchall() == [("JPM",)]
+    assert tmp_store.con.execute(
+        """
+        SELECT primary_symbol,first_seen_date
+        FROM securities
+        WHERE security_id='SEC-CIK-0000019617'
+        """
+    ).fetchone() == ("JPM", first_seen)
+    assert tmp_store.con.execute(
+        """
+        SELECT id_value,valid_to,is_latest_revision
+        FROM security_identifier_history
+        WHERE security_id='SEC-CIK-0000019617'
+          AND source='fixture-security-master'
+          AND id_type='TICKER'
+        ORDER BY id_value
+        """
+    ).fetchall() == [
+        ("AMJB", dt.date.today(), False),
+        ("JPM", None, True),
+    ]
+
+
 def test_security_entity_ids_asof_merger_fixture_no_lookahead(tmp_store):
     from atx_db.security_master import ENTITY_IDENTIFIER_TYPE, security_entity_ids_asof
 

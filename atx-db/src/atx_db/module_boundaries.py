@@ -17,7 +17,9 @@ DECOMPOSED_PACKAGES = (
     "atx_db.estimates",
 )
 PUBLIC_API_MODULES = ("atx_db", *DECOMPOSED_PACKAGES)
-PUBLIC_API_EXCLUDES = {"atx_db": frozenset({"tests"})}
+PUBLIC_API_EXCLUDES = {
+    "atx_db": frozenset({"tests", "_standardization_set_based"}),
+}
 
 
 @dataclass(frozen=True)

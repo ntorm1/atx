@@ -418,6 +418,19 @@ def upsert_security_master_from_frame(
             "source": source,
         }
     ).drop_duplicates(subset=["security_id"])
+    existing_securities = store.con.execute(
+        """
+        SELECT security_id,first_seen_date
+        FROM securities
+        """
+    ).df()
+    if not existing_securities.empty:
+        securities = securities.merge(existing_securities, on="security_id", how="left")
+        securities["first_seen_date"] = securities["first_seen_date_y"].where(
+            securities["first_seen_date_y"].notna(),
+            securities["first_seen_date_x"],
+        )
+        securities = securities.drop(columns=["first_seen_date_x", "first_seen_date_y"])
 
     identifiers = pd.concat(
         [
@@ -539,7 +552,6 @@ def upsert_security_master_from_frame(
                 DELETE FROM sec_company_tickers
                 USING security_master_load src
                 WHERE sec_company_tickers.cik = src.cik
-                  AND sec_company_tickers.ticker = src.ticker
                 """
             )
             store.con.execute(
@@ -548,6 +560,43 @@ def upsert_security_master_from_frame(
                 SELECT cik, ticker, title, security_id
                 FROM security_master_load
                 """
+            )
+            store.con.execute(
+                """
+                UPDATE security_identifier_history AS history
+                SET valid_to=?,is_latest_revision=false
+                WHERE history.source=?
+                  AND history.id_type='TICKER'
+                  AND history.valid_to IS NULL
+                  AND history.security_id IN (
+                      SELECT DISTINCT security_id FROM security_master_load
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM security_master_load current
+                      WHERE current.security_id=history.security_id
+                        AND current.ticker=history.id_value
+                  )
+                """,
+                [today, source],
+            )
+            store.con.execute(
+                """
+                UPDATE exchange_listings AS listing
+                SET valid_to=?
+                WHERE listing.source=?
+                  AND listing.valid_to IS NULL
+                  AND listing.security_id IN (
+                      SELECT DISTINCT security_id FROM security_master_load
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM security_master_load current
+                      WHERE current.security_id=listing.security_id
+                        AND current.ticker=listing.ticker
+                  )
+                """,
+                [today, source],
             )
             store.con.execute(
                 """

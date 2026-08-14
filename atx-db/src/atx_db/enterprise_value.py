@@ -11,8 +11,7 @@ import pandas as pd
 
 from .connection import DuckDBStore
 from .dataset import Dataset, DatasetLoadResult
-from .warehouse import insert_frame, json_dumps, quality_check
-
+from .warehouse import json_dumps, quality_check
 
 SOURCE_NAME = "Derived point-in-time enterprise value"
 DEFAULT_ENTERPRISE_VALUE_SOURCE = "derived_enterprise_value_v1"
@@ -215,8 +214,7 @@ def _select_latest_enterprise_value_inputs(inputs: pd.DataFrame) -> pd.DataFrame
     out["fundamental_is_available"] = out["fundamental_available_at"] <= out["trade_date"]
     key_columns = ["market_cap_source", "security_id", "trade_date"]
     out = out.sort_values(
-        key_columns
-        + ["fundamental_is_available", "period_end", "fundamental_available_at", "fundamental_sort_key"],
+        [*key_columns, "fundamental_is_available", "period_end", "fundamental_available_at", "fundamental_sort_key"],
         ascending=[True, True, True, False, False, False, False],
         kind="mergesort",
     )
@@ -406,7 +404,10 @@ def compute_enterprise_value_rows(
     prepared["enterprise_value_id"] = [
         _enterprise_value_id(source, str(market_cap_source), str(security_id), trade_date)
         for market_cap_source, security_id, trade_date in zip(
-            selected["market_cap_source"], selected["security_id"], selected["trade_date"]
+            selected["market_cap_source"],
+            selected["security_id"],
+            selected["trade_date"],
+            strict=True,
         )
     ]
     # `COMPONENT_CODE_MAP` is the same literal for every row; hoisted out of the
@@ -420,7 +421,7 @@ def compute_enterprise_value_rows(
     # Series, so per-cell values/dtypes (incl. pd.NA/Timestamp/date) are preserved
     # exactly, but building the M-row list stays a single, cheap tuple-unpacking loop.
     prepared["input_lineage_json"] = [
-        _input_lineage_json(dict(zip(lineage_columns, values)))
+        _input_lineage_json(dict(zip(lineage_columns, values, strict=True)))
         for values in selected[lineage_columns].itertuples(index=False, name=None)
     ]
 
@@ -626,16 +627,508 @@ def _delete_enterprise_value_scope(
     store.con.execute(f"DELETE FROM enterprise_value WHERE {' AND '.join(predicates)}", params)
 
 
+def _enterprise_value_stage_sql(options: EnterpriseValueOptions) -> tuple[str, list[object]]:
+    """Build a fully set-based, component-lineaged EV refresh query."""
+
+    symbols = _normalized_symbols(options.symbols)
+    if options.symbols is not None and not symbols:
+        return "", []
+
+    predicates = [
+        "m.is_latest_revision",
+        "m.security_id IS NOT NULL",
+        "m.trade_date IS NOT NULL",
+        "m.market_cap IS NOT NULL",
+        "m.market_cap >= 0",
+        "isfinite(m.market_cap)",
+        "m.available_at IS NOT NULL",
+    ]
+    params: list[object] = [options.source, options.run_id]
+    if options.market_cap_sources:
+        placeholders = ", ".join("?" for _ in options.market_cap_sources)
+        predicates.append(f"m.source IN ({placeholders})")
+        params.extend(options.market_cap_sources)
+    if symbols:
+        placeholders = ", ".join("?" for _ in symbols)
+        predicates.append(f"upper(m.symbol) IN ({placeholders})")
+        params.extend(symbols)
+    if options.start_date is not None:
+        predicates.append("m.trade_date >= ?")
+        params.append(options.start_date)
+    if options.end_date is not None:
+        predicates.append("m.trade_date <= ?")
+        params.append(options.end_date)
+    market_cap_where = "\n              AND ".join(predicates)
+
+    raw_concepts = (
+        ("total_debt_reported", "TotalDebt"),
+        ("debt_current", "DebtCurrent"),
+        ("long_term_debt_current", "LongTermDebtCurrent"),
+        ("short_term_borrowings", "ShortTermBorrowings"),
+        ("commercial_paper", "CommercialPaper"),
+        ("long_term_debt_noncurrent", "LongTermDebtNoncurrent"),
+        ("preferred_equity", "PreferredStockValue"),
+        ("minority_interest", "MinorityInterest"),
+        ("cash_and_equivalents", "CashAndCashEquivalentsAtCarryingValue"),
+    )
+    fact_projection: list[str] = []
+    for component, concept in raw_concepts:
+        fact_projection.extend(
+            [
+                f"max(CASE WHEN l.concept = '{concept}' THEN l.fact.value END) AS {component}",
+                f"max(CASE WHEN l.concept = '{concept}' THEN l.fact.available_at END) "
+                f"AS {component}_available_at",
+                f"max(CASE WHEN l.concept = '{concept}' THEN l.fact.fact_revision_id END) "
+                f"AS {component}_id",
+                f"max(CASE WHEN l.concept = '{concept}' THEN l.fact.source END) "
+                f"AS {component}_source",
+            ]
+        )
+    fact_columns = ",\n                ".join(fact_projection)
+
+    sql = f"""
+        CREATE OR REPLACE TEMP TABLE enterprise_value_refresh_stage AS
+        WITH config AS (
+            SELECT CAST(? AS VARCHAR) AS source, CAST(? AS VARCHAR) AS run_id
+        ),
+        market_caps AS (
+            SELECT
+                m.market_cap_id,
+                m.source AS market_cap_source,
+                m.security_id,
+                m.symbol,
+                m.trade_date,
+                m.close AS price,
+                m.share_count,
+                m.share_count_type_used,
+                m.market_cap,
+                m.available_at AS market_cap_available_at,
+                m.price_available_at,
+                m.share_available_at,
+                m.input_lineage_json AS market_cap_input_lineage_json
+            FROM market_cap m
+            WHERE {market_cap_where}
+        ),
+        component_source AS (
+            SELECT
+                r.security_id,
+                r.period_start,
+                r.period_end,
+                r.concept,
+                r.fiscal_year,
+                r.fiscal_period,
+                r.value,
+                r.available_at,
+                r.fact_revision_id,
+                r.accession_number,
+                r.source,
+                r.revision_sequence,
+                1 AS source_priority
+            FROM fundamental_fact_revisions r
+            WHERE r.is_latest_revision
+              AND r.period_start IS NULL
+              AND r.unit = 'USD'
+              AND r.concept IN (
+                    'DebtCurrent',
+                    'LongTermDebtCurrent',
+                    'ShortTermBorrowings',
+                    'CommercialPaper',
+                    'LongTermDebtNoncurrent',
+                    'PreferredStockValue',
+                    'MinorityInterest',
+                    'CashAndCashEquivalentsAtCarryingValue'
+              )
+              AND r.value IS NOT NULL
+              AND r.value >= 0
+              AND isfinite(r.value)
+              AND r.available_at IS NOT NULL
+
+            UNION ALL
+
+            SELECT
+                s.security_id,
+                s.period_start,
+                s.period_end,
+                CASE s.canonical_metric
+                    WHEN 'total_debt' THEN 'TotalDebt'
+                    WHEN 'pref_stock' THEN 'PreferredStockValue'
+                    WHEN 'minority_int_bs' THEN 'MinorityInterest'
+                    WHEN 'cash_st_inv' THEN 'CashAndCashEquivalentsAtCarryingValue'
+                END AS concept,
+                s.fiscal_year,
+                s.fiscal_period,
+                s.value,
+                s.available_at,
+                s.statement_point_id AS fact_revision_id,
+                s.accession_number,
+                s.source,
+                s.revision_sequence,
+                0 AS source_priority
+            FROM fundamental_statement_points s
+            WHERE s.is_latest_revision
+              AND s.period_type = 'instant'
+              AND s.canonical_metric IN ('total_debt', 'pref_stock', 'minority_int_bs', 'cash_st_inv')
+              AND s.value IS NOT NULL
+              AND s.value >= 0
+              AND isfinite(s.value)
+              AND s.available_at IS NOT NULL
+        ),
+        latest_components AS (
+            SELECT
+                x.security_id,
+                x.period_end,
+                x.concept,
+                arg_max(
+                    struct_pack(
+                        period_start := x.period_start,
+                        fiscal_year := x.fiscal_year,
+                        fiscal_period := x.fiscal_period,
+                        value := x.value,
+                        available_at := x.available_at,
+                        fact_revision_id := x.fact_revision_id,
+                        accession_number := x.accession_number,
+                        source := x.source
+                    ),
+                    struct_pack(
+                        source_priority := x.source_priority,
+                        available_at := x.available_at,
+                        revision_sequence := coalesce(x.revision_sequence, 0),
+                        source := x.source,
+                        fact_revision_id := x.fact_revision_id
+                    )
+                ) AS fact
+            FROM component_source x
+            GROUP BY x.security_id, x.period_end, x.concept
+        ),
+        fundamentals AS (
+            SELECT
+                l.security_id,
+                l.period_end,
+                min(l.fact.period_start) AS period_start,
+                max(l.fact.fiscal_year) AS fiscal_year,
+                max(l.fact.fiscal_period) AS fiscal_period,
+                {fact_columns}
+            FROM latest_components l
+            GROUP BY l.security_id, l.period_end
+        ),
+        derived_fundamentals AS (
+            SELECT
+                f.*,
+                coalesce(
+                    f.total_debt_reported,
+                    coalesce(
+                        f.debt_current,
+                        coalesce(f.long_term_debt_current, 0)
+                            + coalesce(f.short_term_borrowings, f.commercial_paper, 0)
+                    ) + coalesce(f.long_term_debt_noncurrent, 0)
+                ) AS total_debt,
+                CASE
+                    WHEN f.total_debt_reported IS NOT NULL THEN f.total_debt_reported_available_at
+                    ELSE greatest(
+                    CASE
+                        WHEN f.debt_current IS NOT NULL THEN f.debt_current_available_at
+                        ELSE greatest(
+                            f.long_term_debt_current_available_at,
+                            coalesce(
+                                f.short_term_borrowings_available_at,
+                                f.commercial_paper_available_at
+                            )
+                        )
+                    END,
+                    f.long_term_debt_noncurrent_available_at
+                    )
+                END AS total_debt_available_at,
+                coalesce(
+                    f.total_debt_reported_id,
+                    sha256(concat_ws(
+                        '|',
+                        'derived_total_debt_v1',
+                        f.security_id,
+                        CAST(f.period_end AS VARCHAR),
+                        f.debt_current_id,
+                        f.long_term_debt_current_id,
+                        f.short_term_borrowings_id,
+                        f.commercial_paper_id,
+                        f.long_term_debt_noncurrent_id
+                    ))
+                ) AS total_debt_id,
+                coalesce(
+                    f.total_debt_reported_source,
+                    'derived_sec_companyfacts_debt_v1'
+                ) AS total_debt_source,
+                CAST(json_object(
+                    'formula', 'coalesce(DebtCurrent, LongTermDebtCurrent + coalesce(ShortTermBorrowings, CommercialPaper, 0)) + LongTermDebtNoncurrent',
+                    'reported_total_debt', json_object(
+                        'fact_revision_id', f.total_debt_reported_id,
+                        'source', f.total_debt_reported_source,
+                        'value', f.total_debt_reported,
+                        'available_at', f.total_debt_reported_available_at
+                    ),
+                    'debt_current', json_object(
+                        'fact_revision_id', f.debt_current_id,
+                        'source', f.debt_current_source,
+                        'value', f.debt_current,
+                        'available_at', f.debt_current_available_at
+                    ),
+                    'long_term_debt_current', json_object(
+                        'fact_revision_id', f.long_term_debt_current_id,
+                        'source', f.long_term_debt_current_source,
+                        'value', f.long_term_debt_current,
+                        'available_at', f.long_term_debt_current_available_at
+                    ),
+                    'short_term_borrowings', json_object(
+                        'fact_revision_id', f.short_term_borrowings_id,
+                        'source', f.short_term_borrowings_source,
+                        'value', f.short_term_borrowings,
+                        'available_at', f.short_term_borrowings_available_at
+                    ),
+                    'commercial_paper', json_object(
+                        'fact_revision_id', f.commercial_paper_id,
+                        'source', f.commercial_paper_source,
+                        'value', f.commercial_paper,
+                        'available_at', f.commercial_paper_available_at
+                    ),
+                    'long_term_debt_noncurrent', json_object(
+                        'fact_revision_id', f.long_term_debt_noncurrent_id,
+                        'source', f.long_term_debt_noncurrent_source,
+                        'value', f.long_term_debt_noncurrent,
+                        'available_at', f.long_term_debt_noncurrent_available_at
+                    )
+                ) AS VARCHAR) AS total_debt_input_lineage_json
+            FROM fundamentals f
+            WHERE f.total_debt_reported IS NOT NULL
+               OR f.debt_current IS NOT NULL
+               OR f.long_term_debt_current IS NOT NULL
+               OR f.short_term_borrowings IS NOT NULL
+               OR f.commercial_paper IS NOT NULL
+               OR f.long_term_debt_noncurrent IS NOT NULL
+        ),
+        complete_fundamentals AS (
+            SELECT
+                f.*,
+                greatest(
+                    f.total_debt_available_at,
+                    f.preferred_equity_available_at,
+                    f.minority_interest_available_at,
+                    f.cash_and_equivalents_available_at
+                ) AS fundamental_available_at,
+                concat_ws(
+                    '|',
+                    f.total_debt_id,
+                    f.preferred_equity_id,
+                    f.minority_interest_id,
+                    f.cash_and_equivalents_id
+                ) AS fundamental_sort_key
+            FROM derived_fundamentals f
+            WHERE f.preferred_equity IS NOT NULL
+              AND f.minority_interest IS NOT NULL
+              AND f.cash_and_equivalents IS NOT NULL
+        ),
+        matched_groups AS (
+            SELECT
+                mc.market_cap_id,
+                mc.market_cap_source,
+                mc.security_id,
+                mc.symbol,
+                mc.trade_date,
+                mc.price,
+                mc.share_count,
+                mc.share_count_type_used,
+                mc.market_cap,
+                mc.market_cap_available_at,
+                mc.price_available_at,
+                mc.share_available_at,
+                mc.market_cap_input_lineage_json,
+                arg_max(
+                    struct_pack(
+                        period_start := f.period_start,
+                        period_end := f.period_end,
+                        fiscal_year := f.fiscal_year,
+                        fiscal_period := f.fiscal_period,
+                        total_debt := f.total_debt,
+                        total_debt_available_at := f.total_debt_available_at,
+                        total_debt_id := f.total_debt_id,
+                        total_debt_source := f.total_debt_source,
+                        total_debt_input_lineage_json := f.total_debt_input_lineage_json,
+                        preferred_equity := f.preferred_equity,
+                        preferred_equity_available_at := f.preferred_equity_available_at,
+                        preferred_equity_id := f.preferred_equity_id,
+                        preferred_equity_source := f.preferred_equity_source,
+                        minority_interest := f.minority_interest,
+                        minority_interest_available_at := f.minority_interest_available_at,
+                        minority_interest_id := f.minority_interest_id,
+                        minority_interest_source := f.minority_interest_source,
+                        cash_and_equivalents := f.cash_and_equivalents,
+                        cash_and_equivalents_available_at := f.cash_and_equivalents_available_at,
+                        cash_and_equivalents_id := f.cash_and_equivalents_id,
+                        cash_and_equivalents_source := f.cash_and_equivalents_source
+                    ),
+                    struct_pack(
+                        available_priority := f.fundamental_available_at <= CAST(mc.trade_date AS TIMESTAMP),
+                        period_end := f.period_end,
+                        fundamental_available_at := f.fundamental_available_at,
+                        fundamental_sort_key := f.fundamental_sort_key
+                    )
+                ) AS fundamental
+            FROM market_caps mc
+            JOIN complete_fundamentals f
+              ON f.security_id = mc.security_id
+             AND f.period_end <= mc.trade_date
+            GROUP BY
+                mc.market_cap_id,
+                mc.market_cap_source,
+                mc.security_id,
+                mc.symbol,
+                mc.trade_date,
+                mc.price,
+                mc.share_count,
+                mc.share_count_type_used,
+                mc.market_cap,
+                mc.market_cap_available_at,
+                mc.price_available_at,
+                mc.share_available_at,
+                mc.market_cap_input_lineage_json
+        ),
+        matched AS (
+            SELECT
+                g.* EXCLUDE (fundamental),
+                unnest(g.fundamental)
+            FROM matched_groups g
+        )
+        SELECT
+            sha256(concat_ws(
+                '|', c.source, m.market_cap_source, m.security_id, CAST(m.trade_date AS VARCHAR)
+            )) AS enterprise_value_id,
+            c.source,
+            m.market_cap_source,
+            m.market_cap_id,
+            m.security_id,
+            m.symbol,
+            m.trade_date,
+            m.period_start,
+            m.period_end,
+            m.fiscal_year,
+            m.fiscal_period,
+            m.price,
+            m.share_count,
+            m.share_count_type_used,
+            m.market_cap,
+            m.total_debt,
+            m.preferred_equity,
+            m.minority_interest,
+            m.cash_and_equivalents,
+            m.market_cap + m.total_debt + m.preferred_equity
+                + m.minority_interest - m.cash_and_equivalents AS enterprise_value,
+            true AS is_latest_revision,
+            m.trade_date AS as_of_date,
+            greatest(
+                m.market_cap_available_at,
+                m.total_debt_available_at,
+                m.preferred_equity_available_at,
+                m.minority_interest_available_at,
+                m.cash_and_equivalents_available_at
+            ) AS available_at,
+            m.market_cap_available_at,
+            m.price_available_at,
+            m.share_available_at,
+            m.total_debt_available_at,
+            m.preferred_equity_available_at,
+            m.minority_interest_available_at,
+            m.cash_and_equivalents_available_at,
+            CAST(json_object(
+                'market_cap', 'market_cap.market_cap',
+                'total_debt', 'derived:SEC debt facts',
+                'preferred_equity', 'fundamental_fact_revisions.PreferredStockValue',
+                'minority_interest', 'fundamental_fact_revisions.MinorityInterest',
+                'cash_and_equivalents', 'fundamental_fact_revisions.CashAndCashEquivalentsAtCarryingValue'
+            ) AS VARCHAR) AS input_codes_json,
+            CAST(json_object(
+                'formula', 'enterprise_value = market_cap + total_debt + preferred_equity + minority_interest - cash_and_equivalents',
+                'components', json_object(
+                    'market_cap', json_object(
+                        'table', 'market_cap',
+                        'source', m.market_cap_source,
+                        'market_cap_id', m.market_cap_id,
+                        'security_id', m.security_id,
+                        'trade_date', m.trade_date,
+                        'value', m.market_cap,
+                        'available_at', m.market_cap_available_at,
+                        'sign', 'add',
+                        'upstream_lineage', m.market_cap_input_lineage_json
+                    ),
+                    'total_debt', json_object(
+                        'table', 'derived',
+                        'input_id', m.total_debt_id,
+                        'source', m.total_debt_source,
+                        'canonical_metric', 'total_debt',
+                        'period_end', m.period_end,
+                        'value', m.total_debt,
+                        'available_at', m.total_debt_available_at,
+                        'sign', 'add',
+                        'upstream_lineage', m.total_debt_input_lineage_json
+                    ),
+                    'preferred_equity', json_object(
+                        'table', 'fundamental_fact_revisions',
+                        'fact_revision_id', m.preferred_equity_id,
+                        'source', m.preferred_equity_source,
+                        'canonical_metric', 'pref_stock',
+                        'period_end', m.period_end,
+                        'value', m.preferred_equity,
+                        'available_at', m.preferred_equity_available_at,
+                        'sign', 'add'
+                    ),
+                    'minority_interest', json_object(
+                        'table', 'fundamental_fact_revisions',
+                        'fact_revision_id', m.minority_interest_id,
+                        'source', m.minority_interest_source,
+                        'canonical_metric', 'minority_int_bs',
+                        'period_end', m.period_end,
+                        'value', m.minority_interest,
+                        'available_at', m.minority_interest_available_at,
+                        'sign', 'add'
+                    ),
+                    'cash_and_equivalents', json_object(
+                        'table', 'fundamental_fact_revisions',
+                        'fact_revision_id', m.cash_and_equivalents_id,
+                        'source', m.cash_and_equivalents_source,
+                        'canonical_metric', 'cash_st_inv',
+                        'period_end', m.period_end,
+                        'value', m.cash_and_equivalents,
+                        'available_at', m.cash_and_equivalents_available_at,
+                        'sign', 'subtract'
+                    )
+                )
+            ) AS VARCHAR) AS input_lineage_json,
+            'enterprise_value_v1' AS formula_version,
+            c.run_id
+        FROM matched m
+        CROSS JOIN config c
+    """
+    return sql, params
+
+
 def refresh_enterprise_value(store: DuckDBStore, options: EnterpriseValueOptions | None = None) -> int:
+    """Atomically refresh EV without materializing the fact surface in pandas."""
+
     options = options or EnterpriseValueOptions()
     store.initialize()
-    inputs = load_enterprise_value_inputs(store, options)
-    rows = compute_enterprise_value_rows(inputs, source=options.source, run_id=options.run_id)
-    with store.transaction():
-        _delete_enterprise_value_scope(store, options)
-        if not rows.empty:
-            insert_frame(store, rows, "enterprise_value", "enterprise_value_insert")
-    return int(len(rows))
+    stage_sql, params = _enterprise_value_stage_sql(options)
+    if not stage_sql:
+        return 0
+    try:
+        store.con.execute(stage_sql, params)
+        row_count = int(store.con.execute("SELECT count(*) FROM enterprise_value_refresh_stage").fetchone()[0])
+        with store.transaction():
+            _delete_enterprise_value_scope(store, options)
+            if row_count:
+                columns = ", ".join(ENTERPRISE_VALUE_COLUMNS)
+                store.con.execute(
+                    f"INSERT INTO enterprise_value ({columns}) "
+                    f"SELECT {columns} FROM enterprise_value_refresh_stage"
+                )
+        return row_count
+    finally:
+        store.con.execute("DROP TABLE IF EXISTS enterprise_value_refresh_stage")
 
 
 class EnterpriseValueDataset(Dataset):

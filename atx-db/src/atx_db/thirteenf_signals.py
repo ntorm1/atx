@@ -25,6 +25,7 @@ def ensure_thirteenf_signal_schema(store: DuckDBStore) -> None:
         """
         CREATE TABLE IF NOT EXISTS thirteenf_amendment_market_regimes (
             report_period DATE PRIMARY KEY,
+            as_of_date DATE,
             available_at TIMESTAMP NOT NULL,
             manager_count INTEGER NOT NULL,
             amending_manager_count INTEGER NOT NULL,
@@ -46,6 +47,8 @@ def ensure_thirteenf_signal_schema(store: DuckDBStore) -> None:
         CREATE TABLE IF NOT EXISTS thirteenf_consensus_amendment_signals (
             signal_id VARCHAR PRIMARY KEY,
             report_period DATE NOT NULL,
+            as_of_date DATE,
+            available_at TIMESTAMP,
             cusip VARCHAR NOT NULL,
             security_id VARCHAR,
             signal_available_at TIMESTAMP NOT NULL,
@@ -68,6 +71,8 @@ def ensure_thirteenf_signal_schema(store: DuckDBStore) -> None:
         CREATE TABLE IF NOT EXISTS thirteenf_consensus_signal_outcomes (
             signal_id VARCHAR PRIMARY KEY,
             report_period DATE NOT NULL,
+            as_of_date DATE,
+            available_at TIMESTAMP,
             cusip VARCHAR NOT NULL,
             signal_available_at TIMESTAMP NOT NULL,
             followup_manager_count INTEGER NOT NULL,
@@ -81,6 +86,13 @@ def ensure_thirteenf_signal_schema(store: DuckDBStore) -> None:
         )
         """
     )
+    con.execute("ALTER TABLE thirteenf_amendment_market_regimes ADD COLUMN IF NOT EXISTS as_of_date DATE")
+    for table in (
+        "thirteenf_consensus_amendment_signals",
+        "thirteenf_consensus_signal_outcomes",
+    ):
+        con.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS as_of_date DATE")
+        con.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS available_at TIMESTAMP")
     for statement in (
         "CREATE INDEX IF NOT EXISTS idx_13f_signal_period_rank ON thirteenf_consensus_amendment_signals(report_period, signal_rank)",
         "CREATE INDEX IF NOT EXISTS idx_13f_signal_cusip_period ON thirteenf_consensus_amendment_signals(cusip, report_period)",
@@ -134,7 +146,7 @@ def refresh_thirteenf_consensus_signals(
         con.execute(
             f"""
             INSERT INTO thirteenf_amendment_market_regimes (
-                report_period, available_at, manager_count, amending_manager_count,
+                report_period, as_of_date, available_at, manager_count, amending_manager_count,
                 spike_manager_count, amending_manager_share, trailing_history_quarters,
                 trailing_24q_mean, trailing_24q_stddev, stress_zscore, is_stress, run_id
             )
@@ -170,7 +182,7 @@ def refresh_thirteenf_consensus_signals(
                 FROM history
             )
             SELECT
-                report_period, available_at, manager_count, amending_manager_count,
+                report_period, report_period, available_at, manager_count, amending_manager_count,
                 spike_manager_count, amending_manager_share, trailing_history_quarters,
                 trailing_mean, trailing_stddev, regime_zscore,
                 coalesce(trailing_history_quarters >= 8 AND regime_zscore >= {float(stress_zscore)}, false), ?
@@ -182,7 +194,8 @@ def refresh_thirteenf_consensus_signals(
         con.execute(
             f"""
             INSERT INTO thirteenf_consensus_amendment_signals (
-                signal_id, report_period, cusip, security_id, signal_available_at,
+                signal_id, report_period, as_of_date, available_at,
+                cusip, security_id, signal_available_at,
                 distinct_filer_count, average_zscore, minimum_zscore, maximum_zscore,
                 corrected_position_events, manager_ciks_json, signal_rank,
                 is_stress_quarter, run_id
@@ -232,20 +245,22 @@ def refresh_thirteenf_consensus_signals(
             )
             SELECT
                 md5(cast(r.report_period AS VARCHAR) || '|' || r.cusip),
-                r.report_period, r.cusip, r.security_id, r.signal_available_at,
+                r.report_period, r.report_period, r.signal_available_at,
+                r.cusip, r.security_id, r.signal_available_at,
                 r.distinct_filer_count, r.average_zscore, r.minimum_zscore,
                 r.maximum_zscore, r.corrected_position_events, r.manager_ciks_json,
                 r.signal_rank, coalesce(m.is_stress, false), ?
             FROM ranked r
             LEFT JOIN thirteenf_amendment_market_regimes m USING (report_period)
-            WHERE {_date_filter('r.report_period', start, end)}
+            WHERE {_date_filter("r.report_period", start, end)}
             """,
             [run_id],
         )
         con.execute(
             f"""
             INSERT INTO thirteenf_consensus_signal_outcomes (
-                signal_id, report_period, cusip, signal_available_at,
+                signal_id, report_period, as_of_date, available_at,
+                cusip, signal_available_at,
                 followup_manager_count, exited_manager_count, disclosed_exit_rate,
                 exits_disclosed_within_47_trading_days, median_trading_days_to_followup,
                 run_id
@@ -267,7 +282,7 @@ def refresh_thirteenf_consensus_signals(
                  AND r.report_period = c.report_period
                  AND r.is_latest_revision
                  AND r.is_spike
-                WHERE {_date_filter('s.report_period', start, end)}
+                WHERE {_date_filter("s.report_period", start, end)}
             ),
             next_reports AS (
                 SELECT
@@ -374,6 +389,11 @@ def refresh_thirteenf_consensus_signals(
             SELECT
                 signal_id,
                 any_value(report_period),
+                any_value(report_period),
+                greatest(
+                    any_value(signal_available_at),
+                    coalesce(max(next_available_at), any_value(signal_available_at))
+                ),
                 any_value(cusip),
                 any_value(signal_available_at),
                 count(*) FILTER (WHERE next_report_period IS NOT NULL)::INTEGER,

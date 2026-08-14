@@ -6,7 +6,6 @@ import json
 import pandas as pd
 import pytest
 
-
 SOURCE = "SEC companyfacts"
 
 
@@ -571,6 +570,55 @@ def test_quarterly_ttm_stitch_tags_annual_minus_9mo_path(tmp_store) -> None:
     assert row[0] == pytest.approx(100.0)
     assert row[1] == "stitched_quarterly_ttm"
     assert "stitch-fy" not in row[2]
+
+
+def test_ttm_restatement_uses_latest_visible_derived_quarter_and_anchor_time(tmp_store) -> None:
+    from atx_db.fundamental_statements import refresh_fundamental_ttm_points
+
+    sid = "SEC-CIK-0000000304"
+    symbol = "RSTT"
+    fixtures = [
+        ("q1", dt.date(2024, 1, 1), dt.date(2024, 3, 31), "Q1", 10.0, dt.datetime(2024, 5, 1, 22)),
+        ("q2", dt.date(2024, 4, 1), dt.date(2024, 6, 30), "Q2", 20.0, dt.datetime(2024, 8, 1, 22)),
+        ("q3", dt.date(2024, 7, 1), dt.date(2024, 9, 30), "Q3", 30.0, dt.datetime(2024, 11, 1, 22)),
+        ("q4", dt.date(2024, 10, 1), dt.date(2024, 12, 31), "Q4", 40.0, dt.datetime(2025, 2, 1, 22)),
+        ("nine", dt.date(2024, 1, 1), dt.date(2024, 9, 30), "Q3", 60.0, dt.datetime(2024, 11, 1, 22)),
+        ("fy-restated", dt.date(2024, 1, 1), dt.date(2024, 12, 31), "FY", 105.0, dt.datetime(2026, 2, 1, 22)),
+    ]
+    for suffix, start, end, fiscal_period, value, available_at in fixtures:
+        _insert_statement_point(
+            tmp_store,
+            statement_id=f"ttm-restatement-{suffix}",
+            security_id=sid,
+            symbol=symbol,
+            metric="revenue",
+            value=value,
+            start=start,
+            end=end,
+            fiscal_year=2024,
+            fiscal_period=fiscal_period,
+            accession=f"ttm-restatement-{suffix}",
+            available_at=available_at,
+        )
+
+    assert refresh_fundamental_ttm_points(tmp_store) >= 2
+    latest = tmp_store.con.execute(
+        """
+        SELECT ttm_value,available_at,accession_number,calculation_method,is_latest_revision
+        FROM fundamental_ttm_points
+        WHERE security_id=? AND ttm_end_date=DATE '2024-12-31'
+        ORDER BY available_at DESC,ttm_point_id DESC
+        LIMIT 1
+        """,
+        [sid],
+    ).fetchone()
+    assert latest == (
+        pytest.approx(105.0),
+        dt.datetime(2026, 2, 1, 22),
+        "ttm-restatement-fy-restated",
+        "stitched_quarterly_ttm",
+        True,
+    )
 
 
 def test_quarterly_ttm_stitch_noops_without_9mo_ytd(tmp_store) -> None:

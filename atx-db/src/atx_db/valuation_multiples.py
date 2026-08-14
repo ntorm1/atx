@@ -19,8 +19,8 @@ import pandas as pd
 
 from .connection import DuckDBStore
 from .dataset import Dataset, DatasetLoadResult
-from .warehouse import insert_frame, json_dumps, quality_check, replace_by_relation
-
+from .valuation_set_based import valuation_formula_stage_sql, valuation_input_stage_sql
+from .warehouse import insert_frame, json_dumps, quality_check
 
 SOURCE_NAME = "Derived market capitalization"
 VALUATION_SOURCE_NAME = "Derived point-in-time valuation multiples"
@@ -613,11 +613,7 @@ def load_market_cap_inputs(store: DuckDBStore, options: MarketCapOptions) -> pd.
             store.con.unregister(relation)
 
 
-def _delete_market_cap_scope(
-    store: DuckDBStore,
-    options: MarketCapOptions,
-    rows: pd.DataFrame,
-) -> None:
+def _delete_market_cap_scope(store: DuckDBStore, options: MarketCapOptions) -> None:
     """Delete only the output keys/scope that this refresh is allowed to replace."""
 
     has_scope_filter = any(
@@ -650,32 +646,212 @@ def _delete_market_cap_scope(
     else:
         store.con.execute("DELETE FROM market_cap WHERE source = ?", [options.source])
 
-    if rows.empty:
-        return
 
-    relation_name = "market_cap_replace_keys"
-    store.con.register(relation_name, rows[["source", "security_id", "trade_date"]])
-    try:
-        replace_by_relation(
-            store,
-            table="market_cap",
-            relation=relation_name,
-            key_columns=("source", "security_id", "trade_date"),
+def _market_cap_stage_sql(options: MarketCapOptions) -> tuple[str, list[object]]:
+    """Build the fully vectorized PIT market-cap staging query.
+
+    ``arg_max`` over a struct preserves the production ranking contract while
+    avoiding a many-million-row pandas materialization and Python row loops.
+    """
+
+    predicates = [
+        "b.close IS NOT NULL",
+        "b.close > 0",
+        "isfinite(b.close)",
+        "b.source IS NOT NULL",
+        "b.security_id IS NOT NULL",
+        "b.trade_date IS NOT NULL",
+        "b.available_at IS NOT NULL",
+    ]
+    params: list[object] = [options.source, options.run_id]
+    if options.price_sources:
+        placeholders = ", ".join("?" for _ in options.price_sources)
+        predicates.append(f"b.source IN ({placeholders})")
+        params.extend(options.price_sources)
+    if options.symbols:
+        placeholders = ", ".join("?" for _ in options.symbols)
+        predicates.append(f"b.symbol IN ({placeholders})")
+        params.extend(options.symbols)
+    if options.start_date is not None:
+        predicates.append("b.trade_date >= ?")
+        params.append(options.start_date)
+    if options.end_date is not None:
+        predicates.append("b.trade_date <= ?")
+        params.append(options.end_date)
+
+    where_clause = "\n              AND ".join(predicates)
+    sql = f"""
+        CREATE OR REPLACE TEMP TABLE market_cap_refresh_stage AS
+        WITH config AS (
+            SELECT CAST(? AS VARCHAR) AS source, CAST(? AS VARCHAR) AS run_id
+        ),
+        price_groups AS (
+            SELECT
+                b.security_id,
+                b.trade_date,
+                arg_max(
+                    struct_pack(
+                        price_source := b.source,
+                        symbol := b.symbol,
+                        close := b.close,
+                        price_available_at := b.available_at,
+                        price_run_id := b.run_id
+                    ),
+                    struct_pack(available_at := b.available_at, source := b.source)
+                ) AS price
+            FROM equity_daily_bars b
+            WHERE {where_clause}
+            GROUP BY b.security_id, b.trade_date
+        ),
+        prices AS (
+            SELECT
+                security_id,
+                trade_date,
+                price.price_source,
+                price.symbol,
+                price.close,
+                price.price_available_at,
+                price.price_run_id
+            FROM price_groups
+        ),
+        matched_groups AS (
+            SELECT
+                p.security_id,
+                p.trade_date,
+                p.price_source,
+                p.symbol,
+                p.close,
+                p.price_available_at,
+                p.price_run_id,
+                arg_max(
+                    struct_pack(
+                        share_source := s.source,
+                        share_history_id := s.share_history_id,
+                        share_count_type := s.share_count_type,
+                        share_count := s.share_count,
+                        share_available_at := s.available_at,
+                        share_run_id := s.run_id,
+                        effective_date := s.effective_date,
+                        share_as_of_date := s.as_of_date
+                    ),
+                    struct_pack(
+                        type_priority := CASE s.share_count_type
+                            WHEN 'shares_outstanding' THEN 1
+                            ELSE 0
+                        END,
+                        effective_date := s.effective_date,
+                        as_of_date := s.as_of_date,
+                        available_at := s.available_at,
+                        revision_sequence := coalesce(s.revision_sequence, 0),
+                        share_history_id := coalesce(s.share_history_id, '')
+                    )
+                ) AS share
+            FROM prices p
+            JOIN shares_outstanding_history s
+              ON s.security_id = p.security_id
+             AND s.share_count_type IN ('shares_outstanding', 'shares_diluted_avg')
+             AND s.effective_date <= p.trade_date
+             AND s.as_of_date <= p.trade_date
+             AND s.share_count IS NOT NULL
+             AND s.share_count > 0
+             AND isfinite(s.share_count)
+             AND s.source IS NOT NULL
+             AND s.available_at IS NOT NULL
+            GROUP BY
+                p.security_id,
+                p.trade_date,
+                p.price_source,
+                p.symbol,
+                p.close,
+                p.price_available_at,
+                p.price_run_id
+        ),
+        matched AS (
+            SELECT
+                g.* EXCLUDE (share),
+                g.share.share_source,
+                g.share.share_history_id,
+                g.share.share_count_type,
+                g.share.share_count,
+                g.share.share_available_at,
+                g.share.share_run_id,
+                g.share.effective_date,
+                g.share.share_as_of_date
+            FROM matched_groups g
         )
-    finally:
-        store.con.unregister(relation_name)
+        SELECT
+            sha256(concat_ws('|', c.source, m.security_id, CAST(m.trade_date AS VARCHAR))) AS market_cap_id,
+            c.source,
+            m.price_source,
+            m.share_source,
+            m.security_id,
+            m.symbol,
+            m.trade_date,
+            m.close,
+            m.share_count,
+            m.share_count_type AS share_count_type_used,
+            m.close * m.share_count AS market_cap,
+            true AS is_latest_revision,
+            m.trade_date AS as_of_date,
+            greatest(m.price_available_at, m.share_available_at) AS available_at,
+            m.price_available_at,
+            m.share_available_at,
+            m.price_run_id,
+            m.share_run_id,
+            m.share_history_id,
+            CAST(json_object(
+                'price', 'equity_daily_bars.close',
+                'shares', 'shares_outstanding_history.' || m.share_count_type
+            ) AS VARCHAR) AS input_codes_json,
+            CAST(json_object(
+                'price', json_object(
+                    'table', 'equity_daily_bars',
+                    'source', m.price_source,
+                    'security_id', m.security_id,
+                    'trade_date', m.trade_date,
+                    'available_at', m.price_available_at,
+                    'run_id', m.price_run_id,
+                    'field', 'close'
+                ),
+                'shares', json_object(
+                    'table', 'shares_outstanding_history',
+                    'source', m.share_source,
+                    'share_history_id', m.share_history_id,
+                    'share_count_type', m.share_count_type,
+                    'effective_date', m.effective_date,
+                    'as_of_date', m.share_as_of_date,
+                    'available_at', m.share_available_at,
+                    'run_id', m.share_run_id,
+                    'field', 'share_count'
+                )
+            ) AS VARCHAR) AS input_lineage_json,
+            c.run_id
+        FROM matched m
+        CROSS JOIN config c
+    """
+    return sql, params
 
 
 def refresh_market_cap(store: DuckDBStore, options: MarketCapOptions | None = None) -> int:
+    """Atomically refresh market cap without moving the fact surface through pandas."""
+
     options = options or MarketCapOptions()
     store.initialize()
-    inputs = load_market_cap_inputs(store, options)
-    rows = compute_market_cap_rows(inputs, source=options.source, run_id=options.run_id)
-    with store.transaction():
-        _delete_market_cap_scope(store, options, rows)
-        if not rows.empty:
-            insert_frame(store, rows, "market_cap", "market_cap_insert")
-    return len(rows)
+    stage_sql, params = _market_cap_stage_sql(options)
+    try:
+        store.con.execute(stage_sql, params)
+        row_count = int(store.con.execute("SELECT count(*) FROM market_cap_refresh_stage").fetchone()[0])
+        with store.transaction():
+            _delete_market_cap_scope(store, options)
+            if row_count:
+                columns = ", ".join(MARKET_CAP_COLUMNS)
+                store.con.execute(
+                    f"INSERT INTO market_cap ({columns}) "
+                    f"SELECT {columns} FROM market_cap_refresh_stage"
+                )
+        return row_count
+    finally:
+        store.con.execute("DROP TABLE IF EXISTS market_cap_refresh_stage")
 
 
 class MarketCapDataset(Dataset):
@@ -1937,15 +2113,30 @@ def refresh_valuation_multiples(
     store: DuckDBStore,
     options: ValuationMultiplesOptions | None = None,
 ) -> int:
+    """Atomically refresh the formula surface through vectorized DuckDB stages."""
+
     options = options or ValuationMultiplesOptions()
     store.initialize()
-    inputs = load_valuation_multiple_inputs(store, options)
-    rows = compute_valuation_multiple_rows(inputs, source=options.source, run_id=options.run_id)
-    with store.transaction():
-        _delete_valuation_multiples_scope(store, options)
-        if not rows.empty:
-            insert_frame(store, rows, "valuation_multiples", "valuation_multiples_insert")
-    return len(rows)
+    input_sql, input_params = valuation_input_stage_sql(options)
+    if not input_sql:
+        return 0
+    formula_sql, formula_params = valuation_formula_stage_sql(options.source, options.run_id)
+    try:
+        store.con.execute(input_sql, input_params)
+        store.con.execute(formula_sql, formula_params)
+        row_count = int(store.con.execute("SELECT count(*) FROM valuation_multiples_refresh_stage").fetchone()[0])
+        with store.transaction():
+            _delete_valuation_multiples_scope(store, options)
+            if row_count:
+                columns = ", ".join(VALUATION_MULTIPLE_COLUMNS)
+                store.con.execute(
+                    f"INSERT INTO valuation_multiples ({columns}) "
+                    f"SELECT {columns} FROM valuation_multiples_refresh_stage"
+                )
+        return row_count
+    finally:
+        store.con.execute("DROP TABLE IF EXISTS valuation_multiples_refresh_stage")
+        store.con.execute("DROP TABLE IF EXISTS valuation_input_refresh_stage")
 
 
 class ValuationMultiplesDataset(Dataset):

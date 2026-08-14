@@ -270,17 +270,23 @@ def test_migrations_0107_0109_catalog_pit_snapshot_surface(tmp_store):
 
     assert "vintage_class" in ratio_cols
     assert {"snapshot_month", "vintage_class", "source_accession", "available_at"} <= snapshot_cols
-    assert tmp_store.con.execute(
-        "SELECT count(*) FROM dataset_catalog WHERE dataset_id = 'fundamental_pit_snapshot'"
-    ).fetchone()[0] == 1
-    assert tmp_store.con.execute(
-        """
+    assert (
+        tmp_store.con.execute(
+            "SELECT count(*) FROM dataset_catalog WHERE dataset_id = 'fundamental_pit_snapshot'"
+        ).fetchone()[0]
+        == 1
+    )
+    assert (
+        tmp_store.con.execute(
+            """
         SELECT count(*)
         FROM field_catalog
         WHERE table_name = 'fundamental_ratios'
           AND field_name = 'vintage_class'
         """
-    ).fetchone()[0] == 1
+        ).fetchone()[0]
+        == 1
+    )
     indexes = {
         row[0]
         for row in tmp_store.con.execute(
@@ -353,7 +359,7 @@ def test_query_asof_cli_reads_pit_snapshot_view(tmp_store):
     tmp_store.connection.close()
     tmp_store.connection = None
 
-    root = Path(__file__).resolve().parents[2]
+    root = Path(__file__).resolve().parents[1]
     result = subprocess.run(
         [
             sys.executable,

@@ -97,15 +97,14 @@ def test_factor_seed_rows_load_as_s7_factor_definitions() -> None:
     assert "profitability_gross_profitability" in set(frame["factor_id"])
     assert set(frame["stage"]) >= {"s8_0", "s8_1"}
     assert all(row.declared_in == "db/seeds/factor_definitions.csv" for row in definitions)
-    assert frame.loc[frame["factor_id"] == "profitability_gross_profitability", "valid_from"].iloc[0] == dt.date(1900, 1, 1)
+    assert frame.loc[frame["factor_id"] == "profitability_gross_profitability", "valid_from"].iloc[0] == dt.date(
+        1900, 1, 1
+    )
 
 
 def test_core_academic_factors_emit_pit_rows_with_lineage_and_standardization() -> None:
     rows = compute_fundamental_factor_rows(_fixture_metrics(), run_id="s8-run")
-    gross = rows[
-        (rows["factor_id"] == "profitability_gross_profitability")
-        & (rows["security_id"] == "SEC-A")
-    ].iloc[0]
+    gross = rows[(rows["factor_id"] == "profitability_gross_profitability") & (rows["security_id"] == "SEC-A")].iloc[0]
     quality = rows[(rows["factor_id"] == "quality_cash_earnings") & (rows["security_id"] == "SEC-A")].iloc[0]
     families = set(rows["family"])
 
@@ -128,10 +127,7 @@ def test_core_factor_requires_all_pit_inputs() -> None:
     ]
     rows = compute_fundamental_factor_rows(missing_assets, families=("fundamental_profitability",))
 
-    assert not (
-        (rows["factor_id"] == "profitability_gross_profitability")
-        & (rows["security_id"] == "SEC-A")
-    ).any()
+    assert not ((rows["factor_id"] == "profitability_gross_profitability") & (rows["security_id"] == "SEC-A")).any()
 
 
 def test_core_factor_seed_rows_round_trip_into_catalog(tmp_store) -> None:
@@ -162,10 +158,13 @@ def test_core_factor_seed_rows_round_trip_into_catalog(tmp_store) -> None:
     ).fetchone()[0]
 
     assert seeded[0] == "fundamental_profitability"
-    assert json.loads(seeded[1]) == {"method": "zscore_cs"}
+    assert json.loads(seeded[1]) == {
+        "method": "winsorize_then_zscore_cs",
+        "winsor_limits": [0.01, 0.01],
+    }
     assert seeded[2] == dt.date(1900, 1, 1)
     assert seeded[3] is None
-    assert metric_edges == {"gross_profit", "assets"}
+    assert metric_edges == {"gross_profit", "total_assets"}
     assert dataset_row == 1
 
 
@@ -242,10 +241,7 @@ def _composite_metrics() -> pd.DataFrame:
 
 def test_growth_investment_leverage_and_named_composites_reconcile_to_references() -> None:
     rows = compute_fundamental_factor_rows(_composite_metrics(), run_id="s8-composite-run")
-    lookup = {
-        (row.factor_id, row.security_id): row
-        for row in rows.itertuples(index=False)
-    }
+    lookup = {(row.factor_id, row.security_id): row for row in rows.itertuples(index=False)}
 
     assert lookup[("growth_revenue_yoy", "SEC-A")].raw_value == pytest.approx(0.15)
     assert lookup[("investment_capex_to_assets", "SEC-A")].raw_value == pytest.approx(0.08)
@@ -259,15 +255,10 @@ def test_growth_investment_leverage_and_named_composites_reconcile_to_references
 
 def test_composite_with_missing_leg_is_withheld() -> None:
     metrics = _composite_metrics()
-    metrics = metrics[
-        ~((metrics["security_id"] == "SEC-A") & (metrics["metric_code"] == "retained_earnings"))
-    ]
+    metrics = metrics[~((metrics["security_id"] == "SEC-A") & (metrics["metric_code"] == "retained_earnings"))]
     rows = compute_fundamental_factor_rows(metrics)
 
-    assert not (
-        (rows["factor_id"] == "distress_altman_z_score")
-        & (rows["security_id"] == "SEC-A")
-    ).any()
+    assert not ((rows["factor_id"] == "distress_altman_z_score") & (rows["security_id"] == "SEC-A")).any()
 
 
 def test_composite_seed_rows_round_trip_into_catalog(tmp_store) -> None:
@@ -316,31 +307,129 @@ def test_signal_native_factors_emit_and_revisions_ignore_future_vintages() -> No
     as_of = dt.date(2024, 3, 1)
     revisions = pd.DataFrame(
         [
-            {"security_id": "SEC-A", "symbol": "AAA", "metric_code": "net_income", "as_of_date": as_of, "value": 100.0, "available_at": pd.Timestamp("2024-01-15"), "vintage_class": "as_first_reported"},
-            {"security_id": "SEC-A", "symbol": "AAA", "metric_code": "net_income", "as_of_date": as_of, "value": 110.0, "available_at": pd.Timestamp("2024-02-15"), "vintage_class": "amended"},
-            {"security_id": "SEC-A", "symbol": "AAA", "metric_code": "net_income", "as_of_date": as_of, "value": 200.0, "available_at": pd.Timestamp("2024-04-01"), "vintage_class": "future_restatement"},
-            {"security_id": "SEC-B", "symbol": "BBB", "metric_code": "net_income", "as_of_date": as_of, "value": 100.0, "available_at": pd.Timestamp("2024-01-15"), "vintage_class": "as_first_reported"},
-            {"security_id": "SEC-B", "symbol": "BBB", "metric_code": "net_income", "as_of_date": as_of, "value": 90.0, "available_at": pd.Timestamp("2024-02-15"), "vintage_class": "amended"},
+            {
+                "security_id": "SEC-A",
+                "symbol": "AAA",
+                "metric_code": "net_income",
+                "as_of_date": as_of,
+                "value": 100.0,
+                "available_at": pd.Timestamp("2024-01-15"),
+                "vintage_class": "as_first_reported",
+            },
+            {
+                "security_id": "SEC-A",
+                "symbol": "AAA",
+                "metric_code": "net_income",
+                "as_of_date": as_of,
+                "value": 110.0,
+                "available_at": pd.Timestamp("2024-02-15"),
+                "vintage_class": "amended",
+            },
+            {
+                "security_id": "SEC-A",
+                "symbol": "AAA",
+                "metric_code": "net_income",
+                "as_of_date": as_of,
+                "value": 200.0,
+                "available_at": pd.Timestamp("2024-04-01"),
+                "vintage_class": "future_restatement",
+            },
+            {
+                "security_id": "SEC-B",
+                "symbol": "BBB",
+                "metric_code": "net_income",
+                "as_of_date": as_of,
+                "value": 100.0,
+                "available_at": pd.Timestamp("2024-01-15"),
+                "vintage_class": "as_first_reported",
+            },
+            {
+                "security_id": "SEC-B",
+                "symbol": "BBB",
+                "metric_code": "net_income",
+                "as_of_date": as_of,
+                "value": 90.0,
+                "available_at": pd.Timestamp("2024-02-15"),
+                "vintage_class": "amended",
+            },
         ]
     )
     standardization = pd.DataFrame(
         [
-            {"security_id": "SEC-A", "symbol": "AAA", "as_of_date": as_of, "raw_value": 100.0, "standardized_value": 90.0, "available_at": pd.Timestamp("2024-02-01"), "standardization_rule_id": "std-a"},
-            {"security_id": "SEC-B", "symbol": "BBB", "as_of_date": as_of, "raw_value": 100.0, "standardized_value": 110.0, "available_at": pd.Timestamp("2024-02-01"), "standardization_rule_id": "std-b"},
+            {
+                "security_id": "SEC-A",
+                "symbol": "AAA",
+                "as_of_date": as_of,
+                "raw_value": 100.0,
+                "standardized_value": 90.0,
+                "available_at": pd.Timestamp("2024-02-01"),
+                "standardization_rule_id": "std-a",
+            },
+            {
+                "security_id": "SEC-B",
+                "symbol": "BBB",
+                "as_of_date": as_of,
+                "raw_value": 100.0,
+                "standardized_value": 110.0,
+                "available_at": pd.Timestamp("2024-02-01"),
+                "standardization_rule_id": "std-b",
+            },
         ]
     )
     segments = pd.DataFrame(
         [
-            {"security_id": "SEC-A", "symbol": "AAA", "as_of_date": as_of, "segment": "cloud", "segment_revenue": 70.0, "available_at": pd.Timestamp("2024-02-01")},
-            {"security_id": "SEC-A", "symbol": "AAA", "as_of_date": as_of, "segment": "devices", "segment_revenue": 30.0, "available_at": pd.Timestamp("2024-02-01")},
-            {"security_id": "SEC-B", "symbol": "BBB", "as_of_date": as_of, "segment": "cloud", "segment_revenue": 50.0, "available_at": pd.Timestamp("2024-02-01")},
-            {"security_id": "SEC-B", "symbol": "BBB", "as_of_date": as_of, "segment": "devices", "segment_revenue": 50.0, "available_at": pd.Timestamp("2024-02-01")},
+            {
+                "security_id": "SEC-A",
+                "symbol": "AAA",
+                "as_of_date": as_of,
+                "segment": "cloud",
+                "segment_revenue": 70.0,
+                "available_at": pd.Timestamp("2024-02-01"),
+            },
+            {
+                "security_id": "SEC-A",
+                "symbol": "AAA",
+                "as_of_date": as_of,
+                "segment": "devices",
+                "segment_revenue": 30.0,
+                "available_at": pd.Timestamp("2024-02-01"),
+            },
+            {
+                "security_id": "SEC-B",
+                "symbol": "BBB",
+                "as_of_date": as_of,
+                "segment": "cloud",
+                "segment_revenue": 50.0,
+                "available_at": pd.Timestamp("2024-02-01"),
+            },
+            {
+                "security_id": "SEC-B",
+                "symbol": "BBB",
+                "as_of_date": as_of,
+                "segment": "devices",
+                "segment_revenue": 50.0,
+                "available_at": pd.Timestamp("2024-02-01"),
+            },
         ]
     )
     footnotes = pd.DataFrame(
         [
-            {"security_id": "SEC-A", "symbol": "AAA", "as_of_date": as_of, "footnote_count": 12, "prior_footnote_count": 10, "available_at": pd.Timestamp("2024-02-01")},
-            {"security_id": "SEC-B", "symbol": "BBB", "as_of_date": as_of, "footnote_count": 9, "prior_footnote_count": 10, "available_at": pd.Timestamp("2024-02-01")},
+            {
+                "security_id": "SEC-A",
+                "symbol": "AAA",
+                "as_of_date": as_of,
+                "footnote_count": 12,
+                "prior_footnote_count": 10,
+                "available_at": pd.Timestamp("2024-02-01"),
+            },
+            {
+                "security_id": "SEC-B",
+                "symbol": "BBB",
+                "as_of_date": as_of,
+                "footnote_count": 9,
+                "prior_footnote_count": 10,
+                "available_at": pd.Timestamp("2024-02-01"),
+            },
         ]
     )
 
@@ -360,7 +449,9 @@ def test_signal_native_factors_emit_and_revisions_ignore_future_vintages() -> No
         "signal_footnote_disclosure_change",
     }
     assert lookup[("signal_revision_momentum", "SEC-A")].raw_value == pytest.approx(0.10)
-    assert "future_restatement" not in json.dumps(json.loads(lookup[("signal_revision_momentum", "SEC-A")].input_lineage_json))
+    assert "future_restatement" not in json.dumps(
+        json.loads(lookup[("signal_revision_momentum", "SEC-A")].input_lineage_json)
+    )
     assert lookup[("signal_standardization_delta", "SEC-A")].raw_value == pytest.approx(-0.10)
     assert lookup[("signal_segment_revenue_concentration", "SEC-A")].raw_value == pytest.approx(0.58)
     assert lookup[("signal_footnote_disclosure_change", "SEC-A")].raw_value == pytest.approx(0.20)
@@ -399,10 +490,38 @@ def test_factor_lineage_and_coverage_gates_flag_planted_failures() -> None:
     native = compute_signal_native_factor_rows(
         revisions=pd.DataFrame(
             [
-                {"security_id": "SEC-A", "symbol": "AAA", "metric_code": "net_income", "as_of_date": dt.date(2024, 3, 1), "value": 100.0, "available_at": pd.Timestamp("2024-01-15")},
-                {"security_id": "SEC-A", "symbol": "AAA", "metric_code": "net_income", "as_of_date": dt.date(2024, 3, 1), "value": 110.0, "available_at": pd.Timestamp("2024-02-15")},
-                {"security_id": "SEC-B", "symbol": "BBB", "metric_code": "net_income", "as_of_date": dt.date(2024, 3, 1), "value": 100.0, "available_at": pd.Timestamp("2024-01-15")},
-                {"security_id": "SEC-B", "symbol": "BBB", "metric_code": "net_income", "as_of_date": dt.date(2024, 3, 1), "value": 95.0, "available_at": pd.Timestamp("2024-02-15")},
+                {
+                    "security_id": "SEC-A",
+                    "symbol": "AAA",
+                    "metric_code": "net_income",
+                    "as_of_date": dt.date(2024, 3, 1),
+                    "value": 100.0,
+                    "available_at": pd.Timestamp("2024-01-15"),
+                },
+                {
+                    "security_id": "SEC-A",
+                    "symbol": "AAA",
+                    "metric_code": "net_income",
+                    "as_of_date": dt.date(2024, 3, 1),
+                    "value": 110.0,
+                    "available_at": pd.Timestamp("2024-02-15"),
+                },
+                {
+                    "security_id": "SEC-B",
+                    "symbol": "BBB",
+                    "metric_code": "net_income",
+                    "as_of_date": dt.date(2024, 3, 1),
+                    "value": 100.0,
+                    "available_at": pd.Timestamp("2024-01-15"),
+                },
+                {
+                    "security_id": "SEC-B",
+                    "symbol": "BBB",
+                    "metric_code": "net_income",
+                    "as_of_date": dt.date(2024, 3, 1),
+                    "value": 95.0,
+                    "available_at": pd.Timestamp("2024-02-15"),
+                },
             ]
         ),
         run_id="gate-run",

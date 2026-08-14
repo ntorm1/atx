@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from ._check_common import DEFAULT_EXPORT_OBJECTS, _export_scan_internal_cusip_sql
 from ._types import SqlQualityCheck
 
 
@@ -1734,5 +1733,167 @@ def fundamental_check_specs(
             """,
             threshold=0.0,
             required_tables=("fundamental_periods",),
+        ),
+        SqlQualityCheck(
+            dataset_id="fundamental_reconciliation",
+            table_name="fundamental_reconciliation_serving",
+            check_name="duplicate_fundamental_reconciliation_events",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM (
+                    SELECT reconciliation_group_id,available_at,count(*) AS row_count
+                    FROM fundamental_reconciliation_serving
+                    GROUP BY 1,2
+                    HAVING count(*) > 1
+                )
+            """,
+            threshold=0.0,
+            required_tables=("fundamental_reconciliation_serving",),
+            severity="critical",
+        ),
+        SqlQualityCheck(
+            dataset_id="fundamental_reconciliation",
+            table_name="fundamental_reconciliation_serving",
+            check_name="bad_fundamental_reconciliation_rows",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM fundamental_reconciliation_serving
+                WHERE reconciliation_id IS NULL OR reconciliation_id = ''
+                   OR reconciliation_group_id IS NULL OR reconciliation_group_id = ''
+                   OR rule_id IS NULL OR rule_id = ''
+                   OR security_id IS NULL OR security_id = ''
+                   OR basis NOT IN ('annual','quarterly','ttm','instant')
+                   OR period_end IS NULL
+                   OR status NOT IN (
+                        'reconciled','mismatch','diagnostic_difference','not_applicable'
+                   )
+                   OR mismatch_severity NOT IN ('error','diagnostic')
+                   OR is_applicable <> (status <> 'not_applicable')
+                   OR (status = 'diagnostic_difference' AND mismatch_severity <> 'diagnostic')
+                   OR (status = 'mismatch' AND mismatch_severity <> 'error')
+                   OR input_filing_status NOT IN (
+                        'single_filing','mixed_filing_vintage','unknown_accession'
+                   )
+                   OR input_accession_count < 0
+                   OR input_accessions_json IS NULL
+                   OR input_accessions_json = ''
+                   OR context_verification_status NOT IN (
+                        'verified_same_context','verified_same_context_with_extension_map',
+                        'context_not_loaded',
+                        'context_not_aligned','mixed_filing_vintage','unknown_accession'
+                   )
+                   OR context_evidence_json IS NULL
+                   OR context_evidence_json = ''
+                   OR mismatch_reason NOT IN (
+                        'within_tolerance','rule_not_applicable','diagnostic_rule_difference',
+                        'mixed_filing_vintage','context_not_loaded',
+                        'xbrl_context_not_aligned','verified_accounting_mismatch',
+                        'within_tolerance_extension_mapped','unknown_accession'
+                   )
+                   OR extension_mapping_applied <> (
+                        context_verification_status='verified_same_context_with_extension_map'
+                   )
+                   OR extension_inputs_json IS NULL OR extension_inputs_json=''
+                   OR (extension_mapping_applied AND extension_inputs_json='[]')
+                   OR (NOT extension_mapping_applied AND extension_inputs_json<>'[]')
+                   OR (is_hard_failure AND (
+                        status <> 'mismatch'
+                        OR mismatch_severity <> 'error'
+                        OR context_verification_status <> 'verified_same_context'
+                   ))
+                   OR (context_verification_status IN (
+                           'verified_same_context','verified_same_context_with_extension_map'
+                       )
+                       AND input_filing_status <> 'single_filing')
+                   OR tolerance < 0
+                   OR input_standardized_ids_json IS NULL
+                   OR input_standardized_ids_json IN ('','[]')
+                   OR input_item_ids_json IS NULL
+                   OR input_item_ids_json IN ('','[]')
+                   OR input_values_json IS NULL
+                   OR input_values_json IN ('','[]')
+                   OR revision_sequence < 1
+                   OR revision_count < 1
+                   OR revision_sequence > revision_count
+                   OR is_latest_revision <> (revision_sequence = revision_count)
+                   OR update_type NOT IN (
+                        'original','restated','classification_update','metadata_update'
+                   )
+                   OR (revision_sequence = 1 AND update_type <> 'original')
+            """,
+            threshold=0.0,
+            required_tables=("fundamental_reconciliation_serving",),
+            severity="critical",
+        ),
+        SqlQualityCheck(
+            dataset_id="fundamental_reconciliation",
+            table_name="fundamental_reconciliation_serving",
+            check_name="bad_latest_fundamental_reconciliation_chains",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM (
+                    SELECT
+                        reconciliation_group_id,
+                        sum(CASE WHEN is_latest_revision THEN 1 ELSE 0 END) AS latest_rows
+                    FROM fundamental_reconciliation_serving
+                    GROUP BY 1
+                    HAVING latest_rows <> 1
+                )
+            """,
+            threshold=0.0,
+            required_tables=("fundamental_reconciliation_serving",),
+            severity="critical",
+        ),
+        SqlQualityCheck(
+            dataset_id="fundamental_reconciliation",
+            table_name="fundamental_reconciliation_serving",
+            check_name="latest_hard_fundamental_reconciliation_mismatch_rate",
+            sql="""
+                SELECT coalesce(
+                    count(*) FILTER (
+                        WHERE is_latest_revision AND is_hard_failure
+                    )::DOUBLE
+                    / nullif(count(*) FILTER (
+                        WHERE is_latest_revision AND is_applicable
+                          AND mismatch_severity='error'
+                          AND context_verification_status='verified_same_context'
+                    ),0),
+                    0.0
+                )
+                FROM fundamental_reconciliation_serving
+            """,
+            threshold=0.05,
+            comparator="le",
+            required_tables=("fundamental_reconciliation_serving",),
+            failure_status="warning",
+            severity="warning",
+        ),
+        SqlQualityCheck(
+            dataset_id="fundamental_reconciliation",
+            table_name="fundamental_reconciliation_serving",
+            check_name="fundamental_reconciliation_context_verification_rate",
+            sql="""
+                SELECT coalesce(
+                    count(*) FILTER (
+                        WHERE is_latest_revision AND is_applicable
+                          AND mismatch_severity='error'
+                          AND context_verification_status IN (
+                              'verified_same_context',
+                              'verified_same_context_with_extension_map'
+                          )
+                    )::DOUBLE
+                    / nullif(count(*) FILTER (
+                        WHERE is_latest_revision AND is_applicable
+                          AND mismatch_severity='error'
+                    ),0),
+                    1.0
+                )
+                FROM fundamental_reconciliation_serving
+            """,
+            threshold=0.80,
+            comparator="ge",
+            required_tables=("fundamental_reconciliation_serving",),
+            failure_status="warning",
+            severity="warning",
         ),
     )

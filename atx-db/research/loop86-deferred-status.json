@@ -1,0 +1,9 @@
+{
+  "exploration_exit_code": 2,
+  "factor_id": "earnings_sue_price_momentum_residual_12_1",
+  "finished_at": "2026-08-13T23:27:00.185991+00:00",
+  "schema_version": 1,
+  "started_at": "2026-08-13T23:24:37.757320+00:00",
+  "state": "complete",
+  "wait_pid": 2888
+}

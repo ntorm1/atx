@@ -69,6 +69,7 @@ def ensure_openfigi_signal_schema(store: DuckDBStore) -> None:
             selected BOOLEAN NOT NULL,
             mapping_status VARCHAR NOT NULL,
             warning VARCHAR,
+            as_of_date DATE,
             available_at TIMESTAMP NOT NULL,
             source VARCHAR NOT NULL,
             is_latest_revision BOOLEAN NOT NULL DEFAULT true,
@@ -77,6 +78,7 @@ def ensure_openfigi_signal_schema(store: DuckDBStore) -> None:
         )
         """
     )
+    store.con.execute("ALTER TABLE thirteenf_signal_instrument_candidates ADD COLUMN IF NOT EXISTS as_of_date DATE")
     store.con.execute(
         """
         CREATE INDEX IF NOT EXISTS idx_13f_signal_instrument_selected
@@ -141,7 +143,7 @@ def _signal_cusips(store: DuckDBStore, options: OpenFigiSignalMapOptions) -> lis
         f"""
         SELECT DISTINCT upper(trim(s.cusip))
         FROM thirteenf_consensus_amendment_signals s
-        WHERE {' AND '.join(predicates)}
+        WHERE {" AND ".join(predicates)}
         ORDER BY 1
         """
     ).fetchall()
@@ -152,9 +154,7 @@ def _mapping_id(cusip: str, candidate: dict[str, Any] | None) -> str:
     if candidate is None:
         payload = f"{cusip}|UNMATCHED"
     else:
-        payload = "|".join(
-            (cusip, str(candidate.get("figi") or ""), str(candidate.get("exchCode") or ""))
-        )
+        payload = "|".join((cusip, str(candidate.get("figi") or ""), str(candidate.get("exchCode") or "")))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
@@ -237,13 +237,8 @@ def map_signal_cusips(
                     if candidate.get("figi") and candidate.get("ticker")
                 ]
                 ranked = rank_openfigi_candidates(raw_candidates)
-                ranked_ids = {
-                    _mapping_id(cusip, candidate): rank
-                    for rank, candidate in enumerate(ranked, start=1)
-                }
-                candidates_by_id = {
-                    _mapping_id(cusip, candidate): candidate for candidate in raw_candidates
-                }
+                ranked_ids = {_mapping_id(cusip, candidate): rank for rank, candidate in enumerate(ranked, start=1)}
+                candidates_by_id = {_mapping_id(cusip, candidate): candidate for candidate in raw_candidates}
                 if ranked:
                     mapped.add(cusip)
                 if not candidates_by_id:
@@ -265,6 +260,7 @@ def map_signal_cusips(
                             False,
                             "unmatched",
                             warning,
+                            available_at.date(),
                             available_at,
                             OPENFIGI_SOURCE,
                             run_id,
@@ -292,6 +288,7 @@ def map_signal_cusips(
                             result.get("warning")
                             if rank is not None
                             else "Not an eligible US-listed common equity, ADR, or REIT",
+                            available_at.date(),
                             available_at,
                             OPENFIGI_SOURCE,
                             run_id,
@@ -309,8 +306,8 @@ def map_signal_cusips(
                         mapping_id, cusip, figi, composite_figi, share_class_figi,
                         ticker, name, exch_code, market_sector, security_type,
                         security_type2, candidate_rank, selected, mapping_status,
-                        warning, available_at, source, run_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        warning, as_of_date, available_at, source, run_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     rows,
                 )

@@ -11,17 +11,17 @@ import csv
 import datetime as dt
 import hashlib
 import json
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, cast
 
 import pandas as pd
 
 from .connection import DuckDBStore
 from .dataset import Dataset, DatasetLoadResult
-from .warehouse import insert_frame, json_dumps, quality_check
-
+from .warehouse import json_dumps, quality_check
 
 RULE_PATH = Path(__file__).resolve().parent / "seeds" / "standardization_rules.csv"
 DEFAULT_SOURCE = "fundamental_standardization_v1"
@@ -128,6 +128,13 @@ class StandardizationRule:
 class StandardizationResult:
     standardized: pd.DataFrame
     exceptions: pd.DataFrame
+    standardized_row_count: int = 0
+    exception_row_count: int = 0
+    input_row_count: int = 0
+    build_id: str | None = None
+    run_id: str | None = None
+    rule_set_sha256: str | None = None
+    basis_counts: Mapping[str, int] | None = None
 
 
 @dataclass(frozen=True)
@@ -135,6 +142,7 @@ class FundamentalStandardizationOptions:
     source: str = DEFAULT_SOURCE
     symbols: tuple[str, ...] | None = None
     run_id: str | None = None
+    materialize_result_limit: int = 10_000
 
 
 def _none_if_blank(value: str | None) -> str | None:
@@ -315,12 +323,11 @@ def _candidate_code(row: Mapping[str, Any]) -> str:
 
 
 def _row_sort_key(row: Mapping[str, Any]) -> tuple[int, int, str]:
-    rank = row.get("input_rank")
-    if not _present(rank):
-        rank = 100
+    rank_value = row.get("input_rank")
+    rank = 100 if not _present(rank_value) else int(str(rank_value))
     av = row.get("available_at")
-    av_value = 0 if not _present(av) else int(pd.Timestamp(av).value)
-    return (int(rank), -av_value, _candidate_code(row))
+    av_value = 0 if not _present(av) else int(pd.Timestamp(str(av)).value)
+    return (rank, -av_value, _candidate_code(row))
 
 
 def _best_direct_rows(candidates: Sequence[Mapping[str, Any]], rule: StandardizationRule) -> list[Mapping[str, Any]]:
@@ -498,7 +505,7 @@ def compute_standardized_rows(
     sortable = inputs.copy()
     sortable["available_at"] = pd.to_datetime(sortable["available_at"], errors="coerce")
     for (_, period_end, _), group in sortable.groupby(key_columns, dropna=False, sort=False):
-        group_rows = group.to_dict("records")
+        group_rows = cast(list[Mapping[str, Any]], group.to_dict("records"))
         rule_map = _active_rules_by_group(resolved_rules, period_end)
         for rule in sorted(rule_map.values(), key=lambda r: (r.item_id, r.rule_id)):
             if not any(row.get("basis") == rule.basis for row in group_rows):
@@ -545,7 +552,7 @@ def compute_standardization_exceptions(
         item_id = row.get("item_id")
         if not _present(item_id):
             reason = "unmapped_concept"
-        elif (row.get("basis"), int(item_id)) not in active_keys:
+        elif (str(row.get("basis")), int(cast(Any, item_id))) not in active_keys:
             reason = "no_active_standardization_rule"
         else:
             continue
@@ -596,9 +603,15 @@ def compute_standardization_result(
     run_id: str | None = None,
 ) -> StandardizationResult:
     resolved_rules = tuple(rules or default_standardization_rules())
+    standardized = compute_standardized_rows(inputs, rules=resolved_rules, source=source, run_id=run_id)
+    exceptions = compute_standardization_exceptions(inputs, rules=resolved_rules, source=source, run_id=run_id)
     return StandardizationResult(
-        standardized=compute_standardized_rows(inputs, rules=resolved_rules, source=source, run_id=run_id),
-        exceptions=compute_standardization_exceptions(inputs, rules=resolved_rules, source=source, run_id=run_id),
+        standardized=standardized,
+        exceptions=exceptions,
+        standardized_row_count=len(standardized),
+        exception_row_count=len(exceptions),
+        input_row_count=len(inputs),
+        run_id=run_id,
     )
 
 
@@ -789,34 +802,28 @@ def refresh_fundamental_standardized(
     store: DuckDBStore,
     options: FundamentalStandardizationOptions | None = None,
 ) -> StandardizationResult:
-    """Recompute standardized facts and exceptions for the requested scope."""
+    """Recompute revision-complete standardized facts for the requested scope."""
 
     options = options or FundamentalStandardizationOptions()
     store.initialize()
-    inputs = load_standardization_inputs(store, options)
-    result = compute_standardization_result(
-        inputs,
-        source=options.source,
-        run_id=options.run_id,
+    from ._standardization_set_based import refresh_standardized_set_based
+
+    outcome = refresh_standardized_set_based(
+        store,
+        options,
+        default_standardization_rules(),
     )
-    with store.transaction():
-        _delete_scope(store, "fundamental_standardized", options)
-        _delete_scope(store, "fundamental_standardization_exception", options)
-        if not result.standardized.empty:
-            insert_frame(
-                store,
-                result.standardized,
-                "fundamental_standardized",
-                "fundamental_standardized_insert",
-            )
-        if not result.exceptions.empty:
-            insert_frame(
-                store,
-                result.exceptions,
-                "fundamental_standardization_exception",
-                "fundamental_standardization_exception_insert",
-            )
-    return result
+    return StandardizationResult(
+        standardized=outcome.standardized,
+        exceptions=outcome.exceptions,
+        standardized_row_count=outcome.standardized_row_count,
+        exception_row_count=outcome.exception_row_count,
+        input_row_count=outcome.input_row_count,
+        build_id=outcome.build_id,
+        run_id=outcome.run_id,
+        rule_set_sha256=outcome.rule_set_sha256,
+        basis_counts=outcome.basis_counts,
+    )
 
 
 class FundamentalStandardizationDataset(Dataset):
@@ -833,17 +840,24 @@ class FundamentalStandardizationDataset(Dataset):
             dataset_id=self.dataset_id,
             table_name="fundamental_standardized",
             check_name="rows_materialized",
-            status="passed" if len(result.standardized) > 0 else "warning",
-            observed_value=float(len(result.standardized)),
+            status="passed" if result.standardized_row_count > 0 else "warning",
+            observed_value=float(result.standardized_row_count),
             threshold_value=1.0,
             details={
                 "source": options.source,
-                "exceptions": int(len(result.exceptions)),
+                "exceptions": result.exception_row_count,
+                "build_id": result.build_id,
+                "rule_set_sha256": result.rule_set_sha256,
             },
         )
         return DatasetLoadResult(
             dataset_id=self.dataset_id,
-            rows_loaded=int(len(result.standardized)),
+            rows_loaded=result.standardized_row_count,
             source=options.source,
-            details={"exceptions": int(len(result.exceptions))},
+            details={
+                "exceptions": result.exception_row_count,
+                "build_id": result.build_id,
+                "rule_set_sha256": result.rule_set_sha256,
+                "basis_counts": dict(result.basis_counts or {}),
+            },
         )

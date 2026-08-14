@@ -10,46 +10,46 @@
       {
         "completed_trades": 123,
         "is_stress_quarter": false,
-        "mean_net_short_return": -0.012288844735395496
+        "mean_net_short_return": -0.025992922278464527
       }
     ],
     "completed_trades": 123,
     "horizons": [
       {
         "completed_trades": 128,
-        "mean_net_short_return": 0.003022933671036599,
-        "median_net_short_return": 0.008252441121819387,
+        "mean_net_short_return": -0.008666728479148112,
+        "median_net_short_return": 0.00456081849185297,
         "short_win_rate": 0.53125,
         "trading_days": 5
       },
       {
         "completed_trades": 128,
-        "mean_net_short_return": 0.007392688375550513,
-        "median_net_short_return": 0.011862500705992651,
-        "short_win_rate": 0.546875,
+        "mean_net_short_return": -0.002007582517270139,
+        "median_net_short_return": 0.005543935581680926,
+        "short_win_rate": 0.53125,
         "trading_days": 10
       },
       {
         "completed_trades": 127,
-        "mean_net_short_return": -0.0002968421233713972,
-        "median_net_short_return": -0.0006591683708248022,
+        "mean_net_short_return": -0.007184950683764696,
+        "median_net_short_return": -0.0022448132780082944,
         "short_win_rate": 0.49606299212598426,
         "trading_days": 21
       },
       {
         "completed_trades": 123,
-        "mean_net_short_return": -0.012288844735395496,
-        "median_net_short_return": -6.542056074765237e-05,
-        "short_win_rate": 0.4959349593495935,
+        "mean_net_short_return": -0.025992922278464527,
+        "median_net_short_return": -0.0005563442768412577,
+        "short_win_rate": 0.4878048780487805,
         "trading_days": 47
       }
     ],
     "maximum_market_cap_usd": 10000000000.0,
-    "mean_net_short_return": -0.012288844735395496,
-    "median_net_short_return": -6.542056074765237e-05,
+    "mean_net_short_return": -0.025992922278464527,
+    "median_net_short_return": -0.0005563442768412577,
     "minimum_market_cap_usd": 2000000000.0,
     "one_way_slippage_bps": 5.0,
-    "short_win_rate": 0.4959349593495935
+    "short_win_rate": 0.4878048780487805
   },
   "disclosed_exits": {
     "disclosed_exit_rate": 0.16609672691744015,
@@ -62,15 +62,15 @@
       {
         "cohort": "MIXED",
         "completed_47d_trades": 100,
-        "mean_47d_net_short_return": -0.022964232447394217,
-        "median_47d_net_short_return": -0.008833542570189423,
+        "mean_47d_net_short_return": -0.03871704015421691,
+        "median_47d_net_short_return": -0.004987388724035591,
         "selected_signals": 393,
-        "win_rate_47d": 0.48
+        "win_rate_47d": 0.47
       },
       {
         "cohort": "RESTATEMENT_ONLY",
         "completed_47d_trades": 23,
-        "mean_47d_net_short_return": 0.03412588444720753,
+        "mean_47d_net_short_return": 0.02932932935524152,
         "median_47d_net_short_return": 0.019965382740126936,
         "selected_signals": 163,
         "win_rate_47d": 0.5652173913043478

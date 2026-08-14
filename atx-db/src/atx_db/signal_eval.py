@@ -1064,42 +1064,115 @@ def load_panel_for_eval(
     """
 
     filters: list[str] = []
-    params: list[Any] = []
+    date_params: list[Any] = []
     if start_date is not None:
         filters.append("p.as_of_date >= ?")
-        params.append(start_date)
+        date_params.append(start_date)
     if end_date is not None:
         filters.append("p.as_of_date <= ?")
-        params.append(end_date)
+        date_params.append(end_date)
 
     factor_list = [str(factor_id) for factor_id in factor_ids] if factor_ids else []
-    join_sql = ""
-    registered = False
     if factor_list:
-        store.con.register("signal_eval_factor_filter", pd.DataFrame({"factor_id": factor_list}))
-        registered = True
-        join_sql = "JOIN signal_eval_factor_filter ff ON ff.factor_id = p.factor_id"
-
-    where_sql = f"WHERE {' AND '.join(filters)}" if filters else ""
-    try:
+        placeholders = ", ".join("?" for _ in factor_list)
+        where_sql = f"WHERE {' AND '.join(filters)}" if filters else ""
+        params: list[Any] = [*factor_list, *factor_list, *date_params]
         return store.con.execute(
             f"""
+            WITH raw_factor_values AS (
+                SELECT
+                    security_id, as_of_date, factor_id, value, available_at,
+                    source_loaded_at, run_id, input_lineage_json
+                FROM fundamental_factor_values
+                WHERE is_latest_revision
+                  AND value IS NOT NULL
+                  AND factor_id IN ({placeholders})
+                UNION ALL
+                SELECT
+                    security_id, as_of_date, factor_id, value, available_at,
+                    source_loaded_at, run_id, input_lineage_json
+                FROM cross_domain_factor_values
+                WHERE is_latest_revision
+                  AND value IS NOT NULL
+                  AND factor_id IN ({placeholders})
+            ),
+            factor_values AS (
+                SELECT
+                    security_id,
+                    greatest(as_of_date, cast(available_at AS DATE)) AS as_of_date,
+                    factor_id,
+                    value,
+                    available_at,
+                    source_loaded_at,
+                    run_id,
+                    input_lineage_json
+                FROM raw_factor_values
+            ),
+            scoped AS (
+                SELECT * FROM factor_values p
+                {where_sql}
+            ),
+            universe_filtered AS (
+                SELECT
+                    f.*,
+                    row_number() OVER (
+                        PARTITION BY f.security_id, f.as_of_date, f.factor_id
+                        ORDER BY u.valid_from DESC,
+                                 u.available_at DESC NULLS LAST,
+                                 u.source_loaded_at DESC NULLS LAST,
+                                 u.source DESC
+                    ) AS universe_rn
+                FROM scoped f
+                JOIN universe_membership u
+                  ON u.universe_id = 'us_common_equity_liquid_v1'
+                 AND u.security_id = f.security_id
+                 AND u.valid_from <= f.as_of_date
+                 AND (u.valid_to IS NULL OR u.valid_to >= f.as_of_date)
+                 AND u.as_of_date <= f.as_of_date
+                 AND u.is_member
+                 AND u.is_latest_revision
+                 AND (u.available_at IS NULL OR cast(u.available_at AS DATE) <= f.as_of_date)
+            ),
+            latest_factor AS (
+                SELECT
+                    *,
+                    row_number() OVER (
+                        PARTITION BY security_id, as_of_date, factor_id
+                        ORDER BY available_at DESC, source_loaded_at DESC,
+                                 input_lineage_json DESC
+                    ) AS factor_rn
+                FROM universe_filtered
+                WHERE universe_rn = 1
+                  AND cast(available_at AS DATE) <= as_of_date
+            )
             SELECT
                 p.security_id,
                 p.as_of_date,
                 p.factor_id,
                 p.value,
                 p.available_at
-            FROM v_factor_panel p
-            {join_sql}
-            {where_sql}
+            FROM latest_factor p
+            WHERE p.factor_rn = 1
             ORDER BY p.factor_id, p.as_of_date, p.security_id
             """,
             params,
         ).df()
-    finally:
-        if registered:
-            store.con.unregister("signal_eval_factor_filter")
+
+    where_sql = f"WHERE {' AND '.join(filters)}" if filters else ""
+    return store.con.execute(
+        f"""
+        SELECT
+            p.security_id,
+            p.as_of_date,
+            p.factor_id,
+            p.value,
+            p.available_at
+        FROM v_factor_panel p
+        {where_sql}
+        ORDER BY p.factor_id, p.as_of_date, p.security_id
+        """,
+        date_params,
+    ).df()
 
 
 def load_pit_classifications_for_panel(
@@ -1980,6 +2053,7 @@ def evaluate_panel(
     neutralize_taxonomy: str | None = None,
     neutralization_min_group_size: int = 5,
     neutralization_min_coverage: float = 0.80,
+    screen_only: bool = False,
     run_id: str | None = None,
 ) -> dict[str, int]:
     """Orchestrate the signal-evaluation surface: read the panel, score, persist.
@@ -1997,7 +2071,9 @@ def evaluate_panel(
     its own metric table(s); the returned dict merges every surface's per-table row counts,
     summing ``factor_eval_manifest`` across surfaces. Breadth uses the interval-keyed,
     point-in-time ``universe_membership`` roster. The gated leakage/coverage DQC checks are
-    PF4-S1-3 and are not run here.
+    PF4-S1-3 and are not run here. ``screen_only`` stops after persisting IC/HAC
+    and decay, so a preregistered inference gate can reject a weak candidate
+    before paying for portfolio diagnostics.
     """
 
     horizons = tuple(dict.fromkeys(int(horizon) for horizon in horizons))
@@ -2028,6 +2104,7 @@ def evaluate_panel(
 
     evaluation_params: dict[str, Any] = {
         "return_target": "injected" if forward_returns is not None else return_target,
+        "screen_only": bool(screen_only),
     }
     if forward_returns is None and return_target == RETURN_TARGET_SURVIVORSHIP_SAFE:
         evaluation_params["survivorship_safe_source"] = survivorship_safe_source
@@ -2083,6 +2160,9 @@ def evaluate_panel(
             run_id=run_id,
         )
     )
+
+    if screen_only:
+        return counts
 
     quantile_spread = compute_quantile_spread(panel, forward_returns, n_quantiles=n_quantiles, horizons=horizons)
     quantile_manifest = _build_quantile_manifest(

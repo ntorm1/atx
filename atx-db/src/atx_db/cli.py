@@ -13,8 +13,17 @@ from pathlib import Path
 from typing import Any
 
 from .connection import DEFAULT_DB_PATH, DuckDBStore
+from .fundamental_reconciliation import (
+    FundamentalReconciliationRefreshOptions,
+    refresh_fundamental_reconciliation_serving,
+)
 from .migrations import MIGRATIONS
 from .openfigi_signals import OpenFigiSignalMapOptions, map_signal_cusips
+from .provider_coverage import ProviderCoverageOptions, refresh_provider_coverage
+from .standardization import (
+    FundamentalStandardizationOptions,
+    refresh_fundamental_standardized,
+)
 from .thirteenf_amendments import refresh_thirteenf_amendments
 from .thirteenf_analysis import write_thirteenf_analysis_report
 from .thirteenf_archive import (
@@ -31,6 +40,7 @@ from .thirteenf_backtest import (
     refresh_thirteenf_signal_backtest,
 )
 from .thirteenf_signals import refresh_thirteenf_consensus_signals
+from .ticker_history_bulk import BulkTickerHistoryOptions, publish_bulk_ticker_history
 
 
 def _json(value: Any) -> None:
@@ -47,9 +57,7 @@ def _table_exists(store: DuckDBStore, table_name: str) -> bool:
     return bool(row[0])
 
 
-def _configure_analytical_session(
-    store: DuckDBStore, *, memory_limit: str, threads: int
-) -> None:
+def _configure_analytical_session(store: DuckDBStore, *, memory_limit: str, threads: int) -> None:
     if threads < 1:
         raise ValueError("threads must be positive")
     store.con.execute("SET memory_limit = ?", [memory_limit])
@@ -118,6 +126,35 @@ def _build_parser() -> argparse.ArgumentParser:
     status.add_argument("--db-path", type=Path, default=DEFAULT_DB_PATH)
     status.add_argument("--strict", action="store_true", help="Exit nonzero unless the schema is current")
 
+    standardized = commands.add_parser(
+        "refresh-standardized-fundamentals",
+        help="Materialize revision-complete annual, quarterly, instant, and TTM facts",
+    )
+    standardized.add_argument("--db-path", type=Path, default=DEFAULT_DB_PATH)
+    standardized.add_argument("--symbol", action="append", dest="symbols")
+    standardized.add_argument("--memory-limit", default="8GB")
+    standardized.add_argument("--threads", type=int, default=4)
+    standardized.add_argument("--run-id")
+
+    reconciliation = commands.add_parser(
+        "refresh-fundamental-reconciliation",
+        help="Atomically publish indexed, filing-context-aware accounting reconciliations",
+    )
+    reconciliation.add_argument("--db-path", type=Path, default=DEFAULT_DB_PATH)
+    reconciliation.add_argument("--symbol", action="append", dest="symbols")
+    reconciliation.add_argument("--memory-limit", default="8GB")
+    reconciliation.add_argument("--threads", type=int, default=4)
+    reconciliation.add_argument("--run-id")
+
+    coverage = commands.add_parser(
+        "refresh-provider-coverage",
+        help="Snapshot public schema ranges, breadth, freshness, and provider SLO conditions",
+    )
+    coverage.add_argument("--db-path", type=Path, default=DEFAULT_DB_PATH)
+    coverage.add_argument("--dataset", action="append", dest="datasets")
+    coverage.add_argument("--observed-at", type=dt.datetime.fromisoformat)
+    coverage.add_argument("--run-id")
+
     backfill = commands.add_parser("backfill-13f", help="Load SEC quarterly Form 13F archives")
     backfill.add_argument("--db-path", type=Path, default=DEFAULT_DB_PATH)
     backfill.add_argument("--start", type=dt.date.fromisoformat, default=dt.date(2013, 4, 1))
@@ -133,9 +170,7 @@ def _build_parser() -> argparse.ArgumentParser:
     backfill.add_argument("--replace-loaded", action="store_true")
     backfill.add_argument("--keep-indexes-during-load", action="store_true")
 
-    refresh = commands.add_parser(
-        "refresh-13f-amendments", help="Reconstruct effective portfolios and amendment rates"
-    )
+    refresh = commands.add_parser("refresh-13f-amendments", help="Reconstruct effective portfolios and amendment rates")
     refresh.add_argument("--db-path", type=Path, default=DEFAULT_DB_PATH)
     refresh.add_argument("--start", type=dt.date.fromisoformat)
     refresh.add_argument("--end", type=dt.date.fromisoformat)
@@ -163,9 +198,7 @@ def _build_parser() -> argparse.ArgumentParser:
     signals.add_argument("--threads", type=int, default=4)
     signals.add_argument("--run-id")
 
-    mapping = commands.add_parser(
-        "map-13f-signal-instruments", help="Map consensus-signal CUSIPs through OpenFIGI v3"
-    )
+    mapping = commands.add_parser("map-13f-signal-instruments", help="Map consensus-signal CUSIPs through OpenFIGI v3")
     mapping.add_argument("--db-path", type=Path, default=DEFAULT_DB_PATH)
     mapping.add_argument("--start", type=dt.date.fromisoformat)
     mapping.add_argument("--end", type=dt.date.fromisoformat)
@@ -206,6 +239,16 @@ def _build_parser() -> argparse.ArgumentParser:
         default=Path("research") / "recreated-l1vsun-13f-amendment-analysis.md",
     )
     report.add_argument("--json-output", type=Path)
+
+    broad_bars = commands.add_parser(
+        "publish-broad-bars",
+        help="Atomically publish an extracted full ticker-history TSV",
+    )
+    broad_bars.add_argument("--db-path", type=Path, default=DEFAULT_DB_PATH)
+    broad_bars.add_argument("--tsv-path", type=Path, required=True)
+    broad_bars.add_argument("--memory-limit", default="4GB")
+    broad_bars.add_argument("--threads", type=int, default=4)
+    broad_bars.add_argument("--run-id")
     return parser
 
 
@@ -216,6 +259,76 @@ def main(argv: Sequence[str] | None = None) -> int:
         status = warehouse_status(args.db_path)
         _json(status)
         return 0 if not args.strict or status["status"] == "ready" else 2
+
+    if args.command == "refresh-standardized-fundamentals":
+        with DuckDBStore(args.db_path) as store:
+            store.con.execute("PRAGMA disable_progress_bar")
+            _configure_analytical_session(
+                store,
+                memory_limit=args.memory_limit,
+                threads=args.threads,
+            )
+            standardized_result = refresh_fundamental_standardized(
+                store,
+                FundamentalStandardizationOptions(
+                    symbols=None if args.symbols is None else tuple(args.symbols),
+                    run_id=args.run_id,
+                    materialize_result_limit=0,
+                ),
+            )
+        _json(
+            {
+                "build_id": standardized_result.build_id,
+                "run_id": standardized_result.run_id,
+                "rule_set_sha256": standardized_result.rule_set_sha256,
+                "input_rows": standardized_result.input_row_count,
+                "standardized_rows": standardized_result.standardized_row_count,
+                "exception_rows": standardized_result.exception_row_count,
+                "basis_counts": standardized_result.basis_counts,
+            }
+        )
+        return 0
+
+    if args.command == "refresh-fundamental-reconciliation":
+        with DuckDBStore(args.db_path) as store:
+            store.con.execute("PRAGMA disable_progress_bar")
+            _configure_analytical_session(
+                store,
+                memory_limit=args.memory_limit,
+                threads=args.threads,
+            )
+            reconciliation_result = refresh_fundamental_reconciliation_serving(
+                store,
+                FundamentalReconciliationRefreshOptions(
+                    symbols=None if args.symbols is None else tuple(args.symbols),
+                    run_id=args.run_id,
+                ),
+            )
+        _json(asdict(reconciliation_result))
+        return 0
+
+    if args.command == "refresh-provider-coverage":
+        with DuckDBStore(args.db_path) as store:
+            coverage_result = refresh_provider_coverage(
+                store,
+                ProviderCoverageOptions(
+                    dataset_ids=None if args.datasets is None else tuple(args.datasets),
+                    observed_at=args.observed_at,
+                    run_id=args.run_id,
+                ),
+            )
+        _json(
+            {
+                "run_id": None if not coverage_result else coverage_result[0].run_id,
+                "schema_count": len(coverage_result),
+                "conditions": {
+                    condition: sum(row.condition == condition for row in coverage_result)
+                    for condition in ("available", "degraded", "pending", "missing")
+                },
+                "schemas": [asdict(row) for row in coverage_result],
+            }
+        )
+        return 0
 
     if args.command == "backfill-13f":
         defaults = ThirteenFArchiveBackfillOptions()
@@ -242,9 +355,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "refresh-13f-amendments":
         with DuckDBStore(args.db_path) as store:
             store.con.execute("PRAGMA disable_progress_bar")
-            _configure_analytical_session(
-                store, memory_limit=args.memory_limit, threads=args.threads
-            )
+            _configure_analytical_session(store, memory_limit=args.memory_limit, threads=args.threads)
             amendment_result = refresh_thirteenf_amendments(
                 store,
                 start=args.start,
@@ -261,9 +372,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "refresh-13f-signals":
         with DuckDBStore(args.db_path) as store:
             store.con.execute("PRAGMA disable_progress_bar")
-            _configure_analytical_session(
-                store, memory_limit=args.memory_limit, threads=args.threads
-            )
+            _configure_analytical_session(store, memory_limit=args.memory_limit, threads=args.threads)
             signal_result = refresh_thirteenf_consensus_signals(
                 store,
                 start=args.start,
@@ -331,6 +440,20 @@ def main(argv: Sequence[str] | None = None) -> int:
                 json_path=args.json_output,
             )
         _json(report_summary)
+        return 0
+
+    if args.command == "publish-broad-bars":
+        with DuckDBStore(args.db_path) as store:
+            result = publish_bulk_ticker_history(
+                store,
+                BulkTickerHistoryOptions(
+                    tsv_path=args.tsv_path,
+                    memory_limit=args.memory_limit,
+                    threads=args.threads,
+                    run_id=args.run_id,
+                ),
+            )
+        _json(asdict(result))
         return 0
 
     raise AssertionError(f"Unhandled command: {args.command}")

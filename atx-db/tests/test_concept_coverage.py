@@ -5,6 +5,7 @@ operator-run step (for example symbol_source='loaded_facts' with a local
 companyfacts_zip). These tests stay fully offline and only verify the committed
 projection and loader defaults.
 """
+
 from __future__ import annotations
 
 import csv
@@ -24,7 +25,7 @@ from atx_db.fundamentals import CANONICAL_CONCEPTS, DEFAULT_CONCEPTS, SUPPORTED_
 from atx_db.item_registry import read_fundamental_item_seed
 
 
-CONCEPT_MAP_PATH = Path(__file__).resolve().parents[1] / "seeds" / "concept_map.csv"
+CONCEPT_MAP_PATH = Path(__file__).resolve().parents[1] / "src" / "atx_db" / "seeds" / "concept_map.csv"
 
 
 def _read_concept_map_seed() -> tuple[tuple[str, str, str, int, str, str], ...]:
@@ -175,10 +176,7 @@ def test_concept_map_csv_round_trips_generated_projection():
 
 def test_concept_map_rows_match_statement_map_and_registry_item_ids():
     rows = _read_concept_map_seed()
-    map_by_key = {
-        (row.taxonomy, row.concept, row.industry_template): row
-        for row in FUNDAMENTAL_STATEMENT_MAP_ROWS
-    }
+    map_by_key = {(row.taxonomy, row.concept, row.industry_template): row for row in FUNDAMENTAL_STATEMENT_MAP_ROWS}
     registry_item_ids = {row.item_id for row in read_fundamental_item_seed()}
 
     for taxonomy, concept, canonical_metric, item_id, statement_type, industry_template in rows:
@@ -220,10 +218,7 @@ def test_s3_1_fetch_set_has_zero_loaded_concepts_without_statement_map(tmp_store
 
 def test_s3_1_overlay_exceptions_are_exactly_explained_allowlist():
     exception_rows = statement_map_overlay_exception_rows()
-    exception_keys = {
-        (row.taxonomy, row.concept, row.industry_template, row.item_id)
-        for row in exception_rows
-    }
+    exception_keys = {(row.taxonomy, row.concept, row.industry_template, row.item_id) for row in exception_rows}
     unloadable_keys = {
         (row.taxonomy, row.concept, row.industry_template, int(row.item_id))
         for row in statement_map_unloadable_overlay_rows()
@@ -238,14 +233,21 @@ def test_s3_1_overlay_exceptions_are_exactly_explained_allowlist():
 
 
 def test_s3_1_verified_overlay_rows_are_active_with_expected_metadata():
-    map_by_key = {
-        (row.industry_template, row.taxonomy, row.concept): row
-        for row in FUNDAMENTAL_STATEMENT_MAP_ROWS
-    }
+    map_by_key = {(row.industry_template, row.taxonomy, row.concept): row for row in FUNDAMENTAL_STATEMENT_MAP_ROWS}
     expected = {
-        ("BK", "us-gaap", "InterestAndDividendIncomeOperating"): (1503, "bank_statement", "interest_income_bank", False),
+        ("BK", "us-gaap", "InterestAndDividendIncomeOperating"): (
+            1503,
+            "bank_statement",
+            "interest_income_bank",
+            False,
+        ),
         ("BK", "us-gaap", "ProvisionForLoanAndLeaseLosses"): (1505, "bank_statement", "loan_loss_provision", False),
-        ("BK", "us-gaap", "FinancingReceivableAllowanceForCreditLosses"): (1506, "bank_statement", "allowance_loan_lease_losses", False),
+        ("BK", "us-gaap", "FinancingReceivableAllowanceForCreditLosses"): (
+            1506,
+            "bank_statement",
+            "allowance_loan_lease_losses",
+            False,
+        ),
         ("BK", "us-gaap", "LoansAndLeasesReceivableNetReportedAmount"): (1509, "bank_statement", "total_loans", False),
         ("IS", "us-gaap", "PremiumsEarnedNet"): (1601, "insurance_statement", "premiums_earned", False),
         ("IS", "us-gaap", "PremiumsWrittenNet"): (1602, "insurance_statement", "premiums_written", False),
@@ -296,9 +298,7 @@ def test_s3_3_migration_0069_catalogs_reports_and_is_idempotent(tmp_store):
     }
     views = {
         row[0]
-        for row in tmp_store.con.execute(
-            "SELECT view_name FROM duckdb_views() WHERE schema_name = 'main'"
-        ).fetchall()
+        for row in tmp_store.con.execute("SELECT view_name FROM duckdb_views() WHERE schema_name = 'main'").fetchall()
     }
     assert expected_views <= views
 
@@ -437,9 +437,7 @@ def test_s3_3_overlay_allowlist_is_excluded_from_unmapped_gate(tmp_store):
     ).fetchone()
     assert allowlist is not None
     assert allowlist[4]
-    assert tmp_store.con.execute(
-        "SELECT count(*) FROM fundamental_unmapped_concept_report"
-    ).fetchone()[0] == 0
+    assert tmp_store.con.execute("SELECT count(*) FROM fundamental_unmapped_concept_report").fetchone()[0] == 0
 
     results = {
         r.check_name: r

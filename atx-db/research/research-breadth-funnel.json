@@ -1,0 +1,69 @@
+{
+  "as_of_date": "2026-06-15",
+  "factor_coverage": [
+    {
+      "factor_id": "profitability_quarterly_gross_profitability_lagged_assets",
+      "latest_date": "2026-06-15",
+      "latest_names": 551,
+      "maximum_names": 579,
+      "mean_names": 500.15606936416185,
+      "median_names": 520.0,
+      "median_target_fraction": 0.52,
+      "minimum_names": 40
+    },
+    {
+      "factor_id": "profitability_quarterly_gross_profitability_trend_8q",
+      "latest_date": "2026-06-15",
+      "latest_names": 520,
+      "maximum_names": 531,
+      "mean_names": 445.0709677419355,
+      "median_names": 446.0,
+      "median_target_fraction": 0.446,
+      "minimum_names": 36
+    },
+    {
+      "factor_id": "efficiency_quarterly_asset_turnover_trend_8q",
+      "latest_date": "2026-06-15",
+      "latest_names": 491,
+      "maximum_names": 497,
+      "mean_names": 262.0065359477124,
+      "median_names": 166.0,
+      "median_target_fraction": 0.166,
+      "minimum_names": 31
+    },
+    {
+      "factor_id": "profitability_quarterly_gross_margin_trend_8q",
+      "latest_date": "2026-06-15",
+      "latest_names": 486,
+      "maximum_names": 495,
+      "mean_names": 260.6666666666667,
+      "median_names": 164.0,
+      "median_target_fraction": 0.164,
+      "minimum_names": 31
+    }
+  ],
+  "fundamental_statement_securities": {
+    "all_history": 1598,
+    "recent_450d": 1578
+  },
+  "governed_universe": [
+    {
+      "is_member": true,
+      "reason": "member",
+      "securities": 662
+    },
+    {
+      "is_member": false,
+      "reason": "liquidity_screen_fail",
+      "securities": 24
+    }
+  ],
+  "institutional_target_names": 1000,
+  "price_securities": {
+    "all_history": 9346,
+    "exact_date": 935,
+    "trailing_30d": 937
+  },
+  "primary_bottleneck": "recent_daily_bar_coverage",
+  "recent_price_statement_overlap": 775
+}

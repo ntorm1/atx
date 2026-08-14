@@ -76,16 +76,16 @@ SEED_COLUMNS = (
     "sign_note",
 )
 
-SEED_PATH = Path(__file__).resolve().parents[1] / "seeds" / "fundamental_items.csv"
+SEED_PATH = Path(__file__).resolve().parents[1] / "src" / "atx_db" / "seeds" / "fundamental_items.csv"
 
-# S1-1, PF2-S5, and PF3-S5 source sections define 234 canonical item_ids. The original 460-500
+# S1-1, PF2-S5, PF3-S5, and DQC 0004 coverage define 235 canonical item_ids. The original 460-500
 # acceptance count was a plan defect; gap IDs must not be synthesized. 1045-1050 are the PF3-S5
 # share-count items (public float, treasury, Class A-D); 1044 remains a reserved gap id.
 AUTHORIZED_ITEM_IDS = (
     set(range(1001, 1044))
     | set(range(1045, 1051))
     | set(range(1101, 1120))
-    | set(range(1201, 1224))
+    | set(range(1201, 1225))
     | set(range(1301, 1326))
     | set(range(1401, 1428))
     | set(range(1501, 1516))
@@ -96,7 +96,7 @@ AUTHORIZED_ITEM_IDS = (
     | set(range(2001, 2045))
 )
 
-UNAUTHORIZED_GAP_ITEM_IDS = {1044, 1099, 1224, 1326}
+UNAUTHORIZED_GAP_ITEM_IDS = {1044, 1099, 1326}
 
 EXPRESSION_VENDOR_FIELDS = {
     (1004, "compustat", "revt - cogs"),
@@ -314,7 +314,7 @@ def test_fundamental_item_seed_csv_is_stdlib_parseable():
     assert tuple(rows[0].keys()) == SEED_COLUMNS
     seeded_item_ids = {int(row["item_id"]) for row in rows}
     assert seeded_item_ids == AUTHORIZED_ITEM_IDS
-    assert len(seeded_item_ids) == 234
+    assert len(seeded_item_ids) == 235
     assert seeded_item_ids.isdisjoint(UNAUTHORIZED_GAP_ITEM_IDS)
     assert all("ifrs-full:" not in row["alias_code"] for row in rows)
     assert all("ifrs-full:" not in row["vendor_field"] for row in rows)
@@ -322,19 +322,9 @@ def test_fundamental_item_seed_csv_is_stdlib_parseable():
     assert all(row["vendor_field"] != "[unverified]" for row in rows)
     assert all("[" not in row["alias_code"] and "]" not in row["alias_code"] for row in rows)
     assert all("[" not in row["vendor_field"] and "]" not in row["vendor_field"] for row in rows)
-    assert all(
-        not any(marker in row["vendor_field"] for marker in EXPRESSION_MARKERS)
-        for row in rows
-    )
-    assert all(
-        re.search(r"[A-Za-z0-9_][+\-*/][A-Za-z0-9_]", row["vendor_field"]) is None
-        for row in rows
-    )
-    vendor_fields = {
-        (int(row["item_id"]), row["vendor"], row["vendor_field"])
-        for row in rows
-        if row["vendor_field"]
-    }
+    assert all(not any(marker in row["vendor_field"] for marker in EXPRESSION_MARKERS) for row in rows)
+    assert all(re.search(r"[A-Za-z0-9_][+\-*/][A-Za-z0-9_]", row["vendor_field"]) is None for row in rows)
+    vendor_fields = {(int(row["item_id"]), row["vendor"], row["vendor_field"]) for row in rows if row["vendor_field"]}
     assert vendor_fields.isdisjoint(EXPRESSION_VENDOR_FIELDS)
 
 
@@ -437,11 +427,11 @@ def test_default_fundamental_item_seed_path_exists():
 
 def test_pyproject_includes_fundamental_item_seed_package_data():
     """Installed packages include the offline CSV seed file."""
-    pyproject_path = Path(__file__).resolve().parents[2] / "pyproject.toml"
+    pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
     pyproject = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
 
     package_data = pyproject["tool"]["setuptools"]["package-data"]
-    assert "seeds/*.csv" in package_data["db"]
+    assert "seeds/*.csv" in package_data["atx_db"]
 
 
 def test_seed_fundamental_item_registry_loads_acceptance_count(tmp_store):
@@ -452,7 +442,7 @@ def test_seed_fundamental_item_registry_loads_acceptance_count(tmp_store):
     item_count = tmp_store.con.execute("SELECT count(*) FROM fundamental_item").fetchone()[0]
 
     assert inserted == item_count
-    assert item_count == 234
+    assert item_count == 235
 
 
 def test_seed_fundamental_item_registry_rejects_unauthorized_gap_ids(tmp_store):
@@ -665,9 +655,7 @@ def test_registry_rejects_malformed_as_of_on_hit_and_miss_paths_without_duckdb()
     """Bad as_of values fail before alias lookup can short-circuit."""
     from atx_db.item_registry import Registry
 
-    registry = Registry.from_seed_rows(
-        (_seed_row_for_registry(alias_code="Revenues", coalesce_priority=20),)
-    )
+    registry = Registry.from_seed_rows((_seed_row_for_registry(alias_code="Revenues", coalesce_priority=20),))
 
     with pytest.raises(ValueError, match="invalid as_of date"):
         registry.resolve_item("us-gaap", "Revenues", as_of="not-a-date")
@@ -915,9 +903,7 @@ def test_seed_fundamental_item_registry_reload_is_noop(tmp_store):
         for table_name in NEW_TABLES
     }
     before_snapshots = {
-        "fundamental_item": tmp_store.con.execute(
-            "SELECT * FROM fundamental_item ORDER BY item_id"
-        ).fetchall(),
+        "fundamental_item": tmp_store.con.execute("SELECT * FROM fundamental_item ORDER BY item_id").fetchall(),
         "fundamental_item_alias": tmp_store.con.execute(
             """
             SELECT * FROM fundamental_item_alias
@@ -939,9 +925,7 @@ def test_seed_fundamental_item_registry_reload_is_noop(tmp_store):
         for table_name in NEW_TABLES
     }
     after_snapshots = {
-        "fundamental_item": tmp_store.con.execute(
-            "SELECT * FROM fundamental_item ORDER BY item_id"
-        ).fetchall(),
+        "fundamental_item": tmp_store.con.execute("SELECT * FROM fundamental_item ORDER BY item_id").fetchall(),
         "fundamental_item_alias": tmp_store.con.execute(
             """
             SELECT * FROM fundamental_item_alias
@@ -1034,13 +1018,16 @@ def test_ratio_input_item_ids_encode_controller_semantic_picks_and_gaps():
 
     assert input_item_ids_for_ratio(("rev", "ni", "rev_prior", "ni_prior")) == [1001, 1031]
     assert input_item_ids_for_ratio(("current_assets", "inventory", "current_liabilities")) == [1102, 1107, 1202]
-    assert input_item_ids_for_ratio(
-        (
-            "common_shares_outstanding",
-            "common_shares_outstanding_prior",
-            "selling_general_and_administrative_expense",
+    assert (
+        input_item_ids_for_ratio(
+            (
+                "common_shares_outstanding",
+                "common_shares_outstanding_prior",
+                "selling_general_and_administrative_expense",
+            )
         )
-    ) == []
+        == []
+    )
 
 
 def test_ratio_input_registry_returns_copies_and_rejects_unknown_groups():

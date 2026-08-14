@@ -17,8 +17,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+server = [
+    "fastapi>=0.140,<1",
+    "uvicorn>=0.35,<1",
+]
 dev = [
     "filelock>=3,<4",
+    "httpx>=0.28,<1",
     "mypy>=1.17,<2",
     "pytest>=9,<10",
     "pytest-cov>=7,<8",
@@ -31,6 +36,9 @@ dev = [
 [project.scripts]
 atx-db = "atx_db.cli:main"
 atx-db-asof = "atx_db.asof.cli:main"
+atx-db-api = "atx_db.api.app:main"
+atx-db-control = "atx_db.api.admin:main"
+atx-db-worker = "atx_db.api.worker:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -1,0 +1,13 @@
+{
+  "duplicate_keys": 0,
+  "elapsed_seconds": 532.1957171999966,
+  "invalid_rows": 0,
+  "latest_date": "2026-06-15",
+  "latest_date_securities": 12206,
+  "rows": 31173360,
+  "run_id": "broad-bars-native-bulk-v1",
+  "schema_version": 1,
+  "securities": 34495,
+  "state": "complete",
+  "updated_at": "2026-08-13T23:18:10.455742+00:00"
+}
