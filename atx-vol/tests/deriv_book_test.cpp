@@ -381,6 +381,58 @@ TEST(DerivBook, CorridorVarSwapNeverUsesTheVarSwapMemo) {
   EXPECT_LT(g->rows[1].fair_strike_dec, g->rows[0].fair_strike_dec);
 }
 
+// Task F-5, the third sibling of the two tests above and for the same reason:
+// `var_swap_memo_eligible` is a `kind ==` whitelist no compiler polices.
+//
+// The stakes differ from the corridor case in a way worth naming. A variance
+// option shares the VarSwap memo's KEY exactly -- (uid, T-bits, wing band) --
+// and its `strike_dec` is genuinely not in that key. So a widened whitelist
+// would not merely lose a corridor: it would serve five variance CALLS at five
+// different strikes the SAME per-row combine the memo applies to a swap, which
+// is affine in the strike. An option's premium is not. Every row would be
+// linearly wrong, in a way that looks like a plausible number.
+//
+// Unlike the two siblings, F-5's kinds have NO strip counter of their own (the
+// strip they run IS a var-swap strip, see `strip_kind_traits`), so the O(L)
+// evidence is read off `VarSwapStripEvals` directly: five rows must produce
+// five evaluations, not one. Marks-only, same isolation reason.
+TEST(DerivBook, VarianceOptionsNeverUseTheVarSwapMemo) {
+  const PricedSurface ps = make_carry_skew_surface(7, 100.0, 0.30, 0.02);
+  const PricedSurface *arr[] = {&ps};
+  auto ss = SurfaceSet::create(arr);
+  ASSERT_TRUE(ss.has_value());
+
+  std::vector<DerivPosition> book;
+  for (std::uint32_t i = 0; i < 5u; ++i) {
+    DerivPosition p{};
+    p.id = i;
+    p.uid = 7;
+    p.qty = 1.0;
+    p.contract = var_swap_at(0.35);  // same (uid, T) group for every row
+    p.contract.kind = (i % 2u == 0u) ? DerivKind::VarianceCall : DerivKind::VariancePut;
+    p.contract.strike_dec = 0.02 + 0.01 * static_cast<double>(i);
+    p.contract.rv_spec.n_obs_done = i;  // mid-life: not fully aged, needs the strip
+    p.contract.rv_spec.rv_done_dec = 0.05;
+    book.push_back(p);
+  }
+
+  ledger::reset();
+  const auto f = price_deriv_book(*ss, book, DerivConfig{}, /*greeks=*/false);
+  ASSERT_TRUE(f.has_value()) << f.error().to_string();
+  ASSERT_EQ(f->rows.size(), 5u);
+  for (const auto &row : f->rows) {
+    EXPECT_EQ(row.status, PriceStatus::Ok);
+  }
+  // THE assertion: O(L), not O(1). A widened memo whitelist collapses this to 1.
+  EXPECT_EQ(ledger::snapshot().get(ledger::Solve::VarSwapStripEvals), 5u);
+
+  // Non-vacuity: the rows really are distinct numbers, so "they all shared one
+  // block" would have been observable in the values too, not only the counter.
+  for (std::size_t i = 1; i < f->rows.size(); ++i) {
+    EXPECT_NE(f->rows[i].fair_strike_dec, f->rows[0].fair_strike_dec) << "row " << i;
+  }
+}
+
 // Task F-3 fix round 1 (C-1 Critical, "instance nine"). The corridor-scope
 // rule -- corridor bounds are illegal on a non-corridor kind -- must hold on
 // the BOOK-MEMO lane, not only through `deriv_price`.

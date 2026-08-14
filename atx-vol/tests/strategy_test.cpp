@@ -2470,10 +2470,19 @@ TEST(StrategyRestrikeValidation, RejectsEngineUnsupportedSwapKinds) {
   auto snap = snapshot_of({{"SPY", &surface}}, "restrike-val-kind");
   ASSERT_TRUE(snap.has_value());
 
-  // Neither kind is admitted to the live engine (`valid_deriv_kind`,
-  // backtest.cpp), so neither can ever become a live SwapLot. Both must be
-  // refused identically, and at spec-validation time.
-  for (const DerivKind kind : {DerivKind::GammaSwap, DerivKind::CorridorVarSwap}) {
+  // None of these kinds is admitted to the live engine (`valid_deriv_kind`,
+  // backtest.cpp), so none can ever become a live SwapLot. All must be refused
+  // identically, and at spec-validation time.
+  //
+  // Task F-5 added the two variance-option kinds to this list. They are refused
+  // for a reason unlike the other two: nothing is MISSING from `SwapLot` (it
+  // already carries `strike_dec`, which is the option strike). It is
+  // SETTLEMENT that cannot express them -- `swap_terminal_value`'s payoff is
+  // linear in the terminal rate and an option's is kinked -- so admitting them
+  // would settle a worthless short option at a profit. See
+  // `engine_supports_swap_kind`'s own comment (backtest.hpp).
+  for (const DerivKind kind : {DerivKind::GammaSwap, DerivKind::CorridorVarSwap,
+                               DerivKind::VarianceCall, DerivKind::VariancePut}) {
     StrategySpec spec = restrike_spec({kBaseNow, kBaseNow + kDayNs});
     SwapLegSpec leg = var_swap_leg();
     leg.kind = kind;

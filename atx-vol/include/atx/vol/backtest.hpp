@@ -516,6 +516,22 @@ struct SwapLot {
     return true;
   case DerivKind::GammaSwap:
   case DerivKind::CorridorVarSwap:
+  // Task F-5: the two option kinds are refused for a reason of the same shape
+  // as CorridorVarSwap's but one level deeper. It is not that `SwapLot` is
+  // missing a field -- it already carries `strike_dec`, which IS the option
+  // strike. It is that SETTLEMENT is structurally wrong: `swap_terminal_value`
+  // (backtest.cpp) produces a terminal RATE and the settle path pays
+  // `qty * notional * (terminal - strike_dec)`, a payoff LINEAR in that rate.
+  // An option pays max(terminal - strike_dec, 0) / max(strike_dec - terminal,
+  // 0). Admitting these kinds without teaching that path the kink would settle
+  // a short option position at a profit it never had, on every path where the
+  // option expired worthless -- a wrong number, not a missing feature.
+  //
+  // MARKING would already be correct (deriv_price prices both kinds), which is
+  // precisely why this refusal has to be explicit: the half that works is not
+  // the half that decides.
+  case DerivKind::VarianceCall:
+  case DerivKind::VariancePut:
     return false;
   }
   return false;  // out-of-enum value: refuse, matching the C default

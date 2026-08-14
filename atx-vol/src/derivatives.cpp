@@ -1088,6 +1088,144 @@ template <class SurfaceT>
   return Ok(out);
 }
 
+// Assembles a DerivQuote for price_variance_option's three exit paths, so the
+// premium -> PV -> component bookkeeping lives in one place. Same role as
+// capped_var_swap_quote above, with the ONE structural difference these kinds
+// have: `pv` does NOT subtract `contract.strike_dec`, because K is already
+// inside the payoff whose expectation `premium_dec` is. Getting that wrong
+// would subtract the strike twice, and would do it QUIETLY -- the sign and
+// magnitude stay plausible. See `DerivKind::VarianceCall`'s header doc for the
+// full field contract.
+[[nodiscard]] DerivQuote variance_option_quote(double premium_dec, double accrued_dec,
+                                               double future_dec, double df,
+                                               const DerivContract& contract,
+                                               DerivFlags flags) noexcept {
+  DerivQuote out{};
+  out.fair_strike_dec = premium_dec;  // the PREMIUM: no strike prices an option to PV = 0
+  out.fair_strike_points = 1.0e4 * premium_dec;  // variance points, the VarSwap scale
+  out.pv = df * contract.notional * premium_dec;
+  out.undiscounted_expectation_dec = premium_dec;
+  out.accrued_component_dec = accrued_dec;
+  out.future_component_dec = future_dec;
+  out.flags = flags;
+  return out;
+}
+
+// European option on realized variance (Task F-5, PV-F5 / LIT-5): E[(V-K)+]
+// for a call and E[(K-V)+] for a put, over the SAME blended variance
+// V = a + b*W that `price_capped_var_swap` above prices -- a = w_done*
+// rv_done_dec, b = w_future, W lognormal with mean K_var_future and log-stdev
+// xi*sqrt(T). One function serves both kinds: they differ only in which closed
+// form the shared (a, b, m, s, K) resolution is handed to.
+//
+// Exit paths, in order:
+//   1. FULLY AGED (b == 0): V == a exactly, so the payoff is its own intrinsic
+//      value. Deterministic, no strip, valid at T == 0.
+//   2. PUT PIN (a >= K, not fully aged): V >= a >= K makes (K-V)+ identically
+//      0. Like the capped kinds' cap pin, this must run BEFORE the strip and
+//      before any T > 0 requirement -- a put already accrued past its strike is
+//      a legitimate quote request at expiry and must not fail on, or pay for, a
+//      strip it does not need.
+//   3. Otherwise: strip for K_var_future, resolve vol-of-vol, closed form.
+//
+// A CALL HAS NO MIRROR OF EXIT 2, and the asymmetry is the easiest thing here
+// to get backwards. a >= K makes exercise CERTAIN, but certain exercise is not
+// a deterministic value: the payoff is still a + b*W - K, whose expectation
+// needs the strip's m. `lognormal_call` already returns m - k for k <= 0, so
+// that regime is the ordinary model path with a negative effective strike and
+// needs no branch at all.
+//
+// The discrete-monitoring correction, the xi-calibrates-against-the-
+// UNCORRECTED-mean rule (PV-8), and the strip/flag bookkeeping are all
+// `price_capped_var_swap`'s, deliberately identical -- a variance call struck
+// at C and a capped var swap capped at C are the same expectation
+// (`VarOption.CappedSwapIdentity`), which can only hold if both pricers resolve
+// the future leg the same way.
+template <class SurfaceT>
+[[nodiscard]] Result<DerivQuote> price_variance_option(const SurfaceT& surface,
+                                                        const CurveSet& curves,
+                                                        const DerivContract& contract,
+                                                        const DerivConfig& cfg) {
+  assert((contract.kind == DerivKind::VarianceCall ||
+          contract.kind == DerivKind::VariancePut) &&
+         "variance option: kind routed by deriv_price");
+  const bool is_call = contract.kind == DerivKind::VarianceCall;
+  const RealizedVarianceSpec& rv = contract.rv_spec;
+  const double T = contract.maturity_t;
+  const double k_opt = contract.strike_dec;  // the OPTION strike, in decimal variance
+
+  if (cfg.discrete_correction_mode == DerivDiscreteCorrection::FullMc) {
+    return Err(ErrorCode::NotImplemented, "FULL_MC discrete correction reserved");
+  }
+
+  double w_done = 0.0;
+  double w_future = 1.0;
+  if (rv.n_obs_total > 0u) {
+    w_done = static_cast<double>(rv.n_obs_done) / static_cast<double>(rv.n_obs_total);
+    w_future = 1.0 - w_done;
+  }
+  const double a = w_done * rv.rv_done_dec;
+
+  DerivFlags flags = DerivFlags::None;
+  if (rv.n_obs_done > 0u) {
+    flags |= DerivFlags::Aged;
+  }
+  if (rv.n_obs_total > 0u && rv.n_obs_done >= rv.n_obs_total) {
+    flags |= DerivFlags::FullyAged;
+  }
+
+  if (has_flag(flags, DerivFlags::FullyAged)) {
+    const double payoff = is_call ? std::fmax(a - k_opt, 0.0) : std::fmax(k_opt - a, 0.0);
+    const double df = deriv_df_at_T(curves, T, flags);
+    return Ok(variance_option_quote(payoff, a, 0.0, df, contract, flags));
+  }
+
+  if (!is_call && a >= k_opt) {
+    const double df = deriv_df_at_T(curves, T, flags);
+    return Ok(variance_option_quote(0.0, a, 0.0, df, contract, flags));
+  }
+
+  if (!(T > 0.0)) {
+    return Err(ErrorCode::InvalidArgument,
+               "variance option needs T > 0 to price the future leg");
+  }
+  ATX_TRY(auto sq, var_swap_fair_strike(surface, curves, T, cfg));
+
+  // xi auto-calibration resolves against the UNCORRECTED strip mean (PV-8),
+  // for the reason price_capped_var_swap's own copy of this comment gives.
+  const double m_uncorrected = sq.fair_strike_dec;
+  ATX_TRY(const VolOfVol vv, resolve_vol_of_vol(surface, curves, T, m_uncorrected, cfg));
+
+  double m = m_uncorrected;
+  if (cfg.discrete_correction_mode == DerivDiscreteCorrection::Diffusion1OverN &&
+      rv.n_obs_total >= 1u) {
+    ATX_TRY(const double r_minus_q, resolve_carry_diff(curves, T));
+    const std::uint32_t n_remaining = rv.n_obs_total - rv.n_obs_done;
+    m += discrete_monitoring_addend(m, T, n_remaining, r_minus_q);
+    flags |= DerivFlags::DiscreteCorrApplied;
+  }
+
+  const double s = vv.xi * std::sqrt(T);
+  // The option's strike carried into W-space: (V-K)+ == b*(W - (K-a)/b)+.
+  // w_future > 0 here -- the fully-aged exit above already returned.
+  const double k_w = (k_opt - a) / w_future;
+  const double premium = w_future * (is_call ? detail::lognormal_call(m, s, k_w)
+                                             : detail::lognormal_put(m, s, k_w));
+
+  flags |= DerivFlags::ModelProxy | sq.flags;
+  if (vv.calibrated) {
+    flags |= DerivFlags::VolOfVolCalibrated;
+  }
+  const double df = deriv_df_at_T(curves, T, flags);
+
+  DerivQuote out = variance_option_quote(premium, a, w_future * m, df, contract, flags);
+  out.uncapped_var_dec = sq.uncapped_var_dec;
+  out.integration_error_est = sq.integration_error_est;
+  carry_strip_grid(out, sq);
+  out.vol_of_vol_used = vv.xi;
+  return Ok(out);
+}
+
 // Assembles a DerivQuote for price_capped_vol_swap's three exit paths
 // (pinned, fully-aged deterministic, model-based split-domain quadrature).
 // Mirrors capped_var_swap_quote's bookkeeping but in VOL units:
@@ -1283,6 +1421,15 @@ struct StripKindTraits {
   case DerivKind::VolSwap:
   case DerivKind::CappedVarSwap:
   case DerivKind::CappedVolSwap:
+  // Task F-5: an option on variance has no OTM-strip form of ITS OWN. It runs
+  // the VarSwap strip -- through `var_swap_fair_strike`, exactly as the capped
+  // kinds do -- to resolve the future leg's mean, and then applies a nonlinear
+  // payoff to it. Landing here (rather than on the VarSwap arm) is what keeps
+  // `strip_fair_value_core` from being enterable with an option kind, and is
+  // also why F-5 adds no new solve-ledger counter: the strip work it does IS a
+  // var-swap strip and is already counted as one.
+  case DerivKind::VarianceCall:
+  case DerivKind::VariancePut:
     break;  // priced through a nonlinear model layer, never through this body
   }
   t.has_strip_form = false;
@@ -2746,18 +2893,46 @@ namespace {
 // ways at once -- a corridor AND `VolCarrLee` -- now reports the corridor
 // error on both lanes instead of two different ones. Making the two lanes
 // agree is the entire point.
+// The KIND axis of `DerivEngine::RvDistributionProxy`'s admission, stated once
+// and exhaustively. Task F-5 turned this from a hand-written three-term
+// `kind !=` chain into a switch for the reason the census gave it top billing:
+// the chain routed every future enumerator to "reserved pricing engine", which
+// is a safe default for a kind that has some OTHER engine and a silent dead end
+// for a kind whose ONLY engine is this one -- which is precisely what F-5's own
+// two kinds are. `-Wswitch -WX` now forces the choice instead of making it.
+[[nodiscard]] constexpr bool rv_distribution_prices_kind(DerivKind kind) noexcept {
+  switch (kind) {
+  case DerivKind::VolSwap:
+  case DerivKind::CappedVarSwap:
+  case DerivKind::CappedVolSwap:
+  case DerivKind::VarianceCall:
+  case DerivKind::VariancePut:
+    return true;
+  case DerivKind::VarSwap:
+  case DerivKind::GammaSwap:
+  case DerivKind::CorridorVarSwap:
+    return false;
+  }
+  return false;  // out-of-enum value: reserved, matching the `!=` chain replaced
+}
+
 [[nodiscard]] Status validate_deriv_dispatch(const DerivContract& contract,
                                               const DerivConfig& cfg) {
   // Reserved engines fail clean before any work. RvDistributionProxy is the
   // one exception: Task 4 wires it up (alongside Auto) as the distribution
-  // model's entry point for CappedVarSwap, Task 5 adds CappedVolSwap, and
-  // Task 6 adds plain VolSwap (mid-life, and an unaged contract priced end to
-  // end through the model instead of Carr-Lee) -- every other kind still sees
-  // it as reserved.
+  // model's entry point for CappedVarSwap, Task 5 adds CappedVolSwap, Task 6
+  // adds plain VolSwap (mid-life, and an unaged contract priced end to end
+  // through the model instead of Carr-Lee), and Task F-5 adds the two variance
+  // OPTION kinds -- every other kind still sees it as reserved.
+  //
+  // The kind axis here is an if-chain, not a switch, so -Wswitch cannot police
+  // it: a new enumerator falls to `NotImplemented`, which is the safe default
+  // but is also silently WRONG for any kind whose only engine is this one.
+  // F-5's kinds are exactly that case, which is why the census flagged this
+  // line as the one that would have made the feature's own engine unreachable.
   switch (cfg.engine) {
   case DerivEngine::RvDistributionProxy:
-    if (contract.kind != DerivKind::CappedVarSwap && contract.kind != DerivKind::CappedVolSwap &&
-        contract.kind != DerivKind::VolSwap) {
+    if (!rv_distribution_prices_kind(contract.kind)) {
       return Err(ErrorCode::NotImplemented, "reserved pricing engine");
     }
     break;
@@ -2834,7 +3009,9 @@ namespace {
   // VolCarrLee (unaged only -- price_vol_swap itself checks that), Rv
   // DistributionProxy}; CappedVarSwap/CappedVolSwap -> {Auto,
   // RvDistributionProxy}; GammaSwap/CorridorVarSwap -> {Auto,
-  // StripLogContract}.
+  // StripLogContract}; VarianceCall/VariancePut (Task F-5) -> {Auto,
+  // RvDistributionProxy}, the same pair as the capped kinds and for the same
+  // reason -- they price through the same lognormal RV distribution.
   switch (contract.kind) {
   case DerivKind::VarSwap:
     // VarSwap only ever runs the strip -- price_var_swap never reads
@@ -2870,6 +3047,12 @@ namespace {
       return Err(ErrorCode::InvalidArgument, "engine cannot price a corridor var swap");
     }
     break;
+  case DerivKind::VarianceCall:
+  case DerivKind::VariancePut:
+    if (cfg.engine == DerivEngine::StripLogContract || cfg.engine == DerivEngine::VolCarrLee) {
+      return Err(ErrorCode::InvalidArgument, "engine cannot price a variance option");
+    }
+    break;
   }
   return Ok();
 }
@@ -2902,6 +3085,13 @@ Result<DerivQuote> deriv_price(const SurfaceT& surface, const CurveSet& curves,
     return price_gamma_swap(surface, curves, contract, cfg);
   case DerivKind::CorridorVarSwap:
     return price_corridor_var_swap(surface, curves, contract, cfg);
+  case DerivKind::VarianceCall:
+  case DerivKind::VariancePut:
+    // ONE pricer for both: the two payoffs differ only in which closed form
+    // the same (a, b, m, s, K) resolution is fed to. Two arms here and a
+    // `kind ==` inside would be a fifth place this file decides what a
+    // variance option is.
+    return price_variance_option(surface, curves, contract, cfg);
   }
   // Defends against an out-of-enum kind (matches the C default's ERR_INVALID).
   return Err(ErrorCode::InvalidArgument, "unknown derivative kind");

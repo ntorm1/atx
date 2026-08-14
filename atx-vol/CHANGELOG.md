@@ -9,6 +9,40 @@ Vol-derivatives production sprint, Phase 1 (correctness), Phase 2
 (performance), and Phase 3 (features). Grows only with changes that move a
 number a caller could already be marking with.
 
+### Added — options on realized variance: `DerivKind::VarianceCall` / `VariancePut` (PV-F5 / LIT-5, Task F-5)
+
+Two new enumerators (7 and 8) price a European call/put on the SAME blended
+realized variance `V = a + b*W` the capped kinds already price.
+`DerivContract::strike_dec` is read as the OPTION strike in annualized decimal
+variance; `cap_dec` names nothing and is rejected as on every other uncapped
+kind. Engines: `Auto` or `RvDistributionProxy`. Greeks come through
+`deriv_price` dispatch (finite differences), so a mark and its greeks cannot
+come from two different engines.
+
+* MOVES NO EXISTING NUMBER. Purely additive: new enumerators, one new pricer,
+  one new `detail::lognormal_put` beside the existing `lognormal_call`. No
+  struct gained a field, so no arity pin moved.
+* `DerivQuote::fair_strike_dec` MEANS SOMETHING DIFFERENT ON THESE TWO KINDS,
+  and it is the one thing a caller must read before using them: it is the
+  option's undiscounted PREMIUM, and `pv == df * notional * fair_strike_dec`
+  with NO strike subtraction, because K is already inside the payoff. No strike
+  prices an option to PV = 0, so a break-even level does not exist here. E[V]
+  stays readable as `accrued_component_dec + future_component_dec`.
+* NOT CARRYABLE BY THE BACKTEST ENGINE. `engine_supports_swap_kind` refuses
+  both kinds. Marking would have worked; SETTLEMENT would not — the swap-lot
+  settle path pays `qty * notional * (terminal - strike_dec)`, linear in the
+  terminal rate, and an option's payoff is kinked. Admitting them without
+  teaching that path the kink would have paid a short option position a profit
+  it never had on every path where it expired worthless.
+* MODEL RISK, PUBLISHED (LIT-5). Realized variance has a right tail materially
+  fatter than lognormal, so this engine UNDERPRICES out-of-the-money variance
+  CALLS, with the error growing in moneyness. It is a model choice, not a
+  calibration artifact: xi is calibrated to the surface's Carr-Lee convexity, a
+  sqrt-moment, which pins the middle of the distribution and says nothing about
+  its tail. `DerivEngine::RvDistributionAffine` / `McQe` remain reserved as the
+  escape hatch. Treat a far-OTM variance-call mark from this library as a LOWER
+  BOUND. See `DerivKind::VarianceCall`'s header doc for the full statement.
+
 ### Changed — `DerivMarkingConvention::CboeVarianceFuture` now fails loud instead of pricing as OTC (Task F-5)
 
 `DerivContract::marking` shipped as a field **no executable code read**. A

@@ -214,6 +214,67 @@ class PricedSurface;
 // yields both numbers, and the conditional one is published as
 // `DerivQuote::conditional_corridor_var_dec`. See that field's own doc for
 // exactly which quantity it is and, as importantly, which it is not.
+// OPTIONS ON REALIZED VARIANCE (Task F-5, PV-F5 / LIT-5, DerivKind::
+// VarianceCall / VariancePut). A European call or put on the SAME blended
+// realized variance V = a + b*W the capped kinds already price -- a =
+// w_done*rv_done_dec the accrued leg, b = w_future, W the future leg modeled
+// lognormal with mean K_var_future and log-stdev xi*sqrt(T). The payoff is
+// (V - K)+ for a call and (K - V)+ for a put, K being `DerivContract::
+// strike_dec` read as an OPTION STRIKE in annualized decimal VARIANCE units.
+// `cap_dec` names nothing here and must be 0 (validate_deriv_dispatch, the
+// same rule every other uncapped kind follows). Engines: Auto or
+// RvDistributionProxy.
+//
+// Both close in closed form against the displaced lognormal:
+//   E[(V-K)+] = b * E[(W - (K-a)/b)+]   -- atx::vol::detail::lognormal_call
+//   E[(K-V)+] = b * E[((K-a)/b - W)+]   -- atx::vol::detail::lognormal_put
+// The put is priced by its OWN closed form rather than by rearranging the
+// call through put-call parity: parity differences two nearly-equal numbers
+// for a deep in-the-money call and loses digits exactly where the put's value
+// is smallest. Parity is used as the ORACLE instead (`VarOption.PutCallParity`,
+// deriv_distribution_test.cpp), which is the stronger arrangement -- it tests
+// two independent formulas against each other rather than one formula against
+// itself.
+//
+// WHAT `DerivQuote::fair_strike_dec` MEANS HERE, because it is not what the
+// name says on every other kind: it is the option's UNDISCOUNTED PREMIUM,
+// E[payoff], in decimal variance units -- and `pv` is `df * notional *` that,
+// with NO strike subtraction, because K is already inside the payoff. There is
+// no strike that prices an option to PV = 0, so "fair strike" has no meaning
+// for these two kinds; the premium is the headline number a quote carries and
+// it keeps `fair_strike_dec == undiscounted_expectation_dec`, the invariant
+// every other kind already satisfies. E[V] itself remains readable as
+// `accrued_component_dec + future_component_dec`.
+//
+// EXITS mirror the capped-variance structure, with one asymmetry worth stating
+// because it is easy to get backwards. FULLY AGED (b == 0) is deterministic
+// for both: V == a exactly, so the payoff is max(a-K,0) / max(K-a,0) with no
+// strip and no model. A PUT additionally pins when a >= K even mid-life --
+// V >= a >= K makes the payoff identically 0, so it is a valid quote request
+// at T == 0 and must not pay for (or fail on) a strip it does not need, the
+// same argument `DerivFlags::CapPinned` records for the capped kinds. A CALL
+// has NO corresponding pin: a >= K makes exercise certain but the VALUE is
+// still a + b*m - K, which needs the strip's m. `lognormal_call` already
+// returns m - k for k <= 0, so that case needs no branch at all -- it is the
+// ordinary model path with a negative effective strike.
+//
+// MODEL RISK (LIT-5), stated in the header because a caller cannot see it in
+// the numbers. Realized variance has a right tail materially FATTER than
+// lognormal -- variance-of-variance clusters, and the empirical RV
+// distribution is closer to an inverse-gamma / affine-jump law than to the
+// two-parameter lognormal this engine assumes. The house model therefore
+// UNDERPRICES out-of-the-money variance CALLS, and the error grows with
+// moneyness: a strike far above K_var is priced off exactly the region where
+// the lognormal is thinnest. It is a genuine model choice and not a
+// calibration artifact -- xi is calibrated to the surface's own Carr-Lee
+// convexity, i.e. to a sqrt-moment, which pins the middle of the distribution
+// and says nothing about its tail. `DerivEngine::RvDistributionAffine` and
+// `DerivEngine::McQe` remain reserved for exactly this: they are the escape
+// hatch for a caller who needs the tail priced rather than assumed. Until one
+// of them ships, treat a far-OTM variance-call mark from this library as a
+// LOWER BOUND. Variance PUTS are affected in the opposite, much milder
+// direction (the left tail of RV is bounded below by 0 and the lognormal
+// respects that), which is why this note names calls specifically.
 enum class DerivKind : std::uint8_t {
   VarSwap = 1,
   VolSwap = 2,
@@ -221,6 +282,8 @@ enum class DerivKind : std::uint8_t {
   CappedVolSwap = 4,
   GammaSwap = 5,
   CorridorVarSwap = 6,
+  VarianceCall = 7,
+  VariancePut = 8,
 };
 
 // THE two per-kind payoff-shape questions, each stated ONCE (Task F-5, pre-
@@ -259,6 +322,11 @@ enum class DerivKind : std::uint8_t {
   case DerivKind::VolSwap:
   case DerivKind::GammaSwap:
   case DerivKind::CorridorVarSwap:
+  // Task F-5: an option on variance carries an option STRIKE (`strike_dec`),
+  // never a cap. `cap_dec` must stay 0, which is exactly what falling here
+  // means.
+  case DerivKind::VarianceCall:
+  case DerivKind::VariancePut:
     return false;
   }
   return false;  // out-of-enum value: refuse, matching the `==` chains replaced
@@ -279,6 +347,16 @@ enum class DerivKind : std::uint8_t {
   case DerivKind::CappedVarSwap:
   case DerivKind::GammaSwap:
   case DerivKind::CorridorVarSwap:
+  // Task F-5: the option kinds land here because their UNDERLYING is a
+  // variance, but read the contract above before relying on that. Their payoff
+  // is (V-K)+ / (K-V)+, which is NOT linear in the terminal rate, so
+  // `swap_terminal_value`'s `qty * notional * (terminal - strike_dec)`
+  // settlement would pay a swap's linear P&L on an option. That is why
+  // `engine_supports_swap_kind` (backtest.hpp) refuses both kinds outright:
+  // this predicate's answer for them is never reached, and must not become
+  // reachable without `swap_terminal_value` growing an option branch first.
+  case DerivKind::VarianceCall:
+  case DerivKind::VariancePut:
     return false;
   }
   return false;  // out-of-enum value: refuse, matching the `==` chains replaced
@@ -287,16 +365,22 @@ enum class DerivKind : std::uint8_t {
 // Pricing engine selector. Values >= RvDistributionAffine are reserved;
 // RvDistributionProxy is also reserved EXCEPT as the distribution-model
 // dispatch target for DerivKind::CappedVarSwap (Task 4),
-// DerivKind::CappedVolSwap (Task 5), and DerivKind::VolSwap (Task 6 --
-// mid-life always, plus an unaged contract priced end to end through the
-// model instead of Carr-Lee), all of which Auto also routes to as well.
+// DerivKind::CappedVolSwap (Task 5), DerivKind::VolSwap (Task 6 -- mid-life
+// always, plus an unaged contract priced end to end through the model instead
+// of Carr-Lee), and DerivKind::VarianceCall/VariancePut (Task F-5), all of
+// which Auto also routes to as well.
 enum class DerivEngine : std::uint8_t {
   Auto = 0,
   StripLogContract = 1,
   VolCarrLee = 2,
-  RvDistributionProxy = 3,   // CappedVarSwap/CappedVolSwap/VolSwap only; reserved otherwise
-  RvDistributionAffine = 4,  // reserved
-  McQe = 5,                  // reserved
+  // CappedVarSwap/CappedVolSwap/VolSwap/VarianceCall/VariancePut only;
+  // reserved otherwise.
+  RvDistributionProxy = 3,
+  // Reserved -- AND the documented escape hatch from the lognormal RV tail
+  // assumption the proxy engine makes; see DerivKind::VarianceCall's model-risk
+  // note above.
+  RvDistributionAffine = 4,
+  McQe = 5,  // reserved; same escape-hatch role as RvDistributionAffine
 };
 
 // Integration/accuracy tier. Drives the default log-strike grid for the strip.
@@ -808,10 +892,16 @@ private:
 // sensitivity instead of freezing it (see `strip_fair_value_core`'s note on
 // why `DerivQuote::strip_k_lo_used` reports the PRE-corridor span for this
 // kind).
+// OPTION NOTE (Task F-5): on `DerivKind::VarianceCall`/`VariancePut`,
+// `strike_dec` is the OPTION strike in annualized decimal variance (the K in
+// (V-K)+ / (K-V)+), not a swap's break-even level, and `cap_dec` must be 0 like
+// every other uncapped kind. See `DerivKind::VarianceCall`'s own doc for what
+// the resulting quote's `fair_strike_dec` and `pv` then mean, which differs
+// from every swap kind.
 struct DerivContract {
   DerivKind kind = DerivKind::VarSwap;
   double maturity_t = 0.0;   // years until expiry
-  double strike_dec = 0.0;   // K_var or K_vol
+  double strike_dec = 0.0;   // K_var or K_vol; the OPTION strike on F-5's kinds
   double cap_dec = 0.0;      // capped kinds only; see above
   double notional = 0.0;     // N_var or N_vol
   RealizedVarianceSpec rv_spec{};
@@ -962,16 +1052,25 @@ static_assert(detail::aggregate_arity_is_v<DerivConfig, 14>,
 
 // Pricing result (AtsVolDerivQuote).
 struct DerivQuote {
-  double fair_strike_dec = 0.0;           // K_var or K_vol
+  // K_var or K_vol on every SWAP kind. On `DerivKind::VarianceCall`/
+  // `VariancePut` (Task F-5) it is instead the option's UNDISCOUNTED PREMIUM in
+  // decimal variance units, and `pv` is `df * notional *` this with NO strike
+  // subtraction -- no strike prices an option to PV = 0, so a break-even level
+  // does not exist for those two kinds. The invariant
+  // `fair_strike_dec == undiscounted_expectation_dec` holds on all of them
+  // regardless; E[V] on an option quote is
+  // `accrued_component_dec + future_component_dec`.
+  double fair_strike_dec = 0.0;
   double fair_strike_points = 0.0;        // var pts or vol pts
   double pv = 0.0;                        // contract PV today
   double undiscounted_expectation_dec = 0.0;
   // The strip's variance in decimal variance units. ITS MEANING IS PER-KIND,
   // and the two readings are NOT interchangeable:
   //   * var-swap dispatch, the unaged vol swap's best-effort Carr-Lee
-  //     diagnostic, and BOTH capped paths carry the strip's RAW FUTURE-LEG
-  //     value K_var(T) -- no accrued leg, no discrete correction, no cap
-  //     haircut. (`future_component_dec` beside it IS discrete-corrected and
+  //     diagnostic, BOTH capped paths, and BOTH variance-option paths (Task
+  //     F-5) carry the strip's RAW FUTURE-LEG value K_var(T) -- no accrued leg,
+  //     no discrete correction, no cap haircut, no option payoff.
+  //     (`future_component_dec` beside it IS discrete-corrected and
   //     weight-scaled; these two deliberately differ.)
   //   * the MID-LIFE vol swap (the distribution model) carries the BLENDED
   //     TOTAL variance a + b*m that it actually prices sqrt() of: a =

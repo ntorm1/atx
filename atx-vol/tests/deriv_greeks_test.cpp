@@ -227,11 +227,21 @@ TEST(DerivGreeks, FullyAgedHasOnlyRho) {
 }
 
 // Every product kind produces finite greeks mid-life (the full matrix).
+//
+// Task F-5: this test claimed "AllKinds" while listing FOUR of the six kinds
+// that existed -- GammaSwap and CorridorVarSwap were never in it, and the name
+// said otherwise. The list is now genuinely exhaustive over `DerivKind`,
+// including F-5's two option kinds, and the per-kind setup below carries the
+// two extra fields the omitted kinds always needed (a gamma anchor, and the
+// corridor bounds left unbounded). If a kind is ever added without a row here
+// the name lies again, so keep the list and the enum in step.
 TEST(DerivGreeks, AllKindsMidLifeFinite) {
   const EssviSurface surf = make_flat_surface(0.20, 0.01, 1.00);
   const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
-  for (const DerivKind kind : {DerivKind::VarSwap, DerivKind::VolSwap,
-                               DerivKind::CappedVarSwap, DerivKind::CappedVolSwap}) {
+  for (const DerivKind kind :
+       {DerivKind::VarSwap, DerivKind::VolSwap, DerivKind::CappedVarSwap,
+        DerivKind::CappedVolSwap, DerivKind::GammaSwap, DerivKind::CorridorVarSwap,
+        DerivKind::VarianceCall, DerivKind::VariancePut}) {
     DerivContract c{};
     c.kind = kind;
     c.maturity_t = 0.10;
@@ -244,12 +254,63 @@ TEST(DerivGreeks, AllKindsMidLifeFinite) {
     c.rv_spec.n_obs_total = 63u;
     c.rv_spec.n_obs_done = 21u;
     c.rv_spec.rv_done_dec = 0.05;
+    // A mid-life GammaSwap needs its seed anchor to blend the accrued leg onto
+    // the future one; every other kind ignores this field.
+    c.rv_spec.gamma_seed_spot = 100.0;
+    c.rv_spec.rv_gamma_done_dec = 0.05;
     const auto g = deriv_greeks(surf, cs, c);
-    ASSERT_TRUE(g.has_value()) << static_cast<int>(kind);
+    ASSERT_TRUE(g.has_value()) << static_cast<int>(kind) << " " << g.error().to_string();
     for (const double v : {g->pv, g->delta, g->gamma, g->vega, g->volga,
                            g->vanna, g->theta, g->rho, g->charm}) {
       EXPECT_TRUE(std::isfinite(v)) << static_cast<int>(kind);
     }
+  }
+}
+
+// Task F-5, census site S4 (`analytic_in_scope`, derivatives.cpp): P-4's
+// analytic-strip closed form is scoped to `DerivKind::VarSwap` by a `kind ==`
+// WHITELIST, which -Wswitch cannot police -- a new kind falls to finite
+// differences silently, and silently-correct is still unverified. Verified BY
+// TEST rather than by reading the predicate, exactly as
+// `Corridor.AnalyticStripMethodFallsBackToFiniteDifference` does for F-3's
+// kind: requesting AnalyticStrip on a variance option must return BIT-IDENTICAL
+// greeks to the default FD method, because the same FD code produced both.
+TEST(DerivGreeks, VarianceOptionsFallBackToFiniteDifference) {
+  const EssviSurface surf = make_flat_surface(0.20, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+  for (const DerivKind kind : {DerivKind::VarianceCall, DerivKind::VariancePut}) {
+    DerivContract c{};
+    c.kind = kind;
+    c.maturity_t = 0.25;
+    c.notional = 1e6;
+    c.strike_dec = 0.045;
+    c.rv_spec.annualization = 252.0;
+    c.rv_spec.n_obs_total = 63u;
+    c.rv_spec.n_obs_done = 21u;
+    c.rv_spec.rv_done_dec = 0.0324;
+
+    DerivGreekBumps fd{};
+    fd.method = DerivGreekMethod::FiniteDifference;
+    DerivGreekBumps an{};
+    an.method = DerivGreekMethod::AnalyticStrip;
+
+    const auto g_fd = deriv_greeks(surf, cs, c, deriv_default_config(), fd);
+    const auto g_an = deriv_greeks(surf, cs, c, deriv_default_config(), an);
+    ASSERT_TRUE(g_fd.has_value()) << g_fd.error().to_string();
+    ASSERT_TRUE(g_an.has_value()) << g_an.error().to_string();
+    EXPECT_EQ(g_an->pv, g_fd->pv) << static_cast<int>(kind);
+    EXPECT_EQ(g_an->delta, g_fd->delta) << static_cast<int>(kind);
+    EXPECT_EQ(g_an->gamma, g_fd->gamma) << static_cast<int>(kind);
+    EXPECT_EQ(g_an->vega, g_fd->vega) << static_cast<int>(kind);
+    EXPECT_EQ(g_an->volga, g_fd->volga) << static_cast<int>(kind);
+    EXPECT_EQ(g_an->vanna, g_fd->vanna) << static_cast<int>(kind);
+    EXPECT_EQ(g_an->theta, g_fd->theta) << static_cast<int>(kind);
+    EXPECT_EQ(g_an->rho, g_fd->rho) << static_cast<int>(kind);
+    EXPECT_EQ(g_an->charm, g_fd->charm) << static_cast<int>(kind);
+    // Not vacuous: the greeks are real numbers, and a variance call has
+    // strictly positive vega (more implied variance is worth more to it).
+    EXPECT_TRUE(std::isfinite(g_fd->vega));
+    EXPECT_NE(g_fd->vega, 0.0);
   }
 }
 
