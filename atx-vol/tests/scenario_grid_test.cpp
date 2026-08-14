@@ -1048,3 +1048,264 @@ TEST(ScenarioGrid, ExactCellsMatchColdPerCellOracleBitwise) {
     }
   }
 }
+
+// ── Vol-derivative leg (Task F-8, GK-G4) ────────────────────────────────────
+//
+// The deriv leg answers the same question the option leg does -- what does this
+// book make in each (spot%, vol) cell -- for a book the option grid could not
+// hold at all. Its gates below are the option leg's, restated where the deriv
+// path differs, plus the one claim that is genuinely new: that the Taylor cell
+// and the full reprice are two views of ONE model rather than two models.
+
+namespace {
+
+// A variance swap on `uid`, struck mid-life so the accrued and future legs are
+// both live -- a fully-unaged swap would hide any error in the future-leg
+// weighting, and a fully-aged one has no market risk left to shock.
+[[nodiscard]] DerivPosition var_swap_on(std::uint32_t uid, double qty, double T = 0.35) {
+  DerivPosition p{};
+  p.id = 100u + uid;
+  p.uid = uid;
+  p.qty = qty;
+  p.contract.kind = DerivKind::VarSwap;
+  p.contract.maturity_t = T;
+  p.contract.notional = 1.0e6;
+  p.contract.strike_dec = 0.04;
+  p.contract.rv_spec.annualization = 252.0;
+  p.contract.rv_spec.n_obs_total = 63u;
+  p.contract.rv_spec.n_obs_done = 20u;
+  p.contract.rv_spec.rv_done_dec = 0.048;
+  return p;
+}
+
+[[nodiscard]] ScenarioGridSpec small_deriv_spec() {
+  ScenarioGridSpec s;
+  s.spot_pct = {-0.01, 0.0, 0.01};
+  s.vol_bump = {-0.005, 0.0, 0.005};
+  return s;
+}
+
+// The Taylor kernel written out BY HAND, not by calling
+// `scenario_deriv_taylor_leg`. That is the point: if the shipped kernel loses a
+// term, transposes two sensitivities, or re-associates its sum, this expression
+// still says what the expansion is supposed to be.
+[[nodiscard]] double hand_deriv_taylor(const DerivGreeks &g, double dS, double dvol, double dt,
+                                       double dr, double d_skew, double d_convexity) noexcept {
+  return g.delta * dS + 0.5 * g.gamma * dS * dS + g.vega * dvol +
+         0.5 * g.volga * dvol * dvol + g.vanna * dS * dvol + g.theta * dt + g.rho * dr +
+         g.skew_vega * d_skew + g.convexity_vega * d_convexity + g.charm * dS * dt;
+}
+
+} // namespace
+
+// The option leg must not move at all. Asserted on the BITS of every cell and
+// on every option-side counter, because "additive" is a claim about numbers,
+// not about a diff.
+TEST(ScenarioGridDeriv, DerivLegLeavesTheOptionLegByteIdentical) {
+  const PricedSurface ps = make_essvi(1, 4);
+  const SurfaceSet ss = set_of({&ps});
+  const std::vector<Position> book = {
+      Position{0, OptionContract{1, 100.0, 0.15, Side::Call}, +3.0, 100.0},
+      Position{1, OptionContract{1, 95.0, 0.25, Side::Put}, -2.0, 100.0},
+  };
+  const std::vector<DerivPosition> derivs = {var_swap_on(1u, 2.0)};
+  const ScenarioGridSpec spec = small_deriv_spec();
+
+  const auto only_options = scenario_grid(book, ss, spec);
+  ASSERT_TRUE(only_options.has_value()) << only_options.error().to_string();
+  const auto with_derivs = scenario_grid(book, derivs, ss, spec);
+  ASSERT_TRUE(with_derivs.has_value()) << with_derivs.error().to_string();
+
+  ASSERT_EQ(only_options->pnl.size(), with_derivs->pnl.size());
+  for (std::size_t c = 0; c < only_options->pnl.size(); ++c) {
+    EXPECT_TRUE(bits_equal(only_options->pnl[c], with_derivs->pnl[c])) << "option cell " << c;
+    EXPECT_EQ(only_options->route[c], with_derivs->route[c]) << "option route " << c;
+  }
+  EXPECT_EQ(only_options->n_ok, with_derivs->n_ok);
+  EXPECT_EQ(only_options->n_failed, with_derivs->n_failed);
+  EXPECT_EQ(only_options->n_exact_fallback_lanes, with_derivs->n_exact_fallback_lanes);
+
+  // And the option-only overload leaves the deriv columns EMPTY rather than
+  // zero-filled: "no swap book" and "a swap book worth nothing" are different
+  // answers and a reader must be able to tell them apart.
+  EXPECT_TRUE(only_options->deriv_pnl.empty());
+  EXPECT_TRUE(only_options->deriv_route.empty());
+  EXPECT_EQ(only_options->n_deriv_ok, 0u);
+  EXPECT_EQ(with_derivs->deriv_pnl.size(), with_derivs->pnl.size());
+  EXPECT_EQ(with_derivs->n_deriv_ok, 1u);
+  EXPECT_EQ(with_derivs->n_deriv_failed, 0u);
+}
+
+// A zero shock is exactly 0.0 on the deriv leg too -- no solve noise leaks into
+// the centre cell, which is what makes every other cell readable as a move.
+TEST(ScenarioGridDeriv, CenterCellIsExactlyZero) {
+  const PricedSurface ps = make_essvi(1, 4);
+  const SurfaceSet ss = set_of({&ps});
+  const std::vector<DerivPosition> derivs = {var_swap_on(1u, 2.0), var_swap_on(1u, -1.5, 0.25)};
+  ScenarioGridSpec spec;
+  spec.spot_pct = {0.0};
+  spec.vol_bump = {0.0};
+
+  const auto r = scenario_grid({}, derivs, ss, spec);
+  ASSERT_TRUE(r.has_value()) << r.error().to_string();
+  ASSERT_EQ(r->deriv_pnl.size(), 1u);
+  EXPECT_EQ(r->deriv_pnl[0], 0.0);
+  EXPECT_EQ(r->deriv_route[0], static_cast<std::uint8_t>(ScenarioRoute::Taylor));
+}
+
+// Every Taylor cell equals the hand-written expansion over the same greek
+// bundle, term for term and in the same left-to-right order. Routing is
+// disabled on both axes so this is a statement about the KERNEL only.
+TEST(ScenarioGridDeriv, TaylorCellsMatchTheHandWrittenExpansion) {
+  const PricedSurface ps = make_essvi(1, 4);
+  const SurfaceSet ss = set_of({&ps});
+  const std::vector<DerivPosition> derivs = {var_swap_on(1u, 2.0), var_swap_on(1u, -1.5, 0.25)};
+
+  ScenarioGridSpec spec = small_deriv_spec();
+  spec.dr = 0.0005;
+  spec.dt = 1.0 / 365.25;
+  spec.taylor_radius_spot = kInf;
+  spec.taylor_radius_vol = kInf;
+  ScenarioDerivSpec dspec;
+  dspec.d_skew = -0.002;
+  dspec.d_convexity = 0.003;
+
+  const auto r = scenario_grid({}, derivs, ss, spec, dspec);
+  ASSERT_TRUE(r.has_value()) << r.error().to_string();
+
+  // The reference greek bundle is fetched independently, through the public
+  // book pricer, with the same bumps the grid documents it uses.
+  DerivGreekBumps bumps{};
+  bumps.smile_greeks = true;
+  bumps.time_years = spec.dt;
+  const auto frame =
+      price_deriv_book(ss, std::span<const DerivPosition>{derivs}, DerivConfig{}, true, bumps);
+  ASSERT_TRUE(frame.has_value()) << frame.error().to_string();
+
+  const double S = ps.pricing().S;
+  for (std::size_t c = 0; c < r->deriv_pnl.size(); ++c) {
+    const std::size_t i = c / spec.vol_bump.size();
+    const std::size_t j = c % spec.vol_bump.size();
+    const double dS = spec.spot_pct[i] * S;
+    double expected = 0.0;
+    for (const auto &row : frame->rows) {
+      expected += hand_deriv_taylor(row.greeks, dS, spec.vol_bump[j], spec.dt, spec.dr,
+                                    dspec.d_skew, dspec.d_convexity);
+    }
+    EXPECT_EQ(r->deriv_route[c], static_cast<std::uint8_t>(ScenarioRoute::Taylor));
+    EXPECT_NEAR(r->deriv_pnl[c], expected, 1.0e-9 * std::abs(expected) + 1.0e-9) << "cell " << c;
+  }
+}
+
+// A pure smile shock with no spot or vol move must land entirely on the two
+// smile terms. Zero spot and zero vol shocks kill every other term exactly, so
+// this isolates the sensitivities the option leg has no counterpart for.
+TEST(ScenarioGridDeriv, SmileShockLandsOnTheSmileTermsAlone) {
+  const PricedSurface ps = make_essvi(1, 4);
+  const SurfaceSet ss = set_of({&ps});
+  const std::vector<DerivPosition> derivs = {var_swap_on(1u, 2.0)};
+
+  ScenarioGridSpec spec;
+  spec.spot_pct = {0.0};
+  spec.vol_bump = {0.0};
+  spec.taylor_radius_spot = kInf;
+  spec.taylor_radius_vol = kInf;
+  ScenarioDerivSpec dspec;
+  dspec.d_skew = -0.002;
+
+  const auto r = scenario_grid({}, derivs, ss, spec, dspec);
+  ASSERT_TRUE(r.has_value()) << r.error().to_string();
+
+  DerivGreekBumps bumps{};
+  bumps.smile_greeks = true;
+  const auto frame =
+      price_deriv_book(ss, std::span<const DerivPosition>{derivs}, DerivConfig{}, true, bumps);
+  ASSERT_TRUE(frame.has_value()) << frame.error().to_string();
+  const double skew_vega = frame->rows[0].greeks.skew_vega;
+  ASSERT_TRUE(std::isfinite(skew_vega));
+  ASSERT_NE(skew_vega, 0.0);
+
+  EXPECT_NEAR(r->deriv_pnl[0], skew_vega * dspec.d_skew,
+              1.0e-9 * std::abs(skew_vega * dspec.d_skew));
+  // A long var swap loses when the skew flattens: skew_vega < 0 (pinned on
+  // DerivGreeks::skew_vega), so a negative d_skew is a gain.
+  EXPECT_GT(r->deriv_pnl[0], 0.0);
+}
+
+// THE ACCEPTANCE CLAIM. A Taylor cell and a full reprice must be two views of
+// one model. Both grids are built over the same book and the same shocks; the
+// only difference is the routing radii.
+//
+// The bound is not a wished-for constant. The Taylor remainder is O(h^3) in the
+// shock, so the test HALVES every shock and requires the disagreement to fall
+// by at least 4x -- a first-order-wrong kernel would hold its error roughly
+// constant, and a second-order-wrong one would fall by only 2x. The absolute
+// relative bound is the weaker companion check.
+TEST(ScenarioGridDeriv, TaylorAndExactAgreeToTheirOwnRemainder) {
+  const PricedSurface ps = make_essvi(1, 4);
+  const SurfaceSet ss = set_of({&ps});
+  const std::vector<DerivPosition> derivs = {var_swap_on(1u, 2.0)};
+
+  const auto worst_gap = [&](double scale) {
+    ScenarioGridSpec taylor_spec;
+    taylor_spec.spot_pct = {-0.01 * scale, 0.0, 0.01 * scale};
+    taylor_spec.vol_bump = {-0.005 * scale, 0.0, 0.005 * scale};
+    taylor_spec.taylor_radius_spot = kInf; // never route
+    taylor_spec.taylor_radius_vol = kInf;
+
+    ScenarioGridSpec exact_spec = taylor_spec;
+    exact_spec.taylor_radius_spot = -1.0; // |x| > -1 is always true: always route
+    exact_spec.taylor_radius_vol = -1.0;
+
+    const auto t = scenario_grid({}, derivs, ss, taylor_spec);
+    const auto e = scenario_grid({}, derivs, ss, exact_spec);
+    EXPECT_TRUE(t.has_value());
+    EXPECT_TRUE(e.has_value());
+    double gap = 0.0;
+    double mag = 0.0;
+    for (std::size_t c = 0; c < t->deriv_pnl.size(); ++c) {
+      EXPECT_EQ(e->deriv_route[c], static_cast<std::uint8_t>(ScenarioRoute::Exact));
+      gap = std::max(gap, std::abs(t->deriv_pnl[c] - e->deriv_pnl[c]));
+      mag = std::max(mag, std::abs(e->deriv_pnl[c]));
+    }
+    EXPECT_EQ(e->n_deriv_exact_fallback_lanes, 0u) << "every shocked reprice must have solved";
+    return std::pair<double, double>{gap, mag};
+  };
+
+  const auto [gap_h, mag_h] = worst_gap(1.0);
+  const auto [gap_half, mag_half] = worst_gap(0.5);
+  ASSERT_GT(mag_h, 0.0);
+  ASSERT_GT(gap_h, 0.0) << "an exactly-zero gap would mean the Exact route never repriced";
+
+  EXPECT_LT(gap_h, 0.02 * mag_h) << "gap=" << gap_h << " cell magnitude=" << mag_h;
+  EXPECT_LT(gap_half, gap_h / 4.0)
+      << "halving the shock must shrink the Taylor remainder super-quadratically: " << gap_h
+      << " -> " << gap_half << " (mag " << mag_h << " -> " << mag_half << ")";
+}
+
+// A deriv position whose uid has no surface is excluded from every cell and
+// counted once -- the deriv mirror of FailedContractExcludedEverywhere. No NaN
+// reaches a cell total.
+TEST(ScenarioGridDeriv, FailedDerivPositionIsExcludedEverywhere) {
+  const PricedSurface ps = make_essvi(1, 4);
+  const SurfaceSet ss = set_of({&ps});
+  const std::vector<DerivPosition> good = {var_swap_on(1u, 2.0)};
+  std::vector<DerivPosition> mixed = good;
+  mixed.push_back(var_swap_on(9u, 5.0)); // uid 9 is not registered
+
+  ScenarioGridSpec spec = small_deriv_spec();
+  spec.taylor_radius_spot = kInf;
+  spec.taylor_radius_vol = kInf;
+
+  const auto only_good = scenario_grid({}, good, ss, spec);
+  ASSERT_TRUE(only_good.has_value()) << only_good.error().to_string();
+  const auto with_bad = scenario_grid({}, mixed, ss, spec);
+  ASSERT_TRUE(with_bad.has_value()) << with_bad.error().to_string();
+
+  EXPECT_EQ(with_bad->n_deriv_ok, 1u);
+  EXPECT_EQ(with_bad->n_deriv_failed, 1u);
+  for (std::size_t c = 0; c < only_good->deriv_pnl.size(); ++c) {
+    EXPECT_TRUE(std::isfinite(with_bad->deriv_pnl[c]));
+    EXPECT_TRUE(bits_equal(only_good->deriv_pnl[c], with_bad->deriv_pnl[c])) << "cell " << c;
+  }
+}

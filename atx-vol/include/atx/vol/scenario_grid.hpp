@@ -77,6 +77,7 @@
 #include <vector>
 
 #include "atx/vol/american.hpp"         // AmericanGreeks
+#include "atx/vol/deriv_book.hpp"       // DerivPosition (Tier-A, closure-safe)
 #include "atx/vol/portfolio_pricer.hpp" // Position, SurfaceSet
 #include "atx/vol/types.hpp"            // Result
 
@@ -192,6 +193,22 @@ struct ScenarioGridResult {
   // uniques); exposed as a stable working-set diagnostic for production-sized grids.
   std::size_t n_exact_price_scratch_slots{0};
 
+  // ── Vol-derivative leg (Task F-8, GK-G4) ─────────────────────────────────
+  //
+  // EMPTY on every result from the option-only overload, so nothing an existing
+  // caller reads moves: `pnl` stays the OPTION book's total and this is the
+  // swap book's, per cell, same row-major layout. A caller wanting the whole
+  // book adds them. `deriv_route` is the per-cell route tag for this leg,
+  // routed by the SAME radii as the option leg.
+  std::vector<double> deriv_pnl;
+  std::vector<std::uint8_t> deriv_route;
+  std::size_t n_deriv_ok{0};      // deriv positions whose base greek solve succeeded
+  std::size_t n_deriv_failed{0};  // deriv positions excluded from every cell
+  // (cell x position) Exact reprices that Erred or went non-finite and fell
+  // back to that position's Taylor leg for that cell. The cell's route stays
+  // Exact, mirroring the option leg's own fallback accounting.
+  std::size_t n_deriv_exact_fallback_lanes{0};
+
   [[nodiscard]] std::size_t n_cells() const noexcept { return pnl.size(); }
 };
 
@@ -228,5 +245,85 @@ struct ScenarioGridResult {
 [[nodiscard]] Result<ScenarioGridResult> scenario_grid(const std::vector<Position> &book,
                                                        const SurfaceSet &base,
                                                        const ScenarioGridSpec &spec);
+
+// ── Vol-derivative leg (Task F-8, GK-G4) ────────────────────────────────────
+//
+// The shocks a swap book sees that an option book does not. `spot_pct` /
+// `vol_bump` / `dr` / `dt` are the grid's own, shared with the option leg; these
+// two are SCALARS applied to every cell, exactly like `dr`/`dt`, because a
+// smile rotation shifts the whole surface rather than indexing a cell axis.
+//
+// A variance swap's defining risk is the SHAPE of the smile -- the strip
+// integrates every strike, so a rotation moves K_var even when the ATM vol does
+// not budge -- which is why these exist at all and why the option leg has no
+// counterpart. Both are zero by default, and at zero the deriv Taylor cell is
+// term-for-term the option kernel.
+struct ScenarioDerivSpec {
+  double d_skew{0.0};       // absolute smile-slope shift, vol per unit k = ln(K/F)
+  double d_convexity{0.0};  // absolute smile-curvature shift, vol per unit k^2
+};
+
+// Second-order Taylor P&L for ONE deriv position whose greeks `g` are
+// POSITION-SCALED, under the same shock the option kernel takes plus the two
+// smile shifts.
+//
+// The first eight terms are `scenario_taylor_leg`'s, in ITS left-to-right order,
+// so the two legs of one grid reconstruct the same expansion; the two smile
+// terms are appended, and are exactly zero when the smile shocks are. `g.pv`
+// and the carry-theta fields are ignored -- this is a market-move expansion, and
+// the fixing rollover a swap also earns over `dt` is `DerivPnlExplain`'s job,
+// not a scenario cell's.
+[[nodiscard]] inline double scenario_deriv_taylor_leg(const DerivGreeks &g, double dS, double dvol,
+                                                      double dt, double dr, double d_skew,
+                                                      double d_convexity) noexcept {
+  const double pd = g.delta * dS;
+  const double pg = 0.5 * g.gamma * dS * dS;
+  const double pv = g.vega * dvol;
+  const double pvol = 0.5 * g.volga * dvol * dvol;
+  const double pvanna = g.vanna * dS * dvol;
+  const double pth = g.theta * dt;
+  const double prho = g.rho * dr;
+  const double pcharm = g.charm * dS * dt;
+  const double pskew = g.skew_vega * d_skew;
+  const double pconv = g.convexity_vega * d_convexity;
+  return pd + pg + pv + pvol + pvanna + pth + prho + pcharm + pskew + pconv;
+}
+
+// The same grid over an option book AND a vol-derivative book.
+//
+// The option leg is bit-identical to the overload above given the same `book` /
+// `base` / `spec` -- it is literally the same code path -- so this is an
+// additive route, not a replacement. The deriv leg prices each position's
+// greeks ONCE against `base` (`price_deriv_book`) and reconstructs each cell
+// from that one bundle, routing to an exact reprice on the same radii the
+// option leg uses.
+//
+// ## Exact deriv cell semantics -- sticky-strike, NO smile roll
+//
+// `detail::deriv_price_shocked_on_ref` reprices the contract with the base
+// surface read through the shocked overlay: the surface is NOT re-fit, and the
+// smile is NOT rolled to the new spot. Identical in spirit to the option leg's
+// Exact cell, and identical in mechanism to every `deriv_greeks` spot bump --
+// which is what makes a Taylor cell and an Exact cell two views of one model
+// rather than two models.
+//
+// Two deliberate differences from the option leg's Exact cell, stated because
+// they are differences: the rate shock is applied as an exact discount rescale
+// rather than a curve bump (every kind here has `rho = -T*pv` analytically, so
+// the rescale IS the reprice), and `dt` rolls the CALENDAR ONLY -- no fixing is
+// injected, matching `DerivGreeks::theta`.
+//
+// `smile_greeks` is forced ON for the deriv greek solve whenever either smile
+// shock is non-zero, because a NaN `skew_vega` would otherwise poison the whole
+// Taylor cell rather than the term the caller asked for.
+//
+// @return the same error contract as the overload above. A deriv position whose
+//         greek solve fails is excluded from every cell and counted in
+//         `n_deriv_failed`; no NaN enters a cell total.
+[[nodiscard]] Result<ScenarioGridResult> scenario_grid(const std::vector<Position> &book,
+                                                       const std::vector<DerivPosition> &deriv_book,
+                                                       const SurfaceSet &base,
+                                                       const ScenarioGridSpec &spec,
+                                                       const ScenarioDerivSpec &deriv_spec = {});
 
 } // namespace atx::vol

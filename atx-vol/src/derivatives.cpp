@@ -5488,6 +5488,61 @@ Result<DerivQuote> deriv_price_on_ref(const SurfaceRef& ref, const DerivContract
   return deriv_price(view, curves, contract, cfg);
 }
 
+// Task F-8: ONE shocked repricing, for the scenario grid's Exact deriv cell.
+//
+// This is the deriv counterpart of the option grid's "sticky-strike, NO smile
+// roll" Exact cell (scenario_grid.hpp): the surface is not re-fit, the smile is
+// not rolled, and the shocked read is the SAME `SurfaceOverlay` composition
+// every greek bump already prices under -- which is what makes a Taylor cell
+// and an Exact cell comparable rather than two different models.
+//
+// The rate shock is applied as an exact discount rescale rather than a curve
+// bump. Every product here is a discounted expectation whose undiscounted leg
+// does not see the discount curve at all (`rho = -T*pv`, unconditionally, on
+// all four assembly paths), so `pv * exp(-dr*T')` IS the repriced value under a
+// parallel shift, not an approximation of it.
+Result<DerivQuote> deriv_price_shocked_on_ref(const SurfaceRef& ref, const DerivContract& contract,
+                                              const DerivConfig& cfg,
+                                              std::optional<double> surface_certified_wing_band,
+                                              const DerivShock& shock) {
+  if (!ref.valid()) {
+    return Err(ErrorCode::InvalidArgument, "deriv: null surface handle");
+  }
+  if (!std::isfinite(shock.spot_rel) || shock.spot_rel <= -1.0) {
+    return Err(ErrorCode::InvalidArgument,
+               "deriv_price_shocked_on_ref: spot_rel must be finite and > -1");
+  }
+  if (!std::isfinite(shock.vol_shift) || !std::isfinite(shock.skew_shift) ||
+      !std::isfinite(shock.convexity_shift) || !std::isfinite(shock.rate_shift) ||
+      !std::isfinite(shock.time_roll)) {
+    return Err(ErrorCode::InvalidArgument, "deriv_price_shocked_on_ref: non-finite shock");
+  }
+
+  DerivContract rolled = contract;
+  rolled.maturity_t = contract.maturity_t - shock.time_roll;
+  if (!(rolled.maturity_t > 0.0)) {
+    return Err(ErrorCode::InvalidArgument,
+               "deriv_price_shocked_on_ref: time_roll consumes the whole tenor");
+  }
+
+  // The carry snapshot is taken at the ROLLED tenor, because that is the tenor
+  // being priced; asking for a roll on top would carry a pillar nothing reads.
+  ATX_TRY(const CurveSet base_curves, carry_from_ref(ref, rolled.maturity_t, 0.0));
+  const CurveSet curves = respot_curves(base_curves, 1.0 + shock.spot_rel);
+  const SurfaceRefStripView base_view{&ref, &base_curves, rolled.maturity_t,
+                                      surface_certified_wing_band};
+  const SurfaceOverlay<SurfaceRefStripView> view{
+      .base = &base_view,
+      .vol_shift = shock.vol_shift,
+      .skew_shift = shock.skew_shift,
+      .convexity_shift = shock.convexity_shift,
+      .k_shift = sticky_k_shift(StickyMode::StickyStrike, shock.spot_rel)};
+  ATX_TRY(DerivQuote q, deriv_price(view, curves, rolled, cfg));
+  const double df_shift = std::exp(-shock.rate_shift * rolled.maturity_t);
+  q.pv *= df_shift;
+  return Ok(q);
+}
+
 Result<DerivGreeks> deriv_greeks_on_ref(const SurfaceRef& ref, const DerivContract& contract,
                                         const DerivConfig& cfg, const DerivGreekBumps& bumps,
                                         std::optional<double> surface_certified_wing_band) {

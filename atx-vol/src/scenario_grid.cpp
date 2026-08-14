@@ -23,6 +23,7 @@
 
 #include "atx/vol/american.hpp"         // AmericanGreeks, american_price, AlOpts
 #include "atx/vol/priced_surface.hpp"   // PricedSurface, PricingContext
+#include "atx/vol/detail/deriv_ref_bridge.hpp" // Task F-8: deriv_price_shocked_on_ref
 #include "atx/vol/detail/pricing_executor.hpp" // pricing_executor(): the shared P1.4 pool
 
 #include "american_boundary.hpp" // amer:: boundary seam (A7 spot-axis reuse)
@@ -498,6 +499,141 @@ Result<ScenarioGridResult> scenario_grid(const std::vector<Position> &book, cons
   r.n_exact_fallback_lanes = n_fallback;
 
   return r;
+}
+
+// ── Vol-derivative leg (Task F-8, GK-G4) ────────────────────────────────────
+
+namespace {
+
+// Fill `out`'s deriv columns in place. Kept OUT of the option entry above and
+// bolted on by the overload below rather than woven into it: the option leg is
+// then not merely "unchanged", it is the same call, and
+// `DerivLegLeavesTheOptionLegByteIdentical` can say so against a byte compare
+// instead of against a reading of the diff.
+[[nodiscard]] Result<void> fill_deriv_leg(ScenarioGridResult &out,
+                                          const std::vector<DerivPosition> &deriv_book,
+                                          const SurfaceSet &base, const ScenarioGridSpec &spec,
+                                          const ScenarioDerivSpec &deriv_spec) {
+  if (deriv_book.empty()) {
+    return core::Ok();  // no leg, no columns -- distinguishable from a flat one
+  }
+  const std::size_t n_spot = spec.spot_pct.size();
+  const std::size_t n_vol = spec.vol_bump.size();
+  const std::size_t n_cells = n_spot * n_vol;
+  const std::size_t n_pos = deriv_book.size();
+  if (!detail::scenario_grid_product_is_representable(n_cells, n_pos)) {
+    return Err(ErrorCode::InvalidArgument,
+               "scenario_grid: deriv cell x position count overflows size_t");
+  }
+
+  // One greek solve for the whole deriv book, mirroring the option leg's single
+  // `PortfolioPricer::price`. `smile_greeks` costs four extra repricings per
+  // position and is only worth paying for when a smile shock is actually set --
+  // but without it `skew_vega` is NaN, which would poison the entire Taylor
+  // cell rather than just its smile term.
+  DerivGreekBumps bumps{};
+  bumps.smile_greeks = (deriv_spec.d_skew != 0.0) || (deriv_spec.d_convexity != 0.0);
+  bumps.time_years = (spec.dt > 0.0) ? spec.dt : bumps.time_years;
+  const DerivConfig cfg{};
+  ATX_TRY(const DerivPriceFrame frame,
+          price_deriv_book(base, std::span<const DerivPosition>{deriv_book}, cfg, true, bumps));
+  if (frame.rows.size() != n_pos) {
+    return Err(ErrorCode::Internal, "scenario_grid: deriv frame lost a row");
+  }
+
+  std::vector<std::uint8_t> pos_ok(n_pos, 0u);
+  std::vector<double> pos_spot(n_pos, kNaNv);
+  for (std::size_t p = 0; p < n_pos; ++p) {
+    if (frame.rows[p].status != PriceStatus::Ok) {
+      continue;
+    }
+    const SurfaceRef surf = base.find(deriv_book[p].uid);
+    if (surf == nullptr || !(surf->pricing().S > 0.0)) {
+      continue;  // Ok implies a surface, but a cell must never see a NaN spot
+    }
+    pos_ok[p] = 1u;
+    pos_spot[p] = surf->pricing().S;
+  }
+
+  std::size_t n_ok = 0;
+  for (const std::uint8_t v : pos_ok) {
+    n_ok += v;
+  }
+  out.n_deriv_ok = n_ok;
+  out.n_deriv_failed = n_pos - n_ok;
+
+  out.deriv_pnl.assign(n_cells, 0.0);
+  out.deriv_route.assign(n_cells, static_cast<std::uint8_t>(ScenarioRoute::Taylor));
+  std::size_t n_fallback = 0;
+
+  // Serial over cells AND over positions inside each cell. The option leg fans
+  // its Exact reprices over the shared pool because a PUT's exercise boundary
+  // is reusable down a whole spot column; a deriv reprice shares nothing across
+  // cells, so a fan-out here would buy throughput at the cost of the
+  // fixed-order reduction the result's determinism contract rests on. Cost is
+  // therefore (Exact cells x Ok positions) strip integrations, stated plainly
+  // rather than hidden -- a caller wanting a large Exact deriv grid should size
+  // it knowingly.
+  for (std::size_t c = 0; c < n_cells; ++c) {
+    const std::size_t i_spot = c / n_vol;
+    const std::size_t j_vol = c % n_vol;
+    const double spot_pct = spec.spot_pct[i_spot];
+    const double dvol = spec.vol_bump[j_vol];
+    const bool exact = std::abs(spot_pct) > spec.taylor_radius_spot ||
+                       std::abs(dvol) > spec.taylor_radius_vol;
+    out.deriv_route[c] =
+        static_cast<std::uint8_t>(exact ? ScenarioRoute::Exact : ScenarioRoute::Taylor);
+
+    double total = 0.0;
+    for (std::size_t p = 0; p < n_pos; ++p) {
+      if (pos_ok[p] == 0u) {
+        continue;
+      }
+      const double dS = spot_pct * pos_spot[p];
+      const double taylor =
+          scenario_deriv_taylor_leg(frame.rows[p].greeks, dS, dvol, spec.dt, spec.dr,
+                                    deriv_spec.d_skew, deriv_spec.d_convexity);
+      if (!exact) {
+        total += taylor;
+        continue;
+      }
+      detail::DerivShock shock{};
+      shock.spot_rel = spot_pct;
+      shock.vol_shift = dvol;
+      shock.skew_shift = deriv_spec.d_skew;
+      shock.convexity_shift = deriv_spec.d_convexity;
+      shock.rate_shift = spec.dr;
+      shock.time_roll = spec.dt;
+      const SurfaceRef surf = base.find(deriv_book[p].uid);
+      const auto q = detail::deriv_price_shocked_on_ref(surf, deriv_book[p].contract, cfg,
+                                                        std::nullopt, shock);
+      // A shocked solve that Erred or went non-finite falls back to this
+      // position's Taylor leg for this cell; the cell's route STAYS Exact, and
+      // the substitution is counted rather than absorbed -- same accounting the
+      // option leg's `n_exact_fallback_lanes` keeps.
+      if (!q.has_value() || !std::isfinite(q->pv)) {
+        ++n_fallback;
+        total += taylor;
+        continue;
+      }
+      total += deriv_book[p].qty * q->pv - frame.rows[p].pv;
+    }
+    out.deriv_pnl[c] = total;
+  }
+
+  out.n_deriv_exact_fallback_lanes = n_fallback;
+  return core::Ok();
+}
+
+}  // namespace
+
+Result<ScenarioGridResult> scenario_grid(const std::vector<Position> &book,
+                                         const std::vector<DerivPosition> &deriv_book,
+                                         const SurfaceSet &base, const ScenarioGridSpec &spec,
+                                         const ScenarioDerivSpec &deriv_spec) {
+  ATX_TRY(ScenarioGridResult out, scenario_grid(book, base, spec));
+  ATX_TRY_VOID(fill_deriv_leg(out, deriv_book, base, spec, deriv_spec));
+  return core::Ok(std::move(out));
 }
 
 } // namespace atx::vol

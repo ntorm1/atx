@@ -168,5 +168,34 @@ deriv_greeks_on_ref(const SurfaceRef &ref, const DerivContract &contract, const 
                     const DerivGreekBumps &bumps,
                     std::optional<double> surface_certified_wing_band = std::nullopt);
 
+// Task F-8: one scenario shock, in the conventions `scenario_grid` uses.
+// `spot_rel` is a FRACTION of spot; every other field is an absolute shift.
+// `time_roll` rolls the calendar only -- no fixing is injected, matching
+// `DerivGreeks::theta`'s own calendar-only roll (the fixing rollover is what
+// `theta_zero_fixing` and `DerivPnlExplain` are for).
+struct DerivShock {
+  double spot_rel{0.0};
+  double vol_shift{0.0};        // absolute vol points, parallel
+  double skew_shift{0.0};       // vol per unit k = ln(K/F)
+  double convexity_shift{0.0};  // vol per unit k^2
+  double rate_shift{0.0};       // parallel zero-rate shift
+  double time_roll{0.0};        // years, T decreasing
+};
+
+// Reprice `contract` under `shock` against a borrowed surface: a sticky-strike
+// respot with NO smile roll, the same semantics the option grid's Exact cell
+// documents (scenario_grid.hpp) and the same `SurfaceOverlay` composition every
+// greek bump prices under.
+//
+// @pre `ref.valid()`.
+// @return InvalidArgument for a non-finite shock, a `spot_rel <= -1`, or a
+//         `time_roll` that consumes the whole tenor; otherwise the same error
+//         contract as the templated `deriv_price`.
+[[nodiscard]] Result<DerivQuote>
+deriv_price_shocked_on_ref(const SurfaceRef &ref, const DerivContract &contract,
+                           const DerivConfig &cfg,
+                           std::optional<double> surface_certified_wing_band,
+                           const DerivShock &shock);
+
 } // namespace detail
 } // namespace atx::vol
