@@ -92,10 +92,12 @@ scripts\atx-build.ps1 build <target>                    # cmake --build build --
 scripts\atx-build.ps1 -Ctest -R <regex>                 # ctest in build/  (regex-safe; bypasses cmd)
 ```
 
-**Presets** — [CMakePresets.json](../../CMakePresets.json). All are **Debug**:
-`ninja` (default, clang-cl + PCH), `hygiene` (PCH off, CI), `dev` (sccache +
-shared deps), `vs` (MSBuild). There is **no Release preset** — for a release
-build, configure a separate dir manually (see §8).
+**Presets** — [CMakePresets.json](../../CMakePresets.json) is the definition; read the
+preset list from there, not from a copy here. The copy that used to sit in this paragraph
+had gone stale three ways: it named four presets, called them all **Debug**, and said
+there was **no Release preset** — `rel` and `rel-avx2` are Release. `hygiene` (PCH off)
+is the include-clean gate and is run **by hand**: no CI builds this tree (the repo's only
+workflow, `.github/workflows/atx-db.yml`, is path-filtered to `atx-db/**`).
 
 **Relevant targets**
 - `atx-engine-data-tests` — the data test group; contains the load operator test.

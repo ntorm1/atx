@@ -624,9 +624,15 @@ TEST(PreparedPortfolio, GroupedPriceEqualsIndependentOracleAndPinnedFingerprint)
   //
   // The FMA branch carries ONE value deliberately: `rel-avx2` injects /arch:AVX2 via the
   // CFLAGS/CXXFLAGS entries in its own `environment` block in CMakePresets.json, and no
-  // other preset injects it (grep the flag there to confirm — the flag is stable, the
-  // line it sits on is not). It inherits `rel`, so __FMA__ implies NDEBUG in the shipped
-  // preset set and a Debug+FMA cell is unreachable. If a
+  // other preset injects it GLOBALLY. Confirm with `grep -E '/arch:AVX2|-mavx2|-mfma'`
+  // over CMakePresets.json AND the CMakeLists.txt files — a CMakePresets-only grep is
+  // too narrow and would miss atx-vol/CMakeLists.txt's per-source `-mavx2;-mfma`. Those
+  // per-source hits are not counterexamples: they land on src/simd/*_avx2.cpp, i.e.
+  // LIBRARY TUs, whereas kFmaContraction (tests/support/isa_golden_tol.hpp) is evaluated
+  // in the TEST TU, which sees only the preset's global flags. Grep by flag, not by line:
+  // the flags are stable, the lines they sit on are not. `rel-avx2` inherits `rel`, so
+  // __FMA__ implies NDEBUG in the shipped preset set and a Debug+FMA cell is
+  // unreachable. If a
   // Debug+AVX2 preset is ever added, SPLIT this branch and capture it — do not let it
   // fall through to a Release-captured number.
   //
