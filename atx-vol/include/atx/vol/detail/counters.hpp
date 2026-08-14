@@ -40,6 +40,7 @@
 #include <array>  // solve-ledger per-thread block (always on) + gated exact counters
 #include <atomic>
 #include <chrono>
+#include <cstddef> // std::size_t -- every_name_present's array-bound parameter
 #include <cstdint>
 #include <limits>
 #include <mutex>  // solve ledger registry lock (register/scrape only; never the hot path)
@@ -169,6 +170,28 @@ enum class Counter : unsigned {
 
 inline constexpr unsigned kCount = static_cast<unsigned>(Counter::Count_);
 
+// Task F-5. Both name tables in this header are C arrays sized by their enum's
+// own `Count_`, and C++ aggregate initialization SILENTLY value-initializes
+// every element the initializer list omits. A new enumerator added without its
+// name string therefore yields a `nullptr` entry -- no compiler diagnostic
+// fires, and `std::size(kNames) == kCount` would be vacuously true because the
+// BOUND is what is short-initialized, not the declaration. The nullptr then
+// reaches `py::str` (python/src/bindings/backtest.cpp) and `printf("%s")`
+// (tools/surface_db_build_main.cpp) unchecked. The "keep in sync (1:1, same
+// order)" comment above each table was, until now, enforced by nothing.
+//
+// Stated once and asserted at both tables. The `1:1, same order` half is still
+// convention -- this catches a MISSING name, never a misordered one.
+template <std::size_t N>
+[[nodiscard]] constexpr bool every_name_present(const char *const (&names)[N]) noexcept {
+  for (std::size_t i = 0; i < N; ++i) {
+    if (names[i] == nullptr) {
+      return false;
+    }
+  }
+  return true;
+}
+
 // Stable machine-readable names (used as the benchmark JSON counter keys).
 inline constexpr const char *kNames[kCount] = {
     "cnt_boundary_solves",
@@ -211,6 +234,11 @@ inline constexpr const char *kNames[kCount] = {
     "cnt_risk_strict_recovery_rounds",
     "cnt_risk_strict_recovery_admitted",
 };
+
+static_assert(every_name_present(kNames),
+              "counters::kNames is short: a Counter enumerator was added without appending "
+              "its name string, so kNames now holds a nullptr that reaches the bench JSON "
+              "writer unchecked. Append the name, in the enum's own order.");
 
 // A point-in-time copy of every counter. `enabled == false` is the sentinel a
 // caller reads from an OFF build (or the zero-cost test asserts).
@@ -909,6 +937,14 @@ inline constexpr const char *kNames[kCount] = {
     "sl_duplicate_mark_solves", "sl_cache_carry_drift",      "sl_var_swap_strip_evals",
     "sl_gamma_swap_strip_evals", "sl_corridor_var_swap_strip_evals",
 };
+
+static_assert(every_name_present(kNames),
+              "ledger::kNames is short: a Solve enumerator was added without appending its "
+              "name string, so kNames now holds a nullptr -- which reaches py::str "
+              "(python/src/bindings/backtest.cpp:58) and printf(\"%s\") "
+              "(tools/surface_db_build_main.cpp:588) unchecked. Append the name, in the "
+              "enum's own order, and add it to SOLVE_LEDGER_KEYS "
+              "(python/tests/test_run_sp100_strangle_backtest.py) too.");
 
 // A merged, point-in-time copy. Plain values (not atomics) so it is trivially
 // copyable, subtractable, and cheap to store per step.
