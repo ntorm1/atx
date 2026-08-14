@@ -24,6 +24,8 @@
 #include <vector>
 
 #include "amzn_earnings_fit.hpp"   // atx::vol::amzn::amzn_earnings_fit, SliceFit
+#include "support/test_paths.hpp"  // testkit::test_data
+
 #include "atx/vol/cstar.hpp"       // cstar_slice_w
 #include "atx/vol/opra_panel.hpp"  // OpraLoadSpec, load_opra_cbbo_parquet
 
@@ -34,27 +36,19 @@ using namespace atx::vol::amzn;
 
 constexpr double kR = 0.019;
 constexpr const char* kSnapshot = "2018-04-26T19:45:00Z";
+// Repo-relative spelling of the fixture, used only in the skip message below.
+// It is NOT how the file is located -- see find_fixture().
 constexpr const char* kFixtureRel =
     "atx-vol/tests/data/amzn_earnings_2018/amzn_opra_cbbo1m_2018-04-26T1945Z.parquet";
 
-// Probe for the committed fixture. Prefers the configure-time absolute path
-// (ATX_AMZN_FIXTURE, baked by tests/CMakeLists.txt), then a few relative roots so
-// the test also runs from a hand-launched exe.
+// The committed fixture, resolved from the configure-time absolute root. The
+// relative fallbacks this used to carry could only ever disagree with the baked
+// path they sat behind, never improve on it.
 [[nodiscard]] std::string find_fixture() {
-  std::vector<std::string> candidates;
-#ifdef ATX_AMZN_FIXTURE
-  candidates.emplace_back(ATX_AMZN_FIXTURE);
-#endif
-  candidates.emplace_back(kFixtureRel);
-  candidates.emplace_back(std::string("../") + kFixtureRel);
-  candidates.emplace_back(std::string("../../") + kFixtureRel);
-  for (const std::string& c : candidates) {
-    std::error_code ec;
-    if (!c.empty() && std::filesystem::exists(c, ec)) {
-      return c;
-    }
-  }
-  return {};
+  const std::filesystem::path p = atx::vol::testkit::test_data(
+      "amzn_earnings_2018/amzn_opra_cbbo1m_2018-04-26T1945Z.parquet");
+  std::error_code ec;
+  return std::filesystem::exists(p, ec) ? p.string() : std::string{};
 }
 
 // One load + fit shared across the whole suite (built lazily, once).

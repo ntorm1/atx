@@ -8,6 +8,7 @@
 #include "atx/vol/vol_curve.hpp"
 #include "opra_fixture.hpp"
 #include "spy_fit_fixture.hpp"
+#include "test_paths.hpp"
 
 #include <gtest/gtest.h>
 
@@ -19,8 +20,14 @@
 namespace atx::vol::test {
 namespace fs = std::filesystem;
 
+// One cache per BUILD TREE, resolved from a configure-time absolute. It used to
+// be the bare relative `artifact-cache`, which named a different directory for
+// every working directory the binary was launched from: five had accumulated on
+// disk, each rebuilt from scratch because it could not see the others. That was
+// recorded for a year as "artifact-cache-state baselines that flip with
+// freshness"; the flips were never freshness, they were the working directory.
 fs::path cached_spy_convex_dense() {
-  const fs::path dir{"artifact-cache"}; // under the ctest CWD (build tree)
+  const fs::path dir = testkit::artifact_cache_root();
   std::error_code ec;
   fs::create_directories(dir, ec);
 
@@ -78,8 +85,17 @@ fs::path cached_spy_convex_dense() {
 }
 
 fs::path cached_corpus(const char *key, const std::function<std::vector<CorpusBoard>()> &boards) {
-  const fs::path root{"artifact-cache"}; // under the ctest CWD (build tree)
-  const fs::path dir = root / key;
+  const fs::path root = testkit::artifact_cache_root();
+  // `-pathsv2` is the cache-LAYOUT revision, the same invalidate-on-format-bump
+  // idea the two sibling helpers spell with kArchiveV2Major. Entries below now
+  // record an ABSOLUTE archive_path; every manifest written before this bump
+  // recorded one relative to the working directory of whichever run built it.
+  // Such a manifest does not fail loudly when reused -- it resolves against
+  // whatever happens to sit under the NEW caller's working directory, which is
+  // either a different cache's archives or nothing at all. Retiring the
+  // directory name is what stops a stale manifest being served, since its mere
+  // existence is the cache-hit condition below.
+  const fs::path dir = root / (std::string{key} + "-pathsv2");
   std::error_code ec;
   if (fs::exists(dir / "manifest.tsv")) {
     return dir;
@@ -125,7 +141,7 @@ fs::path cached_corpus(const char *key, const std::function<std::vector<CorpusBo
 }
 
 fs::path cached_hft_fit(const atx::vol::testkit::SpyFitFixture &fixture) {
-  const fs::path dir{"artifact-cache"}; // under the ctest CWD (build tree)
+  const fs::path dir = testkit::artifact_cache_root();
   std::error_code ec;
   fs::create_directories(dir, ec);
 

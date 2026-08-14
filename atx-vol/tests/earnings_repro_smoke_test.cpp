@@ -9,6 +9,7 @@
 #include <string>
 
 #include "atx/vol/earnings_forecast_loader.hpp" // load_earnings_events (Task 5)
+#include "support/test_paths.hpp"                // testkit::test_fixture
 #include "atx/vol/event_vol.hpp"                // EventSchedule
 #include "atx/vol/opra_panel.hpp"                // OpraLoadSpec, load_opra_cbbo_parquet
 #include "atx/vol/session.hpp"                   // VolaSession, make_session_inputs
@@ -42,20 +43,7 @@ using atx::vol::VolaSession;
 
 constexpr const char *kNvdaParquet = "C:/atx-data/spy-dispersion/opra/NVDA/2026-02-10.parquet";
 
-// The Task 5 fixture sits next to this test source (tests/support/) -- probe
-// the same relative candidates earnings_forecast_loader_test.cpp uses (ninja
-// invokes clang-cl with a build-dir-relative path, so __FILE__ is not
-// reliably absolute here).
-fs::path fixture(const char *name) {
-  const fs::path rel = fs::path("support") / name;
-  for (const char *base : {"../../../atx-vol/tests", "atx-vol/tests", "../atx-vol/tests", "."}) {
-    const fs::path candidate = fs::path(base) / rel;
-    if (fs::exists(candidate)) {
-      return candidate;
-    }
-  }
-  return fs::path(__FILE__).parent_path() / "support" / name;
-}
+using atx::vol::testkit::test_fixture;
 
 TEST(EarningsReproSmoke, NvdaRealBoard_TwelveFiniteAtmCenI_FiniteNonnegativeEmove) {
   std::error_code ec;
@@ -79,7 +67,7 @@ TEST(EarningsReproSmoke, NvdaRealBoard_TwelveFiniteAtmCenI_FiniteNonnegativeEmov
   ASSERT_TRUE(sess.has_value()) << sess.error().to_string();
 
   const auto events =
-      load_earnings_events(fixture("earnings_forecast_sample.tsv").string(), "NVDA");
+      load_earnings_events(test_fixture("earnings_forecast_sample.tsv").string(), "NVDA");
   ASSERT_TRUE(events.has_value()) << events.error().to_string();
   const EventSchedule sched(*events);
 

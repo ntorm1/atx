@@ -144,6 +144,7 @@ target_link_libraries(atx-vol-fitting-bench
         benchmark::benchmark
         atx_warnings
         Threads::Threads
+        atx-vol-test-paths   # the testkit fixture headers resolve from a baked absolute
 )
 # fitting_throughput_bench.cpp's real-OPRA case (C0.2) reaches the testkit
 # fixture loaders via `#include "support/spy_fit_fixture.hpp"` — the same
@@ -167,6 +168,7 @@ target_link_libraries(atx-vol-e2e-hotpath-bench
         benchmark::benchmark
         atx_warnings
         Threads::Threads
+        atx-vol-test-paths   # the testkit fixture headers resolve from a baked absolute
 )
 target_include_directories(atx-vol-e2e-hotpath-bench
     PRIVATE
@@ -406,6 +408,7 @@ target_link_libraries(atx-vol-al-preset-ladder-bench
         benchmark::benchmark
         atx_warnings
         Threads::Threads
+        atx-vol-test-paths   # the testkit fixture headers resolve from a baked absolute
 )
 target_include_directories(atx-vol-al-preset-ladder-bench
     PRIVATE

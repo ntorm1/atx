@@ -35,6 +35,8 @@
 
 #include <process.h>  // _getpid — private temp dir per test process (parallel gate)
 
+#include "support/test_paths.hpp"      // testkit::market_data
+
 #include "atx/vol/backtest.hpp"        // Clock, run_backtest, RunConfig, BacktestResult, MarketSnapshot
 #include "atx/vol/corpus.hpp"          // CorpusBoard, CorpusConfig, build_corpus, CorpusManifest
 #include "atx/vol/market_env.hpp"      // MarketEnv
@@ -64,21 +66,12 @@ constexpr double kTargetT = 30.0 / 365.25;  // ~30d put tenor (~0.0821)
   return ba == bb;
 }
 
-// Locate the cached SPY parquet across the paths a test binary might run from
-// (identical search to spy_real_test).
+// Locate the cached SPY parquet. Empty when absent (caller GTEST_SKIPs) -- the
+// fixture is licensed vendor data and is not committed.
 [[nodiscard]] std::string find_spy_parquet() {
-  const char* candidates[] = {
-      "data/spy_opra_cbbo1m_2026-06-05T1955Z.parquet",
-      "../data/spy_opra_cbbo1m_2026-06-05T1955Z.parquet",
-      "../../data/spy_opra_cbbo1m_2026-06-05T1955Z.parquet",
-      "C:/atx/data/spy_opra_cbbo1m_2026-06-05T1955Z.parquet",
-  };
-  for (const char* c : candidates) {
-    if (fs::exists(c)) {
-      return c;
-    }
-  }
-  return {};
+  const fs::path p = atx::vol::testkit::market_data("spy_opra_cbbo1m_2026-06-05T1955Z.parquet");
+  std::error_code ec;
+  return fs::exists(p, ec) ? p.string() : std::string{};
 }
 
 // Every numeric column of two BacktestResults is bit-identical (determinism).

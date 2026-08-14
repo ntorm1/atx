@@ -155,6 +155,8 @@
 #include <utility>
 #include <vector>
 
+#include "support/test_paths.hpp"            // testkit::repo_file
+
 #include "atx/vol/american.hpp"              // al_fast_opts, AmericanMethod
 #include "atx/vol/backtest.hpp"              // Clock, MarketSnapshot, FrictionModel
 #include "atx/vol/dispersion.hpp"            // DispersionSide, WeightingScheme, StrikeRule
@@ -438,28 +440,12 @@ const std::vector<std::string_view> kAbsentCohort = {"MSFT", "NVDA"};
   return {};
 }
 
-// The SHIPPED example config's absolute path, or "" when it cannot be found.
-// Prefers the configure-time path baked by tests/CMakeLists.txt
-// (ATX_SP100_DISPERSION_CONFIG), then a few relative roots so the test also runs
-// from a hand-launched exe. Same probe shape as amzn_earnings_test.cpp's
-// find_fixture (ATX_AMZN_FIXTURE).
-constexpr const char *kShippedConfigRel = "atx-vol/examples/sp100_dispersion_config.tsv";
-
+// The SHIPPED example config's absolute path, or "" when it cannot be found,
+// resolved from the configure-time absolute root.
 [[nodiscard]] std::string shipped_example_config() {
-  std::vector<std::string> candidates;
-#ifdef ATX_SP100_DISPERSION_CONFIG
-  candidates.emplace_back(ATX_SP100_DISPERSION_CONFIG);
-#endif
-  candidates.emplace_back(kShippedConfigRel);
-  candidates.emplace_back(std::string("../") + kShippedConfigRel);
-  candidates.emplace_back(std::string("../../") + kShippedConfigRel);
-  for (const std::string &c : candidates) {
-    std::error_code ec;
-    if (fs::exists(c, ec) && !ec) {
-      return c;
-    }
-  }
-  return {};
+  const fs::path p = atx::vol::testkit::repo_file("atx-vol/examples/sp100_dispersion_config.tsv");
+  std::error_code ec;
+  return fs::exists(p, ec) ? p.string() : std::string{};
 }
 
 // ── Task 6 helpers ──────────────────────────────────────────────────────────

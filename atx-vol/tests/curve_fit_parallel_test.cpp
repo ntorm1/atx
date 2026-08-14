@@ -12,6 +12,8 @@
 #include <string>
 #include <vector>
 
+#include "support/test_paths.hpp"      // testkit::market_data
+
 #include "atx/vol/american.hpp"        // american_price, al_fast_opts, AlOpts
 #include "atx/vol/curve_fit.hpp"       // fit_curve_surface, CurveSurfaceReport
 #include "atx/vol/dividend.hpp"        // hybrid_forward, HybridDivParams
@@ -227,21 +229,13 @@ void expect_per_expiry_bit_identical(const atx::vol::CurveSurfaceReport& a,
   }
 }
 
-// Locate the cached SPY parquet across the paths a test binary might run from.
-// (Copied from curve_noarb_test.cpp / spy_real_test.cpp — same gitignored fixture.)
+// Locate the cached SPY parquet. Empty when absent (caller GTEST_SKIPs) -- the
+// fixture is licensed vendor data and is not committed.
 [[nodiscard]] std::string find_spy_parquet() {
-  const char* candidates[] = {
-      "data/spy_opra_cbbo1m_2026-06-05T1955Z.parquet",
-      "../data/spy_opra_cbbo1m_2026-06-05T1955Z.parquet",
-      "../../data/spy_opra_cbbo1m_2026-06-05T1955Z.parquet",
-      "C:/atx/data/spy_opra_cbbo1m_2026-06-05T1955Z.parquet",
-  };
-  for (const char* c : candidates) {
-    if (std::filesystem::exists(c)) {
-      return c;
-    }
-  }
-  return {};
+  const std::filesystem::path p =
+      atx::vol::testkit::market_data("spy_opra_cbbo1m_2026-06-05T1955Z.parquet");
+  std::error_code ec;
+  return std::filesystem::exists(p, ec) ? p.string() : std::string{};
 }
 
 // S0-4': portable ATX_VOL_FIT_WORKERS env set/unset for the cap test below.

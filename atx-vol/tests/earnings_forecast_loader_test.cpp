@@ -1,10 +1,11 @@
 #include "atx/vol/earnings_forecast_loader.hpp"
 
+#include "support/test_paths.hpp"
+
 #include <gtest/gtest.h>
 
 #include <algorithm>
 #include <cstdint>
-#include <filesystem>
 #include <vector>
 
 // Coverage for Task 5's `load_earnings_events`: parses a real-schema
@@ -23,23 +24,7 @@
 namespace {
 
 using atx::vol::load_earnings_events;
-
-namespace fs = std::filesystem;
-
-// The fixtures sit next to this test source (tests/support/). __FILE__ is NOT
-// reliably absolute here (ninja invokes clang-cl with a path relative to the
-// build dir), so probe a few relative candidates the way
-// tests/support/oracle_pde_golden.cpp's golden_path() does -- robust to
-// whichever directory ctest happens to run the test binary from.
-fs::path fixture(const char *name) {
-  const fs::path rel = fs::path("support") / name;
-  for (const char *base : {"../../../atx-vol/tests", "atx-vol/tests", "../atx-vol/tests",
-                           "."}) {
-    fs::path candidate = fs::path(base) / rel;
-    if (fs::exists(candidate)) return candidate;
-  }
-  return fs::path(__FILE__).parent_path() / "support" / name;
-}
+using atx::vol::testkit::test_fixture;
 
 // Independently computed (bash `date -u -d ... +%s`, not via the code under
 // test) UTC epoch-ns for the real NVDA/AAIC forward dates below -- an oracle
@@ -59,7 +44,7 @@ constexpr std::int64_t kAaic2 = 1'804'024'800'000'000'000LL; // 2027-03-02 22:00
 // ── Step 1/2/4: happy path -- 8-date ticker (NVDA) ─────────────────────────
 
 TEST(EarningsForecastLoader, EightDateTicker_SortedAscendingWithKnownFirstInstant) {
-  const auto res = load_earnings_events(fixture("earnings_forecast_sample.tsv").string(), "NVDA");
+  const auto res = load_earnings_events(test_fixture("earnings_forecast_sample.tsv").string(), "NVDA");
   ASSERT_TRUE(res.has_value()) << res.error().to_string();
   const std::vector<std::int64_t> &events = res.value();
 
@@ -76,7 +61,7 @@ TEST(EarningsForecastLoader, EightDateTicker_SortedAscendingWithKnownFirstInstan
 // ── Boundary: a ticker with only 2 forward dates (rest sentinel) ──────────
 
 TEST(EarningsForecastLoader, TwoDateTicker_DropsSentinelSlots) {
-  const auto res = load_earnings_events(fixture("earnings_forecast_sample.tsv").string(), "AAIC");
+  const auto res = load_earnings_events(test_fixture("earnings_forecast_sample.tsv").string(), "AAIC");
   ASSERT_TRUE(res.has_value()) << res.error().to_string();
   const std::vector<std::int64_t> &events = res.value();
 
@@ -90,7 +75,7 @@ TEST(EarningsForecastLoader, TwoDateTicker_DropsSentinelSlots) {
 // epoch-0/epoch-1 event, and that "no forecasts yet" is Ok(empty), not Err.
 
 TEST(EarningsForecastLoader, ZeroDateTicker_ReturnsEmptyOk) {
-  const auto res = load_earnings_events(fixture("earnings_forecast_sample.tsv").string(), "AACG");
+  const auto res = load_earnings_events(test_fixture("earnings_forecast_sample.tsv").string(), "AACG");
   ASSERT_TRUE(res.has_value()) << res.error().to_string();
   EXPECT_TRUE(res.value().empty());
 }
@@ -98,7 +83,7 @@ TEST(EarningsForecastLoader, ZeroDateTicker_ReturnsEmptyOk) {
 // ── Boundary: ticker absent from the file -> Err(NotFound) ────────────────
 
 TEST(EarningsForecastLoader, MissingTicker_ReturnsNotFound) {
-  const auto res = load_earnings_events(fixture("earnings_forecast_sample.tsv").string(), "ZZZZ");
+  const auto res = load_earnings_events(test_fixture("earnings_forecast_sample.tsv").string(), "ZZZZ");
   ASSERT_FALSE(res.has_value());
   EXPECT_EQ(res.error().code(), atx::vol::ErrorCode::NotFound);
 }
@@ -106,7 +91,7 @@ TEST(EarningsForecastLoader, MissingTicker_ReturnsNotFound) {
 // ── Boundary: empty ticker argument -> Err(InvalidArgument) ───────────────
 
 TEST(EarningsForecastLoader, EmptyTicker_ReturnsInvalidArgument) {
-  const auto res = load_earnings_events(fixture("earnings_forecast_sample.tsv").string(), "");
+  const auto res = load_earnings_events(test_fixture("earnings_forecast_sample.tsv").string(), "");
   ASSERT_FALSE(res.has_value());
   EXPECT_EQ(res.error().code(), atx::vol::ErrorCode::InvalidArgument);
 }
@@ -123,7 +108,7 @@ TEST(EarningsForecastLoader, MissingFile_ReturnsIoError) {
 
 TEST(EarningsForecastLoader, MalformedHeader_ReturnsInvalidArgument) {
   const auto res =
-      load_earnings_events(fixture("earnings_forecast_sample_bad_header.tsv").string(), "AAIC");
+      load_earnings_events(test_fixture("earnings_forecast_sample_bad_header.tsv").string(), "AAIC");
   ASSERT_FALSE(res.has_value());
   EXPECT_EQ(res.error().code(), atx::vol::ErrorCode::InvalidArgument);
 }
@@ -133,7 +118,7 @@ TEST(EarningsForecastLoader, MalformedHeader_ReturnsInvalidArgument) {
 
 TEST(EarningsForecastLoader, UnparseableDateCellInMatchedRow_ReturnsInvalidArgument) {
   const auto res =
-      load_earnings_events(fixture("earnings_forecast_sample_bad_row.tsv").string(), "AAIC");
+      load_earnings_events(test_fixture("earnings_forecast_sample_bad_row.tsv").string(), "AAIC");
   ASSERT_FALSE(res.has_value());
   EXPECT_EQ(res.error().code(), atx::vol::ErrorCode::InvalidArgument);
 }

@@ -21,6 +21,8 @@
 #include <string>
 #include <vector>
 
+#include "test_paths.hpp"         // market_data — the one fixture-path resolver
+
 #include "atx/vol/american.hpp"   // american_price, AmericanMethod, al_fast_opts
 #include "atx/vol/calib.hpp"      // FitObs, build_observations, CalibOpts
 #include "atx/vol/data.hpp"       // data_install
@@ -32,20 +34,13 @@
 
 namespace atx::vol::testkit {
 
-// Probe the standard fixture locations for one symbol's cbbo-1m parquet. `symbol`
+// Resolve one symbol's cbbo-1m parquet under the repo-root data/ tree. `symbol`
 // is lowercase (matching the on-disk filename, e.g. "spy" / "xom"). Empty result
 // => not found (caller should GTEST_SKIP).
 [[nodiscard]] inline std::string find_opra_parquet(const std::string &symbol) {
-  const std::string base = symbol + "_opra_cbbo1m_2026-06-05T1955Z.parquet";
-  const char *dirs[] = {"data/", "../data/", "../../data/", "../../../data/", "C:/atx/data/"};
-  for (const char *d : dirs) {
-    std::string p = std::string(d) + base;
-    std::error_code ec;
-    if (std::filesystem::exists(p, ec)) {
-      return p;
-    }
-  }
-  return {};
+  const std::filesystem::path p = market_data(symbol + "_opra_cbbo1m_2026-06-05T1955Z.parquet");
+  std::error_code ec;
+  return std::filesystem::exists(p, ec) ? p.string() : std::string{};
 }
 
 // An installed OPRA board: everything the fitter needs, resolved once.
