@@ -646,7 +646,7 @@ same population and a single hand-written number would hide that:
 | Count | Command | What it counts |
 |---|---|---|
 | **2,892** cases / **429** suites | `build/bin/atx-vol-tests.exe --gtest_list_tests` | GoogleTest cases in the atx-vol test binary, including the 8 `DISABLED_` ones |
-| **2,905** registered tests | `ctest --test-dir build -N -L atx_vol` | the 2,892 above, discovered by `gtest_discover_tests`, **plus 13** lanes that are not GoogleTest cases: `SpxWilmottReproUnit`, `atx-vol-reference-spy-dispersion`, `atx-vol-download-occ-ess`, `atx-vol-build-spy-top50-universe`, `Mag7DispersionReport`, `SpyDispersionPnlReport`, `atx-vol-python`, `atx-vol-pricing-forcescalar`, `atx-vol-e2e-benchmark-name-coverage`, `atx-vol-e2e-benchmark-name-checker-unit`, `atx-vol-american-shootout-name-coverage`, `atx-vol-compare-baseline-unit`, `atx-vol-pg-observability-name-coverage` (`tests/CMakeLists.txt`) |
+| **2,905** registered tests | `ctest --test-dir build -N -L atx_vol` | the 2,892 above, discovered by `gtest_discover_tests`, **plus 13** lanes that are not GoogleTest cases: `SpxWilmottReproUnit`, `atx-vol-reference-spy-dispersion`, `atx-vol-download-occ-ess`, `atx-vol-build-spy-top50-universe`, `Mag7DispersionReport`, `SpyDispersionPnlReport`, `atx-vol-python`, `atx-vol-pricing-forcescalar`, `atx-vol-e2e-benchmark-name-coverage`, `atx-vol-e2e-benchmark-name-checker-unit`, `atx-vol-american-shootout-name-coverage`, `atx-vol-compare-baseline-unit`, `atx-vol-pg-observability-name-coverage`. Registered by `add_test()` across three files, not one: `atx-vol/CMakeLists.txt` (`SpxWilmottReproUnit`), `tests/CMakeLists.txt` (the next seven) and `bench/CMakeLists.txt` (the five `*-name-coverage` / `*-unit` guards) |
 
 The two reconcile exactly: 2,892 + 13 = 2,905. Both were re-measured after the
 strategy-DSL merge landed on main (the first growth past the 1.0.0 numbers,
@@ -768,6 +768,9 @@ the property that makes this table short.
 | `ATX_VOL_CACHE` | Default for the dispersion CLI's `--cache DIR`; an explicit `--cache` overrides it. Empty means disabled, which is the default behaviour | unset = disabled | tool — `tools/spy_dispersion_backtest.cpp` | **keep** |
 | `ATX_VOL_PREFETCH_DEPTH` | Overrides the projected replay's snapshot look-ahead depth (`projected_prefetch_depth()`). Malformed or out-of-range (cap `64`) falls back to the default rather than failing the run. Scheduling only — output is bit-identical at any depth | `2`, cap `64` | tool — `tools/spy_dispersion_backtest.cpp` | **keep** |
 | `ATX_VOL_SOLVE_LEDGER` | Same env-gated shape as `ATX_VOL_PROFILE`: any non-empty value dumps the always-on solve ledger (AL boundary solves / premium evals / IV Newton iterations) as `ledger.<name> <count>` lines to stderr; the stdout build report shape is untouched | unset = off | tool — `tools/surface_db_build_main.cpp` | **keep** |
+| `ATX_VOL_DISABLE_STRIP_BATCH` | A/B seam: forces `var_swap_fair_strike` onto its per-node scalar surface-read loop even when `SurfaceT` exposes a batched `iv_batch`, so one binary can be measured both ways. `Strip.BatchedMatchesScalar*` pins the two as bit-identical, so this moves speed, not results | `1` enables; unset or any other value = off. Read **once at process load** into a static — setting it after start does nothing | library — `src/derivatives.cpp` | **keep** |
+| `ATX_VOL_DISABLE_BUMP_CACHE` | Same shape, orthogonal knob: disables the greek bump table's read-vector cache (`BumpReadCache`/`CachedBumpView`). Speed only | as above | library — `src/derivatives.cpp` | **keep** |
+| `ATX_VOL_DISABLE_IV_EARLY_EXIT` | Forces `ConvexSliceFit::iv()`'s bisection to run its full fixed 64 iterations (pre-P-5 behaviour) rather than stopping at tolerance. **Unlike the two above, this one moves last-place bits** — which is its use: it is how the superseded Release/SSE2 golden fingerprint `17305682487856730537` is reproduced after the P-R re-pin (see `prepared_portfolio_test.cpp`). Reach for it to attribute a golden-hash delta to that seam instead of to a regression | as above | library — `src/dense_slice.cpp` | **keep** |
 
 **Nothing is deleted at v1, because nothing here is dead.** Every row has a live
 read site and a live effect; the two knobs with real *consumers* outside their
@@ -784,11 +787,15 @@ own source are load-bearing:
   it exists to solve. This is the case where an environment variable is the right
   mechanism rather than a shortcut.
 
-The remaining nine library knobs are diagnostics and measurement levers whose
-only documented users are sprint/bench recipes. They are proposed **keep** for
-v1 on the narrow grounds that each is off by default, each is read once, and none
-can change a result — but two follow-ups are worth naming rather than leaving
-implicit:
+The remaining library knobs are diagnostics, measurement levers and A/B seams
+whose only documented users are sprint/bench recipes. They are proposed **keep**
+for v1 on the narrow grounds that each is off by default and each is read once.
+The third of those grounds — *none can change a result* — held while the table
+listed only diagnostics and does **not** cover the A/B seams added above:
+`ATX_VOL_DISABLE_IV_EARLY_EXIT` changes last-place bits by design, which is the
+whole point of it. `ATX_VOL_DISABLE_STRIP_BATCH` and `ATX_VOL_DISABLE_BUMP_CACHE`
+do satisfy it, and are pinned bit-identical by their own tests rather than merely
+asserted to be. Two follow-ups are worth naming rather than leaving implicit:
 
 - `ATX_VOL_CORPUS_DATE_BATCH` is the one knob that is genuinely *library
   behaviour configured from the environment* rather than a diagnostic. It should
@@ -812,8 +819,16 @@ current name, so it is recorded here rather than done silently.
 
 Out of scope for this table, deliberately: `DATABENTO_API_KEY`, read by the
 Databento definition-export example and the OPRA puller scripts (not an `ATX_*`
-name, and gated behind a network/cost opt-in), and the further `ATX_*` names read
-only by tests and benchmarks, neither of which ships. That set is deliberately
+name, and gated behind a network/cost opt-in), and the further `ATX_*` names whose
+read sites do not ship. **The criterion is target membership, not directory and
+not the name.** Resolve it by asking which CMake target the read site compiles
+into, then whether that target is installed: `atx-vol` and the CLIs in
+`cmake/atx-vol-install.cmake`'s `install(TARGETS ...)` lists ship; `atx-vol-tests`,
+every `atx-vol-*-bench` and the `examples/` executables do not. Applying the
+criterion by directory is how three shipping library knobs
+(`ATX_VOL_DISABLE_STRIP_BATCH`, `ATX_VOL_DISABLE_BUMP_CACHE`,
+`ATX_VOL_DISABLE_IV_EARLY_EXIT`) sat outside this table until 2026-08-14 —
+they read from `src/`, not from a test. That set is deliberately
 not enumerated here — a hand-kept count drifts as tests are added and nothing
 catches it. Enumerate it when you need it, from the read sites rather than from
 a naming pattern: `grep -rn 'getenv\|_dupenv_s\|GetEnvironmentVariable'` over
