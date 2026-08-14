@@ -398,3 +398,16 @@ target_link_libraries(varswap-compare-columns-tests PRIVATE
     atx::vol atx::core GTest::gtest_main atx_warnings)
 add_test(NAME VarswapCompareColumns COMMAND varswap-compare-columns-tests)
 set_tests_properties(VarswapCompareColumns PROPERTIES LABELS "atx_vol;atx_vol_fast")
+
+# THE F-8 VERIFICATION FILTER, written down because a count without its filter is
+# one string short of checkable. A reviewer could not re-derive a reported
+# "569 enumerated / 567 passed" and correctly declined to guess a filter and then
+# report agreement with its own guess. This is an ad-hoc lane selector, NOT a
+# scope with a label; the label scopes remain `ctest -L atx_vol` (3204) and
+# `-L atx_vol_fast` (2953), and those are what a reviewer can re-derive unaided.
+#
+#   ctest -R "ScenarioGrid|BacktestSwap|DerivPnl|DerivGreeks|DerivBook|SmileGreeks|SurfaceOverlay|StickyStrike|VolUmbrella|RunArchive|RunReport|Tearsheet|Backtest|SurfaceDb|VarswapCompareColumns|SpxWilmottRepro"
+#
+# The gap between "enumerated" and "executed" is gtest-`DISABLED_` entries, which
+# `ctest -N` lists but no run counts; runtime SKIPs (absent real-data fixtures)
+# execute and count as passed.

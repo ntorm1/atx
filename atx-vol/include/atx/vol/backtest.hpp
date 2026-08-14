@@ -153,10 +153,27 @@ enum class ArchiveBacking : std::uint8_t {
 class MarketSnapshot {
 public:
   // Open `archive_path`, deserialize its surfaces, prepare their runtime-only query
-  // tier, build the `SurfaceSet`, and take the valuation timestamp from the surfaces'
-  // `now_ts_ns` (validating they agree). The archive wire format is unchanged.
+  // tier, build the `SurfaceSet`, and stamp the snapshot with a valuation
+  // timestamp. The archive wire format is unchanged.
+  //
+  // THE TS RULE, AND IT IS NARROWER THAN "the archive's date": a load verifies
+  // exactly the set of surfaces it LOADED, and promises nothing about records it
+  // never read. Concretely, over the three ways in:
+  //   * WHOLE BOARD (`referenced_uids` empty) -- reads every record, so every
+  //     record is checked and `ts_ns()` is an archive-wide fact;
+  //   * A SUBSET THAT MATCHED -- checks the entries it loaded against each other.
+  //     It does not read the entries it skipped and makes no claim about them;
+  //   * A SUBSET THAT MATCHED NOTHING -- loads zero surfaces, so it verifies the
+  //     empty set. IT THEREFORE LOADS A MIXED ARCHIVE SUCCESSFULLY: there is no
+  //     disagreement to find among no surfaces. It reads one record only to date
+  //     the empty snapshot. If you need the archive-wide guarantee, do a
+  //     whole-board load; nothing else offers it.
+  //
   // Errors propagate from open/map/query preparation or `SurfaceSet::create`;
-  // InvalidArgument if the archive is empty or its surfaces disagree on the ts.
+  // InvalidArgument if the archive holds no surfaces at all, or if the surfaces
+  // THIS LOAD READ disagree on `now_ts_ns`. The implementation states the same
+  // rule at its `subset_missed` branch (src/backtest.cpp) -- if the two ever
+  // disagree again, this header is the contract and the one to trust.
   //
   // B1 subset-deserialize: `referenced_uids`, when non-empty, restricts the
   // deserialize to the archive directory entries whose uid is referenced (dropping
@@ -228,6 +245,17 @@ public:
     return views_.empty() ? SurfaceRef{&surfaces_[i]} : SurfaceRef{&views_[i]};
   }
 
+  // The snapshot's valuation timestamp: the `now_ts_ns` every surface THIS LOAD
+  // READ agreed on. That is an archive-wide statement only for a whole-board
+  // load -- see `load`'s ts rule for the two subset cases.
+  //
+  // ON A ZERO-SURFACE SNAPSHOT (a subset load naming no archived uid, which is a
+  // documented success and not an error) there is nothing for it to be a property
+  // OF. It is then the FIRST DIRECTORY ENTRY's `now_ts_ns`, carried so an empty
+  // snapshot still has a date to be scheduled on, and it is not a claim about the
+  // archive: the other records may hold any timestamps at all, including ones
+  // that disagree with this and with each other. Never compare this across
+  // snapshots to infer that an archive is internally consistent.
   [[nodiscard]] std::int64_t ts_ns() const noexcept { return ts_ns_; }
   [[nodiscard]] std::optional<std::uint32_t> uid_of(std::string_view symbol) const;
 

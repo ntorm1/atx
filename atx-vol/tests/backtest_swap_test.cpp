@@ -1368,6 +1368,15 @@ namespace {
 
 } // namespace
 
+// THIS PINS BEHAVIOUR THAT ALREADY HELD; it does not change any. The
+// verification loop these cases exercise is byte-identical at 8454a32, c1771a6,
+// c8bf271 and ec7d3ae -- a subset naming both uids fell into the same `else` as
+// a whole-board load at every one of them, and refused at every one. F-8 r8
+// reported this as "previously loaded, now refuses" and a CHANGELOG migration
+// entry was written from that report before anyone read the pre-image. Recorded
+// here so the next reader does not re-derive the same false entry from this
+// test's existence: the gain is that an UNPINNED behaviour is now pinned, which
+// is worth a test and is not worth a migration note.
 TEST(BacktestSwapExplain, EveryLoadThatReadsAMixedArchiveRefusesIt) {
   const fs::path dir = fresh_dir("r8-ts-disagree");
   // The two surfaces are stamped a full day apart -- a corrupt or mixed archive.

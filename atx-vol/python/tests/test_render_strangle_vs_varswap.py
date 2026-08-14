@@ -318,24 +318,41 @@ def example_derives_the_explain(source: str, where: str) -> bool:
       2. the brace-matched body after it mentions `attach_one`;
       3. that body contains none of the tokens `continue`, `break`, `return`.
 
-    WHAT THAT MISSES, measured by mutating the example and re-running this
-    module against the round-7 version of these checks:
+    WHAT THAT MISSES. Every line below was MEASURED by running this predicate
+    over a mutated copy of the example, because the round-8 version of this list
+    was itself wrong -- and a miss list that over- or under-states is the same
+    artifact as a check that over-claims:
 
       * `if (column.name != "swap_explain_skew") { attach_one(...); }` -- skips a
-        column with no early-exit TOKEN to find. Module stayed green.
+        column with no early-exit TOKEN to find. MISSED.
       * `swap_explain_columns().subspan(0, 4)` -- check 1 still matches, the body
-        is unconditional, and half the roster never reaches the TSV. Green.
-      * `attach_one(roster[i].name, r.*(roster[i + 1].member))` -- right names
-        over shifted data. Nothing here reads data at all. Green.
+        is unconditional, half the roster never reaches the TSV. MISSED.
+      * `attach_one(r, "swap_explain_carry", r.*(column.member))` -- a hardcoded
+        name, so eight members ship under one column name. MISSED.
+      * a literal `attach_one(r, "swap_explain_bonus", ...)` BESIDE the loop --
+        the loop itself still parses clean. MISSED here (`example_attached_columns`
+        is the parser that looks at literal attaches; this one does not).
+      * the whole body commented out with `(void)column;` left behind -- check 2
+        looks for the TEXT `attach_one`, which a COMMENT satisfies. MISSED.
+      * a misrouted member (right name, wrong data). MISSED when spelled as a
+        range-for. NOT missed when spelled as an index loop -- `for (std::size_t
+        i = ...)` puts `swap_explain_columns()` on a different line, so check 1
+        finds no loop and RAISES. Round 8 listed that spelling as a miss; it is
+        caught, for a reason that has nothing to do with the defect. The property
+        is genuinely missed; that spelling of it is not.
 
     So this is a source-SHAPE check, not a column-SET check, and rounds 3-7 spent
     themselves sharpening an approximation. THE COLUMN SET IS NOW OWNED BY A TEST
     THAT READS THE ARTIFACT: tests/varswap_compare_columns_test.cpp compiles the
     example's own TU (with `main` suppressed), calls the shipped
     `attach_swap_columns`, writes a real TSV, and diffs that file's header
-    against `swap_explain_columns()`. All three mutations above fail it; the
-    third fails only its value assertion, which is how that assertion earns its
-    place.
+    against `swap_explain_columns()`. Measured there, mutation by mutation:
+    hardcoded name 3/3 red; commented-out body 2/3; conditional skip 2/3;
+    subspan 2/3; misroute 1/3 -- the value assertion alone, which is how that
+    assertion earns its place; extra literal column 1/3 -- the header-equality
+    assertion alone, which is how THAT one earns its place. Spelling does not
+    reach it: it reads the emitted TSV, so the index and range-for forms of the
+    misroute are the same defect to it.
 
     This function stays because it guards something the artifact test cannot see:
     that the tail is DERIVED rather than hand-listed. A literal eight-row table

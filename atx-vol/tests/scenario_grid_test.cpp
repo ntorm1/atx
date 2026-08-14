@@ -1395,24 +1395,76 @@ TEST(ScenarioGridDeriv, FailedDerivPositionIsExcludedEverywhere) {
 
 // ── The NaN gates (Task F-8 review round 1, Critical) ───────────────────────
 //
-// `DerivGreeks` carries "not computed" as NaN in SIX of the ten slots the
-// Taylor kernel reads, on documented conditions the DEFAULT configuration hits.
-// `NaN * 0.0` is NaN, so an unguarded product poisons all ten terms. Round 1 of
-// this leg shipped exactly that: a VolSwap under the documented default
-// `ScenarioDerivSpec{}` returned nine NaN cells while reporting
-// `n_deriv_ok = 1, n_deriv_failed = 0` -- success, and nothing but NaN.
+// `scenario_deriv_taylor_leg` gates EVERY term on its own shock: a term whose
+// shock is exactly zero contributes exactly zero WITHOUT READING its
+// sensitivity. That is ONE rule over all ten terms, and the first test below is
+// written against the rule -- driven from a table with one row per term --
+// rather than against the list of slots some configuration happens to leave NaN.
 //
-// The three tests below are the gate. The first is the kernel's own rule,
-// checked slot by slot with a deliberately-poisoned `DerivGreeks`; the second
-// sweeps EVERY kind through the real grid under the real default; the third
-// covers the case a zero shock cannot rescue -- a shock on an axis whose
-// sensitivity genuinely was not computed.
+// WHY THE RULE EXISTS. `NaN * 0.0` is NaN, and `DerivGreeks` carries "not
+// computed" as NaN on documented conditions the DEFAULT configuration hits, so
+// an unguarded product poisons the whole cell -- all ten terms -- on a grid that
+// never asked for that axis. Round 1 of this leg shipped exactly that: a VolSwap
+// under the documented default `ScenarioDerivSpec{}` returned nine NaN cells
+// while reporting `n_deriv_ok = 1, n_deriv_failed = 0` -- success, and nothing
+// but NaN.
+//
+// COUNTING THE NaN-CAPABLE SLOTS IS WHAT THIS COMMENT USED TO DO, AND IT WAS
+// WRONG THREE WAYS IN ONE BLOCK (F-8 r9): it said "six of the ten slots", the
+// all-at-once case said "all six" while poisoning five, and the surviving-terms
+// line said "two" for a three-term sum. The six is a count of the CONDITION rows
+// in scenario_grid.hpp, where `charm` appears under two of them -- a contract
+// shorter than `bumps.time_years`, and `second_order` off -- over FIVE distinct
+// slots: theta, charm, vanna, skew_vega, convexity_vega. Six shocks, ten terms,
+// five documented-NaN slots, thirteen `double` members that CAN be NaN: four
+// different numbers, and none of them is the gate's subject. The table below
+// removes the need to state any of them, which is why the fix is not a corrected
+// count.
+//
+// NOTE FOR THE NEXT READER: scenario_grid.hpp carries the same miscount at its
+// own kernel comment ("SIX of these ten slots", "two of six slots"). That file
+// was outside this change's fence; it is reported, not edited here.
+//
+// The three tests are the gate. The first drives the kernel's rule term by term
+// from the table; the second sweeps EVERY kind through the real grid under the
+// real default; the third covers the case a zero shock cannot rescue -- a shock
+// on an axis whose sensitivity genuinely was not computed.
 
-// Each of the six NaN-capable slots, one at a time, with its own shock zero.
-// Every other term must survive: a guard that returned 0.0 for the whole cell
-// would pass a naive "is it finite" check while destroying the answer, so the
-// non-poisoned terms are asserted against their exact hand-written products.
-TEST(ScenarioGridDeriv, EveryNaNCapableTermIsGatedByItsOwnShock) {
+// One row per term in `scenario_deriv_taylor_leg`, naming the sensitivity the
+// term reads and the shocks that appear in it. Zeroing every shock a row names
+// necessarily drops that term (the kernel gates `vanna` and `charm` on EITHER of
+// their two shocks being zero, so zeroing both is sufficient, not just
+// necessary).
+struct GatedTerm {
+  const char *name;
+  double DerivGreeks::*member;
+  bool reads_dS, reads_dvol, reads_dt, reads_dr, reads_dskew, reads_dconv;
+};
+
+constexpr GatedTerm kGatedTerms[] = {
+    {"delta", &DerivGreeks::delta, true, false, false, false, false, false},
+    {"gamma", &DerivGreeks::gamma, true, false, false, false, false, false},
+    {"vega", &DerivGreeks::vega, false, true, false, false, false, false},
+    {"volga", &DerivGreeks::volga, false, true, false, false, false, false},
+    {"vanna", &DerivGreeks::vanna, true, true, false, false, false, false},
+    {"theta", &DerivGreeks::theta, false, false, true, false, false, false},
+    {"rho", &DerivGreeks::rho, false, false, false, true, false, false},
+    {"charm", &DerivGreeks::charm, true, false, true, false, false, false},
+    {"skew_vega", &DerivGreeks::skew_vega, false, false, false, false, true, false},
+    {"convexity_vega", &DerivGreeks::convexity_vega, false, false, false, false, false, true},
+};
+static_assert(std::size(kGatedTerms) == 10u,
+              "scenario_deriv_taylor_leg gained or lost a term: add its row here, then check "
+              "ScenarioDerivSpec's arity pin and scenario_deriv_greeks_sufficient");
+
+// EVERY term, one at a time, poisoned with its own shocks zeroed. Not "every
+// NaN-capable slot": the kernel's rule does not know which slots a configuration
+// leaves NaN, so neither does this test. Every other term must survive -- a
+// guard that returned 0.0 for the whole cell would pass a naive "is it finite"
+// check while destroying the answer, so each case is asserted bit-identical to
+// the same shocks evaluated with clean greeks, and the untouched terms are
+// asserted against their exact hand-written products at the end.
+TEST(ScenarioGridDeriv, EveryTermIsGatedByItsOwnShock) {
   const double nan = std::numeric_limits<double>::quiet_NaN();
 
   DerivGreeks g{};
@@ -1432,44 +1484,53 @@ TEST(ScenarioGridDeriv, EveryNaNCapableTermIsGatedByItsOwnShock) {
   const double full = scenario_deriv_taylor_leg(g, dS, dvol, dt, dr, dsk, dcv);
   ASSERT_TRUE(std::isfinite(full));
 
-  // theta NaN (a contract shorter than the roll) + dt == 0.
-  {
+  // TERM BY TERM, off the table. Poisoning a sensitivity whose shocks are all
+  // zero must change NOTHING -- not "must stay finite", which a guard that
+  // collapsed the cell to 0.0 would also satisfy.
+  for (const GatedTerm &t : kGatedTerms) {
     DerivGreeks p = g;
-    p.theta = nan;
-    p.charm = nan;
-    const double v = scenario_deriv_taylor_leg(p, dS, dvol, 0.0, dr, dsk, dcv);
-    EXPECT_TRUE(std::isfinite(v)) << "theta/charm NaN with dt == 0 must not poison the cell";
-    EXPECT_DOUBLE_EQ(v, scenario_deriv_taylor_leg(g, dS, dvol, 0.0, dr, dsk, dcv));
+    p.*t.member = nan;
+    const double s_dS = t.reads_dS ? 0.0 : dS;
+    const double s_dvol = t.reads_dvol ? 0.0 : dvol;
+    const double s_dt = t.reads_dt ? 0.0 : dt;
+    const double s_dr = t.reads_dr ? 0.0 : dr;
+    const double s_dsk = t.reads_dskew ? 0.0 : dsk;
+    const double s_dcv = t.reads_dconv ? 0.0 : dcv;
+    const double poisoned = scenario_deriv_taylor_leg(p, s_dS, s_dvol, s_dt, s_dr, s_dsk, s_dcv);
+    const double clean = scenario_deriv_taylor_leg(g, s_dS, s_dvol, s_dt, s_dr, s_dsk, s_dcv);
+    EXPECT_TRUE(std::isfinite(poisoned)) << t.name << " NaN with its own shocks zero poisoned "
+                                            "the cell";
+    EXPECT_TRUE(bits_equal(poisoned, clean))
+        << t.name << ": gating changed the value rather than skipping the term";
+    // NON-VACUITY. A row whose shock flags are wrong would zero shocks this term
+    // does not read, leave the term live, and still pass both checks above
+    // whenever the sensitivity stayed finite. Zeroing a term's shocks must move
+    // the answer, or the row proves nothing.
+    EXPECT_NE(clean, full) << t.name << ": zeroing this row's shocks changed nothing, so the "
+                              "row's shock flags do not describe the kernel's term";
   }
-  // vanna/charm NaN (second_order off) + dvol == 0 kills vanna, dt == 0 kills charm.
+
+  // EVERY TERM THE DEFAULT GRID DROPS, poisoned at once -- the real
+  // configuration behind the Critical (no vol, time, or smile shock; spot and
+  // rate live). The poison set is taken from the table rather than listed, so it
+  // cannot disagree with the kernel about which terms these shocks drop.
   {
+    const double s_dvol = 0.0, s_dt = 0.0, s_dsk = 0.0, s_dcv = 0.0;
     DerivGreeks p = g;
-    p.vanna = nan;
-    p.charm = nan;
-    const double v = scenario_deriv_taylor_leg(p, dS, 0.0, 0.0, dr, dsk, dcv);
-    EXPECT_TRUE(std::isfinite(v)) << "vanna/charm NaN with their shocks 0 must not poison";
-    EXPECT_DOUBLE_EQ(v, scenario_deriv_taylor_leg(g, dS, 0.0, 0.0, dr, dsk, dcv));
-  }
-  // The two smile vegas (smile_greeks off -- the DEFAULT) + zero smile shocks.
-  {
-    DerivGreeks p = g;
-    p.skew_vega = nan;
-    p.convexity_vega = nan;
-    const double v = scenario_deriv_taylor_leg(p, dS, dvol, dt, dr, 0.0, 0.0);
-    EXPECT_TRUE(std::isfinite(v)) << "smile vegas NaN with no smile shock must not poison";
-    EXPECT_DOUBLE_EQ(v, scenario_deriv_taylor_leg(g, dS, dvol, dt, dr, 0.0, 0.0));
-  }
-  // ALL SIX at once, every corresponding shock zero -- the real default grid.
-  {
-    DerivGreeks p = g;
-    p.theta = nan;
-    p.charm = nan;
-    p.vanna = nan;
-    p.skew_vega = nan;
-    p.convexity_vega = nan;
-    const double v = scenario_deriv_taylor_leg(p, dS, 0.0, 0.0, dr, 0.0, 0.0);
+    std::size_t poisoned_terms = 0;
+    for (const GatedTerm &t : kGatedTerms) {
+      const bool dropped = (t.reads_dvol && s_dvol == 0.0) || (t.reads_dt && s_dt == 0.0) ||
+                           (t.reads_dskew && s_dsk == 0.0) || (t.reads_dconv && s_dcv == 0.0);
+      if (dropped) {
+        p.*t.member = nan;
+        ++poisoned_terms;
+      }
+    }
+    EXPECT_GT(poisoned_terms, 0u) << "the default-grid shock vector dropped no term at all";
+    const double v = scenario_deriv_taylor_leg(p, dS, s_dvol, s_dt, dr, s_dsk, s_dcv);
     EXPECT_TRUE(std::isfinite(v));
-    // Only the two surviving terms, hand-written.
+    // The terms that survive -- delta, gamma and rho -- named rather than
+    // counted, and hand-written so the expectation is independent of the kernel.
     EXPECT_DOUBLE_EQ(v, g.delta * dS + 0.5 * g.gamma * dS * dS + g.rho * dr);
   }
   // And the honest converse: a NON-ZERO shock against a NaN sensitivity still
