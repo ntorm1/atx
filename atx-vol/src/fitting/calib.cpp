@@ -13,6 +13,7 @@
 #include <utility>
 #include <vector>
 
+#include "fitting/calib_detail.hpp"    // SharedLaneBracket, shared_lane_residual_within_budget
 #include "pricing/al_probe.hpp"        // env-gated shared-boundary engagement events (Perf 2b step 1)
 #include "atx/core/error.hpp"
 #include "atx/vol/api/pricing/american_iv.hpp" // american_implied_vol (de-Americanization)

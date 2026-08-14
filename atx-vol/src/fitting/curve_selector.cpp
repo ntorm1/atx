@@ -20,6 +20,7 @@
 #include "atx/vol/api/fitting/deamer.hpp"      // resolve_chain_forward
 #include "atx/vol/api/fitting/fit_metrics.hpp" // slice_fit_metrics, SliceFitMetrics
 #include "atx/vol/api/fitting/fit_policy.hpp"  // FitAdmissionPolicy
+#include "fitting/curve_selector_detail.hpp"   // slice_butterfly_violations
 #include "fitting/prepared_fitting.hpp"
 #include "atx/vol/api/marketdata/universe.hpp"
 

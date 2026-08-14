@@ -10,6 +10,7 @@
 #include "atx/core/math.hpp"
 #include "atx/vol/api/pricing/american.hpp"
 #include "atx/vol/api/pricing/black76.hpp"
+#include "fitting/correction_detail.hpp" // Chebyshev primitives (kChebMaxNodes, cheb_*)
 #include "fitting/counters.hpp" // ATX_VOL_COUNT (opt-in P0.2; no-op when OFF)
 
 namespace atx::vol {

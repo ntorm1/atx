@@ -14,6 +14,7 @@
 #include "atx/vol/api/pricing/dividend.hpp"       // hybrid_forward, HybridDivParams, DividendEvent
 #include "atx/vol/api/fitting/fit_policy.hpp"
 #include "atx/vol/api/backtest/panel.hpp"
+#include "fitting/curve_selector_detail.hpp" // slice_butterfly_violations
 #include "fitting/spy_fixture.hpp"
 #include "atx/vol/api/fitting/vol_curve.hpp" // VolCurveKind, CurveConfig
 

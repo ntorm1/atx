@@ -13,6 +13,7 @@
 #include "atx/vol/api/pricing/american.hpp"
 #include "atx/vol/api/pricing/black76.hpp"
 #include "atx/vol/api/fitting/correction.hpp"
+#include "fitting/correction_detail.hpp" // Chebyshev primitives (kChebMaxNodes, cheb_*)
 #include "fitting/counters.hpp"
 #include "atx/vol/api/pricing/greeks.hpp"
 #include "support/isa_golden_tol.hpp"
