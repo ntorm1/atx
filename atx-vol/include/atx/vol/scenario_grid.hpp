@@ -351,13 +351,24 @@ static_assert(detail::aggregate_arity_is_v<ScenarioDerivSpec, 2>,
 //
 // The gate is `ScenarioGridDeriv.EveryTermIsGatedByItsOwnShock`
 // (tests/scenario_grid_test.cpp), which drives one case per TERM off a table
-// instead of per NaN-capable slot. Measured at F-8 r9 review, one gate mutated
-// per run: the slot-organised predecessor caught 6 of 11, the term-organised
-// test 11 of 11. The five it missed were exactly delta, gamma, vega, volga and
-// rho -- the terms no configuration leaves NaN, hence the ones a slot-organised
-// test could never have reached. When a count here keeps coming back wrong, that
-// is the tell: the description AND the artifact are organised around a noun the
-// rule does not contain.
+// instead of per NaN-capable slot. The control `64d60e9` recorded is the one
+// that is in the tree: the shipped kernel scores ZERO failures against that
+// table, while a copy with the vega gate removed fails on vega -- a slot the
+// previous, slot-organised test never poisoned and therefore could not have
+// caught. The terms that test could not reach are delta, gamma, vega, volga and
+// rho: no configuration leaves them NaN, so a test built out of documented-NaN
+// slots never perturbs them. The number of terms is not restated here --
+// `std::size(kGatedTerms)` is `static_assert`ed at the gate, which is the
+// mechanism that pins it.
+//
+// A mutant-score ratio ("6 of 11" against "11 of 11") stood here and in
+// `55006c4`'s message. IT IS NOT REPRODUCED: that message does not decompose it,
+// 11 reconciles with nothing in the tree -- the `static_assert`ed term count is
+// what a per-term mutation run has to answer to -- and what an eleventh mutant
+// would be has not been established. Retired rather than reinterpreted, because
+// guessing the noun is exactly how the slot count survived four rounds. When a
+// count here keeps coming back wrong, that is the tell: the description AND the
+// artifact are organised around a noun the rule does not contain.
 //
 // This is bit-identical to an unguarded product whenever the sensitivity is
 // finite: the only value it changes is a `-0.0` term (a negative sensitivity

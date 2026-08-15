@@ -2317,17 +2317,32 @@ Result<MarketSnapshot> MarketSnapshot::load(std::string_view archive_path,
   // returns data.
   //
   // FIX ROUND 7 TRIED VERIFYING ALL OF `dir` HERE AND ROUND 8 REVERTED IT, with
-  // the measurement, because it contradicted the B1 argument fifty lines above --
-  // "loading the full board on a miss turns the cheapest missing-name case into
-  // worst-case I/O". Measured on a 512-surface archive: the walk took the miss
-  // path from 71% to 91% of a whole-board load (2282 -> 3908 us against 4282 us
-  // whole-board, same process), i.e. +71% on the path whose whole purpose is to
-  // be cheap when a book names nothing in this partition. Warm page-fault counts
-  // were equal (681) because the pages were resident; cold they cannot be, since
-  // the walk touches one scattered record header per entry against this branch's
-  // one -- so cold widens that gap rather than closing it. Verifying a set this
-  // branch did not load also made the no-data path enforce MORE than the
-  // one-surface path did, which is backwards.
+  // the measurement, because it contradicted the B1 subset-deserialize rule
+  // stated at the head of the `subset_requested` branch above -- "loading the
+  // full board on a miss turns the cheapest missing-name case into worst-case
+  // I/O".
+  //
+  // Measured at `ec7d3ae` on a 512-surface archive, same process, as TWO ratios
+  // each taken against ITS OWN whole-board baseline: the walk put the miss path
+  // at 91% of a whole-board load (3908 us against a 4282 us whole board), the
+  // sample this branch ships at 71% of one (2282 us against a 3235 us whole
+  // board). The baselines differ between the two runs, so each percentage is a
+  // percentage of its own whole board only -- the two are not subtractable, and
+  // a single denominator for both is exactly the collapse this comment used to
+  // carry. What the pair says is that the walk nearly erases the saving on the
+  // path whose whole purpose is to be cheap when a book names nothing in this
+  // partition.
+  //
+  // That cost is a STANDING PROPERTY, not a transition: both sides still exist,
+  // so a later commit can move it. IT HAS NOT BEEN RE-VERIFIED SINCE `ec7d3ae`
+  // and no benchmark regenerates it -- re-measure rather than cite this line.
+  //
+  // Warm page-fault counts were equal (681) because the pages were resident, so
+  // that instrument did NOT isolate the cold delta; cold they cannot be equal,
+  // since the walk touches one scattered record header per entry against this
+  // branch's one -- so the cold direction is argued structurally, not measured.
+  // Verifying a set this branch did not load also made the no-data path enforce
+  // MORE than the one-surface path did, which is backwards.
   const auto pricing_at = [&](std::size_t i) -> const PricingContext & {
     return borrow ? views[i].pricing() : surfaces[i].pricing();
   };

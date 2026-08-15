@@ -76,7 +76,7 @@ $env:CMAKE_BUILD_PARALLEL_LEVEL = "2"
 $env:SKBUILD_CMAKE_DEFINE = "VCPKG_INSTALLED_DIR=<abs>/vcpkg_installed;FETCHCONTENT_BASE_DIR=<repo>/deps/py"
 
 python -m pip wheel . --no-deps -w dist -v
-python -m pip install dist\atxvol-1.0.0-cp312-cp312-win_amd64.whl
+python -m pip install dist\atxvol-1.1.0-cp312-cp312-win_amd64.whl
 ```
 
 Two steps rather than `pip install .` on purpose: `pip install .` **replaces

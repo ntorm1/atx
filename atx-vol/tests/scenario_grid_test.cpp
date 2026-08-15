@@ -1421,9 +1421,11 @@ TEST(ScenarioGridDeriv, FailedDerivPositionIsExcludedEverywhere) {
 // removes the need to state any of them, which is why the fix is not a corrected
 // count.
 //
-// NOTE FOR THE NEXT READER: scenario_grid.hpp carries the same miscount at its
-// own kernel comment ("SIX of these ten slots", "two of six slots"). That file
-// was outside this change's fence; it is reported, not edited here.
+// The same miscount lived at scenario_grid.hpp's own kernel comment ("SIX of
+// these ten slots", "two of six slots"), which was outside this change's fence;
+// 55006c4 (F-8 r10) retired it there. Both copies were wrong for the same
+// reason -- a count is not the rule's subject -- which is why neither fix was a
+// corrected count.
 //
 // The three tests are the gate. The first drives the kernel's rule term by term
 // from the table; the second sweeps EVERY kind through the real grid under the

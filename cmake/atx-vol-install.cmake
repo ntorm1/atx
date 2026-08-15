@@ -179,13 +179,13 @@ configure_package_config_file(
     "${CMAKE_CURRENT_BINARY_DIR}/atx-volConfig.cmake"
     INSTALL_DESTINATION "${ATX_VOL_INSTALL_CMAKEDIR}")
 
-# At 1.0.0 the tiering IS the compatibility statement (plan 5.3, and see the API
-# stability section of atx-vol/README.md): Tier-A -- the `atx/vol/vol.hpp` set --
-# is frozen for the 1.x line, so a 1.y consumer builds against any 1.z >= y. That
-# is exactly SameMajorVersion. It was SameMinorVersion while the version was 0.y.z,
-# where semver gives a minor bump the meaning a major bump has now; keeping that
-# would refuse a 1.1 package to a `find_package(atx-vol 1.0)` consumer for whom
-# nothing frozen had changed.
+# On the 1.x line the tiering IS the compatibility statement (plan 5.3, and see
+# the API stability section of atx-vol/README.md): Tier-A -- the
+# `atx/vol/vol.hpp` set -- is frozen for the 1.x line, so a 1.y consumer builds
+# against any 1.z >= y. That is exactly SameMajorVersion. It was
+# SameMinorVersion while the version was 0.y.z, where semver gives a minor bump
+# the meaning a major bump has now; keeping that would refuse a 1.1 package to a
+# `find_package(atx-vol 1.0)` consumer for whom nothing frozen had changed.
 #
 # The version itself comes from PROJECT_VERSION -- `project(atx VERSION ...)` --
 # the same single source of truth atx/vol/version.hpp is generated from, so the
