@@ -43,6 +43,7 @@
 #include "atx/vol/api/backtest/priced_surface.hpp"   // PricedSurface, PricingContext
 #include "pricing/deriv_ref_bridge.hpp" // detail::deriv_greeks_on_ref (swap-lane oracle)
 #include "atx/vol/api/backtest/strategy.hpp"  // the DSL + DeclarativeStrategy/DispersionStrategy
+#include "atx/vol/api/backtest/vol_edge.hpp"  // vrp_signal_v1 + VolEdgeStrategy (lane vrp-book)
 #include "atx/vol/api/pricing/swap_leg.hpp"  // swap_contract_for_lot
 #include "atx/vol/api/storage/surface_archive.hpp"  // write_surface_archive_v2_file, SurfaceArchiveItem
 #include "atx/vol/api/fitting/surface_parity.hpp"   // SliceContext
@@ -3075,4 +3076,515 @@ TEST(StrategyRestrikeSwap, SignalsMatchIndependentSwapGreeksOracle) {
               1e-9 * std::max(1.0, std::fabs(lot.qty * g->vega)));
   EXPECT_NEAR((*delta_col)[2], lot.qty * g->delta,
               1e-9 * std::max(1.0, std::fabs(lot.qty * g->delta)));
+}
+
+// ═══ VolEdge — ranked long/short vega-normalized straddle book (lane vrp-book) ═══
+//
+// Fixtures: the same synthetic eSSVI surfaces as the DSL tests above, written
+// as multi-symbol archives, plus hand-written vrp_signal_v1 TSV text. The
+// pure ranking/sizing rule is tested against planted orderings with exact
+// arithmetic; the strategy/engine tests prove the book, the costs, and the
+// determinism the lane brief demands.
+
+namespace {
+
+[[nodiscard]] std::string vrp_signal_text(const std::vector<VrpSignalRow> &rows) {
+  std::string text;
+  text += kVrpSignalSchemaLineV1;
+  text += '\n';
+  text += kVrpSignalHeaderV1;
+  text += '\n';
+  char buf[256];
+  for (const VrpSignalRow &row : rows) {
+    std::snprintf(buf, sizeof buf, "%s\t%s\t%.17g\t%.17g\t%.17g\n", row.symbol.c_str(),
+                  row.date.c_str(), row.pred_label, row.pred_edge_norm, row.vov_63d);
+    text += buf;
+  }
+  return text;
+}
+
+[[nodiscard]] VrpSignalRow signal_row(std::string symbol, std::string date, double edge,
+                                      double vov) {
+  VrpSignalRow row;
+  row.symbol = std::move(symbol);
+  row.date = std::move(date);
+  row.pred_label = edge > 0.0 ? 1.0 : -1.0;
+  row.pred_edge_norm = edge;
+  row.vov_63d = vov;
+  return row;
+}
+
+// A multi-symbol daily corpus: symbol i carries uid 101+i and a small
+// per-symbol vol bump so the boards genuinely differ. Dates are the UTC
+// session dates of the snapshots, i.e. exactly the vrp_signal_v1 join key.
+struct VolEdgeCorpus {
+  CorpusManifest manifest;
+  std::vector<std::string> dates;
+  std::vector<std::string> archives;
+};
+
+[[nodiscard]] VolEdgeCorpus make_vol_edge_corpus(int n_dates,
+                                                 const std::vector<std::string> &symbols,
+                                                 const char *tag) {
+  const fs::path dir = fresh_dir(tag);
+  VolEdgeCorpus corpus;
+  std::vector<std::pair<std::string, std::string>> dp;
+  for (int d = 0; d < n_dates; ++d) {
+    const std::int64_t now = kBaseNow + static_cast<std::int64_t>(d) * kDayNs;
+    std::vector<PricedSurface> surfaces;
+    surfaces.reserve(symbols.size());
+    std::vector<std::pair<std::string, const PricedSurface *>> items;
+    for (std::size_t i = 0; i < symbols.size(); ++i) {
+      surfaces.push_back(make_surface(101u + static_cast<std::uint32_t>(i), 100.0, 100.0, now,
+                                      0.01 * static_cast<double>(i)));
+    }
+    for (std::size_t i = 0; i < symbols.size(); ++i) {
+      items.emplace_back(symbols[i], &surfaces[i]);
+    }
+    const std::string date = vol_edge_session_date(now);
+    corpus.dates.push_back(date);
+    corpus.archives.push_back(write_archive(dir, date, items));
+    dp.emplace_back(date, corpus.archives.back());
+  }
+  corpus.manifest = make_manifest(dp);
+  return corpus;
+}
+
+// Resolve the exact straddle the strategy opens for (uid, signed target) so a
+// test can hand-compute the engine's per-leg cost / delta from the same legs.
+[[nodiscard]] std::vector<SizedLeg> vol_edge_reference_legs(const MarketSnapshot &snap,
+                                                            std::uint32_t uid, double target,
+                                                            const VolEdgeConfig &cfg) {
+  StrategySpec spec;
+  LegSpec leg;
+  leg.uid = uid;
+  leg.tenor.target_T = cfg.horizon_days / 252.0;
+  leg.structure.kind = StructureSpec::Kind::Straddle;
+  leg.strike = {StrikeSelector::Kind::AtmForward, 0.0};
+  leg.size = {SizeSpec::Kind::TargetVega, std::fabs(target), target < 0.0 ? -1.0 : +1.0};
+  spec.legs.push_back(leg);
+  auto sized = resolve_spec(snap, spec);
+  EXPECT_TRUE(sized.has_value()) << (sized.has_value() ? std::string{}
+                                                       : sized.error().to_string());
+  return sized.has_value() ? std::move(*sized) : std::vector<SizedLeg>{};
+}
+
+} // namespace
+
+TEST(VolEdge, SessionDateHelperPinsKnownTimestamps) {
+  EXPECT_EQ(vol_edge_session_date(0), "1970-01-01");
+  EXPECT_EQ(vol_edge_session_date(-1), "1969-12-31");
+  // 1700000000 s = 2023-11-14T22:13:20Z — the corpus fixtures' base instant.
+  EXPECT_EQ(vol_edge_session_date(kBaseNow), "2023-11-14");
+  EXPECT_EQ(vol_edge_session_date(kBaseNow + kDayNs), "2023-11-15");
+}
+
+TEST(VolEdge, SignalLoaderParsesFrozenSchemaV1) {
+  const std::vector<VrpSignalRow> rows = {
+      signal_row("AAA", "2023-11-14", +1.25, 0.80),
+      signal_row("BBB", "2023-11-14", -0.75, 1.60),
+  };
+  const std::string text = vrp_signal_text(rows);
+  const auto parsed = parse_vrp_signal_v1(text);
+  ASSERT_TRUE(parsed.has_value()) << parsed.error().to_string();
+  ASSERT_EQ(parsed->size(), 2u);
+  EXPECT_EQ((*parsed)[0].symbol, "AAA");
+  EXPECT_EQ((*parsed)[0].date, "2023-11-14");
+  EXPECT_DOUBLE_EQ((*parsed)[0].pred_edge_norm, 1.25);
+  EXPECT_DOUBLE_EQ((*parsed)[0].vov_63d, 0.80);
+  EXPECT_DOUBLE_EQ((*parsed)[1].pred_edge_norm, -0.75);
+
+  // CRLF is a line-ending convention, not a schema change.
+  std::string crlf = text;
+  std::size_t pos = 0;
+  while ((pos = crlf.find('\n', pos)) != std::string::npos) {
+    crlf.replace(pos, 1, "\r\n");
+    pos += 2;
+  }
+  const auto parsed_crlf = parse_vrp_signal_v1(crlf);
+  ASSERT_TRUE(parsed_crlf.has_value()) << parsed_crlf.error().to_string();
+  EXPECT_EQ(parsed_crlf->size(), 2u);
+}
+
+TEST(VolEdge, SignalLoaderFailsClosedOnSchemaMismatch) {
+  const std::string header = std::string(kVrpSignalHeaderV1);
+  const std::string schema = std::string(kVrpSignalSchemaLineV1);
+  const std::string good_row = "AAA\t2023-11-14\t1\t0.5\t0.8\n";
+  // Every one of these deviates from the frozen contract in exactly one way.
+  const std::vector<std::string> bad_files = {
+      header + "\n" + good_row,                                       // schema line missing
+      "# schema=vrp_signal_v2\n" + header + "\n" + good_row,          // wrong version
+      schema + "\ndate\tsymbol\tpred_label\tpred_edge_norm\tvov_63d\n" + good_row, // reorder
+      schema + "\n" + header + "\textra\n" + good_row,                // extra column
+      schema + "\n" + header + "\n" + "AAA\t2023-11-14\t1\t0.5\n",    // 4 fields
+      schema + "\n" + header + "\n" + "AAA\t2023-11-14\t1\t0.5\t0.8\t9\n", // 6 fields
+      schema + "\n" + header + "\n" + "AAA\t2023-11-14\t1\tnope\t0.8\n",   // non-numeric
+      schema + "\n" + header + "\n" + "AAA\t2023-11-14\t1\t0.5\t-0.8\n",   // negative vov
+      schema + "\n" + header + "\n" + "\t2023-11-14\t1\t0.5\t0.8\n",       // empty symbol
+  };
+  for (std::size_t i = 0; i < bad_files.size(); ++i) {
+    const auto parsed = parse_vrp_signal_v1(bad_files[i]);
+    ASSERT_FALSE(parsed.has_value()) << "bad file " << i << " parsed";
+    EXPECT_EQ(parsed.error().code(), ErrorCode::InvalidArgument) << i;
+  }
+  // And a missing file is NotFound, not an empty panel.
+  const auto missing = load_vrp_signal_v1(
+      (fs::temp_directory_path() / "atx-vol-edge-definitely-missing.tsv").string());
+  ASSERT_FALSE(missing.has_value());
+  EXPECT_EQ(missing.error().code(), ErrorCode::NotFound);
+}
+
+TEST(VolEdge, BookFormationRanksDecilesAndSizesVegaToTheFormula) {
+  VolEdgeConfig cfg{};
+  cfg.long_fraction = 0.10;
+  cfg.short_fraction = 0.10;
+  cfg.risk_budget_vega = 5'000.0;
+  cfg.vov_floor = 0.05;
+  // Ten names, edges planted 4.5 down to -4.5, handed over UNSORTED so the
+  // ranking is the function's, not the fixture's. The best name's vov is
+  // ordinary; the worst name's vov sits BELOW the floor so the floor binds.
+  std::vector<VrpSignalRow> day;
+  const double edges[] = {-1.5, 4.5, 0.5, -4.5, 2.5, -0.5, 3.5, 1.5, -2.5, -3.5};
+  for (std::size_t i = 0; i < 10; ++i) {
+    const double vov = edges[i] == 4.5 ? 0.8 : (edges[i] == -4.5 ? 0.01 : 1.0);
+    day.push_back(signal_row("S" + std::to_string(i), "2023-11-14", edges[i], vov));
+  }
+  const auto book = build_vol_edge_book(day, cfg);
+  ASSERT_TRUE(book.has_value()) << book.error().to_string();
+  ASSERT_EQ(book->size(), 2u) << "10 names at 10% deciles = 1 long + 1 short";
+  const VolEdgeTarget &long_leg = (*book)[0];
+  const VolEdgeTarget &short_leg = (*book)[1];
+  EXPECT_DOUBLE_EQ(long_leg.pred_edge_norm, 4.5);
+  EXPECT_DOUBLE_EQ(short_leg.pred_edge_norm, -4.5);
+  // The formula, to 1e-12: budget over floored vov, sign by side.
+  const double expected_long = 5'000.0 / 0.8;
+  const double expected_short = -5'000.0 / 0.05; // vov 0.01 < floor 0.05: floor binds
+  EXPECT_NEAR(long_leg.vega_target, expected_long, 1e-12 * expected_long);
+  EXPECT_NEAR(short_leg.vega_target, expected_short, 1e-12 * std::fabs(expected_short));
+  EXPECT_DOUBLE_EQ(vol_edge_vega_target(cfg, +1.0, 0.8), expected_long);
+  EXPECT_DOUBLE_EQ(vol_edge_vega_target(cfg, -1.0, 0.01), expected_short);
+}
+
+TEST(VolEdge, BookFormationCapsAndNoTradeBandBind) {
+  VolEdgeConfig cfg{};
+  cfg.long_fraction = 0.25;
+  cfg.short_fraction = 0.25;
+  cfg.risk_budget_vega = 5'000.0;
+  cfg.vov_floor = 0.05;
+  cfg.per_name_vega_cap = 100.0; // far below budget/vov = 5000: must bind
+  const std::vector<VrpSignalRow> day = {
+      signal_row("AAA", "2023-11-14", +3.0, 1.0),
+      signal_row("BBB", "2023-11-14", +1.0, 1.0),
+      signal_row("CCC", "2023-11-14", -1.0, 1.0),
+      signal_row("DDD", "2023-11-14", -3.0, 1.0),
+  };
+  const auto capped = build_vol_edge_book(day, cfg);
+  ASSERT_TRUE(capped.has_value()) << capped.error().to_string();
+  ASSERT_EQ(capped->size(), 2u);
+  EXPECT_DOUBLE_EQ((*capped)[0].vega_target, +100.0);
+  EXPECT_DOUBLE_EQ((*capped)[1].vega_target, -100.0);
+
+  // No-trade band: the long candidate's |edge| sits inside the band, the
+  // short's outside — only the short trades, and nothing is resized.
+  VolEdgeConfig banded = cfg;
+  banded.per_name_vega_cap = 0.0;
+  banded.no_trade_band = 3.0;
+  const std::vector<VrpSignalRow> quiet_day = {
+      signal_row("AAA", "2023-11-14", +2.0, 1.0),
+      signal_row("BBB", "2023-11-14", +1.0, 1.0),
+      signal_row("CCC", "2023-11-14", -1.0, 1.0),
+      signal_row("DDD", "2023-11-14", -4.0, 1.0),
+  };
+  const auto banded_book = build_vol_edge_book(quiet_day, banded);
+  ASSERT_TRUE(banded_book.has_value()) << banded_book.error().to_string();
+  ASSERT_EQ(banded_book->size(), 1u) << "long leg |edge|=2 <= band=3 must be suppressed";
+  EXPECT_EQ((*banded_book)[0].symbol, "DDD");
+  EXPECT_DOUBLE_EQ((*banded_book)[0].vega_target, -5'000.0);
+}
+
+TEST(VolEdge, NetShortTiltChangesNetVegaAsConfigured) {
+  VolEdgeConfig cfg{};
+  cfg.long_fraction = 0.25;
+  cfg.short_fraction = 0.25;
+  cfg.risk_budget_vega = 4'000.0;
+  cfg.vov_floor = 0.05;
+  cfg.net_short_tilt = 0.25;
+  // Equal vol-of-vol on both sides, so the untilted book is exactly
+  // vega-neutral and the configured tilt is the WHOLE net.
+  const std::vector<VrpSignalRow> day = {
+      signal_row("AAA", "2023-11-14", +4.0, 1.0),
+      signal_row("BBB", "2023-11-14", +1.0, 1.0),
+      signal_row("CCC", "2023-11-14", -1.0, 1.0),
+      signal_row("DDD", "2023-11-14", -4.0, 1.0),
+  };
+  const auto book = build_vol_edge_book(day, cfg);
+  ASSERT_TRUE(book.has_value()) << book.error().to_string();
+  ASSERT_EQ(book->size(), 2u);
+  double net = 0.0;
+  double gross_long = 0.0;
+  for (const VolEdgeTarget &target : *book) {
+    net += target.vega_target;
+    if (target.vega_target > 0.0) {
+      gross_long += target.vega_target;
+    }
+  }
+  ASSERT_GT(gross_long, 0.0);
+  EXPECT_NEAR(net, -cfg.net_short_tilt * gross_long, 1e-12 * gross_long);
+
+  // Tilt off: the same day is exactly neutral.
+  VolEdgeConfig flat = cfg;
+  flat.net_short_tilt = 0.0;
+  const auto neutral = build_vol_edge_book(day, flat);
+  ASSERT_TRUE(neutral.has_value());
+  double net_flat = 0.0;
+  for (const VolEdgeTarget &target : *neutral) {
+    net_flat += target.vega_target;
+  }
+  EXPECT_NEAR(net_flat, 0.0, 1e-12 * gross_long);
+}
+
+TEST(VolEdge, StrategyOpensRankedVegaTargetedStraddleBook) {
+  const std::vector<std::string> symbols = {"AAA", "BBB", "CCC", "DDD"};
+  const VolEdgeCorpus corpus = make_vol_edge_corpus(1, symbols, "vol-edge-book");
+  auto snap = MarketSnapshot::load(corpus.archives[0]);
+  ASSERT_TRUE(snap.has_value()) << snap.error().to_string();
+  const std::string date = corpus.dates[0];
+
+  VolEdgeConfig cfg{};
+  cfg.long_fraction = 0.25;
+  cfg.short_fraction = 0.25;
+  cfg.risk_budget_vega = 5'000.0;
+  cfg.vov_floor = 0.05;
+  const std::vector<VrpSignalRow> signal = {
+      signal_row("AAA", date, +2.0, 0.8),
+      signal_row("BBB", date, +1.0, 1.0),
+      signal_row("CCC", date, -1.0, 1.0),
+      signal_row("DDD", date, -2.0, 1.6),
+  };
+  VolEdgeStrategy strat{signal, cfg};
+  PortfolioState book;
+  std::uint64_t next_lot_id = 1;
+  const Status stepped = strat.on_step(*snap, 0, book, next_lot_id);
+  ASSERT_TRUE(stepped.has_value()) << stepped.error().to_string();
+
+  // Long AAA, short DDD — two straddles, four lots, four risk seeds.
+  ASSERT_EQ(book.lots.size(), 4u);
+  ASSERT_EQ(strat.entry_risk_seeds().size(), 4u);
+  const auto uid_aaa = snap->uid_of("AAA");
+  const auto uid_ddd = snap->uid_of("DDD");
+  ASSERT_TRUE(uid_aaa.has_value() && uid_ddd.has_value());
+  double aaa_book_vega = 0.0;
+  double ddd_book_vega = 0.0;
+  std::vector<double> aaa_strikes;
+  for (const Lot &lot : book.lots) {
+    ASSERT_TRUE(lot.contract.uid == *uid_aaa || lot.contract.uid == *uid_ddd)
+        << "middle-ranked names must not trade";
+    const SurfaceRef surface = snap->find(lot.contract.uid);
+    ASSERT_NE(surface, nullptr);
+    const auto greeks = surface->greeks(lot.contract.K, lot.contract.T, lot.contract.side);
+    ASSERT_TRUE(greeks.has_value()) << greeks.error().to_string();
+    const double lot_vega = lot.qty * lot.multiplier * greeks->vega;
+    if (lot.contract.uid == *uid_aaa) {
+      EXPECT_GT(lot.qty, 0.0);
+      aaa_book_vega += lot_vega;
+      aaa_strikes.push_back(lot.contract.K);
+    } else {
+      EXPECT_LT(lot.qty, 0.0);
+      ddd_book_vega += lot_vega;
+    }
+    EXPECT_GT(lot.entry_price, 0.0);
+    EXPECT_GT(lot.expiry_ts_ns, snap->ts_ns());
+  }
+  // A straddle: both legs at the same ATM-forward strike.
+  ASSERT_EQ(aaa_strikes.size(), 2u);
+  EXPECT_EQ(aaa_strikes[0], aaa_strikes[1]);
+  // Book vega hits the signed per-name target (engine sizing arithmetic).
+  const double target_long = vol_edge_vega_target(cfg, +1.0, 0.8);
+  const double target_short = vol_edge_vega_target(cfg, -1.0, 1.6);
+  EXPECT_NEAR(aaa_book_vega, target_long, 1e-6 * std::fabs(target_long));
+  EXPECT_NEAR(ddd_book_vega, target_short, 1e-6 * std::fabs(target_short));
+  // The engine-owned delta hedge is requested by default.
+  EXPECT_EQ(strat.hedge_spec().kind, HedgeSpec::Kind::DeltaToZero);
+}
+
+TEST(VolEdge, CostsChargedPerOptionLegAtConfiguredHalfSpread) {
+  const std::vector<std::string> symbols = {"AAA", "BBB"};
+  const VolEdgeCorpus corpus = make_vol_edge_corpus(2, symbols, "vol-edge-costs");
+  auto clock = Clock::from_manifest(corpus.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  VolEdgeConfig cfg{};
+  cfg.long_fraction = 0.5;
+  cfg.short_fraction = 0.5;
+  cfg.risk_budget_vega = 5'000.0;
+  cfg.vov_floor = 0.05;
+  cfg.cost_half_spread_vol_pts = 2.0; // vol_tick = 0.02
+  cfg.stock_half_spread_bps = 0.0;
+  cfg.delta_hedge = false; // isolate the option-leg charge
+  cfg.rebalance_every_n_steps = 100; // one entry, then hold
+  const std::vector<VrpSignalRow> signal = {
+      signal_row("AAA", corpus.dates[0], +2.0, 1.0),
+      signal_row("BBB", corpus.dates[0], -2.0, 1.0),
+  };
+
+  // Hand-computed expectation: effective half-spread (vol pts) x vega traded,
+  // summed per option leg: sum |qty| * multiplier * vega * (vol_pts / 100).
+  auto snap = MarketSnapshot::load(corpus.archives[0]);
+  ASSERT_TRUE(snap.has_value());
+  double expected_cost = 0.0;
+  const double vol_tick = cfg.cost_half_spread_vol_pts / 100.0;
+  for (const auto &[symbol, sign] :
+       std::vector<std::pair<std::string, double>>{{"AAA", +1.0}, {"BBB", -1.0}}) {
+    const auto uid = snap->uid_of(symbol);
+    ASSERT_TRUE(uid.has_value());
+    const double target = vol_edge_vega_target(cfg, sign, 1.0);
+    for (const SizedLeg &sl : vol_edge_reference_legs(*snap, *uid, target, cfg)) {
+      expected_cost += std::fabs(sl.qty) * sl.multiplier * sl.leg.vega * vol_tick;
+    }
+  }
+  ASSERT_GT(expected_cost, 0.0);
+
+  VolEdgeStrategy strat{signal, cfg};
+  RunConfig rc;
+  rc.frictions = vol_edge_frictions(cfg);
+  auto res = run_backtest(*clock, strat, rc);
+  ASSERT_TRUE(res.has_value()) << res.error().to_string();
+  ASSERT_EQ(res->size(), 2u);
+  double total_cost = 0.0;
+  for (const double step_cost : res->cost) {
+    total_cost += step_cost;
+  }
+  EXPECT_NEAR(total_cost, expected_cost, 1e-6 * expected_cost)
+      << "engine must charge half-spread(vol pts) x vega per option leg";
+  EXPECT_EQ(strat.skipped_names(), 0u);
+}
+
+TEST(VolEdge, DeltaRebalanceChargedAtStockHalfSpread) {
+  const std::vector<std::string> symbols = {"AAA", "BBB"};
+  const VolEdgeCorpus corpus = make_vol_edge_corpus(2, symbols, "vol-edge-hedge-costs");
+  auto clock = Clock::from_manifest(corpus.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  VolEdgeConfig cfg{};
+  cfg.long_fraction = 0.5;
+  cfg.short_fraction = 0.5;
+  cfg.risk_budget_vega = 5'000.0;
+  cfg.vov_floor = 0.05;
+  cfg.cost_half_spread_vol_pts = 0.0; // isolate the stock-hedge charge
+  cfg.stock_half_spread_bps = 4.0;
+  cfg.delta_hedge = true;
+  cfg.delta_hedge_band = 0.0;
+  cfg.rebalance_every_n_steps = 100;
+  const std::vector<VrpSignalRow> signal = {
+      signal_row("AAA", corpus.dates[0], +2.0, 1.0),
+      signal_row("BBB", corpus.dates[0], -2.0, 1.0),
+  };
+
+  // Hand-computed inception hedge: per uid, shares = -net option delta; the
+  // overlay charges |shares| * spot * bps/1e4 into the cost column.
+  auto snap = MarketSnapshot::load(corpus.archives[0]);
+  ASSERT_TRUE(snap.has_value());
+  double expected_day0_cost = 0.0;
+  for (const auto &[symbol, sign] :
+       std::vector<std::pair<std::string, double>>{{"AAA", +1.0}, {"BBB", -1.0}}) {
+    const auto uid = snap->uid_of(symbol);
+    ASSERT_TRUE(uid.has_value());
+    const SurfaceRef surface = snap->find(*uid);
+    ASSERT_NE(surface, nullptr);
+    const double target = vol_edge_vega_target(cfg, sign, 1.0);
+    double net_delta = 0.0;
+    for (const SizedLeg &sl : vol_edge_reference_legs(*snap, *uid, target, cfg)) {
+      const auto greeks = surface->greeks(sl.leg.K, sl.leg.T, sl.leg.side);
+      ASSERT_TRUE(greeks.has_value()) << greeks.error().to_string();
+      net_delta += sl.qty * sl.multiplier * greeks->delta;
+    }
+    expected_day0_cost += std::fabs(-net_delta) * 100.0 * (cfg.stock_half_spread_bps / 1.0e4);
+  }
+  ASSERT_GT(expected_day0_cost, 0.0);
+
+  VolEdgeStrategy strat{signal, cfg};
+  RunConfig rc;
+  rc.frictions = vol_edge_frictions(cfg);
+  auto res = run_backtest(*clock, strat, rc);
+  ASSERT_TRUE(res.has_value()) << res.error().to_string();
+  ASSERT_EQ(res->size(), 2u);
+  EXPECT_NEAR(res->cost[0], expected_day0_cost, 1e-6 * expected_day0_cost)
+      << "inception delta hedge must charge the stock half-spread per share";
+  // Day 2 rehedges the drifted delta at the same half-spread: a real,
+  // non-negative friction (zero only if the delta happened not to move).
+  EXPECT_GE(res->cost[1], 0.0);
+}
+
+TEST(VolEdge, DeterministicRunsProduceBitIdenticalNav) {
+  const std::vector<std::string> symbols = {"AAA", "BBB", "CCC"};
+  const VolEdgeCorpus corpus = make_vol_edge_corpus(3, symbols, "vol-edge-determinism");
+  auto clock = Clock::from_manifest(corpus.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  VolEdgeConfig cfg{};
+  cfg.long_fraction = 1.0 / 3.0;
+  cfg.short_fraction = 1.0 / 3.0;
+  cfg.risk_budget_vega = 5'000.0;
+  cfg.vov_floor = 0.05;
+  cfg.cost_half_spread_vol_pts = 1.5;
+  cfg.stock_half_spread_bps = 2.0;
+  cfg.delta_hedge = true;
+  cfg.rebalance_every_n_steps = 1; // re-rank and roll daily: the busiest path
+  std::vector<VrpSignalRow> signal;
+  for (const std::string &date : corpus.dates) {
+    signal.push_back(signal_row("AAA", date, +2.0, 0.8));
+    signal.push_back(signal_row("BBB", date, +0.1, 1.0));
+    signal.push_back(signal_row("CCC", date, -2.0, 1.2));
+  }
+
+  const auto run_once = [&]() {
+    VolEdgeStrategy strat{signal, cfg};
+    RunConfig rc;
+    rc.frictions = vol_edge_frictions(cfg);
+    return run_backtest(*clock, strat, rc);
+  };
+  auto first = run_once();
+  auto second = run_once();
+  ASSERT_TRUE(first.has_value()) << first.error().to_string();
+  ASSERT_TRUE(second.has_value()) << second.error().to_string();
+  ASSERT_EQ(first->size(), 3u);
+  ASSERT_EQ(first->size(), second->size());
+  for (std::size_t i = 0; i < first->size(); ++i) {
+    EXPECT_EQ(first->nav[i], second->nav[i]) << "row " << i << ": NAV must be bit-identical";
+    EXPECT_EQ(first->cost[i], second->cost[i]) << "row " << i;
+    EXPECT_EQ(first->pnl_total[i], second->pnl_total[i]) << "row " << i;
+  }
+  // The run genuinely trades (three daily rolls with costs on).
+  double total_cost = 0.0;
+  for (const double step_cost : first->cost) {
+    total_cost += step_cost;
+  }
+  EXPECT_GT(total_cost, 0.0);
+}
+
+TEST(VolEdge, MissingSignalDateHoldsBookAndCountsTheSkip) {
+  const std::vector<std::string> symbols = {"AAA", "BBB"};
+  const VolEdgeCorpus corpus = make_vol_edge_corpus(3, symbols, "vol-edge-missing-day");
+  auto clock = Clock::from_manifest(corpus.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  VolEdgeConfig cfg{};
+  cfg.long_fraction = 0.5;
+  cfg.short_fraction = 0.5;
+  cfg.risk_budget_vega = 5'000.0;
+  cfg.vov_floor = 0.05;
+  cfg.delta_hedge = false;
+  cfg.rebalance_every_n_steps = 1; // every step wants a fresh signal day
+  const std::vector<VrpSignalRow> signal = {
+      signal_row("AAA", corpus.dates[0], +2.0, 1.0),
+      signal_row("BBB", corpus.dates[0], -2.0, 1.0),
+  };
+  VolEdgeStrategy strat{signal, cfg};
+  auto res = run_backtest(*clock, strat, RunConfig{});
+  ASSERT_TRUE(res.has_value()) << res.error().to_string();
+  ASSERT_EQ(res->size(), 3u);
+  // Two rebalance ticks had no signal: both held the day-0 book and counted.
+  EXPECT_EQ(strat.n_steps_entry_skipped(), 2u);
+  EXPECT_EQ(res->n_steps_entry_skipped, 2u);
+  EXPECT_DOUBLE_EQ(res->n_open_lots.back(), 4.0) << "the held straddles never closed";
 }

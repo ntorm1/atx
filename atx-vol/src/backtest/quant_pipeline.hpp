@@ -22,6 +22,7 @@
 #include "atx/vol/api/backtest/dispersion.hpp"
 #include "storage/research_db.hpp"
 #include "atx/vol/api/backtest/research_validation.hpp"
+#include "atx/vol/api/backtest/vol_edge.hpp" // VolEdgeConfig (vrp-backtest subcommand)
 #include "backtest/strategy_pipeline.hpp"
 #include "atx/vol/api/core/types.hpp"
 
@@ -109,5 +110,44 @@ struct StrategyImplementationPlan {
     std::span<const NamedPosition> target, std::span<const NamedPosition> current,
     std::span<const PositionRiskInput> risk_inputs,
     std::span<const ScenarioRiskInput> scenario_inputs, const StrategyImplementationSpec &spec);
+
+// ---------------------------------------------------------------------------
+// vrp-backtest subcommand (2026-08-15 vrp-ml sprint, lane vrp-book)
+// ---------------------------------------------------------------------------
+//
+// Library-shaped seam behind `atx-vol-quant-research vrp-backtest`: a frozen
+// vrp_signal_v1 TSV + one or more SurfaceDb roots + a VolEdgeConfig drive the
+// EXISTING strategy-aware `run_backtest` with a `VolEdgeStrategy`, and the
+// result is written as one report TSV (NAV, the engine's Greek P&L
+// attribution columns, the collected-vs-repriced theo-edge ledger read of
+// those columns, turnover and costs, plus the strategy's signal columns).
+
+struct VrpBacktestSpec {
+  std::string signal_path;                   // frozen vrp_signal_v1 TSV (must exist)
+  std::vector<std::string> surface_db_roots; // >= 1 SurfaceDb roots, disjoint dates
+  std::string report_path;                   // output TSV
+  std::string date_lo{};                     // optional inclusive window (ISO dates)
+  std::string date_hi{};
+  VolEdgeConfig config{};
+};
+
+struct VrpBacktestSummary {
+  std::size_t n_rows{0};
+  double final_nav{0.0};
+  double total_cost{0.0};
+  std::string report_path{};
+};
+
+// Parse + validate the subcommand's arguments. FAIL-CLOSED VALIDATION: a
+// missing/unreadable --signal file, no --surface-db root, an empty --report,
+// an unknown flag, a bad numeric, or an invalid VolEdgeConfig are all errors
+// here — nothing is deferred to the run to fail later with less context.
+[[nodiscard]] Result<VrpBacktestSpec> parse_vrp_backtest_args(std::span<const std::string> args);
+
+// Execute the spec end to end: load the signal, enumerate every root's
+// partitions into one ascending clock (duplicate dates across roots are an
+// error), run the vol-edge book, write the report TSV. No engine contract is
+// modified — this is composition over run_backtest/VolEdgeStrategy only.
+[[nodiscard]] Result<VrpBacktestSummary> run_vrp_backtest(const VrpBacktestSpec &spec);
 
 } // namespace atx::vol

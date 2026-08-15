@@ -190,4 +190,87 @@ static_assert(detail::aggregate_arity_is_v<DerivPnlExplain, 9>,
 // be attributed" is an answer a P&L report has to be able to print.
 [[nodiscard]] Result<DerivPnlExplain> deriv_pnl_explain(const DerivPnlInputs& in);
 
+// ── Daily theo-edge ledger (2026-08-15 vrp-ml sprint, lane vrp-book) ────────
+//
+// The two-line split the VRP digest specifies for a delta-hedged straddle
+// position (research-vrp-portfolio.md, "Daily edge accounting"):
+//
+//   collected = 0.5 * gamma * spot^2 * (r_step^2 - sigma_imp^2 * dt_years)
+//     Line 1, the REALIZED-LEG ACCRUAL: today's realized-vs-implied variance
+//     surprise priced at the position's dollar gamma — the straddle analogue
+//     of a variance swap's one-fixing accrual. Summed over a position's life
+//     it converges to the position's total edge P&L up to hedging noise
+//     (higher-order spot terms and the discrete-hedge residual); the ledger
+//     tests bound that noise on a closed-form Black-Scholes fixture.
+//
+//   repriced  = vega * d_iv
+//     Line 2, the REMARK OF THE UNACCRUED FRACTION: the mark move of the edge
+//     still unearned when implied vol moves. This is mark noise around the
+//     entry edge, not collected premium — a book whose ledger is dominated by
+//     this line is trading IV changes, not harvesting VRP.
+//
+// Note the deliberate relation to `deriv_pnl_explain` above: with the
+// straddle's own zero-fixing carry theta (-0.5*gamma*spot^2*sigma_imp^2, per
+// year) and per-fixing weight (0.5*gamma*spot^2 / annualization), line 1 is
+// EXACTLY that explain's `carry + realized`, and line 2 is exactly its
+// `vol_level`. The ledger is the two-line reading of the same arithmetic, not
+// a second attribution model; `deriv_pnl_test.cpp` pins the equivalence.
+//
+// Same NaN discipline as the explain: an unavailable input yields a NaN line
+// plus its flag, never a zero pretending to be a measurement.
+
+enum class TheoEdgeLedgerFlags : std::uint32_t {
+  None = 0u,
+  CollectedUnavailable = 1u << 0,  // gamma/spot/r_step/sigma_imp not finite
+  RepricedUnavailable = 1u << 1,   // vega/d_iv not finite
+};
+
+[[nodiscard]] constexpr TheoEdgeLedgerFlags operator|(TheoEdgeLedgerFlags a,
+                                                      TheoEdgeLedgerFlags b) noexcept {
+  return static_cast<TheoEdgeLedgerFlags>(static_cast<std::uint32_t>(a) |
+                                          static_cast<std::uint32_t>(b));
+}
+constexpr TheoEdgeLedgerFlags& operator|=(TheoEdgeLedgerFlags& a,
+                                          TheoEdgeLedgerFlags b) noexcept {
+  a = a | b;
+  return a;
+}
+[[nodiscard]] constexpr bool has_flag(TheoEdgeLedgerFlags value,
+                                      TheoEdgeLedgerFlags flag) noexcept {
+  return (static_cast<std::uint32_t>(value) & static_cast<std::uint32_t>(flag)) != 0u;
+}
+
+// Every field is POSITION-SCALED and AS OF THE START of the step, matching
+// `DerivPnlInputs::greeks`' own convention: gamma = d2PV/dS2, vega = dPV/dsigma
+// (per unit vol, i.e. 1.00 = 100 vol points). `r_step` is the step's log
+// return; `d_iv` the implied-vol change over the same step, in the same unit
+// vega is quoted against.
+struct TheoEdgeLedgerInputs {
+  double gamma = kQuietNaN;
+  double spot = kQuietNaN;
+  double r_step = kQuietNaN;
+  double sigma_imp = kQuietNaN;
+  double dt_years = 0.0;
+  double vega = kQuietNaN;
+  double d_iv = kQuietNaN;
+};
+
+static_assert(detail::aggregate_arity_is_v<TheoEdgeLedgerInputs, 7>,
+              "TheoEdgeLedgerInputs field count changed: update this pin.");
+
+struct TheoEdgeLedger {
+  double collected = kQuietNaN;
+  double repriced = kQuietNaN;
+  TheoEdgeLedgerFlags flags = TheoEdgeLedgerFlags::None;
+};
+
+static_assert(detail::aggregate_arity_is_v<TheoEdgeLedger, 3>,
+              "TheoEdgeLedger field count changed: a third ledger line needs its own "
+              "flag bit and its own place in the acceptance identity.");
+
+// Split one step of a delta-hedged straddle position into the two ledger
+// lines above. Fails only on a non-finite or negative `dt_years` (the same
+// caller error `deriv_pnl_explain` refuses); unusable inputs flag instead.
+[[nodiscard]] Result<TheoEdgeLedger> theo_edge_ledger(const TheoEdgeLedgerInputs& in);
+
 }  // namespace atx::vol

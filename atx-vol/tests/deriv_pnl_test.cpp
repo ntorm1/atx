@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <array>
 #include <bit>
 #include <cmath>
 #include <cstdint>
@@ -651,4 +652,231 @@ TEST(DerivPnlExplain, SkewVegaExplainsAPricedSmileRotation) {
   // vega, and the reason this is a shape test rather than a tolerance.
   EXPECT_LT(res_half, res_s / 3.0)
       << "residual did not shrink second-order: " << res_s << " -> " << res_half;
+}
+
+// ── The daily theo-edge ledger (vrp-ml sprint, lane vrp-book) ──────────────
+//
+// Line 1 `collected` = 0.5*Gamma*S^2*(r^2 - sigma^2*dt), line 2 `repriced` =
+// vega*dIV. The oracle here is a closed-form Black-Scholes world with r = q =
+// 0, where the straddle price, delta, gamma and vega are four hand-writable
+// expressions and the delta-hedged step P&L is computed from REPRICING, not
+// from the ledger -- so the acceptance identity (sum of line 1 over a
+// position's life == its total edge P&L up to hedging noise) is measured
+// against an independent number.
+
+namespace {
+
+using atx::vol::TheoEdgeLedger;
+using atx::vol::TheoEdgeLedgerFlags;
+using atx::vol::TheoEdgeLedgerInputs;
+using atx::vol::theo_edge_ledger;
+
+[[nodiscard]] double norm_cdf(double x) noexcept {
+  return 0.5 * std::erfc(-x / std::sqrt(2.0));
+}
+[[nodiscard]] double norm_pdf(double x) noexcept {
+  return std::exp(-0.5 * x * x) / std::sqrt(2.0 * 3.14159265358979323846);
+}
+
+// Black-Scholes straddle with r = q = 0 (so American == European and every
+// greek below is exact). All per one unit of the straddle.
+struct BsStraddle {
+  double price;
+  double delta;
+  double gamma;
+  double vega;
+};
+
+[[nodiscard]] BsStraddle bs_straddle(double S, double K, double sigma, double T) noexcept {
+  const double sqT = std::sqrt(T);
+  const double d1 = (std::log(S / K) + 0.5 * sigma * sigma * T) / (sigma * sqT);
+  const double d2 = d1 - sigma * sqT;
+  BsStraddle out{};
+  const double call = S * norm_cdf(d1) - K * norm_cdf(d2);
+  const double put = call - S + K; // parity at r = q = 0
+  out.price = call + put;
+  out.delta = 2.0 * norm_cdf(d1) - 1.0;
+  out.gamma = 2.0 * norm_pdf(d1) / (S * sigma * sqT);
+  out.vega = 2.0 * S * norm_pdf(d1) * sqT;
+  return out;
+}
+
+constexpr double kLedgerDt = 1.0 / 252.0;
+
+// The controlled 5-day fixture: ATM 21-trading-day straddle, spot follows a
+// planted return path, IV constant unless a test moves it.
+constexpr double kLedgerS0 = 100.0;
+constexpr double kLedgerK = 100.0;
+constexpr double kLedgerT0 = 21.0 / 252.0;
+constexpr double kLedgerSigma = 0.20;
+constexpr std::array<double, 5> kLedgerReturns{0.008, -0.006, 0.004, -0.009, 0.007};
+
+} // namespace
+
+TEST(DerivPnlExplain, TheoEdgeLedgerSplitsCollectedFromRepriced) {
+  TheoEdgeLedgerInputs in{};
+  in.gamma = 2.5;
+  in.spot = 50.0;
+  in.r_step = 0.01;
+  in.sigma_imp = 0.30;
+  in.dt_years = kLedgerDt;
+  in.vega = 120.0;
+  in.d_iv = -0.004;
+
+  const auto ledger = theo_edge_ledger(in);
+  ASSERT_TRUE(ledger.has_value()) << ledger.error().to_string();
+  EXPECT_EQ(ledger->flags, TheoEdgeLedgerFlags::None);
+  // The exact published expressions, reproduced term for term.
+  EXPECT_DOUBLE_EQ(ledger->collected,
+                   0.5 * 2.5 * 50.0 * 50.0 * (0.01 * 0.01 - 0.30 * 0.30 * kLedgerDt));
+  EXPECT_DOUBLE_EQ(ledger->repriced, 120.0 * -0.004);
+}
+
+TEST(DerivPnlExplain, TheoEdgeLedgerFlagsUnavailableInputsAndRejectsBadDt) {
+  TheoEdgeLedgerInputs good{};
+  good.gamma = 1.0;
+  good.spot = 100.0;
+  good.r_step = 0.0;
+  good.sigma_imp = 0.2;
+  good.dt_years = kLedgerDt;
+  good.vega = 10.0;
+  good.d_iv = 0.0;
+
+  // A NaN gamma poisons line 1 only; line 2 stays a real measurement.
+  TheoEdgeLedgerInputs no_gamma = good;
+  no_gamma.gamma = kNaN;
+  const auto l1 = theo_edge_ledger(no_gamma);
+  ASSERT_TRUE(l1.has_value());
+  EXPECT_TRUE(std::isnan(l1->collected));
+  EXPECT_TRUE(std::isfinite(l1->repriced));
+  EXPECT_TRUE(has_flag(l1->flags, TheoEdgeLedgerFlags::CollectedUnavailable));
+  EXPECT_FALSE(has_flag(l1->flags, TheoEdgeLedgerFlags::RepricedUnavailable));
+
+  // A NaN IV move poisons line 2 only.
+  TheoEdgeLedgerInputs no_div = good;
+  no_div.d_iv = kNaN;
+  const auto l2 = theo_edge_ledger(no_div);
+  ASSERT_TRUE(l2.has_value());
+  EXPECT_TRUE(std::isfinite(l2->collected));
+  EXPECT_TRUE(std::isnan(l2->repriced));
+  EXPECT_TRUE(has_flag(l2->flags, TheoEdgeLedgerFlags::RepricedUnavailable));
+  EXPECT_FALSE(has_flag(l2->flags, TheoEdgeLedgerFlags::CollectedUnavailable));
+
+  // dt is the one caller error the ledger cannot be defined against.
+  TheoEdgeLedgerInputs bad_dt = good;
+  bad_dt.dt_years = -kLedgerDt;
+  EXPECT_FALSE(theo_edge_ledger(bad_dt).has_value());
+  bad_dt.dt_years = kNaN;
+  EXPECT_FALSE(theo_edge_ledger(bad_dt).has_value());
+}
+
+// The acceptance identity: over the position's life, sum(collected) equals
+// the delta-hedged straddle's total P&L up to hedging noise. IV is constant
+// here, so line 2 is exactly zero every day and the whole P&L must be line 1
+// plus the discrete-hedge/higher-order residual. The bound below is the
+// DOCUMENTED hedge-noise allowance for this fixture: the residual is
+// third-order in the daily move (|r| <= 0.9%, five steps), measured at ~2e-3
+// against a ~0.4 total, and the assertion allows 5x the measurement.
+TEST(DerivPnlExplain, FiveDayStraddleCollectedSumsToTotalEdgePnl) {
+  double spot = kLedgerS0;
+  double total_hedged_pnl = 0.0;
+  double sum_collected = 0.0;
+  double sum_abs_collected = 0.0;
+  for (std::size_t t = 0; t < kLedgerReturns.size(); ++t) {
+    const double T_t = kLedgerT0 - static_cast<double>(t) * kLedgerDt;
+    const BsStraddle now = bs_straddle(spot, kLedgerK, kLedgerSigma, T_t);
+    const double next_spot = spot * std::exp(kLedgerReturns[t]);
+    const BsStraddle next = bs_straddle(next_spot, kLedgerK, kLedgerSigma, T_t - kLedgerDt);
+    total_hedged_pnl += next.price - now.price - now.delta * (next_spot - spot);
+
+    TheoEdgeLedgerInputs in{};
+    in.gamma = now.gamma;
+    in.spot = spot;
+    in.r_step = kLedgerReturns[t];
+    in.sigma_imp = kLedgerSigma;
+    in.dt_years = kLedgerDt;
+    in.vega = now.vega;
+    in.d_iv = 0.0;
+    const auto ledger = theo_edge_ledger(in);
+    ASSERT_TRUE(ledger.has_value()) << ledger.error().to_string();
+    EXPECT_EQ(ledger->flags, TheoEdgeLedgerFlags::None);
+    EXPECT_EQ(ledger->repriced, 0.0) << "constant IV must remark nothing";
+    sum_collected += ledger->collected;
+    sum_abs_collected += std::fabs(ledger->collected);
+    spot = next_spot;
+  }
+  ASSERT_GT(sum_abs_collected, 0.0);
+  const double hedge_noise_bound = 0.01; // documented: ~5x the measured 2e-3 residual
+  EXPECT_NEAR(sum_collected, total_hedged_pnl, hedge_noise_bound)
+      << "sum(collected)=" << sum_collected << " total=" << total_hedged_pnl;
+  // And the identity is not vacuous: the position actually collected edge.
+  EXPECT_LT(std::fabs(sum_collected - total_hedged_pnl), 0.2 * sum_abs_collected);
+}
+
+// The two ledger lines are the two-line reading of the EXISTING attribution:
+// with the straddle's zero-fixing carry theta and per-fixing weight,
+// deriv_pnl_explain's carry + realized IS line 1 and its vol_level IS line 2,
+// and collected + repriced reconciles each step's delta-hedged P&L up to the
+// same hedge noise. IV moves mid-fixture so line 2 is genuinely nonzero.
+TEST(DerivPnlExplain, TheoEdgeLedgerReconcilesWithExplainLinesAndStepPnl) {
+  const std::array<double, 6> sigma_path{0.20, 0.20, 0.21, 0.21, 0.205, 0.205};
+  double spot = kLedgerS0;
+  for (std::size_t t = 0; t < kLedgerReturns.size(); ++t) {
+    const double T_t = kLedgerT0 - static_cast<double>(t) * kLedgerDt;
+    const double sigma_t = sigma_path[t];
+    const double sigma_next = sigma_path[t + 1];
+    const BsStraddle now = bs_straddle(spot, kLedgerK, sigma_t, T_t);
+    const double next_spot = spot * std::exp(kLedgerReturns[t]);
+    const BsStraddle next = bs_straddle(next_spot, kLedgerK, sigma_next, T_t - kLedgerDt);
+    const double step_pnl = next.price - now.price - now.delta * (next_spot - spot);
+
+    TheoEdgeLedgerInputs lin{};
+    lin.gamma = now.gamma;
+    lin.spot = spot;
+    lin.r_step = kLedgerReturns[t];
+    lin.sigma_imp = sigma_t;
+    lin.dt_years = kLedgerDt;
+    lin.vega = now.vega;
+    lin.d_iv = sigma_next - sigma_t;
+    const auto ledger = theo_edge_ledger(lin);
+    ASSERT_TRUE(ledger.has_value()) << ledger.error().to_string();
+    EXPECT_EQ(ledger->flags, TheoEdgeLedgerFlags::None);
+
+    // The existing explain, fed the straddle's own zero-fixing carry theta
+    // (-0.5*Gamma*S^2*sigma^2 per year) and per-fixing weight
+    // (0.5*Gamma*S^2 / 252) against the step's annualized realized variance.
+    DerivPnlInputs ein{};
+    ein.greeks = DerivGreeks{};
+    ein.greeks.theta_zero_fixing = -0.5 * now.gamma * spot * spot * sigma_t * sigma_t;
+    ein.greeks.vega = now.vega;
+    ein.greeks.rho = 0.0;
+    ein.greeks.skew_vega = 0.0;
+    ein.greeks.convexity_vega = 0.0;
+    ein.dt_years = kLedgerDt;
+    ein.fixing_weight = 0.5 * now.gamma * spot * spot / 252.0;
+    ein.realized_var_dec = 252.0 * kLedgerReturns[t] * kLedgerReturns[t];
+    ein.from = mark_at(now.price);
+    ein.to = mark_at(next.price);
+    ein.from.sigma_atm = sigma_t;
+    ein.to.sigma_atm = sigma_next;
+    const auto explain = deriv_pnl_explain(ein);
+    ASSERT_TRUE(explain.has_value()) << explain.error().to_string();
+    EXPECT_EQ(explain->flags, DerivPnlFlags::None);
+
+    // Line 1 == carry + realized, line 2 == vol_level (association noise only).
+    const double explain_line1 = explain->carry + explain->realized;
+    EXPECT_NEAR(explain_line1, ledger->collected,
+                1.0e-12 * (std::fabs(ledger->collected) + 1.0));
+    EXPECT_DOUBLE_EQ(explain->vol_level, ledger->repriced);
+
+    // And the two lines reconcile the step's delta-hedged P&L up to the
+    // DOCUMENTED per-step noise: on the +1-vol-pt bump step the leftover is
+    // the vanna/volga cross terms a two-line ledger deliberately leaves
+    // unattributed — measured 6.4e-3 on this fixture — plus the same
+    // discrete-hedge noise as the life-sum test. Bound: 1.6x the measurement.
+    EXPECT_NEAR(step_pnl, ledger->collected + ledger->repriced, 1.0e-2)
+        << "t=" << t << " step_pnl=" << step_pnl << " collected=" << ledger->collected
+        << " repriced=" << ledger->repriced;
+    spot = next_spot;
+  }
 }
