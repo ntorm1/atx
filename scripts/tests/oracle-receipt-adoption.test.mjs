@@ -1,5 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 
 const read = path => readFileSync(path, 'utf8')
@@ -111,14 +112,22 @@ test('adoption contract is footer validation plus one aggregate-only underlier p
   assert.match(metadata, /parquet_file\.metadata/u)
   assert.match(metadata, /pc\.any\(pc\.equal\(/u)
   assert.doesNotMatch(metadata, /read_table|read_pandas|to_pandas|to_pylist|to_pydict|to_numpy|to_batches|iter_batches|scan_parquet|ParquetDataset|pc\.(?:unique|filter|take|value_counts)|\.(?:flatten|combine_chunks|dictionary_decode)\b/u)
-  const rowGroupReads = [...metadata.matchAll(/read_row_group\(/gu)]
-  const projections = [...metadata.matchAll(/read_row_group\([\s\S]*?columns=\["([^"]+)"\][\s\S]*?\)\.column\("([^"]+)"\)/gu)]
-  assert.equal(rowGroupReads.length, 1)
-  assert.deepEqual(projections.map(match => [match[1], match[2]]), [['undSecKey_tk', 'undSecKey_tk']])
-  assert.deepEqual([...metadata.matchAll(/projection\.([A-Za-z_][A-Za-z0-9_]*)/gu)].map(match => match[1]), ['chunks'])
-  assert.deepEqual([...metadata.matchAll(/chunk\.([A-Za-z_][A-Za-z0-9_]*)/gu)].map(match => match[1]), [])
-  assert.equal([...metadata.matchAll(/\.as_py\(\)/gu)].length, 1)
   assert.match(preflight, /'aggregate_store'/u)
+})
+
+test('Python AST allowlist rejects alternate, duplicate, dynamic, and extra-column reads', () => {
+  const result = spawnSync('python', [
+    'scripts/tests/oracle_store_projection_guard.py',
+    'atx-vol/scripts/oracle_store_metadata.py',
+  ], { encoding: 'utf8' })
+  assert.equal(result.status, 0, result.stderr || result.stdout)
+  assert.deepEqual(JSON.parse(result.stdout), {
+    schema_version: 1,
+    status: 'PASS',
+    production_calls_allowed: 1,
+    direct_api_attacks_rejected: 4,
+    shape_attacks_rejected: 3,
+  })
 })
 
 test('Stage 1 typed branching rejects missing disk, generic evidence, and contradictory paths', () => {
