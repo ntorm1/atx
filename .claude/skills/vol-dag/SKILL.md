@@ -27,12 +27,18 @@ Freeze base SHA → Plan (vol-planner, 1; every lane mandatory)
        → Re-review (fresh reviewer, mandatory after every Fix)
   └─ Barrier: all mandatory lanes DONE + fresh APPROVE
      → release lane leases → acquire NEW isolated integration lease
-     → merge/report exact reviewed SHAs → gates → ledger → release integration lease
+     → merge/report exact reviewed SHAs → exact changed-closure gates → ledger → release integration lease
 ```
 
 Hard limits: ≤4 lanes. Any incomplete/blocked/non-APPROVE lane fails before
 integration. Second BLOCK after Fix is final. Gate FAIL carries pasted output;
 never "mostly passed" and never integrate in `C:\atx`.
+
+For the oracle loop, each scoped file has a closed `gate_closure`. The workflow
+mechanically derives affected anchored unit tests, hypothesis OracleBench tests,
+required aggregate smoke/tune scorecards, quiet pinned speed, and header-only
+scoped PCH-off targets. Full regression/release suites and broad repository gates
+are intentionally outside this loop.
 
 ## Invocation
 

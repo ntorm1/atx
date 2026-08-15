@@ -21,13 +21,14 @@ Monorepo, layered: `atx-core` (vocab + IO) → `atx-tsdb` (shm store) → `atx-e
 powershell scripts\atx-build.ps1 configure                  # cmake --preset dev into build/ (-Preset dev-shared to flip)
 powershell scripts\atx-build.ps1 build atx-vol-tests        # any target(s) — ALWAYS target-scoped, never bare all-targets
 powershell scripts\atx-build.ps1 check atx-vol\src\foo.cpp  # single-TU compile, no link — seconds-level type-check loop
-powershell scripts\atx-build.ps1 -Ctest -L atx_vol_fast     # ctest passthrough
+powershell scripts\atx-build.ps1 -Ctest -L atx_vol_fast     # release qualification only; forbidden in oracle loop
 cmake --preset dev -DATX_TEST_GROUPS="risk;data"            # compile only engine groups you touch
 ```
 
 **Iterate loop discipline:** `check <file.cpp>` while shaping code (compiles just that
-object), `build <owning-test-target>` + `-Ctest -R <Suite>` to go green, full suite only
-at gate time. Never build the whole graph out of habit.
+object), `build <owning-test-target>` + anchored `-Ctest -R <Suite>` to go green.
+Full suites are release qualification outside `vol-oracle-iter`; the oracle loop
+never runs them. Never build the whole graph out of habit.
 
 | Preset | Use |
 |---|---|

@@ -25,17 +25,13 @@ Process:
 4. Merge exact reviewed SHAs in brief order and report that exact SHA list. A merge conflict stops the gate and
    names lanes/files. Do not resolve semantic conflicts. Trivial gate-owned
    shared-file overlap may be resolved and must be reported.
-5. Run applicable gates from `dev` via `powershell scripts\atx-build.ps1`:
-   - target-scoped `build atx-vol-tests`;
-   - never run the full fast label in a lane; after final integration HEAD is
-     proven, run exactly one authoritative
-     `ctest --preset rel-avx2 -L atx_vol_fast --output-on-failure` receipt bound
-     to that tested SHA;
-   - run `hygiene` only when headers changed and only for the sorted build-target
-     closure supplied by the workflow;
-   - `powershell atx-vol\ci\run_all_gates.ps1` when pricing/backtest/storage
-     semantics changed. Licensed golden replay is SKIPPED, never passed, when absent;
-   - performance claims only from `rel-avx2` against the pin, never `dev-shared`.
+5. After proving final integration HEAD, run exactly the workflow-owned targeted
+   registry once: affected unit targets, anchored unit regexes, hypothesis-specific
+   OracleBench tests, Mode A/B aggregate smoke+tune scorecards, and the quiet pinned
+   `rel-avx2` speed microbenchmark. For changed headers, build only the named owning
+   targets with the PCH-off preset. Labels, bare/unanchored ctest, broad builds,
+   full regression/release suites, `run_all_gates.ps1`, and full-repo hygiene are
+   forbidden inside the oracle loop; release qualification owns them separately.
 6. Append `atx-vol/docs/LEDGER.md` only after applicable gates, deduplicating durable
    facts. Commit gate-owned changes on the integration branch.
 7. On PASS or FAIL, release the integration lease with the same run ID. A dirty tree

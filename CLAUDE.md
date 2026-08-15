@@ -10,10 +10,10 @@ Ninja lives inside the VS install, not on PATH. Use `scripts/atx-build.ps1` (sou
 powershell scripts\atx-build.ps1 configure                  # cmake --preset dev into build/
 powershell scripts\atx-build.ps1 check atx-vol\src\foo.cpp  # single-TU compile, seconds — the shaping loop
 powershell scripts\atx-build.ps1 build atx-vol-tests        # ALWAYS target-scoped, never bare all-targets
-powershell scripts\atx-build.ps1 -Ctest -L atx_vol_fast     # ctest passthrough
+powershell scripts\atx-build.ps1 -Ctest -L atx_vol_fast     # release qualification only; forbidden in oracle loop
 ```
 
-Never raw `cmake --build`/`ninja` outside the wrapper or `--preset` (loses `CCACHE_BASEDIR`). Iterate ladder: `check <file>` → `build <owning-test-target>` → `-Ctest -R <Suite>` → full label only at gate time.
+Never raw `cmake --build`/`ninja` outside the wrapper or `--preset` (loses `CCACHE_BASEDIR`). Iterate with `check <file>` → `build <owning-test-target>` → anchored `-Ctest -R <Suite>`. Full labels belong only to release qualification outside `vol-oracle-iter`; the oracle loop never runs them.
 
 ## Parallel work — worktree POOL, never raw `git worktree add`
 

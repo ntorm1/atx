@@ -89,9 +89,11 @@ Test placement: `*_test.cpp` → `tests/<group>/` matching the subsystem prefix 
 
 - [ ] clang-format clean; `/W4 /permissive- /WX` + `/fp:precise` build (any warning = fail).
 - [ ] ctest green for the group; tests written first, cover boundaries + the invariant.
-- [ ] Harness gate efficiency: lanes never run `-L atx_vol_fast`; integration runs
-  it once at frozen HEAD. Hygiene is skipped without header changes and otherwise
-  builds only the workflow-derived changed-header target closure.
+- [ ] Oracle-loop gate efficiency: exact commands come from the changed-file
+  dependency closure; require affected anchored unit tests, hypothesis OracleBench,
+  smoke/tune scorecards, quiet pinned speed, and header-only scoped PCH-off targets.
+  Labels, broad/full suites, and full-repo hygiene are contract failures. Full
+  regression/release qualification is a separate workflow outside the loop.
 - [ ] Test file in the right `tests/<group>/` folder.
 - [ ] **Orphan check** after every commit on a shared branch: `git -C <root> merge-base --is-ancestor <sha> HEAD` — re-attach if lost. Stage explicit pathspecs, never `git add -A`.
 - [ ] No invariant weakened; no hot-path alloc; no dangling span.

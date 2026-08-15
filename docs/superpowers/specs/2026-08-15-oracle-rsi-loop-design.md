@@ -119,9 +119,9 @@ Measure (smoke+tune, modes A+B)          → scorecard N
   → Attribute (tool-less aggregate payload) → ranked worst cells + 1-3 falsifiable
                                              hypotheses ("fix X ⇒ cell Y RMSE −Z%")
   → Improve (vol-sprint child workflow)    → plan → parallel lanes → review → fix
-  → Ratchet gate (new exact-SHA lease)      → existing gates (atx_vol_fast, hygiene,
-                                             ci/run_all_gates.ps1) PLUS oracle gate:
-                                             scorecard on HOLDOUT must improve target
+  → Ratchet gate (new exact-SHA lease)      → changed-closure unit/OracleBench/PCH-off
+                                             gates + smoke/tune scorecards + quiet speed;
+                                             HOLDOUT scorecard must improve target
                                              cells, no aggregate regression > 2%, speed
                                              ≥ baseline pin
   → Commit + memory                        → accept: canonical CAS, scorecard pinned, ledger line

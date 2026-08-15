@@ -19,15 +19,16 @@ Work loop (TDD, ladder discipline — never bare all-target builds):
 1. Failing test first, in the correct suite under `atx-vol/tests/`.
 2. `atx-build.ps1 check <file.cpp>` while shaping (single-TU, seconds).
 3. `atx-build.ps1 build <test-target-from-brief>` then `-Ctest -R <Suite>` until green.
-4. Never run `-L atx_vol_fast` in a lane. The verifier owns its one authoritative
-   execution after the integration HEAD is frozen. Run only brief-scoped suites.
+4. Run only the workflow-derived `gate_closure` commands. Labels, unanchored/bare
+   ctest, full regression suites, broad builds, and full-repo hygiene are forbidden
+   during the oracle loop. Header changes may run only their named PCH-off targets.
 5. `dev` preset only. NEVER `dev-shared` for anything you will claim test results from.
 
 Hard boundaries:
 - Touch ONLY files-in-scope. A needed change to a forbidden/shared file = report it as a blocker or deviation, don't make it.
 - No scope drift: brief's out-of-scope list is binding.
 - Every claim in your report carries structured command, exit_code=0, and pasted
-  output. Every brief check/build/suite must be named by at least one successful
+  output. Every exact changed-closure command must be named by at least one successful
   evidence command. Failed attempts go under diagnostics. No output, no claim.
 
 Finish:

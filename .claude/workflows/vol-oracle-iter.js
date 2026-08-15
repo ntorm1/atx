@@ -41,21 +41,26 @@ const SPEED_METRIC_ID = 'rel_avx2_rows_per_second'
 const RATCHET_GATE_COMMANDS = Object.freeze({
   holdout_mode_a: 'atx-vol-oracle-bench --cohort holdout --mode A --aggregate-only',
   holdout_mode_b: 'atx-vol-oracle-bench --cohort holdout --mode B --aggregate-only',
-  rel_avx2_speed: 'atx-vol-oracle-bench --cohort tune --benchmark-speed --preset rel-avx2 --aggregate-only',
+  rel_avx2_speed: 'atx-vol-oracle-bench --cohort tune --benchmark-speed --preset rel-avx2 --quiet-host --aggregate-only',
 })
 const BOOTSTRAP_GATE_COMMANDS = Object.freeze({
   disk: 'powershell scripts\\oracle-bootstrap-preflight.ps1 -Gate disk',
   ingest_manifest: 'powershell scripts\\oracle-bootstrap-preflight.ps1 -Gate ingest_manifest',
   cohort_manifests: 'powershell scripts\\oracle-bootstrap-preflight.ps1 -Gate cohort_manifests',
   holdout_digest: 'powershell scripts\\oracle-bootstrap-preflight.ps1 -Gate holdout_digest',
-  mode_a_targeted_tests: 'powershell scripts\\atx-build.ps1 -Ctest -R mode_a_targeted_tests',
+  mode_a_targeted_tests: 'powershell scripts\\atx-build.ps1 -Preset dev -Ctest -R ^mode_a_targeted_tests$',
   mode_a_smoke: 'atx-vol-oracle-bench --cohort smoke --mode A --aggregate-only',
-  convention_tests: 'powershell scripts\\atx-build.ps1 -Ctest -R convention_tests',
+  convention_tests: 'powershell scripts\\atx-build.ps1 -Preset dev -Ctest -R ^convention_tests$',
   mode_a_smoke_tune: 'atx-vol-oracle-bench --cohort smoke,tune --mode A --aggregate-only',
   residual_floor: 'atx-vol-oracle-bench --cohort smoke,tune --mode A --residual-floor --aggregate-only',
-  mode_b_targeted_tests: 'powershell scripts\\atx-build.ps1 -Ctest -R mode_b_targeted_tests',
+  mode_b_targeted_tests: 'powershell scripts\\atx-build.ps1 -Preset dev -Ctest -R ^mode_b_targeted_tests$',
   mode_b_smoke_tune: 'atx-vol-oracle-bench --cohort smoke,tune --mode B --aggregate-only',
 })
+const READY_MEASURE_COMMANDS = Object.freeze([
+  'atx-vol-oracle-bench --cohort smoke,tune --mode A --scorecard --aggregate-only',
+  'atx-vol-oracle-bench --cohort smoke,tune --mode B --scorecard --aggregate-only',
+  'atx-vol-oracle-bench --cohort tune --benchmark-speed --preset rel-avx2 --quiet-host --aggregate-only',
+])
 
 const EVIDENCE_ITEM = {
   type: 'object', additionalProperties: false, required: ['command', 'exit_code', 'output'],
@@ -287,7 +292,29 @@ const BOOTSTRAP_LANES = {
 }
 
 function validSuccessEvidence(evidence) {
-  return Array.isArray(evidence) && evidence.length > 0 && evidence.every(item => item && typeof item.command === 'string' && item.command.trim() && item.exit_code === 0 && typeof item.output === 'string' && item.output.trim())
+  return Array.isArray(evidence) && evidence.length > 0 && evidence.every(item => item && typeof item.command === 'string' && item.command.trim() && !iterationCommandError(item.command) && item.exit_code === 0 && typeof item.output === 'string' && item.output.trim())
+}
+
+function iterationCommandError(command) {
+  const text = String(command || '').trim()
+  if (!text) return 'empty command'
+  if (/[;&|`]/.test(text)) return 'chained command forbidden in oracle loop'
+  if (/(?:^|\s)-L(?:\s|=)/i.test(text) || /run_all_gates/i.test(text)) return 'label/full regression command forbidden in oracle loop'
+  if (/(?:^|\s)(?:ctest|-Ctest)(?:\s|$)/i.test(text)) {
+    const match = text.match(/(?:^|\s)-R\s+(\S+)/i)
+    if (!match || !/^\^[A-Za-z][A-Za-z0-9_.-]{3,63}\$$/.test(match[1]) || /atx_vol/i.test(match[1])) return 'broad or unanchored ctest forbidden in oracle loop'
+  }
+  if (/\bpytest\b/i.test(text) || /\bnode\s+--test\b/i.test(text) || /cmake\s+--build/i.test(text) && !/--target\s+[A-Za-z0-9_.+-]+/i.test(text)) return 'broad runner/build forbidden in oracle loop'
+  return null
+}
+
+function exactEvidenceSet(evidence, commands) {
+  return validSuccessEvidence(evidence) && evidence.length === commands.length && commands.every(command => evidence.filter(item => item.command === command).length === 1) &&
+    evidence.every(item => !iterationCommandError(item.command))
+}
+
+function diagnosticsUseForbiddenCommand(diagnostics) {
+  return Array.isArray(diagnostics) && diagnostics.some(item => iterationCommandError(item && item.command))
 }
 
 function validLeaseReceipt(receipt, expected, action) {
@@ -350,7 +377,7 @@ function reviewContractError(review, expectedSha) {
   if (!review) return 'missing review'
   if (!['APPROVE', 'BLOCK'].includes(review.verdict) || !Array.isArray(review.findings)) return 'review shape invalid'
   if (review.reviewed_sha !== expectedSha) return 'reviewed SHA mismatch'
-  if (!validSuccessEvidence(review.evidence)) return 'review lacks successful evidence'
+  if (!validSuccessEvidence(review.evidence) || diagnosticsUseForbiddenCommand(review.diagnostics)) return 'review has invalid/broad command evidence'
   const blockers = review.findings.filter(finding => finding.severity === 'blocker')
   if (review.verdict === 'APPROVE' && blockers.length) return 'APPROVE contains blocker'
   if (review.verdict === 'BLOCK' && !blockers.length) return 'BLOCK lacks blocker'
@@ -361,7 +388,7 @@ function bootstrapReportError(report, expected) {
   if (!report || report.outcome !== 'DONE') return 'bootstrap build incomplete'
   if (report.state !== expected.state || report.branch !== expected.branch || report.base_sha !== expected.base_sha || report.lease_run_id !== expected.run_id || report.heartbeat_id !== expected.heartbeat_id) return 'bootstrap build identity mismatch'
   if (!/^[0-9a-f]{40}$/i.test(report.sha || '') || !/^[0-9a-f]{64}$/i.test(report.holdout_digest_receipt || '') ||
-      (expected.holdout_digest_receipt && report.holdout_digest_receipt !== expected.holdout_digest_receipt) || !validSuccessEvidence(report.evidence)) return 'bootstrap build evidence/SHA/receipt invalid'
+      (expected.holdout_digest_receipt && report.holdout_digest_receipt !== expected.holdout_digest_receipt) || !validSuccessEvidence(report.evidence) || diagnosticsUseForbiddenCommand(report.diagnostics)) return 'bootstrap build evidence/SHA/receipt invalid'
   if (!/^pool-[0-9]+$/.test(report.lease_name || '') || !/[\\/]atx-wt[\\/]pool-[0-9]+$/i.test(report.worktree || '') ||
       !report.worktree.replace(/\//g, '\\').toLowerCase().endsWith(`\\${report.lease_name.toLowerCase()}`)) return 'bootstrap build not isolated'
   if (!validLeaseReceipt(report.acquisition_receipt, {
@@ -376,7 +403,7 @@ function bootstrapPrepareError(report, review, prepare, expected) {
   if (buildError) return buildError
   const reviewError = reviewContractError(review, report.sha)
   if (reviewError || review.verdict !== 'APPROVE') return reviewError || 'bootstrap not approved'
-  if (!prepare || !prepare.passed || !validSuccessEvidence(prepare.evidence)) return 'scoped verifier missing/failed'
+  if (!prepare || !prepare.passed || !validSuccessEvidence(prepare.evidence) || diagnosticsUseForbiddenCommand(prepare.diagnostics)) return 'scoped verifier missing/failed'
   if (prepare.reviewed_sha !== report.sha || prepare.integration_sha !== report.sha || prepare.integration_branch !== expected.integration_branch ||
       prepare.lease_run_id !== expected.run_id || prepare.next_state !== expected.next_state || prepare.holdout_digest_receipt !== report.holdout_digest_receipt) return 'bootstrap prepare identity/state mismatch'
   if (!/^pool-[0-9]+$/.test(prepare.integration_lease || '') || !/[\\/]atx-wt[\\/]pool-[0-9]+$/i.test(prepare.integration_worktree || '') ||
@@ -485,7 +512,7 @@ function relativeRegression(metric) {
 }
 
 function ratchetPrepareContractError(ratchet, expected) {
-  if (!ratchet || !validSuccessEvidence(ratchet.evidence)) return 'Ratchet evidence missing/failed'
+  if (!ratchet || !validSuccessEvidence(ratchet.evidence) || diagnosticsUseForbiddenCommand(ratchet.diagnostics)) return 'Ratchet evidence missing/failed'
   if (ratchet.tested_sha !== expected.tested_sha || ratchet.tested_branch !== expected.tested_branch || ratchet.base_sha !== expected.tested_sha ||
       ratchet.ratchet_branch !== expected.ratchet_branch || ratchet.lease_run_id !== expected.run_id || ratchet.heartbeat_id !== expected.heartbeat_id ||
       !/^[0-9a-f]{40}$/i.test(ratchet.ratchet_sha || '')) return 'Ratchet exact integration/base identity mismatch'
@@ -619,9 +646,9 @@ if (!capability.canonical_exists) throw new Error('ready requires existing canon
 phase('Measure')
 const measureBranch = `lane/oracle-measure-${capability.next_iter}-${RUN_SLUG}`
 const measureHeartbeat = `${RUN_SLUG}-measure`
-const measure = await agent(`Measure ${capability.next_iter} from ${BASE_SHA} in keeper-backed ${measureBranch}, RunId=${RUN_ID}, HeartbeatId=${measureHeartbeat}. Run aggregate smoke+tune A+B and pinned speed; commit/release. Return strict attribution_payload schema_version=2 with the complete immutable target/aggregate registries and positive pinned speed baseline; only enumerated conventions, validated IDs, and numbers are allowed. No prose, paths, hashes, membership, rows, or encoded blobs. Return typed acquire/release.`, { schema: MEASURE, label: 'measure' })
+const measure = await agent(`Measure ${capability.next_iter} from ${BASE_SHA} in keeper-backed ${measureBranch}, RunId=${RUN_ID}, HeartbeatId=${measureHeartbeat}. Run exactly these three small aggregate commands, once each and no other test/build command: ${JSON.stringify(READY_MEASURE_COMMANDS)}; commit/release. Return their exact evidence plus strict attribution_payload schema_version=2 with the complete immutable target/aggregate registries and positive pinned speed baseline; only enumerated conventions, validated IDs, and numbers are allowed. No prose, paths, hashes, membership, rows, or encoded blobs. Return typed acquire/release.`, { schema: MEASURE, label: 'measure' })
 const measureLease = measure && { lease_name: measure.lease_name, run_id: RUN_ID, branch: measureBranch, base_sha: BASE_SHA, worktree: measure.worktree, heartbeat_id: measureHeartbeat, keeper_pid: measure.keeper_pid, keeper_process_started_utc: measure.keeper_process_started_utc }
-const measureError = !measure || measure.status !== 'ok' || measure.iter !== capability.next_iter || measure.branch !== measureBranch || measure.base_sha !== BASE_SHA || measure.lease_run_id !== RUN_ID || measure.heartbeat_id !== measureHeartbeat || !/^[0-9a-f]{40}$/i.test(measure.sha || '') || !measure.lease_released || !validSuccessEvidence(measure.evidence) || !validLeaseReceipt(measure.acquisition_receipt, measureLease || {}, 'acquire') || !validLeaseReceipt(measure.release_receipt, measureLease || {}, 'release') || aggregatePayloadError(measure.attribution_payload)
+const measureError = !measure || measure.status !== 'ok' || measure.iter !== capability.next_iter || measure.branch !== measureBranch || measure.base_sha !== BASE_SHA || measure.lease_run_id !== RUN_ID || measure.heartbeat_id !== measureHeartbeat || !/^[0-9a-f]{40}$/i.test(measure.sha || '') || !measure.lease_released || !exactEvidenceSet(measure.evidence, READY_MEASURE_COMMANDS) || diagnosticsUseForbiddenCommand(measure.diagnostics) || !validLeaseReceipt(measure.acquisition_receipt, measureLease || {}, 'acquire') || !validLeaseReceipt(measure.release_receipt, measureLease || {}, 'release') || aggregatePayloadError(measure.attribution_payload)
 if (measureError) return { iteration: capability.next_iter, capability_state: 'ready', verdict: 'FAILED', holdout: null, confirmed: [], refuted: [], sprint: null, ledger: [], ratchet_evidence: [], failure: 'Measure failed strict contract; no holdout', run_id: RUN_ID, base_sha: BASE_SHA, canonical_after: null }
 
 phase('Attribute')

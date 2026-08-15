@@ -10,16 +10,17 @@ Vol surface / vol-derivatives library. Source groups: `core pricing fitting mark
 - Python wheel: `python/` is a standalone scikit-build-core + pybind11 project (`atxvol`), 26 pytest files, driven into ctest as `atx-vol-python` (SKIP_RETURN_CODE 77).
 - ~63 tests SKIP on a bare host (AVX2/counters/market-data/env classes — enumerated in README `## Build & test`).
 
-## Gates (pre-merge, in order)
+## Release/pre-merge gates outside the oracle loop
 
 1. Full fast suite green: `powershell scripts\atx-build.ps1 -Ctest -L atx_vol_fast` (from repo root).
 2. Include hygiene: `cmake --preset hygiene && cmake --build --preset hygiene` (PCH OFF; the default build masks include rot).
 
-Under `vol-sprint`, these gates are centralized for throughput: builders never run
-the full fast label, the isolated verifier runs it exactly once at frozen HEAD, and
-hygiene is omitted without header changes or target-scoped to the changed-header
-closure. The commands above remain the manual/full-repository policy outside the
-harness.
+The commands above are never run by `vol-oracle-iter` or its `vol-sprint` child.
+The oracle loop uses only its exact changed-file closure: affected anchored unit
+tests, hypothesis-specific OracleBench tests, aggregate smoke/tune scorecards,
+quiet pinned speed, and owning PCH-off targets for changed headers. Labels, broad
+ctest/builds, full-repository hygiene, and release regression suites are separate
+release qualification work.
 3. Module gates: `powershell atx-vol\ci\run_all_gates.ps1` — determinism (1-thread vs N-thread bit-identical NAV), golden replay (82-session SPY corpus, fails closed if licensed corpus absent), lakehouse-off link, pool soak. All on `dev` preset — correctness only.
 4. Perf claims ONLY from `rel-avx2` (`build-rel-avx2/`) against `bench/baselines/` pins.
 

@@ -25,12 +25,15 @@ is forbidden. Only exit-code-zero commands may support success; failed attempts 
 diagnostics. The integration result identifies the frozen base, run lease, exact
 reviewed lane SHA list, and newly leased integration branch/SHA.
 
-The 3,275-test `atx_vol_fast` label is integration-owned. Lane evidence containing
-`-L atx_vol_fast` is contract-invalid; the exact full-fast command must appear once
-with `tested_sha` equal to the frozen integration HEAD. Hygiene is skipped when no
-header changed and otherwise builds only the sorted target closure derived from
-changed-header lanes. Fast-suite sharding and a durable external background job
-adapter remain bounded follow-ons.
+**BREAKING:** full regression/release suites and full-repository hygiene are removed
+from the oracle loop entirely. Every lane now supplies a closed mapping from scoped
+files to affected unit targets, anchored unit regexes, hypothesis-specific
+OracleBench tests, and owning PCH-off targets. Integration mechanically derives the
+exact changed-file gate set, adds Mode A/B aggregate smoke+tune scorecards and the
+quiet pinned-speed microbenchmark, and requires one exact-SHA receipt per command
+without omission or extras. Labels, bare/unanchored ctest, broad builds/runners,
+and full-repo hygiene fail the oracle contract even when reported as diagnostics.
+Full regression and release qualification remain separate, outside-loop work.
 
 `vol-oracle-iter` no longer maps all missing tooling into a vol-sprint bootstrap.
 It hard-selects one state in order: `missing_data`, `missing_mode_a`,

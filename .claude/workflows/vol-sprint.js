@@ -16,8 +16,11 @@ if (!args || !args.task) throw new Error('vol-sprint needs args: { task: "<what 
 const BASE_REF = (args && args.base) || 'main'
 const RUN_ID = `vol-sprint-${Date.now()}-${Math.random().toString(16).slice(2)}`
 const RUN_SLUG = RUN_ID.replace(/[^A-Za-z0-9._-]/g, '-')
-const AUTHORITATIVE_FAST_GATE = 'atx_vol_fast'
-const AUTHORITATIVE_FAST_COMMAND = 'ctest --preset rel-avx2 -L atx_vol_fast --output-on-failure'
+const FIXED_ORACLE_GATES = Object.freeze([
+  { gate_id: 'scorecard:mode_a_smoke_tune', command: 'atx-vol-oracle-bench --cohort smoke,tune --mode A --scorecard --aggregate-only' },
+  { gate_id: 'scorecard:mode_b_smoke_tune', command: 'atx-vol-oracle-bench --cohort smoke,tune --mode B --scorecard --aggregate-only' },
+  { gate_id: 'speed:rel_avx2_quiet', command: 'atx-vol-oracle-bench --cohort tune --benchmark-speed --preset rel-avx2 --quiet-host --aggregate-only' },
+])
 
 const EVIDENCE_ITEM = {
   type: 'object', required: ['command', 'exit_code', 'output'],
@@ -70,16 +73,24 @@ const FREEZE = {
   },
 }
 const LANE = {
-  type: 'object',
-  required: ['id', 'title', 'goal', 'branch', 'files_in_scope', 'files_forbidden', 'check_targets', 'build_targets', 'suites', 'done_criteria', 'out_of_scope'],
+  type: 'object', additionalProperties: false,
+  required: ['id', 'title', 'goal', 'branch', 'files_in_scope', 'files_forbidden', 'gate_closure', 'done_criteria', 'out_of_scope'],
   properties: {
     id: { type: 'string' }, title: { type: 'string' }, goal: { type: 'string' },
     branch: { type: 'string' },
     files_in_scope: { type: 'array', items: { type: 'string' } },
     files_forbidden: { type: 'array', items: { type: 'string' } },
-    check_targets: { type: 'array', items: { type: 'string' } },
-    build_targets: { type: 'array', items: { type: 'string' } },
-    suites: { type: 'array', items: { type: 'string' } },
+    gate_closure: { type: 'array', items: {
+      type: 'object', additionalProperties: false,
+      required: ['file', 'unit_targets', 'unit_regexes', 'oracle_tests', 'pch_off_targets'],
+      properties: {
+        file: { type: 'string' },
+        unit_targets: { type: 'array', items: { type: 'string' } },
+        unit_regexes: { type: 'array', items: { type: 'string' } },
+        oracle_tests: { type: 'array', items: { type: 'string' } },
+        pch_off_targets: { type: 'array', items: { type: 'string' } },
+      },
+    } },
     done_criteria: { type: 'string' }, out_of_scope: { type: 'string' },
   },
 }
@@ -183,26 +194,76 @@ function laneHeartbeatId(lane) {
   return `${RUN_SLUG}-lane-${String(lane.id).replace(/[^A-Za-z0-9._-]/g, '-')}`
 }
 
-function evidenceReferencesTarget(evidence, target) {
-  const wanted = String(target || '').trim().replace(/\\/g, '/').toLowerCase()
-  if (!wanted) return true
-  return evidence.some(item => {
-    const command = String(item.command || '').replace(/\\/g, '/').toLowerCase()
-    return /(?:^|\s)(?:powershell(?:\.exe)?\s+)?(?:[^\s]*atx-build\.ps1|cmake|ctest|node|python|pytest|invoke-pester)(?:\s|$)/i.test(command) &&
-      command.includes(wanted)
-  })
-}
-
-function isFullFastCommand(command) {
-  return /(?:^|\s)-L\s+atx_vol_fast(?:\s|$)/i.test(String(command || ''))
-}
-
 function changedHeader(path) {
   return /\.(?:h|hh|hpp|hxx|inl)$/i.test(String(path || ''))
 }
 
-function hygieneCommand(targets) {
-  return targets.length ? `cmake --preset hygiene && cmake --build --preset hygiene --target ${targets.join(' ')}` : ''
+function changedCode(path) {
+  return /\.(?:c|cc|cpp|cxx|h|hh|hpp|hxx|inl)$/i.test(String(path || ''))
+}
+
+function safeTarget(value) {
+  return /^[A-Za-z0-9][A-Za-z0-9_.+-]{1,63}$/.test(String(value || '')) && String(value).toLowerCase() !== 'all'
+}
+
+function safeUnitRegex(value) {
+  const text = String(value || '')
+  return /^\^[A-Za-z][A-Za-z0-9_.-]{3,63}\$$/.test(text) && !/atx_vol/i.test(text)
+}
+
+function safeOracleTest(value) {
+  return /^[a-z0-9][a-z0-9_-]{2,63}$/.test(String(value || ''))
+}
+
+function closureError(lane) {
+  if (!lane || !Array.isArray(lane.files_in_scope) || !lane.files_in_scope.length || !Array.isArray(lane.gate_closure)) return 'lane closure missing'
+  const normalizedScope = lane.files_in_scope.map(path => String(path).replace(/\\/g, '/').toLowerCase())
+  const normalizedClosure = lane.gate_closure.map(item => item && String(item.file || '').replace(/\\/g, '/').toLowerCase())
+  if (new Set(normalizedScope).size !== normalizedScope.length || new Set(normalizedClosure).size !== normalizedClosure.length ||
+      normalizedScope.length !== normalizedClosure.length || !normalizedScope.every(path => normalizedClosure.includes(path))) return 'gate closure must map every scoped file exactly once'
+  let oracleTests = 0
+  for (const item of lane.gate_closure) {
+    if (!item || !['unit_targets', 'unit_regexes', 'oracle_tests', 'pch_off_targets'].every(key => Array.isArray(item[key]))) return 'gate closure arrays missing'
+    if (!item.unit_targets.every(safeTarget) || !item.unit_regexes.every(safeUnitRegex) || !item.oracle_tests.every(safeOracleTest) || !item.pch_off_targets.every(safeTarget)) return 'gate closure identifier invalid/broad'
+    if (changedCode(item.file) && (!item.unit_targets.length || !item.unit_regexes.length)) return 'changed code requires affected unit target and anchored unit regex'
+    if (changedHeader(item.file) && !item.pch_off_targets.length) return 'changed header requires scoped PCH-off target'
+    oracleTests += item.oracle_tests.length
+  }
+  return oracleTests > 0 ? null : 'lane requires a hypothesis-specific OracleBench test'
+}
+
+function closureEntries(lane, files) {
+  const wanted = new Set(files.map(path => String(path).replace(/\\/g, '/').toLowerCase()))
+  return lane.gate_closure.filter(item => wanted.has(String(item.file).replace(/\\/g, '/').toLowerCase()))
+}
+
+function derivedGateRegistry(entries, includeFixed = false) {
+  const gates = []
+  const add = (gate_id, command) => { if (!gates.some(item => item.gate_id === gate_id)) gates.push({ gate_id, command }) }
+  for (const entry of entries) {
+    for (const target of entry.unit_targets) add(`unit-build:${target}`, `powershell scripts\\atx-build.ps1 -Preset dev build ${target}`)
+    for (const regex of entry.unit_regexes) add(`unit-test:${regex}`, `powershell scripts\\atx-build.ps1 -Preset dev -Ctest -R ${regex}`)
+    for (const test of entry.oracle_tests) add(`oracle-test:${test}`, `atx-vol-oracle-bench --cohort smoke,tune --test ${test} --aggregate-only`)
+    if (changedHeader(entry.file)) for (const target of entry.pch_off_targets) add(`pch-off:${target}`, `powershell scripts\\atx-build.ps1 -Preset hygiene build ${target}`)
+  }
+  if (includeFixed) for (const gate of FIXED_ORACLE_GATES) add(gate.gate_id, gate.command)
+  return gates.sort((left, right) => left.gate_id.localeCompare(right.gate_id))
+}
+
+function oracleLoopCommandError(command) {
+  const text = String(command || '').trim()
+  if (!text) return 'empty command'
+  if (/[;&|`]/.test(text)) return 'chained command forbidden in oracle loop'
+  if (/(?:^|\s)-L(?:\s|=)/i.test(text) || /run_all_gates/i.test(text)) return 'label/full regression command forbidden in oracle loop'
+  if (/(?:^|\s)(?:ctest|-Ctest)(?:\s|$)/i.test(text)) {
+    const match = text.match(/(?:^|\s)-R\s+(\S+)/i)
+    if (!match || !safeUnitRegex(match[1])) return 'broad or unanchored ctest forbidden in oracle loop'
+  }
+  if (/atx-vol-tests(?:\.exe)?(?:\s|$)/i.test(text) && !/(?:-R\s+\^|--gtest_filter=)/i.test(text) && !/\bbuild\s+atx-vol-tests\b/i.test(text)) return 'direct full test executable forbidden in oracle loop'
+  if (/\bpytest\b/i.test(text) || /\bnode\s+--test\b/i.test(text)) return 'unscoped external test runner forbidden in oracle loop'
+  if (/cmake\s+--build/i.test(text) && !/--target\s+[A-Za-z0-9_.+-]+/i.test(text)) return 'broad cmake build forbidden in oracle loop'
+  if (/atx-build\.ps1[^\r\n]*\bbuild\s*$/i.test(text) || /(?:--target|\bbuild\s+)\s+all(?:\s|$)/i.test(text)) return 'broad build target forbidden in oracle loop'
+  return null
 }
 
 function reportContractError(report, lane, baseSha) {
@@ -221,10 +282,15 @@ function reportContractError(report, lane, baseSha) {
     keeper_process_started_utc: report.keeper_process_started_utc,
   }, 'acquire')) return 'lane acquisition receipt invalid'
   if (!validSuccessEvidence(report.evidence)) return 'missing successful command/output evidence'
-  if ([...(report.evidence || []), ...(report.diagnostics || [])].some(item => isFullFastCommand(item && item.command))) return 'lane attempted forbidden full atx_vol_fast gate'
-  const requiredReferences = [...lane.check_targets, ...lane.build_targets, ...lane.suites]
-  const missing = requiredReferences.filter(target => !evidenceReferencesTarget(report.evidence, target))
-  if (missing.length) return `evidence does not reference required checks: ${missing.join(', ')}`
+  const commandError = [...(report.evidence || []), ...(report.diagnostics || [])].map(item => oracleLoopCommandError(item && item.command)).find(Boolean)
+  if (commandError) return commandError
+  if (!Array.isArray(report.files_changed) || !report.files_changed.length || new Set(report.files_changed).size !== report.files_changed.length) return 'changed-file report missing/duplicated'
+  const scope = new Set(lane.files_in_scope.map(path => String(path).replace(/\\/g, '/').toLowerCase()))
+  if (!report.files_changed.every(path => scope.has(String(path).replace(/\\/g, '/').toLowerCase()))) return 'changed file outside lane scope'
+  const requiredGates = derivedGateRegistry(closureEntries(lane, report.files_changed))
+  if (!requiredGates.length) return 'changed dependency closure produced no targeted gates'
+  const missing = requiredGates.filter(gate => !report.evidence.some(item => item.command === gate.command && item.exit_code === 0 && String(item.output || '').trim()))
+  if (missing.length) return `evidence missing exact changed-closure gates: ${missing.map(gate => gate.gate_id).join(', ')}`
   return null
 }
 
@@ -233,6 +299,8 @@ function reviewContractError(review, report) {
   if (!['APPROVE', 'BLOCK'].includes(review.verdict) || !Array.isArray(review.findings)) return 'review shape invalid'
   if (review.reviewed_sha !== report.sha) return `reviewed stale SHA ${review.reviewed_sha}; expected ${report.sha}`
   if (!validSuccessEvidence(review.evidence)) return 'review has no successful command/output evidence'
+  const commandError = [...(review.evidence || []), ...(review.diagnostics || [])].map(item => oracleLoopCommandError(item && item.command)).find(Boolean)
+  if (commandError) return `review used invalid oracle-loop command: ${commandError}`
   if (review.verdict === 'APPROVE' && review.findings.some(f => f.severity === 'blocker')) {
     return 'APPROVE verdict contains a blocker finding'
   }
@@ -254,6 +322,8 @@ function laneFailureReason(state, lane) {
 function gateContractError(gate, expected) {
   if (!gate || !gate.passed) return 'integration gate missing/failed'
   if (!validSuccessEvidence(gate.gate_results)) return 'integration gate lacks successful evidence'
+  const commandError = [...(gate.gate_results || []), ...(gate.gate_receipts || []), ...(gate.diagnostics || [])].map(item => oracleLoopCommandError(item && item.command)).find(Boolean)
+  if (commandError) return commandError
   if (gate.base_sha !== expected.base_sha || gate.lease_run_id !== expected.run_id ||
       gate.integration_branch !== expected.branch || !/^[0-9a-f]{40}$/i.test(gate.sha || '')) return 'integration identity mismatch'
   if (!Array.isArray(gate.integrated_shas) || gate.integrated_shas.length !== expected.reviewed_shas.length ||
@@ -277,19 +347,17 @@ function gateContractError(gate, expected) {
         !/^[0-9a-f]{40}$/i.test(receipt.head_after || '') || !String(receipt.output || '').includes(receipt.head_after)) return 'exact reviewed SHA integration receipt invalid'
   }
   if (!validHeadReceipt(gate.head_receipt, 'HEAD', gate.sha)) return 'integration HEAD receipt invalid'
-  if (!Array.isArray(gate.gate_receipts) || gate.gate_receipts.length !== expected.gate_ids.length || new Set(gate.gate_receipts.map(receipt => receipt && receipt.gate_id)).size !== expected.gate_ids.length) return 'scoped gate receipts missing/extra/duplicated'
-  for (const gateId of expected.gate_ids) {
+  if (!Array.isArray(expected.gate_registry) || !expected.gate_registry.length || !Array.isArray(gate.gate_receipts) || gate.gate_receipts.length !== expected.gate_registry.length || new Set(gate.gate_receipts.map(receipt => receipt && receipt.gate_id)).size !== expected.gate_registry.length) return 'targeted gate receipts missing/extra/duplicated'
+  for (const expectedGate of expected.gate_registry) {
+    const gateId = expectedGate.gate_id
     const matches = gate.gate_receipts.filter(receipt => receipt && receipt.gate_id === gateId)
     const receipt = matches[0]
-    const commandValid = gateId === AUTHORITATIVE_FAST_GATE ? receipt && receipt.command === AUTHORITATIVE_FAST_COMMAND
-      : gateId === 'hygiene_changed_closure' ? receipt && receipt.command === expected.hygiene_command
-        : receipt && evidenceReferencesTarget([receipt], gateId)
-    if (matches.length !== 1 || receipt.tested_sha !== gate.sha || receipt.exit_code !== 0 || !String(receipt.output || '').trim() || !commandValid) return `required gate receipt invalid: ${gateId}`
+    if (matches.length !== 1 || receipt.tested_sha !== gate.sha || receipt.command !== expectedGate.command || receipt.exit_code !== 0 || !String(receipt.output || '').trim()) return `required targeted gate receipt invalid: ${gateId}`
     if (!gate.gate_results.some(item => item.command === receipt.command && item.exit_code === 0 && item.output === receipt.output)) {
       return `required gate missing from returned evidence: ${gateId}`
     }
   }
-  if (gate.gate_results.length !== expected.gate_ids.length) return 'gate evidence count does not equal authoritative gate set'
+  if (gate.gate_results.length !== expected.gate_registry.length) return 'gate evidence count does not equal exact targeted gate set'
   return null
 }
 
@@ -305,7 +373,7 @@ const BASE_SHA = freeze.base_sha
 
 phase('Plan')
 const plan = await agent(
-  `Task: ${args.task}\nFrozen base: ${BASE_REF} -> ${BASE_SHA}\nRun id: ${RUN_ID}\n\nDecompose into 1-4 file-disjoint lanes. Every listed lane is mandatory. Branches must be lane/<id> and the integration branch must be integration/<task>. Reserve shared files for exactly one lane or the integration gate. Lane checks must be scoped; never assign atx_vol_fast or a -L atx_vol_fast command because the isolated integration gate runs that authoritative suite exactly once after final HEAD freeze. Do not edit, lease, build, or inspect licensed oracle row data.`,
+  `Task: ${args.task}\nFrozen base: ${BASE_REF} -> ${BASE_SHA}\nRun id: ${RUN_ID}\n\nDecompose into 1-4 file-disjoint lanes. Every listed lane is mandatory. Branches must be lane/<id> and the integration branch must be integration/<task>. Reserve shared files for exactly one lane or the integration gate. For EVERY files_in_scope path return one exact gate_closure entry. Changed C/C++ files require affected unit targets plus anchored non-broad unit regexes; every lane needs hypothesis-specific OracleBench test IDs; headers require owning scoped PCH-off targets. Never assign labels, broad ctest/builds, full regression/release suites, or full-repo hygiene. Do not edit, lease, build, or inspect licensed oracle row data.`,
   { agentType: 'vol-planner', schema: PLAN, label: 'plan' },
 )
 if (!plan || !Array.isArray(plan.lanes) || plan.lanes.length < 1 || plan.lanes.length > 4) {
@@ -316,13 +384,8 @@ const lanes = plan.lanes.map(lane => ({
   branch: `lane/${String(lane.id).replace(/[^A-Za-z0-9._-]/g, '-')}-${RUN_SLUG}`,
 }))
 const INTEGRATION_BRANCH = `integration/${RUN_SLUG}`
-const LANE_GATE_IDS = [...new Set(lanes.flatMap(lane => [...lane.build_targets, ...lane.suites]).filter(Boolean))]
-if (!LANE_GATE_IDS.length || lanes.some(lane => ![...lane.build_targets, ...lane.suites].filter(Boolean).length)) {
-  throw new Error('every mandatory lane needs at least one build target or suite')
-}
-if (lanes.some(lane => [...lane.check_targets, ...lane.build_targets, ...lane.suites].some(target => target === AUTHORITATIVE_FAST_GATE || isFullFastCommand(target)))) {
-  throw new Error('planner assigned the authoritative atx_vol_fast gate to a lane')
-}
+const planClosureErrors = lanes.map(lane => closureError(lane)).filter(Boolean)
+if (planClosureErrors.length) throw new Error(`planner changed-dependency closure invalid: ${planClosureErrors.join('; ')}`)
 if (new Set(lanes.map(lane => lane.id)).size !== lanes.length ||
     new Set(lanes.map(lane => lane.branch)).size !== lanes.length) {
   throw new Error('lane ids/derived run-unique branches must be unique')
@@ -331,7 +394,7 @@ if (new Set(lanes.map(lane => lane.id)).size !== lanes.length ||
 const results = await pipeline(
   lanes,
   lane => agent(
-    `Mandatory lane brief (JSON):\n${JSON.stringify(lane, null, 2)}\n\nFrozen base SHA: ${BASE_SHA}. Harness run_id: ${RUN_ID}. Lease only with: powershell scripts\\lease-worktree.ps1 -Branch ${lane.branch} -Base ${BASE_SHA} -Agent vol-builder-${lane.id} -RunId ${RUN_ID} -HeartbeatId ${laneHeartbeatId(lane)} -MaxPool 20. The lease starts an independent continuous keeper; do not substitute foreground pulses for ownership. Never work in C:\\atx. Implement, run every named scoped check/build/suite, but NEVER run -L atx_vol_fast in a lane; the integration gate owns its single authoritative execution. Commit explicit paths, keep the lease held, and return the typed acquisition receipt including keeper PID/start plus only exit_code=0 commands under evidence; failed diagnostics belong under diagnostics.`,
+    `Mandatory lane brief (JSON):\n${JSON.stringify(lane, null, 2)}\n\nFrozen base SHA: ${BASE_SHA}. Harness run_id: ${RUN_ID}. Lease only with: powershell scripts\\lease-worktree.ps1 -Branch ${lane.branch} -Base ${BASE_SHA} -Agent vol-builder-${lane.id} -RunId ${RUN_ID} -HeartbeatId ${laneHeartbeatId(lane)} -MaxPool 20. The lease starts an independent continuous keeper; do not substitute foreground pulses for ownership. Never work in C:\\atx. Implement and run only the planned small changed-closure commands: ${JSON.stringify(derivedGateRegistry(lane.gate_closure))}. Labels, broad ctest/builds, full suites, and full-repo hygiene are forbidden. Commit explicit paths, keep the lease held, and return the typed acquisition receipt including keeper PID/start plus only exit_code=0 commands under evidence; failed diagnostics belong under diagnostics.`,
     { agentType: 'vol-builder', schema: REPORT, phase: 'Build', label: `build:${lane.id}` },
   ),
   (report, lane) => {
@@ -347,7 +410,7 @@ const results = await pipeline(
     const blockers = state.review.findings.filter(f => f.severity === 'blocker')
     if (!blockers.length) return { ...state, contract_error: 'BLOCK review had no blockers' }
     return agent(
-      `Fix mandatory lane ${lane.id} at ${state.report.worktree} on ${state.report.branch}. Frozen base SHA: ${BASE_SHA}; run_id=${RUN_ID}. Address exactly these blockers:\n${JSON.stringify(blockers, null, 2)}\nRun every named lane check/build/suite again, commit explicit paths, keep the same lease, and report the NEW commit SHA with pasted output.`,
+      `Fix mandatory lane ${lane.id} at ${state.report.worktree} on ${state.report.branch}. Frozen base SHA: ${BASE_SHA}; run_id=${RUN_ID}. Address exactly these blockers:\n${JSON.stringify(blockers, null, 2)}\nRerun only the exact small changed-closure commands ${JSON.stringify(derivedGateRegistry(lane.gate_closure))}; labels, broad/full suites, and full-repo hygiene remain forbidden. Commit explicit paths, keep the same lease, and report the NEW commit SHA with pasted output.`,
       { agentType: 'vol-builder', schema: REPORT, phase: 'Fix', label: `fix:${lane.id}` },
     ).then(report => ({
       report,
@@ -413,21 +476,22 @@ if (!releaseComplete) {
   }
 }
 
-const hygieneTargets = [...new Set(results.flatMap((state, index) =>
-  state.report.files_changed.some(changedHeader) ? lanes[index].build_targets : []).filter(target => /^[A-Za-z0-9_.+-]+$/.test(target)))].sort()
-const scopedHygieneCommand = hygieneCommand(hygieneTargets)
-const REQUIRED_GATE_IDS = [...new Set([...LANE_GATE_IDS, AUTHORITATIVE_FAST_GATE, ...(scopedHygieneCommand ? ['hygiene_changed_closure'] : [])])]
+const changedClosureEntries = results.flatMap((state, index) => closureEntries(lanes[index], state.report.files_changed))
+const REQUIRED_GATE_REGISTRY = derivedGateRegistry(changedClosureEntries, true)
+if (!REQUIRED_GATE_REGISTRY.some(gate => gate.gate_id.startsWith('unit-test:')) || !REQUIRED_GATE_REGISTRY.some(gate => gate.gate_id.startsWith('oracle-test:'))) {
+  throw new Error('changed closure omitted affected unit or hypothesis-specific OracleBench gates')
+}
 
 phase('Gate')
 const gate = await agent(
-  `Gate this vol-sprint in a NEW isolated pool lease. Frozen base SHA: ${BASE_SHA}. Integration branch: ${INTEGRATION_BRANCH}. Harness run_id: ${RUN_ID}. Lane commits in brief order:\n${JSON.stringify(results.map(state => ({ lane: state.report.lane_id, branch: state.report.branch, sha: state.report.sha, reviewed_sha: state.review.reviewed_sha, verdict: state.review.verdict })))}\nRequired gate IDs: ${JSON.stringify(REQUIRED_GATE_IDS)}. The authoritative full-fast command is exactly: ${AUTHORITATIVE_FAST_COMMAND}. Changed-header closure: ${JSON.stringify(results.flatMap(state => state.report.files_changed).filter(changedHeader))}. Scoped hygiene targets: ${JSON.stringify(hygieneTargets)}; exact hygiene command: ${scopedHygieneCommand || 'SKIP (no changed headers)'}.\nShared-files ownership: ${plan.shared_files_note}\n\nFirst acquire with powershell scripts\\lease-worktree.ps1 -Branch ${INTEGRATION_BRANCH} -Base ${BASE_SHA} -Agent vol-verifier -RunId ${RUN_ID} -HeartbeatId ${RUN_SLUG}-integration -MaxPool 20. The returned C:\\atx-wt\\pool-N path is the ONLY place integration, builds, tests, and ledger append may occur; never use C:\\atx. Report typed keeper-backed acquisition. Integrate each exact reviewed SHA in listed order and prove the final HEAD SHA BEFORE gates. Run each required gate exactly once against that tested_sha: the full fast gate once, and hygiene only for the derived changed-header target closure. Return one receipt/evidence item per gate, commit gate-owned memory if changed, then release. A conflict or gate failure is passed=false but still releases. Failures belong in diagnostics.`,
+  `Gate this vol-sprint in a NEW isolated pool lease. Frozen base SHA: ${BASE_SHA}. Integration branch: ${INTEGRATION_BRANCH}. Harness run_id: ${RUN_ID}. Lane commits in brief order:\n${JSON.stringify(results.map(state => ({ lane: state.report.lane_id, branch: state.report.branch, sha: state.report.sha, reviewed_sha: state.review.reviewed_sha, verdict: state.review.verdict })))}\nWorkflow-derived changed-file closure: ${JSON.stringify(results.map(state => ({ lane: state.report.lane_id, files: state.report.files_changed })))}. Run this COMPLETE exact targeted gate registry once and omit nothing: ${JSON.stringify(REQUIRED_GATE_REGISTRY)}. It contains affected unit targets/anchored tests, hypothesis OracleBench tests, required aggregate smoke+tune scorecards, quiet pinned speed, and header-only scoped PCH-off targets. Labels, broad ctest/builds, full regression/release suites, and full-repo hygiene are forbidden.\nShared-files ownership: ${plan.shared_files_note}\n\nFirst acquire with powershell scripts\\lease-worktree.ps1 -Branch ${INTEGRATION_BRANCH} -Base ${BASE_SHA} -Agent vol-verifier -RunId ${RUN_ID} -HeartbeatId ${RUN_SLUG}-integration -MaxPool 20. The returned C:\\atx-wt\\pool-N path is the ONLY place integration, builds, tests, and ledger append may occur; never use C:\\atx. Report typed keeper-backed acquisition. Integrate each exact reviewed SHA in listed order and prove final HEAD BEFORE gates. Run every registry command exactly once against that tested_sha, return one exact receipt/evidence item per gate, commit gate-owned memory if changed, then release. A conflict or gate failure is passed=false but still releases. Failures belong in diagnostics.`,
   { agentType: 'vol-verifier', schema: GATE, label: 'gate' },
 )
 
 const gateError = gateContractError(gate, {
   base_sha: BASE_SHA, run_id: RUN_ID, branch: INTEGRATION_BRANCH,
   heartbeat_id: `${RUN_SLUG}-integration`, reviewed_shas: results.map(state => state.review.reviewed_sha),
-  gate_ids: REQUIRED_GATE_IDS, hygiene_command: scopedHygieneCommand,
+  gate_registry: REQUIRED_GATE_REGISTRY,
 })
 const gateContractPassed = !gateError
 

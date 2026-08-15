@@ -14,10 +14,14 @@ One paragraph. What exists after this lane that does not exist now.
 - Branch: run-unique lane/<id>-<run-slug> off <frozen-base-sha>
 - Lease: pool-N acquired with <workflow-run-id>, <heartbeat-id>, and an independent
   continuously renewing keeper PID/process-start identity
-## Ladder
-- check targets: <the .cpp files to type-check while shaping>
-- build target(s): <e.g. atx-vol-tests>
-- suites: <gtest -R filters that must go green>
+## Changed dependency gate closure
+One exact entry per files-in-scope path:
+- file: <path>
+- unit_targets: <affected small build targets>
+- unit_regexes: <anchored exact gtest/ctest -R expressions>
+- oracle_tests: <hypothesis-specific OracleBench test IDs>
+- pch_off_targets: <owning targets; required only for headers>
+Labels, broad/full runners or builds, and full-repo hygiene are forbidden in the oracle loop.
 ## Done criteria
 Falsifiable. "Suite X passes, suite Y still passes, no new warnings" — never "improved".
 ## Out of scope
@@ -43,7 +47,7 @@ exit_code=0, and the `LEASED` output proving them.
 <list>
 ## Evidence
 For each successful command: exact command, exit_code=0, and verbatim non-empty output.
-Every brief check target, build target, and suite must occur in an evidence command.
+Every command mechanically derived from the changed-file closure must occur exactly in evidence.
 Failed attempts belong under Diagnostics and cannot support a success claim. Claims
 without pasted exit-code-zero output are void.
 ## Deviations from brief

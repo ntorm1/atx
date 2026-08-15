@@ -131,3 +131,10 @@ verdict is never authoritative. For ACCEPT only, a minimal finalizer compare-and
 swaps `refs/heads/oracle/canonical` to the prepared commit, then an independent
 auditor reads the actual ref. REJECT leaves it unchanged. If the finalizer report
 is missing, audit truth is returned rather than assuming the old SHA.
+
+The ready-state sprint never runs a full regression label, broad ctest/build, full
+repository hygiene, or release gate. Its integration registry is derived exactly
+from changed files and contains only affected anchored unit tests, hypothesis
+OracleBench tests, aggregate smoke/tune Mode A/B scorecards, the quiet pinned-speed
+microbenchmark, and owning PCH-off targets for changed headers. Full regression and
+release qualification are separate from the oracle loop.

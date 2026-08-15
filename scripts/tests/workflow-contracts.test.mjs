@@ -43,21 +43,27 @@ const SPEED_METRIC_ID = 'rel_avx2_rows_per_second'
 const RATCHET_GATE_COMMANDS = {
   holdout_mode_a: 'atx-vol-oracle-bench --cohort holdout --mode A --aggregate-only',
   holdout_mode_b: 'atx-vol-oracle-bench --cohort holdout --mode B --aggregate-only',
-  rel_avx2_speed: 'atx-vol-oracle-bench --cohort tune --benchmark-speed --preset rel-avx2 --aggregate-only',
+  rel_avx2_speed: 'atx-vol-oracle-bench --cohort tune --benchmark-speed --preset rel-avx2 --quiet-host --aggregate-only',
 }
 const BOOTSTRAP_GATE_COMMANDS = {
   disk: 'powershell scripts\\oracle-bootstrap-preflight.ps1 -Gate disk',
   ingest_manifest: 'powershell scripts\\oracle-bootstrap-preflight.ps1 -Gate ingest_manifest',
   cohort_manifests: 'powershell scripts\\oracle-bootstrap-preflight.ps1 -Gate cohort_manifests',
   holdout_digest: 'powershell scripts\\oracle-bootstrap-preflight.ps1 -Gate holdout_digest',
-  mode_a_targeted_tests: 'powershell scripts\\atx-build.ps1 -Ctest -R mode_a_targeted_tests',
+  mode_a_targeted_tests: 'powershell scripts\\atx-build.ps1 -Preset dev -Ctest -R ^mode_a_targeted_tests$',
   mode_a_smoke: 'atx-vol-oracle-bench --cohort smoke --mode A --aggregate-only',
-  convention_tests: 'powershell scripts\\atx-build.ps1 -Ctest -R convention_tests',
+  convention_tests: 'powershell scripts\\atx-build.ps1 -Preset dev -Ctest -R ^convention_tests$',
   mode_a_smoke_tune: 'atx-vol-oracle-bench --cohort smoke,tune --mode A --aggregate-only',
   residual_floor: 'atx-vol-oracle-bench --cohort smoke,tune --mode A --residual-floor --aggregate-only',
-  mode_b_targeted_tests: 'powershell scripts\\atx-build.ps1 -Ctest -R mode_b_targeted_tests',
+  mode_b_targeted_tests: 'powershell scripts\\atx-build.ps1 -Preset dev -Ctest -R ^mode_b_targeted_tests$',
   mode_b_smoke_tune: 'atx-vol-oracle-bench --cohort smoke,tune --mode B --aggregate-only',
 }
+const FIXED_ORACLE_GATES = [
+  { gate_id: 'scorecard:mode_a_smoke_tune', command: 'atx-vol-oracle-bench --cohort smoke,tune --mode A --scorecard --aggregate-only' },
+  { gate_id: 'scorecard:mode_b_smoke_tune', command: 'atx-vol-oracle-bench --cohort smoke,tune --mode B --scorecard --aggregate-only' },
+  { gate_id: 'speed:rel_avx2_quiet', command: 'atx-vol-oracle-bench --cohort tune --benchmark-speed --preset rel-avx2 --quiet-host --aggregate-only' },
+]
+const READY_MEASURE_COMMANDS = FIXED_ORACLE_GATES.map(gate => gate.command)
 
 function extractFunction(source, name) {
   const start = source.indexOf(`function ${name}(`)
@@ -80,14 +86,14 @@ function loadFunctions(source, names, prelude = '') {
 }
 
 const oracleFns = loadFunctions(oracle, [
-  'validSuccessEvidence', 'validLeaseReceipt', 'validHeadReceipt', 'validGateReceipt', 'expectedGateMetricIds', 'validRatchetGateReceipt', 'validIntegrationCommand', 'casReceiptError', 'auditReceiptError',
+  'iterationCommandError', 'validSuccessEvidence', 'exactEvidenceSet', 'diagnosticsUseForbiddenCommand', 'validLeaseReceipt', 'validHeadReceipt', 'validGateReceipt', 'expectedGateMetricIds', 'validRatchetGateReceipt', 'validIntegrationCommand', 'casReceiptError', 'auditReceiptError',
   'reviewContractError', 'bootstrapReportError', 'bootstrapPrepareError', 'aggregatePayloadError',
   'metricDeltaConsistent', 'expectedRatchetMetrics', 'sameNumber', 'distanceToInterval', 'marketCommand', 'marketReceiptError', 'relativeRegression', 'ratchetPrepareContractError', 'computeRatchetVerdict',
-], `const RATCHET_GATE_IDS = ['holdout_mode_a', 'holdout_mode_b', 'rel_avx2_speed']; const TARGET_REGISTRY = ${JSON.stringify(TARGET_REGISTRY)}; const AGGREGATE_REGISTRY = ${JSON.stringify(AGGREGATE_REGISTRY)}; const SPEED_METRIC_ID = '${SPEED_METRIC_ID}'; const RATCHET_GATE_COMMANDS = ${JSON.stringify(RATCHET_GATE_COMMANDS)}; const BOOTSTRAP_GATE_COMMANDS = ${JSON.stringify(BOOTSTRAP_GATE_COMMANDS)}`)
+], `const RATCHET_GATE_IDS = ['holdout_mode_a', 'holdout_mode_b', 'rel_avx2_speed']; const TARGET_REGISTRY = ${JSON.stringify(TARGET_REGISTRY)}; const AGGREGATE_REGISTRY = ${JSON.stringify(AGGREGATE_REGISTRY)}; const SPEED_METRIC_ID = '${SPEED_METRIC_ID}'; const RATCHET_GATE_COMMANDS = ${JSON.stringify(RATCHET_GATE_COMMANDS)}; const BOOTSTRAP_GATE_COMMANDS = ${JSON.stringify(BOOTSTRAP_GATE_COMMANDS)}; const READY_MEASURE_COMMANDS = ${JSON.stringify(READY_MEASURE_COMMANDS)}`)
 const sprintFns = loadFunctions(sprint, [
-  'validSuccessEvidence', 'validLeaseReceipt', 'validHeadReceipt', 'validIntegrationCommand', 'evidenceReferencesTarget', 'isFullFastCommand', 'changedHeader', 'hygieneCommand', 'reviewContractError',
-  'laneFailureReason', 'gateContractError',
-], "const AUTHORITATIVE_FAST_GATE = 'atx_vol_fast'; const AUTHORITATIVE_FAST_COMMAND = 'ctest --preset rel-avx2 -L atx_vol_fast --output-on-failure'")
+  'validSuccessEvidence', 'validLeaseReceipt', 'validHeadReceipt', 'validIntegrationCommand', 'changedHeader', 'changedCode', 'safeTarget', 'safeUnitRegex', 'safeOracleTest',
+  'closureError', 'closureEntries', 'derivedGateRegistry', 'oracleLoopCommandError', 'laneHeartbeatId', 'reportContractError', 'reviewContractError', 'laneFailureReason', 'gateContractError',
+], `const FIXED_ORACLE_GATES = ${JSON.stringify(FIXED_ORACLE_GATES)}; const RUN_ID = 'run-1'; const RUN_SLUG = 'run-1'`)
 
 function leaseIdentity({ lease = 'pool-1', branch, base, heartbeat, worktree = `C:\\atx-wt\\${lease}`, keeperPid = 4242 }) {
   return {
@@ -204,7 +210,7 @@ function measure() {
     worktree: identity.worktree, lease_name: identity.lease_name, lease_run_id: 'run-1', heartbeat_id: identity.heartbeat_id,
     keeper_pid: identity.keeper_pid, keeper_process_started_utc: identity.keeper_process_started_utc,
     acquisition_receipt: leaseReceipt('acquire', identity), release_receipt: leaseReceipt('release', identity),
-    lease_released: true, attribution_payload: safePayload(), evidence: okEvidence,
+    lease_released: true, attribution_payload: safePayload(), evidence: READY_MEASURE_COMMANDS.map(command => ({ command, exit_code: 0, output: 'PASS' })),
   }
 }
 
@@ -310,6 +316,7 @@ const sprintPass = { passed: true, integration_branch: 'integration/run-1', inte
 
 test('success evidence and APPROVE contracts reject exit failure/blockers', () => {
   assert.equal(oracleFns.validSuccessEvidence([{ command: 'test', exit_code: 1, output: 'failed' }]), false)
+  assert.equal(oracleFns.validSuccessEvidence([{ command: 'ctest --preset rel-avx2 -L atx_vol_fast', exit_code: 0, output: 'PASS' }]), false)
   const review = { verdict: 'APPROVE', reviewed_sha: SHA.build, evidence: okEvidence, findings: [{ severity: 'blocker' }] }
   assert.equal(oracleFns.reviewContractError(review, SHA.build), 'APPROVE contains blocker')
 })
@@ -396,6 +403,19 @@ test('actual workflow rejects plaintext or encoded row payloads before Analyst a
   }
 })
 
+test('actual ready Measure requires exact smoke/tune scorecards and quiet speed with no broad diagnostics', async t => {
+  for (const [name, mutate] of [
+    ['omitted scorecard', measured => { measured.evidence.shift() }],
+    ['nonquiet speed', measured => { measured.evidence[2].command = measured.evidence[2].command.replace(' --quiet-host', '') }],
+    ['broad diagnostic', measured => { measured.diagnostics = [{ command: 'ctest --preset dev', exit_code: 1, output: 'refused' }] }],
+  ]) await t.test(name, async () => {
+    const measured = measure(); mutate(measured)
+    const { result, calls } = await runOracle({ capability: capability('ready'), measure: measured }, sprintPass)
+    assert.equal(result.verdict, 'FAILED')
+    assert.equal(calls.includes('attribute'), false)
+  })
+})
+
 test('actual ready path workflow computes ACCEPT and exact CAS/audit', async () => {
   const { result } = await runOracle(readyResponses(), sprintPass)
   assert.equal(result.verdict, 'ACCEPT')
@@ -476,16 +496,15 @@ test('ready ACCEPT finalizer exception still audits and reports actual landed ca
   assert.match(result.failure, /finalizer transport lost/)
 })
 
-test('sprint integration receipt contract rejects missing merge/gate/release and wrong HEAD', () => {
+test('sprint integration requires the exact mechanically-derived targeted registry without omission', () => {
   const identity = leaseIdentity({ branch: 'integration/run-1', base: SHA.base, heartbeat: 'run-1-integration' })
-  const hygiene = 'cmake --preset hygiene && cmake --build --preset hygiene --target atx-vol-tests'
-  const expected = { base_sha: SHA.base, run_id: 'run-1', branch: identity.branch, heartbeat_id: identity.heartbeat_id, reviewed_shas: [SHA.build], gate_ids: ['atx-vol-tests', 'AmericanSuite', 'atx_vol_fast', 'hygiene_changed_closure'], hygiene_command: hygiene }
-  const receipts = [
-    { ...gateReceipt('atx-vol-tests'), tested_sha: SHA.ratchet },
-    { ...gateReceipt('AmericanSuite'), tested_sha: SHA.ratchet },
-    { gate_id: 'atx_vol_fast', tested_sha: SHA.ratchet, command: 'ctest --preset rel-avx2 -L atx_vol_fast --output-on-failure', exit_code: 0, output: '3275/3275 PASS' },
-    { gate_id: 'hygiene_changed_closure', tested_sha: SHA.ratchet, command: hygiene, exit_code: 0, output: 'scoped hygiene PASS' },
+  const closure = [
+    { file: 'atx-vol/src/american.cpp', unit_targets: ['atx-vol-tests'], unit_regexes: ['^AmericanSuite$'], oracle_tests: ['american-rsi'], pch_off_targets: [] },
+    { file: 'atx-vol/include/atx/vol/american.hpp', unit_targets: ['atx-vol-tests'], unit_regexes: ['^AmericanSuite$'], oracle_tests: ['american-rsi'], pch_off_targets: ['atx-vol-tests'] },
   ]
+  const gateRegistry = sprintFns.derivedGateRegistry(closure, true)
+  const expected = { base_sha: SHA.base, run_id: 'run-1', branch: identity.branch, heartbeat_id: identity.heartbeat_id, reviewed_shas: [SHA.build], gate_registry: gateRegistry }
+  const receipts = gateRegistry.map(item => ({ ...item, tested_sha: SHA.ratchet, exit_code: 0, output: `${item.gate_id} PASS` }))
   const gate = {
     passed: true, base_sha: SHA.base, lease_run_id: 'run-1', integration_branch: identity.branch, sha: SHA.ratchet,
     integrated_shas: [SHA.build], integration_worktree: identity.worktree, integration_lease: identity.lease_name,
@@ -494,23 +513,24 @@ test('sprint integration receipt contract rejects missing merge/gate/release and
     integration_receipts: [{ reviewed_sha: SHA.build, head_after: SHA.build, command: `git merge ${SHA.build}`, exit_code: 0, output: SHA.build }],
     head_receipt: auditReceipt(SHA.ratchet, { ref: 'HEAD' }), gate_receipts: receipts,
     release_receipt: leaseReceipt('release', identity),
-    gate_results: [
-      { command: 'powershell scripts\\atx-build.ps1 -Ctest -R atx-vol-tests', exit_code: 0, output: 'atx-vol-tests PASS' },
-      { command: 'powershell scripts\\atx-build.ps1 -Ctest -R AmericanSuite', exit_code: 0, output: 'AmericanSuite PASS' },
-      { command: 'ctest --preset rel-avx2 -L atx_vol_fast --output-on-failure', exit_code: 0, output: '3275/3275 PASS' },
-      { command: hygiene, exit_code: 0, output: 'scoped hygiene PASS' },
-    ],
+    gate_results: receipts.map(receipt => ({ command: receipt.command, exit_code: 0, output: receipt.output })),
     leases_released: [identity.lease_name],
   }
   assert.equal(sprintFns.gateContractError(gate, expected), null)
   assert.match(sprintFns.gateContractError({ ...gate, integration_receipts: [] }, expected), /integration receipts/)
   assert.match(sprintFns.gateContractError({ ...gate, gate_receipts: gate.gate_receipts.slice(1) }, expected), /missing\/extra\/duplicated/)
-  const duplicateFast = structuredClone(gate); duplicateFast.gate_receipts.push(structuredClone(receipts[2])); duplicateFast.gate_results.push({ command: receipts[2].command, exit_code: 0, output: receipts[2].output })
-  assert.match(sprintFns.gateContractError(duplicateFast, expected), /missing\/extra\/duplicated/)
-  const staleFast = structuredClone(gate); staleFast.gate_receipts[2].tested_sha = SHA.base
-  assert.match(sprintFns.gateContractError(staleFast, expected), /atx_vol_fast/)
-  const broadHygiene = structuredClone(gate); broadHygiene.gate_receipts[3].command = 'cmake --preset hygiene && cmake --build --preset hygiene'
-  assert.match(sprintFns.gateContractError(broadHygiene, expected), /hygiene_changed_closure/)
+  const duplicate = structuredClone(gate); duplicate.gate_receipts.push(structuredClone(receipts[0])); duplicate.gate_results.push({ command: receipts[0].command, exit_code: 0, output: receipts[0].output })
+  assert.match(sprintFns.gateContractError(duplicate, expected), /missing\/extra\/duplicated/)
+  const stale = structuredClone(gate); stale.gate_receipts[0].tested_sha = SHA.base
+  assert.match(sprintFns.gateContractError(stale, expected), /required targeted gate/)
+  const wrongCommand = structuredClone(gate); wrongCommand.gate_receipts[0].command += ' --extra'
+  assert.match(sprintFns.gateContractError(wrongCommand, expected), /required targeted gate/)
+  const missingSpeed = structuredClone(gate); const speedIndex = missingSpeed.gate_receipts.findIndex(item => item.gate_id === 'speed:rel_avx2_quiet'); missingSpeed.gate_receipts.splice(speedIndex, 1); missingSpeed.gate_results.splice(speedIndex, 1)
+  assert.match(sprintFns.gateContractError(missingSpeed, expected), /missing\/extra\/duplicated/)
+  const evidenceOmission = structuredClone(gate); evidenceOmission.gate_results.pop()
+  assert.match(sprintFns.gateContractError(evidenceOmission, expected), /returned evidence|evidence count/)
+  const broadDiagnostic = structuredClone(gate); broadDiagnostic.diagnostics = [{ command: 'ctest --preset dev', exit_code: 1, output: 'refused' }]
+  assert.match(sprintFns.gateContractError(broadDiagnostic, expected), /broad or unanchored ctest/)
   assert.match(sprintFns.gateContractError({ ...gate, release_receipt: null }, expected), /release receipt/)
   assert.match(sprintFns.gateContractError({ ...gate, head_receipt: auditReceipt(SHA.base, { ref: 'HEAD' }) }, expected), /HEAD receipt/)
   const chained = structuredClone(gate)
@@ -518,15 +538,47 @@ test('sprint integration receipt contract rejects missing merge/gate/release and
   assert.match(sprintFns.gateContractError(chained, expected), /integration receipt/)
 })
 
-test('sprint mechanically reserves full fast for one post-freeze gate and scopes hygiene to changed headers', () => {
-  assert.equal(sprintFns.isFullFastCommand('ctest -L atx_vol_fast'), true)
-  assert.equal(sprintFns.isFullFastCommand('ctest -R AmericanSuite'), false)
+test('oracle-loop command policy rejects full/broad work and derives scoped PCH-off only for changed headers', () => {
+  for (const command of [
+    'ctest --preset rel-avx2 -L atx_vol_fast --output-on-failure',
+    'ctest --preset dev --output-on-failure',
+    'powershell scripts\\atx-build.ps1 -Ctest',
+    'powershell scripts\\atx-build.ps1 -Ctest -R .*',
+    'cmake --build --preset hygiene',
+    'powershell atx-vol\\ci\\run_all_gates.ps1',
+    'build\\bin\\atx-vol-tests.exe',
+    'node --test',
+    'powershell scripts\\atx-build.ps1 -Preset dev -Ctest -R ^AmericanSuite$; ctest --preset dev',
+  ]) assert.notEqual(sprintFns.oracleLoopCommandError(command), null, command)
+  assert.equal(sprintFns.oracleLoopCommandError('powershell scripts\\atx-build.ps1 -Preset dev -Ctest -R ^AmericanSuite$'), null)
+  assert.equal(sprintFns.oracleLoopCommandError('powershell scripts\\atx-build.ps1 -Preset hygiene build atx-vol-tests'), null)
   assert.equal(sprintFns.changedHeader('atx-vol/include/model.hpp'), true)
   assert.equal(sprintFns.changedHeader('atx-vol/src/model.cpp'), false)
-  assert.equal(sprintFns.hygieneCommand(['AmericanSuite']), 'cmake --preset hygiene && cmake --build --preset hygiene --target AmericanSuite')
-  assert.ok(sprint.includes('lane attempted forbidden full atx_vol_fast gate'))
+  const cppOnly = sprintFns.derivedGateRegistry([{ file: 'atx-vol/src/model.cpp', unit_targets: ['atx-vol-tests'], unit_regexes: ['^AmericanSuite$'], oracle_tests: ['american-rsi'], pch_off_targets: ['atx-vol-tests'] }])
+  assert.equal(cppOnly.some(gate => gate.gate_id.startsWith('pch-off:')), false)
+  const header = sprintFns.derivedGateRegistry([{ file: 'atx-vol/include/model.hpp', unit_targets: ['atx-vol-tests'], unit_regexes: ['^AmericanSuite$'], oracle_tests: ['american-rsi'], pch_off_targets: ['atx-vol-tests'] }])
+  assert.deepEqual(header.find(gate => gate.gate_id === 'pch-off:atx-vol-tests'), { gate_id: 'pch-off:atx-vol-tests', command: 'powershell scripts\\atx-build.ps1 -Preset hygiene build atx-vol-tests' })
+  const validLane = { files_in_scope: ['atx-vol/src/model.cpp'], gate_closure: [{ file: 'atx-vol/src/model.cpp', unit_targets: ['atx-vol-tests'], unit_regexes: ['^AmericanSuite$'], oracle_tests: ['american-rsi'], pch_off_targets: [] }] }
+  assert.equal(sprintFns.closureError(validLane), null)
+  const omitted = structuredClone(validLane); omitted.gate_closure = []
+  assert.match(sprintFns.closureError(omitted), /every scoped file/)
+  const broad = structuredClone(validLane); broad.gate_closure[0].unit_regexes = ['^.*$']
+  assert.match(sprintFns.closureError(broad), /invalid\/broad/)
+  const lane = { ...validLane, id: 'american', branch: 'lane/american-run-1' }
+  const identity = leaseIdentity({ branch: lane.branch, base: SHA.base, heartbeat: 'run-1-lane-american' })
+  const laneGates = sprintFns.derivedGateRegistry(lane.gate_closure)
+  const report = {
+    outcome: 'DONE', lane_id: lane.id, branch: lane.branch, base_sha: SHA.base, sha: SHA.build,
+    lease_run_id: 'run-1', lease_name: identity.lease_name, heartbeat_id: identity.heartbeat_id,
+    worktree: identity.worktree, keeper_pid: identity.keeper_pid, keeper_process_started_utc: identity.keeper_process_started_utc,
+    acquisition_receipt: leaseReceipt('acquire', identity), files_changed: lane.files_in_scope,
+    evidence: laneGates.map(gate => ({ command: gate.command, exit_code: 0, output: 'PASS' })), diagnostics: [],
+  }
+  assert.equal(sprintFns.reportContractError(report, lane, SHA.base), null)
+  const broadLane = structuredClone(report); broadLane.diagnostics = [{ command: 'ctest --preset dev -L atx_vol_fast', exit_code: 1, output: 'refused' }]
+  assert.match(sprintFns.reportContractError(broadLane, lane, SHA.base), /label\/full regression/)
   assert.ok(sprint.includes("receipt.tested_sha !== gate.sha"))
-  assert.ok(sprint.includes('gate.gate_results.length !== expected.gate_ids.length'))
+  assert.ok(sprint.includes('gate.gate_results.length !== expected.gate_registry.length'))
 })
 
 test('analyst has no tools and Attribute receives only JSON typed payload', () => {
