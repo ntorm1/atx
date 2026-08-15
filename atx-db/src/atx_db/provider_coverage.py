@@ -116,6 +116,17 @@ DEFAULT_PROVIDER_COVERAGE_SLOS: tuple[ProviderCoverageSlo, ...] = (
         "Institutional target for formula-governed ratios and scores.",
     ),
     ProviderCoverageSlo(
+        "ATX.US.FUNDAMENTALS",
+        "restatements",
+        dt.date(2009, 1, 1),
+        15.0,
+        1_000,
+        None,
+        120.0,
+        _FUNDAMENTAL_CITATION,
+        "Institutional target for immutable standardized restatement events.",
+    ),
+    ProviderCoverageSlo(
         "ATX.US.EQUITIES",
         "ohlcv-1d",
         dt.date(2010, 1, 1),
