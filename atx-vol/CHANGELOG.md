@@ -351,7 +351,7 @@ shape rule.
   exist to be ragged. A result produced by the engine is unaffected -- the columns are
   written row-parallel or not at all.
 
-### Fixed — a load verifies exactly the set of surfaces it loaded (Task F-8, rounds 7 and 8)
+### Fixed — a load verifies exactly the set of surfaces it loaded (Task F-8, rounds 7 to 9)
 
 `MarketSnapshot::load` had sample-then-verify and sample-and-trust in the two
 branches of a single `if (subset_missed)`. The full-load branch reads
@@ -359,12 +359,28 @@ branches of a single `if (subset_missed)`. The full-load branch reads
 disagreement; the other branch read the directory's first entry and treated that
 timestamp as a fact about the ARCHIVE.
 
-Both branches now answer to ONE rule: **a load verifies exactly the set of
-surfaces it LOADED.** The whole board verifies all of them. A subset that
-matched verifies what it matched. A subset that matched NOTHING owns zero
-surfaces, verifies the empty set vacuously, and reads one record purely to DATE
-an empty snapshot -- which is a property of that record, not of the archive, and
-now says so at the site.
+Both branches now answer to ONE rule, stated at `backtest.hpp`'s `load`
+declaration, which `64d60e9` made the contract of record: **a load verifies
+exactly the set of surfaces it LOADED, and promises nothing about records it
+never read.** Over the three ways in:
+
+* WHOLE BOARD (`referenced_uids` empty) -- reads every record, so every record
+  is checked and `ts_ns()` IS an archive-wide fact.
+* A SUBSET THAT MATCHED -- checks the entries it loaded against each other. It
+  does not read the entries it skipped and makes no claim about them.
+* A SUBSET THAT MATCHED NOTHING -- loads zero surfaces, so it verifies the empty
+  set. **IT THEREFORE LOADS A MIXED ARCHIVE SUCCESSFULLY**: there is no
+  disagreement to find among no surfaces. It reads one record only to date the
+  empty snapshot.
+
+WHAT A CALLER SHOULD DO WITH THAT, in the contract's own words: **if you need
+the archive-wide guarantee, do a whole-board load; nothing else offers it.** The
+`InvalidArgument` for disagreement is scoped to the surfaces THIS LOAD READ, and
+`ts_ns()` on a zero-surface snapshot is one record's timestamp -- so comparing
+`ts_ns()` across snapshots is not a way to infer that an archive is consistent.
+Where this entry and that header ever disagree, the header is the contract and
+the one to trust; this is a derived copy, and the sprint's repeated failure was
+a derived copy outliving the authoritative one.
 
 THE SAMPLE WAS NEVER THE DEFECT. A zero-match subset still samples one record,
 by the rule above and deliberately: what was wrong is that the sampled timestamp
@@ -411,16 +427,31 @@ overload above, `1f04a01`), so nothing a pre-1.1.0 caller reads moves -- but
 every number that leg produced before `8d2f5de` was affected, on the kinds named
 below.
 
-**NaN poisoning, and what a caller now gets instead.** `DerivGreeks` carries
-"not computed" as NaN in the slots a caller did not ask for, and `NaN * 0.0` is
-NaN, so an unguarded product destroyed EVERY term of a Taylor cell over an axis
-the caller never asked about. Only the two smile terms were gated; theta, charm
-and vanna were bare multiplies. MEASURED: a contract shorter than the default
-roll (`1/365.25`) on a grid whose `dt` is ZERO returned 9 of 9 NaN cells while
-reporting `n_deriv_ok = 1`. Every NaN-capable term is now gated on its own
-shock, once and in the same form
-(`ScenarioGridDeriv.EveryNaNCapableTermIsGatedByItsOwnShock`). The artifact that
-stands behind the GENERAL claim is
+**NaN poisoning, and what a caller now gets instead.** A `DerivGreeks` member
+that was not computed is NaN, and `NaN * 0.0` is NaN, so an unguarded product
+destroyed EVERY term of a Taylor cell over an axis the caller never asked about.
+Only the two smile terms were gated; theta, charm and vanna were bare multiplies.
+MEASURED: a contract shorter than the default roll (`1/365.25`) on a grid whose
+`dt` is ZERO returned 9 of 9 NaN cells while reporting `n_deriv_ok = 1`.
+
+THE RULE IS ABOUT TERMS, AND IT HAS NO EXCEPTIONS: every term is gated on its own
+shock, identically. It is deliberately NOT stated as "the slots a configuration
+leaves NaN", which is how this file and the kernel's own header both described it
+until `55006c4` retired that noun in the last copy. Any count of slots is wrong
+about something -- the table it summarised is three conditions over
+`(slot, condition)` pairs in which one slot appears twice, and it describes what
+the DEFAULT configuration leaves NaN rather than what CAN be NaN, which is every
+`double` member. None of those is the number of TERMS the rule governs. The test
+that pins it was renamed in `64d60e9` to drop the same wrong noun from its own
+title, and is now `ScenarioGridDeriv.EveryTermIsGatedByItsOwnShock`.
+
+That noun was not only a description problem. Measured at the round-9 review,
+one gate mutated per run: the slot-organised test caught 6 of 11 and the
+term-organised one 11 of 11, and the five it missed were exactly delta, gamma,
+vega, volga and rho -- the terms no configuration leaves NaN, which a
+slot-organised test could not reach. The artifact had been built around the
+wrong noun too, which is why every earlier correction held for exactly one
+round. The artifact that stands behind the GENERAL claim is
 `ScenarioGridDeriv.ASufficientVerdictAlwaysYieldsAFiniteKernel`, whose slot list
 names every `double` member of `DerivGreeks` rather than the ones the kernel
 reads today -- a list of what is read today is definitionally unable to catch a
