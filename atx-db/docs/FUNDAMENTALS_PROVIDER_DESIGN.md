@@ -483,6 +483,40 @@ The minimum standardization-template coverage check still remains below its
 full-provider threshold on one sparse historical proof period. That is an explicit
 coverage failure, not a parser failure or a reason to weaken the gate.
 
+## Live warehouse promotion
+
+On 2026-08-15 the governed migration path promoted the live warehouse from
+migration 0266 to 0297 with a verified pre-flight backup
+(SHA-256 `0a91b7963681740a80fcd59b1888fdaaabbab8b6e8ae4a537d6c10afa5d6a1b3`,
+33,079,701,504 bytes) and post-apply schema and checksum verification. The first
+full-warehouse standardized build (`62a0adbe`, rule set
+`2ae542452f2969104c63e1dae7cec9e611b97c6197710bfb020c4826a1025e98`) consumed
+6,089,615 input rows and published 7,340,932 revision-complete standardized rows
+with zero standardization exceptions: 897,693 annual, 2,790,992 quarterly,
+2,302,418 instant, and 1,349,829 TTM. The published surface spans 1,598
+securities and 46 canonical items with economic periods from 1967 through 2026.
+
+That breadth measurement is also the honest gap statement: `sec_company_facts`
+currently holds 2,720 CIKs against the 10,433-symbol company-ticker snapshot,
+and 46 published items sit well below the 235-item registry. Universe expansion
+runs from the cached official bulk archives (`companyfacts.zip` and
+`submissions.zip`, both 2026-08-09) through the existing bulk loaders; item
+breadth is the statement-template and rule-governance work tracked below.
+
+Migration 0298 added the `restatements` public schema:
+`v_fundamental_restatement_events` publishes one immutable event per
+standardized revision that changed a previously published value, keyed by
+`(revision_group_id, revision_sequence)` so point-in-time vintage selection
+never collapses distinct events. Each event retains the restating and
+superseded accessions, first-reported baseline, per-event and cumulative
+deltas, and the availability timestamps of both vintages.
+
+The first full-universe reconciliation publish exposed a real capacity
+contract: materializing the contextual reconciliation view for every revision
+at once exceeded an 8 GB DuckDB memory limit on a 16 GB host while a parallel
+test session ran. The refresh is being re-run isolated with an 11 GB limit and
+reduced threads; symbol-sharded scoped publishes are the documented fallback.
+
 ## Remaining parity work
 
 The foundation is provider-shaped but the product is not yet a complete FactSet or

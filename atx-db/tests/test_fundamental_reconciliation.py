@@ -565,6 +565,47 @@ def test_verified_same_context_mismatch_is_a_hard_failure(tmp_store: DuckDBStore
     )
 
 
+def test_symbol_scoped_refresh_publishes_exactly_the_filtered_full_view(
+    tmp_store: DuckDBStore,
+) -> None:
+    """The scoped publish path must stay row-identical to filtering the full view.
+
+    The scoped implementation evaluates the reconciliation views over a
+    security-scoped copy of the standardized inputs (the full-view scan cannot
+    be memory-bounded by predicate pushdown), so this guard pins the required
+    equivalence between the two evaluation strategies.
+    """
+    _seed_balance_sheet_revisions(tmp_store)
+    expected = tmp_store.con.execute(
+        """
+        SELECT * FROM v_fundamental_reconciliation_contextual
+        WHERE security_id=?
+        ORDER BY reconciliation_id
+        """,
+        [SECURITY_ID],
+    ).fetchall()
+    assert expected
+
+    refresh = refresh_fundamental_reconciliation_serving(
+        tmp_store,
+        FundamentalReconciliationRefreshOptions(
+            symbols=("RECON",),
+            run_id="fixture-scoped-equivalence",
+        ),
+    )
+
+    assert refresh.row_count == len(expected)
+    actual = tmp_store.con.execute(
+        """
+        SELECT * FROM fundamental_reconciliation_serving
+        WHERE security_id=?
+        ORDER BY reconciliation_id
+        """,
+        [SECURITY_ID],
+    ).fetchall()
+    assert actual == expected
+
+
 def test_symbol_scoped_reconciliation_refresh_replaces_only_requested_security(
     tmp_store: DuckDBStore,
 ) -> None:
