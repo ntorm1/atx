@@ -93,6 +93,17 @@ $env:ATX_SEC_USER_AGENT = "atx-db/0.2 data-operations@your-domain.example"
 atx-db status --strict
 ```
 
+Load complete SEC filing histories for the full issuer universe from the official
+bulk archive without per-issuer API traffic. The loader reads each
+`CIK##########.json` member plus its paginated history members, applies the same
+normalization and replace semantics as the API path, and records zip-member
+provenance per row:
+
+```powershell
+atx-db load-sec-submissions-bulk --zip-path data\cache\submissions.zip
+atx-db load-sec-submissions-bulk --zip-path data\cache\submissions.zip --cik 320193 --all-forms
+```
+
 Build the revision-complete standardized fundamentals surface after statement and TTM
 refreshes. Omit `--symbol` for the full warehouse; repeated filters are useful for proof
 slices and incremental recovery:

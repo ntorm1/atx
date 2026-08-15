@@ -146,6 +146,8 @@
     "SchemaVerificationError",
     "SecCompanyFactsDataset",
     "SecCompanyFactsOptions",
+    "SecSubmissionsBulkDataset",
+    "SecSubmissionsBulkOptions",
     "SecSubmissionsDataset",
     "SecSubmissionsOptions",
     "SecurityListingMetricsDataset",

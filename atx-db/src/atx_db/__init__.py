@@ -364,7 +364,12 @@ from .observability import (
 from .quality import GateResult, QualityResult, evaluate_quality_gate, run_warehouse_quality_checks
 from .queries import SHORT_INTEREST_WITH_13F_SQL, short_interest_with_13f_positioning
 from .rebuild import WarehouseRebuildResult, run_warehouse_rebuild
-from .sec_submissions import SecSubmissionsDataset, SecSubmissionsOptions
+from .sec_submissions import (
+    SecSubmissionsBulkDataset,
+    SecSubmissionsBulkOptions,
+    SecSubmissionsDataset,
+    SecSubmissionsOptions,
+)
 from .security_master import SecurityMasterDataset, SecurityMasterOptions
 from .shares_outstanding import (
     SharesOutstandingHistoryDataset,
@@ -723,6 +728,8 @@ __all__ = [
     "SHORT_INTEREST_WITH_13F_SQL",
     "SecCompanyFactsDataset",
     "SecCompanyFactsOptions",
+    "SecSubmissionsBulkDataset",
+    "SecSubmissionsBulkOptions",
     "SecSubmissionsDataset",
     "SecSubmissionsOptions",
     "SecurityMasterDataset",

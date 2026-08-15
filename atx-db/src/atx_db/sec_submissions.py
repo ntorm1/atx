@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
+import re
+import zipfile
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, cast
 
 import pandas as pd
@@ -215,20 +219,213 @@ class SecSubmissionsDataset(Dataset):
         )
 
     def _replace_rows(self, store: DuckDBStore, frame: pd.DataFrame) -> int:
-        if frame.empty:
-            return 0
-        with store.transaction():
-            store.con.register("sec_submissions_load", frame)
-            try:
-                store.con.execute(
-                    """
-                    DELETE FROM sec_submissions AS dst
-                    USING sec_submissions_load AS src
-                    WHERE dst.security_id = src.security_id
-                      AND dst.accession_number = src.accession_number
-                    """
-                )
-                insert_frame(store, frame, "sec_submissions", "sec_submissions_insert")
-            finally:
-                store.con.unregister("sec_submissions_load")
-        return len(frame)
+        return _replace_submission_rows(store, frame)
+
+
+def _replace_submission_rows(store: DuckDBStore, frame: pd.DataFrame) -> int:
+    if frame.empty:
+        return 0
+    with store.transaction():
+        store.con.register("sec_submissions_load", frame)
+        try:
+            store.con.execute(
+                """
+                DELETE FROM sec_submissions AS dst
+                USING sec_submissions_load AS src
+                WHERE dst.security_id = src.security_id
+                  AND dst.accession_number = src.accession_number
+                """
+            )
+            insert_frame(store, frame, "sec_submissions", "sec_submissions_insert")
+        finally:
+            store.con.unregister("sec_submissions_load")
+    return len(frame)
+
+
+BULK_SOURCE_NAME = "SEC submissions bulk archive"
+_BULK_MAIN_MEMBER = re.compile(r"^CIK(\d{10})\.json$")
+
+# Every column _normalize reads positionally; history members omit some of them
+# (notably primaryDocDescription), so bulk frames are padded before normalizing.
+_NORMALIZE_REQUIRED_COLUMNS = (
+    "accessionNumber",
+    "filingDate",
+    "reportDate",
+    "acceptanceDateTime",
+    "form",
+    "primaryDocument",
+    "primaryDocDescription",
+)
+
+
+@dataclass(frozen=True)
+class SecSubmissionsBulkOptions:
+    zip_path: Path
+    forms: tuple[str, ...] | None = ("10-K", "10-Q", "8-K")
+    ciks: tuple[str, ...] | None = None
+    include_history_files: bool = True
+    run_id: str | None = None
+    batch_ciks: int = 2000
+
+
+def _pad_normalize_columns(frame: pd.DataFrame) -> pd.DataFrame:
+    if frame.empty:
+        return frame
+    for column in _NORMALIZE_REQUIRED_COLUMNS:
+        if column not in frame.columns:
+            frame[column] = None
+    return frame
+
+
+def _cik_security_map(store: DuckDBStore) -> dict[str, str]:
+    rows = store.con.execute(
+        """
+        SELECT cik, security_id
+        FROM sec_company_tickers
+        QUALIFY row_number() OVER (
+            PARTITION BY cik
+            ORDER BY source_loaded_at DESC, ticker
+        ) = 1
+        """
+    ).fetchall()
+    return {cik: security_id for cik, security_id in rows if security_id}
+
+
+class SecSubmissionsBulkDataset(Dataset):
+    """Load the complete SEC bulk ``submissions.zip`` corpus without API traffic.
+
+    The official bulk archive contains one ``CIK##########.json`` member per
+    entity (metadata plus the columnar ``filings.recent`` block) and separate
+    ``CIK##########-submissions-NNN.json`` members holding the older filing
+    history that the main member points at via ``filings.files``.
+    """
+
+    dataset_id = "sec_submissions"
+    source_name = BULK_SOURCE_NAME
+
+    def ensure_schema(self, store: DuckDBStore) -> None:
+        store.initialize()
+
+    def load(self, store: DuckDBStore, options: SecSubmissionsBulkOptions) -> DatasetLoadResult:
+        forms = None if options.forms is None else set(options.forms)
+        cik_scope = (
+            None
+            if options.ciks is None
+            else {_normalized_cik(cik) for cik in options.ciks}
+        )
+        security_map = _cik_security_map(store)
+
+        loaded = 0
+        ciks_loaded = 0
+        history_members_read = 0
+        missing_history_members = 0
+        pending: list[pd.DataFrame] = []
+        pending_ciks = 0
+
+        def flush() -> int:
+            nonlocal pending, pending_ciks
+            if not pending:
+                return 0
+            frame = pd.concat(pending, ignore_index=True)
+            frame = frame.drop_duplicates(
+                subset=["security_id", "accession_number"], keep="first"
+            ).reset_index(drop=True)
+            pending = []
+            pending_ciks = 0
+            return _replace_submission_rows(store, frame)
+
+        with zipfile.ZipFile(options.zip_path) as archive:
+            member_names = set(archive.namelist())
+            main_members = sorted(
+                name for name in member_names if _BULK_MAIN_MEMBER.match(name)
+            )
+            for member in main_members:
+                cik = cast(re.Match[str], _BULK_MAIN_MEMBER.match(member)).group(1)
+                if cik_scope is not None and cik not in cik_scope:
+                    continue
+                payload = json.loads(archive.read(member))
+                security_id = security_map.get(cik) or cik_security_id(cik)
+                source_url = f"{options.zip_path}!{member}"
+                frames = [
+                    _normalize(
+                        _pad_normalize_columns(_columnar_filings(payload)),
+                        security_id=security_id,
+                        cik=cik,
+                        source_url=source_url,
+                        run_id=options.run_id,
+                        forms=forms,
+                    )
+                ]
+                if options.include_history_files:
+                    for item in payload.get("filings", {}).get("files", []):
+                        name = item.get("name")
+                        if not name:
+                            continue
+                        if name not in member_names:
+                            missing_history_members += 1
+                            continue
+                        history_payload = json.loads(archive.read(name))
+                        history_members_read += 1
+                        frames.append(
+                            _normalize(
+                                _pad_normalize_columns(
+                                    _columnar_filings(
+                                        {"filings": {"recent": history_payload}}
+                                    )
+                                ),
+                                security_id=security_id,
+                                cik=cik,
+                                source_url=f"{options.zip_path}!{name}",
+                                run_id=options.run_id,
+                                forms=forms,
+                            )
+                        )
+                frames = [frame for frame in frames if not frame.empty]
+                if frames:
+                    pending.extend(frames)
+                    pending_ciks += 1
+                    ciks_loaded += 1
+                if pending_ciks >= options.batch_ciks:
+                    loaded += flush()
+        loaded += flush()
+
+        record_source_file(
+            store,
+            dataset_id=self.dataset_id,
+            source_url=str(options.zip_path),
+            status="fetched",
+            metadata={
+                "main_members": len(main_members),
+                "ciks_loaded": ciks_loaded,
+                "history_members_read": history_members_read,
+                "missing_history_members": missing_history_members,
+            },
+        )
+        quality_check(
+            store,
+            dataset_id=self.dataset_id,
+            table_name="sec_submissions",
+            check_name="rows_loaded",
+            status="passed" if loaded > 0 else "warning",
+            observed_value=float(loaded),
+            threshold_value=1.0,
+            details={
+                "zip_path": str(options.zip_path),
+                "forms": options.forms,
+                "ciks": options.ciks,
+            },
+        )
+        return DatasetLoadResult(
+            dataset_id=self.dataset_id,
+            rows_loaded=loaded,
+            source=BULK_SOURCE_NAME,
+            run_id=options.run_id,
+            details={
+                "zip_path": str(options.zip_path),
+                "main_members": len(main_members),
+                "ciks_loaded": ciks_loaded,
+                "history_members_read": history_members_read,
+                "missing_history_members": missing_history_members,
+                "forms": options.forms,
+            },
+        )

@@ -27,6 +27,7 @@ from .fundamental_reconciliation import (
 )
 from .migrations import MIGRATIONS
 from .openfigi_signals import OpenFigiSignalMapOptions, map_signal_cusips
+from .sec_submissions import SecSubmissionsBulkDataset, SecSubmissionsBulkOptions
 from .provider_coverage import ProviderCoverageOptions, refresh_provider_coverage
 from .standardization import (
     FundamentalStandardizationOptions,
@@ -185,6 +186,24 @@ def _build_parser() -> argparse.ArgumentParser:
     context_executor.add_argument("--capture-filing-packages", action="store_true")
     context_executor.add_argument("--user-agent")
     context_executor.add_argument("--run-id")
+
+    submissions_bulk = commands.add_parser(
+        "load-sec-submissions-bulk",
+        help="Load SEC filing histories from the official bulk submissions.zip archive",
+    )
+    submissions_bulk.add_argument("--db-path", type=Path, default=DEFAULT_DB_PATH)
+    submissions_bulk.add_argument("--zip-path", type=Path, required=True)
+    submissions_bulk.add_argument("--cik", action="append", dest="ciks")
+    submissions_bulk.add_argument(
+        "--form",
+        action="append",
+        dest="forms",
+        help="Repeatable form filter; --all-forms disables filtering",
+    )
+    submissions_bulk.add_argument("--all-forms", action="store_true")
+    submissions_bulk.add_argument("--no-history", action="store_true")
+    submissions_bulk.add_argument("--batch-ciks", type=int, default=2000)
+    submissions_bulk.add_argument("--run-id")
 
     filing_package = commands.add_parser(
         "capture-xbrl-filing-packages",
@@ -425,6 +444,38 @@ def main(argv: Sequence[str] | None = None) -> int:
                 FilingContextBackfillQueueOptions(run_id=args.run_id),
             )
         _json(asdict(queue_result))
+        return 0
+
+    if args.command == "load-sec-submissions-bulk":
+        bulk_defaults = SecSubmissionsBulkOptions(zip_path=args.zip_path)
+        with DuckDBStore(args.db_path) as store:
+            bulk_result = SecSubmissionsBulkDataset().load(
+                store,
+                SecSubmissionsBulkOptions(
+                    zip_path=args.zip_path,
+                    forms=(
+                        None
+                        if args.all_forms
+                        else (
+                            tuple(args.forms)
+                            if args.forms is not None
+                            else bulk_defaults.forms
+                        )
+                    ),
+                    ciks=None if args.ciks is None else tuple(args.ciks),
+                    include_history_files=not args.no_history,
+                    run_id=args.run_id,
+                    batch_ciks=args.batch_ciks,
+                ),
+            )
+        _json(
+            {
+                "dataset_id": bulk_result.dataset_id,
+                "rows_loaded": bulk_result.rows_loaded,
+                "run_id": bulk_result.run_id,
+                "details": bulk_result.details,
+            }
+        )
         return 0
 
     if args.command == "run-filing-context-backfill":
