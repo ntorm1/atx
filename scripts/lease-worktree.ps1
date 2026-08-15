@@ -28,6 +28,7 @@ param(
   [switch]$TestLeaseOnly,
   [string]$TestBaseSha,
   [string]$TestExistingBranchSha,
+  [string[]]$TestRegisteredWorktreePaths,
   [int]$TestSelectionDelayMs = 0
 )
 $ErrorActionPreference = 'Stop'
@@ -371,9 +372,35 @@ function Find-FreePool([string]$PoolRoot) {
   return $null
 }
 
-function Find-MissingPoolNumber([string]$PoolRoot, [int]$PoolLimit) {
+function Get-RegisteredWorktreePaths([string]$RepositoryRoot) {
+  $porcelain = @(git -C $RepositoryRoot worktree list --porcelain)
+  if ($LASTEXITCODE -ne 0) { throw 'git worktree list --porcelain failed' }
+  return @($porcelain | Where-Object { $_ -like 'worktree *' } |
+    ForEach-Object { $_.Substring(9) })
+}
+
+function Find-MissingPoolNumber(
+  [string]$PoolRoot,
+  [int]$PoolLimit,
+  [string[]]$RegisteredWorktreePaths = @()
+) {
   $used = @{}
   foreach ($tree in (Get-PoolTrees $PoolRoot)) { $used[[int]$tree.Name.Substring(5)] = $true }
+  $normalizedRoot = [System.IO.Path]::GetFullPath($PoolRoot).TrimEnd([char[]]@('\', '/'))
+  foreach ($registeredPath in @($RegisteredWorktreePaths)) {
+    if ([string]::IsNullOrWhiteSpace($registeredPath)) { continue }
+    try {
+      $normalizedPath = [System.IO.Path]::GetFullPath($registeredPath).TrimEnd([char[]]@('\', '/'))
+    } catch {
+      throw ('invalid path from git worktree list --porcelain: ' + $registeredPath)
+    }
+    $parent = [System.IO.Path]::GetDirectoryName($normalizedPath)
+    $name = [System.IO.Path]::GetFileName($normalizedPath)
+    if ($parent -and $parent.Equals($normalizedRoot, [System.StringComparison]::OrdinalIgnoreCase) -and
+        $name -match '^pool-([0-9]+)$') {
+      $used[[int]$Matches[1]] = $true
+    }
+  }
   for ($number = 1; $number -le $PoolLimit; $number++) {
     if (-not $used.ContainsKey($number)) { return $number }
   }
@@ -414,6 +441,9 @@ if ($TestLeaseOnly -and -not $TestPoolRoot) { throw 'TestLeaseOnly requires Test
 if ($TestPoolRoot -and -not $TestLeaseOnly) { throw 'TestPoolRoot is valid only with TestLeaseOnly' }
 if ($TestSelectionDelayMs -gt 0 -and -not $TestLeaseOnly) { throw 'TestSelectionDelayMs is test-only' }
 if (($TestBaseSha -or $TestExistingBranchSha) -and -not $TestLeaseOnly) { throw 'test SHA seams require TestLeaseOnly' }
+if ($TestRegisteredWorktreePaths -and -not $TestLeaseOnly) {
+  throw 'TestRegisteredWorktreePaths is valid only with TestLeaseOnly'
+}
 if ($RecoverStale -and -not $Release) { throw 'RecoverStale is valid only with Release' }
 
 $repoRoot = $null
@@ -597,7 +627,12 @@ try {
     $worktree = $free.FullName
     $poolName = $free.Name
   } else {
-    $number = Find-MissingPoolNumber $wtRoot $MaxPool
+    $registeredPaths = if ($TestLeaseOnly) {
+      @($TestRegisteredWorktreePaths)
+    } else {
+      @(Get-RegisteredWorktreePaths $repoRoot)
+    }
+    $number = Find-MissingPoolNumber $wtRoot $MaxPool $registeredPaths
     if ($number -eq 0) { throw ('pool exhausted (' + $MaxPool + ' slots, all leased)') }
     $poolName = 'pool-' + $number
     $worktree = Join-Path $wtRoot $poolName

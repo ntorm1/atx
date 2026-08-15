@@ -57,6 +57,44 @@ Describe 'lease-worktree atomic publication' {
     Test-CompleteLeaseRecord (Read-LeaseRecord (Join-Path $poolRoot 'pool-1\.atx-lease')) | Should Be $true
     & $scriptPath -Release 'pool-1' -RunId 'gap-run' -TestPoolRoot $poolRoot -TestLeaseOnly | Out-Null
   }
+
+  It 'reserves a registered missing path while selecting the first true physical gap under concurrency' {
+    $poolRoot = Join-Path $TestDrive 'registered-missing-gap'
+    $registeredPool = Join-Path $poolRoot 'pool-1'
+    $ownerStart = Get-UtcStamp (Get-Process -Id $PID).StartTime
+    $ownerPidForJobs = $PID
+    $jobBody = {
+      param($Path, $Root, $RegisteredPath, $Run, $DurablePid, $DurableStart)
+      try {
+        $output = & $Path -Branch 'test/registered-gap' -RunId $Run -Agent $Run -MaxPool 2 `
+          -OwnerPid $DurablePid -OwnerProcessStartedUtc $DurableStart `
+          -TestPoolRoot $Root -TestLeaseOnly -TestSelectionDelayMs 150 `
+          -TestRegisteredWorktreePaths @($RegisteredPath)
+        [pscustomobject]@{ ok = $true; run_id = $Run; output = ($output -join "`n") }
+      } catch {
+        [pscustomobject]@{ ok = $false; run_id = $Run; output = $_.Exception.Message }
+      }
+    }
+    $jobs = @(
+      Start-Job -ScriptBlock $jobBody -ArgumentList $scriptPath, $poolRoot, $registeredPool, 'gap-a', $ownerPidForJobs, $ownerStart
+      Start-Job -ScriptBlock $jobBody -ArgumentList $scriptPath, $poolRoot, $registeredPool, 'gap-b', $ownerPidForJobs, $ownerStart
+    )
+    try {
+      $jobs | Wait-Job | Out-Null
+      $results = @($jobs | Receive-Job)
+    } finally {
+      $jobs | Remove-Job -Force -ErrorAction SilentlyContinue
+    }
+
+    @($results | Where-Object { $_.ok }).Count | Should Be 1
+    @($results | Where-Object { -not $_.ok }).Count | Should Be 1
+    ($results | Where-Object { $_.ok }).output | Should Match 'pool=pool-2'
+    ($results | Where-Object { -not $_.ok }).output | Should Match 'pool exhausted'
+    Test-Path -LiteralPath $registeredPool | Should Be $false
+    $record = Read-LeaseRecord (Join-Path $poolRoot 'pool-2\.atx-lease')
+    Test-CompleteLeaseRecord $record | Should Be $true
+    & $scriptPath -Release 'pool-2' -RunId $record.run_id -TestPoolRoot $poolRoot -TestLeaseOnly | Out-Null
+  }
 }
 
 Describe 'lease-worktree durable owner lifecycle' {
