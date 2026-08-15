@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import re
 import uuid
 from dataclasses import dataclass
 
@@ -57,6 +58,83 @@ class FundamentalReconciliationRefreshResult:
     row_count: int
     max_available_at: dt.datetime | None
     run_id: str
+
+
+_SCOPED_CONTEXTUAL_VIEW = "tmp_v_fundamental_reconciliation_contextual_scoped"
+
+
+def _view_definition(store: DuckDBStore, view_name: str) -> str:
+    row = store.con.execute(
+        "SELECT sql FROM duckdb_views() WHERE view_name=?",
+        [view_name],
+    ).fetchone()
+    if row is None or not row[0]:
+        raise RuntimeError(f"view definition not found for {view_name}")
+    return str(row[0])
+
+
+def _create_scoped_contextual_view(store: DuckDBStore) -> str:
+    """Build temp clones of the reconciliation views over scoped inputs.
+
+    A symbol-scoped publish cannot rely on filter pushdown through the
+    reconciliation views: their event/input construction scans the complete
+    ``fundamental_standardized`` table before a security filter can apply, so a
+    full-universe warehouse pays full-view memory for any scope. The scoped
+    path instead materializes the in-scope standardized rows once and rebinds
+    the exact view SQL against that copy, which keeps scoped evaluation
+    row-identical to filtering the full view while bounding memory to the
+    scope.
+    """
+    store.con.execute(
+        """
+        CREATE OR REPLACE TEMP TABLE tmp_fundamental_standardized_scoped AS
+        SELECT * FROM fundamental_standardized
+        WHERE security_id IN (
+            SELECT security_id FROM fundamental_reconciliation_security_scope
+        )
+        """
+    )
+    base_sql = _view_definition(store, "v_fundamental_reconciliation")
+    base_sql = re.sub(
+        r"\bv_fundamental_reconciliation\b",
+        "tmp_v_fundamental_reconciliation_scoped",
+        base_sql,
+    )
+    base_sql = re.sub(
+        r"\bfundamental_standardized\b",
+        "tmp_fundamental_standardized_scoped",
+        base_sql,
+    )
+    base_sql = re.sub(
+        r"^CREATE VIEW\b",
+        "CREATE OR REPLACE TEMP VIEW",
+        base_sql,
+    )
+    store.con.execute(base_sql)
+
+    contextual_sql = _view_definition(store, "v_fundamental_reconciliation_contextual")
+    contextual_sql = re.sub(
+        r"\bv_fundamental_reconciliation_contextual\b",
+        _SCOPED_CONTEXTUAL_VIEW,
+        contextual_sql,
+    )
+    contextual_sql = re.sub(
+        r"\bv_fundamental_reconciliation\b",
+        "tmp_v_fundamental_reconciliation_scoped",
+        contextual_sql,
+    )
+    contextual_sql = re.sub(
+        r"\bfundamental_standardized\b",
+        "tmp_fundamental_standardized_scoped",
+        contextual_sql,
+    )
+    contextual_sql = re.sub(
+        r"^CREATE VIEW\b",
+        "CREATE OR REPLACE TEMP VIEW",
+        contextual_sql,
+    )
+    store.con.execute(contextual_sql)
+    return _SCOPED_CONTEXTUAL_VIEW
 
 
 def _fetch_count_watermark(
@@ -399,13 +477,15 @@ def refresh_fundamental_reconciliation_serving(
                 """
             )
             where_clause = "WHERE security_id IN (SELECT security_id FROM fundamental_reconciliation_security_scope)"
+            source_relation = _create_scoped_contextual_view(store)
         else:
             where_clause = ""
+            source_relation = "v_fundamental_reconciliation_contextual"
         store.con.execute(
             f"""
             CREATE OR REPLACE TEMP TABLE fundamental_reconciliation_serving_next AS
             SELECT *
-            FROM v_fundamental_reconciliation_contextual
+            FROM {source_relation}
             {where_clause}
             """
         )

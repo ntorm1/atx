@@ -472,6 +472,105 @@ RATIOS_SCHEMA = RecordSchema(
 )
 
 
+RESTATEMENTS_SCHEMA = RecordSchema(
+    dataset="ATX.US.FUNDAMENTALS",
+    code="restatements",
+    version="1.0.0",
+    title="US equity fundamental restatement events",
+    description=(
+        "One immutable event per standardized revision that changed a previously "
+        "published value, with the restating and superseded filings, first-reported "
+        "baseline, and point-in-time availability of both vintages."
+    ),
+    source_table="v_fundamental_restatement_events",
+    time_column="period_end",
+    natural_key=("revision_group_id", "revision_sequence"),
+    item_column="canonical_code",
+    basis_column="basis",
+    fields=(
+        FieldSpec(
+            "event_id",
+            "restatement_event_id",
+            "string",
+            "Stable identifier of the restating standardized revision.",
+            nullable=False,
+        ),
+        FieldSpec("security_id", "security_id", "string", "Stable ATX security identifier.", nullable=False),
+        FieldSpec("symbol", "symbol", "string", "Ticker reported for the observation."),
+        FieldSpec("cik", "cik", "string", "SEC Central Index Key."),
+        FieldSpec(
+            "item", "canonical_code", "string", "Canonical ATX fundamental item code.", nullable=False, filterable=True
+        ),
+        FieldSpec("item_id", "item_id", "int32", "Versioned canonical item identifier.", nullable=False),
+        FieldSpec(
+            "basis",
+            "basis",
+            "string",
+            "Fiscal basis such as annual, quarterly, or TTM.",
+            nullable=False,
+            filterable=True,
+        ),
+        FieldSpec("period_start", "period_start", "date", "Fiscal period start; null for instant items."),
+        FieldSpec("period_end", "period_end", "date", "Fiscal period end.", nullable=False),
+        FieldSpec("fiscal_year", "fiscal_year", "int32", "Issuer fiscal year."),
+        FieldSpec("fiscal_period", "fiscal_period", "string", "Issuer fiscal-period label."),
+        FieldSpec("unit", "unit", "string", "As-reported measurement unit or currency unit."),
+        FieldSpec("unit_type", "unit_type", "string", "Canonical unit family."),
+        FieldSpec("restated_value", "restated_value", "float64", "Value published by the restating revision.", nullable=False),
+        FieldSpec("previous_value", "previous_value", "float64", "Value in the immediately superseded revision."),
+        FieldSpec(
+            "first_reported_value",
+            "first_reported_value",
+            "float64",
+            "Value of the first standardized revision in the chain.",
+        ),
+        FieldSpec("value_delta", "value_delta", "float64", "Restated value less the superseded value."),
+        FieldSpec(
+            "value_delta_percent",
+            "value_delta_percent",
+            "float64",
+            "Revision delta divided by the absolute superseded value.",
+        ),
+        FieldSpec(
+            "cumulative_delta",
+            "cumulative_delta",
+            "float64",
+            "Restated value less the first-reported value.",
+        ),
+        FieldSpec(
+            "restating_accession",
+            "restating_accession",
+            "string",
+            "SEC accession that published the restated value.",
+        ),
+        FieldSpec("restating_filed_date", "restating_filed_date", "date", "Filing date of the restating accession."),
+        FieldSpec(
+            "previous_accession",
+            "previous_accession",
+            "string",
+            "SEC accession behind the superseded value.",
+        ),
+        FieldSpec(
+            "previous_available_at",
+            "previous_available_at",
+            "timestamp",
+            "Point-in-time availability of the superseded revision.",
+        ),
+        FieldSpec("revision_group_id", "revision_group_id", "string", "Stable standardized revision chain identifier.", nullable=False),
+        FieldSpec("revision_sequence", "revision_sequence", "int32", "One-based revision sequence of the restating revision.", nullable=False),
+        FieldSpec("revision_count", "revision_count", "int32", "Total revisions currently present in the chain."),
+        FieldSpec("update_type", "update_type", "string", "Original or restated standardized observation."),
+        FieldSpec(
+            "is_latest_revision",
+            "is_latest_revision",
+            "boolean",
+            "Whether the restating revision is currently the chain head.",
+        ),
+        *_PIT_FIELDS,
+    ),
+)
+
+
 DAILY_BARS_SCHEMA = RecordSchema(
     dataset="ATX.US.EQUITIES",
     code="ohlcv-1d",
@@ -525,6 +624,7 @@ DATASETS: Final[tuple[DatasetSpec, ...]] = (
             INDUSTRY_FUNDAMENTALS_SCHEMA,
             FUNDAMENTAL_RECONCILIATION_SCHEMA,
             RATIOS_SCHEMA,
+            RESTATEMENTS_SCHEMA,
         ),
     ),
     DatasetSpec(

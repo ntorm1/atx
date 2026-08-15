@@ -165,7 +165,12 @@ a directly reported discrete quarter when one becomes available.
 
 Two additional fundamentals contracts sit on top of that revision stream. The
 `industry-standardized` schema applies revision-complete `ALL`, bank, insurer, REIT,
-utility, and broker-dealer statement routing. The `reconciliation` schema evaluates 19
+utility, and broker-dealer statement routing. The `restatements` schema (migration
+0298) publishes one immutable event per standardized revision that changed a
+previously published value — restating and superseded accessions, first-reported
+baseline, per-event and cumulative deltas, and the point-in-time availability of
+both vintages — keyed by `(revision_group_id, revision_sequence)` so PIT vintage
+selection never collapses distinct events. The `reconciliation` schema evaluates 19
 governed accounting identities at every input or classification event, exposes exact
 weighted-input lineage and tolerances, and distinguishes hard `mismatch` results from
 diagnostic scope differences and PIT `not_applicable` transitions.
