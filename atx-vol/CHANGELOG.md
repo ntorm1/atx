@@ -3,6 +3,30 @@
 Breaking behavioural changes are recorded here with their migration. Anything
 that silently changes a NUMBER a caller already depends on belongs in this file.
 
+## Unreleased
+
+### BREAKING — oracle/DAG harness now fails closed with run-owned leases and ordered bootstrap states
+
+The old advisory worktree marker and permissive sprint integration behavior are
+removed. `scripts/lease-worktree.ps1` now requires `-RunId` for acquisition and
+release, freezes the base SHA, uses an atomic v2 record, and guards explicit stale
+recovery with owner PID plus process-start identity. Callers must pass the same
+run ID to release; legacy markers are not silently adopted.
+
+`vol-sprint` no longer excludes failed lanes and integrates the rest. Every planned
+lane is mandatory, every Fix gets a fresh exact-SHA review, and any incomplete or
+non-APPROVE lane aborts before integration. Approved lane leases are released before
+the verifier acquires a new isolated integration lease; main checkout integration
+is forbidden. Evidence is structured as command/exit/output and must reference
+the lane's required checks.
+
+`vol-oracle-iter` no longer maps all missing tooling into a vol-sprint bootstrap.
+It hard-selects one state in order: `missing_data`, `missing_mode_a`,
+`missing_conventions`, `missing_mode_b`, `ready`. A bootstrap invocation dispatches
+exactly one fixed lane and never benchmarks holdout. Only ready state runs the RSI
+loop; a failed sprint returns FAILED before holdout and does not count as REJECT.
+Holdout membership is frozen by canonical SHA-256 and verified before Ratchet.
+
 ## 1.2.0
 
 The public-surface api-restructure. Every public header moved from the flat

@@ -15,8 +15,8 @@ The same tree rebuilt warm: **no-op 5 s**; branch/preset flip with hot cache **2
 So: **lease a persistent pool tree instead of creating a new worktree.**
 
 ```powershell
-scripts\lease-worktree.ps1 -Branch feat/x            # lease free pool tree (grows pool to -MaxPool, default 4)
-scripts\lease-worktree.ps1 -Release pool-1           # done: detach branch, keep build/ warm
+scripts\lease-worktree.ps1 -Branch feat/x -Base <frozen-sha> -Agent <owner> -RunId <run-id> -MaxPool 20
+scripts\lease-worktree.ps1 -Release pool-1 -RunId <same-run-id>
 scripts\lease-worktree.ps1 -Status                   # who holds what
 ```
 

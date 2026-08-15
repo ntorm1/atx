@@ -18,12 +18,12 @@ Never raw `cmake --build`/`ninja` outside the wrapper or `--preset` (loses `CCAC
 ## Parallel work — worktree POOL, never raw `git worktree add`
 
 ```powershell
-powershell scripts\lease-worktree.ps1 -Branch feat/x    # DEFAULT: lease a warm pool tree (auto-grows to 4)
+powershell scripts\lease-worktree.ps1 -Branch feat/x -Base <frozen-sha> -Agent <owner> -RunId <run-id> -MaxPool 20
 powershell scripts\lease-worktree.ps1 -Status           # who holds what
-powershell scripts\lease-worktree.ps1 -Release pool-1   # done: commit/stash first (refuses dirty tree)
+powershell scripts\lease-worktree.ps1 -Release pool-1 -RunId <same-run-id>
 ```
 
-Warm tree: 5 s no-op / 27 s branch flip. Fresh worktree: 132 s at 38% cache — and manual `git worktree add` skips submodules (configure dies). One agent per leased tree; leases are advisory (`.atx-lease`).
+Warm tree: 5 s no-op / 27 s branch flip. Fresh worktree: 132 s at 38% cache — and manual `git worktree add` skips submodules. Lease v2 acquisition is atomic and records run_id, PID + process start, branch, frozen base SHA, and time. Release requires the acquiring run_id; investigate owner state before explicit stale recovery.
 
 ## House style — mandatory reading before C++
 

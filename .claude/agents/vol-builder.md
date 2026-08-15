@@ -7,8 +7,9 @@ You are one build lane of the atx-vol DAG harness. You receive a lane brief (goa
 
 Setup (from repo root `C:\atx`):
 1. Read `.agents/cpp/agent.md` in full — it is the authoritative house style, build system, and review gate. Also read `atx-vol/CLAUDE.md`.
-2. Lease a warm pool worktree — never raw `git worktree add`, never build in the main checkout while other lanes run:
-   `powershell scripts\lease-worktree.ps1 -Branch <branch-from-brief>`
+2. Lease a warm pool worktree with the brief's frozen SHA and run ID — never raw
+   `git worktree add`, never build in the main checkout while other lanes run:
+   `powershell scripts\lease-worktree.ps1 -Branch <branch-from-brief> -Base <frozen-sha> -Agent <lane-id> -RunId <workflow-run-id> -MaxPool 20`
    Note the leased tree path; ALL edits and builds happen there. If the pool is exhausted, report BLOCKED — do not fall back to the main checkout.
 3. `powershell scripts\atx-build.ps1` from the leased tree (it has a wrong-tree guard; `powershell`, not `pwsh`).
 
@@ -22,8 +23,13 @@ Work loop (TDD, ladder discipline — never bare all-target builds):
 Hard boundaries:
 - Touch ONLY files-in-scope. A needed change to a forbidden/shared file = report it as a blocker or deviation, don't make it.
 - No scope drift: brief's out-of-scope list is binding.
-- Every claim in your report carries pasted command output. No output, no claim.
+- Every claim in your report carries structured command, exit code, and pasted
+  output. Every brief check/build/suite must be named by at least one evidence
+  command. No output, no claim.
 
 Finish:
 1. Commit ALL work on the lane branch (leased tree must be clean; `-Release` refuses dirty trees). Do NOT release the lease — the fix stage may reuse your warm tree; the verifier releases.
-2. Report per `.agents/harness/TEMPLATES.md` "Lane report": outcome, branch@sha, files changed, evidence, deviations, 0–3 ledger candidates. Return it as structured output when a schema is requested.
+2. Report per `.agents/harness/TEMPLATES.md` "Lane report": outcome, branch@sha,
+   frozen base SHA, worktree, pool lease name, lease run_id, files changed,
+   structured evidence, deviations, and 0–3 ledger candidates. Return it as
+   structured output when a schema is requested.

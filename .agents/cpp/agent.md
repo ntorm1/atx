@@ -45,8 +45,8 @@ preset/branch flip with hot cache in 27 s. Pool trees keep `build/` warm across 
 
 ```powershell
 scripts\dev-setup.ps1                                # one-time per machine: ccache + caches (then NEW shell)
-scripts\lease-worktree.ps1 -Branch feat/x            # DEFAULT: lease warm pool tree (auto-grows to 4)
-scripts\lease-worktree.ps1 -Release pool-1           # done: detach branch, keep build/ warm
+scripts\lease-worktree.ps1 -Branch feat/x -Base <frozen-sha> -Agent <owner> -RunId <run-id> -MaxPool 20
+scripts\lease-worktree.ps1 -Release pool-1 -RunId <same-run-id>
 scripts\lease-worktree.ps1 -Status                   # who holds what
 scripts\new-worktree.ps1 -Name s8 -Branch feat/s8 -Base main -Isolated   # only for deliberate isolation (deps churn, bench)
 ```
@@ -65,7 +65,11 @@ clangd works immediately (committed `.clangd` reads each worktree's own `build/c
 3. **`-DATX_UNITY_BUILD=ON` (opt-in, cold CI builds only) collides on some test groups** — identically-named file-local helpers merge into one TU (`factory`, `parallel` groups). Unity is OFF in `dev`; leave it off for iteration — per-TU objects are what the cache keys on.
 4. **ProcessExecutor tests need `atx-shm-worker` built beside the test exe** — building only `atx-engine-<group>-tests` omits the worker the multi-process executor spawns; `*SeqParallel` suites then fault (SEH `0xc000001d`). Build both: `... build atx-engine-<group>-tests atx-shm-worker`.
 5. **`pwsh` is not always installed** — use `powershell` (5.1) for the `*.ps1` helpers.
-6. **Pool leases are advisory** (`.atx-lease` marker, git-ignored) — one agent per leased tree; `-Release` refuses a dirty tree, so commit/stash before releasing. Release detaches at the base branch so your feature branch stays mergeable elsewhere while `build/` stays warm.
+6. **Pool leases are atomic run-owned records** (`.atx-lease`, git-ignored) — one
+   agent per leased tree. Acquisition records run_id, owner PID plus process-start
+   time, branch, frozen base SHA, and acquisition time. `-Release` requires the same
+   run_id and refuses dirty trees. `-RecoverStale` is explicit and refuses while the
+   exact PID/start identity is alive; investigate status first.
 
 ---
 

@@ -1,5 +1,27 @@
 # SpiderRock oracle RSI loop — design
 
+## 2026-08-15 harness hard cutover
+
+The workflow now has deterministic capability states, evaluated in order:
+`missing_data -> missing_mode_a -> missing_conventions -> missing_mode_b -> ready`.
+Capability freezes the requested base to a full SHA and freezes the canonical
+holdout-membership hash before dispatch. A missing state runs exactly one fixed
+bootstrap lane and returns; it skips planner, ordinary Measure, Analyst,
+vol-sprint, Ratchet, and every holdout benchmark. The four bootstrap deliveries
+are data/cohorts/hash, Mode A, convention floor, then Mode B. There is no
+combined "missing tooling" path.
+
+Only `ready` runs Measure (aggregate smoke+tune), Analyst (aggregate smoke+tune),
+vol-sprint, then Ratchet. A blocked/incomplete sprint or any mandatory lane whose
+final review is not a fresh APPROVE returns `FAILED` before holdout; it is not a
+REJECT and cannot increment the consecutive-reject counter. Ratchet recomputes
+the holdout hash before reading holdout and fails closed on mismatch. Licensed row
+data and holdout membership are forbidden in agent prompts and reports.
+
+Bootstrap artifacts and exact done conditions are authoritative in
+`atx-vol/bench/oracle/CHARTER.md`. This section supersedes the older sequencing
+prose below where they differ.
+
 Date: 2026-08-15. Status: DESIGNED, not started. Depends on: vol DAG harness (f4d8bb9).
 
 Goal: a recursive self-improvement loop that drives atx-vol's American-options fitting and
@@ -114,11 +136,13 @@ parameterization near expiry, batch-vectorized American pricing paths.
 
 ## 5. Sequencing (small → big, per user directive)
 
-1. Ingest + smoke cohort + Mode A on one underlier/bucket — baseline scorecard iter-000.
-2. Iteration 0: convention resolution → residual floor.
-3. Iterations 1..k on smoke+tune with holdout ratchet.
-4. Widen: tune cohort growth, Mode B, fullday sweeps, additional daily drops.
-5. Speed frontier: once accuracy plateaus, iterations may target speed alone (same
+1. `missing_data`: ingest + all three cohorts + frozen holdout-membership hash.
+2. `missing_mode_a`: Mode A tool + aggregate smoke capability receipt.
+3. `missing_conventions`: smoke+tune convention resolution + residual floor at iter-000.
+4. `missing_mode_b`: Mode B + aggregate smoke/tune capability receipt.
+5. `ready`: iterations 1..k on smoke+tune, then holdout ratchet only after sprint PASS.
+6. Widen: tune cohort growth, fullday sweeps, and additional daily drops.
+7. Speed frontier: once accuracy plateaus, iterations may target speed alone (same
    ratchet, roles swapped: speed must improve, accuracy must not regress).
 
 ## Risks

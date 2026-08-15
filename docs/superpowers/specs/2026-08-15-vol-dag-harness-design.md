@@ -1,5 +1,27 @@
 # atx-vol DAG development harness — design
 
+## 2026-08-15 correctness hard cutover
+
+`vol-sprint` freezes the requested base ref to a full SHA before planning. Every
+planned lane is mandatory. Build reports carry structured command/exit/output
+evidence tied to the lane's required checks, and reviews bind their verdict to the
+exact lane SHA. A BLOCK may receive one Fix; that new commit always gets a fresh
+review. Any dead, BLOCKED, contract-invalid, or non-APPROVE lane aborts before
+integration.
+
+Pool leases are atomic v2 records keyed by a workflow `run_id`, owner PID plus
+process-start timestamp, desired branch, frozen base SHA, and acquisition time.
+Release requires the same `run_id`; stale recovery is explicit and refuses while
+the exact local owner identity is alive. Tests use a temp pool root and never
+touch production markers.
+
+After all mandatory lanes are freshly approved, their leases are released before
+integration begins. The verifier then obtains a new run-owned pool lease for the
+integration branch and performs merges, gates, and ledger work only under
+`C:\atx-wt\pool-N`; `C:\atx` is never an integration worktree. Failure still
+releases the integration lease. This section supersedes v1 error/cleanup semantics
+below where they differ.
+
 Date: 2026-08-15. Status: v1 installed. Goal: faster dev loops, durable long-term memory, real parallelism for atx-vol work, built on what the repo already has (worktree pool, `atx-build.ps1`, `.agents/` role docs, `.superpowers/sdd/` brief convention) instead of replacing it.
 
 ## Research grounding (why this shape)
@@ -26,9 +48,16 @@ Date: 2026-08-15. Status: v1 installed. Goal: faster dev loops, durable long-ter
 ## DAG semantics
 
 - **Pipeline, not barriers**, between Build→Review→Fix: lane A reviews while lane B builds; wall-clock = slowest lane chain.
-- **Barrier only at Gate** (needs all lanes): merge APPROVED lane branches → `atx_vol_fast` full → `hygiene` preset (when headers moved) → `atx-vol/ci/run_all_gates.ps1` (when semantics moved) → release ALL pool leases → ledger append.
-- **Concurrency = pool size (4)**. Builder without a lease reports BLOCKED rather than touching the main checkout. Leases held through Fix; released by verifier (warm-tree reuse for fix round).
-- **One fix round.** Second BLOCK surfaces to the user — no unbounded loops.
+- **Barrier before integration** (needs all lanes): every mandatory lane must be
+  DONE and freshly APPROVED at its final SHA. Release lane leases, acquire a new
+  isolated integration lease, merge exact reviewed SHAs, run `atx_vol_fast`,
+  hygiene/module gates as required, append ledger, then release integration.
+- **Per-sprint concurrency is capped at four lanes; the machine pool may grow to 20
+  slots** so unrelated workflows can proceed concurrently. Builder without a lease
+  reports BLOCKED rather than touching main. Lane leases stay held through Fix and
+  mandatory re-review, then are released before integration acquisition.
+- **One fix round plus mandatory re-review.** A second BLOCK fails the sprint before
+  integration — no unbounded loops and no stale verdict reuse.
 - **Evidence discipline end-to-end**: builder claims void without pasted output; reviewer verifies rather than trusts; verifier is the only authoritative pass/fail; golden-replay reported SKIPPED (not passed) when the licensed corpus is absent.
 
 ## Speed levers
@@ -41,8 +70,17 @@ Date: 2026-08-15. Status: v1 installed. Goal: faster dev loops, durable long-ter
 
 ## Error handling
 
-Planner returns 0 lanes → workflow throws. Lane BLOCKED/died → excluded from integration, reported. Merge conflict → verifier stops, names conflicting lanes/files (planner partition failure). Gate FAIL → reported with evidence, branches left for inspection. Workflow death mid-run → `lease-worktree.ps1 -Status` for orphaned leases; `resumeFromRunId` to resume cached stages.
+Planner returns 0 lanes → workflow throws. Any mandatory lane BLOCKED/died or lacking
+a fresh APPROVE → workflow releases known run-owned leases and returns FAIL before
+integration. Merge conflict → verifier stops and names lanes/files. Gate FAIL →
+reported with structured evidence, branches left for inspection, integration lease
+released. Workflow death mid-run → `lease-worktree.ps1 -Status` for owner state and
+run_id; investigate before explicit stale recovery or resume.
 
 ## Not in v1 (deliberate)
 
-Stop-hook enforcement gates (documented convention first; hooks if drift shows), CI runner integration (repo has none for C++), auto ledger compaction (revisit when file is large), headless `claude -p` pipeline (Workflow tool covers it interactively), atx-engine generalization (copy the pattern once proven on atx-vol).
+Stop-hook enforcement gates (documented convention first; hooks if drift shows), CI
+runner integration (repo has none for C++), auto ledger compaction, and atx-engine
+generalization. A custom asynchronous/headless runner is also deferred: prototype
+the host's native background workflow controls and completion notification first;
+do not replace `vol-sprint.js` or add a second polling/orchestration stack.

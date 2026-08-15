@@ -1,46 +1,76 @@
 # Oracle RSI bootstrap charter
 
-Spec: `docs/superpowers/specs/2026-08-15-oracle-rsi-loop-design.md`. This charter is the
-task input to `vol-sprint` when `vol-oracle-iter`'s Measure stage reports missing data or
-tooling. Stages run in order; a bootstrap iteration executes ONE stage.
+Spec: `docs/superpowers/specs/2026-08-15-oracle-rsi-loop-design.md`.
+`vol-oracle-iter` begins with a read-only capability inspection and selects the
+first missing state in this exact order:
 
-## Stage 1 — data (status: missing_data)
+```
+missing_data -> missing_mode_a -> missing_conventions -> missing_mode_b -> ready
+```
 
-Run `python atx-vol/scripts/oracle_ingest.py --zip <the tbloptionintradayhist zip in
-C:\Users\natha\Downloads>` (disk-checks first; ~15 GB transient on the work drive).
-Then pick cohorts from the printed top-underlier list / manifest JSON and fill in
-`atx-vol/bench/oracle/cohorts/{smoke,tune,holdout}.json` per `cohorts/README.md` rules
-(holdout: disjoint underliers AND buckets). Single lane; no C++ changes. Done: manifest
-exists, three cohort files validate against README rules, row counts recorded in report.
+A bootstrap invocation dispatches exactly one fixed lane for that state and then
+returns. It does not call the planner, ordinary Measure, vol-sprint, analyst, or
+Ratchet, and it never benchmarks holdout. Only `ready` enters the RSI loop.
 
-## Stage 2 — oracle bench tool, Mode A first (status: missing_tooling)
+Every lane starts from the capability stage's frozen base SHA, uses a run-owned
+pool lease, commits explicit paths, and releases with the same `run_id`. Reports
+contain command output, aggregate counts/metrics, hashes, and paths only. Licensed
+row values, option membership, and holdout membership must never enter prompts or
+logs.
 
-Build `atx-vol-oracle-bench` (C++, `atx-vol/tools/`, wired like the existing tools
-targets; Arrow/Parquet from vcpkg):
+## Stage 1 - data (`missing_data`)
 
-- Input: cohort JSON → reads the partitioned parquet store (predicate pushdown on
-  underlier + bucket_et; never full-file scans).
-- **Mode A**: per row, price American with SpiderRock's own inputs (`uPrc, rate, sdiv,
-  ddiv, years`, vol = `srVol`) through the atx-vol engine; greeks likewise. Compare to
-  `srPrc` and `de ga th ve rh ph vo va deDecay`.
-- Convention layer isolated in ONE translation unit (`oracle_conventions.*`) — iteration
-  0 rewrites it; the rest of the tool must not care.
-- Output: scorecard JSON (schema below) to a `--out` path + rows/s to stderr.
-- Mode B (fit from NBBO) is a LATER stage — leave a clean seam, do not stub it.
+Precondition: at least 15 GiB free transient space on the work drive. If the
+precondition or licensed ZIP is missing, report `BLOCKED`; do not partially ingest.
 
-Scorecard cell keys: `<mode>.<metric>.<moneyness-band>.<dte-band>.<cp>` with
-moneyness bands `deep-itm/itm/atm/otm/deep-otm` (0.8/0.95/1.05/1.2 on strike/uPrc) and
-dte bands `0-7/8-30/31-90/90+`. Per cell: n, mae, rmse, p50, p95, p99, max,
-within_tol_rate. Header: iter, git sha, cohort, mode timings, tolerance definitions.
+Run `python atx-vol/scripts/oracle_ingest.py --zip <licensed zip>` and create or
+repair:
 
-Done: tool builds target-scoped, runs on the smoke cohort in seconds, scorecard
-validates, unit tests for band edges + within-tol accounting + sentinel-null handling.
+- the partitioned parquet store and checksum/row-count manifest;
+- `cohorts/smoke.json`, `cohorts/tune.json`, and `cohorts/holdout.json`;
+- `cohorts/holdout.sha256`, the SHA-256 of canonical sorted membership fields
+  (`dates`, `underliers`, `buckets_et`) from `holdout.json`.
 
-## Stage 3 — iteration 0: convention resolution
+Smoke/tune/holdout must validate against `cohorts/README.md`; tune and holdout are
+disjoint in both underliers and buckets. Stage 1 may validate holdout metadata and
+hash, but must not run `atx-vol-oracle-bench` on it. Done means the ingest manifest,
+three cohorts, and frozen hash validate with pasted aggregate evidence.
 
-Round-trip their numbers (price(their inputs, srVol) vs srPrc) across candidate
-conventions (theta/day vs /year; vega per point; sdiv continuous borrow; ddiv discrete;
-years daycount; vo/va = vanna/volga hypothesis; signs; share scaling). Commit the
-winning map to `atx-vol/bench/oracle/CONVENTIONS.md` + encode in `oracle_conventions.*`.
-Done: residual floor measured and recorded in NORTHSTAR.md + ledger; scorecard iter-000
-pinned as the baseline.
+## Stage 2 - Mode A (`missing_mode_a`)
+
+Implement `atx-vol-oracle-bench` Mode A first. It reads cohort-selected parquet
+with predicate pushdown, prices SpiderRock inputs with `srVol`, compares aggregate
+price/greek cells, and isolates all comparison semantics in
+`oracle_conventions.*`. Mode B must not be implemented or stubbed in this stage.
+
+Targeted unit tests cover band edges, tolerance accounting, sentinel/null handling,
+and aggregate-only reporting. Run smoke only and write
+`atx-vol/bench/oracle/bootstrap/mode-a.json`, an aggregate capability receipt with
+the full git SHA, command, exit code, scorecard schema version, smoke manifest hash,
+and rows processed (never rows themselves). Holdout is forbidden.
+
+## Stage 3 - conventions (`missing_conventions`)
+
+Using Mode A on smoke+tune only, resolve theta/vega scaling, rate/borrow/dividend
+treatment, day count, `vo`/`va`, signs, and share scaling. Commit the winning map to
+`atx-vol/bench/oracle/CONVENTIONS.md`, encode it only in the isolated convention
+layer, and write aggregate `scorecards/iter-000.json` with the Mode A residual
+floor. Record that evidenced floor in NORTHSTAR and append LEDGER. Do not read Mode
+B or benchmark holdout.
+
+## Stage 4 - Mode B (`missing_mode_b`)
+
+After conventions are frozen, implement Mode B fitting from NBBO and aggregate
+comparison of fitted vol, price, and greeks. Run targeted tests plus smoke+tune only.
+Write `atx-vol/bench/oracle/bootstrap/mode-b.json` with the full git SHA, command,
+exit code, schema version, smoke/tune hashes, and aggregate counts/timing. Do not
+change conventions or holdout membership and do not benchmark holdout.
+
+## Ready-state failure rule
+
+In `ready`, Measure and Analyst still see smoke+tune aggregates only. If any
+mandatory vol-sprint lane is blocked/incomplete, lacks a fresh APPROVE, or fails the
+isolated integration gate, the oracle run returns `FAILED`: no holdout benchmark,
+no Ratchet, and no REJECT-counter change. Holdout is opened only after a passed
+sprint and only after its canonical membership hash matches the value frozen at
+run start.

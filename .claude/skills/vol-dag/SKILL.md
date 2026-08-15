@@ -19,16 +19,20 @@ Disjoint means: no lane needs another lane's NEW interface to compile. Shared fi
 ## The DAG (vol-sprint workflow)
 
 ```
-Plan (vol-planner, 1)
+Freeze base SHA → Plan (vol-planner, 1; every lane mandatory)
   └─ per lane, pipelined (no barrier between lanes):
-       Build (vol-builder, leased pool tree, TDD ladder)
-       → Review (vol-reviewer, fresh context, diff-only, verify-don't-trust)
+       Build (vol-builder, run-owned atomic pool lease, TDD ladder)
+       → Review (vol-reviewer, fresh context, exact-SHA verdict)
        → Fix (vol-builder, same warm tree, only on BLOCK, one round)
-  └─ Gate (vol-verifier, barrier): merge lanes → atx_vol_fast full → hygiene →
-     ci/run_all_gates.ps1 → release ALL leases → append docs/LEDGER.md
+       → Re-review (fresh reviewer, mandatory after every Fix)
+  └─ Barrier: all mandatory lanes DONE + fresh APPROVE
+     → release lane leases → acquire NEW isolated integration lease
+     → merge exact reviewed SHAs → gates → ledger → release integration lease
 ```
 
-Hard limits: ≤4 lanes (pool size). Second BLOCK after the fix round = surface to the user, don't loop. Gate FAIL = report with evidence; never "mostly passed".
+Hard limits: ≤4 lanes. Any incomplete/blocked/non-APPROVE lane fails before
+integration. Second BLOCK after Fix is final. Gate FAIL carries pasted output;
+never "mostly passed" and never integrate in `C:\atx`.
 
 ## Invocation
 
@@ -36,7 +40,10 @@ Hard limits: ≤4 lanes (pool size). Second BLOCK after the fix round = surface 
 Workflow { name: 'vol-sprint', args: { task: '<verbatim user ask + constraints>', base: 'main' } }
 ```
 
-Pass the user's ask verbatim plus known constraints; the planner reads code itself — don't pre-chew. On workflow failure mid-run: check `lease-worktree.ps1 -Status` for orphaned leases before rerunning (resume with `resumeFromRunId` where possible).
+Pass the user's ask verbatim plus known constraints. On workflow death, check
+`lease-worktree.ps1 -Status`; v2 status reports `run_id` and PID/start owner state.
+Investigate before `-RecoverStale`; normal release always supplies the acquiring
+`-RunId`. Resume the cached run where possible rather than dispatching a duplicate.
 
 ## Memory duties (main thread, after every run)
 
