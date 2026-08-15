@@ -3,6 +3,78 @@
 Breaking behavioural changes are recorded here with their migration. Anything
 that silently changes a NUMBER a caller already depends on belongs in this file.
 
+## Unreleased
+
+### BREAKING — oracle/DAG harness now fails closed with run-owned leases and ordered bootstrap states
+
+The old advisory worktree marker and permissive sprint integration behavior are
+removed. `scripts/lease-worktree.ps1` now publishes an atomic v3 record and requires
+`-RunId` plus an explicit durable owner: caller PID/process-start identity or a
+run-unique heartbeat with an independently running continuous keeper. Foreground
+commands and before/after pulses do not own liveness. The short-lived lease command
+cannot silently own a production lease; the old `-Pulse` command is removed.
+Acquisition waits for and records an
+authenticated keeper-ready pulse. Existing branches must still point at the
+frozen base SHA; corrupt records fail closed and require explicit guarded recovery.
+
+`vol-sprint` no longer excludes failed lanes and integrates the rest. Every planned
+lane is mandatory, every Fix gets a fresh exact-SHA review, and any incomplete or
+non-APPROVE lane aborts before integration. Approved lane leases are released before
+the verifier acquires a new isolated integration lease; main checkout integration
+is forbidden. Only exit-code-zero commands may support success; failed attempts are
+diagnostics. The integration result identifies the frozen base, run lease, exact
+reviewed lane SHA list, and newly leased integration branch/SHA.
+
+**BREAKING:** full regression/release suites and full-repository hygiene are removed
+from the oracle loop entirely. Every lane now supplies a closed mapping from scoped
+files to affected unit targets, anchored unit regexes, hypothesis-specific
+OracleBench tests, and owning PCH-off targets. Integration mechanically derives the
+exact changed-file gate set, adds Mode A/B aggregate smoke+tune scorecards and the
+quiet pinned-speed microbenchmark, and requires one exact-SHA receipt per command
+without omission or extras. Labels, bare/unanchored ctest, broad builds/runners,
+and full-repo hygiene fail the oracle contract even when reported as diagnostics.
+Full regression and release qualification remain separate, outside-loop work.
+
+`vol-oracle-iter` no longer maps all missing tooling into a vol-sprint bootstrap.
+It hard-selects one state in order: `missing_data`, `missing_mode_a`,
+`missing_conventions`, `missing_mode_b`, `ready`. A bootstrap invocation dispatches
+exactly one fixed implementation lane through Build, exact-SHA Review, optional Fix,
+fresh Review, scoped verification, and atomic landing on `refs/heads/oracle/canonical`.
+Its capability agent has no general file tools and can run only the fixed
+aggregate-only probe. The probe internally parses committed cohort manifests only
+to recompute canonical sorted holdout-membership SHA-256 and disjointness;
+membership never reaches its agent or report, and it never opens licensed rows or
+benchmarks holdout. Only ready state runs the RSI loop; a failed sprint
+returns FAILED before holdout and does not count as REJECT. Attribute is tool-less
+and receives a validated aggregate smoke/tune payload. Only Ratchet opens holdout,
+recomputes its membership digest, tests the exact reviewed integration SHA in a new
+lease, and atomically lands ACCEPT; REJECT leaves canonical unchanged. Successful
+results return typed aggregate metric deltas and their evidence receipts. Ratchet's
+agent no longer decides ACCEPT/REJECT: workflow code verifies delta arithmetic,
+target improvement, the 2% aggregate bound, pinned speed, applicable modes, digest,
+scoped gates, and market evidence. Agents prepare candidate commits; a minimal
+finalizer performs the exact canonical compare-and-swap only after validation, and
+an independent audit reports the actual ref even when the finalizer report is lost.
+
+Capability completion is no longer inferred from filenames. Each bootstrap stage
+must publish its exact versioned aggregate receipt; the probe validates closed
+keys/enums/target sets, artifact digests, count invariants, SHA ancestry, and
+prior-receipt provenance. Legacy or malformed receipts fail closed. Attribute
+schema v2 likewise removes free-form source strings. Ratchet metric IDs,
+classification, direction, target limit, and exact commands are frozen by the
+workflow. Baseline and speed-pin numerics are derived only from exact typed Measure
+command output; Measure cannot self-report or override them. Ratchet candidates are
+likewise derived from exact typed gate numeric results. Bootstrap stages 2-4 use the
+fixed `oracle-targeted-gate.ps1` adapter to turn ordinary targeted tool output into
+closed semantic PASS receipts. Exit zero with no tests, zero processed rows, or an
+incomplete metric set is failure; targeted ctest uses `--no-tests=error`. Per-file
+gate mappings now impose mandatory commands, so planner additions are additive and
+cannot substitute another allowed suite or hypothesis. Sprint unit gates now map
+to real fully-qualified discovered tests and use the same semantic adapter; lane
+and integration reports cannot claim success for nonexistent/zero-test regexes.
+Exact gate commands return typed results, and
+typed NBBO means/distances are recomputed by workflow code before suspect exclusion.
+
 ## 1.2.0
 
 The public-surface api-restructure. Every public header moved from the flat

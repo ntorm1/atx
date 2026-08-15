@@ -21,13 +21,14 @@ Monorepo, layered: `atx-core` (vocab + IO) → `atx-tsdb` (shm store) → `atx-e
 powershell scripts\atx-build.ps1 configure                  # cmake --preset dev into build/ (-Preset dev-shared to flip)
 powershell scripts\atx-build.ps1 build atx-vol-tests        # any target(s) — ALWAYS target-scoped, never bare all-targets
 powershell scripts\atx-build.ps1 check atx-vol\src\foo.cpp  # single-TU compile, no link — seconds-level type-check loop
-powershell scripts\atx-build.ps1 -Ctest -L atx_vol_fast     # ctest passthrough
+powershell scripts\atx-build.ps1 -Ctest -L atx_vol_fast     # release qualification only; forbidden in oracle loop
 cmake --preset dev -DATX_TEST_GROUPS="risk;data"            # compile only engine groups you touch
 ```
 
 **Iterate loop discipline:** `check <file.cpp>` while shaping code (compiles just that
-object), `build <owning-test-target>` + `-Ctest -R <Suite>` to go green, full suite only
-at gate time. Never build the whole graph out of habit.
+object), `build <owning-test-target>` + anchored `-Ctest -R <Suite>` to go green.
+Full suites are release qualification outside `vol-oracle-iter`; the oracle loop
+never runs them. Never build the whole graph out of habit.
 
 | Preset | Use |
 |---|---|
@@ -45,8 +46,8 @@ preset/branch flip with hot cache in 27 s. Pool trees keep `build/` warm across 
 
 ```powershell
 scripts\dev-setup.ps1                                # one-time per machine: ccache + caches (then NEW shell)
-scripts\lease-worktree.ps1 -Branch feat/x            # DEFAULT: lease warm pool tree (auto-grows to 4)
-scripts\lease-worktree.ps1 -Release pool-1           # done: detach branch, keep build/ warm
+scripts\lease-worktree.ps1 -Branch feat/x-<run-slug> -Base <frozen-sha> -Agent <owner> -RunId <run-id> -HeartbeatId <run-unique-heartbeat> -MaxPool 20
+scripts\lease-worktree.ps1 -Release pool-1 -RunId <same-run-id>
 scripts\lease-worktree.ps1 -Status                   # who holds what
 scripts\new-worktree.ps1 -Name s8 -Branch feat/s8 -Base main -Isolated   # only for deliberate isolation (deps churn, bench)
 ```
@@ -65,7 +66,13 @@ clangd works immediately (committed `.clangd` reads each worktree's own `build/c
 3. **`-DATX_UNITY_BUILD=ON` (opt-in; only worth it on a cold from-scratch build) collides on some test groups** — identically-named file-local helpers merge into one TU (`factory`, `parallel` groups). Unity is OFF in `dev`; leave it off for iteration — per-TU objects are what the cache keys on.
 4. **ProcessExecutor tests need `atx-shm-worker` built beside the test exe** — building only `atx-engine-<group>-tests` omits the worker the multi-process executor spawns; `*SeqParallel` suites then fault (SEH `0xc000001d`). Build both: `... build atx-engine-<group>-tests atx-shm-worker`.
 5. **`pwsh` is not always installed** — use `powershell` (5.1) for the `*.ps1` helpers.
-6. **Pool leases are advisory** (`.atx-lease` marker, git-ignored) — one agent per leased tree; `-Release` refuses a dirty tree, so commit/stash before releasing. Release detaches at the base branch so your feature branch stays mergeable elsewhere while `build/` stays warm.
+6. **Pool leases are atomic run-owned v3 records** (`.atx-lease`, git-ignored) — one
+   agent per leased tree. Acquisition requires either a durable caller PID plus exact
+   process-start time or a run-unique heartbeat. Heartbeat acquisition starts an
+   independent continuously renewing keeper; the short-lived launcher and foreground
+   commands cannot own a production lease. The record also freezes branch/base SHA/time. `-Release`
+   requires the same run_id and refuses dirty trees. `-RecoverStale` is explicit
+   and refuses while the durable process/heartbeat owner is alive; investigate status first.
 
 ---
 

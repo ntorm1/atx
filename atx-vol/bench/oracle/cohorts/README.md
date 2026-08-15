@@ -2,8 +2,8 @@
 
 Cohort JSONs select slices of the parquet oracle store
 (`C:\atx-cache\oracle\spiderrock\date=YYYY-MM-DD\bucket_et=HHMM\`) for
-`atx-vol-oracle-bench`. Filled in by bootstrap stage 1 from
-`oracle_manifest_<date>.json` (ingest prints the top-liquidity underliers).
+`atx-vol-oracle-bench`. Bootstrap stage 1 fills them from the aggregate ingest
+manifest and top-liquidity list.
 
 Schema per file:
 
@@ -17,16 +17,31 @@ Schema per file:
 }
 ```
 
-Rules (enforced by reviewers, not code):
+Rules (enforced by the capability gate and reviewers):
 
-- `smoke` — 1 liquid underlier × 1 bucket (~10-30k rows). Inner-loop speed: seconds.
-- `tune` — ~10 underliers × 3 buckets, stratified: mega-cap ETF, index-style, high-div
-  single names (dividend stress), hard-to-borrow names (sdiv stress), a low-liquidity
-  tail name. The attribution stage reads ONLY smoke/tune results.
-- `holdout` — disjoint from `tune` in BOTH underliers and buckets. Never read by
-  vol-analyst; only the Ratchet stage touches it. Changing holdout membership after
-  iteration 0 invalidates ratchet history — don't, without a ledger line explaining why.
-- `fullday` — everything; periodic sweep, not in the iteration loop.
+- `smoke`: one liquid underlier x one bucket (roughly 10-30k rows); seconds-level
+  inner loop.
+- `tune`: roughly ten underliers x three buckets, stratified across liquidity,
+  dividend, borrow, moneyness, and DTE. Measure and Analyst read only aggregate
+  smoke/tune results.
+- `holdout`: disjoint from tune in both underliers and buckets. Stage 1 writes
+  `holdout.sha256`, the SHA-256 of canonical sorted `dates`, `underliers`, and
+  `buckets_et`. Capability freezes the already committed receipt without opening
+  `holdout.json`. The tool-less Analyst receives no hash, membership, scorecard,
+  path, or rows. Ratchet alone opens `holdout.json`, recomputes membership identity,
+  and compares it with the frozen receipt before benchmarking.
+- `fullday`: everything; periodic sweep only, outside the iteration loop.
 
-Bucket values are ET HHMM strings matching the partition dirs (9:30 slice never exists —
-dropped at ingest).
+Changing holdout membership after stage 1 invalidates ratchet history and is a
+hard gate failure, not an ordinary iteration. A deliberate replacement requires
+operator approval and a ledger entry explaining why.
+
+Canonical hash encoding is UTF-8 JSON with no BOM or trailing newline, fixed key
+order `dates`, `underliers`, `buckets_et`, each array deduplicated and sorted by
+ordinal code point, and compact separators (Python `json.dumps(obj,
+ensure_ascii=True, separators=(',', ':'))`). `holdout.sha256` contains one
+lowercase hex digest plus a newline. Notes and JSON formatting are deliberately
+excluded, so comment-only edits do not change membership identity.
+
+Bucket values are ET `HHMM` strings matching partition directories. The 09:30 ET
+slice never exists because ingest drops it.

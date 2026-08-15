@@ -11,11 +11,17 @@ One paragraph. What exists after this lane that does not exist now.
 ## Scope
 - Files in scope: <explicit list — the ONLY files this lane may create/modify>
 - Files forbidden: <files adjacent lanes own — touching these is a lane failure>
-- Branch: lane/<id> off <base>
-## Ladder
-- check targets: <the .cpp files to type-check while shaping>
-- build target(s): <e.g. atx-vol-tests>
-- suites: <gtest -R filters that must go green>
+- Branch: run-unique lane/<id>-<run-slug> off <frozen-base-sha>
+- Lease: pool-N acquired with <workflow-run-id>, <heartbeat-id>, and an independent
+  continuously renewing keeper PID/process-start identity
+## Changed dependency gate closure
+One exact entry per files-in-scope path:
+- file: <path>
+- unit_targets: <affected small build targets>
+- unit_regexes: <anchored exact gtest/ctest -R expressions>
+- oracle_tests: <hypothesis-specific OracleBench test IDs>
+- pch_off_targets: <owning targets; required only for headers>
+Labels, broad/full runners or builds, and full-repo hygiene are forbidden in the oracle loop.
 ## Done criteria
 Falsifiable. "Suite X passes, suite Y still passes, no new warnings" — never "improved".
 ## Out of scope
@@ -30,11 +36,20 @@ Named explicitly, so the builder does not helpfully drift.
 DONE | BLOCKED — one sentence.
 ## Branch / SHA
 lane/<id> @ <sha> (all work committed; leased tree left clean)
+## Frozen base / lease
+base_sha=<40-char-sha>; worktree=<C:\atx-wt\pool-N>; lease_name=<pool-N>;
+lease_run_id=<workflow-run-id>; heartbeat_id=<heartbeat-id>;
+keeper_pid=<pid>; keeper_process_started_utc=<utc>
+## Acquisition receipt
+action=acquire plus the exact lease/run/branch/base/worktree/heartbeat/keeper fields,
+exit_code=0, and the `LEASED` output proving them.
 ## Files changed
 <list>
 ## Evidence
-Commands actually run, with pass/fail counts pasted — build target, ctest -R output.
-Claims without pasted output are void.
+For each successful command: exact command, exit_code=0, and verbatim non-empty output.
+Every command mechanically derived from the changed-file closure must occur exactly in evidence.
+Failed attempts belong under Diagnostics and cannot support a success claim. Claims
+without pasted exit-code-zero output are void.
 ## Deviations from brief
 <none | list with reason>
 ## Ledger candidates
@@ -47,6 +62,11 @@ Claims without pasted output are void.
 # Lane <id> review
 ## Verdict
 APPROVE | BLOCK
+## Reviewed SHA
+<exact current lane SHA; every Fix requires a new review>
+## Evidence
+At least one independently run successful command with exit_code=0 and pasted output.
+Failed attempts belong under Diagnostics. APPROVE with any blocker is invalid.
 ## Findings
 path:line | severity (blocker/major/minor) | problem | required fix
 Correctness-scoped: UB, lifetime, bounds, error paths, test gaps, contract breaks.

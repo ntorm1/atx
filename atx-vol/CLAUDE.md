@@ -10,10 +10,17 @@ Vol surface / vol-derivatives library. Source groups: `core pricing fitting mark
 - Python wheel: `python/` is a standalone scikit-build-core + pybind11 project (`atxvol`), 26 pytest files, driven into ctest as `atx-vol-python` (SKIP_RETURN_CODE 77).
 - ~63 tests SKIP on a bare host (AVX2/counters/market-data/env classes — enumerated in README `## Build & test`).
 
-## Gates (pre-merge, in order)
+## Release/pre-merge gates outside the oracle loop
 
 1. Full fast suite green: `powershell scripts\atx-build.ps1 -Ctest -L atx_vol_fast` (from repo root).
 2. Include hygiene: `cmake --preset hygiene && cmake --build --preset hygiene` (PCH OFF; the default build masks include rot).
+
+The commands above are never run by `vol-oracle-iter` or its `vol-sprint` child.
+The oracle loop uses only its exact changed-file closure: affected anchored unit
+tests, hypothesis-specific OracleBench tests, aggregate smoke/tune scorecards,
+quiet pinned speed, and owning PCH-off targets for changed headers. Labels, broad
+ctest/builds, full-repository hygiene, and release regression suites are separate
+release qualification work.
 3. Module gates: `powershell atx-vol\ci\run_all_gates.ps1` — determinism (1-thread vs N-thread bit-identical NAV), golden replay (82-session SPY corpus, fails closed if licensed corpus absent), lakehouse-off link, pool soak. All on `dev` preset — correctness only.
 4. Perf claims ONLY from `rel-avx2` (`build-rel-avx2/`) against `bench/baselines/` pins.
 
@@ -23,7 +30,25 @@ Vol surface / vol-derivatives library. Source groups: `core pricing fitting mark
 
 - `docs/LEDGER.md` — append-only fact ledger. Grep it before re-deriving build traps, measured numbers, or past decisions. Append one line on gate-pass, trap discovery, or decision. Never rewrite history lines; corrections get a new line referencing the old.
 - Sprint narratives: `sprints/YYYY-MM-DD-<topic>-sprint.md` (38 exist — search before starting overlapping work).
-- Oracle RSI loop (SpiderRock parity): dashboard `docs/oracle/NORTHSTAR.md`, run one iteration via the `vol-oracle-iter` workflow; scorecards/cohorts under `bench/oracle/`.
+- Oracle RSI loop (SpiderRock parity): dashboard `docs/oracle/NORTHSTAR.md`,
+  bootstrap charter `bench/oracle/CHARTER.md`, scorecards/cohorts under
+  `bench/oracle/`. `vol-oracle-iter` advances exactly one ordered capability state
+  (`missing_data → missing_mode_a → missing_conventions → missing_mode_b → ready`).
+  Bootstrap runs one fixed lane and no holdout; only ready runs Measure → Analyst →
+  vol-sprint → Ratchet.
+  The fixed capability probe internally validates and hashes the committed holdout
+  manifest but exposes no membership. The tool-less Analyst gets a workflow-derived
+  aggregate payload, and Ratchet alone benchmarks holdout or opens licensed rows.
+
+## Harness isolation
+
+- Every lane uses `lease-worktree.ps1` with a frozen base SHA, workflow `RunId`,
+  run-unique branch, and explicit durable heartbeat whose independent keeper renews
+  continuously and is proven by typed acquisition/release receipts.
+- Every Fix is freshly reviewed at its new SHA; all mandatory lanes must finish
+  APPROVE before integration.
+- Release lane leases before acquiring a new isolated integration lease. Merge,
+  gate, and ledger only in `C:\atx-wt\pool-N`, never `C:\atx`.
 - Deep docs index: `docs/` (surface-db-build, backtest-lakehouse, adjoint_greeks_design, simd_fastpath, api-placement, …). Bench anchors: `bench/ANCHORS.md`.
 
 ## Editing rules
