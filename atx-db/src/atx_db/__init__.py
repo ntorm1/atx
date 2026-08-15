@@ -116,6 +116,18 @@ from .fundamental_ratios import (
     compute_ratio_rows,
     refresh_fundamental_ratios,
 )
+from .filing_context_backfill import (
+    FilingContextBackfillQueueDataset,
+    FilingContextBackfillQueueOptions,
+    FilingContextBackfillQueueResult,
+    refresh_filing_context_backfill_queue,
+)
+from .filing_context_backfill_executor import (
+    FilingContextBackfillExecutionOptions,
+    FilingContextBackfillExecutionResult,
+    FilingContextBackfillExecutorDataset,
+    execute_filing_context_backfill,
+)
 from .fundamental_reconciliation import (
     FundamentalReconciliationDataset,
     FundamentalReconciliationRefreshOptions,
@@ -438,6 +450,19 @@ from .reference_classifications import (
 )
 from .watermarks import WatermarkRefreshResult, refresh_warehouse_watermarks
 from .xbrl_filing_contexts import XbrlFilingContextDataset, XbrlFilingContextOptions, archive_primary_document_url
+from .xbrl_processor import (
+    ArelleValidationDataset,
+    ArelleValidationOptions,
+    ArelleValidationResult,
+    parse_arelle_xml_log,
+    run_arelle_validation,
+)
+from .xbrl_taxonomy_packages import (
+    XbrlTaxonomyPackageDataset,
+    XbrlTaxonomyPackageOptions,
+    XbrlTaxonomyPackageResult,
+    capture_xbrl_taxonomy_packages,
+)
 from .xbrl_taxonomy import (
     XbrlTaxonomyDataset,
     XbrlTaxonomyOptions,
@@ -522,6 +547,14 @@ __all__ = [
     "RATIO_DEFS",
     "compute_ratio_rows",
     "refresh_fundamental_ratios",
+    "FilingContextBackfillQueueDataset",
+    "FilingContextBackfillQueueOptions",
+    "FilingContextBackfillQueueResult",
+    "refresh_filing_context_backfill_queue",
+    "FilingContextBackfillExecutionOptions",
+    "FilingContextBackfillExecutionResult",
+    "FilingContextBackfillExecutorDataset",
+    "execute_filing_context_backfill",
     "FundamentalReconciliationDataset",
     "FundamentalReconciliationRefreshOptions",
     "FundamentalReconciliationRefreshResult",
@@ -710,11 +743,18 @@ __all__ = [
     "WatermarkRefreshResult",
     "XbrlFilingContextDataset",
     "XbrlFilingContextOptions",
+    "ArelleValidationDataset",
+    "ArelleValidationOptions",
+    "ArelleValidationResult",
+    "XbrlTaxonomyPackageDataset",
+    "XbrlTaxonomyPackageOptions",
+    "XbrlTaxonomyPackageResult",
     "XbrlTaxonomyDataset",
     "XbrlTaxonomyOptions",
     "XbrlValidationDataset",
     "XbrlValidationOptions",
     "archive_primary_document_url",
+    "capture_xbrl_taxonomy_packages",
     "adjustment_factors_asof",
     "build_listing_status_intervals",
     "EntityClassificationDataset",
@@ -800,6 +840,8 @@ __all__ = [
     "refresh_xbrl_fact_frames",
     "refresh_xbrl_taxonomy",
     "refresh_xbrl_validation_results",
+    "parse_arelle_xml_log",
+    "run_arelle_validation",
     "refresh_adjustment_factor_history",
     "refresh_daily_adjustment_factors",
     "refresh_delisting_events",

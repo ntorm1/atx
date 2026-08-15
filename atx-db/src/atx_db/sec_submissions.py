@@ -2,15 +2,14 @@ from __future__ import annotations
 
 import datetime as dt
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 import pandas as pd
 
 from .connection import DuckDBStore
 from .dataset import Dataset, DatasetLoadResult
 from .security_master import SEC_USER_AGENT, sec_session
-from .warehouse import insert_frame, quality_check, record_source_file, symbol_key
-
+from .warehouse import cik_security_id, insert_frame, quality_check, record_source_file, symbol_key
 
 SOURCE_NAME = "SEC submissions API"
 SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
@@ -19,6 +18,7 @@ SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
 @dataclass(frozen=True)
 class SecSubmissionsOptions:
     symbols: tuple[str, ...] = ("AAPL",)
+    ciks: tuple[str, ...] = ()
     forms: tuple[str, ...] | None = ("10-K", "10-Q", "8-K")
     include_history_files: bool = False
     request_timeout: int = 120
@@ -41,7 +41,7 @@ def _parse_acceptance(value: Any) -> pd.Timestamp | None:
     parsed = pd.to_datetime(value, errors="coerce", utc=True)
     if pd.isna(parsed):
         return None
-    return parsed.tz_convert(None)
+    return cast(pd.Timestamp, parsed.tz_convert(None))
 
 
 def _columnar_filings(payload: dict[str, Any], key: str = "recent") -> pd.DataFrame:
@@ -95,11 +95,19 @@ def _normalize(
     )
 
 
-def _targets(store: DuckDBStore, symbols: tuple[str, ...]) -> list[tuple[str, str, str]]:
+def _normalized_cik(value: str | int) -> str:
+    return f"{int(str(value).strip()):010d}"
+
+
+def _targets(
+    store: DuckDBStore,
+    symbols: tuple[str, ...],
+    ciks: tuple[str, ...] = (),
+) -> list[tuple[str, str, str]]:
     frame = pd.DataFrame({"ticker": sorted({symbol_key(symbol) for symbol in symbols})})
     store.con.register("submission_symbol_lookup", frame)
     try:
-        rows = store.con.execute(
+        symbol_rows = store.con.execute(
             """
             SELECT l.ticker, t.cik, t.security_id
             FROM submission_symbol_lookup l
@@ -112,7 +120,36 @@ def _targets(store: DuckDBStore, symbols: tuple[str, ...]) -> list[tuple[str, st
         ).fetchall()
     finally:
         store.con.unregister("submission_symbol_lookup")
-    return [(ticker, cik, security_id) for ticker, cik, security_id in rows]
+
+    cik_frame = pd.DataFrame({"cik": sorted({_normalized_cik(cik) for cik in ciks})})
+    store.con.register("submission_cik_lookup", cik_frame)
+    try:
+        cik_rows = store.con.execute(
+            """
+            SELECT l.cik,t.ticker,t.security_id
+            FROM submission_cik_lookup l
+            LEFT JOIN sec_company_tickers t ON t.cik=l.cik
+            QUALIFY row_number() OVER (
+                PARTITION BY l.cik
+                ORDER BY t.source_loaded_at DESC,t.ticker
+            )=1
+            """
+        ).fetchall()
+    finally:
+        store.con.unregister("submission_cik_lookup")
+
+    targets = {
+        (cik, security_id): (ticker, cik, security_id)
+        for ticker, cik, security_id in symbol_rows
+    }
+    for cik, ticker, security_id in cik_rows:
+        resolved_security_id = security_id or cik_security_id(cik)
+        targets[(cik, resolved_security_id)] = (
+            ticker or f"CIK-{cik}",
+            cik,
+            resolved_security_id,
+        )
+    return sorted(targets.values(), key=lambda row: (row[0], row[1]))
 
 
 class SecSubmissionsDataset(Dataset):
@@ -126,7 +163,7 @@ class SecSubmissionsDataset(Dataset):
         session = sec_session(options.user_agent)
         forms = None if options.forms is None else set(options.forms)
         rows: list[pd.DataFrame] = []
-        for symbol, cik, security_id in _targets(store, options.symbols):
+        for symbol, cik, security_id in _targets(store, options.symbols, options.ciks):
             url = SUBMISSIONS_URL.format(cik=cik)
             response = session.get(url, timeout=options.request_timeout)
             response.raise_for_status()
@@ -167,13 +204,14 @@ class SecSubmissionsDataset(Dataset):
             status="passed" if loaded > 0 else "warning",
             observed_value=float(loaded),
             threshold_value=1.0,
-            details={"symbols": options.symbols, "forms": options.forms},
+            details={"symbols": options.symbols, "ciks": options.ciks, "forms": options.forms},
         )
         return DatasetLoadResult(
             dataset_id=self.dataset_id,
             rows_loaded=loaded,
             source="SEC submissions API",
-            details={"symbols": options.symbols, "forms": options.forms},
+            run_id=options.run_id,
+            details={"symbols": options.symbols, "ciks": options.ciks, "forms": options.forms},
         )
 
     def _replace_rows(self, store: DuckDBStore, frame: pd.DataFrame) -> int:
@@ -193,4 +231,4 @@ class SecSubmissionsDataset(Dataset):
                 insert_frame(store, frame, "sec_submissions", "sec_submissions_insert")
             finally:
                 store.con.unregister("sec_submissions_load")
-        return int(len(frame))
+        return len(frame)

@@ -14,14 +14,14 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, ClassVar, Protocol, cast
 
-import duckdb
 import pyarrow as pa  # type: ignore[import-untyped]
 import pyarrow.csv as pa_csv  # type: ignore[import-untyped]
 import pyarrow.ipc as pa_ipc  # type: ignore[import-untyped]
 import pyarrow.parquet as pq  # type: ignore[import-untyped]
 
+from ..connection import open_duckdb_connection
 from .auth import ApiPrincipal
-from .catalog import get_schema
+from .catalog import _record_schema_sha256, get_schema, public_schema
 from .commercial import PricingCatalog, calculate_cost, month_start
 from .models import BatchCompression, BatchEncoding, BatchRangeRequest, BatchSubmitRequest
 from .service import WarehouseReadService
@@ -59,6 +59,9 @@ class BatchJob:
     encoding: BatchEncoding
     compression: BatchCompression
     request_sha256: str
+    query_sha256: str
+    schema_version: str
+    schema_sha256: str
     idempotency_key: str | None
     state: str
     attempt_count: int
@@ -71,6 +74,9 @@ class BatchJob:
     package_bytes: int
     result_uri: str | None
     result_sha256: str | None
+    logical_content_sha256: str | None
+    manifest_uri: str | None
+    manifest_sha256: str | None
     error_code: str | None
     error_message: str | None
     received_at: dt.datetime
@@ -85,7 +91,10 @@ class BatchJob:
             "job_id": self.job_id,
             "dataset": self.request.dataset,
             "schema": self.request.schema_name,
-            "schema_version": get_schema(self.request.dataset, self.request.schema_name).version,
+            "schema_version": self.schema_version,
+            "schema_sha256": self.schema_sha256,
+            "request_sha256": self.request_sha256,
+            "query_sha256": self.query_sha256,
             "encoding": self.encoding,
             "compression": self.compression,
             "state": self.state,
@@ -94,6 +103,8 @@ class BatchJob:
             "billed_bytes": self.billed_bytes,
             "package_bytes": self.package_bytes,
             "sha256": self.result_sha256,
+            "logical_content_sha256": self.logical_content_sha256,
+            "manifest_sha256": self.manifest_sha256,
             "received_at": self.received_at,
             "queued_at": self.queued_at,
             "processing_started_at": self.processing_started_at,
@@ -251,6 +262,12 @@ _JOB_COLUMN_NAMES = (
     "package_bytes",
     "result_uri",
     "result_sha256",
+    "logical_content_sha256",
+    "manifest_uri",
+    "manifest_sha256",
+    "schema_version",
+    "schema_sha256",
+    "query_sha256",
     "error_code",
     "error_message",
     "received_at",
@@ -273,6 +290,9 @@ class DuckDBBatchJobRepository:
         "package_bytes",
         "result_uri",
         "result_sha256",
+        "logical_content_sha256",
+        "manifest_uri",
+        "manifest_sha256",
         "error_code",
         "error_message",
         "processing_started_at",
@@ -289,7 +309,7 @@ class DuckDBBatchJobRepository:
         self._lock = threading.Lock()
 
     def add(self, job: BatchJob) -> None:
-        with self._lock, duckdb.connect(str(self.database_path)) as conn:
+        with self._lock, open_duckdb_connection(self.database_path) as conn:
             conn.execute(
                 f"INSERT INTO saas_batch_jobs ({_JOB_COLUMNS}) VALUES ({','.join('?' for _ in _JOB_COLUMN_NAMES)})",
                 _job_values(job),
@@ -298,12 +318,12 @@ class DuckDBBatchJobRepository:
     def get(self, job_id: str, *, account_id: str | None = None) -> BatchJob | None:
         where = "job_id = ?" if account_id is None else "job_id = ? AND account_id = ?"
         params = [job_id] if account_id is None else [job_id, account_id]
-        with self._lock, duckdb.connect(str(self.database_path)) as conn:
+        with self._lock, open_duckdb_connection(self.database_path) as conn:
             row = conn.execute(f"SELECT {_JOB_COLUMNS} FROM saas_batch_jobs WHERE {where}", params).fetchone()
         return _job_from_row(row) if row is not None else None
 
     def list(self, account_id: str, *, limit: int) -> list[BatchJob]:
-        with self._lock, duckdb.connect(str(self.database_path)) as conn:
+        with self._lock, open_duckdb_connection(self.database_path) as conn:
             rows = conn.execute(
                 f"SELECT {_JOB_COLUMNS} FROM saas_batch_jobs WHERE account_id = ? ORDER BY received_at DESC LIMIT ?",
                 [account_id, limit],
@@ -313,7 +333,7 @@ class DuckDBBatchJobRepository:
     def claim(self, job_id: str, *, worker_id: str, lease_seconds: int) -> BatchJob | None:
         now = _utc_now()
         lease_expires_at = now + dt.timedelta(seconds=lease_seconds)
-        with self._lock, duckdb.connect(str(self.database_path)) as conn:
+        with self._lock, open_duckdb_connection(self.database_path) as conn:
             row = conn.execute(
                 """
                 UPDATE saas_batch_jobs
@@ -336,7 +356,7 @@ class DuckDBBatchJobRepository:
     def claim_next(self, *, worker_id: str, lease_seconds: int) -> BatchJob | None:
         now = _utc_now()
         lease_expires_at = now + dt.timedelta(seconds=lease_seconds)
-        with self._lock, duckdb.connect(str(self.database_path)) as conn:
+        with self._lock, open_duckdb_connection(self.database_path) as conn:
             row = conn.execute(
                 """
                 UPDATE saas_batch_jobs
@@ -361,7 +381,7 @@ class DuckDBBatchJobRepository:
 
     def renew_lease(self, job_id: str, *, worker_id: str, lease_seconds: int) -> bool:
         now = _utc_now()
-        with self._lock, duckdb.connect(str(self.database_path)) as conn:
+        with self._lock, open_duckdb_connection(self.database_path) as conn:
             row = conn.execute(
                 """
                 UPDATE saas_batch_jobs
@@ -380,7 +400,7 @@ class DuckDBBatchJobRepository:
         now = _utc_now()
         assignments = [f"{name} = ?" for name in changes]
         params = [*changes.values(), now, job_id, worker_id]
-        with self._lock, duckdb.connect(str(self.database_path)) as conn:
+        with self._lock, open_duckdb_connection(self.database_path) as conn:
             row = conn.execute(
                 f"""
                 UPDATE saas_batch_jobs
@@ -399,7 +419,7 @@ class DuckDBBatchJobRepository:
         now = _utc_now()
         assignments = [f"{name} = ?" for name in changes]
         params = [*changes.values(), now, job_id]
-        with self._lock, duckdb.connect(str(self.database_path)) as conn:
+        with self._lock, open_duckdb_connection(self.database_path) as conn:
             conn.execute(
                 f"UPDATE saas_batch_jobs SET {', '.join(assignments)}, updated_at = ? WHERE job_id = ?",
                 params,
@@ -433,6 +453,12 @@ def _job_values(job: BatchJob) -> list[object]:
         job.package_bytes,
         job.result_uri,
         job.result_sha256,
+        job.logical_content_sha256,
+        job.manifest_uri,
+        job.manifest_sha256,
+        job.schema_version,
+        job.schema_sha256,
+        job.query_sha256,
         job.error_code,
         job.error_message,
         job.received_at,
@@ -465,14 +491,20 @@ def _job_from_row(row: tuple[Any, ...]) -> BatchJob:
         package_bytes=int(row[18]),
         result_uri=None if row[19] is None else str(row[19]),
         result_sha256=None if row[20] is None else str(row[20]),
-        error_code=None if row[21] is None else str(row[21]),
-        error_message=None if row[22] is None else str(row[22]),
-        received_at=_aware_utc(row[23]),
-        queued_at=_optional_aware_utc(row[24]),
-        processing_started_at=_optional_aware_utc(row[25]),
-        completed_at=_optional_aware_utc(row[26]),
-        expires_at=_aware_utc(row[27]),
-        updated_at=_aware_utc(row[28]),
+        logical_content_sha256=None if row[21] is None else str(row[21]),
+        manifest_uri=None if row[22] is None else str(row[22]),
+        manifest_sha256=None if row[23] is None else str(row[23]),
+        schema_version=str(row[24]),
+        schema_sha256=str(row[25]),
+        query_sha256=str(row[26]),
+        error_code=None if row[27] is None else str(row[27]),
+        error_message=None if row[28] is None else str(row[28]),
+        received_at=_aware_utc(row[29]),
+        queued_at=_optional_aware_utc(row[30]),
+        processing_started_at=_optional_aware_utc(row[31]),
+        completed_at=_optional_aware_utc(row[32]),
+        expires_at=_aware_utc(row[33]),
+        updated_at=_aware_utc(row[34]),
     )
 
 
@@ -509,6 +541,11 @@ class LocalBatchManager:
         if request.as_of is None:
             request = request.model_copy(update={"as_of": now})
         normalized_payload = payload.model_copy(update={"request": request})
+        schema = get_schema(request.dataset, request.schema_name)
+        schema_sha256 = _record_schema_sha256(schema)
+        query_sha256 = hashlib.sha256(
+            request.model_dump_json(by_alias=True).encode("utf-8")
+        ).hexdigest()
         digest = (
             request_sha256 or hashlib.sha256(normalized_payload.model_dump_json(by_alias=True).encode()).hexdigest()
         )
@@ -520,6 +557,9 @@ class LocalBatchManager:
             encoding=payload.encoding,
             compression=payload.compression,
             request_sha256=digest,
+            query_sha256=query_sha256,
+            schema_version=schema.version,
+            schema_sha256=schema_sha256,
             idempotency_key=idempotency_key,
             state="queued",
             attempt_count=0,
@@ -532,6 +572,9 @@ class LocalBatchManager:
             package_bytes=0,
             result_uri=None,
             result_sha256=None,
+            logical_content_sha256=None,
+            manifest_uri=None,
+            manifest_sha256=None,
             error_code=None,
             error_message=None,
             received_at=now,
@@ -584,6 +627,15 @@ class LocalBatchManager:
             return renewed
 
         try:
+            active_schema = get_schema(job.request.dataset, job.request.schema_name)
+            active_schema_sha256 = _record_schema_sha256(active_schema)
+            if (
+                active_schema.version != job.schema_version
+                or active_schema_sha256 != job.schema_sha256
+            ):
+                raise RuntimeError(
+                    "batch schema contract changed after submission; submit a new job"
+                )
             remaining_bytes: int | None = None
             if job.monthly_byte_limit is not None and self.usage_ledger is not None:
                 used = self.usage_ledger.billable_bytes_since(
@@ -600,7 +652,7 @@ class LocalBatchManager:
             filename = _artifact_filename(job.encoding, job.compression)
             destination = directory / filename
             temporary = directory / f".{filename}.{uuid.uuid4().hex}.tmp"
-            metadata, record_count, billed_bytes = self._write(
+            metadata, record_count, billed_bytes, logical_content_sha256 = self._write(
                 job,
                 temporary,
                 heartbeat=heartbeat,
@@ -614,7 +666,11 @@ class LocalBatchManager:
             manifest = {
                 "job_id": job.job_id,
                 "api_version": self.api_version,
-                "schema_version": get_schema(job.request.dataset, job.request.schema_name).version,
+                "schema_version": job.schema_version,
+                "schema_sha256": job.schema_sha256,
+                "schema_definition": public_schema(active_schema),
+                "request_sha256": job.request_sha256,
+                "query_sha256": job.query_sha256,
                 "request": job.request.model_dump(by_alias=True, mode="json"),
                 "encoding": job.encoding,
                 "compression": job.compression,
@@ -623,12 +679,17 @@ class LocalBatchManager:
                 "billed_bytes": billed_bytes,
                 "package_bytes": package_bytes,
                 "sha256": digest,
+                "logical_content_sha256": logical_content_sha256,
+                "logical_content_hash_algorithm": "atx-arrow-record-batch-v1",
                 "created_at": _utc_now(),
                 "expires_at": job.expires_at,
             }
-            _write_json_atomic(directory / "manifest.json", manifest)
+            manifest_path = directory / "manifest.json"
+            _write_json_atomic(manifest_path, manifest)
+            manifest_sha256 = _sha256(manifest_path)
             completed_at = _utc_now()
             relative = destination.relative_to(self.artifact_root).as_posix()
+            manifest_relative = manifest_path.relative_to(self.artifact_root).as_posix()
             completed = self.repository.finish(
                 job.job_id,
                 worker_id=worker_id,
@@ -638,6 +699,9 @@ class LocalBatchManager:
                 package_bytes=package_bytes,
                 result_uri=relative,
                 result_sha256=digest,
+                logical_content_sha256=logical_content_sha256,
+                manifest_uri=manifest_relative,
+                manifest_sha256=manifest_sha256,
                 completed_at=completed_at,
                 lease_expires_at=None,
             )
@@ -709,6 +773,23 @@ class LocalBatchManager:
             return None
         return candidate if candidate.is_file() else None
 
+    def manifest_path(self, job: BatchJob) -> Path | None:
+        # Artifact expiry limits paid data delivery, not the customer's audit
+        # trail. Keep a completed job's small manifest addressable while its
+        # account-scoped control-plane record and manifest file are retained.
+        if job.state != "completed" or job.manifest_uri is None:
+            return None
+        candidate = (self.artifact_root / job.manifest_uri).resolve()
+        try:
+            candidate.relative_to(self.artifact_root)
+        except ValueError:
+            return None
+        if not candidate.is_file():
+            return None
+        if job.manifest_sha256 is None or _sha256(candidate) != job.manifest_sha256:
+            return None
+        return candidate
+
     @staticmethod
     def is_expired(job: BatchJob) -> bool:
         return _aware_utc(job.expires_at) <= _utc_now()
@@ -724,10 +805,13 @@ class LocalBatchManager:
         *,
         heartbeat: Callable[..., bool],
         maximum_billable_bytes: int | None,
-    ) -> tuple[dict[str, Any], int, int]:
+    ) -> tuple[dict[str, Any], int, int, str]:
         with self.service.stream_range(job.request) as stream:
             schema = stream.reader.schema
             billed_bytes = 0
+            logical_digest = hashlib.sha256()
+            logical_digest.update(b"atx-arrow-record-batch-v1\0")
+            logical_digest.update(job.schema_sha256.encode("ascii"))
 
             def batches() -> Iterator[pa.RecordBatch]:
                 nonlocal billed_bytes
@@ -737,6 +821,9 @@ class LocalBatchManager:
                     if maximum_billable_bytes is not None and billed_bytes + batch.nbytes > maximum_billable_bytes:
                         raise BatchQuotaExceeded("batch would exceed the remaining monthly byte quota")
                     billed_bytes += batch.nbytes
+                    serialized = batch.serialize().to_pybytes()
+                    logical_digest.update(len(serialized).to_bytes(8, "big"))
+                    logical_digest.update(serialized)
                     yield batch
 
             if job.encoding == "parquet":
@@ -765,7 +852,7 @@ class LocalBatchManager:
                                     sort_keys=True,
                                 )
                                 sink.write(payload.encode("utf-8") + b"\n")
-            return stream.metadata, stream.record_count, billed_bytes
+            return stream.metadata, stream.record_count, billed_bytes, logical_digest.hexdigest()
 
 
 def _artifact_filename(encoding: BatchEncoding, compression: BatchCompression) -> str:

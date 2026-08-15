@@ -30,6 +30,14 @@ from .features import (
     FundamentalFeatureDataset,
 )
 from .fact_disagreement import FactDisagreementDataset, FactDisagreementOptions
+from .filing_context_backfill import (
+    FilingContextBackfillQueueDataset,
+    FilingContextBackfillQueueOptions,
+)
+from .filing_context_backfill_executor import (
+    FilingContextBackfillExecutionOptions,
+    FilingContextBackfillExecutorDataset,
+)
 from .filer_alias import FilerAliasDataset, FilerAliasOptions
 from .finra import FinraShortInterestDataset, FinraShortInterestOptions, parse_date
 from .fundamental_ratios import FundamentalRatiosDataset, FundamentalRatiosOptions
@@ -123,6 +131,11 @@ from .universes import UniverseBuildOptions, UniverseMembershipDataset
 from .watermarks import refresh_warehouse_watermarks
 from .warehouse import json_dumps, now_utc_naive
 from .xbrl_filing_contexts import XbrlFilingContextDataset, XbrlFilingContextOptions
+from .xbrl_processor import ArelleValidationDataset, ArelleValidationOptions
+from .xbrl_taxonomy_packages import (
+    XbrlTaxonomyPackageDataset,
+    XbrlTaxonomyPackageOptions,
+)
 from .xbrl_validation import XbrlValidationDataset, XbrlValidationOptions
 from .reference_classifications import (
     EntityClassificationDataset,
@@ -621,10 +634,12 @@ def _submissions_options(params: dict[str, Any]) -> SecSubmissionsOptions:
     forms = params.get("forms", default.forms)
     return SecSubmissionsOptions(
         symbols=_tuple_or_none(params.get("symbols", default.symbols)) or default.symbols,
+        ciks=_string_tuple_or_none(params.get("ciks")) or default.ciks,
         forms=None if forms is None else _tuple_or_none(forms),
         include_history_files=_bool_param(params.get("include_history_files"), default.include_history_files),
         request_timeout=int(params.get("request_timeout", default.request_timeout)),
         user_agent=params.get("user_agent", default.user_agent),
+        run_id=params.get("run_id") or default.run_id,
     )
 
 
@@ -639,7 +654,22 @@ def _xbrl_filing_context_options(params: dict[str, Any]) -> XbrlFilingContextOpt
             None if params.get("max_filings_per_symbol") in (None, "") else int(params["max_filings_per_symbol"])
         ),
         request_timeout=int(params.get("request_timeout", default.request_timeout)),
+        include_legacy_xbrl=_bool_param(
+            params.get("include_legacy_xbrl"), default.include_legacy_xbrl
+        ),
+        use_source_cache=_bool_param(
+            params.get("use_source_cache"), default.use_source_cache
+        ),
+        source_cache_dir=(
+            None
+            if params.get("source_cache_dir") in (None, "")
+            else Path(params["source_cache_dir"])
+        ),
+        capture_filing_package=_bool_param(
+            params.get("capture_filing_package"), default.capture_filing_package
+        ),
         user_agent=params.get("user_agent", default.user_agent),
+        run_id=params.get("run_id") or default.run_id,
     )
 
 
@@ -958,6 +988,111 @@ def _fundamental_reconciliation_options(
     )
 
 
+def _arelle_validation_options(params: dict[str, Any]) -> ArelleValidationOptions:
+    default = ArelleValidationOptions()
+    return ArelleValidationOptions(
+        accession_numbers=_string_tuple_or_none(params.get("accession_numbers")),
+        max_filings=int(params.get("max_filings", default.max_filings)),
+        executable=params.get("executable") or default.executable,
+        internet_connectivity=(
+            params.get("internet_connectivity") or default.internet_connectivity
+        ),
+        processor_cache_dir=(
+            None
+            if params.get("processor_cache_dir") in (None, "")
+            else Path(params["processor_cache_dir"])
+        ),
+        request_timeout=int(params.get("request_timeout", default.request_timeout)),
+        process_timeout=int(params.get("process_timeout", default.process_timeout)),
+        user_agent=params.get("user_agent") or default.user_agent,
+        efm_plugin_path=(
+            None
+            if params.get("efm_plugin_path") in (None, "")
+            else Path(params["efm_plugin_path"])
+        ),
+        taxonomy_package_paths=tuple(
+            Path(value)
+            for value in params.get(
+                "taxonomy_package_paths", default.taxonomy_package_paths
+            )
+        ),
+        use_catalog_taxonomy_packages=_bool_param(
+            params.get("use_catalog_taxonomy_packages"),
+            default.use_catalog_taxonomy_packages,
+        ),
+        run_id=params.get("run_id") or default.run_id,
+    )
+
+
+def _xbrl_taxonomy_package_options(
+    params: dict[str, Any],
+) -> XbrlTaxonomyPackageOptions:
+    default = XbrlTaxonomyPackageOptions()
+    return XbrlTaxonomyPackageOptions(
+        accession_numbers=_string_tuple_or_none(params.get("accession_numbers")),
+        max_filings=int(params.get("max_filings", default.max_filings)),
+        source_cache_dir=(
+            None
+            if params.get("source_cache_dir") in (None, "")
+            else Path(params["source_cache_dir"])
+        ),
+        package_dir=(
+            None
+            if params.get("package_dir") in (None, "")
+            else Path(params["package_dir"])
+        ),
+        request_timeout=int(params.get("request_timeout", default.request_timeout)),
+        user_agent=params.get("user_agent") or default.user_agent,
+        run_id=params.get("run_id") or default.run_id,
+    )
+
+
+def _filing_context_backfill_queue_options(
+    params: dict[str, Any],
+) -> FilingContextBackfillQueueOptions:
+    default = FilingContextBackfillQueueOptions()
+    return FilingContextBackfillQueueOptions(
+        run_id=params.get("run_id") or default.run_id,
+    )
+
+
+def _filing_context_backfill_execution_options(
+    params: dict[str, Any],
+) -> FilingContextBackfillExecutionOptions:
+    default = FilingContextBackfillExecutionOptions()
+    return FilingContextBackfillExecutionOptions(
+        max_filings=int(params.get("max_filings", default.max_filings)),
+        max_attempts_per_accession=int(
+            params.get("max_attempts_per_accession", default.max_attempts_per_accession)
+        ),
+        stale_running_after_minutes=int(
+            params.get("stale_running_after_minutes", default.stale_running_after_minutes)
+        ),
+        retry_failed=_bool_param(params.get("retry_failed"), default.retry_failed),
+        retry_nonretryable=_bool_param(
+            params.get("retry_nonretryable"), default.retry_nonretryable
+        ),
+        stop_on_error=_bool_param(params.get("stop_on_error"), default.stop_on_error),
+        request_timeout=int(params.get("request_timeout", default.request_timeout)),
+        include_legacy_xbrl=_bool_param(
+            params.get("include_legacy_xbrl"), default.include_legacy_xbrl
+        ),
+        use_source_cache=_bool_param(
+            params.get("use_source_cache"), default.use_source_cache
+        ),
+        source_cache_dir=(
+            None
+            if params.get("source_cache_dir") in (None, "")
+            else Path(params["source_cache_dir"])
+        ),
+        capture_filing_packages=_bool_param(
+            params.get("capture_filing_packages"), default.capture_filing_packages
+        ),
+        user_agent=params.get("user_agent") or default.user_agent,
+        run_id=params.get("run_id") or default.run_id,
+    )
+
+
 def _fact_disagreement_options(params: dict[str, Any]) -> FactDisagreementOptions:
     default = FactDisagreementOptions()
     return FactDisagreementOptions(
@@ -1111,6 +1246,14 @@ DATASET_REGISTRY: dict[str, tuple[type[Dataset], OptionFactory]] = {
     XbrlTaxonomyDataset.dataset_id: (XbrlTaxonomyDataset, _xbrl_taxonomy_options),
     XbrlFilingContextDataset.dataset_id: (XbrlFilingContextDataset, _xbrl_filing_context_options),
     XbrlValidationDataset.dataset_id: (XbrlValidationDataset, _xbrl_validation_options),
+    ArelleValidationDataset.dataset_id: (
+        ArelleValidationDataset,
+        _arelle_validation_options,
+    ),
+    XbrlTaxonomyPackageDataset.dataset_id: (
+        XbrlTaxonomyPackageDataset,
+        _xbrl_taxonomy_package_options,
+    ),
     SecSubmissionsDataset.dataset_id: (SecSubmissionsDataset, _submissions_options),
     NasdaqSymbolDirectoryDataset.dataset_id: (NasdaqSymbolDirectoryDataset, _symbol_directory_options),
     NasdaqListingEventsDataset.dataset_id: (NasdaqListingEventsDataset, _listing_events_options),
@@ -1128,6 +1271,14 @@ DATASET_REGISTRY: dict[str, tuple[type[Dataset], OptionFactory]] = {
     FundamentalReconciliationDataset.dataset_id: (
         FundamentalReconciliationDataset,
         _fundamental_reconciliation_options,
+    ),
+    FilingContextBackfillQueueDataset.dataset_id: (
+        FilingContextBackfillQueueDataset,
+        _filing_context_backfill_queue_options,
+    ),
+    FilingContextBackfillExecutorDataset.dataset_id: (
+        FilingContextBackfillExecutorDataset,
+        _filing_context_backfill_execution_options,
     ),
     FundamentalXbrlMetricDataset.dataset_id: (FundamentalXbrlMetricDataset, _fundamental_xbrl_metric_options),
     SegmentDataset.dataset_id: (SegmentDataset, _segment_options),
@@ -1269,6 +1420,8 @@ DATASET_DEPENDENCIES: dict[str, tuple[str, ...]] = {
         "fundamental_standardized",
         "xbrl_filing_contexts",
     ),
+    "filing_context_backfill_queue": ("fundamental_reconciliation",),
+    "filing_context_backfill_attempts": ("filing_context_backfill_queue",),
     "fundamental_xbrl_metric": ("xbrl_filing_contexts",),
     "segments": ("fundamental_xbrl_metric", "xbrl_filing_contexts"),
     "footnotes": ("xbrl_filing_contexts",),
@@ -1322,6 +1475,8 @@ DATASET_DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "universe_memberships": ("tbltickerhistory_daily",),
     "xbrl_filing_contexts": ("sec_submissions",),
     "xbrl_validation": ("xbrl_filing_contexts", "xbrl_taxonomy"),
+    "xbrl_processor_runs": ("xbrl_filing_contexts",),
+    "xbrl_standard_taxonomy_packages": ("xbrl_filing_contexts",),
 }
 
 
@@ -1365,6 +1520,7 @@ def normalize_dependencies(value: Any) -> list[str]:
 _MERGED_SEQUENCE_PARAM_KEYS = frozenset(
     {
         "accession_numbers",
+        "ciks",
         "concepts",
         "cusips",
         "forms",
@@ -1892,6 +2048,12 @@ class JobManager:
             dataset_id="fundamental_reconciliation",
             params={"symbols": symbols},
             dependencies=["fundamental_standardized", "xbrl_filing_contexts"],
+            **retry_policy,
+        )
+        self.register_job(
+            job_name="filing_context_backfill_queue",
+            dataset_id="filing_context_backfill_queue",
+            dependencies=["fundamental_reconciliation"],
             **retry_policy,
         )
         self.register_job(

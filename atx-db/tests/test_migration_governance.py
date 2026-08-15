@@ -76,9 +76,36 @@ def test_migration_checksum_includes_direct_helper_source(monkeypatch):
     def changed_backfill(conn):
         conn.execute("SELECT 42")
 
+    changed_backfill.__module__ = migration_0100.up.__module__
     monkeypatch.setattr(migrations, "_backfill_missing_migration_checksums", changed_backfill)
 
     assert migrations._migration_source_checksum(migration_0100) != original
+
+
+def test_migration_checksum_excludes_imported_runtime_dependency(monkeypatch):
+    import atx_db.migrations as migrations
+    import atx_db.migrations.bodies_0189 as migration_body
+
+    migration_0189 = next(migration for migration in migrations.MIGRATIONS if migration.version == 189)
+    original = migrations._migration_source_checksum(migration_0189)
+
+    class ReplacementStore:
+        pass
+
+    monkeypatch.setattr(migration_body, "DuckDBStore", ReplacementStore)
+
+    assert migrations._migration_source_checksum(migration_0189) == original
+
+
+def test_verify_migration_checksums_accepts_audited_legacy_runtime_fingerprint(tmp_store):
+    import atx_db.migrations as migrations
+
+    tmp_store.con.execute(
+        "UPDATE schema_migrations SET checksum=? WHERE version='0189'",
+        ["bc16d80f8047189c86d961300f96f8b2dd91ab75f7b440c2e9056b243b907731"],
+    )
+
+    migrations.verify_migration_checksums(tmp_store.con)
 
 
 def test_apply_pending_migrations_clean_current_db_returns_empty(tmp_store):

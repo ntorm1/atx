@@ -449,6 +449,43 @@ def create_app(
             )
         return {"data": _public_job(job)}
 
+    @app.get("/v1/batch.get_manifest", tags=["batch"])
+    def get_batch_manifest(
+        job_id: Annotated[str, Query()],
+        request: Request,
+        user: RequestPrincipal,
+    ) -> FileResponse:
+        _require_batch_scope(user)
+        started_at = _now()
+        job = jobs.get(job_id, user.account_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail={"code": "job_not_found", "message": "batch job not found"})
+        path = jobs.manifest_path(job)
+        if path is None:
+            code = "manifest_unavailable" if job.state == "completed" else "manifest_not_ready"
+            raise HTTPException(
+                status_code=410 if code == "manifest_unavailable" else 409,
+                detail={"code": code, "message": code.replace("_", " ")},
+            )
+        _record(
+            ledger,
+            request,
+            user,
+            endpoint="batch.get_manifest",
+            dataset=job.request.dataset,
+            schema=job.request.schema_name,
+            started_at=started_at,
+            record_count=1,
+            response_bytes=path.stat().st_size,
+            request_id=f"{request.state.request_id}:manifest",
+        )
+        return FileResponse(
+            path,
+            media_type="application/json",
+            filename="manifest.json",
+            headers={"X-ATX-SHA256": job.manifest_sha256 or ""},
+        )
+
     @app.get("/v1/batch.download", tags=["batch"])
     def download_batch(
         job_id: Annotated[str, Query()],
@@ -610,6 +647,7 @@ def _public_job(job: BatchJob) -> dict[str, object]:
     payload = job.public()
     if payload["state"] == "completed":
         payload["download_url"] = f"/v1/batch.download?job_id={payload['job_id']}"
+        payload["manifest_url"] = f"/v1/batch.get_manifest?job_id={payload['job_id']}"
     return payload
 
 

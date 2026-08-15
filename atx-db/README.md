@@ -75,7 +75,11 @@ point-in-time range queries, durable batch jobs, and checksummed Parquet, Arrow,
 and JSONL downloads under `/v1`. Preflight methods expose record count, uncompressed
 Arrow billable size, and configured USD cost before retrieval. Mutating batch submissions
 accept an account-scoped `Idempotency-Key`; quota failures return `429` with reason and
-retry headers. See
+retry headers. Every accepted batch pins the normalized query, `as_of`, public schema
+version, and schema SHA-256. Generation adds an encoding-independent logical-content
+SHA-256 plus byte-level artifact and manifest hashes. Completed jobs expose
+`/v1/batch.get_manifest`; that small audit artifact remains account-scoped and available
+after the paid data file expires. See
 [`docs/SAAS_PLATFORM_ARCHITECTURE.md`](docs/SAAS_PLATFORM_ARCHITECTURE.md) for the
 canonical model, API semantics, production topology, and delivery roadmap.
 
@@ -96,8 +100,50 @@ slices and incremental recovery:
 ```powershell
 atx-db refresh-standardized-fundamentals --memory-limit 8GB --threads 4
 atx-db refresh-standardized-fundamentals --symbol AAPL --symbol MSFT
+atx-db refresh-fundamental-reconciliation
+atx-db refresh-filing-context-backfill-queue
+atx-db run-filing-context-backfill --max-filings 10
 atx-db refresh-provider-coverage
 ```
+
+Install the optional certified XBRL processor and run a bounded, offline validation
+sidecar when structured processor findings are required:
+
+```powershell
+uv sync --extra xbrl
+atx-db capture-xbrl-filing-packages --accession 0000004904-23-000081 --max-filings 1
+atx-db capture-xbrl-taxonomy-packages --accession 0000004904-23-000081 --max-filings 1
+atx-db capture-xbrl-taxonomy-packages --accession 0000004904-23-000081 --fail-fast
+atx-db run-arelle-validation --accession 0000004904-23-000081 --max-filings 1
+atx-db run-arelle-validation --accession 0000004904-23-000081 --taxonomy-package C:\data\xbrl-taxonomy-packages\2022
+```
+
+Offline is the safe default. `--online` permits Arelle to resolve remote DTS resources
+directly and is reserved for an operator-controlled environment with source-specific
+fair-access controls. Core runs are labeled `xbrl21_calc11_round_to_nearest`; passing an
+explicit official SEC EDGAR plugin checkout with `--efm-plugin-path` enables and labels
+the EFM profile. The Arelle PyPI `EFM` extra supplies plugin dependencies but does not
+include the SEC-maintained EDGAR plugin itself.
+`capture-xbrl-filing-packages` uses the same paced SEC client and immutable source cache
+to capture each filing's entrypoints, extension schema, and calculation, definition,
+label, and presentation linkbases. Multi-document IXDS filings are assembled into a
+deterministic ZIP keyed by the ordered member/digest manifest.
+`capture-xbrl-taxonomy-packages` parses cached extension schemas and calculation,
+definition, label, and presentation linkbases. It maps absolute taxonomy references to
+official FASB, SEC, and XBRL US release ZIPs, stores immutable revisions plus filing
+dependency edges, and materializes checksum-verified OASIS taxonomy packages for offline
+processing. Publisher archives without OASIS metadata receive a deterministic catalog
+wrapper while the original ZIP, digest, byte count, and source URL remain unchanged in
+lineage. When an official SEC legacy family publishes only a directory of XSD/XML members,
+the capture builds a deterministic package from those same-origin documents and records
+the directory as the source. Arelle loads the linked processor packages automatically;
+`--taxonomy-package`
+remains an additive override that accepts a ZIP or directory of ZIPs and records every
+expanded package's path, SHA-256, and byte count with the processor run.
+Package capture is failure-isolated by default: one unavailable publisher artifact does
+not discard successful packages or filing edges. Every requested package writes a durable
+latest-revision attempt with stage, cache/network counts, hashes, and exact failure;
+`--fail-fast` restores batch-abort behavior for controlled diagnostics.
 
 The command reports the build ID, rule-set digest, candidate/output/exception counts, and
 basis distribution. Every build is also persisted in
@@ -112,9 +158,63 @@ utility, and broker-dealer statement routing. The `reconciliation` schema evalua
 governed accounting identities at every input or classification event, exposes exact
 weighted-input lineage and tolerances, and distinguishes hard `mismatch` results from
 diagnostic scope differences and PIT `not_applicable` transitions.
+Its indexed serving table is atomically published with a row count, content checksum,
+input watermark, and freshness/parity gates. Filing-context verification reads both
+modern inline XBRL and historical EX-101.INS XML; legacy instance documents are
+discovered from the SEC accession directory's `index.json` and retain the filing primary
+document separately from the exact instance source.
+`refresh-filing-context-backfill-queue` converts the remaining single-filing context
+gaps into a checksum-governed SEC work queue ranked by expected reconciliation
+verification gain; blocked rows preserve missing-submission metadata debt explicitly.
+`run-filing-context-backfill` claims a bounded priority batch one accession at a time,
+records durable success/failure/retry state in `filing_context_backfill_attempts`,
+recovers expired worker leases, and isolates a bad filing without rolling back earlier
+successes. Automatic retries are limited to transient transport failures and retryable
+HTTP statuses; deterministic parser/schema failures require intervention, with an
+explicit `--retry-nonretryable` override for replay after a fix. Submission ingestion
+accepts explicit CIKs as well as tickers so historical
+entities remain loadable after ticker reuse or a successor-CIK transition. The shared
+SEC client enforces process-wide 110 ms request spacing and bounded `Retry-After`-aware
+retries for 429 and transient 5xx responses. Inline filings whose designated primary
+document is only a cover page use a bounded accession-index fallback to the ranked
+resource-bearing companion document; facts from the cover and companion are merged under
+one logical IXDS instance while retaining each exact source-document URL. Downloaded filing
+artifacts are cached immutably by SHA-256, recorded in `raw_source_files`, and reused only
+after checksum verification; executor attempts distinguish network requests from verified
+cache hits so historical builds are reproducible without repeated SEC traffic.
+Migration 0287 adds versioned `xbrl_processor_runs` and structured
+`xbrl_processor_findings`. These tables preserve the processor/version/profile, exact
+entrypoint and command, connectivity and cache mode, exit state, finding codes/messages,
+references, PIT availability, and latest-revision lineage. This sidecar is intentionally
+outside the default DAG because it is optional and substantially heavier than SQL-native
+quality checks.
+Migrations 0288-0290 add processor package lineage, indexed semantic outcomes, and finding-level
+revision visibility. A processor exit
+is distinct from DTS resolution and filing validity: runs are classified as
+`incomplete_dts`, `validation_errors`, `validation_issues`, or `valid`, so a successful
+subprocess cannot be misrepresented as a valid filing when required taxonomy resources
+were absent. Finding revisions follow their parent run, preserving PIT-safe latest and
+historical validation views.
+Migrations 0291-0295 add a governed `xbrl_standard_taxonomy_package_revisions` catalog,
+processor-package lineage, and revision-aware `xbrl_filing_taxonomy_packages` reference
+edges plus per-package capture attempts without overloading the existing
+taxonomy-relationship extraction tables. A real
+20-filing replay discovered 517 references across schemas and linkbases, mapped 380 to ten
+governed packages, and created 306 new edges. Immediate replay used ten verified cache
+hits and zero network requests. The captured official XBRL US 2009 distribution reduced
+a legacy filing from 141 incomplete-DTS findings to two calculation inconsistencies with
+no missing imports; current 2024/2025 filings likewise resolve fully offline.
+Migrations 0296-0297 pin accepted batch queries to a versioned public schema digest,
+persist an encoding-independent logical result digest, and add immutable manifest URI and
+SHA-256 lineage to each completed job. Manifests embed the exact request and field contract
+and are retrievable independently of the expiring data artifact.
 `refresh-provider-coverage` then appends the measured inclusive-start/exclusive-end
 range, record/security/item breadth, freshness, target failures, and
 `available`/`degraded`/`pending`/`missing` condition for every public schema.
+
+The current fundamentals architecture, source evidence, reconciliation policy, and
+measured proof-slice results are recorded in
+[`docs/FUNDAMENTALS_PROVIDER_DESIGN.md`](docs/FUNDAMENTALS_PROVIDER_DESIGN.md).
 
 The native archive loader streams downloads, validates every ZIP, stages only
 the four required TSV members, and lets DuckDB parse them directly:

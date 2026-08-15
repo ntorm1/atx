@@ -312,7 +312,7 @@ def fundamental_check_specs(
             sql="""
                 SELECT count(*)::DOUBLE
                 FROM (
-                    SELECT security_id, accession_number, primary_document, context_id, count(*) AS row_count
+                    SELECT security_id, accession_number, instance_document, context_id, count(*) AS row_count
                     FROM xbrl_filing_contexts
                     GROUP BY 1, 2, 3, 4
                     HAVING count(*) > 1
@@ -338,6 +338,17 @@ def fundamental_check_specs(
                    OR accession_number = ''
                    OR primary_document IS NULL
                    OR primary_document = ''
+                   OR filing_primary_document IS NULL
+                   OR filing_primary_document = ''
+                   OR filing_primary_document <> primary_document
+                   OR instance_document IS NULL
+                   OR instance_document = ''
+                   OR instance_format NOT IN ('inline_xbrl','xbrl_xml')
+                   OR (
+                        instance_format='inline_xbrl'
+                        AND lower(instance_document) NOT LIKE '%.htm%'
+                   )
+                   OR (instance_format='xbrl_xml' AND lower(instance_document) NOT LIKE '%.xml')
                    OR context_id IS NULL
                    OR context_id = ''
                    OR period_type NOT IN ('instant', 'duration', 'forever', 'unknown')
@@ -404,6 +415,12 @@ def fundamental_check_specs(
                    OR accession_number = ''
                    OR primary_document IS NULL
                    OR primary_document = ''
+                   OR filing_primary_document IS NULL
+                   OR filing_primary_document = ''
+                   OR filing_primary_document <> primary_document
+                   OR instance_document IS NULL
+                   OR instance_document = ''
+                   OR instance_format NOT IN ('inline_xbrl','xbrl_xml')
                    OR context_id IS NULL
                    OR context_id = ''
                    OR context_element NOT IN ('segment', 'scenario', 'unknown')
@@ -471,6 +488,12 @@ def fundamental_check_specs(
                    OR accession_number = ''
                    OR primary_document IS NULL
                    OR primary_document = ''
+                   OR filing_primary_document IS NULL
+                   OR filing_primary_document = ''
+                   OR filing_primary_document <> primary_document
+                   OR instance_document IS NULL
+                   OR instance_document = ''
+                   OR instance_format NOT IN ('inline_xbrl','xbrl_xml')
                    OR fact_ordinal < 1
                    OR fact_kind NOT IN ('nonFraction', 'nonNumeric', 'fraction')
                    OR qname IS NULL
@@ -1737,6 +1760,98 @@ def fundamental_check_specs(
         SqlQualityCheck(
             dataset_id="fundamental_reconciliation",
             table_name="fundamental_reconciliation_serving",
+            check_name="fundamental_reconciliation_serving_manifest_parity",
+            sql="""
+                WITH serving AS (
+                    SELECT
+                        count(*) AS row_count,
+                        max(available_at) AS max_available_at,
+                        bit_xor(hash(to_json(reconciliation_row))) AS content_hash
+                    FROM fundamental_reconciliation_serving reconciliation_row
+                ), latest_build AS (
+                    SELECT
+                        build_id,published_row_count,published_max_available_at,
+                        published_content_hash
+                    FROM fundamental_reconciliation_builds
+                    WHERE status='completed'
+                    ORDER BY completed_at DESC,build_id DESC
+                    LIMIT 1
+                )
+                SELECT CASE
+                    WHEN serving.row_count=0 AND latest_build.build_id IS NULL THEN 0
+                    WHEN latest_build.build_id IS NULL THEN 1
+                    WHEN serving.row_count <> latest_build.published_row_count THEN 1
+                    WHEN serving.max_available_at IS DISTINCT FROM
+                         latest_build.published_max_available_at THEN 1
+                    WHEN serving.content_hash IS DISTINCT FROM
+                         latest_build.published_content_hash THEN 1
+                    ELSE 0
+                END::DOUBLE
+                FROM serving
+                LEFT JOIN latest_build ON true
+            """,
+            threshold=0.0,
+            required_tables=(
+                "fundamental_reconciliation_serving",
+                "fundamental_reconciliation_builds",
+            ),
+            severity="critical",
+        ),
+        SqlQualityCheck(
+            dataset_id="fundamental_reconciliation",
+            table_name="fundamental_reconciliation_serving",
+            check_name="fundamental_reconciliation_serving_freshness",
+            sql="""
+                WITH serving AS (
+                    SELECT count(*) AS row_count
+                    FROM fundamental_reconciliation_serving
+                ), current_inputs AS (
+                    SELECT max(input_watermark) AS input_watermark
+                    FROM (
+                        SELECT max(source_loaded_at) AS input_watermark
+                        FROM fundamental_standardized
+                        UNION ALL
+                        SELECT max(source_loaded_at) FROM entity_industry_template
+                        UNION ALL
+                        SELECT max(source_loaded_at) FROM xbrl_filing_contexts
+                        UNION ALL
+                        SELECT max(source_loaded_at) FROM xbrl_filing_facts
+                        UNION ALL
+                        SELECT max(source_loaded_at) FROM fundamental_extension_concept_map
+                    )
+                ), latest_full_build AS (
+                    SELECT build_id,input_max_source_loaded_at
+                    FROM fundamental_reconciliation_builds
+                    WHERE status='completed' AND is_full_refresh
+                    ORDER BY completed_at DESC,build_id DESC
+                    LIMIT 1
+                )
+                SELECT CASE
+                    WHEN serving.row_count=0 THEN 0
+                    WHEN latest_full_build.build_id IS NULL THEN 1
+                    WHEN current_inputs.input_watermark >
+                         latest_full_build.input_max_source_loaded_at THEN 1
+                    ELSE 0
+                END::DOUBLE
+                FROM serving
+                CROSS JOIN current_inputs
+                LEFT JOIN latest_full_build ON true
+            """,
+            threshold=0.0,
+            required_tables=(
+                "fundamental_reconciliation_serving",
+                "fundamental_reconciliation_builds",
+                "fundamental_standardized",
+                "entity_industry_template",
+                "xbrl_filing_contexts",
+                "xbrl_filing_facts",
+                "fundamental_extension_concept_map",
+            ),
+            severity="critical",
+        ),
+        SqlQualityCheck(
+            dataset_id="fundamental_reconciliation",
+            table_name="fundamental_reconciliation_serving",
             check_name="duplicate_fundamental_reconciliation_events",
             sql="""
                 SELECT count(*)::DOUBLE
@@ -1895,5 +2010,689 @@ def fundamental_check_specs(
             required_tables=("fundamental_reconciliation_serving",),
             failure_status="warning",
             severity="warning",
+        ),
+        SqlQualityCheck(
+            dataset_id="filing_context_backfill_queue",
+            table_name="filing_context_backfill_queue",
+            check_name="bad_filing_context_backfill_queue_rows",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM filing_context_backfill_queue
+                WHERE queue_id IS NULL OR queue_id=''
+                   OR build_id IS NULL OR build_id=''
+                   OR security_id IS NULL OR security_id=''
+                   OR cik IS NULL OR cik=''
+                   OR accession_number IS NULL OR accession_number=''
+                   OR filing_directory_url IS NULL OR filing_directory_url=''
+                   OR filing_index_url IS NULL OR filing_index_url=''
+                   OR estimated_request_count < 0
+                   OR affected_reconciliation_count <= 0
+                   OR affected_error_rule_count < 0
+                   OR affected_rule_count <= 0
+                   OR affected_period_count <= 0
+                   OR mismatch_count < 0
+                   OR diagnostic_difference_count < 0
+                   OR unverified_reconciled_count < 0
+                   OR priority_tier NOT IN ('P0','P1','P2','P3')
+                   OR priority_score < 0
+                   OR priority_rank <= 0
+                   OR queue_status NOT IN ('pending','blocked')
+                   OR (queue_status='pending' AND blocked_reason IS NOT NULL)
+                   OR (queue_status='blocked' AND blocked_reason IS NULL)
+                   OR (queue_status='blocked' AND estimated_request_count<>0)
+                   OR (
+                        queue_status='pending'
+                        AND (
+                            expected_instance_format NOT IN ('inline_xbrl','xbrl_xml')
+                            OR primary_document_url IS NULL
+                            OR NOT coalesce(is_xbrl,false)
+                            OR estimated_request_count <>
+                                CASE WHEN expected_instance_format='inline_xbrl' THEN 1 ELSE 2 END
+                        )
+                   )
+                   OR source_max_available_at IS NULL
+                   OR available_at IS DISTINCT FROM source_max_available_at
+                   OR as_of_date IS DISTINCT FROM CAST(available_at AS DATE)
+                   OR NOT is_latest_revision
+                   OR run_id IS NULL OR run_id=''
+                   OR source_loaded_at IS NULL
+            """,
+            threshold=0.0,
+            required_tables=("filing_context_backfill_queue",),
+            severity="critical",
+        ),
+        SqlQualityCheck(
+            dataset_id="filing_context_backfill_queue",
+            table_name="filing_context_backfill_queue",
+            check_name="duplicate_filing_context_backfill_accessions",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM (
+                    SELECT security_id,accession_number,count(*) AS row_count
+                    FROM filing_context_backfill_queue
+                    GROUP BY security_id,accession_number
+                    HAVING count(*)>1
+                )
+            """,
+            threshold=0.0,
+            required_tables=("filing_context_backfill_queue",),
+            severity="critical",
+        ),
+        SqlQualityCheck(
+            dataset_id="filing_context_backfill_queue",
+            table_name="filing_context_backfill_queue",
+            check_name="filing_context_backfill_queue_manifest_parity",
+            sql="""
+                WITH published AS (
+                    SELECT
+                        count(*) AS row_count,
+                        count(*) FILTER (WHERE queue_status='pending') AS ready_count,
+                        count(*) FILTER (WHERE queue_status<>'pending') AS blocked_count,
+                        coalesce(sum(affected_reconciliation_count),0) AS gap_count,
+                        max(available_at) AS max_available_at,
+                        bit_xor(hash(to_json(queue_row))) AS content_hash
+                    FROM filing_context_backfill_queue queue_row
+                ), latest_build AS (
+                    SELECT *
+                    FROM filing_context_backfill_builds
+                    WHERE status='completed'
+                    ORDER BY completed_at DESC,build_id DESC
+                    LIMIT 1
+                )
+                SELECT CASE
+                    WHEN published.row_count=0 AND latest_build.build_id IS NULL THEN 0
+                    WHEN latest_build.build_id IS NULL THEN 1
+                    WHEN published.row_count<>latest_build.queue_row_count THEN 1
+                    WHEN published.ready_count<>latest_build.ready_row_count THEN 1
+                    WHEN published.blocked_count<>latest_build.blocked_row_count THEN 1
+                    WHEN published.gap_count<>latest_build.source_gap_row_count THEN 1
+                    WHEN published.max_available_at IS DISTINCT FROM
+                         latest_build.published_max_available_at THEN 1
+                    WHEN published.content_hash IS DISTINCT FROM
+                         latest_build.published_content_hash THEN 1
+                    ELSE 0
+                END::DOUBLE
+                FROM published
+                LEFT JOIN latest_build ON true
+            """,
+            threshold=0.0,
+            required_tables=(
+                "filing_context_backfill_queue",
+                "filing_context_backfill_builds",
+            ),
+            severity="critical",
+        ),
+        SqlQualityCheck(
+            dataset_id="filing_context_backfill_queue",
+            table_name="filing_context_backfill_queue",
+            check_name="filing_context_backfill_queue_freshness",
+            sql="""
+                WITH serving AS (
+                    SELECT count(*) AS row_count
+                    FROM fundamental_reconciliation_serving
+                ), latest_reconciliation AS (
+                    SELECT build_id,published_content_hash
+                    FROM fundamental_reconciliation_builds
+                    WHERE status='completed'
+                    ORDER BY completed_at DESC,build_id DESC
+                    LIMIT 1
+                ), latest_queue AS (
+                    SELECT
+                        build_id,input_reconciliation_build_id,
+                        input_reconciliation_content_hash,input_max_source_loaded_at
+                    FROM filing_context_backfill_builds
+                    WHERE status='completed'
+                    ORDER BY completed_at DESC,build_id DESC
+                    LIMIT 1
+                ), current_inputs AS (
+                    SELECT max(input_watermark) AS input_watermark
+                    FROM (
+                        SELECT max(source_loaded_at) AS input_watermark
+                        FROM fundamental_reconciliation_serving
+                        UNION ALL
+                        SELECT max(source_loaded_at) FROM sec_submissions
+                        UNION ALL
+                        SELECT max(source_loaded_at) FROM xbrl_filing_contexts
+                    )
+                )
+                SELECT CASE
+                    WHEN serving.row_count=0
+                         AND latest_reconciliation.build_id IS NULL
+                         AND (
+                             latest_queue.build_id IS NULL
+                             OR latest_queue.input_reconciliation_build_id IS NULL
+                         ) THEN 0
+                    WHEN latest_reconciliation.build_id IS NULL THEN 1
+                    WHEN latest_queue.build_id IS NULL THEN 1
+                    WHEN latest_queue.input_reconciliation_build_id IS DISTINCT FROM
+                         latest_reconciliation.build_id THEN 1
+                    WHEN latest_queue.input_reconciliation_content_hash IS DISTINCT FROM
+                         latest_reconciliation.published_content_hash THEN 1
+                    WHEN current_inputs.input_watermark >
+                         latest_queue.input_max_source_loaded_at THEN 1
+                    ELSE 0
+                END::DOUBLE
+                FROM serving
+                LEFT JOIN latest_reconciliation ON true
+                LEFT JOIN latest_queue ON true
+                CROSS JOIN current_inputs
+            """,
+            threshold=0.0,
+            required_tables=(
+                "filing_context_backfill_queue",
+                "filing_context_backfill_builds",
+                "fundamental_reconciliation_serving",
+                "fundamental_reconciliation_builds",
+                "sec_submissions",
+                "xbrl_filing_contexts",
+            ),
+            severity="critical",
+        ),
+        SqlQualityCheck(
+            dataset_id="filing_context_backfill_queue",
+            table_name="filing_context_backfill_queue",
+            check_name="blocked_filing_context_backfill_queue_rows",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM filing_context_backfill_queue
+                WHERE queue_status='blocked'
+            """,
+            threshold=0.0,
+            required_tables=("filing_context_backfill_queue",),
+            failure_status="warning",
+            severity="warning",
+        ),
+        SqlQualityCheck(
+            dataset_id="filing_context_backfill_attempts",
+            table_name="filing_context_backfill_attempts",
+            check_name="bad_filing_context_backfill_attempt_rows",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM filing_context_backfill_attempts
+                WHERE attempt_id IS NULL OR attempt_id=''
+                   OR queue_id IS NULL OR queue_id=''
+                   OR queue_build_id IS NULL OR queue_build_id=''
+                   OR security_id IS NULL OR security_id=''
+                   OR cik IS NULL OR cik=''
+                   OR accession_number IS NULL OR accession_number=''
+                   OR priority_tier NOT IN ('P0','P1','P2','P3')
+                   OR priority_rank < 1
+                   OR attempt_number < 1
+                   OR max_attempts < 1
+                   OR attempt_number > max_attempts
+                   OR status NOT IN ('running','succeeded','failed')
+                   OR estimated_request_count < 1
+                   OR started_at IS NULL
+                   OR available_at IS NULL
+                   OR as_of_date <> CAST(available_at AS DATE)
+                   OR source_loaded_at IS NULL
+                   OR (status='running' AND completed_at IS NOT NULL)
+                   OR (status<>'running' AND completed_at IS NULL)
+                   OR (completed_at IS NOT NULL AND completed_at < started_at)
+                   OR (status='succeeded' AND contexts_loaded IS NULL)
+                   OR (status='succeeded' AND dimensions_loaded IS NULL)
+                   OR (status='succeeded' AND facts_loaded IS NULL)
+                   OR (status='succeeded' AND actual_request_count IS NULL)
+                   OR (status='succeeded' AND source_artifact_count IS NULL)
+                   OR (status='succeeded' AND source_cache_hit_count IS NULL)
+                   OR coalesce(actual_request_count,0) < 0
+                   OR coalesce(source_artifact_count,0) < 0
+                   OR coalesce(source_cache_hit_count,0) < 0
+                   OR (
+                        status='succeeded'
+                        AND source_artifact_count
+                            <> actual_request_count + source_cache_hit_count
+                   )
+                   OR (status='succeeded' AND error_type IS NOT NULL)
+                   OR (status='failed' AND error_type IS NULL)
+                   OR (is_retryable AND status<>'failed')
+                   OR (is_retryable AND attempt_number >= max_attempts)
+            """,
+            threshold=0.0,
+            required_tables=("filing_context_backfill_attempts",),
+            severity="critical",
+        ),
+        SqlQualityCheck(
+            dataset_id="filing_context_backfill_attempts",
+            table_name="filing_context_backfill_attempts",
+            check_name="duplicate_filing_context_backfill_attempt_sequences",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM (
+                    SELECT queue_id,attempt_number
+                    FROM filing_context_backfill_attempts
+                    GROUP BY queue_id,attempt_number
+                    HAVING count(*)>1
+                    UNION ALL
+                    SELECT queue_id,-1
+                    FROM filing_context_backfill_attempts
+                    WHERE is_latest_revision
+                    GROUP BY queue_id
+                    HAVING count(*)>1
+                )
+            """,
+            threshold=0.0,
+            required_tables=("filing_context_backfill_attempts",),
+            severity="critical",
+        ),
+        SqlQualityCheck(
+            dataset_id="filing_context_backfill_attempts",
+            table_name="filing_context_backfill_attempts",
+            check_name="stale_running_filing_context_backfill_attempts",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM filing_context_backfill_attempts
+                WHERE status='running'
+                  AND started_at < now() - INTERVAL '30 minutes'
+            """,
+            threshold=0.0,
+            required_tables=("filing_context_backfill_attempts",),
+            failure_status="warning",
+            severity="warning",
+        ),
+        SqlQualityCheck(
+            dataset_id="filing_context_backfill_attempts",
+            table_name="filing_context_backfill_attempts",
+            check_name="exhausted_filing_context_backfill_attempts",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM filing_context_backfill_attempts
+                WHERE is_latest_revision
+                  AND status='failed'
+                  AND NOT is_retryable
+            """,
+            threshold=0.0,
+            required_tables=("filing_context_backfill_attempts",),
+            failure_status="warning",
+            severity="warning",
+        ),
+        SqlQualityCheck(
+            dataset_id="xbrl_processor_runs",
+            table_name="xbrl_processor_runs",
+            check_name="bad_xbrl_processor_run_rows",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM xbrl_processor_runs
+                WHERE processor_run_id IS NULL OR processor_run_id=''
+                   OR processor<>'arelle'
+                   OR processor_version IS NULL OR processor_version=''
+                   OR validation_profile IS NULL OR validation_profile=''
+                   OR security_id IS NULL OR security_id=''
+                   OR cik IS NULL OR cik=''
+                   OR accession_number IS NULL OR accession_number=''
+                   OR instance_format NOT IN ('inline_xbrl','xbrl_xml')
+                   OR entrypoint_json IS NULL OR entrypoint_json=''
+                   OR command_json IS NULL OR command_json=''
+                   OR taxonomy_packages_json IS NULL
+                   OR internet_connectivity NOT IN ('online','offline')
+                   OR status NOT IN ('running','succeeded','failed','unavailable')
+                   OR dts_resolution_status NOT IN ('not_evaluated','incomplete','resolved')
+                   OR validation_outcome NOT IN (
+                        'not_evaluated','processor_failed','processor_unavailable',
+                        'incomplete_dts','validation_errors','validation_issues','valid'
+                   )
+                   OR started_at IS NULL
+                   OR available_at IS NULL
+                   OR as_of_date <> CAST(available_at AS DATE)
+                   OR source_loaded_at IS NULL
+                   OR (status='running' AND completed_at IS NOT NULL)
+                   OR (status<>'running' AND completed_at IS NULL)
+                   OR (completed_at IS NOT NULL AND completed_at < started_at)
+                   OR (status='succeeded' AND exit_code IS NULL)
+                   OR (status='succeeded' AND finding_count IS NULL)
+                   OR (status='succeeded' AND error_count IS NULL)
+                   OR (status='succeeded' AND warning_count IS NULL)
+                   OR (status='succeeded' AND inconsistency_count IS NULL)
+                   OR (status='succeeded' AND dts_resolution_status='not_evaluated')
+                   OR (status='succeeded' AND validation_outcome IN (
+                        'not_evaluated','processor_failed','processor_unavailable'
+                   ))
+                   OR (status<>'succeeded' AND dts_resolution_status<>'not_evaluated')
+                   OR (status='failed' AND validation_outcome<>'processor_failed')
+                   OR (status='unavailable' AND validation_outcome<>'processor_unavailable')
+                   OR (status='running' AND validation_outcome<>'not_evaluated')
+                   OR (filing_archive_manifest_sha256 IS NULL)
+                        <> (filing_archive_member_count IS NULL)
+                   OR coalesce(filing_archive_member_count,1) < 1
+                   OR coalesce(finding_count,0) < 0
+                   OR coalesce(error_count,0) < 0
+                   OR coalesce(warning_count,0) < 0
+                   OR coalesce(inconsistency_count,0) < 0
+                   OR coalesce(error_count,0) + coalesce(warning_count,0)
+                        + coalesce(inconsistency_count,0) > coalesce(finding_count,0)
+                   OR (status IN ('failed','unavailable') AND error_type IS NULL)
+            """,
+            threshold=0.0,
+            required_tables=("xbrl_processor_runs",),
+            severity="critical",
+        ),
+        SqlQualityCheck(
+            dataset_id="xbrl_processor_runs",
+            table_name="xbrl_processor_runs",
+            check_name="duplicate_latest_xbrl_processor_runs",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM (
+                    SELECT
+                        security_id,accession_number,processor,
+                        processor_version,validation_profile,count(*) AS row_count
+                    FROM xbrl_processor_runs
+                    WHERE is_latest_revision
+                    GROUP BY 1,2,3,4,5
+                    HAVING count(*)>1
+                )
+            """,
+            threshold=0.0,
+            required_tables=("xbrl_processor_runs",),
+            severity="critical",
+        ),
+        SqlQualityCheck(
+            dataset_id="xbrl_processor_findings",
+            table_name="xbrl_processor_findings",
+            check_name="bad_xbrl_processor_finding_rows",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM xbrl_processor_findings
+                WHERE finding_id IS NULL OR finding_id=''
+                   OR processor_run_id IS NULL OR processor_run_id=''
+                   OR processor<>'arelle'
+                   OR processor_version IS NULL OR processor_version=''
+                   OR validation_profile IS NULL OR validation_profile=''
+                   OR security_id IS NULL OR security_id=''
+                   OR cik IS NULL OR cik=''
+                   OR accession_number IS NULL OR accession_number=''
+                   OR severity IS NULL OR severity=''
+                   OR message_code IS NULL OR message_code=''
+                   OR message IS NULL OR message=''
+                   OR message_attributes_json IS NULL
+                   OR references_json IS NULL
+                   OR ordinal < 1
+                   OR is_latest_revision IS NULL
+                   OR as_of_date <> CAST(available_at AS DATE)
+                   OR source_loaded_at IS NULL
+            """,
+            threshold=0.0,
+            required_tables=("xbrl_processor_findings",),
+            severity="critical",
+        ),
+        SqlQualityCheck(
+            dataset_id="xbrl_processor_findings",
+            table_name="xbrl_processor_findings",
+            check_name="orphan_xbrl_processor_findings",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM xbrl_processor_findings finding
+                LEFT JOIN xbrl_processor_runs run
+                  ON run.processor_run_id=finding.processor_run_id
+                WHERE run.processor_run_id IS NULL
+                   OR run.security_id<>finding.security_id
+                   OR run.accession_number<>finding.accession_number
+                   OR run.processor<>finding.processor
+                   OR run.processor_version<>finding.processor_version
+                   OR run.validation_profile<>finding.validation_profile
+                   OR run.is_latest_revision<>finding.is_latest_revision
+            """,
+            threshold=0.0,
+            required_tables=("xbrl_processor_findings", "xbrl_processor_runs"),
+            severity="critical",
+        ),
+        SqlQualityCheck(
+            dataset_id="xbrl_standard_taxonomy_packages",
+            table_name="xbrl_standard_taxonomy_package_revisions",
+            check_name="bad_xbrl_standard_taxonomy_package_revisions",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM xbrl_standard_taxonomy_package_revisions
+                WHERE package_revision_id IS NULL OR package_revision_id=''
+                   OR package_key IS NULL OR package_key=''
+                   OR authority NOT IN ('FASB','SEC','XBRL_US')
+                   OR taxonomy_family IS NULL OR taxonomy_family=''
+                   OR taxonomy_version IS NULL OR taxonomy_version=''
+                   OR source_url NOT LIKE 'https://%'
+                   OR length(sha256)<>64
+                   OR byte_count<=0
+                   OR cache_path IS NULL OR cache_path=''
+                   OR materialized_path IS NULL OR materialized_path=''
+                   OR status<>'cached'
+                   OR package_format NOT IN (
+                        'oasis_taxonomy_package',
+                        'atx_normalized_taxonomy_package'
+                   )
+                   OR processor_package_path IS NULL
+                   OR processor_package_path=''
+                   OR length(processor_package_sha256)<>64
+                   OR processor_package_byte_count<=0
+                   OR fetched_at IS NULL
+                   OR as_of_date<>CAST(available_at AS DATE)
+                   OR is_latest_revision IS NULL
+                   OR run_id IS NULL OR run_id=''
+                   OR source_loaded_at IS NULL
+            """,
+            threshold=0.0,
+            required_tables=("xbrl_standard_taxonomy_package_revisions",),
+            severity="critical",
+        ),
+        SqlQualityCheck(
+            dataset_id="xbrl_standard_taxonomy_packages",
+            table_name="xbrl_standard_taxonomy_package_revisions",
+            check_name="duplicate_latest_xbrl_standard_taxonomy_packages",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM (
+                    SELECT package_key,count(*) AS row_count
+                    FROM xbrl_standard_taxonomy_package_revisions
+                    WHERE is_latest_revision
+                    GROUP BY package_key
+                    HAVING count(*)>1
+                )
+            """,
+            threshold=0.0,
+            required_tables=("xbrl_standard_taxonomy_package_revisions",),
+            severity="critical",
+        ),
+        SqlQualityCheck(
+            dataset_id="xbrl_filing_taxonomy_packages",
+            table_name="xbrl_filing_taxonomy_packages",
+            check_name="bad_xbrl_filing_taxonomy_edges",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM xbrl_filing_taxonomy_packages
+                WHERE filing_package_edge_id IS NULL OR filing_package_edge_id=''
+                   OR security_id IS NULL OR security_id=''
+                   OR cik IS NULL OR cik=''
+                   OR accession_number IS NULL OR accession_number=''
+                   OR source_document_url NOT LIKE 'https://%'
+                   OR reference_url NOT LIKE 'http%://%'
+                   OR package_revision_id IS NULL OR package_revision_id=''
+                   OR package_key IS NULL OR package_key=''
+                   OR as_of_date<>CAST(available_at AS DATE)
+                   OR is_latest_revision IS NULL
+                   OR run_id IS NULL OR run_id=''
+                   OR source_loaded_at IS NULL
+            """,
+            threshold=0.0,
+            required_tables=("xbrl_filing_taxonomy_packages",),
+            severity="critical",
+        ),
+        SqlQualityCheck(
+            dataset_id="xbrl_filing_taxonomy_packages",
+            table_name="xbrl_filing_taxonomy_packages",
+            check_name="duplicate_latest_xbrl_filing_taxonomy_edges",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM (
+                    SELECT
+                        security_id,accession_number,source_document_url,
+                        reference_url,count(*) AS row_count
+                    FROM xbrl_filing_taxonomy_packages
+                    WHERE is_latest_revision
+                    GROUP BY 1,2,3,4
+                    HAVING count(*)>1
+                )
+            """,
+            threshold=0.0,
+            required_tables=("xbrl_filing_taxonomy_packages",),
+            severity="critical",
+        ),
+        SqlQualityCheck(
+            dataset_id="xbrl_filing_taxonomy_packages",
+            table_name="xbrl_filing_taxonomy_packages",
+            check_name="orphan_xbrl_filing_taxonomy_edges",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM xbrl_filing_taxonomy_packages edge
+                LEFT JOIN xbrl_standard_taxonomy_package_revisions package
+                  ON package.package_revision_id=edge.package_revision_id
+                WHERE package.package_revision_id IS NULL
+                   OR package.package_key<>edge.package_key
+            """,
+            threshold=0.0,
+            required_tables=(
+                "xbrl_filing_taxonomy_packages",
+                "xbrl_standard_taxonomy_package_revisions"
+            ),
+            severity="critical",
+        ),
+        SqlQualityCheck(
+            dataset_id="xbrl_taxonomy_package_capture_attempts",
+            table_name="xbrl_taxonomy_package_capture_attempts",
+            check_name="bad_xbrl_taxonomy_package_capture_attempts",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM xbrl_taxonomy_package_capture_attempts
+                WHERE attempt_id IS NULL OR attempt_id=''
+                   OR run_id IS NULL OR run_id=''
+                   OR package_key IS NULL OR package_key=''
+                   OR authority NOT IN ('FASB','SEC','XBRL_US')
+                   OR taxonomy_family IS NULL OR taxonomy_family=''
+                   OR taxonomy_version IS NULL OR taxonomy_version=''
+                   OR source_url NOT LIKE 'https://%'
+                   OR source_kind NOT IN ('archive','sec_directory')
+                   OR status NOT IN ('succeeded','failed')
+                   OR completed_at<started_at
+                   OR available_at<>completed_at
+                   OR as_of_date<>CAST(available_at AS DATE)
+                   OR is_latest_revision IS NULL
+                   OR source_loaded_at IS NULL
+                   OR (
+                        status='succeeded'
+                        AND (
+                            failure_stage IS NOT NULL
+                            OR cache_hit IS NULL
+                            OR network_request_count<0
+                            OR length(sha256)<>64
+                            OR byte_count<=0
+                            OR package_revision_id IS NULL
+                            OR package_revision_id=''
+                            OR package_format NOT IN (
+                                'oasis_taxonomy_package',
+                                'atx_normalized_taxonomy_package'
+                            )
+                            OR processor_package_path IS NULL
+                            OR processor_package_path=''
+                            OR length(processor_package_sha256)<>64
+                            OR processor_package_byte_count<=0
+                            OR error_type IS NOT NULL
+                            OR error_message IS NOT NULL
+                        )
+                   )
+                   OR (
+                        status='failed'
+                        AND (
+                            failure_stage NOT IN (
+                                'fetch','materialize','normalize','catalog'
+                            )
+                            OR cache_hit IS NOT NULL
+                            OR network_request_count IS NOT NULL
+                            OR sha256 IS NOT NULL
+                            OR byte_count IS NOT NULL
+                            OR package_revision_id IS NOT NULL
+                            OR package_format IS NOT NULL
+                            OR processor_package_path IS NOT NULL
+                            OR processor_package_sha256 IS NOT NULL
+                            OR processor_package_byte_count IS NOT NULL
+                            OR error_type IS NULL OR error_type=''
+                            OR error_message IS NULL OR error_message=''
+                        )
+                   )
+            """,
+            threshold=0.0,
+            required_tables=("xbrl_taxonomy_package_capture_attempts",),
+            severity="critical",
+        ),
+        SqlQualityCheck(
+            dataset_id="xbrl_taxonomy_package_capture_attempts",
+            table_name="xbrl_taxonomy_package_capture_attempts",
+            check_name="duplicate_latest_xbrl_taxonomy_package_capture_attempts",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM (
+                    SELECT package_key,count(*) AS row_count
+                    FROM xbrl_taxonomy_package_capture_attempts
+                    WHERE is_latest_revision
+                    GROUP BY package_key
+                    HAVING count(*)>1
+                )
+            """,
+            threshold=0.0,
+            required_tables=("xbrl_taxonomy_package_capture_attempts",),
+            severity="critical",
+        ),
+        SqlQualityCheck(
+            dataset_id="xbrl_taxonomy_package_capture_attempts",
+            table_name="xbrl_taxonomy_package_capture_attempts",
+            check_name="failed_latest_xbrl_taxonomy_package_capture_attempts",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM xbrl_taxonomy_package_capture_attempts
+                WHERE is_latest_revision AND status='failed'
+            """,
+            threshold=0.0,
+            required_tables=("xbrl_taxonomy_package_capture_attempts",),
+            failure_status="warning",
+            severity="warning",
+        ),
+        SqlQualityCheck(
+            dataset_id="atx_saas_control",
+            table_name="saas_batch_jobs",
+            check_name="completed_batch_jobs_missing_reproducibility_identity",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM saas_batch_jobs
+                WHERE state='completed'
+                  AND (
+                       schema_version IS NULL OR schema_version=''
+                    OR schema_sha256 IS NULL
+                    OR query_sha256 IS NULL
+                    OR result_sha256 IS NULL
+                    OR logical_content_sha256 IS NULL
+                    OR manifest_uri IS NULL OR manifest_uri=''
+                    OR manifest_sha256 IS NULL
+                  )
+            """,
+            threshold=0.0,
+            required_tables=("saas_batch_jobs",),
+            severity="critical",
+        ),
+        SqlQualityCheck(
+            dataset_id="atx_saas_control",
+            table_name="saas_batch_jobs",
+            check_name="malformed_batch_manifest_hashes",
+            sql="""
+                SELECT count(*)::DOUBLE
+                FROM saas_batch_jobs
+                WHERE length(request_sha256)<>64
+                   OR length(query_sha256)<>64
+                   OR length(schema_sha256)<>64
+                   OR (result_sha256 IS NOT NULL AND length(result_sha256)<>64)
+                   OR (
+                        logical_content_sha256 IS NOT NULL
+                        AND length(logical_content_sha256)<>64
+                   )
+                   OR (manifest_sha256 IS NOT NULL AND length(manifest_sha256)<>64)
+            """,
+            threshold=0.0,
+            required_tables=("saas_batch_jobs",),
+            severity="critical",
         ),
     )

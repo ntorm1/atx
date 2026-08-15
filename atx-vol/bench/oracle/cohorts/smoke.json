@@ -1,0 +1,7 @@
+{
+  "name": "smoke",
+  "dates": ["2026-08-14"],
+  "underliers": ["SPY"],
+  "buckets_et": ["1300"],
+  "notes": "Most liquid US ETF chain x one midday bucket: 14,588 rows measured in the store (inside the 10-30k smoke budget; SPX x 1300 at 30,042 sits on the edge, SPY is safely inside). Midday avoids open/close microstructure. SPY and 1300 are both members of tune, so the inner loop's smoke runs touch only tune-visible slices and never leak holdout data."
+}
