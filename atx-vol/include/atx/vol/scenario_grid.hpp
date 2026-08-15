@@ -357,9 +357,12 @@ static_assert(detail::aggregate_arity_is_v<ScenarioDerivSpec, 2>,
 // previous, slot-organised test never poisoned and therefore could not have
 // caught. The terms that test could not reach are delta, gamma, vega, volga and
 // rho: no configuration leaves them NaN, so a test built out of documented-NaN
-// slots never perturbs them. The number of terms is not restated here --
-// `std::size(kGatedTerms)` is `static_assert`ed at the gate, which is the
-// mechanism that pins it.
+// slots never perturbs them. The "all ten terms" above is this kernel's own ten
+// and stays, on the ruling `55006c4` made when it removed the slot counts and
+// deliberately kept that phrase: `std::size(kGatedTerms) == 10` is
+// `static_assert`ed at the gate, so it cannot drift without the build saying
+// so. A count backed by a mechanism is not the defect here; a count of the
+// wrong NOUN is.
 //
 // A mutant-score ratio ("6 of 11" against "11 of 11") stood here and in
 // `55006c4`'s message. IT IS NOT REPRODUCED: that message does not decompose it,

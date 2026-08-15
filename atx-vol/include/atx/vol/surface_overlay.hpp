@@ -2,7 +2,8 @@
 
 // Smile-dynamics overlay over any log-moneyness vol source (Task F-8, FIT-F4 /
 // LIT-8). Tier-B: additive, standard headers plus the header-only field-count
-// probe `detail/aggregate_arity.hpp` (three `<type_traits>`-class includes).
+// probe `detail/aggregate_arity.hpp`, which includes no atx header of its own,
+// so the pin at the foot of this file cannot introduce a cycle.
 //
 // WHY THIS EXISTS. Every surface in this library answers `iv(k, T)` and nothing
 // else: there is no way to say "the same surface, seen from 1% higher spot" or
@@ -92,8 +93,10 @@ enum class StickyMode : std::uint8_t {
 // `double iv(double k_log, double T) const noexcept`. `iv_batch` is forwarded
 // only when `base` itself has one -- see the note on that member.
 //
-// Aggregate by design (`{&surface, .vol_shift = ...}`), and cheap enough to
-// build per read: every member is a double or a pointer.
+// Aggregate by design (`{.base = &surface, .vol_shift = ...}`), and cheap enough
+// to build per read: every member is a double or a pointer. The example is
+// fully designated because the mixed form it used to show does not compile
+// under this project's flags -- see the pin at the foot of this file.
 template <class SurfaceT>
 struct SurfaceOverlay {
   const SurfaceT* base;  // non-owning, non-null
@@ -182,14 +185,24 @@ namespace detail {
 struct SurfaceOverlayArityProbe;
 } // namespace detail
 
-// The rest of this library pins its public aggregates because a positional
-// initializer rebinds silently on an INSERT. This one needs the pin more than
-// most: the doc above sanctions the mixed form `{&surface, .vol_shift = ...}`,
-// so `base` is bound POSITIONALLY at every call site, and a member inserted
-// ahead of it takes the surface pointer's slot without a diagnostic.
+// The rest of this library pins its public aggregates because a POSITIONAL
+// brace-init rebinds silently when a field is INSERTED rather than appended.
+// Nothing here is at risk today: every construction site in the tree names its
+// fields (`.base = ...`), and `bump_view` in derivatives.cpp says why. What the
+// pin guards is the form this aggregate's shape invites and nothing forbids --
+// a fully positional `{&surf, 0.01, 0.0, 0.0, 0.0, 1.0}`, legal C++ that goes
+// on compiling after an insert while binding every value one slot late.
+// MEASURED out of tree under this project's own flags: against a copy with one
+// member added after `base`, that list compiles clean, moves the 0.01 into the
+// new field, leaves `vol_shift` at 0.0, and hands `k_shift` term_scale's 1.0.
+//
+// The MIXED form is NOT the hazard, because it does not build here at all:
+// `{&surface, .vol_shift = ...}` is rejected by `-Wc99-designator`, an error
+// under `/WX`. This comment asserted the opposite until it was compiled.
 static_assert(detail::aggregate_arity_is_v<SurfaceOverlay<detail::SurfaceOverlayArityProbe>, 6>,
-              "SurfaceOverlay gained or lost a field. `base` is bound positionally by the "
-              "documented `{&surface, .vol_shift = ...}` form, so audit every construction "
-              "site for a rebind before updating this count.");
+              "SurfaceOverlay gained or lost a field. A fully positional brace-init binds by "
+              "POSITION, so a field INSERTED rather than appended rebinds every value after "
+              "it. Audit construction sites, then update this count; designated init "
+              "(`{.base = &surface, .vol_shift = ...}`) is the form this library uses.");
 
 }  // namespace atx::vol

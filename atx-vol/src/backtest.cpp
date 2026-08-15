@@ -2317,10 +2317,9 @@ Result<MarketSnapshot> MarketSnapshot::load(std::string_view archive_path,
   // returns data.
   //
   // FIX ROUND 7 TRIED VERIFYING ALL OF `dir` HERE AND ROUND 8 REVERTED IT, with
-  // the measurement, because it contradicted the B1 subset-deserialize rule
-  // stated at the head of the `subset_requested` branch above -- "loading the
-  // full board on a miss turns the cheapest missing-name case into worst-case
-  // I/O".
+  // the measurement, because it contradicted the closing sentence of the `B1
+  // subset-deserialize` block above -- "loading the full board on a miss turns
+  // the cheapest missing-name case into worst-case I/O".
   //
   // Measured at `ec7d3ae` on a 512-surface archive, same process, as TWO ratios
   // each taken against ITS OWN whole-board baseline: the walk put the miss path
@@ -2329,8 +2328,12 @@ Result<MarketSnapshot> MarketSnapshot::load(std::string_view archive_path,
   // board). The baselines differ between the two runs, so each percentage is a
   // percentage of its own whole board only -- the two are not subtractable, and
   // a single denominator for both is exactly the collapse this comment used to
-  // carry. What the pair says is that the walk nearly erases the saving on the
-  // path whose whole purpose is to be cheap when a book names nothing in this
+  // carry. THE RAW MICROSECONDS ARE NOT RATIOABLE EITHER, for the same reason:
+  // 3908/2282 divides two DIFFERENT runs, and the 32% spread between their own
+  // whole-board baselines (3235 against 4282) is the size of the run-to-run
+  // difference contaminating that quotient. It is not a cost this branch pays.
+  // What the pair says is that the walk nearly erases the saving on the path
+  // whose whole purpose is to be cheap when a book names nothing in this
   // partition.
   //
   // That cost is a STANDING PROPERTY, not a transition: both sides still exist,
