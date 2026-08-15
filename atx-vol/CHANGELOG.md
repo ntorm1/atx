@@ -62,6 +62,28 @@ prefix.
 compatibility flag: the old paths do not exist in the source tree, the
 install tree, or a forwarding header.
 
+### NEW — `atx-vol-oracle-bench`: SpiderRock Mode A parity benchmark (oracle bootstrap stages 1–2)
+
+The oracle RSI loop's measurement harness. `tools/oracle_bench_main.cpp`
+drives a cohort-scoped Mode A parity run over the SpiderRock intraday store:
+`tools/oracle_cohort_reader.*` (strict cohort JSON validation + a
+partition-pruned direct-Arrow parquet scan that accepts both `utf8` and
+`large_utf8` string columns — polars writes `large_utf8`, which atx-core's
+`LazyParquet` string predicates reject), `tools/oracle_conventions.*` (the
+single conventions TU; every oracle-input mapping there is an iteration-0
+hypothesis), and `tools/oracle_scorecard.*` (moneyness × DTE × side cell
+accounting with sentinel-null / bad-input tallies). Stage-1 ingest
+(`scripts/oracle_ingest.py`) pins all 27 float-natured TSV columns to
+Float64 and writes the store in a single partitioned pass; smoke/tune/holdout
+cohorts live under `bench/oracle/cohorts/` with holdout disjoint from tune by
+both underlier and bucket. First real-data join at the 2026-08-15 gate:
+smoke cohort (SPY × bucket 1300, date 2026-08-14) = 13,926 rows priced +
+662 sentinel-null of 14,588 total. That dev run is diagnostic only: no pinned
+performance baseline or performance claim exists yet. All 30 `OracleBench*`
+gate tests passed in the fast lane. There is no installed public-header or
+library-API change; the additions are the oracle tool, tests, bench data,
+ingest script, and their CMake registration.
+
 ## 1.1.0
 
 The backtest-production-lakehouse sprint. Adds a content-addressed track
