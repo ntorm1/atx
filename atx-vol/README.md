@@ -613,8 +613,10 @@ its clock from the sessions where the symbol's surface actually exists: a live
 variance swap makes the engine fail the whole run closed on a missing board, so
 a dark session cannot be stepped over. `reconcile_nav` is on, so every row's
 NAV is audited against an independently recomputed liquidation value.
-`swap_pv`/`swap_pnl` ride out as signal columns, so `track.tsv` keeps the one
-frozen `write_backtest_pnl_tsv` schema. The example also sets
+`swap_pv`/`swap_pnl` ride out as signal columns rather than as new fixed ones,
+so `track.tsv` keeps `write_backtest_tsv`'s frozen column prefix (the
+`backtest_series_columns()` roster) and carries them in the signal tail after
+it. The example also sets
 `RunConfig::swap_pnl_explain`, so the eight `swap_explain_*` columns — carry,
 realized, vol level, skew, convexity, discount, residual and the `unattributed`
 counter — ride out the same way; the renderer draws its P&L-attribution panel
