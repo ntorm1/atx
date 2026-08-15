@@ -37,6 +37,7 @@
 
 #include <gtest/gtest.h>
 
+#include <bit>
 #include <charconv>
 #include <cmath>
 #include <cstdint>
@@ -678,4 +679,413 @@ TEST(BevLabelFactoryGate, FeatureBlockHeaderAndValues) {
     }
   }
   EXPECT_TRUE(saw_one_event_row) << "expected n_events_to_expiry==1 for the one-event calendar";
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// VrpPanel — gate for the --vrp-panel mode (vrp-ml round 1, lane vrp-panel).
+// Frozen contract vrp_panel_v1: analytics/vrp_panel.hpp (reached through the
+// example TU included above). Series-level tests drive `build_vrp_rows`
+// directly (pure math, hand-computable); corpus-level tests drive
+// `run_vrp_panel` end-to-end over the same self-contained eSSVI fixture the
+// BevLabelFactoryGate tests use.
+// ════════════════════════════════════════════════════════════════════════
+
+namespace {
+
+// vrp_panel_v1 column indices (kVrpPanelColumnsV1 order) used by the
+// file-parsing assertions below.
+constexpr std::size_t kColIvFair21 = 4;
+constexpr std::size_t kColIvFair63 = 5;
+constexpr std::size_t kColTermSlope = 12;
+
+// NaN-safe byte-identity for doubles (EXPECT_EQ fails on NaN == NaN).
+[[nodiscard]] bool same_bits(double a, double b) {
+  return std::bit_cast<std::uint64_t>(a) == std::bit_cast<std::uint64_t>(b);
+}
+
+// Synthetic per-session series for the pure row-builder tests: deterministic
+// (reviewable, not random) spot path with genuine movement, slowly varying
+// iv marks, every session valid.
+[[nodiscard]] VrpSeries make_vrp_series(int n) {
+  VrpSeries s;
+  for (int i = 0; i < n; ++i) {
+    char buf[16];
+    std::snprintf(buf, sizeof buf, "d%04d", i);
+    s.dates.push_back(buf);
+    s.ts_ns.push_back(kBaseNow + static_cast<std::int64_t>(i) * kDayNs);
+    const double di = static_cast<double>(i);
+    s.spot.push_back(500.0 * (1.0 + 0.02 * std::sin(0.7 * di) + 0.001 * di));
+    s.iv21.push_back(0.20 + 0.01 * std::sin(0.3 * di));
+    s.iv63.push_back(0.215 + 0.01 * std::sin(0.3 * di));
+  }
+  return s;
+}
+
+// Same closed-form eSSVI fixture as `make_surface` above, but with the
+// fitted pillars STOPPING at T = 0.20: 21/252 (~0.083) stays inside the
+// fitted range while 63/252 (0.25) falls OUTSIDE it, so the 63d strip is
+// OutOfRange by construction (gate for the f4-NaN-without-drop rule).
+[[nodiscard]] PricedSurface make_surface_narrow(double S, std::int64_t now_ts, double vol_bump) {
+  CurveSurface cs;
+  std::vector<SliceContext> ctx;
+  const double Ts[] = {0.05, 0.10, 0.20};
+  int i = 0;
+  for (const double T : Ts) {
+    EssviParams e{};
+    e.theta = 0.04 + 0.005 * static_cast<double>(i) + vol_bump;
+    e.phi = 1.5 - 0.05 * static_cast<double>(i);
+    e.rho = -0.4 + 0.02 * static_cast<double>(i);
+    e.psi = 0.5;
+    e.p = 0.5;
+    e.lambda = 0.5;
+    e.T = T;
+    e.F = S;
+    e.expiry_id = static_cast<std::uint16_t>(i);
+    cs.push(std::make_unique<EssviCurve>(e, std::exp(-kR * T)));
+    ctx.push_back(SliceContext{T, S, 0.0, 0.02, 250, 7});
+    ++i;
+  }
+  PricingContext pc;
+  pc.S = S;
+  pc.r = kR;
+  pc.now_ts_ns = now_ts;
+  pc.method = AmericanMethod::AndersenLake;
+  pc.al_opts = al_fast_opts();
+  pc.uid = kSpy;
+  auto ps = PricedSurface::create(std::move(cs), std::move(ctx), pc);
+  EXPECT_TRUE(ps.has_value()) << (ps.has_value() ? std::string{} : ps.error().to_string());
+  return std::move(*ps);
+}
+
+// Write a fresh SurfaceDb corpus of SPY surfaces for days
+// [first_day, first_day + n_days) under `root` (same deterministic
+// spot/vol-bump walk as the BevLabelFactoryGate corpora).
+void write_vrp_corpus(const std::string &root, int first_day, int n_days, bool narrow_pillars) {
+  std::error_code ec;
+  fs::remove_all(root, ec);
+  auto db = SurfaceDb::create(root);
+  ASSERT_TRUE(db.has_value()) << db.error().to_string();
+  for (int d = first_day; d < first_day + n_days; ++d) {
+    const double S = spot_for_day(d);
+    const double vol_bump = 0.001 * static_cast<double>(d);
+    const std::int64_t ts = kBaseNow + static_cast<std::int64_t>(d) * kDayNs;
+    const PricedSurface spy =
+        narrow_pillars ? make_surface_narrow(S, ts, vol_bump) : make_surface(S, ts, vol_bump);
+    const SurfaceArchiveItem item{"SPY", &spy};
+    const std::span<const SurfaceArchiveItem> items(&item, 1);
+    const Status st = db->write_partition(date_for_day(d), items);
+    ASSERT_TRUE(st.has_value()) << st.error().to_string();
+  }
+}
+
+} // namespace
+
+// CLI surface: repeated --db roots and --uid symbols collect in order; the
+// mode flag itself is skipped; missing --out rejects.
+TEST(VrpPanel, CliParseCollectsRepeatedRootsAndSymbols) {
+  std::vector<std::string> argv_storage = {
+      "bev_label_factory", "--vrp-panel", "--db",  "rootA",       "--db",
+      "rootB",             "--uid",       "SPY",   "--uid",       "AAPL",
+      "--entry-start",     "2019-01-01",  "--entry-end", "2019-12-31",
+      "--out",             "panel.tsv",
+  };
+  std::vector<char *> argv = make_argv(argv_storage);
+  VrpPanelConfig cfg;
+  ASSERT_TRUE(parse_vrp_panel_args(static_cast<int>(argv.size()), argv.data(), cfg));
+  EXPECT_EQ(cfg.db_roots, (std::vector<std::string>{"rootA", "rootB"}));
+  EXPECT_EQ(cfg.symbols, (std::vector<std::string>{"SPY", "AAPL"}));
+  EXPECT_EQ(cfg.entry_start, "2019-01-01");
+  EXPECT_EQ(cfg.entry_end, "2019-12-31");
+  EXPECT_EQ(cfg.out, "panel.tsv");
+
+  std::vector<std::string> bad_storage = {"bev_label_factory", "--vrp-panel", "--db", "rootA"};
+  std::vector<char *> bad_argv = make_argv(bad_storage);
+  VrpPanelConfig bad_cfg;
+  EXPECT_FALSE(parse_vrp_panel_args(static_cast<int>(bad_argv.size()), bad_argv.data(), bad_cfg));
+}
+
+// Done-criterion (2): label = (rv_fwd^2 - iv_fair^2) * (21/252) to 1e-12 on
+// a hand-computed fixture, with rv_fwd the annualized c2c vol over the
+// 21-bar forward span — plus spot checks of the trailing feature formulas.
+TEST(VrpPanel, LabelArithmeticMatchesHandComputedFixture) {
+  const VrpSeries s = make_vrp_series(60);
+  VrpPanelCounters c;
+  const Result<std::vector<VrpPanelRow>> rows_r = build_vrp_rows(s, c);
+  ASSERT_TRUE(rows_r.has_value()) << rows_r.error().to_string();
+  const std::vector<VrpPanelRow> &rows = *rows_r;
+  ASSERT_EQ(rows.size(), 60u);
+
+  const std::size_t t = 25;
+  // Forward leg: realized_vol(CloseToClose) over bars t+1..t+21 == the 20
+  // c2c return terms r_{t+2}..r_{t+21}, mean-of-squares, annualized by 252.
+  double sum = 0.0;
+  for (std::size_t j = t + 2; j <= t + 21; ++j) {
+    const double r = std::log(s.spot[j] / s.spot[j - 1]);
+    sum += r * r;
+  }
+  const double rv = std::sqrt(sum / 20.0 * 252.0);
+  const double iv = s.iv21[t];
+  EXPECT_NEAR(rows[t].rv_fwd_21d, rv, 1e-12);
+  EXPECT_NEAR(rows[t].label, (rv * rv - iv * iv) * (21.0 / 252.0), 1e-12);
+
+  // Trailing formula spot checks at the same t.
+  const double r1 = std::log(s.spot[t] / s.spot[t - 1]);
+  EXPECT_NEAR(rows[t].f0_log_rv1, std::log(std::max(252.0 * r1 * r1, 1e-8)), 1e-12);
+  double sum21 = 0.0;
+  for (std::size_t j = t - 20; j <= t; ++j) {
+    const double r = std::log(s.spot[j] / s.spot[j - 1]);
+    sum21 += r * r;
+  }
+  const double var21 = sum21 / 21.0 * 252.0; // trailing 21-session ann c2c variance
+  EXPECT_NEAR(rows[t].f2_log_rv21, std::log(var21), 1e-12);
+  EXPECT_NEAR(rows[t].f3_iv_level, std::log(iv * iv), 1e-12);
+  EXPECT_NEAR(rows[t].f4_term_slope, s.iv63[t] - iv, 1e-15);
+  EXPECT_NEAR(rows[t].f5_hv_iv_gap, std::log(std::sqrt(var21) / iv), 1e-12);
+  EXPECT_NEAR(rows[t].f6_vrp_lag, iv * iv - var21, 1e-12);
+  EXPECT_NEAR(rows[t].f7_ret_21d, std::log(s.spot[t] / s.spot[t - 21]), 1e-15);
+}
+
+// Done-criterion (3): the forward-RV window is EXACTLY sessions t+1..t+21 —
+// a spike planted at t and one planted at t+22 each leave the label at t
+// byte-identical, while a row whose window genuinely contains the spiked
+// session DOES move (guards against a vacuous pass).
+TEST(VrpPanel, ForwardWindowIsExactlySessionsTPlus1ToTPlus21) {
+  const int n = 30;
+  const std::size_t t = 5;
+  const VrpSeries base = make_vrp_series(n);
+  VrpPanelCounters c0;
+  const Result<std::vector<VrpPanelRow>> rows0_r = build_vrp_rows(base, c0);
+  ASSERT_TRUE(rows0_r.has_value()) << rows0_r.error().to_string();
+  const std::vector<VrpPanelRow> &rows0 = *rows0_r;
+
+  VrpSeries spike_at_t = base;
+  spike_at_t.spot[t] *= 1.25;
+  VrpPanelCounters ca;
+  const Result<std::vector<VrpPanelRow>> rows_a_r = build_vrp_rows(spike_at_t, ca);
+  ASSERT_TRUE(rows_a_r.has_value()) << rows_a_r.error().to_string();
+  const std::vector<VrpPanelRow> &rows_a = *rows_a_r;
+  EXPECT_TRUE(same_bits(rows_a[t].rv_fwd_21d, rows0[t].rv_fwd_21d))
+      << "session t's own close must not enter the forward window";
+  EXPECT_TRUE(same_bits(rows_a[t].label, rows0[t].label));
+  // Sanity: row t-1's window (t..t+20) contains the spiked session.
+  EXPECT_FALSE(same_bits(rows_a[t - 1].rv_fwd_21d, rows0[t - 1].rv_fwd_21d));
+
+  VrpSeries spike_past_window = base;
+  spike_past_window.spot[t + 22] *= 1.25;
+  VrpPanelCounters cb;
+  const Result<std::vector<VrpPanelRow>> rows_b_r = build_vrp_rows(spike_past_window, cb);
+  ASSERT_TRUE(rows_b_r.has_value()) << rows_b_r.error().to_string();
+  const std::vector<VrpPanelRow> &rows_b = *rows_b_r;
+  EXPECT_TRUE(same_bits(rows_b[t].rv_fwd_21d, rows0[t].rv_fwd_21d))
+      << "session t+22 lies past the forward window";
+  EXPECT_TRUE(same_bits(rows_b[t].label, rows0[t].label));
+  // Sanity: row t+1's window (t+2..t+22) contains the spiked session.
+  EXPECT_FALSE(same_bits(rows_b[t + 1].rv_fwd_21d, rows0[t + 1].rv_fwd_21d));
+}
+
+// Done-criterion (4): no-lookahead tripwire — perturbing EVERY session > t
+// (spot AND both iv marks) leaves every feature column at rows <= t
+// byte-identical; only the forward-looking rv_fwd/label may move.
+TEST(VrpPanel, PerturbingFutureSessionsLeavesFeaturesByteIdentical) {
+  const int n = 100;
+  const std::size_t t = 70; // >= 63 so f8/f9 are real values, not warmup NaN
+  const VrpSeries base = make_vrp_series(n);
+  VrpPanelCounters c0;
+  const Result<std::vector<VrpPanelRow>> rows0_r = build_vrp_rows(base, c0);
+  ASSERT_TRUE(rows0_r.has_value()) << rows0_r.error().to_string();
+  const std::vector<VrpPanelRow> &rows0 = *rows0_r;
+  ASSERT_TRUE(std::isfinite(rows0[t].f9_vov_63d)) << "t chosen past the f9 warmup";
+  ASSERT_TRUE(std::isfinite(rows0[t].f8_jump_recent));
+
+  VrpSeries fut = base;
+  for (std::size_t s2 = t + 1; s2 < static_cast<std::size_t>(n); ++s2) {
+    fut.spot[s2] *= 1.0 + 0.002 * static_cast<double>(s2 - t);
+    fut.iv21[s2] += 0.004;
+    fut.iv63[s2] += 0.006;
+  }
+  VrpPanelCounters c1;
+  const Result<std::vector<VrpPanelRow>> rows1_r = build_vrp_rows(fut, c1);
+  ASSERT_TRUE(rows1_r.has_value()) << rows1_r.error().to_string();
+  const std::vector<VrpPanelRow> &rows1 = *rows1_r;
+  ASSERT_EQ(rows1.size(), rows0.size());
+
+  for (std::size_t i = 0; i <= t; ++i) {
+    EXPECT_EQ(rows1[i].date, rows0[i].date);
+    EXPECT_EQ(rows1[i].entry_ts_ns, rows0[i].entry_ts_ns);
+    EXPECT_TRUE(same_bits(rows1[i].spot, rows0[i].spot)) << i;
+    EXPECT_TRUE(same_bits(rows1[i].iv_fair_21d, rows0[i].iv_fair_21d)) << i;
+    EXPECT_TRUE(same_bits(rows1[i].iv_fair_63d, rows0[i].iv_fair_63d)) << i;
+    EXPECT_TRUE(same_bits(rows1[i].f0_log_rv1, rows0[i].f0_log_rv1)) << i;
+    EXPECT_TRUE(same_bits(rows1[i].f1_log_rv5, rows0[i].f1_log_rv5)) << i;
+    EXPECT_TRUE(same_bits(rows1[i].f2_log_rv21, rows0[i].f2_log_rv21)) << i;
+    EXPECT_TRUE(same_bits(rows1[i].f3_iv_level, rows0[i].f3_iv_level)) << i;
+    EXPECT_TRUE(same_bits(rows1[i].f4_term_slope, rows0[i].f4_term_slope)) << i;
+    EXPECT_TRUE(same_bits(rows1[i].f5_hv_iv_gap, rows0[i].f5_hv_iv_gap)) << i;
+    EXPECT_TRUE(same_bits(rows1[i].f6_vrp_lag, rows0[i].f6_vrp_lag)) << i;
+    EXPECT_TRUE(same_bits(rows1[i].f7_ret_21d, rows0[i].f7_ret_21d)) << i;
+    EXPECT_TRUE(same_bits(rows1[i].f8_jump_recent, rows0[i].f8_jump_recent)) << i;
+    EXPECT_TRUE(same_bits(rows1[i].f9_vov_63d, rows0[i].f9_vov_63d)) << i;
+  }
+  // Sanity: the label at t DID move (its window is entirely in the
+  // perturbed region), so the comparison above is not vacuous.
+  EXPECT_FALSE(same_bits(rows1[t].label, rows0[t].label));
+}
+
+// Done-criterion (5): rows within 21 sessions of the tail emit NaN
+// rv_fwd/label, are KEPT (predict-time rows), and are counted.
+TEST(VrpPanel, TailRowsKeepNaNLabelAndAreCounted) {
+  const int n = 30;
+  const VrpSeries s = make_vrp_series(n);
+  VrpPanelCounters c;
+  const Result<std::vector<VrpPanelRow>> rows_r = build_vrp_rows(s, c);
+  ASSERT_TRUE(rows_r.has_value()) << rows_r.error().to_string();
+  const std::vector<VrpPanelRow> &rows = *rows_r;
+  ASSERT_EQ(rows.size(), 30u);
+  EXPECT_EQ(c.n_rows_written, 30u);
+  EXPECT_EQ(c.n_rows_tail_nan_label, 21u); // sessions 9..29 lack 21 future bars
+  for (std::size_t i = 0; i < rows.size(); ++i) {
+    if (i + 21 < rows.size()) {
+      EXPECT_TRUE(std::isfinite(rows[i].label)) << i;
+      EXPECT_TRUE(std::isfinite(rows[i].rv_fwd_21d)) << i;
+    } else {
+      EXPECT_TRUE(std::isnan(rows[i].label)) << i;
+      EXPECT_TRUE(std::isnan(rows[i].rv_fwd_21d)) << i;
+    }
+  }
+}
+
+// Done-criterion (1): the frozen vrp_panel_v1 file shape — the two frozen
+// comment lines first, the 18 column names in exactly the frozen order, 18
+// fields on every data row — over a real SurfaceDb round trip.
+TEST(VrpPanel, SchemaHeaderAndColumnOrderFrozen) {
+  static_assert(kVrpPanelColumnCount == 18, "vrp_panel_v1 is frozen at 18 columns");
+
+  const std::string root = (fs::temp_directory_path() / "atx-vrp-panel-schema-db").string();
+  write_vrp_corpus(root, 0, 6, /*narrow_pillars=*/false);
+  const std::string out = (fs::temp_directory_path() / "atx-vrp-panel-schema.tsv").string();
+
+  VrpPanelConfig cfg;
+  cfg.db_roots = {root};
+  cfg.symbols = {"SPY"};
+  cfg.out = out;
+  const Result<VrpPanelCounters> rc = run_vrp_panel(cfg);
+  ASSERT_TRUE(rc.has_value()) << rc.error().to_string();
+  EXPECT_EQ(rc->n_sessions, 6u);
+  EXPECT_EQ(rc->n_rows_written, 6u);
+  EXPECT_EQ(rc->n_rows_tail_nan_label, 6u); // only 6 sessions: all predict-time
+  EXPECT_EQ(rc->n_var21_out_of_range, 0u);
+
+  const std::vector<char> bytes = read_whole_file(out);
+  ASSERT_FALSE(bytes.empty());
+  const std::string content(bytes.begin(), bytes.end());
+  const std::string frozen_prefix = "# schema=vrp_panel_v1\n# horizon_days=21\n";
+  ASSERT_GE(content.size(), frozen_prefix.size());
+  EXPECT_EQ(content.compare(0, frozen_prefix.size(), frozen_prefix), 0)
+      << "the two frozen comment lines must lead the file";
+
+  std::string parsed_content;
+  std::string_view header;
+  std::vector<std::vector<std::string_view>> rows;
+  parse_full_tsv(out, parsed_content, header, rows);
+  std::string expected_header;
+  for (std::size_t i = 0; i < kVrpPanelColumnCount; ++i) {
+    if (i > 0) {
+      expected_header += '\t';
+    }
+    expected_header += kVrpPanelColumnsV1[i];
+  }
+  EXPECT_EQ(header, expected_header) << "column names/order are frozen (vrp_panel_v1)";
+  ASSERT_EQ(rows.size(), 6u);
+  for (const auto &row : rows) {
+    ASSERT_EQ(row.size(), kVrpPanelColumnCount);
+    EXPECT_EQ(row[0], "SPY");
+  }
+  // NaN spelling is canonical: NaN-propagating arithmetic in the warmup
+  // features carries a sign bit the UCRT would print as "-nan(ind)" — the
+  // writer must emit exactly "nan" (row 0's f1_log_rv5 is such a warmup NaN).
+  EXPECT_EQ(content.find("-nan"), std::string::npos) << "non-canonical NaN spelling leaked";
+  EXPECT_EQ(rows[0][9], "nan"); // f1_log_rv5 warmup cell
+}
+
+// Done-criterion (6): a surface whose fitted pillars stop below 63/252
+// yields OutOfRange at the slope tenor only — iv_fair_63d and f4_term_slope
+// are the literal "nan" while the row itself is KEPT with a live 21d strike.
+TEST(VrpPanel, OutOfRange63dYieldsNaNSlopeWithoutDroppingRow) {
+  const std::string root = (fs::temp_directory_path() / "atx-vrp-panel-narrow-db").string();
+  write_vrp_corpus(root, 0, 5, /*narrow_pillars=*/true);
+  const std::string out = (fs::temp_directory_path() / "atx-vrp-panel-narrow.tsv").string();
+
+  VrpPanelConfig cfg;
+  cfg.db_roots = {root};
+  cfg.symbols = {"SPY"};
+  cfg.out = out;
+  const Result<VrpPanelCounters> rc = run_vrp_panel(cfg);
+  ASSERT_TRUE(rc.has_value()) << rc.error().to_string();
+  EXPECT_EQ(rc->n_rows_written, 5u) << "63d OutOfRange must not drop rows";
+  EXPECT_EQ(rc->n_63d_unavailable, 5u);
+  EXPECT_EQ(rc->n_var21_out_of_range, 0u);
+
+  std::string content;
+  std::string_view header;
+  std::vector<std::vector<std::string_view>> rows;
+  parse_full_tsv(out, content, header, rows);
+  ASSERT_EQ(rows.size(), 5u);
+  for (const auto &row : rows) {
+    ASSERT_EQ(row.size(), kVrpPanelColumnCount);
+    EXPECT_NE(row[kColIvFair21], "nan") << "21d strike must be live";
+    EXPECT_EQ(row[kColIvFair63], "nan");
+    EXPECT_EQ(row[kColTermSlope], "nan");
+  }
+}
+
+// Done-criterion (7): stitching two roots produces a byte-identical panel to
+// the same sessions written into one concatenated root.
+TEST(VrpPanel, MultiRootStitchingMatchesSingleConcatenatedRoot) {
+  const std::string root_a = (fs::temp_directory_path() / "atx-vrp-panel-stitch-a").string();
+  const std::string root_b = (fs::temp_directory_path() / "atx-vrp-panel-stitch-b").string();
+  const std::string root_c = (fs::temp_directory_path() / "atx-vrp-panel-stitch-c").string();
+  write_vrp_corpus(root_a, 0, 6, /*narrow_pillars=*/false);
+  write_vrp_corpus(root_b, 6, 6, /*narrow_pillars=*/false);
+  write_vrp_corpus(root_c, 0, 12, /*narrow_pillars=*/false);
+
+  const std::string out_ab = (fs::temp_directory_path() / "atx-vrp-panel-stitch-ab.tsv").string();
+  const std::string out_c = (fs::temp_directory_path() / "atx-vrp-panel-stitch-c.tsv").string();
+
+  VrpPanelConfig cfg;
+  cfg.symbols = {"SPY"};
+  cfg.db_roots = {root_a, root_b};
+  cfg.out = out_ab;
+  const Result<VrpPanelCounters> rc_ab = run_vrp_panel(cfg);
+  ASSERT_TRUE(rc_ab.has_value()) << rc_ab.error().to_string();
+  cfg.db_roots = {root_c};
+  cfg.out = out_c;
+  const Result<VrpPanelCounters> rc_c = run_vrp_panel(cfg);
+  ASSERT_TRUE(rc_c.has_value()) << rc_c.error().to_string();
+
+  EXPECT_EQ(rc_ab->n_sessions, 12u);
+  EXPECT_EQ(rc_c->n_sessions, 12u);
+  EXPECT_EQ(rc_ab->n_rows_written, rc_c->n_rows_written);
+  const std::vector<char> bytes_ab = read_whole_file(out_ab);
+  const std::vector<char> bytes_c = read_whole_file(out_c);
+  ASSERT_FALSE(bytes_ab.empty());
+  ASSERT_EQ(bytes_ab.size(), bytes_c.size());
+  EXPECT_EQ(0, std::memcmp(bytes_ab.data(), bytes_c.data(), bytes_ab.size()))
+      << "stitched multi-root panel must be byte-identical to the concatenated-root panel";
+}
+
+// A session date served by two roots is ambiguous — refused loudly, not
+// silently double-counted.
+TEST(VrpPanel, DuplicateSessionDateAcrossRootsIsRejected) {
+  const std::string root_a = (fs::temp_directory_path() / "atx-vrp-panel-dup-a").string();
+  const std::string root_b = (fs::temp_directory_path() / "atx-vrp-panel-dup-b").string();
+  write_vrp_corpus(root_a, 0, 3, /*narrow_pillars=*/false);
+  write_vrp_corpus(root_b, 0, 3, /*narrow_pillars=*/false);
+
+  VrpPanelConfig cfg;
+  cfg.symbols = {"SPY"};
+  cfg.db_roots = {root_a, root_b};
+  cfg.out = (fs::temp_directory_path() / "atx-vrp-panel-dup.tsv").string();
+  const Result<VrpPanelCounters> rc = run_vrp_panel(cfg);
+  ASSERT_FALSE(rc.has_value());
+  EXPECT_EQ(rc.error().code(), ErrorCode::InvalidArgument);
 }
