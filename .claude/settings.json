@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(powershell scripts/atx-build.ps1*)",
+      "Bash(powershell scripts\\atx-build.ps1*)",
+      "Bash(powershell scripts/lease-worktree.ps1*)",
+      "Bash(powershell scripts\\lease-worktree.ps1*)",
+      "PowerShell(powershell scripts\\atx-build.ps1*)",
+      "PowerShell(scripts\\atx-build.ps1*)",
+      "PowerShell(powershell scripts\\lease-worktree.ps1*)",
+      "PowerShell(scripts\\lease-worktree.ps1*)",
+      "Bash(git diff*)",
+      "Bash(git log*)",
+      "Bash(git status*)",
+      "Bash(ctest*)"
+    ]
+  }
+}
