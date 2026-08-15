@@ -104,22 +104,26 @@ Describe 'lease-worktree durable owner lifecycle' {
     } | Should Throw 'short-lived lease launcher'
   }
 
-  It 'supports explicit heartbeat pulse and only reclaims after heartbeat expiry' {
+  It 'keeps foreground work alive beyond timeout, then permits reclaim after keeper death' {
     $poolRoot = Join-Path $TestDrive 'heartbeat-owner'
     & $scriptPath -Branch 'test/heartbeat' -RunId 'heartbeat-run' -Agent 'pester' `
-      -HeartbeatId 'heartbeat-run-lane' -HeartbeatTimeoutSeconds 30 `
+      -HeartbeatId 'heartbeat-run-lane' -HeartbeatTimeoutSeconds 2 `
       -TestPoolRoot $poolRoot -TestLeaseOnly | Out-Null
     $record = Read-LeaseRecord (Join-Path $poolRoot 'pool-1\.atx-lease')
     Get-OwnerState $record $poolRoot | Should Be 'alive'
-    (& $scriptPath -Pulse 'pool-1' -RunId 'heartbeat-run' `
-      -TestPoolRoot $poolRoot -TestLeaseOnly) | Should Match '^PULSED'
+    Test-ExactProcessAlive ([int]$record.keeper_pid) $record.keeper_process_started_utc | Should Be $true
+
+    # Foreground work exceeds the configured timeout with no explicit pulse. The
+    # independent keeper must continuously renew ownership.
+    Start-Sleep -Seconds 3
+    Get-OwnerState $record $poolRoot | Should Be 'alive'
     {
       & $scriptPath -Release 'pool-1' -RunId 'other-run' -RecoverStale `
         -TestPoolRoot $poolRoot -TestLeaseOnly
     } | Should Throw 'owner state is alive'
 
-    $heartbeatPath = Get-HeartbeatPath $poolRoot 'heartbeat-run-lane'
-    [System.IO.File]::SetLastWriteTimeUtc($heartbeatPath, [DateTime]::UtcNow.AddSeconds(-31))
+    (& $scriptPath -StopKeeper 'pool-1' -RunId 'heartbeat-run' `
+      -TestPoolRoot $poolRoot -TestLeaseOnly) | Should Match '^KEEPER_STOPPED'
     Get-OwnerState $record $poolRoot | Should Be 'dead'
     & $scriptPath -Release 'pool-1' -RunId 'other-run' -RecoverStale `
       -TestPoolRoot $poolRoot -TestLeaseOnly | Out-Null

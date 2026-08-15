@@ -16,7 +16,7 @@ param(
   [string]$OwnerProcessStartedUtc,
   [string]$HeartbeatId,
   [int]$HeartbeatTimeoutSeconds = 600,
-  [string]$Pulse,
+  [string]$StopKeeper,
   [switch]$Shared,
   [string]$Release,
   [switch]$RecoverStale,
@@ -90,14 +90,75 @@ function Get-HeartbeatPath([string]$PoolRoot, [string]$Id) {
   return Join-Path (Join-Path $PoolRoot '.atx-heartbeats') ($Id + '.heartbeat')
 }
 
-function New-HeartbeatOwnerFields([string]$Id, [int]$TimeoutSeconds) {
+function New-HeartbeatOwnerFields(
+  [string]$Id,
+  [int]$TimeoutSeconds,
+  [int]$KeeperPid,
+  [string]$KeeperStartedUtc,
+  [string]$KeeperReadyUtc,
+  [string]$ControlToken
+) {
   Assert-HeartbeatId $Id
-  if ($TimeoutSeconds -lt 30) { throw 'HeartbeatTimeoutSeconds must be at least 30' }
+  if ($TimeoutSeconds -lt 1) { throw 'HeartbeatTimeoutSeconds must be positive' }
+  if ($KeeperPid -le 0 -or $KeeperStartedUtc -notmatch '^\d{4}-' -or
+      $KeeperReadyUtc -notmatch '^\d{4}-' -or $ControlToken -notmatch '^[0-9a-f]{32}$') {
+    throw 'heartbeat keeper identity is invalid'
+  }
   return [ordered]@{
     owner_kind = 'heartbeat'
     heartbeat_id = $Id
     heartbeat_timeout_seconds = [string]$TimeoutSeconds
+    keeper_pid = [string]$KeeperPid
+    keeper_process_started_utc = $KeeperStartedUtc
+    keeper_ready_utc = $KeeperReadyUtc
+    keeper_control_token = $ControlToken
   }
+}
+
+function Start-HeartbeatKeeper(
+  [string]$HeartbeatPath,
+  [string]$ControlToken,
+  [int]$TimeoutSeconds
+) {
+  $keeperScript = Join-Path $PSScriptRoot 'lease-heartbeat-keeper.ps1'
+  if (-not (Test-Path -LiteralPath $keeperScript -PathType Leaf)) { throw 'heartbeat keeper script missing' }
+  $intervalMs = [Math]::Max(100, [Math]::Min(30000, [int][Math]::Floor(($TimeoutSeconds * 1000) / 3)))
+  $keeper = Start-Process powershell.exe -ArgumentList @(
+    '-NoProfile', '-File', ('"' + $keeperScript + '"'),
+    '-HeartbeatPath', ('"' + $HeartbeatPath + '"'),
+    '-ControlToken', $ControlToken,
+    '-IntervalMilliseconds', [string]$intervalMs
+  ) -PassThru -WindowStyle Hidden
+  $readyPath = $HeartbeatPath + '.ready'
+  $readyDeadline = (Get-Date).AddSeconds(20)
+  while ((Get-Date) -lt $readyDeadline) {
+    if ($keeper.HasExited) { throw ('heartbeat keeper failed to start; exit=' + $keeper.ExitCode) }
+    if ([System.IO.File]::Exists($readyPath)) {
+      try {
+        if ([System.IO.File]::ReadAllText($readyPath).Trim() -eq $ControlToken) { break }
+      } catch [System.IO.IOException] { }
+    }
+    Start-Sleep -Milliseconds 50
+  }
+  if (-not [System.IO.File]::Exists($readyPath) -or
+      [System.IO.File]::ReadAllText($readyPath).Trim() -ne $ControlToken) {
+    Stop-Process -Id $keeper.Id -Force -ErrorAction SilentlyContinue
+    throw 'heartbeat keeper did not publish its authenticated ready signal'
+  }
+  return [pscustomobject]@{
+    Process = $keeper
+    Pid = $keeper.Id
+    StartedUtc = Get-UtcStamp $keeper.StartTime
+    ReadyUtc = Get-UtcStamp ([System.IO.File]::GetLastWriteTimeUtc($HeartbeatPath))
+    IntervalMilliseconds = $intervalMs
+  }
+}
+
+function Test-ExactProcessAlive([int]$ProcessId, [string]$StartedUtc) {
+  try {
+    $process = Get-Process -Id $ProcessId -ErrorAction Stop
+    return (Get-UtcStamp $process.StartTime) -eq $StartedUtc
+  } catch { return $false }
 }
 
 function New-LeaseFields(
@@ -207,7 +268,11 @@ function Test-CompleteLeaseRecord($Record) {
   }
   if ($Record.owner_kind -eq 'heartbeat') {
     return -not [string]::IsNullOrWhiteSpace([string]$Record.heartbeat_id) -and
-      -not [string]::IsNullOrWhiteSpace([string]$Record.heartbeat_timeout_seconds)
+      -not [string]::IsNullOrWhiteSpace([string]$Record.heartbeat_timeout_seconds) -and
+      -not [string]::IsNullOrWhiteSpace([string]$Record.keeper_pid) -and
+      -not [string]::IsNullOrWhiteSpace([string]$Record.keeper_process_started_utc) -and
+      ([string]$Record.keeper_ready_utc -match '^\d{4}-') -and
+      ([string]$Record.keeper_control_token -match '^[0-9a-f]{32}$')
   }
   return $false
 }
@@ -217,6 +282,9 @@ function Get-OwnerState($Record, [string]$PoolRoot) {
   if ($Record.owner_kind -eq 'heartbeat') {
     $timeout = 0
     if (-not [int]::TryParse([string]$Record.heartbeat_timeout_seconds, [ref]$timeout)) { return 'unknown' }
+    $keeperPid = 0
+    if (-not [int]::TryParse([string]$Record.keeper_pid, [ref]$keeperPid)) { return 'unknown' }
+    if (-not (Test-ExactProcessAlive $keeperPid ([string]$Record.keeper_process_started_utc))) { return 'dead' }
     try { $path = Get-HeartbeatPath $PoolRoot ([string]$Record.heartbeat_id) } catch { return 'unknown' }
     if (-not [System.IO.File]::Exists($path)) { return 'dead' }
     $age = [DateTime]::UtcNow - [System.IO.File]::GetLastWriteTimeUtc($path)
@@ -312,10 +380,29 @@ function Find-MissingPoolNumber([string]$PoolRoot, [int]$PoolLimit) {
   return 0
 }
 
-function Remove-HeartbeatForRecord($Record, [string]$PoolRoot) {
-  if ($Record.owner_kind -ne 'heartbeat') { return }
+function Stop-HeartbeatKeeper($Record, [string]$PoolRoot, [switch]$RemoveFiles) {
+  if ($Record.owner_kind -ne 'heartbeat') { return 'not-heartbeat' }
   $path = Get-HeartbeatPath $PoolRoot ([string]$Record.heartbeat_id)
-  if ([System.IO.File]::Exists($path)) { [System.IO.File]::Delete($path) }
+  $stopPath = $path + '.stop'
+  $readyPath = $path + '.ready'
+  $keeperPid = 0
+  if (-not [int]::TryParse([string]$Record.keeper_pid, [ref]$keeperPid)) { throw 'invalid keeper PID in lease' }
+  if (Test-ExactProcessAlive $keeperPid ([string]$Record.keeper_process_started_utc)) {
+    [System.IO.File]::WriteAllText($stopPath, [string]$Record.keeper_control_token, (New-Object System.Text.ASCIIEncoding))
+    try {
+      $keeper = Get-Process -Id $keeperPid -ErrorAction Stop
+      $keeper.WaitForExit(3000)
+    } catch { }
+    if (Test-ExactProcessAlive $keeperPid ([string]$Record.keeper_process_started_utc)) {
+      Stop-Process -Id $keeperPid -Force -ErrorAction Stop
+    }
+  }
+  if ($RemoveFiles) {
+    if ([System.IO.File]::Exists($stopPath)) { [System.IO.File]::Delete($stopPath) }
+    if ([System.IO.File]::Exists($readyPath)) { [System.IO.File]::Delete($readyPath) }
+    if ([System.IO.File]::Exists($path)) { [System.IO.File]::Delete($path) }
+  }
+  return 'stopped'
 }
 
 # Pester imports safety helpers without running command mode.
@@ -354,6 +441,7 @@ if ($Status) {
     if (Test-CompleteLeaseRecord $record) {
       $state = 'LEASED run_id=' + $record.run_id + ' | agent=' + $record.agent +
         ' | owner_kind=' + $record.owner_kind + ' | owner=' + (Get-OwnerState $record $wtRoot) +
+        $(if ($record.owner_kind -eq 'heartbeat') { ' | keeper_pid=' + $record.keeper_pid } else { '' }) +
         ' | branch=' + $record.branch + ' | acquired=' + $record.acquired_utc
     } elseif ($record) {
       $state = 'LEASED CORRUPT/LEGACY (explicit investigation required)'
@@ -371,18 +459,17 @@ if ($Status) {
   return
 }
 
-if ($Pulse) {
+if ($StopKeeper) {
   Assert-RecordValue 'RunId' $RunId
-  if ($Pulse -notmatch '^pool-[0-9]+$') { throw 'Pulse must name one pool-N slot' }
-  $leasePath = Get-LeasePath (Join-Path $wtRoot $Pulse)
+  if ($StopKeeper -notmatch '^pool-[0-9]+$') { throw 'StopKeeper must name one pool-N slot' }
+  $leasePath = Get-LeasePath (Join-Path $wtRoot $StopKeeper)
   $record = Read-LeaseRecord $leasePath
-  if (-not (Test-CompleteLeaseRecord $record)) { throw 'cannot pulse an incomplete lease record' }
-  if ($record.run_id -ne $RunId) { throw 'run_id mismatch; refusing heartbeat pulse' }
+  if (-not (Test-CompleteLeaseRecord $record)) { throw 'cannot stop keeper for an incomplete lease record' }
+  if ($record.run_id -ne $RunId) { throw 'run_id mismatch; refusing keeper stop' }
   if ($record.owner_kind -ne 'heartbeat') { throw 'lease does not use heartbeat ownership' }
-  $heartbeatPath = Get-HeartbeatPath $wtRoot ([string]$record.heartbeat_id)
-  if (-not [System.IO.File]::Exists($heartbeatPath)) { throw 'heartbeat file is missing' }
-  [System.IO.File]::SetLastWriteTimeUtc($heartbeatPath, [DateTime]::UtcNow)
-  Write-Output ('PULSED pool=' + $Pulse + ' run_id=' + $RunId + ' heartbeat_id=' + $record.heartbeat_id)
+  Stop-HeartbeatKeeper $record $wtRoot | Out-Null
+  Write-Output ('KEEPER_STOPPED pool=' + $StopKeeper + ' run_id=' + $RunId +
+    ' keeper_pid=' + $record.keeper_pid)
   return
 }
 
@@ -426,8 +513,8 @@ if ($Release) {
     git -C $worktree switch --detach $record.base_sha | Out-Null
     if ($LASTEXITCODE -ne 0) { throw ('git switch --detach failed in ' + $worktree) }
   }
+  if ($record.owner_kind -eq 'heartbeat') { Stop-HeartbeatKeeper $record $wtRoot -RemoveFiles | Out-Null }
   Remove-RecordByRename $leasePath $record.lease_token 'released'
-  Remove-HeartbeatForRecord $record $wtRoot
   Write-Output ('RELEASED pool=' + $Release + ' run_id=' + $record.run_id)
   return
 }
@@ -438,7 +525,12 @@ if (($OwnerPid -gt 0 -or $OwnerProcessStartedUtc) -and $HeartbeatId) {
   throw 'choose exactly one durable owner contract: process or heartbeat'
 }
 if ($HeartbeatId) {
-  $ownerFields = New-HeartbeatOwnerFields $HeartbeatId $HeartbeatTimeoutSeconds
+  Assert-HeartbeatId $HeartbeatId
+  if (-not $TestLeaseOnly -and $HeartbeatTimeoutSeconds -lt 30) {
+    throw 'production HeartbeatTimeoutSeconds must be at least 30'
+  }
+  if ($HeartbeatTimeoutSeconds -lt 1) { throw 'HeartbeatTimeoutSeconds must be positive' }
+  $ownerFields = $null
 } elseif ($OwnerPid -gt 0 -and $OwnerProcessStartedUtc) {
   $ownerFields = New-ProcessOwnerFields $OwnerPid $OwnerProcessStartedUtc
 } else {
@@ -466,20 +558,32 @@ if ($TestLeaseOnly) {
 
 $heartbeatPath = $null
 $heartbeatCreated = $false
+$keeper = $null
 if ($HeartbeatId) {
   $heartbeatPath = Get-HeartbeatPath $wtRoot $HeartbeatId
   New-Item -ItemType Directory -Force (Split-Path $heartbeatPath -Parent) | Out-Null
+  $controlToken = [guid]::NewGuid().ToString('N')
   $heartbeatFields = [ordered]@{
     version = '1'
     lease_token = [guid]::NewGuid().ToString('N')
     run_id = $RunId
     heartbeat_id = $HeartbeatId
+    control_token = $controlToken
     created_utc = Get-UtcStamp (Get-Date)
   }
   if (-not (Publish-AtomicRecord $heartbeatPath $heartbeatFields)) {
     throw ('HeartbeatId already exists; use a run-unique id: ' + $HeartbeatId)
   }
   $heartbeatCreated = $true
+  try {
+    $keeper = Start-HeartbeatKeeper $heartbeatPath $controlToken $HeartbeatTimeoutSeconds
+    $ownerFields = New-HeartbeatOwnerFields $HeartbeatId $HeartbeatTimeoutSeconds `
+      $keeper.Pid $keeper.StartedUtc $keeper.ReadyUtc $controlToken
+  } catch {
+    if ([System.IO.File]::Exists($heartbeatPath + '.ready')) { [System.IO.File]::Delete($heartbeatPath + '.ready') }
+    if ([System.IO.File]::Exists($heartbeatPath)) { [System.IO.File]::Delete($heartbeatPath) }
+    throw
+  }
 }
 
 $fields = New-LeaseFields $RunId $Agent $Branch $Base $baseSha $ownerFields
@@ -512,15 +616,23 @@ try {
   $claimed = $true
 } finally {
   if ($mutex) { Exit-SelectionMutex $mutex }
-  if (-not $claimed -and $heartbeatCreated -and [System.IO.File]::Exists($heartbeatPath)) {
-    [System.IO.File]::Delete($heartbeatPath)
+  if (-not $claimed -and $heartbeatCreated) {
+    if ($keeper -and (Test-ExactProcessAlive $keeper.Pid $keeper.StartedUtc)) {
+      Stop-Process -Id $keeper.Pid -Force -ErrorAction SilentlyContinue
+    }
+    if ([System.IO.File]::Exists($heartbeatPath + '.stop')) { [System.IO.File]::Delete($heartbeatPath + '.stop') }
+    if ([System.IO.File]::Exists($heartbeatPath + '.ready')) { [System.IO.File]::Delete($heartbeatPath + '.ready') }
+    if ([System.IO.File]::Exists($heartbeatPath)) { [System.IO.File]::Delete($heartbeatPath) }
   }
 }
 
 if (-not $claimed) { throw 'lease acquisition failed before a slot was claimed' }
 if ($TestLeaseOnly) {
   Write-Output ('LEASED pool=' + $poolName + ' path=' + $worktree + ' run_id=' + $RunId +
-    ' token=' + $fields.lease_token + ' owner_kind=' + $fields.owner_kind)
+    ' token=' + $fields.lease_token + ' owner_kind=' + $fields.owner_kind +
+    $(if ($fields.owner_kind -eq 'heartbeat') { ' keeper_pid=' + $fields.keeper_pid +
+      ' keeper_started_utc=' + $fields.keeper_process_started_utc +
+      ' keeper_ready_utc=' + $fields.keeper_ready_utc } else { '' }))
   return
 }
 
@@ -549,8 +661,8 @@ if (-not (Test-Path (Join-Path $worktree 'build\build.ninja'))) {
 if ($HeartbeatId) { [System.IO.File]::SetLastWriteTimeUtc($heartbeatPath, [DateTime]::UtcNow) }
 
 Write-Output ('LEASED pool=' + $poolName + ' path=' + $worktree + ' branch=' + $Branch +
-  ' base_sha=' + $baseSha + ' run_id=' + $RunId + ' owner_kind=' + $fields.owner_kind)
-if ($HeartbeatId) {
-  Write-Output ('PULSE with: powershell scripts\lease-worktree.ps1 -Pulse ' + $poolName + ' -RunId ' + $RunId)
-}
+  ' base_sha=' + $baseSha + ' run_id=' + $RunId + ' owner_kind=' + $fields.owner_kind +
+  $(if ($fields.owner_kind -eq 'heartbeat') { ' keeper_pid=' + $fields.keeper_pid +
+    ' keeper_started_utc=' + $fields.keeper_process_started_utc +
+    ' keeper_ready_utc=' + $fields.keeper_ready_utc } else { '' }))
 Write-Output ('RELEASE with: powershell scripts\lease-worktree.ps1 -Release ' + $poolName + ' -RunId ' + $RunId)

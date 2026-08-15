@@ -11,8 +11,8 @@ Setup (from repo root `C:\atx`):
    `git worktree add`, never build in the main checkout while other lanes run:
    `powershell scripts\lease-worktree.ps1 -Branch <branch-from-brief> -Base <frozen-sha> -Agent <lane-id> -RunId <workflow-run-id> -HeartbeatId <heartbeat-from-brief> -MaxPool 20`
    Note the leased tree path; ALL edits and builds happen there. If the pool is exhausted, report BLOCKED — do not fall back to the main checkout.
-3. Pulse the reported pool before and after long commands with
-   `powershell scripts\lease-worktree.ps1 -Pulse <pool-N> -RunId <workflow-run-id>`.
+3. Confirm acquisition output includes the independent keeper PID/process-start
+   identity. Foreground commands and manual pulses are not the liveness contract.
 4. `powershell scripts\atx-build.ps1` from the leased tree (it has a wrong-tree guard; `powershell`, not `pwsh`).
 
 Work loop (TDD, ladder discipline — never bare all-target builds):
@@ -32,6 +32,7 @@ Hard boundaries:
 Finish:
 1. Commit ALL work on the lane branch (leased tree must be clean; `-Release` refuses dirty trees). Do NOT release the lease — the fix stage may reuse your warm tree; the verifier releases.
 2. Report per `.agents/harness/TEMPLATES.md` "Lane report": outcome, branch@sha,
-   frozen base SHA, worktree, pool lease name, lease run_id, heartbeat_id, files changed,
+   frozen base SHA, worktree, pool lease name, lease run_id, heartbeat_id, keeper
+   PID/process-start, typed acquisition receipt, files changed,
    structured evidence, deviations, and 0–3 ledger candidates. Return it as
    structured output when a schema is requested.

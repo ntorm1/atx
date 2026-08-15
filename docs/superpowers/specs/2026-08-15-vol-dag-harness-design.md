@@ -12,15 +12,19 @@ integration.
 Pool leases are atomic v3 records keyed by a workflow `run_id`, desired branch,
 frozen base SHA, acquisition time, and an explicit durable owner. The owner is
 either a caller-supplied PID plus exact process-start timestamp or a run-unique
-heartbeat pulsed around long commands; the short-lived lease launcher is rejected.
+heartbeat with an independently running continuous keeper. Acquisition waits for
+an authenticated ready pulse before publishing keeper identity. Foreground commands and
+before/after pulses are not ownership; the short-lived lease launcher is rejected.
 Release requires the same `run_id`; stale recovery is explicit and refuses while
 the durable owner is alive. Corrupt/truncated records fail closed. Tests use a temp
 pool root and never touch production markers.
 
 After all mandatory lanes are freshly approved, their leases are released before
 integration begins. The verifier then obtains a new run-owned heartbeat lease for
-a run-unique integration branch, reports the exact reviewed SHA list, and performs
-merges, gates, and ledger work only under
+a run-unique integration branch. Its typed receipt proves keeper ownership. The
+verifier reports one integration receipt per exact reviewed SHA, an exact HEAD
+receipt, one successful receipt for every required scoped gate, and a typed release;
+it performs merges, gates, and ledger work only under
 `C:\atx-wt\pool-N`; `C:\atx` is never an integration worktree. Failure still
 releases the integration lease. A success claim is valid only when every supporting
 evidence item has `exit_code=0`; failed attempts are kept separately as diagnostics.

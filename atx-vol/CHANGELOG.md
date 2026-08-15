@@ -10,8 +10,11 @@ that silently changes a NUMBER a caller already depends on belongs in this file.
 The old advisory worktree marker and permissive sprint integration behavior are
 removed. `scripts/lease-worktree.ps1` now publishes an atomic v3 record and requires
 `-RunId` plus an explicit durable owner: caller PID/process-start identity or a
-run-unique heartbeat that is pulsed around long work. The short-lived lease command
-cannot silently own a production lease. Existing branches must still point at the
+run-unique heartbeat with an independently running continuous keeper. Foreground
+commands and before/after pulses do not own liveness. The short-lived lease command
+cannot silently own a production lease; the old `-Pulse` command is removed.
+Acquisition waits for and records an
+authenticated keeper-ready pulse. Existing branches must still point at the
 frozen base SHA; corrupt records fail closed and require explicit guarded recovery.
 
 `vol-sprint` no longer excludes failed lanes and integrates the rest. Every planned
@@ -27,12 +30,19 @@ It hard-selects one state in order: `missing_data`, `missing_mode_a`,
 `missing_conventions`, `missing_mode_b`, `ready`. A bootstrap invocation dispatches
 exactly one fixed implementation lane through Build, exact-SHA Review, optional Fix,
 fresh Review, scoped verification, and atomic landing on `refs/heads/oracle/canonical`.
-It never benchmarks holdout. Only ready state runs the RSI loop; a failed sprint
+Its capability agent has no general file tools and can run only the fixed
+aggregate-only probe, which cannot open cohort membership or licensed rows. It
+never benchmarks holdout. Only ready state runs the RSI loop; a failed sprint
 returns FAILED before holdout and does not count as REJECT. Attribute is tool-less
 and receives a validated aggregate smoke/tune payload. Only Ratchet opens holdout,
 recomputes its membership digest, tests the exact reviewed integration SHA in a new
 lease, and atomically lands ACCEPT; REJECT leaves canonical unchanged. Successful
-results return evidence-indexed aggregate metric deltas for PM verification.
+results return typed aggregate metric deltas and their evidence receipts. Ratchet's
+agent no longer decides ACCEPT/REJECT: workflow code verifies delta arithmetic,
+target improvement, the 2% aggregate bound, pinned speed, applicable modes, digest,
+scoped gates, and market evidence. Agents prepare candidate commits; a minimal
+finalizer performs the exact canonical compare-and-swap only after validation, and
+an independent audit reports the actual ref even when the finalizer report is lost.
 
 ## 1.2.0
 

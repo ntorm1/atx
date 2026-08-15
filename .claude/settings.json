@@ -9,9 +9,13 @@
       "PowerShell(scripts\\atx-build.ps1*)",
       "PowerShell(powershell scripts\\lease-worktree.ps1*)",
       "PowerShell(scripts\\lease-worktree.ps1*)",
+      "PowerShell(powershell scripts\\oracle-capability.ps1)",
+      "PowerShell(scripts\\oracle-capability.ps1)",
       "Bash(git diff*)",
       "Bash(git log*)",
       "Bash(git status*)",
+      "Bash(git update-ref refs/heads/oracle/canonical *)",
+      "Bash(git rev-parse refs/heads/oracle/canonical)",
       "Bash(ctest*)"
     ]
   }

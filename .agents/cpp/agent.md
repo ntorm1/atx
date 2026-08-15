@@ -46,7 +46,6 @@ preset/branch flip with hot cache in 27 s. Pool trees keep `build/` warm across 
 ```powershell
 scripts\dev-setup.ps1                                # one-time per machine: ccache + caches (then NEW shell)
 scripts\lease-worktree.ps1 -Branch feat/x-<run-slug> -Base <frozen-sha> -Agent <owner> -RunId <run-id> -HeartbeatId <run-unique-heartbeat> -MaxPool 20
-scripts\lease-worktree.ps1 -Pulse pool-1 -RunId <same-run-id>
 scripts\lease-worktree.ps1 -Release pool-1 -RunId <same-run-id>
 scripts\lease-worktree.ps1 -Status                   # who holds what
 scripts\new-worktree.ps1 -Name s8 -Branch feat/s8 -Base main -Isolated   # only for deliberate isolation (deps churn, bench)
@@ -68,8 +67,9 @@ clangd works immediately (committed `.clangd` reads each worktree's own `build/c
 5. **`pwsh` is not always installed** — use `powershell` (5.1) for the `*.ps1` helpers.
 6. **Pool leases are atomic run-owned v3 records** (`.atx-lease`, git-ignored) — one
    agent per leased tree. Acquisition requires either a durable caller PID plus exact
-   process-start time or a run-unique heartbeat; the short-lived launcher cannot own
-   a production lease. The record also freezes branch/base SHA/time. `-Release`
+   process-start time or a run-unique heartbeat. Heartbeat acquisition starts an
+   independent continuously renewing keeper; the short-lived launcher and foreground
+   commands cannot own a production lease. The record also freezes branch/base SHA/time. `-Release`
    requires the same run_id and refuses dirty trees. `-RecoverStale` is explicit
    and refuses while the durable process/heartbeat owner is alive; investigate status first.
 

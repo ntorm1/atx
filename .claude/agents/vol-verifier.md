@@ -20,8 +20,8 @@ Process:
    `powershell scripts\lease-worktree.ps1 -Branch <run-unique-integration-branch> -Base <frozen-sha> -Agent vol-verifier -RunId <run-id> -HeartbeatId <integration-heartbeat> -MaxPool 20`.
    From here, all merges, edits, builds, tests, and ledger work happen only in the
    returned `C:\atx-wt\pool-N`.
-   Pulse before and after long gates. An existing branch whose HEAD differs from
-   the frozen base is invalid.
+   Confirm the independent keeper PID/process-start receipt. Foreground commands
+   are not the lease owner. An existing branch whose HEAD differs from the frozen base is invalid.
 4. Merge exact reviewed SHAs in brief order and report that exact SHA list. A merge conflict stops the gate and
    names lanes/files. Do not resolve semantic conflicts. Trivial gate-owned
    shared-file overlap may be resolved and must be reported.
@@ -37,6 +37,7 @@ Process:
 7. On PASS or FAIL, release the integration lease with the same run ID. A dirty tree
    is a gate failure; never stash silently. A cleanup-only abort task releases only
    named lane leases and performs no integration or memory work.
-8. Report gate evidence, frozen base/run identity, exact reviewed SHA list,
-   integration branch/SHA/worktree/lease/heartbeat, every lease released, and exact
-   ledger lines. Do not merge to main or push.
+8. Report typed keeper-backed acquisition/release receipts, one exact-SHA integration
+   receipt per lane, an exact `git rev-parse HEAD` receipt, and one exit-code-zero
+   receipt per required gate ID. Include frozen base/run identity and exact ledger
+   lines. Do not merge to main or push.

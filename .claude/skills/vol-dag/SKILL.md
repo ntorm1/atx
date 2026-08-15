@@ -41,9 +41,10 @@ Workflow { name: 'vol-sprint', args: { task: '<verbatim user ask + constraints>'
 ```
 
 Pass the user's ask verbatim plus known constraints. The workflow derives run-unique
-lane/integration branches and heartbeat IDs; agents pulse before and after long work.
-On workflow death, check `lease-worktree.ps1 -Status`; v3 status reports `run_id`
-and durable process/heartbeat owner state. Investigate before `-RecoverStale`; normal
+lane/integration branches and heartbeat IDs. Heartbeat acquisition starts an
+independent continuously renewing keeper; every lane reports its exact keeper
+PID/process-start receipt. On workflow death, check `lease-worktree.ps1 -Status`;
+v3 status reports `run_id` and durable process/keeper state. Investigate before `-RecoverStale`; normal
 release always supplies the acquiring `-RunId`. Resume the cached run where possible
 rather than dispatching a duplicate.
 

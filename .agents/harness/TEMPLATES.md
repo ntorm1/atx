@@ -12,7 +12,8 @@ One paragraph. What exists after this lane that does not exist now.
 - Files in scope: <explicit list — the ONLY files this lane may create/modify>
 - Files forbidden: <files adjacent lanes own — touching these is a lane failure>
 - Branch: run-unique lane/<id>-<run-slug> off <frozen-base-sha>
-- Lease: pool-N acquired with <workflow-run-id> and <heartbeat-id>
+- Lease: pool-N acquired with <workflow-run-id>, <heartbeat-id>, and an independent
+  continuously renewing keeper PID/process-start identity
 ## Ladder
 - check targets: <the .cpp files to type-check while shaping>
 - build target(s): <e.g. atx-vol-tests>
@@ -33,7 +34,11 @@ DONE | BLOCKED — one sentence.
 lane/<id> @ <sha> (all work committed; leased tree left clean)
 ## Frozen base / lease
 base_sha=<40-char-sha>; worktree=<C:\atx-wt\pool-N>; lease_name=<pool-N>;
-lease_run_id=<workflow-run-id>; heartbeat_id=<heartbeat-id>
+lease_run_id=<workflow-run-id>; heartbeat_id=<heartbeat-id>;
+keeper_pid=<pid>; keeper_process_started_utc=<utc>
+## Acquisition receipt
+action=acquire plus the exact lease/run/branch/base/worktree/heartbeat/keeper fields,
+exit_code=0, and the `LEASED` output proving them.
 ## Files changed
 <list>
 ## Evidence

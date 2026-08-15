@@ -25,6 +25,40 @@ const EVIDENCE_ITEM = {
     output: { type: 'string', description: 'verbatim output excerpt; empty output is invalid' },
   },
 }
+const LEASE_RECEIPT = {
+  type: 'object', additionalProperties: false,
+  required: ['action', 'lease_name', 'run_id', 'branch', 'base_sha', 'worktree', 'heartbeat_id', 'keeper_pid', 'keeper_process_started_utc', 'keeper_ready_utc', 'exit_code', 'output'],
+  properties: {
+    action: { type: 'string', enum: ['acquire', 'release'] }, lease_name: { type: 'string' },
+    run_id: { type: 'string' }, branch: { type: 'string' }, base_sha: { type: 'string' },
+    worktree: { type: 'string' }, heartbeat_id: { type: 'string' }, keeper_pid: { type: 'integer' },
+    keeper_process_started_utc: { type: 'string' }, keeper_ready_utc: { type: 'string' }, exit_code: { type: 'integer' }, output: { type: 'string' },
+  },
+}
+const HEAD_RECEIPT = {
+  type: 'object', additionalProperties: false,
+  required: ['ref', 'sha', 'command', 'exit_code', 'output'],
+  properties: {
+    ref: { type: 'string' }, sha: { type: 'string' }, command: { type: 'string' },
+    exit_code: { type: 'integer' }, output: { type: 'string' },
+  },
+}
+const INTEGRATION_RECEIPT = {
+  type: 'object', additionalProperties: false,
+  required: ['reviewed_sha', 'head_after', 'command', 'exit_code', 'output'],
+  properties: {
+    reviewed_sha: { type: 'string' }, head_after: { type: 'string' }, command: { type: 'string' },
+    exit_code: { type: 'integer' }, output: { type: 'string' },
+  },
+}
+const GATE_RECEIPT = {
+  type: 'object', additionalProperties: false,
+  required: ['gate_id', 'command', 'exit_code', 'output'],
+  properties: {
+    gate_id: { type: 'string' }, command: { type: 'string' },
+    exit_code: { type: 'integer' }, output: { type: 'string' },
+  },
+}
 const FREEZE = {
   type: 'object', required: ['base_ref', 'base_sha', 'evidence'],
   properties: {
@@ -57,12 +91,13 @@ const PLAN = {
 }
 const REPORT = {
   type: 'object',
-  required: ['lane_id', 'outcome', 'branch', 'sha', 'base_sha', 'worktree', 'lease_name', 'lease_run_id', 'heartbeat_id', 'files_changed', 'evidence', 'deviations', 'ledger_candidates'],
+  required: ['lane_id', 'outcome', 'branch', 'sha', 'base_sha', 'worktree', 'lease_name', 'lease_run_id', 'heartbeat_id', 'keeper_pid', 'keeper_process_started_utc', 'acquisition_receipt', 'files_changed', 'evidence', 'deviations', 'ledger_candidates'],
   properties: {
     lane_id: { type: 'string' }, outcome: { type: 'string', enum: ['DONE', 'BLOCKED'] },
     branch: { type: 'string' }, sha: { type: 'string' }, base_sha: { type: 'string' },
     worktree: { type: 'string' }, lease_name: { type: 'string' }, lease_run_id: { type: 'string' },
-    heartbeat_id: { type: 'string' },
+    heartbeat_id: { type: 'string' }, keeper_pid: { type: 'integer' }, keeper_process_started_utc: { type: 'string' },
+    acquisition_receipt: LEASE_RECEIPT,
     files_changed: { type: 'array', items: { type: 'string' } },
     evidence: { type: 'array', items: EVIDENCE_ITEM },
     diagnostics: { type: 'array', items: EVIDENCE_ITEM },
@@ -87,23 +122,27 @@ const REVIEW = {
   },
 }
 const CLEANUP = {
-  type: 'object', required: ['passed', 'released', 'evidence'],
+  type: 'object', required: ['passed', 'released', 'release_receipts', 'evidence'],
   properties: {
     passed: { type: 'boolean' },
     released: { type: 'array', items: { type: 'string' } },
+    release_receipts: { type: 'array', items: LEASE_RECEIPT },
     evidence: { type: 'array', items: EVIDENCE_ITEM },
     diagnostics: { type: 'array', items: EVIDENCE_ITEM },
   },
 }
 const GATE = {
   type: 'object',
-  required: ['passed', 'base_sha', 'lease_run_id', 'integration_branch', 'sha', 'integrated_shas', 'integration_worktree', 'integration_lease', 'integration_heartbeat_id', 'gate_results', 'leases_released', 'ledger_appended'],
+  required: ['passed', 'base_sha', 'lease_run_id', 'integration_branch', 'sha', 'integrated_shas', 'integration_worktree', 'integration_lease', 'integration_heartbeat_id', 'keeper_pid', 'keeper_process_started_utc', 'acquisition_receipt', 'integration_receipts', 'head_receipt', 'gate_receipts', 'release_receipt', 'gate_results', 'leases_released', 'ledger_appended'],
   properties: {
     passed: { type: 'boolean' }, base_sha: { type: 'string' }, lease_run_id: { type: 'string' },
     integration_branch: { type: 'string' }, sha: { type: 'string' },
     integrated_shas: { type: 'array', items: { type: 'string' } },
     integration_worktree: { type: 'string' }, integration_lease: { type: 'string' },
-    integration_heartbeat_id: { type: 'string' },
+    integration_heartbeat_id: { type: 'string' }, keeper_pid: { type: 'integer' }, keeper_process_started_utc: { type: 'string' },
+    acquisition_receipt: LEASE_RECEIPT, integration_receipts: { type: 'array', items: INTEGRATION_RECEIPT },
+    head_receipt: HEAD_RECEIPT, gate_receipts: { type: 'array', items: GATE_RECEIPT },
+    release_receipt: LEASE_RECEIPT,
     gate_results: { type: 'array', items: EVIDENCE_ITEM },
     diagnostics: { type: 'array', items: EVIDENCE_ITEM },
     leases_released: { type: 'array', items: { type: 'string' } },
@@ -115,6 +154,27 @@ function validSuccessEvidence(evidence) {
   return Array.isArray(evidence) && evidence.length > 0 && evidence.every(item =>
     item && typeof item.command === 'string' && item.command.trim() &&
     item.exit_code === 0 && typeof item.output === 'string' && item.output.trim())
+}
+
+function validLeaseReceipt(receipt, expected, action) {
+  if (!receipt || receipt.action !== action || receipt.exit_code !== 0 || !String(receipt.output || '').trim()) return false
+  if (receipt.lease_name !== expected.lease_name || receipt.run_id !== expected.run_id ||
+      receipt.branch !== expected.branch || receipt.base_sha !== expected.base_sha ||
+      receipt.worktree !== expected.worktree || receipt.heartbeat_id !== expected.heartbeat_id ||
+      receipt.keeper_pid !== expected.keeper_pid || receipt.keeper_process_started_utc !== expected.keeper_process_started_utc) return false
+  if (!Number.isInteger(receipt.keeper_pid) || receipt.keeper_pid <= 0 || !/^\d{4}-/.test(receipt.keeper_process_started_utc || '') || !/^\d{4}-/.test(receipt.keeper_ready_utc || '')) return false
+  return receipt.output.includes(receipt.lease_name) && receipt.output.includes(receipt.run_id) &&
+    (action === 'release' || (receipt.output.includes(String(receipt.keeper_pid)) && receipt.output.includes(receipt.heartbeat_id) && receipt.output.includes(receipt.keeper_ready_utc)))
+}
+
+function validHeadReceipt(receipt, ref, sha) {
+  return !!receipt && receipt.ref === ref && receipt.sha === sha && receipt.exit_code === 0 &&
+    receipt.command.trim() === `git rev-parse ${ref}` && receipt.output.trim() === sha
+}
+
+function validIntegrationCommand(receipt, reviewedSha) {
+  return !!receipt && receipt.reviewed_sha === reviewedSha && receipt.exit_code === 0 &&
+    new RegExp(`^git\\s+(?:merge(?:\\s+--(?:ff-only|no-ff|no-edit))*|cherry-pick(?:\\s+--(?:ff|no-commit))*)\\s+${reviewedSha}$`, 'i').test(String(receipt.command || '').trim())
 }
 
 function laneHeartbeatId(lane) {
@@ -141,6 +201,11 @@ function reportContractError(report, lane, baseSha) {
   if (report.lease_run_id !== RUN_ID) return `lease run_id mismatch: ${report.lease_run_id}`
   if (!/^pool-[0-9]+$/.test(report.lease_name || '')) return `invalid lease name: ${report.lease_name}`
   if (report.heartbeat_id !== laneHeartbeatId(lane)) return `heartbeat mismatch: ${report.heartbeat_id}`
+  if (!validLeaseReceipt(report.acquisition_receipt, {
+    lease_name: report.lease_name, run_id: RUN_ID, branch: lane.branch, base_sha: baseSha,
+    worktree: report.worktree, heartbeat_id: report.heartbeat_id, keeper_pid: report.keeper_pid,
+    keeper_process_started_utc: report.keeper_process_started_utc,
+  }, 'acquire')) return 'lane acquisition receipt invalid'
   if (!validSuccessEvidence(report.evidence)) return 'missing successful command/output evidence'
   const requiredReferences = [...lane.check_targets, ...lane.build_targets, ...lane.suites]
   const missing = requiredReferences.filter(target => !evidenceReferencesTarget(report.evidence, target))
@@ -182,6 +247,30 @@ function gateContractError(gate, expected) {
       !/[\\/]atx-wt[\\/]pool-[0-9]+$/i.test(gate.integration_worktree || '') ||
       !gate.integration_worktree.replace(/\//g, '\\').toLowerCase().endsWith(`\\${gate.integration_lease.toLowerCase()}`)) return 'integration lease/worktree mismatch'
   if (!Array.isArray(gate.leases_released) || !gate.leases_released.includes(gate.integration_lease)) return 'integration lease not released'
+  const leaseExpected = {
+    lease_name: gate.integration_lease, run_id: expected.run_id, branch: expected.branch,
+    base_sha: expected.base_sha, worktree: gate.integration_worktree,
+    heartbeat_id: expected.heartbeat_id, keeper_pid: gate.keeper_pid,
+    keeper_process_started_utc: gate.keeper_process_started_utc,
+  }
+  if (!validLeaseReceipt(gate.acquisition_receipt, leaseExpected, 'acquire')) return 'integration acquisition receipt invalid'
+  if (!validLeaseReceipt(gate.release_receipt, leaseExpected, 'release')) return 'integration release receipt invalid'
+  if (!Array.isArray(gate.integration_receipts) || gate.integration_receipts.length !== expected.reviewed_shas.length) return 'integration receipts missing'
+  for (let index = 0; index < expected.reviewed_shas.length; index += 1) {
+    const receipt = gate.integration_receipts[index]
+    if (!validIntegrationCommand(receipt, expected.reviewed_shas[index]) ||
+        !/^[0-9a-f]{40}$/i.test(receipt.head_after || '') || !String(receipt.output || '').includes(receipt.head_after)) return 'exact reviewed SHA integration receipt invalid'
+  }
+  if (!validHeadReceipt(gate.head_receipt, 'HEAD', gate.sha)) return 'integration HEAD receipt invalid'
+  if (!Array.isArray(gate.gate_receipts)) return 'scoped gate receipts missing'
+  for (const gateId of expected.gate_ids) {
+    const matches = gate.gate_receipts.filter(receipt => receipt && receipt.gate_id === gateId)
+    if (matches.length !== 1 || matches[0].exit_code !== 0 || !String(matches[0].output || '').trim() ||
+        !evidenceReferencesTarget([matches[0]], gateId)) return `required gate receipt invalid: ${gateId}`
+    if (!gate.gate_results.some(item => item.command === matches[0].command && item.exit_code === 0 && item.output === matches[0].output)) {
+      return `required gate missing from returned evidence: ${gateId}`
+    }
+  }
   return null
 }
 
@@ -208,6 +297,10 @@ const lanes = plan.lanes.map(lane => ({
   branch: `lane/${String(lane.id).replace(/[^A-Za-z0-9._-]/g, '-')}-${RUN_SLUG}`,
 }))
 const INTEGRATION_BRANCH = `integration/${RUN_SLUG}`
+const REQUIRED_GATE_IDS = [...new Set(lanes.flatMap(lane => [...lane.build_targets, ...lane.suites]).filter(Boolean))]
+if (!REQUIRED_GATE_IDS.length || lanes.some(lane => ![...lane.build_targets, ...lane.suites].filter(Boolean).length)) {
+  throw new Error('every mandatory lane needs at least one build target or suite')
+}
 if (new Set(lanes.map(lane => lane.id)).size !== lanes.length ||
     new Set(lanes.map(lane => lane.branch)).size !== lanes.length) {
   throw new Error('lane ids/derived run-unique branches must be unique')
@@ -216,7 +309,7 @@ if (new Set(lanes.map(lane => lane.id)).size !== lanes.length ||
 const results = await pipeline(
   lanes,
   lane => agent(
-    `Mandatory lane brief (JSON):\n${JSON.stringify(lane, null, 2)}\n\nFrozen base SHA: ${BASE_SHA}. Harness run_id: ${RUN_ID}. Lease only with: powershell scripts\\lease-worktree.ps1 -Branch ${lane.branch} -Base ${BASE_SHA} -Agent vol-builder-${lane.id} -RunId ${RUN_ID} -HeartbeatId ${laneHeartbeatId(lane)} -MaxPool 20. Pulse the reported pool before and after every long command with -Pulse <pool-N> -RunId ${RUN_ID}. Never work in C:\\atx. Implement, run every named check/build/suite, commit explicit paths, keep the lease held, and return only exit_code=0 commands under evidence; failed diagnostics belong under diagnostics.`,
+    `Mandatory lane brief (JSON):\n${JSON.stringify(lane, null, 2)}\n\nFrozen base SHA: ${BASE_SHA}. Harness run_id: ${RUN_ID}. Lease only with: powershell scripts\\lease-worktree.ps1 -Branch ${lane.branch} -Base ${BASE_SHA} -Agent vol-builder-${lane.id} -RunId ${RUN_ID} -HeartbeatId ${laneHeartbeatId(lane)} -MaxPool 20. The lease starts an independent continuous keeper; do not substitute foreground pulses for ownership. Never work in C:\\atx. Implement, run every named check/build/suite, commit explicit paths, keep the lease held, and return the typed acquisition receipt including keeper PID/start plus only exit_code=0 commands under evidence; failed diagnostics belong under diagnostics.`,
     { agentType: 'vol-builder', schema: REPORT, phase: 'Build', label: `build:${lane.id}` },
   ),
   (report, lane) => {
@@ -257,10 +350,10 @@ const heldLeases = results.filter(Boolean).map(state => state.report).filter(rep
 
 if (failures.length) {
   phase('Abort')
-  let cleanup = { passed: heldLeases.length === 0, released: [], evidence: [] }
+  let cleanup = { passed: heldLeases.length === 0, released: [], release_receipts: [], evidence: [] }
   if (heldLeases.length) {
     cleanup = await agent(
-      `ABORT before integration. Mandatory lane failures:\n${failures.join('\n')}\nRelease only these run-owned leases, without editing, merging, building, or using C:\\atx: ${JSON.stringify(heldLeases.map(r => ({ lease: r.lease_name, run_id: RUN_ID, worktree: r.worktree })))}. For each use powershell scripts\\lease-worktree.ps1 -Release <pool-N> -RunId ${RUN_ID}. Return pasted output.`,
+      `ABORT before integration. Mandatory lane failures:\n${failures.join('\n')}\nRelease only these run-owned leases, without editing, merging, building, or using C:\\atx: ${JSON.stringify(heldLeases.map(r => ({ lease: r.lease_name, run_id: RUN_ID, worktree: r.worktree, branch: r.branch, base_sha: r.base_sha, heartbeat_id: r.heartbeat_id, keeper_pid: r.keeper_pid, keeper_process_started_utc: r.keeper_process_started_utc })))}. For each use powershell scripts\\lease-worktree.ps1 -Release <pool-N> -RunId ${RUN_ID}. Return one typed release receipt and pasted output per lease.`,
       { agentType: 'vol-verifier', schema: CLEANUP, label: 'abort-cleanup' },
     )
   }
@@ -273,12 +366,20 @@ if (failures.length) {
 
 phase('Release')
 const release = await agent(
-  `All mandatory lanes are DONE and freshly APPROVED. Before any integration lease is acquired, release these lane leases: ${JSON.stringify(heldLeases.map(r => ({ lease: r.lease_name, run_id: RUN_ID, worktree: r.worktree })))}. Use powershell scripts\\lease-worktree.ps1 -Release <pool-N> -RunId ${RUN_ID}; do not edit, merge, build, or use C:\\atx. Return pasted output for every release.`,
+  `All mandatory lanes are DONE and freshly APPROVED. Before any integration lease is acquired, release these lane leases: ${JSON.stringify(heldLeases.map(r => ({ lease: r.lease_name, run_id: RUN_ID, worktree: r.worktree, branch: r.branch, base_sha: r.base_sha, heartbeat_id: r.heartbeat_id, keeper_pid: r.keeper_pid, keeper_process_started_utc: r.keeper_process_started_utc })))}. Use powershell scripts\\lease-worktree.ps1 -Release <pool-N> -RunId ${RUN_ID}; do not edit, merge, build, or use C:\\atx. Return one typed release receipt and pasted output per lease.`,
   { agentType: 'vol-verifier', schema: CLEANUP, label: 'release-lanes' },
 )
 const expectedReleased = heldLeases.map(report => report.lease_name)
 const releaseComplete = release && release.passed && validSuccessEvidence(release.evidence) &&
   expectedReleased.every(name => release.released.includes(name)) &&
+  expectedReleased.every(name => {
+    const report = heldLeases.find(item => item.lease_name === name)
+    return release.release_receipts.filter(receipt => validLeaseReceipt(receipt, {
+      lease_name: report.lease_name, run_id: RUN_ID, branch: report.branch, base_sha: report.base_sha,
+      worktree: report.worktree, heartbeat_id: report.heartbeat_id, keeper_pid: report.keeper_pid,
+      keeper_process_started_utc: report.keeper_process_started_utc,
+    }, 'release')).length === 1
+  }) &&
   expectedReleased.every(name => release.evidence.some(item =>
     item.command.includes(name) && item.command.includes('-RunId') && item.output.includes(name)))
 if (!releaseComplete) {
@@ -292,13 +393,14 @@ if (!releaseComplete) {
 
 phase('Gate')
 const gate = await agent(
-  `Gate this vol-sprint in a NEW isolated pool lease. Frozen base SHA: ${BASE_SHA}. Integration branch: ${INTEGRATION_BRANCH}. Harness run_id: ${RUN_ID}. Lane commits in brief order:\n${JSON.stringify(results.map(state => ({ lane: state.report.lane_id, branch: state.report.branch, sha: state.report.sha, reviewed_sha: state.review.reviewed_sha, verdict: state.review.verdict })))}\nShared-files ownership: ${plan.shared_files_note}\n\nFirst acquire with powershell scripts\\lease-worktree.ps1 -Branch ${INTEGRATION_BRANCH} -Base ${BASE_SHA} -Agent vol-verifier -RunId ${RUN_ID} -HeartbeatId ${RUN_SLUG}-integration -MaxPool 20. Pulse before/after long gates. The returned C:\\atx-wt\\pool-N path is the ONLY place integration, builds, tests, and ledger append may occur; never use C:\\atx. Merge exact reviewed SHAs in the listed order and report them unchanged as integrated_shas, along with base_sha=${BASE_SHA} and lease_run_id=${RUN_ID}. Run required gates with pasted output, commit gate-owned memory if changed, then release the integration lease with -RunId ${RUN_ID}. A conflict or gate failure is passed=false but still releases the integration lease. Successful gate_results contain only exit_code=0 evidence; failures belong in diagnostics.`,
+  `Gate this vol-sprint in a NEW isolated pool lease. Frozen base SHA: ${BASE_SHA}. Integration branch: ${INTEGRATION_BRANCH}. Harness run_id: ${RUN_ID}. Lane commits in brief order:\n${JSON.stringify(results.map(state => ({ lane: state.report.lane_id, branch: state.report.branch, sha: state.report.sha, reviewed_sha: state.review.reviewed_sha, verdict: state.review.verdict })))}\nRequired gate IDs: ${JSON.stringify(REQUIRED_GATE_IDS)}\nShared-files ownership: ${plan.shared_files_note}\n\nFirst acquire with powershell scripts\\lease-worktree.ps1 -Branch ${INTEGRATION_BRANCH} -Base ${BASE_SHA} -Agent vol-verifier -RunId ${RUN_ID} -HeartbeatId ${RUN_SLUG}-integration -MaxPool 20. The returned C:\\atx-wt\\pool-N path is the ONLY place integration, builds, tests, and ledger append may occur; never use C:\\atx. Report typed keeper-backed acquisition. Integrate each exact reviewed SHA in listed order with its own receipt and observed head_after, then provide an exact git rev-parse HEAD receipt. Run every required gate ID with one exit-code-zero typed receipt and pasted output, commit gate-owned memory if changed, then release with one typed keeper-backed receipt. A conflict or gate failure is passed=false but still releases. Failures belong in diagnostics.`,
   { agentType: 'vol-verifier', schema: GATE, label: 'gate' },
 )
 
 const gateError = gateContractError(gate, {
   base_sha: BASE_SHA, run_id: RUN_ID, branch: INTEGRATION_BRANCH,
   heartbeat_id: `${RUN_SLUG}-integration`, reviewed_shas: results.map(state => state.review.reviewed_sha),
+  gate_ids: REQUIRED_GATE_IDS,
 })
 const gateContractPassed = !gateError
 

@@ -16,11 +16,14 @@ It does not call the planner, ordinary Measure, vol-sprint, analyst, or Ratchet,
 and it never benchmarks holdout. The next invocation must observe the next state.
 Only `ready` enters the RSI loop.
 
-Capability freezes `refs/heads/oracle/canonical` (or the requested base before the
-first landing) and reads only the already committed digest receipt; it never opens
-holdout membership. Every lane starts from that SHA, uses a run-unique branch and
-durable heartbeat lease, commits explicit paths, and releases with the same
-`run_id`. Success evidence contains only exit-code-zero command output. Licensed
+Capability runs the fixed `scripts/oracle-capability.ps1` probe through a
+tool-restricted, no-read agent. It freezes `refs/heads/oracle/canonical` (or `main`
+before the first landing), tests only committed receipt existence, and reads only
+the already committed digest receipt; it cannot open holdout membership. Every lane starts from that SHA, uses a run-unique branch and
+durable heartbeat lease with an independent continuously renewing keeper, commits
+explicit paths, and releases with the same `run_id`. Typed receipts prove
+acquisition, keeper identity plus authenticated ready pulse, exact reviewed-SHA integration/HEAD, every scoped
+gate, and release. Success evidence contains only exit-code-zero command output. Licensed
 row values, option membership, and holdout membership must never enter prompts or
 logs.
 
@@ -81,7 +84,10 @@ mandatory vol-sprint lane is blocked/incomplete, lacks a fresh APPROVE, or fails
 isolated integration gate, the oracle run returns `FAILED`: no holdout benchmark,
 no Ratchet, and no REJECT-counter change. Ratchet alone opens holdout: it leases a
 new worktree at the exact reviewed sprint integration SHA, recomputes membership,
-and compares it with the receipt frozen at run start. ACCEPT atomically advances
-`refs/heads/oracle/canonical` to the final Ratchet commit; REJECT leaves it unchanged.
-The result contains pasted Ratchet evidence and evidence-indexed aggregate metric
-deltas so PM reports can be verified without exposing licensed rows.
+and compares it with the receipt frozen at run start. Ratchet prepares typed
+baseline/candidate/delta, digest, required-gate, pinned-speed, and per-suspect market
+receipts. Workflow code verifies the rules and computes ACCEPT/REJECT; the agent
+verdict is never authoritative. For ACCEPT only, a minimal finalizer compare-and-
+swaps `refs/heads/oracle/canonical` to the prepared commit, then an independent
+auditor reads the actual ref. REJECT leaves it unchanged. If the finalizer report
+is missing, audit truth is returned rather than assuming the old SHA.

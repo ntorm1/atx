@@ -35,7 +35,8 @@ Vol surface / vol-derivatives library. Source groups: `core pricing fitting mark
 ## Harness isolation
 
 - Every lane uses `lease-worktree.ps1` with a frozen base SHA, workflow `RunId`,
-  run-unique branch, and explicit durable heartbeat (pulsed around long commands).
+  run-unique branch, and explicit durable heartbeat whose independent keeper renews
+  continuously and is proven by typed acquisition/release receipts.
 - Every Fix is freshly reviewed at its new SHA; all mandatory lanes must finish
   APPROVE before integration.
 - Release lane leases before acquiring a new isolated integration lease. Merge,

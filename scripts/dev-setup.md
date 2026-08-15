@@ -16,7 +16,6 @@ So: **lease a persistent pool tree instead of creating a new worktree.**
 
 ```powershell
 scripts\lease-worktree.ps1 -Branch feat/x-<run-slug> -Base <frozen-sha> -Agent <owner> -RunId <run-id> -HeartbeatId <run-unique-heartbeat> -MaxPool 20
-scripts\lease-worktree.ps1 -Pulse pool-1 -RunId <same-run-id>
 scripts\lease-worktree.ps1 -Release pool-1 -RunId <same-run-id>
 scripts\lease-worktree.ps1 -Status                   # who holds what
 ```
@@ -24,8 +23,9 @@ scripts\lease-worktree.ps1 -Status                   # who holds what
 Lease = an atomic v3 durable-owner claim plus `git switch` inside a warm tree (33 s cold-slot one-time setup incl. configure;
 afterwards seconds) → ninja rebuilds only the TUs that differ between branches. Cold-build
 cost is paid once per pool slot, ever. The `.atx-lease` record is authoritative; a
-caller supplies a durable PID/start identity or a run-unique heartbeat and pulses long
-work. `new-worktree.ps1 -Isolated` remains for work that truly needs an isolated
+caller supplies a durable PID/start identity or a run-unique heartbeat. Heartbeat
+acquisition starts an independent keeper that renews continuously until release;
+foreground work never substitutes for ownership. `new-worktree.ps1 -Isolated` remains for work that truly needs an isolated
 deps/build universe (dependency churn, vcpkg manifest edits, bench isolation).
 
 Inside a leased tree, keep builds target-scoped:

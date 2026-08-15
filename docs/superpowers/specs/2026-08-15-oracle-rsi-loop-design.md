@@ -4,11 +4,13 @@
 
 The workflow now has deterministic capability states, evaluated in order:
 `missing_data -> missing_mode_a -> missing_conventions -> missing_mode_b -> ready`.
-Capability freezes `refs/heads/oracle/canonical` (or the requested base before its
-first creation) to a full SHA and reads only an already committed holdout digest
-receipt. It never opens membership. A missing state runs exactly one fixed
+Capability's tool-restricted agent can run only the fixed aggregate probe; the
+probe freezes `refs/heads/oracle/canonical` (or `main` before its first creation)
+to a full SHA, tests committed receipt existence, and reads only an already
+committed holdout digest receipt. It cannot open membership. A missing state runs exactly one fixed
 implementation lane through Build, exact-SHA Review, optional Fix, fresh Review,
-scoped verification in a newly leased worktree, and atomic canonical landing. It
+scoped verification in a newly leased worktree, workflow receipt validation, a
+minimal exact canonical compare-and-swap, and independent post-ref audit. It
 returns BOOTSTRAP only after that exact reviewed SHA is canonical and the next state
 is observed. It skips planner, ordinary Measure, Analyst, vol-sprint, Ratchet, and
 every holdout benchmark. The four bootstrap deliveries are data/cohorts/hash, Mode
@@ -19,9 +21,13 @@ self-contained aggregate payload), vol-sprint, then Ratchet. A blocked/incomplet
 sprint or any mandatory lane whose final review is not a fresh APPROVE returns
 `FAILED` before holdout; it is not a REJECT and cannot increment the consecutive-
 reject counter. Ratchet leases the exact reviewed integration SHA, then alone opens
-holdout and recomputes the digest. ACCEPT atomically advances canonical to the final
-Ratchet commit; REJECT leaves canonical unchanged. The returned structured result
-includes pasted holdout evidence and evidence-indexed headline deltas. Licensed row
+holdout and recomputes the digest. Its agent prepares typed evidence and a candidate
+commit; workflow code validates delta arithmetic, target improvement, the 2%
+aggregate bound, pinned speed, applicable modes, digest, required gates, and one
+market receipt per suspect exclusion before computing ACCEPT/REJECT. A minimal
+finalizer performs ACCEPT CAS and an independent auditor reports actual canonical
+state even if the finalizer result is missing. REJECT leaves canonical unchanged.
+The returned result includes pasted holdout evidence and typed headline deltas. Licensed row
 data and holdout membership are forbidden in prompts and reports.
 
 Bootstrap artifacts and exact done conditions are authoritative in
