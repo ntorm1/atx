@@ -23,6 +23,7 @@ Vol surface / vol-derivatives library. Source groups: `core pricing fitting mark
 
 - `docs/LEDGER.md` — append-only fact ledger. Grep it before re-deriving build traps, measured numbers, or past decisions. Append one line on gate-pass, trap discovery, or decision. Never rewrite history lines; corrections get a new line referencing the old.
 - Sprint narratives: `sprints/YYYY-MM-DD-<topic>-sprint.md` (38 exist — search before starting overlapping work).
+- Oracle RSI loop (SpiderRock parity): dashboard `docs/oracle/NORTHSTAR.md`, run one iteration via the `vol-oracle-iter` workflow; scorecards/cohorts under `bench/oracle/`.
 - Deep docs index: `docs/` (surface-db-build, backtest-lakehouse, adjoint_greeks_design, simd_fastpath, api-placement, …). Bench anchors: `bench/ANCHORS.md`.
 
 ## Editing rules
