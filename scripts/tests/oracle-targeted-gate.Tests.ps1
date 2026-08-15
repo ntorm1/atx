@@ -44,4 +44,11 @@ Describe 'oracle targeted gate production adapter' {
     $result.rows_processed | Should Be 120
     $result.metric_ids.Count | Should Be 6
   }
+
+  It 'maps sprint unit gates to real fully-qualified discovered tests with zero-test failure enabled' {
+    $american = Get-OracleTargetedGateSpec 'sprint_american_greeks_delta_put'
+    ($american.Arguments -join ' ') | Should Match '-R \^AmericanGreeks.Delta_MatchesFd_Put\$ --no-tests=error'
+    $adjusted = Get-OracleTargetedGateSpec 'sprint_adjusted_greeks_flat_smile'
+    ($adjusted.Arguments -join ' ') | Should Match '-R \^AdjustedGreeks.FlatSmileLeavesDeltaUnchanged\$ --no-tests=error'
+  }
 }

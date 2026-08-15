@@ -69,7 +69,10 @@ fixed `oracle-targeted-gate.ps1` adapter to turn ordinary targeted tool output i
 closed semantic PASS receipts. Exit zero with no tests, zero processed rows, or an
 incomplete metric set is failure; targeted ctest uses `--no-tests=error`. Per-file
 gate mappings now impose mandatory commands, so planner additions are additive and
-cannot substitute another allowed suite or hypothesis. Exact gate commands return typed results, and
+cannot substitute another allowed suite or hypothesis. Sprint unit gates now map
+to real fully-qualified discovered tests and use the same semantic adapter; lane
+and integration reports cannot claim success for nonexistent/zero-test regexes.
+Exact gate commands return typed results, and
 typed NBBO means/distances are recomputed by workflow code before suspect exclusion.
 
 ## 1.2.0

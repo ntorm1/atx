@@ -148,6 +148,11 @@ OracleBench tests, aggregate smoke/tune Mode A/B scorecards, the quiet pinned-sp
 microbenchmark, and owning PCH-off targets for changed headers. Full regression and
 release qualification are separate from the oracle loop.
 
+Sprint unit-test mappings name real fully-qualified tests emitted by
+`gtest_discover_tests` and execute through the same fixed targeted adapter. Both
+lane and integration receipts must prove positive executed/passed counts; an exit-0
+`No tests were found` result is a contract failure.
+
 Bootstrap stages 2-4 invoke only `scripts/oracle-targeted-gate.ps1 -Gate <closed-id>`.
 That fixed adapter captures ordinary targeted ctest/OracleBench output, fails on a
 nonzero exit, zero executed tests, zero processed rows, or an incomplete metric set,

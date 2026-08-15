@@ -43,6 +43,10 @@ required aggregate smoke/tune scorecards, quiet pinned speed, and header-only
 scoped PCH-off targets. Full regression/release suites and broad repository gates
 are intentionally outside this loop.
 
+Unit regexes are real fully-qualified `gtest_discover_tests` names from the closed
+registry. They run through the production targeted adapter and must return positive
+typed executed/passed counts; plain or zero-test success text is invalid.
+
 ## Invocation
 
 ```

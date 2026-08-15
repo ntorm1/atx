@@ -12,6 +12,8 @@ const keeper = read('scripts/lease-heartbeat-keeper.ps1')
 const capabilityProbe = read('scripts/oracle-capability.ps1')
 const targetedGate = read('scripts/oracle-targeted-gate.ps1')
 const capabilityAgent = read('.claude/agents/vol-capability-inspector.md')
+const americanTests = read('atx-vol/tests/american_test.cpp')
+const adjustedGreeksTests = read('atx-vol/tests/adjusted_greeks_test.cpp')
 const settings = JSON.parse(read('.claude/settings.json'))
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor
 
@@ -71,8 +73,12 @@ const READY_MEASURE_GATES = {
 }
 const READY_MEASURE_COMMANDS = Object.values(READY_MEASURE_GATES)
 const PATH_GATE_REGISTRY = [
-  { owner: 'american-engine', exact_paths: ['atx-vol/src/pricing/american.cpp', 'atx-vol/include/atx/vol/api/pricing/american.hpp'], path_patterns: [], unit_targets: ['atx-vol-tests'], suite_prefixes: ['American', 'AdjustedGreeks'], oracle_tests: ['american-rsi', 'american-greeks-rsi'], pch_off_targets: ['atx-vol-tests'], mandatory_unit_targets: ['atx-vol-tests'], mandatory_unit_regexes: ['^AmericanSuite$'], mandatory_oracle_tests: ['american-rsi'], mandatory_pch_off_targets: ['atx-vol-tests'] },
+  { owner: 'american-engine', exact_paths: ['atx-vol/src/pricing/american.cpp', 'atx-vol/include/atx/vol/api/pricing/american.hpp'], path_patterns: [], unit_targets: ['atx-vol-tests'], suite_prefixes: ['American', 'AdjustedGreeks'], oracle_tests: ['american-rsi', 'american-greeks-rsi'], pch_off_targets: ['atx-vol-tests'], mandatory_unit_targets: ['atx-vol-tests'], mandatory_unit_regexes: ['^AmericanGreeks.Delta_MatchesFd_Put$'], mandatory_oracle_tests: ['american-rsi'], mandatory_pch_off_targets: ['atx-vol-tests'] },
 ]
+const UNIT_TEST_GATE_REGISTRY = {
+  '^AmericanGreeks.Delta_MatchesFd_Put$': { adapter_gate: 'sprint_american_greeks_delta_put', source: 'atx-vol/tests/american_test.cpp' },
+  '^AdjustedGreeks.FlatSmileLeavesDeltaUnchanged$': { adapter_gate: 'sprint_adjusted_greeks_flat_smile', source: 'atx-vol/tests/adjusted_greeks_test.cpp' },
+}
 const TARGETED_BOOTSTRAP_GATE_IDS = ['mode_a_targeted_tests', 'mode_a_smoke', 'convention_tests', 'mode_a_smoke_tune', 'residual_floor', 'mode_b_targeted_tests', 'mode_b_smoke_tune']
 
 function extractFunction(source, name) {
@@ -102,8 +108,8 @@ const oracleFns = loadFunctions(oracle, [
 ], `const RATCHET_GATE_IDS = ['holdout_mode_a', 'holdout_mode_b', 'rel_avx2_speed']; const TARGETED_BOOTSTRAP_GATE_IDS = ${JSON.stringify(TARGETED_BOOTSTRAP_GATE_IDS)}; const TARGET_REGISTRY = ${JSON.stringify(TARGET_REGISTRY)}; const AGGREGATE_REGISTRY = ${JSON.stringify(AGGREGATE_REGISTRY)}; const SPEED_METRIC_ID = '${SPEED_METRIC_ID}'; const RATCHET_GATE_COMMANDS = ${JSON.stringify(RATCHET_GATE_COMMANDS)}; const BOOTSTRAP_GATE_COMMANDS = ${JSON.stringify(BOOTSTRAP_GATE_COMMANDS)}; const READY_MEASURE_GATES = ${JSON.stringify(READY_MEASURE_GATES)}; const READY_MEASURE_COMMANDS = ${JSON.stringify(READY_MEASURE_COMMANDS)}`)
 const sprintFns = loadFunctions(sprint, [
   'validSuccessEvidence', 'validLeaseReceipt', 'validHeadReceipt', 'validIntegrationCommand', 'changedHeader', 'changedCode', 'safeTarget', 'safeUnitRegex', 'safeOracleTest',
-  'pathGateOwner', 'regexSuiteName', 'closureError', 'closureEntries', 'derivedGateRegistry', 'oracleLoopCommandError', 'laneHeartbeatId', 'reportContractError', 'reviewContractError', 'laneFailureReason', 'gateContractError',
-], `const FIXED_ORACLE_GATES = ${JSON.stringify(FIXED_ORACLE_GATES)}; const PATH_GATE_REGISTRY = ${JSON.stringify(PATH_GATE_REGISTRY)}; const RUN_ID = 'run-1'; const RUN_SLUG = 'run-1'`)
+  'pathGateOwner', 'regexSuiteName', 'closureError', 'closureEntries', 'derivedGateRegistry', 'sprintUnitEvidenceError', 'oracleLoopCommandError', 'laneHeartbeatId', 'reportContractError', 'reviewContractError', 'laneFailureReason', 'gateContractError',
+], `const FIXED_ORACLE_GATES = ${JSON.stringify(FIXED_ORACLE_GATES)}; const UNIT_TEST_GATE_REGISTRY = ${JSON.stringify(UNIT_TEST_GATE_REGISTRY)}; const PATH_GATE_REGISTRY = ${JSON.stringify(PATH_GATE_REGISTRY)}; const RUN_ID = 'run-1'; const RUN_SLUG = 'run-1'`)
 
 function leaseIdentity({ lease = 'pool-1', branch, base, heartbeat, worktree = `C:\\atx-wt\\${lease}`, keeperPid = 4242 }) {
   return {
@@ -147,6 +153,16 @@ function ratchetGateReceipt(gateId, metrics) {
     return { metric_id: metricId, value: candidate, count: 100, unit: metricId === SPEED_METRIC_ID ? 'rows_per_second' : [...TARGET_REGISTRY, ...AGGREGATE_REGISTRY].find(item => item.metric_id === metricId).unit }
   }) }
   return { gate_id: gateId, command: RATCHET_GATE_COMMANDS[gateId], exit_code: 0, output: JSON.stringify(result), result }
+}
+
+function sprintGateOutput(gate) {
+  if (!gate.gate_id.startsWith('unit-test:')) return `${gate.gate_id} PASS`
+  const commandId = gate.command.match(/-Gate\s+(\S+)/)[1]
+  return JSON.stringify({
+    schema_version: 1, status: 'PASS', observations: 2, command_id: commandId, gate_kind: 'ctest',
+    tests_executed: 2, tests_passed: 2, rows_processed: 0, metric_ids: [],
+    audit_summary: 'tests_executed=2 tests_passed=2', raw_output_sha256: 'a'.repeat(64),
+  })
 }
 
 function auditReceipt(sha, { ref = REF, exitCode = 0 } = {}) {
@@ -559,12 +575,12 @@ test('ready ACCEPT finalizer exception still audits and reports actual landed ca
 test('sprint integration requires the exact mechanically-derived targeted registry without omission', () => {
   const identity = leaseIdentity({ branch: 'integration/run-1', base: SHA.base, heartbeat: 'run-1-integration' })
   const closure = [
-    { file: 'atx-vol/src/pricing/american.cpp', unit_targets: ['atx-vol-tests'], unit_regexes: ['^AmericanSuite$'], oracle_tests: ['american-rsi'], pch_off_targets: [] },
-    { file: 'atx-vol/include/atx/vol/api/pricing/american.hpp', unit_targets: ['atx-vol-tests'], unit_regexes: ['^AmericanSuite$'], oracle_tests: ['american-rsi'], pch_off_targets: ['atx-vol-tests'] },
+    { file: 'atx-vol/src/pricing/american.cpp', unit_targets: ['atx-vol-tests'], unit_regexes: ['^AmericanGreeks.Delta_MatchesFd_Put$'], oracle_tests: ['american-rsi'], pch_off_targets: [] },
+    { file: 'atx-vol/include/atx/vol/api/pricing/american.hpp', unit_targets: ['atx-vol-tests'], unit_regexes: ['^AmericanGreeks.Delta_MatchesFd_Put$'], oracle_tests: ['american-rsi'], pch_off_targets: ['atx-vol-tests'] },
   ]
   const gateRegistry = sprintFns.derivedGateRegistry(closure, true)
   const expected = { base_sha: SHA.base, run_id: 'run-1', branch: identity.branch, heartbeat_id: identity.heartbeat_id, reviewed_shas: [SHA.build], gate_registry: gateRegistry }
-  const receipts = gateRegistry.map(item => ({ ...item, tested_sha: SHA.ratchet, exit_code: 0, output: `${item.gate_id} PASS` }))
+  const receipts = gateRegistry.map(item => ({ ...item, tested_sha: SHA.ratchet, exit_code: 0, output: sprintGateOutput(item) }))
   const gate = {
     passed: true, base_sha: SHA.base, lease_run_id: 'run-1', integration_branch: identity.branch, sha: SHA.ratchet,
     integrated_shas: [SHA.build], integration_worktree: identity.worktree, integration_lease: identity.lease_name,
@@ -591,6 +607,11 @@ test('sprint integration requires the exact mechanically-derived targeted regist
   assert.match(sprintFns.gateContractError(evidenceOmission, expected), /returned evidence|evidence count/)
   const evidenceExtra = structuredClone(gate); evidenceExtra.gate_results.push({ command: 'powershell scripts\\atx-build.ps1 -Preset dev -Ctest -R ^AnotherSuite$', exit_code: 0, output: 'PASS' })
   assert.match(sprintFns.gateContractError(evidenceExtra, expected), /evidence count/)
+  const zeroUnitGate = structuredClone(gate)
+  const unitReceipt = zeroUnitGate.gate_receipts.find(item => item.gate_id.startsWith('unit-test:'))
+  const zeroTyped = JSON.parse(unitReceipt.output); zeroTyped.tests_executed = 0; zeroTyped.tests_passed = 0; zeroTyped.audit_summary = 'tests_executed=0 tests_passed=0'; unitReceipt.output = JSON.stringify(zeroTyped)
+  zeroUnitGate.gate_results.find(item => item.command === unitReceipt.command).output = unitReceipt.output
+  assert.match(sprintFns.gateContractError(zeroUnitGate, expected), /required targeted gate receipt invalid/)
   const broadDiagnostic = structuredClone(gate); broadDiagnostic.diagnostics = [{ command: 'ctest --preset dev', exit_code: 1, output: 'refused' }]
   assert.match(sprintFns.gateContractError(broadDiagnostic, expected), /broad or unanchored ctest/)
   assert.match(sprintFns.gateContractError({ ...gate, release_receipt: null }, expected), /release receipt/)
@@ -613,18 +634,23 @@ test('oracle-loop command policy rejects full/broad work and derives scoped PCH-
     'powershell scripts\\atx-build.ps1 build',
     'powershell scripts\\atx-build.ps1 build all',
     'node --test',
-    'powershell scripts\\atx-build.ps1 -Preset dev -Ctest -R ^AmericanSuite$; ctest --preset dev',
+    'powershell scripts\\atx-build.ps1 -Preset dev -Ctest -R ^AmericanGreeks.Delta_MatchesFd_Put$; ctest --preset dev',
   ]) assert.notEqual(sprintFns.oracleLoopCommandError(command), null, command)
-  assert.equal(sprintFns.oracleLoopCommandError('powershell scripts\\atx-build.ps1 -Preset dev -Ctest -R ^AmericanSuite$'), null)
+  assert.equal(sprintFns.oracleLoopCommandError('powershell scripts\\atx-build.ps1 -Preset dev -Ctest -R ^AmericanGreeks.Delta_MatchesFd_Put$'), null)
   assert.equal(sprintFns.oracleLoopCommandError('powershell scripts\\atx-build.ps1 -Preset hygiene build atx-vol-tests'), null)
   for (const command of ['build\\bin\\atx-vol-tests.exe', 'powershell scripts\\atx-build.ps1 build', 'powershell scripts\\atx-build.ps1 build all']) assert.notEqual(oracleFns.iterationCommandError(command), null, command)
   assert.equal(sprintFns.changedHeader('atx-vol/include/atx/vol/api/pricing/american.hpp'), true)
   assert.equal(sprintFns.changedHeader('atx-vol/src/pricing/american.cpp'), false)
-  const cppOnly = sprintFns.derivedGateRegistry([{ file: 'atx-vol/src/pricing/american.cpp', unit_targets: ['atx-vol-tests'], unit_regexes: ['^AmericanSuite$'], oracle_tests: ['american-rsi'], pch_off_targets: ['atx-vol-tests'] }])
+  const cppOnly = sprintFns.derivedGateRegistry([{ file: 'atx-vol/src/pricing/american.cpp', unit_targets: ['atx-vol-tests'], unit_regexes: ['^AmericanGreeks.Delta_MatchesFd_Put$'], oracle_tests: ['american-rsi'], pch_off_targets: ['atx-vol-tests'] }])
   assert.equal(cppOnly.some(gate => gate.gate_id.startsWith('pch-off:')), false)
-  const header = sprintFns.derivedGateRegistry([{ file: 'atx-vol/include/atx/vol/api/pricing/american.hpp', unit_targets: ['atx-vol-tests'], unit_regexes: ['^AmericanSuite$'], oracle_tests: ['american-rsi'], pch_off_targets: ['atx-vol-tests'] }])
+  assert.equal(cppOnly.find(gate => gate.gate_id.startsWith('unit-test:')).command, 'powershell scripts\\oracle-targeted-gate.ps1 -Gate sprint_american_greeks_delta_put')
+  assert.ok(americanTests.includes('TEST(AmericanGreeks, Delta_MatchesFd_Put)'))
+  assert.ok(adjustedGreeksTests.includes('TEST(AdjustedGreeks, FlatSmileLeavesDeltaUnchanged)'))
+  assert.ok(settings.permissions.allow.includes('PowerShell(powershell scripts\\oracle-targeted-gate.ps1 -Gate sprint_american_greeks_delta_put)'))
+  assert.ok(settings.permissions.allow.includes('PowerShell(powershell scripts\\oracle-targeted-gate.ps1 -Gate sprint_adjusted_greeks_flat_smile)'))
+  const header = sprintFns.derivedGateRegistry([{ file: 'atx-vol/include/atx/vol/api/pricing/american.hpp', unit_targets: ['atx-vol-tests'], unit_regexes: ['^AmericanGreeks.Delta_MatchesFd_Put$'], oracle_tests: ['american-rsi'], pch_off_targets: ['atx-vol-tests'] }])
   assert.deepEqual(header.find(gate => gate.gate_id === 'pch-off:atx-vol-tests'), { gate_id: 'pch-off:atx-vol-tests', command: 'powershell scripts\\atx-build.ps1 -Preset hygiene build atx-vol-tests' })
-  const validLane = { files_in_scope: ['atx-vol/src/pricing/american.cpp'], gate_closure: [{ file: 'atx-vol/src/pricing/american.cpp', unit_targets: ['atx-vol-tests'], unit_regexes: ['^AmericanSuite$'], oracle_tests: ['american-rsi'], pch_off_targets: [] }] }
+  const validLane = { files_in_scope: ['atx-vol/src/pricing/american.cpp'], gate_closure: [{ file: 'atx-vol/src/pricing/american.cpp', unit_targets: ['atx-vol-tests'], unit_regexes: ['^AmericanGreeks.Delta_MatchesFd_Put$'], oracle_tests: ['american-rsi'], pch_off_targets: [] }] }
   assert.equal(sprintFns.closureError(validLane), null)
   const omitted = structuredClone(validLane); omitted.gate_closure = []
   assert.match(sprintFns.closureError(omitted), /every scoped file/)
@@ -636,7 +662,7 @@ test('oracle-loop command policy rejects full/broad work and derives scoped PCH-
   assert.match(sprintFns.closureError(unrelatedTarget), /does not match workflow path owner/)
   const unrelatedTest = structuredClone(validLane); unrelatedTest.gate_closure[0].oracle_tests = ['unrelated-rsi']
   assert.match(sprintFns.closureError(unrelatedTest), /does not match workflow path owner/)
-  const substitution = structuredClone(validLane); substitution.gate_closure[0].unit_regexes = ['^AdjustedGreeks$']; substitution.gate_closure[0].oracle_tests = ['american-greeks-rsi']
+  const substitution = structuredClone(validLane); substitution.gate_closure[0].unit_regexes = ['^AdjustedGreeks.FlatSmileLeavesDeltaUnchanged$']; substitution.gate_closure[0].oracle_tests = ['american-greeks-rsi']
   assert.match(sprintFns.closureError(substitution), /omitted mandatory workflow gates/)
   const lane = { ...validLane, id: 'american', branch: 'lane/american-run-1' }
   const identity = leaseIdentity({ branch: lane.branch, base: SHA.base, heartbeat: 'run-1-lane-american' })
@@ -646,9 +672,13 @@ test('oracle-loop command policy rejects full/broad work and derives scoped PCH-
     lease_run_id: 'run-1', lease_name: identity.lease_name, heartbeat_id: identity.heartbeat_id,
     worktree: identity.worktree, keeper_pid: identity.keeper_pid, keeper_process_started_utc: identity.keeper_process_started_utc,
     acquisition_receipt: leaseReceipt('acquire', identity), files_changed: lane.files_in_scope,
-    evidence: laneGates.map(gate => ({ command: gate.command, exit_code: 0, output: 'PASS' })), diagnostics: [],
+    evidence: laneGates.map(gate => ({ command: gate.command, exit_code: 0, output: sprintGateOutput(gate) })), diagnostics: [],
   }
   assert.equal(sprintFns.reportContractError(report, lane, SHA.base), null)
+  const zeroTest = structuredClone(report)
+  const unitEvidence = zeroTest.evidence.find(item => item.command.includes('sprint_american_greeks_delta_put'))
+  const zeroResult = JSON.parse(unitEvidence.output); zeroResult.tests_executed = 0; zeroResult.tests_passed = 0; zeroResult.audit_summary = 'tests_executed=0 tests_passed=0'; unitEvidence.output = JSON.stringify(zeroResult)
+  assert.match(sprintFns.reportContractError(zeroTest, lane, SHA.base), /missing exact changed-closure gates/)
   const extra = structuredClone(report); extra.evidence.push({ command: 'powershell scripts\\atx-build.ps1 -Preset dev -Ctest -R ^AnotherSuite$', exit_code: 0, output: 'PASS' })
   assert.match(sprintFns.reportContractError(extra, lane, SHA.base), /exact changed-closure command set/)
   const broadLane = structuredClone(report); broadLane.diagnostics = [{ command: 'ctest --preset dev -L atx_vol_fast', exit_code: 1, output: 'refused' }]

@@ -62,7 +62,9 @@ Date: 2026-08-15. Status: v3 correctness hard cutover implemented. Goal: faster 
   exact workflow-derived changed-file registry. Every changed path must have one
   exact path or anchored path-pattern owner with mandatory gates; unknown paths and
   unrelated target/test mappings fail closed. Planner additions cannot substitute
-  for those mandatory gates. The
+  for those mandatory gates. Unit-test mappings name real fully-qualified
+  discovered tests and run through the semantic targeted adapter, so zero-test
+  exit-0 receipts fail. The
   registry contains affected anchored unit tests,
   hypothesis OracleBench tests, aggregate smoke/tune Mode A/B scorecards, quiet
   pinned speed, and owning PCH-off targets for changed headers. Labels, broad/full

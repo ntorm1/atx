@@ -21,22 +21,26 @@ const FIXED_ORACLE_GATES = Object.freeze([
   { gate_id: 'scorecard:mode_b_smoke_tune', command: 'atx-vol-oracle-bench --cohort smoke,tune --mode B --scorecard --aggregate-only' },
   { gate_id: 'speed:rel_avx2_quiet', command: 'atx-vol-oracle-bench --cohort tune --benchmark-speed --preset rel-avx2 --quiet-host --aggregate-only' },
 ])
+const UNIT_TEST_GATE_REGISTRY = Object.freeze({
+  '^AmericanGreeks.Delta_MatchesFd_Put$': { adapter_gate: 'sprint_american_greeks_delta_put', source: 'atx-vol/tests/american_test.cpp' },
+  '^AdjustedGreeks.FlatSmileLeavesDeltaUnchanged$': { adapter_gate: 'sprint_adjusted_greeks_flat_smile', source: 'atx-vol/tests/adjusted_greeks_test.cpp' },
+})
 const PATH_GATE_REGISTRY = Object.freeze([
   {
     owner: 'american-engine', exact_paths: ['atx-vol/src/pricing/american.cpp', 'atx-vol/include/atx/vol/api/pricing/american.hpp'], path_patterns: [],
     unit_targets: ['atx-vol-tests'], suite_prefixes: ['American', 'AndersenLake', 'Baw', 'CallGreeks', 'Alo', 'AlBulk', 'FitPreset', 'AdjointGreeks', 'AdjustedGreeks', 'NegRate', 'ExerciseBoundary', 'ResolvedAmerican', 'GaussLegendre'],
     oracle_tests: ['american-rsi', 'american-price-rsi', 'american-greeks-rsi'], pch_off_targets: ['atx-vol-tests'],
-    mandatory_unit_targets: ['atx-vol-tests'], mandatory_unit_regexes: ['^AmericanSuite$'], mandatory_oracle_tests: ['american-rsi'], mandatory_pch_off_targets: ['atx-vol-tests'],
+    mandatory_unit_targets: ['atx-vol-tests'], mandatory_unit_regexes: ['^AmericanGreeks.Delta_MatchesFd_Put$'], mandatory_oracle_tests: ['american-rsi'], mandatory_pch_off_targets: ['atx-vol-tests'],
   },
   {
     owner: 'american-support', exact_paths: [], path_patterns: ['^atx-vol/(?:src/pricing|include/atx/vol/api/pricing)/american_(?:batch|iv|boundary|detail)(?:\\.[^/]+)?$'],
     unit_targets: ['atx-vol-tests'], suite_prefixes: ['American', 'ResolvedAmerican', 'ExerciseBoundary'], oracle_tests: ['american-rsi', 'american-price-rsi', 'american-greeks-rsi', 'american-simd-rsi'], pch_off_targets: ['atx-vol-tests'],
-    mandatory_unit_targets: ['atx-vol-tests'], mandatory_unit_regexes: ['^AmericanSuite$'], mandatory_oracle_tests: ['american-rsi'], mandatory_pch_off_targets: ['atx-vol-tests'],
+    mandatory_unit_targets: ['atx-vol-tests'], mandatory_unit_regexes: ['^AmericanGreeks.Delta_MatchesFd_Put$'], mandatory_oracle_tests: ['american-rsi'], mandatory_pch_off_targets: ['atx-vol-tests'],
   },
   {
     owner: 'adjusted-greeks', exact_paths: ['atx-vol/src/pricing/adjusted_greeks.cpp', 'atx-vol/include/atx/vol/api/pricing/adjusted_greeks.hpp'], path_patterns: [],
     unit_targets: ['atx-vol-tests'], suite_prefixes: ['AdjustedGreeks', 'American'], oracle_tests: ['american-greeks-rsi'], pch_off_targets: ['atx-vol-tests'],
-    mandatory_unit_targets: ['atx-vol-tests'], mandatory_unit_regexes: ['^AdjustedGreeks$'], mandatory_oracle_tests: ['american-greeks-rsi'], mandatory_pch_off_targets: ['atx-vol-tests'],
+    mandatory_unit_targets: ['atx-vol-tests'], mandatory_unit_regexes: ['^AdjustedGreeks.FlatSmileLeavesDeltaUnchanged$'], mandatory_oracle_tests: ['american-greeks-rsi'], mandatory_pch_off_targets: ['atx-vol-tests'],
   },
   {
     owner: 'oracle-docs', exact_paths: ['atx-vol/changelog.md', 'atx-vol/bench/oracle/charter.md'],
@@ -262,7 +266,7 @@ function closureError(lane) {
     const owner = pathGateOwner(item.file)
     if (!owner) return `gate closure path is not in workflow registry: ${item.file}`
     if (!item.unit_targets.every(target => owner.unit_targets.includes(target)) || !item.pch_off_targets.every(target => owner.pch_off_targets.includes(target)) ||
-        !item.oracle_tests.every(test => owner.oracle_tests.includes(test)) || !item.unit_regexes.every(regex => owner.suite_prefixes.some(prefix => regexSuiteName(regex).startsWith(prefix)))) return `gate closure does not match workflow path owner: ${item.file}`
+        !item.oracle_tests.every(test => owner.oracle_tests.includes(test)) || !item.unit_regexes.every(regex => owner.suite_prefixes.some(prefix => regexSuiteName(regex).startsWith(prefix)) && UNIT_TEST_GATE_REGISTRY[regex])) return `gate closure does not match workflow path owner: ${item.file}`
     if (!owner.mandatory_unit_targets.every(target => item.unit_targets.includes(target)) || !owner.mandatory_unit_regexes.every(regex => item.unit_regexes.includes(regex)) ||
         !owner.mandatory_oracle_tests.every(test => item.oracle_tests.includes(test)) ||
         changedHeader(item.file) && !owner.mandatory_pch_off_targets.every(target => item.pch_off_targets.includes(target))) return `gate closure omitted mandatory workflow gates for: ${item.file}`
@@ -284,12 +288,27 @@ function derivedGateRegistry(entries, includeFixed = false) {
   const add = (gate_id, command) => { if (!gates.some(item => item.gate_id === gate_id)) gates.push({ gate_id, command }) }
   for (const entry of entries) {
     for (const target of entry.unit_targets) add(`unit-build:${target}`, `powershell scripts\\atx-build.ps1 -Preset dev build ${target}`)
-    for (const regex of entry.unit_regexes) add(`unit-test:${regex}`, `powershell scripts\\atx-build.ps1 -Preset dev -Ctest -R ${regex}`)
+    for (const regex of entry.unit_regexes) add(`unit-test:${regex}`, `powershell scripts\\oracle-targeted-gate.ps1 -Gate ${UNIT_TEST_GATE_REGISTRY[regex].adapter_gate}`)
     for (const test of entry.oracle_tests) add(`oracle-test:${test}`, `atx-vol-oracle-bench --cohort smoke,tune --test ${test} --aggregate-only`)
     if (changedHeader(entry.file)) for (const target of entry.pch_off_targets) add(`pch-off:${target}`, `powershell scripts\\atx-build.ps1 -Preset hygiene build ${target}`)
   }
   if (includeFixed) for (const gate of FIXED_ORACLE_GATES) add(gate.gate_id, gate.command)
   return gates.sort((left, right) => left.gate_id.localeCompare(right.gate_id))
+}
+
+function sprintUnitEvidenceError(evidence, expectedGate) {
+  if (!expectedGate.gate_id.startsWith('unit-test:')) return null
+  let result
+  try { result = JSON.parse(String(evidence && evidence.output || '')) } catch { return 'unit-test evidence is not typed adapter JSON' }
+  const regex = expectedGate.gate_id.slice('unit-test:'.length)
+  const adapter = UNIT_TEST_GATE_REGISTRY[regex]
+  const exactKeys = ['schema_version', 'status', 'observations', 'command_id', 'gate_kind', 'tests_executed', 'tests_passed', 'rows_processed', 'metric_ids', 'audit_summary', 'raw_output_sha256'].sort()
+  if (!adapter || !result || Object.keys(result).sort().join(',') !== exactKeys.join(',') || result.schema_version !== 1 || result.status !== 'PASS' ||
+      result.command_id !== adapter.adapter_gate || result.gate_kind !== 'ctest' || !Number.isInteger(result.observations) || result.observations <= 0 ||
+      !Number.isInteger(result.tests_executed) || result.tests_executed <= 0 || result.tests_passed !== result.tests_executed || result.rows_processed !== 0 ||
+      !Array.isArray(result.metric_ids) || result.metric_ids.length !== 0 || result.audit_summary !== `tests_executed=${result.tests_executed} tests_passed=${result.tests_passed}` ||
+      !/^[0-9a-f]{64}$/.test(result.raw_output_sha256 || '')) return 'unit-test evidence reports invalid or zero semantic work'
+  return null
 }
 
 function oracleLoopCommandError(command) {
@@ -336,7 +355,7 @@ function reportContractError(report, lane, baseSha) {
   const requiredGates = derivedGateRegistry(closureEntries(lane, report.files_changed))
   if (!requiredGates.length) return 'changed dependency closure produced no targeted gates'
   if (report.evidence.length !== requiredGates.length || new Set(report.evidence.map(item => item.command)).size !== requiredGates.length) return 'lane evidence must equal exact changed-closure command set'
-  const missing = requiredGates.filter(gate => !report.evidence.some(item => item.command === gate.command && item.exit_code === 0 && String(item.output || '').trim()))
+  const missing = requiredGates.filter(gate => !report.evidence.some(item => item.command === gate.command && item.exit_code === 0 && String(item.output || '').trim() && !sprintUnitEvidenceError(item, gate)))
   if (missing.length) return `evidence missing exact changed-closure gates: ${missing.map(gate => gate.gate_id).join(', ')}`
   return null
 }
@@ -399,7 +418,7 @@ function gateContractError(gate, expected) {
     const gateId = expectedGate.gate_id
     const matches = gate.gate_receipts.filter(receipt => receipt && receipt.gate_id === gateId)
     const receipt = matches[0]
-    if (matches.length !== 1 || receipt.tested_sha !== gate.sha || receipt.command !== expectedGate.command || receipt.exit_code !== 0 || !String(receipt.output || '').trim()) return `required targeted gate receipt invalid: ${gateId}`
+    if (matches.length !== 1 || receipt.tested_sha !== gate.sha || receipt.command !== expectedGate.command || receipt.exit_code !== 0 || !String(receipt.output || '').trim() || sprintUnitEvidenceError(receipt, expectedGate)) return `required targeted gate receipt invalid: ${gateId}`
     if (!gate.gate_results.some(item => item.command === receipt.command && item.exit_code === 0 && item.output === receipt.output)) {
       return `required gate missing from returned evidence: ${gateId}`
     }
