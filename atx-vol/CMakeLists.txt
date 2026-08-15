@@ -922,6 +922,22 @@ if(ATX_BUILD_TOOLS)
     add_executable(atx-vol-vega-panel tools/vega_panel_main.cpp)
     target_link_libraries(atx-vol-vega-panel PRIVATE atx::vol atx::core atx_warnings)
 
+    # Oracle RSI loop (bench/oracle/CHARTER.md stage 2): the SpiderRock parity
+    # benchmark. Reads ONLY the cohort-named date=/bucket_et= partitions of the
+    # parquet oracle store through atx-core's LazyParquet (Arrow/Parquet arrive
+    # via atx::core's unconditional PUBLIC link -- deliberately NOT gated on
+    # ATX_VOL_LAKEHOUSE, which gates atx-vol's OWN Arrow TUs only), prices
+    # Mode A per row through the public American API with SpiderRock's own
+    # inputs, and emits the charter cell-key scorecard JSON. The convention
+    # layer is isolated in tools/oracle_conventions.cpp (iteration 0 rewrites
+    # that one TU). Gate test: OracleBench* (tests/oracle_bench_test.cpp).
+    add_executable(atx-vol-oracle-bench
+        tools/oracle_bench_main.cpp
+        tools/oracle_conventions.cpp
+        tools/oracle_scorecard.cpp
+        tools/oracle_cohort_reader.cpp)
+    target_link_libraries(atx-vol-oracle-bench PRIVATE atx::vol atx::core atx_warnings)
+
     # D2: track_compact -- folds staging/ into the hive-partitioned zstd
     # Parquet tracks/ lakehouse (atx::vol::compact(), track_store.hpp). Only
     # buildable when ATX_VOL_LAKEHOUSE actually compiled TrackStore/compact()

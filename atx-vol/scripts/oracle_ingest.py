@@ -38,6 +38,24 @@ import polars as pl
 # and signed greeks deserve caution).
 SENTINEL_COLS = ("bidIV", "askIV", "error")
 
+# Every float-natured column pinned Float64. infer_schema_length=10_000 only
+# sees the head of the file; `ddiv` proved the failure mode (2026-08-15 run:
+# ComputeError parsing `1.25` as i64 at column 42 — early rows were all
+# integral, so inference locked i64 and the run died hours in). Any column
+# below can be integral for 10k rows (zero greeks, whole-dollar prices,
+# 0 rates/divs), so none of them may be left to inference. Integer count
+# columns (sizes, volumes, cum*) and key fields stay inferred.
+FLOAT64_COLS = (
+    "okey_xx",  # strike — fractional strikes exist
+    "uBid", "uAsk", "uPrc",  # underlier quote/price
+    "bidPrc", "askPrc", "bidPrice2", "askPrice2",  # option quotes
+    "srPrc",  # SpiderRock surface price
+    "bidIV", "askIV", "srVol", "atmVol",  # vols
+    "de", "ga", "th", "ve", "rh", "ph", "vo", "va", "deDecay",  # greeks
+    "sdiv", "ddiv", "rate", "years",  # carry inputs / time
+    "error",  # fit error metric (also -99-sentinel)
+)
+
 EXTRACT_HEADROOM = 1.05  # extracted TSV + slack
 PARQUET_HEADROOM = 6 * 2**30  # generous bound for the compressed store
 
@@ -81,7 +99,7 @@ def build_lazyframe(tsv: Path) -> pl.LazyFrame:
         infer_schema_length=10_000,
         null_values={c: "-99" for c in SENTINEL_COLS},
         schema_overrides={
-            "okey_xx": pl.Float64,  # fractional strikes exist
+            **{c: pl.Float64 for c in FLOAT64_COLS},
             "date": pl.Utf8,
             "timestamp": pl.Utf8,
             "securityID": pl.Utf8,
@@ -113,11 +131,18 @@ def build_lazyframe(tsv: Path) -> pl.LazyFrame:
 
 def sink_partitioned(lf: pl.LazyFrame, out: Path, trading_date: str) -> None:
     base = out / f"date={trading_date}"
-    try:  # polars >= 1.21: single-pass partitioned sink
-        lf.sink_parquet(pl.PartitionByKey(str(base), by=["bucket_et"]), compression="zstd")
+    # Single-pass partitioned sink; the API name shifted across polars versions
+    # (1.21 PartitionByKey(by=...) -> 1.40 PartitionBy(key=...); layout verified
+    # identical hive-style bucket_et=HHMM dirs with the key column in-file).
+    # Probe construction only — never fall back after a sink started writing.
+    for ctor, kwargs in (("PartitionBy", {"key": ["bucket_et"]}), ("PartitionByKey", {"by": ["bucket_et"]})):
+        try:
+            partition = getattr(pl, ctor)(str(base), **kwargs)
+        except (AttributeError, TypeError):
+            continue
+        print(f"sink: single-pass partitioned sink via pl.{ctor}")
+        lf.sink_parquet(partition, compression="zstd")
         return
-    except (AttributeError, TypeError):
-        pass
     # Fallback: one streaming pass per bucket (a dozen buckets; one-time cost).
     buckets = lf.select("bucket_et").unique().collect(engine="streaming")["bucket_et"].sort().to_list()
     for b in buckets:
