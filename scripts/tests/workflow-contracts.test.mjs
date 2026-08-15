@@ -108,7 +108,7 @@ const oracleFns = loadFunctions(oracle, [
   'metricDeltaConsistent', 'expectedRatchetMetrics', 'sameNumber', 'distanceToInterval', 'marketCommand', 'marketReceiptError', 'relativeRegression', 'ratchetGateIdForMetric', 'ratchetCandidateValue', 'ratchetMetricsFromReceipts', 'ratchetPrepareContractError', 'computeRatchetVerdict',
 ], `const RATCHET_GATE_IDS = ['holdout_mode_a', 'holdout_mode_b', 'rel_avx2_speed']; const TARGETED_BOOTSTRAP_GATE_IDS = ${JSON.stringify(TARGETED_BOOTSTRAP_GATE_IDS)}; const TARGET_REGISTRY = ${JSON.stringify(TARGET_REGISTRY)}; const AGGREGATE_REGISTRY = ${JSON.stringify(AGGREGATE_REGISTRY)}; const SPEED_METRIC_ID = '${SPEED_METRIC_ID}'; const RATCHET_GATE_COMMANDS = ${JSON.stringify(RATCHET_GATE_COMMANDS)}; const BOOTSTRAP_GATE_COMMANDS = ${JSON.stringify(BOOTSTRAP_GATE_COMMANDS)}; const READY_MEASURE_GATES = ${JSON.stringify(READY_MEASURE_GATES)}; const READY_MEASURE_COMMANDS = ${JSON.stringify(READY_MEASURE_COMMANDS)}; const ADOPTION_COMMAND = 'powershell scripts\\oracle-adopt-existing-data.ps1'; const MODE_A_RECEIPT_ONLY_PATHS = ['atx-vol/bench/oracle/bootstrap/mode-a.json']`)
 const sprintFns = loadFunctions(sprint, [
-  'validSuccessEvidence', 'validLeaseReceipt', 'validHeadReceipt', 'validIntegrationCommand', 'changedHeader', 'changedCode', 'safeTarget', 'safeUnitRegex', 'safeOracleTest',
+  'deterministicToken', 'sprintRunId', 'validSuccessEvidence', 'validLeaseReceipt', 'validHeadReceipt', 'validIntegrationCommand', 'changedHeader', 'changedCode', 'safeTarget', 'safeUnitRegex', 'safeOracleTest',
   'pathGateOwner', 'regexSuiteName', 'closureError', 'closureEntries', 'derivedGateRegistry', 'sprintUnitEvidenceError', 'oracleLoopCommandError', 'laneHeartbeatId', 'reportContractError', 'reviewContractError', 'laneFailureReason', 'gateContractError',
 ], `const FIXED_ORACLE_GATES = ${JSON.stringify(FIXED_ORACLE_GATES)}; const UNIT_TEST_GATE_REGISTRY = ${JSON.stringify(UNIT_TEST_GATE_REGISTRY)}; const PATH_GATE_REGISTRY = ${JSON.stringify(PATH_GATE_REGISTRY)}; const RUN_ID = 'run-1'; const RUN_SLUG = 'run-1'`)
 
@@ -321,9 +321,10 @@ function ratchetPrepare({ reject = false } = {}) {
 
 async function runOracle(responses, sprintResult = null) {
   let source = oracle.replace('export const meta', 'const meta')
-  source = source.replace(/const RUN_ID = `vol-oracle-\$\{Date\.now\(\)\}-\$\{Math\.random\(\)\.toString\(16\)\.slice\(2\)\}`/, "const RUN_ID = 'run-1'")
+  source = source.replace('const RUN_ID = oracleRunId(BASE_SHA, capability.state, capability.next_iter)', "const RUN_ID = 'run-1'")
   const calls = []
   const phases = []
+  const workflowCalls = []
   const queues = Object.fromEntries(Object.entries(responses).map(([key, value]) => [key, Array.isArray(value) ? [...value] : [value]]))
   const agent = async (_prompt, options) => {
     calls.push(options.label)
@@ -332,11 +333,14 @@ async function runOracle(responses, sprintResult = null) {
     const value = queue.shift()
     return typeof value === 'function' ? value() : value
   }
-  const workflow = async () => sprintResult
+  const workflow = async (name, workflowArgs) => {
+    workflowCalls.push({ name, args: workflowArgs })
+    return sprintResult
+  }
   const phase = name => phases.push(name)
   const fn = new AsyncFunction('args', 'phase', 'agent', 'workflow', source)
   const result = await fn({}, phase, agent, workflow)
-  return { result, phases, calls }
+  return { result, phases, calls, workflowCalls }
 }
 
 function bootstrapResponses({ fix = false, prepareMutator, finalize = casReceipt(SHA.build), audit = auditReceipt(SHA.build) } = {}) {
@@ -375,6 +379,24 @@ function readyResponses({ ratchet = ratchetPrepare(), measureValue = measure(), 
 }
 
 const sprintPass = { passed: true, integration_branch: 'integration/run-1', integration_sha: SHA.integration, gate_evidence: okEvidence }
+
+test('ready Improve binds deterministic caller identity into nested sprint', async () => {
+  const { result, phases, workflowCalls } = await runOracle(readyResponses(), sprintPass)
+  assert.equal(result.verdict, 'ACCEPT')
+  assert.ok(phases.includes('Improve'))
+  assert.deepEqual(workflowCalls.map(call => call.name), ['vol-sprint'])
+  assert.equal(workflowCalls[0].args.base, SHA.measure)
+  assert.equal(workflowCalls[0].args.run_key, 'run-1-improve')
+  assert.match(workflowCalls[0].args.task, /Oracle RSI iter-001/)
+  assert.notEqual(
+    sprintFns.sprintRunId(SHA.measure, 'same task', 'oracle-caller-a'),
+    sprintFns.sprintRunId(SHA.measure, 'same task', 'oracle-caller-b'),
+  )
+  assert.equal(
+    sprintFns.sprintRunId(SHA.measure, 'same task', 'oracle-caller-a'),
+    sprintFns.sprintRunId(SHA.measure, 'same task', 'oracle-caller-a'),
+  )
+})
 
 test('success evidence and APPROVE contracts reject exit failure/blockers', () => {
   assert.equal(oracleFns.validSuccessEvidence([{ command: 'test', exit_code: 1, output: 'failed' }]), false)

@@ -33,7 +33,7 @@ const sprintPath = '.claude/workflows/vol-sprint.js'
 const oraclePath = '.claude/workflows/vol-oracle-iter.js'
 const deterministicToken = loadFunction(sprintPath, 'deterministicToken')
 const sprintRunId = loadFunction(sprintPath, 'sprintRunId')
-const laneOwnerId = loadFunction(sprintPath, 'laneOwnerId')
+const laneHeartbeatId = loadFunction(sprintPath, 'laneHeartbeatId')
 const oracleRunId = loadFunction(oraclePath, 'oracleRunId')
 const shaA = 'a'.repeat(40)
 const shaB = 'b'.repeat(40)
@@ -80,15 +80,20 @@ async function startOracle(state, nextIter = 'iter-0') {
 }
 
 const sprintContext = vm.createContext({ deterministicToken })
-const sprintId = vm.runInContext(`(${sprintRunId.toString()})('${shaA}', 'task-a')`, sprintContext)
-assert.equal(sprintId, vm.runInContext(`(${sprintRunId.toString()})('${shaA}', 'task-a')`, sprintContext), 'sprint ID changed for identical workflow state')
-assert.notEqual(sprintId, vm.runInContext(`(${sprintRunId.toString()})('${shaB}', 'task-a')`, sprintContext), 'sprint ID ignored frozen base SHA')
-assert.notEqual(sprintId, vm.runInContext(`(${sprintRunId.toString()})('${shaA}', 'task-b')`, sprintContext), 'sprint ID ignored task identity')
+const sprintId = vm.runInContext(`(${sprintRunId.toString()})('${shaA}', 'task-a', '')`, sprintContext)
+assert.equal(sprintId, vm.runInContext(`(${sprintRunId.toString()})('${shaA}', 'task-a', '')`, sprintContext), 'sprint ID changed for identical workflow state')
+assert.notEqual(sprintId, vm.runInContext(`(${sprintRunId.toString()})('${shaB}', 'task-a', '')`, sprintContext), 'sprint ID ignored frozen base SHA')
+assert.notEqual(sprintId, vm.runInContext(`(${sprintRunId.toString()})('${shaA}', 'task-b', '')`, sprintContext), 'sprint ID ignored task identity')
+assert.notEqual(
+  vm.runInContext(`(${sprintRunId.toString()})('${shaA}', 'same-task', 'caller-a')`, sprintContext),
+  vm.runInContext(`(${sprintRunId.toString()})('${shaA}', 'same-task', 'caller-b')`, sprintContext),
+  'distinct deterministic callers collided',
+)
 
-const laneContext = vm.createContext({ deterministicToken })
-const laneA = vm.runInContext(`(${laneOwnerId.toString()})('${sprintId}', 'lane-a')`, laneContext)
-const laneB = vm.runInContext(`(${laneOwnerId.toString()})('${sprintId}', 'lane-b')`, laneContext)
-assert.equal(laneA, vm.runInContext(`(${laneOwnerId.toString()})('${sprintId}', 'lane-a')`, laneContext), 'lane owner ID changed across resume')
+const laneContext = vm.createContext({ RUN_SLUG: sprintId })
+const laneA = vm.runInContext(`(${laneHeartbeatId.toString()})({ id: 'lane-a' })`, laneContext)
+const laneB = vm.runInContext(`(${laneHeartbeatId.toString()})({ id: 'lane-b' })`, laneContext)
+assert.equal(laneA, vm.runInContext(`(${laneHeartbeatId.toString()})({ id: 'lane-a' })`, laneContext), 'lane owner ID changed across resume')
 assert.notEqual(laneA, laneB, 'distinct concurrent lane identities collided')
 
 const oracleBootstrap = oracleRunId(shaA, 'missing_data', '')

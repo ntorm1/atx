@@ -911,7 +911,7 @@ const applicableModes = ['A', 'B']
 
 phase('Improve')
 let sprint
-try { sprint = await workflow('vol-sprint', { task: `Oracle RSI ${measure.iter}; typed aggregate hypotheses:\n${JSON.stringify(attribution.hypotheses)}\nHard cutover; CHANGELOG BREAKING; no flags/shims/licensed rows.`, base: measure.sha }) }
+try { sprint = await workflow('vol-sprint', { task: `Oracle RSI ${measure.iter}; typed aggregate hypotheses:\n${JSON.stringify(attribution.hypotheses)}\nHard cutover; CHANGELOG BREAKING; no flags/shims/licensed rows.`, base: measure.sha, run_key: `${RUN_ID}-improve` }) }
 catch (error) { sprint = { passed: false, error: String(error) } }
 const sprintValid = sprint && sprint.passed && /^integration\//.test(sprint.integration_branch || '') && /^[0-9a-f]{40}$/i.test(sprint.integration_sha || '') && validSuccessEvidence(sprint.gate_evidence)
 if (!sprintValid) return { iteration: measure.iter, capability_state: 'ready', verdict: 'FAILED', holdout: null, confirmed: [], refuted: [], sprint: sprint || null, ledger: [], ratchet_evidence: [], failure: 'Sprint incomplete/invalid; no holdout and no REJECT increment', run_id: RUN_ID, base_sha: BASE_SHA, canonical_after: null }
