@@ -98,6 +98,19 @@ composed without performing the check that would have caught the migration, and
 a convention that makes an error uncomposable is worth more than one that
 cautions against it.
 
+CHANGES THAT SHIPPED AFTER THE `v1.0.0` TAG ARE DOCUMENTED UNDER `## 1.0.0`, NOT
+HERE. The tag commit is `68c570c`; 37 commits landed between it and this
+release's branch point, and every CHANGELOG line they added went into the
+`## 1.0.0` section rather than opening a new one. A reader upgrading FROM THE TAG
+therefore has to read those entries as well as this section, because their marks
+move -- the largest is the variance-strip wing-clamp entry under `## 1.0.0`
+("the variance strip now reads flat-vol tails beyond the certified wing band"),
+which adds `DerivConfig::wing_clamp_k`, a field the tagged tree does not have,
+whose default resolves to the certified band: the clamp is ON unless a caller
+opts out with a negative value. That entry states its own effect and its
+reference run; read it there. A reader upgrading from a `1.0.0` build taken
+after the tag has those changes already.
+
 ### Added — surface dynamics: `SurfaceOverlay` / `StickyMode`, `DerivPnlExplain`, and a scenario deriv leg (FIT-F4 / GK-G4 / GK-G5 / LIT-8, Task F-8)
 
 NO EXISTING NUMBER MOVES. Three new public surfaces, one of them a refactor of
@@ -116,10 +129,11 @@ evaluating the base at `k + ln(1+h)`.
 
 MIGRATION: none. `deriv_greeks` / `deriv_price` / `price_deriv_book` return
 bit-identical values across 6084 dumped bit patterns (all 14 `DerivGreeks`
-fields plus 14 centre-quote diagnostics, over 2 surfaces x 5 kinds x 4 bump
-configs x aged/fresh x cached/uncached, plus the deriv-book memo lane), byte-
-compared before and after. `kMinSmileShiftedIv` and `floor_smile_iv` moved from
-`derivatives.cpp`'s anonymous namespace into this header unchanged.
+fields, the last of which is the centre `DerivQuote` itself, over 2 surfaces x 5
+kinds x 4 bump configs x aged/fresh x cached/uncached, plus the deriv-book memo
+lane), byte-compared before and after. `kMinSmileShiftedIv` and
+`floor_smile_iv` moved from `derivatives.cpp`'s anonymous namespace into this
+header unchanged.
 
 **`atx/vol/deriv_pnl.hpp` (Tier-B).** `deriv_pnl_explain` decomposes a swap
 position's two-date mark move into carry, realized, vol level, skew, convexity

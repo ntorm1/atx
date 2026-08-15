@@ -3432,7 +3432,7 @@ struct CachedBumpView {
 // The only makers of a `CachedBumpView`. `SurfaceOverlay`'s field ORDER is
 // {vol, skew, convexity, k, term}, which is not the order any of the bump call
 // sites think in, so they go through designated initializers here rather than
-// each spelling out a five-double brace-init that a future field append would
+// each spelling out a five-double brace-init that a future field insert would
 // silently re-associate.
 template <class SurfaceT>
 [[nodiscard]] CachedBumpView<SurfaceT> bump_view(const SurfaceT& surface, double k_shift,

@@ -614,7 +614,11 @@ variance swap makes the engine fail the whole run closed on a missing board, so
 a dark session cannot be stepped over. `reconcile_nav` is on, so every row's
 NAV is audited against an independently recomputed liquidation value.
 `swap_pv`/`swap_pnl` ride out as signal columns, so `track.tsv` keeps the one
-frozen `write_backtest_pnl_tsv` schema.
+frozen `write_backtest_pnl_tsv` schema. The example also sets
+`RunConfig::swap_pnl_explain`, so the eight `swap_explain_*` columns — carry,
+realized, vol level, skew, convexity, discount, residual and the `unattributed`
+counter — ride out the same way; the renderer draws its P&L-attribution panel
+off that prefix, and omits the panel entirely on a track that lacks it.
 
 **Reading the report.** `pnl_total` is the *whole* step total, so the strangle
 leg is `pnl_total − swap_pnl` and the two legs sum back to `nav` by
