@@ -4,25 +4,32 @@
 
 The workflow now has deterministic capability states, evaluated in order:
 `missing_data -> missing_mode_a -> missing_conventions -> missing_mode_b -> ready`.
-Capability freezes the requested base to a full SHA and freezes the canonical
-holdout-membership hash before dispatch. A missing state runs exactly one fixed
-bootstrap lane and returns; it skips planner, ordinary Measure, Analyst,
-vol-sprint, Ratchet, and every holdout benchmark. The four bootstrap deliveries
-are data/cohorts/hash, Mode A, convention floor, then Mode B. There is no
-combined "missing tooling" path.
+Capability freezes `refs/heads/oracle/canonical` (or the requested base before its
+first creation) to a full SHA and reads only an already committed holdout digest
+receipt. It never opens membership. A missing state runs exactly one fixed
+implementation lane through Build, exact-SHA Review, optional Fix, fresh Review,
+scoped verification in a newly leased worktree, and atomic canonical landing. It
+returns BOOTSTRAP only after that exact reviewed SHA is canonical and the next state
+is observed. It skips planner, ordinary Measure, Analyst, vol-sprint, Ratchet, and
+every holdout benchmark. The four bootstrap deliveries are data/cohorts/hash, Mode
+A, convention floor, then Mode B. There is no combined "missing tooling" path.
 
-Only `ready` runs Measure (aggregate smoke+tune), Analyst (aggregate smoke+tune),
-vol-sprint, then Ratchet. A blocked/incomplete sprint or any mandatory lane whose
-final review is not a fresh APPROVE returns `FAILED` before holdout; it is not a
-REJECT and cannot increment the consecutive-reject counter. Ratchet recomputes
-the holdout hash before reading holdout and fails closed on mismatch. Licensed row
-data and holdout membership are forbidden in agent prompts and reports.
+Only `ready` runs Measure (aggregate smoke+tune), the tool-less Analyst (a validated,
+self-contained aggregate payload), vol-sprint, then Ratchet. A blocked/incomplete
+sprint or any mandatory lane whose final review is not a fresh APPROVE returns
+`FAILED` before holdout; it is not a REJECT and cannot increment the consecutive-
+reject counter. Ratchet leases the exact reviewed integration SHA, then alone opens
+holdout and recomputes the digest. ACCEPT atomically advances canonical to the final
+Ratchet commit; REJECT leaves canonical unchanged. The returned structured result
+includes pasted holdout evidence and evidence-indexed headline deltas. Licensed row
+data and holdout membership are forbidden in prompts and reports.
 
 Bootstrap artifacts and exact done conditions are authoritative in
 `atx-vol/bench/oracle/CHARTER.md`. This section supersedes the older sequencing
 prose below where they differ.
 
-Date: 2026-08-15. Status: DESIGNED, not started. Depends on: vol DAG harness (f4d8bb9).
+Date: 2026-08-15. Status: harness implemented; oracle capability bootstrap pending.
+Depends on: vol DAG harness (f4d8bb9).
 
 Goal: a recursive self-improvement loop that drives atx-vol's American-options fitting and
 pricing pipeline toward reproducing SpiderRock's `srPrc` / `srVol` / greeks at
@@ -96,24 +103,25 @@ could get). Ledger line records the floor.
 
 ```
 Measure (smoke+tune, modes A+B)          → scorecard N
-  → Attribute (vol-analyst, fresh context) → ranked worst cells + 1-3 falsifiable
+  → Attribute (tool-less aggregate payload) → ranked worst cells + 1-3 falsifiable
                                              hypotheses ("fix X ⇒ cell Y RMSE −Z%")
   → Improve (vol-sprint child workflow)    → plan → parallel lanes → review → fix
-  → Ratchet gate (vol-verifier)            → existing gates (atx_vol_fast, hygiene,
+  → Ratchet gate (new exact-SHA lease)      → existing gates (atx_vol_fast, hygiene,
                                              ci/run_all_gates.ps1) PLUS oracle gate:
                                              scorecard on HOLDOUT must improve target
                                              cells, no aggregate regression > 2%, speed
                                              ≥ baseline pin
-  → Commit + memory                        → accept: merge, scorecard pinned, ledger line
+  → Commit + memory                        → accept: canonical CAS, scorecard pinned, ledger line
                                              with metric deltas, NORTHSTAR.md updated;
                                              reject: hypotheses marked REFUTED in ledger
                                              (negative results are memory), branch kept
 ```
 
 **New pieces on the existing harness:**
-- `.claude/agents/vol-analyst.md` — read-only attribution stage: diffs scorecards, ranks
-  cells, forms falsifiable hypotheses, checks the ledger for already-refuted ones. Never
-  sees holdout row-level data.
+- `.claude/agents/vol-analyst.md` — tool-less attribution stage: receives one validated,
+  self-contained aggregate smoke/tune payload, ranks cells, and forms falsifiable
+  hypotheses. It has no workspace reach and never receives paths, hashes, membership,
+  or row-level data.
 - `.claude/workflows/vol-oracle-iter.js` — the iteration DAG above; invokes `vol-sprint`
   as a child via `workflow()` (one nesting level — allowed); schema-typed edges
   (SCORECARD, ATTRIBUTION, RATCHET verdicts).
@@ -121,7 +129,8 @@ Measure (smoke+tune, modes A+B)          → scorecard N
   hypotheses, refuted list, oracle-suspect cells, convention map pointer). The loop's
   working brain; LEDGER.md stays the append-only history.
 
-**Recursion & control.** Each iteration is one workflow run. Trigger: manual ("next
+**Recursion & control.** Each iteration is one workflow run against the frozen
+`refs/heads/oracle/canonical`. Trigger: manual ("next
 iteration") first; `/loop` self-paced later once trust is earned. The analyst reads the
 full scorecard + ledger history each time — the loop improves its own targeting from its
 own record, including what failed. Stopping: targets met (Mode A: price MAE within a

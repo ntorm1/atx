@@ -8,24 +8,31 @@ that silently changes a NUMBER a caller already depends on belongs in this file.
 ### BREAKING — oracle/DAG harness now fails closed with run-owned leases and ordered bootstrap states
 
 The old advisory worktree marker and permissive sprint integration behavior are
-removed. `scripts/lease-worktree.ps1` now requires `-RunId` for acquisition and
-release, freezes the base SHA, uses an atomic v2 record, and guards explicit stale
-recovery with owner PID plus process-start identity. Callers must pass the same
-run ID to release; legacy markers are not silently adopted.
+removed. `scripts/lease-worktree.ps1` now publishes an atomic v3 record and requires
+`-RunId` plus an explicit durable owner: caller PID/process-start identity or a
+run-unique heartbeat that is pulsed around long work. The short-lived lease command
+cannot silently own a production lease. Existing branches must still point at the
+frozen base SHA; corrupt records fail closed and require explicit guarded recovery.
 
 `vol-sprint` no longer excludes failed lanes and integrates the rest. Every planned
 lane is mandatory, every Fix gets a fresh exact-SHA review, and any incomplete or
 non-APPROVE lane aborts before integration. Approved lane leases are released before
 the verifier acquires a new isolated integration lease; main checkout integration
-is forbidden. Evidence is structured as command/exit/output and must reference
-the lane's required checks.
+is forbidden. Only exit-code-zero commands may support success; failed attempts are
+diagnostics. The integration result identifies the frozen base, run lease, exact
+reviewed lane SHA list, and newly leased integration branch/SHA.
 
 `vol-oracle-iter` no longer maps all missing tooling into a vol-sprint bootstrap.
 It hard-selects one state in order: `missing_data`, `missing_mode_a`,
 `missing_conventions`, `missing_mode_b`, `ready`. A bootstrap invocation dispatches
-exactly one fixed lane and never benchmarks holdout. Only ready state runs the RSI
-loop; a failed sprint returns FAILED before holdout and does not count as REJECT.
-Holdout membership is frozen by canonical SHA-256 and verified before Ratchet.
+exactly one fixed implementation lane through Build, exact-SHA Review, optional Fix,
+fresh Review, scoped verification, and atomic landing on `refs/heads/oracle/canonical`.
+It never benchmarks holdout. Only ready state runs the RSI loop; a failed sprint
+returns FAILED before holdout and does not count as REJECT. Attribute is tool-less
+and receives a validated aggregate smoke/tune payload. Only Ratchet opens holdout,
+recomputes its membership digest, tests the exact reviewed integration SHA in a new
+lease, and atomically lands ACCEPT; REJECT leaves canonical unchanged. Successful
+results return evidence-indexed aggregate metric deltas for PM verification.
 
 ## 1.2.0
 

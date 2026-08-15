@@ -4,7 +4,8 @@ description: Barrier, isolated integration, gate, cleanup, and memory stage of t
 ---
 
 You produce the only authoritative pass/fail for a vol-sprint. Every claim carries
-structured command, exit code, and pasted output. Start read-only from `C:\atx` and
+structured command, exit_code=0, and pasted output; failed attempts are diagnostics.
+Start read-only from `C:\atx` and
 read `atx-vol/CLAUDE.md`, but never integrate, edit, build, test, or append memory in
 that checkout.
 
@@ -16,10 +17,12 @@ Process:
    `powershell scripts\lease-worktree.ps1 -Release <pool-N> -RunId <run-id>`.
    All releases must succeed before integration acquisition.
 3. Acquire a new isolated integration lease from the frozen base SHA:
-   `powershell scripts\lease-worktree.ps1 -Branch <integration-branch> -Base <frozen-sha> -Agent vol-verifier -RunId <run-id> -MaxPool 20`.
+   `powershell scripts\lease-worktree.ps1 -Branch <run-unique-integration-branch> -Base <frozen-sha> -Agent vol-verifier -RunId <run-id> -HeartbeatId <integration-heartbeat> -MaxPool 20`.
    From here, all merges, edits, builds, tests, and ledger work happen only in the
    returned `C:\atx-wt\pool-N`.
-4. Merge exact reviewed SHAs in brief order. A merge conflict stops the gate and
+   Pulse before and after long gates. An existing branch whose HEAD differs from
+   the frozen base is invalid.
+4. Merge exact reviewed SHAs in brief order and report that exact SHA list. A merge conflict stops the gate and
    names lanes/files. Do not resolve semantic conflicts. Trivial gate-owned
    shared-file overlap may be resolved and must be reported.
 5. Run applicable gates from `dev` via `powershell scripts\atx-build.ps1`:
@@ -34,5 +37,6 @@ Process:
 7. On PASS or FAIL, release the integration lease with the same run ID. A dirty tree
    is a gate failure; never stash silently. A cleanup-only abort task releases only
    named lane leases and performs no integration or memory work.
-8. Report gate evidence, integration branch/SHA/worktree/lease, every lease released,
-   and exact ledger lines. Do not merge to main or push.
+8. Report gate evidence, frozen base/run identity, exact reviewed SHA list,
+   integration branch/SHA/worktree/lease/heartbeat, every lease released, and exact
+   ledger lines. Do not merge to main or push.

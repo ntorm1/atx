@@ -9,20 +9,24 @@ exact lane SHA. A BLOCK may receive one Fix; that new commit always gets a fresh
 review. Any dead, BLOCKED, contract-invalid, or non-APPROVE lane aborts before
 integration.
 
-Pool leases are atomic v2 records keyed by a workflow `run_id`, owner PID plus
-process-start timestamp, desired branch, frozen base SHA, and acquisition time.
+Pool leases are atomic v3 records keyed by a workflow `run_id`, desired branch,
+frozen base SHA, acquisition time, and an explicit durable owner. The owner is
+either a caller-supplied PID plus exact process-start timestamp or a run-unique
+heartbeat pulsed around long commands; the short-lived lease launcher is rejected.
 Release requires the same `run_id`; stale recovery is explicit and refuses while
-the exact local owner identity is alive. Tests use a temp pool root and never
-touch production markers.
+the durable owner is alive. Corrupt/truncated records fail closed. Tests use a temp
+pool root and never touch production markers.
 
 After all mandatory lanes are freshly approved, their leases are released before
-integration begins. The verifier then obtains a new run-owned pool lease for the
-integration branch and performs merges, gates, and ledger work only under
+integration begins. The verifier then obtains a new run-owned heartbeat lease for
+a run-unique integration branch, reports the exact reviewed SHA list, and performs
+merges, gates, and ledger work only under
 `C:\atx-wt\pool-N`; `C:\atx` is never an integration worktree. Failure still
-releases the integration lease. This section supersedes v1 error/cleanup semantics
-below where they differ.
+releases the integration lease. A success claim is valid only when every supporting
+evidence item has `exit_code=0`; failed attempts are kept separately as diagnostics.
+This section supersedes v1 error/cleanup semantics below where they differ.
 
-Date: 2026-08-15. Status: v1 installed. Goal: faster dev loops, durable long-term memory, real parallelism for atx-vol work, built on what the repo already has (worktree pool, `atx-build.ps1`, `.agents/` role docs, `.superpowers/sdd/` brief convention) instead of replacing it.
+Date: 2026-08-15. Status: v3 correctness hard cutover implemented. Goal: faster dev loops, durable long-term memory, real parallelism for atx-vol work, built on what the repo already has (worktree pool, `atx-build.ps1`, `.agents/` role docs, `.superpowers/sdd/` brief convention) instead of replacing it.
 
 ## Research grounding (why this shape)
 
@@ -58,7 +62,10 @@ Date: 2026-08-15. Status: v1 installed. Goal: faster dev loops, durable long-ter
   mandatory re-review, then are released before integration acquisition.
 - **One fix round plus mandatory re-review.** A second BLOCK fails the sprint before
   integration — no unbounded loops and no stale verdict reuse.
-- **Evidence discipline end-to-end**: builder claims void without pasted output; reviewer verifies rather than trusts; verifier is the only authoritative pass/fail; golden-replay reported SKIPPED (not passed) when the licensed corpus is absent.
+- **Evidence discipline end-to-end**: builder claims void without pasted output or
+  with a nonzero success exit code; diagnostics are separate. APPROVE plus any blocker
+  is invalid. The verifier reports the exact integrated SHA list and is the only
+  authoritative pass/fail; golden-replay is SKIPPED (not passed) when absent.
 
 ## Speed levers
 
@@ -74,8 +81,8 @@ Planner returns 0 lanes → workflow throws. Any mandatory lane BLOCKED/died or 
 a fresh APPROVE → workflow releases known run-owned leases and returns FAIL before
 integration. Merge conflict → verifier stops and names lanes/files. Gate FAIL →
 reported with structured evidence, branches left for inspection, integration lease
-released. Workflow death mid-run → `lease-worktree.ps1 -Status` for owner state and
-run_id; investigate before explicit stale recovery or resume.
+released. Workflow death mid-run → `lease-worktree.ps1 -Status` for durable
+owner/heartbeat state and run_id; investigate before explicit stale recovery or resume.
 
 ## Not in v1 (deliberate)
 

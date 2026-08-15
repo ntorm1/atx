@@ -8,13 +8,19 @@ first missing state in this exact order:
 missing_data -> missing_mode_a -> missing_conventions -> missing_mode_b -> ready
 ```
 
-A bootstrap invocation dispatches exactly one fixed lane for that state and then
-returns. It does not call the planner, ordinary Measure, vol-sprint, analyst, or
-Ratchet, and it never benchmarks holdout. Only `ready` enters the RSI loop.
+A bootstrap invocation dispatches exactly one fixed implementation lane for that
+state. That lane must complete Build, exact-SHA Review, optional Fix, fresh
+exact-SHA Review, scoped verification in a newly leased worktree, and atomic
+landing on `refs/heads/oracle/canonical`; only then does the run return BOOTSTRAP.
+It does not call the planner, ordinary Measure, vol-sprint, analyst, or Ratchet,
+and it never benchmarks holdout. The next invocation must observe the next state.
+Only `ready` enters the RSI loop.
 
-Every lane starts from the capability stage's frozen base SHA, uses a run-owned
-pool lease, commits explicit paths, and releases with the same `run_id`. Reports
-contain command output, aggregate counts/metrics, hashes, and paths only. Licensed
+Capability freezes `refs/heads/oracle/canonical` (or the requested base before the
+first landing) and reads only the already committed digest receipt; it never opens
+holdout membership. Every lane starts from that SHA, uses a run-unique branch and
+durable heartbeat lease, commits explicit paths, and releases with the same
+`run_id`. Success evidence contains only exit-code-zero command output. Licensed
 row values, option membership, and holdout membership must never enter prompts or
 logs.
 
@@ -68,9 +74,14 @@ change conventions or holdout membership and do not benchmark holdout.
 
 ## Ready-state failure rule
 
-In `ready`, Measure and Analyst still see smoke+tune aggregates only. If any
+In `ready`, Measure sees smoke+tune and produces a self-contained aggregate payload;
+the tool-less Analyst sees only that payload, with no workspace, paths, hashes,
+membership, or row values. If any
 mandatory vol-sprint lane is blocked/incomplete, lacks a fresh APPROVE, or fails the
 isolated integration gate, the oracle run returns `FAILED`: no holdout benchmark,
-no Ratchet, and no REJECT-counter change. Holdout is opened only after a passed
-sprint and only after its canonical membership hash matches the value frozen at
-run start.
+no Ratchet, and no REJECT-counter change. Ratchet alone opens holdout: it leases a
+new worktree at the exact reviewed sprint integration SHA, recomputes membership,
+and compares it with the receipt frozen at run start. ACCEPT atomically advances
+`refs/heads/oracle/canonical` to the final Ratchet commit; REJECT leaves it unchanged.
+The result contains pasted Ratchet evidence and evidence-indexed aggregate metric
+deltas so PM reports can be verified without exposing licensed rows.

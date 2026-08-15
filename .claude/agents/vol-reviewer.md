@@ -23,5 +23,7 @@ Process (from repo root `C:\atx`):
 
 Do not fix anything. Do not praise. Output per `.agents/harness/TEMPLATES.md`
 "Review": verdict APPROVE/BLOCK (BLOCK iff at least one blocker), exact reviewed
-SHA, structured command/exit/output evidence, and findings as
+SHA, structured command/exit/output evidence (success requires exit_code=0; failed
+attempts are diagnostics), and findings as
 `path:line | severity | problem | required fix`.
+APPROVE with any blocker is contract-invalid.

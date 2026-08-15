@@ -21,13 +21,13 @@ Disjoint means: no lane needs another lane's NEW interface to compile. Shared fi
 ```
 Freeze base SHA → Plan (vol-planner, 1; every lane mandatory)
   └─ per lane, pipelined (no barrier between lanes):
-       Build (vol-builder, run-owned atomic pool lease, TDD ladder)
+       Build (vol-builder, run-owned heartbeat lease, TDD ladder)
        → Review (vol-reviewer, fresh context, exact-SHA verdict)
        → Fix (vol-builder, same warm tree, only on BLOCK, one round)
        → Re-review (fresh reviewer, mandatory after every Fix)
   └─ Barrier: all mandatory lanes DONE + fresh APPROVE
      → release lane leases → acquire NEW isolated integration lease
-     → merge exact reviewed SHAs → gates → ledger → release integration lease
+     → merge/report exact reviewed SHAs → gates → ledger → release integration lease
 ```
 
 Hard limits: ≤4 lanes. Any incomplete/blocked/non-APPROVE lane fails before
@@ -40,10 +40,12 @@ never "mostly passed" and never integrate in `C:\atx`.
 Workflow { name: 'vol-sprint', args: { task: '<verbatim user ask + constraints>', base: 'main' } }
 ```
 
-Pass the user's ask verbatim plus known constraints. On workflow death, check
-`lease-worktree.ps1 -Status`; v2 status reports `run_id` and PID/start owner state.
-Investigate before `-RecoverStale`; normal release always supplies the acquiring
-`-RunId`. Resume the cached run where possible rather than dispatching a duplicate.
+Pass the user's ask verbatim plus known constraints. The workflow derives run-unique
+lane/integration branches and heartbeat IDs; agents pulse before and after long work.
+On workflow death, check `lease-worktree.ps1 -Status`; v3 status reports `run_id`
+and durable process/heartbeat owner state. Investigate before `-RecoverStale`; normal
+release always supplies the acquiring `-RunId`. Resume the cached run where possible
+rather than dispatching a duplicate.
 
 ## Memory duties (main thread, after every run)
 

@@ -11,8 +11,8 @@ One paragraph. What exists after this lane that does not exist now.
 ## Scope
 - Files in scope: <explicit list — the ONLY files this lane may create/modify>
 - Files forbidden: <files adjacent lanes own — touching these is a lane failure>
-- Branch: lane/<id> off <frozen-base-sha>
-- Lease: pool-N acquired with <workflow-run-id>
+- Branch: run-unique lane/<id>-<run-slug> off <frozen-base-sha>
+- Lease: pool-N acquired with <workflow-run-id> and <heartbeat-id>
 ## Ladder
 - check targets: <the .cpp files to type-check while shaping>
 - build target(s): <e.g. atx-vol-tests>
@@ -33,13 +33,14 @@ DONE | BLOCKED — one sentence.
 lane/<id> @ <sha> (all work committed; leased tree left clean)
 ## Frozen base / lease
 base_sha=<40-char-sha>; worktree=<C:\atx-wt\pool-N>; lease_name=<pool-N>;
-lease_run_id=<workflow-run-id>
+lease_run_id=<workflow-run-id>; heartbeat_id=<heartbeat-id>
 ## Files changed
 <list>
 ## Evidence
-For each command: exact command, integer exit code, and verbatim non-empty output.
+For each successful command: exact command, exit_code=0, and verbatim non-empty output.
 Every brief check target, build target, and suite must occur in an evidence command.
-Claims without pasted output are void.
+Failed attempts belong under Diagnostics and cannot support a success claim. Claims
+without pasted exit-code-zero output are void.
 ## Deviations from brief
 <none | list with reason>
 ## Ledger candidates
@@ -55,7 +56,8 @@ APPROVE | BLOCK
 ## Reviewed SHA
 <exact current lane SHA; every Fix requires a new review>
 ## Evidence
-At least one independently run command with exit code and pasted output.
+At least one independently run successful command with exit_code=0 and pasted output.
+Failed attempts belong under Diagnostics. APPROVE with any blocker is invalid.
 ## Findings
 path:line | severity (blocker/major/minor) | problem | required fix
 Correctness-scoped: UB, lifetime, bounds, error paths, test gaps, contract breaks.

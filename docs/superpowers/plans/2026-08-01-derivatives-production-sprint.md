@@ -19,7 +19,7 @@
 - Backward compatibility: zero-swap books and existing `deriv_price` behavior on uncapped, unaged/fully-aged contracts must be numerically UNCHANGED (existing tests pin this).
 - Naming: `PascalCase` types, `snake_case` functions, `kPascalCase` constants, `enum class : std::uint8_t`, trailing-underscore members, `namespace atx::vol`.
 - Build/iterate: `powershell scripts\atx-build.ps1 check atx-vol\src\derivatives.cpp` while shaping; `powershell scripts\atx-build.ps1 build atx-vol-tests`; `powershell scripts\atx-build.ps1 -Ctest -R <Suite>`. Full-suite + `hygiene` preset only at gate time.
-- Work in a leased pool worktree: `powershell scripts\lease-worktree.ps1 -Branch feat/deriv-prod-sprint -Base <frozen-sha> -Agent deriv-prod -RunId <run-id> -MaxPool 20`. Release with the same run ID. Commit per task, message style `feat(vol): ...` / `fix(vol): ...`, trailer `Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>`.
+- Work in a leased pool worktree: `powershell scripts\lease-worktree.ps1 -Branch feat/deriv-prod-sprint-<run-slug> -Base <frozen-sha> -Agent deriv-prod -RunId <run-id> -HeartbeatId <run-unique-heartbeat> -MaxPool 20`. Pulse around long commands and release with the same run ID. Commit per task, message style `feat(vol): ...` / `fix(vol): ...`, trailer `Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>`.
 
 ## Reference math (shared by Tasks 2–6)
 

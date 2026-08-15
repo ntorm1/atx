@@ -26,8 +26,10 @@ Rules (enforced by the capability gate and reviewers):
   smoke/tune results.
 - `holdout`: disjoint from tune in both underliers and buckets. Stage 1 writes
   `holdout.sha256`, the SHA-256 of canonical sorted `dates`, `underliers`, and
-  `buckets_et`. Every run freezes that hash at Capability and verifies it before
-  Ratchet. Analyst never receives its hash, membership, scorecard, or rows.
+  `buckets_et`. Capability freezes the already committed receipt without opening
+  `holdout.json`. The tool-less Analyst receives no hash, membership, scorecard,
+  path, or rows. Ratchet alone opens `holdout.json`, recomputes membership identity,
+  and compares it with the frozen receipt before benchmarking.
 - `fullday`: everything; periodic sweep only, outside the iteration loop.
 
 Changing holdout membership after stage 1 invalidates ratchet history and is a

@@ -28,11 +28,14 @@ Vol surface / vol-derivatives library. Source groups: `core pricing fitting mark
   `bench/oracle/`. `vol-oracle-iter` advances exactly one ordered capability state
   (`missing_data → missing_mode_a → missing_conventions → missing_mode_b → ready`).
   Bootstrap runs one fixed lane and no holdout; only ready runs Measure → Analyst →
-  vol-sprint → Ratchet. Holdout hash is frozen at run start and hidden from Analyst.
+  vol-sprint → Ratchet. Capability freezes only the committed digest receipt;
+  tool-less Analyst gets a validated aggregate payload, and Ratchet alone recomputes
+  membership before holdout.
 
 ## Harness isolation
 
-- Every lane uses `lease-worktree.ps1` with a frozen base SHA and workflow `RunId`.
+- Every lane uses `lease-worktree.ps1` with a frozen base SHA, workflow `RunId`,
+  run-unique branch, and explicit durable heartbeat (pulsed around long commands).
 - Every Fix is freshly reviewed at its new SHA; all mandatory lanes must finish
   APPROVE before integration.
 - Release lane leases before acquiring a new isolated integration lease. Merge,
