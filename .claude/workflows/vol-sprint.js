@@ -14,8 +14,23 @@ export const meta = {
 
 if (!args || !args.task) throw new Error('vol-sprint needs args: { task: "<what to build>", base?: "<ref, default main>" }')
 const BASE_REF = (args && args.base) || 'main'
-const RUN_ID = `vol-sprint-${Date.now()}-${Math.random().toString(16).slice(2)}`
-const RUN_SLUG = RUN_ID.replace(/[^A-Za-z0-9._-]/g, '-')
+
+function deterministicToken(value) {
+  let hash = 0xcbf29ce484222325n
+  for (const character of String(value || '')) {
+    hash ^= BigInt(character.codePointAt(0))
+    hash = BigInt.asUintN(64, hash * 0x100000001b3n)
+  }
+  return hash.toString(16).padStart(16, '0')
+}
+
+function sprintRunId(baseSha, task) {
+  return `vol-sprint-${baseSha}-${deterministicToken(task)}`
+}
+
+function laneOwnerId(runSlug, laneId) {
+  return `${runSlug}-lane-${deterministicToken(laneId)}`
+}
 const FIXED_ORACLE_GATES = Object.freeze([
   { gate_id: 'scorecard:mode_a_smoke_tune', command: 'atx-vol-oracle-bench --cohort smoke,tune --mode A --scorecard --aggregate-only' },
   { gate_id: 'scorecard:mode_b_smoke_tune', command: 'atx-vol-oracle-bench --cohort smoke,tune --mode B --scorecard --aggregate-only' },
@@ -218,7 +233,7 @@ function validIntegrationCommand(receipt, reviewedSha) {
 }
 
 function laneHeartbeatId(lane) {
-  return `${RUN_SLUG}-lane-${String(lane.id).replace(/[^A-Za-z0-9._-]/g, '-')}`
+  return laneOwnerId(RUN_SLUG, lane.id)
 }
 
 function changedHeader(path) {
@@ -429,13 +444,15 @@ function gateContractError(gate, expected) {
 
 phase('Freeze')
 const freeze = await agent(
-  `Read-only preflight for vol-sprint run_id=${RUN_ID}. Resolve ${BASE_REF}^{commit} once with git rev-parse. Do not edit, lease, build, merge, or switch branches. Return the full SHA and pasted command output.`,
+  `Read-only preflight for vol-sprint. Resolve ${BASE_REF}^{commit} once with git rev-parse. Do not edit, lease, build, merge, or switch branches. Return the full SHA and pasted command output.`,
   { schema: FREEZE, label: 'freeze-base' },
 )
 if (!freeze || freeze.base_ref !== BASE_REF || !/^[0-9a-f]{40}$/i.test(freeze.base_sha || '') || !validSuccessEvidence(freeze.evidence)) {
   throw new Error('could not freeze base ref with command evidence')
 }
 const BASE_SHA = freeze.base_sha
+const RUN_ID = sprintRunId(BASE_SHA, args.task)
+const RUN_SLUG = RUN_ID
 
 phase('Plan')
 const plan = await agent(

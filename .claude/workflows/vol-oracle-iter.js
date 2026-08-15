@@ -14,8 +14,12 @@ export const meta = {
 
 if (args && args.base && args.base !== 'main') throw new Error('vol-oracle-iter capability probe is fixed to main before canonical creation')
 const REQUESTED_BASE = 'main'
-const RUN_ID = `vol-oracle-${Date.now()}-${Math.random().toString(16).slice(2)}`
-const RUN_SLUG = RUN_ID.replace(/[^A-Za-z0-9._-]/g, '-')
+
+function oracleRunId(baseSha, state, nextIter) {
+  const step = state === 'ready' ? `ready-${nextIter}` : state
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(String(step || ''))) throw new Error('capability step is not a safe deterministic run identity')
+  return `vol-oracle-${baseSha}-${step}`
+}
 const CANONICAL_REF = 'refs/heads/oracle/canonical'
 const ZERO_SHA = '0000000000000000000000000000000000000000'
 const RATCHET_GATE_IDS = ['holdout_mode_a', 'holdout_mode_b', 'rel_avx2_speed']
@@ -825,6 +829,8 @@ if (capability.evidence.length !== 1 || capability.evidence[0].command !== 'powe
     !capability.evidence[0].output.includes(`canonical_exists=${String(capability.canonical_exists)}`)) throw new Error('capability probe receipt invalid')
 if (capability.state !== 'missing_data' && !/^[0-9a-f]{64}$/i.test(capability.holdout_digest_receipt || '')) throw new Error('holdout digest receipt invalid')
 const BASE_SHA = capability.base_sha
+const RUN_ID = oracleRunId(BASE_SHA, capability.state, capability.next_iter)
+const RUN_SLUG = RUN_ID
 const CANONICAL_EXPECTED_OLD = capability.canonical_exists ? BASE_SHA : ZERO_SHA
 
 if (capability.state !== 'ready') {
