@@ -115,7 +115,7 @@ test('adoption contract is footer validation plus one aggregate-only underlier p
   assert.match(preflight, /'aggregate_store'/u)
 })
 
-test('Python AST allowlist rejects alternate, duplicate, dynamic, and extra-column reads', () => {
+test('Python AST allowlist rejects alternate constructors, aliases, dynamic, and extra-column reads', () => {
   const result = spawnSync('python', [
     'scripts/tests/oracle_store_projection_guard.py',
     'atx-vol/scripts/oracle_store_metadata.py',
@@ -124,9 +124,11 @@ test('Python AST allowlist rejects alternate, duplicate, dynamic, and extra-colu
   assert.deepEqual(JSON.parse(result.stdout), {
     schema_version: 1,
     status: 'PASS',
+    production_constructors_allowed: 1,
     production_calls_allowed: 1,
     direct_api_attacks_rejected: 4,
     shape_attacks_rejected: 3,
+    bypass_attacks_rejected: 6,
   })
 })
 
