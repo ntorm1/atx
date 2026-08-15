@@ -39,7 +39,7 @@
       "name": "dev",
       "inherits": "_base",
       "displayName": "dev: canonical fast-iterate preset (ccache + shared deps + PCH)",
-      "description": "The one preset agents and worktrees use (scripts/new-worktree.ps1 and scripts/atx-build.ps1 both target it). Compiler cache + shared FetchContent deps + shared vcpkg dir all come from _base/CMakeLists auto-detection. Unity stays OFF: stable per-TU objects are what the ccache cross-worktree cache keys on, and unity batches (16 test files merged per TU) were the slowest TUs in the ninja log. Opt back in with -DATX_UNITY_BUILD=ON for cache-less cold builds (CI).",
+      "description": "The default preset for agents and worktrees, by construction rather than by convention: scripts/atx-build.ps1 declares its -Preset parameter with a default of dev, and scripts/new-worktree.ps1 targets it too. Compiler cache + shared FetchContent deps + shared vcpkg dir all come from _base/CMakeLists auto-detection. Unity stays OFF: stable per-TU objects are what the ccache cross-worktree cache keys on, and unity batches (16 test files merged per TU) were the slowest TUs in the ninja log. Opt back in with -DATX_UNITY_BUILD=ON for a cache-less cold build — a manual escape hatch: the repository's only CI workflow (.github/workflows/atx-db.yml) is path-filtered to atx-db/** and never builds the C++ tree, so no job does this for you.",
       "cacheVariables": {
         "ATX_UNITY_BUILD": "OFF"
       }
@@ -78,7 +78,7 @@
       "name": "rel",
       "inherits": "dev",
       "displayName": "rel: Release (canonical acceptance / benchmarks)",
-      "description": "Optimized Release build in build-rel/ for throughput benchmarks and canonical acceptance numbers, on the dev toolchain (clang-cl + compiler cache + shared deps). Never the debug-checked test gate — use `dev` for that. THIN-LTO (S6-T30, plan 6.3): CMAKE_INTERPROCEDURAL_OPTIMIZATION enables clang's -flto=thin across the TU-boundary-heavy solve chain, verified bit-identical against the pre-LTO NAV/section/fingerprint anchors (closeout Task 2). `dev`/`hygiene`/`vs` deliberately stay non-LTO: dev's fast-iterate build-time budget and its debug-checked determinism baseline are the point of that preset.",
+      "description": "Optimized Release build in build-rel/ for throughput benchmarks and canonical acceptance numbers, on the dev toolchain (clang-cl + compiler cache + shared deps). Never the debug-checked test gate — use `dev` for that. THIN-LTO: CMAKE_INTERPROCEDURAL_OPTIMIZATION enables clang's -flto=thin across the TU-boundary-heavy solve chain. Turned on at commit 63f6f29 (2026-08-02), whose message carries the evidence: a 2x2 NAV bit-parity matrix {rel, rel-avx2} x {LTO off, on} matching in all four cells (rel 123243.11724603444, rel-avx2 123243.11724602008), all 5 RunArchive section digests identical in every cell, and a 145-test focused group pass/fail/skip-identical LTO-on vs LTO-off ON REL. Read those as dated findings, not as current values: the SSE2 fingerprint 63f6f29 checked (17305682487856730537) has since been re-pinned twice under the P-5/P-R seam, and today is recoverable only with ATX_VOL_DISABLE_IV_EARLY_EXIT=1. The live pins are the kGoldenFingerprintSse2/Fma constants in atx-vol/tests/prepared_portfolio_test.cpp - read them there rather than copying them here, since a copy is precisely what went stale. The test PreparedPortfolio.GroupedPriceEqualsIndependentOracleAndPinnedFingerprint is still the right thing to re-run if you change this setting; only the value it compares against has moved. Scope and rationale: Task 2 of atx-vol/sprints/2026-08-02-atx-vol-v1-production-closeout-sprint.md, itself item 6.3 of atx-vol/sprints/2026-07-26-atx-vol-production-v1-release-sprint.md. `dev`/`hygiene`/`vs` deliberately stay non-LTO: dev's fast-iterate build-time budget and its debug-checked determinism baseline are the point of that preset.",
       "binaryDir": "${sourceDir}/build-rel",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
@@ -99,8 +99,8 @@
     {
       "name": "hygiene",
       "inherits": "_base",
-      "displayName": "Ninja + clang-cl, PCH OFF (include hygiene / CI nightly)",
-      "description": "Strict build: PCH OFF so every TU compiles with its own includes, catching any missing/unused include the PCH would otherwise mask. Slower (full per-TU header re-parse) — run on CI/nightly, not for local iteration.",
+      "displayName": "Ninja + clang-cl, PCH OFF (include-hygiene gate, run by hand)",
+      "description": "Strict build: PCH OFF so every TU compiles with its own includes, catching any missing/unused include the PCH would otherwise mask. Slower (full per-TU header re-parse) — run it by hand before claiming include-clean, not for local iteration. NOTHING RUNS THIS AUTOMATICALLY: the repository's CI is one GitHub Actions workflow, .github/workflows/atx-db.yml (on main and other branches, byte-identical on every ref that carries it; established by sweeping EVERY ref with `git for-each-ref --format='%(refname)'` piped into `git ls-tree -r --name-only` per ref, not a sample - re-run that for the current list). It is path-filtered to atx-db/** and runs ruff/mypy/pytest over Python only - it never invokes CMake or ctest, and no ref carries a nightly job. So if you did not invoke this preset yourself, it did not run.",
       "binaryDir": "${sourceDir}/build-hygiene",
       "cacheVariables": {
         "ATX_USE_PCH": "OFF"

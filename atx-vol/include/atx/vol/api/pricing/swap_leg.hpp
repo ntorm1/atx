@@ -35,6 +35,7 @@
 // loop on ONE thread — exactly `IStrategy`'s own rule (strategy.hpp).
 
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string>
 #include <utility>
@@ -60,6 +61,20 @@ namespace atx::vol {
 // `qty` (sized to the caller's target vega).
 struct CycleSwapRequest {
   std::uint32_t uid{0};
+  // Task F-2: `DerivKind::GammaSwap` passes through this field, `swap_
+  // contract_for_lot`, and `solve_cycle_swap` identically to every other
+  // kind -- none of this file's own logic branches on `kind` (it reads
+  // `DerivGreeks::vega` and `DerivQuote::fair_strike_dec` generically,
+  // whichever pricer produced them), so a gamma-swap entry solve works today
+  // with no code change here. The one gap this does NOT close: `backtest.cpp`
+  // 's `valid_deriv_kind` (out of this task's file list) does not yet admit
+  // `GammaSwap` into a live `SwapLot`, so a strategy that hands a solved
+  // gamma-swap lot to the ENGINE's book still fails loud at that boundary
+  // (`validate_swap_lot_economics`) -- wiring the live backtest engine for
+  // gamma swaps is a separate, future task. `solve_cycle_swap` itself (a
+  // standalone fair-strike/vega solve against a `SurfaceRef`, no engine
+  // involved) has no such gap; see `SwapLeg.GammaSwapKindPassesThrough`
+  // (swap_leg_test.cpp).
   DerivKind kind{DerivKind::VarSwap};
   double cap_dec{0.0}; // > 0 required on a capped kind; must be 0 otherwise
   // Sizing rides entirely on `qty`, so notional stays a constant the reader
@@ -97,8 +112,17 @@ struct CycleSwapRequest {
 // fair strike, failed or non-finite/zero entry vega, a non-finite qty. The
 // caller counts refusals and reports them; it never guesses. `lot.id` is left
 // 0 for the caller's monotonic watermark.
-[[nodiscard]] Result<SwapLot> solve_cycle_swap(const SurfaceRef &surface,
-                                               const CycleSwapRequest &req, double target_vega);
+//
+// `surface_certified_wing_band` (FIT-C7 / Task C-6): `surface`'s own
+// certified band, resolved by the caller from the SAME snapshot's provenance
+// (`certified_wing_band_for`, backtest.hpp) at the uid `surface` was resolved
+// from. Threaded into BOTH the fair-strike solve and the entry vega, so the
+// strike a swap opens at and the vega it is sized against trust the SAME
+// band. `std::nullopt` (the default) resolves the mode-blind band —
+// unchanged prior behaviour for a caller that does not (yet) supply one.
+[[nodiscard]] Result<SwapLot>
+solve_cycle_swap(const SurfaceRef &surface, const CycleSwapRequest &req, double target_vega,
+                 std::optional<double> surface_certified_wing_band = std::nullopt);
 
 // Strategy-side mirror of the engine's swap accruals, driving the five
 // `swap_*` greek signal columns. Usage, per `on_step`:

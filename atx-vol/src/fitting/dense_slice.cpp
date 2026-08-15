@@ -1,8 +1,11 @@
 #include "atx/vol/api/fitting/dense_slice.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstddef>
+#include <cstdlib>
+#include <cstring>
 #include <functional>
 #include <limits>
 #include <string>
@@ -12,8 +15,10 @@
 #include "atx/core/error.hpp"
 #include "atx/core/linalg/linalg.hpp" // MatX, VecX
 #include "atx/core/linalg/solve.hpp"  // solve, solve_spd
-#include "atx/vol/api/pricing/black76.hpp"        // black76_price, black76_value_and_vega
-#include "atx/vol/api/pricing/implied_vol.hpp"    // implied_vol
+#include "atx/vol/api/pricing/black76.hpp"     // black76_price, black76_value_and_vega
+#include "atx/vol/api/pricing/implied_vol.hpp" // implied_vol
+
+#include "fitting/dense_slice_price.hpp" // safe_call_price (shared w/ vol_curve.cpp)
 
 namespace atx::vol {
 
@@ -25,12 +30,50 @@ using atx::core::linalg::solve;
 using atx::core::linalg::solve_spd;
 using atx::core::linalg::VecX;
 
+namespace detail {
+// Task P-5 review N-1: the ONE place that reads `g_iv_early_exit_disabled`
+// from outside this TU. Mirrors derivatives.cpp's
+// `strip_batch_disabled_for_test` precedent -- declared here (external
+// linkage, no header touched) so a bench or test TU reads the EXACT
+// predicate production reads (env_flag_enabled's exact-match-"1" semantics)
+// instead of each re-deriving its own (weaker, presence-only) guess at what
+// the environment variable means. Defined below, past the anonymous
+// namespace `g_iv_early_exit_disabled` lives in.
+[[nodiscard]] bool iv_early_exit_disabled_for_test() noexcept;
+} // namespace detail
+
 namespace {
 
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 constexpr double kQpCertificateTol = 1.0e-8;
 constexpr double kQpActiveTol = 1.0e-9;
 constexpr double kQpStartTol = 1.0e-12;
+
+// Read a boolean override from an environment variable ONCE at process load,
+// mirroring derivatives.cpp's `ATX_VOL_DISABLE_STRIP_BATCH` seed (same
+// rationale: a bench leg toggles a whole-process default without touching any
+// call site). "1" enables the override; anything else (including unset)
+// leaves it off.
+[[nodiscard]] bool env_flag_enabled(const char *name) noexcept {
+#if defined(_WIN32)
+  std::size_t sz = 0;
+  char buf[8] = {};
+  if (getenv_s(&sz, buf, sizeof(buf), name) != 0 || sz == 0) {
+    return false;
+  }
+  return std::strcmp(buf, "1") == 0;
+#else
+  const char *v = std::getenv(name);
+  return v != nullptr && std::strcmp(v, "1") == 0;
+#endif
+}
+
+// Task P-5 (FIT-P1) test/bench seam: forces ConvexSliceFit::iv()'s bisection
+// to run its full fixed 64 iterations (pre-P-5 behavior) even though the
+// early-exit tolerance below converges sooner. Production call sites never
+// set this; the paired A/B bench uses the ATX_VOL_DISABLE_IV_EARLY_EXIT env
+// seed to measure the SAME binary with and without the optimization.
+std::atomic<bool> g_iv_early_exit_disabled{env_flag_enabled("ATX_VOL_DISABLE_IV_EARLY_EXIT")};
 
 struct QpSolveResult {
   VecX x;
@@ -160,7 +203,8 @@ struct QpSolveResult {
 // means dropping that constraint decreases the objective. Otherwise a ratio test
 // caps the step at the nearest inactive constraint and adds it to the set.
 [[nodiscard]] atx::core::Result<QpSolveResult>
-qp_active_set(const MatX &H, const VecX &q, const MatX &G, const VecX &h, VecX x, int max_iter) {
+qp_active_set(const MatX &H, const VecX &q, const MatX &G, const VecX &h, VecX x, int max_iter,
+              std::vector<Eigen::Index> *dropped_rows = nullptr) {
   const bool dimensions_ok = H.rows() == H.cols() && H.rows() == x.size() && q.size() == x.size() &&
                              G.cols() == x.size() && G.rows() == h.size();
   if (!dimensions_ok || !H.allFinite() || !q.allFinite() || !G.allFinite() || !h.allFinite() ||
@@ -236,13 +280,60 @@ qp_active_set(const MatX &H, const VecX &q, const MatX &G, const VecX &h, VecX x
       if (worst < 0) {
         return Ok(qp_result(H, q, G, h, std::move(x), wset, lambda, iter + 1, true)); // KKT-optimal
       }
+      // Anti-cycling (scoped Bland's rule): two rows can carry the EXACT same
+      // multiplier -- e.g. a calendar-floor row admitted as a numeric duplicate
+      // of an intrinsic-bound row, both constraining the same node identically.
+      // Position in `wset` is insertion order, not a fixed row identity, so
+      // breaking such a tie by "whichever the scan hit first" is itself hidden
+      // state that can flip between visits to the same vertex and cycle.
+      // Re-scan and keep the tied entry whose underlying constraint ROW index
+      // is lowest -- a pure function of (G, h, x), never of insertion history.
+      for (Eigen::Index i = 0; i < nw; ++i) {
+        if (lambda(i) == worst_val &&
+            wset[static_cast<std::size_t>(i)] < wset[static_cast<std::size_t>(worst)]) {
+          worst = i;
+        }
+      }
       const Eigen::Index drop = wset[static_cast<std::size_t>(worst)];
+      if (dropped_rows != nullptr) {
+        dropped_rows->push_back(drop); // test-only trace: see qp_active_set_for_test
+      }
       in_w[static_cast<std::size_t>(drop)] = 0;
       wset.erase(wset.begin() + worst);
       continue;
     }
 
     // Ratio test: largest α ∈ [0, 1] keeping G(x + αp) >= h for inactive rows.
+    // ai MUST be clamped at zero: "gix >= 0 => ai >= 0" is only an exact-
+    // arithmetic invariant. A row whose directional derivative sits inside the
+    // -1.0e-14 dead zone above is excluded from this test yet can still drift a
+    // few ulp past zero over many iterations, so gix can go a hair negative.
+    // Unclamped, that yields a NEGATIVE ai -- and since selection takes the
+    // MINIMUM, a negative value beats every legitimate positive one, with |ai|
+    // unbounded as |gip| shrinks toward the dead-zone edge. `x += alpha * p`
+    // would then step BACKWARD out of the feasible region by an arbitrary
+    // multiple; qp_result's certificate correctly refuses such a point (measured
+    // on real SPY boards: scaled primal violation saturating at 1.0) and the
+    // caller drops the whole slice. Clamping turns that into the degenerate
+    // zero-length step an active-set method takes at a tied vertex: the row joins
+    // the working set at the current iterate and the walk continues -- which is
+    // why the interval above is CLOSED at 0 rather than the pre-clamp (0, 1].
+    // Selection is the exact ARGMIN, never an epsilon band around it. A band
+    // admits rows that do NOT attain the minimum, so the row that enters the
+    // working set can be strictly inactive at x + alpha*p while the row that
+    // actually blocks stays out. Working set and active set then disagree, the
+    // next equality-constrained subproblem is posed on the wrong face, and the
+    // walk churns on zero-length steps to the iteration cap -- converged=false,
+    // which every caller surfaces as "QP failed KKT certification" (measured on
+    // the 40-node / 237-row SPY board in dense_slice_test.cpp, whose defining
+    // property is blocking constraints that tie to the last few ulp).
+    // Anti-cycling survives without a band: strict `<` keeps the FIRST row
+    // attaining the minimum, so rows tying EXACTLY -- e.g. a calendar-floor row
+    // admitted as a numeric duplicate of the same node's intrinsic-bound row --
+    // resolve to the lowest constraint-ROW index, a pure function of
+    // (G, h, x, p) and never of insertion history. Bland's rule breaks ties
+    // WITHIN the argmin set; widening that set is a different thing, and it
+    // buys determinism already had here at the price of termination.
     double alpha = 1.0;
     Eigen::Index block = -1;
     for (Eigen::Index i = 0; i < nc; ++i) {
@@ -252,22 +343,6 @@ qp_active_set(const MatX &H, const VecX &q, const MatX &G, const VecX &h, VecX x
       const double gip = G.row(i).dot(p);
       if (gip < -1.0e-14) {
         const double gix = G.row(i).dot(x) - h(i); // residual to the RHS
-        // The ratio MUST be clamped at zero. "gix >= 0, so ai >= 0" is the exact
-        // arithmetic invariant, and it does not survive finite precision: rows
-        // whose directional derivative falls INSIDE the -1.0e-14 dead zone above
-        // are excluded from the ratio test yet still decrease, so their residual
-        // can drift a few ulp negative over many iterations. Unclamped, such a
-        // row yields a NEGATIVE ai — and since the selection below takes the
-        // MINIMUM ratio, a negative value beats every legitimate positive one,
-        // with |ai| = |gix/gip| unbounded when |gip| sits just past the dead
-        // zone. `x += alpha * p` then steps BACKWARDS along p by an arbitrary
-        // multiple and leaves the feasible region entirely; qp_result refuses to
-        // certify the result (measured on real SPY boards: scaled primal
-        // violation saturating at 1.0) and the caller drops the whole slice.
-        // Clamping turns that step into the degenerate ZERO-length step an
-        // active-set method is supposed to take at a tied vertex — the blocking
-        // row simply joins the working set at the current iterate. Inert on any
-        // solve whose ratios are all non-negative.
         const double ai = std::max(0.0, -gix / gip);
         if (ai < alpha) {
           alpha = ai;
@@ -298,6 +373,42 @@ struct Node {
 };
 
 } // namespace
+
+namespace detail {
+bool iv_early_exit_disabled_for_test() noexcept {
+  return g_iv_early_exit_disabled.load(std::memory_order_relaxed);
+}
+} // namespace detail
+
+// Test-only direct entry into the active-set QP kernel above. qp_active_set is
+// TU-local to this file (anonymous namespace), and fit_convex_slice's public
+// API always builds boards with >= 3 distinct strikes and never exposes
+// per-iteration state -- neither reaches the small hand-built problem sizes
+// (e.g. 2 variables) the ratio-test-clamp and anti-cycling characterization
+// tests in dense_slice_test.cpp need. Deliberately NOT declared in
+// dense_slice.hpp: this is QP-kernel test plumbing, not v1 public surface, so
+// the test file forward-declares this exact signature itself instead of
+// sharing a header. `dropped_rows_out`, if non-null, receives the row index
+// dropped at each multiplier-drop event, in order -- the only way to observe
+// the drop-side lowest-index tie-break's outcome directly, since a genuinely
+// tied-negative-multiplier board can otherwise converge to the identical
+// final x regardless of which tied row is dropped first (both end up
+// dropped either way; only the ORDER, not the final point, reveals the
+// tie-break rule).
+Result<VecX> qp_active_set_for_test(const MatX &H, const VecX &q, const MatX &G, const VecX &h,
+                                    VecX x0, int max_iter, bool *converged_out,
+                                    int *iterations_out,
+                                    std::vector<Eigen::Index> *dropped_rows_out = nullptr) {
+  ATX_TRY(QpSolveResult solved,
+          qp_active_set(H, q, G, h, std::move(x0), max_iter, dropped_rows_out));
+  if (converged_out != nullptr) {
+    *converged_out = solved.converged;
+  }
+  if (iterations_out != nullptr) {
+    *iterations_out = solved.iterations;
+  }
+  return Ok(std::move(solved.x));
+}
 
 double ConvexSliceFit::call_price(double K) const noexcept {
   if (u.empty() || C.size() != u.size() || !(K > 0.0) || !(F > 0.0) || !(df > 0.0)) {
@@ -330,11 +441,16 @@ double ConvexSliceFit::call_price(double K) const noexcept {
     }
     // Right wing in CALL space. A power tail matches the edge slope while
     // remaining positive, decreasing and convex, and tends to zero instead of
-    // flat-clamping a non-zero option price indefinitely.
+    // flat-clamping a non-zero option price indefinitely. FIT-C11: floor the
+    // exponent at a small positive epsilon rather than 0.0 -- a degenerate
+    // fitted edge (last two node prices exactly equal, zero slope) would
+    // otherwise clamp to EXACTLY 0.0 and C.back()*(K/Kn)^-0.0 == C.back() for
+    // every K, i.e. the flat-clamp this tail exists to avoid. The epsilon
+    // still decays (if slowly) instead of never decaying at all.
     const std::size_t n = u.size();
     const double Kn = u.back();
     const double slope = (C[n - 1] - C[n - 2]) / (u[n - 1] - u[n - 2]);
-    const double exponent = std::max(0.0, -slope * Kn / C.back());
+    const double exponent = std::max(1.0e-6, -slope * Kn / C.back());
     return C.back() * std::pow(K / Kn, -exponent);
   }
   // Bracket K and linearly interpolate (convexity-preserving: the piecewise-linear
@@ -352,22 +468,20 @@ double ConvexSliceFit::iv(double k_log) const noexcept {
   }
   const double K = F * std::exp(k_log);
   const double c = call_price(K);
-  if (!std::isfinite(c)) {
-    return kNaN;
-  }
   // Price-space convex wings legitimately approach intrinsic/zero so closely
   // that a finite-vol root is lost to floating-point cancellation. Project the
   // price into Black's open interval by taking the maximum with a parallel
-  // intrinsic+epsilon line (left) / epsilon floor (right). The maximum of these
+  // intrinsic+epsilon line (left) / epsilon floor (right); the maximum of these
   // convex functions remains convex, so numerical invertibility does not trade
-  // away the very shape guarantee the dense fit provides.
-  const double lower = df * std::max(F - K, 0.0);
-  const double upper = df * F;
-  const double gap = upper - lower;
-  const double epsilon = std::min(1.0e-6 * std::max(1.0, upper), 0.25 * gap);
-  const double safe_price =
-      std::min(std::max(c, lower + epsilon), std::nextafter(upper, lower));
-  if (!(safe_price > lower) || !(safe_price < upper)) {
+  // away the very shape guarantee the dense fit provides. This projection (plus
+  // the bracket-feasibility gate below it) is shared with the ConvexDense
+  // calendar-admission scan (src/vol_curve.cpp's scan_k) via
+  // detail::safe_call_price -- Task P-5 review I-1: the two call sites must
+  // agree on which wing prices are invertible, or they silently disagree
+  // exactly where a fitted price sits close to the intrinsic/forward bound
+  // (the defect class the price-space scan's first attempt hit).
+  const double safe_price = detail::safe_call_price(F, K, T, df, c);
+  if (!std::isfinite(safe_price)) {
     return kNaN;
   }
   // The generic IV helper stops at a price tolerance appropriate for market
@@ -380,9 +494,18 @@ double ConvexSliceFit::iv(double k_log) const noexcept {
   // would move the served price off the convex curve and create false density.
   double lo = 1.0e-10;
   double hi = kIvMax;
-  if (black76_price(F, K, T, hi, df, Side::Call) < safe_price) {
-    return kNaN;
-  }
+  // FIT-P1 (Task P-5): a fixed 64-iteration bisection here was up to ~260k
+  // Black-76 calls per Audit strip on a ConvexDense surface, with no early
+  // exit even once the bracket was already far tighter than any consumer
+  // reads. Break once the bracket is at the documented near-machine width
+  // (1e-12 relative to hi, absolute below hi=1) instead of always running to
+  // 64 -- this moves the returned midpoint by at most that bracket width, so
+  // it is NOT bit-identical to the old fixed-iteration result, only agreeing
+  // to within the stated tolerance (see dense_slice_test.cpp's
+  // IvBisectionEarlyExitMatchesPreP5BaselineWithin1e11 for the measured drift).
+  // `g_iv_early_exit_disabled` exists solely so a bench can measure the SAME
+  // binary with the optimization on and off (see its declaration above).
+  const bool early_exit = !g_iv_early_exit_disabled.load(std::memory_order_relaxed);
   for (int iter = 0; iter < 64; ++iter) {
     const double mid = 0.5 * (lo + hi);
     const double model = black76_price(F, K, T, mid, df, Side::Call);
@@ -390,6 +513,9 @@ double ConvexSliceFit::iv(double k_log) const noexcept {
       lo = mid;
     } else {
       hi = mid;
+    }
+    if (early_exit && (hi - lo) < 1.0e-12 * std::max(1.0, hi)) {
+      break;
     }
   }
   return 0.5 * (lo + hi);

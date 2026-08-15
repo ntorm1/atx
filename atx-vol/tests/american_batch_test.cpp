@@ -1071,7 +1071,7 @@ INSTANTIATE_TEST_SUITE_P(
         // K2 ql_fast marks rung: nb=7, fp=8, 2 sweeps, DECOUPLED premium p=32. The
         // AVX2 batch's intended ship tier — a low sweep budget makes it the most
         // seed-sensitive production scheme, so it pins the 4-wide BAW seed's economic
-        // parity vs the specialized scalar (7,8) baseline (kernel-stage1.md).
+        // parity vs the specialized scalar (7,8) baseline.
         AlSchemeMappingCase{"n7_q8_i2_p32_qlfast", AlOpts{.n_collocation = 7,
                                                          .n_quadrature = 8,
                                                          .n_quad_price = 32,

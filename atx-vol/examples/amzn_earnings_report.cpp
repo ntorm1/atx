@@ -418,11 +418,15 @@ int run(const std::string& opra_path, const std::string& snapshot_iso, double r,
 }  // namespace
 
 int main(int argc, char** argv) {
+  // Repo-relative defaults only, overridable with --opra. A third candidate used
+  // to name an absolute path inside a DIFFERENT worktree
+  // (C:/atx-wt/wt-amzn-earn/...), so running this from anywhere those two
+  // relative rungs miss silently reported on another checkout's committed
+  // fixture. A default may be wrong and say so; it must not be quietly right
+  // about the wrong tree.
   std::string opra = find_existing({
       "atx-vol/tests/data/amzn_earnings_2018/amzn_opra_cbbo1m_2018-04-26T1945Z.parquet",
       "../atx-vol/tests/data/amzn_earnings_2018/amzn_opra_cbbo1m_2018-04-26T1945Z.parquet",
-      "C:/atx-wt/wt-amzn-earn/atx-vol/tests/data/amzn_earnings_2018/"
-      "amzn_opra_cbbo1m_2018-04-26T1945Z.parquet",
   });
   std::string snapshot = "2018-04-26T19:45:00Z";
   double r = 0.019;

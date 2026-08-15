@@ -166,6 +166,42 @@ struct GreekNeeds {
   }
 };
 
+// ── Strip-carry hoisting (Task P-1) ─────────────────────────────────────────
+//
+// A quadrature strip (the var-swap/vol-swap/greeks node loop in
+// derivatives.cpp) queries one surface at ONE constant T across up to ~2000
+// log-moneyness nodes. `iv(K, T)` re-derives T's forward/carry AND the
+// surface's own T-bracket on EVERY call -- pure waste when T does not move
+// between calls, exactly the ladder-reuse case `evaluate_batch` already
+// exploits for a run of bit-identical-T queries (see its "T-bracket and carry
+// are resolved ONCE and reused ... bit-identical" comment below).
+// `strip_carry_at` / `iv_with_carry` generalize that same hoist to a caller
+// that cannot present its whole ladder as one span up front (a quadrature
+// node loop interleaves the surface read with outer pricing arithmetic per
+// node, and a greek stencil re-queries at a second, ROLLED T for its theta/
+// charm repricings).
+//
+// `SurfaceStripCarry` is namespace-scope (not nested in `PricedSurface`)
+// because `PricedSurfaceView` (priced_surface_view.hpp) produces and consumes
+// the identical snapshot for its own zero-copy queries, and `SurfaceRef`
+// (portfolio_pricer.hpp) forwards to whichever of the two a borrowed handle
+// wraps -- one shared value type keeps that forwarding a single overload
+// pair instead of a tagged union of two structurally-identical per-class
+// types. Fields are an opaque snapshot: construct via `strip_carry_at` and
+// consume via `iv_with_carry`; do not construct, compare, or mutate them
+// directly, and do not reuse a token across a different T or a different
+// surface instance.
+struct SurfaceStripCarry {
+  double T{0.0};
+  double forward{0.0};
+  double q_eff{0.0};
+  double rate{0.0};
+  std::size_t bracket_lo{0};
+  std::size_t bracket_hi{0};
+  double bracket_upper_weight{0.0};
+  bool valid{false};
+};
+
 // A fitted, serialization-ready surface with optional transient query caches.
 // Move-only (owns a move-only `CurveSurface`). Construct via `create` (validating)
 // or receive one from `VolaSession::to_priced_surface` /
@@ -202,11 +238,18 @@ public:
   // reconstructing the surface. IV and total variance are tier-independent.
 
   // European-equivalent implied vol at absolute strike K and year-fraction T. NaN
-  // outside the surface's no-extrapolation domain or for non-finite/non-positive
-  // K/T. Identical to `VolaSession::iv` on the override path.
+  // only for non-finite/non-positive K/T (or an empty surface) -- there is no
+  // fitted-range gate here. Outside the fitted tenor range this EXTRAPOLATES
+  // (`CurveSurface::w`: flat vol short of the front pillar; flat total variance,
+  // i.e. zero forward variance, at or past the last one). It does NOT return NaN
+  // the way `VolSurface` and the demoted per-family containers do outside
+  // THEIR fitted range; a caller that needs that stricter guarantee must
+  // check K/T against `context()` itself. Identical to `VolaSession::iv` on
+  // the override path.
   [[nodiscard]] double iv(double K, double T) const noexcept;
 
-  // Total variance w(k, T) = sigma^2 * T at (K, T). Same domain / NaN semantics.
+  // Total variance w(k, T) = sigma^2 * T at (K, T). Same domain / extrapolation
+  // semantics as `iv` above.
   [[nodiscard]] double total_variance(double K, double T) const noexcept;
 
   // Re-Americanized model fair value at (K, T, side). Cold tiers price the
@@ -400,6 +443,39 @@ public:
   // Per-expiry rate derived from each stored curve's discount factor. Old
   // archives fall back to `PricingContext::r` if a slice carries invalid df/T.
   [[nodiscard]] double rate_at(double T) const noexcept;
+
+  // Batched sibling of `iv(K,T)` (Task P-3 / GK-P2): resolves this surface's
+  // T-bracket and forward/carry ONCE (exactly like `strip_carry_at` does),
+  // then reads every strike -- eliminating the per-call re-resolution that N
+  // independent `iv(K[i], T)` calls each pay redundantly (a quadrature strip
+  // is the intended caller: it queries one T across up to ~2000 K's).
+  // Bit-identical to calling `iv(K[i], T)` for each i: `interp_forward(T)` /
+  // `CurveSurface::bracket(T)` are pure functions of T alone over this
+  // surface's immutable state, so resolving them once and reusing computes
+  // exactly what N fresh per-call resolutions would (the same guarantee
+  // `evaluate_batch`'s bit-identical-T ladder reuse already relies on).
+  // `out[i]` is NaN wherever `K[i]` is non-finite/non-positive or `T` is
+  // invalid, matching `iv`'s own domain exactly.
+  // Precondition (asserted in debug, degrades to the shorter length in
+  // release rather than reading/writing out of bounds): `K.size() ==
+  // out.size()`.
+  void iv_batch(std::span<const double> K, double T, std::span<double> out) const noexcept;
+
+  // ── Strip-carry hoisting (Task P-1; see SurfaceStripCarry above) ───────────
+
+  // Resolve T's forward/carry and this surface's own T-bracket ONCE. `valid`
+  // is false (every other field left at its sentinel) for a non-finite/
+  // non-positive T or an empty surface -- `iv_with_carry` then reads that as
+  // "no opinion" and returns NaN, mirroring `iv(K,T)`'s own T-invalid path.
+  [[nodiscard]] SurfaceStripCarry strip_carry_at(double T) const noexcept;
+
+  // Surface IV at absolute strike K, off a carry already resolved by
+  // `strip_carry_at`. Bit-identical to `iv(K, carry.T)` -- `interp_forward`/
+  // `CurveSurface::bracket` are pure functions of T over this surface's
+  // immutable state, so resolving once and reusing computes exactly what a
+  // fresh per-call resolve would have. NaN for a non-finite/non-positive K or
+  // an invalid carry (see above).
+  [[nodiscard]] double iv_with_carry(double K, const SurfaceStripCarry &carry) const noexcept;
 
   // ── Introspection ──────────────────────────────────────────────────────────
 

@@ -432,7 +432,9 @@ inline constexpr double kNoArbSigmaSpan = 4.0;
 inline constexpr double kNoArbSpanMin = 0.1;
 inline constexpr double kNoArbSpanMax = 1.5;
 inline constexpr std::uint32_t kNoArbGrid = 128u;
-inline constexpr double kNoArbCalendarTol = 1.0e-7;  // matches arb.cpp
+// Task F-4: was a local `1.0e-7` whose comment asked the reader to keep it
+// matching arb.cpp; it now IS arb.cpp's constant (types.hpp).
+inline constexpr double kNoArbCalendarTol = kCalendarTotalVarianceTol;
 
 [[nodiscard]] std::uint32_t inserted_slice_no_arb_status(
     const VolSurface& surface, const InsertedSliceHandle& h) {

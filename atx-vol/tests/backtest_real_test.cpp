@@ -35,14 +35,16 @@
 
 #include <process.h>  // _getpid — private temp dir per test process (parallel gate)
 
+#include "support/test_paths.hpp"  // testkit::market_data
+
 #include "atx/vol/api/backtest/backtest.hpp"        // Clock, run_backtest, RunConfig, BacktestResult, MarketSnapshot
-#include "atx/vol/api/marketdata/corpus.hpp"          // CorpusBoard, CorpusConfig, build_corpus, CorpusManifest
-#include "atx/vol/api/core/market_env.hpp"      // MarketEnv
-#include "atx/vol/api/marketdata/opra_batch.hpp"      // market_env_from_frame
-#include "atx/vol/api/marketdata/opra_panel.hpp"      // load_opra_cbbo_parquet, OpraLoadSpec
-#include "atx/vol/api/fitting/pricer_fitter.hpp"   // PricerConfig
+#include "atx/vol/api/marketdata/corpus.hpp"        // CorpusBoard, CorpusConfig, build_corpus, CorpusManifest
+#include "atx/vol/api/core/market_env.hpp"          // MarketEnv
+#include "atx/vol/api/marketdata/opra_batch.hpp"    // market_env_from_frame
+#include "atx/vol/api/marketdata/opra_panel.hpp"    // load_opra_cbbo_parquet, OpraLoadSpec
+#include "atx/vol/api/fitting/pricer_fitter.hpp"    // PricerConfig
 #include "atx/vol/api/backtest/priced_surface.hpp"  // PricedSurface
-#include "atx/vol/api/fitting/session.hpp"         // FitPreset
+#include "atx/vol/api/fitting/session.hpp"          // FitPreset
 #include "atx/vol/api/backtest/strategy.hpp"        // DeclarativeStrategy, StrategySpec, resolve_strike_by_delta
 #include "atx/vol/tools/tearsheet.hpp"       // TearSheet, tearsheet, write_backtest_tsv
 #include "atx/vol/api/core/types.hpp"           // Side, Result, Status
@@ -64,21 +66,11 @@ constexpr double kTargetT = 30.0 / 365.25;  // ~30d put tenor (~0.0821)
   return ba == bb;
 }
 
-// Locate the cached SPY parquet across the paths a test binary might run from
-// (identical search to spy_real_test).
+// Locate the cached SPY parquet. Empty when absent (caller GTEST_SKIPs) -- the
+// fixture is licensed vendor data and is not committed.
 [[nodiscard]] std::string find_spy_parquet() {
-  const char* candidates[] = {
-      "data/spy_opra_cbbo1m_2026-06-05T1955Z.parquet",
-      "../data/spy_opra_cbbo1m_2026-06-05T1955Z.parquet",
-      "../../data/spy_opra_cbbo1m_2026-06-05T1955Z.parquet",
-      "C:/atx/data/spy_opra_cbbo1m_2026-06-05T1955Z.parquet",
-  };
-  for (const char* c : candidates) {
-    if (fs::exists(c)) {
-      return c;
-    }
-  }
-  return {};
+  return atx::vol::testkit::market_data_if_present("spy_opra_cbbo1m_2026-06-05T1955Z.parquet")
+      .string();
 }
 
 // Every numeric column of two BacktestResults is bit-identical (determinism).

@@ -1,15 +1,42 @@
 """Gate test for tools/render_strangle_vs_varswap.py.
 
-The renderer's input is the track TSV `atx-vol-strangle-varswap-driver` writes
+The renderer's input is the track TSV `atx-vol-varswap-compare-example` writes
 through `atx::vol::write_backtest_pnl_tsv`: a `# key=value` meta header, the 27
 pinned series columns, then one dynamic column per signal — the eight
-`StrangleVsVarswapStrategy` comparison signals plus the `swap_pv`/`swap_pnl`
-pair the driver appends (those two are deliberately absent from the frozen
-serialized column set, so the driver rides them in as signals rather than
-touching `kBacktestSeriesColumns`).
+comparison signals the strategy publishes plus the tail the example attaches
+(that tail is deliberately absent from the frozen serialized column set, so the
+example rides it in as signals rather than touching `kBacktestSeriesColumns`).
+
+THE ATTACHED TAIL IS NOT SPELLED OUT HERE. It is parsed at run time out of the
+C++ that emits it, because a hand-copied list is exactly how task F-8 landed
+eight P&L-explain columns in the engine that never reached the TSV: the C++ lane
+emitted them, the Python lane did not know they existed, and nothing was red.
+
+WHICH FILE IS PARSED CHANGED IN FIX ROUND 4, and the reason is the point. The
+example used to hand-list all ten attaches, so this module read that table and
+compared it against `backtest.hpp`'s declarations. The example now DERIVES its
+explain tail from `swap_explain_columns()` — the engine's single roster — so the
+C++ compiler guarantees that comparison and re-asserting it here would be a
+tautology dressed as coverage. What is parsed instead:
+
+  * `ROSTER_COLUMNS` from `src/backtest.cpp`'s `kSwapExplainColumns`, checked
+    against the header's declarations. This is the pairing C++ cannot check:
+    there is no reflection, so a row naming one column beside another's member
+    compiles and ships a mislabelled TSV column.
+  * `DRIVER_SIGNAL_COLUMNS` from the example, now only its two literal lead
+    attaches — asserted to contain NO explain column, which is the
+    anti-regression for the unification itself.
+
+THE COLUMN SET ITSELF IS NO LONGER THIS MODULE'S JOB, as of fix round 8.
+`tests/varswap_compare_columns_test.cpp` links the example's translation unit,
+calls the shipped attach, writes a real TSV and diffs its header against
+`swap_explain_columns()` — the artifact, not the source text. Three mutations
+that this module was measured to pass are red there; see
+`example_derives_the_explain` for the list and for what parsing still does buy.
+Do not answer a gap in that C++ test by sharpening a regex here.
 
 The fixture below is hand-built rather than produced by a run, and it encodes
-the three data facts the renderer has to survive:
+the four data facts the renderer has to survive:
 
   * a ONE-LEGGED TAIL. The last cycle of a corpus whose calendar runs out
     mid-tenor carries no swap, so every `swap_*` signal is NaN on those rows.
@@ -19,6 +46,13 @@ the three data facts the renderer has to survive:
     keyed off `swap_vega` and never off `swap_theta`.
   * `skipped_restrikes` / `skipped_swaps` are CUMULATIVE, so the per-session
     event count is the consecutive-row difference.
+  * the P&L EXPLAIN IS OPT-IN. `RunConfig::swap_pnl_explain` is off by default
+    because it costs up to 20 repricings per live lot per step, and off, the
+    engine leaves those columns EMPTY rather than zero-filled — the distinction
+    between "not computed" and "computed as zero". A track without them is
+    therefore ordinary input, and reading their absence as a flat attribution
+    would destroy exactly the distinction the C++ side paid to keep. The fixture
+    writes tracks both ways.
 """
 
 from __future__ import annotations
@@ -104,11 +138,348 @@ PINNED_COLUMNS = [
     "n_unpriced_lots", "n_unpriced_greeks",
 ]
 
-# The dynamic signal tail: the strategy's eight, then the driver's two.
-SIGNAL_COLUMNS = [
+# ── the dynamic signal tail, derived from the C++ that emits it ─────────────
+#
+# The strategy's eight come out of `src/strategy.cpp` / `src/swap_leg.cpp`, one
+# `out.emplace_back` per probe greek plus the two cumulative counters. The rest
+# of the tail is whatever `examples/varswap_compare_example.cpp` attaches, and is
+# READ FROM THAT FILE rather than copied — see the module docstring.
+STRATEGY_SIGNAL_COLUMNS = [
     "swap_delta", "swap_gamma", "swap_vega", "swap_theta", "swap_rho", "strangle_vega",
-    "skipped_restrikes", "skipped_swaps", "swap_pv", "swap_pnl",
+    "skipped_restrikes", "skipped_swaps",
 ]
+
+_HEADER = _ATX_VOL_ROOT / "include" / "atx" / "vol" / "backtest.hpp"
+_EXAMPLE = _ATX_VOL_ROOT / "examples" / "varswap_compare_example.cpp"
+_ROSTER = _ATX_VOL_ROOT / "src" / "backtest.cpp"
+
+_EXPLAIN_PREFIX = "swap_explain_"
+
+
+def _leading_identifier(text: str) -> str:
+    """The C identifier `text` starts with, or "" if it does not start with one.
+
+    Hand-rolled rather than a regex ON PURPOSE. Every caller below reports a
+    DISTINGUISHABLE failure — nothing declared, declared twice, a cell that will
+    not parse — and a regex that simply does not match collapses all three into
+    one indistinguishable negative. A silent non-match is the failure mode these
+    parsers exist to replace, so it must not be reintroduced by the splitter.
+    """
+    end = 0
+    while end < len(text) and (text[end].isalnum() or text[end] == "_"):
+        end += 1
+    return text[:end]
+
+
+def _comment_body(line: str) -> str:
+    """The prose of a `//` comment line, with the slashes and padding removed."""
+    return line.strip().lstrip("/").strip()
+
+
+def declared_explain_columns(source: str, where: str) -> list[str]:
+    """The `swap_explain_*` members `BacktestResult` declares, in order.
+
+    One entry per name on a `std::vector<double> a, b;` declaration line, so the
+    engine's own field list is the source of truth for what the explain is.
+    """
+    lines = source.splitlines()
+    found: list[str] = []
+    for line in lines:
+        text = line.strip()
+        if text.startswith("//") or not text.startswith("std::vector<double>"):
+            continue
+        body = text[len("std::vector<double>"):].strip().rstrip(";")
+        for part in body.split(","):
+            name = _leading_identifier(part.strip())
+            if name.startswith(_EXPLAIN_PREFIX):
+                found.append(name)
+    if not found:
+        raise AssertionError(
+            f"{where}: no `std::vector<double> {_EXPLAIN_PREFIX}*` member declared "
+            f"in {len(lines)} lines scanned. This test reads the engine's own field "
+            "list; if the explain moved, point it at the new home rather than "
+            "hand-copying the names back in."
+        )
+    duplicated = sorted({n for n in found if found.count(n) > 1})
+    if duplicated:
+        raise AssertionError(
+            f"{where}: {duplicated} declared more than once, so the column order "
+            "this test derives is ambiguous."
+        )
+    return found
+
+
+def identity_flow_columns(source: str, where: str) -> list[str]:
+    """The summands of `BacktestResult`'s `... == swap_pnl` identity comment.
+
+    That comment is the engine's statement of WHICH explain columns are dollar
+    flows that decompose `swap_pnl`; the rest of `swap_explain_*` is not. The
+    renderer must sum exactly these, so it is read from there rather than
+    re-decided here.
+    """
+    lines = source.splitlines()
+    hits = [
+        i for i, line in enumerate(lines)
+        if line.strip().startswith("//") and "== swap_pnl" in line
+    ]
+    if len(hits) != 1:
+        raise AssertionError(
+            f"{where}: {len(hits)} comment lines carry the `== swap_pnl` identity "
+            f"({len(lines)} lines scanned); exactly one is required, and "
+            f"{'none names the explain components' if not hits else 'more than one is ambiguous'}."
+        )
+    row = hits[0]
+    if row == 0:
+        raise AssertionError(f"{where}: the `== swap_pnl` identity has no summand line above it.")
+    expression = f"{_comment_body(lines[row - 1])} {_comment_body(lines[row])}"
+    left, _, right = expression.partition("==")
+    if right.strip() != "swap_pnl":
+        raise AssertionError(
+            f"{where}: the identity reads `{expression}`, whose right-hand side is "
+            f"{right.strip()!r} rather than `swap_pnl`."
+        )
+    summands: list[str] = []
+    for part in left.split("+"):
+        name = _leading_identifier(part.strip())
+        if not name or name != part.strip():
+            raise AssertionError(
+                f"{where}: identity summand {part.strip()!r} is not a bare component "
+                f"name, so the explain column it means cannot be derived "
+                f"(identity read as `{expression}`)."
+            )
+        summands.append(_EXPLAIN_PREFIX + name)
+    duplicated = sorted({n for n in summands if summands.count(n) > 1})
+    if duplicated:
+        raise AssertionError(f"{where}: the identity names {duplicated} twice.")
+    return summands
+
+
+def roster_columns(source: str, where: str) -> list[str]:
+    """The `swap_explain_*` columns `kSwapExplainColumns` names, in table order.
+
+    THE ROSTER IS THE ENGINE'S SINGLE LIST, and everything C++-side is driven
+    from it: `validate()`, `push_row`, both `backtest_db` shape rules, and (since
+    fix round 4) the example's attach loop. What C++ CANNOT check about it is the
+    one thing this parser exists for -- the name STRING beside each member. C++
+    has no reflection, so
+    `{"swap_explain_skew", &BacktestResult::swap_explain_convexity}` compiles
+    happily and ships a TSV column labelled `skew` carrying convexity dollars.
+    Each row must name the same identifier twice.
+
+    Read from `src/backtest.cpp` rather than copied. Order matters: it is the
+    enum order, the TSV column order, and -- asserted below -- the declaration
+    order.
+    """
+    lines = source.splitlines()
+    found: list[str] = []
+    for line in lines:
+        text = line.strip()
+        if not text.startswith('{"'):
+            continue
+        name, quote, rest = text[2:].partition('"')
+        if not quote:
+            raise AssertionError(f"{where}: unterminated column name in roster row `{text}`.")
+        if not name.startswith(_EXPLAIN_PREFIX):
+            continue
+        _, marker, tail = rest.partition("&BacktestResult::")
+        if not marker:
+            raise AssertionError(
+                f"{where}: roster row `{text}` names no `&BacktestResult::<field>` "
+                "member, so the column cannot be tied back to the field it carries."
+            )
+        field = _leading_identifier(tail)
+        if name != field:
+            raise AssertionError(
+                f"{where}: roster row `{text}` emits column {name!r} from field "
+                f"{field!r}. They must match - the renderer finds the explain tail "
+                "by the field-name prefix, and C++ cannot check this pairing."
+            )
+        found.append(name)
+    if not found:
+        raise AssertionError(
+            f"{where}: no `{_EXPLAIN_PREFIX}*` roster rows naming a "
+            f"`&BacktestResult::` member in {len(lines)} lines scanned. This test "
+            "reads the engine's own roster; if it moved, point this at the new home "
+            "rather than hand-copying the names back in."
+        )
+    duplicated = sorted({n for n in found if found.count(n) > 1})
+    if duplicated:
+        raise AssertionError(f"{where}: roster names {duplicated} more than once.")
+    return found
+
+
+def example_derives_the_explain(source: str, where: str) -> bool:
+    """Is there a roster-driven attach loop in the example's source TEXT?
+
+    THAT IS THE PREDICATE, and it is narrower than the property anyone wants.
+    Read the three checks below as the whole of what this function knows:
+
+      1. some line contains `swap_explain_columns()` and starts with `for`;
+      2. the brace-matched body after it mentions `attach_one`;
+      3. that body contains none of the tokens `continue`, `break`, `return`.
+
+    WHAT THAT MISSES. Every line below was MEASURED by running this predicate
+    over a mutated copy of the example, because the round-8 version of this list
+    was itself wrong -- and a miss list that over- or under-states is the same
+    artifact as a check that over-claims:
+
+      * `if (column.name != "swap_explain_skew") { attach_one(...); }` -- skips a
+        column with no early-exit TOKEN to find. MISSED.
+      * `swap_explain_columns().subspan(0, 4)` -- check 1 still matches, the body
+        is unconditional, half the roster never reaches the TSV. MISSED.
+      * `attach_one(r, "swap_explain_carry", r.*(column.member))` -- a hardcoded
+        name, so eight members ship under one column name. MISSED.
+      * a literal `attach_one(r, "swap_explain_bonus", ...)` BESIDE the loop --
+        the loop itself still parses clean. MISSED here (`example_attached_columns`
+        is the parser that looks at literal attaches; this one does not).
+      * the whole body commented out with `(void)column;` left behind -- check 2
+        looks for the TEXT `attach_one`, which a COMMENT satisfies. MISSED.
+      * a misrouted member (right name, wrong data). MISSED when spelled as a
+        range-for. NOT missed when spelled as an index loop -- `for (std::size_t
+        i = ...)` puts `swap_explain_columns()` on a different line, so check 1
+        finds no loop and RAISES. Round 8 listed that spelling as a miss; it is
+        caught, for a reason that has nothing to do with the defect. The property
+        is genuinely missed; that spelling of it is not.
+
+    So this is a source-SHAPE check, not a column-SET check, and rounds 3-7 spent
+    themselves sharpening an approximation. THE COLUMN SET IS NOW OWNED BY A TEST
+    THAT READS THE ARTIFACT: tests/varswap_compare_columns_test.cpp compiles the
+    example's own TU (with `main` suppressed), calls the shipped
+    `attach_swap_columns`, writes a real TSV, and diffs that file's header
+    against `swap_explain_columns()`. Measured there, mutation by mutation:
+    hardcoded name 3/3 red; commented-out body 2/3; conditional skip 2/3;
+    subspan 2/3; misroute 1/3 -- the value assertion alone, which is how that
+    assertion earns its place; extra literal column 1/3 -- the header-equality
+    assertion alone, which is how THAT one earns its place. Spelling does not
+    reach it: it reads the emitted TSV, so the index and range-for forms of the
+    misroute are the same defect to it.
+
+    This function stays because it guards something the artifact test cannot see:
+    that the tail is DERIVED rather than hand-listed. A literal eight-row table
+    that happens to be correct today emits the right header and passes the C++
+    gate -- and is the fifth copy of the roster coming back, one edit away from
+    drifting. Check 1 is what refuses it.
+    """
+    lines = source.splitlines()
+    header = None
+    for i, line in enumerate(lines):
+        if "swap_explain_columns()" in line and line.strip().startswith("for "):
+            header = i
+            break
+    if header is None:
+        raise AssertionError(
+            f"{where}: no `for (... : swap_explain_columns())` loop in {len(lines)} lines "
+            "scanned. The explain tail must be DERIVED from the roster; a literal list "
+            "here is the fifth copy of it coming back, and an absent loop is a TSV with "
+            "no attribution at all."
+        )
+    body: list[str] = []
+    depth = 0
+    for line in lines[header:]:
+        depth += line.count("{") - line.count("}")
+        body.append(line.strip())
+        if depth <= 0 and len(body) > 1:
+            break
+    joined = " ".join(body)
+    if "attach_one" not in joined:
+        raise AssertionError(
+            f"{where}: the roster loop does not call `attach_one`, so it emits nothing: "
+            f"`{joined}`"
+        )
+    for escape in ("continue", "break", "return"):
+        if escape in joined:
+            raise AssertionError(
+                f"{where}: the roster loop body contains `{escape}`, so it can skip a "
+                f"column the roster yields and the TSV would silently lose it: `{joined}`"
+            )
+    return True
+
+
+def example_attached_columns(source: str, where: str) -> list[str]:
+    """The signal columns the example HAND-LISTS, in emitted order.
+
+    Since fix round 4 the example derives its explain tail from
+    `swap_explain_columns()`, so the only literal attaches left are the two lead
+    columns. Each reads `attach_one(r, "<name>", r.<field>)`, and the two halves
+    must be the SAME identifier: the TSV column IS the result field, which is
+    what lets the renderer discover the explain tail by prefix.
+
+    This parser therefore no longer derives the tail -- `roster_columns` does.
+    What it still establishes is that nothing has hand-listed an explain column
+    back into this file.
+    """
+    marker_text = 'attach_one(r, "'
+    lines = source.splitlines()
+    attached: list[str] = []
+    for line in lines:
+        _, marker, rest = line.partition(marker_text)
+        if not marker:
+            continue
+        name, quote, tail = rest.partition('"')
+        if not quote:
+            raise AssertionError(f"{where}: unterminated column name in attach `{line.strip()}`.")
+        _, member, member_tail = tail.partition("r.")
+        if not member:
+            raise AssertionError(
+                f"{where}: attach `{line.strip()}` names no `r.<field>` member, so the "
+                "column cannot be tied back to the field it carries."
+            )
+        field = _leading_identifier(member_tail)
+        if name != field:
+            raise AssertionError(
+                f"{where}: attach `{line.strip()}` emits column {name!r} from field "
+                f"{field!r}. They must match - the renderer finds the explain tail "
+                "by the field-name prefix, and a renamed column silently hides it."
+            )
+        attached.append(name)
+    if not attached:
+        raise AssertionError(
+            f'{where}: no `attach_one(r, "name", r.field)` calls in {len(lines)} lines '
+            "scanned, so what this fixture hand-lists cannot be determined."
+        )
+    return attached
+
+
+EXPLAIN_COLUMNS = declared_explain_columns(_HEADER.read_text(encoding="utf-8"), str(_HEADER))
+EXPLAIN_FLOW_COLUMNS = identity_flow_columns(_HEADER.read_text(encoding="utf-8"), str(_HEADER))
+ROSTER_COLUMNS = roster_columns(_ROSTER.read_text(encoding="utf-8"), str(_ROSTER))
+EXAMPLE_DERIVES = example_derives_the_explain(
+    _EXAMPLE.read_text(encoding="utf-8"), str(_EXAMPLE)
+)
+# What the example HAND-LISTS. Since fix round 4 that is only the two lead
+# columns; the explain tail is a loop over the roster.
+DRIVER_SIGNAL_COLUMNS = example_attached_columns(
+    _EXAMPLE.read_text(encoding="utf-8"), str(_EXAMPLE)
+)
+
+
+def _explain_counter() -> str:
+    """The one `swap_explain_*` column the identity does NOT sum: the counter.
+
+    Derived by difference so neither list is written down twice. Two counters (or
+    none) means the engine changed shape in a way the renderer's single exclusion
+    rule no longer describes, and that has to be a loud failure rather than a
+    silently wrong attribution.
+    """
+    rest = [c for c in EXPLAIN_COLUMNS if c not in EXPLAIN_FLOW_COLUMNS]
+    if len(rest) != 1:
+        raise AssertionError(
+            f"{_HEADER}: expected exactly one `{_EXPLAIN_PREFIX}*` column outside the "
+            f"`== swap_pnl` identity (the unattributed COUNTER); found {rest}. The "
+            "renderer excludes exactly one column from the attribution sum."
+        )
+    return rest[0]
+
+
+EXPLAIN_COUNTER = _explain_counter()
+
+# The full dynamic tail, in TSV order: the strategy's signals, then what the
+# example emits -- its two hand-listed lead columns followed by its loop over the
+# roster. Assembled from the two halves in that order because that is literally
+# what `attach_swap_columns` does; before fix round 4 the example hand-listed the
+# whole thing and this was one parse.
+EMITTED_SIGNAL_COLUMNS = DRIVER_SIGNAL_COLUMNS + ROSTER_COLUMNS
+SIGNAL_COLUMNS = STRATEGY_SIGNAL_COLUMNS + EMITTED_SIGNAL_COLUMNS
 
 DATES = ["2026-01-02", "2026-01-05", "2026-01-06", "2026-01-07", "2026-01-08"]
 BASE_TS = 1767398400000000000
@@ -130,9 +501,56 @@ SWAP_RHO = [40.0, 41.0, 42.0, math.nan, math.nan]
 STRANGLE_VEGA = [12000.0, 11800.0, 11500.0, 6000.0, 5800.0]
 SKIPPED_RESTRIKES = [0.0, 0.0, 1.0, 1.0, 1.0]
 SKIPPED_SWAPS = [0.0, 0.0, 0.0, 1.0, 1.0]
+# Lot-steps whose move the explain could not attribute (a lot's first mark, a
+# failed greek solve). NON-ZERO on two rows on purpose: it is the one
+# `swap_explain_*` column that is a COUNT rather than a dollar flow, so a
+# renderer that summed it into the attribution would break the identity here.
+UNATTRIBUTED = [1.0, 0.0, 2.0, 0.0, 0.0]
 
 # nav is the engine's running Σ step_total, i.e. the cumulative pnl_total.
 NAV = [0.0, 1200.0, 400.0, 850.0, 700.0]
+
+
+def explain_split(total: float) -> list[float]:
+    """Attribution shares for one row that sum EXACTLY back to `total`.
+
+    Thirty-seconds, so every share is exact in binary for this fixture's P&L
+    values and the identity test measures the RENDERER's arithmetic rather than
+    the fixture's own rounding. The shares are DISTINCT (1, 2, 3 ... units) so a
+    renderer that mislabelled or reordered the components would not still agree
+    with this fixture by accident.
+    """
+    unit = total / 32.0
+    head = [unit * float(j + 1) for j in range(len(EXPLAIN_FLOW_COLUMNS) - 1)]
+    return head + [total - math.fsum(head)]
+
+
+_FIXTURE_SERIES = {
+    "swap_delta": SWAP_DELTA,
+    "swap_gamma": SWAP_GAMMA,
+    "swap_vega": SWAP_VEGA,
+    "swap_theta": SWAP_THETA,
+    "swap_rho": SWAP_RHO,
+    "strangle_vega": STRANGLE_VEGA,
+    "skipped_restrikes": SKIPPED_RESTRIKES,
+    "skipped_swaps": SKIPPED_SWAPS,
+    "swap_pv": SWAP_PV,
+    "swap_pnl": SWAP_PNL,
+}
+
+
+def _signal_value(name: str, i: int) -> float:
+    if name in _FIXTURE_SERIES:
+        return _FIXTURE_SERIES[name][i]
+    if name == EXPLAIN_COUNTER:
+        return UNATTRIBUTED[i]
+    if name in EXPLAIN_FLOW_COLUMNS:
+        return explain_split(SWAP_PNL[i])[EXPLAIN_FLOW_COLUMNS.index(name)]
+    raise AssertionError(
+        f"this fixture has no series for signal column {name!r}, which "
+        f"{_EXAMPLE.name} now attaches. A track the renderer must survive is one "
+        "this fixture can write, so give the new column data here."
+    )
 
 
 def _cell(v: float) -> str:
@@ -140,7 +558,7 @@ def _cell(v: float) -> str:
     return "nan" if isinstance(v, float) and math.isnan(v) else repr(float(v))
 
 
-def _row(i: int, *, with_swap: bool) -> list[str]:
+def _row(i: int, columns: list[str]) -> list[str]:
     pinned = {
         "date": DATES[i],
         "ts_ns": str(BASE_TS + i * DAY_NS),
@@ -170,33 +588,230 @@ def _row(i: int, *, with_swap: bool) -> list[str]:
         "n_unpriced_lots": _cell(0.0),
         "n_unpriced_greeks": _cell(0.0),
     }
-    out = [pinned[c] for c in PINNED_COLUMNS]
-    if with_swap:
-        signals = {
-            "swap_delta": SWAP_DELTA[i],
-            "swap_gamma": SWAP_GAMMA[i],
-            "swap_vega": SWAP_VEGA[i],
-            "swap_theta": SWAP_THETA[i],
-            "swap_rho": SWAP_RHO[i],
-            "strangle_vega": STRANGLE_VEGA[i],
-            "skipped_restrikes": SKIPPED_RESTRIKES[i],
-            "skipped_swaps": SKIPPED_SWAPS[i],
-            "swap_pv": SWAP_PV[i],
-            "swap_pnl": SWAP_PNL[i],
-        }
-        out.extend(_cell(signals[c]) for c in SIGNAL_COLUMNS)
-    return out
+    return [pinned[c] if c in pinned else _cell(_signal_value(c, i)) for c in columns]
 
 
-def write_track(path: pathlib.Path, *, with_swap: bool = True) -> None:
+def track_columns(*, with_swap: bool = True, with_explain: bool = True) -> list[str]:
+    """The header row of a track written with (or without) each optional lane.
+
+    `with_explain=False` is a run left on the `RunConfig::swap_pnl_explain`
+    DEFAULT: the engine leaves those vectors empty and the example attaches
+    nothing, so the columns are ABSENT from the TSV — not present and zero.
+    """
+    if not with_swap:
+        return list(PINNED_COLUMNS)
+    tail = [c for c in SIGNAL_COLUMNS if with_explain or not c.startswith(_EXPLAIN_PREFIX)]
+    return PINNED_COLUMNS + tail
+
+
+def write_track(
+    path: pathlib.Path, *, with_swap: bool = True, with_explain: bool = True
+) -> None:
     """The exact bytes write_backtest_pnl_tsv would emit for this fixture."""
-    columns = PINNED_COLUMNS + (SIGNAL_COLUMNS if with_swap else [])
+    columns = track_columns(with_swap=with_swap, with_explain=with_explain)
     with path.open("w", encoding="utf-8", newline="\n") as fh:
         for k, v in META.items():
             fh.write(f"# {k}={v}\n")
         fh.write("\t".join(columns) + "\n")
         for i in range(len(DATES)):
-            fh.write("\t".join(_row(i, with_swap=with_swap)) + "\n")
+            fh.write("\t".join(_row(i, columns)) + "\n")
+
+
+class ColumnDerivationTests(unittest.TestCase):
+    """The one place the C++ and Python views of the signal tail are compared.
+
+    Task F-8 landed eight `swap_explain_*` columns in the engine and nothing
+    carried them to the TSV, because the two lanes agreed only by hand. These
+    tests are the agreement.
+    """
+
+    # ── WHAT THIS CLASS STILL TESTS, after fix round 4 ─────────────────────
+    #
+    # It used to assert that the EXAMPLE attaches exactly what the HEADER
+    # declares, because the two were independently hand-written. Round 4 drove
+    # the example's attach loop from `swap_explain_columns()`, so the C++
+    # compiler now guarantees that half. Re-asserting it here would be asserting
+    # a derived thing against the thing it was derived from -- a tautology that
+    # reads as coverage, which is worse than no test because it manufactures
+    # exactly the confidence the unification was supposed to earn. That
+    # assertion is DELETED, deliberately, and this paragraph is the record.
+    #
+    # What genuinely remains, and why C++ cannot do it:
+    #   1. ROSTER row pairing. `{"name", &BacktestResult::field}` -- C++ has no
+    #      reflection, so a transposed pairing compiles and mislabels a TSV
+    #      column. Only text can check it. (`roster_columns` does, per row.)
+    #   2. ROSTER order vs DECLARATION order. Round 4 pinned each roster index to
+    #      its own member in C++, so the enum/roster half is a build error now;
+    #      what stays here is the roster-against-declarations comparison, which
+    #      is what the renderer's prefix discovery and this TSV's column order
+    #      rest on.
+    #   3. The example hand-lists NO explain column. That is the anti-regression
+    #      for the unification itself -- someone re-adding a literal row would
+    #      silently reintroduce the fifth copy.
+    #   4. The renderer sums exactly the header's identity components (below).
+
+    def test_the_roster_and_the_header_declare_the_same_explain_in_the_same_order(self) -> None:
+        self.assertEqual(
+            ROSTER_COLUMNS,
+            EXPLAIN_COLUMNS,
+            f"{_ROSTER} names the explain roster as {ROSTER_COLUMNS}, but {_HEADER} "
+            f"declares {EXPLAIN_COLUMNS}. Everything C++-side is driven from the "
+            "roster, so a column declared and not rostered never reaches a report, "
+            "and the ORDER is the TSV's column order. The arity pin catches a count "
+            "change; it is blind to a reorder, which is why this compares lists.",
+        )
+
+    def test_the_example_still_derives_its_explain_tail_from_the_roster(self) -> None:
+        # C-1. The round-4 deletion removed an assertion whose OPERAND had gone
+        # away, and treated that as the property having gone away. It had not:
+        # nothing then covered whether the example emits the explain at all.
+        # Deleting the deriving loop, or skipping one column inside it, left this
+        # module green and silent. `example_derives_the_explain` raises by name
+        # on both, so this call IS the assertion.
+        self.assertTrue(EXAMPLE_DERIVES)
+
+    def test_the_example_hand_lists_no_explain_column(self) -> None:
+        # The unification's anti-regression. The example attaches the two lead
+        # columns literally and derives the rest; a literal `swap_explain_*` row
+        # reappearing here is the fifth roster copy coming back.
+        self.assertEqual(
+            DRIVER_SIGNAL_COLUMNS,
+            ["swap_pv", "swap_pnl"],
+            f"{_EXAMPLE} hand-lists {DRIVER_SIGNAL_COLUMNS}. Only swap_pv and "
+            "swap_pnl may be literal -- they are the quantity being explained, not "
+            "components of it. The explain tail must stay a loop over "
+            "swap_explain_columns(), or it becomes a hand-kept copy of the roster "
+            "again.",
+        )
+
+    def test_the_renderer_sums_exactly_the_headers_identity_and_excludes_the_counter(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            track = pathlib.Path(raw) / "track.tsv"
+            write_track(track)
+            _meta, df = renderer.read_track(track)
+
+            self.assertEqual(list(renderer.explain_components(df)), EXPLAIN_FLOW_COLUMNS)
+        self.assertEqual(
+            renderer._EXPLAIN_COUNTER,
+            EXPLAIN_COUNTER,
+            "the renderer excludes one column from the attribution sum; it must be "
+            "the one column backtest.hpp's `== swap_pnl` identity leaves out.",
+        )
+
+    def test_a_header_with_no_explain_declaration_is_a_named_failure(self) -> None:
+        with self.assertRaises(AssertionError) as caught:
+            declared_explain_columns("struct BacktestResult {\n  int n;\n};\n", "fake.hpp")
+
+        self.assertIn("no `std::vector<double> swap_explain_*` member", str(caught.exception))
+        self.assertIn("3 lines scanned", str(caught.exception))
+
+    def test_a_twice_declared_explain_column_is_a_named_failure(self) -> None:
+        source = (
+            "  std::vector<double> swap_explain_carry, swap_explain_skew;\n"
+            "  std::vector<double> swap_explain_carry;\n"
+        )
+
+        with self.assertRaises(AssertionError) as caught:
+            declared_explain_columns(source, "fake.hpp")
+
+        self.assertIn("['swap_explain_carry'] declared more than once", str(caught.exception))
+
+    def test_a_missing_or_duplicated_identity_is_a_named_failure(self) -> None:
+        with self.assertRaises(AssertionError) as caught:
+            identity_flow_columns("// nothing here\n", "fake.hpp")
+        self.assertIn("0 comment lines carry the `== swap_pnl` identity", str(caught.exception))
+
+        twice = (
+            "//   carry + residual\n"
+            "//     == swap_pnl\n"
+            "//   carry + residual\n"
+            "//     == swap_pnl\n"
+        )
+        with self.assertRaises(AssertionError) as caught:
+            identity_flow_columns(twice, "fake.hpp")
+        self.assertIn("2 comment lines carry the `== swap_pnl` identity", str(caught.exception))
+
+    def test_an_unparseable_identity_summand_is_a_named_failure(self) -> None:
+        source = "//   carry + 2 * residual\n//     == swap_pnl\n"
+
+        with self.assertRaises(AssertionError) as caught:
+            identity_flow_columns(source, "fake.hpp")
+
+        self.assertIn("'2 * residual' is not a bare component name", str(caught.exception))
+
+    def test_a_roster_row_whose_column_renames_its_field_is_a_named_failure(self) -> None:
+        # The one check C++ cannot make, so its negative control matters most.
+        source = '    {"swap_explain_skew", &BacktestResult::swap_explain_convexity},\n'
+
+        with self.assertRaises(AssertionError) as caught:
+            roster_columns(source, "fake.cpp")
+
+        self.assertIn("emits column 'swap_explain_skew' from field", str(caught.exception))
+        self.assertIn("'swap_explain_convexity'", str(caught.exception))
+
+    def test_a_roster_with_no_rows_is_a_named_failure(self) -> None:
+        with self.assertRaises(AssertionError) as caught:
+            roster_columns("int main() { return 0; }\n", "fake.cpp")
+
+        self.assertIn("roster rows naming a `&BacktestResult::` member", str(caught.exception))
+        self.assertIn("1 lines scanned", str(caught.exception))
+
+    def test_a_twice_rostered_column_is_a_named_failure(self) -> None:
+        source = (
+            '    {"swap_explain_carry", &BacktestResult::swap_explain_carry},\n'
+            '    {"swap_explain_carry", &BacktestResult::swap_explain_carry},\n'
+        )
+
+        with self.assertRaises(AssertionError) as caught:
+            roster_columns(source, "fake.cpp")
+
+        self.assertIn("roster names ['swap_explain_carry'] more than once", str(caught.exception))
+
+    def test_an_example_that_stops_deriving_the_explain_is_a_named_failure(self) -> None:
+        with self.assertRaises(AssertionError) as caught:
+            example_derives_the_explain("int main() { return 0; }\n", "fake.cpp")
+
+        self.assertIn("no `for (... : swap_explain_columns())` loop", str(caught.exception))
+
+    def test_a_roster_loop_that_can_skip_a_column_is_a_named_failure(self) -> None:
+        source = (
+            "  for (const BacktestExplainColumn &c : swap_explain_columns()) {\n"
+            '    if (c.name == "swap_explain_skew") { continue; }\n'
+            "    ATX_TRY_VOID(attach_one(r, c.name, r.*(c.member)));\n"
+            "  }\n"
+        )
+
+        with self.assertRaises(AssertionError) as caught:
+            example_derives_the_explain(source, "fake.cpp")
+
+        self.assertIn("contains `continue`", str(caught.exception))
+
+    def test_a_roster_loop_that_attaches_nothing_is_a_named_failure(self) -> None:
+        source = (
+            "  for (const BacktestExplainColumn &c : swap_explain_columns()) {\n"
+            "    (void)c;\n"
+            "  }\n"
+        )
+
+        with self.assertRaises(AssertionError) as caught:
+            example_derives_the_explain(source, "fake.cpp")
+
+        self.assertIn("does not call `attach_one`", str(caught.exception))
+
+    def test_an_attach_row_whose_column_renames_its_field_is_a_named_failure(self) -> None:
+        source = '  ATX_TRY_VOID(attach_one(r, "swap_explain_carry", r.swap_explain_realized));\n'
+
+        with self.assertRaises(AssertionError) as caught:
+            example_attached_columns(source, "fake.cpp")
+
+        self.assertIn("emits column 'swap_explain_carry' from field", str(caught.exception))
+        self.assertIn("'swap_explain_realized'", str(caught.exception))
+
+    def test_an_example_with_no_attach_table_is_a_named_failure(self) -> None:
+        with self.assertRaises(AssertionError) as caught:
+            example_attached_columns("int main() { return 0; }\n", "fake.cpp")
+
+        self.assertIn('no `attach_one(r, "name", r.field)` calls in 1 lines', str(caught.exception))
 
 
 class TrackReaderTests(unittest.TestCase):
@@ -217,10 +832,10 @@ class TrackReaderTests(unittest.TestCase):
 
 
 class LegSplitTests(unittest.TestCase):
-    def _legs(self, *, with_swap: bool = True):
+    def _legs(self, *, with_swap: bool = True, with_explain: bool = True):
         with tempfile.TemporaryDirectory() as raw:
             track = pathlib.Path(raw) / "track.tsv"
-            write_track(track, with_swap=with_swap)
+            write_track(track, with_swap=with_swap, with_explain=with_explain)
             _meta, df = renderer.read_track(track)
             return renderer.split_legs(df)
 
@@ -276,6 +891,48 @@ class LegSplitTests(unittest.TestCase):
         self.assertEqual(list(legs.swap_cum), [0.0] * 5)
         self.assertEqual(legs.n_swap_live_rows, 0)
 
+    def test_the_explain_components_close_back_onto_the_swap_leg(self) -> None:
+        legs = self._legs()
+
+        self.assertEqual(list(legs.explain), EXPLAIN_FLOW_COLUMNS)
+        for i, swap_step in enumerate(SWAP_PNL):
+            summed = math.fsum(float(c.iloc[i]) for c in legs.explain.values())
+            self.assertAlmostEqual(summed, swap_step, places=9)
+        self.assertAlmostEqual(legs.max_explain_gap, 0.0, places=9)
+        self.assertEqual(legs.total_unattributed, sum(UNATTRIBUTED))
+
+    def test_an_explainless_track_reports_no_attribution_rather_than_a_flat_one(self) -> None:
+        legs = self._legs(with_explain=False)
+
+        # `RunConfig::swap_pnl_explain` off leaves the engine's vectors EMPTY, so
+        # the columns never reach the TSV. NOT COMPUTED IS NOT COMPUTED AS ZERO:
+        # a zero here would report a swap whose whole P&L was attributed and
+        # every component of it flat, which is a different claim entirely.
+        self.assertFalse(legs.has_explain)
+        self.assertEqual(legs.explain, {})
+        self.assertTrue(math.isnan(legs.max_explain_gap))
+        self.assertTrue(math.isnan(legs.total_unattributed))
+        # The swap leg itself is untouched by the explain being off.
+        self.assertEqual(list(legs.swap_step), SWAP_PNL)
+
+    def test_a_component_that_did_not_compute_stays_nan(self) -> None:
+        # Within a PRESENT explain column, a cell the engine could not fill is
+        # NaN, and NaN is not zero either: the memoized-skew Critical of this
+        # sprint was exactly a 0.0 standing in for an uncomputed sensitivity.
+        df = pandas.DataFrame(
+            {
+                "swap_pnl": [1.0, 2.0],
+                EXPLAIN_FLOW_COLUMNS[0]: [1.0, float("nan")],
+                EXPLAIN_COUNTER: [0.0, 1.0],
+            }
+        )
+
+        components = renderer.explain_components(df)
+
+        self.assertEqual(list(components), [EXPLAIN_FLOW_COLUMNS[0]])
+        self.assertEqual(float(components[EXPLAIN_FLOW_COLUMNS[0]].iloc[0]), 1.0)
+        self.assertTrue(math.isnan(float(components[EXPLAIN_FLOW_COLUMNS[0]].iloc[1])))
+
 
 class RenderTests(unittest.TestCase):
     def test_renders_a_png_over_a_track_with_nan_swap_rows(self) -> None:
@@ -297,6 +954,9 @@ class RenderTests(unittest.TestCase):
             self.assertAlmostEqual(summary["swap_total"], 300.0, places=9)
             self.assertEqual(summary["skipped_restrikes"], 1.0)
             self.assertEqual(summary["skipped_swaps"], 1.0)
+            self.assertEqual(summary["n_explain_components"], len(EXPLAIN_FLOW_COLUMNS))
+            self.assertEqual(summary["explain_unattributed"], sum(UNATTRIBUTED))
+            self.assertAlmostEqual(summary["max_explain_gap"], 0.0, places=9)
 
     def test_every_comparison_series_reaches_a_panel(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -307,18 +967,35 @@ class RenderTests(unittest.TestCase):
 
             fig, panels = renderer.build_figure(META, df)
             try:
-                # One entry per rendered comparison panel, keyed by the pair of
-                # columns it overlays — this is the renderer's contract with the
-                # signal names Task 3 froze.
+                # One entry per rendered comparison panel, keyed by the columns it
+                # draws — this is the renderer's contract with the signal names the
+                # strategy and the example froze.
                 self.assertEqual(
                     set(panels),
-                    {"pnl", "vega", "delta", "gamma", "theta"},
+                    {"pnl", "explain", "vega", "delta", "gamma", "theta"},
                 )
                 self.assertEqual(panels["vega"], ("gross_vega", "swap_vega"))
                 self.assertEqual(panels["delta"], ("gross_delta", "swap_delta"))
                 self.assertEqual(panels["gamma"], ("gross_gamma", "swap_gamma"))
                 self.assertEqual(panels["theta"], ("gross_theta", "swap_theta"))
                 self.assertEqual(panels["pnl"], ("strangle_cum", "swap_cum"))
+                self.assertEqual(panels["explain"], tuple(EXPLAIN_FLOW_COLUMNS))
+            finally:
+                renderer.close_figure(fig)
+
+    def test_a_track_without_the_explain_draws_no_attribution_panel(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            directory = pathlib.Path(raw)
+            track = directory / "track.tsv"
+            write_track(track, with_explain=False)
+            _meta, df = renderer.read_track(track)
+
+            fig, panels = renderer.build_figure(META, df)
+            try:
+                # An opt-in the run did not take draws NOTHING. A panel of flat
+                # zeros would be a claim the run never made.
+                self.assertNotIn("explain", panels)
+                self.assertEqual(set(panels), {"pnl", "vega", "delta", "gamma", "theta"})
             finally:
                 renderer.close_figure(fig)
 
@@ -349,6 +1026,11 @@ class RenderTests(unittest.TestCase):
             self.assertEqual(out.read_bytes()[:8], PNG_MAGIC)
             self.assertEqual(summary["n_swap_live_rows"], 0)
             self.assertEqual(summary["swap_total"], 0.0)
+            # No swap lane at all, so no attribution to report — and NaN, not
+            # 0.0, is what "nothing was measured" reads as in the summary.
+            self.assertEqual(summary["n_explain_components"], 0.0)
+            self.assertTrue(math.isnan(summary["explain_unattributed"]))
+            self.assertTrue(math.isnan(summary["max_explain_gap"]))
 
 
 class CommandLineTests(unittest.TestCase):

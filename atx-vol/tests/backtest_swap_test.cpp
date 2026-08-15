@@ -23,6 +23,7 @@
 
 #include <gtest/gtest.h>
 
+#include <bit> // Task F-8: the NAV gate compares on the bits, not near-equal
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -287,6 +288,37 @@ struct DatedSpot {
   c.manifest = make_manifest(c.dp, symbol);
   return c;
 }
+
+// Task F-8 fix round 2 (C-1): the same corpus on a REAL, irregular calendar.
+//
+// `make_spot_corpus` places every snapshot `kStepNs` apart, so `dt_this /
+// dt_prev == 1` on every step of every fixture built from it. That single
+// uniformity is what hid C-1 — a carry column mis-scaled by exactly that ratio —
+// through five explain tests, a NAV gate, and a review. A real trading calendar
+// is not uniform: a Friday-to-Monday step follows a one-day step.
+//
+// These are six CONSECUTIVE NYSE sessions across Thanksgiving 2024. Each step
+// is therefore exactly ONE session -- 2024-11-28 is a listed closure in
+// `VolTimeCalendar::us_default()`, the same window
+// `HolidayAwareCoarseClockAcceptedUnderRequireEverySession` pins -- while the
+// WALL-CLOCK step length still runs 1, 2 and 3 days. That combination is what
+// the two tests below need and what a synthetic gap sequence cannot give them:
+// their premise is one fixing per step, which only the DEFAULT
+// `RequireEverySession` cadence guarantees, so the fixture must be genuinely
+// session-adjacent rather than merely uneven. An earlier version SIMULATED
+// "the shape a real calendar produces around weekends and holidays" with a
+// 1/3/1/7/1-day gap sequence; it can use the real ones now.
+//
+// Over the three ATTRIBUTED rows (2, 3, 4 — see the carry test) the step
+// lengths are 2, 3 and 1 days against preceding steps of 1, 2 and 3, so
+// `dt_this/dt_prev` runs 2, 1.5 and 1/3: a 6x spread in exactly the ratio C-1
+// scaled carry by, against a bound of 2x.
+constexpr std::int64_t kSessD0 = 1732579200000000000LL; // 2024-11-26 Tue
+constexpr std::int64_t kSessD1 = 1732665600000000000LL; // 2024-11-27 Wed (+1d)
+constexpr std::int64_t kSessD2 = 1732838400000000000LL; // 2024-11-29 Fri (+2d, Thanksgiving)
+constexpr std::int64_t kSessD3 = 1733097600000000000LL; // 2024-12-02 Mon (+3d, weekend)
+constexpr std::int64_t kSessD4 = 1733184000000000000LL; // 2024-12-03 Tue (+1d)
+constexpr std::int64_t kSessD5 = 1733270400000000000LL; // 2024-12-04 Wed (+1d, expiry)
 
 // Opens exactly ONE swap lot at inception and never trades options. The lot's
 // id is drawn from the engine's monotonic watermark, exactly as an option lot's
@@ -1122,4 +1154,650 @@ TEST(BacktestSwap, OutOfWindowDailyClockStillAcceptedUnderRequireEverySession) {
   ASSERT_TRUE(cont.has_value()) << cont.error().to_string();
   ASSERT_EQ(cont->checkpoint.swap_accruals.size(), 1u);
   EXPECT_EQ(cont->checkpoint.swap_accruals.front().rv.n_obs_done, 1u);
+}
+
+// ── Task F-8 S4: the swap lane's P&L explain ────────────────────────────────
+//
+// `RunConfig::swap_pnl_explain` adds seven attribution columns and an
+// unattributed counter beside `swap_pnl`. The gates below are, in order of what
+// they protect: the sprint's NAV invariant, the identity the columns exist to
+// satisfy, its survival under downsampling, and the "empty, not zero" contract.
+
+// THE NAV GATE. The sprint treats an unexplained backtest NAV move as
+// stop-the-sprint, so this is the first thing the feature has to prove -- and it
+// proves it with the flag ON, not merely off. An opt-in diagnostic that
+// perturbed the run when enabled would be worse than no diagnostic: it would
+// make every measurement taken with it untrustworthy.
+//
+// Asserted on the BITS of every NAV-lane column, not near-equal. The explain
+// only ever READS (one extra `deriv_greeks_on_ref` and three surface reads per
+// live lot per step); if any of it ever fed back into a mark, this is where that
+// shows up.
+TEST(BacktestSwapExplain, NavIsUnmovedByTheExplain) {
+  const fs::path dir = fresh_dir("explain_nav");
+  const std::vector<double> spots = {100.0, 101.0, 99.0, 102.0, 101.5, 103.0};
+  const Corpus c = make_spot_corpus(dir, "SPX", spots);
+  auto clock = Clock::from_manifest(c.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  const std::int64_t expiry = kBaseNow + 5LL * kStepNs;
+  // Task A1: opt in (see the migration note near `elapsed_weekdays`) -- this
+  // fixture's 30-calendar-day step is ~21 weekday sessions. BOTH runs carry the
+  // same cadence, so the bit-comparison below still isolates the one flag under
+  // test. The huge cap keeps the fixing series open across every step, so the
+  // explain still has four marked steps to attribute rather than one.
+  SwapOnlyStrategy off_strat{var_swap_proto(kUid, expiry, /*n_obs_total=*/kHugeObsCap)};
+  SwapOnlyStrategy on_strat{var_swap_proto(kUid, expiry, /*n_obs_total=*/kHugeObsCap)};
+
+  RunConfig off_cfg;
+  off_cfg.swap_fixing_cadence = SwapFixingCadence::AcceptClockAsSchedule;
+  const auto off = run_backtest(*clock, off_strat, off_cfg);
+  ASSERT_TRUE(off.has_value()) << off.error().to_string();
+
+  RunConfig on_cfg;
+  on_cfg.swap_fixing_cadence = SwapFixingCadence::AcceptClockAsSchedule;
+  on_cfg.swap_pnl_explain = true;
+  const auto on = run_backtest(*clock, on_strat, on_cfg);
+  ASSERT_TRUE(on.has_value()) << on.error().to_string();
+
+  ASSERT_EQ(off->size(), on->size());
+  ASSERT_GT(off->size(), 1u);
+  const auto bits = [](double v) { return std::bit_cast<std::uint64_t>(v); };
+  for (std::size_t i = 0; i < off->size(); ++i) {
+    EXPECT_EQ(bits(off->nav[i]), bits(on->nav[i])) << "nav row " << i;
+    EXPECT_EQ(bits(off->cash[i]), bits(on->cash[i])) << "cash row " << i;
+    EXPECT_EQ(bits(off->pnl_total[i]), bits(on->pnl_total[i])) << "pnl_total row " << i;
+    EXPECT_EQ(bits(off->swap_pv[i]), bits(on->swap_pv[i])) << "swap_pv row " << i;
+    EXPECT_EQ(bits(off->swap_pnl[i]), bits(on->swap_pnl[i])) << "swap_pnl row " << i;
+    EXPECT_EQ(bits(off->pnl_settlement[i]), bits(on->pnl_settlement[i]))
+        << "pnl_settlement row " << i;
+  }
+  // And the flag really did something, or the comparison above is vacuous.
+  ASSERT_EQ(on->swap_explain_residual.size(), on->size());
+  EXPECT_TRUE(off->swap_explain_residual.empty());
+}
+
+// THE IDENTITY, row by row. `swap_pnl` is the number being explained, so the
+// seven components must sum to it exactly -- to floating-point rounding on the
+// per-lot sums, not to a modelling tolerance, because `residual` is defined as
+// whatever is left over and therefore absorbs every real modelling gap.
+//
+// A test that only checked "the columns are finite" would pass on an explain
+// that attributed nothing; the `unattributed` column is asserted too, so a run
+// that silently gave up on every lot cannot masquerade as an explained one.
+TEST(BacktestSwapExplain, ComponentsSumToSwapPnlOnEveryRow) {
+  const fs::path dir = fresh_dir("explain_identity");
+  const std::vector<double> spots = {100.0, 101.0, 99.0, 102.0, 101.5, 103.0};
+  const Corpus c = make_spot_corpus(dir, "SPX", spots);
+  auto clock = Clock::from_manifest(c.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  const std::int64_t expiry = kBaseNow + 5LL * kStepNs;
+  // Task A1: opt in (see the migration note near `elapsed_weekdays`). The huge
+  // cap is what preserves this gate's REACH: at a cap of 4 the elapsed-session
+  // scaling closes the fixing series after the first accrual step, and every
+  // later row lands unattributed -- the identity would still close (the
+  // residual absorbs it) while "everything in between must actually attribute"
+  // silently stopped being true.
+  SwapOnlyStrategy strat{var_swap_proto(kUid, expiry, /*n_obs_total=*/kHugeObsCap)};
+
+  RunConfig cfg;
+  cfg.swap_fixing_cadence = SwapFixingCadence::AcceptClockAsSchedule;
+  cfg.swap_pnl_explain = true;
+  const auto result = run_backtest(*clock, strat, cfg);
+  ASSERT_TRUE(result.has_value()) << result.error().to_string();
+  const BacktestResult &r = *result;
+
+  ASSERT_EQ(r.swap_explain_carry.size(), r.size());
+  ASSERT_EQ(r.swap_explain_unattributed.size(), r.size());
+
+  double total_unattributed = 0.0;
+  for (std::size_t i = 0; i < r.size(); ++i) {
+    const double summed = r.swap_explain_carry[i] + r.swap_explain_realized[i] +
+                          r.swap_explain_vol_level[i] + r.swap_explain_skew[i] +
+                          r.swap_explain_convexity[i] + r.swap_explain_discount[i] +
+                          r.swap_explain_residual[i];
+    EXPECT_TRUE(std::isfinite(summed)) << "row " << i;
+    // The scale is the row's own move; an absolute floor keeps a row whose move
+    // is legitimately ~0 from being compared relatively against itself.
+    const double tol = 1.0e-9 * std::abs(r.swap_pnl[i]) + 1.0e-6;
+    EXPECT_NEAR(summed, r.swap_pnl[i], tol)
+        << "row " << i << " components=" << summed << " swap_pnl=" << r.swap_pnl[i];
+    total_unattributed += r.swap_explain_unattributed[i];
+  }
+
+  // Rows 0 (inception) and 1 (the lot's first mark, no prior state) are
+  // unattributed by construction, and the expiry row settles. Everything in
+  // between must actually attribute, or this feature explains nothing.
+  EXPECT_GT(r.size(), 3u);
+  bool any_attributed = false;
+  for (std::size_t i = 2; i + 1 < r.size(); ++i) {
+    any_attributed = any_attributed || (r.swap_explain_unattributed[i] == 0.0);
+  }
+  EXPECT_TRUE(any_attributed) << "every step was unattributed; total=" << total_unattributed;
+
+  // Carry is the deterministic "nothing happened" leg and is the largest named
+  // component on a swap that is not moving much -- a sign flip here would still
+  // satisfy the identity above, because the residual would absorb it.
+  bool any_carry = false;
+  for (std::size_t i = 0; i < r.size(); ++i) {
+    any_carry = any_carry || (r.swap_explain_carry[i] != 0.0);
+  }
+  EXPECT_TRUE(any_carry) << "carry was zero on every row";
+}
+
+// The identity has to survive DOWNSAMPLING, which is the whole reason every
+// component is a flow. At `record_every_n > 1` each recorded row is a block sum;
+// if any component were accumulated as state (like `swap_pv` legitimately is)
+// its column would report a level against six summed flows and the identity
+// would silently stop closing.
+TEST(BacktestSwapExplain, IdentitySurvivesRecordEveryN) {
+  const fs::path dir = fresh_dir("explain_stride");
+  const std::vector<double> spots = {100.0, 101.0, 99.0, 102.0, 101.5, 103.0, 102.0};
+  const Corpus c = make_spot_corpus(dir, "SPX", spots);
+  auto clock = Clock::from_manifest(c.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  const std::int64_t expiry = kBaseNow + 6LL * kStepNs;
+  // Task A1: opt in (see the migration note near `elapsed_weekdays`); the huge
+  // cap keeps every step inside the fixing series, so each downsampled row is
+  // still a block sum of GENUINELY attributed steps -- which is the only shape
+  // in which a component accumulated as a level rather than a flow shows up.
+  SwapOnlyStrategy strat{var_swap_proto(kUid, expiry, /*n_obs_total=*/kHugeObsCap)};
+
+  RunConfig cfg;
+  cfg.swap_fixing_cadence = SwapFixingCadence::AcceptClockAsSchedule;
+  cfg.swap_pnl_explain = true;
+  cfg.record_every_n = 2;
+  const auto result = run_backtest(*clock, strat, cfg);
+  ASSERT_TRUE(result.has_value()) << result.error().to_string();
+  const BacktestResult &r = *result;
+  ASSERT_EQ(r.swap_explain_residual.size(), r.size());
+
+  for (std::size_t i = 0; i < r.size(); ++i) {
+    const double summed = r.swap_explain_carry[i] + r.swap_explain_realized[i] +
+                          r.swap_explain_vol_level[i] + r.swap_explain_skew[i] +
+                          r.swap_explain_convexity[i] + r.swap_explain_discount[i] +
+                          r.swap_explain_residual[i];
+    const double tol = 1.0e-9 * std::abs(r.swap_pnl[i]) + 1.0e-6;
+    EXPECT_NEAR(summed, r.swap_pnl[i], tol) << "downsampled row " << i;
+  }
+}
+
+// EMPTY, not zero-filled, when the flag is off -- the same distinction
+// `nav_liquidation` makes, and the one that lets a reader tell "not measured"
+// from "measured as flat". `validate()` accepts both shapes and rejects a
+// partially-filled one.
+TEST(BacktestSwapExplain, ColumnsAreEmptyRatherThanZeroFilledWhenOff) {
+  const fs::path dir = fresh_dir("explain_off");
+  const std::vector<double> spots = {100.0, 101.0, 99.0, 102.0};
+  const Corpus c = make_spot_corpus(dir, "SPX", spots);
+  auto clock = Clock::from_manifest(c.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  const std::int64_t expiry = kBaseNow + 3LL * kStepNs;
+  // Task A1: opt in (see the migration note near `elapsed_weekdays`). The huge
+  // cap keeps `n_obs_done <= n_obs_total`, the accrual invariant the engine
+  // itself enforces on a checkpoint -- a cap of 2 against ~21 elapsed sessions
+  // per step would leave the run in a state it would refuse to resume from.
+  SwapOnlyStrategy strat{var_swap_proto(kUid, expiry, /*n_obs_total=*/kHugeObsCap)};
+
+  RunConfig cfg; // swap_pnl_explain flag OFF (the default)
+  cfg.swap_fixing_cadence = SwapFixingCadence::AcceptClockAsSchedule;
+  const auto result = run_backtest(*clock, strat, cfg);
+  ASSERT_TRUE(result.has_value()) << result.error().to_string();
+  EXPECT_TRUE(result->swap_explain_carry.empty());
+  EXPECT_TRUE(result->swap_explain_realized.empty());
+  EXPECT_TRUE(result->swap_explain_vol_level.empty());
+  EXPECT_TRUE(result->swap_explain_skew.empty());
+  EXPECT_TRUE(result->swap_explain_convexity.empty());
+  EXPECT_TRUE(result->swap_explain_discount.empty());
+  EXPECT_TRUE(result->swap_explain_residual.empty());
+  EXPECT_TRUE(result->swap_explain_unattributed.empty());
+  // But the run is still a valid, shape-checked result.
+  EXPECT_TRUE(result->validate().has_value());
+
+  // A hand-built result with a half-length explain column is refused, which is
+  // what registering them in `validate()` buys.
+  BacktestResult broken = *result;
+  broken.swap_explain_carry.assign(broken.size() - 1u, 0.0);
+  EXPECT_FALSE(broken.validate().has_value());
+}
+
+// The explain columns concatenate or clear on THEIR OWN shape test, not the
+// swap lane's -- they are opt-in, so a stored prefix without them meeting a
+// continuation with them is an ordinary shape change.
+//
+// FIX ROUND 2 (I-3): the collapse is legal ONLY when neither side has
+// attribution to lose. Round 1 implemented the collapse without that condition,
+// where the sibling swap-lane rule thirty lines above refuses exactly the same
+// thing -- and this test pinned the loss as if it were intended, asserting that
+// a column carrying 1.0 came back empty. A test that pins a defect is worse than
+// no test, because it converts the next person's correct fix into a red suite.
+// It now pins the refusal, and the collapse is checked on the all-zero case
+// where it is genuinely lossless.
+TEST(BacktestSwapExplain, AppendRefusesToDiscardExplainAcrossAShapeChange) {
+  BacktestResult a = make_result(/*first_index=*/0u, /*n_rows=*/2u, /*swap=*/true,
+                                 /*swap_value=*/0.0);
+  BacktestResult b = make_result(2u, 1u, /*swap=*/true, /*swap_value=*/0.0);
+  a.swap_explain_carry.assign(a.size(), 1.0);
+  a.swap_explain_realized.assign(a.size(), 0.0);
+  a.swap_explain_vol_level.assign(a.size(), 0.0);
+  a.swap_explain_skew.assign(a.size(), 0.0);
+  a.swap_explain_convexity.assign(a.size(), 0.0);
+  a.swap_explain_discount.assign(a.size(), 0.0);
+  a.swap_explain_residual.assign(a.size(), 0.0);
+  a.swap_explain_unattributed.assign(a.size(), 0.0);
+  // `b` carries no explain columns: one side has them, the other does not.
+
+  // `a` carries REAL attribution (a 1.0) and `b` carries none. Collapsing would
+  // discard it silently, so this must be refused rather than performed.
+  BacktestResult combined = a;
+  const Status refused = append_backtest_results(combined, b);
+  ASSERT_FALSE(refused.has_value())
+      << "appending across an explain shape change while one side carries attribution "
+         "would discard it; the swap lane refuses the same shape thirty lines up";
+  EXPECT_EQ(refused.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_NE(refused.error().message().find("swap-explain shape change"), std::string::npos)
+      << refused.error().to_string();
+
+  // The lossless case: same shape change, but no side carries attribution. That
+  // IS the DB-extension case (a decoded prefix reports the explain absent, a
+  // fresh continuation reports it present and all-zero) and collapsing to absent
+  // loses nothing.
+  BacktestResult zeroed = a;
+  for (const BacktestExplainColumn &column : swap_explain_columns()) {
+    (zeroed.*(column.member)).assign(zeroed.size(), 0.0);
+  }
+  BacktestResult collapsed = zeroed;
+  ASSERT_TRUE(append_backtest_results(collapsed, b).has_value());
+  EXPECT_EQ(collapsed.size(), 3u);
+  EXPECT_TRUE(collapsed.swap_explain_carry.empty())
+      << "a half-present all-zero explain collapses to absent, not to a ragged column";
+  EXPECT_TRUE(collapsed.swap_explain_residual.empty());
+  EXPECT_TRUE(collapsed.validate().has_value());
+
+  // Both sides present => genuine concatenation, nothing dropped.
+  BacktestResult b_full = b;
+  b_full.swap_explain_carry.assign(b_full.size(), 2.0);
+  b_full.swap_explain_realized.assign(b_full.size(), 0.0);
+  b_full.swap_explain_vol_level.assign(b_full.size(), 0.0);
+  b_full.swap_explain_skew.assign(b_full.size(), 0.0);
+  b_full.swap_explain_convexity.assign(b_full.size(), 0.0);
+  b_full.swap_explain_discount.assign(b_full.size(), 0.0);
+  b_full.swap_explain_residual.assign(b_full.size(), 0.0);
+  b_full.swap_explain_unattributed.assign(b_full.size(), 0.0);
+
+  BacktestResult both = a;
+  ASSERT_TRUE(append_backtest_results(both, b_full).has_value());
+  ASSERT_EQ(both.swap_explain_carry.size(), 3u);
+  EXPECT_EQ(both.swap_explain_carry[0], 1.0);
+  EXPECT_EQ(both.swap_explain_carry[2], 2.0);
+  EXPECT_TRUE(both.validate().has_value());
+}
+
+
+// ── C-1: carry on an irregular calendar ─────────────────────────────────────
+//
+// `theta_zero_fixing` is a RATE from a roll of `bumps.time_years` carrying
+// exactly ONE injected fixing, so `theta_zero_fixing * h` is the deterministic
+// move over `h` INCLUDING that fixing. Round 1 resolved the greeks one step
+// early and multiplied them by the NEXT step's `dt`, scaling the fixing leg by
+// `dt_this / dt_prev`. Every committed fixture used `make_spot_corpus`, whose
+// snapshots are uniformly `kStepNs` apart, so that ratio was 1.000 everywhere
+// and nothing could see it. The residual absorbed the error, the identity
+// closed, and NAV never moved.
+//
+// The fix removes the coupling rather than correcting for it: start-of-step
+// sensitivities now resolve against `base`, so the interval the greek is bumped
+// over and the interval it is multiplied by are the same number by construction.
+//
+// This fixture is the other half: six consecutive NYSE sessions whose
+// wall-clock lengths differ (see `kSessD0`..`kSessD5`), so `dt_this/dt_prev`
+// swings 2, 1.5 and 1/3 across the attributed rows while exactly one fixing
+// still lands per step.
+
+// The identity must hold on an irregular calendar exactly as it does on a
+// uniform one -- necessary but NOT sufficient, since the residual absorbs a
+// mis-scaled carry and closes the identity anyway. That is precisely why round 1
+// passed. The real assertion is the next test.
+TEST(BacktestSwapExplain, IdentityHoldsOnAnIrregularCalendar) {
+  const fs::path dir = fresh_dir("explain_irregular");
+  const std::vector<double> spots = {100.0, 101.0, 99.5, 102.0, 101.0, 103.5};
+  const std::vector<DatedSpot> points = {
+      {"2024-11-26", kSessD0, spots[0]}, {"2024-11-27", kSessD1, spots[1]},
+      {"2024-11-29", kSessD2, spots[2]}, {"2024-12-02", kSessD3, spots[3]},
+      {"2024-12-03", kSessD4, spots[4]}, {"2024-12-04", kSessD5, spots[5]},
+  };
+  const Corpus c = make_spot_corpus_at(dir, "SPX", points);
+  auto clock = Clock::from_manifest(c.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  const std::int64_t expiry = kSessD5; // the last snapshot
+  SwapOnlyStrategy strat{var_swap_proto(kUid, expiry, /*n_obs_total=*/4u)};
+
+  // Task A1: the DEFAULT `RequireEverySession` cadence is load-bearing here, not
+  // incidental -- every step above is one real session, and the opt-in would
+  // book a step's whole elapsed count, breaking the one-fixing-per-step premise
+  // the carry test below rests on.
+  RunConfig cfg;
+  cfg.swap_pnl_explain = true;
+  const auto result = run_backtest(*clock, strat, cfg);
+  ASSERT_TRUE(result.has_value()) << result.error().to_string();
+  const BacktestResult &r = *result;
+  ASSERT_EQ(r.swap_explain_carry.size(), r.size());
+
+  for (std::size_t i = 0; i < r.size(); ++i) {
+    const double summed = r.swap_explain_carry[i] + r.swap_explain_realized[i] +
+                          r.swap_explain_vol_level[i] + r.swap_explain_skew[i] +
+                          r.swap_explain_convexity[i] + r.swap_explain_discount[i] +
+                          r.swap_explain_residual[i];
+    const double tol = 1.0e-9 * std::abs(r.swap_pnl[i]) + 1.0e-6;
+    EXPECT_NEAR(summed, r.swap_pnl[i], tol) << "irregular row " << i;
+  }
+}
+
+// THE TEST THAT WOULD HAVE CAUGHT C-1.
+//
+// `carry` is `theta_zero_fixing * dt`, and `theta_zero_fixing` is a rate whose
+// fixing leg does NOT scale with the interval -- one fixing lands per step
+// regardless of how long the step is. So carry is NOT proportional to `dt`: it
+// is (one fixing) + (a calendar roll proportional to dt). On a variance swap the
+// fixing leg dominates by orders of magnitude, so carry should be roughly
+// CONSTANT per step across wildly different step lengths.
+//
+// Round 1's bug made carry scale by `dt_this / dt_prev`, which on this
+// fixture's 1/2/3/1/1-day session sequence would swing consecutive carry values
+// by 2x, 1.5x and 1/3. That is the signature this test refuses.
+//
+// Stated as a ratio rather than a value so it pins the SHAPE and not a number
+// that would need re-deriving whenever the fixture moves.
+TEST(BacktestSwapExplain, CarryDoesNotScaleWithStepLengthOnAnIrregularCalendar) {
+  const fs::path dir = fresh_dir("explain_carry_scale");
+  // Flat spots: every step realizes exactly zero variance, so `realized` is 0
+  // and carry is the only live component. That isolates the column under test.
+  const std::vector<double> spots = {100.0, 100.0, 100.0, 100.0, 100.0, 100.0};
+  const std::vector<DatedSpot> points = {
+      {"2024-11-26", kSessD0, spots[0]}, {"2024-11-27", kSessD1, spots[1]},
+      {"2024-11-29", kSessD2, spots[2]}, {"2024-12-02", kSessD3, spots[3]},
+      {"2024-12-03", kSessD4, spots[4]}, {"2024-12-04", kSessD5, spots[5]},
+  };
+  const Corpus c = make_spot_corpus_at(dir, "SPX", points);
+  auto clock = Clock::from_manifest(c.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  const std::int64_t expiry = kSessD5;
+  SwapOnlyStrategy strat{var_swap_proto(kUid, expiry, /*n_obs_total=*/4u)};
+
+  // Task A1: the DEFAULT cadence is what makes "one fixing per step" TRUE here.
+  // Under `AcceptClockAsSchedule` the 3-day step would book 3 observations and
+  // carry could legitimately track step length, which would make the bound
+  // below fail for a correct reason.
+  RunConfig cfg;
+  cfg.swap_pnl_explain = true;
+  const auto result = run_backtest(*clock, strat, cfg);
+  ASSERT_TRUE(result.has_value()) << result.error().to_string();
+  const BacktestResult &r = *result;
+  ASSERT_EQ(r.swap_explain_carry.size(), r.size());
+
+  // The attributed rows: skip inception (row 0) and the lot's first mark (row 1,
+  // which seeds the fixing series and lands no fixing), and skip the expiry row,
+  // which settles rather than marks.
+  std::vector<double> carries;
+  for (std::size_t i = 2; i + 1 < r.size(); ++i) {
+    if (r.swap_explain_unattributed[i] == 0.0) {
+      carries.push_back(r.swap_explain_carry[i]);
+    }
+  }
+  ASSERT_GE(carries.size(), 3u) << "need several attributed steps of differing length";
+
+  double lo = std::abs(carries.front());
+  double hi = lo;
+  for (const double v : carries) {
+    lo = std::min(lo, std::abs(v));
+    hi = std::max(hi, std::abs(v));
+  }
+  ASSERT_GT(lo, 0.0) << "carry must be non-zero, or this test measures nothing";
+
+  // The attributed steps here are 2, 3 and 1 days long against preceding steps
+  // of 1, 2 and 3 days, so a carry that tracked `dt_this/dt_prev` would spread
+  // 6x (2 / 0.333) across these rows -- three times the bound. One fixing per
+  // step plus a small dt-proportional roll spreads far less; the bound is
+  // deliberately loose because the roll leg IS allowed to vary with dt.
+  EXPECT_LT(hi / lo, 2.0)
+      << "carry spread " << lo << " .. " << hi << " across steps of 2, 3 and 1 days. "
+      << "carry is one fixing (independent of step length) plus a dt-proportional roll, "
+      << "so it must not track the step-length ratio. A spread near 3x or 7x means "
+      << "`theta_zero_fixing` is being multiplied by an interval other than the one it "
+      << "was bumped over -- which is C-1.";
+}
+
+
+// ── The partially-populated explain set (fix round 6) ───────────────────────
+//
+// The explain columns are written together or not at all -- `push_row` fills all
+// eight under one `if`. Nothing enforced that. Both shape validators checked
+// every column INDEPENDENTLY (`empty || row-parallel`), so eight individually
+// legal columns could form an illegal SET, and `append_backtest_results` decided
+// the set's shape by reading `swap_explain_columns().front()` -- one column
+// sampled for a property of all eight -- justified by a comment asserting the
+// validators had already rejected a partial set.
+//
+// MEASURED before the fix: a result with `swap_explain_carry` populated and the
+// other seven empty passed `validate()`, passed the append, and emerged with
+// `carry` at 3 rows and `skew` at 1. `combined.validate()` refused it only
+// afterwards, by which point the ragged result had already escaped.
+//
+// The fix is `swap_explain_shape`, which cannot answer from fewer than all eight
+// columns, plus both validators rejecting `Mixed`. These tests pin each half.
+
+TEST(BacktestSwapExplain, APartiallyPopulatedExplainSetIsMalformed) {
+  BacktestResult r = make_result(/*first_index=*/0u, /*n_rows=*/2u, /*swap=*/true,
+                                 /*swap_value=*/0.0);
+  EXPECT_EQ(swap_explain_shape(r), SwapExplainShape::Absent);
+  EXPECT_TRUE(r.validate().has_value());
+
+  // All eight -> Present, and legal.
+  for (const BacktestExplainColumn &column : swap_explain_columns()) {
+    (r.*(column.member)).assign(r.size(), 0.0);
+  }
+  EXPECT_EQ(swap_explain_shape(r), SwapExplainShape::Present);
+  EXPECT_TRUE(r.validate().has_value());
+
+  // Exactly one emptied -> Mixed, and refused. Every column is individually
+  // legal here (empty is always allowed per column); only the SET is wrong,
+  // which is precisely the question the per-column loop cannot ask.
+  r.swap_explain_skew.clear();
+  EXPECT_EQ(swap_explain_shape(r), SwapExplainShape::Mixed);
+  const Status refused = r.validate();
+  ASSERT_FALSE(refused.has_value())
+      << "a set with seven populated columns and one empty must be refused; before fix "
+         "round 6 this returned OK and the ragged result escaped the append";
+  EXPECT_NE(refused.error().message().find("partially populated"), std::string::npos)
+      << refused.error().to_string();
+
+  // And the mirror case: exactly one populated.
+  BacktestResult one = make_result(0u, 2u, /*swap=*/true, /*swap_value=*/0.0);
+  one.swap_explain_carry.assign(one.size(), 0.0);
+  EXPECT_EQ(swap_explain_shape(one), SwapExplainShape::Mixed);
+  EXPECT_FALSE(one.validate().has_value());
+}
+
+// The escape itself, end to end. This is the reproduction from the round-6
+// audit, asserted as a refusal.
+TEST(BacktestSwapExplain, AppendRefusesAPartiallyPopulatedExplainRatherThanRaggedIt) {
+  // dst: carry populated but ALL ZERO, so `result_has_explain_data` is false and
+  // the round-2 I-3 refusal does NOT fire. That is what made this reachable.
+  BacktestResult dst = make_result(0u, 2u, /*swap=*/true, /*swap_value=*/0.0);
+  dst.swap_explain_carry.assign(dst.size(), 0.0);
+
+  BacktestResult src = make_result(2u, 1u, /*swap=*/true, /*swap_value=*/0.0);
+  for (const BacktestExplainColumn &column : swap_explain_columns()) {
+    (src.*(column.member)).assign(src.size(), 0.0);
+  }
+
+  const Status refused = append_backtest_results(dst, src);
+  ASSERT_FALSE(refused.has_value())
+      << "before fix round 6 this returned OK and produced carry=3, skew=1 -- a ragged "
+         "result that only the NEXT validate() would have caught";
+  EXPECT_EQ(refused.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_NE(refused.error().message().find("partially populated"), std::string::npos)
+      << refused.error().to_string();
+
+  // The append refused rather than half-applied: `dst` still has its own rows.
+  EXPECT_EQ(dst.size(), 2u);
+}
+
+// The property the whole round rests on: no accessor answers the set question
+// from one column. A single populated column must NOT read as Present, which is
+// exactly what the deleted `.front()` sample did whenever `carry` was the
+// populated one.
+TEST(BacktestSwapExplain, TheShapeAccessorReadsEveryColumnNotTheFirst) {
+  const std::span<const BacktestExplainColumn> roster = swap_explain_columns();
+  ASSERT_GT(roster.size(), 1u);
+
+  for (std::size_t i = 0; i < roster.size(); ++i) {
+    BacktestResult only_one = make_result(0u, 2u, /*swap=*/true, /*swap_value=*/0.0);
+    (only_one.*(roster[i].member)).assign(only_one.size(), 0.0);
+    EXPECT_EQ(swap_explain_shape(only_one), SwapExplainShape::Mixed)
+        << "column " << roster[i].name
+        << " populated alone must read as Mixed; a first-column sample would have called "
+           "index 0 Present and every other index Absent";
+
+    BacktestResult all_but_one = make_result(0u, 2u, /*swap=*/true, /*swap_value=*/0.0);
+    for (std::size_t j = 0; j < roster.size(); ++j) {
+      if (j != i) {
+        (all_but_one.*(roster[j].member)).assign(all_but_one.size(), 0.0);
+      }
+    }
+    EXPECT_EQ(swap_explain_shape(all_but_one), SwapExplainShape::Mixed)
+        << "column " << roster[i].name
+        << " empty alone must read as Mixed; a first-column sample would have called this "
+           "Present for every index except 0";
+  }
+}
+
+
+// ── `MarketSnapshot::load` verifies what it LOADED (fix rounds 7-8) ─────────
+//
+// The rule, and it is one rule rather than a branch-by-branch habit: a load
+// checks `now_ts_ns` across exactly the surfaces it loaded, and promises nothing
+// about records it never read.
+//
+//   * whole board          -> every record loaded, every record checked
+//   * subset that MATCHED  -> checks the surfaces it loaded, not the ones it
+//                             skipped, and does not claim to
+//   * subset matching NONE -> owns zero surfaces (`subset_missed` is
+//                             `subset_requested && !loaded_subset`), so it
+//                             verifies the empty set and reads ONE record purely
+//                             to date an empty snapshot
+//
+// Round 7 made the last case verify the entire directory. Round 8 reverted that:
+// it contradicted the B1 cheap-miss argument in `MarketSnapshot::load` (measured
+// +71% on the miss path, taking it to 91% of a whole-board load at 512 surfaces)
+// AND it made the path returning NO data enforce more than the path returning
+// one surface, which is backwards.
+//
+// So these tests pin the rule including its deliberate limit: a mixed archive is
+// refused by every path that loads from it, and accepted by the path that loads
+// nothing. That asymmetry is a consequence of the rule rather than an exception
+// to it, and it is pinned so it cannot drift back into being silent.
+
+namespace {
+
+// Two surfaces in ONE archive, with caller-chosen timestamps so the disagreeing
+// case is constructible through the ordinary writer rather than by corrupting
+// bytes.
+[[nodiscard]] std::string write_two(const fs::path &dir, const std::string &date,
+                                    std::int64_t now_a, std::int64_t now_b) {
+  std::error_code ec;
+  fs::create_directories(dir, ec);
+  const std::string path = (dir / (date + ".atxvsa")).string();
+  const PricedSurface a = make_surface(kUid, 100.0, 100.0, now_a);
+  const PricedSurface b = make_surface(kUid + 1u, 105.0, 105.0, now_b);
+  const SurfaceArchiveItem items[] = {SurfaceArchiveItem{"AAA", &a},
+                                      SurfaceArchiveItem{"BBB", &b}};
+  const Status st = write_surface_archive_v2_file(path, std::span<const SurfaceArchiveItem>{items});
+  EXPECT_TRUE(st.has_value()) << (st.has_value() ? std::string{} : st.error().to_string());
+  return path;
+}
+
+} // namespace
+
+// THIS PINS BEHAVIOUR THAT ALREADY HELD; it does not change any. The
+// verification loop these cases exercise is byte-identical at 8454a32, c1771a6,
+// c8bf271 and ec7d3ae -- a subset naming both uids fell into the same `else` as
+// a whole-board load at every one of them, and refused at every one. F-8 r8
+// reported this as "previously loaded, now refuses" and a CHANGELOG migration
+// entry was written from that report before anyone read the pre-image. Recorded
+// here so the next reader does not re-derive the same false entry from this
+// test's existence: the gain is that an UNPINNED behaviour is now pinned, which
+// is worth a test and is not worth a migration note.
+TEST(BacktestSwapExplain, EveryLoadThatReadsAMixedArchiveRefusesIt) {
+  const fs::path dir = fresh_dir("r8-ts-disagree");
+  // The two surfaces are stamped a full day apart -- a corrupt or mixed archive.
+  const std::string path = write_two(dir, "2026-08-01", kBaseNow, kBaseNow + kDayNs);
+
+  // Whole board: loads both, so it sees the disagreement.
+  const auto whole = MarketSnapshot::load(path);
+  ASSERT_FALSE(whole.has_value()) << "a whole-board load reads both records and must refuse";
+  EXPECT_NE(whole.error().message().find("disagree on now_ts_ns"), std::string::npos)
+      << whole.error().to_string();
+
+  // A subset naming BOTH uids also loads both, so it must refuse identically --
+  // the rule is about what was loaded, not about which entry point was used.
+  const std::uint32_t both[] = {kUid, kUid + 1u};
+  const auto pair = MarketSnapshot::load(path, QueryPricingTier::LegacyCompatible,
+                                         std::span<const std::uint32_t>{both});
+  ASSERT_FALSE(pair.has_value()) << "a subset that loads both records must refuse them too";
+  EXPECT_NE(pair.error().message().find("disagree on now_ts_ns"), std::string::npos)
+      << pair.error().to_string();
+}
+
+// THE DELIBERATE LIMIT, pinned so it cannot become silent again. A load that
+// reads ONE record, or none, cannot see a disagreement -- and does not claim to.
+// This is the documented consequence of "verify what you loaded", not a gap in
+// it; round 7 tried to close it by walking the whole directory and paid 91% of a
+// whole-board load on the path that exists to be cheap.
+TEST(BacktestSwapExplain, ALoadThatReadsOneRecordOrNoneCannotSeeAMixedArchive) {
+  const fs::path dir = fresh_dir("r8-ts-partial");
+  const std::string path = write_two(dir, "2026-08-01", kBaseNow, kBaseNow + kDayNs);
+
+  // Zero-surface: verifies the empty set, dates the snapshot from one record.
+  const std::uint32_t absent[] = {kUid + 9000u};
+  const auto missed = MarketSnapshot::load(path, QueryPricingTier::LegacyCompatible,
+                                           std::span<const std::uint32_t>{absent});
+  ASSERT_TRUE(missed.has_value()) << missed.error().to_string();
+  EXPECT_EQ(missed->n_surfaces(), 0u);
+
+  // Exactly one surface: verifies that one against itself, trivially agrees.
+  const std::uint32_t one[] = {kUid + 1u};
+  const auto single = MarketSnapshot::load(path, QueryPricingTier::LegacyCompatible,
+                                           std::span<const std::uint32_t>{one});
+  ASSERT_TRUE(single.has_value()) << single.error().to_string();
+  EXPECT_EQ(single->n_surfaces(), 1u);
+  EXPECT_EQ(single->ts_ns(), kBaseNow + kDayNs)
+      << "a one-surface load reports ITS surface's date, not the archive's first record's";
+}
+
+TEST(BacktestSwapExplain, AZeroSurfaceSnapshotStillLoadsWhenTheArchiveAgrees) {
+  const fs::path dir = fresh_dir("r8-ts-agree");
+  const std::string path = write_two(dir, "2026-08-01", kBaseNow, kBaseNow);
+
+  // The positive control for the test above: same shape, same zero-surface path,
+  // agreeing timestamps. Without this, "refuses everything" would pass.
+  const std::uint32_t absent[] = {kUid + 9000u};
+  const auto missed = MarketSnapshot::load(path, QueryPricingTier::LegacyCompatible,
+                                           std::span<const std::uint32_t>{absent});
+  ASSERT_TRUE(missed.has_value()) << missed.error().to_string();
+  EXPECT_EQ(missed->n_surfaces(), 0u) << "a subset matching no uid owns no surface, by design";
+  EXPECT_EQ(missed->ts_ns(), kBaseNow) << "and still reports the date it was loaded for";
+
+  // A subset that DOES match goes through the other branch and is verified there.
+  const std::uint32_t present[] = {kUid + 1u};
+  const auto hit = MarketSnapshot::load(path, QueryPricingTier::LegacyCompatible,
+                                        std::span<const std::uint32_t>{present});
+  ASSERT_TRUE(hit.has_value()) << hit.error().to_string();
+  EXPECT_EQ(hit->n_surfaces(), 1u);
+  EXPECT_EQ(hit->ts_ns(), kBaseNow);
 }

@@ -284,7 +284,10 @@ TEST(BevLabelFactoryGate, ParseArgsProducesExpectedFieldsFromCannedArgv) {
   std::vector<std::string> argv_storage = {
       "bev_label_factory",
       "--db",
-      "C:/some/db",
+      // A canned argv TOKEN, not a lookup: parse_args only copies --db into
+      // args.db and checks it non-empty, so this stays a relative placeholder
+      // rather than an absolute that reads as a path into another checkout.
+      "some/db",
       "--uid",
       "SPY",
       "--entry-start",
@@ -309,7 +312,7 @@ TEST(BevLabelFactoryGate, ParseArgsProducesExpectedFieldsFromCannedArgv) {
   BevFactoryArgs args;
   const bool ok = parse_args(static_cast<int>(argv.size()), argv.data(), args);
   ASSERT_TRUE(ok);
-  EXPECT_EQ(args.db, "C:/some/db");
+  EXPECT_EQ(args.db, "some/db");
   EXPECT_EQ(args.uid, "SPY");
   EXPECT_EQ(args.entry_start, "2026-01-01");
   EXPECT_EQ(args.entry_end, "2026-01-31");

@@ -392,12 +392,20 @@ private:
 // ── Unified surface container ───────────────────────────────────────────────
 //
 // An ascending-T stack of polymorphic slices with ONE linear-in-total-variance
-// time interpolation. A query at T locates T among the slice T's and
-// interpolates total variance linearly across the two bracketing slices (never
-// in sigma). Outside the fitted pillars the surface EXTRAPOLATES rather than
-// failing: below the front slice, implied vol is held flat at the front curve's
-// smile and total variance scales linearly (w = w_front * T/T_front); at or
-// past the last slice, total variance is held FLAT at the last slice's value.
+// time interpolation. A query at T locates T among the slice T's and interpolates
+// total variance linearly across the two bracketing slices (never in sigma).
+//
+// OUTSIDE the fitted range this does NOT return NaN -- unlike `VolSurface` and
+// the demoted per-family containers, which DO apply the strict Sprint-26
+// no-extrapolation guard. Instead:
+//   - SHORT of the front slice: implied vol is held FLAT at the front slice's
+//     own iv, so total variance scales linearly in T (w = w_front * T/T_front)
+//     -- bounded and positive as T -> 0, which is what lets a hold-to-expiry
+//     backtest price a near-expiry option instead of hitting a NaN cliff.
+//   - AT OR PAST the last slice: total variance itself is held FLAT at the
+//     last slice's own w, so the FORWARD variance beyond that slice is ZERO --
+//     a query genuinely longer-dated than every fitted tenor is silently
+//     priced as if nothing moves after the last pillar.
 // Both branches are silent — no NaN, no error (see `CurveSurface::w`,
 // vol_curve.cpp:323-347). A caller that needs to know whether a query left the
 // fitted domain should use `PricedSurface::extrapolates_tenor` /
@@ -477,6 +485,27 @@ inline constexpr std::string_view kCalendarFloorUnsupportedMsg =
     "fit_slice_curve: calendar floor breach beyond previous slice's "
     "data-supported k-range";
 
+// ── The ConvexDense shared-k calendar lattice, stated ONCE ──────────────────
+//
+// The fixed lattice the `convex_repair == nullopt` path scans (vol_curve.cpp)
+// AND the values `ConvexRepairSpec`'s own defaults reproduce. Task F-4 fix
+// round 1 (finding F1): these three lived as literals in vol_curve.cpp's
+// anonymous namespace while `ConvexRepairSpec{}` carried a hand-kept second
+// copy of each in this header, and the fourth member, `tolerance`, was a sixth
+// copy of `kCalendarTotalVarianceTol` (types.hpp). All four now NAME their
+// source, so a default-constructed spec cannot drift away from the lattice it
+// exists to reproduce.
+//
+// NOT a claim of bit-identical sample positions: the two paths deliberately
+// evaluate DIFFERENT arithmetic (`k_min + dk*i` on the nullopt path, the
+// admission oracle's `k_min + (i/(n-1))*(k_max-k_min)` on the spec path -- see
+// `ConvexRepairSpec::grid_points`). Single-sourcing the ENDPOINTS and the
+// interval count is what is claimed, and it is what a drifting literal would
+// have broken.
+inline constexpr double kConvexCalendarLatticeKMin = -0.60;
+inline constexpr double kConvexCalendarLatticeKMax = 0.60;
+inline constexpr std::uint32_t kConvexCalendarLatticeIntervals = 64;
+
 // Producer-side override of the ConvexDense shared-k calendar-repair contract.
 // Default (`CurveConfig::convex_repair == nullopt`) keeps the historical fixed
 // lattice ([-0.60, 0.60], 64 intervals, 1e-7 acceptance) untouched, expression
@@ -490,8 +519,10 @@ inline constexpr std::string_view kCalendarFloorUnsupportedMsg =
 // oracle's reported violation k's can be pinned directly. Plain data on
 // purpose: vol_curve must not depend on detail/risk_surface_validation.hpp.
 struct ConvexRepairSpec {
-  double k_min{-0.60};
-  double k_max{0.60};
+  // All four defaults NAME their source rather than repeating its literal --
+  // see the lattice block above and `kCalendarTotalVarianceTol` (types.hpp).
+  double k_min{kConvexCalendarLatticeKMin};
+  double k_max{kConvexCalendarLatticeKMax};
   // Inclusive point count; k_i = k_min + (i / (grid_points - 1)) * (k_max -
   // k_min), the oracle's sample_k formula verbatim (fraction first — the
   // arithmetic ORDER is part of the contract, both sides must evaluate the
@@ -500,9 +531,11 @@ struct ConvexRepairSpec {
   // contraction can still move an individual sample by an ulp. That is fine
   // here — the 10x tolerance margin (`tolerance` below vs. the oracle's) and
   // exact-node promotion (`extra_node_ks`) absorb any such cross-TU drift.
-  std::uint32_t grid_points{65};
-  // Max accepted w_prev(k) - w_curr(k) at a grid k before promotion/refit.
-  double tolerance{1.0e-7};
+  std::uint32_t grid_points{kConvexCalendarLatticeIntervals + 1u};
+  // Max accepted w_prev(k) - w_curr(k) at a grid k before promotion/refit --
+  // the same total-variance quantity, in the same units, that every other
+  // calendar rule in the library measures, so it names the same constant.
+  double tolerance{kCalendarTotalVarianceTol};
   // Extra exact QP node locations seeded into required_k for every slice.
   std::vector<double> extra_node_ks{};
 };

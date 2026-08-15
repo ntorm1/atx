@@ -68,7 +68,7 @@ Header-only under `include/atx/engine/` (namespace `atx::engine` + the nested na
 
 ## Workflow
 
-- **TDD always** (failing GoogleTest first; cover boundaries + the load-bearing invariant proof; `EXPECT_DEATH` for `ATX_ASSERT` preconditions). A unit is done only when header + tests + **clang-format clean + `/W4 /WX` + `/fp:precise` build + tests green**.
+- **TDD always** (failing GoogleTest first; cover boundaries + the load-bearing invariant proof; `EXPECT_DEATH` for `ATX_ASSERT` preconditions). A unit is done only when header + tests + **`/W4 /WX` + `/fp:precise` build + tests green + the 100-column limit held**. (Not clang-format — nothing in the build or scripts invokes it, and it is not to be run.)
 - New sprint? Freeze a `sprint-N-<theme>-implementation-plan.md` first (the frozen *how*), copy the §0-recon / §1-rules / §2-files / §3-gates+handoff / §4-algorithms / §5-per-unit / §6-exit / §7-refs / §8-self-review shape of the S4/S5/S6/S7 plans. Open a `sprint-N-progress.md` ledger as the marker commit.
 - Commit per unit `feat(sN-M): …` with the `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>` trailer. **Do not push** unless asked.
 - Engine adds **no general-purpose primitives** — new numeric/infra needs are `atx-core` requests (Pattern B edges), recorded in the sprint plan + `p1/ROADMAP.md`, shipped engine-local with the lift noted.

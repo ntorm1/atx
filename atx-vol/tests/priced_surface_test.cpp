@@ -12,7 +12,7 @@
 // Reference bracket scan written out below. The reference is not the
 // new code path, so a bit-identical match across a (K, T, side) grid proves the
 // refactor preserved every bit. The reference tests were captured and made green
-// against the PRE-change source first (see at-task-4-report.md).
+// against the PRE-change source first.
 
 #include <gtest/gtest.h>
 
@@ -538,9 +538,10 @@ TEST(PricedSurface, QueryMethodsBitIdenticalToReference) {
   }
 }
 
-// Prints a small set of pre-change hex anchors so at-task-4-report.md can pin the
-// literal bit patterns captured on the unchanged source (belt-and-suspenders on
-// top of the reference sweep). Always passes; the values are read from stdout.
+// Prints a small set of pre-change hex anchors, which is how the literal bit
+// patterns in `PricedSurface.PinnedPreChangeAnchors` below were captured on the
+// unchanged source (belt-and-suspenders on top of the reference sweep). Always
+// passes; the values are read from stdout.
 TEST(PricedSurface, PrintHexAnchors) {
   const PricedSurface s = make_essvi_varycarry(1);
   const double K = 104.0;
@@ -568,7 +569,7 @@ TEST(PricedSurface, PrintHexAnchors) {
 }
 
 // The literal pre-change bit patterns, captured on the UNCHANGED source (before
-// any P1.1 edit — see PrintHexAnchors output recorded in at-task-4-report.md).
+// any P1.1 edit — from the `PricedSurface.PrintHexAnchors` output above).
 // This is the belt-and-suspenders absolute anchor on top of the reference sweep:
 // even if the in-test reference and the implementation drifted TOGETHER, these
 // fixed constants would catch it. make_essvi_varycarry(1), K=104, T=0.29, Call.
@@ -747,6 +748,52 @@ TEST(PricedSurface, EvaluateBatchLadderBitIdenticalToPerEntry) {
     EXPECT_TRUE(bits_equal(out_gk[i].volga, e.greeks.volga)) << i;
     EXPECT_TRUE(bits_equal(out_gk[i].charm, e.greeks.charm)) << i;
   }
+}
+
+// ── iv_batch (Task P-3 / GK-P2) ──────────────────────────────────────────
+//
+// `iv_batch` resolves T's carry/bracket ONCE and reuses it across every K --
+// the same ladder-reuse guarantee `evaluate_batch` already proves for the
+// full pricer bundle, narrowed to the pure IV resolution a quadrature strip
+// actually needs. Bit-identical to per-call `iv(K[i], T)` is the whole
+// contract, so every check below is `bits_equal`, never a tolerance.
+TEST(PricedSurface, IvBatchMatchesPerCallIvOnStrikeLadder) {
+  const PricedSurface surfaces[] = {make_essvi_varycarry(1), make_essvi(2, 6),
+                                    make_convex(3, 6, 40)};
+  for (const PricedSurface &s : surfaces) {
+    for (const double T : {0.05, 0.30, 0.80, 1.20}) {
+      std::vector<double> Ks;
+      for (int i = 0; i < 61; ++i) {
+        Ks.push_back(60.0 + 90.0 * (static_cast<double>(i) + 0.5) / 61.0);
+      }
+      std::vector<double> out(Ks.size(), -1.0);
+      s.iv_batch(Ks, T, out);
+      for (std::size_t i = 0; i < Ks.size(); ++i) {
+        EXPECT_TRUE(bits_equal(out[i], s.iv(Ks[i], T)))
+            << "K=" << Ks[i] << " T=" << T << " batch=" << out[i] << " scalar=" << s.iv(Ks[i], T);
+      }
+    }
+  }
+}
+
+// Degenerate/invalid inputs: non-finite/non-positive K, non-finite/non-
+// positive T, and an empty span. Every branch mirrors `iv(K,T)`'s own NaN
+// contract exactly (see `resolve`/`valid_query`).
+TEST(PricedSurface, IvBatchMatchesPerCallIvOnDegenerateInputs) {
+  const PricedSurface s = make_essvi(4, 4);
+  const std::vector<double> Ks = {-5.0, 0.0, kNaN, std::numeric_limits<double>::infinity(), 100.0};
+  for (const double T : {-1.0, 0.0, kNaN, 0.30}) {
+    std::vector<double> out(Ks.size(), -1.0);
+    s.iv_batch(Ks, T, out);
+    for (std::size_t i = 0; i < Ks.size(); ++i) {
+      const double want = s.iv(Ks[i], T);
+      EXPECT_TRUE(bits_equal(out[i], want)) << "K=" << Ks[i] << " T=" << T;
+    }
+  }
+
+  double sentinel = 7.0;
+  s.iv_batch(std::span<const double>{}, 0.30, std::span<double>{});
+  EXPECT_EQ(sentinel, 7.0); // zero-length is a no-op, nothing written anywhere
 }
 
 // A MIXED batch: interleaved T runs + singletons + a degenerate entry. Status + IV

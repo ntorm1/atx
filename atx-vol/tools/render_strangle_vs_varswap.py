@@ -2,7 +2,7 @@
 """Comparison report for an XOM strangle-vs-varswap run.
 
 Reads the single self-describing track TSV
-`atx-vol-strangle-varswap-driver` writes through
+`atx-vol-varswap-compare-example` writes through
 `atx::vol::write_backtest_pnl_tsv` — a `# key=value` metadata header, the 27
 pinned series columns, then one dynamic column per signal — and renders ONE
 figure that puts the two legs of the comparison side by side on every axis the
@@ -10,18 +10,20 @@ run measured:
 
     python render_strangle_vs_varswap.py <track.tsv> [out.html|out.png]
 
-    panel 1  cumulative P&L: the strangle leg against the variance-swap leg
-    panel 2  vega:   `gross_vega`  vs `swap_vega`  (+ `strangle_vega`)
-    panel 3  delta:  `gross_delta` vs `swap_delta`
-    panel 4  gamma:  `gross_gamma` vs `swap_gamma`
-    panel 5  theta:  `gross_theta` vs `swap_theta`
+    P&L      cumulative: the strangle leg against the variance-swap leg
+    explain  the swap leg's P&L attribution, `swap_explain_*` — ONLY when the
+             run computed it (see note 4)
+    vega     `gross_vega`  vs `swap_vega`  (+ `strangle_vega`)
+    delta    `gross_delta` vs `swap_delta`
+    gamma    `gross_gamma` vs `swap_gamma`
+    theta    `gross_theta` vs `swap_theta`
 
 Default output: `<track-stem>_comparison.png` alongside the TSV. `.html` writes
 a self-contained page with the figure inlined as a data URI; `.png`/`.svg`/
 `.pdf` write the figure directly. Reuses the tools/tearsheet.py idiom (palette,
 axis styling, stats box). Pure matplotlib (Agg backend) + pandas + stdlib.
 
-## Three things about this input that the code below is shaped by
+## Four things about this input that the code below is shaped by
 
 1. `pnl_total` IS THE WHOLE STEP. The engine's row total is options
    `pnl_explain` + settlement + hedge shares + financing - cost + the swap's
@@ -39,6 +41,17 @@ axis styling, stats box). Pure matplotlib (Agg backend) + pandas + stdlib.
 
 3. `skipped_restrikes` / `skipped_swaps` ARE CUMULATIVE. The per-session event
    count is the consecutive-row difference; the last row carries the run total.
+
+4. THE P&L EXPLAIN IS OPT-IN, AND ABSENT IS NOT ZERO. `RunConfig::swap_pnl_explain`
+   is off by default (it costs up to 20 repricings per live lot per step), and
+   off, the engine leaves those vectors EMPTY rather than zero-filled, so the
+   columns never reach the TSV at all. Nothing below stands 0.0 in for them: a
+   track without them draws no attribution panel and reports NaN — "not
+   measured" — where a track with them reports a number. Reading absence as a
+   flat attribution would assert that every component of the swap's P&L was
+   measured and came out zero, which is a different claim entirely, and it is
+   the same coercion an earlier defect in this lane made when a memoized path
+   reported 0.0 skew vega for a sensitivity it had not computed.
 """
 
 from __future__ import annotations
@@ -83,6 +96,22 @@ _GREEK_PANELS = (
 
 _RENDERABLE_SUFFIXES = (".png", ".svg", ".pdf")
 _HTML_SUFFIXES = (".html", ".htm")
+
+# The swap leg's P&L attribution is DISCOVERED from the track's own header row by
+# this prefix, never from a list written down here. The column names ARE the
+# `BacktestResult::swap_explain_*` field names (examples/varswap_compare_example.cpp
+# attaches them by field name), so a component the engine gains rides into this
+# report without a second copy of the roster to keep in step — which is exactly
+# what did not happen when those columns first landed.
+_EXPLAIN_PREFIX = "swap_explain_"
+# The one `swap_explain_*` column that is NOT a dollar flow: it COUNTS the
+# lot-steps whose move could not be attributed (a lot's first mark, a failed
+# greek solve), and those moves are already inside the residual. Summing it into
+# the attribution would break the identity
+# `carry + realized + vol_level + skew + convexity + discount + residual ==
+# swap_pnl` that backtest.hpp states. An EXCLUSION is written here rather than a
+# roster of the seven components for the reason above.
+_EXPLAIN_COUNTER = _EXPLAIN_PREFIX + "unattributed"
 
 
 # ── input ───────────────────────────────────────────────────────────────────
@@ -136,6 +165,24 @@ def swap_live_mask(df: pd.DataFrame) -> pd.Series:
     return np.isfinite(series(df, "swap_vega"))
 
 
+def explain_components(df: pd.DataFrame) -> dict[str, pd.Series]:
+    """The swap leg's P&L attribution, in track-column order, or {} if absent.
+
+    Discovered by prefix off the track's own header (see `_EXPLAIN_PREFIX`), so
+    the roster lives in one place — the engine — rather than here as well.
+
+    EMPTY, not a dict of zeros, when the run did not compute it. See module note
+    (4): "not computed" and "computed as zero" are different readings of a P&L
+    and the caller has to be able to tell them apart. Within a column that IS
+    present, a cell the engine could not fill stays NaN for the same reason.
+    """
+    return {
+        name: pd.to_numeric(df[name], errors="coerce").astype(float)
+        for name in df.columns
+        if name.startswith(_EXPLAIN_PREFIX) and name != _EXPLAIN_COUNTER
+    }
+
+
 def step_events(df: pd.DataFrame, name: str) -> pd.Series:
     """A CUMULATIVE counter column differenced into per-recorded-row events.
 
@@ -168,6 +215,11 @@ class Legs:
     swap_live: pd.Series
     restrike_events: pd.Series
     swap_skip_events: pd.Series
+    # The swap leg's P&L attribution and its unattributed-lot-step counter. The
+    # dict is EMPTY and the counter ALL-NaN on a run that did not compute the
+    # explain — module note (4).
+    explain: dict[str, pd.Series]
+    explain_unattributed: pd.Series
 
     @property
     def n_swap_live_rows(self) -> int:
@@ -180,6 +232,45 @@ class Legs:
     @property
     def total_swap_skips(self) -> float:
         return float(self.swap_skip_events.sum())
+
+    @property
+    def has_explain(self) -> bool:
+        return bool(self.explain)
+
+    @property
+    def explain_gap(self) -> pd.Series:
+        """(Σ components) − `swap_pnl` per row; ALL-NaN when there is no explain.
+
+        The components decompose `swap_pnl` exactly, so this is zero on a healthy
+        track and is drawn/reported rather than asserted: a reader who can see
+        the gap can tell a modelling change from a broken column set.
+        """
+        if not self.explain:
+            return pd.Series(np.full(len(self.date), np.nan), index=self.date.index)
+        total = pd.Series(np.zeros(len(self.date)), index=self.date.index)
+        for component in self.explain.values():
+            total = total + component  # NaN-propagating on purpose: see the docstring
+        return total - self.swap_step
+
+    @property
+    def max_explain_gap(self) -> float:
+        """Worst |gap| over the run, or NaN when nothing was attributed."""
+        if not self.explain:
+            return float("nan")
+        gap = np.abs(self.explain_gap.to_numpy(dtype=float))
+        return float(np.nanmax(gap)) if np.isfinite(gap).any() else float("nan")
+
+    @property
+    def total_unattributed(self) -> float:
+        """Unattributed lot-steps over the run, or NaN when not measured.
+
+        NOT 0.0 when the column is absent: pandas' own `.sum()` of an all-NaN
+        series is 0.0, and that would report "every lot-step was attributed" for
+        a run that never looked. NaN is the honest answer, and it is why this
+        does not simply forward to `.sum()`.
+        """
+        counted = self.explain_unattributed.to_numpy(dtype=float)
+        return float(np.nansum(counted)) if np.isfinite(counted).any() else float("nan")
 
 
 def split_legs(df: pd.DataFrame) -> Legs:
@@ -201,6 +292,11 @@ def split_legs(df: pd.DataFrame) -> Legs:
         swap_live=swap_live_mask(df),
         restrike_events=step_events(df, "skipped_restrikes"),
         swap_skip_events=step_events(df, "skipped_swaps"),
+        explain=explain_components(df),
+        # NaN — a MEASUREMENT never taken — is the stand-in here, not the 0.0 the
+        # cumulative counters get: those are flows that provably did not happen,
+        # while an absent explain simply did not look. Module note (4).
+        explain_unattributed=series(df, _EXPLAIN_COUNTER),
     )
 
 
@@ -254,11 +350,15 @@ def build_figure(meta: dict[str, str], df: pd.DataFrame):
     legs = split_legs(df)
     d = legs.date
     n = len(df)
-    panels: dict[str, tuple[str, str]] = {}
+    panels: dict[str, tuple[str, ...]] = {}
 
-    fig = plt.figure(figsize=(13.0, 10.4), dpi=150, facecolor=PAPER)
+    # The attribution row exists only on a track that carries the explain; a
+    # track without it gets the figure it has always had, not an empty band.
+    heights = [2.4, 1.4, 1.0, 1.0] if legs.has_explain else [2.4, 1.0, 1.0]
+    fig = plt.figure(figsize=(13.0, 10.4 + (2.6 if legs.has_explain else 0.0)),
+                     dpi=150, facecolor=PAPER)
     gs = fig.add_gridspec(
-        3, 4, height_ratios=[2.4, 1.0, 1.0], hspace=0.42, wspace=0.30,
+        len(heights), 4, height_ratios=heights, hspace=0.42, wspace=0.30,
         left=0.070, right=0.965, top=0.845, bottom=0.06,
     )
 
@@ -281,8 +381,17 @@ def build_figure(meta: dict[str, str], df: pd.DataFrame):
     _stats_box(ax, legs)
     panels["pnl"] = ("strangle_cum", "swap_cum")
 
-    # ── panels 2-5: one greek each, book against swap ───────────────────────
-    slots = (gs[1, :2], gs[1, 2:], gs[2, :2], gs[2, 2:])
+    # ── the swap leg's P&L attribution, when the run computed it ────────────
+    greek_row = 1
+    if legs.has_explain:
+        axx = fig.add_subplot(gs[1, :])
+        _explain_panel(axx, legs, n)
+        panels["explain"] = tuple(legs.explain)
+        greek_row = 2
+
+    # ── the greek panels: one greek each, book against swap ─────────────────
+    slots = (gs[greek_row, :2], gs[greek_row, 2:],
+             gs[greek_row + 1, :2], gs[greek_row + 1, 2:])
     for slot, (key, title, book_col, swap_col, unit) in zip(slots, _GREEK_PANELS):
         axg = fig.add_subplot(slot)
         _style_axis(axg)
@@ -309,6 +418,35 @@ def build_figure(meta: dict[str, str], df: pd.DataFrame):
 
     _titles(fig, meta, legs, n)
     return fig, panels
+
+
+def _explain_panel(ax, legs: Legs, n_rows: int) -> None:
+    """Cumulative attribution of the swap leg's P&L, one line per component.
+
+    CUMULATIVE rather than stacked bars: every component is a signed FLOW, and a
+    stack cannot show a negative contribution without inventing a baseline. The
+    swap leg itself is drawn over the top, so the identity — the components sum
+    to it — is something the reader can see rather than take on trust.
+    """
+    _style_axis(ax)
+    cycle = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+    for i, (name, component) in enumerate(legs.explain.items()):
+        # No fillna: a component the engine could not compute gaps the line
+        # instead of pretending it was flat (module note 4).
+        ax.plot(legs.date, component.cumsum(), color=cycle[i % len(cycle)],
+                linewidth=1.4, zorder=5, label=name[len(_EXPLAIN_PREFIX):])
+    ax.plot(legs.date, legs.swap_cum, color=SWAP, linewidth=2.2, alpha=0.75,
+            linestyle=(0, (5, 3)), zorder=6, label="swap_pnl (Σ components)")
+    ax.axhline(0.0, color=MUTE, linewidth=0.8, alpha=0.6)
+    _money(ax)
+    _date_ticks(ax, n_rows)
+    ax.legend(loc="best", frameon=False, fontsize=7.5, ncol=4, handlelength=1.4)
+    ax.set_title(
+        "Swap P&L attribution (cumulative)   ·   "
+        f"{legs.total_unattributed:,.0f} unattributed lot-steps   ·   "
+        f"worst identity gap ${legs.max_explain_gap:,.2f}",
+        fontsize=9.5, fontweight="bold", color=INK, loc="left", pad=5,
+    )
 
 
 def _mark_schedule_holes(ax, legs: Legs) -> None:
@@ -338,6 +476,8 @@ def _stats_box(ax, legs: Legs) -> None:
         ("Restrike skips", f"{legs.total_restrike_skips:,.0f}"),
         ("Swapless cycles", f"{legs.total_swap_skips:,.0f}"),
     ]
+    if legs.has_explain:
+        rows.append(("Unattributed", f"{legs.total_unattributed:,.0f}"))
     txt = "\n".join(f"{k:<16}{v:>13}" for k, v in rows)
     ax.text(
         0.012, 0.97, txt, transform=ax.transAxes, va="top", ha="left",
@@ -443,6 +583,13 @@ def render(track: Path, out: Path) -> dict[str, float]:
         "combined_total": float(legs.total_cum.iloc[-1]),
         "skipped_restrikes": legs.total_restrike_skips,
         "skipped_swaps": legs.total_swap_skips,
+        # 0 components means the run did not compute the explain, and the two
+        # numbers beside it are NaN rather than 0.0 for exactly that reason —
+        # module note (4). A caller reading `explain_unattributed == 0` off a run
+        # that never attributed anything would have it backwards.
+        "n_explain_components": float(len(legs.explain)),
+        "explain_unattributed": legs.total_unattributed,
+        "max_explain_gap": legs.max_explain_gap,
     }
 
 

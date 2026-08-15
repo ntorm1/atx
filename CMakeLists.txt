@@ -2,14 +2,22 @@ cmake_minimum_required(VERSION 3.20)
 
 project(atx
     # THE single source of truth for the atx-vol library version (plan 5.3).
-    # Everything downstream DERIVES from this field and nothing restates it:
+    # Everything downstream DERIVES from this field:
     #   * atx/vol/detail/version_generated.hpp is configure_file'd from
     #     PROJECT_VERSION_{MAJOR,MINOR,PATCH} / PROJECT_VERSION,
     #   * atx/vol/version.hpp publishes ATX_VOL_VERSION* + kVersion* from that,
     #   * atx-vol/src/version.cpp returns it (it used to carry its own literal),
     #   * the installed atx-volConfigVersion.cmake is written from PROJECT_VERSION.
     # Version.Query_MatchesTheCMakeProjectVersion fails if any of them drifts.
-    VERSION 1.0.0
+    #
+    # EXACTLY ONE PLACE RESTATES IT, and this comment used to deny that place
+    # existed: atx-vol/python/pyproject.toml's `version = "..."`, because a
+    # PEP 621 table cannot read a CMake variable. Bump it in the same commit as
+    # this field. The mirror is not silent -- python/tests/test_atxvol.py
+    # asserts the compiled atx::vol::version() equals the wheel metadata -- but
+    # that test only fires once the wheel is rebuilt, so it catches the drift
+    # later than this line does.
+    VERSION 1.1.0
     DESCRIPTION "ATX monorepo: core + engine"
     LANGUAGES C CXX
 )
@@ -281,7 +289,8 @@ endif()
 # sccache cannot share first-party objects across worktrees (its cache keys embed
 # per-worktree absolute paths). Include-hygiene enforcement (every TU compiled with
 # its own includes, catching missing/unused ones) lives in the `hygiene` preset
-# (ATX_USE_PCH OFF) for CI/nightly, so the PCH never hides an include defect.
+# (ATX_USE_PCH OFF), run by hand — no CI or nightly job builds this tree — so
+# the PCH never hides an include defect.
 # The option default stays OFF so a bare `cmake` (no preset) gets the strict build.
 option(ATX_USE_PCH "Use precompiled headers on atx targets (dev speed; ON in ninja/dev presets, OFF in hygiene)" OFF)
 option(ATX_UNITY_BUILD "Unity/jumbo build atx test target (dev speed)" OFF)

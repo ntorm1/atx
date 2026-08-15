@@ -1217,6 +1217,12 @@ Status PricerFitter::fit(const OptionChain &chain,
     SurfaceBuildAttemptReport attempt =
         completed_attempt_report(under, mark_in.curve, *built, cfg_.admission);
     const bool mark_admitted = attempt.admission.admitted;
+    // Final-review I2, mark arm: name the publish gate's verdict the same way
+    // the risk arm does. Without it a refused mark cell reports only the stage,
+    // and an operator cannot tell a QUALITY-FLOOR refusal from a domain defect
+    // from a MISSING MEASUREMENT (DiagnosticsUnavailable) — three different next
+    // steps behind one string. Rendering only; no admission semantics move.
+    const std::string mark_admission_detail = admission_detail(attempt.admission);
     report.attempts.push_back(std::move(attempt));
     if (!mark_admitted) {
       report.retained_last_known_good = market_mark_surface_ != nullptr;
@@ -1224,7 +1230,8 @@ Status PricerFitter::fit(const OptionChain &chain,
       (void)retain_or_reject(ValidationFailure::InvalidDomain);
       timings_.total_ms = elapsed_ms(fit_start);
       return Err(ErrorCode::Unavailable,
-                 "PricerFitter::fit: mark candidate failed surface admission");
+                 "PricerFitter::fit: mark candidate failed surface admission" +
+                     mark_admission_detail);
     }
     report.published = true;
     report.published_curve = mark_in.curve;

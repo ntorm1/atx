@@ -17,6 +17,7 @@
 #include <cstdio>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -31,6 +32,71 @@
 
 using namespace atx::vol;
 
+// THE EMISSION IS TESTED, so it lives in a named namespace rather than an
+// anonymous one -- exactly as examples/spx_wilmott_repro.cpp does for the
+// functions tests/spx_wilmott_repro_test.cpp drives. `main` below is suppressed
+// under ATX_VARSWAP_COMPARE_NO_MAIN so tests/varswap_compare_columns_test.cpp
+// can link THIS translation unit and call the shipped attach, then diff the
+// header of a TSV it really wrote against `swap_explain_columns()`.
+//
+// WHY THAT TEST EXISTS AND WHAT IT REPLACES. Until fix round 8 the only thing
+// standing between this file and a silently truncated attribution tail was a
+// Python module that READS THIS SOURCE AS TEXT
+// (python/tests/test_render_strangle_vs_varswap.py). A text predicate can only
+// ever approximate the property; the round-7 one missed `if (name != "x")` and
+// missed `swap_explain_columns().subspan(0, 4)`, both measured. The C++ gate
+// observes the artifact instead, so those two holes -- and the ones nobody has
+// thought of -- close together.
+namespace atx::vol::varswap_compare {
+
+[[nodiscard]] Status attach_one(BacktestResult &r, std::string_view name,
+                                const std::vector<double> &column) {
+  if (column.size() != r.size()) {
+    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
+                          "swap column " + std::string(name) +
+                              " is not row-parallel (an EMPTY column means the run "
+                              "did not compute it; see RunConfig::swap_pnl_explain)");
+  }
+  r.signals.emplace_back(std::string(name), column);
+  return atx::core::Ok();
+}
+
+// The swap lane's columns ride out through the TSV's dynamic signal tail (they
+// are deliberately not part of the frozen series-column registry).
+//
+// Task F-8 fix round 4 (R2-I3): the explain tail is DRIVEN from
+// `swap_explain_columns()`. This used to be a hand-written table -- the fifth
+// copy of that roster, and it predated the header comment claiming there was
+// only one. Round 3 could not remove it, because the Python gate derived this
+// fixture's signal tail by PARSING the literal rows; round 4 repointed that
+// parser at the roster, which is where the names actually live. A ninth column
+// now reaches this TSV with no edit to this file.
+//
+// THE COLUMN NAME IS THE FIELD NAME, and that now holds by construction rather
+// than by a hand-kept pairing: `column.name` and `column.member` are the two
+// halves of one roster row. The renderer (tools/render_strangle_vs_varswap.py)
+// finds the P&L-explain tail by the `swap_explain_` prefix, which is why the
+// property matters.
+//
+// `swap_pv` / `swap_pnl` stay literal: they are the quantity being explained,
+// not components of it, they are not on the explain roster, and they lead the
+// signal tail in that order.
+[[nodiscard]] Status attach_swap_columns(BacktestResult &r) {
+  ATX_TRY_VOID(attach_one(r, "swap_pv", r.swap_pv));
+  ATX_TRY_VOID(attach_one(r, "swap_pnl", r.swap_pnl));
+  for (const BacktestExplainColumn &column : swap_explain_columns()) {
+    ATX_TRY_VOID(attach_one(r, column.name, r.*(column.member)));
+  }
+  return atx::core::Ok();
+}
+
+} // namespace atx::vol::varswap_compare
+
+#ifndef ATX_VARSWAP_COMPARE_NO_MAIN
+
+// The strategy shape `main` drives. Inside the guard because it is `main`'s, not
+// the emission's: the test target compiles this TU without a `main`, and under
+// -Wunused-const-variable an unused constant there is an error.
 namespace {
 
 constexpr double kDelta = 0.40;
@@ -38,18 +104,6 @@ constexpr double kDelta = 0.40;
 // ceil-snapped onto the session grid.
 constexpr double kTenorT = 91.0 / 365.25;
 constexpr double kContracts = 100.0;
-
-// swap_pv / swap_pnl ride out through the TSV's dynamic signal tail (they are
-// deliberately not part of the frozen series-column registry).
-[[nodiscard]] Status attach_swap_columns(BacktestResult &r) {
-  if (r.swap_pv.size() != r.size() || r.swap_pnl.size() != r.size()) {
-    return atx::core::Err(atx::core::ErrorCode::InvalidArgument,
-                          "swap columns are not row-parallel");
-  }
-  r.signals.emplace_back("swap_pv", r.swap_pv);
-  r.signals.emplace_back("swap_pnl", r.swap_pnl);
-  return atx::core::Ok();
-}
 
 } // namespace
 
@@ -127,13 +181,18 @@ int main(int argc, char **argv) {
   rc.snapshot_cache = std::make_shared<SnapshotCache>();
   rc.unpriced = UnpricedLotPolicy::ExcludeAndReport;
   rc.reconcile_nav = true;
+  // OFF by default in the library — it costs up to 20 repricings per live lot
+  // per step — but this example exists to produce the comparison report, and
+  // attributing `swap_pnl` is what separates a bad day from a bad model there.
+  // One swap lot is live per cycle, so the bill is one lot's worth of repricing.
+  rc.swap_pnl_explain = true;
   auto outcome = run_timed(*clock, strat, rc);
   if (!outcome) {
     std::fprintf(stderr, "run_timed: %s\n", outcome.error().to_string().c_str());
     return 1;
   }
   BacktestResult &r = outcome->result;
-  if (const Status st = attach_swap_columns(r); !st) {
+  if (const Status st = atx::vol::varswap_compare::attach_swap_columns(r); !st) {
     std::fprintf(stderr, "%s\n", st.error().to_string().c_str());
     return 1;
   }
@@ -157,3 +216,5 @@ int main(int argc, char **argv) {
   std::printf("wrote %s (%zu rows)\n", out_tsv.c_str(), r.size());
   return 0;
 }
+
+#endif // ATX_VARSWAP_COMPARE_NO_MAIN

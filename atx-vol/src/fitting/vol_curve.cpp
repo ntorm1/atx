@@ -7,11 +7,14 @@
 #include <utility>
 
 #include "atx/core/error.hpp"
-#include "atx/vol/api/fitting/arb.hpp" // butterfly gates + shared-k pair projection + independent shape check
-#include "fitting/c8_calib.hpp"    // c8_fit_slice_lm, C8LmDiag
-#include "fitting/counters.hpp" // ConvexDense wing-anchor observability
-#include "fitting/essvi_calib.hpp" // essvi_fit_slice
-#include "fitting/svi_calib.hpp"   // svi_fit_slice, svi_project_mm
+#include "atx/vol/api/fitting/arb.hpp" // butterfly gates + shared-k projection + shape check
+#include "atx/vol/api/pricing/black76.hpp" // black76_price: price-space calendar floor (P-5)
+
+#include "fitting/c8_calib.hpp"          // c8_fit_slice_lm, C8LmDiag
+#include "fitting/counters.hpp"          // ConvexDense wing-anchor observability
+#include "fitting/dense_slice_price.hpp" // safe_call_price (shared w/ dense_slice.cpp)
+#include "fitting/essvi_calib.hpp"       // essvi_fit_slice
+#include "fitting/svi_calib.hpp"         // svi_fit_slice, svi_project_mm
 
 namespace atx::vol {
 
@@ -21,9 +24,13 @@ using atx::core::Ok;
 
 namespace {
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
-constexpr double kRiskCalendarMin = -0.60;
-constexpr double kRiskCalendarMax = 0.60;
-constexpr std::uint32_t kRiskCalendarIntervals = 64;
+// Task F-4 fix round 1 (F1): these three WERE literals here, hand-kept equal to
+// `ConvexRepairSpec`'s member defaults in vol_curve.hpp. Both now name the one
+// declaration there, so `ConvexRepairSpec{}` cannot drift away from the lattice
+// this branch scans.
+constexpr double kRiskCalendarMin = kConvexCalendarLatticeKMin;
+constexpr double kRiskCalendarMax = kConvexCalendarLatticeKMax;
+constexpr std::uint32_t kRiskCalendarIntervals = kConvexCalendarLatticeIntervals;
 constexpr std::uint32_t kRiskShapeIntervals = 256;
 
 // The tradeable pair band for a parametric calendar projection: the risk band
@@ -417,7 +424,11 @@ Result<std::unique_ptr<IVolCurve>> fit_slice_curve(const CurveConfig &cfg,
     // price-shape cone and the calendar cone: every iterate remains bounded,
     // monotone and convex because calendar repair happens inside the QP, never
     // by mutating total variance after the fit.
-    constexpr double kCalendarTol = 1.0e-7;
+    // Task F-4: THE calendar tolerance (types.hpp), not a local literal. Its
+    // sibling on the other branch of the ternary below,
+    // `ConvexRepairSpec::tolerance`, names the SAME constant (F-4 fix round 1,
+    // finding F1) -- so the two branches of `calendar_tol` cannot diverge.
+    constexpr double kCalendarTol = kCalendarTotalVarianceTol;
     constexpr int kMaxCalendarRefits = 4;
 
     const ConvexRepairSpec* repair =
@@ -490,12 +501,54 @@ Result<std::unique_ptr<IVolCurve>> fit_slice_curve(const CurveConfig &cfg,
       std::vector<double> violations;
       violations.reserve(8);
       bool unsupported_violation = false;
+      // FIT-P1 (Task P-5): the floor this scan checks is ITSELF enforced in price
+      // space (fit_convex_slice's cfloor rows, dense_slice.cpp), so inverting the
+      // fitted node back to an implied vol just to square it into a total variance
+      // was pure waste -- up to 64 Black-76 calls per scanned k via fit.iv(), on
+      // top of the fit itself. Compare prices directly instead: fold calendar_tol
+      // into the FLOOR side (shift the required total variance down by the
+      // tolerance before pricing it), so "floored price >= current price" is
+      // exactly the old "wp - w_curr > calendar_tol" decision under Black-76's
+      // monotone-in-sigma price (the same equivalence dense_slice.cpp's own cfloor
+      // construction relies on). Not a bit-for-bit-identical arithmetic path (one
+      // black76_price call instead of bisecting fit.iv() ~64 times), but the same
+      // SOURCE decision, so the set of flagged k's is unchanged.
+      //
+      // The current-side price MUST go through the identical safe_price projection
+      // ConvexSliceFit::iv() applies before it would invert -- in a wing the raw
+      // node price can sit within float noise of the intrinsic/forward no-arb
+      // bound, where comparing it unprojected disagrees with what iv()-then-square
+      // used to compare (characterization found the raw node price flagging
+      // spurious wing violations a slack floor never triggered against the pinned
+      // pre-change baseline; VolCurve.
+      // CalendarScanPriceSpaceSelectsIdenticalFloorsAsPreP5Baseline pins that
+      // agreement and is what fails if this ever moves). Task P-5 review I-1: the
+      // projection lives in ONE place (detail::safe_call_price, shared with
+      // ConvexSliceFit::iv()) instead of being copy-pasted here -- the prior copy
+      // is exactly the drift-prone duplication that produced the wing bug above.
+      //
+      // Task 3 / Task 6 (D1): the price-space rewrite changes only HOW a breach is
+      // detected, never how one is classified -- a breach outside the previous
+      // slice's data-supported band is still extrapolation-vs-extrapolation and
+      // still refuses rather than promoting an out-of-support k (see below).
       const auto scan_k = [&](double k) {
         const double wp = w_prev(k);
-        const double wc = fit.iv(k);
-        const double w_curr = (std::isfinite(wc) && wc > 0.0) ? wc * wc * T : kNaN;
-        if (std::isfinite(wp) && std::isfinite(w_curr) &&
-            wp - w_curr > calendar_tol) {
+        if (!std::isfinite(wp)) {
+          return;
+        }
+        const double w_floor = wp - calendar_tol;
+        if (!(w_floor > 0.0)) {
+          return; // current total variance is always >= 0, so no floor to violate
+        }
+        const double K = F * std::exp(k);
+        const double c = fit.call_price(K);
+        const double safe_price = detail::safe_call_price(F, K, T, df, c);
+        if (!std::isfinite(safe_price)) {
+          return; // iv() would have returned NaN here too -- no comparable current vol
+        }
+        const double floor_price =
+            black76_price(F, K, T, std::sqrt(w_floor / T), df, Side::Call);
+        if (std::isfinite(floor_price) && safe_price < floor_price) {
           if (k < floor_lo || k > floor_hi) {
             unsupported_violation = true; // extrapolation-vs-extrapolation
           } else {
@@ -568,7 +621,22 @@ Result<std::unique_ptr<IVolCurve>> fit_slice_curve(const CurveConfig &cfg,
       }
     }
     std::unique_ptr<IVolCurve> curve = std::make_unique<EssviCurve>(slice, df);
-    ATX_TRY_VOID(validate_parametric_risk_shape(*curve));
+    // FIT-C5: the eSSVI backbone is butterfly-arb-free EVERYWHERE by
+    // construction (the Mingone cube-space fit enforces the Lee/Gatheral-
+    // Jacquier bound), so the fixed risk-band scan is sufficient whenever no
+    // wing residual was fit — this branch is BIT-IDENTICAL to before C-8 on
+    // that (default, residual_disable == true) path. The optional HINGE_QUAD
+    // wing-residual layer is NOT projected onto the admissible cone (the
+    // per-slice Roper projector is out of port scope; see the PORT NOTE on
+    // `fit_wing_residual`, essvi_calib.cpp), so a served residual slice needs
+    // the SAME full-quoted-range scan the SVI branch uses (FT-C2/FT-C5): the
+    // residual's hinge-quadratic wing term can carry Durrleman g < 0 outside
+    // the fixed [-0.6, 0.6] band that a narrower scan never sees.
+    if (slice.resid_scale > 0.0) {
+      ATX_TRY_VOID(validate_served_shape_over_quotes(*curve, obs_eu));
+    } else {
+      ATX_TRY_VOID(validate_parametric_risk_shape(*curve));
+    }
     return Ok(std::move(curve));
   }
   case VolCurveKind::Svi: {

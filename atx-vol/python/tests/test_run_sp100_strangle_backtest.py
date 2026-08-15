@@ -96,6 +96,26 @@ SOLVE_LEDGER_KEYS = (
     "sl_iv_newton_iters",
     "sl_duplicate_mark_solves",
     "sl_cache_carry_drift",
+    # Task P-6 (VarSwap book memo). Matches `ledger::Solve` (counters.hpp),
+    # whose new counter is appended before `Count_` so existing indices stay
+    # stable. Caller-visible through `av.solve_ledger()`.
+    "sl_var_swap_strip_evals",
+    # Task F-2 (GammaSwap strip evals, review .../task-F-2-review.md, I-1):
+    # appended after `sl_var_swap_strip_evals`, matching `ledger::Solve`'s own
+    # `GammaSwapStripEvals` (counters.hpp) appended right before `Count_`.
+    # `av.solve_ledger()` now returns a 10-key dict (this file's own 9-tuple,
+    # unextended, is exactly what the review's I-1 finding broke); order
+    # verified by an executed probe against `counters::ledger::kNames`
+    # directly, not by reading the C++ source alone -- see this fix round's
+    # report for the probe's output.
+    "sl_gamma_swap_strip_evals",
+    # Task F-3 (CorridorVarSwap strip evals): appended after
+    # `sl_gamma_swap_strip_evals`, matching `ledger::Solve`'s own
+    # `CorridorVarSwapStripEvals` (counters.hpp) appended right before
+    # `Count_`. `av.solve_ledger()` now returns an 11-key dict. Order verified
+    # against `counters::ledger::kNames` by an executed source-level index
+    # comparison -- see this task's report.
+    "sl_corridor_var_swap_strip_evals",
 )
 
 

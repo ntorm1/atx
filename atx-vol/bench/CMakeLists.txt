@@ -168,6 +168,7 @@ target_link_libraries(atx-vol-fitting-bench
         benchmark::benchmark
         atx_warnings
         Threads::Threads
+        atx-vol-test-paths   # the testkit fixture headers resolve from a baked absolute
 )
 # fitting_throughput_bench.cpp's real-OPRA case (C0.2) reaches the testkit
 # fixture loaders via `#include "support/spy_fit_fixture.hpp"` — the same
@@ -191,6 +192,7 @@ target_link_libraries(atx-vol-e2e-hotpath-bench
         benchmark::benchmark
         atx_warnings
         Threads::Threads
+        atx-vol-test-paths   # the testkit fixture headers resolve from a baked absolute
 )
 target_include_directories(atx-vol-e2e-hotpath-bench
     PRIVATE
@@ -365,6 +367,12 @@ target_link_libraries(atx-vol-cstar-panel
         atx::core
         atx_warnings
         Threads::Threads
+        atx-vol-test-paths   # --data-root now defaults to this worktree's data/
+)
+# For "support/test_paths.hpp": same extra quoted-include root as the benches above.
+target_include_directories(atx-vol-cstar-panel
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../tests
 )
 
 # ── WS-0 M1 (infra-measure) — bench-gate unit test ────────────────────────
@@ -430,6 +438,7 @@ target_link_libraries(atx-vol-al-preset-ladder-bench
         benchmark::benchmark
         atx_warnings
         Threads::Threads
+        atx-vol-test-paths   # the testkit fixture headers resolve from a baked absolute
 )
 target_include_directories(atx-vol-al-preset-ladder-bench
     PRIVATE

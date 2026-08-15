@@ -3,6 +3,7 @@
 #include <cmath>
 
 #include "atx/core/error.hpp"
+#include "atx/vol/api/core/vol_time.hpp" // kCalendarYearNs (THE calendar-365 year length)
 
 namespace atx::vol {
 
@@ -184,7 +185,7 @@ double forward_div_corrected(double S, double r, double T,
       continue; // after expiry
     }
     const double t_i =
-        static_cast<double>(ev.ex_date_ns - now_ts_ns) / (1.0e9 * 365.25 * 86400.0);
+        static_cast<double>(ev.ex_date_ns - now_ts_ns) / kCalendarYearNs;
     if (t_i < 0.0 || t_i > T) {
       continue;
     }

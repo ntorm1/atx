@@ -398,7 +398,7 @@ struct FitObs {
   double mid{0.0};             // anchor-aware target price (bid / mid / ask)
   double spread{0.0};          // ask − bid (price units)
   double vega{0.0};            // B76 vega at sigma_mkt
-  double noise_sigma{0.0};     // spread / vega — σ-equivalent of the half-spread
+  double noise_sigma{0.0};     // spread / vega — σ-equivalent of the FULL spread
   Side side{Side::Call};
   // Stable source identity survives sorting, observation caps, and de-Am.
   std::uint32_t source_strike_index{0};
@@ -475,10 +475,33 @@ struct FitDiag {
   std::uint32_t n_quotes_used{0};
   // Butterfly no-arb diagnostic (Task C2.5): summed per-slice butterfly
   // violations observed on the research/surface-driver path. Closed-form
-  // Martini-Mingone tally for raw-SVI slices; 0 by construction for eSSVI. This
-  // is a DIAGNOSTIC COUNT ONLY — the surface drivers do not reject on it (the
-  // per-slice serving gates in `fit_slice_curve` do the rejecting).
+  // Martini-Mingone tally for raw-SVI slices. For the eSSVI alternate driver
+  // (essvi_calib_surface[_sequential], Task C-8) this is a real post-fit
+  // grid-scan count over the assembled surface whenever `CalibOpts::
+  // validate_no_arb` is set — the eSSVI backbone alone is butterfly-free by
+  // construction, but the optional un-projected wing-residual layer is not, so
+  // this is NOT always 0 the way it was before C-8. The eSSVI scan is a FIXED
+  // `k ∈ [-0.5, 0.5]` band (see `essvi_calib_surface`'s docstring, essvi_
+  // calib.hpp) — a violation confined entirely past `|k| = 0.5` reads 0 here
+  // regardless of validate_no_arb. 0 also means "the audit did not run" when
+  // validate_no_arb is false — NEITHER case is a "verified globally clean"
+  // claim. DIAGNOSTIC-ONLY for callers that leave validate_no_arb off; the
+  // per-slice serving gates in `fit_slice_curve` do their own independent
+  // rejecting regardless of this field, always on -- but NOT always
+  // full-quoted-range-aware (MUST-FIX 9): true for SVI (unconditionally) and
+  // for eSSVI's optional wing-residual layer (`resid_scale > 0`); the
+  // default eSSVI/C8/CStar/spline branches still scan the fixed
+  // `[-0.6, 0.6]` band (`kRiskCalendarMin`/`Max`, vol_curve.cpp). See
+  // essvi_calib.hpp for the precise per-branch statement.
   std::uint32_t n_butterfly_viol{0};
+  // Calendar no-arb diagnostic (Task C-8): real post-fit surface-level
+  // calendar-crossing count from the same eSSVI alternate-driver audit above
+  // (`arb_check_total_surface_all`, gated on `CalibOpts::validate_no_arb`,
+  // same fixed `[-0.5, 0.5]` band and same "0 is not a global clean bill"
+  // caveat as `n_butterfly_viol` above). Unset (0) by every OTHER
+  // calibrator's driver (SVI, C8, CStar) — read only in the eSSVI
+  // alternate-driver context.
+  std::uint32_t n_calendar_viol{0};
 
   // ── T10 (plan D5): signals the serving path could not previously report ──
   //

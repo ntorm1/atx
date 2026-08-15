@@ -3,6 +3,8 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <cstring>
 #include <functional>
 #include <limits>
 #include <memory>
@@ -1104,6 +1106,209 @@ TEST(ArbButterflySlice, SurfaceCheckUnchanged) {
     EXPECT_DOUBLE_EQ(res.value()[i].slack, expected[i].slack);
     EXPECT_EQ(res.value()[i].kind, expected[i].kind);
   }
+}
+
+// ── THE butterfly FD rule: one implementation, pinned ────────────────────────
+//
+// `detail/butterfly_density.hpp` states the Durrleman stencil and its tolerance
+// once and four entry points call it. Each site used to carry a hand-written
+// copy while arb.cpp asserted, falsely, that it held the only one. These tests
+// are what makes that singleness checkable instead of upkeep-only prose.
+
+[[nodiscard]] std::uint64_t hexbits(double v) noexcept {
+  std::uint64_t u = 0;
+  std::memcpy(&u, &v, sizeof(u));
+  return u;
+}
+
+// FNV-1a over the raw IEEE bits of every field of every violation, in order.
+// Any arithmetic drift -- a reassociated term, a moved tolerance, a changed
+// guard, a dropped or reordered point -- moves the digest, and no float
+// comparison tolerance can hide inside it.
+[[nodiscard]] std::uint64_t digest(const std::vector<ArbViolation> &v) noexcept {
+  std::uint64_t acc = 0xcbf29ce484222325ull ^ static_cast<std::uint64_t>(v.size());
+  for (const ArbViolation &x : v) {
+    for (const double d : {x.k_log, x.T1, x.T2, x.slack}) {
+      acc = (acc ^ hexbits(d)) * 1099511628211ull;
+    }
+    acc = (acc ^ static_cast<std::uint64_t>(x.kind)) * 1099511628211ull;
+  }
+  return acc;
+}
+
+// A raw-SVI slice whose total variance is negative everywhere: every interior
+// grid point is an unusable stencil, which is the one place the entries that
+// share the FD rule genuinely disagree.
+[[nodiscard]] SviParams dead_svi_slice() {
+  SviParams s = steep_svi_slice();
+  s.a = -1.0;
+  s.b = 0.0;
+  return s;
+}
+
+// The singleness claim, made checkable. `arb.cpp` used to assert in a comment
+// that it held "the SINGLE implementation of the butterfly FD scheme" while
+// three more hand-written copies sat in the same file and in spline_curve.cpp.
+// Nothing tested the claim, so nothing caught that it was false. This asserts it
+// instead: on one fixture, every entry point must produce a BIT-IDENTICAL
+// violation set, and the count-only entry must agree on the tally. It also
+// prints the digests so a report can quote them.
+TEST(ArbButterflyScheme, EveryEntryProducesTheIdenticalViolationSet) {
+  const SviParams steep = steep_svi_slice();
+  const VolSurface surf = make_svi_1slice(steep);
+  constexpr double k_min = -0.5;
+  constexpr double k_max = 0.5;
+  constexpr std::uint32_t n_grid = 64;
+
+  const auto surface_v = arb_check_butterfly(surf, k_min, k_max, n_grid);
+  const auto slice_v = arb_check_butterfly_slice(
+      [&surf, &steep](double k) { return surf.w(k, steep.T); }, steep.T, k_min,
+      k_max, n_grid);
+  const SviCurve curve(steep, 1.0);
+  const auto curve_v = arb_check_butterfly(curve, k_min, k_max, n_grid);
+  const auto counts = arb_check_total_surface_all(surf, k_min, k_max, n_grid);
+  const SviCurve dead(dead_svi_slice(), 1.0);
+  const auto dead_v = arb_check_butterfly(dead, k_min, k_max, n_grid);
+
+  ASSERT_TRUE(surface_v.has_value());
+  ASSERT_TRUE(slice_v.has_value());
+  ASSERT_TRUE(curve_v.has_value());
+  ASSERT_TRUE(counts.has_value());
+  ASSERT_TRUE(dead_v.has_value());
+  std::printf("[bf-anchor] surface n=%llu digest=%016llx\n",
+              static_cast<unsigned long long>(surface_v->size()),
+              static_cast<unsigned long long>(digest(*surface_v)));
+  std::printf("[bf-anchor] slice   n=%llu digest=%016llx\n",
+              static_cast<unsigned long long>(slice_v->size()),
+              static_cast<unsigned long long>(digest(*slice_v)));
+  std::printf("[bf-anchor] curve   n=%llu digest=%016llx\n",
+              static_cast<unsigned long long>(curve_v->size()),
+              static_cast<unsigned long long>(digest(*curve_v)));
+  std::printf("[bf-anchor] counts  n_butterfly=%llu n_calendar=%llu\n",
+              static_cast<unsigned long long>(counts->n_butterfly),
+              static_cast<unsigned long long>(counts->n_calendar));
+  std::printf("[bf-anchor] dead    n=%llu digest=%016llx\n",
+              static_cast<unsigned long long>(dead_v->size()),
+              static_cast<unsigned long long>(digest(*dead_v)));
+
+  ASSERT_FALSE(surface_v->empty()) << "fixture must actually breach the density";
+  EXPECT_EQ(digest(*slice_v), digest(*surface_v));
+  EXPECT_EQ(digest(*curve_v), digest(*surface_v));
+  EXPECT_EQ(counts->n_butterfly, static_cast<std::uint32_t>(surface_v->size()));
+  // The degenerate slice is the documented exception, not a fifth answer: the
+  // gate reports every interior point, so it cannot coincide with the others.
+  EXPECT_EQ(dead_v->size(), static_cast<std::size_t>(n_grid - 1u));
+}
+
+TEST(ArbButterflyScheme, UnusableStencilReportedByTheCurveGateSkippedElsewhere) {
+  // The ONE substantive difference between the entries sharing the FD rule,
+  // pinned so it stays a decision rather than an accident of copying: on a slice
+  // whose total variance is non-positive everywhere the IVolCurve gate records
+  // an infinite-slack violation at every interior point, while the per-slice
+  // scan the surface walk and the count-only entry use records nothing.
+  const SviParams dead = dead_svi_slice();
+  const SviCurve curve(dead, 1.0);
+  constexpr std::uint32_t n_grid = 64;
+  const auto gate = arb_check_butterfly(curve, -0.5, 0.5, n_grid);
+  ASSERT_TRUE(gate.has_value());
+  ASSERT_EQ(gate->size(), static_cast<std::size_t>(n_grid - 1u));
+  for (const ArbViolation &v : *gate) {
+    EXPECT_EQ(v.kind, ArbViolation::Kind::Butterfly);
+    EXPECT_TRUE(std::isinf(v.slack));
+  }
+
+  const auto scan = arb_check_butterfly_slice(
+      [&curve](double k) { return curve.w(k); }, dead.T, -0.5, 0.5, n_grid);
+  ASSERT_TRUE(scan.has_value());
+  EXPECT_TRUE(scan->empty());
+}
+
+TEST(ArbButterflyScheme, CurveGateAndCountEntryMatchThePreUnificationStencil) {
+  // Two of the four unified sites wrote the SAME density with a different
+  // spelling: the curve gate inlined it into one expression (`a*a - ... + ...`)
+  // and the count-only entry named `t1/t2/t3` and inlined only the comparison,
+  // where the shared helper names `term1/term2/term3`. Re-association is the one
+  // way a pure refactor of this loop could still move a mark, so it is checked on
+  // raw IEEE bits rather than EXPECT_DOUBLE_EQ.
+  //
+  // The two reference loops below are NOT paraphrases. They were taken from
+  // `git show HEAD:atx-vol/src/arb.cpp` (lines 445-470 and 563-579 of that
+  // output) and diffed against it line-for-line; the only edits are the ones
+  // needed to hoist them into a test (`out`/`counts` become locals).
+  const SviParams steep = steep_svi_slice();
+  constexpr double k_min = -0.5;
+  constexpr double k_max = 0.5;
+  constexpr std::uint32_t n_grid = 64;
+  const SviCurve curve(steep, 1.0);
+  const VolSurface surf = make_svi_1slice(steep);
+
+  const double dk = (k_max - k_min) / static_cast<double>(n_grid);
+  const double inv_2dk = 0.5 / dk;
+  const double inv_dksq = 1.0 / (dk * dk);
+
+  std::vector<ArbViolation> curve_ref;
+  for (std::uint32_t gi = 1; gi < n_grid; ++gi) {
+    const double k = k_min + static_cast<double>(gi) * dk;
+    const double w_lo = curve.w(k - dk);
+    const double w_mi = curve.w(k);
+    const double w_hi = curve.w(k + dk);
+    if (!(w_mi > 1.0e-12) || !std::isfinite(w_lo) ||
+        !std::isfinite(w_mi) || !std::isfinite(w_hi)) {
+      curve_ref.push_back(ArbViolation{k, curve.T(), curve.T(),
+                                       std::numeric_limits<double>::infinity(),
+                                       ArbViolation::Kind::Butterfly});
+      continue;
+    }
+    const double w_p = (w_hi - w_lo) * inv_2dk;
+    const double w_pp = (w_hi - 2.0 * w_mi + w_lo) * inv_dksq;
+    const double a = 1.0 - 0.5 * k * w_p / w_mi;
+    const double density = a * a -
+                           0.25 * w_p * w_p * (0.25 + 1.0 / w_mi) +
+                           0.5 * w_pp;
+    if (density < -1.0e-9) {
+      curve_ref.push_back(ArbViolation{k, curve.T(), curve.T(), -density,
+                                       ArbViolation::Kind::Butterfly});
+    }
+  }
+
+  const auto gate = arb_check_butterfly(curve, k_min, k_max, n_grid);
+  ASSERT_TRUE(gate.has_value());
+  ASSERT_FALSE(curve_ref.empty()) << "fixture must actually breach the density";
+  ASSERT_EQ(gate->size(), curve_ref.size());
+  for (std::size_t i = 0; i < curve_ref.size(); ++i) {
+    EXPECT_EQ(hexbits((*gate)[i].k_log), hexbits(curve_ref[i].k_log)) << "i=" << i;
+    EXPECT_EQ(hexbits((*gate)[i].slack), hexbits(curve_ref[i].slack)) << "i=" << i;
+    EXPECT_EQ(hexbits((*gate)[i].T1), hexbits(curve_ref[i].T1)) << "i=" << i;
+    EXPECT_EQ(hexbits((*gate)[i].T2), hexbits(curve_ref[i].T2)) << "i=" << i;
+    EXPECT_EQ((*gate)[i].kind, curve_ref[i].kind) << "i=" << i;
+  }
+  EXPECT_EQ(digest(*gate), digest(curve_ref));
+
+  std::uint32_t count_ref = 0;
+  const double T = steep.T;
+  for (std::uint32_t g = 1; g < n_grid; ++g) {
+    const double k = k_min + static_cast<double>(g) * dk;
+    const double w_lo = surf.w(k - dk, T);
+    const double w_mi = surf.w(k, T);
+    const double w_hi = surf.w(k + dk, T);
+    if (!(w_mi > 1.0e-12) || !std::isfinite(w_lo) || !std::isfinite(w_hi)) {
+      continue;
+    }
+    const double w_p = (w_hi - w_lo) * inv_2dk;
+    const double w_pp = (w_hi - 2.0 * w_mi + w_lo) * inv_dksq;
+    const double a = 1.0 - 0.5 * k * w_p / w_mi;
+    const double t1 = a * a;
+    const double t2 = 0.25 * w_p * w_p * (0.25 + 1.0 / w_mi);
+    const double t3 = 0.5 * w_pp;
+    if (t1 - t2 + t3 < -1.0e-9) {
+      ++count_ref;
+    }
+  }
+
+  const auto counts = arb_check_total_surface_all(surf, k_min, k_max, n_grid);
+  ASSERT_TRUE(counts.has_value());
+  ASSERT_GT(count_ref, 0u) << "fixture must actually breach the density";
+  EXPECT_EQ(counts->n_butterfly, count_ref);
 }
 
 // ── Combined check ────────────────────────────────────────────────────────

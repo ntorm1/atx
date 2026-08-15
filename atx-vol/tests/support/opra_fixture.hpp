@@ -21,31 +21,24 @@
 #include <string>
 #include <vector>
 
-#include "atx/vol/api/pricing/american.hpp"   // american_price, AmericanMethod, al_fast_opts
-#include "atx/vol/api/fitting/calib.hpp"      // FitObs, build_observations, CalibOpts
-#include "atx/vol/api/marketdata/data.hpp"       // data_install
-#include "atx/vol/api/core/market_env.hpp" // MarketEnv
-#include "atx/vol/api/marketdata/opra_panel.hpp" // OpraLoadSpec, load_opra_cbbo_parquet
-#include "atx/vol/api/fitting/session.hpp"    // VolaSession
-#include "atx/vol/api/core/types.hpp"      // Side
-#include "atx/vol/api/marketdata/universe.hpp"   // Universe, Underlying, Chain
+#include "test_paths.hpp"  // market_data — the one fixture-path resolver
+
+#include "atx/vol/api/pricing/american.hpp"     // american_price, AmericanMethod, al_fast_opts
+#include "atx/vol/api/fitting/calib.hpp"        // FitObs, build_observations, CalibOpts
+#include "atx/vol/api/marketdata/data.hpp"      // data_install
+#include "atx/vol/api/core/market_env.hpp"      // MarketEnv
+#include "atx/vol/api/marketdata/opra_panel.hpp"  // OpraLoadSpec, load_opra_cbbo_parquet
+#include "atx/vol/api/fitting/session.hpp"      // VolaSession
+#include "atx/vol/api/core/types.hpp"           // Side
+#include "atx/vol/api/marketdata/universe.hpp"  // Universe, Underlying, Chain
 
 namespace atx::vol::testkit {
 
-// Probe the standard fixture locations for one symbol's cbbo-1m parquet. `symbol`
+// Resolve one symbol's cbbo-1m parquet under the repo-root data/ tree. `symbol`
 // is lowercase (matching the on-disk filename, e.g. "spy" / "xom"). Empty result
 // => not found (caller should GTEST_SKIP).
 [[nodiscard]] inline std::string find_opra_parquet(const std::string &symbol) {
-  const std::string base = symbol + "_opra_cbbo1m_2026-06-05T1955Z.parquet";
-  const char *dirs[] = {"data/", "../data/", "../../data/", "../../../data/", "C:/atx/data/"};
-  for (const char *d : dirs) {
-    std::string p = std::string(d) + base;
-    std::error_code ec;
-    if (std::filesystem::exists(p, ec)) {
-      return p;
-    }
-  }
-  return {};
+  return market_data_if_present(symbol + "_opra_cbbo1m_2026-06-05T1955Z.parquet").string();
 }
 
 // An installed OPRA board: everything the fitter needs, resolved once.

@@ -31,10 +31,54 @@
 //   analytics/diff/two_surface        — compute_surface_diff between the base
 //                                       skewed surface and a +2vol-bumped copy
 //                                       of the same underlying (same uid).
+//   deriv/greeks/standard_priced_surface — deriv_greeks on the PricedSurface-
+//                                       native entry point (Task P-1): a
+//                                       DerivQuality::Standard (257-node) var
+//                                       swap with the default greek bundle
+//                                       (second_order + carry_theta on,
+//                                       method == FiniteDifference), the
+//                                       center quote plus up to 16 bumped/
+//                                       rolled strip repricings per call
+//                                       (Task P-2 dropped the r+ FD rho bump:
+//                                       17 -> 16) — the per-strip-constant
+//                                       resolve hoist's target.
+//   deriv/greeks/varswap_analytic_priced_surface — Task P-4 / GK-P: the
+//                                       IDENTICAL contract/cfg as the case
+//                                       above with only bumps.method flipped
+//                                       to AnalyticStrip — delta/gamma/vega/
+//                                       vanna/volga come from the closed
+//                                       form (deriv_analytic_greeks.hpp)
+//                                       instead of up to 8 spot/vol bump
+//                                       repricings; theta/rho/charm cost the
+//                                       same either way. The A/B pair for
+//                                       this task's paired measurement.
+//   swap_leg/solve_cycle_swap_entry   — solve_cycle_swap's entry-vega greeks
+//                                       call (swap_leg.cpp, Task P-2 / GK-P3):
+//                                       a VarSwap cycle-open sizing solve that
+//                                       reads ONLY `greeks->vega`, so its
+//                                       DerivGreekBumps carries
+//                                       second_order = false, carry_theta =
+//                                       false (this task's swap_leg change) —
+//                                       the per-cycle-open backtest-populate
+//                                       path the brief's "one backtest
+//                                       populate leg" bench targets.
 
 #include <benchmark/benchmark.h>
 
+#include <cstdint>
+#include <filesystem>
+#include <system_error>
+#include <vector>
+
+#include "atx/vol/api/pricing/american.hpp"    // al_fast_opts, AmericanMethod
 #include "atx/vol/api/analytics/analytics.hpp" // AnalyticsConfig, compute_surface_analytics, risk_neutral_density, var_swap_vol, compute_surface_diff
+#include "atx/vol/api/backtest/backtest.hpp"       // MarketSnapshot, SurfaceRef
+#include "atx/vol/api/pricing/derivatives.hpp"     // DerivContract/Config/GreekBumps, deriv_greeks
+#include "atx/vol/api/storage/surface_archive.hpp" // write_surface_archive_v2_file
+#include "atx/vol/api/fitting/surface_parity.hpp"  // SliceContext
+#include "atx/vol/api/pricing/swap_leg.hpp"        // CycleSwapRequest, solve_cycle_swap (Task P-2)
+#include "atx/vol/api/fitting/vol_curve.hpp"       // CurveSurface, EssviCurve
+#include "atx/vol/api/fitting/vol_surface.hpp"     // EssviParams
 
 #include "bench_util.hpp"
 #include "support/analytics_fixture.hpp" // testkit::make_skewed_surface, kFixtureNow
@@ -128,6 +172,213 @@ void BM_SurfaceDiff(benchmark::State &state) {
   state.SetItemsProcessed(state.iterations()); // items = diff bundles
 }
 
+// ── deriv/greeks/standard_priced_surface ──────────────────────────────────
+
+// An unaged 1e6-notional var swap at the same 90d tenor as the RND/var-swap
+// cases above (inside the fixture's fitted pillar range), priced against the
+// skewed PricedSurface fixture.
+[[nodiscard]] DerivContract skewed_var_swap_contract() {
+  DerivContract c{};
+  c.kind = DerivKind::VarSwap;
+  c.maturity_t = kRndTenorYears;
+  c.notional = 1e6;
+  c.rv_spec.annualization = 252.0;
+  c.rv_spec.n_obs_total = 63u;
+  return c;
+}
+
+void BM_DerivGreeks_Standard_PricedSurface(benchmark::State &state) {
+  const PricedSurface &ps = skewed_surface();
+  const DerivContract contract = skewed_var_swap_contract();
+  const DerivConfig cfg{};       // DerivQuality::Standard (257-node strip)
+  const DerivGreekBumps bumps{}; // second_order + carry_theta both default true; method == FD
+  for (auto _ : state) {
+    Result<DerivGreeks> g = deriv_greeks(ps, contract, cfg, bumps);
+    if (!g.has_value()) {
+      state.SkipWithError(g.error().to_string().c_str());
+      break;
+    }
+    benchmark::DoNotOptimize(g);
+    benchmark::ClobberMemory();
+  }
+  state.SetItemsProcessed(state.iterations()); // items = deriv_greeks calls
+}
+
+// ── deriv/greeks/varswap_analytic_priced_surface ───────────────────────────
+//
+// Task P-4 / GK-P: the SAME contract/cfg as `deriv/greeks/standard_priced_
+// surface` above -- same surface, same tenor, same DerivQuality::Standard
+// 257-node strip, same second_order + carry_theta defaults -- with only
+// `bumps.method` flipped to `AnalyticStrip`. Delta/gamma/vega/vanna/volga
+// come from the closed form (deriv_analytic_greeks.hpp) instead of the up-to
+// -8 spot/vol bump repricings `eval_bump_table` would otherwise pay for
+// (`skip_market_bumps`, derivatives.cpp); theta/theta_carry/theta_zero_
+// fixing/charm cost exactly what they already did either way (their own
+// evaluations never route through the closed form -- `DerivGreekMethod`'s
+// own doc, derivatives.hpp), and rho is already the P-2 closed form on
+// every path regardless. Review fix round 2, I-2: charm's COST is
+// unaffected by the knob but its VALUE is not -- it differences the same
+// FD-rolled delta against `g.delta`, which the knob does select -- this
+// bench case does not read `charm`, so the distinction does not change
+// anything measured here.
+//
+// Paired against the FD case above -- same binary, only the bumps struct
+// differs -- for the Task P-4 A/B measurement (no env-var seam needed:
+// `method` is an ordinary runtime config field, not a compiled-in choice).
+void BM_DerivGreeks_Analytic_PricedSurface(benchmark::State &state) {
+  const PricedSurface &ps = skewed_surface();
+  const DerivContract contract = skewed_var_swap_contract();
+  const DerivConfig cfg{};
+  DerivGreekBumps bumps{};
+  bumps.method = DerivGreekMethod::AnalyticStrip;
+  for (auto _ : state) {
+    Result<DerivGreeks> g = deriv_greeks(ps, contract, cfg, bumps);
+    if (!g.has_value()) {
+      state.SkipWithError(g.error().to_string().c_str());
+      break;
+    }
+    benchmark::DoNotOptimize(g);
+    benchmark::ClobberMemory();
+  }
+  state.SetItemsProcessed(state.iterations()); // items = deriv_greeks calls
+}
+
+// ── deriv/price/audit_priced_surface ──────────────────────────────────────
+
+// Task P-3 / PV-P4: a SINGLE quote (no bump table) at DerivQuality::Audit --
+// the richest tier this file ships (2049-node strip, kMaxStripNodes), so the
+// batched surface-read path (PricedSurfaceStripView::iv_batch, gated on
+// `has_strip_iv_batch`) gathers the most nodes per call. Isolates the strip
+// batching win from the greek bump table's read-vector cache (that is
+// `deriv/greeks/standard_priced_surface` above); this case never touches
+// `CachedBumpView` at all. `ATX_VOL_DISABLE_STRIP_BATCH=1` (read once at
+// process load, `derivatives.cpp`'s `g_strip_batch_disabled`) forces the
+// SAME binary back onto the pre-P-3 per-node scalar loop, which is how the
+// paired A/B measurement in the task report was taken -- two runs of this
+// exact binary, only the env var differing.
+void BM_DerivPrice_Audit_PricedSurface(benchmark::State &state) {
+  const PricedSurface &ps = skewed_surface();
+  const DerivContract contract = skewed_var_swap_contract();
+  DerivConfig cfg{};
+  cfg.quality = DerivQuality::Audit;
+  for (auto _ : state) {
+    Result<DerivQuote> q = deriv_price(ps, contract, cfg);
+    if (!q.has_value()) {
+      state.SkipWithError(q.error().to_string().c_str());
+      break;
+    }
+    benchmark::DoNotOptimize(q);
+    benchmark::ClobberMemory();
+  }
+  state.SetItemsProcessed(state.iterations()); // items = deriv_price calls
+}
+
+// ── swap_leg/solve_cycle_swap_entry ────────────────────────────────────────
+
+// A one-symbol on-disk archive -> loadable MarketSnapshot, built ONCE (the
+// only way to obtain a SurfaceRef -- solve_cycle_swap's own surface type).
+// Mirrors tests/swap_leg_test.cpp's fixture recipe, trimmed to what the entry
+// solve alone needs.
+[[nodiscard]] const MarketSnapshot &solve_cycle_swap_snapshot() {
+  static const MarketSnapshot value = [] {
+    constexpr double kR = 0.043;
+    constexpr std::uint32_t kUid = 11;
+    constexpr std::int64_t kBaseNow = 1700000000000000000LL;
+
+    CurveSurface cs;
+    std::vector<SliceContext> ctx;
+    const double Ts[] = {0.05, 0.10, 0.20, 0.35, 0.50, 0.75, 1.00};
+    int i = 0;
+    for (const double T : Ts) {
+      const double term_forward = 100.0 * std::exp((kR - 0.02) * T);
+      EssviParams e{};
+      e.theta = 0.04 + 0.005 * static_cast<double>(i);
+      e.phi = 1.5 - 0.05 * static_cast<double>(i);
+      e.rho = -0.4 + 0.02 * static_cast<double>(i);
+      e.psi = 0.5;
+      e.p = 0.5;
+      e.lambda = 0.5;
+      e.T = T;
+      e.F = term_forward;
+      e.expiry_id = static_cast<std::uint16_t>(i);
+      cs.push(std::make_unique<EssviCurve>(e, std::exp(-kR * T)));
+      ctx.push_back(SliceContext{T, term_forward, 0.0, 0.02, 250, 7});
+      ++i;
+    }
+    PricingContext pc;
+    pc.S = 100.0;
+    pc.r = kR;
+    pc.now_ts_ns = kBaseNow;
+    pc.method = AmericanMethod::AndersenLake;
+    pc.al_opts = al_fast_opts();
+    pc.uid = kUid;
+    Result<PricedSurface> ps = PricedSurface::create(std::move(cs), std::move(ctx), pc);
+    if (!ps.has_value()) {
+      std::abort(); // fixture construction must not fail silently
+    }
+
+    const std::filesystem::path dir =
+        std::filesystem::temp_directory_path() / "atx-vol-bench-swap-leg";
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    const std::string path = (dir / "2026-08-01.atxvsa").string();
+    const SurfaceArchiveItem item{"XOM", &*ps, std::nullopt};
+    const std::span<const SurfaceArchiveItem> items(&item, 1);
+    if (!write_surface_archive_v2_file(path, items).has_value()) {
+      std::abort();
+    }
+    Result<MarketSnapshot> snap = MarketSnapshot::load(path);
+    if (!snap.has_value()) {
+      std::abort();
+    }
+    return std::move(*snap);
+  }();
+  return value;
+}
+
+// A 5-session grid (kUid, kBaseNow, kStepNs matching the snapshot fixture
+// above): open at sessions[0], expiry at sessions[4], 3 observed returns
+// (mirrors swap_leg_test.cpp's make_request/SolveCycleSwapStrikesFair...).
+[[nodiscard]] CycleSwapRequest solve_cycle_swap_request() {
+  static const std::vector<std::int64_t> sessions = [] {
+    constexpr std::int64_t kBaseNow = 1700000000000000000LL;
+    constexpr std::int64_t kStepNs = 30LL * 86400LL * 1000000000LL;
+    std::vector<std::int64_t> out;
+    for (int i = 0; i < 5; ++i) {
+      out.push_back(kBaseNow + i * kStepNs);
+    }
+    return out;
+  }();
+  CycleSwapRequest req;
+  req.uid = 11u;
+  req.kind = DerivKind::VarSwap;
+  req.cap_dec = 0.0;
+  req.notional = 1.0;
+  req.annualization = 252.0;
+  req.open_ts_ns = sessions.front();
+  req.expiry_ts_ns = sessions.back();
+  req.session_ts = sessions;
+  req.deriv_cfg = DerivConfig{};
+  return req;
+}
+
+void BM_SolveCycleSwapEntry(benchmark::State &state) {
+  const MarketSnapshot &snap = solve_cycle_swap_snapshot();
+  const SurfaceRef surface = snap.find(11u);
+  const CycleSwapRequest req = solve_cycle_swap_request();
+  constexpr double kTargetVega = 2500.0;
+  for (auto _ : state) {
+    Result<SwapLot> lot = solve_cycle_swap(surface, req, kTargetVega);
+    if (!lot.has_value()) {
+      state.SkipWithError(lot.error().to_string().c_str());
+      break;
+    }
+    benchmark::DoNotOptimize(lot);
+    benchmark::ClobberMemory();
+  }
+  state.SetItemsProcessed(state.iterations()); // items = solve_cycle_swap calls
+}
+
 const int kRegistered = [] {
   apply_common(benchmark::RegisterBenchmark("analytics/surface/full", [](benchmark::State &state) {
     BM_SurfaceAnalytics(state, AnalyticsConfig{});
@@ -149,6 +400,22 @@ const int kRegistered = [] {
       ->Unit(benchmark::kMicrosecond);
 
   apply_common(benchmark::RegisterBenchmark("analytics/diff/two_surface", BM_SurfaceDiff))
+      ->Unit(benchmark::kMicrosecond);
+
+  apply_common(benchmark::RegisterBenchmark("deriv/greeks/standard_priced_surface",
+                                            BM_DerivGreeks_Standard_PricedSurface))
+      ->Unit(benchmark::kMicrosecond);
+
+  apply_common(benchmark::RegisterBenchmark("deriv/greeks/varswap_analytic_priced_surface",
+                                            BM_DerivGreeks_Analytic_PricedSurface))
+      ->Unit(benchmark::kMicrosecond);
+
+  apply_common(benchmark::RegisterBenchmark("deriv/price/audit_priced_surface",
+                                            BM_DerivPrice_Audit_PricedSurface))
+      ->Unit(benchmark::kMicrosecond);
+
+  apply_common(benchmark::RegisterBenchmark("swap_leg/solve_cycle_swap_entry",
+                                            BM_SolveCycleSwapEntry))
       ->Unit(benchmark::kMicrosecond);
   return 0;
 }();

@@ -12,16 +12,18 @@
 #include <string>
 #include <vector>
 
-#include "atx/vol/api/pricing/american.hpp"            // american_price, al_fast_opts, AlOpts
-#include "atx/vol/api/fitting/arb.hpp"                 // QuoteFlag, to_u8 (kill-mask rescue probe)
-#include "atx/vol/api/fitting/curve_fit.hpp"           // fit_curve_surface, CurveSurfaceReport
-#include "core/parallel_for.hpp" // atx_auto_worker_count
-#include "atx/vol/api/pricing/dividend.hpp"            // hybrid_forward, HybridDivParams
-#include "atx/vol/api/marketdata/opra_panel.hpp"          // load_opra_cbbo_parquet, OpraLoadSpec
-#include "atx/vol/api/fitting/surface_parity.hpp"      // SurfaceParityInputs, SliceContext, CalendarRepair
-#include "atx/vol/api/core/types.hpp"               // Side
-#include "atx/vol/api/marketdata/universe.hpp"            // Underlying, Chain, chain_index, Universe, data_install
-#include "atx/vol/api/fitting/vol_curve.hpp"           // CurveConfig, IVolCurve
+#include "support/test_paths.hpp"  // testkit::market_data
+
+#include "atx/vol/api/pricing/american.hpp"        // american_price, al_fast_opts, AlOpts
+#include "atx/vol/api/fitting/arb.hpp"             // QuoteFlag, to_u8 (kill-mask rescue probe)
+#include "atx/vol/api/fitting/curve_fit.hpp"       // fit_curve_surface, CurveSurfaceReport
+#include "core/parallel_for.hpp"                   // atx_auto_worker_count
+#include "atx/vol/api/pricing/dividend.hpp"        // hybrid_forward, HybridDivParams
+#include "atx/vol/api/marketdata/opra_panel.hpp"   // load_opra_cbbo_parquet, OpraLoadSpec
+#include "atx/vol/api/fitting/surface_parity.hpp"  // SurfaceParityInputs, SliceContext, CalendarRepair
+#include "atx/vol/api/core/types.hpp"              // Side
+#include "atx/vol/api/marketdata/universe.hpp"     // Underlying, Chain, chain_index, Universe, data_install
+#include "atx/vol/api/fitting/vol_curve.hpp"       // CurveConfig, IVolCurve
 
 // S0-1 gate: `fit_curve_surface`'s per-chain de-Am pre-pass fans out over
 // `in.fit_workers` (parallel_for block-partition), but the fit itself stays
@@ -228,21 +230,11 @@ void expect_per_expiry_bit_identical(const atx::vol::CurveSurfaceReport& a,
   }
 }
 
-// Locate the cached SPY parquet across the paths a test binary might run from.
-// (Copied from curve_noarb_test.cpp / spy_real_test.cpp — same gitignored fixture.)
+// Locate the cached SPY parquet. Empty when absent (caller GTEST_SKIPs) -- the
+// fixture is licensed vendor data and is not committed.
 [[nodiscard]] std::string find_spy_parquet() {
-  const char* candidates[] = {
-      "data/spy_opra_cbbo1m_2026-06-05T1955Z.parquet",
-      "../data/spy_opra_cbbo1m_2026-06-05T1955Z.parquet",
-      "../../data/spy_opra_cbbo1m_2026-06-05T1955Z.parquet",
-      "C:/atx/data/spy_opra_cbbo1m_2026-06-05T1955Z.parquet",
-  };
-  for (const char* c : candidates) {
-    if (std::filesystem::exists(c)) {
-      return c;
-    }
-  }
-  return {};
+  return atx::vol::testkit::market_data_if_present("spy_opra_cbbo1m_2026-06-05T1955Z.parquet")
+      .string();
 }
 
 // S0-4': portable ATX_VOL_FIT_WORKERS env set/unset for the cap test below.

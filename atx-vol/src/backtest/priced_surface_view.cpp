@@ -588,16 +588,6 @@ double PricedSurfaceView::rate_at(double T) const noexcept {
   return interp_forward(T).rate;
 }
 
-namespace {
-// Local mirror of CurveSurface::Bracket (which is private).
-struct Bracket {
-  std::size_t lo{0};
-  std::size_t hi{0};
-  double upper_weight{0.0};
-  [[nodiscard]] bool is_single_slice() const noexcept { return lo == hi; }
-};
-} // namespace
-
 double PricedSurfaceView::slice_w(std::size_t i, double k_log) const noexcept {
   const auto kind = static_cast<VolCurveKind>(col_kind_[i]);
   const std::byte *p = record_.data() + col_payload_off_[i];
@@ -644,49 +634,72 @@ double PricedSurfaceView::slice_w(std::size_t i, double k_log) const noexcept {
   return kNaN;
 }
 
+PricedSurfaceView::Bracket PricedSurfaceView::surface_bracket(double T) const noexcept {
+  // Mirrors CurveSurface::bracket exactly, over the mapped col_T_ column
+  // instead of CurveSurface's maturities_ vector. Precondition (see header):
+  // n_slices_ != 0 and T finite/positive -- callers guard this before calling,
+  // the same way forward_at/rate_at/q_eff_at guard interp_forward.
+  const std::size_t n = n_slices_;
+  if (!(T > col_T_[0])) {
+    return Bracket{0, 0, 0.0};
+  }
+  if (T >= col_T_[n - 1]) {
+    return Bracket{n - 1, n - 1, 0.0};
+  }
+  const double *upper = std::lower_bound(col_T_ + 1, col_T_ + n, T);
+  const std::size_t hi = static_cast<std::size_t>(upper - col_T_);
+  if (*upper == T) {
+    return Bracket{hi, hi, 0.0};
+  }
+  const std::size_t lo = hi - 1;
+  const double span = col_T_[hi] - col_T_[lo];
+  const double uw = span > 0.0 ? (T - col_T_[lo]) / span : 0.0;
+  return Bracket{lo, hi, uw};
+}
+
 double PricedSurfaceView::surface_w(double k_log, double T) const noexcept {
   // CurveSurface::w(k_log, T) == w(k_log, T, bracket(T)).
   if (n_slices_ == 0 || !(T > 0.0)) {
     return kNaN;
   }
-  const std::size_t n = n_slices_;
-  // bracket(T) (CurveSurface::bracket).
-  Bracket br;
-  if (!(T > col_T_[0])) {
-    br = Bracket{0, 0, 0.0};
-  } else if (T >= col_T_[n - 1]) {
-    br = Bracket{n - 1, n - 1, 0.0};
-  } else {
-    const double *upper = std::lower_bound(col_T_ + 1, col_T_ + n, T);
-    const std::size_t hi = static_cast<std::size_t>(upper - col_T_);
-    if (*upper == T) {
-      br = Bracket{hi, hi, 0.0};
-    } else {
-      const std::size_t lo = hi - 1;
-      const double span = col_T_[hi] - col_T_[lo];
-      const double uw = span > 0.0 ? (T - col_T_[lo]) / span : 0.0;
-      br = Bracket{lo, hi, uw};
-    }
+  return surface_w(k_log, T, surface_bracket(T));
+}
+
+double PricedSurfaceView::surface_w(double k_log, double T, Bracket resolved) const noexcept {
+  // Mirrors CurveSurface::w(k_log, T, resolved)'s own defensive bounds check:
+  // `resolved` is only ever legitimately produced by surface_bracket (always
+  // in-bounds by construction, so this never rejects the real callers), and a
+  // caller that hand-rolled or replayed a stale carry token fails closed
+  // instead of indexing out of range.
+  if (n_slices_ == 0 || !(T > 0.0) || resolved.lo >= n_slices_ || resolved.hi >= n_slices_ ||
+      resolved.lo > resolved.hi ||
+      !(resolved.upper_weight >= 0.0 && resolved.upper_weight <= 1.0)) {
+    return kNaN;
   }
-  // CurveSurface::w(k_log, T, resolved).
   const double T_front = col_T_[0];
   if (T < T_front) {
     const double w_front = slice_w(0, k_log);
     return std::isfinite(w_front) ? w_front * (T / T_front) : kNaN;
   }
-  const double wlo = slice_w(br.lo, k_log);
-  if (br.is_single_slice()) {
+  const double wlo = slice_w(resolved.lo, k_log);
+  if (resolved.is_single_slice()) {
     return wlo;
   }
-  const double whi = slice_w(br.hi, k_log);
+  const double whi = slice_w(resolved.hi, k_log);
   if (!std::isfinite(wlo) || !std::isfinite(whi)) {
     return kNaN;
   }
-  return (1.0 - br.upper_weight) * wlo + br.upper_weight * whi;
+  return (1.0 - resolved.upper_weight) * wlo + resolved.upper_weight * whi;
 }
 
 PricedSurfaceView::ResolvedSurfacePoint
 PricedSurfaceView::resolve_with_carry(double K, double T, ForwardCarry fc) const noexcept {
+  return resolve_with_carry_and_bracket(K, T, fc, surface_bracket(T));
+}
+
+PricedSurfaceView::ResolvedSurfacePoint
+PricedSurfaceView::resolve_with_carry_and_bracket(double K, double T, ForwardCarry fc,
+                                                  Bracket bracket) const noexcept {
   ResolvedSurfacePoint p;
   p.K = K;
   p.T = T;
@@ -697,10 +710,38 @@ PricedSurfaceView::resolve_with_carry(double K, double T, ForwardCarry fc) const
   p.q_eff = fc.q_eff;
   p.rate = fc.rate;
   p.k_log = std::log(K / fc.forward);
-  const double w = surface_w(p.k_log, T);
+  const double w = surface_w(p.k_log, T, bracket);
   p.sigma = (w > 0.0 && T > 0.0) ? std::sqrt(w / T) : kNaN; // == CurveSurface::iv
   p.valid = true;
   return p;
+}
+
+SurfaceStripCarry PricedSurfaceView::strip_carry_at(double T) const noexcept {
+  SurfaceStripCarry sc;
+  sc.T = T;
+  if (!(T > 0.0) || !std::isfinite(T) || n_slices_ == 0) {
+    return sc; // valid == false; forward/rate/bracket left at their sentinel 0
+  }
+  const ForwardCarry fc = interp_forward(T);
+  sc.forward = fc.forward;
+  sc.q_eff = fc.q_eff;
+  sc.rate = fc.rate;
+  const Bracket bracket = surface_bracket(T);
+  sc.bracket_lo = bracket.lo;
+  sc.bracket_hi = bracket.hi;
+  sc.bracket_upper_weight = bracket.upper_weight;
+  sc.valid = true;
+  return sc;
+}
+
+double PricedSurfaceView::iv_with_carry(double K, const SurfaceStripCarry &carry) const noexcept {
+  if (!carry.valid || !(std::isfinite(K) && (K > 0.0))) {
+    return kNaN;
+  }
+  const ForwardCarry fc{carry.forward, carry.q_eff, carry.rate};
+  const Bracket bracket{carry.bracket_lo, carry.bracket_hi, carry.bracket_upper_weight};
+  const ResolvedSurfacePoint p = resolve_with_carry_and_bracket(K, carry.T, fc, bracket);
+  return p.valid ? p.sigma : kNaN;
 }
 
 PricedSurfaceView::ResolvedSurfacePoint PricedSurfaceView::resolve(double K,

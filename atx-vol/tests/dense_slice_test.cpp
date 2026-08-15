@@ -10,12 +10,41 @@
 #include <utility>
 #include <vector>
 
+#include "atx/core/linalg/linalg.hpp"  // MatX, VecX -- QP-kernel unit tests below
+
 #include "atx/vol/api/fitting/arb.hpp"          // arb_check_calendar
 #include "atx/vol/api/pricing/black76.hpp"      // black76_price, black76_value_and_vega
 #include "atx/vol/api/fitting/calib.hpp"        // FitObs
 #include "atx/vol/api/fitting/dense_slice.hpp"  // fit_convex_slice, ConvexSliceFit, kMaxIntervalSlackRows
-#include "atx/vol/api/core/types.hpp"        // Side
+#include "atx/vol/api/core/types.hpp"           // Side
 #include "atx/vol/api/fitting/vol_curve.hpp"    // fit_slice_curve, CurveSurface
+
+// Task C-7 (FIT-C3/FIT-C4): forward declaration of the QP-kernel test-only
+// entry point defined in src/dense_slice.cpp -- qp_active_set itself is
+// TU-local (anonymous namespace) to that file. Not part of any header; see
+// the definition site for why. The signature must match exactly for the
+// linker to resolve it. `dropped_rows_out`, if non-null, receives the row
+// index dropped at each multiplier-drop event, in order -- see the
+// definition site for why this is the only way to observe the drop-side
+// tie-break's outcome on a genuinely tied board.
+namespace atx::vol {
+Result<atx::core::linalg::VecX> qp_active_set_for_test(
+    const atx::core::linalg::MatX &H, const atx::core::linalg::VecX &q,
+    const atx::core::linalg::MatX &G, const atx::core::linalg::VecX &h,
+    atx::core::linalg::VecX x0, int max_iter, bool *converged_out, int *iterations_out,
+    std::vector<Eigen::Index> *dropped_rows_out = nullptr);
+} // namespace atx::vol
+
+// Task P-5 review N-1: forward declaration of the P-5 test/bench seam defined
+// in src/dense_slice.cpp -- mirrors derivatives.cpp's
+// `set_strip_batch_disabled_for_test` forward-declare-in-the-consumer
+// convention (no header touched). Reads the SAME predicate
+// ConvexSliceFit::iv() reads (env_flag_enabled's exact `"1"` match), so this
+// test's skip guard cannot disagree with what production actually did, the
+// way a local presence-only re-check of the environment variable could.
+namespace atx::vol::detail {
+[[nodiscard]] bool iv_early_exit_disabled_for_test() noexcept;
+} // namespace atx::vol::detail
 
 // Phase 1 of the arbitrage-constrained dense surface: the per-slice convex
 // call-price QP. These tests pin the two properties the whole approach rests on:
@@ -27,12 +56,16 @@
 
 namespace {
 
+using atx::core::linalg::MatX;
+using atx::core::linalg::VecX;
 using atx::vol::black76_price;
 using atx::vol::black76_value_and_vega;
 using atx::vol::ConvexFitOpts;
+using atx::vol::ConvexSliceFit;
 using atx::vol::ErrorCode;
 using atx::vol::fit_convex_slice;
 using atx::vol::FitObs;
+using atx::vol::qp_active_set_for_test;
 using atx::vol::Side;
 
 // One OTM observation at strike K under a given vol, with a Black-76 vega weight.
@@ -94,6 +127,30 @@ std::vector<double> strike_grid(double F) {
   }
   return ks;
 }
+
+// Task P-5 (FIT-P1) characterization fixture, shared by both P-5 iv()
+// regression tests below (IvBisectionEarlyExitMatchesPreP5BaselineWithin1e11
+// and IvBisectionEarlyExitIsActuallyEngagedInProduction): F=100, T=0.25,
+// df=0.98, flat 22% vol, strikes 70%-130% of F via strike_grid/mk_obs.
+constexpr double kP5F = 100.0, kP5T = 0.25, kP5Df = 0.98;
+
+// Served iv() at kP5F/kP5T/kP5Df's fixture, captured from the UNMODIFIED
+// (pre-P-5, fixed 64-iteration bisection, no early exit) code, at k from
+// -0.60 to 0.60 in steps of 0.03. That sentence IS the capture method: revert
+// d283efe and re-read the same grid.
+constexpr double kPreP5Iv[41] = {
+    0.38306620209843278, 0.36585647544632593, 0.34854766705012208, 0.33113476990919311,
+    0.31361215772259232, 0.29597346148127623, 0.27821141126176629, 0.26031763012829434,
+    0.24228236072034093, 0.22409409487564735, 0.22034599272928146, 0.22092830152199339,
+    0.22134878962186633, 0.22135402335839144, 0.22088461146865995, 0.22018063596501236,
+    0.22106308025283938, 0.22090261863719107, 0.22033568585089119, 0.22096225288330668,
+    0.22000000584963630, 0.22085483829700253, 0.22025983560406370, 0.22064066740980282,
+    0.22065811537153923, 0.22021009273612463, 0.22032406422399492, 0.22053656799330695,
+    0.22052467701593248, 0.21918848633132137, 0.21704597398801689, 0.21671195086840145,
+    0.21753825849925401, 0.21913648501516581, 0.22126220321505885, 0.22493746009124133,
+    0.23892309280367430, 0.25284689612604161, 0.26671198479956604, 0.28052111779829192,
+    0.29427675652366592,
+};
 
 // An in-the-money-heavy observation set (~11 strikes) at a flat vol, with one
 // deep-ITM print forced far below its no-arb intrinsic floor (df*(F-K)) and
@@ -165,6 +222,220 @@ std::vector<FitObs> make_synthetic_slice_obs_wideband(double F, double T, double
 
 } // namespace
 
+// ── QP kernel unit tests (Task C-7: FIT-C3 ratio-test clamp, FIT-C4 anti-cycling) ──
+//
+// fit_convex_slice enforces >= 3 distinct strikes, so neither pathology below is
+// reachable through the public API at the problem sizes that isolate it. Both
+// tests go straight at the QP kernel (qp_active_set_for_test) with small,
+// hand-built (H, q, G, h) systems -- no board, no Black-76, fully deterministic.
+
+// FIT-C3 (P2): the ratio test computed `ai = -gix / gip` unclamped. A row whose
+// directional derivative sits just past the -1e-14 dead zone (gip a hair more
+// negative than the cutoff) combined with a residual admitted as "a few ulp
+// negative" under kQpStartTol (1e-12, scaled) produces a NEGATIVE ai, unbounded
+// in magnitude as |gip| -> the cutoff edge -- and since the ratio test selects
+// the MINIMUM, that negative value beats every legitimate positive one. This
+// 2-variable board is engineered (not discovered) to hit exactly that case at
+// iteration 1 from an empty working set:
+//   * H = I, so the unconstrained Newton step solves p = -g exactly, and q is
+//     chosen to place p1 (the blocking row's directional derivative) at a
+//     specific value just past the dead zone;
+//   * the single constraint row is x1 >= h0, with x0_1 a few ulp below h0 --
+//     admitted by the start-feasibility check, never a real violation;
+//   * p2 carries a large, UNRELATED step. alpha is a single scalar shared by
+//     the whole step, so an unbounded blow-up driven entirely by row 1's
+//     near-zero gip corrupts x2 too -- that is what makes the bug's blast
+//     radius visible in a 2-variable board instead of a 1-variable one.
+TEST(DenseSliceQp, RatioTestClampsUnboundedBackwardStep) {
+  constexpr double h0 = 10.0;
+  constexpr double gix0 = -9.0e-13;         // a few ulp negative; admitted (kQpStartTol = 1e-12)
+  constexpr double x0_1 = h0 + gix0;        // sits just inside the row's bound
+  constexpr double target_gip = -1.05e-14;  // just past the -1.0e-14 ratio-test dead zone
+  constexpr double x0_2 = 0.0;
+  constexpr double p2_target = 5.0; // large, unrelated step -- exposes the blow-up
+
+  MatX H = MatX::Identity(2, 2);
+  // H = I => the unconstrained Newton step solves p = -g; pick q so g (hence
+  // p) lands exactly where this scenario needs it.
+  VecX q(2);
+  q(0) = -target_gip - x0_1;
+  q(1) = -p2_target - x0_2;
+  MatX G(1, 2);
+  G << 1.0, 0.0; // single row: x1 >= h0
+  VecX h(1);
+  h(0) = h0;
+  VecX x0(2);
+  x0 << x0_1, x0_2;
+
+  const auto res = qp_active_set_for_test(H, q, G, h, x0, /*max_iter=*/1, nullptr, nullptr);
+  ASSERT_TRUE(res.has_value()) << res.error().to_string();
+  const VecX &x1 = *res;
+
+  // Post-fix: the clamp turns the row's negative ratio into the degenerate
+  // zero-length step -- the row joins the working set and x is UNCHANGED at
+  // this iterate, so the objective cannot have increased.
+  const auto objective = [&](const VecX &x) { return 0.5 * x.dot(H * x) + q.dot(x); };
+  EXPECT_LE(objective(x1), objective(x0) + 1.0e-9)
+      << "unclamped ratio test stepped backward and increased the objective";
+  // Pin the concrete failure this guards against directly: an unclamped ai
+  // here is gix0/target_gip ~ -85.7, which would carry x2 to ~-428 instead of
+  // leaving it untouched.
+  EXPECT_NEAR(x1(1), x0_2, 1.0e-9) << "x2 moved despite carrying no blocking constraint";
+}
+
+// FIT-C4 (P3): no anti-cycling tie-break on the ratio test or the drop rule. A
+// degenerate vertex -- two constraint rows simultaneously binding -- is exactly
+// what happens in production when a calendar-floor row (w_prev's Black-76
+// price at a node) numerically duplicates that same node's intrinsic-bound row
+// (see fit_convex_slice's `g_j >= discounted intrinsic` and
+// `calendar floor: g_j >= cfloor_j` rows). This 3-variable board encodes that
+// pattern directly: row 0 is an "intrinsic bound"-style row (x1 >= 5), row 1 is
+// a bit-identical "calendar floor"-style row on the SAME node (x1 >= 5,
+// duplicated verbatim), and row 2 is an unrelated bound (x2 >= 3) so the board
+// is a genuine 2-constraint-active vertex, not a single-row trivial case.
+TEST(DenseSliceQp, DegenerateVertexDuplicateFloorRowConvergesFast) {
+  MatX H = MatX::Identity(3, 3);
+  VecX q = VecX::Zero(3); // unconstrained minimum at the origin -- infeasible for both bounds
+
+  MatX G(3, 3);
+  VecX h(3);
+  G.row(0) << 1.0, 0.0, 0.0;
+  h(0) = 5.0; // "intrinsic bound": x1 >= 5
+  G.row(1) << 1.0, 0.0, 0.0;
+  h(1) = 5.0; // "calendar floor": duplicate of row 0
+  G.row(2) << 0.0, 1.0, 0.0;
+  h(2) = 3.0; // unrelated: x2 >= 3
+
+  VecX x0(3);
+  x0 << 10.0, 10.0, 10.0; // comfortably feasible start
+
+  bool converged = false;
+  int iterations = 0;
+  const auto res =
+      qp_active_set_for_test(H, q, G, h, x0, /*max_iter=*/200, &converged, &iterations);
+  ASSERT_TRUE(res.has_value()) << res.error().to_string();
+  EXPECT_TRUE(converged);
+  EXPECT_LT(iterations, 200);
+
+  const VecX &x = *res;
+  // The certified optimum: both distinct bounds bind exactly (the unconstrained
+  // min at the origin is infeasible for x1 and x2); x3 is free and returns to 0.
+  EXPECT_NEAR(x(0), 5.0, 1.0e-8);
+  EXPECT_NEAR(x(1), 3.0, 1.0e-8);
+  EXPECT_NEAR(x(2), 0.0, 1.0e-8);
+
+  // Identical certified solution: the duplicate row is redundant by
+  // construction (same direction, same RHS as row 0), so removing it must not
+  // change the optimum at all.
+  MatX G2(2, 3);
+  VecX h2(2);
+  G2.row(0) = G.row(0);
+  G2.row(1) = G.row(2);
+  h2(0) = h(0);
+  h2(1) = h(2);
+  const auto ref = qp_active_set_for_test(H, q, G2, h2, x0, /*max_iter=*/200, nullptr, nullptr);
+  ASSERT_TRUE(ref.has_value()) << ref.error().to_string();
+  EXPECT_LT((x - *ref).lpNorm<Eigen::Infinity>(), 1.0e-10)
+      << "the redundant duplicate row changed the certified solution";
+
+  // Determinism: re-solving the SAME degenerate board twice must give a
+  // bit-identical result -- the tie-break is a pure function of (G, h, x, p),
+  // never of prior calls.
+  const auto res2 = qp_active_set_for_test(H, q, G, h, x0, /*max_iter=*/200, nullptr, nullptr);
+  ASSERT_TRUE(res2.has_value()) << res2.error().to_string();
+  EXPECT_EQ((x - *res2).lpNorm<Eigen::Infinity>(), 0.0)
+      << "the tie-break is not deterministic across repeated calls";
+}
+
+// FIT-C4 drop-side coverage (review round 1): the ratio-test tie-break test
+// above never drives ANY multiplier negative, so it never enters the
+// worst>=0 branch this fix also touches (`dense_slice.cpp`'s drop-side
+// lowest-row-index re-scan). This board genuinely does: it was found by
+// temporary instrumentation (printing wset/lambda at each drop check),
+// since-removed, replaced here by the permanent `dropped_rows_out` seam on
+// `qp_active_set_for_test` -- the drop sequence it records IS the proof this
+// branch executes, not just an indirect final-value inference.
+//
+// Construction: two DECOUPLED (block-diagonal H, no shared rows) copies of a
+// 2-variable "wedge + far bound" board --
+//   copy 1 (x1,x2): rows (1,1)>=2 [A1], (1,-1)>=2 [B1], (1,0)>=10 [C1]
+//   copy 2 (x3,x4): rows (1,1)>=2 [A2], (1,-1)>=2 [B2], (1,0)>=10 [C2]
+// -- with q=0 throughout. Each copy's true optimum needs only its C row (the
+// far bound alone already implies both wedge rows with slack); its B row
+// gets falsely activated by the ratio-test's straight-line overshoot en
+// route, then must be dropped once both B and C are active and the KKT
+// solve reveals B's multiplier is negative. Because both copies share
+// IDENTICAL (G, h, q), whichever copy's B row is checked at the drop step
+// computes the IDENTICAL multiplier (-8) -- an exact tie, not a
+// floating-point coincidence.
+//
+// x0 = (15, 12.5, 15, 12.9): copy 2's x0 sits closer to its own B boundary
+// than copy 1's, so B2 (row index 4) is added to the working set BEFORE B1
+// (row index 1) via the ratio test (no tie there -- 0.048 < 0.2, a clean
+// ordering, not the ratio-test tie-break this construction is not testing).
+// By the time both B1 and B2 are active, `wset` is in INSERTION order
+// [4, 1, ...] -- B2 (position 0) before B1 (position 1) -- so the OLD
+// position-scanned drop rule and the FIXED row-index-scanned drop rule
+// disagree: position-order would drop row 4 first; lowest-row-index (the
+// spec) must drop row 1 first. Hand/instrumented trace confirms the fixed
+// code drops [1, 4] in that order; reverting just the drop-side re-scan
+// (dense_slice.cpp's `for (Eigen::Index i = 0; i < nw; ++i) { if (lambda(i)
+// == worst_val && ...` loop) reproduces [4, 1] instead -- so this assertion
+// is genuinely load-bearing on that code, not merely consistent with it.
+TEST(DenseSliceQp, DropTieBreakPrefersLowestRowIndex) {
+  MatX H = MatX::Identity(4, 4);
+  VecX q = VecX::Zero(4);
+  MatX G = MatX::Zero(6, 4);
+  VecX h(6);
+  G(0, 0) = 1.0;
+  G(0, 1) = 1.0;
+  h(0) = 2.0; // A1: x1+x2 >= 2
+  G(1, 0) = 1.0;
+  G(1, 1) = -1.0;
+  h(1) = 2.0; // B1: x1-x2 >= 2
+  G(2, 0) = 1.0;
+  h(2) = 10.0; // C1: x1 >= 10
+  G(3, 2) = 1.0;
+  G(3, 3) = 1.0;
+  h(3) = 2.0; // A2: x3+x4 >= 2
+  G(4, 2) = 1.0;
+  G(4, 3) = -1.0;
+  h(4) = 2.0; // B2: x3-x4 >= 2
+  G(5, 2) = 1.0;
+  h(5) = 10.0; // C2: x3 >= 10
+
+  VecX x0(4);
+  x0 << 15.0, 12.5, 15.0, 12.9; // both feasible; copy 2 closer to its B boundary
+
+  bool converged = false;
+  int iterations = 0;
+  std::vector<Eigen::Index> dropped_rows;
+  const auto res = qp_active_set_for_test(H, q, G, h, x0, /*max_iter=*/200, &converged,
+                                          &iterations, &dropped_rows);
+  ASSERT_TRUE(res.has_value()) << res.error().to_string();
+  EXPECT_TRUE(converged);
+  EXPECT_LT(iterations, 200);
+
+  ASSERT_FALSE(dropped_rows.empty())
+      << "board never reached the multiplier-drop branch -- construction regressed";
+  // The load-bearing assertion: at the tie, row 1 (lower actual constraint-row
+  // index) must be dropped, never row 4, regardless of which entered `wset`
+  // first. Pre-fix (position-scanned drop), this would be 4.
+  EXPECT_EQ(dropped_rows.front(), 1);
+  // Full expected sequence: B1 drops at the tie (lowest index wins), then B2
+  // drops on its own next (no longer tied with anything).
+  ASSERT_EQ(dropped_rows.size(), std::size_t{2});
+  EXPECT_EQ(dropped_rows[0], 1);
+  EXPECT_EQ(dropped_rows[1], 4);
+
+  // Certified solution: both copies converge to their C-only optimum.
+  const VecX &x = *res;
+  EXPECT_NEAR(x(0), 10.0, 1.0e-8);
+  EXPECT_NEAR(x(1), 0.0, 1.0e-8);
+  EXPECT_NEAR(x(2), 10.0, 1.0e-8);
+  EXPECT_NEAR(x(3), 0.0, 1.0e-8);
+}
+
 TEST(DenseSlice, FlatVolIsRecoveredAndArbFree) {
   constexpr double F = 100.0, T = 0.25, r = 0.03, vol = 0.22;
   const double df = std::exp(-r * T);
@@ -191,6 +462,33 @@ TEST(DenseSlice, FlatVolIsRecoveredAndArbFree) {
     ++checked;
   }
   EXPECT_GT(checked, 5);
+}
+
+// FIT-C11. The right-wing power tail's exponent is
+// `max(0.0, -slope*Kn/C.back())` (dense_slice.cpp). A board whose last two
+// fitted node prices are EXACTLY equal -- a degenerate zero edge slope, e.g. a
+// featureless far-OTM tail with no fit signal -- drives that expression to
+// exactly 0.0 pre-fix, and C.back() * (K/Kn)^-0.0 == C.back() identically: the
+// tail never decays, contradicting the class's own doc ("tends to zero instead
+// of flat-clamping a non-zero option price indefinitely"). Pin such a board
+// directly (bypassing the QP fitter, which would not degenerate this cleanly
+// on real data) and require the far strike to have decayed.
+TEST(DenseSlice, DegenerateFlatEdgeSlopeStillDecaysPastKMax) {
+  ConvexSliceFit fit;
+  fit.T = 0.25;
+  fit.F = 100.0;
+  fit.df = std::exp(-0.03 * fit.T);
+  fit.u = {80.0, 90.0, 100.0, 110.0, 120.0};
+  // Convex, monotone decreasing board, EXCEPT the last two nodes are pinned to
+  // the identical price -- the degenerate zero-slope right edge under test.
+  fit.C = {22.0, 13.0, 6.0, 2.0, 2.0};
+
+  const double k_max = fit.u.back();
+  const double at_edge = fit.call_price(k_max);
+  const double far = fit.call_price(10.0 * k_max);
+  ASSERT_TRUE(std::isfinite(at_edge));
+  ASSERT_TRUE(std::isfinite(far));
+  EXPECT_LT(far, at_edge);
 }
 
 TEST(DenseSlice, SmileIsRecovered) {
@@ -1033,4 +1331,90 @@ TEST(ConvexSliceFit, WideSupportRangeIsByteIdenticalToUnbounded) {
   for (double k = -0.60; k <= 0.601; k += 0.03) {
     EXPECT_EQ((*unbounded)->iv(k), (*ranged)->iv(k)) << "diverged at k=" << k; // EXACT
   }
+}
+
+// Task P-5 (FIT-P1) characterization: the bisection early exit is
+// deliberately NOT bit-identical to the old fixed-64-iteration loop (the
+// last ulp of the returned midpoint can move once the loop stops as soon as
+// the bracket is near-machine width instead of always halving 64 times).
+// `kPreP5Iv` (file scope, above) is the served iv() at this exact
+// fixture/k-grid captured from the UNMODIFIED (pre-P-5) bisection -- revert
+// d283efe to reproduce the capture.
+// Every point must still agree within 1e-11 (the acceptance bound; measured
+// drift maxes out far below it, ~2.8e-13).
+TEST(ConvexSliceFit, IvBisectionEarlyExitMatchesPreP5BaselineWithin1e11) {
+  using namespace atx::vol;
+  std::vector<FitObs> obs;
+  for (const double K : strike_grid(kP5F)) {
+    obs.push_back(mk_obs(kP5F, kP5T, kP5Df, K, 0.22));
+  }
+  const auto fit = fit_convex_slice(obs, kP5F, kP5T, kP5Df, ConvexFitOpts{});
+  ASSERT_TRUE(fit.has_value());
+
+  double max_abs_diff = 0.0;
+  for (int i = 0; i <= 40; ++i) {
+    const double k = -0.60 + 0.03 * static_cast<double>(i);
+    const double iv = fit->iv(k);
+    const double diff = std::fabs(iv - kPreP5Iv[static_cast<std::size_t>(i)]);
+    max_abs_diff = std::max(max_abs_diff, diff);
+    EXPECT_NEAR(iv, kPreP5Iv[static_cast<std::size_t>(i)], 1.0e-11) << "k=" << k;
+  }
+  EXPECT_LT(max_abs_diff, 1.0e-11);
+}
+
+// Task P-5 review I-2 fix: the PRIOR version of this test asserted `iters <
+// 64` against a hand-rolled REPLICA of the bisection loop, never calling
+// `fit->iv()`. The review verified that deleting the early-exit break in
+// `src/dense_slice.cpp` left that version green (the replica kept its own
+// copy of the break condition, so it stayed "early-exiting" regardless of
+// what production did), and that the drift-tolerance sibling above ALSO
+// cannot catch a reverted optimization -- under
+// `ATX_VOL_DISABLE_IV_EARLY_EXIT=1` (behaviourally identical to deleting the
+// break) it passes bit-exactly, because its pinned values ARE the pre-P-5
+// values. So the shipped optimization had no regression guard at all.
+//
+// This version calls the SHIPPING `fit->iv()` directly. The early exit
+// provably changes the returned midpoint whenever it fires before iteration
+// 64 (it stops at a strictly wider bracket than 64 fixed halvings would have
+// reached), so if the break is ever silently reverted, every one of these
+// 41 points becomes bit-identical to the pre-P-5 `kPreP5Iv` again --
+// verified BOTH ways below by actually deleting the break, rebuilding, and
+// observing this exact test fail, then restoring it and observing green
+// again. Skipped when `detail::iv_early_exit_disabled_for_test()`
+// reports the intentional bench-only override that restores pre-P-5
+// arithmetic -- bit-identity is the CORRECT behavior there, not a
+// regression. Task P-5 review N-1: this used to re-derive "is the override
+// on?" from a local presence-only check of the environment variable, which
+// disagreed with production's exact-match-"1" semantics at, e.g.,
+// ATX_VOL_DISABLE_IV_EARLY_EXIT=0 (production runs the early exit; the old
+// guard would have skipped anyway). Now reads the same accessor production
+// itself is built from, so this guard cannot disagree with what the binary
+// actually did.
+TEST(ConvexSliceFit, IvBisectionEarlyExitIsActuallyEngagedInProduction) {
+  using namespace atx::vol;
+  if (detail::iv_early_exit_disabled_for_test()) {
+    GTEST_SKIP() << "ATX_VOL_DISABLE_IV_EARLY_EXIT is set -- bit-identity to "
+                    "the pre-P-5 baseline is the intended bench-A/B behavior here";
+  }
+  std::vector<FitObs> obs;
+  for (const double K : strike_grid(kP5F)) {
+    obs.push_back(mk_obs(kP5F, kP5T, kP5Df, K, 0.22));
+  }
+  const auto fit = fit_convex_slice(obs, kP5F, kP5T, kP5Df, ConvexFitOpts{});
+  ASSERT_TRUE(fit.has_value());
+
+  int bit_identical_to_pre_p5 = 0;
+  for (int i = 0; i <= 40; ++i) {
+    const double k = -0.60 + 0.03 * static_cast<double>(i);
+    const double iv = fit->iv(k);
+    if (iv == kPreP5Iv[static_cast<std::size_t>(i)]) {
+      ++bit_identical_to_pre_p5;
+    }
+  }
+  EXPECT_EQ(bit_identical_to_pre_p5, 0)
+      << "fit->iv() matched the pre-P-5 pinned baseline bit-for-bit at "
+      << bit_identical_to_pre_p5
+      << "/41 points -- the early exit is not firing in production (deleting "
+         "the break condition in ConvexSliceFit::iv(), src/fitting/dense_slice.cpp, "
+         "reproduces exactly this failure)";
 }

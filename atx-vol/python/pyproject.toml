@@ -9,10 +9,16 @@ build-backend = "scikit_build_core.build"
 name = "atxvol"
 # The wheel's declared version. It MIRRORS `project(atx VERSION ...)` in the root
 # CMakeLists -- the C++ single source of truth (plan 5.3) -- because a PEP 621
-# table cannot read a CMake variable. `atxvol.__version__` comes from the compiled
-# `atx::vol::version()`, and tests/test_atxvol.py asserts the two agree, so this
-# line cannot drift from the library without a red test.
-version = "1.0.0"
+# table cannot read a CMake variable.
+#
+# THE MIRROR IS CHECKED TWICE, AND THE EARLIER CHECK IS THE USEFUL ONE.
+# `CMakeLists.txt` beside this file re-reads this line at CONFIGURE time and
+# fails with a message naming this file when it disagrees with the root project
+# version. `tests/test_atxvol.py` also asserts `atxvol.__version__` (the compiled
+# `atx::vol::version()`) against `importlib.metadata.version("atxvol")` (this
+# line) -- but that only runs once a wheel has been BUILT, which is how this line
+# sat at 1.0.0 through a 1.1.0 bump with a green tree.
+version = "1.1.0"
 description = "Python bindings for the atx-vol options and volatility library"
 readme = "README.md"
 requires-python = ">=3.10"

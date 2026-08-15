@@ -44,6 +44,38 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # Build atx-vol and its monorepo dependencies in the wheel build tree.
 add_subdirectory("${ATX_ROOT}" "${CMAKE_CURRENT_BINARY_DIR}/atx-monorepo")
 
+# ── The version mirror, checked here rather than only after a wheel exists ────
+#
+# `pyproject.toml`'s `version =` is a hand-maintained copy of
+# `project(atx VERSION ...)`, because a PEP 621 table cannot read a CMake
+# variable. `tests/test_atxvol.py` asserts the compiled `atx::vol::version()`
+# against `importlib.metadata.version("atxvol")`, which is the right assertion --
+# but it can only run once a wheel has been BUILT and INSTALLED, so a bump to the
+# root project version leaves the mirror stale with a fully green tree until
+# someone happens to cut a wheel. That is exactly what happened at 1.1.0.
+#
+# This closes the gap at CONFIGURE time, before anything is compiled, and names
+# the file to edit. Deliberately a plain regex rather than a TOML parser: CMake
+# has no TOML reader, and the alternative -- a scikit-build-core dynamic-version
+# provider -- would move the version out of the static PEP 621 metadata other
+# tooling reads directly.
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/pyproject.toml" ATXVOL_PYPROJECT_TEXT)
+set(ATXVOL_VERSION_KEY_RE "[\r\n][ \t]*version[ \t]*=[ \t]*\"([0-9]+\\.[0-9]+\\.[0-9]+)\"")
+if(NOT ATXVOL_PYPROJECT_TEXT MATCHES "${ATXVOL_VERSION_KEY_RE}")
+    message(FATAL_ERROR
+        "atx-vol/python/pyproject.toml: no 'version = \"X.Y.Z\"' line found to check against "
+        "project(atx VERSION ...). If the key moved or became dynamic, update this guard too -- "
+        "do not delete it: the wheel-test assertion it backs up only runs after a wheel exists.")
+endif()
+set(ATXVOL_PYPROJECT_VERSION "${CMAKE_MATCH_1}")
+if(NOT ATXVOL_PYPROJECT_VERSION VERSION_EQUAL "${atx_VERSION}")
+    message(FATAL_ERROR
+        "version mirror drifted: atx-vol/python/pyproject.toml declares "
+        "${ATXVOL_PYPROJECT_VERSION}, but project(atx VERSION ...) in the root CMakeLists is "
+        "${atx_VERSION}. Bump the 'version =' line in atx-vol/python/pyproject.toml to "
+        "${atx_VERSION}.")
+endif()
+
 find_package(Python COMPONENTS Interpreter Development.Module REQUIRED)
 find_package(pybind11 CONFIG REQUIRED)
 

@@ -11,7 +11,8 @@ from collections.abc import Sequence
 
 
 _REGISTRATION_SUFFIX = re.compile(
-    r"/(?:min_warmup_time|iterations|repetitions|repeats):|/(?:real_time|manual_time)(?:/|$)"
+    r"/(?:min_time|min_warmup_time|iterations|repetitions|repeats):"
+    r"|/(?:real_time|manual_time)(?:/|$)"
 )
 
 

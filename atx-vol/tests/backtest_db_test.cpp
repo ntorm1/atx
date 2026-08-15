@@ -557,12 +557,23 @@ TEST(BacktestDbSeriesIdentity, DiscriminatesTemplateUidAndSources) {
 // `ra_schema_hash() == 0xdcce47781ac8390dull` freeze: proves the D1 fold
 // (make_engine_id(), which embeds kBacktestEconomicsRev) is actually part of
 // the computed value for a fixed input, not a no-op. Captured after the D1
-// fold landed (task-D1-report.md has the TDD RED/GREEN evidence); a future
-// intentional change to the identity recipe re-pins this deliberately, same
-// as any other schema-salt bump.
+// fold landed (task-D1-report.md has the TDD RED/GREEN evidence).
+//
+// THIS LITERAL IS COUPLED TO PROJECT_VERSION, NOT ONLY TO THE ECONOMICS.
+// `make_engine_id()` is `ATX_VOL_VERSION_STRING | kBacktestEconomicsRev |
+// hex(ra_schema_hash())`, and the whole string is folded in — so an ORDINARY
+// release bump re-derives this number with nothing about the recipe, the fold
+// order, the column identity or the byte layout having changed. Re-pin it on a
+// version bump the same way you would on a deliberate recipe change; what tells
+// the two apart is whether `ra_schema_hash()` and `kBacktestEconomicsRev` also
+// moved (run_archive_test.cpp's `RunArchiveSchema.GoldenHashPinned` is the
+// independent witness for the former). Reading a mismatch here as "the
+// economics changed" is the trap this note exists to close.
+//
+// 1.0.0 -> 7271453385763286616; 1.1.0 -> the value below.
 TEST(BacktestDbSeriesIdentity, GoldenPinReflectsTheD1Fold) {
   const std::vector<BacktestSourcePartition> sources = make_sources(3);
-  constexpr std::uint64_t kExpected = 7271453385763286616ULL;
+  constexpr std::uint64_t kExpected = 11189445390157306873ULL;
   EXPECT_EQ(backtest_series_identity(777, 101, sources), kExpected);
 }
 

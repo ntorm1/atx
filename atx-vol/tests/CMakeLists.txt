@@ -21,6 +21,7 @@ add_executable(atx-vol-tests
     support/oracle_pricer_pde.cpp
     support/oracle_pde_golden.cpp
     support/cached_artifacts.cpp
+    test_paths_test.cpp
     arb_test.cpp
     risk_surface_validation_test.cpp
     surface_v2_qualification_test.cpp
@@ -213,6 +214,13 @@ add_executable(atx-vol-tests
     margin_test.cpp                  # Reg-T + scenario-grid margin models, engine wiring
     # backtest-production-lakehouse sprint, Task D1 — appended target:
     track_key_test.cpp               # content-addressed TrackKey + economics-rev tripwire
+    # vol-derivs production sprint Task 0: shared fixtures + MC oracle
+    deriv_fixtures_test.cpp
+    # vol-derivs production sprint Task F-9: CBOE discrete-strike variance sum
+    cboe_strip_test.cpp
+    # vol-derivs production sprint Task F-8: the shared smile-shift overlay
+    surface_overlay_test.cpp
+    deriv_pnl_test.cpp               # Task F-8: two-date swap P&L attribution
 )
 
 # backtest-production-lakehouse sprint, Task D2 — appended conditionally: the
@@ -302,6 +310,21 @@ target_compile_definitions(atx-vol-tests PRIVATE
 target_compile_definitions(atx-vol-tests PRIVATE
     "ATX_VOL_INCLUDE_ROOT=\"${CMAKE_CURRENT_SOURCE_DIR}/../include\""
     "ATX_VOL_UMBRELLA_HPP=\"${CMAKE_CURRENT_SOURCE_DIR}/../include/atx/vol/api/vol.hpp\"")
+
+# FRI-072: the single anchor every fixture/resource path in this test tree is
+# resolved from (tests/support/test_paths.hpp). Same intent as the three baked
+# paths above -- the contract must hold regardless of the working directory the
+# binary is launched from -- but defined ONCE on an INTERFACE target in
+# ../CMakeLists.txt, because bench/ and the example targets include the same
+# testkit headers and must agree with this tree about where a fixture lives.
+#
+# The artifact cache inside it is anchored on CMAKE_BINARY_DIR rather than the
+# repo root, and that difference is load-bearing: this repo is configured into
+# more than one build tree (build/ and build-rel-avx2/ both exist) and the cache
+# key carries a wire-format version and a fit-shape revision but NO
+# build-configuration component, so a repo-root-relative cache would let a
+# rel-avx2 run serve an archive fitted by the dev build.
+target_link_libraries(atx-vol-tests PRIVATE atx-vol-test-paths)
 
 # Plan 5.3: version_test.cpp compares the SHIPPED version against the build
 # system's declaration, so it needs `project(atx VERSION ...)` verbatim. Baked in
@@ -405,7 +428,8 @@ if(Python3_Interpreter_FOUND)
         TIMEOUT 900)
 endif()
 
-# PR-C2 non-AVX2 CI leg: run the pricing correctness suites with the whole process
+# PR-C2 non-AVX2 scalar leg: a registered ctest lane (`atx-vol-pricing-forcescalar`,
+# selectable with -R) that runs the pricing correctness suites with the whole process
 # pinned to the scalar ISA (ATX_SIMD_ISA=ForceScalar), keeping the scalar
 # patch-paths honest against the Auto-ON AVX2 marks. The filter runs only scalar
 # VALUE suites plus the ScalarLegEnv self-check that PROVES the env diverted the
@@ -422,3 +446,39 @@ add_test(
 set_tests_properties(atx-vol-pricing-forcescalar PROPERTIES
     ENVIRONMENT "ATX_SIMD_ISA=ForceScalar"
     LABELS atx_vol)
+
+# Task F-8 fix round 8 (I-A): the P&L-explain column gate, moved off source-text
+# parsing and onto the emitted artifact. The example TU is compiled with its
+# `main` suppressed — the same shape as `spx-wilmott-repro-tests` in the parent
+# CMakeLists — so the test drives the exact `attach_swap_columns` the executable
+# ships, writes a real TSV, and diffs that file's header against
+# `swap_explain_columns()`.
+#
+# WHY A SEPARATE TARGET rather than another source in `atx-vol-tests`:
+# ATX_VARSWAP_COMPARE_NO_MAIN is a target-wide define, and the example TU opens
+# with a file-scope `using namespace atx::vol;`. Keeping it in its own binary
+# means neither reaches the main suite. It does NOT need ATX_BUILD_EXAMPLES —
+# the TU is compiled here directly, so the gate runs in the default test build
+# even though the example EXECUTABLE stays opt-in.
+add_executable(varswap-compare-columns-tests
+    varswap_compare_columns_test.cpp
+    ../examples/varswap_compare_example.cpp)
+target_compile_definitions(varswap-compare-columns-tests PRIVATE
+    ATX_VARSWAP_COMPARE_NO_MAIN)
+target_link_libraries(varswap-compare-columns-tests PRIVATE
+    atx::vol atx::core GTest::gtest_main atx_warnings)
+add_test(NAME VarswapCompareColumns COMMAND varswap-compare-columns-tests)
+set_tests_properties(VarswapCompareColumns PROPERTIES LABELS "atx_vol;atx_vol_fast")
+
+# THE F-8 VERIFICATION FILTER, written down because a count without its filter is
+# one string short of checkable. A reviewer could not re-derive a reported
+# "569 enumerated / 567 passed" and correctly declined to guess a filter and then
+# report agreement with its own guess. This is an ad-hoc lane selector, NOT a
+# scope with a label; the label scopes remain `ctest -L atx_vol` (3204) and
+# `-L atx_vol_fast` (2953), and those are what a reviewer can re-derive unaided.
+#
+#   ctest -R "ScenarioGrid|BacktestSwap|DerivPnl|DerivGreeks|DerivBook|SmileGreeks|SurfaceOverlay|StickyStrike|VolUmbrella|RunArchive|RunReport|Tearsheet|Backtest|SurfaceDb|VarswapCompareColumns|SpxWilmottRepro"
+#
+# The gap between "enumerated" and "executed" is gtest-`DISABLED_` entries, which
+# `ctest -N` lists but no run counts; runtime SKIPs (absent real-data fixtures)
+# execute and count as passed.

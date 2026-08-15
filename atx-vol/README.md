@@ -10,11 +10,11 @@ The upstream `ats-vol` (~65k LOC of C across ~90 translation units) has been
 ported in full to idiomatic, tested C++20, and then extended with a
 Vola-Dynamics American-equity parity layer (see below), a composable
 `VolaSession` handle, and a cached high-performance pricing hot path. It registers
-**2,892 GoogleTest cases across 429 suites** under `/W4 /permissive- /WX`
-(clang-cl). That number is *measured*, not maintained — re-derive it with
-`build/bin/atx-vol-tests.exe --gtest_list_tests` rather than trusting the prose,
-which is how a count in a README stops rotting silently (see *Build & test* for
-the ctest-side number and what the difference is).
+**several thousand GoogleTest cases** under `/W4 /permissive- /WX` (clang-cl).
+Deliberately not a digit: a precise count here is measured once and then rots
+silently, so get the current one from
+`build/bin/atx-vol-tests.exe --gtest_list_tests` (see *Build & test* for the
+ctest-side number and the fixed +13 that separates them).
 The C library's arena / SoA-slab / thread-local / hand-written-AVX2 machinery is
 re-expressed with `std::vector` + Rule of Zero + `atx::core` (error vocabulary,
 linear algebra, hashing) rather than transliterated; the numerics are ported
@@ -577,9 +577,16 @@ operations, and the DuckDB/Python query cookbook (`atxpy.tracks`).
 (`run_backtest(Clock, IStrategy, ...)`) additionally carries an OTC
 variance/vol-swap book (`PortfolioState::swap_lots`), additive to the option
 lane: a book with no swap lots prices, accrues and settles exactly as before
-the lane existed. Every step a lot is alive takes a dated fixing
-(`RealizedTracker::observe_dated`) against that step's spot; a lot settles at
+the lane existed. Every step a lot is alive takes a dated fixing against that
+step's spot — through the lane's own `observe_swap_fixing` (`backtest.cpp`),
+which transcribes `RealizedTracker`'s accrual arithmetic rather than calling it,
+for the two deliberate deviations documented on `SwapAccrual` (`backtest.hpp`);
+the tracker has no production caller. A lot settles at
 its exact-match expiry off the accrued realized rate, no re-pricing needed.
+Fixings are booked on the INDEX convention (raw close-to-close returns): the
+driver passes no dividend, and `RealizedTracker`'s single-name adjustment
+(Task F-6) is not reachable from this lane until a corporate-actions feed
+exists to source ex-dividend cash from.
 No early close in v1 — a strategy that erases a live swap lot gets
 `InvalidArgument`, not a close. `swap_pv` / `swap_pnl` report per-row state and
 flow columns. **`BacktestDb` does not yet persist the swap lane** — its
@@ -615,8 +622,14 @@ its clock from the sessions where the symbol's surface actually exists: a live
 variance swap makes the engine fail the whole run closed on a missing board, so
 a dark session cannot be stepped over. `reconcile_nav` is on, so every row's
 NAV is audited against an independently recomputed liquidation value.
-`swap_pv`/`swap_pnl` ride out as signal columns, so `track.tsv` keeps the one
-frozen `write_backtest_pnl_tsv` schema.
+`swap_pv`/`swap_pnl` ride out as signal columns rather than as new fixed ones,
+so `track.tsv` keeps `write_backtest_tsv`'s frozen column prefix (the
+`backtest_series_columns()` roster) and carries them in the signal tail after
+it. The example also sets
+`RunConfig::swap_pnl_explain`, so the eight `swap_explain_*` columns — carry,
+realized, vol level, skew, convexity, discount, residual and the `unattributed`
+counter — ride out the same way; the renderer draws its P&L-attribution panel
+off that prefix, and omits the panel entirely on a track that lacks it.
 
 **Reading the report.** `pnl_total` is the *whole* step total, so the strangle
 leg is `pnl_total − swap_pnl` and the two legs sum back to `nav` by
@@ -647,23 +660,43 @@ same population and a single hand-written number would hide that:
 
 | Count | Command | What it counts |
 |---|---|---|
-| **2,892** cases / **429** suites | `build/bin/atx-vol-tests.exe --gtest_list_tests` | GoogleTest cases in the atx-vol test binary, including the 8 `DISABLED_` ones |
-| **2,905** registered tests | `ctest --test-dir build -N -L atx_vol` | the 2,892 above, discovered by `gtest_discover_tests`, **plus 13** lanes that are not GoogleTest cases: `SpxWilmottReproUnit`, `atx-vol-reference-spy-dispersion`, `atx-vol-download-occ-ess`, `atx-vol-build-spy-top50-universe`, `Mag7DispersionReport`, `SpyDispersionPnlReport`, `atx-vol-python`, `atx-vol-pricing-forcescalar`, `atx-vol-e2e-benchmark-name-coverage`, `atx-vol-e2e-benchmark-name-checker-unit`, `atx-vol-american-shootout-name-coverage`, `atx-vol-compare-baseline-unit`, `atx-vol-pg-observability-name-coverage` (`tests/CMakeLists.txt`) |
+| cases / suites | `build/bin/atx-vol-tests.exe --gtest_list_tests` | GoogleTest cases in the atx-vol test binary, including the `DISABLED_` ones |
+| registered tests | `ctest --test-dir build -N -L atx_vol` | the cases above, discovered by `gtest_discover_tests`, **plus exactly 13** lanes that are not GoogleTest cases: `SpxWilmottReproUnit`, `atx-vol-reference-spy-dispersion`, `atx-vol-download-occ-ess`, `atx-vol-build-spy-top50-universe`, `Mag7DispersionReport`, `SpyDispersionPnlReport`, `atx-vol-python`, `atx-vol-pricing-forcescalar`, `atx-vol-e2e-benchmark-name-coverage`, `atx-vol-e2e-benchmark-name-checker-unit`, `atx-vol-american-shootout-name-coverage`, `atx-vol-compare-baseline-unit`, `atx-vol-pg-observability-name-coverage`. Registered by `add_test()` across three files, not one: `atx-vol/CMakeLists.txt` (`SpxWilmottReproUnit`), `tests/CMakeLists.txt` (the next seven) and `bench/CMakeLists.txt` (the five `*-name-coverage` / `*-unit` guards) |
 
-The two reconcile exactly: 2,892 + 13 = 2,905. Both were re-measured after the
-strategy-DSL merge landed on main (the first growth past the 1.0.0 numbers,
-which were 2,848 cases / 422 suites / 8 lanes): the DSL and convex-recovery
-suites added 44 cases across 7 suites, and the bench name-coverage guards added
-5 script lanes. The digits are the measurement, not a maintained invariant —
-which is the whole reason the command sits next to each one.
+**The stable thing is the gap, not the totals — and it is stable only per
+configuration.** Absolute figures are deliberately not published: they grow with
+every suite added, and a written one goes stale silently. The gap is
+`registered − cases = the non-GoogleTest lanes`, i.e. the size of the enumerated
+list above. **No number is published for it per preset, deliberately** — some
+lanes are conditionally registered, so the gap is a function of your
+configuration and the honest form is the list plus the command, not a digit
+attached to a preset name.
 
-Both figures are `cmake --preset dev`. **The `rel` and `rel-avx2` presets
-register 2,907**, not 2,905: they are configured with `-DATX_BUILD_EXAMPLES=ON`,
-which adds the two `accuracy_panel` determinism lanes (`AccuracyPanelDeterminism`,
-`AccuracyPanelFailureDeterminism`, `atx-vol/CMakeLists.txt`). The GoogleTest
-population is identical on all three presets — only the script lanes differ — so
-a gate log quoting the rel-side number is not a drift (the v1.0.0 gate logs quote
-2,856/2,858, the same two-lane split under the pre-merge counts).
+Which lanes register depends on guards you can read rather than guess. The
+`accuracy_panel` pair, for instance, needs **three** conjuncts to all hold —
+`ATX_BUILD_EXAMPLES` **and** `ATX_BUILD_TESTS` **and** `Python3_Interpreter_FOUND`
+(`atx-vol/CMakeLists.txt`) — and the first of those is OFF by default and set by
+no preset, so those two lanes are absent from `dev`, `rel` and `rel-avx2` alike
+unless you pass `-DATX_BUILD_EXAMPLES=ON` yourself. Enumerate what your build
+actually registered with `ctest --test-dir <build-dir> -N -L atx_vol` and compare
+the names against the list above.
+
+**Nothing enforces it.** No test or CMake assertion checks the count; a
+fourteenth `add_test()` would change the gap silently and this list would simply
+be wrong. So verify it by set difference, not by subtraction — subtracting two
+totals can return the expected number for compensating reasons and cannot tell
+you which lanes are in the gap. Run both commands, diff the two name sets, and
+confirm the difference is exactly the lanes named above.
+
+The GoogleTest population is identical on `dev`, `rel` and `rel-avx2` — only the
+script lanes can differ, and only via the guards above — so two gate logs whose
+totals disagree are not automatically drift; diff the *names* to see which lanes
+one had and the other did not. An earlier version of this paragraph asserted that
+`rel`/`rel-avx2` register two more because they set `-DATX_BUILD_EXAMPLES=ON`.
+They do not set it: no preset does, `build-rel/CMakeCache.txt` records it `OFF`,
+and `ctest -N` on that build lists neither `accuracy_panel` lane. That claim was
+inherited from a retired sentence and restated as an invariant without being
+re-derived — the same failure the paragraph above this one warns about.
 
 Every count in the section below comes from the same
 measurement, quoted once; the *skip* inventory needs a full matrix run to
@@ -677,12 +710,20 @@ Green means **every lane that can run, ran and passed**. It does not mean every
 registered lane ran, and the difference is stable, deliberate and enumerated
 below rather than being a backlog.
 
-Of the **2,905** registered above, ctest starts **2,897** — the other 8 are the
-`DISABLED_` cases — and **63** of those reported `SKIPPED` at the v1.0.0
-release-sprint measurement on an AVX2 host with `cmake --preset dev` and no
-market-data cache present. Every skip carries a reason string naming exactly
-what would let it run; the six classes below account for all 63 as of that
+`DISABLED_` cases appear in **both** listings — `--gtest_list_tests` prints them
+with their `DISABLED_` prefix, and `gtest_discover_tests` registers them with ctest
+renamed `… (Disabled)` — so they are not what separates the two commands, and
+neither command's total excludes them. ctest declines to *run* them; both still
+*count* them. (An earlier version of this paragraph said the opposite, and quoted
+a figure for them that was wrong in the same breath.) **63** reported `SKIPPED` at
+the v1.0.0 release-sprint measurement on an AVX2 host with `cmake --preset dev`
+and no market-data cache present — a dated figure from that one run, not a current
+count. Every skip carries a reason string naming exactly
+what would let it run; the six skip classes below account for all 63 as of that
 measurement (the post-merge tree has not had a fresh full-matrix skip census).
+The last row is **not** a skip class and contributes none of the 63 — it is the
+other opt-in that changes what a green run covers, listed here because this is
+where a reader looks for one.
 
 | Gate class | What gates it | Skips | Provisioning status |
 |---|---|---|---|
@@ -691,6 +732,7 @@ measurement (the post-merge tree has not had a fresh full-matrix skip census).
 | Cached real-market fixtures | Presence of OPRA `cbbo-1m` parquet boards, the SPY fit corpus, and the shared board cache under `C:/atx-data/spy-dispersion/opra/` | **30** | Permanently unprovisioned in-repo: this is licensed vendor market data, too large to commit and not ours to redistribute. Materialise it with the Databento pull + `opra_dbn_to_parquet` (see the real-data section above) and the whole class runs. |
 | Named external data (env) | `ATX_T7_DEFINITIONS_TSV` (5), `ATX_SP100_SURFACE_DB` (1) | **6** | Same reason as the row above, pointed at by an environment variable instead of a search path. All six are measurement harnesses / a real-database baseline, not correctness gates. |
 | Opt-in long sweep | `ATX_VOL_LONG_CORPUS=1` | **1** | By design — a 250 + 10,000 synthetic-board property sweep, too slow for every run. Deterministic and runnable on any host. |
+| Opt-in coverage widener (**not** a skip gate) | `ATX_VOL_SCOREBOARDS=1` | **0** | Skips nothing — it widens an assertion. Its one consumer is `SigmaInterpCorpus.RealBoard_WithinGates` (`spy_fit_corpus_test.cpp`), which runs in every default matrix; the flag takes that test's cold-Andersen-Lake reference comparison from **every 2nd strike to every strike** — a strict superset at the same tolerances. So an unset run is not a skipped test, it is half the reference cases. To widen it: set the variable, then `ctest -R SigmaInterpCorpus.RealBoard_WithinGates`. That test is in `ATX_VOL_SLOW_FILTER`, so it carries the `atx_vol_slow` label and an `-L atx_vol_fast` run never reaches it with or without the flag. There is no `nightly` preset — one was proposed in a 2026-07-11 plan and never added, so nothing sets this for you. |
 | Structurally not a standalone lane | `ProcessScratchChild.*` (3) run only when their driver test re-invokes the binary as a child; `ScalarLegEnv.ForceScalarEnvSeedsScalarOverride` (1) runs inside the `atx-vol-pricing-forcescalar` lane; `atx-vol-python` (1) exits ctest's `SKIP_RETURN_CODE` unless the standalone `atx-vol/python` extension is built | **5** | Four of the five ARE covered — by the lane that drives them. Only `atx-vol-python` is genuinely uncovered by a default build; build the standalone Python project to run it. |
 
 So a green matrix asserts: **every pure-computation, synthetic-fixture and
@@ -698,7 +740,10 @@ in-repo-fixture test passes, on the host's ISA, in the default build, plus the
 forced-scalar pricing leg.** It does not assert the real-market accuracy gates,
 the exact-counter gates, the long corpus sweep, or the Python binding suite —
 each of which is a documented opt-in with a named way to turn it on, not an
-unknown.
+unknown. Nor does it assert the *full-strike* cold-AL reference sweep: green
+covers `SigmaInterpCorpus.RealBoard_WithinGates` at every 2nd strike unless
+`ATX_VOL_SCOREBOARDS=1` is set. That one is a narrower result than a skip, and
+easier to miss, because the test reports **passed** either way.
 
 The Vola-parity harness alone: `atx-vol-tests.exe --gtest_filter='SurfaceParity.*:VolaSession.*:OpraPanel.*:DeAmer.*:Parity.*:AmericanIv.*:HybridDiv.*:S3.*:FitMetrics.*:Panel.*'`.
 
@@ -739,30 +784,72 @@ demonstrations stay behind `ATX_BUILD_EXAMPLES` (OFF by default).
 
 ## Configuration registry: the `ATX_*` environment variables
 
-atx-vol reads **fourteen** `ATX_*` environment variables in shipped code —
-eleven from the library, three from tools. None is required, and **none of them changes a
-fitted, priced or archived value.** The ones that touch parallelism select how
-much of the machine is used, and every atx-vol fan-out is documented
-bit-identical for any worker count; the rest decide only whether a diagnostic is
-printed. So an unset environment is a complete, correct configuration, which is
-the property that makes this table short.
+atx-vol reads the `ATX_*` environment variables below in shipped code. The table
+is the list — count its rows and read its `Scope` column rather than trusting a
+number in this sentence, because a hand-kept count is exactly the artifact that
+goes stale when a row is added. None is required, so **an unset environment is a
+complete, correct configuration**, which is the property that makes this table
+short.
 
-| Knob | Effect | Default | Scope | v1 status |
-|---|---|---|---|---|
-| `ATX_VOL_FIT_WORKERS` | Resolves the auto (`0`) worker count for `parallel_for` fan-outs. An explicitly requested non-zero count is honoured as-is and is *not* capped by it | `hardware_concurrency()` (min 1) | library — `src/core/parallel_for.hpp` | **keep** |
-| `ATX_SIMD_ISA` | Seeds the process-global SIMD override at load: `Auto`, `ForceScalar` or `ForceAvx2`. An in-process `set_simd_isa_override()` still wins | `Auto` | library — `src/simd/cpu.cpp` | **keep** |
-| `ATX_VOL_FIT_ECORE_TIER` | Arms the E-core second scheduling tier. `2` arms it *without* the below-normal priority drop; any other non-zero value arms it *with* the drop | unset = off | library — `src/fitting/fit_scheduler.cpp` | **keep**, deprecation candidate |
-| `ATX_VOL_CORPUS_DATE_BATCH` | Dates per corpus fan-out call. Scheduling only — output bytes do not depend on it | `8` | library — `src/backtest/dispersion_run.cpp` | **keep**, belongs in a config struct |
-| `ATX_VOL_CORPUS_PHASE_TIMING` | Prints the corpus build's phase split. Collection is unconditional and cheap; only the report is gated | unset = off | library — `src/backtest/dispersion_run.cpp` | **keep** |
-| `ATX_VOL_PROFILE` | Prints per-phase fit timings from `curve_fit` and `surface_parity`. **Not** the CMake option of the same name — see the collision note below | unset = off | library — `src/fitting/curve_fit.cpp`, `src/fitting/surface_parity.cpp` | **keep**, rename candidate |
-| `ATX_SLICE_DEBUG` | Prints `curve_fit`'s per-slice fit-preparation outcome (why a chain did or did not become a fittable slice) | unset = off | library — `src/fitting/curve_fit.cpp` | **keep** |
-| `ATX_VOL_ZC_BORROW` | `0` forces the owned-reconstruct archive path instead of the zero-copy borrow. Read once per process, so it cannot make a run non-deterministic | unset = borrow allowed | library — `src/backtest/backtest.cpp` | **keep**, deprecation candidate |
-| `ATX_VOL_ZC_BACKING` | `map` or `copy` overrides the caller-declared `ArchiveBacking` on the borrow path. Read once per process | unset = the caller's choice stands | library — `src/backtest/backtest.cpp` | **keep**, deprecation candidate |
-| `ATX_VOL_AL_PROBE` | Arms the Andersen-Lake zone cycle-attribution probe, read once into `g_mode` at process load. Any non-empty value turns it on; a value containing `s`/`S` additionally records each cold boundary solve's normalized query state. Attribution only — the priced values it counts around are unaffected | unset = off | library — `src/pricing/al_probe.cpp` | **keep** |
-| `ATX_VOL_AL_PROBE_OUT` | File path for the per-state binary trace `ATX_VOL_AL_PROBE`'s `s`/`S` flag records; the human-readable `alprobe.*` summary itself always goes to the stream `dump()` was called with, not this path. Unset just skips writing the trace file. Meaningless unless `ATX_VOL_AL_PROBE` is set | unset = trace not written | library — `src/pricing/al_probe.cpp` | **keep** |
-| `ATX_VOL_CACHE` | Default for the dispersion CLI's `--cache DIR`; an explicit `--cache` overrides it. Empty means disabled, which is the default behaviour | unset = disabled | tool — `tools/spy_dispersion_backtest.cpp` | **keep** |
-| `ATX_VOL_PREFETCH_DEPTH` | Overrides the projected replay's snapshot look-ahead depth (`projected_prefetch_depth()`). Malformed or out-of-range (cap `64`) falls back to the default rather than failing the run. Scheduling only — output is bit-identical at any depth | `2`, cap `64` | tool — `tools/spy_dispersion_backtest.cpp` | **keep** |
-| `ATX_VOL_SOLVE_LEDGER` | Same env-gated shape as `ATX_VOL_PROFILE`: any non-empty value dumps the always-on solve ledger (AL boundary solves / premium evals / IV Newton iterations) as `ledger.<name> <count>` lines to stderr; the stdout build report shape is untouched | unset = off | tool — `tools/surface_db_build_main.cpp` | **keep** |
+The **Result** column carries the safety claim: whether the knob can change a
+fitted, priced or archived value. Read it per row. A prose taxonomy summarising
+this table used to sit here and drifted from it three times — each new row landed
+outside whatever buckets the paragraph had named — so the classification lives in
+the table, where a new row cannot be added without filling it in.
+
+Each cell also records **how strongly that is established**, because "reasoned"
+and "verified" look identical once written down:
+
+- **`· test`** — a test exercises the knob's two states and pins the outcome.
+  Where the test drives the seam through an in-process setter rather than the
+  environment, the row's `Default` cell says so; only `ATX_SIMD_ISA` has a test
+  that goes through the environment itself (`ScalarLegEnv.ForceScalarEnvSeedsScalarOverride`,
+  plus the `atx-vol-pricing-forcescalar` ctest lane).
+- **`· construction`** — neutral because of what the knob *does*: it gates a
+  printout or names an output file, and no computed value reads it.
+- **`· asserted`** — reasoned, not verified. No test found for it. These are the
+  cells to attack first if you doubt the column. When reading their `Effect`
+  cells, check the justification proves *this* property: a cell arguing that a
+  knob "cannot make a run non-deterministic" has argued determinism, not the
+  path-equivalence this column claims, and a justification for an adjacent
+  theorem reads exactly like a justification for this one. `ATX_VOL_ZC_BORROW`
+  carried precisely that mismatch until a test was found for it.
+
+A qualifier in brackets narrows the evidence rather than decorating it —
+**`(real-data)`** means the test is gated on a market-data archive and
+`GTEST_SKIP`s without one, so it does not run in a stock checkout.
+
+The grades come from asking which files under `atx-vol/tests/` name each
+variable. That is a name-based instrument and this lane has twice shown name
+patterns to be the wrong tool, so a test may exist under a name it did not reach:
+finding one **upgrades a cell**, it does not fix a defect.
+
+One distinction the column cannot make on its own: `ATX_SIMD_ISA` is neutral
+because the *runtime* dispatch is pinned bit-identical to scalar
+(`AmericanPriceBatch.MatchesScalarBitIdentical` and the `*MatchesScalar*` family).
+Last-place bits do differ between SSE2 and FMA builds, but that is
+`kFmaContraction`, a **compile-time** `__FMA__` constant driven by `rel-avx2`'s
+`/arch:AVX2`, not by this variable.
+
+| Knob | Result | Effect | Default | Scope | v1 status |
+|---|---|---|---|---|---|
+| `ATX_VOL_FIT_WORKERS` | neutral · test | Resolves the auto (`0`) worker count for `parallel_for` fan-outs. An explicitly requested non-zero count is honoured as-is and is *not* capped by it | `hardware_concurrency()` (min 1) | library — `src/core/parallel_for.hpp` | **keep** |
+| `ATX_SIMD_ISA` | neutral · test (env path) | Seeds the process-global SIMD override at load: `Auto`, `ForceScalar` or `ForceAvx2`. An in-process `set_simd_isa_override()` still wins | `Auto` | library — `src/simd/cpu.cpp` | **keep** |
+| `ATX_VOL_FIT_ECORE_TIER` | neutral · test | Arms the E-core second scheduling tier. `2` arms it *without* the below-normal priority drop; any other non-zero value arms it *with* the drop | unset = off | library — `src/fitting/fit_scheduler.cpp` | **keep**, deprecation candidate |
+| `ATX_VOL_CORPUS_DATE_BATCH` | neutral · asserted | Dates per corpus fan-out call. Scheduling only — output bytes do not depend on it | `8` | library — `src/backtest/dispersion_run.cpp` | **keep**, belongs in a config struct |
+| `ATX_VOL_CORPUS_PHASE_TIMING` | neutral · construction | Prints the corpus build's phase split. Collection is unconditional and cheap; only the report is gated | unset = off | library — `src/backtest/dispersion_run.cpp` | **keep** |
+| `ATX_VOL_PROFILE` | neutral · construction | Prints per-phase fit timings from `curve_fit` and `surface_parity`. **Not** the CMake option of the same name — see the collision note below | unset = off | library — `src/fitting/curve_fit.cpp`, `src/fitting/surface_parity.cpp` | **keep**, rename candidate |
+| `ATX_SLICE_DEBUG` | neutral · construction | Prints `curve_fit`'s per-slice fit-preparation outcome (why a chain did or did not become a fittable slice) | unset = off | library — `src/fitting/curve_fit.cpp` | **keep** |
+| `ATX_VOL_ZC_BORROW` | neutral · test (real-data) | `0` forces the owned-reconstruct archive path instead of the zero-copy borrow. Path-equivalence of those two is pinned by `ZcViewParity` (`tests/zc_view_parity_diag_test.cpp`), which compares `reconstruct_entry` against `map_entry` under `std::bit_cast` and asserts four mismatch counters are zero, plus a second test through the hot batch seam — gated on a real-market archive, so it `GTEST_SKIP`s where that is absent | unset = borrow allowed | library — `src/backtest/backtest.cpp` | **keep**, deprecation candidate |
+| `ATX_VOL_ZC_BACKING` | neutral · asserted | `map` or `copy` overrides the caller-declared `ArchiveBacking` on the borrow path. Read once per process | unset = the caller's choice stands | library — `src/backtest/backtest.cpp` | **keep**, deprecation candidate |
+| `ATX_VOL_AL_PROBE` | neutral · construction | Arms the Andersen-Lake zone cycle-attribution probe, read once into `g_mode` at process load. Any non-empty value turns it on; a value containing `s`/`S` additionally records each cold boundary solve's normalized query state. Attribution only — the priced values it counts around are unaffected | unset = off | library — `src/pricing/al_probe.cpp` | **keep** |
+| `ATX_VOL_AL_PROBE_OUT` | neutral · construction | File path for the per-state binary trace `ATX_VOL_AL_PROBE`'s `s`/`S` flag records; the human-readable `alprobe.*` summary itself always goes to the stream `dump()` was called with, not this path. Unset just skips writing the trace file. Meaningless unless `ATX_VOL_AL_PROBE` is set | unset = trace not written | library — `src/pricing/al_probe.cpp` | **keep** |
+| `ATX_VOL_CACHE` | neutral · asserted | Default for the dispersion CLI's `--cache DIR`; an explicit `--cache` overrides it. Empty means disabled, which is the default behaviour | unset = disabled | tool — `tools/spy_dispersion_backtest.cpp` | **keep** |
+| `ATX_VOL_PREFETCH_DEPTH` | neutral · asserted | Overrides the projected replay's snapshot look-ahead depth (`projected_prefetch_depth()`). Malformed or out-of-range (cap `64`) falls back to the default rather than failing the run. Scheduling only — output is bit-identical at any depth | `2`, cap `64` | tool — `tools/spy_dispersion_backtest.cpp` | **keep** |
+| `ATX_VOL_SOLVE_LEDGER` | neutral · construction | Same env-gated shape as `ATX_VOL_PROFILE`: any non-empty value dumps the always-on solve ledger (AL boundary solves / premium evals / IV Newton iterations) as `ledger.<name> <count>` lines to stderr; the stdout build report shape is untouched | unset = off | tool — `tools/surface_db_build_main.cpp` | **keep** |
+| `ATX_VOL_DISABLE_STRIP_BATCH` | neutral · test (setter path) | A/B seam: forces `var_swap_fair_strike` onto its per-node scalar surface-read loop even when `SurfaceT` exposes a batched `iv_batch`, so one binary can be measured both ways. `Strip.BatchedMatchesScalar*` pins the two bit-identical (`bits_equal_or_both_nan` across six fields plus `EXPECT_EQ` on flags and node count, over four quality tiers on flat and skewed surfaces), so this moves speed, not results — note those tests drive the seam through the setter below, not through this variable | `1` enables; unset or anything else = off. The env var seeds a static **once at process load**; an in-process `detail::set_strip_batch_disabled_for_test()` overrides it afterwards and wins, same as `ATX_SIMD_ISA` above | library — `src/pricing/derivatives.cpp` | **keep** |
+| `ATX_VOL_DISABLE_BUMP_CACHE` | neutral · test (setter path) | Same shape, orthogonal knob: disables the greek bump table's read-vector cache (`BumpReadCache`/`CachedBumpView`). Speed only | as above, overridden in-process by `detail::set_bump_read_cache_disabled_for_test()` | library — `src/pricing/derivatives.cpp` | **keep** |
+| `ATX_VOL_DISABLE_IV_EARLY_EXIT` | **MOVES BITS** · by design | Forces `ConvexSliceFit::iv()`'s bisection to run its full fixed 64 iterations (pre-P-5 behaviour) rather than stopping at tolerance. **Unlike the two above, this one moves last-place bits** — which is its use: it is how the superseded Release/SSE2 golden fingerprint `17305682487856730537` is reproduced after the P-R re-pin (see `prepared_portfolio_test.cpp`). Reach for it to attribute a golden-hash delta to that seam instead of to a regression | `1` enables; unset or anything else = off. Read once at process load, and **unlike the two seams above there is no setter** — `dense_slice.cpp` exposes only the getter `iv_early_exit_disabled_for_test()`, so the environment is the only way in and this one genuinely cannot be toggled mid-process | library — `src/fitting/dense_slice.cpp` | **keep** |
 
 **Nothing is deleted at v1, because nothing here is dead.** Every row has a live
 read site and a live effect; the two knobs with real *consumers* outside their
@@ -779,11 +866,15 @@ own source are load-bearing:
   it exists to solve. This is the case where an environment variable is the right
   mechanism rather than a shortcut.
 
-The remaining nine library knobs are diagnostics and measurement levers whose
-only documented users are sprint/bench recipes. They are proposed **keep** for
-v1 on the narrow grounds that each is off by default, each is read once, and none
-can change a result — but two follow-ups are worth naming rather than leaving
-implicit:
+The remaining library knobs are diagnostics, measurement levers and A/B seams
+whose only documented users are sprint/bench recipes. They are proposed **keep**
+for v1 on the narrow grounds that each is off by default and each is read once.
+The third of those grounds — *none can change a result* — held while the table
+listed only diagnostics and does **not** cover the A/B seams added above:
+`ATX_VOL_DISABLE_IV_EARLY_EXIT` changes last-place bits by design, which is the
+whole point of it. `ATX_VOL_DISABLE_STRIP_BATCH` and `ATX_VOL_DISABLE_BUMP_CACHE`
+do satisfy it, and are pinned bit-identical by their own tests rather than merely
+asserted to be. Two follow-ups are worth naming rather than leaving implicit:
 
 - `ATX_VOL_CORPUS_DATE_BATCH` is the one knob that is genuinely *library
   behaviour configured from the environment* rather than a diagnostic. It should
@@ -807,8 +898,28 @@ current name, so it is recorded here rather than done silently.
 
 Out of scope for this table, deliberately: `DATABENTO_API_KEY`, read by the
 Databento definition-export example and the OPRA puller scripts (not an `ATX_*`
-name, and gated behind a network/cost opt-in), and the 17 further `ATX_*` names
-read only by tests and benchmarks, neither of which ships.
+name, and gated behind a network/cost opt-in), and the further `ATX_*` names whose
+read sites do not ship. **The criterion is target membership, not directory and
+not the name.** Resolve it by asking which CMake target the read site compiles
+into, then whether that target is installed: `atx-vol` and the CLIs in
+`cmake/atx-vol-install.cmake`'s `install(TARGETS ...)` lists ship; `atx-vol-tests`,
+every `atx-vol-*-bench` and the `examples/` executables do not. Applying the
+criterion by directory is how three shipping library knobs
+(`ATX_VOL_DISABLE_STRIP_BATCH`, `ATX_VOL_DISABLE_BUMP_CACHE`,
+`ATX_VOL_DISABLE_IV_EARLY_EXIT`) sat outside this table until 2026-08-14 —
+they read from `src/`, not from a test. That set is deliberately
+not enumerated here — a hand-kept count drifts as tests are added and nothing
+catches it. Enumerate it when you need it, from the read sites rather than from
+a naming pattern: `grep -rn 'getenv\|_dupenv_s\|GetEnvironmentVariable'` over
+`atx-vol/`, then resolve every call site that reads a **parameter** rather than a
+string literal back to the concrete names its callers pass. Several do, and a
+name-pattern grep silently misses all of them — which is the whole reason to
+enumerate by read site. Those three tokens are the complete set of env-access
+mechanisms in shipping code: `atx-core` reads the environment nowhere, and each
+`env_flag_enabled` helper is file-local to its own TU rather than a shared
+wrapper, so nothing reaches the environment by a route the grep cannot see. One
+exception is documented above rather than here because it changes what a green
+run asserts: `ATX_VOL_SCOREBOARDS`.
 
 ## API stability policy (1.x)
 
@@ -844,12 +955,15 @@ current tree.
 | Tier | Where | Count | Promise |
 |---|---|---|---|
 | **Tier-A** | exactly the headers `atx/vol/api/vol.hpp` includes | 58 | **Frozen for 1.x.** Closed under inclusion |
-| **Tier-B** | other public headers under `include/atx/vol/api/<module>/` | 16 | Public and supported to include; **not** frozen |
+| **Tier-B** | other public headers under `include/atx/vol/api/<module>/` | 19 | Public and supported to include; **not** frozen |
 | `tools/` | `tools/include/atx/vol/tools/` — target `atx::vol::tools` | 6 | CLI support. Not part of the shipped library surface |
 | `research/` | `research/include/atx/vol/research/` — target `atx::vol::research` | 12 | Run orchestration. Not part of the shipped library surface |
 
-**Three of the five digits above had rotted by v1, and the first three no longer
-can.** All five rows were re-derived at the release commit: Tier-A 56 → **57**,
+**Three of the five digits this table used to carry had rotted by v1, and the
+two that survive the restructure no longer can.** The table above is now four
+rows — the api-restructure retired the `detail/` row, and `simd/` had already
+folded into Tier-B — of which Tier-A and Tier-B are machine-checked. All five
+rows of the pre-restructure table were re-derived at the release commit: Tier-A 56 → **57**,
 Tier-B 23 → **31**, `detail/` 25 → **28**, while `simd/` 9, `tools/` 6 and
 `research/` 9 held. The earlier note here said the table was "one short" because
 `log.hpp` and `detail/log_emit.hpp` had landed; that was true when written, and
@@ -858,7 +972,19 @@ moving — which is the point it was making. The first post-1.0.0 growth is
 already in the table: the strategy DSL made `strategy.hpp` include
 `swap_leg.hpp`, so closure-under-inclusion promoted it (Tier-A 57 → **58**),
 and `detail/convex_recovery.hpp` landed alongside it (`detail/` 28 → **29**).
-The v1.0.0 tag itself ships 57 / 31 / 28.
+The v1.0.0 tag itself ships 57 / 31 / 28. Task P-5 (vol-derivatives
+production sprint, review fix round 1) added `detail/dense_slice_price.hpp`
+(the `ConvexSliceFit::iv()` / calendar-scan shared price projection) —
+`detail/` 29 → **30**, no Tier-A/Tier-B change. Task F-9 (same sprint) added
+`cboe_strip.hpp` — the CBOE discrete-strike variance strip, additive and
+outside the umbrella — so Tier-B 31 → **32**, no Tier-A/`detail/` change. Task
+F-R (same sprint) added `detail/butterfly_density.hpp` — the one Lee/Roper
+density stencil and its violation floor, previously hand-copied at four call
+sites — so `detail/` 30 → **31**, no Tier-A/Tier-B change. Task F-8 (same
+sprint) added `surface_overlay.hpp` — the smile-shift/sticky-mode algebra
+hoisted out of `derivatives.cpp`'s private bump views — so Tier-B 32 → **33**,
+then `deriv_pnl.hpp` — the two-date swap P&L attribution — so Tier-B 33 →
+**34**, neither touching Tier-A or `detail/`.
 
 The backtest-production-lakehouse sprint's margin engine (Task B2) added
 `margin.hpp` (Reg-T + scenario-grid margin models) as new public surface — the
@@ -908,14 +1034,30 @@ this newly-Tier-B header into Tier-A.
 That drift is now caught by a test rather than by a reader, for the counts
 that can be.
 `VolUmbrella.TierCountsMatchTheReadmeTable` (`tests/vol_umbrella_test.cpp`)
-asserts **58 / 16** against the live header tree — Tier-A from the umbrella
-manifest, Tier-B by counting every `.hpp` file recursively under
-`include/atx/vol/api/` and subtracting Tier-A and the umbrella itself — plus
-the api/ tree's own module-directory count (8) and total public header count
-(75), and each failure message says to update this table. `tools/` 6 and
-`research/` 12 remain prose: they live under wholly separate include roots
-(`tools/include/`, `research/include/`) and are not covered by that test, so
-re-derive those two by hand. The one generated header,
+**parses the Tier-A and Tier-B Count cells out of the table above** and compares
+them to the live header tree — Tier-A against the umbrella manifest, Tier-B by
+counting every `.hpp` file recursively under `include/atx/vol/api/` and
+subtracting Tier-A and the umbrella itself. **This table is the pin.** Editing a
+cell here changes what the test asserts, and a header landing without a matching
+edit fails it; there is no count literal in the test to keep in step, and no
+update procedure to remember. The api/ tree's total public header count is not
+written down anywhere either — it is exactly Tier-A + Tier-B + `vol.hpp`, so a
+header appearing under api/ moves the Tier-B arithmetic and fails against this
+table. The eight module directories are checked by NAME rather than by count, so
+a module added, removed or renamed says which one.
+
+That is the second fix of this rot, and the first one did not hold. The test
+originally held integer literals and asked, in its failure text, for a human to
+update this table — which is a request, not a mechanism. This very sentence
+restated the counts as a further copy and had to be corrected at `222b379`,
+`1e0b708` and `738c9b4` before going stale once more, every time because a lane
+fixed the copy it was shown. Removing the restatement got the count down to two
+copies; parsing the table got it to one.
+Previously the Tier-A *set* was machine-checked but no **count** was, and
+nothing compared any of them to this table at all, which is how three rows rotted
+undetected. `tools/` 6 and `research/` 12 remain prose: they live under wholly
+separate include roots (`tools/include/`, `research/include/`) and are not
+covered by that test, so re-derive those two by hand. The one generated header,
 `atx/vol/detail/version_generated.hpp`, is likewise uncovered: it is
 configure_file'd into the install prefix only, and does not exist in the
 source tree the test walks.
@@ -960,6 +1102,17 @@ wc -l` over their own include roots. The one generated header exists only in
 an install prefix (`<prefix>/include/atx/vol/detail/version_generated.hpp`,
 configure_file'd from `project(atx VERSION ...)`); it is never in the source
 tree, so no `find` over `include/` ever counts it.
+
+**2026-08-15 vol-derivatives merge reconciliation:** Tier-B 16 → **19**,
+api/ headers 75 → **78**, Tier-A (58) and the 8 module directories held. The
+restructure lane placed this sprint's three new public headers into the api/
+tree — `cboe_strip.hpp` under `api/pricing/`, `deriv_pnl.hpp` under
+`api/analytics/`, `surface_overlay.hpp` under `api/fitting/` — all three
+deliberately outside the umbrella, so they are Tier-B and Tier-A is untouched.
+The sprint's other two relocations, `butterfly_density.hpp` and
+`dense_slice_price.hpp`, went to `src/fitting/` and are in no tier at all: the
+old `detail/` row was retired by the restructure, which is why this
+reconciliation moves two digits where the pre-restructure ones moved three.
 
 *Closed under inclusion* is the load-bearing rule: a header named in a frozen
 signature is frozen whether or not callers reach for it directly, so if a Tier-A

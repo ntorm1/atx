@@ -7,6 +7,8 @@
 #include <string>
 #include <vector>
 
+#include "support/test_paths.hpp"
+
 #include "atx/vol/api/fitting/calib.hpp"
 #include "atx/vol/api/marketdata/opra_panel.hpp"
 #include "atx/vol/api/fitting/session.hpp"
@@ -41,20 +43,11 @@ using atx::vol::Universe;
 using atx::vol::VolaSession;
 using atx::vol::VolCurveKind;
 
-// Locate the cached SPY parquet across the paths a test binary might run from.
+// Locate the cached SPY parquet. Empty when absent (caller GTEST_SKIPs) -- the
+// fixture is licensed vendor data and is not committed.
 [[nodiscard]] std::string find_spy_parquet() {
-  const char* candidates[] = {
-      "data/spy_opra_cbbo1m_2026-06-05T1955Z.parquet",
-      "../data/spy_opra_cbbo1m_2026-06-05T1955Z.parquet",
-      "../../data/spy_opra_cbbo1m_2026-06-05T1955Z.parquet",
-      "C:/atx/data/spy_opra_cbbo1m_2026-06-05T1955Z.parquet",
-  };
-  for (const char* c : candidates) {
-    if (std::filesystem::exists(c)) {
-      return c;
-    }
-  }
-  return {};
+  return atx::vol::testkit::market_data_if_present("spy_opra_cbbo1m_2026-06-05T1955Z.parquet")
+      .string();
 }
 
 }  // namespace

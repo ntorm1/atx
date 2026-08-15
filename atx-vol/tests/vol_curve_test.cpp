@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -11,14 +12,15 @@
 #include <string>
 #include <vector>
 
-#include "atx/vol/api/fitting/arb.hpp"          // arb_check_butterfly_svi_mm, arb_check_butterfly_slice
-#include "atx/vol/api/pricing/black76.hpp"      // black76_value_and_vega
-#include "atx/vol/api/fitting/calib.hpp"        // CalibOpts, FitObs
-#include "atx/vol/api/fitting/spline_curve.hpp" // fit_spline_vol_slice
-#include "fitting/svi_calib.hpp"    // svi_project_mm
-#include "atx/vol/api/core/types.hpp"        // Side
+#include "atx/vol/api/fitting/arb.hpp"      // arb_check_butterfly_svi_mm, arb_check_butterfly_slice
+#include "atx/vol/api/pricing/black76.hpp"  // black76_value_and_vega
+#include "atx/vol/api/fitting/calib.hpp"    // CalibOpts, FitObs
+#include "fitting/essvi_calib.hpp"          // essvi_fit_slice
+#include "atx/vol/api/fitting/spline_curve.hpp"  // fit_spline_vol_slice
+#include "fitting/svi_calib.hpp"                 // svi_project_mm
+#include "atx/vol/api/core/types.hpp"            // Side
 #include "atx/vol/api/fitting/vol_curve.hpp"    // fit_slice_curve, CurveConfig, SviCurve, C8Curve
-#include "atx/vol/api/fitting/vol_surface.hpp"  // SviParams
+#include "atx/vol/api/fitting/vol_surface.hpp"  // SviParams, EssviParams, essvi_backbone_w/total_w
 
 // Task C2.5: the raw-SVI and C8 serving seams (fit_slice_curve) must never
 // hand back a butterfly-arbitrageable slice. These tests fit a standard
@@ -502,6 +504,114 @@ TEST(VolCurve, SviServedSliceRejectsWingButterflyArb) {
          "quoted range +/- 0.5";
 }
 
+// C-8 (FIT-C5) fixture: CORE obs (|k| <= 0.15) are pure eSSVI-backbone-
+// consistent quotes; WING obs (k in [0.55, 1.2], beyond the HINGE_QUAD dead
+// band at 0.4 * scale = 0.48 for scale = kmax = 1.2) carry a deliberate
+// upward quadratic bump the rigid 3-parameter backbone cannot reproduce.
+[[nodiscard]] std::vector<FitObs> make_essvi_wing_residual_obs() {
+  const double T = 0.5, F = 100.0;
+  atx::vol::EssviParams tr{};
+  tr.theta = 0.04;
+  tr.phi = 1.0;
+  tr.rho = -0.25;
+  tr.T = T;
+
+  const auto push = [&](std::vector<FitObs>& obs, double k, double w) {
+    FitObs o{};
+    o.k = k;
+    o.w_mkt = w;
+    o.sigma_mkt = std::sqrt(w / T);
+    o.weight_w = 1.0;
+    o.active_weight_w = 1.0;
+    o.F = F;
+    o.K = F * std::exp(k);
+    o.df = 1.0;
+    obs.push_back(o);
+  };
+
+  std::vector<FitObs> obs;
+  // A LARGE core count is load-bearing, not cosmetic: the joint (core + wing)
+  // LM otherwise lets the 3-parameter backbone itself chase part of the wing
+  // bump (phi drifting several-fold off truth was observed at n_core ~ 25-70),
+  // which contaminates the ridge-LS "leftover" the residual layer fits and
+  // pulls a spurious HINGE_QUAD linear (yc) term out of what should be a pure
+  // quadratic bump — that stray linear term's OWN kink (HINGE_QUAD is only
+  // C0 at its dead-band boundary) then trips the narrow scan on its own,
+  // independent of the deliberate wing arb this fixture targets. Outweighing
+  // the 6 wing points ~65:1 anchors the backbone to the core-only optimum
+  // (verified: recovers truth to fp precision) and leaves the wing bump for
+  // the residual layer to absorb cleanly.
+  const int n_core = 400;
+  for (int i = 0; i < n_core; ++i) {
+    const double k = -0.15 + 0.30 * static_cast<double>(i) /
+                                  static_cast<double>(n_core - 1);
+    push(obs, k, atx::vol::essvi_backbone_w(tr, k));
+  }
+  constexpr double kScale = 1.2;         // == kmax over all obs (matches
+                                         // fit_wing_residual's own `scale`)
+  constexpr double kResidInnerY = 0.4;  // HINGE_QUAD's dead-band boundary
+  const std::array<double, 6> wing_k{0.75, 0.85, 0.95, 1.05, 1.15, 1.20};
+  for (const double k : wing_k) {
+    double w = atx::vol::essvi_backbone_w(tr, k);
+    const double y = std::clamp(k / kScale, -1.0, 1.0);
+    if (y > kResidInnerY) {
+      const double yc = y - kResidInnerY;
+      w += 0.5 * yc * yc;
+    }
+    push(obs, k, w);
+  }
+  return obs;
+}
+
+// FIT-C5 (mirrors FT-C2's SviServedSliceRejectsWingButterflyArb): the eSSVI
+// backbone is butterfly-arb-free EVERYWHERE by construction (the Mingone
+// cube-space fit enforces the Lee/Gatheral-Jacquier bound), but its optional
+// HINGE_QUAD wing-residual layer is NOT projected onto the admissible cone
+// (the per-slice Roper projector is out of port scope; see the PORT NOTE on
+// `fit_wing_residual`, essvi_calib.cpp) — the same class of served-arb gap
+// FT-C2 closed for raw-SVI. This fixture is quoted out to |k| = 1.2 with a
+// HINGE_QUAD-shaped wing bump the rigid backbone cannot absorb: the residual
+// reproduces it verbatim and carries genuine Durrleman g < 0 beyond k = 0.6,
+// invisible to the OLD fixed [-0.6, 0.6] scan. The served path must scan the
+// full quoted range +/- 0.5 (FT-C2/FIT-C5) and refuse it.
+TEST(VolCurve, EssviServedSliceRejectsWingButterflyArb) {
+  const double T = 0.5, F = 100.0, df = 1.0;
+  const std::vector<FitObs> obs = make_essvi_wing_residual_obs();
+
+  CalibOpts po = vc_permissive_opts();
+  po.residual_disable = false;
+  po.residual_basis_kind = atx::vol::ResidualBasisKind::HingeQuad;
+
+  // Non-vacuity: the RAW fit passes clean on the old [-0.6, 0.6] scan yet
+  // carries genuine wing butterfly arb over the quoted range +/- 0.5.
+  const auto raw =
+      atx::vol::essvi_fit_slice(std::span<const FitObs>(obs), T, F, po);
+  ASSERT_TRUE(raw.has_value());
+  const atx::vol::EssviParams sp = raw.value();
+  ASSERT_GT(sp.resid_scale, 0.0)
+      << "fixture must actually engage the wing-residual layer";
+  const std::function<double(double)> wf = [&](double k) {
+    return atx::vol::essvi_total_w(sp, k);
+  };
+  const auto narrow = arb_check_butterfly_slice(wf, T, -0.6, 0.6, 256u);
+  ASSERT_TRUE(narrow.has_value());
+  EXPECT_TRUE(narrow->empty()) << "fixture must be clean on the old [-0.6,0.6] scan";
+  // Mirrors validate_served_shape_over_quotes' own window: min(-0.6, k_lo-0.5)
+  // .. max(0.6, k_hi+0.5) for this fixture's obs (k in [-0.15, 1.20]).
+  const auto wide = arb_check_butterfly_slice(wf, T, -0.65, 1.70, 256u);
+  ASSERT_TRUE(wide.has_value());
+  EXPECT_FALSE(wide->empty()) << "fixture must carry real wing arb over quoted+/-0.5";
+
+  // Served path: must REFUSE.
+  CurveConfig cfg;
+  cfg.kind = VolCurveKind::Essvi;
+  cfg.parametric = po;
+  const auto served = fit_slice_curve(cfg, obs, F, T, df);
+  EXPECT_FALSE(served.has_value())
+      << "served-path admitted an eSSVI slice with wing butterfly arb over the "
+         "quoted range +/- 0.5";
+}
+
 // FT-C7 (B2b): a caller-pinned SplineVol bypasses the selector, and the spline
 // fit computes its butterfly-violation count as a DIAGNOSTIC only (never rejects
 // or projects). A sharp ATM vol bump fits a spline whose total variance is non-
@@ -735,4 +845,184 @@ TEST(ParseCurveKind, RejectsTheToStringFallbackSpelling) {
   // to_string returns "unknown" only for an out-of-range enumerator value; that
   // sentinel must never parse back into a real kind.
   EXPECT_FALSE(atx::vol::parse_curve_kind("unknown").has_value());
+}
+
+// Task F-4 fix round 1, finding F1. `ConvexRepairSpec{}` exists to reproduce
+// the `convex_repair == nullopt` path's fixed lattice, and all FOUR of its
+// defaults were hand-kept duplicates of that path's own constants -- three
+// literals living in vol_curve.cpp's anonymous namespace, plus a sixth copy of
+// the library's calendar tolerance. They feed the SAME variable through the two
+// branches of one ternary (`calendar_tol`, vol_curve.cpp), so a drift in either
+// direction changes which crossings a fit accepts, selected by nothing but
+// whether an `optional` is engaged.
+//
+// Both halves are pinned here, because either alone is insufficient: the
+// compile-time half would pass if the shared constants were themselves wrong,
+// and the behavioural half would pass today on equal-but-unlinked literals.
+TEST(VolCurve, ConvexRepairSpecDefaultsAreTheNullOptLattice) {
+  const ConvexRepairSpec spec{};
+
+  // (a) Compile-time: every default NAMES its source. `EXPECT_EQ` on doubles is
+  // deliberate -- these must be the same constant, not merely close.
+  EXPECT_EQ(spec.k_min, atx::vol::kConvexCalendarLatticeKMin);
+  EXPECT_EQ(spec.k_max, atx::vol::kConvexCalendarLatticeKMax);
+  EXPECT_EQ(spec.grid_points, atx::vol::kConvexCalendarLatticeIntervals + 1u);
+  EXPECT_EQ(spec.tolerance, atx::vol::kCalendarTotalVarianceTol);
+
+  // (b) Behavioural: the two branches of the ternary agree on a real fit. The
+  // fixture carries a calendar crossing of +9e-8 at k = -0.45 -- deliberately
+  // sized BELOW the 1e-7 acceptance, so both branches must SERVE it.
+  //
+  // WHAT (b) DISCRIMINATES AGAINST, stated exactly (Task F-4 fix round 2, N3):
+  // a TIGHTENING tolerance drift, and a band or grid that moved off the
+  // lattice. Sweeping the drifted `tolerance` on this fixture: at 5e-8 and
+  // below the crossing stops being accepted, the branch promotes a node and
+  // refits, and the served curve moves by 4.499090e-03 -- 4.5e9x this gate. (A
+  // tight enough drift can instead make that refit fail KKT certification, in
+  // which case the ASSERT_TRUE above fires; either way (b) is loud.)
+  //
+  // A LOOSENING drift is INVISIBLE to (b): 8.9e-08 sits below 1e-7 and below
+  // 1e-6 alike, so both branches keep serving it identically and (b) passes.
+  // Half (a) is what covers loosening -- which is why both halves ship, and
+  // why neither is redundant.
+  constexpr double T = 0.10;
+  constexpr double F = 100.0;
+  constexpr double df = 0.999;
+  const std::vector<FitObs> obs = make_smile_obs(T, F, df, 15);
+
+  CurveConfig cfg;
+  cfg.kind = VolCurveKind::ConvexDense;
+  const auto base = fit_slice_curve(cfg, obs, F, T, df);
+  ASSERT_TRUE(base.has_value()) << base.error().to_string();
+  const IVolCurve& base_curve = **base;
+  const auto w_prev = [&base_curve](double k) {
+    const double z = (k + 0.45) / 3.0e-3;
+    return base_curve.w(k) - 1.0e-9 + 9.0e-8 * std::exp(-z * z);
+  };
+
+  const auto null_opt = fit_slice_curve(cfg, obs, F, T, df, w_prev);
+  ASSERT_TRUE(null_opt.has_value()) << null_opt.error().to_string();
+
+  cfg.convex_repair = ConvexRepairSpec{};
+  const auto defaulted = fit_slice_curve(cfg, obs, F, T, df, w_prev);
+  ASSERT_TRUE(defaulted.has_value()) << defaulted.error().to_string();
+
+  // The crossing must actually be present, or (b) is vacuous.
+  const double crossing = w_prev(-0.45) - (*null_opt)->w(-0.45);
+  EXPECT_GT(crossing, 1.0e-8) << "fixture must carry a sub-tolerance crossing";
+
+  for (const double k : {-0.60, -0.45, -0.25, 0.0, 0.25, 0.60}) {
+    EXPECT_NEAR((*null_opt)->w(k), (*defaulted)->w(k), 1.0e-12)
+        << "nullopt and ConvexRepairSpec{} disagree at k=" << k;
+  }
+}
+
+// Task P-5 (FIT-P1): the calendar-admission scan_k (fit_slice_curve's
+// ConvexDense branch) used to invert the fitted node price to an implied vol
+// via ConvexSliceFit::iv() and square it back to a total variance just to
+// compare against w_prev -- pure waste, since the floor is enforced in PRICE
+// space by fit_convex_slice's own cfloor rows. This pins that the
+// price-space rewrite selects the IDENTICAL set of floor violations (hence
+// the identical required_k growth and served curve) as the pre-P-5
+// vol-space scan, across a fixture matrix spanning every scan_k call site:
+// legacy slack (no violation expected), legacy crossing that the coarse
+// 64-interval lattice cannot see (no violation on THIS lattice either --
+// verbatim ConvexRepairSpecRepairsOffLatticeCalendarCrossing's fixture),
+// strict on-lattice (repairs), and strict off-lattice via extra_node_ks
+// (verbatim ConvexRepairSpecExtraNodeKsBecomeExactFloorNodes's fixture).
+//
+// `kPreP5*` are served w(k) at 9 representative k's (both wings, the
+// kink/repair regions, and ATM) captured from the UNMODIFIED (pre-P-5,
+// iv()-inversion) scan -- revert d283efe to reproduce the capture. The full
+// 41-point / 4-case comparison ran at max observed drift ~8e-13, driven
+// entirely by the UNRELATED iv() bisection early-exit task P-5 also lands,
+// not by a different floor being chosen). 1e-9 here is ~1e4x that noise
+// floor and ~1e6x below the ~1e-3 scale a genuinely different floor
+// selection would move these values by (this bug WAS caught this way during
+// implementation: an earlier, less faithful price-space rewrite that
+// skipped iv()'s wing safe-price projection moved these same points by
+// 3e-3-5e-3 -- a completely different set of floors chosen, not noise).
+TEST(VolCurve, CalendarScanPriceSpaceSelectsIdenticalFloorsAsPreP5Baseline) {
+  constexpr double T = 0.10;
+  constexpr double F = 100.0;
+  constexpr double df = 0.999;
+  const std::vector<FitObs> obs = make_smile_obs(T, F, df, 15);
+  constexpr std::array<double, 9> kSampleK = {-0.60, -0.51, -0.33, -0.21, 0.0,
+                                              0.21,  0.33,  0.51,  0.60};
+
+  const auto expect_matches = [&](const char* label, const IVolCurve& curve,
+                                  const std::array<double, 9>& pinned) {
+    for (std::size_t i = 0; i < kSampleK.size(); ++i) {
+      EXPECT_NEAR(curve.w(kSampleK[i]), pinned[i], 1.0e-9)
+          << label << " k=" << kSampleK[i];
+    }
+  };
+
+  CurveConfig cfg;
+  cfg.kind = VolCurveKind::ConvexDense;
+  const auto base = fit_slice_curve(cfg, obs, F, T, df);
+  ASSERT_TRUE(base.has_value()) << base.error().to_string();
+  const IVolCurve& base_curve = **base;
+
+  // Case A: mostly-slack w_prev (no violations expected on the legacy lattice).
+  const auto w_prev_slack = [&base_curve](double k) { return base_curve.w(k) - 1.0e-3; };
+  const auto slack = fit_slice_curve(cfg, obs, F, T, df, w_prev_slack);
+  ASSERT_TRUE(slack.has_value()) << slack.error().to_string();
+  static constexpr std::array<double, 9> kPreP5Slack = {
+      0.023073812939698696, 0.016885898743741863, 0.0073482334401989667,
+      0.0061095771687040704, 0.0048400976716167256, 0.005410183306104998,
+      0.0071283048771612623, 0.015982888220143317, 0.021649702357522241,
+  };
+  expect_matches("slack", **slack, kPreP5Slack);
+
+  // Case B: legacy off-lattice crossing (verbatim ConvexRepairSpecRepairsOffLatticeCalendarCrossing
+  // fixture) -- exercises the coarse 64-interval legacy scan and at least one refit pass.
+  // The bump is narrow enough (3e-3 width) that the legacy lattice never samples
+  // inside it, so this case's served curve is expected to equal Case A's exactly.
+  const auto w_prev_bump = [&base_curve](double k) {
+    const double z = (k + 0.50) / 3.0e-3;
+    return base_curve.w(k) - 1.0e-9 + 9.0e-8 * std::exp(-z * z);
+  };
+  const auto legacy = fit_slice_curve(cfg, obs, F, T, df, w_prev_bump);
+  ASSERT_TRUE(legacy.has_value()) << legacy.error().to_string();
+  expect_matches("legacy_crossing", **legacy, kPreP5Slack);
+
+  // Case C: strict ConvexRepairSpec on-lattice (same bump, dense 65-point grid).
+  CurveConfig strict_cfg = cfg;
+  strict_cfg.convex_repair = ConvexRepairSpec{};
+  strict_cfg.convex_repair->k_min = -0.50;
+  strict_cfg.convex_repair->k_max = 0.50;
+  strict_cfg.convex_repair->grid_points = 65;
+  strict_cfg.convex_repair->tolerance = 1.0e-9;
+  const auto strict = fit_slice_curve(strict_cfg, obs, F, T, df, w_prev_bump);
+  ASSERT_TRUE(strict.has_value()) << strict.error().to_string();
+  static constexpr std::array<double, 9> kPreP5StrictOnLattice = {
+      0.023073812939698696, 0.016885898743741863, 0.015900422507329481,
+      0.0080931546180809163, 0.004840097628925997, 0.0054101833061062842,
+      0.0071283048771754376, 0.015982888220143317, 0.021649702357522241,
+  };
+  expect_matches("strict_on_lattice", **strict, kPreP5StrictOnLattice);
+
+  // Case D: strict ConvexRepairSpec off-lattice via extra_node_ks (verbatim
+  // ConvexRepairSpecExtraNodeKsBecomeExactFloorNodes fixture).
+  const auto w_prev_off = [&base_curve](double k) {
+    const double z = (k + 0.517) / 2.5e-3;
+    return base_curve.w(k) - 1.0e-9 + 9.0e-8 * std::exp(-z * z);
+  };
+  CurveConfig off_cfg = cfg;
+  ConvexRepairSpec off_spec;
+  off_spec.k_min = -0.50;
+  off_spec.k_max = 0.50;
+  off_spec.grid_points = 65;
+  off_spec.tolerance = 1.0e-9;
+  off_spec.extra_node_ks = {-0.517};
+  off_cfg.convex_repair = off_spec;
+  const auto off_lattice = fit_slice_curve(off_cfg, obs, F, T, df, w_prev_off);
+  ASSERT_TRUE(off_lattice.has_value()) << off_lattice.error().to_string();
+  static constexpr std::array<double, 9> kPreP5StrictOffLattice = {
+      0.023073812939698696, 0.021083968927089494, 0.016052219842009045,
+      0.0081063700823840162, 0.0048400976266193101, 0.0054101833061063068,
+      0.0071283048771760829, 0.015982888220143317, 0.021649702357522241,
+  };
+  expect_matches("strict_off_lattice", **off_lattice, kPreP5StrictOffLattice);
 }

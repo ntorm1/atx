@@ -73,7 +73,9 @@ try {
   cmake --preset $preset @isoArgs
   Write-Host ''
   Write-Host ('ready: ' + $wt) -ForegroundColor Green
-  Write-Host ('  build : cmake --build --preset ' + $preset + ' --target atx-engine-<group>-tests   (groups: alpha risk data factory parallel learn eval library combine fund book core regime store)')
+  # Group list is NOT duplicated here on purpose: a pasted copy drifted to 14-of-15 once
+  # already. ATX_ALL_TEST_GROUPS in atx-engine/tests/CMakeLists.txt is the definition.
+  Write-Host ('  build : cmake --build --preset ' + $preset + ' --target atx-engine-<group>-tests   (groups: see ATX_ALL_TEST_GROUPS in atx-engine/tests/CMakeLists.txt)')
   Write-Host ('  partial suite (faster worktree builds): reconfigure with  cmake --preset ' + $preset + ' -DATX_TEST_GROUPS="risk;data"  to drop the groups you are not touching')
   Write-Host ('  test  : ctest --preset ' + $preset + ' -R <Suite>')
   Write-Host '  clangd: auto-loads build/compile_commands.json (no setup)'

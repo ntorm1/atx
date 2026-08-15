@@ -9,8 +9,10 @@
 #include "atx/core/error.hpp"
 #include "atx/core/linalg/linalg.hpp"  // MatX, VecX
 #include "atx/core/linalg/solve.hpp"   // solve_spd
-#include "atx/vol/api/fitting/arb.hpp"             // CalendarPairProjection (calendar cone)
-#include "atx/vol/api/fitting/vol_curve.hpp"       // IVolCurve, SplineVolCurve (full class)
+#include "atx/vol/api/fitting/arb.hpp"       // CalendarPairProjection (calendar cone)
+#include "atx/vol/api/fitting/vol_curve.hpp" // IVolCurve, SplineVolCurve (full class)
+
+#include "fitting/butterfly_density.hpp" // THE butterfly FD rule
 
 namespace atx::vol {
 
@@ -164,10 +166,11 @@ constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 
 // ── Post-fit Lee/Roper butterfly-density scan ───────────────────────────────
 //
-// Mirrors arb_check_butterfly's finite-difference scheme and tolerance
-// exactly (arb.cpp): central differences on a uniform k-grid, sharing FD
-// neighbours across sample points, g(k) < -1e-9 counted as a violation. A
-// diagnostic only -- never rejects or projects the fit.
+// Runs THE butterfly FD rule (detail/butterfly_density.hpp) that every
+// arb_check_butterfly entry runs, on this file's own fixed 128-cell z-grid.
+// It used to be a hand-written copy of that scheme with a comment asking the
+// reader to keep the two matching; it is now a call, so "the same rule" holds by
+// construction. A diagnostic only -- never rejects or projects the fit.
 [[nodiscard]] std::size_t count_butterfly_violations(std::span<const double> zk,
                                                       std::span<const double> mult,
                                                       std::span<const double> m2nd, double atm,
@@ -183,9 +186,6 @@ constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
     return 0;
   }
   constexpr std::uint32_t kNGrid = 128;
-  const double dk = (k_hi - k_lo) / static_cast<double>(kNGrid);
-  const double inv_2dk = 0.5 / dk;
-  const double inv_dksq = 1.0 / (dk * dk);
 
   const auto w_at = [&](double k) noexcept {
     const double z = k / (atm * sqrtT);
@@ -195,25 +195,9 @@ constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
   };
 
   std::size_t violations = 0;
-  for (std::uint32_t g = 1; g < kNGrid; ++g) {
-    const double k = k_lo + static_cast<double>(g) * dk;
-    const double w_lo = w_at(k - dk);
-    const double w_mi = w_at(k);
-    const double w_hi = w_at(k + dk);
-    if (!(w_mi > 1.0e-12) || !std::isfinite(w_lo) || !std::isfinite(w_hi)) {
-      continue;
-    }
-    const double w_p = (w_hi - w_lo) * inv_2dk;
-    const double w_pp = (w_hi - 2.0 * w_mi + w_lo) * inv_dksq;
-    const double term1_inner = 1.0 - 0.5 * k * w_p / w_mi;
-    const double term1 = term1_inner * term1_inner;
-    const double term2 = 0.25 * w_p * w_p * (0.25 + 1.0 / w_mi);
-    const double term3 = 0.5 * w_pp;
-    const double g_density = term1 - term2 + term3;
-    if (g_density < -1.0e-9) {
-      ++violations;
-    }
-  }
+  detail::butterfly_density_scan(
+      w_at, k_lo, k_hi, kNGrid,
+      [&violations](double, double) { ++violations; });
   return violations;
 }
 
@@ -286,10 +270,11 @@ SplineVolCurve::project_calendar(const std::function<double(double)> &w_prev,
                "spline calendar pair projection: degenerate slice");
   }
 
-  // Matches arb.cpp's file-local kCalendarPairTol (1e-7) used by every sibling
-  // pair projection. Replicated (it is not exported) so the spline agrees on the
-  // same convergence bar.
-  constexpr double kCalendarPairTol = 1.0e-7;
+  // Task F-4: this WAS a replicated literal, with a comment asking the reader
+  // to keep it matching arb.cpp's file-local copy. It is now THE constant
+  // (types.hpp), which arb.cpp's own pair projections name too, so "agrees on
+  // the same convergence bar" holds by construction rather than by upkeep.
+  constexpr double kCalendarPairTol = kCalendarTotalVarianceTol;
   constexpr double kLiftEps = 1.0e-9;  // strict-clearance inflation (siblings' +1e-9)
 
   const double atm = p_.atm_vol;

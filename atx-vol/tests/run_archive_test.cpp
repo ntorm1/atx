@@ -9,6 +9,8 @@
 // write_diagnostics). `ra_schema_hash()` folds the whole registry into one
 // constexpr FNV-1a-64 value so a header can pin the schema at open time.
 
+#include "support/test_paths.hpp"
+
 #include "atx/vol/research/run_archive.hpp"
 #include "storage/run_archive_schema.hpp"
 
@@ -1175,18 +1177,10 @@ TEST(RunArchiveEncoders, MetaSectionEchoesResolvedSpec) {
 
 // ── Task 5: committed Python fixture (Task 8's reader consumes this) ─────────
 
-// Locate <repo>/atx-vol/python/tests robustly: __FILE__ is not reliably
-// absolute under ninja/clang-cl, so probe upward the way earnings tests do.
+// <repo>/atx-vol/python/tests, resolved from the configure-time absolute root.
 std::filesystem::path python_fixture_path() {
-  const std::filesystem::path tail =
-      std::filesystem::path("data") / "runarchive" / "wave_a_fixture.atxrun";
-  for (const char* base : {".", "..", "../..", "../../..", "../../../.."}) {
-    const std::filesystem::path candidate =
-        std::filesystem::path(base) / "atx-vol" / "python" / "tests";
-    if (std::filesystem::exists(candidate)) return candidate / tail;
-  }
-  return std::filesystem::path(__FILE__).parent_path().parent_path() / "python" / "tests" /
-         tail;
+  return atx::vol::testkit::repo_file("atx-vol/python/tests") / "data" / "runarchive" /
+         "wave_a_fixture.atxrun";
 }
 
 TEST(RunArchiveEncoders, MatchesCommittedPythonFixture) {

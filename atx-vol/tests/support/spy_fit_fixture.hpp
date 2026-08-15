@@ -2,8 +2,10 @@
 
 // Ten real Databento OPRA SPY slices selected to exercise cold fitting across
 // intraday liquidity and volatility regimes. The Parquet payloads live outside
-// git under data/spy_fit_slices (C:/atx/data is the shared developer cache), so
-// source-only CI can skip while a fixture-enabled run gets a stable matrix.
+// git, under THIS worktree's data/spy_fit_slices, so source-only CI can skip
+// while a fixture-enabled run gets a stable matrix. The probe used to end at a
+// `C:/atx/data/` fallback into a different checkout; a fixture resolved from
+// another tree is not this tree's fixture, and it read as a pass either way.
 
 #include <array>
 #include <filesystem>
@@ -46,17 +48,7 @@ inline constexpr std::array<SpyFitFixture, 10> kSpyFitFixtures{{
 }};
 
 [[nodiscard]] inline std::string find_spy_fit_parquet(const SpyFitFixture &fixture) {
-  const char *dirs[] = {"data/spy_fit_slices/", "../data/spy_fit_slices/",
-                        "../../data/spy_fit_slices/", "../../../data/spy_fit_slices/",
-                        "C:/atx/data/spy_fit_slices/"};
-  for (const char *dir : dirs) {
-    const std::string path = std::string(dir) + fixture.filename;
-    std::error_code ec;
-    if (std::filesystem::exists(path, ec)) {
-      return path;
-    }
-  }
-  return {};
+  return market_data_if_present(std::string("spy_fit_slices/") + fixture.filename).string();
 }
 
 [[nodiscard]] inline std::optional<OpraBoard> load_spy_fit_fixture(const SpyFitFixture &fixture,

@@ -48,6 +48,7 @@
 #include "atx/vol/api/backtest/priced_surface.hpp"   // PricedSurface
 #include "atx/vol/api/backtest/query_pricing.hpp"    // QueryPricingTier
 #include "atx/vol/api/storage/surface_archive.hpp"  // SurfaceProvenance
+#include "atx/vol/api/fitting/surface_policy.hpp"   // certified_wing_half_band (FIT-C7 / Task C-6)
 #include "atx/vol/api/core/types.hpp"            // Result, Side
 
 namespace atx::vol {
@@ -177,10 +178,27 @@ enum class ArchiveBacking : std::uint8_t {
 class MarketSnapshot {
 public:
   // Open `archive_path`, deserialize its surfaces, prepare their runtime-only query
-  // tier, build the `SurfaceSet`, and take the valuation timestamp from the surfaces'
-  // `now_ts_ns` (validating they agree). The archive wire format is unchanged.
+  // tier, build the `SurfaceSet`, and stamp the snapshot with a valuation
+  // timestamp. The archive wire format is unchanged.
+  //
+  // THE TS RULE, AND IT IS NARROWER THAN "the archive's date": a load verifies
+  // exactly the set of surfaces it LOADED, and promises nothing about records it
+  // never read. Concretely, over the three ways in:
+  //   * WHOLE BOARD (`referenced_uids` empty) -- reads every record, so every
+  //     record is checked and `ts_ns()` is an archive-wide fact;
+  //   * A SUBSET THAT MATCHED -- checks the entries it loaded against each other.
+  //     It does not read the entries it skipped and makes no claim about them;
+  //   * A SUBSET THAT MATCHED NOTHING -- loads zero surfaces, so it verifies the
+  //     empty set. IT THEREFORE LOADS A MIXED ARCHIVE SUCCESSFULLY: there is no
+  //     disagreement to find among no surfaces. It reads one record only to date
+  //     the empty snapshot. If you need the archive-wide guarantee, do a
+  //     whole-board load; nothing else offers it.
+  //
   // Errors propagate from open/map/query preparation or `SurfaceSet::create`;
-  // InvalidArgument if the archive is empty or its surfaces disagree on the ts.
+  // InvalidArgument if the archive holds no surfaces at all, or if the surfaces
+  // THIS LOAD READ disagree on `now_ts_ns`. The implementation states the same
+  // rule at its `subset_missed` branch (src/backtest.cpp) -- if the two ever
+  // disagree again, this header is the contract and the one to trust.
   //
   // B1 subset-deserialize: `referenced_uids`, when non-empty, restricts the
   // deserialize to the archive directory entries whose uid is referenced (dropping
@@ -252,6 +270,17 @@ public:
     return views_.empty() ? SurfaceRef{&surfaces_[i]} : SurfaceRef{&views_[i]};
   }
 
+  // The snapshot's valuation timestamp: the `now_ts_ns` every surface THIS LOAD
+  // READ agreed on. That is an archive-wide statement only for a whole-board
+  // load -- see `load`'s ts rule for the two subset cases.
+  //
+  // ON A ZERO-SURFACE SNAPSHOT (a subset load naming no archived uid, which is a
+  // documented success and not an error) there is nothing for it to be a property
+  // OF. It is then the FIRST DIRECTORY ENTRY's `now_ts_ns`, carried so an empty
+  // snapshot still has a date to be scheduled on, and it is not a claim about the
+  // archive: the other records may hold any timestamps at all, including ones
+  // that disagree with this and with each other. Never compare this across
+  // snapshots to infer that an archive is internally consistent.
   [[nodiscard]] std::int64_t ts_ns() const noexcept { return ts_ns_; }
   [[nodiscard]] std::optional<std::uint32_t> uid_of(std::string_view symbol) const;
 
@@ -306,6 +335,23 @@ private:
   std::int64_t ts_ns_{0};
   std::vector<std::pair<std::string, std::uint32_t>> syms_; // symbol -> uid
 };
+
+// FIT-C7 / Task C-6: the certified wing half-band `uid`'s surface actually
+// supports on `snapshot`, resolved from the SAME-BLOB provenance
+// `MarketSnapshot::provenance` already carries -- for `deriv_price_on_ref`'s
+// (etc.) `surface_certified_wing_band` argument, so a swap mark or a
+// vega-sized swap lot trusts exactly the band the fit pipeline certified for
+// that surface's OWN quality mode instead of the mode-blind default.
+// `std::nullopt` for an unknown uid (mirrors `find`'s null handle) OR a
+// legacy archive with no independently-admitted record --
+// `legacy_surface_provenance()` resolves `FitQualityMode::Balanced`, which
+// IS the mode-blind default, so this is never a behaviour change for those.
+[[nodiscard]] inline std::optional<double>
+certified_wing_band_for(const MarketSnapshot &snapshot, std::uint32_t uid) noexcept {
+  const SurfaceProvenance *prov = snapshot.provenance(uid);
+  return prov != nullptr ? std::optional<double>{certified_wing_half_band(prov->quality_mode)}
+                        : std::nullopt;
+}
 
 // ABI note: this pre-1.0 hot-path revision changes the IStrategy vtable and the
 // public ResolvedLeg, MarketSnapshot, SnapshotCacheStats, and RunConfig layouts.
@@ -495,6 +541,66 @@ struct SwapLot {
   [[nodiscard]] bool operator==(const SwapLot &) const = default;
 };
 
+// THE list of `DerivKind`s this engine can carry as a live `SwapLot`, stated
+// ONCE (Task F-3 fix round 1, I-3).
+//
+// It is a property of the ENGINE, not of the pricers: `derivatives.cpp` prices
+// GammaSwap and CorridorVarSwap correctly through every other entry point, but
+// `SwapAccrual`'s transcribed daily-fixing loop maintains only the plain
+// realized-variance estimator, and `SwapLot` carries no corridor bounds for a
+// corridor contract to be tested against. Admitting either would mis-accrue a
+// live position rather than merely miss a feature.
+//
+// Lives in the header, and is exhaustive over `DerivKind` with no `default:`,
+// for two reasons that F-3 learned the hard way. (1) `-Wswitch -WX` turns a
+// future enumerator into a compile error here, so a new kind cannot be
+// silently admitted OR silently refused -- the author has to choose. (2) The
+// STRATEGY layer needs the same verdict when it validates a swap-leg spec
+// (`validate_restrike_spec`, strategy.cpp), and a second hand-written copy of
+// this list is exactly the two-copies hazard that produced F-3's own C-1: the
+// spec validator and the engine boundary would drift, and a leg would be
+// accepted by one and refused by the other.
+[[nodiscard]] constexpr bool engine_supports_swap_kind(DerivKind kind) noexcept {
+  switch (kind) {
+  case DerivKind::VarSwap:
+  case DerivKind::VolSwap:
+  case DerivKind::CappedVarSwap:
+  case DerivKind::CappedVolSwap:
+    return true;
+  case DerivKind::GammaSwap:
+  case DerivKind::CorridorVarSwap:
+  // Task F-5: the two option kinds are refused for a reason of the same shape
+  // as CorridorVarSwap's but one level deeper. It is not that `SwapLot` is
+  // missing a field -- it already carries `strike_dec`, which IS the option
+  // strike. It is that SETTLEMENT is structurally wrong: `swap_terminal_value`
+  // (backtest.cpp) produces a terminal RATE and the settle path pays
+  // `qty * notional * (terminal - strike_dec)`, a payoff LINEAR in that rate.
+  // An option pays max(terminal - strike_dec, 0) / max(strike_dec - terminal,
+  // 0). Admitting these kinds without teaching that path the kink would settle
+  // a short option position at a profit it never had, on every path where the
+  // option expired worthless -- a wrong number, not a missing feature.
+  //
+  // MARKING would already be correct (deriv_price prices both kinds), which is
+  // precisely why this refusal has to be explicit: the half that works is not
+  // the half that decides.
+  //
+  // IF YOU ARE HERE TO ADMIT A KIND (Task F-5 fix round 1): moving an arm from
+  // `false` to `true` is NOT sufficient on its own. `swap_terminal_value`
+  // (backtest.cpp) returns a terminal RATE that its caller multiplies by
+  // `qty * notional` after subtracting `strike_dec`, so every kind admitted
+  // above must have a payoff LINEAR in that rate. Teach that function the new
+  // shape FIRST. Its assert CALLS this list rather than re-listing the linear
+  // kinds -- deliberately, because a second copy of this membership is the
+  // hazard F-5's own unification commit existed to remove -- so it cannot catch
+  // a widening here. That coupling is not expressible as a check and therefore
+  // lives at this line, which is the one an author actually edits.
+  case DerivKind::VarianceCall:
+  case DerivKind::VariancePut:
+    return false;
+  }
+  return false;  // out-of-enum value: refuse, matching the C default
+}
+
 // The open book across all cohorts. Plain for B0 (no cash/shares ledger yet);
 // `swap_lots` is the additive vol-derivative lane and defaults to empty.
 class PortfolioState {
@@ -534,12 +640,51 @@ struct SwapAccrual {
 
   // RealizedVarianceSpec is a C-ABI mirror with no comparison operator, so this
   // is spelled out rather than defaulted.
+  //
+  // THE PIN BELOW FIRED ON TASK F-3, WHICH IS WHAT IT WAS INSTALLED FOR (Task
+  // F-2 fix round 2, m-6). The decision it forced, recorded here rather than
+  // in a report that gets deleted: this comparator now compares ALL TWELVE
+  // RealizedVarianceSpec fields, not the six it used to.
+  //
+  // WHY THE APPENDED FIELDS BELONG IN IT. This operator answers "is this the
+  // same accrual state?" for snapshot/replay diffs, and a per-kind accrued leg
+  // IS accrual state -- as load-bearing as `rv_done_dec` for any kind that
+  // reads it. The old defence was DORMANCY ("`valid_deriv_kind` admits neither
+  // GammaSwap nor CorridorVarSwap, so those fields are always 0"), which is
+  // still true today and is still the wrong thing to rest on: dormancy is
+  // exactly the argument F-2's C-1..C-4 falsified twice, each time at a larger
+  // error than the last, and it makes the comparator's correctness a property
+  // of a DIFFERENT file's whitelist rather than of this expression.
+  //
+  // WHY EXTENDING IT IS SAFE TO DO NOW. It is provably inert on every
+  // reachable input, not merely "expected to be": `SwapAccrual` is never
+  // deserialized (backtest_db.cpp refuses outright to persist the swap lane --
+  // "the stored checkpoint format does not persist the swap lane"), the only
+  // constructor is `accrual_for`'s value-initialized `SwapAccrual fresh;`, and
+  // the only mutator is `observe_swap_fixing`, which writes the plain leg
+  // alone. All six appended fields are therefore 0.0/0u on both sides of every
+  // comparison this engine can perform, so no existing comparison outcome can
+  // change.
+  //
+  // WHAT THE PIN STILL DOES NOT CATCH: field COUNT only, never a reorder --
+  // see `RunConfig`'s own pin's blind-spot comment 400 lines below.
+  static_assert(detail::aggregate_arity_is_v<RealizedVarianceSpec, 12>,
+                "RealizedVarianceSpec field count changed: SwapAccrual::operator== "
+                "compares all twelve of its fields as of this pin -- add the new "
+                "field to that comparison, or record why it does not belong, "
+                "before raising this.");
   [[nodiscard]] bool operator==(const SwapAccrual &other) const noexcept {
     return lot_id == other.lot_id && rv.annualization == other.rv.annualization &&
            rv.n_obs_total == other.rv.n_obs_total && rv.n_obs_done == other.rv.n_obs_done &&
            rv.sum_sq_log_returns_done == other.rv.sum_sq_log_returns_done &&
            rv.rv_done_dec == other.rv.rv_done_dec &&
            rv.include_dividend_adjustment == other.rv.include_dividend_adjustment &&
+           rv.sum_weighted_sq_log_returns_done == other.rv.sum_weighted_sq_log_returns_done &&
+           rv.rv_gamma_done_dec == other.rv.rv_gamma_done_dec &&
+           rv.gamma_seed_spot == other.rv.gamma_seed_spot &&
+           rv.n_obs_in_corridor == other.rv.n_obs_in_corridor &&
+           rv.sum_sq_log_returns_in_corridor == other.rv.sum_sq_log_returns_in_corridor &&
+           rv.rv_corridor_done_dec == other.rv.rv_corridor_done_dec &&
            prev_spot == other.prev_spot && prev_ts_ns == other.prev_ts_ns &&
            have_prev == other.have_prev && prev_pv == other.prev_pv;
   }
@@ -654,7 +799,7 @@ enum class ExercisePolicy : std::uint8_t {
 struct FrictionModel {
   // B1 (backtest-lakehouse sprint, target 1.1.0): `QuoteSide` APPENDED at the
   // end (same additive-enum treatment as every `RunConfig` knob this sprint
-  // adds — see the `aggregate_arity_is_v<RunConfig, 19>` note below). It fills
+  // adds — see the `aggregate_arity_is_v<RunConfig>` note below). It fills
   // at `mid ± f(leg_count)·half_spread` instead of charging a synthetic spread
   // ON TOP of the model mid: `quote_lookup` supplies the recorded NBBO when the
   // caller has one, `half_spread_bps` (the existing PriceBps knob) supplies the
@@ -1150,6 +1295,24 @@ struct RunConfig {
   // normally sets `half_spread_bps`/`vol_tick` to 0 so the spread is not paid
   // twice.
   bool book_entry_fill_slippage{true};
+  // Task F-8 (GK-G5): emit the swap lane's P&L EXPLAIN beside `swap_pnl` --
+  // carry, realized-vs-implied, vol level, skew, convexity, discount and the
+  // residual, per recorded row (see `BacktestResult::swap_explain_*`).
+  //
+  // OFF BY DEFAULT, and the default is behaviour-compatible in both senses. The
+  // columns are then EMPTY rather than zero-filled, exactly like
+  // `nav_liquidation` -- and, more to the point, the whole path is skipped: the
+  // mark stays the single `deriv_price_on_ref` it has always been, so no NAV
+  // column can move. That is the reason the flag exists rather than an argument
+  // for it; `BacktestSwapExplain.NavIsUnmovedByTheExplain` measures NAV with the
+  // flag ON as well, since an opt-in that perturbed the run when enabled would
+  // be worse than none.
+  //
+  // ON, each live lot additionally costs one `deriv_greeks_on_ref` per step --
+  // up to 20 repricings where the mark alone is one -- plus three surface reads
+  // for the smile observables. A run that does not read the explain should not
+  // pay that.
+  bool swap_pnl_explain{false};
   // Absolute drift tolerance for `reconcile_nav`. The two quantities are the same
   // flows summed in different orders, so the honest floor is rounding
   // (~|cash|*eps per row), not zero. Must be finite and positive.
@@ -1260,24 +1423,32 @@ struct RunConfig {
   SnapshotPool *snapshot_pool{nullptr};
 };
 
-// Drift pin (plan item 4.2). RunConfig has exactly TWENTY-THREE fields. Adding,
-// removing or splitting one breaks this line, which is the point: it forces
-// whoever changes the struct to read the construction contract above instead of
-// appending a knob "for compatibility" with positional initializers that are no
-// longer part of the API.
+// Drift pin (plan item 4.2). Adding, removing or splitting a field breaks the
+// line below, which is the point: it forces whoever changes the struct to read
+// the construction contract above instead of appending a knob "for
+// compatibility" with positional initializers that are no longer part of the
+// API.
 //
-// 15 -> 16 (plan item 5.5): `cancel` was INSERTED beside `step_observer`, its
-// semantic group, not appended at the end. That is exactly the move the old
-// convention forbade and this one requires — and it is safe only because there
-// are no positional initializers left in-tree to rebind.
+// THE COUNT LIVES IN THE `static_assert` AND NOWHERE ELSE, deliberately. This
+// paragraph used to open "RunConfig has exactly SEVENTEEN fields" and carry a
+// hand-kept transition log (15 -> 16, 16 -> 17) directly above an assertion that
+// already knew the answer. Task F-8 took it to 18 and the prose stayed at 17 --
+// a second copy of a machine-checked fact, sitting close enough to read as
+// authoritative and far enough to rot on its own. The sprint's own precedent is
+// the tier-count triple, which went stale FOUR times while being dutifully
+// corrected each time and only stopped when the literals were deleted and the
+// test was made to read the source of truth. So the number and the log are gone
+// rather than corrected; `git log -L` on the assert line recovers the history
+// with dates and authorship the log never had.
 //
-// 16 -> 17 (main merge): `prefetch_depth` APPENDED at the end — the pipelined
-// snapshot look-ahead depth main's backtest-replay work introduced. Appending is
-// the form this convention prescribes for a new knob, and it is what supersedes
-// the branch's earlier `kPrefetchLookahead` file-scope constant in backtest.cpp.
-// Output is bit-identical at any depth
-// (`Backtest.PrefetchDepthIsBitIdenticalToSingleStepLookAhead` pins it), so the
-// addition moves no number a caller already depends on.
+// One thing the log did carry that the assert cannot, kept because it is a
+// RULING and not a count: `cancel` and `swap_pnl_explain` were both INSERTED
+// beside their semantic group rather than appended, which the old convention
+// forbade and this one requires. Both are safe for the same reason, and it is a
+// property of the tree rather than of the struct: there are no positional
+// `RunConfig{...}` initializers left to rebind. (The transition numbers those
+// two used to carry are gone with the rest -- a ruling about WHICH fields were
+// inserted needs no arithmetic, and the arithmetic is the part that rots.)
 //
 // 17 -> 18: `mark_domain` INSERTED beside `unpriced` / `surface_provenance_policy`,
 // its semantic group (the three fail-closed valuation policies), not appended at
@@ -1339,22 +1510,22 @@ struct RunConfig {
 // FORWARD-DECLARED pointer, so no Tier-A header gained a non-Tier-A include.
 //
 // BLIND SPOT: this probe pins the field COUNT, nothing else. It cannot see a
-// REORDER that leaves the count at 23 -- `aggregate_arity_is_v` (see
-// detail/aggregate_arity.hpp) only checks how many brace-initializer slots
+// REORDER that leaves the count unchanged -- `aggregate_arity_is_v` (see
+// api/fitting/aggregate_arity.hpp) only checks how many brace-initializer slots
 // `RunConfig{...}` accepts, with no notion of field NAMES or TYPES, so swapping
 // two existing fields (e.g. two `bool`s, or two `std::size_t`s) still compiles
 // green here. What actually protects against that is the "designated
 // initializers only" contract above (a named initializer binds by field, so a
 // reorder cannot mis-target it) -- this assert only proves the contract is not
 // being silently defeated by an APPEND, and a reorder still needs the contract
-// upheld EVERYWHERE to be safe. UPDATE DISCIPLINE for a reorder: before
-// landing one, confirm every construction site still names its fields --
+// upheld EVERYWHERE to be safe. UPDATE DISCIPLINE for a reorder OR AN INSERT:
+// before landing one, confirm every construction site still names its fields --
 // `git grep -n "RunConfig{"` across src/, tests/, bench/ and the python
 // bindings should turn up only empty `RunConfig{}` (or none) with no
 // multi-argument positional brace list; `git grep -n "RunConfig cfg"` sites
 // build via `RunConfig cfg;` plus `cfg.field = ...` assignment, which is
 // order-independent by construction.
-static_assert(detail::aggregate_arity_is_v<RunConfig, 23>,
+static_assert(detail::aggregate_arity_is_v<RunConfig, 24>,
               "RunConfig field count changed: update this pin, and confirm every "
               "construction site still initializes by field name.");
 
@@ -1489,6 +1660,59 @@ struct BacktestResult {
   // (and `backtest_db` refuses to persist a run that carries swap state at all
   // rather than dropping it silently).
   std::vector<double> swap_pv, swap_pnl;
+  // Task F-8 (GK-G5): the swap lane's P&L EXPLAIN, decomposing exactly the
+  // `swap_pnl` above. EVERY ONE IS A FLOW COLUMN, block-summed identically at
+  // `record_every_n > 1` -- the identity
+  //
+  //   carry + realized + vol_level + skew + convexity + discount + residual
+  //     == swap_pnl
+  //
+  // holds row by row AND under downsampling only because all eight are summed
+  // the same way. A component accumulated as STATE would break it silently at
+  // any stride above 1, which is the trap `swap_pv`'s own comment warns about
+  // from the other side.
+  //
+  // The components are `deriv_pnl_explain`'s (deriv_pnl.hpp), evaluated per live
+  // lot against the START of each step and summed over the lane in fixed lot
+  // order. `residual` carries everything a first-order explain leaves out --
+  // gamma against the spot move, second-order vol, a lot whose sensitivities
+  // were not computable, and every settling lot's payoff (a settlement is not a
+  // market move and is deliberately not attributed).
+  //
+  // EMPTY unless `RunConfig::swap_pnl_explain` is set, and always empty on the
+  // fixed-book overload. Like `swap_pv`/`swap_pnl` these are NOT part of the
+  // frozen `kBacktestSeriesColumns` / RunArchive registry, so `ra_schema_hash()`
+  // and every golden are untouched.
+  std::vector<double> swap_explain_carry, swap_explain_realized;
+  std::vector<double> swap_explain_vol_level, swap_explain_skew;
+  std::vector<double> swap_explain_convexity, swap_explain_discount;
+  std::vector<double> swap_explain_residual;
+  // Live lots on this row whose explain could not be computed at all. The causes,
+  // enumerated from the lane that increments this (`run_swap_lane`, backtest.cpp):
+  //   * NO FIXING LANDED in the step -- the lot's first mark, or a step over a
+  //     series that has already closed. `carry` prices one more fixing arriving
+  //     at a zero return, so attributing such a step would book a term for an
+  //     event that did not happen;
+  //   * the START-OF-STEP snapshot holds no surface for the lot's uid;
+  //   * the pricer DECLINED A COMPONENT -- a greek solve that failed, or a
+  //     sensitivity reported as "not computed". That makes the whole lot
+  //     unattributed rather than partially attributed, because booking five of
+  //     six terms and calling the sixth a residual reports a clean-looking
+  //     explain for a day nobody measured.
+  // NOT a cause, since 96a3c70 (F-8 r2): the first step after a CHECKPOINT
+  // RESUME. The explain is resolved against `base` -- the snapshot the step is
+  // measured FROM, which the engine already holds -- instead of against carried
+  // prior state, and the accrual's `have_prev` round-trips through the
+  // checkpoint. A resumed run attributes its first step like any other. That
+  // commit changed the implementation and the comment above
+  // `accumulate_swap_explain` in backtest.cpp; this header kept the old text
+  // until F-8 r8, and a CHANGELOG bullet was sourced from the stale version.
+  //
+  // Their whole mark move lands in `swap_explain_residual`, so the identity
+  // still closes; this column is how a reader tells a genuinely unexplained day
+  // from an unattributed one. A FLOW column like the rest (it counts lot-steps,
+  // not lots).
+  std::vector<double> swap_explain_unattributed;
   // Open lots at this row. USUALLY the size of the engine's book, but not by
   // definition: under `UnpricedLotPolicy::ExcludeAndReport` a lot whose expiry step
   // had no board is DEFERRED, and a deferred lot has left the engine's `lots`
@@ -1753,6 +1977,160 @@ struct BacktestResult {
   // @return InvalidArgument naming the first offending column and both lengths.
   [[nodiscard]] Status validate() const;
 };
+
+// Drift pin, added in Task F-8 fix round 2 (I-5) -- late for a struct this
+// widely enumerated, and no longer merely hygiene, because these DECLARATIONS
+// are now parsed by another language.
+// `atx-vol/python/tests/test_render_strangle_vs_varswap.py` derives the
+// example's attach table and the renderer's column roster by reading the
+// `std::vector<double>` lines above; a field added or reordered here propagates
+// silently into that lane, whose build cannot catch it.
+//
+// THE COUNT IS IN THE `static_assert` AND NOWHERE ELSE, for the same reason it
+// was removed from `RunConfig`'s pin above -- including from this paragraph,
+// which opened with it until fix round 3 and would have been the fifth stale
+// count in this file's history.
+//
+// WHY A HAND COUNT IS NOT AN OPTION HERE, which is the part worth keeping.
+// Before this pin existed, THREE independent careful counts of this struct
+// disagreed: a reviewer counted the fields Task F-8 added, a second lane counted
+// one more, and the author's own script counted the struct total. The reviewer
+// was right; the extra field was `RunConfig::swap_pnl_explain`, a DIFFERENT
+// struct that one `git show` presents in the same field of view; and the script
+// silently dropped eleven members because a trailing `// comment` after a `;`
+// broke its statement split -- returning a confident number from a broken
+// assumption, which is the shape of every sweep that reported clean this sprint.
+// Three ways of counting by hand, three different answers, and the build settles
+// it in one compile.
+//
+// WHEN THIS FIRES: the HAND EDITS a ninth `swap_explain_*` column needs, and
+// what stops the build if you skip each. Seven, enumerated by walking the tree
+// rather than by editing the previous list -- which said three, then five, then
+// four, and the reviewer's diagnosis of that is worth keeping: those were never
+// one number drifting, they were three different questions being counted.
+//
+//   1. The `std::vector<double>` declaration above.  -> nothing fires; this pin
+//      is what notices, which is why it exists.
+//   2. This pin's own count.                          -> the assert below.
+//   3. The identity comment above -- the one whose right-hand side is
+//      `swap_pnl` -- if the new column is a dollar flow rather than the counter.
+//      -> the Python renderer derives its summands from that comment, and
+//      `_explain_counter` fails by name if the leftover is not exactly one
+//      column. Worded WITHOUT quoting the identity operator on purpose:
+//      `identity_flow_columns` requires exactly one comment line carrying it,
+//      and an earlier draft of this bullet was a second one. It caught that.
+//   4. `SwapExplainIx` (src/backtest.cpp).            -> the roster/enum size
+//      `static_assert`.
+//   5. `kSwapExplainColumns` (src/backtest.cpp).      -> same size assert.
+//   6. `explain_member_for`'s switch (src/backtest.cpp). -> -Wswitch under /WX,
+//      AND `roster_rows_match_their_indices()`. Two stops; before fix round 5
+//      this was the SILENT one, because the per-index pins were eight
+//      hand-written asserts that said nothing about a ninth row.
+//   7. `accumulate_swap_explain` (src/backtest.cpp), to actually compute the new
+//      component, plus its field on `DerivPnlExplain`. -> `DerivPnlExplain`'s
+//      own arity pin.
+//
+// SEVEN FUNCTIONS CONSUME THE ROSTER AND NEED NOTHING, because each is a loop
+// over `swap_explain_columns()`: `BacktestResult::validate()`, `push_row`
+// (src/backtest.cpp), `validate_result_shape`, `result_has_explain_data`,
+// `validate_series_data`, `append_backtest_results` (src/backtest_db.cpp), and
+// `attach_swap_columns` (examples/varswap_compare_example.cpp). That is the
+// property the roster buys; it is NOT the same set as the list above, and
+// conflating the two is how the earlier counts disagreed.
+//
+// A `double` added to `DerivGreeks` instead is a different struct with the same
+// failure mode: `kNaNSlots` (tests/scenario_grid_test.cpp) must name every
+// double member, read by the scenario kernel or not.
+//
+// `aggregate_arity_is_v` counts brace initializers and is BLIND TO A REORDER, so
+// this pin is not a substitute for care about field order.
+static_assert(detail::aggregate_arity_is_v<BacktestResult, 53>,
+              "BacktestResult field count changed: update this pin, add the column to "
+              "swap_explain_columns() (src/backtest.cpp) if it is a swap_explain_* column, and "
+              "to BacktestResult::validate(); note atx-vol/python parses these declarations.");
+
+// One {name, member} binding for a `swap_explain_*` column (Task F-8 fix round
+// 2, I-2/I-3). Deliberately the SAME idiom as `BacktestSeriesColumn`
+// (detail/backtest_series_columns.hpp), which already earned its place in this
+// subsystem by replacing two hand-kept `dbl_cols[]` arrays "kept in lockstep
+// only by convention" -- the same defect this table closes, one registry over.
+struct BacktestExplainColumn {
+  std::string_view name;
+  std::vector<double> BacktestResult::*member;
+};
+
+// The eight explain columns, in declaration order. THE roster: it drives
+// `BacktestResult::validate()`, `push_row`, `backtest_db`'s store guard,
+// `backtest_db`'s append/clear, and `attach_swap_columns` in
+// examples/varswap_compare_example.cpp -- five sites, each of which carried its
+// own hand-written copy at some point. Three of them disagreeing is how the
+// store guard and the shape validator came to differ about whether a ragged
+// explain column was legal; the fifth (the example) survived a round longer
+// because the Python gate parsed its literal rows, and was driven in fix round 4
+// once that parser was repointed at this roster.
+//
+// ── THE LIMIT, STATED HERE RATHER THAN ONLY IN A REPORT ────────────────────
+//
+// This is ONE list, not zero. The field declarations above and this table are
+// two adjacent lists, and nothing in the language ties them together: declare a
+// ninth column and forget this table and the code still compiles.
+//
+// What catches that is the arity pin directly above, whose message names this
+// function. That is a real, build-time detection -- not the silent
+// non-application this sprint has been chasing -- but it is detection, not
+// impossibility, and a reader should not trust this table further than that.
+//
+// What the build DOES make impossible: the per-index `static_assert`s beside the
+// table pin each roster row to its own member, so a REORDER cannot compile.
+//
+// "Every consumer is a loop over this span, so none of them can fall behind it"
+// stood here from fix round 4 until round 6, and was FALSE.
+// `append_backtest_results` read `swap_explain_columns().front()` -- one column
+// sampled to decide a property of all eight -- and a comment two files away
+// asserted that a partial set had already been rejected, which nothing did. A
+// result with one column populated passed `validate()`, passed the append, and
+// came out ragged. `swap_explain_shape` below exists so that question can no
+// longer be asked of one column.
+//
+// What remains hand-checked is the NAME STRING beside each member -- C++ has no
+// reflection, and `roster_columns` in
+// python/tests/test_render_strangle_vs_varswap.py is the check for it.
+//
+// An X-macro over the declarations WOULD make it impossible, and was declined
+// for two reasons. First, `atx-vol/python` derives its roster by scanning these
+// declarations for lines beginning `std::vector<double>`; an X-macro repoints
+// that cross-language coupling at macro syntax, which is a less stable shape to
+// parse, not a more stable one. Second, this codebase already has exactly one
+// idiom for single-sourcing a column roster, and adding a second idiom to
+// remove a duplicated list is a duplicated rule one level up.
+[[nodiscard]] std::span<const BacktestExplainColumn> swap_explain_columns() noexcept;
+
+// The shape of a result's explain column SET -- ONE answer computed over all
+// eight, never sampled from one.
+//
+// This type exists because of a specific defect (fix round 6). The columns are
+// populated together or not at all, and two places needed to know which: the
+// append path, and the shape validators. The append path asked
+// `swap_explain_columns().front()` and a comment justified it by asserting the
+// validators had already rejected a partial set -- which they had not, because
+// each validator checked every column INDEPENDENTLY (`empty || row-parallel`)
+// and nothing ever asked whether the SET was coherent. Measured: a result with
+// `swap_explain_carry` populated and the other seven empty passed `validate()`,
+// passed `append_backtest_results`, and emerged with `carry` at 3 rows and
+// `skew` at 1.
+//
+// `Mixed` is the state that was unrepresentable before and is therefore the
+// point of the enum: it is always malformed, both validators reject it by name,
+// and a caller comparing against `Present` cannot silently treat it as such.
+// The guarantee is mechanical rather than asserted -- there is no accessor that
+// answers this question from fewer than all eight columns.
+enum class SwapExplainShape : std::uint8_t {
+  Absent,  // every column empty: the run did not compute the explain
+  Present, // every column non-empty
+  Mixed,   // some but not all: malformed, and the reason this enum has three values
+};
+
+[[nodiscard]] SwapExplainShape swap_explain_shape(const BacktestResult &result) noexcept;
 
 // One entry in the engine's insertion-ordered delta-hedge share ledger. Order is
 // economically significant: share P&L, financing, and subsequent hedge trades

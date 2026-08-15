@@ -71,12 +71,15 @@
 // the first pricing call builds it, after which configuration is refused with
 // AlreadyExists.
 
+#include <cmath> // std::isfinite: the deriv leg's NaN gating
 #include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <vector>
 
 #include "atx/vol/api/pricing/american.hpp"         // AmericanGreeks
+#include "atx/vol/api/backtest/deriv_book.hpp"       // DerivPosition (Tier-A, closure-safe)
+#include "atx/vol/api/fitting/aggregate_arity.hpp"   // the three drift pins below
 #include "atx/vol/api/backtest/portfolio_pricer.hpp" // Position, SurfaceSet
 #include "atx/vol/api/core/types.hpp"            // Result
 
@@ -102,14 +105,15 @@ namespace atx::vol {
 // The defaults below are the MEASURED PER-AXIS radii: the largest PURE-spot (resp.
 // PURE-vol) bump at which the worst-case per-share Taylor residual over the synthetic
 // eSSVI board stays <= $0.005 (both land at 3% / 3 vol-pts; the residual jumps past
-// the band at the next step — see task-c3.2-report.md req 4). They are pinned by
-// ScenarioGrid.DefaultRadiiPinned so a silent change fails a test. NOTE: the bound is
-// per-axis — a Taylor cell at the DOUBLE CORNER (|spot| and |vol| both at the radius)
+// the band at the next step). The measurement itself is `ScenarioGrid.MeasureTaylorRadius`
+// in scenario_grid_test.cpp — a live test, not a written-down conclusion — and the values
+// are pinned by ScenarioGrid.DefaultRadiiPinned so a silent change fails. NOTE: the bound
+// is per-axis — a Taylor cell at the DOUBLE CORNER (|spot| and |vol| both at the radius)
 // combines both residuals plus the vanna cross-term and, measured over the FULL eSSVI
 // board (wing strikes 80/120, tenor extremes 0.05/0.45 — the same board
-// MeasureTaylorRadius uses), can reach ~$0.0111. $0.0125 (worst + ~13% headroom,
-// rounded) is the pinned §9.3 gate tolerance (ScenarioGrid.TaylorExactAgreeInsideRadius
-// — see task-c3.2-report.md, "Fix: M1 gate board widening"). Setting a radius to
+// MeasureTaylorRadius uses), reaches $0.011063. $0.0125 (worst + ~13% headroom,
+// rounded) is the gate tolerance ScenarioGrid.TaylorExactAgreeInsideRadius asserts, and
+// that test states the derivation at the assertion. Setting a radius to
 // `std::numeric_limits<double>::infinity()` DISABLES routing on that axis: `|x| > inf`
 // is always false, so an inf/inf spec reproduces the C3.1 all-Taylor grid BYTE-for-byte
 // (pinned by ScenarioGrid.InfiniteRadiusIsByteIdenticalToTaylorOnly).
@@ -140,8 +144,9 @@ namespace atx::vol {
 // corner surfaced by dr, or a boundary collapse) FALLS BACK to its Taylor leg for
 // that cell — the cell's route STAYS Exact — and is counted once in
 // ScenarioGridResult::n_exact_fallback_lanes. No NaN ever enters a cell total.
-inline constexpr double kDefaultTaylorRadiusSpot = 0.03; // fraction of spot (MEASURED, req 4)
-inline constexpr double kDefaultTaylorRadiusVol = 0.03;  // absolute vol points (MEASURED, req 4)
+// Both MEASURED by ScenarioGrid.MeasureTaylorRadius (scenario_grid_test.cpp).
+inline constexpr double kDefaultTaylorRadiusSpot = 0.03; // fraction of spot
+inline constexpr double kDefaultTaylorRadiusVol = 0.03;  // absolute vol points
 
 // The scenario shocks. `spot_pct` / `vol_bump` are the two grid axes; `dr` / `dt`
 // are scalars applied to every cell (see the header conventions).
@@ -185,8 +190,57 @@ struct ScenarioGridResult {
   // uniques); exposed as a stable working-set diagnostic for production-sized grids.
   std::size_t n_exact_price_scratch_slots{0};
 
+  // ── Vol-derivative leg (Task F-8, GK-G4) ─────────────────────────────────
+  //
+  // EMPTY on every result from the option-only overload, so nothing an existing
+  // caller reads moves: `pnl` stays the OPTION book's total and this is the
+  // swap book's, per cell, same row-major layout. A caller wanting the whole
+  // book adds them. `deriv_route` is the per-cell route tag for this leg,
+  // routed by the SAME radii as the option leg.
+  std::vector<double> deriv_pnl;
+  std::vector<std::uint8_t> deriv_route;
+  std::size_t n_deriv_ok{0};      // deriv positions contributing to every cell
+  std::size_t n_deriv_failed{0};  // deriv positions whose base greek solve failed
+  // Deriv positions that PRICED but carry "not computed" (NaN) in a sensitivity
+  // this grid's own shocks would read -- a contract too short to roll against a
+  // non-zero `dt`, or a smile shock against a book priced without
+  // `smile_greeks`. Excluded from every cell and counted HERE rather than in
+  // `n_deriv_failed`, because the two have different fixes: a failed solve is a
+  // broken position, this is a grid asking for an axis nothing measured.
+  //
+  // Counted rather than contributed as 0.0. A zero would read as "measured, and
+  // this position has no exposure to that axis", which is exactly the confusion
+  // Task F-7 round 1 removed one layer down.
+  //
+  // ok + failed + missing_sensitivity == deriv_book.size(), always.
+  std::size_t n_deriv_missing_sensitivity{0};
+  // (cell x position) Exact reprices that Erred or went non-finite and fell
+  // back to that position's Taylor leg for that cell. The cell's route stays
+  // Exact, mirroring the option leg's own fallback accounting.
+  std::size_t n_deriv_exact_fallback_lanes{0};
+
   [[nodiscard]] std::size_t n_cells() const noexcept { return pnl.size(); }
 };
+
+// Drift pins: FOURTEEN fields on the result, TWO on the deriv spec, EIGHT on the
+// spec. These three had NO pin at all until Task F-8 round 1, which is how the
+// deriv leg appended five fields to the result without one to update.
+//
+// The pin is not a substitute for care about ORDER -- `aggregate_arity_is_v`
+// counts brace initializers and is blind to a reorder, and `ScenarioGridResult`
+// / `ScenarioGridSpec` are aggregates a caller may brace-initialize. A reorder
+// silently re-associates every such call site and passes this line.
+//
+// It IS the guard against the failure this file already suffered: several sites
+// enumerate these structs by hand (the impl's cell fill, the deriv leg's
+// accounting, `scenario_grid_test.cpp`'s comparisons), and an appended field
+// that some of them miss is exactly how a sixth hand-enumerated list goes stale
+// unnoticed.
+static_assert(detail::aggregate_arity_is_v<ScenarioGridResult, 14>,
+              "ScenarioGridResult field count changed: update this pin, and check every site "
+              "that enumerates the struct by hand.");
+static_assert(detail::aggregate_arity_is_v<ScenarioGridSpec, 8>,
+              "ScenarioGridSpec field count changed: update this pin.");
 
 // Second-order Taylor P&L for ONE leg whose greeks `g` are POSITION-SCALED
 // (qty * multiplier * per-share), under a shock of (dS absolute spot move, dvol
@@ -221,5 +275,194 @@ struct ScenarioGridResult {
 [[nodiscard]] Result<ScenarioGridResult> scenario_grid(const std::vector<Position> &book,
                                                        const SurfaceSet &base,
                                                        const ScenarioGridSpec &spec);
+
+// ── Vol-derivative leg (Task F-8, GK-G4) ────────────────────────────────────
+//
+// The shocks a swap book sees that an option book does not. `spot_pct` /
+// `vol_bump` / `dr` / `dt` are the grid's own, shared with the option leg; these
+// two are SCALARS applied to every cell, exactly like `dr`/`dt`, because a
+// smile rotation shifts the whole surface rather than indexing a cell axis.
+//
+// A variance swap's defining risk is the SHAPE of the smile -- the strip
+// integrates every strike, so a rotation moves K_var even when the ATM vol does
+// not budge -- which is why these exist at all and why the option leg has no
+// counterpart. Both are zero by default, and at zero the deriv Taylor cell is
+// term-for-term the option kernel.
+struct ScenarioDerivSpec {
+  double d_skew{0.0};       // absolute smile-slope shift, vol per unit k = ln(K/F)
+  double d_convexity{0.0};  // absolute smile-curvature shift, vol per unit k^2
+};
+
+// Drift pin: TWO fields. A third smile shock is a third Taylor term AND a third
+// entry in `scenario_deriv_greeks_sufficient` -- both must move with it, or a
+// grid will read a sensitivity it never checked was computed.
+static_assert(detail::aggregate_arity_is_v<ScenarioDerivSpec, 2>,
+              "ScenarioDerivSpec field count changed: update this pin, the Taylor kernel, and "
+              "the sufficiency predicate together.");
+
+// Second-order Taylor P&L for ONE deriv position whose greeks `g` are
+// POSITION-SCALED, under the same shock the option kernel takes plus the two
+// smile shifts.
+//
+// The first eight terms are `scenario_taylor_leg`'s, in ITS left-to-right order,
+// so the two legs of one grid reconstruct the same expansion; the two smile
+// terms are appended. `g.pv` and the carry-theta fields are ignored -- this is a
+// market-move expansion, and the fixing rollover a swap also earns over `dt` is
+// `DerivPnlExplain`'s job, not a scenario cell's.
+//
+// ── EVERY TERM IS SHOCK-GATED, AND THAT IS ONE RULE, NOT TEN ───────────────
+//
+// A term whose SHOCK is exactly zero contributes exactly zero WITHOUT READING
+// its sensitivity. `NaN * 0.0` is NaN, not 0, and a `DerivGreeks` legitimately
+// carries "not computed" as NaN under documented conditions:
+//
+//   theta, charm              a contract shorter than `bumps.time_years`
+//   vanna, charm              `DerivGreekBumps::second_order` off
+//   skew_vega, convexity_vega `DerivGreekBumps::smile_greeks` off (the default)
+//
+// so an unguarded product poisons the WHOLE cell -- all ten terms -- on a grid
+// that never asked for that axis.
+//
+// THAT TABLE IS NOT THIS RULE'S SUBJECT, and every attempt to summarise it as a
+// count has been wrong. It is three conditions over six (slot, condition) pairs
+// naming five distinct slots, because `charm` appears under two of them; it
+// describes what the DEFAULT configuration leaves NaN, not what CAN be NaN,
+// which is every one of `DerivGreeks`'s thirteen `double` members; and none of
+// those numbers is the number of TERMS the rule governs. This comment said "SIX
+// of these ten slots" and "two of six slots" until F-8 r10, and the gate's own
+// prose carried the same miscount until r9.
+//
+// So the rule is stated without a count, because it has no exceptions: EVERY
+// term is gated on its own shock, identically, and which slots a configuration
+// happens to leave NaN does not enter it. Task F-7 round 1 guarded the two smile
+// terms after `price_deriv_book` stopped fabricating a 0.0 skew vega for memoized
+// VarSwap rows. That guard was correct and incomplete -- the same argument covers
+// theta, charm and vanna verbatim -- and generalising it to a rule with no
+// exceptions is what removed the need to enumerate anything. It is now expressed
+// identically at each term rather than as a special case beside eight bare
+// multiplies.
+//
+// The gate is `ScenarioGridDeriv.EveryTermIsGatedByItsOwnShock`
+// (tests/scenario_grid_test.cpp), which drives one case per TERM off a table
+// instead of per NaN-capable slot. The control `64d60e9` recorded is the one
+// that is in the tree: the shipped kernel scores ZERO failures against that
+// table, while a copy with the vega gate removed fails on vega -- a slot the
+// previous, slot-organised test never poisoned and therefore could not have
+// caught. The terms that test could not reach are delta, gamma, vega, volga and
+// rho: no configuration leaves them NaN, so a test built out of documented-NaN
+// slots never perturbs them. The "all ten terms" above is this kernel's own ten
+// and stays, on the ruling `55006c4` made when it removed the slot counts and
+// deliberately kept that phrase: `std::size(kGatedTerms) == 10` is
+// `static_assert`ed at the gate, so it cannot drift without the build saying
+// so. A count backed by a mechanism is not the defect here; a count of the
+// wrong NOUN is.
+//
+// A mutant-score ratio ("6 of 11" against "11 of 11") stood here and in
+// `55006c4`'s message. IT IS NOT REPRODUCED: that message does not decompose it,
+// 11 reconciles with nothing in the tree -- the `static_assert`ed term count is
+// what a per-term mutation run has to answer to -- and what an eleventh mutant
+// would be has not been established. Retired rather than reinterpreted, because
+// guessing the noun is exactly how the slot count survived four rounds. When a
+// count here keeps coming back wrong, that is the tell: the description AND the
+// artifact are organised around a noun the rule does not contain.
+//
+// This is bit-identical to an unguarded product whenever the sensitivity is
+// finite: the only value it changes is a `-0.0` term (a negative sensitivity
+// times a zero shock) into `+0.0`, which can only alter a sum in which EVERY
+// term is `-0.0` -- and that sum is zero either way.
+//
+// A NON-ZERO shock against a NaN sensitivity still propagates NaN, deliberately.
+// The caller asked for an axis nothing measured, and there is no answer to give;
+// `scenario_grid`'s deriv leg detects that case BEFORE pricing and excludes the
+// position rather than letting the NaN reach a cell (see
+// `ScenarioGridResult::n_deriv_missing_sensitivity`).
+[[nodiscard]] inline double scenario_deriv_taylor_leg(const DerivGreeks &g, double dS, double dvol,
+                                                      double dt, double dr, double d_skew,
+                                                      double d_convexity) noexcept {
+  const double pd = (dS == 0.0) ? 0.0 : g.delta * dS;
+  const double pg = (dS == 0.0) ? 0.0 : 0.5 * g.gamma * dS * dS;
+  const double pv = (dvol == 0.0) ? 0.0 : g.vega * dvol;
+  const double pvol = (dvol == 0.0) ? 0.0 : 0.5 * g.volga * dvol * dvol;
+  const double pvanna = (dS == 0.0 || dvol == 0.0) ? 0.0 : g.vanna * dS * dvol;
+  const double pth = (dt == 0.0) ? 0.0 : g.theta * dt;
+  const double prho = (dr == 0.0) ? 0.0 : g.rho * dr;
+  const double pcharm = (dS == 0.0 || dt == 0.0) ? 0.0 : g.charm * dS * dt;
+  const double pskew = (d_skew == 0.0) ? 0.0 : g.skew_vega * d_skew;
+  const double pconv = (d_convexity == 0.0) ? 0.0 : g.convexity_vega * d_convexity;
+  return pd + pg + pv + pvol + pvanna + pth + prho + pcharm + pskew + pconv;
+}
+
+// Which `DerivGreeks` slots a grid carrying these shocks will actually read.
+// The mirror of the gating above, and deliberately the same disjunctions: a
+// term is read iff its shock is non-zero, so this is the exact predicate under
+// which a NaN sensitivity would reach a cell.
+//
+// `any_spot` / `any_vol` are "does ANY cell on that axis carry a non-zero
+// shock", because one grid shares one included/excluded verdict across all its
+// cells -- a position that contributes to some cells and not others would make
+// the matrix unreadable as a surface.
+[[nodiscard]] inline bool scenario_deriv_greeks_sufficient(const DerivGreeks &g, bool any_spot,
+                                                           bool any_vol, bool has_dt, bool has_dr,
+                                                           const ScenarioDerivSpec &d) noexcept {
+  const auto ok = [](double v) noexcept { return std::isfinite(v); };
+  if (any_spot && !(ok(g.delta) && ok(g.gamma))) return false;
+  if (any_vol && !(ok(g.vega) && ok(g.volga))) return false;
+  if (any_spot && any_vol && !ok(g.vanna)) return false;
+  if (has_dt && !ok(g.theta)) return false;
+  if (any_spot && has_dt && !ok(g.charm)) return false;
+  if (has_dr && !ok(g.rho)) return false;
+  if (d.d_skew != 0.0 && !ok(g.skew_vega)) return false;
+  if (d.d_convexity != 0.0 && !ok(g.convexity_vega)) return false;
+  return true;
+}
+
+// The same grid over an option book AND a vol-derivative book.
+//
+// The option leg is bit-identical to the overload above given the same `book` /
+// `base` / `spec` -- it is literally the same code path -- so this is an
+// additive route, not a replacement. The deriv leg prices each position's
+// greeks ONCE against `base` (`price_deriv_book`) and reconstructs each cell
+// from that one bundle, routing to an exact reprice on the same radii the
+// option leg uses.
+//
+// ## Exact deriv cell semantics -- sticky-strike, NO smile roll
+//
+// `detail::deriv_price_shocked_on_ref` reprices the contract with the base
+// surface read through the shocked overlay: the surface is NOT re-fit, and the
+// smile is NOT rolled to the new spot. Identical in spirit to the option leg's
+// Exact cell, and identical in mechanism to every `deriv_greeks` spot bump --
+// which is what makes a Taylor cell and an Exact cell two views of one model
+// rather than two models.
+//
+// Two deliberate differences from the option leg's Exact cell, stated because
+// they are differences: the rate shock is applied as an exact discount rescale
+// rather than a curve bump (every kind here has `rho = -T*pv` analytically, so
+// the rescale IS the reprice), and `dt` rolls the CALENDAR ONLY -- no fixing is
+// injected, matching `DerivGreeks::theta`.
+//
+// `smile_greeks` is forced ON for the deriv greek solve whenever either smile
+// shock is non-zero, because a NaN `skew_vega` would otherwise poison the whole
+// Taylor cell rather than the term the caller asked for.
+//
+// @return the same error contract as the overload above, plus `Internal` if a
+//         cell total ever goes non-finite (see `fill_deriv_leg`) -- that cannot
+//         happen through the exclusions below and exists to make the "no NaN"
+//         promise enforced rather than asserted.
+//
+//         A deriv position is excluded from EVERY cell for either of two
+//         reasons, counted separately because they have different fixes:
+//         `n_deriv_failed` if its base greek solve failed, and
+//         `n_deriv_missing_sensitivity` if it priced but carries "not computed"
+//         in a slot this grid's own shocks would read. A caller wanting
+//         "positions that contributed" must use `n_deriv_ok`, NOT
+//         `book.size() - n_deriv_failed`: that subtraction was correct before
+//         the second bucket existed and is silently wrong now.
+//         `n_deriv_ok + n_deriv_failed + n_deriv_missing_sensitivity ==
+//         deriv_book.size()`, always. No NaN enters a cell total.
+[[nodiscard]] Result<ScenarioGridResult> scenario_grid(const std::vector<Position> &book,
+                                                       const std::vector<DerivPosition> &deriv_book,
+                                                       const SurfaceSet &base,
+                                                       const ScenarioGridSpec &spec,
+                                                       const ScenarioDerivSpec &deriv_spec = {});
 
 } // namespace atx::vol

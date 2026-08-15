@@ -44,6 +44,8 @@
 #include <string>
 #include <vector>
 
+#include "support/test_paths.hpp"   // testkit::data_root
+
 #include "atx/vol/api/fitting/arb.hpp"          // arb_check_butterfly_slice
 #include "atx/vol/api/pricing/black76.hpp"      // black76_price
 #include "atx/vol/api/fitting/calib.hpp"        // CalibOpts, FitObs, ObsSet, build_observations
@@ -654,10 +656,11 @@ int run_real(const std::string& root, const std::vector<std::string>& cohort_ove
       discover_opra_boards(root, "SPY", "dense-index");
   if (spy_boards.empty()) {
     for (const SpySlice& s : kSpySlices) {
-      const std::string path = find_existing({
-          root + "/spy_fit_slices/" + s.filename,
-          "data/spy_fit_slices/" + std::string(s.filename),
-      });
+      // Only under `root`. The CWD-relative "data/..." candidate that used to
+      // sit behind this was redundant when --data-root was unset (root already
+      // names that directory) and wrong when it was set, since it silently
+      // served a different tree than the operator asked for.
+      const std::string path = find_existing({root + "/spy_fit_slices/" + s.filename});
       RealBoardSpec spec;
       spec.label = std::string("SPY/") + s.regime;
       spec.symbol = "SPY";
@@ -692,10 +695,8 @@ int run_real(const std::string& root, const std::vector<std::string>& cohort_ove
     std::vector<RealBoardSpec> sym_boards =
         discover_opra_boards(root, sym, "single-name");
     if (sym_boards.empty()) {
-      const std::string path = find_existing({
-          root + "/opra_universe/" + sym + "/2026-07-01.parquet",
-          "data/opra_universe/" + sym + "/2026-07-01.parquet",
-      });
+      const std::string path =
+          find_existing({root + "/opra_universe/" + sym + "/2026-07-01.parquet"});
       RealBoardSpec spec;
       spec.label = sym;
       spec.symbol = sym;
@@ -805,7 +806,9 @@ int main(int argc, char** argv) {
   bool real = false;
   bool verbose = false;
   bool time_it = true;
-  std::string root = "C:/atx/data";
+  // Default to THIS worktree's data/, not another checkout's. --data-root still
+  // overrides; the old default silently read a different tree's market data.
+  std::string root = atx::vol::testkit::data_root().generic_string();
   int spy_limit = 3;       // representative SPY regime spread by default
   int universe_limit = 0;  // 0 = all cohort names
   std::vector<std::string> cohort_override;  // --symbols; empty => default cohort

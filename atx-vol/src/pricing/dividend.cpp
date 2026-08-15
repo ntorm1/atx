@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "atx/core/error.hpp"
+#include "atx/vol/api/core/vol_time.hpp" // kCalendarYearNs (THE calendar-365 year length)
 
 namespace atx::vol {
 
@@ -74,7 +75,7 @@ void hybrid_forward_div_jacobian(double r, double borrow, double T,
       dF_dDiv_out[i] = 0.0; // paid already / after expiry — mirrors forward_div_corrected
       continue;
     }
-    const double t_i = static_cast<double>(ev.ex_date_ns - now_ts_ns) / (1.0e9 * 365.25 * 86400.0);
+    const double t_i = static_cast<double>(ev.ex_date_ns - now_ts_ns) / kCalendarYearNs;
     if (t_i < 0.0 || t_i > T) {
       dF_dDiv_out[i] = 0.0;
       continue;

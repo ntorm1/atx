@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <atomic>
 #include <bit>
+#include <cassert>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -614,6 +615,59 @@ PricedSurface::resolve_with_carry_and_bracket(double K, double T, ForwardCarry f
 
 double PricedSurface::iv(double K, double T) const noexcept {
   const ResolvedSurfacePoint p = resolve(K, T);
+  return p.valid ? p.sigma : kNaN;
+}
+
+void PricedSurface::iv_batch(std::span<const double> K, double T,
+                             std::span<double> out) const noexcept {
+  // SAFETY: a length mismatch is a caller bug (asserted in debug); degrading
+  // to the shorter span in release keeps every write in-bounds rather than
+  // reading/writing past either buffer -- "fail safe in release".
+  assert(K.size() == out.size() && "PricedSurface::iv_batch: K/out length mismatch");
+  const std::size_t n = std::min(K.size(), out.size());
+  if (!(T > 0.0) || !std::isfinite(T) || ctx_.empty()) {
+    for (std::size_t i = 0; i < n; ++i) {
+      out[i] = kNaN;
+    }
+    return;
+  }
+  // Resolved ONCE for the whole call -- both are pure functions of T over
+  // this surface's immutable state, so this is exactly what N independent
+  // resolve(K[i], T) calls would each redo.
+  const ForwardCarry fc = interp_forward(T);
+  const CurveSurface::Bracket bracket = surface_.bracket(T);
+  for (std::size_t i = 0; i < n; ++i) {
+    const ResolvedSurfacePoint p = resolve_with_carry_and_bracket(K[i], T, fc, bracket);
+    out[i] = p.valid ? p.sigma : kNaN;
+  }
+}
+
+SurfaceStripCarry PricedSurface::strip_carry_at(double T) const noexcept {
+  SurfaceStripCarry sc;
+  sc.T = T;
+  if (!(T > 0.0) || !std::isfinite(T) || ctx_.empty()) {
+    return sc; // valid == false; forward/rate/bracket left at their sentinel 0
+  }
+  const ForwardCarry fc = interp_forward(T);
+  sc.forward = fc.forward;
+  sc.q_eff = fc.q_eff;
+  sc.rate = fc.rate;
+  const CurveSurface::Bracket bracket = surface_.bracket(T);
+  sc.bracket_lo = bracket.lo;
+  sc.bracket_hi = bracket.hi;
+  sc.bracket_upper_weight = bracket.upper_weight;
+  sc.valid = true;
+  return sc;
+}
+
+double PricedSurface::iv_with_carry(double K, const SurfaceStripCarry &carry) const noexcept {
+  if (!carry.valid || !(std::isfinite(K) && (K > 0.0))) {
+    return kNaN;
+  }
+  const ForwardCarry fc{carry.forward, carry.q_eff, carry.rate};
+  const CurveSurface::Bracket bracket{carry.bracket_lo, carry.bracket_hi,
+                                      carry.bracket_upper_weight};
+  const ResolvedSurfacePoint p = resolve_with_carry_and_bracket(K, carry.T, fc, bracket);
   return p.valid ? p.sigma : kNaN;
 }
 

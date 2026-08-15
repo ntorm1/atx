@@ -376,7 +376,19 @@ void bind_backtest(py::module_ &m) {
             }
             return out;
           },
-          "Every column as a dict of NumPy arrays (signals folded in by name).");
+          // The roster above is hand-listed, so this text states what it does
+          // NOT reach as well as what it does: shrinking the claim to fit would
+          // hide the swap lane rather than route a reader to the one entry
+          // point that emits it. Whoever adds an ATXVOL_COL owes this sentence
+          // a read.
+          "The recorded series plus the run's signals, as a dict of NumPy arrays "
+          "(signals folded in by name).\n\n"
+          "This is the binding's hand-listed roster, not every column of "
+          "BacktestResult. The swap lane -- swap_pv, swap_pnl and the eight "
+          "swap_explain_* P&L-attribution columns -- is not exposed here and is "
+          "not reachable from Python. examples/varswap_compare_example.cpp is "
+          "the C++ entry point that produces those columns, attaching them as "
+          "signals before it writes its TSV.");
 
   ATXVOL_SERIES(result, pnl_total);
   ATXVOL_SERIES(result, pnl_delta);

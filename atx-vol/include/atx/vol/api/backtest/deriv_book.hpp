@@ -92,10 +92,14 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
+#include <map>       // DerivPriceFrame::vega_by_tenor (ordered = the ladder)
+#include <optional>
 #include <span>
 #include <vector>
 
 #include "atx/vol/api/pricing/derivatives.hpp"      // DerivContract/DerivConfig/DerivGreeks/DerivGreekBumps
+#include "atx/vol/api/fitting/aggregate_arity.hpp" // DerivPriceFrame field-count drift pin (GK-C9b)
 #include "atx/vol/api/backtest/portfolio_pricer.hpp" // SurfaceSet, PriceTotals, PriceStatus, kPriceColumnNaN
 #include "atx/vol/api/core/types.hpp"            // Result
 
@@ -126,16 +130,70 @@ struct DerivPriceRow {
   PriceStatus status{PriceStatus::Ok};
 };
 
+// A uid -> certified wing-band resolver (FIT-C7 / Task C-6). A caller who
+// tracks each surface's build quality mode (e.g. `MarketSnapshot::provenance`
+// / `certified_wing_band_for`, backtest.hpp -- the SurfaceSet this call prices
+// against typically comes from one) supplies one so every position's
+// `deriv_price`/`deriv_greeks` trusts exactly the band that mode certified
+// instead of the mode-blind default. An empty resolver (the default) resolves
+// the mode-blind band for every position -- unchanged prior behaviour for a
+// caller that does not (yet) supply one.
+using WingBandResolver = std::function<std::optional<double>(std::uint32_t uid)>;
+
 // Rows in input order plus the column sums over the Ok rows.
 struct DerivPriceFrame {
   std::vector<DerivPriceRow> rows;
   PriceTotals totals{};
+  // GK-C9b. `totals.{theta,vanna,charm}` are NaN-poisoned by design the moment
+  // ANY Ok row's own column is NaN (theta/charm: a contract too short to roll
+  // past `bumps.time_years`; vanna/charm: additionally `second_order == false`)
+  // -- that poisoning is unchanged. What was missing was a count: a NaN total
+  // used to be a dead end with no way to tell "1 excluded lane" from "every
+  // lane excluded". These name how many Ok rows were excluded from each
+  // column, so the desk theta going NaN comes with a reason attached instead
+  // of silence. 0 when `greeks` was false (nothing was attempted, not "nothing
+  // excluded") or when every Ok lane's column was finite.
+  std::uint32_t n_theta_excluded{0};
+  std::uint32_t n_vanna_excluded{0};
+  std::uint32_t n_charm_excluded{0};
+
+  // Task F-7 term-bucket vega: `contract.maturity_t` -> the sum of that
+  // tenor's qty-scaled `greeks.vega` over the Ok rows, i.e. `totals.vega`
+  // split by expiry. A vol desk hedges a term STRUCTURE, and a single net vega
+  // hides the commonest real exposure -- long front, short back, flat overall.
+  //
+  // Keyed by the raw maturity in years, so `std::map`'s ordering IS the ladder,
+  // front to back. Exact double equality is the bucketing rule: two positions
+  // land together iff they carry the identical `maturity_t`, which is what a
+  // caller who built the book off one calendar gets. Callers wanting coarser
+  // buckets (1M / 3M / 6M) round before building the book, or re-bucket this
+  // map -- deliberately no rounding policy here, which would have to guess.
+  //
+  // Same NaN discipline as `totals.vega`: an Ok lane whose own vega is NaN
+  // poisons ITS bucket only, leaving the other tenors readable. A row that did
+  // not price at all contributes nothing (it is not an Ok row). EMPTY when
+  // `price_deriv_book`'s `greeks` argument was false -- no vega was computed,
+  // and an empty ladder says that, where a map of zeros would read as a
+  // genuinely vega-flat book.
+  //
+  // Costs no extra repricing: it is a plain reduction over the same per-row
+  // vegas `totals.vega` already sums.
+  std::map<double, double> vega_by_tenor;
 
   // Number of rows that priced. Equals `totals.n_ok` by construction; counted
   // from `rows` so the frame stays self-describing if it is ever rebuilt or
   // filtered by a caller.
   [[nodiscard]] std::size_t n_ok() const noexcept;
 };
+
+// Drift pin: DerivPriceFrame has exactly SIX fields (v1.1 appended
+// n_theta_excluded/n_vanna_excluded/n_charm_excluded in GK-C9b, then
+// vega_by_tenor in Task F-7). Adding, removing, or splitting one breaks this
+// line -- update the count, and confirm every construction site still
+// default-constructs plus designated/member assignment (there is no positional
+// brace-init of this type anywhere in this codebase today).
+static_assert(detail::aggregate_arity_is_v<DerivPriceFrame, 6>,
+              "DerivPriceFrame field count changed: update this pin.");
 
 // Price every position in `book` against its uid's surface.
 //
@@ -145,18 +203,52 @@ struct DerivPriceFrame {
 //                 valid and yields an empty frame with zeroed totals.
 // @param cfg      pricing config, applied to every position.
 // @param greeks   false prices MARKS ONLY: one `deriv_price` per position
-//                 instead of the ~8-14 repricings a greek block costs. Every
-//                 greek field (rows and totals) is then NaN.
+//                 instead of the up-to-16 repricings a greek block costs (14
+//                 bump-table evaluations, the centre, and `carry_theta`'s own
+//                 fair-strike resolve), or up-to-20 with `bumps.smile_greeks`.
+//                 Task F-7 recount: this said "~8-17 / up to 17", stale since
+//                 Task P-2 removed the FD rate bump without re-counting; the
+//                 replacement figures are the ones
+//                 `SmileGreeks.OffByDefaultCostsNothing` measures. Every greek
+//                 field (rows and totals) is then NaN, and `vega_by_tenor` is
+//                 empty.
 // @param bumps    finite-difference bump sizes; ignored when `greeks` is false.
 //                 A non-positive bump is rejected by the pricer PER POSITION,
 //                 so a malformed `bumps` shows up as every row reporting
 //                 `InvalidContract` rather than as a call-level error.
+//
+//                 `bumps.smile_greeks` COSTS FAR MORE ON A BOOK THAN ITS
+//                 PER-CONTRACT PRICE SUGGESTS (Task F-7 fix round 1). Per
+//                 contract it is 4 extra repricings, 16 -> 20. But it also
+//                 makes a VarSwap row INELIGIBLE for the P-6 per-(uid,T) strip
+//                 memo (that shared block carries no smile slots -- see
+//                 detail/deriv_ref_bridge.hpp), so on a book the memo's whole
+//                 L-fold saving goes with it. MEASURED on a 10-row, single-
+//                 tenor var-swap book: 13 -> 200 strip evaluations, a 15.4x
+//                 step, not the ~25% "+4 repricings" reads as. Pinned by
+//                 `TermVega.SmileGreeksOnABookCostsTheWholeMemoSaving`
+//                 (deriv_greeks_test.cpp) so this figure cannot quietly rot.
+//
+//                 It is a deliberate correctness-over-performance choice, not
+//                 an oversight: the alternative was a second, independently
+//                 maintained smile implementation inside the shared block whose
+//                 bit-identity to this one nothing would have checked. Callers
+//                 who need the ladder cheaply on a large book should request
+//                 smile greeks on a SAMPLE of representative rows, or price the
+//                 book twice (once without, once with) rather than paying it on
+//                 every lane. Nothing changes for a caller who leaves the flag
+//                 off, which is the default.
+// @param wing_band_of  FIT-C7 / Task C-6: uid -> certified wing-band resolver
+//                 (see `WingBandResolver` above). Called once per position
+//                 when set; unset (the default) resolves the mode-blind band
+//                 for every position, unchanged prior behaviour.
 // @return the frame. Per-position failures are reported as row status, so this
 //         does not fail on any book the pricers can reject lane-by-lane.
 [[nodiscard]] Result<DerivPriceFrame>
 price_deriv_book(const SurfaceSet &surfaces, std::span<const DerivPosition> book,
                  const DerivConfig &cfg = DerivConfig{}, bool greeks = true,
-                 const DerivGreekBumps &bumps = DerivGreekBumps{});
+                 const DerivGreekBumps &bumps = DerivGreekBumps{},
+                 const WingBandResolver &wing_band_of = {});
 
 // Field-wise sum of two totals blocks — the seam that lets an option book's
 // `PriceTotals` and a deriv book's be reported as one desk-level risk number.

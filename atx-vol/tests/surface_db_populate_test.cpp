@@ -1361,7 +1361,11 @@ TEST(SurfaceDbPopulate, PropagatesStoredSurfacePolicyAndPersistsServedProvenance
   const std::vector<CorpusBoard> boards = {make_board(kDate0, "AAA", 100.0, 0.28)};
   auto result = populate_surface_db(*db, boards, SurfaceDbPopulateConfig{});
   ASSERT_TRUE(result.has_value()) << (result ? "" : result.error().to_string());
-  ASSERT_EQ(result->n_ok, 1u);
+  // A fit failure here reports only "0 != 1" unless the cell's own reason is
+  // printed, exactly as the sibling throw-isolation gate above already does.
+  ASSERT_EQ(result->n_ok, 1u) << (result->failed_cells.empty()
+                                      ? std::string("no failed cell recorded")
+                                      : result->failed_cells.front().detail);
 
   auto archive = db->open_partition(kDate0);
   ASSERT_TRUE(archive.has_value()) << (archive ? "" : archive.error().to_string());
@@ -3033,8 +3037,8 @@ TEST(SurfaceDbPopulate, NarrowerRerunSkipsTheDateRatherThanDroppingAnAbsentSymbo
 //
 // This test PINS CURRENT BEHAVIOUR, INCLUDING A REAL DEFECT. It is not an
 // aspiration and it must not be "made to pass" by preserving the bytes without
-// first reading the argument below (and `.superpowers/sdd/surface-db-prod/
-// fixF-report.md`). Two facts are asserted, and the second is why the obvious
+// first reading the argument below, which is stated here in full precisely so
+// that it survives. Two facts are asserted, and the second is why the obvious
 // fix is REFUSED rather than merely unwritten.
 //
 // FACT 1 (the defect, legs 1-2). A cell that fitted ONCE and later DEGRADES

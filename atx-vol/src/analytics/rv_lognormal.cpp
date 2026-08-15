@@ -236,4 +236,19 @@ double lognormal_call(double m, double s, double k) noexcept {
   return m * norm_cdf(d1) - k * norm_cdf(d2);
 }
 
+double lognormal_put(double m, double s, double k) noexcept {
+  if (k <= 0.0) {
+    return 0.0; // W > 0 with probability one: (k-W)+ is identically 0
+  }
+  if (s <= 0.0) {
+    return std::max(k - m, 0.0); // W deterministic == m: intrinsic value only
+  }
+  // The call's mirror on the SAME d1/d2, not a parity rearrangement of its
+  // RESULT -- see the header for why. Parity then holds to the accuracy of
+  // Phi(x) + Phi(-x) == 1 alone, which is the tightest it can be made.
+  const double d1 = (std::log(m / k) + 0.5 * s * s) / s;
+  const double d2 = d1 - s;
+  return k * norm_cdf(-d2) - m * norm_cdf(-d1);
+}
+
 } // namespace atx::vol::detail

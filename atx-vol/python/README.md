@@ -11,9 +11,20 @@
 - priced surfaces (`CurveSurface` -> `PricedSurface`) and the on-disk `SurfaceDb`
 - the declarative strategy DSL (`StrategySpec`, `DeclarativeStrategy`) and the
   dispersion-strangle spec builder
-- the backtest engine (`Clock`, `RunConfig`, `run_backtest`) with every result
-  column exposed as a NumPy array
+- the backtest engine (`Clock`, `RunConfig`, `run_backtest`) with the recorded
+  series and the run's signals exposed as NumPy arrays
 - backtest analytics: `tearsheet` plus the deterministic TSV exports
+
+Not the swap lane. `BacktestResult`'s `swap_pv` and `swap_pnl`, and the eight
+`swap_explain_*` P&L-attribution columns, have no binding and are not reachable
+from Python — `to_dict` and the per-column properties both hand-list what they
+expose, and the swap columns are on neither list. The C++ example
+`examples/varswap_compare_example.cpp` is the entry point that produces them: it
+sets `RunConfig::swap_pnl_explain` and attaches them as signal columns before
+writing its TSV, which is what feeds the renderer's attribution panel. A reader
+who wants the explain panel wants that track, not this API. See
+"The three `RunConfig` fields Python does not get" for why the flag itself is
+unbound.
 
 ## Build and install
 
@@ -76,7 +87,11 @@ $env:CMAKE_BUILD_PARALLEL_LEVEL = "2"
 $env:SKBUILD_CMAKE_DEFINE = "VCPKG_INSTALLED_DIR=<abs>/vcpkg_installed;FETCHCONTENT_BASE_DIR=<repo>/deps/py"
 
 python -m pip wheel . --no-deps -w dist -v
-python -m pip install dist\atxvol-1.0.0-cp312-cp312-win_amd64.whl
+# Resolves whatever `pip wheel` just built -- no version, ABI or platform tag to
+# go stale. --force-reinstall: without it pip calls the installed copy already
+# satisfied and does nothing. --no-deps: --force-reinstall re-resolves
+# dependencies too, and `dist` holds only this wheel.
+python -m pip install --no-index --find-links dist --force-reinstall --no-deps atxvol
 ```
 
 Two steps rather than `pip install .` on purpose: `pip install .` **replaces
@@ -381,12 +396,13 @@ the reported count.
 the current values so an engine-side flip is reviewed, not discovered at a call
 site.
 
-### The two run-control knobs Python does not get
+### The three `RunConfig` fields Python does not get
 
-`RunConfig` has **seventeen** fields in the engine (`backtest.hpp` pins the count
-with a `static_assert`). The binding hand-lists **fifteen**. The two it leaves
-out are the per-step run-control pair, and each omission is a decision recorded
-at the C++ declaration rather than an oversight:
+`RunConfig` has **eighteen** fields in the engine (`backtest.hpp` pins the count
+with a `static_assert`). The binding hand-lists **fifteen**. The three it leaves
+out are the per-step run-control pair plus one output opt-in. The pair are
+omitted by a decision recorded at the C++ declaration rather than by oversight;
+the third is not, and says so:
 
 - **`step_observer` — there is no progress or observation hook in the Python API
   at all.** Not a slower one, not a coarser one: none. `StepObserver` is a
@@ -399,15 +415,25 @@ at the C++ declaration rather than an oversight:
   holds a raw pointer to a caller-owned `std::atomic<bool>`; there is no owner on
   the Python side for that flag to belong to. The call runs to completion or
   raises.
+- **`swap_pnl_explain` — the swap lane's P&L explain cannot be switched on from
+  Python.** Unlike the pair above, nothing resists binding it: it is a plain
+  `bool` with no lifetime or ownership obstacle, and no C++ declaration records a
+  decision to leave it out. It is unbound, not ruled out. The consequence is that
+  a Python run always leaves `BacktestResult::swap_explain_*` empty, so the swap
+  explain columns cannot be produced from Python at all — see the note under the
+  feature list at the top of this file for the entry point that does produce
+  them.
 
-The practical shape of this: a Python backtest is one blocking call that either
-returns a whole `BacktestResult` or raises `atxvol.AtxError`. Plan for the run
-length up front — there is no mid-run readout to watch and no way to interrupt
-it from inside the API. Long runs belong in a subprocess you can signal.
+The practical shape of the first two: a Python backtest is one blocking call that
+either returns a whole `BacktestResult` or raises `atxvol.AtxError`. Plan for the
+run length up front — there is no mid-run readout to watch and no way to
+interrupt it from inside the API. Long runs belong in a subprocess you can
+signal.
 
-Binding either knob means designing a new API (a lifetime-safe event object; an
-owned cancellation handle), so both are **post-v1 candidates**, deliberately not
-smuggled in as part of a documentation pass. The C++ path keeps both.
+Binding either run-control knob means designing a new API (a lifetime-safe event
+object; an owned cancellation handle), so both are **post-v1 candidates**,
+deliberately not smuggled in as part of a documentation pass. The C++ path keeps
+both.
 
 The projection-specific `DispersionBacktestConfig` exposes the same material
 controls as C++: side, multiplier, risk limits, weighting and strike policies,

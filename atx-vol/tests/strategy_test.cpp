@@ -2458,6 +2458,73 @@ TEST(StrategyRestrikeValidation, RejectsCappedKindWithoutCap) {
   EXPECT_EQ(uncapped_st.error().code(), atx::core::ErrorCode::InvalidArgument);
 }
 
+// Task F-3 fix round 1 (I-3). A swap leg's `kind` was never validated at all,
+// which made two engine-unsupported kinds fail in two very different ways:
+//
+//   GammaSwap        -> spec accepted, `solve_cycle_swap` has no gate for it,
+//                       a lot is built, and the ENGINE's `valid_deriv_kind`
+//                       (backtest.cpp) fails the WHOLE RUN loud.
+//   CorridorVarSwap  -> spec accepted, `solve_cycle_swap` refuses it (F-3
+//                       added that, because SwapLot carries no corridor
+//                       bounds), and `strategy.cpp`'s caller folds ANY Err
+//                       into `++skipped_swap_cycles_; continue;` -- so the run
+//                       COMPLETES at exit 0 with the swap lane silently
+//                       absent, visible only in an aggregate counter that also
+//                       counts dark boards and one-legged cycles.
+//
+// F-3's own refusal is what converted the louder outcome into the quieter one.
+// Validating `kind` HERE makes both fail at the boundary where the caller
+// actually wrote the mistake, and makes the error name that mistake.
+TEST(StrategyRestrikeValidation, RejectsEngineUnsupportedSwapKinds) {
+  const PricedSurface surface = make_surface(kUid, 100.0, 100.0, kBaseNow);
+  auto snap = snapshot_of({{"SPY", &surface}}, "restrike-val-kind");
+  ASSERT_TRUE(snap.has_value());
+
+  // None of these kinds is admitted to the live engine (`valid_deriv_kind`,
+  // backtest.cpp), so none can ever become a live SwapLot. All must be refused
+  // identically, and at spec-validation time.
+  //
+  // Task F-5 added the two variance-option kinds to this list. They are refused
+  // for a reason unlike the other two: nothing is MISSING from `SwapLot` (it
+  // already carries `strike_dec`, which is the option strike). It is
+  // SETTLEMENT that cannot express them -- `swap_terminal_value`'s payoff is
+  // linear in the terminal rate and an option's is kinked -- so admitting them
+  // would settle a worthless short option at a profit. See
+  // `engine_supports_swap_kind`'s own comment (backtest.hpp).
+  for (const DerivKind kind : {DerivKind::GammaSwap, DerivKind::CorridorVarSwap,
+                               DerivKind::VarianceCall, DerivKind::VariancePut}) {
+    StrategySpec spec = restrike_spec({kBaseNow, kBaseNow + kDayNs});
+    SwapLegSpec leg = var_swap_leg();
+    leg.kind = kind;
+    spec.swap_legs.push_back(leg);
+    const Status st = first_step_status(std::move(spec), *snap);
+    ASSERT_FALSE(st.has_value()) << static_cast<int>(kind);
+    EXPECT_EQ(st.error().code(), atx::core::ErrorCode::InvalidArgument)
+        << static_cast<int>(kind);
+    // The message must name the actual mistake -- the kind -- so an operator
+    // reading a failed run learns what to change.
+    EXPECT_NE(st.error().to_string().find("kind"), std::string::npos)
+        << static_cast<int>(kind);
+  }
+
+  // CONTROL: the kinds the engine DOES support are untouched by this gate.
+  // Without this the test above would also pass if swap legs had simply
+  // stopped validating.
+  for (const DerivKind kind : {DerivKind::VarSwap, DerivKind::VolSwap}) {
+    StrategySpec spec = restrike_spec({kBaseNow, kBaseNow + kDayNs});
+    SwapLegSpec leg = var_swap_leg();
+    leg.kind = kind;
+    spec.swap_legs.push_back(leg);
+    const Status st = first_step_status(std::move(spec), *snap);
+    // These reach the ordinary step path; whatever they do, they must NOT be
+    // refused for their kind.
+    if (!st.has_value()) {
+      EXPECT_EQ(st.error().to_string().find("kind"), std::string::npos)
+          << static_cast<int>(kind);
+    }
+  }
+}
+
 TEST(StrategyRestrikeValidation, RejectsUnknownMatchGroup) {
   const PricedSurface surface = make_surface(kUid, 100.0, 100.0, kBaseNow);
   auto snap = snapshot_of({{"SPY", &surface}}, "restrike-val-group");

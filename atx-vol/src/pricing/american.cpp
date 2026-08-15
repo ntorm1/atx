@@ -2711,7 +2711,7 @@ Status andersen_lake_put_slice(double S, std::span<const double> strikes, double
   // …,Put), and every other strike matches to a few ULP: the sweep kernels carry b.K
   // in absolute (non-ratio) terms — alpha = K·e^{-(r-q)τ}, y_from_b(b, K·min(1,r/q)) —
   // so the reused y[] equals a fresh per-strike y[] only in EXACT arithmetic. The
-  // measured gap (see at-task-8-report.md) is the ~1e-7 the correction cache's PUT
+  // measured gap is the ~1e-7 the correction cache's PUT
   // row now accepts by routing here (T16a) — the put cache pins were repinned and
   // revalidated to the §9 accuracy gates against cold andersen_lake for this shift.
   //
@@ -3926,10 +3926,10 @@ Result<AssignmentRisk> assignment_risk(double S, double K, double T, double sigm
 // sigma-) instead of the full bundle's 5 (base + sigma+/- + r+/-). The base
 // (b0) and rate (r+/-hr) boundary solves are NOT attempted here, so unlike
 // the bundle this function's fallback trigger does not observe a b0- or
-// r+/-hr-only collapse (bvp/bvm both convergent) — see the doc comment in
-// american.hpp and task-c1.7-report.md for why this is the deliberate,
-// disclosed scope of the additive kernel (not silently swept under a
-// tolerance) and why it was not observed on the fitted-surface parity grid.
+// r+/-hr-only collapse (bvp/bvm both convergent) — see `american_vega_al`'s
+// doc comment in american.hpp for why this is the deliberate, disclosed scope
+// of the additive kernel (not silently swept under a tolerance) and why it was
+// not observed on the fitted-surface parity grid.
 Result<double> american_vega_al(double S, double K, double T, double sigma, double r, double q,
                                 Side side, const std::optional<AlOpts> &opts) {
   if (!(S > 0.0) || !(K > 0.0) || !(T > 0.0) || !(sigma > 0.0)) {

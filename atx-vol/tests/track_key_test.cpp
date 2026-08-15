@@ -30,6 +30,7 @@
 #include "atx/vol/api/backtest/backtest.hpp"
 #include "backtest/backtest_template.hpp"
 #include "atx/vol/research/golden_pin.hpp"
+#include "support/test_paths.hpp"  // testkit::market_data_if_present
 
 using namespace atx::vol;
 namespace fs = std::filesystem;
@@ -425,16 +426,16 @@ namespace {
     }
   }
 #endif
-  const char *candidates[] = {
-      "data/golden/82-session-spy",
-      "../data/golden/82-session-spy",
-      "../../data/golden/82-session-spy",
-      "C:/atx/data/golden/82-session-spy",
-  };
-  for (const char *candidate : candidates) {
-    if (fs::exists(candidate)) {
-      return fs::path(candidate);
-    }
+  // FRI-072: ONE resolver, not a hand-pasted ladder. The retired candidate list
+  // probed CWD-relative rungs -- so it named a different directory per launch
+  // directory -- and ended at a hardcoded absolute into a SECOND checkout, which
+  // let a run in one worktree silently read another worktree's corpus.
+  // market_data_if_present() anchors on the configure-time repo root and reports
+  // absence as an empty path, which is the normal case for this uncommitted
+  // licensed data and is what the skip below is built on.
+  const fs::path corpus = testkit::market_data_if_present("golden/82-session-spy");
+  if (!corpus.empty()) {
+    return corpus;
   }
   return std::nullopt;
 }
@@ -452,8 +453,8 @@ TEST(TrackKeyGoldenReplay, Pinned82SessionNavUnlessEconomicsRevBumped) {
   const std::optional<fs::path> corpus_root = find_golden_82_session_corpus_root();
   if (!corpus_root.has_value()) {
     GTEST_SKIP() << "golden 82-session SPY corpus not available (checked "
-                    "$ATX_VOL_GOLDEN_82_SESSION_CORPUS and data/golden/82-session-spy "
-                    "relative to a few candidate working directories); the economics "
+                    "$ATX_VOL_GOLDEN_82_SESSION_CORPUS, then golden/82-session-spy "
+                    "under the repo data root); the economics "
                     "tripwire is pinned at final_nav="
                  << std::setprecision(17) << kGolden82SessionFinalNav
                  << " for kBacktestEconomicsRev=" << kGolden82SessionEconomicsRev

@@ -8,20 +8,22 @@
 #include <cstdint>
 #include <limits>
 #include <span>
+#include <string>
 #include <vector>
 
 #include "atx/core/error.hpp"
 #include "atx/core/linalg/linalg.hpp"  // MatX, VecX
 #include "atx/core/linalg/solve.hpp"   // solve_spd
-#include "atx/vol/api/fitting/arb.hpp"             // arb_project_calendar_essvi
-#include "atx/vol/api/fitting/deamer.hpp"          // DeAmOptions (opt-in de-Am route)
-#include "fitting/calib_shared.hpp"  // detail::outer_cap + shared LM constants
-#include "fitting/resid_basis.hpp"  // dense C2 residual basis (shared with hot-path eval)
-#include "fitting/robust.hpp"   // huber_weights_strided
-#include "pricing/strip_grid.hpp"  // strip::kCertifiedWingHalfBand ((S1) band)
+#include "atx/vol/api/fitting/arb.hpp"    // arb_project_calendar_essvi, arb_check_total_surface_all
+#include "atx/vol/api/fitting/deamer.hpp" // DeAmOptions (opt-in de-Am route)
+#include "atx/vol/api/fitting/vol_surface.hpp" // essvi_backbone_w, essvi_w_grad3, essvi_phi_max
+
 #include "core/parallel_for.hpp"    // parallel_for_dynamic, atx_auto_worker_count
-#include "simd/essvi_batch.hpp"  // batched w + w-grad kernels (fit hot path)
-#include "atx/vol/api/fitting/vol_surface.hpp"     // essvi_backbone_w, essvi_w_grad3, essvi_phi_max
+#include "fitting/calib_shared.hpp" // detail::outer_cap + shared LM constants
+#include "fitting/resid_basis.hpp"  // dense C2 residual basis (shared with hot-path eval)
+#include "fitting/robust.hpp"       // huber_weights_strided
+#include "pricing/strip_grid.hpp"   // strip::kCertifiedWingHalfBand ((S1) band)
+#include "simd/essvi_batch.hpp"     // batched w + w-grad kernels (fit hot path)
 
 // eSSVI per-slice cube-space Levenberg-Marquardt + surface drivers.
 //
@@ -68,6 +70,22 @@ constexpr double kTMinFit = 1.0 / (365.25 * 24.0 * 2.0);
 // calendar days in year-fraction units). Cross-snapshot T drifts intraday and
 // across a few days; beyond this a stale seed is worse than a cold fit.
 constexpr double kWarmPriorMaxTenorGap = 5.0 / 365.0;
+
+// Task C-8: window + grid for the honest post-fit `opts.validate_no_arb`
+// audit in `calib_surface_impl`. Deliberately the SAME (k_min, k_max, n_grid)
+// the surface-driver tests independently certify clean via
+// `arb_check_total_surface_all` (EssviCalibSurface.RecoversSyntheticSurface_
+// WithinTolerance / EssviCalibSurfaceSequential.ProducesThetaMonotoneSurface),
+// not the wider [-1.5, 1.5] the theta-project REPAIR above uses: at that
+// width, per-slice-independent phi/rho fit noise in the unconstrained
+// extrapolated wings can trip the tight (1e-12) calendar tolerance even on a
+// genuinely clean board, which would make the audit a false-positive trap
+// rather than an honest gate. [-0.5, 0.5] is comfortably past every synthetic
+// fixture's quoted range while staying inside the region those fixtures are
+// proven arb-free on.
+constexpr double kNoArbAuditKMin = -0.5;
+constexpr double kNoArbAuditKMax = 0.5;
+constexpr std::uint32_t kNoArbAuditGrid = 64u;
 
 // LM control constants — canonical values live in
 // atx/vol/detail/calib_shared.hpp and are shared with the SVI-MM and CStar
@@ -944,6 +962,21 @@ void fit_dense_residual(std::span<const FitObs> obs, EssviParams& slice,
 // the historical solve is kept and its coefficients are written unchanged, so
 // this is bit-identical wherever the constraint does not bind.
 //
+// PORT NOTE (R1b SUPERSEDES the deferral; kept because the surface-level audits
+// below are still load-bearing). The C follows the ridge LS with a per-slice
+// Roper density projection (`ats_vol_essvi_residual_arb_project`) that damps the
+// coefficients until g(k) >= 0. The ported arb.hpp exposes only the
+// surface-level projectors (`arb_repair_calendar_residual` / total-surface), so
+// this port originally left the fitted residual UN-projected and leaned entirely
+// on downstream refusal. R1b closes that gap in-file, so a served eSSVI residual
+// is now density-projected here. Task C-8's audits therefore became a
+// fail-closed BACKSTOP rather than the substitute they were:
+// `essvi_calib_surface`'s `validate_no_arb` audit (this file,
+// `calib_surface_impl`) covers the alternate-driver path over its fixed
+// `[-0.5, 0.5]` band (essvi_calib.hpp); `validate_served_shape_over_quotes`
+// (vol_curve.cpp) covers the canonical `fit_slice_curve` serving path over the
+// full quoted range +/- 0.5. Neither REPAIRS the residual — both refuse to serve
+// the slice/surface, which is what catches anything R1's projection does not.
 // The layer is off by default (`opts.residual_disable == true`).
 
 // Dead-band half-width of the HINGE_QUAD basis. MUST match `kResidInnerY` in
@@ -1654,6 +1687,35 @@ struct ChainFitResult {
     (void)arb_project_calendar_essvi(surface, -1.5, 1.5, 64u);
   }
 
+  // FIT-C1: honest post-fit no-arb audit. `opts.validate_no_arb`'s documented
+  // contract (calib.hpp) is "run the static-arb validators at the end and
+  // bail on a violation" — this driver used to leave the knob dead (the
+  // out_diag block below unconditionally stamped n_butterfly_viol = 0 with no
+  // check ever run, and nothing ever bailed). Scan the ASSEMBLED surface
+  // (which includes the optional wing-residual layer — R1-constrained and
+  // density-projected since the api-restructure merge, but audited here rather
+  // than trusted; see the PORT NOTE on `fit_wing_residual`) for real calendar +
+  // butterfly violations. Runs AFTER the opt-in theta-project repair above, so a caller
+  // enabling BOTH knobs gets repair-then-audit.
+  // MUST-FIX 8 (C-8 MINOR-2): the audit call used to sit behind a plain
+  // ATX_TRY, which early-returns PAST surface.set_diagnostics and the whole
+  // out_diag block below on a failing audit -- total diagnostic loss on the
+  // one path whose entire purpose is diagnostic honesty. Capture the Result
+  // without propagating yet, so RMSE/quote counts/iteration counts are
+  // always recorded before any return, then propagate the audit's own error
+  // (if any) AFTER diagnostics are populated.
+  std::uint32_t n_calendar_viol = 0u;
+  std::uint32_t n_butterfly_viol = 0u;
+  Result<TotalSurfaceArbCounts> arb_result = Ok(TotalSurfaceArbCounts{});
+  if (n_fit_ok > 0 && opts.validate_no_arb) {
+    arb_result = arb_check_total_surface_all(surface, kNoArbAuditKMin, kNoArbAuditKMax,
+                                              kNoArbAuditGrid);
+    if (arb_result.has_value()) {
+      n_calendar_viol = arb_result->n_calendar;
+      n_butterfly_viol = arb_result->n_butterfly;
+    }
+  }
+
   const double rmse_global = (sum_w > 0.0) ? std::sqrt(sum_sse / sum_w) : 0.0;
   VolSurface::Diagnostics d{};
   d.rmse_vol = rmse_global;
@@ -1670,13 +1732,27 @@ struct ChainFitResult {
     out_diag->inner_iters_total =
         static_cast<std::uint16_t>(std::min<std::uint32_t>(agg_inner, 0xFFFFu));
     out_diag->n_quotes_used = total_used;
-    // eSSVI is butterfly-free by construction (essvi_phi_max ceiling + cube
-    // reparam clamp + lee_project), so the diagnostic tally is always zero.
-    out_diag->n_butterfly_viol = 0u;
+    // Real counts from the audit above (0 when opts.validate_no_arb left it
+    // un-run, or when the audit itself failed, neither of which is a
+    // "verified clean" claim — see FitDiag).
+    out_diag->n_butterfly_viol = n_butterfly_viol;
+    out_diag->n_calendar_viol = n_calendar_viol;
+  }
+
+  if (!arb_result.has_value()) {
+    return Err(arb_result.error());
   }
 
   if (n_fit_ok == 0) {
     return Err(ErrorCode::NotFound, "essvi_calib_surface: no slice fit");
+  }
+  if (opts.validate_no_arb && (n_calendar_viol > 0u || n_butterfly_viol > 0u)) {
+    return Err(ErrorCode::Unavailable,
+               "essvi_calib_surface: post-fit static-arb audit found " +
+                   std::to_string(n_calendar_viol) + " calendar + " +
+                   std::to_string(n_butterfly_viol) +
+                   " butterfly violation(s); refusing to serve an "
+                   "arbitrageable surface");
   }
   return Ok();
 }

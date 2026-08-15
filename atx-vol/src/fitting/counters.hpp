@@ -40,6 +40,7 @@
 #include <array>  // solve-ledger per-thread block (always on) + gated exact counters
 #include <atomic>
 #include <chrono>
+#include <cstddef> // std::size_t -- every_name_present's array-bound parameter
 #include <cstdint>
 #include <limits>
 #include <mutex>  // solve ledger registry lock (register/scrape only; never the hot path)
@@ -169,6 +170,28 @@ enum class Counter : unsigned {
 
 inline constexpr unsigned kCount = static_cast<unsigned>(Counter::Count_);
 
+// Task F-5. Both name tables in this header are C arrays sized by their enum's
+// own `Count_`, and C++ aggregate initialization SILENTLY value-initializes
+// every element the initializer list omits. A new enumerator added without its
+// name string therefore yields a `nullptr` entry -- no compiler diagnostic
+// fires, and `std::size(kNames) == kCount` would be vacuously true because the
+// BOUND is what is short-initialized, not the declaration. The nullptr then
+// reaches `py::str` (python/src/bindings/backtest.cpp) and `printf("%s")`
+// (tools/surface_db_build_main.cpp) unchecked. The "keep in sync (1:1, same
+// order)" comment above each table was, until now, enforced by nothing.
+//
+// Stated once and asserted at both tables. The `1:1, same order` half is still
+// convention -- this catches a MISSING name, never a misordered one.
+template <std::size_t N>
+[[nodiscard]] constexpr bool every_name_present(const char *const (&names)[N]) noexcept {
+  for (std::size_t i = 0; i < N; ++i) {
+    if (names[i] == nullptr) {
+      return false;
+    }
+  }
+  return true;
+}
+
 // Stable machine-readable names (used as the benchmark JSON counter keys).
 inline constexpr const char *kNames[kCount] = {
     "cnt_boundary_solves",
@@ -211,6 +234,11 @@ inline constexpr const char *kNames[kCount] = {
     "cnt_risk_strict_recovery_rounds",
     "cnt_risk_strict_recovery_admitted",
 };
+
+static_assert(every_name_present(kNames),
+              "counters::kNames is short: a Counter enumerator was added without appending "
+              "its name string, so kNames now holds a nullptr that reaches the bench JSON "
+              "writer unchecked. Append the name, in the enum's own order.");
 
 // A point-in-time copy of every counter. `enabled == false` is the sentinel a
 // caller reads from an OFF build (or the zero-cost test asserts).
@@ -860,6 +888,42 @@ enum class Solve : unsigned {
   // aborted the suite), so it is deliberately not counted. In-fit de-Am queries at
   // the session rate == baked rate, so this stays 0 through a normal fit/serve.
   CacheCarryDrift,
+  // Task P-6 (GK-P book memo, append-only). One bump per actual variance-strip
+  // quadrature (`var_swap_fair_strike`'s templated body, the ONE place every
+  // dispatch path -- price_var_swap, deriv_greeks' FD/analytic bump table, the
+  // vol-swap/capped-swap best-effort diagnostics -- resolves K_var), counted
+  // AFTER its own cheap validation guards (T>0, reserved fields, vol_of_vol,
+  // wing_clamp) so a call rejected before ever touching the grid is not
+  // counted as an evaluation. This is what `price_deriv_book`'s book-level
+  // shared-strip memo measures itself against: a book of L VarSwap rows over
+  // K distinct (uid,T) groups must bump this O(K), not O(L) -- PV, every
+  // market greek, AND theta/theta_carry/theta_zero_fixing/charm's own T-dt
+  // roll are all resolved from the SAME per-group shared block (see
+  // `deriv_ref_bridge.hpp`'s `VarSwapSharedBlock`); only each row's own cheap
+  // aged-blend/discount/strike-offset combine (no strip work) runs per row.
+  VarSwapStripEvals,
+  // Task F-2 (append-only, mirrors VarSwapStripEvals's own precedent above --
+  // a SEPARATE counter, not a shared one, because P-6's book-memo O(K)-not-
+  // O(L) gate reads VarSwapStripEvals specifically and a gamma-swap eval
+  // folded into that same counter would silently corrupt what that gate
+  // measures). One bump per actual gamma-weighted strip quadrature
+  // (`strip_fair_value_core`'s shared body, `DerivKind::GammaSwap` branch),
+  // counted after the same cheap validation guards VarSwapStripEvals is.
+  // GammaSwap has no book-memo participation (`var_swap_memo_eligible`,
+  // deriv_book.cpp, whitelists VarSwap only), so this is O(L) for a book of L
+  // gamma-swap rows -- expected, and not itself a gate this task adds.
+  GammaSwapStripEvals,
+  // Task F-3 (append-only), for the SAME reason GammaSwapStripEvals is
+  // separate: P-6's book-memo O(K)-not-O(L) gate reads VarSwapStripEvals
+  // specifically, and a corridor-strip eval folded into it would corrupt what
+  // that gate measures. One bump per actual corridor-strip quadrature
+  // (`strip_fair_value_core`'s shared body, `DerivKind::CorridorVarSwap`
+  // branch), counted after the same cheap validation guards the other two are.
+  // CorridorVarSwap has no book-memo participation (`var_swap_memo_eligible`,
+  // deriv_book.cpp, whitelists VarSwap only), so this is O(L) for a book of L
+  // corridor rows -- expected, and pinned by
+  // `DerivBook.CorridorVarSwapNeverUsesTheVarSwapMemo`.
+  CorridorVarSwapStripEvals,
   Count_
 };
 
@@ -868,10 +932,19 @@ inline constexpr unsigned kCount = static_cast<unsigned>(Solve::Count_);
 // Stable machine-readable names (bench JSON keys). `sl_` distinguishes the always-on
 // solve ledger from the gated `cnt_` exact counters.
 inline constexpr const char *kNames[kCount] = {
-    "sl_al_boundary_solves", "sl_al_premium_evals",     "sl_greeks_fd",
-    "sl_greeks_analytic",    "sl_greeks_adjoint",       "sl_iv_newton_iters",
-    "sl_duplicate_mark_solves", "sl_cache_carry_drift",
+    "sl_al_boundary_solves",    "sl_al_premium_evals",       "sl_greeks_fd",
+    "sl_greeks_analytic",       "sl_greeks_adjoint",         "sl_iv_newton_iters",
+    "sl_duplicate_mark_solves", "sl_cache_carry_drift",      "sl_var_swap_strip_evals",
+    "sl_gamma_swap_strip_evals", "sl_corridor_var_swap_strip_evals",
 };
+
+static_assert(every_name_present(kNames),
+              "ledger::kNames is short: a Solve enumerator was added without appending its "
+              "name string, so kNames now holds a nullptr -- which reaches py::str "
+              "(python/src/bindings/backtest.cpp:58) and printf(\"%s\") "
+              "(tools/surface_db_build_main.cpp:588) unchecked. Append the name, in the "
+              "enum's own order, and add it to SOLVE_LEDGER_KEYS "
+              "(python/tests/test_run_sp100_strangle_backtest.py) too.");
 
 // A merged, point-in-time copy. Plain values (not atomics) so it is trivially
 // copyable, subtractable, and cheap to store per step.

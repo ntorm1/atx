@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -232,6 +233,35 @@ TEST(SplineVol, ButterflyViolationCounterOnConvexData) {
   ASSERT_TRUE(fitted.has_value()) << fitted.error().to_string();
   const IVolCurve &curve = **fitted;
   EXPECT_EQ(as_spline(curve).params().n_butterfly_viol, 0u);
+}
+
+TEST(SplineVol, ButterflyViolationCounterFiresOnAnArbitrageableSmile) {
+  // Companion to the convex-data case above, which only ever observed a ZERO
+  // count -- so nothing pinned the COUNTING branch of the post-fit scan, which
+  // is exactly the branch the shared-FD-rule unification moved. This slice's
+  // wing sits far past the Lee bound, so the fitted spline inherits a genuinely
+  // negative Durrleman density.
+  SviParams svi;
+  svi.a = 0.04;
+  svi.b = 4.0;
+  svi.rho = 0.0;
+  svi.m = 0.0;
+  svi.sigma = 0.1;
+  const double T = 1.0, F = 100.0, df = 1.0;
+  const std::vector<FitObs> obs = svi_smile_obs(svi, T, 25, 0.6);
+
+  auto fitted = fit_spline_vol_slice(obs, F, T, df);
+  ASSERT_TRUE(fitted.has_value()) << fitted.error().to_string();
+  const std::uint32_t n_viol = as_spline(**fitted).params().n_butterfly_viol;
+  std::printf("[bf-anchor] spline  n_butterfly_viol=%llu\n",
+              static_cast<unsigned long long>(n_viol));
+  // Exact, not just non-zero: this diagnostic is fed by the spline fitter AND by
+  // the shared FD rule, so a drift in either moves it. PROCEDURE if it turns red:
+  // establish which of the two moved before re-pinning -- a fitter change that
+  // legitimately reshapes the smile may re-pin here, but a change in the density
+  // stencil or its tolerance must not, because the FD rule is shared with every
+  // arb_check_butterfly entry and those are pinned bit-for-bit in arb_test.cpp.
+  EXPECT_EQ(n_viol, 94u);
 }
 
 // ── Self-review edge cases (not in the brief's fixed list, added for safety

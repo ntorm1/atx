@@ -101,6 +101,7 @@
 #include "atx/vol/api/backtest/priced_surface_view.hpp" // PricedSurfaceView (WS-ZC1 borrowed surfaces)
 #include "atx/vol/api/backtest/query_pricing.hpp"       // QueryExecution
 #include "atx/vol/api/core/types.hpp"               // Result, Status, Side
+#include "atx/vol/api/core/vol_time.hpp"            // kCalendarYearNs (THE T convention)
 
 namespace atx::vol {
 
@@ -120,10 +121,12 @@ reduce_risk_buckets(const PriceFrame &frame, const Portfolio &pf, RiskBucketKey 
 reduce_pnl_risk_buckets(const PnlFrame &frame, const Portfolio &pf, RiskBucketKey by,
                         PnlTotals *grand);
 
-// Calendar year length in nanoseconds — the library's T convention
-// (data.cpp `year_fraction`: 365.25 * 86400 * 1e9). Used to convert a
-// base->shifted valuation-timestamp gap into the theta/charm time-roll dt.
-inline constexpr double kNsPerYear = 365.25 * 86400.0 * 1.0e9;
+// Calendar year length in nanoseconds — the library's T convention. Used to
+// convert a base->shifted valuation-timestamp gap into the theta/charm time-roll
+// dt. This spelling is public API with many callers, so it stays; it is now an
+// ALIAS rather than a second statement of the value, which is where it used to
+// restate `365.25 * 86400.0 * 1.0e9` in its own right.
+inline constexpr double kNsPerYear = kCalendarYearNs;
 
 // ── Position / contract model ────────────────────────────────────────────
 
@@ -338,6 +341,18 @@ public:
   }
   [[nodiscard]] double q_eff_at(double T) const noexcept { ATX_VOL_SURFACE_REF_FWD(q_eff_at(T)); }
   [[nodiscard]] double rate_at(double T) const noexcept { ATX_VOL_SURFACE_REF_FWD(rate_at(T)); }
+
+  // Strip-carry hoisting (Task P-1). Both PricedSurface and PricedSurfaceView
+  // expose the identical `strip_carry_at` / `iv_with_carry` pair (see
+  // SurfaceStripCarry, priced_surface.hpp), so this forwards through the same
+  // owned-vs-view branch as every other accessor above with no borrow-form
+  // dispatch of its own.
+  [[nodiscard]] SurfaceStripCarry strip_carry_at(double T) const noexcept {
+    ATX_VOL_SURFACE_REF_FWD(strip_carry_at(T));
+  }
+  [[nodiscard]] double iv_with_carry(double K, const SurfaceStripCarry &carry) const noexcept {
+    ATX_VOL_SURFACE_REF_FWD(iv_with_carry(K, carry));
+  }
 
   [[nodiscard]] PricedSurface::ResolvedSurfacePoint resolve(double K, double T) const noexcept {
     ATX_VOL_SURFACE_REF_FWD(resolve(K, T));
@@ -957,8 +972,10 @@ struct PriceOptions {
   // pnl_totals/pnl_explain requires the stamped needs to be full() before a P&L
   // Taylor decomposition (which reads all eight base greeks) may reuse it. A narrowed
   // base therefore NEVER silently feeds a full P&L attribution — it forces a fresh
-  // full solve. So narrowing a frame that a later P&L reuses (L1) is a NET LOSS; only
-  // narrow frames whose bundle no P&L reuses (see loop-stage3.md §economy).
+  // full solve. So narrowing a frame that a later P&L reuses (L1) is a NET LOSS, and
+  // the arithmetic is the whole argument: you pay the narrowed solves AND the full 5
+  // the reuse guard then forces, where not narrowing would have paid 5 once. Only
+  // narrow frames whose bundle no P&L reuses.
   PricedSurface::GreekNeeds greek_needs{};
 };
 

@@ -39,6 +39,32 @@ using atx::core::Ok;
 
 namespace {
 
+// populate's publish gate READS the re-Americanized parity evidence: that is
+// exactly what the 0.35 worst-in-band floor `populate_admission_policy` arms
+// measures against. So populate must also make sure the evidence is actually
+// PRODUCED, or the gate refuses on its own blindness. Stated once here and
+// asserted at both seams below, because `apply_symbol_config` re-binds
+// `score_parity` from the stored config AFTER the fitter has resolved its own
+// inputs and would otherwise undo the config-translation half.
+//
+// WHY THE STORED VALUE CANNOT DECIDE THIS. `SymbolFitConfig::score_parity` is
+// preset-derived, not an operator instruction: `symbol_config_from_preset`
+// copies whatever `apply_fit_preset` left, and the Hft/Bulk presets turn
+// scoring off to buy latency. The symbol config knows nothing about the floor
+// populate arms on top of it, so left alone every Hft-preset symbol is fitted
+// unscored and then refused `DiagnosticsUnavailable` -- a measurement populate
+// itself suppressed, charged to the board as if the board were defective. The
+// floor's own contract test already states the intent this restores
+// (surface_db_populate_policy_test.cpp: "a floored Mark policy consumes the
+// re-Americanized parity diagnostics, so score_parity is forced on"), and the
+// fitter pins the same rule for a caller that leaves the knob unset
+// (pricer_fitter_test.cpp V2MarkBidAskFloorRetainsParityScoringByDefault).
+// Populate is the batch tier and scoring costs one cold re-Americanization pass
+// per slice that moves no fit row, so measuring is the cheap side of the trade.
+[[nodiscard]] bool populate_admission_needs_parity() noexcept {
+  return fit_admission_consumes_parity(populate_admission_policy());
+}
+
 // Translate the PricerConfig-representable subset of a SymbolFitConfig
 // (product policy, preset, curve-when-pinned, and the four optional<bool>
 // knobs) so the
@@ -65,6 +91,9 @@ namespace {
   out.use_deam_cache_for_fit = cfg.use_deam_cache_for_fit;
   // Task 2: arm the quote-fidelity publish floor (see populate_admission_policy).
   out.admission = populate_admission_policy();
+  if (populate_admission_needs_parity()) {
+    out.score_parity = true; // the gate must be able to read its own evidence
+  }
   return out;
 }
 
@@ -596,6 +625,14 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
       slots[pos] = fit_board(board, pc, /*admission=*/nullptr,
                              [&resolved, &board, &offer_inner_fit_workers](SessionInputs &in) {
                                apply_symbol_config(resolved, in);
+                               // Re-assert AFTER the overlay, the same shape and
+                               // for the same reason as the risk pipeline's own
+                               // post-overlay re-assert (pricer_fitter.cpp): the
+                               // overlay must not smuggle back the opt-out that
+                               // blinds the publish gate populate armed.
+                               if (populate_admission_needs_parity()) {
+                                 in.score_parity = true;
+                               }
                                in.fit_workers = offer_inner_fit_workers(board.symbol);
                              });
     } catch (const std::exception &e) {

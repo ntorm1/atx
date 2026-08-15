@@ -60,13 +60,34 @@ DerivContract swap_contract_for_lot(const SwapLot &lot, std::int64_t base_ts,
 }
 
 Result<SwapLot> solve_cycle_swap(const SurfaceRef &surface, const CycleSwapRequest &req,
-                                 double target_vega) {
+                                 double target_vega,
+                                 std::optional<double> surface_certified_wing_band) {
   if (!(std::isfinite(target_vega) && target_vega != 0.0)) {
     return Err(ErrorCode::Unavailable,
                "solve_cycle_swap: target vega is non-finite or zero; no leg to size against");
   }
   if (surface == nullptr) {
     return Err(ErrorCode::Unavailable, "solve_cycle_swap: no surface for the underlier");
+  }
+  // Task F-3: `SwapLot` (and `CycleSwapRequest`) carry no corridor bounds, so
+  // `swap_contract_for_lot` below can only ever build a contract with
+  // corridor_lo == corridor_hi == 0 -- the UNBOUNDED corridor, which prices
+  // and accrues identically to a plain variance swap. Solving such a lot would
+  // hand back a lot labelled CorridorVarSwap and struck at the all-strike
+  // K_var: a wrong strike for every real corridor, produced silently. Refuse
+  // instead. This is deliberately NOT the fail-soft `Unavailable` the causes
+  // below use -- those are market/schedule conditions a later cycle may clear,
+  // whereas this one can only be fixed by changing `kind`, so it is reported
+  // as the caller error it is. (The engine would refuse the lot one step later
+  // anyway: `valid_deriv_kind`, backtest.cpp. Refusing here means no wrong
+  // number is ever computed en route.) Adding corridor fields to `SwapLot` is
+  // a real option, but it is worthless until `SwapAccrual`'s own fixing loop
+  // can test fixings against them -- see that gate's comment.
+  if (req.kind == DerivKind::CorridorVarSwap) {
+    return Err(ErrorCode::InvalidArgument,
+               "solve_cycle_swap: DerivKind::CorridorVarSwap needs corridor bounds, "
+               "which SwapLot does not carry; a solved lot would silently be an "
+               "unbounded corridor");
   }
 
   // The fixing schedule the ENGINE will actually observe. The swap pass runs on
@@ -123,15 +144,28 @@ Result<SwapLot> solve_cycle_swap(const SurfaceRef &surface, const CycleSwapReque
   // entire entry difference).
   const Result<DerivQuote> fair =
       detail::deriv_price_on_ref(surface, swap_contract_for_lot(lot, lot.start_ts_ns, rv),
-                                 req.deriv_cfg);
+                                 req.deriv_cfg, surface_certified_wing_band);
   if (!fair || !(std::isfinite(fair->fair_strike_dec) && fair->fair_strike_dec > 0.0)) {
     return Err(ErrorCode::Unavailable,
                "solve_cycle_swap: fair-strike solve failed or returned a non-positive strike");
   }
   lot.strike_dec = fair->fair_strike_dec;
 
-  const Result<DerivGreeks> greeks = detail::deriv_greeks_on_ref(
-      surface, swap_contract_for_lot(lot, lot.start_ts_ns, rv), req.deriv_cfg, DerivGreekBumps{});
+  // MUST-FIX 5 / aggregate review I-4: this call reads ONLY `greeks->vega`
+  // below -- `carry_theta`'s default-true cost (~3 extra strip-equivalent
+  // evaluations, ~+21%) buys two fields (theta_carry/theta_zero_fixing) this
+  // site never touches, on a per-cycle-open path.
+  //
+  // Task P-2 / GK-P3: `second_order` gates ONLY vanna/charm (6 extra
+  // repricings: 4 spot x vol crosses + 2 rolled spot bumps), neither of which
+  // this site reads either -- vega rides the same first-order stencil either
+  // way, so second_order buys nothing here.
+  DerivGreekBumps entry_bumps{};
+  entry_bumps.carry_theta = false;
+  entry_bumps.second_order = false;
+  const Result<DerivGreeks> greeks =
+      detail::deriv_greeks_on_ref(surface, swap_contract_for_lot(lot, lot.start_ts_ns, rv),
+                                  req.deriv_cfg, entry_bumps, surface_certified_wing_band);
   if (!greeks || !(std::isfinite(greeks->vega) && greeks->vega != 0.0)) {
     // Never a garbage qty: no vega, no leg.
     return Err(ErrorCode::Unavailable,
@@ -256,9 +290,27 @@ void SwapSignalProbe::append_swap_greek_signals(
       // The contract the engine's mark lane priced this row, rebuilt through
       // the one helper that also builds entry solves' — residual tenor plus
       // the fixings observed so far.
-      const Result<DerivGreeks> greeks =
-          detail::deriv_greeks_on_ref(surface, swap_contract_for_lot(lot, base.ts_ns(), mirror->rv),
-                                      kEngineSwapMarkCfg, DerivGreekBumps{});
+      //
+      // FIT-C7 / Task C-6: same-snapshot provenance for this lot's own uid, so
+      // the reported swap_vega/etc. signals trust the SAME certified band the
+      // engine's own mark lane (step_swap_lots, backtest.cpp) resolves for
+      // this surface, not the mode-blind default.
+      //
+      // MUST-FIX 5 / aggregate review I-4: this probe reads delta/gamma/vega/
+      // theta/rho below, never theta_carry/theta_zero_fixing -- carry_theta's
+      // default-true cost (~+21%) buys nothing here, on a per-step x per-lot
+      // loop.
+      //
+      // Task P-2 / GK-P3: same reasoning for `second_order` -- this probe
+      // never reads vanna/charm (the only two fields it gates), so the 6
+      // extra spot x vol cross / rolled-spot repricings it pays for by
+      // default buy nothing on this per-step x per-lot loop either.
+      DerivGreekBumps probe_bumps{};
+      probe_bumps.carry_theta = false;
+      probe_bumps.second_order = false;
+      const Result<DerivGreeks> greeks = detail::deriv_greeks_on_ref(
+          surface, swap_contract_for_lot(lot, base.ts_ns(), mirror->rv), kEngineSwapMarkCfg,
+          probe_bumps, certified_wing_band_for(base, lot.uid));
       if (!greeks) {
         priced = false; // never a PARTIAL total: one unpriced lot voids the set
         break;

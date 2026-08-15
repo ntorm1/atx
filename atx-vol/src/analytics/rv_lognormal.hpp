@@ -89,6 +89,17 @@ struct GlRule {
 // certain, no optionality); s <= 0 -> max(m-k, 0) (W is deterministic == m).
 [[nodiscard]] double lognormal_call(double m, double s, double k) noexcept;
 
+// E[(k-W)+] for the same W: the put beside the call above (Task F-5). It is a
+// SEPARATE closed form, deliberately NOT `lognormal_call(m,s,k) - (m - k)`:
+// parity differences two nearly-equal numbers when the call is deep in the
+// money, which is exactly where the put's own value is smallest, so the
+// rearrangement loses its leading digits precisely where they are all that is
+// left. Parity is the ORACLE instead (`VarOption.PutCallParity`), which is
+// strictly stronger -- it tests two independent formulas against each other
+// rather than one against itself. Degenerate edges mirror the call's: k <= 0 ->
+// 0 (W > 0, so the put can never pay); s <= 0 -> max(k-m, 0).
+[[nodiscard]] double lognormal_put(double m, double s, double k) noexcept;
+
 // E[g(W)] for W lognormal with mean m and log-stdev s, by Gauss-Hermite
 // quadrature: evaluates g(m*exp(s*sqrt(2)*x_i - s^2/2)) at each rule node,
 // weighted by w_i/sqrt(pi). s <= 0 collapses to g(m) exactly (W is

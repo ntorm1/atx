@@ -19,6 +19,8 @@
 #include "atx/vol/api/fitting/vol_curve.hpp"
 #include "atx/vol/api/fitting/vol_surface.hpp"
 
+#include "fitting/butterfly_density.hpp" // THE butterfly FD rule (the four scans below)
+
 namespace atx::vol {
 
 using atx::core::Err;
@@ -28,7 +30,9 @@ using atx::core::Ok;
 namespace {
 
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
-constexpr double kCalendarPairTol = 1.0e-7;
+// Task F-4: was a local `1.0e-7` literal; now THE constant (types.hpp), which
+// every sibling calendar rule in the library also names.
+constexpr double kCalendarPairTol = kCalendarTotalVarianceTol;
 
 // Wing-residual coefficient width — mirrors the C `ATS_VOL_ESSVI_RESID_N`.
 constexpr int kEssviResidN = 16;
@@ -214,47 +218,23 @@ butterfly_check_convex_dense(const ConvexDenseCurve &curve, double k_min,
   return max_def;
 }
 
-// Shared per-slice Durrleman g(k) finite-difference scan. Appends one Butterfly
-// `ArbViolation` per interior grid point where the Lee/Roper density
-//   g(k) = (1 - k*w'/(2w))^2 - (w'/2)^2*(1/4 + 1/w) + w''/2
-// dips below -1e-9. This is the SINGLE implementation of the butterfly FD
-// scheme: both the surface-level `arb_check_butterfly` (per slice) and the
-// per-slice `arb_check_butterfly_slice` delegate here, so their outputs are
-// pointwise identical and the legacy surface pins hold bit-for-bit. The caller
-// guarantees `k_max > k_min` and `n_grid >= 4`.
+// Violation-collecting adapter over THE butterfly FD rule
+// (detail/butterfly_density.hpp): one Butterfly `ArbViolation` per interior grid
+// point whose Durrleman density breaches the floor, labelled with this slice's
+// maturity on both ends. The caller guarantees `k_max > k_min` and `n_grid >= 4`.
 void butterfly_scan_slice(const std::function<double(double)> &w_of_k, double T,
                           double k_min, double k_max, std::uint32_t n_grid,
                           std::vector<ArbViolation> &out) {
-  const double dk = (k_max - k_min) / static_cast<double>(n_grid);
-  const double inv_2dk = 0.5 / dk;
-  const double inv_dksq = 1.0 / (dk * dk);
-  for (std::uint32_t g = 1; g < n_grid; ++g) {
-    const double k = k_min + static_cast<double>(g) * dk;
-    const double w_lo = w_of_k(k - dk);
-    const double w_mi = w_of_k(k);
-    const double w_hi = w_of_k(k + dk);
-    if (!(w_mi > 1.0e-12) || !std::isfinite(w_lo) || !std::isfinite(w_hi)) {
-      continue;
-    }
-    const double w_p = (w_hi - w_lo) * inv_2dk;                 // w'(k)
-    const double w_pp = (w_hi - 2.0 * w_mi + w_lo) * inv_dksq;  // w''(k)
-
-    const double term1_inner = 1.0 - 0.5 * k * w_p / w_mi;
-    const double term1 = term1_inner * term1_inner;
-    const double term2 = 0.25 * w_p * w_p * (0.25 + 1.0 / w_mi);
-    const double term3 = 0.5 * w_pp;
-    const double g_density = term1 - term2 + term3;
-
-    if (g_density < -1.0e-9) {
-      ArbViolation v{};
-      v.k_log = k;
-      v.T1 = T;
-      v.T2 = T;
-      v.slack = -g_density;
-      v.kind = ArbViolation::Kind::Butterfly;
-      out.push_back(v);
-    }
-  }
+  detail::butterfly_density_scan(
+      w_of_k, k_min, k_max, n_grid, [&out, T](double k, double g_density) {
+        ArbViolation v{};
+        v.k_log = k;
+        v.T1 = T;
+        v.T2 = T;
+        v.slack = -g_density;
+        v.kind = ArbViolation::Kind::Butterfly;
+        out.push_back(v);
+      });
 }
 
 struct SharedGridGap {
@@ -1016,7 +996,7 @@ Result<std::vector<ArbViolation>> arb_check_calendar(const CurveSurface &s,
   if (slices.size() < 2 || n_grid == 0 || !(k_max > k_min)) {
     return Ok(std::move(out));
   }
-  constexpr double kCalendarTol = 1.0e-7;  // total-variance units
+  constexpr double kCalendarTol = kCalendarTotalVarianceTol;  // total-variance units
   const double dk = (k_max - k_min) / static_cast<double>(n_grid);
   for (std::size_t i = 1; i < slices.size(); ++i) {
     const IVolCurve &prev = *slices[i - 1];
@@ -1104,32 +1084,22 @@ Result<std::vector<ArbViolation>> arb_check_butterfly(
       dense != nullptr) {
     return Ok(butterfly_check_convex_dense(*dense, k_min, k_max));
   }
-  const double dk = (k_max - k_min) / static_cast<double>(n_grid);
-  const double inv_2dk = 0.5 / dk;
-  const double inv_dksq = 1.0 / (dk * dk);
-  for (std::uint32_t gi = 1; gi < n_grid; ++gi) {
-    const double k = k_min + static_cast<double>(gi) * dk;
-    const double w_lo = curve.w(k - dk);
-    const double w_mi = curve.w(k);
-    const double w_hi = curve.w(k + dk);
-    if (!(w_mi > 1.0e-12) || !std::isfinite(w_lo) ||
-        !std::isfinite(w_mi) || !std::isfinite(w_hi)) {
-      out.push_back(ArbViolation{k, curve.T(), curve.T(),
-                                 std::numeric_limits<double>::infinity(),
-                                 ArbViolation::Kind::Butterfly});
-      continue;
-    }
-    const double w_p = (w_hi - w_lo) * inv_2dk;
-    const double w_pp = (w_hi - 2.0 * w_mi + w_lo) * inv_dksq;
-    const double a = 1.0 - 0.5 * k * w_p / w_mi;
-    const double density = a * a -
-                           0.25 * w_p * w_p * (0.25 + 1.0 / w_mi) +
-                           0.5 * w_pp;
-    if (density < -1.0e-9) {
-      out.push_back(ArbViolation{k, curve.T(), curve.T(), -density,
-                                 ArbViolation::Kind::Butterfly});
-    }
-  }
+  // Same FD rule as every other butterfly scan, under the REPORTING stencil
+  // policy: this overload is the independent gate run after a calendar
+  // projection, so a grid point it could not evaluate is surfaced as an
+  // infinite-slack violation rather than skipped (see the policy's own note).
+  detail::butterfly_density_scan(
+      [&curve](double k) { return curve.w(k); }, k_min, k_max, n_grid,
+      detail::ButterflyStencilPolicy::ReportUnusable,
+      [&out, &curve](double k, double density) {
+        out.push_back(ArbViolation{k, curve.T(), curve.T(), -density,
+                                   ArbViolation::Kind::Butterfly});
+      },
+      [&out, &curve](double k) {
+        out.push_back(ArbViolation{k, curve.T(), curve.T(),
+                                   std::numeric_limits<double>::infinity(),
+                                   ArbViolation::Kind::Butterfly});
+      });
   return Ok(std::move(out));
 }
 
@@ -1217,34 +1187,16 @@ Result<TotalSurfaceArbCounts> arb_check_total_surface_all(const VolSurface &s,
     }
   }
 
-  // Butterfly: FD on total surface w, mirroring arb_check_butterfly.
+  // Butterfly: THE shared FD density rule on the total surface w, count-only.
   if (n > 0 && n_grid >= 4 && k_max > k_min) {
-    const double dk = (k_max - k_min) / static_cast<double>(n_grid);
-    const double inv_2dk = 0.5 / dk;
-    const double inv_dksq = 1.0 / (dk * dk);
     for (std::size_t i = 0; i < n; ++i) {
       const double T = slice_T_at(s, i);
       if (!(T > 0.0)) {
         continue;
       }
-      for (std::uint32_t g = 1; g < n_grid; ++g) {
-        const double k = k_min + static_cast<double>(g) * dk;
-        const double w_lo = s.w(k - dk, T);
-        const double w_mi = s.w(k, T);
-        const double w_hi = s.w(k + dk, T);
-        if (!(w_mi > 1.0e-12) || !std::isfinite(w_lo) || !std::isfinite(w_hi)) {
-          continue;
-        }
-        const double w_p = (w_hi - w_lo) * inv_2dk;
-        const double w_pp = (w_hi - 2.0 * w_mi + w_lo) * inv_dksq;
-        const double a = 1.0 - 0.5 * k * w_p / w_mi;
-        const double t1 = a * a;
-        const double t2 = 0.25 * w_p * w_p * (0.25 + 1.0 / w_mi);
-        const double t3 = 0.5 * w_pp;
-        if (t1 - t2 + t3 < -1.0e-9) {
-          ++counts.n_butterfly;
-        }
-      }
+      detail::butterfly_density_scan(
+          [&s, T](double k) { return s.w(k, T); }, k_min, k_max, n_grid,
+          [&counts](double, double) { ++counts.n_butterfly; });
     }
   }
   return Ok(counts);

@@ -18,9 +18,14 @@
 # ---- Per-module source lists (api-restructure Task 3, 2026-08-14) -----------
 # One set(ATX_VOL_<MODULE>_SOURCES ...) block per src/<module>/ directory,
 # mirroring the include/atx/vol/api/<module>/ public split from Tasks 1-2.
-# Pure regrouping of the SAME 128 always-built .cpp files this target has
-# always compiled -- membership follows the directory a file already lives in;
-# nothing added, removed, or gated differently. The SIMD module (src/simd/) is
+# Was a pure regrouping of the SAME 128 always-built .cpp files this target had
+# always compiled -- membership follows the directory a file already lives in.
+# Now 132: the vol-derivs merge brought four sources that branch had added at
+# flat src/ paths (cboe_strip, deriv_analytic_greeks, deriv_pnl,
+# surface_overlay). Git raised no conflict on them -- they were pure additions
+# against a tree that had already moved -- so they are filed by the same rule as
+# everything else here, into the module their public header landed in. The SIMD
+# module (src/simd/) is
 # handled separately just below via its own CONFIGURE_DEPENDS glob (unchanged
 # from before this restructure -- new kernels still need no CMake edit), and
 # the five ATX_VOL_LAKEHOUSE-conditional sources stay in their own gated
@@ -40,6 +45,12 @@ set(ATX_VOL_PRICING_SOURCES
     src/pricing/implied_vol.cpp
     src/pricing/rates_curve.cpp
     src/pricing/derivatives.cpp
+    # Task P-4 (GK-P): closed-form variance-swap strip greeks. A private sibling
+    # of derivatives.cpp (its only caller), not a module of its own -- it backs
+    # the public DerivGreekMethod::AnalyticStrip knob in api/pricing/.
+    src/pricing/deriv_analytic_greeks.cpp
+    # CBOE VIX-style strip; public header landed at api/pricing/cboe_strip.hpp.
+    src/pricing/cboe_strip.cpp
     src/pricing/al_probe.cpp
     src/pricing/american.cpp
     src/pricing/american_batch.cpp
@@ -62,6 +73,10 @@ set(ATX_VOL_FITTING_SOURCES
     src/fitting/correction.cpp
     src/fitting/arb.cpp
     src/fitting/surface_policy.cpp
+    # Task F-8: SurfaceOverlay/StickyMode bump algebra over a fitted surface --
+    # a fitting concern, and where its public header landed
+    # (api/fitting/surface_overlay.hpp), so it joins this list rather than pricing.
+    src/fitting/surface_overlay.cpp
     src/fitting/risk_surface_validation.cpp
     src/fitting/convex_recovery.cpp
     src/fitting/quote_feasibility.cpp
@@ -155,6 +170,9 @@ set(ATX_VOL_ANALYTICS_SOURCES
     src/analytics/event_vol.cpp
     src/analytics/scenario_grid.cpp
     src/analytics/pnl_attribution.cpp
+    # Task F-8: the swap lane's P&L explain, beside pnl_attribution.cpp for the
+    # same reason -- attribution, not pricing; header at api/analytics/deriv_pnl.hpp.
+    src/analytics/deriv_pnl.cpp
     src/analytics/analytics_primitives.cpp
     src/analytics/analytics_density.cpp
     src/analytics/analytics_aggregate.cpp
@@ -463,6 +481,21 @@ if(ATX_VOL_PROFILE)
     target_compile_definitions(atx-vol PUBLIC ATX_VOL_PROFILE)
 endif()
 
+# FRI-072: the single absolute anchor every fixture/resource path in the test
+# tree resolves from (tests/support/test_paths.hpp). Carried by an INTERFACE
+# target rather than by a target_compile_definitions call repeated in tests/,
+# bench/ and beside the example targets: those three sit in different
+# directories, so three copies would each carry their own
+# ${CMAKE_CURRENT_SOURCE_DIR} and could drift apart independently -- which is
+# precisely the duplicated-rule defect test_paths.hpp exists to remove. One
+# definition, linked by every consumer. Not installed or exported: these are
+# test/bench-only targets.
+add_library(atx-vol-test-paths INTERFACE)
+target_compile_definitions(atx-vol-test-paths INTERFACE
+    "ATX_VOL_TESTS_ROOT=\"${CMAKE_CURRENT_SOURCE_DIR}/tests\""
+    "ATX_VOL_REPO_ROOT=\"${CMAKE_CURRENT_SOURCE_DIR}/..\""
+    "ATX_VOL_ARTIFACT_CACHE=\"${CMAKE_BINARY_DIR}/artifact-cache\"")
+
 if(ATX_BUILD_TESTS)
     add_subdirectory(tests)
 
@@ -549,7 +582,10 @@ if(ATX_BUILD_EXAMPLES)
     # Ten real Databento OPRA SPY snapshots spanning intraday/stress regimes:
     # cold fit latency distribution with a per-slice 98% clean in-band gate.
     add_executable(spy_fit_matrix_bench examples/spy_fit_matrix_bench.cpp)
-    target_link_libraries(spy_fit_matrix_bench PRIVATE atx::vol atx::core atx_warnings)
+    # Includes ../tests/support/spy_fit_fixture.hpp, which resolves fixtures from
+    # the baked absolute root rather than probing relative to the working directory.
+    target_link_libraries(spy_fit_matrix_bench
+        PRIVATE atx::vol atx::core atx_warnings atx-vol-test-paths)
 
     # Dump the SPY Dec-2026 vol smile + bid/ask IV bands over z in [-2,2] (CSV on
     # stdout) for plotting. See examples/spy_dec_curve.cpp.
@@ -569,7 +605,9 @@ if(ATX_BUILD_EXAMPLES)
     # Breadth: one PricerFitter auto-selects the curve per underlying (index SPY
     # vs single-name XOM) with no per-symbol config. See examples/vol_breadth_bench.cpp.
     add_executable(vol_breadth_bench examples/vol_breadth_bench.cpp)
-    target_link_libraries(vol_breadth_bench PRIVATE atx::vol atx::core atx_warnings)
+    # Includes ../tests/support/opra_fixture.hpp — same baked-absolute anchor.
+    target_link_libraries(vol_breadth_bench
+        PRIVATE atx::vol atx::core atx_warnings atx-vol-test-paths)
 
     # Surface-archive (ATXVSA2) deserialization throughput: fit -> serialize -> reload,
     # reporting ns/surface for single-symbol random access + full reconstruct_all.

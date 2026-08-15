@@ -1726,6 +1726,29 @@ namespace {
     return Err(ErrorCode::InvalidArgument,
                "backtest_db: optional backtest column row count mismatch");
   }
+  // Task F-8 fix round 2 (I-2). This is the SECOND shape check on optional
+  // columns -- `BacktestResult::validate()` is the first, and `backtest_db`
+  // never calls it, so the two boundaries disagreed about whether a ragged
+  // explain column was legal until this loop existed. Driven off the roster
+  // rather than re-listed, so there is nothing left here to forget to extend.
+  for (const BacktestExplainColumn &column : swap_explain_columns()) {
+    const std::vector<double> &values = result.*(column.member);
+    if (!values.empty() && values.size() != rows) {
+      return Err(ErrorCode::InvalidArgument,
+                 "backtest_db: optional backtest column row count mismatch");
+    }
+  }
+  // Fix round 6. The loop above checks each column in ISOLATION, and every
+  // column is independently allowed to be empty -- so eight individually-legal
+  // columns can still form an illegal SET. This is the question it cannot ask,
+  // and its absence is what let a partially-populated result reach the append
+  // and come out ragged. A comment thirty lines below used to assert this check
+  // existed; now it does.
+  if (swap_explain_shape(result) == SwapExplainShape::Mixed) {
+    return Err(ErrorCode::InvalidArgument,
+               "backtest_db: the swap-explain columns are partially populated; they are "
+               "written together or not at all");
+  }
   if (!result.step_pnl_total.empty() &&
       result.step_pnl_total.size() != (rows == 0 ? 0 : rows - 1) &&
       result.step_pnl_total.size() != rows) {
@@ -1776,6 +1799,22 @@ template <class T> void append_vector(std::vector<T> &dst, const std::vector<T> 
   for (const double v : result.swap_pnl) {
     if (v != 0.0) {
       return true;
+    }
+  }
+  return false;
+}
+
+// Task F-8 fix round 2 (I-3): the explain's counterpart of the predicate above.
+// The append path collapses a shape mismatch to "absent"; without this, that
+// collapse silently DESTROYS real attribution, where the sibling swap-lane rule
+// twenty lines below refuses exactly that. Round 1 implemented only the collapse
+// half and then pinned the data loss in a test as if it were intended.
+[[nodiscard]] bool result_has_explain_data(const BacktestResult &result) noexcept {
+  for (const BacktestExplainColumn &column : swap_explain_columns()) {
+    for (const double v : result.*(column.member)) {
+      if (v != 0.0) {
+        return true;
+      }
     }
   }
   return false;
@@ -1846,9 +1885,18 @@ template <class T> void append_vector(std::vector<T> &dst, const std::vector<T> 
   // run still HOLDING swap lots; this catches the run whose swaps all settled
   // before the last row, leaving a clean checkpoint. Zero-swap runs carry
   // exactly 0.0 in both columns and store unchanged.
+  // Task F-8 extends the same guard to the explain columns. They are populated
+  // only when `RunConfig::swap_pnl_explain` is on, and a run with them populated
+  // is by construction a run with a swap lane -- but a caller can hand-build a
+  // result, and a NEW column that slipped past this loop would be dropped
+  // silently on store, which is exactly what this guard exists to refuse.
   for (std::size_t i = 0; i < data.backtest.size(); ++i) {
-    const bool live = (i < data.backtest.swap_pv.size() && data.backtest.swap_pv[i] != 0.0) ||
-                      (i < data.backtest.swap_pnl.size() && data.backtest.swap_pnl[i] != 0.0);
+    bool live = (i < data.backtest.swap_pv.size() && data.backtest.swap_pv[i] != 0.0) ||
+                (i < data.backtest.swap_pnl.size() && data.backtest.swap_pnl[i] != 0.0);
+    for (const BacktestExplainColumn &column : swap_explain_columns()) {
+      const std::vector<double> &values = data.backtest.*(column.member);
+      live = live || (i < values.size() && values[i] != 0.0);
+    }
     if (live) {
       return Err(ErrorCode::InvalidArgument,
                  "backtest_db: the stored series schema does not carry the swap lane");
@@ -1906,6 +1954,33 @@ Status append_backtest_results(BacktestResult &dst, const BacktestResult &src) {
                "backtest_db: cannot append across a swap-lane shape change while either side "
                "carries swap data (the stored schema does not persist the lane)");
   }
+  // The same rule for the explain, on its own shape (Task F-8 fix round 2, I-3).
+  // A shape mismatch collapses to "absent" below, which is lossless only when
+  // neither side has attribution to lose; if either does, refuse rather than
+  // discard it.
+  //
+  // Fix round 6: this read `swap_explain_columns().front()` -- ONE column
+  // sampled to decide a property of all eight -- justified by a comment claiming
+  // `validate_result_shape` had already rejected a partial set. It had not, and
+  // a result with one column populated came out of this function ragged. Both
+  // validators now reject `Mixed`, and the question is asked through
+  // `swap_explain_shape`, which has no way to answer it from fewer than all
+  // eight. The guarantee is the accessor, not the comment.
+  const SwapExplainShape dst_explain = swap_explain_shape(dst);
+  const SwapExplainShape src_explain = swap_explain_shape(src);
+  if (dst_explain == SwapExplainShape::Mixed || src_explain == SwapExplainShape::Mixed) {
+    return Err(ErrorCode::InvalidArgument,
+               "backtest_db: cannot append a result whose swap-explain columns are partially "
+               "populated");
+  }
+  const bool dst_explain_shape = dst_explain == SwapExplainShape::Present;
+  const bool src_explain_shape = src_explain == SwapExplainShape::Present;
+  if (dst_explain_shape != src_explain_shape &&
+      (result_has_explain_data(dst) || result_has_explain_data(src))) {
+    return Err(ErrorCode::InvalidArgument,
+               "backtest_db: cannot append across a swap-explain shape change while either side "
+               "carries attribution (collapsing it would discard the explain silently)");
+  }
   for (std::size_t i = 0; i < dst.signals.size(); ++i) {
     if (dst.signals[i].first != src.signals[i].first) {
       return Err(ErrorCode::InvalidArgument, "backtest_db: appended signal columns differ");
@@ -1933,6 +2008,25 @@ Status append_backtest_results(BacktestResult &dst, const BacktestResult &src) {
   } else {
     combined.swap_pv.clear();
     combined.swap_pnl.clear();
+  }
+  // Task F-8: the explain columns concatenate or clear TOGETHER with each
+  // other, on their own shape test rather than on the swap lane's. They are
+  // opt-in, so a run with `swap_pv`/`swap_pnl` present and these absent is a
+  // normal result, not a malformed one -- reusing `dst_swap_shape` would clear
+  // a perfectly good set of explain columns whenever the swap shapes happened
+  // to differ, and vice versa.
+  //
+  // The collapse is only reached when NEITHER side carries attribution; the
+  // refusal above (fix round 2, I-3) is what makes that safe, and it is the same
+  // rule the swap lane states thirty lines up. Round 1 had the collapse without
+  // the refusal, which turned a shape mismatch into silent data loss.
+  for (const BacktestExplainColumn &column : swap_explain_columns()) {
+    std::vector<double> &into = combined.*(column.member);
+    if (dst_explain_shape && src_explain_shape) {
+      append_vector(into, src.*(column.member));
+    } else {
+      into.clear();
+    }
   }
   append_vector(combined.step_pnl_total, src.step_pnl_total);
   for (std::size_t i = 0; i < combined.signals.size(); ++i) {

@@ -999,8 +999,31 @@ namespace {
     if (!(std::isfinite(leg.annualization) && leg.annualization > 0.0)) {
       return Err(ErrorCode::InvalidArgument, tag + " needs a finite positive annualization");
     }
-    const bool capped =
-        leg.kind == DerivKind::CappedVarSwap || leg.kind == DerivKind::CappedVolSwap;
+    // Task F-3 fix round 1 (I-3): validate `kind` HERE, at the boundary where
+    // the caller wrote it. Nothing used to, and the two engine-unsupported
+    // kinds then failed in two very different ways: a GammaSwap leg solved
+    // into a lot and failed the WHOLE run at the engine's own
+    // `valid_deriv_kind`, while a CorridorVarSwap leg was refused by
+    // `solve_cycle_swap` and folded into `++skipped_swap_cycles_` below --
+    // completing the run at exit 0 with the swap lane silently absent,
+    // evidenced only by an aggregate counter that also counts dark boards and
+    // one-legged cycles. F-3's own refusal is what made that outcome the
+    // quieter one. `engine_supports_swap_kind` (backtest.hpp) is the ENGINE's
+    // own admission list, called rather than re-listed, so this gate cannot
+    // drift from the boundary it is protecting.
+    if (!engine_supports_swap_kind(leg.kind)) {
+      return Err(ErrorCode::InvalidArgument,
+                 tag + " names a kind the backtest engine cannot carry as a live "
+                       "swap lot (kind=" +
+                     std::to_string(static_cast<int>(leg.kind)) + ")");
+    }
+    // Task F-5 (pre-feature refactor): this used to be a third hand-written
+    // copy of the capped-kind disjunction, alongside `validate_deriv_dispatch`
+    // (derivatives.cpp) and `is_capped_kind` (backtest.cpp). Same reason
+    // `engine_supports_swap_kind` is CALLED on the line above rather than
+    // re-listed: the spec validator and the engine boundary must not be able
+    // to reach different verdicts about one leg.
+    const bool capped = deriv_kind_is_capped(leg.kind);
     if (capped && !(std::isfinite(leg.cap_dec) && leg.cap_dec > 0.0)) {
       return Err(ErrorCode::InvalidArgument, tag + " is a capped kind and needs cap_dec > 0");
     }
@@ -1291,7 +1314,10 @@ Status DeclarativeStrategy::step_restrike(const MarketSnapshot &base, std::size_
       req.session_ts = spec_.session_ts;
       req.deriv_cfg = leg.deriv_cfg;
 
-      Result<SwapLot> lot = solve_cycle_swap(surface, req, target_vega);
+      // FIT-C7 / Task C-6: trust this leg's surface's OWN certified wing band
+      // (same-snapshot provenance for `uid`), not the mode-blind default.
+      Result<SwapLot> lot =
+          solve_cycle_swap(surface, req, target_vega, certified_wing_band_for(base, uid));
       if (!lot) {
         ++skipped_swap_cycles_;
         continue;
