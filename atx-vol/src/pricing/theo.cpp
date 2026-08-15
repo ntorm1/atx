@@ -894,6 +894,12 @@ Result<GbtFairVolModelData> load_gbt_fair_vol_model_data(std::string_view path) 
     return Err(ErrorCode::ParseError,
                "load_gbt_fair_vol_model: unparseable tree count '" + value + "'");
   }
+  if (n_trees > content.size() - at) {
+    return Err(ErrorCode::ParseError,
+               "load_gbt_fair_vol_model: declared tree count " + std::to_string(n_trees) +
+                   " exceeds the " + std::to_string(content.size() - at) +
+                   " content lines present");
+  }
   data.tree_first_node.reserve(n_trees);
   for (std::size_t t = 0; t < n_trees; ++t) {
     st = tagged_line("tree", value);
@@ -916,6 +922,12 @@ Result<GbtFairVolModelData> load_gbt_fair_vol_model_data(std::string_view path) 
   if (!parse_int_token(value, n_nodes)) {
     return Err(ErrorCode::ParseError,
                "load_gbt_fair_vol_model: unparseable node count '" + value + "'");
+  }
+  if (n_nodes > content.size() - at) {
+    return Err(ErrorCode::ParseError,
+               "load_gbt_fair_vol_model: declared node count " + std::to_string(n_nodes) +
+                   " exceeds the " + std::to_string(content.size() - at) +
+                   " content lines present");
   }
   data.feature_idx.reserve(n_nodes);
   data.threshold.reserve(n_nodes);

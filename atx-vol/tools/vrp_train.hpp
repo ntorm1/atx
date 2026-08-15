@@ -454,10 +454,6 @@ struct VrpObservations {
     }
     const std::size_t s = panel.row_symbol[r];
     const std::size_t p = pos_in_symbol[r];
-    if (p + kVrpHorizonSessions >= sym_rows[s].size() + 1 &&
-        p + kVrpHorizonSessions != sym_rows[s].size() - 1 + 1) {
-      // (kept explicit below; this branch is unreachable scaffolding)
-    }
     if (p + kVrpHorizonSessions > sym_rows[s].size() - 1) {
       return Err(ErrorCode::InvalidArgument,
                  "build_vrp_observations: labeled row without a t+21 session row ('" +

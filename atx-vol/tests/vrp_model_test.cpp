@@ -301,6 +301,76 @@ TEST(VrpModel, GbtLoadMissingFileIsIoError) {
   EXPECT_EQ(model.error().code(), ErrorCode::IoError);
 }
 
+// ── VrpModel: GBT loader fail-closed grammar (counts / truncation / trailing) ─
+
+// Saves the two-tree fixture (trees\t2, nodes\t8), applies one byte-level
+// find/replace mutation, and returns the loader's Result. Every mutation below
+// must fail closed with Err(ParseError) -- never an exception escaping the
+// Result-returning loader.
+[[nodiscard]] Result<GbtFairVolModelData> load_gbt_fixture_with_mutation(
+    std::string_view label, std::string_view find, std::string_view replace) {
+  const GbtFairVolModelData d = make_two_tree_fixture();
+  const std::filesystem::path p = unique_temp_path(label, ".tsv");
+  EXPECT_TRUE(save_gbt_fair_vol_model_data(d, p.string()).has_value());
+  std::string bytes = read_file_bytes(p);
+  const std::size_t pos = bytes.find(find);
+  EXPECT_NE(pos, std::string::npos) << "fixture no longer contains '" << find << "'";
+  if (pos != std::string::npos) {
+    bytes.replace(pos, find.size(), replace);
+  }
+  {
+    std::ofstream out(p, std::ios::binary | std::ios::trunc);
+    out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+  }
+  auto loaded = load_gbt_fair_vol_model_data(p.string());
+  std::error_code ec;
+  std::filesystem::remove(p, ec);
+  return loaded;
+}
+
+TEST(VrpModel, GbtLoadRejectsOverdeclaredTreeCountWithoutReserving) {
+  // 'trees\t400000000000' parses into size_t; the loader must bound it by the
+  // content lines actually present BEFORE any vector::reserve, so a corrupt
+  // count is Err(ParseError) instead of bad_alloc/length_error escaping.
+  const auto loaded = load_gbt_fixture_with_mutation("gbt_trees_huge", "trees\t2\n",
+                                                     "trees\t400000000000\n");
+  ASSERT_FALSE(loaded.has_value());
+  EXPECT_EQ(loaded.error().code(), ErrorCode::ParseError);
+}
+
+TEST(VrpModel, GbtLoadRejectsOverdeclaredNodeCountWithoutReserving) {
+  const auto loaded = load_gbt_fixture_with_mutation("gbt_nodes_huge", "nodes\t8\n",
+                                                     "nodes\t400000000000\n");
+  ASSERT_FALSE(loaded.has_value());
+  EXPECT_EQ(loaded.error().code(), ErrorCode::ParseError);
+}
+
+TEST(VrpModel, GbtLoadRejectsTruncatedNodeSection) {
+  // Declares one more node than the file carries.
+  const auto loaded =
+      load_gbt_fixture_with_mutation("gbt_nodes_trunc", "nodes\t8\n", "nodes\t9\n");
+  ASSERT_FALSE(loaded.has_value());
+  EXPECT_EQ(loaded.error().code(), ErrorCode::ParseError);
+}
+
+TEST(VrpModel, GbtLoadRejectsTruncatedNodeLine) {
+  // Final node line loses its leaf field (5 -> 4 fields).
+  const auto loaded =
+      load_gbt_fixture_with_mutation("gbt_node_4field", "\t-1\t-1\t0.5\n", "\t-1\t-1\n");
+  ASSERT_FALSE(loaded.has_value());
+  EXPECT_EQ(loaded.error().code(), ErrorCode::ParseError);
+}
+
+TEST(VrpModel, GbtLoadRejectsTrailingContentAfterDeclaredNodes) {
+  // An extra node-shaped line after the declared count must fail closed --
+  // deleting the loader's 'at != content.size()' trailing check would turn
+  // this into a silent Ok.
+  const auto loaded = load_gbt_fixture_with_mutation(
+      "gbt_trailing", "\t-1\t-1\t0.5\n", "\t-1\t-1\t0.5\n0\t0\t-1\t-1\t0.125\n");
+  ASSERT_FALSE(loaded.has_value());
+  EXPECT_EQ(loaded.error().code(), ErrorCode::ParseError);
+}
+
 TEST(VrpModel, GbtMakeRejectsChildIndexNotStrictlyIncreasing) {
   GbtFairVolModelData d = make_two_tree_fixture();
   d.left[0] = 0; // self-cycle: a child must be strictly greater than its parent
