@@ -53,10 +53,27 @@ IN ONE DIRECTION PRODUCES THE ERROR IN THE OTHER. Such a rule cannot be fixed by
 widening it -- widening makes both directions worse. It needs the classifier the
 question above supplies.
 
-COMPARISONS NAME THEIR BASELINE. Every `previously`, `used to`, `no longer` and
-comparative `now` in this file states WHAT IT IS RELATIVE TO -- `1.0.0` for a
-change a released caller will meet, or an explicit SHA where the baseline is an
-earlier commit of the development branch. This is not stylistic. A comparison
+COMPARISONS MUST NAME THEIR BASELINE. A `previously`, `used to`, `no longer` or
+comparative `now` MUST state what it is relative to whenever the baseline is not
+the section heading -- an explicit SHA where the baseline is an earlier commit
+of the development branch, and `1.0.0` wherever a released caller is the one
+affected. Scope, so the rule is checkable rather than aspirational: an entry
+under `## 1.1.0` whose comparison is against the previous RELEASE inherits that
+frame from the heading and needs no further marking, and most entries here are
+of that kind and are deliberately left unmarked. What must be marked is the
+mid-branch baseline, because that is the one a reader cannot recover and the one
+that inverts. THIS IS A REQUIREMENT ON NEW TEXT, NOT A DESCRIPTION OF THE FILE:
+stated as a property of what is already written it would be false, and a
+standing claim about the tree is the shape this file's own rule 2 forbids.
+
+AND THE READER OF A `1.1.0` CHANGELOG STANDS AT `1.0.0`. Mid-branch SHAs are
+internal history; they are the right frame for saying what moved while the
+release was built, and the wrong frame to leave a reader in. An entry that is
+complete in the mid-branch frame and silent in the release frame is incomplete
+for every actual reader, which is the inverse of the mistake below and was
+shipped in this same file one round after it.
+
+This is not stylistic. A comparison
 carries a frame the sentence does not otherwise name, and the frame is exactly
 what inverts when the sentence is moved: this release shipped a MIGRATION for a
 refusal that was real against one mid-branch commit and false against `1.0.0`,
@@ -299,8 +316,8 @@ New public `enum class SwapExplainShape { Absent, Present, Mixed }` and
 column, and there is no accessor that answers it from fewer. `Mixed` is the
 state that was unrepresentable before `c1771a6` and is the reason the enum has
 three values: it is always malformed, and a caller comparing against `Present`
-cannot
-silently treat it as such. `Mixed` is rejected BY NAME at each surface that can
+cannot silently treat it as such. `Mixed` is rejected BY NAME at each surface
+that can
 see a whole result -- the result's own `BacktestResult::validate()`,
 `backtest_db`'s store guard, and `append_backtest_results` -- rather than at one
 of them with the others trusting a comment, which is the arrangement that let it
@@ -310,9 +327,8 @@ MIGRATION: OBSERVABLE AT ALL THREE, RELATIVE TO `f505225` -- not to `1.0.0`,
 which had no explain columns to populate partially, so no released caller is
 affected. A `BacktestResult::validate()`, store, or `append_backtest_results`
 call that succeeded on a partial explain set at `f505225` now returns an error
-naming the shape. A caller assembling a
-`BacktestResult` by
-hand must populate the whole roster or none of it -- `swap_explain_shape` is how
+naming the shape. A caller assembling a `BacktestResult` by hand must populate
+the whole roster or none of it -- `swap_explain_shape` is how
 to check before calling. No caller that was populating the columns together, or
 leaving them all empty, is affected
 (`BacktestSwapExplain.TheShapeAccessorReadsEveryColumnNotTheFirst`,
@@ -332,8 +348,9 @@ shape rule.
   intended. The sibling swap-lane rule in the same function
   ("cannot append across a swap-lane shape change while either side carries swap
   data") had refused exactly this shape all along, which is what made the
-  asymmetry visible.
-  MIGRATION: append explain-carrying onto explain-carrying, or explain-less onto
+  asymmetry visible. MIGRATION, relative to `f505225` and not to `1.0.0`, which
+  had no explain columns to discard:
+  append explain-carrying onto explain-carrying, or explain-less onto
   explain-less; `swap_explain_shape` tells you which a result is BEFORE the
   call. A caller that was relying on the silent clear to normalise a mixed
   history must now do that explicitly, and should check whether it ever noticed
@@ -374,13 +391,36 @@ never read.** Over the three ways in:
   empty snapshot.
 
 WHAT A CALLER SHOULD DO WITH THAT, in the contract's own words: **if you need
-the archive-wide guarantee, do a whole-board load; nothing else offers it.** The
-`InvalidArgument` for disagreement is scoped to the surfaces THIS LOAD READ, and
-`ts_ns()` on a zero-surface snapshot is one record's timestamp -- so comparing
-`ts_ns()` across snapshots is not a way to infer that an archive is consistent.
-Where this entry and that header ever disagree, the header is the contract and
-the one to trust; this is a derived copy, and the sprint's repeated failure was
-a derived copy outliving the authoritative one.
+the archive-wide guarantee, do a whole-board load; nothing else offers it.**
+`load` still returns `InvalidArgument` on the two cases it always did -- an
+archive holding NO surfaces at all, and a disagreement among the surfaces THIS
+LOAD READ -- and it is the first of those that keeps the success clause above
+from being unconditional. `ts_ns()` on a zero-surface snapshot is one record's
+timestamp, so comparing `ts_ns()` across snapshots is not a way to infer that an
+archive is consistent. Where this entry and that header ever disagree, the
+header is the contract and the one to trust; this is a derived copy, and the
+sprint's repeated failure was a derived copy outliving the authoritative one.
+
+**IF YOU ARE COMING FROM `1.0.0`, THIS IS THE PART THAT CONCERNS YOU**, and it
+is the only 1.0.0-relative statement in this entry. The 1.0.0 header promised,
+without qualification, that `load` takes the valuation timestamp "from the
+surfaces' `now_ts_ns` (validating they agree)", with "InvalidArgument if the
+archive is empty or its surfaces disagree on the ts". THAT PROMISE WAS ALREADY
+FALSE AT RELEASE on one path: 1.0.0's own `src/backtest.cpp` carried the same
+unvalidated `dir.front()` sample for a subset that matched nothing, and
+`referenced_uids` was a public parameter of `load`, so the path was reachable by
+any caller. 1.0.0's B1 paragraph did describe the mechanism -- "if none match,
+the snapshot contains an empty SurfaceSet and reads only timestamp metadata from
+one mapped record" -- but never said that path skipped the validation the
+sentence above had just promised, so the header contradicted itself and the
+stronger half was the one a caller would rely on.
+
+NOTHING WAS DONE TO YOUR CODE: the behaviour on that path is unchanged from
+1.0.0 to here, and the fix was to the promise, not the loader. What a released
+caller must do is re-read the rule above and stop treating a subset load's
+success as evidence that an archive agrees with itself. A caller who checked
+archive consistency by loading a subset and relying on the documented refusal
+was never getting that check.
 
 THE SAMPLE WAS NEVER THE DEFECT. A zero-match subset still samples one record,
 by the rule above and deliberately: what was wrong is that the sampled timestamp
@@ -405,12 +445,15 @@ argued structurally rather than measured.
 NOTHING HERE IS A MIGRATION, and the entry is worth reading precisely because
 an earlier cut of it claimed one. What round 8 adds to a load that READS
 something is a PIN, not a change: the loop that verifies every loaded surface
-against the first is byte-identical across `8454a32`, `c1771a6`, `c8bf271` and
-`ec7d3ae` (285 bytes, same SHA-256 at all four), and the predicate routing a
+against the first is byte-identical at `1.0.0`, `8454a32`, `c1771a6`, `c8bf271`
+and `ec7d3ae` (285 bytes, same SHA-256 at all five), and the predicate routing a
 matched subset into it -- `subset_missed = subset_requested && !loaded_subset`,
 with `loaded_subset` being `n_surfaces() != 0` -- is unchanged across the same
-four. So a subset naming two disagreeing uids has ALWAYS refused; no caller
-loading one has anything to do. What was missing was a test saying so, and that
+five. `1.0.0` is the member of that set that matters, since it is where a
+released caller stands; the mid-branch four only establish that nothing moved
+while this release was being built. So a subset naming two disagreeing uids has
+refused since `1.0.0`, and no caller loading one has anything to do. What was
+missing was a test saying so, and that
 is what landed
 (`BacktestSwapExplain.EveryLoadThatReadsAMixedArchiveRefusesIt`, with
 `ALoadThatReadsOneRecordOrNoneCannotSeeAMixedArchive` pinning the documented
@@ -437,20 +480,31 @@ MEASURED: a contract shorter than the default roll (`1/365.25`) on a grid whose
 THE RULE IS ABOUT TERMS, AND IT HAS NO EXCEPTIONS: every term is gated on its own
 shock, identically. It is deliberately NOT stated as "the slots a configuration
 leaves NaN", which is how this file and the kernel's own header both described it
-until `55006c4` retired that noun in the last copy. Any count of slots is wrong
-about something -- the table it summarised is three conditions over
-`(slot, condition)` pairs in which one slot appears twice, and it describes what
-the DEFAULT configuration leaves NaN rather than what CAN be NaN, which is every
-`double` member. None of those is the number of TERMS the rule governs. The test
-that pins it was renamed in `64d60e9` to drop the same wrong noun from its own
-title, and is now `ScenarioGridDeriv.EveryTermIsGatedByItsOwnShock`.
+until `55006c4` retired that noun in the last copy. A count of slots is wrong
+about something whichever way it is taken -- the table it summarised counts
+`(slot, condition)` rows, in which one slot appears more than once, and it
+describes what the DEFAULT configuration leaves NaN rather than what CAN be NaN,
+which is every `double` member. Neither is the number of TERMS the rule governs,
+and that number is not restated here: `std::size(kGatedTerms)` is
+`static_assert`ed at the gate in `scenario_grid_test.cpp`, which is where it
+belongs. The test that pins the rule was renamed in `64d60e9` to drop the same
+wrong noun from its own title, and is now
+`ScenarioGridDeriv.EveryTermIsGatedByItsOwnShock`.
 
-That noun was not only a description problem. Measured at the round-9 review,
-one gate mutated per run: the slot-organised test caught 6 of 11 and the
-term-organised one 11 of 11, and the five it missed were exactly delta, gamma,
-vega, volga and rho -- the terms no configuration leaves NaN, which a
-slot-organised test could not reach. The artifact had been built around the
-wrong noun too, which is why every earlier correction held for exactly one
+That noun was not only a description problem: the ARTIFACT had been built around
+it too, which is why every earlier correction held for exactly one round. The
+terms a slot-organised test could not reach are delta, gamma, vega, volga and
+rho -- no configuration leaves them NaN, so a test that poisons only
+documented-NaN slots never perturbs them. `64d60e9` records the control that
+demonstrates the replacement: the shipped kernel scores zero failures against
+the term table, while a copy with the vega gate removed fails on vega, a slot
+the previous test never poisoned and therefore could not have caught. A
+mutant-score ratio quoted in `55006c4`'s message is NOT reproduced here -- it
+does not reconcile with the `static_assert`ed term count, and its own record
+does not decompose it, so this entry states the control that is in the tree
+rather than a figure that is not. The same ratio appears in
+`scenario_grid.hpp`'s mirror of this text and is flagged for that lane rather
+than corrected from here.
 round. The artifact that stands behind the GENERAL claim is
 `ScenarioGridDeriv.ASufficientVerdictAlwaysYieldsAFiniteKernel`, whose slot list
 names every `double` member of `DerivGreeks` rather than the ones the kernel
@@ -707,6 +761,21 @@ through `validate_deriv_dispatch` into the parametric OTC strip and returned a
 successful `DerivQuote` — a confident OTC number for a listed-variance
 convention. The header documented the gap in prose ("DECLARED, UNENFORCED")
 and nothing enforced it.
+
+**CODE THAT COMPILED AND SUCCEEDED AT `1.0.0` NOW RETURNS AN ERROR, and every
+mechanical additive-only check passes this clean** — no symbol was removed, no
+signature changed, and the enumerator still exists at the same value. It is
+recorded here as a deliberate exception rather than an oversight, on the ground
+that `1.0.0` reserved the field IN WRITING at the point of use. Its
+`derivatives.hpp` listed the enumerator under "DECLARED, UNENFORCED", said in
+terms that "a `CboeVarianceFuture` contract prices identically to an `Otc` one
+today rather than failing loud", and instructed the affected caller directly: "a
+caller relying on CBOE variance-future conventions **must not assume this field
+does anything yet**". A caller who honoured that reservation set `Otc` and is
+unaffected. A caller who set the enumerator anyway was being handed an OTC mark
+under a listed label, which is the defect this closes; there is deliberately no
+behaviour-preserving migration for that case, because the preserved behaviour
+was the bug.
 
 * NOW: `validate_deriv_dispatch` returns `ErrorCode::NotImplemented`
   ("reserved marking convention") for any `marking != Otc`, on **every**
@@ -1366,7 +1435,13 @@ exit returns successfully for ANY `T` without setting `DerivFlags::FullyAged`
 default `rate_abs = 1.0e-4` and `T = 0.25`; grows linearly with `T` and with
 `rate_abs`) — a real, if small, mark move on any book already reading `rho`.
 `DerivGreekBumps::rate_abs` is left in the struct (source-compatible,
-harmless) but is no longer consumed by anything; see its own field doc.
+harmless) but is no longer consumed by anything; see its own field doc. A
+`1.0.0` caller sees a NUMBER MOVE WITH NO API CHANGE TO EXPLAIN IT, which is
+the reason this is called out rather than folded into the identity above: the
+field it used to be computed from is still there, still settable, and now
+INERT — but not ignorable, because `bumps_valid` still requires it to be
+strictly positive, so a caller who "disables" it by setting it to 0 gets an
+error rather than the old FD path.
 **−1 repricing per `deriv_greeks` call** (the deleted `r+` bump; Standard
 unaged VarSwap greeks: 14 → 13 evaluations).
 
@@ -1545,6 +1620,15 @@ this is a plain append) reports the real calendar-violation count;
 `n_butterfly_viol` is no longer unconditionally zero on the eSSVI path.
 Both read 0 when `validate_no_arb` is false (audit not run — not itself a
 "verified clean" claim).
+
+FOR A CALLER COMING FROM `1.0.0`: that field's own documentation said
+"Martini-Mingone tally for raw-SVI slices; **0 by construction for eSSVI**", and
+code written against that sentence treated a zero as carrying no information on
+an eSSVI surface. It is now a real post-fit grid-scan count on that driver
+whenever `CalibOpts::validate_no_arb` is set, which is its default — so a
+non-zero value is reachable where the documented answer was always 0. The knob
+is what turns it on, and setting `validate_no_arb = false` restores the
+`1.0.0` reading of both counts exactly.
 
 The `fit_slice_curve` (canonical PricerFitter) Essvi branch is UNCHANGED
 on the default (`residual_disable == true`) path — bit-identical. When a
