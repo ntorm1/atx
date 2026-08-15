@@ -29,7 +29,40 @@ void usage(std::FILE *out) {
   std::fprintf(out, "usage: atx-vol-quant-research --db <backtest-root> --template <id>\n"
                     "       --symbol <symbol> --signal <name> --capital <positive-number>\n"
                     "       [--min-train N] [--test N] [--step N] [--embargo-ns N]\n"
-                    "       [--nw-lag N] [--lookbacks 5,20,60] [--rolling-train N]\n");
+                    "       [--nw-lag N] [--lookbacks 5,20,60] [--rolling-train N]\n"
+                    "   or: atx-vol-quant-research vrp-backtest --signal <vrp_signal_v1.tsv>\n"
+                    "       --surface-db <root> [--surface-db <root> ...] --report <out.tsv>\n"
+                    "       [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--horizon-days X]\n"
+                    "       [--rebalance-steps N] [--long-frac X] [--short-frac X]\n"
+                    "       [--risk-budget X] [--vov-floor X] [--vega-cap X]\n"
+                    "       [--net-short-tilt X] [--no-trade-band X] [--cost-vol-pts X]\n"
+                    "       [--stock-bps X] [--hedge-band X] [--no-hedge]\n");
+}
+
+// vrp-backtest subcommand (lane vrp-book): signal TSV + SurfaceDb roots ->
+// VolEdgeStrategy through run_backtest -> report TSV. All logic lives in the
+// library seam (backtest/quant_pipeline.hpp); this is dispatch only.
+[[nodiscard]] int run_vrp_backtest_command(int argc, char **argv) {
+  std::vector<std::string> args;
+  args.reserve(static_cast<std::size_t>(argc > 2 ? argc - 2 : 0));
+  for (int i = 2; i < argc; ++i) {
+    args.emplace_back(argv[i]);
+  }
+  auto spec = parse_vrp_backtest_args(args);
+  if (!spec) {
+    std::fprintf(stderr, "%s\n", spec.error().to_string().c_str());
+    usage(stderr);
+    return 2;
+  }
+  auto summary = run_vrp_backtest(*spec);
+  if (!summary) {
+    std::fprintf(stderr, "%s\n", summary.error().to_string().c_str());
+    return 1;
+  }
+  std::printf("report=%s\nrows=%zu\nfinal_nav=%.17g\ntotal_cost=%.17g\n",
+              summary->report_path.c_str(), summary->n_rows, summary->final_nav,
+              summary->total_cost);
+  return 0;
 }
 
 [[nodiscard]] bool parse_u64(std::string_view text, std::uint64_t &out) {
@@ -119,6 +152,9 @@ selected_evaluation(const ResearchMiningResult &mining) {
 } // namespace
 
 int main(int argc, char **argv) {
+  if (argc >= 2 && std::string_view(argv[1]) == "vrp-backtest") {
+    return run_vrp_backtest_command(argc, argv);
+  }
   std::string db_root;
   std::string template_id;
   std::string symbol;

@@ -85,4 +85,36 @@ Result<DerivPnlExplain> deriv_pnl_explain(const DerivPnlInputs& in) {
   return Ok(out);
 }
 
+Result<TheoEdgeLedger> theo_edge_ledger(const TheoEdgeLedgerInputs& in) {
+  if (!std::isfinite(in.dt_years) || in.dt_years < 0.0) {
+    return Err(ErrorCode::InvalidArgument,
+               "theo_edge_ledger: dt_years must be finite and >= 0");
+  }
+
+  TheoEdgeLedger out{};
+  TheoEdgeLedgerFlags flags = TheoEdgeLedgerFlags::None;
+
+  // Line 1: realized-leg accrual at dollar gamma. Every factor must be a real
+  // measurement -- a NaN gamma multiplying a zero surprise must stay NaN.
+  if (!std::isfinite(in.gamma) || !std::isfinite(in.spot) || !std::isfinite(in.r_step) ||
+      !std::isfinite(in.sigma_imp)) {
+    flags |= TheoEdgeLedgerFlags::CollectedUnavailable;
+    out.collected = kQuietNaN;
+  } else {
+    out.collected = 0.5 * in.gamma * in.spot * in.spot *
+                    (in.r_step * in.r_step - in.sigma_imp * in.sigma_imp * in.dt_years);
+  }
+
+  // Line 2: the unaccrued fraction remarked at today's implied vol.
+  if (!std::isfinite(in.vega) || !std::isfinite(in.d_iv)) {
+    flags |= TheoEdgeLedgerFlags::RepricedUnavailable;
+    out.repriced = kQuietNaN;
+  } else {
+    out.repriced = in.vega * in.d_iv;
+  }
+
+  out.flags = flags;
+  return Ok(out);
+}
+
 }  // namespace atx::vol
