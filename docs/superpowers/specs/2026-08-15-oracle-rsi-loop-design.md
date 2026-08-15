@@ -6,8 +6,9 @@ The workflow now has deterministic capability states, evaluated in order:
 `missing_data -> missing_mode_a -> missing_conventions -> missing_mode_b -> ready`.
 Capability's tool-restricted agent can run only the fixed aggregate probe; the
 probe freezes `refs/heads/oracle/canonical` (or `main` before its first creation)
-to a full SHA, tests committed receipt existence, and reads only an already
-committed holdout digest receipt. It cannot open membership. A missing state runs exactly one fixed
+to a full SHA, validates closed receipts, internally parses the committed cohort
+manifests, recomputes canonical holdout membership SHA-256 and tune/holdout
+disjointness, and exposes only booleans/digest. A missing state runs exactly one fixed
 implementation lane through Build, exact-SHA Review, optional Fix, fresh Review,
 scoped verification in a newly leased worktree, workflow receipt validation, a
 minimal exact canonical compare-and-swap, and independent post-ref audit. It
@@ -16,12 +17,13 @@ is observed. It skips planner, ordinary Measure, Analyst, vol-sprint, Ratchet, a
 every holdout benchmark. The four bootstrap deliveries are data/cohorts/hash, Mode
 A, convention floor, then Mode B. There is no combined "missing tooling" path.
 
-Only `ready` runs Measure (aggregate smoke+tune), the tool-less Analyst (a validated,
-self-contained aggregate payload), vol-sprint, then Ratchet. A blocked/incomplete
+Only `ready` runs Measure (aggregate smoke+tune exact typed numeric receipts); the
+workflow derives the validated self-contained Analyst payload from those receipts,
+then runs the tool-less Analyst, vol-sprint, and Ratchet. A blocked/incomplete
 sprint or any mandatory lane whose final review is not a fresh APPROVE returns
 `FAILED` before holdout; it is not a REJECT and cannot increment the consecutive-
-reject counter. Ratchet leases the exact reviewed integration SHA, then alone opens
-holdout and recomputes the digest. Its agent prepares typed evidence and a candidate
+reject counter. Ratchet leases the exact reviewed integration SHA, then alone
+benchmarks holdout and opens licensed holdout rows; it recomputes the digest. Its agent prepares typed evidence and a candidate
 commit; workflow code validates delta arithmetic, target improvement, the 2%
 aggregate bound, pinned speed, applicable modes, digest, required gates, and one
 market receipt per suspect exclusion before computing ACCEPT/REJECT. A minimal
@@ -38,8 +40,9 @@ Capability state is derived from the exact versioned aggregate receipts defined 
 the bootstrap charter, not artifact existence. The probe recomputes manifest and
 Git-blob identities, validates closed schemas, target sets, enum maps, counts,
 prior-receipt invariance, and ancestor provenance. Missing/legacy/extra/corrupt
-content resolves to the first missing state. Holdout validation uses its blob and
-membership-digest receipts; the probe never opens holdout membership.
+content resolves to the first missing state. Holdout manifest validation recomputes
+the canonical sorted membership digest and disjointness inside the fixed probe;
+membership never reaches the capability agent, Analyst, prompt, or report.
 
 Date: 2026-08-15. Status: harness implemented; oracle capability bootstrap pending.
 Depends on: vol DAG harness (f4d8bb9).

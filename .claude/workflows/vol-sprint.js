@@ -21,6 +21,30 @@ const FIXED_ORACLE_GATES = Object.freeze([
   { gate_id: 'scorecard:mode_b_smoke_tune', command: 'atx-vol-oracle-bench --cohort smoke,tune --mode B --scorecard --aggregate-only' },
   { gate_id: 'speed:rel_avx2_quiet', command: 'atx-vol-oracle-bench --cohort tune --benchmark-speed --preset rel-avx2 --quiet-host --aggregate-only' },
 ])
+const PATH_GATE_REGISTRY = Object.freeze([
+  {
+    owner: 'pricing', source_prefixes: ['atx-vol/src/pricing/', 'atx-vol/include/atx/vol/api/pricing/'],
+    test_prefixes: ['american', 'adjusted_greeks', 'adjoint_greeks', 'black76', 'batch', 'dividend', 'greeks', 'implied_vol', 'rates_curve'],
+    unit_targets: ['atx-vol-tests'], suite_prefixes: ['American', 'AndersenLake', 'Baw', 'CallGreeks', 'Alo', 'AlBulk', 'FitPreset', 'AdjointGreeks', 'AdjustedGreeks', 'NegRate', 'ExerciseBoundary', 'ResolvedAmerican', 'GaussLegendre'],
+    oracle_tests: ['american-rsi', 'american-price-rsi', 'american-greeks-rsi'], pch_off_targets: ['atx-vol-tests'],
+  },
+  {
+    owner: 'fitting', source_prefixes: ['atx-vol/src/fitting/', 'atx-vol/include/atx/vol/api/fitting/'],
+    test_prefixes: ['arb', 'calib', 'c8', 'cstar', 'correction', 'convex_recovery', 'curve_fit', 'deamer'],
+    unit_targets: ['atx-vol-tests'], suite_prefixes: ['Arb', 'Calib', 'C8', 'CStar', 'Correction', 'Chebyshev', 'ConvexRecovery', 'CurveFit', 'Deamer', 'Pin', 'PricerFitter'],
+    oracle_tests: ['american-fit-rsi', 'surface-fit-rsi'], pch_off_targets: ['atx-vol-tests'],
+  },
+  {
+    owner: 'simd', source_prefixes: ['atx-vol/src/simd/', 'atx-vol/include/atx/vol/api/simd/'],
+    test_prefixes: ['american_batch', 'batch', 'simd', 'vector_math'],
+    unit_targets: ['atx-vol-tests'], suite_prefixes: ['American', 'ResolvedAmerican', 'Simd', 'VectorMath', 'Batch'],
+    oracle_tests: ['american-simd-rsi', 'american-greeks-rsi'], pch_off_targets: ['atx-vol-tests'],
+  },
+  {
+    owner: 'oracle-docs', exact_paths: ['atx-vol/changelog.md', 'atx-vol/bench/oracle/charter.md'],
+    source_prefixes: [], test_prefixes: [], unit_targets: [], suite_prefixes: [], oracle_tests: [], pch_off_targets: [],
+  },
+])
 
 const EVIDENCE_ITEM = {
   type: 'object', required: ['command', 'exit_code', 'output'],
@@ -215,6 +239,18 @@ function safeOracleTest(value) {
   return /^[a-z0-9][a-z0-9_-]{2,63}$/.test(String(value || ''))
 }
 
+function pathGateOwner(path) {
+  const normalized = String(path || '').replace(/\\/g, '/').toLowerCase()
+  return PATH_GATE_REGISTRY.find(owner => (owner.exact_paths || []).includes(normalized) ||
+    owner.source_prefixes.some(prefix => normalized.startsWith(prefix)) ||
+    normalized.startsWith('atx-vol/tests/') && owner.test_prefixes.some(prefix => normalized.slice('atx-vol/tests/'.length).startsWith(prefix))) || null
+}
+
+function regexSuiteName(value) {
+  const body = String(value || '').slice(1, -1)
+  return body.includes('.') ? body.slice(0, body.indexOf('.')) : body
+}
+
 function closureError(lane) {
   if (!lane || !Array.isArray(lane.files_in_scope) || !lane.files_in_scope.length || !Array.isArray(lane.gate_closure)) return 'lane closure missing'
   const normalizedScope = lane.files_in_scope.map(path => String(path).replace(/\\/g, '/').toLowerCase())
@@ -225,8 +261,13 @@ function closureError(lane) {
   for (const item of lane.gate_closure) {
     if (!item || !['unit_targets', 'unit_regexes', 'oracle_tests', 'pch_off_targets'].every(key => Array.isArray(item[key]))) return 'gate closure arrays missing'
     if (!item.unit_targets.every(safeTarget) || !item.unit_regexes.every(safeUnitRegex) || !item.oracle_tests.every(safeOracleTest) || !item.pch_off_targets.every(safeTarget)) return 'gate closure identifier invalid/broad'
+    const owner = pathGateOwner(item.file)
+    if (!owner) return `gate closure path is not in workflow registry: ${item.file}`
+    if (!item.unit_targets.every(target => owner.unit_targets.includes(target)) || !item.pch_off_targets.every(target => owner.pch_off_targets.includes(target)) ||
+        !item.oracle_tests.every(test => owner.oracle_tests.includes(test)) || !item.unit_regexes.every(regex => owner.suite_prefixes.some(prefix => regexSuiteName(regex).startsWith(prefix)))) return `gate closure does not match workflow path owner: ${item.file}`
     if (changedCode(item.file) && (!item.unit_targets.length || !item.unit_regexes.length)) return 'changed code requires affected unit target and anchored unit regex'
     if (changedHeader(item.file) && !item.pch_off_targets.length) return 'changed header requires scoped PCH-off target'
+    if (!changedCode(item.file) && (item.unit_targets.length || item.unit_regexes.length || item.oracle_tests.length || item.pch_off_targets.length)) return 'non-code path cannot assert code gates'
     oracleTests += item.oracle_tests.length
   }
   return oracleTests > 0 ? null : 'lane requires a hypothesis-specific OracleBench test'
@@ -259,10 +300,14 @@ function oracleLoopCommandError(command) {
     const match = text.match(/(?:^|\s)-R\s+(\S+)/i)
     if (!match || !safeUnitRegex(match[1])) return 'broad or unanchored ctest forbidden in oracle loop'
   }
-  if (/atx-vol-tests(?:\.exe)?(?:\s|$)/i.test(text) && !/(?:-R\s+\^|--gtest_filter=)/i.test(text) && !/\bbuild\s+atx-vol-tests\b/i.test(text)) return 'direct full test executable forbidden in oracle loop'
+  const tokens = text.split(/\s+/)
+  for (let index = 0; index < tokens.length; index += 1) {
+    if (/(?:^|[\\/])[^\\/\s]*(?:test|tests)(?:\.exe)?$/i.test(tokens[index]) && !/^-/i.test(tokens[index]) &&
+        !['build', '--target'].includes(String(tokens[index - 1] || '').toLowerCase())) return 'direct test executable forbidden in oracle loop'
+  }
   if (/\bpytest\b/i.test(text) || /\bnode\s+--test\b/i.test(text)) return 'unscoped external test runner forbidden in oracle loop'
   if (/cmake\s+--build/i.test(text) && !/--target\s+[A-Za-z0-9_.+-]+/i.test(text)) return 'broad cmake build forbidden in oracle loop'
-  if (/atx-build\.ps1[^\r\n]*\bbuild\s*$/i.test(text) || /(?:--target|\bbuild\s+)\s+all(?:\s|$)/i.test(text)) return 'broad build target forbidden in oracle loop'
+  if (/atx-build\.ps1[^\r\n]*\bbuild(?:\s*$|\s+all(?:\s|$))/i.test(text) || /(?:--target|\bbuild\s+)\s+all(?:\s|$)/i.test(text)) return 'broad build target forbidden in oracle loop'
   return null
 }
 
@@ -289,6 +334,7 @@ function reportContractError(report, lane, baseSha) {
   if (!report.files_changed.every(path => scope.has(String(path).replace(/\\/g, '/').toLowerCase()))) return 'changed file outside lane scope'
   const requiredGates = derivedGateRegistry(closureEntries(lane, report.files_changed))
   if (!requiredGates.length) return 'changed dependency closure produced no targeted gates'
+  if (report.evidence.length !== requiredGates.length || new Set(report.evidence.map(item => item.command)).size !== requiredGates.length) return 'lane evidence must equal exact changed-closure command set'
   const missing = requiredGates.filter(gate => !report.evidence.some(item => item.command === gate.command && item.exit_code === 0 && String(item.output || '').trim()))
   if (missing.length) return `evidence missing exact changed-closure gates: ${missing.map(gate => gate.gate_id).join(', ')}`
   return null

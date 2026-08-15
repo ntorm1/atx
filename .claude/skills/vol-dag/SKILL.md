@@ -34,8 +34,10 @@ Hard limits: ≤4 lanes. Any incomplete/blocked/non-APPROVE lane fails before
 integration. Second BLOCK after Fix is final. Gate FAIL carries pasted output;
 never "mostly passed" and never integrate in `C:\atx`.
 
-For the oracle loop, each scoped file has a closed `gate_closure`. The workflow
-mechanically derives affected anchored unit tests, hypothesis OracleBench tests,
+For the oracle loop, each scoped file has a closed `gate_closure` checked against
+the workflow-owned path/target/test registry. Unknown paths, unrelated mappings,
+omissions, and extra command receipts fail. The workflow mechanically derives
+affected anchored unit tests, hypothesis OracleBench tests,
 required aggregate smoke/tune scorecards, quiet pinned speed, and header-only
 scoped PCH-off targets. Full regression/release suites and broad repository gates
 are intentionally outside this loop.

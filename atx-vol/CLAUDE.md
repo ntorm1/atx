@@ -35,9 +35,10 @@ release qualification work.
   `bench/oracle/`. `vol-oracle-iter` advances exactly one ordered capability state
   (`missing_data → missing_mode_a → missing_conventions → missing_mode_b → ready`).
   Bootstrap runs one fixed lane and no holdout; only ready runs Measure → Analyst →
-  vol-sprint → Ratchet. Capability freezes only the committed digest receipt;
-  tool-less Analyst gets a validated aggregate payload, and Ratchet alone recomputes
-  membership before holdout.
+  vol-sprint → Ratchet.
+  The fixed capability probe internally validates and hashes the committed holdout
+  manifest but exposes no membership. The tool-less Analyst gets a workflow-derived
+  aggregate payload, and Ratchet alone benchmarks holdout or opens licensed rows.
 
 ## Harness isolation
 

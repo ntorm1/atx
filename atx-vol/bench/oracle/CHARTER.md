@@ -18,8 +18,9 @@ Only `ready` enters the RSI loop.
 
 Capability runs the fixed `scripts/oracle-capability.ps1` probe through a
 tool-restricted, no-read agent. It freezes `refs/heads/oracle/canonical` (or `main`
-before the first landing), tests only committed receipt existence, and reads only
-the already committed digest receipt; it cannot open holdout membership. Every lane starts from that SHA, uses a run-unique branch and
+before the first landing), validates closed committed receipts, and internally
+parses the three committed cohort manifests. It recomputes the canonical holdout
+membership digest and disjointness but returns no membership. Every lane starts from that SHA, uses a run-unique branch and
 durable heartbeat lease with an independent continuously renewing keeper, commits
 explicit paths, and releases with the same `run_id`. Typed receipts prove
 acquisition, keeper identity plus authenticated ready pulse, exact reviewed-SHA integration/HEAD, every scoped
@@ -40,9 +41,10 @@ the inherited blob at canonical.
   manifest name/SHA-256, smoke/tune/holdout Git blob IDs, the holdout membership
   SHA-256, three schema-valid booleans, and the two tune/holdout disjointness
   booleans. The probe validates the external aggregate ingest manifest schema,
-  digest, positive counts and bucket sum; validates smoke/tune schemas and blob
-  IDs; and checks the holdout blob ID plus frozen membership digest without opening
-  `holdout.json`.
+  digest, positive counts and bucket sum; validates all three cohort schemas and
+  blob IDs; recomputes SHA-256 over the canonical ordered object
+  `{schema_version:1,name,dates,underliers,buckets_et}` with each membership array
+  sorted; and independently verifies both tune/holdout disjointness invariants.
 - `bootstrap/mode-a.json` has exactly the common provenance fields,
   `transition=mode_a`, `command_id=oracle_mode_a_aggregate`, `exit_code=0`, the
   smoke blob ID, positive row count, and the complete closed Mode A target-ID set.
@@ -71,8 +73,9 @@ repair:
 
 - the partitioned parquet store and checksum/row-count manifest;
 - `cohorts/smoke.json`, `cohorts/tune.json`, and `cohorts/holdout.json`;
-- `cohorts/holdout.sha256`, the SHA-256 of canonical sorted membership fields
-  (`dates`, `underliers`, `buckets_et`) from `holdout.json`.
+- `cohorts/holdout.sha256`, the SHA-256 of the compact canonical ordered object
+  (`schema_version=1`, `name`, sorted `dates`, sorted `underliers`, sorted
+  `buckets_et`) derived from `holdout.json`.
 
 Smoke/tune/holdout must validate against `cohorts/README.md`; tune and holdout are
 disjoint in both underliers and buckets. Stage 1 may validate holdout metadata and
@@ -113,19 +116,25 @@ change conventions or holdout membership and do not benchmark holdout.
 
 ## Ready-state failure rule
 
-In `ready`, Measure sees smoke+tune and produces a self-contained aggregate payload;
-the tool-less Analyst sees only schema v2: the complete enumerated Mode A/B target
-registry, two aggregate baselines, a positive frozen speed pin, validated IDs, and
+In `ready`, Measure returns exact typed JSON receipts for the fixed Mode A, Mode B,
+and quiet-speed commands. Workflow code validates their complete numeric metric
+sets and derives the self-contained aggregate payload; Measure cannot self-report
+or override a baseline or speed pin. The tool-less Analyst sees only schema v2:
+the complete enumerated Mode A/B target registry, two aggregate baselines, a
+positive frozen speed pin, validated IDs, and
 a closed convention enum map. It has no workspace, arbitrary-string field, paths,
 hashes, membership, or row values. If any
 mandatory vol-sprint lane is blocked/incomplete, lacks a fresh APPROVE, or fails the
 isolated integration gate, the oracle run returns `FAILED`: no holdout benchmark,
-no Ratchet, and no REJECT-counter change. Ratchet alone opens holdout: it leases a
+no Ratchet, and no REJECT-counter change. Ratchet alone benchmarks holdout or opens
+licensed holdout rows: it leases a
 new worktree at the exact reviewed sprint integration SHA, recomputes membership,
 and compares it with the receipt frozen at run start. Ratchet prepares typed
 baseline/candidate/delta, digest, required-gate, pinned-speed, and per-suspect typed
-NBBO receipts. Workflow code owns metric IDs/classes/directions/baselines/limits,
-the speed pin, exact gate commands, and bounded numeric suspect identifiers; it recomputes NBBO distances and verifies
+NBBO receipts. Workflow code owns metric IDs/classes/directions/limits and exact
+gate commands; Measure's exact typed speed result supplies the baseline/pin.
+Ratchet candidate values are derived from typed gate results, not agent metric
+prose. The workflow also owns bounded numeric suspect identifiers; it recomputes NBBO distances and verifies
 the market is strictly closer to atx-vol before exclusion. It then computes ACCEPT/REJECT; the agent
 verdict is never authoritative. For ACCEPT only, a minimal finalizer compare-and-
 swaps `refs/heads/oracle/canonical` to the prepared commit, then an independent
@@ -138,3 +147,8 @@ from changed files and contains only affected anchored unit tests, hypothesis
 OracleBench tests, aggregate smoke/tune Mode A/B scorecards, the quiet pinned-speed
 microbenchmark, and owning PCH-off targets for changed headers. Full regression and
 release qualification are separate from the oracle loop.
+
+Bootstrap stages 2-4 invoke only `scripts/oracle-targeted-gate.ps1 -Gate <closed-id>`.
+That fixed adapter captures ordinary targeted ctest/OracleBench output, fails on a
+nonzero exit or empty output, and emits the exact typed PASS receipt consumed by the
+workflow. Direct test executables and broad build-wrapper verbs are invalid evidence.

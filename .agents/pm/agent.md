@@ -15,7 +15,9 @@ owns `refs/heads/oracle/canonical` and the ordered capability states in
 `atx-vol/bench/oracle/CHARTER.md`; bootstrap dispatches one fixed implementation
 lane but independently reviews, verifies, and atomically lands its exact SHA. Only
 ready state may reach holdout Ratchet. A failed/incomplete sprint is FAILED, not
-REJECT, and cannot increment the reject counter. Ratchet alone opens holdout, but
+REJECT, and cannot increment the reject counter. The fixed capability probe may
+internally hash the committed holdout manifest but exposes no membership; Ratchet
+alone benchmarks holdout or opens licensed rows. In Ratchet,
 workflow code computes ACCEPT/REJECT from typed delta/gate/digest/speed/market
 receipts. A minimal CAS finalizer lands only validated ACCEPT, followed by an
 independent ref audit. PM reports actual audited canonical state and only numbers

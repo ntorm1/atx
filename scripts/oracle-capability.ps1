@@ -1,6 +1,7 @@
 # Closed, aggregate-only capability probe for the SpiderRock oracle workflow.
-# It validates versioned bootstrap receipts and provenance without opening
-# holdout.json or licensed row data. Output is state plus booleans/digest only.
+# It validates versioned bootstrap receipts and provenance. The fixed probe alone
+# opens committed cohort manifests to recompute membership integrity; stdout is
+# state plus booleans/digest only and never contains membership or licensed rows.
 $ErrorActionPreference = 'Stop'
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
@@ -80,6 +81,28 @@ function Test-CohortJson($Cohort, [string]$ExpectedName) {
     @($Cohort.buckets_et | Select-Object -Unique).Count -eq @($Cohort.buckets_et).Count
 }
 
+function Get-CohortMembershipDigest($Cohort) {
+  if (-not $Cohort -or -not (Test-CohortJson $Cohort ([string]$Cohort.name))) { return '' }
+  $canonical = [ordered]@{
+    schema_version = 1
+    name = [string]$Cohort.name
+    dates = @($Cohort.dates | ForEach-Object { [string]$_ } | Sort-Object)
+    underliers = @($Cohort.underliers | ForEach-Object { [string]$_ } | Sort-Object)
+    buckets_et = @($Cohort.buckets_et | ForEach-Object { [string]$_ } | Sort-Object)
+  } | ConvertTo-Json -Depth 4 -Compress
+  $bytes = [System.Text.UTF8Encoding]::new($false).GetBytes($canonical)
+  try {
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    return ([System.BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant()
+  } finally { if ($sha) { $sha.Dispose() } }
+}
+
+function Test-Disjoint($Left, $Right) {
+  $leftSet = @($Left | ForEach-Object { [string]$_ } | Select-Object -Unique)
+  $rightSet = @($Right | ForEach-Object { [string]$_ } | Select-Object -Unique)
+  return @($leftSet | Where-Object { $rightSet -contains $_ }).Count -eq 0
+}
+
 function Test-IngestManifest([string]$Name, [string]$ExpectedSha256) {
   if (-not ($Name -match '^oracle_manifest_(\d{4}-\d{2}-\d{2})\.json$')) { return $false }
   $expectedDate = $Matches[1]
@@ -111,9 +134,15 @@ function Test-DataReceipt([string]$Sha, [ref]$DigestOut) {
   $holdoutPath = $oracleRoot + '/cohorts/holdout.json'; $digestPath = $oracleRoot + '/cohorts/holdout.sha256'
   if ((Get-BlobOid $Sha $smokePath) -ne $receipt.smoke_blob_oid -or (Get-BlobOid $Sha $tunePath) -ne $receipt.tune_blob_oid -or
       (Get-BlobOid $Sha $holdoutPath) -ne $receipt.holdout_blob_oid -or -not (Test-CommittedPath $Sha $digestPath)) { return $false }
-  if (-not (Test-CohortJson (Get-CommittedJson $Sha $smokePath) 'smoke') -or -not (Test-CohortJson (Get-CommittedJson $Sha $tunePath) 'tune')) { return $false }
+  $smoke = Get-CommittedJson $Sha $smokePath
+  $tune = Get-CommittedJson $Sha $tunePath
+  $holdout = Get-CommittedJson $Sha $holdoutPath
+  if (-not (Test-CohortJson $smoke 'smoke') -or -not (Test-CohortJson $tune 'tune') -or -not (Test-CohortJson $holdout 'holdout')) { return $false }
+  if (-not (Test-Disjoint $tune.underliers $holdout.underliers) -or -not (Test-Disjoint $tune.buckets_et $holdout.buckets_et)) { return $false }
   $digestText = (Invoke-GitText @('show', ($Sha + ':' + $digestPath))).Text.ToLowerInvariant()
-  if ($digestText -notmatch '^[0-9a-f]{64}$' -or $digestText -ne $receipt.holdout_membership_sha256 -or -not (Test-IngestManifest ([string]$receipt.ingest_manifest_name) ([string]$receipt.ingest_manifest_sha256))) { return $false }
+  $computedDigest = Get-CohortMembershipDigest $holdout
+  if ($digestText -notmatch '^[0-9a-f]{64}$' -or $computedDigest -notmatch '^[0-9a-f]{64}$' -or $digestText -ne $computedDigest -or
+      $digestText -ne $receipt.holdout_membership_sha256 -or -not (Test-IngestManifest ([string]$receipt.ingest_manifest_name) ([string]$receipt.ingest_manifest_sha256))) { return $false }
   $DigestOut.Value = $digestText
   return $true
 }

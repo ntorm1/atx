@@ -59,7 +59,9 @@ Date: 2026-08-15. Status: v3 correctness hard cutover implemented. Goal: faster 
 - **Barrier before integration** (needs all lanes): every mandatory lane must be
   DONE and freshly APPROVED at its final SHA. Release lane leases, acquire a new
   isolated integration lease, merge exact reviewed SHAs, prove HEAD, and run the
-  exact workflow-derived changed-file registry: affected anchored unit tests,
+  exact workflow-derived changed-file registry. Every changed path must have one
+  known owner; unknown paths and unrelated target/test mappings fail closed. The
+  registry contains affected anchored unit tests,
   hypothesis OracleBench tests, aggregate smoke/tune Mode A/B scorecards, quiet
   pinned speed, and owning PCH-off targets for changed headers. Labels, broad/full
   runners, full-repo hygiene, and release suites fail closed and remain outside the
@@ -78,7 +80,9 @@ Date: 2026-08-15. Status: v3 correctness hard cutover implemented. Goal: faster 
 ## Speed levers
 
 1. Warm pool trees (5 s/27 s vs 132 s cold) as the parallel substrate.
-2. Closed per-file gate mappings derive anchored unit/OracleBench commands; no broad or full-suite fallback exists in the loop.
+2. Closed workflow-owned per-file mappings derive anchored unit/OracleBench commands;
+   unknown paths, unrelated mappings, omitted receipts, and extra receipts fail.
+   No broad or full-suite fallback exists in the loop.
 3. Permission allowlist removes per-command prompting in lanes.
 4. Pipelined review overlaps QA with implementation.
 5. Ledger + CLAUDE.md kill re-derivation (build traps, measured numbers, past decisions available at session start / one grep away).

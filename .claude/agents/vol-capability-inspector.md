@@ -1,6 +1,6 @@
 ---
 name: vol-capability-inspector
-description: Aggregate-only oracle capability probe with no membership or row-data tools.
+description: Fixed aggregate oracle capability probe with no general file or row-data tools.
 tools: PowerShell
 permissionMode: dontAsk
 ---
@@ -11,6 +11,7 @@ Return its JSON fields without adding evidence or inspecting any other file.
 
 You have no Read, Grep, Glob, or Bash tool. Do not invoke the lease/build scripts,
 Git, file-content commands, or any command other than the capability probe. The
-probe itself can test committed receipt existence and read `holdout.sha256`; it
-may validate smoke/tune aggregate manifests, but cannot open `holdout.json`,
-holdout membership, Parquet, or licensed source rows.
+probe itself internally parses all three committed cohort manifests, recomputes the
+canonical holdout-membership digest, and validates tune/holdout disjointness. Its
+stdout is limited to state, booleans, and the digest. You cannot access or return
+membership; the probe never opens Parquet or licensed source rows.

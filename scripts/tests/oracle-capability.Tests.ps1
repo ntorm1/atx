@@ -37,8 +37,9 @@ Describe 'oracle capability closed aggregate receipts' {
     $cohortRoot = Join-Path $repoRoot ($oracleRoot + '/cohorts')
     Write-JsonFile (Join-Path $cohortRoot 'smoke.json') ([ordered]@{ name = 'smoke'; dates = @('2026-08-14'); underliers = @('SPY'); buckets_et = @('1000'); notes = 'aggregate smoke' })
     Write-JsonFile (Join-Path $cohortRoot 'tune.json') ([ordered]@{ name = 'tune'; dates = @('2026-08-14'); underliers = @('QQQ'); buckets_et = @('1330'); notes = 'aggregate tune' })
-    Write-JsonFile (Join-Path $cohortRoot 'holdout.json') ([ordered]@{ name = 'holdout'; dates = @('2026-08-14'); underliers = @('IWM'); buckets_et = @('1500'); notes = 'never opened by probe' })
-    $digest = 'e' * 64
+    $holdoutCohort = [ordered]@{ name = 'holdout'; dates = @('2026-08-14'); underliers = @('IWM'); buckets_et = @('1500'); notes = 'fixed probe hashes membership internally' }
+    Write-JsonFile (Join-Path $cohortRoot 'holdout.json') $holdoutCohort
+    $digest = Get-CohortMembershipDigest ([pscustomobject]$holdoutCohort)
     Set-Content -LiteralPath (Join-Path $cohortRoot 'holdout.sha256') -Value $digest -Encoding ASCII
     $dataTested = Commit-All $repoRoot 'cohort artifacts'
     $smokeOid = Get-BlobOid $dataTested ($oracleRoot + '/cohorts/smoke.json')
@@ -154,5 +155,13 @@ Describe 'oracle capability closed aggregate receipts' {
     Write-JsonFile (Join-Path $bootstrapRoot 'data.json') $dataReceipt
     $dataCorruptCommit = Commit-All $repoRoot 'corrupt data schema'
     (Test-DataReceipt $dataCorruptCommit ([ref]$actualDigest)) | Should Be $false
+
+    $forgedDigest = 'e' * 64
+    $dataReceipt.Remove('unexpected')
+    $dataReceipt.holdout_membership_sha256 = $forgedDigest
+    Set-Content -LiteralPath (Join-Path $cohortRoot 'holdout.sha256') -Value $forgedDigest -Encoding ASCII
+    Write-JsonFile (Join-Path $bootstrapRoot 'data.json') $dataReceipt
+    $forgedDigestCommit = Commit-All $repoRoot 'forged arbitrary digest'
+    (Test-DataReceipt $forgedDigestCommit ([ref]$actualDigest)) | Should Be $false
   }
 }

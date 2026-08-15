@@ -41,8 +41,10 @@ It hard-selects one state in order: `missing_data`, `missing_mode_a`,
 exactly one fixed implementation lane through Build, exact-SHA Review, optional Fix,
 fresh Review, scoped verification, and atomic landing on `refs/heads/oracle/canonical`.
 Its capability agent has no general file tools and can run only the fixed
-aggregate-only probe, which cannot open cohort membership or licensed rows. It
-never benchmarks holdout. Only ready state runs the RSI loop; a failed sprint
+aggregate-only probe. The probe internally parses committed cohort manifests only
+to recompute canonical sorted holdout-membership SHA-256 and disjointness;
+membership never reaches its agent or report, and it never opens licensed rows or
+benchmarks holdout. Only ready state runs the RSI loop; a failed sprint
 returns FAILED before holdout and does not count as REJECT. Attribute is tool-less
 and receives a validated aggregate smoke/tune payload. Only Ratchet opens holdout,
 recomputes its membership digest, tests the exact reviewed integration SHA in a new
@@ -59,8 +61,12 @@ must publish its exact versioned aggregate receipt; the probe validates closed
 keys/enums/target sets, artifact digests, count invariants, SHA ancestry, and
 prior-receipt provenance. Legacy or malformed receipts fail closed. Attribute
 schema v2 likewise removes free-form source strings. Ratchet metric IDs,
-classification, direction, baseline, target limit, and speed pin are frozen from
-the workflow-owned Measure contract; exact gate commands return typed results, and
+classification, direction, target limit, and exact commands are frozen by the
+workflow. Baseline and speed-pin numerics are derived only from exact typed Measure
+command output; Measure cannot self-report or override them. Ratchet candidates are
+likewise derived from exact typed gate numeric results. Bootstrap stages 2-4 use the
+fixed `oracle-targeted-gate.ps1` adapter to turn ordinary targeted tool output into
+closed PASS receipts. Exact gate commands return typed results, and
 typed NBBO means/distances are recomputed by workflow code before suspect exclusion.
 
 ## 1.2.0

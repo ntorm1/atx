@@ -3,7 +3,7 @@ export const meta = {
   description: 'One transactional SpiderRock capability bootstrap or exact-SHA oracle RSI iteration',
   whenToUse: 'Run exactly one oracle step; canonical mutation occurs only after typed receipts validate.',
   phases: [
-    { title: 'Capability', detail: 'freeze canonical SHA and committed digest receipt without membership access' },
+    { title: 'Capability', detail: 'freeze canonical SHA and internally verify committed membership digest without membership output' },
     { title: 'Bootstrap', detail: 'one fixed lane, independent review, typed prepare, CAS finalizer, audit' },
     { title: 'Measure', detail: 'ready only: aggregate smoke+tune Mode A+B' },
     { title: 'Attribute', detail: 'ready only: tool-less strict typed aggregate payload' },
@@ -48,19 +48,20 @@ const BOOTSTRAP_GATE_COMMANDS = Object.freeze({
   ingest_manifest: 'powershell scripts\\oracle-bootstrap-preflight.ps1 -Gate ingest_manifest',
   cohort_manifests: 'powershell scripts\\oracle-bootstrap-preflight.ps1 -Gate cohort_manifests',
   holdout_digest: 'powershell scripts\\oracle-bootstrap-preflight.ps1 -Gate holdout_digest',
-  mode_a_targeted_tests: 'powershell scripts\\atx-build.ps1 -Preset dev -Ctest -R ^mode_a_targeted_tests$',
-  mode_a_smoke: 'atx-vol-oracle-bench --cohort smoke --mode A --aggregate-only',
-  convention_tests: 'powershell scripts\\atx-build.ps1 -Preset dev -Ctest -R ^convention_tests$',
-  mode_a_smoke_tune: 'atx-vol-oracle-bench --cohort smoke,tune --mode A --aggregate-only',
-  residual_floor: 'atx-vol-oracle-bench --cohort smoke,tune --mode A --residual-floor --aggregate-only',
-  mode_b_targeted_tests: 'powershell scripts\\atx-build.ps1 -Preset dev -Ctest -R ^mode_b_targeted_tests$',
-  mode_b_smoke_tune: 'atx-vol-oracle-bench --cohort smoke,tune --mode B --aggregate-only',
+  mode_a_targeted_tests: 'powershell scripts\\oracle-targeted-gate.ps1 -Gate mode_a_targeted_tests',
+  mode_a_smoke: 'powershell scripts\\oracle-targeted-gate.ps1 -Gate mode_a_smoke',
+  convention_tests: 'powershell scripts\\oracle-targeted-gate.ps1 -Gate convention_tests',
+  mode_a_smoke_tune: 'powershell scripts\\oracle-targeted-gate.ps1 -Gate mode_a_smoke_tune',
+  residual_floor: 'powershell scripts\\oracle-targeted-gate.ps1 -Gate residual_floor',
+  mode_b_targeted_tests: 'powershell scripts\\oracle-targeted-gate.ps1 -Gate mode_b_targeted_tests',
+  mode_b_smoke_tune: 'powershell scripts\\oracle-targeted-gate.ps1 -Gate mode_b_smoke_tune',
 })
-const READY_MEASURE_COMMANDS = Object.freeze([
-  'atx-vol-oracle-bench --cohort smoke,tune --mode A --scorecard --aggregate-only',
-  'atx-vol-oracle-bench --cohort smoke,tune --mode B --scorecard --aggregate-only',
-  'atx-vol-oracle-bench --cohort tune --benchmark-speed --preset rel-avx2 --quiet-host --aggregate-only',
-])
+const READY_MEASURE_GATES = Object.freeze({
+  measure_mode_a: 'atx-vol-oracle-bench --cohort smoke,tune --mode A --scorecard --aggregate-only',
+  measure_mode_b: 'atx-vol-oracle-bench --cohort smoke,tune --mode B --scorecard --aggregate-only',
+  measure_speed: 'atx-vol-oracle-bench --cohort tune --benchmark-speed --preset rel-avx2 --quiet-host --aggregate-only',
+})
+const READY_MEASURE_COMMANDS = Object.freeze(Object.values(READY_MEASURE_GATES))
 
 const EVIDENCE_ITEM = {
   type: 'object', additionalProperties: false, required: ['command', 'exit_code', 'output'],
@@ -86,13 +87,36 @@ const CAS_RECEIPT = {
     exit_code: { type: 'integer' }, output: { type: 'string' },
   },
 }
+const NUMERIC_GATE_METRIC = {
+  type: 'object', additionalProperties: false, required: ['metric_id', 'value', 'count', 'unit'],
+  properties: {
+    metric_id: { type: 'string' }, value: { type: 'number' }, count: { type: 'integer' }, unit: { type: 'string' }, pin: { type: 'number' },
+  },
+}
 const GATE_RECEIPT = {
   type: 'object', additionalProperties: false, required: ['gate_id', 'command', 'exit_code', 'output', 'result'],
   properties: {
     gate_id: { type: 'string', enum: Object.keys(BOOTSTRAP_GATE_COMMANDS) }, command: { type: 'string' }, exit_code: { type: 'integer' }, output: { type: 'string' },
     result: {
-      type: 'object', additionalProperties: false, required: ['schema_version', 'status', 'observations'],
-      properties: { schema_version: { type: 'integer', enum: [1] }, status: { type: 'string', enum: ['PASS'] }, observations: { type: 'integer' } },
+      type: 'object', additionalProperties: false, required: ['schema_version', 'status', 'observations', 'command_id', 'raw_output_sha256'],
+      properties: {
+        schema_version: { type: 'integer', enum: [1] }, status: { type: 'string', enum: ['PASS'] }, observations: { type: 'integer' },
+        command_id: { type: 'string', enum: Object.keys(BOOTSTRAP_GATE_COMMANDS) }, raw_output_sha256: { type: 'string', pattern: '^[0-9a-f]{64}$' },
+      },
+    },
+  },
+}
+const MEASURE_GATE_RECEIPT = {
+  type: 'object', additionalProperties: false, required: ['gate_id', 'command', 'exit_code', 'output', 'result'],
+  properties: {
+    gate_id: { type: 'string', enum: Object.keys(READY_MEASURE_GATES) }, command: { type: 'string' }, exit_code: { type: 'integer' }, output: { type: 'string' },
+    result: {
+      type: 'object', additionalProperties: false, required: ['schema_version', 'status', 'command_id', 'observations', 'metrics'],
+      properties: {
+        schema_version: { type: 'integer', enum: [1] }, status: { type: 'string', enum: ['PASS'] }, observations: { type: 'integer' },
+        command_id: { type: 'string', enum: Object.keys(READY_MEASURE_GATES) },
+        metrics: { type: 'array', items: NUMERIC_GATE_METRIC },
+      },
     },
   },
 }
@@ -101,10 +125,11 @@ const RATCHET_GATE_RECEIPT = {
   properties: {
     gate_id: { type: 'string', enum: RATCHET_GATE_IDS }, command: { type: 'string' }, exit_code: { type: 'integer' }, output: { type: 'string' },
     result: {
-      type: 'object', additionalProperties: false, required: ['schema_version', 'status', 'observations', 'metric_ids'],
+      type: 'object', additionalProperties: false, required: ['schema_version', 'status', 'command_id', 'observations', 'metrics'],
       properties: {
         schema_version: { type: 'integer', enum: [1] }, status: { type: 'string', enum: ['PASS'] }, observations: { type: 'integer' },
-        metric_ids: { type: 'array', items: { type: 'string', enum: [...TARGET_REGISTRY.map(item => item.metric_id), SPEED_METRIC_ID] } },
+        command_id: { type: 'string', enum: RATCHET_GATE_IDS },
+        metrics: { type: 'array', items: NUMERIC_GATE_METRIC },
       },
     },
   },
@@ -217,14 +242,24 @@ const ATTR_PAYLOAD = {
     oracle_suspect_cells: { type: 'array', items: { type: 'integer', minimum: 0, maximum: 2147483647 } }, conventions: CONVENTION_MAP,
   },
 }
+const ANALYSIS_CONTEXT = {
+  type: 'object', additionalProperties: false,
+  required: ['prior_refuted_ids', 'oracle_suspect_cells', 'conventions'],
+  properties: {
+    prior_refuted_ids: ATTR_PAYLOAD.properties.prior_refuted_ids,
+    oracle_suspect_cells: ATTR_PAYLOAD.properties.oracle_suspect_cells,
+    conventions: CONVENTION_MAP,
+  },
+}
 const MEASURE = {
   type: 'object', additionalProperties: false,
-  required: ['status', 'iter', 'scorecard_path', 'branch', 'sha', 'base_sha', 'worktree', 'lease_name', 'lease_run_id', 'heartbeat_id', 'keeper_pid', 'keeper_process_started_utc', 'acquisition_receipt', 'release_receipt', 'lease_released', 'attribution_payload', 'evidence'],
+  required: ['status', 'iter', 'scorecard_path', 'branch', 'sha', 'base_sha', 'worktree', 'lease_name', 'lease_run_id', 'heartbeat_id', 'keeper_pid', 'keeper_process_started_utc', 'acquisition_receipt', 'release_receipt', 'lease_released', 'analysis_context', 'gate_receipts', 'evidence'],
   properties: {
     status: { type: 'string', enum: ['ok', 'failed'] }, iter: { type: 'string' }, scorecard_path: { type: 'string' }, branch: { type: 'string' },
     sha: { type: 'string' }, base_sha: { type: 'string' }, worktree: { type: 'string' }, lease_name: { type: 'string' }, lease_run_id: { type: 'string' },
     heartbeat_id: { type: 'string' }, keeper_pid: { type: 'integer' }, keeper_process_started_utc: { type: 'string' },
-    acquisition_receipt: LEASE_RECEIPT, release_receipt: LEASE_RECEIPT, lease_released: { type: 'boolean' }, attribution_payload: ATTR_PAYLOAD,
+    acquisition_receipt: LEASE_RECEIPT, release_receipt: LEASE_RECEIPT, lease_released: { type: 'boolean' }, analysis_context: ANALYSIS_CONTEXT,
+    gate_receipts: { type: 'array', items: MEASURE_GATE_RECEIPT },
     evidence: { type: 'array', items: EVIDENCE_ITEM }, diagnostics: { type: 'array', items: EVIDENCE_ITEM },
   },
 }
@@ -304,6 +339,12 @@ function iterationCommandError(command) {
     const match = text.match(/(?:^|\s)-R\s+(\S+)/i)
     if (!match || !/^\^[A-Za-z][A-Za-z0-9_.-]{3,63}\$$/.test(match[1]) || /atx_vol/i.test(match[1])) return 'broad or unanchored ctest forbidden in oracle loop'
   }
+  const tokens = text.split(/\s+/)
+  for (let index = 0; index < tokens.length; index += 1) {
+    if (/(?:^|[\\/])[^\\/\s]*(?:test|tests)(?:\.exe)?$/i.test(tokens[index]) && !/^-/i.test(tokens[index]) &&
+        !['build', '--target'].includes(String(tokens[index - 1] || '').toLowerCase())) return 'direct test executable forbidden in oracle loop'
+  }
+  if (/atx-build\.ps1[^\r\n]*\bbuild(?:\s*$|\s+all(?:\s|$))/i.test(text) || /(?:--target|\bbuild\s+)\s+all(?:\s|$)/i.test(text)) return 'broad build target forbidden in oracle loop'
   if (/\bpytest\b/i.test(text) || /\bnode\s+--test\b/i.test(text) || /cmake\s+--build/i.test(text) && !/--target\s+[A-Za-z0-9_.+-]+/i.test(text)) return 'broad runner/build forbidden in oracle loop'
   return null
 }
@@ -334,22 +375,81 @@ function validHeadReceipt(receipt, ref, sha) {
 function validGateReceipt(receipt, gateId) {
   if (!receipt || receipt.gate_id !== gateId || receipt.command !== BOOTSTRAP_GATE_COMMANDS[gateId] || receipt.exit_code !== 0) return false
   const result = receipt.result
-  return !!result && result.schema_version === 1 && result.status === 'PASS' && Number.isInteger(result.observations) && result.observations > 0 && receipt.output === JSON.stringify(result)
+  return !!result && result.schema_version === 1 && result.status === 'PASS' && result.command_id === gateId &&
+    Number.isInteger(result.observations) && result.observations > 0 && /^[0-9a-f]{64}$/.test(result.raw_output_sha256 || '') &&
+    receipt.output === JSON.stringify(result)
 }
 
 function expectedGateMetricIds(gateId) {
-  if (gateId === 'holdout_mode_a') return TARGET_REGISTRY.filter(item => item.mode === 'A').map(item => item.metric_id)
-  if (gateId === 'holdout_mode_b') return TARGET_REGISTRY.filter(item => item.mode === 'B').map(item => item.metric_id)
+  if (gateId === 'holdout_mode_a') return [...TARGET_REGISTRY, ...AGGREGATE_REGISTRY].filter(item => item.mode === 'A').map(item => item.metric_id)
+  if (gateId === 'holdout_mode_b') return [...TARGET_REGISTRY, ...AGGREGATE_REGISTRY].filter(item => item.mode === 'B').map(item => item.metric_id)
   if (gateId === 'rel_avx2_speed') return [SPEED_METRIC_ID]
   return []
+}
+
+function expectedMeasureMetricIds(gateId) {
+  if (gateId === 'measure_mode_a') return [...TARGET_REGISTRY.filter(item => item.mode === 'A').map(item => item.metric_id), 'mode_a_aggregate_error']
+  if (gateId === 'measure_mode_b') return [...TARGET_REGISTRY.filter(item => item.mode === 'B').map(item => item.metric_id), 'mode_b_aggregate_error']
+  if (gateId === 'measure_speed') return [SPEED_METRIC_ID]
+  return []
+}
+
+function expectedMetricUnit(metricId) {
+  if (metricId === SPEED_METRIC_ID) return 'rows_per_second'
+  return [...TARGET_REGISTRY, ...AGGREGATE_REGISTRY].find(item => item.metric_id === metricId)?.unit || null
+}
+
+function validNumericMetric(metric, metricId, requirePin) {
+  if (!metric || metric.metric_id !== metricId || metric.unit !== expectedMetricUnit(metricId) || !Number.isFinite(metric.value) || metric.value < 0 ||
+      !Number.isInteger(metric.count) || metric.count <= 0) return false
+  const keys = Object.keys(metric).sort().join(',')
+  if (requirePin) return keys === 'count,metric_id,pin,unit,value' && Number.isFinite(metric.pin) && metric.pin > 0 && metric.value >= metric.pin
+  return keys === 'count,metric_id,unit,value'
+}
+
+function validMeasureGateReceipt(receipt, gateId) {
+  if (!receipt || receipt.gate_id !== gateId || receipt.command !== READY_MEASURE_GATES[gateId] || receipt.exit_code !== 0) return false
+  const result = receipt.result
+  const wanted = expectedMeasureMetricIds(gateId)
+  if (!result || result.schema_version !== 1 || result.status !== 'PASS' || result.command_id !== gateId ||
+      !Number.isInteger(result.observations) || result.observations <= 0 || !Array.isArray(result.metrics) ||
+      result.metrics.length !== wanted.length || new Set(result.metrics.map(metric => metric && metric.metric_id)).size !== wanted.length ||
+      !wanted.every(metricId => validNumericMetric(result.metrics.find(metric => metric && metric.metric_id === metricId), metricId, metricId === SPEED_METRIC_ID))) return false
+  return receipt.output === JSON.stringify(result)
+}
+
+function measurePayloadError(measure) {
+  if (!measure || Object.prototype.hasOwnProperty.call(measure, 'attribution_payload')) return 'Measure may not self-report baseline payload'
+  if (!Array.isArray(measure.gate_receipts) || measure.gate_receipts.length !== Object.keys(READY_MEASURE_GATES).length) return 'Measure gate receipt set mismatch'
+  for (const gateId of Object.keys(READY_MEASURE_GATES)) {
+    const matches = measure.gate_receipts.filter(receipt => receipt && receipt.gate_id === gateId)
+    if (matches.length !== 1 || !validMeasureGateReceipt(matches[0], gateId)) return `Measure gate receipt invalid: ${gateId}`
+  }
+  const context = measure.analysis_context
+  const candidate = { schema_version: 2, iteration: Number(String(measure.iter || '').replace(/^iter-/, '')), target_metrics: [], aggregate_metrics: [], speed: null,
+    prior_refuted_ids: context && context.prior_refuted_ids, oracle_suspect_cells: context && context.oracle_suspect_cells, conventions: context && context.conventions }
+  return aggregatePayloadError(attributionPayloadFromMeasure(measure, candidate))
+}
+
+function attributionPayloadFromMeasure(measure, candidate = null) {
+  const byMetric = new Map((measure.gate_receipts || []).flatMap(receipt => receipt?.result?.metrics || []).map(metric => [metric.metric_id, metric]))
+  const context = measure.analysis_context || {}
+  const payload = candidate || { schema_version: 2, iteration: Number(String(measure.iter || '').replace(/^iter-/, '')),
+    prior_refuted_ids: context.prior_refuted_ids, oracle_suspect_cells: context.oracle_suspect_cells, conventions: context.conventions }
+  payload.target_metrics = TARGET_REGISTRY.map(item => { const metric = byMetric.get(item.metric_id); return { metric_id: item.metric_id, mode: item.mode, baseline: metric?.value, count: metric?.count, unit: item.unit } })
+  payload.aggregate_metrics = AGGREGATE_REGISTRY.map(item => { const metric = byMetric.get(item.metric_id); return { metric_id: item.metric_id, mode: item.mode, baseline: metric?.value, count: metric?.count, unit: item.unit } })
+  const speed = byMetric.get(SPEED_METRIC_ID)
+  payload.speed = { metric_id: SPEED_METRIC_ID, baseline: speed?.value, pin: speed?.pin, unit: 'rows_per_second' }
+  return payload
 }
 
 function validRatchetGateReceipt(receipt, gateId) {
   if (!receipt || receipt.gate_id !== gateId || receipt.command !== RATCHET_GATE_COMMANDS[gateId] || receipt.exit_code !== 0 || !String(receipt.output || '').trim()) return false
   const result = receipt.result
   const wanted = expectedGateMetricIds(gateId)
-  return !!result && result.schema_version === 1 && result.status === 'PASS' && Number.isInteger(result.observations) && result.observations > 0 &&
-    Array.isArray(result.metric_ids) && result.metric_ids.length === wanted.length && new Set(result.metric_ids).size === wanted.length && wanted.every(id => result.metric_ids.includes(id)) &&
+  return !!result && result.schema_version === 1 && result.status === 'PASS' && result.command_id === gateId && Number.isInteger(result.observations) && result.observations > 0 &&
+    Array.isArray(result.metrics) && result.metrics.length === wanted.length && new Set(result.metrics.map(metric => metric && metric.metric_id)).size === wanted.length &&
+    wanted.every(id => validNumericMetric(result.metrics.find(metric => metric && metric.metric_id === id), id, false)) &&
     receipt.output === JSON.stringify(result)
 }
 
@@ -511,6 +611,27 @@ function relativeRegression(metric) {
   return metric.direction === 'lower' ? (metric.candidate - metric.baseline) / denominator : (metric.baseline - metric.candidate) / denominator
 }
 
+function ratchetGateIdForMetric(metricId) {
+  if (metricId === SPEED_METRIC_ID) return 'rel_avx2_speed'
+  const target = TARGET_REGISTRY.find(item => item.metric_id === metricId)
+  const aggregate = AGGREGATE_REGISTRY.find(item => item.metric_id === metricId)
+  const mode = (target || aggregate)?.mode
+  return mode === 'A' ? 'holdout_mode_a' : mode === 'B' ? 'holdout_mode_b' : null
+}
+
+function ratchetCandidateValue(ratchet, metricId) {
+  const gateId = ratchetGateIdForMetric(metricId)
+  const receipt = (ratchet.gate_receipts || []).find(item => item && item.gate_id === gateId)
+  return receipt?.result?.metrics?.find(metric => metric && metric.metric_id === metricId)?.value
+}
+
+function ratchetMetricsFromReceipts(ratchet) {
+  return (ratchet.metrics || []).map(metric => {
+    const candidate = ratchetCandidateValue(ratchet, metric.metric_id)
+    return { ...metric, candidate, delta: candidate - metric.baseline }
+  })
+}
+
 function ratchetPrepareContractError(ratchet, expected) {
   if (!ratchet || !validSuccessEvidence(ratchet.evidence) || diagnosticsUseForbiddenCommand(ratchet.diagnostics)) return 'Ratchet evidence missing/failed'
   if (ratchet.tested_sha !== expected.tested_sha || ratchet.tested_branch !== expected.tested_branch || ratchet.base_sha !== expected.tested_sha ||
@@ -534,6 +655,8 @@ function ratchetPrepareContractError(ratchet, expected) {
     const metric = metricById.get(registryMetric.metric_id)
     if (!metric || metric.mode !== registryMetric.mode || metric.gate !== registryMetric.gate || metric.direction !== registryMetric.direction ||
         metric.unit !== registryMetric.unit || !sameNumber(metric.baseline, registryMetric.baseline) || !sameNumber(metric.pin, registryMetric.pin)) return `Ratchet workflow-owned metric contract mismatch: ${registryMetric.metric_id}`
+    const measuredCandidate = ratchetCandidateValue(ratchet, registryMetric.metric_id)
+    if (!Number.isFinite(measuredCandidate) || !sameNumber(metric.candidate, measuredCandidate)) return `Ratchet candidate is not bound to typed gate output: ${registryMetric.metric_id}`
     if (!metricDeltaConsistent(metric)) return 'Ratchet metric delta inconsistent'
     if (!Number.isInteger(metric.evidence_index) || metric.evidence_index < 0 || metric.evidence_index >= ratchet.metric_evidence.length) return 'Ratchet metric shape/evidence index invalid'
     const evidence = ratchet.metric_evidence[metric.evidence_index]
@@ -560,9 +683,10 @@ function ratchetPrepareContractError(ratchet, expected) {
 }
 
 function computeRatchetVerdict(ratchet) {
-  const targetPass = ratchet.metrics.filter(metric => metric.gate === 'target').every(metric => metric.direction === 'lower' ? metric.candidate < metric.baseline : metric.candidate > metric.baseline)
-  const aggregatePass = ratchet.metrics.filter(metric => metric.gate === 'aggregate').every(metric => relativeRegression(metric) <= 0.02 + 1e-12)
-  const speed = ratchet.metrics.find(metric => metric.gate === 'speed')
+  const measuredMetrics = ratchetMetricsFromReceipts(ratchet)
+  const targetPass = measuredMetrics.filter(metric => metric.gate === 'target').every(metric => metric.direction === 'lower' ? metric.candidate < metric.baseline : metric.candidate > metric.baseline)
+  const aggregatePass = measuredMetrics.filter(metric => metric.gate === 'aggregate').every(metric => relativeRegression(metric) <= 0.02 + 1e-12)
+  const speed = measuredMetrics.find(metric => metric.gate === 'speed')
   const speedPass = speed.direction === 'higher' && speed.candidate >= speed.pin
   return targetPass && aggregatePass && speedPass ? 'ACCEPT' : 'REJECT'
 }
@@ -646,13 +770,14 @@ if (!capability.canonical_exists) throw new Error('ready requires existing canon
 phase('Measure')
 const measureBranch = `lane/oracle-measure-${capability.next_iter}-${RUN_SLUG}`
 const measureHeartbeat = `${RUN_SLUG}-measure`
-const measure = await agent(`Measure ${capability.next_iter} from ${BASE_SHA} in keeper-backed ${measureBranch}, RunId=${RUN_ID}, HeartbeatId=${measureHeartbeat}. Run exactly these three small aggregate commands, once each and no other test/build command: ${JSON.stringify(READY_MEASURE_COMMANDS)}; commit/release. Return their exact evidence plus strict attribution_payload schema_version=2 with the complete immutable target/aggregate registries and positive pinned speed baseline; only enumerated conventions, validated IDs, and numbers are allowed. No prose, paths, hashes, membership, rows, or encoded blobs. Return typed acquire/release.`, { schema: MEASURE, label: 'measure' })
+const measure = await agent(`Measure ${capability.next_iter} from ${BASE_SHA} in keeper-backed ${measureBranch}, RunId=${RUN_ID}, HeartbeatId=${measureHeartbeat}. Run exactly these three small aggregate commands, once each and no other test/build command: ${JSON.stringify(READY_MEASURE_GATES)}; commit/release. Return one exact typed JSON gate receipt per command with every workflow-registry metric numeric value/count/unit and the speed pin emitted by the pinned benchmark. Return only numeric/enumerated analysis_context; never return an attribution_payload, prose, paths, hashes, membership, rows, or encoded blobs. Return typed acquire/release.`, { schema: MEASURE, label: 'measure' })
 const measureLease = measure && { lease_name: measure.lease_name, run_id: RUN_ID, branch: measureBranch, base_sha: BASE_SHA, worktree: measure.worktree, heartbeat_id: measureHeartbeat, keeper_pid: measure.keeper_pid, keeper_process_started_utc: measure.keeper_process_started_utc }
-const measureError = !measure || measure.status !== 'ok' || measure.iter !== capability.next_iter || measure.branch !== measureBranch || measure.base_sha !== BASE_SHA || measure.lease_run_id !== RUN_ID || measure.heartbeat_id !== measureHeartbeat || !/^[0-9a-f]{40}$/i.test(measure.sha || '') || !measure.lease_released || !exactEvidenceSet(measure.evidence, READY_MEASURE_COMMANDS) || diagnosticsUseForbiddenCommand(measure.diagnostics) || !validLeaseReceipt(measure.acquisition_receipt, measureLease || {}, 'acquire') || !validLeaseReceipt(measure.release_receipt, measureLease || {}, 'release') || aggregatePayloadError(measure.attribution_payload)
+const measureError = !measure || measure.status !== 'ok' || measure.iter !== capability.next_iter || measure.branch !== measureBranch || measure.base_sha !== BASE_SHA || measure.lease_run_id !== RUN_ID || measure.heartbeat_id !== measureHeartbeat || !/^[0-9a-f]{40}$/i.test(measure.sha || '') || !measure.lease_released || !exactEvidenceSet(measure.evidence, READY_MEASURE_COMMANDS) || diagnosticsUseForbiddenCommand(measure.diagnostics) || !validLeaseReceipt(measure.acquisition_receipt, measureLease || {}, 'acquire') || !validLeaseReceipt(measure.release_receipt, measureLease || {}, 'release') || measurePayloadError(measure)
 if (measureError) return { iteration: capability.next_iter, capability_state: 'ready', verdict: 'FAILED', holdout: null, confirmed: [], refuted: [], sprint: null, ledger: [], ratchet_evidence: [], failure: 'Measure failed strict contract; no holdout', run_id: RUN_ID, base_sha: BASE_SHA, canonical_after: null }
+const attributionPayload = attributionPayloadFromMeasure(measure)
 
 phase('Attribute')
-const attribution = await agent(`Tool-less aggregate attribution. Strict payload:\n${JSON.stringify(measure.attribution_payload)}\nRank 1-3 falsifiable hypotheses and reference only registry target_metric_ids. Never request tools, paths, hashes, membership, rows, or encoded data.`, { agentType: 'vol-analyst', schema: ATTR, label: 'attribute' })
+const attribution = await agent(`Tool-less aggregate attribution. Strict payload:\n${JSON.stringify(attributionPayload)}\nRank 1-3 falsifiable hypotheses and reference only registry target_metric_ids. Never request tools, paths, hashes, membership, rows, or encoded data.`, { agentType: 'vol-analyst', schema: ATTR, label: 'attribute' })
 if (!attribution || !Array.isArray(attribution.hypotheses) || !attribution.hypotheses.length || attribution.hypotheses.some(item => !Array.isArray(item.target_metric_ids) || !item.target_metric_ids.length || item.target_metric_ids.some(id => !TARGET_REGISTRY.some(target => target.metric_id === id)))) return { iteration: measure.iter, capability_state: 'ready', verdict: 'FAILED', holdout: null, confirmed: [], refuted: [], sprint: null, ledger: [], ratchet_evidence: [], failure: 'Attribution failed; no holdout', run_id: RUN_ID, base_sha: BASE_SHA, canonical_after: null }
 const applicableModes = ['A', 'B']
 
@@ -666,8 +791,8 @@ if (!sprintValid) return { iteration: measure.iter, capability_state: 'ready', v
 phase('Ratchet Prepare')
 const ratchetBranch = `lane/oracle-ratchet-${RUN_SLUG}`
 const ratchetHeartbeat = `${RUN_SLUG}-ratchet`
-const ratchet = await agent(`PREPARE ONLY; never update canonical or choose authoritative verdict. Lease keeper-backed ${ratchetBranch} at exact ${sprint.integration_branch}@${sprint.integration_sha}, RunId=${RUN_ID}, HeartbeatId=${ratchetHeartbeat}. Recompute digest=${capability.holdout_digest_receipt}. Run these exact gate commands: ${JSON.stringify(RATCHET_GATE_COMMANDS)}. Return every metric in the workflow-frozen contract ${JSON.stringify(expectedRatchetMetrics(measure.attribution_payload))}; only candidate/delta/evidence_index are measured here. For suspect exclusions use only frozen candidates ${JSON.stringify(measure.attribution_payload.oracle_suspect_cells)} and typed NBBO means/distances from exact market-check commands. Prepare/commit scorecard and memory with memory_verdict derived from rules, release. Workflow independently validates and computes verdict/CAS.`, { agentType: 'vol-verifier', schema: RATCHET_PREPARE, label: 'ratchet-prepare' })
-const ratchetError = ratchetPrepareContractError(ratchet, { tested_sha: sprint.integration_sha, tested_branch: sprint.integration_branch, ratchet_branch: ratchetBranch, holdout_digest: capability.holdout_digest_receipt, run_id: RUN_ID, heartbeat_id: ratchetHeartbeat, applicable_modes: applicableModes, baseline_contract: measure.attribution_payload, suspect_candidates: measure.attribution_payload.oracle_suspect_cells })
+const ratchet = await agent(`PREPARE ONLY; never update canonical or choose authoritative verdict. Lease keeper-backed ${ratchetBranch} at exact ${sprint.integration_branch}@${sprint.integration_sha}, RunId=${RUN_ID}, HeartbeatId=${ratchetHeartbeat}. Recompute digest=${capability.holdout_digest_receipt}. Run these exact gate commands: ${JSON.stringify(RATCHET_GATE_COMMANDS)}. Return every metric in the workflow-frozen contract ${JSON.stringify(expectedRatchetMetrics(attributionPayload))}; candidate values must be copied from the exact typed gate JSON and deltas computed from them. For suspect exclusions use only frozen candidates ${JSON.stringify(attributionPayload.oracle_suspect_cells)} and typed NBBO means/distances from exact market-check commands. Prepare/commit scorecard and memory with memory_verdict derived from rules, release. Workflow independently validates and computes verdict/CAS.`, { agentType: 'vol-verifier', schema: RATCHET_PREPARE, label: 'ratchet-prepare' })
+const ratchetError = ratchetPrepareContractError(ratchet, { tested_sha: sprint.integration_sha, tested_branch: sprint.integration_branch, ratchet_branch: ratchetBranch, holdout_digest: capability.holdout_digest_receipt, run_id: RUN_ID, heartbeat_id: ratchetHeartbeat, applicable_modes: applicableModes, baseline_contract: attributionPayload, suspect_candidates: attributionPayload.oracle_suspect_cells })
 if (ratchetError) return { iteration: measure.iter, capability_state: 'ready', verdict: 'FAILED', holdout: null, confirmed: [], refuted: [], sprint: { passed: true, integration_branch: sprint.integration_branch, integration_sha: sprint.integration_sha }, ledger: [], ratchet_evidence: [], ratchet: null, failure: ratchetError, run_id: RUN_ID, base_sha: BASE_SHA, canonical_after: null }
 const computedVerdict = computeRatchetVerdict(ratchet)
 if (ratchet.memory_verdict !== computedVerdict) return { iteration: measure.iter, capability_state: 'ready', verdict: 'FAILED', holdout: null, confirmed: [], refuted: [], sprint: { passed: true, integration_branch: sprint.integration_branch, integration_sha: sprint.integration_sha }, ledger: [], ratchet_evidence: [], ratchet: null, failure: 'prepared memory verdict disagrees with workflow computation', run_id: RUN_ID, base_sha: BASE_SHA, canonical_after: null }

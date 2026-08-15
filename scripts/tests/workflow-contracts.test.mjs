@@ -10,6 +10,7 @@ const analyst = read('.claude/agents/vol-analyst.md')
 const leases = read('scripts/lease-worktree.ps1')
 const keeper = read('scripts/lease-heartbeat-keeper.ps1')
 const capabilityProbe = read('scripts/oracle-capability.ps1')
+const targetedGate = read('scripts/oracle-targeted-gate.ps1')
 const capabilityAgent = read('.claude/agents/vol-capability-inspector.md')
 const settings = JSON.parse(read('.claude/settings.json'))
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor
@@ -50,20 +51,28 @@ const BOOTSTRAP_GATE_COMMANDS = {
   ingest_manifest: 'powershell scripts\\oracle-bootstrap-preflight.ps1 -Gate ingest_manifest',
   cohort_manifests: 'powershell scripts\\oracle-bootstrap-preflight.ps1 -Gate cohort_manifests',
   holdout_digest: 'powershell scripts\\oracle-bootstrap-preflight.ps1 -Gate holdout_digest',
-  mode_a_targeted_tests: 'powershell scripts\\atx-build.ps1 -Preset dev -Ctest -R ^mode_a_targeted_tests$',
-  mode_a_smoke: 'atx-vol-oracle-bench --cohort smoke --mode A --aggregate-only',
-  convention_tests: 'powershell scripts\\atx-build.ps1 -Preset dev -Ctest -R ^convention_tests$',
-  mode_a_smoke_tune: 'atx-vol-oracle-bench --cohort smoke,tune --mode A --aggregate-only',
-  residual_floor: 'atx-vol-oracle-bench --cohort smoke,tune --mode A --residual-floor --aggregate-only',
-  mode_b_targeted_tests: 'powershell scripts\\atx-build.ps1 -Preset dev -Ctest -R ^mode_b_targeted_tests$',
-  mode_b_smoke_tune: 'atx-vol-oracle-bench --cohort smoke,tune --mode B --aggregate-only',
+  mode_a_targeted_tests: 'powershell scripts\\oracle-targeted-gate.ps1 -Gate mode_a_targeted_tests',
+  mode_a_smoke: 'powershell scripts\\oracle-targeted-gate.ps1 -Gate mode_a_smoke',
+  convention_tests: 'powershell scripts\\oracle-targeted-gate.ps1 -Gate convention_tests',
+  mode_a_smoke_tune: 'powershell scripts\\oracle-targeted-gate.ps1 -Gate mode_a_smoke_tune',
+  residual_floor: 'powershell scripts\\oracle-targeted-gate.ps1 -Gate residual_floor',
+  mode_b_targeted_tests: 'powershell scripts\\oracle-targeted-gate.ps1 -Gate mode_b_targeted_tests',
+  mode_b_smoke_tune: 'powershell scripts\\oracle-targeted-gate.ps1 -Gate mode_b_smoke_tune',
 }
 const FIXED_ORACLE_GATES = [
   { gate_id: 'scorecard:mode_a_smoke_tune', command: 'atx-vol-oracle-bench --cohort smoke,tune --mode A --scorecard --aggregate-only' },
   { gate_id: 'scorecard:mode_b_smoke_tune', command: 'atx-vol-oracle-bench --cohort smoke,tune --mode B --scorecard --aggregate-only' },
   { gate_id: 'speed:rel_avx2_quiet', command: 'atx-vol-oracle-bench --cohort tune --benchmark-speed --preset rel-avx2 --quiet-host --aggregate-only' },
 ]
-const READY_MEASURE_COMMANDS = FIXED_ORACLE_GATES.map(gate => gate.command)
+const READY_MEASURE_GATES = {
+  measure_mode_a: FIXED_ORACLE_GATES[0].command,
+  measure_mode_b: FIXED_ORACLE_GATES[1].command,
+  measure_speed: FIXED_ORACLE_GATES[2].command,
+}
+const READY_MEASURE_COMMANDS = Object.values(READY_MEASURE_GATES)
+const PATH_GATE_REGISTRY = [
+  { owner: 'pricing', source_prefixes: ['atx-vol/src/pricing/', 'atx-vol/include/atx/vol/api/pricing/'], test_prefixes: ['american'], unit_targets: ['atx-vol-tests'], suite_prefixes: ['American'], oracle_tests: ['american-rsi', 'american-price-rsi', 'american-greeks-rsi'], pch_off_targets: ['atx-vol-tests'] },
+]
 
 function extractFunction(source, name) {
   const start = source.indexOf(`function ${name}(`)
@@ -87,13 +96,13 @@ function loadFunctions(source, names, prelude = '') {
 
 const oracleFns = loadFunctions(oracle, [
   'iterationCommandError', 'validSuccessEvidence', 'exactEvidenceSet', 'diagnosticsUseForbiddenCommand', 'validLeaseReceipt', 'validHeadReceipt', 'validGateReceipt', 'expectedGateMetricIds', 'validRatchetGateReceipt', 'validIntegrationCommand', 'casReceiptError', 'auditReceiptError',
-  'reviewContractError', 'bootstrapReportError', 'bootstrapPrepareError', 'aggregatePayloadError',
-  'metricDeltaConsistent', 'expectedRatchetMetrics', 'sameNumber', 'distanceToInterval', 'marketCommand', 'marketReceiptError', 'relativeRegression', 'ratchetPrepareContractError', 'computeRatchetVerdict',
-], `const RATCHET_GATE_IDS = ['holdout_mode_a', 'holdout_mode_b', 'rel_avx2_speed']; const TARGET_REGISTRY = ${JSON.stringify(TARGET_REGISTRY)}; const AGGREGATE_REGISTRY = ${JSON.stringify(AGGREGATE_REGISTRY)}; const SPEED_METRIC_ID = '${SPEED_METRIC_ID}'; const RATCHET_GATE_COMMANDS = ${JSON.stringify(RATCHET_GATE_COMMANDS)}; const BOOTSTRAP_GATE_COMMANDS = ${JSON.stringify(BOOTSTRAP_GATE_COMMANDS)}; const READY_MEASURE_COMMANDS = ${JSON.stringify(READY_MEASURE_COMMANDS)}`)
+  'reviewContractError', 'bootstrapReportError', 'bootstrapPrepareError', 'aggregatePayloadError', 'expectedMeasureMetricIds', 'expectedMetricUnit', 'validNumericMetric', 'validMeasureGateReceipt', 'measurePayloadError', 'attributionPayloadFromMeasure',
+  'metricDeltaConsistent', 'expectedRatchetMetrics', 'sameNumber', 'distanceToInterval', 'marketCommand', 'marketReceiptError', 'relativeRegression', 'ratchetGateIdForMetric', 'ratchetCandidateValue', 'ratchetMetricsFromReceipts', 'ratchetPrepareContractError', 'computeRatchetVerdict',
+], `const RATCHET_GATE_IDS = ['holdout_mode_a', 'holdout_mode_b', 'rel_avx2_speed']; const TARGET_REGISTRY = ${JSON.stringify(TARGET_REGISTRY)}; const AGGREGATE_REGISTRY = ${JSON.stringify(AGGREGATE_REGISTRY)}; const SPEED_METRIC_ID = '${SPEED_METRIC_ID}'; const RATCHET_GATE_COMMANDS = ${JSON.stringify(RATCHET_GATE_COMMANDS)}; const BOOTSTRAP_GATE_COMMANDS = ${JSON.stringify(BOOTSTRAP_GATE_COMMANDS)}; const READY_MEASURE_GATES = ${JSON.stringify(READY_MEASURE_GATES)}; const READY_MEASURE_COMMANDS = ${JSON.stringify(READY_MEASURE_COMMANDS)}`)
 const sprintFns = loadFunctions(sprint, [
   'validSuccessEvidence', 'validLeaseReceipt', 'validHeadReceipt', 'validIntegrationCommand', 'changedHeader', 'changedCode', 'safeTarget', 'safeUnitRegex', 'safeOracleTest',
-  'closureError', 'closureEntries', 'derivedGateRegistry', 'oracleLoopCommandError', 'laneHeartbeatId', 'reportContractError', 'reviewContractError', 'laneFailureReason', 'gateContractError',
-], `const FIXED_ORACLE_GATES = ${JSON.stringify(FIXED_ORACLE_GATES)}; const RUN_ID = 'run-1'; const RUN_SLUG = 'run-1'`)
+  'pathGateOwner', 'regexSuiteName', 'closureError', 'closureEntries', 'derivedGateRegistry', 'oracleLoopCommandError', 'laneHeartbeatId', 'reportContractError', 'reviewContractError', 'laneFailureReason', 'gateContractError',
+], `const FIXED_ORACLE_GATES = ${JSON.stringify(FIXED_ORACLE_GATES)}; const PATH_GATE_REGISTRY = ${JSON.stringify(PATH_GATE_REGISTRY)}; const RUN_ID = 'run-1'; const RUN_SLUG = 'run-1'`)
 
 function leaseIdentity({ lease = 'pool-1', branch, base, heartbeat, worktree = `C:\\atx-wt\\${lease}`, keeperPid = 4242 }) {
   return {
@@ -118,14 +127,17 @@ function gateReceipt(gateId) {
 }
 
 function bootstrapGateReceipt(gateId) {
-  const result = { schema_version: 1, status: 'PASS', observations: 100 }
+  const result = { schema_version: 1, status: 'PASS', observations: 100, command_id: gateId, raw_output_sha256: 'a'.repeat(64) }
   return { gate_id: gateId, command: BOOTSTRAP_GATE_COMMANDS[gateId], exit_code: 0, output: JSON.stringify(result), result }
 }
 
-function ratchetGateReceipt(gateId) {
-  const metricIds = gateId === 'holdout_mode_a' ? TARGET_REGISTRY.filter(item => item.mode === 'A').map(item => item.metric_id)
-    : gateId === 'holdout_mode_b' ? TARGET_REGISTRY.filter(item => item.mode === 'B').map(item => item.metric_id) : [SPEED_METRIC_ID]
-  const result = { schema_version: 1, status: 'PASS', observations: 100, metric_ids: metricIds }
+function ratchetGateReceipt(gateId, metrics) {
+  const metricIds = gateId === 'holdout_mode_a' ? [...TARGET_REGISTRY, ...AGGREGATE_REGISTRY].filter(item => item.mode === 'A').map(item => item.metric_id)
+    : gateId === 'holdout_mode_b' ? [...TARGET_REGISTRY, ...AGGREGATE_REGISTRY].filter(item => item.mode === 'B').map(item => item.metric_id) : [SPEED_METRIC_ID]
+  const result = { schema_version: 1, status: 'PASS', command_id: gateId, observations: 100, metrics: metricIds.map(metricId => {
+    const candidate = metrics.find(metric => metric.metric_id === metricId).candidate
+    return { metric_id: metricId, value: candidate, count: 100, unit: metricId === SPEED_METRIC_ID ? 'rows_per_second' : [...TARGET_REGISTRY, ...AGGREGATE_REGISTRY].find(item => item.metric_id === metricId).unit }
+  }) }
   return { gate_id: gateId, command: RATCHET_GATE_COMMANDS[gateId], exit_code: 0, output: JSON.stringify(result), result }
 }
 
@@ -202,6 +214,19 @@ function safePayload() {
   }
 }
 
+function measureGateReceipt(gateId, payload = safePayload()) {
+  let source
+  if (gateId === 'measure_mode_a') source = [...payload.target_metrics.filter(item => item.mode === 'A'), ...payload.aggregate_metrics.filter(item => item.mode === 'A')]
+  else if (gateId === 'measure_mode_b') source = [...payload.target_metrics.filter(item => item.mode === 'B'), ...payload.aggregate_metrics.filter(item => item.mode === 'B')]
+  else source = [payload.speed]
+  const metrics = source.map(metric => ({
+    metric_id: metric.metric_id, value: metric.baseline, count: metric.count || 1000, unit: metric.unit,
+    ...(metric.metric_id === SPEED_METRIC_ID ? { pin: metric.pin } : {}),
+  }))
+  const result = { schema_version: 1, status: 'PASS', command_id: gateId, observations: 1000, metrics }
+  return { gate_id: gateId, command: READY_MEASURE_GATES[gateId], exit_code: 0, output: JSON.stringify(result), result }
+}
+
 function measure() {
   const branch = 'lane/oracle-measure-iter-001-run-1'
   const identity = leaseIdentity({ branch, base: SHA.base, heartbeat: 'run-1-measure' })
@@ -210,7 +235,10 @@ function measure() {
     worktree: identity.worktree, lease_name: identity.lease_name, lease_run_id: 'run-1', heartbeat_id: identity.heartbeat_id,
     keeper_pid: identity.keeper_pid, keeper_process_started_utc: identity.keeper_process_started_utc,
     acquisition_receipt: leaseReceipt('acquire', identity), release_receipt: leaseReceipt('release', identity),
-    lease_released: true, attribution_payload: safePayload(), evidence: READY_MEASURE_COMMANDS.map(command => ({ command, exit_code: 0, output: 'PASS' })),
+    lease_released: true,
+    analysis_context: { prior_refuted_ids: [0], oracle_suspect_cells: [7], conventions: safePayload().conventions },
+    gate_receipts: Object.keys(READY_MEASURE_GATES).map(gateId => measureGateReceipt(gateId)),
+    evidence: Object.keys(READY_MEASURE_GATES).map(gateId => { const receipt = measureGateReceipt(gateId); return { command: receipt.command, exit_code: receipt.exit_code, output: receipt.output } }),
   }
 }
 
@@ -243,7 +271,7 @@ function ratchetPrepare({ reject = false } = {}) {
     acquisition_receipt: leaseReceipt('acquire', identity), release_receipt: leaseReceipt('release', identity),
     digest_receipt: { expected_digest: DIGEST, actual_digest: DIGEST, command: 'verify holdout digest', exit_code: 0, output: DIGEST },
     applicable_modes: ['A', 'B'], metrics, metric_evidence: metricEvidence,
-    gate_receipts: ['holdout_mode_a', 'holdout_mode_b', 'rel_avx2_speed'].map(ratchetGateReceipt),
+    gate_receipts: ['holdout_mode_a', 'holdout_mode_b', 'rel_avx2_speed'].map(gateId => ratchetGateReceipt(gateId, metrics)),
     oracle_suspects_excluded: [7],
     market_evidence: [{
       cell_id: 7, nbbo_bid_mean: 99, nbbo_ask_mean: 101, atx_price_mean: 100, oracle_price_mean: 103,
@@ -319,6 +347,8 @@ test('success evidence and APPROVE contracts reject exit failure/blockers', () =
   assert.equal(oracleFns.validSuccessEvidence([{ command: 'ctest --preset rel-avx2 -L atx_vol_fast', exit_code: 0, output: 'PASS' }]), false)
   const review = { verdict: 'APPROVE', reviewed_sha: SHA.build, evidence: okEvidence, findings: [{ severity: 'blocker' }] }
   assert.equal(oracleFns.reviewContractError(review, SHA.build), 'APPROVE contains blocker')
+  const broadReview = { verdict: 'APPROVE', reviewed_sha: SHA.build, evidence: [{ command: 'build\\bin\\atx-vol-tests.exe', exit_code: 0, output: 'PASS' }], findings: [] }
+  assert.match(oracleFns.reviewContractError(broadReview, SHA.build), /invalid\/broad/)
 })
 
 test('actual bootstrap no-Fix path prepares, finalizes exact CAS, audits, and returns BOOTSTRAP', async () => {
@@ -394,7 +424,7 @@ test('actual workflow rejects plaintext or encoded row payloads before Analyst a
   for (const raw of ['uPrc=100 rate=.05 sdiv=.01 de=.4 ga=.02', 'okey_xx=123 bidIV=.2 askIV=.3', Buffer.from('okey_xx=123 bidIV=.2 askIV=.3').toString('base64')]) {
     await t.test(raw.slice(0, 16), async () => {
       const measured = measure()
-      measured.attribution_payload.conventions.rate_model = raw
+      measured.analysis_context.conventions.rate_model = raw
       const { result, calls } = await runOracle({ capability: capability('ready'), measure: measured }, sprintPass)
       assert.equal(result.verdict, 'FAILED')
       assert.equal(calls.includes('attribute'), false)
@@ -406,14 +436,32 @@ test('actual workflow rejects plaintext or encoded row payloads before Analyst a
 test('actual ready Measure requires exact smoke/tune scorecards and quiet speed with no broad diagnostics', async t => {
   for (const [name, mutate] of [
     ['omitted scorecard', measured => { measured.evidence.shift() }],
-    ['nonquiet speed', measured => { measured.evidence[2].command = measured.evidence[2].command.replace(' --quiet-host', '') }],
+    ['nonquiet speed', measured => { measured.gate_receipts[2].command = measured.gate_receipts[2].command.replace(' --quiet-host', '') }],
     ['broad diagnostic', measured => { measured.diagnostics = [{ command: 'ctest --preset dev', exit_code: 1, output: 'refused' }] }],
+    ['self-reported forged baseline and pin', measured => {
+      measured.gate_receipts[0].result.metrics[0].value = 2
+      measured.gate_receipts[0].output = JSON.stringify(measured.gate_receipts[0].result)
+      measured.evidence[0].output = measured.gate_receipts[0].output
+      measured.attribution_payload = safePayload()
+      measured.attribution_payload.target_metrics[0].baseline = 100
+      measured.attribution_payload.speed.pin = 1
+    }],
   ]) await t.test(name, async () => {
     const measured = measure(); mutate(measured)
     const { result, calls } = await runOracle({ capability: capability('ready'), measure: measured }, sprintPass)
     assert.equal(result.verdict, 'FAILED')
     assert.equal(calls.includes('attribute'), false)
   })
+})
+
+test('Measure baselines and speed pin are derived from exact typed command JSON', () => {
+  const measured = measure()
+  measured.gate_receipts[0].result.metrics[0].value = 2
+  measured.gate_receipts[0].output = JSON.stringify(measured.gate_receipts[0].result)
+  const payload = oracleFns.attributionPayloadFromMeasure(measured)
+  assert.equal(payload.target_metrics.find(metric => metric.metric_id === 'mode_a_price_mae').baseline, 2)
+  assert.equal(payload.speed.pin, 100)
+  assert.equal(oracleFns.measurePayloadError(measured), null)
 })
 
 test('actual ready path workflow computes ACCEPT and exact CAS/audit', async () => {
@@ -454,6 +502,7 @@ test('actual Ratchet rejects agent-selected target, direction, baseline, speed p
     ['price direction higher', value => { value.metrics.find(metric => metric.metric_id === 'mode_a_price_mae').direction = 'higher' }],
     ['price reclassified', value => { value.metrics.find(metric => metric.metric_id === 'mode_a_price_mae').gate = 'aggregate' }],
     ['baseline override', value => { value.metrics.find(metric => metric.metric_id === 'mode_a_price_mae').baseline = 1 }],
+    ['candidate override', value => { const metric = value.metrics.find(metric => metric.metric_id === 'mode_a_price_mae'); metric.candidate = 1; metric.delta = 1 - metric.baseline }],
     ['speed pin override', value => { const speed = value.metrics.find(metric => metric.metric_id === SPEED_METRIC_ID); speed.candidate = 1; speed.delta = 1 - speed.baseline; speed.pin = 0 }],
     ['generic node gate', value => { value.gate_receipts[0].command = 'node holdout_mode_a'; value.gate_receipts[0].output = 'holdout_mode_a PASS' }],
     ['forged market side', value => { const market = value.market_evidence[0]; market.atx_price_mean = 104; market.oracle_price_mean = 100; market.atx_nbbo_distance = 0; market.oracle_nbbo_distance = 3; market.output = '7 99 101 104 100 0 3 100' }],
@@ -471,6 +520,7 @@ test('Ratchet missing digest, required gate, or suspect market evidence is FAILE
     ['digest', value => { value.digest_receipt = null }],
     ['gate', value => { value.gate_receipts.pop() }],
     ['market', value => { value.market_evidence = [] }],
+    ['broad success evidence', value => { value.evidence = [{ command: 'powershell scripts\\atx-build.ps1 build all', exit_code: 0, output: 'PASS' }] }],
   ]) await t.test(name, async () => {
     const value = ratchetPrepare()
     mutate(value)
@@ -499,8 +549,8 @@ test('ready ACCEPT finalizer exception still audits and reports actual landed ca
 test('sprint integration requires the exact mechanically-derived targeted registry without omission', () => {
   const identity = leaseIdentity({ branch: 'integration/run-1', base: SHA.base, heartbeat: 'run-1-integration' })
   const closure = [
-    { file: 'atx-vol/src/american.cpp', unit_targets: ['atx-vol-tests'], unit_regexes: ['^AmericanSuite$'], oracle_tests: ['american-rsi'], pch_off_targets: [] },
-    { file: 'atx-vol/include/atx/vol/american.hpp', unit_targets: ['atx-vol-tests'], unit_regexes: ['^AmericanSuite$'], oracle_tests: ['american-rsi'], pch_off_targets: ['atx-vol-tests'] },
+    { file: 'atx-vol/src/pricing/american.cpp', unit_targets: ['atx-vol-tests'], unit_regexes: ['^AmericanSuite$'], oracle_tests: ['american-rsi'], pch_off_targets: [] },
+    { file: 'atx-vol/include/atx/vol/api/pricing/american.hpp', unit_targets: ['atx-vol-tests'], unit_regexes: ['^AmericanSuite$'], oracle_tests: ['american-rsi'], pch_off_targets: ['atx-vol-tests'] },
   ]
   const gateRegistry = sprintFns.derivedGateRegistry(closure, true)
   const expected = { base_sha: SHA.base, run_id: 'run-1', branch: identity.branch, heartbeat_id: identity.heartbeat_id, reviewed_shas: [SHA.build], gate_registry: gateRegistry }
@@ -529,6 +579,8 @@ test('sprint integration requires the exact mechanically-derived targeted regist
   assert.match(sprintFns.gateContractError(missingSpeed, expected), /missing\/extra\/duplicated/)
   const evidenceOmission = structuredClone(gate); evidenceOmission.gate_results.pop()
   assert.match(sprintFns.gateContractError(evidenceOmission, expected), /returned evidence|evidence count/)
+  const evidenceExtra = structuredClone(gate); evidenceExtra.gate_results.push({ command: 'powershell scripts\\atx-build.ps1 -Preset dev -Ctest -R ^AnotherSuite$', exit_code: 0, output: 'PASS' })
+  assert.match(sprintFns.gateContractError(evidenceExtra, expected), /evidence count/)
   const broadDiagnostic = structuredClone(gate); broadDiagnostic.diagnostics = [{ command: 'ctest --preset dev', exit_code: 1, output: 'refused' }]
   assert.match(sprintFns.gateContractError(broadDiagnostic, expected), /broad or unanchored ctest/)
   assert.match(sprintFns.gateContractError({ ...gate, release_receipt: null }, expected), /release receipt/)
@@ -547,23 +599,33 @@ test('oracle-loop command policy rejects full/broad work and derives scoped PCH-
     'cmake --build --preset hygiene',
     'powershell atx-vol\\ci\\run_all_gates.ps1',
     'build\\bin\\atx-vol-tests.exe',
+    'build\\bin\\spx-wilmott-repro-tests.exe',
+    'powershell scripts\\atx-build.ps1 build',
+    'powershell scripts\\atx-build.ps1 build all',
     'node --test',
     'powershell scripts\\atx-build.ps1 -Preset dev -Ctest -R ^AmericanSuite$; ctest --preset dev',
   ]) assert.notEqual(sprintFns.oracleLoopCommandError(command), null, command)
   assert.equal(sprintFns.oracleLoopCommandError('powershell scripts\\atx-build.ps1 -Preset dev -Ctest -R ^AmericanSuite$'), null)
   assert.equal(sprintFns.oracleLoopCommandError('powershell scripts\\atx-build.ps1 -Preset hygiene build atx-vol-tests'), null)
-  assert.equal(sprintFns.changedHeader('atx-vol/include/model.hpp'), true)
-  assert.equal(sprintFns.changedHeader('atx-vol/src/model.cpp'), false)
-  const cppOnly = sprintFns.derivedGateRegistry([{ file: 'atx-vol/src/model.cpp', unit_targets: ['atx-vol-tests'], unit_regexes: ['^AmericanSuite$'], oracle_tests: ['american-rsi'], pch_off_targets: ['atx-vol-tests'] }])
+  for (const command of ['build\\bin\\atx-vol-tests.exe', 'powershell scripts\\atx-build.ps1 build', 'powershell scripts\\atx-build.ps1 build all']) assert.notEqual(oracleFns.iterationCommandError(command), null, command)
+  assert.equal(sprintFns.changedHeader('atx-vol/include/atx/vol/api/pricing/american.hpp'), true)
+  assert.equal(sprintFns.changedHeader('atx-vol/src/pricing/american.cpp'), false)
+  const cppOnly = sprintFns.derivedGateRegistry([{ file: 'atx-vol/src/pricing/american.cpp', unit_targets: ['atx-vol-tests'], unit_regexes: ['^AmericanSuite$'], oracle_tests: ['american-rsi'], pch_off_targets: ['atx-vol-tests'] }])
   assert.equal(cppOnly.some(gate => gate.gate_id.startsWith('pch-off:')), false)
-  const header = sprintFns.derivedGateRegistry([{ file: 'atx-vol/include/model.hpp', unit_targets: ['atx-vol-tests'], unit_regexes: ['^AmericanSuite$'], oracle_tests: ['american-rsi'], pch_off_targets: ['atx-vol-tests'] }])
+  const header = sprintFns.derivedGateRegistry([{ file: 'atx-vol/include/atx/vol/api/pricing/american.hpp', unit_targets: ['atx-vol-tests'], unit_regexes: ['^AmericanSuite$'], oracle_tests: ['american-rsi'], pch_off_targets: ['atx-vol-tests'] }])
   assert.deepEqual(header.find(gate => gate.gate_id === 'pch-off:atx-vol-tests'), { gate_id: 'pch-off:atx-vol-tests', command: 'powershell scripts\\atx-build.ps1 -Preset hygiene build atx-vol-tests' })
-  const validLane = { files_in_scope: ['atx-vol/src/model.cpp'], gate_closure: [{ file: 'atx-vol/src/model.cpp', unit_targets: ['atx-vol-tests'], unit_regexes: ['^AmericanSuite$'], oracle_tests: ['american-rsi'], pch_off_targets: [] }] }
+  const validLane = { files_in_scope: ['atx-vol/src/pricing/american.cpp'], gate_closure: [{ file: 'atx-vol/src/pricing/american.cpp', unit_targets: ['atx-vol-tests'], unit_regexes: ['^AmericanSuite$'], oracle_tests: ['american-rsi'], pch_off_targets: [] }] }
   assert.equal(sprintFns.closureError(validLane), null)
   const omitted = structuredClone(validLane); omitted.gate_closure = []
   assert.match(sprintFns.closureError(omitted), /every scoped file/)
   const broad = structuredClone(validLane); broad.gate_closure[0].unit_regexes = ['^.*$']
   assert.match(sprintFns.closureError(broad), /invalid\/broad/)
+  const unknown = structuredClone(validLane); unknown.files_in_scope[0] = unknown.gate_closure[0].file = 'atx-vol/src/unowned/fake.cpp'
+  assert.match(sprintFns.closureError(unknown), /not in workflow registry/)
+  const unrelatedTarget = structuredClone(validLane); unrelatedTarget.gate_closure[0].unit_targets = ['fake-target']
+  assert.match(sprintFns.closureError(unrelatedTarget), /does not match workflow path owner/)
+  const unrelatedTest = structuredClone(validLane); unrelatedTest.gate_closure[0].oracle_tests = ['unrelated-rsi']
+  assert.match(sprintFns.closureError(unrelatedTest), /does not match workflow path owner/)
   const lane = { ...validLane, id: 'american', branch: 'lane/american-run-1' }
   const identity = leaseIdentity({ branch: lane.branch, base: SHA.base, heartbeat: 'run-1-lane-american' })
   const laneGates = sprintFns.derivedGateRegistry(lane.gate_closure)
@@ -575,6 +637,8 @@ test('oracle-loop command policy rejects full/broad work and derives scoped PCH-
     evidence: laneGates.map(gate => ({ command: gate.command, exit_code: 0, output: 'PASS' })), diagnostics: [],
   }
   assert.equal(sprintFns.reportContractError(report, lane, SHA.base), null)
+  const extra = structuredClone(report); extra.evidence.push({ command: 'powershell scripts\\atx-build.ps1 -Preset dev -Ctest -R ^AnotherSuite$', exit_code: 0, output: 'PASS' })
+  assert.match(sprintFns.reportContractError(extra, lane, SHA.base), /exact changed-closure command set/)
   const broadLane = structuredClone(report); broadLane.diagnostics = [{ command: 'ctest --preset dev -L atx_vol_fast', exit_code: 1, output: 'refused' }]
   assert.match(sprintFns.reportContractError(broadLane, lane, SHA.base), /label\/full regression/)
   assert.ok(sprint.includes("receipt.tested_sha !== gate.sha"))
@@ -599,12 +663,28 @@ test('capability inspection is tool-restricted to an aggregate-only fixed probe'
   assert.equal(settings.permissions.allow.includes('PowerShell(powershell scripts\\oracle-capability.ps1*)'), false)
   assert.equal(/Get-Content|ReadAllLines|scan_parquet|Import-Csv/i.test(capabilityProbe), false)
   assert.match(capabilityProbe, /ReadAllText\(\$path\) \| ConvertFrom-Json/)
-  assert.equal(/ReadAllText\([^)]*holdout/i.test(capabilityProbe), false)
+  assert.ok(capabilityProbe.includes('Get-CommittedJson $Sha $holdoutPath'))
+  assert.ok(capabilityProbe.includes('Get-CohortMembershipDigest $holdout'))
+  assert.ok(capabilityProbe.includes('Test-Disjoint $tune.underliers $holdout.underliers'))
   assert.ok(capabilityProbe.includes("$oracleRoot + '/bootstrap/data.json'"))
   assert.ok(capabilityProbe.includes("$oracleRoot + '/bootstrap/mode-a.json'"))
   assert.ok(capabilityProbe.includes("$oracleRoot + '/bootstrap/conventions.json'"))
   assert.ok(capabilityProbe.includes("$oracleRoot + '/bootstrap/mode-' + $slug + '.json'"))
   assert.ok(capabilityProbe.includes('Test-Provenance'))
+  assert.equal(/holdout_membership\s*=|licensed_rows|raw_rows/i.test(capabilityProbe.slice(capabilityProbe.indexOf('$probeOutput'))), false)
+})
+
+test('bootstrap uses the fixed production targeted-gate adapter with typed receipts only', () => {
+  for (const gateId of ['mode_a_targeted_tests', 'mode_a_smoke', 'convention_tests', 'mode_a_smoke_tune', 'residual_floor', 'mode_b_targeted_tests', 'mode_b_smoke_tune']) {
+    const command = `powershell scripts\\oracle-targeted-gate.ps1 -Gate ${gateId}`
+    assert.equal(BOOTSTRAP_GATE_COMMANDS[gateId], command)
+    assert.ok(settings.permissions.allow.includes(`PowerShell(${command})`))
+  }
+  assert.ok(targetedGate.includes('Invoke-OracleTargetedGate'))
+  assert.ok(targetedGate.includes('raw_output_sha256'))
+  assert.ok(targetedGate.includes("'-R', '^mode_a_targeted_tests$'"))
+  assert.ok(targetedGate.includes("'--cohort', 'smoke,tune'"))
+  assert.equal(/-L\s+atx_vol_fast|run_all_gates|build\s+all/i.test(targetedGate), false)
 })
 
 test('lease source starts independent keeper and rejects before/after-only ownership', () => {
