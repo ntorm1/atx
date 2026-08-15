@@ -16,6 +16,8 @@ if (!args || !args.task) throw new Error('vol-sprint needs args: { task: "<what 
 const BASE_REF = (args && args.base) || 'main'
 const RUN_ID = `vol-sprint-${Date.now()}-${Math.random().toString(16).slice(2)}`
 const RUN_SLUG = RUN_ID.replace(/[^A-Za-z0-9._-]/g, '-')
+const AUTHORITATIVE_FAST_GATE = 'atx_vol_fast'
+const AUTHORITATIVE_FAST_COMMAND = 'ctest --preset rel-avx2 -L atx_vol_fast --output-on-failure'
 
 const EVIDENCE_ITEM = {
   type: 'object', required: ['command', 'exit_code', 'output'],
@@ -53,9 +55,9 @@ const INTEGRATION_RECEIPT = {
 }
 const GATE_RECEIPT = {
   type: 'object', additionalProperties: false,
-  required: ['gate_id', 'command', 'exit_code', 'output'],
+  required: ['gate_id', 'tested_sha', 'command', 'exit_code', 'output'],
   properties: {
-    gate_id: { type: 'string' }, command: { type: 'string' },
+    gate_id: { type: 'string' }, tested_sha: { type: 'string' }, command: { type: 'string' },
     exit_code: { type: 'integer' }, output: { type: 'string' },
   },
 }
@@ -191,6 +193,18 @@ function evidenceReferencesTarget(evidence, target) {
   })
 }
 
+function isFullFastCommand(command) {
+  return /(?:^|\s)-L\s+atx_vol_fast(?:\s|$)/i.test(String(command || ''))
+}
+
+function changedHeader(path) {
+  return /\.(?:h|hh|hpp|hxx|inl)$/i.test(String(path || ''))
+}
+
+function hygieneCommand(targets) {
+  return targets.length ? `cmake --preset hygiene && cmake --build --preset hygiene --target ${targets.join(' ')}` : ''
+}
+
 function reportContractError(report, lane, baseSha) {
   if (!report) return 'agent returned no report'
   if (report.outcome !== 'DONE') return `lane outcome ${report.outcome || 'missing'}`
@@ -207,6 +221,7 @@ function reportContractError(report, lane, baseSha) {
     keeper_process_started_utc: report.keeper_process_started_utc,
   }, 'acquire')) return 'lane acquisition receipt invalid'
   if (!validSuccessEvidence(report.evidence)) return 'missing successful command/output evidence'
+  if ([...(report.evidence || []), ...(report.diagnostics || [])].some(item => isFullFastCommand(item && item.command))) return 'lane attempted forbidden full atx_vol_fast gate'
   const requiredReferences = [...lane.check_targets, ...lane.build_targets, ...lane.suites]
   const missing = requiredReferences.filter(target => !evidenceReferencesTarget(report.evidence, target))
   if (missing.length) return `evidence does not reference required checks: ${missing.join(', ')}`
@@ -262,15 +277,19 @@ function gateContractError(gate, expected) {
         !/^[0-9a-f]{40}$/i.test(receipt.head_after || '') || !String(receipt.output || '').includes(receipt.head_after)) return 'exact reviewed SHA integration receipt invalid'
   }
   if (!validHeadReceipt(gate.head_receipt, 'HEAD', gate.sha)) return 'integration HEAD receipt invalid'
-  if (!Array.isArray(gate.gate_receipts)) return 'scoped gate receipts missing'
+  if (!Array.isArray(gate.gate_receipts) || gate.gate_receipts.length !== expected.gate_ids.length || new Set(gate.gate_receipts.map(receipt => receipt && receipt.gate_id)).size !== expected.gate_ids.length) return 'scoped gate receipts missing/extra/duplicated'
   for (const gateId of expected.gate_ids) {
     const matches = gate.gate_receipts.filter(receipt => receipt && receipt.gate_id === gateId)
-    if (matches.length !== 1 || matches[0].exit_code !== 0 || !String(matches[0].output || '').trim() ||
-        !evidenceReferencesTarget([matches[0]], gateId)) return `required gate receipt invalid: ${gateId}`
-    if (!gate.gate_results.some(item => item.command === matches[0].command && item.exit_code === 0 && item.output === matches[0].output)) {
+    const receipt = matches[0]
+    const commandValid = gateId === AUTHORITATIVE_FAST_GATE ? receipt && receipt.command === AUTHORITATIVE_FAST_COMMAND
+      : gateId === 'hygiene_changed_closure' ? receipt && receipt.command === expected.hygiene_command
+        : receipt && evidenceReferencesTarget([receipt], gateId)
+    if (matches.length !== 1 || receipt.tested_sha !== gate.sha || receipt.exit_code !== 0 || !String(receipt.output || '').trim() || !commandValid) return `required gate receipt invalid: ${gateId}`
+    if (!gate.gate_results.some(item => item.command === receipt.command && item.exit_code === 0 && item.output === receipt.output)) {
       return `required gate missing from returned evidence: ${gateId}`
     }
   }
+  if (gate.gate_results.length !== expected.gate_ids.length) return 'gate evidence count does not equal authoritative gate set'
   return null
 }
 
@@ -286,7 +305,7 @@ const BASE_SHA = freeze.base_sha
 
 phase('Plan')
 const plan = await agent(
-  `Task: ${args.task}\nFrozen base: ${BASE_REF} -> ${BASE_SHA}\nRun id: ${RUN_ID}\n\nDecompose into 1-4 file-disjoint lanes. Every listed lane is mandatory. Branches must be lane/<id> and the integration branch must be integration/<task>. Reserve shared files for exactly one lane or the integration gate. Do not edit, lease, build, or inspect licensed oracle row data.`,
+  `Task: ${args.task}\nFrozen base: ${BASE_REF} -> ${BASE_SHA}\nRun id: ${RUN_ID}\n\nDecompose into 1-4 file-disjoint lanes. Every listed lane is mandatory. Branches must be lane/<id> and the integration branch must be integration/<task>. Reserve shared files for exactly one lane or the integration gate. Lane checks must be scoped; never assign atx_vol_fast or a -L atx_vol_fast command because the isolated integration gate runs that authoritative suite exactly once after final HEAD freeze. Do not edit, lease, build, or inspect licensed oracle row data.`,
   { agentType: 'vol-planner', schema: PLAN, label: 'plan' },
 )
 if (!plan || !Array.isArray(plan.lanes) || plan.lanes.length < 1 || plan.lanes.length > 4) {
@@ -297,9 +316,12 @@ const lanes = plan.lanes.map(lane => ({
   branch: `lane/${String(lane.id).replace(/[^A-Za-z0-9._-]/g, '-')}-${RUN_SLUG}`,
 }))
 const INTEGRATION_BRANCH = `integration/${RUN_SLUG}`
-const REQUIRED_GATE_IDS = [...new Set(lanes.flatMap(lane => [...lane.build_targets, ...lane.suites]).filter(Boolean))]
-if (!REQUIRED_GATE_IDS.length || lanes.some(lane => ![...lane.build_targets, ...lane.suites].filter(Boolean).length)) {
+const LANE_GATE_IDS = [...new Set(lanes.flatMap(lane => [...lane.build_targets, ...lane.suites]).filter(Boolean))]
+if (!LANE_GATE_IDS.length || lanes.some(lane => ![...lane.build_targets, ...lane.suites].filter(Boolean).length)) {
   throw new Error('every mandatory lane needs at least one build target or suite')
+}
+if (lanes.some(lane => [...lane.check_targets, ...lane.build_targets, ...lane.suites].some(target => target === AUTHORITATIVE_FAST_GATE || isFullFastCommand(target)))) {
+  throw new Error('planner assigned the authoritative atx_vol_fast gate to a lane')
 }
 if (new Set(lanes.map(lane => lane.id)).size !== lanes.length ||
     new Set(lanes.map(lane => lane.branch)).size !== lanes.length) {
@@ -309,7 +331,7 @@ if (new Set(lanes.map(lane => lane.id)).size !== lanes.length ||
 const results = await pipeline(
   lanes,
   lane => agent(
-    `Mandatory lane brief (JSON):\n${JSON.stringify(lane, null, 2)}\n\nFrozen base SHA: ${BASE_SHA}. Harness run_id: ${RUN_ID}. Lease only with: powershell scripts\\lease-worktree.ps1 -Branch ${lane.branch} -Base ${BASE_SHA} -Agent vol-builder-${lane.id} -RunId ${RUN_ID} -HeartbeatId ${laneHeartbeatId(lane)} -MaxPool 20. The lease starts an independent continuous keeper; do not substitute foreground pulses for ownership. Never work in C:\\atx. Implement, run every named check/build/suite, commit explicit paths, keep the lease held, and return the typed acquisition receipt including keeper PID/start plus only exit_code=0 commands under evidence; failed diagnostics belong under diagnostics.`,
+    `Mandatory lane brief (JSON):\n${JSON.stringify(lane, null, 2)}\n\nFrozen base SHA: ${BASE_SHA}. Harness run_id: ${RUN_ID}. Lease only with: powershell scripts\\lease-worktree.ps1 -Branch ${lane.branch} -Base ${BASE_SHA} -Agent vol-builder-${lane.id} -RunId ${RUN_ID} -HeartbeatId ${laneHeartbeatId(lane)} -MaxPool 20. The lease starts an independent continuous keeper; do not substitute foreground pulses for ownership. Never work in C:\\atx. Implement, run every named scoped check/build/suite, but NEVER run -L atx_vol_fast in a lane; the integration gate owns its single authoritative execution. Commit explicit paths, keep the lease held, and return the typed acquisition receipt including keeper PID/start plus only exit_code=0 commands under evidence; failed diagnostics belong under diagnostics.`,
     { agentType: 'vol-builder', schema: REPORT, phase: 'Build', label: `build:${lane.id}` },
   ),
   (report, lane) => {
@@ -391,16 +413,21 @@ if (!releaseComplete) {
   }
 }
 
+const hygieneTargets = [...new Set(results.flatMap((state, index) =>
+  state.report.files_changed.some(changedHeader) ? lanes[index].build_targets : []).filter(target => /^[A-Za-z0-9_.+-]+$/.test(target)))].sort()
+const scopedHygieneCommand = hygieneCommand(hygieneTargets)
+const REQUIRED_GATE_IDS = [...new Set([...LANE_GATE_IDS, AUTHORITATIVE_FAST_GATE, ...(scopedHygieneCommand ? ['hygiene_changed_closure'] : [])])]
+
 phase('Gate')
 const gate = await agent(
-  `Gate this vol-sprint in a NEW isolated pool lease. Frozen base SHA: ${BASE_SHA}. Integration branch: ${INTEGRATION_BRANCH}. Harness run_id: ${RUN_ID}. Lane commits in brief order:\n${JSON.stringify(results.map(state => ({ lane: state.report.lane_id, branch: state.report.branch, sha: state.report.sha, reviewed_sha: state.review.reviewed_sha, verdict: state.review.verdict })))}\nRequired gate IDs: ${JSON.stringify(REQUIRED_GATE_IDS)}\nShared-files ownership: ${plan.shared_files_note}\n\nFirst acquire with powershell scripts\\lease-worktree.ps1 -Branch ${INTEGRATION_BRANCH} -Base ${BASE_SHA} -Agent vol-verifier -RunId ${RUN_ID} -HeartbeatId ${RUN_SLUG}-integration -MaxPool 20. The returned C:\\atx-wt\\pool-N path is the ONLY place integration, builds, tests, and ledger append may occur; never use C:\\atx. Report typed keeper-backed acquisition. Integrate each exact reviewed SHA in listed order with its own receipt and observed head_after, then provide an exact git rev-parse HEAD receipt. Run every required gate ID with one exit-code-zero typed receipt and pasted output, commit gate-owned memory if changed, then release with one typed keeper-backed receipt. A conflict or gate failure is passed=false but still releases. Failures belong in diagnostics.`,
+  `Gate this vol-sprint in a NEW isolated pool lease. Frozen base SHA: ${BASE_SHA}. Integration branch: ${INTEGRATION_BRANCH}. Harness run_id: ${RUN_ID}. Lane commits in brief order:\n${JSON.stringify(results.map(state => ({ lane: state.report.lane_id, branch: state.report.branch, sha: state.report.sha, reviewed_sha: state.review.reviewed_sha, verdict: state.review.verdict })))}\nRequired gate IDs: ${JSON.stringify(REQUIRED_GATE_IDS)}. The authoritative full-fast command is exactly: ${AUTHORITATIVE_FAST_COMMAND}. Changed-header closure: ${JSON.stringify(results.flatMap(state => state.report.files_changed).filter(changedHeader))}. Scoped hygiene targets: ${JSON.stringify(hygieneTargets)}; exact hygiene command: ${scopedHygieneCommand || 'SKIP (no changed headers)'}.\nShared-files ownership: ${plan.shared_files_note}\n\nFirst acquire with powershell scripts\\lease-worktree.ps1 -Branch ${INTEGRATION_BRANCH} -Base ${BASE_SHA} -Agent vol-verifier -RunId ${RUN_ID} -HeartbeatId ${RUN_SLUG}-integration -MaxPool 20. The returned C:\\atx-wt\\pool-N path is the ONLY place integration, builds, tests, and ledger append may occur; never use C:\\atx. Report typed keeper-backed acquisition. Integrate each exact reviewed SHA in listed order and prove the final HEAD SHA BEFORE gates. Run each required gate exactly once against that tested_sha: the full fast gate once, and hygiene only for the derived changed-header target closure. Return one receipt/evidence item per gate, commit gate-owned memory if changed, then release. A conflict or gate failure is passed=false but still releases. Failures belong in diagnostics.`,
   { agentType: 'vol-verifier', schema: GATE, label: 'gate' },
 )
 
 const gateError = gateContractError(gate, {
   base_sha: BASE_SHA, run_id: RUN_ID, branch: INTEGRATION_BRANCH,
   heartbeat_id: `${RUN_SLUG}-integration`, reviewed_shas: results.map(state => state.review.reviewed_sha),
-  gate_ids: REQUIRED_GATE_IDS,
+  gate_ids: REQUIRED_GATE_IDS, hygiene_command: scopedHygieneCommand,
 })
 const gateContractPassed = !gateError
 

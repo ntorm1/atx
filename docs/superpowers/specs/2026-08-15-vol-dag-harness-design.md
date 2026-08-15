@@ -58,8 +58,11 @@ Date: 2026-08-15. Status: v3 correctness hard cutover implemented. Goal: faster 
 - **Pipeline, not barriers**, between Build→Review→Fix: lane A reviews while lane B builds; wall-clock = slowest lane chain.
 - **Barrier before integration** (needs all lanes): every mandatory lane must be
   DONE and freshly APPROVED at its final SHA. Release lane leases, acquire a new
-  isolated integration lease, merge exact reviewed SHAs, run `atx_vol_fast`,
-  hygiene/module gates as required, append ledger, then release integration.
+  isolated integration lease, merge exact reviewed SHAs, prove HEAD, run the
+  authoritative `atx_vol_fast` once, run scoped hygiene/module gates as required,
+  append ledger, then release integration. Lanes are mechanically forbidden from
+  `-L atx_vol_fast`. No changed header means no hygiene run; otherwise the command
+  names only the sorted build-target closure for changed-header lanes.
 - **Per-sprint concurrency is capped at four lanes; the machine pool may grow to 20
   slots** so unrelated workflows can proceed concurrently. Builder without a lease
   reports BLOCKED rather than touching main. Lane leases stay held through Fix and

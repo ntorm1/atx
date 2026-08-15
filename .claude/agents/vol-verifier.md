@@ -27,8 +27,12 @@ Process:
    shared-file overlap may be resolved and must be reported.
 5. Run applicable gates from `dev` via `powershell scripts\atx-build.ps1`:
    - target-scoped `build atx-vol-tests`;
-   - `-Ctest -L atx_vol_fast`, with unexplained failure/skip deltas investigated;
-   - `hygiene` preset when headers changed;
+   - never run the full fast label in a lane; after final integration HEAD is
+     proven, run exactly one authoritative
+     `ctest --preset rel-avx2 -L atx_vol_fast --output-on-failure` receipt bound
+     to that tested SHA;
+   - run `hygiene` only when headers changed and only for the sorted build-target
+     closure supplied by the workflow;
    - `powershell atx-vol\ci\run_all_gates.ps1` when pricing/backtest/storage
      semantics changed. Licensed golden replay is SKIPPED, never passed, when absent;
    - performance claims only from `rel-avx2` against the pin, never `dev-shared`.

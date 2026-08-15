@@ -14,12 +14,48 @@ export const meta = {
 
 if (args && args.base && args.base !== 'main') throw new Error('vol-oracle-iter capability probe is fixed to main before canonical creation')
 const REQUESTED_BASE = 'main'
-const FOCUS = (args && args.focus) || ''
 const RUN_ID = `vol-oracle-${Date.now()}-${Math.random().toString(16).slice(2)}`
 const RUN_SLUG = RUN_ID.replace(/[^A-Za-z0-9._-]/g, '-')
 const CANONICAL_REF = 'refs/heads/oracle/canonical'
 const ZERO_SHA = '0000000000000000000000000000000000000000'
 const RATCHET_GATE_IDS = ['holdout_mode_a', 'holdout_mode_b', 'rel_avx2_speed']
+const TARGET_REGISTRY = Object.freeze([
+  { metric_id: 'mode_a_price_mae', mode: 'A', unit: 'ticks', limit: 1 },
+  { metric_id: 'mode_a_vol_mae', mode: 'A', unit: 'bp', limit: 5 },
+  { metric_id: 'mode_a_delta_rel', mode: 'A', unit: 'relative', limit: 0.01 },
+  { metric_id: 'mode_a_gamma_rel', mode: 'A', unit: 'relative', limit: 0.01 },
+  { metric_id: 'mode_a_theta_rel', mode: 'A', unit: 'relative', limit: 0.01 },
+  { metric_id: 'mode_a_vega_rel', mode: 'A', unit: 'relative', limit: 0.01 },
+  { metric_id: 'mode_b_price_mae', mode: 'B', unit: 'ticks', limit: 2 },
+  { metric_id: 'mode_b_vol_mae', mode: 'B', unit: 'bp', limit: 10 },
+  { metric_id: 'mode_b_delta_rel', mode: 'B', unit: 'relative', limit: 0.02 },
+  { metric_id: 'mode_b_gamma_rel', mode: 'B', unit: 'relative', limit: 0.02 },
+  { metric_id: 'mode_b_theta_rel', mode: 'B', unit: 'relative', limit: 0.02 },
+  { metric_id: 'mode_b_vega_rel', mode: 'B', unit: 'relative', limit: 0.02 },
+])
+const AGGREGATE_REGISTRY = Object.freeze([
+  { metric_id: 'mode_a_aggregate_error', mode: 'A', unit: 'relative' },
+  { metric_id: 'mode_b_aggregate_error', mode: 'B', unit: 'relative' },
+])
+const SPEED_METRIC_ID = 'rel_avx2_rows_per_second'
+const RATCHET_GATE_COMMANDS = Object.freeze({
+  holdout_mode_a: 'atx-vol-oracle-bench --cohort holdout --mode A --aggregate-only',
+  holdout_mode_b: 'atx-vol-oracle-bench --cohort holdout --mode B --aggregate-only',
+  rel_avx2_speed: 'atx-vol-oracle-bench --cohort tune --benchmark-speed --preset rel-avx2 --aggregate-only',
+})
+const BOOTSTRAP_GATE_COMMANDS = Object.freeze({
+  disk: 'powershell scripts\\oracle-bootstrap-preflight.ps1 -Gate disk',
+  ingest_manifest: 'powershell scripts\\oracle-bootstrap-preflight.ps1 -Gate ingest_manifest',
+  cohort_manifests: 'powershell scripts\\oracle-bootstrap-preflight.ps1 -Gate cohort_manifests',
+  holdout_digest: 'powershell scripts\\oracle-bootstrap-preflight.ps1 -Gate holdout_digest',
+  mode_a_targeted_tests: 'powershell scripts\\atx-build.ps1 -Ctest -R mode_a_targeted_tests',
+  mode_a_smoke: 'atx-vol-oracle-bench --cohort smoke --mode A --aggregate-only',
+  convention_tests: 'powershell scripts\\atx-build.ps1 -Ctest -R convention_tests',
+  mode_a_smoke_tune: 'atx-vol-oracle-bench --cohort smoke,tune --mode A --aggregate-only',
+  residual_floor: 'atx-vol-oracle-bench --cohort smoke,tune --mode A --residual-floor --aggregate-only',
+  mode_b_targeted_tests: 'powershell scripts\\atx-build.ps1 -Ctest -R mode_b_targeted_tests',
+  mode_b_smoke_tune: 'atx-vol-oracle-bench --cohort smoke,tune --mode B --aggregate-only',
+})
 
 const EVIDENCE_ITEM = {
   type: 'object', additionalProperties: false, required: ['command', 'exit_code', 'output'],
@@ -46,8 +82,27 @@ const CAS_RECEIPT = {
   },
 }
 const GATE_RECEIPT = {
-  type: 'object', additionalProperties: false, required: ['gate_id', 'command', 'exit_code', 'output'],
-  properties: { gate_id: { type: 'string' }, command: { type: 'string' }, exit_code: { type: 'integer' }, output: { type: 'string' } },
+  type: 'object', additionalProperties: false, required: ['gate_id', 'command', 'exit_code', 'output', 'result'],
+  properties: {
+    gate_id: { type: 'string', enum: Object.keys(BOOTSTRAP_GATE_COMMANDS) }, command: { type: 'string' }, exit_code: { type: 'integer' }, output: { type: 'string' },
+    result: {
+      type: 'object', additionalProperties: false, required: ['schema_version', 'status', 'observations'],
+      properties: { schema_version: { type: 'integer', enum: [1] }, status: { type: 'string', enum: ['PASS'] }, observations: { type: 'integer' } },
+    },
+  },
+}
+const RATCHET_GATE_RECEIPT = {
+  type: 'object', additionalProperties: false, required: ['gate_id', 'command', 'exit_code', 'output', 'result'],
+  properties: {
+    gate_id: { type: 'string', enum: RATCHET_GATE_IDS }, command: { type: 'string' }, exit_code: { type: 'integer' }, output: { type: 'string' },
+    result: {
+      type: 'object', additionalProperties: false, required: ['schema_version', 'status', 'observations', 'metric_ids'],
+      properties: {
+        schema_version: { type: 'integer', enum: [1] }, status: { type: 'string', enum: ['PASS'] }, observations: { type: 'integer' },
+        metric_ids: { type: 'array', items: { type: 'string', enum: [...TARGET_REGISTRY.map(item => item.metric_id), SPEED_METRIC_ID] } },
+      },
+    },
+  },
 }
 const INTEGRATION_RECEIPT = {
   type: 'object', additionalProperties: false, required: ['reviewed_sha', 'head_after', 'command', 'exit_code', 'output'],
@@ -113,21 +168,48 @@ const BOOTSTRAP_PREPARE = {
     evidence: { type: 'array', items: EVIDENCE_ITEM }, diagnostics: { type: 'array', items: EVIDENCE_ITEM },
   },
 }
-const AGGREGATE_METRIC = {
+const BASELINE_METRIC = {
   type: 'object', additionalProperties: false,
-  required: ['cell_id', 'mode', 'metric', 'count', 'mae', 'rmse', 'p95', 'within_tolerance_rate', 'unit'],
+  required: ['metric_id', 'mode', 'baseline', 'count', 'unit'],
   properties: {
-    cell_id: { type: 'string' }, mode: { type: 'string', enum: ['A', 'B'] }, metric: { type: 'string' }, count: { type: 'integer' },
-    mae: { type: 'number' }, rmse: { type: 'number' }, p95: { type: 'number' }, within_tolerance_rate: { type: 'number' }, unit: { type: 'string' },
+    metric_id: { type: 'string', enum: TARGET_REGISTRY.map(item => item.metric_id) }, mode: { type: 'string', enum: ['A', 'B'] },
+    baseline: { type: 'number' }, count: { type: 'integer' }, unit: { type: 'string', enum: ['ticks', 'bp', 'relative'] },
+  },
+}
+const AGGREGATE_BASELINE = {
+  type: 'object', additionalProperties: false, required: ['metric_id', 'mode', 'baseline', 'count', 'unit'],
+  properties: {
+    metric_id: { type: 'string', enum: AGGREGATE_REGISTRY.map(item => item.metric_id) }, mode: { type: 'string', enum: ['A', 'B'] },
+    baseline: { type: 'number' }, count: { type: 'integer' }, unit: { type: 'string', enum: ['relative'] },
+  },
+}
+const SPEED_BASELINE = {
+  type: 'object', additionalProperties: false, required: ['metric_id', 'baseline', 'pin', 'unit'],
+  properties: {
+    metric_id: { type: 'string', enum: [SPEED_METRIC_ID] }, baseline: { type: 'number' }, pin: { type: 'number' },
+    unit: { type: 'string', enum: ['rows_per_second'] },
+  },
+}
+const CONVENTION_MAP = {
+  type: 'object', additionalProperties: false,
+  required: ['theta_basis', 'vega_basis', 'rate_model', 'dividend_model', 'day_count', 'sign_model'],
+  properties: {
+    theta_basis: { type: 'string', enum: ['per_day', 'per_year'] },
+    vega_basis: { type: 'string', enum: ['per_vol_point', 'per_unit_vol'] },
+    rate_model: { type: 'string', enum: ['continuous', 'simple'] },
+    dividend_model: { type: 'string', enum: ['continuous_yield', 'discrete_cash'] },
+    day_count: { type: 'string', enum: ['ACT_365F', 'ACT_360', 'BUS_252'] },
+    sign_model: { type: 'string', enum: ['spiderrock'] },
   },
 }
 const ATTR_PAYLOAD = {
   type: 'object', additionalProperties: false,
-  required: ['schema_version', 'iteration', 'metrics', 'prior_refuted_ids', 'oracle_suspect_cells', 'convention_summary', 'source_symbols'],
+  required: ['schema_version', 'iteration', 'target_metrics', 'aggregate_metrics', 'speed', 'prior_refuted_ids', 'oracle_suspect_cells', 'conventions'],
   properties: {
-    schema_version: { type: 'integer', enum: [1] }, iteration: { type: 'string' }, metrics: { type: 'array', items: AGGREGATE_METRIC },
-    prior_refuted_ids: { type: 'array', items: { type: 'string' } }, oracle_suspect_cells: { type: 'array', items: { type: 'string' } },
-    convention_summary: { type: 'string' }, source_symbols: { type: 'array', items: { type: 'string' } },
+    schema_version: { type: 'integer', enum: [2] }, iteration: { type: 'integer' },
+    target_metrics: { type: 'array', items: BASELINE_METRIC }, aggregate_metrics: { type: 'array', items: AGGREGATE_BASELINE }, speed: SPEED_BASELINE,
+    prior_refuted_ids: { type: 'array', items: { type: 'integer', minimum: 0, maximum: 2147483647 } },
+    oracle_suspect_cells: { type: 'array', items: { type: 'integer', minimum: 0, maximum: 2147483647 } }, conventions: CONVENTION_MAP,
   },
 }
 const MEASURE = {
@@ -145,9 +227,9 @@ const ATTR = {
   type: 'object', additionalProperties: false, required: ['hypotheses', 'new_suspect_candidates'],
   properties: {
     hypotheses: { type: 'array', items: {
-      type: 'object', additionalProperties: false, required: ['id', 'target_cells', 'modes', 'mechanism', 'prediction', 'blast_radius', 'effort'],
+      type: 'object', additionalProperties: false, required: ['id', 'target_metric_ids', 'mechanism', 'prediction', 'blast_radius', 'effort'],
       properties: {
-        id: { type: 'string' }, target_cells: { type: 'array', items: { type: 'string' } }, modes: { type: 'array', items: { type: 'string', enum: ['A', 'B'] } },
+        id: { type: 'string', pattern: '^H-[A-Z0-9-]{1,48}$' }, target_metric_ids: { type: 'array', items: { type: 'string', enum: TARGET_REGISTRY.map(item => item.metric_id) } },
         mechanism: { type: 'string' }, prediction: { type: 'string' }, blast_radius: { type: 'string' }, effort: { type: 'string', enum: ['S', 'M', 'L'] },
       },
     } },
@@ -171,10 +253,12 @@ const DIGEST_RECEIPT = {
   },
 }
 const MARKET_RECEIPT = {
-  type: 'object', additionalProperties: false, required: ['cell_id', 'market_sides_with', 'command', 'exit_code', 'output'],
+  type: 'object', additionalProperties: false,
+  required: ['cell_id', 'nbbo_bid_mean', 'nbbo_ask_mean', 'atx_price_mean', 'oracle_price_mean', 'atx_nbbo_distance', 'oracle_nbbo_distance', 'sample_count', 'command', 'exit_code', 'output'],
   properties: {
-    cell_id: { type: 'string' }, market_sides_with: { type: 'string', enum: ['atx-vol'] }, command: { type: 'string' },
-    exit_code: { type: 'integer' }, output: { type: 'string' },
+    cell_id: { type: 'integer', minimum: 0, maximum: 2147483647 }, nbbo_bid_mean: { type: 'number' }, nbbo_ask_mean: { type: 'number' },
+    atx_price_mean: { type: 'number' }, oracle_price_mean: { type: 'number' }, atx_nbbo_distance: { type: 'number' },
+    oracle_nbbo_distance: { type: 'number' }, sample_count: { type: 'integer' }, command: { type: 'string' }, exit_code: { type: 'integer' }, output: { type: 'string' },
   },
 }
 const RATCHET_PREPARE = {
@@ -186,8 +270,8 @@ const RATCHET_PREPARE = {
     heartbeat_id: { type: 'string' }, keeper_pid: { type: 'integer' }, keeper_process_started_utc: { type: 'string' },
     acquisition_receipt: LEASE_RECEIPT, release_receipt: LEASE_RECEIPT, digest_receipt: DIGEST_RECEIPT,
     applicable_modes: { type: 'array', items: { type: 'string', enum: ['A', 'B'] } }, metrics: { type: 'array', items: RATCHET_METRIC },
-    metric_evidence: { type: 'array', items: EVIDENCE_ITEM }, gate_receipts: { type: 'array', items: GATE_RECEIPT },
-    oracle_suspects_excluded: { type: 'array', items: { type: 'string' } }, market_evidence: { type: 'array', items: MARKET_RECEIPT },
+    metric_evidence: { type: 'array', items: EVIDENCE_ITEM }, gate_receipts: { type: 'array', items: RATCHET_GATE_RECEIPT },
+    oracle_suspects_excluded: { type: 'array', items: { type: 'integer', minimum: 0, maximum: 2147483647 } }, market_evidence: { type: 'array', items: MARKET_RECEIPT },
     memory_verdict: { type: 'string', enum: ['ACCEPT', 'REJECT'] }, holdout_summary: { type: 'string' },
     hypotheses_confirmed: { type: 'array', items: { type: 'string' } }, hypotheses_refuted: { type: 'array', items: { type: 'string' } },
     ledger_appended: { type: 'array', items: { type: 'string' } }, northstar_updated: { type: 'boolean' },
@@ -196,9 +280,9 @@ const RATCHET_PREPARE = {
 }
 
 const BOOTSTRAP_LANES = {
-  missing_data: { stage: '1', slug: 'data', next: 'missing_mode_a', gate_ids: ['disk', 'ingest_manifest', 'cohort_manifests', 'holdout_digest'], contract: 'Verify >=15 GiB, ingest, create/repair smoke+tune+holdout manifests, commit holdout.sha256. Never benchmark holdout or emit membership/rows.' },
+  missing_data: { stage: '1', slug: 'data', next: 'missing_mode_a', gate_ids: ['disk', 'ingest_manifest', 'cohort_manifests', 'holdout_digest'], contract: 'Verify >=15 GiB, ingest, create/repair smoke+tune+holdout manifests, commit holdout.sha256 plus the exact v1 bootstrap/data.json aggregate validation/provenance receipt from CHARTER. Never benchmark holdout or emit membership/rows.' },
   missing_mode_a: { stage: '2', slug: 'mode-a', next: 'missing_conventions', gate_ids: ['mode_a_targeted_tests', 'mode_a_smoke'], contract: 'Implement/test Mode A, run aggregate smoke only, commit bootstrap/mode-a.json. Do not implement/stub Mode B; never benchmark holdout.' },
-  missing_conventions: { stage: '3', slug: 'conventions', next: 'missing_mode_b', gate_ids: ['convention_tests', 'mode_a_smoke_tune', 'residual_floor'], contract: 'Resolve conventions on aggregate smoke+tune Mode A, commit CONVENTIONS.md + iter-000 + evidenced memory. Never benchmark holdout or read Mode B.' },
+  missing_conventions: { stage: '3', slug: 'conventions', next: 'missing_mode_b', gate_ids: ['convention_tests', 'mode_a_smoke_tune', 'residual_floor'], contract: 'Resolve conventions on aggregate smoke+tune Mode A, commit CONVENTIONS.md + iter-000 + exact v1 bootstrap/conventions.json validation/provenance receipt and evidenced memory. Never benchmark holdout or read Mode B.' },
   missing_mode_b: { stage: '4', slug: 'mode-b', next: 'ready', gate_ids: ['mode_b_targeted_tests', 'mode_b_smoke_tune'], contract: 'Implement/test Mode B, run aggregate smoke+tune, commit bootstrap/mode-b.json. Never change holdout/conventions or benchmark holdout.' },
 }
 
@@ -221,9 +305,25 @@ function validHeadReceipt(receipt, ref, sha) {
 }
 
 function validGateReceipt(receipt, gateId) {
-  if (!receipt || receipt.gate_id !== gateId || receipt.exit_code !== 0 || !String(receipt.output || '').trim()) return false
-  const command = String(receipt.command || '')
-  return command.includes(gateId) && /atx-build\.ps1|atx-vol-oracle-bench|python|node|invoke-pester/i.test(command)
+  if (!receipt || receipt.gate_id !== gateId || receipt.command !== BOOTSTRAP_GATE_COMMANDS[gateId] || receipt.exit_code !== 0) return false
+  const result = receipt.result
+  return !!result && result.schema_version === 1 && result.status === 'PASS' && Number.isInteger(result.observations) && result.observations > 0 && receipt.output === JSON.stringify(result)
+}
+
+function expectedGateMetricIds(gateId) {
+  if (gateId === 'holdout_mode_a') return TARGET_REGISTRY.filter(item => item.mode === 'A').map(item => item.metric_id)
+  if (gateId === 'holdout_mode_b') return TARGET_REGISTRY.filter(item => item.mode === 'B').map(item => item.metric_id)
+  if (gateId === 'rel_avx2_speed') return [SPEED_METRIC_ID]
+  return []
+}
+
+function validRatchetGateReceipt(receipt, gateId) {
+  if (!receipt || receipt.gate_id !== gateId || receipt.command !== RATCHET_GATE_COMMANDS[gateId] || receipt.exit_code !== 0 || !String(receipt.output || '').trim()) return false
+  const result = receipt.result
+  const wanted = expectedGateMetricIds(gateId)
+  return !!result && result.schema_version === 1 && result.status === 'PASS' && Number.isInteger(result.observations) && result.observations > 0 &&
+    Array.isArray(result.metric_ids) && result.metric_ids.length === wanted.length && new Set(result.metric_ids).size === wanted.length && wanted.every(id => result.metric_ids.includes(id)) &&
+    receipt.output === JSON.stringify(result)
 }
 
 function validIntegrationCommand(receipt, reviewedSha) {
@@ -289,7 +389,7 @@ function bootstrapPrepareError(report, review, prepare, expected) {
   if (!validIntegrationCommand(prepare.integration_receipt, report.sha) || prepare.integration_receipt.head_after !== report.sha ||
       !String(prepare.integration_receipt.output || '').includes(report.sha)) return 'exact reviewed SHA integration receipt invalid'
   if (!validHeadReceipt(prepare.head_receipt, 'HEAD', report.sha)) return 'bootstrap HEAD receipt invalid'
-  if (!Array.isArray(prepare.gate_receipts)) return 'bootstrap gate receipts missing'
+  if (!Array.isArray(prepare.gate_receipts) || prepare.gate_receipts.length !== expected.gate_ids.length) return 'bootstrap gate receipt set mismatch'
   for (const gateId of expected.gate_ids) {
     const matches = prepare.gate_receipts.filter(receipt => receipt && receipt.gate_id === gateId)
     if (matches.length !== 1 || !validGateReceipt(matches[0], gateId)) return `bootstrap required gate receipt invalid: ${gateId}`
@@ -300,21 +400,34 @@ function bootstrapPrepareError(report, review, prepare, expected) {
 function aggregatePayloadError(payload) {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return 'aggregate payload missing/not object'
   const exactKeys = (value, keys) => { const actual = Object.keys(value).sort(); const wanted = [...keys].sort(); return actual.length === wanted.length && actual.every((key, index) => key === wanted[index]) }
-  const payloadKeys = ['schema_version', 'iteration', 'metrics', 'prior_refuted_ids', 'oracle_suspect_cells', 'convention_summary', 'source_symbols']
-  if (!exactKeys(payload, payloadKeys) || payload.schema_version !== 1 || typeof payload.iteration !== 'string') return 'aggregate payload keys/version invalid'
-  const safeString = value => typeof value === 'string' && value.length > 0 && value.length <= 512 &&
-    !/holdout|sha-?256|[0-9a-f]{40,64}|[A-Za-z]:[\\/]|(?:bidPrc|askPrc|srPrc|srVol)\s*[:=]\s*[-+0-9.]|(?:[A-Za-z0-9+/]{80,}={0,2})/i.test(value)
-  if (!safeString(payload.iteration) || !safeString(payload.convention_summary)) return 'aggregate payload unsafe scalar'
-  for (const key of ['prior_refuted_ids', 'oracle_suspect_cells', 'source_symbols']) {
-    if (!Array.isArray(payload[key]) || payload[key].length > 256 || !payload[key].every(safeString)) return `aggregate payload ${key} invalid`
+  const payloadKeys = ['schema_version', 'iteration', 'target_metrics', 'aggregate_metrics', 'speed', 'prior_refuted_ids', 'oracle_suspect_cells', 'conventions']
+  if (!exactKeys(payload, payloadKeys) || payload.schema_version !== 2 || !Number.isInteger(payload.iteration) || payload.iteration < 0) return 'aggregate payload keys/version invalid'
+  for (const values of [payload.prior_refuted_ids, payload.oracle_suspect_cells]) {
+    if (!Array.isArray(values) || values.length > 256 || new Set(values).size !== values.length ||
+        !values.every(value => Number.isSafeInteger(value) && value >= 0 && value <= 2147483647)) return 'aggregate payload numeric ID list invalid'
   }
-  const metricKeys = ['cell_id', 'mode', 'metric', 'count', 'mae', 'rmse', 'p95', 'within_tolerance_rate', 'unit']
-  if (!Array.isArray(payload.metrics) || !payload.metrics.length || payload.metrics.length > 2000) return 'aggregate metrics invalid'
-  for (const metric of payload.metrics) {
-    if (!metric || typeof metric !== 'object' || Array.isArray(metric) || !exactKeys(metric, metricKeys)) return 'aggregate metric keys invalid'
-    if (!safeString(metric.cell_id) || !safeString(metric.metric) || !safeString(metric.unit) || !['A', 'B'].includes(metric.mode) || !Number.isInteger(metric.count) || metric.count < 0 ||
-        ![metric.mae, metric.rmse, metric.p95, metric.within_tolerance_rate].every(Number.isFinite) || metric.within_tolerance_rate < 0 || metric.within_tolerance_rate > 1) return 'aggregate metric value invalid'
+  const conventionKeys = ['theta_basis', 'vega_basis', 'rate_model', 'dividend_model', 'day_count', 'sign_model']
+  const conventions = payload.conventions
+  if (!conventions || typeof conventions !== 'object' || Array.isArray(conventions) || !exactKeys(conventions, conventionKeys) ||
+      !['per_day', 'per_year'].includes(conventions.theta_basis) || !['per_vol_point', 'per_unit_vol'].includes(conventions.vega_basis) ||
+      !['continuous', 'simple'].includes(conventions.rate_model) || !['continuous_yield', 'discrete_cash'].includes(conventions.dividend_model) ||
+      !['ACT_365F', 'ACT_360', 'BUS_252'].includes(conventions.day_count) || conventions.sign_model !== 'spiderrock') return 'aggregate convention map invalid'
+  const baselineKeys = ['metric_id', 'mode', 'baseline', 'count', 'unit']
+  const validateRegistry = (metrics, registry) => {
+    if (!Array.isArray(metrics) || metrics.length !== registry.length) return false
+    const byId = new Map(metrics.map(metric => [metric && metric.metric_id, metric]))
+    if (byId.size !== registry.length) return false
+    return registry.every(expected => {
+      const metric = byId.get(expected.metric_id)
+      return metric && typeof metric === 'object' && !Array.isArray(metric) && exactKeys(metric, baselineKeys) && metric.mode === expected.mode &&
+        metric.unit === expected.unit && Number.isFinite(metric.baseline) && metric.baseline >= 0 && Number.isInteger(metric.count) && metric.count > 0
+    })
   }
+  if (!validateRegistry(payload.target_metrics, TARGET_REGISTRY) || !validateRegistry(payload.aggregate_metrics, AGGREGATE_REGISTRY)) return 'aggregate metric registry invalid'
+  if (!payload.speed || typeof payload.speed !== 'object' || Array.isArray(payload.speed) ||
+      !exactKeys(payload.speed, ['metric_id', 'baseline', 'pin', 'unit']) || payload.speed.metric_id !== SPEED_METRIC_ID ||
+      payload.speed.unit !== 'rows_per_second' || !Number.isFinite(payload.speed.baseline) || !Number.isFinite(payload.speed.pin) ||
+      payload.speed.pin <= 0 || payload.speed.baseline < payload.speed.pin) return 'aggregate speed baseline invalid'
   return null
 }
 
@@ -323,6 +436,47 @@ function metricDeltaConsistent(metric) {
   const expected = metric.candidate - metric.baseline
   const scale = Math.max(1, Math.abs(metric.baseline), Math.abs(metric.candidate), Math.abs(metric.delta))
   return Math.abs(metric.delta - expected) <= Number.EPSILON * scale * 16
+}
+
+function expectedRatchetMetrics(payload) {
+  const targetBaselines = new Map(payload.target_metrics.map(metric => [metric.metric_id, metric.baseline]))
+  const aggregateBaselines = new Map(payload.aggregate_metrics.map(metric => [metric.metric_id, metric.baseline]))
+  return [
+    ...TARGET_REGISTRY.map(item => ({ metric_id: item.metric_id, mode: item.mode, unit: item.unit, gate: 'target', direction: 'lower', baseline: targetBaselines.get(item.metric_id), pin: item.limit })),
+    ...AGGREGATE_REGISTRY.map(item => ({ ...item, gate: 'aggregate', direction: 'lower', baseline: aggregateBaselines.get(item.metric_id), pin: 0 })),
+    { metric_id: SPEED_METRIC_ID, mode: 'ALL', unit: 'rows_per_second', gate: 'speed', direction: 'higher', baseline: payload.speed.baseline, pin: payload.speed.pin },
+  ]
+}
+
+function sameNumber(left, right) {
+  if (!Number.isFinite(left) || !Number.isFinite(right)) return false
+  return Math.abs(left - right) <= Number.EPSILON * Math.max(1, Math.abs(left), Math.abs(right)) * 16
+}
+
+function distanceToInterval(value, low, high) {
+  if (value < low) return low - value
+  if (value > high) return value - high
+  return 0
+}
+
+function marketCommand(cellId) {
+  return `atx-vol-oracle-bench --cohort holdout --market-check ${cellId} --aggregate-only`
+}
+
+function marketReceiptError(receipt, cellId) {
+  if (!receipt || receipt.cell_id !== cellId || receipt.command !== marketCommand(cellId) || receipt.exit_code !== 0 || !String(receipt.output || '').trim()) return 'identity/command invalid'
+  const numbers = [receipt.nbbo_bid_mean, receipt.nbbo_ask_mean, receipt.atx_price_mean, receipt.oracle_price_mean, receipt.atx_nbbo_distance, receipt.oracle_nbbo_distance]
+  if (!numbers.every(Number.isFinite) || receipt.nbbo_bid_mean > receipt.nbbo_ask_mean || !Number.isInteger(receipt.sample_count) || receipt.sample_count <= 0) return 'typed NBBO fields invalid'
+  const atxDistance = distanceToInterval(receipt.atx_price_mean, receipt.nbbo_bid_mean, receipt.nbbo_ask_mean)
+  const oracleDistance = distanceToInterval(receipt.oracle_price_mean, receipt.nbbo_bid_mean, receipt.nbbo_ask_mean)
+  if (!sameNumber(receipt.atx_nbbo_distance, atxDistance) || !sameNumber(receipt.oracle_nbbo_distance, oracleDistance) || !(atxDistance < oracleDistance)) return 'market does not mechanically side with atx-vol'
+  const expectedOutput = JSON.stringify({
+    cell_id: receipt.cell_id, nbbo_bid_mean: receipt.nbbo_bid_mean, nbbo_ask_mean: receipt.nbbo_ask_mean,
+    atx_price_mean: receipt.atx_price_mean, oracle_price_mean: receipt.oracle_price_mean,
+    atx_nbbo_distance: receipt.atx_nbbo_distance, oracle_nbbo_distance: receipt.oracle_nbbo_distance, sample_count: receipt.sample_count,
+  })
+  if (receipt.output !== expectedOutput) return 'market output does not bind typed fields'
+  return null
 }
 
 function relativeRegression(metric) {
@@ -345,26 +499,34 @@ function ratchetPrepareContractError(ratchet, expected) {
       !/holdout/i.test(digest.command || '') || !/digest/i.test(digest.command || '') || !String(digest.output || '').includes(expected.holdout_digest)) return 'Ratchet digest recomputation receipt invalid'
   if (!Array.isArray(ratchet.applicable_modes) || ratchet.applicable_modes.length !== expected.applicable_modes.length || !expected.applicable_modes.every(mode => ratchet.applicable_modes.includes(mode))) return 'Ratchet applicable modes mismatch'
   if (!Array.isArray(ratchet.metrics) || !ratchet.metrics.length || !Array.isArray(ratchet.metric_evidence)) return 'Ratchet typed metrics missing'
-  for (const metric of ratchet.metrics) {
+  const expectedMetrics = expectedRatchetMetrics(expected.baseline_contract)
+  if (ratchet.metrics.length !== expectedMetrics.length) return 'Ratchet metric registry incomplete/extra'
+  const metricById = new Map(ratchet.metrics.map(metric => [metric && metric.metric_id, metric]))
+  if (metricById.size !== expectedMetrics.length) return 'Ratchet metric registry duplicated'
+  for (const registryMetric of expectedMetrics) {
+    const metric = metricById.get(registryMetric.metric_id)
+    if (!metric || metric.mode !== registryMetric.mode || metric.gate !== registryMetric.gate || metric.direction !== registryMetric.direction ||
+        metric.unit !== registryMetric.unit || !sameNumber(metric.baseline, registryMetric.baseline) || !sameNumber(metric.pin, registryMetric.pin)) return `Ratchet workflow-owned metric contract mismatch: ${registryMetric.metric_id}`
     if (!metricDeltaConsistent(metric)) return 'Ratchet metric delta inconsistent'
-    if (!['A', 'B', 'ALL'].includes(metric.mode) || !['target', 'aggregate', 'speed'].includes(metric.gate) || !['lower', 'higher'].includes(metric.direction) ||
-        !Number.isInteger(metric.evidence_index) || metric.evidence_index < 0 || metric.evidence_index >= ratchet.metric_evidence.length) return 'Ratchet metric shape/evidence index invalid'
+    if (!Number.isInteger(metric.evidence_index) || metric.evidence_index < 0 || metric.evidence_index >= ratchet.metric_evidence.length) return 'Ratchet metric shape/evidence index invalid'
     const evidence = ratchet.metric_evidence[metric.evidence_index]
     if (!evidence || evidence.exit_code !== 0 || !/holdout|speed/i.test(evidence.command || '') || !String(evidence.output || '').includes(metric.metric_id) ||
         !String(evidence.output || '').includes(String(metric.baseline)) || !String(evidence.output || '').includes(String(metric.candidate)) ||
         !String(evidence.output || '').includes(String(metric.delta))) return 'Ratchet metric not supported by referenced output'
   }
-  if (!ratchet.metrics.some(metric => metric.gate === 'aggregate') || ratchet.metrics.filter(metric => metric.gate === 'speed').length !== 1) return 'Ratchet aggregate/speed metrics missing'
-  for (const mode of expected.applicable_modes) if (!ratchet.metrics.some(metric => metric.gate === 'target' && metric.mode === mode)) return `Ratchet target metrics missing for Mode ${mode}`
-  if (!Array.isArray(ratchet.gate_receipts)) return 'Ratchet gate receipts missing'
+  if (!Array.isArray(ratchet.gate_receipts) || ratchet.gate_receipts.length !== RATCHET_GATE_IDS.length) return 'Ratchet gate receipt set mismatch'
   for (const gateId of RATCHET_GATE_IDS) {
     const matches = ratchet.gate_receipts.filter(receipt => receipt && receipt.gate_id === gateId)
-    if (matches.length !== 1 || !validGateReceipt(matches[0], gateId)) return `Ratchet required gate receipt invalid: ${gateId}`
+    if (matches.length !== 1 || !validRatchetGateReceipt(matches[0], gateId)) return `Ratchet required gate receipt invalid: ${gateId}`
   }
   if (!Array.isArray(ratchet.oracle_suspects_excluded) || !Array.isArray(ratchet.market_evidence) || ratchet.market_evidence.length !== ratchet.oracle_suspects_excluded.length) return 'Ratchet suspect market evidence missing'
+  if (new Set(ratchet.oracle_suspects_excluded).size !== ratchet.oracle_suspects_excluded.length ||
+      !ratchet.oracle_suspects_excluded.every(cell => expected.suspect_candidates.includes(cell))) return 'Ratchet suspect exclusion not frozen by Measure'
   for (const cell of ratchet.oracle_suspects_excluded) {
     const matches = ratchet.market_evidence.filter(receipt => receipt && receipt.cell_id === cell)
-    if (matches.length !== 1 || matches[0].market_sides_with !== 'atx-vol' || matches[0].exit_code !== 0 || !String(matches[0].command || '').includes(cell) || !String(matches[0].output || '').trim()) return `Ratchet suspect evidence invalid: ${cell}`
+    if (matches.length !== 1) return `Ratchet suspect evidence invalid: ${cell}`
+    const marketError = marketReceiptError(matches[0], cell)
+    if (marketError) return `Ratchet suspect evidence invalid: ${cell}: ${marketError}`
   }
   if (!ratchet.northstar_updated || !Array.isArray(ratchet.ledger_appended) || !ratchet.ledger_appended.length || typeof ratchet.holdout_summary !== 'string' || !ratchet.holdout_summary.trim()) return 'Ratchet memory/summary incomplete'
   return null
@@ -457,15 +619,15 @@ if (!capability.canonical_exists) throw new Error('ready requires existing canon
 phase('Measure')
 const measureBranch = `lane/oracle-measure-${capability.next_iter}-${RUN_SLUG}`
 const measureHeartbeat = `${RUN_SLUG}-measure`
-const measure = await agent(`Measure ${capability.next_iter} from ${BASE_SHA} in keeper-backed ${measureBranch}, RunId=${RUN_ID}, HeartbeatId=${measureHeartbeat}. Run aggregate smoke+tune A+B and pinned speed; commit/release. Return strict attribution_payload schema_version=1 only, with no unknown keys, paths, hashes, membership, rows, or encoded blobs, plus typed acquire/release.`, { schema: MEASURE, label: 'measure' })
+const measure = await agent(`Measure ${capability.next_iter} from ${BASE_SHA} in keeper-backed ${measureBranch}, RunId=${RUN_ID}, HeartbeatId=${measureHeartbeat}. Run aggregate smoke+tune A+B and pinned speed; commit/release. Return strict attribution_payload schema_version=2 with the complete immutable target/aggregate registries and positive pinned speed baseline; only enumerated conventions, validated IDs, and numbers are allowed. No prose, paths, hashes, membership, rows, or encoded blobs. Return typed acquire/release.`, { schema: MEASURE, label: 'measure' })
 const measureLease = measure && { lease_name: measure.lease_name, run_id: RUN_ID, branch: measureBranch, base_sha: BASE_SHA, worktree: measure.worktree, heartbeat_id: measureHeartbeat, keeper_pid: measure.keeper_pid, keeper_process_started_utc: measure.keeper_process_started_utc }
 const measureError = !measure || measure.status !== 'ok' || measure.iter !== capability.next_iter || measure.branch !== measureBranch || measure.base_sha !== BASE_SHA || measure.lease_run_id !== RUN_ID || measure.heartbeat_id !== measureHeartbeat || !/^[0-9a-f]{40}$/i.test(measure.sha || '') || !measure.lease_released || !validSuccessEvidence(measure.evidence) || !validLeaseReceipt(measure.acquisition_receipt, measureLease || {}, 'acquire') || !validLeaseReceipt(measure.release_receipt, measureLease || {}, 'release') || aggregatePayloadError(measure.attribution_payload)
 if (measureError) return { iteration: capability.next_iter, capability_state: 'ready', verdict: 'FAILED', holdout: null, confirmed: [], refuted: [], sprint: null, ledger: [], ratchet_evidence: [], failure: 'Measure failed strict contract; no holdout', run_id: RUN_ID, base_sha: BASE_SHA, canonical_after: null }
 
 phase('Attribute')
-const attribution = await agent(`Tool-less aggregate attribution. Strict payload:\n${JSON.stringify(measure.attribution_payload)}\nRank 1-3 falsifiable hypotheses and declare modes A/B. Never request tools, paths, hashes, membership, rows, or encoded data.${FOCUS ? `\nFocus: ${FOCUS}` : ''}`, { agentType: 'vol-analyst', schema: ATTR, label: 'attribute' })
-if (!attribution || !Array.isArray(attribution.hypotheses) || !attribution.hypotheses.length || attribution.hypotheses.some(item => !Array.isArray(item.modes) || !item.modes.length)) return { iteration: measure.iter, capability_state: 'ready', verdict: 'FAILED', holdout: null, confirmed: [], refuted: [], sprint: null, ledger: [], ratchet_evidence: [], failure: 'Attribution failed; no holdout', run_id: RUN_ID, base_sha: BASE_SHA, canonical_after: null }
-const applicableModes = [...new Set(attribution.hypotheses.flatMap(item => item.modes))].sort()
+const attribution = await agent(`Tool-less aggregate attribution. Strict payload:\n${JSON.stringify(measure.attribution_payload)}\nRank 1-3 falsifiable hypotheses and reference only registry target_metric_ids. Never request tools, paths, hashes, membership, rows, or encoded data.`, { agentType: 'vol-analyst', schema: ATTR, label: 'attribute' })
+if (!attribution || !Array.isArray(attribution.hypotheses) || !attribution.hypotheses.length || attribution.hypotheses.some(item => !Array.isArray(item.target_metric_ids) || !item.target_metric_ids.length || item.target_metric_ids.some(id => !TARGET_REGISTRY.some(target => target.metric_id === id)))) return { iteration: measure.iter, capability_state: 'ready', verdict: 'FAILED', holdout: null, confirmed: [], refuted: [], sprint: null, ledger: [], ratchet_evidence: [], failure: 'Attribution failed; no holdout', run_id: RUN_ID, base_sha: BASE_SHA, canonical_after: null }
+const applicableModes = ['A', 'B']
 
 phase('Improve')
 let sprint
@@ -477,8 +639,8 @@ if (!sprintValid) return { iteration: measure.iter, capability_state: 'ready', v
 phase('Ratchet Prepare')
 const ratchetBranch = `lane/oracle-ratchet-${RUN_SLUG}`
 const ratchetHeartbeat = `${RUN_SLUG}-ratchet`
-const ratchet = await agent(`PREPARE ONLY; never update canonical or choose authoritative verdict. Lease keeper-backed ${ratchetBranch} at exact ${sprint.integration_branch}@${sprint.integration_sha}, RunId=${RUN_ID}, HeartbeatId=${ratchetHeartbeat}. Recompute digest=${capability.holdout_digest_receipt}; run gates ${JSON.stringify(RATCHET_GATE_IDS)}. Return typed baseline/candidate/delta target/aggregate/pinned-speed metrics (delta=candidate-baseline), applicable modes exactly ${JSON.stringify(applicableModes)}, and one market receipt per suspect exclusion. Prepare/commit scorecard and memory with memory_verdict derived from rules, release. Workflow independently computes verdict/CAS.`, { agentType: 'vol-verifier', schema: RATCHET_PREPARE, label: 'ratchet-prepare' })
-const ratchetError = ratchetPrepareContractError(ratchet, { tested_sha: sprint.integration_sha, tested_branch: sprint.integration_branch, ratchet_branch: ratchetBranch, holdout_digest: capability.holdout_digest_receipt, run_id: RUN_ID, heartbeat_id: ratchetHeartbeat, applicable_modes: applicableModes })
+const ratchet = await agent(`PREPARE ONLY; never update canonical or choose authoritative verdict. Lease keeper-backed ${ratchetBranch} at exact ${sprint.integration_branch}@${sprint.integration_sha}, RunId=${RUN_ID}, HeartbeatId=${ratchetHeartbeat}. Recompute digest=${capability.holdout_digest_receipt}. Run these exact gate commands: ${JSON.stringify(RATCHET_GATE_COMMANDS)}. Return every metric in the workflow-frozen contract ${JSON.stringify(expectedRatchetMetrics(measure.attribution_payload))}; only candidate/delta/evidence_index are measured here. For suspect exclusions use only frozen candidates ${JSON.stringify(measure.attribution_payload.oracle_suspect_cells)} and typed NBBO means/distances from exact market-check commands. Prepare/commit scorecard and memory with memory_verdict derived from rules, release. Workflow independently validates and computes verdict/CAS.`, { agentType: 'vol-verifier', schema: RATCHET_PREPARE, label: 'ratchet-prepare' })
+const ratchetError = ratchetPrepareContractError(ratchet, { tested_sha: sprint.integration_sha, tested_branch: sprint.integration_branch, ratchet_branch: ratchetBranch, holdout_digest: capability.holdout_digest_receipt, run_id: RUN_ID, heartbeat_id: ratchetHeartbeat, applicable_modes: applicableModes, baseline_contract: measure.attribution_payload, suspect_candidates: measure.attribution_payload.oracle_suspect_cells })
 if (ratchetError) return { iteration: measure.iter, capability_state: 'ready', verdict: 'FAILED', holdout: null, confirmed: [], refuted: [], sprint: { passed: true, integration_branch: sprint.integration_branch, integration_sha: sprint.integration_sha }, ledger: [], ratchet_evidence: [], ratchet: null, failure: ratchetError, run_id: RUN_ID, base_sha: BASE_SHA, canonical_after: null }
 const computedVerdict = computeRatchetVerdict(ratchet)
 if (ratchet.memory_verdict !== computedVerdict) return { iteration: measure.iter, capability_state: 'ready', verdict: 'FAILED', holdout: null, confirmed: [], refuted: [], sprint: { passed: true, integration_branch: sprint.integration_branch, integration_sha: sprint.integration_sha }, ledger: [], ratchet_evidence: [], ratchet: null, failure: 'prepared memory verdict disagrees with workflow computation', run_id: RUN_ID, base_sha: BASE_SHA, canonical_after: null }

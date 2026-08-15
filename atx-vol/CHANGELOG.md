@@ -25,6 +25,13 @@ is forbidden. Only exit-code-zero commands may support success; failed attempts 
 diagnostics. The integration result identifies the frozen base, run lease, exact
 reviewed lane SHA list, and newly leased integration branch/SHA.
 
+The 3,275-test `atx_vol_fast` label is integration-owned. Lane evidence containing
+`-L atx_vol_fast` is contract-invalid; the exact full-fast command must appear once
+with `tested_sha` equal to the frozen integration HEAD. Hygiene is skipped when no
+header changed and otherwise builds only the sorted target closure derived from
+changed-header lanes. Fast-suite sharding and a durable external background job
+adapter remain bounded follow-ons.
+
 `vol-oracle-iter` no longer maps all missing tooling into a vol-sprint bootstrap.
 It hard-selects one state in order: `missing_data`, `missing_mode_a`,
 `missing_conventions`, `missing_mode_b`, `ready`. A bootstrap invocation dispatches
@@ -43,6 +50,15 @@ target improvement, the 2% aggregate bound, pinned speed, applicable modes, dige
 scoped gates, and market evidence. Agents prepare candidate commits; a minimal
 finalizer performs the exact canonical compare-and-swap only after validation, and
 an independent audit reports the actual ref even when the finalizer report is lost.
+
+Capability completion is no longer inferred from filenames. Each bootstrap stage
+must publish its exact versioned aggregate receipt; the probe validates closed
+keys/enums/target sets, artifact digests, count invariants, SHA ancestry, and
+prior-receipt provenance. Legacy or malformed receipts fail closed. Attribute
+schema v2 likewise removes free-form source strings. Ratchet metric IDs,
+classification, direction, baseline, target limit, and speed pin are frozen from
+the workflow-owned Measure contract; exact gate commands return typed results, and
+typed NBBO means/distances are recomputed by workflow code before suspect exclusion.
 
 ## 1.2.0
 

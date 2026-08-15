@@ -21,6 +21,43 @@ const SHA = {
 const DIGEST = 'e'.repeat(64)
 const REF = 'refs/heads/oracle/canonical'
 const okEvidence = [{ command: 'verify target', exit_code: 0, output: 'PASS' }]
+const TARGET_REGISTRY = [
+  { metric_id: 'mode_a_price_mae', mode: 'A', unit: 'ticks', limit: 1 },
+  { metric_id: 'mode_a_vol_mae', mode: 'A', unit: 'bp', limit: 5 },
+  { metric_id: 'mode_a_delta_rel', mode: 'A', unit: 'relative', limit: 0.01 },
+  { metric_id: 'mode_a_gamma_rel', mode: 'A', unit: 'relative', limit: 0.01 },
+  { metric_id: 'mode_a_theta_rel', mode: 'A', unit: 'relative', limit: 0.01 },
+  { metric_id: 'mode_a_vega_rel', mode: 'A', unit: 'relative', limit: 0.01 },
+  { metric_id: 'mode_b_price_mae', mode: 'B', unit: 'ticks', limit: 2 },
+  { metric_id: 'mode_b_vol_mae', mode: 'B', unit: 'bp', limit: 10 },
+  { metric_id: 'mode_b_delta_rel', mode: 'B', unit: 'relative', limit: 0.02 },
+  { metric_id: 'mode_b_gamma_rel', mode: 'B', unit: 'relative', limit: 0.02 },
+  { metric_id: 'mode_b_theta_rel', mode: 'B', unit: 'relative', limit: 0.02 },
+  { metric_id: 'mode_b_vega_rel', mode: 'B', unit: 'relative', limit: 0.02 },
+]
+const AGGREGATE_REGISTRY = [
+  { metric_id: 'mode_a_aggregate_error', mode: 'A', unit: 'relative' },
+  { metric_id: 'mode_b_aggregate_error', mode: 'B', unit: 'relative' },
+]
+const SPEED_METRIC_ID = 'rel_avx2_rows_per_second'
+const RATCHET_GATE_COMMANDS = {
+  holdout_mode_a: 'atx-vol-oracle-bench --cohort holdout --mode A --aggregate-only',
+  holdout_mode_b: 'atx-vol-oracle-bench --cohort holdout --mode B --aggregate-only',
+  rel_avx2_speed: 'atx-vol-oracle-bench --cohort tune --benchmark-speed --preset rel-avx2 --aggregate-only',
+}
+const BOOTSTRAP_GATE_COMMANDS = {
+  disk: 'powershell scripts\\oracle-bootstrap-preflight.ps1 -Gate disk',
+  ingest_manifest: 'powershell scripts\\oracle-bootstrap-preflight.ps1 -Gate ingest_manifest',
+  cohort_manifests: 'powershell scripts\\oracle-bootstrap-preflight.ps1 -Gate cohort_manifests',
+  holdout_digest: 'powershell scripts\\oracle-bootstrap-preflight.ps1 -Gate holdout_digest',
+  mode_a_targeted_tests: 'powershell scripts\\atx-build.ps1 -Ctest -R mode_a_targeted_tests',
+  mode_a_smoke: 'atx-vol-oracle-bench --cohort smoke --mode A --aggregate-only',
+  convention_tests: 'powershell scripts\\atx-build.ps1 -Ctest -R convention_tests',
+  mode_a_smoke_tune: 'atx-vol-oracle-bench --cohort smoke,tune --mode A --aggregate-only',
+  residual_floor: 'atx-vol-oracle-bench --cohort smoke,tune --mode A --residual-floor --aggregate-only',
+  mode_b_targeted_tests: 'powershell scripts\\atx-build.ps1 -Ctest -R mode_b_targeted_tests',
+  mode_b_smoke_tune: 'atx-vol-oracle-bench --cohort smoke,tune --mode B --aggregate-only',
+}
 
 function extractFunction(source, name) {
   const start = source.indexOf(`function ${name}(`)
@@ -43,14 +80,14 @@ function loadFunctions(source, names, prelude = '') {
 }
 
 const oracleFns = loadFunctions(oracle, [
-  'validSuccessEvidence', 'validLeaseReceipt', 'validHeadReceipt', 'validGateReceipt', 'validIntegrationCommand', 'casReceiptError', 'auditReceiptError',
+  'validSuccessEvidence', 'validLeaseReceipt', 'validHeadReceipt', 'validGateReceipt', 'expectedGateMetricIds', 'validRatchetGateReceipt', 'validIntegrationCommand', 'casReceiptError', 'auditReceiptError',
   'reviewContractError', 'bootstrapReportError', 'bootstrapPrepareError', 'aggregatePayloadError',
-  'metricDeltaConsistent', 'relativeRegression', 'ratchetPrepareContractError', 'computeRatchetVerdict',
-], `const RATCHET_GATE_IDS = ['holdout_mode_a', 'holdout_mode_b', 'rel_avx2_speed']`)
+  'metricDeltaConsistent', 'expectedRatchetMetrics', 'sameNumber', 'distanceToInterval', 'marketCommand', 'marketReceiptError', 'relativeRegression', 'ratchetPrepareContractError', 'computeRatchetVerdict',
+], `const RATCHET_GATE_IDS = ['holdout_mode_a', 'holdout_mode_b', 'rel_avx2_speed']; const TARGET_REGISTRY = ${JSON.stringify(TARGET_REGISTRY)}; const AGGREGATE_REGISTRY = ${JSON.stringify(AGGREGATE_REGISTRY)}; const SPEED_METRIC_ID = '${SPEED_METRIC_ID}'; const RATCHET_GATE_COMMANDS = ${JSON.stringify(RATCHET_GATE_COMMANDS)}; const BOOTSTRAP_GATE_COMMANDS = ${JSON.stringify(BOOTSTRAP_GATE_COMMANDS)}`)
 const sprintFns = loadFunctions(sprint, [
-  'validSuccessEvidence', 'validLeaseReceipt', 'validHeadReceipt', 'validIntegrationCommand', 'evidenceReferencesTarget', 'reviewContractError',
+  'validSuccessEvidence', 'validLeaseReceipt', 'validHeadReceipt', 'validIntegrationCommand', 'evidenceReferencesTarget', 'isFullFastCommand', 'changedHeader', 'hygieneCommand', 'reviewContractError',
   'laneFailureReason', 'gateContractError',
-])
+], "const AUTHORITATIVE_FAST_GATE = 'atx_vol_fast'; const AUTHORITATIVE_FAST_COMMAND = 'ctest --preset rel-avx2 -L atx_vol_fast --output-on-failure'")
 
 function leaseIdentity({ lease = 'pool-1', branch, base, heartbeat, worktree = `C:\\atx-wt\\${lease}`, keeperPid = 4242 }) {
   return {
@@ -72,6 +109,18 @@ function leaseReceipt(action, identity) {
 
 function gateReceipt(gateId) {
   return { gate_id: gateId, command: `powershell scripts\\atx-build.ps1 -Ctest -R ${gateId}`, exit_code: 0, output: `${gateId} PASS` }
+}
+
+function bootstrapGateReceipt(gateId) {
+  const result = { schema_version: 1, status: 'PASS', observations: 100 }
+  return { gate_id: gateId, command: BOOTSTRAP_GATE_COMMANDS[gateId], exit_code: 0, output: JSON.stringify(result), result }
+}
+
+function ratchetGateReceipt(gateId) {
+  const metricIds = gateId === 'holdout_mode_a' ? TARGET_REGISTRY.filter(item => item.mode === 'A').map(item => item.metric_id)
+    : gateId === 'holdout_mode_b' ? TARGET_REGISTRY.filter(item => item.mode === 'B').map(item => item.metric_id) : [SPEED_METRIC_ID]
+  const result = { schema_version: 1, status: 'PASS', observations: 100, metric_ids: metricIds }
+  return { gate_id: gateId, command: RATCHET_GATE_COMMANDS[gateId], exit_code: 0, output: JSON.stringify(result), result }
 }
 
 function auditReceipt(sha, { ref = REF, exitCode = 0 } = {}) {
@@ -122,7 +171,7 @@ function bootstrapPrepare(report) {
       exit_code: 0, output: report.sha,
     },
     head_receipt: auditReceipt(report.sha, { ref: 'HEAD' }),
-    gate_receipts: [gateReceipt('mode_a_targeted_tests'), gateReceipt('mode_a_smoke')],
+    gate_receipts: [bootstrapGateReceipt('mode_a_targeted_tests'), bootstrapGateReceipt('mode_a_smoke')],
     integration_release_receipt: leaseReceipt('release', integrationIdentity), evidence: okEvidence,
   }
 }
@@ -138,10 +187,12 @@ function capability(state = 'missing_mode_a') {
 
 function safePayload() {
   return {
-    schema_version: 1, iteration: 'iter-001',
-    metrics: [{ cell_id: 'A-price-near', mode: 'A', metric: 'price_mae', count: 100, mae: 0.01, rmse: 0.02, p95: 0.03, within_tolerance_rate: 0.9, unit: 'price' }],
-    prior_refuted_ids: ['H-0'], oracle_suspect_cells: ['suspect-cell'],
-    convention_summary: 'theta per day; vega per point', source_symbols: ['AmericanModel::price'],
+    schema_version: 2, iteration: 1,
+    target_metrics: TARGET_REGISTRY.map((item, index) => ({ metric_id: item.metric_id, mode: item.mode, baseline: 100 + index, count: 1000, unit: item.unit })),
+    aggregate_metrics: AGGREGATE_REGISTRY.map((item, index) => ({ metric_id: item.metric_id, mode: item.mode, baseline: 50 + index, count: 1000, unit: item.unit })),
+    speed: { metric_id: SPEED_METRIC_ID, baseline: 110, pin: 100, unit: 'rows_per_second' },
+    prior_refuted_ids: [0], oracle_suspect_cells: [7],
+    conventions: { theta_basis: 'per_day', vega_basis: 'per_vol_point', rate_model: 'continuous', dividend_model: 'continuous_yield', day_count: 'ACT_365F', sign_model: 'spiderrock' },
   }
 }
 
@@ -160,12 +211,20 @@ function measure() {
 function ratchetPrepare({ reject = false } = {}) {
   const branch = 'lane/oracle-ratchet-run-1'
   const identity = leaseIdentity({ branch, base: SHA.integration, heartbeat: 'run-1-ratchet', lease: 'pool-3', keeperPid: 4444 })
-  const metrics = [
-    { metric_id: 'mode_a_target', mode: 'A', gate: 'target', direction: 'lower', baseline: 2, candidate: reject ? 3 : 1, delta: reject ? 1 : -1, pin: 0, unit: 'tick', evidence_index: 0 },
-    { metric_id: 'mode_b_target', mode: 'B', gate: 'target', direction: 'lower', baseline: 3, candidate: 2, delta: -1, pin: 0, unit: 'tick', evidence_index: 1 },
-    { metric_id: 'aggregate_mae', mode: 'ALL', gate: 'aggregate', direction: 'lower', baseline: 100, candidate: 101, delta: 1, pin: 0, unit: 'bp', evidence_index: 2 },
-    { metric_id: 'rows_per_second', mode: 'ALL', gate: 'speed', direction: 'higher', baseline: 100, candidate: 110, delta: 10, pin: 100, unit: 'rows/s', evidence_index: 3 },
+  const baseline = safePayload()
+  const expected = [
+    ...TARGET_REGISTRY.map(item => ({ metric_id: item.metric_id, mode: item.mode, unit: item.unit, gate: 'target', direction: 'lower', baseline: baseline.target_metrics.find(metric => metric.metric_id === item.metric_id).baseline, pin: item.limit })),
+    ...AGGREGATE_REGISTRY.map(item => ({ ...item, gate: 'aggregate', direction: 'lower', baseline: baseline.aggregate_metrics.find(metric => metric.metric_id === item.metric_id).baseline, pin: 0 })),
+    { metric_id: SPEED_METRIC_ID, mode: 'ALL', gate: 'speed', direction: 'higher', baseline: baseline.speed.baseline, pin: baseline.speed.pin, unit: 'rows_per_second' },
   ]
+  const metrics = expected.map((metric, index) => {
+    const candidate = metric.gate === 'speed' ? 120 : metric.gate === 'aggregate' ? metric.baseline * 1.01 : metric.baseline - 1
+    return { ...metric, candidate, delta: candidate - metric.baseline, evidence_index: index }
+  })
+  if (reject) {
+    metrics[0].candidate = metrics[0].baseline + 1
+    metrics[0].delta = 1
+  }
   const metricEvidence = metrics.map(metric => ({
     command: metric.gate === 'speed' ? 'speed benchmark' : 'oracle holdout benchmark', exit_code: 0,
     output: `${metric.metric_id} ${metric.baseline} ${metric.candidate} ${metric.delta}`,
@@ -178,9 +237,14 @@ function ratchetPrepare({ reject = false } = {}) {
     acquisition_receipt: leaseReceipt('acquire', identity), release_receipt: leaseReceipt('release', identity),
     digest_receipt: { expected_digest: DIGEST, actual_digest: DIGEST, command: 'verify holdout digest', exit_code: 0, output: DIGEST },
     applicable_modes: ['A', 'B'], metrics, metric_evidence: metricEvidence,
-    gate_receipts: ['holdout_mode_a', 'holdout_mode_b', 'rel_avx2_speed'].map(gateReceipt),
-    oracle_suspects_excluded: ['suspect-cell'],
-    market_evidence: [{ cell_id: 'suspect-cell', market_sides_with: 'atx-vol', command: 'verify market suspect-cell', exit_code: 0, output: 'NBBO sides with atx-vol' }],
+    gate_receipts: ['holdout_mode_a', 'holdout_mode_b', 'rel_avx2_speed'].map(ratchetGateReceipt),
+    oracle_suspects_excluded: [7],
+    market_evidence: [{
+      cell_id: 7, nbbo_bid_mean: 99, nbbo_ask_mean: 101, atx_price_mean: 100, oracle_price_mean: 103,
+      atx_nbbo_distance: 0, oracle_nbbo_distance: 2, sample_count: 100,
+      command: 'atx-vol-oracle-bench --cohort holdout --market-check 7 --aggregate-only', exit_code: 0,
+      output: JSON.stringify({ cell_id: 7, nbbo_bid_mean: 99, nbbo_ask_mean: 101, atx_price_mean: 100, oracle_price_mean: 103, atx_nbbo_distance: 0, oracle_nbbo_distance: 2, sample_count: 100 }),
+    }],
     memory_verdict: reject ? 'REJECT' : 'ACCEPT', holdout_summary: 'aggregate holdout result',
     hypotheses_confirmed: reject ? [] : ['H-1'], hypotheses_refuted: reject ? ['H-1'] : [],
     ledger_appended: ['ratchet fact'], northstar_updated: true, evidence: okEvidence,
@@ -234,7 +298,7 @@ function bootstrapResponses({ fix = false, prepareMutator, finalize = casReceipt
 function readyResponses({ ratchet = ratchetPrepare(), measureValue = measure(), finalize = casReceipt(SHA.ratchet), audit = auditReceipt(SHA.ratchet) } = {}) {
   const responses = {
     capability: capability('ready'), measure: measureValue,
-    attribute: { hypotheses: [{ id: 'H-1', target_cells: ['A-price-near'], modes: ['A', 'B'], mechanism: 'engine', prediction: 'lower MAE', blast_radius: 'pricing', effort: 'S' }], new_suspect_candidates: [] },
+    attribute: { hypotheses: [{ id: 'H-1', target_metric_ids: ['mode_a_price_mae', 'mode_b_price_mae'], mechanism: 'engine', prediction: 'lower MAE', blast_radius: 'pricing', effort: 'S' }], new_suspect_candidates: [] },
     'ratchet-prepare': ratchet,
     'ratchet-post-decision-audit': audit,
   }
@@ -268,6 +332,9 @@ test('actual bootstrap Fix path requires fresh re-review of new SHA before prepa
 test('bootstrap missing gate/stale integration/release receipts fail before finalizer', async t => {
   for (const [name, mutate] of [
     ['missing gate', prepare => { prepare.gate_receipts.pop() }],
+    ['extra gate', prepare => { prepare.gate_receipts.push(bootstrapGateReceipt('disk')) }],
+    ['generic node gate', prepare => { prepare.gate_receipts[0].command = 'node mode_a_targeted_tests' }],
+    ['spoofed gate output', prepare => { prepare.gate_receipts[0].output = 'mode_a_targeted_tests PASS' }],
     ['stale SHA', prepare => { prepare.integration_receipt.reviewed_sha = SHA.base }],
     ['missing release', prepare => { prepare.integration_release_receipt = null }],
   ]) await t.test(name, async () => {
@@ -303,13 +370,30 @@ test('bootstrap finalizer exception still performs independent canonical audit',
 
 test('strict aggregate payload rejects unknown keys, row arrays, raw row content, and encoded blobs', () => {
   assert.equal(oracleFns.aggregatePayloadError(safePayload()), null)
-  const variants = [
-    { ...safePayload(), raw_rows: [] },
-    { ...safePayload(), metrics: [[1, 2, 3]] },
-    { ...safePayload(), convention_summary: 'srPrc=1.23' },
-    { ...safePayload(), convention_summary: 'A'.repeat(100) },
-  ]
+  const variants = []
+  variants.push({ ...safePayload(), raw_rows: [] })
+  for (const raw of ['uPrc=100 rate=.05 sdiv=.01 de=.4 ga=.02', 'okey_xx=123 bidIV=.2 askIV=.3', Buffer.from('uPrc=100 rate=.05').toString('base64')]) {
+    const prior = structuredClone(safePayload()); prior.prior_refuted_ids = [raw]; variants.push(prior)
+    const suspect = structuredClone(safePayload()); suspect.oracle_suspect_cells = [raw]; variants.push(suspect)
+    const prefixed = structuredClone(safePayload()); prefixed.oracle_suspect_cells = [`cell-${raw.replace(/[^A-Za-z0-9]/g, '')}`]; variants.push(prefixed)
+    const convention = structuredClone(safePayload()); convention.conventions.rate_model = raw; variants.push(convention)
+    const unit = structuredClone(safePayload()); unit.target_metrics[0].unit = raw; variants.push(unit)
+  }
+  const rows = structuredClone(safePayload()); rows.target_metrics = [[{ uPrc: 100, rate: 0.05 }]]; variants.push(rows)
   for (const payload of variants) assert.notEqual(oracleFns.aggregatePayloadError(payload), null)
+})
+
+test('actual workflow rejects plaintext or encoded row payloads before Analyst and holdout', async t => {
+  for (const raw of ['uPrc=100 rate=.05 sdiv=.01 de=.4 ga=.02', 'okey_xx=123 bidIV=.2 askIV=.3', Buffer.from('okey_xx=123 bidIV=.2 askIV=.3').toString('base64')]) {
+    await t.test(raw.slice(0, 16), async () => {
+      const measured = measure()
+      measured.attribution_payload.conventions.rate_model = raw
+      const { result, calls } = await runOracle({ capability: capability('ready'), measure: measured }, sprintPass)
+      assert.equal(result.verdict, 'FAILED')
+      assert.equal(calls.includes('attribute'), false)
+      assert.equal(calls.includes('ratchet-prepare'), false)
+    })
+  }
 })
 
 test('actual ready path workflow computes ACCEPT and exact CAS/audit', async () => {
@@ -319,7 +403,7 @@ test('actual ready path workflow computes ACCEPT and exact CAS/audit', async () 
   assert.equal(result.canonical_after, SHA.ratchet)
   assert.ok(result.ratchet_evidence.some(item => item.command.startsWith('git update-ref')))
   assert.ok(result.ratchet_evidence.some(item => item.command === 'verify holdout digest'))
-  assert.ok(result.ratchet_evidence.some(item => item.command === 'verify market suspect-cell'))
+  assert.ok(result.ratchet_evidence.some(item => item.command === 'atx-vol-oracle-bench --cohort holdout --market-check 7 --aggregate-only'))
   for (const metric of result.holdout.metrics) {
     assert.ok(result.ratchet_evidence.some(item => item.output.includes(metric.metric_id) && item.output.includes(String(metric.delta))))
   }
@@ -342,6 +426,24 @@ test('regressive target yields REJECT while inconsistent delta is contract FAILE
   assert.equal(result.verdict, 'FAILED')
   assert.match(result.failure, /delta inconsistent/)
   assert.equal(calls.includes('ratchet-cas-finalizer'), false)
+})
+
+test('actual Ratchet rejects agent-selected target, direction, baseline, speed pin, gate command, and market spoofing', async t => {
+  const attacks = [
+    ['omitted target', value => { value.metrics.shift() }],
+    ['price direction higher', value => { value.metrics.find(metric => metric.metric_id === 'mode_a_price_mae').direction = 'higher' }],
+    ['price reclassified', value => { value.metrics.find(metric => metric.metric_id === 'mode_a_price_mae').gate = 'aggregate' }],
+    ['baseline override', value => { value.metrics.find(metric => metric.metric_id === 'mode_a_price_mae').baseline = 1 }],
+    ['speed pin override', value => { const speed = value.metrics.find(metric => metric.metric_id === SPEED_METRIC_ID); speed.candidate = 1; speed.delta = 1 - speed.baseline; speed.pin = 0 }],
+    ['generic node gate', value => { value.gate_receipts[0].command = 'node holdout_mode_a'; value.gate_receipts[0].output = 'holdout_mode_a PASS' }],
+    ['forged market side', value => { const market = value.market_evidence[0]; market.atx_price_mean = 104; market.oracle_price_mean = 100; market.atx_nbbo_distance = 0; market.oracle_nbbo_distance = 3; market.output = '7 99 101 104 100 0 3 100' }],
+  ]
+  for (const [name, mutate] of attacks) await t.test(name, async () => {
+    const value = ratchetPrepare(); mutate(value)
+    const { result, calls } = await runOracle(readyResponses({ ratchet: value }), sprintPass)
+    assert.equal(result.verdict, 'FAILED')
+    assert.equal(calls.includes('ratchet-cas-finalizer'), false)
+  })
 })
 
 test('Ratchet missing digest, required gate, or suspect market evidence is FAILED', async t => {
@@ -376,25 +478,39 @@ test('ready ACCEPT finalizer exception still audits and reports actual landed ca
 
 test('sprint integration receipt contract rejects missing merge/gate/release and wrong HEAD', () => {
   const identity = leaseIdentity({ branch: 'integration/run-1', base: SHA.base, heartbeat: 'run-1-integration' })
-  const expected = { base_sha: SHA.base, run_id: 'run-1', branch: identity.branch, heartbeat_id: identity.heartbeat_id, reviewed_shas: [SHA.build], gate_ids: ['atx-vol-tests', 'AmericanSuite'] }
+  const hygiene = 'cmake --preset hygiene && cmake --build --preset hygiene --target atx-vol-tests'
+  const expected = { base_sha: SHA.base, run_id: 'run-1', branch: identity.branch, heartbeat_id: identity.heartbeat_id, reviewed_shas: [SHA.build], gate_ids: ['atx-vol-tests', 'AmericanSuite', 'atx_vol_fast', 'hygiene_changed_closure'], hygiene_command: hygiene }
+  const receipts = [
+    { ...gateReceipt('atx-vol-tests'), tested_sha: SHA.ratchet },
+    { ...gateReceipt('AmericanSuite'), tested_sha: SHA.ratchet },
+    { gate_id: 'atx_vol_fast', tested_sha: SHA.ratchet, command: 'ctest --preset rel-avx2 -L atx_vol_fast --output-on-failure', exit_code: 0, output: '3275/3275 PASS' },
+    { gate_id: 'hygiene_changed_closure', tested_sha: SHA.ratchet, command: hygiene, exit_code: 0, output: 'scoped hygiene PASS' },
+  ]
   const gate = {
     passed: true, base_sha: SHA.base, lease_run_id: 'run-1', integration_branch: identity.branch, sha: SHA.ratchet,
     integrated_shas: [SHA.build], integration_worktree: identity.worktree, integration_lease: identity.lease_name,
     integration_heartbeat_id: identity.heartbeat_id, keeper_pid: identity.keeper_pid,
     keeper_process_started_utc: identity.keeper_process_started_utc, acquisition_receipt: leaseReceipt('acquire', identity),
     integration_receipts: [{ reviewed_sha: SHA.build, head_after: SHA.build, command: `git merge ${SHA.build}`, exit_code: 0, output: SHA.build }],
-    head_receipt: auditReceipt(SHA.ratchet, { ref: 'HEAD' }), gate_receipts: [gateReceipt('atx-vol-tests'), gateReceipt('AmericanSuite')],
+    head_receipt: auditReceipt(SHA.ratchet, { ref: 'HEAD' }), gate_receipts: receipts,
     release_receipt: leaseReceipt('release', identity),
     gate_results: [
       { command: 'powershell scripts\\atx-build.ps1 -Ctest -R atx-vol-tests', exit_code: 0, output: 'atx-vol-tests PASS' },
       { command: 'powershell scripts\\atx-build.ps1 -Ctest -R AmericanSuite', exit_code: 0, output: 'AmericanSuite PASS' },
+      { command: 'ctest --preset rel-avx2 -L atx_vol_fast --output-on-failure', exit_code: 0, output: '3275/3275 PASS' },
+      { command: hygiene, exit_code: 0, output: 'scoped hygiene PASS' },
     ],
     leases_released: [identity.lease_name],
   }
   assert.equal(sprintFns.gateContractError(gate, expected), null)
   assert.match(sprintFns.gateContractError({ ...gate, integration_receipts: [] }, expected), /integration receipts/)
-  assert.match(sprintFns.gateContractError({ ...gate, gate_receipts: gate.gate_receipts.slice(1) }, expected), /atx-vol-tests/)
-  assert.match(sprintFns.gateContractError({ ...gate, gate_receipts: gate.gate_receipts.slice(0, 1) }, expected), /AmericanSuite/)
+  assert.match(sprintFns.gateContractError({ ...gate, gate_receipts: gate.gate_receipts.slice(1) }, expected), /missing\/extra\/duplicated/)
+  const duplicateFast = structuredClone(gate); duplicateFast.gate_receipts.push(structuredClone(receipts[2])); duplicateFast.gate_results.push({ command: receipts[2].command, exit_code: 0, output: receipts[2].output })
+  assert.match(sprintFns.gateContractError(duplicateFast, expected), /missing\/extra\/duplicated/)
+  const staleFast = structuredClone(gate); staleFast.gate_receipts[2].tested_sha = SHA.base
+  assert.match(sprintFns.gateContractError(staleFast, expected), /atx_vol_fast/)
+  const broadHygiene = structuredClone(gate); broadHygiene.gate_receipts[3].command = 'cmake --preset hygiene && cmake --build --preset hygiene'
+  assert.match(sprintFns.gateContractError(broadHygiene, expected), /hygiene_changed_closure/)
   assert.match(sprintFns.gateContractError({ ...gate, release_receipt: null }, expected), /release receipt/)
   assert.match(sprintFns.gateContractError({ ...gate, head_receipt: auditReceipt(SHA.base, { ref: 'HEAD' }) }, expected), /HEAD receipt/)
   const chained = structuredClone(gate)
@@ -402,12 +518,23 @@ test('sprint integration receipt contract rejects missing merge/gate/release and
   assert.match(sprintFns.gateContractError(chained, expected), /integration receipt/)
 })
 
+test('sprint mechanically reserves full fast for one post-freeze gate and scopes hygiene to changed headers', () => {
+  assert.equal(sprintFns.isFullFastCommand('ctest -L atx_vol_fast'), true)
+  assert.equal(sprintFns.isFullFastCommand('ctest -R AmericanSuite'), false)
+  assert.equal(sprintFns.changedHeader('atx-vol/include/model.hpp'), true)
+  assert.equal(sprintFns.changedHeader('atx-vol/src/model.cpp'), false)
+  assert.equal(sprintFns.hygieneCommand(['AmericanSuite']), 'cmake --preset hygiene && cmake --build --preset hygiene --target AmericanSuite')
+  assert.ok(sprint.includes('lane attempted forbidden full atx_vol_fast gate'))
+  assert.ok(sprint.includes("receipt.tested_sha !== gate.sha"))
+  assert.ok(sprint.includes('gate.gate_results.length !== expected.gate_ids.length'))
+})
+
 test('analyst has no tools and Attribute receives only JSON typed payload', () => {
   const frontmatter = analyst.slice(0, analyst.indexOf('---', 3) + 3)
   const toolsLine = frontmatter.split(/\r?\n/).find(line => line.startsWith('tools:'))
   assert.deepEqual(JSON.parse(toolsLine.slice('tools:'.length).trim()), [])
   const attribute = oracle.slice(oracle.indexOf("phase('Attribute')"), oracle.indexOf("phase('Improve')"))
-  for (const forbidden of ['scorecard_path', 'holdout_digest_receipt', 'holdout.sha256', 'NORTHSTAR.md', 'LEDGER.md']) assert.equal(attribute.includes(forbidden), false)
+  for (const forbidden of ['scorecard_path', 'holdout_digest_receipt', 'holdout.sha256', 'NORTHSTAR.md', 'LEDGER.md', 'args.focus', 'FOCUS']) assert.equal(attribute.includes(forbidden), false)
 })
 
 test('capability inspection is tool-restricted to an aggregate-only fixed probe', () => {
@@ -418,9 +545,14 @@ test('capability inspection is tool-restricted to an aggregate-only fixed probe'
   assert.ok(oracle.includes('Run exactly powershell scripts\\\\oracle-capability.ps1'))
   assert.ok(settings.permissions.allow.includes('PowerShell(powershell scripts\\oracle-capability.ps1)'))
   assert.equal(settings.permissions.allow.includes('PowerShell(powershell scripts\\oracle-capability.ps1*)'), false)
-  assert.equal(/Get-Content|ReadAll(?:Text|Lines)|scan_parquet|Import-Csv/i.test(capabilityProbe), false)
-  assert.equal((capabilityProbe.match(/\bgit\s+-C\s+\$repoRoot\s+show\b/g) || []).length, 1)
-  assert.match(capabilityProbe, /show \(\$baseSha \+ ':' \+ \$digestPath\)/)
+  assert.equal(/Get-Content|ReadAllLines|scan_parquet|Import-Csv/i.test(capabilityProbe), false)
+  assert.match(capabilityProbe, /ReadAllText\(\$path\) \| ConvertFrom-Json/)
+  assert.equal(/ReadAllText\([^)]*holdout/i.test(capabilityProbe), false)
+  assert.ok(capabilityProbe.includes("$oracleRoot + '/bootstrap/data.json'"))
+  assert.ok(capabilityProbe.includes("$oracleRoot + '/bootstrap/mode-a.json'"))
+  assert.ok(capabilityProbe.includes("$oracleRoot + '/bootstrap/conventions.json'"))
+  assert.ok(capabilityProbe.includes("$oracleRoot + '/bootstrap/mode-' + $slug + '.json'"))
+  assert.ok(capabilityProbe.includes('Test-Provenance'))
 })
 
 test('lease source starts independent keeper and rejects before/after-only ownership', () => {

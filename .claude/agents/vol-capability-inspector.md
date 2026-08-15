@@ -12,4 +12,5 @@ Return its JSON fields without adding evidence or inspecting any other file.
 You have no Read, Grep, Glob, or Bash tool. Do not invoke the lease/build scripts,
 Git, file-content commands, or any command other than the capability probe. The
 probe itself can test committed receipt existence and read `holdout.sha256`; it
-cannot open `holdout.json`, cohort membership, Parquet, or licensed source rows.
+may validate smoke/tune aggregate manifests, but cannot open `holdout.json`,
+holdout membership, Parquet, or licensed source rows.

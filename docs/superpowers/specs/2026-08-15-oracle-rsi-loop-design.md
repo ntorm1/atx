@@ -34,6 +34,13 @@ Bootstrap artifacts and exact done conditions are authoritative in
 `atx-vol/bench/oracle/CHARTER.md`. This section supersedes the older sequencing
 prose below where they differ.
 
+Capability state is derived from the exact versioned aggregate receipts defined in
+the bootstrap charter, not artifact existence. The probe recomputes manifest and
+Git-blob identities, validates closed schemas, target sets, enum maps, counts,
+prior-receipt invariance, and ancestor provenance. Missing/legacy/extra/corrupt
+content resolves to the first missing state. Holdout validation uses its blob and
+membership-digest receipts; the probe never opens holdout membership.
+
 Date: 2026-08-15. Status: harness implemented; oracle capability bootstrap pending.
 Depends on: vol DAG harness (f4d8bb9).
 

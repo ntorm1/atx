@@ -19,7 +19,8 @@ Work loop (TDD, ladder discipline — never bare all-target builds):
 1. Failing test first, in the correct suite under `atx-vol/tests/`.
 2. `atx-build.ps1 check <file.cpp>` while shaping (single-TU, seconds).
 3. `atx-build.ps1 build <test-target-from-brief>` then `-Ctest -R <Suite>` until green.
-4. Fast label (`-Ctest -L atx_vol_fast`) only if the brief demands it — the verifier runs the full gate, not you.
+4. Never run `-L atx_vol_fast` in a lane. The verifier owns its one authoritative
+   execution after the integration HEAD is frozen. Run only brief-scoped suites.
 5. `dev` preset only. NEVER `dev-shared` for anything you will claim test results from.
 
 Hard boundaries:

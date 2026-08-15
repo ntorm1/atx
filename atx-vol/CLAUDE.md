@@ -14,6 +14,12 @@ Vol surface / vol-derivatives library. Source groups: `core pricing fitting mark
 
 1. Full fast suite green: `powershell scripts\atx-build.ps1 -Ctest -L atx_vol_fast` (from repo root).
 2. Include hygiene: `cmake --preset hygiene && cmake --build --preset hygiene` (PCH OFF; the default build masks include rot).
+
+Under `vol-sprint`, these gates are centralized for throughput: builders never run
+the full fast label, the isolated verifier runs it exactly once at frozen HEAD, and
+hygiene is omitted without header changes or target-scoped to the changed-header
+closure. The commands above remain the manual/full-repository policy outside the
+harness.
 3. Module gates: `powershell atx-vol\ci\run_all_gates.ps1` — determinism (1-thread vs N-thread bit-identical NAV), golden replay (82-session SPY corpus, fails closed if licensed corpus absent), lakehouse-off link, pool soak. All on `dev` preset — correctness only.
 4. Perf claims ONLY from `rel-avx2` (`build-rel-avx2/`) against `bench/baselines/` pins.
 
