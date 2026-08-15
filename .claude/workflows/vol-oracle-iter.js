@@ -56,6 +56,7 @@ const BOOTSTRAP_GATE_COMMANDS = Object.freeze({
   mode_b_targeted_tests: 'powershell scripts\\oracle-targeted-gate.ps1 -Gate mode_b_targeted_tests',
   mode_b_smoke_tune: 'powershell scripts\\oracle-targeted-gate.ps1 -Gate mode_b_smoke_tune',
 })
+const TARGETED_BOOTSTRAP_GATE_IDS = Object.freeze(['mode_a_targeted_tests', 'mode_a_smoke', 'convention_tests', 'mode_a_smoke_tune', 'residual_floor', 'mode_b_targeted_tests', 'mode_b_smoke_tune'])
 const READY_MEASURE_GATES = Object.freeze({
   measure_mode_a: 'atx-vol-oracle-bench --cohort smoke,tune --mode A --scorecard --aggregate-only',
   measure_mode_b: 'atx-vol-oracle-bench --cohort smoke,tune --mode B --scorecard --aggregate-only',
@@ -102,6 +103,8 @@ const GATE_RECEIPT = {
       properties: {
         schema_version: { type: 'integer', enum: [1] }, status: { type: 'string', enum: ['PASS'] }, observations: { type: 'integer' },
         command_id: { type: 'string', enum: Object.keys(BOOTSTRAP_GATE_COMMANDS) }, raw_output_sha256: { type: 'string', pattern: '^[0-9a-f]{64}$' },
+        gate_kind: { type: 'string', enum: ['ctest', 'oracle_bench'] }, tests_executed: { type: 'integer' }, tests_passed: { type: 'integer' },
+        rows_processed: { type: 'integer' }, metric_ids: { type: 'array', items: { type: 'string' } }, audit_summary: { type: 'string' },
       },
     },
   },
@@ -375,9 +378,26 @@ function validHeadReceipt(receipt, ref, sha) {
 function validGateReceipt(receipt, gateId) {
   if (!receipt || receipt.gate_id !== gateId || receipt.command !== BOOTSTRAP_GATE_COMMANDS[gateId] || receipt.exit_code !== 0) return false
   const result = receipt.result
-  return !!result && result.schema_version === 1 && result.status === 'PASS' && result.command_id === gateId &&
-    Number.isInteger(result.observations) && result.observations > 0 && /^[0-9a-f]{64}$/.test(result.raw_output_sha256 || '') &&
-    receipt.output === JSON.stringify(result)
+  if (!result || result.schema_version !== 1 || result.status !== 'PASS' || result.command_id !== gateId ||
+      !Number.isInteger(result.observations) || result.observations <= 0 || !/^[0-9a-f]{64}$/.test(result.raw_output_sha256 || '') ||
+      receipt.output !== JSON.stringify(result)) return false
+  const commonKeys = ['schema_version', 'status', 'observations', 'command_id', 'raw_output_sha256']
+  if (!TARGETED_BOOTSTRAP_GATE_IDS.includes(gateId)) return Object.keys(result).sort().join(',') === commonKeys.sort().join(',')
+  const semanticKeys = [...commonKeys, 'gate_kind', 'tests_executed', 'tests_passed', 'rows_processed', 'metric_ids', 'audit_summary']
+  if (Object.keys(result).sort().join(',') !== semanticKeys.sort().join(',')) return false
+  if (gateId.endsWith('_tests')) return result.gate_kind === 'ctest' && Number.isInteger(result.tests_executed) && result.tests_executed > 0 &&
+    result.tests_passed === result.tests_executed && result.rows_processed === 0 && Array.isArray(result.metric_ids) && result.metric_ids.length === 0 &&
+    result.audit_summary === `tests_executed=${result.tests_executed} tests_passed=${result.tests_passed}`
+  const wanted = expectedBootstrapMetricIds(gateId)
+  return result.gate_kind === 'oracle_bench' && result.tests_executed === 0 && result.tests_passed === 0 && Number.isInteger(result.rows_processed) && result.rows_processed > 0 &&
+    Array.isArray(result.metric_ids) && result.metric_ids.length === wanted.length && new Set(result.metric_ids).size === wanted.length && wanted.every(id => result.metric_ids.includes(id)) &&
+    result.audit_summary === `status=PASS rows_processed=${result.rows_processed} metric_ids=${[...result.metric_ids].sort().join(',')}`
+}
+
+function expectedBootstrapMetricIds(gateId) {
+  if (['mode_a_smoke', 'mode_a_smoke_tune', 'residual_floor'].includes(gateId)) return TARGET_REGISTRY.filter(item => item.mode === 'A').map(item => item.metric_id)
+  if (gateId === 'mode_b_smoke_tune') return TARGET_REGISTRY.filter(item => item.mode === 'B').map(item => item.metric_id)
+  return []
 }
 
 function expectedGateMetricIds(gateId) {

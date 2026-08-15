@@ -66,7 +66,10 @@ workflow. Baseline and speed-pin numerics are derived only from exact typed Meas
 command output; Measure cannot self-report or override them. Ratchet candidates are
 likewise derived from exact typed gate numeric results. Bootstrap stages 2-4 use the
 fixed `oracle-targeted-gate.ps1` adapter to turn ordinary targeted tool output into
-closed PASS receipts. Exact gate commands return typed results, and
+closed semantic PASS receipts. Exit zero with no tests, zero processed rows, or an
+incomplete metric set is failure; targeted ctest uses `--no-tests=error`. Per-file
+gate mappings now impose mandatory commands, so planner additions are additive and
+cannot substitute another allowed suite or hypothesis. Exact gate commands return typed results, and
 typed NBBO means/distances are recomputed by workflow code before suspect exclusion.
 
 ## 1.2.0

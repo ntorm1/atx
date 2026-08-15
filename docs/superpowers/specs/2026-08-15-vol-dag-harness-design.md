@@ -60,7 +60,9 @@ Date: 2026-08-15. Status: v3 correctness hard cutover implemented. Goal: faster 
   DONE and freshly APPROVED at its final SHA. Release lane leases, acquire a new
   isolated integration lease, merge exact reviewed SHAs, prove HEAD, and run the
   exact workflow-derived changed-file registry. Every changed path must have one
-  known owner; unknown paths and unrelated target/test mappings fail closed. The
+  exact path or anchored path-pattern owner with mandatory gates; unknown paths and
+  unrelated target/test mappings fail closed. Planner additions cannot substitute
+  for those mandatory gates. The
   registry contains affected anchored unit tests,
   hypothesis OracleBench tests, aggregate smoke/tune Mode A/B scorecards, quiet
   pinned speed, and owning PCH-off targets for changed headers. Labels, broad/full

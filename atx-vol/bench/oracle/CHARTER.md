@@ -150,5 +150,7 @@ release qualification are separate from the oracle loop.
 
 Bootstrap stages 2-4 invoke only `scripts/oracle-targeted-gate.ps1 -Gate <closed-id>`.
 That fixed adapter captures ordinary targeted ctest/OracleBench output, fails on a
-nonzero exit or empty output, and emits the exact typed PASS receipt consumed by the
-workflow. Direct test executables and broad build-wrapper verbs are invalid evidence.
+nonzero exit, zero executed tests, zero processed rows, or an incomplete metric set,
+and emits the exact semantic typed PASS receipt plus aggregate audit summary/raw
+digest consumed by the workflow. Ctest uses `--no-tests=error`. Direct test
+executables and broad build-wrapper verbs are invalid evidence.

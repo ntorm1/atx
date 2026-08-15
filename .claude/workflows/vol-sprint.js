@@ -23,26 +23,25 @@ const FIXED_ORACLE_GATES = Object.freeze([
 ])
 const PATH_GATE_REGISTRY = Object.freeze([
   {
-    owner: 'pricing', source_prefixes: ['atx-vol/src/pricing/', 'atx-vol/include/atx/vol/api/pricing/'],
-    test_prefixes: ['american', 'adjusted_greeks', 'adjoint_greeks', 'black76', 'batch', 'dividend', 'greeks', 'implied_vol', 'rates_curve'],
+    owner: 'american-engine', exact_paths: ['atx-vol/src/pricing/american.cpp', 'atx-vol/include/atx/vol/api/pricing/american.hpp'], path_patterns: [],
     unit_targets: ['atx-vol-tests'], suite_prefixes: ['American', 'AndersenLake', 'Baw', 'CallGreeks', 'Alo', 'AlBulk', 'FitPreset', 'AdjointGreeks', 'AdjustedGreeks', 'NegRate', 'ExerciseBoundary', 'ResolvedAmerican', 'GaussLegendre'],
     oracle_tests: ['american-rsi', 'american-price-rsi', 'american-greeks-rsi'], pch_off_targets: ['atx-vol-tests'],
+    mandatory_unit_targets: ['atx-vol-tests'], mandatory_unit_regexes: ['^AmericanSuite$'], mandatory_oracle_tests: ['american-rsi'], mandatory_pch_off_targets: ['atx-vol-tests'],
   },
   {
-    owner: 'fitting', source_prefixes: ['atx-vol/src/fitting/', 'atx-vol/include/atx/vol/api/fitting/'],
-    test_prefixes: ['arb', 'calib', 'c8', 'cstar', 'correction', 'convex_recovery', 'curve_fit', 'deamer'],
-    unit_targets: ['atx-vol-tests'], suite_prefixes: ['Arb', 'Calib', 'C8', 'CStar', 'Correction', 'Chebyshev', 'ConvexRecovery', 'CurveFit', 'Deamer', 'Pin', 'PricerFitter'],
-    oracle_tests: ['american-fit-rsi', 'surface-fit-rsi'], pch_off_targets: ['atx-vol-tests'],
+    owner: 'american-support', exact_paths: [], path_patterns: ['^atx-vol/(?:src/pricing|include/atx/vol/api/pricing)/american_(?:batch|iv|boundary|detail)(?:\\.[^/]+)?$'],
+    unit_targets: ['atx-vol-tests'], suite_prefixes: ['American', 'ResolvedAmerican', 'ExerciseBoundary'], oracle_tests: ['american-rsi', 'american-price-rsi', 'american-greeks-rsi', 'american-simd-rsi'], pch_off_targets: ['atx-vol-tests'],
+    mandatory_unit_targets: ['atx-vol-tests'], mandatory_unit_regexes: ['^AmericanSuite$'], mandatory_oracle_tests: ['american-rsi'], mandatory_pch_off_targets: ['atx-vol-tests'],
   },
   {
-    owner: 'simd', source_prefixes: ['atx-vol/src/simd/', 'atx-vol/include/atx/vol/api/simd/'],
-    test_prefixes: ['american_batch', 'batch', 'simd', 'vector_math'],
-    unit_targets: ['atx-vol-tests'], suite_prefixes: ['American', 'ResolvedAmerican', 'Simd', 'VectorMath', 'Batch'],
-    oracle_tests: ['american-simd-rsi', 'american-greeks-rsi'], pch_off_targets: ['atx-vol-tests'],
+    owner: 'adjusted-greeks', exact_paths: ['atx-vol/src/pricing/adjusted_greeks.cpp', 'atx-vol/include/atx/vol/api/pricing/adjusted_greeks.hpp'], path_patterns: [],
+    unit_targets: ['atx-vol-tests'], suite_prefixes: ['AdjustedGreeks', 'American'], oracle_tests: ['american-greeks-rsi'], pch_off_targets: ['atx-vol-tests'],
+    mandatory_unit_targets: ['atx-vol-tests'], mandatory_unit_regexes: ['^AdjustedGreeks$'], mandatory_oracle_tests: ['american-greeks-rsi'], mandatory_pch_off_targets: ['atx-vol-tests'],
   },
   {
     owner: 'oracle-docs', exact_paths: ['atx-vol/changelog.md', 'atx-vol/bench/oracle/charter.md'],
-    source_prefixes: [], test_prefixes: [], unit_targets: [], suite_prefixes: [], oracle_tests: [], pch_off_targets: [],
+    path_patterns: [], unit_targets: [], suite_prefixes: [], oracle_tests: [], pch_off_targets: [],
+    mandatory_unit_targets: [], mandatory_unit_regexes: [], mandatory_oracle_tests: [], mandatory_pch_off_targets: [],
   },
 ])
 
@@ -242,8 +241,7 @@ function safeOracleTest(value) {
 function pathGateOwner(path) {
   const normalized = String(path || '').replace(/\\/g, '/').toLowerCase()
   return PATH_GATE_REGISTRY.find(owner => (owner.exact_paths || []).includes(normalized) ||
-    owner.source_prefixes.some(prefix => normalized.startsWith(prefix)) ||
-    normalized.startsWith('atx-vol/tests/') && owner.test_prefixes.some(prefix => normalized.slice('atx-vol/tests/'.length).startsWith(prefix))) || null
+    (owner.path_patterns || []).some(pattern => new RegExp(pattern).test(normalized))) || null
 }
 
 function regexSuiteName(value) {
@@ -265,6 +263,9 @@ function closureError(lane) {
     if (!owner) return `gate closure path is not in workflow registry: ${item.file}`
     if (!item.unit_targets.every(target => owner.unit_targets.includes(target)) || !item.pch_off_targets.every(target => owner.pch_off_targets.includes(target)) ||
         !item.oracle_tests.every(test => owner.oracle_tests.includes(test)) || !item.unit_regexes.every(regex => owner.suite_prefixes.some(prefix => regexSuiteName(regex).startsWith(prefix)))) return `gate closure does not match workflow path owner: ${item.file}`
+    if (!owner.mandatory_unit_targets.every(target => item.unit_targets.includes(target)) || !owner.mandatory_unit_regexes.every(regex => item.unit_regexes.includes(regex)) ||
+        !owner.mandatory_oracle_tests.every(test => item.oracle_tests.includes(test)) ||
+        changedHeader(item.file) && !owner.mandatory_pch_off_targets.every(target => item.pch_off_targets.includes(target))) return `gate closure omitted mandatory workflow gates for: ${item.file}`
     if (changedCode(item.file) && (!item.unit_targets.length || !item.unit_regexes.length)) return 'changed code requires affected unit target and anchored unit regex'
     if (changedHeader(item.file) && !item.pch_off_targets.length) return 'changed header requires scoped PCH-off target'
     if (!changedCode(item.file) && (item.unit_targets.length || item.unit_regexes.length || item.oracle_tests.length || item.pch_off_targets.length)) return 'non-code path cannot assert code gates'

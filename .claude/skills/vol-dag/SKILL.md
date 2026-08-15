@@ -35,8 +35,9 @@ integration. Second BLOCK after Fix is final. Gate FAIL carries pasted output;
 never "mostly passed" and never integrate in `C:\atx`.
 
 For the oracle loop, each scoped file has a closed `gate_closure` checked against
-the workflow-owned path/target/test registry. Unknown paths, unrelated mappings,
-omissions, and extra command receipts fail. The workflow mechanically derives
+the workflow-owned exact path/path-pattern target/test registry. Mandatory gates
+cannot be substituted; planner additions are additive. Unknown paths, unrelated
+mappings, omissions, and extra command receipts fail. The workflow mechanically derives
 affected anchored unit tests, hypothesis OracleBench tests,
 required aggregate smoke/tune scorecards, quiet pinned speed, and header-only
 scoped PCH-off targets. Full regression/release suites and broad repository gates

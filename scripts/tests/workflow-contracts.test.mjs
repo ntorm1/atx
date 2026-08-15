@@ -71,8 +71,9 @@ const READY_MEASURE_GATES = {
 }
 const READY_MEASURE_COMMANDS = Object.values(READY_MEASURE_GATES)
 const PATH_GATE_REGISTRY = [
-  { owner: 'pricing', source_prefixes: ['atx-vol/src/pricing/', 'atx-vol/include/atx/vol/api/pricing/'], test_prefixes: ['american'], unit_targets: ['atx-vol-tests'], suite_prefixes: ['American'], oracle_tests: ['american-rsi', 'american-price-rsi', 'american-greeks-rsi'], pch_off_targets: ['atx-vol-tests'] },
+  { owner: 'american-engine', exact_paths: ['atx-vol/src/pricing/american.cpp', 'atx-vol/include/atx/vol/api/pricing/american.hpp'], path_patterns: [], unit_targets: ['atx-vol-tests'], suite_prefixes: ['American', 'AdjustedGreeks'], oracle_tests: ['american-rsi', 'american-greeks-rsi'], pch_off_targets: ['atx-vol-tests'], mandatory_unit_targets: ['atx-vol-tests'], mandatory_unit_regexes: ['^AmericanSuite$'], mandatory_oracle_tests: ['american-rsi'], mandatory_pch_off_targets: ['atx-vol-tests'] },
 ]
+const TARGETED_BOOTSTRAP_GATE_IDS = ['mode_a_targeted_tests', 'mode_a_smoke', 'convention_tests', 'mode_a_smoke_tune', 'residual_floor', 'mode_b_targeted_tests', 'mode_b_smoke_tune']
 
 function extractFunction(source, name) {
   const start = source.indexOf(`function ${name}(`)
@@ -95,10 +96,10 @@ function loadFunctions(source, names, prelude = '') {
 }
 
 const oracleFns = loadFunctions(oracle, [
-  'iterationCommandError', 'validSuccessEvidence', 'exactEvidenceSet', 'diagnosticsUseForbiddenCommand', 'validLeaseReceipt', 'validHeadReceipt', 'validGateReceipt', 'expectedGateMetricIds', 'validRatchetGateReceipt', 'validIntegrationCommand', 'casReceiptError', 'auditReceiptError',
+  'iterationCommandError', 'validSuccessEvidence', 'exactEvidenceSet', 'diagnosticsUseForbiddenCommand', 'validLeaseReceipt', 'validHeadReceipt', 'validGateReceipt', 'expectedBootstrapMetricIds', 'expectedGateMetricIds', 'validRatchetGateReceipt', 'validIntegrationCommand', 'casReceiptError', 'auditReceiptError',
   'reviewContractError', 'bootstrapReportError', 'bootstrapPrepareError', 'aggregatePayloadError', 'expectedMeasureMetricIds', 'expectedMetricUnit', 'validNumericMetric', 'validMeasureGateReceipt', 'measurePayloadError', 'attributionPayloadFromMeasure',
   'metricDeltaConsistent', 'expectedRatchetMetrics', 'sameNumber', 'distanceToInterval', 'marketCommand', 'marketReceiptError', 'relativeRegression', 'ratchetGateIdForMetric', 'ratchetCandidateValue', 'ratchetMetricsFromReceipts', 'ratchetPrepareContractError', 'computeRatchetVerdict',
-], `const RATCHET_GATE_IDS = ['holdout_mode_a', 'holdout_mode_b', 'rel_avx2_speed']; const TARGET_REGISTRY = ${JSON.stringify(TARGET_REGISTRY)}; const AGGREGATE_REGISTRY = ${JSON.stringify(AGGREGATE_REGISTRY)}; const SPEED_METRIC_ID = '${SPEED_METRIC_ID}'; const RATCHET_GATE_COMMANDS = ${JSON.stringify(RATCHET_GATE_COMMANDS)}; const BOOTSTRAP_GATE_COMMANDS = ${JSON.stringify(BOOTSTRAP_GATE_COMMANDS)}; const READY_MEASURE_GATES = ${JSON.stringify(READY_MEASURE_GATES)}; const READY_MEASURE_COMMANDS = ${JSON.stringify(READY_MEASURE_COMMANDS)}`)
+], `const RATCHET_GATE_IDS = ['holdout_mode_a', 'holdout_mode_b', 'rel_avx2_speed']; const TARGETED_BOOTSTRAP_GATE_IDS = ${JSON.stringify(TARGETED_BOOTSTRAP_GATE_IDS)}; const TARGET_REGISTRY = ${JSON.stringify(TARGET_REGISTRY)}; const AGGREGATE_REGISTRY = ${JSON.stringify(AGGREGATE_REGISTRY)}; const SPEED_METRIC_ID = '${SPEED_METRIC_ID}'; const RATCHET_GATE_COMMANDS = ${JSON.stringify(RATCHET_GATE_COMMANDS)}; const BOOTSTRAP_GATE_COMMANDS = ${JSON.stringify(BOOTSTRAP_GATE_COMMANDS)}; const READY_MEASURE_GATES = ${JSON.stringify(READY_MEASURE_GATES)}; const READY_MEASURE_COMMANDS = ${JSON.stringify(READY_MEASURE_COMMANDS)}`)
 const sprintFns = loadFunctions(sprint, [
   'validSuccessEvidence', 'validLeaseReceipt', 'validHeadReceipt', 'validIntegrationCommand', 'changedHeader', 'changedCode', 'safeTarget', 'safeUnitRegex', 'safeOracleTest',
   'pathGateOwner', 'regexSuiteName', 'closureError', 'closureEntries', 'derivedGateRegistry', 'oracleLoopCommandError', 'laneHeartbeatId', 'reportContractError', 'reviewContractError', 'laneFailureReason', 'gateContractError',
@@ -128,6 +129,13 @@ function gateReceipt(gateId) {
 
 function bootstrapGateReceipt(gateId) {
   const result = { schema_version: 1, status: 'PASS', observations: 100, command_id: gateId, raw_output_sha256: 'a'.repeat(64) }
+  if (TARGETED_BOOTSTRAP_GATE_IDS.includes(gateId)) {
+    const ctest = gateId.endsWith('_tests')
+    const metricIds = gateId.startsWith('mode_b') ? TARGET_REGISTRY.filter(item => item.mode === 'B').map(item => item.metric_id) : TARGET_REGISTRY.filter(item => item.mode === 'A').map(item => item.metric_id)
+    Object.assign(result, ctest
+      ? { gate_kind: 'ctest', tests_executed: 2, tests_passed: 2, rows_processed: 0, metric_ids: [], audit_summary: 'tests_executed=2 tests_passed=2' }
+      : { gate_kind: 'oracle_bench', tests_executed: 0, tests_passed: 0, rows_processed: 100, metric_ids: metricIds, audit_summary: `status=PASS rows_processed=100 metric_ids=${[...metricIds].sort().join(',')}` })
+  }
   return { gate_id: gateId, command: BOOTSTRAP_GATE_COMMANDS[gateId], exit_code: 0, output: JSON.stringify(result), result }
 }
 
@@ -372,6 +380,8 @@ test('bootstrap missing gate/stale integration/release receipts fail before fina
     ['extra gate', prepare => { prepare.gate_receipts.push(bootstrapGateReceipt('disk')) }],
     ['generic node gate', prepare => { prepare.gate_receipts[0].command = 'node mode_a_targeted_tests' }],
     ['spoofed gate output', prepare => { prepare.gate_receipts[0].output = 'mode_a_targeted_tests PASS' }],
+    ['exit-zero ctest zero work', prepare => { const receipt = prepare.gate_receipts[0]; receipt.result.tests_executed = 0; receipt.result.tests_passed = 0; receipt.result.audit_summary = 'tests_executed=0 tests_passed=0'; receipt.output = JSON.stringify(receipt.result) }],
+    ['exit-zero OracleBench zero rows', prepare => { const receipt = prepare.gate_receipts[1]; receipt.result.rows_processed = 0; receipt.result.audit_summary = `status=PASS rows_processed=0 metric_ids=${[...receipt.result.metric_ids].sort().join(',')}`; receipt.output = JSON.stringify(receipt.result) }],
     ['stale SHA', prepare => { prepare.integration_receipt.reviewed_sha = SHA.base }],
     ['missing release', prepare => { prepare.integration_release_receipt = null }],
   ]) await t.test(name, async () => {
@@ -626,6 +636,8 @@ test('oracle-loop command policy rejects full/broad work and derives scoped PCH-
   assert.match(sprintFns.closureError(unrelatedTarget), /does not match workflow path owner/)
   const unrelatedTest = structuredClone(validLane); unrelatedTest.gate_closure[0].oracle_tests = ['unrelated-rsi']
   assert.match(sprintFns.closureError(unrelatedTest), /does not match workflow path owner/)
+  const substitution = structuredClone(validLane); substitution.gate_closure[0].unit_regexes = ['^AdjustedGreeks$']; substitution.gate_closure[0].oracle_tests = ['american-greeks-rsi']
+  assert.match(sprintFns.closureError(substitution), /omitted mandatory workflow gates/)
   const lane = { ...validLane, id: 'american', branch: 'lane/american-run-1' }
   const identity = leaseIdentity({ branch: lane.branch, base: SHA.base, heartbeat: 'run-1-lane-american' })
   const laneGates = sprintFns.derivedGateRegistry(lane.gate_closure)
@@ -682,8 +694,11 @@ test('bootstrap uses the fixed production targeted-gate adapter with typed recei
   }
   assert.ok(targetedGate.includes('Invoke-OracleTargetedGate'))
   assert.ok(targetedGate.includes('raw_output_sha256'))
-  assert.ok(targetedGate.includes("'-R', '^mode_a_targeted_tests$'"))
+  assert.ok(targetedGate.includes("'-R', '^mode_a_targeted_tests$', '--no-tests=error'"))
   assert.ok(targetedGate.includes("'--cohort', 'smoke,tune'"))
+  assert.ok(targetedGate.includes('tests_executed'))
+  assert.ok(targetedGate.includes('rows_processed'))
+  assert.ok(targetedGate.includes('metric_ids'))
   assert.equal(/-L\s+atx_vol_fast|run_all_gates|build\s+all/i.test(targetedGate), false)
 })
 
