@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -41,6 +42,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--memory-limit", default="8GB")
     parser.add_argument("--threads", type=int, default=4)
     parser.add_argument("--run-id-prefix", default="recon-sharded")
+    parser.add_argument(
+        "--only-shard",
+        type=int,
+        default=None,
+        help="Internal: execute exactly one shard in this process and exit. "
+        "The parent runs every shard in a fresh interpreter because a "
+        "long-lived process was measured to degrade from ~110s to ~840s "
+        "per shard at identical warehouse size.",
+    )
     return parser.parse_args()
 
 
@@ -68,19 +78,50 @@ def main() -> int:
     if args.shards < 1:
         raise SystemExit("--shards must be positive")
     shards = _symbol_shards(args.db_path, args.shards)
-    print(
-        json.dumps(
-            {
-                "step": "plan",
-                "symbol_count": sum(len(s) for s in shards),
-                "shard_count": len(shards),
-                "start_shard": args.start_shard,
-            }
-        ),
-        flush=True,
-    )
+    if args.only_shard is None:
+        print(
+            json.dumps(
+                {
+                    "step": "plan",
+                    "symbol_count": sum(len(s) for s in shards),
+                    "shard_count": len(shards),
+                    "start_shard": args.start_shard,
+                }
+            ),
+            flush=True,
+        )
     for index, shard in enumerate(shards, start=1):
         if index < args.start_shard:
+            continue
+        if args.only_shard is not None and index != args.only_shard:
+            continue
+        if args.only_shard is None:
+            child = subprocess.run(
+                [
+                    sys.executable,
+                    str(Path(__file__).resolve()),
+                    "--db-path",
+                    str(args.db_path),
+                    "--shards",
+                    str(args.shards),
+                    "--only-shard",
+                    str(index),
+                    "--memory-limit",
+                    args.memory_limit,
+                    "--threads",
+                    str(args.threads),
+                    "--run-id-prefix",
+                    args.run_id_prefix,
+                ],
+            )
+            if child.returncode != 0:
+                print(
+                    json.dumps(
+                        {"step": "shard", "shard": index, "status": "failed", "exit_code": child.returncode}
+                    ),
+                    flush=True,
+                )
+                return child.returncode
             continue
         begun = time.monotonic()
         with DuckDBStore(args.db_path) as store:

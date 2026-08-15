@@ -511,30 +511,71 @@ never collapses distinct events. Each event retains the restating and
 superseded accessions, first-reported baseline, per-event and cumulative
 deltas, and the availability timestamps of both vintages.
 
-The first full-universe reconciliation publish exposed a real capacity
-contract: materializing the contextual reconciliation view for every revision
-at once exceeded an 8 GB DuckDB memory limit on a 16 GB host while a parallel
-test session ran. The refresh is being re-run isolated with an 11 GB limit and
-reduced threads; symbol-sharded scoped publishes are the documented fallback.
+The first full-universe reconciliation publish exposed two real capacity
+contracts. Materializing the contextual reconciliation view for every revision
+at once exceeded both 8 GB and 11 GB DuckDB memory limits on a 16 GB host, and
+a symbol scope did not help because the reconciliation views scan the complete
+standardized table before any security filter can apply. The scoped publish
+path now materializes the in-scope standardized rows once and rebinds the
+exact view SQL against that copy; a governance test pins that scoped
+evaluation stays row-identical to filtering the full view. Second, a
+long-lived publishing process degraded from roughly 110 seconds to 840 seconds
+per identical-size shard at unchanged warehouse size, so the shard runner
+executes every shard in a fresh interpreter; isolated shards completed in
+42-105 seconds.
+
+Sixteen sequential scope-safe shards then published the complete surface:
+364,037 reconciliation serving rows across 1,450 securities, classified as
+295,133 reconciled, 61,649 diagnostic differences, and 7,255 mismatches
+pending filing-context verification, with zero hard failures among latest
+revisions and sixteen completed build manifests.
+
+The bulk submissions loader then ingested the complete official
+`submissions.zip` corpus offline: 3,036,691 10-K/10-Q/8-K filing rows across
+47,810 CIKs from 980,321 archive members plus 5,335 paginated history members
+with zero missing references. With full-universe filing metadata in place, the
+first live filing-context backfill queue build produced 58,551 prioritized
+filings (56,569 immediately actionable, 1,982 blocked on metadata debt)
+attributing 100,840 reconciliation verification gaps — the same
+reconciliation-driven coverage loop proven on the slice, now operating at
+warehouse scale.
+
+The measured coverage refresh reports honest per-schema conditions: reported,
+standardized, industry-standardized, reconciliation, ratios, and daily bars
+are `degraded` with explicit observed-versus-target security/item/freshness
+failures (1,598 securities against the 2,500 institutional target being the
+common gap), while the new `restatements` schema is `available` with 288,369
+immutable restatement events across 1,453 securities and zero failed SLOs.
+Universe expansion from the cached bulk `companyfacts.zip`
+(2,720 loaded CIKs toward the 10,433-symbol snapshot) is the active lever for
+the remaining breadth targets.
 
 ## Remaining parity work
 
 The foundation is provider-shaped but the product is not yet a complete FactSet or
 Compustat replacement. The next priorities are:
 
-1. Execute the remaining prioritized filing-instance queue across the proof universe,
-   rebuilding metrics, standardization, reconciliation, and coverage after bounded
-   batches; promote the same loop to the full US issuer universe.
-2. Expand the governed SEC/FASB/XBRL US taxonomy-package catalog across all filing years and
+1. Finish raw-universe expansion from the cached bulk `companyfacts.zip`
+   (`sec_company_tickers` targets with `--skip-loaded`), rebuild the derived
+   statement/TTM/standardized/reconciliation chain, and re-measure coverage;
+   the promotion ladder and sharded reconciliation publisher are the governed
+   entry points.
+2. Execute the 56,569-filing actionable backfill queue in bounded rate-limited
+   tranches against live SEC EDGAR, closing the 100,840 attributed
+   reconciliation verification gaps; clear the 1,982 blocked rows via targeted
+   submissions recovery.
+3. Expand the governed SEC/FASB/XBRL US taxonomy-package catalog across all filing years and
    compatibility-pin an isolated official Arelle 2.39.8 / SEC EDGAR / XULE 30052 bundle;
    then execute EFM, renderer, transformations, and DQC/XULE profiles over the
    now-complete filing DTSes.
-3. Increase canonical statement breadth, especially insurer/bank/REIT disclosures,
-   footnotes, per-share bases, and acquired/discontinued operations.
-4. Extend the proven per-delivery query/schema/logical/artifact/manifest identity into
-   scheduled full-universe publications and restatement diffs; prove delisted-company
-   continuity plus correction/deletion handling.
-5. Complete contractual availability SLOs, schema-version negotiation, longer-lived
+4. Increase canonical statement breadth, especially insurer/bank/REIT disclosures,
+   footnotes, per-share bases, and acquired/discontinued operations; 46
+   published items against the 235-item registry is the measured gap.
+5. Extend the proven per-delivery query/schema/logical/artifact/manifest identity into
+   scheduled full-universe publications; prove delisted-company
+   continuity plus correction/deletion handling. Restatement events now ship
+   as the `restatements` schema; scheduled publication diffs remain.
+6. Complete contractual availability SLOs, schema-version negotiation, longer-lived
    publication catalogs, and benchmark suites against licensed vendor samples when available.
 
 Coverage is an observed product metric, not a claim. Until these gates reach their
