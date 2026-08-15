@@ -213,7 +213,28 @@ add_executable(atx-vol-tests
     margin_test.cpp                  # Reg-T + scenario-grid margin models, engine wiring
     # backtest-production-lakehouse sprint, Task D1 — appended target:
     track_key_test.cpp               # content-addressed TrackKey + economics-rev tripwire
+    # Oracle RSI bootstrap charter stage 2 — appended target: the
+    # atx-vol-oracle-bench gate (band edges, tolerances, scorecard cell-key
+    # schema + accounting, cohort JSON, partition-pruned reader, synthetic-
+    # store end-to-end). The bench DRIVER TU (tools/oracle_bench_main.cpp)
+    # joins via textual #include with main() suppressed (the
+    # bev_label_factory_gate_test.cpp pattern above); the tool's three
+    # LIBRARY TUs compile in via the target_sources below. OracleBench*
+    # matches nothing in ATX_VOL_SLOW_FILTER, so the suite lands in the
+    # atx_vol_fast label.
+    oracle_bench_test.cpp
 )
+
+# Oracle RSI charter stage 2: the three non-driver TUs of atx-vol-oracle-bench
+# (headers + implementations under ../tools) compile into the test exe so
+# OracleBench* exercises the shipped implementation, not a copy. tools/ is
+# already a PRIVATE quoted-include root of this target (see
+# target_include_directories below), which is how oracle_bench_test.cpp
+# resolves both the headers and its textual #include of the driver TU.
+target_sources(atx-vol-tests PRIVATE
+    ../tools/oracle_conventions.cpp
+    ../tools/oracle_scorecard.cpp
+    ../tools/oracle_cohort_reader.cpp)
 
 # backtest-production-lakehouse sprint, Task D2 — appended conditionally: the
 # Parquet track store round-trip test includes Arrow/Parquet headers directly
