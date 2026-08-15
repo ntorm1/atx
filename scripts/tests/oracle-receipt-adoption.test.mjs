@@ -201,3 +201,37 @@ test('top-level bootstrap report validator enforces typed Stage 1 and Stage 2 pa
   stage2.changed_path_receipt = changedPathReceipt(base, tested, ['atx-vol/bench/oracle/bootstrap/mode-a.json', 'atx-vol/tools/oracle_bench_main.cpp'].sort())
   assert.match(validators.bootstrapReportError(stage2, expectedFor(stage2)), /receipt-only/u)
 })
+
+test('Stage 1 report contract rejects observed malformed builder fields and accepts the exact report', () => {
+  const base = sha('5'); const tested = sha('6')
+  const adopted = adoptedReceipt(base)
+  const report = completeReport({
+    base_sha: base, sha: tested, holdout_digest_receipt: adopted.result.holdout_membership_sha256,
+    bootstrap_path: 'data_adoption', adoption_receipt: adopted,
+    evidence: [{ command: adopted.command, exit_code: 0, output: adopted.output }],
+    changed_path_receipt: changedPathReceipt(base, tested, [
+      'atx-vol/bench/oracle/bootstrap/data.json',
+      'atx-vol/bench/oracle/cohorts/holdout.sha256',
+    ]),
+  }, 'missing_data')
+  assert.equal(validators.bootstrapReportError(report, expectedFor(report)), null)
+
+  const proseDigest = structuredClone(report)
+  proseDigest.holdout_digest_receipt += ' (raw holdout membership digest)'
+  assert.match(validators.bootstrapReportError(proseDigest, expectedFor(proseDigest)), /evidence\/SHA\/receipt invalid/u)
+
+  const chainedEvidence = structuredClone(report)
+  chainedEvidence.evidence[0].command += '; git status --short'
+  assert.match(validators.bootstrapReportError(chainedEvidence, expectedFor(chainedEvidence)), /evidence\/SHA\/receipt invalid/u)
+
+  const annotatedAdoption = structuredClone(report)
+  annotatedAdoption.evidence[0].command += ' (cwd C:\\atx-wt\\pool-13)'
+  assert.match(validators.bootstrapReportError(annotatedAdoption, expectedFor(annotatedAdoption)), /evidence\/SHA\/receipt invalid/u)
+})
+
+test('Bootstrap StructuredOutput schema rejects prose digests and chained or annotated success commands', () => {
+  assert.match(workflow, /holdout_digest_receipt: \{ type: 'string', pattern: '\^\[0-9a-f\]\{64\}\$' \}, evidence: \{ type: 'array', minItems: 1, items: BOOTSTRAP_SUCCESS_EVIDENCE_ITEM \}/u)
+  assert.match(workflow, /command: \{ type: 'string', pattern: '\^\[\^;&\|`\(\)\\\\r\\\\n\]\+\$' \}/u)
+  assert.match(workflow, /holdout_digest_receipt is only the raw lowercase 64-hex digest/u)
+  assert.match(workflow, /adoption_receipt\.command and its one matching evidence\[\]\.command must both equal exactly/u)
+})
