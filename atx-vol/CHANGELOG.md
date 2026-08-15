@@ -5,6 +5,37 @@ that silently changes a NUMBER a caller already depends on belongs in this file.
 
 ## Unreleased
 
+### NEW — VRP ML pipeline: frozen `vrp_panel_v1`/`vrp_signal_v1` contracts, walk-forward trainer, and the VolEdge vol book
+
+Three additions land as one pipeline (sprint 2026-08-15-vrp-ml, three lanes on
+frozen TSV contracts):
+
+- `bev_label_factory --vrp-panel` (`examples/bev_label_factory.cpp` over
+  `src/analytics/vrp_panel.hpp`, Tier-B) builds the 18-column (symbol, date)
+  VRP label/feature panel, schema `vrp_panel_v1`, from one or more SurfaceDb
+  roots. Labels are 21-session forward variance-premium; features are RAW —
+  standardization belongs to the trainer, in-fold.
+- `atx-vol-vrp-train` (`tools/vrp_train.hpp`) trains the schema-v2
+  `IFairVolModel` seam (elastic-net linear TSV + flat-array GBT scorer,
+  byte-stable file round trips, NaN routes right) with purged + embargoed
+  walk-forward folds, QLIKE in variance levels, retransform + train-range
+  insanity clip, and deterministic outputs under a pinned `--master-seed`;
+  emits the frozen 5-column `vrp_signal_v1` OOS prediction file.
+- `atx-vol-quant-research vrp-backtest` (`api/backtest/vol_edge.hpp` +
+  `src/backtest/quant_pipeline.cpp`) consumes `vrp_signal_v1` against SurfaceDb
+  roots: cross-sectional long/short straddle book with vega targets scaled by
+  vol-of-vol, friction model, and a full Greek-attribution report TSV. Note:
+  `build_vol_edge_book` needs at least two usable names per day — a
+  single-name signal is a permanent no-trade book by design. The GBT model
+  loader fails closed (`Err(ParseError)`) on corrupt tree/node counts,
+  truncation, and trailing content — counts are bounded by the lines actually
+  present before any allocation.
+
+All three loaders reject wrong or reordered schema headers outright; the
+Tier-B census grew 19→20 (`vol_edge.hpp`). Known pre-production caveat: the
+shipped VolEdge horizon/rebalance defaults leave under 1.1 calendar days of
+expiry margin (ledger 2026-08-15 risk line) — widen before production use.
+
 ### BREAKING - oracle Stage 1 adopts valid existing stores before ingest
 
 `missing_data` no longer unconditionally checks for 15 GiB and re-ingests the

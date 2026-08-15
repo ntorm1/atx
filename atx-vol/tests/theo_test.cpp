@@ -1135,12 +1135,15 @@ TEST_F(TheoEngineTest, FairVolModelInterceptOnlyScalesTheoVolByExpB0) {
   EXPECT_EQ(v->flags & static_cast<std::uint32_t>(TheoFlagBits::ModelMissing), 0u);
 }
 
-// (c) a declared schema that isn't kFairVolFeatureSchemaV1 is refused at
-// load, ParseError family (matches this module's own schema-mismatch
-// precedent -- SurfaceArchiveV2::open, backtest_db.cpp).
+// (c) a declared schema the seam does not know is refused at load,
+// ParseError family (matches this module's own schema-mismatch precedent --
+// SurfaceArchiveV2::open, backtest_db.cpp). vrp-model lane: schema 2 became
+// a VALID schema (kVrpFeatureSchemaV1, width 10 -- fair_vol_feature_count),
+// so this regression now probes an UNKNOWN id; the schema-2-with-v1-width
+// reject lives in tests/vrp_model_test.cpp (LinearLoaderRejectsSchemaTwo...).
 TEST_F(TheoEngineTest, LoadLinearFairVolModelRejectsSchemaMismatch) {
   const std::array<double, kFairVolFeatureCount> coefs{};
-  const ScopedTempFile coef_file("schema_mismatch", make_coef_tsv(2, 0.0, coefs));
+  const ScopedTempFile coef_file("schema_mismatch", make_coef_tsv(99, 0.0, coefs));
   const auto model = load_linear_fair_vol_model(coef_file.path_string());
   ASSERT_FALSE(model.has_value());
   EXPECT_EQ(model.error().code(), ErrorCode::ParseError);
