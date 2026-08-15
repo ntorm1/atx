@@ -321,21 +321,43 @@ static_assert(detail::aggregate_arity_is_v<ScenarioDerivSpec, 2>,
 //
 // A term whose SHOCK is exactly zero contributes exactly zero WITHOUT READING
 // its sensitivity. `NaN * 0.0` is NaN, not 0, and a `DerivGreeks` legitimately
-// carries "not computed" as NaN in SIX of these ten slots on documented
-// conditions:
+// carries "not computed" as NaN under documented conditions:
 //
-//   theta, charm             a contract shorter than `bumps.time_years`
-//   vanna, charm             `DerivGreekBumps::second_order` off
-//   skew_vega, convexity_vega`DerivGreekBumps::smile_greeks` off (the default)
+//   theta, charm              a contract shorter than `bumps.time_years`
+//   vanna, charm              `DerivGreekBumps::second_order` off
+//   skew_vega, convexity_vega `DerivGreekBumps::smile_greeks` off (the default)
 //
 // so an unguarded product poisons the WHOLE cell -- all ten terms -- on a grid
-// that never asked for that axis. Task F-7 round 1 guarded the two smile terms
-// after `price_deriv_book` stopped fabricating a 0.0 skew vega for memoized
-// VarSwap rows. That guard was correct and incomplete: the same argument covers
-// theta, charm and vanna verbatim, and a rule applied to two of six slots is
-// the shape this sprint keeps re-finding. It is now the single rule for all
-// ten, expressed identically at each term rather than as a special case beside
-// eight bare multiplies.
+// that never asked for that axis.
+//
+// THAT TABLE IS NOT THIS RULE'S SUBJECT, and every attempt to summarise it as a
+// count has been wrong. It is three conditions over six (slot, condition) pairs
+// naming five distinct slots, because `charm` appears under two of them; it
+// describes what the DEFAULT configuration leaves NaN, not what CAN be NaN,
+// which is every one of `DerivGreeks`'s thirteen `double` members; and none of
+// those numbers is the number of TERMS the rule governs. This comment said "SIX
+// of these ten slots" and "two of six slots" until F-8 r10, and the gate's own
+// prose carried the same miscount until r9.
+//
+// So the rule is stated without a count, because it has no exceptions: EVERY
+// term is gated on its own shock, identically, and which slots a configuration
+// happens to leave NaN does not enter it. Task F-7 round 1 guarded the two smile
+// terms after `price_deriv_book` stopped fabricating a 0.0 skew vega for memoized
+// VarSwap rows. That guard was correct and incomplete -- the same argument covers
+// theta, charm and vanna verbatim -- and generalising it to a rule with no
+// exceptions is what removed the need to enumerate anything. It is now expressed
+// identically at each term rather than as a special case beside eight bare
+// multiplies.
+//
+// The gate is `ScenarioGridDeriv.EveryTermIsGatedByItsOwnShock`
+// (tests/scenario_grid_test.cpp), which drives one case per TERM off a table
+// instead of per NaN-capable slot. Measured at F-8 r9 review, one gate mutated
+// per run: the slot-organised predecessor caught 6 of 11, the term-organised
+// test 11 of 11. The five it missed were exactly delta, gamma, vega, volga and
+// rho -- the terms no configuration leaves NaN, hence the ones a slot-organised
+// test could never have reached. When a count here keeps coming back wrong, that
+// is the tell: the description AND the artifact are organised around a noun the
+// rule does not contain.
 //
 // This is bit-identical to an unguarded product whenever the sensitivity is
 // finite: the only value it changes is a `-0.0` term (a negative sensitivity
