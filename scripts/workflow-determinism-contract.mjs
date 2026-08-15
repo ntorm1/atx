@@ -89,6 +89,16 @@ assert.notEqual(
   vm.runInContext(`(${sprintRunId.toString()})('${shaA}', 'same-task', 'caller-b')`, sprintContext),
   'distinct deterministic callers collided',
 )
+assert.notEqual(
+  vm.runInContext(`(${sprintRunId.toString()})('${shaA}', 'task-a', 'same-caller')`, sprintContext),
+  vm.runInContext(`(${sprintRunId.toString()})('${shaA}', 'task-b', 'same-caller')`, sprintContext),
+  'distinct tasks from the same caller collided',
+)
+assert.notEqual(
+  vm.runInContext(`(${sprintRunId.toString()})('${shaA}', 'task-a', '')`, sprintContext),
+  vm.runInContext(`(${sprintRunId.toString()})('${shaA}', 'task-a', 'direct')`, sprintContext),
+  'direct-call fallback collided with an explicit caller',
+)
 
 const laneContext = vm.createContext({ RUN_SLUG: sprintId })
 const laneA = vm.runInContext(`(${laneHeartbeatId.toString()})({ id: 'lane-a' })`, laneContext)

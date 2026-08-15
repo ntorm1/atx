@@ -26,7 +26,8 @@ function deterministicToken(value) {
 
 function sprintRunId(baseSha, task, runKey) {
   const caller = String(runKey || '').trim()
-  const identity = caller ? `caller:${caller}` : `task:${task}`
+  const normalizedTask = String(task || '').trim()
+  const identity = JSON.stringify([caller || null, normalizedTask])
   return `vol-sprint-${baseSha}-${deterministicToken(identity)}`
 }
 const FIXED_ORACLE_GATES = Object.freeze([

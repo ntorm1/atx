@@ -388,13 +388,14 @@ test('ready Improve binds deterministic caller identity into nested sprint', asy
   assert.equal(workflowCalls[0].args.base, SHA.measure)
   assert.equal(workflowCalls[0].args.run_key, 'run-1-improve')
   assert.match(workflowCalls[0].args.task, /Oracle RSI iter-001/)
+  const replay = sprintFns.sprintRunId(SHA.measure, 'task-a', 'caller-a')
+  assert.equal(replay, sprintFns.sprintRunId(SHA.measure, ' task-a ', ' caller-a '))
+  assert.notEqual(replay, sprintFns.sprintRunId(SHA.measure, 'task-b', 'caller-a'))
+  assert.notEqual(replay, sprintFns.sprintRunId(SHA.measure, 'task-a', 'caller-b'))
+  assert.notEqual(replay, sprintFns.sprintRunId(SHA.base, 'task-a', 'caller-a'))
   assert.notEqual(
-    sprintFns.sprintRunId(SHA.measure, 'same task', 'oracle-caller-a'),
-    sprintFns.sprintRunId(SHA.measure, 'same task', 'oracle-caller-b'),
-  )
-  assert.equal(
-    sprintFns.sprintRunId(SHA.measure, 'same task', 'oracle-caller-a'),
-    sprintFns.sprintRunId(SHA.measure, 'same task', 'oracle-caller-a'),
+    sprintFns.sprintRunId(SHA.measure, 'task-a', ''),
+    sprintFns.sprintRunId(SHA.measure, 'task-a', 'direct'),
   )
 })
 
