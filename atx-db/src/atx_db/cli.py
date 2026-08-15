@@ -13,6 +13,14 @@ from pathlib import Path
 from typing import Any
 
 from .connection import DEFAULT_DB_PATH, DuckDBStore
+from .filing_context_backfill import (
+    FilingContextBackfillQueueOptions,
+    refresh_filing_context_backfill_queue,
+)
+from .filing_context_backfill_executor import (
+    FilingContextBackfillExecutionOptions,
+    execute_filing_context_backfill,
+)
 from .fundamental_reconciliation import (
     FundamentalReconciliationRefreshOptions,
     refresh_fundamental_reconciliation_serving,
@@ -41,6 +49,12 @@ from .thirteenf_backtest import (
 )
 from .thirteenf_signals import refresh_thirteenf_consensus_signals
 from .ticker_history_bulk import BulkTickerHistoryOptions, publish_bulk_ticker_history
+from .xbrl_filing_contexts import XbrlFilingContextDataset, XbrlFilingContextOptions
+from .xbrl_processor import ArelleValidationOptions, run_arelle_validation
+from .xbrl_taxonomy_packages import (
+    XbrlTaxonomyPackageOptions,
+    capture_xbrl_taxonomy_packages,
+)
 
 
 def _json(value: Any) -> None:
@@ -145,6 +159,103 @@ def _build_parser() -> argparse.ArgumentParser:
     reconciliation.add_argument("--memory-limit", default="8GB")
     reconciliation.add_argument("--threads", type=int, default=4)
     reconciliation.add_argument("--run-id")
+
+    context_queue = commands.add_parser(
+        "refresh-filing-context-backfill-queue",
+        help="Prioritize missing SEC filing instances by reconciliation verification gain",
+    )
+    context_queue.add_argument("--db-path", type=Path, default=DEFAULT_DB_PATH)
+    context_queue.add_argument("--run-id")
+
+    context_executor = commands.add_parser(
+        "run-filing-context-backfill",
+        help="Execute a bounded priority batch with durable retries",
+    )
+    context_executor.add_argument("--db-path", type=Path, default=DEFAULT_DB_PATH)
+    context_executor.add_argument("--max-filings", type=int, default=10)
+    context_executor.add_argument("--max-attempts", type=int, default=3)
+    context_executor.add_argument("--stale-running-minutes", type=int, default=30)
+    context_executor.add_argument("--request-timeout", type=int, default=120)
+    context_executor.add_argument("--source-cache-dir", type=Path)
+    context_executor.add_argument("--no-source-cache", action="store_true")
+    context_executor.add_argument("--no-retry", action="store_true")
+    context_executor.add_argument("--retry-nonretryable", action="store_true")
+    context_executor.add_argument("--stop-on-error", action="store_true")
+    context_executor.add_argument("--inline-only", action="store_true")
+    context_executor.add_argument("--capture-filing-packages", action="store_true")
+    context_executor.add_argument("--user-agent")
+    context_executor.add_argument("--run-id")
+
+    filing_package = commands.add_parser(
+        "capture-xbrl-filing-packages",
+        help="Cache filing-local XBRL entrypoints, extension schemas, and linkbases",
+    )
+    filing_package.add_argument("--db-path", type=Path, default=DEFAULT_DB_PATH)
+    filing_package.add_argument("--accession", action="append", dest="accessions", required=True)
+    filing_package.add_argument("--max-filings", type=int, default=10)
+    filing_package.add_argument("--request-timeout", type=int, default=120)
+    filing_package.add_argument("--source-cache-dir", type=Path)
+    filing_package.add_argument("--user-agent")
+    filing_package.add_argument("--run-id")
+
+    taxonomy_packages = commands.add_parser(
+        "capture-xbrl-taxonomy-packages",
+        help=(
+            "Resolve filing-package taxonomy references to cached official "
+            "FASB/SEC/XBRL US ZIPs"
+        ),
+    )
+    taxonomy_packages.add_argument("--db-path", type=Path, default=DEFAULT_DB_PATH)
+    taxonomy_packages.add_argument(
+        "--accession", action="append", dest="accessions", required=True
+    )
+    taxonomy_packages.add_argument("--max-filings", type=int, default=10)
+    taxonomy_packages.add_argument("--request-timeout", type=int, default=120)
+    taxonomy_packages.add_argument("--source-cache-dir", type=Path)
+    taxonomy_packages.add_argument("--package-dir", type=Path)
+    taxonomy_packages.add_argument(
+        "--fail-fast",
+        action="store_true",
+        help="Abort the batch on the first package failure instead of recording and continuing",
+    )
+    taxonomy_packages.add_argument("--user-agent")
+    taxonomy_packages.add_argument("--run-id")
+
+    arelle = commands.add_parser(
+        "run-arelle-validation",
+        help="Run optional Arelle XBRL 2.1 and Calculation 1.1 validation",
+    )
+    arelle.add_argument("--db-path", type=Path, default=DEFAULT_DB_PATH)
+    arelle.add_argument("--accession", action="append", dest="accessions")
+    arelle.add_argument("--max-filings", type=int, default=1)
+    arelle.add_argument("--executable", default="arelleCmdLine")
+    arelle.add_argument(
+        "--online",
+        action="store_true",
+        help="Allow direct network resolution; operator must enforce source fair-access policy",
+    )
+    arelle.add_argument("--processor-cache-dir", type=Path)
+    arelle.add_argument("--request-timeout", type=int, default=120)
+    arelle.add_argument("--process-timeout", type=int, default=900)
+    arelle.add_argument("--user-agent")
+    arelle.add_argument(
+        "--efm-plugin-path",
+        type=Path,
+        help="Path to an official SEC EDGAR plugin checkout; enables EFM validation",
+    )
+    arelle.add_argument(
+        "--taxonomy-package",
+        action="append",
+        dest="taxonomy_packages",
+        type=Path,
+        help="Taxonomy ZIP or directory of ZIPs; repeatable and SHA-256 recorded",
+    )
+    arelle.add_argument(
+        "--no-catalog-taxonomy-packages",
+        action="store_true",
+        help="Do not auto-load verified packages linked to each filing",
+    )
+    arelle.add_argument("--run-id")
 
     coverage = commands.add_parser(
         "refresh-provider-coverage",
@@ -305,6 +416,105 @@ def main(argv: Sequence[str] | None = None) -> int:
                 ),
             )
         _json(asdict(reconciliation_result))
+        return 0
+
+    if args.command == "refresh-filing-context-backfill-queue":
+        with DuckDBStore(args.db_path) as store:
+            queue_result = refresh_filing_context_backfill_queue(
+                store,
+                FilingContextBackfillQueueOptions(run_id=args.run_id),
+            )
+        _json(asdict(queue_result))
+        return 0
+
+    if args.command == "run-filing-context-backfill":
+        context_defaults = FilingContextBackfillExecutionOptions()
+        with DuckDBStore(args.db_path) as store:
+            execution_result = execute_filing_context_backfill(
+                store,
+                FilingContextBackfillExecutionOptions(
+                    max_filings=args.max_filings,
+                    max_attempts_per_accession=args.max_attempts,
+                    stale_running_after_minutes=args.stale_running_minutes,
+                    retry_failed=not args.no_retry,
+                    retry_nonretryable=args.retry_nonretryable,
+                    stop_on_error=args.stop_on_error,
+                    request_timeout=args.request_timeout,
+                    include_legacy_xbrl=not args.inline_only,
+                    use_source_cache=not args.no_source_cache,
+                    source_cache_dir=args.source_cache_dir,
+                    capture_filing_packages=args.capture_filing_packages,
+                    user_agent=args.user_agent or context_defaults.user_agent,
+                    run_id=args.run_id,
+                ),
+            )
+        _json(asdict(execution_result))
+        return 0
+
+    if args.command == "capture-xbrl-filing-packages":
+        package_defaults = XbrlFilingContextOptions()
+        with DuckDBStore(args.db_path) as store:
+            package_result = XbrlFilingContextDataset().load(
+                store,
+                XbrlFilingContextOptions(
+                    symbols=(),
+                    forms=(),
+                    accession_numbers=tuple(args.accessions),
+                    max_filings=args.max_filings,
+                    request_timeout=args.request_timeout,
+                    source_cache_dir=args.source_cache_dir,
+                    capture_filing_package=True,
+                    user_agent=args.user_agent or package_defaults.user_agent,
+                    run_id=args.run_id,
+                ),
+            )
+        _json(asdict(package_result))
+        return 0
+
+    if args.command == "capture-xbrl-taxonomy-packages":
+        taxonomy_defaults = XbrlTaxonomyPackageOptions()
+        with DuckDBStore(args.db_path) as store:
+            taxonomy_result = capture_xbrl_taxonomy_packages(
+                store,
+                XbrlTaxonomyPackageOptions(
+                    accession_numbers=tuple(args.accessions),
+                    max_filings=args.max_filings,
+                    source_cache_dir=args.source_cache_dir,
+                    package_dir=args.package_dir,
+                    request_timeout=args.request_timeout,
+                    user_agent=args.user_agent or taxonomy_defaults.user_agent,
+                    run_id=args.run_id,
+                    fail_fast=args.fail_fast,
+                ),
+            )
+        _json(asdict(taxonomy_result))
+        return 0
+
+    if args.command == "run-arelle-validation":
+        arelle_defaults = ArelleValidationOptions()
+        with DuckDBStore(args.db_path) as store:
+            validation_result = run_arelle_validation(
+                store,
+                ArelleValidationOptions(
+                    accession_numbers=(
+                        None if args.accessions is None else tuple(args.accessions)
+                    ),
+                    max_filings=args.max_filings,
+                    executable=args.executable,
+                    internet_connectivity="online" if args.online else "offline",
+                    processor_cache_dir=args.processor_cache_dir,
+                    request_timeout=args.request_timeout,
+                    process_timeout=args.process_timeout,
+                    user_agent=args.user_agent or arelle_defaults.user_agent,
+                    efm_plugin_path=args.efm_plugin_path,
+                    taxonomy_package_paths=tuple(args.taxonomy_packages or ()),
+                    use_catalog_taxonomy_packages=(
+                        not args.no_catalog_taxonomy_packages
+                    ),
+                    run_id=args.run_id,
+                ),
+            )
+        _json(asdict(validation_result))
         return 0
 
     if args.command == "refresh-provider-coverage":

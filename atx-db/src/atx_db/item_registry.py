@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 import csv
-from dataclasses import dataclass
-from datetime import date, datetime
-from collections.abc import Iterable, Mapping, Sequence
-from pathlib import Path
 import re
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass, field
+from datetime import date, datetime
+from pathlib import Path
+from typing import Any, NoReturn
 
 from .connection import DuckDBStore
-
 
 SEED_PATH = Path(__file__).resolve().parent / "seeds" / "fundamental_items.csv"
 
@@ -158,7 +158,11 @@ def _validate_aliases(aliases: tuple[FundamentalItemAlias, ...]) -> None:
         by_lookup.setdefault(lookup_key, []).append(alias)
 
 
-def _row_value(row, field_name: str, index: int):
+def _row_value(
+    row: Mapping[str, object] | Sequence[object],
+    field_name: str,
+    index: int,
+) -> Any:
     if isinstance(row, Mapping):
         return row[field_name]
     return row[index]
@@ -169,6 +173,14 @@ class Registry:
     """Pure in-memory resolver for fundamental item aliases."""
 
     aliases: tuple[FundamentalItemAlias, ...]
+    _by_alias: dict[tuple[str, str], tuple[FundamentalItemAlias, ...]] = field(
+        init=False,
+        repr=False,
+    )
+    _by_canonical: dict[str, tuple[FundamentalItemAlias, ...]] = field(
+        init=False,
+        repr=False,
+    )
 
     def __post_init__(self) -> None:
         _validate_aliases(self.aliases)
@@ -305,7 +317,7 @@ def _none_if_blank(value: str | None) -> str | None:
     return value or None
 
 
-def _fail(seed_path: Path, row_number: int, message: str) -> None:
+def _fail(seed_path: Path, row_number: int, message: str) -> NoReturn:
     raise ValueError(f"{seed_path} row {row_number}: {message}")
 
 
@@ -358,7 +370,7 @@ def _is_expression_vendor_field(value: str) -> bool:
 
 def _validate_raw_row(raw: dict[str, str], *, seed_path: Path, row_number: int) -> None:
     if None in raw:
-        _fail(seed_path, row_number, f"extra CSV fields {raw[None]!r}")
+        _fail(seed_path, row_number, f"extra CSV fields {raw.get(None)!r}")  # type: ignore[call-overload]
 
     missing_columns = [column for column in SEED_COLUMNS if column not in raw]
     if missing_columns:
@@ -515,8 +527,7 @@ def seed_fundamental_item_registry(
         if row.vendor is not None and row.vendor_field is not None
     }
 
-    seed_item_ids = sorted(items)
-    import pyarrow as pa
+    import pyarrow as pa  # type: ignore[import-untyped]
 
     item_columns = (
         "item_id",
@@ -540,24 +551,20 @@ def seed_fundamental_item_registry(
     )
     vendor_columns = ("item_id", "vendor", "vendor_field", "sign_note")
 
-    def _arrow_table(records, columns):
+    def _arrow_table(
+        records: Iterable[Sequence[object]],
+        columns: Sequence[str],
+    ) -> Any:
         if not records:
             return pa.table({column: [] for column in columns})
         return pa.Table.from_pylist([dict(zip(columns, record, strict=True)) for record in records])
 
-    item_frame = _arrow_table(sorted(items.values(), key=lambda values: values[0]), item_columns)
+    item_records = sorted(items.values(), key=lambda values: values[0])
+    item_frame = _arrow_table(item_records, item_columns)
     alias_frame = _arrow_table(sorted(aliases), alias_columns)
     vendor_frame = _arrow_table(sorted(vendor_maps), vendor_columns)
 
     with store.transaction():
-        store.con.execute(
-            "DELETE FROM fundamental_item_alias WHERE item_id = ANY(?)",
-            [seed_item_ids],
-        )
-        store.con.execute(
-            "DELETE FROM fundamental_item_vendor_map WHERE item_id = ANY(?)",
-            [seed_item_ids],
-        )
         store.con.register("_fundamental_item_seed", item_frame)
         store.con.register("_fundamental_item_alias_seed", alias_frame)
         store.con.register("_fundamental_item_vendor_seed", vendor_frame)
@@ -603,6 +610,22 @@ def seed_fundamental_item_registry(
 
             store.con.execute(
                 """
+                UPDATE fundamental_item_alias existing
+                SET coalesce_priority=seed.coalesce_priority,
+                    valid_to=CAST(seed.valid_to AS DATE)
+                FROM _fundamental_item_alias_seed seed
+                WHERE existing.item_id IS NOT DISTINCT FROM seed.item_id
+                  AND existing.alias_scheme IS NOT DISTINCT FROM seed.alias_scheme
+                  AND existing.alias_code IS NOT DISTINCT FROM seed.alias_code
+                  AND existing.valid_from IS NOT DISTINCT FROM CAST(seed.valid_from AS DATE)
+                  AND (
+                      existing.coalesce_priority IS DISTINCT FROM seed.coalesce_priority
+                      OR existing.valid_to IS DISTINCT FROM CAST(seed.valid_to AS DATE)
+                  )
+                """
+            )
+            store.con.execute(
+                """
                 INSERT INTO fundamental_item_alias (
                     item_id,
                     alias_scheme,
@@ -612,16 +635,37 @@ def seed_fundamental_item_registry(
                     valid_to
                 )
                 SELECT
-                    item_id,
-                    alias_scheme,
-                    alias_code,
-                    coalesce_priority,
-                    CAST(valid_from AS DATE),
-                    CAST(valid_to AS DATE)
-                FROM _fundamental_item_alias_seed
+                    seed.item_id,
+                    seed.alias_scheme,
+                    seed.alias_code,
+                    seed.coalesce_priority,
+                    CAST(seed.valid_from AS DATE),
+                    CAST(seed.valid_to AS DATE)
+                FROM _fundamental_item_alias_seed seed
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM fundamental_item_alias existing
+                    WHERE existing.item_id IS NOT DISTINCT FROM seed.item_id
+                      AND existing.alias_scheme IS NOT DISTINCT FROM seed.alias_scheme
+                      AND existing.alias_code IS NOT DISTINCT FROM seed.alias_code
+                      AND existing.coalesce_priority IS NOT DISTINCT FROM seed.coalesce_priority
+                      AND existing.valid_from IS NOT DISTINCT FROM CAST(seed.valid_from AS DATE)
+                      AND existing.valid_to IS NOT DISTINCT FROM CAST(seed.valid_to AS DATE)
+                )
                 """
             )
 
+            store.con.execute(
+                """
+                UPDATE fundamental_item_vendor_map existing
+                SET sign_note=seed.sign_note
+                FROM _fundamental_item_vendor_seed seed
+                WHERE existing.item_id IS NOT DISTINCT FROM seed.item_id
+                  AND existing.vendor IS NOT DISTINCT FROM seed.vendor
+                  AND existing.vendor_field IS NOT DISTINCT FROM seed.vendor_field
+                  AND existing.sign_note IS DISTINCT FROM seed.sign_note
+                """
+            )
             store.con.execute(
                 """
                 INSERT INTO fundamental_item_vendor_map (
@@ -630,8 +674,15 @@ def seed_fundamental_item_registry(
                     vendor_field,
                     sign_note
                 )
-                SELECT item_id, vendor, vendor_field, sign_note
-                FROM _fundamental_item_vendor_seed
+                SELECT seed.item_id,seed.vendor,seed.vendor_field,seed.sign_note
+                FROM _fundamental_item_vendor_seed seed
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM fundamental_item_vendor_map existing
+                    WHERE existing.item_id IS NOT DISTINCT FROM seed.item_id
+                      AND existing.vendor IS NOT DISTINCT FROM seed.vendor
+                      AND existing.vendor_field IS NOT DISTINCT FROM seed.vendor_field
+                )
                 """
             )
         finally:

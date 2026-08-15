@@ -217,12 +217,23 @@ def test_saas_contract_migration_catalogs_public_schemas(tmp_store):
     }
     assert {
         "request_sha256",
+        "query_sha256",
+        "schema_version",
+        "schema_sha256",
+        "logical_content_sha256",
+        "manifest_uri",
+        "manifest_sha256",
         "attempt_count",
         "worker_id",
         "lease_expires_at",
         "next_attempt_at",
         "monthly_byte_limit",
     } <= job_columns
+    schema_hashes = tmp_store.con.execute(
+        "SELECT schema_sha256 FROM api_schema_catalog"
+    ).fetchall()
+    assert schema_hashes
+    assert all(len(row[0]) == 64 for row in schema_hashes)
 
 
 def test_range_query_is_point_in_time_revision_correct_and_end_exclusive(tmp_store):
@@ -537,6 +548,24 @@ def test_durable_batch_job_is_pit_pinned_checksummed_and_entitled(tmp_store, tmp
     assert job["record_count"] == 1
     assert job["attempt_count"] == 1
     assert job["download_url"].endswith(job_id)
+    assert job["manifest_url"].endswith(job_id)
+    assert len(job["query_sha256"]) == 64
+    assert len(job["schema_sha256"]) == 64
+    assert len(job["logical_content_sha256"]) == 64
+    assert len(job["manifest_sha256"]) == 64
+
+    manifest_response = client.get(
+        "/v1/batch.get_manifest", params={"job_id": job_id}, headers=headers
+    )
+    assert manifest_response.status_code == 200
+    assert manifest_response.headers["X-ATX-SHA256"] == hashlib.sha256(
+        manifest_response.content
+    ).hexdigest()
+    served_manifest = manifest_response.json()
+    assert served_manifest["query_sha256"] == job["query_sha256"]
+    assert served_manifest["schema_sha256"] == job["schema_sha256"]
+    assert served_manifest["logical_content_sha256"] == job["logical_content_sha256"]
+    assert served_manifest["schema_definition"]["schema_sha256"] == job["schema_sha256"]
 
     downloaded = client.get("/v1/batch.download", params={"job_id": job_id}, headers=headers)
     assert downloaded.status_code == 200
@@ -549,6 +578,9 @@ def test_durable_batch_job_is_pit_pinned_checksummed_and_entitled(tmp_store, tmp
     assert manifest["request"]["as_of"] is not None
     assert manifest["schema_version"] == "2.0.0"
     assert manifest["sha256"] == job["sha256"]
+    assert hashlib.sha256((artifact.parent / "manifest.json").read_bytes()).hexdigest() == job[
+        "manifest_sha256"
+    ]
 
     with duckdb.connect(str(path), read_only=True) as conn:
         states = conn.execute(
@@ -577,8 +609,21 @@ def test_durable_batch_job_is_pit_pinned_checksummed_and_entitled(tmp_store, tmp
     assert billing[1] is not None
     assert billing[2] == "historical_batch"
     assert job_count == 1
-    assert {"batch.submit_job", "batch.generate", "batch.download"} <= endpoints
+    assert {"batch.submit_job", "batch.generate", "batch.get_manifest", "batch.download"} <= endpoints
     assert last_used_at is not None
+
+    with duckdb.connect(str(path)) as conn:
+        conn.execute(
+            "UPDATE saas_batch_jobs SET expires_at=TIMESTAMP '2000-01-01' WHERE job_id=?",
+            [job_id],
+        )
+    assert client.get("/v1/batch.download", params={"job_id": job_id}, headers=headers).status_code == 410
+    retained_manifest = client.get(
+        "/v1/batch.get_manifest", params={"job_id": job_id}, headers=headers
+    )
+    assert retained_manifest.status_code == 200
+    assert hashlib.sha256(retained_manifest.content).hexdigest() == job["manifest_sha256"]
+
     assert revoke_api_key(path, issued.key_id)
     assert client.get("/v1/batch.list_jobs", headers=headers).status_code == 401
 
@@ -595,6 +640,7 @@ def test_batch_artifact_contract_supports_all_encodings(tmp_store, tmp_path):
         datasets=frozenset({"ATX.US.FUNDAMENTALS"}),
     )
 
+    logical_hashes: set[str] = set()
     for encoding, compression in (
         ("parquet", "zstd"),
         ("arrow", "zstd"),
@@ -627,6 +673,13 @@ def test_batch_artifact_contract_supports_all_encodings(tmp_store, tmp_path):
         artifact = manager.artifact_path(completed)
         assert artifact is not None
         assert _read_batch_values(artifact, encoding, compression) == [110.0]
+        assert completed.logical_content_sha256 is not None
+        logical_hashes.add(completed.logical_content_sha256)
+        manifest_path = manager.manifest_path(completed)
+        assert manifest_path is not None
+        assert hashlib.sha256(manifest_path.read_bytes()).hexdigest() == completed.manifest_sha256
+
+    assert len(logical_hashes) == 1
 
 
 def test_rate_and_monthly_byte_limits_return_explicit_429(tmp_store, tmp_path):

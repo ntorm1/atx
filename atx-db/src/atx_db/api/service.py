@@ -12,7 +12,7 @@ from typing import Any
 import duckdb
 import pyarrow as pa  # type: ignore[import-untyped]
 
-from ..connection import DEFAULT_DB_PATH
+from ..connection import DEFAULT_DB_PATH, open_duckdb_connection
 from .catalog import DATASETS, RecordSchema, get_dataset, get_schema, public_catalog, public_schema
 from .models import BatchRangeRequest, RangeRequest, SymbologyRequest, SymbolType
 
@@ -131,7 +131,7 @@ class WarehouseReadService:
         self.database_path = Path(database_path)
 
     def _connect(self) -> duckdb.DuckDBPyConnection:
-        return duckdb.connect(str(self.database_path), read_only=True)
+        return open_duckdb_connection(self.database_path, read_only=True)
 
     def list_datasets(self) -> list[dict[str, object]]:
         return public_catalog()

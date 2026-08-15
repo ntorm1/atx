@@ -920,9 +920,10 @@ def refresh_standardized_set_based(
 ) -> SetBasedStandardizationOutcome:
     """Materialize all standardized revisions without moving the fact set into Python."""
 
-    item_count = _count(store, "fundamental_item")
-    if item_count == 0:
-        seed_fundamental_item_registry(store)
+    # The committed registry is authoritative even for an already-populated warehouse.
+    # Reseeding is idempotent and prevents additive canonical items/aliases from remaining
+    # absent until an operator manually empties the table.
+    seed_fundamental_item_registry(store)
 
     active_rules = tuple(rule for rule in rules if rule.is_active)
     symbols = tuple(sorted({str(value).strip().upper() for value in options.symbols or () if str(value).strip()}))

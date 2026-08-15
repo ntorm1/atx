@@ -13,7 +13,7 @@ from .warehouse import quality_check
 
 SOURCE_NAME = "fundamental_reconciliation_v1"
 DQC_0004_URL = "https://xbrl.us/data-rule/dqc_0004/"
-SEC_XBRL_GUIDE_URL = "https://www.sec.gov/files/edgar/filer-information/specifications/xbrl-guide-2026-01-16.pdf"
+SEC_XBRL_GUIDE_URL = "https://www.sec.gov/files/edgar/filer-information/specifications/xbrl-guide-2026-06-29.pdf"
 
 
 @dataclass(frozen=True)
@@ -67,6 +67,23 @@ def _fetch_count_watermark(
     if row is None:
         raise RuntimeError("reconciliation serving parity query returned no row")
     return int(row[0]), row[1]
+
+
+def _fetch_published_state(
+    store: DuckDBStore,
+) -> tuple[int, dt.datetime | None, int | None]:
+    row = store.con.execute(
+        """
+        SELECT
+            count(*),
+            max(available_at),
+            bit_xor(hash(to_json(reconciliation_row)))
+        FROM fundamental_reconciliation_serving reconciliation_row
+        """
+    ).fetchone()
+    if row is None:
+        raise RuntimeError("reconciliation published-state query returned no row")
+    return int(row[0]), row[1], None if row[2] is None else int(row[2])
 
 
 def _duration_rules(
@@ -399,24 +416,56 @@ def refresh_fundamental_reconciliation_serving(
             FROM fundamental_reconciliation_serving_next
             """,
         )
+        _, input_max_source_loaded_at = _fetch_count_watermark(
+            store,
+            """
+            SELECT count(*),max(input_watermark)
+            FROM (
+                SELECT max(source_loaded_at) AS input_watermark
+                FROM fundamental_standardized
+                UNION ALL
+                SELECT max(source_loaded_at) FROM entity_industry_template
+                UNION ALL
+                SELECT max(source_loaded_at) FROM xbrl_filing_contexts
+                UNION ALL
+                SELECT max(source_loaded_at) FROM xbrl_filing_facts
+                UNION ALL
+                SELECT max(source_loaded_at) FROM fundamental_extension_concept_map
+            )
+            """,
+        )
         with store.transaction():
-            if symbols:
-                store.con.execute(
-                    """
-                    DELETE FROM fundamental_reconciliation_serving
-                    WHERE security_id IN (
-                        SELECT security_id FROM fundamental_reconciliation_security_scope
-                    )
-                    """
-                )
-            else:
-                store.con.execute("DELETE FROM fundamental_reconciliation_serving")
             store.con.execute(
                 """
-                INSERT INTO fundamental_reconciliation_serving
+                INSERT OR REPLACE INTO fundamental_reconciliation_serving
                 SELECT * FROM fundamental_reconciliation_serving_next
                 """
             )
+            if symbols:
+                store.con.execute(
+                    """
+                    DELETE FROM fundamental_reconciliation_serving current_row
+                    WHERE current_row.security_id IN (
+                        SELECT security_id FROM fundamental_reconciliation_security_scope
+                    )
+                      AND NOT EXISTS (
+                        SELECT 1
+                        FROM fundamental_reconciliation_serving_next next_row
+                        WHERE next_row.reconciliation_id=current_row.reconciliation_id
+                      )
+                    """
+                )
+            else:
+                store.con.execute(
+                    """
+                    DELETE FROM fundamental_reconciliation_serving current_row
+                    WHERE NOT EXISTS (
+                        SELECT 1
+                        FROM fundamental_reconciliation_serving_next next_row
+                        WHERE next_row.reconciliation_id=current_row.reconciliation_id
+                    )
+                    """
+                )
             if symbols:
                 serving_row_count, serving_max_available_at = _fetch_count_watermark(
                     store,
@@ -445,11 +494,19 @@ def refresh_fundamental_reconciliation_serving(
                     f"source=({source_row_count},{source_max_available_at}) "
                     f"serving=({serving_row_count},{serving_max_available_at})"
                 )
+            (
+                published_row_count,
+                published_max_available_at,
+                published_content_hash,
+            ) = _fetch_published_state(store)
             store.con.execute(
                 """
                 UPDATE fundamental_reconciliation_builds
                 SET status='completed',source_row_count=?,serving_row_count=?,
                     source_max_available_at=?,serving_max_available_at=?,
+                    is_full_refresh=?,published_row_count=?,
+                    published_max_available_at=?,published_content_hash=?,
+                    input_max_source_loaded_at=?,
                     completed_at=now(),source_loaded_at=now()
                 WHERE build_id=?
                 """,
@@ -458,6 +515,11 @@ def refresh_fundamental_reconciliation_serving(
                     serving_row_count,
                     source_max_available_at,
                     serving_max_available_at,
+                    not symbols,
+                    published_row_count,
+                    published_max_available_at,
+                    published_content_hash,
+                    input_max_source_loaded_at,
                     build_id,
                 ],
             )

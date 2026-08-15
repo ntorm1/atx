@@ -1,9 +1,9 @@
-"""S10a: consolidated inline-XBRL canonical-metric extraction.
+"""Consolidated SEC filing-instance XBRL canonical-metric extraction.
 
 The narrow SEC companyfacts feed this warehouse caches carries only ~16 concepts, so
 balance-sheet detail (current assets/liabilities, cash, inventory, ...) needed for
 liquidity/solvency ratios is absent from ``fundamental_statement_points``. That detail
-*is* present in the already-cached inline-XBRL facts (``xbrl_filing_facts``), which hold
+*is* present in cached inline or legacy XBRL facts (``xbrl_filing_facts``), which hold
 ~1,000 distinct us-gaap numeric concepts. This module turns the consolidated subset of
 those facts into canonical metric rows the ratio engine can consume — entirely offline,
 no network.
@@ -17,10 +17,12 @@ The math-free :func:`normalize_xbrl_metric_rows` is a pure transform (concept ma
 restatement-vintage flagging, id hashing) tested without DuckDB; :func:`refresh_fundamental_xbrl_metrics`
 just feeds it the consolidated candidate facts pulled from the warehouse.
 """
+
 from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
+from typing import Any
 
 import pandas as pd
 
@@ -29,11 +31,11 @@ from .dataset import Dataset, DatasetLoadResult
 from .fundamental_statements import (
     CONCEPT_MAP_SUPPORTED_TAXONOMIES,
     FUNDAMENTAL_STATEMENT_MAP_ROWS,
+    FundamentalStatementMapRow,
 )
 from .warehouse import insert_frame, quality_check
 
-
-SOURCE_NAME = "Consolidated inline-XBRL canonical metrics"
+SOURCE_NAME = "Consolidated SEC filing XBRL canonical metrics"
 DEFAULT_SOURCE = "sec_inline_xbrl_v1"
 
 # us-gaap concept local name -> warehouse canonical metric. S10a covers the instant
@@ -81,7 +83,7 @@ DURATION_CONCEPT_MAP = {
 _RATIO_COMPAT_METRIC_OVERRIDES = {**INSTANT_CONCEPT_MAP, **DURATION_CONCEPT_MAP}
 
 
-def _is_loadable_statement_map_row(row, period_type: str) -> bool:
+def _is_loadable_statement_map_row(row: FundamentalStatementMapRow, period_type: str) -> bool:
     return (
         row.taxonomy in CONCEPT_MAP_SUPPORTED_TAXONOMIES
         and row.period_type == period_type
@@ -95,11 +97,7 @@ def _companyfacts_concept_map(period_type: str) -> dict[str, str]:
     """Build the broad companyfacts concept map from the S3 statement projection."""
 
     rows = sorted(
-        (
-            row
-            for row in FUNDAMENTAL_STATEMENT_MAP_ROWS
-            if _is_loadable_statement_map_row(row, period_type)
-        ),
+        (row for row in FUNDAMENTAL_STATEMENT_MAP_ROWS if _is_loadable_statement_map_row(row, period_type)),
         key=lambda row: (
             0 if row.industry_template == "ALL" else 1,
             row.concept_priority,
@@ -138,10 +136,28 @@ ANNUAL_MIN_DAYS = 350
 ANNUAL_MAX_DAYS = 380
 
 XBRL_METRIC_COLUMNS = [
-    "metric_id", "source", "security_id", "symbol", "cik", "canonical_metric",
-    "concept", "taxonomy", "unit", "period_type", "period_start", "period_end",
-    "fiscal_year", "fiscal_period", "accession_number", "value", "raw_value",
-    "revision_seq", "is_latest_revision", "as_of_date", "available_at", "run_id",
+    "metric_id",
+    "source",
+    "security_id",
+    "symbol",
+    "cik",
+    "canonical_metric",
+    "concept",
+    "taxonomy",
+    "unit",
+    "period_type",
+    "period_start",
+    "period_end",
+    "fiscal_year",
+    "fiscal_period",
+    "accession_number",
+    "value",
+    "raw_value",
+    "revision_seq",
+    "is_latest_revision",
+    "as_of_date",
+    "available_at",
+    "run_id",
 ]
 
 
@@ -152,7 +168,14 @@ class FundamentalXbrlMetricOptions:
     run_id: str | None = None
 
 
-def _metric_id(source: str, security_id, canonical_metric: str, period_start, period_end, accession_number) -> str:
+def _metric_id(
+    source: str,
+    security_id: Any,
+    canonical_metric: str,
+    period_start: Any,
+    period_end: Any,
+    accession_number: Any,
+) -> str:
     payload = "|".join(
         "" if (p is None or (not isinstance(p, str) and pd.isna(p))) else str(p)
         for p in (source, security_id, canonical_metric, period_start, period_end, accession_number)
@@ -197,18 +220,22 @@ def normalize_xbrl_metric_rows(
     # is part of the key so instants (start NULL) and distinct duration windows stay apart.
     out["__ps"] = out["period_start"].astype("string").fillna("")
     natkey = ["security_id", "canonical_metric", "__ps", "period_end", "accession_number"]
-    out = out.sort_values(natkey + ["available_at", "value"]).drop_duplicates(natkey, keep="last")
+    out = out.sort_values([*natkey, "available_at", "value"]).drop_duplicates(natkey, keep="last")
 
     # Vintages across filings.
     key = ["security_id", "canonical_metric", "__ps", "period_end"]
-    out = out.sort_values(key + ["available_at", "accession_number"]).reset_index(drop=True)
+    out = out.sort_values([*key, "available_at", "accession_number"]).reset_index(drop=True)
     out["revision_seq"] = out.groupby(key).cumcount()
     out["is_latest_revision"] = ~out.duplicated(key, keep="last")
     out["metric_id"] = [
         _metric_id(source, sid, cm, ps, pe, acc)
         for sid, cm, ps, pe, acc in zip(
-            out["security_id"], out["canonical_metric"], out["period_start"],
-            out["period_end"], out["accession_number"]
+            out["security_id"],
+            out["canonical_metric"],
+            out["period_start"],
+            out["period_end"],
+            out["accession_number"],
+            strict=True,
         )
     ]
     return out[XBRL_METRIC_COLUMNS]
@@ -337,26 +364,22 @@ _COMPANYFACTS_DURATION_SQL = """
 """
 
 
-def _symbol_clause(symbols: tuple[str, ...] | None) -> tuple[str, list]:
+def _symbol_clause(symbols: tuple[str, ...] | None) -> tuple[str, list[object]]:
     if not symbols:
         return "", []
     sym_ph = ", ".join(["?"] * len(symbols))
     return f"AND s.primary_symbol IN ({sym_ph})", [s.strip().upper() for s in symbols]
 
 
-def _fetch_consolidated_candidates(
-    store: DuckDBStore, symbols: tuple[str, ...] | None
-) -> pd.DataFrame:
+def _fetch_consolidated_candidates(store: DuckDBStore, symbols: tuple[str, ...] | None) -> pd.DataFrame:
     symbol_pred, sym_params = _symbol_clause(symbols)
     frames = []
-    if INSTANT_CONCEPT_MAP:
-        concepts = tuple(INSTANT_CONCEPT_MAP)
-        sql = _INSTANT_SQL.format(
-            placeholders=", ".join(["?"] * len(concepts)), symbol_pred=symbol_pred
-        )
+    if COMPANYFACTS_INSTANT_CONCEPT_MAP:
+        concepts = tuple(COMPANYFACTS_INSTANT_CONCEPT_MAP)
+        sql = _INSTANT_SQL.format(placeholders=", ".join(["?"] * len(concepts)), symbol_pred=symbol_pred)
         frames.append(store.con.execute(sql, list(concepts) + sym_params).df())
-    if DURATION_CONCEPT_MAP:
-        concepts = tuple(DURATION_CONCEPT_MAP)
+    if COMPANYFACTS_DURATION_CONCEPT_MAP:
+        concepts = tuple(COMPANYFACTS_DURATION_CONCEPT_MAP)
         sql = _DURATION_SQL.format(
             placeholders=", ".join(["?"] * len(concepts)),
             symbol_pred=symbol_pred,
@@ -372,9 +395,7 @@ def _fetch_consolidated_candidates(
     return pd.concat(frames, ignore_index=True)
 
 
-def _fetch_companyfacts_candidates(
-    store: DuckDBStore, symbols: tuple[str, ...] | None
-) -> pd.DataFrame:
+def _fetch_companyfacts_candidates(store: DuckDBStore, symbols: tuple[str, ...] | None) -> pd.DataFrame:
     """Pull broad S3 canonical concepts from the SEC companyfacts feed."""
     symbol_pred, sym_params = _symbol_clause(symbols)
     frames = []
@@ -404,15 +425,31 @@ def _fetch_companyfacts_candidates(
 
 
 def refresh_fundamental_xbrl_metrics(store: DuckDBStore, options: FundamentalXbrlMetricOptions) -> int:
-    """Extract consolidated inline-XBRL canonical metrics and replace the source's rows."""
+    """Extract consolidated filing-instance XBRL metrics and replace the requested scope."""
     store.initialize()
     candidates = _fetch_consolidated_candidates(store, options.symbols)
     rows = normalize_xbrl_metric_rows(candidates, source=options.source, run_id=options.run_id)
     with store.transaction():
-        store.con.execute("DELETE FROM fundamental_xbrl_metric WHERE source = ?", [options.source])
+        if options.symbols:
+            symbols = [symbol.strip().upper() for symbol in options.symbols]
+            placeholders = ", ".join(["?"] * len(symbols))
+            store.con.execute(
+                f"""
+                DELETE FROM fundamental_xbrl_metric
+                WHERE source = ?
+                  AND security_id IN (
+                      SELECT security_id
+                      FROM securities
+                      WHERE upper(primary_symbol) IN ({placeholders})
+                  )
+                """,
+                [options.source, *symbols],
+            )
+        else:
+            store.con.execute("DELETE FROM fundamental_xbrl_metric WHERE source = ?", [options.source])
         if not rows.empty:
             insert_frame(store, rows, "fundamental_xbrl_metric", "fundamental_xbrl_metric_insert")
-    return int(len(rows))
+    return len(rows)
 
 
 class FundamentalXbrlMetricDataset(Dataset):

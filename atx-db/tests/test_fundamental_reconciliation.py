@@ -295,6 +295,8 @@ def test_reconciliation_quality_checks_are_registered_and_pass_on_empty_view(
         dataset_ids=("fundamental_reconciliation",),
     )
     assert {result.check_name for result in results} == {
+        "fundamental_reconciliation_serving_manifest_parity",
+        "fundamental_reconciliation_serving_freshness",
         "duplicate_fundamental_reconciliation_events",
         "bad_fundamental_reconciliation_rows",
         "bad_latest_fundamental_reconciliation_chains",
@@ -302,6 +304,71 @@ def test_reconciliation_quality_checks_are_registered_and_pass_on_empty_view(
         "fundamental_reconciliation_context_verification_rate",
     }
     assert {result.status for result in results} == {"passed"}
+
+
+def test_reconciliation_serving_quality_detects_tampering_and_stale_inputs(
+    tmp_store: DuckDBStore,
+) -> None:
+    _seed_balance_sheet_revisions(tmp_store)
+    refresh_fundamental_reconciliation_serving(
+        tmp_store,
+        FundamentalReconciliationRefreshOptions(run_id="fixture-quality-refresh"),
+    )
+    check_names = (
+        "fundamental_reconciliation_serving_manifest_parity",
+        "fundamental_reconciliation_serving_freshness",
+    )
+    baseline = run_warehouse_quality_checks(
+        tmp_store,
+        record=False,
+        check_names=check_names,
+    )
+    assert {result.check_name: result.status for result in baseline} == {
+        "fundamental_reconciliation_serving_manifest_parity": "passed",
+        "fundamental_reconciliation_serving_freshness": "passed",
+    }
+
+    tmp_store.con.execute(
+        """
+        UPDATE fundamental_reconciliation_serving
+        SET label='tampered serving row'
+        WHERE reconciliation_id=(
+            SELECT reconciliation_id
+            FROM fundamental_reconciliation_serving
+            LIMIT 1
+        )
+        """
+    )
+    tampered = run_warehouse_quality_checks(
+        tmp_store,
+        record=False,
+        check_names=("fundamental_reconciliation_serving_manifest_parity",),
+    )
+    assert tampered[0].status == "failed"
+
+    refresh_fundamental_reconciliation_serving(
+        tmp_store,
+        FundamentalReconciliationRefreshOptions(run_id="fixture-quality-repair"),
+    )
+    tmp_store.con.execute(
+        """
+        UPDATE fundamental_standardized
+        SET source_loaded_at=(
+            SELECT input_max_source_loaded_at + INTERVAL '1 day'
+            FROM fundamental_reconciliation_builds
+            WHERE status='completed' AND is_full_refresh
+            ORDER BY completed_at DESC
+            LIMIT 1
+        )
+        WHERE standardized_id='assets-original'
+        """
+    )
+    stale = run_warehouse_quality_checks(
+        tmp_store,
+        record=False,
+        check_names=("fundamental_reconciliation_serving_freshness",),
+    )
+    assert stale[0].status == "failed"
 
 
 def test_verified_same_context_mismatch_is_a_hard_failure(tmp_store: DuckDBStore) -> None:
@@ -535,7 +602,7 @@ def test_symbol_scoped_reconciliation_refresh_replaces_only_requested_security(
 
 def test_reconciliation_serving_migration_publishes_schema_v1_2(tmp_store: DuckDBStore) -> None:
     assert tmp_store.con.execute(
-        "SELECT count(*) FROM schema_migrations WHERE CAST(version AS INTEGER)=277"
+        "SELECT count(*) FROM schema_migrations WHERE CAST(version AS INTEGER)=278"
     ).fetchone() == (1,)
     assert "is_required" in {
         row[1] for row in tmp_store.con.execute("PRAGMA table_info('fundamental_reconciliation_rule_term')").fetchall()
@@ -563,3 +630,10 @@ def test_reconciliation_serving_migration_publishes_schema_v1_2(tmp_store: DuckD
           AND schema_version='1.2.0'
         """
     ).fetchone() == ("fundamental_reconciliation_serving",)
+    assert {
+        "is_full_refresh",
+        "published_row_count",
+        "published_max_available_at",
+        "published_content_hash",
+        "input_max_source_loaded_at",
+    } <= {row[1] for row in tmp_store.con.execute("PRAGMA table_info('fundamental_reconciliation_builds')").fetchall()}

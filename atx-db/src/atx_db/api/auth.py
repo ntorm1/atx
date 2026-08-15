@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
-import duckdb
+from ..connection import open_duckdb_connection
 
 API_KEYS_ENV = "ATX_DB_API_KEYS_JSON"
 
@@ -108,7 +108,7 @@ class DuckDBApiKeyAuthenticator:
 
     def authenticate(self, api_key: str) -> ApiPrincipal | None:
         digest = hashlib.sha256(api_key.encode("utf-8")).hexdigest()
-        with duckdb.connect(str(self.database_path)) as conn:
+        with open_duckdb_connection(self.database_path) as conn:
             rows = conn.execute(
                 """
                 SELECT k.key_id,k.account_id,k.secret_digest,k.digest_algorithm,k.scopes_json

@@ -12,7 +12,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Protocol
 
-import duckdb
+from ..connection import open_duckdb_connection
 
 
 def _utc_now() -> dt.datetime:
@@ -94,7 +94,7 @@ class DuckDBPricingCatalog:
         self.database_path = Path(database_path)
 
     def get(self, dataset: str, schema: str, *, mode: str = "historical") -> UnitPrice | None:
-        with duckdb.connect(str(self.database_path), read_only=True) as conn:
+        with open_duckdb_connection(self.database_path, read_only=True) as conn:
             row = conn.execute(
                 """
                 SELECT dataset_id,schema_code,mode,currency,billing_unit,
@@ -111,7 +111,7 @@ class DuckDBPricingCatalog:
     def list(self, *, dataset: str | None = None) -> list[UnitPrice]:
         condition = "true" if dataset is None else "dataset_id = ?"
         parameters: list[object] = [] if dataset is None else [dataset]
-        with duckdb.connect(str(self.database_path), read_only=True) as conn:
+        with open_duckdb_connection(self.database_path, read_only=True) as conn:
             rows = conn.execute(
                 f"""
                 SELECT dataset_id,schema_code,mode,currency,billing_unit,
@@ -317,7 +317,7 @@ class DuckDBIdempotencyStore:
     ) -> IdempotencyRecord | None:
         now = _utc_now()
         expires_at = now + ttl
-        with self._lock, duckdb.connect(str(self.database_path)) as conn:
+        with self._lock, open_duckdb_connection(self.database_path) as conn:
             conn.execute(
                 """
                 DELETE FROM saas_idempotency_records
@@ -360,7 +360,7 @@ class DuckDBIdempotencyStore:
         response_status: int,
         response: Mapping[str, object],
     ) -> None:
-        with self._lock, duckdb.connect(str(self.database_path)) as conn:
+        with self._lock, open_duckdb_connection(self.database_path) as conn:
             conn.execute(
                 """
                 UPDATE saas_idempotency_records
@@ -380,7 +380,7 @@ class DuckDBIdempotencyStore:
             )
 
     def abort(self, account_id: str, endpoint: str, key: str) -> None:
-        with self._lock, duckdb.connect(str(self.database_path)) as conn:
+        with self._lock, open_duckdb_connection(self.database_path) as conn:
             conn.execute(
                 """
                 DELETE FROM saas_idempotency_records

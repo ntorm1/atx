@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import contextlib
 import os
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterator
 
 import duckdb
-
 
 DB_PATH_ENV = "ATX_DB_PATH"
 DATA_DIR_ENV = "ATX_DB_DATA_DIR"
@@ -45,6 +44,18 @@ def resolve_default_db_path() -> Path:
 DEFAULT_DB_PATH = resolve_default_db_path()
 
 
+def open_duckdb_connection(
+    path: Path | str,
+    *,
+    read_only: bool = False,
+) -> duckdb.DuckDBPyConnection:
+    """Open a raw DuckDB connection with the warehouse-wide UTC clock contract."""
+
+    con = duckdb.connect(str(path), read_only=read_only)
+    con.execute("SET TimeZone='UTC'")
+    return con
+
+
 class DuckDBStore:
     """Persistence boundary used by ATX dataset loaders and read paths."""
 
@@ -54,17 +65,17 @@ class DuckDBStore:
         self.connection: duckdb.DuckDBPyConnection | None = None
         self._initialized = False
 
-    def __enter__(self) -> "DuckDBStore":
+    def __enter__(self) -> DuckDBStore:
         if not self.read_only:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.connection = duckdb.connect(str(self.path), read_only=self.read_only)
+        self.connection = open_duckdb_connection(self.path, read_only=self.read_only)
         self._configure_session(self.connection)
         if not self.read_only:
             self.initialize()
         return self
 
     def _configure_session(self, con: duckdb.DuckDBPyConnection) -> None:
-        """Point DuckDB's spill directory at an absolute path beside the DB file.
+        """Use UTC semantics and an absolute spill directory beside the DB file.
 
         DuckDB's default temp_directory is derived from the (possibly relative) DB
         path and resolves to an invalid location on Windows (e.g. ``\\.tmp``), so any
@@ -72,13 +83,12 @@ class DuckDBStore:
         over the widened universe (millions of rows) hit this; an explicit absolute
         temp directory keeps them robust. Best-effort: never fail open over a setting.
         """
+        con.execute("SET TimeZone='UTC'")
         if str(self.path) == ":memory:":
             return
         temp_dir = (self.path.resolve().parent / f".{self.path.name}.duckdb_tmp").as_posix()
-        try:
+        with contextlib.suppress(Exception):
             con.execute("SET temp_directory = ?", [temp_dir])
-        except Exception:
-            pass
 
     def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
         if self.connection is not None:

@@ -1,21 +1,30 @@
 from __future__ import annotations
 
 import datetime as dt
+import threading
+import time
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any
 
+import duckdb
 import pandas as pd
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from .connection import DuckDBStore
 from .dataset import Dataset, DatasetLoadResult
 from .warehouse import cik_security_id, insert_frame, quality_check, record_source_file, symbol_key
 
-
 SEC_COMPANY_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 SEC_USER_AGENT = "atx-db security master nathan.tormaschy@gmail.com"
 SECURITY_MASTER_SOURCE = "SEC company_tickers"
 ENTITY_IDENTIFIER_TYPE = "ENTITY_ID"
+SEC_REQUEST_INTERVAL_SECONDS = 0.11
+SEC_RETRY_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
+_SEC_REQUEST_LOCK = threading.Lock()
+_SEC_NEXT_REQUEST_AT = 0.0
 
 
 @dataclass(frozen=True)
@@ -24,6 +33,23 @@ class SecurityMasterOptions:
     request_timeout: int = 60
     user_agent: str = SEC_USER_AGENT
     run_id: str | None = None
+
+
+def _wait_for_sec_request_slot() -> None:
+    global _SEC_NEXT_REQUEST_AT
+    with _SEC_REQUEST_LOCK:
+        current = time.monotonic()
+        delay = max(0.0, _SEC_NEXT_REQUEST_AT - current)
+        if delay:
+            time.sleep(delay)
+            current = time.monotonic()
+        _SEC_NEXT_REQUEST_AT = max(current, _SEC_NEXT_REQUEST_AT) + SEC_REQUEST_INTERVAL_SECONDS
+
+
+class _SecRateLimitedAdapter(HTTPAdapter):
+    def send(self, request, **kwargs):  # type: ignore[no-untyped-def,override]
+        _wait_for_sec_request_slot()
+        return super().send(request, **kwargs)
 
 
 def sec_session(user_agent: str) -> requests.Session:
@@ -35,6 +61,20 @@ def sec_session(user_agent: str) -> requests.Session:
             "Accept-Encoding": "gzip, deflate",
         }
     )
+    retry = Retry(
+        total=5,
+        connect=5,
+        read=5,
+        status=5,
+        allowed_methods=frozenset({"GET", "HEAD"}),
+        status_forcelist=SEC_RETRY_STATUS_CODES,
+        backoff_factor=0.5,
+        respect_retry_after_header=True,
+        raise_on_status=False,
+    )
+    adapter = _SecRateLimitedAdapter(max_retries=retry)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
     return session
 
 
@@ -360,7 +400,7 @@ def dedupe_open_identifier_intervals(frame: pd.DataFrame) -> pd.DataFrame:
     return pd.concat([open_rows, closed], ignore_index=True)
 
 
-def collapse_identifier_history_open_duplicates(conn) -> int:
+def collapse_identifier_history_open_duplicates(conn: duckdb.DuckDBPyConnection) -> int:
     """One-time repair: collapse redundant open-ended identifier intervals.
 
     For each ``(security_id, id_type, id_value, source)`` among rows with
@@ -368,7 +408,10 @@ def collapse_identifier_history_open_duplicates(conn) -> int:
     row and delete the rest. Closed intervals are never touched. Returns the
     number of rows removed. Safe to run repeatedly (idempotent once collapsed).
     """
-    before = conn.execute("SELECT count(*) FROM security_identifier_history").fetchone()[0]
+    before_row = conn.execute("SELECT count(*) FROM security_identifier_history").fetchone()
+    if before_row is None:
+        raise RuntimeError("security identifier count before duplicate collapse returned no row")
+    before = int(before_row[0])
     conn.execute(
         """
         DELETE FROM security_identifier_history
@@ -386,8 +429,10 @@ def collapse_identifier_history_open_duplicates(conn) -> int:
         )
         """
     )
-    after = conn.execute("SELECT count(*) FROM security_identifier_history").fetchone()[0]
-    return int(before - after)
+    after_row = conn.execute("SELECT count(*) FROM security_identifier_history").fetchone()
+    if after_row is None:
+        raise RuntimeError("security identifier count after duplicate collapse returned no row")
+    return before - int(after_row[0])
 
 
 def upsert_security_master_from_frame(
@@ -401,7 +446,7 @@ def upsert_security_master_from_frame(
         return
     frame = ensure_security_frame_entity_ids(frame)
     today = dt.date.today()
-    available_at = pd.Timestamp.utcnow().tz_localize(None)
+    available_at = pd.Timestamp.now(tz="UTC").tz_localize(None)
     securities = pd.DataFrame(
         {
             "security_id": frame["security_id"],
@@ -512,7 +557,7 @@ def upsert_security_master_from_frame(
             "valid_from": today,
             "valid_to": pd.NaT,
             "as_of_date": today,
-            "available_at": pd.Timestamp.utcnow().tz_localize(None),
+            "available_at": pd.Timestamp.now(tz="UTC").tz_localize(None),
             "source": source,
             "run_id": run_id,
         }
@@ -629,10 +674,8 @@ def upsert_security_master_from_frame(
             insert_frame(store, listings, "exchange_listings", "listings_insert")
     finally:
         for relation in ("security_master_load", "securities_load", "identifiers_load", "listings_load"):
-            try:
+            with suppress(Exception):
                 store.con.unregister(relation)
-            except Exception:
-                pass
 
 
 class SecurityMasterDataset(Dataset):
@@ -665,8 +708,9 @@ class SecurityMasterDataset(Dataset):
         )
         return DatasetLoadResult(
             dataset_id=self.dataset_id,
-            rows_loaded=int(len(frame)),
+            rows_loaded=len(frame),
             source=options.source_url,
+            run_id=options.run_id,
             details={
                 "symbols": int(frame["ticker"].nunique()),
                 "ciks": int(frame["cik"].nunique()),

@@ -7,6 +7,8 @@ expression.  This is both the public contract and the query allow-list.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 from typing import Final
 
@@ -566,7 +568,7 @@ def public_catalog() -> list[dict[str, object]]:
     ]
 
 
-def public_schema(schema: RecordSchema) -> dict[str, object]:
+def _public_schema_contract(schema: RecordSchema) -> dict[str, object]:
     return {
         "dataset": schema.dataset,
         "schema": schema.code,
@@ -589,3 +591,20 @@ def public_schema(schema: RecordSchema) -> dict[str, object]:
             for field in schema.fields
         ],
     }
+
+
+def _record_schema_sha256(schema: RecordSchema) -> str:
+    """Hash the complete customer-visible record contract deterministically."""
+
+    payload = json.dumps(
+        _public_schema_contract(schema),
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def public_schema(schema: RecordSchema) -> dict[str, object]:
+    payload = _public_schema_contract(schema)
+    payload["schema_sha256"] = _record_schema_sha256(schema)
+    return payload

@@ -100,6 +100,15 @@ def test_standardization_rule_seed_covers_template_items():
     total_debt = next(rule for rule in rules if rule.rule_id == "std_instant_1208")
     assert total_debt.combination_rule == "sum"
     assert total_debt.source_item_ids == (1205, 1207)
+    temporary_equity = next(rule for rule in rules if rule.rule_id == "std_instant_1224")
+    assert [alias.alias_code for alias in temporary_equity.source_aliases] == [
+        "TemporaryEquityCarryingAmountIncludingPortionAttributableToNoncontrollingInterests",
+        "RedeemableNoncontrollingInterestEquityCarryingAmount",
+        "TemporaryEquityCarryingAmount",
+        "RedeemablePreferredStockCarryingAmount",
+        "TemporaryEquityRedemptionValue",
+        "RedeemableNoncontrollingInterestEquityPreferredCarryingAmount",
+    ]
     net_debt_issuance = next(rule for rule in rules if rule.rule_id == "std_quarterly_1315")
     assert net_debt_issuance.combination_rule == "sum"
     assert net_debt_issuance.source_item_ids == (1313, 1314)
@@ -388,14 +397,17 @@ def test_set_based_refresh_retains_revisions_classifies_quarters_and_writes_mani
     ).fetchone()
     assert quarterly == (25.0, "std_quarterly_1001", "USD", "monetary")
     assert tmp_store.con.execute("SELECT count(*) FROM fundamental_item").fetchone()[0] == 235
-    assert tmp_store.con.execute(
-        """
+    assert (
+        tmp_store.con.execute(
+            """
         SELECT template_item_count
         FROM v_fundamental_standardization_coverage
         WHERE security_id=? AND basis='quarterly'
         """,
-        [sid],
-    ).fetchone()[0] == 130.0
+            [sid],
+        ).fetchone()[0]
+        == 130.0
+    )
     manifest = tmp_store.con.execute(
         """
         SELECT status,rule_count,input_row_count,standardized_row_count,

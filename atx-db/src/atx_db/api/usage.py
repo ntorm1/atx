@@ -9,7 +9,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Protocol
 
-import duckdb
+from ..connection import open_duckdb_connection
 
 
 @dataclass(frozen=True)
@@ -68,7 +68,7 @@ class DuckDBUsageLedger:
         self._lock = threading.Lock()
 
     def record(self, event: UsageEvent) -> None:
-        with self._lock, duckdb.connect(str(self.database_path)) as conn:
+        with self._lock, open_duckdb_connection(self.database_path) as conn:
             conn.execute(
                 """
                 INSERT INTO saas_usage_events (
@@ -104,7 +104,7 @@ class DuckDBUsageLedger:
             )
 
     def billable_bytes_since(self, account_id: str, dataset: str, since: dt.datetime) -> int:
-        with self._lock, duckdb.connect(str(self.database_path), read_only=True) as conn:
+        with self._lock, open_duckdb_connection(self.database_path, read_only=True) as conn:
             row = conn.execute(
                 """
                 SELECT coalesce(sum(billable_bytes), 0)

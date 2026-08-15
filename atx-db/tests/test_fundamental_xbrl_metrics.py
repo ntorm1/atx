@@ -1,4 +1,4 @@
-"""Tests for S10a consolidated inline-XBRL metric extraction (`fundamental_xbrl_metric`).
+"""Tests for consolidated filing-instance XBRL metric extraction (`fundamental_xbrl_metric`).
 
 The extractor pulls entity-level (non-segment) us-gaap facts out of the already-cached
 `xbrl_filing_facts` and turns them into canonical metric rows that the ratio engine can
@@ -6,13 +6,14 @@ consume — unlocking liquidity/solvency ratios that the narrow companyfacts fee
 carried. The math-free normalize step is a pure transform tested here without DuckDB;
 the DB refresh just feeds it the consolidated candidate facts.
 """
+
 from __future__ import annotations
 
 import datetime as dt
 
 import pandas as pd
-import pytest
 
+from atx_db.fundamental_statements import CONCEPT_MAP_SUPPORTED_TAXONOMIES, FUNDAMENTAL_STATEMENT_MAP_ROWS
 from atx_db.fundamental_xbrl_metrics import (
     COMPANYFACTS_DURATION_CONCEPT_MAP,
     COMPANYFACTS_INSTANT_CONCEPT_MAP,
@@ -24,7 +25,8 @@ from atx_db.fundamental_xbrl_metrics import (
     normalize_xbrl_metric_rows,
     refresh_fundamental_xbrl_metrics,
 )
-from atx_db.fundamental_statements import CONCEPT_MAP_SUPPORTED_TAXONOMIES, FUNDAMENTAL_STATEMENT_MAP_ROWS
+
+_DEFAULT_AVAILABLE_AT = pd.Timestamp("2024-11-01")
 
 
 def _ts(s: str) -> pd.Timestamp:
@@ -116,13 +118,20 @@ class TestNormalizeXbrlMetrics:
     def test_concept_map_covers_retained_earnings(self):
         assert CONCEPT_MAP["RetainedEarningsAccumulatedDeficit"] == "retained_earnings"
 
+    def test_concept_map_covers_legacy_temporary_equity_alternatives(self):
+        assert CONCEPT_MAP["TemporaryEquityRedemptionValue"] == "temporary_equity"
+        assert CONCEPT_MAP["RedeemableNoncontrollingInterestEquityCarryingAmount"] == "temporary_equity"
+        assert CONCEPT_MAP["RedeemableNoncontrollingInterestEquityPreferredCarryingAmount"] == "temporary_equity"
+
     def test_concept_map_covers_period_end_shares(self):
         # period-end common shares outstanding (S10e Piotroski issuance signal)
         assert CONCEPT_MAP["CommonStockSharesOutstanding"] == "common_shares_outstanding"
 
     def test_normalizes_period_end_shares_as_instant(self):
         out = normalize_xbrl_metric_rows(
-            pd.DataFrame([_cand("CommonStockSharesOutstanding", 15.0e9, dt.date(2025, 9, 27), _ts("2025-10-31"), "acc1")]),
+            pd.DataFrame(
+                [_cand("CommonStockSharesOutstanding", 15.0e9, dt.date(2025, 9, 27), _ts("2025-10-31"), "acc1")]
+            ),
             source="x",
         )
         r = out.iloc[0]
@@ -140,15 +149,17 @@ class TestNormalizeXbrlMetrics:
         assert CONCEPT_MAP["CostOfGoodsAndServicesSold"] == "cost_of_revenue"
         assert CONCEPT_MAP["InterestExpense"] == "interest_expense"
         assert CONCEPT_MAP["DepreciationDepletionAndAmortization"] == "depreciation_amortization"
-        assert (
-            CONCEPT_MAP["SellingGeneralAndAdministrativeExpense"]
-            == "selling_general_and_administrative_expense"
-        )
+        assert CONCEPT_MAP["SellingGeneralAndAdministrativeExpense"] == "selling_general_and_administrative_expense"
 
     def test_duration_flow_preserves_period_start_and_type(self):
         cand = _cand(
-            "GrossProfit", 180.0, dt.date(2025, 9, 27), _ts("2025-10-31"), "acc1",
-            period_type="duration", period_start=dt.date(2024, 9, 29),
+            "GrossProfit",
+            180.0,
+            dt.date(2025, 9, 27),
+            _ts("2025-10-31"),
+            "acc1",
+            period_type="duration",
+            period_start=dt.date(2024, 9, 29),
         )
         out = normalize_xbrl_metric_rows(pd.DataFrame([cand]), source="x")
         r = out.iloc[0]
@@ -212,7 +223,7 @@ def _cf_row(
     taxonomy="us-gaap",
     unit="USD",
     filed_date=dt.date(2024, 11, 1),
-    available_at=pd.Timestamp("2024-11-01"),
+    available_at=_DEFAULT_AVAILABLE_AT,
 ):
     return {
         "source": "sec_companyfacts",
@@ -387,20 +398,19 @@ class TestCompanyFactsCandidatePath:
     def test_companyfacts_rows_become_canonical_metrics(self, tmp_store):
         store = tmp_store
         self._seed_security(store)
-        _insert_companyfacts(store, [
-            _cf_row("AssetsCurrent", 152_987e6, dt.date(2024, 9, 28)),
-            _cf_row("LiabilitiesCurrent", 176_392e6, dt.date(2024, 9, 28)),
-            _cf_row("LongTermDebtNoncurrent", 85_750e6, dt.date(2024, 9, 28)),
-            _cf_row("GrossProfit", 180_683e6, dt.date(2024, 9, 28),
-                    period_start=dt.date(2023, 10, 1)),
-        ])
-        n = refresh_fundamental_xbrl_metrics(
-            store, FundamentalXbrlMetricOptions(source="test_cf")
+        _insert_companyfacts(
+            store,
+            [
+                _cf_row("AssetsCurrent", 152_987e6, dt.date(2024, 9, 28)),
+                _cf_row("LiabilitiesCurrent", 176_392e6, dt.date(2024, 9, 28)),
+                _cf_row("LongTermDebtNoncurrent", 85_750e6, dt.date(2024, 9, 28)),
+                _cf_row("GrossProfit", 180_683e6, dt.date(2024, 9, 28), period_start=dt.date(2023, 10, 1)),
+            ],
         )
+        n = refresh_fundamental_xbrl_metrics(store, FundamentalXbrlMetricOptions(source="test_cf"))
         assert n == 4
         got = store.con.execute(
-            "SELECT canonical_metric, period_type, value, symbol "
-            "FROM fundamental_xbrl_metric WHERE source = 'test_cf'"
+            "SELECT canonical_metric, period_type, value, symbol FROM fundamental_xbrl_metric WHERE source = 'test_cf'"
         ).df()
         metrics = set(got["canonical_metric"])
         assert {"current_assets", "current_liabilities", "long_term_debt", "gross_profit"} <= metrics
@@ -412,41 +422,42 @@ class TestCompanyFactsCandidatePath:
         self._seed_security(store, "SEC-CIK-0000789019", "MSFT")
         annual_start = dt.date(2023, 10, 1)
         period_end = dt.date(2024, 9, 28)
-        _insert_companyfacts(store, [
-            _cf_row("AccountsPayableCurrent", 68_960e6, period_end),
-            _cf_row("ResearchAndDevelopmentExpense", 31_370e6, period_end, period_start=annual_start),
-            _cf_row(
-                "DeferredRevenue",
-                45_538e6,
-                period_end,
-                security_id="SEC-CIK-0000789019",
-                cik="789019",
-                accession="msft-bs",
-            ),
-            _cf_row(
-                "PaymentsToAcquireBusinessesNetOfCashAcquired",
-                5_000e6,
-                period_end,
-                period_start=annual_start,
-                security_id="SEC-CIK-0000789019",
-                cik="789019",
-                accession="msft-cf",
-            ),
-            _cf_row(
-                "EntityCommonStockSharesOutstanding",
-                7_430e6,
-                period_end,
-                security_id="SEC-CIK-0000789019",
-                cik="789019",
-                taxonomy="dei",
-                unit="shares",
-                accession="msft-dei",
-            ),
-        ])
-
-        n = refresh_fundamental_xbrl_metrics(
-            store, FundamentalXbrlMetricOptions(source="test_cf")
+        _insert_companyfacts(
+            store,
+            [
+                _cf_row("AccountsPayableCurrent", 68_960e6, period_end),
+                _cf_row("ResearchAndDevelopmentExpense", 31_370e6, period_end, period_start=annual_start),
+                _cf_row(
+                    "DeferredRevenue",
+                    45_538e6,
+                    period_end,
+                    security_id="SEC-CIK-0000789019",
+                    cik="789019",
+                    accession="msft-bs",
+                ),
+                _cf_row(
+                    "PaymentsToAcquireBusinessesNetOfCashAcquired",
+                    5_000e6,
+                    period_end,
+                    period_start=annual_start,
+                    security_id="SEC-CIK-0000789019",
+                    cik="789019",
+                    accession="msft-cf",
+                ),
+                _cf_row(
+                    "EntityCommonStockSharesOutstanding",
+                    7_430e6,
+                    period_end,
+                    security_id="SEC-CIK-0000789019",
+                    cik="789019",
+                    taxonomy="dei",
+                    unit="shares",
+                    accession="msft-dei",
+                ),
+            ],
         )
+
+        n = refresh_fundamental_xbrl_metrics(store, FundamentalXbrlMetricOptions(source="test_cf"))
 
         assert n == 5
         got = store.con.execute(
@@ -465,45 +476,84 @@ class TestCompanyFactsCandidatePath:
             ("DeferredRevenue", "deferred_revenue", "instant"),
             ("PaymentsToAcquireBusinessesNetOfCashAcquired", "acquisitions", "duration"),
             ("EntityCommonStockSharesOutstanding", "shares_outstanding", "instant"),
-        } <= set(zip(got["concept"], got["canonical_metric"], got["period_type"]))
+        } <= set(zip(got["concept"], got["canonical_metric"], got["period_type"], strict=True))
         assert got.loc[got["canonical_metric"] == "rd_expense", "period_start"].iloc[0] == pd.Timestamp(annual_start)
         assert got["available_at"].min() == pd.Timestamp("2024-11-01")
 
-    def test_inline_path_does_not_expand_to_companyfacts_only_concepts(self, tmp_store):
+    def test_symbol_scoped_refresh_preserves_other_securities(self, tmp_store):
+        store = tmp_store
+        self._seed_security(store, "SEC-CIK-0000320193", "AAPL")
+        self._seed_security(store, "SEC-CIK-0000789019", "MSFT")
+        _insert_companyfacts(
+            store,
+            [
+                _cf_row("AssetsCurrent", 152_987e6, dt.date(2024, 9, 28)),
+                _cf_row(
+                    "AssetsCurrent",
+                    159_734e6,
+                    dt.date(2024, 9, 28),
+                    security_id="SEC-CIK-0000789019",
+                    cik="789019",
+                    accession="msft-bs",
+                ),
+            ],
+        )
+        refresh_fundamental_xbrl_metrics(store, FundamentalXbrlMetricOptions(source="test_scoped"))
+
+        rows_loaded = refresh_fundamental_xbrl_metrics(
+            store,
+            FundamentalXbrlMetricOptions(source="test_scoped", symbols=("aapl",)),
+        )
+
+        assert rows_loaded == 1
+        got = store.con.execute(
+            """
+            SELECT security_id, count(*) AS row_count
+            FROM fundamental_xbrl_metric
+            WHERE source = 'test_scoped'
+            GROUP BY security_id
+            ORDER BY security_id
+            """
+        ).fetchall()
+        assert got == [("SEC-CIK-0000320193", 1), ("SEC-CIK-0000789019", 1)]
+
+    def test_filing_instance_path_uses_full_governed_concept_map(self, tmp_store):
         store = tmp_store
         self._seed_security(store)
         _insert_inline_instant_context(store)
         _insert_inline_fact(store, "fact-assets-current", 1, "AssetsCurrent", 152_987e6)
         _insert_inline_fact(store, "fact-ap-current", 2, "AccountsPayableCurrent", 68_960e6)
 
-        n = refresh_fundamental_xbrl_metrics(
-            store, FundamentalXbrlMetricOptions(source="test_inline")
-        )
+        n = refresh_fundamental_xbrl_metrics(store, FundamentalXbrlMetricOptions(source="test_inline"))
 
-        assert n == 1
+        assert n == 2
         got = store.con.execute(
             "SELECT concept, canonical_metric FROM fundamental_xbrl_metric WHERE source = 'test_inline'"
         ).fetchall()
-        assert got == [("AssetsCurrent", "current_assets")]
+        assert set(got) == {
+            ("AccountsPayableCurrent", "ap"),
+            ("AssetsCurrent", "current_assets"),
+        }
 
     def test_inline_and_companyfacts_overlap_dedupes_one_metric_row(self, tmp_store):
         store = tmp_store
         self._seed_security(store)
         _insert_inline_instant_context(store)
         _insert_inline_fact(store, "fact-assets-current", 1, "AssetsCurrent", 152_987e6)
-        _insert_companyfacts(store, [
-            _cf_row(
-                "AssetsCurrent",
-                152_987e6,
-                dt.date(2024, 9, 28),
-                accession="acc-inline",
-                available_at=pd.Timestamp("2024-11-01 18:00:00"),
-            ),
-        ])
-
-        refresh_fundamental_xbrl_metrics(
-            store, FundamentalXbrlMetricOptions(source="test_overlap")
+        _insert_companyfacts(
+            store,
+            [
+                _cf_row(
+                    "AssetsCurrent",
+                    152_987e6,
+                    dt.date(2024, 9, 28),
+                    accession="acc-inline",
+                    available_at=pd.Timestamp("2024-11-01 18:00:00"),
+                ),
+            ],
         )
+
+        refresh_fundamental_xbrl_metrics(store, FundamentalXbrlMetricOptions(source="test_overlap"))
 
         got = store.con.execute(
             """
@@ -518,20 +568,22 @@ class TestCompanyFactsCandidatePath:
     def test_non_annual_duration_excluded(self, tmp_store):
         store = tmp_store
         self._seed_security(store)
-        _insert_companyfacts(store, [
-            # annual window (363 days) — kept
-            _cf_row("GrossProfit", 180_683e6, dt.date(2024, 9, 28),
-                    period_start=dt.date(2023, 10, 1), accession="fy"),
-            # quarterly window (~91 days) — dropped (avoids Q-vs-FY ambiguity)
-            _cf_row("GrossProfit", 43_000e6, dt.date(2024, 9, 28),
-                    period_start=dt.date(2024, 6, 29), accession="q"),
-        ])
-        refresh_fundamental_xbrl_metrics(
-            store, FundamentalXbrlMetricOptions(source="test_cf")
+        _insert_companyfacts(
+            store,
+            [
+                # annual window (363 days) — kept
+                _cf_row(
+                    "GrossProfit", 180_683e6, dt.date(2024, 9, 28), period_start=dt.date(2023, 10, 1), accession="fy"
+                ),
+                # quarterly window (~91 days) — dropped (avoids Q-vs-FY ambiguity)
+                _cf_row(
+                    "GrossProfit", 43_000e6, dt.date(2024, 9, 28), period_start=dt.date(2024, 6, 29), accession="q"
+                ),
+            ],
         )
+        refresh_fundamental_xbrl_metrics(store, FundamentalXbrlMetricOptions(source="test_cf"))
         gp = store.con.execute(
-            "SELECT value FROM fundamental_xbrl_metric "
-            "WHERE source = 'test_cf' AND canonical_metric = 'gross_profit'"
+            "SELECT value FROM fundamental_xbrl_metric WHERE source = 'test_cf' AND canonical_metric = 'gross_profit'"
         ).df()
         assert len(gp) == 1
         assert gp.iloc[0]["value"] == 180_683e6
@@ -541,12 +593,13 @@ class TestCompanyFactsCandidatePath:
         # metric row, never leak into the duration branch.
         store = tmp_store
         self._seed_security(store)
-        _insert_companyfacts(store, [
-            _cf_row("InventoryNet", 7_286e6, dt.date(2024, 9, 28)),
-        ])
-        refresh_fundamental_xbrl_metrics(
-            store, FundamentalXbrlMetricOptions(source="test_cf")
+        _insert_companyfacts(
+            store,
+            [
+                _cf_row("InventoryNet", 7_286e6, dt.date(2024, 9, 28)),
+            ],
         )
+        refresh_fundamental_xbrl_metrics(store, FundamentalXbrlMetricOptions(source="test_cf"))
         rows = store.con.execute(
             "SELECT period_type FROM fundamental_xbrl_metric "
             "WHERE source = 'test_cf' AND canonical_metric = 'inventory'"

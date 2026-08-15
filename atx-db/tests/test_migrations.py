@@ -23,6 +23,80 @@ def test_apply_pending_idempotent(tmp_store):
     assert result == [], f"Expected [] but got {result}"
 
 
+def test_taxonomy_reference_rename_and_indexes_commit_with_populated_table(tmp_store):
+    """0293/0294 keep data intact and build indexes in separate transactions."""
+    from atx_db.migrations.bodies_0293 import (
+        _xbrl_filing_taxonomy_reference_edges,
+    )
+    from atx_db.migrations.bodies_0294 import (
+        _xbrl_filing_taxonomy_reference_edge_indexes,
+    )
+
+    tmp_store.con.execute(
+        """
+        DROP INDEX IF EXISTS idx_xbrl_filing_taxonomy_accession;
+        DROP INDEX IF EXISTS idx_xbrl_filing_taxonomy_package;
+        ALTER TABLE xbrl_filing_taxonomy_packages
+            RENAME COLUMN source_document_url TO extension_schema_url;
+        ALTER TABLE xbrl_filing_taxonomy_packages
+            RENAME COLUMN reference_namespace TO import_namespace;
+        ALTER TABLE xbrl_filing_taxonomy_packages
+            RENAME COLUMN reference_url TO import_url;
+        CREATE INDEX idx_xbrl_filing_taxonomy_accession
+            ON xbrl_filing_taxonomy_packages(
+                security_id,accession_number,is_latest_revision,package_key
+            );
+        CREATE INDEX idx_xbrl_filing_taxonomy_package
+            ON xbrl_filing_taxonomy_packages(package_revision_id);
+        INSERT INTO xbrl_filing_taxonomy_packages (
+            filing_package_edge_id,security_id,cik,accession_number,
+            extension_schema_url,import_namespace,import_url,
+            package_revision_id,package_key,as_of_date,available_at,
+            is_latest_revision,run_id,source_loaded_at
+        ) VALUES (
+            'edge-1','SEC-CIK-0000000001','0000000001','accession-1',
+            'https://www.sec.gov/extension.xsd','http://fasb.org/us-gaap/2009',
+            'http://taxonomies.xbrl.us/us-gaap/2009/elts/us-gaap.xsd',
+            'package-revision-1','XBRL_US:us-gaap:2009',DATE '2026-08-14',
+            TIMESTAMP '2026-08-14 00:00:00',true,'migration-test',
+            TIMESTAMP '2026-08-14 00:00:00'
+        )
+        """
+    )
+
+    tmp_store.con.execute("BEGIN TRANSACTION")
+    _xbrl_filing_taxonomy_reference_edges(tmp_store.con)
+    tmp_store.con.execute("COMMIT")
+    tmp_store.con.execute("BEGIN TRANSACTION")
+    _xbrl_filing_taxonomy_reference_edge_indexes(tmp_store.con)
+    tmp_store.con.execute("COMMIT")
+
+    assert tmp_store.con.execute(
+        """
+        SELECT source_document_url,reference_namespace,reference_url
+        FROM xbrl_filing_taxonomy_packages
+        WHERE filing_package_edge_id='edge-1'
+        """
+    ).fetchone() == (
+        "https://www.sec.gov/extension.xsd",
+        "http://fasb.org/us-gaap/2009",
+        "http://taxonomies.xbrl.us/us-gaap/2009/elts/us-gaap.xsd",
+    )
+    assert {
+        row[0]
+        for row in tmp_store.con.execute(
+            """
+            SELECT index_name
+            FROM duckdb_indexes()
+            WHERE table_name='xbrl_filing_taxonomy_packages'
+            """
+        ).fetchall()
+    } == {
+        "idx_xbrl_filing_taxonomy_accession",
+        "idx_xbrl_filing_taxonomy_package",
+    }
+
+
 def test_migration_0002_columns_exist(tmp_store):
     """Columns added by migration 0002 (schema_evolution_alters) must be present."""
     cols_query = """
