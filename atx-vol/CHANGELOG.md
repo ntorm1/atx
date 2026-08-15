@@ -53,6 +53,17 @@ IN ONE DIRECTION PRODUCES THE ERROR IN THE OTHER. Such a rule cannot be fixed by
 widening it -- widening makes both directions worse. It needs the classifier the
 question above supplies.
 
+A RELEASED SECTION MAY TAKE A CORRECTION THAT REMOVES A CLAIM ABOUT THE PRESENT,
+AND NO OTHER KIND. Permitted, on a section for a version already shipped:
+converting a present-tense assertion into the past tense it should always have
+had, adding a pointer to whatever source is now authoritative, and striking a
+tally. Forbidden: renumbering a figure, which rewrites history rather than
+recording it; adding a new claim about released behaviour; and prose
+improvement, which is indistinguishable from the first two once the diff is
+cold. The reasoning is worth keeping because the obvious rule is the wrong one:
+freezing a released section outright would preserve a sentence the document
+itself knows to be false, so what is protected is the RECORD, not the SENTENCE.
+
 COMPARISONS MUST NAME THEIR BASELINE. A `previously`, `used to`, `no longer` or
 comparative `now` MUST state what it is relative to whenever the baseline is not
 the section heading -- an explicit SHA where the baseline is an earlier commit
@@ -264,8 +275,8 @@ the interval it is multiplied by are the same number by construction. Pinned by
 SHAPE rather than by value, on a 1/3/1/7/1-day calendar: carry is one fixing
 (independent of step length) plus a dt-proportional roll, so it must not track
 the step-length ratio. Against the old arithmetic that test reports a 6.97x
-spread and fails
-(`BacktestSwapExplain.CarryDoesNotScaleWithStepLengthOnAnIrregularCalendar`;
+spread, and fails
+(`BacktestSwapExplain.CarryDoesNotScaleWithStepLengthOnAnIrregularCalendar`,
 `IdentityHoldsOnAnIrregularCalendar` stays green throughout, which is the point
 -- the identity could not see this). Deleting the state also retired a per-lot
 entry that leaked for every lot leaving the book by a path other than
@@ -317,8 +328,7 @@ column, and there is no accessor that answers it from fewer. `Mixed` is the
 state that was unrepresentable before `c1771a6` and is the reason the enum has
 three values: it is always malformed, and a caller comparing against `Present`
 cannot silently treat it as such. `Mixed` is rejected BY NAME at each surface
-that can
-see a whole result -- the result's own `BacktestResult::validate()`,
+that can see a whole result -- the result's own `BacktestResult::validate()`,
 `backtest_db`'s store guard, and `append_backtest_results` -- rather than at one
 of them with the others trusting a comment, which is the arrangement that let it
 through.
@@ -353,8 +363,8 @@ shape rule.
   append explain-carrying onto explain-carrying, or explain-less onto
   explain-less; `swap_explain_shape` tells you which a result is BEFORE the
   call. A caller that was relying on the silent clear to normalise a mixed
-  history must now do that explicitly, and should check whether it ever noticed
-  it was losing the columns
+  history must now do that explicitly, and should check whether it ever
+  noticed it was losing the columns
   (`BacktestSwapExplain.AppendRefusesToDiscardExplainAcrossAShapeChange`).
 * THE STORE GUARD now rejects a RAGGED explain column. `backtest_db` applied its
   optional-column row-count check to the other columns and never to these, so
@@ -401,8 +411,8 @@ archive is consistent. Where this entry and that header ever disagree, the
 header is the contract and the one to trust; this is a derived copy, and the
 sprint's repeated failure was a derived copy outliving the authoritative one.
 
-**IF YOU ARE COMING FROM `1.0.0`, THIS IS THE PART THAT CONCERNS YOU**, and it
-is the only 1.0.0-relative statement in this entry. The 1.0.0 header promised,
+**IF YOU ARE COMING FROM `1.0.0`, THIS IS THE PART THAT CONCERNS YOU** -- the
+release-frame statement of the ts rule itself. The 1.0.0 header promised,
 without qualification, that `load` takes the valuation timestamp "from the
 surfaces' `now_ts_ns` (validating they agree)", with "InvalidArgument if the
 archive is empty or its surfaces disagree on the ts". THAT PROMISE WAS ALREADY
@@ -430,11 +440,17 @@ contradict it. An earlier cut of this entry described a whole-directory walk;
 that walk was reverted in `ec7d3ae` with its cost recorded in the code.
 
 THAT COST IS A STANDING PROPERTY, NOT A TRANSITION, so it is fenced accordingly.
-Measured at `ec7d3ae` on an N = 512 archive, the walk put the miss path at 91%
-of a whole-board load (3908µs vs 4282µs) against 71% for the sample (2282µs vs
-3235µs) in the same process. Unlike a before/after figure, which compares
-against a tree that no longer exists and cannot be falsified, this is a ratio
-between two things that BOTH still exist -- so a later commit can move it, and
+Measured at `ec7d3ae` on an N = 512 archive, same process, as TWO ratios each
+taken against ITS OWN whole-board baseline: the walk put the miss path at 91% of
+a whole-board load (3908µs against a 4282µs whole board), and the sample this
+branch ships at 71% of one (2282µs against a 3235µs whole board). THE BASELINES
+DIFFER BETWEEN THE TWO RUNS, so each percentage is a percentage of its own whole
+board only; the two are NOT subtractable, and collapsing them onto one
+denominator is the error `92a0b49` retired from the code's copy of this
+measurement. What the pair says is that the walk nearly erases the saving on the
+path whose whole purpose is to be cheap. Unlike a before/after figure, which
+compares against a tree that no longer exists and cannot be falsified, this is a
+ratio between two things that BOTH still exist -- so a later commit moves it, and
 the SHA gives provenance but not falsifiability. IT HAS NOT BEEN RE-VERIFIED
 SINCE `ec7d3ae`, no benchmark regenerates it, and a reader relying on the
 proportion should re-measure rather than cite this line. The qualification the
@@ -453,8 +469,7 @@ five. `1.0.0` is the member of that set that matters, since it is where a
 released caller stands; the mid-branch four only establish that nothing moved
 while this release was being built. So a subset naming two disagreeing uids has
 refused since `1.0.0`, and no caller loading one has anything to do. What was
-missing was a test saying so, and that
-is what landed
+missing was a test saying so, and that is what landed
 (`BacktestSwapExplain.EveryLoadThatReadsAMixedArchiveRefusesIt`, with
 `ALoadThatReadsOneRecordOrNoneCannotSeeAMixedArchive` pinning the documented
 limit and `AZeroSurfaceSnapshotStillLoadsWhenTheArchiveAgrees` as the positive
@@ -502,10 +517,10 @@ the previous test never poisoned and therefore could not have caught. A
 mutant-score ratio quoted in `55006c4`'s message is NOT reproduced here -- it
 does not reconcile with the `static_assert`ed term count, and its own record
 does not decompose it, so this entry states the control that is in the tree
-rather than a figure that is not. The same ratio appears in
-`scenario_grid.hpp`'s mirror of this text and is flagged for that lane rather
-than corrected from here.
-round. The artifact that stands behind the GENERAL claim is
+rather than a figure that is not. The same ratio stood in `scenario_grid.hpp`'s
+mirror of this text and was retired there in `92a0b49`.
+
+The artifact that stands behind the GENERAL claim is
 `ScenarioGridDeriv.ASufficientVerdictAlwaysYieldsAFiniteKernel`, whose slot list
 names every `double` member of `DerivGreeks` rather than the ones the kernel
 reads today -- a list of what is read today is definitionally unable to catch a
@@ -546,9 +561,9 @@ none of these fields exist on it. A caller of the deriv overload that reads
 `n_deriv_ok` alone must now ALSO read `n_deriv_missing_sensitivity` to account
 for the whole book; a grid that at `1f04a01` returned NaN cells alongside a
 healthy `n_deriv_ok` returns finite cells and a non-zero exclusion count here.
-Every pre-existing greek is
-unmoved: the F-8 bit-identity probe byte-matches its pre-task baseline on 6052
-of 6084 values, and the 32 that differ are exactly `39c934c`'s own smile-vega
+Every pre-existing greek is unmoved: the F-8 bit-identity probe byte-matches its
+pre-task baseline on 6052 of 6084 values, and the 32 that differ are exactly
+`39c934c`'s own smile-vega
 fix (`0.0 -> NaN` on 16 deriv-book memo rows), which this probe independently
 confirms landed only there. Landed in `8d2f5de`.
 
