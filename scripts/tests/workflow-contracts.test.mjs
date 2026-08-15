@@ -104,9 +104,9 @@ function loadFunctions(source, names, prelude = '') {
 
 const oracleFns = loadFunctions(oracle, [
   'iterationCommandError', 'validSuccessEvidence', 'exactEvidenceSet', 'diagnosticsUseForbiddenCommand', 'validLeaseReceipt', 'validHeadReceipt', 'validGateReceipt', 'expectedBootstrapMetricIds', 'expectedGateMetricIds', 'validRatchetGateReceipt', 'validIntegrationCommand', 'casReceiptError', 'auditReceiptError',
-  'reviewContractError', 'bootstrapReportError', 'bootstrapPrepareError', 'aggregatePayloadError', 'expectedMeasureMetricIds', 'expectedMetricUnit', 'validNumericMetric', 'validMeasureGateReceipt', 'measurePayloadError', 'attributionPayloadFromMeasure',
+  'reviewContractError', 'validAdoptionReceipt', 'validChangedPathReceipt', 'validPrecheckGateReceipt', 'bootstrapPathError', 'bootstrapReportError', 'bootstrapPrepareError', 'aggregatePayloadError', 'expectedMeasureMetricIds', 'expectedMetricUnit', 'validNumericMetric', 'validMeasureGateReceipt', 'measurePayloadError', 'attributionPayloadFromMeasure',
   'metricDeltaConsistent', 'expectedRatchetMetrics', 'sameNumber', 'distanceToInterval', 'marketCommand', 'marketReceiptError', 'relativeRegression', 'ratchetGateIdForMetric', 'ratchetCandidateValue', 'ratchetMetricsFromReceipts', 'ratchetPrepareContractError', 'computeRatchetVerdict',
-], `const RATCHET_GATE_IDS = ['holdout_mode_a', 'holdout_mode_b', 'rel_avx2_speed']; const TARGETED_BOOTSTRAP_GATE_IDS = ${JSON.stringify(TARGETED_BOOTSTRAP_GATE_IDS)}; const TARGET_REGISTRY = ${JSON.stringify(TARGET_REGISTRY)}; const AGGREGATE_REGISTRY = ${JSON.stringify(AGGREGATE_REGISTRY)}; const SPEED_METRIC_ID = '${SPEED_METRIC_ID}'; const RATCHET_GATE_COMMANDS = ${JSON.stringify(RATCHET_GATE_COMMANDS)}; const BOOTSTRAP_GATE_COMMANDS = ${JSON.stringify(BOOTSTRAP_GATE_COMMANDS)}; const READY_MEASURE_GATES = ${JSON.stringify(READY_MEASURE_GATES)}; const READY_MEASURE_COMMANDS = ${JSON.stringify(READY_MEASURE_COMMANDS)}`)
+], `const RATCHET_GATE_IDS = ['holdout_mode_a', 'holdout_mode_b', 'rel_avx2_speed']; const TARGETED_BOOTSTRAP_GATE_IDS = ${JSON.stringify(TARGETED_BOOTSTRAP_GATE_IDS)}; const TARGET_REGISTRY = ${JSON.stringify(TARGET_REGISTRY)}; const AGGREGATE_REGISTRY = ${JSON.stringify(AGGREGATE_REGISTRY)}; const SPEED_METRIC_ID = '${SPEED_METRIC_ID}'; const RATCHET_GATE_COMMANDS = ${JSON.stringify(RATCHET_GATE_COMMANDS)}; const BOOTSTRAP_GATE_COMMANDS = ${JSON.stringify(BOOTSTRAP_GATE_COMMANDS)}; const READY_MEASURE_GATES = ${JSON.stringify(READY_MEASURE_GATES)}; const READY_MEASURE_COMMANDS = ${JSON.stringify(READY_MEASURE_COMMANDS)}; const ADOPTION_COMMAND = 'powershell scripts\\oracle-adopt-existing-data.ps1'; const MODE_A_RECEIPT_ONLY_PATHS = ['atx-vol/bench/oracle/bootstrap/mode-a.json']`)
 const sprintFns = loadFunctions(sprint, [
   'validSuccessEvidence', 'validLeaseReceipt', 'validHeadReceipt', 'validIntegrationCommand', 'changedHeader', 'changedCode', 'safeTarget', 'safeUnitRegex', 'safeOracleTest',
   'pathGateOwner', 'regexSuiteName', 'closureError', 'closureEntries', 'derivedGateRegistry', 'sprintUnitEvidenceError', 'oracleLoopCommandError', 'laneHeartbeatId', 'reportContractError', 'reviewContractError', 'laneFailureReason', 'gateContractError',
@@ -187,6 +187,15 @@ function bootstrapReport(sha = SHA.build) {
     heartbeat_id: identity.heartbeat_id, keeper_pid: identity.keeper_pid,
     keeper_process_started_utc: identity.keeper_process_started_utc,
     acquisition_receipt: leaseReceipt('acquire', identity), holdout_digest_receipt: DIGEST,
+    bootstrap_path: 'mode_a_receipt_only',
+    precheck_gate_receipts: ['mode_a_targeted_tests', 'mode_a_smoke'].map(gateId => {
+      const receipt = bootstrapGateReceipt(gateId)
+      return { gate_id: gateId, command: receipt.command, status: 'PASS', exit_code: 0, output: receipt.output }
+    }),
+    changed_path_receipt: {
+      base_sha: SHA.base, tested_sha: sha, command: `git diff --name-only ${SHA.base}...${sha}`, exit_code: 0,
+      output: 'atx-vol/bench/oracle/bootstrap/mode-a.json', paths: ['atx-vol/bench/oracle/bootstrap/mode-a.json'],
+    },
     evidence: okEvidence, deviations: '',
   }
 }

@@ -57,9 +57,11 @@ recorded in CHANGELOG, never as opt-in configuration.
 ## 1. Oracle data foundation (one-time per drop)
 
 Stage 1 always runs `scripts/oracle-adopt-existing-data.ps1` before ingest. The
-fixed command validates committed cohorts plus the existing aggregate manifest
-and Parquet footer metadata, recomputes schema/disjointness/holdout digest
-internally, and emits aggregate JSON only. `ADOPTED` writes the exact v1 digest
+fixed command validates committed cohorts plus the existing aggregate manifest,
+pins every required SpiderRock field/type, verifies Parquet footer counts and
+partition stats, and internally aggregates only the underlier join key to prove
+cohort existence. It recomputes schema/disjointness/holdout digest and emits no
+membership/rows. `ADOPTED` journal-publishes the exact v1 digest
 and data receipt without extraction or a disk gate. Any missing, corrupt,
 mismatched, or overlapping input returns `INGEST_REQUIRED`, the only route to the
 normal disk-gated licensed ingest. There is no selector flag or compatibility
@@ -173,7 +175,8 @@ parameterization near expiry, batch-vectorized American pricing paths.
 1. `missing_data`: mandatory existing-store adoption; only `INGEST_REQUIRED` runs
    ingest. Both routes finish with all three cohorts, frozen holdout hash, and v1 receipt.
 2. `missing_mode_a`: run exact targeted Mode A gates first; a passing existing
-   implementation gets a receipt-only transition, otherwise implement/fix Mode A.
+   implementation gets a mechanically diff-pinned receipt-only transition;
+   otherwise typed failing prechecks select the normal implementation path.
 3. `missing_conventions`: smoke+tune convention resolution + residual floor at iter-000.
 4. `missing_mode_b`: Mode B + aggregate smoke/tune capability receipt.
 5. `ready`: iterations 1..k on smoke+tune, then holdout ratchet only after sprint PASS.

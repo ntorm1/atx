@@ -64,6 +64,8 @@ const READY_MEASURE_GATES = Object.freeze({
   measure_speed: 'atx-vol-oracle-bench --cohort tune --benchmark-speed --preset rel-avx2 --quiet-host --aggregate-only',
 })
 const READY_MEASURE_COMMANDS = Object.freeze(Object.values(READY_MEASURE_GATES))
+const ADOPTION_COMMAND = 'powershell scripts\\oracle-adopt-existing-data.ps1'
+const MODE_A_RECEIPT_ONLY_PATHS = Object.freeze(['atx-vol/bench/oracle/bootstrap/mode-a.json'])
 
 const EVIDENCE_ITEM = {
   type: 'object', additionalProperties: false, required: ['command', 'exit_code', 'output'],
@@ -108,6 +110,35 @@ const GATE_RECEIPT = {
         rows_processed: { type: 'integer' }, metric_ids: { type: 'array', items: { type: 'string' } }, audit_summary: { type: 'string' },
       },
     },
+  },
+}
+const ADOPTION_RECEIPT = {
+  type: 'object', additionalProperties: false, required: ['command', 'exit_code', 'output', 'result'],
+  properties: {
+    command: { type: 'string', enum: [ADOPTION_COMMAND] }, exit_code: { type: 'integer' }, output: { type: 'string' },
+    result: {
+      type: 'object', additionalProperties: false, required: ['schema_version', 'status', 'command_id'],
+      properties: {
+        schema_version: { type: 'integer', enum: [1] }, status: { type: 'string', enum: ['ADOPTED', 'INGEST_REQUIRED'] },
+        command_id: { type: 'string', enum: ['oracle_existing_store_adoption'] }, reason: { type: 'string' }, base_sha: { type: 'string' },
+        manifest_sha256: { type: 'string' }, holdout_membership_sha256: { type: 'string' }, total_rows: { type: 'integer' },
+        bucket_count: { type: 'integer' }, parquet_files: { type: 'integer' }, cohort_underlier_count: { type: 'integer' },
+      },
+    },
+  },
+}
+const PRECHECK_GATE_RECEIPT = {
+  type: 'object', additionalProperties: false, required: ['gate_id', 'command', 'status', 'exit_code', 'output'],
+  properties: {
+    gate_id: { type: 'string', enum: ['mode_a_targeted_tests', 'mode_a_smoke'] }, command: { type: 'string' },
+    status: { type: 'string', enum: ['PASS', 'FAIL'] }, exit_code: { type: 'integer' }, output: { type: 'string' },
+  },
+}
+const CHANGED_PATH_RECEIPT = {
+  type: 'object', additionalProperties: false, required: ['base_sha', 'tested_sha', 'command', 'exit_code', 'output', 'paths'],
+  properties: {
+    base_sha: { type: 'string' }, tested_sha: { type: 'string' }, command: { type: 'string' }, exit_code: { type: 'integer' },
+    output: { type: 'string' }, paths: { type: 'array', items: { type: 'string' } },
   },
 }
 const MEASURE_GATE_RECEIPT = {
@@ -171,6 +202,9 @@ const BOOTSTRAP_REPORT = {
     worktree: { type: 'string' }, lease_name: { type: 'string' }, lease_run_id: { type: 'string' }, heartbeat_id: { type: 'string' },
     keeper_pid: { type: 'integer' }, keeper_process_started_utc: { type: 'string' }, acquisition_receipt: LEASE_RECEIPT,
     holdout_digest_receipt: { type: 'string' }, evidence: { type: 'array', items: EVIDENCE_ITEM },
+    bootstrap_path: { type: 'string', enum: ['data_adoption', 'data_ingest', 'mode_a_receipt_only', 'mode_a_implementation', 'standard'] },
+    adoption_receipt: ADOPTION_RECEIPT, disk_receipt: GATE_RECEIPT,
+    precheck_gate_receipts: { type: 'array', items: PRECHECK_GATE_RECEIPT }, changed_path_receipt: CHANGED_PATH_RECEIPT,
     diagnostics: { type: 'array', items: EVIDENCE_ITEM }, deviations: { type: 'string' },
   },
 }
@@ -505,6 +539,71 @@ function reviewContractError(review, expectedSha) {
   return null
 }
 
+function validAdoptionReceipt(receipt, baseSha) {
+  if (!receipt || receipt.command !== ADOPTION_COMMAND || receipt.exit_code !== 0 || !receipt.result || receipt.output !== JSON.stringify(receipt.result)) return false
+  const result = receipt.result
+  const keys = Object.keys(result).sort().join(',')
+  if (result.schema_version !== 1 || result.command_id !== 'oracle_existing_store_adoption') return false
+  if (result.status === 'ADOPTED') {
+    if (keys !== ['base_sha', 'bucket_count', 'cohort_underlier_count', 'command_id', 'holdout_membership_sha256', 'manifest_sha256', 'parquet_files', 'schema_version', 'status', 'total_rows'].sort().join(',')) return false
+    return result.base_sha === baseSha && /^[0-9a-f]{64}$/.test(result.manifest_sha256 || '') && /^[0-9a-f]{64}$/.test(result.holdout_membership_sha256 || '') &&
+      Number.isInteger(result.total_rows) && result.total_rows > 0 && Number.isInteger(result.bucket_count) && result.bucket_count > 0 &&
+      Number.isInteger(result.parquet_files) && result.parquet_files > 0 && Number.isInteger(result.cohort_underlier_count) && result.cohort_underlier_count > 0
+  }
+  const reasons = ['cohort_schema_smoke', 'cohort_schema_tune', 'cohort_schema_holdout', 'cohort_disjointness', 'cohort_dates', 'manifest_missing', 'store_validation', 'manifest_validation', 'cohort_store_coverage', 'holdout_digest', 'holdout_digest_mismatch', 'cohort_blob', 'publication_transaction', 'publication_recovery', 'validation_exception']
+  return result.status === 'INGEST_REQUIRED' && keys === ['command_id', 'reason', 'schema_version', 'status'].sort().join(',') && reasons.includes(result.reason)
+}
+
+function validChangedPathReceipt(receipt, report) {
+  if (!receipt || receipt.base_sha !== report.base_sha || receipt.tested_sha !== report.sha || receipt.exit_code !== 0) return false
+  if (receipt.command !== `git diff --name-only ${report.base_sha}...${report.sha}` || !Array.isArray(receipt.paths) || !receipt.paths.length) return false
+  if (new Set(receipt.paths).size !== receipt.paths.length || receipt.paths.some(path => !/^[A-Za-z0-9._/-]+$/.test(path) || path.startsWith('/') || path.includes('..'))) return false
+  const sorted = [...receipt.paths].sort()
+  return receipt.paths.every((path, index) => path === sorted[index]) && receipt.output.trim() === receipt.paths.join('\n')
+}
+
+function validPrecheckGateReceipt(receipt, gateId) {
+  if (!receipt || receipt.gate_id !== gateId || receipt.command !== BOOTSTRAP_GATE_COMMANDS[gateId] || !String(receipt.output || '').trim()) return false
+  if (receipt.status === 'FAIL') return Number.isInteger(receipt.exit_code) && receipt.exit_code !== 0
+  if (receipt.status !== 'PASS' || receipt.exit_code !== 0) return false
+  let result
+  try { result = JSON.parse(receipt.output) } catch { return false }
+  return validGateReceipt({ gate_id: gateId, command: receipt.command, exit_code: receipt.exit_code, output: receipt.output, result }, gateId)
+}
+
+function bootstrapPathError(report, expected) {
+  if (!['missing_data', 'missing_mode_a'].includes(expected.state)) return null
+  if (!validChangedPathReceipt(report.changed_path_receipt, report)) return 'bootstrap changed-path receipt invalid'
+  const paths = report.changed_path_receipt.paths
+  if (expected.state === 'missing_data') {
+    if (!validAdoptionReceipt(report.adoption_receipt, expected.base_sha)) return 'Stage1 typed adoption receipt invalid'
+    const adoptionEvidence = report.evidence.filter(item => item.command === ADOPTION_COMMAND && item.exit_code === report.adoption_receipt.exit_code && item.output === report.adoption_receipt.output)
+    if (adoptionEvidence.length !== 1) return 'Stage1 adoption evidence missing/untyped'
+    const ingestEvidence = report.evidence.filter(item => /^python atx-vol\/scripts\/oracle_ingest\.py --zip \S+/.test(item.command || ''))
+    const diskEvidence = report.evidence.filter(item => item.command === BOOTSTRAP_GATE_COMMANDS.disk)
+    if (report.adoption_receipt.result.status === 'ADOPTED') {
+      if (report.bootstrap_path !== 'data_adoption' || Object.prototype.hasOwnProperty.call(report, 'disk_receipt') || ingestEvidence.length || diskEvidence.length) return 'Stage1 ADOPTED path contradicted by disk/ingest'
+      if (report.adoption_receipt.result.holdout_membership_sha256 !== report.holdout_digest_receipt) return 'Stage1 ADOPTED digest receipt mismatch'
+      const wanted = ['atx-vol/bench/oracle/bootstrap/data.json', 'atx-vol/bench/oracle/cohorts/holdout.sha256']
+      return paths.length === wanted.length && wanted.every((path, index) => paths[index] === path) ? null : 'Stage1 ADOPTED changed paths invalid'
+    }
+    if (report.bootstrap_path !== 'data_ingest' || !validGateReceipt(report.disk_receipt, 'disk') || report.disk_receipt.result.observations < 15) return 'Stage1 INGEST_REQUIRED disk receipt invalid'
+    if (diskEvidence.length !== 1 || diskEvidence[0].output !== report.disk_receipt.output || ingestEvidence.length !== 1 || ingestEvidence[0].exit_code !== 0 || !String(ingestEvidence[0].output || '').trim()) return 'Stage1 INGEST_REQUIRED evidence missing/untyped'
+    for (const path of ['atx-vol/bench/oracle/bootstrap/data.json', 'atx-vol/bench/oracle/cohorts/holdout.sha256']) if (!paths.includes(path)) return 'Stage1 ingest receipt paths missing'
+    return null
+  }
+  if (Object.prototype.hasOwnProperty.call(report, 'adoption_receipt') || Object.prototype.hasOwnProperty.call(report, 'disk_receipt')) return 'Stage2 contains Stage1 receipt'
+  if (!Array.isArray(report.precheck_gate_receipts) || report.precheck_gate_receipts.length !== 2) return 'Stage2 precheck receipt set invalid'
+  const gateIds = ['mode_a_targeted_tests', 'mode_a_smoke']
+  for (const gateId of gateIds) {
+    const matches = report.precheck_gate_receipts.filter(receipt => receipt && receipt.gate_id === gateId)
+    if (matches.length !== 1 || !validPrecheckGateReceipt(matches[0], gateId)) return `Stage2 precheck receipt invalid: ${gateId}`
+  }
+  const existingPasses = report.precheck_gate_receipts.every(receipt => receipt.status === 'PASS')
+  if (existingPasses) return report.bootstrap_path === 'mode_a_receipt_only' && paths.length === MODE_A_RECEIPT_ONLY_PATHS.length && MODE_A_RECEIPT_ONLY_PATHS.every((path, index) => paths[index] === path) ? null : 'Stage2 passing implementation must be receipt-only'
+  return report.bootstrap_path === 'mode_a_implementation' && paths.includes(MODE_A_RECEIPT_ONLY_PATHS[0]) && paths.length > 1 ? null : 'Stage2 failed precheck requires implementation path'
+}
+
 function bootstrapReportError(report, expected) {
   if (!report || report.outcome !== 'DONE') return 'bootstrap build incomplete'
   if (report.state !== expected.state || report.branch !== expected.branch || report.base_sha !== expected.base_sha || report.lease_run_id !== expected.run_id || report.heartbeat_id !== expected.heartbeat_id) return 'bootstrap build identity mismatch'
@@ -516,6 +615,8 @@ function bootstrapReportError(report, expected) {
     lease_name: report.lease_name, run_id: expected.run_id, branch: expected.branch, base_sha: expected.base_sha, worktree: report.worktree,
     heartbeat_id: expected.heartbeat_id, keeper_pid: report.keeper_pid, keeper_process_started_utc: report.keeper_process_started_utc,
   }, 'acquire')) return 'bootstrap acquisition receipt invalid'
+  const pathError = bootstrapPathError(report, expected)
+  if (pathError) return pathError
   return null
 }
 
@@ -735,7 +836,7 @@ if (capability.state !== 'ready') {
   const expected = { state: capability.state, branch, base_sha: BASE_SHA, run_id: RUN_ID, heartbeat_id: heartbeat, holdout_digest_receipt: capability.holdout_digest_receipt, integration_branch: integrationBranch, integration_heartbeat_id: integrationHeartbeat, next_state: lane.next, gate_ids: lane.gate_ids }
   phase('Bootstrap Build')
   let report = await agent(
-    `ONE fixed bootstrap lane; no planner/holdout. Stage=${lane.stage}, base=${BASE_SHA}. ${lane.contract} Acquire ${branch} with RunId=${RUN_ID}, HeartbeatId=${heartbeat}; the independent keeper owns liveness. Implement, scoped-test, commit, keep lease, and return typed keeper acquisition plus exit-code-zero evidence.`,
+    `ONE fixed bootstrap lane; no planner/holdout. Stage=${lane.stage}, base=${BASE_SHA}. ${lane.contract} Acquire ${branch} with RunId=${RUN_ID}, HeartbeatId=${heartbeat}; the independent keeper owns liveness. Implement, scoped-test, commit, keep lease, and return typed keeper acquisition plus exit-code-zero evidence. Stage 1 must return bootstrap_path, exact adoption_receipt, conditional disk_receipt, and exact base...SHA changed_path_receipt. Stage 2 must return bootstrap_path, both typed pre-edit gate receipts, and exact base...SHA changed_path_receipt; PASS/PASS mechanically permits only bootstrap/mode-a.json.`,
     { agentType: 'vol-builder', schema: BOOTSTRAP_REPORT, label: `bootstrap-build:${capability.state}` },
   )
   let reportError = bootstrapReportError(report, expected)

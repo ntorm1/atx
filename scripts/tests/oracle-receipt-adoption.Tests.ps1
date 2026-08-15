@@ -28,24 +28,57 @@ function New-TestOracleCase([string]$Name) {
   $base = Commit-TestRepo $repo 'committed cohorts'
   $manifestPath = Join-Path $data 'oracle_manifest_2026-08-14.json'
   Write-TestJson $manifestPath ([ordered]@{
-    trading_date='2026-08-14'; source_tsv_bytes=100; total_rows=6
-    buckets=[ordered]@{ '1000'=2; '1330'=2; '1500'=2 }
-    top_underliers_by_rows=[ordered]@{ SPY=2; QQQ=2; IWM=2 }
+    trading_date='2026-08-14'; source_tsv_bytes=100; total_rows=9
+    buckets=[ordered]@{ '1000'=3; '1330'=3; '1500'=3 }
+    top_underliers_by_rows=[ordered]@{ SPY=3; QQQ=3; IWM=3 }
     ingested_at='2026-08-15T12:00:00Z'
   })
-  $python = @'
+  if (-not $script:oracleFixtureParquet) {
+    $python = @'
+import datetime as dt
+import importlib.util
 import sys
 from pathlib import Path
 import pyarrow as pa
 import pyarrow.parquet as pq
 root=Path(sys.argv[1])
+tool=Path(sys.argv[2])
+spec=importlib.util.spec_from_file_location('oracle_store_metadata',tool)
+module=importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
 for bucket in ('1000','1330','1500'):
     path=root/'date=2026-08-14'/f'bucket_et={bucket}'/'data.parquet'
     path.parent.mkdir(parents=True,exist_ok=True)
-    pq.write_table(pa.table({'x':pa.array([1,2],type=pa.int64())}),path)
+    values={}
+    for name,type_name in module.REQUIRED_SCHEMA.items():
+        if type_name == 'large_string':
+            values[name]=pa.array(['x','x','x'],type=pa.large_string())
+        elif type_name == 'double':
+            values[name]=pa.array([1.0,1.0,1.0],type=pa.float64())
+        elif type_name == 'int64':
+            values[name]=pa.array([1,1,1],type=pa.int64())
+        elif type_name == 'timestamp[us]':
+            values[name]=pa.array([dt.datetime(2026,8,14)]*3,type=pa.timestamp('us'))
+    values['undSecKey_tk']=pa.array(['SPY','QQQ','IWM'],type=pa.large_string())
+    values['tradingDate']=pa.array(['2026-08-14']*3,type=pa.large_string())
+    values['bucket_et']=pa.array([bucket]*3,type=pa.large_string())
+    values['okey_cp']=pa.array(['C','P','C'],type=pa.large_string())
+    pq.write_table(pa.table(values),path)
 '@
-  & python -c $python $data
-  if ($LASTEXITCODE -ne 0) { throw 'synthetic parquet creation failed' }
+    & python -c $python $data $adoptionMetadataTool
+    if ($LASTEXITCODE -ne 0) { throw 'synthetic parquet creation failed' }
+    $script:oracleFixtureParquet = @{}
+    foreach ($bucket in @('1000','1330','1500')) {
+      $path = Join-Path $data ('date=2026-08-14\bucket_et=' + $bucket + '\data.parquet')
+      $script:oracleFixtureParquet[$bucket] = [System.IO.File]::ReadAllBytes($path)
+    }
+  } else {
+    foreach ($bucket in @('1000','1330','1500')) {
+      $path = Join-Path $data ('date=2026-08-14\bucket_et=' + $bucket + '\data.parquet')
+      New-Item -ItemType Directory -Force (Split-Path -Parent $path) | Out-Null
+      [System.IO.File]::WriteAllBytes($path, $script:oracleFixtureParquet[$bucket])
+    }
+  }
   return [pscustomobject]@{ Repo=$repo; Data=$data; Base=$base; CohortRoot=$cohortRoot; Manifest=$manifestPath }
 }
 
@@ -65,7 +98,7 @@ Describe 'oracle existing-store receipt adoption' {
     $result = Invoke-OracleDataAdoption
     ($result.status + ':' + [string]$result.reason) | Should Be 'ADOPTED:'
     $result.base_sha | Should Be $case.Base
-    $result.total_rows | Should Be 6
+    $result.total_rows | Should Be 9
     $serialized = $result | ConvertTo-Json -Compress
     foreach ($secret in @('SPY','QQQ','IWM','holdout secret')) { $serialized.Contains($secret) | Should Be $false }
 
@@ -103,8 +136,8 @@ Describe 'oracle existing-store receipt adoption' {
   It 'requires ingest when Parquet footer counts disagree with the manifest' {
     $case = New-TestOracleCase 'counts'
     $manifest = [System.IO.File]::ReadAllText($case.Manifest) | ConvertFrom-Json
-    $manifest.total_rows = 7
-    $manifest.buckets.'1000' = 3
+    $manifest.total_rows = 10
+    $manifest.buckets.'1000' = 4
     Write-TestJson $case.Manifest $manifest
     Use-TestOracleCase $case
     (Invoke-OracleDataAdoption).status | Should Be 'INGEST_REQUIRED'
@@ -119,5 +152,55 @@ Describe 'oracle existing-store receipt adoption' {
     (Invoke-OracleDataAdoption).status | Should Be 'INGEST_REQUIRED'
     ([System.IO.File]::ReadAllText($digestPath).Trim()) | Should Be ('e' * 64)
     (Test-Path -LiteralPath (Join-Path $case.Repo 'atx-vol/bench/oracle/bootstrap/data.json')) | Should Be $false
+  }
+
+  It 'rejects a uniform arbitrary schema even when every required field name is present' {
+    $case = New-TestOracleCase 'uniform-schema'
+    $python = @'
+import importlib.util
+import sys
+from pathlib import Path
+import pyarrow as pa
+import pyarrow.parquet as pq
+root=Path(sys.argv[1]); tool=Path(sys.argv[2])
+spec=importlib.util.spec_from_file_location('oracle_store_metadata',tool)
+module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+for path in root.glob('date=*/bucket_et=*/*.parquet'):
+    pq.write_table(pa.table({name:pa.array([1,1,1],type=pa.int64()) for name in module.REQUIRED_SCHEMA}),path)
+'@
+    & python -c $python $case.Data $adoptionMetadataTool
+    if ($LASTEXITCODE -ne 0) { throw 'uniform-schema fixture failed' }
+    Use-TestOracleCase $case
+    (Invoke-OracleDataAdoption).status | Should Be 'INGEST_REQUIRED'
+    (Test-Path -LiteralPath (Join-Path $case.Repo 'atx-vol/bench/oracle/bootstrap/data.json')) | Should Be $false
+  }
+
+  It 'requires ingest when a committed cohort underlier is absent from the aggregate store' {
+    $case = New-TestOracleCase 'underlier-missing'
+    Write-TestJson (Join-Path $case.CohortRoot 'holdout.json') ([ordered]@{ name='holdout'; dates=@('2026-08-14'); underliers=@('DIA'); buckets_et=@('1500'); notes='absent key' })
+    $case.Base = Commit-TestRepo $case.Repo 'absent cohort underlier'
+    Use-TestOracleCase $case
+    (Invoke-OracleDataAdoption).status | Should Be 'INGEST_REQUIRED'
+    (Test-Path -LiteralPath (Join-Path $case.Repo 'atx-vol/bench/oracle/bootstrap/data.json')) | Should Be $false
+  }
+
+  It 'rolls back both outputs byte-exactly when the second publication fails' {
+    $case = New-TestOracleCase 'rollback'
+    Use-TestOracleCase $case
+    $digestPath = Join-Path $case.CohortRoot 'holdout.sha256'
+    $receiptPath = Join-Path $case.Repo 'atx-vol/bench/oracle/bootstrap/data.json'
+    New-Item -ItemType Directory -Force (Split-Path -Parent $receiptPath) | Out-Null
+    $oldDigest = "prior-digest-bytes`r`n"
+    $oldReceipt = "prior-receipt-bytes`n"
+    [System.IO.File]::WriteAllText($digestPath, $oldDigest, [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllText($receiptPath, $oldReceipt, [System.Text.UTF8Encoding]::new($false))
+    $newDigest = ('a' * 64) + "`n"
+    $newReceipt = ([ordered]@{ schema_version=1; command_id='oracle_existing_store_adoption'; exit_code=0; holdout_membership_sha256=('a' * 64) } | ConvertTo-Json -Compress) + "`n"
+    $script:adoptionTestFailAfterDigest = $true
+    try { (Publish-AdoptionTransaction $digestPath $receiptPath $newDigest $newReceipt) | Should Be $false }
+    finally { $script:adoptionTestFailAfterDigest = $false }
+    [System.IO.File]::ReadAllText($digestPath) | Should Be $oldDigest
+    [System.IO.File]::ReadAllText($receiptPath) | Should Be $oldReceipt
+    @(Get-ChildItem -LiteralPath (Join-Path $case.Repo 'atx-vol/bench/oracle') -Recurse -File | Where-Object { $_.Name -match '\.(?:stage|backup)$|\.txn\.json$' }).Count | Should Be 0
   }
 }

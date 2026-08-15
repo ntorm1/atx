@@ -16,6 +16,13 @@ flag or legacy execution mode. Stage 2 likewise runs its exact targeted Mode A
 gates before editing, so an already-present passing implementation advances by
 receipt only.
 
+Adoption now pins the full required physical schema and proves every committed
+cohort underlier exists through an internal join-key-only aggregate scan. Digest
+and receipt publication is a journaled two-target transaction with byte-exact
+rollback. The workflow owns typed adoption/disk/path receipts: adoption cannot
+also claim ingest, ingest cannot proceed without a >=15 GiB receipt, and a passing
+pre-existing Mode A can change only its capability receipt.
+
 ### BREAKING — oracle/DAG harness now fails closed with run-owned leases and ordered bootstrap states
 
 The old advisory worktree marker and permissive sprint integration behavior are

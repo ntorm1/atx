@@ -31,8 +31,10 @@ logs.
 Before any Stage 1 ingest, `scripts/oracle-adopt-existing-data.ps1` performs the
 mandatory one-time adoption check. It reads the three cohort manifests from the
 frozen commit, recomputes their schema, membership digest, and both disjointness
-rules internally, and checks the aggregate ingest manifest against Parquet footer
-row counts and schema metadata. It emits aggregate JSON only. `ADOPTED` writes the
+rules internally, pins the complete required SpiderRock field/type schema, checks
+the aggregate ingest manifest against Parquet footer row counts/date/bucket stats,
+and performs an internal underlier-key-only aggregate existence scan. It emits no
+membership or row values. `ADOPTED` transactionally publishes the
 v1 digest and data receipt and bypasses both extraction and the transient-disk
 gate. `INGEST_REQUIRED` is fail-closed and is the only route to the licensed ZIP
 and normal ingest path; there is no flag that bypasses or selects adoption.
@@ -78,7 +80,10 @@ encoded payload field exists.
 First run exactly `powershell scripts\oracle-adopt-existing-data.ps1`. If it
 returns `ADOPTED`, commit only the generated `holdout.sha256` and `data.json` and
 do not require transient disk or rerun ingest. It validates committed cohorts and
-the existing aggregate store using Parquet metadata only, never licensed rows.
+the existing aggregate store using metadata plus an underlier-key-only aggregate
+existence scan, never option rows. Both outputs are staged and validated before a
+journaled two-target publication; any exception restores prior bytes and returns
+typed `INGEST_REQUIRED`.
 
 Only `INGEST_REQUIRED` enters the normal ingest route. That route requires at
 least 15 GiB free transient space on the work drive. If the precondition or
@@ -101,9 +106,11 @@ with pasted aggregate evidence.
 
 ## Stage 2 - Mode A (`missing_mode_a`)
 
-Run the exact targeted Mode A gates before editing. If the already-present Mode A
-implementation passes, write only its v1 capability receipt; do not reimplement
-or rebuild unrelated targets. Otherwise implement `atx-vol-oracle-bench` Mode A.
+Run the exact targeted Mode A gates before editing and return typed precheck
+receipts. If both pass, an exact base-to-tested changed-path receipt must contain
+only `bootstrap/mode-a.json`; any other path fails the workflow. If either gate
+fails, the typed path switches to normal implementation and must include both an
+implementation path and the v1 receipt. Otherwise implement `atx-vol-oracle-bench` Mode A.
 It reads cohort-selected parquet
 with predicate pushdown, prices SpiderRock inputs with `srVol`, compares aggregate
 price/greek cells, and isolates all comparison semantics in

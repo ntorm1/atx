@@ -11,18 +11,6 @@ $adoptionMetadataTool = Join-Path $adoptionRepoRoot 'atx-vol/scripts/oracle_stor
 
 . (Join-Path $PSScriptRoot 'oracle-capability.ps1')
 
-function Write-AtomicUtf8([string]$Path, [string]$Text) {
-  $parent = Split-Path -Parent $Path
-  New-Item -ItemType Directory -Force $parent | Out-Null
-  $temp = $Path + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
-  try {
-    [System.IO.File]::WriteAllText($temp, $Text, [System.Text.UTF8Encoding]::new($false))
-    Move-Item -LiteralPath $temp -Destination $Path -Force
-  } finally {
-    if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Force }
-  }
-}
-
 function New-AdoptionResult([string]$Status, [string]$Reason, $Fields = $null) {
   $result = [ordered]@{ schema_version = 1; status = $Status; command_id = 'oracle_existing_store_adoption' }
   if ($Reason) { $result.reason = $Reason }
@@ -30,13 +18,98 @@ function New-AdoptionResult([string]$Status, [string]$Reason, $Fields = $null) {
   return [pscustomobject]$result
 }
 
-function Invoke-OracleStoreMetadata([string]$ManifestPath) {
-  $raw = @(& python $adoptionMetadataTool --data-root $adoptionDataRoot --manifest $ManifestPath 2>$null)
+function Invoke-OracleStoreMetadata([string]$ManifestPath, [string]$Commit) {
+  $raw = @(& python $adoptionMetadataTool --data-root $adoptionDataRoot --manifest $ManifestPath `
+    --repo-root $adoptionRepoRoot --commit $Commit 2>$null)
   if ($LASTEXITCODE -ne 0 -or @($raw).Count -ne 1) { return $null }
   try { return ([string]$raw[0]) | ConvertFrom-Json } catch { return $null }
 }
 
-function Invoke-OracleDataAdoption {
+function Remove-AdoptionFile([string]$Path) {
+  if ([System.IO.File]::Exists($Path)) { [System.IO.File]::Delete($Path) }
+}
+
+function Restore-AdoptionTransaction($Transaction, [string]$JournalPath) {
+  try {
+    foreach ($name in @('digest', 'receipt')) {
+      $target = [string]$Transaction.($name + '_target')
+      $backup = [string]$Transaction.($name + '_backup')
+      $prior = [bool]$Transaction.($name + '_prior')
+      if ($prior) {
+        if ([System.IO.File]::Exists($backup)) {
+          Remove-AdoptionFile $target
+          [System.IO.File]::Move($backup, $target)
+        } elseif (-not [System.IO.File]::Exists($target)) { return $false }
+      } else {
+        Remove-AdoptionFile $target
+        Remove-AdoptionFile $backup
+      }
+    }
+    Remove-AdoptionFile ([string]$Transaction.digest_stage)
+    Remove-AdoptionFile ([string]$Transaction.receipt_stage)
+    Remove-AdoptionFile $JournalPath
+    return $true
+  } catch { return $false }
+}
+
+function Restore-PendingAdoptionTransaction {
+  $journal = Join-Path $adoptionRepoRoot ($adoptionOracleRoot -replace '/', [System.IO.Path]::DirectorySeparatorChar)
+  $journal = Join-Path $journal '.oracle-data-adoption.txn.json'
+  if (-not [System.IO.File]::Exists($journal)) { return $true }
+  try { $transaction = [System.IO.File]::ReadAllText($journal) | ConvertFrom-Json }
+  catch { return $false }
+  return Restore-AdoptionTransaction $transaction $journal
+}
+
+function Publish-AdoptionTransaction([string]$DigestPath, [string]$ReceiptPath, [string]$DigestText, [string]$ReceiptText) {
+  $token = [guid]::NewGuid().ToString('N')
+  New-Item -ItemType Directory -Force (Split-Path -Parent $DigestPath), (Split-Path -Parent $ReceiptPath) | Out-Null
+  $journal = Join-Path $adoptionRepoRoot ($adoptionOracleRoot -replace '/', [System.IO.Path]::DirectorySeparatorChar)
+  $journal = Join-Path $journal '.oracle-data-adoption.txn.json'
+  $transaction = [ordered]@{
+    schema_version = 1; token = $token
+    digest_target = $DigestPath; digest_stage = $DigestPath + '.' + $token + '.stage'; digest_backup = $DigestPath + '.' + $token + '.backup'; digest_prior = [System.IO.File]::Exists($DigestPath)
+    receipt_target = $ReceiptPath; receipt_stage = $ReceiptPath + '.' + $token + '.stage'; receipt_backup = $ReceiptPath + '.' + $token + '.backup'; receipt_prior = [System.IO.File]::Exists($ReceiptPath)
+  }
+  $journalStage = $journal + '.' + $token + '.stage'
+  try {
+    [System.IO.File]::WriteAllText($transaction.digest_stage, $DigestText, [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllText($transaction.receipt_stage, $ReceiptText, [System.Text.UTF8Encoding]::new($false))
+    $digest = [System.IO.File]::ReadAllText($transaction.digest_stage).Trim().ToLowerInvariant()
+    $stagedReceipt = [System.IO.File]::ReadAllText($transaction.receipt_stage) | ConvertFrom-Json
+    if ($digest -notmatch '^[0-9a-f]{64}$' -or $stagedReceipt.schema_version -ne 1 -or
+        $stagedReceipt.command_id -ne 'oracle_existing_store_adoption' -or $stagedReceipt.exit_code -ne 0 -or
+        $stagedReceipt.holdout_membership_sha256 -ne $digest) { throw 'staged adoption output validation failed' }
+
+    [System.IO.File]::WriteAllText($journalStage, (($transaction | ConvertTo-Json -Compress) + "`n"), [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::Move($journalStage, $journal)
+    if ($transaction.digest_prior) { [System.IO.File]::Copy($DigestPath, $transaction.digest_backup) }
+    if ($transaction.receipt_prior) { [System.IO.File]::Copy($ReceiptPath, $transaction.receipt_backup) }
+    Remove-AdoptionFile $DigestPath
+    [System.IO.File]::Move($transaction.digest_stage, $DigestPath)
+    if ($script:adoptionTestFailAfterDigest) { throw 'simulated second publication failure' }
+    Remove-AdoptionFile $ReceiptPath
+    [System.IO.File]::Move($transaction.receipt_stage, $ReceiptPath)
+    if ([System.IO.File]::ReadAllText($DigestPath) -ne $DigestText -or [System.IO.File]::ReadAllText($ReceiptPath) -ne $ReceiptText) {
+      throw 'published adoption output validation failed'
+    }
+    Remove-AdoptionFile $transaction.digest_backup
+    Remove-AdoptionFile $transaction.receipt_backup
+    Remove-AdoptionFile $journal
+    return $true
+  } catch {
+    if ([System.IO.File]::Exists($journal)) {
+      $null = Restore-AdoptionTransaction ([pscustomobject]$transaction) $journal
+      return $false
+    }
+    Remove-AdoptionFile $transaction.digest_stage
+    Remove-AdoptionFile $transaction.receipt_stage
+    Remove-AdoptionFile $journalStage
+    return $false
+  }
+}
+
+function Invoke-OracleDataAdoptionCore {
   $headSha = Resolve-Commit 'HEAD'
   $cohorts = [ordered]@{}
   foreach ($name in @('smoke', 'tune', 'holdout')) {
@@ -55,11 +128,11 @@ function Invoke-OracleDataAdoption {
   $manifestPath = Join-Path $adoptionDataRoot $manifestName
   if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { return New-AdoptionResult 'INGEST_REQUIRED' 'manifest_missing' }
 
-  $metadata = Invoke-OracleStoreMetadata $manifestPath
-  $metadataKeys = @('schema_version', 'status', 'manifest_sha256', 'total_rows', 'bucket_count', 'parquet_files', 'schema_sha256')
+  $metadata = Invoke-OracleStoreMetadata $manifestPath $headSha
+  $metadataKeys = @('schema_version', 'status', 'manifest_sha256', 'total_rows', 'bucket_count', 'parquet_files', 'schema_sha256', 'cohort_underlier_count')
   if (-not $metadata -or -not (Test-ExactKeys $metadata $metadataKeys) -or $metadata.schema_version -ne 1 -or $metadata.status -ne 'PASS' -or
       $metadata.manifest_sha256 -notmatch '^[0-9a-f]{64}$' -or $metadata.schema_sha256 -notmatch '^[0-9a-f]{64}$' -or
-      [long]$metadata.total_rows -le 0 -or [long]$metadata.bucket_count -le 0 -or [long]$metadata.parquet_files -le 0) {
+      [long]$metadata.total_rows -le 0 -or [long]$metadata.bucket_count -le 0 -or [long]$metadata.parquet_files -le 0 -or [long]$metadata.cohort_underlier_count -le 0) {
     return New-AdoptionResult 'INGEST_REQUIRED' 'store_validation'
   }
   if (-not (Test-IngestManifest $manifestName ([string]$metadata.manifest_sha256))) {
@@ -106,12 +179,25 @@ function Invoke-OracleDataAdoption {
     tune_holdout_underliers_disjoint = $true; tune_holdout_buckets_disjoint = $true
   }
   $receiptPath = Join-Path $adoptionRepoRoot (($adoptionOracleRoot + '/bootstrap/data.json') -replace '/', [System.IO.Path]::DirectorySeparatorChar)
-  Write-AtomicUtf8 $digestPath ($digest + "`n")
-  Write-AtomicUtf8 $receiptPath (($receipt | ConvertTo-Json -Depth 4 -Compress) + "`n")
+  $digestText = $digest + "`n"
+  $receiptText = ($receipt | ConvertTo-Json -Depth 4 -Compress) + "`n"
+  if (-not (Publish-AdoptionTransaction $digestPath $receiptPath $digestText $receiptText)) {
+    return New-AdoptionResult 'INGEST_REQUIRED' 'publication_transaction'
+  }
   return New-AdoptionResult 'ADOPTED' '' ([ordered]@{
     base_sha = $headSha; manifest_sha256 = [string]$metadata.manifest_sha256; holdout_membership_sha256 = $digest
     total_rows = [long]$metadata.total_rows; bucket_count = [long]$metadata.bucket_count; parquet_files = [long]$metadata.parquet_files
+    cohort_underlier_count = [long]$metadata.cohort_underlier_count
   })
+}
+
+function Invoke-OracleDataAdoption {
+  try {
+    if (-not (Restore-PendingAdoptionTransaction)) { return New-AdoptionResult 'INGEST_REQUIRED' 'publication_recovery' }
+    return Invoke-OracleDataAdoptionCore
+  } catch {
+    return New-AdoptionResult 'INGEST_REQUIRED' 'validation_exception'
+  }
 }
 
 if ($MyInvocation.InvocationName -eq '.') { return }

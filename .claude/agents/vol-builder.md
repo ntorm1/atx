@@ -21,7 +21,9 @@ Work loop (TDD, ladder discipline — never bare all-target builds):
    the 15 GiB disk gate. Only aggregate `INGEST_REQUIRED` permits the normal
    licensed ingest path. For Stage 2, run the supplied exact targeted gates
    before editing; if the existing Mode A passes, write only its capability
-   receipt and do not reimplement it.
+   receipt and do not reimplement it. Return the workflow-owned typed adoption,
+   conditional disk, precheck, and exact changed-path receipts; generic evidence
+   cannot choose either branch.
 1. Failing test first, in the correct suite under `atx-vol/tests/`.
 2. `atx-build.ps1 check <file.cpp>` while shaping (single-TU, seconds).
 3. `atx-build.ps1 build <test-target-from-brief>` then `-Ctest -R <Suite>` until green.
