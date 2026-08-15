@@ -4296,8 +4296,19 @@ TEST(MarkDomain, CarryRollCloseBooksAtTheCarriedMark) {
   EXPECT_DOUBLE_EQ(rolled->n_open_lots[kClose], 2.0); // reopened, not flat
   // Closing at the carried mark and reopening at the row's own mark is a pure
   // transfer both ways, so the frictionless roll moves neither P&L nor NAV.
-  EXPECT_DOUBLE_EQ(rolled->pnl_total[kClose], 0.0);
-  EXPECT_DOUBLE_EQ(rolled->nav[kClose], rolled->nav[kClose - 1]);
+  // Tolerance, not exact equality, sized from measurement (2026-08-15, this
+  // fixture): the reopen re-accumulates the row through fresh lots whose
+  // intermediates sit at the ~5e3 scale (gross_vega ~5185.77 here, ulp ~9e-13),
+  // so the two directions of the transfer cancel to summation-order noise —
+  // measured at -7.64e-12 on a ~202 NAV — not to the bit-exact 0.0 the
+  // close-only leg above books (no reopen, so no re-accumulation). The failure
+  // shape this assertion exists to catch — the close booking the EXTRAPOLATED
+  // mark instead of the carried one — measures 98.622 on this same fixture
+  // (the naive leg's NAV move), eleven orders of magnitude above 1e-9: the
+  // bound keeps the real bug loud while absorbing fp noise, and matches the
+  // nav_liquidation reconciliation bound used just below.
+  EXPECT_NEAR(rolled->pnl_total[kClose], 0.0, 1.0e-9);
+  EXPECT_NEAR(rolled->nav[kClose], rolled->nav[kClose - 1], 1.0e-9);
   ASSERT_EQ(rolled->nav_liquidation.size(), rolled->size());
   for (std::size_t i = 0; i < rolled->size(); ++i) {
     EXPECT_NEAR(rolled->nav_liquidation[i], rolled->nav[i], 1.0e-9)
