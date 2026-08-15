@@ -28,6 +28,18 @@ gate, and release. Success evidence contains only exit-code-zero command output.
 row values, option membership, and holdout membership must never enter prompts or
 logs.
 
+Before any Stage 1 ingest, `scripts/oracle-adopt-existing-data.ps1` performs the
+mandatory one-time adoption check. It reads the three cohort manifests from the
+frozen commit, recomputes their schema, membership digest, and both disjointness
+rules internally, pins the complete required SpiderRock field/type schema, checks
+the aggregate ingest manifest against Parquet footer row counts/date/bucket stats,
+then projects only `undSecKey_tk` and uses Arrow compute against the closed cohort
+target set. Only boolean matched-target state is retained; no keys, membership,
+or row values are materialized or emitted. `ADOPTED` transactionally publishes the
+v1 digest and data receipt and bypasses both extraction and the transient-disk
+gate. `INGEST_REQUIRED` is fail-closed and is the only route to the licensed ZIP
+and normal ingest path; there is no flag that bypasses or selects adoption.
+
 ### Closed capability receipts
 
 Capability fails closed on missing, legacy, extra-key, corrupt, or unprovenanced
@@ -37,7 +49,8 @@ an ancestor of canonical, and the prior-stage receipt blob at `base_sha` to equa
 the inherited blob at canonical.
 
 - `bootstrap/data.json` has exactly: `schema_version`, `transition=data`, the two
-  SHAs, `command_id=oracle_ingest_and_cohort_validate`, `exit_code=0`, ingest
+  SHAs, `command_id=oracle_existing_store_adoption` for footer-plus-projection adoption or
+  `oracle_ingest_and_cohort_validate` for the normal licensed ingest, `exit_code=0`, ingest
   manifest name/SHA-256, smoke/tune/holdout Git blob IDs, the holdout membership
   SHA-256, three schema-valid booleans, and the two tune/holdout disjointness
   booleans. The probe validates the external aggregate ingest manifest schema,
@@ -65,8 +78,18 @@ encoded payload field exists.
 
 ## Stage 1 - data (`missing_data`)
 
-Precondition: at least 15 GiB free transient space on the work drive. If the
-precondition or licensed ZIP is missing, report `BLOCKED`; do not partially ingest.
+First run exactly `powershell scripts\oracle-adopt-existing-data.ps1`. If it
+returns `ADOPTED`, commit only the generated `holdout.sha256` and `data.json` and
+do not require transient disk or rerun ingest. It validates committed cohorts and
+the existing aggregate store using Parquet footers plus an aggregate-only projection
+of exactly `undSecKey_tk`; Arrow comparisons retain only boolean target matches and
+never materialize option rows or stored key strings. Both outputs are staged and validated before a
+journaled two-target publication; any exception restores prior bytes and returns
+typed `INGEST_REQUIRED`.
+
+Only `INGEST_REQUIRED` enters the normal ingest route. That route requires at
+least 15 GiB free transient space on the work drive. If the precondition or
+licensed ZIP is missing, report `BLOCKED`; do not partially ingest.
 
 Run `python atx-vol/scripts/oracle_ingest.py --zip <licensed zip>` and create or
 repair:
@@ -85,7 +108,12 @@ with pasted aggregate evidence.
 
 ## Stage 2 - Mode A (`missing_mode_a`)
 
-Implement `atx-vol-oracle-bench` Mode A first. It reads cohort-selected parquet
+Run the exact targeted Mode A gates before editing and return typed precheck
+receipts. If both pass, an exact base-to-tested changed-path receipt must contain
+only `bootstrap/mode-a.json`; any other path fails the workflow. If either gate
+fails, the typed path switches to normal implementation and must include both an
+implementation path and the v1 receipt. Otherwise implement `atx-vol-oracle-bench` Mode A.
+It reads cohort-selected parquet
 with predicate pushdown, prices SpiderRock inputs with `srVol`, compares aggregate
 price/greek cells, and isolates all comparison semantics in
 `oracle_conventions.*`. Mode B must not be implemented or stubbed in this stage.

@@ -1,7 +1,9 @@
-# Exact stage-1 verifier targets used by vol-oracle-iter.
+# Exact stage-1 verifier targets used by vol-oracle-iter. Aggregate-store
+# verification is Parquet-footer validation plus an undSecKey_tk-only Arrow
+# projection whose externally visible result is counts/digests/booleans only.
 param(
   [Parameter(Mandatory = $true)]
-  [ValidateSet('disk', 'ingest_manifest', 'cohort_manifests', 'holdout_digest')]
+  [ValidateSet('disk', 'aggregate_store', 'ingest_manifest', 'cohort_manifests', 'holdout_digest')]
   [string]$Gate
 )
 $ErrorActionPreference = 'Stop'
@@ -17,8 +19,22 @@ if ($Gate -eq 'disk') {
   $headSha = Resolve-Commit 'HEAD'
   $digest = ''
   if (-not (Test-DataReceipt $headSha ([ref]$digest))) { throw ($Gate + ' gate failed closed aggregate data receipt validation') }
+  if ($Gate -eq 'aggregate_store') {
+    $receipt = Get-CommittedJson $headSha ($oracleRoot + '/bootstrap/data.json')
+    $tool = Join-Path $repoRoot 'atx-vol/scripts/oracle_store_metadata.py'
+    $manifestPath = Join-Path $dataRoot ([string]$receipt.ingest_manifest_name)
+    $raw = @(& python $tool --data-root $dataRoot --manifest $manifestPath --repo-root $repoRoot --commit $headSha 2>$null)
+    if ($LASTEXITCODE -ne 0 -or @($raw).Count -ne 1) { throw 'aggregate_store gate failed closed metadata invocation' }
+    try { $metadata = ([string]$raw[0]) | ConvertFrom-Json } catch { throw 'aggregate_store gate failed closed metadata receipt' }
+    if (-not (Test-ExactKeys $metadata @('schema_version', 'status', 'manifest_sha256', 'total_rows', 'bucket_count', 'parquet_files', 'schema_sha256', 'cohort_underlier_count')) -or
+        $metadata.schema_version -ne 1 -or $metadata.status -ne 'PASS' -or $metadata.manifest_sha256 -ne $receipt.ingest_manifest_sha256 -or
+        [long]$metadata.total_rows -le 0 -or [long]$metadata.bucket_count -le 0 -or [long]$metadata.parquet_files -le 0 -or [long]$metadata.cohort_underlier_count -le 0 -or
+        $metadata.schema_sha256 -notmatch '^[0-9a-f]{64}$') { throw 'aggregate_store gate failed closed metadata validation' }
+    $rawEvidence = $headSha + ':' + $digest + ':' + $metadata.manifest_sha256 + ':' + $metadata.total_rows
+  } else {
+    $rawEvidence = $headSha + ':' + $digest
+  }
   $observations = 1
-  $rawEvidence = $headSha + ':' + $digest
 }
 
 $bytes = [System.Text.UTF8Encoding]::new($false).GetBytes($rawEvidence)

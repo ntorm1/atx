@@ -56,6 +56,19 @@ recorded in CHANGELOG, never as opt-in configuration.
 
 ## 1. Oracle data foundation (one-time per drop)
 
+Stage 1 always runs `scripts/oracle-adopt-existing-data.ps1` before ingest. The
+fixed command validates committed cohorts plus the existing aggregate manifest,
+pins every required SpiderRock field/type and verifies Parquet footer counts and
+partition stats. It then projects exactly `undSecKey_tk`; Arrow compute compares
+that projection with the closed cohort target set while retaining only boolean
+matched-target state. Stored strings, membership, and option rows are never
+materialized or emitted. It recomputes schema/disjointness/holdout digest, and
+`ADOPTED` journal-publishes the exact v1 digest
+and data receipt without extraction or a disk gate. Any missing, corrupt,
+mismatched, or overlapping input returns `INGEST_REQUIRED`, the only route to the
+normal disk-gated licensed ingest. There is no selector flag or compatibility
+mode.
+
 **Source schema** (verified against the file): option key `okey_*` (incl. strike `okey_xx`,
 `okey_cp`), slice `date` (UTC; 13:30 UTC = the ignored 9:30 ET slice), quote-time
 `timestamp`, underlier `undSecKey_tk` + `uBid/uAsk/uPrc`, market `bidPrc/askPrc/bidSz/askSz/
@@ -161,8 +174,11 @@ parameterization near expiry, batch-vectorized American pricing paths.
 
 ## 5. Sequencing (small → big, per user directive)
 
-1. `missing_data`: ingest + all three cohorts + frozen holdout-membership hash.
-2. `missing_mode_a`: Mode A tool + aggregate smoke capability receipt.
+1. `missing_data`: mandatory existing-store adoption; only `INGEST_REQUIRED` runs
+   ingest. Both routes finish with all three cohorts, frozen holdout hash, and v1 receipt.
+2. `missing_mode_a`: run exact targeted Mode A gates first; a passing existing
+   implementation gets a mechanically diff-pinned receipt-only transition;
+   otherwise typed failing prechecks select the normal implementation path.
 3. `missing_conventions`: smoke+tune convention resolution + residual floor at iter-000.
 4. `missing_mode_b`: Mode B + aggregate smoke/tune capability receipt.
 5. `ready`: iterations 1..k on smoke+tune, then holdout ratchet only after sprint PASS.
@@ -172,8 +188,8 @@ parameterization near expiry, batch-vectorized American pricing paths.
 
 ## Risks
 
-- 15 GB transient disk (C: was recently near capacity — ingest checks first, target
-  drive configurable).
+- 15 GB transient disk only when adoption returns `INGEST_REQUIRED` (C: was
+  recently near capacity; the ingest fallback checks first, target drive configurable).
 - Single trading day → overfit risk even with holdout; mitigated by underlier+bucket
   disjointness now, more days later.
 - Convention mismatch could masquerade as model error for the whole loop — hence

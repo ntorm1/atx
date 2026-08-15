@@ -128,8 +128,10 @@ function Test-IngestManifest([string]$Name, [string]$ExpectedSha256) {
 function Test-DataReceipt([string]$Sha, [ref]$DigestOut) {
   $receipt = Get-CommittedJson $Sha ($oracleRoot + '/bootstrap/data.json')
   $keys = @('schema_version', 'transition', 'base_sha', 'tested_sha', 'command_id', 'exit_code', 'ingest_manifest_name', 'ingest_manifest_sha256', 'smoke_blob_oid', 'tune_blob_oid', 'holdout_blob_oid', 'holdout_membership_sha256', 'smoke_schema_valid', 'tune_schema_valid', 'holdout_schema_valid', 'tune_holdout_underliers_disjoint', 'tune_holdout_buckets_disjoint')
-  if (-not (Test-ExactKeys $receipt $keys) -or $receipt.schema_version -ne 1 -or $receipt.transition -ne 'data' -or $receipt.command_id -ne 'oracle_ingest_and_cohort_validate' -or $receipt.exit_code -ne 0 -or
+  $dataCommandIds = @('oracle_existing_store_adoption', 'oracle_ingest_and_cohort_validate')
+  if (-not (Test-ExactKeys $receipt $keys) -or $receipt.schema_version -ne 1 -or $receipt.transition -ne 'data' -or $dataCommandIds -notcontains $receipt.command_id -or $receipt.exit_code -ne 0 -or
       -not $receipt.smoke_schema_valid -or -not $receipt.tune_schema_valid -or -not $receipt.holdout_schema_valid -or -not $receipt.tune_holdout_underliers_disjoint -or -not $receipt.tune_holdout_buckets_disjoint -or -not (Test-Provenance $receipt $Sha '')) { return $false }
+  if ($receipt.command_id -eq 'oracle_existing_store_adoption' -and $receipt.base_sha -ne $receipt.tested_sha) { return $false }
   $smokePath = $oracleRoot + '/cohorts/smoke.json'; $tunePath = $oracleRoot + '/cohorts/tune.json'
   $holdoutPath = $oracleRoot + '/cohorts/holdout.json'; $digestPath = $oracleRoot + '/cohorts/holdout.sha256'
   if ((Get-BlobOid $Sha $smokePath) -ne $receipt.smoke_blob_oid -or (Get-BlobOid $Sha $tunePath) -ne $receipt.tune_blob_oid -or

@@ -37,9 +37,9 @@ hard gate failure, not an ordinary iteration. A deliberate replacement requires
 operator approval and a ledger entry explaining why.
 
 Canonical hash encoding is UTF-8 JSON with no BOM or trailing newline, fixed key
-order `dates`, `underliers`, `buckets_et`, each array deduplicated and sorted by
-ordinal code point, and compact separators (Python `json.dumps(obj,
-ensure_ascii=True, separators=(',', ':'))`). `holdout.sha256` contains one
+order `schema_version`, `name`, `dates`, `underliers`, `buckets_et`, with
+`schema_version=1`, `name=holdout`, and each membership array deduplicated and
+sorted by ordinal code point. Encoding is compact JSON. `holdout.sha256` contains one
 lowercase hex digest plus a newline. Notes and JSON formatting are deliberately
 excluded, so comment-only edits do not change membership identity.
 
