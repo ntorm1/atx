@@ -5,6 +5,17 @@ that silently changes a NUMBER a caller already depends on belongs in this file.
 
 ## Unreleased
 
+### BREAKING - oracle Stage 1 adopts valid existing stores before ingest
+
+`missing_data` no longer unconditionally checks for 15 GiB and re-ingests the
+licensed drop. The fixed Stage 1 path first validates the committed smoke/tune/
+holdout cohorts and the existing aggregate manifest plus Parquet footer metadata,
+then writes the v1 holdout digest and data receipt. Only fail-closed
+`INGEST_REQUIRED` enters the disk-gated licensed ingest path. There is no opt-in
+flag or legacy execution mode. Stage 2 likewise runs its exact targeted Mode A
+gates before editing, so an already-present passing implementation advances by
+receipt only.
+
 ### BREAKING — oracle/DAG harness now fails closed with run-owned leases and ordered bootstrap states
 
 The old advisory worktree marker and permissive sprint integration behavior are

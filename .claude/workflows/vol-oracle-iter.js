@@ -45,6 +45,7 @@ const RATCHET_GATE_COMMANDS = Object.freeze({
 })
 const BOOTSTRAP_GATE_COMMANDS = Object.freeze({
   disk: 'powershell scripts\\oracle-bootstrap-preflight.ps1 -Gate disk',
+  aggregate_store: 'powershell scripts\\oracle-bootstrap-preflight.ps1 -Gate aggregate_store',
   ingest_manifest: 'powershell scripts\\oracle-bootstrap-preflight.ps1 -Gate ingest_manifest',
   cohort_manifests: 'powershell scripts\\oracle-bootstrap-preflight.ps1 -Gate cohort_manifests',
   holdout_digest: 'powershell scripts\\oracle-bootstrap-preflight.ps1 -Gate holdout_digest',
@@ -323,8 +324,8 @@ const RATCHET_PREPARE = {
 }
 
 const BOOTSTRAP_LANES = {
-  missing_data: { stage: '1', slug: 'data', next: 'missing_mode_a', gate_ids: ['disk', 'ingest_manifest', 'cohort_manifests', 'holdout_digest'], contract: 'Verify >=15 GiB, ingest, create/repair smoke+tune+holdout manifests, commit holdout.sha256 plus the exact v1 bootstrap/data.json aggregate validation/provenance receipt from CHARTER. Never benchmark holdout or emit membership/rows.' },
-  missing_mode_a: { stage: '2', slug: 'mode-a', next: 'missing_conventions', gate_ids: ['mode_a_targeted_tests', 'mode_a_smoke'], contract: 'Implement/test Mode A, run aggregate smoke only, commit bootstrap/mode-a.json. Do not implement/stub Mode B; never benchmark holdout.' },
+  missing_data: { stage: '1', slug: 'data', next: 'missing_mode_a', gate_ids: ['aggregate_store', 'ingest_manifest', 'cohort_manifests', 'holdout_digest'], contract: 'First run exactly powershell scripts\\oracle-adopt-existing-data.ps1. ADOPTED means commit only the generated holdout.sha256 and exact v1 bootstrap/data.json receipt; do not ingest or require transient disk. INGEST_REQUIRED means verify >=15 GiB and licensed ZIP, then run the normal ingest/cohort path and produce the exact v1 schema with licensed-ingest command provenance. Never benchmark holdout or emit membership/rows.' },
+  missing_mode_a: { stage: '2', slug: 'mode-a', next: 'missing_conventions', gate_ids: ['mode_a_targeted_tests', 'mode_a_smoke'], contract: 'Run the exact targeted Mode A gates first. If the already-present implementation passes, make no pricing implementation change and write only bootstrap/mode-a.json. Implement/fix Mode A only when an exact targeted gate proves it necessary. Do not implement/stub Mode B; never benchmark holdout.' },
   missing_conventions: { stage: '3', slug: 'conventions', next: 'missing_mode_b', gate_ids: ['convention_tests', 'mode_a_smoke_tune', 'residual_floor'], contract: 'Resolve conventions on aggregate smoke+tune Mode A, commit CONVENTIONS.md + iter-000 + exact v1 bootstrap/conventions.json validation/provenance receipt and evidenced memory. Never benchmark holdout or read Mode B.' },
   missing_mode_b: { stage: '4', slug: 'mode-b', next: 'ready', gate_ids: ['mode_b_targeted_tests', 'mode_b_smoke_tune'], contract: 'Implement/test Mode B, run aggregate smoke+tune, commit bootstrap/mode-b.json. Never change holdout/conventions or benchmark holdout.' },
 }

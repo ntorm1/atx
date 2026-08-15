@@ -50,6 +50,7 @@ const RATCHET_GATE_COMMANDS = {
 }
 const BOOTSTRAP_GATE_COMMANDS = {
   disk: 'powershell scripts\\oracle-bootstrap-preflight.ps1 -Gate disk',
+  aggregate_store: 'powershell scripts\\oracle-bootstrap-preflight.ps1 -Gate aggregate_store',
   ingest_manifest: 'powershell scripts\\oracle-bootstrap-preflight.ps1 -Gate ingest_manifest',
   cohort_manifests: 'powershell scripts\\oracle-bootstrap-preflight.ps1 -Gate cohort_manifests',
   holdout_digest: 'powershell scripts\\oracle-bootstrap-preflight.ps1 -Gate holdout_digest',

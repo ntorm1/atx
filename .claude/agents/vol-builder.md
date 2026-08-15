@@ -16,6 +16,12 @@ Setup (from repo root `C:\atx`):
 4. `powershell scripts\atx-build.ps1` from the leased tree (it has a wrong-tree guard; `powershell`, not `pwsh`).
 
 Work loop (TDD, ladder discipline — never bare all-target builds):
+0. For oracle bootstrap Stage 1, run the fixed adoption command first. An
+   aggregate `ADOPTED` result is receipt-only work: do not ingest and do not run
+   the 15 GiB disk gate. Only aggregate `INGEST_REQUIRED` permits the normal
+   licensed ingest path. For Stage 2, run the supplied exact targeted gates
+   before editing; if the existing Mode A passes, write only its capability
+   receipt and do not reimplement it.
 1. Failing test first, in the correct suite under `atx-vol/tests/`.
 2. `atx-build.ps1 check <file.cpp>` while shaping (single-TU, seconds).
 3. `atx-build.ps1 build <test-target-from-brief>` then `-Ctest -R <Suite>` until green.
