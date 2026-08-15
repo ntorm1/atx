@@ -18,6 +18,14 @@
 //       --entry-end <date> --tenor-days <n> --delta-lo 0.05 --delta-hi 0.95
 //       --dividends <tsv> --out labels.tsv [--threads N] [--events <tsv>]
 //
+// SECOND MODE (vrp-ml round 1): `--vrp-panel` switches this driver to the
+// (symbol, date) VRP label/feature panel builder (schema vrp_panel_v1,
+// analytics/vrp_panel.hpp — header-only, so the gate test's textual
+// inclusion of this TU picks it up with no CMake change):
+//
+//   bev_label_factory --vrp-panel --db <root> [--db <root2> ...] --out <tsv>
+//       [--uid <symbol> ...] [--entry-start <date>] [--entry-end <date>]
+//
 // --events <tsv> is OPTIONAL: one ISO (YYYY-MM-DD) announcement date per
 // line, `#` comment lines and blank lines skipped, CR tolerated. Timestamps
 // are midnight UTC of the announcement date -- a deliberate day-resolution
@@ -100,6 +108,7 @@
 #include "atx/vol/api/backtest/priced_surface.hpp"   // PricedSurface
 #include "atx/vol/api/pricing/rates_curve.hpp"      // DividendEvent
 #include "analytics/realized_vol.hpp"     // OhlcBar, RvEstimator, RvPanel, realized_vol_panel
+#include "analytics/vrp_panel.hpp"        // VrpPanelConfig, run_vrp_panel (--vrp-panel mode)
 #include "atx/vol/api/backtest/strategy.hpp"         // resolve_strike_by_delta
 #include "atx/vol/api/storage/surface_archive.hpp"  // SurfaceArchiveV2
 #include "atx/vol/api/storage/surface_db.hpp"       // SurfaceDb
@@ -147,6 +156,64 @@ struct BevFactoryArgs {
   std::fprintf(stderr, "usage: bev_label_factory --db ROOT --uid SYMBOL --entry-start DATE "
                        "--entry-end DATE\n    --tenor-days N --delta-lo X --delta-hi X "
                        "--dividends TSV --out FILE\n    [--threads N] [--events TSV]\n");
+}
+
+// ── --vrp-panel mode (vrp-ml round 1) ────────────────────────────────────
+//
+// A SECOND, self-contained mode on this driver: build the (symbol, date)
+// VRP label/feature panel (schema vrp_panel_v1) from one or more SurfaceDb
+// roots. All logic lives in analytics/vrp_panel.hpp (header-only, so this
+// example's no-CMake-edit / textual-inclusion contract is untouched); this
+// file adds only the argv surface. `--db` REPEATS — the SPY corpus is one
+// root per year and the panel stitches spot/iv history across the root
+// boundaries — and `--uid` repeats to filter symbols (omitted = union of
+// the roots' manifest symbol tables).
+
+[[maybe_unused]] void vrp_usage() {
+  std::fprintf(stderr,
+               "usage: bev_label_factory --vrp-panel --db ROOT [--db ROOT2 ...] --out FILE\n"
+               "    [--uid SYMBOL ...] [--entry-start DATE] [--entry-end DATE]\n");
+}
+
+// argv -> VrpPanelConfig. Outside the NO_MAIN guard for the same reason
+// parse_args below is: the gate test drives it with canned argv vectors.
+bool parse_vrp_panel_args(int argc, char **argv, VrpPanelConfig &cfg) {
+  for (int i = 1; i < argc; ++i) {
+    const std::string_view flag{argv[i]};
+    auto next = [&](std::string &dst) {
+      if (i + 1 >= argc)
+        return false;
+      dst = argv[++i];
+      return true;
+    };
+    std::string v;
+    if (flag == "--vrp-panel") {
+      continue; // the mode selector itself
+    } else if (flag == "--db" && next(v)) {
+      cfg.db_roots.push_back(v);
+    } else if (flag == "--uid" && next(v)) {
+      cfg.symbols.push_back(v);
+    } else if (flag == "--entry-start" && next(v)) {
+      cfg.entry_start = v;
+    } else if (flag == "--entry-end" && next(v)) {
+      cfg.entry_end = v;
+    } else if (flag == "--out" && next(v)) {
+      cfg.out = v;
+    } else {
+      std::fprintf(stderr, "unknown/incomplete flag (--vrp-panel mode): %.*s\n",
+                   static_cast<int>(flag.size()), flag.data());
+      return false;
+    }
+  }
+  if (cfg.db_roots.empty() || cfg.out.empty()) {
+    std::fprintf(stderr, "--vrp-panel requires at least one --db and --out\n");
+    return false;
+  }
+  if (!cfg.entry_start.empty() && !cfg.entry_end.empty() && cfg.entry_end < cfg.entry_start) {
+    std::fprintf(stderr, "--entry-end precedes --entry-start\n");
+    return false;
+  }
+  return true;
 }
 
 // argv -> BevFactoryArgs, plus the required-field and range validation. Left
@@ -1057,6 +1124,30 @@ std::string fmt_num(double v) {
 
 #ifndef ATX_BEV_LABEL_FACTORY_NO_MAIN
 int main(int argc, char **argv) {
+  // Mode dispatch BEFORE parse_args: the BEV parser rejects unknown flags,
+  // so `--vrp-panel` must be routed to its own parser first.
+  bool vrp_mode = false;
+  // Bounded by argc.
+  for (int i = 1; i < argc; ++i) {
+    if (std::string_view{argv[i]} == "--vrp-panel") {
+      vrp_mode = true;
+      break;
+    }
+  }
+  if (vrp_mode) {
+    VrpPanelConfig cfg;
+    if (!parse_vrp_panel_args(argc, argv, cfg)) {
+      vrp_usage();
+      return 2;
+    }
+    const Result<VrpPanelCounters> rc = run_vrp_panel(cfg);
+    if (!rc.has_value()) {
+      std::fprintf(stderr, "bev_label_factory --vrp-panel: %s\n",
+                   rc.error().to_string().c_str());
+      return 1;
+    }
+    return 0;
+  }
   BevFactoryArgs args;
   if (!parse_args(argc, argv, args)) {
     usage();
