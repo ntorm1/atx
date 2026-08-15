@@ -228,6 +228,21 @@ function bootstrapPrepare(report) {
   }
 }
 
+function blockedStage1Report() {
+  const branch = 'lane/oracle-bootstrap-data-run-1'
+  const identity = leaseIdentity({ branch, base: SHA.base, heartbeat: 'run-1-bootstrap-data' })
+  return {
+    state: 'missing_data', outcome: 'BLOCKED', branch, sha: '', base_sha: SHA.base,
+    worktree: identity.worktree, lease_name: identity.lease_name, lease_run_id: 'run-1',
+    heartbeat_id: identity.heartbeat_id, keeper_pid: identity.keeper_pid,
+    keeper_process_started_utc: identity.keeper_process_started_utc,
+    acquisition_receipt: leaseReceipt('acquire', identity), holdout_digest_receipt: '', evidence: [],
+    blockers: ['licensed ZIP unavailable'],
+    diagnostics: [{ command: 'powershell Test-Path licensed-oracle.zip', exit_code: 1, output: 'licensed-oracle.zip missing' }],
+    deviations: 'licensed data unavailable',
+  }
+}
+
 function capability(state = 'missing_mode_a') {
   const canonicalExists = true
   return {
@@ -408,12 +423,26 @@ test('success evidence and APPROVE contracts reject exit failure/blockers', () =
   assert.match(oracleFns.reviewContractError(broadReview, SHA.build), /invalid\/broad/)
 })
 
-test('actual bootstrap no-Fix path prepares, finalizes exact CAS, audits, and returns BOOTSTRAP', async () => {
+test('actual bootstrap no-Fix path lands, while BLOCKED enters guarded abort cleanup', async () => {
   const { result, phases } = await runOracle(bootstrapResponses())
   assert.equal(result.verdict, 'BOOTSTRAP')
   assert.equal(result.canonical_after, SHA.build)
   assert.equal(phases.includes('Bootstrap Fix'), false)
   assert.deepEqual(phases.slice(-3), ['Bootstrap Verify', 'Bootstrap Finalize', 'Bootstrap Audit'])
+
+  const blocked = blockedStage1Report()
+  const cleanup = {
+    passed: true, released: [blocked.lease_name],
+    release_receipts: [leaseReceipt('release', leaseIdentity({ branch: blocked.branch, base: SHA.base, heartbeat: blocked.heartbeat_id }))],
+    evidence: [{ command: 'powershell scripts\\lease-worktree.ps1 -Release pool-1 -RunId run-1', exit_code: 0, output: 'RELEASED pool-1 run-1' }],
+  }
+  const blockedRun = await runOracle({
+    capability: capability('missing_data'), 'bootstrap-build:missing_data': blocked, 'bootstrap-abort-cleanup': cleanup,
+  })
+  assert.equal(blockedRun.result.verdict, 'FAILED')
+  assert.match(blockedRun.result.failure, /bootstrap blocked: licensed ZIP unavailable/u)
+  assert.equal(blockedRun.result.cleanup, cleanup)
+  assert.deepEqual(blockedRun.calls, ['capability', 'bootstrap-build:missing_data', 'bootstrap-abort-cleanup'])
 })
 
 test('actual bootstrap Fix path requires fresh re-review of new SHA before prepare', async () => {

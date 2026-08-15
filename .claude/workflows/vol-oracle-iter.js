@@ -82,6 +82,13 @@ const BOOTSTRAP_SUCCESS_EVIDENCE_ITEM = {
     exit_code: { type: 'integer', enum: [0] }, output: { type: 'string', minLength: 1 },
   },
 }
+const BOOTSTRAP_DIAGNOSTIC_EVIDENCE_ITEM = {
+  type: 'object', additionalProperties: false, required: ['command', 'exit_code', 'output'],
+  properties: {
+    command: { type: 'string', pattern: '^[^;&|`()\\r\\n]+$' },
+    exit_code: { type: 'integer' }, output: { type: 'string', minLength: 1 },
+  },
+}
 const LEASE_RECEIPT = {
   type: 'object', additionalProperties: false,
   required: ['action', 'lease_name', 'run_id', 'branch', 'base_sha', 'worktree', 'heartbeat_id', 'keeper_pid', 'keeper_process_started_utc', 'keeper_ready_utc', 'exit_code', 'output'],
@@ -204,20 +211,44 @@ const CAPABILITY = {
     diagnostics: { type: 'array', items: EVIDENCE_ITEM },
   },
 }
+const BOOTSTRAP_REPORT_IDENTITY_REQUIRED = ['state', 'outcome', 'branch', 'sha', 'base_sha', 'worktree', 'lease_name', 'lease_run_id', 'heartbeat_id', 'keeper_pid', 'keeper_process_started_utc', 'acquisition_receipt', 'holdout_digest_receipt', 'evidence', 'deviations']
+const BOOTSTRAP_REPORT_COMMON_PROPERTIES = {
+  state: { type: 'string', enum: ['missing_data', 'missing_mode_a', 'missing_conventions', 'missing_mode_b'] },
+  branch: { type: 'string', minLength: 1 }, sha: { type: 'string' }, base_sha: { type: 'string', pattern: '^[0-9a-f]{40}$' },
+  worktree: { type: 'string', minLength: 1 }, lease_name: { type: 'string', pattern: '^pool-[0-9]+$' },
+  lease_run_id: { type: 'string', minLength: 1 }, heartbeat_id: { type: 'string', minLength: 1 },
+  keeper_pid: { type: 'integer' }, keeper_process_started_utc: { type: 'string', minLength: 1 }, acquisition_receipt: LEASE_RECEIPT,
+  bootstrap_path: { type: 'string', enum: ['data_adoption', 'data_ingest', 'mode_a_receipt_only', 'mode_a_implementation', 'standard'] },
+  adoption_receipt: ADOPTION_RECEIPT, disk_receipt: GATE_RECEIPT,
+  precheck_gate_receipts: { type: 'array', items: PRECHECK_GATE_RECEIPT }, changed_path_receipt: CHANGED_PATH_RECEIPT,
+  deviations: { type: 'string' },
+}
 const BOOTSTRAP_REPORT = {
-  type: 'object', additionalProperties: false,
-  required: ['state', 'outcome', 'branch', 'sha', 'base_sha', 'worktree', 'lease_name', 'lease_run_id', 'heartbeat_id', 'keeper_pid', 'keeper_process_started_utc', 'acquisition_receipt', 'holdout_digest_receipt', 'evidence', 'deviations'],
-  properties: {
-    state: { type: 'string', enum: ['missing_data', 'missing_mode_a', 'missing_conventions', 'missing_mode_b'] },
-    outcome: { type: 'string', enum: ['DONE', 'BLOCKED'] }, branch: { type: 'string' }, sha: { type: 'string' }, base_sha: { type: 'string' },
-    worktree: { type: 'string' }, lease_name: { type: 'string' }, lease_run_id: { type: 'string' }, heartbeat_id: { type: 'string' },
-    keeper_pid: { type: 'integer' }, keeper_process_started_utc: { type: 'string' }, acquisition_receipt: LEASE_RECEIPT,
-    holdout_digest_receipt: { type: 'string', pattern: '^[0-9a-f]{64}$' }, evidence: { type: 'array', minItems: 1, items: BOOTSTRAP_SUCCESS_EVIDENCE_ITEM },
-    bootstrap_path: { type: 'string', enum: ['data_adoption', 'data_ingest', 'mode_a_receipt_only', 'mode_a_implementation', 'standard'] },
-    adoption_receipt: ADOPTION_RECEIPT, disk_receipt: GATE_RECEIPT,
-    precheck_gate_receipts: { type: 'array', items: PRECHECK_GATE_RECEIPT }, changed_path_receipt: CHANGED_PATH_RECEIPT,
-    diagnostics: { type: 'array', items: EVIDENCE_ITEM }, deviations: { type: 'string' },
-  },
+  oneOf: [
+    {
+      type: 'object', additionalProperties: false,
+      required: BOOTSTRAP_REPORT_IDENTITY_REQUIRED,
+      properties: {
+        ...BOOTSTRAP_REPORT_COMMON_PROPERTIES,
+        outcome: { type: 'string', enum: ['DONE'] }, sha: { type: 'string', pattern: '^[0-9a-f]{40}$' },
+        holdout_digest_receipt: { type: 'string', pattern: '^[0-9a-f]{64}$' },
+        evidence: { type: 'array', minItems: 1, items: BOOTSTRAP_SUCCESS_EVIDENCE_ITEM },
+        diagnostics: { type: 'array', items: BOOTSTRAP_DIAGNOSTIC_EVIDENCE_ITEM },
+      },
+    },
+    {
+      type: 'object', additionalProperties: false,
+      required: [...BOOTSTRAP_REPORT_IDENTITY_REQUIRED, 'blockers', 'diagnostics'],
+      properties: {
+        ...BOOTSTRAP_REPORT_COMMON_PROPERTIES,
+        outcome: { type: 'string', enum: ['BLOCKED'] }, sha: { type: 'string', pattern: '^(?:|[0-9a-f]{40})$' },
+        holdout_digest_receipt: { type: 'string', pattern: '^(?:|[0-9a-f]{64})$' },
+        evidence: { type: 'array', items: BOOTSTRAP_SUCCESS_EVIDENCE_ITEM },
+        blockers: { type: 'array', minItems: 1, items: { type: 'string', minLength: 1 } },
+        diagnostics: { type: 'array', minItems: 1, items: BOOTSTRAP_DIAGNOSTIC_EVIDENCE_ITEM },
+      },
+    },
+  ],
 }
 const REVIEW = {
   type: 'object', additionalProperties: false, required: ['verdict', 'reviewed_sha', 'evidence', 'findings'],
@@ -617,7 +648,24 @@ function bootstrapPathError(report, expected) {
 }
 
 function bootstrapReportError(report, expected) {
-  if (!report || report.outcome !== 'DONE') return 'bootstrap build incomplete'
+  if (!report) return 'bootstrap build incomplete'
+  if (report.outcome === 'BLOCKED') {
+    if (report.state !== expected.state || report.branch !== expected.branch || report.base_sha !== expected.base_sha || report.lease_run_id !== expected.run_id || report.heartbeat_id !== expected.heartbeat_id) return 'blocked bootstrap identity mismatch'
+    if (!/^pool-[0-9]+$/.test(report.lease_name || '') || !/[\\/]atx-wt[\\/]pool-[0-9]+$/i.test(report.worktree || '') ||
+        !report.worktree.replace(/\//g, '\\').toLowerCase().endsWith(`\\${report.lease_name.toLowerCase()}`)) return 'blocked bootstrap not isolated'
+    if ((report.sha && !/^[0-9a-f]{40}$/.test(report.sha)) ||
+        (report.holdout_digest_receipt && !/^[0-9a-f]{64}$/.test(report.holdout_digest_receipt))) return 'blocked bootstrap SHA/receipt invalid'
+    if (!Array.isArray(report.blockers) || !report.blockers.length || report.blockers.some(item => typeof item !== 'string' || !item.trim())) return 'blocked bootstrap blockers missing'
+    if (!Array.isArray(report.evidence) || (report.evidence.length && !validSuccessEvidence(report.evidence))) return 'blocked bootstrap success evidence invalid'
+    if (!Array.isArray(report.diagnostics) || !report.diagnostics.length || report.diagnostics.some(item => !item || typeof item.command !== 'string' || iterationCommandError(item.command) ||
+        !Number.isInteger(item.exit_code) || typeof item.output !== 'string' || !item.output.trim())) return 'blocked bootstrap diagnostics invalid'
+    if (!validLeaseReceipt(report.acquisition_receipt, {
+      lease_name: report.lease_name, run_id: expected.run_id, branch: expected.branch, base_sha: expected.base_sha, worktree: report.worktree,
+      heartbeat_id: expected.heartbeat_id, keeper_pid: report.keeper_pid, keeper_process_started_utc: report.keeper_process_started_utc,
+    }, 'acquire')) return 'blocked bootstrap acquisition receipt invalid'
+    return `bootstrap blocked: ${report.blockers.join('; ')}`
+  }
+  if (report.outcome !== 'DONE') return 'bootstrap build incomplete'
   if (report.state !== expected.state || report.branch !== expected.branch || report.base_sha !== expected.base_sha || report.lease_run_id !== expected.run_id || report.heartbeat_id !== expected.heartbeat_id) return 'bootstrap build identity mismatch'
   if (!/^[0-9a-f]{40}$/i.test(report.sha || '') || !/^[0-9a-f]{64}$/.test(report.holdout_digest_receipt || '') ||
       (expected.holdout_digest_receipt && report.holdout_digest_receipt !== expected.holdout_digest_receipt) || !validSuccessEvidence(report.evidence) || diagnosticsUseForbiddenCommand(report.diagnostics)) return 'bootstrap build evidence/SHA/receipt invalid'
@@ -850,7 +898,7 @@ if (capability.state !== 'ready') {
   const expected = { state: capability.state, branch, base_sha: BASE_SHA, run_id: RUN_ID, heartbeat_id: heartbeat, holdout_digest_receipt: capability.holdout_digest_receipt, integration_branch: integrationBranch, integration_heartbeat_id: integrationHeartbeat, next_state: lane.next, gate_ids: lane.gate_ids }
   phase('Bootstrap Build')
   let report = await agent(
-    `ONE fixed bootstrap lane; no planner/holdout. Stage=${lane.stage}, base=${BASE_SHA}. ${lane.contract} Acquire ${branch} with RunId=${RUN_ID}, HeartbeatId=${heartbeat}; the independent keeper owns liveness. Implement, scoped-test, commit, keep lease, and return typed keeper acquisition plus exit-code-zero evidence. Every evidence[].command is one exact executed command only: no chaining, cwd annotation, or prose. Stage 1 must return bootstrap_path, exact adoption_receipt, conditional disk_receipt, and exact base...SHA changed_path_receipt. Its holdout_digest_receipt is only the raw lowercase 64-hex digest, with no label or prose. For ADOPTED, adoption_receipt.command and its one matching evidence[].command must both equal exactly ${ADOPTION_COMMAND}, and that evidence output must exactly equal adoption_receipt.output. Stage 2 must return bootstrap_path, both typed pre-edit gate receipts, and exact base...SHA changed_path_receipt; PASS/PASS mechanically permits only bootstrap/mode-a.json.`,
+    `ONE fixed bootstrap lane; no planner/holdout. Stage=${lane.stage}, base=${BASE_SHA}. ${lane.contract} Acquire ${branch} with RunId=${RUN_ID}, HeartbeatId=${heartbeat}; the independent keeper owns liveness. Implement, scoped-test, commit, keep lease, and return typed keeper acquisition plus exit-code-zero evidence. Every evidence[].command and diagnostics[].command is one exact executed command only: no chaining, cwd annotation, or prose. DONE requires a committed SHA, nonempty success evidence, and only the raw lowercase 64-hex holdout_digest_receipt. Stage 1 DONE must return bootstrap_path, exact adoption_receipt, conditional disk_receipt, and exact base...SHA changed_path_receipt. For ADOPTED, adoption_receipt.command and its one matching evidence[].command must both equal exactly ${ADOPTION_COMMAND}, and that evidence output must exactly equal adoption_receipt.output. If work is BLOCKED after acquiring the lease, do not invent a digest, commit, or success: return the exact lease identity/acquisition receipt, sha='' and holdout_digest_receipt='' when unavailable, evidence=[] when no command succeeded (otherwise only exact exit-zero commands), plus nonempty blockers and typed nonempty diagnostics; the workflow will abort and release. Stage 2 DONE must return bootstrap_path, both typed pre-edit gate receipts, and exact base...SHA changed_path_receipt; PASS/PASS mechanically permits only bootstrap/mode-a.json.`,
     { agentType: 'vol-builder', schema: BOOTSTRAP_REPORT, label: `bootstrap-build:${capability.state}` },
   )
   let reportError = bootstrapReportError(report, expected)
