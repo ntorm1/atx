@@ -95,10 +95,20 @@ Describe 'oracle existing-store receipt adoption' {
   It 'adopts valid aggregate metadata with exact provenance and no membership output or iteration increment' {
     $case = New-TestOracleCase 'valid'
     Use-TestOracleCase $case
+    $metadataResult = Invoke-OracleStoreMetadata $case.Manifest $case.Base
+    (Test-ExactKeys $metadataResult @('schema_version','status','manifest_sha256','total_rows','bucket_count','parquet_files','schema_sha256','cohort_underlier_count')) | Should Be $true
+    $metadataResult.status | Should Be 'PASS'
+    $metadataResult.total_rows | Should Be 9
+    $metadataResult.cohort_underlier_count | Should Be 3
+    $metadataSerialized = $metadataResult | ConvertTo-Json -Compress
+    foreach ($secret in @('SPY','QQQ','IWM','holdout secret')) { $metadataSerialized.Contains($secret) | Should Be $false }
+
     $result = Invoke-OracleDataAdoption
     ($result.status + ':' + [string]$result.reason) | Should Be 'ADOPTED:'
+    (Test-ExactKeys $result @('schema_version','status','command_id','base_sha','manifest_sha256','holdout_membership_sha256','total_rows','bucket_count','parquet_files','cohort_underlier_count')) | Should Be $true
     $result.base_sha | Should Be $case.Base
     $result.total_rows | Should Be 9
+    $result.cohort_underlier_count | Should Be 3
     $serialized = $result | ConvertTo-Json -Compress
     foreach ($secret in @('SPY','QQQ','IWM','holdout secret')) { $serialized.Contains($secret) | Should Be $false }
 

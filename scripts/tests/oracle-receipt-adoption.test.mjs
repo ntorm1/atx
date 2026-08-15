@@ -100,7 +100,7 @@ test('Stage 1 is adoption-first and Stage 2 is receipt-first with targeted gates
   assert.match(stage2, /Implement\/fix Mode A only when an exact targeted gate proves it necessary/u)
 })
 
-test('adoption and preflight contracts are aggregate-only and metadata-only', () => {
+test('adoption contract is footer validation plus one aggregate-only underlier projection', () => {
   const adoption = read('scripts/oracle-adopt-existing-data.ps1')
   const metadata = read('atx-vol/scripts/oracle_store_metadata.py')
   const preflight = read('scripts/oracle-bootstrap-preflight.ps1')
@@ -109,7 +109,15 @@ test('adoption and preflight contracts are aggregate-only and metadata-only', ()
   assert.match(adoption, /holdout_membership_sha256/u)
   assert.doesNotMatch(adoption, /atx-vol-oracle-bench/u)
   assert.match(metadata, /parquet_file\.metadata/u)
-  assert.doesNotMatch(metadata, /read_table|to_pandas|scan_parquet/u)
+  assert.match(metadata, /pc\.any\(pc\.equal\(/u)
+  assert.doesNotMatch(metadata, /read_table|read_pandas|to_pandas|to_pylist|to_pydict|to_numpy|to_batches|iter_batches|scan_parquet|ParquetDataset|pc\.(?:unique|filter|take|value_counts)|\.(?:flatten|combine_chunks|dictionary_decode)\b/u)
+  const rowGroupReads = [...metadata.matchAll(/read_row_group\(/gu)]
+  const projections = [...metadata.matchAll(/read_row_group\([\s\S]*?columns=\["([^"]+)"\][\s\S]*?\)\.column\("([^"]+)"\)/gu)]
+  assert.equal(rowGroupReads.length, 1)
+  assert.deepEqual(projections.map(match => [match[1], match[2]]), [['undSecKey_tk', 'undSecKey_tk']])
+  assert.deepEqual([...metadata.matchAll(/projection\.([A-Za-z_][A-Za-z0-9_]*)/gu)].map(match => match[1]), ['chunks'])
+  assert.deepEqual([...metadata.matchAll(/chunk\.([A-Za-z_][A-Za-z0-9_]*)/gu)].map(match => match[1]), [])
+  assert.equal([...metadata.matchAll(/\.as_py\(\)/gu)].length, 1)
   assert.match(preflight, /'aggregate_store'/u)
 })
 

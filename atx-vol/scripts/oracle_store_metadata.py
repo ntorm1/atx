@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Validate an oracle Parquet store from metadata only.
+"""Validate an oracle Parquet store without exposing licensed option rows.
 
-This command never reads column values.  It compares Parquet footer row counts
-and schema fingerprints with the aggregate ingest manifest and emits only an
-aggregate JSON receipt.
+The command validates schema/count/date/bucket facts from Parquet footers, then
+projects only ``undSecKey_tk`` and compares it with the closed committed cohort
+target set using Arrow compute.  The projection retains boolean match state;
+raw strings, rows, and membership are never materialized or emitted.  Stdout is
+an aggregate JSON receipt whose data-bearing fields are counts and digests only.
 """
 
 from __future__ import annotations
@@ -167,6 +169,7 @@ def main() -> int:
     wanted_underliers = _cohort_underliers(args.repo_root, args.commit)
     if not wanted_underliers:
         return _fail("cohort_underliers")
+    target_underliers = tuple(sorted(wanted_underliers))
 
     date_root = args.data_root / f"date={trading_date}"
     if not date_root.is_dir():
@@ -177,7 +180,7 @@ def main() -> int:
 
     actual: dict[str, int] = {}
     schema_fingerprints: set[str] = set()
-    found_underliers: set[str] = set()
+    matched_underliers = [False] * len(target_underliers)
     parquet_files = 0
     try:
         for bucket, directory in actual_dirs.items():
@@ -222,20 +225,25 @@ def main() -> int:
                         or _text_stat(date_stats.max) != trading_date
                     ):
                         return _fail("store_partition_stats")
-                    missing = wanted_underliers - found_underliers
-                    if not missing:
+                    pending = [index for index, matched in enumerate(matched_underliers) if not matched]
+                    if not pending:
                         continue
                     underlier_stats = row_group.column(underlier_index).statistics
-                    candidates = missing
+                    candidates = pending
                     if underlier_stats is not None and underlier_stats.has_min_max:
                         lower = _text_stat(underlier_stats.min)
                         upper = _text_stat(underlier_stats.max)
                         if lower is not None and upper is not None:
-                            candidates = {item for item in missing if lower <= item <= upper}
+                            candidates = [index for index in pending if lower <= target_underliers[index] <= upper]
                     if candidates:
-                        values = parquet_file.read_row_group(row_group_index, columns=["undSecKey_tk"]).column(0)
-                        for chunk in values.chunks:
-                            found_underliers.update(item for item in pc.unique(chunk).to_pylist() if item in candidates)
+                        projection = parquet_file.read_row_group(
+                            row_group_index, columns=["undSecKey_tk"]
+                        ).column("undSecKey_tk")
+                        for chunk in projection.chunks:
+                            for index in candidates:
+                                matched = pc.any(pc.equal(chunk, target_underliers[index])).as_py()
+                                if not matched_underliers[index] and matched is True:
+                                    matched_underliers[index] = True
             actual[bucket] = rows
     except (OSError, ValueError, TypeError):
         return _fail("store_metadata")
@@ -244,7 +252,7 @@ def main() -> int:
         return _fail("store_counts")
     if len(schema_fingerprints) != 1:
         return _fail("store_schema")
-    if found_underliers != wanted_underliers:
+    if not all(matched_underliers):
         return _fail("cohort_underliers")
 
     manifest_sha256 = hashlib.sha256(args.manifest.read_bytes()).hexdigest()
@@ -256,7 +264,7 @@ def main() -> int:
         "bucket_count": len(actual),
         "parquet_files": parquet_files,
         "schema_sha256": next(iter(schema_fingerprints)),
-        "cohort_underlier_count": len(wanted_underliers),
+        "cohort_underlier_count": len(target_underliers),
     }
     print(json.dumps(result, separators=(",", ":")))
     return 0

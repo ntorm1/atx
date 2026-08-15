@@ -1,6 +1,7 @@
 # One-time, fail-closed Stage-1 adoption of an existing aggregate oracle store.
-# The command reads committed cohort manifests internally and Parquet metadata
-# only. Stdout is an aggregate typed result and never contains membership/rows.
+# The command validates Parquet footers, then projects only undSecKey_tk and
+# retains boolean matches against committed cohort targets. Stdout is an
+# aggregate typed result and never contains keys, membership, or rows.
 $ErrorActionPreference = 'Stop'
 
 $adoptionScriptRoot = $PSScriptRoot

@@ -58,10 +58,12 @@ recorded in CHANGELOG, never as opt-in configuration.
 
 Stage 1 always runs `scripts/oracle-adopt-existing-data.ps1` before ingest. The
 fixed command validates committed cohorts plus the existing aggregate manifest,
-pins every required SpiderRock field/type, verifies Parquet footer counts and
-partition stats, and internally aggregates only the underlier join key to prove
-cohort existence. It recomputes schema/disjointness/holdout digest and emits no
-membership/rows. `ADOPTED` journal-publishes the exact v1 digest
+pins every required SpiderRock field/type and verifies Parquet footer counts and
+partition stats. It then projects exactly `undSecKey_tk`; Arrow compute compares
+that projection with the closed cohort target set while retaining only boolean
+matched-target state. Stored strings, membership, and option rows are never
+materialized or emitted. It recomputes schema/disjointness/holdout digest, and
+`ADOPTED` journal-publishes the exact v1 digest
 and data receipt without extraction or a disk gate. Any missing, corrupt,
 mismatched, or overlapping input returns `INGEST_REQUIRED`, the only route to the
 normal disk-gated licensed ingest. There is no selector flag or compatibility

@@ -17,7 +17,10 @@ gates before editing, so an already-present passing implementation advances by
 receipt only.
 
 Adoption now pins the full required physical schema and proves every committed
-cohort underlier exists through an internal join-key-only aggregate scan. Digest
+cohort underlier exists through Parquet footer validation plus an aggregate-only
+projection of exactly `undSecKey_tk`. Arrow comparisons retain only boolean target
+matches; stored strings, membership, and option rows are never materialized or
+emitted. Digest
 and receipt publication is a journaled two-target transaction with byte-exact
 rollback. The workflow owns typed adoption/disk/path receipts: adoption cannot
 also claim ingest, ingest cannot proceed without a >=15 GiB receipt, and a passing

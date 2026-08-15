@@ -1,4 +1,6 @@
-# Exact stage-1 verifier targets used by vol-oracle-iter.
+# Exact stage-1 verifier targets used by vol-oracle-iter. Aggregate-store
+# verification is Parquet-footer validation plus an undSecKey_tk-only Arrow
+# projection whose externally visible result is counts/digests/booleans only.
 param(
   [Parameter(Mandatory = $true)]
   [ValidateSet('disk', 'aggregate_store', 'ingest_manifest', 'cohort_manifests', 'holdout_digest')]
