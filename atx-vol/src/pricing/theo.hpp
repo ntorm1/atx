@@ -281,6 +281,33 @@ inline constexpr std::uint32_t kFairVolFeatureSchemaV1 = 1;
 // [4] rv_63d                       [5] iv_minus_rv = market_vol - rv_21d
 // [6] n_events_to_expiry           [7] delta_abs (surface analytic |delta|)
 
+// VRP feature schema (vrp-ml sprint, lane vrp-model): schema id 2, width 10.
+// The feature order is EXACTLY f0..f9 of the frozen vrp_panel_v1 contract
+// (tools/vrp_train.hpp owns the panel parse; the trainer and any consumer of
+// a schema-2 model file must produce/consume this layout, per-asset
+// standardized -- the serialized models score z-scored panel features, see
+// the trainer's banner).
+inline constexpr std::uint32_t kVrpFeatureSchemaV1 = 2;
+inline constexpr std::size_t kVrpFeatureCount = 10;
+// [0] log_rv1      [1] log_rv5      [2] log_rv21     [3] iv_level
+// [4] term_slope   [5] hv_iv_gap    [6] vrp_lag      [7] ret_21d
+// [8] jump_recent  [9] vov_63d
+
+// The feature-row width a schema id implies, or 0 for an UNKNOWN schema --
+// the fail-closed sentinel every loader below checks before sizing anything.
+// (An optional would say the same thing; 0 is never a valid width, keeps the
+// lookup constexpr-trivial, and matches the loaders' "reject unknown schema
+// as ParseError" contract.)
+[[nodiscard]] constexpr std::size_t fair_vol_feature_count(std::uint32_t schema_id) noexcept {
+  if (schema_id == kFairVolFeatureSchemaV1) {
+    return kFairVolFeatureCount;
+  }
+  if (schema_id == kVrpFeatureSchemaV1) {
+    return kVrpFeatureCount;
+  }
+  return 0;
+}
+
 // A fair-vol model: any implementation, trained however, that maps the fixed
 // `kFairVolFeatureCount`-wide feature row to a log fair/market-vol ratio.
 // Batch-first (mirrors `ITheoOverlay::adjust`'s batch shape) so a heavier
@@ -299,9 +326,10 @@ public:
   [[nodiscard]] virtual std::uint32_t feature_schema() const noexcept = 0;
 
   // Predicts `y = ln(sigma_fair / market_vol)` per row, from `features_row_major`
-  // (row `i`'s features occupy `[i*kFairVolFeatureCount, (i+1)*kFairVolFeatureCount)`
-  // in the fixed order documented above). `Err(InvalidArgument)` if
-  // `features_row_major.size() != n_rows * kFairVolFeatureCount` or
+  // (row `i`'s features occupy `[i*W, (i+1)*W)` where
+  // `W = fair_vol_feature_count(feature_schema())` -- the schema decides the
+  // stride, in that schema's fixed order). `Err(InvalidArgument)` if
+  // `features_row_major.size() != n_rows * W` or
   // `log_ratio_out.size() != n_rows` -- a schema/size mismatch is the caller's
   // bug, not a data condition, so this is NOT the graceful-degrade path (that
   // lives in the overlay, per-row, on missing ctx.rv/ctx.events -- see
@@ -314,22 +342,120 @@ public:
                                        std::span<double> log_ratio_out) const = 0;
 };
 
-// v1 model: linear on the fixed schema above, `y = b0 + sum_i b_i * x_i`.
+// Linear model on a schema-parameterized width, `y = b0 + sum_i b_i * x_i`.
 // Coefficients loaded from a TSV: a `# schema=<n>` comment line (any leading
 // comment line, matched in file order) declaring the feature schema the file
-// was fit against, then `kFairVolFeatureCount + 1` whitespace-separated
-// values (intercept first, then one coefficient per feature in the fixed
-// order above) spread across the remaining non-comment, non-blank content.
+// was fit against, then `fair_vol_feature_count(schema) + 1` whitespace-
+// separated values (intercept first, then one coefficient per feature in the
+// declared schema's fixed order) spread across the remaining non-comment,
+// non-blank content. For a v1 file this is byte-for-byte the original v1
+// loader behavior (8 coefficients, same errors); a `# schema=2` file carries
+// the 10 VRP coefficients instead.
 //
 // Errors (ParseError family, matching this module's own schema/coefficient-
 // file precedent -- `SurfaceArchiveV2::open`'s "schema hash mismatch",
 // `backtest_db.cpp`'s "schema mismatch"): `Err(IoError)` if the path can't be
 // opened; `Err(ParseError)` if no `# schema=<n>` line is found, the declared
-// schema isn't `kFairVolFeatureSchemaV1`, the coefficient value count isn't
-// exactly `kFairVolFeatureCount + 1`, or any coefficient token fails to parse
-// as a finite double.
+// schema is unknown (`fair_vol_feature_count(schema) == 0` -- fail closed),
+// the coefficient value count isn't exactly the schema's width + 1, or any
+// coefficient token fails to parse as a finite double.
 [[nodiscard]] Result<std::unique_ptr<IFairVolModel>>
 load_linear_fair_vol_model(std::string_view coef_tsv_path);
+
+// ── Schema-2 model files (vrp-ml sprint): linear params + flat-array GBT ────
+
+// The plain-data form of a linear fair-vol model: the schema it was fit
+// against, the intercept, and one coefficient per feature in that schema's
+// fixed order. `coefficients.size()` must equal
+// `fair_vol_feature_count(feature_schema)`. DESIGNATED INITIALIZERS ONLY for
+// aggregate construction sites (module convention).
+struct LinearFairVolParams {
+  std::uint32_t feature_schema{kVrpFeatureSchemaV1};
+  double intercept{0.0};
+  std::vector<double> coefficients;
+};
+
+// Loads the coefficient TSV into its plain-data form (same grammar and same
+// error contract as `load_linear_fair_vol_model` above, which is now a thin
+// composition of this and `make_linear_fair_vol_model`).
+[[nodiscard]] Result<LinearFairVolParams>
+load_linear_fair_vol_params(std::string_view coef_tsv_path);
+
+// Writes the CANONICAL coefficient TSV: `# schema=<n>` then intercept + the
+// coefficients tab-separated on one line, every double in std::to_chars
+// shortest round-trip form. save(load(f)) of a save-produced file is
+// byte-identical (the round-trip stability the model registry hashes rely
+// on). `Err(InvalidArgument)` on invalid params (unknown schema, wrong
+// coefficient count, non-finite value); `Err(IoError)` if the file can't be
+// written.
+[[nodiscard]] Status save_linear_fair_vol_params(const LinearFairVolParams &params,
+                                                 std::string_view coef_tsv_path);
+
+// Builds the linear model from its plain-data form. `Err(InvalidArgument)`
+// on an unknown schema, a coefficient count that isn't the schema's width,
+// or any non-finite value.
+[[nodiscard]] Result<std::unique_ptr<IFairVolModel>>
+make_linear_fair_vol_model(LinearFairVolParams params);
+
+// Flat-array GBT scorer: `n` nodes across `tree_first_node.size()` trees in
+// five parallel arrays (SoA -- byte-stable to serialize, allocation-free to
+// walk). Node i is a LEAF iff `left[i] == -1 && right[i] == -1` (one -1 and
+// one child is malformed); a split routes `x[feature_idx[i]] < threshold[i]`
+// left, else right -- so a NaN feature deterministically routes RIGHT (IEEE
+// `<` is false on NaN). Child indices are ABSOLUTE node indices, must stay
+// inside the owning tree's [first, next-first) range, and must be STRICTLY
+// GREATER than the parent index -- that topological order is what makes
+// every walk provably terminate within the tree's node count.
+// `prediction(row) = base + sum_t leaf_value[leaf reached in tree t]`
+// (leaf values arrive pre-scaled by any learning rate; the scorer never
+// rescales). DESIGNATED INITIALIZERS ONLY.
+struct GbtFairVolModelData {
+  std::uint32_t feature_schema{kVrpFeatureSchemaV1};
+  double base{0.0};
+  std::vector<std::uint32_t> tree_first_node; // strictly increasing; [0]==0 when nonempty
+  std::vector<std::uint32_t> feature_idx;     // < fair_vol_feature_count(feature_schema)
+  std::vector<double> threshold;              // finite; unused (0.0) at a leaf
+  std::vector<std::int32_t> left;             // absolute child index; -1 at a leaf
+  std::vector<std::int32_t> right;            // absolute child index; -1 at a leaf
+  std::vector<double> leaf_value;             // finite; unused (0.0) at a split
+};
+
+// Builds the GBT model, validating the FULL structural contract documented
+// on `GbtFairVolModelData` (schema known, equal array lengths, ascending
+// tree offsets, child indices in-range/strictly-increasing, no half-leaf
+// nodes, finite thresholds/leaf values/base). `Err(InvalidArgument)` on any
+// violation -- predict then walks the arrays with no per-call re-validation.
+// An empty model (no trees, no nodes) is valid and predicts `base`.
+[[nodiscard]] Result<std::unique_ptr<IFairVolModel>>
+make_gbt_fair_vol_model(GbtFairVolModelData data);
+
+// GBT model file: a versioned, canonical TSV --
+//   # gbt_fair_vol=1
+//   # schema=<n>
+//   base\t<v>
+//   trees\t<k>
+//   tree\t<first_node>          (k lines, ascending)
+//   nodes\t<n>
+//   <feature_idx>\t<threshold>\t<left>\t<right>\t<leaf_value>   (n lines)
+// with every double in std::to_chars shortest round-trip form, so
+// save(load(f)) of a save-produced file is byte-identical.
+//
+// load: `Err(IoError)` if the path can't be opened; `Err(ParseError)` if the
+// format-version line is missing/unsupported, the `# schema=<n>` line is
+// missing or names an unknown schema (fail closed), a count disagrees with
+// the lines present, or any token fails to parse. Structural validation
+// beyond the grammar happens in `make_gbt_fair_vol_model`.
+[[nodiscard]] Result<GbtFairVolModelData> load_gbt_fair_vol_model_data(std::string_view path);
+
+// save: canonical writer for the format above. `Err(InvalidArgument)` on
+// data violating the structural contract (validated before any I/O);
+// `Err(IoError)` if the file can't be written.
+[[nodiscard]] Status save_gbt_fair_vol_model_data(const GbtFairVolModelData &data,
+                                                  std::string_view path);
+
+// Composition: load_gbt_fair_vol_model_data -> make_gbt_fair_vol_model.
+[[nodiscard]] Result<std::unique_ptr<IFairVolModel>>
+load_gbt_fair_vol_model(std::string_view path);
 
 // Builds the model-driven fair-vol overlay: assembles the
 // `kFairVolFeatureCount`-wide feature row from `ctx` (surface + rv + events)
