@@ -24,6 +24,26 @@ void print_usage() {
             "                         [--max-label-span <n>]     (default 42; >= 21)\n"
             "                         [--lambda <f>]             (default 1e-3)\n"
             "                         [--alpha <f>]              (default 0.5)\n"
+            "                         [--recalibrate <off|isotonic>] (default off)\n"
+            "                         [--recalib-window <n>]     (default 63; >= 1)\n"
+            "                         [--retransform <jensen|smearing>] (default jensen)\n"
+            "\n"
+            "--recalibrate isotonic fits, per fold, a deterministic PAVA isotonic\n"
+            "map from raw GBT forecast to realized label on the trailing\n"
+            "--recalib-window ADMITTED train sessions (capped at half the fold's\n"
+            "train sessions; out-of-sample via a temporal-holdout calibration\n"
+            "model) and applies it to the fold's raw test forecasts. Monotone =>\n"
+            "rank-preserving; fit rows are admitted train rows, so the fit uses\n"
+            "only data strictly before the fold's test start and the fold plan is\n"
+            "untouched. Behind the flag the recalibrated values flow through the\n"
+            "EXISTING pred_label/pred_edge_norm columns (schema unchanged; value\n"
+            "semantics in CHANGELOG). QLIKE + Mincer-Zarnowitz slope/intercept +\n"
+            "rank IC are reported before AND after per fold (meta lines + the\n"
+            "recalibration table below the fold table).\n"
+            "\n"
+            "--retransform smearing swaps the baseline's exp(s^2/2) lognormal\n"
+            "retransform for the Duan smearing factor mean(exp(resid))\n"
+            "(trainer-side only; the sidecar contract stays jensen-based).\n"
             "\n"
             "--max-label-span caps each labeled row's label-window span in POOLED\n"
             "sessions (decision row -> its own 21st emitted successor). Rows past\n"
@@ -111,6 +131,34 @@ int main(int argc, char **argv) {
       ok = parse_number(value, cfg.en_lambda);
     } else if (arg == "--alpha") {
       ok = parse_number(value, cfg.en_alpha);
+    } else if (arg == "--recalibrate") {
+      if (value == "off") {
+        cfg.recalibrate = atx::vol::vrp::VrpRecalMode::Off;
+      } else if (value == "isotonic") {
+        cfg.recalibrate = atx::vol::vrp::VrpRecalMode::Isotonic;
+      } else {
+        std::fprintf(stderr, "error: --recalibrate must be 'off' or 'isotonic', got '%.*s'\n",
+                     static_cast<int>(value.size()), value.data());
+        return 2;
+      }
+    } else if (arg == "--recalib-window") {
+      ok = parse_number(value, cfg.recalib_window_sessions);
+      // Fail closed at the boundary: a zero window cannot calibrate.
+      if (ok && cfg.recalib_window_sessions == 0) {
+        std::fprintf(stderr, "error: --recalib-window must be >= 1\n");
+        return 2;
+      }
+    } else if (arg == "--retransform") {
+      if (value == "jensen") {
+        cfg.retransform = atx::vol::vrp::VrpRetransformMode::Jensen;
+      } else if (value == "smearing") {
+        cfg.retransform = atx::vol::vrp::VrpRetransformMode::Smearing;
+      } else {
+        std::fprintf(stderr,
+                     "error: --retransform must be 'jensen' or 'smearing', got '%.*s'\n",
+                     static_cast<int>(value.size()), value.data());
+        return 2;
+      }
     } else {
       std::fprintf(stderr, "error: unknown flag '%.*s'\n", static_cast<int>(arg.size()),
                    arg.data());
@@ -162,6 +210,26 @@ int main(int argc, char **argv) {
                 fold.qlike_mean_forecast, fold.ic_baseline, fold.ic_gbt,
                 fold.n_gbt_forecast_clipped, fold.gbt_test_forecast_min,
                 fold.gbt_test_forecast_max);
+  }
+  // Round-3 metrics honesty (research digest Q4): Mincer-Zarnowitz level
+  // diagnostics per fold -- raw always; the before/after recalibration table
+  // only when --recalibrate is on. QLIKE alone can favor positively biased
+  // forecasts, so slope/intercept sit beside it in every mode.
+  std::printf("fold\tmz_slope_raw\tmz_intercept_raw\tsmear_factor\n");
+  for (const auto &fold : report->folds) {
+    std::printf("%u\t%.4f\t%.6g\t%.6g\n", fold.fold_id, fold.mz_slope_raw,
+                fold.mz_intercept_raw, fold.smear_factor);
+  }
+  if (cfg.recalibrate == atx::vol::vrp::VrpRecalMode::Isotonic) {
+    std::printf("recal\tfold\tqlike_raw\tqlike_recal\tmz_slope_raw\tmz_slope_recal\t"
+                "mz_int_raw\tmz_int_recal\tic_raw\tic_recal\tn_fit\twindow\tapplied\n");
+    for (const auto &fold : report->folds) {
+      std::printf("recal\t%u\t%.6g\t%.6g\t%.4f\t%.4f\t%.6g\t%.6g\t%.4f\t%.4f\t%zu\t%zu\t%d\n",
+                  fold.fold_id, fold.qlike_gbt, fold.qlike_gbt_recal, fold.mz_slope_raw,
+                  fold.mz_slope_recal, fold.mz_intercept_raw, fold.mz_intercept_recal,
+                  fold.ic_gbt, fold.ic_gbt_recal, fold.recal_n_fit,
+                  fold.recal_window_effective, fold.recal_applied ? 1 : 0);
+    }
   }
   std::printf("signal:     %s\n", report->signal_path.string().c_str());
   std::printf("metrics:    %s\n", report->metrics_path.string().c_str());
