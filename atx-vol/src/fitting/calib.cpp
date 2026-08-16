@@ -527,6 +527,105 @@ void cap_observations_for_deam(ObsSet &set, std::uint32_t requested_cap) {
   return premium >= -0.05 * o.spread && premium <= tol;
 }
 
+// ── Three-tier exercise ladder ───────────────────────────────────────────────
+//
+// Which pricer a de-Am row is inverted against. See `CalibOpts::deam_tier0_*`
+// for the economics; the short version is that the routing quantity is the
+// early-exercise premium expressed in VOL POINTS, which is the same unit the
+// budget is stated in and the same unit the downstream surface error is judged
+// in. Costs, measured on this workload: Tier 2 is ~570 kcyc/row (a cold
+// Andersen-Lake inversion), Tier 1 is one analytic BAW root-find with no
+// boundary solve at all, Tier 0 is free — the Black-76 IV it returns was
+// already computed by the filter cascade (`evaluate_row`) to admit the row.
+enum class DeamTier : std::uint8_t { Full = 0, European = 1, Analytic = 2 };
+
+struct TierDecision {
+  DeamTier tier{DeamTier::Full};
+  // Estimated early-exercise premium in absolute vol units. NaN when the
+  // estimator was not run (ladder off, or a precondition refused the row).
+  double eep_vol_pts{std::numeric_limits<double>::quiet_NaN()};
+};
+
+// Route one row. PURE: depends only on pre-de-Am row fields, so it can be (and
+// is) hoisted out of the inversion loop and evaluated exactly once per row.
+//
+// Fail-safe by construction: every early return yields `DeamTier::Full`, so any
+// input the estimator cannot vouch for — a collapsed vega, a non-finite BAW, a
+// premium the analytic map reports as NEGATIVE (a model disagreement, not an
+// arbitrage) — costs a cold solve rather than an unaudited approximation.
+[[nodiscard]] TierDecision classify_deam_tier(const FitObs &o, double S, double T, double r,
+                                              double q_eff, const CalibOpts &opts,
+                                              AmericanMethod method) noexcept {
+  const double t0 = opts.deam_tier0_max_eep_vol_pts;
+  const double t1 = opts.deam_tier1_max_eep_vol_pts;
+  if (!(t0 > 0.0) && !(t1 > 0.0)) {
+    return TierDecision{}; // ladder off — the historical full-AL path
+  }
+  // Same preconditions the OTM shortcut applies, for the same reasons: the
+  // estimator divides by vega, and it is only meaningful on a two-sided Mid
+  // anchor against the Andersen-Lake reference the audit will reprice with.
+  if (opts.anchor_kind != CalibAnchorKind::Mid || method != AmericanMethod::AndersenLake ||
+      !(o.spread > 0.0) || !(o.sigma_mkt > kObsIvMin && o.sigma_mkt < kObsIvMax) ||
+      T < opts.min_otm_shortcut_T || o.vega < opts.min_otm_shortcut_vega ||
+      !(o.vega > 0.0) || std::fabs(o.k) > opts.max_otm_shortcut_abs_k) {
+    alprobe::bump(alprobe::Event::LadderRefusedGuard);
+    return TierDecision{};
+  }
+  // Dividend-proximity pocket (call side). Bounded on the TOTAL implied
+  // dividend over the option's life, so it cannot be evaded by an ex-date this
+  // seam cannot see.
+  if (o.side == Side::Call && opts.deam_tier_div_call_max_T > 0.0 &&
+      opts.deam_tier_div_call_max_div_frac > 0.0 && T <= opts.deam_tier_div_call_max_T) {
+    const double div_frac = -std::expm1(-q_eff * T); // 1 − e^{−q_eff·T}
+    if (div_frac > opts.deam_tier_div_call_max_div_frac) {
+      alprobe::bump(alprobe::Event::LadderRefusedDiv);
+      return TierDecision{};
+    }
+  }
+
+  const Result<double> baw = baw_american(S, o.K, T, o.sigma_mkt, r, q_eff, o.side);
+  if (!baw.has_value() || !std::isfinite(*baw)) {
+    return TierDecision{};
+  }
+  const double eu = black76_price(o.F, o.K, T, o.sigma_mkt, o.df, o.side);
+  if (!(eu > 0.0) || !std::isfinite(eu)) {
+    return TierDecision{};
+  }
+  // First-order conversion of a premium into the vol error it induces. Exact in
+  // the limit of a small premium, which is precisely the regime Tier 0 claims.
+  const double eep_vol_pts = (*baw - eu) / o.vega;
+  if (!std::isfinite(eep_vol_pts)) {
+    return TierDecision{};
+  }
+  // A materially negative analytic premium means BAW and Black-76 disagree
+  // about a quantity that theory says is non-negative. Do not approximate here.
+  if (eep_vol_pts < -0.5 * t0) {
+    return TierDecision{};
+  }
+  const double margin = std::max(0.0, opts.deam_tier_escalate_margin_vol_pts);
+  const double guarded = std::max(eep_vol_pts, 0.0) + margin;
+  if (t0 > 0.0 && guarded <= t0) {
+    alprobe::bump(alprobe::Event::LadderTier0);
+    return TierDecision{DeamTier::European, eep_vol_pts};
+  }
+  if (t1 > 0.0 && guarded <= t1) {
+    // Count the rows the margin alone pushed off Tier 0 — that is the price of
+    // the fail-safe, and it must be visible or it cannot be tuned.
+    if (t0 > 0.0 && std::max(eep_vol_pts, 0.0) <= t0) {
+      alprobe::bump(alprobe::Event::LadderEscalatedByMargin);
+    }
+    alprobe::bump(alprobe::Event::LadderTier1);
+    return TierDecision{DeamTier::Analytic, eep_vol_pts};
+  }
+  if (std::max(eep_vol_pts, 0.0) <= t1) {
+    alprobe::bump(alprobe::Event::LadderEscalatedByMargin);
+  } else {
+    alprobe::bump(alprobe::Event::LadderRefusedBudget);
+  }
+  alprobe::bump(alprobe::Event::LadderTier2);
+  return TierDecision{DeamTier::Full, eep_vol_pts};
+}
+
 enum class IvRoute : std::uint8_t { Shortcut = 0, Cache = 1, Fast = 2, Accurate = 3 };
 
 [[nodiscard]] InversionRouteDiagnostics &route_diag(DeAmAuditDiagnostics &diag,
@@ -1396,12 +1495,36 @@ Result<ObsSet> build_observations_european(const Chain &chain, double S, double 
   // Cost is neutral: the loop below used to run exactly this predicate once per
   // row, and it still runs exactly once per row.
   std::vector<std::uint8_t> shortcut_mask(am->obs.size(), 0u);
+  // Exercise-ladder routing, hoisted for exactly the reasons above and carried
+  // alongside the shortcut mask rather than fused into it: `shortcut_mask` means
+  // "this row needs no boundary from the shared-boundary prepare pass", which is
+  // true of BOTH cheap tiers, while `tiers` records WHICH cheap tier so the
+  // collect loop can pick the forward map. Fusing them would make a Tier-1 row
+  // indistinguishable from a Tier-0 one at the point of inversion.
+  std::vector<DeamTier> tiers(am->obs.size(), DeamTier::Full);
+  // `shortcut_mask` keeps its exact historical meaning (the OTM-shortcut
+  // predicate alone) because the scoring rule below keys off it. `claim_mask` is
+  // the union of that and the two cheap ladder tiers — i.e. every row that will
+  // be served WITHOUT a boundary, which is the question the shared-boundary
+  // prepare pass is actually asking. With the ladder off the two vectors are
+  // equal element-for-element, so the prepare pass sees a bit-identical input.
+  std::vector<std::uint8_t> claim_mask(am->obs.size(), 0u);
   for (std::size_t index = 0; index < am->obs.size(); ++index) {
     shortcut_mask[index] =
         use_otm_shortcut_deam(am->obs[index], S, T, r, q_eff, opts, method, &out.deam_audit) ? 1u
                                                                                             : 0u;
+    claim_mask[index] = shortcut_mask[index];
+    if (shortcut_mask[index] == 0u) {
+      tiers[index] = classify_deam_tier(am->obs[index], S, T, r, q_eff, opts, method).tier;
+      if (tiers[index] != DeamTier::Full) {
+        // A laddered row is served without a boundary, so it must leave the
+        // shared-boundary population exactly as a shortcut row does — otherwise
+        // the side pays nine interpolant solves to serve rows nobody asks it to.
+        claim_mask[index] = 1u;
+      }
+    }
   }
-  prepare_shared_boundary_proposals(am->obs, shortcut_mask, S, T, r, q_eff, opts, caches, al_opts,
+  prepare_shared_boundary_proposals(am->obs, claim_mask, S, T, r, q_eff, opts, caches, al_opts,
                                     iv_tol, iv_max_iter, method, out.deam_audit);
   std::array<std::vector<double>, 4> audit_residuals;
 
@@ -1455,13 +1578,18 @@ Result<ObsSet> build_observations_european(const Chain &chain, double S, double 
     // Same mask the prepare pass consumed — not a re-evaluation. Priority order
     // is unchanged: shortcut -> shared_proposal -> scalar.
     const bool shortcut = shortcut_mask[obs_index] != 0u;
-    const bool shared_proposal = !shortcut && std::isfinite(o.score_sigma_mkt) &&
+    const DeamTier tier = tiers[obs_index];
+    // Every row served without a boundary: the OTM shortcut plus both cheap
+    // ladder tiers. This is the mask the prepare pass consumed, so it — not
+    // `shortcut` — is what the shared-lane invariants below must be read against.
+    const bool claimed = shortcut || tier != DeamTier::Full;
+    const bool shared_proposal = !claimed && std::isfinite(o.score_sigma_mkt) &&
                                  o.score_sigma_mkt > kObsIvMin && o.score_sigma_mkt < kObsIvMax;
     // A shortcut-claimed row must never also be a shared lane. `solve_shared_side`
     // skips masked rows, so a masked row carrying a shared proposal means the two
     // consumers disagreed about the mask — the exact divergence single-sourcing
     // exists to prevent. Fail closed rather than silently preferring a route.
-    if (shortcut && std::isfinite(o.score_sigma_mkt)) {
+    if (claimed && std::isfinite(o.score_sigma_mkt)) {
       return Err(ErrorCode::Internal,
                  "build_observations_european: shortcut row carries a shared-boundary proposal");
     }
@@ -1470,6 +1598,15 @@ Result<ObsSet> build_observations_european(const Chain &chain, double S, double 
     // independent economic observation; reuse it. A shortcut has no fit
     // inversion, while Bid/Ask anchors target a different premium, so both still
     // require the cold raw-mid scoring solve.
+    //
+    // A LADDERED row is deliberately NOT in that set. Unlike a shortcut it does
+    // perform a fit inversion of the raw Mid — against the European or analytic
+    // map rather than the Andersen-Lake one — so, exactly as for an ordinary Mid
+    // row, its score is that inversion's own result. Forcing a cold score solve
+    // here instead would reinstate the per-row Andersen-Lake inversion the
+    // ladder exists to remove, and would score the row against a DIFFERENT map
+    // than the one its published sigma came from. The recovered sigma is audited
+    // once, against the accurate reference, and the score inherits that verdict.
     const bool independent_score =
         prepare_scoring && (shortcut || opts.anchor_kind != CalibAnchorKind::Mid);
     // Anchor-independent score. Inverted COLD off the raw symmetric mid so the
@@ -1494,21 +1631,49 @@ Result<ObsSet> build_observations_european(const Chain &chain, double S, double 
     const CorrectionCache *correction = caches.for_side(o.side);
     const bool cache_proposal =
         correction != nullptr && correction->populated() && correction->side() == o.side;
+    // Tier 0 publishes the raw Black-76 IV, which is what the Shortcut route
+    // already means; Tier 1 publishes an approximate-map inversion, which is
+    // what Fast already means. Reusing the two existing routes keeps both
+    // laddered tiers inside the SAME audit contract — batched reference reprice,
+    // then an accurate Andersen-Lake refit on a miss — with no new verdict path
+    // and no new diagnostics slot to keep in sync.
+    const bool serve_european = shortcut || tier == DeamTier::European;
     const IvRoute route =
-        shortcut ? IvRoute::Shortcut
-                 : (cache_proposal ? IvRoute::Cache
-                                   : (method == AmericanMethod::AndersenLake && al_opts.has_value()
-                                          ? IvRoute::Fast
-                                          : IvRoute::Accurate));
+        serve_european
+            ? IvRoute::Shortcut
+            : (tier == DeamTier::Analytic
+                   ? IvRoute::Fast
+                   : (cache_proposal ? IvRoute::Cache
+                                     : (method == AmericanMethod::AndersenLake && al_opts.has_value()
+                                            ? IvRoute::Fast
+                                            : IvRoute::Accurate)));
     InversionRouteDiagnostics &proposal_diag = route_diag(out.deam_audit, route);
     ++proposal_diag.n_proposed;
     const double warm = warm_start_deam ? ((o.side == Side::Call) ? warm_call : warm_put) : 0.0;
-    const Result<double> sig_res =
-        shortcut ? Ok(o.sigma_mkt)
-                 : (shared_proposal
-                        ? Ok(o.score_sigma_mkt)
-                        : american_implied_vol(o.mid, S, o.K, T, r, q_eff, o.side, method, iv_tol,
-                                               iv_max_iter, al_opts, correction, warm));
+    // Route priority: European (shortcut or Tier 0) -> analytic (Tier 1) ->
+    // shared-boundary lane -> the cold scalar inverter. Written as a chain
+    // rather than a nested conditional because four alternatives in one
+    // expression stopped being readable at three.
+    const auto invert_row = [&]() -> Result<double> {
+      if (serve_european) {
+        return Ok(o.sigma_mkt);
+      }
+      if (tier == DeamTier::Analytic) {
+        // The Barone-Adesi-Whaley map. `american_implied_vol` builds no
+        // AloPricer for it (american_iv.cpp:249), so this costs a handful of
+        // closed-form evaluations and ZERO boundary solves. The correction cache
+        // is deliberately not passed: it would override the forward map and
+        // defeat the tier's whole point.
+        return american_implied_vol(o.mid, S, o.K, T, r, q_eff, o.side, AmericanMethod::Baw, iv_tol,
+                                    iv_max_iter, std::nullopt, nullptr, warm);
+      }
+      if (shared_proposal) {
+        return Ok(o.score_sigma_mkt);
+      }
+      return american_implied_vol(o.mid, S, o.K, T, r, q_eff, o.side, method, iv_tol, iv_max_iter,
+                                  al_opts, correction, warm);
+    };
+    const Result<double> sig_res = invert_row();
     if (!sig_res.has_value() || !(*sig_res > kObsIvMin && *sig_res < kObsIvMax)) {
       reject_row(source_index, ObsRejectionReason::Deamericanization);
       prepared.push_back(PreparedObs{obs_index, source_index, route, 0.0, score_sigma,

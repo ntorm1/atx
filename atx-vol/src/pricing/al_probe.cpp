@@ -24,6 +24,9 @@ const char *const kEventNames[kEventCount] = {
     "shared_rows_fallback",    "shared_side_skip_narrow", "shared_side_skip_shortT",
     "shared_side_skip_rate",   "shared_side_skip_box",    "shared_rows_skip_narrow",
     "shared_rows_skip_shortT", "shared_rows_skip_rate",   "shared_rows_skip_box",
+    "ladder_tier0",            "ladder_tier1",            "ladder_tier2",
+    "ladder_refused_guard",    "ladder_refused_div",      "ladder_refused_budget",
+    "ladder_escalated_margin",
 };
 
 namespace {
