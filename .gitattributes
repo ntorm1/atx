@@ -1,3 +1,4 @@
 .claude/workflows/*.js text eol=lf
 scripts/tests/workflow-contracts.test.mjs text eol=lf
 scripts/workflow-determinism-contract.mjs text eol=lf
+scripts/bootstrap-structured-output-contract.mjs text eol=lf

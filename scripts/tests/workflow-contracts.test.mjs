@@ -103,8 +103,8 @@ function loadFunctions(source, names, prelude = '') {
 }
 
 const oracleFns = loadFunctions(oracle, [
-  'iterationCommandError', 'validSuccessEvidence', 'exactEvidenceSet', 'diagnosticsUseForbiddenCommand', 'validLeaseReceipt', 'validHeadReceipt', 'validGateReceipt', 'expectedBootstrapMetricIds', 'expectedGateMetricIds', 'validRatchetGateReceipt', 'validIntegrationCommand', 'casReceiptError', 'auditReceiptError',
-  'reviewContractError', 'validAdoptionReceipt', 'validChangedPathReceipt', 'validPrecheckGateReceipt', 'bootstrapPathError', 'bootstrapReportError', 'bootstrapPrepareError', 'aggregatePayloadError', 'expectedMeasureMetricIds', 'expectedMetricUnit', 'validNumericMetric', 'validMeasureGateReceipt', 'measurePayloadError', 'attributionPayloadFromMeasure',
+  'iterationCommandError', 'validSuccessEvidence', 'exactEvidenceSet', 'diagnosticsUseForbiddenCommand', 'bootstrapCommandError', 'validBootstrapSuccessEvidence', 'validBootstrapDiagnostics', 'validLeaseReceipt', 'validHeadReceipt', 'validGateReceipt', 'expectedBootstrapMetricIds', 'expectedGateMetricIds', 'validRatchetGateReceipt', 'validIntegrationCommand', 'casReceiptError', 'auditReceiptError',
+  'reviewContractError', 'validAdoptionReceipt', 'validChangedPathReceipt', 'validPrecheckGateReceipt', 'bootstrapPathError', 'bootstrapLeaseIdentityError', 'unwrapBootstrapReport', 'bootstrapReportError', 'bootstrapPrepareError', 'aggregatePayloadError', 'expectedMeasureMetricIds', 'expectedMetricUnit', 'validNumericMetric', 'validMeasureGateReceipt', 'measurePayloadError', 'attributionPayloadFromMeasure',
   'metricDeltaConsistent', 'expectedRatchetMetrics', 'sameNumber', 'distanceToInterval', 'marketCommand', 'marketReceiptError', 'relativeRegression', 'ratchetGateIdForMetric', 'ratchetCandidateValue', 'ratchetMetricsFromReceipts', 'ratchetPrepareContractError', 'computeRatchetVerdict',
 ], `const RATCHET_GATE_IDS = ['holdout_mode_a', 'holdout_mode_b', 'rel_avx2_speed']; const TARGETED_BOOTSTRAP_GATE_IDS = ${JSON.stringify(TARGETED_BOOTSTRAP_GATE_IDS)}; const TARGET_REGISTRY = ${JSON.stringify(TARGET_REGISTRY)}; const AGGREGATE_REGISTRY = ${JSON.stringify(AGGREGATE_REGISTRY)}; const SPEED_METRIC_ID = '${SPEED_METRIC_ID}'; const RATCHET_GATE_COMMANDS = ${JSON.stringify(RATCHET_GATE_COMMANDS)}; const BOOTSTRAP_GATE_COMMANDS = ${JSON.stringify(BOOTSTRAP_GATE_COMMANDS)}; const READY_MEASURE_GATES = ${JSON.stringify(READY_MEASURE_GATES)}; const READY_MEASURE_COMMANDS = ${JSON.stringify(READY_MEASURE_COMMANDS)}; const ADOPTION_COMMAND = 'powershell scripts\\oracle-adopt-existing-data.ps1'; const MODE_A_RECEIPT_ONLY_PATHS = ['atx-vol/bench/oracle/bootstrap/mode-a.json']`)
 const sprintFns = loadFunctions(sprint, [
@@ -365,7 +365,7 @@ function bootstrapResponses({ fix = false, prepareMutator, finalize = casReceipt
   if (prepareMutator) prepareMutator(prepare)
   const responses = {
     capability: capability(),
-    'bootstrap-build:missing_mode_a': first,
+    'bootstrap-build:missing_mode_a': { report: first },
     'bootstrap-review:missing_mode_a': fix
       ? { verdict: 'BLOCK', reviewed_sha: first.sha, evidence: okEvidence, findings: [{ location: 'x:1', severity: 'blocker', problem: 'bad', fix: 'fix' }] }
       : { verdict: 'APPROVE', reviewed_sha: first.sha, evidence: okEvidence, findings: [] },
@@ -374,7 +374,7 @@ function bootstrapResponses({ fix = false, prepareMutator, finalize = casReceipt
     'bootstrap-post-cas-audit': audit,
   }
   if (fix) {
-    responses['bootstrap-fix:missing_mode_a'] = final
+    responses['bootstrap-fix:missing_mode_a'] = { report: final }
     responses['bootstrap-rereview:missing_mode_a'] = { verdict: 'APPROVE', reviewed_sha: final.sha, evidence: okEvidence, findings: [] }
     responses['bootstrap-cas-finalizer'] = casReceipt(final.sha)
     responses['bootstrap-post-cas-audit'] = auditReceipt(final.sha)
@@ -437,12 +437,37 @@ test('actual bootstrap no-Fix path lands, while BLOCKED enters guarded abort cle
     evidence: [{ command: 'powershell scripts\\lease-worktree.ps1 -Release pool-1 -RunId run-1', exit_code: 0, output: 'RELEASED pool-1 run-1' }],
   }
   const blockedRun = await runOracle({
-    capability: capability('missing_data'), 'bootstrap-build:missing_data': blocked, 'bootstrap-abort-cleanup': cleanup,
+    capability: capability('missing_data'), 'bootstrap-build:missing_data': { report: blocked }, 'bootstrap-abort-cleanup': cleanup,
   })
   assert.equal(blockedRun.result.verdict, 'FAILED')
   assert.match(blockedRun.result.failure, /bootstrap blocked: licensed ZIP unavailable/u)
   assert.equal(blockedRun.result.cleanup, cleanup)
+  assert.deepEqual(blockedRun.result.cleanup.released, [blocked.lease_name])
   assert.deepEqual(blockedRun.calls, ['capability', 'bootstrap-build:missing_data', 'bootstrap-abort-cleanup'])
+
+  for (const malformed of [blocked, { report: blocked, extra: true }, { report: null }]) {
+    const malformedRun = await runOracle({ capability: capability('missing_data'), 'bootstrap-build:missing_data': malformed })
+    assert.equal(malformedRun.result.verdict, 'FAILED')
+    assert.match(malformedRun.result.failure, /StructuredOutput envelope invalid/u)
+    assert.deepEqual(malformedRun.calls, ['capability', 'bootstrap-build:missing_data'])
+  }
+
+  const first = bootstrapReport()
+  const fixCleanup = {
+    passed: true, released: [first.lease_name],
+    release_receipts: [leaseReceipt('release', leaseIdentity({ branch: first.branch, base: SHA.base, heartbeat: first.heartbeat_id }))],
+    evidence: [{ command: 'powershell scripts\\lease-worktree.ps1 -Release pool-1 -RunId run-1', exit_code: 0, output: 'RELEASED pool-1 run-1' }],
+  }
+  const malformedFixResponses = bootstrapResponses({ fix: true })
+  malformedFixResponses['bootstrap-fix:missing_mode_a'] = bootstrapReport(SHA.fixed)
+  malformedFixResponses['bootstrap-abort-cleanup'] = fixCleanup
+  const malformedFix = await runOracle(malformedFixResponses)
+  assert.equal(malformedFix.result.verdict, 'FAILED')
+  assert.match(malformedFix.result.failure, /StructuredOutput envelope invalid/u)
+  assert.deepEqual(malformedFix.calls, [
+    'capability', 'bootstrap-build:missing_mode_a', 'bootstrap-review:missing_mode_a',
+    'bootstrap-fix:missing_mode_a', 'bootstrap-abort-cleanup',
+  ])
 })
 
 test('actual bootstrap Fix path requires fresh re-review of new SHA before prepare', async () => {
