@@ -62,6 +62,12 @@ function Get-OracleGitIdentity {
   if ($LASTEXITCODE -ne 0 -or $sha -notmatch '^[0-9a-f]{40}$') { throw 'oracle targeted gate cannot resolve worktree HEAD' }
   $tree = (& git -C $script:OracleRepoRoot rev-parse --verify 'HEAD^{tree}' 2>$null | Out-String).Trim().ToLowerInvariant()
   if ($LASTEXITCODE -ne 0 -or $tree -notmatch '^[0-9a-f]{40}$') { throw 'oracle targeted gate cannot resolve worktree tree' }
+  & git -C $script:OracleRepoRoot diff --no-ext-diff --quiet -- 2>$null
+  if ($LASTEXITCODE -ne 0) { throw 'oracle targeted gate refuses tracked worktree changes' }
+  & git -C $script:OracleRepoRoot diff --cached --no-ext-diff --quiet -- 2>$null
+  if ($LASTEXITCODE -ne 0) { throw 'oracle targeted gate refuses staged worktree changes' }
+  $untracked = @(& git -C $script:OracleRepoRoot ls-files --others --exclude-standard -- .claude atx-vol scripts 2>$null)
+  if ($LASTEXITCODE -ne 0 -or $untracked.Count) { throw 'oracle targeted gate refuses untracked source files' }
   return [pscustomobject]@{ Sha = $sha; Tree = $tree }
 }
 
