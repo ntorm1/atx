@@ -264,6 +264,7 @@ test('Stage 1 recovery and integration agents have operation-specific broker too
 
 test('active bootstrap workflow owns acquisition, quarantine, immutable verify, and exact SHA/tree finalization', () => {
   const active = oracle.slice(0, oracle.indexOf('/* RETIRED_READY_PATH'))
+  assert.match(active, /CANONICAL_EXPECTED_OLD = capability\.canonical_exists \? BASE_SHA : ZERO_SHA/)
   assert.match(active, /buildAgentType = capability\.state === 'missing_data' \? 'vol-stage1-recovery' : 'vol-builder'/)
   assert.match(active, /label: 'bootstrap-build-quarantine'/)
   assert.match(active, /agentType: 'vol-stage1-quarantiner', schema: BROKER_QUARANTINE/)

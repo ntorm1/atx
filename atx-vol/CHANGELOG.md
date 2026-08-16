@@ -5,6 +5,16 @@ that silently changes a NUMBER a caller already depends on belongs in this file.
 
 ## Unreleased
 
+### BREAKING - later oracle bootstrap stages advance an existing canonical ref
+
+Stage 2 Mode A and the ordered convention/Mode B bootstrap stages now finalize
+from the capability-frozen `oracle/canonical` SHA instead of requiring that ref
+to be absent. The broker binds the released bootstrap operation/stage,
+candidate SHA/tree, and exact targeted-gate receipts, then compare-and-swaps
+only from that canonical base. Canonical drift, main substitution, unrelated
+or sibling candidates, and reused finalizers fail closed. Stage 1 retains its
+absent-canonical transaction with no compatibility path or opt-in flag.
+
 ### BREAKING — Oracle Mode A gates now execute real worktree binaries and require every SpiderRock greek
 
 The bootstrap `mode_a_targeted_tests` gate now runs the discovered

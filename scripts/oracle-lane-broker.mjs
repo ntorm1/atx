@@ -121,6 +121,13 @@ const MESSAGE_REGISTRY = Object.freeze({
   ratchet: 'chore(vol-oracle): ratchet scorecard and memory',
 })
 
+const BOOTSTRAP_INTEGRATION_GATES = Object.freeze({
+  bootstrap_data: Object.freeze(['aggregate_store', 'ingest_manifest', 'cohort_manifests', 'holdout_digest']),
+  bootstrap_mode_a: Object.freeze(['mode_a_targeted_tests', 'mode_a_smoke']),
+  bootstrap_conventions: Object.freeze(['convention_tests', 'mode_a_smoke_tune', 'residual_floor']),
+  bootstrap_mode_b: Object.freeze(['mode_b_targeted_tests', 'mode_b_smoke_tune']),
+})
+
 const sha256 = value => createHash('sha256').update(value).digest('hex')
 export const brokerGateOutputSha256 = output => sha256(Buffer.from(String(output), 'utf8'))
 export function brokerGateReceiptId(operationId, receipt) {
@@ -461,6 +468,59 @@ export class OracleLaneBroker {
     return spec.exact.includes(rel) || spec.prefixes.some(prefix => rel.startsWith(prefix))
   }
 
+  #assertBootstrapCanonical(cap) {
+    if (cap.operation_id !== 'bootstrap_integration' || cap.stage !== 'bootstrap-prepare') throw new Error('bootstrap canonical guard requires bootstrap integration capability')
+    const current = this.#ref(CANONICAL_REF)
+    if (cap.canonical_before === null) {
+      if (current !== null) throw new Error('bootstrap canonical drifted from its frozen absent state')
+      return ZERO_SHA
+    }
+    if (cap.canonical_before !== cap.base_sha || current !== cap.base_sha) throw new Error('bootstrap canonical/base precondition drifted')
+    return cap.base_sha
+  }
+
+  #bootstrapCandidateOrigin(cap, sha, tree) {
+    const matches = []
+    for (const file of existsSync(this.capDir) ? readdirSync(this.capDir) : []) {
+      if (!/^[0-9a-f]{64}\.json$/.test(file)) continue
+      const token = file.slice(0, -5)
+      const candidate = this.#loadCap(token, false)
+      if (candidate.token_hash !== sha256(token)) throw new Error('durable capability filename/token binding mismatch')
+      if (candidate.state !== 'released' || candidate.run_id !== cap.run_id || candidate.base_sha !== cap.base_sha || candidate.canonical_before !== cap.canonical_before ||
+          candidate.released_head !== sha || candidate.released_tree !== tree) continue
+      const expectedStage = OPERATION_REGISTRY[candidate.operation_id]?.stage
+      if (!Object.hasOwn(BOOTSTRAP_INTEGRATION_GATES, candidate.operation_id) || candidate.stage !== expectedStage) throw new Error('reviewed bootstrap candidate has wrong operation/stage')
+      if (this.#ref(`refs/heads/${candidate.branch}`) !== sha || this.#tree(sha) !== tree) throw new Error('reviewed bootstrap candidate branch/SHA/tree drifted')
+      matches.push({ operation_id: candidate.operation_id, stage: candidate.stage, branch: candidate.branch, capability_hash: candidate.token_hash })
+    }
+    if (!matches.length) throw new Error('reviewed commit lacks an exact clean released bootstrap candidate')
+    const identity = `${matches[0].operation_id}\0${matches[0].stage}\0${matches[0].branch}`
+    if (matches.some(item => `${item.operation_id}\0${item.stage}\0${item.branch}` !== identity)) throw new Error('reviewed commit has ambiguous bootstrap operation/stage')
+    if (cap.canonical_before === null && matches[0].operation_id !== 'bootstrap_data') throw new Error('absent-canonical bootstrap integration is restricted to Stage 1')
+    if (cap.canonical_before !== null && matches[0].operation_id === 'bootstrap_data') throw new Error('existing-canonical bootstrap integration requires Stage 2 or later')
+    return {
+      operation_id: matches[0].operation_id, stage: matches[0].stage, branch: matches[0].branch,
+      candidate_sha: sha, candidate_tree: tree,
+      capability_hashes: matches.map(item => item.capability_hash).sort(),
+    }
+  }
+
+  #assertBootstrapGateSet(cap) {
+    const origin = cap.bootstrap_origin
+    if (!origin || origin.candidate_sha !== cap.integrated_sha || origin.candidate_tree !== cap.integrated_tree) throw new Error('bootstrap integration lacks exact sealed candidate origin')
+    const required = BOOTSTRAP_INTEGRATION_GATES[origin.operation_id]
+    if (!required) throw new Error('bootstrap integration candidate operation is not finalizable')
+    const receipts = Array.isArray(cap.gate_receipts) ? cap.gate_receipts : []
+    if (receipts.length !== required.length || new Set(receipts.map(item => item.gate_id)).size !== required.length) throw new Error('bootstrap integration gate receipt set is incomplete or duplicated')
+    for (const gateId of required) {
+      const receipt = receipts.find(item => item.gate_id === gateId)
+      if (!receipt || receipt.exit_code !== 0 || receipt.tested_sha !== cap.integrated_sha || receipt.tested_tree !== cap.integrated_tree ||
+          receipt.receipt_id !== brokerGateReceiptId(cap.operation_id, { ...receipt, raw_output_sha256: receipt.broker_evidence?.raw_output_sha256 }) || receipt.broker_evidence?.logical_operation !== `gate:${gateId}` ||
+          !samePath(receipt.broker_evidence?.physical_cwd || '', cap.worktree)) throw new Error(`bootstrap integration gate receipt is not bound: ${gateId}`)
+    }
+    return receipts
+  }
+
   #assertLanePath(cap, relPath, allowMissing = false) {
     const rel = normalizeRel(relPath)
     if (!this.#allowed(cap, rel)) throw new Error(`path is outside capability scope: ${rel}`)
@@ -525,6 +585,10 @@ export class OracleLaneBroker {
     if (input.operation_id !== 'sprint_build' && scope.length) throw new Error('scope_paths is valid only for sprint_build')
     const provisional = { operation_id: input.operation_id, scope_paths: scope }
     for (const item of scope) if (!this.#allowed(provisional, item)) throw new Error(`requested scope is outside the fixed operation registry: ${item}`)
+    if (input.operation_id === 'bootstrap_integration') {
+      const canonical = this.#ref(CANONICAL_REF)
+      if (canonical !== null && canonical !== baseSha) throw new Error('bootstrap integration base must equal the current canonical ref')
+    }
     const recoveryJournal = input.operation_id === 'bootstrap_data' ? this.#loadRecovery({ ...input, base_sha: baseSha }) : null
     if (recoveryJournal) this.#assertRecoveryJournal(recoveryJournal)
     const leaseStartSha = recoveryJournal ? recoveryJournal.result.sha : baseSha
@@ -737,10 +801,10 @@ export class OracleLaneBroker {
     assertExactKeys(input, ['capability', 'gate_id'])
     const cap = this.#loadCap(input.capability)
     if (cap.operation_id === 'bootstrap_data') throw new Error('gate_run is forbidden for bootstrap_data; use recover_stage1')
-    return this.#runGate(cap, input.gate_id)
+    return this.#runGate(cap, input.gate_id, input.capability)
   }
 
-  #runGate(cap, gateId) {
+  #runGate(cap, gateId, capabilityToken = null) {
     const gate = this.gates[gateId]
     if (!gate) throw new Error('gate_id is not in the fixed broker registry')
     if (['holdout_mode_a', 'holdout_mode_b'].includes(gateId) && cap.operation_id !== 'ratchet') throw new Error('holdout gate is restricted to Ratchet')
@@ -749,6 +813,12 @@ export class OracleLaneBroker {
     const integrationOperation = ['bootstrap_integration', 'sprint_integration'].includes(cap.operation_id)
     if (integrationOperation) {
       if (!cap.integrated_sha || !cap.integrated_tree) throw new Error('integration gates require one sealed lane_integrate result')
+      if (cap.operation_id === 'bootstrap_integration') {
+        this.#assertBootstrapCanonical(cap)
+        const required = BOOTSTRAP_INTEGRATION_GATES[cap.bootstrap_origin?.operation_id] || []
+        if (!required.includes(gateId)) throw new Error('gate_id is not required for the reviewed bootstrap operation/stage')
+        if ((cap.gate_receipts || []).some(receipt => receipt.gate_id === gateId)) throw new Error('bootstrap integration gate receipt already exists')
+      }
       const currentHead = this.#git(['rev-parse', 'HEAD'], cap.worktree).stdout.trim().toLowerCase()
       if (currentHead !== cap.integrated_sha || this.#tree(currentHead, cap.worktree) !== cap.integrated_tree) throw new Error('integration HEAD/tree differs from sealed reviewed candidate')
       if (this.#changedPaths(cap).length) throw new Error('integration lane changed after sealed integration')
@@ -766,10 +836,12 @@ export class OracleLaneBroker {
     const brokerEvidence = this.#evidence(`gate:${gateId}`, cap.worktree, gate.display, result, before, after)
     // Gate evidence is committed to the exact UTF-8 bytes of the canonical carried output.
     // Unlike process stdout/stderr framing, this value is independently recomputable by a workflow consumer.
-    return buildBrokerGateReceipt(cap.operation_id, {
+    const receipt = buildBrokerGateReceipt(cap.operation_id, {
       gate_id: gateId, tested_sha: testedSha, tested_tree: testedTree, command: gate.display, exit_code: result.exit_code,
       output: result.output, broker_evidence: brokerEvidence,
     })
+    if (cap.operation_id === 'bootstrap_integration') this.#saveCap(capabilityToken, { ...cap, gate_receipts: [...(cap.gate_receipts || []), receipt] })
+    return receipt
   }
 
   commitLane(input) {
@@ -822,11 +894,17 @@ export class OracleLaneBroker {
     if (!Array.isArray(input.reviewed_shas) || input.reviewed_shas.length < 1 || input.reviewed_shas.length > 4) throw new Error('reviewed_shas must contain 1-4 commits')
     const shas = input.reviewed_shas.map(value => String(value).toLowerCase())
     if (new Set(shas).size !== shas.length || shas.some(sha => !SHA_RE.test(sha) || !this.#ref(sha))) throw new Error('reviewed_shas must be unique existing exact commits')
+    if (cap.operation_id === 'bootstrap_integration') {
+      this.#assertBootstrapCanonical(cap)
+      if (shas.length !== 1) throw new Error('bootstrap integration requires exactly one reviewed candidate')
+    }
     if (this.#changedPaths(cap).length) throw new Error('integration lane must start clean')
     const receipts = []
     const reviewedCandidates = []
+    let bootstrapOrigin = null
     for (const sha of shas) {
       const reviewedTree = this.#tree(sha, cap.worktree)
+      if (cap.operation_id === 'bootstrap_integration') bootstrapOrigin = this.#bootstrapCandidateOrigin(cap, sha, reviewedTree)
       reviewedCandidates.push({ sha, tree: reviewedTree })
       const ancestor = processResult('git', ['merge-base', '--is-ancestor', cap.base_sha, sha], cap.worktree)
       if (ancestor.exit_code !== 0) throw new Error(`reviewed commit is not based on frozen base: ${sha}`)
@@ -855,7 +933,10 @@ export class OracleLaneBroker {
     requireSuccess(headResult, 'integration HEAD audit')
     const head = headResult.stdout.trim().toLowerCase()
     const tree = this.#tree(head, cap.worktree)
-    this.#saveCap(input.capability, { ...cap, integrated_sha: head, integrated_tree: tree, reviewed_candidates: reviewedCandidates })
+    this.#saveCap(input.capability, {
+      ...cap, integrated_sha: head, integrated_tree: tree, reviewed_candidates: reviewedCandidates,
+      ...(bootstrapOrigin ? { bootstrap_origin: bootstrapOrigin, gate_receipts: [] } : {}),
+    })
     return {
       integrated_shas: shas, reviewed_candidates: reviewedCandidates, sha: head, tree, integration_receipts: receipts,
       head_receipt: { ref: 'HEAD', sha: head, tree, command: 'git rev-parse HEAD', exit_code: 0, output: head, broker_evidence: this.#evidence('lane_head_audit', cap.worktree, 'git rev-parse HEAD', headResult, beforeHead, afterHead) },
@@ -961,6 +1042,8 @@ export class OracleLaneBroker {
     if (this.#changedPaths(cap).length) throw new Error('refusing to release a dirty broker lane')
     const head = this.#git(['rev-parse', 'HEAD'], cap.worktree).stdout.trim().toLowerCase()
     const tree = this.#tree(head, cap.worktree)
+    let bootstrapExpectedOld = null
+    let bootstrapGateReceipts = []
     if (cap.operation_id === 'bootstrap_data' && cap.stage1_gate_failure) {
       if (head !== cap.stage1_gate_failure.sha || tree !== cap.stage1_gate_failure.tree) throw new Error('failed Stage 1 lane differs from preserved committed SHA/tree')
       throw new Error('refusing to release failed Stage 1 gate lane; quarantine required')
@@ -969,8 +1052,14 @@ export class OracleLaneBroker {
       if (!cap.integrated_sha || !cap.integrated_tree || head !== cap.integrated_sha || tree !== cap.integrated_tree) throw new Error('integration release SHA/tree differs from sealed integration')
       if (!Array.isArray(cap.reviewed_candidates) || !cap.reviewed_candidates.length) throw new Error('integration release lacks sealed reviewed candidates')
       if (cap.operation_id === 'bootstrap_integration' && (cap.reviewed_candidates.length !== 1 || cap.reviewed_candidates[0].sha !== head || cap.reviewed_candidates[0].tree !== tree)) throw new Error('bootstrap integration is not the exact reviewed SHA/tree')
+      if (cap.operation_id === 'bootstrap_integration') {
+        bootstrapExpectedOld = this.#assertBootstrapCanonical(cap)
+        bootstrapGateReceipts = this.#assertBootstrapGateSet(cap)
+        if (!this.#isAncestor(cap.base_sha, head)) throw new Error('bootstrap integration target is not a descendant of its canonical base')
+      }
     }
     const before = this.rootGuard()
+    if (cap.operation_id === 'bootstrap_integration' && (before.canonical_sha || ZERO_SHA) !== bootstrapExpectedOld) throw new Error('bootstrap canonical drifted before integration release')
     const script = join(this.root, 'scripts', 'lease-worktree.ps1')
     const result = processResult('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-Release', cap.lease_name, '-RunId', cap.run_id], this.root)
     const after = this.rootGuard()
@@ -978,12 +1067,19 @@ export class OracleLaneBroker {
     requireSuccess(result, 'broker lane release')
     let finalizeToken = ''
     if (OPERATION_REGISTRY[cap.operation_id].finalize) {
-      if (cap.operation_id === 'bootstrap_integration' && cap.canonical_before !== null) throw new Error('bootstrap finalize requires a missing canonical ref at acquisition')
       if (cap.operation_id === 'ratchet' && (!cap.canonical_before || cap.canonical_before === head)) throw new Error('Ratchet finalize identity is invalid')
       finalizeToken = randomBytes(32).toString('hex')
       const finalSha = cap.operation_id === 'bootstrap_integration' ? cap.integrated_sha : head
       const finalTree = cap.operation_id === 'bootstrap_integration' ? cap.integrated_tree : tree
-      this.#saveFinalize(finalizeToken, { version: VERSION, state: 'active', source_capability_hash: sha256(input.capability), expected_old_sha: cap.canonical_before || ZERO_SHA, new_sha: finalSha, new_tree: finalTree, operation_id: cap.operation_id, branch: cap.branch, run_id: cap.run_id })
+      this.#saveFinalize(finalizeToken, {
+        version: VERSION, state: 'active', source_capability_hash: sha256(input.capability),
+        expected_old_sha: cap.operation_id === 'bootstrap_integration' ? bootstrapExpectedOld : (cap.canonical_before || ZERO_SHA),
+        new_sha: finalSha, new_tree: finalTree, operation_id: cap.operation_id, stage: cap.stage, branch: cap.branch, run_id: cap.run_id,
+        ...(cap.operation_id === 'bootstrap_integration' ? {
+          base_sha: cap.base_sha, canonical_before: cap.canonical_before, bootstrap_origin: cap.bootstrap_origin,
+          gate_receipt_ids: bootstrapGateReceipts.map(receipt => receipt.receipt_id),
+        } : {}),
+      })
     }
     this.#saveCap(input.capability, { ...cap, state: 'released', released_head: head, released_tree: tree })
     return {
@@ -1023,6 +1119,19 @@ export class OracleLaneBroker {
     const expectedSha = String(input.expected_sha || '').toLowerCase()
     const expectedTree = String(input.expected_tree || '').toLowerCase()
     if (!SHA_RE.test(expectedSha) || !SHA_RE.test(expectedTree) || expectedSha !== finalizer.new_sha || expectedTree !== finalizer.new_tree) throw new Error('workflow expected SHA/tree differs from sealed integration')
+    if (finalizer.operation_id === 'bootstrap_integration') {
+      const origin = finalizer.bootstrap_origin
+      const expectedOld = finalizer.canonical_before === null ? ZERO_SHA : finalizer.base_sha
+      const requiredGates = BOOTSTRAP_INTEGRATION_GATES[origin?.operation_id]
+      if (finalizer.stage !== 'bootstrap-prepare' || !SHA_RE.test(finalizer.base_sha || '') || finalizer.expected_old_sha !== expectedOld ||
+          (finalizer.canonical_before !== null && finalizer.canonical_before !== finalizer.base_sha) || !requiredGates ||
+          origin.candidate_sha !== finalizer.new_sha || origin.candidate_tree !== finalizer.new_tree ||
+          !Array.isArray(finalizer.gate_receipt_ids) || finalizer.gate_receipt_ids.length !== requiredGates.length ||
+          new Set(finalizer.gate_receipt_ids).size !== requiredGates.length || finalizer.gate_receipt_ids.some(id => !SHA256_RE.test(id)) ||
+          !this.#isAncestor(finalizer.base_sha, finalizer.new_sha)) throw new Error('sealed bootstrap finalizer operation/stage/base/gate binding is invalid')
+      if (finalizer.canonical_before === null && origin.operation_id !== 'bootstrap_data') throw new Error('sealed absent-canonical finalizer is not Stage 1')
+      if (finalizer.canonical_before !== null && origin.operation_id === 'bootstrap_data') throw new Error('sealed existing-canonical finalizer has wrong bootstrap stage')
+    }
     const before = this.rootGuard()
     const actualOld = before.canonical_sha || ZERO_SHA
     if (actualOld !== finalizer.expected_old_sha) throw new Error('canonical compare-and-swap precondition is stale')
