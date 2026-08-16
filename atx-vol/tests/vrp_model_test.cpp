@@ -2252,80 +2252,312 @@ TEST(VrpTrainMath, FmtDoubleCanonicalizesEveryNanSpelling) {
 // ── ROUND 4 F2: the benchmark gate verdict ──────────────────────────────────
 
 namespace {
+// The verdict reads ONLY the rv_fwd_21d axis, so that is what these fixtures
+// carry unless a test deliberately says otherwise.
 [[nodiscard]] vrp::VrpScoreReport make_score(std::string name, vrp::VrpScoreKind kind,
                                              double pearson, double spearman) {
   vrp::VrpScoreReport s;
   s.name = std::move(name);
   s.kind = kind;
+  s.target = vrp::VrpTargetAxis::RvFwd;
   s.ic_pearson = pearson;
   s.ic_spearman = spearman;
   return s;
 }
+
+[[nodiscard]] vrp::VrpScoreReport make_score_on(std::string name, vrp::VrpScoreKind kind,
+                                                vrp::VrpTargetAxis axis, double pearson,
+                                                double spearman) {
+  vrp::VrpScoreReport s = make_score(std::move(name), kind, pearson, spearman);
+  s.target = axis;
+  return s;
+}
+
+[[nodiscard]] vrp::VrpPnlReport make_pnl(std::string name, vrp::VrpScoreKind kind,
+                                         double iv_neutral_excess) {
+  vrp::VrpPnlReport p;
+  p.name = std::move(name);
+  p.kind = kind;
+  p.iv_neutral.excess = iv_neutral_excess;
+  return p;
+}
+
+[[nodiscard]] vrp::VrpPnlFloor make_floor(double mean) {
+  vrp::VrpPnlFloor f;
+  f.mean = mean;
+  return f;
+}
+
+// The measured SP100 floor: shorting the whole cross-section blind earns
+// +3.706 vol pts / 1u gross vega / cycle.
+constexpr double kMeasuredFloor = 3.706;
 } // namespace
 
 TEST(VrpTrainGate, VerdictFailsWhenAFreeBenchmarkBeatsTheModel) {
-  // The measured round-3 state: the model scored +0.247 on per-date rank IC
-  // and the zero-parameter -iv_fair_21d scored +0.462. That must read FAIL.
+  // The measured SP100 state on the CORRECTED target. Against rv_fwd_21d the
+  // GBT scores +0.0467 and the free hv_iv_gap +0.0730, and hv_iv_gap earns
+  // +4.998 IV-neutralised vol pts against the GBT's +2.157 -- against a
+  // short-everything floor of +3.706, so the model does not even clear doing
+  // nothing. That must read FAIL.
   const std::vector<vrp::VrpScoreReport> scores{
-      make_score("gbt", vrp::VrpScoreKind::Model, 0.10, 0.247),
+      make_score("gbt", vrp::VrpScoreKind::Model, 0.0671, 0.0467),
       make_score("baseline_log_har", vrp::VrpScoreKind::Baseline, 0.30, 0.55),
-      make_score("bench_neg_iv_fair_21d", vrp::VrpScoreKind::Benchmark, 0.20, 0.462),
-      make_score("bench_hv_iv_gap", vrp::VrpScoreKind::Benchmark, 0.05, 0.10)};
-  const vrp::VrpGateVerdict v = vrp::vrp_gate_verdict(scores);
+      make_score("bench_hv_iv_gap", vrp::VrpScoreKind::Benchmark, 0.1674, 0.0730)};
+  const std::vector<vrp::VrpPnlReport> pnl{
+      make_pnl("gbt", vrp::VrpScoreKind::Model, 2.157 - kMeasuredFloor),
+      make_pnl("bench_hv_iv_gap", vrp::VrpScoreKind::Benchmark, 4.998 - kMeasuredFloor)};
+  const vrp::VrpGateVerdict v =
+      vrp::vrp_gate_verdict(scores, pnl, make_floor(kMeasuredFloor));
   EXPECT_FALSE(v.pass);
   EXPECT_EQ(v.model, "gbt");
-  EXPECT_EQ(v.best_benchmark, "bench_neg_iv_fair_21d");
-  EXPECT_EQ(v.n_benchmarks, 2u);
-  EXPECT_DOUBLE_EQ(v.model_ic_spearman, 0.247);
-  EXPECT_DOUBLE_EQ(v.best_benchmark_ic_spearman, 0.462);
+  EXPECT_EQ(v.best_benchmark, "bench_hv_iv_gap");
+  EXPECT_EQ(v.n_benchmarks, 1u);
+  EXPECT_DOUBLE_EQ(v.model_ic_spearman, 0.0467);
+  EXPECT_DOUBLE_EQ(v.best_benchmark_ic_spearman, 0.0730);
+  EXPECT_DOUBLE_EQ(v.pnl_floor, kMeasuredFloor);
+  EXPECT_NEAR(v.model_pnl_excess, -1.549, 1e-12);
+  EXPECT_NEAR(v.best_benchmark_pnl_excess, 1.292, 1e-12);
   // The FITTED baseline outscoring the model is reported but never the bar:
   // only zero-parameter benchmarks decide the verdict.
   const std::vector<vrp::VrpScoreReport> beats_benchmarks{
       make_score("gbt", vrp::VrpScoreKind::Model, 0.40, 0.60),
       make_score("baseline_log_har", vrp::VrpScoreKind::Baseline, 0.90, 0.90),
-      make_score("bench_neg_iv_fair_21d", vrp::VrpScoreKind::Benchmark, 0.20, 0.462)};
-  EXPECT_TRUE(vrp::vrp_gate_verdict(beats_benchmarks).pass);
+      make_score("bench_hv_iv_gap", vrp::VrpScoreKind::Benchmark, 0.20, 0.30)};
+  const std::vector<vrp::VrpPnlReport> beats_pnl{
+      make_pnl("gbt", vrp::VrpScoreKind::Model, 2.0),
+      make_pnl("baseline_log_har", vrp::VrpScoreKind::Baseline, 9.0),
+      make_pnl("bench_hv_iv_gap", vrp::VrpScoreKind::Benchmark, 1.0)};
+  EXPECT_TRUE(
+      vrp::vrp_gate_verdict(beats_benchmarks, beats_pnl, make_floor(kMeasuredFloor)).pass);
 }
 
-TEST(VrpTrainGate, VerdictFailsClosedOnTiesMissingBenchmarksAndNaN) {
-  // A tie is not a win.
+TEST(VrpTrainGate, ContaminatedNegIvFairCanNeverDecideTheVerdict) {
+  // -iv_fair_21d is a PERFECT rank transform of the composite label's own
+  // implied leg (IC exactly +1.0000, by algebra, since iv_fair_21d > 0) and a
+  // strong ANTI-forecaster of realized vol (-0.6128, t_nw -22.93 on SP100).
+  // Round 4 counted it as a zero-parameter benchmark and every verdict it
+  // issued is void. Plant it here beating the model on every axis by a mile:
+  // the verdict must not move, and it must not be counted as a benchmark.
+  const std::vector<vrp::VrpScoreReport> without{
+      make_score("gbt", vrp::VrpScoreKind::Model, 0.40, 0.60),
+      make_score("bench_hv_iv_gap", vrp::VrpScoreKind::Benchmark, 0.20, 0.30)};
+  const std::vector<vrp::VrpPnlReport> pnl_without{
+      make_pnl("gbt", vrp::VrpScoreKind::Model, 2.0),
+      make_pnl("bench_hv_iv_gap", vrp::VrpScoreKind::Benchmark, 1.0)};
+  const vrp::VrpGateVerdict base =
+      vrp::vrp_gate_verdict(without, pnl_without, make_floor(kMeasuredFloor));
+  ASSERT_TRUE(base.pass);
+
+  std::vector<vrp::VrpScoreReport> with = without;
+  with.push_back(
+      make_score("contaminated_neg_iv_fair_21d", vrp::VrpScoreKind::Contaminated, 0.99, 0.99));
+  std::vector<vrp::VrpPnlReport> pnl_with = pnl_without;
+  pnl_with.push_back(
+      make_pnl("contaminated_neg_iv_fair_21d", vrp::VrpScoreKind::Contaminated, 99.0));
+  const vrp::VrpGateVerdict v =
+      vrp::vrp_gate_verdict(with, pnl_with, make_floor(kMeasuredFloor));
+  EXPECT_TRUE(v.pass);
+  EXPECT_EQ(v.n_benchmarks, base.n_benchmarks);
+  EXPECT_EQ(v.best_benchmark, "bench_hv_iv_gap");
+  EXPECT_DOUBLE_EQ(v.best_benchmark_ic_spearman, 0.30);
+}
+
+TEST(VrpTrainGate, OnlyTheRvFwdAxisDecidesTheVerdict) {
+  // The composite label's rank ordering is anti-correlated with realized-vol
+  // forecasting skill, so it is reported and NEVER gated. A model that loses
+  // catastrophically on the label axis while winning on the realized leg must
+  // still pass; that is the whole correction.
+  std::vector<vrp::VrpScoreReport> scores{
+      make_score("gbt", vrp::VrpScoreKind::Model, 0.40, 0.60),
+      make_score_on("gbt", vrp::VrpScoreKind::Model, vrp::VrpTargetAxis::Label, -0.90, -0.90),
+      make_score("bench_hv_iv_gap", vrp::VrpScoreKind::Benchmark, 0.20, 0.30),
+      make_score_on("bench_hv_iv_gap", vrp::VrpScoreKind::Benchmark,
+                    vrp::VrpTargetAxis::Label, 0.95, 0.95),
+      make_score_on("bench_hv_iv_gap", vrp::VrpScoreKind::Benchmark,
+                    vrp::VrpTargetAxis::VolChg, 0.95, 0.95)};
+  const std::vector<vrp::VrpPnlReport> pnl{
+      make_pnl("gbt", vrp::VrpScoreKind::Model, 2.0),
+      make_pnl("bench_hv_iv_gap", vrp::VrpScoreKind::Benchmark, 1.0)};
+  const vrp::VrpGateVerdict v =
+      vrp::vrp_gate_verdict(scores, pnl, make_floor(kMeasuredFloor));
+  EXPECT_TRUE(v.pass);
+  EXPECT_EQ(v.n_benchmarks, 1u); // one benchmark, not one per axis
+  EXPECT_DOUBLE_EQ(v.model_ic_spearman, 0.60);
+  EXPECT_DOUBLE_EQ(v.best_benchmark_ic_spearman, 0.30);
+}
+
+TEST(VrpTrainGate, VerdictFailsClosedOnTiesMissingBenchmarksMissingMoneyAndNaN) {
+  const auto pnl = [](double model_excess, double bench_excess) {
+    return std::vector<vrp::VrpPnlReport>{
+        make_pnl("gbt", vrp::VrpScoreKind::Model, model_excess),
+        make_pnl("bench_hv_iv_gap", vrp::VrpScoreKind::Benchmark, bench_excess)};
+  };
+  const vrp::VrpPnlFloor floor = make_floor(kMeasuredFloor);
+  // A tie is not a win -- on ICs...
   const std::vector<vrp::VrpScoreReport> tie{
       make_score("gbt", vrp::VrpScoreKind::Model, 0.20, 0.30),
-      make_score("bench_neg_iv_fair_21d", vrp::VrpScoreKind::Benchmark, 0.20, 0.30)};
-  EXPECT_FALSE(vrp::vrp_gate_verdict(tie).pass);
+      make_score("bench_hv_iv_gap", vrp::VrpScoreKind::Benchmark, 0.20, 0.30)};
+  EXPECT_FALSE(vrp::vrp_gate_verdict(tie, pnl(2.0, 1.0), floor).pass);
+  // ...and on money.
+  const std::vector<vrp::VrpScoreReport> wins_ic{
+      make_score("gbt", vrp::VrpScoreKind::Model, 0.40, 0.60),
+      make_score("bench_hv_iv_gap", vrp::VrpScoreKind::Benchmark, 0.20, 0.30)};
+  EXPECT_FALSE(vrp::vrp_gate_verdict(wins_ic, pnl(1.0, 1.0), floor).pass);
+  // Winning both ICs while earning LESS money than the free rule is not a win:
+  // hv_iv_gap outearned the model IV-neutralised on SP100 and that is the fact
+  // the gate has to be able to see.
+  EXPECT_FALSE(vrp::vrp_gate_verdict(wins_ic, pnl(0.5, 1.0), floor).pass);
+  // Beating every benchmark while still earning LESS per unit of gross vega
+  // than shorting the universe blind is not selection: the floor is absolute.
+  EXPECT_FALSE(vrp::vrp_gate_verdict(wins_ic, pnl(-0.5, -1.0), floor).pass);
+  EXPECT_TRUE(vrp::vrp_gate_verdict(wins_ic, pnl(0.5, -1.0), floor).pass);
+  // A run with no money measured at all is ungraded, therefore not passing.
+  EXPECT_FALSE(vrp::vrp_gate_verdict(wins_ic, {}, floor).pass);
   // Winning on rank while losing on level is the state that produced a book
   // with rank skill and no currency edge. Both must clear.
   const std::vector<vrp::VrpScoreReport> rank_only{
       make_score("gbt", vrp::VrpScoreKind::Model, 0.05, 0.90),
-      make_score("bench_neg_iv_fair_21d", vrp::VrpScoreKind::Benchmark, 0.20, 0.30)};
-  EXPECT_FALSE(vrp::vrp_gate_verdict(rank_only).pass);
+      make_score("bench_hv_iv_gap", vrp::VrpScoreKind::Benchmark, 0.20, 0.30)};
+  EXPECT_FALSE(vrp::vrp_gate_verdict(rank_only, pnl(2.0, 1.0), floor).pass);
   // An ungraded run must never read as a passing one.
   const std::vector<vrp::VrpScoreReport> no_bench{
       make_score("gbt", vrp::VrpScoreKind::Model, 0.90, 0.90)};
-  EXPECT_FALSE(vrp::vrp_gate_verdict(no_bench).pass);
-  EXPECT_EQ(vrp::vrp_gate_verdict(no_bench).n_benchmarks, 0u);
+  EXPECT_FALSE(vrp::vrp_gate_verdict(no_bench, pnl(2.0, 1.0), floor).pass);
+  EXPECT_EQ(vrp::vrp_gate_verdict(no_bench, pnl(2.0, 1.0), floor).n_benchmarks, 0u);
   const std::vector<vrp::VrpScoreReport> no_model{
-      make_score("bench_neg_iv_fair_21d", vrp::VrpScoreKind::Benchmark, 0.20, 0.30)};
-  EXPECT_FALSE(vrp::vrp_gate_verdict(no_model).pass);
-  EXPECT_TRUE(vrp::vrp_gate_verdict(no_model).model.empty());
+      make_score("bench_hv_iv_gap", vrp::VrpScoreKind::Benchmark, 0.20, 0.30)};
+  EXPECT_FALSE(vrp::vrp_gate_verdict(no_model, pnl(2.0, 1.0), floor).pass);
+  EXPECT_TRUE(vrp::vrp_gate_verdict(no_model, pnl(2.0, 1.0), floor).model.empty());
   // NaN on either side is unmeasurable, therefore not won.
   const std::vector<vrp::VrpScoreReport> nan_model{
       make_score("gbt", vrp::VrpScoreKind::Model, kNaN, 0.90),
-      make_score("bench_neg_iv_fair_21d", vrp::VrpScoreKind::Benchmark, 0.20, 0.30)};
-  EXPECT_FALSE(vrp::vrp_gate_verdict(nan_model).pass);
+      make_score("bench_hv_iv_gap", vrp::VrpScoreKind::Benchmark, 0.20, 0.30)};
+  EXPECT_FALSE(vrp::vrp_gate_verdict(nan_model, pnl(2.0, 1.0), floor).pass);
   const std::vector<vrp::VrpScoreReport> nan_bench{
       make_score("gbt", vrp::VrpScoreKind::Model, 0.90, 0.90),
-      make_score("bench_neg_iv_fair_21d", vrp::VrpScoreKind::Benchmark, kNaN, kNaN)};
-  EXPECT_FALSE(vrp::vrp_gate_verdict(nan_bench).pass);
+      make_score("bench_hv_iv_gap", vrp::VrpScoreKind::Benchmark, kNaN, kNaN)};
+  EXPECT_FALSE(vrp::vrp_gate_verdict(nan_bench, pnl(2.0, 1.0), floor).pass);
+  EXPECT_FALSE(vrp::vrp_gate_verdict(wins_ic, pnl(kNaN, 1.0), floor).pass);
+  EXPECT_FALSE(vrp::vrp_gate_verdict(wins_ic, pnl(2.0, kNaN), floor).pass);
   // A MEASURED benchmark must be named as the bar even when an unmeasurable
   // one arrives first -- otherwise a leading NaN latches and the report names
   // the wrong thing for the model to answer for.
   const std::vector<vrp::VrpScoreReport> nan_first{
       make_score("gbt", vrp::VrpScoreKind::Model, 0.90, 0.90),
-      make_score("bench_hv_iv_gap", vrp::VrpScoreKind::Benchmark, kNaN, kNaN),
-      make_score("bench_neg_iv_fair_21d", vrp::VrpScoreKind::Benchmark, 0.20, 0.30)};
-  EXPECT_EQ(vrp::vrp_gate_verdict(nan_first).best_benchmark, "bench_neg_iv_fair_21d");
-  EXPECT_FALSE(vrp::vrp_gate_verdict(nan_first).pass); // the NaN one still fails it
+      make_score("bench_unmeasurable", vrp::VrpScoreKind::Benchmark, kNaN, kNaN),
+      make_score("bench_hv_iv_gap", vrp::VrpScoreKind::Benchmark, 0.20, 0.30)};
+  EXPECT_EQ(vrp::vrp_gate_verdict(nan_first, pnl(2.0, 1.0), floor).best_benchmark,
+            "bench_hv_iv_gap");
+  EXPECT_FALSE(vrp::vrp_gate_verdict(nan_first, pnl(2.0, 1.0), floor).pass);
+}
+
+// ── ROUND 5: money, and the floor every candidate must clear ────────────────
+
+TEST(VrpTrainMath, PpvAndTheShortEverythingFloorMatchHandComputation) {
+  // ppv = 100 * (rv^2 - iv^2) / (2 * iv), the hold-to-horizon carry of a
+  // daily-delta-hedged ATM straddle carrying 1 unit of vega.
+  EXPECT_DOUBLE_EQ(vrp::vrp_ppv_raw(0.30, 0.20), 12.5);
+  EXPECT_DOUBLE_EQ(vrp::vrp_ppv_raw(0.10, 0.20), -7.5);
+  EXPECT_DOUBLE_EQ(vrp::vrp_ppv_raw(0.10, 0.50), -24.0);
+  EXPECT_DOUBLE_EQ(vrp::vrp_ppv_raw(1.00, 0.50), 75.0);
+  // A row that cannot be priced is undefined, never 0.0 -- iv_fair is the
+  // denominator and a tail row carries no realized leg at all.
+  EXPECT_TRUE(std::isnan(vrp::vrp_ppv_raw(kNaN, 0.20)));
+  EXPECT_TRUE(std::isnan(vrp::vrp_ppv_raw(0.30, 0.0)));
+  EXPECT_TRUE(std::isnan(vrp::vrp_ppv_raw(0.30, -0.20)));
+
+  const std::vector<double> rv{0.30, 0.10, 0.10, 1.00, kNaN};
+  const std::vector<double> iv{0.20, 0.20, 0.50, 0.50, 0.20};
+  const vrp::VrpPpvSeries s = vrp::vrp_build_ppv(rv, iv);
+  ASSERT_EQ(s.ppv.size(), 5u);
+  EXPECT_EQ(s.n_priced, 4u);
+  // The +16465-vol-point unadjusted-split rows are the reason the cap exists,
+  // and the count is published rather than hidden.
+  EXPECT_EQ(s.n_winsorized, 1u);
+  EXPECT_DOUBLE_EQ(s.ppv[3], vrp::kVrpPpvWinsorAbs);
+  EXPECT_TRUE(std::isnan(s.ppv[4]));
+
+  // Shorting earns -ppv, so the floor is the negated per-date cross-sectional
+  // mean: date 1 = -(12.5 - 7.5 - 24.0)/3, date 2 = -60.
+  const std::vector<std::int64_t> ts{1, 1, 1, 2, 2};
+  const vrp::VrpPnlFloor floor = vrp::vrp_short_everything_floor(ts, s.ppv);
+  ASSERT_EQ(floor.per_date.size(), 2u);
+  EXPECT_NEAR(floor.per_date[0], 19.0 / 3.0, 1e-12);
+  EXPECT_DOUBLE_EQ(floor.per_date[1], -60.0);
+  EXPECT_NEAR(floor.mean, (19.0 / 3.0 - 60.0) / 2.0, 1e-12);
+  EXPECT_EQ(floor.n_dates, 2u);
+}
+
+TEST(VrpTrainMath, PnlExcessIsThePairedPerDateDifferenceFromTheFloor) {
+  // The excess is a PAIRED per-date statistic, not (mean book - mean floor):
+  // a date the book could not trade must not contribute its floor either.
+  const std::vector<double> book{2.0, 4.0, kNaN};
+  const std::vector<double> floor{1.0, 1.0, 5.0};
+  const vrp::VrpPnlAgg a = vrp::vrp_pnl_agg(book, floor);
+  EXPECT_DOUBLE_EQ(a.mean, 3.0);
+  EXPECT_EQ(a.n_dates, 2u);
+  EXPECT_DOUBLE_EQ(a.excess, 2.0);
+  // The naive difference of the two means would have been +0.667. It is not
+  // the same number, and the paired one is the honest one.
+  EXPECT_NE(a.excess, 3.0 - (1.0 + 1.0 + 5.0) / 3.0);
+  // Misaligned inputs are undefined, never faked.
+  const std::vector<double> shorter{1.0};
+  EXPECT_TRUE(std::isnan(vrp::vrp_pnl_agg(book, shorter).excess));
+}
+
+TEST(VrpTrainMath, IvNeutralisationStripsAStaticVolLevelTiltFromTheBook) {
+  // Ten names on one date. iv rises 0.10 -> 0.55; the score is -iv (the
+  // contaminated rule: long the cheap names, short the expensive ones); and
+  // ppv is a pure function of the IV QUINTILE, constant inside each pair.
+  //
+  // The decile book therefore harvests the whole IV-level gradient, while the
+  // IV-neutralised book -- which can only compare names inside one quintile --
+  // must read EXACTLY ZERO. That is the audit's finding reproduced in a
+  // closed-form fixture: 90% of -iv_fair_21d's P&L was a static vol-level tilt.
+  std::vector<std::int64_t> ts(10, 7);
+  std::vector<double> iv;
+  std::vector<double> score;
+  const std::vector<double> ppv{14.0, 14.0, 4.0, 4.0, -6.0, -6.0, -16.0, -16.0, -26.0, -26.0};
+  for (std::size_t i = 0; i < 10; ++i) {
+    iv.push_back(0.10 + 0.05 * static_cast<double>(i));
+    score.push_back(-iv.back());
+  }
+  const vrp::VrpPnlFloor floor = vrp::vrp_short_everything_floor(ts, ppv);
+  ASSERT_EQ(floor.per_date.size(), 1u);
+  EXPECT_DOUBLE_EQ(floor.per_date[0], 6.0); // -mean(ppv) = -(-6) = +6
+
+  // Decile book, halved because the quoted spread costs 2u of gross vega.
+  const std::vector<double> dec = vrp::vrp_decile_book_per_date(ts, score, ppv);
+  ASSERT_EQ(dec.size(), 1u);
+  EXPECT_DOUBLE_EQ(dec[0], 0.5 * (14.0 - (-26.0)));
+
+  const std::vector<double> ivn = vrp::vrp_iv_neutral_book_per_date(ts, score, ppv, iv);
+  ASSERT_EQ(ivn.size(), 1u);
+  EXPECT_DOUBLE_EQ(ivn[0], 0.0);
+
+  // And the number that decides anything is the excess over doing nothing:
+  // +20 raw becomes +14, and the neutralised book is BELOW the floor at -6.
+  EXPECT_DOUBLE_EQ(vrp::vrp_pnl_agg(dec, floor.per_date).excess, 14.0);
+  EXPECT_DOUBLE_EQ(vrp::vrp_pnl_agg(ivn, floor.per_date).excess, -6.0);
+
+  // A score that genuinely selects INSIDE each IV quintile survives the
+  // transform: flip the sign of ppv dispersion within pairs and neutralise.
+  const std::vector<double> ppv_within{20.0, 8.0, 10.0, -2.0, 0.0, -12.0,
+                                       -10.0, -22.0, -20.0, -32.0};
+  const std::vector<double> ivn2 =
+      vrp::vrp_iv_neutral_book_per_date(ts, score, ppv_within, iv);
+  ASSERT_EQ(ivn2.size(), 1u);
+  // Inside every quintile the higher score (lower iv) carries +12 more ppv.
+  EXPECT_DOUBLE_EQ(ivn2[0], 6.0);
+
+  // Dates thinner than two names per quintile contribute NOTHING rather than a
+  // fabricated tail -- the same contract as the decile floor.
+  const std::vector<std::int64_t> thin_ts(9, 7);
+  const std::vector<double> thin(9, 1.0);
+  const std::vector<double> thin_out =
+      vrp::vrp_iv_neutral_book_per_date(thin_ts, thin, thin, thin);
+  ASSERT_EQ(thin_out.size(), 1u);
+  EXPECT_TRUE(std::isnan(thin_out[0]));
 }
 
 // ── ROUND 4 F4: feature lagging ─────────────────────────────────────────────
@@ -2543,11 +2775,15 @@ TEST_F(VrpTrainPipelineTest, PerSymbolEdgeNormIsReproducibleFromTheSidecarAlone)
             std::string::npos);
   // The break the gate now makes visible: under per-symbol the column the book
   // RANKS on is a different axis from the column the IC is measured on, so its
-  // rank IC diverges from the model's. Under cross-section the two coincide
-  // (pinned by GateScoresEveryFoldAndThePooledCorpusAgainstFreeBenchmarks).
-  ASSERT_EQ(ps->gate.pooled.size(), 5u);
-  EXPECT_EQ(ps->gate.pooled[4].name, "ranked_pred_edge_norm");
-  EXPECT_NE(ps->gate.pooled[4].ic_spearman, ps->gate.pooled[0].ic_spearman);
+  // rank IC diverges from the model's on EVERY target. Under cross-section the
+  // two coincide (pinned by GateScoresEveryColumnOnAllThreeTargetAxes).
+  constexpr std::size_t kAxes = 3;
+  ASSERT_EQ(ps->gate.pooled.size(), vrp::kVrpGateColumnCount * kAxes);
+  for (std::size_t a = 0; a < kAxes; ++a) {
+    const auto &ranked = ps->gate.pooled[3 * kAxes + a];
+    EXPECT_EQ(ranked.name, "ranked_pred_edge_norm");
+    EXPECT_NE(ranked.ic_spearman, ps->gate.pooled[a].ic_spearman);
+  }
   std::error_code ec;
   std::filesystem::remove_all(out, ec);
 }
@@ -2600,60 +2836,107 @@ TEST(VrpTrainMath, CrossSectionEdgeNormEmitsZeroOnDegenerateDatesAndNeverNonFini
 
 // ── ROUND 4 F2/F3: the gate in the artifacts ────────────────────────────────
 
-TEST_F(VrpTrainPipelineTest, GateScoresEveryFoldAndThePooledCorpusAgainstFreeBenchmarks) {
+TEST_F(VrpTrainPipelineTest, GateScoresEveryColumnOnAllThreeTargetAxes) {
   const auto &gate = report_->gate;
+  constexpr std::size_t kAxes = 3;
+  constexpr std::size_t kCols = vrp::kVrpGateColumnCount;
   ASSERT_EQ(gate.per_fold.size(), report_->folds.size());
-  ASSERT_EQ(gate.pooled.size(), 5u);
-  // Column order and kinds: the model on trial, the fitted baseline, the two
-  // ZERO-PARAMETER benchmarks that decide the verdict, and the column the
-  // BOOK actually ranks on (which rounds 1-3 never scored).
-  EXPECT_EQ(gate.pooled[0].name, "gbt");
-  EXPECT_EQ(gate.pooled[0].kind, vrp::VrpScoreKind::Model);
-  EXPECT_EQ(gate.pooled[1].name, "baseline_log_har");
-  EXPECT_EQ(gate.pooled[1].kind, vrp::VrpScoreKind::Baseline);
-  EXPECT_EQ(gate.pooled[2].name, "bench_neg_iv_fair_21d");
-  EXPECT_EQ(gate.pooled[2].kind, vrp::VrpScoreKind::Benchmark);
-  EXPECT_EQ(gate.pooled[3].name, "bench_hv_iv_gap");
-  EXPECT_EQ(gate.pooled[3].kind, vrp::VrpScoreKind::Benchmark);
-  EXPECT_EQ(gate.pooled[4].name, "ranked_pred_edge_norm");
-  EXPECT_EQ(gate.pooled[4].kind, vrp::VrpScoreKind::Ranked);
-  EXPECT_EQ(gate.verdict.n_benchmarks, 2u);
+  ASSERT_EQ(gate.pooled.size(), kCols * kAxes);
+  ASSERT_EQ(gate.pooled_pnl.size(), kCols);
+  // Column order and kinds: the model on trial, the fitted baseline, the ONE
+  // surviving zero-parameter benchmark, the column the BOOK actually ranks on,
+  // and -- last, and structurally non-gating -- the contaminated appendix.
+  const std::array<std::pair<std::string, vrp::VrpScoreKind>, kCols> expect_cols{
+      std::pair{std::string{"gbt"}, vrp::VrpScoreKind::Model},
+      std::pair{std::string{"baseline_log_har"}, vrp::VrpScoreKind::Baseline},
+      std::pair{std::string{"bench_hv_iv_gap"}, vrp::VrpScoreKind::Benchmark},
+      std::pair{std::string{"ranked_pred_edge_norm"}, vrp::VrpScoreKind::Ranked},
+      std::pair{std::string{"contaminated_neg_iv_fair_21d"},
+                vrp::VrpScoreKind::Contaminated}};
+  const std::array<vrp::VrpTargetAxis, kAxes> expect_axes{vrp::VrpTargetAxis::RvFwd,
+                                                          vrp::VrpTargetAxis::VolChg,
+                                                          vrp::VrpTargetAxis::Label};
+  for (std::size_t c = 0; c < kCols; ++c) {
+    EXPECT_EQ(gate.pooled_pnl[c].name, expect_cols[c].first);
+    EXPECT_EQ(gate.pooled_pnl[c].kind, expect_cols[c].second);
+    for (std::size_t a = 0; a < kAxes; ++a) {
+      const auto &s = gate.pooled[c * kAxes + a];
+      EXPECT_EQ(s.name, expect_cols[c].first);
+      EXPECT_EQ(s.kind, expect_cols[c].second);
+      EXPECT_EQ(s.target, expect_axes[a]);
+    }
+  }
+  // ONE benchmark. -iv_fair_21d is scored and published and counts for
+  // nothing: it is +1.0000 correlated with the label's own implied leg by
+  // algebra, and every round-4 verdict issued against it is void.
+  EXPECT_EQ(gate.verdict.n_benchmarks, 1u);
+  EXPECT_EQ(gate.verdict.best_benchmark, "bench_hv_iv_gap");
+  // The primary axis is the REALIZED leg, and it is a different number from
+  // the contaminated composite -- which is the entire point of grading both.
+  EXPECT_NE(gate.pooled[0].ic_spearman, gate.pooled[2].ic_spearman);
+  EXPECT_DOUBLE_EQ(gate.verdict.model_ic_spearman, gate.pooled[0].ic_spearman);
+  EXPECT_DOUBLE_EQ(gate.verdict.model_ic_pearson, gate.pooled[0].ic_pearson);
   // Under the cross-section default the ranking column is an order-preserving
   // map of pred_label WITHIN each date, so its per-date rank IC and its decile
   // tails must coincide with the model's -- the round-1..3 gap between the
-  // scored column and the traded one closes to zero by construction.
-  EXPECT_NEAR(gate.pooled[4].ic_spearman, gate.pooled[0].ic_spearman, 1e-9);
-  // Pearson is invariant to a positive affine map, so the PER-DATE Pearson IC
-  // coincides too. The pooled-across-dates Pearson deliberately does NOT: the
-  // z-score is date-specific, which is exactly why a pooled-row correlation is
-  // the wrong statistic for a per-date cross-sectional book.
-  EXPECT_NEAR(gate.pooled[4].ic_pearson, gate.pooled[0].ic_pearson, 1e-9);
-  EXPECT_NE(gate.pooled[4].ic_pearson_pooled, gate.pooled[0].ic_pearson_pooled);
-  // This fixture carries 3 names per date, below the one-name-per-decile floor,
-  // so the tail block is UNDEFINED rather than fabricated from three names --
-  // pinned here because a fabricated decile spread is the exact failure mode
-  // the floor exists to prevent.
-  EXPECT_EQ(gate.pooled[0].n_dates, gate.pooled[4].n_dates);
+  // scored column and the traded one closes to zero by construction. Holds on
+  // every axis, because the transform is on the SCORE side.
+  for (std::size_t a = 0; a < kAxes; ++a) {
+    EXPECT_NEAR(gate.pooled[3 * kAxes + a].ic_spearman, gate.pooled[a].ic_spearman, 1e-9);
+    // Pearson is invariant to a positive affine map, so the PER-DATE Pearson
+    // IC coincides too. The pooled-across-dates Pearson deliberately does NOT:
+    // the z-score is date-specific, which is exactly why a pooled-row
+    // correlation is the wrong statistic for a per-date cross-sectional book.
+    EXPECT_NEAR(gate.pooled[3 * kAxes + a].ic_pearson, gate.pooled[a].ic_pearson, 1e-9);
+    EXPECT_NE(gate.pooled[3 * kAxes + a].ic_pearson_pooled, gate.pooled[a].ic_pearson_pooled);
+  }
+  // This fixture carries 3 names per date, below the one-name-per-decile floor
+  // AND below the two-names-per-IV-quintile floor, so every tail and every
+  // book is UNDEFINED rather than fabricated from three names. The floor
+  // itself needs only one priced name per date, so it IS measurable -- pinned
+  // because "the book is unmeasurable" and "doing nothing pays nothing" are
+  // different statements.
   EXPECT_TRUE(std::isnan(gate.pooled[0].decile_spread));
-  EXPECT_TRUE(std::isnan(gate.pooled[4].decile_spread));
   EXPECT_TRUE(std::isnan(gate.pooled[0].decile_rho));
-  EXPECT_TRUE(std::isnan(gate.pooled[4].decile_rho));
-  // Every fold scores the same five columns on that fold's own test rows.
+  EXPECT_TRUE(std::isnan(gate.pooled_pnl[0].decile.mean));
+  EXPECT_TRUE(std::isnan(gate.pooled_pnl[0].iv_neutral.mean));
+  EXPECT_TRUE(std::isnan(gate.pooled_pnl[0].iv_neutral.excess));
+  EXPECT_TRUE(std::isfinite(gate.pooled_floor.mean));
+  EXPECT_GT(gate.pooled_floor.n_dates, 0u);
+  EXPECT_DOUBLE_EQ(gate.verdict.pnl_floor, gate.pooled_floor.mean);
+  // An unmeasurable book cannot clear the floor, so the run cannot pass.
+  EXPECT_FALSE(gate.verdict.pass);
+  // Every row that carries a realized leg is priced, and this clean fixture
+  // trips the winsorization cap on nothing.
+  EXPECT_EQ(gate.n_ppv_rows_priced, gate.pooled[0].n_rows);
+  EXPECT_EQ(gate.n_ppv_rows_winsorized, 0u);
+  // Every fold scores the same columns on that fold's own test rows.
   for (std::size_t i = 0; i < gate.per_fold.size(); ++i) {
-    ASSERT_EQ(gate.per_fold[i].scores.size(), 5u);
+    ASSERT_EQ(gate.per_fold[i].scores.size(), kCols * kAxes);
+    ASSERT_EQ(gate.per_fold[i].pnl.size(), kCols);
     EXPECT_EQ(gate.per_fold[i].fold_id, report_->folds[i].fold_id);
+    EXPECT_TRUE(std::isfinite(gate.per_fold[i].floor.mean));
     for (const auto &s : gate.per_fold[i].scores) {
       EXPECT_EQ(s.n_rows, report_->folds[i].n_test);
       EXPECT_GT(s.n_dates, 0u);
     }
     // MSE / Mincer-Zarnowitz are LABEL-unit claims: populated for the model
-    // and the baseline, deliberately absent for a pure ranking benchmark.
-    EXPECT_TRUE(std::isfinite(gate.per_fold[i].scores[0].mse));
-    EXPECT_TRUE(std::isfinite(gate.per_fold[i].scores[0].mz_slope));
-    EXPECT_TRUE(std::isnan(gate.per_fold[i].scores[2].mse));
-    EXPECT_TRUE(std::isnan(gate.per_fold[i].scores[2].mz_slope));
-    // The ranking column is a z-score: no level claim, so no MSE either.
-    EXPECT_TRUE(std::isnan(gate.per_fold[i].scores[4].mse));
+    // and the baseline ON THE LABEL AXIS ONLY. A level loss against
+    // rv_fwd_21d or against a log vol ratio is a category error, and it is
+    // refused rather than fabricated.
+    EXPECT_TRUE(std::isfinite(gate.per_fold[i].scores[2].mse));
+    EXPECT_TRUE(std::isfinite(gate.per_fold[i].scores[2].mz_slope));
+    EXPECT_TRUE(std::isnan(gate.per_fold[i].scores[0].mse));
+    EXPECT_TRUE(std::isnan(gate.per_fold[i].scores[1].mse));
+    EXPECT_TRUE(std::isfinite(gate.per_fold[i].scores[1 * kAxes + 2].mse));
+    // The benchmark, the ranking z-score and the contaminated column make no
+    // level claim on any axis.
+    for (std::size_t c = 2; c < kCols; ++c) {
+      for (std::size_t a = 0; a < kAxes; ++a) {
+        EXPECT_TRUE(std::isnan(gate.per_fold[i].scores[c * kAxes + a].mse));
+        EXPECT_TRUE(std::isnan(gate.per_fold[i].scores[c * kAxes + a].mz_slope));
+      }
+    }
   }
   // Pooled covers every fold's test rows exactly once.
   std::size_t n_test_total = 0;
@@ -2662,8 +2945,9 @@ TEST_F(VrpTrainPipelineTest, GateScoresEveryFoldAndThePooledCorpusAgainstFreeBen
   }
   EXPECT_EQ(gate.pooled[0].n_rows, n_test_total);
   // The gate's model column is the SHIPPED forecast: with recalibration off
-  // it must equal the per-fold rank IC the round-1..3 path already reported.
-  EXPECT_NEAR(gate.per_fold.front().scores[0].ic_spearman, report_->folds.front().ic_gbt,
+  // its LABEL-axis rank IC must equal the per-fold number the round-1..3 path
+  // already reported (that path scores the composite label).
+  EXPECT_NEAR(gate.per_fold.front().scores[2].ic_spearman, report_->folds.front().ic_gbt,
               1e-9);
   // The corpus is named, so a clean-25 number can never be quoted for an
   // SP100 book again by accident.
@@ -2685,8 +2969,54 @@ TEST_F(VrpTrainPipelineTest, MetricsFileCarriesTheGateVerdictBenchmarkTableAndCo
   };
   has(std::string("# gate_verdict=") + (gate.verdict.pass ? "PASS" : "FAIL") + "\n");
   has("# gate_model=gbt\n");
-  has("# gate_n_benchmarks=2\n");
+  has("# gate_n_benchmarks=1\n");
   has("# gate_best_benchmark=" + gate.verdict.best_benchmark + "\n");
+  // The corrections are stamped on the artifact so a stale reader cannot
+  // mistake this file for a round-4 one, and so the reason -iv_fair_21d is
+  // gone travels with the numbers rather than living only in a report.
+  has("# gate_primary_target=rv_fwd_21d\n");
+  EXPECT_NE(bytes.find("# gate_deleted_benchmark=neg_iv_fair_21d_rank_ic_exactly_plus_"
+                       "1.0000_vs_the_labels_own_implied_leg_and_minus_0.6128"),
+            std::string::npos);
+  has("# gate_deleted_benchmark_reference=.superpowers/sdd/2026-08-15-vrp-ml/"
+      "audit-benchmark-contamination.md\n");
+  EXPECT_NE(bytes.find("# gate_contaminated_target=label_composite"), std::string::npos);
+  // Money, and the floor it must clear, on every P&L claim.
+  has("# gate_model_pnl_iv_neutral_excess_over_floor=" +
+      vrp::detail::fmt_double(gate.verdict.model_pnl_excess) + "\n");
+  has("# gate_best_benchmark_pnl_iv_neutral_excess_over_floor=" +
+      vrp::detail::fmt_double(gate.verdict.best_benchmark_pnl_excess) + "\n");
+  has("# gate_pnl_floor_short_everything=" +
+      vrp::detail::fmt_double(gate.verdict.pnl_floor) + "\n");
+  has("# pnl_ppv_winsor_abs=" + vrp::detail::fmt_double(vrp::kVrpPpvWinsorAbs) + "\n");
+  has("# pnl_n_rows_priced=" + std::to_string(gate.n_ppv_rows_priced) + "\n");
+  has("# pnl_n_rows_winsorized=" + std::to_string(gate.n_ppv_rows_winsorized) + "\n");
+  has("# gate_pooled_pnl_floor_short_everything_vol_pts_gross_vega=" +
+      vrp::detail::fmt_double(gate.pooled_floor.mean) + "\n");
+  has("# gate_pooled_pnl_floor_short_everything_vol_pts_gross_vega_t_nw=" +
+      vrp::detail::fmt_double(gate.pooled_floor.t_nw) + "\n");
+  for (const auto &p : gate.pooled_pnl) {
+    // Raw carry and excess-over-floor share a key stem and are emitted
+    // together: quoting one without the other is how short-vol beta read as
+    // selection skill for three rounds.
+    for (const auto &book : {std::pair{std::string{"decile"}, p.decile},
+                             std::pair{std::string{"iv_neutral"}, p.iv_neutral}}) {
+      const std::string stem = "# gate_pooled_pnl_" + p.name + "_" + book.first + "_";
+      has(stem + "vol_pts_gross_vega=" + vrp::detail::fmt_double(book.second.mean) + "\n");
+      has(stem + "vol_pts_gross_vega_t_nw=" + vrp::detail::fmt_double(book.second.t_nw) +
+          "\n");
+      has(stem + "excess_over_floor=" + vrp::detail::fmt_double(book.second.excess) + "\n");
+      has(stem + "excess_over_floor_t_nw=" +
+          vrp::detail::fmt_double(book.second.excess_t_nw) + "\n");
+    }
+  }
+  for (const auto &f : gate.per_fold) {
+    has("# gate_fold_" + std::to_string(f.fold_id) +
+        "_pnl_floor_short_everything_vol_pts_gross_vega=" +
+        vrp::detail::fmt_double(f.floor.mean) + "\n");
+  }
+  // The deleted benchmark's key must not survive anywhere in the artifact.
+  EXPECT_EQ(bytes.find("bench_neg_iv_fair_21d"), std::string::npos);
   has("# gate_model_ic_pearson=" + vrp::detail::fmt_double(gate.verdict.model_ic_pearson) +
       "\n");
   has("# gate_model_ic_spearman=" + vrp::detail::fmt_double(gate.verdict.model_ic_spearman) +
@@ -2701,10 +3031,13 @@ TEST_F(VrpTrainPipelineTest, MetricsFileCarriesTheGateVerdictBenchmarkTableAndCo
   has("# n_signal_rows_unlabeled_tail=" + std::to_string(gate.n_signal_rows_unlabeled) + "\n");
   has("# frac_signal_rows_unlabeled_tail=" + vrp::detail::fmt_double(gate.frac_unlabeled()) +
       "\n");
-  // Every score column, pooled AND per fold, with its t-stats and its tail
-  // statement -- an IC without a t-stat is how t = -0.96 shipped three times.
+  // Every score column, on every target axis, pooled AND per fold, with its
+  // t-stats and its tail statement -- an IC without a t-stat is how t = -0.96
+  // shipped three times, and an IC without a NAMED TARGET is how a +1.0000
+  // algebraic identity read as a forecast for a whole round.
   for (const auto &s : gate.pooled) {
-    const std::string p = "# gate_pooled_" + s.name + "_";
+    const std::string p = "# gate_pooled_" + s.name + "_" +
+                          std::string{vrp::vrp_target_axis_key(s.target)} + "_";
     has(p + "ic_pearson=" + vrp::detail::fmt_double(s.ic_pearson) + "\n");
     has(p + "ic_pearson_t=" + vrp::detail::fmt_double(s.ic_pearson_t) + "\n");
     has(p + "ic_pearson_t_nw=" + vrp::detail::fmt_double(s.ic_pearson_t_nw) + "\n");
@@ -2718,7 +3051,8 @@ TEST_F(VrpTrainPipelineTest, MetricsFileCarriesTheGateVerdictBenchmarkTableAndCo
   }
   for (const auto &f : gate.per_fold) {
     for (const auto &s : f.scores) {
-      const std::string p = "# gate_fold_" + std::to_string(f.fold_id) + "_" + s.name + "_";
+      const std::string p = "# gate_fold_" + std::to_string(f.fold_id) + "_" + s.name + "_" +
+                            std::string{vrp::vrp_target_axis_key(s.target)} + "_";
       has(p + "ic_pearson=" + vrp::detail::fmt_double(s.ic_pearson) + "\n");
       has(p + "ic_spearman=" + vrp::detail::fmt_double(s.ic_spearman) + "\n");
       has(p + "ic_spearman_t_nw=" + vrp::detail::fmt_double(s.ic_spearman_t_nw) + "\n");

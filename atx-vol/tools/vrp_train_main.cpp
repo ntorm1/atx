@@ -292,14 +292,18 @@ int main(int argc, char **argv) {
   // signed variance spread and the gate never reads it.
   const auto &gate = report->gate;
   const auto score_row = [](const char *scope, const atx::vol::vrp::VrpScoreReport &s) {
-    std::printf("gate\t%s\t%s\t%.4f\t%.2f\t%.2f\t%.4f\t%.2f\t%.2f\t%.4f\t%.2f\t%.6g\t%.2f\t"
+    std::printf("gate\t%s\t%s\t%s\t%.4f\t%.2f\t%.2f\t%.4f\t%.2f\t%.2f\t%.4f\t%.2f\t%.6g\t%.2f\t"
                 "%.4f\t%zu\t%zu\n",
-                scope, s.name.c_str(), s.ic_pearson, s.ic_pearson_t, s.ic_pearson_t_nw,
-                s.ic_spearman, s.ic_spearman_t, s.ic_spearman_t_nw, s.ic_pearson_traded,
+                scope, s.name.c_str(),
+                std::string{atx::vol::vrp::vrp_target_axis_key(s.target)}.c_str(),
+                s.ic_pearson, s.ic_pearson_t, s.ic_pearson_t_nw, s.ic_spearman,
+                s.ic_spearman_t, s.ic_spearman_t_nw, s.ic_pearson_traded,
                 s.ic_pearson_traded_t_nw, s.decile_spread, s.decile_spread_t_nw,
                 s.decile_rho, s.n_dates, s.n_rows);
   };
-  std::printf("gate\tscope\tscore\tic_pearson\tt\tt_nw\tic_spearman\tt\tt_nw\t"
+  // Every IC names its TARGET. A bare ic_spearman is the key that let a
+  // +1.0000 algebraic identity read as a forecast for a whole round.
+  std::printf("gate\tscope\tscore\ttarget\tic_pearson\tt\tt_nw\tic_spearman\tt\tt_nw\t"
               "ic_pear_traded\tt_nw\tdecile_spread\tt_nw\tdecile_rho\tn_dates\tn_rows\n");
   for (const auto &f : gate.per_fold) {
     const std::string scope = "fold_" + std::to_string(f.fold_id);
@@ -310,29 +314,62 @@ int main(int argc, char **argv) {
   for (const auto &s : gate.pooled) {
     score_row("pooled", s);
   }
+  // Money, in vol points per 1u GROSS VEGA per cycle. The raw figure is never
+  // printed without its excess over the short-everything floor beside it:
+  // short-vol beta was read as selection skill for three rounds.
+  std::printf("pnl\tscope\tscore\tbook\tvol_pts_gross_vega\tt\tt_nw\texcess_over_floor\tt\t"
+              "t_nw\tn_dates\n");
+  const auto pnl_row = [](const char *scope, const char *name, const char *book,
+                          const atx::vol::vrp::VrpPnlAgg &a) {
+    std::printf("pnl\t%s\t%s\t%s\t%+.3f\t%.2f\t%.2f\t%+.3f\t%.2f\t%.2f\t%zu\n", scope, name,
+                book, a.mean, a.t_iid, a.t_nw, a.excess, a.excess_t, a.excess_t_nw,
+                a.n_dates);
+  };
+  std::printf("pnl\tpooled\tfloor_short_everything\t--\t%+.3f\t%.2f\t%.2f\t%+.3f\t%.2f\t%.2f\t"
+              "%zu\n",
+              gate.pooled_floor.mean, gate.pooled_floor.t_iid, gate.pooled_floor.t_nw, 0.0,
+              0.0, 0.0, gate.pooled_floor.n_dates);
+  for (const auto &p : gate.pooled_pnl) {
+    pnl_row("pooled", p.name.c_str(), "decile", p.decile);
+    pnl_row("pooled", p.name.c_str(), "iv_neutral", p.iv_neutral);
+  }
+  std::printf("pnl\tppv_winsor_abs=%.1f\trows_priced=%zu\trows_winsorized=%zu\n",
+              atx::vol::vrp::kVrpPpvWinsorAbs, gate.n_ppv_rows_priced,
+              gate.n_ppv_rows_winsorized);
   std::printf("gate\tcorpus=%s\tsignal_rows=%zu\tunlabeled_tail=%zu (%.1f%% never validated)\n",
               gate.corpus.c_str(), gate.n_signal_rows, gate.n_signal_rows_unlabeled,
               100.0 * gate.frac_unlabeled());
   // The verdict goes to BOTH streams and says the word out loud. A model that
   // loses to a zero-parameter rule has produced no evidence it should ship.
   const char *verdict = gate.verdict.pass ? "PASS" : "FAIL";
-  std::printf("GATE VERDICT: %s -- model '%s' ic_pearson=%.4f ic_spearman=%.4f vs best free "
-              "benchmark '%s' ic_pearson=%.4f ic_spearman=%.4f (%zu benchmarks)\n",
+  std::printf("GATE VERDICT: %s -- model '%s' vs rv_fwd_21d ic_pearson=%.4f ic_spearman=%.4f, "
+              "iv-neutral P&L excess over the +%.3f short-everything floor = %+.3f; best free "
+              "benchmark '%s' ic_pearson=%.4f ic_spearman=%.4f excess=%+.3f (%zu benchmarks)\n",
               verdict, gate.verdict.model.c_str(), gate.verdict.model_ic_pearson,
-              gate.verdict.model_ic_spearman, gate.verdict.best_benchmark.c_str(),
+              gate.verdict.model_ic_spearman, gate.verdict.pnl_floor,
+              gate.verdict.model_pnl_excess, gate.verdict.best_benchmark.c_str(),
               gate.verdict.best_benchmark_ic_pearson, gate.verdict.best_benchmark_ic_spearman,
-              gate.verdict.n_benchmarks);
+              gate.verdict.best_benchmark_pnl_excess, gate.verdict.n_benchmarks);
   if (!gate.verdict.pass) {
     std::fprintf(stderr,
                  "[vrp-train] GATE VERDICT: FAIL -- '%s' does not beat the zero-parameter "
-                 "benchmark '%s' on both mean per-date Pearson and Spearman IC. The free rule "
-                 "wins; this model is not evidence of skill.\n",
+                 "benchmark '%s' on rv_fwd_21d Pearson AND Spearman IC AND IV-neutralised P&L "
+                 "in excess of the short-everything floor. The free rule wins; this model is "
+                 "not evidence of skill.\n",
                  gate.verdict.model.c_str(), gate.verdict.best_benchmark.c_str());
   } else {
-    std::fprintf(stderr, "[vrp-train] GATE VERDICT: PASS -- '%s' beats all %zu "
-                         "zero-parameter benchmarks on both ICs.\n",
-                 gate.verdict.model.c_str(), gate.verdict.n_benchmarks);
+    std::fprintf(stderr,
+                 "[vrp-train] GATE VERDICT: PASS -- '%s' beats all %zu zero-parameter "
+                 "benchmarks on rv_fwd_21d Pearson and Spearman IC and on IV-neutralised P&L, "
+                 "and clears the short-everything floor by %+.3f vol pts / 1u gross vega.\n",
+                 gate.verdict.model.c_str(), gate.verdict.n_benchmarks,
+                 gate.verdict.model_pnl_excess);
   }
+  std::fprintf(stderr,
+               "[vrp-train] the composite label is CONTAMINATED as a ranking target "
+               "(-iv_fair_21d scores +1.0000 against its implied leg by algebra and -0.6128 "
+               "against rv_fwd_21d); it is reported, never gated. See "
+               ".superpowers/sdd/2026-08-15-vrp-ml/audit-benchmark-contamination.md\n");
   std::fprintf(stderr, "[vrp-train] edge_norm=%s feature_lag=%zu lag_rows_unavailable=%zu\n",
                cfg.edge_norm == atx::vol::vrp::VrpEdgeNormMode::PerSymbol ? "per_symbol"
                                                                           : "cross_section",
