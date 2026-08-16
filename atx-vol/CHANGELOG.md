@@ -77,6 +77,31 @@ the WINDOW END (the engine stays fail-closed on held-lot surface holes); the
 round-2 25.4-day presence filter is insufficient for configs with
 `hold_to_horizon` and data-level filtering must widen accordingly.
 
+### NOTE — VRP round 3 integration: defaults still reproduce round 2 bit-for-bit
+
+Both round-3 feature sets above ship behind flags/config that default to the
+round-2 behaviour, and the round-3 integration gate re-verified that at the
+merged tip, not just per lane:
+
+- `atx-vol-vrp-train` with default flags reproduces the round-2 gate's
+  `vrp_signal.tsv`, `vrp_gbt_model.tsv`, `vrp_baseline_model.tsv` and
+  `vrp_fold_stats.tsv` **byte-identically** on both the SP100 and clean-25
+  panels. `vrp_metrics.tsv` is the sole difference and is purely additive:
+  exactly 11 added meta lines, 0 removed and 0 changed, on each corpus.
+- `vrp-backtest` with the round-2 default VolEdge config produces
+  `vrp_backtest_net.tsv` and `vrp_backtest_gross.tsv` **byte-identical** to
+  the round-2 gate reports (`fc /b`: no differences).
+- The recalibration flag does not touch the production path: with
+  `--recalibrate isotonic` the model files and the `vrp_fold_stats_v1` sidecar
+  stay byte-identical to the flag-off run; only signal values and metrics meta
+  lines move.
+
+Caveat carried forward for anyone turning `--recalibrate isotonic` ON: on the
+SP100 corpus the fitted map is strongly collapsing — distinct forecast values
+per fold go 731 → 42, 151 → 3 and 141 → 2 (94.3% / 98.0% / 98.6%) with zero
+rank inversions. Gate any ON usage on the map's distinct-output count, not on
+QLIKE alone.
+
 ### BREAKING - oracle mutations require the v3 lane broker
 
 Oracle bootstrap/recovery now uses a trusted local MCP transaction broker as its
