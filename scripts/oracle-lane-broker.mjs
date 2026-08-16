@@ -559,6 +559,35 @@ export class OracleLaneBroker {
     const { lane, record } = this.#leasePath(leaseName)
     if (!samePath(match[2], lane) || match[3] !== input.branch || lower(match[4]) !== leaseStartSha || match[5] !== input.run_id) throw new Error('lease output identity mismatch')
     const lease = parseRecord(readFileSync(record, 'ascii'))
+    let capabilityGuardAfter = after
+    if (input.operation_id === 'bootstrap_mode_a' && stage2Predecessors.length) {
+      let acquiredChanges = null
+      let auditFailure = null
+      try {
+        const expectedTree = this.#tree(baseSha)
+        const acquiredHead = this.#git(['rev-parse', 'HEAD'], lane).stdout.trim().toLowerCase()
+        const acquiredTree = this.#tree(acquiredHead, lane)
+        acquiredChanges = this.#changedPaths({ worktree: lane })
+        capabilityGuardAfter = this.rootGuard()
+        this.#assertGuard(after, capabilityGuardAfter)
+        if (acquiredHead !== baseSha || acquiredTree !== expectedTree || acquiredChanges.length) auditFailure = new Error('post-acquisition HEAD/tree/clean mismatch')
+      } catch (error) {
+        auditFailure = error
+      }
+      if (auditFailure) {
+        const preserveLane = !Array.isArray(acquiredChanges) || acquiredChanges.length > 0
+        const cleanupArgs = preserveLane
+          ? ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-StopKeeper', leaseName, '-RunId', input.run_id]
+          : ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-Release', leaseName, '-RunId', input.run_id]
+        const cleanupBefore = this.rootGuard()
+        const cleanup = processResult('powershell', cleanupArgs, this.root)
+        const cleanupAfter = this.rootGuard()
+        this.#assertGuard(cleanupBefore, cleanupAfter)
+        requireSuccess(cleanup, 'rejected Stage 2 reopen cleanup')
+        const disposition = preserveLane ? 'dirty lane preserved and keeper stopped' : 'clean lane released'
+        throw new Error(`reopened Stage 2 lane failed post-acquisition base/clean audit; ${disposition}`)
+      }
+    }
     const token = randomBytes(32).toString('hex')
     const cap = {
       version: VERSION, state: 'active', token_hash: sha256(token), operation_id: input.operation_id, stage: input.stage,
@@ -567,7 +596,7 @@ export class OracleLaneBroker {
       lease_name: leaseName, worktree: lane, lease_token: lease.lease_token, keeper_pid: Number(lease.keeper_pid),
       keeper_process_started_utc: lease.keeper_process_started_utc, keeper_ready_utc: lease.keeper_ready_utc,
       canonical_before: before.canonical_sha, scope_paths: scope, acquisition_output: result.output,
-      acquisition_root_guard_before: before, acquisition_root_guard_after: after,
+      acquisition_root_guard_before: before, acquisition_root_guard_after: capabilityGuardAfter,
       ...(input.operation_id === 'bootstrap_mode_a' ? { attempt_epoch: stage2Predecessors.length + 1, reopen_predecessors: stage2Predecessors.sort((a, b) => a.capability_hash.localeCompare(b.capability_hash)) } : {}),
     }
     this.#saveCap(token, cap)
