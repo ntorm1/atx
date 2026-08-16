@@ -15,13 +15,15 @@ const char *const kZoneNames[kZoneCount] = {
     "sigma_interp_build",  "slice_sigma",            "alo_pricer_price",
     "al_seed_baw",         "al_sweep_jn",            "al_sweep_fp",
     "al_bind_geo_static",  "al_bind_geo_sigma",      "al_seed_baw_ACC",
-    "al_sweep_jn_ACC",     "al_sweep_fp_ACC",
+    "al_sweep_jn_ACC",     "al_sweep_fp_ACC",        "iv_cold_polish",
 };
 
 const char *const kEventNames[kEventCount] = {
-    "shared_side_considered", "shared_side_guard_skip", "shared_side_build_fail",
-    "shared_side_certified",  "shared_side_rejected",   "shared_rows_laned",
-    "shared_rows_fallback",
+    "shared_side_considered",  "shared_side_guard_skip",  "shared_side_build_fail",
+    "shared_side_certified",   "shared_side_rejected",    "shared_rows_laned",
+    "shared_rows_fallback",    "shared_side_skip_narrow", "shared_side_skip_shortT",
+    "shared_side_skip_rate",   "shared_side_skip_box",    "shared_rows_skip_narrow",
+    "shared_rows_skip_shortT", "shared_rows_skip_rate",   "shared_rows_skip_box",
 };
 
 namespace {

@@ -1842,6 +1842,53 @@ TEST(SurfaceDbPopulate, SymbolConfigOverlayReachesFit) {
   std::filesystem::remove_all(root_c);
 }
 
+// FIX-W2: an EXPLICIT budget of one core must be honoured as one core, while
+// `n_threads == 0` stays SurfaceDb's documented outer-serial mode (inner auto).
+//
+// The defect this pins: both cases collapsed to `worker_budget == 1`, which fell
+// past the `inner_budget > 1u` test and offered 0 = AUTO — so `--fit-workers 1`
+// silently ran one outer worker with an UNBOUNDED, machine-wide inner fan-out
+// while `--fit-workers 2` correctly ran on two cores. That is what made w=2
+// measure 63% slower than w=1: the flag did not mean the same kind of thing at 1
+// and at 2, so the two were never comparable. Honouring the budget at 1 restores
+// a monotone curve and makes the cap the flag documents actually cap.
+TEST(SurfaceDbPopulate, ExplicitSingleWorkerBudgetIsHonouredButZeroStaysAuto) {
+  const std::vector<CorpusBoard> boards{make_board(kDate0, "AAA", 100.0, 0.28),
+                                        make_board(kDate0, "BBB", 60.0, 0.34)};
+  struct Case {
+    const char *what;
+    unsigned n_threads;
+    unsigned expect_inner; // the offer this config must produce
+  };
+  // n_threads == 0 is the outer-serial mode and must keep offering 0 (auto);
+  // n_threads == 1 is a budget and must offer exactly one inner worker.
+  const std::array<Case, 2> cases{
+      {{"outer-serial auto", 0u, 0u}, {"explicit budget of 1", 1u, 1u}}};
+  for (const Case &c : cases) {
+    const auto root = test_root(std::string("w2_budget_") + std::to_string(c.n_threads));
+    auto db = SurfaceDb::create(root.string());
+    ASSERT_TRUE(db.has_value()) << c.what;
+
+    std::mutex offer_mu;
+    std::vector<unsigned> offers;
+    PopulateTestHooks hooks;
+    hooks.on_inner_fit_workers = [&](const std::string &, unsigned inner, std::size_t) {
+      const std::lock_guard<std::mutex> lock(offer_mu);
+      offers.push_back(inner);
+    };
+
+    SurfaceDbPopulateConfig cfg;
+    cfg.n_threads = c.n_threads;
+    const auto result = populate_surface_db(*db, boards, cfg, &hooks);
+    ASSERT_TRUE(result.has_value()) << c.what;
+    ASSERT_FALSE(offers.empty()) << "on_inner_fit_workers never fired for " << c.what;
+    for (const unsigned inner : offers) {
+      EXPECT_EQ(inner, c.expect_inner) << c.what;
+    }
+    std::filesystem::remove_all(root);
+  }
+}
+
 // U4 (R-14) [pure-refactor]: shared worker budget for small books. When a book
 // is smaller than the worker budget, the outer fans every board across the pool
 // but the OLD fixed split pinned each board's inner fit to a single worker

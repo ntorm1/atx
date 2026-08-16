@@ -520,6 +520,7 @@ Result<double> american_implied_vol_impl(double price, double S, double K, doubl
   // bracket (one cold seed, not two far extremes) keeps the inversion well below
   // the cold-per-residual baseline.
   if (alo) {
+    const alprobe::Scope probe_polish(alprobe::Zone::IvColdPolish);
     if (trace != nullptr) {
       trace->ran = true;
       trace->xl = xl;

@@ -85,6 +85,13 @@ enum class Zone : unsigned {
   AlSeedBawAcc,
   AlSweepJnAcc,
   AlSweepFpAcc,
+  // The COLD reference polish at the tail of american_implied_vol_impl: up to two
+  // full `american_price` re-solves per inversion, run to lock the returned iv to
+  // andersen_lake(iv) == price. It nests inside AmericanIv but NOT inside
+  // AloPricerPrice, so no existing zone separates it from the bracket-and-Newton
+  // search. They are the two halves of an inversion's cost and the optimizations
+  // available to each are completely different, so they need separate meters.
+  IvColdPolish,
   Count_
 };
 
@@ -102,6 +109,22 @@ enum class Event : unsigned {
   SharedSideRejected,        // built + solved, then invalidated (whole side back to scalar)
   SharedRowsLaned,           // rows served by the interpolant
   SharedRowsFallback,        // rows that fell back to the per-row scalar inverter
+  // Guard-skip REASONS. SharedSideGuardSkip alone cannot be acted on: the four
+  // conditions it fuses have opposite remedies. A narrow side is a threshold
+  // question (does 9 boundary solves amortise over n rows?); a non-positive
+  // internal rate is a REGIME question (McDonald-Schroder maps the call side's
+  // rate to q, and classify_regime calls rate <= 0 European — those rows never
+  // solve a boundary at all, so "engaging" them would replace a Black-76
+  // evaluation with nine AL solves). The `*Rows` companions carry the row counts,
+  // which is what decides whether a reason is worth any work.
+  SharedSideSkipNarrow,      // side_rows < kSharedMinSideRows
+  SharedSideSkipShortT,      // T < kSharedMinT
+  SharedSideSkipRate,        // internal_rate <= 0 — the non-American (European) regime
+  SharedSideSkipBox,         // degenerate / too-wide sigma box
+  SharedRowsSkipNarrow,
+  SharedRowsSkipShortT,
+  SharedRowsSkipRate,
+  SharedRowsSkipBox,
   Count_
 };
 
