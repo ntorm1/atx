@@ -120,7 +120,7 @@ const brokerEvidence = {
   raw_output_sha256: '5'.repeat(64), root_guard_before: guard, root_guard_after: guard,
 }
 const common = {
-  state: 'missing_data', branch: lease.branch, base_sha: base, worktree: lease.worktree,
+  state: 'missing_data', branch: lease.branch, base_sha: base, tree: 'c'.repeat(40), worktree: lease.worktree,
   lease_name: lease.lease_name, lease_run_id: lease.run_id, heartbeat_id: lease.heartbeat_id,
   keeper_pid: lease.keeper_pid, keeper_process_started_utc: lease.keeper_process_started_utc,
   acquisition_receipt: lease, broker_evidence: [brokerEvidence], deviations: '',
@@ -130,7 +130,7 @@ const done = {
   evidence: [{ command: 'verify target', exit_code: 0, output: 'PASS' }],
 }
 const blocked = {
-  ...common, outcome: 'BLOCKED', sha: '', holdout_digest_receipt: '', evidence: [],
+  ...common, outcome: 'BLOCKED', sha: '', tree: '', holdout_digest_receipt: '', evidence: [],
   blockers: ['licensed data unavailable'],
   diagnostics: [{ command: 'powershell Test-Path licensed.zip', exit_code: 1, output: 'missing' }],
 }

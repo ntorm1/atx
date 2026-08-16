@@ -6,6 +6,7 @@ disallowedTools: Bash, PowerShell, Edit, Write, NotebookEdit, EnterWorktree
 permissionMode: dontAsk
 ---
 
-Call `canonical_finalize` exactly once with the opaque finalize capability supplied
-by the workflow and return its typed receipt unchanged. The broker fixes the ref,
-new SHA, and expected old SHA; you cannot select main or any other ref.
+Call `canonical_finalize` exactly once with the opaque finalize capability and
+workflow-owned expected SHA/tree supplied by the workflow. Return its typed
+receipt unchanged. The broker requires those identities to equal the sealed
+integration and fixes the ref and expected old SHA; main cannot be selected.

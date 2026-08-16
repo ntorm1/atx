@@ -313,24 +313,34 @@ export class OracleLaneBroker {
     return { lane, record: join(lane, '.atx-lease') }
   }
 
-  #revalidateLease(cap) {
+  #revalidateLease(cap, { requireLiveKeeper = true, requireCheckedOutBranch = true } = {}) {
     const { lane, record } = this.#leasePath(cap.lease_name)
     if (!samePath(lane, cap.worktree) || !existsSync(record)) throw new Error('lease path/record missing')
     const lease = parseRecord(readFileSync(record, 'ascii'))
     const fields = ['lease_token', 'run_id', 'branch', 'base_sha', 'heartbeat_id', 'keeper_pid', 'keeper_process_started_utc', 'keeper_ready_utc']
     for (const field of fields) if (String(lease[field] || '') !== String(cap[field] || '')) throw new Error(`stale capability lease mismatch: ${field}`)
     if (lease.version !== String(VERSION) || lease.owner_kind !== 'heartbeat') throw new Error('lease is not a keeper-backed v3 lease')
-    const heartbeat = assertNoReparse(this.poolRoot, join(this.poolRoot, '.atx-heartbeats', `${cap.heartbeat_id}.heartbeat`))
-    const age = Date.now() - statSync(heartbeat).mtimeMs
-    if (age < 0 || age > Number(lease.heartbeat_timeout_seconds) * 1000) throw new Error('lease heartbeat is stale')
-    const pid = Number(cap.keeper_pid)
-    if (!Number.isInteger(pid) || pid <= 0) throw new Error('invalid keeper pid')
-    const ps = processResult('powershell', ['-NoProfile', '-Command', `(Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToUniversalTime().ToString('o',[Globalization.CultureInfo]::InvariantCulture)`], lane)
-    requireSuccess(ps, 'keeper identity check')
-    if (ps.stdout.trim() !== cap.keeper_process_started_utc) throw new Error('keeper PID/start mismatch')
-    const branch = this.#git(['branch', '--show-current'], lane).stdout.trim()
-    if (branch !== cap.branch) throw new Error('leased branch changed')
+    if (requireLiveKeeper) {
+      const heartbeat = assertNoReparse(this.poolRoot, join(this.poolRoot, '.atx-heartbeats', `${cap.heartbeat_id}.heartbeat`))
+      const age = Date.now() - statSync(heartbeat).mtimeMs
+      if (age < 0 || age > Number(lease.heartbeat_timeout_seconds) * 1000) throw new Error('lease heartbeat is stale')
+      const pid = Number(cap.keeper_pid)
+      if (!Number.isInteger(pid) || pid <= 0) throw new Error('invalid keeper pid')
+      const ps = processResult('powershell', ['-NoProfile', '-Command', `(Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToUniversalTime().ToString('o',[Globalization.CultureInfo]::InvariantCulture)`], lane)
+      requireSuccess(ps, 'keeper identity check')
+      if (ps.stdout.trim() !== cap.keeper_process_started_utc) throw new Error('keeper PID/start mismatch')
+    }
+    if (requireCheckedOutBranch) {
+      const branch = this.#git(['branch', '--show-current'], lane).stdout.trim()
+      if (branch !== cap.branch) throw new Error('leased branch changed')
+    }
     return cap
+  }
+
+  #tree(sha, cwd = this.root) {
+    const tree = this.#git(['show', '-s', '--format=%T', sha], cwd).stdout.trim().toLowerCase()
+    if (!SHA_RE.test(tree)) throw new Error('commit tree identity is invalid')
+    return tree
   }
 
   #allowed(cap, relPath) {
@@ -359,6 +369,16 @@ export class OracleLaneBroker {
     if (requireChanges && !paths.length) throw new Error('lane has no source changes')
     for (const path of paths) if (!this.#allowed(cap, path)) throw new Error(`lane mutation escaped capability scope: ${path}`)
     return paths
+  }
+
+  #protectedIgnoredIntegrity(cap) {
+    const protectedPaths = ['build/build.ninja']
+    return Object.fromEntries(protectedPaths.map(rel => {
+      const absolute = join(cap.worktree, ...rel.split('/'))
+      if (!existsSync(absolute)) return [rel, null]
+      assertNoReparse(cap.worktree, absolute)
+      return [rel, sha256(readFileSync(absolute))]
+    }))
   }
 
   refResolve(input) {
@@ -395,13 +415,25 @@ export class OracleLaneBroker {
     if (input.operation_id !== 'sprint_build' && scope.length) throw new Error('scope_paths is valid only for sprint_build')
     const provisional = { operation_id: input.operation_id, scope_paths: scope }
     for (const item of scope) if (!this.#allowed(provisional, item)) throw new Error(`requested scope is outside the fixed operation registry: ${item}`)
+    for (const entry of existsSync(this.poolRoot) ? readdirSync(this.poolRoot, { withFileTypes: true }) : []) {
+      if (!entry.isDirectory() || !/^pool-[0-9]+$/.test(entry.name)) continue
+      const marker = join(this.poolRoot, entry.name, '.atx-quarantine-v3')
+      if (!existsSync(marker)) continue
+      const record = parseRecord(readFileSync(marker, 'ascii'))
+      if (record.run_id === input.run_id && record.branch === input.branch && lower(record.base_sha || '') === baseSha && record.heartbeat_id === input.heartbeat_id) {
+        throw new Error(`deterministic lane is quarantined for audit: ${entry.name}`)
+      }
+    }
     for (const file of existsSync(this.capDir) ? readdirSync(this.capDir) : []) {
       if (!/^[0-9a-f]{64}\.json$/.test(file)) continue
       try {
         const token = file.slice(0, -5)
-        const existing = this.#loadCap(token)
+        const existing = this.#loadCap(token, false)
         if (existing.operation_id === input.operation_id && existing.stage === input.stage && existing.run_id === input.run_id && existing.branch === input.branch &&
             existing.base_sha === baseSha && existing.heartbeat_id === input.heartbeat_id && JSON.stringify(existing.scope_paths || []) === JSON.stringify(scope)) {
+          if (existing.state === 'quarantined') throw new Error(`deterministic lane is quarantined for audit: ${existing.lease_name}`)
+          if (existing.state !== 'active') throw new Error(`deterministic lane capability is ${existing.state}: ${existing.lease_name}`)
+          this.#revalidateLease(existing)
           const guard = this.rootGuard()
           const idempotent = { exit_code: 0, output: existing.acquisition_output, stdout: existing.acquisition_output, stderr: '' }
           return this.#acquireResponse(existing, token, idempotent, guard, guard)
@@ -501,24 +533,41 @@ export class OracleLaneBroker {
   applyPatch(input) {
     assertExactKeys(input, ['capability', 'patch'])
     const cap = this.#loadCap(input.capability)
+    if (['bootstrap_data', 'bootstrap_integration', 'sprint_integration'].includes(cap.operation_id)) throw new Error(`patch_apply is forbidden for ${cap.operation_id}`)
     const patch = String(input.patch || '')
     if (!patch || Buffer.byteLength(patch) > 2 * 1024 * 1024 || patch.includes('\0')) throw new Error('patch is empty or too large')
     if (/^GIT binary patch$/m.test(patch) || /^rename (?:from|to) /m.test(patch)) throw new Error('binary and rename patches are forbidden')
     const paths = []
-    for (const match of patch.matchAll(/^diff --git a\/(.+) b\/(.+)$/gm)) {
+    const starts = [...patch.matchAll(/^diff --git /gm)].map(match => match.index)
+    if (!starts.length || patch.slice(0, starts[0]).trim()) throw new Error('patch has content outside canonical diff sections')
+    starts.push(patch.length)
+    for (let index = 0; index < starts.length - 1; index += 1) {
+      const section = patch.slice(starts[index], starts[index + 1])
+      const lines = section.split(/\r?\n/)
+      const match = lines[0].match(/^diff --git a\/(.+) b\/(.+)$/)
+      if (!match) throw new Error('patch diff header is not canonical')
       const left = normalizeRel(match[1]); const right = normalizeRel(match[2])
       if (left !== right) throw new Error('rename/path substitution is forbidden')
+      const oldHeaders = lines.filter(line => line.startsWith('--- '))
+      const newHeaders = lines.filter(line => line.startsWith('+++ '))
+      if (oldHeaders.length !== 1 || newHeaders.length !== 1) throw new Error('patch must contain one exact ---/+++ pair per diff')
+      const isCreate = lines.some(line => /^new file mode 100[0-7]{3}$/.test(line))
+      const expectedOld = isCreate ? '/dev/null' : `a/${left}`
+      const expectedNew = `b/${right}`
+      if (oldHeaders[0] !== `--- ${expectedOld}` || newHeaders[0] !== `+++ ${expectedNew}`) throw new Error('patch ---/+++ path differs from diff header')
+      if (!isCreate && lines.some(line => /^deleted file mode /i.test(line))) throw new Error('raw patch deletion is forbidden')
       paths.push(right)
     }
-    if (!paths.length) throw new Error('patch has no canonical diff headers')
     for (const path of [...new Set(paths)]) this.#assertLanePath(cap, path, true)
+    const protectedBefore = this.#protectedIgnoredIntegrity(cap)
     const before = this.rootGuard()
-    const check = processResult('git', ['apply', '--check', '--whitespace=nowarn', '-'], cap.worktree, patch)
+    const check = processResult('git', ['apply', '--index', '--check', '--whitespace=nowarn', '-'], cap.worktree, patch)
     requireSuccess(check, 'patch preflight')
-    const apply = processResult('git', ['apply', '--whitespace=nowarn', '-'], cap.worktree, patch)
+    const apply = processResult('git', ['apply', '--index', '--whitespace=nowarn', '-'], cap.worktree, patch)
     const after = this.rootGuard()
     this.#assertGuard(before, after)
     requireSuccess(apply, 'patch apply')
+    if (JSON.stringify(this.#protectedIgnoredIntegrity(cap)) !== JSON.stringify(protectedBefore)) throw new Error('protected ignored/build integrity changed')
     const changed = this.#assertLaneChanges(cap, true)
     return { changed_paths: changed, broker_evidence: this.#evidence('patch_apply', cap.worktree, 'git apply <validated scoped patch>', apply, before, after) }
   }
@@ -526,6 +575,7 @@ export class OracleLaneBroker {
   runGate(input) {
     assertExactKeys(input, ['capability', 'gate_id'])
     const cap = this.#loadCap(input.capability)
+    if (cap.operation_id === 'bootstrap_data') throw new Error('gate_run is forbidden for bootstrap_data; use recover_stage1')
     return this.#runGate(cap, input.gate_id)
   }
 
@@ -535,20 +585,35 @@ export class OracleLaneBroker {
     if (['holdout_mode_a', 'holdout_mode_b'].includes(gateId) && cap.operation_id !== 'ratchet') throw new Error('holdout gate is restricted to Ratchet')
     if (gateId === 'rel_avx2_speed' && cap.operation_id !== 'ratchet') throw new Error('Ratchet speed gate used outside Ratchet')
     if (gateId.startsWith('measure_') && cap.operation_id !== 'measure') throw new Error('Measure gate used outside Measure')
+    const integrationOperation = ['bootstrap_integration', 'sprint_integration'].includes(cap.operation_id)
+    if (integrationOperation) {
+      if (!cap.integrated_sha || !cap.integrated_tree) throw new Error('integration gates require one sealed lane_integrate result')
+      const currentHead = this.#git(['rev-parse', 'HEAD'], cap.worktree).stdout.trim().toLowerCase()
+      if (currentHead !== cap.integrated_sha || this.#tree(currentHead, cap.worktree) !== cap.integrated_tree) throw new Error('integration HEAD/tree differs from sealed reviewed candidate')
+      if (this.#changedPaths(cap).length) throw new Error('integration lane changed after sealed integration')
+    }
     const before = this.rootGuard()
     const result = gate.file
       ? processResult('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', join(cap.worktree, ...gate.file.split('/')), ...gate.args], cap.worktree)
       : processResult(gate.exe, gate.args, cap.worktree)
     const after = this.rootGuard()
     this.#assertGuard(before, after)
-    this.#assertLaneChanges(cap, false)
-    return { gate_id: gateId, tested_sha: this.#git(['rev-parse', 'HEAD'], cap.worktree).stdout.trim().toLowerCase(), command: gate.display, exit_code: result.exit_code, output: result.output, broker_evidence: this.#evidence(`gate:${gateId}`, cap.worktree, gate.display, result, before, after) }
+    const changed = this.#assertLaneChanges(cap, false)
+    const testedSha = this.#git(['rev-parse', 'HEAD'], cap.worktree).stdout.trim().toLowerCase()
+    const testedTree = this.#tree(testedSha, cap.worktree)
+    if (integrationOperation && (changed.length || testedSha !== cap.integrated_sha || testedTree !== cap.integrated_tree)) throw new Error('gate changed sealed integration SHA/tree or worktree')
+    return { gate_id: gateId, tested_sha: testedSha, tested_tree: testedTree, command: gate.display, exit_code: result.exit_code, output: result.output, broker_evidence: this.#evidence(`gate:${gateId}`, cap.worktree, gate.display, result, before, after) }
   }
 
   commitLane(input) {
     assertExactKeys(input, ['capability', 'message_id'])
     const cap = this.#loadCap(input.capability)
-    const message = MESSAGE_REGISTRY[input.message_id]
+    if (['bootstrap_data', 'bootstrap_integration', 'sprint_integration'].includes(cap.operation_id)) throw new Error(`lane_commit is forbidden for ${cap.operation_id}`)
+    return this.#commitLane(cap, input.message_id)
+  }
+
+  #commitLane(cap, messageId) {
+    const message = MESSAGE_REGISTRY[messageId]
     if (!message) throw new Error('message_id is not registered')
     const paths = this.#assertLaneChanges(cap, true)
     const before = this.rootGuard()
@@ -562,7 +627,7 @@ export class OracleLaneBroker {
     requireSuccess(commit, 'lane commit')
     const sha = this.#git(['rev-parse', 'HEAD'], cap.worktree).stdout.trim().toLowerCase()
     if (this.#changedPaths(cap).length) throw new Error('lane remains dirty after scoped commit')
-    return { sha, files_changed: paths, broker_evidence: this.#evidence('lane_commit', cap.worktree, `git commit -- <${paths.length} validated paths>`, commit, before, after) }
+    return { sha, tree: this.#tree(sha, cap.worktree), files_changed: paths, broker_evidence: this.#evidence('lane_commit', cap.worktree, `git commit -- <${paths.length} validated paths>`, commit, before, after) }
   }
 
   inspectCommit(input) {
@@ -586,12 +651,16 @@ export class OracleLaneBroker {
     assertExactKeys(input, ['capability', 'reviewed_shas'])
     const cap = this.#loadCap(input.capability)
     if (!['bootstrap_integration', 'sprint_integration'].includes(cap.operation_id)) throw new Error('capability cannot integrate commits')
+    if (cap.integrated_sha || cap.integrated_tree) throw new Error('integration capability already sealed')
     if (!Array.isArray(input.reviewed_shas) || input.reviewed_shas.length < 1 || input.reviewed_shas.length > 4) throw new Error('reviewed_shas must contain 1-4 commits')
     const shas = input.reviewed_shas.map(value => String(value).toLowerCase())
     if (new Set(shas).size !== shas.length || shas.some(sha => !SHA_RE.test(sha) || !this.#ref(sha))) throw new Error('reviewed_shas must be unique existing exact commits')
     if (this.#changedPaths(cap).length) throw new Error('integration lane must start clean')
     const receipts = []
+    const reviewedCandidates = []
     for (const sha of shas) {
+      const reviewedTree = this.#tree(sha, cap.worktree)
+      reviewedCandidates.push({ sha, tree: reviewedTree })
       const ancestor = processResult('git', ['merge-base', '--is-ancestor', cap.base_sha, sha], cap.worktree)
       if (ancestor.exit_code !== 0) throw new Error(`reviewed commit is not based on frozen base: ${sha}`)
       const diffPaths = this.#git(['diff', '--name-only', '-z', `${cap.base_sha}...${sha}`], cap.worktree).stdout.split('\0').filter(Boolean).map(normalizeRel)
@@ -609,7 +678,7 @@ export class OracleLaneBroker {
       this.#assertGuard(before, after)
       requireSuccess(result, 'exact reviewed commit integration')
       const head = this.#git(['rev-parse', 'HEAD'], cap.worktree).stdout.trim().toLowerCase()
-      receipts.push({ reviewed_sha: sha, head_after: head, command: cap.operation_id === 'bootstrap_integration' ? `git merge --ff-only ${sha}` : `git merge --no-ff ${sha}`, exit_code: 0, output: `${result.output}\n${head}`.trim(), broker_evidence: this.#evidence('lane_integrate', cap.worktree, `integrate-reviewed:${sha}`, result, before, after) })
+      receipts.push({ reviewed_sha: sha, reviewed_tree: reviewedTree, head_after: head, tree_after: this.#tree(head, cap.worktree), command: cap.operation_id === 'bootstrap_integration' ? `git merge --ff-only ${sha}` : `git merge --no-ff ${sha}`, exit_code: 0, output: `${result.output}\n${head}`.trim(), broker_evidence: this.#evidence('lane_integrate', cap.worktree, `integrate-reviewed:${sha}`, result, before, after) })
     }
     if (this.#changedPaths(cap).length) throw new Error('integration left the lane dirty')
     const beforeHead = this.rootGuard()
@@ -618,9 +687,11 @@ export class OracleLaneBroker {
     this.#assertGuard(beforeHead, afterHead)
     requireSuccess(headResult, 'integration HEAD audit')
     const head = headResult.stdout.trim().toLowerCase()
+    const tree = this.#tree(head, cap.worktree)
+    this.#saveCap(input.capability, { ...cap, integrated_sha: head, integrated_tree: tree, reviewed_candidates: reviewedCandidates })
     return {
-      integrated_shas: shas, sha: head, integration_receipts: receipts,
-      head_receipt: { ref: 'HEAD', sha: head, command: 'git rev-parse HEAD', exit_code: 0, output: head, broker_evidence: this.#evidence('lane_head_audit', cap.worktree, 'git rev-parse HEAD', headResult, beforeHead, afterHead) },
+      integrated_shas: shas, reviewed_candidates: reviewedCandidates, sha: head, tree, integration_receipts: receipts,
+      head_receipt: { ref: 'HEAD', sha: head, tree, command: 'git rev-parse HEAD', exit_code: 0, output: head, broker_evidence: this.#evidence('lane_head_audit', cap.worktree, 'git rev-parse HEAD', headResult, beforeHead, afterHead) },
     }
   }
 
@@ -628,8 +699,10 @@ export class OracleLaneBroker {
     assertExactKeys(input, ['capability'])
     const cap = this.#loadCap(input.capability)
     if (cap.operation_id !== 'bootstrap_data' || cap.stage !== 'bootstrap-1') throw new Error('Stage 1 recovery requires bootstrap_data capability')
+    if (cap.base_sha !== this.recoverySource.parent) throw new Error('Stage 1 recovery base must equal the pinned source parent')
     if (this.#changedPaths(cap).length || this.#git(['rev-parse', 'HEAD'], cap.worktree).stdout.trim().toLowerCase() !== cap.base_sha) throw new Error('Stage 1 recovery lane is not pristine at its frozen base')
     const source = this.recoverySource
+    if (this.#git(['cat-file', '-t', source.commit], this.root).stdout.trim() !== 'commit') throw new Error('Stage 1 recovery source is not a commit')
     const parent = this.#git(['show', '-s', '--format=%P', source.commit], this.root).stdout.trim().toLowerCase()
     const tree = this.#git(['show', '-s', '--format=%T', source.commit], this.root).stdout.trim().toLowerCase()
     if (parent !== source.parent || tree !== source.tree) throw new Error('Stage 1 recovery source parent/tree mismatch')
@@ -655,14 +728,14 @@ export class OracleLaneBroker {
     if (JSON.stringify(replayPaths) !== JSON.stringify(expectedPaths)) throw new Error('Stage 1 replay changed unexpected paths')
     const gateReceipts = ['aggregate_store', 'ingest_manifest', 'cohort_manifests', 'holdout_digest'].map(gate => this.#runGate(cap, gate))
     if (gateReceipts.some(receipt => receipt.exit_code !== 0)) throw new Error('Stage 1 recovery fixed gate failed')
-    const commitResult = this.commitLane({ capability: input.capability, message_id: 'bootstrap_data_recovery' })
+    const commitResult = this.#commitLane(cap, 'bootstrap_data_recovery')
     const changed = this.#git(['diff', '--name-only', '-z', `${cap.base_sha}...${commitResult.sha}`], cap.worktree).stdout.split('\0').filter(Boolean).map(normalizeRel).sort()
     if (JSON.stringify(changed) !== JSON.stringify(expectedPaths)) throw new Error('Stage 1 recovery committed path closure mismatch')
     const after = this.rootGuard()
     this.#assertGuard(before, after)
     return {
       recovery: { source_commit: source.commit, source_parent: parent, source_tree: tree, blobs: blobProof, adoption_rerun: false },
-      replay_paths: replayPaths, gate_receipts: gateReceipts, sha: commitResult.sha, files_changed: commitResult.files_changed,
+      replay_paths: replayPaths, gate_receipts: gateReceipts, sha: commitResult.sha, tree: commitResult.tree, files_changed: commitResult.files_changed,
       changed_path_receipt: { base_sha: cap.base_sha, tested_sha: commitResult.sha, command: `git diff --name-only ${cap.base_sha}...${commitResult.sha}`, exit_code: 0, output: changed.join('\n'), paths: changed },
       broker_evidence: [this.#evidence('recover_stage1_source_replay', cap.worktree, 'recover-stage1:validated-source', { exit_code: 0, output: JSON.stringify({ parent, tree, paths: replayPaths }), stdout: JSON.stringify(blobProof), stderr: '' }, before, after), commitResult.broker_evidence],
     }
@@ -673,6 +746,12 @@ export class OracleLaneBroker {
     const cap = this.#loadCap(input.capability)
     if (this.#changedPaths(cap).length) throw new Error('refusing to release a dirty broker lane')
     const head = this.#git(['rev-parse', 'HEAD'], cap.worktree).stdout.trim().toLowerCase()
+    const tree = this.#tree(head, cap.worktree)
+    if (['bootstrap_integration', 'sprint_integration'].includes(cap.operation_id)) {
+      if (!cap.integrated_sha || !cap.integrated_tree || head !== cap.integrated_sha || tree !== cap.integrated_tree) throw new Error('integration release SHA/tree differs from sealed integration')
+      if (!Array.isArray(cap.reviewed_candidates) || !cap.reviewed_candidates.length) throw new Error('integration release lacks sealed reviewed candidates')
+      if (cap.operation_id === 'bootstrap_integration' && (cap.reviewed_candidates.length !== 1 || cap.reviewed_candidates[0].sha !== head || cap.reviewed_candidates[0].tree !== tree)) throw new Error('bootstrap integration is not the exact reviewed SHA/tree')
+    }
     const before = this.rootGuard()
     const script = join(this.root, 'scripts', 'lease-worktree.ps1')
     const result = processResult('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-Release', cap.lease_name, '-RunId', cap.run_id], this.root)
@@ -684,24 +763,52 @@ export class OracleLaneBroker {
       if (cap.operation_id === 'bootstrap_integration' && cap.canonical_before !== null) throw new Error('bootstrap finalize requires a missing canonical ref at acquisition')
       if (cap.operation_id === 'ratchet' && (!cap.canonical_before || cap.canonical_before === head)) throw new Error('Ratchet finalize identity is invalid')
       finalizeToken = randomBytes(32).toString('hex')
-      this.#saveFinalize(finalizeToken, { version: VERSION, state: 'active', source_capability_hash: sha256(input.capability), expected_old_sha: cap.canonical_before || ZERO_SHA, new_sha: head, operation_id: cap.operation_id, branch: cap.branch, run_id: cap.run_id })
+      const finalSha = cap.operation_id === 'bootstrap_integration' ? cap.integrated_sha : head
+      const finalTree = cap.operation_id === 'bootstrap_integration' ? cap.integrated_tree : tree
+      this.#saveFinalize(finalizeToken, { version: VERSION, state: 'active', source_capability_hash: sha256(input.capability), expected_old_sha: cap.canonical_before || ZERO_SHA, new_sha: finalSha, new_tree: finalTree, operation_id: cap.operation_id, branch: cap.branch, run_id: cap.run_id })
     }
-    this.#saveCap(input.capability, { ...cap, state: 'released', released_head: head })
+    this.#saveCap(input.capability, { ...cap, state: 'released', released_head: head, released_tree: tree })
     return {
-      released: true, lease_name: cap.lease_name, sha: head, finalize_capability: finalizeToken,
+      released: true, lease_name: cap.lease_name, sha: head, tree, finalize_capability: finalizeToken,
       release_receipt: { action: 'release', lease_name: cap.lease_name, run_id: cap.run_id, branch: cap.branch, base_sha: cap.base_sha, worktree: cap.worktree, heartbeat_id: cap.heartbeat_id, keeper_pid: cap.keeper_pid, keeper_process_started_utc: cap.keeper_process_started_utc, keeper_ready_utc: cap.keeper_ready_utc, exit_code: 0, output: result.output },
       broker_evidence: this.#evidence('lane_release', this.root, `lease-worktree:release:${cap.lease_name}`, result, before, after),
     }
   }
 
+  quarantineLane(input) {
+    assertExactKeys(input, ['capability'])
+    const cap = this.#loadCap(input.capability, false)
+    if (cap.state !== 'active') throw new Error('capability is stale or inactive')
+    if (cap.operation_id !== 'bootstrap_data') throw new Error('lane_quarantine is restricted to Stage 1 recovery')
+    this.#revalidateLease(cap, { requireLiveKeeper: false, requireCheckedOutBranch: false })
+    const head = this.#git(['rev-parse', 'HEAD'], cap.worktree).stdout.trim().toLowerCase()
+    const tree = this.#tree(head, cap.worktree)
+    const preservedPaths = this.#changedPaths(cap)
+    const before = this.rootGuard()
+    const script = join(this.root, 'scripts', 'lease-worktree.ps1')
+    const result = processResult('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-Quarantine', cap.lease_name, '-RunId', cap.run_id], this.root)
+    const after = this.rootGuard()
+    this.#assertGuard(before, after)
+    requireSuccess(result, 'broker lane quarantine')
+    this.#saveCap(input.capability, { ...cap, state: 'quarantined', quarantined_head: head, quarantined_tree: tree, preserved_paths: preservedPaths })
+    return {
+      quarantined: true, lease_name: cap.lease_name, sha: head, tree, preserved_paths: preservedPaths,
+      quarantine_receipt: { action: 'quarantine', lease_name: cap.lease_name, run_id: cap.run_id, branch: cap.branch, base_sha: cap.base_sha, worktree: cap.worktree, heartbeat_id: cap.heartbeat_id, keeper_pid: cap.keeper_pid, keeper_process_started_utc: cap.keeper_process_started_utc, keeper_ready_utc: cap.keeper_ready_utc, exit_code: 0, output: result.output },
+      broker_evidence: this.#evidence('lane_quarantine', this.root, `lease-worktree:quarantine:${cap.lease_name}`, result, before, after),
+    }
+  }
+
   canonicalFinalize(input) {
-    assertExactKeys(input, ['finalize_capability'])
+    assertExactKeys(input, ['finalize_capability', 'expected_sha', 'expected_tree'])
     const token = input.finalize_capability
     const finalizer = this.#loadFinalize(token)
+    const expectedSha = String(input.expected_sha || '').toLowerCase()
+    const expectedTree = String(input.expected_tree || '').toLowerCase()
+    if (!SHA_RE.test(expectedSha) || !SHA_RE.test(expectedTree) || expectedSha !== finalizer.new_sha || expectedTree !== finalizer.new_tree) throw new Error('workflow expected SHA/tree differs from sealed integration')
     const before = this.rootGuard()
     const actualOld = before.canonical_sha || ZERO_SHA
     if (actualOld !== finalizer.expected_old_sha) throw new Error('canonical compare-and-swap precondition is stale')
-    if (!SHA_RE.test(finalizer.new_sha) || !this.#ref(finalizer.new_sha)) throw new Error('finalize target is not an exact commit')
+    if (!SHA_RE.test(finalizer.new_sha) || !this.#ref(finalizer.new_sha) || this.#tree(finalizer.new_sha) !== finalizer.new_tree) throw new Error('finalize target SHA/tree is not exact')
     const result = processResult('git', ['update-ref', CANONICAL_REF, finalizer.new_sha, finalizer.expected_old_sha], this.root)
     const after = this.rootGuard()
     this.#assertGuard(before, after, true)
@@ -709,7 +816,7 @@ export class OracleLaneBroker {
     if (after.canonical_sha !== finalizer.new_sha) throw new Error('canonical audit disagrees after compare-and-swap')
     const target = this.#finalizePath(token)
     rmSync(target)
-    return { ref: CANONICAL_REF, new_sha: finalizer.new_sha, expected_old_sha: finalizer.expected_old_sha, command: `git update-ref ${CANONICAL_REF} ${finalizer.new_sha} ${finalizer.expected_old_sha}`, exit_code: 0, output: finalizer.new_sha, broker_evidence: this.#evidence('canonical_finalize', this.root, `canonical-cas:${finalizer.operation_id}`, result, before, after) }
+    return { ref: CANONICAL_REF, new_sha: finalizer.new_sha, new_tree: finalizer.new_tree, expected_old_sha: finalizer.expected_old_sha, command: `git update-ref ${CANONICAL_REF} ${finalizer.new_sha} ${finalizer.expected_old_sha}`, exit_code: 0, output: finalizer.new_sha, broker_evidence: this.#evidence('canonical_finalize', this.root, `canonical-cas:${finalizer.operation_id}`, result, before, after) }
   }
 
   canonicalAudit() {
@@ -736,7 +843,8 @@ const TOOL_DEFINITIONS = Object.freeze([
   { name: 'lane_integrate', description: 'Integrate 1-4 exact reviewed SHAs through the fixed broker merge path.', inputSchema: { type: 'object', additionalProperties: false, required: ['capability', 'reviewed_shas'], properties: { capability: { type: 'string', pattern: '^[0-9a-f]{64}$' }, reviewed_shas: { type: 'array', minItems: 1, maxItems: 4, items: { type: 'string', pattern: '^[0-9a-f]{40}$' } } } } },
   { name: 'recover_stage1', description: 'Validate and replay the pinned Stage 1 source commit, run four fixed gates, and commit without adoption rerun.', inputSchema: { type: 'object', additionalProperties: false, required: ['capability'], properties: { capability: { type: 'string', pattern: '^[0-9a-f]{64}$' } } } },
   { name: 'lane_release', description: 'Release only the capability-bound clean lease and optionally issue a bound finalize capability.', inputSchema: { type: 'object', additionalProperties: false, required: ['capability'], properties: { capability: { type: 'string', pattern: '^[0-9a-f]{64}$' } } } },
-  { name: 'canonical_finalize', description: 'Consume a broker-issued finalize capability for exact oracle/canonical CAS; main is impossible.', inputSchema: { type: 'object', additionalProperties: false, required: ['finalize_capability'], properties: { finalize_capability: { type: 'string', pattern: '^[0-9a-f]{64}$' } } } },
+  { name: 'lane_quarantine', description: 'Stop and remove a failed Stage 1 lease while preserving its dirty branch/worktree for audit.', inputSchema: { type: 'object', additionalProperties: false, required: ['capability'], properties: { capability: { type: 'string', pattern: '^[0-9a-f]{64}$' } } } },
+  { name: 'canonical_finalize', description: 'Consume a broker-issued finalize capability only when workflow expected SHA/tree matches the sealed integration.', inputSchema: { type: 'object', additionalProperties: false, required: ['finalize_capability', 'expected_sha', 'expected_tree'], properties: { finalize_capability: { type: 'string', pattern: '^[0-9a-f]{64}$' }, expected_sha: { type: 'string', pattern: '^[0-9a-f]{40}$' }, expected_tree: { type: 'string', pattern: '^[0-9a-f]{40}$' } } } },
   { name: 'canonical_audit', description: 'Read only refs/heads/oracle/canonical under the root guard.', inputSchema: { type: 'object', additionalProperties: false, properties: {} } },
 ])
 
@@ -745,7 +853,7 @@ function dispatch(broker, name, input) {
     capability_probe: () => broker.capabilityProbe(), ref_resolve: () => broker.refResolve(input), repo_search: () => broker.repoSearch(input), repo_read: () => broker.repoRead(input),
     lane_open: () => broker.openLane(input), workspace_list: () => broker.listWorkspace(input), patch_apply: () => broker.applyPatch(input), gate_run: () => broker.runGate(input),
     lane_commit: () => broker.commitLane(input), commit_inspect: () => broker.inspectCommit(input), lane_integrate: () => broker.integrate(input), recover_stage1: () => broker.recoverStage1(input),
-    lane_release: () => broker.releaseLane(input), canonical_finalize: () => broker.canonicalFinalize(input), canonical_audit: () => broker.canonicalAudit(),
+    lane_release: () => broker.releaseLane(input), lane_quarantine: () => broker.quarantineLane(input), canonical_finalize: () => broker.canonicalFinalize(input), canonical_audit: () => broker.canonicalAudit(),
   }
   if (!routes[name]) throw new Error(`unknown broker tool: ${name}`)
   return routes[name]()

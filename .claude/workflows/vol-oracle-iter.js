@@ -120,7 +120,7 @@ const LEASE_RECEIPT = {
   type: 'object', additionalProperties: false,
   required: ['action', 'lease_name', 'run_id', 'branch', 'base_sha', 'worktree', 'heartbeat_id', 'keeper_pid', 'keeper_process_started_utc', 'keeper_ready_utc', 'exit_code', 'output'],
   properties: {
-    action: { type: 'string', enum: ['acquire', 'release'] }, lease_name: { type: 'string' }, run_id: { type: 'string' },
+    action: { type: 'string', enum: ['acquire', 'release', 'quarantine'] }, lease_name: { type: 'string' }, run_id: { type: 'string' },
     branch: { type: 'string' }, base_sha: { type: 'string' }, worktree: { type: 'string' }, heartbeat_id: { type: 'string' },
     keeper_pid: { type: 'integer' }, keeper_process_started_utc: { type: 'string' }, keeper_ready_utc: { type: 'string' }, exit_code: { type: 'integer' }, output: { type: 'string' },
   },
@@ -136,20 +136,28 @@ const BROKER_ACQUIRE = {
 }
 const BROKER_RELEASE = {
   type: 'object', additionalProperties: false,
-  required: ['released', 'lease_name', 'sha', 'finalize_capability', 'release_receipt', 'broker_evidence'],
+  required: ['released', 'lease_name', 'sha', 'tree', 'finalize_capability', 'release_receipt', 'broker_evidence'],
   properties: {
-    released: { type: 'boolean' }, lease_name: { type: 'string' }, sha: { type: 'string' }, finalize_capability: { type: 'string' },
+    released: { type: 'boolean' }, lease_name: { type: 'string' }, sha: { type: 'string' }, tree: { type: 'string' }, finalize_capability: { type: 'string' },
     release_receipt: LEASE_RECEIPT, broker_evidence: BROKER_EVIDENCE,
+  },
+}
+const BROKER_QUARANTINE = {
+  type: 'object', additionalProperties: false,
+  required: ['quarantined', 'lease_name', 'sha', 'tree', 'preserved_paths', 'quarantine_receipt', 'broker_evidence'],
+  properties: {
+    quarantined: { type: 'boolean' }, lease_name: { type: 'string' }, sha: { type: 'string' }, tree: { type: 'string' },
+    preserved_paths: { type: 'array', items: { type: 'string' } }, quarantine_receipt: LEASE_RECEIPT, broker_evidence: BROKER_EVIDENCE,
   },
 }
 const HEAD_RECEIPT = {
   type: 'object', additionalProperties: false, required: ['ref', 'sha', 'command', 'exit_code', 'output'],
-  properties: { ref: { type: 'string' }, sha: { type: 'string' }, command: { type: 'string' }, exit_code: { type: 'integer' }, output: { type: 'string' }, broker_evidence: BROKER_EVIDENCE },
+  properties: { ref: { type: 'string' }, sha: { type: 'string' }, tree: { type: 'string' }, command: { type: 'string' }, exit_code: { type: 'integer' }, output: { type: 'string' }, broker_evidence: BROKER_EVIDENCE },
 }
 const CAS_RECEIPT = {
-  type: 'object', additionalProperties: false, required: ['ref', 'new_sha', 'expected_old_sha', 'command', 'exit_code', 'output'],
+  type: 'object', additionalProperties: false, required: ['ref', 'new_sha', 'new_tree', 'expected_old_sha', 'command', 'exit_code', 'output'],
   properties: {
-    ref: { type: 'string' }, new_sha: { type: 'string' }, expected_old_sha: { type: 'string' }, command: { type: 'string' },
+    ref: { type: 'string' }, new_sha: { type: 'string' }, new_tree: { type: 'string' }, expected_old_sha: { type: 'string' }, command: { type: 'string' },
     exit_code: { type: 'integer' }, output: { type: 'string' }, broker_evidence: BROKER_EVIDENCE,
   },
 }
@@ -232,9 +240,9 @@ const RATCHET_GATE_RECEIPT = {
   },
 }
 const INTEGRATION_RECEIPT = {
-  type: 'object', additionalProperties: false, required: ['reviewed_sha', 'head_after', 'command', 'exit_code', 'output'],
+  type: 'object', additionalProperties: false, required: ['reviewed_sha', 'reviewed_tree', 'head_after', 'tree_after', 'command', 'exit_code', 'output'],
   properties: {
-    reviewed_sha: { type: 'string' }, head_after: { type: 'string' }, command: { type: 'string' },
+    reviewed_sha: { type: 'string' }, reviewed_tree: { type: 'string' }, head_after: { type: 'string' }, tree_after: { type: 'string' }, command: { type: 'string' },
     exit_code: { type: 'integer' }, output: { type: 'string' },
   },
 }
@@ -255,10 +263,10 @@ const CAPABILITY = {
     diagnostics: { type: 'array', items: EVIDENCE_ITEM }, broker_evidence: BROKER_EVIDENCE,
   },
 }
-const BOOTSTRAP_REPORT_IDENTITY_REQUIRED = ['state', 'outcome', 'branch', 'sha', 'base_sha', 'worktree', 'lease_name', 'lease_run_id', 'heartbeat_id', 'keeper_pid', 'keeper_process_started_utc', 'acquisition_receipt', 'holdout_digest_receipt', 'evidence', 'broker_evidence', 'deviations']
+const BOOTSTRAP_REPORT_IDENTITY_REQUIRED = ['state', 'outcome', 'branch', 'sha', 'tree', 'base_sha', 'worktree', 'lease_name', 'lease_run_id', 'heartbeat_id', 'keeper_pid', 'keeper_process_started_utc', 'acquisition_receipt', 'holdout_digest_receipt', 'evidence', 'broker_evidence', 'deviations']
 const BOOTSTRAP_REPORT_COMMON_PROPERTIES = {
   state: { type: 'string', enum: ['missing_data', 'missing_mode_a', 'missing_conventions', 'missing_mode_b'] },
-  branch: { type: 'string', minLength: 1 }, sha: { type: 'string' }, base_sha: { type: 'string', pattern: '^[0-9a-f]{40}$' },
+  branch: { type: 'string', minLength: 1 }, sha: { type: 'string' }, tree: { type: 'string' }, base_sha: { type: 'string', pattern: '^[0-9a-f]{40}$' },
   worktree: { type: 'string', minLength: 1 }, lease_name: { type: 'string', pattern: '^pool-[0-9]+$' },
   lease_run_id: { type: 'string', minLength: 1 }, heartbeat_id: { type: 'string', minLength: 1 },
   keeper_pid: { type: 'integer' }, keeper_process_started_utc: { type: 'string', minLength: 1 }, acquisition_receipt: LEASE_RECEIPT,
@@ -283,7 +291,7 @@ const BOOTSTRAP_REPORT_VARIANTS = {
       required: BOOTSTRAP_REPORT_IDENTITY_REQUIRED,
       properties: {
         ...BOOTSTRAP_REPORT_COMMON_PROPERTIES,
-        outcome: { type: 'string', enum: ['DONE'] }, sha: { type: 'string', pattern: '^[0-9a-f]{40}$' },
+        outcome: { type: 'string', enum: ['DONE'] }, sha: { type: 'string', pattern: '^[0-9a-f]{40}$' }, tree: { type: 'string', pattern: '^[0-9a-f]{40}$' },
         holdout_digest_receipt: { type: 'string', pattern: '^[0-9a-f]{64}$' },
         evidence: { type: 'array', minItems: 1, items: BOOTSTRAP_SUCCESS_EVIDENCE_ITEM },
         diagnostics: { type: 'array', items: BOOTSTRAP_DIAGNOSTIC_EVIDENCE_ITEM },
@@ -294,7 +302,7 @@ const BOOTSTRAP_REPORT_VARIANTS = {
       required: [...BOOTSTRAP_REPORT_IDENTITY_REQUIRED, 'blockers', 'diagnostics'],
       properties: {
         ...BOOTSTRAP_REPORT_COMMON_PROPERTIES,
-        outcome: { type: 'string', enum: ['BLOCKED'] }, sha: { type: 'string', pattern: '^(?:|[0-9a-f]{40})$' },
+        outcome: { type: 'string', enum: ['BLOCKED'] }, sha: { type: 'string', pattern: '^(?:|[0-9a-f]{40})$' }, tree: { type: 'string', pattern: '^(?:|[0-9a-f]{40})$' },
         holdout_digest_receipt: { type: 'string', pattern: '^(?:|[0-9a-f]{64})$' },
         evidence: { type: 'array', items: BOOTSTRAP_SUCCESS_EVIDENCE_ITEM },
         blockers: { type: 'array', minItems: 1, items: { type: 'string', minLength: 1 } },
@@ -355,9 +363,9 @@ const BOOTSTRAP_PREPARE = {
 }
 const BOOTSTRAP_VERIFY = {
   type: 'object', additionalProperties: false,
-  required: ['passed', 'reviewed_sha', 'integration_branch', 'integration_sha', 'integration_worktree', 'integration_lease', 'lease_run_id', 'integration_heartbeat_id', 'keeper_pid', 'keeper_process_started_utc', 'holdout_digest_receipt', 'next_state', 'integration_receipt', 'head_receipt', 'gate_receipts', 'evidence', 'broker_evidence'],
+  required: ['passed', 'reviewed_sha', 'reviewed_tree', 'integration_branch', 'integration_sha', 'integration_tree', 'integration_worktree', 'integration_lease', 'lease_run_id', 'integration_heartbeat_id', 'keeper_pid', 'keeper_process_started_utc', 'holdout_digest_receipt', 'next_state', 'integration_receipt', 'head_receipt', 'gate_receipts', 'evidence', 'broker_evidence'],
   properties: {
-    passed: { type: 'boolean' }, reviewed_sha: { type: 'string' }, integration_branch: { type: 'string' }, integration_sha: { type: 'string' },
+    passed: { type: 'boolean' }, reviewed_sha: { type: 'string' }, reviewed_tree: { type: 'string' }, integration_branch: { type: 'string' }, integration_sha: { type: 'string' }, integration_tree: { type: 'string' },
     integration_worktree: { type: 'string' }, integration_lease: { type: 'string' }, lease_run_id: { type: 'string' }, integration_heartbeat_id: { type: 'string' },
     keeper_pid: { type: 'integer' }, keeper_process_started_utc: { type: 'string' }, holdout_digest_receipt: { type: 'string' },
     next_state: { type: 'string', enum: ['missing_mode_a', 'missing_conventions', 'missing_mode_b', 'ready'] }, integration_receipt: INTEGRATION_RECEIPT,
@@ -554,7 +562,7 @@ function validLeaseReceipt(receipt, expected, action) {
       receipt.keeper_process_started_utc !== expected.keeper_process_started_utc) return false
   if (!Number.isInteger(receipt.keeper_pid) || receipt.keeper_pid <= 0 || !/^\d{4}-/.test(receipt.keeper_process_started_utc || '') || !/^\d{4}-/.test(receipt.keeper_ready_utc || '')) return false
   return receipt.output.includes(receipt.lease_name) && receipt.output.includes(receipt.run_id) &&
-    (action === 'release' || (receipt.output.includes(String(receipt.keeper_pid)) && receipt.output.includes(receipt.heartbeat_id) && receipt.output.includes(receipt.keeper_ready_utc)))
+    (action !== 'acquire' || (receipt.output.includes(String(receipt.keeper_pid)) && receipt.output.includes(receipt.heartbeat_id) && receipt.output.includes(receipt.keeper_ready_utc)))
 }
 
 function validBrokerEvidence(receipt, logicalOperation = null, physicalCwd = null, allowCanonical = false) {
@@ -578,14 +586,21 @@ function brokerAcquireError(acquire, expected) {
 }
 
 function brokerReleaseError(release, acquire, finalizeExpected) {
-  if (!release || !release.released || release.lease_name !== acquire.lease_name || !/^[0-9a-f]{40}$/.test(release.sha || '') ||
+  if (!release || !release.released || release.lease_name !== acquire.lease_name || !/^[0-9a-f]{40}$/.test(release.sha || '') || !/^[0-9a-f]{40}$/.test(release.tree || '') ||
       (finalizeExpected ? !/^[0-9a-f]{64}$/.test(release.finalize_capability || '') : release.finalize_capability !== '')) return 'broker release identity invalid'
   if (!validLeaseReceipt(release.release_receipt, { ...acquire, run_id: acquire.run_id }, 'release')) return 'broker release receipt invalid'
   return validBrokerEvidence(release.broker_evidence, 'lane_release') ? null : 'broker release root evidence invalid'
 }
 
-function validHeadReceipt(receipt, ref, sha) {
-  return !!receipt && receipt.ref === ref && receipt.sha === sha && receipt.exit_code === 0 && receipt.command.trim() === `git rev-parse ${ref}` && receipt.output.trim() === sha
+function brokerQuarantineError(quarantine, acquire) {
+  if (!quarantine || !quarantine.quarantined || quarantine.lease_name !== acquire.lease_name || !/^[0-9a-f]{40}$/.test(quarantine.sha || '') ||
+      !/^[0-9a-f]{40}$/.test(quarantine.tree || '') || !Array.isArray(quarantine.preserved_paths)) return 'broker quarantine identity invalid'
+  if (!validLeaseReceipt(quarantine.quarantine_receipt, { ...acquire, run_id: acquire.run_id }, 'quarantine')) return 'broker quarantine receipt invalid'
+  return validBrokerEvidence(quarantine.broker_evidence, 'lane_quarantine') ? null : 'broker quarantine root evidence invalid'
+}
+
+function validHeadReceipt(receipt, ref, sha, tree = null) {
+  return !!receipt && receipt.ref === ref && receipt.sha === sha && (!tree || receipt.tree === tree) && receipt.exit_code === 0 && receipt.command.trim() === `git rev-parse ${ref}` && receipt.output.trim() === sha
 }
 
 function validGateReceipt(receipt, gateId) {
@@ -686,14 +701,14 @@ function validRatchetGateReceipt(receipt, gateId) {
     receipt.output === JSON.stringify(result)
 }
 
-function validIntegrationCommand(receipt, reviewedSha) {
-  return !!receipt && receipt.reviewed_sha === reviewedSha && receipt.exit_code === 0 &&
+function validIntegrationCommand(receipt, reviewedSha, reviewedTree = null) {
+  return !!receipt && receipt.reviewed_sha === reviewedSha && (!reviewedTree || (receipt.reviewed_tree === reviewedTree && receipt.tree_after === reviewedTree)) && receipt.exit_code === 0 &&
     new RegExp(`^git\\s+(?:merge(?:\\s+--(?:ff-only|no-ff|no-edit))*|cherry-pick(?:\\s+--(?:ff|no-commit))*)\\s+${reviewedSha}$`, 'i').test(String(receipt.command || '').trim())
 }
 
 function casReceiptError(receipt, expected) {
   if (!receipt) return 'CAS receipt missing'
-  if (receipt.ref !== expected.ref || receipt.new_sha !== expected.new_sha || receipt.expected_old_sha !== expected.expected_old_sha) return 'CAS identity mismatch'
+  if (receipt.ref !== expected.ref || receipt.new_sha !== expected.new_sha || receipt.new_tree !== expected.new_tree || receipt.expected_old_sha !== expected.expected_old_sha) return 'CAS identity mismatch'
   if (receipt.command.trim() !== `git update-ref ${expected.ref} ${expected.new_sha} ${expected.expected_old_sha}` || receipt.exit_code !== 0 || !String(receipt.output || '').trim() ||
       !validBrokerEvidence(receipt.broker_evidence, 'canonical_finalize', null, true)) return 'CAS command receipt invalid'
   return null
@@ -816,7 +831,7 @@ function bootstrapReportError(report, expected) {
   if (typeof report.deviations !== 'string' || !Array.isArray(report.broker_evidence) || !report.broker_evidence.length ||
       !report.broker_evidence.every(item => validBrokerEvidence(item, null, report.worktree))) return 'bootstrap broker evidence invalid'
   if (report.outcome === 'BLOCKED') {
-    if ((report.sha && !/^[0-9a-f]{40}$/.test(report.sha)) ||
+    if ((report.sha && !/^[0-9a-f]{40}$/.test(report.sha)) || (report.tree && !/^[0-9a-f]{40}$/.test(report.tree)) || (!!report.sha !== !!report.tree) ||
         (report.holdout_digest_receipt && !/^[0-9a-f]{64}$/.test(report.holdout_digest_receipt))) return 'blocked bootstrap SHA/receipt invalid'
     if (!Array.isArray(report.blockers) || !report.blockers.length || report.blockers.some(item => typeof item !== 'string' || !item.trim())) return 'blocked bootstrap blockers missing'
     if (!validBootstrapSuccessEvidence(report.evidence, false)) return 'blocked bootstrap success evidence invalid'
@@ -824,7 +839,7 @@ function bootstrapReportError(report, expected) {
     return `bootstrap blocked: ${report.blockers.join('; ')}`
   }
   if (report.outcome !== 'DONE') return 'bootstrap build incomplete'
-  if (!/^[0-9a-f]{40}$/.test(report.sha || '') || !/^[0-9a-f]{64}$/.test(report.holdout_digest_receipt || '') ||
+  if (!/^[0-9a-f]{40}$/.test(report.sha || '') || !/^[0-9a-f]{40}$/.test(report.tree || '') || !/^[0-9a-f]{64}$/.test(report.holdout_digest_receipt || '') ||
       (expected.holdout_digest_receipt && report.holdout_digest_receipt !== expected.holdout_digest_receipt) || !validBootstrapSuccessEvidence(report.evidence, true) ||
       !validBootstrapDiagnostics(report.diagnostics, false)) return 'bootstrap build evidence/SHA/receipt invalid'
   if (report.bootstrap_path !== undefined && !['data_recovery', 'data_ingest', 'mode_a_receipt_only', 'mode_a_implementation', 'standard'].includes(report.bootstrap_path)) return 'bootstrap path invalid'
@@ -840,7 +855,7 @@ function bootstrapPrepareError(report, review, prepare, expected) {
   if (reviewError || review.verdict !== 'APPROVE') return reviewError || 'bootstrap not approved'
   if (!prepare || !prepare.passed || !validSuccessEvidence(prepare.evidence) || diagnosticsUseForbiddenCommand(prepare.diagnostics) ||
       !Array.isArray(prepare.broker_evidence) || !prepare.broker_evidence.length || !prepare.broker_evidence.every(item => validBrokerEvidence(item, null, prepare.integration_worktree))) return 'scoped verifier missing/failed'
-  if (prepare.reviewed_sha !== report.sha || prepare.integration_sha !== report.sha || prepare.integration_branch !== expected.integration_branch ||
+  if (prepare.reviewed_sha !== report.sha || prepare.reviewed_tree !== report.tree || prepare.integration_sha !== report.sha || prepare.integration_tree !== report.tree || prepare.integration_branch !== expected.integration_branch ||
       prepare.lease_run_id !== expected.run_id || prepare.next_state !== expected.next_state || prepare.holdout_digest_receipt !== report.holdout_digest_receipt) return 'bootstrap prepare identity/state mismatch'
   if (!/^pool-[0-9]+$/.test(prepare.integration_lease || '') || !/[\\/]atx-wt[\\/]pool-[0-9]+$/i.test(prepare.integration_worktree || '') ||
       !prepare.integration_worktree.replace(/\//g, '\\').toLowerCase().endsWith(`\\${prepare.integration_lease.toLowerCase()}`)) return 'bootstrap verifier not isolated'
@@ -849,9 +864,9 @@ function bootstrapPrepareError(report, review, prepare, expected) {
   if (!validLeaseReceipt(prepare.lane_release_receipt, laneLease, 'release')) return 'bootstrap lane release receipt invalid'
   if (!validLeaseReceipt(prepare.acquisition_receipt, integrationLease, 'acquire')) return 'bootstrap integration acquisition receipt invalid'
   if (!validLeaseReceipt(prepare.integration_release_receipt, integrationLease, 'release')) return 'bootstrap integration release receipt invalid'
-  if (!validIntegrationCommand(prepare.integration_receipt, report.sha) || prepare.integration_receipt.head_after !== report.sha ||
+  if (!validIntegrationCommand(prepare.integration_receipt, report.sha, report.tree) || prepare.integration_receipt.head_after !== report.sha ||
       !String(prepare.integration_receipt.output || '').includes(report.sha)) return 'exact reviewed SHA integration receipt invalid'
-  if (!validHeadReceipt(prepare.head_receipt, 'HEAD', report.sha)) return 'bootstrap HEAD receipt invalid'
+  if (!validHeadReceipt(prepare.head_receipt, 'HEAD', report.sha, report.tree)) return 'bootstrap HEAD/tree receipt invalid'
   if (!Array.isArray(prepare.gate_receipts) || prepare.gate_receipts.length !== expected.gate_ids.length) return 'bootstrap gate receipt set mismatch'
   for (const gateId of expected.gate_ids) {
     const matches = prepare.gate_receipts.filter(receipt => receipt && receipt.gate_id === gateId)
@@ -1057,7 +1072,7 @@ if (capability.state !== 'ready') {
   try {
     buildAcquire = await agent(
       `Call broker lane_open exactly once with ${JSON.stringify({ operation_id: operationId, stage: `bootstrap-${lane.stage}`, run_id: RUN_ID, branch, base_sha: BASE_SHA, heartbeat_id: heartbeat })}; return the broker result unchanged.`,
-      { agentType: 'vol-lane-controller', schema: BROKER_ACQUIRE, label: `bootstrap-acquire:${capability.state}` },
+      { agentType: 'vol-lane-opener', schema: BROKER_ACQUIRE, label: `bootstrap-acquire:${capability.state}` },
     )
   } catch (error) { buildAcquireThrown = String(error) }
   const buildAcquireError = buildAcquireThrown || brokerAcquireError(buildAcquire, expected)
@@ -1065,10 +1080,11 @@ if (capability.state !== 'ready') {
   phase('Bootstrap Build')
   let envelope = null
   let buildThrown = null
+  const buildAgentType = capability.state === 'missing_data' ? 'vol-stage1-recovery' : 'vol-builder'
   try {
     envelope = await agent(
-      `ONE preleased broker lane; no planner/holdout. Immutable acquisition: ${JSON.stringify(buildAcquire)}. Use only capability=${buildAcquire.capability}. Stage=${lane.stage}. ${lane.contract} Return exactly {report:<typed report>} and copy lease identity from acquisition. Every report evidence item must come from a broker tool result. Include all broker evidence under report.broker_evidence. DONE requires a committed lowercase SHA and raw lowercase holdout digest. Stage 1 must set bootstrap_path=data_recovery, recovery_source_receipt from recover_stage1.recovery, changed_path_receipt unchanged, holdout_digest_receipt=${STAGE1_RECOVERY.holdout_digest}, evidence from its four gate receipts, and no adoption_receipt/disk_receipt. Stage 2 retains its typed precheck/changed-path contract.`,
-      { agentType: 'vol-builder', schema: BOOTSTRAP_REPORT_TOOL_SCHEMA, label: `bootstrap-build:${capability.state}` },
+      `ONE preleased broker lane; no planner/holdout. Immutable acquisition: ${JSON.stringify(buildAcquire)}. Use only capability=${buildAcquire.capability}. Stage=${lane.stage}. ${lane.contract} Return exactly {report:<typed report>} and copy lease identity from acquisition. Every report evidence item must come from a broker tool result. Include all broker evidence under report.broker_evidence. DONE requires the broker-returned lowercase SHA and tree plus raw lowercase holdout digest. Stage 1 must call only recover_stage1, set bootstrap_path=data_recovery, recovery_source_receipt from its recovery field, changed_path_receipt unchanged, sha/tree unchanged, holdout_digest_receipt=${STAGE1_RECOVERY.holdout_digest}, evidence from its four gate receipts, and no adoption_receipt/disk_receipt. Stage 2 retains its typed precheck/changed-path contract.`,
+      { agentType: buildAgentType, schema: BOOTSTRAP_REPORT_TOOL_SCHEMA, label: `bootstrap-build:${capability.state}` },
     )
   } catch (error) { buildThrown = String(error) }
   let unwrapped = unwrapBootstrapReport(envelope)
@@ -1078,7 +1094,7 @@ if (capability.state !== 'ready') {
   if (!reportError) {
     phase('Bootstrap Review')
     try {
-      review = await agent(`Fresh exact-SHA broker review ${BASE_SHA}...${report.sha}. Use commit_inspect and capability=${buildAcquire.capability}; for Stage 1 replay only gate ${lane.gate_ids[0]}. Verify exact recovery source/path closure and no adoption/ingest/disk. Return command evidence plus every broker evidence unchanged.`, { agentType: 'vol-reviewer', schema: REVIEW, label: `bootstrap-review:${capability.state}` })
+      review = await agent(`Fresh exact-SHA broker review ${BASE_SHA}...${report.sha}. Use commit_inspect; Stage 1 must not call generic gate_run because recover_stage1 already owns all four fixed gates atomically. Verify exact recovery source/path closure, SHA/tree ${report.sha}/${report.tree}, and no adoption/ingest/disk. Return command evidence plus every broker evidence unchanged.`, { agentType: 'vol-reviewer', schema: REVIEW, label: `bootstrap-review:${capability.state}` })
       reportError = reviewContractError(review, report.sha)
     } catch (error) { reportError = `bootstrap review failed: ${String(error)}` }
   }
@@ -1101,11 +1117,21 @@ if (capability.state !== 'ready') {
   let buildRelease = null
   let buildReleaseThrown = null
   try {
-    buildRelease = await agent(`Call broker lane_release exactly once with capability=${buildAcquire.capability}; return the result unchanged.`, { agentType: 'vol-lane-controller', schema: BROKER_RELEASE, label: 'bootstrap-build-release' })
+    buildRelease = await agent(`Call broker lane_release exactly once with capability=${buildAcquire.capability}; return the result unchanged.`, { agentType: 'vol-lane-releaser', schema: BROKER_RELEASE, label: 'bootstrap-build-release' })
   } catch (error) { buildReleaseThrown = String(error) }
-  const buildReleaseError = buildReleaseThrown || brokerReleaseError(buildRelease, buildAcquire, false) || (report && /^[0-9a-f]{40}$/.test(report.sha || '') && buildRelease.sha !== report.sha ? 'released builder HEAD differs from report' : null)
+  let buildReleaseError = buildReleaseThrown || brokerReleaseError(buildRelease, buildAcquire, false) || (report && /^[0-9a-f]{40}$/.test(report.sha || '') && (buildRelease.sha !== report.sha || buildRelease.tree !== report.tree) ? 'released builder SHA/tree differs from report' : null)
+  let buildQuarantine = null
+  let buildQuarantineThrown = null
+  if (buildReleaseError && capability.state === 'missing_data') {
+    try {
+      buildQuarantine = await agent(`Clean release failed (${buildReleaseError}). Call broker lane_quarantine exactly once with capability=${buildAcquire.capability}; preserve the dirty lane for audit and return the result unchanged.`, { agentType: 'vol-stage1-quarantiner', schema: BROKER_QUARANTINE, label: 'bootstrap-build-quarantine' })
+    } catch (error) { buildQuarantineThrown = String(error) }
+    const quarantineError = buildQuarantineThrown || brokerQuarantineError(buildQuarantine, buildAcquire)
+    if (!quarantineError) buildReleaseError = 'builder lane quarantined after clean release refusal'
+    else buildReleaseError = `${buildReleaseError}; quarantine failed: ${quarantineError}`
+  }
   if (reportError || !review || review.verdict !== 'APPROVE') {
-    return { iteration: `bootstrap-${lane.stage}`, capability_state: capability.state, verdict: 'FAILED', holdout: null, confirmed: [], refuted: [], sprint: null, ledger: [], ratchet_evidence: [], failure: reportError || buildReleaseError || 'bootstrap not approved', cleanup: buildRelease, bootstrap: { acquire: buildAcquire, report, review, release: buildRelease }, run_id: RUN_ID, base_sha: BASE_SHA, canonical_after: null }
+    return { iteration: `bootstrap-${lane.stage}`, capability_state: capability.state, verdict: 'FAILED', holdout: null, confirmed: [], refuted: [], sprint: null, ledger: [], ratchet_evidence: [], failure: reportError || buildReleaseError || 'bootstrap not approved', cleanup: buildQuarantine || buildRelease, bootstrap: { acquire: buildAcquire, report, review, release: buildRelease, quarantine: buildQuarantine }, run_id: RUN_ID, base_sha: BASE_SHA, canonical_after: null }
   }
   if (buildReleaseError) return { iteration: `bootstrap-${lane.stage}`, capability_state: capability.state, verdict: 'FAILED', holdout: null, confirmed: [], refuted: [], sprint: null, ledger: [], ratchet_evidence: [], failure: buildReleaseError, bootstrap: { acquire: buildAcquire, report, review, release: buildRelease }, run_id: RUN_ID, base_sha: BASE_SHA, canonical_after: null }
   phase('Bootstrap Integration Acquire')
@@ -1113,7 +1139,7 @@ if (capability.state !== 'ready') {
   let integrationAcquire = null
   let integrationAcquireThrown = null
   try {
-    integrationAcquire = await agent(`Call broker lane_open exactly once with ${JSON.stringify({ operation_id: 'bootstrap_integration', stage: 'bootstrap-prepare', run_id: RUN_ID, branch: integrationBranch, base_sha: BASE_SHA, heartbeat_id: integrationHeartbeat })}; return the result unchanged.`, { agentType: 'vol-lane-controller', schema: BROKER_ACQUIRE, label: `bootstrap-integration-acquire:${capability.state}` })
+    integrationAcquire = await agent(`Call broker lane_open exactly once with ${JSON.stringify({ operation_id: 'bootstrap_integration', stage: 'bootstrap-prepare', run_id: RUN_ID, branch: integrationBranch, base_sha: BASE_SHA, heartbeat_id: integrationHeartbeat })}; return the result unchanged.`, { agentType: 'vol-lane-opener', schema: BROKER_ACQUIRE, label: `bootstrap-integration-acquire:${capability.state}` })
   } catch (error) { integrationAcquireThrown = String(error) }
   const integrationAcquireError = integrationAcquireThrown || brokerAcquireError(integrationAcquire, integrationExpected)
   if (integrationAcquireError) return { iteration: `bootstrap-${lane.stage}`, capability_state: capability.state, verdict: 'FAILED', holdout: null, confirmed: [], refuted: [], sprint: null, ledger: [], ratchet_evidence: [], failure: integrationAcquireError, bootstrap: { acquire: buildAcquire, report, review, release: buildRelease, integration_acquire: integrationAcquire }, run_id: RUN_ID, base_sha: BASE_SHA, canonical_after: null }
@@ -1122,25 +1148,25 @@ if (capability.state !== 'ready') {
   let verifyThrown = null
   try {
     verified = await agent(
-      `Use only preleased capability=${integrationAcquire.capability}. Call lane_integrate with reviewed_shas=[${JSON.stringify(report.sha)}], relay its exact integration and HEAD receipts, then run each fixed gate ID exactly once: ${JSON.stringify(lane.gate_ids)}. Do not release/finalize. Return identities copied from ${JSON.stringify(integrationAcquire)}, holdout_digest_receipt=${report.holdout_digest_receipt}, next_state=${lane.next}, typed gate JSON parsed from broker output, ordinary evidence mapped from actual broker receipts, and all broker evidence.`,
+      `Use only preleased capability=${integrationAcquire.capability}. Call lane_integrate once with reviewed_shas=[${JSON.stringify(report.sha)}], require its reviewed candidate and integrated identities to equal workflow-owned SHA/tree ${report.sha}/${report.tree}, relay exact integration and HEAD receipts, then run each fixed gate ID exactly once: ${JSON.stringify(lane.gate_ids)}. Do not patch, commit, release, or finalize. Return reviewed_tree=${report.tree}, integration_tree=${report.tree}, identities copied from ${JSON.stringify(integrationAcquire)}, holdout_digest_receipt=${report.holdout_digest_receipt}, next_state=${lane.next}, typed gate JSON parsed from broker output, ordinary evidence mapped from actual broker receipts, and all broker evidence.`,
       { agentType: 'vol-verifier', schema: BOOTSTRAP_VERIFY, label: `bootstrap-verify:${capability.state}` },
     )
   } catch (error) { verifyThrown = String(error) }
   let integrationRelease = null
   let integrationReleaseThrown = null
   try {
-    integrationRelease = await agent(`Call broker lane_release exactly once with capability=${integrationAcquire.capability}; return the result unchanged.`, { agentType: 'vol-lane-controller', schema: BROKER_RELEASE, label: 'bootstrap-integration-release' })
+    integrationRelease = await agent(`Call broker lane_release exactly once with capability=${integrationAcquire.capability}; return the result unchanged.`, { agentType: 'vol-lane-releaser', schema: BROKER_RELEASE, label: 'bootstrap-integration-release' })
   } catch (error) { integrationReleaseThrown = String(error) }
-  const integrationReleaseError = integrationReleaseThrown || brokerReleaseError(integrationRelease, integrationAcquire, true)
+  const integrationReleaseError = integrationReleaseThrown || brokerReleaseError(integrationRelease, integrationAcquire, true) || (integrationRelease && (integrationRelease.sha !== report.sha || integrationRelease.tree !== report.tree) ? 'integration release differs from workflow-owned reviewed SHA/tree' : null)
   const prepare = verified && { ...verified, lane_release_receipt: buildRelease.release_receipt, acquisition_receipt: integrationAcquire.acquisition_receipt, integration_release_receipt: integrationRelease && integrationRelease.release_receipt }
   const prepareError = bootstrapPrepareError(report, review, prepare, expected)
   if (verifyThrown || integrationReleaseError || prepareError) return { iteration: `bootstrap-${lane.stage}`, capability_state: capability.state, verdict: 'FAILED', holdout: null, confirmed: [], refuted: [], sprint: null, ledger: [], ratchet_evidence: [], failure: verifyThrown || integrationReleaseError || prepareError, bootstrap: { acquire: buildAcquire, report, review, release: buildRelease, integration_acquire: integrationAcquire, verify: verified, integration_release: integrationRelease }, run_id: RUN_ID, base_sha: BASE_SHA, canonical_after: null }
   phase('Bootstrap Finalize')
-  const casExpected = { ref: CANONICAL_REF, new_sha: report.sha, expected_old_sha: CANONICAL_EXPECTED_OLD }
+  const casExpected = { ref: CANONICAL_REF, new_sha: report.sha, new_tree: report.tree, expected_old_sha: CANONICAL_EXPECTED_OLD }
   let finalize = null
   let finalizeThrown = null
   try {
-    finalize = await agent(`Call broker canonical_finalize exactly once with finalize_capability=${integrationRelease.finalize_capability}; return the typed receipt unchanged.`, { agentType: 'vol-ref-finalizer', schema: CAS_RECEIPT, label: 'bootstrap-cas-finalizer' })
+    finalize = await agent(`Call broker canonical_finalize exactly once with finalize_capability=${integrationRelease.finalize_capability}, expected_sha=${report.sha}, expected_tree=${report.tree}; return the typed receipt unchanged.`, { agentType: 'vol-ref-finalizer', schema: CAS_RECEIPT, label: 'bootstrap-cas-finalizer' })
   } catch (error) { finalizeThrown = String(error) }
   const finalizeError = casReceiptError(finalize, casExpected)
   phase('Bootstrap Audit')

@@ -17,6 +17,22 @@ can compare-and-swap `refs/heads/oracle/canonical`; `main` is never a CAS target
 Evidence records the logical operation, physical cwd, lease/HEAD identity, root
 guards, output, and raw-output hash.
 
+Mutation rights are operation-specific. Stage 1 exposes only the atomic
+`recover_stage1` tool; its capability rejects generic patch, gate, and commit
+calls. Integration exposes only one exact integrate followed by fixed gates; the
+broker seals the reviewed and integrated SHA/tree, forbids later patch/commit or
+reintegration, and requires the clean-release and finalizer identities to match
+that seal plus the workflow-owned expected SHA/tree. A failed partial Stage 1
+clean release is quarantined: its keeper and active lease are removed, the dirty
+branch/worktree is preserved behind an allocation-excluding audit marker, and
+the capability is consumed. Reopening that deterministic identity fails
+immediately with the quarantine location instead of leasing another lane.
+
+For the remaining scoped patch operation, every `diff --git`, `---`, and `+++`
+path must be identical (apart from a scoped `/dev/null` create), application is
+index-backed, and protected ignored build state is verified unchanged. This
+closes the mismatched-header route to ignored `build/build.ninja`.
+
 Stage 1 is recovery-only: it validates preserved commit
 `58a94584baabae8263d16421f633540b420de10b`, its exact parent/tree and two pinned
 blobs, replays those blobs on the fixed base, and runs exactly the aggregate-store,

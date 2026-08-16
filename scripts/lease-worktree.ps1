@@ -19,6 +19,7 @@ param(
   [string]$StopKeeper,
   [switch]$Shared,
   [string]$Release,
+  [string]$Quarantine,
   [switch]$RecoverStale,
   [string]$RecoveryBaseSha,
   [switch]$Status,
@@ -367,7 +368,9 @@ function Exit-SelectionMutex($Mutex) {
 
 function Find-FreePool([string]$PoolRoot) {
   foreach ($tree in (Get-PoolTrees $PoolRoot)) {
-    if (-not [System.IO.File]::Exists((Get-LeasePath $tree.FullName))) { return $tree }
+    $leaseMissing = -not [System.IO.File]::Exists((Get-LeasePath $tree.FullName))
+    $quarantineMissing = -not [System.IO.File]::Exists((Join-Path $tree.FullName '.atx-quarantine-v3'))
+    if ($leaseMissing -and $quarantineMissing) { return $tree }
   }
   return $null
 }
@@ -444,6 +447,7 @@ if (($TestBaseSha -or $TestExistingBranchSha) -and -not $TestLeaseOnly) { throw 
 if ($TestRegisteredWorktreePaths -and -not $TestLeaseOnly) {
   throw 'TestRegisteredWorktreePaths is valid only with TestLeaseOnly'
 }
+if ($Release -and $Quarantine) { throw 'choose exactly one of Release or Quarantine' }
 if ($RecoverStale -and -not $Release) { throw 'RecoverStale is valid only with Release' }
 
 $repoRoot = $null
@@ -476,7 +480,8 @@ if ($Status) {
     } elseif ($record) {
       $state = 'LEASED CORRUPT/LEGACY (explicit investigation required)'
     } else {
-      $state = 'free'
+      $quarantinePath = Join-Path $tree.FullName '.atx-quarantine-v3'
+      $state = if ([System.IO.File]::Exists($quarantinePath)) { 'QUARANTINED (preserved for audit)' } else { 'free' }
     }
     if ($TestLeaseOnly) {
       $branchName = if ($record) { $record.branch } else { 'HEAD' }
@@ -500,6 +505,24 @@ if ($StopKeeper) {
   Stop-HeartbeatKeeper $record $wtRoot | Out-Null
   Write-Output ('KEEPER_STOPPED pool=' + $StopKeeper + ' run_id=' + $RunId +
     ' keeper_pid=' + $record.keeper_pid)
+  return
+}
+
+if ($Quarantine) {
+  Assert-RecordValue 'RunId' $RunId
+  if ($Quarantine -notmatch '^pool-[0-9]+$') { throw 'Quarantine must name one pool-N slot' }
+  $worktree = Join-Path $wtRoot $Quarantine
+  if (-not (Test-Path -LiteralPath $worktree -PathType Container)) { throw ('no such pool tree: ' + $worktree) }
+  $leasePath = Get-LeasePath $worktree
+  $record = Read-LeaseRecord $leasePath
+  if (-not (Test-CompleteLeaseRecord $record)) { throw 'cannot quarantine an incomplete lease record' }
+  if ($record.run_id -ne $RunId) { throw 'run_id mismatch; refusing quarantine' }
+  $quarantinePath = Join-Path $worktree '.atx-quarantine-v3'
+  if ([System.IO.File]::Exists($quarantinePath)) { throw 'quarantine marker already exists' }
+  if ($record.owner_kind -eq 'heartbeat') { Stop-HeartbeatKeeper $record $wtRoot -RemoveFiles | Out-Null }
+  [System.IO.File]::Move($leasePath, $quarantinePath)
+  Write-Output ('QUARANTINED pool=' + $Quarantine + ' run_id=' + $record.run_id +
+    ' branch=' + $record.branch + ' path=' + $worktree)
   return
 }
 

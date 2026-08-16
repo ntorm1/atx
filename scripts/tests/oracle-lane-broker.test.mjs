@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -24,7 +24,7 @@ function write(root, rel, content) {
   writeFileSync(target, content, 'utf8')
 }
 
-function fixture() {
+function fixture({ failGate = '' } = {}) {
   const sandbox = mkdtempSync(join(tmpdir(), 'atx-oracle-broker-v3-'))
   const root = join(sandbox, 'repo')
   const poolRoot = join(sandbox, 'atx-wt')
@@ -40,6 +40,7 @@ function fixture() {
   write(root, 'atx-vol/src/pricing/american.cpp', 'int oracle_fixture() { return 1; }\n')
   write(root, 'scripts/oracle-bootstrap-preflight.ps1', [
     'param([string]$Gate)',
+    `if ($Gate -eq '${failGate}') { [Console]::Error.Write('forced gate failure'); exit 17 }`,
     "$value = [ordered]@{schema_version=1;status='PASS';observations=1;command_id=$Gate;raw_output_sha256=('a' * 64)}",
     '[Console]::Out.Write(($value | ConvertTo-Json -Compress))',
   ].join('\r\n'))
@@ -94,9 +95,12 @@ test('production broker surface has fixed IDs, no raw command tool, and exact re
 
   const forbidden = 'disallowedTools: Bash, PowerShell, Edit, Write, NotebookEdit, EnterWorktree'
   const exactAgentTools = {
-    'vol-lane-controller': 'tools: mcp__oracle_lane_broker__lane_open, mcp__oracle_lane_broker__lane_release',
-    'vol-builder': 'tools: mcp__oracle_lane_broker__repo_search, mcp__oracle_lane_broker__repo_read, mcp__oracle_lane_broker__workspace_list, mcp__oracle_lane_broker__patch_apply, mcp__oracle_lane_broker__gate_run, mcp__oracle_lane_broker__lane_commit, mcp__oracle_lane_broker__recover_stage1',
-    'vol-verifier': 'tools: mcp__oracle_lane_broker__repo_search, mcp__oracle_lane_broker__repo_read, mcp__oracle_lane_broker__workspace_list, mcp__oracle_lane_broker__patch_apply, mcp__oracle_lane_broker__gate_run, mcp__oracle_lane_broker__lane_commit, mcp__oracle_lane_broker__lane_integrate, mcp__oracle_lane_broker__canonical_audit',
+    'vol-lane-opener': 'tools: mcp__oracle_lane_broker__lane_open',
+    'vol-lane-releaser': 'tools: mcp__oracle_lane_broker__lane_release',
+    'vol-stage1-quarantiner': 'tools: mcp__oracle_lane_broker__lane_quarantine',
+    'vol-stage1-recovery': 'tools: mcp__oracle_lane_broker__recover_stage1',
+    'vol-builder': 'tools: mcp__oracle_lane_broker__repo_search, mcp__oracle_lane_broker__repo_read, mcp__oracle_lane_broker__workspace_list, mcp__oracle_lane_broker__patch_apply, mcp__oracle_lane_broker__gate_run, mcp__oracle_lane_broker__lane_commit',
+    'vol-verifier': 'tools: mcp__oracle_lane_broker__lane_integrate, mcp__oracle_lane_broker__gate_run',
     'vol-reviewer': 'tools: mcp__oracle_lane_broker__repo_search, mcp__oracle_lane_broker__repo_read, mcp__oracle_lane_broker__commit_inspect, mcp__oracle_lane_broker__gate_run',
     'vol-ref-finalizer': 'tools: mcp__oracle_lane_broker__canonical_finalize',
     'vol-ref-auditor': 'tools: mcp__oracle_lane_broker__ref_resolve, mcp__oracle_lane_broker__canonical_audit',
@@ -112,11 +116,13 @@ test('production broker surface has fixed IDs, no raw command tool, and exact re
 
   const oracleWorkflow = readFileSync(join(projectRoot, '.claude', 'workflows', 'vol-oracle-iter.js'), 'utf8')
   assert.ok(oracleWorkflow.indexOf("failure: 'READY_BROKER_MIGRATION_REQUIRED'") < oracleWorkflow.indexOf("phase('Measure')"))
-  for (const agentName of ['vol-lane-controller', 'vol-builder', 'vol-reviewer', 'vol-verifier', 'vol-ref-finalizer', 'vol-ref-auditor']) {
+  for (const agentName of ['vol-lane-opener', 'vol-lane-releaser', 'vol-stage1-quarantiner', 'vol-reviewer', 'vol-verifier', 'vol-ref-finalizer', 'vol-ref-auditor']) {
     assert.match(oracleWorkflow, new RegExp(`agentType: '${agentName}'`))
   }
+  assert.match(oracleWorkflow, /buildAgentType = capability\.state === 'missing_data' \? 'vol-stage1-recovery' : 'vol-builder'/)
   const sprintWorkflow = readFileSync(join(projectRoot, '.claude', 'workflows', 'vol-sprint.js'), 'utf8')
-  assert.ok(sprintWorkflow.indexOf("failure: 'ORACLE_BROKER_MIGRATION_REQUIRED'") < sprintWorkflow.indexOf('const BASE_REF'))
+  assert.match(sprintWorkflow, /failure: 'ORACLE_BROKER_MIGRATION_REQUIRED'/)
+  assert.doesNotMatch(sprintWorkflow, /\bagent\s*\(/)
 })
 
 test('temp repo broker rejects incident classes and proves recovery, lane commit/release, integration, and canonical CAS', { timeout: 120_000 }, async () => {
@@ -136,10 +142,9 @@ test('temp repo broker rejects incident classes and proves recovery, lane commit
     assert.equal(idempotent.capability, acquire.capability)
 
     const escapePatch = 'diff --git a/../repo/pwned.txt b/../repo/pwned.txt\nnew file mode 100644\n--- /dev/null\n+++ b/../repo/pwned.txt\n@@ -0,0 +1 @@\n+pwned\n'
-    assert.throws(() => fx.broker.applyPatch({ capability: acquire.capability, patch: escapePatch }), /unsafe|outside|escapes/)
-    const gitPatch = 'diff --git a/.git/config b/.git/config\n--- a/.git/config\n+++ b/.git/config\n@@ -1 +1 @@\n-x\n+y\n'
-    assert.throws(() => fx.broker.applyPatch({ capability: acquire.capability, patch: gitPatch }), /unsafe/)
-    assert.throws(() => fx.broker.runGate({ capability: acquire.capability, gate_id: 'full-suite' }), /fixed broker registry/)
+    assert.throws(() => fx.broker.applyPatch({ capability: acquire.capability, patch: escapePatch }), /forbidden for bootstrap_data/)
+    assert.throws(() => fx.broker.commitLane({ capability: acquire.capability, message_id: 'bootstrap_data_recovery' }), /forbidden for bootstrap_data/)
+    assert.throws(() => fx.broker.runGate({ capability: acquire.capability, gate_id: 'aggregate_store' }), /use recover_stage1/)
 
     const leasePath = join(fx.pool, '.atx-lease')
     const lease = readFileSync(leasePath, 'ascii')
@@ -163,23 +168,44 @@ test('temp repo broker rejects incident classes and proves recovery, lane commit
     const released = fx.broker.releaseLane({ capability: acquire.capability })
     assert.equal(released.finalize_capability, '')
     assert.equal(released.sha, recovered.sha)
+    assert.equal(released.tree, recovered.tree)
     assert.throws(() => fx.broker.listWorkspace({ capability: acquire.capability }), /stale|inactive/)
 
+    const edit = fx.broker.openLane({ operation_id: 'bootstrap_mode_a', stage: 'bootstrap-2', run_id: 'run-mode-a', branch: 'lane/oracle-bootstrap-mode-a-run-mode-a', base_sha: fx.base, heartbeat_id: 'run-mode-a-edit' })
+    const buildNinjaBefore = readFileSync(join(edit.worktree, 'build', 'build.ninja'), 'utf8')
+    const hiddenTargetPatch = 'diff --git a/atx-vol/src/pricing/american.cpp b/atx-vol/src/pricing/american.cpp\n--- a/atx-vol/src/pricing/american.cpp\n+++ b/build/build.ninja\n@@ -1 +1 @@\n-# warm fixture\n+PWNED\n'
+    assert.throws(() => fx.broker.applyPatch({ capability: edit.capability, patch: hiddenTargetPatch }), /path differs from diff header/)
+    assert.equal(readFileSync(join(edit.worktree, 'build', 'build.ninja'), 'utf8'), buildNinjaBefore)
+    const safePatch = 'diff --git a/atx-vol/src/pricing/american.cpp b/atx-vol/src/pricing/american.cpp\n--- a/atx-vol/src/pricing/american.cpp\n+++ b/atx-vol/src/pricing/american.cpp\n@@ -1 +1 @@\n-int oracle_fixture() { return 1; }\n+int oracle_fixture() { return 2; }\n'
+    assert.deepEqual(fx.broker.applyPatch({ capability: edit.capability, patch: safePatch }).changed_paths, ['atx-vol/src/pricing/american.cpp'])
+    const editCommit = fx.broker.commitLane({ capability: edit.capability, message_id: 'bootstrap_mode_a' })
+    assert.match(editCommit.tree, /^[0-9a-f]{40}$/)
+    assert.equal(fx.broker.releaseLane({ capability: edit.capability }).tree, editCommit.tree)
+
     const integration = fx.broker.openLane({ operation_id: 'bootstrap_integration', stage: 'bootstrap-prepare', run_id: 'run-stage1', branch: 'integration/oracle-bootstrap-data-run-stage1', base_sha: fx.base, heartbeat_id: 'run-stage1-integration' })
+    assert.throws(() => fx.broker.applyPatch({ capability: integration.capability, patch: safePatch }), /forbidden for bootstrap_integration/)
+    assert.throws(() => fx.broker.commitLane({ capability: integration.capability, message_id: 'bootstrap_mode_a' }), /forbidden for bootstrap_integration/)
     const integrated = fx.broker.integrate({ capability: integration.capability, reviewed_shas: [recovered.sha] })
     assert.equal(integrated.sha, recovered.sha)
+    assert.equal(integrated.tree, recovered.tree)
     assert.equal(integrated.head_receipt.sha, recovered.sha)
+    assert.throws(() => fx.broker.integrate({ capability: integration.capability, reviewed_shas: [recovered.sha] }), /already sealed/)
     for (const gateId of ['aggregate_store', 'ingest_manifest', 'cohort_manifests', 'holdout_digest']) assert.equal(fx.broker.runGate({ capability: integration.capability, gate_id: gateId }).exit_code, 0)
     const integrationRelease = fx.broker.releaseLane({ capability: integration.capability })
     assert.match(integrationRelease.finalize_capability, /^[0-9a-f]{64}$/)
+    assert.equal(integrationRelease.sha, recovered.sha)
+    assert.equal(integrationRelease.tree, recovered.tree)
 
-    const finalized = fx.broker.canonicalFinalize({ finalize_capability: integrationRelease.finalize_capability })
+    assert.throws(() => fx.broker.canonicalFinalize({ finalize_capability: integrationRelease.finalize_capability, expected_sha: fx.base, expected_tree: recovered.tree }), /expected SHA\/tree/)
+    assert.throws(() => fx.broker.canonicalFinalize({ finalize_capability: integrationRelease.finalize_capability, expected_sha: recovered.sha, expected_tree: '0'.repeat(40) }), /expected SHA\/tree/)
+    const finalized = fx.broker.canonicalFinalize({ finalize_capability: integrationRelease.finalize_capability, expected_sha: recovered.sha, expected_tree: recovered.tree })
     assert.equal(finalized.ref, CANONICAL_REF)
     assert.equal(finalized.new_sha, recovered.sha)
+    assert.equal(finalized.new_tree, recovered.tree)
     assert.equal(finalized.expected_old_sha, '0'.repeat(40))
     assert.equal(finalized.broker_evidence.root_guard_before.main_sha, finalized.broker_evidence.root_guard_after.main_sha)
     assert.notEqual(finalized.broker_evidence.root_guard_before.canonical_sha, finalized.broker_evidence.root_guard_after.canonical_sha)
-    assert.throws(() => fx.broker.canonicalFinalize({ finalize_capability: integrationRelease.finalize_capability }), /unknown|stale|consumed/)
+    assert.throws(() => fx.broker.canonicalFinalize({ finalize_capability: integrationRelease.finalize_capability, expected_sha: recovered.sha, expected_tree: recovered.tree }), /unknown|stale|consumed/)
     assert.equal(fx.broker.canonicalAudit().sha, recovered.sha)
 
     const rootAfter = fx.broker.rootGuard()
@@ -187,6 +213,36 @@ test('temp repo broker rejects incident classes and proves recovery, lane commit
     assert.equal(rootAfter.index_sha256, rootBefore.index_sha256)
     assert.equal(rootAfter.tracked_sha256, rootBefore.tracked_sha256)
     assert.equal(rootAfter.untracked_sha256, rootBefore.untracked_sha256)
+  } finally {
+    try { run('git', ['worktree', 'remove', '--force', fx.pool], fx.root) } catch { }
+    await new Promise(resolveDelay => setTimeout(resolveDelay, 250))
+    try {
+      rmSync(fx.sandbox, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 })
+    } catch (error) {
+      if (error?.code !== 'EPERM') throw error
+      const cleanup = spawn(process.execPath, ['-e', `setTimeout(()=>require('fs').rmSync(${JSON.stringify(fx.sandbox)},{recursive:true,force:true,maxRetries:20,retryDelay:200}),1000)`], { detached: true, stdio: 'ignore', windowsHide: true })
+      cleanup.unref()
+    }
+  }
+})
+
+test('partial Stage 1 recovery is quarantined without discard and deterministic reopen does not lease', { timeout: 120_000 }, async () => {
+  const fx = fixture({ failGate: 'ingest_manifest' })
+  const identity = { operation_id: 'bootstrap_data', stage: 'bootstrap-1', run_id: 'run-partial', branch: 'lane/oracle-bootstrap-data-run-partial', base_sha: fx.base, heartbeat_id: 'run-partial-data' }
+  try {
+    const acquire = fx.broker.openLane(identity)
+    assert.throws(() => fx.broker.recoverStage1({ capability: acquire.capability }), /fixed gate failed/)
+    assert.deepEqual(git(fx.pool, 'status', '--porcelain=v1', '-uall').split(/\r?\n/).filter(line => !line.includes('.atx-lease')).map(line => line.slice(3).replace(/\\/g, '/')).sort(), Object.keys(fx.files).sort())
+    assert.throws(() => fx.broker.releaseLane({ capability: acquire.capability }), /dirty broker lane/)
+    const quarantine = fx.broker.quarantineLane({ capability: acquire.capability })
+    assert.equal(quarantine.quarantined, true)
+    assert.deepEqual(quarantine.preserved_paths.sort(), Object.keys(fx.files).sort())
+    assert.equal(existsSync(join(fx.pool, '.atx-lease')), false)
+    assert.equal(existsSync(join(fx.pool, '.atx-quarantine-v3')), true)
+    assert.deepEqual(git(fx.pool, 'status', '--porcelain=v1', '-uall').split(/\r?\n/).filter(line => !line.includes('.atx-quarantine-v3')).map(line => line.slice(3).replace(/\\/g, '/')).sort(), Object.keys(fx.files).sort())
+    assert.throws(() => fx.broker.listWorkspace({ capability: acquire.capability }), /stale|inactive/)
+    assert.throws(() => fx.broker.openLane(identity), /quarantined for audit/)
+    assert.equal(existsSync(join(fx.poolRoot, 'pool-2', '.atx-lease')), false)
   } finally {
     try { run('git', ['worktree', 'remove', '--force', fx.pool], fx.root) } catch { }
     await new Promise(resolveDelay => setTimeout(resolveDelay, 250))
