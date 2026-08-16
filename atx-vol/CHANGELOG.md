@@ -5,6 +5,66 @@ that silently changes a NUMBER a caller already depends on belongs in this file.
 
 ## Unreleased
 
+### NEW — the tradeable vol-change target, a cost-charged VEGA book, and a second gate (round 5, lane vrp-volchg)
+
+**What shipped.** `atx-vol-vrp-train` reads `vrp_panel_v2` (v1's 18 columns
+then `iv_atmf_21d`) and grades every score column on two further target axes.
+`iv_chg_21d_raw` is `100*(iv_atmf_21d[t+21] - iv_atmf_21d[t])` in vol points,
+joined to the same symbol's row at exactly +21 pooled sessions — a missing exit
+row is undefined, never interpolated. `iv_chg_21d_roll` subtracts the
+term-structure roll a constant-maturity 21d vega position pays over the same
+window, `100*(iv_fair_63d[t] - iv_fair_21d[t])/2`, and is the ONLY iv-change
+axis the money is graded on. `vrp_build_iv_chg`, `vrp_vega_book_per_date`,
+`vrp_vega_iv_neutral_per_date`, `vrp_vega_floor`, `vrp_vega_agg`,
+`vrp_vega_report` and `vrp_vega_gate_verdict` are new in `tools/vrp_train.hpp`.
+
+**Why the raw axis is reported and never gated.** `iv_atmf_21d` is a
+constant-maturity index; the 21d option bought at t has expired by t+21, so
+nobody is marked at `iv_atmf_21d[t+21]`. Measured on the SP100 OOS rows,
+`f4_term_slope` scores rank IC **+0.4764 (t_nw +17.51)** against the raw axis
+and **+0.2038 (t_nw +5.62)** against the roll-adjusted one: more than half of
+the strongest apparent predictor of the raw axis is carry accounting. A gate on
+it would have crowned a roll identity exactly as round 4's crowned an algebraic
+one.
+
+**Costs are charged, not assumed away.** One-way 3.205% of premium
+(Christoffersen–Goyenko–Jacobs–Karoui, *RFS* 2018, ATM effective relative
+spread 6.41%, halved) times `100*iv`, at entry AND exit (Zhan–Han–Cao–Tong,
+*RFS* 2022). On the SP100 traded rows that is **2.12–2.59 vol points per 1u
+gross vega per cycle**, against gross books of +2.2 to +3.4.
+
+**The floor is not "short everything".** A cross-sectionally neutral vega book
+is not structurally short vol, so its zero-selection bar is the better of LONG
+everything and SHORT everything, chosen once from the run's own rows and
+published with both. On SP100 the binding bar is long-everything at **−0.048
+vol pts net of costs** (short-everything: −4.266).
+
+**Two new zero-parameter benchmarks and one new contaminated column.**
+`bench_neg_iv_atmf_21d` (cross-sectional vol mean reversion) and
+`bench_term_slope` (Vasquez, *JFQA* 2017) join `bench_hv_iv_gap`;
+`contaminated_iv63_minus_iv_atmf21` is scored, published, and structurally
+unable to decide a verdict because it contains the iv-change target's own entry
+mark.
+
+**Asymmetric objective (`--short-vega-haircut`, default 0.50).** A POSITIVE
+short-vega aggregate edge is discounted; a short-vega LOSS is not. The
+multiplier is decided once from the whole-sample short-leg mean, so the
+objective has a real per-date series and a real t-stat. Every vega figure is
+emitted with its long-leg and short-leg split, each with its own `t_nw` and its
+own excess over the SAME-DIRECTION zero-selection alternative.
+
+**MIGRATION.** `# gate_n_benchmarks` changes from **1 to 3** — the only
+non-additive line in `vrp_metrics.tsv`; every other round-4/5 line is present
+unchanged and ~4,020 lines are added. `kVrpGateColumnCount` 5 → 8 and
+`kVrpTargetAxes` 3 → 5, so `gate.pooled` is now 40 entries (column-major,
+5 axes per column) and the ranked column moves from index 3 to index 5.
+`vrp_signal_v1`, `vrp_fold_stats_v1` and the model files are UNCHANGED: a v1
+panel reproduces `vrp-ml-r5-gatefix/sp100-flagoff-final` byte for byte on all
+four non-metrics artifacts.
+
+**Verdict: DO-NOT-SHIP, both corpora, both feature lags.** See
+`.superpowers/sdd/2026-08-15-vrp-ml/task-vrp-volchg-report.md`.
+
 ### BREAKING - later oracle bootstrap stages advance an existing canonical ref
 
 Stage 2 Mode A and the ordered convention/Mode B bootstrap stages now finalize

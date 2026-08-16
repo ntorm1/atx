@@ -3753,8 +3753,8 @@ inline void append_vega_floor_meta(std::string &body, const std::string &prefix,
   };
   one("long", f.long_all);
   one("short", f.short_all);
-  body += prefix + "vega_floor_binding=" + (f.best_is_long ? "long_everything" : "short_everything") +
-          "\n";
+  body += prefix + "vega_floor_binding=" +
+          (f.best_is_long ? "long_everything" : "short_everything") + "\n";
 }
 
 [[nodiscard]] inline Status write_metrics_file(std::span<const VrpFoldMetrics> folds,
