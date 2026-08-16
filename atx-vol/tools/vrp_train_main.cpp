@@ -31,6 +31,8 @@ void print_usage() {
             "                                                    (default cross-section)\n"
             "                         [--feature-lag <n>]        (default 0; <= 21)\n"
             "                         [--short-vega-haircut <f>] (default 0.50; in [0,1])\n"
+            "                         [--cost-crossing-fraction <f>] (default 0.55; (0,1])\n"
+            "                         [--eiv-target-entry-lag <n>] (default 0; <= 21)\n"
             "                         [--corpus <label>]         (default: panel file stem)\n"
             "\n"
             "--panel accepts vrp_panel_v1 (18 columns) and vrp_panel_v2 (v1 then\n"
@@ -67,6 +69,26 @@ void print_usage() {
             "which a stale same-session quote can manufacture IC. 0 reproduces the\n"
             "round-1..3 behaviour. Rows without an N-th predecessor get NaN features\n"
             "and are counted in feature_lag_rows_unavailable.\n"
+            "\n"
+            "--cost-crossing-fraction is the fraction of the DERIVED QUOTED option\n"
+            "spread the vega book crosses. The measured input is an EFFECTIVE spread\n"
+            "(Christoffersen et al. RFS 2018, ATM call 6.41% of premium, halved\n"
+            "one-way), so the crossing discount is ALREADY INSIDE IT; the quoted\n"
+            "width is derived by dividing it by Zhan-Han-Cao-Tong (RFS 2022) realized\n"
+            "effective/quoted of 0.55, measured on actual OPRA prints 2003-2016. The\n"
+            "default therefore returns the measured effective charge bit-exactly. Do\n"
+            "NOT apply the ORATS complex-order 0.53 on top of it -- that counts the\n"
+            "same discount twice and hands the book a free 47% cost cut. 0.38 is\n"
+            "Muravyev-Pearson patient-algo, 1.00 the full-quoted stress corner; below\n"
+            "0.30 is unsupported by any published measurement.\n"
+            "\n"
+            "--eiv-target-entry-lag N rebuilds the iv-change TARGET with its ENTRY leg\n"
+            "read N same-symbol sessions earlier, exit leg unmoved. It is a\n"
+            "DIAGNOSTIC, not a tradeable configuration (N>0 is a 21+N session hold):\n"
+            "whichever surface read sits inside the target is the one that scores, so\n"
+            "a column whose edge survives moving the target's entry read away from its\n"
+            "own has a forecast, and one whose edge migrates does not. Run it against\n"
+            "every column you intend to gate.\n"
             "\n"
             "--corpus labels every gate statistic in vrp_metrics.tsv. Rounds 1-3\n"
             "quoted a clean-25 IC beside an SP100 book because no artifact recorded\n"
@@ -277,6 +299,20 @@ int main(int argc, char **argv) {
       // Fail closed at the boundary: a haircut outside [0,1] is not a discount.
       if (ok && !(cfg.short_vega_haircut >= 0.0 && cfg.short_vega_haircut <= 1.0)) {
         std::fprintf(stderr, "error: --short-vega-haircut must be in [0, 1]\n");
+        return 2;
+      }
+    } else if (arg == "--cost-crossing-fraction") {
+      ok = parse_number(value, cfg.cost_crossing_fraction);
+      // Fail closed at the boundary: 0 is not "costs off", it is a free lunch.
+      if (ok && !(cfg.cost_crossing_fraction > 0.0 && cfg.cost_crossing_fraction <= 1.0)) {
+        std::fprintf(stderr, "error: --cost-crossing-fraction must be in (0, 1]\n");
+        return 2;
+      }
+    } else if (arg == "--eiv-target-entry-lag") {
+      ok = parse_number(value, cfg.eiv_target_entry_lag);
+      if (ok && cfg.eiv_target_entry_lag > atx::vol::vrp::kVrpMaxFeatureLag) {
+        std::fprintf(stderr, "error: --eiv-target-entry-lag %zu exceeds the %zu-session cap\n",
+                     cfg.eiv_target_entry_lag, atx::vol::vrp::kVrpMaxFeatureLag);
         return 2;
       }
     } else if (arg == "--corpus") {

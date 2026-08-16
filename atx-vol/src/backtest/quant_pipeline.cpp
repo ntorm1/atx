@@ -544,6 +544,11 @@ Result<VrpBacktestSpec> parse_vrp_backtest_args(std::span<const std::string> arg
       ATX_TRY_VOID(parse_flag_double(flag, parsed, spec.config.no_trade_band));
     } else if (flag == "--cost-vol-pts") {
       ATX_TRY_VOID(parse_flag_double(flag, parsed, spec.config.cost_half_spread_vol_pts));
+    } else if (flag == "--cost-crossing-fraction") {
+      // ROUND 6: the ORATS-class crossing fraction, finally reachable from the
+      // path this book actually runs. Pass 1.0 alongside the pre-round-6 width
+      // to reproduce a round-2/3 cost column exactly.
+      ATX_TRY_VOID(parse_flag_double(flag, parsed, spec.config.cost_crossing_fraction));
     } else if (flag == "--stock-bps") {
       ATX_TRY_VOID(parse_flag_double(flag, parsed, spec.config.stock_half_spread_bps));
     } else if (flag == "--hedge-band") {
