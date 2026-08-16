@@ -5,7 +5,10 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>  // env-gated tier-error trace
+#include <cstdlib> // env-gated tier-error trace
 #include <limits>
+#include <mutex> // env-gated tier-error trace
 #include <optional>
 #include <span>
 #include <string>
@@ -624,6 +627,61 @@ struct TierDecision {
   }
   alprobe::bump(alprobe::Event::LadderTier2);
   return TierDecision{DeamTier::Full, eep_vol_pts};
+}
+
+// ── Env-gated per-quote tier-error trace ─────────────────────────────────────
+//
+// Writes one CSV row per de-Am quote carrying ALL THREE tiers' recovered vols,
+// so the ladder's budgets can be calibrated against the error this workload
+// actually exhibits rather than against published figures for a different
+// regime. Burkovska et al. (2016) are explicit that de-Americanization has no
+// theoretical error control and degrades with the rate level, so importing
+// their thresholds would be importing an assumption; this measures instead.
+//
+// OFF unless `ATX_VOL_DEAM_TIER_TRACE` names a writable path — one const-pointer
+// load and a not-taken branch per row when off. It costs one extra analytic
+// inversion per row when on, so it is a measurement mode, never a production
+// one. Serialized on a mutex: the trace is for offline analysis, not throughput.
+[[nodiscard]] std::FILE *tier_trace_file() noexcept {
+  static std::FILE *const file = []() noexcept -> std::FILE * {
+#if defined(_MSC_VER)
+    char *raw = nullptr;
+    std::size_t size = 0;
+    if (::_dupenv_s(&raw, &size, "ATX_VOL_DEAM_TIER_TRACE") != 0 || raw == nullptr) {
+      return nullptr;
+    }
+    std::FILE *handle = nullptr;
+    const bool opened = (::fopen_s(&handle, raw, "w") == 0);
+    std::free(raw);
+    if (!opened || handle == nullptr) {
+      return nullptr;
+    }
+#else
+    const char *raw = std::getenv("ATX_VOL_DEAM_TIER_TRACE");
+    if (raw == nullptr) {
+      return nullptr;
+    }
+    std::FILE *handle = std::fopen(raw, "w");
+    if (handle == nullptr) {
+      return nullptr;
+    }
+#endif
+    std::fputs("T,k,side,q_eff,vega,spread,mid,eep_pts,iv_t0,iv_t1,iv_t2\n", handle);
+    return handle;
+  }();
+  return file;
+}
+
+void tier_trace_row(double T, double k, Side side, double q_eff, double vega, double spread,
+                    double mid, double eep_pts, double iv_t0, double iv_t1, double iv_t2) noexcept {
+  std::FILE *const file = tier_trace_file();
+  if (file == nullptr) {
+    return;
+  }
+  static std::mutex trace_mutex;
+  const std::lock_guard<std::mutex> lock(trace_mutex);
+  std::fprintf(file, "%.10g,%.10g,%d,%.10g,%.10g,%.10g,%.10g,%.10g,%.10g,%.10g,%.10g\n", T, k,
+               static_cast<int>(side), q_eff, vega, spread, mid, eep_pts, iv_t0, iv_t1, iv_t2);
 }
 
 enum class IvRoute : std::uint8_t { Shortcut = 0, Cache = 1, Fast = 2, Accurate = 3 };
@@ -1501,30 +1559,28 @@ Result<ObsSet> build_observations_european(const Chain &chain, double S, double 
   // true of BOTH cheap tiers, while `tiers` records WHICH cheap tier so the
   // collect loop can pick the forward map. Fusing them would make a Tier-1 row
   // indistinguishable from a Tier-0 one at the point of inversion.
-  std::vector<DeamTier> tiers(am->obs.size(), DeamTier::Full);
-  // `shortcut_mask` keeps its exact historical meaning (the OTM-shortcut
-  // predicate alone) because the scoring rule below keys off it. `claim_mask` is
-  // the union of that and the two cheap ladder tiers — i.e. every row that will
-  // be served WITHOUT a boundary, which is the question the shared-boundary
-  // prepare pass is actually asking. With the ladder off the two vectors are
-  // equal element-for-element, so the prepare pass sees a bit-identical input.
-  std::vector<std::uint8_t> claim_mask(am->obs.size(), 0u);
   for (std::size_t index = 0; index < am->obs.size(); ++index) {
     shortcut_mask[index] =
         use_otm_shortcut_deam(am->obs[index], S, T, r, q_eff, opts, method, &out.deam_audit) ? 1u
                                                                                             : 0u;
-    claim_mask[index] = shortcut_mask[index];
-    if (shortcut_mask[index] == 0u) {
-      tiers[index] = classify_deam_tier(am->obs[index], S, T, r, q_eff, opts, method).tier;
-      if (tiers[index] != DeamTier::Full) {
-        // A laddered row is served without a boundary, so it must leave the
-        // shared-boundary population exactly as a shortcut row does — otherwise
-        // the side pays nine interpolant solves to serve rows nobody asks it to.
-        claim_mask[index] = 1u;
-      }
-    }
   }
-  prepare_shared_boundary_proposals(am->obs, claim_mask, S, T, r, q_eff, opts, caches, al_opts,
+  // The exercise ladder is applied INSIDE the collect loop below rather than
+  // hoisted here, and that ordering is load-bearing rather than incidental.
+  //
+  // Measured (612 boards, 2025-09-11): masking laddered rows out of the
+  // shared-boundary population before this call CANNIBALIZES the lane. Rows the
+  // interpolant would have served at ~1/10 of a cold solve get diverted to a
+  // tier that saves nothing against that baseline, and — worse — removing them
+  // starves their side below `kSharedMinSideRows`, so the whole side collapses
+  // back to scalar. That configuration measured `shared_rows_laned`
+  // 126,883 -> 73,471 and `shared_side_certified` 5,214 -> 2,952, and the lane
+  // losses ate most of the ladder's gain.
+  //
+  // Running the prepare pass FIRST, on its untouched population, and offering
+  // the ladder only the rows it declined makes the two optimizations COMPOSE:
+  // the lane keeps its full economics, and the ladder mops up the fallback rows
+  // that would otherwise each pay a cold scalar Andersen-Lake inversion.
+  prepare_shared_boundary_proposals(am->obs, shortcut_mask, S, T, r, q_eff, opts, caches, al_opts,
                                     iv_tol, iv_max_iter, method, out.deam_audit);
   std::array<std::vector<double>, 4> audit_residuals;
 
@@ -1578,21 +1634,24 @@ Result<ObsSet> build_observations_european(const Chain &chain, double S, double 
     // Same mask the prepare pass consumed — not a re-evaluation. Priority order
     // is unchanged: shortcut -> shared_proposal -> scalar.
     const bool shortcut = shortcut_mask[obs_index] != 0u;
-    const DeamTier tier = tiers[obs_index];
-    // Every row served without a boundary: the OTM shortcut plus both cheap
-    // ladder tiers. This is the mask the prepare pass consumed, so it — not
-    // `shortcut` — is what the shared-lane invariants below must be read against.
-    const bool claimed = shortcut || tier != DeamTier::Full;
-    const bool shared_proposal = !claimed && std::isfinite(o.score_sigma_mkt) &&
+    const bool shared_proposal = !shortcut && std::isfinite(o.score_sigma_mkt) &&
                                  o.score_sigma_mkt > kObsIvMin && o.score_sigma_mkt < kObsIvMax;
     // A shortcut-claimed row must never also be a shared lane. `solve_shared_side`
     // skips masked rows, so a masked row carrying a shared proposal means the two
     // consumers disagreed about the mask — the exact divergence single-sourcing
     // exists to prevent. Fail closed rather than silently preferring a route.
-    if (claimed && std::isfinite(o.score_sigma_mkt)) {
+    if (shortcut && std::isfinite(o.score_sigma_mkt)) {
       return Err(ErrorCode::Internal,
                  "build_observations_european: shortcut row carries a shared-boundary proposal");
     }
+    // Exercise ladder — offered ONLY the rows the two cheaper existing routes
+    // already declined, so it can never displace a shared lane (see the ordering
+    // note at the prepare call). These are precisely the rows that would each
+    // otherwise pay a full cold Andersen-Lake inversion.
+    const DeamTier tier =
+        (shortcut || shared_proposal)
+            ? DeamTier::Full
+            : classify_deam_tier(o, S, T, r, q_eff, opts, method).tier;
     // A Mid fit inversion and its score solve the same equation. Warm-starting
     // can move a tolerance-terminated result by a few ULPs, but that is not an
     // independent economic observation; reuse it. A shortcut has no fit
@@ -1681,6 +1740,23 @@ Result<ObsSet> build_observations_european(const Chain &chain, double S, double 
       continue;
     }
     const double sig = *sig_res;
+    // Measurement mode. Emitted from the REFERENCE (ladder-off) configuration,
+    // where `sig` is the production Andersen-Lake answer, so the two cheap
+    // tiers are scored against the very path they would replace rather than
+    // against an idealised one.
+    if (tier_trace_file() != nullptr) {
+      const Result<double> analytic =
+          american_implied_vol(o.mid, S, o.K, T, r, q_eff, o.side, AmericanMethod::Baw, iv_tol,
+                               iv_max_iter, std::nullopt, nullptr, 0.0);
+      const double eu_prem = baw_american(S, o.K, T, o.sigma_mkt, r, q_eff, o.side)
+                                 .map([&](double p) {
+                                   return (p - black76_price(o.F, o.K, T, o.sigma_mkt, o.df, o.side)) /
+                                          o.vega;
+                                 })
+                                 .value_or(std::numeric_limits<double>::quiet_NaN());
+      tier_trace_row(T, o.k, o.side, q_eff, o.vega, o.spread, o.mid, eu_prem, o.sigma_mkt,
+                     analytic.value_or(std::numeric_limits<double>::quiet_NaN()), sig);
+    }
     // Warm chain: the original body advances warm_{call,put} from each accepted
     // row's FINAL σ at the tail. Here it advances with the PRIMARY σ right after a
     // successful inversion — identical for every row accepted without an accurate

@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib> // _dupenv_s / getenv + atof — the ladder rollout switch
 #include <future>
 #include <limits>
 #include <span>
@@ -147,6 +148,66 @@ std::optional<std::size_t> ChainValuation::row_of(OptionId id) const {
 }
 
 namespace detail {
+
+// ── Three-tier exercise-ladder rollout switch ────────────────────────────────
+//
+// Read exactly once, on first use. See the arming site in `apply_risk_policy`
+// for why this is an environment gate and not a `PricerConfig` field.
+//
+//   ATX_VOL_DEAM_LADDER          Tier-0 budget, VOL POINTS (0.001 = 0.1 pts).
+//                                Unset / <= 0 leaves the whole ladder OFF.
+//   ATX_VOL_DEAM_LADDER_T1       Tier-1 budget. Default 0 = Tier 1 disabled,
+//                                so Tier 0 can be evaluated on its own.
+//   ATX_VOL_DEAM_LADDER_MARGIN   fail-safe escalation margin, vol points.
+//   ATX_VOL_DEAM_LADDER_DIVT     call-side dividend guard: max T, YEARS.
+//   ATX_VOL_DEAM_LADDER_DIVFRAC  call-side dividend guard: max implied
+//                                dividend over the option's life, as a
+//                                fraction of spot.
+//
+// A malformed or negative value is treated as absent rather than as an error:
+// this switch can only ever make the fit CHEAPER, so failing closed means
+// falling back to the accurate path, which is the safe direction.
+struct DeamLadderEnv {
+  bool armed{false};
+  double tier0_vol_pts{0.0};
+  double tier1_vol_pts{0.0};
+  double margin_vol_pts{0.0};
+  double div_call_max_T{0.0};
+  double div_call_max_div_frac{0.0};
+};
+
+[[nodiscard]] double ladder_env_double(const char *name) noexcept {
+#if defined(_MSC_VER)
+  char *raw = nullptr;
+  std::size_t size = 0;
+  if (::_dupenv_s(&raw, &size, name) != 0 || raw == nullptr) {
+    return 0.0;
+  }
+  const double parsed = std::atof(raw);
+  std::free(raw);
+#else
+  const char *raw = std::getenv(name);
+  if (raw == nullptr) {
+    return 0.0;
+  }
+  const double parsed = std::atof(raw);
+#endif
+  return (std::isfinite(parsed) && parsed > 0.0) ? parsed : 0.0;
+}
+
+[[nodiscard]] const DeamLadderEnv &deam_ladder_env() noexcept {
+  static const DeamLadderEnv value = []() noexcept {
+    DeamLadderEnv e;
+    e.tier0_vol_pts = ladder_env_double("ATX_VOL_DEAM_LADDER");
+    e.tier1_vol_pts = ladder_env_double("ATX_VOL_DEAM_LADDER_T1");
+    e.margin_vol_pts = ladder_env_double("ATX_VOL_DEAM_LADDER_MARGIN");
+    e.div_call_max_T = ladder_env_double("ATX_VOL_DEAM_LADDER_DIVT");
+    e.div_call_max_div_frac = ladder_env_double("ATX_VOL_DEAM_LADDER_DIVFRAC");
+    e.armed = e.tier0_vol_pts > 0.0 || e.tier1_vol_pts > 0.0;
+    return e;
+  }();
+  return value;
+}
 
 [[nodiscard]] SurfaceBuildAttemptReport
 failed_attempt_report(const Underlying &under, const CurveConfig &curve,
@@ -1467,6 +1528,22 @@ Status PricerFitter::fit(const OptionChain &chain,
       in.calib.max_otm_shortcut_premium_spread_frac =
           cfg_.max_otm_shortcut_premium_spread_frac.value_or(0.0);
       break;
+    }
+    // Three-tier exercise ladder (perf/exercise-ladder). OFF unless armed, and
+    // armed through the environment rather than the per-symbol PricerConfig
+    // deliberately: that config is SERIALIZED into the surface database
+    // (surface_db.cpp), so a new field there would change an on-disk record
+    // format for what is a rollout switch. Same convention, and the same
+    // read-exactly-once discipline, as ATX_VOL_FIT_ECORE_TIER and
+    // ATX_VOL_FIT_WORKERS. Unset leaves both budgets at 0.0 => the ladder is
+    // inert and this path is bit-identical to the full-Andersen-Lake one.
+    const detail::DeamLadderEnv &ladder = detail::deam_ladder_env();
+    if (ladder.armed) {
+      in.calib.deam_tier0_max_eep_vol_pts = ladder.tier0_vol_pts;
+      in.calib.deam_tier1_max_eep_vol_pts = ladder.tier1_vol_pts;
+      in.calib.deam_tier_escalate_margin_vol_pts = ladder.margin_vol_pts;
+      in.calib.deam_tier_div_call_max_T = ladder.div_call_max_T;
+      in.calib.deam_tier_div_call_max_div_frac = ladder.div_call_max_div_frac;
     }
   };
   apply_risk_policy();
