@@ -690,7 +690,8 @@ if ($TestLeaseOnly) {
     ' token=' + $fields.lease_token + ' owner_kind=' + $fields.owner_kind +
     $(if ($fields.owner_kind -eq 'heartbeat') { ' keeper_pid=' + $fields.keeper_pid +
       ' keeper_started_utc=' + $fields.keeper_process_started_utc +
-      ' keeper_ready_utc=' + $fields.keeper_ready_utc } else { '' }))
+      ' keeper_ready_utc=' + $fields.keeper_ready_utc +
+      ' heartbeat_id=' + $fields.heartbeat_id } else { '' }))
   return
 }
 
@@ -722,5 +723,6 @@ Write-Output ('LEASED pool=' + $poolName + ' path=' + $worktree + ' branch=' + $
   ' base_sha=' + $baseSha + ' run_id=' + $RunId + ' owner_kind=' + $fields.owner_kind +
   $(if ($fields.owner_kind -eq 'heartbeat') { ' keeper_pid=' + $fields.keeper_pid +
     ' keeper_started_utc=' + $fields.keeper_process_started_utc +
-    ' keeper_ready_utc=' + $fields.keeper_ready_utc } else { '' }))
+    ' keeper_ready_utc=' + $fields.keeper_ready_utc +
+    ' heartbeat_id=' + $fields.heartbeat_id } else { '' }))
 Write-Output ('RELEASE with: powershell scripts\lease-worktree.ps1 -Release ' + $poolName + ' -RunId ' + $RunId)

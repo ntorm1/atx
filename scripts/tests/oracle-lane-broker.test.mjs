@@ -25,7 +25,7 @@ function write(root, rel, content) {
   writeFileSync(target, content, 'utf8')
 }
 
-function fixture({ failGate = '' } = {}) {
+function fixture({ failGate = '', descendantBase = false } = {}) {
   const sandbox = mkdtempSync(join(tmpdir(), 'atx-oracle-broker-v3-'))
   const root = join(sandbox, 'repo')
   const poolRoot = join(sandbox, 'atx-wt')
@@ -47,7 +47,7 @@ function fixture({ failGate = '' } = {}) {
   ].join('\r\n'))
   git(root, 'add', '--', '.gitignore', 'scripts', 'atx-vol')
   git(root, 'commit', '-m', 'fixture base')
-  const base = git(root, 'rev-parse', 'HEAD')
+  const sourceParent = git(root, 'rev-parse', 'HEAD')
 
   git(root, 'switch', '-c', 'preserved-stage1')
   write(root, 'atx-vol/bench/oracle/bootstrap/data.json', '{"schema_version":1,"transition":"data"}\n')
@@ -61,6 +61,12 @@ function fixture({ failGate = '' } = {}) {
     'atx-vol/bench/oracle/cohorts/holdout.sha256': git(root, 'rev-parse', `${sourceCommit}:atx-vol/bench/oracle/cohorts/holdout.sha256`),
   }
   git(root, 'switch', 'main')
+  if (descendantBase) {
+    write(root, 'atx-vol/CHANGELOG.md', '# changelog\n\n- descendant frozen base\n')
+    git(root, 'add', '--', 'atx-vol/CHANGELOG.md')
+    git(root, 'commit', '-m', 'fixture descendant base')
+  }
+  const base = git(root, 'rev-parse', 'HEAD')
   mkdirSync(poolRoot, { recursive: true })
   const pool = join(poolRoot, 'pool-1')
   git(root, 'worktree', 'add', '--detach', pool, base)
@@ -71,8 +77,8 @@ function fixture({ failGate = '' } = {}) {
   for (const gateId of ['aggregate_store', 'ingest_manifest', 'cohort_manifests', 'holdout_digest']) {
     gateRegistry[gateId] = { display: `powershell scripts\\oracle-bootstrap-preflight.ps1 -Gate ${gateId}`, file: 'scripts/oracle-bootstrap-preflight.ps1', args: ['-Gate', gateId] }
   }
-  const broker = new OracleLaneBroker({ root, poolRoot, testMode: true, gateRegistry, recoverySource: { commit: sourceCommit, parent: base, tree: sourceTree, files } })
-  return { sandbox, root, poolRoot, pool, base, sourceCommit, sourceTree, files, broker }
+  const broker = new OracleLaneBroker({ root, poolRoot, testMode: true, gateRegistry, recoverySource: { commit: sourceCommit, parent: sourceParent, tree: sourceTree, files } })
+  return { sandbox, root, poolRoot, pool, base, sourceParent, sourceCommit, sourceTree, files, broker }
 }
 
 test('production broker surface has fixed IDs, no raw command tool, and exact recovery pin', () => {
@@ -125,6 +131,45 @@ test('production broker surface has fixed IDs, no raw command tool, and exact re
   const sprintWorkflow = readFileSync(join(projectRoot, '.claude', 'workflows', 'vol-sprint.js'), 'utf8')
   assert.match(sprintWorkflow, /failure: 'ORACLE_BROKER_MIGRATION_REQUIRED'/)
   assert.doesNotMatch(sprintWorkflow, /\bagent\s*\(/)
+})
+
+test('Stage 1 recovery commits atop a current descendant base and reopens only by sealed replay', { timeout: 120_000 }, async () => {
+  const fx = fixture({ descendantBase: true })
+  const identity = { operation_id: 'bootstrap_data', stage: 'bootstrap-1', run_id: 'run-descendant', branch: 'lane/oracle-bootstrap-data-run-descendant', base_sha: fx.base, heartbeat_id: 'run-descendant-data' }
+  try {
+    assert.notEqual(fx.base, fx.sourceParent)
+    git(fx.root, 'merge-base', '--is-ancestor', fx.sourceParent, fx.base)
+    const acquire = fx.broker.openLane(identity)
+    assert.equal(acquire.recovery_replay, false)
+    assert.equal(acquire.lease_start_sha, fx.base)
+    const recovered = fx.broker.recoverStage1({ capability: acquire.capability })
+    assert.equal(recovered.replayed, false)
+    assert.equal(recovered.recovery.source_parent, fx.sourceParent)
+    assert.equal(git(fx.root, 'show', '-s', '--format=%P', recovered.sha), fx.base)
+    assert.deepEqual(recovered.files_changed.sort(), Object.keys(fx.files).sort())
+    const receiptIds = recovered.gate_receipts.map(receipt => receipt.receipt_id)
+    const released = fx.broker.releaseLane({ capability: acquire.capability })
+    assert.equal(released.sha, recovered.sha)
+
+    const replayAcquire = fx.broker.openLane(identity)
+    assert.equal(replayAcquire.recovery_replay, true)
+    assert.equal(replayAcquire.lease_start_sha, recovered.sha)
+    const replayed = fx.broker.recoverStage1({ capability: replayAcquire.capability })
+    assert.equal(replayed.replayed, true)
+    assert.equal(replayed.sha, recovered.sha)
+    assert.deepEqual(replayed.gate_receipts.map(receipt => receipt.receipt_id), receiptIds)
+    assert.equal(fx.broker.releaseLane({ capability: replayAcquire.capability }).sha, recovered.sha)
+  } finally {
+    try { run('git', ['worktree', 'remove', '--force', fx.pool], fx.root) } catch { }
+    await new Promise(resolveDelay => setTimeout(resolveDelay, 250))
+    try {
+      rmSync(fx.sandbox, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 })
+    } catch (error) {
+      if (error?.code !== 'EPERM') throw error
+      const cleanup = spawn(process.execPath, ['-e', `setTimeout(()=>require('fs').rmSync(${JSON.stringify(fx.sandbox)},{recursive:true,force:true,maxRetries:20,retryDelay:200}),1000)`], { detached: true, stdio: 'ignore', windowsHide: true })
+      cleanup.unref()
+    }
+  }
 })
 
 test('temp repo broker rejects incident classes and proves recovery, lane commit/release, integration, and canonical CAS', { timeout: 240_000 }, async () => {

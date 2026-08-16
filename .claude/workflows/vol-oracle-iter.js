@@ -595,7 +595,8 @@ function validLeaseReceipt(receipt, expected, action) {
       receipt.keeper_process_started_utc !== expected.keeper_process_started_utc) return false
   if (!Number.isInteger(receipt.keeper_pid) || receipt.keeper_pid <= 0 || !/^\d{4}-/.test(receipt.keeper_process_started_utc || '') || !/^\d{4}-/.test(receipt.keeper_ready_utc || '')) return false
   return receipt.output.includes(receipt.lease_name) && receipt.output.includes(receipt.run_id) &&
-    (action !== 'acquire' || (receipt.output.includes(String(receipt.keeper_pid)) && receipt.output.includes(receipt.heartbeat_id) && receipt.output.includes(receipt.keeper_ready_utc)))
+    (action !== 'acquire' || (receipt.output.includes(String(receipt.keeper_pid)) && receipt.output.includes(receipt.keeper_ready_utc) &&
+      receipt.output.includes(` heartbeat_id=${receipt.heartbeat_id}`)))
 }
 
 function validBrokerEvidence(receipt, logicalOperation = null, physicalCwd = null, allowCanonical = false) {

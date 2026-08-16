@@ -98,6 +98,18 @@ Describe 'lease-worktree atomic publication' {
 }
 
 Describe 'lease-worktree durable owner lifecycle' {
+  It 'publishes the exact heartbeat identity after keeper readiness' {
+    $poolRoot = Join-Path $TestDrive 'heartbeat-output'
+    $output = & $scriptPath -Branch 'test/heartbeat-output' -RunId 'heartbeat-output-run' -Agent 'pester' `
+      -HeartbeatId 'heartbeat-output-owner' -TestPoolRoot $poolRoot -TestLeaseOnly
+    $record = Read-LeaseRecord (Join-Path $poolRoot 'pool-1\.atx-lease')
+    ($output -join "`n") | Should Match ([regex]::Escape(
+      (' keeper_ready_utc=' + $record.keeper_ready_utc + ' heartbeat_id=' + $record.heartbeat_id)))
+    $record.heartbeat_id | Should Be 'heartbeat-output-owner'
+    & $scriptPath -Release 'pool-1' -RunId 'heartbeat-output-run' `
+      -TestPoolRoot $poolRoot -TestLeaseOnly | Out-Null
+  }
+
   It 'keeps a lease live after the acquisition child exits, then permits reclaim after durable owner death' {
     $poolRoot = Join-Path $TestDrive 'durable-owner'
     New-Item -ItemType Directory -Path (Join-Path $poolRoot 'pool-1') -Force | Out-Null

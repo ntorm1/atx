@@ -358,7 +358,7 @@ export class OracleLaneBroker {
     const result = journal.result
     if (result.recovery_id !== journal.recovery_id || result.replayed !== false || !SHA_RE.test(result.sha || '') || !SHA_RE.test(result.tree || '') ||
         this.#ref(result.sha) !== result.sha || this.#tree(result.sha) !== result.tree) throw new Error('sealed Stage 1 recovery SHA/tree mismatch')
-    if (journal.identity.base_sha !== this.recoverySource.parent || result.recovery?.source_commit !== this.recoverySource.commit ||
+    if (!this.#isAncestor(this.recoverySource.parent, journal.identity.base_sha) || result.recovery?.source_commit !== this.recoverySource.commit ||
         result.recovery?.source_parent !== this.recoverySource.parent || result.recovery?.source_tree !== this.recoverySource.tree || result.recovery?.adoption_rerun !== false) throw new Error('sealed Stage 1 recovery source mismatch')
     const paths = Object.keys(this.recoverySource.files).sort()
     if (JSON.stringify([...(result.files_changed || [])].sort()) !== JSON.stringify(paths) || JSON.stringify([...(result.changed_path_receipt?.paths || [])].sort()) !== JSON.stringify(paths) ||
@@ -421,6 +421,14 @@ export class OracleLaneBroker {
     const tree = this.#git(['show', '-s', '--format=%T', sha], cwd).stdout.trim().toLowerCase()
     if (!SHA_RE.test(tree)) throw new Error('commit tree identity is invalid')
     return tree
+  }
+
+  #isAncestor(ancestor, descendant) {
+    if (!SHA_RE.test(String(ancestor || '')) || !SHA_RE.test(String(descendant || ''))) return false
+    const result = processResult('git', ['merge-base', '--is-ancestor', ancestor, descendant], this.root)
+    if (result.exit_code === 0) return true
+    if (result.exit_code === 1) return false
+    throw new Error(`git ancestry check failed: ${result.output}`)
   }
 
   #allowed(cap, relPath) {
@@ -790,7 +798,7 @@ export class OracleLaneBroker {
     assertExactKeys(input, ['capability'])
     const cap = this.#loadCap(input.capability)
     if (cap.operation_id !== 'bootstrap_data' || cap.stage !== 'bootstrap-1') throw new Error('Stage 1 recovery requires bootstrap_data capability')
-    if (cap.base_sha !== this.recoverySource.parent) throw new Error('Stage 1 recovery base must equal the pinned source parent')
+    if (!this.#isAncestor(this.recoverySource.parent, cap.base_sha)) throw new Error('Stage 1 recovery base must descend from the pinned source parent')
     const existingJournal = this.#loadRecovery(cap)
     if (existingJournal) return this.#replayRecovery(cap, existingJournal)
     if (this.#changedPaths(cap).length || this.#git(['rev-parse', 'HEAD'], cap.worktree).stdout.trim().toLowerCase() !== cap.base_sha) throw new Error('Stage 1 recovery lane is not pristine at its frozen base')
