@@ -30,6 +30,27 @@ function New-OracleBenchCtestLines([string[]]$TestIds) {
   return $lines
 }
 
+function New-ConventionSweepJson([string]$Sha) {
+  $map = [ordered]@{
+    input_model = 'discrete_forward_pv__rate__sdiv_yield'; forward_formula = 'uprc_exp_rate_t_minus_ddiv'; rate_model = 'continuous_row_rate'; carry_model = 'sdiv_as_yield'; dividend_model = 'discrete_cash_forward'; day_count = 'ACT_365_25'
+    price_scale = 'per_share'; price_sign = 'positive'; vol_scale = 'decimal_identity'; delta_scale = 'per_unit'; delta_sign = 'positive'; gamma_scale = 'per_unit'; gamma_sign = 'positive'
+    theta_basis = 'per_day'; theta_sign = 'positive'; vega_scale = 'per_point'; vega_sign = 'positive'; rho_scale = 'per_point'; rho_sign = 'positive'; phi_scale = 'per_point_squared'; phi_sign = 'positive'
+    volga_source = 'volga'; volga_scale = 'per_point_squared'; volga_sign = 'positive'; vanna_source = 'vanna'; vanna_scale = 'per_point'; vanna_sign = 'positive'
+    delta_decay_basis = 'per_day'; delta_decay_day_count = 'ACT_365_25'; delta_decay_sign = 'positive'
+  }
+  $metrics = @($script:ModeAMetricMap.Values | ForEach-Object { [ordered]@{ metric_id = [string]$_; value = 1.0; count = 100; unit = if ($_ -eq 'mode_a_price_mae') { 'ticks' } elseif ($_ -eq 'mode_a_vol_mae') { 'bp' } else { 'relative' } } })
+  $baseline = @($metrics | ForEach-Object { [ordered]@{ metric_id = $_.metric_id; value = 2.0; count = 100; unit = $_.unit } })
+  $deltas = @($metrics | ForEach-Object { [ordered]@{ metric_id = $_.metric_id; candidate = 1.0; baseline = 2.0; delta = -1.0; count = 100; unit = $_.unit } })
+  $ids = @('uprc_spot__rate__sdiv_yield', 'discrete_forward_pv__rate__sdiv_yield', 'discrete_forward_net_carry__rate__sdiv_yield', 'discrete_forward__rate__sdiv_yield', 'discrete_forward__rate_minus_sdiv__zero_carry', 'discrete_forward__zero_rate__zero_carry', 'discrete_forward_pv__rate_minus_sdiv__zero_carry', 'discrete_forward_pv__rate_plus_sdiv__zero_carry')
+  $candidates = @(for ($i = 0; $i -lt $ids.Count; $i++) { [ordered]@{ candidate_id = $ids[$i]; smoke_price_mae_ticks = 1.0 + $i; smoke_count = 50; tune_sample_price_mae_ticks = if ($i -lt 2) { 2.0 + $i } else { 0.0 }; tune_sample_count = if ($i -lt 2) { 20 } else { 0 } } })
+  return ([ordered]@{
+    schema_version = 2; kind = 'convention_sweep'; git_sha = $Sha; cohorts = @('smoke', 'tune'); selection_strategy = 'all_smoke_then_top2_deterministic_tune_sample_then_full_attribution'
+    smoke_rows = 40; tune_rows = 60; rows_priced = 100; engine_errors = 0; baseline_conventions = $map; conventions = $map
+    metrics = $metrics; baseline_metrics = $baseline; metric_deltas = $deltas; candidate_prices = $candidates; oracle_suspect_candidates = @(); market_evidence_status = 'not_evaluated_no_nbbo_gate'
+    diagnostic_speed = [ordered]@{ preset = 'dev'; citable = $false; wall_seconds = 1.0; rows_per_second = 100.0 }
+  } | ConvertTo-Json -Depth 20)
+}
+
 Describe 'oracle targeted gate production adapter' {
   It 'binds the targeted test gate to the real OracleBench CTest discovery in this worktree' {
     $script:captured = $null
@@ -123,5 +144,34 @@ Describe 'oracle targeted gate production adapter' {
     ($american.Arguments -join ' ') | Should Match '-R \^AmericanGreeks.Delta_MatchesFd_Put\$ --no-tests=error'
     $adjusted = Get-OracleTargetedGateSpec 'sprint_adjusted_greeks_flat_smile'
     ($adjusted.Arguments -join ' ') | Should Match '-R \^AdjustedGreeks.FlatSmileLeavesDeltaUnchanged\$ --no-tests=error'
+  }
+
+  It 'binds Stage 3 to one isolated test target, one closed smoke+tune sweep, and cached exact-SHA floor verification' {
+    $identity = Get-OracleGitIdentity
+    $tests = Get-OracleTargetedGateSpec 'convention_tests' $identity
+    ($tests.PrepareArguments -join ' ') | Should Match 'build atx-vol-oracle-convention-tests --parallel 2$'
+    ($tests.Arguments -join ' ') | Should Match '-Ctest -R \^OracleConvention\$ --no-tests=error'
+    $sweep = Get-OracleTargetedGateSpec 'mode_a_smoke_tune' $identity
+    ($sweep.PrepareArguments -join ' ') | Should Match 'build atx-vol-oracle-bench --parallel 2$'
+    ($sweep.Arguments -join ' ') | Should Match '--convention-sweep --smoke .+smoke\.json --tune .+tune\.json'
+    ($sweep.Arguments -join ' ') | Should Not Match 'holdout'
+    $floor = Get-OracleTargetedGateSpec 'residual_floor' $identity
+    $floor.Kind | Should Be 'oracle_floor_verify'
+    $floor.Program | Should Be ''
+    $floor.RequiredExecutables.Count | Should Be 0
+    $floor.OutputPath | Should Be $sweep.OutputPath
+  }
+
+  It 'emits all eleven convention floors, deltas, the complete map, and eight bounded candidates' {
+    $identity = Get-OracleGitIdentity
+    $result = Invoke-OracleTargetedGate 'mode_a_smoke_tune' {
+      [pscustomobject]@{ ExitCode = 0; Lines = @('closed convention sweep completed'); ScorecardJson = (New-ConventionSweepJson $identity.Sha) }
+    }
+    $result.gate_kind | Should Be 'oracle_convention'
+    $result.rows_processed | Should Be 100
+    $result.metrics.Count | Should Be 11
+    $result.metric_deltas.Count | Should Be 11
+    $result.candidate_prices.Count | Should Be 8
+    (Test-OracleConventionMap $result.conventions) | Should Be $true
   }
 }

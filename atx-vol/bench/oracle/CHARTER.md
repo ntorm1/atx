@@ -43,7 +43,8 @@ and normal ingest path; there is no flag that bypasses or selects adoption.
 ### Closed capability receipts
 
 Capability fails closed on missing, legacy, extra-key, corrupt, or unprovenanced
-receipts. All receipts are schema version 1 with full `base_sha` and `tested_sha`;
+receipts. Data and Mode receipts are schema version 1; the convention receipt is
+schema version 2. Every receipt has full `base_sha` and `tested_sha`;
 the probe requires `base_sha` to be an ancestor of `tested_sha`, `tested_sha` to be
 an ancestor of canonical, and the prior-stage receipt blob at `base_sha` to equal
 the inherited blob at canonical.
@@ -64,9 +65,14 @@ the inherited blob at canonical.
 - `bootstrap/conventions.json` has exactly the common provenance fields,
   `transition=conventions`, `command_id=oracle_conventions_smoke_tune`,
   `exit_code=0`, smoke/tune blob IDs, `CONVENTIONS.md` and iter-000 blob IDs, and
-  the closed theta/vega/rate/dividend/day-count/sign enum map. Iter-000 is itself an
-  exact versioned `residual_floor` receipt with Mode A, smoke+tune, positive count,
-  complete target IDs, and ancestor provenance.
+  positive aggregate row count, the complete eleven-target registry, baseline
+  and winning complete convention maps, numeric candidate/baseline/delta floors,
+  the eight-candidate price attribution, and the pinned quiet rel-avx2 speed.
+  Iter-000 is itself an exact schema-v2 `residual_floor` receipt with the same
+  values plus Mode A, smoke+tune, both cohort blob IDs, empty oracle-suspect
+  candidates until an NBBO gate supplies market evidence, explicit market-evidence
+  status, and a non-citable dev diagnostic timing. The receipt and scorecard values
+  must be byte-equivalent after closed JSON serialization.
 - `bootstrap/mode-b.json` has exactly the common provenance fields,
   `transition=mode_b`, `command_id=oracle_mode_b_aggregate`, `exit_code=0`,
   smoke/tune blob IDs, positive row count, and the complete closed Mode B target-ID
@@ -126,13 +132,25 @@ the exact closed Mode A schema above (never rows themselves). Holdout is forbidd
 
 ## Stage 3 - conventions (`missing_conventions`)
 
-Using Mode A on smoke+tune only, resolve theta/vega scaling, rate/borrow/dividend
-treatment, day count, `vo`/`va`, signs, and share scaling. Commit the winning map to
+Using Mode A on smoke+tune only, run the closed deterministic staged sweep. Price
+input attribution first evaluates all eight bounded candidates on smoke, including
+the documented SpiderRock discrete-dividend forward
+`fUPrc = uPrc * exp(rate * T) - ddiv`, then evaluates only the stable-ID-tiebroken
+top two on a deterministic tune sample. The winning input treatment is evaluated
+on complete smoke+tune while bounded independent searches resolve theta/vega/rho/
+phi/volga/vanna/delta-decay scaling and sources, day count, signs, and share scaling.
+Vol remains decimal identity. No Cartesian-product sweep is permitted. Commit the winning map to
 `atx-vol/bench/oracle/CONVENTIONS.md`, encode it only in the isolated convention
 layer, and write aggregate `scorecards/iter-000.json` with the Mode A residual
-floor plus the exact `bootstrap/conventions.json` receipt. Record that evidenced
-floor in NORTHSTAR and append LEDGER. Do not read Mode
-B or benchmark holdout.
+floor plus the exact `bootstrap/conventions.json` receipt. Run only these four
+worktree-local gates: `convention_tests`, `mode_a_smoke_tune`, `residual_floor`,
+and `convention_speed`. The residual gate verifies the exact-SHA sweep artifact
+from the preceding smoke+tune gate against iter-000; it does not price the same
+rows twice and fails if the artifact is absent or belongs to another SHA. The
+speed gate builds only the rel-avx2 oracle-bench target and runs tune on a quiet
+host against the frozen pin. Record that evidenced floor in NORTHSTAR and append
+LEDGER only after audited landing; the Stage 3 build lane must not edit either
+memory file. Do not read Mode B or benchmark holdout.
 
 ## Stage 4 - Mode B (`missing_mode_b`)
 

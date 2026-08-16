@@ -168,23 +168,105 @@ function Test-ModeReceipt([string]$Sha, [string]$Mode, $DataReceipt) {
   return $Mode -eq 'A' -or $receipt.tune_blob_oid -eq $DataReceipt.tune_blob_oid
 }
 
+function Test-FiniteNumber($Value) {
+  if ($null -eq $Value) { return $false }
+  $number = 0.0
+  return [double]::TryParse(([string]$Value), [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$number) -and -not [double]::IsNaN($number) -and -not [double]::IsInfinity($number)
+}
+
+function Test-PositiveInteger($Value) {
+  $number = 0L
+  return $null -ne $Value -and [long]::TryParse(([string]$Value), [ref]$number) -and $number -gt 0 -and [double]$Value -eq [double]$number
+}
+
+function Test-FloorMetrics($Metrics) {
+  $items = @($Metrics)
+  if ($items.Count -ne $targetA.Count -or -not (Test-StringSet @($items.metric_id) $targetA)) { return $false }
+  foreach ($metric in $items) {
+    if (-not (Test-ExactKeys $metric @('metric_id', 'value', 'count', 'unit')) -or -not (Test-FiniteNumber $metric.value) -or [double]$metric.value -lt 0 -or -not (Test-PositiveInteger $metric.count)) { return $false }
+    $unit = if ($metric.metric_id -eq 'mode_a_price_mae') { 'ticks' } elseif ($metric.metric_id -eq 'mode_a_vol_mae') { 'bp' } else { 'relative' }
+    if ($metric.unit -ne $unit) { return $false }
+  }
+  return $true
+}
+
+function Test-MetricDeltas($Deltas) {
+  $items = @($Deltas)
+  if ($items.Count -ne $targetA.Count -or -not (Test-StringSet @($items.metric_id) $targetA)) { return $false }
+  foreach ($delta in $items) {
+    if (-not (Test-ExactKeys $delta @('metric_id', 'candidate', 'baseline', 'delta', 'count', 'unit')) -or
+        -not (Test-FiniteNumber $delta.candidate) -or -not (Test-FiniteNumber $delta.baseline) -or -not (Test-FiniteNumber $delta.delta) -or
+        -not (Test-PositiveInteger $delta.count) -or [Math]::Abs(([double]$delta.candidate - [double]$delta.baseline) - [double]$delta.delta) -gt 1.0e-12) { return $false }
+  }
+  return $true
+}
+
+function Test-ConventionMap($Map) {
+  $keys = @('input_model', 'forward_formula', 'rate_model', 'carry_model', 'dividend_model', 'day_count', 'price_scale', 'price_sign', 'vol_scale', 'delta_scale', 'delta_sign', 'gamma_scale', 'gamma_sign', 'theta_basis', 'theta_sign', 'vega_scale', 'vega_sign', 'rho_scale', 'rho_sign', 'phi_scale', 'phi_sign', 'volga_source', 'volga_scale', 'volga_sign', 'vanna_source', 'vanna_scale', 'vanna_sign', 'delta_decay_basis', 'delta_decay_day_count', 'delta_decay_sign')
+  if (-not (Test-ExactKeys $Map $keys)) { return $false }
+  $inputModels = @('uprc_spot__rate__sdiv_yield', 'discrete_forward_pv__rate__sdiv_yield', 'discrete_forward_net_carry__rate__sdiv_yield', 'discrete_forward__rate__sdiv_yield', 'discrete_forward__rate_minus_sdiv__zero_carry', 'discrete_forward__zero_rate__zero_carry', 'discrete_forward_pv__rate_minus_sdiv__zero_carry', 'discrete_forward_pv__rate_plus_sdiv__zero_carry')
+  if ($inputModels -notcontains $Map.input_model -or @('none', 'uprc_exp_rate_t_minus_ddiv') -notcontains $Map.forward_formula -or
+      @('continuous_row_rate', 'continuous_rate_minus_sdiv', 'continuous_rate_plus_sdiv', 'zero') -notcontains $Map.rate_model -or
+      @('sdiv_as_yield', 'zero') -notcontains $Map.carry_model -or @('continuous_yield_only', 'discrete_cash_forward') -notcontains $Map.dividend_model -or
+      @('ACT_365F', 'ACT_365_25', 'ACT_360', 'BUS_252') -notcontains $Map.day_count -or @('per_share', 'per_contract_100', 'per_share_from_contract') -notcontains $Map.price_scale -or
+      $Map.vol_scale -ne 'decimal_identity' -or @('volga', 'vanna') -notcontains $Map.volga_source -or @('volga', 'vanna') -notcontains $Map.vanna_source -or
+      @('per_day', 'per_year') -notcontains $Map.theta_basis -or @('per_day', 'per_year') -notcontains $Map.delta_decay_basis -or
+      @('ACT_365F', 'ACT_365_25', 'ACT_360', 'BUS_252') -notcontains $Map.delta_decay_day_count) { return $false }
+  foreach ($name in @('price_sign', 'delta_sign', 'gamma_sign', 'theta_sign', 'vega_sign', 'rho_sign', 'phi_sign', 'volga_sign', 'vanna_sign', 'delta_decay_sign')) {
+    if (@('positive', 'negative') -notcontains $Map.$name) { return $false }
+  }
+  foreach ($name in @('delta_scale', 'gamma_scale', 'vega_scale', 'rho_scale', 'phi_scale', 'volga_scale', 'vanna_scale')) {
+    if (@('per_unit', 'per_point', 'per_point_squared', 'per_contract_100') -notcontains $Map.$name) { return $false }
+  }
+  return $true
+}
+
+function Test-CandidatePrices($Candidates) {
+  $items = @($Candidates)
+  if ($items.Count -ne 8 -or @($items.candidate_id | Select-Object -Unique).Count -ne 8) { return $false }
+  foreach ($candidate in $items) {
+    if (-not (Test-ExactKeys $candidate @('candidate_id', 'smoke_price_mae_ticks', 'smoke_count', 'tune_sample_price_mae_ticks', 'tune_sample_count')) -or
+        -not (Test-FiniteNumber $candidate.smoke_price_mae_ticks) -or -not (Test-PositiveInteger $candidate.smoke_count) -or
+        -not (Test-FiniteNumber $candidate.tune_sample_price_mae_ticks)) { return $false }
+    $tuneCount = 0L
+    if (-not [long]::TryParse(([string]$candidate.tune_sample_count), [ref]$tuneCount) -or $tuneCount -lt 0) { return $false }
+  }
+  return @($items | Where-Object { [long]$_.tune_sample_count -gt 0 }).Count -eq 2
+}
+
+function Test-SpeedFloor($Speed) {
+  return (Test-ExactKeys $Speed @('metric_id', 'baseline', 'pin', 'unit', 'preset', 'quiet_host')) -and
+    $Speed.metric_id -eq 'rel_avx2_rows_per_second' -and $Speed.unit -eq 'rows_per_second' -and $Speed.preset -eq 'rel-avx2' -and $Speed.quiet_host -and
+    (Test-FiniteNumber $Speed.baseline) -and [double]$Speed.baseline -gt 0 -and (Test-FiniteNumber $Speed.pin) -and [double]$Speed.pin -gt 0 -and [double]$Speed.pin -le [double]$Speed.baseline
+}
+
 function Test-ConventionsReceipt([string]$Sha, $DataReceipt) {
   $receipt = Get-CommittedJson $Sha ($oracleRoot + '/bootstrap/conventions.json')
-  $keys = @('schema_version', 'transition', 'base_sha', 'tested_sha', 'command_id', 'exit_code', 'smoke_blob_oid', 'tune_blob_oid', 'conventions_blob_oid', 'scorecard_blob_oid', 'conventions')
-  if (-not (Test-ExactKeys $receipt $keys) -or $receipt.schema_version -ne 1 -or $receipt.transition -ne 'conventions' -or $receipt.command_id -ne 'oracle_conventions_smoke_tune' -or $receipt.exit_code -ne 0 -or
+  $keys = @('schema_version', 'transition', 'base_sha', 'tested_sha', 'command_id', 'exit_code', 'smoke_blob_oid', 'tune_blob_oid', 'conventions_blob_oid', 'scorecard_blob_oid', 'rows_processed', 'target_metric_ids', 'baseline_conventions', 'conventions', 'metrics', 'baseline_metrics', 'metric_deltas', 'candidate_prices', 'speed')
+  if (-not (Test-ExactKeys $receipt $keys) -or $receipt.schema_version -ne 2 -or $receipt.transition -ne 'conventions' -or $receipt.command_id -ne 'oracle_conventions_smoke_tune' -or $receipt.exit_code -ne 0 -or
       -not (Test-Provenance $receipt $Sha ($oracleRoot + '/bootstrap/mode-a.json')) -or $receipt.smoke_blob_oid -ne $DataReceipt.smoke_blob_oid -or $receipt.tune_blob_oid -ne $DataReceipt.tune_blob_oid) { return $false }
-  $map = $receipt.conventions
-  if (-not (Test-ExactKeys $map @('theta_basis', 'vega_basis', 'rate_model', 'dividend_model', 'day_count', 'sign_model')) -or @('per_day', 'per_year') -notcontains $map.theta_basis -or
-      @('per_vol_point', 'per_unit_vol') -notcontains $map.vega_basis -or @('continuous', 'simple') -notcontains $map.rate_model -or @('continuous_yield', 'discrete_cash') -notcontains $map.dividend_model -or
-      @('ACT_365F', 'ACT_360', 'BUS_252') -notcontains $map.day_count -or $map.sign_model -ne 'spiderrock') { return $false }
+  if (-not (Test-ConventionMap $receipt.conventions) -or -not (Test-ConventionMap $receipt.baseline_conventions) -or
+      -not (Test-FloorMetrics $receipt.metrics) -or -not (Test-FloorMetrics $receipt.baseline_metrics) -or
+      -not (Test-MetricDeltas $receipt.metric_deltas) -or -not (Test-CandidatePrices $receipt.candidate_prices) -or
+      -not (Test-SpeedFloor $receipt.speed) -or -not (Test-PositiveInteger $receipt.rows_processed) -or
+      -not (Test-StringSet $receipt.target_metric_ids $targetA)) { return $false }
   $conventionsPath = $oracleRoot + '/CONVENTIONS.md'; $scorecardPath = $oracleRoot + '/scorecards/iter-000.json'
   if ((Get-BlobOid $Sha $conventionsPath) -ne $receipt.conventions_blob_oid -or (Get-BlobOid $Sha $scorecardPath) -ne $receipt.scorecard_blob_oid) { return $false }
   $scorecard = Get-CommittedJson $Sha $scorecardPath
-  if (-not (Test-ExactKeys $scorecard @('schema_version', 'kind', 'base_sha', 'tested_sha', 'command_id', 'exit_code', 'mode', 'cohorts', 'rows_processed', 'target_metric_ids')) -or $scorecard.schema_version -ne 1 -or
+  $scorecardKeys = @('schema_version', 'kind', 'base_sha', 'tested_sha', 'command_id', 'exit_code', 'mode', 'cohorts', 'smoke_blob_oid', 'tune_blob_oid', 'rows_processed', 'target_metric_ids', 'baseline_conventions', 'conventions', 'metrics', 'baseline_metrics', 'metric_deltas', 'candidate_prices', 'oracle_suspect_candidates', 'market_evidence_status', 'diagnostic_speed', 'speed')
+  if (-not (Test-ExactKeys $scorecard $scorecardKeys) -or $scorecard.schema_version -ne 2 -or
       $scorecard.kind -ne 'residual_floor' -or $scorecard.command_id -ne 'mode_a_residual_floor' -or $scorecard.exit_code -ne 0 -or $scorecard.mode -ne 'A' -or
       -not (Test-StringSet $scorecard.cohorts @('smoke', 'tune')) -or -not (Test-StringSet $scorecard.target_metric_ids $targetA) -or [long]$scorecard.rows_processed -le 0 -or
-      -not (Test-Ancestor ([string]$scorecard.base_sha) ([string]$scorecard.tested_sha)) -or -not (Test-Ancestor ([string]$scorecard.tested_sha) $Sha)) { return $false }
-  return $true
+      -not (Test-Ancestor ([string]$scorecard.base_sha) ([string]$scorecard.tested_sha)) -or -not (Test-Ancestor ([string]$scorecard.tested_sha) $Sha) -or
+      $scorecard.smoke_blob_oid -ne $DataReceipt.smoke_blob_oid -or $scorecard.tune_blob_oid -ne $DataReceipt.tune_blob_oid -or
+      @($scorecard.oracle_suspect_candidates).Count -ne 0 -or $scorecard.market_evidence_status -ne 'not_evaluated_no_nbbo_gate' -or
+      -not (Test-ConventionMap $scorecard.conventions) -or -not (Test-ConventionMap $scorecard.baseline_conventions) -or
+      -not (Test-FloorMetrics $scorecard.metrics) -or -not (Test-FloorMetrics $scorecard.baseline_metrics) -or
+      -not (Test-MetricDeltas $scorecard.metric_deltas) -or -not (Test-CandidatePrices $scorecard.candidate_prices) -or -not (Test-SpeedFloor $scorecard.speed)) { return $false }
+  foreach ($name in @('baseline_conventions', 'conventions', 'metrics', 'baseline_metrics', 'metric_deltas', 'candidate_prices', 'speed')) {
+    if (($receipt.$name | ConvertTo-Json -Depth 20 -Compress) -cne ($scorecard.$name | ConvertTo-Json -Depth 20 -Compress)) { return $false }
+  }
+  return [long]$receipt.rows_processed -eq [long]$scorecard.rows_processed
 }
 
 # Pester imports the closed validators without running command mode.

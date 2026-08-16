@@ -5,6 +5,23 @@ that silently changes a NUMBER a caller already depends on belongs in this file.
 
 ## Unreleased
 
+### BREAKING - SpiderRock convention resolution is a closed production mapping
+
+Mode A now uses one hard-cut, worktree-local SpiderRock convention map selected
+by a deterministic aggregate smoke+tune sweep. The sweep explicitly tests the
+documented discrete-dividend forward `uPrc * exp(rate*T) - ddiv`, bounded
+rate/carry treatments, day counts, price/share and sign scaling, and all nine
+Greek source/unit/sign mappings. There is no runtime selection flag and no
+legacy convention shim. Convention bootstrap receipts and iter-000 residual
+floors are schema version 2 and carry all eleven numeric metrics, baseline and
+winning maps/deltas, bounded candidate attribution, artifact blob IDs, and a
+quiet rel-avx2 speed pin; legacy convention receipts now fail closed.
+
+The bootstrap gate registry builds only the convention test and oracle-bench
+targets. It executes one smoke+tune sweep, verifies that exact-SHA artifact
+against the committed floor without repricing it, and runs one quiet tune speed
+gate. Holdout and broad/full test suites remain outside convention resolution.
+
 ### BREAKING - later oracle bootstrap stages advance an existing canonical ref
 
 Stage 2 Mode A and the ordered convention/Mode B bootstrap stages now finalize

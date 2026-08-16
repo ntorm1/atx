@@ -37,6 +37,7 @@
 #include "atx/vol/api/core/types.hpp"
 #include "atx/vol/api/pricing/american.hpp"
 #include "oracle_cohort_reader.hpp"
+#include "oracle_convention_sweep.hpp"
 #include "oracle_conventions.hpp"
 #include "oracle_scorecard.hpp"
 
@@ -49,15 +50,21 @@ using atx::core::Ok; // Err resolves via ADL (Error argument); Ok's arguments
 namespace {
 constexpr std::string_view kUsage =
     "usage: atx-vol-oracle-bench --cohort <cohort.json> --store <store-root>\n"
-    "                            --out <scorecard.json> [--iter N] [--git-sha SHA]\n";
+    "                            --out <scorecard.json> [--iter N] [--git-sha SHA]\n"
+    "   or: atx-vol-oracle-bench --convention-sweep --smoke <smoke.json>\n"
+    "                            --tune <tune.json> --store <store-root>\n"
+    "                            --out <sweep.json> --git-sha <SHA>\n";
 } // namespace
 
 struct BenchArgs {
   std::string cohort_path;
+  std::string smoke_path;
+  std::string tune_path;
   std::string store_root;
   std::string out_path;
   std::string git_sha = "unknown";
   std::int64_t iter = 0;
+  bool convention_sweep = false;
 };
 
 [[nodiscard]] Result<BenchArgs> parse_bench_args(std::span<const std::string> args) {
@@ -68,6 +75,12 @@ struct BenchArgs {
     auto take = [&]() -> const std::string & { return args[++i]; };
     if (flag == "--cohort" && has_value) {
       out.cohort_path = take();
+    } else if (flag == "--smoke" && has_value) {
+      out.smoke_path = take();
+    } else if (flag == "--tune" && has_value) {
+      out.tune_path = take();
+    } else if (flag == "--convention-sweep") {
+      out.convention_sweep = true;
     } else if (flag == "--store" && has_value) {
       out.store_root = take();
     } else if (flag == "--out" && has_value) {
@@ -86,8 +99,16 @@ struct BenchArgs {
       return Err(ErrorCode::InvalidArgument, "unknown or valueless flag: " + flag);
     }
   }
-  if (out.cohort_path.empty() || out.store_root.empty() || out.out_path.empty()) {
-    return Err(ErrorCode::InvalidArgument, "--cohort, --store and --out are required");
+  if (out.store_root.empty() || out.out_path.empty()) {
+    return Err(ErrorCode::InvalidArgument, "--store and --out are required");
+  }
+  if (out.convention_sweep) {
+    if (!out.cohort_path.empty() || out.smoke_path.empty() || out.tune_path.empty()) {
+      return Err(ErrorCode::InvalidArgument,
+                 "convention sweep requires --smoke and --tune, without --cohort");
+    }
+  } else if (out.cohort_path.empty() || !out.smoke_path.empty() || !out.tune_path.empty()) {
+    return Err(ErrorCode::InvalidArgument, "scorecard mode requires only --cohort");
   }
   return Ok(std::move(out));
 }
@@ -148,8 +169,7 @@ public:
 
       const MoneynessBand mband = moneyness_band(row.strike / row.uprc, in.side);
       const DteBand dband = dte_band(dte_days(row.years));
-      auto observe = [&](std::string_view metric, double model, double oracle_val,
-                         double tol) {
+      auto observe = [&](std::string_view metric, double model, double oracle_val, double tol) {
         const double err = model - oracle_val;
         if (!std::isfinite(err)) {
           return; // belt-and-suspenders: a non-finite comparison poisons no cell
@@ -212,14 +232,16 @@ public:
     ModeStats stats;
     stats.rows_null_sentinel = scan.rows_null_sentinel;
     stats.rows_bad_input = scan.rows_bad_input;
-    stats.rows_total = static_cast<std::int64_t>(scan.rows.size()) + scan.rows_null_sentinel +
-                       scan.rows_bad_input;
+    stats.rows_total =
+        static_cast<std::int64_t>(scan.rows.size()) + scan.rows_null_sentinel + scan.rows_bad_input;
     const auto t0 = std::chrono::steady_clock::now();
     ATX_TRY_VOID(runner->run(scan.rows, card, stats));
-    stats.wall_seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    stats.wall_seconds =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     card.set_mode_stats(runner->name(), stats);
-    const double rows_per_s =
-        stats.wall_seconds > 0.0 ? static_cast<double>(stats.rows_priced) / stats.wall_seconds : 0.0;
+    const double rows_per_s = stats.wall_seconds > 0.0
+                                  ? static_cast<double>(stats.rows_priced) / stats.wall_seconds
+                                  : 0.0;
     std::fprintf(stderr, "oracle-bench: mode %.*s: %lld row(s) priced in %.3f s (%.0f rows/s)\n",
                  static_cast<int>(runner->name().size()), runner->name().data(),
                  static_cast<long long>(stats.rows_priced), stats.wall_seconds, rows_per_s);
@@ -243,6 +265,39 @@ public:
   return Ok(std::move(card));
 }
 
+[[nodiscard]] Status write_text_file(const std::string &path, std::string_view text) {
+  const std::filesystem::path out{path};
+  if (out.has_parent_path()) {
+    std::error_code ec;
+    std::filesystem::create_directories(out.parent_path(), ec);
+    if (ec) {
+      return Err(ErrorCode::IoError, "create output dir: " + ec.message());
+    }
+  }
+  std::ofstream file{out, std::ios::binary | std::ios::trunc};
+  if (!file.write(text.data(), static_cast<std::streamsize>(text.size()))) {
+    return Err(ErrorCode::IoError, "write output: " + path);
+  }
+  return Ok();
+}
+
+[[nodiscard]] Status run_oracle_convention_sweep(const BenchArgs &args) {
+  ATX_TRY(const Cohort smoke_cohort, load_cohort_json(args.smoke_path));
+  ATX_TRY(const Cohort tune_cohort, load_cohort_json(args.tune_path));
+  if (smoke_cohort.name != "smoke" || tune_cohort.name != "tune") {
+    return Err(ErrorCode::InvalidArgument, "convention sweep admits only named smoke+tune");
+  }
+  ATX_TRY(const CohortScan smoke, read_cohort_rows(smoke_cohort, args.store_root));
+  ATX_TRY(const CohortScan tune, read_cohort_rows(tune_cohort, args.store_root));
+  ATX_TRY(const ConventionSweepResult result, run_convention_sweep(smoke.rows, tune.rows));
+  std::fprintf(stderr,
+               "oracle-conventions: smoke=%zu tune=%zu priced=%lld errors=%lld %.0f rows/s "
+               "diagnostic-only\n",
+               smoke.rows.size(), tune.rows.size(), static_cast<long long>(result.rows_priced),
+               static_cast<long long>(result.engine_errors), result.diagnostic_rows_per_second);
+  return write_text_file(args.out_path, convention_sweep_json(result, args.git_sha));
+}
+
 } // namespace atx::vol::oracle
 
 #ifndef ATX_ORACLE_BENCH_NO_MAIN
@@ -258,6 +313,14 @@ int main(int argc, char **argv) {
                  static_cast<int>(atx::vol::oracle::kUsage.size()),
                  atx::vol::oracle::kUsage.data());
     return 2;
+  }
+  if (parsed->convention_sweep) {
+    const auto run = atx::vol::oracle::run_oracle_convention_sweep(*parsed);
+    if (!run.has_value()) {
+      std::fprintf(stderr, "atx-vol-oracle-bench: %s\n", run.error().to_string().c_str());
+      return 1;
+    }
+    return 0;
   }
   const auto run = atx::vol::oracle::run_oracle_bench(*parsed);
   if (!run.has_value()) {

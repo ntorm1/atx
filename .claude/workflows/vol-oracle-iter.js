@@ -68,10 +68,11 @@ const BOOTSTRAP_GATE_COMMANDS = Object.freeze({
   convention_tests: 'powershell scripts\\oracle-targeted-gate.ps1 -Gate convention_tests',
   mode_a_smoke_tune: 'powershell scripts\\oracle-targeted-gate.ps1 -Gate mode_a_smoke_tune',
   residual_floor: 'powershell scripts\\oracle-targeted-gate.ps1 -Gate residual_floor',
+  convention_speed: 'powershell scripts\\oracle-targeted-gate.ps1 -Gate convention_speed',
   mode_b_targeted_tests: 'powershell scripts\\oracle-targeted-gate.ps1 -Gate mode_b_targeted_tests',
   mode_b_smoke_tune: 'powershell scripts\\oracle-targeted-gate.ps1 -Gate mode_b_smoke_tune',
 })
-const TARGETED_BOOTSTRAP_GATE_IDS = Object.freeze(['mode_a_targeted_tests', 'mode_a_smoke', 'convention_tests', 'mode_a_smoke_tune', 'residual_floor', 'mode_b_targeted_tests', 'mode_b_smoke_tune'])
+const TARGETED_BOOTSTRAP_GATE_IDS = Object.freeze(['mode_a_targeted_tests', 'mode_a_smoke', 'convention_tests', 'mode_a_smoke_tune', 'residual_floor', 'convention_speed', 'mode_b_targeted_tests', 'mode_b_smoke_tune'])
 const ORACLE_BENCH_TEST_COUNT = 31
 const READY_MEASURE_GATES = Object.freeze({
   measure_mode_a: 'atx-vol-oracle-bench --cohort smoke,tune --mode A --scorecard --aggregate-only',
@@ -187,6 +188,45 @@ const NUMERIC_GATE_METRIC = {
     metric_id: { type: 'string' }, value: { type: 'number' }, count: { type: 'integer' }, unit: { type: 'string' }, pin: { type: 'number' },
   },
 }
+const CONVENTION_MAP = {
+  type: 'object', additionalProperties: false,
+  required: ['input_model', 'forward_formula', 'rate_model', 'carry_model', 'dividend_model', 'day_count', 'price_scale', 'price_sign', 'vol_scale', 'delta_scale', 'delta_sign', 'gamma_scale', 'gamma_sign', 'theta_basis', 'theta_sign', 'vega_scale', 'vega_sign', 'rho_scale', 'rho_sign', 'phi_scale', 'phi_sign', 'volga_source', 'volga_scale', 'volga_sign', 'vanna_source', 'vanna_scale', 'vanna_sign', 'delta_decay_basis', 'delta_decay_day_count', 'delta_decay_sign'],
+  properties: {
+    input_model: { type: 'string', enum: ['uprc_spot__rate__sdiv_yield', 'discrete_forward_pv__rate__sdiv_yield', 'discrete_forward_net_carry__rate__sdiv_yield', 'discrete_forward__rate__sdiv_yield', 'discrete_forward__rate_minus_sdiv__zero_carry', 'discrete_forward__zero_rate__zero_carry', 'discrete_forward_pv__rate_minus_sdiv__zero_carry', 'discrete_forward_pv__rate_plus_sdiv__zero_carry'] },
+    forward_formula: { type: 'string', enum: ['none', 'uprc_exp_rate_t_minus_ddiv'] },
+    rate_model: { type: 'string', enum: ['continuous_row_rate', 'continuous_rate_minus_sdiv', 'continuous_rate_plus_sdiv', 'zero'] },
+    carry_model: { type: 'string', enum: ['sdiv_as_yield', 'zero'] },
+    dividend_model: { type: 'string', enum: ['continuous_yield_only', 'discrete_cash_forward'] },
+    day_count: { type: 'string', enum: ['ACT_365F', 'ACT_365_25', 'ACT_360', 'BUS_252'] },
+    price_scale: { type: 'string', enum: ['per_share', 'per_contract_100', 'per_share_from_contract'] },
+    price_sign: { type: 'string', enum: ['positive', 'negative'] }, vol_scale: { type: 'string', enum: ['decimal_identity'] },
+    delta_scale: { type: 'string' }, delta_sign: { type: 'string', enum: ['positive', 'negative'] },
+    gamma_scale: { type: 'string' }, gamma_sign: { type: 'string', enum: ['positive', 'negative'] },
+    theta_basis: { type: 'string', enum: ['per_day', 'per_year'] }, theta_sign: { type: 'string', enum: ['positive', 'negative'] },
+    vega_scale: { type: 'string' }, vega_sign: { type: 'string', enum: ['positive', 'negative'] },
+    rho_scale: { type: 'string' }, rho_sign: { type: 'string', enum: ['positive', 'negative'] },
+    phi_scale: { type: 'string' }, phi_sign: { type: 'string', enum: ['positive', 'negative'] },
+    volga_source: { type: 'string', enum: ['volga', 'vanna'] }, volga_scale: { type: 'string' }, volga_sign: { type: 'string', enum: ['positive', 'negative'] },
+    vanna_source: { type: 'string', enum: ['volga', 'vanna'] }, vanna_scale: { type: 'string' }, vanna_sign: { type: 'string', enum: ['positive', 'negative'] },
+    delta_decay_basis: { type: 'string', enum: ['per_day', 'per_year'] }, delta_decay_day_count: { type: 'string', enum: ['ACT_365F', 'ACT_365_25', 'ACT_360', 'BUS_252'] }, delta_decay_sign: { type: 'string', enum: ['positive', 'negative'] },
+  },
+}
+const STAGE3_DELTA = {
+  type: 'object', additionalProperties: false, required: ['metric_id', 'candidate', 'baseline', 'delta', 'count', 'unit'],
+  properties: { metric_id: { type: 'string' }, candidate: { type: 'number' }, baseline: { type: 'number' }, delta: { type: 'number' }, count: { type: 'integer' }, unit: { type: 'string' } },
+}
+const STAGE3_CANDIDATE_PRICE = {
+  type: 'object', additionalProperties: false, required: ['candidate_id', 'smoke_price_mae_ticks', 'smoke_count', 'tune_sample_price_mae_ticks', 'tune_sample_count'],
+  properties: { candidate_id: { type: 'string' }, smoke_price_mae_ticks: { type: 'number' }, smoke_count: { type: 'integer' }, tune_sample_price_mae_ticks: { type: 'number' }, tune_sample_count: { type: 'integer' } },
+}
+const STAGE3_SPEED = {
+  type: 'object', additionalProperties: false, required: ['metric_id', 'value', 'count', 'unit', 'pin', 'preset', 'quiet_host'],
+  properties: { metric_id: { type: 'string' }, value: { type: 'number' }, count: { type: 'integer' }, unit: { type: 'string' }, pin: { type: 'number' }, preset: { type: 'string' }, quiet_host: { type: 'boolean' } },
+}
+const STAGE3_DIAGNOSTIC_SPEED = {
+  type: 'object', additionalProperties: false, required: ['preset', 'citable', 'wall_seconds', 'rows_per_second'],
+  properties: { preset: { type: 'string', enum: ['dev'] }, citable: { type: 'boolean', enum: [false] }, wall_seconds: { type: 'number' }, rows_per_second: { type: 'number' } },
+}
 const GATE_RECEIPT = {
   type: 'object', additionalProperties: false, required: ['receipt_id', 'gate_id', 'tested_sha', 'tested_tree', 'command', 'exit_code', 'output', 'result', 'broker_evidence'],
   properties: {
@@ -197,8 +237,11 @@ const GATE_RECEIPT = {
         schema_version: { type: 'integer', enum: [1] }, status: { type: 'string', enum: ['PASS'] }, observations: { type: 'integer' },
         command_id: { type: 'string', enum: Object.keys(BOOTSTRAP_GATE_COMMANDS) }, raw_output_sha256: { type: 'string', pattern: '^[0-9a-f]{64}$' },
         tested_sha: { type: 'string' }, tested_tree: { type: 'string' },
-        gate_kind: { type: 'string', enum: ['ctest', 'oracle_bench'] }, tests_executed: { type: 'integer' }, tests_passed: { type: 'integer' },
+        gate_kind: { type: 'string', enum: ['ctest', 'oracle_bench', 'oracle_convention', 'oracle_floor_verify', 'oracle_speed'] }, tests_executed: { type: 'integer' }, tests_passed: { type: 'integer' },
         rows_processed: { type: 'integer' }, metric_ids: { type: 'array', items: { type: 'string' } }, audit_summary: { type: 'string' },
+        metrics: { type: 'array', items: NUMERIC_GATE_METRIC }, baseline_metrics: { type: 'array', items: NUMERIC_GATE_METRIC },
+        metric_deltas: { type: 'array', items: STAGE3_DELTA }, conventions: CONVENTION_MAP,
+        candidate_prices: { type: 'array', items: STAGE3_CANDIDATE_PRICE }, diagnostic_speed: STAGE3_DIAGNOSTIC_SPEED, speed: STAGE3_SPEED,
       },
     },
   },
@@ -452,18 +495,6 @@ const SPEED_BASELINE = {
     unit: { type: 'string', enum: ['rows_per_second'] },
   },
 }
-const CONVENTION_MAP = {
-  type: 'object', additionalProperties: false,
-  required: ['theta_basis', 'vega_basis', 'rate_model', 'dividend_model', 'day_count', 'sign_model'],
-  properties: {
-    theta_basis: { type: 'string', enum: ['per_day', 'per_year'] },
-    vega_basis: { type: 'string', enum: ['per_vol_point', 'per_unit_vol'] },
-    rate_model: { type: 'string', enum: ['continuous', 'simple'] },
-    dividend_model: { type: 'string', enum: ['continuous_yield', 'discrete_cash'] },
-    day_count: { type: 'string', enum: ['ACT_365F', 'ACT_360', 'BUS_252'] },
-    sign_model: { type: 'string', enum: ['spiderrock'] },
-  },
-}
 const ATTR_PAYLOAD = {
   type: 'object', additionalProperties: false,
   required: ['schema_version', 'iteration', 'target_metrics', 'aggregate_metrics', 'speed', 'prior_refuted_ids', 'oracle_suspect_cells', 'conventions'],
@@ -554,7 +585,7 @@ const RATCHET_PREPARE = {
 const BOOTSTRAP_LANES = {
   missing_data: { stage: '1', slug: 'data', next: 'missing_mode_a', gate_ids: ['aggregate_store', 'ingest_manifest', 'cohort_manifests', 'holdout_digest'], contract: 'Use only broker recover_stage1 for immutable source 58a94584baabae8263d16421f633540b420de10b. It validates the exact parent/tree/two blobs, replays those blobs atop the frozen fixed main, runs the four fixed Stage 1 gates, and commits. Do not run adoption, disk, ingest, builds, or other gates; never synthesize their receipts.' },
   missing_mode_a: { stage: '2', slug: 'mode-a', next: 'missing_conventions', gate_ids: ['mode_a_targeted_tests', 'mode_a_smoke'], contract: 'Run the exact targeted Mode A gates first. If the already-present implementation passes, make no pricing implementation change and write only bootstrap/mode-a.json. Implement/fix Mode A only when an exact targeted gate proves it necessary. Do not implement/stub Mode B; never benchmark holdout.' },
-  missing_conventions: { stage: '3', slug: 'conventions', next: 'missing_mode_b', gate_ids: ['convention_tests', 'mode_a_smoke_tune', 'residual_floor'], contract: 'Resolve conventions on aggregate smoke+tune Mode A, commit CONVENTIONS.md + iter-000 + exact v1 bootstrap/conventions.json validation/provenance receipt and evidenced memory. Never benchmark holdout or read Mode B.' },
+  missing_conventions: { stage: '3', slug: 'conventions', next: 'missing_mode_b', gate_ids: ['convention_tests', 'mode_a_smoke_tune', 'residual_floor', 'convention_speed'], contract: 'Resolve conventions on aggregate smoke+tune Mode A with the closed staged sweep, commit CONVENTIONS.md + iter-000 + exact v2 bootstrap/conventions.json including all 11 numeric floors/deltas/map/blob OIDs and the rel-avx2 pin. Never benchmark holdout, read Mode B, or edit Ratchet memory; PM updates memory only after audited landing.' },
   missing_mode_b: { stage: '4', slug: 'mode-b', next: 'ready', gate_ids: ['mode_b_targeted_tests', 'mode_b_smoke_tune'], contract: 'Implement/test Mode B, run aggregate smoke+tune, commit bootstrap/mode-b.json. Never change holdout/conventions or benchmark holdout.' },
 }
 
@@ -758,6 +789,8 @@ function validGateReceipt(receipt, gateId, expectedSha, expectedTree) {
   const commonKeys = ['schema_version', 'status', 'observations', 'command_id', 'raw_output_sha256']
   if (!TARGETED_BOOTSTRAP_GATE_IDS.includes(gateId)) return Object.keys(result).sort().join(',') === commonKeys.sort().join(',')
   const semanticKeys = [...commonKeys, 'tested_sha', 'tested_tree', 'gate_kind', 'tests_executed', 'tests_passed', 'rows_processed', 'metric_ids', 'audit_summary']
+  if (['mode_a_smoke_tune', 'residual_floor'].includes(gateId)) semanticKeys.push('metrics', 'baseline_metrics', 'metric_deltas', 'conventions', 'candidate_prices', 'diagnostic_speed')
+  if (gateId === 'convention_speed') semanticKeys.push('speed')
   if (Object.keys(result).sort().join(',') !== semanticKeys.sort().join(',')) return false
   if (!/^[0-9a-f]{40}$/.test(result.tested_sha || '') || !/^[0-9a-f]{40}$/.test(result.tested_tree || '') ||
       (expectedSha !== undefined && (result.tested_sha !== expectedSha || result.tested_tree !== expectedTree))) return false
@@ -766,13 +799,38 @@ function validGateReceipt(receipt, gateId, expectedSha, expectedTree) {
     result.tests_passed === result.tests_executed && result.rows_processed === 0 && Array.isArray(result.metric_ids) && result.metric_ids.length === 0 &&
     result.audit_summary === `tests_executed=${result.tests_executed} tests_passed=${result.tests_passed}`
   const wanted = expectedBootstrapMetricIds(gateId)
-  return result.gate_kind === 'oracle_bench' && result.tests_executed === 0 && result.tests_passed === 0 && Number.isInteger(result.rows_processed) && result.rows_processed > 0 &&
-    Array.isArray(result.metric_ids) && result.metric_ids.length === wanted.length && new Set(result.metric_ids).size === wanted.length && wanted.every(id => result.metric_ids.includes(id)) &&
-    result.audit_summary === `status=PASS rows_processed=${result.rows_processed} metric_ids=${[...result.metric_ids].sort().join(',')}`
+  const wantedKind = gateId === 'mode_a_smoke_tune' ? 'oracle_convention' : gateId === 'residual_floor' ? 'oracle_floor_verify' : gateId === 'convention_speed' ? 'oracle_speed' : 'oracle_bench'
+  if (result.gate_kind !== wantedKind || result.tests_executed !== 0 || result.tests_passed !== 0 || !Number.isInteger(result.rows_processed) || result.rows_processed <= 0 ||
+      !Array.isArray(result.metric_ids) || result.metric_ids.length !== wanted.length || new Set(result.metric_ids).size !== wanted.length || !wanted.every(id => result.metric_ids.includes(id)) ||
+      result.audit_summary !== `status=PASS rows_processed=${result.rows_processed} metric_ids=${[...result.metric_ids].sort().join(',')}`) return false
+  if (['mode_a_smoke_tune', 'residual_floor'].includes(gateId)) {
+    if (!validStage3MetricArray(result.metrics, wanted) || !validStage3MetricArray(result.baseline_metrics, wanted) || !validStage3ConventionMap(result.conventions) ||
+        !Array.isArray(result.metric_deltas) || result.metric_deltas.length !== wanted.length || !Array.isArray(result.candidate_prices) || result.candidate_prices.length !== 8 ||
+        !result.diagnostic_speed || result.diagnostic_speed.preset !== 'dev' || result.diagnostic_speed.citable !== false || !(result.diagnostic_speed.rows_per_second > 0) || !(result.diagnostic_speed.wall_seconds > 0)) return false
+    const deltaIds = new Set(result.metric_deltas.map(item => item && item.metric_id))
+    if (deltaIds.size !== wanted.length || !wanted.every(id => deltaIds.has(id)) || result.metric_deltas.some(item => !item || !Number.isFinite(item.candidate) || !Number.isFinite(item.baseline) || !Number.isFinite(item.delta) || !Number.isInteger(item.count) || item.count <= 0 || Math.abs((item.candidate - item.baseline) - item.delta) > 1e-12)) return false
+  }
+  if (gateId === 'convention_speed') {
+    const speed = result.speed
+    if (!speed || speed.metric_id !== SPEED_METRIC_ID || speed.unit !== 'rows_per_second' || speed.preset !== 'rel-avx2' || speed.quiet_host !== true || !Number.isFinite(speed.value) || speed.value <= 0 || !Number.isFinite(speed.pin) || speed.pin <= 0 || speed.value < speed.pin || !Number.isInteger(speed.count) || speed.count <= 0) return false
+  }
+  return true
+}
+
+function validStage3MetricArray(metrics, wanted) {
+  if (!Array.isArray(metrics) || metrics.length !== wanted.length || new Set(metrics.map(item => item && item.metric_id)).size !== wanted.length) return false
+  return wanted.every(id => metrics.some(item => item && item.metric_id === id && Number.isFinite(item.value) && item.value >= 0 && Number.isInteger(item.count) && item.count > 0 && item.unit === (id === 'mode_a_price_mae' ? 'ticks' : id === 'mode_a_vol_mae' ? 'bp' : 'relative')))
+}
+
+function validStage3ConventionMap(map) {
+  if (!map || typeof map !== 'object' || Array.isArray(map)) return false
+  const wanted = CONVENTION_MAP.required
+  return Object.keys(map).length === wanted.length && wanted.every(key => typeof map[key] === 'string' && map[key].length > 0)
 }
 
 function expectedBootstrapMetricIds(gateId) {
   if (['mode_a_smoke', 'mode_a_smoke_tune', 'residual_floor'].includes(gateId)) return TARGET_REGISTRY.filter(item => item.mode === 'A').map(item => item.metric_id)
+  if (gateId === 'convention_speed') return [SPEED_METRIC_ID]
   if (gateId === 'mode_b_smoke_tune') return TARGET_REGISTRY.filter(item => item.mode === 'B').map(item => item.metric_id)
   return []
 }
@@ -1085,12 +1143,10 @@ function aggregatePayloadError(payload) {
     if (!Array.isArray(values) || values.length > 256 || new Set(values).size !== values.length ||
         !values.every(value => Number.isSafeInteger(value) && value >= 0 && value <= 2147483647)) return 'aggregate payload numeric ID list invalid'
   }
-  const conventionKeys = ['theta_basis', 'vega_basis', 'rate_model', 'dividend_model', 'day_count', 'sign_model']
+  const conventionKeys = CONVENTION_MAP.required
   const conventions = payload.conventions
   if (!conventions || typeof conventions !== 'object' || Array.isArray(conventions) || !exactKeys(conventions, conventionKeys) ||
-      !['per_day', 'per_year'].includes(conventions.theta_basis) || !['per_vol_point', 'per_unit_vol'].includes(conventions.vega_basis) ||
-      !['continuous', 'simple'].includes(conventions.rate_model) || !['continuous_yield', 'discrete_cash'].includes(conventions.dividend_model) ||
-      !['ACT_365F', 'ACT_360', 'BUS_252'].includes(conventions.day_count) || conventions.sign_model !== 'spiderrock') return 'aggregate convention map invalid'
+      !validStage3ConventionMap(conventions)) return 'aggregate convention map invalid'
   const baselineKeys = ['metric_id', 'mode', 'baseline', 'count', 'unit']
   const validateRegistry = (metrics, registry) => {
     if (!Array.isArray(metrics) || metrics.length !== registry.length) return false

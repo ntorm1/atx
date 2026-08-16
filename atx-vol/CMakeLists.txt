@@ -954,6 +954,7 @@ if(ATX_BUILD_TOOLS)
     # that one TU). Gate test: OracleBench* (tests/oracle_bench_test.cpp).
     add_executable(atx-vol-oracle-bench
         tools/oracle_bench_main.cpp
+        tools/oracle_convention_sweep.cpp
         tools/oracle_conventions.cpp
         tools/oracle_scorecard.cpp
         tools/oracle_cohort_reader.cpp)

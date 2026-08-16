@@ -249,6 +249,7 @@ add_executable(atx-vol-tests
 # target_include_directories below), which is how oracle_bench_test.cpp
 # resolves both the headers and its textual #include of the driver TU.
 target_sources(atx-vol-tests PRIVATE
+    ../tools/oracle_convention_sweep.cpp
     ../tools/oracle_conventions.cpp
     ../tools/oracle_scorecard.cpp
     ../tools/oracle_cohort_reader.cpp)
@@ -384,6 +385,20 @@ if(ATX_USE_PCH)
 endif()
 
 include(GoogleTest)
+
+# Stage 3's worktree-local convention gate deliberately owns a small target:
+# it compiles only the isolated convention/sweep implementation and anchored
+# tests, never the full atx-vol test executable.
+add_executable(atx-vol-oracle-convention-tests
+    oracle_conventions_test.cpp
+    ../tools/oracle_convention_sweep.cpp
+    ../tools/oracle_conventions.cpp)
+target_link_libraries(atx-vol-oracle-convention-tests
+    PRIVATE atx::vol atx::core GTest::gtest_main atx_warnings)
+target_include_directories(atx-vol-oracle-convention-tests
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../tools ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME OracleConvention
+    COMMAND atx-vol-oracle-convention-tests --gtest_filter=OracleConvention.*)
 
 # Suites measured >10s (serial debug, 2026-07-11). Everything here still runs
 # under `ctest -L atx_vol`; `-L atx_vol_fast` is the developer inner loop.
