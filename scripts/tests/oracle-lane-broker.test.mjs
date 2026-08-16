@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawn, spawnSync } from 'node:child_process'
-import { createHash } from 'node:crypto'
+import { createHash, createHmac } from 'node:crypto'
 
 import { CANONICAL_REF, GATE_REGISTRY, MAIN_REF, OPERATION_REGISTRY, OracleLaneBroker, RECOVERY_SOURCE, TOOL_DEFINITIONS } from '../oracle-lane-broker.mjs'
 
@@ -135,6 +135,110 @@ test('production broker surface has fixed IDs, no raw command tool, and exact re
   const sprintWorkflow = readFileSync(join(projectRoot, '.claude', 'workflows', 'vol-sprint.js'), 'utf8')
   assert.match(sprintWorkflow, /failure: 'ORACLE_BROKER_MIGRATION_REQUIRED'/)
   assert.doesNotMatch(sprintWorkflow, /\bagent\s*\(/)
+})
+
+test('Stage 2 clean release reopens with fresh capability and immutable history while drift rejects', { timeout: 120_000 }, async () => {
+  const fx = fixture()
+  const identity = { operation_id: 'bootstrap_mode_a', stage: 'bootstrap-2', run_id: 'run-stage2-reopen', branch: 'lane/oracle-bootstrap-mode-a-run-stage2-reopen', base_sha: fx.base, heartbeat_id: 'run-stage2-reopen-mode-a' }
+  try {
+    git(fx.root, 'update-ref', 'refs/heads/oracle/canonical', fx.base)
+    const acquired = fx.broker.openLane(identity)
+    assert.equal(acquired.recovery_replay, false)
+    assert.equal(acquired.lease_start_sha, fx.base)
+    const gitDir = git(fx.root, 'rev-parse', '--absolute-git-dir')
+    const capDir = join(gitDir, 'oracle-lane-broker-v3', 'capabilities')
+    const recoveryDir = join(gitDir, 'oracle-lane-broker-v3', 'recoveries')
+    const firstCapPath = join(capDir, `${acquired.capability}.json`)
+    let firstRecord = JSON.parse(readFileSync(firstCapPath, 'utf8'))
+    assert.equal(firstRecord.attempt_epoch, 1)
+    assert.deepEqual(firstRecord.reopen_predecessors, [])
+    assert.equal(firstRecord.acquisition_root_guard_before.raw_sha256, firstRecord.acquisition_root_guard_after.raw_sha256)
+    const changelogPath = join(fx.pool, 'atx-vol', 'CHANGELOG.md')
+    const cleanChangelog = readFileSync(changelogPath, 'utf8')
+    writeFileSync(changelogPath, `${cleanChangelog}\nDIRTY\n`, 'utf8')
+    assert.throws(() => fx.broker.releaseLane({ capability: acquired.capability }), /refusing to release a dirty broker lane/)
+    writeFileSync(changelogPath, cleanChangelog, 'utf8')
+    assert.equal(fx.broker.releaseLane({ capability: acquired.capability }).sha, fx.base)
+    const immutableFirstRelease = readFileSync(firstCapPath, 'utf8')
+    firstRecord = JSON.parse(immutableFirstRelease)
+    assert.equal(firstRecord.state, 'released')
+    assert.equal(firstRecord.released_head, fx.base)
+    assert.equal(firstRecord.released_tree, git(fx.root, 'show', '-s', '--format=%T', fx.base))
+    assert.deepEqual(readdirSync(recoveryDir).filter(name => name.endsWith('.json')), [])
+
+    const strandedUntracked = join(fx.pool, 'atx-vol', 'STAGE2-DIRTY.tmp')
+    writeFileSync(changelogPath, `${cleanChangelog}\nDIRTY AFTER RELEASE\n`, 'utf8')
+    writeFileSync(strandedUntracked, 'preserve me\n', 'utf8')
+    assert.throws(() => fx.broker.openLane(identity), /post-acquisition base\/clean audit; dirty lane preserved and keeper stopped/)
+    assert.match(readFileSync(changelogPath, 'utf8'), /DIRTY AFTER RELEASE/)
+    assert.equal(readFileSync(strandedUntracked, 'utf8'), 'preserve me\n')
+    assert.equal(readFileSync(firstCapPath, 'utf8'), immutableFirstRelease)
+    assert.equal(readdirSync(capDir).filter(name => name.endsWith('.json')).length, 1)
+    const strandedLeasePath = join(fx.pool, '.atx-lease')
+    const strandedLease = readFileSync(strandedLeasePath, 'ascii')
+    const strandedKeeperPid = Number(strandedLease.match(/^keeper_pid=(\d+)$/m)?.[1])
+    assert.ok(strandedKeeperPid > 0)
+    const keeperStopped = spawnSync('powershell', ['-NoProfile', '-Command', `if (Get-Process -Id ${strandedKeeperPid} -ErrorAction SilentlyContinue) { exit 1 } else { exit 0 }`], { windowsHide: true })
+    assert.equal(keeperStopped.status, 0)
+    writeFileSync(changelogPath, cleanChangelog, 'utf8')
+    rmSync(strandedUntracked)
+    run('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', join(fx.root, 'scripts', 'lease-worktree.ps1'), '-Release', 'pool-1', '-RunId', identity.run_id], fx.root)
+    assert.equal(existsSync(strandedLeasePath), false)
+
+    const reopened = fx.broker.openLane(identity)
+    assert.notEqual(reopened.capability, acquired.capability)
+    assert.equal(reopened.recovery_replay, false)
+    assert.equal(reopened.lease_start_sha, fx.base)
+    assert.equal(readFileSync(firstCapPath, 'utf8'), immutableFirstRelease)
+    const secondCapPath = join(capDir, `${reopened.capability}.json`)
+    const secondRecord = JSON.parse(readFileSync(secondCapPath, 'utf8'))
+    assert.equal(secondRecord.state, 'active')
+    assert.equal(secondRecord.attempt_epoch, 2)
+    assert.deepEqual(secondRecord.reopen_predecessors, [{
+      capability_hash: createHash('sha256').update(acquired.capability).digest('hex'),
+      released_head: fx.base, released_tree: firstRecord.released_tree, lease_name: acquired.lease_name,
+    }])
+    assert.equal(secondRecord.acquisition_root_guard_before.raw_sha256, secondRecord.acquisition_root_guard_after.raw_sha256)
+    assert.equal(fx.broker.releaseLane({ capability: reopened.capability }).sha, fx.base)
+    assert.equal(readFileSync(firstCapPath, 'utf8'), immutableFirstRelease)
+    assert.equal(git(fx.root, 'rev-parse', `refs/heads/${identity.branch}`), fx.base)
+    assert.deepEqual(git(fx.pool, 'status', '--porcelain=v1', '-uall').split(/\r?\n/).filter(Boolean), [])
+
+    assert.throws(() => fx.broker.openLane({ ...identity, heartbeat_id: 'run-stage2-reopen-wrong' }), /identity conflicts/)
+    assert.throws(() => fx.broker.openLane({ ...identity, base_sha: fx.sourceCommit }), /identity conflicts/)
+
+    git(fx.root, 'update-ref', `refs/heads/${identity.branch}`, fx.sourceCommit, fx.base)
+    assert.throws(() => fx.broker.openLane(identity), /clean-base reopen audit/)
+    git(fx.root, 'update-ref', `refs/heads/${identity.branch}`, fx.base, fx.sourceCommit)
+
+    const quarantinePath = join(fx.pool, '.atx-quarantine-v3')
+    writeFileSync(quarantinePath, `version=3\nrun_id=${identity.run_id}\nbranch=${identity.branch}\nheartbeat_id=${identity.heartbeat_id}\n`, 'ascii')
+    assert.throws(() => fx.broker.openLane(identity), /quarantined for audit/)
+    rmSync(quarantinePath)
+
+    const secret = readFileSync(join(gitDir, 'oracle-lane-broker-v3', 'secret'), 'ascii').trim()
+    const { seal: _seal, ...wrongTreeBody } = JSON.parse(immutableFirstRelease)
+    wrongTreeBody.released_tree = '0'.repeat(40)
+    const wrongTreeSeal = createHmac('sha256', secret).update(JSON.stringify(wrongTreeBody)).digest('hex')
+    writeFileSync(firstCapPath, JSON.stringify({ ...wrongTreeBody, seal: wrongTreeSeal }), 'utf8')
+    assert.throws(() => fx.broker.openLane(identity), /clean-base reopen audit/)
+    writeFileSync(firstCapPath, immutableFirstRelease, 'utf8')
+
+    writeFileSync(firstCapPath, immutableFirstRelease.replace('"state":"released"', '"state":"tampered"'), 'utf8')
+    assert.throws(() => fx.broker.openLane(identity), /capability seal mismatch/)
+    writeFileSync(firstCapPath, immutableFirstRelease, 'utf8')
+    assert.deepEqual(readdirSync(recoveryDir).filter(name => name.endsWith('.json')), [])
+  } finally {
+    try { run('git', ['worktree', 'remove', '--force', fx.pool], fx.root) } catch { }
+    await new Promise(resolveDelay => setTimeout(resolveDelay, 250))
+    try {
+      rmSync(fx.sandbox, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 })
+    } catch (error) {
+      if (error?.code !== 'EPERM') throw error
+      const cleanup = spawn(process.execPath, ['-e', `setTimeout(()=>require('fs').rmSync(${JSON.stringify(fx.sandbox)},{recursive:true,force:true,maxRetries:20,retryDelay:200}),1000)`], { detached: true, stdio: 'ignore', windowsHide: true })
+      cleanup.unref()
+    }
+  }
 })
 
 test('Stage 1 recovery commits atop a current descendant base and reopens only by sealed replay', { timeout: 120_000 }, async () => {
