@@ -136,6 +136,14 @@ struct VrpBacktestSummary {
   double final_nav{0.0};
   double total_cost{0.0};
   std::string report_path{};
+  // F3/F4 hardening attribution (also per-row in the report's cumulative
+  // `vol_edge_held_steps` / `vol_edge_roll_closed` signal columns): rebalance
+  // ticks held on a missing signal date, per-name fail-soft skips, and
+  // fail-safe expiry-guard roll-closes. The gate's SP100 rerun reads these to
+  // quantify how often the hardened paths actually fired.
+  std::uint64_t n_held_steps{0};
+  std::uint64_t n_skipped_names{0};
+  std::uint64_t n_roll_closes{0};
 };
 
 // Parse + validate the subcommand's arguments. FAIL-CLOSED VALIDATION: a

@@ -544,6 +544,8 @@ Result<VrpBacktestSpec> parse_vrp_backtest_args(std::span<const std::string> arg
       ATX_TRY_VOID(parse_flag_double(flag, parsed, spec.config.stock_half_spread_bps));
     } else if (flag == "--hedge-band") {
       ATX_TRY_VOID(parse_flag_double(flag, parsed, spec.config.delta_hedge_band));
+    } else if (flag == "--expiry-guard") {
+      ATX_TRY_VOID(parse_flag_double(flag, parsed, spec.config.expiry_guard_days));
     } else {
       return Err(ErrorCode::InvalidArgument,
                  "vrp-backtest: unknown argument '" + std::string(flag) + "'");
@@ -699,6 +701,11 @@ Result<VrpBacktestSummary> run_vrp_backtest(const VrpBacktestSpec &spec) {
     summary.total_cost += step_cost;
   }
   summary.report_path = spec.report_path;
+  // F3/F4 hardening attribution, read off the strategy after the run (the
+  // same counters ride per-row in the report's cumulative signal columns).
+  summary.n_held_steps = strategy.held_steps();
+  summary.n_skipped_names = strategy.skipped_names();
+  summary.n_roll_closes = strategy.guard_roll_closes();
   return summary;
 }
 

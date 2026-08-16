@@ -3123,13 +3123,15 @@ struct VolEdgeCorpus {
   std::vector<std::string> archives;
 };
 
-[[nodiscard]] VolEdgeCorpus make_vol_edge_corpus(int n_dates,
-                                                 const std::vector<std::string> &symbols,
-                                                 const char *tag) {
+// Sessions at explicit CALENDAR-day offsets from kBaseNow, so a test can
+// shape weekends and holiday clusters (the F4 expiry-margin geometry).
+[[nodiscard]] VolEdgeCorpus
+make_vol_edge_corpus_at_offsets(const std::vector<int> &day_offsets,
+                                const std::vector<std::string> &symbols, const char *tag) {
   const fs::path dir = fresh_dir(tag);
   VolEdgeCorpus corpus;
   std::vector<std::pair<std::string, std::string>> dp;
-  for (int d = 0; d < n_dates; ++d) {
+  for (const int d : day_offsets) {
     const std::int64_t now = kBaseNow + static_cast<std::int64_t>(d) * kDayNs;
     std::vector<PricedSurface> surfaces;
     surfaces.reserve(symbols.size());
@@ -3148,6 +3150,17 @@ struct VolEdgeCorpus {
   }
   corpus.manifest = make_manifest(dp);
   return corpus;
+}
+
+[[nodiscard]] VolEdgeCorpus make_vol_edge_corpus(int n_dates,
+                                                 const std::vector<std::string> &symbols,
+                                                 const char *tag) {
+  std::vector<int> day_offsets;
+  day_offsets.reserve(static_cast<std::size_t>(n_dates));
+  for (int d = 0; d < n_dates; ++d) {
+    day_offsets.push_back(d);
+  }
+  return make_vol_edge_corpus_at_offsets(day_offsets, symbols, tag);
 }
 
 // Resolve the exact straddle the strategy opens for (uid, signed target) so a
@@ -3587,4 +3600,195 @@ TEST(VolEdge, MissingSignalDateHoldsBookAndCountsTheSkip) {
   EXPECT_EQ(strat.n_steps_entry_skipped(), 2u);
   EXPECT_EQ(res->n_steps_entry_skipped, 2u);
   EXPECT_DOUBLE_EQ(res->n_open_lots.back(), 4.0) << "the held straddles never closed";
+}
+
+// F4 regression (round-2 gate blocker; the empirically confirmed 2026-01-02
+// 07:25 UTC crash shape). The ROUND-1 default pair horizon_days=21 /
+// rebalance_every_n_steps=21 leaves < 1.1 calendar days of expiry margin
+// (21/252 * 365.25 = 30.4375d tenor vs 29-31+d per 21 sessions), so a
+// December-shaped two-holiday window stretches the rebalance span PAST the
+// synthetic expiry and the crossing lands between sessions — a run-ending
+// engine error ("expired without an exact observation"). The hardened
+// strategy must complete this run: the expiry guard roll-closes the cohort at
+// marks before the unobservable crossing, and the next tick reopens the book.
+TEST(VolEdge, RoundOneDefaultPairSurvivesTwoHolidayDecemberWindow) {
+  // 22 weekend-shaped sessions (5 on / 2 off) with a two-holiday cluster in
+  // the final two weeks. No inter-session gap exceeds 4 calendar days (the US
+  // maximum), yet session 21 sits 32 days after session 0 — past the
+  // 30.4375-day synthetic expiry of a cohort opened at session 0.
+  const std::vector<int> offsets = {0,  1,  2,  3,  4,  7,  8,  9,  10, 11, 14,
+                                    15, 16, 17, 18, 21, 22, 23, 24, 28, 29, 32};
+  const std::vector<std::string> symbols = {"AAA", "BBB", "CCC", "DDD"};
+  const VolEdgeCorpus corpus =
+      make_vol_edge_corpus_at_offsets(offsets, symbols, "vol-edge-f4-holiday");
+  auto clock = Clock::from_manifest(corpus.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  VolEdgeConfig cfg{};
+  cfg.horizon_days = 21.0; // the round-1 pair, restated explicitly
+  cfg.rebalance_every_n_steps = 21u;
+  cfg.long_fraction = 0.25;
+  cfg.short_fraction = 0.25;
+  cfg.risk_budget_vega = 5'000.0;
+  cfg.vov_floor = 0.05;
+  cfg.delta_hedge = false;
+  std::vector<VrpSignalRow> signal;
+  for (const std::string &date : {corpus.dates[0], corpus.dates[21]}) {
+    signal.push_back(signal_row("AAA", date, +2.0, 1.0));
+    signal.push_back(signal_row("BBB", date, +1.0, 1.0));
+    signal.push_back(signal_row("CCC", date, -1.0, 1.0));
+    signal.push_back(signal_row("DDD", date, -2.0, 1.0));
+  }
+
+  VolEdgeStrategy strat{signal, cfg};
+  auto res = run_backtest(*clock, strat, RunConfig{});
+  ASSERT_TRUE(res.has_value())
+      << "the two-holiday window must not carry the cohort past expiry: "
+      << res.error().to_string();
+  ASSERT_EQ(res->size(), offsets.size());
+  // The guard closes the cohort at session 19 (day 28: 2.4375 days from the
+  // day-30.4375 expiry, inside the 5-day guard), the book stays flat across
+  // the crossing, and the step-21 tick reopens: never lost for the run.
+  EXPECT_EQ(strat.guard_roll_closes(), 1u);
+  EXPECT_EQ(strat.held_steps(), 0u) << "both ticks had a signal: no fail-soft hold";
+  EXPECT_DOUBLE_EQ(res->n_open_lots[18], 4.0) << "day 24: 6.4 days of margin, still held";
+  EXPECT_DOUBLE_EQ(res->n_open_lots[19], 0.0) << "day 28: guard roll-close at marks";
+  EXPECT_DOUBLE_EQ(res->n_open_lots[20], 0.0) << "flat across the would-be crossing";
+  EXPECT_DOUBLE_EQ(res->n_open_lots.back(), 4.0) << "the step-21 rebalance must reopen";
+}
+
+// The HARDENED defaults on the same two-holiday calendar: safe by
+// construction, not saved by the guard. rebalance_every_n_steps=15 spans at
+// most 23 calendar days against the tenor's 30.4375, so the normal roll
+// always lands first and the fail-safe never has to fire.
+TEST(VolEdge, DefaultConfigIsSafeByConstructionOnHolidayCalendar) {
+  const std::vector<int> offsets = {0,  1,  2,  3,  4,  7,  8,  9,  10, 11, 14,
+                                    15, 16, 17, 18, 21, 22, 23, 24, 28, 29, 32};
+  const std::vector<std::string> symbols = {"AAA", "BBB", "CCC", "DDD"};
+  const VolEdgeCorpus corpus =
+      make_vol_edge_corpus_at_offsets(offsets, symbols, "vol-edge-default-holiday");
+  auto clock = Clock::from_manifest(corpus.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  const VolEdgeConfig cfg{}; // ALL defaults — the point of the test
+  std::vector<VrpSignalRow> signal;
+  for (const std::string &date : {corpus.dates[0], corpus.dates[15]}) {
+    signal.push_back(signal_row("AAA", date, +2.0, 1.0));
+    signal.push_back(signal_row("BBB", date, +1.0, 1.0));
+    signal.push_back(signal_row("CCC", date, -1.0, 1.0));
+    signal.push_back(signal_row("DDD", date, -2.0, 1.0));
+  }
+  VolEdgeStrategy strat{signal, cfg};
+  auto res = run_backtest(*clock, strat, RunConfig{});
+  ASSERT_TRUE(res.has_value()) << res.error().to_string();
+  ASSERT_EQ(res->size(), offsets.size());
+  EXPECT_EQ(strat.guard_roll_closes(), 0u)
+      << "safe by construction: the default cadence must never need the guard";
+  EXPECT_EQ(strat.held_steps(), 0u);
+  // The step-15 tick (day 21, 9.4 days of margin) rolled and reopened.
+  EXPECT_DOUBLE_EQ(res->n_open_lots[14], 4.0);
+  EXPECT_DOUBLE_EQ(res->n_open_lots.back(), 4.0);
+}
+
+// F3 regression (11-session mid-run signal gap). The fail-soft
+// hold-on-missing-signal path used to keep the previous book unchanged for as
+// long as the gap lasted, carrying the held lots past their synthetic expiry
+// between sessions — the same run-ending engine error as F4. The hardened
+// strategy must roll-close the held book at marks before the crossing and
+// resume trading when the signal returns.
+TEST(VolEdge, SignalGapCannotHoldTheBookPastExpiry) {
+  const std::vector<std::string> symbols = {"AAA", "BBB"};
+  const VolEdgeCorpus corpus = make_vol_edge_corpus(15, symbols, "vol-edge-f3-gap");
+  auto clock = Clock::from_manifest(corpus.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  VolEdgeConfig cfg{};
+  cfg.long_fraction = 0.5;
+  cfg.short_fraction = 0.5;
+  cfg.risk_budget_vega = 5'000.0;
+  cfg.vov_floor = 0.05;
+  cfg.delta_hedge = false;
+  cfg.horizon_days = 5.0;          // tenor = 5/252 * 365.25 = 7.247 calendar days
+  cfg.rebalance_every_n_steps = 1; // daily re-rank: every gap session is a held tick
+  // Signal present on sessions 0-1 and 13-14; missing on 2..12 (11 sessions).
+  // The cohort opened at session 1 expires 7.247 days later, INSIDE the gap.
+  std::vector<VrpSignalRow> signal;
+  for (const std::size_t d : {std::size_t{0}, std::size_t{1}, std::size_t{13}, std::size_t{14}}) {
+    signal.push_back(signal_row("AAA", corpus.dates[d], +2.0, 1.0));
+    signal.push_back(signal_row("BBB", corpus.dates[d], -2.0, 1.0));
+  }
+
+  VolEdgeStrategy strat{signal, cfg};
+  auto res = run_backtest(*clock, strat, RunConfig{});
+  ASSERT_TRUE(res.has_value())
+      << "an 11-session signal gap must not carry the held book past expiry: "
+      << res.error().to_string();
+  ASSERT_EQ(res->size(), 15u);
+  // The session-1 cohort expires 7.247 days after session 1. The guard (5
+  // calendar days) fires at session 4 (3.247 days out); the held book is
+  // closed at marks there and stays flat until the signal returns.
+  EXPECT_EQ(strat.guard_roll_closes(), 1u);
+  EXPECT_EQ(strat.held_steps(), 11u) << "sessions 2..12 held on a missing signal date";
+  EXPECT_EQ(strat.n_steps_entry_skipped(), 11u);
+  EXPECT_DOUBLE_EQ(res->n_open_lots[3], 4.0) << "session 3: 4.25 days out, still held";
+  EXPECT_DOUBLE_EQ(res->n_open_lots[4], 0.0) << "session 4: guard roll-close at marks";
+  EXPECT_DOUBLE_EQ(res->n_open_lots[12], 0.0) << "held lots must be gone before expiry";
+  EXPECT_DOUBLE_EQ(res->n_open_lots.back(), 4.0) << "trading resumes with the signal";
+  // The hardening counters ride the recorded signal columns (cumulative), so
+  // the vrp-backtest report can attribute held/roll-closed sessions per row.
+  const std::vector<double> *held_col = nullptr;
+  const std::vector<double> *roll_col = nullptr;
+  for (const auto &[name, series] : res->signals) {
+    if (name == "vol_edge_held_steps") {
+      held_col = &series;
+    } else if (name == "vol_edge_roll_closed") {
+      roll_col = &series;
+    }
+  }
+  ASSERT_NE(held_col, nullptr);
+  ASSERT_NE(roll_col, nullptr);
+  EXPECT_DOUBLE_EQ(held_col->back(), 11.0);
+  EXPECT_DOUBLE_EQ(roll_col->back(), 1.0);
+  EXPECT_DOUBLE_EQ((*roll_col)[3], 0.0);
+  EXPECT_DOUBLE_EQ((*roll_col)[4], 1.0) << "the roll-close lands on the session it fired";
+}
+
+// The hardened-config contract: the defaults hold a real worst-case margin
+// above the guard, and validate_vol_edge_config fails closed on any
+// guard/tenor pair that could never hold a book.
+TEST(VolEdge, ConfigValidationPinsTheHardenedDefaultsAndGuard) {
+  const VolEdgeConfig cfg{};
+  EXPECT_TRUE(validate_vol_edge_config(cfg).has_value());
+  // Default pin: 21td tenor / 15-session cadence / 5-day guard. The margin
+  // arithmetic is the safety argument, so pin it, not just the numbers: a
+  // 15-session span costs at most ceil(15 * 7/5) + 2 = 23 calendar days on a
+  // weekend calendar with a two-holiday cluster, and what remains of the
+  // 30.4375-day tenor must clear the guard.
+  EXPECT_DOUBLE_EQ(cfg.horizon_days, 21.0);
+  EXPECT_EQ(cfg.rebalance_every_n_steps, 15u);
+  EXPECT_DOUBLE_EQ(cfg.expiry_guard_days, 5.0);
+  const double tenor_calendar_days = cfg.horizon_days * (365.25 / 252.0);
+  const double worst_case_span_days =
+      std::ceil(static_cast<double>(cfg.rebalance_every_n_steps) * 7.0 / 5.0) + 2.0;
+  EXPECT_GE(tenor_calendar_days - worst_case_span_days, cfg.expiry_guard_days)
+      << "default margin must clear the guard or the defaults are unsafe again";
+
+  // The guard knob itself fails closed: non-finite, zero, negative, or at or
+  // above the tenor's calendar days (a config that could never hold a book).
+  for (const double bad : {0.0, -1.0, std::numeric_limits<double>::quiet_NaN(),
+                           std::numeric_limits<double>::infinity()}) {
+    VolEdgeConfig bad_cfg{};
+    bad_cfg.expiry_guard_days = bad;
+    const Status st = validate_vol_edge_config(bad_cfg);
+    ASSERT_FALSE(st.has_value()) << "expiry_guard_days=" << bad;
+    EXPECT_EQ(st.error().code(), ErrorCode::InvalidArgument);
+  }
+  VolEdgeConfig negative_margin{};
+  negative_margin.horizon_days = 5.0; // tenor = 7.247 calendar days
+  negative_margin.expiry_guard_days = 7.3;
+  const Status rejected = validate_vol_edge_config(negative_margin);
+  ASSERT_FALSE(rejected.has_value());
+  EXPECT_EQ(rejected.error().code(), ErrorCode::InvalidArgument);
+  negative_margin.expiry_guard_days = 7.0; // just inside the tenor: fine
+  EXPECT_TRUE(validate_vol_edge_config(negative_margin).has_value());
 }
