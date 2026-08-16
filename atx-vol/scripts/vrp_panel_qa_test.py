@@ -211,6 +211,17 @@ class TestHardTierWiring(_TmpDirCase):
             main([str(path), "--out-md", str(out_md), "--max-t21-violations", "0"]), 0
         )
 
+    def test_f1_threshold_negative_is_a_usage_error(self) -> None:
+        # A sign typo must be a usage error at argparse (exit 2), never a
+        # fake gate failure: pre-fix, -1 on a ZERO-violation panel exited 1
+        # with "0 violation(s) exceed the -1 threshold" (fix-2 review minor).
+        path = _write_panel(self.tmp, "clean.tsv", _symbol_rows("AAA", 30, 9))
+        out_md = self.tmp / "report.md"
+        with self.assertRaises(SystemExit) as ctx:
+            main([str(path), "--out-md", str(out_md), "--max-t21-violations", "-1"])
+        self.assertEqual(ctx.exception.code, 2)
+        self.assertFalse(out_md.exists())  # rejected before any work
+
     def test_duplicate_keys_still_exit_one(self) -> None:
         a = _write_panel(self.tmp, "a.tsv", _symbol_rows("AAA", 30, 9))
         b = _write_panel(self.tmp, "b.tsv", _symbol_rows("AAA", 30, 9))

@@ -452,6 +452,17 @@ def build_report(paths: list[Path]) -> tuple[str, bool, int]:
 # ── CLI ───────────────────────────────────────────────────────────────────
 
 
+def _t21_threshold(text: str) -> int:
+    """argparse type for --max-t21-violations: a non-negative int, rejected at
+    PARSE time (fix-2 review minor: a sign typo like -1 previously turned a
+    ZERO-violation panel into exit 1 with the absurd message "0 violation(s)
+    exceed the -1 threshold" -- a usage error, exit 2, never a gate result)."""
+    value = int(text)  # ValueError -> argparse usage error (exit 2)
+    if value < 0:
+        raise argparse.ArgumentTypeError(f"must be a non-negative count, got {value}")
+    return value
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Build a markdown QA report over one or more vrp_panel_v1 TSVs."
@@ -460,11 +471,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--out-md", required=True, type=Path)
     parser.add_argument(
         "--max-t21-violations",
-        type=int,
+        type=_t21_threshold,
         default=None,
         metavar="N",
         help="opt-in hard gate for section 5: exit 1 iff the t+21 coverage "
-        "violation count EXCEEDS N (default: report-only, exit 0)",
+        "violation count EXCEEDS N (N >= 0; default: report-only, exit 0)",
     )
     return parser.parse_args(argv)
 

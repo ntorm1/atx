@@ -555,12 +555,13 @@ transform_panel_rows(const std::string &tsv,
   return out;
 }
 
-// Sparse-symbol fixture for the pooled-session-axis label_end fix (round-2
-// review major 2): CCC thinned to every other session. Its 21-EMITTED-rows
-// label window spans 42 pooled sessions, but the TRUE horizon is 21 pooled
-// sessions -- the round-2 code inflated sparse symbols' label spans (250
-// days on the real SP100 corpus) and, through the global-max embargo, made
-// the motivating 102-name panel untrainable.
+// Sparse-EMITTED-rows fixture (DUK-class sparsity): CCC thinned to every
+// other session. Its 21-emitted-rows label window spans 42 pooled sessions
+// -- exactly AT the default span cap, so its rows stay admitted and its
+// 42-session span becomes the embargo source. label_end must be the
+// EMITTED-AXIS end (a provable upper bound on the true bar-axis t+21 end):
+// the fix-2 review demonstrated that the pooled-axis "true horizon" claim
+// is false for bar-holey symbols and admitted leaking train rows.
 [[nodiscard]] std::string make_sparse_ccc_panel_tsv() {
   return transform_panel_rows(make_synth_panel_tsv(), [](std::vector<std::string> &f) {
     if (f[0] != "CCC") {
@@ -568,6 +569,50 @@ transform_panel_rows(const std::string &tsv,
     }
     return std::stoi(f[1].substr(5)) % 2 == 0; // keep even sessions only
   });
+}
+
+// Bar-holey fixture (the fix-2 review's demonstrated-leak attack shape):
+// HHH's LABEL-GENERATION (bar) axis is SPARSER than the pooled axis --
+// present two sessions of every three (d % 3 != 2) while AAA/BBB/CCC keep
+// the pooled axis dense. Emitted rows == bars for HHH, so bar q sits at
+// session d(q) = 3*(q/2) + (q%2) and the TRUE label end of bar q is bar
+// q+21 at session d(q) + 31 (q even) or + 32 (q odd) -- STRICTLY LATER
+// than pooled session d(q)+21. A pooled-axis label_end understates every
+// such row's true window (SP100: HD/AMT class, 77 of 102 names carried
+// >= 1 in-span bar hole).
+[[nodiscard]] std::size_t bar_holey_session_of(std::size_t q) {
+  return 3 * (q / 2) + (q % 2);
+}
+
+[[nodiscard]] std::string make_bar_holey_panel_tsv() {
+  std::string out = make_synth_panel_tsv();
+  constexpr std::size_t kBars = 120; // sessions 0..178, d % 3 != 2
+  for (std::size_t q = 0; q < kBars; ++q) {
+    const std::size_t d = bar_holey_session_of(q);
+    const bool tail = q + kSynthTail >= kBars;
+    out += "HHH\t" + synth_date_string(d) + '\t' +
+           std::to_string(kSynthBaseTs + static_cast<std::int64_t>(d) * kSynthDayNs) +
+           (tail ? "\t100\t0.2\t0.206\tnan\tnan" : "\t100\t0.2\t0.206\t0.25\t0.001875") +
+           "\t-3\t-3\t-3\t0.2\t0.01\t-0.05\t0.001\t0.02\t0\t0.1\n";
+  }
+  return out;
+}
+
+// Ultra-sparse fixture for the span cap: SSS present every 3rd session only
+// (60 bars over 180 sessions), so each 21-emitted-row window spans 63
+// pooled sessions -- past the default 42-session cap (2x horizon).
+[[nodiscard]] std::string make_span_cap_sss_panel_tsv() {
+  std::string out = make_synth_panel_tsv();
+  constexpr std::size_t kBars = 60; // sessions 0, 3, ..., 177
+  for (std::size_t q = 0; q < kBars; ++q) {
+    const std::size_t d = 3 * q;
+    const bool tail = q + kSynthTail >= kBars;
+    out += "SSS\t" + synth_date_string(d) + '\t' +
+           std::to_string(kSynthBaseTs + static_cast<std::int64_t>(d) * kSynthDayNs) +
+           (tail ? "\t100\t0.2\t0.206\tnan\tnan" : "\t100\t0.2\t0.206\t0.25\t0.001875") +
+           "\t-3\t-3\t-3\t0.2\t0.01\t-0.05\t0.001\t0.02\t0\t0.1\n";
+  }
+  return out;
 }
 
 [[nodiscard]] vrp::VrpTrainConfig make_synth_config(const std::string &panel_path,
@@ -774,9 +819,9 @@ TEST(VrpTrainLoader, NonTailUnlabeledRowFailsClosed) {
   EXPECT_NE(obs.error().to_string().find("non-tail unlabeled row"), std::string::npos);
 }
 
-// ── VrpTrain: label_end on the POOLED session axis (round-2 review major 2) ─
+// ── VrpTrain: label_end on the EMITTED axis (fix-2 review blocker revert) ───
 
-TEST(VrpTrainLoader, SparseSymbolLabelEndIsTruePooledSessionHorizon) {
+TEST(VrpTrainLoader, SparseSymbolLabelEndIsConservativeEmittedAxisEnd) {
   const ScopedTempFile file("sparse_ccc", make_sparse_ccc_panel_tsv());
   const auto panel = vrp::load_vrp_panel(file.path_string());
   ASSERT_TRUE(panel.has_value()) << panel.error().to_string();
@@ -789,25 +834,28 @@ TEST(VrpTrainLoader, SparseSymbolLabelEndIsTruePooledSessionHorizon) {
   EXPECT_EQ(obs->n_rows_rejected_no_t21, 11u);
   EXPECT_EQ(obs->n_symbols_fully_rejected, 0u);
   EXPECT_EQ(obs->obs.size(), 159u + 159u + 69u);
-  // CCC's date-0 observation (uid = sorted symbol index + 1 = 3) carries
-  // the TRUE horizon: the pooled-axis timestamp 21 sessions later, NOT its
-  // own 21st emitted row two calendar-sessions out (date 42).
+  // CCC's date-0 observation (uid = sorted symbol index + 1 = 3) records
+  // the EMITTED-AXIS end: its own 21st emitted row (date 42 under the
+  // every-other-session thinning), NOT the pooled-axis timestamp 21
+  // sessions later. Emitted rows are a subset of the symbol's label-
+  // generation bars, so this end is >= the true bar-axis t+21 end BY
+  // CONSTRUCTION -- it may over-purge, it can never understate (the fix-2
+  // review's demonstrated leak).
   bool found = false;
   for (const ResearchObservation &ob : obs->obs) {
     if (ob.uid == 3u && ob.decision_ts_ns == kSynthBaseTs) {
-      EXPECT_EQ(ob.label_end_ts_ns, kSynthBaseTs + 21 * kSynthDayNs);
+      EXPECT_EQ(ob.label_end_ts_ns, kSynthBaseTs + 42 * kSynthDayNs);
       found = true;
     }
   }
   EXPECT_TRUE(found);
-  // Hence the sparse symbol cannot poison the global embargo: the maximum
-  // observed label span (make_vrp_plan's embargo_ns source) is exactly the
-  // 21-session horizon.
+  // CCC's 42-session span sits exactly AT the default cap (inclusive):
+  // admitted, and it becomes the max span the embargo derives from.
   std::int64_t max_span = 0;
   for (const ResearchObservation &ob : obs->obs) {
     max_span = std::max(max_span, ob.label_end_ts_ns - ob.decision_ts_ns);
   }
-  EXPECT_EQ(max_span, 21 * kSynthDayNs);
+  EXPECT_EQ(max_span, 42 * kSynthDayNs);
 }
 
 TEST(VrpTrainLoader, SparsePanelTrainsLeakFreeAndOverlappingRowsStayRejected) {
@@ -817,7 +865,8 @@ TEST(VrpTrainLoader, SparsePanelTrainsLeakFreeAndOverlappingRowsStayRejected) {
       vrp::run_vrp_train(make_synth_config(file.path_string(), out.string()));
   ASSERT_TRUE(report.has_value()) << report.error().to_string();
   ASSERT_GE(report->folds.size(), 1u);
-  EXPECT_EQ(report->plan.spec.embargo_ns, 21 * kSynthDayNs);
+  // Embargo = max ADMITTED emitted-axis span: CCC's 42 sessions.
+  EXPECT_EQ(report->plan.spec.embargo_ns, 42 * kSynthDayNs);
   const auto &obs = report->observations.obs;
   // Leak-conservatism preserved: the independent audit passes, and no
   // admitted train row's TRUE label window overlaps its fold's test window.
@@ -847,6 +896,135 @@ TEST(VrpTrainLoader, SparsePanelTrainsLeakFreeAndOverlappingRowsStayRejected) {
   }
   std::error_code ec;
   std::filesystem::remove_all(out, ec);
+}
+
+TEST(VrpTrainLoader, BarHoleySymbolLabelEndNeverUnderstatesTrueBarAxisEnd) {
+  const ScopedTempFile file("bar_holey", make_bar_holey_panel_tsv());
+  const auto panel = vrp::load_vrp_panel(file.path_string());
+  ASSERT_TRUE(panel.has_value()) << panel.error().to_string();
+  const auto obs = vrp::build_vrp_observations(*panel);
+  ASSERT_TRUE(obs.has_value()) << obs.error().to_string();
+  // HHH = sorted symbol index 3 -> uid 4. For every admitted HHH row the
+  // recorded label_end must NOT understate the true bar-axis t+21 end (the
+  // fixture's emitted list IS the bar axis, so bar q's true end is bar
+  // q+21's timestamp). The pooled-axis end sat 10-11 sessions EARLY here --
+  // the review's attack shape; here it is exact, and > pooled t+21.
+  std::size_t n_hhh = 0;
+  for (const ResearchObservation &ob : obs->obs) {
+    if (ob.uid != 4u) {
+      continue;
+    }
+    const auto d =
+        static_cast<std::size_t>((ob.decision_ts_ns - kSynthBaseTs) / kSynthDayNs);
+    const std::size_t q = 2 * (d / 3) + (d % 3); // d % 3 is 0 or 1 by construction
+    const std::int64_t true_end =
+        kSynthBaseTs +
+        static_cast<std::int64_t>(bar_holey_session_of(q + 21)) * kSynthDayNs;
+    EXPECT_EQ(ob.label_end_ts_ns, true_end) << "HHH bar " << q;
+    EXPECT_GT(ob.label_end_ts_ns, ob.decision_ts_ns + 21 * kSynthDayNs) << "HHH bar " << q;
+    ++n_hhh;
+  }
+  // All 99 labeled HHH bars have 21 emitted successors and 31/32-session
+  // spans -- inside the default cap, so every one is admitted.
+  EXPECT_EQ(n_hhh, 99u);
+}
+
+TEST(VrpTrainLoader, BarHoleySymbolCannotAdmitALeakingTrainRow) {
+  const ScopedTempFile file("bar_holey_e2e", make_bar_holey_panel_tsv());
+  const auto out = unique_temp_path("bar_holey_out", "");
+  const auto report =
+      vrp::run_vrp_train(make_synth_config(file.path_string(), out.string()));
+  ASSERT_TRUE(report.has_value()) << report.error().to_string();
+  ASSERT_GE(report->folds.size(), 1u);
+  const auto &obs = report->observations.obs;
+  // The review's acceptance check in miniature: every admitted HHH train
+  // row's TRUE bar-axis label end stays <= its fold's earliest test
+  // decision. The pooled-axis semantics admitted HHH rows decided within
+  // (test_min - 32, test_min - 21) sessions whose true windows crossed the
+  // test boundary -- exactly the demonstrated SP100 leak.
+  for (const auto &fold : report->plan.folds) {
+    std::int64_t test_min = std::numeric_limits<std::int64_t>::max();
+    for (const std::size_t t : fold.test_indices) {
+      test_min = std::min(test_min, obs[t].decision_ts_ns);
+    }
+    for (const std::size_t i : fold.train_indices) {
+      if (obs[i].uid != 4u) {
+        continue;
+      }
+      const auto d =
+          static_cast<std::size_t>((obs[i].decision_ts_ns - kSynthBaseTs) / kSynthDayNs);
+      const std::size_t q = 2 * (d / 3) + (d % 3);
+      const std::int64_t true_end =
+          kSynthBaseTs +
+          static_cast<std::int64_t>(bar_holey_session_of(q + 21)) * kSynthDayNs;
+      EXPECT_LE(true_end, test_min) << "fold " << fold.id << " HHH bar " << q;
+    }
+  }
+  // Embargo derives from the max ADMITTED emitted-axis span -- HHH's 32
+  // sessions -- never the pooled-axis fiction of 21.
+  EXPECT_EQ(report->plan.spec.embargo_ns, 32 * kSynthDayNs);
+  std::error_code ec;
+  std::filesystem::remove_all(out, ec);
+}
+
+// ── VrpTrain: span-cap reject-and-count (fix-2 remedy, trainability leg) ────
+
+TEST(VrpTrainLoader, SpanCapRejectsAndCountsUltraSparseRows) {
+  const ScopedTempFile file("span_cap", make_span_cap_sss_panel_tsv());
+  const auto panel = vrp::load_vrp_panel(file.path_string());
+  ASSERT_TRUE(panel.has_value()) << panel.error().to_string();
+  const auto obs = vrp::build_vrp_observations(*panel);
+  ASSERT_TRUE(obs.has_value()) << obs.error().to_string();
+  // SSS: 39 labeled rows, every one WITH a t+21 emitted successor -- but
+  // each window spans 63 pooled sessions > the default 42 cap: rejected
+  // one by one and counted, so the symbol cannot poison the global embargo
+  // (round-1's DUK shape: one sparse symbol embargoed ~70% of the corpus).
+  EXPECT_EQ(obs->n_labeled_rows, 477u + 39u);
+  EXPECT_EQ(obs->n_rows_rejected_no_t21, 0u);
+  EXPECT_EQ(obs->n_rows_rejected_span_cap, 39u);
+  EXPECT_EQ(obs->n_symbols_fully_rejected, 1u);
+  EXPECT_EQ(obs->obs.size(), 477u);
+  std::int64_t max_span = 0;
+  for (const ResearchObservation &ob : obs->obs) {
+    max_span = std::max(max_span, ob.label_end_ts_ns - ob.decision_ts_ns);
+  }
+  EXPECT_EQ(max_span, 21 * kSynthDayNs);
+  // Cap boundary is inclusive: raising it to exactly 63 admits SSS whole.
+  const auto obs63 = vrp::build_vrp_observations(*panel, 63);
+  ASSERT_TRUE(obs63.has_value()) << obs63.error().to_string();
+  EXPECT_EQ(obs63->n_rows_rejected_span_cap, 0u);
+  EXPECT_EQ(obs63->obs.size(), 477u + 39u);
+  // A cap below the 21-session horizon would reject every row: fail closed.
+  const auto bad = vrp::build_vrp_observations(*panel, 20);
+  ASSERT_FALSE(bad.has_value());
+  EXPECT_EQ(bad.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_NE(bad.error().to_string().find("below the 21-session horizon"), std::string::npos);
+}
+
+TEST(VrpTrainLoader, SpanCapCounterIsPersistedAndEmbargoFollowsTheCap) {
+  const ScopedTempFile file("span_cap_e2e", make_span_cap_sss_panel_tsv());
+  const auto out = unique_temp_path("span_cap_out", "");
+  const auto report =
+      vrp::run_vrp_train(make_synth_config(file.path_string(), out.string()));
+  ASSERT_TRUE(report.has_value()) << report.error().to_string();
+  EXPECT_EQ(report->observations.n_rows_rejected_span_cap, 39u);
+  // Every admitted symbol is dense: the embargo stays the bare horizon.
+  EXPECT_EQ(report->plan.spec.embargo_ns, 21 * kSynthDayNs);
+  const std::string metrics = read_file_bytes(report->metrics_path);
+  EXPECT_NE(metrics.find("# n_rows_rejected_span_cap=39\n"), std::string::npos);
+  // Raising the cap via config admits SSS and the embargo follows the max
+  // ADMITTED span: the cap bounds the embargo, and the embargo bounds the
+  // purge/embargo attrition that zeroed the SP100 folds in round 1.
+  vrp::VrpTrainConfig cfg = make_synth_config(
+      file.path_string(), unique_temp_path("span_cap_out63", "").string());
+  cfg.max_label_span_sessions = 63;
+  const auto wide = vrp::run_vrp_train(cfg);
+  ASSERT_TRUE(wide.has_value()) << wide.error().to_string();
+  EXPECT_EQ(wide->observations.n_rows_rejected_span_cap, 0u);
+  EXPECT_EQ(wide->plan.spec.embargo_ns, 63 * kSynthDayNs);
+  std::error_code ec;
+  std::filesystem::remove_all(out, ec);
+  std::filesystem::remove_all(cfg.out_dir, ec);
 }
 
 // ── VrpTrain: QLIKE in variance levels (hand values) ────────────────────────
@@ -1096,6 +1274,7 @@ TEST_F(VrpTrainPipelineTest, MetricsFileCarriesRejectionMetaLines) {
   const std::string bytes = read_file_bytes(report_->metrics_path);
   EXPECT_NE(bytes.find("# n_labeled_rows=477\n"), std::string::npos);
   EXPECT_NE(bytes.find("# n_rows_rejected_no_t21=0\n"), std::string::npos);
+  EXPECT_NE(bytes.find("# n_rows_rejected_span_cap=0\n"), std::string::npos);
   EXPECT_NE(bytes.find("# n_symbols_fully_rejected=0\n"), std::string::npos);
 }
 
