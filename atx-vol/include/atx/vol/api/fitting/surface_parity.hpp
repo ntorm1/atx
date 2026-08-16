@@ -155,6 +155,14 @@ struct SurfaceParityInputs {
   // disjoint per-chain output slots, so the result is bit-identical for any
   // worker count. `run_surface_parity` (the eSSVI path) does not read this
   // field and is unaffected.
+  // Minimum surviving fit rows for an expiry to be PREPARED at all. 0 (default)
+  // selects `kMinPreparedFitRows`, which is the historical behaviour: an expiry
+  // below the floor does not exist. Lower it only when the caller can serve a
+  // sub-floor expiry without fitting it — `CalibOpts::essvi_anchored_
+  // interpolate_thin` is the one such caller — because the row floor then
+  // governs whether a slice is FIT INDEPENDENTLY, not whether it EXISTS.
+  std::uint32_t min_prepared_rows_to_exist{0};
+
   unsigned fit_workers{0};
 
   // Score the re-Americanized per-expiry parity diagnostic (a SECOND cold

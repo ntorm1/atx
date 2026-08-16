@@ -10,6 +10,7 @@
 #include <limits>
 #include <optional> // std::nullopt (cold accurate re-inversion on audit failure)
 #include <span>     // prepared.fit_observations() view (C1 input certification)
+#include <cassert>  // anchored eSSVI arbitrage invariant (fail loud in debug)
 #include <string>   // typed board-refusal message (W2-B)
 #include <utility>
 #include <vector>
@@ -21,6 +22,7 @@
 #include "atx/vol/api/fitting/arb.hpp"              // arb_check_calendar, ArbViolation
 #include "atx/vol/api/fitting/calib.hpp"            // FitObs, FitDiag, CalibOpts
 #include "atx/vol/api/fitting/deamer.hpp"           // de_americanize_chain, european_equiv_iv, otm_side
+#include "fitting/essvi_anchored.hpp"   // anchored_fit_sequence (opt-in)
 #include "fitting/essvi_calib.hpp"      // essvi_fit_slice
 #include "core/parallel_for.hpp"     // parallel_for_dynamic (per-chain prepass fan-out)
 #include "atx/vol/api/fitting/parity.hpp"           // chain_parity, ParityInputs, ParityReport
@@ -593,6 +595,115 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
     });
   }
 
+  // ── Anchored eSSVI pre-pass (opt-in; CalibOpts::essvi_anchored) ──────────
+  //
+  // Resolve the WHOLE board's slice parameters up front, in ascending T. This
+  // cannot be folded into the serial loop below: a quote-starved expiry is
+  // served by interpolating between its calibrated neighbours, and one of those
+  // neighbours is LONGER-dated than the expiry itself, so its parameters are not
+  // yet known when the loop reaches the thin slice. The loop then simply
+  // consumes what this pass decided.
+  //
+  // With the flag off this whole block is skipped and nothing below reads its
+  // outputs, so the legacy path is unchanged.
+  std::vector<std::optional<EssviParams>> anchored_slice(n_chains);
+  std::vector<AnchoredSliceOrigin> anchored_origin(n_chains, AnchoredSliceOrigin::Dropped);
+  if (in.calib.essvi_anchored) {
+    const std::size_t min_fit_rows =
+        (in.calib.min_rows_to_fit_independently > 0u)
+            ? static_cast<std::size_t>(in.calib.min_rows_to_fit_independently)
+            : kMinPreparedFitRows;
+    std::vector<AnchoredSliceRequest> reqs;
+    std::vector<std::size_t> req_chain;
+    reqs.reserve(n_chains);
+    req_chain.reserve(n_chains);
+    for (std::size_t i = 0; i < n_chains; ++i) {
+      if (!(under.chains[i].T > 0.0) || !slots[i].result.has_value() ||
+          !slots[i].result->has_value()) {
+        continue; // degenerate T, carry failure or hard prep defect: no expiry
+      }
+      const PreparedSlice &ps = (*slots[i].result)->slice;
+      AnchoredSliceRequest r{};
+      r.obs = ps.fit_observations();
+      r.T = under.chains[i].T;
+      r.F = ps.forward();
+      // The row floor now decides only whether the slice is calibrated on its
+      // OWN observations. With interpolation off every prepared slice is (the
+      // preparation floor already guaranteed the rows).
+      r.fit_independently = !in.calib.essvi_anchored_interpolate_thin ||
+                            ps.fit_observations().size() >= min_fit_rows;
+      reqs.push_back(r);
+      req_chain.push_back(i);
+    }
+    const Result<std::vector<AnchoredSliceResult>> seq =
+        anchored_fit_sequence(reqs, AnchoredOpts{});
+    // Arbitrage is an INVARIANT of what this pass produced, not a verdict to be
+    // passed afterwards. Every slice came out of a psi interval on which both
+    // Gatheral-Jacquier butterfly conditions hold identically, and every
+    // consecutive pair was either calibrated inside the previous slice's
+    // calendar interval or interpolated between two that were — so a violation
+    // here cannot be a property of the market, only a defect in the interval
+    // algebra of essvi_anchored.cpp.
+    //
+    // That is why this is a CHECK and never a repair: the legacy path's
+    // butterfly/calendar handling is a rejection gate that discards a completed
+    // surface and re-fits it on another curve family (pricer_fitter.cpp's
+    // validation-rejection ladder, up to three more full builds), which is only
+    // rational when the fit can genuinely land outside the admissible set.
+    // Here it cannot, so the honest structure is an assertion that fails loud in
+    // debug and, in release, refuses to publish a surface it cannot vouch for
+    // rather than quietly handing it to a repair ladder. The DETECTION
+    // capability is fully retained — see anchored_butterfly_ok /
+    // anchored_calendar_ok, and the dense numerical g-function cross-checks in
+    // essvi_anchored_test.cpp.
+    std::size_t n_butterfly_viol = 0;
+    std::size_t n_calendar_viol = 0;
+    if (seq.has_value()) {
+      const AnchoredSlice *last = nullptr;
+      for (std::size_t j = 0; j < seq->size(); ++j) {
+        const AnchoredSliceResult &ar = (*seq)[j];
+        if (ar.origin == AnchoredSliceOrigin::Dropped) {
+          continue; // uncalibratable AND unbracketed: no slice, never faked
+        }
+        if (!anchored_butterfly_ok(ar.slice)) {
+          ++n_butterfly_viol;
+        }
+        if (last != nullptr && !anchored_calendar_ok(*last, ar.slice)) {
+          ++n_calendar_viol;
+        }
+        last = &ar.slice;
+        anchored_slice[req_chain[j]] = anchored_to_essvi(ar.slice);
+        anchored_origin[req_chain[j]] = ar.origin;
+      }
+    }
+    assert(n_butterfly_viol == 0 && n_calendar_viol == 0 &&
+           "anchored eSSVI produced an arbitrageable slice: the psi interval "
+           "algebra is wrong, not the market");
+    if (n_butterfly_viol != 0 || n_calendar_viol != 0) {
+      return Err(ErrorCode::Internal,
+                 "run_surface_parity: anchored eSSVI invariant violated (butterfly=" +
+                     std::to_string(n_butterfly_viol) +
+                     ", calendar=" + std::to_string(n_calendar_viol) +
+                     ") — structurally impossible, so this is a calibrator defect");
+    }
+    // Per-board slice census. This is the tenor-coverage measurement the whole
+    // thin-slice change exists to move, and it is NOT recoverable from the
+    // stored surface: an interpolated slice is indistinguishable from a fitted
+    // one once written (that is the point), so the split has to be reported
+    // where it is decided. Emitted only on the opt-in path.
+    std::size_t n_calibrated = 0;
+    std::size_t n_interpolated = 0;
+    for (const AnchoredSliceOrigin o : anchored_origin) {
+      n_calibrated += (o == AnchoredSliceOrigin::Calibrated) ? 1u : 0u;
+      n_interpolated += (o == AnchoredSliceOrigin::Interpolated) ? 1u : 0u;
+    }
+    detail::log_emitf(LogLevel::Info, LogStream::Stderr,
+                      "[anchored-essvi] %s chains=%zu offered=%zu calibrated=%zu "
+                      "interpolated=%zu dropped=%zu",
+                      under.ticker.c_str(), n_chains, reqs.size(), n_calibrated,
+                      n_interpolated, reqs.size() - n_calibrated - n_interpolated);
+  }
+
   // Chains are stored ascending in T; consume them in that order so slices land
   // in the surface ascending as set_slice_essvi requires. This pass is serial:
   // the calendar floor (MonotoneFit) is a loop-carry and the surface writes are
@@ -685,7 +796,7 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
     // quiet 2/3 drop — matching the pre-(N1) behavior where the post-fit
     // projection's refusal failed the whole build. A failed probe fit falls
     // through to the constrained fit: no new refusal class on probe failure.
-    if (calendar_prev != nullptr && calendar_prev->theta > 0.0) {
+    if (!in.calib.essvi_anchored && calendar_prev != nullptr && calendar_prev->theta > 0.0) {
       double atm_w = 0.0;
       double atm_absk = std::numeric_limits<double>::infinity();
       for (const FitObs &o : prepared.fit_observations()) {
@@ -723,8 +834,20 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
         }
       }
     }
+    // Anchored: the parameters were resolved by the pre-pass, whose sequential
+    // calendar intervals already make the whole board arbitrage-free. Neither
+    // the MonotoneFit floor nor the (N1) probe applies — there is nothing left
+    // for them to repair.
     Result<EssviParams> slice_res =
-        (in.repair == CalendarRepair::MonotoneFit)
+        in.calib.essvi_anchored
+            ? (anchored_slice[chain_index].has_value()
+                   ? Result<EssviParams>(*anchored_slice[chain_index])
+                   : Result<EssviParams>(::tl::unexpected<::atx::core::Error>(
+                         atx::core::Error{ErrorCode::Unavailable,
+                                          "run_surface_parity: anchored eSSVI produced no "
+                                          "slice for this expiry (not calibratable and not "
+                                          "bracketed by two calibrated maturities)"})))
+        : (in.repair == CalendarRepair::MonotoneFit)
             ? fit_slice_calendar_floored(prepared, T, F, in.calib, &diag,
                                          has_prev ? &prev_slice : nullptr, df)
             : essvi_fit_slice(prepared.fit_observations(), T, F, in.calib, &diag,

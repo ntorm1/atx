@@ -84,6 +84,7 @@ set(ATX_VOL_FITTING_SOURCES
     src/fitting/prepared_fitting.cpp
     src/fitting/c8.cpp
     src/fitting/c8_calib.cpp
+    src/fitting/essvi_anchored.cpp
     src/fitting/essvi_calib.cpp
     src/fitting/svi_calib.cpp
     src/fitting/cstar.cpp
