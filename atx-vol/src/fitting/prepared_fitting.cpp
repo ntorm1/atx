@@ -664,7 +664,10 @@ Result<PreparedSlice> PreparedSliceBuilder::prepare_legacy(const Chain &chain,
   if (inputs.out_legacy_audit_dropped != nullptr) {
     *inputs.out_legacy_audit_dropped = n_audit_dropped;
   }
-  if (out.fit_rows_.size() < kMinPreparedFitRows) {
+  const std::size_t min_rows = (inputs.min_fit_rows > 0u)
+                                   ? static_cast<std::size_t>(inputs.min_fit_rows)
+                                   : kMinPreparedFitRows;
+  if (out.fit_rows_.size() < min_rows) {
     // W2-B: name the condition. The permissive predicate only ever drops a row
     // for an invalid strike/quote, the de-Am cap, or a failed/audit-rejected
     // de-Americanization — and the last of those is a board property (negative
@@ -843,6 +846,15 @@ Result<CanonicalPreparedExpiry> prepare_expiry(const Chain &chain, std::uint32_t
   prepare_inputs.iv_max_iterations = inputs.deam.iv_max_iter;
   prepare_inputs.method = inputs.deam.method;
   prepare_inputs.policy = policy;
+  // The floor for an expiry to EXIST. An explicit caller value wins; otherwise
+  // enabling anchored thin-slice interpolation lowers it, because under that
+  // policy a sub-floor expiry is served by interpolation rather than by a fit.
+  prepare_inputs.min_fit_rows =
+      (inputs.min_prepared_rows_to_exist > 0u)
+          ? inputs.min_prepared_rows_to_exist
+          : ((inputs.calib.essvi_anchored && inputs.calib.essvi_anchored_interpolate_thin)
+                 ? static_cast<std::uint32_t>(kMinPreparedRowsWithInterpolation)
+                 : 0u);
   // Legacy eSSVI always scored parity in the cold driver. The generic flag is
   // an optimization only for Configured preparation and must not erase the
   // historical eSSVI scoring population.
@@ -862,7 +874,11 @@ Result<CanonicalPreparedExpiry> prepare_expiry(const Chain &chain, std::uint32_t
         std::chrono::duration<double, std::milli>(StageClock::now() - observation_start).count();
   }
   ATX_TRY(PreparedSlice prepared, std::move(prepared_result));
-  if (prepared.fit_observations().size() < kMinPreparedFitRows) {
+  const std::size_t expiry_min_rows =
+      (prepare_inputs.min_fit_rows > 0u)
+          ? static_cast<std::size_t>(prepare_inputs.min_fit_rows)
+          : kMinPreparedFitRows;
+  if (prepared.fit_observations().size() < expiry_min_rows) {
     return Err(ErrorCode::NotFound, "prepare_expiry: fewer than five usable rows");
   }
   return Ok(CanonicalPreparedExpiry{std::move(prepared), rate, carry.borrow, q_eff, df});

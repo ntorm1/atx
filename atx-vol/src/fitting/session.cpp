@@ -25,6 +25,7 @@
 #include "atx/vol/api/marketdata/data.hpp"             // data_install
 #include "fitting/deam_pass_counter.hpp" // C1 proof: cert de-Am pass tally
 #include "atx/vol/api/pricing/dividend.hpp"         // hybrid_forward (representative carry)
+#include "fitting/essvi_anchored.hpp"   // apply_anchored_env_policy (opt-in)
 #include "fitting/essvi_calib.hpp"      // essvi_fit_slice (warm-start refit)
 #include "atx/vol/api/analytics/event_vol.hpp"        // EventSchedule, count_events_at, implied_emove
 #include "core/parallel_for.hpp"     // bounded post-fit cache-bank fan-out
@@ -1117,6 +1118,11 @@ void apply_fit_preset(SessionInputs &in, FitPreset preset) noexcept {
     in.calendar_repair = CalendarRepair::MonotoneFit;
     break;
   }
+  // Opt-in anchored eSSVI. A no-op unless the environment arms it; see
+  // `apply_anchored_env_policy` (fitting/essvi_anchored.hpp) for why the switch
+  // lives there rather than on the CLI, and why it can only ever turn the flags
+  // ON.
+  apply_anchored_env_policy(in.calib);
 }
 
 SessionInputs make_session_inputs(FitPreset preset, double S, double r, std::int64_t now_ts_ns) {

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdlib>
 #include <limits>
 #include <utility>
 
@@ -554,6 +555,55 @@ Result<std::vector<AnchoredSliceResult>> anchored_fit_sequence(
     }
   }
   return Ok(std::move(out));
+}
+
+// ── Qualification activation seam ────────────────────────────────────────
+
+namespace {
+
+[[nodiscard]] bool env_truthy(const char* name) noexcept {
+#if defined(_MSC_VER)
+  std::size_t len = 0;
+  char buf[16] = {};
+  if (::getenv_s(&len, buf, sizeof buf, name) != 0 || len == 0u) {
+    return false;
+  }
+  const char c = buf[0];
+#else
+  const char* v = std::getenv(name);
+  if (v == nullptr || v[0] == ' ') {
+    return false;
+  }
+  const char c = v[0];
+#endif
+  return c == '1' || c == 't' || c == 'T' || c == 'y' || c == 'Y' || c == 'o' ||
+         c == 'O';
+}
+
+struct AnchoredEnvPolicy {
+  bool anchored{false};
+  bool interpolate_thin{false};
+};
+
+[[nodiscard]] const AnchoredEnvPolicy& anchored_env_policy() noexcept {
+  // Read once per process: function-local static initialisation is
+  // thread-safe and happens exactly once (C++11 [stmt.dcl]/4).
+  static const AnchoredEnvPolicy policy = [] {
+    AnchoredEnvPolicy p{};
+    p.anchored = env_truthy("ATX_VOL_ESSVI_ANCHORED");
+    p.interpolate_thin = env_truthy("ATX_VOL_ESSVI_ANCHORED_INTERP");
+    return p;
+  }();
+  return policy;
+}
+
+}  // namespace
+
+void apply_anchored_env_policy(CalibOpts& calib) noexcept {
+  const AnchoredEnvPolicy& p = anchored_env_policy();
+  calib.essvi_anchored = calib.essvi_anchored || p.anchored;
+  calib.essvi_anchored_interpolate_thin =
+      calib.essvi_anchored_interpolate_thin || p.interpolate_thin;
 }
 
 }  // namespace atx::vol

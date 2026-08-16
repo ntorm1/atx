@@ -347,4 +347,28 @@ struct AnchoredSliceResult {
 [[nodiscard]] Result<std::vector<AnchoredSliceResult>> anchored_fit_sequence(
     std::span<const AnchoredSliceRequest> reqs, const AnchoredOpts& opts);
 
+// ── Qualification activation seam ────────────────────────────────────────
+
+// Turn the anchored path on from the environment:
+//
+//   ATX_VOL_ESSVI_ANCHORED=1         -> CalibOpts::essvi_anchored
+//   ATX_VOL_ESSVI_ANCHORED_INTERP=1  -> CalibOpts::essvi_anchored_interpolate_thin
+//
+// WHY an environment seam rather than a CLI flag: the A/B qualification this
+// feature has to pass (cells_ok, tenor coverage and fitted-IV deltas against the
+// legacy path on a full session) has to reach the production binary, and the
+// driver + CLI that would otherwise carry the flag are owned by a concurrent
+// change. This seam touches only the policy functions that already exist to set
+// CalibOpts, matches the env-gating pattern the tree already uses for
+// ATX_VOL_AL_PROBE / ATX_VOL_FIT_WORKERS, and cannot alter behaviour unless the
+// variable is set: absent or unset, both flags keep their `false` default and
+// every byte of the legacy path is unchanged. Replace it with a real CLI flag
+// once the driver is free.
+//
+// The environment is read ONCE per process (first call) and cached, so this is
+// not a per-board syscall and cannot change mid-run.
+//
+// Never DOWNGRADES: a caller that already set the flags keeps them.
+void apply_anchored_env_policy(CalibOpts& calib) noexcept;
+
 }  // namespace atx::vol

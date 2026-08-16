@@ -346,6 +346,33 @@ struct CalibOpts {
   // Asymmetric ρ in the eSSVI backbone (Sprint 15). Off ⇒ symmetric 3D LM.
   bool essvi_asymmetric_rho{false};
 
+  // ── Anchored eSSVI (Corbetta et al. 2019; src/fitting/essvi_anchored.hpp) ──
+  //
+  // OPT-IN. FALSE (default) leaves every calibration on the cube-space
+  // Levenberg-Marquardt fitter, byte for byte — this flag is read only where a
+  // driver explicitly branches on it, and no default anywhere else changes.
+  //
+  // TRUE routes per-slice eSSVI calibration through the anchored
+  // parameterization: two free parameters, no starting point, and both
+  // no-arbitrage classes expressed as interval constraints on psi so a
+  // calibrated slice is admissible BY CONSTRUCTION rather than by post-hoc
+  // audit. Currently honored by `run_surface_parity` (the served eSSVI path).
+  bool essvi_anchored{false};
+
+  // Interpolate quote-starved expiries from their calibrated neighbours instead
+  // of dropping them. INERT unless `essvi_anchored` is set, because linear
+  // interpolation of slice parameters is only provably arbitrage-free in the
+  // anchored (theta, psi, rho*psi) coordinates. Interpolation is STRICTLY
+  // bracketed — an expiry outside the calibrated tenor domain stays dropped and
+  // is never extrapolated.
+  bool essvi_anchored_interpolate_thin{false};
+
+  // Row floor for a slice to be calibrated INDEPENDENTLY. Distinct from the
+  // floor for a slice to EXIST at all (`min_prepared_rows_to_exist`): with
+  // interpolation available the two questions are no longer the same one. 0 =
+  // use `kMinPreparedFitRows`.
+  std::uint32_t min_rows_to_fit_independently{0};
+
   // Robustness guards (Sprint 24). `min_obs_per_slice` gates the fitter;
   // `max_post_fit_sigma` rejects a blown-up slice; `max_spread_to_mid_pct` is
   // an extra observation-builder filter on (ask − bid) / mid (0 disables it).
