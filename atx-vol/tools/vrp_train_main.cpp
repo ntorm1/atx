@@ -301,9 +301,9 @@ int main(int argc, char **argv) {
   };
   std::printf("gate\tscope\tscore\tic_pearson\tt\tt_nw\tic_spearman\tt\tt_nw\t"
               "ic_pear_traded\tt_nw\tdecile_spread\tt_nw\tdecile_rho\tn_dates\tn_rows\n");
-  for (std::size_t i = 0; i < gate.per_fold.size(); ++i) {
-    const std::string scope = "fold_" + std::to_string(gate.fold_ids[i]);
-    for (const auto &s : gate.per_fold[i]) {
+  for (const auto &f : gate.per_fold) {
+    const std::string scope = "fold_" + std::to_string(f.fold_id);
+    for (const auto &s : f.scores) {
       score_row(scope.c_str(), s);
     }
   }

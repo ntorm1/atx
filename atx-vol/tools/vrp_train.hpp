@@ -1323,6 +1323,10 @@ struct VrpScoreReport {
   double mse{std::numeric_limits<double>::quiet_NaN()};
   double mz_slope{std::numeric_limits<double>::quiet_NaN()};
   double mz_intercept{std::numeric_limits<double>::quiet_NaN()};
+  // Dates that produced a DEFINED per-date Pearson IC (>= 2 finite pairs and
+  // both inputs non-degenerate), not the raw date count -- the mean is over
+  // these and nothing else. n_rows is every row handed in, including the ones
+  // the finite filter dropped, so the two together show the attrition.
   std::size_t n_dates{0};
   std::size_t n_rows{0};
 };
@@ -1441,8 +1445,13 @@ struct VrpGateVerdict {
       beats_all = false;
     }
     // "Best" = strongest rank benchmark, so the report names the one the model
-    // most has to answer for. NaN never wins the comparison.
-    if (v.best_benchmark.empty() || s.ic_spearman > v.best_benchmark_ic_spearman) {
+    // most has to answer for. A measured benchmark always outranks an
+    // unmeasurable one, whatever order they arrive in -- otherwise a leading
+    // NaN would latch and the report would name the wrong bar.
+    const bool first = v.best_benchmark.empty();
+    const bool held_is_nan = std::isnan(v.best_benchmark_ic_spearman);
+    const bool beats_held = s.ic_spearman > v.best_benchmark_ic_spearman;
+    if (first || beats_held || (held_is_nan && !std::isnan(s.ic_spearman))) {
       v.best_benchmark = s.name;
       v.best_benchmark_ic_pearson = s.ic_pearson;
       v.best_benchmark_ic_spearman = s.ic_spearman;
@@ -1471,12 +1480,20 @@ inline constexpr std::string_view kVrpScoreRanked = "ranked_pred_edge_norm";
 // on the pooled OOS rows, plus the verdict, plus the corpus label. The corpus
 // is carried because the widely quoted +0.22 IC was a clean-25 number while
 // every traded config ran on SP100 and no artifact recorded the difference.
+// One fold's scored columns, carrying their own fold id. A struct rather than
+// a second vector kept parallel to the first: a fold whose id lives somewhere
+// else is a state that can go wrong, and mislabelled per-fold ICs are one of
+// the breaks this gate exists to prevent.
+struct VrpGateFold {
+  std::uint32_t fold_id{0};
+  std::vector<VrpScoreReport> scores;
+};
+
 struct VrpGateReport {
   std::string corpus;
-  std::vector<std::uint32_t> fold_ids;              // parallel to per_fold
-  std::vector<std::vector<VrpScoreReport>> per_fold; // [fold][column]
-  std::vector<VrpScoreReport> pooled;               // same column order
-  VrpGateVerdict verdict;                           // computed on `pooled`
+  std::vector<VrpGateFold> per_fold;
+  std::vector<VrpScoreReport> pooled; // same column order as each fold
+  VrpGateVerdict verdict;             // computed on `pooled`
   // Coverage honesty: signal rows with no realized label were TRADED in
   // rounds 1-3 and reported as if validated (27% of the round-2 run).
   std::size_t n_signal_rows{0};
@@ -2461,9 +2478,9 @@ inline void append_score_meta(std::string &body, const std::string &prefix,
   for (const VrpScoreReport &s : gate.pooled) {
     append_score_meta(body, "# gate_pooled_", s);
   }
-  for (std::size_t i = 0; i < gate.per_fold.size(); ++i) {
-    const std::string prefix = "# gate_fold_" + std::to_string(gate.fold_ids[i]) + "_";
-    for (const VrpScoreReport &s : gate.per_fold[i]) {
+  for (const VrpGateFold &f : gate.per_fold) {
+    const std::string prefix = "# gate_fold_" + std::to_string(f.fold_id) + "_";
+    for (const VrpScoreReport &s : f.scores) {
       append_score_meta(body, prefix, s);
     }
   }
@@ -2839,16 +2856,16 @@ inline void append_score_meta(std::string &body, const std::string &prefix,
     // off), so the gate grades the shipped forecast, not an internal one.
     const std::span<const std::int64_t> gts{test_ts};
     const std::span<const double> gy{realized};
-    report.gate.fold_ids.push_back(m.fold_id);
-    report.gate.per_fold.push_back(std::vector<VrpScoreReport>{
-        vrp_score_report(std::string{kVrpScoreModel}, VrpScoreKind::Model, gts,
-                         std::span<const double>{pred_recal}, gy, true),
-        vrp_score_report(std::string{kVrpScoreBaseline}, VrpScoreKind::Baseline, gts,
-                         std::span<const double>{pred_base}, gy, true),
-        vrp_score_report(std::string{kVrpScoreBenchNegIv}, VrpScoreKind::Benchmark, gts,
-                         std::span<const double>{bench_neg_iv}, gy, false),
-        vrp_score_report(std::string{kVrpScoreBenchHvIv}, VrpScoreKind::Benchmark, gts,
-                         std::span<const double>{bench_hv_iv}, gy, false)});
+    report.gate.per_fold.push_back(VrpGateFold{
+        .fold_id = m.fold_id,
+        .scores = {vrp_score_report(std::string{kVrpScoreModel}, VrpScoreKind::Model, gts,
+                                    std::span<const double>{pred_recal}, gy, true),
+                   vrp_score_report(std::string{kVrpScoreBaseline}, VrpScoreKind::Baseline,
+                                    gts, std::span<const double>{pred_base}, gy, true),
+                   vrp_score_report(std::string{kVrpScoreBenchNegIv}, VrpScoreKind::Benchmark,
+                                    gts, std::span<const double>{bench_neg_iv}, gy, false),
+                   vrp_score_report(std::string{kVrpScoreBenchHvIv}, VrpScoreKind::Benchmark,
+                                    gts, std::span<const double>{bench_hv_iv}, gy, false)}});
     pool_ts.insert(pool_ts.end(), test_ts.begin(), test_ts.end());
     pool_realized.insert(pool_realized.end(), realized.begin(), realized.end());
     pool_gbt.insert(pool_gbt.end(), pred_recal.begin(), pred_recal.end());
@@ -2997,7 +3014,7 @@ inline void append_score_meta(std::string &body, const std::string &prefix,
         fscore.push_back(edge_of[r]);
         freal.push_back(report.panel.rows[r].label);
       }
-      report.gate.per_fold[k].push_back(vrp_score_report(
+      report.gate.per_fold[k].scores.push_back(vrp_score_report(
           std::string{kVrpScoreRanked}, VrpScoreKind::Ranked,
           std::span<const std::int64_t>{fts}, std::span<const double>{fscore},
           std::span<const double>{freal}, false));

@@ -2317,6 +2317,15 @@ TEST(VrpTrainGate, VerdictFailsClosedOnTiesMissingBenchmarksAndNaN) {
       make_score("gbt", vrp::VrpScoreKind::Model, 0.90, 0.90),
       make_score("bench_neg_iv_fair_21d", vrp::VrpScoreKind::Benchmark, kNaN, kNaN)};
   EXPECT_FALSE(vrp::vrp_gate_verdict(nan_bench).pass);
+  // A MEASURED benchmark must be named as the bar even when an unmeasurable
+  // one arrives first -- otherwise a leading NaN latches and the report names
+  // the wrong thing for the model to answer for.
+  const std::vector<vrp::VrpScoreReport> nan_first{
+      make_score("gbt", vrp::VrpScoreKind::Model, 0.90, 0.90),
+      make_score("bench_hv_iv_gap", vrp::VrpScoreKind::Benchmark, kNaN, kNaN),
+      make_score("bench_neg_iv_fair_21d", vrp::VrpScoreKind::Benchmark, 0.20, 0.30)};
+  EXPECT_EQ(vrp::vrp_gate_verdict(nan_first).best_benchmark, "bench_neg_iv_fair_21d");
+  EXPECT_FALSE(vrp::vrp_gate_verdict(nan_first).pass); // the NaN one still fails it
 }
 
 // ── ROUND 4 F4: feature lagging ─────────────────────────────────────────────
@@ -2594,7 +2603,6 @@ TEST(VrpTrainMath, CrossSectionEdgeNormEmitsZeroOnDegenerateDatesAndNeverNonFini
 TEST_F(VrpTrainPipelineTest, GateScoresEveryFoldAndThePooledCorpusAgainstFreeBenchmarks) {
   const auto &gate = report_->gate;
   ASSERT_EQ(gate.per_fold.size(), report_->folds.size());
-  ASSERT_EQ(gate.fold_ids.size(), report_->folds.size());
   ASSERT_EQ(gate.pooled.size(), 5u);
   // Column order and kinds: the model on trial, the fitted baseline, the two
   // ZERO-PARAMETER benchmarks that decide the verdict, and the column the
@@ -2632,18 +2640,20 @@ TEST_F(VrpTrainPipelineTest, GateScoresEveryFoldAndThePooledCorpusAgainstFreeBen
   EXPECT_TRUE(std::isnan(gate.pooled[4].decile_rho));
   // Every fold scores the same five columns on that fold's own test rows.
   for (std::size_t i = 0; i < gate.per_fold.size(); ++i) {
-    ASSERT_EQ(gate.per_fold[i].size(), 5u);
-    EXPECT_EQ(gate.fold_ids[i], report_->folds[i].fold_id);
-    for (const auto &s : gate.per_fold[i]) {
+    ASSERT_EQ(gate.per_fold[i].scores.size(), 5u);
+    EXPECT_EQ(gate.per_fold[i].fold_id, report_->folds[i].fold_id);
+    for (const auto &s : gate.per_fold[i].scores) {
       EXPECT_EQ(s.n_rows, report_->folds[i].n_test);
       EXPECT_GT(s.n_dates, 0u);
     }
     // MSE / Mincer-Zarnowitz are LABEL-unit claims: populated for the model
     // and the baseline, deliberately absent for a pure ranking benchmark.
-    EXPECT_TRUE(std::isfinite(gate.per_fold[i][0].mse));
-    EXPECT_TRUE(std::isfinite(gate.per_fold[i][0].mz_slope));
-    EXPECT_TRUE(std::isnan(gate.per_fold[i][2].mse));
-    EXPECT_TRUE(std::isnan(gate.per_fold[i][2].mz_slope));
+    EXPECT_TRUE(std::isfinite(gate.per_fold[i].scores[0].mse));
+    EXPECT_TRUE(std::isfinite(gate.per_fold[i].scores[0].mz_slope));
+    EXPECT_TRUE(std::isnan(gate.per_fold[i].scores[2].mse));
+    EXPECT_TRUE(std::isnan(gate.per_fold[i].scores[2].mz_slope));
+    // The ranking column is a z-score: no level claim, so no MSE either.
+    EXPECT_TRUE(std::isnan(gate.per_fold[i].scores[4].mse));
   }
   // Pooled covers every fold's test rows exactly once.
   std::size_t n_test_total = 0;
@@ -2653,7 +2663,8 @@ TEST_F(VrpTrainPipelineTest, GateScoresEveryFoldAndThePooledCorpusAgainstFreeBen
   EXPECT_EQ(gate.pooled[0].n_rows, n_test_total);
   // The gate's model column is the SHIPPED forecast: with recalibration off
   // it must equal the per-fold rank IC the round-1..3 path already reported.
-  EXPECT_NEAR(gate.per_fold.front()[0].ic_spearman, report_->folds.front().ic_gbt, 1e-9);
+  EXPECT_NEAR(gate.per_fold.front().scores[0].ic_spearman, report_->folds.front().ic_gbt,
+              1e-9);
   // The corpus is named, so a clean-25 number can never be quoted for an
   // SP100 book again by accident.
   EXPECT_FALSE(gate.corpus.empty());
@@ -2705,11 +2716,13 @@ TEST_F(VrpTrainPipelineTest, MetricsFileCarriesTheGateVerdictBenchmarkTableAndCo
     has(p + "decile_rho=" + vrp::detail::fmt_double(s.decile_rho) + "\n");
     has(p + "n_rows=" + std::to_string(s.n_rows) + "\n");
   }
-  for (std::size_t i = 0; i < gate.per_fold.size(); ++i) {
-    const std::string p =
-        "# gate_fold_" + std::to_string(gate.fold_ids[i]) + "_" + gate.per_fold[i][0].name + "_";
-    has(p + "ic_pearson=" + vrp::detail::fmt_double(gate.per_fold[i][0].ic_pearson) + "\n");
-    has(p + "ic_spearman=" + vrp::detail::fmt_double(gate.per_fold[i][0].ic_spearman) + "\n");
+  for (const auto &f : gate.per_fold) {
+    for (const auto &s : f.scores) {
+      const std::string p = "# gate_fold_" + std::to_string(f.fold_id) + "_" + s.name + "_";
+      has(p + "ic_pearson=" + vrp::detail::fmt_double(s.ic_pearson) + "\n");
+      has(p + "ic_spearman=" + vrp::detail::fmt_double(s.ic_spearman) + "\n");
+      has(p + "ic_spearman_t_nw=" + vrp::detail::fmt_double(s.ic_spearman_t_nw) + "\n");
+    }
   }
 }
 
