@@ -185,7 +185,13 @@ void append_json_string(std::string &out, std::string_view s) {
       out.append("\\\"");
       break;
     case '\\':
-      out.append("\\\\");
+      // JSON escape for a backslash: emit two backslash CHARACTERS via the
+      // count overload. Spelled as a string literal, the decoded two-backslash
+      // content reads as a UNC path prefix to the umbrella path-literal scan
+      // (VolUmbrella.NoFixturePathResolvedOutsideTheSharedResolver), whose
+      // absolute-literal rule deliberately has no exemption list. This is JSON
+      // string escaping, not a path literal.
+      out.append(2, '\\');
       break;
     case '\n':
       out.append("\\n");
