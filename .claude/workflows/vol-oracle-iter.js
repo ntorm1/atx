@@ -223,8 +223,8 @@ const BOOTSTRAP_REPORT_COMMON_PROPERTIES = {
   precheck_gate_receipts: { type: 'array', items: PRECHECK_GATE_RECEIPT }, changed_path_receipt: CHANGED_PATH_RECEIPT,
   deviations: { type: 'string' },
 }
-const BOOTSTRAP_REPORT = {
-  oneOf: [
+const BOOTSTRAP_REPORT_VARIANTS = {
+  anyOf: [
     {
       type: 'object', additionalProperties: false,
       required: BOOTSTRAP_REPORT_IDENTITY_REQUIRED,
@@ -249,6 +249,28 @@ const BOOTSTRAP_REPORT = {
       },
     },
   ],
+}
+const BOOTSTRAP_WIRE_SCHEMA_KEYS = new Set([
+  '$schema', 'type', 'description', 'title', 'properties', 'required',
+  'additionalProperties', 'items', 'enum', 'const', 'anyOf',
+])
+function bootstrapWireSchema(schema) {
+  if (Array.isArray(schema)) return schema.map(item => bootstrapWireSchema(item))
+  if (!schema || typeof schema !== 'object') return schema
+  const converted = {}
+  for (const [key, value] of Object.entries(schema)) {
+    if (!BOOTSTRAP_WIRE_SCHEMA_KEYS.has(key)) continue
+    if (key === 'properties') {
+      converted.properties = Object.fromEntries(Object.entries(value).map(([name, child]) => [name, bootstrapWireSchema(child)]))
+    } else if (key === 'items') converted.items = bootstrapWireSchema(value)
+    else if (key === 'anyOf') converted.anyOf = value.map(item => bootstrapWireSchema(item))
+    else converted[key] = Array.isArray(value) ? [...value] : value
+  }
+  return converted
+}
+const BOOTSTRAP_REPORT_TOOL_SCHEMA = {
+  type: 'object', additionalProperties: false, required: ['report'],
+  properties: { report: bootstrapWireSchema(BOOTSTRAP_REPORT_VARIANTS) },
 }
 const REVIEW = {
   type: 'object', additionalProperties: false, required: ['verdict', 'reviewed_sha', 'evidence', 'findings'],
@@ -430,6 +452,20 @@ function iterationCommandError(command) {
   return null
 }
 
+function bootstrapCommandError(command) {
+  const policyError = iterationCommandError(command)
+  if (policyError) return policyError
+  if (/[\x00-\x1f\x7f]/.test(String(command || ''))) return 'control character forbidden in bootstrap command'
+  if (/[()]/.test(String(command || ''))) return 'parenthesized annotation forbidden in bootstrap command'
+  return null
+}
+
+function validBootstrapSuccessEvidence(evidence, required) {
+  return Array.isArray(evidence) && (!required || evidence.length > 0) && evidence.every(item =>
+    item && typeof item.command === 'string' && item.command.trim() && !bootstrapCommandError(item.command) &&
+    item.exit_code === 0 && typeof item.output === 'string' && item.output.trim())
+}
+
 function exactEvidenceSet(evidence, commands) {
   return validSuccessEvidence(evidence) && evidence.length === commands.length && commands.every(command => evidence.filter(item => item.command === command).length === 1) &&
     evidence.every(item => !iterationCommandError(item.command))
@@ -437,6 +473,13 @@ function exactEvidenceSet(evidence, commands) {
 
 function diagnosticsUseForbiddenCommand(diagnostics) {
   return Array.isArray(diagnostics) && diagnostics.some(item => iterationCommandError(item && item.command))
+}
+
+function validBootstrapDiagnostics(diagnostics, required) {
+  if (diagnostics === undefined) return !required
+  return Array.isArray(diagnostics) && (!required || diagnostics.length > 0) && diagnostics.every(item =>
+    item && typeof item.command === 'string' && item.command.trim() && !bootstrapCommandError(item.command) &&
+    Number.isInteger(item.exit_code) && typeof item.output === 'string' && item.output.trim())
 }
 
 function validLeaseReceipt(receipt, expected, action) {
@@ -647,34 +690,48 @@ function bootstrapPathError(report, expected) {
   return report.bootstrap_path === 'mode_a_implementation' && paths.includes(MODE_A_RECEIPT_ONLY_PATHS[0]) && paths.length > 1 ? null : 'Stage2 failed precheck requires implementation path'
 }
 
-function bootstrapReportError(report, expected) {
-  if (!report) return 'bootstrap build incomplete'
-  if (report.outcome === 'BLOCKED') {
-    if (report.state !== expected.state || report.branch !== expected.branch || report.base_sha !== expected.base_sha || report.lease_run_id !== expected.run_id || report.heartbeat_id !== expected.heartbeat_id) return 'blocked bootstrap identity mismatch'
-    if (!/^pool-[0-9]+$/.test(report.lease_name || '') || !/[\\/]atx-wt[\\/]pool-[0-9]+$/i.test(report.worktree || '') ||
-        !report.worktree.replace(/\//g, '\\').toLowerCase().endsWith(`\\${report.lease_name.toLowerCase()}`)) return 'blocked bootstrap not isolated'
-    if ((report.sha && !/^[0-9a-f]{40}$/.test(report.sha)) ||
-        (report.holdout_digest_receipt && !/^[0-9a-f]{64}$/.test(report.holdout_digest_receipt))) return 'blocked bootstrap SHA/receipt invalid'
-    if (!Array.isArray(report.blockers) || !report.blockers.length || report.blockers.some(item => typeof item !== 'string' || !item.trim())) return 'blocked bootstrap blockers missing'
-    if (!Array.isArray(report.evidence) || (report.evidence.length && !validSuccessEvidence(report.evidence))) return 'blocked bootstrap success evidence invalid'
-    if (!Array.isArray(report.diagnostics) || !report.diagnostics.length || report.diagnostics.some(item => !item || typeof item.command !== 'string' || iterationCommandError(item.command) ||
-        !Number.isInteger(item.exit_code) || typeof item.output !== 'string' || !item.output.trim())) return 'blocked bootstrap diagnostics invalid'
-    if (!validLeaseReceipt(report.acquisition_receipt, {
-      lease_name: report.lease_name, run_id: expected.run_id, branch: expected.branch, base_sha: expected.base_sha, worktree: report.worktree,
-      heartbeat_id: expected.heartbeat_id, keeper_pid: report.keeper_pid, keeper_process_started_utc: report.keeper_process_started_utc,
-    }, 'acquire')) return 'blocked bootstrap acquisition receipt invalid'
-    return `bootstrap blocked: ${report.blockers.join('; ')}`
-  }
-  if (report.outcome !== 'DONE') return 'bootstrap build incomplete'
-  if (report.state !== expected.state || report.branch !== expected.branch || report.base_sha !== expected.base_sha || report.lease_run_id !== expected.run_id || report.heartbeat_id !== expected.heartbeat_id) return 'bootstrap build identity mismatch'
-  if (!/^[0-9a-f]{40}$/i.test(report.sha || '') || !/^[0-9a-f]{64}$/.test(report.holdout_digest_receipt || '') ||
-      (expected.holdout_digest_receipt && report.holdout_digest_receipt !== expected.holdout_digest_receipt) || !validSuccessEvidence(report.evidence) || diagnosticsUseForbiddenCommand(report.diagnostics)) return 'bootstrap build evidence/SHA/receipt invalid'
-  if (!/^pool-[0-9]+$/.test(report.lease_name || '') || !/[\\/]atx-wt[\\/]pool-[0-9]+$/i.test(report.worktree || '') ||
+function bootstrapLeaseIdentityError(report, expected) {
+  if (!report || typeof report !== 'object' || Array.isArray(report)) return 'bootstrap build incomplete'
+  const nonempty = ['state', 'branch', 'base_sha', 'worktree', 'lease_name', 'lease_run_id', 'heartbeat_id', 'keeper_process_started_utc']
+  if (nonempty.some(key => typeof report[key] !== 'string' || !report[key].trim())) return 'bootstrap lease identity field empty'
+  if (!/^[0-9a-f]{40}$/.test(report.base_sha) || report.state !== expected.state || report.branch !== expected.branch ||
+      report.base_sha !== expected.base_sha || report.lease_run_id !== expected.run_id || report.heartbeat_id !== expected.heartbeat_id) return 'bootstrap lease identity mismatch'
+  if (!Number.isInteger(report.keeper_pid) || report.keeper_pid <= 0 || !/^\d{4}-/.test(report.keeper_process_started_utc)) return 'bootstrap keeper identity invalid'
+  if (!/^pool-[0-9]+$/.test(report.lease_name) || !/[\\/]atx-wt[\\/]pool-[0-9]+$/i.test(report.worktree) ||
       !report.worktree.replace(/\//g, '\\').toLowerCase().endsWith(`\\${report.lease_name.toLowerCase()}`)) return 'bootstrap build not isolated'
   if (!validLeaseReceipt(report.acquisition_receipt, {
     lease_name: report.lease_name, run_id: expected.run_id, branch: expected.branch, base_sha: expected.base_sha, worktree: report.worktree,
     heartbeat_id: expected.heartbeat_id, keeper_pid: report.keeper_pid, keeper_process_started_utc: report.keeper_process_started_utc,
   }, 'acquire')) return 'bootstrap acquisition receipt invalid'
+  return null
+}
+
+function unwrapBootstrapReport(envelope) {
+  if (!envelope || typeof envelope !== 'object' || Array.isArray(envelope)) return { report: null, error: 'bootstrap StructuredOutput envelope invalid' }
+  const keys = Object.keys(envelope)
+  if (keys.length !== 1 || keys[0] !== 'report' || !envelope.report || typeof envelope.report !== 'object' || Array.isArray(envelope.report)) {
+    return { report: null, error: 'bootstrap StructuredOutput envelope invalid' }
+  }
+  return { report: envelope.report, error: null }
+}
+
+function bootstrapReportError(report, expected) {
+  const leaseError = bootstrapLeaseIdentityError(report, expected)
+  if (leaseError) return leaseError
+  if (typeof report.deviations !== 'string') return 'bootstrap deviations invalid'
+  if (report.outcome === 'BLOCKED') {
+    if ((report.sha && !/^[0-9a-f]{40}$/.test(report.sha)) ||
+        (report.holdout_digest_receipt && !/^[0-9a-f]{64}$/.test(report.holdout_digest_receipt))) return 'blocked bootstrap SHA/receipt invalid'
+    if (!Array.isArray(report.blockers) || !report.blockers.length || report.blockers.some(item => typeof item !== 'string' || !item.trim())) return 'blocked bootstrap blockers missing'
+    if (!validBootstrapSuccessEvidence(report.evidence, false)) return 'blocked bootstrap success evidence invalid'
+    if (!validBootstrapDiagnostics(report.diagnostics, true)) return 'blocked bootstrap diagnostics invalid'
+    return `bootstrap blocked: ${report.blockers.join('; ')}`
+  }
+  if (report.outcome !== 'DONE') return 'bootstrap build incomplete'
+  if (!/^[0-9a-f]{40}$/.test(report.sha || '') || !/^[0-9a-f]{64}$/.test(report.holdout_digest_receipt || '') ||
+      (expected.holdout_digest_receipt && report.holdout_digest_receipt !== expected.holdout_digest_receipt) || !validBootstrapSuccessEvidence(report.evidence, true) ||
+      !validBootstrapDiagnostics(report.diagnostics, false)) return 'bootstrap build evidence/SHA/receipt invalid'
+  if (report.bootstrap_path !== undefined && !['data_adoption', 'data_ingest', 'mode_a_receipt_only', 'mode_a_implementation', 'standard'].includes(report.bootstrap_path)) return 'bootstrap path invalid'
   const pathError = bootstrapPathError(report, expected)
   if (pathError) return pathError
   return null
@@ -897,11 +954,14 @@ if (capability.state !== 'ready') {
   const integrationHeartbeat = `${RUN_SLUG}-bootstrap-integration`
   const expected = { state: capability.state, branch, base_sha: BASE_SHA, run_id: RUN_ID, heartbeat_id: heartbeat, holdout_digest_receipt: capability.holdout_digest_receipt, integration_branch: integrationBranch, integration_heartbeat_id: integrationHeartbeat, next_state: lane.next, gate_ids: lane.gate_ids }
   phase('Bootstrap Build')
-  let report = await agent(
-    `ONE fixed bootstrap lane; no planner/holdout. Stage=${lane.stage}, base=${BASE_SHA}. ${lane.contract} Acquire ${branch} with RunId=${RUN_ID}, HeartbeatId=${heartbeat}; the independent keeper owns liveness. Implement, scoped-test, commit, keep lease, and return typed keeper acquisition plus exit-code-zero evidence. Every evidence[].command and diagnostics[].command is one exact executed command only: no chaining, cwd annotation, or prose. DONE requires a committed SHA, nonempty success evidence, and only the raw lowercase 64-hex holdout_digest_receipt. Stage 1 DONE must return bootstrap_path, exact adoption_receipt, conditional disk_receipt, and exact base...SHA changed_path_receipt. For ADOPTED, adoption_receipt.command and its one matching evidence[].command must both equal exactly ${ADOPTION_COMMAND}, and that evidence output must exactly equal adoption_receipt.output. If work is BLOCKED after acquiring the lease, do not invent a digest, commit, or success: return the exact lease identity/acquisition receipt, sha='' and holdout_digest_receipt='' when unavailable, evidence=[] when no command succeeded (otherwise only exact exit-zero commands), plus nonempty blockers and typed nonempty diagnostics; the workflow will abort and release. Stage 2 DONE must return bootstrap_path, both typed pre-edit gate receipts, and exact base...SHA changed_path_receipt; PASS/PASS mechanically permits only bootstrap/mode-a.json.`,
-    { agentType: 'vol-builder', schema: BOOTSTRAP_REPORT, label: `bootstrap-build:${capability.state}` },
+  let envelope = await agent(
+    `ONE fixed bootstrap lane; no planner/holdout. Stage=${lane.stage}, base=${BASE_SHA}. ${lane.contract} Acquire ${branch} with RunId=${RUN_ID}, HeartbeatId=${heartbeat}; the independent keeper owns liveness. Implement, scoped-test, commit, keep lease, and return exactly {report:<typed report>}. Every evidence[].command and diagnostics[].command is one exact executed command only: no chaining, cwd annotation, control characters, or prose. DONE requires a committed lowercase SHA, nonempty success evidence, and only the raw lowercase 64-hex holdout_digest_receipt. Stage 1 DONE must return bootstrap_path, exact adoption_receipt, conditional disk_receipt, and exact base...SHA changed_path_receipt. For ADOPTED, adoption_receipt.command and its one matching evidence[].command must both equal exactly ${ADOPTION_COMMAND}, and that evidence output must exactly equal adoption_receipt.output. If work is BLOCKED after acquiring the lease, do not invent a digest, commit, or success: return the exact lease identity/acquisition receipt, sha='' and holdout_digest_receipt='' when unavailable, evidence=[] when no command succeeded (otherwise only exact exit-zero commands), plus nonempty blockers and typed nonempty diagnostics; the workflow will abort and release. Stage 2 DONE must return bootstrap_path, both typed pre-edit gate receipts, and exact base...SHA changed_path_receipt; PASS/PASS mechanically permits only bootstrap/mode-a.json.`,
+    { agentType: 'vol-builder', schema: BOOTSTRAP_REPORT_TOOL_SCHEMA, label: `bootstrap-build:${capability.state}` },
   )
-  let reportError = bootstrapReportError(report, expected)
+  let unwrapped = unwrapBootstrapReport(envelope)
+  let report = unwrapped.report
+  let reportError = unwrapped.error || bootstrapReportError(report, expected)
+  let cleanupReport = report && !bootstrapLeaseIdentityError(report, expected) ? report : null
   let review = null
   if (!reportError) {
     phase('Bootstrap Review')
@@ -910,8 +970,11 @@ if (capability.state !== 'ready') {
   }
   if (!reportError && review.verdict === 'BLOCK') {
     phase('Bootstrap Fix')
-    report = await agent(`Fix exactly blockers ${JSON.stringify(review.findings.filter(finding => finding.severity === 'blocker'))} in ${report.worktree}; keep same keeper lease, rerun checks, commit, return new SHA/receipts.`, { agentType: 'vol-builder', schema: BOOTSTRAP_REPORT, label: `bootstrap-fix:${capability.state}` })
-    reportError = bootstrapReportError(report, expected)
+    envelope = await agent(`Fix exactly blockers ${JSON.stringify(review.findings.filter(finding => finding.severity === 'blocker'))} in ${report.worktree}; keep same keeper lease, rerun checks, commit, and return exactly {report:<new typed report>} with new lowercase SHA/receipts.`, { agentType: 'vol-builder', schema: BOOTSTRAP_REPORT_TOOL_SCHEMA, label: `bootstrap-fix:${capability.state}` })
+    unwrapped = unwrapBootstrapReport(envelope)
+    report = unwrapped.report
+    if (report && !bootstrapLeaseIdentityError(report, expected)) cleanupReport = report
+    reportError = unwrapped.error || bootstrapReportError(report, expected)
     if (!reportError) {
       phase('Bootstrap Re-review')
       review = await agent(`FRESH post-Fix review of exactly ${report.sha}; never reuse prior verdict.`, { agentType: 'vol-reviewer', schema: REVIEW, label: `bootstrap-rereview:${capability.state}` })
@@ -920,7 +983,7 @@ if (capability.state !== 'ready') {
   }
   if (reportError || !review || review.verdict !== 'APPROVE') {
     let cleanup = null
-    if (report && /^pool-[0-9]+$/.test(report.lease_name || '') && report.lease_run_id === RUN_ID) cleanup = await agent(`Abort without integration. Release only ${report.lease_name} with RunId=${RUN_ID}; return typed release.`, { agentType: 'vol-verifier', schema: CLEANUP, label: 'bootstrap-abort-cleanup' })
+    if (cleanupReport) cleanup = await agent(`Abort without integration. Release only ${cleanupReport.lease_name} with RunId=${RUN_ID}; return typed release.`, { agentType: 'vol-verifier', schema: CLEANUP, label: 'bootstrap-abort-cleanup' })
     return { iteration: `bootstrap-${lane.stage}`, capability_state: capability.state, verdict: 'FAILED', holdout: null, confirmed: [], refuted: [], sprint: null, ledger: [], ratchet_evidence: [], failure: reportError || 'bootstrap not approved', cleanup, run_id: RUN_ID, base_sha: BASE_SHA, canonical_after: null }
   }
   phase('Bootstrap Verify')
