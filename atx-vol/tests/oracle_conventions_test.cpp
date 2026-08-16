@@ -159,19 +159,70 @@ TEST(OracleConvention, ProductionMapIsTheResolvedHardCut) {
   EXPECT_EQ(convention_map_json(resolved->winner), convention_map_json(map));
 }
 
-TEST(OracleConvention, BestScaleRanksOnTheSelectionPopulation) {
+TEST(OracleConvention, BestScaleRanksOnTheSelectionObjective) {
   std::vector<ScaleCandidate> candidates = {
       ScaleCandidate{GreekSource::Delta, 1.0, {}},
       ScaleCandidate{GreekSource::Delta, 0.01, {}},
   };
-  // Candidate 0 wins the reported floor and loses the selection population.
-  // Selection decides, because the reported floor includes the sub-floor rows
-  // whose denominator pins.
+  // Candidate 0 wins the REPORTED floor and loses the SELECTION loss. The two
+  // are deliberately different functions over the same rows, and selection is
+  // what picks the production scale.
   candidates[0].error.report.relative(1.0, 1.0);
-  candidates[0].error.selection.relative(2.0, 1.0);
+  candidates[0].error.selection.symmetric_relative(2.0, 1.0);
   candidates[1].error.report.relative(5.0, 1.0);
-  candidates[1].error.selection.relative(1.5, 1.0);
+  candidates[1].error.selection.symmetric_relative(1.05, 1.0);
   EXPECT_EQ(best_scale(candidates), 1u);
+}
+
+// The regression test for the whole Stage 3 finding. The asymmetric objective
+// divides by max(|oracle|, floor), so on a row whose oracle sits far below the
+// floor the denominator pins while the numerator still grows with
+// |model * scale| — a systematic gradient toward the smallest candidate scale,
+// no matter how wrong it is. The symmetric objective is bounded per row, so the
+// row that carries the true unit decides instead.
+TEST(OracleConvention, SymmetricObjectiveHasNoSmallestScaleGradient) {
+  constexpr double kSubFloorOracle = kSelectionAbsFloor / 100.0;
+  constexpr double kRawModel = 1.0;
+  std::vector<ScaleCandidate> symmetric = {
+      ScaleCandidate{GreekSource::Delta, 1.0, {}},
+      ScaleCandidate{GreekSource::Delta, 0.01, {}},
+  };
+  std::vector<ScaleCandidate> asymmetric = symmetric;
+  for (std::size_t index = 0; index < symmetric.size(); ++index) {
+    const double model = kRawModel * symmetric[index].scale;
+    // One near-zero oracle row, and one row whose oracle says the true scale
+    // is 1.0.
+    symmetric[index].error.selection.symmetric_relative(model, kSubFloorOracle);
+    symmetric[index].error.selection.symmetric_relative(model, kRawModel);
+    asymmetric[index].error.selection.relative(model, kSubFloorOracle);
+    asymmetric[index].error.selection.relative(model, kRawModel);
+  }
+  EXPECT_EQ(best_scale(asymmetric), 1u);
+  EXPECT_EQ(best_scale(symmetric), 0u);
+}
+
+TEST(OracleConvention, FinalistRankPrefersNoGreekRegressionOverLowerPriceMae) {
+  // A finalist that regresses on a Greek loses to one that does not, even when
+  // its price MAE is an order of magnitude better: the keys are lexicographic,
+  // never weighted, because ticks and dimensionless ratios have no exchange
+  // rate.
+  const FinalistRank clean{.regresses_any_greek = false, .tune_price_mae = 10.0,
+                           .candidate_id = "b"};
+  const FinalistRank regressing{.regresses_any_greek = true, .tune_price_mae = 1.0,
+                                .candidate_id = "a"};
+  EXPECT_TRUE(less_finalist(clean, regressing));
+  EXPECT_FALSE(less_finalist(regressing, clean));
+  // Both regressing: the rank degenerates to the lower tune-sample price MAE.
+  EXPECT_TRUE(less_finalist(
+      FinalistRank{.regresses_any_greek = true, .tune_price_mae = 1.0, .candidate_id = "b"},
+      FinalistRank{.regresses_any_greek = true, .tune_price_mae = 2.0, .candidate_id = "a"}));
+  // Equal on both keys: the stable candidate identity, never source order.
+  EXPECT_TRUE(less_finalist(
+      FinalistRank{.regresses_any_greek = false, .tune_price_mae = 1.0, .candidate_id = "a"},
+      FinalistRank{.regresses_any_greek = false, .tune_price_mae = 1.0, .candidate_id = "b"}));
+  EXPECT_FALSE(less_finalist(
+      FinalistRank{.regresses_any_greek = false, .tune_price_mae = 1.0, .candidate_id = "b"},
+      FinalistRank{.regresses_any_greek = false, .tune_price_mae = 1.0, .candidate_id = "a"}));
 }
 
 TEST(OracleConvention, BestScaleTieBreaksOnSourceThenNumericScale) {
@@ -181,7 +232,7 @@ TEST(OracleConvention, BestScaleTieBreaksOnSourceThenNumericScale) {
       ScaleCandidate{GreekSource::Delta, -1.0, {}},
   };
   for (ScaleCandidate &candidate : candidates) {
-    candidate.error.selection.relative(1.0, 1.0);
+    candidate.error.selection.symmetric_relative(1.0, 1.0);
   }
   // "delta" < "gamma" on the source ID; within one source the SIGNED scale
   // orders numerically, so -1.0 beats -0.01. A formatted-string comparison
@@ -298,12 +349,18 @@ TEST(OracleConvention, CandidateAndBaselineFloorsShareOneRowPopulation) {
     EXPECT_EQ(candidate.metric_id, baseline.metric_id);
     EXPECT_EQ(candidate.count, baseline.count) << candidate.metric_id;
     EXPECT_EQ(candidate.selection_count, baseline.selection_count) << candidate.metric_id;
-    EXPECT_LE(candidate.selection_count, candidate.count) << candidate.metric_id;
+    // Selection now runs on the FULL reported population: the symmetric
+    // objective is well-conditioned on every row, so nothing is excluded.
+    EXPECT_EQ(candidate.selection_count, candidate.count) << candidate.metric_id;
     EXPECT_GT(candidate.count, 0) << candidate.metric_id;
   }
 }
 
-TEST(OracleConvention, SelectionExcludesSubFloorOracleRowsButStillReportsThem) {
+// A sub-floor oracle row used to be reported but excluded from selection, as a
+// workaround for the asymmetric objective's denominator pinning. The symmetric
+// objective needs no workaround, so such a row now BOTH reports and selects and
+// selection_count stays equal to count.
+TEST(OracleConvention, SubFloorOracleRowsBothReportAndSelect) {
   std::vector<OracleRow> smoke = {make_row(90.0, Side::Call), make_row(110.0, Side::Put)};
   const std::vector<OracleRow> tune = {make_row(95.0, Side::Call), make_row(105.0, Side::Put)};
   smoke[0].vo = kSelectionAbsFloor / 1000.0;
@@ -315,7 +372,20 @@ TEST(OracleConvention, SelectionExcludesSubFloorOracleRowsButStillReportsThem) {
                                   });
   ASSERT_NE(volga, result->metrics.end());
   EXPECT_EQ(volga->count, 4);
-  EXPECT_EQ(volga->selection_count, 3);
+  EXPECT_EQ(volga->selection_count, 4);
+}
+
+// The input model is now chosen on Greeks before price, and what that choice
+// cost is published: a cohort authored BY the production map cannot regress
+// against the baseline on any Greek, so the field must be present and empty.
+TEST(OracleConvention, SweepPublishesTheSelectedInputModelGreekRegressions) {
+  const std::vector<OracleRow> smoke = production_rows(90.0, 110.0);
+  const std::vector<OracleRow> tune = production_rows(95.0, 105.0);
+  const auto result = run_convention_sweep(smoke, tune);
+  ASSERT_TRUE(result.has_value()) << result.error().to_string();
+  EXPECT_TRUE(result->input_model_regressed_greeks.empty());
+  const std::string json = convention_sweep_json(*result, "0123456789abcdef");
+  EXPECT_NE(json.find("\"input_model_regressed_greeks\":[]"), std::string::npos);
 }
 
 TEST(OracleConvention, SweepJsonPublishesTheProductionMapBesideTheWinner) {

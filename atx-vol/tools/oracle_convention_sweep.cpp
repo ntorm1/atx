@@ -71,20 +71,61 @@ struct PriceScaleCandidate {
   Accumulator error;
 };
 
+constexpr std::size_t kGreekCount = 9;
+
+// One table binds each relative Greek's metric id, its SpiderRock oracle
+// column, and its baseline-arm member together, in REPORTED metric order. Nine
+// hand-matched call sites is precisely the transposition class this file
+// already guards against elsewhere; the winner attribution and the greek-aware
+// finalist ranking both index this table, so the two can never disagree about
+// which Greek is which.
+struct GreekSpec {
+  std::string_view metric_id;
+  double OracleRow::*oracle;
+  double OracleUnitGreeks::*baseline;
+};
+constexpr std::array<GreekSpec, kGreekCount> kGreekSpecs = {
+    GreekSpec{"mode_a_delta_rel", &OracleRow::de, &OracleUnitGreeks::de},
+    GreekSpec{"mode_a_gamma_rel", &OracleRow::ga, &OracleUnitGreeks::ga},
+    GreekSpec{"mode_a_theta_rel", &OracleRow::th, &OracleUnitGreeks::th},
+    GreekSpec{"mode_a_vega_rel", &OracleRow::ve, &OracleUnitGreeks::ve},
+    GreekSpec{"mode_a_rho_rel", &OracleRow::rh, &OracleUnitGreeks::rh},
+    GreekSpec{"mode_a_phi_rel", &OracleRow::ph, &OracleUnitGreeks::ph},
+    GreekSpec{"mode_a_volga_rel", &OracleRow::vo, &OracleUnitGreeks::vo},
+    GreekSpec{"mode_a_vanna_rel", &OracleRow::va, &OracleUnitGreeks::va},
+    GreekSpec{"mode_a_delta_decay_rel", &OracleRow::de_decay, &OracleUnitGreeks::de_decay},
+};
+
+// Positions in kGreekSpecs. The winner map assigns each search's pick to its
+// own ConventionMap field, so the positions must be named rather than counted,
+// and each name is checked against the id it claims.
+constexpr std::size_t kDeltaSearch = 0;
+constexpr std::size_t kGammaSearch = 1;
+constexpr std::size_t kThetaSearch = 2;
+constexpr std::size_t kVegaSearch = 3;
+constexpr std::size_t kRhoSearch = 4;
+constexpr std::size_t kPhiSearch = 5;
+constexpr std::size_t kVolgaSearch = 6;
+constexpr std::size_t kVannaSearch = 7;
+constexpr std::size_t kDecaySearch = 8;
+static_assert(kGreekSpecs[kDeltaSearch].metric_id == "mode_a_delta_rel");
+static_assert(kGreekSpecs[kGammaSearch].metric_id == "mode_a_gamma_rel");
+static_assert(kGreekSpecs[kThetaSearch].metric_id == "mode_a_theta_rel");
+static_assert(kGreekSpecs[kVegaSearch].metric_id == "mode_a_vega_rel");
+static_assert(kGreekSpecs[kRhoSearch].metric_id == "mode_a_rho_rel");
+static_assert(kGreekSpecs[kPhiSearch].metric_id == "mode_a_phi_rel");
+static_assert(kGreekSpecs[kVolgaSearch].metric_id == "mode_a_volga_rel");
+static_assert(kGreekSpecs[kVannaSearch].metric_id == "mode_a_vanna_rel");
+static_assert(kGreekSpecs[kDecaySearch].metric_id == "mode_a_delta_decay_rel");
+
+using GreekSearches = std::array<std::vector<ScaleCandidate>, kGreekCount>;
+
 // Absolute floors (price, vol) have no relative denominator, so the reported
 // population IS the selection population.
 struct BaselineFloors {
   Accumulator price;
   Accumulator vol;
-  FloorAccumulators delta;
-  FloorAccumulators gamma;
-  FloorAccumulators theta;
-  FloorAccumulators vega;
-  FloorAccumulators rho;
-  FloorAccumulators phi;
-  FloorAccumulators volga;
-  FloorAccumulators vanna;
-  FloorAccumulators delta_decay;
+  std::array<FloorAccumulators, kGreekCount> greeks;
 };
 
 // Which cohort a price candidate is ranked on. Smoke decides the 8-way cut;
@@ -140,6 +181,25 @@ void evaluate_price_rows(std::span<const OracleRow> rows, std::size_t stride,
     }
   }
   return out;
+}
+
+// ONE definition of which bounded grid each Greek searches, shared by the
+// winner attribution and the stage-2 finalist ranking. Two copies could drift,
+// and a finalist ranked on a grid the winner is not later scored on would
+// disagree with the published floor by construction.
+[[nodiscard]] GreekSearches make_greek_searches() {
+  constexpr std::array<GreekSource, 2> kSecondOrder = {GreekSource::Volga, GreekSource::Vanna};
+  return GreekSearches{{
+      scales_for(GreekSource::Delta, kUnitScales),
+      scales_for(GreekSource::Gamma, kUnitScales),
+      scales_for(GreekSource::Theta, kTimeScales),
+      scales_for(GreekSource::Vega, kPointScales),
+      scales_for(GreekSource::Rho, kPointScales),
+      scales_for(GreekSource::CarryRho, kPointScales),
+      source_scales(kSecondOrder, kPointScales),
+      source_scales(kSecondOrder, kPointScales),
+      scales_for(GreekSource::Charm, kTimeScales),
+  }};
 }
 
 [[nodiscard]] std::vector<PriceScaleCandidate> price_scales_for(std::span<const double> scales) {
@@ -212,6 +272,44 @@ struct PricedRow {
     }
   }
   return true;
+}
+
+// Nine best-scale SELECTION errors for one convention map on the deterministic
+// tune sample — the same bounded attribution the winner runs, restricted to the
+// sample. Only `input_model` of `map` matters here: every candidate scale
+// multiplies the raw engine Greek, so the map's own scale fields never enter.
+//
+// An unobserved Greek yields infinity (Accumulator::mean on an empty
+// accumulator). Compared with `>`, that reads as a regression unless the other
+// side is equally unobserved, which is the intended fail-closed direction for a
+// finalist nothing can be said about.
+[[nodiscard]] std::array<double, kGreekCount>
+attribute_greeks(std::span<const OracleRow> rows, std::size_t stride, const ConventionMap &map) {
+  GreekSearches searches = make_greek_searches();
+  for (std::size_t index = 0; index < rows.size(); index += stride) {
+    const OracleRow &row = rows[index];
+    const std::optional<PricedRow> priced = price_row(row, map);
+    if (!priced.has_value()) {
+      continue;
+    }
+    for (std::size_t greek = 0; greek < kGreekCount; ++greek) {
+      std::vector<ScaleCandidate> &candidates = searches[greek];
+      const double oracle = row.*kGreekSpecs[greek].oracle;
+      if (!std::isfinite(oracle) || !sources_finite(candidates, *priced)) {
+        continue;
+      }
+      for (ScaleCandidate &candidate : candidates) {
+        const double model =
+            source_value(priced->greeks, priced->dp_dq, candidate.source) * candidate.scale;
+        candidate.error.selection.symmetric_relative(model, oracle);
+      }
+    }
+  }
+  std::array<double, kGreekCount> out{};
+  for (std::size_t greek = 0; greek < kGreekCount; ++greek) {
+    out[greek] = searches[greek][best_scale(searches[greek])].error.selection.mean();
+  }
+  return out;
 }
 
 // Stable total order on candidate identity: source ID first, then the SIGNED
@@ -438,9 +536,24 @@ void Accumulator::absolute(double model, double oracle) noexcept {
   }
 }
 
+// REPORTED objective. Asymmetric on purpose: the charter states the Greek
+// target as an error relative to the ORACLE, so the published number stays
+// directly comparable to it.
 void Accumulator::relative(double model, double oracle) noexcept {
   if (std::isfinite(model) && std::isfinite(oracle)) {
     sum += std::abs(model - oracle) / std::max(std::abs(oracle), kSelectionAbsFloor);
+    ++count;
+  }
+}
+
+// SELECTION objective. The largest of the two magnitudes (floored only for the
+// degenerate both-near-zero case) bounds the ratio, which removes the
+// asymmetric form's systematic pull toward the smallest candidate scale.
+// Deliberately NOT the same function as relative() above — see the header.
+void Accumulator::symmetric_relative(double model, double oracle) noexcept {
+  if (std::isfinite(model) && std::isfinite(oracle)) {
+    sum += std::abs(model - oracle) /
+           std::max({std::abs(model), std::abs(oracle), kSelectionAbsFloor});
     ++count;
   }
 }
@@ -461,6 +574,16 @@ std::size_t best_scale(std::span<const ScaleCandidate> candidates) noexcept {
     }
   }
   return best;
+}
+
+bool less_finalist(const FinalistRank &left, const FinalistRank &right) noexcept {
+  if (left.regresses_any_greek != right.regresses_any_greek) {
+    return !left.regresses_any_greek;
+  }
+  if (left.tune_price_mae != right.tune_price_mae) {
+    return left.tune_price_mae < right.tune_price_mae;
+  }
+  return left.candidate_id < right.candidate_id;
 }
 
 Result<ConventionSweepResult> run_convention_sweep(std::span<const OracleRow> smoke,
@@ -488,26 +611,41 @@ Result<ConventionSweepResult> run_convention_sweep(std::span<const OracleRow> sm
   for (const std::size_t index : finalists) {
     evaluate_price_rows(tune, tune_stride, prices[index], PriceStage::TuneSample);
   }
-  std::sort(finalists.begin(), finalists.end(), [&](std::size_t left, std::size_t right) {
-    return less_price(prices[left], prices[right], PriceStage::TuneSample);
-  });
+  ConventionSweepResult out;
+  // Stage 2 is the ONLY place Greeks enter the input-model choice. Nine-Greek
+  // attribution for all eight candidates is prohibitively expensive, so only
+  // the two finalists — and the baseline they are measured against — pay for
+  // it. Ranking all eight on price alone is how a Greek regression used to
+  // reach the winner unnoticed.
+  const std::array<double, kGreekCount> baseline_greeks =
+      attribute_greeks(tune, tune_stride, baseline);
+  std::array<std::vector<std::string>, kFinalistCount> finalist_regressions;
+  std::array<FinalistRank, kFinalistCount> ranks;
+  for (std::size_t slot = 0; slot < kFinalistCount; ++slot) {
+    const PriceCandidate &candidate = prices[finalists[slot]];
+    ConventionMap arm = baseline;
+    arm.input_model = candidate.model;
+    const std::array<double, kGreekCount> arm_greeks =
+        arm.input_model == baseline.input_model ? baseline_greeks
+                                                : attribute_greeks(tune, tune_stride, arm);
+    for (std::size_t greek = 0; greek < kGreekCount; ++greek) {
+      if (arm_greeks[greek] > baseline_greeks[greek]) {
+        finalist_regressions[slot].emplace_back(kGreekSpecs[greek].metric_id);
+      }
+    }
+    ranks[slot] = FinalistRank{.regresses_any_greek = !finalist_regressions[slot].empty(),
+                               .tune_price_mae = candidate.tune.mean(),
+                               .candidate_id = input_model_id(candidate.model)};
+  }
+  const std::size_t chosen = less_finalist(ranks[1], ranks[0]) ? 1 : 0;
   ConventionMap winner = baseline;
-  winner.input_model = prices[finalists.front()].model;
+  winner.input_model = prices[finalists[chosen]].model;
+  out.input_model_regressed_greeks = std::move(finalist_regressions[chosen]);
 
   std::vector<PriceScaleCandidate> price_scales = price_scales_for(kUnitScales);
-  std::vector<ScaleCandidate> delta = scales_for(GreekSource::Delta, kUnitScales);
-  std::vector<ScaleCandidate> gamma = scales_for(GreekSource::Gamma, kUnitScales);
-  std::vector<ScaleCandidate> theta = scales_for(GreekSource::Theta, kTimeScales);
-  std::vector<ScaleCandidate> vega = scales_for(GreekSource::Vega, kPointScales);
-  std::vector<ScaleCandidate> rho = scales_for(GreekSource::Rho, kPointScales);
-  std::vector<ScaleCandidate> phi = scales_for(GreekSource::CarryRho, kPointScales);
-  constexpr std::array<GreekSource, 2> kSecondOrder = {GreekSource::Volga, GreekSource::Vanna};
-  std::vector<ScaleCandidate> volga = source_scales(kSecondOrder, kPointScales);
-  std::vector<ScaleCandidate> vanna = source_scales(kSecondOrder, kPointScales);
-  std::vector<ScaleCandidate> decay = scales_for(GreekSource::Charm, kTimeScales);
+  GreekSearches searches = make_greek_searches();
   BaselineFloors baseline_floors;
   Accumulator candidate_vol;
-  ConventionSweepResult out;
   out.smoke_rows = static_cast<std::int64_t>(smoke.size());
   out.tune_rows = static_cast<std::int64_t>(tune.size());
   const auto start = std::chrono::steady_clock::now();
@@ -549,95 +687,71 @@ Result<ConventionSweepResult> run_convention_sweep(std::span<const OracleRow> sm
       }
 
       const OracleUnitGreeks base_units = to_oracle_units(base->greeks, base->dp_dq, baseline);
-      const auto observe_greek = [&](std::vector<ScaleCandidate> &candidates,
-                                     FloorAccumulators &baseline_acc, double oracle,
-                                     double baseline_value) {
+      for (std::size_t greek = 0; greek < kGreekCount; ++greek) {
+        std::vector<ScaleCandidate> &candidates = searches[greek];
+        FloorAccumulators &baseline_acc = baseline_floors.greeks[greek];
+        const double oracle = row.*kGreekSpecs[greek].oracle;
+        const double baseline_value = base_units.*kGreekSpecs[greek].baseline;
         if (!std::isfinite(oracle) || !std::isfinite(baseline_value) ||
             !sources_finite(candidates, *win)) {
-          return;
+          continue;
         }
-        // The relative objective's denominator is floored, so a row with a
-        // near-zero oracle rewards the smallest candidate scale no matter how
-        // wrong it is. Such rows are reported but never select.
-        const bool selectable = std::abs(oracle) >= kSelectionAbsFloor;
         for (ScaleCandidate &candidate : candidates) {
           const double model =
               source_value(win->greeks, win->dp_dq, candidate.source) * candidate.scale;
+          // REPORTING: the published floor, standard relative error over the
+          // full population, so it stays directly comparable to the charter's
+          // "greeks within 1% rel" target.
           candidate.error.report.relative(model, oracle);
-          if (selectable) {
-            candidate.error.selection.relative(model, oracle);
-          }
+          // SELECTION: the symmetric objective. A DIFFERENT function from the
+          // reported metric by design — the selection loss must be
+          // well-conditioned, the reported metric must be the target. A future
+          // reader should not "helpfully" unify these two lines.
+          candidate.error.selection.symmetric_relative(model, oracle);
         }
         baseline_acc.report.relative(baseline_value, oracle);
-        if (selectable) {
-          baseline_acc.selection.relative(baseline_value, oracle);
-        }
-      };
-      observe_greek(delta, baseline_floors.delta, row.de, base_units.de);
-      observe_greek(gamma, baseline_floors.gamma, row.ga, base_units.ga);
-      observe_greek(theta, baseline_floors.theta, row.th, base_units.th);
-      observe_greek(vega, baseline_floors.vega, row.ve, base_units.ve);
-      observe_greek(rho, baseline_floors.rho, row.rh, base_units.rh);
-      observe_greek(phi, baseline_floors.phi, row.ph, base_units.ph);
-      observe_greek(volga, baseline_floors.volga, row.vo, base_units.vo);
-      observe_greek(vanna, baseline_floors.vanna, row.va, base_units.va);
-      observe_greek(decay, baseline_floors.delta_decay, row.de_decay, base_units.de_decay);
+        baseline_acc.selection.symmetric_relative(baseline_value, oracle);
+      }
     }
   };
   evaluate_full(smoke);
   evaluate_full(tune);
 
   const std::size_t price_index = best_price_scale(price_scales);
-  const std::size_t delta_index = best_scale(delta);
-  const std::size_t gamma_index = best_scale(gamma);
-  const std::size_t theta_index = best_scale(theta);
-  const std::size_t vega_index = best_scale(vega);
-  const std::size_t rho_index = best_scale(rho);
-  const std::size_t phi_index = best_scale(phi);
-  const std::size_t volga_index = best_scale(volga);
-  const std::size_t vanna_index = best_scale(vanna);
-  const std::size_t decay_index = best_scale(decay);
+  std::array<std::size_t, kGreekCount> best{};
+  for (std::size_t greek = 0; greek < kGreekCount; ++greek) {
+    best[greek] = best_scale(searches[greek]);
+  }
   winner.price_scale = price_scales[price_index].scale;
-  winner.delta_scale = delta[delta_index].scale;
-  winner.gamma_scale = gamma[gamma_index].scale;
-  winner.theta_scale = theta[theta_index].scale;
+  winner.delta_scale = searches[kDeltaSearch][best[kDeltaSearch]].scale;
+  winner.gamma_scale = searches[kGammaSearch][best[kGammaSearch]].scale;
+  winner.theta_scale = searches[kThetaSearch][best[kThetaSearch]].scale;
   // Theta's day count only; the DTE banding day count stays pinned.
   winner.theta_days_per_year = days_from_time_scale(winner.theta_scale);
-  winner.vega_scale = vega[vega_index].scale;
-  winner.rho_scale = rho[rho_index].scale;
-  winner.phi_scale = phi[phi_index].scale;
-  winner.volga_source = volga[volga_index].source;
-  winner.volga_scale = volga[volga_index].scale;
-  winner.vanna_source = vanna[vanna_index].source;
-  winner.vanna_scale = vanna[vanna_index].scale;
-  winner.delta_decay_scale = decay[decay_index].scale;
+  winner.vega_scale = searches[kVegaSearch][best[kVegaSearch]].scale;
+  winner.rho_scale = searches[kRhoSearch][best[kRhoSearch]].scale;
+  winner.phi_scale = searches[kPhiSearch][best[kPhiSearch]].scale;
+  winner.volga_source = searches[kVolgaSearch][best[kVolgaSearch]].source;
+  winner.volga_scale = searches[kVolgaSearch][best[kVolgaSearch]].scale;
+  winner.vanna_source = searches[kVannaSearch][best[kVannaSearch]].source;
+  winner.vanna_scale = searches[kVannaSearch][best[kVannaSearch]].scale;
+  winner.delta_decay_scale = searches[kDecaySearch][best[kDecaySearch]].scale;
   out.winner = winner;
   out.metrics = {
       floor_metric("mode_a_price_mae", price_scales[price_index].error, "ticks", 100.0),
       floor_metric("mode_a_vol_mae", candidate_vol, "bp", 10000.0),
-      floor_metric("mode_a_delta_rel", delta[delta_index].error, "relative"),
-      floor_metric("mode_a_gamma_rel", gamma[gamma_index].error, "relative"),
-      floor_metric("mode_a_theta_rel", theta[theta_index].error, "relative"),
-      floor_metric("mode_a_vega_rel", vega[vega_index].error, "relative"),
-      floor_metric("mode_a_rho_rel", rho[rho_index].error, "relative"),
-      floor_metric("mode_a_phi_rel", phi[phi_index].error, "relative"),
-      floor_metric("mode_a_volga_rel", volga[volga_index].error, "relative"),
-      floor_metric("mode_a_vanna_rel", vanna[vanna_index].error, "relative"),
-      floor_metric("mode_a_delta_decay_rel", decay[decay_index].error, "relative"),
   };
   out.baseline_metrics = {
       floor_metric("mode_a_price_mae", baseline_floors.price, "ticks", 100.0),
       floor_metric("mode_a_vol_mae", baseline_floors.vol, "bp", 10000.0),
-      floor_metric("mode_a_delta_rel", baseline_floors.delta, "relative"),
-      floor_metric("mode_a_gamma_rel", baseline_floors.gamma, "relative"),
-      floor_metric("mode_a_theta_rel", baseline_floors.theta, "relative"),
-      floor_metric("mode_a_vega_rel", baseline_floors.vega, "relative"),
-      floor_metric("mode_a_rho_rel", baseline_floors.rho, "relative"),
-      floor_metric("mode_a_phi_rel", baseline_floors.phi, "relative"),
-      floor_metric("mode_a_volga_rel", baseline_floors.volga, "relative"),
-      floor_metric("mode_a_vanna_rel", baseline_floors.vanna, "relative"),
-      floor_metric("mode_a_delta_decay_rel", baseline_floors.delta_decay, "relative"),
   };
+  for (std::size_t greek = 0; greek < kGreekCount; ++greek) {
+    const std::string metric_id{kGreekSpecs[greek].metric_id};
+    out.metrics.push_back(
+        floor_metric(metric_id, searches[greek][best[greek]].error, "relative"));
+    out.baseline_metrics.push_back(
+        floor_metric(metric_id, baseline_floors.greeks[greek], "relative"));
+  }
   // Designated initializers: two doubles then two int64s in a row is exactly the
   // transposition that would defeat the population checks by construction.
   for (const PriceCandidate &candidate : prices) {
@@ -742,7 +856,7 @@ std::string convention_sweep_json(const ConventionSweepResult &result, std::stri
   std::string out = "{\"schema_version\":2,\"kind\":\"convention_sweep\",\"git_sha\":";
   append_json_string(out, git_sha);
   out.append(",\"cohorts\":[\"smoke\",\"tune\"],\"selection_strategy\":"
-             "\"all_smoke_then_top2_deterministic_tune_sample_then_full_attribution\","
+             "\"all_smoke_then_top2_greek_then_price_tune_sample_then_full_attribution\","
              "\"smoke_rows\":");
   append_int(out, result.smoke_rows);
   out.append(",\"tune_rows\":");
@@ -800,6 +914,17 @@ std::string convention_sweep_json(const ConventionSweepResult &result, std::stri
     out.append(",\"tune_sample_count\":");
     append_int(out, candidate.tune_sample_count);
     out.push_back('}');
+  }
+  // What the greek-aware finalist rank cost, if anything. Empty when the
+  // selected input model regressed on none of the nine; non-empty only when
+  // BOTH finalists regressed and the rank degenerated to price MAE, which must
+  // be visible in the receipt rather than absorbed silently.
+  out.append("],\"input_model_regressed_greeks\":[");
+  for (std::size_t index = 0; index < result.input_model_regressed_greeks.size(); ++index) {
+    if (index != 0) {
+      out.push_back(',');
+    }
+    append_json_string(out, result.input_model_regressed_greeks[index]);
   }
   out.append("],\"oracle_suspect_candidates\":[],"
              "\"market_evidence_status\":\"not_evaluated_no_nbbo_gate\","

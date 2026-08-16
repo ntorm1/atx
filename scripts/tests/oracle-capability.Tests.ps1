@@ -152,7 +152,7 @@ Describe 'oracle capability closed aggregate receipts' {
       smoke_blob_oid = $smokeOid; tune_blob_oid = $tuneOid; rows_processed = 100; target_metric_ids = $targetA
       baseline_conventions = $baselineMap; conventions = $conventionMap; production_conventions = (New-TestConventionMap)
       metrics = $metrics; baseline_metrics = $baselineMetrics
-      metric_deltas = $metricDeltas; candidate_prices = $candidatePrices; oracle_suspect_candidates = @()
+      metric_deltas = $metricDeltas; candidate_prices = $candidatePrices; input_model_regressed_greeks = @(); oracle_suspect_candidates = @()
       market_evidence_status = 'not_evaluated_no_nbbo_gate'; diagnostic_speed = [ordered]@{ preset = 'dev'; citable = $false; wall_seconds = 1.0; rows_per_second = 100.0 }; speed = $speed
     })
     $conventionsTested = Commit-All $repoRoot 'convention artifacts'
@@ -163,12 +163,23 @@ Describe 'oracle capability closed aggregate receipts' {
       scorecard_blob_oid = (Get-BlobOid $conventionsTested ($oracleRoot + '/scorecards/iter-000.json'))
       rows_processed = 100; target_metric_ids = $targetA; baseline_conventions = $baselineMap; conventions = $conventionMap
       production_conventions = (New-TestConventionMap)
-      metrics = $metrics; baseline_metrics = $baselineMetrics; metric_deltas = $metricDeltas; candidate_prices = $candidatePrices; speed = $speed
+      metrics = $metrics; baseline_metrics = $baselineMetrics; metric_deltas = $metricDeltas; candidate_prices = $candidatePrices
+      input_model_regressed_greeks = @(); speed = $speed
     }
     Write-JsonFile (Join-Path $bootstrapRoot 'conventions.json') $conventionsReceipt
     $conventionsCommit = Commit-All $repoRoot 'conventions receipt'
     $currentData = Get-CommittedJson $conventionsCommit ($oracleRoot + '/bootstrap/data.json')
     (Test-ConventionsReceipt $conventionsCommit $currentData) | Should Be $true
+
+    # Hard no-regression gate on the committed floor: equality passes (vol is
+    # structurally 0 on both arms), any worse candidate value fails closed.
+    (Test-FloorNoRegression $metrics $baselineMetrics) | Should Be $true
+    (Test-FloorNoRegression $metrics $metrics) | Should Be $true
+    (Test-FloorNoRegression $baselineMetrics $metrics) | Should Be $false
+    (Test-InputModelRegressedGreeks @()) | Should Be $true
+    (Test-InputModelRegressedGreeks @('mode_a_phi_rel', 'mode_a_delta_decay_rel')) | Should Be $true
+    (Test-InputModelRegressedGreeks @('mode_a_price_mae')) | Should Be $false
+    (Test-InputModelRegressedGreeks @('mode_a_phi_rel', 'mode_a_phi_rel')) | Should Be $false
 
     $modeBReceipt = [ordered]@{
       schema_version = 1; transition = 'mode_b'; base_sha = $conventionsCommit; tested_sha = $conventionsCommit

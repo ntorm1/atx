@@ -49,14 +49,17 @@ $script:OracleBenchTestIds = @(
 $script:OracleConventionTestIds = @(
   'OracleConvention.DiscreteDividendForwardIsAppliedExactly',
   'OracleConvention.ProductionMapIsTheResolvedHardCut',
-  'OracleConvention.BestScaleRanksOnTheSelectionPopulation',
+  'OracleConvention.BestScaleRanksOnTheSelectionObjective',
+  'OracleConvention.SymmetricObjectiveHasNoSmallestScaleGradient',
+  'OracleConvention.FinalistRankPrefersNoGreekRegressionOverLowerPriceMae',
   'OracleConvention.BestScaleTieBreaksOnSourceThenNumericScale',
   'OracleConvention.BestScaleWithoutSelectionEvidenceUsesCandidateIdentity',
   'OracleConvention.CompleteMapNamesEveryGreekSignAndScale',
   'OracleConvention.ThetaDayCountNeverRebucketsDteBands',
   'OracleConvention.SweepIsClosedDeterministicAndCoversElevenMetrics',
   'OracleConvention.CandidateAndBaselineFloorsShareOneRowPopulation',
-  'OracleConvention.SelectionExcludesSubFloorOracleRowsButStillReportsThem',
+  'OracleConvention.SubFloorOracleRowsBothReportAndSelect',
+  'OracleConvention.SweepPublishesTheSelectedInputModelGreekRegressions',
   'OracleConvention.SweepJsonPublishesTheProductionMapBesideTheWinner',
   'OracleConvention.SweepRefusesAMetricNoRowObserved',
   'OracleConvention.SweepRejectsEmptyCohort'
@@ -253,14 +256,44 @@ function Assert-OracleQuietHost {
   if ($busy.Count) { throw ('quiet rel-avx2 gate found competing process(es): ' + (($busy.ProcessName | Sort-Object -Unique) -join ',')) }
 }
 
+function Get-OracleGreekMetricIds {
+  return @($script:ModeAMetricMap.Values | ForEach-Object { [string]$_ } |
+    Where-Object { $_ -ne 'mode_a_price_mae' -and $_ -ne 'mode_a_vol_mae' })
+}
+
+# HARD no-regression gate. No REPORTED metric may be worse than its baseline;
+# equality is allowed because mode_a_vol_mae is structurally 0 on both arms.
+# There is deliberately no bypass flag, no allowlist and no tolerance fudge: a
+# convention map that makes a published number worse than doing nothing is not a
+# candidate, and hiding that behind a knob is how the delta_decay regression
+# survived a full gate run.
+function Get-OracleMetricRegressions($Metrics, $BaselineMetrics) {
+  $baselineById = @{}
+  foreach ($metric in @($BaselineMetrics)) { $baselineById[[string]$metric.metric_id] = $metric }
+  $offenders = @()
+  $invariant = [Globalization.CultureInfo]::InvariantCulture
+  foreach ($metric in @($Metrics)) {
+    $id = [string]$metric.metric_id
+    $baseline = $baselineById[$id]
+    if (-not $baseline) { $offenders += ($id + ' has no baseline metric'); continue }
+    $candidateValue = [double]$metric.value
+    $baselineValue = [double]$baseline.value
+    if ($candidateValue -gt $baselineValue) {
+      $offenders += ($id + ' candidate=' + $candidateValue.ToString('R', $invariant) + ' baseline=' + $baselineValue.ToString('R', $invariant))
+    }
+  }
+  return @($offenders)
+}
+
 function Test-OracleMetricArray($Metrics) {
   $items = @($Metrics)
   $expected = @($script:ModeAMetricMap.Values | ForEach-Object { [string]$_ })
   if ($items.Count -ne $expected.Count -or -not (Test-OracleExactStringSet @($items.metric_id) $expected)) { return $false }
   foreach ($metric in $items) {
-    # selection_count > 0 alone admits a scale chosen on a handful of the 277k
-    # rows. Require at least a tenth of the reported population, so a collapsed
-    # selection sample fails the gate instead of pinning production silently.
+    # selection_count now equals count (the symmetric selection objective needs
+    # no sub-floor exclusion), but the field stays pinned and the ratio stays
+    # checked: an objective that ever narrowed the selection population again
+    # would have to move this published number instead of doing it silently.
     if (-not (Test-OracleExactKeys $metric @('metric_id', 'value', 'count', 'selection_count', 'unit')) -or
         -not (Test-OracleFiniteNumber $metric.value) -or -not (Test-OracleNonnegativeInteger $metric.count) -or [long]$metric.count -le 0 -or
         -not (Test-OracleNonnegativeInteger $metric.selection_count) -or [long]$metric.selection_count -le 0 -or
@@ -348,7 +381,7 @@ function Test-OracleJsonValueEqual($Left, $Right) {
 
 function ConvertFrom-OracleConventionSweep([string]$ScorecardText, [string]$GateId, $Identity, [string]$ExpectedFloorPath) {
   try { $sweep = $ScorecardText | ConvertFrom-Json } catch { throw "oracle targeted gate $GateId sweep is not JSON" }
-  $keys = @('schema_version', 'kind', 'git_sha', 'cohorts', 'selection_strategy', 'smoke_rows', 'tune_rows', 'rows_priced', 'engine_errors', 'baseline_conventions', 'conventions', 'production_conventions', 'metrics', 'baseline_metrics', 'metric_deltas', 'candidate_prices', 'oracle_suspect_candidates', 'market_evidence_status', 'diagnostic_speed')
+  $keys = @('schema_version', 'kind', 'git_sha', 'cohorts', 'selection_strategy', 'smoke_rows', 'tune_rows', 'rows_priced', 'engine_errors', 'baseline_conventions', 'conventions', 'production_conventions', 'metrics', 'baseline_metrics', 'metric_deltas', 'candidate_prices', 'input_model_regressed_greeks', 'oracle_suspect_candidates', 'market_evidence_status', 'diagnostic_speed')
   if (-not (Test-OracleExactKeys $sweep $keys) -or $sweep.schema_version -ne 2 -or $sweep.kind -ne 'convention_sweep' -or
       $sweep.git_sha -ne $Identity.Sha -or -not (Test-OracleExactStringSet @($sweep.cohorts) @('smoke', 'tune')) -or
       -not (Test-OracleNonnegativeInteger $sweep.smoke_rows) -or [long]$sweep.smoke_rows -le 0 -or
@@ -371,6 +404,23 @@ function ConvertFrom-OracleConventionSweep([string]$ScorecardText, [string]$Gate
   # prices with.
   if (-not (Test-OracleJsonValueEqual $sweep.production_conventions $sweep.conventions)) {
     throw "oracle targeted gate $GateId production convention map differs from the resolved sweep winner"
+  }
+  # HARD gate: fail closed on ANY reported metric worse than its baseline, and
+  # name every offender with both values so the failure is diagnosable without
+  # re-running a 12-minute sweep.
+  $regressions = Get-OracleMetricRegressions $sweep.metrics $sweep.baseline_metrics
+  if ($regressions.Count) {
+    throw ("oracle targeted gate $GateId candidate is worse than baseline on " + $regressions.Count +
+           ' metric(s): ' + ($regressions -join '; '))
+  }
+  # Greeks the SELECTED input model still regresses on versus baseline on the
+  # tune sample. Non-empty only when BOTH finalists regressed and the
+  # lexicographic rank fell through to price MAE — published, never silent.
+  $regressedGreeks = @($sweep.input_model_regressed_greeks | ForEach-Object { [string]$_ })
+  $greekIds = Get-OracleGreekMetricIds
+  if (@($regressedGreeks | Where-Object { $greekIds -notcontains $_ }).Count -or
+      @($regressedGreeks | Select-Object -Unique).Count -ne $regressedGreeks.Count) {
+    throw "oracle targeted gate $GateId input_model_regressed_greeks is not a unique subset of the nine Greek metric ids"
   }
   $candidatePrices = @($sweep.candidate_prices)
   if ($candidatePrices.Count -ne 8 -or @($candidatePrices.candidate_id | Select-Object -Unique).Count -ne 8) { throw "oracle targeted gate $GateId candidate registry mismatch" }
@@ -398,13 +448,13 @@ function ConvertFrom-OracleConventionSweep([string]$ScorecardText, [string]$Gate
     # `production_conventions` is committed too: without it the floor records the
     # map the sweep RESOLVED but not the map production actually prices with, and
     # the two are only checked against each other while a sweep is running.
-    $floorKeys = @('schema_version', 'kind', 'base_sha', 'tested_sha', 'command_id', 'exit_code', 'mode', 'cohorts', 'smoke_blob_oid', 'tune_blob_oid', 'rows_processed', 'target_metric_ids', 'baseline_conventions', 'conventions', 'production_conventions', 'metrics', 'baseline_metrics', 'metric_deltas', 'candidate_prices', 'oracle_suspect_candidates', 'market_evidence_status', 'diagnostic_speed', 'speed')
+    $floorKeys = @('schema_version', 'kind', 'base_sha', 'tested_sha', 'command_id', 'exit_code', 'mode', 'cohorts', 'smoke_blob_oid', 'tune_blob_oid', 'rows_processed', 'target_metric_ids', 'baseline_conventions', 'conventions', 'production_conventions', 'metrics', 'baseline_metrics', 'metric_deltas', 'candidate_prices', 'input_model_regressed_greeks', 'oracle_suspect_candidates', 'market_evidence_status', 'diagnostic_speed', 'speed')
     if (-not (Test-OracleExactKeys $floor $floorKeys) -or $floor.schema_version -ne 2 -or $floor.kind -ne 'residual_floor' -or
         $floor.command_id -ne 'mode_a_residual_floor' -or $floor.exit_code -ne 0 -or $floor.mode -ne 'A' -or
         [long]$floor.rows_processed -ne [long]$sweep.rows_priced -or -not (Test-OracleExactStringSet @($floor.cohorts) @('smoke', 'tune')) -or
         -not (Test-OracleConventionMap $floor.production_conventions) -or
         -not (Test-OracleExactStringSet @($floor.target_metric_ids) @($script:ModeAMetricMap.Values))) { throw 'residual floor receipt schema mismatch' }
-    foreach ($name in @('baseline_conventions', 'conventions', 'production_conventions', 'metrics', 'baseline_metrics', 'metric_deltas', 'candidate_prices', 'oracle_suspect_candidates', 'market_evidence_status')) {
+    foreach ($name in @('baseline_conventions', 'conventions', 'production_conventions', 'metrics', 'baseline_metrics', 'metric_deltas', 'candidate_prices', 'input_model_regressed_greeks', 'oracle_suspect_candidates', 'market_evidence_status')) {
       if (-not (Test-OracleJsonValueEqual $floor.$name $sweep.$name)) {
         throw ('residual floor differs from recomputed sweep: ' + $name +
                ' (fields compare by VALUE, numbers as doubles; look for a real value change, a differing key set or array order,' +
@@ -431,6 +481,7 @@ function ConvertFrom-OracleConventionSweep([string]$ScorecardText, [string]$Gate
     Conventions = $sweep.conventions
     ProductionConventions = $sweep.production_conventions
     CandidatePrices = @($sweep.candidate_prices)
+    InputModelRegressedGreeks = $regressedGreeks
     DiagnosticSpeed = $sweep.diagnostic_speed
   }
 }
@@ -640,6 +691,10 @@ function Invoke-OracleTargetedGate([string]$GateId, [scriptblock]$Invoker) {
     $result.conventions = $aggregate.Conventions
     $result.production_conventions = $aggregate.ProductionConventions
     $result.candidate_prices = @($aggregate.CandidatePrices)
+    # Carried into the typed receipt, not left inside the sweep artifact: a
+    # reviewer must see what the greek-aware input-model rank cost without
+    # opening a 12-minute run's output.
+    $result.input_model_regressed_greeks = @($aggregate.InputModelRegressedGreeks)
     $result.diagnostic_speed = $aggregate.DiagnosticSpeed
   }
   if ($aggregate -and $aggregate.PSObject.Properties.Name -contains 'Speed') { $result.speed = $aggregate.Speed }

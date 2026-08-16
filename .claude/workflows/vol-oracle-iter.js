@@ -75,7 +75,7 @@ const BOOTSTRAP_GATE_COMMANDS = Object.freeze({
 })
 const TARGETED_BOOTSTRAP_GATE_IDS = Object.freeze(['mode_a_targeted_tests', 'mode_a_smoke', 'convention_tests', 'mode_a_smoke_tune', 'residual_floor', 'convention_speed_measure', 'convention_speed', 'mode_b_targeted_tests', 'mode_b_smoke_tune'])
 const ORACLE_BENCH_TEST_COUNT = 31
-const ORACLE_CONVENTION_TEST_COUNT = 13
+const ORACLE_CONVENTION_TEST_COUNT = 16
 const READY_MEASURE_GATES = Object.freeze({
   measure_mode_a: 'atx-vol-oracle-bench --cohort smoke,tune --mode A --scorecard --aggregate-only',
   measure_mode_b: 'atx-vol-oracle-bench --cohort smoke,tune --mode B --scorecard --aggregate-only',
@@ -188,8 +188,9 @@ const NUMERIC_GATE_METRIC = {
   type: 'object', additionalProperties: false, required: ['metric_id', 'value', 'count', 'unit'],
   properties: {
     metric_id: { type: 'string' }, value: { type: 'number' }, count: { type: 'integer' },
-    // Stage 3 floors also carry the population the scale selection ran on,
-    // which excludes |oracle| < the Greek absolute floor.
+    // Stage 3 floors also carry the population the scale selection ran on. The
+    // symmetric selection objective excludes nothing, so it now equals `count`;
+    // it stays published so a future narrowing cannot happen silently.
     selection_count: { type: 'integer' }, unit: { type: 'string' }, pin: { type: 'number' },
   },
 }
@@ -260,7 +261,12 @@ const GATE_RECEIPT = {
         // What winning_convention() actually prices with. The gate fails closed
         // while it differs from `conventions`.
         production_conventions: CONVENTION_MAP,
-        candidate_prices: { type: 'array', items: STAGE3_CANDIDATE_PRICE }, diagnostic_speed: STAGE3_DIAGNOSTIC_SPEED, speed: STAGE3_SPEED,
+        candidate_prices: { type: 'array', items: STAGE3_CANDIDATE_PRICE },
+        // Greeks the SELECTED input model still regresses on versus baseline.
+        // Non-empty only when both finalists regressed and the lexicographic
+        // rank fell through to price MAE; the trade-off is published, not silent.
+        input_model_regressed_greeks: { type: 'array', items: { type: 'string' } },
+        diagnostic_speed: STAGE3_DIAGNOSTIC_SPEED, speed: STAGE3_SPEED,
       },
     },
   },
@@ -820,7 +826,7 @@ function validGateReceipt(receipt, gateId, expectedSha, expectedTree) {
   const commonKeys = ['schema_version', 'status', 'observations', 'command_id', 'raw_output_sha256']
   if (!TARGETED_BOOTSTRAP_GATE_IDS.includes(gateId)) return Object.keys(result).sort().join(',') === commonKeys.sort().join(',')
   const semanticKeys = [...commonKeys, 'tested_sha', 'tested_tree', 'gate_kind', 'tests_executed', 'tests_passed', 'rows_processed', 'metric_ids', 'audit_summary']
-  if (['mode_a_smoke_tune', 'residual_floor'].includes(gateId)) semanticKeys.push('rows_total', 'engine_errors', 'metrics', 'baseline_metrics', 'metric_deltas', 'conventions', 'production_conventions', 'candidate_prices', 'diagnostic_speed')
+  if (['mode_a_smoke_tune', 'residual_floor'].includes(gateId)) semanticKeys.push('rows_total', 'engine_errors', 'metrics', 'baseline_metrics', 'metric_deltas', 'conventions', 'production_conventions', 'candidate_prices', 'input_model_regressed_greeks', 'diagnostic_speed')
   if (['convention_speed_measure', 'convention_speed'].includes(gateId)) semanticKeys.push('speed')
   if (Object.keys(result).sort().join(',') !== semanticKeys.sort().join(',')) return false
   if (!/^[0-9a-f]{40}$/.test(result.tested_sha || '') || !/^[0-9a-f]{40}$/.test(result.tested_tree || '') ||
@@ -858,6 +864,18 @@ function validGateReceipt(receipt, gateId, expectedSha, expectedTree) {
       const baseline = baselineById.get(item.metric_id)
       return !baseline || baseline.count !== item.count || baseline.selection_count !== item.selection_count
     })) return false
+    // HARD no-regression gate: no reported metric may be worse than its
+    // baseline. Equality is allowed because mode_a_vol_mae is structurally 0 on
+    // both arms. No bypass flag, no allowlist, no tolerance — a map that makes a
+    // published number worse than doing nothing is not a candidate.
+    if (result.metrics.some(item => item.value > (baselineById.get(item.metric_id) || {}).value)) return false
+    // Greeks the SELECTED input model still regresses on: a unique subset of the
+    // nine relative Greek ids (price and vol are absolute floors, not part of
+    // the input-model Greek comparison).
+    const greekIds = wanted.filter(id => id !== 'mode_a_price_mae' && id !== 'mode_a_vol_mae')
+    const regressed = result.input_model_regressed_greeks
+    if (!Array.isArray(regressed) || new Set(regressed).size !== regressed.length ||
+        regressed.some(id => !greekIds.includes(id))) return false
     const metricById = new Map(result.metrics.map(item => [item.metric_id, item]))
     const deltaIds = new Set(result.metric_deltas.map(item => item && item.metric_id))
     if (deltaIds.size !== wanted.length || !wanted.every(id => deltaIds.has(id)) || result.metric_deltas.some(item => !item || !Number.isFinite(item.candidate) || !Number.isFinite(item.baseline) || !Number.isFinite(item.delta) || !Number.isInteger(item.count) || item.count <= 0 || Math.abs((item.candidate - item.baseline) - item.delta) > 1e-12 || item.count !== (metricById.get(item.metric_id) || {}).count)) return false
