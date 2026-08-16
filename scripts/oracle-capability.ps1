@@ -210,12 +210,22 @@ function Test-FloorPopulationParity($Metrics, $BaselineMetrics) {
   return $true
 }
 
-# HARD no-regression gate on the COMMITTED receipt: no reported metric may be
-# worse than its baseline (equality allowed — mode_a_vol_mae is structurally 0
-# on both arms). Duplicated from the targeted gate on purpose: the targeted gate
-# runs before the commit, this one runs after, and the one place a regression
-# must not be recoverable-only-by-hand is the committed floor. No bypass flag,
-# no allowlist, no tolerance.
+# HARD no-regression gate on the COMMITTED receipt, stated against the
+# SYMMETRIC-RELATIVE arrays: no symmetric metric may be worse than its baseline
+# (equality allowed — mode_a_vol_mae is structurally 0 on both arms).
+#
+# The symmetric loss is the one the scale SELECTION minimises: bounded, with no
+# smallest-scale gradient. The standard-relative array pins its denominator on
+# near-zero-oracle rows, so gating it would systematically reward the smaller
+# multiplier and contradict the selector rather than catch a defect. The
+# standard array is still validated for shape, non-negativity, population parity
+# and delta arithmetic; it is simply not the criterion. The committed symmetric
+# array is also the RATCHET BASELINE a later iteration must not be worse than.
+#
+# Duplicated from the targeted gate on purpose: the targeted gate runs before the
+# commit, this one runs after, and the one place a regression must not be
+# recoverable-only-by-hand is the committed floor. No bypass flag, no allowlist,
+# no tolerance.
 function Test-FloorNoRegression($Metrics, $BaselineMetrics) {
   $baselineById = @{}
   foreach ($metric in @($BaselineMetrics)) { $baselineById[[string]$metric.metric_id] = $metric }
@@ -326,23 +336,31 @@ function Test-ConventionsReceipt([string]$Sha, $DataReceipt) {
   # `production_conventions` is part of both committed artifacts: without it the
   # receipt records the map the sweep RESOLVED but never the map production
   # actually prices with, and the two are only compared while a sweep is running.
-  $keys = @('schema_version', 'transition', 'base_sha', 'tested_sha', 'command_id', 'exit_code', 'smoke_blob_oid', 'tune_blob_oid', 'conventions_blob_oid', 'scorecard_blob_oid', 'rows_processed', 'target_metric_ids', 'baseline_conventions', 'conventions', 'production_conventions', 'metrics', 'baseline_metrics', 'metric_deltas', 'candidate_prices', 'input_model_regressed_greeks', 'speed')
+  # Both floor arrays are committed. `symmetric_metrics` is the ratchet baseline
+  # and the no-regression criterion (it is the loss selection minimises);
+  # `metrics` is committed beside it so the floor stays directly comparable to
+  # the charter's "greeks within 1% rel" target. Never unify them.
+  $keys = @('schema_version', 'transition', 'base_sha', 'tested_sha', 'command_id', 'exit_code', 'smoke_blob_oid', 'tune_blob_oid', 'conventions_blob_oid', 'scorecard_blob_oid', 'rows_processed', 'target_metric_ids', 'baseline_conventions', 'conventions', 'production_conventions', 'metrics', 'baseline_metrics', 'metric_deltas', 'symmetric_metrics', 'baseline_symmetric_metrics', 'symmetric_metric_deltas', 'candidate_prices', 'input_model_regressed_greeks', 'speed')
   if (-not (Test-ExactKeys $receipt $keys) -or $receipt.schema_version -ne 2 -or $receipt.transition -ne 'conventions' -or $receipt.command_id -ne 'oracle_conventions_smoke_tune' -or $receipt.exit_code -ne 0 -or
       -not (Test-Provenance $receipt $Sha ($oracleRoot + '/bootstrap/mode-a.json')) -or $receipt.smoke_blob_oid -ne $DataReceipt.smoke_blob_oid -or $receipt.tune_blob_oid -ne $DataReceipt.tune_blob_oid) { return $false }
   if (-not (Test-ConventionMap $receipt.production_conventions) -or
       -not (Test-JsonValueEqual $receipt.production_conventions $receipt.conventions) -or
       -not (Test-ConventionMap $receipt.conventions) -or -not (Test-ConventionMap $receipt.baseline_conventions) -or
       -not (Test-FloorMetrics $receipt.metrics) -or -not (Test-FloorMetrics $receipt.baseline_metrics) -or
+      -not (Test-FloorMetrics $receipt.symmetric_metrics) -or -not (Test-FloorMetrics $receipt.baseline_symmetric_metrics) -or
       -not (Test-FloorPopulationParity $receipt.metrics $receipt.baseline_metrics) -or
-      -not (Test-FloorNoRegression $receipt.metrics $receipt.baseline_metrics) -or
+      -not (Test-FloorPopulationParity $receipt.symmetric_metrics $receipt.baseline_symmetric_metrics) -or
+      -not (Test-FloorPopulationParity $receipt.symmetric_metrics $receipt.metrics) -or
+      -not (Test-FloorNoRegression $receipt.symmetric_metrics $receipt.baseline_symmetric_metrics) -or
       -not (Test-InputModelRegressedGreeks $receipt.input_model_regressed_greeks) -or
-      -not (Test-MetricDeltas $receipt.metric_deltas) -or -not (Test-CandidatePrices $receipt.candidate_prices) -or
+      -not (Test-MetricDeltas $receipt.metric_deltas) -or -not (Test-MetricDeltas $receipt.symmetric_metric_deltas) -or
+      -not (Test-CandidatePrices $receipt.candidate_prices) -or
       -not (Test-SpeedFloor $receipt.speed) -or -not (Test-PositiveInteger $receipt.rows_processed) -or
       -not (Test-StringSet $receipt.target_metric_ids $targetA)) { return $false }
   $conventionsPath = $oracleRoot + '/CONVENTIONS.md'; $scorecardPath = $oracleRoot + '/scorecards/iter-000.json'
   if ((Get-BlobOid $Sha $conventionsPath) -ne $receipt.conventions_blob_oid -or (Get-BlobOid $Sha $scorecardPath) -ne $receipt.scorecard_blob_oid) { return $false }
   $scorecard = Get-CommittedJson $Sha $scorecardPath
-  $scorecardKeys = @('schema_version', 'kind', 'base_sha', 'tested_sha', 'command_id', 'exit_code', 'mode', 'cohorts', 'smoke_blob_oid', 'tune_blob_oid', 'rows_processed', 'target_metric_ids', 'baseline_conventions', 'conventions', 'production_conventions', 'metrics', 'baseline_metrics', 'metric_deltas', 'candidate_prices', 'input_model_regressed_greeks', 'oracle_suspect_candidates', 'market_evidence_status', 'diagnostic_speed', 'speed')
+  $scorecardKeys = @('schema_version', 'kind', 'base_sha', 'tested_sha', 'command_id', 'exit_code', 'mode', 'cohorts', 'smoke_blob_oid', 'tune_blob_oid', 'rows_processed', 'target_metric_ids', 'baseline_conventions', 'conventions', 'production_conventions', 'metrics', 'baseline_metrics', 'metric_deltas', 'symmetric_metrics', 'baseline_symmetric_metrics', 'symmetric_metric_deltas', 'candidate_prices', 'input_model_regressed_greeks', 'oracle_suspect_candidates', 'market_evidence_status', 'diagnostic_speed', 'speed')
   if (-not (Test-ExactKeys $scorecard $scorecardKeys) -or $scorecard.schema_version -ne 2 -or
       $scorecard.kind -ne 'residual_floor' -or $scorecard.command_id -ne 'mode_a_residual_floor' -or $scorecard.exit_code -ne 0 -or $scorecard.mode -ne 'A' -or
       -not (Test-StringSet $scorecard.cohorts @('smoke', 'tune')) -or -not (Test-StringSet $scorecard.target_metric_ids $targetA) -or [long]$scorecard.rows_processed -le 0 -or
@@ -353,11 +371,15 @@ function Test-ConventionsReceipt([string]$Sha, $DataReceipt) {
       -not (Test-ConventionMap $scorecard.production_conventions) -or
       -not (Test-JsonValueEqual $scorecard.production_conventions $scorecard.conventions) -or
       -not (Test-FloorMetrics $scorecard.metrics) -or -not (Test-FloorMetrics $scorecard.baseline_metrics) -or
+      -not (Test-FloorMetrics $scorecard.symmetric_metrics) -or -not (Test-FloorMetrics $scorecard.baseline_symmetric_metrics) -or
       -not (Test-FloorPopulationParity $scorecard.metrics $scorecard.baseline_metrics) -or
-      -not (Test-FloorNoRegression $scorecard.metrics $scorecard.baseline_metrics) -or
+      -not (Test-FloorPopulationParity $scorecard.symmetric_metrics $scorecard.baseline_symmetric_metrics) -or
+      -not (Test-FloorPopulationParity $scorecard.symmetric_metrics $scorecard.metrics) -or
+      -not (Test-FloorNoRegression $scorecard.symmetric_metrics $scorecard.baseline_symmetric_metrics) -or
       -not (Test-InputModelRegressedGreeks $scorecard.input_model_regressed_greeks) -or
-      -not (Test-MetricDeltas $scorecard.metric_deltas) -or -not (Test-CandidatePrices $scorecard.candidate_prices) -or -not (Test-SpeedFloor $scorecard.speed)) { return $false }
-  foreach ($name in @('baseline_conventions', 'conventions', 'production_conventions', 'metrics', 'baseline_metrics', 'metric_deltas', 'candidate_prices', 'input_model_regressed_greeks', 'speed')) {
+      -not (Test-MetricDeltas $scorecard.metric_deltas) -or -not (Test-MetricDeltas $scorecard.symmetric_metric_deltas) -or
+      -not (Test-CandidatePrices $scorecard.candidate_prices) -or -not (Test-SpeedFloor $scorecard.speed)) { return $false }
+  foreach ($name in @('baseline_conventions', 'conventions', 'production_conventions', 'metrics', 'baseline_metrics', 'metric_deltas', 'symmetric_metrics', 'baseline_symmetric_metrics', 'symmetric_metric_deltas', 'candidate_prices', 'input_model_regressed_greeks', 'speed')) {
     if (-not (Test-JsonValueEqual $receipt.$name $scorecard.$name)) { return $false }
   }
   return [long]$receipt.rows_processed -eq [long]$scorecard.rows_processed

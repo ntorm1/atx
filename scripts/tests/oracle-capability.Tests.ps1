@@ -144,6 +144,12 @@ Describe 'oracle capability closed aggregate receipts' {
     $metrics = New-TestFloorMetrics
     $baselineMetrics = New-TestFloorMetrics 1.0
     $metricDeltas = New-TestMetricDeltas
+    # The symmetric-relative trio committed beside the standard one. It is the
+    # ratchet baseline and the no-regression criterion; the standard array is
+    # committed for comparability with the charter target only.
+    $symmetricMetrics = New-TestFloorMetrics
+    $baselineSymmetricMetrics = New-TestFloorMetrics 1.0
+    $symmetricMetricDeltas = New-TestMetricDeltas
     $candidatePrices = New-TestCandidatePrices
     $speed = [ordered]@{ metric_id = 'rel_avx2_rows_per_second'; baseline = 1000.0; pin = 900.0; unit = 'rows_per_second'; preset = 'rel-avx2'; quiet_host = $true }
     Write-JsonFile $scorecardPath ([ordered]@{
@@ -152,7 +158,10 @@ Describe 'oracle capability closed aggregate receipts' {
       smoke_blob_oid = $smokeOid; tune_blob_oid = $tuneOid; rows_processed = 100; target_metric_ids = $targetA
       baseline_conventions = $baselineMap; conventions = $conventionMap; production_conventions = (New-TestConventionMap)
       metrics = $metrics; baseline_metrics = $baselineMetrics
-      metric_deltas = $metricDeltas; candidate_prices = $candidatePrices; input_model_regressed_greeks = @(); oracle_suspect_candidates = @()
+      metric_deltas = $metricDeltas
+      symmetric_metrics = $symmetricMetrics; baseline_symmetric_metrics = $baselineSymmetricMetrics
+      symmetric_metric_deltas = $symmetricMetricDeltas
+      candidate_prices = $candidatePrices; input_model_regressed_greeks = @(); oracle_suspect_candidates = @()
       market_evidence_status = 'not_evaluated_no_nbbo_gate'; diagnostic_speed = [ordered]@{ preset = 'dev'; citable = $false; wall_seconds = 1.0; rows_per_second = 100.0 }; speed = $speed
     })
     $conventionsTested = Commit-All $repoRoot 'convention artifacts'
@@ -163,7 +172,9 @@ Describe 'oracle capability closed aggregate receipts' {
       scorecard_blob_oid = (Get-BlobOid $conventionsTested ($oracleRoot + '/scorecards/iter-000.json'))
       rows_processed = 100; target_metric_ids = $targetA; baseline_conventions = $baselineMap; conventions = $conventionMap
       production_conventions = (New-TestConventionMap)
-      metrics = $metrics; baseline_metrics = $baselineMetrics; metric_deltas = $metricDeltas; candidate_prices = $candidatePrices
+      metrics = $metrics; baseline_metrics = $baselineMetrics; metric_deltas = $metricDeltas
+      symmetric_metrics = $symmetricMetrics; baseline_symmetric_metrics = $baselineSymmetricMetrics
+      symmetric_metric_deltas = $symmetricMetricDeltas; candidate_prices = $candidatePrices
       input_model_regressed_greeks = @(); speed = $speed
     }
     Write-JsonFile (Join-Path $bootstrapRoot 'conventions.json') $conventionsReceipt

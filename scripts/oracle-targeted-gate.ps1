@@ -58,6 +58,7 @@ $script:OracleConventionTestIds = @(
   'OracleConvention.ThetaDayCountNeverRebucketsDteBands',
   'OracleConvention.SweepIsClosedDeterministicAndCoversElevenMetrics',
   'OracleConvention.CandidateAndBaselineFloorsShareOneRowPopulation',
+  'OracleConvention.StandardAndSymmetricFloorsDisagreeInDirection',
   'OracleConvention.SubFloorOracleRowsBothReportAndSelect',
   'OracleConvention.SweepPublishesTheSelectedInputModelGreekRegressions',
   'OracleConvention.SweepJsonPublishesTheProductionMapBesideTheWinner',
@@ -261,8 +262,18 @@ function Get-OracleGreekMetricIds {
     Where-Object { $_ -ne 'mode_a_price_mae' -and $_ -ne 'mode_a_vol_mae' })
 }
 
-# HARD no-regression gate. No REPORTED metric may be worse than its baseline;
-# equality is allowed because mode_a_vol_mae is structurally 0 on both arms.
+# HARD no-regression gate, stated against the SYMMETRIC-RELATIVE arrays. No
+# symmetric metric may be worse than its baseline; equality is allowed because
+# mode_a_vol_mae is structurally 0 on both arms.
+#
+# The symmetric loss is the one the scale SELECTION minimises, and it is bounded
+# with no smallest-scale gradient. Gating the standard-relative array instead
+# pins the denominator on near-zero-oracle rows and therefore systematically
+# rewards the smaller multiplier — a criterion that contradicts the selector by
+# construction rather than catching a real defect. The standard array is still
+# validated for shape, finiteness, non-negativity, population parity and delta
+# arithmetic; it is simply no longer the regression criterion.
+#
 # There is deliberately no bypass flag, no allowlist and no tolerance fudge: a
 # convention map that makes a published number worse than doing nothing is not a
 # candidate, and hiding that behind a knob is how the delta_decay regression
@@ -381,7 +392,7 @@ function Test-OracleJsonValueEqual($Left, $Right) {
 
 function ConvertFrom-OracleConventionSweep([string]$ScorecardText, [string]$GateId, $Identity, [string]$ExpectedFloorPath) {
   try { $sweep = $ScorecardText | ConvertFrom-Json } catch { throw "oracle targeted gate $GateId sweep is not JSON" }
-  $keys = @('schema_version', 'kind', 'git_sha', 'cohorts', 'selection_strategy', 'smoke_rows', 'tune_rows', 'rows_priced', 'engine_errors', 'baseline_conventions', 'conventions', 'production_conventions', 'metrics', 'baseline_metrics', 'metric_deltas', 'candidate_prices', 'input_model_regressed_greeks', 'oracle_suspect_candidates', 'market_evidence_status', 'diagnostic_speed')
+  $keys = @('schema_version', 'kind', 'git_sha', 'cohorts', 'selection_strategy', 'smoke_rows', 'tune_rows', 'rows_priced', 'engine_errors', 'baseline_conventions', 'conventions', 'production_conventions', 'metrics', 'baseline_metrics', 'metric_deltas', 'symmetric_metrics', 'baseline_symmetric_metrics', 'symmetric_metric_deltas', 'candidate_prices', 'input_model_regressed_greeks', 'oracle_suspect_candidates', 'market_evidence_status', 'diagnostic_speed')
   if (-not (Test-OracleExactKeys $sweep $keys) -or $sweep.schema_version -ne 2 -or $sweep.kind -ne 'convention_sweep' -or
       $sweep.git_sha -ne $Identity.Sha -or -not (Test-OracleExactStringSet @($sweep.cohorts) @('smoke', 'tune')) -or
       -not (Test-OracleNonnegativeInteger $sweep.smoke_rows) -or [long]$sweep.smoke_rows -le 0 -or
@@ -389,8 +400,11 @@ function ConvertFrom-OracleConventionSweep([string]$ScorecardText, [string]$Gate
       -not (Test-OracleNonnegativeInteger $sweep.rows_priced) -or [long]$sweep.rows_priced -le 0 -or
       -not (Test-OracleNonnegativeInteger $sweep.engine_errors) -or -not (Test-OracleMetricArray $sweep.metrics) -or
       -not (Test-OracleMetricArray $sweep.baseline_metrics) -or -not (Test-OracleConventionMap $sweep.conventions) -or
+      -not (Test-OracleMetricArray $sweep.symmetric_metrics) -or -not (Test-OracleMetricArray $sweep.baseline_symmetric_metrics) -or
       -not (Test-OracleConventionMap $sweep.baseline_conventions) -or -not (Test-OracleConventionMap $sweep.production_conventions) -or
       -not (Test-OracleMetricPopulationParity $sweep.metrics $sweep.baseline_metrics) -or
+      -not (Test-OracleMetricPopulationParity $sweep.symmetric_metrics $sweep.baseline_symmetric_metrics) -or
+      -not (Test-OracleMetricPopulationParity $sweep.symmetric_metrics $sweep.metrics) -or
       @($sweep.oracle_suspect_candidates).Count -ne 0 -or
       $sweep.market_evidence_status -ne 'not_evaluated_no_nbbo_gate') { throw "oracle targeted gate $GateId sweep schema mismatch" }
   # Row accounting closes by construction in the sweep, but nothing asserted it,
@@ -405,13 +419,16 @@ function ConvertFrom-OracleConventionSweep([string]$ScorecardText, [string]$Gate
   if (-not (Test-OracleJsonValueEqual $sweep.production_conventions $sweep.conventions)) {
     throw "oracle targeted gate $GateId production convention map differs from the resolved sweep winner"
   }
-  # HARD gate: fail closed on ANY reported metric worse than its baseline, and
+  # HARD gate: fail closed on ANY SYMMETRIC metric worse than its baseline, and
   # name every offender with both values so the failure is diagnosable without
-  # re-running a 12-minute sweep.
-  $regressions = @(Get-OracleMetricRegressions $sweep.metrics $sweep.baseline_metrics)
+  # re-running a 12-minute sweep. The symmetric array is the one the scale
+  # selection optimises, so gate and selector agree; the standard-relative array
+  # above is validated for shape/parity and published for comparability with the
+  # charter target, but it is not the regression criterion.
+  $regressions = @(Get-OracleMetricRegressions $sweep.symmetric_metrics $sweep.baseline_symmetric_metrics)
   if ($regressions.Count) {
     throw ("oracle targeted gate $GateId candidate is worse than baseline on " + $regressions.Count +
-           ' metric(s): ' + ($regressions -join '; '))
+           ' symmetric metric(s): ' + ($regressions -join '; '))
   }
   # Greeks the SELECTED input model still regresses on versus baseline on the
   # tune sample. Non-empty only when BOTH finalists regressed and the
@@ -430,17 +447,25 @@ function ConvertFrom-OracleConventionSweep([string]$ScorecardText, [string]$Gate
         -not (Test-OracleNonnegativeInteger $candidate.smoke_count) -or [long]$candidate.smoke_count -le 0 -or
         -not (Test-OracleFiniteNumber $candidate.tune_sample_price_mae_ticks) -or -not (Test-OracleNonnegativeInteger $candidate.tune_sample_count)) { throw "oracle targeted gate $GateId candidate evidence mismatch" }
   }
-  $deltas = @($sweep.metric_deltas)
-  if ($deltas.Count -ne 11 -or -not (Test-OracleExactStringSet @($deltas.metric_id) @($script:ModeAMetricMap.Values))) { throw "oracle targeted gate $GateId delta coverage mismatch" }
-  $metricsById = @{}
-  foreach ($metric in @($sweep.metrics)) { $metricsById[[string]$metric.metric_id] = $metric }
-  foreach ($delta in $deltas) {
-    if (-not (Test-OracleExactKeys $delta @('metric_id', 'candidate', 'baseline', 'delta', 'count', 'unit')) -or
-        -not (Test-OracleFiniteNumber $delta.candidate) -or -not (Test-OracleFiniteNumber $delta.baseline) -or
-        -not (Test-OracleFiniteNumber $delta.delta) -or -not (Test-OracleNonnegativeInteger $delta.count) -or [long]$delta.count -le 0) { throw "oracle targeted gate $GateId delta schema mismatch" }
-    if ([Math]::Abs(([double]$delta.candidate - [double]$delta.baseline) - [double]$delta.delta) -gt 1.0e-12) { throw "oracle targeted gate $GateId delta arithmetic mismatch" }
-    $metric = $metricsById[[string]$delta.metric_id]
-    if (-not $metric -or [long]$delta.count -ne [long]$metric.count) { throw "oracle targeted gate $GateId delta population mismatch" }
+  # BOTH delta arrays get the identical check — coverage, schema, the
+  # `candidate - baseline == delta` arithmetic to 1e-12, and a count equal to its
+  # own metric array's population. One loop, two calls: a second copy is how the
+  # standard and symmetric arrays would come to disagree about what a delta is.
+  foreach ($pair in @(@{ Name = 'delta'; Deltas = $sweep.metric_deltas; Metrics = $sweep.metrics },
+                      @{ Name = 'symmetric delta'; Deltas = $sweep.symmetric_metric_deltas; Metrics = $sweep.symmetric_metrics })) {
+    $deltas = @($pair.Deltas)
+    $label = [string]$pair.Name
+    if ($deltas.Count -ne 11 -or -not (Test-OracleExactStringSet @($deltas.metric_id) @($script:ModeAMetricMap.Values))) { throw "oracle targeted gate $GateId $label coverage mismatch" }
+    $metricsById = @{}
+    foreach ($metric in @($pair.Metrics)) { $metricsById[[string]$metric.metric_id] = $metric }
+    foreach ($delta in $deltas) {
+      if (-not (Test-OracleExactKeys $delta @('metric_id', 'candidate', 'baseline', 'delta', 'count', 'unit')) -or
+          -not (Test-OracleFiniteNumber $delta.candidate) -or -not (Test-OracleFiniteNumber $delta.baseline) -or
+          -not (Test-OracleFiniteNumber $delta.delta) -or -not (Test-OracleNonnegativeInteger $delta.count) -or [long]$delta.count -le 0) { throw "oracle targeted gate $GateId $label schema mismatch" }
+      if ([Math]::Abs(([double]$delta.candidate - [double]$delta.baseline) - [double]$delta.delta) -gt 1.0e-12) { throw "oracle targeted gate $GateId $label arithmetic mismatch" }
+      $metric = $metricsById[[string]$delta.metric_id]
+      if (-not $metric -or [long]$delta.count -ne [long]$metric.count) { throw "oracle targeted gate $GateId $label population mismatch" }
+    }
   }
   if ($GateId -eq 'residual_floor') {
     if (-not (Test-Path -LiteralPath $ExpectedFloorPath -PathType Leaf)) { throw 'residual floor receipt is missing' }
@@ -448,13 +473,18 @@ function ConvertFrom-OracleConventionSweep([string]$ScorecardText, [string]$Gate
     # `production_conventions` is committed too: without it the floor records the
     # map the sweep RESOLVED but not the map production actually prices with, and
     # the two are only checked against each other while a sweep is running.
-    $floorKeys = @('schema_version', 'kind', 'base_sha', 'tested_sha', 'command_id', 'exit_code', 'mode', 'cohorts', 'smoke_blob_oid', 'tune_blob_oid', 'rows_processed', 'target_metric_ids', 'baseline_conventions', 'conventions', 'production_conventions', 'metrics', 'baseline_metrics', 'metric_deltas', 'candidate_prices', 'input_model_regressed_greeks', 'oracle_suspect_candidates', 'market_evidence_status', 'diagnostic_speed', 'speed')
+    # The committed floor carries BOTH arrays. `symmetric_metrics` is the RATCHET
+    # BASELINE — the number a later iteration must not be worse than — because it
+    # is the loss the scale selection minimises; `metrics` is committed beside it
+    # so the floor stays directly comparable to the charter's "greeks within 1%
+    # rel" target. Neither may be dropped, and they must not be unified.
+    $floorKeys = @('schema_version', 'kind', 'base_sha', 'tested_sha', 'command_id', 'exit_code', 'mode', 'cohorts', 'smoke_blob_oid', 'tune_blob_oid', 'rows_processed', 'target_metric_ids', 'baseline_conventions', 'conventions', 'production_conventions', 'metrics', 'baseline_metrics', 'metric_deltas', 'symmetric_metrics', 'baseline_symmetric_metrics', 'symmetric_metric_deltas', 'candidate_prices', 'input_model_regressed_greeks', 'oracle_suspect_candidates', 'market_evidence_status', 'diagnostic_speed', 'speed')
     if (-not (Test-OracleExactKeys $floor $floorKeys) -or $floor.schema_version -ne 2 -or $floor.kind -ne 'residual_floor' -or
         $floor.command_id -ne 'mode_a_residual_floor' -or $floor.exit_code -ne 0 -or $floor.mode -ne 'A' -or
         [long]$floor.rows_processed -ne [long]$sweep.rows_priced -or -not (Test-OracleExactStringSet @($floor.cohorts) @('smoke', 'tune')) -or
         -not (Test-OracleConventionMap $floor.production_conventions) -or
         -not (Test-OracleExactStringSet @($floor.target_metric_ids) @($script:ModeAMetricMap.Values))) { throw 'residual floor receipt schema mismatch' }
-    foreach ($name in @('baseline_conventions', 'conventions', 'production_conventions', 'metrics', 'baseline_metrics', 'metric_deltas', 'candidate_prices', 'input_model_regressed_greeks', 'oracle_suspect_candidates', 'market_evidence_status')) {
+    foreach ($name in @('baseline_conventions', 'conventions', 'production_conventions', 'metrics', 'baseline_metrics', 'metric_deltas', 'symmetric_metrics', 'baseline_symmetric_metrics', 'symmetric_metric_deltas', 'candidate_prices', 'input_model_regressed_greeks', 'oracle_suspect_candidates', 'market_evidence_status')) {
       if (-not (Test-OracleJsonValueEqual $floor.$name $sweep.$name)) {
         throw ('residual floor differs from recomputed sweep: ' + $name +
                ' (fields compare by VALUE, numbers as doubles; look for a real value change, a differing key set or array order,' +
@@ -478,6 +508,9 @@ function ConvertFrom-OracleConventionSweep([string]$ScorecardText, [string]$Gate
     Metrics = @($sweep.metrics)
     BaselineMetrics = @($sweep.baseline_metrics)
     MetricDeltas = @($sweep.metric_deltas)
+    SymmetricMetrics = @($sweep.symmetric_metrics)
+    BaselineSymmetricMetrics = @($sweep.baseline_symmetric_metrics)
+    SymmetricMetricDeltas = @($sweep.symmetric_metric_deltas)
     Conventions = $sweep.conventions
     ProductionConventions = $sweep.production_conventions
     CandidatePrices = @($sweep.candidate_prices)
@@ -688,6 +721,12 @@ function Invoke-OracleTargetedGate([string]$GateId, [scriptblock]$Invoker) {
     $result.metrics = @($aggregate.Metrics)
     $result.baseline_metrics = @($aggregate.BaselineMetrics)
     $result.metric_deltas = @($aggregate.MetricDeltas)
+    # The symmetric trio is carried too: it is the array the no-regression gate
+    # ruled on and the array a later iteration ratchets against, so a reviewer
+    # must see it in the receipt rather than only inside the sweep artifact.
+    $result.symmetric_metrics = @($aggregate.SymmetricMetrics)
+    $result.baseline_symmetric_metrics = @($aggregate.BaselineSymmetricMetrics)
+    $result.symmetric_metric_deltas = @($aggregate.SymmetricMetricDeltas)
     $result.conventions = $aggregate.Conventions
     $result.production_conventions = $aggregate.ProductionConventions
     $result.candidate_prices = @($aggregate.CandidatePrices)

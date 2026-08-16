@@ -364,6 +364,25 @@ best_price_scale(std::span<const PriceScaleCandidate> candidates) noexcept {
                      .unit = std::move(unit)};
 }
 
+// DEFINITION SITE 2 of the two published floor arrays. Same FloorMetric shape
+// and same rows as floor_metric() above; it reads the SYMMETRIC accumulator
+// instead of the reported one.
+//
+// The symmetric loss is what the scale search minimises, because it is bounded
+// and carries no smallest-scale gradient; the no-regression gate and the ratchet
+// baseline are stated against THIS array so that the gate and the selector
+// optimise one objective. The standard-relative array is still published,
+// unchanged, so the committed floor stays directly comparable to the charter's
+// "greeks within 1% rel" target. Do not unify the two.
+[[nodiscard]] FloorMetric symmetric_floor_metric(std::string id, const FloorAccumulators &acc,
+                                                 std::string unit, double multiplier = 1.0) {
+  return FloorMetric{.metric_id = std::move(id),
+                     .value = acc.selection.mean() * multiplier,
+                     .count = acc.report.count,
+                     .selection_count = acc.selection.count,
+                     .unit = std::move(unit)};
+}
+
 // An accumulator that admitted nothing has an infinite mean, and `%.17g` writes
 // that as a bare `inf` — JSON that does not parse. Name the empty metric at the
 // source instead of failing a 12-minute sweep on "sweep is not JSON".
@@ -480,6 +499,37 @@ void append_metric_array(std::string &out, std::span<const FloorMetric> metrics)
     append_int(out, metric.selection_count);
     out.append(",\"unit\":");
     append_json_string(out, metric.unit);
+    out.push_back('}');
+  }
+  out.push_back(']');
+}
+
+// ONE delta rendering, shared by the standard and the symmetric arrays.
+// `candidate - baseline == delta` is the invariant five gate layers re-check to
+// 1e-12, and two hand-written copies of this loop is exactly how the two arrays
+// would come to disagree about what a delta is.
+// PRECONDITION: both spans carry the same metric ids in the same order.
+void append_delta_array(std::string &out, std::span<const FloorMetric> metrics,
+                        std::span<const FloorMetric> baseline) {
+  assert(metrics.size() == baseline.size());
+  out.push_back('[');
+  for (std::size_t index = 0; index < metrics.size(); ++index) {
+    assert(metrics[index].metric_id == baseline[index].metric_id);
+    if (index != 0) {
+      out.push_back(',');
+    }
+    out.append("{\"metric_id\":");
+    append_json_string(out, metrics[index].metric_id);
+    out.append(",\"candidate\":");
+    append_double(out, metrics[index].value);
+    out.append(",\"baseline\":");
+    append_double(out, baseline[index].value);
+    out.append(",\"delta\":");
+    append_double(out, metrics[index].value - baseline[index].value);
+    out.append(",\"count\":");
+    append_int(out, metrics[index].count);
+    out.append(",\"unit\":");
+    append_json_string(out, metrics[index].unit);
     out.push_back('}');
   }
   out.push_back(']');
@@ -745,12 +795,28 @@ Result<ConventionSweepResult> run_convention_sweep(std::span<const OracleRow> sm
       floor_metric("mode_a_price_mae", baseline_floors.price, "ticks", 100.0),
       floor_metric("mode_a_vol_mae", baseline_floors.vol, "bp", 10000.0),
   };
+  // The two absolute floors have no relative denominator, so their symmetric
+  // entry IS their standard entry — the arrays differ only on the nine relative
+  // Greeks. Publishing them anyway keeps both arrays at the same eleven ids over
+  // the same populations, which is what lets the gate compare them index-free.
+  out.symmetric_metrics = {
+      floor_metric("mode_a_price_mae", price_scales[price_index].error, "ticks", 100.0),
+      floor_metric("mode_a_vol_mae", candidate_vol, "bp", 10000.0),
+  };
+  out.baseline_symmetric_metrics = {
+      floor_metric("mode_a_price_mae", baseline_floors.price, "ticks", 100.0),
+      floor_metric("mode_a_vol_mae", baseline_floors.vol, "bp", 10000.0),
+  };
   for (std::size_t greek = 0; greek < kGreekCount; ++greek) {
     const std::string metric_id{kGreekSpecs[greek].metric_id};
     out.metrics.push_back(
         floor_metric(metric_id, searches[greek][best[greek]].error, "relative"));
     out.baseline_metrics.push_back(
         floor_metric(metric_id, baseline_floors.greeks[greek], "relative"));
+    out.symmetric_metrics.push_back(
+        symmetric_floor_metric(metric_id, searches[greek][best[greek]].error, "relative"));
+    out.baseline_symmetric_metrics.push_back(
+        symmetric_floor_metric(metric_id, baseline_floors.greeks[greek], "relative"));
   }
   // Designated initializers: two doubles then two int64s in a row is exactly the
   // transposition that would defeat the population checks by construction.
@@ -785,6 +851,15 @@ Result<ConventionSweepResult> run_convention_sweep(std::span<const OracleRow> sm
   if (const FloorMetric *empty = first_unobserved_metric(out.baseline_metrics)) {
     return Err(ErrorCode::InvalidArgument,
                "convention sweep baseline metric has no observation: " + empty->metric_id);
+  }
+  if (const FloorMetric *empty = first_unobserved_metric(out.symmetric_metrics)) {
+    return Err(ErrorCode::InvalidArgument,
+               "convention sweep symmetric metric has no observation: " + empty->metric_id);
+  }
+  if (const FloorMetric *empty = first_unobserved_metric(out.baseline_symmetric_metrics)) {
+    return Err(ErrorCode::InvalidArgument,
+               "convention sweep baseline symmetric metric has no observation: " +
+                   empty->metric_id);
   }
   for (const CandidatePriceMetric &candidate : out.candidate_prices) {
     if (candidate.smoke_count <= 0 || !std::isfinite(candidate.smoke_price_mae_ticks) ||
@@ -874,30 +949,27 @@ std::string convention_sweep_json(const ConventionSweepResult &result, std::stri
   // map the engine does not use.
   out.append(",\"production_conventions\":");
   out.append(convention_map_json(winning_convention()));
+  // DEFINITION SITE 3 of the two published floor arrays. The STANDARD-RELATIVE
+  // trio is emitted unchanged so the committed floor stays directly comparable
+  // to the charter's "greeks within 1% rel" target, which is stated relative to
+  // the oracle. The SYMMETRIC-RELATIVE trio beside it is the loss the scale
+  // selection actually minimises — bounded, with no smallest-scale gradient —
+  // and it is the array the no-regression gate and the ratchet baseline are
+  // stated against, so gate and selector optimise the same thing. Publishing
+  // both is the point; do not unify them.
   out.append(",\"metrics\":");
   append_metric_array(out, result.metrics);
   out.append(",\"baseline_metrics\":");
   append_metric_array(out, result.baseline_metrics);
-  out.append(",\"metric_deltas\":[");
-  for (std::size_t index = 0; index < result.metrics.size(); ++index) {
-    if (index != 0) {
-      out.push_back(',');
-    }
-    out.append("{\"metric_id\":");
-    append_json_string(out, result.metrics[index].metric_id);
-    out.append(",\"candidate\":");
-    append_double(out, result.metrics[index].value);
-    out.append(",\"baseline\":");
-    append_double(out, result.baseline_metrics[index].value);
-    out.append(",\"delta\":");
-    append_double(out, result.metrics[index].value - result.baseline_metrics[index].value);
-    out.append(",\"count\":");
-    append_int(out, result.metrics[index].count);
-    out.append(",\"unit\":");
-    append_json_string(out, result.metrics[index].unit);
-    out.push_back('}');
-  }
-  out.append("],\"candidate_prices\":[");
+  out.append(",\"metric_deltas\":");
+  append_delta_array(out, result.metrics, result.baseline_metrics);
+  out.append(",\"symmetric_metrics\":");
+  append_metric_array(out, result.symmetric_metrics);
+  out.append(",\"baseline_symmetric_metrics\":");
+  append_metric_array(out, result.baseline_symmetric_metrics);
+  out.append(",\"symmetric_metric_deltas\":");
+  append_delta_array(out, result.symmetric_metrics, result.baseline_symmetric_metrics);
+  out.append(",\"candidate_prices\":[");
   for (std::size_t index = 0; index < result.candidate_prices.size(); ++index) {
     if (index != 0) {
       out.push_back(',');

@@ -75,7 +75,7 @@ const BOOTSTRAP_GATE_COMMANDS = Object.freeze({
 })
 const TARGETED_BOOTSTRAP_GATE_IDS = Object.freeze(['mode_a_targeted_tests', 'mode_a_smoke', 'convention_tests', 'mode_a_smoke_tune', 'residual_floor', 'convention_speed_measure', 'convention_speed', 'mode_b_targeted_tests', 'mode_b_smoke_tune'])
 const ORACLE_BENCH_TEST_COUNT = 31
-const ORACLE_CONVENTION_TEST_COUNT = 16
+const ORACLE_CONVENTION_TEST_COUNT = 17
 const READY_MEASURE_GATES = Object.freeze({
   measure_mode_a: 'atx-vol-oracle-bench --cohort smoke,tune --mode A --scorecard --aggregate-only',
   measure_mode_b: 'atx-vol-oracle-bench --cohort smoke,tune --mode B --scorecard --aggregate-only',
@@ -256,8 +256,18 @@ const GATE_RECEIPT = {
         // rows_total == rows_processed + engine_errors is re-checkable from the
         // receipt without re-reading the artifact.
         rows_total: { type: 'integer' }, engine_errors: { type: 'integer' },
+        // TWO floor arrays, deliberately not one. `metrics` is the
+        // STANDARD-RELATIVE floor, |m-o|/max(|o|,floor), kept because the
+        // charter states its Greek target relative to the oracle.
+        // `symmetric_metrics` is |m-o|/max(|m|,|o|,floor) — the loss the scale
+        // selection minimises, bounded and free of the smallest-scale gradient —
+        // and it is the array the no-regression gate and the ratchet baseline
+        // are stated against, so the gate cannot contradict the selector.
         metrics: { type: 'array', items: NUMERIC_GATE_METRIC }, baseline_metrics: { type: 'array', items: NUMERIC_GATE_METRIC },
-        metric_deltas: { type: 'array', items: STAGE3_DELTA }, conventions: CONVENTION_MAP,
+        metric_deltas: { type: 'array', items: STAGE3_DELTA },
+        symmetric_metrics: { type: 'array', items: NUMERIC_GATE_METRIC }, baseline_symmetric_metrics: { type: 'array', items: NUMERIC_GATE_METRIC },
+        symmetric_metric_deltas: { type: 'array', items: STAGE3_DELTA },
+        conventions: CONVENTION_MAP,
         // What winning_convention() actually prices with. The gate fails closed
         // while it differs from `conventions`.
         production_conventions: CONVENTION_MAP,
@@ -610,7 +620,7 @@ const RATCHET_PREPARE = {
 const BOOTSTRAP_LANES = {
   missing_data: { stage: '1', slug: 'data', next: 'missing_mode_a', gate_ids: ['aggregate_store', 'ingest_manifest', 'cohort_manifests', 'holdout_digest'], contract: 'Use only broker recover_stage1 for immutable source 58a94584baabae8263d16421f633540b420de10b. It validates the exact parent/tree/two blobs, replays those blobs atop the frozen fixed main, runs the four fixed Stage 1 gates, and commits. Do not run adoption, disk, ingest, builds, or other gates; never synthesize their receipts.' },
   missing_mode_a: { stage: '2', slug: 'mode-a', next: 'missing_conventions', gate_ids: ['mode_a_targeted_tests', 'mode_a_smoke'], contract: 'Run the exact targeted Mode A gates first. If the already-present implementation passes, make no pricing implementation change and write only bootstrap/mode-a.json. Implement/fix Mode A only when an exact targeted gate proves it necessary. Do not implement/stub Mode B; never benchmark holdout.' },
-  missing_conventions: { stage: '3', slug: 'conventions', next: 'missing_mode_b', gate_ids: ['convention_tests', 'mode_a_smoke_tune', 'convention_speed_measure', 'residual_floor', 'convention_speed'], contract: 'Resolve conventions on aggregate smoke+tune Mode A with the closed staged sweep, commit CONVENTIONS.md + iter-000 + exact v2 bootstrap/conventions.json including all 11 numeric floors/deltas/map/blob OIDs and the rel-avx2 pin. The gate order is executable as listed: convention_speed_measure runs BEFORE residual_floor because residual_floor hard-requires the committed iter-000 while convention_speed_measure is the only sanctioned producer of the rel-avx2 rows_per_second measurement iter-000 needs and must therefore precede it. Derive iter-000 speed from that receipt, never copy it verbatim: baseline = the measured rows_per_second and pin = floor(baseline * 0.90). convention_speed then re-measures on a quiet host against the committed pin. Never benchmark holdout, read Mode B, or edit Ratchet memory; PM updates memory only after audited landing.' },
+  missing_conventions: { stage: '3', slug: 'conventions', next: 'missing_mode_b', gate_ids: ['convention_tests', 'mode_a_smoke_tune', 'convention_speed_measure', 'residual_floor', 'convention_speed'], contract: 'Resolve conventions on aggregate smoke+tune Mode A with the closed staged sweep, commit CONVENTIONS.md + iter-000 + exact v2 bootstrap/conventions.json including BOTH 11-metric floor arrays (metrics/baseline_metrics/metric_deltas and symmetric_metrics/baseline_symmetric_metrics/symmetric_metric_deltas), the map/blob OIDs and the rel-avx2 pin. The COMMITTED RATCHET BASELINE is the symmetric array, and the hard no-regression gate is stated against it: the symmetric loss |m-o|/max(|m|,|o|,floor) is what the scale selection minimises, it is bounded and has no smallest-scale gradient, so gate and selector optimise one objective. The standard-relative array |m-o|/max(|o|,floor) is committed unchanged beside it purely so the floor stays directly comparable to the charter target of greeks within 1% rel; it is validated for shape, population parity and delta arithmetic but is never the regression criterion, and the two must not be unified. The gate order is executable as listed: convention_speed_measure runs BEFORE residual_floor because residual_floor hard-requires the committed iter-000 while convention_speed_measure is the only sanctioned producer of the rel-avx2 rows_per_second measurement iter-000 needs and must therefore precede it. Derive iter-000 speed from that receipt, never copy it verbatim: baseline = the measured rows_per_second and pin = floor(baseline * 0.90). convention_speed then re-measures on a quiet host against the committed pin. Never benchmark holdout, read Mode B, or edit Ratchet memory; PM updates memory only after audited landing.' },
   missing_mode_b: { stage: '4', slug: 'mode-b', next: 'ready', gate_ids: ['mode_b_targeted_tests', 'mode_b_smoke_tune'], contract: 'Implement/test Mode B, run aggregate smoke+tune, commit bootstrap/mode-b.json. Never change holdout/conventions or benchmark holdout.' },
 }
 
@@ -826,7 +836,7 @@ function validGateReceipt(receipt, gateId, expectedSha, expectedTree) {
   const commonKeys = ['schema_version', 'status', 'observations', 'command_id', 'raw_output_sha256']
   if (!TARGETED_BOOTSTRAP_GATE_IDS.includes(gateId)) return Object.keys(result).sort().join(',') === commonKeys.sort().join(',')
   const semanticKeys = [...commonKeys, 'tested_sha', 'tested_tree', 'gate_kind', 'tests_executed', 'tests_passed', 'rows_processed', 'metric_ids', 'audit_summary']
-  if (['mode_a_smoke_tune', 'residual_floor'].includes(gateId)) semanticKeys.push('rows_total', 'engine_errors', 'metrics', 'baseline_metrics', 'metric_deltas', 'conventions', 'production_conventions', 'candidate_prices', 'input_model_regressed_greeks', 'diagnostic_speed')
+  if (['mode_a_smoke_tune', 'residual_floor'].includes(gateId)) semanticKeys.push('rows_total', 'engine_errors', 'metrics', 'baseline_metrics', 'metric_deltas', 'symmetric_metrics', 'baseline_symmetric_metrics', 'symmetric_metric_deltas', 'conventions', 'production_conventions', 'candidate_prices', 'input_model_regressed_greeks', 'diagnostic_speed')
   if (['convention_speed_measure', 'convention_speed'].includes(gateId)) semanticKeys.push('speed')
   if (Object.keys(result).sort().join(',') !== semanticKeys.sort().join(',')) return false
   if (!/^[0-9a-f]{40}$/.test(result.tested_sha || '') || !/^[0-9a-f]{40}$/.test(result.tested_tree || '') ||
@@ -844,8 +854,10 @@ function validGateReceipt(receipt, gateId, expectedSha, expectedTree) {
   const auditPrefix = `status=PASS rows_processed=${result.rows_processed} metric_ids=${[...result.metric_ids].sort().join(',')}`
   if (['mode_a_smoke_tune', 'residual_floor'].includes(gateId)) {
     if (!validStage3MetricArray(result.metrics, wanted) || !validStage3MetricArray(result.baseline_metrics, wanted) || !validStage3ConventionMap(result.conventions) ||
+        !validStage3MetricArray(result.symmetric_metrics, wanted) || !validStage3MetricArray(result.baseline_symmetric_metrics, wanted) ||
         !validStage3ConventionMap(result.production_conventions) ||
-        !Array.isArray(result.metric_deltas) || result.metric_deltas.length !== wanted.length || !Array.isArray(result.candidate_prices) || result.candidate_prices.length !== 8 ||
+        !Array.isArray(result.metric_deltas) || result.metric_deltas.length !== wanted.length ||
+        !Array.isArray(result.symmetric_metric_deltas) || result.symmetric_metric_deltas.length !== wanted.length || !Array.isArray(result.candidate_prices) || result.candidate_prices.length !== 8 ||
         !result.diagnostic_speed || result.diagnostic_speed.preset !== 'dev' || result.diagnostic_speed.citable !== false || !(result.diagnostic_speed.rows_per_second > 0) || !(result.diagnostic_speed.wall_seconds > 0)) return false
     // Row accounting must close: a sweep that lost 99% of its rows to engine
     // errors would otherwise report PASS on the 1% it managed to price.
@@ -857,18 +869,32 @@ function validGateReceipt(receipt, gateId, expectedSha, expectedTree) {
     // Fail closed while the map production prices with differs from the map the
     // sweep resolved: a committed floor must never describe an unused map.
     if (JSON.stringify(result.production_conventions) !== JSON.stringify(result.conventions)) return false
-    // One row population per metric across both arms, or metric_deltas compares
-    // two different samples.
+    // One row population per metric across both arms AND both objectives, or the
+    // delta arrays compare two different samples. The symmetric array is a
+    // second OBJECTIVE over the same rows, never a second population.
     const baselineById = new Map(result.baseline_metrics.map(item => [item.metric_id, item]))
+    const symmetricById = new Map(result.symmetric_metrics.map(item => [item.metric_id, item]))
+    const baselineSymmetricById = new Map(result.baseline_symmetric_metrics.map(item => [item.metric_id, item]))
     if (result.metrics.some(item => {
       const baseline = baselineById.get(item.metric_id)
-      return !baseline || baseline.count !== item.count || baseline.selection_count !== item.selection_count
+      const symmetric = symmetricById.get(item.metric_id)
+      const baselineSymmetric = baselineSymmetricById.get(item.metric_id)
+      return !baseline || baseline.count !== item.count || baseline.selection_count !== item.selection_count ||
+        !symmetric || symmetric.count !== item.count || symmetric.selection_count !== item.selection_count ||
+        !baselineSymmetric || baselineSymmetric.count !== item.count || baselineSymmetric.selection_count !== item.selection_count
     })) return false
-    // HARD no-regression gate: no reported metric may be worse than its
-    // baseline. Equality is allowed because mode_a_vol_mae is structurally 0 on
-    // both arms. No bypass flag, no allowlist, no tolerance — a map that makes a
-    // published number worse than doing nothing is not a candidate.
-    if (result.metrics.some(item => item.value > (baselineById.get(item.metric_id) || {}).value)) return false
+    // HARD no-regression gate, on the SYMMETRIC array: no symmetric metric may be
+    // worse than its baseline. Equality is allowed because mode_a_vol_mae is
+    // structurally 0 on both arms. The symmetric loss is what the scale selection
+    // minimises — bounded, no smallest-scale gradient — so gate and selector
+    // optimise one objective; the standard-relative array pins its denominator on
+    // near-zero-oracle rows and would systematically reward the smaller
+    // multiplier, contradicting the selector instead of catching a defect. It is
+    // still validated for shape/parity/delta arithmetic and published unchanged so
+    // the floor stays comparable to the charter target. No bypass flag, no
+    // allowlist, no tolerance — a map that makes the selected number worse than
+    // doing nothing is not a candidate.
+    if (result.symmetric_metrics.some(item => item.value > (baselineSymmetricById.get(item.metric_id) || {}).value)) return false
     // Greeks the SELECTED input model still regresses on: a unique subset of the
     // nine relative Greek ids (price and vol are absolute floors, not part of
     // the input-model Greek comparison).
@@ -876,9 +902,14 @@ function validGateReceipt(receipt, gateId, expectedSha, expectedTree) {
     const regressed = result.input_model_regressed_greeks
     if (!Array.isArray(regressed) || new Set(regressed).size !== regressed.length ||
         regressed.some(id => !greekIds.includes(id))) return false
-    const metricById = new Map(result.metrics.map(item => [item.metric_id, item]))
-    const deltaIds = new Set(result.metric_deltas.map(item => item && item.metric_id))
-    if (deltaIds.size !== wanted.length || !wanted.every(id => deltaIds.has(id)) || result.metric_deltas.some(item => !item || !Number.isFinite(item.candidate) || !Number.isFinite(item.baseline) || !Number.isFinite(item.delta) || !Number.isInteger(item.count) || item.count <= 0 || Math.abs((item.candidate - item.baseline) - item.delta) > 1e-12 || item.count !== (metricById.get(item.metric_id) || {}).count)) return false
+    // Both delta arrays get the identical check against their OWN metric array:
+    // coverage, finiteness, positive count, `candidate - baseline == delta` to
+    // 1e-12, and a count equal to that array's reported population.
+    for (const [deltas, byId] of [[result.metric_deltas, new Map(result.metrics.map(item => [item.metric_id, item]))],
+                                  [result.symmetric_metric_deltas, symmetricById]]) {
+      const deltaIds = new Set(deltas.map(item => item && item.metric_id))
+      if (deltaIds.size !== wanted.length || !wanted.every(id => deltaIds.has(id)) || deltas.some(item => !item || !Number.isFinite(item.candidate) || !Number.isFinite(item.baseline) || !Number.isFinite(item.delta) || !Number.isInteger(item.count) || item.count <= 0 || Math.abs((item.candidate - item.baseline) - item.delta) > 1e-12 || item.count !== (byId.get(item.metric_id) || {}).count)) return false
+    }
   } else if (result.audit_summary !== auditPrefix) return false
   if (['convention_speed_measure', 'convention_speed'].includes(gateId)) {
     const speed = result.speed

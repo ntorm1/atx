@@ -66,8 +66,12 @@ the inherited blob at canonical.
   `transition=conventions`, `command_id=oracle_conventions_smoke_tune`,
   `exit_code=0`, smoke/tune blob IDs, `CONVENTIONS.md` and iter-000 blob IDs, and
   positive aggregate row count, the complete eleven-target registry, baseline,
-  winning AND `production_conventions` complete convention maps, numeric
-  candidate/baseline/delta floors,
+  winning AND `production_conventions` complete convention maps, BOTH numeric
+  candidate/baseline/delta floor arrays — the standard-relative
+  `metrics`/`baseline_metrics`/`metric_deltas` and the symmetric-relative
+  `symmetric_metrics`/`baseline_symmetric_metrics`/`symmetric_metric_deltas`,
+  the latter being the ratchet baseline and the no-regression criterion (Stage 3
+  below states why) —
   the eight-candidate price attribution, and the pinned quiet rel-avx2 speed.
   `production_conventions` is the map `winning_convention()` actually prices
   with; both committed artifacts carry it so the floor holds a standalone record
@@ -155,16 +159,33 @@ banding convention so a silent change to it is visible in the receipt. Each row
 is priced under BOTH
 the winner and the baseline map before anything is accumulated, so the candidate
 and baseline floors always describe one row population — the gates enforce equal
-per-metric counts. Scale selection excludes rows with
-`|oracle| < kSelectionAbsFloor` — the sweep's OWN constant, not the scorecard's
-reporting tolerance, so retuning that tolerance cannot silently move the
-selection population — where the relative objective's floored denominator would
-otherwise reward the smallest candidate scale; those rows still appear in the
-reported floor and each metric publishes both counts. The excluded fraction
-differs per metric, and every validator requires
-`selection_count >= count / 10`, so a scale resolved on a sliver of the cohort
-fails closed; the weakest ratio is surfaced in the gate receipt's
-`audit_summary` as `min_selection_pct`. The sweep also emits
+per-metric counts. Over that one population the sweep publishes TWO eleven-metric
+floor arrays, deliberately different OBJECTIVES rather than duplicates.
+`metrics`/`baseline_metrics`/`metric_deltas` are STANDARD-RELATIVE,
+`|m - o| / max(|o|, kSelectionAbsFloor)`, kept because this charter states the
+Greek target relative to the ORACLE and the committed floor must stay directly
+comparable to that "greeks within 1% rel" target.
+`symmetric_metrics`/`baseline_symmetric_metrics`/`symmetric_metric_deltas` are
+SYMMETRIC-RELATIVE, `|m - o| / max(|m|, |o|, kSelectionAbsFloor)`, which is the
+loss the scale SELECTION minimises. `kSelectionAbsFloor` is the sweep's OWN
+constant, not the scorecard's reporting tolerance, so retuning that tolerance
+cannot silently move what selection optimised.
+
+The hard no-regression gate AND the committed ratchet baseline are the SYMMETRIC
+array. The symmetric loss is bounded and carries no smallest-scale gradient, so
+selection runs on the FULL row population and excludes nothing —
+`selection_count` now equals `count`. The standard-relative form instead pins its
+denominator on rows whose oracle sits below the floor while its numerator keeps
+growing with `|model * scale|`, so gating IT would systematically reward the
+smaller multiplier and contradict the selector by construction rather than catch
+a real defect. The standard array is still validated in every layer for shape,
+finiteness, non-negativity, count parity and the
+`candidate - baseline == delta` arithmetic; it is simply not the criterion, and
+the two arrays must never be unified. Both counts stay published and every
+validator still requires `selection_count >= count / 10`, so an objective that
+ever narrowed the selection population again would have to move a published
+number instead of doing it silently; the weakest ratio is surfaced in the gate
+receipt's `audit_summary` as `min_selection_pct`. The sweep also emits
 `production_conventions`, the
 map `winning_convention()` actually prices with, and the gate fails closed while
 it differs from the resolved winner. Row accounting must close as

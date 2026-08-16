@@ -50,8 +50,28 @@ struct CandidatePriceMetric {
 
 struct ConventionSweepResult {
   ConventionMap winner;
+  // DEFINITION SITE 1 of the two published floor arrays.
+  //
+  // `metrics`/`baseline_metrics` are the STANDARD-RELATIVE floor,
+  // |m - o| / max(|o|, kSelectionAbsFloor). They exist so the published number
+  // stays directly comparable to the charter's "greeks within 1% rel" target,
+  // which is stated against the oracle.
+  //
+  // `symmetric_metrics`/`baseline_symmetric_metrics` are the SYMMETRIC-RELATIVE
+  // floor, |m - o| / max(|m|, |o|, kSelectionAbsFloor) — the same loss the scale
+  // SELECTION minimises. It is bounded and has no smallest-scale gradient, so it
+  // is the array the no-regression gate and the ratchet baseline run on: gating
+  // on the standard array would reward the smaller multiplier on near-zero-oracle
+  // rows and therefore contradict the selector by construction.
+  //
+  // Both arrays carry the same eleven metric ids over the same row population.
+  // The two absolute floors (price, vol) have no relative denominator at all, so
+  // their symmetric entry is the same number as their standard entry; only the
+  // nine relative Greeks differ. A future reader must NOT unify the two arrays.
   std::vector<FloorMetric> metrics;
   std::vector<FloorMetric> baseline_metrics;
+  std::vector<FloorMetric> symmetric_metrics;
+  std::vector<FloorMetric> baseline_symmetric_metrics;
   std::vector<CandidatePriceMetric> candidate_prices;
   // Metric ids of the Greeks on which the SELECTED input model is still worse
   // than baseline_convention() on the tune sample, each side at its own best

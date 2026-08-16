@@ -319,6 +319,13 @@ TEST(OracleConvention, SweepIsClosedDeterministicAndCoversElevenMetrics) {
   ASSERT_TRUE(second.has_value()) << second.error().to_string();
   ASSERT_EQ(first->metrics.size(), 11u);
   ASSERT_EQ(first->baseline_metrics.size(), 11u);
+  ASSERT_EQ(first->symmetric_metrics.size(), 11u);
+  ASSERT_EQ(first->baseline_symmetric_metrics.size(), 11u);
+  for (std::size_t index = 0; index < first->metrics.size(); ++index) {
+    EXPECT_EQ(first->symmetric_metrics[index].metric_id, first->metrics[index].metric_id);
+    EXPECT_EQ(first->baseline_symmetric_metrics[index].metric_id,
+              first->baseline_metrics[index].metric_id);
+  }
   ASSERT_EQ(first->candidate_prices.size(), 8u);
   EXPECT_EQ(std::count_if(first->candidate_prices.begin(), first->candidate_prices.end(),
                           [](const CandidatePriceMetric &candidate) {
@@ -330,6 +337,13 @@ TEST(OracleConvention, SweepIsClosedDeterministicAndCoversElevenMetrics) {
   EXPECT_NE(json.find("\"cohorts\":[\"smoke\",\"tune\"]"), std::string::npos);
   EXPECT_NE(json.find("\"oracle_suspect_candidates\":[]"), std::string::npos);
   EXPECT_NE(json.find("\"selection_count\":"), std::string::npos);
+  // Both floor arrays are published: the standard-relative one stays comparable
+  // to the charter target, the symmetric one is what the gate and the ratchet
+  // baseline are stated against. A key present in the C++ emission alone fails
+  // five gate layers closed after a 12-minute sweep, so pin all three here.
+  EXPECT_NE(json.find("\"symmetric_metrics\":"), std::string::npos);
+  EXPECT_NE(json.find("\"baseline_symmetric_metrics\":"), std::string::npos);
+  EXPECT_NE(json.find("\"symmetric_metric_deltas\":"), std::string::npos);
   EXPECT_NE(json.find("not_evaluated_no_nbbo_gate"), std::string::npos);
   EXPECT_EQ(json.find("holdout"), std::string::npos);
 }
@@ -343,6 +357,8 @@ TEST(OracleConvention, CandidateAndBaselineFloorsShareOneRowPopulation) {
   // the winner arm would satisfy the parity check for free.
   ASSERT_NE(result->winner.input_model, baseline_convention().input_model);
   ASSERT_EQ(result->metrics.size(), result->baseline_metrics.size());
+  ASSERT_EQ(result->symmetric_metrics.size(), result->metrics.size());
+  ASSERT_EQ(result->baseline_symmetric_metrics.size(), result->metrics.size());
   for (std::size_t index = 0; index < result->metrics.size(); ++index) {
     const FloorMetric &candidate = result->metrics[index];
     const FloorMetric &baseline = result->baseline_metrics[index];
@@ -353,7 +369,59 @@ TEST(OracleConvention, CandidateAndBaselineFloorsShareOneRowPopulation) {
     // objective is well-conditioned on every row, so nothing is excluded.
     EXPECT_EQ(candidate.selection_count, candidate.count) << candidate.metric_id;
     EXPECT_GT(candidate.count, 0) << candidate.metric_id;
+    // The symmetric array is a second OBJECTIVE over the same rows, never a
+    // second population: the gate compares it arm-to-arm and the deltas would
+    // otherwise compare two different samples.
+    const FloorMetric &symmetric = result->symmetric_metrics[index];
+    const FloorMetric &baseline_symmetric = result->baseline_symmetric_metrics[index];
+    EXPECT_EQ(symmetric.metric_id, candidate.metric_id);
+    EXPECT_EQ(baseline_symmetric.metric_id, candidate.metric_id);
+    EXPECT_EQ(symmetric.count, candidate.count) << candidate.metric_id;
+    EXPECT_EQ(symmetric.selection_count, candidate.selection_count) << candidate.metric_id;
+    EXPECT_EQ(baseline_symmetric.count, baseline.count) << candidate.metric_id;
+    EXPECT_EQ(baseline_symmetric.selection_count, baseline.selection_count) << candidate.metric_id;
   }
+}
+
+// The ENTIRE reason two floor arrays are published, pinned on data small enough
+// to reason about. On one row the oracle evidences a 100x delta unit; on another
+// the oracle delta sits far below kSelectionAbsFloor. The standard-relative
+// floor pins its denominator on that near-zero row while its numerator keeps
+// growing with the multiplier, so it ranks the baseline scale better; the
+// symmetric floor is bounded there, so it ranks the evidenced scale better. Same
+// rows, opposite direction — which is why the no-regression gate must be stated
+// against the same objective the selector minimises, and why a future reader
+// must not unify the two arrays.
+TEST(OracleConvention, StandardAndSymmetricFloorsDisagreeInDirection) {
+  std::vector<OracleRow> smoke = {make_row(90.0, Side::Call)};
+  std::vector<OracleRow> tune = {make_row(105.0, Side::Call)};
+  smoke[0].de *= 100.0;
+  tune[0].de = kSelectionAbsFloor / 1.0e8;
+  const auto result = run_convention_sweep(smoke, tune);
+  ASSERT_TRUE(result.has_value()) << result.error().to_string();
+  // Selection followed the evidenced unit, not the smallest multiplier.
+  EXPECT_DOUBLE_EQ(result->winner.delta_scale, 100.0);
+
+  const auto find = [](const std::vector<FloorMetric> &metrics) {
+    return std::find_if(metrics.begin(), metrics.end(), [](const FloorMetric &metric) {
+      return metric.metric_id == "mode_a_delta_rel";
+    });
+  };
+  const auto standard = find(result->metrics);
+  const auto standard_baseline = find(result->baseline_metrics);
+  const auto symmetric = find(result->symmetric_metrics);
+  const auto symmetric_baseline = find(result->baseline_symmetric_metrics);
+  ASSERT_NE(standard, result->metrics.end());
+  ASSERT_NE(standard_baseline, result->baseline_metrics.end());
+  ASSERT_NE(symmetric, result->symmetric_metrics.end());
+  ASSERT_NE(symmetric_baseline, result->baseline_symmetric_metrics.end());
+  // Worse than baseline on the reported array, better on the symmetric one.
+  EXPECT_GT(standard->value, standard_baseline->value);
+  EXPECT_LT(symmetric->value, symmetric_baseline->value);
+  // Both arrays are bounded to the same rows, so the disagreement is one of
+  // objective and not of sample.
+  EXPECT_EQ(symmetric->count, standard->count);
+  EXPECT_EQ(symmetric_baseline->count, standard_baseline->count);
 }
 
 // A sub-floor oracle row used to be reported but excluded from selection, as a
