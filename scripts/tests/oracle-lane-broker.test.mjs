@@ -1,10 +1,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawn, spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 
 import { CANONICAL_REF, GATE_REGISTRY, MAIN_REF, OPERATION_REGISTRY, OracleLaneBroker, RECOVERY_SOURCE, TOOL_DEFINITIONS } from '../oracle-lane-broker.mjs'
 
@@ -99,6 +100,7 @@ test('production broker surface has fixed IDs, no raw command tool, and exact re
     'vol-lane-releaser': 'tools: mcp__oracle_lane_broker__lane_release',
     'vol-stage1-quarantiner': 'tools: mcp__oracle_lane_broker__lane_quarantine',
     'vol-stage1-recovery': 'tools: mcp__oracle_lane_broker__recover_stage1',
+    'vol-stage1-result-reader': 'tools: mcp__oracle_lane_broker__recovery_result',
     'vol-builder': 'tools: mcp__oracle_lane_broker__repo_search, mcp__oracle_lane_broker__repo_read, mcp__oracle_lane_broker__workspace_list, mcp__oracle_lane_broker__patch_apply, mcp__oracle_lane_broker__gate_run, mcp__oracle_lane_broker__lane_commit',
     'vol-verifier': 'tools: mcp__oracle_lane_broker__lane_integrate, mcp__oracle_lane_broker__gate_run',
     'vol-reviewer': 'tools: mcp__oracle_lane_broker__repo_search, mcp__oracle_lane_broker__repo_read, mcp__oracle_lane_broker__commit_inspect, mcp__oracle_lane_broker__gate_run',
@@ -116,7 +118,7 @@ test('production broker surface has fixed IDs, no raw command tool, and exact re
 
   const oracleWorkflow = readFileSync(join(projectRoot, '.claude', 'workflows', 'vol-oracle-iter.js'), 'utf8')
   assert.ok(oracleWorkflow.indexOf("failure: 'READY_BROKER_MIGRATION_REQUIRED'") < oracleWorkflow.indexOf("phase('Measure')"))
-  for (const agentName of ['vol-lane-opener', 'vol-lane-releaser', 'vol-stage1-quarantiner', 'vol-reviewer', 'vol-verifier', 'vol-ref-finalizer', 'vol-ref-auditor']) {
+  for (const agentName of ['vol-lane-opener', 'vol-lane-releaser', 'vol-stage1-quarantiner', 'vol-stage1-result-reader', 'vol-reviewer', 'vol-verifier', 'vol-ref-finalizer', 'vol-ref-auditor']) {
     assert.match(oracleWorkflow, new RegExp(`agentType: '${agentName}'`))
   }
   assert.match(oracleWorkflow, /buildAgentType = capability\.state === 'missing_data' \? 'vol-stage1-recovery' : 'vol-builder'/)
@@ -125,7 +127,7 @@ test('production broker surface has fixed IDs, no raw command tool, and exact re
   assert.doesNotMatch(sprintWorkflow, /\bagent\s*\(/)
 })
 
-test('temp repo broker rejects incident classes and proves recovery, lane commit/release, integration, and canonical CAS', { timeout: 120_000 }, async () => {
+test('temp repo broker rejects incident classes and proves recovery, lane commit/release, integration, and canonical CAS', { timeout: 240_000 }, async () => {
   const fx = fixture()
   try {
     const rootBefore = fx.broker.rootGuard()
@@ -152,24 +154,65 @@ test('temp repo broker rejects incident classes and proves recovery, lane commit
     assert.throws(() => fx.broker.listWorkspace({ capability: acquire.capability }), /lease mismatch/)
     writeFileSync(leasePath, lease, 'ascii')
 
-    const recovered = fx.broker.recoverStage1({ capability: acquire.capability })
+    // Simulate a transport loss: the successful mutation result is deliberately
+    // ignored.  Cleanup may still release the now-clean lane.
+    fx.broker.recoverStage1({ capability: acquire.capability })
+    const released = fx.broker.releaseLane({ capability: acquire.capability })
+    assert.equal(released.finalize_capability, '')
+    assert.throws(() => fx.broker.listWorkspace({ capability: acquire.capability }), /stale|inactive/)
+
+    const gitDir = git(fx.root, 'rev-parse', '--absolute-git-dir')
+    const recoveryDir = join(gitDir, 'oracle-lane-broker-v3', 'recoveries')
+    const recoveryFiles = readdirSync(recoveryDir).filter(name => name.endsWith('.json'))
+    assert.equal(recoveryFiles.length, 1)
+    const recoveryPath = join(recoveryDir, recoveryFiles[0])
+    const sealedRecovery = readFileSync(recoveryPath, 'utf8')
+
+    writeFileSync(recoveryPath, sealedRecovery.replace('"state":"sealed"', '"state":"broken"'), 'utf8')
+    assert.throws(() => fx.broker.openLane({ operation_id: 'bootstrap_data', stage: 'bootstrap-1', run_id: 'run-stage1', branch: 'lane/oracle-bootstrap-data-run-stage1', base_sha: fx.base, heartbeat_id: 'run-stage1-data' }), /seal mismatch/)
+    writeFileSync(recoveryPath, sealedRecovery, 'utf8')
+
+    const wrongIdentity = { version: 3, operation_id: 'bootstrap_data', stage: 'bootstrap-1', run_id: 'run-wrong', branch: 'lane/oracle-bootstrap-data-run-wrong', base_sha: fx.base, heartbeat_id: 'run-wrong-data', source_commit: fx.sourceCommit }
+    const wrongPath = join(recoveryDir, `${createHash('sha256').update(Buffer.from(JSON.stringify(wrongIdentity), 'utf8')).digest('hex')}.json`)
+    writeFileSync(wrongPath, sealedRecovery, 'utf8')
+    assert.throws(() => fx.broker.openLane({ operation_id: 'bootstrap_data', stage: 'bootstrap-1', run_id: 'run-wrong', branch: 'lane/oracle-bootstrap-data-run-wrong', base_sha: fx.base, heartbeat_id: 'run-wrong-data' }), /identity mismatch/)
+    rmSync(wrongPath)
+
+    git(fx.root, 'update-ref', 'refs/heads/lane/oracle-bootstrap-data-run-stage1', fx.sourceCommit, released.sha)
+    assert.throws(() => fx.broker.openLane({ operation_id: 'bootstrap_data', stage: 'bootstrap-1', run_id: 'run-stage1', branch: 'lane/oracle-bootstrap-data-run-stage1', base_sha: fx.base, heartbeat_id: 'run-stage1-data' }), /branch is missing or ahead/)
+    git(fx.root, 'update-ref', 'refs/heads/lane/oracle-bootstrap-data-run-stage1', released.sha, fx.sourceCommit)
+
+    rmSync(recoveryPath)
+    assert.throws(() => fx.broker.openLane({ operation_id: 'bootstrap_data', stage: 'bootstrap-1', run_id: 'run-stage1', branch: 'lane/oracle-bootstrap-data-run-stage1', base_sha: fx.base, heartbeat_id: 'run-stage1-data' }), /incompatible released/)
+    writeFileSync(recoveryPath, sealedRecovery, 'utf8')
+
+    const replayAcquire = fx.broker.openLane({ operation_id: 'bootstrap_data', stage: 'bootstrap-1', run_id: 'run-stage1', branch: 'lane/oracle-bootstrap-data-run-stage1', base_sha: fx.base, heartbeat_id: 'run-stage1-data' })
+    assert.equal(replayAcquire.recovery_replay, true)
+    assert.equal(replayAcquire.lease_start_sha, released.sha)
+    const queried = fx.broker.recoveryResult({ capability: replayAcquire.capability })
+    assert.equal(queried.found, true)
+    assert.equal(queried.recovery_id, recoveryFiles[0].replace(/\.json$/, ''))
+    const recovered = queried.result
+    assert.equal(recovered.replayed, true)
+    assert.equal(recovered.sha, released.sha)
+    assert.equal(recovered.tree, released.tree)
     assert.equal(recovered.recovery.source_commit, fx.sourceCommit)
     assert.equal(recovered.recovery.source_parent, fx.base)
     assert.equal(recovered.recovery.source_tree, fx.sourceTree)
     assert.equal(recovered.recovery.adoption_rerun, false)
     assert.deepEqual(recovered.files_changed.sort(), Object.keys(fx.files).sort())
     assert.deepEqual(recovered.gate_receipts.map(item => item.gate_id), ['aggregate_store', 'ingest_manifest', 'cohort_manifests', 'holdout_digest'])
-    assert.ok(recovered.gate_receipts.every(item => item.exit_code === 0 && item.broker_evidence.physical_cwd === fx.pool))
-    assert.throws(() => fx.broker.recoverStage1({ capability: acquire.capability }), /not pristine/)
+    assert.ok(recovered.gate_receipts.every(item => /^[0-9a-f]{64}$/.test(item.receipt_id) && item.tested_sha === fx.base && item.exit_code === 0 && item.broker_evidence.physical_cwd === fx.pool))
+    const replayAgain = fx.broker.recoverStage1({ capability: replayAcquire.capability })
+    assert.equal(replayAgain.replayed, true)
+    assert.deepEqual(replayAgain.gate_receipts.map(item => item.receipt_id), recovered.gate_receipts.map(item => item.receipt_id))
 
     const inspection = fx.broker.inspectCommit({ base_sha: fx.base, candidate_sha: recovered.sha })
     assert.deepEqual(inspection.paths.sort(), Object.keys(fx.files).sort())
     assert.equal(inspection.broker_evidence.root_guard_before.main_sha, fx.base)
-    const released = fx.broker.releaseLane({ capability: acquire.capability })
-    assert.equal(released.finalize_capability, '')
-    assert.equal(released.sha, recovered.sha)
-    assert.equal(released.tree, recovered.tree)
-    assert.throws(() => fx.broker.listWorkspace({ capability: acquire.capability }), /stale|inactive/)
+    const replayReleased = fx.broker.releaseLane({ capability: replayAcquire.capability })
+    assert.equal(replayReleased.sha, recovered.sha)
+    assert.equal(replayReleased.tree, recovered.tree)
 
     const edit = fx.broker.openLane({ operation_id: 'bootstrap_mode_a', stage: 'bootstrap-2', run_id: 'run-mode-a', branch: 'lane/oracle-bootstrap-mode-a-run-mode-a', base_sha: fx.base, heartbeat_id: 'run-mode-a-edit' })
     const buildNinjaBefore = readFileSync(join(edit.worktree, 'build', 'build.ninja'), 'utf8')

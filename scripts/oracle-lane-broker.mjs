@@ -19,6 +19,7 @@ const CANONICAL_REF = 'refs/heads/oracle/canonical'
 const MAIN_REF = 'refs/heads/main'
 const ZERO_SHA = '0000000000000000000000000000000000000000'
 const SHA_RE = /^[0-9a-f]{40}$/
+const SHA256_RE = /^[0-9a-f]{64}$/
 const SAFE_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,191}$/
 const SAFE_BRANCH_RE = /^(?:lane|integration)\/[A-Za-z0-9][A-Za-z0-9._\/-]{0,220}$/
 const RECOVERY_SOURCE = Object.freeze({
@@ -196,8 +197,10 @@ export class OracleLaneBroker {
     this.stateDir = join(this.gitDir, 'oracle-lane-broker-v3')
     this.capDir = join(this.stateDir, 'capabilities')
     this.finalizeDir = join(this.stateDir, 'finalizers')
+    this.recoveryDir = join(this.stateDir, 'recoveries')
     mkdirSync(this.capDir, { recursive: true })
     mkdirSync(this.finalizeDir, { recursive: true })
+    mkdirSync(this.recoveryDir, { recursive: true })
     const secretPath = join(this.stateDir, 'secret')
     if (!existsSync(secretPath)) writeFileSync(secretPath, randomBytes(32).toString('hex'), { encoding: 'ascii', mode: 0o600, flag: 'wx' })
     this.secret = readFileSync(secretPath, 'ascii').trim()
@@ -307,6 +310,82 @@ export class OracleLaneBroker {
     return body
   }
 
+  #recoveryIdentity(value) {
+    const identity = {
+      version: VERSION, operation_id: 'bootstrap_data', stage: 'bootstrap-1',
+      run_id: String(value.run_id || ''), branch: String(value.branch || ''),
+      base_sha: lower(value.base_sha || ''), heartbeat_id: String(value.heartbeat_id || ''),
+      source_commit: this.recoverySource.commit,
+    }
+    if (!SAFE_ID_RE.test(identity.run_id) || !SAFE_ID_RE.test(identity.heartbeat_id) || !SAFE_BRANCH_RE.test(identity.branch) ||
+        !OPERATION_REGISTRY.bootstrap_data.branch.test(identity.branch) || !SHA_RE.test(identity.base_sha)) throw new Error('invalid deterministic recovery identity')
+    return identity
+  }
+
+  #recoveryPath(value) {
+    const identity = this.#recoveryIdentity(value)
+    const key = sha256(Buffer.from(JSON.stringify(identity), 'utf8'))
+    return { identity, key, path: join(this.recoveryDir, `${key}.json`) }
+  }
+
+  #loadRecovery(value, allowMissing = true) {
+    const located = this.#recoveryPath(value)
+    if (!existsSync(located.path)) {
+      if (allowMissing) return null
+      throw new Error('sealed Stage 1 recovery result is missing')
+    }
+    const body = this.#verifySealed(JSON.parse(readFileSync(located.path, 'utf8')))
+    if (body.state !== 'sealed' || body.recovery_id !== located.key || JSON.stringify(body.identity) !== JSON.stringify(located.identity) || !body.result) throw new Error('sealed Stage 1 recovery result identity mismatch')
+    return body
+  }
+
+  #saveRecovery(value, result) {
+    const located = this.#recoveryPath(value)
+    if (existsSync(located.path)) {
+      const existing = this.#loadRecovery(value, false)
+      if (existing.result.sha !== result.sha || existing.result.tree !== result.tree) throw new Error('sealed Stage 1 recovery result conflicts with existing journal')
+      return existing
+    }
+    const temp = `${located.path}.${randomBytes(8).toString('hex')}.tmp`
+    const body = { version: VERSION, state: 'sealed', recovery_id: located.key, identity: located.identity, result }
+    writeFileSync(temp, JSON.stringify(this.#seal(body)), { encoding: 'utf8', flag: 'wx' })
+    renameSync(temp, located.path)
+    return body
+  }
+
+  #assertRecoveryJournal(journal) {
+    if (!journal || journal.identity.operation_id !== 'bootstrap_data' || journal.identity.stage !== 'bootstrap-1') throw new Error('sealed Stage 1 recovery operation mismatch')
+    const result = journal.result
+    if (result.recovery_id !== journal.recovery_id || result.replayed !== false || !SHA_RE.test(result.sha || '') || !SHA_RE.test(result.tree || '') ||
+        this.#ref(result.sha) !== result.sha || this.#tree(result.sha) !== result.tree) throw new Error('sealed Stage 1 recovery SHA/tree mismatch')
+    if (journal.identity.base_sha !== this.recoverySource.parent || result.recovery?.source_commit !== this.recoverySource.commit ||
+        result.recovery?.source_parent !== this.recoverySource.parent || result.recovery?.source_tree !== this.recoverySource.tree || result.recovery?.adoption_rerun !== false) throw new Error('sealed Stage 1 recovery source mismatch')
+    const paths = Object.keys(this.recoverySource.files).sort()
+    if (JSON.stringify([...(result.files_changed || [])].sort()) !== JSON.stringify(paths) || JSON.stringify([...(result.changed_path_receipt?.paths || [])].sort()) !== JSON.stringify(paths) ||
+        result.changed_path_receipt?.base_sha !== journal.identity.base_sha || result.changed_path_receipt?.tested_sha !== result.sha) throw new Error('sealed Stage 1 recovery path closure mismatch')
+    for (const path of paths) {
+      const proof = result.recovery.blobs?.find(item => item.path === path)
+      if (!proof || proof.source_blob !== this.recoverySource.files[path] || proof.replay_blob !== this.recoverySource.files[path]) throw new Error(`sealed Stage 1 recovery blob mismatch: ${path}`)
+    }
+    const gates = ['aggregate_store', 'ingest_manifest', 'cohort_manifests', 'holdout_digest']
+    const baseTree = this.#tree(journal.identity.base_sha)
+    if (!Array.isArray(result.gate_receipts) || result.gate_receipts.length !== gates.length ||
+        new Set(result.gate_receipts.map(receipt => receipt.receipt_id)).size !== gates.length) throw new Error('sealed Stage 1 recovery gate set mismatch')
+    for (const gate of gates) {
+      const matches = result.gate_receipts.filter(receipt => receipt.gate_id === gate && receipt.exit_code === 0 && /^[0-9a-f]{64}$/.test(receipt.receipt_id || ''))
+      const receipt = matches[0]
+      const evidence = receipt?.broker_evidence
+      if (matches.length !== 1 || receipt.command !== this.gates[gate].display || receipt.tested_sha !== journal.identity.base_sha || receipt.tested_tree !== baseTree ||
+          !evidence || evidence.logical_operation !== `gate:${gate}` || evidence.command !== receipt.command || evidence.output !== receipt.output || evidence.exit_code !== receipt.exit_code ||
+          !SHA256_RE.test(evidence.raw_output_sha256 || '') || evidence.root_guard_before?.main_sha !== evidence.root_guard_after?.main_sha ||
+          evidence.root_guard_before?.index_sha256 !== evidence.root_guard_after?.index_sha256 || evidence.root_guard_before?.tracked_sha256 !== evidence.root_guard_after?.tracked_sha256 ||
+          evidence.root_guard_before?.untracked_sha256 !== evidence.root_guard_after?.untracked_sha256) throw new Error(`sealed Stage 1 recovery gate mismatch: ${gate}`)
+    }
+    const branchSha = this.#ref(`refs/heads/${journal.identity.branch}`)
+    if (branchSha !== result.sha) throw new Error('sealed Stage 1 recovery branch is missing or ahead')
+    return journal
+  }
+
   #leasePath(leaseName) {
     if (!/^pool-[0-9]+$/.test(leaseName)) throw new Error('invalid lease name')
     const lane = assertNoReparse(this.poolRoot, join(this.poolRoot, leaseName))
@@ -317,8 +396,9 @@ export class OracleLaneBroker {
     const { lane, record } = this.#leasePath(cap.lease_name)
     if (!samePath(lane, cap.worktree) || !existsSync(record)) throw new Error('lease path/record missing')
     const lease = parseRecord(readFileSync(record, 'ascii'))
-    const fields = ['lease_token', 'run_id', 'branch', 'base_sha', 'heartbeat_id', 'keeper_pid', 'keeper_process_started_utc', 'keeper_ready_utc']
+    const fields = ['lease_token', 'run_id', 'branch', 'heartbeat_id', 'keeper_pid', 'keeper_process_started_utc', 'keeper_ready_utc']
     for (const field of fields) if (String(lease[field] || '') !== String(cap[field] || '')) throw new Error(`stale capability lease mismatch: ${field}`)
+    if (lower(lease.base_sha || '') !== lower(cap.lease_start_sha || cap.base_sha)) throw new Error('stale capability lease mismatch: base_sha')
     if (lease.version !== String(VERSION) || lease.owner_kind !== 'heartbeat') throw new Error('lease is not a keeper-backed v3 lease')
     if (requireLiveKeeper) {
       const heartbeat = assertNoReparse(this.poolRoot, join(this.poolRoot, '.atx-heartbeats', `${cap.heartbeat_id}.heartbeat`))
@@ -415,34 +495,42 @@ export class OracleLaneBroker {
     if (input.operation_id !== 'sprint_build' && scope.length) throw new Error('scope_paths is valid only for sprint_build')
     const provisional = { operation_id: input.operation_id, scope_paths: scope }
     for (const item of scope) if (!this.#allowed(provisional, item)) throw new Error(`requested scope is outside the fixed operation registry: ${item}`)
+    const recoveryJournal = input.operation_id === 'bootstrap_data' ? this.#loadRecovery({ ...input, base_sha: baseSha }) : null
+    if (recoveryJournal) this.#assertRecoveryJournal(recoveryJournal)
+    const leaseStartSha = recoveryJournal ? recoveryJournal.result.sha : baseSha
     for (const entry of existsSync(this.poolRoot) ? readdirSync(this.poolRoot, { withFileTypes: true }) : []) {
       if (!entry.isDirectory() || !/^pool-[0-9]+$/.test(entry.name)) continue
       const marker = join(this.poolRoot, entry.name, '.atx-quarantine-v3')
       if (!existsSync(marker)) continue
       const record = parseRecord(readFileSync(marker, 'ascii'))
-      if (record.run_id === input.run_id && record.branch === input.branch && lower(record.base_sha || '') === baseSha && record.heartbeat_id === input.heartbeat_id) {
+      if (record.run_id === input.run_id && record.branch === input.branch && record.heartbeat_id === input.heartbeat_id) {
         throw new Error(`deterministic lane is quarantined for audit: ${entry.name}`)
       }
     }
     for (const file of existsSync(this.capDir) ? readdirSync(this.capDir) : []) {
       if (!/^[0-9a-f]{64}\.json$/.test(file)) continue
+      let existing
       try {
         const token = file.slice(0, -5)
-        const existing = this.#loadCap(token, false)
+        existing = this.#loadCap(token, false)
         if (existing.operation_id === input.operation_id && existing.stage === input.stage && existing.run_id === input.run_id && existing.branch === input.branch &&
             existing.base_sha === baseSha && existing.heartbeat_id === input.heartbeat_id && JSON.stringify(existing.scope_paths || []) === JSON.stringify(scope)) {
-          if (existing.state === 'quarantined') throw new Error(`deterministic lane is quarantined for audit: ${existing.lease_name}`)
-          if (existing.state !== 'active') throw new Error(`deterministic lane capability is ${existing.state}: ${existing.lease_name}`)
-          this.#revalidateLease(existing)
-          const guard = this.rootGuard()
-          const idempotent = { exit_code: 0, output: existing.acquisition_output, stdout: existing.acquisition_output, stderr: '' }
-          return this.#acquireResponse(existing, token, idempotent, guard, guard)
+          if (existing.state === 'active') {
+            this.#revalidateLease(existing)
+            const guard = this.rootGuard()
+            const idempotent = { exit_code: 0, output: existing.acquisition_output, stdout: existing.acquisition_output, stderr: '' }
+            return this.#acquireResponse(existing, token, idempotent, guard, guard)
+          }
+          if (existing.state === 'released' && recoveryJournal && existing.released_head === recoveryJournal.result.sha && existing.released_tree === recoveryJournal.result.tree) continue
+          throw new Error(`deterministic lane capability is incompatible ${existing.state}: ${existing.lease_name}`)
         }
-      } catch { }
+      } catch (error) {
+        if (existing) throw error
+      }
     }
     const before = this.rootGuard()
     const script = join(this.root, 'scripts', 'lease-worktree.ps1')
-    const args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-Branch', input.branch, '-Base', baseSha, '-Agent', 'vol-oracle-broker-v3', '-RunId', input.run_id, '-HeartbeatId', input.heartbeat_id, '-MaxPool', '20']
+    const args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-Branch', input.branch, '-Base', leaseStartSha, '-Agent', 'vol-oracle-broker-v3', '-RunId', input.run_id, '-HeartbeatId', input.heartbeat_id, '-MaxPool', '20']
     const result = processResult('powershell', args, this.root)
     const after = this.rootGuard()
     this.#assertGuard(before, after)
@@ -451,12 +539,13 @@ export class OracleLaneBroker {
     if (!match) throw new Error('lease output did not contain a typed keeper acquisition')
     const leaseName = match[1]
     const { lane, record } = this.#leasePath(leaseName)
-    if (!samePath(match[2], lane) || match[3] !== input.branch || lower(match[4]) !== baseSha || match[5] !== input.run_id) throw new Error('lease output identity mismatch')
+    if (!samePath(match[2], lane) || match[3] !== input.branch || lower(match[4]) !== leaseStartSha || match[5] !== input.run_id) throw new Error('lease output identity mismatch')
     const lease = parseRecord(readFileSync(record, 'ascii'))
     const token = randomBytes(32).toString('hex')
     const cap = {
       version: VERSION, state: 'active', token_hash: sha256(token), operation_id: input.operation_id, stage: input.stage,
       run_id: input.run_id, branch: input.branch, base_sha: baseSha, heartbeat_id: input.heartbeat_id,
+      lease_start_sha: leaseStartSha, recovery_replay: !!recoveryJournal,
       lease_name: leaseName, worktree: lane, lease_token: lease.lease_token, keeper_pid: Number(lease.keeper_pid),
       keeper_process_started_utc: lease.keeper_process_started_utc, keeper_ready_utc: lease.keeper_ready_utc,
       canonical_before: before.canonical_sha, scope_paths: scope, acquisition_output: result.output,
@@ -469,7 +558,7 @@ export class OracleLaneBroker {
   #acquireResponse(cap, token, result, before, after) {
     return {
       capability: token, operation_id: cap.operation_id, stage: cap.stage, lease_name: cap.lease_name, run_id: cap.run_id,
-      branch: cap.branch, base_sha: cap.base_sha, worktree: cap.worktree, heartbeat_id: cap.heartbeat_id,
+      branch: cap.branch, base_sha: cap.base_sha, lease_start_sha: cap.lease_start_sha || cap.base_sha, recovery_replay: !!cap.recovery_replay, worktree: cap.worktree, heartbeat_id: cap.heartbeat_id,
       keeper_pid: cap.keeper_pid, keeper_process_started_utc: cap.keeper_process_started_utc, keeper_ready_utc: cap.keeper_ready_utc,
       acquisition_receipt: { action: 'acquire', lease_name: cap.lease_name, run_id: cap.run_id, branch: cap.branch, base_sha: cap.base_sha, worktree: cap.worktree, heartbeat_id: cap.heartbeat_id, keeper_pid: cap.keeper_pid, keeper_process_started_utc: cap.keeper_process_started_utc, keeper_ready_utc: cap.keeper_ready_utc, exit_code: 0, output: result.output },
       broker_evidence: this.#evidence('lane_open', this.root, `lease-worktree:${cap.operation_id}`, result, before, after),
@@ -602,7 +691,9 @@ export class OracleLaneBroker {
     const testedSha = this.#git(['rev-parse', 'HEAD'], cap.worktree).stdout.trim().toLowerCase()
     const testedTree = this.#tree(testedSha, cap.worktree)
     if (integrationOperation && (changed.length || testedSha !== cap.integrated_sha || testedTree !== cap.integrated_tree)) throw new Error('gate changed sealed integration SHA/tree or worktree')
-    return { gate_id: gateId, tested_sha: testedSha, tested_tree: testedTree, command: gate.display, exit_code: result.exit_code, output: result.output, broker_evidence: this.#evidence(`gate:${gateId}`, cap.worktree, gate.display, result, before, after) }
+    const brokerEvidence = this.#evidence(`gate:${gateId}`, cap.worktree, gate.display, result, before, after)
+    const receiptId = sha256(Buffer.from(JSON.stringify({ operation_id: cap.operation_id, gate_id: gateId, tested_sha: testedSha, tested_tree: testedTree, command: gate.display, exit_code: result.exit_code, raw_output_sha256: brokerEvidence.raw_output_sha256 }), 'utf8'))
+    return { receipt_id: receiptId, gate_id: gateId, tested_sha: testedSha, tested_tree: testedTree, command: gate.display, exit_code: result.exit_code, output: result.output, broker_evidence: brokerEvidence }
   }
 
   commitLane(input) {
@@ -700,6 +791,8 @@ export class OracleLaneBroker {
     const cap = this.#loadCap(input.capability)
     if (cap.operation_id !== 'bootstrap_data' || cap.stage !== 'bootstrap-1') throw new Error('Stage 1 recovery requires bootstrap_data capability')
     if (cap.base_sha !== this.recoverySource.parent) throw new Error('Stage 1 recovery base must equal the pinned source parent')
+    const existingJournal = this.#loadRecovery(cap)
+    if (existingJournal) return this.#replayRecovery(cap, existingJournal)
     if (this.#changedPaths(cap).length || this.#git(['rev-parse', 'HEAD'], cap.worktree).stdout.trim().toLowerCase() !== cap.base_sha) throw new Error('Stage 1 recovery lane is not pristine at its frozen base')
     const source = this.recoverySource
     if (this.#git(['cat-file', '-t', source.commit], this.root).stdout.trim() !== 'commit') throw new Error('Stage 1 recovery source is not a commit')
@@ -733,12 +826,47 @@ export class OracleLaneBroker {
     if (JSON.stringify(changed) !== JSON.stringify(expectedPaths)) throw new Error('Stage 1 recovery committed path closure mismatch')
     const after = this.rootGuard()
     this.#assertGuard(before, after)
-    return {
+    const recoveryId = this.#recoveryPath(cap).key
+    const durableResult = {
+      recovery_id: recoveryId, replayed: false,
       recovery: { source_commit: source.commit, source_parent: parent, source_tree: tree, blobs: blobProof, adoption_rerun: false },
       replay_paths: replayPaths, gate_receipts: gateReceipts, sha: commitResult.sha, tree: commitResult.tree, files_changed: commitResult.files_changed,
       changed_path_receipt: { base_sha: cap.base_sha, tested_sha: commitResult.sha, command: `git diff --name-only ${cap.base_sha}...${commitResult.sha}`, exit_code: 0, output: changed.join('\n'), paths: changed },
       broker_evidence: [this.#evidence('recover_stage1_source_replay', cap.worktree, 'recover-stage1:validated-source', { exit_code: 0, output: JSON.stringify({ parent, tree, paths: replayPaths }), stdout: JSON.stringify(blobProof), stderr: '' }, before, after), commitResult.broker_evidence],
     }
+    const journal = this.#saveRecovery(cap, durableResult)
+    this.#assertRecoveryJournal(journal)
+    this.#saveCap(input.capability, { ...cap, recovery_id: recoveryId, recovery_sha: durableResult.sha, recovery_tree: durableResult.tree })
+    return durableResult
+  }
+
+  #replayRecovery(cap, journal) {
+    this.#assertRecoveryJournal(journal)
+    const head = this.#git(['rev-parse', 'HEAD'], cap.worktree).stdout.trim().toLowerCase()
+    const tree = this.#tree(head, cap.worktree)
+    if (head !== journal.result.sha || tree !== journal.result.tree || this.#changedPaths(cap).length) throw new Error('active lane does not match sealed Stage 1 recovery SHA/tree')
+    const before = this.rootGuard()
+    const replay = { exit_code: 0, output: journal.recovery_id, stdout: journal.recovery_id, stderr: '' }
+    const after = this.rootGuard()
+    this.#assertGuard(before, after)
+    return { ...journal.result, replayed: true, broker_evidence: [this.#evidence('recover_stage1_replay', cap.worktree, `recover-stage1:sealed-replay:${journal.recovery_id}`, replay, before, after)] }
+  }
+
+  recoveryResult(input) {
+    assertExactKeys(input, ['capability'])
+    const cap = this.#loadCap(input.capability)
+    if (cap.operation_id !== 'bootstrap_data' || cap.stage !== 'bootstrap-1') throw new Error('recovery_result is restricted to Stage 1')
+    const before = this.rootGuard()
+    const journal = this.#loadRecovery(cap)
+    if (!journal) {
+      const result = { exit_code: 0, output: 'MISSING', stdout: 'MISSING', stderr: '' }
+      const after = this.rootGuard(); this.#assertGuard(before, after)
+      return { found: false, recovery_id: '', broker_evidence: this.#evidence('recovery_result', cap.worktree, 'recover-stage1:result-query', result, before, after) }
+    }
+    const replayed = this.#replayRecovery(cap, journal)
+    const result = { exit_code: 0, output: journal.recovery_id, stdout: journal.recovery_id, stderr: '' }
+    const after = this.rootGuard(); this.#assertGuard(before, after)
+    return { found: true, recovery_id: journal.recovery_id, result: replayed, broker_evidence: this.#evidence('recovery_result', cap.worktree, 'recover-stage1:result-query', result, before, after) }
   }
 
   releaseLane(input) {
@@ -842,6 +970,7 @@ const TOOL_DEFINITIONS = Object.freeze([
   { name: 'commit_inspect', description: 'Read an exact commit diff without exposing frozen cohort membership.', inputSchema: { type: 'object', additionalProperties: false, required: ['base_sha', 'candidate_sha'], properties: { base_sha: { type: 'string', pattern: '^[0-9a-f]{40}$' }, candidate_sha: { type: 'string', pattern: '^[0-9a-f]{40}$' } } } },
   { name: 'lane_integrate', description: 'Integrate 1-4 exact reviewed SHAs through the fixed broker merge path.', inputSchema: { type: 'object', additionalProperties: false, required: ['capability', 'reviewed_shas'], properties: { capability: { type: 'string', pattern: '^[0-9a-f]{64}$' }, reviewed_shas: { type: 'array', minItems: 1, maxItems: 4, items: { type: 'string', pattern: '^[0-9a-f]{40}$' } } } } },
   { name: 'recover_stage1', description: 'Validate and replay the pinned Stage 1 source commit, run four fixed gates, and commit without adoption rerun.', inputSchema: { type: 'object', additionalProperties: false, required: ['capability'], properties: { capability: { type: 'string', pattern: '^[0-9a-f]{64}$' } } } },
+  { name: 'recovery_result', description: 'Query and replay only the sealed durable Stage 1 result bound to an active deterministic capability.', inputSchema: { type: 'object', additionalProperties: false, required: ['capability'], properties: { capability: { type: 'string', pattern: '^[0-9a-f]{64}$' } } } },
   { name: 'lane_release', description: 'Release only the capability-bound clean lease and optionally issue a bound finalize capability.', inputSchema: { type: 'object', additionalProperties: false, required: ['capability'], properties: { capability: { type: 'string', pattern: '^[0-9a-f]{64}$' } } } },
   { name: 'lane_quarantine', description: 'Stop and remove a failed Stage 1 lease while preserving its dirty branch/worktree for audit.', inputSchema: { type: 'object', additionalProperties: false, required: ['capability'], properties: { capability: { type: 'string', pattern: '^[0-9a-f]{64}$' } } } },
   { name: 'canonical_finalize', description: 'Consume a broker-issued finalize capability only when workflow expected SHA/tree matches the sealed integration.', inputSchema: { type: 'object', additionalProperties: false, required: ['finalize_capability', 'expected_sha', 'expected_tree'], properties: { finalize_capability: { type: 'string', pattern: '^[0-9a-f]{64}$' }, expected_sha: { type: 'string', pattern: '^[0-9a-f]{40}$' }, expected_tree: { type: 'string', pattern: '^[0-9a-f]{40}$' } } } },
@@ -852,7 +981,7 @@ function dispatch(broker, name, input) {
   const routes = {
     capability_probe: () => broker.capabilityProbe(), ref_resolve: () => broker.refResolve(input), repo_search: () => broker.repoSearch(input), repo_read: () => broker.repoRead(input),
     lane_open: () => broker.openLane(input), workspace_list: () => broker.listWorkspace(input), patch_apply: () => broker.applyPatch(input), gate_run: () => broker.runGate(input),
-    lane_commit: () => broker.commitLane(input), commit_inspect: () => broker.inspectCommit(input), lane_integrate: () => broker.integrate(input), recover_stage1: () => broker.recoverStage1(input),
+    lane_commit: () => broker.commitLane(input), commit_inspect: () => broker.inspectCommit(input), lane_integrate: () => broker.integrate(input), recover_stage1: () => broker.recoverStage1(input), recovery_result: () => broker.recoveryResult(input),
     lane_release: () => broker.releaseLane(input), lane_quarantine: () => broker.quarantineLane(input), canonical_finalize: () => broker.canonicalFinalize(input), canonical_audit: () => broker.canonicalAudit(),
   }
   if (!routes[name]) throw new Error(`unknown broker tool: ${name}`)
