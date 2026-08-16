@@ -446,6 +446,16 @@ if(Python3_Interpreter_FOUND)
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/spy_dispersion_pnl_report_test.py
     )
     set_tests_properties(SpyDispersionPnlReport PROPERTIES LABELS atx_vol)
+    # vrp-ml round 2 gate: the panel-QA checker (scripts/vrp_panel_qa.py) grew a
+    # stdlib-unittest suite (scripts/vrp_panel_qa_test.py, 14 cases, pure tmp-dir
+    # fixtures). Registered here so the QA tool that guards the frozen
+    # vrp_panel_v1 contract is itself gated; runs from scripts/ so its
+    # `from vrp_panel_qa import ...` resolves via sys.path[0].
+    add_test(
+        NAME VrpPanelQa
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/vrp_panel_qa_test.py
+    )
+    set_tests_properties(VrpPanelQa PROPERTIES LABELS atx_vol)
     # FIX-5/I6: the atx-vol Python suite — eight test_*.py modules that, before
     # this line, were registered with ZERO ctest tests. `grep -rn "pytest"
     # --include=CMakeLists.txt .` returned nothing repo-wide and a grep for any
