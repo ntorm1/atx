@@ -1335,13 +1335,14 @@ enum class VrpTargetAxis : std::uint8_t { RvFwd, VolChg, Label };
   return "unknown";
 }
 
-// Everything the round-4 gate says about ONE score column on ONE row set.
-// `ic_pearson` is THE sizing IC (Grinold alpha = IC * sigma_y * z); the
-// Spearman fields exist to be REPORTED, never to be substituted into it.
-// `mse` / `mz_*` are populated only for scores that live in LABEL units -- a
-// benchmark like -iv_fair_21d is a ranking axis with no level claim, and a
-// fabricated MSE for it would be a category error of exactly the kind QLIKE
-// on a signed spread was.
+// Everything the gate says about ONE score column against ONE target axis on
+// ONE row set. `ic_pearson` is THE sizing IC (Grinold alpha = IC * sigma_y *
+// z); the Spearman fields exist to be REPORTED, never to be substituted into
+// it. `mse` / `mz_*` are populated only on the Label axis, and only for scores
+// that live in LABEL units -- a pure ranking axis (a benchmark, a z-score) has
+// no level claim, and neither does any forecast measured against rv_fwd_21d or
+// against a log vol ratio. A fabricated MSE would be a category error of
+// exactly the kind QLIKE on a signed spread was.
 struct VrpScoreReport {
   std::string name;
   VrpScoreKind kind{VrpScoreKind::Benchmark};
@@ -1510,11 +1511,13 @@ struct VrpPpvSeries {
 // 1u gross vega.
 //
 // It exists because short-vol BETA was mistaken for selection SKILL for three
-// rounds. Measured on the round-4 SP100 OOS rows it is +3.706 vol pts/cycle
-// (t_nw +2.89): -iv_fair_21d earns +1.783 and the GBT +1.403 -- BOTH LESS THAN
-// DOING NOTHING -- while only hv_iv_gap (+4.025) clears it. It is computed from
-// the run's own rows and is NEVER a hardcoded constant: it is a property of the
-// corpus and the period, not of this code.
+// rounds. Measured here on the round-4 SP100 OOS rows it is +3.706 vol pts/
+// cycle (t_nw +2.89) and on clean25 +3.843 (t_nw +2.70). At the decile book
+// -iv_fair_21d earns +1.836 and the GBT +2.704 -- BOTH LESS THAN DOING NOTHING
+// -- and only hv_iv_gap (+3.951) clears it, by +0.245 at t_nw +0.24. After
+// IV-neutralisation NOTHING in the set clears it on either corpus. It is
+// computed from the run's own rows and is NEVER a hardcoded constant: it is a
+// property of the corpus and the period, not of this code.
 struct VrpPnlFloor {
   double mean{std::numeric_limits<double>::quiet_NaN()};
   double t_iid{std::numeric_limits<double>::quiet_NaN()};
