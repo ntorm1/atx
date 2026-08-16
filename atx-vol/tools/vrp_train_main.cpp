@@ -27,6 +27,62 @@ void print_usage() {
             "                         [--recalibrate <off|isotonic>] (default off)\n"
             "                         [--recalib-window <n>]     (default 63; >= 1)\n"
             "                         [--retransform <jensen|smearing>] (default jensen)\n"
+            "                         [--edge-norm <cross-section|per-symbol>]\n"
+            "                                                    (default cross-section)\n"
+            "                         [--feature-lag <n>]        (default 0; <= 21)\n"
+            "                         [--corpus <label>]         (default: panel file stem)\n"
+            "\n"
+            "--edge-norm picks the basis pred_edge_norm standardizes on -- the column\n"
+            "the VolEdge book RANKS on. cross-section (the round-4 DEFAULT)\n"
+            "standardizes pred_label WITHIN each date across symbols, an\n"
+            "order-preserving map, so the book ranks on the axis the IC is measured\n"
+            "on. per-symbol is the round-1..3 z-score (pred_label - label_mean[sym])\n"
+            "/ label_sd[sym], which demeans away each name's own variance premium --\n"
+            "the quantity being harvested -- and reproduces round-3 artifacts byte\n"
+            "for byte. Measured on the same rows, dates and 21d horizon through an\n"
+            "equal-weighted decile long/short book: per-symbol -1.63 vol pts/cycle\n"
+            "(29% of phase offsets positive), cross-section +1.74 (76% positive).\n"
+            "\n"
+            "--feature-lag N reads every FEATURE from the row's N-th same-symbol\n"
+            "predecessor (targets untouched, so the fold plan is identical at every\n"
+            "lag). 2 is the recommended round-4 setting: it removes the channel by\n"
+            "which a stale same-session quote can manufacture IC. 0 reproduces the\n"
+            "round-1..3 behaviour. Rows without an N-th predecessor get NaN features\n"
+            "and are counted in feature_lag_rows_unavailable.\n"
+            "\n"
+            "--corpus labels every gate statistic in vrp_metrics.tsv. Rounds 1-3\n"
+            "quoted a clean-25 IC beside an SP100 book because no artifact recorded\n"
+            "which corpus a number came from.\n"
+            "\n"
+            "EVERY run grades every score column on THREE targets and prints a\n"
+            "PASS/FAIL verdict. The gating target is rv_fwd_21d, the label's\n"
+            "REALIZED leg; ln(rv_fwd_21d/rv_trail_21d) is reported as the one axis\n"
+            "with no iv_fair in it; the composite label is reported and LABELLED\n"
+            "CONTAMINATED. The gate PASSES only when the model beats EVERY\n"
+            "zero-parameter benchmark (f5_hv_iv_gap, the Goyal-Saretto HV-IV\n"
+            "classic) on the rv_fwd_21d mean per-date Pearson IC (the Grinold\n"
+            "sizing IC), the rv_fwd_21d mean per-date Spearman IC, AND the\n"
+            "IV-quintile-neutralised P&L measured in EXCESS OF THE\n"
+            "SHORT-EVERYTHING FLOOR -- which the model's own excess must also\n"
+            "clear outright. It fails closed: an unmeasurable comparison is a FAIL.\n"
+            "\n"
+            "-iv_fair_21d IS NOT A BENCHMARK and must never be reinstated as one.\n"
+            "The label is (rv_fwd_21d^2 - iv_fair_21d^2)*21/252 and iv_fair_21d > 0\n"
+            "on every labeled row, so -iv_fair_21d is a PERFECT rank transform of\n"
+            "the label's own implied leg: rank IC exactly +1.0000, by algebra, on\n"
+            "any dataset, forever. Against rv_fwd_21d it is an ANTI-forecaster at\n"
+            "-0.6128 (t_nw -22.93). It is still scored and published, as\n"
+            "contaminated_neg_iv_fair_21d, and cannot decide a verdict. The defect\n"
+            "generalises to ANY score shaped (variance_forecast - iv_fair^2). See\n"
+            ".superpowers/sdd/2026-08-15-vrp-ml/audit-benchmark-contamination.md\n"
+            "\n"
+            "All P&L is vol points per 1 unit of GROSS vega per cycle, from\n"
+            "ppv = 100*(rv_fwd_21d^2 - iv_fair_21d^2)/(2*iv_fair_21d), |ppv| capped\n"
+            "at 60 with the capped-row count published. EVERY P&L figure is printed\n"
+            "beside its excess over the short-everything floor (shorting the whole\n"
+            "cross-section blind, computed from this run's own rows): raw carry is\n"
+            "mostly short-vol beta, and quoting it alone is how that beta was read\n"
+            "as selection skill for three rounds.\n"
             "\n"
             "--recalibrate isotonic fits, per fold, a deterministic PAVA isotonic\n"
             "map from raw GBT forecast to realized label on the trailing\n"
@@ -148,6 +204,27 @@ int main(int argc, char **argv) {
         std::fprintf(stderr, "error: --recalib-window must be >= 1\n");
         return 2;
       }
+    } else if (arg == "--edge-norm") {
+      if (value == "cross-section") {
+        cfg.edge_norm = atx::vol::vrp::VrpEdgeNormMode::CrossSection;
+      } else if (value == "per-symbol") {
+        cfg.edge_norm = atx::vol::vrp::VrpEdgeNormMode::PerSymbol;
+      } else {
+        std::fprintf(stderr,
+                     "error: --edge-norm must be 'cross-section' or 'per-symbol', got '%.*s'\n",
+                     static_cast<int>(value.size()), value.data());
+        return 2;
+      }
+    } else if (arg == "--feature-lag") {
+      ok = parse_number(value, cfg.feature_lag);
+      // Fail closed at the boundary: a lag past the cap blanks whole symbols.
+      if (ok && cfg.feature_lag > atx::vol::vrp::kVrpMaxFeatureLag) {
+        std::fprintf(stderr, "error: --feature-lag %zu exceeds the %zu-session cap\n",
+                     cfg.feature_lag, atx::vol::vrp::kVrpMaxFeatureLag);
+        return 2;
+      }
+    } else if (arg == "--corpus") {
+      cfg.corpus = std::string(value);
     } else if (arg == "--retransform") {
       if (value == "jensen") {
         cfg.retransform = atx::vol::vrp::VrpRetransformMode::Jensen;
@@ -231,6 +308,96 @@ int main(int argc, char **argv) {
                   fold.recal_window_effective, fold.recal_applied ? 1 : 0);
     }
   }
+  // ── Round-4 benchmark gate (F2) + honest metrics (F3) ─────────────────────
+  // Printed for EVERY run, never behind a flag: this block exists because
+  // three rounds shipped on an IC no free rule was asked to beat. `qlike`
+  // above is retained only for round-3 comparability -- it is undefined on a
+  // signed variance spread and the gate never reads it.
+  const auto &gate = report->gate;
+  const auto score_row = [](const char *scope, const atx::vol::vrp::VrpScoreReport &s) {
+    std::printf("gate\t%s\t%s\t%s\t%.4f\t%.2f\t%.2f\t%.4f\t%.2f\t%.2f\t%.4f\t%.2f\t%.6g\t%.2f\t"
+                "%.4f\t%zu\t%zu\n",
+                scope, s.name.c_str(),
+                std::string{atx::vol::vrp::vrp_target_axis_key(s.target)}.c_str(),
+                s.ic_pearson, s.ic_pearson_t, s.ic_pearson_t_nw, s.ic_spearman,
+                s.ic_spearman_t, s.ic_spearman_t_nw, s.ic_pearson_traded,
+                s.ic_pearson_traded_t_nw, s.decile_spread, s.decile_spread_t_nw,
+                s.decile_rho, s.n_dates, s.n_rows);
+  };
+  // Every IC names its TARGET. A bare ic_spearman is the key that let a
+  // +1.0000 algebraic identity read as a forecast for a whole round.
+  std::printf("gate\tscope\tscore\ttarget\tic_pearson\tt\tt_nw\tic_spearman\tt\tt_nw\t"
+              "ic_pear_traded\tt_nw\tdecile_spread\tt_nw\tdecile_rho\tn_dates\tn_rows\n");
+  for (const auto &f : gate.per_fold) {
+    const std::string scope = "fold_" + std::to_string(f.fold_id);
+    for (const auto &s : f.scores) {
+      score_row(scope.c_str(), s);
+    }
+  }
+  for (const auto &s : gate.pooled) {
+    score_row("pooled", s);
+  }
+  // Money, in vol points per 1u GROSS VEGA per cycle. The raw figure is never
+  // printed without its excess over the short-everything floor beside it:
+  // short-vol beta was read as selection skill for three rounds.
+  std::printf("pnl\tscope\tscore\tbook\tvol_pts_gross_vega\tt\tt_nw\texcess_over_floor\tt\t"
+              "t_nw\tn_dates\n");
+  const auto pnl_row = [](const char *scope, const char *name, const char *book,
+                          const atx::vol::vrp::VrpPnlAgg &a) {
+    std::printf("pnl\t%s\t%s\t%s\t%+.3f\t%.2f\t%.2f\t%+.3f\t%.2f\t%.2f\t%zu\n", scope, name,
+                book, a.mean, a.t_iid, a.t_nw, a.excess, a.excess_t, a.excess_t_nw,
+                a.n_dates);
+  };
+  std::printf("pnl\tpooled\tfloor_short_everything\t--\t%+.3f\t%.2f\t%.2f\t%+.3f\t%.2f\t%.2f\t"
+              "%zu\n",
+              gate.pooled_floor.mean, gate.pooled_floor.t_iid, gate.pooled_floor.t_nw, 0.0,
+              0.0, 0.0, gate.pooled_floor.n_dates);
+  for (const auto &p : gate.pooled_pnl) {
+    pnl_row("pooled", p.name.c_str(), "decile", p.decile);
+    pnl_row("pooled", p.name.c_str(), "iv_neutral", p.iv_neutral);
+  }
+  std::printf("pnl\tppv_winsor_abs=%.1f\trows_priced=%zu\trows_winsorized=%zu\n",
+              atx::vol::vrp::kVrpPpvWinsorAbs, gate.n_ppv_rows_priced,
+              gate.n_ppv_rows_winsorized);
+  std::printf("gate\tcorpus=%s\tsignal_rows=%zu\tunlabeled_tail=%zu (%.1f%% never validated)\n",
+              gate.corpus.c_str(), gate.n_signal_rows, gate.n_signal_rows_unlabeled,
+              100.0 * gate.frac_unlabeled());
+  // The verdict goes to BOTH streams and says the word out loud. A model that
+  // loses to a zero-parameter rule has produced no evidence it should ship.
+  const char *verdict = gate.verdict.pass ? "PASS" : "FAIL";
+  std::printf("GATE VERDICT: %s -- model '%s' vs rv_fwd_21d ic_pearson=%.4f ic_spearman=%.4f, "
+              "iv-neutral P&L excess over the +%.3f short-everything floor = %+.3f; best free "
+              "benchmark '%s' ic_pearson=%.4f ic_spearman=%.4f excess=%+.3f (%zu benchmarks)\n",
+              verdict, gate.verdict.model.c_str(), gate.verdict.model_ic_pearson,
+              gate.verdict.model_ic_spearman, gate.verdict.pnl_floor,
+              gate.verdict.model_pnl_excess, gate.verdict.best_benchmark.c_str(),
+              gate.verdict.best_benchmark_ic_pearson, gate.verdict.best_benchmark_ic_spearman,
+              gate.verdict.best_benchmark_pnl_excess, gate.verdict.n_benchmarks);
+  if (!gate.verdict.pass) {
+    std::fprintf(stderr,
+                 "[vrp-train] GATE VERDICT: FAIL -- '%s' does not beat the zero-parameter "
+                 "benchmark '%s' on rv_fwd_21d Pearson AND Spearman IC AND IV-neutralised P&L "
+                 "in excess of the short-everything floor. The free rule wins; this model is "
+                 "not evidence of skill.\n",
+                 gate.verdict.model.c_str(), gate.verdict.best_benchmark.c_str());
+  } else {
+    std::fprintf(stderr,
+                 "[vrp-train] GATE VERDICT: PASS -- '%s' beats all %zu zero-parameter "
+                 "benchmarks on rv_fwd_21d Pearson and Spearman IC and on IV-neutralised P&L, "
+                 "and clears the short-everything floor by %+.3f vol pts / 1u gross vega.\n",
+                 gate.verdict.model.c_str(), gate.verdict.n_benchmarks,
+                 gate.verdict.model_pnl_excess);
+  }
+  std::fprintf(stderr,
+               "[vrp-train] the composite label is CONTAMINATED as a ranking target "
+               "(-iv_fair_21d scores +1.0000 against its implied leg by algebra and -0.6128 "
+               "against rv_fwd_21d); it is reported, never gated. See "
+               ".superpowers/sdd/2026-08-15-vrp-ml/audit-benchmark-contamination.md\n");
+  std::fprintf(stderr, "[vrp-train] edge_norm=%s feature_lag=%zu lag_rows_unavailable=%zu\n",
+               cfg.edge_norm == atx::vol::vrp::VrpEdgeNormMode::PerSymbol ? "per_symbol"
+                                                                          : "cross_section",
+               cfg.feature_lag, report->feature_lag_rows_unavailable);
+
   std::printf("signal:     %s\n", report->signal_path.string().c_str());
   std::printf("metrics:    %s\n", report->metrics_path.string().c_str());
   std::printf("gbt:        %s\n", report->gbt_model_path.string().c_str());
