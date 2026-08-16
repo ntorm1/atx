@@ -3,12 +3,15 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
+#include <cstdio>
 #include <limits>
 #include <vector>
 
-#include "atx/vol/api/fitting/calib.hpp"         // FitObs
+#include "atx/vol/api/fitting/calib.hpp"         // FitObs, calib_default_opts
 #include "atx/vol/api/fitting/vol_surface.hpp"   // essvi_backbone_w, essvi_phi_max
 #include "fitting/essvi_anchored.hpp"            // the unit under test
+#include "fitting/essvi_calib.hpp"               // essvi_fit_slice (the path compared against)
 
 // Anchored eSSVI calibrator coverage (Corbetta et al. 2019, arXiv:1804.04924).
 //
@@ -34,6 +37,9 @@ using atx::vol::AnchoredSliceOrigin;
 using atx::vol::AnchoredSliceRequest;
 using atx::vol::anchored_to_essvi;
 using atx::vol::anchored_w;
+using atx::vol::calib_default_opts;
+using atx::vol::CalibOpts;
+using atx::vol::essvi_fit_slice;
 using atx::vol::ErrorCode;
 using atx::vol::essvi_backbone_w;
 using atx::vol::EssviParams;
@@ -288,8 +294,13 @@ TEST(AnchoredEssviCalibration, RejectsEmptyObservationsAndNonPositiveT) {
 
 TEST(AnchoredEssviCalibration, ObjectiveEvaluationCountIsBoundedAndDataIndependent) {
   const AnchoredOpts opts{};
+  // The budget is a product of fixed counts and contains no data-dependent
+  // term: each of n_anchor_candidates anchors gets one coarse sweep and
+  // n_refine_passes refinement sweeps, each of n_rho Brent solves costing at
+  // most brent_max_iter + 3 evaluations.
   const std::uint32_t cap =
       static_cast<std::uint32_t>(opts.n_rho) *
+      static_cast<std::uint32_t>(opts.n_anchor_candidates) *
       static_cast<std::uint32_t>(1u + opts.n_refine_passes) *
       static_cast<std::uint32_t>(opts.brent_max_iter + 3u);
   for (const std::size_t n : {3u, 9u, 40u}) {
@@ -300,6 +311,86 @@ TEST(AnchoredEssviCalibration, ObjectiveEvaluationCountIsBoundedAndDataIndepende
     ASSERT_TRUE(fit.has_value());
     EXPECT_LE(diag.n_objective_evals, cap) << "n=" << n;
   }
+}
+
+// ── Fit quality against the incumbent Levenberg-Marquardt path ───────────
+
+// Deterministic pseudo-noise. A fixed LCG, not <random>, so the fixture is
+// bit-reproducible across standard-library implementations.
+[[nodiscard]] std::vector<FitObs> make_noisy_obs(const AnchoredSlice& s,
+                                                 std::size_t n, double rel_noise,
+                                                 std::uint64_t seed) {
+  std::vector<FitObs> obs = make_obs(s, n);
+  std::uint64_t state = seed;
+  for (FitObs& o : obs) {
+    state = state * 6364136223846793005ULL + 1442695040888963407ULL;
+    const double u =
+        static_cast<double>((state >> 11) & 0x1FFFFFFFFFFFFFULL) /
+            static_cast<double>(0x20000000000000ULL) -
+        0.5;
+    o.w_mkt *= (1.0 + 2.0 * rel_noise * u);
+    o.sigma_mkt = std::sqrt(o.w_mkt / s.T);
+  }
+  return obs;
+}
+
+[[nodiscard]] double rmse_vs_quotes_anchored(const AnchoredSlice& s,
+                                             const std::vector<FitObs>& obs) {
+  double acc = 0.0;
+  for (const FitObs& o : obs) {
+    const double r = anchored_w(s, o.k) - o.w_mkt;
+    acc += r * r;
+  }
+  return std::sqrt(acc / static_cast<double>(obs.size()));
+}
+
+[[nodiscard]] double rmse_vs_quotes_essvi(const EssviParams& p,
+                                          const std::vector<FitObs>& obs) {
+  double acc = 0.0;
+  for (const FitObs& o : obs) {
+    const double r = essvi_backbone_w(p, o.k) - o.w_mkt;
+    acc += r * r;
+  }
+  return std::sqrt(acc / static_cast<double>(obs.size()));
+}
+
+// The anchored slice has TWO free parameters against the LM cube's three, and it
+// pins its ATM level to one quote rather than fitting it. Both cost in-sample
+// accuracy, so this is not a claim that the anchored path fits better — it is a
+// bound on how much worse it is allowed to be. The bound is deliberately checked
+// on NOISY data, because that is where pinning theta to a single quote is most
+// exposed.
+TEST(AnchoredEssviCalibration, FitsNoisyQuotesWithinABoundedFactorOfTheLmPath) {
+  const AnchoredSlice truth = make_slice(0.04, 0.28, -0.40);
+  double worst_ratio = 0.0;
+  for (std::uint64_t seed = 1; seed <= 8; ++seed) {
+    const std::vector<FitObs> obs = make_noisy_obs(truth, 21, 0.02, seed);
+    const auto anch = anchored_fit_slice(obs, kT, kF, AnchoredOpts{});
+    ASSERT_TRUE(anch.has_value()) << anch.error().to_string();
+    const auto lm = essvi_fit_slice(obs, kT, kF, atx::vol::calib_default_opts());
+    ASSERT_TRUE(lm.has_value()) << lm.error().to_string();
+
+    const double r_anch = rmse_vs_quotes_anchored(*anch, obs);
+    const double r_lm = rmse_vs_quotes_essvi(*lm, obs);
+    ASSERT_GT(r_lm, 0.0);
+    const double ratio = r_anch / r_lm;
+    worst_ratio = std::max(worst_ratio, ratio);
+    // The anchored slice must stay arbitrage-free on data the LM path is free to
+    // over-fit; that asymmetry is the whole trade.
+    EXPECT_TRUE(anchored_butterfly_ok(*anch)) << "seed=" << seed;
+    std::printf("[fit-quality] seed=%llu rmse_w anchored=%.3e lm=%.3e ratio=%.3f\n",
+                static_cast<unsigned long long>(seed), r_anch, r_lm, ratio);
+  }
+  EXPECT_LE(worst_ratio, 2.0) << "worst anchored/LM total-variance RMSE ratio";
+}
+
+// A guard, not a behaviour test: the whole "legacy path byte-identical" claim
+// rests on these two defaults, and a default flip is a one-character change.
+TEST(AnchoredEssviCalibration, IsOffByDefault) {
+  const CalibOpts defaults{};
+  EXPECT_FALSE(defaults.essvi_anchored);
+  EXPECT_FALSE(defaults.essvi_anchored_interpolate_thin);
+  EXPECT_EQ(defaults.min_rows_to_fit_independently, 0u);
 }
 
 // ── Interpolation ────────────────────────────────────────────────────────

@@ -149,6 +149,13 @@ struct AnchoredOpts {
   // |rho| ceiling. Mirrors the LM path's kRhoMax so the two calibrators span
   // the same skew range.
   double rho_max{0.999};
+  // How many of the nearest-to-ATM observations to try as the anchor, keeping
+  // whichever minimises the objective over the WHOLE chain. 1 is Corbetta et
+  // al.'s literal rule; `pick_anchors` (essvi_anchored.cpp) carries the measured
+  // reason the default is higher. This is a discrete selection among OBSERVED
+  // quotes, not a fourth parameter and not a starting point: the free-parameter
+  // count is still two and there is still nothing to seed or tune.
+  std::uint16_t n_anchor_candidates{3};
 };
 
 // Per-slice fit diagnostics.

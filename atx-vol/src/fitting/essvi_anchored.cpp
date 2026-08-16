@@ -156,25 +156,59 @@ struct Anchor {
   bool ok{false};
 };
 
-// Corbetta et al.: anchor on the market point NEAREST the ATM forward, so the
-// O(k*^2) truncation in relation (A) is as small as the chain allows. Ties
-// resolve to the lower index, which keeps the choice deterministic.
-[[nodiscard]] Anchor pick_anchor(std::span<const FitObs> obs) noexcept {
-  Anchor a{};
-  double best_abs_k = std::numeric_limits<double>::infinity();
-  for (const FitObs& o : obs) {
-    if (!(o.w_mkt > 0.0) || !std::isfinite(o.k)) {
-      continue;
-    }
-    const double abs_k = std::fabs(o.k);
-    if (abs_k < best_abs_k) {
-      best_abs_k = abs_k;
-      a.k_star = o.k;
-      a.theta_star = o.w_mkt;
-      a.ok = true;
-    }
+// Corbetta et al. anchor on the single market point NEAREST the ATM forward, so
+// the O(k*^2) truncation in relation (A) is as small as the chain allows.
+//
+// This returns the nearest `max_n` instead, in ascending |k|, because that one
+// point sets the slice's ENTIRE level: theta = theta* - rho*psi*k*, so whatever
+// bid/ask noise sits on the nearest quote's mid is transferred undamped into
+// w(0), while the incumbent LM path averages the level over the whole chain and
+// suppresses that noise by roughly sqrt(n). MEASURED (2026-08-16, 611-symbol
+// session): with a single anchor the anchored path lost 8 cells to the risk
+// surface's in-band quality floor -- not to arbitrage, which was clean -- and
+// the synthetic 2%-noise comparison put its total-variance RMSE 0-13% above the
+// LM path's.
+//
+// Trying several anchors and keeping the one with the lowest TOTAL objective is
+// a DISCRETE model selection over observed data, exactly like the rho grid. It
+// costs nothing structurally: the count of FREE parameters is still two, the
+// interval algebra is unchanged (it consumes a scalar (k*, theta*) whatever its
+// provenance), and there is still no starting point to choose or tune. It is
+// also not the "interpolate an ATM vol from bracketing strikes" step the
+// anchoring trick exists to avoid -- no value between quotes is ever
+// manufactured; each candidate is an observed quote.
+//
+// Ties resolve to the lower index, so the ordering is deterministic.
+[[nodiscard]] std::vector<Anchor> pick_anchors(std::span<const FitObs> obs,
+                                               std::size_t max_n) {
+  std::vector<Anchor> out;
+  if (max_n == 0u) {
+    return out;
   }
-  return a;
+  out.reserve(max_n);
+  // Selection sort over the candidate set: max_n is a small fixed budget, so
+  // this is cheaper than sorting the whole observation set and needs no scratch.
+  std::vector<bool> taken(obs.size(), false);
+  for (std::size_t slot = 0; slot < max_n; ++slot) {
+    double best_abs_k = std::numeric_limits<double>::infinity();
+    std::size_t best = obs.size();
+    for (std::size_t i = 0; i < obs.size(); ++i) {
+      if (taken[i] || !(obs[i].w_mkt > 0.0) || !std::isfinite(obs[i].k)) {
+        continue;
+      }
+      const double abs_k = std::fabs(obs[i].k);
+      if (abs_k < best_abs_k) {
+        best_abs_k = abs_k;
+        best = i;
+      }
+    }
+    if (best == obs.size()) {
+      break;  // no usable observation left
+    }
+    taken[best] = true;
+    out.push_back(Anchor{obs[best].k, obs[best].w_mkt, true});
+  }
+  return out;
 }
 
 }  // namespace
@@ -297,8 +331,12 @@ Result<AnchoredSlice> anchored_fit_slice(std::span<const FitObs> obs, double T,
     return Err(ErrorCode::InvalidArgument,
                "anchored_fit_slice: empty observations or non-positive T");
   }
-  const Anchor anchor = pick_anchor(obs);
-  if (!anchor.ok) {
+  const std::size_t n_anchor =
+      (opts.n_anchor_candidates >= 1u)
+          ? static_cast<std::size_t>(opts.n_anchor_candidates)
+          : std::size_t{1u};
+  const std::vector<Anchor> anchors = pick_anchors(obs, n_anchor);
+  if (anchors.empty()) {
     return Err(ErrorCode::InvalidArgument,
                "anchored_fit_slice: no observation carries a usable anchor "
                "(positive total variance at a finite log-moneyness)");
@@ -315,8 +353,8 @@ Result<AnchoredSlice> anchored_fit_slice(std::span<const FitObs> obs, double T,
 
   // Weighted total-variance SSE — the same objective domain the LM path
   // minimises, so residuals from the two calibrators are directly comparable.
-  const auto objective = [&](double rho, double psi) noexcept {
-    const double theta = anchored_theta(rho, psi, anchor.k_star, anchor.theta_star);
+  const auto objective = [&](const Anchor& a, double rho, double psi) noexcept {
+    const double theta = anchored_theta(rho, psi, a.k_star, a.theta_star);
     if (!(theta > 0.0)) {
       return std::numeric_limits<double>::max();
     }
@@ -329,14 +367,21 @@ Result<AnchoredSlice> anchored_fit_slice(std::span<const FitObs> obs, double T,
     return sse;
   };
 
+  // Incumbent for the anchor currently being swept.
+  double cur_sse = std::numeric_limits<double>::infinity();
+  double cur_rho = 0.0;
+  double cur_psi = 0.0;
+  bool cur_have = false;
+  // Best across all anchors, each already fully refined.
   double best_sse = std::numeric_limits<double>::infinity();
   double best_rho = 0.0;
   double best_psi = 0.0;
+  std::size_t best_anchor = 0u;
   bool have_best = false;
 
   // One deterministic sweep: sample rho, solve the constrained 1-D problem in
   // psi exactly, keep the incumbent. No starting point enters anywhere.
-  const auto sweep = [&](double rho_lo, double rho_hi) {
+  const auto sweep = [&](const Anchor& a, double rho_lo, double rho_hi) {
     for (std::uint16_t j = 0; j < n_rho; ++j) {
       const double u = (n_rho == 1u)
                            ? 0.5
@@ -345,12 +390,12 @@ Result<AnchoredSlice> anchored_fit_slice(std::span<const FitObs> obs, double T,
       double rho = rho_lo + (rho_hi - rho_lo) * u;
       rho = std::clamp(rho, -rho_max, rho_max);
       const PsiInterval iv =
-          anchored_psi_bounds(rho, anchor.k_star, anchor.theta_star, prev);
+          anchored_psi_bounds(rho, a.k_star, a.theta_star, prev);
       if (iv.empty()) {
         continue;
       }
       ++n_feasible;
-      const auto fn = [&](double psi) noexcept { return objective(rho, psi); };
+      const auto fn = [&](double psi) noexcept { return objective(a, rho, psi); };
       const BrentOutcome br = brent_minimize(fn, iv.lo, iv.hi, brent_tol, brent_iter);
       n_eval += br.n_eval;
       // The constrained minimum frequently sits ON an endpoint (that is what a
@@ -358,8 +403,8 @@ Result<AnchoredSlice> anchored_fit_slice(std::span<const FitObs> obs, double T,
       // slowly; evaluating both endpoints makes the bound exact for two evals.
       double cand_psi = br.x;
       double cand_sse = br.f;
-      const double f_lo = objective(rho, iv.lo);
-      const double f_hi = objective(rho, iv.hi);
+      const double f_lo = objective(a, rho, iv.lo);
+      const double f_hi = objective(a, rho, iv.hi);
       n_eval += 2u;
       if (f_lo < cand_sse) {
         cand_sse = f_lo;
@@ -369,32 +414,53 @@ Result<AnchoredSlice> anchored_fit_slice(std::span<const FitObs> obs, double T,
         cand_sse = f_hi;
         cand_psi = iv.hi;
       }
-      if (!have_best || cand_sse < best_sse) {
-        best_sse = cand_sse;
-        best_psi = cand_psi;
-        best_rho = rho;
-        have_best = true;
+      if (!cur_have || cand_sse < cur_sse) {
+        cur_sse = cand_sse;
+        cur_psi = cand_psi;
+        cur_rho = rho;
+        cur_have = true;
       }
     }
   };
 
-  sweep(-rho_max, rho_max);
+  // Each anchor candidate gets its OWN coarse sweep plus full refinement, and
+  // only the refined results are compared. Comparing coarse results instead
+  // would be unsound: the coarse rho resolution is ~1e-1, refinement moves the
+  // objective by more than the gap between anchors, and the anchor that happens
+  // to win at coarse resolution is not the one that wins after refining
+  // (measured: it cost up to 8% of in-sample RMSE on the noisy fixture).
+  for (std::size_t ai = 0; ai < anchors.size(); ++ai) {
+    cur_have = false;
+    cur_sse = std::numeric_limits<double>::infinity();
+    sweep(anchors[ai], -rho_max, rho_max);
+    if (!cur_have) {
+      continue; // this anchor admits no feasible psi for any sampled rho
+    }
+    // Refine on the bracket around this anchor's incumbent. Each pass narrows
+    // the rho resolution by ~n_rho.
+    double half = (2.0 * rho_max) / static_cast<double>(n_rho - 1u);
+    for (std::uint16_t pass = 0; pass < opts.n_refine_passes; ++pass) {
+      const double lo = std::max(-rho_max, cur_rho - half);
+      const double hi = std::min(rho_max, cur_rho + half);
+      sweep(anchors[ai], lo, hi);
+      half = (hi - lo) / static_cast<double>(n_rho - 1u);
+    }
+    if (!have_best || cur_sse < best_sse) {
+      best_sse = cur_sse;
+      best_psi = cur_psi;
+      best_rho = cur_rho;
+      best_anchor = ai;
+      have_best = true;
+    }
+  }
   if (!have_best) {
     return Err(ErrorCode::Unavailable,
                "anchored_fit_slice: every sampled rho has an empty admissible "
                "psi interval (the no-arbitrage constraints and the anchor are "
                "jointly infeasible)");
   }
-  // Refine on the bracket around the incumbent. The initial grid spacing is the
-  // bracket half-width, so each pass narrows the rho resolution by ~n_rho.
-  double half = (2.0 * rho_max) / static_cast<double>(n_rho - 1u);
-  for (std::uint16_t pass = 0; pass < opts.n_refine_passes; ++pass) {
-    const double lo = std::max(-rho_max, best_rho - half);
-    const double hi = std::min(rho_max, best_rho + half);
-    sweep(lo, hi);
-    half = (hi - lo) / static_cast<double>(n_rho - 1u);
-  }
 
+  const Anchor& anchor = anchors[best_anchor];
   AnchoredSlice out{};
   out.rho = best_rho;
   out.psi = best_psi;
