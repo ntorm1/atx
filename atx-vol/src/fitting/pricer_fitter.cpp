@@ -209,6 +209,23 @@ struct DeamLadderEnv {
   return value;
 }
 
+// ── Fitter-stability rollout switch ─────────────────────────────────────────
+//
+//   ATX_VOL_FIT_UNCOVERED_PARAMETRIC   > 0 arms
+//   `CalibOpts::per_slice_uncovered_parametric` (calib.hpp): a ConvexDense slice
+//   refused by the k-coverage predicate is DEMOTED to the parametric backbone
+//   instead of deleting the whole expiry.
+//
+// An environment gate rather than a `PricerConfig` field for the same reason the
+// exercise ladder above is one: `PricerConfig` is projected into the surface-db
+// symbol record, and a new field there is an on-disk format change for what is a
+// rollout switch. Read exactly once, on first use. Unset => the historical
+// drop-the-expiry path, bit-identical.
+[[nodiscard]] bool uncovered_parametric_armed() noexcept {
+  static const bool value = ladder_env_double("ATX_VOL_FIT_UNCOVERED_PARAMETRIC") > 0.0;
+  return value;
+}
+
 [[nodiscard]] SurfaceBuildAttemptReport
 failed_attempt_report(const Underlying &under, const CurveConfig &curve,
                       const atx::core::Error &failure,
@@ -1544,6 +1561,12 @@ Status PricerFitter::fit(const OptionChain &chain,
       in.calib.deam_tier_escalate_margin_vol_pts = ladder.margin_vol_pts;
       in.calib.deam_tier_div_call_max_T = ladder.div_call_max_T;
       in.calib.deam_tier_div_call_max_div_frac = ladder.div_call_max_div_frac;
+    }
+    // Fitter stability (see `uncovered_parametric_armed`). Set HERE, beside the
+    // ladder, so the live rollout switch wins over anything a per-symbol preset
+    // left on `in.calib`.
+    if (detail::uncovered_parametric_armed()) {
+      in.calib.per_slice_uncovered_parametric = true;
     }
   };
   apply_risk_policy();
