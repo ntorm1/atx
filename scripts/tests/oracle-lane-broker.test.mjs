@@ -78,7 +78,7 @@ function fixture({ failGate = '', descendantBase = false, requireCommittedHead =
   writeFileSync(join(pool, 'build', 'build.ninja'), '# warm fixture\n', 'utf8')
 
   const gateRegistry = { ...GATE_REGISTRY }
-  for (const gateId of ['aggregate_store', 'ingest_manifest', 'cohort_manifests', 'holdout_digest']) {
+  for (const gateId of ['aggregate_store', 'ingest_manifest', 'cohort_manifests', 'holdout_digest', 'mode_a_targeted_tests', 'mode_a_smoke', 'convention_tests', 'mode_a_smoke_tune', 'residual_floor', 'mode_b_targeted_tests', 'mode_b_smoke_tune']) {
     gateRegistry[gateId] = { display: `powershell scripts\\oracle-bootstrap-preflight.ps1 -Gate ${gateId}`, file: 'scripts/oracle-bootstrap-preflight.ps1', args: ['-Gate', gateId] }
   }
   const broker = new OracleLaneBroker({ root, poolRoot, testMode: true, gateRegistry, recoverySource: { commit: sourceCommit, parent: sourceParent, tree: sourceTree, files } })
@@ -281,6 +281,85 @@ test('Stage 1 recovery commits atop a current descendant base and reopens only b
   }
 })
 
+test('existing canonical bootstrap finalizes one exact Stage 2 descendant with sealed gates and rejects drift or substitution', { timeout: 180_000 }, async () => {
+  const fx = fixture()
+  const runId = 'run-existing-canonical'
+  const stage2Identity = { operation_id: 'bootstrap_mode_a', stage: 'bootstrap-2', run_id: runId, branch: 'lane/oracle-bootstrap-mode-a-run-existing-canonical', base_sha: fx.base, heartbeat_id: 'run-existing-canonical-mode-a' }
+  try {
+    git(fx.root, 'update-ref', 'refs/heads/oracle/canonical', fx.base)
+    const stage2 = fx.broker.openLane(stage2Identity)
+    const stage2Patch = 'diff --git a/atx-vol/src/pricing/american.cpp b/atx-vol/src/pricing/american.cpp\n--- a/atx-vol/src/pricing/american.cpp\n+++ b/atx-vol/src/pricing/american.cpp\n@@ -1 +1 @@\n-int oracle_fixture() { return 1; }\n+int oracle_fixture() { return 2; }\n'
+    fx.broker.applyPatch({ capability: stage2.capability, patch: stage2Patch })
+    const candidate = fx.broker.commitLane({ capability: stage2.capability, message_id: 'bootstrap_mode_a' })
+    assert.equal(fx.broker.releaseLane({ capability: stage2.capability }).finalize_capability, '')
+
+    const wrongOperation = fx.broker.openLane({ operation_id: 'sprint_build', stage: 'improve', run_id: runId, branch: 'lane/wrong-operation-run-existing-canonical', base_sha: fx.base, heartbeat_id: 'run-existing-canonical-wrong-operation' })
+    const wrongOperationPatch = 'diff --git a/atx-vol/src/pricing/american.cpp b/atx-vol/src/pricing/american.cpp\n--- a/atx-vol/src/pricing/american.cpp\n+++ b/atx-vol/src/pricing/american.cpp\n@@ -1 +1 @@\n-int oracle_fixture() { return 1; }\n+int oracle_fixture() { return 3; }\n'
+    fx.broker.applyPatch({ capability: wrongOperation.capability, patch: wrongOperationPatch })
+    const wrongOperationCommit = fx.broker.commitLane({ capability: wrongOperation.capability, message_id: 'sprint_lane' })
+    fx.broker.releaseLane({ capability: wrongOperation.capability })
+
+    const integration = fx.broker.openLane({ operation_id: 'bootstrap_integration', stage: 'bootstrap-prepare', run_id: runId, branch: 'integration/oracle-bootstrap-mode-a-run-existing-canonical', base_sha: fx.base, heartbeat_id: 'run-existing-canonical-integration' })
+    git(fx.root, 'update-ref', 'refs/heads/oracle/canonical', fx.sourceCommit, fx.base)
+    assert.throws(() => fx.broker.integrate({ capability: integration.capability, reviewed_shas: [candidate.sha] }), /canonical\/base precondition drifted/)
+    git(fx.root, 'update-ref', 'refs/heads/oracle/canonical', fx.base, fx.sourceCommit)
+    assert.throws(() => fx.broker.integrate({ capability: integration.capability, reviewed_shas: [wrongOperationCommit.sha] }), /wrong operation\/stage/)
+    assert.throws(() => fx.broker.integrate({ capability: integration.capability, reviewed_shas: [fx.sourceCommit] }), /lacks an exact clean released bootstrap candidate/)
+
+    const gitDir = git(fx.root, 'rev-parse', '--absolute-git-dir')
+    const stage2CapPath = join(gitDir, 'oracle-lane-broker-v3', 'capabilities', `${stage2.capability}.json`)
+    const stage2CapRaw = readFileSync(stage2CapPath, 'utf8')
+    const { seal: _stage2Seal, ...stage2CapBody } = JSON.parse(stage2CapRaw)
+    const secret = readFileSync(join(gitDir, 'oracle-lane-broker-v3', 'secret'), 'ascii').trim()
+    const writeSealedStage2 = body => writeFileSync(stage2CapPath, JSON.stringify({ ...body, seal: createHmac('sha256', secret).update(JSON.stringify(body)).digest('hex') }), 'utf8')
+    writeSealedStage2({ ...stage2CapBody, stage: 'bootstrap-3' })
+    assert.throws(() => fx.broker.integrate({ capability: integration.capability, reviewed_shas: [candidate.sha] }), /wrong operation\/stage/)
+    writeSealedStage2({ ...stage2CapBody, released_tree: '0'.repeat(40) })
+    assert.throws(() => fx.broker.integrate({ capability: integration.capability, reviewed_shas: [candidate.sha] }), /lacks an exact clean released bootstrap candidate/)
+    writeFileSync(stage2CapPath, stage2CapRaw, 'utf8')
+
+    const integrated = fx.broker.integrate({ capability: integration.capability, reviewed_shas: [candidate.sha] })
+    assert.equal(integrated.sha, candidate.sha)
+    assert.equal(integrated.tree, candidate.tree)
+    assert.throws(() => fx.broker.runGate({ capability: integration.capability, gate_id: 'convention_tests' }), /not required for the reviewed bootstrap operation\/stage/)
+    assert.throws(() => fx.broker.releaseLane({ capability: integration.capability }), /gate receipt set is incomplete/)
+    const gates = ['mode_a_targeted_tests', 'mode_a_smoke'].map(gate_id => fx.broker.runGate({ capability: integration.capability, gate_id }))
+    assert.ok(gates.every(receipt => receipt.exit_code === 0 && receipt.tested_sha === candidate.sha && receipt.tested_tree === candidate.tree && /^[0-9a-f]{64}$/.test(receipt.receipt_id)))
+    assert.throws(() => fx.broker.runGate({ capability: integration.capability, gate_id: 'mode_a_smoke' }), /already exists/)
+
+    git(fx.root, 'update-ref', 'refs/heads/oracle/canonical', fx.sourceCommit, fx.base)
+    assert.throws(() => fx.broker.releaseLane({ capability: integration.capability }), /canonical\/base precondition drifted/)
+    git(fx.root, 'update-ref', 'refs/heads/oracle/canonical', fx.base, fx.sourceCommit)
+    const released = fx.broker.releaseLane({ capability: integration.capability })
+    assert.equal(released.sha, candidate.sha)
+    assert.equal(released.tree, candidate.tree)
+    assert.match(released.finalize_capability, /^[0-9a-f]{64}$/)
+
+    assert.throws(() => fx.broker.canonicalFinalize({ finalize_capability: released.finalize_capability, expected_sha: candidate.sha, expected_tree: fx.sourceTree }), /expected SHA\/tree/)
+    git(fx.root, 'update-ref', 'refs/heads/oracle/canonical', fx.sourceCommit, fx.base)
+    assert.throws(() => fx.broker.canonicalFinalize({ finalize_capability: released.finalize_capability, expected_sha: candidate.sha, expected_tree: candidate.tree }), /compare-and-swap precondition is stale/)
+    git(fx.root, 'update-ref', 'refs/heads/oracle/canonical', fx.base, fx.sourceCommit)
+    const finalized = fx.broker.canonicalFinalize({ finalize_capability: released.finalize_capability, expected_sha: candidate.sha, expected_tree: candidate.tree })
+    assert.equal(finalized.expected_old_sha, fx.base)
+    assert.equal(finalized.new_sha, candidate.sha)
+    assert.equal(finalized.new_tree, candidate.tree)
+    assert.equal(git(fx.root, 'rev-parse', 'refs/heads/main'), fx.base)
+    assert.equal(git(fx.root, 'rev-parse', 'refs/heads/oracle/canonical'), candidate.sha)
+    assert.throws(() => fx.broker.canonicalFinalize({ finalize_capability: released.finalize_capability, expected_sha: candidate.sha, expected_tree: candidate.tree }), /unknown|stale|consumed/)
+    assert.throws(() => fx.broker.openLane({ operation_id: 'bootstrap_integration', stage: 'bootstrap-prepare', run_id: 'run-main-substitution', branch: 'integration/oracle-bootstrap-main-substitution', base_sha: fx.base, heartbeat_id: 'run-main-substitution-integration' }), /base must equal the current canonical ref/)
+  } finally {
+    try { run('git', ['worktree', 'remove', '--force', fx.pool], fx.root) } catch { }
+    await new Promise(resolveDelay => setTimeout(resolveDelay, 250))
+    try {
+      rmSync(fx.sandbox, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 })
+    } catch (error) {
+      if (error?.code !== 'EPERM') throw error
+      const cleanup = spawn(process.execPath, ['-e', `setTimeout(()=>require('fs').rmSync(${JSON.stringify(fx.sandbox)},{recursive:true,force:true,maxRetries:20,retryDelay:200}),1000)`], { detached: true, stdio: 'ignore', windowsHide: true })
+      cleanup.unref()
+    }
+  }
+})
+
 test('temp repo broker rejects incident classes and proves recovery, lane commit/release, integration, and canonical CAS', { timeout: 240_000 }, async () => {
   const fx = fixture()
   try {
@@ -356,7 +435,7 @@ test('temp repo broker rejects incident classes and proves recovery, lane commit
     assert.equal(recovered.recovery.adoption_rerun, false)
     assert.deepEqual(recovered.files_changed.sort(), Object.keys(fx.files).sort())
     assert.deepEqual(recovered.gate_receipts.map(item => item.gate_id), ['aggregate_store', 'ingest_manifest', 'cohort_manifests', 'holdout_digest'])
-    assert.ok(recovered.gate_receipts.every(item => /^[0-9a-f]{64}$/.test(item.receipt_id) && item.tested_sha === fx.base && item.exit_code === 0 && item.broker_evidence.physical_cwd === fx.pool))
+    assert.ok(recovered.gate_receipts.every(item => /^[0-9a-f]{64}$/.test(item.receipt_id) && item.tested_sha === recovered.sha && item.tested_tree === recovered.tree && item.exit_code === 0 && item.broker_evidence.physical_cwd === fx.pool))
     const replayAgain = fx.broker.recoverStage1({ capability: replayAcquire.capability })
     assert.equal(replayAgain.replayed, true)
     assert.deepEqual(replayAgain.gate_receipts.map(item => item.receipt_id), recovered.gate_receipts.map(item => item.receipt_id))
