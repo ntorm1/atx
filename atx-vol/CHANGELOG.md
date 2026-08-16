@@ -5,6 +5,89 @@ that silently changes a NUMBER a caller already depends on belongs in this file.
 
 ## Unreleased
 
+### CHANGED (default) + NEW — VRP round 4: the evaluation gate (lane vrp-eval-gate)
+
+**One default CHANGES A NUMBER a caller depends on: `pred_edge_norm` in
+`vrp_signal.tsv`.** Everything else in this entry is additive. Migration and
+the byte-identity escape hatch are in the first bullet.
+
+- **`--edge-norm {cross-section|per-symbol}` (default `cross-section`) — the
+  ranking column.** `pred_edge_norm` is now the WITHIN-DATE cross-sectional
+  z-score of `pred_label` across the symbols scored on that date. It was the
+  per-symbol z-score `(pred_label - label_mean[sym]) / label_sd[sym]`, which
+  subtracts each name's own average variance premium — the persistent
+  cross-sectional VRP the book exists to harvest — and then divides by a
+  `label_sd` spanning three orders of magnitude, reordering the cross-section
+  instead of rescaling it. Measured on the same rows, dates and 21d horizon
+  through an equal-weighted decile long/short book with all sizing stripped:
+  per-symbol **−1.63 vol pts/cycle** (29% of phase offsets positive) against
+  ranking on `pred_label` **+1.74** (76% positive). Re-measured in-trainer on
+  clean-25 OOS test rows, ranking-column statistics: decile Spearman rho
+  **+0.32 → +0.72**, decile spread **+0.00058 → +0.00413** (t_nw 0.51 → 2.25),
+  traded-tail Pearson IC **−0.025 → +0.262**, per-date rank IC
+  **+0.0845 → +0.2240**. Within a date the new map is affine with positive
+  scale, so it is exactly order-preserving on `pred_label`.
+  **MIGRATION:** the `vrp_signal_v1` header and column grammar are unchanged
+  and the file still loads under the unmodified frozen loader; only the values
+  in that one column move. Pass `--edge-norm per-symbol` to restore the
+  round-3 column — verified byte-identical `vrp_signal.tsv`,
+  `vrp_gbt_model.tsv`, `vrp_baseline_model.tsv` and `vrp_fold_stats.tsv`
+  against the round-3 SP100 gate anchor. **NOTE:** under `cross-section` the
+  sidecar's `label_mean`/`label_sd` no longer reproduce `pred_edge_norm` from
+  one row — it is a within-date transform and needs the whole date's
+  cross-section. `pred_label` remains reproducible from
+  {model file + sidecar} alone, and `--edge-norm per-symbol` restores the
+  single-row derivation of `pred_edge_norm`.
+
+- **NEW: a mandatory zero-parameter benchmark gate, reported on every run.**
+  The model is scored against `-iv_fair_21d` (known at t) and `f5_hv_iv_gap`
+  (Goyal–Saretto HV–IV) on the same rows, dates and folds, plus the fitted
+  log-HAR baseline for reference and — new — the column the book actually
+  RANKS on. PASS requires the model to beat every zero-parameter benchmark on
+  BOTH mean per-date Pearson and Spearman IC, strictly; ties, NaN, a missing
+  model and zero benchmarks all FAIL. The verdict is written to
+  `vrp_metrics.tsv` (`# gate_verdict=`), stdout and stderr. It is not behind a
+  flag: three rounds shipped on a +0.22 IC that no free rule was ever asked to
+  beat.
+
+- **NEW: honest metrics.** Every IC and P&L aggregate carries an i.i.d.
+  t-stat and a Newey–West/Bartlett t at the 20-session overlap lag. The sizing
+  IC is out-of-sample **Pearson** (Grinold `alpha = IC·sigma_y·z`), reported
+  on all OOS rows and on the decile tails a book would hold; Spearman is
+  reported beside it and is never the sizing input. Per-date decile buckets,
+  top-minus-bottom spread with t-stats, and Spearman rho publish the TAIL
+  statement a pooled IC cannot make. Every statistic is labelled with its
+  **corpus** (`--corpus`, default the panel file stem) and emitted per fold AND
+  pooled. Unlabeled-tail coverage is published as a count and a fraction.
+
+- **DEPRECATED: QLIKE.** `L(F,P) = P/F − ln(P/F) − 1` is a VARIANCE loss
+  requiring `F > 0` and `P > 0`; the label is a SIGNED variance spread,
+  negative about half the time, which is the entire source of the round-1
+  1e6..3e7 readings. The round-4 gate scores **MSE + Mincer–Zarnowitz** and
+  never reads QLIKE. The legacy `qlike` column in the `vrp_train_metrics_v1`
+  table is retained unchanged so round-3 artifacts stay comparable, and is
+  explicitly disowned by a `# qlike_status=...` meta line. Do not read it as a
+  model-quality metric.
+
+- **NEW: `--feature-lag <n>` (default `0`, cap 21).** Reads every FEATURE from
+  the row's n-th same-symbol predecessor so a stale same-session quote cannot
+  manufacture IC. Targets are never shifted, so the observation set and fold
+  plan are identical at every lag. Rows without an n-th predecessor get NaN
+  features (routed through the existing z = 0 imputation) and are counted in
+  `# feature_lag_rows_unavailable`. Default 0 preserves round-3 behaviour.
+
+- **CHANGED: `fmt_double` canonicalizes every NaN spelling to `nan`.** MSVC
+  `to_chars` prints the x87 indefinite quiet NaN (what `0.0/0.0` yields) as
+  `-nan(ind)` and a signalling one as `nan(snan)`, so artifact bytes would
+  otherwise depend on which instruction produced an undefined value. No
+  round-3 artifact contains a `nan(` spelling, so every anchored byte is
+  unchanged.
+
+`vrp_metrics.tsv` grows ~340–420 `# key=value` meta lines and its tabular
+block keeps its round-1 shape: diffed against the round-3 SP100 anchor,
+**0 lines removed or changed, 417 added**. The `vrp_fold_stats_v1` sidecar
+grammar is untouched.
+
 ### NEW — VRP round 3: flagged isotonic forecast recalibration + metrics honesty (lane vrp-recalibration)
 
 `atx-vol-vrp-train` grows three flags; every flag defaults to the fix-2

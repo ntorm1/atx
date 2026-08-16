@@ -2532,6 +2532,13 @@ TEST_F(VrpTrainPipelineTest, PerSymbolEdgeNormIsReproducibleFromTheSidecarAlone)
   EXPECT_GT(checked, 0u);
   EXPECT_NE(read_file_bytes(ps->metrics_path).find("# edge_norm=per_symbol\n"),
             std::string::npos);
+  // The break the gate now makes visible: under per-symbol the column the book
+  // RANKS on is a different axis from the column the IC is measured on, so its
+  // rank IC diverges from the model's. Under cross-section the two coincide
+  // (pinned by GateScoresEveryFoldAndThePooledCorpusAgainstFreeBenchmarks).
+  ASSERT_EQ(ps->gate.pooled.size(), 5u);
+  EXPECT_EQ(ps->gate.pooled[4].name, "ranked_pred_edge_norm");
+  EXPECT_NE(ps->gate.pooled[4].ic_spearman, ps->gate.pooled[0].ic_spearman);
   std::error_code ec;
   std::filesystem::remove_all(out, ec);
 }
@@ -2588,9 +2595,10 @@ TEST_F(VrpTrainPipelineTest, GateScoresEveryFoldAndThePooledCorpusAgainstFreeBen
   const auto &gate = report_->gate;
   ASSERT_EQ(gate.per_fold.size(), report_->folds.size());
   ASSERT_EQ(gate.fold_ids.size(), report_->folds.size());
-  ASSERT_EQ(gate.pooled.size(), 4u);
-  // Column order and kinds: the model on trial, the fitted baseline, then the
-  // two ZERO-PARAMETER benchmarks that decide the verdict.
+  ASSERT_EQ(gate.pooled.size(), 5u);
+  // Column order and kinds: the model on trial, the fitted baseline, the two
+  // ZERO-PARAMETER benchmarks that decide the verdict, and the column the
+  // BOOK actually ranks on (which rounds 1-3 never scored).
   EXPECT_EQ(gate.pooled[0].name, "gbt");
   EXPECT_EQ(gate.pooled[0].kind, vrp::VrpScoreKind::Model);
   EXPECT_EQ(gate.pooled[1].name, "baseline_log_har");
@@ -2599,10 +2607,32 @@ TEST_F(VrpTrainPipelineTest, GateScoresEveryFoldAndThePooledCorpusAgainstFreeBen
   EXPECT_EQ(gate.pooled[2].kind, vrp::VrpScoreKind::Benchmark);
   EXPECT_EQ(gate.pooled[3].name, "bench_hv_iv_gap");
   EXPECT_EQ(gate.pooled[3].kind, vrp::VrpScoreKind::Benchmark);
+  EXPECT_EQ(gate.pooled[4].name, "ranked_pred_edge_norm");
+  EXPECT_EQ(gate.pooled[4].kind, vrp::VrpScoreKind::Ranked);
   EXPECT_EQ(gate.verdict.n_benchmarks, 2u);
-  // Every fold scores the same four columns on that fold's own test rows.
+  // Under the cross-section default the ranking column is an order-preserving
+  // map of pred_label WITHIN each date, so its per-date rank IC and its decile
+  // tails must coincide with the model's -- the round-1..3 gap between the
+  // scored column and the traded one closes to zero by construction.
+  EXPECT_NEAR(gate.pooled[4].ic_spearman, gate.pooled[0].ic_spearman, 1e-9);
+  // Pearson is invariant to a positive affine map, so the PER-DATE Pearson IC
+  // coincides too. The pooled-across-dates Pearson deliberately does NOT: the
+  // z-score is date-specific, which is exactly why a pooled-row correlation is
+  // the wrong statistic for a per-date cross-sectional book.
+  EXPECT_NEAR(gate.pooled[4].ic_pearson, gate.pooled[0].ic_pearson, 1e-9);
+  EXPECT_NE(gate.pooled[4].ic_pearson_pooled, gate.pooled[0].ic_pearson_pooled);
+  // This fixture carries 3 names per date, below the one-name-per-decile floor,
+  // so the tail block is UNDEFINED rather than fabricated from three names --
+  // pinned here because a fabricated decile spread is the exact failure mode
+  // the floor exists to prevent.
+  EXPECT_EQ(gate.pooled[0].n_dates, gate.pooled[4].n_dates);
+  EXPECT_TRUE(std::isnan(gate.pooled[0].decile_spread));
+  EXPECT_TRUE(std::isnan(gate.pooled[4].decile_spread));
+  EXPECT_TRUE(std::isnan(gate.pooled[0].decile_rho));
+  EXPECT_TRUE(std::isnan(gate.pooled[4].decile_rho));
+  // Every fold scores the same five columns on that fold's own test rows.
   for (std::size_t i = 0; i < gate.per_fold.size(); ++i) {
-    ASSERT_EQ(gate.per_fold[i].size(), 4u);
+    ASSERT_EQ(gate.per_fold[i].size(), 5u);
     EXPECT_EQ(gate.fold_ids[i], report_->folds[i].fold_id);
     for (const auto &s : gate.per_fold[i]) {
       EXPECT_EQ(s.n_rows, report_->folds[i].n_test);

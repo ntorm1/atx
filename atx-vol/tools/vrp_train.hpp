@@ -1286,7 +1286,12 @@ struct VrpDecileStats {
 // that does not beat it has produced no evidence it should be deployed.
 // Baseline == the fitted log-HAR comparator: informative, but not free, so it
 // is reported and never used as the pass bar.
-enum class VrpScoreKind : std::uint8_t { Model, Baseline, Benchmark };
+// Ranked == the column the BOOK sorts on (pred_edge_norm), which is not
+// necessarily the column the model was scored on. Rounds 1-3 measured the IC
+// on pred_label and traded pred_edge_norm, a ~0.6-correlated transform whose
+// decile tails were inverted; scoring both, side by side, on the same rows is
+// what makes that class of break impossible to miss again.
+enum class VrpScoreKind : std::uint8_t { Model, Baseline, Benchmark, Ranked };
 
 // Everything the round-4 gate says about ONE score column on ONE row set.
 // `ic_pearson` is THE sizing IC (Grinold alpha = IC * sigma_y * z); the
@@ -1460,6 +1465,7 @@ inline constexpr std::string_view kVrpScoreModel = "gbt";
 inline constexpr std::string_view kVrpScoreBaseline = "baseline_log_har";
 inline constexpr std::string_view kVrpScoreBenchNegIv = "bench_neg_iv_fair_21d";
 inline constexpr std::string_view kVrpScoreBenchHvIv = "bench_hv_iv_gap";
+inline constexpr std::string_view kVrpScoreRanked = "ranked_pred_edge_norm";
 
 // The gate's whole finding for one run: every score column on every fold and
 // on the pooled OOS rows, plus the verdict, plus the corpus label. The corpus
@@ -2965,6 +2971,59 @@ inline void append_score_meta(std::string &body, const std::string &prefix,
     if (!is_labeled_row(report.panel.rows[e.panel_row])) {
       ++report.gate.n_signal_rows_unlabeled;
     }
+  }
+
+  // Score the SHIPPED RANKING COLUMN, on the same OOS rows as everything else.
+  // Round 1-3 measured pred_label and traded pred_edge_norm; on the traded
+  // universe that transform cut the IC by 62% and inverted the decile tails
+  // (+0.042 pooled IC while the tails ran -2.5 vol pts). Scoring it beside the
+  // forecast is what turns that from a forensic finding into a reported one.
+  {
+    std::vector<double> edge_of(report.panel.rows.size(),
+                                std::numeric_limits<double>::quiet_NaN());
+    for (const detail::SignalEntry &e : signal_entries) {
+      edge_of[e.panel_row] = e.pred_edge_norm;
+    }
+    std::vector<std::int64_t> rank_ts;
+    std::vector<double> rank_score;
+    std::vector<double> rank_real;
+    for (std::size_t k = 0; k < report.folds.size(); ++k) {
+      std::vector<std::int64_t> fts;
+      std::vector<double> fscore;
+      std::vector<double> freal;
+      fts.reserve(report.folds[k].test_rows.size());
+      for (const std::size_t r : report.folds[k].test_rows) {
+        fts.push_back(report.panel.rows[r].entry_ts_ns);
+        fscore.push_back(edge_of[r]);
+        freal.push_back(report.panel.rows[r].label);
+      }
+      report.gate.per_fold[k].push_back(vrp_score_report(
+          std::string{kVrpScoreRanked}, VrpScoreKind::Ranked,
+          std::span<const std::int64_t>{fts}, std::span<const double>{fscore},
+          std::span<const double>{freal}, false));
+      rank_ts.insert(rank_ts.end(), fts.begin(), fts.end());
+      rank_score.insert(rank_score.end(), fscore.begin(), fscore.end());
+      rank_real.insert(rank_real.end(), freal.begin(), freal.end());
+    }
+    // Same ascending-timestamp requirement as the pooled block above.
+    std::vector<std::size_t> ord(rank_ts.size());
+    for (std::size_t i = 0; i < ord.size(); ++i) {
+      ord[i] = i;
+    }
+    std::stable_sort(ord.begin(), ord.end(),
+                     [&](std::size_t a, std::size_t b) { return rank_ts[a] < rank_ts[b]; });
+    std::vector<std::int64_t> sorted_ts(ord.size());
+    std::vector<double> sorted_score(ord.size());
+    std::vector<double> sorted_real(ord.size());
+    for (std::size_t i = 0; i < ord.size(); ++i) {
+      sorted_ts[i] = rank_ts[ord[i]];
+      sorted_score[i] = rank_score[ord[i]];
+      sorted_real[i] = rank_real[ord[i]];
+    }
+    report.gate.pooled.push_back(vrp_score_report(
+        std::string{kVrpScoreRanked}, VrpScoreKind::Ranked,
+        std::span<const std::int64_t>{sorted_ts}, std::span<const double>{sorted_score},
+        std::span<const double>{sorted_real}, false));
   }
 
   // Outputs.
