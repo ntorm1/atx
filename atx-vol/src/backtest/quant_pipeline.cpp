@@ -4,11 +4,18 @@
 #include <bit>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <limits>
 #include <span>
 #include <string>
 #include <utility>
 #include <vector>
+
+#include "atx/vol/api/backtest/backtest.hpp"    // Clock, run_backtest
+#include "atx/vol/api/marketdata/corpus.hpp"    // CorpusManifest / CorpusEntry
+#include "atx/vol/api/storage/surface_db.hpp"   // SurfaceDb (vrp-backtest roots)
 
 namespace atx::vol {
 namespace {
@@ -455,6 +462,251 @@ Result<StrategyImplementationPlan> build_strategy_implementation_plan(
   plan.risk_overlay = std::move(overlay);
   plan.intent = std::move(intent);
   return plan;
+}
+
+// ---------------------------------------------------------------------------
+// vrp-backtest subcommand (lane vrp-book)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+[[nodiscard]] Status parse_flag_double(std::string_view flag, std::string_view text,
+                                       double &out) {
+  if (!vol_edge_detail::parse_finite_double(text, out)) {
+    return Err(ErrorCode::InvalidArgument,
+               "vrp-backtest: " + std::string(flag) + " needs a finite numeric value, got '" +
+                   std::string(text) + "'");
+  }
+  return Status{};
+}
+
+[[nodiscard]] Status parse_flag_unsigned(std::string_view flag, std::string_view text,
+                                         unsigned &out) {
+  double value = 0.0;
+  ATX_TRY_VOID(parse_flag_double(flag, text, value));
+  if (value < 1.0 || value != std::floor(value) || value > 1.0e9) {
+    return Err(ErrorCode::InvalidArgument,
+               "vrp-backtest: " + std::string(flag) + " needs a positive integer");
+  }
+  out = static_cast<unsigned>(value);
+  return Status{};
+}
+
+} // namespace
+
+Result<VrpBacktestSpec> parse_vrp_backtest_args(std::span<const std::string> args) {
+  VrpBacktestSpec spec;
+  for (std::size_t i = 0; i < args.size(); ++i) {
+    const std::string_view flag = args[i];
+    const auto value = [&]() -> Result<std::string_view> {
+      if (i + 1u >= args.size()) {
+        return Err(ErrorCode::InvalidArgument,
+                   "vrp-backtest: " + std::string(flag) + " needs a value");
+      }
+      return std::string_view{args[++i]};
+    };
+    if (flag == "--no-hedge") {
+      spec.config.delta_hedge = false;
+      continue;
+    }
+    ATX_TRY(const std::string_view parsed, value());
+    if (flag == "--signal") {
+      spec.signal_path.assign(parsed);
+    } else if (flag == "--surface-db") {
+      spec.surface_db_roots.emplace_back(parsed);
+    } else if (flag == "--report") {
+      spec.report_path.assign(parsed);
+    } else if (flag == "--from") {
+      spec.date_lo.assign(parsed);
+    } else if (flag == "--to") {
+      spec.date_hi.assign(parsed);
+    } else if (flag == "--horizon-days") {
+      ATX_TRY_VOID(parse_flag_double(flag, parsed, spec.config.horizon_days));
+    } else if (flag == "--rebalance-steps") {
+      ATX_TRY_VOID(parse_flag_unsigned(flag, parsed, spec.config.rebalance_every_n_steps));
+    } else if (flag == "--long-frac") {
+      ATX_TRY_VOID(parse_flag_double(flag, parsed, spec.config.long_fraction));
+    } else if (flag == "--short-frac") {
+      ATX_TRY_VOID(parse_flag_double(flag, parsed, spec.config.short_fraction));
+    } else if (flag == "--risk-budget") {
+      ATX_TRY_VOID(parse_flag_double(flag, parsed, spec.config.risk_budget_vega));
+    } else if (flag == "--vov-floor") {
+      ATX_TRY_VOID(parse_flag_double(flag, parsed, spec.config.vov_floor));
+    } else if (flag == "--vega-cap") {
+      ATX_TRY_VOID(parse_flag_double(flag, parsed, spec.config.per_name_vega_cap));
+    } else if (flag == "--net-short-tilt") {
+      ATX_TRY_VOID(parse_flag_double(flag, parsed, spec.config.net_short_tilt));
+    } else if (flag == "--no-trade-band") {
+      ATX_TRY_VOID(parse_flag_double(flag, parsed, spec.config.no_trade_band));
+    } else if (flag == "--cost-vol-pts") {
+      ATX_TRY_VOID(parse_flag_double(flag, parsed, spec.config.cost_half_spread_vol_pts));
+    } else if (flag == "--stock-bps") {
+      ATX_TRY_VOID(parse_flag_double(flag, parsed, spec.config.stock_half_spread_bps));
+    } else if (flag == "--hedge-band") {
+      ATX_TRY_VOID(parse_flag_double(flag, parsed, spec.config.delta_hedge_band));
+    } else if (flag == "--expiry-guard") {
+      ATX_TRY_VOID(parse_flag_double(flag, parsed, spec.config.expiry_guard_days));
+    } else {
+      return Err(ErrorCode::InvalidArgument,
+                 "vrp-backtest: unknown argument '" + std::string(flag) + "'");
+    }
+  }
+  // Fail closed HERE, with the flag vocabulary in scope — not later in the run.
+  if (spec.signal_path.empty()) {
+    return Err(ErrorCode::InvalidArgument,
+               "vrp-backtest: --signal <vrp_signal_v1.tsv> is required");
+  }
+  std::error_code ec;
+  if (!std::filesystem::exists(std::filesystem::path(spec.signal_path), ec) || ec) {
+    return Err(ErrorCode::NotFound,
+               "vrp-backtest: signal file '" + spec.signal_path + "' does not exist");
+  }
+  if (spec.surface_db_roots.empty()) {
+    return Err(ErrorCode::InvalidArgument,
+               "vrp-backtest: at least one --surface-db <root> is required");
+  }
+  if (spec.report_path.empty()) {
+    return Err(ErrorCode::InvalidArgument, "vrp-backtest: --report <out.tsv> is required");
+  }
+  ATX_TRY_VOID(validate_vol_edge_config(spec.config));
+  return spec;
+}
+
+Result<VrpBacktestSummary> run_vrp_backtest(const VrpBacktestSpec &spec) {
+  ATX_TRY_VOID(validate_vol_edge_config(spec.config));
+  if (spec.surface_db_roots.empty() || spec.report_path.empty()) {
+    return Err(ErrorCode::InvalidArgument,
+               "vrp-backtest: spec needs >= 1 surface-db root and a report path");
+  }
+  ATX_TRY(auto signal, load_vrp_signal_v1(spec.signal_path));
+
+  // One ascending clock over every root's partitions. Roots must be date-
+  // disjoint (the yearly spy-20NN layout); a duplicate date is two archives
+  // claiming one session, which no deterministic replay should guess between.
+  CorpusManifest manifest;
+  for (const std::string &root : spec.surface_db_roots) {
+    ATX_TRY(const SurfaceDb db, SurfaceDb::open(root));
+    const std::vector<DbPartitionInfo> partitions = db.partitions();
+    if (partitions.empty()) {
+      return Err(ErrorCode::InvalidArgument,
+                 "vrp-backtest: surface-db root '" + root + "' has no partitions");
+    }
+    for (const DbPartitionInfo &partition : partitions) {
+      CorpusEntry entry;
+      entry.date = partition.key;
+      entry.symbol = "SURFACE-DB";
+      entry.status = CorpusFitStatus::Ok;
+      entry.archive_path = (std::filesystem::path(root) / std::string(kSurfaceDbPartitionDir) /
+                            (partition.key + ".atxvsa"))
+                               .string();
+      manifest.entries.push_back(std::move(entry));
+    }
+  }
+  std::sort(manifest.entries.begin(), manifest.entries.end(),
+            [](const CorpusEntry &a, const CorpusEntry &b) { return a.date < b.date; });
+  for (std::size_t i = 1; i < manifest.entries.size(); ++i) {
+    if (manifest.entries[i].date == manifest.entries[i - 1u].date) {
+      return Err(ErrorCode::InvalidArgument,
+                 "vrp-backtest: duplicate session date '" + manifest.entries[i].date +
+                     "' across surface-db roots");
+    }
+  }
+  manifest.dates.reserve(manifest.entries.size());
+  for (const CorpusEntry &entry : manifest.entries) {
+    manifest.dates.push_back(entry.date);
+  }
+  manifest.n_boards = static_cast<std::uint32_t>(manifest.entries.size());
+  manifest.n_ok = manifest.n_boards;
+
+  ATX_TRY(Clock clock, Clock::from_manifest(manifest));
+  if (!spec.date_lo.empty() || !spec.date_hi.empty()) {
+    const std::string lo = spec.date_lo.empty() ? manifest.dates.front() : spec.date_lo;
+    const std::string hi = spec.date_hi.empty() ? manifest.dates.back() : spec.date_hi;
+    ATX_TRY(clock, clock.between(lo, hi));
+  }
+
+  VolEdgeStrategy strategy{std::move(signal), spec.config};
+  RunConfig run_config;
+  run_config.frictions = vol_edge_frictions(spec.config);
+  ATX_TRY(const BacktestResult result, run_backtest(clock, strategy, run_config));
+
+  // The report TSV: NAV, the engine's Greek attribution, the theo-edge ledger
+  // read of it (collected = gamma+theta accrual, repriced = vega remark; the
+  // deriv_pnl.hpp ledger doc pins that equivalence), turnover and costs, plus
+  // the strategy's signal columns.
+  std::string report;
+  report.reserve(256u + result.size() * 512u);
+  report += "date\tts_ns\tnav\tpnl_total\tpnl_delta\tpnl_gamma\tpnl_vega\tpnl_vanna\t"
+            "pnl_volga\tpnl_theta\tpnl_rho\tpnl_charm\tpnl_unexplained\tpnl_settlement\t"
+            "pnl_shares\tfinancing\tcost\tturnover_notional\tturnover_vega\t"
+            "ledger_collected\tledger_repriced\tn_open_lots";
+  for (const auto &[name, series] : result.signals) {
+    report += '\t';
+    report += name;
+  }
+  report += '\n';
+  char cell[64];
+  const auto append_value = [&report, &cell](double value) {
+    std::snprintf(cell, sizeof cell, "\t%.17g", value);
+    report += cell;
+  };
+  for (std::size_t i = 0; i < result.size(); ++i) {
+    report += result.date[i];
+    std::snprintf(cell, sizeof cell, "\t%lld", static_cast<long long>(result.ts_ns[i]));
+    report += cell;
+    append_value(result.nav[i]);
+    append_value(result.pnl_total[i]);
+    append_value(result.pnl_delta[i]);
+    append_value(result.pnl_gamma[i]);
+    append_value(result.pnl_vega[i]);
+    append_value(result.pnl_vanna[i]);
+    append_value(result.pnl_volga[i]);
+    append_value(result.pnl_theta[i]);
+    append_value(result.pnl_rho[i]);
+    append_value(result.pnl_charm[i]);
+    append_value(result.pnl_unexplained[i]);
+    append_value(result.pnl_settlement[i]);
+    append_value(result.pnl_shares[i]);
+    append_value(result.financing[i]);
+    append_value(result.cost[i]);
+    append_value(result.turnover_notional[i]);
+    append_value(result.turnover_vega[i]);
+    append_value(result.pnl_gamma[i] + result.pnl_theta[i]); // ledger_collected
+    append_value(result.pnl_vega[i]);                        // ledger_repriced
+    append_value(result.n_open_lots[i]);
+    for (const auto &[name, series] : result.signals) {
+      (void)name;
+      append_value(series[i]);
+    }
+    report += '\n';
+  }
+  {
+    std::ofstream out(std::filesystem::path(spec.report_path), std::ios::binary | std::ios::trunc);
+    if (!out) {
+      return Err(ErrorCode::Unavailable,
+                 "vrp-backtest: cannot open report '" + spec.report_path + "' for writing");
+    }
+    out.write(report.data(), static_cast<std::streamsize>(report.size()));
+    out.close();
+    if (!out) {
+      return Err(ErrorCode::Unavailable,
+                 "vrp-backtest: writing report '" + spec.report_path + "' failed");
+    }
+  }
+
+  VrpBacktestSummary summary;
+  summary.n_rows = result.size();
+  summary.final_nav = result.nav.empty() ? 0.0 : result.nav.back();
+  for (const double step_cost : result.cost) {
+    summary.total_cost += step_cost;
+  }
+  summary.report_path = spec.report_path;
+  // F3/F4 hardening attribution, read off the strategy after the run (the
+  // same counters ride per-row in the report's cumulative signal columns).
+  summary.n_held_steps = strategy.held_steps();
+  summary.n_skipped_names = strategy.skipped_names();
+  summary.n_roll_closes = strategy.guard_roll_closes();
+  return summary;
 }
 
 } // namespace atx::vol

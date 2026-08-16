@@ -1,133 +1,703 @@
-# Worktree POOL: lease a persistent, warm-build worktree instead of creating a
-# fresh one per task. ASCII-only (Windows PowerShell 5.1 safe).
+# Worktree pool lease manager. Windows PowerShell 5.1 compatible; ASCII only.
 #
-# WHY: `git worktree add` is cheap, but the empty build/ dir it implies is not —
-# a fresh worktree pays a cold configure + rebuild even with ccache softening it.
-# Pool trees keep their build/ dir WARM across tasks: leasing one and switching
-# its branch means ninja rebuilds only the TUs that differ between branches.
-# Cold-build cost is paid once per pool slot, ever; cache growth stays bounded.
-#
-# Usage:
-#   scripts\lease-worktree.ps1 -Branch feat/x [-Base main] [-Agent name] [-Shared]
-#       -> leases a free pool tree (creates pool-N if all busy, cap -MaxPool),
-#          switches it to <Branch> (created from <Base> if new), syncs submodules,
-#          configures build/ on first use. Prints the tree path to use.
-#   scripts\lease-worktree.ps1 -Release pool-2
-#       -> detaches the tree from its branch (so the branch can be merged/checked
-#          out elsewhere) and clears the lease. build/ stays warm for next lease.
-#   scripts\lease-worktree.ps1 -Status
-#       -> lists pool trees, lease holders, branches.
-#
-# The lease marker (.atx-lease in the tree root) is advisory - it serializes
-# agents choosing a tree; it does not lock git. One agent per leased tree.
-# new-worktree.ps1 remains for deliberately ISOLATED one-off trees (-Isolated).
+# Production leases require an explicit durable owner contract:
+#   -OwnerPid <pid> -OwnerProcessStartedUtc <utc>, or -HeartbeatId <unique-id>.
+# The short-lived PowerShell process running this script is never an implicit
+# lease owner. Lease records are fully written to a unique temp file and then
+# atomically published by rename; a truncated final record is fail-closed and
+# can be explicitly recovered only after a corruption grace period.
 
 param(
   [string]$Branch,
   [string]$Base = 'main',
   [string]$Agent = $env:USERNAME,
-  [switch]$Shared,       # first-configure uses the dev-shared preset (atx libs as DLLs)
+  [string]$RunId,
+  [int]$OwnerPid = 0,
+  [string]$OwnerProcessStartedUtc,
+  [string]$HeartbeatId,
+  [int]$HeartbeatTimeoutSeconds = 600,
+  [string]$StopKeeper,
+  [switch]$Shared,
   [string]$Release,
+  [switch]$RecoverStale,
+  [string]$RecoveryBaseSha,
   [switch]$Status,
-  [int]$MaxPool = 4
+  [int]$MaxPool = 20,
+  [int]$CorruptRecordGraceSeconds = 30,
+  [string]$TestPoolRoot,
+  [switch]$TestLeaseOnly,
+  [string]$TestBaseSha,
+  [string]$TestExistingBranchSha,
+  [string[]]$TestRegisteredWorktreePaths,
+  [int]$TestSelectionDelayMs = 0
 )
 $ErrorActionPreference = 'Stop'
 
-$root = (git rev-parse --show-toplevel).Trim()
-$wtRoot = Join-Path (Split-Path $root -Parent) 'atx-wt'
+function Get-UtcStamp([datetime]$Value) {
+  return $Value.ToUniversalTime().ToString('o', [Globalization.CultureInfo]::InvariantCulture)
+}
+
+function Get-CurrentProcessStartUtc {
+  return Get-UtcStamp (Get-Process -Id $PID -ErrorAction Stop).StartTime
+}
+
+function Assert-RecordValue([string]$Name, [string]$Value) {
+  if ([string]::IsNullOrWhiteSpace($Value)) { throw ($Name + ' must not be empty') }
+  if ($Value -match "[`r`n=]") { throw ($Name + ' contains an invalid character') }
+}
+
+function Assert-BranchHeadMatchesBase([string]$ExistingSha, [string]$BaseSha) {
+  if ($ExistingSha -ne $BaseSha) {
+    throw ('existing branch HEAD ' + $ExistingSha + ' does not equal frozen base ' +
+      $BaseSha + '; use a run-unique branch')
+  }
+}
+
+function New-ProcessOwnerFields(
+  [int]$DurablePid,
+  [string]$DurableStartedUtc,
+  [switch]$AllowLauncher
+) {
+  if ($DurablePid -le 0) { throw 'OwnerPid must identify a durable process' }
+  Assert-RecordValue 'OwnerProcessStartedUtc' $DurableStartedUtc
+  if (-not $AllowLauncher -and $DurablePid -eq $PID) {
+    throw 'OwnerPid is the short-lived lease launcher; supply a durable owner or HeartbeatId'
+  }
+  try {
+    $process = Get-Process -Id $DurablePid -ErrorAction Stop
+  } catch {
+    throw ('owner process is not alive: ' + $DurablePid)
+  }
+  $actualStart = Get-UtcStamp $process.StartTime
+  if ($actualStart -ne $DurableStartedUtc) {
+    throw ('owner PID/start mismatch for PID ' + $DurablePid)
+  }
+  return [ordered]@{
+    owner_kind = 'process'
+    owner_host = [Environment]::MachineName
+    owner_pid = [string]$DurablePid
+    owner_process_started_utc = $DurableStartedUtc
+  }
+}
+
+function Assert-HeartbeatId([string]$Id) {
+  if ($Id -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$') {
+    throw 'HeartbeatId must be 1-128 safe filename characters'
+  }
+}
+
+function Get-HeartbeatPath([string]$PoolRoot, [string]$Id) {
+  Assert-HeartbeatId $Id
+  return Join-Path (Join-Path $PoolRoot '.atx-heartbeats') ($Id + '.heartbeat')
+}
+
+function New-HeartbeatOwnerFields(
+  [string]$Id,
+  [int]$TimeoutSeconds,
+  [int]$KeeperPid,
+  [string]$KeeperStartedUtc,
+  [string]$KeeperReadyUtc,
+  [string]$ControlToken
+) {
+  Assert-HeartbeatId $Id
+  if ($TimeoutSeconds -lt 1) { throw 'HeartbeatTimeoutSeconds must be positive' }
+  if ($KeeperPid -le 0 -or $KeeperStartedUtc -notmatch '^\d{4}-' -or
+      $KeeperReadyUtc -notmatch '^\d{4}-' -or $ControlToken -notmatch '^[0-9a-f]{32}$') {
+    throw 'heartbeat keeper identity is invalid'
+  }
+  return [ordered]@{
+    owner_kind = 'heartbeat'
+    heartbeat_id = $Id
+    heartbeat_timeout_seconds = [string]$TimeoutSeconds
+    keeper_pid = [string]$KeeperPid
+    keeper_process_started_utc = $KeeperStartedUtc
+    keeper_ready_utc = $KeeperReadyUtc
+    keeper_control_token = $ControlToken
+  }
+}
+
+function Start-HeartbeatKeeper(
+  [string]$HeartbeatPath,
+  [string]$ControlToken,
+  [int]$TimeoutSeconds
+) {
+  $keeperScript = Join-Path $PSScriptRoot 'lease-heartbeat-keeper.ps1'
+  if (-not (Test-Path -LiteralPath $keeperScript -PathType Leaf)) { throw 'heartbeat keeper script missing' }
+  $intervalMs = [Math]::Max(100, [Math]::Min(30000, [int][Math]::Floor(($TimeoutSeconds * 1000) / 3)))
+  $keeper = Start-Process powershell.exe -ArgumentList @(
+    '-NoProfile', '-File', ('"' + $keeperScript + '"'),
+    '-HeartbeatPath', ('"' + $HeartbeatPath + '"'),
+    '-ControlToken', $ControlToken,
+    '-IntervalMilliseconds', [string]$intervalMs
+  ) -PassThru -WindowStyle Hidden
+  $readyPath = $HeartbeatPath + '.ready'
+  $readyDeadline = (Get-Date).AddSeconds(20)
+  while ((Get-Date) -lt $readyDeadline) {
+    if ($keeper.HasExited) { throw ('heartbeat keeper failed to start; exit=' + $keeper.ExitCode) }
+    if ([System.IO.File]::Exists($readyPath)) {
+      try {
+        if ([System.IO.File]::ReadAllText($readyPath).Trim() -eq $ControlToken) { break }
+      } catch [System.IO.IOException] { }
+    }
+    Start-Sleep -Milliseconds 50
+  }
+  if (-not [System.IO.File]::Exists($readyPath) -or
+      [System.IO.File]::ReadAllText($readyPath).Trim() -ne $ControlToken) {
+    Stop-Process -Id $keeper.Id -Force -ErrorAction SilentlyContinue
+    throw 'heartbeat keeper did not publish its authenticated ready signal'
+  }
+  return [pscustomobject]@{
+    Process = $keeper
+    Pid = $keeper.Id
+    StartedUtc = Get-UtcStamp $keeper.StartTime
+    ReadyUtc = Get-UtcStamp ([System.IO.File]::GetLastWriteTimeUtc($HeartbeatPath))
+    IntervalMilliseconds = $intervalMs
+  }
+}
+
+function Test-ExactProcessAlive([int]$ProcessId, [string]$StartedUtc) {
+  try {
+    $process = Get-Process -Id $ProcessId -ErrorAction Stop
+    return (Get-UtcStamp $process.StartTime) -eq $StartedUtc
+  } catch { return $false }
+}
+
+function New-LeaseFields(
+  [string]$LeaseRunId,
+  [string]$LeaseAgent,
+  [string]$LeaseBranch,
+  [string]$BaseRef,
+  [string]$BaseSha,
+  $OwnerFields
+) {
+  Assert-RecordValue 'RunId' $LeaseRunId
+  Assert-RecordValue 'Agent' $LeaseAgent
+  Assert-RecordValue 'Branch' $LeaseBranch
+  Assert-RecordValue 'Base' $BaseRef
+  Assert-RecordValue 'BaseSha' $BaseSha
+  $fields = [ordered]@{
+    version = '3'
+    lease_token = [guid]::NewGuid().ToString('N')
+    run_id = $LeaseRunId
+    agent = $LeaseAgent
+    branch = $LeaseBranch
+    base_ref = $BaseRef
+    base_sha = $BaseSha
+    acquired_utc = Get-UtcStamp (Get-Date)
+  }
+  foreach ($entry in $OwnerFields.GetEnumerator()) { $fields[$entry.Key] = $entry.Value }
+  return $fields
+}
+
+function ConvertTo-RecordLines($Fields) {
+  $lines = New-Object System.Collections.Generic.List[string]
+  foreach ($entry in $Fields.GetEnumerator()) {
+    Assert-RecordValue ([string]$entry.Key) ([string]$entry.Value)
+    $lines.Add(([string]$entry.Key + '=' + [string]$entry.Value))
+  }
+  return $lines.ToArray()
+}
+
+function Write-CompleteRecord([string]$Path, $Fields) {
+  $stream = $null
+  $writer = $null
+  try {
+    $stream = New-Object System.IO.FileStream(
+      $Path,
+      [System.IO.FileMode]::CreateNew,
+      [System.IO.FileAccess]::Write,
+      [System.IO.FileShare]::None
+    )
+    $writer = New-Object System.IO.StreamWriter($stream, (New-Object System.Text.ASCIIEncoding))
+    foreach ($line in (ConvertTo-RecordLines $Fields)) { $writer.WriteLine($line) }
+    $writer.Flush()
+    $stream.Flush()
+  } finally {
+    if ($writer) { $writer.Dispose() }
+    elseif ($stream) { $stream.Dispose() }
+  }
+}
+
+function Publish-AtomicRecord([string]$Path, $Fields) {
+  $temp = $Path + '.' + $Fields.lease_token + '.tmp'
+  try {
+    Write-CompleteRecord $temp $Fields
+    # Same-volume rename publishes a complete record atomically and refuses to
+    # overwrite an existing lease won by another process.
+    [System.IO.File]::Move($temp, $Path)
+    return $true
+  } catch [System.IO.IOException] {
+    return $false
+  } finally {
+    if ([System.IO.File]::Exists($temp)) {
+      try { [System.IO.File]::Delete($temp) } catch { }
+    }
+  }
+}
+
+function Try-NewClaimRecord([string]$Path, $Fields) {
+  try {
+    Write-CompleteRecord $Path $Fields
+    return $true
+  } catch [System.IO.IOException] {
+    return $false
+  }
+}
+
+function Read-LeaseRecord([string]$Path) {
+  if (-not [System.IO.File]::Exists($Path)) { return $null }
+  $record = @{}
+  foreach ($line in [System.IO.File]::ReadAllLines($Path)) {
+    $split = $line.IndexOf('=')
+    if ($split -gt 0) {
+      $record[$line.Substring(0, $split)] = $line.Substring($split + 1)
+    }
+  }
+  return $record
+}
+
+function Test-CompleteLeaseRecord($Record) {
+  if (-not $Record -or $Record.version -ne '3') { return $false }
+  foreach ($field in @('lease_token', 'run_id', 'agent', 'branch', 'base_sha', 'acquired_utc', 'owner_kind')) {
+    if ([string]::IsNullOrWhiteSpace([string]$Record[$field])) { return $false }
+  }
+  if ($Record.base_sha -notmatch '^[0-9a-fA-F]{40}$') { return $false }
+  if ($Record.owner_kind -eq 'process') {
+    return -not [string]::IsNullOrWhiteSpace([string]$Record.owner_host) -and
+      -not [string]::IsNullOrWhiteSpace([string]$Record.owner_pid) -and
+      -not [string]::IsNullOrWhiteSpace([string]$Record.owner_process_started_utc)
+  }
+  if ($Record.owner_kind -eq 'heartbeat') {
+    return -not [string]::IsNullOrWhiteSpace([string]$Record.heartbeat_id) -and
+      -not [string]::IsNullOrWhiteSpace([string]$Record.heartbeat_timeout_seconds) -and
+      -not [string]::IsNullOrWhiteSpace([string]$Record.keeper_pid) -and
+      -not [string]::IsNullOrWhiteSpace([string]$Record.keeper_process_started_utc) -and
+      ([string]$Record.keeper_ready_utc -match '^\d{4}-') -and
+      ([string]$Record.keeper_control_token -match '^[0-9a-f]{32}$')
+  }
+  return $false
+}
+
+function Get-OwnerState($Record, [string]$PoolRoot) {
+  if (-not (Test-CompleteLeaseRecord $Record)) { return 'unknown' }
+  if ($Record.owner_kind -eq 'heartbeat') {
+    $timeout = 0
+    if (-not [int]::TryParse([string]$Record.heartbeat_timeout_seconds, [ref]$timeout)) { return 'unknown' }
+    $keeperPid = 0
+    if (-not [int]::TryParse([string]$Record.keeper_pid, [ref]$keeperPid)) { return 'unknown' }
+    if (-not (Test-ExactProcessAlive $keeperPid ([string]$Record.keeper_process_started_utc))) { return 'dead' }
+    try { $path = Get-HeartbeatPath $PoolRoot ([string]$Record.heartbeat_id) } catch { return 'unknown' }
+    if (-not [System.IO.File]::Exists($path)) { return 'dead' }
+    $age = [DateTime]::UtcNow - [System.IO.File]::GetLastWriteTimeUtc($path)
+    if ($age.TotalSeconds -le $timeout) { return 'alive' }
+    return 'dead'
+  }
+  if ($Record.owner_host -ne [Environment]::MachineName) { return 'foreign' }
+  $durablePid = 0
+  if (-not [int]::TryParse([string]$Record.owner_pid, [ref]$durablePid)) { return 'unknown' }
+  try {
+    $process = Get-Process -Id $durablePid -ErrorAction Stop
+    if ((Get-UtcStamp $process.StartTime) -eq [string]$Record.owner_process_started_utc) {
+      return 'alive'
+    }
+    return 'dead'
+  } catch {
+    return 'dead'
+  }
+}
+
+function Test-RecordOldEnough([string]$Path, [int]$GraceSeconds) {
+  if (-not [System.IO.File]::Exists($Path)) { return $false }
+  $age = [DateTime]::UtcNow - [System.IO.File]::GetLastWriteTimeUtc($Path)
+  return $age.TotalSeconds -ge $GraceSeconds
+}
+
+function Remove-RecordByRename([string]$Path, [string]$ExpectedToken, [string]$Reason) {
+  $record = Read-LeaseRecord $Path
+  if (-not $record -or $record.lease_token -ne $ExpectedToken) {
+    throw ('lease identity changed before ' + $Reason + ': ' + $Path)
+  }
+  $tombstone = $Path + '.' + $Reason + '.' + $ExpectedToken
+  [System.IO.File]::Move($Path, $tombstone)
+  [System.IO.File]::Delete($tombstone)
+}
+
+function Remove-CorruptRecordByRename([string]$Path, [string]$Reason) {
+  $tombstone = $Path + '.' + $Reason + '.' + [guid]::NewGuid().ToString('N')
+  [System.IO.File]::Move($Path, $tombstone)
+  [System.IO.File]::Delete($tombstone)
+}
+
+function Get-PoolTrees([string]$PoolRoot) {
+  return @(Get-ChildItem $PoolRoot -Directory -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -match '^pool-([0-9]+)$' } |
+    Sort-Object { [int]($_.Name.Substring(5)) })
+}
+
+function Get-LeasePath([string]$Worktree) { return Join-Path $Worktree '.atx-lease' }
+
+function Enter-SelectionMutex([string]$PoolRoot, [string]$MutexRunId) {
+  $path = Join-Path $PoolRoot '.atx-pool-acquire.lock'
+  $deadline = (Get-Date).AddSeconds(20)
+  while ((Get-Date) -lt $deadline) {
+    $internalOwner = New-ProcessOwnerFields $PID (Get-CurrentProcessStartUtc) -AllowLauncher
+    $fields = New-LeaseFields $MutexRunId 'pool-selector' 'POOL_SELECTION' 'none' ('0' * 40) $internalOwner
+    if (Try-NewClaimRecord $path $fields) {
+      return [pscustomobject]@{ Path = $path; Token = $fields.lease_token }
+    }
+    $existing = Read-LeaseRecord $path
+    if (Test-CompleteLeaseRecord $existing) {
+      if ((Get-OwnerState $existing $PoolRoot) -eq 'dead') {
+        try { Remove-RecordByRename $path $existing.lease_token 'stale' } catch { }
+      } else {
+        Start-Sleep -Milliseconds 50
+      }
+    } elseif (Test-RecordOldEnough $path 5) {
+      try { Remove-CorruptRecordByRename $path 'corrupt-stale' } catch { }
+    } else {
+      Start-Sleep -Milliseconds 50
+    }
+  }
+  throw ('timed out waiting for atomic pool-selection lock: ' + $path)
+}
+
+function Exit-SelectionMutex($Mutex) {
+  if ($Mutex) { Remove-RecordByRename $Mutex.Path $Mutex.Token 'released' }
+}
+
+function Find-FreePool([string]$PoolRoot) {
+  foreach ($tree in (Get-PoolTrees $PoolRoot)) {
+    if (-not [System.IO.File]::Exists((Get-LeasePath $tree.FullName))) { return $tree }
+  }
+  return $null
+}
+
+function Get-RegisteredWorktreePaths([string]$RepositoryRoot) {
+  $porcelain = @(git -C $RepositoryRoot worktree list --porcelain)
+  if ($LASTEXITCODE -ne 0) { throw 'git worktree list --porcelain failed' }
+  return @($porcelain | Where-Object { $_ -like 'worktree *' } |
+    ForEach-Object { $_.Substring(9) })
+}
+
+function Find-MissingPoolNumber(
+  [string]$PoolRoot,
+  [int]$PoolLimit,
+  [string[]]$RegisteredWorktreePaths = @()
+) {
+  $used = @{}
+  foreach ($tree in (Get-PoolTrees $PoolRoot)) { $used[[int]$tree.Name.Substring(5)] = $true }
+  $normalizedRoot = [System.IO.Path]::GetFullPath($PoolRoot).TrimEnd([char[]]@('\', '/'))
+  foreach ($registeredPath in @($RegisteredWorktreePaths)) {
+    if ([string]::IsNullOrWhiteSpace($registeredPath)) { continue }
+    try {
+      $normalizedPath = [System.IO.Path]::GetFullPath($registeredPath).TrimEnd([char[]]@('\', '/'))
+    } catch {
+      throw ('invalid path from git worktree list --porcelain: ' + $registeredPath)
+    }
+    $parent = [System.IO.Path]::GetDirectoryName($normalizedPath)
+    $name = [System.IO.Path]::GetFileName($normalizedPath)
+    if ($parent -and $parent.Equals($normalizedRoot, [System.StringComparison]::OrdinalIgnoreCase) -and
+        $name -match '^pool-([0-9]+)$') {
+      $used[[int]$Matches[1]] = $true
+    }
+  }
+  for ($number = 1; $number -le $PoolLimit; $number++) {
+    if (-not $used.ContainsKey($number)) { return $number }
+  }
+  return 0
+}
+
+function Stop-HeartbeatKeeper($Record, [string]$PoolRoot, [switch]$RemoveFiles) {
+  if ($Record.owner_kind -ne 'heartbeat') { return 'not-heartbeat' }
+  $path = Get-HeartbeatPath $PoolRoot ([string]$Record.heartbeat_id)
+  $stopPath = $path + '.stop'
+  $readyPath = $path + '.ready'
+  $keeperPid = 0
+  if (-not [int]::TryParse([string]$Record.keeper_pid, [ref]$keeperPid)) { throw 'invalid keeper PID in lease' }
+  if (Test-ExactProcessAlive $keeperPid ([string]$Record.keeper_process_started_utc)) {
+    [System.IO.File]::WriteAllText($stopPath, [string]$Record.keeper_control_token, (New-Object System.Text.ASCIIEncoding))
+    try {
+      $keeper = Get-Process -Id $keeperPid -ErrorAction Stop
+      $keeper.WaitForExit(3000)
+    } catch { }
+    if (Test-ExactProcessAlive $keeperPid ([string]$Record.keeper_process_started_utc)) {
+      Stop-Process -Id $keeperPid -Force -ErrorAction Stop
+    }
+  }
+  if ($RemoveFiles) {
+    if ([System.IO.File]::Exists($stopPath)) { [System.IO.File]::Delete($stopPath) }
+    if ([System.IO.File]::Exists($readyPath)) { [System.IO.File]::Delete($readyPath) }
+    if ([System.IO.File]::Exists($path)) { [System.IO.File]::Delete($path) }
+  }
+  return 'stopped'
+}
+
+# Pester imports safety helpers without running command mode.
+if ($MyInvocation.InvocationName -eq '.') { return }
+
+if ($MaxPool -lt 1) { throw 'MaxPool must be at least 1' }
+if ($CorruptRecordGraceSeconds -lt 1) { throw 'CorruptRecordGraceSeconds must be at least 1' }
+if ($TestLeaseOnly -and -not $TestPoolRoot) { throw 'TestLeaseOnly requires TestPoolRoot' }
+if ($TestPoolRoot -and -not $TestLeaseOnly) { throw 'TestPoolRoot is valid only with TestLeaseOnly' }
+if ($TestSelectionDelayMs -gt 0 -and -not $TestLeaseOnly) { throw 'TestSelectionDelayMs is test-only' }
+if (($TestBaseSha -or $TestExistingBranchSha) -and -not $TestLeaseOnly) { throw 'test SHA seams require TestLeaseOnly' }
+if ($TestRegisteredWorktreePaths -and -not $TestLeaseOnly) {
+  throw 'TestRegisteredWorktreePaths is valid only with TestLeaseOnly'
+}
+if ($RecoverStale -and -not $Release) { throw 'RecoverStale is valid only with Release' }
+
+$repoRoot = $null
+if ($TestPoolRoot) {
+  $wtRoot = [System.IO.Path]::GetFullPath($TestPoolRoot)
+} else {
+  $repoRoot = (git rev-parse --show-toplevel).Trim()
+  if ($LASTEXITCODE -ne 0 -or -not $repoRoot) { throw 'not inside a git repository' }
+  $gitCommonDir = (git rev-parse --path-format=absolute --git-common-dir).Trim()
+  if ($LASTEXITCODE -ne 0 -or -not $gitCommonDir) { throw 'cannot resolve git common directory' }
+  $primaryRoot = Split-Path $gitCommonDir -Parent
+  $wtRoot = Join-Path (Split-Path $primaryRoot -Parent) 'atx-wt'
+}
 New-Item -ItemType Directory -Force $wtRoot | Out-Null
 
-function Get-PoolTrees { Get-ChildItem $wtRoot -Directory -Filter 'pool-*' -ErrorAction SilentlyContinue | Sort-Object Name }
-function Get-LeasePath([string]$wt) { Join-Path $wt '.atx-lease' }
-
 if ($Status) {
-  $trees = @(Get-PoolTrees)
-  if ($trees.Count -eq 0) { Write-Host ('pool empty (' + $wtRoot + '); lease one with -Branch <name>'); return }
-  foreach ($t in $trees) {
-    $lease = Get-LeasePath $t.FullName
-    $br = (git -C $t.FullName rev-parse --abbrev-ref HEAD 2>$null)
-    $state = if (Test-Path $lease) { 'LEASED ' + ((Get-Content $lease) -join ' | ') } else { 'free' }
-    $warm = if (Test-Path (Join-Path $t.FullName 'build\build.ninja')) { 'warm' } else { 'cold' }
-    Write-Host ($t.Name + '  [' + $warm + ']  branch=' + $br + '  ' + $state)
+  $trees = @(Get-PoolTrees $wtRoot)
+  if ($trees.Count -eq 0) {
+    Write-Host ('pool empty (' + $wtRoot + '); lease with a durable owner contract')
+    return
   }
+  foreach ($tree in $trees) {
+    $leasePath = Get-LeasePath $tree.FullName
+    $record = Read-LeaseRecord $leasePath
+    if (Test-CompleteLeaseRecord $record) {
+      $state = 'LEASED run_id=' + $record.run_id + ' | agent=' + $record.agent +
+        ' | owner_kind=' + $record.owner_kind + ' | owner=' + (Get-OwnerState $record $wtRoot) +
+        $(if ($record.owner_kind -eq 'heartbeat') { ' | keeper_pid=' + $record.keeper_pid } else { '' }) +
+        ' | branch=' + $record.branch + ' | acquired=' + $record.acquired_utc
+    } elseif ($record) {
+      $state = 'LEASED CORRUPT/LEGACY (explicit investigation required)'
+    } else {
+      $state = 'free'
+    }
+    if ($TestLeaseOnly) {
+      $branchName = if ($record) { $record.branch } else { 'HEAD' }
+    } else {
+      $branchName = (git -C $tree.FullName rev-parse --abbrev-ref HEAD 2>$null)
+    }
+    $warm = if (Test-Path (Join-Path $tree.FullName 'build\build.ninja')) { 'warm' } else { 'cold' }
+    Write-Host ($tree.Name + '  [' + $warm + ']  branch=' + $branchName + '  ' + $state)
+  }
+  return
+}
+
+if ($StopKeeper) {
+  Assert-RecordValue 'RunId' $RunId
+  if ($StopKeeper -notmatch '^pool-[0-9]+$') { throw 'StopKeeper must name one pool-N slot' }
+  $leasePath = Get-LeasePath (Join-Path $wtRoot $StopKeeper)
+  $record = Read-LeaseRecord $leasePath
+  if (-not (Test-CompleteLeaseRecord $record)) { throw 'cannot stop keeper for an incomplete lease record' }
+  if ($record.run_id -ne $RunId) { throw 'run_id mismatch; refusing keeper stop' }
+  if ($record.owner_kind -ne 'heartbeat') { throw 'lease does not use heartbeat ownership' }
+  Stop-HeartbeatKeeper $record $wtRoot | Out-Null
+  Write-Output ('KEEPER_STOPPED pool=' + $StopKeeper + ' run_id=' + $RunId +
+    ' keeper_pid=' + $record.keeper_pid)
   return
 }
 
 if ($Release) {
-  $wt = Join-Path $wtRoot $Release
-  if (-not (Test-Path $wt)) { throw ('no such pool tree: ' + $wt) }
-  $lease = Get-LeasePath $wt
-  $dirty = @(git -C $wt status --porcelain) | Where-Object { $_ -notmatch '\.atx-lease$' }
-  if ($dirty) {
-    throw ('refusing to release ' + $Release + ': tree is dirty (commit or stash first):' + "`n" + ($dirty -join "`n"))
+  Assert-RecordValue 'RunId' $RunId
+  if ($Release -notmatch '^pool-[0-9]+$') { throw 'Release must name one pool-N slot' }
+  $worktree = Join-Path $wtRoot $Release
+  if (-not (Test-Path -LiteralPath $worktree -PathType Container)) { throw ('no such pool tree: ' + $worktree) }
+  $leasePath = Get-LeasePath $worktree
+  $record = Read-LeaseRecord $leasePath
+
+  if (-not (Test-CompleteLeaseRecord $record)) {
+    if (-not $RecoverStale) { throw ('incomplete lease record; explicit stale recovery required: ' + $leasePath) }
+    if (-not (Test-RecordOldEnough $leasePath $CorruptRecordGraceSeconds)) {
+      throw 'refusing corrupt-record recovery inside the grace period'
+    }
+    if (-not $TestLeaseOnly) {
+      if ($RecoveryBaseSha -notmatch '^[0-9a-fA-F]{40}$') {
+        throw 'corrupt production recovery requires exact -RecoveryBaseSha'
+      }
+      $dirty = @(git -C $worktree status --porcelain) | Where-Object { $_ -notmatch '\.atx-lease($|\.)' }
+      if ($dirty) { throw ('refusing corrupt release of dirty tree:' + "`n" + ($dirty -join "`n")) }
+      git -C $worktree switch --detach $RecoveryBaseSha | Out-Null
+      if ($LASTEXITCODE -ne 0) { throw 'git detach failed during corrupt-record recovery' }
+    }
+    Remove-CorruptRecordByRename $leasePath 'corrupt-recovered'
+    Write-Output ('RECOVERED_CORRUPT pool=' + $Release + ' by_run_id=' + $RunId)
+    return
   }
-  # Detach so the branch is no longer "checked out in another worktree" - it can
-  # then be merged, rebased, or leased again elsewhere. build/ stays warm.
-  git -C $wt switch --detach $Base | Out-Null
-  if ($LASTEXITCODE -ne 0) { throw ('git switch --detach failed in ' + $wt) }
-  Remove-Item $lease -ErrorAction SilentlyContinue
-  Write-Host ('released ' + $Release + ' (detached at ' + $Base + ', build/ kept warm)') -ForegroundColor Green
+
+  if ($record.run_id -ne $RunId) {
+    if (-not $RecoverStale) { throw ('run_id mismatch: lease belongs to ' + $record.run_id + '; refusing release') }
+    $ownerState = Get-OwnerState $record $wtRoot
+    if ($ownerState -ne 'dead') {
+      throw ('refusing stale recovery: owner state is ' + $ownerState + ' (durable owner guard)')
+    }
+  }
+  if (-not $TestLeaseOnly) {
+    $dirty = @(git -C $worktree status --porcelain) | Where-Object { $_ -notmatch '\.atx-lease($|\.)' }
+    if ($dirty) { throw ('refusing to release ' + $Release + ': tree is dirty:' + "`n" + ($dirty -join "`n")) }
+    git -C $worktree switch --detach $record.base_sha | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw ('git switch --detach failed in ' + $worktree) }
+  }
+  if ($record.owner_kind -eq 'heartbeat') { Stop-HeartbeatKeeper $record $wtRoot -RemoveFiles | Out-Null }
+  Remove-RecordByRename $leasePath $record.lease_token 'released'
+  Write-Output ('RELEASED pool=' + $Release + ' run_id=' + $record.run_id)
   return
 }
 
-if (-not $Branch) { throw 'usage: lease-worktree.ps1 -Branch <branch> [-Base main] | -Release <pool-N> | -Status' }
-
-# ---- pick a free tree (or grow the pool) ----
-$free = @(Get-PoolTrees | Where-Object { -not (Test-Path (Get-LeasePath $_.FullName)) }) | Select-Object -First 1
-if ($free) {
-  $wt = $free.FullName
-  $poolName = $free.Name
-} else {
-  $n = @(Get-PoolTrees).Count + 1
-  if ($n -gt $MaxPool) {
-    throw ('pool exhausted (' + $MaxPool + ' trees, all leased). Release one (-Release pool-N) or raise -MaxPool.')
+Assert-RecordValue 'Branch' $Branch
+Assert-RecordValue 'RunId' $RunId
+if (($OwnerPid -gt 0 -or $OwnerProcessStartedUtc) -and $HeartbeatId) {
+  throw 'choose exactly one durable owner contract: process or heartbeat'
+}
+if ($HeartbeatId) {
+  Assert-HeartbeatId $HeartbeatId
+  if (-not $TestLeaseOnly -and $HeartbeatTimeoutSeconds -lt 30) {
+    throw 'production HeartbeatTimeoutSeconds must be at least 30'
   }
-  $poolName = 'pool-' + $n
-  $wt = Join-Path $wtRoot $poolName
-  Write-Host ('growing pool: git worktree add --detach ' + $wt + ' ' + $Base) -ForegroundColor Cyan
-  git worktree add --detach $wt $Base
-  if ($LASTEXITCODE -ne 0) { throw 'git worktree add failed' }
-}
-
-# ---- point the tree at the branch ----
-# Existing branch: plain switch (never -C: that would silently reset the branch
-# to Base). New branch: create from Base. Either way ninja later rebuilds only
-# the TUs whose inputs differ from whatever this tree last built.
-git show-ref --verify --quiet ('refs/heads/' + $Branch)
-if ($LASTEXITCODE -eq 0) {
-  git -C $wt switch $Branch
+  if ($HeartbeatTimeoutSeconds -lt 1) { throw 'HeartbeatTimeoutSeconds must be positive' }
+  $ownerFields = $null
+} elseif ($OwnerPid -gt 0 -and $OwnerProcessStartedUtc) {
+  $ownerFields = New-ProcessOwnerFields $OwnerPid $OwnerProcessStartedUtc
 } else {
-  git -C $wt switch -c $Branch $Base
+  throw 'production lease requires explicit OwnerPid+OwnerProcessStartedUtc or HeartbeatId'
 }
-if ($LASTEXITCODE -ne 0) {
-  throw ('git switch failed (branch checked out in another worktree, or conflicts). Tree NOT leased: ' + $wt)
+
+if ($TestLeaseOnly) {
+  $baseSha = if ($TestBaseSha) { $TestBaseSha } else { '0' * 40 }
+  if ($baseSha -notmatch '^[0-9a-fA-F]{40}$') { throw 'TestBaseSha must be a full SHA' }
+  if ($TestExistingBranchSha) {
+    if ($TestExistingBranchSha -notmatch '^[0-9a-fA-F]{40}$') { throw 'TestExistingBranchSha must be a full SHA' }
+    Assert-BranchHeadMatchesBase $TestExistingBranchSha $baseSha
+  }
+} else {
+  $baseSha = (git -C $repoRoot rev-parse ($Base + '^{commit}')).Trim()
+  if ($LASTEXITCODE -ne 0 -or $baseSha -notmatch '^[0-9a-fA-F]{40}$') {
+    throw ('cannot resolve base ref to a commit: ' + $Base)
+  }
+  git -C $repoRoot show-ref --verify --quiet ('refs/heads/' + $Branch)
+  if ($LASTEXITCODE -eq 0) {
+    $existingSha = (git -C $repoRoot rev-parse ('refs/heads/' + $Branch + '^{commit}')).Trim()
+    Assert-BranchHeadMatchesBase $existingSha $baseSha
+  }
 }
-# worktree add/switch does not populate submodules (databento-cpp arrives empty).
-git -C $wt submodule update --init --recursive
-if ($LASTEXITCODE -ne 0) { throw 'git submodule update failed' }
 
-Set-Content -Path (Get-LeasePath $wt) -Encoding Ascii -Value @(
-  ('agent=' + $Agent),
-  ('branch=' + $Branch),
-  ('since=' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'))
-)
+$heartbeatPath = $null
+$heartbeatCreated = $false
+$keeper = $null
+if ($HeartbeatId) {
+  $heartbeatPath = Get-HeartbeatPath $wtRoot $HeartbeatId
+  New-Item -ItemType Directory -Force (Split-Path $heartbeatPath -Parent) | Out-Null
+  $controlToken = [guid]::NewGuid().ToString('N')
+  $heartbeatFields = [ordered]@{
+    version = '1'
+    lease_token = [guid]::NewGuid().ToString('N')
+    run_id = $RunId
+    heartbeat_id = $HeartbeatId
+    control_token = $controlToken
+    created_utc = Get-UtcStamp (Get-Date)
+  }
+  if (-not (Publish-AtomicRecord $heartbeatPath $heartbeatFields)) {
+    throw ('HeartbeatId already exists; use a run-unique id: ' + $HeartbeatId)
+  }
+  $heartbeatCreated = $true
+  try {
+    $keeper = Start-HeartbeatKeeper $heartbeatPath $controlToken $HeartbeatTimeoutSeconds
+    $ownerFields = New-HeartbeatOwnerFields $HeartbeatId $HeartbeatTimeoutSeconds `
+      $keeper.Pid $keeper.StartedUtc $keeper.ReadyUtc $controlToken
+  } catch {
+    if ([System.IO.File]::Exists($heartbeatPath + '.ready')) { [System.IO.File]::Delete($heartbeatPath + '.ready') }
+    if ([System.IO.File]::Exists($heartbeatPath)) { [System.IO.File]::Delete($heartbeatPath) }
+    throw
+  }
+}
 
-# ---- first-use configure (build/ absent) ----
+$fields = New-LeaseFields $RunId $Agent $Branch $Base $baseSha $ownerFields
+$mutex = $null
+$claimed = $false
+try {
+  $mutex = Enter-SelectionMutex $wtRoot $RunId
+  if ($TestSelectionDelayMs -gt 0) { Start-Sleep -Milliseconds $TestSelectionDelayMs }
+  $free = Find-FreePool $wtRoot
+  if ($free) {
+    $worktree = $free.FullName
+    $poolName = $free.Name
+  } else {
+    $registeredPaths = if ($TestLeaseOnly) {
+      @($TestRegisteredWorktreePaths)
+    } else {
+      @(Get-RegisteredWorktreePaths $repoRoot)
+    }
+    $number = Find-MissingPoolNumber $wtRoot $MaxPool $registeredPaths
+    if ($number -eq 0) { throw ('pool exhausted (' + $MaxPool + ' slots, all leased)') }
+    $poolName = 'pool-' + $number
+    $worktree = Join-Path $wtRoot $poolName
+    if ($TestLeaseOnly) {
+      New-Item -ItemType Directory -Path $worktree -ErrorAction Stop | Out-Null
+    } else {
+      Write-Host ('growing pool: git worktree add --detach ' + $worktree + ' ' + $baseSha) -ForegroundColor Cyan
+      git worktree add --detach $worktree $baseSha
+      if ($LASTEXITCODE -ne 0) { throw 'git worktree add failed' }
+    }
+  }
+  $leasePath = Get-LeasePath $worktree
+  if (-not (Publish-AtomicRecord $leasePath $fields)) {
+    throw ('atomic lease publication lost for ' + $poolName)
+  }
+  $claimed = $true
+} finally {
+  if ($mutex) { Exit-SelectionMutex $mutex }
+  if (-not $claimed -and $heartbeatCreated) {
+    if ($keeper -and (Test-ExactProcessAlive $keeper.Pid $keeper.StartedUtc)) {
+      Stop-Process -Id $keeper.Pid -Force -ErrorAction SilentlyContinue
+    }
+    if ([System.IO.File]::Exists($heartbeatPath + '.stop')) { [System.IO.File]::Delete($heartbeatPath + '.stop') }
+    if ([System.IO.File]::Exists($heartbeatPath + '.ready')) { [System.IO.File]::Delete($heartbeatPath + '.ready') }
+    if ([System.IO.File]::Exists($heartbeatPath)) { [System.IO.File]::Delete($heartbeatPath) }
+  }
+}
+
+if (-not $claimed) { throw 'lease acquisition failed before a slot was claimed' }
+if ($TestLeaseOnly) {
+  Write-Output ('LEASED pool=' + $poolName + ' path=' + $worktree + ' run_id=' + $RunId +
+    ' token=' + $fields.lease_token + ' owner_kind=' + $fields.owner_kind +
+    $(if ($fields.owner_kind -eq 'heartbeat') { ' keeper_pid=' + $fields.keeper_pid +
+      ' keeper_started_utc=' + $fields.keeper_process_started_utc +
+      ' keeper_ready_utc=' + $fields.keeper_ready_utc } else { '' }))
+  return
+}
+
+# Existing branches were proven equal to baseSha before acquisition. Verify again
+# after switch so a mutable branch can never bypass the frozen-base contract.
+git -C $repoRoot show-ref --verify --quiet ('refs/heads/' + $Branch)
+if ($LASTEXITCODE -eq 0) { git -C $worktree switch $Branch }
+else { git -C $worktree switch -c $Branch $baseSha }
+if ($LASTEXITCODE -ne 0) { throw ('git switch failed; lease remains held: ' + $worktree) }
+$checkedOutSha = (git -C $worktree rev-parse HEAD).Trim()
+Assert-BranchHeadMatchesBase $checkedOutSha $baseSha
+
+git -C $worktree submodule update --init --recursive
+if ($LASTEXITCODE -ne 0) { throw ('submodule update failed; lease remains held: ' + $worktree) }
+
 $preset = if ($Shared) { 'dev-shared' } else { 'dev' }
-if (-not (Test-Path (Join-Path $wt 'build\build.ninja'))) {
+if (-not (Test-Path (Join-Path $worktree 'build\build.ninja'))) {
   Write-Host ('cold tree: configuring preset ' + $preset + ' (one-time for this slot)') -ForegroundColor Cyan
-  Push-Location $wt
-  try { & (Join-Path $wt 'scripts\atx-build.ps1') configure -Preset $preset }
+  Push-Location $worktree
+  try { & (Join-Path $worktree 'scripts\atx-build.ps1') configure -Preset $preset }
   finally { Pop-Location }
-  if ($LASTEXITCODE -ne 0) { throw 'configure failed (lease kept; fix and re-run configure inside the tree)' }
+  if ($LASTEXITCODE -ne 0) { throw ('configure failed; lease remains held: ' + $worktree) }
 } elseif ($Shared) {
-  Write-Host 'NOTE: tree already configured; -Shared ignored (reconfigure inside the tree to switch preset).' -ForegroundColor Yellow
+  Write-Host 'NOTE: tree already configured; -Shared ignored.' -ForegroundColor Yellow
 }
+if ($HeartbeatId) { [System.IO.File]::SetLastWriteTimeUtc($heartbeatPath, [DateTime]::UtcNow) }
 
-Write-Host ''
-Write-Host ('leased ' + $poolName + ' -> ' + $wt + '  (branch ' + $Branch + ')') -ForegroundColor Green
-Write-Host ('  cd ' + $wt)
-Write-Host ('  build : powershell scripts\atx-build.ps1 build <target>        (target-scoped; never bare `ninja all`)')
-Write-Host ('  check : powershell scripts\atx-build.ps1 check <file.cpp>      (single-TU compile, no link)')
-Write-Host ('  test  : powershell scripts\atx-build.ps1 -Ctest -R <Suite>')
-Write-Host ('  done  : powershell scripts\lease-worktree.ps1 -Release ' + $poolName)
+Write-Output ('LEASED pool=' + $poolName + ' path=' + $worktree + ' branch=' + $Branch +
+  ' base_sha=' + $baseSha + ' run_id=' + $RunId + ' owner_kind=' + $fields.owner_kind +
+  $(if ($fields.owner_kind -eq 'heartbeat') { ' keeper_pid=' + $fields.keeper_pid +
+    ' keeper_started_utc=' + $fields.keeper_process_started_utc +
+    ' keeper_ready_utc=' + $fields.keeper_ready_utc } else { '' }))
+Write-Output ('RELEASE with: powershell scripts\lease-worktree.ps1 -Release ' + $poolName + ' -RunId ' + $RunId)

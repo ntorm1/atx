@@ -955,7 +955,7 @@ current tree.
 | Tier | Where | Count | Promise |
 |---|---|---|---|
 | **Tier-A** | exactly the headers `atx/vol/api/vol.hpp` includes | 58 | **Frozen for 1.x.** Closed under inclusion |
-| **Tier-B** | other public headers under `include/atx/vol/api/<module>/` | 19 | Public and supported to include; **not** frozen |
+| **Tier-B** | other public headers under `include/atx/vol/api/<module>/` | 20 | Public and supported to include; **not** frozen |
 | `tools/` | `tools/include/atx/vol/tools/` — target `atx::vol::tools` | 6 | CLI support. Not part of the shipped library surface |
 | `research/` | `research/include/atx/vol/research/` — target `atx::vol::research` | 12 | Run orchestration. Not part of the shipped library surface |
 
@@ -1113,6 +1113,12 @@ The sprint's other two relocations, `butterfly_density.hpp` and
 `dense_slice_price.hpp`, went to `src/fitting/` and are in no tier at all: the
 old `detail/` row was retired by the restructure, which is why this
 reconciliation moves two digits where the pre-restructure ones moved three.
+
+**2026-08-15 vrp-ml sprint (lane vrp-book):** Tier-B 19 → **20**, api/ headers
+78 → **79**: `vol_edge.hpp` landed under `api/backtest/` — the frozen
+`vrp_signal_v1` signal contract plus the ranked long/short vega-normalized
+straddle book (`VolEdgeStrategy`), header-only and deliberately outside the
+umbrella — so Tier-A (58) held and no other row moved.
 
 *Closed under inclusion* is the load-bearing rule: a header named in a frozen
 signature is frozen whether or not callers reach for it directly, so if a Tier-A

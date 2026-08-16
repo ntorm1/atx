@@ -221,7 +221,37 @@ add_executable(atx-vol-tests
     # vol-derivs production sprint Task F-8: the shared smile-shift overlay
     surface_overlay_test.cpp
     deriv_pnl_test.cpp               # Task F-8: two-date swap P&L attribution
+    # Oracle RSI bootstrap charter stage 2 — appended target: the
+    # atx-vol-oracle-bench gate (band edges, tolerances, scorecard cell-key
+    # schema + accounting, cohort JSON, partition-pruned reader, synthetic-
+    # store end-to-end). The bench DRIVER TU (tools/oracle_bench_main.cpp)
+    # joins via textual #include with main() suppressed (the
+    # bev_label_factory_gate_test.cpp pattern above); the tool's three
+    # LIBRARY TUs compile in via the target_sources below. OracleBench*
+    # matches nothing in ATX_VOL_SLOW_FILTER, so the suite lands in the
+    # atx_vol_fast label.
+    oracle_bench_test.cpp
+    # vrp-ml sprint, lane vrp-model — appended target: the schema-v2
+    # IFairVolModel seam (pricing/theo.hpp: fair_vol_feature_count, linear-v2
+    # coefficient TSV, flat-array GBT scorer) + the walk-forward VRP trainer
+    # logic header (tools/vrp_train.hpp). The trainer calls atx-engine's learn
+    # layer (fit_gbt / fit_linear / elastic_net), whose definitions live in
+    # the atx-engine LIBRARY — hence the extra target_link_libraries below.
+    # The atx-vol LIBRARY itself still never includes an atx-engine header;
+    # the engine edge exists only on this test exe and atx-vol-vrp-train.
+    vrp_model_test.cpp
 )
+
+# Oracle RSI charter stage 2: the three non-driver TUs of atx-vol-oracle-bench
+# (headers + implementations under ../tools) compile into the test exe so
+# OracleBench* exercises the shipped implementation, not a copy. tools/ is
+# already a PRIVATE quoted-include root of this target (see
+# target_include_directories below), which is how oracle_bench_test.cpp
+# resolves both the headers and its textual #include of the driver TU.
+target_sources(atx-vol-tests PRIVATE
+    ../tools/oracle_conventions.cpp
+    ../tools/oracle_scorecard.cpp
+    ../tools/oracle_cohort_reader.cpp)
 
 # backtest-production-lakehouse sprint, Task D2 — appended conditionally: the
 # Parquet track store round-trip test includes Arrow/Parquet headers directly
@@ -272,6 +302,16 @@ target_link_libraries(atx-vol-tests
         atx_warnings
         atx-test-scratch    # FIX-3/F3-B: per-process temp root (was a listed source in F2-A)
 )
+
+# vrp-ml lane vrp-model: vrp_model_test.cpp includes tools/vrp_train.hpp,
+# which calls into atx::engine::learn (fit_gbt / fit_linear / elastic_net —
+# declared in headers, DEFINED in atx-engine/src/learn/*.cpp), so this exe
+# links the atx-engine library. Spelled as the plain target name (not the
+# atx::engine ALIAS): atx-vol is add_subdirectory'd BEFORE atx-engine at the
+# root, and a namespaced name must already exist at the call site while a
+# plain name resolves at generate time. Eigen arrives transitively (atx::core
+# links Eigen3::Eigen PUBLIC); atx-engine's PUBLIC include dir rides this edge.
+target_link_libraries(atx-vol-tests PRIVATE atx-engine)
 
 # Wave E T7 fix round 1, I5: listed_definitions_cache_test.cpp's peak-RSS
 # harness calls GetProcessMemoryInfo/EmptyWorkingSet (psapi.h). Linked

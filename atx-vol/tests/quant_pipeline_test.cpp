@@ -1,12 +1,24 @@
 #include "backtest/quant_pipeline.hpp"
 
 #include <atomic>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
+#include <memory>
+#include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
+
+#include "atx/vol/api/backtest/priced_surface.hpp" // PricedSurface, PricingContext
+#include "atx/vol/api/fitting/surface_parity.hpp"  // SliceContext
+#include "atx/vol/api/fitting/vol_curve.hpp"       // CurveSurface, EssviCurve
+#include "atx/vol/api/fitting/vol_surface.hpp"     // EssviParams
+#include "atx/vol/api/pricing/american.hpp"        // al_fast_opts, AmericanMethod
+#include "atx/vol/api/storage/surface_db.hpp"      // SurfaceDb (vrp-backtest roots)
 
 namespace atx::vol {
 namespace {
@@ -300,6 +312,296 @@ TEST(QuantPipeline, AlignsImplementationInputsByStableIdAndGreekSnapshot) {
   reversed_scenario_inputs[0].position.qty = -2.0;
   EXPECT_FALSE(build_strategy_implementation_plan(target, {}, reversed_risk,
                                                   reversed_scenario_inputs, spec));
+}
+
+// ── vrp-backtest subcommand seam (lane vrp-book) ────────────────────────────
+
+namespace {
+
+// A real on-disk vrp_signal_v1 file so the parse stage's existence check and
+// the loader's schema check are both exercised against genuine files.
+[[nodiscard]] std::filesystem::path write_signal_fixture(const std::filesystem::path &root,
+                                                         const std::string &body) {
+  std::error_code ec;
+  std::filesystem::create_directories(root, ec);
+  const std::filesystem::path path = root / "signal.tsv";
+  std::ofstream out(path, std::ios::binary);
+  out << body;
+  out.close();
+  return path;
+}
+
+[[nodiscard]] std::string valid_signal_body() {
+  std::string body{kVrpSignalSchemaLineV1};
+  body += '\n';
+  body += kVrpSignalHeaderV1;
+  body += "\nAAA\t2026-01-05\t1\t0.5\t0.8\nBBB\t2026-01-05\t-1\t-0.5\t1.2\n";
+  return body;
+}
+
+} // namespace
+
+TEST(QuantPipeline, VrpBacktestArgsParseDefaultsAndOverrides) {
+  const std::filesystem::path root = pipeline_test_root();
+  const std::filesystem::path signal = write_signal_fixture(root, valid_signal_body());
+  // Runtime-composed dummy roots (never opened by the parse stage): a source
+  // literal would trip the shared-resolver path-literal guard, and rightly so.
+  const std::string db_a = (root / "spy-2025").string();
+  const std::string db_b = (root / "spy-2026").string();
+
+  const std::vector<std::string> args = {
+      "--signal",        signal.string(), "--surface-db",   db_a,
+      "--surface-db",    db_b,            "--report",       (root / "report.tsv").string(),
+      "--from",          "2026-01-02",    "--to",           "2026-06-30",
+      "--risk-budget",   "2500",          "--vov-floor",    "0.1",
+      "--vega-cap",      "10000",         "--net-short-tilt", "0.2",
+      "--no-trade-band", "0.25",          "--cost-vol-pts", "1.5",
+      "--stock-bps",     "3",             "--hedge-band",   "50",
+      "--rebalance-steps", "5",           "--horizon-days", "10",
+      "--long-frac",     "0.2",           "--short-frac",   "0.3",
+      "--expiry-guard",  "4",
+  };
+  const auto spec = parse_vrp_backtest_args(args);
+  ASSERT_TRUE(spec.has_value()) << spec.error().to_string();
+  EXPECT_EQ(spec->signal_path, signal.string());
+  ASSERT_EQ(spec->surface_db_roots.size(), 2u);
+  EXPECT_EQ(spec->surface_db_roots[1], db_b);
+  EXPECT_EQ(spec->date_lo, "2026-01-02");
+  EXPECT_EQ(spec->date_hi, "2026-06-30");
+  EXPECT_DOUBLE_EQ(spec->config.risk_budget_vega, 2500.0);
+  EXPECT_DOUBLE_EQ(spec->config.vov_floor, 0.1);
+  EXPECT_DOUBLE_EQ(spec->config.per_name_vega_cap, 10000.0);
+  EXPECT_DOUBLE_EQ(spec->config.net_short_tilt, 0.2);
+  EXPECT_DOUBLE_EQ(spec->config.no_trade_band, 0.25);
+  EXPECT_DOUBLE_EQ(spec->config.cost_half_spread_vol_pts, 1.5);
+  EXPECT_DOUBLE_EQ(spec->config.stock_half_spread_bps, 3.0);
+  EXPECT_DOUBLE_EQ(spec->config.delta_hedge_band, 50.0);
+  EXPECT_EQ(spec->config.rebalance_every_n_steps, 5u);
+  EXPECT_DOUBLE_EQ(spec->config.horizon_days, 10.0);
+  EXPECT_DOUBLE_EQ(spec->config.expiry_guard_days, 4.0);
+  EXPECT_TRUE(spec->config.delta_hedge);
+
+  // --no-hedge is the one value-free flag.
+  const std::vector<std::string> hedgeless = {"--signal", signal.string(), "--surface-db",
+                                              db_a, "--report",
+                                              (root / "r.tsv").string(), "--no-hedge"};
+  const auto hedgeless_spec = parse_vrp_backtest_args(hedgeless);
+  ASSERT_TRUE(hedgeless_spec.has_value()) << hedgeless_spec.error().to_string();
+  EXPECT_FALSE(hedgeless_spec->config.delta_hedge);
+  std::filesystem::remove_all(root);
+}
+
+TEST(QuantPipeline, VrpBacktestArgsFailClosedOnMissingSignalFile) {
+  const std::filesystem::path root = pipeline_test_root();
+  const std::filesystem::path signal = write_signal_fixture(root, valid_signal_body());
+  const std::string report = (root / "report.tsv").string();
+  // Runtime-composed dummy root — see the path-literal note in the parse test.
+  const std::string db = (root / "db").string();
+
+  // No --signal flag at all.
+  const auto no_flag = parse_vrp_backtest_args(
+      std::vector<std::string>{"--surface-db", db, "--report", report});
+  ASSERT_FALSE(no_flag.has_value());
+  EXPECT_EQ(no_flag.error().code(), ErrorCode::InvalidArgument);
+
+  // --signal names a file that does not exist: NotFound at PARSE time.
+  const auto missing_file = parse_vrp_backtest_args(std::vector<std::string>{
+      "--signal", (root / "nope.tsv").string(), "--surface-db", db, "--report", report});
+  ASSERT_FALSE(missing_file.has_value());
+  EXPECT_EQ(missing_file.error().code(), ErrorCode::NotFound);
+
+  // A real signal file but no surface-db root / no report / an unknown flag /
+  // a bad numeric — each fails closed with InvalidArgument.
+  const auto no_root = parse_vrp_backtest_args(
+      std::vector<std::string>{"--signal", signal.string(), "--report", report});
+  ASSERT_FALSE(no_root.has_value());
+  EXPECT_EQ(no_root.error().code(), ErrorCode::InvalidArgument);
+
+  const auto no_report = parse_vrp_backtest_args(
+      std::vector<std::string>{"--signal", signal.string(), "--surface-db", db});
+  ASSERT_FALSE(no_report.has_value());
+  EXPECT_EQ(no_report.error().code(), ErrorCode::InvalidArgument);
+
+  const auto unknown = parse_vrp_backtest_args(
+      std::vector<std::string>{"--signal", signal.string(), "--surface-db", db,
+                               "--report", report, "--frobnicate", "1"});
+  ASSERT_FALSE(unknown.has_value());
+  EXPECT_EQ(unknown.error().code(), ErrorCode::InvalidArgument);
+
+  const auto bad_numeric = parse_vrp_backtest_args(
+      std::vector<std::string>{"--signal", signal.string(), "--surface-db", db,
+                               "--report", report, "--risk-budget", "lots"});
+  ASSERT_FALSE(bad_numeric.has_value());
+  EXPECT_EQ(bad_numeric.error().code(), ErrorCode::InvalidArgument);
+
+  // A dangling flag with no value fails closed too.
+  const auto dangling = parse_vrp_backtest_args(
+      std::vector<std::string>{"--signal", signal.string(), "--surface-db", db,
+                               "--report", report, "--vov-floor"});
+  ASSERT_FALSE(dangling.has_value());
+  EXPECT_EQ(dangling.error().code(), ErrorCode::InvalidArgument);
+
+  // An invalid config combination is refused at parse time as well.
+  const auto bad_config = parse_vrp_backtest_args(
+      std::vector<std::string>{"--signal", signal.string(), "--surface-db", db,
+                               "--report", report, "--long-frac", "0.9"});
+  ASSERT_FALSE(bad_config.has_value());
+  EXPECT_EQ(bad_config.error().code(), ErrorCode::InvalidArgument);
+
+  // A guard at or above the tenor's calendar days can never hold a book:
+  // refused at parse time by the same config validation.
+  const auto bad_guard = parse_vrp_backtest_args(
+      std::vector<std::string>{"--signal", signal.string(), "--surface-db", db,
+                               "--report", report, "--horizon-days", "5",
+                               "--expiry-guard", "7.3"});
+  ASSERT_FALSE(bad_guard.has_value());
+  EXPECT_EQ(bad_guard.error().code(), ErrorCode::InvalidArgument);
+  std::filesystem::remove_all(root);
+}
+
+namespace {
+
+// The strategy_test synthetic-eSSVI fixture (flat forward, genuine American
+// premium), reproduced here so the vrp-backtest seam can be driven over a
+// REAL SurfaceDb root end to end.
+[[nodiscard]] PricedSurface vrp_test_surface(std::uint32_t uid, std::int64_t now_ts,
+                                             double vol_bump) {
+  constexpr double kRate = 0.043;
+  CurveSurface cs;
+  std::vector<SliceContext> ctx;
+  const double tenors[] = {0.05, 0.10, 0.20, 0.35, 0.50, 0.75, 1.00};
+  int i = 0;
+  for (const double T : tenors) {
+    EssviParams e{};
+    e.theta = 0.04 + 0.005 * static_cast<double>(i) + vol_bump;
+    e.phi = 1.5 - 0.05 * static_cast<double>(i);
+    e.rho = -0.4 + 0.02 * static_cast<double>(i);
+    e.psi = 0.5;
+    e.p = 0.5;
+    e.lambda = 0.5;
+    e.T = T;
+    e.F = 100.0;
+    e.expiry_id = static_cast<std::uint16_t>(i);
+    cs.push(std::make_unique<EssviCurve>(e, std::exp(-kRate * T)));
+    ctx.push_back(SliceContext{T, 100.0, 0.0, 0.02, 250, 7});
+    ++i;
+  }
+  PricingContext pc;
+  pc.S = 100.0;
+  pc.r = kRate;
+  pc.now_ts_ns = now_ts;
+  pc.method = AmericanMethod::AndersenLake;
+  pc.al_opts = al_fast_opts();
+  pc.uid = uid;
+  auto surface = PricedSurface::create(std::move(cs), std::move(ctx), pc);
+  EXPECT_TRUE(surface.has_value())
+      << (surface.has_value() ? std::string{} : surface.error().to_string());
+  return std::move(*surface);
+}
+
+} // namespace
+
+TEST(QuantPipeline, RunVrpBacktestWritesTheReportOverARealSurfaceDbRoot) {
+  const std::filesystem::path root = pipeline_test_root();
+  const std::filesystem::path db_root = root / "surface-db";
+  auto db = SurfaceDb::create(db_root.string());
+  ASSERT_TRUE(db.has_value()) << db.error().to_string();
+
+  constexpr std::int64_t kNow0 = 1'700'000'000'000'000'000LL; // 2023-11-14 UTC
+  constexpr std::int64_t kDay = 86'400'000'000'000LL;
+  std::vector<std::string> dates;
+  for (int d = 0; d < 2; ++d) {
+    const std::int64_t now = kNow0 + static_cast<std::int64_t>(d) * kDay;
+    const PricedSurface aaa = vrp_test_surface(11u, now, 0.0);
+    const PricedSurface bbb = vrp_test_surface(12u, now, 0.01);
+    const std::vector<SurfaceArchiveItem> items = {SurfaceArchiveItem{"AAA", &aaa},
+                                                   SurfaceArchiveItem{"BBB", &bbb}};
+    const std::string date = vol_edge_session_date(now);
+    dates.push_back(date);
+    const Status written = db->write_partition(date, items);
+    ASSERT_TRUE(written.has_value()) << written.error().to_string();
+  }
+
+  std::string signal_body{kVrpSignalSchemaLineV1};
+  signal_body += '\n';
+  signal_body += kVrpSignalHeaderV1;
+  signal_body += "\nAAA\t" + dates[0] + "\t1\t2\t0.8\nBBB\t" + dates[0] + "\t-1\t-2\t1.2\n";
+
+  VrpBacktestSpec spec;
+  spec.signal_path = write_signal_fixture(root, signal_body).string();
+  spec.surface_db_roots = {db_root.string()};
+  spec.report_path = (root / "report.tsv").string();
+  spec.config.long_fraction = 0.5;
+  spec.config.short_fraction = 0.5;
+  spec.config.risk_budget_vega = 5'000.0;
+  spec.config.vov_floor = 0.05;
+  spec.config.cost_half_spread_vol_pts = 1.0;
+  spec.config.delta_hedge = false;
+  spec.config.rebalance_every_n_steps = 100; // one entry, hold to run end
+
+  const auto summary = run_vrp_backtest(spec);
+  ASSERT_TRUE(summary.has_value()) << summary.error().to_string();
+  EXPECT_EQ(summary->n_rows, 2u);
+  EXPECT_TRUE(std::isfinite(summary->final_nav));
+  EXPECT_GT(summary->total_cost, 0.0) << "the configured half-spread must charge";
+  // A clean two-session hold: no fail-soft or fail-safe path fired, and the
+  // summary says so explicitly (the hardening counters are surfaced, not
+  // inferred from silence).
+  EXPECT_EQ(summary->n_held_steps, 0u);
+  EXPECT_EQ(summary->n_skipped_names, 0u);
+  EXPECT_EQ(summary->n_roll_closes, 0u);
+
+  // The report exists, carries the promised columns, and is row-parallel.
+  std::ifstream report(spec.report_path);
+  ASSERT_TRUE(report.is_open());
+  std::string header;
+  ASSERT_TRUE(static_cast<bool>(std::getline(report, header)));
+  EXPECT_NE(header.find("nav"), std::string::npos);
+  EXPECT_NE(header.find("pnl_gamma"), std::string::npos);
+  EXPECT_NE(header.find("ledger_collected"), std::string::npos);
+  EXPECT_NE(header.find("ledger_repriced"), std::string::npos);
+  EXPECT_NE(header.find("turnover_vega"), std::string::npos);
+  EXPECT_NE(header.find("cost"), std::string::npos);
+  EXPECT_NE(header.find("vol_edge_n_long"), std::string::npos);
+  EXPECT_NE(header.find("vol_edge_held_steps"), std::string::npos);
+  EXPECT_NE(header.find("vol_edge_roll_closed"), std::string::npos);
+  std::size_t data_rows = 0;
+  std::string line;
+  while (std::getline(report, line)) {
+    if (!line.empty()) {
+      ++data_rows;
+      EXPECT_EQ(line.find(dates[data_rows - 1u]), 0u) << "rows follow the clock order";
+    }
+  }
+  EXPECT_EQ(data_rows, 2u);
+  report.close();
+  std::filesystem::remove_all(root);
+}
+
+TEST(QuantPipeline, RunVrpBacktestFailsClosedBeforeTouchingRoots) {
+  const std::filesystem::path root = pipeline_test_root();
+
+  // A signal file that exists but breaks the frozen schema: the run must die
+  // in the loader, before any surface-db root is opened (the fake root would
+  // fail with a DIFFERENT error if it were reached first).
+  VrpBacktestSpec bad_schema;
+  bad_schema.signal_path =
+      write_signal_fixture(root, "symbol\tdate\tpred_label\tpred_edge_norm\tvov_63d\n").string();
+  bad_schema.surface_db_roots = {(root / "no-such-db").string()};
+  bad_schema.report_path = (root / "report.tsv").string();
+  const auto schema_result = run_vrp_backtest(bad_schema);
+  ASSERT_FALSE(schema_result.has_value());
+  EXPECT_EQ(schema_result.error().code(), ErrorCode::InvalidArgument);
+
+  // A valid signal against a nonexistent root: NotFound from SurfaceDb::open.
+  VrpBacktestSpec bad_root;
+  bad_root.signal_path = write_signal_fixture(root / "ok", valid_signal_body()).string();
+  bad_root.surface_db_roots = {(root / "no-such-db").string()};
+  bad_root.report_path = (root / "report.tsv").string();
+  const auto root_result = run_vrp_backtest(bad_root);
+  ASSERT_FALSE(root_result.has_value());
+  EXPECT_EQ(root_result.error().code(), ErrorCode::NotFound);
+  std::filesystem::remove_all(root);
 }
 
 } // namespace

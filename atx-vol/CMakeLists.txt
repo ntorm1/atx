@@ -922,6 +922,43 @@ if(ATX_BUILD_TOOLS)
     add_executable(atx-vol-vega-panel tools/vega_panel_main.cpp)
     target_link_libraries(atx-vol-vega-panel PRIVATE atx::vol atx::core atx_warnings)
 
+    # vrp-ml lane vrp-model: walk-forward VRP trainer CLI. Loads a frozen
+    # vrp_panel_v1 TSV, pools across symbols, runs the purged/embargoed
+    # walk-forward (api/backtest/research_validation.hpp), fits the log-HAR
+    # elastic-net baseline + the pooled GBT via atx-engine's learn layer, and
+    # writes the frozen vrp_signal_v1 TSV + metrics + serialized schema-2
+    # model files (pricing/theo.hpp loaders read them back). Logic lives in
+    # tools/vrp_train.hpp (library-shaped, gate-tested by VrpTrain* in
+    # tests/vrp_model_test.cpp); this TU is the thin argv shell.
+    #
+    # atx-engine linked as the plain target name (not the atx::engine ALIAS):
+    # atx-vol is add_subdirectory'd BEFORE atx-engine at the root, and a
+    # namespaced name must already exist at the call site while a plain name
+    # resolves at generate time. The engine edge carries its PUBLIC include
+    # dir; Eigen arrives transitively (atx::core links Eigen3::Eigen PUBLIC).
+    # The atx::engine::learn definitions live in atx-engine/src/learn/*.cpp,
+    # which is why an include-dir grant alone would not link. This edge stays
+    # confined to THIS executable and atx-vol-tests — the atx-vol LIBRARY
+    # never includes an atx-engine header (layering).
+    add_executable(atx-vol-vrp-train tools/vrp_train_main.cpp)
+    target_link_libraries(atx-vol-vrp-train PRIVATE atx::vol atx::core atx-engine atx_warnings)
+
+    # Oracle RSI loop (bench/oracle/CHARTER.md stage 2): the SpiderRock parity
+    # benchmark. Reads ONLY the cohort-named date=/bucket_et= partitions of the
+    # parquet oracle store through atx-core's LazyParquet (Arrow/Parquet arrive
+    # via atx::core's unconditional PUBLIC link -- deliberately NOT gated on
+    # ATX_VOL_LAKEHOUSE, which gates atx-vol's OWN Arrow TUs only), prices
+    # Mode A per row through the public American API with SpiderRock's own
+    # inputs, and emits the charter cell-key scorecard JSON. The convention
+    # layer is isolated in tools/oracle_conventions.cpp (iteration 0 rewrites
+    # that one TU). Gate test: OracleBench* (tests/oracle_bench_test.cpp).
+    add_executable(atx-vol-oracle-bench
+        tools/oracle_bench_main.cpp
+        tools/oracle_conventions.cpp
+        tools/oracle_scorecard.cpp
+        tools/oracle_cohort_reader.cpp)
+    target_link_libraries(atx-vol-oracle-bench PRIVATE atx::vol atx::core atx_warnings)
+
     # D2: track_compact -- folds staging/ into the hive-partitioned zstd
     # Parquet tracks/ lakehouse (atx::vol::compact(), track_store.hpp). Only
     # buildable when ATX_VOL_LAKEHOUSE actually compiled TrackStore/compact()
