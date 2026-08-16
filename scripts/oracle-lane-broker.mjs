@@ -368,14 +368,13 @@ export class OracleLaneBroker {
       if (!proof || proof.source_blob !== this.recoverySource.files[path] || proof.replay_blob !== this.recoverySource.files[path]) throw new Error(`sealed Stage 1 recovery blob mismatch: ${path}`)
     }
     const gates = ['aggregate_store', 'ingest_manifest', 'cohort_manifests', 'holdout_digest']
-    const baseTree = this.#tree(journal.identity.base_sha)
     if (!Array.isArray(result.gate_receipts) || result.gate_receipts.length !== gates.length ||
         new Set(result.gate_receipts.map(receipt => receipt.receipt_id)).size !== gates.length) throw new Error('sealed Stage 1 recovery gate set mismatch')
     for (const gate of gates) {
       const matches = result.gate_receipts.filter(receipt => receipt.gate_id === gate && receipt.exit_code === 0 && /^[0-9a-f]{64}$/.test(receipt.receipt_id || ''))
       const receipt = matches[0]
       const evidence = receipt?.broker_evidence
-      if (matches.length !== 1 || receipt.command !== this.gates[gate].display || receipt.tested_sha !== journal.identity.base_sha || receipt.tested_tree !== baseTree ||
+      if (matches.length !== 1 || receipt.command !== this.gates[gate].display || receipt.tested_sha !== result.sha || receipt.tested_tree !== result.tree ||
           !evidence || evidence.logical_operation !== `gate:${gate}` || evidence.command !== receipt.command || evidence.output !== receipt.output || evidence.exit_code !== receipt.exit_code ||
           !SHA256_RE.test(evidence.raw_output_sha256 || '') || evidence.root_guard_before?.main_sha !== evidence.root_guard_after?.main_sha ||
           evidence.root_guard_before?.index_sha256 !== evidence.root_guard_after?.index_sha256 || evidence.root_guard_before?.tracked_sha256 !== evidence.root_guard_after?.tracked_sha256 ||
@@ -827,11 +826,21 @@ export class OracleLaneBroker {
     }
     const replayPaths = this.#assertLaneChanges(cap, true)
     if (JSON.stringify(replayPaths) !== JSON.stringify(expectedPaths)) throw new Error('Stage 1 replay changed unexpected paths')
-    const gateReceipts = ['aggregate_store', 'ingest_manifest', 'cohort_manifests', 'holdout_digest'].map(gate => this.#runGate(cap, gate))
-    if (gateReceipts.some(receipt => receipt.exit_code !== 0)) throw new Error('Stage 1 recovery fixed gate failed')
     const commitResult = this.#commitLane(cap, 'bootstrap_data_recovery')
     const changed = this.#git(['diff', '--name-only', '-z', `${cap.base_sha}...${commitResult.sha}`], cap.worktree).stdout.split('\0').filter(Boolean).map(normalizeRel).sort()
-    if (JSON.stringify(changed) !== JSON.stringify(expectedPaths)) throw new Error('Stage 1 recovery committed path closure mismatch')
+    const committedHead = this.#git(['rev-parse', 'HEAD'], cap.worktree).stdout.trim().toLowerCase()
+    const committedTree = this.#tree(committedHead, cap.worktree)
+    if (committedHead !== commitResult.sha || committedTree !== commitResult.tree || JSON.stringify(commitResult.files_changed) !== JSON.stringify(expectedPaths) ||
+        JSON.stringify(changed) !== JSON.stringify(expectedPaths) || this.#changedPaths(cap).length) throw new Error('Stage 1 recovery committed HEAD/tree/path closure mismatch')
+    const gateReceipts = ['aggregate_store', 'ingest_manifest', 'cohort_manifests', 'holdout_digest'].map(gate => this.#runGate(cap, gate))
+    const postGateHead = this.#git(['rev-parse', 'HEAD'], cap.worktree).stdout.trim().toLowerCase()
+    const postGateTree = this.#tree(postGateHead, cap.worktree)
+    const gateFailure = gateReceipts.some(receipt => receipt.exit_code !== 0) || postGateHead !== commitResult.sha || postGateTree !== commitResult.tree || this.#changedPaths(cap).length
+    if (gateFailure) {
+      this.#saveCap(input.capability, { ...cap, stage1_gate_failure: { sha: commitResult.sha, tree: commitResult.tree, gate_receipts: gateReceipts } })
+      const failedIds = gateReceipts.filter(receipt => receipt.exit_code !== 0).map(receipt => receipt.gate_id)
+      throw new Error(`Stage 1 recovery fixed gate failed; quarantine required; failed_gate_ids=${failedIds.join(',') || 'lane_integrity'}`)
+    }
     const after = this.rootGuard()
     this.#assertGuard(before, after)
     const recoveryId = this.#recoveryPath(cap).key
@@ -883,6 +892,10 @@ export class OracleLaneBroker {
     if (this.#changedPaths(cap).length) throw new Error('refusing to release a dirty broker lane')
     const head = this.#git(['rev-parse', 'HEAD'], cap.worktree).stdout.trim().toLowerCase()
     const tree = this.#tree(head, cap.worktree)
+    if (cap.operation_id === 'bootstrap_data' && cap.stage1_gate_failure) {
+      if (head !== cap.stage1_gate_failure.sha || tree !== cap.stage1_gate_failure.tree) throw new Error('failed Stage 1 lane differs from preserved committed SHA/tree')
+      throw new Error('refusing to release failed Stage 1 gate lane; quarantine required')
+    }
     if (['bootstrap_integration', 'sprint_integration'].includes(cap.operation_id)) {
       if (!cap.integrated_sha || !cap.integrated_tree || head !== cap.integrated_sha || tree !== cap.integrated_tree) throw new Error('integration release SHA/tree differs from sealed integration')
       if (!Array.isArray(cap.reviewed_candidates) || !cap.reviewed_candidates.length) throw new Error('integration release lacks sealed reviewed candidates')
@@ -928,7 +941,7 @@ export class OracleLaneBroker {
     requireSuccess(result, 'broker lane quarantine')
     this.#saveCap(input.capability, { ...cap, state: 'quarantined', quarantined_head: head, quarantined_tree: tree, preserved_paths: preservedPaths })
     return {
-      quarantined: true, lease_name: cap.lease_name, sha: head, tree, preserved_paths: preservedPaths,
+      quarantined: true, lease_name: cap.lease_name, sha: head, tree, preserved_paths: preservedPaths, gate_receipts: cap.stage1_gate_failure?.gate_receipts || [],
       quarantine_receipt: { action: 'quarantine', lease_name: cap.lease_name, run_id: cap.run_id, branch: cap.branch, base_sha: cap.base_sha, worktree: cap.worktree, heartbeat_id: cap.heartbeat_id, keeper_pid: cap.keeper_pid, keeper_process_started_utc: cap.keeper_process_started_utc, keeper_ready_utc: cap.keeper_ready_utc, exit_code: 0, output: result.output },
       broker_evidence: this.#evidence('lane_quarantine', this.root, `lease-worktree:quarantine:${cap.lease_name}`, result, before, after),
     }

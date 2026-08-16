@@ -142,12 +142,21 @@ const BROKER_RELEASE = {
     release_receipt: LEASE_RECEIPT, broker_evidence: BROKER_EVIDENCE,
   },
 }
+const QUARANTINE_GATE_RECEIPT = {
+  type: 'object', additionalProperties: false,
+  required: ['receipt_id', 'gate_id', 'tested_sha', 'tested_tree', 'command', 'exit_code', 'output', 'broker_evidence'],
+  properties: {
+    receipt_id: { type: 'string' }, gate_id: { type: 'string' }, tested_sha: { type: 'string' }, tested_tree: { type: 'string' },
+    command: { type: 'string' }, exit_code: { type: 'integer' }, output: { type: 'string' }, broker_evidence: BROKER_EVIDENCE,
+  },
+}
 const BROKER_QUARANTINE = {
   type: 'object', additionalProperties: false,
-  required: ['quarantined', 'lease_name', 'sha', 'tree', 'preserved_paths', 'quarantine_receipt', 'broker_evidence'],
+  required: ['quarantined', 'lease_name', 'sha', 'tree', 'preserved_paths', 'gate_receipts', 'quarantine_receipt', 'broker_evidence'],
   properties: {
     quarantined: { type: 'boolean' }, lease_name: { type: 'string' }, sha: { type: 'string' }, tree: { type: 'string' },
-    preserved_paths: { type: 'array', items: { type: 'string' } }, quarantine_receipt: LEASE_RECEIPT, broker_evidence: BROKER_EVIDENCE,
+    preserved_paths: { type: 'array', items: { type: 'string' } }, gate_receipts: { type: 'array', items: QUARANTINE_GATE_RECEIPT },
+    quarantine_receipt: LEASE_RECEIPT, broker_evidence: BROKER_EVIDENCE,
   },
 }
 const HEAD_RECEIPT = {
@@ -599,8 +608,8 @@ function validLeaseReceipt(receipt, expected, action) {
       receipt.output.includes(` heartbeat_id=${receipt.heartbeat_id}`)))
 }
 
-function validBrokerEvidence(receipt, logicalOperation = null, physicalCwd = null, allowCanonical = false) {
-  if (!receipt || receipt.exit_code !== 0 || typeof receipt.command !== 'string' || !receipt.command.trim() || typeof receipt.output !== 'string' ||
+function validBrokerEvidence(receipt, logicalOperation = null, physicalCwd = null, allowCanonical = false, allowFailure = false) {
+  if (!receipt || !Number.isInteger(receipt.exit_code) || (!allowFailure && receipt.exit_code !== 0) || typeof receipt.command !== 'string' || !receipt.command.trim() || typeof receipt.output !== 'string' ||
       !/^[0-9a-f]{64}$/.test(receipt.raw_output_sha256 || '') || (logicalOperation && receipt.logical_operation !== logicalOperation)) return false
   if (physicalCwd && String(receipt.physical_cwd || '').replace(/\//g, '\\').toLowerCase() !== String(physicalCwd).replace(/\//g, '\\').toLowerCase()) return false
   const before = receipt.root_guard_before; const after = receipt.root_guard_after
@@ -630,7 +639,19 @@ function brokerReleaseError(release, acquire, finalizeExpected) {
 
 function brokerQuarantineError(quarantine, acquire) {
   if (!quarantine || !quarantine.quarantined || quarantine.lease_name !== acquire.lease_name || !/^[0-9a-f]{40}$/.test(quarantine.sha || '') ||
-      !/^[0-9a-f]{40}$/.test(quarantine.tree || '') || !Array.isArray(quarantine.preserved_paths)) return 'broker quarantine identity invalid'
+      !/^[0-9a-f]{40}$/.test(quarantine.tree || '') || !Array.isArray(quarantine.preserved_paths) || !Array.isArray(quarantine.gate_receipts)) return 'broker quarantine identity invalid'
+  if (quarantine.gate_receipts.length) {
+    const gateIds = BOOTSTRAP_LANES.missing_data.gate_ids
+    if (quarantine.gate_receipts.length !== gateIds.length || !quarantine.gate_receipts.some(receipt => receipt.exit_code !== 0) ||
+        new Set(quarantine.gate_receipts.map(receipt => receipt.receipt_id)).size !== gateIds.length) return 'broker quarantine gate evidence invalid'
+    for (const gateId of gateIds) {
+      const matches = quarantine.gate_receipts.filter(receipt => receipt.gate_id === gateId)
+      const receipt = matches[0]
+      if (matches.length !== 1 || receipt.tested_sha !== quarantine.sha || receipt.tested_tree !== quarantine.tree || receipt.command !== BOOTSTRAP_GATE_COMMANDS[gateId] ||
+          !validBrokerEvidence(receipt.broker_evidence, `gate:${gateId}`, acquire.worktree, false, true) || receipt.broker_evidence.exit_code !== receipt.exit_code || receipt.broker_evidence.command !== receipt.command ||
+          receipt.broker_evidence.output !== receipt.output) return `broker quarantine gate evidence invalid: ${gateId}`
+    }
+  }
   if (!validLeaseReceipt(quarantine.quarantine_receipt, { ...acquire, run_id: acquire.run_id }, 'quarantine')) return 'broker quarantine receipt invalid'
   return validBrokerEvidence(quarantine.broker_evidence, 'lane_quarantine') ? null : 'broker quarantine root evidence invalid'
 }
@@ -829,7 +850,7 @@ function sealedRecoveryQueryError(query, acquire, expected) {
     const receipt = matches[0]
     let parsed
     try { parsed = JSON.parse(receipt.output) } catch { return `sealed recovery gate output invalid: ${gateId}` }
-    if (!/^[0-9a-f]{64}$/.test(receipt.receipt_id || '') || receipt.tested_sha !== expected.base_sha || !/^[0-9a-f]{40}$/.test(receipt.tested_tree || '') ||
+    if (!/^[0-9a-f]{64}$/.test(receipt.receipt_id || '') || receipt.tested_sha !== result.sha || receipt.tested_tree !== result.tree ||
         !validGateReceipt({ gate_id: gateId, command: receipt.command, exit_code: receipt.exit_code, output: receipt.output, result: parsed }, gateId) ||
         !validBrokerEvidence(receipt.broker_evidence, `gate:${gateId}`) || receipt.broker_evidence.command !== receipt.command || receipt.broker_evidence.output !== receipt.output) return `sealed recovery gate invalid: ${gateId}`
   }

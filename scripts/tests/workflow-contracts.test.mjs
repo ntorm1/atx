@@ -115,7 +115,7 @@ function changedPathReceipt() {
 }
 
 function stage1Report(buildAcquire, replayed = false) {
-  const recoveryGates = STAGE1.gates.map((gate, index) => gateReceipt(gate, STAGE1.base, STAGE1.baseTree, buildAcquire.worktree, String(index + 1)))
+  const recoveryGates = STAGE1.gates.map((gate, index) => gateReceipt(gate, STAGE1.sha, STAGE1.tree, buildAcquire.worktree, String(index + 1)))
   return {
     state: 'missing_data', outcome: 'DONE', branch: buildAcquire.branch, sha: STAGE1.sha, tree: STAGE1.tree, base_sha: STAGE1.base,
     worktree: buildAcquire.worktree, lease_name: buildAcquire.lease_name, lease_run_id: buildAcquire.run_id, heartbeat_id: buildAcquire.heartbeat_id,
@@ -129,7 +129,7 @@ function stage1Report(buildAcquire, replayed = false) {
 
 function recoveryQuery(buildAcquire) {
   const recoveryGates = STAGE1.gates.map((gate, index) => {
-    const { result: _parsed, ...raw } = gateReceipt(gate, STAGE1.base, STAGE1.baseTree, buildAcquire.worktree, String(index + 1))
+    const { result: _parsed, ...raw } = gateReceipt(gate, STAGE1.sha, STAGE1.tree, buildAcquire.worktree, String(index + 1))
     return raw
   })
   return {

@@ -25,7 +25,7 @@ function write(root, rel, content) {
   writeFileSync(target, content, 'utf8')
 }
 
-function fixture({ failGate = '', descendantBase = false } = {}) {
+function fixture({ failGate = '', descendantBase = false, requireCommittedHead = false } = {}) {
   const sandbox = mkdtempSync(join(tmpdir(), 'atx-oracle-broker-v3-'))
   const root = join(sandbox, 'repo')
   const poolRoot = join(sandbox, 'atx-wt')
@@ -41,6 +41,10 @@ function fixture({ failGate = '', descendantBase = false } = {}) {
   write(root, 'atx-vol/src/pricing/american.cpp', 'int oracle_fixture() { return 1; }\n')
   write(root, 'scripts/oracle-bootstrap-preflight.ps1', [
     'param([string]$Gate)',
+    ...(requireCommittedHead ? [
+      '$headData = git show HEAD:atx-vol/bench/oracle/bootstrap/data.json 2>$null',
+      `if ($LASTEXITCODE -ne 0 -or -not ([string]$headData).Contains('"transition":"data"')) { [Console]::Error.Write('HEAD data unavailable'); exit 19 }`,
+    ] : []),
     `if ($Gate -eq '${failGate}') { [Console]::Error.Write('forced gate failure'); exit 17 }`,
     "$value = [ordered]@{schema_version=1;status='PASS';observations=1;command_id=$Gate;raw_output_sha256=('a' * 64)}",
     '[Console]::Out.Write(($value | ConvertTo-Json -Compress))',
@@ -134,7 +138,7 @@ test('production broker surface has fixed IDs, no raw command tool, and exact re
 })
 
 test('Stage 1 recovery commits atop a current descendant base and reopens only by sealed replay', { timeout: 120_000 }, async () => {
-  const fx = fixture({ descendantBase: true })
+  const fx = fixture({ descendantBase: true, requireCommittedHead: true })
   const identity = { operation_id: 'bootstrap_data', stage: 'bootstrap-1', run_id: 'run-descendant', branch: 'lane/oracle-bootstrap-data-run-descendant', base_sha: fx.base, heartbeat_id: 'run-descendant-data' }
   try {
     assert.notEqual(fx.base, fx.sourceParent)
@@ -147,6 +151,7 @@ test('Stage 1 recovery commits atop a current descendant base and reopens only b
     assert.equal(recovered.recovery.source_parent, fx.sourceParent)
     assert.equal(git(fx.root, 'show', '-s', '--format=%P', recovered.sha), fx.base)
     assert.deepEqual(recovered.files_changed.sort(), Object.keys(fx.files).sort())
+    assert.ok(recovered.gate_receipts.every(receipt => receipt.exit_code === 0 && receipt.tested_sha === recovered.sha && receipt.tested_tree === recovered.tree))
     const receiptIds = recovered.gate_receipts.map(receipt => receipt.receipt_id)
     const released = fx.broker.releaseLane({ capability: acquire.capability })
     assert.equal(released.sha, recovered.sha)
@@ -314,20 +319,34 @@ test('temp repo broker rejects incident classes and proves recovery, lane commit
   }
 })
 
-test('partial Stage 1 recovery is quarantined without discard and deterministic reopen does not lease', { timeout: 120_000 }, async () => {
-  const fx = fixture({ failGate: 'ingest_manifest' })
+test('Stage 1 recovery gate failure preserves the committed lane and writes no journal', { timeout: 120_000 }, async () => {
+  const fx = fixture({ failGate: 'ingest_manifest', requireCommittedHead: true })
   const identity = { operation_id: 'bootstrap_data', stage: 'bootstrap-1', run_id: 'run-partial', branch: 'lane/oracle-bootstrap-data-run-partial', base_sha: fx.base, heartbeat_id: 'run-partial-data' }
   try {
     const acquire = fx.broker.openLane(identity)
     assert.throws(() => fx.broker.recoverStage1({ capability: acquire.capability }), /fixed gate failed/)
-    assert.deepEqual(git(fx.pool, 'status', '--porcelain=v1', '-uall').split(/\r?\n/).filter(line => !line.includes('.atx-lease')).map(line => line.slice(3).replace(/\\/g, '/')).sort(), Object.keys(fx.files).sort())
-    assert.throws(() => fx.broker.releaseLane({ capability: acquire.capability }), /dirty broker lane/)
+    const failedSha = git(fx.pool, 'rev-parse', 'HEAD')
+    const failedTree = git(fx.pool, 'show', '-s', '--format=%T', failedSha)
+    assert.notEqual(failedSha, fx.base)
+    assert.equal(git(fx.pool, 'show', '-s', '--format=%P', failedSha), fx.base)
+    assert.deepEqual(git(fx.pool, 'diff', '--name-only', `${fx.base}...${failedSha}`).split(/\r?\n/).filter(Boolean).sort(), Object.keys(fx.files).sort())
+    assert.deepEqual(git(fx.pool, 'status', '--porcelain=v1', '-uall').split(/\r?\n/).filter(line => line && !line.includes('.atx-lease')), [])
+    const recoveryDir = join(git(fx.root, 'rev-parse', '--absolute-git-dir'), 'oracle-lane-broker-v3', 'recoveries')
+    assert.deepEqual(readdirSync(recoveryDir).filter(name => name.endsWith('.json')), [])
+    assert.throws(() => fx.broker.releaseLane({ capability: acquire.capability }), /failed Stage 1 gate lane/)
     const quarantine = fx.broker.quarantineLane({ capability: acquire.capability })
     assert.equal(quarantine.quarantined, true)
-    assert.deepEqual(quarantine.preserved_paths.sort(), Object.keys(fx.files).sort())
+    assert.equal(quarantine.sha, failedSha)
+    assert.equal(quarantine.tree, failedTree)
+    assert.deepEqual(quarantine.preserved_paths, [])
+    assert.equal(quarantine.gate_receipts.length, 4)
+    assert.ok(quarantine.gate_receipts.every(receipt => receipt.tested_sha === failedSha && receipt.tested_tree === failedTree))
+    assert.equal(quarantine.gate_receipts.find(receipt => receipt.gate_id === 'ingest_manifest').exit_code, 17)
+    assert.equal(quarantine.gate_receipts.filter(receipt => receipt.exit_code === 0).length, 3)
     assert.equal(existsSync(join(fx.pool, '.atx-lease')), false)
     assert.equal(existsSync(join(fx.pool, '.atx-quarantine-v3')), true)
-    assert.deepEqual(git(fx.pool, 'status', '--porcelain=v1', '-uall').split(/\r?\n/).filter(line => !line.includes('.atx-quarantine-v3')).map(line => line.slice(3).replace(/\\/g, '/')).sort(), Object.keys(fx.files).sort())
+    assert.deepEqual(git(fx.pool, 'status', '--porcelain=v1', '-uall').split(/\r?\n/).filter(line => line && !line.includes('.atx-quarantine-v3')), [])
+    assert.deepEqual(readdirSync(recoveryDir).filter(name => name.endsWith('.json')), [])
     assert.throws(() => fx.broker.listWorkspace({ capability: acquire.capability }), /stale|inactive/)
     assert.throws(() => fx.broker.openLane(identity), /quarantined for audit/)
     assert.equal(existsSync(join(fx.poolRoot, 'pool-2', '.atx-lease')), false)
