@@ -176,6 +176,22 @@ struct CurveSurfaceReport {
   // not straddle ATM or leave a central k-hole wider than the cap
   // (ExpiryFitOutcome::PrepUncovered). Surfaced, never silent.
   std::size_t n_slices_uncovered{0};
+  // Slices whose k-coverage refusal was absorbed by the opt-in parametric
+  // demotion (`CalibOpts::per_slice_uncovered_parametric`) and which therefore
+  // SERVE an eSSVI curve instead of vanishing from the surface. Such a slice is
+  // reported `ExpiryFitOutcome::FittedFallbackCurve` and does NOT increment
+  // `n_slices_uncovered` — the refusal is absorbed, so counting it as a drop
+  // would misreport a served expiry as a missing one. Always 0 when the flag is
+  // off (the byte-identical default path).
+  std::size_t n_slices_uncovered_parametric{0};
+  // Slices whose own FIT failed under the configured family and which were
+  // recovered by the same opt-in parametric demotion instead of being dropped
+  // from the surface. This is the LARGER of the two stability lanes on real
+  // boards: the marginal per-slice fit admission, not the coverage predicate, is
+  // what flips an expiry between present and absent under a negligible input
+  // change. Reported `ExpiryFitOutcome::FittedFallbackCurve`. Always 0 when the
+  // flag is off (the byte-identical default path).
+  std::size_t n_slices_fit_demoted_parametric{0};
   // Task 3, re-gated by Task 6 (D1): slices refused because the previous
   // slice's calendar floor bound them only where that slice had no admitted
   // data (the seed-ratchet shape; kCalendarFloorUnsupportedMsg), reported as

@@ -451,6 +451,38 @@ struct CalibOpts {
   // DEFAULT FALSE => byte-identical to the historical drop-the-slice behavior;
   // ConvexDense / Svi / eSSVI paths stay bit-identical.
   bool per_slice_linear_fallback{false};
+
+  // Opt-in per-slice PARAMETRIC demotion on a k-coverage refusal (fitter
+  // stability). `SliceKCoverage::admissible` (detail/prepared_fitting.hpp) is a
+  // hard boolean over an ORDER STATISTIC of the surviving quote set — it asks
+  // whether the admitted rows straddle the forward and leave no central
+  // adjacent-row hole wider than `kCoverageMaxCentralGap`. Dropping one row
+  // MERGES two adjacent gaps, so the predicate can flip on a single quote, and
+  // the historical response to a failure is to delete the whole EXPIRY.
+  //
+  // Measured (SP100, 2025-09-11, populate preset): perturbing the de-Am inputs
+  // by a provably-negligible amount moved 45 of 939 expiry fits across that
+  // boolean, and every one of those flips was a ConvexDense slice entering or
+  // leaving the served surface. An expiry appearing or vanishing re-rolls every
+  // tenor-interpolated quantity read off the surface, which is a far larger
+  // perturbation than any curve-shape difference.
+  //
+  // When TRUE and the configured kind is ConvexDense, a coverage-refused slice
+  // is DEMOTED to the parsimonious parametric backbone (eSSVI) instead of being
+  // dropped. That keeps the safety property the predicate exists for — the dense
+  // price-space chord/tails are still never drawn across the hole — while making
+  // the surface's COMPOSITION independent of which side of the boolean a single
+  // quote lands on. The demoted slice goes through the SAME `fit_slice_curve`
+  // admission (including the calendar floor against the prior slice) as any
+  // eSSVI slice; no numerical-sanity check is bypassed, and a demoted slice that
+  // fails to fit is dropped exactly as before.
+  //
+  // This removes the DISCONTINUITY IN COMPOSITION, not every discontinuity: the
+  // served curve SHAPE still switches families at the predicate boundary. It is
+  // a strict improvement in stability, not a proof of continuity.
+  //
+  // DEFAULT FALSE => byte-identical to the historical drop-the-expiry behavior.
+  bool per_slice_uncovered_parametric{false};
 };
 
 // The calibration defaults (`ats_vol_calib_default_opts`). Equal to a

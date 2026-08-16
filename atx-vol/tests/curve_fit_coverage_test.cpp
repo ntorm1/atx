@@ -206,6 +206,63 @@ TEST(CurveFitCoverage, OneSidedThinExpiryIsRefusedAsPrepUncovered) {
   EXPECT_EQ(rep->n_slices_uncovered, 1u);
 }
 
+// ── Fitter stability: the refusal must not DELETE the expiry ────────────────
+//
+// `SliceKCoverage::admissible` is a hard boolean over an ORDER STATISTIC of the
+// surviving quote set, and dropping one row MERGES two adjacent gaps — so the
+// predicate can flip on a single quote. Measured on SP100 2025-09-11 under the
+// populate preset, a provably-negligible de-Am perturbation moved 45 of 939
+// expiry fits across it, every one a ConvexDense slice entering or leaving the
+// served surface. An expiry that appears or vanishes moves every
+// tenor-interpolated quantity read off the surface far more than any
+// curve-shape difference does.
+//
+// Under the flag the slice is DEMOTED to the parametric backbone instead of
+// deleted: the expiry survives, so composition stops depending on which side of
+// the boolean one quote lands, while the dense chord across the hole is still
+// never drawn (the slice is not fitted with ConvexDense at all).
+TEST(CurveFitCoverage, UncoveredSliceIsDemotedToParametricInsteadOfDropped) {
+  Underlying under;
+  under.spot = kSpot;
+  under.chains.push_back(make_one_sided_put_chain(0.04));
+  under.chains.push_back(make_two_sided_chain(0.50));
+
+  SurfaceParityInputs in = coverage_inputs();
+  in.calib.per_slice_uncovered_parametric = true;
+
+  const auto rep = fit_curve_surface(under, in, CurveConfig{});
+  ASSERT_TRUE(rep.has_value()) << rep.error().to_string();
+  ASSERT_EQ(rep->expiry_reports.size(), 2u);
+  // The refused expiry is SERVED, under a different family, and is no longer
+  // counted as a drop.
+  EXPECT_EQ(rep->expiry_reports[0].outcome, ExpiryFitOutcome::FittedFallbackCurve);
+  EXPECT_EQ(rep->expiry_reports[1].outcome, ExpiryFitOutcome::Fitted);
+  EXPECT_EQ(rep->n_slices, 2u);
+  EXPECT_EQ(rep->n_slices_uncovered, 0u);
+  EXPECT_EQ(rep->n_slices_uncovered_parametric, 1u);
+}
+
+// The flag is the ONLY thing that changes the refusal's disposition: a board
+// with no uncovered slice must be untouched by arming it, counter included.
+TEST(CurveFitCoverage, DemotionFlagDoesNotDisturbACoveredBoard) {
+  Underlying under;
+  under.spot = kSpot;
+  under.chains.push_back(make_two_sided_chain(0.25));
+  under.chains.push_back(make_two_sided_chain(0.50));
+
+  SurfaceParityInputs in = coverage_inputs();
+  in.calib.per_slice_uncovered_parametric = true;
+
+  const auto rep = fit_curve_surface(under, in, CurveConfig{});
+  ASSERT_TRUE(rep.has_value()) << rep.error().to_string();
+  EXPECT_EQ(rep->n_slices, 2u);
+  EXPECT_EQ(rep->n_slices_uncovered, 0u);
+  EXPECT_EQ(rep->n_slices_uncovered_parametric, 0u);
+  for (const auto &er : rep->expiry_reports) {
+    EXPECT_EQ(er.outcome, ExpiryFitOutcome::Fitted);
+  }
+}
+
 TEST(CurveFitCoverage, WellCoveredBoardIsUntouched) {
   Underlying under;
   under.spot = kSpot;

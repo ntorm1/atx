@@ -185,6 +185,14 @@ struct ChainPrepass {
   // axes, and a slice can be rescued on both — so it is its own flag rather
   // than another `SlicePrepOutcome` enumerator.
   bool itm_leg_rescued = false;
+  // Fitter stability: this slice FAILED the ConvexDense k-coverage predicate but
+  // was retained for parametric demotion rather than dropped
+  // (`CalibOpts::per_slice_uncovered_parametric`). Orthogonal to `prep_outcome`
+  // — preparation SUCCEEDED, so the outcome stays `Prepared`/`PreparedLegacyRescue`
+  // and only the family this slice may be fitted with is restricted. Always false
+  // when the flag is off, where the refusal still sets `prep_outcome = Uncovered`
+  // and clears `usable`.
+  bool k_uncovered = false;
 };
 
 // W2-B: the board-level refusal string. `NotFound: no expiry produced a usable
@@ -555,10 +563,21 @@ void prepare_fit_slice_into_slot(const Chain &chain, const SurfaceParityInputs &
   // extrapolated. Refuse such slices into the same truthful-drop lane as
   // Starved. ConvexDense only: every other family's population and admission
   // are byte-identical.
+  //
+  // Fitter stability: the predicate is a hard boolean over an ORDER STATISTIC of
+  // the surviving rows (removing one row MERGES two adjacent gaps), so DELETING
+  // the expiry on it makes the surface's composition flip on a single quote.
+  // Under `per_slice_uncovered_parametric` the slice is retained and demoted to
+  // the parametric backbone in phase 2 instead — the dense chord the predicate
+  // exists to prevent is still never drawn, because the demoted slice is not
+  // fitted with ConvexDense at all.
   if (kind == VolCurveKind::ConvexDense &&
       !slice_k_coverage(prepared->fit_observations()).admissible()) {
-    slot.prep_outcome = SlicePrepOutcome::Uncovered;
-    return;
+    if (!in.calib.per_slice_uncovered_parametric) {
+      slot.prep_outcome = SlicePrepOutcome::Uncovered;
+      return;
+    }
+    slot.k_uncovered = true;
   }
 
   slot.prepared.emplace(std::move(*prepared));
@@ -1016,6 +1035,22 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
     const PreparedSlice &prepared = *pre.prepared;
     out.n_score_inversions += prepared.provenance().n_score_inversions;
 
+    // Fitter stability: a slice retained by the k-coverage demotion serves the
+    // parsimonious parametric backbone, never the dense family whose chord /
+    // power tails across the hole the predicate refused. Everything downstream
+    // in this iteration — the calendar-authority branch, the fit, the linear
+    // fallback, and the parity cache policy — reads `slice_cfg`, so the demoted
+    // slice is treated as an eSSVI slice in full, not a ConvexDense slice fitted
+    // by another family. `k_uncovered` is only ever set behind the flag.
+    const CurveConfig slice_cfg = [&] {
+      if (!pre.k_uncovered) {
+        return cfg;
+      }
+      CurveConfig demoted = cfg;
+      demoted.kind = VolCurveKind::Essvi;
+      return demoted;
+    }();
+
     // 3. Fit the configured curve kind from the European obs.
     //    Calendar floor: previous fitted slice's total variance (ascending T).
     //    Guard on the prior slice's T so a non-ascending input degrades to
@@ -1042,7 +1077,7 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
       if (const auto *sp = dynamic_cast<const SplineVolCurve *>(prev); sp != nullptr) {
         prev_data_k_range = sp->data_k_range();
       }
-      if (cfg.kind == VolCurveKind::ConvexDense && last_committed_covered) {
+      if (slice_cfg.kind == VolCurveKind::ConvexDense && last_committed_covered) {
         // D1 (Task 6): coverage-admissible prev => unbounded floor authority.
         // ConvexDense only: prev_data_k_range also feeds the parametric arms'
         // tradeable_pair_band, whose semantics must not change.
@@ -1063,7 +1098,7 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
     // entry, so a slice that fails leaves it default ("not known") rather than
     // carrying the previous expiry's — this struct is reused across the walk.
     FitDiag slice_diag{};
-    auto slice_res = fit_slice_curve(cfg, prepared.fit_observations(), F, T, df, w_prev,
+    auto slice_res = fit_slice_curve(slice_cfg, prepared.fit_observations(), F, T, df, w_prev,
                                      calendar_floor_knots, prev_data_k_range, &slice_diag);
     if (time_stages) {
       ms_fit_slice += elapsed_ms(t_slice0, ProfileClock::now());
@@ -1080,8 +1115,8 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
       // numerical-sanity check is bypassed. Gated on `per_slice_linear_fallback`
       // and skipped when the primary kind is already LinearVariance, so the
       // default path (flag off) is byte-identical to the historical drop.
-      if (in.calib.per_slice_linear_fallback && cfg.kind != VolCurveKind::LinearVariance) {
-        CurveConfig fallback_cfg = cfg;
+      if (in.calib.per_slice_linear_fallback && slice_cfg.kind != VolCurveKind::LinearVariance) {
+        CurveConfig fallback_cfg = slice_cfg;
         fallback_cfg.kind = VolCurveKind::LinearVariance;
         // Calendar consistency for the inserted linear slice: a LinearVariance
         // fit only floors w >= w_prev at its OWN nodes, so between/beyond those
@@ -1127,6 +1162,37 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
           slice_diag = fb_diag;
           ++out.n_slice_linear_fallback;
           used_linear_fallback = true;
+        }
+      }
+      // Fitter stability: the DOMINANT discontinuity measured on real boards is
+      // not family reselection and not the k-coverage predicate — it is THIS
+      // drop. A dense slice that marginally fails its own fit admission is
+      // silently removed from the surface ("a slice that fails to fit
+      // contributes no slice"), so a negligible input change flips the expiry
+      // between present and absent. Measured on SP100 2025-09-11: 45 of 905
+      // expiry slots flipped `Fitted <-> Missing` under a provably-negligible
+      // de-Am perturbation (29 one way, 16 the other), every one a ConvexDense
+      // slice, while ZERO boards changed curve family.
+      //
+      // Same remedy as the coverage refusal above, and deliberately the same
+      // family: demote THAT SLICE to the parsimonious parametric backbone rather
+      // than deleting the expiry. The demoted fit re-enters `fit_slice_curve`
+      // with an unchanged config except `kind`, so it faces the SAME admission
+      // (including the calendar floor against the prior slice) as any eSSVI
+      // slice — a slice that cannot be fitted by either family is still dropped.
+      if (!slice_res && in.calib.per_slice_uncovered_parametric &&
+          slice_cfg.kind != VolCurveKind::Essvi) {
+        CurveConfig demoted_cfg = slice_cfg;
+        demoted_cfg.kind = VolCurveKind::Essvi;
+        FitDiag demoted_diag{};
+        auto demoted_res =
+            fit_slice_curve(demoted_cfg, prepared.fit_observations(), F, T, df, w_prev,
+                            calendar_floor_knots, prev_data_k_range, &demoted_diag);
+        if (demoted_res) {
+          slice_res = std::move(demoted_res);
+          slice_diag = demoted_diag;
+          ++out.n_slices_fit_demoted_parametric;
+          used_linear_fallback = true; // FittedFallbackCurve: a different family serves
         }
       }
       if (!slice_res) {
@@ -1220,7 +1286,8 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
         // Re-Americanize through the same cache policy that produced the one
         // canonical European row. A cold fit must not score against a cached
         // inverse map (or vice versa).
-        pin.caches = allow_fit_cache(in, cfg.kind) ? in.deam.caches : AmericanCorrectionCaches{};
+        pin.caches =
+            allow_fit_cache(in, slice_cfg.kind) ? in.deam.caches : AmericanCorrectionCaches{};
         auto pr = chain_parity(score.strike, score.bid, score.ask, score.mid, score.side, model_iv,
                                score.market_iv, pin);
         // Witness the dof that was ACTUALLY scored by reading it back off the
@@ -1289,10 +1356,18 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
       rep.chain_index = ci;
       rep.maturity = T;
       rep.n_observations = prepared.fit_observations().size();
-      rep.outcome = used_linear_fallback ? ExpiryFitOutcome::FittedFallbackCurve
+      // A k-coverage demotion serves a DIFFERENT family than the board's
+      // configured one, which is exactly what `FittedFallbackCurve` names, so it
+      // shares that spelling with the linear fallback rather than inventing a
+      // second one. It is counted separately on the report.
+      rep.outcome = (used_linear_fallback || pre.k_uncovered)
+                        ? ExpiryFitOutcome::FittedFallbackCurve
                     : (pre.prep_outcome == SlicePrepOutcome::PreparedLegacyRescue)
                         ? ExpiryFitOutcome::FittedLegacyPrep
                         : ExpiryFitOutcome::Fitted;
+      if (pre.k_uncovered) {
+        ++out.n_slices_uncovered_parametric;
+      }
       rep.carry_source = pre.carry_source; // Decision B: Solved / TermStructureInterp/Extrap
       out.expiry_reports.push_back(rep);
     }
