@@ -6,6 +6,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <shared_mutex>
+#include <span>
+#include <vector>
 
 namespace atx::vol::carry_memo {
 
