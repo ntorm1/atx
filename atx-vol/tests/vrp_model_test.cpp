@@ -2777,10 +2777,11 @@ TEST_F(VrpTrainPipelineTest, PerSymbolEdgeNormIsReproducibleFromTheSidecarAlone)
   // RANKS on is a different axis from the column the IC is measured on, so its
   // rank IC diverges from the model's on EVERY target. Under cross-section the
   // two coincide (pinned by GateScoresEveryColumnOnAllThreeTargetAxes).
-  constexpr std::size_t kAxes = 3;
+  constexpr std::size_t kAxes = vrp::kVrpTargetAxes.size();
+  constexpr std::size_t kRankedCol = 5;
   ASSERT_EQ(ps->gate.pooled.size(), vrp::kVrpGateColumnCount * kAxes);
   for (std::size_t a = 0; a < kAxes; ++a) {
-    const auto &ranked = ps->gate.pooled[3 * kAxes + a];
+    const auto &ranked = ps->gate.pooled[kRankedCol * kAxes + a];
     EXPECT_EQ(ranked.name, "ranked_pred_edge_norm");
     EXPECT_NE(ranked.ic_spearman, ps->gate.pooled[a].ic_spearman);
   }
@@ -2836,29 +2837,37 @@ TEST(VrpTrainMath, CrossSectionEdgeNormEmitsZeroOnDegenerateDatesAndNeverNonFini
 
 // ── ROUND 4 F2/F3: the gate in the artifacts ────────────────────────────────
 
-TEST_F(VrpTrainPipelineTest, GateScoresEveryColumnOnAllThreeTargetAxes) {
+TEST_F(VrpTrainPipelineTest, GateScoresEveryColumnOnEveryTargetAxis) {
   const auto &gate = report_->gate;
-  constexpr std::size_t kAxes = 3;
+  constexpr std::size_t kAxes = vrp::kVrpTargetAxes.size();
   constexpr std::size_t kCols = vrp::kVrpGateColumnCount;
+  constexpr std::size_t kRankedCol = 5;
   ASSERT_EQ(gate.per_fold.size(), report_->folds.size());
   ASSERT_EQ(gate.pooled.size(), kCols * kAxes);
   ASSERT_EQ(gate.pooled_pnl.size(), kCols);
-  // Column order and kinds: the model on trial, the fitted baseline, the ONE
-  // surviving zero-parameter benchmark, the column the BOOK actually ranks on,
-  // and -- last, and structurally non-gating -- the contaminated appendix.
+  ASSERT_EQ(gate.pooled_vega.size(), kCols);
+  // Column order and kinds: the model on trial, the fitted baseline, the three
+  // surviving zero-parameter benchmarks, the column the BOOK actually ranks on,
+  // and -- last, and structurally non-gating -- the two contaminated appendices.
   const std::array<std::pair<std::string, vrp::VrpScoreKind>, kCols> expect_cols{
       std::pair{std::string{"gbt"}, vrp::VrpScoreKind::Model},
       std::pair{std::string{"baseline_log_har"}, vrp::VrpScoreKind::Baseline},
       std::pair{std::string{"bench_hv_iv_gap"}, vrp::VrpScoreKind::Benchmark},
+      std::pair{std::string{"bench_neg_iv_atmf_21d"}, vrp::VrpScoreKind::Benchmark},
+      std::pair{std::string{"bench_term_slope"}, vrp::VrpScoreKind::Benchmark},
       std::pair{std::string{"ranked_pred_edge_norm"}, vrp::VrpScoreKind::Ranked},
       std::pair{std::string{"contaminated_neg_iv_fair_21d"},
+                vrp::VrpScoreKind::Contaminated},
+      std::pair{std::string{"contaminated_iv63_minus_iv_atmf21"},
                 vrp::VrpScoreKind::Contaminated}};
-  const std::array<vrp::VrpTargetAxis, kAxes> expect_axes{vrp::VrpTargetAxis::RvFwd,
-                                                          vrp::VrpTargetAxis::VolChg,
-                                                          vrp::VrpTargetAxis::Label};
+  const std::array<vrp::VrpTargetAxis, kAxes> expect_axes{
+      vrp::VrpTargetAxis::RvFwd, vrp::VrpTargetAxis::VolChg, vrp::VrpTargetAxis::Label,
+      vrp::VrpTargetAxis::IvChgRaw, vrp::VrpTargetAxis::IvChgRoll};
   for (std::size_t c = 0; c < kCols; ++c) {
     EXPECT_EQ(gate.pooled_pnl[c].name, expect_cols[c].first);
     EXPECT_EQ(gate.pooled_pnl[c].kind, expect_cols[c].second);
+    EXPECT_EQ(gate.pooled_vega[c].name, expect_cols[c].first);
+    EXPECT_EQ(gate.pooled_vega[c].kind, expect_cols[c].second);
     for (std::size_t a = 0; a < kAxes; ++a) {
       const auto &s = gate.pooled[c * kAxes + a];
       EXPECT_EQ(s.name, expect_cols[c].first);
@@ -2866,11 +2875,11 @@ TEST_F(VrpTrainPipelineTest, GateScoresEveryColumnOnAllThreeTargetAxes) {
       EXPECT_EQ(s.target, expect_axes[a]);
     }
   }
-  // ONE benchmark. -iv_fair_21d is scored and published and counts for
-  // nothing: it is +1.0000 correlated with the label's own implied leg by
-  // algebra, and every round-4 verdict issued against it is void.
-  EXPECT_EQ(gate.verdict.n_benchmarks, 1u);
-  EXPECT_EQ(gate.verdict.best_benchmark, "bench_hv_iv_gap");
+  // THREE benchmarks. Neither contaminated column counts: -iv_fair_21d is
+  // +1.0000 correlated with the label's own implied leg by algebra, and
+  // iv_fair_63d - iv_atmf_21d carries the iv-change target's own entry mark.
+  EXPECT_EQ(gate.verdict.n_benchmarks, 3u);
+  EXPECT_EQ(gate.vega_verdict.n_benchmarks, 3u);
   // The primary axis is the REALIZED leg, and it is a different number from
   // the contaminated composite -- which is the entire point of grading both.
   EXPECT_NE(gate.pooled[0].ic_spearman, gate.pooled[2].ic_spearman);
@@ -2880,16 +2889,42 @@ TEST_F(VrpTrainPipelineTest, GateScoresEveryColumnOnAllThreeTargetAxes) {
   // map of pred_label WITHIN each date, so its per-date rank IC and its decile
   // tails must coincide with the model's -- the round-1..3 gap between the
   // scored column and the traded one closes to zero by construction. Holds on
-  // every axis, because the transform is on the SCORE side.
-  for (std::size_t a = 0; a < kAxes; ++a) {
-    EXPECT_NEAR(gate.pooled[3 * kAxes + a].ic_spearman, gate.pooled[a].ic_spearman, 1e-9);
+  // every MEASURABLE axis, because the transform is on the SCORE side. This
+  // fixture is a vrp_panel_v1 file, so the two iv-change axes carry no ATM-
+  // forward leg at all -- asserted below rather than skipped silently.
+  constexpr std::size_t kMeasurableAxes = 3;
+  for (std::size_t a = 0; a < kMeasurableAxes; ++a) {
+    EXPECT_NEAR(gate.pooled[kRankedCol * kAxes + a].ic_spearman, gate.pooled[a].ic_spearman,
+                1e-9);
     // Pearson is invariant to a positive affine map, so the PER-DATE Pearson
     // IC coincides too. The pooled-across-dates Pearson deliberately does NOT:
     // the z-score is date-specific, which is exactly why a pooled-row
     // correlation is the wrong statistic for a per-date cross-sectional book.
-    EXPECT_NEAR(gate.pooled[3 * kAxes + a].ic_pearson, gate.pooled[a].ic_pearson, 1e-9);
-    EXPECT_NE(gate.pooled[3 * kAxes + a].ic_pearson_pooled, gate.pooled[a].ic_pearson_pooled);
+    EXPECT_NEAR(gate.pooled[kRankedCol * kAxes + a].ic_pearson, gate.pooled[a].ic_pearson,
+                1e-9);
+    EXPECT_NE(gate.pooled[kRankedCol * kAxes + a].ic_pearson_pooled,
+              gate.pooled[a].ic_pearson_pooled);
   }
+  // A v1 panel has no ATM-forward leg, so BOTH iv-change axes and the whole
+  // vega book are undefined -- never quietly built on iv_fair_21d, which is the
+  // variance-swap strip strike and sits ~4.24 vol points above the ATMF point.
+  // The vega gate therefore FAILS, because an unmeasurable run is not a passing
+  // one.
+  for (std::size_t c = 0; c < kCols; ++c) {
+    for (std::size_t a = kMeasurableAxes; a < kAxes; ++a) {
+      const auto &s = gate.pooled[c * kAxes + a];
+      EXPECT_TRUE(std::isnan(s.ic_pearson)) << c << ',' << a;
+      EXPECT_TRUE(std::isnan(s.ic_spearman)) << c << ',' << a;
+      EXPECT_EQ(s.n_dates, 0u) << c << ',' << a;
+    }
+    EXPECT_TRUE(std::isnan(gate.pooled_vega[c].decile.net.mean)) << c;
+    EXPECT_TRUE(std::isnan(gate.pooled_vega[c].iv_neutral.excess)) << c;
+  }
+  EXPECT_TRUE(std::isnan(gate.pooled_vega_floor.long_all.mean));
+  EXPECT_TRUE(std::isnan(gate.pooled_vega_floor.short_all.mean));
+  EXPECT_FALSE(gate.vega_verdict.pass);
+  EXPECT_EQ(gate.n_iv_chg_rows_no_exit + gate.n_iv_chg_rows,
+            report_->panel.rows.size());
   // This fixture carries 3 names per date, below the one-name-per-decile floor
   // AND below the two-names-per-IV-quintile floor, so every tail and every
   // book is UNDEFINED rather than fabricated from three names. The floor
@@ -2916,9 +2951,23 @@ TEST_F(VrpTrainPipelineTest, GateScoresEveryColumnOnAllThreeTargetAxes) {
     ASSERT_EQ(gate.per_fold[i].pnl.size(), kCols);
     EXPECT_EQ(gate.per_fold[i].fold_id, report_->folds[i].fold_id);
     EXPECT_TRUE(std::isfinite(gate.per_fold[i].floor.mean));
-    for (const auto &s : gate.per_fold[i].scores) {
+    ASSERT_EQ(gate.per_fold[i].vega.size(), kCols);
+    for (std::size_t k = 0; k < gate.per_fold[i].scores.size(); ++k) {
+      const auto &s = gate.per_fold[i].scores[k];
       EXPECT_EQ(s.n_rows, report_->folds[i].n_test);
-      EXPECT_GT(s.n_dates, 0u);
+      // On this v1 fixture nothing that touches iv_atmf_21d is measurable:
+      // neither the two iv-change AXES nor the two COLUMNS built from that
+      // leg (bench_neg_iv_atmf_21d, contaminated_iv63_minus_iv_atmf21). Both
+      // kinds of hole are asserted, not skipped -- an undefined statistic that
+      // silently reads as zero is the failure mode this gate exists to stop.
+      const std::size_t col = k / kAxes;
+      const bool col_needs_atmf = (col == 3 || col == 7);
+      const bool axis_needs_atmf = (k % kAxes) >= kMeasurableAxes;
+      if (col_needs_atmf || axis_needs_atmf) {
+        EXPECT_EQ(s.n_dates, 0u) << k;
+      } else {
+        EXPECT_GT(s.n_dates, 0u) << k;
+      }
     }
     // MSE / Mincer-Zarnowitz are LABEL-unit claims: populated for the model
     // and the baseline ON THE LABEL AXIS ONLY. A level loss against
@@ -2969,7 +3018,33 @@ TEST_F(VrpTrainPipelineTest, MetricsFileCarriesTheGateVerdictBenchmarkTableAndCo
   };
   has(std::string("# gate_verdict=") + (gate.verdict.pass ? "PASS" : "FAIL") + "\n");
   has("# gate_model=gbt\n");
-  has("# gate_n_benchmarks=1\n");
+  has("# gate_n_benchmarks=3\n");
+  // The round-5 vega gate is emitted beside the variance one, with its own
+  // rule, its own target axis, and the two honesty lines that keep the raw
+  // iv-change axis and the surface-read EIV channel from being read as edge.
+  has("# vega_gate_verdict=");
+  has("# vega_gate_primary_target=iv_chg_21d_roll\n");
+  has("# vega_target_raw_axis_is_not_a_pnl=");
+  has("# vega_target_eiv_caveat=");
+  has("# vega_cost_one_way_frac_of_premium=" +
+      vrp::detail::fmt_double(vrp::kVrpVegaOneWayCostFracOfPremium) + "\n");
+  has("# vega_short_haircut=" + vrp::detail::fmt_double(vrp::kVrpDefaultShortVegaHaircut) +
+      "\n");
+  has("# gate_pooled_vega_floor_long_everything_net_vol_pts=");
+  has("# gate_pooled_vega_floor_short_everything_net_vol_pts=");
+  has("# gate_pooled_vega_floor_binding=");
+  // Gross, cost and net travel together, and the leg split is never optional.
+  for (const std::string &stat :
+       {std::string{"gross_vol_pts"}, std::string{"cost_vol_pts"},
+        std::string{"net_vol_pts"}, std::string{"excess_over_vega_floor"},
+        std::string{"long_leg_net_vol_pts"}, std::string{"long_leg_net_vol_pts_t_nw"},
+        std::string{"short_leg_net_vol_pts"}, std::string{"short_leg_net_vol_pts_t_nw"},
+        std::string{"long_leg_excess_over_long_everything"},
+        std::string{"short_leg_excess_over_short_everything"},
+        std::string{"haircut_objective_vol_pts"}}) {
+    has("# gate_pooled_gbt_vega_decile_" + stat + "=");
+    has("# gate_pooled_gbt_vega_iv_neutral_" + stat + "=");
+  }
   has("# gate_best_benchmark=" + gate.verdict.best_benchmark + "\n");
   // The corrections are stamped on the artifact so a stale reader cannot
   // mistake this file for a round-4 one, and so the reason -iv_fair_21d is
@@ -3058,6 +3133,404 @@ TEST_F(VrpTrainPipelineTest, MetricsFileCarriesTheGateVerdictBenchmarkTableAndCo
       has(p + "ic_spearman_t_nw=" + vrp::detail::fmt_double(s.ic_spearman_t_nw) + "\n");
     }
   }
+}
+
+// ── ROUND 5: the tradeable vol-change target and the VEGA book ──────────────
+
+namespace {
+
+// Build a tiny panel in memory: `n_dates` sessions x `syms` symbols, with the
+// caller filling iv_atmf / iv_fair / iv63 per (date, symbol). Everything the
+// iv-change target reads is target-side, so no feature plumbing is needed.
+struct MiniPanelSpec {
+  std::size_t n_dates{0};
+  std::size_t n_syms{0};
+  std::function<double(std::size_t, std::size_t)> iv_atmf;
+  std::function<double(std::size_t, std::size_t)> iv_fair;
+  std::function<double(std::size_t, std::size_t)> iv63;
+  // Return false to DROP the (date, symbol) row, which is how a surface gap --
+  // and therefore a missing exit mark -- is expressed.
+  std::function<bool(std::size_t, std::size_t)> keep;
+};
+
+[[nodiscard]] vrp::VrpPanel make_mini_panel(const MiniPanelSpec &spec) {
+  vrp::VrpPanel p;
+  for (std::size_t d = 0; d < spec.n_dates; ++d) {
+    for (std::size_t s = 0; s < spec.n_syms; ++s) {
+      if (spec.keep && !spec.keep(d, s)) {
+        continue;
+      }
+      vrp::VrpPanelRow r;
+      r.symbol = "S" + std::to_string(s);
+      r.date = "D" + std::to_string(d);
+      r.entry_ts_ns = static_cast<std::int64_t>(d) * 86400000000000LL;
+      r.spot = 100.0;
+      r.iv_atmf_21d = spec.iv_atmf ? spec.iv_atmf(d, s) : 0.30;
+      r.iv_fair_21d = spec.iv_fair ? spec.iv_fair(d, s) : 0.31;
+      r.iv_fair_63d = spec.iv63 ? spec.iv63(d, s) : 0.31;
+      r.rv_fwd_21d = 0.30;
+      r.label = 0.0;
+      r.f.fill(0.0);
+      p.rows.push_back(std::move(r));
+    }
+  }
+  std::sort(p.rows.begin(), p.rows.end(),
+            [](const vrp::VrpPanelRow &a, const vrp::VrpPanelRow &b) {
+              if (a.entry_ts_ns != b.entry_ts_ns) {
+                return a.entry_ts_ns < b.entry_ts_ns;
+              }
+              return a.symbol < b.symbol;
+            });
+  for (const vrp::VrpPanelRow &r : p.rows) {
+    p.symbols.push_back(r.symbol);
+  }
+  std::sort(p.symbols.begin(), p.symbols.end());
+  p.symbols.erase(std::unique(p.symbols.begin(), p.symbols.end()), p.symbols.end());
+  for (const vrp::VrpPanelRow &r : p.rows) {
+    const auto it = std::lower_bound(p.symbols.begin(), p.symbols.end(), r.symbol);
+    p.row_symbol.push_back(static_cast<std::size_t>(it - p.symbols.begin()));
+  }
+  return p;
+}
+
+} // namespace
+
+// The target is a horizon-matched forward MARK, not a smoothed one: the exit
+// row must exist at exactly +H pooled sessions or the row is undefined.
+TEST(VrpTrainVega, IvChgTargetIsTheExactHorizonForwardMarkMinusItsRollLeg) {
+  MiniPanelSpec spec;
+  spec.n_dates = 30;
+  spec.n_syms = 2;
+  // S0: iv rises 0.001/session. S1: iv falls 0.002/session.
+  spec.iv_atmf = [](std::size_t d, std::size_t s) {
+    return s == 0 ? 0.20 + 0.001 * static_cast<double>(d)
+                  : 0.50 - 0.002 * static_cast<double>(d);
+  };
+  spec.iv_fair = [](std::size_t, std::size_t s) { return s == 0 ? 0.22 : 0.52; };
+  spec.iv63 = [](std::size_t, std::size_t s) { return s == 0 ? 0.26 : 0.50; };
+  // Punch a hole in S1's session 25 -- so S1's session 4 loses its exit mark.
+  spec.keep = [](std::size_t d, std::size_t s) { return !(s == 1 && d == 25); };
+  const vrp::VrpPanel panel = make_mini_panel(spec);
+
+  const vrp::VrpIvChgTargets t = vrp::vrp_build_iv_chg(panel, 21);
+
+  // S0 @ d=0 -> d=21: 100*(0.221 - 0.200) = 2.1 vol pts raw.
+  // roll leg = 100*(0.26 - 0.22)/2 = 2.0  =>  roll-adjusted 0.1.
+  std::size_t s0d0 = panel.rows.size();
+  std::size_t s1d4 = panel.rows.size();
+  for (std::size_t i = 0; i < panel.rows.size(); ++i) {
+    if (panel.rows[i].symbol == "S0" && panel.rows[i].date == "D0") {
+      s0d0 = i;
+    }
+    if (panel.rows[i].symbol == "S1" && panel.rows[i].date == "D4") {
+      s1d4 = i;
+    }
+  }
+  ASSERT_LT(s0d0, panel.rows.size());
+  ASSERT_LT(s1d4, panel.rows.size());
+  EXPECT_NEAR(t.raw[s0d0], 2.1, 1e-9);
+  EXPECT_NEAR(t.roll[s0d0], 0.1, 1e-9);
+  // S1 @ d=4 wanted the dropped session 25: UNDEFINED, never interpolated to
+  // the neighbouring session, which would silently shorten the horizon.
+  EXPECT_TRUE(std::isnan(t.raw[s1d4]));
+  EXPECT_TRUE(std::isnan(t.roll[s1d4]));
+  // S0 keeps 30 rows and 9 of them (d=0..8) reach d+21 <= 29, so 21 do not.
+  // S1 keeps 29 rows (session 25 dropped) and 8 reach an exit -- d=4 is the one
+  // that loses it -- so 21 do not. The dropped row is not a row and is not
+  // counted anywhere: a gap costs the rows that POINT at it, nothing else.
+  EXPECT_EQ(t.n_rows_with_exit, static_cast<std::size_t>(9 + 8));
+  EXPECT_EQ(t.n_rows_no_exit, static_cast<std::size_t>(21 + 21));
+}
+
+// A v1 panel carries no ATM-forward leg, so every iv-change axis must be
+// UNDEFINED rather than silently substituting the variance-swap strip strike.
+TEST(VrpTrainVega, AV1PanelLeavesEveryIvChangeAxisUndefined) {
+  MiniPanelSpec spec;
+  spec.n_dates = 25;
+  spec.n_syms = 2;
+  spec.iv_atmf = [](std::size_t, std::size_t) {
+    return std::numeric_limits<double>::quiet_NaN(); // what load_vrp_panel leaves on v1
+  };
+  const vrp::VrpPanel panel = make_mini_panel(spec);
+  const vrp::VrpIvChgTargets t = vrp::vrp_build_iv_chg(panel, 21);
+  EXPECT_GT(t.n_rows_with_exit, 0u); // the JOIN succeeded
+  for (std::size_t i = 0; i < t.raw.size(); ++i) {
+    EXPECT_TRUE(std::isnan(t.raw[i])) << i; // the VALUE did not
+    EXPECT_TRUE(std::isnan(t.roll[i])) << i;
+  }
+}
+
+// THE CONTAMINATION CHECK, as an executable contract.
+//
+// -iv_atmf_21d[t] is a PERFECT rank transform of the target's KNOWN leg -- the
+// same +1.0000 algebraic relation -iv_fair_21d had to the old label's implied
+// leg. That much is unavoidable for any difference target and is not by itself
+// disqualifying. What WOULD disqualify it is the same +1.0000 against the
+// TARGET, and that is a measurement, not an identity: it depends entirely on
+// how the forward leg moves, so a fixture can drive it to +1, to -1, or to 0
+// with the entry leg held fixed. This test pins all three.
+TEST(VrpTrainVega, NegIvAtmfIsAnIdentityOnTheKnownLegButNotOnTheTarget) {
+  const std::vector<double> iv_t{0.20, 0.30, 0.40, 0.50};
+  const std::vector<double> neg_iv_t{-0.20, -0.30, -0.40, -0.50};
+  // The known leg: E_t[iv_fwd] - iv_t. The date constant cannot change ranks.
+  std::vector<double> known_leg;
+  for (const double v : iv_t) {
+    known_leg.push_back(0.35 - v);
+  }
+  EXPECT_NEAR(vrp::vrp_spearman(neg_iv_t, known_leg), 1.0, 1e-12);
+
+  // Forward leg case A -- perfect mean reversion (everything to 0.35):
+  // the target IS the known leg, so the identity carries through.
+  std::vector<double> tgt_a;
+  for (const double v : iv_t) {
+    tgt_a.push_back(0.35 - v);
+  }
+  EXPECT_NEAR(vrp::vrp_spearman(neg_iv_t, tgt_a), 1.0, 1e-12);
+  // Case B -- a cross-sectional random walk: iv_fwd = iv_t + an idiosyncratic
+  // shift whose ranks (2,4,1,3) are orthogonal to the entry level's. The SAME
+  // entry leg now scores EXACTLY ZERO. This is the case the whole check turns
+  // on: if implied vol did not mean-revert cross-sectionally, -iv_atmf_21d
+  // would carry no information about the target at all.
+  const std::vector<double> tgt_b{-0.01, 0.03, -0.02, 0.01};
+  EXPECT_NEAR(vrp::vrp_spearman(neg_iv_t, tgt_b), 0.0, 1e-12);
+  // Case C -- momentum (high implied goes higher): the SAME entry leg now
+  // scores -1. A quantity that can be -1 is not an algebraic identity.
+  std::vector<double> tgt_c;
+  for (const double v : iv_t) {
+    tgt_c.push_back(0.5 * v);
+  }
+  EXPECT_NEAR(vrp::vrp_spearman(neg_iv_t, tgt_c), -1.0, 1e-12);
+}
+
+// THE ROLL LEG EARNS ITS PLACE: under a frozen (sticky-expiry) surface the raw
+// axis IS the term slope by construction, and the roll adjustment removes it
+// exactly. A gate on the raw axis would be grading a carry identity.
+TEST(VrpTrainVega, RollAdjustmentRemovesAStickyExpiryTermStructureRoll) {
+  // Sticky-expiry, linear-in-tenor: iv_atmf_21d(t+21) == iv_42d(t) ==
+  // iv_21d(t) + (iv63(t)-iv21(t))/2 for every name, with a different slope per
+  // name so the slope has cross-sectional dispersion to rank on.
+  const std::size_t n_syms = 12;
+  MiniPanelSpec spec;
+  spec.n_dates = 43;
+  spec.n_syms = n_syms;
+  const auto slope = [](std::size_t s) {
+    return -0.06 + 0.01 * static_cast<double>(s); // spans backwardation..contango
+  };
+  spec.iv_fair = [](std::size_t, std::size_t s) {
+    return 0.25 + 0.005 * static_cast<double>(s);
+  };
+  spec.iv63 = [&slope](std::size_t, std::size_t s) {
+    return 0.25 + 0.005 * static_cast<double>(s) + slope(s);
+  };
+  // The ATMF point rides the entry-date curve forward and nothing else moves.
+  spec.iv_atmf = [&slope](std::size_t d, std::size_t s) {
+    return 0.25 + 0.005 * static_cast<double>(s) +
+           0.5 * slope(s) * static_cast<double>(d) / 21.0;
+  };
+  const vrp::VrpPanel panel = make_mini_panel(spec);
+  const vrp::VrpIvChgTargets t = vrp::vrp_build_iv_chg(panel, 21);
+
+  // The gate's statistic is CROSS-SECTIONAL (per date), so the fixture is read
+  // one date at a time. Pooling would tie every date's term slope for a given
+  // name against raw values that differ in their last bits, which is a
+  // tie-handling artifact rather than a statement about the roll.
+  std::vector<double> term_slope;
+  std::vector<double> raw;
+  std::vector<double> roll;
+  const std::int64_t first_ts = panel.rows.front().entry_ts_ns;
+  for (std::size_t i = 0; i < panel.rows.size(); ++i) {
+    if (panel.rows[i].entry_ts_ns != first_ts || !std::isfinite(t.roll[i])) {
+      continue;
+    }
+    term_slope.push_back(panel.rows[i].iv_fair_63d - panel.rows[i].iv_fair_21d);
+    raw.push_back(t.raw[i]);
+    roll.push_back(t.roll[i]);
+  }
+  ASSERT_EQ(raw.size(), n_syms);
+  // On the RAW axis the free term slope is a PERFECT predictor -- +1.0000, by
+  // carry accounting, on any dataset in which the surface does not move...
+  EXPECT_NEAR(vrp::vrp_spearman(term_slope, raw), 1.0, 1e-12);
+  // ...and on the roll-adjusted axis there is nothing left of it at all.
+  for (const double v : roll) {
+    EXPECT_NEAR(v, 0.0, 1e-9);
+  }
+}
+
+// The vega book charges a round trip on BOTH legs, splits its P&L by vega
+// sign, and quotes the pair per 1u GROSS vega (i.e. halved).
+TEST(VrpTrainVega, VegaBookChargesARoundTripOnBothLegsAndSplitsByVegaSign) {
+  // 10 names on one date so the decile buckets hold exactly one name each.
+  std::vector<std::int64_t> ts(10, 1000);
+  std::vector<double> score;
+  std::vector<double> target;
+  std::vector<double> iv(10, 0.40);
+  for (std::size_t i = 0; i < 10; ++i) {
+    score.push_back(static_cast<double>(i));
+    target.push_back(static_cast<double>(i) - 4.5); // -4.5 .. +4.5 vol pts
+  }
+  const vrp::VrpVegaLegs legs = vrp::vrp_vega_book_per_date(ts, score, target, iv);
+  ASSERT_EQ(legs.net.size(), 1u);
+  // Round-trip cost at iv = 0.40: 2 * 0.03205 * 40 = 2.564 vol pts per leg.
+  const double rt = 2.0 * vrp::vrp_vega_cost_one_way(0.40);
+  EXPECT_NEAR(rt, 2.564, 1e-12);
+  EXPECT_NEAR(legs.long_leg[0], 4.5 - rt, 1e-12);  // long the top name
+  EXPECT_NEAR(legs.short_leg[0], 4.5 - rt, 1e-12); // short the bottom (-4.5)
+  EXPECT_NEAR(legs.gross[0], 4.5, 1e-12);          // 0.5*(4.5 + 4.5)
+  EXPECT_NEAR(legs.cost[0], rt, 1e-12);
+  EXPECT_NEAR(legs.net[0], 4.5 - rt, 1e-12);
+  // Costs off reproduces the gross figure exactly, so the charge is visible.
+  const vrp::VrpVegaLegs free_legs =
+      vrp::vrp_vega_book_per_date(ts, score, target, iv, false);
+  EXPECT_NEAR(free_legs.net[0], 4.5, 1e-12);
+  EXPECT_NEAR(free_legs.cost[0], 0.0, 1e-12);
+}
+
+// A vega book is NOT structurally short vol, so its zero-selection bar is the
+// better of long-everything and short-everything -- picked ONCE from the whole
+// sample and then applied to every date, never per-date hindsight.
+TEST(VrpTrainVega, VegaFloorIsTheBetterOfLongAndShortEverythingChosenOnce) {
+  std::vector<std::int64_t> ts;
+  std::vector<double> target;
+  std::vector<double> iv;
+  // Two dates: implied rises 10 vol pts on the first, falls 4 on the second.
+  for (const double m : {10.0, -4.0}) {
+    for (std::size_t i = 0; i < 4; ++i) {
+      ts.push_back(m > 0.0 ? 1 : 2);
+      target.push_back(m);
+      iv.push_back(0.40);
+    }
+  }
+  const vrp::VrpVegaFloor f = vrp::vrp_vega_floor(ts, target, iv);
+  const double rt = 2.0 * vrp::vrp_vega_cost_one_way(0.40);
+  ASSERT_EQ(f.per_date_long.size(), 2u);
+  EXPECT_NEAR(f.per_date_long[0], 10.0 - rt, 1e-12);
+  EXPECT_NEAR(f.per_date_long[1], -4.0 - rt, 1e-12);
+  EXPECT_NEAR(f.per_date_short[0], -10.0 - rt, 1e-12);
+  EXPECT_NEAR(f.per_date_short[1], 4.0 - rt, 1e-12);
+  // Long everything means +3 - rt; short everything means -3 - rt. Long wins,
+  // and the SAME choice is applied to date 1 where long lost money.
+  EXPECT_TRUE(f.best_is_long);
+  EXPECT_NEAR(f.long_all.mean, 3.0 - rt, 1e-12);
+  EXPECT_NEAR(f.short_all.mean, -3.0 - rt, 1e-12);
+  EXPECT_NEAR(f.per_date_best[1], -4.0 - rt, 1e-12);
+}
+
+// THE ASYMMETRIC OBJECTIVE. A positive short-vega edge is discounted; a
+// short-vega LOSS is not -- otherwise the haircut would flatter a losing short
+// book by shrinking its loss.
+TEST(VrpTrainVega, ShortVegaHaircutDiscountsOnlyAPositiveShortLegEdge) {
+  vrp::VrpVegaLegs legs;
+  legs.gross = {6.0, 6.0};
+  legs.cost = {0.0, 0.0};
+  legs.net = {6.0, 6.0};
+  legs.long_leg = {2.0, 2.0};
+  legs.short_leg = {10.0, 10.0};
+  vrp::VrpVegaFloor floor;
+  floor.per_date_long = {0.0, 0.0};
+  floor.per_date_short = {0.0, 0.0};
+  floor.per_date_best = {0.0, 0.0};
+  const vrp::VrpVegaAgg a = vrp::vrp_vega_agg(legs, floor, 0.5);
+  EXPECT_NEAR(a.short_multiplier, 0.5, 1e-12);
+  EXPECT_NEAR(a.net.mean, 6.0, 1e-12);
+  EXPECT_NEAR(a.objective.mean, 0.5 * (2.0 + 0.5 * 10.0), 1e-12); // 3.5, not 6
+  EXPECT_NEAR(a.long_leg.mean, 2.0, 1e-12);
+  EXPECT_NEAR(a.short_leg.mean, 10.0, 1e-12);
+  EXPECT_NEAR(a.excess, 6.0, 1e-12);
+  EXPECT_NEAR(a.long_excess, 2.0, 1e-12);
+  EXPECT_NEAR(a.short_excess, 10.0, 1e-12);
+
+  // Flip the short leg negative: the haircut must NOT apply.
+  legs.short_leg = {-10.0, -10.0};
+  legs.net = {-4.0, -4.0};
+  const vrp::VrpVegaAgg b = vrp::vrp_vega_agg(legs, floor, 0.5);
+  EXPECT_NEAR(b.short_multiplier, 1.0, 1e-12);
+  EXPECT_NEAR(b.objective.mean, 0.5 * (2.0 - 10.0), 1e-12); // -4, undiscounted
+  // Haircut 0 is the undiscounted book on either sign.
+  const vrp::VrpVegaAgg c = vrp::vrp_vega_agg(legs, floor, 0.0);
+  EXPECT_NEAR(c.short_multiplier, 1.0, 1e-12);
+  EXPECT_NEAR(c.objective.mean, -4.0, 1e-12);
+}
+
+namespace {
+
+[[nodiscard]] vrp::VrpScoreReport make_iv_score(std::string name, vrp::VrpScoreKind kind,
+                                                double pearson, double spearman) {
+  vrp::VrpScoreReport s;
+  s.name = std::move(name);
+  s.kind = kind;
+  s.target = vrp::VrpTargetAxis::IvChgRoll;
+  s.ic_pearson = pearson;
+  s.ic_spearman = spearman;
+  return s;
+}
+
+[[nodiscard]] vrp::VrpVegaReport make_iv_vega(std::string name, double iv_neutral_excess) {
+  vrp::VrpVegaReport v;
+  v.name = std::move(name);
+  v.iv_neutral.excess = iv_neutral_excess;
+  return v;
+}
+
+} // namespace
+
+// The vega gate is exactly as strict as the variance gate, is gated on the
+// ROLL-ADJUSTED axis only, and fails closed on everything the variance gate
+// fails closed on.
+TEST(VrpTrainVega, VegaGateIsStrictOnTheRollAxisAndFailsClosed) {
+  vrp::VrpVegaFloor floor;
+  floor.long_all.mean = 2.1;
+  floor.best_is_long = true;
+
+  // Model beats the one benchmark on both ICs and on money, and its own excess
+  // is positive: PASS.
+  std::vector<vrp::VrpScoreReport> s{
+      make_iv_score("gbt", vrp::VrpScoreKind::Model, 0.20, 0.20),
+      make_iv_score("bench_term_slope", vrp::VrpScoreKind::Benchmark, 0.10, 0.10)};
+  std::vector<vrp::VrpVegaReport> v{make_iv_vega("gbt", 1.5),
+                                    make_iv_vega("bench_term_slope", 0.5)};
+  EXPECT_TRUE(vrp::vrp_vega_gate_verdict(s, v, floor).pass);
+
+  // Losing on money alone is a FAIL, however far ahead the ICs are.
+  v[0] = make_iv_vega("gbt", 0.4);
+  EXPECT_FALSE(vrp::vrp_vega_gate_verdict(s, v, floor).pass);
+
+  // A positive relative win with a NEGATIVE own excess is a FAIL: earning less
+  // than the zero-selection alternative is not selection.
+  v[0] = make_iv_vega("gbt", -0.1);
+  v[1] = make_iv_vega("bench_term_slope", -0.9);
+  EXPECT_FALSE(vrp::vrp_vega_gate_verdict(s, v, floor).pass);
+
+  // NaN anywhere is a FAIL.
+  v[0] = make_iv_vega("gbt", kNaN);
+  v[1] = make_iv_vega("bench_term_slope", 0.5);
+  EXPECT_FALSE(vrp::vrp_vega_gate_verdict(s, v, floor).pass);
+  v[0] = make_iv_vega("gbt", 1.5);
+  s[0].ic_spearman = kNaN;
+  EXPECT_FALSE(vrp::vrp_vega_gate_verdict(s, v, floor).pass);
+
+  // No benchmark at all is a FAIL: an ungraded run never reads as a passing one.
+  s = {make_iv_score("gbt", vrp::VrpScoreKind::Model, 0.20, 0.20)};
+  EXPECT_FALSE(vrp::vrp_vega_gate_verdict(s, v, floor).pass);
+
+  // A CONTAMINATED column cannot decide the verdict however well it scores --
+  // iv_fair_63d - iv_atmf_21d carries the target's own entry mark.
+  s = {make_iv_score("gbt", vrp::VrpScoreKind::Model, 0.05, 0.05),
+       make_iv_score("bench_term_slope", vrp::VrpScoreKind::Benchmark, 0.01, 0.01),
+       make_iv_score(std::string{vrp::kVrpScoreContamIvSlope},
+                     vrp::VrpScoreKind::Contaminated, 0.90, 0.90)};
+  v = {make_iv_vega("gbt", 1.5), make_iv_vega("bench_term_slope", 0.5),
+       make_iv_vega(std::string{vrp::kVrpScoreContamIvSlope}, 9.9)};
+  const vrp::VrpVegaGateVerdict got = vrp::vrp_vega_gate_verdict(s, v, floor);
+  EXPECT_TRUE(got.pass);
+  EXPECT_EQ(got.n_benchmarks, 1u);
+  EXPECT_EQ(got.best_benchmark, "bench_term_slope");
+
+  // The RV-axis model entry is invisible here: only IvChgRoll gates the vega.
+  std::vector<vrp::VrpScoreReport> wrong_axis{
+      make_iv_score("gbt", vrp::VrpScoreKind::Model, 0.20, 0.20),
+      make_iv_score("bench_term_slope", vrp::VrpScoreKind::Benchmark, 0.10, 0.10)};
+  wrong_axis[0].target = vrp::VrpTargetAxis::IvChgRaw;
+  EXPECT_FALSE(vrp::vrp_vega_gate_verdict(wrong_axis, v, floor).pass);
 }
 
 } // namespace

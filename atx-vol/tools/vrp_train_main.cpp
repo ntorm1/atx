@@ -30,7 +30,25 @@ void print_usage() {
             "                         [--edge-norm <cross-section|per-symbol>]\n"
             "                                                    (default cross-section)\n"
             "                         [--feature-lag <n>]        (default 0; <= 21)\n"
+            "                         [--short-vega-haircut <f>] (default 0.50; in [0,1])\n"
             "                         [--corpus <label>]         (default: panel file stem)\n"
+            "\n"
+            "--panel accepts vrp_panel_v1 (18 columns) and vrp_panel_v2 (v1 then\n"
+            "iv_atmf_21d, the ATM-FORWARD implied vol a straddle is struck and\n"
+            "marked at). The round-5 iv-change axes and the VEGA book need v2; on a\n"
+            "v1 panel they are undefined rather than silently built on the\n"
+            "variance-swap strip strike iv_fair_21d, which sits ~4.24 vol points\n"
+            "above the ATM-forward point on 99.5% of rows.\n"
+            "\n"
+            "--short-vega-haircut discounts a POSITIVE short-vega edge in the\n"
+            "asymmetric objective and NEVER discounts a short-vega loss. Short vol\n"
+            "carries unbounded single-name gap risk, negative skew and left-tail\n"
+            "correlation across names, and its Sharpe is exactly the payoff\n"
+            "Goetzmann-Ingersoll-Spiegel-Welch (RFS 2007) prove is maximised by\n"
+            "option selling that adds no value; Faias-Santa-Clara (JFQA 2017)\n"
+            "exhibit a Sharpe-0.47 option book with a certainty equivalent of\n"
+            "-100%. 0.50 is a STATED JUDGEMENT, not a measurement: it makes a\n"
+            "short-vega edge count half. 0 prints the undiscounted book.\n"
             "\n"
             "--edge-norm picks the basis pred_edge_norm standardizes on -- the column\n"
             "the VolEdge book RANKS on. cross-section (the round-4 DEFAULT)\n"
@@ -83,6 +101,37 @@ void print_usage() {
             "cross-section blind, computed from this run's own rows): raw carry is\n"
             "mostly short-vol beta, and quoting it alone is how that beta was read\n"
             "as selection skill for three rounds.\n"
+            "\n"
+            "ROUND 5 adds the TRADEABLE vol-change axes and a second, equally\n"
+            "strict VEGA GATE. iv_chg_21d_raw = 100*(iv_atmf_21d[t+21] -\n"
+            "iv_atmf_21d[t]) vol points. That RAW axis IS REPORTED AND NEVER GATED:\n"
+            "iv_atmf_21d is a CONSTANT-MATURITY index, the 21d option bought at t\n"
+            "has expired by t+21, and the strongest free predictor of the raw axis\n"
+            "is the term-structure roll a real constant-maturity position pays\n"
+            "(f4_term_slope scores rank IC +0.4764, t_nw +17.51, against the raw\n"
+            "axis and +0.2038 against the roll-adjusted one). iv_chg_21d_roll\n"
+            "subtracts that roll, 100*(iv_fair_63d[t]-iv_fair_21d[t])/2, and is the\n"
+            "ONLY iv-change axis the money is graded on.\n"
+            "\n"
+            "BOTH LEGS OF THE IV-CHANGE TARGET ARE FITTED SURFACE READS, so any\n"
+            "predictor built from the same ENTRY read inherits its error with the\n"
+            "target's own sign. Measured: -iv_atmf_21d scores +0.2537 read at t and\n"
+            "+0.1182 read at t-2; rebuilding the TARGET with a t-2 entry leg moves\n"
+            "the advantage to -iv_atmf_21d[t-2] (+0.2535) from -iv_atmf_21d[t]\n"
+            "(+0.1068). Whichever surface read sits inside the target is the one\n"
+            "that scores. Run --feature-lag 2 before trusting any level-ranked\n"
+            "column on these axes (Duarte-Jones-Wang errors-in-variables).\n"
+            "\n"
+            "VEGA P&L is vol points per 1u GROSS vega per cycle, NET OF COSTS:\n"
+            "a one-way charge of 3.205% of premium (Christoffersen-Goyenko-Jacobs-\n"
+            "Karoui RFS 2018 ATM effective relative spread, halved) times 100*iv,\n"
+            "charged at entry AND exit. Its floor is NOT short-everything -- a\n"
+            "vega book is not structurally short vol -- but the better of LONG\n"
+            "everything and SHORT everything, chosen once from this run's own rows\n"
+            "and published with both. Every vega figure carries its long-leg and\n"
+            "short-leg split, each with its own t_nw and its own excess over the\n"
+            "SAME-DIRECTION zero-selection alternative, because a net number can\n"
+            "hide a dead long leg.\n"
             "\n"
             "--recalibrate isotonic fits, per fold, a deterministic PAVA isotonic\n"
             "map from raw GBT forecast to realized label on the trailing\n"
@@ -221,6 +270,13 @@ int main(int argc, char **argv) {
       if (ok && cfg.feature_lag > atx::vol::vrp::kVrpMaxFeatureLag) {
         std::fprintf(stderr, "error: --feature-lag %zu exceeds the %zu-session cap\n",
                      cfg.feature_lag, atx::vol::vrp::kVrpMaxFeatureLag);
+        return 2;
+      }
+    } else if (arg == "--short-vega-haircut") {
+      ok = parse_number(value, cfg.short_vega_haircut);
+      // Fail closed at the boundary: a haircut outside [0,1] is not a discount.
+      if (ok && !(cfg.short_vega_haircut >= 0.0 && cfg.short_vega_haircut <= 1.0)) {
+        std::fprintf(stderr, "error: --short-vega-haircut must be in [0, 1]\n");
         return 2;
       }
     } else if (arg == "--corpus") {
