@@ -3792,3 +3792,391 @@ TEST(VolEdge, ConfigValidationPinsTheHardenedDefaultsAndGuard) {
   negative_margin.expiry_guard_days = 7.0; // just inside the tenor: fine
   EXPECT_TRUE(validate_vol_edge_config(negative_margin).has_value());
 }
+
+// ═══ VolEdge round 3 — cost-aware selective construction (lane vrp-selective-book) ═══
+//
+// Three additive, config-gated behaviors; every default preserves the round-2
+// book bit-for-bit, so every VolEdge test ABOVE this block is the regression
+// pin for "defaults unchanged". Research grounding: research-vrp-costs.md —
+//   1. hold_to_horizon: diff-based rebalancing (kept names are never closed
+//      and reopened on a tick) + per-name expiry rolls, the hold-to-expiry
+//      cost convention of Goyal-Saretto [7] and shortlist change #1.
+//   2. exit_*_fraction: the Novy-Marx–Velikov sS buy/hold band [4] — enter
+//      only the entry band, exit only on leaving the WIDER exit band.
+//   3. cost_gate_k: cost-gated admission [1][4] — per unit of position vega,
+//      the predicted edge (variance-unit pred_label mapped to a vol move via
+//      cost_gate_ref_vol) must clear k x the estimated round-trip friction.
+
+namespace {
+
+[[nodiscard]] VrpSignalRow signal_row_label(std::string symbol, std::string date, double edge,
+                                            double vov, double label) {
+  VrpSignalRow row = signal_row(std::move(symbol), std::move(date), edge, vov);
+  row.pred_label = label;
+  return row;
+}
+
+} // namespace
+
+TEST(VolEdge, RoundThreeConfigDefaultsOffAndFailClosedValidation) {
+  // The shipped defaults keep every round-3 knob OFF: round-2 semantics.
+  const VolEdgeConfig cfg{};
+  EXPECT_FALSE(cfg.hold_to_horizon);
+  EXPECT_DOUBLE_EQ(cfg.exit_long_fraction, 0.0);
+  EXPECT_DOUBLE_EQ(cfg.exit_short_fraction, 0.0);
+  EXPECT_DOUBLE_EQ(cfg.cost_gate_k, 0.0);
+  EXPECT_DOUBLE_EQ(cfg.cost_gate_ref_vol, 0.25);
+  EXPECT_DOUBLE_EQ(cfg.cost_gate_hedge_per_vega, 0.0);
+  EXPECT_TRUE(validate_vol_edge_config(cfg).has_value());
+
+  // The sS band adjudicates a PERSISTENT book: exit bands without
+  // hold_to_horizon fail closed instead of being silently ignored.
+  VolEdgeConfig no_hold{};
+  no_hold.exit_long_fraction = 0.20;
+  const Status no_hold_st = validate_vol_edge_config(no_hold);
+  ASSERT_FALSE(no_hold_st.has_value());
+  EXPECT_EQ(no_hold_st.error().code(), ErrorCode::InvalidArgument);
+
+  VolEdgeConfig hys{};
+  hys.hold_to_horizon = true;
+  hys.exit_long_fraction = 0.20;
+  hys.exit_short_fraction = 0.20;
+  EXPECT_TRUE(validate_vol_edge_config(hys).has_value());
+  hys.exit_short_fraction = 0.0; // per-side bands: one side may run without hysteresis
+  EXPECT_TRUE(validate_vol_edge_config(hys).has_value());
+  // A band NARROWER than the entry fraction is not a hysteresis band at all.
+  for (const double bad : {0.05, 0.6, -0.1, std::numeric_limits<double>::quiet_NaN(),
+                           std::numeric_limits<double>::infinity()}) {
+    VolEdgeConfig bad_cfg{};
+    bad_cfg.hold_to_horizon = true;
+    bad_cfg.exit_long_fraction = bad;
+    const Status st = validate_vol_edge_config(bad_cfg);
+    ASSERT_FALSE(st.has_value()) << "exit_long_fraction=" << bad;
+    EXPECT_EQ(st.error().code(), ErrorCode::InvalidArgument);
+  }
+
+  // The cost gate is orthogonal to hold mode; its knobs still fail closed.
+  VolEdgeConfig gate{};
+  gate.cost_gate_k = 1.5;
+  EXPECT_TRUE(validate_vol_edge_config(gate).has_value());
+  for (const double bad : {-1.0, std::numeric_limits<double>::quiet_NaN()}) {
+    VolEdgeConfig bad_cfg{};
+    bad_cfg.cost_gate_k = bad;
+    EXPECT_FALSE(validate_vol_edge_config(bad_cfg).has_value()) << "cost_gate_k=" << bad;
+  }
+  for (const double bad : {0.0, -0.25, std::numeric_limits<double>::quiet_NaN()}) {
+    VolEdgeConfig bad_cfg{};
+    bad_cfg.cost_gate_ref_vol = bad;
+    EXPECT_FALSE(validate_vol_edge_config(bad_cfg).has_value()) << "cost_gate_ref_vol=" << bad;
+  }
+  for (const double bad : {-0.01, std::numeric_limits<double>::quiet_NaN()}) {
+    VolEdgeConfig bad_cfg{};
+    bad_cfg.cost_gate_hedge_per_vega = bad;
+    EXPECT_FALSE(validate_vol_edge_config(bad_cfg).has_value())
+        << "cost_gate_hedge_per_vega=" << bad;
+  }
+
+  VolEdgeConfig hold_only{};
+  hold_only.hold_to_horizon = true;
+  EXPECT_TRUE(validate_vol_edge_config(hold_only).has_value());
+}
+
+TEST(VolEdge, CostGateAdmitsOnlyEdgeClearingRoundTripFriction) {
+  // Threshold arithmetic, per unit of position vega (the vega cancels):
+  //   edge_vol = |pred_label| * (252 / horizon_days) / (2 * cost_gate_ref_vol)
+  //   round_trip = 2 * (cost_half_spread_vol_pts / 100) + cost_gate_hedge_per_vega
+  // With defaults horizon 21 / ref vol 0.25 and half-spread 0.5 vol pts:
+  //   edge_vol = 24 |label|, round trip 0.01, k=1.5 bar = 0.015.
+  VolEdgeConfig cfg{};
+  cfg.cost_half_spread_vol_pts = 0.5;
+  cfg.cost_gate_k = 1.5;
+  EXPECT_TRUE(vol_edge_cost_gate_admits(cfg, 0.001));   // 0.024 > 0.015
+  EXPECT_TRUE(vol_edge_cost_gate_admits(cfg, -0.001));  // sign-symmetric
+  EXPECT_FALSE(vol_edge_cost_gate_admits(cfg, 0.0005)); // 0.012 < 0.015
+  EXPECT_FALSE(vol_edge_cost_gate_admits(cfg, 0.0));
+
+  // The hedge component of the fixture decomposition widens the bar.
+  VolEdgeConfig hedged = cfg;
+  hedged.cost_gate_hedge_per_vega = 0.02; // round trip 0.03: bar 0.045
+  EXPECT_FALSE(vol_edge_cost_gate_admits(hedged, 0.001)); // 0.024 < 0.045
+  EXPECT_TRUE(vol_edge_cost_gate_admits(hedged, 0.002));  // 0.048 > 0.045
+
+  // k = 0 (the default) disables the gate entirely.
+  VolEdgeConfig off = cfg;
+  off.cost_gate_k = 0.0;
+  EXPECT_TRUE(vol_edge_cost_gate_admits(off, 0.0));
+
+  // Admission through the ranked book: the long candidate's label fails the
+  // gate, the short's clears it — only the short trades, nothing is resized.
+  cfg.long_fraction = 0.25;
+  cfg.short_fraction = 0.25;
+  cfg.risk_budget_vega = 5'000.0;
+  const std::vector<VrpSignalRow> day = {
+      signal_row_label("AAA", "2023-11-14", +3.0, 1.0, +0.0005),
+      signal_row_label("BBB", "2023-11-14", +1.0, 1.0, +0.01),
+      signal_row_label("CCC", "2023-11-14", -1.0, 1.0, -0.01),
+      signal_row_label("DDD", "2023-11-14", -3.0, 1.0, -0.01),
+  };
+  const auto book = build_vol_edge_book(day, cfg);
+  ASSERT_TRUE(book.has_value()) << book.error().to_string();
+  ASSERT_EQ(book->size(), 1u) << "gated long must be suppressed, not resized";
+  EXPECT_EQ((*book)[0].symbol, "DDD");
+  EXPECT_DOUBLE_EQ((*book)[0].vega_target, -5'000.0);
+}
+
+TEST(VolEdge, PlanEntersEntryBandKeepsExitBandExitsBeyond) {
+  VolEdgeConfig cfg{};
+  cfg.hold_to_horizon = true;
+  cfg.long_fraction = 0.10; // entry band: 1 name per side of 10
+  cfg.short_fraction = 0.10;
+  cfg.exit_long_fraction = 0.20; // hold band: 2 names per side of 10
+  cfg.exit_short_fraction = 0.20;
+  cfg.risk_budget_vega = 5'000.0;
+  // Ranked: S1(4.5) S6(3.5) S4(2.5) S7(1.5) S2(0.5) S5(-0.5) S0(-1.5)
+  //         S8(-2.5) S9(-3.5) S3(-4.5).
+  std::vector<VrpSignalRow> day;
+  const double edges[] = {-1.5, 4.5, 0.5, -4.5, 2.5, -0.5, 3.5, 1.5, -2.5, -3.5};
+  for (std::size_t i = 0; i < 10; ++i) {
+    day.push_back(signal_row("S" + std::to_string(i), "2023-11-14", edges[i], 1.0));
+  }
+
+  // (a) Nothing held: entries are exactly the round-2 decile book.
+  {
+    const auto plan = plan_vol_edge_book(day, cfg, {});
+    ASSERT_TRUE(plan.has_value()) << plan.error().to_string();
+    EXPECT_TRUE(plan->rankable);
+    ASSERT_EQ(plan->entries.size(), 2u);
+    EXPECT_EQ(plan->entries[0].symbol, "S1");
+    EXPECT_DOUBLE_EQ(plan->entries[0].vega_target, +5'000.0);
+    EXPECT_EQ(plan->entries[1].symbol, "S3");
+    EXPECT_DOUBLE_EQ(plan->entries[1].vega_target, -5'000.0);
+    EXPECT_TRUE(plan->keeps.empty());
+    EXPECT_TRUE(plan->exits.empty());
+    EXPECT_EQ(plan->n_cost_gated, 0u);
+  }
+  // (b) Held long S6 at rank 1: inside the exit band, outside the entry band —
+  //     kept (the sS rule), while S1 still enters long.
+  {
+    const std::vector<VolEdgeHeldName> held = {{"S6", +1.0}};
+    const auto plan = plan_vol_edge_book(day, cfg, held);
+    ASSERT_TRUE(plan.has_value()) << plan.error().to_string();
+    ASSERT_EQ(plan->keeps.size(), 1u);
+    EXPECT_EQ(plan->keeps[0].symbol, "S6");
+    EXPECT_TRUE(plan->exits.empty());
+    ASSERT_EQ(plan->entries.size(), 2u) << "S1 long + S3 short still enter";
+  }
+  // (c) Held long S1 at rank 0 (entry band): kept, and the long side must NOT
+  //     double-enter the same name.
+  {
+    const std::vector<VolEdgeHeldName> held = {{"S1", +1.0}};
+    const auto plan = plan_vol_edge_book(day, cfg, held);
+    ASSERT_TRUE(plan.has_value()) << plan.error().to_string();
+    ASSERT_EQ(plan->keeps.size(), 1u);
+    EXPECT_EQ(plan->keeps[0].symbol, "S1");
+    ASSERT_EQ(plan->entries.size(), 1u) << "only the short side enters";
+    EXPECT_EQ(plan->entries[0].symbol, "S3");
+  }
+  // (d) Held long S4 at rank 2: left the 2-name exit band — exits.
+  {
+    const std::vector<VolEdgeHeldName> held = {{"S4", +1.0}};
+    const auto plan = plan_vol_edge_book(day, cfg, held);
+    ASSERT_TRUE(plan.has_value()) << plan.error().to_string();
+    EXPECT_TRUE(plan->keeps.empty());
+    ASSERT_EQ(plan->exits.size(), 1u);
+    EXPECT_EQ(plan->exits[0], "S4");
+    ASSERT_EQ(plan->entries.size(), 2u);
+  }
+  // (e) A held name absent from today's cross-section left the universe: exit.
+  {
+    const std::vector<VolEdgeHeldName> held = {{"ZZZ", +1.0}};
+    const auto plan = plan_vol_edge_book(day, cfg, held);
+    ASSERT_TRUE(plan.has_value()) << plan.error().to_string();
+    ASSERT_EQ(plan->exits.size(), 1u);
+    EXPECT_EQ(plan->exits[0], "ZZZ");
+  }
+  // (f) Sign flip: a held LONG now ranked bottom exits its side and re-enters
+  //     as the short-side entry.
+  {
+    const std::vector<VolEdgeHeldName> held = {{"S3", +1.0}};
+    const auto plan = plan_vol_edge_book(day, cfg, held);
+    ASSERT_TRUE(plan.has_value()) << plan.error().to_string();
+    ASSERT_EQ(plan->exits.size(), 1u);
+    EXPECT_EQ(plan->exits[0], "S3");
+    ASSERT_EQ(plan->entries.size(), 2u);
+    EXPECT_EQ(plan->entries[1].symbol, "S3");
+    EXPECT_LT(plan->entries[1].vega_target, 0.0);
+  }
+  // (g) An unrankable day (< 2 usable rows) holds everything: sS exits need
+  //     ranking evidence, and closing blind would pay a round trip for nothing.
+  {
+    const std::vector<VrpSignalRow> thin = {signal_row("S1", "2023-11-14", 1.0, 1.0)};
+    const std::vector<VolEdgeHeldName> held = {{"S6", +1.0}, {"S9", -1.0}};
+    const auto plan = plan_vol_edge_book(thin, cfg, held);
+    ASSERT_TRUE(plan.has_value()) << plan.error().to_string();
+    EXPECT_FALSE(plan->rankable);
+    ASSERT_EQ(plan->keeps.size(), 2u);
+    EXPECT_TRUE(plan->entries.empty());
+    EXPECT_TRUE(plan->exits.empty());
+  }
+}
+
+TEST(VolEdge, HoldToHorizonKeepsNamesAcrossTicksWithoutRechurn) {
+  const std::vector<std::string> symbols = {"AAA", "BBB", "CCC", "DDD"};
+  const VolEdgeCorpus corpus = make_vol_edge_corpus(3, symbols, "vol-edge-hold-keep");
+  auto clock = Clock::from_manifest(corpus.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  VolEdgeConfig cfg{};
+  cfg.long_fraction = 0.25;
+  cfg.short_fraction = 0.25;
+  cfg.risk_budget_vega = 5'000.0;
+  cfg.vov_floor = 0.05;
+  cfg.delta_hedge = false;
+  cfg.cost_half_spread_vol_pts = 2.0;
+  cfg.rebalance_every_n_steps = 1; // daily re-rank — the round-2 churn shape
+  cfg.hold_to_horizon = true;
+  std::vector<VrpSignalRow> signal;
+  for (const std::string &date : corpus.dates) {
+    signal.push_back(signal_row("AAA", date, +2.0, 1.0));
+    signal.push_back(signal_row("BBB", date, +1.0, 1.0));
+    signal.push_back(signal_row("CCC", date, -1.0, 1.0));
+    signal.push_back(signal_row("DDD", date, -2.0, 1.0));
+  }
+
+  VolEdgeStrategy strat{signal, cfg};
+  RunConfig rc;
+  rc.frictions = vol_edge_frictions(cfg);
+  auto res = run_backtest(*clock, strat, rc);
+  ASSERT_TRUE(res.has_value()) << res.error().to_string();
+  ASSERT_EQ(res->size(), 3u);
+  // Entry spread charged ONCE; the unchanged selection is never re-churned.
+  EXPECT_GT(res->cost[0], 0.0);
+  EXPECT_EQ(res->cost[1], 0.0) << "kept names must not pay the spread again";
+  EXPECT_EQ(res->cost[2], 0.0);
+  for (const double lots : res->n_open_lots) {
+    EXPECT_DOUBLE_EQ(lots, 4.0) << "AAA+DDD straddles held throughout";
+  }
+  EXPECT_EQ(strat.name_entries(), 2u);
+  EXPECT_EQ(strat.name_exits(), 0u);
+  EXPECT_EQ(strat.skipped_names(), 0u);
+  EXPECT_EQ(strat.guard_roll_closes(), 0u);
+
+  // The round-2 default on the same fixture pays the churn every tick.
+  VolEdgeConfig churn = cfg;
+  churn.hold_to_horizon = false;
+  VolEdgeStrategy churn_strat{signal, churn};
+  RunConfig churn_rc;
+  churn_rc.frictions = vol_edge_frictions(churn);
+  auto churn_res = run_backtest(*clock, churn_strat, churn_rc);
+  ASSERT_TRUE(churn_res.has_value()) << churn_res.error().to_string();
+  EXPECT_GT(churn_res->cost[1], 0.0) << "the legacy path rolls the whole book daily";
+  EXPECT_GT(churn_res->cost[2], 0.0);
+  EXPECT_EQ(churn_strat.name_entries(), 6u) << "2 names re-entered on each of 3 ticks";
+}
+
+TEST(VolEdge, HoldToHorizonRollsExpiringNamesPerNameAndSurvivesSignalGaps) {
+  const std::vector<std::string> symbols = {"AAA", "BBB"};
+  const VolEdgeCorpus corpus = make_vol_edge_corpus(13, symbols, "vol-edge-hold-roll");
+  auto clock = Clock::from_manifest(corpus.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  VolEdgeConfig cfg{};
+  cfg.long_fraction = 0.5;
+  cfg.short_fraction = 0.5;
+  cfg.risk_budget_vega = 5'000.0;
+  cfg.vov_floor = 0.05;
+  cfg.delta_hedge = false;
+  cfg.cost_half_spread_vol_pts = 2.0;
+  cfg.horizon_days = 10.0;         // tenor = 10/252 * 365.25 = 14.494 calendar days
+  cfg.rebalance_every_n_steps = 1; // every gap session is a held tick (the F3 shape)
+  cfg.hold_to_horizon = true;
+  // Signal on session 0 ONLY: the book must live through 12 signal-less
+  // sessions, roll the expiring names per name, and never cross an expiry.
+  const std::vector<VrpSignalRow> signal = {
+      signal_row("AAA", corpus.dates[0], +2.0, 1.0),
+      signal_row("BBB", corpus.dates[0], -2.0, 1.0),
+  };
+
+  VolEdgeStrategy strat{signal, cfg};
+  RunConfig rc;
+  rc.frictions = vol_edge_frictions(cfg);
+  auto res = run_backtest(*clock, strat, rc);
+  ASSERT_TRUE(res.has_value())
+      << "hold mode must survive the signal gap without an expiry crossing: "
+      << res.error().to_string();
+  ASSERT_EQ(res->size(), 13u);
+  // The session-0 cohort expires 14.494 days out; the 5-day guard fires at
+  // session 10 (4.494 out). In hold mode that is a PER-NAME ROLL at marks —
+  // close + immediate re-entry at the held vega target — not a flat close.
+  EXPECT_EQ(strat.guard_roll_closes(), 1u);
+  EXPECT_EQ(strat.held_steps(), 12u) << "sessions 1..12 all held on a missing signal";
+  EXPECT_DOUBLE_EQ(res->n_open_lots[9], 4.0) << "session 9: 5.494 days out, still held";
+  EXPECT_DOUBLE_EQ(res->n_open_lots[10], 4.0) << "session 10: rolled, never flat";
+  EXPECT_DOUBLE_EQ(res->n_open_lots[12], 4.0);
+  EXPECT_EQ(res->cost[5], 0.0) << "mid-hold sessions trade nothing";
+  EXPECT_GT(res->cost[10], 0.0) << "the roll pays the close and the fresh entry";
+  EXPECT_EQ(strat.name_entries(), 4u) << "2 at inception + 2 roll re-entries";
+  EXPECT_EQ(strat.name_exits(), 2u) << "the 2 roll closes";
+  EXPECT_EQ(strat.skipped_names(), 0u);
+}
+
+TEST(VolEdge, SelectiveModeDualRunsBitIdentical) {
+  const std::vector<std::string> symbols = {"S0", "S1", "S2", "S3", "S4", "S5"};
+  const VolEdgeCorpus corpus = make_vol_edge_corpus(6, symbols, "vol-edge-selective-det");
+  auto clock = Clock::from_manifest(corpus.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  // Config-D shape: hold-to-horizon + sS band + cost gate, hedge on.
+  VolEdgeConfig cfg{};
+  cfg.long_fraction = 1.0 / 6.0;  // entry: 1 name per side of 6
+  cfg.short_fraction = 1.0 / 6.0;
+  cfg.exit_long_fraction = 1.0 / 3.0; // hold band: 2 names per side
+  cfg.exit_short_fraction = 1.0 / 3.0;
+  cfg.hold_to_horizon = true;
+  cfg.cost_half_spread_vol_pts = 2.0; // round trip 0.04/vega
+  cfg.cost_gate_k = 1.5;              // bar: |label| * 24 > 0.06 → |label| > 0.0025
+  cfg.stock_half_spread_bps = 2.0;
+  cfg.delta_hedge = true;
+  cfg.rebalance_every_n_steps = 2;
+  cfg.risk_budget_vega = 5'000.0;
+  cfg.vov_floor = 0.05;
+  // Ranks rotate across ticks and one leader's label fails the gate, so the
+  // run exercises entries, keeps, exits and gated suppression together.
+  std::vector<VrpSignalRow> signal;
+  for (std::size_t d = 0; d < corpus.dates.size(); ++d) {
+    const std::string &date = corpus.dates[d];
+    const bool late = d >= 4;
+    signal.push_back(signal_row_label("S0", date, late ? +0.5 : +3.0, 1.0, +0.01));
+    signal.push_back(signal_row_label("S1", date, d >= 2 ? +3.5 : +2.0, 1.0, +0.001));
+    signal.push_back(signal_row_label("S2", date, late ? +3.0 : +1.0, 1.0, +0.01));
+    signal.push_back(signal_row_label("S3", date, -1.0, 1.0, -0.01));
+    signal.push_back(signal_row_label("S4", date, late ? -3.5 : -2.0, 1.0, -0.001));
+    signal.push_back(signal_row_label("S5", date, late ? -1.5 : -3.0, 1.0, -0.01));
+  }
+
+  const auto run_once = [&]() {
+    VolEdgeStrategy strat{signal, cfg};
+    RunConfig rc;
+    rc.frictions = vol_edge_frictions(cfg);
+    auto res = run_backtest(*clock, strat, rc);
+    const std::uint64_t entries = strat.name_entries();
+    return std::make_pair(std::move(res), entries);
+  };
+  auto [first, first_entries] = run_once();
+  auto [second, second_entries] = run_once();
+  ASSERT_TRUE(first.has_value()) << first.error().to_string();
+  ASSERT_TRUE(second.has_value()) << second.error().to_string();
+  ASSERT_EQ(first->size(), 6u);
+  ASSERT_EQ(first->size(), second->size());
+  for (std::size_t i = 0; i < first->size(); ++i) {
+    EXPECT_EQ(first->nav[i], second->nav[i]) << "row " << i << ": NAV must be bit-identical";
+    EXPECT_EQ(first->cost[i], second->cost[i]) << "row " << i;
+    EXPECT_EQ(first->n_open_lots[i], second->n_open_lots[i]) << "row " << i;
+  }
+  EXPECT_EQ(first_entries, second_entries);
+  double total_cost = 0.0;
+  for (const double step_cost : first->cost) {
+    total_cost += step_cost;
+  }
+  EXPECT_GT(total_cost, 0.0) << "the selective run must genuinely trade";
+}
