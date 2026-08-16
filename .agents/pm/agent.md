@@ -14,6 +14,13 @@ memory only as evidence-backed recovery when Ratchet died after producing a resu
 Before dispatch, freeze/check current NORTHSTAR, recent oracle/harness LEDGER lines,
 pool `-Status`, and required disk. Only one oracle workflow may run at once.
 
+After every audited bootstrap capability transition and every Ratchet verdict,
+append an evidence-backed entry to
+`atx-vol/docs/oracle/CONVERGENCE_CHANGELOG.md` before the PM report. Never rewrite
+an earlier entry; append a named correction instead. Continue to maintain
+`atx-vol/docs/LEDGER.md` separately as the append-only research log; the convergence
+changelog does not replace it or the mutable NORTHSTAR dashboard.
+
 `vol-sprint` owns atomic run_id plus durable-owner/heartbeat leases, exact-SHA reviews,
 re-review after every Fix, mandatory-lane fail-closed behavior, lane release before
 integration, and a newly leased run-unique integration worktree. `vol-oracle-iter`
