@@ -36,7 +36,10 @@ void usage(std::FILE *out) {
                     "       [--rebalance-steps N] [--long-frac X] [--short-frac X]\n"
                     "       [--risk-budget X] [--vov-floor X] [--vega-cap X]\n"
                     "       [--net-short-tilt X] [--no-trade-band X] [--cost-vol-pts X]\n"
-                    "       [--stock-bps X] [--hedge-band X] [--no-hedge] [--expiry-guard X]\n");
+                    "       [--stock-bps X] [--hedge-band X] [--no-hedge] [--expiry-guard X]\n"
+                    "       [--hold-to-horizon] [--exit-long-frac X] [--exit-short-frac X]\n"
+                    "       [--cost-gate-k X] [--cost-gate-ref-vol X]\n"
+                    "       [--cost-gate-hedge-per-vega X]\n");
 }
 
 // vrp-backtest subcommand (lane vrp-book): signal TSV + SurfaceDb roots ->
@@ -60,11 +63,14 @@ void usage(std::FILE *out) {
     return 1;
   }
   std::printf("report=%s\nrows=%zu\nfinal_nav=%.17g\ntotal_cost=%.17g\n"
-              "held_steps=%llu\nskipped_names=%llu\nroll_closes=%llu\n",
+              "held_steps=%llu\nskipped_names=%llu\nroll_closes=%llu\n"
+              "name_entries=%llu\nname_exits=%llu\n",
               summary->report_path.c_str(), summary->n_rows, summary->final_nav,
               summary->total_cost, static_cast<unsigned long long>(summary->n_held_steps),
               static_cast<unsigned long long>(summary->n_skipped_names),
-              static_cast<unsigned long long>(summary->n_roll_closes));
+              static_cast<unsigned long long>(summary->n_roll_closes),
+              static_cast<unsigned long long>(summary->n_name_entries),
+              static_cast<unsigned long long>(summary->n_name_exits));
   return 0;
 }
 

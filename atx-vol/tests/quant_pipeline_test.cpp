@@ -381,13 +381,47 @@ TEST(QuantPipeline, VrpBacktestArgsParseDefaultsAndOverrides) {
   EXPECT_DOUBLE_EQ(spec->config.expiry_guard_days, 4.0);
   EXPECT_TRUE(spec->config.delta_hedge);
 
-  // --no-hedge is the one value-free flag.
+  // --no-hedge and --hold-to-horizon are the value-free flags.
   const std::vector<std::string> hedgeless = {"--signal", signal.string(), "--surface-db",
                                               db_a, "--report",
                                               (root / "r.tsv").string(), "--no-hedge"};
   const auto hedgeless_spec = parse_vrp_backtest_args(hedgeless);
   ASSERT_TRUE(hedgeless_spec.has_value()) << hedgeless_spec.error().to_string();
   EXPECT_FALSE(hedgeless_spec->config.delta_hedge);
+  std::filesystem::remove_all(root);
+}
+
+TEST(QuantPipeline, VrpBacktestArgsParseRoundThreeSelectiveKnobs) {
+  const std::filesystem::path root = pipeline_test_root();
+  const std::filesystem::path signal = write_signal_fixture(root, valid_signal_body());
+  const std::string db = (root / "spy-2026").string();
+  const std::string report = (root / "report.tsv").string();
+
+  // The config-D sweep shape round-trips into the VolEdgeConfig verbatim.
+  const std::vector<std::string> args = {
+      "--signal",         signal.string(), "--surface-db",       db,
+      "--report",         report,          "--hold-to-horizon",
+      "--long-frac",      "0.10",          "--short-frac",       "0.10",
+      "--exit-long-frac", "0.20",          "--exit-short-frac",  "0.20",
+      "--cost-gate-k",    "1.5",           "--cost-gate-ref-vol", "0.3",
+      "--cost-gate-hedge-per-vega", "0.02",
+  };
+  const auto spec = parse_vrp_backtest_args(args);
+  ASSERT_TRUE(spec.has_value()) << spec.error().to_string();
+  EXPECT_TRUE(spec->config.hold_to_horizon);
+  EXPECT_DOUBLE_EQ(spec->config.exit_long_fraction, 0.20);
+  EXPECT_DOUBLE_EQ(spec->config.exit_short_fraction, 0.20);
+  EXPECT_DOUBLE_EQ(spec->config.cost_gate_k, 1.5);
+  EXPECT_DOUBLE_EQ(spec->config.cost_gate_ref_vol, 0.3);
+  EXPECT_DOUBLE_EQ(spec->config.cost_gate_hedge_per_vega, 0.02);
+
+  // Config validation fails closed at PARSE time: an exit band without
+  // hold-to-horizon is refused, not silently ignored.
+  const auto bad = parse_vrp_backtest_args(
+      std::vector<std::string>{"--signal", signal.string(), "--surface-db", db, "--report",
+                               report, "--exit-long-frac", "0.2"});
+  ASSERT_FALSE(bad.has_value());
+  EXPECT_EQ(bad.error().code(), ErrorCode::InvalidArgument);
   std::filesystem::remove_all(root);
 }
 

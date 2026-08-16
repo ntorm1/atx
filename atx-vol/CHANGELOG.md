@@ -50,6 +50,33 @@ emitted-but-not-present scan now covers EVERY panel row date >=
 coverage_start (successor and tail rows included), not just admitted
 decision dates.
 
+### NEW — VolEdge round 3: cost-aware selective book (config-gated, defaults = round-2)
+
+`VolEdgeConfig` grows six appended knobs (arity pin 14 → 20; Tier-B additive,
+all defaults OFF so the default book is bit-for-bit the round-2 book —
+verified by reproducing the round-2 SP100 gate numbers ±0 at the lane tip):
+
+- `hold_to_horizon`: rebalance ticks trade the DIFF against a persistent held
+  book (kept names never pay the close/reopen churn; entry spread once per
+  holding period), and the expiry guard rolls EXPIRING NAMES individually at
+  their held targets instead of flattening the whole book.
+- `exit_long_fraction`/`exit_short_fraction`: Novy-Marx–Velikov sS buy/hold
+  band via the new `plan_vol_edge_book` (enter only the entry band, exit only
+  on leaving the wider band; unrankable days hold). Fail-closed: requires
+  `hold_to_horizon`, band must lie in [entry fraction, 0.5].
+- `cost_gate_k`/`cost_gate_ref_vol`/`cost_gate_hedge_per_vega`: cost-gated
+  admission per unit vega — `|pred_label|` mapped to a vol move through a
+  reference vol must clear k × (round-trip option spread + hedge component).
+  PRE-RECALIBRATION mechanism: the variance→vol conversion is a crude fixed
+  scale until the recalibration lane lands currency-correct labels.
+
+`vrp-backtest` gains the matching flags plus `name_entries`/`name_exits`
+summary lines (one-sided turnover attribution). NOTE for hold-mode e2e runs
+on holey corpora: a persistent book needs surface presence from entry through
+the WINDOW END (the engine stays fail-closed on held-lot surface holes); the
+round-2 25.4-day presence filter is insufficient for configs with
+`hold_to_horizon` and data-level filtering must widen accordingly.
+
 ### BREAKING - oracle mutations require the v3 lane broker
 
 Oracle bootstrap/recovery now uses a trusted local MCP transaction broker as its
