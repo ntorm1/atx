@@ -112,7 +112,6 @@ IMPLIED_LEG_COLUMNS = ("iv_fair_21d", "iv_atmf_21d")
 # comparison (never float round-tripping), like bev_label_qa.py.
 DUP_KEY_COLUMNS = ("symbol", "date")
 
-SCHEMA_LINE = "# schema=vrp_panel_v1"
 HORIZON_SESSIONS = 21
 HORIZON_YEARS = 21 / 252
 LABEL_IDENTITY_TOL = 1e-12  # abs or rel -- allows FMA-contraction noise only
