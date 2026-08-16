@@ -1681,9 +1681,410 @@ TEST_F(VrpTrainPipelineTest, RawPanelRowScoresFromModelFilePlusSidecarAlone) {
       report_->panel, stz, std::span<const std::size_t>{report_->folds.back().train_rows},
       make_synth_config(panel_file_->path_string(), out_dir_.string()));
   EXPECT_DOUBLE_EQ(fs.baseline_s2, refit.s2);
-  const double f_inproc =
-      vrp::detail::baseline_forecast_var(report_->panel, stz, refit, row);
+  const double f_inproc = vrp::detail::baseline_forecast_var(
+      report_->panel, stz, refit, row, vrp::VrpRetransformMode::Jensen);
   EXPECT_NEAR(f_file, f_inproc, 1e-9 * std::max(1.0, f_inproc));
+}
+
+// ── VrpTrain: round-3 isotonic recalibration + retransform (digest Q4) ──────
+
+// Reads the double value of a `# key=value` metrics meta line; NaN when the
+// key is absent (asserted separately by the callers).
+[[nodiscard]] double meta_double(const std::string &bytes, const std::string &key) {
+  const std::string tag = "# " + key + "=";
+  const std::size_t at = bytes.find(tag);
+  if (at == std::string::npos) {
+    return kNaN;
+  }
+  const std::size_t end = bytes.find('\n', at);
+  return std::stod(bytes.substr(at + tag.size(), end - at - tag.size()));
+}
+
+TEST(VrpTrainMath, IsotonicPavaMatchesHandExample) {
+  // x = {1,2,3,4}, y = {1,3,2,4}: the (3,2) violator pools with (2,3) into a
+  // 2.5 block, giving fitted values {1, 2.5, 2.5, 4} (classic PAVA example).
+  const auto map = vrp::fit_vrp_isotonic({1.0, 2.0, 3.0, 4.0}, {1.0, 3.0, 2.0, 4.0});
+  ASSERT_TRUE(map.has_value()) << map.error().to_string();
+  EXPECT_DOUBLE_EQ(vrp::vrp_isotonic_eval(*map, 1.0), 1.0);
+  EXPECT_DOUBLE_EQ(vrp::vrp_isotonic_eval(*map, 2.0), 2.5);
+  EXPECT_DOUBLE_EQ(vrp::vrp_isotonic_eval(*map, 3.0), 2.5);
+  EXPECT_DOUBLE_EQ(vrp::vrp_isotonic_eval(*map, 4.0), 4.0);
+  // Piecewise-linear between fitted points, flat inside a pooled block.
+  EXPECT_DOUBLE_EQ(vrp::vrp_isotonic_eval(*map, 1.5), 1.75);
+  EXPECT_DOUBLE_EQ(vrp::vrp_isotonic_eval(*map, 2.5), 2.5);
+  EXPECT_DOUBLE_EQ(vrp::vrp_isotonic_eval(*map, 3.5), 3.25);
+  // Constant extrapolation outside the fitted range: recalibrated levels are
+  // bounded by observed calibration targets (the point of the exercise).
+  EXPECT_DOUBLE_EQ(vrp::vrp_isotonic_eval(*map, -10.0), 1.0);
+  EXPECT_DOUBLE_EQ(vrp::vrp_isotonic_eval(*map, 99.0), 4.0);
+}
+
+TEST(VrpTrainMath, IsotonicPoolsTiedInputsToTheirMean) {
+  const auto map = vrp::fit_vrp_isotonic({1.0, 1.0, 2.0}, {1.0, 3.0, 5.0});
+  ASSERT_TRUE(map.has_value()) << map.error().to_string();
+  EXPECT_DOUBLE_EQ(vrp::vrp_isotonic_eval(*map, 1.0), 2.0); // mean(1, 3)
+  EXPECT_DOUBLE_EQ(vrp::vrp_isotonic_eval(*map, 2.0), 5.0);
+  EXPECT_DOUBLE_EQ(vrp::vrp_isotonic_eval(*map, 1.5), 3.5);
+}
+
+TEST(VrpTrainMath, IsotonicEvalIsMonotoneNonDecreasingOnAWigglyFit) {
+  // A broadly increasing but locally violating relation: after PAVA the
+  // evaluated map must be globally non-decreasing (the rank-preservation
+  // property everything downstream rests on).
+  std::vector<double> x;
+  std::vector<double> y;
+  for (std::size_t i = 0; i < 200; ++i) {
+    const double xi = 0.05 * static_cast<double>(i);
+    x.push_back(xi);
+    y.push_back(0.8 * xi + 0.9 * std::sin(2.3 * xi));
+  }
+  const auto map = vrp::fit_vrp_isotonic(std::move(x), std::move(y));
+  ASSERT_TRUE(map.has_value()) << map.error().to_string();
+  double prev = -std::numeric_limits<double>::infinity();
+  for (std::size_t k = 0; k <= 1200; ++k) {
+    const double q = -1.0 + 0.01 * static_cast<double>(k);
+    const double v = vrp::vrp_isotonic_eval(*map, q);
+    EXPECT_LE(prev, v) << "q=" << q;
+    prev = v;
+  }
+}
+
+TEST(VrpTrainMath, IsotonicFitFailsClosedOnBadInputs) {
+  EXPECT_FALSE(vrp::fit_vrp_isotonic({}, {}).has_value());
+  EXPECT_FALSE(vrp::fit_vrp_isotonic({1.0}, {1.0, 2.0}).has_value());
+  // Non-finite pairs carry no level information and are excluded; an
+  // all-non-finite input fails closed instead of yielding an empty map.
+  EXPECT_FALSE(vrp::fit_vrp_isotonic({kNaN}, {1.0}).has_value());
+  const auto one_good = vrp::fit_vrp_isotonic({kNaN, 2.0}, {7.0, 3.0});
+  ASSERT_TRUE(one_good.has_value()) << one_good.error().to_string();
+  EXPECT_DOUBLE_EQ(vrp::vrp_isotonic_eval(*one_good, -5.0), 3.0);
+  EXPECT_DOUBLE_EQ(vrp::vrp_isotonic_eval(*one_good, 5.0), 3.0);
+}
+
+TEST(VrpTrainMath, MincerZarnowitzRecoversPlantedAffineRelation) {
+  const std::vector<double> f{0.1, 0.2, 0.4, 0.8};
+  std::vector<double> r;
+  for (const double v : f) {
+    r.push_back(0.5 + 2.0 * v);
+  }
+  const vrp::VrpMzFit fit = vrp::vrp_mincer_zarnowitz(std::span<const double>{f},
+                                                      std::span<const double>{r});
+  EXPECT_NEAR(fit.slope, 2.0, 1e-12);
+  EXPECT_NEAR(fit.intercept, 0.5, 1e-12);
+  // Degenerate (constant) forecasts: slope/intercept are NaN, never faked.
+  const std::vector<double> flat{0.3, 0.3};
+  const std::vector<double> real{1.0, 2.0};
+  const vrp::VrpMzFit deg = vrp::vrp_mincer_zarnowitz(std::span<const double>{flat},
+                                                      std::span<const double>{real});
+  EXPECT_TRUE(std::isnan(deg.slope));
+  EXPECT_TRUE(std::isnan(deg.intercept));
+}
+
+TEST(VrpTrainMath, SmearingFactorAndRetransformMatchHandComputation) {
+  // Duan smearing: factor = mean(exp(residual)) -- 0.5 and 2.0 average 1.25.
+  const std::vector<double> resid{std::log(0.5), std::log(2.0)};
+  EXPECT_DOUBLE_EQ(vrp::vrp_smearing_factor(std::span<const double>{resid}), 1.25);
+  // forecast = exp(mu) * factor, then the SAME insanity clip as Jensen.
+  EXPECT_DOUBLE_EQ(vrp::vrp_smearing_retransform_clip(std::log(0.04), 1.25, 0.0, 1.0), 0.05);
+  EXPECT_DOUBLE_EQ(vrp::vrp_smearing_retransform_clip(std::log(0.04), 1.25, 0.0, 0.045),
+                   0.045);
+}
+
+// One shared isotonic-mode trainer run (deterministic, same panel content as
+// the flag-off VrpTrainPipelineTest fixture, walk 90/20/20, window 21).
+class VrpTrainRecalPipelineTest : public ::testing::Test {
+protected:
+  static void SetUpTestSuite() {
+    panel_file_ = new ScopedTempFile("recal_panel", make_synth_panel_tsv());
+    out_dir_ = unique_temp_path("recal_out", "");
+    vrp::VrpTrainConfig cfg = make_synth_config(panel_file_->path_string(), out_dir_.string());
+    cfg.recalibrate = vrp::VrpRecalMode::Isotonic;
+    cfg.recalib_window_sessions = 21;
+    auto report = vrp::run_vrp_train(cfg);
+    ASSERT_TRUE(report.has_value()) << report.error().to_string();
+    report_ = new vrp::VrpTrainReport(std::move(*report));
+  }
+
+  static void TearDownTestSuite() {
+    delete report_;
+    report_ = nullptr;
+    delete panel_file_;
+    panel_file_ = nullptr;
+    std::error_code ec;
+    std::filesystem::remove_all(out_dir_, ec);
+  }
+
+  static ScopedTempFile *panel_file_;
+  static std::filesystem::path out_dir_;
+  static vrp::VrpTrainReport *report_;
+};
+
+ScopedTempFile *VrpTrainRecalPipelineTest::panel_file_ = nullptr;
+std::filesystem::path VrpTrainRecalPipelineTest::out_dir_{};
+vrp::VrpTrainReport *VrpTrainRecalPipelineTest::report_ = nullptr;
+
+TEST_F(VrpTrainRecalPipelineTest, IsotonicRecalibrationPreservesTestRankOrder) {
+  // The monotone map may repair the LEVEL but must never reorder the ranks:
+  // raw_i < raw_j => recal_i <= recal_j (ties from pooled blocks allowed),
+  // and equal raw forecasts stay equal. Rank IC may lose only tie
+  // granularity, so before/after IC must stay close.
+  ASSERT_FALSE(report_->folds.empty());
+  for (const auto &fold : report_->folds) {
+    EXPECT_TRUE(fold.recal_applied);
+    ASSERT_EQ(fold.test_pred_raw.size(), fold.test_rows.size());
+    ASSERT_EQ(fold.test_pred_recal.size(), fold.test_rows.size());
+    bool any_diff = false;
+    for (std::size_t i = 0; i < fold.test_pred_raw.size(); ++i) {
+      any_diff = any_diff || fold.test_pred_recal[i] != fold.test_pred_raw[i];
+      for (std::size_t j = i + 1; j < fold.test_pred_raw.size(); ++j) {
+        if (fold.test_pred_raw[i] < fold.test_pred_raw[j]) {
+          EXPECT_LE(fold.test_pred_recal[i], fold.test_pred_recal[j]);
+        } else if (fold.test_pred_raw[i] == fold.test_pred_raw[j]) {
+          EXPECT_EQ(fold.test_pred_recal[i], fold.test_pred_recal[j]);
+        } else {
+          EXPECT_GE(fold.test_pred_recal[i], fold.test_pred_recal[j]);
+        }
+      }
+    }
+    EXPECT_TRUE(any_diff); // the level actually moved somewhere
+    EXPECT_NEAR(fold.ic_gbt, fold.ic_gbt_recal, 0.25);
+  }
+}
+
+TEST_F(VrpTrainRecalPipelineTest, IsotonicFitWindowStaysStrictlyBeforeEachFoldsTestStart) {
+  // THE leak-safety pin: every isotonic fit row is an ADMITTED TRAIN row
+  // from the trailing window, so its decision is strictly before the fold's
+  // test start AND its recorded emitted-axis label end (a provable UPPER
+  // bound on the true end) never crosses the earliest test decision -- the
+  // fit uses only data strictly before the test window, which is why the
+  // leak adjudicator stays PASS with recalibration on.
+  std::vector<std::int64_t> label_end_of(report_->panel.rows.size(), -1);
+  for (std::size_t i = 0; i < report_->observations.obs.size(); ++i) {
+    label_end_of[report_->observations.row_of[i]] =
+        report_->observations.obs[i].label_end_ts_ns;
+  }
+  ASSERT_FALSE(report_->folds.empty());
+  for (const auto &fold : report_->folds) {
+    ASSERT_TRUE(fold.recal_applied);
+    ASSERT_GT(fold.recal_n_fit, 0u);
+    ASSERT_EQ(fold.recal_fit_rows.size(), fold.recal_n_fit);
+    std::int64_t test_min = std::numeric_limits<std::int64_t>::max();
+    for (const std::size_t r : fold.test_rows) {
+      test_min = std::min(test_min, report_->panel.rows[r].entry_ts_ns);
+    }
+    for (const std::size_t r : fold.recal_fit_rows) {
+      EXPECT_LT(report_->panel.rows[r].entry_ts_ns, test_min);
+      ASSERT_NE(label_end_of[r], -1);
+      EXPECT_LE(label_end_of[r], test_min);
+      EXPECT_TRUE(std::find(fold.train_rows.begin(), fold.train_rows.end(), r) !=
+                  fold.train_rows.end());
+    }
+    // Window accounting: the fit sessions are exactly the trailing
+    // recal_window_effective distinct admitted train sessions.
+    std::vector<std::int64_t> train_ts;
+    for (const std::size_t r : fold.train_rows) {
+      train_ts.push_back(report_->panel.rows[r].entry_ts_ns);
+    }
+    train_ts.erase(std::unique(train_ts.begin(), train_ts.end()), train_ts.end());
+    std::vector<std::int64_t> fit_ts;
+    for (const std::size_t r : fold.recal_fit_rows) {
+      fit_ts.push_back(report_->panel.rows[r].entry_ts_ns);
+    }
+    fit_ts.erase(std::unique(fit_ts.begin(), fit_ts.end()), fit_ts.end());
+    EXPECT_EQ(fit_ts.size(), fold.recal_window_effective);
+    EXPECT_EQ(fold.recal_window_effective, 21u); // min(21, n_train_sessions/2)
+    ASSERT_LE(fit_ts.size(), train_ts.size());
+    const std::vector<std::int64_t> tail(train_ts.end() -
+                                             static_cast<std::ptrdiff_t>(fit_ts.size()),
+                                         train_ts.end());
+    EXPECT_EQ(fit_ts, tail);
+  }
+}
+
+TEST_F(VrpTrainRecalPipelineTest, RecalibratedValuesFlowOnlyBehindTheFlagAndRawPathIsUntouched) {
+  const auto out = unique_temp_path("recal_off_cmp", "");
+  const auto off =
+      vrp::run_vrp_train(make_synth_config(panel_file_->path_string(), out.string()));
+  ASSERT_TRUE(off.has_value()) << off.error().to_string();
+  ASSERT_EQ(off->folds.size(), report_->folds.size());
+  for (std::size_t k = 0; k < off->folds.size(); ++k) {
+    const auto &a = off->folds[k];
+    const auto &b = report_->folds[k];
+    // The flag adds a post-hoc map: fold plan and raw production forecasts
+    // must be bit-identical to the flag-off run (extra calibration fits use
+    // their own seeded state and cannot perturb the production model).
+    EXPECT_EQ(a.train_rows, b.train_rows);
+    EXPECT_EQ(a.test_rows, b.test_rows);
+    EXPECT_EQ(a.test_pred_raw, b.test_pred_raw);
+    EXPECT_DOUBLE_EQ(a.qlike_gbt, b.qlike_gbt);
+    EXPECT_DOUBLE_EQ(a.ic_gbt, b.ic_gbt);
+    // Flag off: the recalibrated vector collapses onto the raw one.
+    EXPECT_EQ(a.test_pred_raw, a.test_pred_recal);
+    EXPECT_FALSE(a.recal_applied);
+  }
+  // Recalibrated values flow into pred_label only behind the flag; the file
+  // stays SCHEMA byte-compatible (same schema + header lines) and parses
+  // under the UNMODIFIED frozen vrp_signal_v1 loader.
+  const std::string sig_off = read_file_bytes(off->signal_path);
+  const std::string sig_on = read_file_bytes(report_->signal_path);
+  EXPECT_NE(sig_off, sig_on);
+  const auto head = [](const std::string &bytes) {
+    const std::size_t first = bytes.find('\n');
+    return bytes.substr(0, bytes.find('\n', first + 1));
+  };
+  EXPECT_EQ(head(sig_off), head(sig_on));
+  const auto loaded = load_vrp_signal_v1(report_->signal_path.string());
+  ASSERT_TRUE(loaded.has_value()) << loaded.error().to_string();
+  // Spot-check: an emitted test row carries the fold's recalibrated value
+  // (fmt_double is shortest-round-trip, so the parse is exact).
+  const auto &fold0 = report_->folds.front();
+  ASSERT_FALSE(fold0.test_rows.empty());
+  const vrp::VrpPanelRow &pr = report_->panel.rows[fold0.test_rows.front()];
+  bool found = false;
+  for (const auto &srow : *loaded) {
+    if (srow.symbol == pr.symbol && srow.date == pr.date) {
+      EXPECT_DOUBLE_EQ(srow.pred_label, fold0.test_pred_recal.front());
+      found = true;
+    }
+  }
+  EXPECT_TRUE(found);
+  std::error_code ec;
+  std::filesystem::remove_all(out, ec);
+}
+
+TEST_F(VrpTrainRecalPipelineTest, MetricsMetaLinesCarryBeforeAfterAndWindowAccounting) {
+  const std::string bytes = read_file_bytes(report_->metrics_path);
+  EXPECT_NE(bytes.find("# recalibrate=isotonic\n"), std::string::npos);
+  EXPECT_NE(bytes.find("# recalib_window=21\n"), std::string::npos);
+  EXPECT_NE(bytes.find("# retransform=jensen\n"), std::string::npos);
+  for (const auto &m : report_->folds) {
+    const std::string p = "# fold_" + std::to_string(m.fold_id) + "_";
+    const auto has = [&](const std::string &line) {
+      EXPECT_NE(bytes.find(line), std::string::npos) << line;
+    };
+    has(p + "mz_slope_raw=" + vrp::detail::fmt_double(m.mz_slope_raw) + "\n");
+    has(p + "mz_intercept_raw=" + vrp::detail::fmt_double(m.mz_intercept_raw) + "\n");
+    has(p + "smear_factor=" + vrp::detail::fmt_double(m.smear_factor) + "\n");
+    has(p + "recal_applied=1\n");
+    has(p + "recal_window_effective=" + std::to_string(m.recal_window_effective) + "\n");
+    has(p + "recal_n_fit=" + std::to_string(m.recal_n_fit) + "\n");
+    has(p + "qlike_gbt_recal=" + vrp::detail::fmt_double(m.qlike_gbt_recal) + "\n");
+    has(p + "mz_slope_recal=" + vrp::detail::fmt_double(m.mz_slope_recal) + "\n");
+    has(p + "mz_intercept_recal=" + vrp::detail::fmt_double(m.mz_intercept_recal) + "\n");
+    has(p + "ic_gbt_recal=" + vrp::detail::fmt_double(m.ic_gbt_recal) + "\n");
+    EXPECT_TRUE(std::isfinite(m.mz_slope_raw));
+    EXPECT_TRUE(std::isfinite(m.qlike_gbt_recal));
+  }
+}
+
+TEST(VrpTrainRecal, OversizedWindowShrinksToHalfTheAdmittedTrainSessions) {
+  const ScopedTempFile panel("recal_big_win", make_synth_panel_tsv());
+  const auto out = unique_temp_path("recal_big_win_out", "");
+  vrp::VrpTrainConfig cfg = make_synth_config(panel.path_string(), out.string());
+  cfg.recalibrate = vrp::VrpRecalMode::Isotonic;
+  cfg.recalib_window_sessions = 500;
+  const auto report = vrp::run_vrp_train(cfg);
+  ASSERT_TRUE(report.has_value()) << report.error().to_string();
+  for (const auto &fold : report->folds) {
+    std::vector<std::int64_t> train_ts;
+    for (const std::size_t r : fold.train_rows) {
+      train_ts.push_back(report->panel.rows[r].entry_ts_ns);
+    }
+    train_ts.erase(std::unique(train_ts.begin(), train_ts.end()), train_ts.end());
+    EXPECT_EQ(fold.recal_window_effective, train_ts.size() / 2);
+    EXPECT_TRUE(fold.recal_applied);
+  }
+  std::error_code ec;
+  std::filesystem::remove_all(out, ec);
+}
+
+TEST(VrpTrainRecal, ZeroRecalWindowFailsClosed) {
+  const ScopedTempFile panel("recal_zero_win", make_synth_panel_tsv());
+  vrp::VrpTrainConfig cfg =
+      make_synth_config(panel.path_string(), unique_temp_path("recal_zero_out", "").string());
+  cfg.recalibrate = vrp::VrpRecalMode::Isotonic;
+  cfg.recalib_window_sessions = 0;
+  const auto report = vrp::run_vrp_train(cfg);
+  ASSERT_FALSE(report.has_value());
+  EXPECT_NE(report.error().to_string().find("recalib-window"), std::string::npos);
+}
+
+TEST(VrpTrainRecal, IsotonicModeIsByteDeterministicAcrossRuns) {
+  const ScopedTempFile panel("recal_det", make_synth_panel_tsv());
+  const auto out_a = unique_temp_path("recal_det_a", "");
+  const auto out_b = unique_temp_path("recal_det_b", "");
+  vrp::VrpTrainConfig cfg_a = make_synth_config(panel.path_string(), out_a.string());
+  cfg_a.recalibrate = vrp::VrpRecalMode::Isotonic;
+  cfg_a.recalib_window_sessions = 21;
+  vrp::VrpTrainConfig cfg_b = cfg_a;
+  cfg_b.out_dir = out_b.string();
+  const auto a = vrp::run_vrp_train(cfg_a);
+  const auto b = vrp::run_vrp_train(cfg_b);
+  ASSERT_TRUE(a.has_value()) << a.error().to_string();
+  ASSERT_TRUE(b.has_value()) << b.error().to_string();
+  EXPECT_EQ(read_file_bytes(a->signal_path), read_file_bytes(b->signal_path));
+  EXPECT_EQ(read_file_bytes(a->metrics_path), read_file_bytes(b->metrics_path));
+  EXPECT_EQ(read_file_bytes(a->gbt_model_path), read_file_bytes(b->gbt_model_path));
+  EXPECT_EQ(read_file_bytes(a->baseline_model_path), read_file_bytes(b->baseline_model_path));
+  EXPECT_EQ(read_file_bytes(a->fold_stats_path), read_file_bytes(b->fold_stats_path));
+  std::error_code ec;
+  std::filesystem::remove_all(out_a, ec);
+  std::filesystem::remove_all(out_b, ec);
+}
+
+TEST_F(VrpTrainPipelineTest, MetricsFileCarriesMzHonestyMetaLinesWithFlagOff) {
+  // Feature 3 (metrics honesty) is NOT gated on the flag: the raw GBT's
+  // Mincer-Zarnowitz level diagnostics and the baseline smearing factor are
+  // reported per fold in every mode (QLIKE alone can favor positively
+  // biased forecasts, digest [15]); recal lines appear only behind the flag.
+  const std::string bytes = read_file_bytes(report_->metrics_path);
+  EXPECT_NE(bytes.find("# recalibrate=off\n"), std::string::npos);
+  EXPECT_NE(bytes.find("# retransform=jensen\n"), std::string::npos);
+  EXPECT_EQ(bytes.find("# recalib_window="), std::string::npos);
+  EXPECT_EQ(bytes.find("recal_applied="), std::string::npos);
+  EXPECT_EQ(bytes.find("mz_slope_recal="), std::string::npos);
+  for (const auto &m : report_->folds) {
+    const std::string p = "# fold_" + std::to_string(m.fold_id) + "_";
+    EXPECT_NE(bytes.find(p + "mz_slope_raw=" + vrp::detail::fmt_double(m.mz_slope_raw) + "\n"),
+              std::string::npos);
+    EXPECT_NE(bytes.find(p + "mz_intercept_raw=" +
+                         vrp::detail::fmt_double(m.mz_intercept_raw) + "\n"),
+              std::string::npos);
+    EXPECT_NE(bytes.find(p + "smear_factor=" + vrp::detail::fmt_double(m.smear_factor) + "\n"),
+              std::string::npos);
+    EXPECT_TRUE(std::isfinite(m.mz_slope_raw));
+    EXPECT_TRUE(std::isfinite(m.mz_intercept_raw));
+    // Flag off: recal vectors collapse onto raw, nothing recal-side applied.
+    EXPECT_FALSE(m.recal_applied);
+    EXPECT_EQ(m.test_pred_raw, m.test_pred_recal);
+  }
+}
+
+TEST_F(VrpTrainPipelineTest, SmearingRetransformChangesOnlyTheBaselinePath) {
+  // Duan smearing (digest [16][17]) replaces exp(s2/2) with mean(exp(resid))
+  // in the baseline retransform, behind its own flag: the GBT path (raw
+  // preds, QLIKE clip) must stay bit-identical, and the factor is reported.
+  const auto out = unique_temp_path("smear_out", "");
+  vrp::VrpTrainConfig cfg = make_synth_config(panel_file_->path_string(), out.string());
+  cfg.retransform = vrp::VrpRetransformMode::Smearing;
+  const auto smear = vrp::run_vrp_train(cfg);
+  ASSERT_TRUE(smear.has_value()) << smear.error().to_string();
+  ASSERT_EQ(smear->folds.size(), report_->folds.size());
+  for (std::size_t k = 0; k < smear->folds.size(); ++k) {
+    const auto &a = report_->folds[k];
+    const auto &b = smear->folds[k];
+    EXPECT_NE(a.qlike_baseline, b.qlike_baseline); // level path actually moved
+    EXPECT_DOUBLE_EQ(a.qlike_gbt, b.qlike_gbt);
+    EXPECT_EQ(a.test_pred_raw, b.test_pred_raw);
+    EXPECT_TRUE(std::isfinite(b.smear_factor));
+    EXPECT_GT(b.smear_factor, 0.0);
+  }
+  const std::string bytes = read_file_bytes(smear->metrics_path);
+  EXPECT_NE(bytes.find("# retransform=smearing\n"), std::string::npos);
+  EXPECT_NE(bytes.find("# fold_0_smear_factor="), std::string::npos);
+  EXPECT_TRUE(std::isfinite(meta_double(bytes, "fold_0_smear_factor")));
+  std::error_code ec;
+  std::filesystem::remove_all(out, ec);
 }
 
 } // namespace

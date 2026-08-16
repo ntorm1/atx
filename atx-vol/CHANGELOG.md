@@ -5,6 +5,51 @@ that silently changes a NUMBER a caller already depends on belongs in this file.
 
 ## Unreleased
 
+### NEW — VRP round 3: flagged isotonic forecast recalibration + metrics honesty (lane vrp-recalibration)
+
+`atx-vol-vrp-train` grows three flags; every flag defaults to the fix-2
+behaviour, and with defaults the signal, model, and fold-stats artifacts stay
+**byte-identical** (verified against the round-2 gate hashes):
+
+- `--recalibrate {off|isotonic}` (default `off`). Per walk-forward fold, a
+  deterministic PAVA isotonic map from raw GBT label forecast to realized
+  label is fit on the trailing `--recalib-window` (default 63, capped per
+  fold at half the fold's admitted train sessions) ADMITTED train sessions,
+  using out-of-sample forecasts from a temporal-holdout calibration model,
+  then applied to the fold's raw test forecasts. Fit rows are admitted train
+  rows, so the plan's purge already bounds every fit datum strictly before
+  the fold's test start; the fold plan itself is untouched by the flag (leak
+  adjudicator PASS in both modes, pinned by test).
+  **VALUE SEMANTICS behind the flag**: the recalibrated label flows through
+  the EXISTING `vrp_signal_v1` `pred_label` column, and `pred_edge_norm` is
+  standardized from it. The schema is unchanged and byte-compatible; only
+  the numbers change, and only when the flag is on. The map is monotone
+  non-decreasing: rank order is preserved (pooled-block ties possible at
+  the extremes, where constant extrapolation bounds outputs by observed
+  calibration labels). Model files and the sidecar stay those of the
+  production (full-train) models — byte-identical to the flag-off run.
+- `--retransform {jensen|smearing}` (default `jensen`). Swaps the baseline's
+  `exp(s2/2)` lognormal retransform for the Duan smearing factor
+  `mean(exp(resid))`. Trainer-side scoring only; the `vrp_fold_stats_v1`
+  sidecar contract (strict grammar untouched) remains jensen-based, so
+  score-from-files consumers reproduce the jensen path.
+- Metrics honesty (every mode): `vrp_metrics.tsv` gains additive meta lines —
+  run-level `recalibrate`/`retransform` (+ `recalib_window` when on), per
+  fold `mz_slope_raw`/`mz_intercept_raw` (Mincer-Zarnowitz OLS of realized
+  label on forecast label; level target slope 1, intercept 0) and
+  `smear_factor`; behind the flag also `recal_applied`,
+  `recal_window_effective`, `recal_n_fit`, `qlike_gbt_recal`,
+  `mz_slope_recal`, `mz_intercept_recal`, `ic_gbt_recal`. The tabular rows
+  and the fold-stats sidecar are unchanged. QLIKE alone can favor positively
+  biased forecasts — do not tune to it without the MZ lines.
+
+`scripts/vrp_leak_adjudicate.py` hardening (fix-2 review round-3 minors):
+exit 2 when the panel's `# n_bad_spot=` meta counter is nonzero (presence
+would be denser than the true bar axis — an optimistic oracle), and the
+emitted-but-not-present scan now covers EVERY panel row date >=
+coverage_start (successor and tail rows included), not just admitted
+decision dates.
+
 ### BREAKING - oracle mutations require the v3 lane broker
 
 Oracle bootstrap/recovery now uses a trusted local MCP transaction broker as its
