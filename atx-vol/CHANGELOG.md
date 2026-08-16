@@ -5,6 +5,103 @@ that silently changes a NUMBER a caller already depends on belongs in this file.
 
 ## Unreleased
 
+### NEW — VRP round 3: flagged isotonic forecast recalibration + metrics honesty (lane vrp-recalibration)
+
+`atx-vol-vrp-train` grows three flags; every flag defaults to the fix-2
+behaviour, and with defaults the signal, model, and fold-stats artifacts stay
+**byte-identical** (verified against the round-2 gate hashes):
+
+- `--recalibrate {off|isotonic}` (default `off`). Per walk-forward fold, a
+  deterministic PAVA isotonic map from raw GBT label forecast to realized
+  label is fit on the trailing `--recalib-window` (default 63, capped per
+  fold at half the fold's admitted train sessions) ADMITTED train sessions,
+  using out-of-sample forecasts from a temporal-holdout calibration model,
+  then applied to the fold's raw test forecasts. Fit rows are admitted train
+  rows, so the plan's purge already bounds every fit datum strictly before
+  the fold's test start; the fold plan itself is untouched by the flag (leak
+  adjudicator PASS in both modes, pinned by test).
+  **VALUE SEMANTICS behind the flag**: the recalibrated label flows through
+  the EXISTING `vrp_signal_v1` `pred_label` column, and `pred_edge_norm` is
+  standardized from it. The schema is unchanged and byte-compatible; only
+  the numbers change, and only when the flag is on. The map is monotone
+  non-decreasing: rank order is preserved (pooled-block ties possible at
+  the extremes, where constant extrapolation bounds outputs by observed
+  calibration labels). Model files and the sidecar stay those of the
+  production (full-train) models — byte-identical to the flag-off run.
+- `--retransform {jensen|smearing}` (default `jensen`). Swaps the baseline's
+  `exp(s2/2)` lognormal retransform for the Duan smearing factor
+  `mean(exp(resid))`. Trainer-side scoring only; the `vrp_fold_stats_v1`
+  sidecar contract (strict grammar untouched) remains jensen-based, so
+  score-from-files consumers reproduce the jensen path.
+- Metrics honesty (every mode): `vrp_metrics.tsv` gains additive meta lines —
+  run-level `recalibrate`/`retransform` (+ `recalib_window` when on), per
+  fold `mz_slope_raw`/`mz_intercept_raw` (Mincer-Zarnowitz OLS of realized
+  label on forecast label; level target slope 1, intercept 0) and
+  `smear_factor`; behind the flag also `recal_applied`,
+  `recal_window_effective`, `recal_n_fit`, `qlike_gbt_recal`,
+  `mz_slope_recal`, `mz_intercept_recal`, `ic_gbt_recal`. The tabular rows
+  and the fold-stats sidecar are unchanged. QLIKE alone can favor positively
+  biased forecasts — do not tune to it without the MZ lines.
+
+`scripts/vrp_leak_adjudicate.py` hardening (fix-2 review round-3 minors):
+exit 2 when the panel's `# n_bad_spot=` meta counter is nonzero (presence
+would be denser than the true bar axis — an optimistic oracle), and the
+emitted-but-not-present scan now covers EVERY panel row date >=
+coverage_start (successor and tail rows included), not just admitted
+decision dates.
+
+### NEW — VolEdge round 3: cost-aware selective book (config-gated, defaults = round-2)
+
+`VolEdgeConfig` grows six appended knobs (arity pin 14 → 20; Tier-B additive,
+all defaults OFF so the default book is bit-for-bit the round-2 book —
+verified by reproducing the round-2 SP100 gate numbers ±0 at the lane tip):
+
+- `hold_to_horizon`: rebalance ticks trade the DIFF against a persistent held
+  book (kept names never pay the close/reopen churn; entry spread once per
+  holding period), and the expiry guard rolls EXPIRING NAMES individually at
+  their held targets instead of flattening the whole book.
+- `exit_long_fraction`/`exit_short_fraction`: Novy-Marx–Velikov sS buy/hold
+  band via the new `plan_vol_edge_book` (enter only the entry band, exit only
+  on leaving the wider band; unrankable days hold). Fail-closed: requires
+  `hold_to_horizon`, band must lie in [entry fraction, 0.5].
+- `cost_gate_k`/`cost_gate_ref_vol`/`cost_gate_hedge_per_vega`: cost-gated
+  admission per unit vega — `|pred_label|` mapped to a vol move through a
+  reference vol must clear k × (round-trip option spread + hedge component).
+  PRE-RECALIBRATION mechanism: the variance→vol conversion is a crude fixed
+  scale until the recalibration lane lands currency-correct labels.
+
+`vrp-backtest` gains the matching flags plus `name_entries`/`name_exits`
+summary lines (one-sided turnover attribution). NOTE for hold-mode e2e runs
+on holey corpora: a persistent book needs surface presence from entry through
+the WINDOW END (the engine stays fail-closed on held-lot surface holes); the
+round-2 25.4-day presence filter is insufficient for configs with
+`hold_to_horizon` and data-level filtering must widen accordingly.
+
+### NOTE — VRP round 3 integration: defaults still reproduce round 2 bit-for-bit
+
+Both round-3 feature sets above ship behind flags/config that default to the
+round-2 behaviour, and the round-3 integration gate re-verified that at the
+merged tip, not just per lane:
+
+- `atx-vol-vrp-train` with default flags reproduces the round-2 gate's
+  `vrp_signal.tsv`, `vrp_gbt_model.tsv`, `vrp_baseline_model.tsv` and
+  `vrp_fold_stats.tsv` **byte-identically** on both the SP100 and clean-25
+  panels. `vrp_metrics.tsv` is the sole difference and is purely additive:
+  exactly 11 added meta lines, 0 removed and 0 changed, on each corpus.
+- `vrp-backtest` with the round-2 default VolEdge config produces
+  `vrp_backtest_net.tsv` and `vrp_backtest_gross.tsv` **byte-identical** to
+  the round-2 gate reports (`fc /b`: no differences).
+- The recalibration flag does not touch the production path: with
+  `--recalibrate isotonic` the model files and the `vrp_fold_stats_v1` sidecar
+  stay byte-identical to the flag-off run; only signal values and metrics meta
+  lines move.
+
+Caveat carried forward for anyone turning `--recalibrate isotonic` ON: on the
+SP100 corpus the fitted map is strongly collapsing — distinct forecast values
+per fold go 731 → 42, 151 → 3 and 141 → 2 (94.3% / 98.0% / 98.6%) with zero
+rank inversions. Gate any ON usage on the map's distinct-output count, not on
+QLIKE alone.
+
 ### BREAKING - oracle mutations require the v3 lane broker
 
 Oracle bootstrap/recovery now uses a trusted local MCP transaction broker as its

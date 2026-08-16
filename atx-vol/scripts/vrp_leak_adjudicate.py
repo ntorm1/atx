@@ -35,10 +35,21 @@ the trainer's own artifact (per-fold n_train/n_test/purged/embargoed + the
 rejection counters) and fails closed (exit 2) on ANY mismatch, so the
 adjudication provably ran on the trainer's actual plan.
 
+Adjudicability guards (both exit 2, fix2-review round-3 minors):
+  n_bad_spot: the panel builder's bar axis is presence AND finite positive
+    spot (load_vrp_series skips bad-spot sessions), so a panel whose
+    `# n_bad_spot=` meta counter is NONZERO has a bar axis SPARSER than
+    presence -- presence-derived 21st forward bars would come too early and
+    the oracle would be optimistic. Refused outright. A panel without the
+    meta line (hand-built fixtures) proceeds with a printed note.
+  emitted-but-not-present: EVERY panel row date >= coverage_start (decision,
+    successor, rejected, and tail rows alike -- recorded label ends rest on
+    successor rows' timestamps) must be a presence bar of its symbol.
+
 Exit codes: 0 zero violations; 1 >= 1 train row with true end > test_min
-(details printed); 2 bad args, malformed inputs, panel/presence
-inconsistency (an emitted row absent from presence), or reconstruction
-mismatch against --metrics.
+(details printed); 2 bad args, malformed inputs, nonzero panel n_bad_spot
+meta, panel/presence inconsistency (any emitted row absent from presence),
+or reconstruction mismatch against --metrics.
 
 Run: python -m pytest atx-vol/scripts/vrp_leak_adjudicate_test.py -q
 """
@@ -208,6 +219,25 @@ def build_plan(
     return folds
 
 
+# ── Panel meta counters ───────────────────────────────────────────────────
+
+
+def read_panel_meta(path: Path) -> dict[str, int]:
+    """Integer `# key=value` meta lines from the panel's comment header
+    (stops at the first non-comment line -- the frozen column header)."""
+    meta: dict[str, int] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.startswith("#"):
+            break
+        key, sep, value = line[1:].strip().partition("=")
+        if sep:
+            try:
+                meta[key.strip()] = int(value.strip())
+            except ValueError:
+                pass
+    return meta
+
+
 # ── Presence data ─────────────────────────────────────────────────────────
 
 
@@ -343,6 +373,22 @@ def main(argv: list[str] | None = None) -> int:
         print(f"vrp_leak_adjudicate: {exc}", file=sys.stderr)
         return 2
 
+    # Adjudicability gate (fix2-review minor a): the true bar axis is
+    # presence AND finite positive spot; n_bad_spot > 0 means presence is
+    # DENSER than the bar axis, presence-derived true ends come too early,
+    # and a real leak could be missed -- refuse the corpus, never pass it.
+    n_bad_spot = read_panel_meta(args.panel).get("n_bad_spot")
+    if n_bad_spot is not None and n_bad_spot != 0:
+        print(
+            f"vrp_leak_adjudicate: panel meta n_bad_spot={n_bad_spot} != 0 -- presence "
+            "data is denser than the panel's bar axis (bar = presence AND finite "
+            "positive spot), so presence cannot adjudicate this corpus",
+            file=sys.stderr,
+        )
+        return 2
+    if n_bad_spot is None:
+        print("panel carries no n_bad_spot meta; treating presence as the bar axis")
+
     print(f"axis={args.label_end_axis} max_label_span={max_span} "
           f"walk={min_train}/{test_groups}/{step} embargo_days={embargo_ns / 86.4e12:.1f}")
     print(f"labeled={built.n_labeled} admitted={len(built.obs)} "
@@ -359,15 +405,24 @@ def main(argv: list[str] | None = None) -> int:
         print(f"metrics cross-check: reconstruction matches {args.metrics.name} exactly")
 
     coverage_start = sessions[0]
-    # Structural-bound sanity: an emitted row inside presence coverage must be
-    # a bar of its symbol (emitted rows are a subset of bars).
+    # Structural-bound sanity, WIDENED to every panel row (fix2-review minor
+    # b): every emitted row inside presence coverage -- decision, successor,
+    # rejected, and tail rows alike -- must be a bar of its symbol, because
+    # the recorded label ends the bounded_safe path rests on are SUCCESSOR
+    # rows' timestamps. Scanning admitted decision dates alone would let a
+    # successor-side panel/presence inconsistency slip past this guard.
+    bar_sets = {sym: frozenset(dates) for sym, dates in bars.items()}
     anomalies = 0
-    for o in built.obs:
-        if o.date >= coverage_start and o.date not in set(bars.get(o.symbol, ())):
+    examples: list[str] = []
+    for r in rows:
+        if r["date"] >= coverage_start and r["date"] not in bar_sets.get(r["symbol"], ()):
             anomalies += 1
+            if len(examples) < 5:
+                examples.append(f"{r['symbol']}/{r['date']}")
     if anomalies:
-        print(f"vrp_leak_adjudicate: {anomalies} emitted-but-not-present anomalies; "
-              "presence data cannot adjudicate this panel", file=sys.stderr)
+        print(f"vrp_leak_adjudicate: {anomalies} emitted-but-not-present panel row(s) "
+              f"(e.g. {', '.join(examples)}); presence data cannot adjudicate this panel",
+              file=sys.stderr)
         return 2
 
     violations: list[str] = []   # PROVEN leaks: true end (or its bound) past test start

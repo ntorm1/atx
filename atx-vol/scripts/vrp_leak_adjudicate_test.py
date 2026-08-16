@@ -111,6 +111,40 @@ class TestAdjudicator(unittest.TestCase):
         )
         self.assertEqual(self._run(), 2)
 
+    def test_nonzero_bad_spot_meta_fails_closed(self) -> None:
+        # fix2-review minor (a): the panel builder's bar axis is presence AND
+        # finite positive spot (load_vrp_series skips bad-spot sessions), so
+        # n_bad_spot > 0 makes presence DENSER than the true bar axis and the
+        # presence-derived 21st forward bar comes too early -- an OPTIMISTIC
+        # oracle that could miss a real leak. The adjudicator must refuse the
+        # corpus (exit 2), never pass it.
+        text = self.panel.read_text(encoding="utf-8")
+        self.panel.write_text(
+            text.replace(_META, _META + "# n_bad_spot=2\n", 1), encoding="utf-8"
+        )
+        self.assertEqual(self._run(), 2)
+
+    def test_zero_bad_spot_meta_stays_clean(self) -> None:
+        # The real-corpus shape (SP100 carries `# n_bad_spot=0`): a zero
+        # counter certifies presence == bar axis, adjudication proceeds.
+        text = self.panel.read_text(encoding="utf-8")
+        self.panel.write_text(
+            text.replace(_META, _META + "# n_bad_spot=0\n", 1), encoding="utf-8"
+        )
+        self.assertEqual(self._run(), 0)
+
+    def test_successor_only_presence_hole_fails_closed(self) -> None:
+        # fix2-review minor (b): date 178 is HHH's LAST bar -- a tail row's
+        # date, never an admitted decision date, but exactly the successor
+        # class that recorded label ends rest on. Dropping it from presence
+        # must trip the WIDENED emitted-but-not-present scan (every panel row
+        # date >= coverage_start), not silently adjudicate against a thinner
+        # bar axis.
+        self.presence.write_text(
+            "\n".join(_presence_lines(drop_hhh_date=_date(178))) + "\n", encoding="utf-8"
+        )
+        self.assertEqual(self._run(), 2)
+
     def test_observation_build_matches_trainer_semantics(self) -> None:
         # Unit pin mirroring the C++ suite: HHH bar q's emitted-axis end is
         # bar q+21 (31/32 pooled sessions out), never pooled t+21.

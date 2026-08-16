@@ -144,6 +144,13 @@ struct VrpBacktestSummary {
   std::uint64_t n_held_steps{0};
   std::uint64_t n_skipped_names{0};
   std::uint64_t n_roll_closes{0};
+  // Round-3 per-name turnover attribution: cumulative cost-bearing option
+  // entries by name (both modes) and strategy-attributed per-name closes
+  // (hold-to-horizon exits and rolls; the legacy whole-book churn's closes
+  // are implicit and stay 0). One-sided turnover per session for the sweep
+  // table = n_name_entries / sessions.
+  std::uint64_t n_name_entries{0};
+  std::uint64_t n_name_exits{0};
 };
 
 // Parse + validate the subcommand's arguments. FAIL-CLOSED VALIDATION: a

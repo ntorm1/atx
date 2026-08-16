@@ -59,6 +59,27 @@
 //      scored variance forecast is positive. The clip touches ONLY the QLIKE
 //      scoring path -- pred_label in the signal stays the raw GBT output
 //      (rank information preserved).
+//   3b. OPTIONAL round-3 level recalibration (--recalibrate isotonic,
+//      default OFF; research-vrp-costs digest Q4 [18][19]): per fold, the
+//      trailing --recalib-window ADMITTED train sessions (capped at half
+//      the fold's train sessions) become a temporal-holdout calibration
+//      window. A CALIBRATION GBT fit on the earlier train rows produces
+//      genuinely out-of-sample forecasts on the window; PAVA isotonic
+//      regression maps those forecasts onto realized labels, and the
+//      monotone map is applied to the PRODUCTION model's raw test
+//      forecasts. Every fit row is an admitted train row, so the plan's
+//      own purge already bounds its label window at the fold's test start
+//      -- the fit uses only data strictly before the test window and the
+//      fold plan itself is untouched (the leak adjudicator stays PASS).
+//      Monotone => rank-preserving by construction; QLIKE + Mincer-
+//      Zarnowitz slope/intercept + rank IC are reported before AND after
+//      per fold (QLIKE alone can favor positively biased forecasts,
+//      digest [15]). Behind the flag the recalibrated values flow through
+//      the EXISTING pred_label/pred_edge_norm columns (schema unchanged).
+//      A second flag (--retransform smearing, default jensen) swaps the
+//      baseline's exp(s2/2) lognormal retransform for the Duan smearing
+//      factor mean(exp(resid)) (digest [16][17]); trainer-side only, the
+//      sidecar contract stays jensen-based.
 //   4. Write the FROZEN vrp_signal_v1 TSV (`# schema=vrp_signal_v1`;
 //      columns EXACTLY symbol, date, pred_label, pred_edge_norm, vov_63d):
 //      one row per OOS test observation (each labeled row appears in at
@@ -139,6 +160,16 @@ inline constexpr double kVrpHorizonYears = 21.0 / 252.0;
 // 42 keeps 97.5% of the coverage-complete rows while capping the DUK-class
 // 100+ session spans that poisoned the global-max embargo.
 inline constexpr std::size_t kVrpDefaultMaxLabelSpanSessions = 2 * kVrpHorizonSessions;
+
+// Round-3 forecast-level recalibration (research-vrp-costs digest Q4).
+// Off keeps every signal/model/sidecar byte identical to the fix-2 trainer.
+enum class VrpRecalMode : std::uint8_t { Off, Isotonic };
+// Baseline log-target retransformation: Jensen = exp(s2/2) (the round-1
+// path), Smearing = Duan's nonparametric mean(exp(resid)) factor.
+enum class VrpRetransformMode : std::uint8_t { Jensen, Smearing };
+// Default --recalib-window: trailing admitted-train calibration sessions
+// (digest suggestion 60-90; capped per fold at half the train sessions).
+inline constexpr std::size_t kVrpDefaultRecalibWindowSessions = 63;
 
 inline constexpr std::array<std::string_view, kVrpPanelColumnCount> kVrpPanelColumns{
     "symbol",        "date",       "entry_ts_ns", "spot",       "iv_fair_21d", "iv_fair_63d",
@@ -688,6 +719,181 @@ make_vrp_plan(const VrpObservations &observations, const VrpWalkForwardCfg &walk
   return std::clamp(f, train_var_min, train_var_max);
 }
 
+// Duan (1983) smearing factor: mean(exp(residual)) over the train-fold log
+// residuals -- the nonparametric retransformation alternative to exp(s2/2),
+// safer when residuals are non-Gaussian (digest [16][17]). NaN on empty.
+[[nodiscard]] inline double vrp_smearing_factor(std::span<const double> residuals) noexcept {
+  if (residuals.empty()) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  double sum = 0.0;
+  for (const double r : residuals) {
+    sum += std::exp(r);
+  }
+  return sum / static_cast<double>(residuals.size());
+}
+
+// Smearing retransform + the SAME insanity clip as the Jensen path.
+[[nodiscard]] inline double vrp_smearing_retransform_clip(double log_var_forecast,
+                                                          double smear_factor,
+                                                          double train_var_min,
+                                                          double train_var_max) noexcept {
+  return std::clamp(std::exp(log_var_forecast) * smear_factor, train_var_min, train_var_max);
+}
+
+// ── Isotonic recalibration (PAVA; digest [18][19]) ──────────────────────────
+
+// Deterministic pool-adjacent-violators isotonic fit of a non-decreasing map
+// x -> y, evaluated with piecewise-linear interpolation between the fitted
+// points and CONSTANT extrapolation outside the fitted x range (recalibrated
+// levels stay bounded by observed calibration targets). The evaluated map is
+// monotone non-decreasing by construction: q1 <= q2 => eval(q1) <= eval(q2)
+// and equal inputs map to equal outputs -- applying it to a forecast can
+// repair the LEVEL but can never reorder the ranks (rank statistics are
+// invariant under non-decreasing maps, up to pooled-block ties).
+struct VrpIsotonicMap {
+  std::vector<double> x; // strictly increasing fitted abscissae
+  std::vector<double> y; // non-decreasing fitted values (parallel to x)
+};
+
+// PAVA over the finite (x, y) pairs; non-finite pairs carry no level
+// information and are excluded. Err(InvalidArgument) on size mismatch or
+// when no finite pair survives. Deterministic and RNG-free: pairs sort by
+// (x, y), exact x-ties pool to their mean first, then adjacent violators
+// merge on weighted means.
+[[nodiscard]] inline Result<VrpIsotonicMap> fit_vrp_isotonic(std::vector<double> x,
+                                                             std::vector<double> y) {
+  if (x.size() != y.size()) {
+    return Err(ErrorCode::InvalidArgument, "fit_vrp_isotonic: x/y size mismatch");
+  }
+  std::vector<std::pair<double, double>> pts;
+  pts.reserve(x.size());
+  for (std::size_t i = 0; i < x.size(); ++i) {
+    if (std::isfinite(x[i]) && std::isfinite(y[i])) {
+      pts.emplace_back(x[i], y[i]);
+    }
+  }
+  if (pts.empty()) {
+    return Err(ErrorCode::InvalidArgument, "fit_vrp_isotonic: no finite (x, y) pairs");
+  }
+  std::sort(pts.begin(), pts.end());
+  struct Block {
+    double sum_wy{0.0};
+    double w{0.0};
+    double x_first{0.0};
+    double x_last{0.0};
+    [[nodiscard]] double value() const noexcept { return sum_wy / w; }
+  };
+  std::vector<Block> blocks;
+  blocks.reserve(pts.size());
+  std::size_t i = 0;
+  // Bounded: each outer iteration consumes >= 1 point; merges only shrink
+  // the block stack.
+  while (i < pts.size()) {
+    // Pool exact x-ties into one weighted point.
+    std::size_t j = i;
+    double sum = 0.0;
+    while (j < pts.size() && pts[j].first == pts[i].first) {
+      sum += pts[j].second;
+      ++j;
+    }
+    blocks.push_back(
+        Block{sum, static_cast<double>(j - i), pts[i].first, pts[i].first});
+    // PAVA: merge while the previous block violates non-decreasing order.
+    while (blocks.size() >= 2 &&
+           blocks[blocks.size() - 2].value() > blocks.back().value()) {
+      const Block last = blocks.back();
+      blocks.pop_back();
+      blocks.back().sum_wy += last.sum_wy;
+      blocks.back().w += last.w;
+      blocks.back().x_last = last.x_last;
+    }
+    i = j;
+  }
+  VrpIsotonicMap map;
+  map.x.reserve(blocks.size() * 2);
+  map.y.reserve(blocks.size() * 2);
+  for (const Block &b : blocks) {
+    map.x.push_back(b.x_first);
+    map.y.push_back(b.value());
+    if (b.x_last > b.x_first) { // flat block interior: two boundary points
+      map.x.push_back(b.x_last);
+      map.y.push_back(b.value());
+    }
+  }
+  return Ok(std::move(map));
+}
+
+// Piecewise-linear evaluation of a fitted map, constant outside the fitted
+// range. Non-finite inputs and an empty (unfitted) map pass q through
+// unchanged -- the caller's forecast stays exactly unrecalibrated.
+[[nodiscard]] inline double vrp_isotonic_eval(const VrpIsotonicMap &m, double q) noexcept {
+  if (!std::isfinite(q) || m.x.empty()) {
+    return q;
+  }
+  if (q <= m.x.front()) {
+    return m.y.front();
+  }
+  if (q >= m.x.back()) {
+    return m.y.back();
+  }
+  const auto it = std::upper_bound(m.x.begin(), m.x.end(), q);
+  const auto hi = static_cast<std::size_t>(it - m.x.begin()); // first x > q; >= 1
+  const std::size_t lo = hi - 1;
+  const double t = (q - m.x[lo]) / (m.x[hi] - m.x[lo]); // x strictly increasing
+  return m.y[lo] + t * (m.y[hi] - m.y[lo]);
+}
+
+// ── Mincer-Zarnowitz level diagnostic ───────────────────────────────────────
+
+// OLS of realized on forecast: realized = intercept + slope * forecast.
+// Level-honesty target: slope -> 1, intercept -> 0 (digest Q4 -- QLIKE alone
+// can favor positively biased forecasts [15]). Non-finite pairs are
+// excluded; slope/intercept stay NaN with fewer than 2 finite pairs or a
+// degenerate (zero-variance) forecast -- reported as-is, never fabricated.
+struct VrpMzFit {
+  double slope{std::numeric_limits<double>::quiet_NaN()};
+  double intercept{std::numeric_limits<double>::quiet_NaN()};
+};
+
+[[nodiscard]] inline VrpMzFit vrp_mincer_zarnowitz(std::span<const double> forecast,
+                                                   std::span<const double> realized) noexcept {
+  VrpMzFit fit;
+  if (forecast.size() != realized.size()) {
+    return fit;
+  }
+  double sx = 0.0;
+  double sy = 0.0;
+  std::size_t n = 0;
+  for (std::size_t i = 0; i < forecast.size(); ++i) {
+    if (std::isfinite(forecast[i]) && std::isfinite(realized[i])) {
+      sx += forecast[i];
+      sy += realized[i];
+      ++n;
+    }
+  }
+  if (n < 2) {
+    return fit;
+  }
+  const double mx = sx / static_cast<double>(n);
+  const double my = sy / static_cast<double>(n);
+  double sxx = 0.0;
+  double sxy = 0.0;
+  for (std::size_t i = 0; i < forecast.size(); ++i) {
+    if (std::isfinite(forecast[i]) && std::isfinite(realized[i])) {
+      const double dx = forecast[i] - mx;
+      sxx += dx * dx;
+      sxy += dx * (realized[i] - my);
+    }
+  }
+  if (sxx == 0.0) {
+    return fit;
+  }
+  fit.slope = sxy / sxx;
+  fit.intercept = my - fit.slope * mx;
+  return fit;
+}
+
 // ── FeatureMatrix bridge + model predict helpers ────────────────────────────
 
 namespace detail {
@@ -898,6 +1104,16 @@ struct VrpTrainConfig {
   // (build_vrp_observations; the CLI's --max-label-span). Bounds the
   // embargo, which bounds purge/embargo attrition.
   std::size_t max_label_span_sessions{kVrpDefaultMaxLabelSpanSessions};
+  // Round-3 level recalibration (--recalibrate; default Off keeps the
+  // signal/model/sidecar artifacts byte-identical to the fix-2 trainer).
+  VrpRecalMode recalibrate{VrpRecalMode::Off};
+  // Trailing admitted-train calibration window in sessions (--recalib-window;
+  // capped per fold at half the fold's admitted train sessions, and the
+  // effective value is reported per fold). Must be >= 1 under Isotonic.
+  std::size_t recalib_window_sessions{kVrpDefaultRecalibWindowSessions};
+  // Baseline log-target retransformation (--retransform; trainer-side only,
+  // the sidecar score-from-files contract stays jensen-based).
+  VrpRetransformMode retransform{VrpRetransformMode::Jensen};
 };
 
 struct VrpFoldMetrics {
@@ -924,6 +1140,27 @@ struct VrpFoldMetrics {
   // observation counts from the fold's ResearchValidationFold.
   std::size_t n_train_purged{0};
   std::size_t n_train_embargoed{0};
+  // Round-3 metrics honesty + isotonic recalibration (digest Q4): Mincer-
+  // Zarnowitz level diagnostics of the raw GBT always, and of the
+  // recalibrated forecast when cfg.recalibrate is on; the raw/recalibrated
+  // per-test-row label forecasts (parallel to test_rows; recal == raw when
+  // recalibration is off or not applied); the isotonic fit accounting --
+  // recal_fit_rows are ADMITTED TRAIN rows from the trailing
+  // recal_window_effective train sessions, strictly before the fold's test
+  // start by the plan's own purge (pinned by test).
+  double mz_slope_raw{std::numeric_limits<double>::quiet_NaN()};
+  double mz_intercept_raw{std::numeric_limits<double>::quiet_NaN()};
+  double mz_slope_recal{std::numeric_limits<double>::quiet_NaN()};
+  double mz_intercept_recal{std::numeric_limits<double>::quiet_NaN()};
+  double qlike_gbt_recal{std::numeric_limits<double>::quiet_NaN()};
+  double ic_gbt_recal{std::numeric_limits<double>::quiet_NaN()};
+  double smear_factor{1.0}; // baseline Duan factor (computed in every mode)
+  bool recal_applied{false};
+  std::size_t recal_window_effective{0};
+  std::size_t recal_n_fit{0};
+  std::vector<std::size_t> recal_fit_rows; // panel rows the isotonic fit used
+  std::vector<double> test_pred_raw;       // raw GBT label forecast per test row
+  std::vector<double> test_pred_recal;     // recalibrated (== raw when off)
   std::vector<std::size_t> train_rows;  // panel row indices
   std::vector<std::size_t> test_rows;   // panel row indices
 };
@@ -1291,6 +1528,7 @@ struct BaselineFit {
   learn::LearnedModel model;   // 3-feature linear (z inputs)
   double train_mean_log{0.0};  // ybar over train rows (kernel fits no intercept)
   double s2{0.0};              // train residual variance in log space
+  double smear_factor{1.0};    // Duan smearing factor: mean(exp(resid))
   double train_var_min{0.0};   // insanity clip bounds: train label variance range
   double train_var_max{0.0};
   double train_var_mean{0.0};  // the "mean forecast" benchmark
@@ -1335,10 +1573,13 @@ inline constexpr std::array<std::size_t, kVrpFeatureCount> kAllFeatures{0, 1, 2,
       .horizons = {static_cast<atx::u16>(kVrpHorizonSessions)}};
   fit.model = learn::fit_linear(fm, learn::LatentAugmentation{}, lin_cfg);
 
-  // Train residual variance in log space (for the exp(s2/2) retransform).
-  // Predictions omit the mean (no-intercept kernel over zero-mean columns),
-  // so the residual is measured against pred + ybar.
+  // Train residual variance in log space (for the exp(s2/2) retransform)
+  // plus the Duan smearing factor mean(exp(resid)) over the same residuals
+  // (the --retransform smearing alternative). Predictions omit the mean
+  // (no-intercept kernel over zero-mean columns), so the residual is
+  // measured against pred + ybar.
   double sq = 0.0;
+  std::vector<double> resids(train_rows.size(), 0.0);
   std::array<double, 3> base{};
   for (std::size_t i = 0; i < train_rows.size(); ++i) {
     for (std::size_t j = 0; j < kBaselineFeatures.size(); ++j) {
@@ -1346,23 +1587,32 @@ inline constexpr std::array<std::size_t, kVrpFeatureCount> kAllFeatures{0, 1, 2,
     }
     const double pred = predict_model(fit.model, std::span<const double>{base});
     const double resid = y_log[i] - (pred + fit.train_mean_log);
+    resids[i] = resid;
     sq += resid * resid;
   }
   fit.s2 = sq / n;
+  fit.smear_factor = vrp_smearing_factor(std::span<const double>{resids});
   return fit;
 }
 
-// The clipped baseline VARIANCE forecast for one panel row.
+// The clipped baseline VARIANCE forecast for one panel row, retransformed
+// per `mode`: Jensen exp(s2/2) (round-1 path, the sidecar contract) or the
+// Duan smearing factor (--retransform smearing; digest [16][17]).
 [[nodiscard]] inline double baseline_forecast_var(const VrpPanel &panel,
                                                   const VrpStandardization &stz,
-                                                  const BaselineFit &fit, std::size_t row) {
+                                                  const BaselineFit &fit, std::size_t row,
+                                                  VrpRetransformMode mode) {
   std::array<double, 3> base{};
   for (std::size_t j = 0; j < kBaselineFeatures.size(); ++j) {
     base[j] = standardized_feature(panel, stz, row, kBaselineFeatures[j]);
   }
   const double pred = predict_model(fit.model, std::span<const double>{base});
-  return vrp_retransform_clip(pred + fit.train_mean_log, fit.s2, fit.train_var_min,
-                              fit.train_var_max);
+  const double mu = pred + fit.train_mean_log;
+  if (mode == VrpRetransformMode::Smearing) {
+    return vrp_smearing_retransform_clip(mu, fit.smear_factor, fit.train_var_min,
+                                         fit.train_var_max);
+  }
+  return vrp_retransform_clip(mu, fit.s2, fit.train_var_min, fit.train_var_max);
 }
 
 // The GBT's direct label-space prediction for one panel row.
@@ -1438,12 +1688,14 @@ struct SignalEntry {
 
 [[nodiscard]] inline Status write_metrics_file(std::span<const VrpFoldMetrics> folds,
                                                const VrpObservations &observations,
+                                               const VrpTrainConfig &cfg,
                                                const std::filesystem::path &path) {
   std::ofstream out{path, std::ios::binary | std::ios::trunc};
   if (!out) {
     return Err(ErrorCode::IoError,
                "write_metrics_file: cannot open '" + path.string() + "' for writing");
   }
+  const bool recal_on = cfg.recalibrate == VrpRecalMode::Isotonic;
   std::string body = "# schema=vrp_train_metrics_v1\n";
   // Rejection accounting as meta lines (columns below stay round-1 shaped).
   body += "# n_labeled_rows=" + std::to_string(observations.n_labeled_rows) + "\n";
@@ -1453,11 +1705,20 @@ struct SignalEntry {
           std::to_string(observations.n_rows_rejected_span_cap) + "\n";
   body += "# n_symbols_fully_rejected=" +
           std::to_string(observations.n_symbols_fully_rejected) + "\n";
+  // Round-3 run-level mode lines (value semantics documented in CHANGELOG).
+  body += std::string("# recalibrate=") + (recal_on ? "isotonic" : "off") + "\n";
+  if (recal_on) {
+    body += "# recalib_window=" + std::to_string(cfg.recalib_window_sessions) + "\n";
+  }
+  body += std::string("# retransform=") +
+          (cfg.retransform == VrpRetransformMode::Smearing ? "smearing" : "jensen") + "\n";
   // Per-fold accounting meta lines (round-2 review majors 2 + 3): the
   // purge/embargo train-row losses and the GBT QLIKE-path insanity-clip
   // count + post-clip extrema, via the same `# key=value` mechanism as the
-  // F1 counters. Additive only -- the tabular columns below stay round-1
-  // shaped.
+  // F1 counters. Round 3 adds the Mincer-Zarnowitz level diagnostics (raw
+  // always; recalibrated behind the flag, together with the fit-window
+  // accounting) and the baseline smearing factor. Additive only -- the
+  // tabular columns below stay round-1 shaped.
   for (const VrpFoldMetrics &m : folds) {
     const std::string p = "# fold_" + std::to_string(m.fold_id) + "_";
     body += p + "n_train_purged=" + std::to_string(m.n_train_purged) + "\n";
@@ -1465,6 +1726,18 @@ struct SignalEntry {
     body += p + "n_gbt_forecast_clipped=" + std::to_string(m.n_gbt_forecast_clipped) + "\n";
     body += p + "gbt_test_forecast_min=" + fmt_double(m.gbt_test_forecast_min) + "\n";
     body += p + "gbt_test_forecast_max=" + fmt_double(m.gbt_test_forecast_max) + "\n";
+    body += p + "mz_slope_raw=" + fmt_double(m.mz_slope_raw) + "\n";
+    body += p + "mz_intercept_raw=" + fmt_double(m.mz_intercept_raw) + "\n";
+    body += p + "smear_factor=" + fmt_double(m.smear_factor) + "\n";
+    if (recal_on) {
+      body += p + "recal_applied=" + std::to_string(m.recal_applied ? 1 : 0) + "\n";
+      body += p + "recal_window_effective=" + std::to_string(m.recal_window_effective) + "\n";
+      body += p + "recal_n_fit=" + std::to_string(m.recal_n_fit) + "\n";
+      body += p + "qlike_gbt_recal=" + fmt_double(m.qlike_gbt_recal) + "\n";
+      body += p + "mz_slope_recal=" + fmt_double(m.mz_slope_recal) + "\n";
+      body += p + "mz_intercept_recal=" + fmt_double(m.mz_intercept_recal) + "\n";
+      body += p + "ic_gbt_recal=" + fmt_double(m.ic_gbt_recal) + "\n";
+    }
   }
   body += "fold_id\tmodel\tn_train\tn_test\tqlike\tspearman_ic\ttrain_var_min\ttrain_var_max\n";
   const auto row = [&](const VrpFoldMetrics &m, std::string_view model, double qlike,
@@ -1505,6 +1778,10 @@ struct SignalEntry {
 // ── The trainer ─────────────────────────────────────────────────────────────
 
 [[nodiscard]] inline Result<VrpTrainReport> run_vrp_train(const VrpTrainConfig &cfg) {
+  if (cfg.recalibrate == VrpRecalMode::Isotonic && cfg.recalib_window_sessions == 0) {
+    return Err(ErrorCode::InvalidArgument,
+               "run_vrp_train: --recalib-window must be >= 1 under --recalibrate isotonic");
+  }
   auto panel_r = load_vrp_panel(cfg.panel_path);
   if (!panel_r.has_value()) {
     return Err(panel_r.error());
@@ -1552,6 +1829,8 @@ struct SignalEntry {
   std::optional<detail::BaselineFit> last_baseline;
   std::optional<learn::LearnedModel> last_gbt;
   std::optional<detail::LabelStats> last_label_stats;
+  VrpIsotonicMap last_recal_map; // empty when off / not applied
+  bool last_recal_applied = false;
 
   for (const ResearchValidationFold &fold : report.plan.folds) {
     VrpFoldMetrics m;
@@ -1588,8 +1867,81 @@ struct SignalEntry {
         std::span<const std::size_t>{detail::kAllFeatures}, std::span<const double>{gbt_labels});
     const learn::LearnedModel gbt = learn::fit_gbt(fm10, learn::LatentAugmentation{}, gbt_cfg);
 
+    // Round-3 isotonic recalibration (digest Q4 [18][19]): fit a monotone
+    // map from raw GBT label forecast to realized label on the TRAILING
+    // window of the fold's ADMITTED train sessions, using genuinely
+    // out-of-sample forecasts from a CALIBRATION model fit on the earlier
+    // train rows (temporal-holdout calibration). Fit rows are admitted
+    // train rows, so the plan's own purge already bounds every fit row's
+    // recorded (upper-bound) label end at the fold's test start -- the fit
+    // uses only data strictly before the test window, and the fold plan is
+    // untouched by the flag (the leak adjudicator stays PASS). The map is
+    // applied to the PRODUCTION model's raw test forecasts; the production
+    // fit itself (full train fold, same seed) is bit-identical to flag-off.
+    VrpIsotonicMap recal_map;
+    if (cfg.recalibrate == VrpRecalMode::Isotonic) {
+      // Distinct train decision sessions, ascending (train_rows arrive in
+      // canonical ascending panel order).
+      std::vector<std::int64_t> train_sessions;
+      for (const std::size_t r : m.train_rows) {
+        const std::int64_t ts = report.panel.rows[r].entry_ts_ns;
+        if (train_sessions.empty() || train_sessions.back() != ts) {
+          train_sessions.push_back(ts);
+        }
+      }
+      // Never let calibration swallow the fold: cap the window at half the
+      // admitted train sessions (the effective value is reported).
+      const std::size_t eff =
+          std::min(cfg.recalib_window_sessions, train_sessions.size() / 2);
+      m.recal_window_effective = eff;
+      if (eff >= 1) {
+        const std::int64_t cutoff = train_sessions[train_sessions.size() - eff];
+        std::vector<std::size_t> core_rows;
+        std::vector<std::size_t> calib_rows;
+        for (const std::size_t r : m.train_rows) {
+          (report.panel.rows[r].entry_ts_ns < cutoff ? core_rows : calib_rows).push_back(r);
+        }
+        // eff <= n_sessions/2 guarantees both splits are non-empty.
+        const VrpStandardization stz_core = compute_asset_standardization(
+            report.panel, std::span<const std::size_t>{core_rows});
+        std::vector<double> core_labels(core_rows.size(), 0.0);
+        for (std::size_t ci = 0; ci < core_rows.size(); ++ci) {
+          core_labels[ci] = report.panel.rows[core_rows[ci]].label;
+        }
+        const learn::FeatureMatrix fm_core = detail::build_feature_matrix(
+            report.panel, stz_core, std::span<const std::size_t>{core_rows},
+            std::span<const std::size_t>{detail::kAllFeatures},
+            std::span<const double>{core_labels});
+        const learn::LearnedModel gbt_core =
+            learn::fit_gbt(fm_core, learn::LatentAugmentation{}, gbt_cfg);
+        std::vector<double> fit_x;
+        std::vector<double> fit_y;
+        for (const std::size_t r : calib_rows) {
+          const double pred =
+              detail::gbt_predict_label(report.panel, stz_core, gbt_core, r);
+          if (std::isfinite(pred)) { // NaN forecast carries no level info
+            fit_x.push_back(pred);
+            fit_y.push_back(report.panel.rows[r].label);
+            m.recal_fit_rows.push_back(r);
+          }
+        }
+        if (fit_x.size() >= 2) { // < 2 points cannot shape a level map
+          auto map_r = fit_vrp_isotonic(std::move(fit_x), std::move(fit_y));
+          if (!map_r.has_value()) {
+            return Err(map_r.error());
+          }
+          recal_map = std::move(*map_r);
+          m.recal_applied = true;
+        } else {
+          m.recal_fit_rows.clear();
+        }
+      }
+      m.recal_n_fit = m.recal_fit_rows.size();
+    }
+
     double q_base = 0.0;
     double q_gbt = 0.0;
+    double q_recal = 0.0;
     double q_mean = 0.0;
     double base_forecast_max = -std::numeric_limits<double>::infinity();
     double gbt_forecast_min = std::numeric_limits<double>::infinity();
@@ -1597,6 +1949,7 @@ struct SignalEntry {
     std::vector<std::int64_t> test_ts;
     std::vector<double> pred_base;
     std::vector<double> pred_gbt;
+    std::vector<double> pred_recal;
     std::vector<double> realized;
     test_ts.reserve(m.test_rows.size());
     for (const std::size_t r : m.test_rows) {
@@ -1604,11 +1957,15 @@ struct SignalEntry {
       const double proxy_var = row.rv_fwd_21d * row.rv_fwd_21d;
       const double iv_var = row.iv_fair_21d * row.iv_fair_21d;
 
-      const double f_base = detail::baseline_forecast_var(report.panel, stz, baseline, r);
+      const double f_base =
+          detail::baseline_forecast_var(report.panel, stz, baseline, r, cfg.retransform);
       base_forecast_max = std::max(base_forecast_max, f_base);
       const double label_base = (f_base - iv_var) * kVrpHorizonYears;
 
       const double label_gbt = detail::gbt_predict_label(report.panel, stz, gbt, r);
+      // Monotone post-map: identity when recalibration is off / not applied.
+      const double label_recal =
+          m.recal_applied ? vrp_isotonic_eval(recal_map, label_gbt) : label_gbt;
       // The GBT's implied variance forecast goes through the SAME insanity
       // clip as the baseline (train-window label variance range, digest
       // [20]): a signed-label prediction can imply a variance <= 0 on thin
@@ -1624,37 +1981,65 @@ struct SignalEntry {
       }
       gbt_forecast_min = std::min(gbt_forecast_min, f_gbt);
       gbt_forecast_max = std::max(gbt_forecast_max, f_gbt);
+      // The recalibrated forecast's QLIKE goes through the SAME insanity
+      // clip (F > 0 precondition; the map's constant extrapolation already
+      // bounds it by observed calibration labels, but a small iv_var can
+      // still push the implied variance under train_var_min).
+      const double f_recal = std::clamp(label_recal / kVrpHorizonYears + iv_var,
+                                        baseline.train_var_min, baseline.train_var_max);
 
       q_base += vrp_qlike(f_base, proxy_var);
       q_gbt += vrp_qlike(f_gbt, proxy_var);
+      q_recal += vrp_qlike(f_recal, proxy_var);
       q_mean += vrp_qlike(baseline.train_var_mean, proxy_var);
 
       test_ts.push_back(row.entry_ts_ns);
       pred_base.push_back(label_base);
       pred_gbt.push_back(label_gbt);
+      pred_recal.push_back(label_recal);
       realized.push_back(row.label);
+      m.test_pred_raw.push_back(label_gbt);
+      m.test_pred_recal.push_back(label_recal);
 
+      // Behind the flag the recalibrated value flows through the EXISTING
+      // pred_label / pred_edge_norm columns (schema unchanged; value
+      // semantics in CHANGELOG). label_recal == label_gbt when off.
       const std::size_t sym = report.panel.row_symbol[r];
       const double sd = label_stats.sd[sym];
       signal_entries.push_back(detail::SignalEntry{
           .panel_row = r,
-          .pred_label = label_gbt,
-          .pred_edge_norm = sd == 0.0 ? 0.0 : (label_gbt - label_stats.mean[sym]) / sd,
+          .pred_label = label_recal,
+          .pred_edge_norm = sd == 0.0 ? 0.0 : (label_recal - label_stats.mean[sym]) / sd,
           .vov_63d = detail::signal_vov(report.panel, stz, r)});
     }
     const auto n_test = static_cast<double>(m.test_rows.size());
     m.qlike_baseline = q_base / n_test;
     m.qlike_gbt = q_gbt / n_test;
+    m.qlike_gbt_recal = q_recal / n_test;
     m.qlike_mean_forecast = q_mean / n_test;
     m.baseline_test_forecast_max = base_forecast_max;
     m.gbt_test_forecast_min = gbt_forecast_min;
     m.gbt_test_forecast_max = gbt_forecast_max;
+    m.smear_factor = baseline.smear_factor;
     m.ic_baseline = detail::mean_per_date_spearman(std::span<const std::int64_t>{test_ts},
                                                    std::span<const double>{pred_base},
                                                    std::span<const double>{realized});
     m.ic_gbt = detail::mean_per_date_spearman(std::span<const std::int64_t>{test_ts},
                                               std::span<const double>{pred_gbt},
                                               std::span<const double>{realized});
+    m.ic_gbt_recal = detail::mean_per_date_spearman(std::span<const std::int64_t>{test_ts},
+                                                    std::span<const double>{pred_recal},
+                                                    std::span<const double>{realized});
+    // Mincer-Zarnowitz level diagnostics in LABEL units (realized on
+    // forecast; target slope 1, intercept 0) -- raw always, recal alongside.
+    const VrpMzFit mz_raw = vrp_mincer_zarnowitz(std::span<const double>{pred_gbt},
+                                                 std::span<const double>{realized});
+    m.mz_slope_raw = mz_raw.slope;
+    m.mz_intercept_raw = mz_raw.intercept;
+    const VrpMzFit mz_recal = vrp_mincer_zarnowitz(std::span<const double>{pred_recal},
+                                                   std::span<const double>{realized});
+    m.mz_slope_recal = mz_recal.slope;
+    m.mz_intercept_recal = mz_recal.intercept;
 
     // The fold's live-path sidecar block: everything a consumer needs to
     // score raw panel rows against this fold's serialized models.
@@ -1678,6 +2063,8 @@ struct SignalEntry {
     last_baseline = baseline;
     last_gbt = gbt;
     last_label_stats = label_stats;
+    last_recal_map = std::move(recal_map);
+    last_recal_applied = m.recal_applied;
     report.folds.push_back(std::move(m));
   }
 
@@ -1687,19 +2074,22 @@ struct SignalEntry {
 
   // NaN-label tail rows: predict-time rows, scored by the FINAL fold's
   // models (their dates lie after the final train window, so this is a
-  // forward application, not a re-scoring of trained rows).
+  // forward application, not a re-scoring of trained rows). Behind the
+  // recalibration flag the final fold's monotone map applies here too.
   for (std::size_t r = 0; r < report.panel.rows.size(); ++r) {
     const VrpPanelRow &row = report.panel.rows[r];
     if (is_labeled_row(row)) {
       continue;
     }
     const double label_gbt = detail::gbt_predict_label(report.panel, *last_stz, *last_gbt, r);
+    const double label_out =
+        last_recal_applied ? vrp_isotonic_eval(last_recal_map, label_gbt) : label_gbt;
     const std::size_t sym = report.panel.row_symbol[r];
     const double sd = last_label_stats->sd[sym];
     signal_entries.push_back(detail::SignalEntry{
         .panel_row = r,
-        .pred_label = label_gbt,
-        .pred_edge_norm = sd == 0.0 ? 0.0 : (label_gbt - last_label_stats->mean[sym]) / sd,
+        .pred_label = label_out,
+        .pred_edge_norm = sd == 0.0 ? 0.0 : (label_out - last_label_stats->mean[sym]) / sd,
         .vov_63d = detail::signal_vov(report.panel, *last_stz, r)});
   }
   std::sort(signal_entries.begin(), signal_entries.end(),
@@ -1728,7 +2118,7 @@ struct SignalEntry {
     return Err(st.error());
   }
   st = detail::write_metrics_file(std::span<const VrpFoldMetrics>{report.folds},
-                                  report.observations, report.metrics_path);
+                                  report.observations, cfg, report.metrics_path);
   if (!st.has_value()) {
     return Err(st.error());
   }

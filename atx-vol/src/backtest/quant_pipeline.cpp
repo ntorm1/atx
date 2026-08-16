@@ -509,6 +509,10 @@ Result<VrpBacktestSpec> parse_vrp_backtest_args(std::span<const std::string> arg
       spec.config.delta_hedge = false;
       continue;
     }
+    if (flag == "--hold-to-horizon") {
+      spec.config.hold_to_horizon = true;
+      continue;
+    }
     ATX_TRY(const std::string_view parsed, value());
     if (flag == "--signal") {
       spec.signal_path.assign(parsed);
@@ -546,6 +550,16 @@ Result<VrpBacktestSpec> parse_vrp_backtest_args(std::span<const std::string> arg
       ATX_TRY_VOID(parse_flag_double(flag, parsed, spec.config.delta_hedge_band));
     } else if (flag == "--expiry-guard") {
       ATX_TRY_VOID(parse_flag_double(flag, parsed, spec.config.expiry_guard_days));
+    } else if (flag == "--exit-long-frac") {
+      ATX_TRY_VOID(parse_flag_double(flag, parsed, spec.config.exit_long_fraction));
+    } else if (flag == "--exit-short-frac") {
+      ATX_TRY_VOID(parse_flag_double(flag, parsed, spec.config.exit_short_fraction));
+    } else if (flag == "--cost-gate-k") {
+      ATX_TRY_VOID(parse_flag_double(flag, parsed, spec.config.cost_gate_k));
+    } else if (flag == "--cost-gate-ref-vol") {
+      ATX_TRY_VOID(parse_flag_double(flag, parsed, spec.config.cost_gate_ref_vol));
+    } else if (flag == "--cost-gate-hedge-per-vega") {
+      ATX_TRY_VOID(parse_flag_double(flag, parsed, spec.config.cost_gate_hedge_per_vega));
     } else {
       return Err(ErrorCode::InvalidArgument,
                  "vrp-backtest: unknown argument '" + std::string(flag) + "'");
@@ -706,6 +720,10 @@ Result<VrpBacktestSummary> run_vrp_backtest(const VrpBacktestSpec &spec) {
   summary.n_held_steps = strategy.held_steps();
   summary.n_skipped_names = strategy.skipped_names();
   summary.n_roll_closes = strategy.guard_roll_closes();
+  // Round-3 per-name turnover attribution (the sweep's one-sided turnover
+  // numerator): cost-bearing entries and strategy-attributed exits by name.
+  summary.n_name_entries = strategy.name_entries();
+  summary.n_name_exits = strategy.name_exits();
   return summary;
 }
 
