@@ -35,9 +35,11 @@ void print_usage() {
             "GBT over a purged/embargoed walk-forward, then writes\n"
             "vrp_signal.tsv (frozen vrp_signal_v1; vov_63d always finite --\n"
             "a NaN f9 imputes the scoring fold's per-asset train mean),\n"
-            "vrp_metrics.tsv (t+21 rejection counters as meta lines),\n"
-            "vrp_fold_stats.tsv (per-fold standardization/label/retransform\n"
-            "sidecar), and the serialized schema-2 model files into --out-dir.");
+            "vrp_metrics.tsv (meta lines: t+21 rejection counters, per-fold\n"
+            "purge/embargo-removed train counts, per-fold GBT insanity-clip\n"
+            "count + post-clip extrema), vrp_fold_stats.tsv (per-fold\n"
+            "standardization/label/retransform sidecar), and the serialized\n"
+            "schema-2 model files into --out-dir.");
 }
 
 template <typename T>
@@ -130,12 +132,18 @@ int main(int argc, char **argv) {
                report->observations.n_rows_rejected_no_t21,
                report->observations.n_symbols_fully_rejected);
 
-  std::printf("fold\tn_train\tn_test\tqlike_baseline\tqlike_gbt\tqlike_mean\tic_baseline\t"
-              "ic_gbt\n");
+  // gbt_clipped + post-clip extrema and the purge/embargo losses mirror the
+  // metrics meta lines (round-2 review majors 2 + 3) -- a saturated clip or
+  // a purge-dominated fold is visible from the summary alone.
+  std::printf("fold\tn_train\tn_test\tpurged\tembargoed\tqlike_baseline\tqlike_gbt\t"
+              "qlike_mean\tic_baseline\tic_gbt\tgbt_clipped\tgbt_fcast_min\tgbt_fcast_max\n");
   for (const auto &fold : report->folds) {
-    std::printf("%u\t%zu\t%zu\t%.6g\t%.6g\t%.6g\t%.4f\t%.4f\n", fold.fold_id, fold.n_train,
-                fold.n_test, fold.qlike_baseline, fold.qlike_gbt, fold.qlike_mean_forecast,
-                fold.ic_baseline, fold.ic_gbt);
+    std::printf("%u\t%zu\t%zu\t%zu\t%zu\t%.6g\t%.6g\t%.6g\t%.4f\t%.4f\t%zu\t%.6g\t%.6g\n",
+                fold.fold_id, fold.n_train, fold.n_test, fold.n_train_purged,
+                fold.n_train_embargoed, fold.qlike_baseline, fold.qlike_gbt,
+                fold.qlike_mean_forecast, fold.ic_baseline, fold.ic_gbt,
+                fold.n_gbt_forecast_clipped, fold.gbt_test_forecast_min,
+                fold.gbt_test_forecast_max);
   }
   std::printf("signal:     %s\n", report->signal_path.string().c_str());
   std::printf("metrics:    %s\n", report->metrics_path.string().c_str());

@@ -555,6 +555,21 @@ transform_panel_rows(const std::string &tsv,
   return out;
 }
 
+// Sparse-symbol fixture for the pooled-session-axis label_end fix (round-2
+// review major 2): CCC thinned to every other session. Its 21-EMITTED-rows
+// label window spans 42 pooled sessions, but the TRUE horizon is 21 pooled
+// sessions -- the round-2 code inflated sparse symbols' label spans (250
+// days on the real SP100 corpus) and, through the global-max embargo, made
+// the motivating 102-name panel untrainable.
+[[nodiscard]] std::string make_sparse_ccc_panel_tsv() {
+  return transform_panel_rows(make_synth_panel_tsv(), [](std::vector<std::string> &f) {
+    if (f[0] != "CCC") {
+      return true;
+    }
+    return std::stoi(f[1].substr(5)) % 2 == 0; // keep even sessions only
+  });
+}
+
 [[nodiscard]] vrp::VrpTrainConfig make_synth_config(const std::string &panel_path,
                                                     const std::string &out_dir) {
   vrp::VrpTrainConfig cfg;
@@ -662,6 +677,26 @@ TEST(VrpTrainLoader, MissingFileIsIoError) {
   EXPECT_EQ(panel.error().code(), ErrorCode::IoError);
 }
 
+TEST(VrpTrainLoader, RejectsNegativeVovFeatureFailClosed) {
+  // f9_vov_63d is a sample stdev, so a finite negative value is a panel
+  // contract violation. Validated at the boundary (review minor, round 2):
+  // letting it through would either emit a negative vov_63d the frozen
+  // signal loader fail-closes on (raw pass-through) or drag the per-asset
+  // imputation mean negative.
+  std::string tsv = make_synth_panel_tsv();
+  tsv = transform_panel_rows(tsv, [](std::vector<std::string> &f) {
+    if (f[0] == "AAA" && f[1] == "2020-010") {
+      f[17] = "-0.05"; // f9_vov_63d
+    }
+    return true;
+  });
+  const ScopedTempFile file("neg_vov", tsv);
+  const auto panel = vrp::load_vrp_panel(file.path_string());
+  ASSERT_FALSE(panel.has_value());
+  EXPECT_EQ(panel.error().code(), ErrorCode::ParseError);
+  EXPECT_NE(panel.error().to_string().find("f9_vov_63d"), std::string::npos);
+}
+
 // ── VrpTrain: F1 per-row t+21 rejection (round 2) ───────────────────────────
 
 TEST(VrpTrainLoader, InteriorHolesRejectOnlyTheUnusableRows) {
@@ -737,6 +772,81 @@ TEST(VrpTrainLoader, NonTailUnlabeledRowFailsClosed) {
   ASSERT_FALSE(obs.has_value());
   EXPECT_EQ(obs.error().code(), ErrorCode::InvalidArgument);
   EXPECT_NE(obs.error().to_string().find("non-tail unlabeled row"), std::string::npos);
+}
+
+// ── VrpTrain: label_end on the POOLED session axis (round-2 review major 2) ─
+
+TEST(VrpTrainLoader, SparseSymbolLabelEndIsTruePooledSessionHorizon) {
+  const ScopedTempFile file("sparse_ccc", make_sparse_ccc_panel_tsv());
+  const auto panel = vrp::load_vrp_panel(file.path_string());
+  ASSERT_TRUE(panel.has_value()) << panel.error().to_string();
+  const auto obs = vrp::build_vrp_observations(*panel);
+  ASSERT_TRUE(obs.has_value()) << obs.error().to_string();
+  // Labeled rows: AAA/BBB 159 each, CCC even sessions 0..158 = 80. The
+  // per-row ADMISSION rule (21 same-symbol EMITTED rows) is unchanged:
+  // CCC even sessions 0..136 = 69 admitted, 11 rejected-and-counted.
+  EXPECT_EQ(obs->n_labeled_rows, 159u + 159u + 80u);
+  EXPECT_EQ(obs->n_rows_rejected_no_t21, 11u);
+  EXPECT_EQ(obs->n_symbols_fully_rejected, 0u);
+  EXPECT_EQ(obs->obs.size(), 159u + 159u + 69u);
+  // CCC's date-0 observation (uid = sorted symbol index + 1 = 3) carries
+  // the TRUE horizon: the pooled-axis timestamp 21 sessions later, NOT its
+  // own 21st emitted row two calendar-sessions out (date 42).
+  bool found = false;
+  for (const ResearchObservation &ob : obs->obs) {
+    if (ob.uid == 3u && ob.decision_ts_ns == kSynthBaseTs) {
+      EXPECT_EQ(ob.label_end_ts_ns, kSynthBaseTs + 21 * kSynthDayNs);
+      found = true;
+    }
+  }
+  EXPECT_TRUE(found);
+  // Hence the sparse symbol cannot poison the global embargo: the maximum
+  // observed label span (make_vrp_plan's embargo_ns source) is exactly the
+  // 21-session horizon.
+  std::int64_t max_span = 0;
+  for (const ResearchObservation &ob : obs->obs) {
+    max_span = std::max(max_span, ob.label_end_ts_ns - ob.decision_ts_ns);
+  }
+  EXPECT_EQ(max_span, 21 * kSynthDayNs);
+}
+
+TEST(VrpTrainLoader, SparsePanelTrainsLeakFreeAndOverlappingRowsStayRejected) {
+  const ScopedTempFile file("sparse_ccc_e2e", make_sparse_ccc_panel_tsv());
+  const auto out = unique_temp_path("sparse_ccc_out", "");
+  const auto report =
+      vrp::run_vrp_train(make_synth_config(file.path_string(), out.string()));
+  ASSERT_TRUE(report.has_value()) << report.error().to_string();
+  ASSERT_GE(report->folds.size(), 1u);
+  EXPECT_EQ(report->plan.spec.embargo_ns, 21 * kSynthDayNs);
+  const auto &obs = report->observations.obs;
+  // Leak-conservatism preserved: the independent audit passes, and no
+  // admitted train row's TRUE label window overlaps its fold's test window.
+  const Status audit = validate_research_plan_no_leakage(
+      std::span<const ResearchObservation>{obs}, report->plan);
+  EXPECT_TRUE(audit.has_value()) << audit.error().to_string();
+  for (const auto &fold : report->plan.folds) {
+    std::int64_t test_min = std::numeric_limits<std::int64_t>::max();
+    for (const std::size_t t : fold.test_indices) {
+      test_min = std::min(test_min, obs[t].decision_ts_ns);
+    }
+    for (const std::size_t i : fold.train_indices) {
+      EXPECT_LE(obs[i].label_end_ts_ns, test_min) << "fold " << fold.id;
+    }
+    // A genuinely-overlapping row -- decided one session before the test
+    // window, so its [t, t+21] label window crosses it -- is still kept out
+    // of train (purged or embargoed, never admitted).
+    bool overlap_seen = false;
+    for (std::size_t i = 0; i < obs.size(); ++i) {
+      if (obs[i].decision_ts_ns == test_min - kSynthDayNs) {
+        overlap_seen = true;
+        EXPECT_EQ(std::count(fold.train_indices.begin(), fold.train_indices.end(), i), 0)
+            << "fold " << fold.id << " obs " << i;
+      }
+    }
+    EXPECT_TRUE(overlap_seen) << "fold " << fold.id;
+  }
+  std::error_code ec;
+  std::filesystem::remove_all(out, ec);
 }
 
 // ── VrpTrain: QLIKE in variance levels (hand values) ────────────────────────
@@ -989,6 +1099,31 @@ TEST_F(VrpTrainPipelineTest, MetricsFileCarriesRejectionMetaLines) {
   EXPECT_NE(bytes.find("# n_symbols_fully_rejected=0\n"), std::string::npos);
 }
 
+TEST_F(VrpTrainPipelineTest, MetricsFileCarriesPerFoldClipAndPurgeMetaLines) {
+  // Round-2 review major 3: the GBT QLIKE-path clip count + post-clip
+  // extrema -- and the purge/embargo train-row losses (major 2's counter
+  // ask) -- are persisted per fold via the same `# key=value` mechanism as
+  // the F1 counters, so a reader of the artifacts can tell a saturated clip
+  // from a healthy forecaster. Values must match the in-memory report.
+  const std::string bytes = read_file_bytes(report_->metrics_path);
+  ASSERT_EQ(report_->plan.folds.size(), report_->folds.size());
+  for (std::size_t i = 0; i < report_->folds.size(); ++i) {
+    const auto &m = report_->folds[i];
+    const auto &pf = report_->plan.folds[i];
+    const std::string p = "# fold_" + std::to_string(m.fold_id) + "_";
+    const auto has = [&](const std::string &line) {
+      EXPECT_NE(bytes.find(line), std::string::npos) << line;
+    };
+    has(p + "n_train_purged=" + std::to_string(pf.purged_indices.size()) + "\n");
+    has(p + "n_train_embargoed=" + std::to_string(pf.embargoed_indices.size()) + "\n");
+    has(p + "n_gbt_forecast_clipped=" + std::to_string(m.n_gbt_forecast_clipped) + "\n");
+    has(p + "gbt_test_forecast_min=" + vrp::detail::fmt_double(m.gbt_test_forecast_min) +
+        "\n");
+    has(p + "gbt_test_forecast_max=" + vrp::detail::fmt_double(m.gbt_test_forecast_max) +
+        "\n");
+  }
+}
+
 // ── VrpTrain: F2 -- emitted vov_63d is ALWAYS finite (round 2) ──────────────
 
 TEST_F(VrpTrainPipelineTest, WarmupNaNVovImputesTrainFoldMeanAndParsesUnderFrozenLoader) {
@@ -1031,6 +1166,37 @@ TEST_F(VrpTrainPipelineTest, WarmupNaNVovImputesTrainFoldMeanAndParsesUnderFroze
     }
   }
   EXPECT_TRUE(found);
+  std::error_code ec;
+  std::filesystem::remove_all(out, ec);
+}
+
+TEST_F(VrpTrainPipelineTest, AllNaNVovSymbolEmitsDocumentedZeroFallback) {
+  // A symbol with ZERO finite f9 observations in every scoring fold's train
+  // window: the per-asset imputation mean is the DOCUMENTED 0.0 fallback --
+  // finite and >= 0, so the frozen loader accepts it, and the vov_floor at
+  // sizing owns the degenerate value downstream (review minor, round 2).
+  std::string tsv = make_synth_panel_tsv();
+  tsv = transform_panel_rows(tsv, [](std::vector<std::string> &f) {
+    if (f[0] == "AAA") {
+      f[17] = "nan"; // f9_vov_63d
+    }
+    return true;
+  });
+  const ScopedTempFile file("allnan_vov", tsv);
+  const auto out = unique_temp_path("allnan_vov_out", "");
+  const auto report =
+      vrp::run_vrp_train(make_synth_config(file.path_string(), out.string()));
+  ASSERT_TRUE(report.has_value()) << report.error().to_string();
+  const auto rows = load_vrp_signal_v1(report->signal_path.string());
+  ASSERT_TRUE(rows.has_value()) << rows.error().to_string();
+  bool saw_aaa = false;
+  for (const auto &row : *rows) {
+    if (row.symbol == "AAA") {
+      saw_aaa = true;
+      EXPECT_EQ(row.vov_63d, 0.0);
+    }
+  }
+  EXPECT_TRUE(saw_aaa);
   std::error_code ec;
   std::filesystem::remove_all(out, ec);
 }
@@ -1106,6 +1272,12 @@ TEST_F(VrpTrainPipelineTest, ThinFoldGbtForecastIsClippedAndQlikeStaysFinite) {
   EXPECT_GT(fold.gbt_test_forecast_min, 0.0);
   EXPECT_TRUE(std::isfinite(fold.qlike_gbt));
   EXPECT_LT(fold.qlike_gbt, 100.0);
+  // The NONZERO clip count is persisted in the metrics meta lines (round-2
+  // review major 3) -- a reader of the artifacts alone sees the saturation.
+  const std::string metrics = read_file_bytes(report->metrics_path);
+  EXPECT_NE(metrics.find("# fold_0_n_gbt_forecast_clipped=" +
+                         std::to_string(fold.n_gbt_forecast_clipped) + "\n"),
+            std::string::npos);
   std::error_code ec;
   std::filesystem::remove_all(out, ec);
 }
@@ -1142,6 +1314,122 @@ TEST_F(VrpTrainPipelineTest, SidecarLoaderFailsClosedOnMutations) {
   reject("# schema=vrp_fold_stats_v1", "# schema=vrp_fold_stats_v9");
   reject("\tbaseline_s2\t", "\tbaseline_zz\t");   // fold field renamed
   reject("\tf9_sd\t", "\tf9_zz\t");               // asset block truncated field
+}
+
+// Fail-closed probe shared by the sidecar-loader reject tests below (review
+// minor, round 2: structural mutations no prior test would catch).
+void expect_sidecar_parse_error(const std::string &content, std::string_view needle) {
+  const ScopedTempFile f("sidecar_reject", content);
+  const auto loaded = vrp::load_vrp_fold_stats(f.path_string());
+  ASSERT_FALSE(loaded.has_value()) << "accepted a sidecar that should fail: " << needle;
+  EXPECT_EQ(loaded.error().code(), ErrorCode::ParseError);
+  EXPECT_NE(loaded.error().to_string().find(needle), std::string::npos)
+      << loaded.error().to_string();
+}
+
+// Newline split (no trailing empty line) for sidecar text surgery.
+[[nodiscard]] std::vector<std::string> split_lines(const std::string &bytes) {
+  std::vector<std::string> lines;
+  std::size_t start = 0;
+  while (start < bytes.size()) {
+    std::size_t end = bytes.find('\n', start);
+    if (end == std::string::npos) {
+      end = bytes.size();
+    }
+    lines.push_back(bytes.substr(start, end - start));
+    start = end + 1;
+  }
+  return lines;
+}
+
+TEST_F(VrpTrainPipelineTest, SidecarLoaderRejectsHeaderOnlyFile) {
+  expect_sidecar_parse_error(
+      "# schema=vrp_fold_stats_v1\nfold_id\tkind\tsymbol\tname\tvalue\n", "no data rows");
+}
+
+TEST_F(VrpTrainPipelineTest, SidecarLoaderRejectsFieldCountMismatch) {
+  std::string bytes = read_file_bytes(report_->fold_stats_path);
+  bytes += "9\tfold\t-\tn_train\n"; // 4 fields, not the canonical 5
+  expect_sidecar_parse_error(bytes, "expected 5 fields");
+}
+
+TEST_F(VrpTrainPipelineTest, SidecarLoaderRejectsTruncatedAssetBlock) {
+  const std::string bytes = read_file_bytes(report_->fold_stats_path);
+  // Drop the final data row (the last fold's last symbol loses f9_sd).
+  ASSERT_GT(bytes.size(), 2u);
+  const std::size_t cut = bytes.find_last_of('\n', bytes.size() - 2);
+  ASSERT_NE(cut, std::string::npos);
+  expect_sidecar_parse_error(bytes.substr(0, cut + 1), "incomplete asset block");
+}
+
+TEST_F(VrpTrainPipelineTest, SidecarLoaderRejectsDescendingFoldIds) {
+  ASSERT_GE(report_->fold_stats.size(), 2u);
+  const std::vector<std::string> lines = split_lines(read_file_bytes(report_->fold_stats_path));
+  // Reassemble with fold 1's whole block BEFORE fold 0's.
+  std::string mutated = lines[0] + "\n" + lines[1] + "\n";
+  for (const std::string_view prefix : {std::string_view{"1\t"}, std::string_view{"0\t"}}) {
+    for (std::size_t i = 2; i < lines.size(); ++i) {
+      if (lines[i].starts_with(prefix)) {
+        mutated += lines[i];
+        mutated += '\n';
+      }
+    }
+  }
+  expect_sidecar_parse_error(mutated, "fold ids not ascending");
+}
+
+TEST_F(VrpTrainPipelineTest, SidecarLoaderRejectsDuplicateFoldIdBlock) {
+  ASSERT_GE(report_->fold_stats.size(), 2u);
+  std::string bytes = read_file_bytes(report_->fold_stats_path);
+  // Relabel every fold-1 row as fold 0: a second fold-0 block right after
+  // the first one -- fails closed (the loader sees a 'fold' row where only
+  // 'asset' rows may continue the open block).
+  std::size_t pos = 0;
+  while ((pos = bytes.find("\n1\t", pos)) != std::string::npos) {
+    bytes[pos + 1] = '0';
+    ++pos;
+  }
+  expect_sidecar_parse_error(bytes, "asset rows out of canonical order");
+}
+
+TEST_F(VrpTrainPipelineTest, SidecarLoaderRejectsFoldBlockWithoutAssetRows) {
+  const std::vector<std::string> lines = split_lines(read_file_bytes(report_->fold_stats_path));
+  // Drop every fold-0 asset row, keeping its 7 fold-field rows.
+  std::string mutated;
+  for (const std::string &line : lines) {
+    if (line.starts_with("0\tasset\t")) {
+      continue;
+    }
+    mutated += line;
+    mutated += '\n';
+  }
+  expect_sidecar_parse_error(mutated, "without asset rows");
+}
+
+TEST_F(VrpTrainPipelineTest, SidecarLoaderRejectsOutOfOrderSymbols) {
+  const std::vector<std::string> lines = split_lines(read_file_bytes(report_->fold_stats_path));
+  // Swap fold 0's AAA and BBB asset blocks (BBB first breaks the strictly
+  // ascending symbol order within the fold).
+  std::string mutated;
+  std::vector<std::string> aaa;
+  bool aaa_flushed = false;
+  for (const std::string &line : lines) {
+    if (line.starts_with("0\tasset\tAAA\t")) {
+      aaa.push_back(line);
+      continue;
+    }
+    if (!aaa_flushed && line.starts_with("0\tasset\tCCC\t")) {
+      for (const std::string &a : aaa) {
+        mutated += a;
+        mutated += '\n';
+      }
+      aaa_flushed = true;
+    }
+    mutated += line;
+    mutated += '\n';
+  }
+  ASSERT_TRUE(aaa_flushed);
+  expect_sidecar_parse_error(mutated, "asset rows out of canonical order");
 }
 
 TEST_F(VrpTrainPipelineTest, RawPanelRowScoresFromModelFilePlusSidecarAlone) {
