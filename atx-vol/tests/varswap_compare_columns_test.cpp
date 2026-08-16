@@ -133,6 +133,18 @@ constexpr std::int64_t kDayNs = 86400000000000LL;
   return 2u + backtest_series_columns().size();
 }
 
+// The mark-domain counters `append_backtest_series_tsv` (src/backtest/
+// tearsheet.cpp) appends LAST by documented contract: report-only columns,
+// deliberately outside the frozen RunArchive-pinned registry, always the
+// rightmost fields — after the frozen block AND after every attached signal
+// column. Pinned here by name and order so a writer change that drops or
+// reorders them fails this gate, and so the signal-tail checks below can
+// exclude exactly these fields and nothing else.
+constexpr std::string_view kTrailingMarkDomainCols[] = {
+    "n_extrapolated_marks",
+    "n_carried_marks",
+};
+
 // THE HEADER IS THE ROSTER. Not "contains every roster name" -- equality, so an
 // EXTRA column is a failure too. A stray hand-added `swap_explain_*` name is how
 // the sixth copy of this roster would get back in.
@@ -140,12 +152,22 @@ TEST(VarswapCompareColumns, TheEmittedHeaderIsTheRosterInRosterOrder) {
   const std::vector<std::string> lines = emit_and_read();
   ASSERT_FALSE(lines.empty()) << "the example's writer produced no header line";
   const std::vector<std::string> header = split_tabs(lines.front());
-  ASSERT_GE(header.size(), fixed_prefix_width())
-      << "header is shorter than the frozen series registry: " << lines.front();
+  const std::size_t n_trailing = std::size(kTrailingMarkDomainCols);
+  ASSERT_GE(header.size(), fixed_prefix_width() + n_trailing)
+      << "header is shorter than the frozen series registry plus the trailing "
+         "mark-domain counters: "
+      << lines.front();
 
-  const std::vector<std::string> tail(header.begin() +
-                                          static_cast<std::ptrdiff_t>(fixed_prefix_width()),
-                                      header.end());
+  // The writer's contract puts the mark-domain counters rightmost, in order —
+  // pinning them here is what licenses slicing them off the signal tail below.
+  for (std::size_t i = 0; i < n_trailing; ++i) {
+    EXPECT_EQ(header[header.size() - n_trailing + i], kTrailingMarkDomainCols[i])
+        << "the trailing mark-domain counter block moved or lost a column";
+  }
+
+  const std::vector<std::string> tail(
+      header.begin() + static_cast<std::ptrdiff_t>(fixed_prefix_width()),
+      header.end() - static_cast<std::ptrdiff_t>(n_trailing));
   std::vector<std::string> want{"swap_pv", "swap_pnl"};
   for (const BacktestExplainColumn &col : swap_explain_columns()) {
     want.emplace_back(col.name);
@@ -189,17 +211,23 @@ TEST(VarswapCompareColumns, TheExplainPrefixPartitionsTheSignalTail) {
   ASSERT_FALSE(lines.empty());
   const std::vector<std::string> header = split_tabs(lines.front());
   const std::size_t width = fixed_prefix_width();
-  ASSERT_GT(header.size(), width + 1u);
+  ASSERT_GT(header.size(), width + 1u + std::size(kTrailingMarkDomainCols));
 
   EXPECT_EQ(header[width], "swap_pv");
   EXPECT_EQ(header[width + 1u], "swap_pnl");
+  // The writer appends the mark-domain counters after every signal column, so
+  // the prefix-carrying tail ends where that pinned trailing block begins. A
+  // stray un-prefixed column between the explain tail and the counters lands
+  // inside [width+2, tail_end) and still fails the partition.
+  const std::size_t tail_end = header.size() - std::size(kTrailingMarkDomainCols);
   for (std::size_t i = 0; i < header.size(); ++i) {
     const bool has_prefix = header[i].rfind("swap_explain_", 0) == 0;
-    const bool in_tail = i >= width + 2u;
+    const bool in_tail = i >= width + 2u && i < tail_end;
     EXPECT_EQ(has_prefix, in_tail)
         << "field " << i << " (`" << header[i]
-        << "`) breaks the partition the renderer relies on: exactly the fields after "
-           "`swap_pv`/`swap_pnl` carry the `swap_explain_` prefix";
+        << "`) breaks the partition the renderer relies on: exactly the fields between "
+           "`swap_pv`/`swap_pnl` and the trailing mark-domain counters carry the "
+           "`swap_explain_` prefix";
   }
 }
 

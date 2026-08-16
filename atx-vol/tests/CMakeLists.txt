@@ -503,6 +503,12 @@ set_tests_properties(atx-vol-pricing-forcescalar PROPERTIES
 add_executable(varswap-compare-columns-tests
     varswap_compare_columns_test.cpp
     ../examples/varswap_compare_example.cpp)
+# The gate TU includes "backtest/backtest_series_columns.hpp" straight out of
+# src/ (the column manifest is deliberately not public API), so this target
+# needs the same ../src include rung atx-vol-tests carries above — atx::vol
+# does not export its src/ directory to consumers.
+target_include_directories(varswap-compare-columns-tests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 target_compile_definitions(varswap-compare-columns-tests PRIVATE
     ATX_VARSWAP_COMPARE_NO_MAIN)
 target_link_libraries(varswap-compare-columns-tests PRIVATE
