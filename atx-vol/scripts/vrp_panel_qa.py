@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
-"""Panel QA report for vrp_panel_v1 TSVs (bev_label_factory --vrp-panel).
+"""Panel QA report for vrp_panel_v1/v2 TSVs (bev_label_factory --vrp-panel).
 
-Reads one or more vrp_panel_v1 TSVs (`# key=value` meta lines, then the
-frozen 18-column tab-separated header + data rows) and writes one markdown
-QA report over the union of all rows:
+Reads one or more panel TSVs (`# key=value` meta lines, then the frozen
+tab-separated header + data rows) and writes one markdown QA report over the
+union of all rows. The SCHEMA IS READ FROM EACH FILE (line 1,
+`# schema=vrp_panel_v<N>`) and its column tuple enforced exactly: v1 is the
+frozen 18-column contract, v2 appends `iv_atmf_21d`. Mixing v1 and v2 inputs
+is allowed -- v1 rows are filled with a NaN `iv_atmf_21d` so every tier sees
+one row shape -- and the report names which files carried which schema.
+
+Report sections:
 (1) row accounting by file/symbol, including predict-time (NaN-label) tail
     rows; (2) per-column NaN coverage; (3) cross-file duplicate
     (symbol, date) key check (nonzero exit -- a double-covered root/window,
@@ -27,7 +33,17 @@ QA report over the union of all rows:
     expected thin-history attrition must not mask the genuinely fatal
     tiers 3/4a). Passing --max-t21-violations N opts into a hard gate:
     exit 1 iff the violation count EXCEEDS N (pure row counting, no
-    session-adjacency assumption, unlike 4b).
+    session-adjacency assumption, unlike 4b);
+(6) HARD realized-vol plausibility tier: any row with
+    rv_fwd_21d > MAX_PLAUSIBLE_RV_FWD exits 1. This is the PERMANENT guard
+    against the round-1..3 defect class -- an unadjusted corporate action
+    read as a genuine return -- and it deliberately has no opt-out flag (see
+    the constant for the threshold's justification);
+(7) report-only implied-leg stability: the day-over-day |delta| distribution
+    of iv_fair_21d and, on a v2 panel, of iv_atmf_21d beside it. The strip is
+    a quadrature over a refit wing policy and jitters far more than the ATM
+    read it stands in for; publishing both makes that gap measurable instead
+    of anecdotal.
 Pure stdlib -- see atx-vol/scripts/README.md for the tier note.
 
 CLI:
@@ -36,9 +52,9 @@ CLI:
 
 Exit codes: 0 clean (t+21 findings alone never fail the run unless
 --max-t21-violations is given and exceeded), 1 duplicate keys,
-label-identity violations, or more than --max-t21-violations t+21
-coverage violations (report still written), 2 bad args / malformed
-input file.
+label-identity violations, implausible realized vol, or more than
+--max-t21-violations t+21 coverage violations (report still written), 2 bad
+args / malformed input file.
 
 Run: python -m pytest atx-vol/scripts/vrp_panel_qa_test.py -q
 """
@@ -74,18 +90,50 @@ COLUMNS = (
     "f9_vov_63d",
 )
 
+# vrp_panel_v2 = v1's 18 columns in the frozen order, then the ATM-forward
+# implied leg (the point a traded AtmForward straddle is struck and marked at,
+# as opposed to iv_fair_21d's OTM-strip variance-swap fair strike).
+COLUMNS_V2 = COLUMNS + ("iv_atmf_21d",)
+
+# Schema comment line -> the exact column tuple that file must carry.
+SCHEMA_COLUMNS = {
+    "# schema=vrp_panel_v1": COLUMNS,
+    "# schema=vrp_panel_v2": COLUMNS_V2,
+}
+
 # Every column that parses as a float (all but the two identity strings).
 NUMERIC_COLUMNS = tuple(c for c in COLUMNS if c not in ("symbol", "date"))
+NUMERIC_COLUMNS_V2 = tuple(c for c in COLUMNS_V2 if c not in ("symbol", "date"))
+
+# The two implied legs whose day-over-day stability section 7 publishes.
+IMPLIED_LEG_COLUMNS = ("iv_fair_21d", "iv_atmf_21d")
 
 # Corpus-assembly identity key: one row per (symbol, session). Raw-string
 # comparison (never float round-tripping), like bev_label_qa.py.
 DUP_KEY_COLUMNS = ("symbol", "date")
 
-SCHEMA_LINE = "# schema=vrp_panel_v1"
 HORIZON_SESSIONS = 21
 HORIZON_YEARS = 21 / 252
 LABEL_IDENTITY_TOL = 1e-12  # abs or rel -- allows FMA-contraction noise only
 RV_RECOMPUTE_TOL = 1e-9     # report-only adjacency-assuming recompute
+
+# PERMANENT data-integrity threshold. Must equal kVrpMaxPlausibleRvFwd in
+# analytics/vrp_panel.hpp -- the C++ builder refuses to WRITE a v2 panel above
+# it, and this tier refuses to PASS any panel above it, including the frozen v1
+# artifacts the builder's gate cannot reach retroactively.
+#
+# Justified on the round-1 SP100 panel (19,042 labeled rows, 102 names,
+# 2025-08..2026-07): the largest clean value is 1.222 (ORCL 2025-08-27) and the
+# mildest corrupt one is 5.79 (NOW), so 3.0 sits 2.5x above the worst honest
+# observation and 1.9x below the mildest corruption -- a factor-4.7 gap with
+# nothing in between, so the threshold is fitted to neither edge. On economics,
+# 300% annualized over a 21-bar (20-return) window needs sum(r^2) >= 0.714:
+# one session of |r| >= 0.845 (a -57% day) or twenty consecutive +-19%
+# sessions. The most extreme single-session large-cap collapse on record (AIG,
+# 2008-09-16, -61%) lands near 3.35, so an event of that severity trips this
+# tier and demands human confirmation rather than silent ingestion. That is the
+# intended behaviour, which is why the tier has no opt-out flag.
+MAX_PLAUSIBLE_RV_FWD = 3.0
 
 
 # ── Numeric helpers (mirrors bev_label_qa.py) ─────────────────────────────
@@ -111,47 +159,75 @@ def pearson(xs: list[float], ys: list[float]) -> float | None:
 # ── TSV loading ───────────────────────────────────────────────────────────
 
 
-def parse_tsv_file(path: Path) -> tuple[list[str], list[dict[str, str]]]:
-    """One panel TSV -> (header columns, rows as raw string dicts). Requires
-    the frozen schema comment line and the EXACT frozen column header --
-    vrp_panel_v1 is a frozen contract, so any drift is malformed input
-    (ValueError -> exit 2), not something to tolerate."""
+def detect_schema(path: Path, meta_lines: list[str]) -> str:
+    """The schema comment line the file declares. Exactly one recognized
+    `# schema=` line must be present -- a panel that does not say what it is,
+    or says something this checker does not know, is malformed input (exit 2),
+    never something to guess at from the column count."""
+    declared = [ln.strip() for ln in meta_lines if ln.startswith("# schema=")]
+    if not declared:
+        raise ValueError(f"{path}: no '# schema=vrp_panel_v<N>' comment line")
+    if len(declared) > 1:
+        raise ValueError(f"{path}: {len(declared)} '# schema=' lines; expected exactly one")
+    if declared[0] not in SCHEMA_COLUMNS:
+        raise ValueError(
+            f"{path}: unknown schema '{declared[0]}'; "
+            f"known: {', '.join(sorted(SCHEMA_COLUMNS))}"
+        )
+    return declared[0]
+
+
+def parse_tsv_file(path: Path) -> tuple[list[str], list[dict[str, str]], str]:
+    """One panel TSV -> (header columns, rows as raw string dicts, schema
+    line). The schema is READ FROM THE FILE and its column tuple then enforced
+    EXACTLY -- both contracts are frozen, so any drift is malformed input
+    (ValueError -> exit 2), not something to tolerate.
+
+    v1 rows are widened with a NaN `iv_atmf_21d` so callers mixing v1 and v2
+    panels see one row shape; the missing leg then simply reads as absent
+    coverage rather than as a parse special case."""
     text = path.read_text(encoding="utf-8")
     all_lines = text.splitlines()
-    if SCHEMA_LINE not in (line.strip() for line in all_lines if line.startswith("#")):
-        raise ValueError(f"{path}: missing frozen '{SCHEMA_LINE}' comment line")
+    meta = [line for line in all_lines if line.startswith("#")]
+    schema = detect_schema(path, meta)
+    expected = SCHEMA_COLUMNS[schema]
     horizon_lines = [ln for ln in all_lines if ln.startswith("# horizon_days=")]
     if horizon_lines and horizon_lines[0] != f"# horizon_days={HORIZON_SESSIONS}":
         raise ValueError(f"{path}: unexpected horizon line '{horizon_lines[0]}'")
     lines = [line for line in all_lines if line and not line.startswith("#")]
     if not lines:
-        return [], []
+        return [], [], schema
     reader = csv.reader(lines, delimiter="\t")
     header = next(reader)
-    if tuple(header) != COLUMNS:
-        raise ValueError(f"{path}: header does not match frozen vrp_panel_v1 columns: {header}")
+    if tuple(header) != expected:
+        raise ValueError(f"{path}: header does not match {schema[9:]} columns: {header}")
     rows: list[dict[str, str]] = []
     for row_num, record in enumerate(reader, start=1):
         if len(record) != len(header):
             raise ValueError(
                 f"{path}: row {row_num}: expected {len(header)} column(s), got {len(record)}"
             )
-        rows.append(dict(zip(header, record)))
-    return header, rows
+        row = dict(zip(header, record))
+        for col in COLUMNS_V2:
+            row.setdefault(col, "nan")
+        rows.append(row)
+    return header, rows, schema
 
 
-def load_rows(paths: list[Path]) -> tuple[list[dict[str, str]], dict[str, int]]:
+def load_rows(paths: list[Path]) -> tuple[list[dict[str, str]], dict[str, int], dict[str, str]]:
     """Loads and concatenates every input file's rows (each tagged with its
-    source file under "_file"), plus per-file row counts."""
+    source file under "_file"), plus per-file row counts and per-file schema."""
     all_rows: list[dict[str, str]] = []
     per_file_counts: dict[str, int] = {}
+    per_file_schema: dict[str, str] = {}
     for path in paths:
-        _header, rows = parse_tsv_file(path)
+        _header, rows, schema = parse_tsv_file(path)
         per_file_counts[str(path)] = len(rows)
+        per_file_schema[str(path)] = schema[len("# schema=") :]
         for row in rows:
             row["_file"] = str(path)
             all_rows.append(row)
-    return all_rows, per_file_counts
+    return all_rows, per_file_counts, per_file_schema
 
 
 def _getf(row: dict[str, str], col: str) -> float:
@@ -181,7 +257,7 @@ def compute_row_accounting(
 def compute_nan_coverage(rows: list[dict[str, str]]) -> dict[str, dict[str, Any]]:
     total = len(rows)
     coverage: dict[str, dict[str, Any]] = {}
-    for col in NUMERIC_COLUMNS:
+    for col in NUMERIC_COLUMNS_V2:
         nan_count = sum(1 for row in rows if math.isnan(_getf(row, col)))
         fraction = (nan_count / total) if total > 0 else float("nan")
         coverage[col] = {"nan_count": nan_count, "total": total, "fraction": fraction}
@@ -290,6 +366,90 @@ def check_t21_successors(rows: list[dict[str, str]]) -> dict[str, Any]:
     return {"n_checked": n_checked, "violations": violations}
 
 
+def check_implausible_rv(rows: list[dict[str, str]]) -> dict[str, Any]:
+    """HARD tier: no forward realized vol may exceed MAX_PLAUSIBLE_RV_FWD.
+
+    This is the permanent guard against the defect class that invalidated
+    rounds 1-3: an unadjusted corporate action enters the spot mirror as a
+    genuine multi-hundred-percent return, poisons every forward window that
+    straddles it, flips the panel mean label's SIGN, and dominates a
+    squared-error objective. It is silent by construction -- the rows parse,
+    the label identity holds, no NaN appears -- so nothing else in this report
+    would catch it. See MAX_PLAUSIBLE_RV_FWD for the threshold's justification;
+    the remedy is to supply the missing factor to `--splits`, never to relax
+    the tier, which is why it has no threshold flag."""
+    violations: list[str] = []
+    n_checked = 0
+    worst = 0.0
+    per_symbol: dict[str, int] = {}
+    for row in rows:
+        rv = _getf(row, "rv_fwd_21d")
+        if math.isnan(rv):
+            continue
+        n_checked += 1
+        if rv > MAX_PLAUSIBLE_RV_FWD:
+            worst = max(worst, rv)
+            per_symbol[row["symbol"]] = per_symbol.get(row["symbol"], 0) + 1
+            violations.append(f"{row['symbol']}/{row['date']}: rv_fwd_21d={rv!r}")
+    return {
+        "n_checked": n_checked,
+        "violations": violations,
+        "worst": worst,
+        "per_symbol": dict(sorted(per_symbol.items())),
+    }
+
+
+def _quantile(sorted_values: list[float], q: float) -> float:
+    """Nearest-rank quantile on an already-sorted list (no interpolation, so
+    the reported number is always an OBSERVED delta, not a synthetic one)."""
+    if not sorted_values:
+        return float("nan")
+    idx = min(int(q * len(sorted_values)), len(sorted_values) - 1)
+    return sorted_values[idx]
+
+
+def compute_implied_leg_stability(rows: list[dict[str, str]]) -> dict[str, dict[str, float]]:
+    """REPORT-ONLY: the day-over-day |delta| distribution of each implied leg.
+
+    Within each symbol, ordered by entry_ts_ns, take |x[t] - x[t-1]| over
+    CONSECUTIVE EMITTED rows for every pair where both values are finite, and
+    report the distribution in VOL POINTS (x100). Consecutive emitted rows are
+    not always consecutive sessions -- a dropped session widens one gap -- but
+    both legs are measured over exactly the same row pairs, so the comparison
+    between them is apples to apples even where the absolute level is not.
+
+    The point of publishing both: iv_fair_21d is a quadrature over a refit wing
+    policy at a synthetic tenor, so its jitter is largely fit noise rather than
+    market; iv_atmf_21d reads one fitted point. A real 21-day implied moves
+    ~0.5-1.5 vol points a day, so the gap between the two rows below is a
+    direct measurement of how much of the label is strip noise."""
+    by_symbol: dict[str, list[dict[str, str]]] = {}
+    for row in rows:
+        by_symbol.setdefault(row["symbol"], []).append(row)
+    out: dict[str, dict[str, float]] = {}
+    for col in IMPLIED_LEG_COLUMNS:
+        deltas: list[float] = []
+        for sym_rows in by_symbol.values():
+            ordered = sorted(sym_rows, key=lambda r: int(r["entry_ts_ns"]))
+            prev = float("nan")
+            for row in ordered:
+                cur = _getf(row, col)
+                if not math.isnan(prev) and not math.isnan(cur):
+                    deltas.append(abs(cur - prev) * 100.0)
+                prev = cur
+        deltas.sort()
+        n = len(deltas)
+        out[col] = {
+            "n": float(n),
+            "mean": (sum(deltas) / n) if n else float("nan"),
+            "median": _quantile(deltas, 0.5),
+            "p90": _quantile(deltas, 0.90),
+            "p99": _quantile(deltas, 0.99),
+            "max": deltas[-1] if n else float("nan"),
+        }
+    return out
+
+
 def compute_correlations(rows: list[dict[str, str]]) -> dict[str, float | None]:
     label = [_getf(row, "label") for row in rows]
     f5 = [_getf(row, "f5_hv_iv_gap") for row in rows]
@@ -317,12 +477,16 @@ def render_markdown(
     rv_recompute: dict[str, Any],
     correlations: dict[str, float | None],
     t21: dict[str, Any],
+    implausible: dict[str, Any],
+    stability: dict[str, dict[str, float]],
+    per_file_schema: dict[str, str],
 ) -> str:
-    lines: list[str] = ["# vrp_panel_v1 QA report", ""]
+    schemas = sorted(set(per_file_schema.values()))
+    lines: list[str] = [f"# vrp_panel QA report ({', '.join(schemas) if schemas else 'no input'})", ""]
 
     lines += ["## 1. Row accounting", "", "Rows per file:", ""]
     for file, count in accounting["rows_per_file"].items():
-        lines.append(f"- {file}: {count}")
+        lines.append(f"- {file}: {count} ({per_file_schema.get(file, 'unknown schema')})")
     lines += ["", f"Total rows: {accounting['total_rows']}", "", "Rows per symbol:", ""]
     for symbol, count in accounting["rows_per_symbol"].items():
         lines.append(f"- {symbol}: {count}")
@@ -339,7 +503,7 @@ def render_markdown(
         "| column | nan_count | total | nan_fraction |",
         "|---|---|---|---|",
     ]
-    for col in NUMERIC_COLUMNS:
+    for col in NUMERIC_COLUMNS_V2:
         c = coverage[col]
         lines.append(f"| {col} | {c['nan_count']} | {c['total']} | {_fmt(c['fraction'])} |")
     lines.append("")
@@ -426,15 +590,69 @@ def render_markdown(
         lines.append("No violations.")
     lines.append("")
 
+    lines += ["## 6. Realized-vol plausibility (hard tripwire)", ""]
+    lines.append(
+        f"Checked {implausible['n_checked']} finite rv_fwd_21d value(s) against the "
+        f"{MAX_PLAUSIBLE_RV_FWD:g} annualized ceiling."
+    )
+    if implausible["violations"]:
+        lines += [
+            "",
+            f"{len(implausible['violations'])} row(s) exceed it (worst "
+            f"{implausible['worst']:.4f}). A value in this range is not a market event: "
+            "it is an unadjusted corporate action entering the spot mirror as a genuine "
+            "return. Supply the missing factor via the panel builder's --splits reference; "
+            "do NOT relax this tier.",
+            "",
+            "Affected symbols:",
+            "",
+        ]
+        for symbol, count in implausible["per_symbol"].items():
+            lines.append(f"- {symbol}: {count} row(s)")
+        lines += ["", "Rows:", ""]
+        for v in implausible["violations"][:50]:
+            lines.append(f"- {v}")
+        if len(implausible["violations"]) > 50:
+            lines.append(f"- ... and {len(implausible['violations']) - 50} more")
+    else:
+        lines.append("")
+        lines.append("No violations.")
+    lines.append("")
+
+    lines += [
+        "## 7. Implied-leg day-over-day stability (report-only)",
+        "",
+        "|delta| between consecutive emitted rows of the same symbol, in VOL POINTS.",
+        "",
+        "| leg | n | mean | median | p90 | p99 | max |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    for col in IMPLIED_LEG_COLUMNS:
+        s = stability[col]
+        lines.append(
+            f"| {col} | {int(s['n'])} | {_fmt(s['mean'], 3)} | {_fmt(s['median'], 3)} | "
+            f"{_fmt(s['p90'], 3)} | {_fmt(s['p99'], 3)} | {_fmt(s['max'], 3)} |"
+        )
+    lines += [
+        "",
+        "iv_fair_21d is an OTM-strip quadrature over a refit wing policy at a synthetic "
+        "21/252 tenor; iv_atmf_21d reads one fitted point (the strike an AtmForward "
+        "straddle actually trades). A real 21-day implied moves ~0.5-1.5 vol points a "
+        "day, so the excess in the strip row is fit noise carried directly into the "
+        "label. Report-only: the target choice is the trainer's decision, not this "
+        "checker's.",
+        "",
+    ]
+
     return "\n".join(lines)
 
 
 def build_report(paths: list[Path]) -> tuple[str, bool, int]:
     """Returns (markdown report, hard failure flag, t+21 violation count).
-    hard_failure covers ONLY the unconditionally fatal tiers (duplicate keys,
-    label identity); the t+21 count is report-only data the CLI gates on iff
-    --max-t21-violations was given."""
-    rows, per_file_counts = load_rows(paths)
+    hard_failure covers the unconditionally fatal tiers (duplicate keys, label
+    identity, implausible realized vol); the t+21 count is report-only data the
+    CLI gates on iff --max-t21-violations was given."""
+    rows, per_file_counts, per_file_schema = load_rows(paths)
     accounting = compute_row_accounting(rows, per_file_counts)
     coverage = compute_nan_coverage(rows)
     duplicates = find_duplicates(rows)
@@ -442,10 +660,23 @@ def build_report(paths: list[Path]) -> tuple[str, bool, int]:
     rv_recompute = recompute_forward_rv(rows)
     correlations = compute_correlations(rows)
     t21 = check_t21_successors(rows)
+    implausible = check_implausible_rv(rows)
+    stability = compute_implied_leg_stability(rows)
     report_md = render_markdown(
-        accounting, coverage, duplicates, identity, rv_recompute, correlations, t21
+        accounting,
+        coverage,
+        duplicates,
+        identity,
+        rv_recompute,
+        correlations,
+        t21,
+        implausible,
+        stability,
+        per_file_schema,
     )
-    hard_failure = bool(duplicates) or bool(identity["violations"])
+    hard_failure = (
+        bool(duplicates) or bool(identity["violations"]) or bool(implausible["violations"])
+    )
     return report_md, hard_failure, len(t21["violations"])
 
 
@@ -493,8 +724,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if hard_failure:
         print(
-            f"vrp_panel_qa: duplicate keys and/or label-identity violations found, "
-            f"see {args.out_md}",
+            f"vrp_panel_qa: duplicate keys, label-identity violations and/or implausible "
+            f"realized vol found, see {args.out_md}",
             file=sys.stderr,
         )
         return 1
