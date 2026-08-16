@@ -337,6 +337,10 @@ TEST(OracleBenchTolerance, PriceCrossedMarketDegradesToTick) {
   EXPECT_DOUBLE_EQ(price_tolerance(2.0, 1.0), 0.01);
 }
 
+TEST(OracleBenchTolerance, VolUsesFiveBpAbsolute) {
+  EXPECT_DOUBLE_EQ(vol_tolerance(), 5.0e-4);
+}
+
 TEST(OracleBenchTolerance, GreekRelativeWithAbsoluteFloor) {
   EXPECT_DOUBLE_EQ(greek_tolerance(0.0), 1.0e-4);
   EXPECT_DOUBLE_EQ(greek_tolerance(0.005), 1.0e-4); // 1% of 0.005 < floor
@@ -649,8 +653,8 @@ TEST(OracleBenchE2E, SyntheticCohortProducesCharterScorecard) {
   // dte band on both sides.
   const double strikes[] = {70.0, 90.0, 100.0, 110.0, 130.0};
   const double dtes[] = {5.0, 20.0, 60.0, 200.0};
-  constexpr std::string_view kMetrics[] = {"price", "de", "ga",      "th", "ve",
-                                           "rh",    "ph", "vo",      "va", "deDecay"};
+  constexpr std::string_view kMetrics[] = {"price", "vol", "de", "ga", "th", "ve",
+                                           "rh", "ph", "vo", "va", "deDecay"};
   std::vector<FixtureRow> rows;
   std::set<std::string> expected_keys;
   for (const Side side : {Side::Call, Side::Put}) {
@@ -735,7 +739,7 @@ TEST(OracleBenchE2E, SyntheticCohortProducesCharterScorecard) {
   const std::vector<std::string> keys = card->cell_keys();
   EXPECT_EQ(std::set<std::string>(keys.begin(), keys.end()), expected_keys);
   const std::regex charter_key(
-      R"(^a\.(price|de|ga|th|ve|rh|ph|vo|va|deDecay)\.(deep-itm|itm|atm|otm|deep-otm)\.(0-7|8-30|31-90|90\+)\.(c|p)$)");
+      R"(^a\.(price|vol|de|ga|th|ve|rh|ph|vo|va|deDecay)\.(deep-itm|itm|atm|otm|deep-otm)\.(0-7|8-30|31-90|90\+)\.(c|p)$)");
   for (const std::string &key : keys) {
     EXPECT_TRUE(std::regex_match(key, charter_key)) << key;
   }

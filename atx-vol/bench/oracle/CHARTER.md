@@ -72,9 +72,10 @@ the inherited blob at canonical.
   smoke/tune blob IDs, positive row count, and the complete closed Mode B target-ID
   set.
 
-The workflow target registry is price MAE, vol MAE, and delta/gamma/theta/vega
-relative error for both modes. Receipt strings are closed IDs/enums; no row text or
-encoded payload field exists.
+The workflow target registry is price MAE, vol MAE, and all nine SpiderRock
+greek columns as relative error for both modes: delta, gamma, theta, vega, rho,
+phi, volga, vanna, and delta decay. Receipt strings are closed IDs/enums; no row
+text or encoded payload field exists.
 
 ## Stage 1 - data (`missing_data`)
 

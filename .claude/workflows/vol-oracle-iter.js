@@ -30,12 +30,22 @@ const TARGET_REGISTRY = Object.freeze([
   { metric_id: 'mode_a_gamma_rel', mode: 'A', unit: 'relative', limit: 0.01 },
   { metric_id: 'mode_a_theta_rel', mode: 'A', unit: 'relative', limit: 0.01 },
   { metric_id: 'mode_a_vega_rel', mode: 'A', unit: 'relative', limit: 0.01 },
+  { metric_id: 'mode_a_rho_rel', mode: 'A', unit: 'relative', limit: 0.01 },
+  { metric_id: 'mode_a_phi_rel', mode: 'A', unit: 'relative', limit: 0.01 },
+  { metric_id: 'mode_a_volga_rel', mode: 'A', unit: 'relative', limit: 0.01 },
+  { metric_id: 'mode_a_vanna_rel', mode: 'A', unit: 'relative', limit: 0.01 },
+  { metric_id: 'mode_a_delta_decay_rel', mode: 'A', unit: 'relative', limit: 0.01 },
   { metric_id: 'mode_b_price_mae', mode: 'B', unit: 'ticks', limit: 2 },
   { metric_id: 'mode_b_vol_mae', mode: 'B', unit: 'bp', limit: 10 },
   { metric_id: 'mode_b_delta_rel', mode: 'B', unit: 'relative', limit: 0.02 },
   { metric_id: 'mode_b_gamma_rel', mode: 'B', unit: 'relative', limit: 0.02 },
   { metric_id: 'mode_b_theta_rel', mode: 'B', unit: 'relative', limit: 0.02 },
   { metric_id: 'mode_b_vega_rel', mode: 'B', unit: 'relative', limit: 0.02 },
+  { metric_id: 'mode_b_rho_rel', mode: 'B', unit: 'relative', limit: 0.02 },
+  { metric_id: 'mode_b_phi_rel', mode: 'B', unit: 'relative', limit: 0.02 },
+  { metric_id: 'mode_b_volga_rel', mode: 'B', unit: 'relative', limit: 0.02 },
+  { metric_id: 'mode_b_vanna_rel', mode: 'B', unit: 'relative', limit: 0.02 },
+  { metric_id: 'mode_b_delta_decay_rel', mode: 'B', unit: 'relative', limit: 0.02 },
 ])
 const AGGREGATE_REGISTRY = Object.freeze([
   { metric_id: 'mode_a_aggregate_error', mode: 'A', unit: 'relative' },
@@ -185,6 +195,7 @@ const GATE_RECEIPT = {
       properties: {
         schema_version: { type: 'integer', enum: [1] }, status: { type: 'string', enum: ['PASS'] }, observations: { type: 'integer' },
         command_id: { type: 'string', enum: Object.keys(BOOTSTRAP_GATE_COMMANDS) }, raw_output_sha256: { type: 'string', pattern: '^[0-9a-f]{64}$' },
+        tested_sha: { type: 'string' }, tested_tree: { type: 'string' },
         gate_kind: { type: 'string', enum: ['ctest', 'oracle_bench'] }, tests_executed: { type: 'integer' }, tests_passed: { type: 'integer' },
         rows_processed: { type: 'integer' }, metric_ids: { type: 'array', items: { type: 'string' } }, audit_summary: { type: 'string' },
       },
@@ -670,8 +681,10 @@ function validGateReceipt(receipt, gateId, expectedSha, expectedTree) {
       receipt.output !== JSON.stringify(result)) return false
   const commonKeys = ['schema_version', 'status', 'observations', 'command_id', 'raw_output_sha256']
   if (!TARGETED_BOOTSTRAP_GATE_IDS.includes(gateId)) return Object.keys(result).sort().join(',') === commonKeys.sort().join(',')
-  const semanticKeys = [...commonKeys, 'gate_kind', 'tests_executed', 'tests_passed', 'rows_processed', 'metric_ids', 'audit_summary']
+  const semanticKeys = [...commonKeys, 'tested_sha', 'tested_tree', 'gate_kind', 'tests_executed', 'tests_passed', 'rows_processed', 'metric_ids', 'audit_summary']
   if (Object.keys(result).sort().join(',') !== semanticKeys.sort().join(',')) return false
+  if (!/^[0-9a-f]{40}$/.test(result.tested_sha || '') || !/^[0-9a-f]{40}$/.test(result.tested_tree || '') ||
+      (expectedSha !== undefined && (result.tested_sha !== expectedSha || result.tested_tree !== expectedTree))) return false
   if (gateId.endsWith('_tests')) return result.gate_kind === 'ctest' && Number.isInteger(result.tests_executed) && result.tests_executed > 0 &&
     result.tests_passed === result.tests_executed && result.rows_processed === 0 && Array.isArray(result.metric_ids) && result.metric_ids.length === 0 &&
     result.audit_summary === `tests_executed=${result.tests_executed} tests_passed=${result.tests_passed}`

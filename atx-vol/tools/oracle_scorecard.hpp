@@ -64,12 +64,18 @@ enum class DteBand : std::uint8_t { D0To7 = 0, D8To30, D31To90, D90Plus };
 // degrades to the tick floor.
 inline constexpr double kPriceTick = 0.01;
 inline constexpr double kPriceSpreadFrac = 0.10;
+// vol: SpiderRock and engine vols are decimal fractions; five basis points is
+// therefore an absolute 0.0005 tolerance. Mode A is an identity observation
+// because srVol is the supplied pricing input, but it remains explicit in the
+// scorecard so the closed target registry cannot silently omit volatility.
+inline constexpr double kVolTolerance = 5.0e-4;
 // greeks: |err| <= max(abs floor, 1% of |oracle|). The absolute floor keeps a
 // zero-valued oracle greek (deep-OTM delta ~ 0) from demanding exact equality.
 inline constexpr double kGreekRelTol = 0.01;
 inline constexpr double kGreekAbsFloor = 1.0e-4;
 
 [[nodiscard]] double price_tolerance(double bid_prc, double ask_prc) noexcept;
+[[nodiscard]] double vol_tolerance() noexcept;
 [[nodiscard]] double greek_tolerance(double oracle_value) noexcept;
 
 // Nearest-rank percentile over an ALREADY-SORTED ascending sample span;

@@ -97,6 +97,8 @@ double price_tolerance(double bid_prc, double ask_prc) noexcept {
   return std::max(kPriceTick, kPriceSpreadFrac * (ask_prc - bid_prc));
 }
 
+double vol_tolerance() noexcept { return kVolTolerance; }
+
 double greek_tolerance(double oracle_value) noexcept {
   return std::max(kGreekAbsFloor, kGreekRelTol * std::abs(oracle_value));
 }
@@ -284,6 +286,7 @@ std::string Scorecard::to_json(const ScorecardHeader &header) const {
   // within_tol_rate is meaningless without the rule that produced it.
   out.append("\n  \"tolerances\": {\n"
              "    \"price\": \"|err| <= max(0.01, 0.10 * (askPrc - bidPrc))\",\n"
+             "    \"vol\": \"|err| <= 0.0005 (5 bp absolute vol)\",\n"
              "    \"greeks\": \"|err| <= max(0.0001, 0.01 * |oracle|)\"\n"
              "  },");
 

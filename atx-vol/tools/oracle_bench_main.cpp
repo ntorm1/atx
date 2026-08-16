@@ -7,8 +7,8 @@
 // by construction), with an exact undSecKey_tk predicate pushed into each
 // file scan. Mode A prices every admitted row through the PUBLIC atx-vol
 // American API using SpiderRock's own inputs (uPrc, rate, sdiv, ddiv, years;
-// vol = srVol) and compares price + greeks to srPrc / de ga th ve rh ph vo va
-// deDecay under the oracle_conventions.* unit map. Output: the charter
+// vol = srVol) and compares vol identity + price + greeks to srVol / srPrc /
+// de ga th ve rh ph vo va deDecay under the oracle_conventions.* unit map. Output: the charter
 // cell-key scorecard JSON to --out; rows/s and the opened partitions to
 // stderr.
 //
@@ -159,6 +159,10 @@ public:
 
       observe("price", price_to_oracle_units(greeks->price), row.sr_prc,
               price_tolerance(row.bid_prc, row.ask_prc));
+      // Mode A deliberately prices at SpiderRock's own vol. Record that
+      // identity as a first-class aggregate instead of letting the target
+      // registry claim vol coverage without scorecard provenance.
+      observe("vol", in.sigma, row.sr_vol, vol_tolerance());
 
       // ph rides the carry-greeks route; its corner-regime failures skip ONLY
       // the ph observation (cell n per metric reflects it), never the row.

@@ -5,6 +5,26 @@ that silently changes a NUMBER a caller already depends on belongs in this file.
 
 ## Unreleased
 
+### BREAKING — Oracle Mode A gates now execute real worktree binaries and require every SpiderRock greek
+
+The bootstrap `mode_a_targeted_tests` gate now runs the discovered
+`OracleBench*` CTest cases from the leased worktree, and `mode_a_smoke` now
+invokes that worktree's `build/bin/atx-vol-oracle-bench.exe` with its actual
+`--cohort/--store/--out/--iter/--git-sha` CLI. The smoke adapter reads the
+aggregate scorecard file, requires positive priced rows, exact HEAD/tree
+identity, and complete price, vol, delta, gamma, theta, vega, rho, phi, volga,
+vanna, and delta-decay coverage. It emits no option rows or cohort membership.
+Before CTest, the adapter asks Ninja for only `atx-vol-tests` and
+`atx-vol-oracle-bench` with parallelism capped at two, so a reused pool cannot
+mistake stale executables for the tested HEAD; an already-current tree is a
+Ninja no-op.
+
+**BREAKING:** the closed Mode A/Mode B receipt registries grow from six targets
+to eleven; legacy six-target receipts now fail capability validation. Mode A
+scorecards gain explicit `a.vol.*` identity cells and a five-basis-point
+absolute-vol tolerance. There is no compatibility flag or legacy receipt shim;
+regenerate the bootstrap receipt through the fixed targeted gates.
+
 ### NEW — VRP round 3: flagged isotonic forecast recalibration + metrics honesty (lane vrp-recalibration)
 
 `atx-vol-vrp-train` grows three flags; every flag defaults to the fix-2

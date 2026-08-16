@@ -10,7 +10,7 @@ const BOOTSTRAP_GATE_COMMANDS = {
   mode_a_targeted_tests: 'powershell scripts\\oracle-targeted-gate.ps1 -Gate mode_a_targeted_tests',
   mode_a_smoke: 'powershell scripts\\oracle-targeted-gate.ps1 -Gate mode_a_smoke',
 }
-const MODE_A_TARGETS = ['mode_a_price_mae', 'mode_a_vol_mae', 'mode_a_delta_rel', 'mode_a_gamma_rel', 'mode_a_theta_rel', 'mode_a_vega_rel']
+const MODE_A_TARGETS = ['mode_a_price_mae', 'mode_a_vol_mae', 'mode_a_delta_rel', 'mode_a_gamma_rel', 'mode_a_theta_rel', 'mode_a_vega_rel', 'mode_a_rho_rel', 'mode_a_phi_rel', 'mode_a_volga_rel', 'mode_a_vanna_rel', 'mode_a_delta_decay_rel']
 
 function extractFunction(source, name) {
   const start = source.indexOf(`function ${name}(`)
@@ -78,9 +78,10 @@ const sha = char => char.repeat(40)
 const digest = char => char.repeat(64)
 function gateReceipt(gateId, observations = 20) {
   const common = { schema_version: 1, status: 'PASS', observations, command_id: gateId, raw_output_sha256: digest('f') }
+  const semantic = { ...common, tested_sha: sha('a'), tested_tree: sha('b') }
   const result = gateId === 'disk' ? common : gateId.endsWith('_tests')
-    ? { ...common, gate_kind: 'ctest', tests_executed: 2, tests_passed: 2, rows_processed: 0, metric_ids: [], audit_summary: 'tests_executed=2 tests_passed=2' }
-    : { ...common, gate_kind: 'oracle_bench', tests_executed: 0, tests_passed: 0, rows_processed: 3, metric_ids: MODE_A_TARGETS, audit_summary: `status=PASS rows_processed=3 metric_ids=${[...MODE_A_TARGETS].sort().join(',')}` }
+    ? { ...semantic, gate_kind: 'ctest', tests_executed: 2, tests_passed: 2, rows_processed: 0, metric_ids: [], audit_summary: 'tests_executed=2 tests_passed=2' }
+    : { ...semantic, gate_kind: 'oracle_bench', tests_executed: 0, tests_passed: 0, rows_processed: 3, metric_ids: MODE_A_TARGETS, audit_summary: `status=PASS rows_processed=3 metric_ids=${[...MODE_A_TARGETS].sort().join(',')}` }
   return { gate_id: gateId, command: BOOTSTRAP_GATE_COMMANDS[gateId], exit_code: 0, output: JSON.stringify(result), result }
 }
 function precheck(gateId, status = 'PASS') {
@@ -195,6 +196,17 @@ test('Stage 2 precheck receipts mechanically select receipt-only or implementati
   const receiptPath = ['atx-vol/bench/oracle/bootstrap/mode-a.json']
   const passing = { base_sha: base, sha: tested, bootstrap_path: 'mode_a_receipt_only', evidence: [], precheck_gate_receipts: [precheck('mode_a_targeted_tests'), precheck('mode_a_smoke')], changed_path_receipt: changedPathReceipt(base, tested, receiptPath) }
   assert.equal(validators.bootstrapPathError(passing, { state: 'missing_mode_a', base_sha: base }), null)
+  const wrongGateIdentity = structuredClone(passing)
+  const parsedIdentity = JSON.parse(wrongGateIdentity.precheck_gate_receipts[0].output)
+  parsedIdentity.tested_sha = 'not-a-sha'
+  wrongGateIdentity.precheck_gate_receipts[0].output = JSON.stringify(parsedIdentity)
+  assert.match(validators.bootstrapPathError(wrongGateIdentity, { state: 'missing_mode_a', base_sha: base }), /precheck receipt invalid/iu)
+  const incompleteMetrics = structuredClone(passing)
+  const parsedMetrics = JSON.parse(incompleteMetrics.precheck_gate_receipts[1].output)
+  parsedMetrics.metric_ids = parsedMetrics.metric_ids.slice(0, -1)
+  parsedMetrics.audit_summary = `status=PASS rows_processed=${parsedMetrics.rows_processed} metric_ids=${[...parsedMetrics.metric_ids].sort().join(',')}`
+  incompleteMetrics.precheck_gate_receipts[1].output = JSON.stringify(parsedMetrics)
+  assert.match(validators.bootstrapPathError(incompleteMetrics, { state: 'missing_mode_a', base_sha: base }), /precheck receipt invalid/iu)
   passing.changed_path_receipt = changedPathReceipt(base, tested, [...receiptPath, 'atx-vol/tools/oracle_bench_main.cpp'].sort())
   assert.match(validators.bootstrapPathError(passing, { state: 'missing_mode_a', base_sha: base }), /receipt-only/u)
 
