@@ -1658,13 +1658,17 @@ TEST_F(VrpTrainPipelineTest, RawPanelRowScoresFromModelFilePlusSidecarAlone) {
   for (const auto &srow : *signal) {
     if (srow.symbol == pr.symbol && srow.date == pr.date) {
       EXPECT_NEAR(y[0], srow.pred_label, 1e-9);
-      const double sd = fs.label_sd[s];
-      const double edge = sd == 0.0 ? 0.0 : (y[0] - fs.label_mean[s]) / sd;
-      EXPECT_NEAR(edge, srow.pred_edge_norm, 1e-9);
       found = true;
     }
   }
   EXPECT_TRUE(found);
+  // ROUND-4 F1 SCOPE NOTE: pred_LABEL is still reproducible from
+  // {model file + sidecar} alone, and that is the live-path contract this test
+  // pins. pred_EDGE_NORM is not, under the cross-section default: it is a
+  // WITHIN-DATE transform, so it needs the whole date's cross-section, not one
+  // row's per-asset stats. The sidecar's label_mean/label_sd reproduce it only
+  // under --edge-norm per-symbol, which
+  // PerSymbolEdgeNormIsReproducibleFromTheSidecarAlone pins separately.
 
   // Baseline: the linear file scores ln(rv^2) pre-retransform; the sidecar's
   // s2 + clip bounds complete the variance forecast. Compare against the
@@ -2085,6 +2089,598 @@ TEST_F(VrpTrainPipelineTest, SmearingRetransformChangesOnlyTheBaselinePath) {
   EXPECT_TRUE(std::isfinite(meta_double(bytes, "fold_0_smear_factor")));
   std::error_code ec;
   std::filesystem::remove_all(out, ec);
+}
+
+// ── ROUND 4 F3: honest-metric primitives ────────────────────────────────────
+
+TEST(VrpTrainMath, PearsonAndSpearmanAreUndefinedNotZeroOnDegenerateInput) {
+  // A zero correlation is a MEASUREMENT; an unmeasurable one must not
+  // impersonate one. The engine kernel's all-zero convention is right for
+  // feature screening and wrong for a reported IC, so the degenerate cases
+  // are intercepted before it ever runs.
+  const std::array<double, 1> one{1.0};
+  EXPECT_TRUE(std::isnan(vrp::vrp_pearson(one, one)));
+  EXPECT_TRUE(std::isnan(vrp::vrp_spearman(one, one)));
+  const std::array<double, 4> flat{2.0, 2.0, 2.0, 2.0};
+  const std::array<double, 4> vary{1.0, 2.0, 3.0, 4.0};
+  EXPECT_TRUE(std::isnan(vrp::vrp_pearson(flat, vary)));
+  EXPECT_TRUE(std::isnan(vrp::vrp_pearson(vary, flat)));
+  EXPECT_TRUE(std::isnan(vrp::vrp_spearman(flat, vary)));
+  // Size mismatch is a caller bug, not a zero.
+  EXPECT_TRUE(std::isnan(vrp::vrp_pearson(one, vary)));
+  // Non-finite pairs drop out; the surviving pairs decide the answer.
+  const std::array<double, 5> ax{1.0, 2.0, kNaN, 3.0, 4.0};
+  const std::array<double, 5> ay{2.0, 4.0, 9.0, 6.0, 8.0};
+  EXPECT_NEAR(vrp::vrp_pearson(ax, ay), 1.0, 1e-12);
+  EXPECT_NEAR(vrp::vrp_spearman(ax, ay), 1.0, 1e-12);
+  // Perfect monotone but non-linear: Spearman 1, Pearson strictly below --
+  // the exact substitution Grinold's alpha = IC*sigma_y*z must never make.
+  const std::array<double, 5> bx{1.0, 2.0, 3.0, 4.0, 5.0};
+  const std::array<double, 5> by{1.0, 4.0, 9.0, 16.0, 100.0};
+  EXPECT_NEAR(vrp::vrp_spearman(bx, by), 1.0, 1e-12);
+  EXPECT_LT(vrp::vrp_pearson(bx, by), 0.95);
+  EXPECT_DOUBLE_EQ(vrp::vrp_corr(bx, by, vrp::VrpCorrKind::Pearson), vrp::vrp_pearson(bx, by));
+  EXPECT_DOUBLE_EQ(vrp::vrp_corr(bx, by, vrp::VrpCorrKind::Spearman),
+                   vrp::vrp_spearman(bx, by));
+}
+
+TEST(VrpTrainMath, StatAggTStatsMatchHandComputationAndPayTheOverlapHaircut) {
+  // x = {1,2,3,4,5}: mean 3, unbiased sd sqrt(2.5), se = sqrt(2.5/5),
+  // t_iid = 3/sqrt(0.5) = 4.2426406871192848.
+  const std::array<double, 5> x{1.0, 2.0, 3.0, 4.0, 5.0};
+  const vrp::VrpStatAgg a = vrp::vrp_aggregate_series(x, 0);
+  EXPECT_DOUBLE_EQ(a.mean, 3.0);
+  EXPECT_EQ(a.n, 5u);
+  EXPECT_NEAR(a.t_iid, 3.0 / std::sqrt(0.5), 1e-12);
+  // At lag 0 the Bartlett sum is just gamma_0 (the POPULATION second moment),
+  // so t_nw = mean / sqrt(g0/n) = 3 / sqrt(2/5).
+  EXPECT_NEAR(a.t_nw, 3.0 / std::sqrt(2.0 / 5.0), 1e-12);
+  // A trending (positively autocorrelated) series is exactly the overlap
+  // shape: the HAC t must be strictly SMALLER than the naive one.
+  const vrp::VrpStatAgg lagged = vrp::vrp_aggregate_series(x, 2);
+  EXPECT_LT(lagged.t_nw, lagged.t_iid);
+  // Non-finite entries are dropped, not counted.
+  const std::array<double, 4> holey{1.0, kNaN, 3.0, 5.0};
+  const vrp::VrpStatAgg h = vrp::vrp_aggregate_series(holey, 0);
+  EXPECT_EQ(h.n, 3u);
+  EXPECT_DOUBLE_EQ(h.mean, 3.0);
+  // Degenerate: empty -> NaN mean; constant -> a mean but no t (no sampling
+  // error to divide by), never a fabricated infinity.
+  const vrp::VrpStatAgg empty = vrp::vrp_aggregate_series(std::span<const double>{}, 0);
+  EXPECT_TRUE(std::isnan(empty.mean));
+  EXPECT_EQ(empty.n, 0u);
+  const std::array<double, 3> konst{2.0, 2.0, 2.0};
+  const vrp::VrpStatAgg k = vrp::vrp_aggregate_series(konst, 0);
+  EXPECT_DOUBLE_EQ(k.mean, 2.0);
+  EXPECT_TRUE(std::isnan(k.t_iid));
+  EXPECT_TRUE(std::isnan(k.t_nw));
+}
+
+TEST(VrpTrainMath, MseMatchesHandComputationOverFinitePairsOnly) {
+  const std::array<double, 4> f{1.0, 2.0, 3.0, kNaN};
+  const std::array<double, 4> r{1.5, 1.0, 5.0, 0.0};
+  // (0.25 + 1 + 4) / 3
+  EXPECT_NEAR(vrp::vrp_mse(f, r), 5.25 / 3.0, 1e-12);
+  const std::array<double, 2> none{kNaN, kNaN};
+  const std::array<double, 2> some{1.0, 2.0};
+  EXPECT_TRUE(std::isnan(vrp::vrp_mse(none, some)));
+}
+
+TEST(VrpTrainMath, DecileStatsRecoverPlantedTailsAndCarryTStats) {
+  // Two dates, 20 names each, realized == score: a perfectly monotone
+  // cross-section. Deciles must be increasing, rho = +1, and the top-minus-
+  // bottom spread must be positive with a defined t-stat -- the harvestability
+  // test of audit-gross-negative S1 run inside the trainer.
+  std::vector<std::int64_t> ts;
+  std::vector<double> score;
+  std::vector<double> real;
+  for (int d = 0; d < 2; ++d) {
+    for (int i = 0; i < 20; ++i) {
+      ts.push_back(d);
+      score.push_back(static_cast<double>(i));
+      real.push_back(static_cast<double>(i));
+    }
+  }
+  const vrp::VrpDecileStats up = vrp::vrp_decile_stats(ts, score, real);
+  EXPECT_EQ(up.n_dates, 2u);
+  EXPECT_NEAR(up.rho, 1.0, 1e-12);
+  EXPECT_NEAR(up.spread, 18.0, 1e-12); // mean{18,19} - mean{0,1}
+  EXPECT_TRUE(std::isfinite(up.ic_traded));
+  EXPECT_NEAR(up.ic_traded, 1.0, 1e-12); // tails only, still perfectly linear
+  // Both dates realize the SAME spread, so the per-date series is constant:
+  // there is no sampling error to divide by and the t-stat is undefined, not
+  // infinite and not zero.
+  EXPECT_TRUE(std::isnan(up.spread_t));
+  EXPECT_TRUE(std::isnan(up.spread_t_nw));
+
+  // A genuinely varying per-date spread does produce a t-stat, and the
+  // overlap-adjusted one is the smaller of the two on a trending series.
+  std::vector<std::int64_t> vts;
+  std::vector<double> vscore;
+  std::vector<double> vreal;
+  for (int d = 0; d < 6; ++d) {
+    for (int i = 0; i < 20; ++i) {
+      vts.push_back(d);
+      vscore.push_back(static_cast<double>(i));
+      vreal.push_back(static_cast<double>(i) * (1.0 + 0.1 * static_cast<double>(d)));
+    }
+  }
+  const vrp::VrpDecileStats varying = vrp::vrp_decile_stats(vts, vscore, vreal);
+  EXPECT_EQ(varying.n_dates, 6u);
+  EXPECT_GT(varying.spread, 0.0);
+  EXPECT_GT(varying.spread_t, 0.0);
+  EXPECT_TRUE(std::isfinite(varying.spread_t_nw));
+  EXPECT_LT(varying.spread_t_nw, varying.spread_t);
+  EXPECT_NEAR(varying.rho, 1.0, 1e-12);
+  // INVERTED tails with a flat-to-positive pooled correlation is exactly the
+  // pred_edge_norm pathology (+0.042 pooled IC, -2.5 vol pts in the tails):
+  // flip the realized value only in the two extreme deciles.
+  std::vector<double> inverted = real;
+  for (std::size_t i = 0; i < inverted.size(); ++i) {
+    const double s = score[i];
+    if (s >= 18.0) {
+      inverted[i] = -100.0;
+    } else if (s <= 1.0) {
+      inverted[i] = 100.0;
+    }
+  }
+  const vrp::VrpDecileStats bad = vrp::vrp_decile_stats(ts, score, inverted);
+  EXPECT_LT(bad.spread, 0.0);
+  EXPECT_LT(bad.ic_traded, 0.0);
+  // A date thinner than one name per decile contributes NOTHING rather than a
+  // fabricated tail.
+  const std::vector<std::int64_t> thin_ts{7, 7, 7};
+  const std::vector<double> thin{1.0, 2.0, 3.0};
+  const vrp::VrpDecileStats thin_stats = vrp::vrp_decile_stats(thin_ts, thin, thin);
+  EXPECT_EQ(thin_stats.n_dates, 0u);
+  EXPECT_TRUE(std::isnan(thin_stats.spread));
+  EXPECT_TRUE(std::isnan(thin_stats.rho));
+}
+
+TEST(VrpTrainMath, FmtDoubleCanonicalizesEveryNanSpelling) {
+  // UCRT/MSVC to_chars prints the x87 "indefinite" quiet NaN (what 0.0/0.0
+  // yields) as "-nan(ind)". A TSV whose bytes depend on which instruction
+  // produced an undefined value is not reproducible.
+  EXPECT_EQ(vrp::detail::fmt_double(kNaN), "nan");
+  EXPECT_EQ(vrp::detail::fmt_double(-kNaN), "nan");
+  volatile double zero = 0.0;
+  EXPECT_EQ(vrp::detail::fmt_double(zero / zero), "nan");
+  EXPECT_EQ(vrp::detail::fmt_double(std::numeric_limits<double>::infinity()), "inf");
+  EXPECT_EQ(vrp::detail::fmt_double(1.5), "1.5");
+}
+
+// ── ROUND 4 F2: the benchmark gate verdict ──────────────────────────────────
+
+namespace {
+[[nodiscard]] vrp::VrpScoreReport make_score(std::string name, vrp::VrpScoreKind kind,
+                                             double pearson, double spearman) {
+  vrp::VrpScoreReport s;
+  s.name = std::move(name);
+  s.kind = kind;
+  s.ic_pearson = pearson;
+  s.ic_spearman = spearman;
+  return s;
+}
+} // namespace
+
+TEST(VrpTrainGate, VerdictFailsWhenAFreeBenchmarkBeatsTheModel) {
+  // The measured round-3 state: the model scored +0.247 on per-date rank IC
+  // and the zero-parameter -iv_fair_21d scored +0.462. That must read FAIL.
+  const std::vector<vrp::VrpScoreReport> scores{
+      make_score("gbt", vrp::VrpScoreKind::Model, 0.10, 0.247),
+      make_score("baseline_log_har", vrp::VrpScoreKind::Baseline, 0.30, 0.55),
+      make_score("bench_neg_iv_fair_21d", vrp::VrpScoreKind::Benchmark, 0.20, 0.462),
+      make_score("bench_hv_iv_gap", vrp::VrpScoreKind::Benchmark, 0.05, 0.10)};
+  const vrp::VrpGateVerdict v = vrp::vrp_gate_verdict(scores);
+  EXPECT_FALSE(v.pass);
+  EXPECT_EQ(v.model, "gbt");
+  EXPECT_EQ(v.best_benchmark, "bench_neg_iv_fair_21d");
+  EXPECT_EQ(v.n_benchmarks, 2u);
+  EXPECT_DOUBLE_EQ(v.model_ic_spearman, 0.247);
+  EXPECT_DOUBLE_EQ(v.best_benchmark_ic_spearman, 0.462);
+  // The FITTED baseline outscoring the model is reported but never the bar:
+  // only zero-parameter benchmarks decide the verdict.
+  const std::vector<vrp::VrpScoreReport> beats_benchmarks{
+      make_score("gbt", vrp::VrpScoreKind::Model, 0.40, 0.60),
+      make_score("baseline_log_har", vrp::VrpScoreKind::Baseline, 0.90, 0.90),
+      make_score("bench_neg_iv_fair_21d", vrp::VrpScoreKind::Benchmark, 0.20, 0.462)};
+  EXPECT_TRUE(vrp::vrp_gate_verdict(beats_benchmarks).pass);
+}
+
+TEST(VrpTrainGate, VerdictFailsClosedOnTiesMissingBenchmarksAndNaN) {
+  // A tie is not a win.
+  const std::vector<vrp::VrpScoreReport> tie{
+      make_score("gbt", vrp::VrpScoreKind::Model, 0.20, 0.30),
+      make_score("bench_neg_iv_fair_21d", vrp::VrpScoreKind::Benchmark, 0.20, 0.30)};
+  EXPECT_FALSE(vrp::vrp_gate_verdict(tie).pass);
+  // Winning on rank while losing on level is the state that produced a book
+  // with rank skill and no currency edge. Both must clear.
+  const std::vector<vrp::VrpScoreReport> rank_only{
+      make_score("gbt", vrp::VrpScoreKind::Model, 0.05, 0.90),
+      make_score("bench_neg_iv_fair_21d", vrp::VrpScoreKind::Benchmark, 0.20, 0.30)};
+  EXPECT_FALSE(vrp::vrp_gate_verdict(rank_only).pass);
+  // An ungraded run must never read as a passing one.
+  const std::vector<vrp::VrpScoreReport> no_bench{
+      make_score("gbt", vrp::VrpScoreKind::Model, 0.90, 0.90)};
+  EXPECT_FALSE(vrp::vrp_gate_verdict(no_bench).pass);
+  EXPECT_EQ(vrp::vrp_gate_verdict(no_bench).n_benchmarks, 0u);
+  const std::vector<vrp::VrpScoreReport> no_model{
+      make_score("bench_neg_iv_fair_21d", vrp::VrpScoreKind::Benchmark, 0.20, 0.30)};
+  EXPECT_FALSE(vrp::vrp_gate_verdict(no_model).pass);
+  EXPECT_TRUE(vrp::vrp_gate_verdict(no_model).model.empty());
+  // NaN on either side is unmeasurable, therefore not won.
+  const std::vector<vrp::VrpScoreReport> nan_model{
+      make_score("gbt", vrp::VrpScoreKind::Model, kNaN, 0.90),
+      make_score("bench_neg_iv_fair_21d", vrp::VrpScoreKind::Benchmark, 0.20, 0.30)};
+  EXPECT_FALSE(vrp::vrp_gate_verdict(nan_model).pass);
+  const std::vector<vrp::VrpScoreReport> nan_bench{
+      make_score("gbt", vrp::VrpScoreKind::Model, 0.90, 0.90),
+      make_score("bench_neg_iv_fair_21d", vrp::VrpScoreKind::Benchmark, kNaN, kNaN)};
+  EXPECT_FALSE(vrp::vrp_gate_verdict(nan_bench).pass);
+}
+
+// ── ROUND 4 F4: feature lagging ─────────────────────────────────────────────
+
+TEST(VrpTrainMath, FeatureLagShiftsToTheKthSameSymbolPredecessorAndCountsWarmup) {
+  const ScopedTempFile panel("lag_unit", make_synth_panel_tsv());
+  const auto loaded = vrp::load_vrp_panel(panel.path_string());
+  ASSERT_TRUE(loaded.has_value()) << loaded.error().to_string();
+  const vrp::VrpPanel original = *loaded;
+  vrp::VrpPanel lagged = *loaded;
+
+  // The synthetic panel plants NaN f4 cells, and NaN != NaN, so identity has
+  // to be checked bit-for-bit rather than with operator==.
+  const auto same_features = [](const std::array<double, kVrpFeatureCount> &a,
+                                const std::array<double, kVrpFeatureCount> &b) {
+    for (std::size_t f = 0; f < kVrpFeatureCount; ++f) {
+      if (!((std::isnan(a[f]) && std::isnan(b[f])) || a[f] == b[f])) {
+        return false;
+      }
+    }
+    return true;
+  };
+
+  // Lag 0 is the identity and reports no attrition.
+  vrp::VrpPanel identity = original;
+  EXPECT_EQ(vrp::apply_vrp_feature_lag(identity, 0), 0u);
+  for (std::size_t r = 0; r < identity.rows.size(); ++r) {
+    EXPECT_TRUE(same_features(identity.rows[r].f, original.rows[r].f)) << r;
+  }
+
+  constexpr std::size_t kLag = 2;
+  const std::size_t blanked = vrp::apply_vrp_feature_lag(lagged, kLag);
+  // Exactly `lag` warmup rows per symbol have no k-th predecessor.
+  EXPECT_EQ(blanked, kLag * kSynthSymbols.size());
+
+  // Per symbol, row i must now carry the features of row i-lag, and the
+  // TARGET side must be untouched.
+  std::vector<std::vector<std::size_t>> by_symbol(original.symbols.size());
+  for (std::size_t r = 0; r < original.rows.size(); ++r) {
+    by_symbol[original.row_symbol[r]].push_back(r);
+  }
+  for (const auto &rows : by_symbol) {
+    for (std::size_t i = 0; i < rows.size(); ++i) {
+      const auto &out = lagged.rows[rows[i]];
+      const auto &in = original.rows[rows[i]];
+      EXPECT_EQ(out.symbol, in.symbol);
+      EXPECT_EQ(out.date, in.date);
+      EXPECT_EQ(out.entry_ts_ns, in.entry_ts_ns);
+      EXPECT_DOUBLE_EQ(out.iv_fair_21d, in.iv_fair_21d);
+      EXPECT_TRUE((std::isnan(out.label) && std::isnan(in.label)) || out.label == in.label);
+      if (i < kLag) {
+        for (const double v : out.f) {
+          EXPECT_TRUE(std::isnan(v));
+        }
+      } else {
+        for (std::size_t f = 0; f < kVrpFeatureCount; ++f) {
+          const double src = original.rows[rows[i - kLag]].f[f];
+          EXPECT_TRUE((std::isnan(out.f[f]) && std::isnan(src)) || out.f[f] == src);
+        }
+      }
+    }
+  }
+}
+
+TEST(VrpTrainMath, FeatureLagPastTheCapFailsClosed) {
+  const ScopedTempFile panel("lag_cap", make_synth_panel_tsv());
+  vrp::VrpTrainConfig cfg =
+      make_synth_config(panel.path_string(), unique_temp_path("lag_cap_out", "").string());
+  cfg.feature_lag = vrp::kVrpMaxFeatureLag + 1;
+  const auto report = vrp::run_vrp_train(cfg);
+  ASSERT_FALSE(report.has_value());
+  EXPECT_NE(report.error().to_string().find("feature-lag"), std::string::npos);
+}
+
+TEST(VrpTrainPipeline, FeatureLagLeavesTheFoldPlanIdenticalAndMovesTheForecasts) {
+  // Targets are never shifted, so the observation set and the fold plan are
+  // the SAME at every lag -- which is what makes a lag-to-lag comparison a
+  // comparison rather than two different experiments. The forecasts do move.
+  const ScopedTempFile panel("lag_pipe", make_synth_panel_tsv());
+  const auto out0 = unique_temp_path("lag_pipe_0", "");
+  const auto out2 = unique_temp_path("lag_pipe_2", "");
+  vrp::VrpTrainConfig cfg0 = make_synth_config(panel.path_string(), out0.string());
+  vrp::VrpTrainConfig cfg2 = cfg0;
+  cfg2.out_dir = out2.string();
+  cfg2.feature_lag = 2;
+  const auto a = vrp::run_vrp_train(cfg0);
+  const auto b = vrp::run_vrp_train(cfg2);
+  ASSERT_TRUE(a.has_value()) << a.error().to_string();
+  ASSERT_TRUE(b.has_value()) << b.error().to_string();
+  EXPECT_EQ(a->feature_lag_rows_unavailable, 0u);
+  EXPECT_EQ(b->feature_lag_rows_unavailable, 2u * kSynthSymbols.size());
+  ASSERT_EQ(a->folds.size(), b->folds.size());
+  bool any_pred_moved = false;
+  for (std::size_t k = 0; k < a->folds.size(); ++k) {
+    EXPECT_EQ(a->folds[k].train_rows, b->folds[k].train_rows);
+    EXPECT_EQ(a->folds[k].test_rows, b->folds[k].test_rows);
+    any_pred_moved = any_pred_moved || a->folds[k].test_pred_raw != b->folds[k].test_pred_raw;
+  }
+  EXPECT_TRUE(any_pred_moved);
+  const std::string bytes = read_file_bytes(b->metrics_path);
+  EXPECT_NE(bytes.find("# feature_lag=2\n"), std::string::npos);
+  EXPECT_NE(bytes.find("# feature_lag_rows_unavailable=" +
+                       std::to_string(b->feature_lag_rows_unavailable) + "\n"),
+            std::string::npos);
+  EXPECT_NE(read_file_bytes(a->metrics_path).find("# feature_lag=0\n"), std::string::npos);
+  std::error_code ec;
+  std::filesystem::remove_all(out0, ec);
+  std::filesystem::remove_all(out2, ec);
+}
+
+// ── ROUND 4 F1: the ranking column ──────────────────────────────────────────
+
+TEST_F(VrpTrainPipelineTest, CrossSectionEdgeNormPreservesWithinDateOrderOfPredLabel) {
+  // THE point of the default: within each date the ranking column must order
+  // the names exactly as pred_label does, so the book ranks on the axis the
+  // IC is measured on. Ranking on the per-symbol z-score instead was measured
+  // at -1.63 vol pts/cycle against pred_label's +1.74.
+  const auto signal = load_vrp_signal_v1(report_->signal_path.string());
+  ASSERT_TRUE(signal.has_value()) << signal.error().to_string();
+  ASSERT_FALSE(signal->empty());
+  // Group the emitted rows by date (the signal file is written in canonical
+  // panel-row order, so equal dates are contiguous).
+  std::size_t begin = 0;
+  std::size_t dates_checked = 0;
+  std::size_t pairs_checked = 0;
+  while (begin < signal->size()) {
+    std::size_t end = begin;
+    while (end < signal->size() && (*signal)[end].date == (*signal)[begin].date) {
+      ++end;
+    }
+    if (end - begin >= 2) {
+      ++dates_checked;
+      for (std::size_t i = begin; i < end; ++i) {
+        for (std::size_t j = i + 1; j < end; ++j) {
+          const auto &a = (*signal)[i];
+          const auto &b = (*signal)[j];
+          ++pairs_checked;
+          if (a.pred_label < b.pred_label) {
+            EXPECT_LT(a.pred_edge_norm, b.pred_edge_norm) << a.date << ' ' << a.symbol;
+          } else if (a.pred_label > b.pred_label) {
+            EXPECT_GT(a.pred_edge_norm, b.pred_edge_norm) << a.date << ' ' << a.symbol;
+          } else {
+            EXPECT_DOUBLE_EQ(a.pred_edge_norm, b.pred_edge_norm);
+          }
+        }
+      }
+      // The column really is a z-score: mean ~ 0 and population sd ~ 1.
+      double sum = 0.0;
+      for (std::size_t i = begin; i < end; ++i) {
+        sum += (*signal)[i].pred_edge_norm;
+      }
+      const auto n = static_cast<double>(end - begin);
+      const double mean = sum / n;
+      double sq = 0.0;
+      for (std::size_t i = begin; i < end; ++i) {
+        const double d = (*signal)[i].pred_edge_norm - mean;
+        sq += d * d;
+      }
+      EXPECT_NEAR(mean, 0.0, 1e-9);
+      EXPECT_NEAR(std::sqrt(sq / n), 1.0, 1e-9);
+    }
+    begin = end;
+  }
+  EXPECT_GT(dates_checked, 0u);
+  EXPECT_GT(pairs_checked, 0u);
+  const std::string bytes = read_file_bytes(report_->metrics_path);
+  EXPECT_NE(bytes.find("# edge_norm=cross_section\n"), std::string::npos);
+}
+
+TEST_F(VrpTrainPipelineTest, PerSymbolEdgeNormIsReproducibleFromTheSidecarAlone) {
+  // The round-1..3 column, now behind --edge-norm per-symbol so the round-3
+  // artifacts stay byte-reproducible: pred_edge_norm is exactly
+  // (pred_label - label_mean[sym]) / label_sd[sym] from the fold sidecar, and
+  // the two modes genuinely disagree (otherwise the flag would be theatre).
+  const auto out = unique_temp_path("per_symbol_out", "");
+  vrp::VrpTrainConfig cfg = make_synth_config(panel_file_->path_string(), out.string());
+  cfg.edge_norm = vrp::VrpEdgeNormMode::PerSymbol;
+  const auto ps = vrp::run_vrp_train(cfg);
+  ASSERT_TRUE(ps.has_value()) << ps.error().to_string();
+
+  // Everything except the ranking column is untouched by the flag.
+  EXPECT_EQ(read_file_bytes(ps->gbt_model_path), read_file_bytes(report_->gbt_model_path));
+  EXPECT_EQ(read_file_bytes(ps->baseline_model_path),
+            read_file_bytes(report_->baseline_model_path));
+  EXPECT_EQ(read_file_bytes(ps->fold_stats_path), read_file_bytes(report_->fold_stats_path));
+  EXPECT_NE(read_file_bytes(ps->signal_path), read_file_bytes(report_->signal_path));
+
+  const auto sidecar = vrp::load_vrp_fold_stats(ps->fold_stats_path);
+  ASSERT_TRUE(sidecar.has_value()) << sidecar.error().to_string();
+  const vrp::VrpFoldStats &fs = sidecar->back();
+  const auto signal = load_vrp_signal_v1(ps->signal_path.string());
+  ASSERT_TRUE(signal.has_value()) << signal.error().to_string();
+
+  // Check the tail rows, which the FINAL fold's stats score.
+  std::size_t checked = 0;
+  for (const auto &srow : *signal) {
+    const auto it = std::find_if(report_->panel.rows.begin(), report_->panel.rows.end(),
+                                 [&](const vrp::VrpPanelRow &pr) {
+                                   return pr.symbol == srow.symbol && pr.date == srow.date;
+                                 });
+    ASSERT_NE(it, report_->panel.rows.end());
+    if (!std::isnan(it->label)) {
+      continue; // fold rows use their own fold's stats, not the last fold's
+    }
+    const auto sym_it = std::lower_bound(fs.symbols.begin(), fs.symbols.end(), srow.symbol);
+    ASSERT_TRUE(sym_it != fs.symbols.end() && *sym_it == srow.symbol);
+    const auto s = static_cast<std::size_t>(sym_it - fs.symbols.begin());
+    const double sd = fs.label_sd[s];
+    const double expected = sd == 0.0 ? 0.0 : (srow.pred_label - fs.label_mean[s]) / sd;
+    EXPECT_NEAR(expected, srow.pred_edge_norm, 1e-9) << srow.symbol << ' ' << srow.date;
+    ++checked;
+  }
+  EXPECT_GT(checked, 0u);
+  EXPECT_NE(read_file_bytes(ps->metrics_path).find("# edge_norm=per_symbol\n"),
+            std::string::npos);
+  std::error_code ec;
+  std::filesystem::remove_all(out, ec);
+}
+
+TEST(VrpTrainMath, CrossSectionEdgeNormEmitsZeroOnDegenerateDatesAndNeverNonFinite) {
+  // The frozen vrp_signal_v1 loader fail-closes on a non-finite column, so a
+  // date with no dispersion (or a lone name) must emit 0.0, matching the
+  // per-symbol path's sd == 0 convention -- never NaN, never inf.
+  vrp::VrpPanel panel;
+  const auto add = [&panel](std::string sym, std::int64_t ts) {
+    vrp::VrpPanelRow row;
+    row.symbol = std::move(sym);
+    row.date = std::to_string(ts);
+    row.entry_ts_ns = ts;
+    panel.rows.push_back(std::move(row));
+  };
+  add("AAA", 1); // date 1: a single name
+  add("AAA", 2); // date 2: two names, identical forecasts
+  add("BBB", 2);
+  add("AAA", 3); // date 3: two names, one forecast non-finite
+  add("BBB", 3);
+  add("AAA", 4); // date 4: genuine dispersion
+  add("BBB", 4);
+  panel.symbols = {"AAA", "BBB"};
+  panel.row_symbol = {0, 0, 1, 0, 1, 0, 1};
+  std::vector<vrp::detail::SignalEntry> e(panel.rows.size());
+  for (std::size_t i = 0; i < e.size(); ++i) {
+    e[i].panel_row = i;
+  }
+  e[0].pred_label = 5.0;
+  e[1].pred_label = 3.0;
+  e[2].pred_label = 3.0;
+  e[3].pred_label = kNaN;
+  e[4].pred_label = 2.0;
+  e[5].pred_label = -1.0;
+  e[6].pred_label = 1.0;
+  vrp::detail::apply_cross_section_edge_norm(panel, std::span<vrp::detail::SignalEntry>{e});
+  for (const auto &entry : e) {
+    EXPECT_TRUE(std::isfinite(entry.pred_edge_norm));
+  }
+  EXPECT_DOUBLE_EQ(e[0].pred_edge_norm, 0.0); // lone name
+  EXPECT_DOUBLE_EQ(e[1].pred_edge_norm, 0.0); // zero dispersion
+  EXPECT_DOUBLE_EQ(e[2].pred_edge_norm, 0.0);
+  EXPECT_DOUBLE_EQ(e[3].pred_edge_norm, 0.0); // fewer than two finite forecasts
+  EXPECT_DOUBLE_EQ(e[4].pred_edge_norm, 0.0);
+  // date 4: mean 0, population sd 1 -> exactly -1 and +1.
+  EXPECT_DOUBLE_EQ(e[5].pred_edge_norm, -1.0);
+  EXPECT_DOUBLE_EQ(e[6].pred_edge_norm, 1.0);
+}
+
+// ── ROUND 4 F2/F3: the gate in the artifacts ────────────────────────────────
+
+TEST_F(VrpTrainPipelineTest, GateScoresEveryFoldAndThePooledCorpusAgainstFreeBenchmarks) {
+  const auto &gate = report_->gate;
+  ASSERT_EQ(gate.per_fold.size(), report_->folds.size());
+  ASSERT_EQ(gate.fold_ids.size(), report_->folds.size());
+  ASSERT_EQ(gate.pooled.size(), 4u);
+  // Column order and kinds: the model on trial, the fitted baseline, then the
+  // two ZERO-PARAMETER benchmarks that decide the verdict.
+  EXPECT_EQ(gate.pooled[0].name, "gbt");
+  EXPECT_EQ(gate.pooled[0].kind, vrp::VrpScoreKind::Model);
+  EXPECT_EQ(gate.pooled[1].name, "baseline_log_har");
+  EXPECT_EQ(gate.pooled[1].kind, vrp::VrpScoreKind::Baseline);
+  EXPECT_EQ(gate.pooled[2].name, "bench_neg_iv_fair_21d");
+  EXPECT_EQ(gate.pooled[2].kind, vrp::VrpScoreKind::Benchmark);
+  EXPECT_EQ(gate.pooled[3].name, "bench_hv_iv_gap");
+  EXPECT_EQ(gate.pooled[3].kind, vrp::VrpScoreKind::Benchmark);
+  EXPECT_EQ(gate.verdict.n_benchmarks, 2u);
+  // Every fold scores the same four columns on that fold's own test rows.
+  for (std::size_t i = 0; i < gate.per_fold.size(); ++i) {
+    ASSERT_EQ(gate.per_fold[i].size(), 4u);
+    EXPECT_EQ(gate.fold_ids[i], report_->folds[i].fold_id);
+    for (const auto &s : gate.per_fold[i]) {
+      EXPECT_EQ(s.n_rows, report_->folds[i].n_test);
+      EXPECT_GT(s.n_dates, 0u);
+    }
+    // MSE / Mincer-Zarnowitz are LABEL-unit claims: populated for the model
+    // and the baseline, deliberately absent for a pure ranking benchmark.
+    EXPECT_TRUE(std::isfinite(gate.per_fold[i][0].mse));
+    EXPECT_TRUE(std::isfinite(gate.per_fold[i][0].mz_slope));
+    EXPECT_TRUE(std::isnan(gate.per_fold[i][2].mse));
+    EXPECT_TRUE(std::isnan(gate.per_fold[i][2].mz_slope));
+  }
+  // Pooled covers every fold's test rows exactly once.
+  std::size_t n_test_total = 0;
+  for (const auto &m : report_->folds) {
+    n_test_total += m.n_test;
+  }
+  EXPECT_EQ(gate.pooled[0].n_rows, n_test_total);
+  // The gate's model column is the SHIPPED forecast: with recalibration off
+  // it must equal the per-fold rank IC the round-1..3 path already reported.
+  EXPECT_NEAR(gate.per_fold.front()[0].ic_spearman, report_->folds.front().ic_gbt, 1e-9);
+  // The corpus is named, so a clean-25 number can never be quoted for an
+  // SP100 book again by accident.
+  EXPECT_FALSE(gate.corpus.empty());
+  // Coverage: the tail rows are counted and the fraction is published.
+  EXPECT_GT(gate.n_signal_rows_unlabeled, 0u);
+  EXPECT_LT(gate.n_signal_rows_unlabeled, gate.n_signal_rows);
+  EXPECT_NEAR(gate.frac_unlabeled(),
+              static_cast<double>(gate.n_signal_rows_unlabeled) /
+                  static_cast<double>(gate.n_signal_rows),
+              1e-12);
+}
+
+TEST_F(VrpTrainPipelineTest, MetricsFileCarriesTheGateVerdictBenchmarkTableAndCoverage) {
+  const std::string bytes = read_file_bytes(report_->metrics_path);
+  const auto &gate = report_->gate;
+  const auto has = [&](const std::string &line) {
+    EXPECT_NE(bytes.find(line), std::string::npos) << line;
+  };
+  has(std::string("# gate_verdict=") + (gate.verdict.pass ? "PASS" : "FAIL") + "\n");
+  has("# gate_model=gbt\n");
+  has("# gate_n_benchmarks=2\n");
+  has("# gate_best_benchmark=" + gate.verdict.best_benchmark + "\n");
+  has("# gate_model_ic_pearson=" + vrp::detail::fmt_double(gate.verdict.model_ic_pearson) +
+      "\n");
+  has("# gate_model_ic_spearman=" + vrp::detail::fmt_double(gate.verdict.model_ic_spearman) +
+      "\n");
+  has("# corpus=" + gate.corpus + "\n");
+  // QLIKE is retained for round-3 comparability and explicitly disowned: it is
+  // undefined on a signed variance spread and the gate never reads it.
+  has("# qlike_status=deprecated_undefined_on_signed_label_not_scored_by_gate\n");
+  // Coverage honesty (27% of the round-2 run was unvalidated and reported as
+  // if it were not).
+  has("# n_signal_rows=" + std::to_string(gate.n_signal_rows) + "\n");
+  has("# n_signal_rows_unlabeled_tail=" + std::to_string(gate.n_signal_rows_unlabeled) + "\n");
+  has("# frac_signal_rows_unlabeled_tail=" + vrp::detail::fmt_double(gate.frac_unlabeled()) +
+      "\n");
+  // Every score column, pooled AND per fold, with its t-stats and its tail
+  // statement -- an IC without a t-stat is how t = -0.96 shipped three times.
+  for (const auto &s : gate.pooled) {
+    const std::string p = "# gate_pooled_" + s.name + "_";
+    has(p + "ic_pearson=" + vrp::detail::fmt_double(s.ic_pearson) + "\n");
+    has(p + "ic_pearson_t=" + vrp::detail::fmt_double(s.ic_pearson_t) + "\n");
+    has(p + "ic_pearson_t_nw=" + vrp::detail::fmt_double(s.ic_pearson_t_nw) + "\n");
+    has(p + "ic_spearman=" + vrp::detail::fmt_double(s.ic_spearman) + "\n");
+    has(p + "ic_spearman_t_nw=" + vrp::detail::fmt_double(s.ic_spearman_t_nw) + "\n");
+    has(p + "ic_pearson_traded=" + vrp::detail::fmt_double(s.ic_pearson_traded) + "\n");
+    has(p + "decile_spread=" + vrp::detail::fmt_double(s.decile_spread) + "\n");
+    has(p + "decile_spread_t_nw=" + vrp::detail::fmt_double(s.decile_spread_t_nw) + "\n");
+    has(p + "decile_rho=" + vrp::detail::fmt_double(s.decile_rho) + "\n");
+    has(p + "n_rows=" + std::to_string(s.n_rows) + "\n");
+  }
+  for (std::size_t i = 0; i < gate.per_fold.size(); ++i) {
+    const std::string p =
+        "# gate_fold_" + std::to_string(gate.fold_ids[i]) + "_" + gate.per_fold[i][0].name + "_";
+    has(p + "ic_pearson=" + vrp::detail::fmt_double(gate.per_fold[i][0].ic_pearson) + "\n");
+    has(p + "ic_spearman=" + vrp::detail::fmt_double(gate.per_fold[i][0].ic_spearman) + "\n");
+  }
 }
 
 } // namespace

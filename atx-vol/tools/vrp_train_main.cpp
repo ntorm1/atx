@@ -27,6 +27,39 @@ void print_usage() {
             "                         [--recalibrate <off|isotonic>] (default off)\n"
             "                         [--recalib-window <n>]     (default 63; >= 1)\n"
             "                         [--retransform <jensen|smearing>] (default jensen)\n"
+            "                         [--edge-norm <cross-section|per-symbol>]\n"
+            "                                                    (default cross-section)\n"
+            "                         [--feature-lag <n>]        (default 0; <= 21)\n"
+            "                         [--corpus <label>]         (default: panel file stem)\n"
+            "\n"
+            "--edge-norm picks the basis pred_edge_norm standardizes on -- the column\n"
+            "the VolEdge book RANKS on. cross-section (the round-4 DEFAULT)\n"
+            "standardizes pred_label WITHIN each date across symbols, an\n"
+            "order-preserving map, so the book ranks on the axis the IC is measured\n"
+            "on. per-symbol is the round-1..3 z-score (pred_label - label_mean[sym])\n"
+            "/ label_sd[sym], which demeans away each name's own variance premium --\n"
+            "the quantity being harvested -- and reproduces round-3 artifacts byte\n"
+            "for byte. Measured on the same rows, dates and 21d horizon through an\n"
+            "equal-weighted decile long/short book: per-symbol -1.63 vol pts/cycle\n"
+            "(29% of phase offsets positive), cross-section +1.74 (76% positive).\n"
+            "\n"
+            "--feature-lag N reads every FEATURE from the row's N-th same-symbol\n"
+            "predecessor (targets untouched, so the fold plan is identical at every\n"
+            "lag). 2 is the recommended round-4 setting: it removes the channel by\n"
+            "which a stale same-session quote can manufacture IC. 0 reproduces the\n"
+            "round-1..3 behaviour. Rows without an N-th predecessor get NaN features\n"
+            "and are counted in feature_lag_rows_unavailable.\n"
+            "\n"
+            "--corpus labels every gate statistic in vrp_metrics.tsv. Rounds 1-3\n"
+            "quoted a clean-25 IC beside an SP100 book because no artifact recorded\n"
+            "which corpus a number came from.\n"
+            "\n"
+            "EVERY run reports the model against ZERO-PARAMETER benchmarks on the\n"
+            "same rows, dates and folds (-iv_fair_21d, known at t; f5_hv_iv_gap, the\n"
+            "Goyal-Saretto HV-IV classic) and prints a PASS/FAIL verdict. The gate\n"
+            "PASSES only when the model beats EVERY benchmark on BOTH the mean\n"
+            "per-date Pearson IC (the Grinold sizing IC) and the mean per-date\n"
+            "Spearman IC. It fails closed: an unmeasurable comparison is a FAIL.\n"
             "\n"
             "--recalibrate isotonic fits, per fold, a deterministic PAVA isotonic\n"
             "map from raw GBT forecast to realized label on the trailing\n"
@@ -148,6 +181,27 @@ int main(int argc, char **argv) {
         std::fprintf(stderr, "error: --recalib-window must be >= 1\n");
         return 2;
       }
+    } else if (arg == "--edge-norm") {
+      if (value == "cross-section") {
+        cfg.edge_norm = atx::vol::vrp::VrpEdgeNormMode::CrossSection;
+      } else if (value == "per-symbol") {
+        cfg.edge_norm = atx::vol::vrp::VrpEdgeNormMode::PerSymbol;
+      } else {
+        std::fprintf(stderr,
+                     "error: --edge-norm must be 'cross-section' or 'per-symbol', got '%.*s'\n",
+                     static_cast<int>(value.size()), value.data());
+        return 2;
+      }
+    } else if (arg == "--feature-lag") {
+      ok = parse_number(value, cfg.feature_lag);
+      // Fail closed at the boundary: a lag past the cap blanks whole symbols.
+      if (ok && cfg.feature_lag > atx::vol::vrp::kVrpMaxFeatureLag) {
+        std::fprintf(stderr, "error: --feature-lag %zu exceeds the %zu-session cap\n",
+                     cfg.feature_lag, atx::vol::vrp::kVrpMaxFeatureLag);
+        return 2;
+      }
+    } else if (arg == "--corpus") {
+      cfg.corpus = std::string(value);
     } else if (arg == "--retransform") {
       if (value == "jensen") {
         cfg.retransform = atx::vol::vrp::VrpRetransformMode::Jensen;
@@ -231,6 +285,59 @@ int main(int argc, char **argv) {
                   fold.recal_window_effective, fold.recal_applied ? 1 : 0);
     }
   }
+  // ── Round-4 benchmark gate (F2) + honest metrics (F3) ─────────────────────
+  // Printed for EVERY run, never behind a flag: this block exists because
+  // three rounds shipped on an IC no free rule was asked to beat. `qlike`
+  // above is retained only for round-3 comparability -- it is undefined on a
+  // signed variance spread and the gate never reads it.
+  const auto &gate = report->gate;
+  const auto score_row = [](const char *scope, const atx::vol::vrp::VrpScoreReport &s) {
+    std::printf("gate\t%s\t%s\t%.4f\t%.2f\t%.2f\t%.4f\t%.2f\t%.2f\t%.4f\t%.2f\t%.6g\t%.2f\t"
+                "%.4f\t%zu\t%zu\n",
+                scope, s.name.c_str(), s.ic_pearson, s.ic_pearson_t, s.ic_pearson_t_nw,
+                s.ic_spearman, s.ic_spearman_t, s.ic_spearman_t_nw, s.ic_pearson_traded,
+                s.ic_pearson_traded_t_nw, s.decile_spread, s.decile_spread_t_nw,
+                s.decile_rho, s.n_dates, s.n_rows);
+  };
+  std::printf("gate\tscope\tscore\tic_pearson\tt\tt_nw\tic_spearman\tt\tt_nw\t"
+              "ic_pear_traded\tt_nw\tdecile_spread\tt_nw\tdecile_rho\tn_dates\tn_rows\n");
+  for (std::size_t i = 0; i < gate.per_fold.size(); ++i) {
+    const std::string scope = "fold_" + std::to_string(gate.fold_ids[i]);
+    for (const auto &s : gate.per_fold[i]) {
+      score_row(scope.c_str(), s);
+    }
+  }
+  for (const auto &s : gate.pooled) {
+    score_row("pooled", s);
+  }
+  std::printf("gate\tcorpus=%s\tsignal_rows=%zu\tunlabeled_tail=%zu (%.1f%% never validated)\n",
+              gate.corpus.c_str(), gate.n_signal_rows, gate.n_signal_rows_unlabeled,
+              100.0 * gate.frac_unlabeled());
+  // The verdict goes to BOTH streams and says the word out loud. A model that
+  // loses to a zero-parameter rule has produced no evidence it should ship.
+  const char *verdict = gate.verdict.pass ? "PASS" : "FAIL";
+  std::printf("GATE VERDICT: %s -- model '%s' ic_pearson=%.4f ic_spearman=%.4f vs best free "
+              "benchmark '%s' ic_pearson=%.4f ic_spearman=%.4f (%zu benchmarks)\n",
+              verdict, gate.verdict.model.c_str(), gate.verdict.model_ic_pearson,
+              gate.verdict.model_ic_spearman, gate.verdict.best_benchmark.c_str(),
+              gate.verdict.best_benchmark_ic_pearson, gate.verdict.best_benchmark_ic_spearman,
+              gate.verdict.n_benchmarks);
+  if (!gate.verdict.pass) {
+    std::fprintf(stderr,
+                 "[vrp-train] GATE VERDICT: FAIL -- '%s' does not beat the zero-parameter "
+                 "benchmark '%s' on both mean per-date Pearson and Spearman IC. The free rule "
+                 "wins; this model is not evidence of skill.\n",
+                 gate.verdict.model.c_str(), gate.verdict.best_benchmark.c_str());
+  } else {
+    std::fprintf(stderr, "[vrp-train] GATE VERDICT: PASS -- '%s' beats all %zu "
+                         "zero-parameter benchmarks on both ICs.\n",
+                 gate.verdict.model.c_str(), gate.verdict.n_benchmarks);
+  }
+  std::fprintf(stderr, "[vrp-train] edge_norm=%s feature_lag=%zu lag_rows_unavailable=%zu\n",
+               cfg.edge_norm == atx::vol::vrp::VrpEdgeNormMode::PerSymbol ? "per_symbol"
+                                                                          : "cross_section",
+               cfg.feature_lag, report->feature_lag_rows_unavailable);
+
   std::printf("signal:     %s\n", report->signal_path.string().c_str());
   std::printf("metrics:    %s\n", report->metrics_path.string().c_str());
   std::printf("gbt:        %s\n", report->gbt_model_path.string().c_str());
