@@ -208,8 +208,8 @@ Describe 'oracle targeted gate production adapter' {
   It 'fails closed when any reported metric is worse than its baseline' {
     $identity = Get-OracleGitIdentity
     # Equality must still pass: mode_a_vol_mae is structurally 0 on both arms.
-    (Get-OracleMetricRegressions @([pscustomobject]@{ metric_id = 'mode_a_vol_mae'; value = 0.0 }) @([pscustomobject]@{ metric_id = 'mode_a_vol_mae'; value = 0.0 })).Count | Should Be 0
-    $offenders = Get-OracleMetricRegressions @([pscustomobject]@{ metric_id = 'mode_a_phi_rel'; value = 2.0 }) @([pscustomobject]@{ metric_id = 'mode_a_phi_rel'; value = 1.0 })
+    @(Get-OracleMetricRegressions @([pscustomobject]@{ metric_id = 'mode_a_vol_mae'; value = 0.0 }) @([pscustomobject]@{ metric_id = 'mode_a_vol_mae'; value = 0.0 })).Count | Should Be 0
+    $offenders = @(Get-OracleMetricRegressions @([pscustomobject]@{ metric_id = 'mode_a_phi_rel'; value = 2.0 }) @([pscustomobject]@{ metric_id = 'mode_a_phi_rel'; value = 1.0 }))
     $offenders.Count | Should Be 1
     $offenders[0] | Should Match 'mode_a_phi_rel candidate=2 baseline=1'
     { Invoke-OracleTargetedGate 'mode_a_smoke_tune' {

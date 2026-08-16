@@ -408,7 +408,7 @@ function ConvertFrom-OracleConventionSweep([string]$ScorecardText, [string]$Gate
   # HARD gate: fail closed on ANY reported metric worse than its baseline, and
   # name every offender with both values so the failure is diagnosable without
   # re-running a 12-minute sweep.
-  $regressions = Get-OracleMetricRegressions $sweep.metrics $sweep.baseline_metrics
+  $regressions = @(Get-OracleMetricRegressions $sweep.metrics $sweep.baseline_metrics)
   if ($regressions.Count) {
     throw ("oracle targeted gate $GateId candidate is worse than baseline on " + $regressions.Count +
            ' metric(s): ' + ($regressions -join '; '))
