@@ -229,8 +229,8 @@ const STAGE3_CANDIDATE_PRICE = {
   properties: { candidate_id: { type: 'string' }, smoke_price_mae_ticks: { type: 'number' }, smoke_count: { type: 'integer' }, tune_sample_price_mae_ticks: { type: 'number' }, tune_sample_count: { type: 'integer' } },
 }
 // `pin` is present on convention_speed and ABSENT on convention_speed_measure,
-// which produces the very number iter-000's pin is copied from; validGateReceipt
-// enforces presence/absence per gate id.
+// which produces the baseline iter-000's pin is DERIVED from as
+// floor(baseline * 0.90); validGateReceipt enforces presence/absence per gate id.
 const STAGE3_SPEED = {
   type: 'object', additionalProperties: false, required: ['metric_id', 'value', 'count', 'unit', 'preset', 'quiet_host'],
   properties: { metric_id: { type: 'string' }, value: { type: 'number' }, count: { type: 'integer' }, unit: { type: 'string' }, pin: { type: 'number' }, preset: { type: 'string' }, quiet_host: { type: 'boolean' } },

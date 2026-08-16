@@ -666,11 +666,11 @@ Result<ConventionSweepResult> run_convention_sweep(std::span<const OracleRow> sm
   // whole 12-minute sweep as "not JSON".
   if (const FloorMetric *empty = first_unobserved_metric(out.metrics)) {
     return Err(ErrorCode::InvalidArgument,
-               "convention sweep candidate metric has no admitted observation: " + empty->metric_id);
+               "convention sweep candidate metric has no observation: " + empty->metric_id);
   }
   if (const FloorMetric *empty = first_unobserved_metric(out.baseline_metrics)) {
     return Err(ErrorCode::InvalidArgument,
-               "convention sweep baseline metric has no admitted observation: " + empty->metric_id);
+               "convention sweep baseline metric has no observation: " + empty->metric_id);
   }
   for (const CandidatePriceMetric &candidate : out.candidate_prices) {
     if (candidate.smoke_count <= 0 || !std::isfinite(candidate.smoke_price_mae_ticks) ||
