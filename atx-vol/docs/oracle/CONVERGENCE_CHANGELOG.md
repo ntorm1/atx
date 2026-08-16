@@ -206,16 +206,16 @@ append-only research log.
 
   No accuracy, MAE, or relative-error values were surfaced, so no convergence
   or Ratchet delta is claimed.
-- Speed: the targeted-test and smoke gate wall times were 19.956 seconds and
-  14.792 seconds, respectively. These are diagnostic qualification timings;
-  no pinned speed baseline was measured or changed.
+- Speed: the pasted wrapper wall times for the targeted-test and smoke gates
+  were 22.4 seconds and 15.8 seconds, respectively. These are diagnostic
+  qualification timings; no pinned speed baseline was measured or changed.
 - Gates: final promotion used exactly these two fresh receipts against the
   candidate SHA/tree:
 
-  | Gate ID | Status / result | Wall time | Receipt ID |
+  | Gate ID | Status / result | Pasted wrapper wall | Receipt ID |
   |---|---|---:|---|
-  | `mode_a_targeted_tests` | PASS; 31/31 | 19.956 s | `8ce4bc4372001fb1dcaf1dee31a7523b58c4ccabddba3eb512e49af88f841cdb` |
-  | `mode_a_smoke` | PASS; 13,926 rows and exact eleven-metric coverage | 14.792 s | `e87b1678f5bc6b48ce5bb84017edc73eca3b53a1e0211a984cbbe495a79b71de` |
+  | `mode_a_targeted_tests` | PASS; 31/31 | 22.4 s | `8ce4bc4372001fb1dcaf1dee31a7523b58c4ccabddba3eb512e49af88f841cdb` |
+  | `mode_a_smoke` | PASS; 13,926 rows and exact eleven-metric coverage | 15.8 s | `e87b1678f5bc6b48ce5bb84017edc73eca3b53a1e0211a984cbbe495a79b71de` |
 
 - Recovery/protocol note: the original workflow stopped after an MCP
   `Connection closed` error. Before that stop, it ran one extra
@@ -227,8 +227,8 @@ append-only research log.
   two required gates listed above.
 - Hypotheses: unchanged; none confirmed or refuted.
 - Oracle-suspect exclusions: unchanged; none vetted.
-- Holdout/tune/ingest/full: none evaluated or run; no Ratchet verdict was
-  produced.
+- Holdout/tune/ingest/full:
+  No holdout/tune cohort benchmark, ingest, or full suite ran; only the disclosed digest-only preflight ran.
 - Evidence: candidate commit/tree and artifact blob are identified above. The
   sealed capability record is
   `C:\atx\.git\oracle-lane-broker-v3\capabilities\550591909e1daeaac2359ee3412c93af243191f2e1212e8c1be5fe4795d52bf8.json`
