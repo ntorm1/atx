@@ -2,6 +2,12 @@
 
 ## atx-vol harness hard cutover (overrides generic worktree prose below)
 
+The v3 root-isolation cutover currently enables only brokered bootstrap and
+Stage 1 recovery. If capability reports `ready`, do not dispatch the retired
+Measure/Sprint/Ratchet path or `vol-sprint`; both fail closed with
+`ORACLE_BROKER_MIGRATION_REQUIRED` until the complete ready transaction is
+broker-only. There is no direct-shell fallback.
+
 For atx-vol DAG/oracle work, dispatch only through `vol-sprint` and
 `vol-oracle-iter`; the PM does not implement, merge, or build. It edits ratchet
 memory only as evidence-backed recovery when Ratchet died after producing a result.

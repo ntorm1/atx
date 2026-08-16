@@ -1,5 +1,31 @@
 # SpiderRock oracle RSI loop — design
 
+## 2026-08-16 v3 root-isolation hard cut
+
+All oracle mutations cross one trusted local MCP lane broker. Named mutation
+agents receive exact broker tool allowlists and explicitly disallow Bash,
+PowerShell, editors, notebooks, and worktree tools. An opaque capability binds a
+v3 lease, run, branch, base, keeper, pool, operation, and stage; every broker call
+revalidates that identity. Agents cannot submit a raw command, working directory,
+or arbitrary path. Fixed operation and gate IDs select argv and always execute in
+the leased worktree. Canonical-path/reparse checks contain repository access.
+
+The broker guards `main`, `oracle/canonical`, the canonical index, tracked changes,
+and untracked names before and after each operation. Lane commits forbid reset,
+clean, checkout, and restore. Only a broker-issued one-use finalization capability
+can compare-and-swap `refs/heads/oracle/canonical`; `main` is never a CAS target.
+Evidence records the logical operation, physical cwd, lease/HEAD identity, root
+guards, output, and raw-output hash.
+
+Stage 1 is recovery-only: it validates preserved commit
+`58a94584baabae8263d16421f633540b420de10b`, its exact parent/tree and two pinned
+blobs, replays those blobs on the fixed base, and runs exactly the aggregate-store,
+ingest-manifest, cohort-manifest, and holdout-digest gates. It never reruns
+adoption/ingest or fabricates a report. The ready Measure/Sprint/Ratchet path and
+standalone `vol-sprint` now fail closed with `ORACLE_BROKER_MIGRATION_REQUIRED`
+until their entire transaction is broker-only; the retired direct-mutation code
+is unreachable. This is an intentional availability break, not an opt-in mode.
+
 ## 2026-08-15 harness hard cutover
 
 The workflow now has deterministic capability states, evaluated in order:

@@ -1,21 +1,12 @@
 ---
 name: vol-capability-inspector
-description: Fixed aggregate oracle capability probe with no general file or row-data tools.
-tools: PowerShell
+description: Fixed aggregate oracle capability probe through the trusted broker.
+tools: mcp__oracle_lane_broker__capability_probe
+disallowedTools: Bash, PowerShell, Edit, Write, NotebookEdit, EnterWorktree
 permissionMode: dontAsk
 ---
 
-Run only the exact `powershell scripts\oracle-capability.ps1` command supplied by
-the workflow, from the repository root.
-Return its JSON fields without adding evidence or inspecting any other file.
-
-You have no Read, Grep, Glob, or Bash tool. Do not invoke the lease/build scripts,
-Git, file-content commands, or any command other than the capability probe. The
-probe itself internally parses all three committed cohort manifests, recomputes the
-canonical holdout-membership digest, and validates tune/holdout disjointness. Its
-stdout is limited to state, booleans, and the digest. You cannot access or return
-membership; the probe never opens Parquet or licensed source rows. Stage 1's
-separate fixed adoption/preflight contract is Parquet-footer schema/stats
-validation plus an aggregate-only projection of exactly `undSecKey_tk`. Arrow
-compute retains only boolean matches against the closed cohort target set; stored
-strings, keys, membership, and option rows are never materialized or emitted.
+Call `mcp__oracle_lane_broker__capability_probe` exactly once with `{}`. Return
+the probe fields unchanged and include its broker evidence. You have no shell,
+filesystem, editor, worktree, or general MCP capability. Never request or emit
+cohort membership, raw rows, paths, or licensed data.

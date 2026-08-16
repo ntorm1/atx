@@ -13,6 +13,19 @@ export const meta = {
 }
 
 if (!args || !args.task) throw new Error('vol-sprint needs args: { task: "<what to build>", base?: "<ref, default main>", run_key?: "<resume-stable caller identity>" }')
+// Hard cut: this workflow is an oracle mutation path and cannot run until its
+// builders, integration gate, and cleanup have moved to the v3 lane broker.
+// The typed refusal is deliberately before all legacy dispatch code.
+return {
+  passed: false,
+  blocked: ['ORACLE_BROKER_MIGRATION_REQUIRED'],
+  failure: 'ORACLE_BROKER_MIGRATION_REQUIRED',
+  integration_branch: null,
+  integration_sha: null,
+  gate_evidence: [],
+}
+
+/* RETIRED_DIRECT_MUTATION_PATH: unreachable until replaced by broker-only transactions.
 const BASE_REF = (args && args.base) || 'main'
 
 function deterministicToken(value) {

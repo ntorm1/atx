@@ -5,6 +5,18 @@ that silently changes a NUMBER a caller already depends on belongs in this file.
 
 ## Unreleased
 
+### BREAKING - oracle mutations require the v3 lane broker
+
+Oracle bootstrap/recovery now uses a trusted local MCP transaction broker as its
+only mutation boundary. Mutation agents have exact broker-only tool lists and no
+shell, editor, notebook, or worktree tools; capabilities bind and revalidate the
+lease/run/branch/base/keeper/pool/stage, and only one-use broker capabilities may
+compare-and-swap `oracle/canonical`. Stage 1 replays the exact validated preserved
+`58a94584` source and runs four fixed targeted gates; adoption and licensed ingest
+are not rerun. The not-yet-migrated ready Measure/Sprint/Ratchet flow and direct
+`vol-sprint` invocation fail closed with `ORACLE_BROKER_MIGRATION_REQUIRED`.
+There is no compatibility flag or direct-shell fallback.
+
 ### NEW — VRP ML pipeline: frozen `vrp_panel_v1`/`vrp_signal_v1` contracts, walk-forward trainer, and the VolEdge vol book
 
 Three additions land as one pipeline (sprint 2026-08-15-vrp-ml, three lanes on

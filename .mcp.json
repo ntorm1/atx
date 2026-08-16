@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "oracle_lane_broker": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["C:/atx/scripts/oracle-lane-broker.mjs"]
+    }
+  }
+}

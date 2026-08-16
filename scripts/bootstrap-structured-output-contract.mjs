@@ -109,11 +109,21 @@ const lease = {
   keeper_process_started_utc: '2026-08-15T12:00:00Z', keeper_ready_utc: '2026-08-15T12:00:01Z',
   exit_code: 0, output: 'LEASED pool-14 run-1',
 }
+const guard = {
+  main_sha: base, canonical_sha: null,
+  index_sha256: '1'.repeat(64), tracked_sha256: '2'.repeat(64),
+  untracked_sha256: '3'.repeat(64), raw_sha256: '4'.repeat(64),
+}
+const brokerEvidence = {
+  logical_operation: 'recover_stage1_source_replay', physical_cwd: lease.worktree,
+  command: 'recover-stage1:validated-source', exit_code: 0, output: 'PASS',
+  raw_output_sha256: '5'.repeat(64), root_guard_before: guard, root_guard_after: guard,
+}
 const common = {
   state: 'missing_data', branch: lease.branch, base_sha: base, worktree: lease.worktree,
   lease_name: lease.lease_name, lease_run_id: lease.run_id, heartbeat_id: lease.heartbeat_id,
   keeper_pid: lease.keeper_pid, keeper_process_started_utc: lease.keeper_process_started_utc,
-  acquisition_receipt: lease, deviations: '',
+  acquisition_receipt: lease, broker_evidence: [brokerEvidence], deviations: '',
 }
 const done = {
   ...common, outcome: 'DONE', sha: 'a'.repeat(40), holdout_digest_receipt: 'd'.repeat(64),
