@@ -1164,6 +1164,37 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
           used_linear_fallback = true;
         }
       }
+      // Fitter stability: the DOMINANT discontinuity measured on real boards is
+      // not family reselection and not the k-coverage predicate — it is THIS
+      // drop. A dense slice that marginally fails its own fit admission is
+      // silently removed from the surface ("a slice that fails to fit
+      // contributes no slice"), so a negligible input change flips the expiry
+      // between present and absent. Measured on SP100 2025-09-11: 45 of 905
+      // expiry slots flipped `Fitted <-> Missing` under a provably-negligible
+      // de-Am perturbation (29 one way, 16 the other), every one a ConvexDense
+      // slice, while ZERO boards changed curve family.
+      //
+      // Same remedy as the coverage refusal above, and deliberately the same
+      // family: demote THAT SLICE to the parsimonious parametric backbone rather
+      // than deleting the expiry. The demoted fit re-enters `fit_slice_curve`
+      // with an unchanged config except `kind`, so it faces the SAME admission
+      // (including the calendar floor against the prior slice) as any eSSVI
+      // slice — a slice that cannot be fitted by either family is still dropped.
+      if (!slice_res && in.calib.per_slice_uncovered_parametric &&
+          slice_cfg.kind != VolCurveKind::Essvi) {
+        CurveConfig demoted_cfg = slice_cfg;
+        demoted_cfg.kind = VolCurveKind::Essvi;
+        FitDiag demoted_diag{};
+        auto demoted_res =
+            fit_slice_curve(demoted_cfg, prepared.fit_observations(), F, T, df, w_prev,
+                            calendar_floor_knots, prev_data_k_range, &demoted_diag);
+        if (demoted_res) {
+          slice_res = std::move(demoted_res);
+          slice_diag = demoted_diag;
+          ++out.n_slices_fit_demoted_parametric;
+          used_linear_fallback = true; // FittedFallbackCurve: a different family serves
+        }
+      }
       if (!slice_res) {
         // Diagnostic-only (env-gated, failure path): surface WHY a slice was
         // dropped so a caller can tell a genuinely-thin expiry from a curve-family
