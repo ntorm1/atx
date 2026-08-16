@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "atx/vol/api/pricing/american.hpp"
@@ -77,6 +78,35 @@ std::vector<OracleRow> distinct_arm_rows(double first_strike, double second_stri
           make_row(second_strike, Side::Put, map, 2.5, 0.01)};
 }
 
+// A cohort authored under the PRODUCTION map, so a sweep over it must resolve
+// back to winning_convention(). Non-zero ddiv/sdiv keep the production input
+// model distinguishable from the other seven.
+std::vector<OracleRow> production_rows(double first_strike, double second_strike) {
+  const ConventionMap &map = winning_convention();
+  return {make_row(first_strike, Side::Call, map, 2.5, 0.01),
+          make_row(second_strike, Side::Put, map, 2.5, 0.01)};
+}
+
+// The exact bytes `convention_sweep_json` publishes as `production_conventions`,
+// pinned from the deterministic aggregate smoke+tune sweep. That gate compares
+// this rendering against the `conventions` it resolves on the same run and fails
+// closed on any difference, so pinning the RENDERING (not a second hand-written
+// struct literal that could drift the same way the first one did) is what makes
+// the production map checkable against the sweep.
+constexpr std::string_view kResolvedWinnerJson =
+    R"({"input_model":"discrete_forward_pv__rate__sdiv_yield",)"
+    R"("forward_formula":"uprc_exp_rate_t_minus_ddiv","rate_model":"continuous_row_rate",)"
+    R"("carry_model":"sdiv_as_yield","dividend_model":"discrete_cash_forward",)"
+    R"("day_count":"ACT_365_25","price_scale":"per_share","price_sign":"positive",)"
+    R"("vol_scale":"decimal_identity","delta_scale":"per_unit","delta_sign":"positive",)"
+    R"("gamma_scale":"per_unit","gamma_sign":"positive","theta_basis":"per_day",)"
+    R"("theta_sign":"positive","vega_scale":"per_point","vega_sign":"positive",)"
+    R"("rho_scale":"per_point","rho_sign":"positive","phi_scale":"per_point",)"
+    R"("phi_sign":"positive","volga_source":"volga","volga_scale":"per_point_squared",)"
+    R"("volga_sign":"positive","vanna_source":"vanna","vanna_scale":"per_point",)"
+    R"("vanna_sign":"positive","delta_decay_basis":"per_day","delta_decay_day_count":"BUS_252",)"
+    R"("delta_decay_sign":"positive"})";
+
 TEST(OracleConvention, DiscreteDividendForwardIsAppliedExactly) {
   OracleRow row;
   row.uprc = 123.0;
@@ -97,6 +127,7 @@ TEST(OracleConvention, ProductionMapIsTheResolvedHardCut) {
   const ConventionMap &map = winning_convention();
   EXPECT_EQ(map.input_model, InputModel::DiscreteDividendPvSdivYield);
   EXPECT_DOUBLE_EQ(map.price_scale, 1.0);
+  // Never searched: the DTE-banding day count, not a unit the sweep may pick.
   EXPECT_DOUBLE_EQ(map.days_per_year, 365.0);
   EXPECT_DOUBLE_EQ(map.theta_days_per_year, 365.25);
   EXPECT_DOUBLE_EQ(map.delta_scale, 1.0);
@@ -104,12 +135,27 @@ TEST(OracleConvention, ProductionMapIsTheResolvedHardCut) {
   EXPECT_DOUBLE_EQ(map.theta_scale, 1.0 / 365.25);
   EXPECT_DOUBLE_EQ(map.vega_scale, 0.01);
   EXPECT_DOUBLE_EQ(map.rho_scale, 0.01);
-  EXPECT_DOUBLE_EQ(map.phi_scale, 0.0001);
+  EXPECT_DOUBLE_EQ(map.phi_scale, 0.01);
   EXPECT_EQ(map.volga_source, GreekSource::Volga);
   EXPECT_DOUBLE_EQ(map.volga_scale, 0.0001);
   EXPECT_EQ(map.vanna_source, GreekSource::Vanna);
   EXPECT_DOUBLE_EQ(map.vanna_scale, 0.01);
-  EXPECT_DOUBLE_EQ(map.delta_decay_scale, 1.0 / 365.25);
+  EXPECT_DOUBLE_EQ(map.delta_decay_scale, 1.0 / 252.0);
+
+  // The rendering the aggregate gate diffs against its own resolved winner.
+  EXPECT_EQ(convention_map_json(map), kResolvedWinnerJson);
+
+  // Stronger than any literal: the production map must be a FIXED POINT of the
+  // sweep. A cohort whose oracle columns were produced BY winning_convention()
+  // has to resolve back to it, so a map carrying a unit outside the candidate
+  // grid, an input model the search cannot reach, or a theta_days_per_year
+  // inconsistent with theta_scale fails here, in seconds on synthetic rows,
+  // instead of only at the aggregate gate.
+  const std::vector<OracleRow> smoke = production_rows(90.0, 110.0);
+  const std::vector<OracleRow> tune = production_rows(95.0, 105.0);
+  const auto resolved = run_convention_sweep(smoke, tune);
+  ASSERT_TRUE(resolved.has_value()) << resolved.error().to_string();
+  EXPECT_EQ(convention_map_json(resolved->winner), convention_map_json(map));
 }
 
 TEST(OracleConvention, BestScaleRanksOnTheSelectionPopulation) {

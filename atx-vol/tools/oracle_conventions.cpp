@@ -9,12 +9,19 @@ namespace {
 
 constexpr ConventionMap kBaseline{};
 
-// Hard cut: this is the only production convention map. It is hand-authored
-// until an aggregate Stage 3 sweep artifact pins it; `convention_sweep_json`
-// emits this map as `production_conventions` beside the sweep's own winner and
-// the gate fails closed while the two disagree.
+// Hard cut: this is the only production convention map, and it is PINNED from
+// the deterministic Stage 3 sweep (`atx-vol-oracle-bench --convention-sweep`
+// over the aggregate smoke+tune cohort) rather than hand-authored. Nothing here
+// asserts the sweep's answer on trust: `convention_sweep_json` re-emits this map
+// as `production_conventions` beside the winner the sweep just resolved, and the
+// gate fails closed while the two differ, so every gate run re-derives the map
+// and checks this literal against it.
 //
-// Designated initializers: nine consecutive doubles by position is a
+// `days_per_year` is deliberately absent from the search: it is the scorecard's
+// calendar DTE-banding day count, not a unit the sweep may pick (see the field's
+// contract in oracle_conventions.hpp).
+//
+// Designated initializers: twelve consecutive doubles by position is a
 // parameter-swap waiting to happen.
 constexpr ConventionMap kWinner{
     .input_model = InputModel::DiscreteDividendPvSdivYield,
@@ -26,12 +33,12 @@ constexpr ConventionMap kWinner{
     .theta_scale = 1.0 / 365.25,
     .vega_scale = 0.01,
     .rho_scale = 0.01,
-    .phi_scale = 0.0001,
+    .phi_scale = 0.01,
     .volga_source = GreekSource::Volga,
     .volga_scale = 0.0001,
     .vanna_source = GreekSource::Vanna,
     .vanna_scale = 0.01,
-    .delta_decay_scale = 1.0 / 365.25,
+    .delta_decay_scale = 1.0 / 252.0,
 };
 
 [[nodiscard]] double greek_value(const AmericanGreeks &g, double dp_dq,

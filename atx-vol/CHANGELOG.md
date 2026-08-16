@@ -5,13 +5,35 @@ that silently changes a NUMBER a caller already depends on belongs in this file.
 
 ## Unreleased
 
-### BREAKING - SpiderRock convention sweep tool and v2 convention gate contract
+### BREAKING - SpiderRock convention sweep tool, sweep-pinned production map, and v2 convention gate contract
 
-This lands the Stage 3 machinery, not a sweep-selected production map. Mode A
-still prices through one hard-cut, worktree-local `winning_convention()` map
-with no runtime selection flag and no legacy convention shim; that map remains
-HAND-AUTHORED. It is not yet the sweep's output and must not be described as
-such until an `iter-000` artifact exists to pin it.
+Mode A still prices through one hard-cut, worktree-local `winning_convention()`
+map with no runtime selection flag and no legacy convention shim, but that map
+is no longer hand-authored: it is PINNED from the deterministic aggregate
+smoke+tune sweep. Two units move, and both silently change numbers a caller
+already depends on:
+
+- `phi_scale` 1e-4 -> 1e-2 (`per_point_squared` -> `per_point`). Every `ph`
+  produced by `to_oracle_units` is now 100x its previous value.
+- `delta_decay_scale` 1/365.25 -> 1/252 (`ACT_365_25` -> `BUS_252`). Every
+  `deDecay` is now ~1.45x its previous value.
+
+Migration: nothing else reads these two units, and no committed residual floor
+described the old ones, so there is no stored number to restate. Any caller
+holding its own `ph`/`deDecay` comparison constants must rescale by those two
+factors.
+
+Nothing asserts that pin on trust; the gate re-derives it.
+`convention_sweep_json` re-emits the production map as `production_conventions`
+on every run beside the `conventions` the sweep just resolved, and the gate
+FAILS CLOSED while the two differ, so the pinned literal is checked against a
+fresh sweep each time. `OracleConvention.ProductionMapIsTheResolvedHardCut`
+additionally pins the exact published rendering and asserts the map is a fixed
+point of the sweep on synthetic rows authored by it.
+
+No residual floor is claimed. The gate-produced `iter-000` artifact still does
+not exist, so nothing here commits a Mode A residual floor or a speed pin; this
+entry records the map and the contract that verifies it, not a measured floor.
 
 New: `atx-vol-oracle-bench --convention-sweep` runs a closed deterministic
 aggregate smoke+tune search — the documented discrete-dividend forward
@@ -23,11 +45,6 @@ population. Scale selection excludes rows with `|oracle| < kGreekAbsFloor`
 (whose floored relative denominator otherwise rewards the smallest candidate
 scale); those rows still count toward the reported floor, and every metric now
 publishes both `count` and `selection_count`.
-
-The sweep artifact also emits `production_conventions` — what
-`winning_convention()` actually prices with — beside the resolved `conventions`.
-The gate FAILS CLOSED while the two differ, so a committed floor can never
-describe a map production does not use.
 
 Convention bootstrap receipts and iter-000 residual floors are schema version 2
 and carry all eleven numeric metrics with both counts, baseline and winning
