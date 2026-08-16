@@ -717,6 +717,9 @@ constexpr std::size_t kColTermSlope = 12;
     s.spot.push_back(500.0 * (1.0 + 0.02 * std::sin(0.7 * di) + 0.001 * di));
     s.iv21.push_back(0.20 + 0.01 * std::sin(0.3 * di));
     s.iv63.push_back(0.215 + 0.01 * std::sin(0.3 * di));
+    // Deliberately BELOW iv21: on a skewed smile the ATM-forward read sits
+    // under the strip, so a test that mixes the two legs up fails loudly.
+    s.iv_atmf21.push_back(0.185 + 0.01 * std::sin(0.3 * di));
   }
   return s;
 }
@@ -760,13 +763,19 @@ constexpr std::size_t kColTermSlope = 12;
 // Write a fresh SurfaceDb corpus of SPY surfaces for days
 // [first_day, first_day + n_days) under `root` (same deterministic
 // spot/vol-bump walk as the BevLabelFactoryGate corpora).
-void write_vrp_corpus(const std::string &root, int first_day, int n_days, bool narrow_pillars) {
+//
+// `split_day >= 0` divides the spot by 10 from that day onward, planting an
+// UNADJUSTED 10-for-1 split exactly as a raw SurfaceDb spot series carries
+// one. The surface's own vol is untouched — the corruption is in the spot
+// mirror the forward-RV window reads, which is the defect being gated.
+void write_vrp_corpus(const std::string &root, int first_day, int n_days, bool narrow_pillars,
+                      int split_day = -1) {
   std::error_code ec;
   fs::remove_all(root, ec);
   auto db = SurfaceDb::create(root);
   ASSERT_TRUE(db.has_value()) << db.error().to_string();
   for (int d = first_day; d < first_day + n_days; ++d) {
-    const double S = spot_for_day(d);
+    const double S = (split_day >= 0 && d >= split_day) ? spot_for_day(d) * 0.1 : spot_for_day(d);
     const double vol_bump = 0.001 * static_cast<double>(d);
     const std::int64_t ts = kBaseNow + static_cast<std::int64_t>(d) * kDayNs;
     const PricedSurface spy =
@@ -956,7 +965,8 @@ TEST(VrpPanel, TailRowsKeepNaNLabelAndAreCounted) {
 
 // Done-criterion (1): the frozen vrp_panel_v1 file shape — the two frozen
 // comment lines first, the 18 column names in exactly the frozen order, 18
-// fields on every data row — over a real SurfaceDb round trip.
+// fields on every data row — over a real SurfaceDb round trip. v1 is now
+// opt-in (v2 is the default), so this is also the flag's regression anchor.
 TEST(VrpPanel, SchemaHeaderAndColumnOrderFrozen) {
   static_assert(kVrpPanelColumnCount == 18, "vrp_panel_v1 is frozen at 18 columns");
 
@@ -968,6 +978,7 @@ TEST(VrpPanel, SchemaHeaderAndColumnOrderFrozen) {
   cfg.db_roots = {root};
   cfg.symbols = {"SPY"};
   cfg.out = out;
+  cfg.schema = VrpPanelSchema::V1;
   const Result<VrpPanelCounters> rc = run_vrp_panel(cfg);
   ASSERT_TRUE(rc.has_value()) << rc.error().to_string();
   EXPECT_EQ(rc->n_sessions, 6u);
@@ -1031,7 +1042,7 @@ TEST(VrpPanel, OutOfRange63dYieldsNaNSlopeWithoutDroppingRow) {
   parse_full_tsv(out, content, header, rows);
   ASSERT_EQ(rows.size(), 5u);
   for (const auto &row : rows) {
-    ASSERT_EQ(row.size(), kVrpPanelColumnCount);
+    ASSERT_EQ(row.size(), kVrpPanelColumnCountV2); // default schema is v2
     EXPECT_NE(row[kColIvFair21], "nan") << "21d strike must be live";
     EXPECT_EQ(row[kColIvFair63], "nan");
     EXPECT_EQ(row[kColTermSlope], "nan");
@@ -1088,4 +1099,389 @@ TEST(VrpPanel, DuplicateSessionDateAcrossRootsIsRejected) {
   const Result<VrpPanelCounters> rc = run_vrp_panel(cfg);
   ASSERT_FALSE(rc.has_value());
   EXPECT_EQ(rc.error().code(), ErrorCode::InvalidArgument);
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// VrpPanelV2 — round-4 contract: the ATM-forward implied leg, the split /
+// corporate-action back-adjustment, and the permanent realized-vol
+// plausibility gate. v1 must stay byte-frozen throughout.
+// ════════════════════════════════════════════════════════════════════════
+
+namespace {
+
+// Write `text` to a temp file and hand back its path (split-reference
+// fixtures — the loader contracts on bytes, so the tests supply bytes).
+[[nodiscard]] std::string write_temp_text(const std::string &name, std::string_view text) {
+  const std::string path = (fs::temp_directory_path() / name).string();
+  std::ofstream os(path, std::ios::binary | std::ios::trunc);
+  os.write(text.data(), static_cast<std::streamsize>(text.size()));
+  return path;
+}
+
+// Split the meta block (leading `#` lines) off a panel file.
+[[nodiscard]] std::vector<std::string> meta_lines(const std::string &path) {
+  std::vector<std::string> out;
+  std::ifstream in(path, std::ios::binary);
+  std::string line;
+  while (std::getline(in, line) && !line.empty() && line[0] == '#') {
+    out.push_back(line);
+  }
+  return out;
+}
+
+} // namespace
+
+// The v2 contract is a strict PREFIX-EXTENSION of v1 in all three blocks:
+// meta lines, column names, and per-row fields. Same corpus, no split
+// reference — so the only difference the file may carry is the appended
+// ATM-forward column and the four appended v2 counters.
+TEST(VrpPanelV2, V2IsPrefixExtensionOfV1OnTheSameCorpus) {
+  static_assert(kVrpPanelColumnCountV2 == kVrpPanelColumnCount + 1,
+                "v2 adds exactly one column to the frozen v1 contract");
+  const std::string root = (fs::temp_directory_path() / "atx-vrp-panel-v2-prefix-db").string();
+  write_vrp_corpus(root, 0, 8, /*narrow_pillars=*/false);
+  const std::string out_v1 = (fs::temp_directory_path() / "atx-vrp-panel-v2-prefix-v1.tsv").string();
+  const std::string out_v2 = (fs::temp_directory_path() / "atx-vrp-panel-v2-prefix-v2.tsv").string();
+
+  VrpPanelConfig cfg;
+  cfg.db_roots = {root};
+  cfg.symbols = {"SPY"};
+  cfg.out = out_v1;
+  cfg.schema = VrpPanelSchema::V1;
+  const Result<VrpPanelCounters> rc1 = run_vrp_panel(cfg);
+  ASSERT_TRUE(rc1.has_value()) << rc1.error().to_string();
+  cfg.out = out_v2;
+  cfg.schema = VrpPanelSchema::V2;
+  const Result<VrpPanelCounters> rc2 = run_vrp_panel(cfg);
+  ASSERT_TRUE(rc2.has_value()) << rc2.error().to_string();
+  EXPECT_EQ(rc1->n_rows_written, rc2->n_rows_written) << "the row POLICY is unchanged by v2";
+
+  const std::vector<std::string> meta1 = meta_lines(out_v1);
+  const std::vector<std::string> meta2 = meta_lines(out_v2);
+  ASSERT_EQ(meta1.size(), 13u);
+  ASSERT_EQ(meta2.size(), 17u);
+  EXPECT_EQ(meta1[0], "# schema=vrp_panel_v1");
+  EXPECT_EQ(meta2[0], "# schema=vrp_panel_v2");
+  // Every meta line after the schema tag is shared, in order.
+  for (std::size_t i = 1; i < meta1.size(); ++i) {
+    EXPECT_EQ(meta1[i], meta2[i]) << "v2 must not rewrite a v1 meta line (index " << i << ')';
+  }
+  EXPECT_EQ(meta2[13], "# n_atmf21_unavailable=0");
+  EXPECT_EQ(meta2[14], "# n_split_events_applied=0");
+  EXPECT_EQ(meta2[15], "# n_split_symbols_adjusted=0");
+  EXPECT_EQ(meta2[16], "# n_rv_fwd_implausible=0");
+
+  std::string c1;
+  std::string c2;
+  std::string_view h1;
+  std::string_view h2;
+  std::vector<std::vector<std::string_view>> r1;
+  std::vector<std::vector<std::string_view>> r2;
+  parse_full_tsv(out_v1, c1, h1, r1);
+  parse_full_tsv(out_v2, c2, h2, r2);
+  EXPECT_EQ(std::string(h2), std::string(h1) + "\tiv_atmf_21d");
+  ASSERT_EQ(r1.size(), r2.size());
+  for (std::size_t i = 0; i < r1.size(); ++i) {
+    ASSERT_EQ(r1[i].size(), kVrpPanelColumnCount);
+    ASSERT_EQ(r2[i].size(), kVrpPanelColumnCountV2);
+    for (std::size_t j = 0; j < kVrpPanelColumnCount; ++j) {
+      EXPECT_EQ(r1[i][j], r2[i][j]) << "row " << i << " column " << kVrpPanelColumnsV1[j];
+    }
+    // The tradeable leg is present, positive, and NOT the strip: on a skewed
+    // smile K_var > sigma_ATMF^2 strictly, so the ATMF read must be smaller.
+    const double atmf = std::stod(std::string(r2[i][kVrpPanelColumnCountV2 - 1]));
+    const double strip = std::stod(std::string(r2[i][kColIvFair21]));
+    EXPECT_GT(atmf, 0.0);
+    EXPECT_LT(atmf, strip) << "ATM-forward vol must sit under the OTM-strip fair strike";
+  }
+}
+
+// v1 is a frozen UNADJUSTED contract: it must be reproducible from the corpus
+// alone, so the one input that would silently move a v1 cell is refused — at
+// the CLI boundary and again in the runner.
+TEST(VrpPanelV2, V1RefusesASplitReference) {
+  const std::string splits =
+      write_temp_text("atx-vrp-splits-refused.tsv", "symbol\tex_date\tprice_factor\nSPY\t2026-03-05\t0.1\n");
+
+  std::vector<std::string> argv_storage = {"bev_label_factory", "--vrp-panel", "--db",    "rootA",
+                                           "--out",             "p.tsv",       "--splits", splits,
+                                           "--panel-schema",    "v1"};
+  std::vector<char *> argv = make_argv(argv_storage);
+  VrpPanelConfig bad;
+  EXPECT_FALSE(parse_vrp_panel_args(static_cast<int>(argv.size()), argv.data(), bad));
+
+  VrpPanelConfig cfg;
+  cfg.db_roots = {"unused-root"};
+  cfg.out = "unused.tsv";
+  cfg.schema = VrpPanelSchema::V1;
+  cfg.splits = splits;
+  const Result<VrpPanelCounters> rc = run_vrp_panel(cfg);
+  ASSERT_FALSE(rc.has_value());
+  EXPECT_EQ(rc.error().code(), ErrorCode::InvalidArgument);
+}
+
+// CLI surface for the two v2 flags, including the schema-word validation.
+TEST(VrpPanelV2, CliParsesSchemaAndSplitsFlags) {
+  std::vector<std::string> ok_storage = {"bev_label_factory", "--vrp-panel",    "--db",  "rootA",
+                                         "--out",             "p.tsv",          "--splits",
+                                         "s.tsv",             "--panel-schema", "v2"};
+  std::vector<char *> ok_argv = make_argv(ok_storage);
+  VrpPanelConfig cfg;
+  ASSERT_TRUE(parse_vrp_panel_args(static_cast<int>(ok_argv.size()), ok_argv.data(), cfg));
+  EXPECT_EQ(cfg.schema, VrpPanelSchema::V2);
+  EXPECT_EQ(cfg.splits, "s.tsv");
+
+  // Default (no --panel-schema) is v2 — v1 is the opt-in legacy path.
+  std::vector<std::string> def_storage = {"bev_label_factory", "--vrp-panel", "--db",
+                                          "rootA",             "--out",       "p.tsv"};
+  std::vector<char *> def_argv = make_argv(def_storage);
+  VrpPanelConfig def_cfg;
+  ASSERT_TRUE(parse_vrp_panel_args(static_cast<int>(def_argv.size()), def_argv.data(), def_cfg));
+  EXPECT_EQ(def_cfg.schema, VrpPanelSchema::V2);
+  EXPECT_TRUE(def_cfg.splits.empty());
+
+  std::vector<std::string> bad_storage = {"bev_label_factory", "--vrp-panel",    "--db", "rootA",
+                                          "--out",             "p.tsv",          "--panel-schema",
+                                          "v3"};
+  std::vector<char *> bad_argv = make_argv(bad_storage);
+  VrpPanelConfig bad_cfg;
+  EXPECT_FALSE(parse_vrp_panel_args(static_cast<int>(bad_argv.size()), bad_argv.data(), bad_cfg));
+}
+
+// Reference-file grammar: comments and blank lines skipped, extra provenance
+// columns ignored, output sorted by (symbol, ex_date).
+TEST(VrpPanelV2, SplitReferenceLoaderParsesGrammarAndSorts) {
+  const std::string path = write_temp_text(
+      "atx-vrp-splits-ok.tsv",
+      "# generated by vrp_split_factors.py\n"
+      "symbol\tex_date\tprice_factor\tsource\traw_close\n"
+      "NOW\t2025-12-18\t0.2\tequity_daily_bars\t153.38\n"
+      "\n"
+      "# NFLX 10-for-1\n"
+      "NFLX\t2025-11-17\t0.1\tequity_daily_bars\t110.29\n"
+      "BKNG\t2026-04-06\t0.04\tequity_daily_bars\t176.19\n");
+  const Result<std::vector<VrpSplitFactor>> ev = load_vrp_split_factors(path);
+  ASSERT_TRUE(ev.has_value()) << ev.error().to_string();
+  ASSERT_EQ(ev->size(), 3u);
+  EXPECT_EQ((*ev)[0].symbol, "BKNG");
+  EXPECT_EQ((*ev)[1].symbol, "NFLX");
+  EXPECT_EQ((*ev)[2].symbol, "NOW");
+  EXPECT_EQ((*ev)[1].ex_date, "2025-11-17");
+  EXPECT_DOUBLE_EQ((*ev)[0].price_factor, 0.04);
+}
+
+// Every malformed reference is refused at the boundary; nothing degrades to a
+// silently-unadjusted series.
+TEST(VrpPanelV2, SplitReferenceLoaderRejectsMalformedInput) {
+  const auto load = [](const char *name, std::string_view text) {
+    return load_vrp_split_factors(write_temp_text(name, text));
+  };
+  EXPECT_EQ(load("atx-vrp-splits-nohdr.tsv", "SPY\t2026-03-05\t0.1\n").error().code(),
+            ErrorCode::ParseError);
+  EXPECT_EQ(load("atx-vrp-splits-badhdr.tsv", "sym\tdate\tfactor\n").error().code(),
+            ErrorCode::ParseError);
+  EXPECT_EQ(load("atx-vrp-splits-short.tsv", "symbol\tex_date\tprice_factor\nSPY\t2026-03-05\n")
+                .error()
+                .code(),
+            ErrorCode::ParseError);
+  EXPECT_EQ(
+      load("atx-vrp-splits-nan.tsv", "symbol\tex_date\tprice_factor\nSPY\t2026-03-05\tabc\n")
+          .error()
+          .code(),
+      ErrorCode::ParseError);
+  EXPECT_EQ(
+      load("atx-vrp-splits-zero.tsv", "symbol\tex_date\tprice_factor\nSPY\t2026-03-05\t0\n")
+          .error()
+          .code(),
+      ErrorCode::ParseError);
+  EXPECT_EQ(load("atx-vrp-splits-neg.tsv", "symbol\tex_date\tprice_factor\nSPY\t2026-03-05\t-2\n")
+                .error()
+                .code(),
+            ErrorCode::ParseError);
+  EXPECT_EQ(load("atx-vrp-splits-dup.tsv",
+                 "symbol\tex_date\tprice_factor\nSPY\t2026-03-05\t0.5\nSPY\t2026-03-05\t0.1\n")
+                .error()
+                .code(),
+            ErrorCode::InvalidArgument);
+  EXPECT_EQ(load_vrp_split_factors("no-such-splits-file.tsv").error().code(), ErrorCode::IoError);
+}
+
+// The exactness property. A 2-for-1 factor is a power of two, so the whole
+// adjusted series is `orig * 0.5` with NO rounding, and every panel quantity
+// derived from a RATIO of two closes must come back BIT-IDENTICAL to the
+// unsplit panel. Only the `spot` level itself may move.
+TEST(VrpPanelV2, SplitAdjustmentRestoresEveryRatioQuantityBitExactly) {
+  constexpr int kN = 40;
+  constexpr std::size_t kEx = 20;
+  const VrpSeries unsplit = make_vrp_series(kN);
+  VrpSeries raw = unsplit;
+  // Bounded by kN: the raw SurfaceDb spot mirror steps down at the ex-date.
+  for (std::size_t i = kEx; i < static_cast<std::size_t>(kN); ++i) {
+    raw.spot[i] *= 0.5;
+  }
+  VrpSeries adjusted = raw;
+  const std::vector<VrpSplitFactor> events{{"SPY", unsplit.dates[kEx], 0.5}};
+  EXPECT_EQ(apply_vrp_split_adjustment(adjusted, events), 1u);
+
+  // Anchor invariant: the newest session is never rescaled.
+  EXPECT_TRUE(same_bits(adjusted.spot.back(), raw.spot.back()));
+  // Pre-ex sessions carry the factor; on/after sessions do not.
+  for (std::size_t i = 0; i < static_cast<std::size_t>(kN); ++i) {
+    EXPECT_TRUE(same_bits(adjusted.spot[i], unsplit.spot[i] * 0.5)) << i;
+  }
+
+  VrpPanelCounters c_unsplit;
+  VrpPanelCounters c_adjusted;
+  const Result<std::vector<VrpPanelRow>> a = build_vrp_rows(unsplit, c_unsplit);
+  const Result<std::vector<VrpPanelRow>> b = build_vrp_rows(adjusted, c_adjusted);
+  ASSERT_TRUE(a.has_value() && b.has_value());
+  ASSERT_EQ(a->size(), b->size());
+  for (std::size_t i = 0; i < a->size(); ++i) {
+    const VrpPanelRow &x = (*a)[i];
+    const VrpPanelRow &y = (*b)[i];
+    EXPECT_TRUE(same_bits(y.spot, x.spot * 0.5)) << i;
+    EXPECT_TRUE(same_bits(x.rv_fwd_21d, y.rv_fwd_21d)) << i;
+    EXPECT_TRUE(same_bits(x.label, y.label)) << i;
+    EXPECT_TRUE(same_bits(x.f0_log_rv1, y.f0_log_rv1)) << i;
+    EXPECT_TRUE(same_bits(x.f1_log_rv5, y.f1_log_rv5)) << i;
+    EXPECT_TRUE(same_bits(x.f2_log_rv21, y.f2_log_rv21)) << i;
+    EXPECT_TRUE(same_bits(x.f5_hv_iv_gap, y.f5_hv_iv_gap)) << i;
+    EXPECT_TRUE(same_bits(x.f6_vrp_lag, y.f6_vrp_lag)) << i;
+    EXPECT_TRUE(same_bits(x.f7_ret_21d, y.f7_ret_21d)) << i;
+    EXPECT_TRUE(same_bits(x.f8_jump_recent, y.f8_jump_recent)) << i;
+  }
+}
+
+// The defect this whole feature exists for: a 10-for-1 step drives rv_fwd_21d
+// past the plausibility gate on every window that straddles it; the reference
+// factor removes it and the gate goes quiet.
+TEST(VrpPanelV2, SplitAdjustmentClearsTheImplausibleRealizedVolCounter) {
+  constexpr int kN = 40;
+  constexpr std::size_t kEx = 20;
+  const VrpSeries unsplit = make_vrp_series(kN);
+  VrpSeries raw = unsplit;
+  for (std::size_t i = kEx; i < static_cast<std::size_t>(kN); ++i) {
+    raw.spot[i] *= 0.1;
+  }
+  VrpPanelCounters c_raw;
+  const Result<std::vector<VrpPanelRow>> rows_raw = build_vrp_rows(raw, c_raw);
+  ASSERT_TRUE(rows_raw.has_value());
+  // Row i's forward window carries the returns r_{i+2}..r_{i+21}, so the
+  // corrupt return at bar kEx lands in every labeled row (i <= kN-22 == 18).
+  EXPECT_EQ(c_raw.n_rv_fwd_implausible, 19u) << "every window straddling the step must trip";
+  EXPECT_GT(rows_raw->at(18).rv_fwd_21d, kVrpMaxPlausibleRvFwd);
+
+  VrpSeries adjusted = raw;
+  const std::vector<VrpSplitFactor> events{{"SPY", unsplit.dates[kEx], 0.1}};
+  ASSERT_EQ(apply_vrp_split_adjustment(adjusted, events), 1u);
+  VrpPanelCounters c_adj;
+  const Result<std::vector<VrpPanelRow>> rows_adj = build_vrp_rows(adjusted, c_adj);
+  ASSERT_TRUE(rows_adj.has_value());
+  EXPECT_EQ(c_adj.n_rv_fwd_implausible, 0u);
+  VrpPanelCounters c_ref;
+  const Result<std::vector<VrpPanelRow>> rows_ref = build_vrp_rows(unsplit, c_ref);
+  ASSERT_TRUE(rows_ref.has_value());
+  for (std::size_t i = 0; i < rows_ref->size(); ++i) {
+    // The tail rows are NaN by design (no forward window) — assert the NaN
+    // structure survives, then the value on the labeled rows.
+    ASSERT_EQ(std::isnan(rows_adj->at(i).rv_fwd_21d), std::isnan(rows_ref->at(i).rv_fwd_21d)) << i;
+    if (std::isnan(rows_ref->at(i).rv_fwd_21d)) {
+      continue;
+    }
+    EXPECT_NEAR(rows_adj->at(i).rv_fwd_21d, rows_ref->at(i).rv_fwd_21d, 1e-12) << i;
+    EXPECT_NEAR(rows_adj->at(i).label, rows_ref->at(i).label, 1e-15) << i;
+  }
+}
+
+// Events the history cannot express are ignored rather than silently
+// rescaling the whole series (a uniform rescale is a no-op on every return,
+// but it would move the emitted `spot` column for no reason).
+TEST(VrpPanelV2, SplitAdjustmentIgnoresEventsOutsideTheSessionHistory) {
+  const VrpSeries base = make_vrp_series(10);
+  const auto unchanged = [&base](const VrpSeries &s) {
+    for (std::size_t i = 0; i < base.spot.size(); ++i) {
+      if (!same_bits(s.spot[i], base.spot[i])) {
+        return false;
+      }
+    }
+    return true;
+  };
+  VrpSeries before = base;
+  EXPECT_EQ(apply_vrp_split_adjustment(before, std::vector<VrpSplitFactor>{{"SPY", "a", 0.5}}), 0u);
+  EXPECT_TRUE(unchanged(before));
+
+  VrpSeries at_first = base;
+  EXPECT_EQ(apply_vrp_split_adjustment(at_first,
+                                       std::vector<VrpSplitFactor>{{"SPY", base.dates.front(), 0.5}}),
+            0u);
+  EXPECT_TRUE(unchanged(at_first)) << "no session precedes the first, so there is nothing to scale";
+
+  VrpSeries after = base;
+  EXPECT_EQ(apply_vrp_split_adjustment(after, std::vector<VrpSplitFactor>{{"SPY", "z", 0.5}}), 0u);
+  EXPECT_TRUE(unchanged(after));
+
+  // At the LAST session the event is real: everything before it scales.
+  VrpSeries at_last = base;
+  EXPECT_EQ(
+      apply_vrp_split_adjustment(at_last, std::vector<VrpSplitFactor>{{"SPY", base.dates.back(), 0.5}}),
+      1u);
+  EXPECT_TRUE(same_bits(at_last.spot.back(), base.spot.back()));
+  EXPECT_TRUE(same_bits(at_last.spot.front(), base.spot.front() * 0.5));
+}
+
+// Cumulative composition: two events compound on every session that precedes
+// both, exactly once each.
+TEST(VrpPanelV2, SplitAdjustmentComposesMultipleEventsCumulatively) {
+  const VrpSeries base = make_vrp_series(12);
+  VrpSeries s = base;
+  const std::vector<VrpSplitFactor> events{{"SPY", base.dates[4], 0.5}, {"SPY", base.dates[8], 0.25}};
+  ASSERT_EQ(apply_vrp_split_adjustment(s, events), 2u);
+  for (std::size_t i = 0; i < 4; ++i) {
+    EXPECT_TRUE(same_bits(s.spot[i], base.spot[i] * 0.125)) << i; // 0.5 * 0.25
+  }
+  for (std::size_t i = 4; i < 8; ++i) {
+    EXPECT_TRUE(same_bits(s.spot[i], base.spot[i] * 0.25)) << i;
+  }
+  for (std::size_t i = 8; i < 12; ++i) {
+    EXPECT_TRUE(same_bits(s.spot[i], base.spot[i])) << i;
+  }
+}
+
+// End-to-end: a v2 run over a corpus carrying an unadjusted 10-for-1 split
+// FAILS loudly, and the identical run with the reference factor supplied
+// succeeds with the gate counter at zero. v1, being the frozen unadjusted
+// contract, still emits the corrupt panel — that is exactly why v1 is not the
+// default any more.
+TEST(VrpPanelV2, UnadjustedSplitFailsTheV2RunAndTheReferenceFactorClearsIt) {
+  const std::string root = (fs::temp_directory_path() / "atx-vrp-panel-v2-split-db").string();
+  write_vrp_corpus(root, 0, 26, /*narrow_pillars=*/false, /*split_day=*/13);
+
+  VrpPanelConfig cfg;
+  cfg.db_roots = {root};
+  cfg.symbols = {"SPY"};
+  cfg.out = (fs::temp_directory_path() / "atx-vrp-panel-v2-split.tsv").string();
+  const Result<VrpPanelCounters> failed = run_vrp_panel(cfg);
+  ASSERT_FALSE(failed.has_value()) << "an unadjusted split must not produce a v2 panel";
+  EXPECT_EQ(failed.error().code(), ErrorCode::OutOfRange);
+  EXPECT_NE(failed.error().to_string().find("--splits"), std::string::npos)
+      << "the gate must name the remedy: " << failed.error().to_string();
+  EXPECT_NE(failed.error().to_string().find("SPY"), std::string::npos)
+      << "the gate must name the offending symbol: " << failed.error().to_string();
+
+  // date_for_day(13) is the ex-date; the reference factor is the 10-for-1.
+  cfg.splits = write_temp_text("atx-vrp-splits-corpus.tsv",
+                               "symbol\tex_date\tprice_factor\nSPY\t" + date_for_day(13) + "\t0.1\n");
+  const Result<VrpPanelCounters> ok = run_vrp_panel(cfg);
+  ASSERT_TRUE(ok.has_value()) << ok.error().to_string();
+  EXPECT_EQ(ok->n_rv_fwd_implausible, 0u);
+  EXPECT_EQ(ok->n_split_events_applied, 1u);
+  EXPECT_EQ(ok->n_split_symbols_adjusted, 1u);
+
+  std::string content;
+  std::string_view header;
+  std::vector<std::vector<std::string_view>> rows;
+  parse_full_tsv(cfg.out, content, header, rows);
+  ASSERT_FALSE(rows.empty());
+  EXPECT_NE(content.find("# n_split_events_applied=1"), std::string::npos);
+  EXPECT_NE(content.find("# n_rv_fwd_implausible=0"), std::string::npos);
 }

@@ -161,18 +161,21 @@ struct BevFactoryArgs {
 // ── --vrp-panel mode (vrp-ml round 1) ────────────────────────────────────
 //
 // A SECOND, self-contained mode on this driver: build the (symbol, date)
-// VRP label/feature panel (schema vrp_panel_v1) from one or more SurfaceDb
-// roots. All logic lives in analytics/vrp_panel.hpp (header-only, so this
-// example's no-CMake-edit / textual-inclusion contract is untouched); this
-// file adds only the argv surface. `--db` REPEATS — the SPY corpus is one
-// root per year and the panel stitches spot/iv history across the root
-// boundaries — and `--uid` repeats to filter symbols (omitted = union of
-// the roots' manifest symbol tables).
+// VRP label/feature panel (schema vrp_panel_v2, or the frozen v1 behind
+// `--panel-schema v1`) from one or more SurfaceDb roots. All logic lives in
+// analytics/vrp_panel.hpp (header-only, so this example's no-CMake-edit /
+// textual-inclusion contract is untouched); this file adds only the argv
+// surface. `--db` REPEATS — the SPY corpus is one root per year and the panel
+// stitches spot/iv history across the root boundaries — and `--uid` repeats to
+// filter symbols (omitted = union of the roots' manifest symbol tables).
 
 [[maybe_unused]] void vrp_usage() {
   std::fprintf(stderr,
                "usage: bev_label_factory --vrp-panel --db ROOT [--db ROOT2 ...] --out FILE\n"
-               "    [--uid SYMBOL ...] [--entry-start DATE] [--entry-end DATE]\n");
+               "    [--uid SYMBOL ...] [--entry-start DATE] [--entry-end DATE]\n"
+               "    [--panel-schema v1|v2]  default v2; v1 is the frozen 18-column\n"
+               "                            contract and refuses --splits\n"
+               "    [--splits FILE]         v2 only: symbol/ex_date/price_factor TSV\n");
 }
 
 // argv -> VrpPanelConfig. Outside the NO_MAIN guard for the same reason
@@ -199,6 +202,17 @@ bool parse_vrp_panel_args(int argc, char **argv, VrpPanelConfig &cfg) {
       cfg.entry_end = v;
     } else if (flag == "--out" && next(v)) {
       cfg.out = v;
+    } else if (flag == "--splits" && next(v)) {
+      cfg.splits = v;
+    } else if (flag == "--panel-schema" && next(v)) {
+      if (v == "v1") {
+        cfg.schema = VrpPanelSchema::V1;
+      } else if (v == "v2") {
+        cfg.schema = VrpPanelSchema::V2;
+      } else {
+        std::fprintf(stderr, "--panel-schema must be 'v1' or 'v2' (got '%s')\n", v.c_str());
+        return false;
+      }
     } else {
       std::fprintf(stderr, "unknown/incomplete flag (--vrp-panel mode): %.*s\n",
                    static_cast<int>(flag.size()), flag.data());
@@ -211,6 +225,12 @@ bool parse_vrp_panel_args(int argc, char **argv, VrpPanelConfig &cfg) {
   }
   if (!cfg.entry_start.empty() && !cfg.entry_end.empty() && cfg.entry_end < cfg.entry_start) {
     std::fprintf(stderr, "--entry-end precedes --entry-start\n");
+    return false;
+  }
+  // Rejected here as well as in run_vrp_panel so the CLI fails at parse time
+  // with a usage message rather than after opening every root.
+  if (cfg.schema == VrpPanelSchema::V1 && !cfg.splits.empty()) {
+    std::fprintf(stderr, "--splits requires --panel-schema v2\n");
     return false;
   }
   return true;
