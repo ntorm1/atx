@@ -446,6 +446,16 @@ if(Python3_Interpreter_FOUND)
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/spy_dispersion_pnl_report_test.py
     )
     set_tests_properties(SpyDispersionPnlReport PROPERTIES LABELS atx_vol)
+    # vrp-ml round 2 gate: the panel-QA checker (scripts/vrp_panel_qa.py) grew a
+    # stdlib-unittest suite (scripts/vrp_panel_qa_test.py, 14 cases, pure tmp-dir
+    # fixtures). Registered here so the QA tool that guards the frozen
+    # vrp_panel_v1 contract is itself gated; runs from scripts/ so its
+    # `from vrp_panel_qa import ...` resolves via sys.path[0].
+    add_test(
+        NAME VrpPanelQa
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/vrp_panel_qa_test.py
+    )
+    set_tests_properties(VrpPanelQa PROPERTIES LABELS atx_vol)
     # FIX-5/I6: the atx-vol Python suite — eight test_*.py modules that, before
     # this line, were registered with ZERO ctest tests. `grep -rn "pytest"
     # --include=CMakeLists.txt .` returned nothing repo-wide and a grep for any
@@ -503,6 +513,12 @@ set_tests_properties(atx-vol-pricing-forcescalar PROPERTIES
 add_executable(varswap-compare-columns-tests
     varswap_compare_columns_test.cpp
     ../examples/varswap_compare_example.cpp)
+# The gate TU includes "backtest/backtest_series_columns.hpp" straight out of
+# src/ (the column manifest is deliberately not public API), so this target
+# needs the same ../src include rung atx-vol-tests carries above — atx::vol
+# does not export its src/ directory to consumers.
+target_include_directories(varswap-compare-columns-tests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 target_compile_definitions(varswap-compare-columns-tests PRIVATE
     ATX_VARSWAP_COMPARE_NO_MAIN)
 target_link_libraries(varswap-compare-columns-tests PRIVATE

@@ -30,11 +30,19 @@
 // optional net tilt only (no sector/beta vega-neutrality solver), no earnings
 // masking beyond what the upstream signal already encodes, no margin/Kelly
 // sizing. A rebalance date MISSING from the signal file keeps the previous
-// book unchanged (fail-soft hold, counted in `n_steps_entry_skipped`); the
-// caller must therefore choose `horizon_days` comfortably above the rebalance
-// cadence, because a lot carried past its expiry without an exact-expiry
-// snapshot observation is a run-ending engine error by the engine's own
-// contract.
+// book unchanged (fail-soft hold, counted in `n_steps_entry_skipped` and
+// `held_steps`).
+//
+// EXPIRY SAFETY (round-2 hardening, experiments F3/F4): a lot carried past
+// its expiry without an exact-expiry snapshot observation is a run-ending
+// engine error by the engine's own contract, and round 1 could reach it two
+// ways — the 21/21 default pair left < 1.1 calendar days of margin (a
+// two-holiday December window crossed it), and the fail-soft hold above
+// could carry a book through a mid-run signal gap until it expired. The
+// strategy now roll-closes the WHOLE book at marks on any step where a lot
+// sits within `expiry_guard_days` calendar days of its expiry (counted in
+// `guard_roll_closes`), and the shipped defaults keep a worst-case margin
+// above the guard so the guard never fires on a normal US-shaped calendar.
 //
 // Thread-safety: the free functions are pure. `VolEdgeStrategy` follows the
 // `IStrategy` rule verbatim — one instance, one engine loop, one thread.
@@ -210,10 +218,15 @@ template <std::size_t N>
 struct VolEdgeConfig {
   // Straddle tenor in TRADING days; the leg tenor is horizon_days / 252 years.
   double horizon_days{21.0};
-  // Roll cadence in clock STEPS (sessions). Must stay below the tenor in
-  // sessions or a held lot crosses its expiry between rebalances (see the
-  // header doc). 1 = re-rank and re-open every session.
-  unsigned rebalance_every_n_steps{21};
+  // Roll cadence in clock STEPS (sessions), kept BELOW the tenor's calendar
+  // span by a real margin: 15 sessions span at most ceil(15 * 7/5) + 2 = 23
+  // calendar days on a weekend calendar with a two-holiday cluster, vs the
+  // default tenor's 21/252 * 365.25 = 30.4375 calendar days — a worst-case
+  // margin of ~7.4 days, above `expiry_guard_days`, so the fail-safe below
+  // never fires on a normal calendar. (The round-1 default of 21 left < 1.1
+  // calendar days and a December two-holiday window crossed the synthetic
+  // expiry between sessions: experiment F4.) 1 = re-rank every session.
+  unsigned rebalance_every_n_steps{15};
   // Decile fractions of the day's usable cross-section (long = top, short =
   // bottom by pred_edge_norm). At least one name per side once >= 2 usable
   // names exist; a day where the two selections would overlap trades nothing.
@@ -243,10 +256,20 @@ struct VolEdgeConfig {
   // Engine-owned daily delta hedge (HedgeSpec::DeltaToZero) and its band.
   bool delta_hedge{true};
   double delta_hedge_band{0.0};
+  // FAIL-SAFE ROLL-CLOSE MARGIN in CALENDAR days (F3/F4 hardening). On EVERY
+  // step — held, off-tick, or rebalancing — a lot within this margin of its
+  // synthetic expiry roll-closes the WHOLE book at marks, so neither a
+  // missing-signal hold nor a holiday-stretched cadence can carry a lot past
+  // an expiry the clock never observes exactly (a run-ending engine error).
+  // Must be at least the LONGEST inter-session calendar gap the corpus can
+  // produce (5.0 covers US calendars, whose worst gap — a holiday abutting a
+  // weekend — is 4 days) and strictly below the tenor's calendar days, or no
+  // book could ever be held at all.
+  double expiry_guard_days{5.0};
 };
 
 // Field-count drift pin: a new knob must be appended AND documented above.
-static_assert(detail::aggregate_arity_is_v<VolEdgeConfig, 13>,
+static_assert(detail::aggregate_arity_is_v<VolEdgeConfig, 14>,
               "VolEdgeConfig field count changed: update this pin and the doc block.");
 
 [[nodiscard]] inline Status validate_vol_edge_config(const VolEdgeConfig &cfg) {
@@ -287,6 +310,14 @@ static_assert(detail::aggregate_arity_is_v<VolEdgeConfig, 13>,
   }
   if (!(std::isfinite(cfg.delta_hedge_band) && cfg.delta_hedge_band >= 0.0)) {
     return bad("delta_hedge_band must be finite and >= 0");
+  }
+  // Negative-margin guard/tenor pairs are rejected outright: a guard at or
+  // above the tenor's calendar span would roll-close every entry on the very
+  // step it opened, i.e. the config can never hold a book.
+  const double tenor_calendar_days = cfg.horizon_days * (365.25 / 252.0);
+  if (!(std::isfinite(cfg.expiry_guard_days) && cfg.expiry_guard_days > 0.0 &&
+        cfg.expiry_guard_days < tenor_calendar_days)) {
+    return bad("expiry_guard_days must be finite, > 0, and below the tenor's calendar days");
   }
   return atx::core::Ok();
 }
@@ -443,6 +474,28 @@ public:
                  std::uint64_t &next_lot_id, const PriceOptions &price_options) override {
     last_entry_seeds_.clear();
     ATX_TRY_VOID(validate_vol_edge_config(cfg_));
+    // FAIL-SAFE ROLL-CLOSE (F3/F4 hardening) — checked on EVERY step, before
+    // any hold/tick early-out: a lot within `expiry_guard_days` of expiry is
+    // roll-closed at this step's marks, because the NEXT session may lie past
+    // the expiry and a crossing without an exact observation is a run-ending
+    // engine error. The guard is sufficient whenever `expiry_guard_days` is at
+    // least the corpus's longest inter-session calendar gap: the last session
+    // strictly before an expiry is then always within the guard of it.
+    if (!book.lots.empty()) {
+      const auto guard_ns =
+          static_cast<std::int64_t>(std::llround(cfg_.expiry_guard_days * 86'400.0e9));
+      bool expiring = false;
+      for (const Lot &lot : book.lots) {
+        if (lot.expiry_ts_ns - base.ts_ns() <= guard_ns) {
+          expiring = true;
+          break;
+        }
+      }
+      if (expiring) {
+        book.lots.clear(); // the engine books each close at the current mark
+        ++n_guard_roll_closes_;
+      }
+    }
     if (step_index % cfg_.rebalance_every_n_steps != 0u) {
       return atx::core::Ok(); // hold between rebalance ticks
     }
@@ -450,6 +503,7 @@ public:
     const auto day = by_date_.find(date);
     if (day == by_date_.end()) {
       ++n_steps_entry_skipped_; // no signal for this session: fail-soft hold
+      ++n_steps_held_missing_signal_;
       return atx::core::Ok();
     }
     auto targets = build_vol_edge_book(day->second, cfg_);
@@ -533,13 +587,18 @@ public:
     return hedge;
   }
 
-  // Always the same four columns so every recorded row stays column-parallel.
+  // Always the same six columns so every recorded row stays column-parallel.
+  // The last two are CUMULATIVE counters (the DeclarativeStrategy convention:
+  // a renderer differences consecutive rows to find the session an event
+  // landed on) — they surface the held / roll-closed attribution per row.
   [[nodiscard]] std::vector<std::pair<std::string, double>>
   signals(const MarketSnapshot & /*base*/) const override {
     return {{"vol_edge_n_long", last_n_long_},
             {"vol_edge_n_short", last_n_short_},
             {"vol_edge_net_target_vega", last_net_target_vega_},
-            {"vol_edge_skipped_names", static_cast<double>(skipped_names_)}};
+            {"vol_edge_skipped_names", static_cast<double>(skipped_names_)},
+            {"vol_edge_held_steps", static_cast<double>(n_steps_held_missing_signal_)},
+            {"vol_edge_roll_closed", static_cast<double>(n_guard_roll_closes_)}};
   }
 
   [[nodiscard]] std::uint64_t n_steps_entry_skipped() const noexcept override {
@@ -548,6 +607,19 @@ public:
 
   // Cumulative per-name fail-soft skips (symbol absent / unresolvable board).
   [[nodiscard]] std::uint64_t skipped_names() const noexcept { return skipped_names_; }
+
+  // Cumulative rebalance ticks held on a MISSING signal date (the fail-soft
+  // hold path only — the "ranked day, nothing tradeable" case counts in
+  // `n_steps_entry_skipped` but not here).
+  [[nodiscard]] std::uint64_t held_steps() const noexcept {
+    return n_steps_held_missing_signal_;
+  }
+
+  // Cumulative fail-safe roll-closes: steps on which the expiry guard closed
+  // the whole book at marks before an unobservable expiry crossing.
+  [[nodiscard]] std::uint64_t guard_roll_closes() const noexcept {
+    return n_guard_roll_closes_;
+  }
 
   [[nodiscard]] const VolEdgeConfig &config() const noexcept { return cfg_; }
 
@@ -561,6 +633,8 @@ private:
   double last_net_target_vega_{0.0};
   std::uint64_t skipped_names_{0};
   std::uint64_t n_steps_entry_skipped_{0};
+  std::uint64_t n_steps_held_missing_signal_{0};
+  std::uint64_t n_guard_roll_closes_{0};
 };
 
 } // namespace atx::vol

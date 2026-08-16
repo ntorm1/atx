@@ -15,11 +15,30 @@
 //      are KEPT (predict-time rows); NaN features (f4_term_slope from an
 //      OutOfRange iv_fair_63d) survive parsing as NaN.
 //   2. Pool across symbols; map labeled rows onto ResearchObservations
-//      (label interval [t, t+21 sessions]) and build a purged + embargoed
-//      anchored walk-forward via make_purged_walk_forward_plan
-//      (research_validation.hpp). embargo_ns is derived from the panel as
-//      the MAXIMUM observed 21-session wall-clock span, so it always covers
-//      >= 21 sessions.
+//      (label interval [t, t+21 label bars]; label_end is the EMITTED-AXIS
+//      end -- the symbol's own 21st emitted successor row's timestamp, a
+//      provable UPPER bound on the true bar-axis t+21 end, because emitted
+//      rows are a subset of the symbol's label-generation bars; the fix-2
+//      review demonstrated that a pooled-axis t+21 end UNDERSTATES bar-holey
+//      symbols' windows and admits leaking train rows) and build a purged +
+//      embargoed anchored walk-forward via make_purged_walk_forward_plan
+//      (research_validation.hpp). Trainability is recovered by a SPAN CAP
+//      instead of a shorter end: a row whose emitted-axis window spans more
+//      than cfg.max_label_span_sessions POOLED sessions (default 42 = 2x
+//      the horizon) is REJECTED AND COUNTED, so one sparse symbol can no
+//      longer stretch the global-max embargo to months and purge the whole
+//      corpus. embargo_ns is derived as the MAXIMUM ADMITTED wall-clock
+//      span -- >= 21 sessions, <= the cap (plus calendar gaps). The t+21
+//      same-symbol-row invariant is enforced PER ROW (round-2 F1): a
+//      labeled row whose symbol lacks an emitted row 21 positions later
+//      (interior surface holes inside the final horizon) is REJECTED AND
+//      COUNTED, never fatal for the symbol or the run; an UNLABELED row
+//      that does have a t+21 successor is a panel-contract violation (a
+//      mid-sample NaN label would be scored with hindsight models) and
+//      fails closed. When cfg.walk_auto is set the fold plan is derived
+//      from the labeled decision-group depth (derive_vrp_walk_forward
+//      below), so thin histories still train instead of dying on the
+//      production 252/63/63 defaults.
 //   3. Per fold, with per-asset standardization fit on TRAIN-fold rows ONLY
 //      (digest Pitfall 6: full-sample z-scores leak the future vol level;
 //      NaN features impute to z = 0, the per-asset train mean):
@@ -32,7 +51,14 @@
 //            panel label directly.
 //      QLIKE is scored in VARIANCE LEVELS (never log-vol) against the
 //      close-to-close proxy rv_fwd_21d^2, plus per-date Spearman rank IC of
-//      predicted vs realized label.
+//      predicted vs realized label. The GBT's label-space prediction implies
+//      a variance forecast that can go <= 0 on thin folds (round-1 SP100
+//      experiment: QLIKE 1e6..3e7); its QLIKE forecast passes through the
+//      SAME Clements-Preve insanity clip as the baseline (train-window label
+//      variance range, digest [20]) so the reported loss is finite and every
+//      scored variance forecast is positive. The clip touches ONLY the QLIKE
+//      scoring path -- pred_label in the signal stays the raw GBT output
+//      (rank information preserved).
 //   4. Write the FROZEN vrp_signal_v1 TSV (`# schema=vrp_signal_v1`;
 //      columns EXACTLY symbol, date, pred_label, pred_edge_norm, vov_63d):
 //      one row per OOS test observation (each labeled row appears in at
@@ -40,13 +66,28 @@
 //      scored by the FINAL fold's models. pred_label is the GBT prediction
 //      in variance*N units; pred_edge_norm standardizes it by the row's
 //      asset's TRAIN-fold label mean/sd (cross-sectionally rankable);
-//      vov_63d passes f9 through raw. Also writes a metrics TSV and the two
-//      serialized schema-2 model files (pricing/theo.hpp formats). The
-//      serialized models score PER-ASSET-STANDARDIZED panel features (the
-//      trainer folds its fit-internal global standardization into the
-//      coefficients/thresholds; the per-asset train-window stats remain
-//      fold artifacts). The linear file scores ln(rv_fwd^2) BEFORE
-//      retransformation/clip.
+//      vov_63d passes a FINITE f9 through raw, and imputes a non-finite f9
+//      (63-session warmup / iv gaps) with the row's asset's TRAIN-fold f9
+//      mean from the fold that scored the row (round-2 F2: the frozen
+//      vrp_signal_v1 loader fail-closes on non-finite vov_63d, so emitted
+//      rows NEVER carry one; the digest's per-asset train-fold imputation
+//      recipe, applied at the writer against the untouched loader). Also
+//      writes a metrics TSV (carrying the F1 rejection counters plus, per
+//      fold, the purge/embargo-removed train counts and the GBT insanity-
+//      clip count and post-clip extrema as `# key=value` meta lines --
+//      round-2 review majors 2 + 3), the two serialized schema-2 model files
+//      (pricing/theo.hpp formats), and the vrp_fold_stats_v1 SIDECAR
+//      (save_vrp_fold_stats below): per fold, the per-asset feature
+//      mean/sd, per-asset label mean/sd, and the baseline retransform
+//      state (s2, train_mean_log, train-window variance clip bounds), so a
+//      consumer can score RAW panel rows from {model file + sidecar} alone
+//      and reproduce pred_label / pred_edge_norm / the clipped baseline
+//      variance forecast. The serialized models score PER-ASSET-STANDARDIZED
+//      panel features (the trainer folds its fit-internal global
+//      standardization into the coefficients/thresholds; the per-asset
+//      train-window stats live in the sidecar). The linear file scores
+//      ln(rv_fwd^2) BEFORE retransformation/clip; s2 and the clip bounds it
+//      needs are persisted per fold in the sidecar.
 //
 // Layering: this header (and the two TUs that include it -- the CLI and the
 // test) is the ONLY place in atx-vol that includes atx-engine headers. The
@@ -92,10 +133,12 @@ inline constexpr std::string_view kVrpPanelSchemaValue = "vrp_panel_v1";
 inline constexpr std::size_t kVrpPanelColumnCount = 18;
 inline constexpr std::size_t kVrpHorizonSessions = 21;
 inline constexpr double kVrpHorizonYears = 21.0 / 252.0;
-// Fail-open floor for a model-implied variance handed to QLIKE: annualized
-// variance 1e-10 (vol 1e-5) -- QLIKE needs F > 0 and the GBT's label-space
-// prediction can imply a non-positive variance on a wild row.
-inline constexpr double kVrpMinForecastVariance = 1e-10;
+// Default --max-label-span: reject-and-count rows whose emitted-axis label
+// window spans more than this many POOLED sessions (2x the 21-session
+// horizon). SP100 survey (fix round 2): spans p50=22 p95=35 p99=64 max=169;
+// 42 keeps 97.5% of the coverage-complete rows while capping the DUK-class
+// 100+ session spans that poisoned the global-max embargo.
+inline constexpr std::size_t kVrpDefaultMaxLabelSpanSessions = 2 * kVrpHorizonSessions;
 
 inline constexpr std::array<std::string_view, kVrpPanelColumnCount> kVrpPanelColumns{
     "symbol",        "date",       "entry_ts_ns", "spot",       "iv_fair_21d", "iv_fair_63d",
@@ -301,6 +344,15 @@ inline void split_tabs(std::string_view line, std::vector<std::string_view> &out
                        row.symbol + "' @ '" + row.date + "')");
       }
     }
+    // f9_vov_63d is a sample stdev, so a finite value must be >= 0 (round-2
+    // review minor). Validated at the boundary so neither the raw signal
+    // pass-through nor the per-asset imputation mean (signal_vov below) can
+    // ever hand the frozen vrp_signal_v1 loader a negative vov_63d.
+    if (std::isfinite(row.f[9]) && row.f[9] < 0.0) {
+      return Err(ErrorCode::ParseError,
+                 "load_vrp_panel: negative f9_vov_63d ('" + row.symbol + "' @ '" + row.date +
+                     "'); vov_63d is a sample stdev, so a finite value must be >= 0");
+    }
     panel.rows.push_back(std::move(row));
   }
   if (!header_seen) {
@@ -425,15 +477,51 @@ compute_asset_standardization(const VrpPanel &panel, std::span<const std::size_t
 struct VrpObservations {
   std::vector<ResearchObservation> obs; // canonical (decision_ts_ns, uid) order
   std::vector<std::size_t> row_of;      // obs index -> panel row index
+  // Rejection accounting (surfaced in the metrics meta lines + CLI stderr):
+  std::size_t n_labeled_rows{0};           // labeled panel rows seen
+  std::size_t n_rows_rejected_no_t21{0};   // labeled rows lacking a t+21 row
+  std::size_t n_rows_rejected_span_cap{0}; // rows whose label span exceeds the cap
+  std::size_t n_symbols_fully_rejected{0}; // symbols whose EVERY labeled row was rejected
 };
 
-// One ResearchObservation per LABELED panel row. decision = entry_ts_ns;
-// label interval [t, t+21 sessions]: label_end is the SAME SYMBOL's entry
-// timestamp 21 sessions later (the panel keeps those rows -- tail rows are
-// NaN-labeled precisely because they lack the forward window, so a labeled
-// row missing its t+21 session row is a contract violation, fail closed).
-// uid = symbol index + 1 (uid 0 is rejected upstream).
-[[nodiscard]] inline Result<VrpObservations> build_vrp_observations(const VrpPanel &panel) {
+// One ResearchObservation per USABLE labeled panel row. decision =
+// entry_ts_ns; label_end is the EMITTED-AXIS end: the symbol's own 21st
+// emitted successor row's timestamp. The panel builder labels over 21 bars
+// of the SYMBOL'S OWN bar axis, and emitted rows are a SUBSET of those bars
+// (an emitted row requires the bar to exist plus a usable surface), so the
+// 21st emitted successor is the k-th bar for some k >= 21 and this end is
+// >= the true bar-axis t+21 end BY CONSTRUCTION -- it may over-purge, it
+// can never understate. The fix-2 review demonstrated the alternative
+// (pooled-axis t+21) UNDERSTATES the window of any symbol with in-window
+// bar holes (77 of 102 SP100 names) and admitted train rows whose true
+// label windows crossed their fold's test start -- reverted here.
+//
+// Trainability under the conservative end comes from the SPAN CAP: a row
+// whose emitted-axis window spans more than max_label_span_sessions POOLED
+// sessions is rejected AND COUNTED (n_rows_rejected_span_cap), so a sparse
+// symbol's stretched windows can no longer poison make_vrp_plan's global-
+// max embargo (round-1 SP100: one 250-day span embargoed ~70% of the
+// corpus and zeroed every fold). Precondition: max_label_span_sessions >=
+// kVrpHorizonSessions (every window spans >= the horizon; fail closed).
+//
+// The t+21 invariant stays PER ROW (F1): a labeled row whose symbol lacks
+// an emitted row 21 positions later (interior surface holes inside the
+// final horizon) loses only itself -- rejected and counted, with fully-
+// rejected symbols counted separately -- never the symbol or the run. The
+// mirrored check fails CLOSED: an unlabeled (NaN-label) row that DOES have
+// a t+21 successor is not a tail row, and silently scoring it with the
+// final fold's models would hand it a hindsight prediction (review minor,
+// round 1). uid = symbol index + 1 (uid 0 is rejected upstream).
+[[nodiscard]] inline Result<VrpObservations> build_vrp_observations(
+    const VrpPanel &panel,
+    std::size_t max_label_span_sessions = kVrpDefaultMaxLabelSpanSessions) {
+  if (max_label_span_sessions < kVrpHorizonSessions) {
+    return Err(ErrorCode::InvalidArgument,
+               "build_vrp_observations: max_label_span_sessions " +
+                   std::to_string(max_label_span_sessions) + " is below the " +
+                   std::to_string(kVrpHorizonSessions) +
+                   "-session horizon (every label window spans >= the horizon)");
+  }
   const std::size_t n_sym = panel.symbols.size();
   std::vector<std::vector<std::size_t>> sym_rows(n_sym);
   for (std::size_t r = 0; r < panel.rows.size(); ++r) {
@@ -445,28 +533,67 @@ struct VrpObservations {
       pos_in_symbol[sym_rows[s][p]] = p;
     }
   }
+  // Pooled session axis: sorted distinct entry_ts_ns over ALL symbols' rows.
+  // Rows are canonical ascending, so one linear scan builds the axis and
+  // each row's session index.
+  std::vector<std::int64_t> session_ts;
+  session_ts.reserve(panel.rows.size());
+  std::vector<std::size_t> row_session(panel.rows.size(), 0);
+  for (std::size_t r = 0; r < panel.rows.size(); ++r) {
+    const std::int64_t ts = panel.rows[r].entry_ts_ns;
+    if (session_ts.empty() || session_ts.back() != ts) {
+      session_ts.push_back(ts);
+    }
+    row_session[r] = session_ts.size() - 1;
+  }
 
   VrpObservations out;
+  std::vector<std::size_t> sym_labeled(n_sym, 0);
+  std::vector<std::size_t> sym_rejected(n_sym, 0);
   for (std::size_t r = 0; r < panel.rows.size(); ++r) {
     const VrpPanelRow &row = panel.rows[r];
-    if (!is_labeled_row(row)) {
-      continue;
-    }
     const std::size_t s = panel.row_symbol[r];
     const std::size_t p = pos_in_symbol[r];
-    if (p + kVrpHorizonSessions > sym_rows[s].size() - 1) {
-      return Err(ErrorCode::InvalidArgument,
-                 "build_vrp_observations: labeled row without a t+21 session row ('" +
-                     row.symbol + "' @ '" + row.date + "')");
+    // sym_rows[s] contains r, so .size() >= 1 and the -1 below cannot wrap.
+    const bool has_t21_row = p + kVrpHorizonSessions <= sym_rows[s].size() - 1;
+    if (!is_labeled_row(row)) {
+      if (has_t21_row) {
+        return Err(ErrorCode::InvalidArgument,
+                   "build_vrp_observations: non-tail unlabeled row ('" + row.symbol + "' @ '" +
+                       row.date + "' has a t+21 session row; a mid-sample NaN label would be "
+                       "scored with hindsight models)");
+      }
+      continue;
     }
-    const std::size_t end_row = sym_rows[s][p + kVrpHorizonSessions];
+    ++out.n_labeled_rows;
+    ++sym_labeled[s];
+    if (!has_t21_row) {
+      ++out.n_rows_rejected_no_t21; // F1: this row only, never the symbol
+      ++sym_rejected[s];
+      continue;
+    }
+    // The row's 21st same-symbol emitted successor: the label_end source.
+    const std::size_t t21_row = sym_rows[s][p + kVrpHorizonSessions];
+    // Span cap: the window's width in POOLED sessions. Within-symbol rows
+    // occupy strictly increasing pooled session indices, so the span is
+    // always >= kVrpHorizonSessions; interior emitted gaps (surface holes
+    // or partition absence) stretch it. Rows past the cap lose only
+    // themselves -- rejected and counted, never the symbol or the run.
+    const std::size_t span_sessions = row_session[t21_row] - row_session[r];
+    if (span_sessions > max_label_span_sessions) {
+      ++out.n_rows_rejected_span_cap;
+      ++sym_rejected[s];
+      continue;
+    }
     ResearchObservation ob;
     ob.uid = static_cast<std::uint32_t>(s + 1);
     ob.observed_ts_ns = row.entry_ts_ns;
     ob.available_ts_ns = row.entry_ts_ns;
     ob.decision_ts_ns = row.entry_ts_ns;
     ob.execution_ts_ns = row.entry_ts_ns + 1; // strictly after the decision
-    ob.label_end_ts_ns = panel.rows[end_row].entry_ts_ns;
+    // EMITTED-AXIS end: >= the true bar-axis t+21 end (see the contract
+    // comment above) -- conservative by construction, bounded by the cap.
+    ob.label_end_ts_ns = panel.rows[t21_row].entry_ts_ns;
     ob.signal = 0.0;
     ob.forward_pnl = row.label;
     ob.lagged_capital = 1.0;
@@ -474,8 +601,17 @@ struct VrpObservations {
     out.obs.push_back(ob);
     out.row_of.push_back(r);
   }
+  for (std::size_t s = 0; s < n_sym; ++s) {
+    if (sym_labeled[s] > 0 && sym_rejected[s] == sym_labeled[s]) {
+      ++out.n_symbols_fully_rejected;
+    }
+  }
   if (out.obs.empty()) {
-    return Err(ErrorCode::InvalidArgument, "build_vrp_observations: no labeled rows");
+    return Err(ErrorCode::InvalidArgument,
+               "build_vrp_observations: no usable labeled rows (labeled=" +
+                   std::to_string(out.n_labeled_rows) + ", rejected_no_t21=" +
+                   std::to_string(out.n_rows_rejected_no_t21) + ", rejected_span_cap=" +
+                   std::to_string(out.n_rows_rejected_span_cap) + ")");
   }
   // Panel rows are canonical (ts, symbol) and uid follows the symbol order,
   // so `obs` is already in canonical (decision_ts_ns, uid) order.
@@ -488,9 +624,34 @@ struct VrpWalkForwardCfg {
   std::size_t step_sessions{21};
 };
 
+// Auto-scaled walk-forward defaults (round-2 F1 companion): keep the
+// production 252/63/63 plan whenever the panel carries enough labeled
+// decision groups for it, otherwise scale the fold plan to the available
+// depth -- test/step = clamp(n/6, 21, 63) (never below one full label
+// horizon), min_train = clamp(n/3, 84, 252). The floors make the smallest
+// trainable panel 105 labeled groups (126 sessions with the 21-session NaN
+// tail); anything thinner still fails closed inside make_vrp_plan with the
+// "insufficient decision groups" error -- auto-scaling changes WHERE the
+// line sits, never removes it.
+[[nodiscard]] inline VrpWalkForwardCfg derive_vrp_walk_forward(std::size_t n_groups) noexcept {
+  constexpr std::size_t kDefaultTrain = 252;
+  constexpr std::size_t kDefaultTest = 63;
+  constexpr std::size_t kTrainFloor = 84;
+  constexpr std::size_t kTestFloor = kVrpHorizonSessions;
+  if (n_groups >= kDefaultTrain + kDefaultTest) {
+    return VrpWalkForwardCfg{kDefaultTrain, kDefaultTest, kDefaultTest};
+  }
+  const std::size_t test = std::clamp(n_groups / 6, kTestFloor, kDefaultTest);
+  const std::size_t train = std::clamp(n_groups / 3, kTrainFloor, kDefaultTrain);
+  return VrpWalkForwardCfg{train, test, test};
+}
+
 // Anchored purged walk-forward over decision-timestamp groups (sessions).
-// embargo_ns = max observed [t, t+21-session] wall-clock span, so the
-// embargo always covers >= 21 sessions regardless of weekends/holidays.
+// embargo_ns = max ADMITTED [t, label_end] wall-clock span, so the embargo
+// always covers >= 21 sessions regardless of weekends/holidays. The span
+// cap in build_vrp_observations bounds every admitted span at
+// max_label_span_sessions pooled sessions (plus calendar gaps), so a
+// sparse symbol can no longer stretch the embargo to months.
 [[nodiscard]] inline Result<ResearchValidationPlan>
 make_vrp_plan(const VrpObservations &observations, const VrpWalkForwardCfg &walk) {
   std::int64_t embargo_ns = 0;
@@ -727,8 +888,16 @@ struct VrpTrainConfig {
   std::string out_dir;
   std::uint64_t master_seed{42};
   VrpWalkForwardCfg walk{};
+  // true => ignore `walk` and derive the fold plan from the panel's labeled
+  // decision-group depth (derive_vrp_walk_forward). The CLI turns this on
+  // whenever the caller passes none of the three walk flags.
+  bool walk_auto{false};
   double en_lambda{1e-3};
   double en_alpha{0.5};
+  // Reject-and-count cap on each row's label-window span in POOLED sessions
+  // (build_vrp_observations; the CLI's --max-label-span). Bounds the
+  // embargo, which bounds purge/embargo attrition.
+  std::size_t max_label_span_sessions{kVrpDefaultMaxLabelSpanSessions};
 };
 
 struct VrpFoldMetrics {
@@ -743,8 +912,55 @@ struct VrpFoldMetrics {
   double train_var_min{0.0};            // insanity-clip lower bound (variance)
   double train_var_max{0.0};            // insanity-clip upper bound (variance)
   double baseline_test_forecast_max{0.0}; // max clipped baseline forecast on test
+  // GBT QLIKE-path insanity clip (digest [20], round-2 item 4): how many test
+  // rows' implied variance forecasts left the train range, and the post-clip
+  // extrema (min must stay > 0 -- QLIKE's precondition). Persisted in the
+  // metrics meta lines (round-2 review major 3) and printed by the CLI.
+  std::size_t n_gbt_forecast_clipped{0};
+  double gbt_test_forecast_min{0.0};
+  double gbt_test_forecast_max{0.0};
+  // Train candidates the plan removed for this fold (round-2 review major 2:
+  // surface the purge/embargo loss) -- outcome-purged and pre-test-embargoed
+  // observation counts from the fold's ResearchValidationFold.
+  std::size_t n_train_purged{0};
+  std::size_t n_train_embargoed{0};
   std::vector<std::size_t> train_rows;  // panel row indices
   std::vector<std::size_t> test_rows;   // panel row indices
+};
+
+// ── Per-fold stats sidecar (vrp_fold_stats_v1) ──────────────────────────────
+//
+// The ADDITIVE live-path artifact written next to the model files: everything
+// a consumer needs, per fold, to score a RAW panel row from files alone --
+// per-asset feature mean/sd (standardize raw features exactly as the trainer
+// did, NaN/degenerate -> z = 0), per-asset label mean/sd (pred_edge_norm),
+// and the baseline retransform state (s2, train_mean_log, and the insanity
+// clip bounds; the linear model file scores ln(rv_fwd^2) PRE-retransform).
+// Canonical TSV grammar (byte-stable; save(load(f)) of a save-produced file
+// is byte-identical):
+//   # schema=vrp_fold_stats_v1
+//   fold_id\tkind\tsymbol\tname\tvalue
+//   <id>\tfold\t-\t<name>\t<value>          (fixed fold-field order below)
+//   <id>\tasset\t<symbol>\t<name>\t<value>  (symbols ascending; label_mean,
+//                                            label_sd, f0_mean, f0_sd, ...)
+// The loader is STRICT: it accepts exactly the canonical layout and fails
+// closed (ParseError) on anything else.
+struct VrpFoldStats {
+  std::uint32_t fold_id{0};
+  std::size_t n_train{0};
+  std::size_t n_test{0};
+  double baseline_s2{0.0};             // train residual variance, log space
+  double baseline_train_mean_log{0.0}; // ybar the no-intercept kernel omits
+  double train_var_min{0.0};           // insanity clip bounds (variance)
+  double train_var_max{0.0};
+  double train_var_mean{0.0};          // the mean-forecast benchmark
+  std::vector<std::string> symbols;    // == panel.symbols (sorted unique)
+  std::vector<std::array<double, kVrpFeatureCount>> feat_mean; // per symbol
+  std::vector<std::array<double, kVrpFeatureCount>> feat_sd;
+  std::vector<double> label_mean;
+  std::vector<double> label_sd;
+
+  [[nodiscard]] bool operator==(const VrpFoldStats &) const = default;
 };
 
 struct VrpTrainReport {
@@ -752,11 +968,285 @@ struct VrpTrainReport {
   VrpObservations observations;
   ResearchValidationPlan plan;
   std::vector<VrpFoldMetrics> folds;
+  std::vector<VrpFoldStats> fold_stats; // parallel to `folds`
   std::filesystem::path signal_path;
   std::filesystem::path metrics_path;
   std::filesystem::path gbt_model_path;
   std::filesystem::path baseline_model_path;
+  std::filesystem::path fold_stats_path;
 };
+
+inline constexpr std::string_view kVrpFoldStatsSchemaValue = "vrp_fold_stats_v1";
+
+namespace detail {
+
+// Canonical fold-level field order of the vrp_fold_stats_v1 grammar. The
+// writer emits exactly this order; the loader requires it (fail closed).
+inline constexpr std::array<std::string_view, 7> kVrpFoldStatsFoldFields{
+    "n_train",       "n_test",        "baseline_s2", "baseline_train_mean_log",
+    "train_var_min", "train_var_max", "train_var_mean"};
+
+inline constexpr std::string_view kVrpFoldStatsHeader = "fold_id\tkind\tsymbol\tname\tvalue";
+
+[[nodiscard]] inline Status validate_fold_stats(const VrpFoldStats &fs) {
+  const std::size_t n_sym = fs.symbols.size();
+  if (n_sym == 0 || fs.feat_mean.size() != n_sym || fs.feat_sd.size() != n_sym ||
+      fs.label_mean.size() != n_sym || fs.label_sd.size() != n_sym) {
+    return Err(ErrorCode::InvalidArgument,
+               "vrp_fold_stats: per-asset arrays disagree with the symbol count");
+  }
+  const std::array<double, 5> scalars{fs.baseline_s2, fs.baseline_train_mean_log,
+                                      fs.train_var_min, fs.train_var_max, fs.train_var_mean};
+  for (const double v : scalars) {
+    if (!std::isfinite(v)) {
+      return Err(ErrorCode::InvalidArgument, "vrp_fold_stats: non-finite fold scalar");
+    }
+  }
+  for (std::size_t s = 0; s < n_sym; ++s) {
+    if (fs.symbols[s].empty() ||
+        fs.symbols[s].find_first_of("\t\r\n") != std::string::npos ||
+        (s > 0 && !(fs.symbols[s - 1] < fs.symbols[s]))) {
+      return Err(ErrorCode::InvalidArgument,
+                 "vrp_fold_stats: symbols must be non-empty, tab-free, strictly ascending");
+    }
+    if (!std::isfinite(fs.label_mean[s]) || !std::isfinite(fs.label_sd[s])) {
+      return Err(ErrorCode::InvalidArgument, "vrp_fold_stats: non-finite label stat");
+    }
+    for (std::size_t f = 0; f < kVrpFeatureCount; ++f) {
+      if (!std::isfinite(fs.feat_mean[s][f]) || !std::isfinite(fs.feat_sd[s][f])) {
+        return Err(ErrorCode::InvalidArgument, "vrp_fold_stats: non-finite feature stat");
+      }
+    }
+  }
+  return Ok();
+}
+
+} // namespace detail
+
+// Canonical writer for the vrp_fold_stats_v1 sidecar (grammar on the
+// VrpFoldStats banner). `Err(InvalidArgument)` on structurally invalid or
+// non-finite stats (validated before any I/O); `Err(IoError)` on write
+// failure. Byte-deterministic: fixed row order, std::to_chars doubles.
+[[nodiscard]] inline Status save_vrp_fold_stats(std::span<const VrpFoldStats> folds,
+                                                const std::filesystem::path &path) {
+  if (folds.empty()) {
+    return Err(ErrorCode::InvalidArgument, "save_vrp_fold_stats: no folds");
+  }
+  for (std::size_t i = 0; i < folds.size(); ++i) {
+    if (const Status st = detail::validate_fold_stats(folds[i]); !st.has_value()) {
+      return st;
+    }
+    if (i > 0 && folds[i - 1].fold_id >= folds[i].fold_id) {
+      return Err(ErrorCode::InvalidArgument,
+                 "save_vrp_fold_stats: fold ids must be strictly ascending");
+    }
+  }
+  std::string body = "# schema=";
+  body += kVrpFoldStatsSchemaValue;
+  body += '\n';
+  body += detail::kVrpFoldStatsHeader;
+  body += '\n';
+  const auto row = [&body](std::uint32_t fold_id, std::string_view kind, std::string_view symbol,
+                           std::string_view name, std::string_view value) {
+    body += std::to_string(fold_id);
+    body += '\t';
+    body += kind;
+    body += '\t';
+    body += symbol;
+    body += '\t';
+    body += name;
+    body += '\t';
+    body += value;
+    body += '\n';
+  };
+  for (const VrpFoldStats &fs : folds) {
+    row(fs.fold_id, "fold", "-", "n_train", std::to_string(fs.n_train));
+    row(fs.fold_id, "fold", "-", "n_test", std::to_string(fs.n_test));
+    row(fs.fold_id, "fold", "-", "baseline_s2", detail::fmt_double(fs.baseline_s2));
+    row(fs.fold_id, "fold", "-", "baseline_train_mean_log",
+        detail::fmt_double(fs.baseline_train_mean_log));
+    row(fs.fold_id, "fold", "-", "train_var_min", detail::fmt_double(fs.train_var_min));
+    row(fs.fold_id, "fold", "-", "train_var_max", detail::fmt_double(fs.train_var_max));
+    row(fs.fold_id, "fold", "-", "train_var_mean", detail::fmt_double(fs.train_var_mean));
+    for (std::size_t s = 0; s < fs.symbols.size(); ++s) {
+      row(fs.fold_id, "asset", fs.symbols[s], "label_mean",
+          detail::fmt_double(fs.label_mean[s]));
+      row(fs.fold_id, "asset", fs.symbols[s], "label_sd", detail::fmt_double(fs.label_sd[s]));
+      for (std::size_t f = 0; f < kVrpFeatureCount; ++f) {
+        const std::string base = "f" + std::to_string(f);
+        row(fs.fold_id, "asset", fs.symbols[s], base + "_mean",
+            detail::fmt_double(fs.feat_mean[s][f]));
+        row(fs.fold_id, "asset", fs.symbols[s], base + "_sd",
+            detail::fmt_double(fs.feat_sd[s][f]));
+      }
+    }
+  }
+  std::ofstream out{path, std::ios::binary | std::ios::trunc};
+  if (!out) {
+    return Err(ErrorCode::IoError,
+               "save_vrp_fold_stats: cannot open '" + path.string() + "' for writing");
+  }
+  out.write(body.data(), static_cast<std::streamsize>(body.size()));
+  if (!out) {
+    return Err(ErrorCode::IoError, "save_vrp_fold_stats: write failed for '" + path.string() +
+                                       "'");
+  }
+  return Ok();
+}
+
+// Strict loader for the vrp_fold_stats_v1 sidecar: accepts exactly the
+// canonical layout save_vrp_fold_stats emits and fails closed (ParseError)
+// on any deviation -- wrong schema/header, out-of-order fields or symbols,
+// missing rows, or an unparseable value. save(load(f)) of a save-produced
+// file is byte-identical.
+[[nodiscard]] inline Result<std::vector<VrpFoldStats>>
+load_vrp_fold_stats(const std::filesystem::path &path) {
+  std::ifstream in{path, std::ios::binary};
+  if (!in) {
+    return Err(ErrorCode::IoError, "load_vrp_fold_stats: cannot open '" + path.string() + "'");
+  }
+  struct RawRow {
+    std::uint32_t fold_id;
+    std::string kind;
+    std::string symbol;
+    std::string name;
+    std::string value;
+  };
+  std::vector<RawRow> raw;
+  bool saw_schema = false;
+  bool saw_header = false;
+  std::string raw_line;
+  std::vector<std::string_view> fields;
+  // Bounded by the file's own line count.
+  while (std::getline(in, raw_line)) {
+    const std::string_view line = detail::rstrip_cr(raw_line);
+    if (detail::trim(line).empty()) {
+      continue;
+    }
+    if (!saw_schema) {
+      if (line != std::string("# schema=") + std::string(kVrpFoldStatsSchemaValue)) {
+        return Err(ErrorCode::ParseError,
+                   "load_vrp_fold_stats: missing '# schema=vrp_fold_stats_v1' line");
+      }
+      saw_schema = true;
+      continue;
+    }
+    if (!saw_header) {
+      if (line != detail::kVrpFoldStatsHeader) {
+        return Err(ErrorCode::ParseError, "load_vrp_fold_stats: header row mismatch");
+      }
+      saw_header = true;
+      continue;
+    }
+    detail::split_tabs(line, fields);
+    if (fields.size() != 5) {
+      return Err(ErrorCode::ParseError, "load_vrp_fold_stats: expected 5 fields, got " +
+                                            std::to_string(fields.size()));
+    }
+    std::int64_t id = 0;
+    if (!detail::parse_i64(fields[0], id) || id < 0 ||
+        id > std::numeric_limits<std::uint32_t>::max()) {
+      return Err(ErrorCode::ParseError, "load_vrp_fold_stats: unparseable fold_id");
+    }
+    raw.push_back(RawRow{static_cast<std::uint32_t>(id), std::string(fields[1]),
+                         std::string(fields[2]), std::string(fields[3]),
+                         std::string(fields[4])});
+  }
+  if (!saw_header || raw.empty()) {
+    return Err(ErrorCode::ParseError, "load_vrp_fold_stats: no data rows");
+  }
+
+  std::vector<VrpFoldStats> out;
+  std::size_t i = 0;
+  // Bounded: every block consumes >= 1 raw row.
+  while (i < raw.size()) {
+    VrpFoldStats fs;
+    fs.fold_id = raw[i].fold_id;
+    if (!out.empty() && out.back().fold_id >= fs.fold_id) {
+      return Err(ErrorCode::ParseError, "load_vrp_fold_stats: fold ids not ascending");
+    }
+    // The 7 fold-level rows, fixed order.
+    for (const std::string_view name : detail::kVrpFoldStatsFoldFields) {
+      if (i >= raw.size() || raw[i].fold_id != fs.fold_id || raw[i].kind != "fold" ||
+          raw[i].symbol != "-" || raw[i].name != name) {
+        return Err(ErrorCode::ParseError,
+                   "load_vrp_fold_stats: fold block for id " + std::to_string(fs.fold_id) +
+                       " missing field '" + std::string(name) + "'");
+      }
+      if (name == "n_train" || name == "n_test") {
+        std::int64_t v = 0;
+        if (!detail::parse_i64(raw[i].value, v) || v < 0) {
+          return Err(ErrorCode::ParseError, "load_vrp_fold_stats: bad integer for '" +
+                                                std::string(name) + "'");
+        }
+        (name == "n_train" ? fs.n_train : fs.n_test) = static_cast<std::size_t>(v);
+      } else {
+        double v = 0.0;
+        if (!detail::parse_double(raw[i].value, v) || !std::isfinite(v)) {
+          return Err(ErrorCode::ParseError, "load_vrp_fold_stats: bad value for '" +
+                                                std::string(name) + "'");
+        }
+        if (name == "baseline_s2") {
+          fs.baseline_s2 = v;
+        } else if (name == "baseline_train_mean_log") {
+          fs.baseline_train_mean_log = v;
+        } else if (name == "train_var_min") {
+          fs.train_var_min = v;
+        } else if (name == "train_var_max") {
+          fs.train_var_max = v;
+        } else {
+          fs.train_var_mean = v;
+        }
+      }
+      ++i;
+    }
+    // Asset blocks: 22 rows per symbol, symbols strictly ascending.
+    while (i < raw.size() && raw[i].fold_id == fs.fold_id) {
+      const std::string symbol = raw[i].symbol;
+      if (raw[i].kind != "asset" || symbol.empty() ||
+          (!fs.symbols.empty() && !(fs.symbols.back() < symbol))) {
+        return Err(ErrorCode::ParseError,
+                   "load_vrp_fold_stats: asset rows out of canonical order");
+      }
+      std::array<double, kVrpFeatureCount> mean{};
+      std::array<double, kVrpFeatureCount> sd{};
+      double label_mean = 0.0;
+      double label_sd = 0.0;
+      const auto take = [&](std::string_view name, double &dst) -> bool {
+        if (i >= raw.size() || raw[i].fold_id != fs.fold_id || raw[i].kind != "asset" ||
+            raw[i].symbol != symbol || raw[i].name != name) {
+          return false;
+        }
+        double v = 0.0;
+        if (!detail::parse_double(raw[i].value, v) || !std::isfinite(v)) {
+          return false;
+        }
+        dst = v;
+        ++i;
+        return true;
+      };
+      bool ok = take("label_mean", label_mean) && take("label_sd", label_sd);
+      for (std::size_t f = 0; ok && f < kVrpFeatureCount; ++f) {
+        const std::string base = "f" + std::to_string(f);
+        ok = take(base + "_mean", mean[f]) && take(base + "_sd", sd[f]);
+      }
+      if (!ok) {
+        return Err(ErrorCode::ParseError,
+                   "load_vrp_fold_stats: incomplete asset block for '" + symbol + "'");
+      }
+      fs.symbols.push_back(symbol);
+      fs.feat_mean.push_back(mean);
+      fs.feat_sd.push_back(sd);
+      fs.label_mean.push_back(label_mean);
+      fs.label_sd.push_back(label_sd);
+    }
+    if (fs.symbols.empty()) {
+      return Err(ErrorCode::ParseError, "load_vrp_fold_stats: fold block without asset rows");
+    }
+    out.push_back(std::move(fs));
+  }
+  return Ok(std::move(out));
+}
 
 namespace detail {
 
@@ -891,7 +1381,30 @@ struct SignalEntry {
   std::size_t panel_row{0};
   double pred_label{0.0};
   double pred_edge_norm{0.0};
+  // FINITE by construction (round-2 F2): raw f9 when finite, else the
+  // scoring fold's per-asset train-fold f9 mean -- the frozen vrp_signal_v1
+  // loader fail-closes on a non-finite vov_63d, so the writer never emits
+  // one.
+  double vov_63d{0.0};
 };
+
+// The vov_63d a signal row carries: raw panel f9 when finite, else the
+// per-asset train-fold mean under the fold that scored the row (z = 0
+// imputation mapped back to raw space). Emitted values are ALWAYS >= 0
+// (round-2 review minor): load_vrp_panel rejects finite negative f9 at the
+// boundary, so both the raw pass-through and every accumulated mean are
+// >= 0. DOCUMENTED FALLBACK: an asset with ZERO finite f9 observations in
+// the scoring fold's train window imputes the default-constructed mean 0.0
+// -- finite and >= 0, accepted by the frozen vrp_signal_v1 loader, and
+// floored by vov_floor at sizing downstream.
+[[nodiscard]] inline double signal_vov(const VrpPanel &panel, const VrpStandardization &stz,
+                                       std::size_t row) {
+  const double raw = panel.rows[row].f[9];
+  if (std::isfinite(raw)) {
+    return raw;
+  }
+  return stz.mean[panel.row_symbol[row]][9];
+}
 
 [[nodiscard]] inline Status write_signal_file(const VrpPanel &panel,
                                               std::span<const SignalEntry> entries,
@@ -913,7 +1426,7 @@ struct SignalEntry {
     body += '\t';
     body += fmt_double(e.pred_edge_norm);
     body += '\t';
-    body += fmt_double(row.f[9]); // vov_63d pass-through, RAW
+    body += fmt_double(e.vov_63d); // finite: raw f9 or train-fold imputation
     body += '\n';
   }
   out.write(body.data(), static_cast<std::streamsize>(body.size()));
@@ -924,6 +1437,7 @@ struct SignalEntry {
 }
 
 [[nodiscard]] inline Status write_metrics_file(std::span<const VrpFoldMetrics> folds,
+                                               const VrpObservations &observations,
                                                const std::filesystem::path &path) {
   std::ofstream out{path, std::ios::binary | std::ios::trunc};
   if (!out) {
@@ -931,6 +1445,27 @@ struct SignalEntry {
                "write_metrics_file: cannot open '" + path.string() + "' for writing");
   }
   std::string body = "# schema=vrp_train_metrics_v1\n";
+  // Rejection accounting as meta lines (columns below stay round-1 shaped).
+  body += "# n_labeled_rows=" + std::to_string(observations.n_labeled_rows) + "\n";
+  body += "# n_rows_rejected_no_t21=" + std::to_string(observations.n_rows_rejected_no_t21) +
+          "\n";
+  body += "# n_rows_rejected_span_cap=" +
+          std::to_string(observations.n_rows_rejected_span_cap) + "\n";
+  body += "# n_symbols_fully_rejected=" +
+          std::to_string(observations.n_symbols_fully_rejected) + "\n";
+  // Per-fold accounting meta lines (round-2 review majors 2 + 3): the
+  // purge/embargo train-row losses and the GBT QLIKE-path insanity-clip
+  // count + post-clip extrema, via the same `# key=value` mechanism as the
+  // F1 counters. Additive only -- the tabular columns below stay round-1
+  // shaped.
+  for (const VrpFoldMetrics &m : folds) {
+    const std::string p = "# fold_" + std::to_string(m.fold_id) + "_";
+    body += p + "n_train_purged=" + std::to_string(m.n_train_purged) + "\n";
+    body += p + "n_train_embargoed=" + std::to_string(m.n_train_embargoed) + "\n";
+    body += p + "n_gbt_forecast_clipped=" + std::to_string(m.n_gbt_forecast_clipped) + "\n";
+    body += p + "gbt_test_forecast_min=" + fmt_double(m.gbt_test_forecast_min) + "\n";
+    body += p + "gbt_test_forecast_max=" + fmt_double(m.gbt_test_forecast_max) + "\n";
+  }
   body += "fold_id\tmodel\tn_train\tn_test\tqlike\tspearman_ic\ttrain_var_min\ttrain_var_max\n";
   const auto row = [&](const VrpFoldMetrics &m, std::string_view model, double qlike,
                        double ic) {
@@ -977,13 +1512,30 @@ struct SignalEntry {
   VrpTrainReport report;
   report.panel = std::move(*panel_r);
 
-  auto obs_r = build_vrp_observations(report.panel);
+  auto obs_r = build_vrp_observations(report.panel, cfg.max_label_span_sessions);
   if (!obs_r.has_value()) {
     return Err(obs_r.error());
   }
   report.observations = std::move(*obs_r);
 
-  auto plan_r = make_vrp_plan(report.observations, cfg.walk);
+  VrpWalkForwardCfg walk = cfg.walk;
+  if (cfg.walk_auto) {
+    // Distinct decision-timestamp groups among the USABLE labeled rows --
+    // obs is canonical (decision_ts_ns, uid) ascending, so a linear scan
+    // counts groups exactly.
+    std::size_t n_groups = 0;
+    std::int64_t prev_ts = std::numeric_limits<std::int64_t>::min();
+    bool first = true;
+    for (const ResearchObservation &ob : report.observations.obs) {
+      if (first || ob.decision_ts_ns != prev_ts) {
+        ++n_groups;
+        first = false;
+      }
+      prev_ts = ob.decision_ts_ns;
+    }
+    walk = derive_vrp_walk_forward(n_groups);
+  }
+  auto plan_r = make_vrp_plan(report.observations, walk);
   if (!plan_r.has_value()) {
     return Err(plan_r.error());
   }
@@ -1014,6 +1566,8 @@ struct SignalEntry {
     }
     m.n_train = m.train_rows.size();
     m.n_test = m.test_rows.size();
+    m.n_train_purged = fold.purged_indices.size();
+    m.n_train_embargoed = fold.embargoed_indices.size();
 
     const VrpStandardization stz =
         compute_asset_standardization(report.panel, std::span<const std::size_t>{m.train_rows});
@@ -1038,6 +1592,8 @@ struct SignalEntry {
     double q_gbt = 0.0;
     double q_mean = 0.0;
     double base_forecast_max = -std::numeric_limits<double>::infinity();
+    double gbt_forecast_min = std::numeric_limits<double>::infinity();
+    double gbt_forecast_max = -std::numeric_limits<double>::infinity();
     std::vector<std::int64_t> test_ts;
     std::vector<double> pred_base;
     std::vector<double> pred_gbt;
@@ -1053,8 +1609,21 @@ struct SignalEntry {
       const double label_base = (f_base - iv_var) * kVrpHorizonYears;
 
       const double label_gbt = detail::gbt_predict_label(report.panel, stz, gbt, r);
+      // The GBT's implied variance forecast goes through the SAME insanity
+      // clip as the baseline (train-window label variance range, digest
+      // [20]): a signed-label prediction can imply a variance <= 0 on thin
+      // folds, and QLIKE against a near-zero floor explodes (round-1 SP100:
+      // 1e6..3e7). train_var_min > 0 (labeled rows carry rv_fwd > 0), so the
+      // clipped forecast always satisfies QLIKE's F > 0 precondition.
+      // pred_label below stays the RAW prediction -- rank info untouched.
+      const double f_gbt_raw = label_gbt / kVrpHorizonYears + iv_var;
       const double f_gbt =
-          std::max(label_gbt / kVrpHorizonYears + iv_var, kVrpMinForecastVariance);
+          std::clamp(f_gbt_raw, baseline.train_var_min, baseline.train_var_max);
+      if (f_gbt != f_gbt_raw) {
+        ++m.n_gbt_forecast_clipped;
+      }
+      gbt_forecast_min = std::min(gbt_forecast_min, f_gbt);
+      gbt_forecast_max = std::max(gbt_forecast_max, f_gbt);
 
       q_base += vrp_qlike(f_base, proxy_var);
       q_gbt += vrp_qlike(f_gbt, proxy_var);
@@ -1070,19 +1639,40 @@ struct SignalEntry {
       signal_entries.push_back(detail::SignalEntry{
           .panel_row = r,
           .pred_label = label_gbt,
-          .pred_edge_norm = sd == 0.0 ? 0.0 : (label_gbt - label_stats.mean[sym]) / sd});
+          .pred_edge_norm = sd == 0.0 ? 0.0 : (label_gbt - label_stats.mean[sym]) / sd,
+          .vov_63d = detail::signal_vov(report.panel, stz, r)});
     }
     const auto n_test = static_cast<double>(m.test_rows.size());
     m.qlike_baseline = q_base / n_test;
     m.qlike_gbt = q_gbt / n_test;
     m.qlike_mean_forecast = q_mean / n_test;
     m.baseline_test_forecast_max = base_forecast_max;
+    m.gbt_test_forecast_min = gbt_forecast_min;
+    m.gbt_test_forecast_max = gbt_forecast_max;
     m.ic_baseline = detail::mean_per_date_spearman(std::span<const std::int64_t>{test_ts},
                                                    std::span<const double>{pred_base},
                                                    std::span<const double>{realized});
     m.ic_gbt = detail::mean_per_date_spearman(std::span<const std::int64_t>{test_ts},
                                               std::span<const double>{pred_gbt},
                                               std::span<const double>{realized});
+
+    // The fold's live-path sidecar block: everything a consumer needs to
+    // score raw panel rows against this fold's serialized models.
+    VrpFoldStats fs;
+    fs.fold_id = m.fold_id;
+    fs.n_train = m.n_train;
+    fs.n_test = m.n_test;
+    fs.baseline_s2 = baseline.s2;
+    fs.baseline_train_mean_log = baseline.train_mean_log;
+    fs.train_var_min = baseline.train_var_min;
+    fs.train_var_max = baseline.train_var_max;
+    fs.train_var_mean = baseline.train_var_mean;
+    fs.symbols = report.panel.symbols;
+    fs.feat_mean = stz.mean;
+    fs.feat_sd = stz.sd;
+    fs.label_mean = label_stats.mean;
+    fs.label_sd = label_stats.sd;
+    report.fold_stats.push_back(std::move(fs));
 
     last_stz = stz;
     last_baseline = baseline;
@@ -1109,7 +1699,8 @@ struct SignalEntry {
     signal_entries.push_back(detail::SignalEntry{
         .panel_row = r,
         .pred_label = label_gbt,
-        .pred_edge_norm = sd == 0.0 ? 0.0 : (label_gbt - last_label_stats->mean[sym]) / sd});
+        .pred_edge_norm = sd == 0.0 ? 0.0 : (label_gbt - last_label_stats->mean[sym]) / sd,
+        .vov_63d = detail::signal_vov(report.panel, *last_stz, r)});
   }
   std::sort(signal_entries.begin(), signal_entries.end(),
             [](const detail::SignalEntry &a, const detail::SignalEntry &b) {
@@ -1128,6 +1719,7 @@ struct SignalEntry {
   report.metrics_path = out_dir / "vrp_metrics.tsv";
   report.gbt_model_path = out_dir / "vrp_gbt_model.tsv";
   report.baseline_model_path = out_dir / "vrp_baseline_model.tsv";
+  report.fold_stats_path = out_dir / "vrp_fold_stats.tsv";
 
   Status st = detail::write_signal_file(report.panel,
                                         std::span<const detail::SignalEntry>{signal_entries},
@@ -1136,7 +1728,12 @@ struct SignalEntry {
     return Err(st.error());
   }
   st = detail::write_metrics_file(std::span<const VrpFoldMetrics>{report.folds},
-                                  report.metrics_path);
+                                  report.observations, report.metrics_path);
+  if (!st.has_value()) {
+    return Err(st.error());
+  }
+  st = save_vrp_fold_stats(std::span<const VrpFoldStats>{report.fold_stats},
+                           report.fold_stats_path);
   if (!st.has_value()) {
     return Err(st.error());
   }

@@ -15,17 +15,32 @@ QA report over the union of all rows:
          column (assumes within-symbol session adjacency, which a dropped
          session legitimately breaks -- so this NEVER affects the exit
          code, mirroring bev_label_qa.py's report-only tripwire tier);
-      c. report-only Pearson corr(label, f5/f6).
+      c. report-only Pearson corr(label, f5/f6);
+(5) F1 t+21 session-coverage check, REPORT-ONLY BY DEFAULT (the check the
+    round-1 SP100 experiment demanded): within each symbol, ordered by
+    entry_ts_ns, every finite-label row should have a same-symbol row
+    HORIZON_SESSIONS positions later. The trainer's build_vrp_observations
+    tolerates violating rows BY DESIGN (per-row rejection, counted, never
+    fatal -- round 2), and real multi-name panels carry them wherever a
+    surface history is thin, so by default this section only REPORTS the
+    violation count and the affected labeled rows (exit code untouched --
+    expected thin-history attrition must not mask the genuinely fatal
+    tiers 3/4a). Passing --max-t21-violations N opts into a hard gate:
+    exit 1 iff the violation count EXCEEDS N (pure row counting, no
+    session-adjacency assumption, unlike 4b).
 Pure stdlib -- see atx-vol/scripts/README.md for the tier note.
 
 CLI:
     python vrp_panel_qa.py <panel.tsv>... --out-md report.md
+        [--max-t21-violations N]
 
-Exit codes: 0 clean, 1 duplicate keys or label-identity violations found
-(report still written), 2 bad args / malformed input file.
+Exit codes: 0 clean (t+21 findings alone never fail the run unless
+--max-t21-violations is given and exceeded), 1 duplicate keys,
+label-identity violations, or more than --max-t21-violations t+21
+coverage violations (report still written), 2 bad args / malformed
+input file.
 
-Run: python -m pytest atx-vol/scripts/vrp_panel_qa_test.py -q  (none yet --
-round 1 ships the tool; its own pytest follows bev_label_qa_test.py's shape)
+Run: python -m pytest atx-vol/scripts/vrp_panel_qa_test.py -q
 """
 
 from __future__ import annotations
@@ -242,6 +257,39 @@ def recompute_forward_rv(rows: list[dict[str, str]]) -> dict[str, Any]:
     return {"n_checked": n_checked, "n_matched": n_matched, "max_abs_diff": max_abs_diff}
 
 
+def check_t21_successors(rows: list[dict[str, str]]) -> dict[str, Any]:
+    """REPORT-ONLY tripwire by default (F1): within each symbol, ordered by
+    entry_ts_ns, every finite-label row should have a same-symbol row
+    HORIZON_SESSIONS positions later. The panel builder only labels a session
+    whose forward window fits the bar axis, so a labeled row missing its t+21
+    EMITTED successor means sessions inside the final horizon were dropped
+    (surface holes) -- rows the trainer tolerates by rejecting one by one,
+    counted, never fatally (build_vrp_observations, round 2). This check
+    makes that attrition loud BEFORE a training run without failing panels
+    that are merely thin; --max-t21-violations N opts into exit 1 when the
+    count exceeds N. Pure row counting: no session-adjacency assumption, so
+    a mid-panel dropped session alone never trips it."""
+    by_symbol: dict[str, list[dict[str, str]]] = {}
+    for row in rows:
+        by_symbol.setdefault(row["symbol"], []).append(row)
+    n_checked = 0
+    violations: list[str] = []
+    for symbol in sorted(by_symbol):
+        sym_rows = by_symbol[symbol]
+        sym_rows.sort(key=lambda r: int(r["entry_ts_ns"]))
+        n = len(sym_rows)
+        for p, row in enumerate(sym_rows):
+            if math.isnan(_getf(row, "label")):
+                continue
+            n_checked += 1
+            if p + HORIZON_SESSIONS > n - 1:
+                violations.append(
+                    f"{symbol}/{row['date']}: only {n - 1 - p} later same-symbol row(s), "
+                    f"need {HORIZON_SESSIONS}"
+                )
+    return {"n_checked": n_checked, "violations": violations}
+
+
 def compute_correlations(rows: list[dict[str, str]]) -> dict[str, float | None]:
     label = [_getf(row, "label") for row in rows]
     f5 = [_getf(row, "f5_hv_iv_gap") for row in rows]
@@ -268,6 +316,7 @@ def render_markdown(
     identity: dict[str, Any],
     rv_recompute: dict[str, Any],
     correlations: dict[str, float | None],
+    t21: dict[str, Any],
 ) -> str:
     lines: list[str] = ["# vrp_panel_v1 QA report", ""]
 
@@ -354,10 +403,37 @@ def render_markdown(
         "",
     ]
 
+    lines += ["## 5. F1 t+21 session-coverage (report-only by default)", ""]
+    lines.append(
+        f"Checked {t21['n_checked']} finite-label row(s): each should have a "
+        f"same-symbol row {HORIZON_SESSIONS} positions later (ordered by entry_ts_ns)."
+    )
+    if t21["violations"]:
+        lines.append("")
+        lines.append(
+            f"{len(t21['violations'])} violation(s) -- the trainer rejects these rows "
+            "one by one (per-row t+21 rejection, counted, never fatal; round 2). "
+            "Report-only: the exit code is untouched unless --max-t21-violations "
+            "is given and exceeded:"
+        )
+        lines.append("")
+        for v in t21["violations"][:50]:
+            lines.append(f"- {v}")
+        if len(t21["violations"]) > 50:
+            lines.append(f"- ... and {len(t21['violations']) - 50} more")
+    else:
+        lines.append("")
+        lines.append("No violations.")
+    lines.append("")
+
     return "\n".join(lines)
 
 
-def build_report(paths: list[Path]) -> tuple[str, bool]:
+def build_report(paths: list[Path]) -> tuple[str, bool, int]:
+    """Returns (markdown report, hard failure flag, t+21 violation count).
+    hard_failure covers ONLY the unconditionally fatal tiers (duplicate keys,
+    label identity); the t+21 count is report-only data the CLI gates on iff
+    --max-t21-violations was given."""
     rows, per_file_counts = load_rows(paths)
     accounting = compute_row_accounting(rows, per_file_counts)
     coverage = compute_nan_coverage(rows)
@@ -365,14 +441,26 @@ def build_report(paths: list[Path]) -> tuple[str, bool]:
     identity = check_label_identity(rows)
     rv_recompute = recompute_forward_rv(rows)
     correlations = compute_correlations(rows)
+    t21 = check_t21_successors(rows)
     report_md = render_markdown(
-        accounting, coverage, duplicates, identity, rv_recompute, correlations
+        accounting, coverage, duplicates, identity, rv_recompute, correlations, t21
     )
     hard_failure = bool(duplicates) or bool(identity["violations"])
-    return report_md, hard_failure
+    return report_md, hard_failure, len(t21["violations"])
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────
+
+
+def _t21_threshold(text: str) -> int:
+    """argparse type for --max-t21-violations: a non-negative int, rejected at
+    PARSE time (fix-2 review minor: a sign typo like -1 previously turned a
+    ZERO-violation panel into exit 1 with the absurd message "0 violation(s)
+    exceed the -1 threshold" -- a usage error, exit 2, never a gate result)."""
+    value = int(text)  # ValueError -> argparse usage error (exit 2)
+    if value < 0:
+        raise argparse.ArgumentTypeError(f"must be a non-negative count, got {value}")
+    return value
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -381,13 +469,21 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument("panels", nargs="+", type=Path, help="panel TSV file(s)")
     parser.add_argument("--out-md", required=True, type=Path)
+    parser.add_argument(
+        "--max-t21-violations",
+        type=_t21_threshold,
+        default=None,
+        metavar="N",
+        help="opt-in hard gate for section 5: exit 1 iff the t+21 coverage "
+        "violation count EXCEEDS N (N >= 0; default: report-only, exit 0)",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
     try:
-        report_md, hard_failure = build_report(args.panels)
+        report_md, hard_failure, n_t21 = build_report(args.panels)
     except (ValueError, OSError) as exc:
         print(f"vrp_panel_qa: {exc}", file=sys.stderr)
         return 2
@@ -402,6 +498,24 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 1
+    if args.max_t21_violations is not None and n_t21 > args.max_t21_violations:
+        print(
+            f"vrp_panel_qa: {n_t21} t+21 coverage violation(s) exceed the "
+            f"--max-t21-violations {args.max_t21_violations} threshold, see {args.out_md}",
+            file=sys.stderr,
+        )
+        return 1
+    if n_t21 > 0:
+        detail = (
+            "report-only (no --max-t21-violations threshold)"
+            if args.max_t21_violations is None
+            else f"within the --max-t21-violations {args.max_t21_violations} threshold"
+        )
+        print(
+            f"vrp_panel_qa: {n_t21} t+21 coverage violation(s), {detail}, "
+            f"see {args.out_md}",
+            file=sys.stderr,
+        )
     return 0
 
 

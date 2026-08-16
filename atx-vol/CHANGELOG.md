@@ -52,6 +52,52 @@ Tier-B census grew 19→20 (`vol_edge.hpp`). Known pre-production caveat: the
 shipped VolEdge horizon/rebalance defaults leave under 1.1 calendar days of
 expiry margin (ledger 2026-08-15 risk line) — widen before production use.
 
+### FIXED — VRP round 2: leak-proof data efficiency, VolEdge expiry safety, fast-suite base reds cleared
+
+Sprint 2026-08-15-vrp-ml round 2 (lanes vol-edge-hardening, vrp-data-efficiency
++ two reviewed fix rounds, base-red-trio):
+
+- VolEdge expiry safety (`api/backtest/vol_edge.hpp`, experiment findings
+  F3/F4): a fail-safe roll-close now closes the whole book at marks on any
+  step where a lot sits within `expiry_guard_days` (default 5.0 calendar days,
+  new `--expiry-guard` CLI knob) of its expiry, so neither a missing-signal
+  hold nor a holiday-stretched cadence can carry a lot past expiry into the
+  engine's fail-closed mark error. The shipped rebalance default drops 21→15
+  sessions, keeping the worst-case calendar margin above the guard. Hardening
+  attribution lands per run (`VrpBacktestSummary::n_held_steps` /
+  `n_skipped_names` / `n_roll_closes`) and per row (cumulative
+  `vol_edge_held_steps` / `vol_edge_roll_closed` signal columns). This
+  CHANGES vrp-backtest numbers versus round 1's defaults; the round-1 caveat
+  paragraph above is closed.
+- `atx-vol-vrp-train` (`tools/vrp_train.hpp`) data efficiency (F1/F2): labeled
+  rows without a t+21 same-symbol successor are per-row rejected and counted
+  (`rejected_rows_no_t21`) instead of failing the whole panel; `label_end_ts_ns`
+  stays on the symbol's own EMITTED axis (an upper bound on the true bar-axis
+  t+21 end — a pooled-session end understates it for partition-absence
+  symbols); a span cap (`--max-label-span`, default 42 pooled sessions,
+  `rejected_rows_span_cap` + `symbols_fully_rejected` counters) rejects
+  pathological label windows so one sparse symbol cannot poison the global
+  embargo; the fold plan auto-scales on short corpora; warm-up NaN `vov_63d`
+  is imputed from the train-fold mean so every emitted `vrp_signal_v1` row
+  parses under the frozen loader. The 102-name SP100 panel now trains
+  (3 folds) where round 1 rejected 77/102 names; GBT clip saturation is
+  persisted (`vrp_metrics.tsv` meta + CLI stderr).
+- `scripts/vrp_leak_adjudicate.py` (NEW): presence-based leak oracle — rebuilds
+  the trainer's plan and computes every admitted train row's TRUE label end
+  from surface-presence data, failing on any end past its fold's test start;
+  `--label-end-axis pooled` reproduces the blocked pooled-axis plan's exact 20
+  leaked rows as the non-vacuity control.
+- `scripts/vrp_panel_qa.py`: the t+21 coverage check is a report-only tier by
+  default; `--max-t21-violations N` opts into a hard exit-1 threshold
+  (negative N rejected at argparse).
+- Fast suite base reds cleared: the a75c389a trio (VolUmbrella fixture-path
+  scan, `MarkDomain.CarryRollCloseBooksAtTheCarriedMark` exact-eq drift,
+  varswap-compare-columns missing `-I`) plus the umbrella path-literal
+  scanner's false positive on `tools/oracle_scorecard.cpp`'s JSON backslash
+  escape (the decoded two-backslash literal reads as a UNC prefix; the escape
+  is now emitted via the `append(count, char)` overload). `VrpPanelQa` joined
+  ctest's fast lane.
+
 ### BREAKING - oracle Stage 1 adopts valid existing stores before ingest
 
 `missing_data` no longer unconditionally checks for 15 GiB and re-ingests the

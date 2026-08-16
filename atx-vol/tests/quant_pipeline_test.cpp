@@ -359,6 +359,7 @@ TEST(QuantPipeline, VrpBacktestArgsParseDefaultsAndOverrides) {
       "--stock-bps",     "3",             "--hedge-band",   "50",
       "--rebalance-steps", "5",           "--horizon-days", "10",
       "--long-frac",     "0.2",           "--short-frac",   "0.3",
+      "--expiry-guard",  "4",
   };
   const auto spec = parse_vrp_backtest_args(args);
   ASSERT_TRUE(spec.has_value()) << spec.error().to_string();
@@ -377,6 +378,7 @@ TEST(QuantPipeline, VrpBacktestArgsParseDefaultsAndOverrides) {
   EXPECT_DOUBLE_EQ(spec->config.delta_hedge_band, 50.0);
   EXPECT_EQ(spec->config.rebalance_every_n_steps, 5u);
   EXPECT_DOUBLE_EQ(spec->config.horizon_days, 10.0);
+  EXPECT_DOUBLE_EQ(spec->config.expiry_guard_days, 4.0);
   EXPECT_TRUE(spec->config.delta_hedge);
 
   // --no-hedge is the one value-free flag.
@@ -445,6 +447,15 @@ TEST(QuantPipeline, VrpBacktestArgsFailClosedOnMissingSignalFile) {
                                "--report", report, "--long-frac", "0.9"});
   ASSERT_FALSE(bad_config.has_value());
   EXPECT_EQ(bad_config.error().code(), ErrorCode::InvalidArgument);
+
+  // A guard at or above the tenor's calendar days can never hold a book:
+  // refused at parse time by the same config validation.
+  const auto bad_guard = parse_vrp_backtest_args(
+      std::vector<std::string>{"--signal", signal.string(), "--surface-db", db,
+                               "--report", report, "--horizon-days", "5",
+                               "--expiry-guard", "7.3"});
+  ASSERT_FALSE(bad_guard.has_value());
+  EXPECT_EQ(bad_guard.error().code(), ErrorCode::InvalidArgument);
   std::filesystem::remove_all(root);
 }
 
@@ -533,6 +544,12 @@ TEST(QuantPipeline, RunVrpBacktestWritesTheReportOverARealSurfaceDbRoot) {
   EXPECT_EQ(summary->n_rows, 2u);
   EXPECT_TRUE(std::isfinite(summary->final_nav));
   EXPECT_GT(summary->total_cost, 0.0) << "the configured half-spread must charge";
+  // A clean two-session hold: no fail-soft or fail-safe path fired, and the
+  // summary says so explicitly (the hardening counters are surfaced, not
+  // inferred from silence).
+  EXPECT_EQ(summary->n_held_steps, 0u);
+  EXPECT_EQ(summary->n_skipped_names, 0u);
+  EXPECT_EQ(summary->n_roll_closes, 0u);
 
   // The report exists, carries the promised columns, and is row-parallel.
   std::ifstream report(spec.report_path);
@@ -546,6 +563,8 @@ TEST(QuantPipeline, RunVrpBacktestWritesTheReportOverARealSurfaceDbRoot) {
   EXPECT_NE(header.find("turnover_vega"), std::string::npos);
   EXPECT_NE(header.find("cost"), std::string::npos);
   EXPECT_NE(header.find("vol_edge_n_long"), std::string::npos);
+  EXPECT_NE(header.find("vol_edge_held_steps"), std::string::npos);
+  EXPECT_NE(header.find("vol_edge_roll_closed"), std::string::npos);
   std::size_t data_rows = 0;
   std::string line;
   while (std::getline(report, line)) {

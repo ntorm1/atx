@@ -308,21 +308,25 @@ inline constexpr std::size_t kVrpFeatureCount = 10;
   return 0;
 }
 
-// A fair-vol model: any implementation, trained however, that maps the fixed
-// `kFairVolFeatureCount`-wide feature row to a log fair/market-vol ratio.
-// Batch-first (mirrors `ITheoOverlay::adjust`'s batch shape) so a heavier
-// model (e.g. a tree ensemble) can amortize per-call overhead; the shipped
-// v1 linear model's per-row cost is trivial either way.
+// A fair-vol model: any implementation, trained however, that maps a feature
+// row laid out per its declared schema -- width
+// `fair_vol_feature_count(feature_schema())`, NOT a fixed count -- to a log
+// fair/market-vol ratio. Batch-first (mirrors `ITheoOverlay::adjust`'s batch
+// shape) so a heavier model (e.g. the schema-2 flat-array GBT) can amortize
+// per-call overhead; a linear model's per-row cost is trivial either way.
 class IFairVolModel {
 public:
   virtual ~IFairVolModel() = default;
 
-  // The feature schema this model was trained against (`kFairVolFeatureSchemaV1`
-  // for every model this module currently ships). `make_fair_vol_model_overlay`
-  // checks this against `kFairVolFeatureSchemaV1` at construction (it assembles
-  // exactly that fixed layout and nothing else) and refuses a mismatch --
-  // a NEW model implementation cannot silently receive a feature block laid
-  // out for a schema it wasn't trained against.
+  // The feature schema this model was trained against -- v1 (width 8) or the
+  // VRP schema 2 (width 10; the vrp-train serialized linear/GBT files) --
+  // `fair_vol_feature_count` maps the id to the row width. The THEO overlay
+  // path stays v1-only: `make_fair_vol_model_overlay` assembles exactly the
+  // v1 layout, checks this id against `kFairVolFeatureSchemaV1` at
+  // construction, and refuses a mismatch -- a model cannot silently receive
+  // a feature block laid out for a schema it wasn't trained against.
+  // Schema-2 models are scored outside the overlay (the VRP trainer and its
+  // downstream consumers standardize per-asset and call predict directly).
   [[nodiscard]] virtual std::uint32_t feature_schema() const noexcept = 0;
 
   // Predicts `y = ln(sigma_fair / market_vol)` per row, from `features_row_major`
