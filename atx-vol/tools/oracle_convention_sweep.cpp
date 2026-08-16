@@ -12,7 +12,6 @@
 #include <utility>
 
 #include "atx/vol/api/pricing/american.hpp"
-#include "oracle_scorecard.hpp"
 
 namespace atx::vol::oracle {
 
@@ -244,15 +243,39 @@ best_price_scale(std::span<const PriceScaleCandidate> candidates) noexcept {
   return best;
 }
 
+// Designated initializers: `count` and `selection_count` are adjacent same-typed
+// fields, and transposing them is exactly the defect the gates' population
+// parity check would then be unable to see.
 [[nodiscard]] FloorMetric floor_metric(std::string id, const FloorAccumulators &acc,
                                        std::string unit, double multiplier = 1.0) {
-  return FloorMetric{std::move(id), acc.report.mean() * multiplier, acc.report.count,
-                     acc.selection.count, std::move(unit)};
+  return FloorMetric{.metric_id = std::move(id),
+                     .value = acc.report.mean() * multiplier,
+                     .count = acc.report.count,
+                     .selection_count = acc.selection.count,
+                     .unit = std::move(unit)};
 }
 
+// Absolute floors have no relative denominator, so the reported population IS
+// the selection population and both counts are the same accumulator's.
 [[nodiscard]] FloorMetric floor_metric(std::string id, const Accumulator &acc, std::string unit,
                                        double multiplier = 1.0) {
-  return FloorMetric{std::move(id), acc.mean() * multiplier, acc.count, acc.count, std::move(unit)};
+  return FloorMetric{.metric_id = std::move(id),
+                     .value = acc.mean() * multiplier,
+                     .count = acc.count,
+                     .selection_count = acc.count,
+                     .unit = std::move(unit)};
+}
+
+// An accumulator that admitted nothing has an infinite mean, and `%.17g` writes
+// that as a bare `inf` — JSON that does not parse. Name the empty metric at the
+// source instead of failing a 12-minute sweep on "sweep is not JSON".
+[[nodiscard]] const FloorMetric *first_unobserved_metric(std::span<const FloorMetric> metrics) {
+  for (const FloorMetric &metric : metrics) {
+    if (metric.count <= 0 || !std::isfinite(metric.value)) {
+      return &metric;
+    }
+  }
+  return nullptr;
 }
 
 [[nodiscard]] std::string_view sign_id(double scale) noexcept {
@@ -326,7 +349,11 @@ void append_json_string(std::string &out, std::string_view value) {
   out.push_back('"');
 }
 
+// PRECONDITION: `value` is finite. `%.17g` renders infinity/NaN as bare
+// `inf`/`nan`, which is not JSON — run_convention_sweep refuses to return a
+// result carrying a non-finite number so this stays unreachable.
 void append_double(std::string &out, double value) {
+  assert(std::isfinite(value));
   char buffer[48];
   std::snprintf(buffer, sizeof buffer, "%.17g", value);
   out.append(buffer);
@@ -413,7 +440,7 @@ void Accumulator::absolute(double model, double oracle) noexcept {
 
 void Accumulator::relative(double model, double oracle) noexcept {
   if (std::isfinite(model) && std::isfinite(oracle)) {
-    sum += std::abs(model - oracle) / std::max(std::abs(oracle), kGreekAbsFloor);
+    sum += std::abs(model - oracle) / std::max(std::abs(oracle), kSelectionAbsFloor);
     ++count;
   }
 }
@@ -532,7 +559,7 @@ Result<ConventionSweepResult> run_convention_sweep(std::span<const OracleRow> sm
         // The relative objective's denominator is floored, so a row with a
         // near-zero oracle rewards the smallest candidate scale no matter how
         // wrong it is. Such rows are reported but never select.
-        const bool selectable = std::abs(oracle) >= kGreekAbsFloor;
+        const bool selectable = std::abs(oracle) >= kSelectionAbsFloor;
         for (ScaleCandidate &candidate : candidates) {
           const double model =
               source_value(win->greeks, win->dp_dq, candidate.source) * candidate.scale;
@@ -611,11 +638,16 @@ Result<ConventionSweepResult> run_convention_sweep(std::span<const OracleRow> sm
       floor_metric("mode_a_vanna_rel", baseline_floors.vanna, "relative"),
       floor_metric("mode_a_delta_decay_rel", baseline_floors.delta_decay, "relative"),
   };
+  // Designated initializers: two doubles then two int64s in a row is exactly the
+  // transposition that would defeat the population checks by construction.
   for (const PriceCandidate &candidate : prices) {
     out.candidate_prices.push_back(CandidatePriceMetric{
-        std::string(input_model_id(candidate.model)), candidate.smoke.mean() * 100.0,
-        candidate.smoke.count, candidate.tune.count > 0 ? candidate.tune.mean() * 100.0 : 0.0,
-        candidate.tune.count});
+        .candidate_id = std::string(input_model_id(candidate.model)),
+        .smoke_price_mae_ticks = candidate.smoke.mean() * 100.0,
+        .smoke_count = candidate.smoke.count,
+        .tune_sample_price_mae_ticks =
+            candidate.tune.count > 0 ? candidate.tune.mean() * 100.0 : 0.0,
+        .tune_sample_count = candidate.tune.count});
   }
   std::sort(out.candidate_prices.begin(), out.candidate_prices.end(),
             [](const CandidatePriceMetric &left, const CandidatePriceMetric &right) {
@@ -627,6 +659,26 @@ Result<ConventionSweepResult> run_convention_sweep(std::span<const OracleRow> sm
       out.diagnostic_wall_seconds > 0.0
           ? static_cast<double>(out.rows_priced) / out.diagnostic_wall_seconds
           : 0.0;
+
+  // Every published number must be finite, and the only way one is not is an
+  // accumulator that admitted nothing. Refuse HERE, naming the metric or the
+  // input candidate, rather than emitting `inf` and having the gate report the
+  // whole 12-minute sweep as "not JSON".
+  if (const FloorMetric *empty = first_unobserved_metric(out.metrics)) {
+    return Err(ErrorCode::InvalidArgument,
+               "convention sweep candidate metric has no admitted observation: " + empty->metric_id);
+  }
+  if (const FloorMetric *empty = first_unobserved_metric(out.baseline_metrics)) {
+    return Err(ErrorCode::InvalidArgument,
+               "convention sweep baseline metric has no admitted observation: " + empty->metric_id);
+  }
+  for (const CandidatePriceMetric &candidate : out.candidate_prices) {
+    if (candidate.smoke_count <= 0 || !std::isfinite(candidate.smoke_price_mae_ticks) ||
+        !std::isfinite(candidate.tune_sample_price_mae_ticks)) {
+      return Err(ErrorCode::InvalidArgument,
+                 "convention sweep input candidate priced no smoke row: " + candidate.candidate_id);
+    }
+  }
   return Ok(std::move(out));
 }
 
@@ -647,7 +699,17 @@ std::string convention_map_json(const ConventionMap &map) {
   field("dividend_model", map.input_model == InputModel::CurrentSpotSdivYield
                               ? "continuous_yield_only"
                               : "discrete_cash_forward");
-  field("day_count", day_count_id(map.theta_days_per_year));
+  // Derived from the MULTIPLIER PRODUCTION APPLIES, not from the descriptive
+  // `theta_days_per_year` field: a map whose two theta fields disagree must
+  // render differently from a correct one, or the divergence check between
+  // `production_conventions` and the resolved winner cannot see the difference.
+  // `theta_days_per_year` stays a redundant cross-check, asserted here.
+  assert(day_count_id(map.theta_days_per_year) ==
+         day_count_id(days_from_time_scale(map.theta_scale)));
+  field("day_count", day_count_id(days_from_time_scale(map.theta_scale)));
+  // The scorecard's DTE-banding day count. It is outside the search, but a
+  // silent change to it re-buckets every cell, so the receipt records it.
+  field("dte_banding_day_count", day_count_id(map.days_per_year));
   field("price_scale", price_scale_id(map.price_scale));
   field("price_sign", sign_id(map.price_scale));
   field("vol_scale", "decimal_identity");

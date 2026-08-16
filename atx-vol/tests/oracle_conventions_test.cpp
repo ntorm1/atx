@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -9,7 +10,6 @@
 #include "atx/vol/api/pricing/american.hpp"
 #include "oracle_convention_sweep.hpp"
 #include "oracle_conventions.hpp"
-#include "oracle_scorecard.hpp"
 
 namespace {
 
@@ -97,7 +97,8 @@ constexpr std::string_view kResolvedWinnerJson =
     R"({"input_model":"discrete_forward_pv__rate__sdiv_yield",)"
     R"("forward_formula":"uprc_exp_rate_t_minus_ddiv","rate_model":"continuous_row_rate",)"
     R"("carry_model":"sdiv_as_yield","dividend_model":"discrete_cash_forward",)"
-    R"("day_count":"ACT_365_25","price_scale":"per_share","price_sign":"positive",)"
+    R"("day_count":"ACT_365_25","dte_banding_day_count":"ACT_365F",)"
+    R"("price_scale":"per_share","price_sign":"positive",)"
     R"("vol_scale":"decimal_identity","delta_scale":"per_unit","delta_sign":"positive",)"
     R"("gamma_scale":"per_unit","gamma_sign":"positive","theta_basis":"per_day",)"
     R"("theta_sign":"positive","vega_scale":"per_point","vega_sign":"positive",)"
@@ -199,17 +200,47 @@ TEST(OracleConvention, BestScaleWithoutSelectionEvidenceUsesCandidateIdentity) {
 
 TEST(OracleConvention, CompleteMapNamesEveryGreekSignAndScale) {
   const std::string json = convention_map_json(baseline_convention());
-  for (const char *token :
-       {"input_model",     "forward_formula", "rate_model",        "carry_model",
-        "dividend_model",  "day_count",       "price_scale",       "vol_scale",
-        "delta_scale",     "delta_sign",      "gamma_scale",       "gamma_sign",
-        "theta_basis",     "theta_sign",      "vega_scale",        "vega_sign",
-        "rho_scale",       "rho_sign",        "phi_scale",         "phi_sign",
-        "volga_source",    "volga_scale",     "volga_sign",        "vanna_source",
-        "vanna_scale",     "vanna_sign",      "delta_decay_basis", "delta_decay_day_count",
-        "delta_decay_sign"}) {
+  const char *const tokens[] = {"input_model",
+                                "forward_formula",
+                                "rate_model",
+                                "carry_model",
+                                "dividend_model",
+                                "day_count",
+                                "dte_banding_day_count",
+                                "price_scale",
+                                "price_sign",
+                                "vol_scale",
+                                "delta_scale",
+                                "delta_sign",
+                                "gamma_scale",
+                                "gamma_sign",
+                                "theta_basis",
+                                "theta_sign",
+                                "vega_scale",
+                                "vega_sign",
+                                "rho_scale",
+                                "rho_sign",
+                                "phi_scale",
+                                "phi_sign",
+                                "volga_source",
+                                "volga_scale",
+                                "volga_sign",
+                                "vanna_source",
+                                "vanna_scale",
+                                "vanna_sign",
+                                "delta_decay_basis",
+                                "delta_decay_day_count",
+                                "delta_decay_sign"};
+  for (const char *token : tokens) {
     EXPECT_NE(json.find(std::string{"\""} + token + "\""), std::string::npos) << token;
   }
+  // A substring sweep cannot see an EXTRA key, and five gate layers pin this map
+  // at exactly one size: a key added to the C++ emission alone fails the gate
+  // only after a 12-minute sweep. Every value is a closed enum token with no
+  // ':' in it, so counting colons counts keys.
+  EXPECT_EQ(static_cast<std::size_t>(std::count(json.begin(), json.end(), ':')),
+            std::size(tokens));
+  EXPECT_EQ(std::size(tokens), 31u);
 }
 
 TEST(OracleConvention, ThetaDayCountNeverRebucketsDteBands) {
@@ -275,7 +306,7 @@ TEST(OracleConvention, CandidateAndBaselineFloorsShareOneRowPopulation) {
 TEST(OracleConvention, SelectionExcludesSubFloorOracleRowsButStillReportsThem) {
   std::vector<OracleRow> smoke = {make_row(90.0, Side::Call), make_row(110.0, Side::Put)};
   const std::vector<OracleRow> tune = {make_row(95.0, Side::Call), make_row(105.0, Side::Put)};
-  smoke[0].vo = kGreekAbsFloor / 1000.0;
+  smoke[0].vo = kSelectionAbsFloor / 1000.0;
   const auto result = run_convention_sweep(smoke, tune);
   ASSERT_TRUE(result.has_value()) << result.error().to_string();
   const auto volga = std::find_if(result->metrics.begin(), result->metrics.end(),
@@ -295,6 +326,26 @@ TEST(OracleConvention, SweepJsonPublishesTheProductionMapBesideTheWinner) {
   const std::string json = convention_sweep_json(*result, "0123456789abcdef");
   EXPECT_NE(json.find("\"production_conventions\":"), std::string::npos);
   EXPECT_NE(json.find(convention_map_json(winning_convention())), std::string::npos);
+}
+
+// An accumulator that admitted nothing means infinity, `%.17g` renders that as
+// a bare `inf`, and the receipt would be JSON that does not parse — diagnosed
+// as "sweep is not JSON" after a 12-minute aggregate run. The sweep must name
+// the empty metric instead.
+TEST(OracleConvention, SweepRefusesAMetricNoRowObserved) {
+  std::vector<OracleRow> smoke = {make_row(90.0, Side::Call), make_row(110.0, Side::Put)};
+  std::vector<OracleRow> tune = {make_row(95.0, Side::Call), make_row(105.0, Side::Put)};
+  const double missing = std::numeric_limits<double>::quiet_NaN();
+  for (OracleRow &row : smoke) {
+    row.ph = missing;
+  }
+  for (OracleRow &row : tune) {
+    row.ph = missing;
+  }
+  const auto result = run_convention_sweep(smoke, tune);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_NE(result.error().to_string().find("mode_a_phi_rel"), std::string::npos)
+      << result.error().to_string();
 }
 
 TEST(OracleConvention, SweepRejectsEmptyCohort) {

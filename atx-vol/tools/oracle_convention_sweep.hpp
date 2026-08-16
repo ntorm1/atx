@@ -12,14 +12,28 @@
 
 namespace atx::vol::oracle {
 
+// The sweep's OWN absolute floor. It deliberately does not reuse the scorecard's
+// `kGreekAbsFloor` tolerance even though it currently carries the same value:
+// that constant is a REPORTING tolerance, and retuning it must never silently
+// move which rows the scale SELECTION ran on. Both jobs the floor performs
+// inside the sweep — the relative objective's denominator floor and the
+// selection-exclusion threshold — read this one constant, so the excluded rows
+// are exactly the rows whose denominator would have been pinned.
+//
+// The excluded FRACTION differs per metric (near-zero oracle deltas are common
+// on deep-OTM rows, near-zero vegas are not), which is why every metric
+// publishes its own `selection_count` beside `count` instead of the sweep
+// reporting one exclusion rate.
+inline constexpr double kSelectionAbsFloor = 1.0e-4;
+
 struct FloorMetric {
   std::string metric_id;
   double value = 0.0;
   // Rows behind `value`: every row both arms priced.
   std::int64_t count = 0;
   // Rows the scale SELECTION ran on. For the nine relative Greeks this excludes
-  // |oracle| < kGreekAbsFloor, where the relative objective's denominator floor
-  // would otherwise reward the smallest candidate scale regardless of
+  // |oracle| < kSelectionAbsFloor, where the relative objective's denominator
+  // floor would otherwise reward the smallest candidate scale regardless of
   // correctness. Reported separately so the exclusion stays auditable.
   std::int64_t selection_count = 0;
   std::string unit;
@@ -52,6 +66,12 @@ struct ConventionSweepResult {
 // Greek attribution. Every observation is committed to the candidate and the
 // baseline accumulator together or to neither, so the two floors always
 // describe one row population.
+//
+// Returns Err on an empty cohort, and Err NAMING the offending metric or input
+// candidate when one of them admitted no observation at all: an empty
+// Accumulator means infinity, `%.17g` renders that as a bare `inf`, and the
+// receipt would then be JSON that does not parse — diagnosed three layers away
+// from its cause.
 [[nodiscard]] Result<ConventionSweepResult> run_convention_sweep(std::span<const OracleRow> smoke,
                                                                  std::span<const OracleRow> tune);
 

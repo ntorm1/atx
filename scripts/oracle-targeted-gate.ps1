@@ -58,6 +58,7 @@ $script:OracleConventionTestIds = @(
   'OracleConvention.CandidateAndBaselineFloorsShareOneRowPopulation',
   'OracleConvention.SelectionExcludesSubFloorOracleRowsButStillReportsThem',
   'OracleConvention.SweepJsonPublishesTheProductionMapBesideTheWinner',
+  'OracleConvention.SweepRefusesAMetricNoRowObserved',
   'OracleConvention.SweepRejectsEmptyCohort'
 )
 $script:ModeAMetricMap = [ordered]@{
@@ -151,8 +152,13 @@ function Get-OracleTargetedGateSpec([string]$GateId, $Identity) {
     'convention_speed_measure' {
       # The only sanctioned producer of a rel-avx2 rows_per_second number, and
       # therefore the only thing that can run BEFORE iter-000 exists. It pins
-      # nothing: iter-000's speed.pin is copied from this receipt, and
-      # convention_speed then re-measures against that committed pin.
+      # nothing. iter-000's speed floor is DERIVED from this receipt, not copied
+      # from it: baseline = the measured rows_per_second, and
+      #   pin = floor(baseline * 0.90)
+      # convention_speed then re-measures on a quiet host and requires
+      # rows_per_second >= pin. A verbatim copy (pin == baseline) would make that
+      # a coin flip on run-to-run noise, so the 10% margin is part of the
+      # contract and Test-SpeedFloor rejects any pin above baseline * 0.95.
       $out = Join-Path $outputRoot ('convention-speed-measure-' + $Identity.Sha + '.json')
       return [pscustomobject]@{
         Kind = 'oracle_speed'; Program = $relBenchExe; OutputPath = $out
@@ -252,10 +258,14 @@ function Test-OracleMetricArray($Metrics) {
   $expected = @($script:ModeAMetricMap.Values | ForEach-Object { [string]$_ })
   if ($items.Count -ne $expected.Count -or -not (Test-OracleExactStringSet @($items.metric_id) $expected)) { return $false }
   foreach ($metric in $items) {
+    # selection_count > 0 alone admits a scale chosen on a handful of the 277k
+    # rows. Require at least a tenth of the reported population, so a collapsed
+    # selection sample fails the gate instead of pinning production silently.
     if (-not (Test-OracleExactKeys $metric @('metric_id', 'value', 'count', 'selection_count', 'unit')) -or
         -not (Test-OracleFiniteNumber $metric.value) -or -not (Test-OracleNonnegativeInteger $metric.count) -or [long]$metric.count -le 0 -or
         -not (Test-OracleNonnegativeInteger $metric.selection_count) -or [long]$metric.selection_count -le 0 -or
-        [long]$metric.selection_count -gt [long]$metric.count) { return $false }
+        [long]$metric.selection_count -gt [long]$metric.count -or
+        (10L * [long]$metric.selection_count) -lt [long]$metric.count) { return $false }
     $wantedUnit = if ($metric.metric_id -eq 'mode_a_price_mae') { 'ticks' } elseif ($metric.metric_id -eq 'mode_a_vol_mae') { 'bp' } else { 'relative' }
     if ($metric.unit -ne $wantedUnit -or [double]$metric.value -lt 0) { return $false }
   }
@@ -276,18 +286,64 @@ function Test-OracleMetricPopulationParity($Metrics, $BaselineMetrics) {
   return $true
 }
 
+# Value domains are the SAME closed enums oracle-capability.ps1 enforces on the
+# committed receipt. They are duplicated here deliberately: a targeted gate that
+# validated fewer domains would pass a map the capability probe then rejects,
+# i.e. AFTER the commit, which is the one place the failure cannot be undone.
 function Test-OracleConventionMap($Map) {
-  $keys = @('input_model', 'forward_formula', 'rate_model', 'carry_model', 'dividend_model', 'day_count', 'price_scale', 'price_sign', 'vol_scale', 'delta_scale', 'delta_sign', 'gamma_scale', 'gamma_sign', 'theta_basis', 'theta_sign', 'vega_scale', 'vega_sign', 'rho_scale', 'rho_sign', 'phi_scale', 'phi_sign', 'volga_source', 'volga_scale', 'volga_sign', 'vanna_source', 'vanna_scale', 'vanna_sign', 'delta_decay_basis', 'delta_decay_day_count', 'delta_decay_sign')
+  $keys = @('input_model', 'forward_formula', 'rate_model', 'carry_model', 'dividend_model', 'day_count', 'dte_banding_day_count', 'price_scale', 'price_sign', 'vol_scale', 'delta_scale', 'delta_sign', 'gamma_scale', 'gamma_sign', 'theta_basis', 'theta_sign', 'vega_scale', 'vega_sign', 'rho_scale', 'rho_sign', 'phi_scale', 'phi_sign', 'volga_source', 'volga_scale', 'volga_sign', 'vanna_source', 'vanna_scale', 'vanna_sign', 'delta_decay_basis', 'delta_decay_day_count', 'delta_decay_sign')
   if (-not (Test-OracleExactKeys $Map $keys)) { return $false }
   foreach ($key in $keys) { if (-not ($Map.$key -is [string]) -or -not $Map.$key) { return $false } }
-  if (@('none', 'uprc_exp_rate_t_minus_ddiv') -notcontains $Map.forward_formula -or
+  $inputModels = @('uprc_spot__rate__sdiv_yield', 'discrete_forward_pv__rate__sdiv_yield', 'discrete_forward_net_carry__rate__sdiv_yield', 'discrete_forward__rate__sdiv_yield', 'discrete_forward__rate_minus_sdiv__zero_carry', 'discrete_forward__zero_rate__zero_carry', 'discrete_forward_pv__rate_minus_sdiv__zero_carry', 'discrete_forward_pv__rate_plus_sdiv__zero_carry')
+  $dayCounts = @('ACT_365F', 'ACT_365_25', 'ACT_360', 'BUS_252')
+  if ($inputModels -notcontains $Map.input_model -or
+      @('none', 'uprc_exp_rate_t_minus_ddiv') -notcontains $Map.forward_formula -or
+      @('continuous_row_rate', 'continuous_rate_minus_sdiv', 'continuous_rate_plus_sdiv', 'zero') -notcontains $Map.rate_model -or
+      @('sdiv_as_yield', 'zero') -notcontains $Map.carry_model -or
+      @('continuous_yield_only', 'discrete_cash_forward') -notcontains $Map.dividend_model -or
+      $dayCounts -notcontains $Map.day_count -or $dayCounts -notcontains $Map.dte_banding_day_count -or
+      $dayCounts -notcontains $Map.delta_decay_day_count -or
+      @('per_share', 'per_contract_100', 'per_share_from_contract') -notcontains $Map.price_scale -or
       @('positive', 'negative') -notcontains $Map.price_sign -or
       @('decimal_identity') -notcontains $Map.vol_scale -or
+      @('per_day', 'per_year') -notcontains $Map.theta_basis -or @('per_day', 'per_year') -notcontains $Map.delta_decay_basis -or
       @('volga', 'vanna') -notcontains $Map.volga_source -or @('volga', 'vanna') -notcontains $Map.vanna_source) { return $false }
+  foreach ($name in @('delta_scale', 'gamma_scale', 'vega_scale', 'rho_scale', 'phi_scale', 'volga_scale', 'vanna_scale')) {
+    if (@('per_unit', 'per_point', 'per_point_squared', 'per_contract_100') -notcontains $Map.$name) { return $false }
+  }
   foreach ($name in @('delta_sign', 'gamma_sign', 'theta_sign', 'vega_sign', 'rho_sign', 'phi_sign', 'volga_sign', 'vanna_sign', 'delta_decay_sign')) {
     if (@('positive', 'negative') -notcontains $Map.$name) { return $false }
   }
   return $true
+}
+
+# Committed receipts are compared FIELD BY FIELD, with numbers compared by
+# VALUE. Windows PowerShell 5.1's ConvertFrom-Json parses JSON numbers into
+# System.Decimal and ConvertTo-Json re-emits the SOURCE DIGITS, so comparing two
+# re-serialized documents as text made an authored `0.0` differ from the sweep's
+# `%.17g` rendering of the same number (`0`) — a byte comparison of digits
+# masquerading as a value comparison.
+function Test-OracleJsonValueEqual($Left, $Right) {
+  if ($null -eq $Left -or $null -eq $Right) { return ($null -eq $Left) -and ($null -eq $Right) }
+  if ($Left -is [bool] -or $Right -is [bool]) { return ($Left -is [bool]) -and ($Right -is [bool]) -and ([bool]$Left -eq [bool]$Right) }
+  if ($Left -is [string] -or $Right -is [string]) { return ($Left -is [string]) -and ($Right -is [string]) -and ([string]$Left -ceq [string]$Right) }
+  if ($Left -is [array] -or $Right -is [array]) {
+    if (-not ($Left -is [array]) -or -not ($Right -is [array]) -or $Left.Count -ne $Right.Count) { return $false }
+    for ($index = 0; $index -lt $Left.Count; $index++) {
+      if (-not (Test-OracleJsonValueEqual $Left[$index] $Right[$index])) { return $false }
+    }
+    return $true
+  }
+  if ($Left -is [System.Management.Automation.PSCustomObject] -or $Right -is [System.Management.Automation.PSCustomObject]) {
+    if (-not ($Left -is [System.Management.Automation.PSCustomObject]) -or -not ($Right -is [System.Management.Automation.PSCustomObject])) { return $false }
+    $leftNames = @($Left.PSObject.Properties.Name)
+    if (-not (Test-OracleExactStringSet $leftNames @($Right.PSObject.Properties.Name))) { return $false }
+    foreach ($name in $leftNames) {
+      if (-not (Test-OracleJsonValueEqual $Left.$name $Right.$name)) { return $false }
+    }
+    return $true
+  }
+  return (Test-OracleFiniteNumber $Left) -and (Test-OracleFiniteNumber $Right) -and ([double]$Left -eq [double]$Right)
 }
 
 function ConvertFrom-OracleConventionSweep([string]$ScorecardText, [string]$GateId, $Identity, [string]$ExpectedFloorPath) {
@@ -304,10 +360,16 @@ function ConvertFrom-OracleConventionSweep([string]$ScorecardText, [string]$Gate
       -not (Test-OracleMetricPopulationParity $sweep.metrics $sweep.baseline_metrics) -or
       @($sweep.oracle_suspect_candidates).Count -ne 0 -or
       $sweep.market_evidence_status -ne 'not_evaluated_no_nbbo_gate') { throw "oracle targeted gate $GateId sweep schema mismatch" }
-  # Fail closed while the hand-authored production map differs from what the
-  # sweep resolved: otherwise a committed floor can describe a map production
-  # never prices with.
-  if (($sweep.production_conventions | ConvertTo-Json -Depth 20 -Compress) -cne ($sweep.conventions | ConvertTo-Json -Depth 20 -Compress)) {
+  # Row accounting closes by construction in the sweep, but nothing asserted it,
+  # so a run that failed 99% of its rows in the engine still reported PASS on the
+  # 1% it priced.
+  if (([long]$sweep.smoke_rows + [long]$sweep.tune_rows) -ne ([long]$sweep.rows_priced + [long]$sweep.engine_errors)) {
+    throw "oracle targeted gate $GateId sweep row accounting does not close: smoke_rows+tune_rows != rows_priced+engine_errors"
+  }
+  # Fail closed while the pinned production map differs from what the sweep
+  # resolved: otherwise a committed floor can describe a map production never
+  # prices with.
+  if (-not (Test-OracleJsonValueEqual $sweep.production_conventions $sweep.conventions)) {
     throw "oracle targeted gate $GateId production convention map differs from the resolved sweep winner"
   }
   $candidatePrices = @($sweep.candidate_prices)
@@ -333,17 +395,35 @@ function ConvertFrom-OracleConventionSweep([string]$ScorecardText, [string]$Gate
   if ($GateId -eq 'residual_floor') {
     if (-not (Test-Path -LiteralPath $ExpectedFloorPath -PathType Leaf)) { throw 'residual floor receipt is missing' }
     try { $floor = [System.IO.File]::ReadAllText($ExpectedFloorPath) | ConvertFrom-Json } catch { throw 'residual floor receipt is not JSON' }
-    $floorKeys = @('schema_version', 'kind', 'base_sha', 'tested_sha', 'command_id', 'exit_code', 'mode', 'cohorts', 'smoke_blob_oid', 'tune_blob_oid', 'rows_processed', 'target_metric_ids', 'baseline_conventions', 'conventions', 'metrics', 'baseline_metrics', 'metric_deltas', 'candidate_prices', 'oracle_suspect_candidates', 'market_evidence_status', 'diagnostic_speed', 'speed')
+    # `production_conventions` is committed too: without it the floor records the
+    # map the sweep RESOLVED but not the map production actually prices with, and
+    # the two are only checked against each other while a sweep is running.
+    $floorKeys = @('schema_version', 'kind', 'base_sha', 'tested_sha', 'command_id', 'exit_code', 'mode', 'cohorts', 'smoke_blob_oid', 'tune_blob_oid', 'rows_processed', 'target_metric_ids', 'baseline_conventions', 'conventions', 'production_conventions', 'metrics', 'baseline_metrics', 'metric_deltas', 'candidate_prices', 'oracle_suspect_candidates', 'market_evidence_status', 'diagnostic_speed', 'speed')
     if (-not (Test-OracleExactKeys $floor $floorKeys) -or $floor.schema_version -ne 2 -or $floor.kind -ne 'residual_floor' -or
         $floor.command_id -ne 'mode_a_residual_floor' -or $floor.exit_code -ne 0 -or $floor.mode -ne 'A' -or
         [long]$floor.rows_processed -ne [long]$sweep.rows_priced -or -not (Test-OracleExactStringSet @($floor.cohorts) @('smoke', 'tune')) -or
+        -not (Test-OracleConventionMap $floor.production_conventions) -or
         -not (Test-OracleExactStringSet @($floor.target_metric_ids) @($script:ModeAMetricMap.Values))) { throw 'residual floor receipt schema mismatch' }
-    foreach ($name in @('baseline_conventions', 'conventions', 'metrics', 'baseline_metrics', 'metric_deltas', 'candidate_prices', 'oracle_suspect_candidates', 'market_evidence_status')) {
-      if (($floor.$name | ConvertTo-Json -Depth 20 -Compress) -cne ($sweep.$name | ConvertTo-Json -Depth 20 -Compress)) { throw ('residual floor differs from recomputed sweep: ' + $name) }
+    foreach ($name in @('baseline_conventions', 'conventions', 'production_conventions', 'metrics', 'baseline_metrics', 'metric_deltas', 'candidate_prices', 'oracle_suspect_candidates', 'market_evidence_status')) {
+      if (-not (Test-OracleJsonValueEqual $floor.$name $sweep.$name)) {
+        throw ('residual floor differs from recomputed sweep: ' + $name +
+               ' (fields compare by VALUE, numbers as doubles; look for a real value change, a differing key set or array order,' +
+               ' or a number written as a string / with digits that do not round-trip)')
+      }
     }
+  }
+  # The scale selection ran on selection_count of count rows per metric; the
+  # weakest of those ratios is the one worth carrying into the receipt.
+  $minSelectionPercent = 100L
+  foreach ($metric in @($sweep.metrics)) {
+    $percent = [long][Math]::Floor((100.0 * [long]$metric.selection_count) / [long]$metric.count)
+    if ($percent -lt $minSelectionPercent) { $minSelectionPercent = $percent }
   }
   return [pscustomobject]@{
     RowsProcessed = [long]$sweep.rows_priced
+    RowsTotal = [long]$sweep.smoke_rows + [long]$sweep.tune_rows
+    EngineErrors = [long]$sweep.engine_errors
+    MinSelectionPercent = $minSelectionPercent
     MetricIds = @($script:ModeAMetricMap.Values | ForEach-Object { [string]$_ })
     Metrics = @($sweep.metrics)
     BaselineMetrics = @($sweep.baseline_metrics)
@@ -357,7 +437,11 @@ function ConvertFrom-OracleConventionSweep([string]$ScorecardText, [string]$Gate
 
 # An empty $ExpectedFloorPath is the MEASURE arm: it emits the measured
 # rel-avx2 rate with no pin comparison, because on a first-ever Stage 3 run no
-# pin exists yet and this gate is the only sanctioned producer of one.
+# pin exists yet and this gate is the only sanctioned producer of one. The
+# committed floor is DERIVED from that measurement — baseline = the measured
+# rows_per_second and pin = floor(baseline * 0.90) — never copied verbatim: a
+# pin equal to the baseline turns the re-measurement into a ~50/50 coin flip on
+# ordinary run-to-run noise, so the margin is enforced, not merely documented.
 function ConvertFrom-OracleSpeed([string]$ScorecardText, $Identity, [string]$ExpectedFloorPath) {
   try { $scorecard = $ScorecardText | ConvertFrom-Json } catch { throw 'convention speed scorecard is not JSON' }
   if (-not (Test-OracleExactKeys $scorecard @('iter', 'git_sha', 'cohort', 'modes', 'tolerances', 'cells')) -or
@@ -378,7 +462,9 @@ function ConvertFrom-OracleSpeed([string]$ScorecardText, $Identity, [string]$Exp
   if (-not (Test-OracleExactKeys $speed @('metric_id', 'baseline', 'pin', 'unit', 'preset', 'quiet_host')) -or
       $speed.metric_id -ne 'rel_avx2_rows_per_second' -or $speed.unit -ne 'rows_per_second' -or
       $speed.preset -ne 'rel-avx2' -or -not $speed.quiet_host -or -not (Test-OracleFiniteNumber $speed.baseline) -or
-      -not (Test-OracleFiniteNumber $speed.pin) -or [double]$speed.pin -le 0 -or [double]$mode.rows_per_second -lt [double]$speed.pin) { throw 'convention speed is below the pinned rel-avx2 floor' }
+      [double]$speed.baseline -le 0 -or -not (Test-OracleFiniteNumber $speed.pin) -or [double]$speed.pin -le 0 -or
+      [double]$speed.pin -gt ([double]$speed.baseline * 0.95)) { throw 'convention speed pin is not a margined floor below its measured baseline' }
+  if ([double]$mode.rows_per_second -lt [double]$speed.pin) { throw 'convention speed is below the pinned rel-avx2 floor' }
   return [pscustomobject]@{
     RowsProcessed = [long]$mode.rows_priced
     MetricIds = @('rel_avx2_rows_per_second')
@@ -521,6 +607,11 @@ function Invoke-OracleTargetedGate([string]$GateId, [scriptblock]$Invoker) {
     $requiredMetricIds = Get-OracleRequiredMetricIds $GateId
     if ($rowsProcessed -le 0 -or -not (Test-OracleExactStringSet $metricIds $requiredMetricIds)) { throw "oracle targeted gate $GateId reported empty/incomplete aggregate work" }
     $auditSummary = 'status=PASS rows_processed=' + $rowsProcessed + ' metric_ids=' + (($metricIds | Sort-Object) -join ',')
+    # Surface the weakest selection population so a scale chosen on a sliver of
+    # the cohort is visible in the receipt, not only inside the sweep artifact.
+    if ($aggregate.PSObject.Properties.Name -contains 'MinSelectionPercent') {
+      $auditSummary += ' min_selection_pct=' + [long]$aggregate.MinSelectionPercent
+    }
     $rawEvidence = $raw + "`n--scorecard--`n" + $scorecardText
   }
   $result = [ordered]@{
@@ -539,6 +630,10 @@ function Invoke-OracleTargetedGate([string]$GateId, [scriptblock]$Invoker) {
     raw_output_sha256 = Get-OracleTextSha256 $rawEvidence
   }
   if ($aggregate -and $aggregate.PSObject.Properties.Name -contains 'Metrics') {
+    # Carried so the row-accounting identity smoke_rows+tune_rows ==
+    # rows_priced+engine_errors is re-checkable from the receipt alone.
+    $result.rows_total = [long]$aggregate.RowsTotal
+    $result.engine_errors = [long]$aggregate.EngineErrors
     $result.metrics = @($aggregate.Metrics)
     $result.baseline_metrics = @($aggregate.BaselineMetrics)
     $result.metric_deltas = @($aggregate.MetricDeltas)

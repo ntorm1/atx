@@ -65,14 +65,21 @@ the inherited blob at canonical.
 - `bootstrap/conventions.json` has exactly the common provenance fields,
   `transition=conventions`, `command_id=oracle_conventions_smoke_tune`,
   `exit_code=0`, smoke/tune blob IDs, `CONVENTIONS.md` and iter-000 blob IDs, and
-  positive aggregate row count, the complete eleven-target registry, baseline
-  and winning complete convention maps, numeric candidate/baseline/delta floors,
+  positive aggregate row count, the complete eleven-target registry, baseline,
+  winning AND `production_conventions` complete convention maps, numeric
+  candidate/baseline/delta floors,
   the eight-candidate price attribution, and the pinned quiet rel-avx2 speed.
-  Iter-000 is itself an exact schema-v2 `residual_floor` receipt with the same
+  `production_conventions` is the map `winning_convention()` actually prices
+  with; both committed artifacts carry it so the floor holds a standalone record
+  of that map rather than only of the map the sweep resolved, and the probe
+  requires the two to be equal. Iter-000 is itself an exact schema-v2
+  `residual_floor` receipt with the same
   values plus Mode A, smoke+tune, both cohort blob IDs, empty oracle-suspect
   candidates until an NBBO gate supplies market evidence, explicit market-evidence
   status, and a non-citable dev diagnostic timing. The receipt and scorecard values
-  must be byte-equivalent after closed JSON serialization.
+  must be EQUAL FIELD BY FIELD, numbers compared as doubles — never as
+  re-serialized text, which in Windows PowerShell 5.1 compares source digits and
+  makes an authored `0.0` differ from the same number written `0`.
 - `bootstrap/mode-b.json` has exactly the common provenance fields,
   `transition=mode_b`, `command_id=oracle_mode_b_aggregate`, `exit_code=0`,
   smoke/tune blob IDs, positive row count, and the complete closed Mode B target-ID
@@ -141,29 +148,50 @@ and its evidence is never counted a second time. The winning input treatment is 
 on complete smoke+tune while bounded independent searches resolve theta/vega/rho/
 phi/volga/vanna/delta-decay scaling and sources, theta day count, signs, and share scaling.
 The scorecard's calendar DTE banding day count is a separate convention and stays
-pinned; the theta unit pick must not re-bucket it. Each row is priced under BOTH
+pinned; the theta unit pick must not re-bucket it. The map publishes both: the
+`day_count` field is theta's, derived from the multiplier production applies
+rather than from a descriptive field, and `dte_banding_day_count` records the
+banding convention so a silent change to it is visible in the receipt. Each row
+is priced under BOTH
 the winner and the baseline map before anything is accumulated, so the candidate
 and baseline floors always describe one row population — the gates enforce equal
-per-metric counts. Scale selection excludes rows with `|oracle| < kGreekAbsFloor`,
-where the relative objective's floored denominator would otherwise reward the
-smallest candidate scale; those rows still appear in the reported floor and each
-metric publishes both counts. The sweep also emits `production_conventions`, the
+per-metric counts. Scale selection excludes rows with
+`|oracle| < kSelectionAbsFloor` — the sweep's OWN constant, not the scorecard's
+reporting tolerance, so retuning that tolerance cannot silently move the
+selection population — where the relative objective's floored denominator would
+otherwise reward the smallest candidate scale; those rows still appear in the
+reported floor and each metric publishes both counts. The excluded fraction
+differs per metric, and every validator requires
+`selection_count >= count / 10`, so a scale resolved on a sliver of the cohort
+fails closed; the weakest ratio is surfaced in the gate receipt's
+`audit_summary` as `min_selection_pct`. The sweep also emits
+`production_conventions`, the
 map `winning_convention()` actually prices with, and the gate fails closed while
-it differs from the resolved winner.
+it differs from the resolved winner. Row accounting must close as
+`smoke_rows + tune_rows == rows_priced + engine_errors`, and a metric or input
+candidate that admitted no observation at all is a hard error naming that metric
+— never an `inf` written into the receipt.
 Vol remains decimal identity. No Cartesian-product sweep is permitted. Commit the winning map to
 `atx-vol/bench/oracle/CONVENTIONS.md`, encode it only in the isolated convention
 layer, and write aggregate `scorecards/iter-000.json` with the Mode A residual
 floor plus the exact `bootstrap/conventions.json` receipt. Run only these five
-worktree-local gates: `convention_tests`, `mode_a_smoke_tune`, `residual_floor`,
-`convention_speed_measure`, and `convention_speed`. The residual gate verifies the exact-SHA sweep artifact
+worktree-local gates, IN THIS ORDER: `convention_tests`, `mode_a_smoke_tune`,
+`convention_speed_measure`, `residual_floor`, and `convention_speed`. The order
+is executable rather than nominal: `residual_floor` hard-requires the committed
+iter-000, and `convention_speed_measure` produces the number iter-000 needs, so
+the measure gate necessarily precedes it. The residual gate verifies the exact-SHA sweep artifact
 from the preceding smoke+tune gate against iter-000; it does not price the same
 rows twice and fails if the artifact is absent or belongs to another SHA. On a
 first-ever Stage 3 run no speed pin exists, so `convention_speed_measure` runs
 BEFORE iter-000 is committed: it builds only the rel-avx2 oracle-bench target,
 runs tune on a quiet host, and emits the measured rows_per_second with no pin
-comparison. That receipt is the only sanctioned source of iter-000's `speed.pin`.
-`convention_speed` then re-runs the same quiet measurement against the committed
-pin. Record that evidenced floor in NORTHSTAR and append
+comparison. That receipt is the only sanctioned source of iter-000's speed
+floor, and the floor is DERIVED from it rather than copied: `speed.baseline` is
+the measured rows_per_second and `speed.pin` is `floor(baseline * 0.90)`. A
+verbatim copy would leave `pin == baseline`, making the re-measurement a coin
+flip on run-to-run noise, so the validators reject any pin above
+`baseline * 0.95`. `convention_speed` then re-runs the same quiet measurement
+against the committed pin. Record that evidenced floor in NORTHSTAR and append
 LEDGER only after audited landing; the Stage 3 build lane must not edit either
 memory file. Do not read Mode B or benchmark holdout.
 

@@ -152,7 +152,10 @@ const MESSAGE_REGISTRY = Object.freeze({
 const BOOTSTRAP_INTEGRATION_GATES = Object.freeze({
   bootstrap_data: Object.freeze(['aggregate_store', 'ingest_manifest', 'cohort_manifests', 'holdout_digest']),
   bootstrap_mode_a: Object.freeze(['mode_a_targeted_tests', 'mode_a_smoke']),
-  bootstrap_conventions: Object.freeze(['convention_tests', 'mode_a_smoke_tune', 'residual_floor', 'convention_speed_measure', 'convention_speed']),
+  // Execution order, not alphabetical: residual_floor hard-requires the
+  // committed iter-000, and convention_speed_measure produces the rel-avx2
+  // number iter-000's speed floor is derived from, so it must precede it.
+  bootstrap_conventions: Object.freeze(['convention_tests', 'mode_a_smoke_tune', 'convention_speed_measure', 'residual_floor', 'convention_speed']),
   bootstrap_mode_b: Object.freeze(['mode_b_targeted_tests', 'mode_b_smoke_tune']),
 })
 

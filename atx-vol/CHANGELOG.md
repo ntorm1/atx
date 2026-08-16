@@ -10,18 +10,38 @@ that silently changes a NUMBER a caller already depends on belongs in this file.
 Mode A still prices through one hard-cut, worktree-local `winning_convention()`
 map with no runtime selection flag and no legacy convention shim, but that map
 is no longer hand-authored: it is PINNED from the deterministic aggregate
-smoke+tune sweep. Two units move, and both silently change numbers a caller
-already depends on:
+smoke+tune sweep.
 
-- `phi_scale` 1e-4 -> 1e-2 (`per_point_squared` -> `per_point`). Every `ph`
-  produced by `to_oracle_units` is now 100x its previous value.
-- `delta_decay_scale` 1/365.25 -> 1/252 (`ACT_365_25` -> `BUS_252`). Every
-  `deDecay` is now ~1.45x its previous value.
+The previous values are the Stage-2 hypothesis map at `f619d3b4`
+(`atx-vol/tools/oracle_conventions.cpp`, `kDaysPerYear = 365.0`,
+`kPerPoint = 0.01`, `in.spot = row.uprc` with `ddiv` unused). Measured against
+that baseline, four things move and every one of them silently changes a number
+a caller already depends on:
 
-Migration: nothing else reads these two units, and no committed residual floor
-described the old ones, so there is no stored number to restate. Any caller
-holding its own `ph`/`deDecay` comparison constants must rescale by those two
-factors.
+- `input_model` `uprc_spot__rate__sdiv_yield` -> `discrete_forward_pv__rate__sdiv_yield`.
+  The pricing spot goes from `row.uprc` to `(uprc*exp(rate*T) - ddiv)*exp(-rate*T)`,
+  so on any row with `ddiv != 0` EVERY price and EVERY Greek changes. This is not
+  a search candidate note: it is the production map. There is no single scalar
+  factor — the shift is `-ddiv*exp(-rate*T)` in spot, and each output moves by
+  its own sensitivity to that shift. Rows with `ddiv == 0` are unchanged.
+- `theta_scale` `1/365` -> `1/365.25` (`ACT_365F` -> `ACT_365_25`). Every `th` is
+  now `365/365.25 = 0.99931554x` its previous value.
+- `volga_scale` `1e-2` -> `1e-4` (`per_point` -> `per_point_squared`). Every `vo`
+  is now `0.01x` — one hundredth of — its previous value.
+- `delta_decay_scale` `1/365` -> `1/252` (`ACT_365F` -> `BUS_252`). Every
+  `deDecay` is now `365/252 = 1.44841270x` its previous value.
+
+`phi_scale` did NOT move: it was `0.01` (`kPerPoint`) at `f619d3b4` and is
+`0.01` (`per_point`) now, so `ph` is unchanged. `price_scale`, `delta_scale`,
+`gamma_scale`, `vega_scale`, `rho_scale`, `vanna_scale`, the volga/vanna sources
+and every sign are likewise unchanged.
+
+Migration: nothing else in the tree reads these units, and no committed residual
+floor described the old ones, so there is no stored number to restate. A caller
+holding its own comparison constants must multiply `th` by 0.99931554, `vo` by
+0.01 and `deDecay` by 1.44841270, and must RE-DERIVE rather than rescale
+anything computed from a `ddiv != 0` row, because the input model changed the
+priced spot itself.
 
 Nothing asserts that pin on trust; the gate re-derives it.
 `convention_sweep_json` re-emits the production map as `production_conventions`
@@ -41,15 +61,29 @@ aggregate smoke+tune search — the documented discrete-dividend forward
 price/share and sign scaling, and all nine Greek source/unit/sign mappings, with
 no Cartesian product. Every row is priced under both the winner and the baseline
 map before either accumulator sees it, so the two floors always describe one row
-population. Scale selection excludes rows with `|oracle| < kGreekAbsFloor`
+population. Scale selection excludes rows with `|oracle| < kSelectionAbsFloor`
 (whose floored relative denominator otherwise rewards the smallest candidate
 scale); those rows still count toward the reported floor, and every metric now
-publishes both `count` and `selection_count`.
+publishes both `count` and `selection_count`. `kSelectionAbsFloor` is the
+sweep's own constant, currently `1e-4` — the same value the scorecard's
+`kGreekAbsFloor` reporting tolerance carries, but no longer the same constant,
+so retuning that tolerance cannot silently move the selection population. Every
+validator additionally requires `selection_count >= count / 10`, and the gate
+receipt's `audit_summary` gains `min_selection_pct`.
+
+A sweep whose metric or input candidate admitted no observation at all now
+returns an error NAMING it. Previously the empty accumulator's infinite mean was
+written through `%.17g` as a bare `inf`, and a twelve-minute aggregate run
+failed as "sweep is not JSON".
 
 Convention bootstrap receipts and iter-000 residual floors are schema version 2
-and carry all eleven numeric metrics with both counts, baseline and winning
-maps/deltas, bounded candidate attribution, artifact blob IDs, and a quiet
-rel-avx2 speed pin; legacy convention receipts now fail closed.
+and carry all eleven numeric metrics with both counts, baseline, winning AND
+`production_conventions` maps, deltas, bounded candidate attribution, artifact
+blob IDs, and a quiet rel-avx2 speed pin; legacy convention receipts now fail
+closed. Receipt and scorecard values are compared FIELD BY FIELD with numbers
+compared as doubles: the previous re-serialized-text comparison compared source
+digits under Windows PowerShell 5.1, where an authored `0.0` and the sweep's
+`%.17g` rendering of the same number (`0`) are different strings.
 
 The bootstrap gate registry builds only the convention test and oracle-bench
 targets. It runs the isolated convention suite (discovered per test case, so a
@@ -57,14 +91,25 @@ filter that matches nothing fails instead of reporting 1/1 passed), executes one
 smoke+tune sweep, verifies that exact-SHA artifact against the committed floor
 without repricing it, and runs two quiet tune speed gates: `convention_speed_measure`
 emits the measured rel-avx2 rate with no pin comparison (it is the only
-sanctioned producer of the number iter-000's `speed.pin` is copied from), and
-`convention_speed` then re-measures against that committed pin. Holdout and
-broad/full test suites remain outside convention resolution.
+sanctioned producer of the number iter-000's speed floor is DERIVED from —
+`speed.baseline` is that measurement and `speed.pin` is
+`floor(baseline * 0.90)`; a verbatim copy would make the re-measurement a coin
+flip, so validators reject any pin above `baseline * 0.95`), and
+`convention_speed` then re-measures against that committed pin. The declared
+Stage 3 gate order is `convention_tests`, `mode_a_smoke_tune`,
+`convention_speed_measure`, `residual_floor`, `convention_speed` — measure
+precedes the residual gate because the residual gate requires the iter-000 the
+measurement feeds. Holdout and broad/full test suites remain outside convention
+resolution.
 
 `ConventionMap` gains `theta_days_per_year`. The map's reported `day_count` is
-the theta day count; `days_per_year` is now solely the scorecard's calendar
-DTE-banding day count and the sweep never writes it, so a theta unit pick no
-longer silently re-buckets every DTE band.
+the theta day count, derived from `theta_scale` (the multiplier production
+applies) rather than from the descriptive field, so a map whose two theta fields
+disagree can no longer render identically to a correct one. `days_per_year` is
+now solely the scorecard's calendar DTE-banding day count and the sweep never
+writes it, so a theta unit pick no longer silently re-buckets every DTE band; it
+is published as `dte_banding_day_count`, taking the convention map to 31 keys
+across all five layers that pin it.
 
 ### BREAKING - later oracle bootstrap stages advance an existing canonical ref
 

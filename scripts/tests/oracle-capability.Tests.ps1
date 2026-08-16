@@ -17,7 +17,8 @@ function New-TestConventionMap {
   return [ordered]@{
     input_model = 'discrete_forward_pv__rate__sdiv_yield'; forward_formula = 'uprc_exp_rate_t_minus_ddiv'
     rate_model = 'continuous_row_rate'; carry_model = 'sdiv_as_yield'; dividend_model = 'discrete_cash_forward'
-    day_count = 'ACT_365_25'; price_scale = 'per_share'; price_sign = 'positive'; vol_scale = 'decimal_identity'
+    day_count = 'ACT_365_25'; dte_banding_day_count = 'ACT_365F'
+    price_scale = 'per_share'; price_sign = 'positive'; vol_scale = 'decimal_identity'
     delta_scale = 'per_unit'; delta_sign = 'positive'; gamma_scale = 'per_unit'; gamma_sign = 'positive'
     theta_basis = 'per_day'; theta_sign = 'positive'; vega_scale = 'per_point'; vega_sign = 'positive'
     rho_scale = 'per_point'; rho_sign = 'positive'; phi_scale = 'per_point_squared'; phi_sign = 'positive'
@@ -149,7 +150,8 @@ Describe 'oracle capability closed aggregate receipts' {
       schema_version = 2; kind = 'residual_floor'; base_sha = $modeACommit; tested_sha = $modeACommit
       command_id = 'mode_a_residual_floor'; exit_code = 0; mode = 'A'; cohorts = @('smoke', 'tune')
       smoke_blob_oid = $smokeOid; tune_blob_oid = $tuneOid; rows_processed = 100; target_metric_ids = $targetA
-      baseline_conventions = $baselineMap; conventions = $conventionMap; metrics = $metrics; baseline_metrics = $baselineMetrics
+      baseline_conventions = $baselineMap; conventions = $conventionMap; production_conventions = (New-TestConventionMap)
+      metrics = $metrics; baseline_metrics = $baselineMetrics
       metric_deltas = $metricDeltas; candidate_prices = $candidatePrices; oracle_suspect_candidates = @()
       market_evidence_status = 'not_evaluated_no_nbbo_gate'; diagnostic_speed = [ordered]@{ preset = 'dev'; citable = $false; wall_seconds = 1.0; rows_per_second = 100.0 }; speed = $speed
     })
@@ -160,6 +162,7 @@ Describe 'oracle capability closed aggregate receipts' {
       conventions_blob_oid = (Get-BlobOid $conventionsTested ($oracleRoot + '/CONVENTIONS.md'))
       scorecard_blob_oid = (Get-BlobOid $conventionsTested ($oracleRoot + '/scorecards/iter-000.json'))
       rows_processed = 100; target_metric_ids = $targetA; baseline_conventions = $baselineMap; conventions = $conventionMap
+      production_conventions = (New-TestConventionMap)
       metrics = $metrics; baseline_metrics = $baselineMetrics; metric_deltas = $metricDeltas; candidate_prices = $candidatePrices; speed = $speed
     }
     Write-JsonFile (Join-Path $bootstrapRoot 'conventions.json') $conventionsReceipt
