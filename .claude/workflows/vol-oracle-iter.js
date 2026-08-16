@@ -605,6 +605,77 @@ function diagnosticsUseForbiddenCommand(diagnostics) {
   return Array.isArray(diagnostics) && diagnostics.some(item => iterationCommandError(item && item.command))
 }
 
+function sha256HexUtf8(value) {
+  const bytes = []
+  for (const symbol of String(value)) {
+    const code = symbol.codePointAt(0)
+    if (code <= 0x7f) bytes.push(code)
+    else if (code <= 0x7ff) bytes.push(0xc0 | (code >>> 6), 0x80 | (code & 0x3f))
+    else if (code <= 0xffff) bytes.push(0xe0 | (code >>> 12), 0x80 | ((code >>> 6) & 0x3f), 0x80 | (code & 0x3f))
+    else bytes.push(0xf0 | (code >>> 18), 0x80 | ((code >>> 12) & 0x3f), 0x80 | ((code >>> 6) & 0x3f), 0x80 | (code & 0x3f))
+  }
+  const bitLength = bytes.length * 8
+  bytes.push(0x80)
+  while (bytes.length % 64 !== 56) bytes.push(0)
+  const high = Math.floor(bitLength / 0x100000000)
+  const low = bitLength >>> 0
+  for (let shift = 24; shift >= 0; shift -= 8) bytes.push((high >>> shift) & 0xff)
+  for (let shift = 24; shift >= 0; shift -= 8) bytes.push((low >>> shift) & 0xff)
+  const k = [
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+  ]
+  const h = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19]
+  const rotate = (word, bits) => (word >>> bits) | (word << (32 - bits))
+  for (let offset = 0; offset < bytes.length; offset += 64) {
+    const w = new Array(64)
+    for (let index = 0; index < 16; index += 1) {
+      const cursor = offset + index * 4
+      w[index] = ((bytes[cursor] << 24) | (bytes[cursor + 1] << 16) | (bytes[cursor + 2] << 8) | bytes[cursor + 3]) >>> 0
+    }
+    for (let index = 16; index < 64; index += 1) {
+      const s0 = rotate(w[index - 15], 7) ^ rotate(w[index - 15], 18) ^ (w[index - 15] >>> 3)
+      const s1 = rotate(w[index - 2], 17) ^ rotate(w[index - 2], 19) ^ (w[index - 2] >>> 10)
+      w[index] = (w[index - 16] + s0 + w[index - 7] + s1) >>> 0
+    }
+    let [a, b, c, d, e, f, g, hh] = h
+    for (let index = 0; index < 64; index += 1) {
+      const s1 = rotate(e, 6) ^ rotate(e, 11) ^ rotate(e, 25)
+      const choice = (e & f) ^ (~e & g)
+      const first = (hh + s1 + choice + k[index] + w[index]) >>> 0
+      const s0 = rotate(a, 2) ^ rotate(a, 13) ^ rotate(a, 22)
+      const majority = (a & b) ^ (a & c) ^ (b & c)
+      const second = (s0 + majority) >>> 0
+      hh = g; g = f; f = e; e = (d + first) >>> 0; d = c; c = b; b = a; a = (first + second) >>> 0
+    }
+    const chunk = [a, b, c, d, e, f, g, hh]
+    for (let index = 0; index < h.length; index += 1) h[index] = (h[index] + chunk[index]) >>> 0
+  }
+  return h.map(word => word.toString(16).padStart(8, '0')).join('')
+}
+
+function brokerGateOutputSha256(output) {
+  return sha256HexUtf8(String(output))
+}
+
+function brokerGateReceiptId(operationId, receipt) {
+  return sha256HexUtf8(JSON.stringify({
+    operation_id: operationId,
+    gate_id: receipt.gate_id,
+    tested_sha: receipt.tested_sha,
+    tested_tree: receipt.tested_tree,
+    command: receipt.command,
+    exit_code: receipt.exit_code,
+    raw_output_sha256: receipt.broker_evidence.raw_output_sha256,
+  }))
+}
+
 function validBootstrapDiagnostics(diagnostics, required) {
   if (diagnostics === undefined) return !required
   return Array.isArray(diagnostics) && (!required || diagnostics.length > 0) && diagnostics.every(item =>
@@ -840,7 +911,9 @@ function validPrecheckGateReceipt(receipt, gateId, expected, worktree) {
   if (!receipt || receipt.gate_id !== gateId || receipt.command !== BOOTSTRAP_GATE_COMMANDS[gateId] || !String(receipt.output || '').trim() ||
       !/^[0-9a-f]{64}$/.test(receipt.receipt_id || '') || receipt.tested_sha !== expected.base_sha || receipt.tested_tree !== expected.base_tree ||
       !validBrokerEvidence(receipt.broker_evidence, `gate:${gateId}`, worktree, false, true) || receipt.broker_evidence.command !== receipt.command ||
-      receipt.broker_evidence.output !== receipt.output || receipt.broker_evidence.exit_code !== receipt.exit_code) return false
+      receipt.broker_evidence.output !== receipt.output || receipt.broker_evidence.exit_code !== receipt.exit_code ||
+      receipt.broker_evidence.raw_output_sha256 !== brokerGateOutputSha256(receipt.output) ||
+      receipt.receipt_id !== brokerGateReceiptId(expected.operation_id, receipt)) return false
   const keys = Object.keys(receipt).sort().join(',')
   const outerKeys = ['receipt_id', 'gate_id', 'tested_sha', 'tested_tree', 'command', 'status', 'exit_code', 'output', 'broker_evidence']
   if (receipt.status === 'FAIL') return Number.isInteger(receipt.exit_code) && receipt.exit_code !== 0 && keys === outerKeys.sort().join(',')

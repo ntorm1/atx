@@ -27,7 +27,10 @@ scorecards gain explicit `a.vol.*` identity cells and a five-basis-point
 absolute-vol tolerance. Stage 2 prechecks now require the complete broker gate
 receipt, including receipt ID, outer tested SHA/tree, command/output, raw-output
 digest evidence, and broker root guards, all bound to the capability probe's
-base SHA/tree. Stripped or synthesized legacy precheck receipts fail closed.
+base SHA/tree. Broker gate digests now hash the exact UTF-8 bytes of the carried
+canonical output, and receipt IDs use the broker's closed ordered JSON preimage,
+so both values are independently recomputed before Stage 2 accepts them.
+Stripped or synthesized legacy precheck receipts fail closed.
 There is no compatibility flag or legacy receipt shim; regenerate the bootstrap
 receipt through the fixed targeted gates.
 

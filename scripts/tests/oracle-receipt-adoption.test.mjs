@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
+import { brokerGateOutputSha256 as productionGateOutputSha256, brokerGateReceiptId as productionGateReceiptId, buildBrokerGateReceipt } from '../oracle-lane-broker.mjs'
 
 const read = path => readFileSync(path, 'utf8')
 const workflow = read('.claude/workflows/vol-oracle-iter.js')
@@ -27,7 +28,7 @@ function extractFunction(source, name) {
 
 const functionNames = [
   'expectedBootstrapMetricIds', 'iterationCommandError', 'validSuccessEvidence', 'diagnosticsUseForbiddenCommand',
-  'bootstrapCommandError', 'validBootstrapSuccessEvidence', 'validBootstrapDiagnostics',
+  'bootstrapCommandError', 'validBootstrapSuccessEvidence', 'sha256HexUtf8', 'brokerGateOutputSha256', 'brokerGateReceiptId', 'validBootstrapDiagnostics',
   'validLeaseReceipt', 'validBrokerEvidence', 'validGateReceipt', 'validAdoptionReceipt', 'validChangedPathReceipt', 'validPrecheckGateReceipt',
   'bootstrapPathError', 'bootstrapLeaseIdentityError', 'unwrapBootstrapReport', 'bootstrapReportError',
 ]
@@ -78,17 +79,16 @@ function schemaErrors(schema, value, path = '$') {
 
 const sha = char => char.repeat(40)
 const digest = char => char.repeat(64)
-const receiptDigests = { disk: digest('d'), mode_a_targeted_tests: digest('e'), mode_a_smoke: digest('f') }
 function rootGuard() {
   return { main_sha: sha('9'), canonical_sha: sha('8'), index_sha256: digest('1'), tracked_sha256: digest('2'), untracked_sha256: digest('3'), raw_sha256: digest('4') }
 }
 function gateBrokerEvidence(gateId, worktree, command, output, exitCode) {
   return {
     logical_operation: `gate:${gateId}`, physical_cwd: worktree, command, exit_code: exitCode, output,
-    raw_output_sha256: digest('5'), root_guard_before: rootGuard(), root_guard_after: rootGuard(),
+    raw_output_sha256: productionGateOutputSha256(output), root_guard_before: rootGuard(), root_guard_after: rootGuard(),
   }
 }
-function gateReceipt(gateId, observations = 20, testedSha = sha('a'), testedTree = sha('b'), worktree = 'C:\\atx-wt\\pool-1') {
+function gateReceipt(gateId, observations = 20, testedSha = sha('a'), testedTree = sha('b'), worktree = 'C:\\atx-wt\\pool-1', operationId = 'bootstrap_mode_a') {
   const common = { schema_version: 1, status: 'PASS', observations, command_id: gateId, raw_output_sha256: digest('f') }
   const semantic = { ...common, tested_sha: testedSha, tested_tree: testedTree }
   const result = gateId === 'disk' ? common : gateId.endsWith('_tests')
@@ -96,21 +96,17 @@ function gateReceipt(gateId, observations = 20, testedSha = sha('a'), testedTree
     : { ...semantic, gate_kind: 'oracle_bench', tests_executed: 0, tests_passed: 0, rows_processed: 3, metric_ids: MODE_A_TARGETS, audit_summary: `status=PASS rows_processed=3 metric_ids=${[...MODE_A_TARGETS].sort().join(',')}` }
   const command = BOOTSTRAP_GATE_COMMANDS[gateId]
   const output = JSON.stringify(result)
-  return {
-    receipt_id: receiptDigests[gateId], gate_id: gateId, tested_sha: testedSha, tested_tree: testedTree,
-    command, exit_code: 0, output, result, broker_evidence: gateBrokerEvidence(gateId, worktree, command, output, 0),
-  }
+  const broker_evidence = gateBrokerEvidence(gateId, worktree, command, output, 0)
+  return { ...buildBrokerGateReceipt(operationId, { gate_id: gateId, tested_sha: testedSha, tested_tree: testedTree, command, exit_code: 0, output, broker_evidence }), result }
 }
-function precheck(gateId, status = 'PASS', testedSha = sha('a'), testedTree = sha('b'), worktree = 'C:\\atx-wt\\pool-1') {
+function precheck(gateId, status = 'PASS', testedSha = sha('a'), testedTree = sha('b'), worktree = 'C:\\atx-wt\\pool-1', operationId = 'bootstrap_mode_a') {
   if (status === 'FAIL') {
     const command = BOOTSTRAP_GATE_COMMANDS[gateId]
     const output = 'targeted failure'
-    return {
-      receipt_id: receiptDigests[gateId], gate_id: gateId, tested_sha: testedSha, tested_tree: testedTree,
-      command, status, exit_code: 1, output, broker_evidence: gateBrokerEvidence(gateId, worktree, command, output, 1),
-    }
+    const broker_evidence = gateBrokerEvidence(gateId, worktree, command, output, 1)
+    return { ...buildBrokerGateReceipt(operationId, { gate_id: gateId, tested_sha: testedSha, tested_tree: testedTree, command, exit_code: 1, output, broker_evidence }), status }
   }
-  return { ...gateReceipt(gateId, 20, testedSha, testedTree, worktree), status }
+  return { ...gateReceipt(gateId, 20, testedSha, testedTree, worktree, operationId), status }
 }
 function changedPathReceipt(base, tested, paths) {
   return { base_sha: base, tested_sha: tested, command: `git diff --name-only ${base}...${tested}`, exit_code: 0, output: paths.join('\n'), paths }
@@ -148,6 +144,7 @@ function expectedFor(report) {
   return {
     state: report.state, branch: report.branch, base_sha: report.base_sha,
     base_tree: report.precheck_gate_receipts?.[0]?.tested_tree || sha('c'),
+    operation_id: report.state === 'missing_mode_a' ? 'bootstrap_mode_a' : undefined,
     run_id: report.lease_run_id, heartbeat_id: report.heartbeat_id,
   }
 }
@@ -220,9 +217,13 @@ test('Stage 1 typed branching rejects missing disk, generic evidence, and contra
 
 test('Stage 2 precheck receipts mechanically select receipt-only or implementation paths', () => {
   const base = sha('d'); const baseTree = sha('c'); const tested = sha('e'); const worktree = 'C:\\atx-wt\\pool-1'
-  const expected = { state: 'missing_mode_a', base_sha: base, base_tree: baseTree }
+  const expected = { state: 'missing_mode_a', operation_id: 'bootstrap_mode_a', base_sha: base, base_tree: baseTree }
   const receiptPath = ['atx-vol/bench/oracle/bootstrap/mode-a.json']
   const passing = { base_sha: base, sha: tested, bootstrap_path: 'mode_a_receipt_only', worktree, evidence: [], precheck_gate_receipts: [precheck('mode_a_targeted_tests', 'PASS', base, baseTree, worktree), precheck('mode_a_smoke', 'PASS', base, baseTree, worktree)], changed_path_receipt: changedPathReceipt(base, tested, receiptPath) }
+  const actualReceipt = passing.precheck_gate_receipts[0]
+  for (const value of ['', 'abc', 'oracle-\u0394-\ud83d\ude80']) assert.equal(validators.brokerGateOutputSha256(value), productionGateOutputSha256(value))
+  assert.equal(validators.brokerGateOutputSha256(actualReceipt.output), productionGateOutputSha256(actualReceipt.output))
+  assert.equal(validators.brokerGateReceiptId(expected.operation_id, actualReceipt), actualReceipt.receipt_id)
   assert.equal(validators.bootstrapPathError(passing, expected), null)
   const structured = completeReport({
     ...passing, tree: sha('0'), holdout_digest_receipt: digest('a'),
@@ -244,11 +245,19 @@ test('Stage 2 precheck receipts mechanically select receipt-only or implementati
       receipt.broker_evidence.output = receipt.output
     },
     value => { delete value.precheck_gate_receipts[0].receipt_id },
+    value => { value.precheck_gate_receipts[0].receipt_id = digest('a') },
     value => { value.precheck_gate_receipts[1].receipt_id = value.precheck_gate_receipts[0].receipt_id },
     value => { value.precheck_gate_receipts[0].broker_evidence.command = 'forged command' },
     value => { value.precheck_gate_receipts[0].broker_evidence.output = 'forged output' },
     value => { delete value.precheck_gate_receipts[0].broker_evidence.raw_output_sha256 },
+    value => { value.precheck_gate_receipts[0].broker_evidence.raw_output_sha256 = digest('a') },
     value => { value.precheck_gate_receipts[0].broker_evidence.physical_cwd = 'C:\\atx-wt\\pool-99' },
+    value => {
+      const receipt = value.precheck_gate_receipts[0]
+      receipt.result.raw_output_sha256 = digest('a')
+      receipt.output = JSON.stringify(receipt.result)
+      receipt.broker_evidence.output = receipt.output
+    },
     value => {
       const receipt = value.precheck_gate_receipts[0]
       receipt.result.tests_executed = 30

@@ -122,6 +122,29 @@ const MESSAGE_REGISTRY = Object.freeze({
 })
 
 const sha256 = value => createHash('sha256').update(value).digest('hex')
+export const brokerGateOutputSha256 = output => sha256(Buffer.from(String(output), 'utf8'))
+export function brokerGateReceiptId(operationId, receipt) {
+  return sha256(Buffer.from(JSON.stringify({
+    operation_id: operationId,
+    gate_id: receipt.gate_id,
+    tested_sha: receipt.tested_sha,
+    tested_tree: receipt.tested_tree,
+    command: receipt.command,
+    exit_code: receipt.exit_code,
+    raw_output_sha256: receipt.raw_output_sha256,
+  }), 'utf8'))
+}
+export function buildBrokerGateReceipt(operationId, receipt) {
+  const brokerEvidence = { ...receipt.broker_evidence, raw_output_sha256: brokerGateOutputSha256(receipt.output) }
+  const receiptId = brokerGateReceiptId(operationId, {
+    gate_id: receipt.gate_id, tested_sha: receipt.tested_sha, tested_tree: receipt.tested_tree,
+    command: receipt.command, exit_code: receipt.exit_code, raw_output_sha256: brokerEvidence.raw_output_sha256,
+  })
+  return {
+    receipt_id: receiptId, gate_id: receipt.gate_id, tested_sha: receipt.tested_sha, tested_tree: receipt.tested_tree,
+    command: receipt.command, exit_code: receipt.exit_code, output: receipt.output, broker_evidence: brokerEvidence,
+  }
+}
 const lower = value => String(value).toLowerCase()
 const samePath = (left, right) => lower(resolve(left)) === lower(resolve(right))
 
@@ -741,8 +764,12 @@ export class OracleLaneBroker {
     const testedTree = this.#tree(testedSha, cap.worktree)
     if (integrationOperation && (changed.length || testedSha !== cap.integrated_sha || testedTree !== cap.integrated_tree)) throw new Error('gate changed sealed integration SHA/tree or worktree')
     const brokerEvidence = this.#evidence(`gate:${gateId}`, cap.worktree, gate.display, result, before, after)
-    const receiptId = sha256(Buffer.from(JSON.stringify({ operation_id: cap.operation_id, gate_id: gateId, tested_sha: testedSha, tested_tree: testedTree, command: gate.display, exit_code: result.exit_code, raw_output_sha256: brokerEvidence.raw_output_sha256 }), 'utf8'))
-    return { receipt_id: receiptId, gate_id: gateId, tested_sha: testedSha, tested_tree: testedTree, command: gate.display, exit_code: result.exit_code, output: result.output, broker_evidence: brokerEvidence }
+    // Gate evidence is committed to the exact UTF-8 bytes of the canonical carried output.
+    // Unlike process stdout/stderr framing, this value is independently recomputable by a workflow consumer.
+    return buildBrokerGateReceipt(cap.operation_id, {
+      gate_id: gateId, tested_sha: testedSha, tested_tree: testedTree, command: gate.display, exit_code: result.exit_code,
+      output: result.output, broker_evidence: brokerEvidence,
+    })
   }
 
   commitLane(input) {
