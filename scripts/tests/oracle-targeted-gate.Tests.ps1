@@ -21,13 +21,22 @@ function New-ModeAScorecardJson([string]$Sha, [string]$OmitMetric = '') {
   } | ConvertTo-Json -Depth 8)
 }
 
+function New-OracleBenchCtestLines([string[]]$TestIds) {
+  $lines = @('Test project C:/atx/build')
+  for ($index = 0; $index -lt $TestIds.Count; $index++) {
+    $lines += (($index + 1).ToString() + '/' + $TestIds.Count + ' Test #' + (3400 + $index) + ': ' + $TestIds[$index] + ' ........ Passed 0.01 sec')
+  }
+  $lines += '100% tests passed, 0 tests failed out of ' + $TestIds.Count
+  return $lines
+}
+
 Describe 'oracle targeted gate production adapter' {
   It 'binds the targeted test gate to the real OracleBench CTest discovery in this worktree' {
     $script:captured = $null
     $result = Invoke-OracleTargetedGate 'mode_a_targeted_tests' {
       param($spec)
       $script:captured = $spec
-      [pscustomobject]@{ ExitCode = 0; Lines = @('Test project C:/atx/build', '100% tests passed, 0 tests failed out of 30') }
+      [pscustomobject]@{ ExitCode = 0; Lines = @(New-OracleBenchCtestLines @($spec.ExpectedTestIds)) }
     }
     $script:captured.Program | Should Be 'powershell'
     ($script:captured.Arguments -join ' ') | Should Match '-Ctest -R \^OracleBench\.\*\$ --no-tests=error'
@@ -37,8 +46,9 @@ Describe 'oracle targeted gate production adapter' {
     $result.status | Should Be 'PASS'
     $result.command_id | Should Be 'mode_a_targeted_tests'
     $result.gate_kind | Should Be 'ctest'
-    $result.tests_executed | Should Be 30
-    $result.tests_passed | Should Be 30
+    $script:captured.ExpectedTestIds.Count | Should Be 31
+    $result.tests_executed | Should Be 31
+    $result.tests_passed | Should Be 31
     $result.tested_sha | Should Match '^[0-9a-f]{40}$'
     $result.tested_tree | Should Match '^[0-9a-f]{40}$'
     $result.raw_output_sha256 | Should Match '^[0-9a-f]{64}$'
@@ -56,6 +66,18 @@ Describe 'oracle targeted gate production adapter' {
     { Invoke-OracleTargetedGate 'mode_a_targeted_tests' { [pscustomobject]@{ ExitCode = 0; Lines = @('No tests were found!!!') } } } | Should Throw
     $missing = Join-Path $TestDrive 'missing.exe'
     { Assert-OracleGateExecutables ([pscustomobject]@{ RequiredExecutables = @($missing) }) } | Should Throw
+  }
+
+  It 'rejects both count drift and same-count test-name substitution' {
+    $tooFew = @($script:OracleBenchTestIds | Select-Object -First 30)
+    { Invoke-OracleTargetedGate 'mode_a_targeted_tests' {
+        [pscustomobject]@{ ExitCode = 0; Lines = @(New-OracleBenchCtestLines $tooFew) }
+      } } | Should Throw
+    $substituted = @($script:OracleBenchTestIds)
+    $substituted[0] = 'OracleBenchBands.ReplacementThatMustNotPass'
+    { Invoke-OracleTargetedGate 'mode_a_targeted_tests' {
+        [pscustomobject]@{ ExitCode = 0; Lines = @(New-OracleBenchCtestLines $substituted) }
+      } } | Should Throw
   }
 
   It 'captures ordinary native stderr without weakening nonzero exit handling' {

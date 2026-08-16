@@ -10,6 +10,39 @@ param(
 $ErrorActionPreference = 'Stop'
 $script:OracleRepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $script:OracleStoreRoot = 'C:\atx-cache\oracle\spiderrock'
+$script:OracleBenchTestIds = @(
+  'OracleBenchBands.MoneynessCallEdgesAreHalfOpen',
+  'OracleBenchBands.MoneynessPutMirrorsCall',
+  'OracleBenchBands.DteEdgesBelongToTheLowerBand',
+  'OracleBenchBands.BandTokensMatchTheCharter',
+  'OracleBenchTolerance.PriceTickFloorWins',
+  'OracleBenchTolerance.PriceSpreadFractionWins',
+  'OracleBenchTolerance.PriceCrossedMarketDegradesToTick',
+  'OracleBenchTolerance.VolUsesFiveBpAbsolute',
+  'OracleBenchTolerance.GreekRelativeWithAbsoluteFloor',
+  'OracleBenchScorecard.CellKeyMatchesCharterFormat',
+  'OracleBenchScorecard.PercentilesAreNearestRank',
+  'OracleBenchScorecard.WithinTolAccountingAndStats',
+  'OracleBenchScorecard.UnknownCellIsNotFound',
+  'OracleBenchScorecard.JsonCarriesHeaderModesTolerancesAndCells',
+  'OracleBenchCohort.ParsesTheReadmeSchema',
+  'OracleBenchCohort.ToleratesUnknownScalarKeys',
+  'OracleBenchCohort.RejectsMissingRequiredKey',
+  'OracleBenchCohort.RejectsWrongTypeForDates',
+  'OracleBenchCohort.RejectsMalformedDate',
+  'OracleBenchCohort.RejectsMalformedBucket',
+  'OracleBenchCohort.RejectsEmptyUnderliers',
+  'OracleBenchCohort.RejectsMalformedJson',
+  'OracleBenchArgs.ParsesAllFlags',
+  'OracleBenchArgs.DefaultsIterZeroShaUnknown',
+  'OracleBenchArgs.RejectsMissingRequiredFlag',
+  'OracleBenchArgs.RejectsUnknownFlag',
+  'OracleBenchArgs.RejectsNonIntegerIter',
+  'OracleBenchReader.OpensOnlyCohortNamedPartitionsAndFiltersUnderlier',
+  'OracleBenchReader.CrossesUnderliersAndBuckets',
+  'OracleBenchReader.MissingPartitionDirIsNotFound',
+  'OracleBenchE2E.SyntheticCohortProducesCharterScorecard'
+)
 $script:ModeAMetricMap = [ordered]@{
   price = 'mode_a_price_mae'
   vol = 'mode_a_vol_mae'
@@ -44,6 +77,7 @@ function Get-OracleTargetedGateSpec([string]$GateId, $Identity) {
       return [pscustomobject]@{
         Kind = 'ctest'; Program = 'powershell'; OutputPath = ''
         RequiredExecutables = @($testExe, $benchExe)
+        ExpectedTestIds = @($script:OracleBenchTestIds)
         PrepareProgram = 'powershell'
         PrepareArguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $buildScript, '-Preset', 'dev', 'build', 'atx-vol-tests', 'atx-vol-oracle-bench', '--parallel', '2')
         Arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $buildScript, '-Preset', 'dev', '-Ctest', '-R', '^OracleBench.*$', '--no-tests=error')
@@ -226,6 +260,15 @@ function Invoke-OracleTargetedGate([string]$GateId, [scriptblock]$Invoker) {
     $testsExecuted = [int]$summary.Groups[3].Value
     $testsPassed = $testsExecuted - $failed
     if ($testsExecuted -le 0 -or $failed -ne 0 -or $percent -ne 100 -or $testsPassed -ne $testsExecuted) { throw "oracle targeted gate $GateId did not pass positive test work" }
+    if ($spec.PSObject.Properties.Name -contains 'ExpectedTestIds') {
+      $passedTestIds = @($lines | ForEach-Object {
+        $match = [regex]::Match([string]$_, 'Test\s+#[0-9]+:\s+(OracleBench[A-Za-z0-9_.]+)\s+\.+\s+Passed')
+        if ($match.Success) { $match.Groups[1].Value }
+      })
+      if ($testsExecuted -ne @($spec.ExpectedTestIds).Count -or -not (Test-OracleExactStringSet $passedTestIds @($spec.ExpectedTestIds))) {
+        throw "oracle targeted gate $GateId test closure differs from the closed 31-test registry"
+      }
+    }
     $auditSummary = "tests_executed=$testsExecuted tests_passed=$testsPassed"
   } else {
     if ($Invoker -and $execution.PSObject.Properties.Name -contains 'ScorecardJson') {

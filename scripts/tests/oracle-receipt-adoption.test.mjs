@@ -11,6 +11,7 @@ const BOOTSTRAP_GATE_COMMANDS = {
   mode_a_smoke: 'powershell scripts\\oracle-targeted-gate.ps1 -Gate mode_a_smoke',
 }
 const MODE_A_TARGETS = ['mode_a_price_mae', 'mode_a_vol_mae', 'mode_a_delta_rel', 'mode_a_gamma_rel', 'mode_a_theta_rel', 'mode_a_vega_rel', 'mode_a_rho_rel', 'mode_a_phi_rel', 'mode_a_volga_rel', 'mode_a_vanna_rel', 'mode_a_delta_decay_rel']
+const ORACLE_BENCH_TEST_COUNT = 31
 
 function extractFunction(source, name) {
   const start = source.indexOf(`function ${name}(`)
@@ -27,7 +28,7 @@ function extractFunction(source, name) {
 const functionNames = [
   'expectedBootstrapMetricIds', 'iterationCommandError', 'validSuccessEvidence', 'diagnosticsUseForbiddenCommand',
   'bootstrapCommandError', 'validBootstrapSuccessEvidence', 'validBootstrapDiagnostics',
-  'validLeaseReceipt', 'validGateReceipt', 'validAdoptionReceipt', 'validChangedPathReceipt', 'validPrecheckGateReceipt',
+  'validLeaseReceipt', 'validBrokerEvidence', 'validGateReceipt', 'validAdoptionReceipt', 'validChangedPathReceipt', 'validPrecheckGateReceipt',
   'bootstrapPathError', 'bootstrapLeaseIdentityError', 'unwrapBootstrapReport', 'bootstrapReportError',
 ]
 const declarations = functionNames.map(name => extractFunction(workflow, name)).join('\n')
@@ -37,6 +38,7 @@ const validators = Function(`
   const BOOTSTRAP_GATE_COMMANDS = ${JSON.stringify(BOOTSTRAP_GATE_COMMANDS)};
   const TARGETED_BOOTSTRAP_GATE_IDS = ['mode_a_targeted_tests', 'mode_a_smoke'];
   const TARGET_REGISTRY = ${JSON.stringify(MODE_A_TARGETS.map(metric_id => ({ metric_id, mode: 'A' })))};
+  const ORACLE_BENCH_TEST_COUNT = ${ORACLE_BENCH_TEST_COUNT};
   ${declarations}; return { ${functionNames.join(',')} }
 `)()
 
@@ -76,18 +78,39 @@ function schemaErrors(schema, value, path = '$') {
 
 const sha = char => char.repeat(40)
 const digest = char => char.repeat(64)
-function gateReceipt(gateId, observations = 20) {
-  const common = { schema_version: 1, status: 'PASS', observations, command_id: gateId, raw_output_sha256: digest('f') }
-  const semantic = { ...common, tested_sha: sha('a'), tested_tree: sha('b') }
-  const result = gateId === 'disk' ? common : gateId.endsWith('_tests')
-    ? { ...semantic, gate_kind: 'ctest', tests_executed: 2, tests_passed: 2, rows_processed: 0, metric_ids: [], audit_summary: 'tests_executed=2 tests_passed=2' }
-    : { ...semantic, gate_kind: 'oracle_bench', tests_executed: 0, tests_passed: 0, rows_processed: 3, metric_ids: MODE_A_TARGETS, audit_summary: `status=PASS rows_processed=3 metric_ids=${[...MODE_A_TARGETS].sort().join(',')}` }
-  return { gate_id: gateId, command: BOOTSTRAP_GATE_COMMANDS[gateId], exit_code: 0, output: JSON.stringify(result), result }
+const receiptDigests = { disk: digest('d'), mode_a_targeted_tests: digest('e'), mode_a_smoke: digest('f') }
+function rootGuard() {
+  return { main_sha: sha('9'), canonical_sha: sha('8'), index_sha256: digest('1'), tracked_sha256: digest('2'), untracked_sha256: digest('3'), raw_sha256: digest('4') }
 }
-function precheck(gateId, status = 'PASS') {
-  if (status === 'FAIL') return { gate_id: gateId, command: BOOTSTRAP_GATE_COMMANDS[gateId], status, exit_code: 1, output: 'targeted failure' }
-  const gate = gateReceipt(gateId)
-  return { gate_id: gateId, command: gate.command, status, exit_code: 0, output: gate.output }
+function gateBrokerEvidence(gateId, worktree, command, output, exitCode) {
+  return {
+    logical_operation: `gate:${gateId}`, physical_cwd: worktree, command, exit_code: exitCode, output,
+    raw_output_sha256: digest('5'), root_guard_before: rootGuard(), root_guard_after: rootGuard(),
+  }
+}
+function gateReceipt(gateId, observations = 20, testedSha = sha('a'), testedTree = sha('b'), worktree = 'C:\\atx-wt\\pool-1') {
+  const common = { schema_version: 1, status: 'PASS', observations, command_id: gateId, raw_output_sha256: digest('f') }
+  const semantic = { ...common, tested_sha: testedSha, tested_tree: testedTree }
+  const result = gateId === 'disk' ? common : gateId.endsWith('_tests')
+    ? { ...semantic, gate_kind: 'ctest', tests_executed: ORACLE_BENCH_TEST_COUNT, tests_passed: ORACLE_BENCH_TEST_COUNT, rows_processed: 0, metric_ids: [], audit_summary: `tests_executed=${ORACLE_BENCH_TEST_COUNT} tests_passed=${ORACLE_BENCH_TEST_COUNT}` }
+    : { ...semantic, gate_kind: 'oracle_bench', tests_executed: 0, tests_passed: 0, rows_processed: 3, metric_ids: MODE_A_TARGETS, audit_summary: `status=PASS rows_processed=3 metric_ids=${[...MODE_A_TARGETS].sort().join(',')}` }
+  const command = BOOTSTRAP_GATE_COMMANDS[gateId]
+  const output = JSON.stringify(result)
+  return {
+    receipt_id: receiptDigests[gateId], gate_id: gateId, tested_sha: testedSha, tested_tree: testedTree,
+    command, exit_code: 0, output, result, broker_evidence: gateBrokerEvidence(gateId, worktree, command, output, 0),
+  }
+}
+function precheck(gateId, status = 'PASS', testedSha = sha('a'), testedTree = sha('b'), worktree = 'C:\\atx-wt\\pool-1') {
+  if (status === 'FAIL') {
+    const command = BOOTSTRAP_GATE_COMMANDS[gateId]
+    const output = 'targeted failure'
+    return {
+      receipt_id: receiptDigests[gateId], gate_id: gateId, tested_sha: testedSha, tested_tree: testedTree,
+      command, status, exit_code: 1, output, broker_evidence: gateBrokerEvidence(gateId, worktree, command, output, 1),
+    }
+  }
+  return { ...gateReceipt(gateId, 20, testedSha, testedTree, worktree), status }
 }
 function changedPathReceipt(base, tested, paths) {
   return { base_sha: base, tested_sha: tested, command: `git diff --name-only ${base}...${tested}`, exit_code: 0, output: paths.join('\n'), paths }
@@ -122,7 +145,11 @@ function completeReport(pathReport, state) {
   }
 }
 function expectedFor(report) {
-  return { state: report.state, branch: report.branch, base_sha: report.base_sha, run_id: report.lease_run_id, heartbeat_id: report.heartbeat_id }
+  return {
+    state: report.state, branch: report.branch, base_sha: report.base_sha,
+    base_tree: report.precheck_gate_receipts?.[0]?.tested_tree || sha('c'),
+    run_id: report.lease_run_id, heartbeat_id: report.heartbeat_id,
+  }
 }
 
 test('Stage 1 is adoption-first and Stage 2 is receipt-first with targeted gates', () => {
@@ -192,31 +219,67 @@ test('Stage 1 typed branching rejects missing disk, generic evidence, and contra
 })
 
 test('Stage 2 precheck receipts mechanically select receipt-only or implementation paths', () => {
-  const base = sha('d'); const tested = sha('e')
+  const base = sha('d'); const baseTree = sha('c'); const tested = sha('e'); const worktree = 'C:\\atx-wt\\pool-1'
+  const expected = { state: 'missing_mode_a', base_sha: base, base_tree: baseTree }
   const receiptPath = ['atx-vol/bench/oracle/bootstrap/mode-a.json']
-  const passing = { base_sha: base, sha: tested, bootstrap_path: 'mode_a_receipt_only', evidence: [], precheck_gate_receipts: [precheck('mode_a_targeted_tests'), precheck('mode_a_smoke')], changed_path_receipt: changedPathReceipt(base, tested, receiptPath) }
-  assert.equal(validators.bootstrapPathError(passing, { state: 'missing_mode_a', base_sha: base }), null)
-  const wrongGateIdentity = structuredClone(passing)
-  const parsedIdentity = JSON.parse(wrongGateIdentity.precheck_gate_receipts[0].output)
-  parsedIdentity.tested_sha = 'not-a-sha'
-  wrongGateIdentity.precheck_gate_receipts[0].output = JSON.stringify(parsedIdentity)
-  assert.match(validators.bootstrapPathError(wrongGateIdentity, { state: 'missing_mode_a', base_sha: base }), /precheck receipt invalid/iu)
+  const passing = { base_sha: base, sha: tested, bootstrap_path: 'mode_a_receipt_only', worktree, evidence: [], precheck_gate_receipts: [precheck('mode_a_targeted_tests', 'PASS', base, baseTree, worktree), precheck('mode_a_smoke', 'PASS', base, baseTree, worktree)], changed_path_receipt: changedPathReceipt(base, tested, receiptPath) }
+  assert.equal(validators.bootstrapPathError(passing, expected), null)
+  const structured = completeReport({
+    ...passing, tree: sha('0'), holdout_digest_receipt: digest('a'),
+    evidence: [{ command: BOOTSTRAP_GATE_COMMANDS.mode_a_smoke, exit_code: 0, output: 'targeted PASS' }],
+    broker_evidence: [gateBrokerEvidence('commit', worktree, 'git commit', 'committed', 0)],
+  }, 'missing_mode_a')
+  assert.deepEqual(schemaErrors(bootstrapReportSchema, { report: structured }), [])
+  const strippedStructured = structuredClone(structured)
+  delete strippedStructured.precheck_gate_receipts[0].receipt_id
+  assert.notDeepEqual(schemaErrors(bootstrapReportSchema, { report: strippedStructured }), [])
+
+  for (const mutate of [
+    value => { value.precheck_gate_receipts[0].tested_sha = sha('f') },
+    value => { value.precheck_gate_receipts[0].tested_tree = sha('f') },
+    value => {
+      const receipt = value.precheck_gate_receipts[0]
+      receipt.result.tested_sha = sha('f')
+      receipt.output = JSON.stringify(receipt.result)
+      receipt.broker_evidence.output = receipt.output
+    },
+    value => { delete value.precheck_gate_receipts[0].receipt_id },
+    value => { value.precheck_gate_receipts[1].receipt_id = value.precheck_gate_receipts[0].receipt_id },
+    value => { value.precheck_gate_receipts[0].broker_evidence.command = 'forged command' },
+    value => { value.precheck_gate_receipts[0].broker_evidence.output = 'forged output' },
+    value => { delete value.precheck_gate_receipts[0].broker_evidence.raw_output_sha256 },
+    value => { value.precheck_gate_receipts[0].broker_evidence.physical_cwd = 'C:\\atx-wt\\pool-99' },
+    value => {
+      const receipt = value.precheck_gate_receipts[0]
+      receipt.result.tests_executed = 30
+      receipt.result.tests_passed = 30
+      receipt.result.audit_summary = 'tests_executed=30 tests_passed=30'
+      receipt.output = JSON.stringify(receipt.result)
+      receipt.broker_evidence.output = receipt.output
+    },
+  ]) {
+    const forged = structuredClone(passing)
+    mutate(forged)
+    assert.match(validators.bootstrapPathError(forged, expected), /precheck receipt (?:invalid|set mismatch|IDs duplicated)/iu)
+  }
+
   const incompleteMetrics = structuredClone(passing)
-  const parsedMetrics = JSON.parse(incompleteMetrics.precheck_gate_receipts[1].output)
+  const parsedMetrics = incompleteMetrics.precheck_gate_receipts[1].result
   parsedMetrics.metric_ids = parsedMetrics.metric_ids.slice(0, -1)
   parsedMetrics.audit_summary = `status=PASS rows_processed=${parsedMetrics.rows_processed} metric_ids=${[...parsedMetrics.metric_ids].sort().join(',')}`
   incompleteMetrics.precheck_gate_receipts[1].output = JSON.stringify(parsedMetrics)
-  assert.match(validators.bootstrapPathError(incompleteMetrics, { state: 'missing_mode_a', base_sha: base }), /precheck receipt invalid/iu)
+  incompleteMetrics.precheck_gate_receipts[1].broker_evidence.output = incompleteMetrics.precheck_gate_receipts[1].output
+  assert.match(validators.bootstrapPathError(incompleteMetrics, expected), /precheck receipt invalid/iu)
   passing.changed_path_receipt = changedPathReceipt(base, tested, [...receiptPath, 'atx-vol/tools/oracle_bench_main.cpp'].sort())
-  assert.match(validators.bootstrapPathError(passing, { state: 'missing_mode_a', base_sha: base }), /receipt-only/u)
+  assert.match(validators.bootstrapPathError(passing, expected), /receipt-only/u)
 
   const implementationPaths = [...receiptPath, 'atx-vol/tools/oracle_bench_main.cpp'].sort()
-  const implementation = { ...passing, bootstrap_path: 'mode_a_implementation', precheck_gate_receipts: [precheck('mode_a_targeted_tests', 'FAIL'), precheck('mode_a_smoke')], changed_path_receipt: changedPathReceipt(base, tested, implementationPaths) }
-  assert.equal(validators.bootstrapPathError(implementation, { state: 'missing_mode_a', base_sha: base }), null)
+  const implementation = { ...passing, bootstrap_path: 'mode_a_implementation', precheck_gate_receipts: [precheck('mode_a_targeted_tests', 'FAIL', base, baseTree, worktree), precheck('mode_a_smoke', 'PASS', base, baseTree, worktree)], changed_path_receipt: changedPathReceipt(base, tested, implementationPaths) }
+  assert.equal(validators.bootstrapPathError(implementation, expected), null)
   implementation.changed_path_receipt = changedPathReceipt(base, tested, receiptPath)
-  assert.match(validators.bootstrapPathError(implementation, { state: 'missing_mode_a', base_sha: base }), /requires implementation/u)
+  assert.match(validators.bootstrapPathError(implementation, expected), /requires implementation/u)
   implementation.changed_path_receipt = { ...changedPathReceipt(base, tested, implementationPaths), output: 'forged' }
-  assert.match(validators.bootstrapPathError(implementation, { state: 'missing_mode_a', base_sha: base }), /changed-path receipt invalid/u)
+  assert.match(validators.bootstrapPathError(implementation, expected), /changed-path receipt invalid/u)
 })
 
 test('top-level bootstrap report validator enforces typed Stage 1 and Stage 2 paths', () => {
@@ -239,10 +302,11 @@ test('top-level bootstrap report validator enforces typed Stage 1 and Stage 2 pa
   stage1.evidence[0] = { command: 'generic adoption', exit_code: 0, output: 'PASS' }
   assert.match(validators.bootstrapReportError(stage1, expectedFor(stage1)), /missing\/untyped/u)
 
+  const stage2Tree = sha('3')
   const stage2 = completeReport({
     base_sha: base, sha: tested, holdout_digest_receipt: digest('4'), bootstrap_path: 'mode_a_receipt_only',
     evidence: [{ command: BOOTSTRAP_GATE_COMMANDS.mode_a_smoke, exit_code: 0, output: 'targeted PASS' }],
-    precheck_gate_receipts: [precheck('mode_a_targeted_tests'), precheck('mode_a_smoke')],
+    precheck_gate_receipts: [precheck('mode_a_targeted_tests', 'PASS', base, stage2Tree), precheck('mode_a_smoke', 'PASS', base, stage2Tree)],
     changed_path_receipt: changedPathReceipt(base, tested, ['atx-vol/bench/oracle/bootstrap/mode-a.json']),
   }, 'missing_mode_a')
   assert.equal(validators.bootstrapReportError(stage2, expectedFor(stage2)), null)

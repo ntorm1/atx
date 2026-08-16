@@ -153,7 +153,8 @@ async function runStage1Scenario(mode) {
     switch (options.label) {
       case 'capability': return {
         state: 'missing_data', canonical_ref: 'refs/heads/oracle/canonical', canonical_exists: false, base_ref: 'main', base_sha: STAGE1.base,
-        holdout_digest_receipt: '', next_iter: 'iter-0', evidence: [{ command: 'powershell scripts\\oracle-capability.ps1', exit_code: 0, output: 'state=missing_data\ncanonical_exists=false' }],
+        base_tree: STAGE1.baseTree, holdout_digest_receipt: '', next_iter: 'iter-0',
+        evidence: [{ command: 'powershell scripts\\oracle-capability.ps1', exit_code: 0, output: `state=missing_data\ncanonical_exists=false\nbase_ref=main\nbase_sha=${STAGE1.base}\nbase_tree=${STAGE1.baseTree}` }],
         broker_evidence: brokerEvidence('capability_probe', null),
       }
       case 'bootstrap-acquire:missing_data': return buildAcquire
@@ -231,8 +232,8 @@ test('ready oracle capability fails closed before Measure, Sprint, Ratchet, or h
     assert.equal(options.agentType, 'vol-capability-inspector')
     return {
       state: 'ready', canonical_ref: 'refs/heads/oracle/canonical', canonical_exists: true,
-      base_ref: 'refs/heads/oracle/canonical', base_sha: base, holdout_digest_receipt: 'd'.repeat(64), next_iter: 'iter-1',
-      evidence: [{ command: 'powershell scripts\\oracle-capability.ps1', exit_code: 0, output: 'state=ready\ncanonical_exists=true' }],
+      base_ref: 'refs/heads/oracle/canonical', base_sha: base, base_tree: 'c'.repeat(40), holdout_digest_receipt: 'd'.repeat(64), next_iter: 'iter-1',
+      evidence: [{ command: 'powershell scripts\\oracle-capability.ps1', exit_code: 0, output: `state=ready\ncanonical_exists=true\nbase_ref=refs/heads/oracle/canonical\nbase_sha=${base}\nbase_tree=${'c'.repeat(40)}` }],
       broker_evidence: brokerEvidence('capability_probe', base),
     }
   }

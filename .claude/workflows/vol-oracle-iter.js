@@ -72,6 +72,7 @@ const BOOTSTRAP_GATE_COMMANDS = Object.freeze({
   mode_b_smoke_tune: 'powershell scripts\\oracle-targeted-gate.ps1 -Gate mode_b_smoke_tune',
 })
 const TARGETED_BOOTSTRAP_GATE_IDS = Object.freeze(['mode_a_targeted_tests', 'mode_a_smoke', 'convention_tests', 'mode_a_smoke_tune', 'residual_floor', 'mode_b_targeted_tests', 'mode_b_smoke_tune'])
+const ORACLE_BENCH_TEST_COUNT = 31
 const READY_MEASURE_GATES = Object.freeze({
   measure_mode_a: 'atx-vol-oracle-bench --cohort smoke,tune --mode A --scorecard --aggregate-only',
   measure_mode_b: 'atx-vol-oracle-bench --cohort smoke,tune --mode B --scorecard --aggregate-only',
@@ -218,10 +219,13 @@ const ADOPTION_RECEIPT = {
   },
 }
 const PRECHECK_GATE_RECEIPT = {
-  type: 'object', additionalProperties: false, required: ['gate_id', 'command', 'status', 'exit_code', 'output'],
+  type: 'object', additionalProperties: false,
+  required: ['receipt_id', 'gate_id', 'tested_sha', 'tested_tree', 'command', 'status', 'exit_code', 'output', 'broker_evidence'],
   properties: {
-    gate_id: { type: 'string', enum: ['mode_a_targeted_tests', 'mode_a_smoke'] }, command: { type: 'string' },
+    receipt_id: { type: 'string' }, gate_id: { type: 'string', enum: ['mode_a_targeted_tests', 'mode_a_smoke'] },
+    tested_sha: { type: 'string' }, tested_tree: { type: 'string' }, command: { type: 'string' },
     status: { type: 'string', enum: ['PASS', 'FAIL'] }, exit_code: { type: 'integer' }, output: { type: 'string' },
+    result: GATE_RECEIPT.properties.result, broker_evidence: BROKER_EVIDENCE,
   },
 }
 const CHANGED_PATH_RECEIPT = {
@@ -307,10 +311,10 @@ const FINDING = {
 }
 const CAPABILITY = {
   type: 'object', additionalProperties: false,
-  required: ['state', 'canonical_ref', 'canonical_exists', 'base_ref', 'base_sha', 'holdout_digest_receipt', 'next_iter', 'evidence', 'broker_evidence'],
+  required: ['state', 'canonical_ref', 'canonical_exists', 'base_ref', 'base_sha', 'base_tree', 'holdout_digest_receipt', 'next_iter', 'evidence', 'broker_evidence'],
   properties: {
     state: { type: 'string', enum: ['missing_data', 'missing_mode_a', 'missing_conventions', 'missing_mode_b', 'ready'] },
-    canonical_ref: { type: 'string' }, canonical_exists: { type: 'boolean' }, base_ref: { type: 'string' }, base_sha: { type: 'string' },
+    canonical_ref: { type: 'string' }, canonical_exists: { type: 'boolean' }, base_ref: { type: 'string' }, base_sha: { type: 'string' }, base_tree: { type: 'string' },
     holdout_digest_receipt: { type: 'string' }, next_iter: { type: 'string' }, evidence: { type: 'array', items: EVIDENCE_ITEM },
     diagnostics: { type: 'array', items: EVIDENCE_ITEM }, broker_evidence: BROKER_EVIDENCE,
   },
@@ -674,7 +678,8 @@ function validHeadReceipt(receipt, ref, sha, tree = null) {
 function validGateReceipt(receipt, gateId, expectedSha, expectedTree) {
   if (!receipt || receipt.gate_id !== gateId || receipt.command !== BOOTSTRAP_GATE_COMMANDS[gateId] || receipt.exit_code !== 0) return false
   if (expectedSha !== undefined && (!/^[0-9a-f]{64}$/.test(receipt.receipt_id || '') || receipt.tested_sha !== expectedSha || receipt.tested_tree !== expectedTree ||
-      !validBrokerEvidence(receipt.broker_evidence, `gate:${gateId}`) || receipt.broker_evidence.command !== receipt.command || receipt.broker_evidence.output !== receipt.output)) return false
+      !validBrokerEvidence(receipt.broker_evidence, `gate:${gateId}`) || receipt.broker_evidence.command !== receipt.command || receipt.broker_evidence.output !== receipt.output ||
+      receipt.broker_evidence.exit_code !== receipt.exit_code)) return false
   const result = receipt.result
   if (!result || result.schema_version !== 1 || result.status !== 'PASS' || result.command_id !== gateId ||
       !Number.isInteger(result.observations) || result.observations <= 0 || !/^[0-9a-f]{64}$/.test(result.raw_output_sha256 || '') ||
@@ -686,6 +691,7 @@ function validGateReceipt(receipt, gateId, expectedSha, expectedTree) {
   if (!/^[0-9a-f]{40}$/.test(result.tested_sha || '') || !/^[0-9a-f]{40}$/.test(result.tested_tree || '') ||
       (expectedSha !== undefined && (result.tested_sha !== expectedSha || result.tested_tree !== expectedTree))) return false
   if (gateId.endsWith('_tests')) return result.gate_kind === 'ctest' && Number.isInteger(result.tests_executed) && result.tests_executed > 0 &&
+    (gateId !== 'mode_a_targeted_tests' || result.tests_executed === ORACLE_BENCH_TEST_COUNT) &&
     result.tests_passed === result.tests_executed && result.rows_processed === 0 && Array.isArray(result.metric_ids) && result.metric_ids.length === 0 &&
     result.audit_summary === `tests_executed=${result.tests_executed} tests_passed=${result.tests_passed}`
   const wanted = expectedBootstrapMetricIds(gateId)
@@ -830,13 +836,16 @@ function validChangedPathReceipt(receipt, report) {
   return receipt.paths.every((path, index) => path === sorted[index]) && receipt.output.trim() === receipt.paths.join('\n')
 }
 
-function validPrecheckGateReceipt(receipt, gateId) {
-  if (!receipt || receipt.gate_id !== gateId || receipt.command !== BOOTSTRAP_GATE_COMMANDS[gateId] || !String(receipt.output || '').trim()) return false
-  if (receipt.status === 'FAIL') return Number.isInteger(receipt.exit_code) && receipt.exit_code !== 0
-  if (receipt.status !== 'PASS' || receipt.exit_code !== 0) return false
-  let result
-  try { result = JSON.parse(receipt.output) } catch { return false }
-  return validGateReceipt({ gate_id: gateId, command: receipt.command, exit_code: receipt.exit_code, output: receipt.output, result }, gateId)
+function validPrecheckGateReceipt(receipt, gateId, expected, worktree) {
+  if (!receipt || receipt.gate_id !== gateId || receipt.command !== BOOTSTRAP_GATE_COMMANDS[gateId] || !String(receipt.output || '').trim() ||
+      !/^[0-9a-f]{64}$/.test(receipt.receipt_id || '') || receipt.tested_sha !== expected.base_sha || receipt.tested_tree !== expected.base_tree ||
+      !validBrokerEvidence(receipt.broker_evidence, `gate:${gateId}`, worktree, false, true) || receipt.broker_evidence.command !== receipt.command ||
+      receipt.broker_evidence.output !== receipt.output || receipt.broker_evidence.exit_code !== receipt.exit_code) return false
+  const keys = Object.keys(receipt).sort().join(',')
+  const outerKeys = ['receipt_id', 'gate_id', 'tested_sha', 'tested_tree', 'command', 'status', 'exit_code', 'output', 'broker_evidence']
+  if (receipt.status === 'FAIL') return Number.isInteger(receipt.exit_code) && receipt.exit_code !== 0 && keys === outerKeys.sort().join(',')
+  if (receipt.status !== 'PASS' || receipt.exit_code !== 0 || keys !== [...outerKeys, 'result'].sort().join(',')) return false
+  return validGateReceipt(receipt, gateId, expected.base_sha, expected.base_tree)
 }
 
 function sealedRecoveryQueryError(query, acquire, expected) {
@@ -907,10 +916,11 @@ function bootstrapPathError(report, expected) {
   }
   if (Object.prototype.hasOwnProperty.call(report, 'adoption_receipt') || Object.prototype.hasOwnProperty.call(report, 'disk_receipt')) return 'Stage2 contains Stage1 receipt'
   if (!Array.isArray(report.precheck_gate_receipts) || report.precheck_gate_receipts.length !== 2) return 'Stage2 precheck receipt set invalid'
+  if (new Set(report.precheck_gate_receipts.map(receipt => receipt && receipt.receipt_id)).size !== 2) return 'Stage2 precheck receipt IDs duplicated'
   const gateIds = ['mode_a_targeted_tests', 'mode_a_smoke']
   for (const gateId of gateIds) {
     const matches = report.precheck_gate_receipts.filter(receipt => receipt && receipt.gate_id === gateId)
-    if (matches.length !== 1 || !validPrecheckGateReceipt(matches[0], gateId)) return `Stage2 precheck receipt invalid: ${gateId}`
+    if (matches.length !== 1 || !validPrecheckGateReceipt(matches[0], gateId, expected, report.worktree)) return `Stage2 precheck receipt invalid: ${gateId}`
   }
   const existingPasses = report.precheck_gate_receipts.every(receipt => receipt.status === 'PASS')
   if (existingPasses) return report.bootstrap_path === 'mode_a_receipt_only' && paths.length === MODE_A_RECEIPT_ONLY_PATHS.length && MODE_A_RECEIPT_ONLY_PATHS.every((path, index) => paths[index] === path) ? null : 'Stage2 passing implementation must be receipt-only'
@@ -1165,11 +1175,14 @@ const capability = await agent(
   'Call the fixed broker capability_probe once with an empty object. Return its typed result unchanged.',
   { agentType: 'vol-capability-inspector', schema: CAPABILITY, label: 'capability' },
 )
-if (!capability || capability.canonical_ref !== CANONICAL_REF || !/^[0-9a-f]{40}$/i.test(capability.base_sha || '') || !validSuccessEvidence(capability.evidence) || !validBrokerEvidence(capability.broker_evidence, 'capability_probe')) throw new Error('capability freeze invalid')
+if (!capability || capability.canonical_ref !== CANONICAL_REF || !/^[0-9a-f]{40}$/i.test(capability.base_sha || '') || !/^[0-9a-f]{40}$/i.test(capability.base_tree || '') || !validSuccessEvidence(capability.evidence) || !validBrokerEvidence(capability.broker_evidence, 'capability_probe')) throw new Error('capability freeze invalid')
 if (capability.base_ref !== (capability.canonical_exists ? CANONICAL_REF : REQUESTED_BASE)) throw new Error('capability base-ref selection invalid')
 if (capability.evidence.length !== 1 || capability.evidence[0].command !== 'powershell scripts\\oracle-capability.ps1' ||
     !capability.evidence[0].output.includes(`state=${capability.state}`) ||
-    !capability.evidence[0].output.includes(`canonical_exists=${String(capability.canonical_exists)}`)) throw new Error('capability probe receipt invalid')
+    !capability.evidence[0].output.includes(`canonical_exists=${String(capability.canonical_exists)}`) ||
+    !capability.evidence[0].output.includes(`base_ref=${capability.base_ref}`) ||
+    !capability.evidence[0].output.includes(`base_sha=${capability.base_sha}`) ||
+    !capability.evidence[0].output.includes(`base_tree=${capability.base_tree}`)) throw new Error('capability probe receipt invalid')
 if (capability.state !== 'missing_data' && !/^[0-9a-f]{64}$/i.test(capability.holdout_digest_receipt || '')) throw new Error('holdout digest receipt invalid')
 const BASE_SHA = capability.base_sha
 const RUN_ID = oracleRunId(BASE_SHA, capability.state, capability.next_iter)
@@ -1183,7 +1196,7 @@ if (capability.state !== 'ready') {
   const integrationBranch = `integration/oracle-bootstrap-${lane.slug}-${RUN_SLUG}`
   const integrationHeartbeat = `${RUN_SLUG}-bootstrap-integration`
   const operationId = BOOTSTRAP_OPERATION_IDS[capability.state]
-  const expected = { state: capability.state, operation_id: operationId, stage: `bootstrap-${lane.stage}`, branch, base_sha: BASE_SHA, run_id: RUN_ID, heartbeat_id: heartbeat, holdout_digest_receipt: capability.holdout_digest_receipt, integration_branch: integrationBranch, integration_heartbeat_id: integrationHeartbeat, next_state: lane.next, gate_ids: lane.gate_ids }
+  const expected = { state: capability.state, operation_id: operationId, stage: `bootstrap-${lane.stage}`, branch, base_sha: BASE_SHA, base_tree: capability.base_tree, run_id: RUN_ID, heartbeat_id: heartbeat, holdout_digest_receipt: capability.holdout_digest_receipt, integration_branch: integrationBranch, integration_heartbeat_id: integrationHeartbeat, next_state: lane.next, gate_ids: lane.gate_ids }
   phase('Bootstrap Acquire')
   let buildAcquire = null
   let buildAcquireThrown = null
@@ -1201,7 +1214,7 @@ if (capability.state !== 'ready') {
   const buildAgentType = capability.state === 'missing_data' ? 'vol-stage1-recovery' : 'vol-builder'
   try {
     envelope = await agent(
-      `ONE preleased broker lane; no planner/holdout. Immutable acquisition: ${JSON.stringify(buildAcquire)}. Use only capability=${buildAcquire.capability}. Stage=${lane.stage}. ${lane.contract} Return exactly {report:<typed report>} and copy lease identity from acquisition. Every report evidence item must come from a broker tool result. Include all broker evidence under report.broker_evidence. DONE requires the broker-returned lowercase SHA and tree plus raw lowercase holdout digest. Stage 1 must call only recover_stage1, set bootstrap_path=data_recovery, recovery_id/recovery_replayed exactly from its sealed result, recovery_source_receipt from its recovery field, changed_path_receipt unchanged, sha/tree unchanged, holdout_digest_receipt=${STAGE1_RECOVERY.holdout_digest}, evidence from its four gate receipts, and no adoption_receipt/disk_receipt. Stage 2 retains its typed precheck/changed-path contract.`,
+      `ONE preleased broker lane; no planner/holdout. Immutable acquisition: ${JSON.stringify(buildAcquire)}. Use only capability=${buildAcquire.capability}. Stage=${lane.stage}. ${lane.contract} Return exactly {report:<typed report>} and copy lease identity from acquisition. Every report evidence item must come from a broker tool result. Include all broker evidence under report.broker_evidence. DONE requires the broker-returned lowercase SHA and tree plus raw lowercase holdout digest. Stage 1 must call only recover_stage1, set bootstrap_path=data_recovery, recovery_id/recovery_replayed exactly from its sealed result, recovery_source_receipt from its recovery field, changed_path_receipt unchanged, sha/tree unchanged, holdout_digest_receipt=${STAGE1_RECOVERY.holdout_digest}, evidence from its four gate receipts, and no adoption_receipt/disk_receipt. Stage 2 must return both complete broker gate receipts unchanged (receipt_id, tested SHA/tree, command, exit, output, broker evidence), add status and parsed result only for PASS, and bind both to workflow base ${BASE_SHA}/${capability.base_tree}; never strip broker fields or synthesize receipts.`,
       { agentType: buildAgentType, schema: BOOTSTRAP_REPORT_TOOL_SCHEMA, label: `bootstrap-build:${capability.state}` },
     )
   } catch (error) { buildThrown = String(error) }

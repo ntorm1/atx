@@ -28,6 +28,12 @@ function Resolve-Commit([string]$Ref) {
   return $result.Text.ToLowerInvariant()
 }
 
+function Resolve-Tree([string]$Sha) {
+  $result = Invoke-GitText @('rev-parse', '--verify', ($Sha + '^{tree}'))
+  if ($result.Code -ne 0 -or $result.Text -notmatch '^[0-9a-fA-F]{40}$') { throw ('cannot resolve tree: ' + $Sha) }
+  return $result.Text.ToLowerInvariant()
+}
+
 function Test-CommittedPath([string]$Sha, [string]$Path) {
   return (Invoke-GitText @('cat-file', '-e', ($Sha + ':' + $Path))).Code -eq 0
 }
@@ -187,6 +193,7 @@ if ($MyInvocation.InvocationName -eq '.') { return }
 $canonicalExists = $true
 try { $baseSha = Resolve-Commit $canonicalRef } catch { $canonicalExists = $false; $baseSha = Resolve-Commit $baseRef }
 $resolvedBaseRef = if ($canonicalExists) { $canonicalRef } else { $baseRef }
+$baseTree = Resolve-Tree $baseSha
 $holdoutDigest = ''
 $dataValid = Test-DataReceipt $baseSha ([ref]$holdoutDigest)
 $dataReceipt = if ($dataValid) { Get-CommittedJson $baseSha ($oracleRoot + '/bootstrap/data.json') } else { $null }
@@ -201,9 +208,11 @@ if ($state -eq 'ready') {
   foreach ($name in $names) { if ($name -match '/iter-([0-9]+)\.json$') { $nextNumber = [Math]::Max($nextNumber, [int]$Matches[1] + 1) } }
 }
 $probeOutput = 'state=' + $state + ' canonical_exists=' + $canonicalExists.ToString().ToLowerInvariant() + ' data_receipt_valid=' + $dataValid.ToString().ToLowerInvariant() +
-  ' mode_a_receipt_valid=' + $modeAValid.ToString().ToLowerInvariant() + ' conventions_receipt_valid=' + $conventionsValid.ToString().ToLowerInvariant() + ' mode_b_receipt_valid=' + $modeBValid.ToString().ToLowerInvariant()
+  ' mode_a_receipt_valid=' + $modeAValid.ToString().ToLowerInvariant() + ' conventions_receipt_valid=' + $conventionsValid.ToString().ToLowerInvariant() + ' mode_b_receipt_valid=' + $modeBValid.ToString().ToLowerInvariant() +
+  ' base_ref=' + $resolvedBaseRef + ' base_sha=' + $baseSha + ' base_tree=' + $baseTree
 [ordered]@{
   state = $state; canonical_ref = $canonicalRef; canonical_exists = $canonicalExists; base_ref = $resolvedBaseRef; base_sha = $baseSha
+  base_tree = $baseTree
   holdout_digest_receipt = $holdoutDigest; next_iter = 'iter-' + $nextNumber.ToString('000')
   evidence = @([ordered]@{ command = 'powershell scripts\oracle-capability.ps1'; exit_code = 0; output = $probeOutput })
 } | ConvertTo-Json -Depth 5 -Compress

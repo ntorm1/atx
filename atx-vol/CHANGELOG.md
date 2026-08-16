@@ -17,13 +17,19 @@ vanna, and delta-decay coverage. It emits no option rows or cohort membership.
 Before CTest, the adapter asks Ninja for only `atx-vol-tests` and
 `atx-vol-oracle-bench` with parallelism capped at two, so a reused pool cannot
 mistake stale executables for the tested HEAD; an already-current tree is a
-Ninja no-op.
+Ninja no-op. The CTest gate is closed over the current 31 fully-qualified
+`OracleBench` test IDs: count drift, removal, addition, or same-count name
+substitution now fails the adapter and typed receipt contract.
 
 **BREAKING:** the closed Mode A/Mode B receipt registries grow from six targets
 to eleven; legacy six-target receipts now fail capability validation. Mode A
 scorecards gain explicit `a.vol.*` identity cells and a five-basis-point
-absolute-vol tolerance. There is no compatibility flag or legacy receipt shim;
-regenerate the bootstrap receipt through the fixed targeted gates.
+absolute-vol tolerance. Stage 2 prechecks now require the complete broker gate
+receipt, including receipt ID, outer tested SHA/tree, command/output, raw-output
+digest evidence, and broker root guards, all bound to the capability probe's
+base SHA/tree. Stripped or synthesized legacy precheck receipts fail closed.
+There is no compatibility flag or legacy receipt shim; regenerate the bootstrap
+receipt through the fixed targeted gates.
 
 ### NEW — VRP round 3: flagged isotonic forecast recalibration + metrics honesty (lane vrp-recalibration)
 
