@@ -3,7 +3,7 @@
 # and emits one closed aggregate-only typed JSON receipt.
 [CmdletBinding()]
 param(
-  [ValidateSet('mode_a_targeted_tests', 'mode_a_smoke', 'convention_tests', 'mode_a_smoke_tune', 'residual_floor', 'convention_speed', 'mode_b_targeted_tests', 'mode_b_smoke_tune', 'sprint_american_greeks_delta_put', 'sprint_adjusted_greeks_flat_smile')]
+  [ValidateSet('mode_a_targeted_tests', 'mode_a_smoke', 'convention_tests', 'mode_a_smoke_tune', 'residual_floor', 'convention_speed_measure', 'convention_speed', 'mode_b_targeted_tests', 'mode_b_smoke_tune', 'sprint_american_greeks_delta_put', 'sprint_adjusted_greeks_flat_smile')]
   [string]$Gate
 )
 
@@ -42,6 +42,23 @@ $script:OracleBenchTestIds = @(
   'OracleBenchReader.CrossesUnderliersAndBuckets',
   'OracleBenchReader.MissingPartitionDirIsNotFound',
   'OracleBenchE2E.SyntheticCohortProducesCharterScorecard'
+)
+# Pinned exactly like the OracleBench registry above: the Stage 3 suite is
+# discovered per gtest case, so a vanished or renamed case fails the gate
+# instead of passing a filter that matched nothing.
+$script:OracleConventionTestIds = @(
+  'OracleConvention.DiscreteDividendForwardIsAppliedExactly',
+  'OracleConvention.ProductionMapIsTheResolvedHardCut',
+  'OracleConvention.BestScaleRanksOnTheSelectionPopulation',
+  'OracleConvention.BestScaleTieBreaksOnSourceThenNumericScale',
+  'OracleConvention.BestScaleWithoutSelectionEvidenceUsesCandidateIdentity',
+  'OracleConvention.CompleteMapNamesEveryGreekSignAndScale',
+  'OracleConvention.ThetaDayCountNeverRebucketsDteBands',
+  'OracleConvention.SweepIsClosedDeterministicAndCoversElevenMetrics',
+  'OracleConvention.CandidateAndBaselineFloorsShareOneRowPopulation',
+  'OracleConvention.SelectionExcludesSubFloorOracleRowsButStillReportsThem',
+  'OracleConvention.SweepJsonPublishesTheProductionMapBesideTheWinner',
+  'OracleConvention.SweepRejectsEmptyCohort'
 )
 $script:ModeAMetricMap = [ordered]@{
   price = 'mode_a_price_mae'
@@ -105,9 +122,10 @@ function Get-OracleTargetedGateSpec([string]$GateId, $Identity) {
       return [pscustomobject]@{
         Kind = 'ctest'; Program = 'powershell'; OutputPath = ''
         RequiredExecutables = @($conventionTestExe)
+        ExpectedTestIds = @($script:OracleConventionTestIds)
         PrepareProgram = 'powershell'
         PrepareArguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $buildScript, '-Preset', 'dev', 'build', 'atx-vol-oracle-convention-tests', '--parallel', '2')
-        Arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $buildScript, '-Preset', 'dev', '-Ctest', '-R', '^OracleConvention$', '--no-tests=error')
+        Arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $buildScript, '-Preset', 'dev', '-Ctest', '-R', '^OracleConvention\.', '--no-tests=error')
       }
     }
     'mode_a_smoke_tune' {
@@ -128,6 +146,20 @@ function Get-OracleTargetedGateSpec([string]$GateId, $Identity) {
       return [pscustomobject]@{
         Kind = 'oracle_floor_verify'; Program = ''; OutputPath = $out
         ExpectedFloorPath = $floorPath; RequiredExecutables = @(); Arguments = @()
+      }
+    }
+    'convention_speed_measure' {
+      # The only sanctioned producer of a rel-avx2 rows_per_second number, and
+      # therefore the only thing that can run BEFORE iter-000 exists. It pins
+      # nothing: iter-000's speed.pin is copied from this receipt, and
+      # convention_speed then re-measures against that committed pin.
+      $out = Join-Path $outputRoot ('convention-speed-measure-' + $Identity.Sha + '.json')
+      return [pscustomobject]@{
+        Kind = 'oracle_speed'; Program = $relBenchExe; OutputPath = $out
+        ExpectedFloorPath = ''; RequiredExecutables = @($relBenchExe)
+        PrepareProgram = 'powershell'
+        PrepareArguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $buildScript, '-Preset', 'rel-avx2', 'build', 'atx-vol-oracle-bench', '--parallel', '2')
+        Arguments = @('--cohort', $tuneCohort, '--store', $script:OracleStoreRoot, '--out', $out, '--iter', '0', '--git-sha', $Identity.Sha)
       }
     }
     'convention_speed' {
@@ -152,7 +184,7 @@ function Get-OracleRequiredMetricIds([string]$GateId) {
   if ($GateId -in @('mode_a_smoke', 'mode_a_smoke_tune', 'residual_floor')) {
     return @($script:ModeAMetricMap.Values | ForEach-Object { [string]$_ })
   }
-  if ($GateId -eq 'convention_speed') { return @('rel_avx2_rows_per_second') }
+  if ($GateId -in @('convention_speed_measure', 'convention_speed')) { return @('rel_avx2_rows_per_second') }
   if ($GateId -eq 'mode_b_smoke_tune') {
     return @('mode_b_price_mae', 'mode_b_vol_mae', 'mode_b_delta_rel', 'mode_b_gamma_rel', 'mode_b_theta_rel', 'mode_b_vega_rel', 'mode_b_rho_rel', 'mode_b_phi_rel', 'mode_b_volga_rel', 'mode_b_vanna_rel', 'mode_b_delta_decay_rel')
   }
@@ -220,10 +252,26 @@ function Test-OracleMetricArray($Metrics) {
   $expected = @($script:ModeAMetricMap.Values | ForEach-Object { [string]$_ })
   if ($items.Count -ne $expected.Count -or -not (Test-OracleExactStringSet @($items.metric_id) $expected)) { return $false }
   foreach ($metric in $items) {
-    if (-not (Test-OracleExactKeys $metric @('metric_id', 'value', 'count', 'unit')) -or
-        -not (Test-OracleFiniteNumber $metric.value) -or -not (Test-OracleNonnegativeInteger $metric.count) -or [long]$metric.count -le 0) { return $false }
+    if (-not (Test-OracleExactKeys $metric @('metric_id', 'value', 'count', 'selection_count', 'unit')) -or
+        -not (Test-OracleFiniteNumber $metric.value) -or -not (Test-OracleNonnegativeInteger $metric.count) -or [long]$metric.count -le 0 -or
+        -not (Test-OracleNonnegativeInteger $metric.selection_count) -or [long]$metric.selection_count -le 0 -or
+        [long]$metric.selection_count -gt [long]$metric.count) { return $false }
     $wantedUnit = if ($metric.metric_id -eq 'mode_a_price_mae') { 'ticks' } elseif ($metric.metric_id -eq 'mode_a_vol_mae') { 'bp' } else { 'relative' }
     if ($metric.unit -ne $wantedUnit -or [double]$metric.value -lt 0) { return $false }
+  }
+  return $true
+}
+
+# The candidate and baseline floors must describe ONE row population per metric.
+# Without this, a row abandoned by only one arm turns metric_deltas into a
+# comparison of two different samples, biased toward whichever arm kept it.
+function Test-OracleMetricPopulationParity($Metrics, $BaselineMetrics) {
+  $baselineById = @{}
+  foreach ($metric in @($BaselineMetrics)) { $baselineById[[string]$metric.metric_id] = $metric }
+  foreach ($metric in @($Metrics)) {
+    $baseline = $baselineById[[string]$metric.metric_id]
+    if (-not $baseline -or [long]$metric.count -ne [long]$baseline.count -or
+        [long]$metric.selection_count -ne [long]$baseline.selection_count) { return $false }
   }
   return $true
 }
@@ -244,7 +292,7 @@ function Test-OracleConventionMap($Map) {
 
 function ConvertFrom-OracleConventionSweep([string]$ScorecardText, [string]$GateId, $Identity, [string]$ExpectedFloorPath) {
   try { $sweep = $ScorecardText | ConvertFrom-Json } catch { throw "oracle targeted gate $GateId sweep is not JSON" }
-  $keys = @('schema_version', 'kind', 'git_sha', 'cohorts', 'selection_strategy', 'smoke_rows', 'tune_rows', 'rows_priced', 'engine_errors', 'baseline_conventions', 'conventions', 'metrics', 'baseline_metrics', 'metric_deltas', 'candidate_prices', 'oracle_suspect_candidates', 'market_evidence_status', 'diagnostic_speed')
+  $keys = @('schema_version', 'kind', 'git_sha', 'cohorts', 'selection_strategy', 'smoke_rows', 'tune_rows', 'rows_priced', 'engine_errors', 'baseline_conventions', 'conventions', 'production_conventions', 'metrics', 'baseline_metrics', 'metric_deltas', 'candidate_prices', 'oracle_suspect_candidates', 'market_evidence_status', 'diagnostic_speed')
   if (-not (Test-OracleExactKeys $sweep $keys) -or $sweep.schema_version -ne 2 -or $sweep.kind -ne 'convention_sweep' -or
       $sweep.git_sha -ne $Identity.Sha -or -not (Test-OracleExactStringSet @($sweep.cohorts) @('smoke', 'tune')) -or
       -not (Test-OracleNonnegativeInteger $sweep.smoke_rows) -or [long]$sweep.smoke_rows -le 0 -or
@@ -252,8 +300,16 @@ function ConvertFrom-OracleConventionSweep([string]$ScorecardText, [string]$Gate
       -not (Test-OracleNonnegativeInteger $sweep.rows_priced) -or [long]$sweep.rows_priced -le 0 -or
       -not (Test-OracleNonnegativeInteger $sweep.engine_errors) -or -not (Test-OracleMetricArray $sweep.metrics) -or
       -not (Test-OracleMetricArray $sweep.baseline_metrics) -or -not (Test-OracleConventionMap $sweep.conventions) -or
-      -not (Test-OracleConventionMap $sweep.baseline_conventions) -or @($sweep.oracle_suspect_candidates).Count -ne 0 -or
+      -not (Test-OracleConventionMap $sweep.baseline_conventions) -or -not (Test-OracleConventionMap $sweep.production_conventions) -or
+      -not (Test-OracleMetricPopulationParity $sweep.metrics $sweep.baseline_metrics) -or
+      @($sweep.oracle_suspect_candidates).Count -ne 0 -or
       $sweep.market_evidence_status -ne 'not_evaluated_no_nbbo_gate') { throw "oracle targeted gate $GateId sweep schema mismatch" }
+  # Fail closed while the hand-authored production map differs from what the
+  # sweep resolved: otherwise a committed floor can describe a map production
+  # never prices with.
+  if (($sweep.production_conventions | ConvertTo-Json -Depth 20 -Compress) -cne ($sweep.conventions | ConvertTo-Json -Depth 20 -Compress)) {
+    throw "oracle targeted gate $GateId production convention map differs from the resolved sweep winner"
+  }
   $candidatePrices = @($sweep.candidate_prices)
   if ($candidatePrices.Count -ne 8 -or @($candidatePrices.candidate_id | Select-Object -Unique).Count -ne 8) { throw "oracle targeted gate $GateId candidate registry mismatch" }
   foreach ($candidate in $candidatePrices) {
@@ -264,11 +320,15 @@ function ConvertFrom-OracleConventionSweep([string]$ScorecardText, [string]$Gate
   }
   $deltas = @($sweep.metric_deltas)
   if ($deltas.Count -ne 11 -or -not (Test-OracleExactStringSet @($deltas.metric_id) @($script:ModeAMetricMap.Values))) { throw "oracle targeted gate $GateId delta coverage mismatch" }
+  $metricsById = @{}
+  foreach ($metric in @($sweep.metrics)) { $metricsById[[string]$metric.metric_id] = $metric }
   foreach ($delta in $deltas) {
     if (-not (Test-OracleExactKeys $delta @('metric_id', 'candidate', 'baseline', 'delta', 'count', 'unit')) -or
         -not (Test-OracleFiniteNumber $delta.candidate) -or -not (Test-OracleFiniteNumber $delta.baseline) -or
         -not (Test-OracleFiniteNumber $delta.delta) -or -not (Test-OracleNonnegativeInteger $delta.count) -or [long]$delta.count -le 0) { throw "oracle targeted gate $GateId delta schema mismatch" }
     if ([Math]::Abs(([double]$delta.candidate - [double]$delta.baseline) - [double]$delta.delta) -gt 1.0e-12) { throw "oracle targeted gate $GateId delta arithmetic mismatch" }
+    $metric = $metricsById[[string]$delta.metric_id]
+    if (-not $metric -or [long]$delta.count -ne [long]$metric.count) { throw "oracle targeted gate $GateId delta population mismatch" }
   }
   if ($GateId -eq 'residual_floor') {
     if (-not (Test-Path -LiteralPath $ExpectedFloorPath -PathType Leaf)) { throw 'residual floor receipt is missing' }
@@ -289,11 +349,15 @@ function ConvertFrom-OracleConventionSweep([string]$ScorecardText, [string]$Gate
     BaselineMetrics = @($sweep.baseline_metrics)
     MetricDeltas = @($sweep.metric_deltas)
     Conventions = $sweep.conventions
+    ProductionConventions = $sweep.production_conventions
     CandidatePrices = @($sweep.candidate_prices)
     DiagnosticSpeed = $sweep.diagnostic_speed
   }
 }
 
+# An empty $ExpectedFloorPath is the MEASURE arm: it emits the measured
+# rel-avx2 rate with no pin comparison, because on a first-ever Stage 3 run no
+# pin exists yet and this gate is the only sanctioned producer of one.
 function ConvertFrom-OracleSpeed([string]$ScorecardText, $Identity, [string]$ExpectedFloorPath) {
   try { $scorecard = $ScorecardText | ConvertFrom-Json } catch { throw 'convention speed scorecard is not JSON' }
   if (-not (Test-OracleExactKeys $scorecard @('iter', 'git_sha', 'cohort', 'modes', 'tolerances', 'cells')) -or
@@ -301,13 +365,20 @@ function ConvertFrom-OracleSpeed([string]$ScorecardText, $Identity, [string]$Exp
   $mode = $scorecard.modes.a
   if (-not (Test-OracleNonnegativeInteger $mode.rows_priced) -or [long]$mode.rows_priced -le 0 -or
       -not (Test-OracleFiniteNumber $mode.rows_per_second) -or [double]$mode.rows_per_second -le 0) { throw 'convention speed produced no positive work' }
+  if (-not $ExpectedFloorPath) {
+    return [pscustomobject]@{
+      RowsProcessed = [long]$mode.rows_priced
+      MetricIds = @('rel_avx2_rows_per_second')
+      Speed = [ordered]@{ metric_id = 'rel_avx2_rows_per_second'; value = [double]$mode.rows_per_second; count = [long]$mode.rows_priced; unit = 'rows_per_second'; preset = 'rel-avx2'; quiet_host = $true }
+    }
+  }
   if (-not (Test-Path -LiteralPath $ExpectedFloorPath -PathType Leaf)) { throw 'convention speed pin receipt is missing' }
   try { $floor = [System.IO.File]::ReadAllText($ExpectedFloorPath) | ConvertFrom-Json } catch { throw 'convention speed pin receipt is not JSON' }
   $speed = $floor.speed
   if (-not (Test-OracleExactKeys $speed @('metric_id', 'baseline', 'pin', 'unit', 'preset', 'quiet_host')) -or
       $speed.metric_id -ne 'rel_avx2_rows_per_second' -or $speed.unit -ne 'rows_per_second' -or
       $speed.preset -ne 'rel-avx2' -or -not $speed.quiet_host -or -not (Test-OracleFiniteNumber $speed.baseline) -or
-      -not (Test-OracleFiniteNumber $speed.pin) -or [double]$speed.pin -lt 0 -or [double]$mode.rows_per_second -lt [double]$speed.pin) { throw 'convention speed is below the pinned rel-avx2 floor' }
+      -not (Test-OracleFiniteNumber $speed.pin) -or [double]$speed.pin -le 0 -or [double]$mode.rows_per_second -lt [double]$speed.pin) { throw 'convention speed is below the pinned rel-avx2 floor' }
   return [pscustomobject]@{
     RowsProcessed = [long]$mode.rows_priced
     MetricIds = @('rel_avx2_rows_per_second')
@@ -318,7 +389,7 @@ function ConvertFrom-OracleSpeed([string]$ScorecardText, $Identity, [string]$Exp
 function ConvertFrom-OracleBenchScorecard([string]$ScorecardText, [string]$GateId, $Identity) {
   $spec = Get-OracleTargetedGateSpec $GateId $Identity
   if ($GateId -in @('mode_a_smoke_tune', 'residual_floor')) { return ConvertFrom-OracleConventionSweep $ScorecardText $GateId $Identity $spec.ExpectedFloorPath }
-  if ($GateId -eq 'convention_speed') { return ConvertFrom-OracleSpeed $ScorecardText $Identity $spec.ExpectedFloorPath }
+  if ($GateId -in @('convention_speed_measure', 'convention_speed')) { return ConvertFrom-OracleSpeed $ScorecardText $Identity $spec.ExpectedFloorPath }
   try { $scorecard = $ScorecardText | ConvertFrom-Json } catch { throw "oracle targeted gate $GateId scorecard is not JSON" }
   if ($GateId -ne 'mode_a_smoke') { throw "oracle targeted gate $GateId has no production scorecard adapter yet" }
   if (-not (Test-OracleExactKeys $scorecard @('iter', 'git_sha', 'cohort', 'modes', 'tolerances', 'cells')) -or
@@ -429,11 +500,11 @@ function Invoke-OracleTargetedGate([string]$GateId, [scriptblock]$Invoker) {
     if ($testsExecuted -le 0 -or $failed -ne 0 -or $percent -ne 100 -or $testsPassed -ne $testsExecuted) { throw "oracle targeted gate $GateId did not pass positive test work" }
     if ($spec.PSObject.Properties.Name -contains 'ExpectedTestIds') {
       $passedTestIds = @($lines | ForEach-Object {
-        $match = [regex]::Match([string]$_, 'Test\s+#[0-9]+:\s+(OracleBench[A-Za-z0-9_.]+)\s+\.+\s+Passed')
+        $match = [regex]::Match([string]$_, 'Test\s+#[0-9]+:\s+([A-Za-z][A-Za-z0-9_.]*)\s+\.+\s+Passed')
         if ($match.Success) { $match.Groups[1].Value }
       })
       if ($testsExecuted -ne @($spec.ExpectedTestIds).Count -or -not (Test-OracleExactStringSet $passedTestIds @($spec.ExpectedTestIds))) {
-        throw "oracle targeted gate $GateId test closure differs from the closed 31-test registry"
+        throw ("oracle targeted gate $GateId test closure differs from its pinned " + @($spec.ExpectedTestIds).Count + '-test registry')
       }
     }
     $auditSummary = "tests_executed=$testsExecuted tests_passed=$testsPassed"
@@ -472,6 +543,7 @@ function Invoke-OracleTargetedGate([string]$GateId, [scriptblock]$Invoker) {
     $result.baseline_metrics = @($aggregate.BaselineMetrics)
     $result.metric_deltas = @($aggregate.MetricDeltas)
     $result.conventions = $aggregate.Conventions
+    $result.production_conventions = $aggregate.ProductionConventions
     $result.candidate_prices = @($aggregate.CandidatePrices)
     $result.diagnostic_speed = $aggregate.DiagnosticSpeed
   }

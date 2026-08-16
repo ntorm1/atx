@@ -28,7 +28,14 @@ enum class GreekSource { Delta, Gamma, Theta, Vega, Rho, CarryRho, Volga, Vanna,
 struct ConventionMap {
   InputModel input_model = InputModel::CurrentSpotSdivYield;
   double price_scale = 1.0;
+  // Calendar days-to-expiry, used ONLY for the scorecard's 0-7/8-30/31-90/90+
+  // banding. SpiderRock's theta day count is an unrelated convention, so the
+  // sweep never writes this field: re-bucketing every band as a side effect of
+  // a theta unit pick would silently change what the bands mean.
   double days_per_year = 365.0;
+  // Day count implied by theta_scale; this is what the receipt reports as
+  // `day_count`.
+  double theta_days_per_year = 365.0;
   double delta_scale = 1.0;
   double gamma_scale = 1.0;
   double theta_scale = 1.0 / 365.0;

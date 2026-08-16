@@ -5,22 +5,49 @@ that silently changes a NUMBER a caller already depends on belongs in this file.
 
 ## Unreleased
 
-### BREAKING - SpiderRock convention resolution is a closed production mapping
+### BREAKING - SpiderRock convention sweep tool and v2 convention gate contract
 
-Mode A now uses one hard-cut, worktree-local SpiderRock convention map selected
-by a deterministic aggregate smoke+tune sweep. The sweep explicitly tests the
-documented discrete-dividend forward `uPrc * exp(rate*T) - ddiv`, bounded
-rate/carry treatments, day counts, price/share and sign scaling, and all nine
-Greek source/unit/sign mappings. There is no runtime selection flag and no
-legacy convention shim. Convention bootstrap receipts and iter-000 residual
-floors are schema version 2 and carry all eleven numeric metrics, baseline and
-winning maps/deltas, bounded candidate attribution, artifact blob IDs, and a
-quiet rel-avx2 speed pin; legacy convention receipts now fail closed.
+This lands the Stage 3 machinery, not a sweep-selected production map. Mode A
+still prices through one hard-cut, worktree-local `winning_convention()` map
+with no runtime selection flag and no legacy convention shim; that map remains
+HAND-AUTHORED. It is not yet the sweep's output and must not be described as
+such until an `iter-000` artifact exists to pin it.
+
+New: `atx-vol-oracle-bench --convention-sweep` runs a closed deterministic
+aggregate smoke+tune search — the documented discrete-dividend forward
+`uPrc * exp(rate*T) - ddiv`, bounded rate/carry treatments, theta day counts,
+price/share and sign scaling, and all nine Greek source/unit/sign mappings, with
+no Cartesian product. Every row is priced under both the winner and the baseline
+map before either accumulator sees it, so the two floors always describe one row
+population. Scale selection excludes rows with `|oracle| < kGreekAbsFloor`
+(whose floored relative denominator otherwise rewards the smallest candidate
+scale); those rows still count toward the reported floor, and every metric now
+publishes both `count` and `selection_count`.
+
+The sweep artifact also emits `production_conventions` — what
+`winning_convention()` actually prices with — beside the resolved `conventions`.
+The gate FAILS CLOSED while the two differ, so a committed floor can never
+describe a map production does not use.
+
+Convention bootstrap receipts and iter-000 residual floors are schema version 2
+and carry all eleven numeric metrics with both counts, baseline and winning
+maps/deltas, bounded candidate attribution, artifact blob IDs, and a quiet
+rel-avx2 speed pin; legacy convention receipts now fail closed.
 
 The bootstrap gate registry builds only the convention test and oracle-bench
-targets. It executes one smoke+tune sweep, verifies that exact-SHA artifact
-against the committed floor without repricing it, and runs one quiet tune speed
-gate. Holdout and broad/full test suites remain outside convention resolution.
+targets. It runs the isolated convention suite (discovered per test case, so a
+filter that matches nothing fails instead of reporting 1/1 passed), executes one
+smoke+tune sweep, verifies that exact-SHA artifact against the committed floor
+without repricing it, and runs two quiet tune speed gates: `convention_speed_measure`
+emits the measured rel-avx2 rate with no pin comparison (it is the only
+sanctioned producer of the number iter-000's `speed.pin` is copied from), and
+`convention_speed` then re-measures against that committed pin. Holdout and
+broad/full test suites remain outside convention resolution.
+
+`ConventionMap` gains `theta_days_per_year`. The map's reported `day_count` is
+the theta day count; `days_per_year` is now solely the scorecard's calendar
+DTE-banding day count and the sweep never writes it, so a theta unit pick no
+longer silently re-buckets every DTE band.
 
 ### BREAKING - later oracle bootstrap stages advance an existing canonical ref
 

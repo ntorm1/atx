@@ -183,9 +183,26 @@ function Test-FloorMetrics($Metrics) {
   $items = @($Metrics)
   if ($items.Count -ne $targetA.Count -or -not (Test-StringSet @($items.metric_id) $targetA)) { return $false }
   foreach ($metric in $items) {
-    if (-not (Test-ExactKeys $metric @('metric_id', 'value', 'count', 'unit')) -or -not (Test-FiniteNumber $metric.value) -or [double]$metric.value -lt 0 -or -not (Test-PositiveInteger $metric.count)) { return $false }
+    # selection_count is the floor-filtered population the scale search ran on;
+    # count is the full reported population. Both are pinned so the exclusion
+    # stays auditable in the committed receipt.
+    if (-not (Test-ExactKeys $metric @('metric_id', 'value', 'count', 'selection_count', 'unit')) -or -not (Test-FiniteNumber $metric.value) -or [double]$metric.value -lt 0 -or
+        -not (Test-PositiveInteger $metric.count) -or -not (Test-PositiveInteger $metric.selection_count) -or [long]$metric.selection_count -gt [long]$metric.count) { return $false }
     $unit = if ($metric.metric_id -eq 'mode_a_price_mae') { 'ticks' } elseif ($metric.metric_id -eq 'mode_a_vol_mae') { 'bp' } else { 'relative' }
     if ($metric.unit -ne $unit) { return $false }
+  }
+  return $true
+}
+
+# Candidate and baseline floors must describe ONE row population per metric,
+# otherwise the committed deltas compare two different samples.
+function Test-FloorPopulationParity($Metrics, $BaselineMetrics) {
+  $baselineById = @{}
+  foreach ($metric in @($BaselineMetrics)) { $baselineById[[string]$metric.metric_id] = $metric }
+  foreach ($metric in @($Metrics)) {
+    $baseline = $baselineById[[string]$metric.metric_id]
+    if (-not $baseline -or [long]$metric.count -ne [long]$baseline.count -or
+        [long]$metric.selection_count -ne [long]$baseline.selection_count) { return $false }
   }
   return $true
 }
@@ -247,6 +264,7 @@ function Test-ConventionsReceipt([string]$Sha, $DataReceipt) {
       -not (Test-Provenance $receipt $Sha ($oracleRoot + '/bootstrap/mode-a.json')) -or $receipt.smoke_blob_oid -ne $DataReceipt.smoke_blob_oid -or $receipt.tune_blob_oid -ne $DataReceipt.tune_blob_oid) { return $false }
   if (-not (Test-ConventionMap $receipt.conventions) -or -not (Test-ConventionMap $receipt.baseline_conventions) -or
       -not (Test-FloorMetrics $receipt.metrics) -or -not (Test-FloorMetrics $receipt.baseline_metrics) -or
+      -not (Test-FloorPopulationParity $receipt.metrics $receipt.baseline_metrics) -or
       -not (Test-MetricDeltas $receipt.metric_deltas) -or -not (Test-CandidatePrices $receipt.candidate_prices) -or
       -not (Test-SpeedFloor $receipt.speed) -or -not (Test-PositiveInteger $receipt.rows_processed) -or
       -not (Test-StringSet $receipt.target_metric_ids $targetA)) { return $false }
@@ -262,6 +280,7 @@ function Test-ConventionsReceipt([string]$Sha, $DataReceipt) {
       @($scorecard.oracle_suspect_candidates).Count -ne 0 -or $scorecard.market_evidence_status -ne 'not_evaluated_no_nbbo_gate' -or
       -not (Test-ConventionMap $scorecard.conventions) -or -not (Test-ConventionMap $scorecard.baseline_conventions) -or
       -not (Test-FloorMetrics $scorecard.metrics) -or -not (Test-FloorMetrics $scorecard.baseline_metrics) -or
+      -not (Test-FloorPopulationParity $scorecard.metrics $scorecard.baseline_metrics) -or
       -not (Test-MetricDeltas $scorecard.metric_deltas) -or -not (Test-CandidatePrices $scorecard.candidate_prices) -or -not (Test-SpeedFloor $scorecard.speed)) { return $false }
   foreach ($name in @('baseline_conventions', 'conventions', 'metrics', 'baseline_metrics', 'metric_deltas', 'candidate_prices', 'speed')) {
     if (($receipt.$name | ConvertTo-Json -Depth 20 -Compress) -cne ($scorecard.$name | ConvertTo-Json -Depth 20 -Compress)) { return $false }

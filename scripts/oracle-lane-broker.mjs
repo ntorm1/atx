@@ -113,6 +113,7 @@ const GATE_REGISTRY = Object.freeze({
   convention_tests: { display: 'powershell scripts\\oracle-targeted-gate.ps1 -Gate convention_tests', file: 'scripts/oracle-targeted-gate.ps1', args: ['-Gate', 'convention_tests'] },
   mode_a_smoke_tune: { display: 'powershell scripts\\oracle-targeted-gate.ps1 -Gate mode_a_smoke_tune', file: 'scripts/oracle-targeted-gate.ps1', args: ['-Gate', 'mode_a_smoke_tune'] },
   residual_floor: { display: 'powershell scripts\\oracle-targeted-gate.ps1 -Gate residual_floor', file: 'scripts/oracle-targeted-gate.ps1', args: ['-Gate', 'residual_floor'] },
+  convention_speed_measure: { display: 'powershell scripts\\oracle-targeted-gate.ps1 -Gate convention_speed_measure', file: 'scripts/oracle-targeted-gate.ps1', args: ['-Gate', 'convention_speed_measure'] },
   convention_speed: { display: 'powershell scripts\\oracle-targeted-gate.ps1 -Gate convention_speed', file: 'scripts/oracle-targeted-gate.ps1', args: ['-Gate', 'convention_speed'] },
   mode_b_targeted_tests: { display: 'powershell scripts\\oracle-targeted-gate.ps1 -Gate mode_b_targeted_tests', file: 'scripts/oracle-targeted-gate.ps1', args: ['-Gate', 'mode_b_targeted_tests'] },
   mode_b_smoke_tune: { display: 'powershell scripts\\oracle-targeted-gate.ps1 -Gate mode_b_smoke_tune', file: 'scripts/oracle-targeted-gate.ps1', args: ['-Gate', 'mode_b_smoke_tune'] },
@@ -151,7 +152,7 @@ const MESSAGE_REGISTRY = Object.freeze({
 const BOOTSTRAP_INTEGRATION_GATES = Object.freeze({
   bootstrap_data: Object.freeze(['aggregate_store', 'ingest_manifest', 'cohort_manifests', 'holdout_digest']),
   bootstrap_mode_a: Object.freeze(['mode_a_targeted_tests', 'mode_a_smoke']),
-  bootstrap_conventions: Object.freeze(['convention_tests', 'mode_a_smoke_tune', 'residual_floor', 'convention_speed']),
+  bootstrap_conventions: Object.freeze(['convention_tests', 'mode_a_smoke_tune', 'residual_floor', 'convention_speed_measure', 'convention_speed']),
   bootstrap_mode_b: Object.freeze(['mode_b_targeted_tests', 'mode_b_smoke_tune']),
 })
 

@@ -68,12 +68,14 @@ const BOOTSTRAP_GATE_COMMANDS = Object.freeze({
   convention_tests: 'powershell scripts\\oracle-targeted-gate.ps1 -Gate convention_tests',
   mode_a_smoke_tune: 'powershell scripts\\oracle-targeted-gate.ps1 -Gate mode_a_smoke_tune',
   residual_floor: 'powershell scripts\\oracle-targeted-gate.ps1 -Gate residual_floor',
+  convention_speed_measure: 'powershell scripts\\oracle-targeted-gate.ps1 -Gate convention_speed_measure',
   convention_speed: 'powershell scripts\\oracle-targeted-gate.ps1 -Gate convention_speed',
   mode_b_targeted_tests: 'powershell scripts\\oracle-targeted-gate.ps1 -Gate mode_b_targeted_tests',
   mode_b_smoke_tune: 'powershell scripts\\oracle-targeted-gate.ps1 -Gate mode_b_smoke_tune',
 })
-const TARGETED_BOOTSTRAP_GATE_IDS = Object.freeze(['mode_a_targeted_tests', 'mode_a_smoke', 'convention_tests', 'mode_a_smoke_tune', 'residual_floor', 'convention_speed', 'mode_b_targeted_tests', 'mode_b_smoke_tune'])
+const TARGETED_BOOTSTRAP_GATE_IDS = Object.freeze(['mode_a_targeted_tests', 'mode_a_smoke', 'convention_tests', 'mode_a_smoke_tune', 'residual_floor', 'convention_speed_measure', 'convention_speed', 'mode_b_targeted_tests', 'mode_b_smoke_tune'])
 const ORACLE_BENCH_TEST_COUNT = 31
+const ORACLE_CONVENTION_TEST_COUNT = 12
 const READY_MEASURE_GATES = Object.freeze({
   measure_mode_a: 'atx-vol-oracle-bench --cohort smoke,tune --mode A --scorecard --aggregate-only',
   measure_mode_b: 'atx-vol-oracle-bench --cohort smoke,tune --mode B --scorecard --aggregate-only',
@@ -185,7 +187,10 @@ const CAS_RECEIPT = {
 const NUMERIC_GATE_METRIC = {
   type: 'object', additionalProperties: false, required: ['metric_id', 'value', 'count', 'unit'],
   properties: {
-    metric_id: { type: 'string' }, value: { type: 'number' }, count: { type: 'integer' }, unit: { type: 'string' }, pin: { type: 'number' },
+    metric_id: { type: 'string' }, value: { type: 'number' }, count: { type: 'integer' },
+    // Stage 3 floors also carry the population the scale selection ran on,
+    // which excludes |oracle| < the Greek absolute floor.
+    selection_count: { type: 'integer' }, unit: { type: 'string' }, pin: { type: 'number' },
   },
 }
 const CONVENTION_MAP = {
@@ -219,8 +224,11 @@ const STAGE3_CANDIDATE_PRICE = {
   type: 'object', additionalProperties: false, required: ['candidate_id', 'smoke_price_mae_ticks', 'smoke_count', 'tune_sample_price_mae_ticks', 'tune_sample_count'],
   properties: { candidate_id: { type: 'string' }, smoke_price_mae_ticks: { type: 'number' }, smoke_count: { type: 'integer' }, tune_sample_price_mae_ticks: { type: 'number' }, tune_sample_count: { type: 'integer' } },
 }
+// `pin` is present on convention_speed and ABSENT on convention_speed_measure,
+// which produces the very number iter-000's pin is copied from; validGateReceipt
+// enforces presence/absence per gate id.
 const STAGE3_SPEED = {
-  type: 'object', additionalProperties: false, required: ['metric_id', 'value', 'count', 'unit', 'pin', 'preset', 'quiet_host'],
+  type: 'object', additionalProperties: false, required: ['metric_id', 'value', 'count', 'unit', 'preset', 'quiet_host'],
   properties: { metric_id: { type: 'string' }, value: { type: 'number' }, count: { type: 'integer' }, unit: { type: 'string' }, pin: { type: 'number' }, preset: { type: 'string' }, quiet_host: { type: 'boolean' } },
 }
 const STAGE3_DIAGNOSTIC_SPEED = {
@@ -241,6 +249,9 @@ const GATE_RECEIPT = {
         rows_processed: { type: 'integer' }, metric_ids: { type: 'array', items: { type: 'string' } }, audit_summary: { type: 'string' },
         metrics: { type: 'array', items: NUMERIC_GATE_METRIC }, baseline_metrics: { type: 'array', items: NUMERIC_GATE_METRIC },
         metric_deltas: { type: 'array', items: STAGE3_DELTA }, conventions: CONVENTION_MAP,
+        // What winning_convention() actually prices with. The gate fails closed
+        // while it differs from `conventions`.
+        production_conventions: CONVENTION_MAP,
         candidate_prices: { type: 'array', items: STAGE3_CANDIDATE_PRICE }, diagnostic_speed: STAGE3_DIAGNOSTIC_SPEED, speed: STAGE3_SPEED,
       },
     },
@@ -585,7 +596,7 @@ const RATCHET_PREPARE = {
 const BOOTSTRAP_LANES = {
   missing_data: { stage: '1', slug: 'data', next: 'missing_mode_a', gate_ids: ['aggregate_store', 'ingest_manifest', 'cohort_manifests', 'holdout_digest'], contract: 'Use only broker recover_stage1 for immutable source 58a94584baabae8263d16421f633540b420de10b. It validates the exact parent/tree/two blobs, replays those blobs atop the frozen fixed main, runs the four fixed Stage 1 gates, and commits. Do not run adoption, disk, ingest, builds, or other gates; never synthesize their receipts.' },
   missing_mode_a: { stage: '2', slug: 'mode-a', next: 'missing_conventions', gate_ids: ['mode_a_targeted_tests', 'mode_a_smoke'], contract: 'Run the exact targeted Mode A gates first. If the already-present implementation passes, make no pricing implementation change and write only bootstrap/mode-a.json. Implement/fix Mode A only when an exact targeted gate proves it necessary. Do not implement/stub Mode B; never benchmark holdout.' },
-  missing_conventions: { stage: '3', slug: 'conventions', next: 'missing_mode_b', gate_ids: ['convention_tests', 'mode_a_smoke_tune', 'residual_floor', 'convention_speed'], contract: 'Resolve conventions on aggregate smoke+tune Mode A with the closed staged sweep, commit CONVENTIONS.md + iter-000 + exact v2 bootstrap/conventions.json including all 11 numeric floors/deltas/map/blob OIDs and the rel-avx2 pin. Never benchmark holdout, read Mode B, or edit Ratchet memory; PM updates memory only after audited landing.' },
+  missing_conventions: { stage: '3', slug: 'conventions', next: 'missing_mode_b', gate_ids: ['convention_tests', 'mode_a_smoke_tune', 'residual_floor', 'convention_speed_measure', 'convention_speed'], contract: 'Resolve conventions on aggregate smoke+tune Mode A with the closed staged sweep, commit CONVENTIONS.md + iter-000 + exact v2 bootstrap/conventions.json including all 11 numeric floors/deltas/map/blob OIDs and the rel-avx2 pin. Run convention_speed_measure BEFORE committing iter-000: it is the only sanctioned producer of a rel-avx2 rows_per_second measurement and pins nothing, and iter-000 speed.pin is copied from that receipt. convention_speed then re-measures against the committed pin. Never benchmark holdout, read Mode B, or edit Ratchet memory; PM updates memory only after audited landing.' },
   missing_mode_b: { stage: '4', slug: 'mode-b', next: 'ready', gate_ids: ['mode_b_targeted_tests', 'mode_b_smoke_tune'], contract: 'Implement/test Mode B, run aggregate smoke+tune, commit bootstrap/mode-b.json. Never change holdout/conventions or benchmark holdout.' },
 }
 
@@ -777,6 +788,18 @@ function validHeadReceipt(receipt, ref, sha, tree = null) {
   return !!receipt && receipt.ref === ref && receipt.sha === sha && (!tree || receipt.tree === tree) && receipt.exit_code === 0 && receipt.command.trim() === `git rev-parse ${ref}` && receipt.output.trim() === sha
 }
 
+// PowerShell 5.1's ConvertFrom-Json parses JSON numbers into System.Decimal and
+// re-emits the literal source digits, while C++ prints %.17g and JS prints the
+// shortest round-trip. A byte comparison of the two renderings therefore fails
+// for most MAE-shaped doubles, and a Stage 3 receipt carries ~75 of them. Both
+// sides are canonicalised through JS number formatting instead. Key ORDER, the
+// property this check exists to bind, is preserved: JSON.parse keeps the source
+// order and JSON.stringify replays it.
+function sameJsonPayload(text, value) {
+  if (typeof text !== 'string') return false
+  try { return JSON.stringify(JSON.parse(text)) === JSON.stringify(value) } catch { return false }
+}
+
 function validGateReceipt(receipt, gateId, expectedSha, expectedTree) {
   if (!receipt || receipt.gate_id !== gateId || receipt.command !== BOOTSTRAP_GATE_COMMANDS[gateId] || receipt.exit_code !== 0) return false
   if (expectedSha !== undefined && (!/^[0-9a-f]{64}$/.test(receipt.receipt_id || '') || receipt.tested_sha !== expectedSha || receipt.tested_tree !== expectedTree ||
@@ -785,41 +808,64 @@ function validGateReceipt(receipt, gateId, expectedSha, expectedTree) {
   const result = receipt.result
   if (!result || result.schema_version !== 1 || result.status !== 'PASS' || result.command_id !== gateId ||
       !Number.isInteger(result.observations) || result.observations <= 0 || !/^[0-9a-f]{64}$/.test(result.raw_output_sha256 || '') ||
-      receipt.output !== JSON.stringify(result)) return false
+      !sameJsonPayload(receipt.output, result)) return false
   const commonKeys = ['schema_version', 'status', 'observations', 'command_id', 'raw_output_sha256']
   if (!TARGETED_BOOTSTRAP_GATE_IDS.includes(gateId)) return Object.keys(result).sort().join(',') === commonKeys.sort().join(',')
   const semanticKeys = [...commonKeys, 'tested_sha', 'tested_tree', 'gate_kind', 'tests_executed', 'tests_passed', 'rows_processed', 'metric_ids', 'audit_summary']
-  if (['mode_a_smoke_tune', 'residual_floor'].includes(gateId)) semanticKeys.push('metrics', 'baseline_metrics', 'metric_deltas', 'conventions', 'candidate_prices', 'diagnostic_speed')
-  if (gateId === 'convention_speed') semanticKeys.push('speed')
+  if (['mode_a_smoke_tune', 'residual_floor'].includes(gateId)) semanticKeys.push('metrics', 'baseline_metrics', 'metric_deltas', 'conventions', 'production_conventions', 'candidate_prices', 'diagnostic_speed')
+  if (['convention_speed_measure', 'convention_speed'].includes(gateId)) semanticKeys.push('speed')
   if (Object.keys(result).sort().join(',') !== semanticKeys.sort().join(',')) return false
   if (!/^[0-9a-f]{40}$/.test(result.tested_sha || '') || !/^[0-9a-f]{40}$/.test(result.tested_tree || '') ||
       (expectedSha !== undefined && (result.tested_sha !== expectedSha || result.tested_tree !== expectedTree))) return false
   if (gateId.endsWith('_tests')) return result.gate_kind === 'ctest' && Number.isInteger(result.tests_executed) && result.tests_executed > 0 &&
     (gateId !== 'mode_a_targeted_tests' || result.tests_executed === ORACLE_BENCH_TEST_COUNT) &&
+    (gateId !== 'convention_tests' || result.tests_executed === ORACLE_CONVENTION_TEST_COUNT) &&
     result.tests_passed === result.tests_executed && result.rows_processed === 0 && Array.isArray(result.metric_ids) && result.metric_ids.length === 0 &&
     result.audit_summary === `tests_executed=${result.tests_executed} tests_passed=${result.tests_passed}`
   const wanted = expectedBootstrapMetricIds(gateId)
-  const wantedKind = gateId === 'mode_a_smoke_tune' ? 'oracle_convention' : gateId === 'residual_floor' ? 'oracle_floor_verify' : gateId === 'convention_speed' ? 'oracle_speed' : 'oracle_bench'
+  const wantedKind = gateId === 'mode_a_smoke_tune' ? 'oracle_convention' : gateId === 'residual_floor' ? 'oracle_floor_verify'
+    : ['convention_speed_measure', 'convention_speed'].includes(gateId) ? 'oracle_speed' : 'oracle_bench'
   if (result.gate_kind !== wantedKind || result.tests_executed !== 0 || result.tests_passed !== 0 || !Number.isInteger(result.rows_processed) || result.rows_processed <= 0 ||
       !Array.isArray(result.metric_ids) || result.metric_ids.length !== wanted.length || new Set(result.metric_ids).size !== wanted.length || !wanted.every(id => result.metric_ids.includes(id)) ||
       result.audit_summary !== `status=PASS rows_processed=${result.rows_processed} metric_ids=${[...result.metric_ids].sort().join(',')}`) return false
   if (['mode_a_smoke_tune', 'residual_floor'].includes(gateId)) {
     if (!validStage3MetricArray(result.metrics, wanted) || !validStage3MetricArray(result.baseline_metrics, wanted) || !validStage3ConventionMap(result.conventions) ||
+        !validStage3ConventionMap(result.production_conventions) ||
         !Array.isArray(result.metric_deltas) || result.metric_deltas.length !== wanted.length || !Array.isArray(result.candidate_prices) || result.candidate_prices.length !== 8 ||
         !result.diagnostic_speed || result.diagnostic_speed.preset !== 'dev' || result.diagnostic_speed.citable !== false || !(result.diagnostic_speed.rows_per_second > 0) || !(result.diagnostic_speed.wall_seconds > 0)) return false
+    // Fail closed while the map production prices with differs from the map the
+    // sweep resolved: a committed floor must never describe an unused map.
+    if (JSON.stringify(result.production_conventions) !== JSON.stringify(result.conventions)) return false
+    // One row population per metric across both arms, or metric_deltas compares
+    // two different samples.
+    const baselineById = new Map(result.baseline_metrics.map(item => [item.metric_id, item]))
+    if (result.metrics.some(item => {
+      const baseline = baselineById.get(item.metric_id)
+      return !baseline || baseline.count !== item.count || baseline.selection_count !== item.selection_count
+    })) return false
+    const metricById = new Map(result.metrics.map(item => [item.metric_id, item]))
     const deltaIds = new Set(result.metric_deltas.map(item => item && item.metric_id))
-    if (deltaIds.size !== wanted.length || !wanted.every(id => deltaIds.has(id)) || result.metric_deltas.some(item => !item || !Number.isFinite(item.candidate) || !Number.isFinite(item.baseline) || !Number.isFinite(item.delta) || !Number.isInteger(item.count) || item.count <= 0 || Math.abs((item.candidate - item.baseline) - item.delta) > 1e-12)) return false
+    if (deltaIds.size !== wanted.length || !wanted.every(id => deltaIds.has(id)) || result.metric_deltas.some(item => !item || !Number.isFinite(item.candidate) || !Number.isFinite(item.baseline) || !Number.isFinite(item.delta) || !Number.isInteger(item.count) || item.count <= 0 || Math.abs((item.candidate - item.baseline) - item.delta) > 1e-12 || item.count !== (metricById.get(item.metric_id) || {}).count)) return false
   }
-  if (gateId === 'convention_speed') {
+  if (['convention_speed_measure', 'convention_speed'].includes(gateId)) {
     const speed = result.speed
-    if (!speed || speed.metric_id !== SPEED_METRIC_ID || speed.unit !== 'rows_per_second' || speed.preset !== 'rel-avx2' || speed.quiet_host !== true || !Number.isFinite(speed.value) || speed.value <= 0 || !Number.isFinite(speed.pin) || speed.pin <= 0 || speed.value < speed.pin || !Number.isInteger(speed.count) || speed.count <= 0) return false
+    if (!speed || speed.metric_id !== SPEED_METRIC_ID || speed.unit !== 'rows_per_second' || speed.preset !== 'rel-avx2' || speed.quiet_host !== true || !Number.isFinite(speed.value) || speed.value <= 0 || !Number.isInteger(speed.count) || speed.count <= 0) return false
+    const speedKeys = ['metric_id', 'value', 'count', 'unit', 'preset', 'quiet_host']
+    if (gateId === 'convention_speed_measure') {
+      // The measure arm pins NOTHING: it exists precisely because no pin can
+      // exist yet, so a pin here would mean it validated against something.
+      if (Object.keys(speed).sort().join(',') !== speedKeys.sort().join(',')) return false
+    } else if (Object.keys(speed).sort().join(',') !== [...speedKeys, 'pin'].sort().join(',') ||
+        !Number.isFinite(speed.pin) || speed.pin <= 0 || speed.value < speed.pin) return false
   }
   return true
 }
 
 function validStage3MetricArray(metrics, wanted) {
   if (!Array.isArray(metrics) || metrics.length !== wanted.length || new Set(metrics.map(item => item && item.metric_id)).size !== wanted.length) return false
-  return wanted.every(id => metrics.some(item => item && item.metric_id === id && Number.isFinite(item.value) && item.value >= 0 && Number.isInteger(item.count) && item.count > 0 && item.unit === (id === 'mode_a_price_mae' ? 'ticks' : id === 'mode_a_vol_mae' ? 'bp' : 'relative')))
+  return wanted.every(id => metrics.some(item => item && item.metric_id === id && Number.isFinite(item.value) && item.value >= 0 && Number.isInteger(item.count) && item.count > 0 &&
+    Number.isInteger(item.selection_count) && item.selection_count > 0 && item.selection_count <= item.count &&
+    item.unit === (id === 'mode_a_price_mae' ? 'ticks' : id === 'mode_a_vol_mae' ? 'bp' : 'relative')))
 }
 
 function validStage3ConventionMap(map) {
@@ -830,7 +876,7 @@ function validStage3ConventionMap(map) {
 
 function expectedBootstrapMetricIds(gateId) {
   if (['mode_a_smoke', 'mode_a_smoke_tune', 'residual_floor'].includes(gateId)) return TARGET_REGISTRY.filter(item => item.mode === 'A').map(item => item.metric_id)
-  if (gateId === 'convention_speed') return [SPEED_METRIC_ID]
+  if (['convention_speed_measure', 'convention_speed'].includes(gateId)) return [SPEED_METRIC_ID]
   if (gateId === 'mode_b_smoke_tune') return TARGET_REGISTRY.filter(item => item.mode === 'B').map(item => item.metric_id)
   return []
 }
@@ -870,7 +916,7 @@ function validMeasureGateReceipt(receipt, gateId) {
       !Number.isInteger(result.observations) || result.observations <= 0 || !Array.isArray(result.metrics) ||
       result.metrics.length !== wanted.length || new Set(result.metrics.map(metric => metric && metric.metric_id)).size !== wanted.length ||
       !wanted.every(metricId => validNumericMetric(result.metrics.find(metric => metric && metric.metric_id === metricId), metricId, metricId === SPEED_METRIC_ID))) return false
-  return receipt.output === JSON.stringify(result)
+  return sameJsonPayload(receipt.output, result)
 }
 
 function measurePayloadError(measure) {
@@ -905,7 +951,7 @@ function validRatchetGateReceipt(receipt, gateId) {
   return !!result && result.schema_version === 1 && result.status === 'PASS' && result.command_id === gateId && Number.isInteger(result.observations) && result.observations > 0 &&
     Array.isArray(result.metrics) && result.metrics.length === wanted.length && new Set(result.metrics.map(metric => metric && metric.metric_id)).size === wanted.length &&
     wanted.every(id => validNumericMetric(result.metrics.find(metric => metric && metric.metric_id === id), id, false)) &&
-    receipt.output === JSON.stringify(result)
+    sameJsonPayload(receipt.output, result)
 }
 
 function validIntegrationCommand(receipt, reviewedSha, reviewedTree = null) {

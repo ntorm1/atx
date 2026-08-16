@@ -9,23 +9,29 @@ namespace {
 
 constexpr ConventionMap kBaseline{};
 
-// Hard cut: this is the only production convention map. The aggregate Stage 3
-// sweep rewrites this initializer after deterministic smoke+tune selection.
+// Hard cut: this is the only production convention map. It is hand-authored
+// until an aggregate Stage 3 sweep artifact pins it; `convention_sweep_json`
+// emits this map as `production_conventions` beside the sweep's own winner and
+// the gate fails closed while the two disagree.
+//
+// Designated initializers: nine consecutive doubles by position is a
+// parameter-swap waiting to happen.
 constexpr ConventionMap kWinner{
-    InputModel::DiscreteDividendPvSdivYield,
-    1.0,
-    365.25,
-    1.0,
-    1.0,
-    1.0 / 365.25,
-    0.01,
-    0.01,
-    0.0001,
-    GreekSource::Volga,
-    0.0001,
-    GreekSource::Vanna,
-    0.01,
-    1.0 / 365.25,
+    .input_model = InputModel::DiscreteDividendPvSdivYield,
+    .price_scale = 1.0,
+    .days_per_year = 365.0,
+    .theta_days_per_year = 365.25,
+    .delta_scale = 1.0,
+    .gamma_scale = 1.0,
+    .theta_scale = 1.0 / 365.25,
+    .vega_scale = 0.01,
+    .rho_scale = 0.01,
+    .phi_scale = 0.0001,
+    .volga_source = GreekSource::Volga,
+    .volga_scale = 0.0001,
+    .vanna_source = GreekSource::Vanna,
+    .vanna_scale = 0.01,
+    .delta_decay_scale = 1.0 / 365.25,
 };
 
 [[nodiscard]] double greek_value(const AmericanGreeks &g, double dp_dq,

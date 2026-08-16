@@ -397,8 +397,13 @@ target_link_libraries(atx-vol-oracle-convention-tests
     PRIVATE atx::vol atx::core GTest::gtest_main atx_warnings)
 target_include_directories(atx-vol-oracle-convention-tests
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../tools ${CMAKE_CURRENT_SOURCE_DIR}/../src)
-add_test(NAME OracleConvention
-    COMMAND atx-vol-oracle-convention-tests --gtest_filter=OracleConvention.*)
+# Discovery, not one filtered add_test(): a `--gtest_filter=OracleConvention.*`
+# case exits 0 and reports 1/1 passed even when the filter matches ZERO tests,
+# which the charter treats as a contract failure. One ctest case per gtest case
+# turns a vanished suite into "No tests were found", and the gate pins the exact
+# fully-qualified ID set the way it pins the OracleBench registry.
+gtest_discover_tests(atx-vol-oracle-convention-tests
+    DISCOVERY_MODE PRE_TEST)
 
 # Suites measured >10s (serial debug, 2026-07-11). Everything here still runs
 # under `ctest -L atx_vol`; `-L atx_vol_fast` is the developer inner loop.

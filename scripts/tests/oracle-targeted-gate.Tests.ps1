@@ -30,7 +30,7 @@ function New-OracleBenchCtestLines([string[]]$TestIds) {
   return $lines
 }
 
-function New-ConventionSweepJson([string]$Sha) {
+function New-ConventionSweepJson([string]$Sha, [string]$ProductionDayCount = '', [long]$BaselineCountOverride = 0) {
   $map = [ordered]@{
     input_model = 'discrete_forward_pv__rate__sdiv_yield'; forward_formula = 'uprc_exp_rate_t_minus_ddiv'; rate_model = 'continuous_row_rate'; carry_model = 'sdiv_as_yield'; dividend_model = 'discrete_cash_forward'; day_count = 'ACT_365_25'
     price_scale = 'per_share'; price_sign = 'positive'; vol_scale = 'decimal_identity'; delta_scale = 'per_unit'; delta_sign = 'positive'; gamma_scale = 'per_unit'; gamma_sign = 'positive'
@@ -38,14 +38,18 @@ function New-ConventionSweepJson([string]$Sha) {
     volga_source = 'volga'; volga_scale = 'per_point_squared'; volga_sign = 'positive'; vanna_source = 'vanna'; vanna_scale = 'per_point'; vanna_sign = 'positive'
     delta_decay_basis = 'per_day'; delta_decay_day_count = 'ACT_365_25'; delta_decay_sign = 'positive'
   }
-  $metrics = @($script:ModeAMetricMap.Values | ForEach-Object { [ordered]@{ metric_id = [string]$_; value = 1.0; count = 100; unit = if ($_ -eq 'mode_a_price_mae') { 'ticks' } elseif ($_ -eq 'mode_a_vol_mae') { 'bp' } else { 'relative' } } })
-  $baseline = @($metrics | ForEach-Object { [ordered]@{ metric_id = $_.metric_id; value = 2.0; count = 100; unit = $_.unit } })
+  $metrics = @($script:ModeAMetricMap.Values | ForEach-Object { [ordered]@{ metric_id = [string]$_; value = 1.0; count = 100; selection_count = 90; unit = if ($_ -eq 'mode_a_price_mae') { 'ticks' } elseif ($_ -eq 'mode_a_vol_mae') { 'bp' } else { 'relative' } } })
+  $baseline = @($metrics | ForEach-Object { [ordered]@{ metric_id = $_.metric_id; value = 2.0; count = 100; selection_count = 90; unit = $_.unit } })
   $deltas = @($metrics | ForEach-Object { [ordered]@{ metric_id = $_.metric_id; candidate = 1.0; baseline = 2.0; delta = -1.0; count = 100; unit = $_.unit } })
   $ids = @('uprc_spot__rate__sdiv_yield', 'discrete_forward_pv__rate__sdiv_yield', 'discrete_forward_net_carry__rate__sdiv_yield', 'discrete_forward__rate__sdiv_yield', 'discrete_forward__rate_minus_sdiv__zero_carry', 'discrete_forward__zero_rate__zero_carry', 'discrete_forward_pv__rate_minus_sdiv__zero_carry', 'discrete_forward_pv__rate_plus_sdiv__zero_carry')
   $candidates = @(for ($i = 0; $i -lt $ids.Count; $i++) { [ordered]@{ candidate_id = $ids[$i]; smoke_price_mae_ticks = 1.0 + $i; smoke_count = 50; tune_sample_price_mae_ticks = if ($i -lt 2) { 2.0 + $i } else { 0.0 }; tune_sample_count = if ($i -lt 2) { 20 } else { 0 } } })
+  if ($BaselineCountOverride -gt 0) { foreach ($metric in $baseline) { $metric.count = $BaselineCountOverride } }
+  $production = [ordered]@{}
+  foreach ($property in $map.GetEnumerator()) { $production[$property.Key] = $property.Value }
+  if ($ProductionDayCount) { $production.day_count = $ProductionDayCount }
   return ([ordered]@{
     schema_version = 2; kind = 'convention_sweep'; git_sha = $Sha; cohorts = @('smoke', 'tune'); selection_strategy = 'all_smoke_then_top2_deterministic_tune_sample_then_full_attribution'
-    smoke_rows = 40; tune_rows = 60; rows_priced = 100; engine_errors = 0; baseline_conventions = $map; conventions = $map
+    smoke_rows = 40; tune_rows = 60; rows_priced = 100; engine_errors = 0; baseline_conventions = $map; conventions = $map; production_conventions = $production
     metrics = $metrics; baseline_metrics = $baseline; metric_deltas = $deltas; candidate_prices = $candidates; oracle_suspect_candidates = @(); market_evidence_status = 'not_evaluated_no_nbbo_gate'
     diagnostic_speed = [ordered]@{ preset = 'dev'; citable = $false; wall_seconds = 1.0; rows_per_second = 100.0 }
   } | ConvertTo-Json -Depth 20)
@@ -150,7 +154,9 @@ Describe 'oracle targeted gate production adapter' {
     $identity = Get-OracleGitIdentity
     $tests = Get-OracleTargetedGateSpec 'convention_tests' $identity
     ($tests.PrepareArguments -join ' ') | Should Match 'build atx-vol-oracle-convention-tests --parallel 2$'
-    ($tests.Arguments -join ' ') | Should Match '-Ctest -R \^OracleConvention\$ --no-tests=error'
+    ($tests.Arguments -join ' ') | Should Match '-Ctest -R \^OracleConvention\\\. --no-tests=error'
+    $tests.ExpectedTestIds.Count | Should Be 12
+    @($tests.ExpectedTestIds | Where-Object { $_ -notmatch '^OracleConvention\.[A-Za-z0-9_]+$' }).Count | Should Be 0
     $sweep = Get-OracleTargetedGateSpec 'mode_a_smoke_tune' $identity
     ($sweep.PrepareArguments -join ' ') | Should Match 'build atx-vol-oracle-bench --parallel 2$'
     ($sweep.Arguments -join ' ') | Should Match '--convention-sweep --smoke .+smoke\.json --tune .+tune\.json'
@@ -173,5 +179,46 @@ Describe 'oracle targeted gate production adapter' {
     $result.metric_deltas.Count | Should Be 11
     $result.candidate_prices.Count | Should Be 8
     (Test-OracleConventionMap $result.conventions) | Should Be $true
+    (Test-OracleConventionMap $result.production_conventions) | Should Be $true
+    $result.metrics[0].selection_count | Should Be 90
+  }
+
+  It 'fails closed when the production map differs from the resolved sweep winner' {
+    $identity = Get-OracleGitIdentity
+    { Invoke-OracleTargetedGate 'mode_a_smoke_tune' {
+        [pscustomobject]@{ ExitCode = 0; Lines = @('closed convention sweep completed'); ScorecardJson = (New-ConventionSweepJson $identity.Sha 'ACT_360') }
+      } } | Should Throw
+  }
+
+  It 'fails closed when the candidate and baseline floors describe different populations' {
+    $identity = Get-OracleGitIdentity
+    { Invoke-OracleTargetedGate 'mode_a_smoke_tune' {
+        [pscustomobject]@{ ExitCode = 0; Lines = @('closed convention sweep completed'); ScorecardJson = (New-ConventionSweepJson $identity.Sha '' 99) }
+      } } | Should Throw
+  }
+
+  It 'measures the rel-avx2 rate with no pin before iter-000 exists, and pins only afterwards' {
+    $identity = Get-OracleGitIdentity
+    $measure = Get-OracleTargetedGateSpec 'convention_speed_measure' $identity
+    $measure.Kind | Should Be 'oracle_speed'
+    $measure.ExpectedFloorPath | Should Be ''
+    ($measure.PrepareArguments -join ' ') | Should Match '-Preset rel-avx2 build atx-vol-oracle-bench --parallel 2$'
+    ($measure.Arguments -join ' ') | Should Not Match 'holdout'
+    $pinned = Get-OracleTargetedGateSpec 'convention_speed' $identity
+    $pinned.ExpectedFloorPath | Should Match 'iter-000\.json$'
+    $measure.OutputPath | Should Not Be $pinned.OutputPath
+    (Get-OracleRequiredMetricIds 'convention_speed_measure') | Should Be @('rel_avx2_rows_per_second')
+
+    $scorecard = ([ordered]@{
+      iter = 0; git_sha = $identity.Sha; cohort = 'tune'
+      modes = [ordered]@{ a = [ordered]@{ rows_priced = 500; rows_per_second = 1200.0 } }
+      tolerances = [ordered]@{ price = 'price' }; cells = [ordered]@{}
+    } | ConvertTo-Json -Depth 8)
+    $result = Invoke-OracleTargetedGate 'convention_speed_measure' {
+      [pscustomobject]@{ ExitCode = 0; Lines = @('rel-avx2 tune measurement'); ScorecardJson = $scorecard }
+    }
+    $result.gate_kind | Should Be 'oracle_speed'
+    $result.speed.value | Should Be 1200.0
+    $result.speed.Contains('pin') | Should Be $false
   }
 }

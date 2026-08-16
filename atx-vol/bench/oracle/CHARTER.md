@@ -135,20 +135,35 @@ the exact closed Mode A schema above (never rows themselves). Holdout is forbidd
 Using Mode A on smoke+tune only, run the closed deterministic staged sweep. Price
 input attribution first evaluates all eight bounded candidates on smoke, including
 the documented SpiderRock discrete-dividend forward
-`fUPrc = uPrc * exp(rate * T) - ddiv`, then evaluates only the stable-ID-tiebroken
-top two on a deterministic tune sample. The winning input treatment is evaluated
+`fUPrc = uPrc * exp(rate * T) - ddiv`, then ranks only the stable-ID-tiebroken
+top two on a deterministic tune sample ALONE — smoke decides the eight-way cut
+and its evidence is never counted a second time. The winning input treatment is evaluated
 on complete smoke+tune while bounded independent searches resolve theta/vega/rho/
-phi/volga/vanna/delta-decay scaling and sources, day count, signs, and share scaling.
+phi/volga/vanna/delta-decay scaling and sources, theta day count, signs, and share scaling.
+The scorecard's calendar DTE banding day count is a separate convention and stays
+pinned; the theta unit pick must not re-bucket it. Each row is priced under BOTH
+the winner and the baseline map before anything is accumulated, so the candidate
+and baseline floors always describe one row population — the gates enforce equal
+per-metric counts. Scale selection excludes rows with `|oracle| < kGreekAbsFloor`,
+where the relative objective's floored denominator would otherwise reward the
+smallest candidate scale; those rows still appear in the reported floor and each
+metric publishes both counts. The sweep also emits `production_conventions`, the
+map `winning_convention()` actually prices with, and the gate fails closed while
+it differs from the resolved winner.
 Vol remains decimal identity. No Cartesian-product sweep is permitted. Commit the winning map to
 `atx-vol/bench/oracle/CONVENTIONS.md`, encode it only in the isolated convention
 layer, and write aggregate `scorecards/iter-000.json` with the Mode A residual
-floor plus the exact `bootstrap/conventions.json` receipt. Run only these four
+floor plus the exact `bootstrap/conventions.json` receipt. Run only these five
 worktree-local gates: `convention_tests`, `mode_a_smoke_tune`, `residual_floor`,
-and `convention_speed`. The residual gate verifies the exact-SHA sweep artifact
+`convention_speed_measure`, and `convention_speed`. The residual gate verifies the exact-SHA sweep artifact
 from the preceding smoke+tune gate against iter-000; it does not price the same
-rows twice and fails if the artifact is absent or belongs to another SHA. The
-speed gate builds only the rel-avx2 oracle-bench target and runs tune on a quiet
-host against the frozen pin. Record that evidenced floor in NORTHSTAR and append
+rows twice and fails if the artifact is absent or belongs to another SHA. On a
+first-ever Stage 3 run no speed pin exists, so `convention_speed_measure` runs
+BEFORE iter-000 is committed: it builds only the rel-avx2 oracle-bench target,
+runs tune on a quiet host, and emits the measured rows_per_second with no pin
+comparison. That receipt is the only sanctioned source of iter-000's `speed.pin`.
+`convention_speed` then re-runs the same quiet measurement against the committed
+pin. Record that evidenced floor in NORTHSTAR and append
 LEDGER only after audited landing; the Stage 3 build lane must not edit either
 memory file. Do not read Mode B or benchmark holdout.
 

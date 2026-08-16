@@ -2,14 +2,17 @@
 
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <limits>
+#include <optional>
 #include <string>
 #include <utility>
 
 #include "atx/vol/api/pricing/american.hpp"
+#include "oracle_scorecard.hpp"
 
 namespace atx::vol::oracle {
 
@@ -24,34 +27,37 @@ constexpr std::array<InputModel, 8> kInputModels = {
     InputModel::DiscreteDividendPvNetRate, InputModel::DiscreteDividendPvRatePlusSdiv,
 };
 
+// The staged search evaluates the CLOSED candidate set, so the array and the
+// enum must not drift apart. InputModel is default-numbered from 0, so the last
+// enumerator's value pins the enum's cardinality.
+static_assert(static_cast<std::size_t>(InputModel::DiscreteDividendPvRatePlusSdiv) + 1 ==
+                  kInputModels.size(),
+              "kInputModels must enumerate every InputModel");
+
+[[nodiscard]] constexpr bool enumerates_every_input_model() noexcept {
+  for (std::size_t index = 0; index < kInputModels.size(); ++index) {
+    const auto wanted = static_cast<InputModel>(index);
+    bool found = false;
+    for (const InputModel model : kInputModels) {
+      found = found || model == wanted;
+    }
+    if (!found) {
+      return false;
+    }
+  }
+  return true;
+}
+static_assert(enumerates_every_input_model(), "kInputModels must list each InputModel exactly once");
+
+// The second stage always ranks exactly two finalists.
+constexpr std::size_t kFinalistCount = 2;
+static_assert(kInputModels.size() >= kFinalistCount, "the smoke cut needs two survivors");
+
 constexpr std::array<double, 6> kUnitScales = {0.01, -0.01, 1.0, -1.0, 100.0, -100.0};
 constexpr std::array<double, 6> kPointScales = {0.0001, -0.0001, 0.01, -0.01, 1.0, -1.0};
 constexpr std::array<double, 10> kTimeScales = {
     1.0 / 365.0,  -1.0 / 365.0, 1.0 / 365.25, -1.0 / 365.25, 1.0 / 360.0,
     -1.0 / 360.0, 1.0 / 252.0,  -1.0 / 252.0, 1.0,           -1.0};
-
-struct Accumulator {
-  double sum = 0.0;
-  std::int64_t count = 0;
-
-  void absolute(double model, double oracle) noexcept {
-    if (std::isfinite(model) && std::isfinite(oracle)) {
-      sum += std::abs(model - oracle);
-      ++count;
-    }
-  }
-
-  void relative(double model, double oracle) noexcept {
-    if (std::isfinite(model) && std::isfinite(oracle)) {
-      sum += std::abs(model - oracle) / std::max(std::abs(oracle), 1.0e-4);
-      ++count;
-    }
-  }
-
-  [[nodiscard]] double mean() const noexcept {
-    return count > 0 ? sum / static_cast<double>(count) : std::numeric_limits<double>::infinity();
-  }
-};
 
 struct PriceCandidate {
   InputModel model{};
@@ -59,22 +65,40 @@ struct PriceCandidate {
   Accumulator tune;
 };
 
-struct ScaleCandidate {
-  GreekSource source{};
+// The price/share search has no Greek source to pick, so it carries none: a
+// filler GreekSource would degenerate into a constant tie-break prefix.
+struct PriceScaleCandidate {
   double scale = 1.0;
   Accumulator error;
 };
 
+// Absolute floors (price, vol) have no relative denominator, so the reported
+// population IS the selection population.
+struct BaselineFloors {
+  Accumulator price;
+  Accumulator vol;
+  FloorAccumulators delta;
+  FloorAccumulators gamma;
+  FloorAccumulators theta;
+  FloorAccumulators vega;
+  FloorAccumulators rho;
+  FloorAccumulators phi;
+  FloorAccumulators volga;
+  FloorAccumulators vanna;
+  FloorAccumulators delta_decay;
+};
+
+// Which cohort a price candidate is ranked on. Smoke decides the 8-way cut;
+// the two finalists are then ranked on the tune sample ALONE, so smoke evidence
+// is never counted a second time under a ~14%-weighted tune sample.
+enum class PriceStage { Smoke, TuneSample };
+
 [[nodiscard]] bool less_price(const PriceCandidate &left, const PriceCandidate &right,
-                              bool include_tune) {
-  const double left_sum = left.smoke.sum + (include_tune ? left.tune.sum : 0.0);
-  const double right_sum = right.smoke.sum + (include_tune ? right.tune.sum : 0.0);
-  const auto left_n = left.smoke.count + (include_tune ? left.tune.count : 0);
-  const auto right_n = right.smoke.count + (include_tune ? right.tune.count : 0);
-  const double left_mean =
-      left_n > 0 ? left_sum / static_cast<double>(left_n) : std::numeric_limits<double>::infinity();
-  const double right_mean = right_n > 0 ? right_sum / static_cast<double>(right_n)
-                                        : std::numeric_limits<double>::infinity();
+                              PriceStage stage) noexcept {
+  const Accumulator &left_acc = stage == PriceStage::Smoke ? left.smoke : left.tune;
+  const Accumulator &right_acc = stage == PriceStage::Smoke ? right.smoke : right.tune;
+  const double left_mean = left_acc.mean();
+  const double right_mean = right_acc.mean();
   if (left_mean != right_mean) {
     return left_mean < right_mean;
   }
@@ -82,10 +106,10 @@ struct ScaleCandidate {
 }
 
 void evaluate_price_rows(std::span<const OracleRow> rows, std::size_t stride,
-                         PriceCandidate &candidate, bool tune) {
+                         PriceCandidate &candidate, PriceStage stage) {
   ConventionMap map = baseline_convention();
   map.input_model = candidate.model;
-  Accumulator &acc = tune ? candidate.tune : candidate.smoke;
+  Accumulator &acc = stage == PriceStage::Smoke ? candidate.smoke : candidate.tune;
   for (std::size_t index = 0; index < rows.size(); index += stride) {
     const OracleRow &row = rows[index];
     const EnginePricingInputs in = mode_a_inputs(row, map);
@@ -119,6 +143,15 @@ void evaluate_price_rows(std::span<const OracleRow> rows, std::size_t stride,
   return out;
 }
 
+[[nodiscard]] std::vector<PriceScaleCandidate> price_scales_for(std::span<const double> scales) {
+  std::vector<PriceScaleCandidate> out;
+  out.reserve(scales.size());
+  for (const double scale : scales) {
+    out.push_back(PriceScaleCandidate{scale, {}});
+  }
+  return out;
+}
+
 [[nodiscard]] double source_value(const AmericanGreeks &g, double dp_dq,
                                   GreekSource source) noexcept {
   switch (source) {
@@ -141,35 +174,85 @@ void evaluate_price_rows(std::span<const OracleRow> rows, std::size_t stride,
   case GreekSource::Charm:
     return g.charm;
   }
+  assert(false);
   return std::numeric_limits<double>::quiet_NaN();
 }
 
-void observe_scales(std::vector<ScaleCandidate> &candidates, const AmericanGreeks &g, double dp_dq,
-                    double oracle) noexcept {
-  for (ScaleCandidate &candidate : candidates) {
-    candidate.error.relative(source_value(g, dp_dq, candidate.source) * candidate.scale, oracle);
+// One engine evaluation of a row under one convention map.
+struct PricedRow {
+  EnginePricingInputs inputs{};
+  AmericanGreeks greeks{};
+  double dp_dq = std::numeric_limits<double>::quiet_NaN();
+};
+
+// A failed carry solve leaves dp_dq non-finite (only the phi metric reads it)
+// rather than discarding the row's other eight Greeks.
+[[nodiscard]] std::optional<PricedRow> price_row(const OracleRow &row, const ConventionMap &map) {
+  const EnginePricingInputs in = mode_a_inputs(row, map);
+  const auto greeks = american_greeks_al(in.spot, in.strike, in.years, in.sigma, in.rate, in.carry,
+                                         in.side, al_fast_opts());
+  if (!greeks.has_value()) {
+    return std::nullopt;
   }
+  PricedRow out{.inputs = in, .greeks = *greeks, .dp_dq = std::numeric_limits<double>::quiet_NaN()};
+  const auto carry = american_carry_greeks_al(in.spot, in.strike, in.years, in.sigma, in.rate,
+                                              in.carry, in.side, al_fast_opts());
+  if (carry.has_value()) {
+    out.dp_dq = carry->dP_dq;
+  }
+  return out;
 }
 
-[[nodiscard]] std::size_t best_scale(const std::vector<ScaleCandidate> &candidates) noexcept {
+// Every scale in one search must be scored on the same rows, so a search is
+// admitted only when every source it may pick is finite on the winner arm.
+[[nodiscard]] bool sources_finite(std::span<const ScaleCandidate> candidates,
+                                  const PricedRow &row) noexcept {
+  for (const ScaleCandidate &candidate : candidates) {
+    if (!std::isfinite(source_value(row.greeks, row.dp_dq, candidate.source))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Stable total order on candidate identity: source ID first, then the SIGNED
+// SCALE NUMERICALLY. Formatting the scale into a string would order 0.01 ahead
+// of 1.0 by digits rather than by value, and would allocate past SSO on ids
+// like "carry_rho:0.002740".
+[[nodiscard]] bool less_candidate_id(const ScaleCandidate &left,
+                                     const ScaleCandidate &right) noexcept {
+  const std::string_view left_id = greek_source_id(left.source);
+  const std::string_view right_id = greek_source_id(right.source);
+  if (left_id != right_id) {
+    return left_id < right_id;
+  }
+  return left.scale < right.scale;
+}
+
+[[nodiscard]] std::size_t
+best_price_scale(std::span<const PriceScaleCandidate> candidates) noexcept {
+  assert(!candidates.empty());
   std::size_t best = 0;
   for (std::size_t index = 1; index < candidates.size(); ++index) {
     const double value = candidates[index].error.mean();
     const double best_value = candidates[best].error.mean();
-    const std::string id = std::string(greek_source_id(candidates[index].source)) + ":" +
-                           std::to_string(candidates[index].scale);
-    const std::string best_id = std::string(greek_source_id(candidates[best].source)) + ":" +
-                                std::to_string(candidates[best].scale);
-    if (value < best_value || (value == best_value && id < best_id)) {
+    const bool ties_lower = value == best_value && candidates[index].scale < candidates[best].scale;
+    if (value < best_value || ties_lower) {
       best = index;
     }
   }
   return best;
 }
 
+[[nodiscard]] FloorMetric floor_metric(std::string id, const FloorAccumulators &acc,
+                                       std::string unit, double multiplier = 1.0) {
+  return FloorMetric{std::move(id), acc.report.mean() * multiplier, acc.report.count,
+                     acc.selection.count, std::move(unit)};
+}
+
 [[nodiscard]] FloorMetric floor_metric(std::string id, const Accumulator &acc, std::string unit,
                                        double multiplier = 1.0) {
-  return FloorMetric{std::move(id), acc.mean() * multiplier, acc.count, std::move(unit)};
+  return FloorMetric{std::move(id), acc.mean() * multiplier, acc.count, acc.count, std::move(unit)};
 }
 
 [[nodiscard]] std::string_view sign_id(double scale) noexcept {
@@ -268,6 +351,8 @@ void append_metric_array(std::string &out, std::span<const FloorMetric> metrics)
     append_double(out, metric.value);
     out.append(",\"count\":");
     append_int(out, metric.count);
+    out.append(",\"selection_count\":");
+    append_int(out, metric.selection_count);
     out.append(",\"unit\":");
     append_json_string(out, metric.unit);
     out.push_back('}');
@@ -279,18 +364,25 @@ void append_metric_array(std::string &out, std::span<const FloorMetric> metrics)
   return model == InputModel::CurrentSpotSdivYield ? "none" : "uprc_exp_rate_t_minus_ddiv";
 }
 
+// These labels are written verbatim into bootstrap/conventions.json, so a
+// silently defaulted label would be a falsified receipt: enumerate every model.
 [[nodiscard]] std::string_view rate_model(InputModel model) noexcept {
   switch (model) {
-  case InputModel::DiscreteForwardZeroRates:
-    return "zero";
-  case InputModel::DiscreteDividendPvNetRate:
+  case InputModel::CurrentSpotSdivYield:
+  case InputModel::DiscreteDividendPvSdivYield:
+  case InputModel::DiscreteForwardNetCarry:
+  case InputModel::DiscreteForwardRateSdivYield:
+    return "continuous_row_rate";
   case InputModel::DiscreteForwardNetRate:
+  case InputModel::DiscreteDividendPvNetRate:
     return "continuous_rate_minus_sdiv";
   case InputModel::DiscreteDividendPvRatePlusSdiv:
     return "continuous_rate_plus_sdiv";
-  default:
-    return "continuous_row_rate";
+  case InputModel::DiscreteForwardZeroRates:
+    return "zero";
   }
+  assert(false);
+  return "invalid";
 }
 
 [[nodiscard]] std::string_view carry_model(InputModel model) noexcept {
@@ -300,32 +392,48 @@ void append_metric_array(std::string &out, std::span<const FloorMetric> metrics)
   case InputModel::DiscreteForwardNetCarry:
   case InputModel::DiscreteForwardRateSdivYield:
     return "sdiv_as_yield";
-  default:
+  case InputModel::DiscreteForwardNetRate:
+  case InputModel::DiscreteForwardZeroRates:
+  case InputModel::DiscreteDividendPvNetRate:
+  case InputModel::DiscreteDividendPvRatePlusSdiv:
     return "zero";
   }
+  assert(false);
+  return "invalid";
 }
 
 } // namespace
 
-double select_relative_scale(std::span<const ScaleObservation> observations,
-                             std::span<const double> signed_scales) noexcept {
-  if (signed_scales.empty()) {
-    return 0.0;
+void Accumulator::absolute(double model, double oracle) noexcept {
+  if (std::isfinite(model) && std::isfinite(oracle)) {
+    sum += std::abs(model - oracle);
+    ++count;
   }
+}
+
+void Accumulator::relative(double model, double oracle) noexcept {
+  if (std::isfinite(model) && std::isfinite(oracle)) {
+    sum += std::abs(model - oracle) / std::max(std::abs(oracle), kGreekAbsFloor);
+    ++count;
+  }
+}
+
+double Accumulator::mean() const noexcept {
+  return count > 0 ? sum / static_cast<double>(count) : std::numeric_limits<double>::infinity();
+}
+
+std::size_t best_scale(std::span<const ScaleCandidate> candidates) noexcept {
+  assert(!candidates.empty());
   std::size_t best = 0;
-  double best_error = std::numeric_limits<double>::infinity();
-  for (std::size_t index = 0; index < signed_scales.size(); ++index) {
-    Accumulator acc;
-    for (const ScaleObservation &observation : observations) {
-      acc.relative(observation.raw * signed_scales[index], observation.oracle);
-    }
-    const double error = acc.mean();
-    if (error < best_error || (error == best_error && signed_scales[index] < signed_scales[best])) {
+  for (std::size_t index = 1; index < candidates.size(); ++index) {
+    const double value = candidates[index].error.selection.mean();
+    const double best_value = candidates[best].error.selection.mean();
+    if (value < best_value ||
+        (value == best_value && less_candidate_id(candidates[index], candidates[best]))) {
       best = index;
-      best_error = error;
     }
   }
-  return signed_scales[best];
+  return best;
 }
 
 Result<ConventionSweepResult> run_convention_sweep(std::span<const OracleRow> smoke,
@@ -333,31 +441,33 @@ Result<ConventionSweepResult> run_convention_sweep(std::span<const OracleRow> sm
   if (smoke.empty() || tune.empty()) {
     return Err(ErrorCode::InvalidArgument, "convention sweep requires non-empty smoke+tune");
   }
+  const ConventionMap &baseline = baseline_convention();
   std::vector<PriceCandidate> prices;
   prices.reserve(kInputModels.size());
   for (const InputModel model : kInputModels) {
     prices.push_back(PriceCandidate{model, {}, {}});
-    evaluate_price_rows(smoke, 1, prices.back(), false);
+    evaluate_price_rows(smoke, 1, prices.back(), PriceStage::Smoke);
   }
   std::vector<std::size_t> finalists(prices.size());
   for (std::size_t index = 0; index < finalists.size(); ++index) {
     finalists[index] = index;
   }
   std::sort(finalists.begin(), finalists.end(), [&](std::size_t left, std::size_t right) {
-    return less_price(prices[left], prices[right], false);
+    return less_price(prices[left], prices[right], PriceStage::Smoke);
   });
-  finalists.resize(2);
+  assert(finalists.size() >= kFinalistCount);
+  finalists.resize(kFinalistCount);
   const std::size_t tune_stride = std::max<std::size_t>(1, tune.size() / 32768);
   for (const std::size_t index : finalists) {
-    evaluate_price_rows(tune, tune_stride, prices[index], true);
+    evaluate_price_rows(tune, tune_stride, prices[index], PriceStage::TuneSample);
   }
   std::sort(finalists.begin(), finalists.end(), [&](std::size_t left, std::size_t right) {
-    return less_price(prices[left], prices[right], true);
+    return less_price(prices[left], prices[right], PriceStage::TuneSample);
   });
-  ConventionMap winner = baseline_convention();
+  ConventionMap winner = baseline;
   winner.input_model = prices[finalists.front()].model;
 
-  std::vector<ScaleCandidate> price_scales = scales_for(GreekSource::Delta, kUnitScales);
+  std::vector<PriceScaleCandidate> price_scales = price_scales_for(kUnitScales);
   std::vector<ScaleCandidate> delta = scales_for(GreekSource::Delta, kUnitScales);
   std::vector<ScaleCandidate> gamma = scales_for(GreekSource::Gamma, kUnitScales);
   std::vector<ScaleCandidate> theta = scales_for(GreekSource::Theta, kTimeScales);
@@ -368,9 +478,8 @@ Result<ConventionSweepResult> run_convention_sweep(std::span<const OracleRow> sm
   std::vector<ScaleCandidate> volga = source_scales(kSecondOrder, kPointScales);
   std::vector<ScaleCandidate> vanna = source_scales(kSecondOrder, kPointScales);
   std::vector<ScaleCandidate> decay = scales_for(GreekSource::Charm, kTimeScales);
-  std::array<Accumulator, 11> baseline_acc{};
+  BaselineFloors baseline_floors;
   Accumulator candidate_vol;
-  Accumulator baseline_vol;
   ConventionSweepResult out;
   out.smoke_rows = static_cast<std::int64_t>(smoke.size());
   out.tune_rows = static_cast<std::int64_t>(tune.size());
@@ -378,75 +487,80 @@ Result<ConventionSweepResult> run_convention_sweep(std::span<const OracleRow> sm
 
   auto evaluate_full = [&](std::span<const OracleRow> rows) {
     for (const OracleRow &row : rows) {
-      const EnginePricingInputs win_in = mode_a_inputs(row, winner);
-      const auto win_greeks =
-          american_greeks_al(win_in.spot, win_in.strike, win_in.years, win_in.sigma, win_in.rate,
-                             win_in.carry, win_in.side, al_fast_opts());
-      if (!win_greeks.has_value()) {
+      // Both arms are priced BEFORE anything is committed. A row either feeds
+      // the candidate and the baseline floors or feeds neither, so
+      // metric_deltas can never compare two different populations.
+      const std::optional<PricedRow> win = price_row(row, winner);
+      if (!win.has_value()) {
+        ++out.engine_errors;
+        continue;
+      }
+      const std::optional<PricedRow> base =
+          winner.input_model == baseline.input_model ? win : price_row(row, baseline);
+      if (!base.has_value()) {
         ++out.engine_errors;
         continue;
       }
       ++out.rows_priced;
-      double win_dpdq = std::numeric_limits<double>::quiet_NaN();
-      const auto win_carry =
-          american_carry_greeks_al(win_in.spot, win_in.strike, win_in.years, win_in.sigma,
-                                   win_in.rate, win_in.carry, win_in.side, al_fast_opts());
-      if (win_carry.has_value()) {
-        win_dpdq = win_carry->dP_dq;
-      }
-      for (ScaleCandidate &candidate : price_scales) {
-        candidate.error.absolute(win_greeks->price * candidate.scale, row.sr_prc);
-      }
-      candidate_vol.absolute(row.sr_vol, row.sr_vol);
-      observe_scales(delta, *win_greeks, win_dpdq, row.de);
-      observe_scales(gamma, *win_greeks, win_dpdq, row.ga);
-      observe_scales(theta, *win_greeks, win_dpdq, row.th);
-      observe_scales(vega, *win_greeks, win_dpdq, row.ve);
-      observe_scales(rho, *win_greeks, win_dpdq, row.rh);
-      observe_scales(phi, *win_greeks, win_dpdq, row.ph);
-      observe_scales(volga, *win_greeks, win_dpdq, row.vo);
-      observe_scales(vanna, *win_greeks, win_dpdq, row.va);
-      observe_scales(decay, *win_greeks, win_dpdq, row.de_decay);
 
-      const EnginePricingInputs base_in = mode_a_inputs(row, baseline_convention());
-      const AmericanGreeks *base_greeks = nullptr;
-      AmericanGreeks distinct_base{};
-      double base_dpdq = win_dpdq;
-      if (winner.input_model == baseline_convention().input_model) {
-        base_greeks = &*win_greeks;
-      } else {
-        const auto priced =
-            american_greeks_al(base_in.spot, base_in.strike, base_in.years, base_in.sigma,
-                               base_in.rate, base_in.carry, base_in.side, al_fast_opts());
-        if (!priced.has_value()) {
-          continue;
+      const double base_price = price_to_oracle_units(base->greeks.price, baseline);
+      if (std::isfinite(win->greeks.price) && std::isfinite(base_price) &&
+          std::isfinite(row.sr_prc)) {
+        for (PriceScaleCandidate &candidate : price_scales) {
+          candidate.error.absolute(win->greeks.price * candidate.scale, row.sr_prc);
         }
-        distinct_base = *priced;
-        base_greeks = &distinct_base;
-        const auto carry =
-            american_carry_greeks_al(base_in.spot, base_in.strike, base_in.years, base_in.sigma,
-                                     base_in.rate, base_in.carry, base_in.side, al_fast_opts());
-        base_dpdq = carry.has_value() ? carry->dP_dq : std::numeric_limits<double>::quiet_NaN();
+        baseline_floors.price.absolute(base_price, row.sr_prc);
       }
-      const OracleUnitGreeks base_units =
-          to_oracle_units(*base_greeks, base_dpdq, baseline_convention());
-      baseline_acc[0].absolute(base_greeks->price, row.sr_prc);
-      baseline_vol.absolute(row.sr_vol, row.sr_vol);
-      baseline_acc[2].relative(base_units.de, row.de);
-      baseline_acc[3].relative(base_units.ga, row.ga);
-      baseline_acc[4].relative(base_units.th, row.th);
-      baseline_acc[5].relative(base_units.ve, row.ve);
-      baseline_acc[6].relative(base_units.rh, row.rh);
-      baseline_acc[7].relative(base_units.ph, row.ph);
-      baseline_acc[8].relative(base_units.vo, row.vo);
-      baseline_acc[9].relative(base_units.va, row.va);
-      baseline_acc[10].relative(base_units.de_decay, row.de_decay);
+      // Identity by construction on both arms (oracle_scorecard.hpp:68-70:
+      // srVol is the supplied Mode A pricing input). It reads the CONVENTION
+      // LAYER's sigma, not the raw row, so a convention that ever transformed
+      // sigma would surface here instead of reporting a hard-coded zero.
+      if (std::isfinite(win->inputs.sigma) && std::isfinite(base->inputs.sigma) &&
+          std::isfinite(row.sr_vol)) {
+        candidate_vol.absolute(win->inputs.sigma, row.sr_vol);
+        baseline_floors.vol.absolute(base->inputs.sigma, row.sr_vol);
+      }
+
+      const OracleUnitGreeks base_units = to_oracle_units(base->greeks, base->dp_dq, baseline);
+      const auto observe_greek = [&](std::vector<ScaleCandidate> &candidates,
+                                     FloorAccumulators &baseline_acc, double oracle,
+                                     double baseline_value) {
+        if (!std::isfinite(oracle) || !std::isfinite(baseline_value) ||
+            !sources_finite(candidates, *win)) {
+          return;
+        }
+        // The relative objective's denominator is floored, so a row with a
+        // near-zero oracle rewards the smallest candidate scale no matter how
+        // wrong it is. Such rows are reported but never select.
+        const bool selectable = std::abs(oracle) >= kGreekAbsFloor;
+        for (ScaleCandidate &candidate : candidates) {
+          const double model =
+              source_value(win->greeks, win->dp_dq, candidate.source) * candidate.scale;
+          candidate.error.report.relative(model, oracle);
+          if (selectable) {
+            candidate.error.selection.relative(model, oracle);
+          }
+        }
+        baseline_acc.report.relative(baseline_value, oracle);
+        if (selectable) {
+          baseline_acc.selection.relative(baseline_value, oracle);
+        }
+      };
+      observe_greek(delta, baseline_floors.delta, row.de, base_units.de);
+      observe_greek(gamma, baseline_floors.gamma, row.ga, base_units.ga);
+      observe_greek(theta, baseline_floors.theta, row.th, base_units.th);
+      observe_greek(vega, baseline_floors.vega, row.ve, base_units.ve);
+      observe_greek(rho, baseline_floors.rho, row.rh, base_units.rh);
+      observe_greek(phi, baseline_floors.phi, row.ph, base_units.ph);
+      observe_greek(volga, baseline_floors.volga, row.vo, base_units.vo);
+      observe_greek(vanna, baseline_floors.vanna, row.va, base_units.va);
+      observe_greek(decay, baseline_floors.delta_decay, row.de_decay, base_units.de_decay);
     }
   };
   evaluate_full(smoke);
   evaluate_full(tune);
 
-  const std::size_t price_index = best_scale(price_scales);
+  const std::size_t price_index = best_price_scale(price_scales);
   const std::size_t delta_index = best_scale(delta);
   const std::size_t gamma_index = best_scale(gamma);
   const std::size_t theta_index = best_scale(theta);
@@ -460,7 +574,8 @@ Result<ConventionSweepResult> run_convention_sweep(std::span<const OracleRow> sm
   winner.delta_scale = delta[delta_index].scale;
   winner.gamma_scale = gamma[gamma_index].scale;
   winner.theta_scale = theta[theta_index].scale;
-  winner.days_per_year = days_from_time_scale(winner.theta_scale);
+  // Theta's day count only; the DTE banding day count stays pinned.
+  winner.theta_days_per_year = days_from_time_scale(winner.theta_scale);
   winner.vega_scale = vega[vega_index].scale;
   winner.rho_scale = rho[rho_index].scale;
   winner.phi_scale = phi[phi_index].scale;
@@ -483,19 +598,18 @@ Result<ConventionSweepResult> run_convention_sweep(std::span<const OracleRow> sm
       floor_metric("mode_a_vanna_rel", vanna[vanna_index].error, "relative"),
       floor_metric("mode_a_delta_decay_rel", decay[decay_index].error, "relative"),
   };
-  baseline_acc[1] = baseline_vol;
   out.baseline_metrics = {
-      floor_metric("mode_a_price_mae", baseline_acc[0], "ticks", 100.0),
-      floor_metric("mode_a_vol_mae", baseline_acc[1], "bp", 10000.0),
-      floor_metric("mode_a_delta_rel", baseline_acc[2], "relative"),
-      floor_metric("mode_a_gamma_rel", baseline_acc[3], "relative"),
-      floor_metric("mode_a_theta_rel", baseline_acc[4], "relative"),
-      floor_metric("mode_a_vega_rel", baseline_acc[5], "relative"),
-      floor_metric("mode_a_rho_rel", baseline_acc[6], "relative"),
-      floor_metric("mode_a_phi_rel", baseline_acc[7], "relative"),
-      floor_metric("mode_a_volga_rel", baseline_acc[8], "relative"),
-      floor_metric("mode_a_vanna_rel", baseline_acc[9], "relative"),
-      floor_metric("mode_a_delta_decay_rel", baseline_acc[10], "relative"),
+      floor_metric("mode_a_price_mae", baseline_floors.price, "ticks", 100.0),
+      floor_metric("mode_a_vol_mae", baseline_floors.vol, "bp", 10000.0),
+      floor_metric("mode_a_delta_rel", baseline_floors.delta, "relative"),
+      floor_metric("mode_a_gamma_rel", baseline_floors.gamma, "relative"),
+      floor_metric("mode_a_theta_rel", baseline_floors.theta, "relative"),
+      floor_metric("mode_a_vega_rel", baseline_floors.vega, "relative"),
+      floor_metric("mode_a_rho_rel", baseline_floors.rho, "relative"),
+      floor_metric("mode_a_phi_rel", baseline_floors.phi, "relative"),
+      floor_metric("mode_a_volga_rel", baseline_floors.volga, "relative"),
+      floor_metric("mode_a_vanna_rel", baseline_floors.vanna, "relative"),
+      floor_metric("mode_a_delta_decay_rel", baseline_floors.delta_decay, "relative"),
   };
   for (const PriceCandidate &candidate : prices) {
     out.candidate_prices.push_back(CandidatePriceMetric{
@@ -533,7 +647,7 @@ std::string convention_map_json(const ConventionMap &map) {
   field("dividend_model", map.input_model == InputModel::CurrentSpotSdivYield
                               ? "continuous_yield_only"
                               : "discrete_cash_forward");
-  field("day_count", day_count_id(map.days_per_year));
+  field("day_count", day_count_id(map.theta_days_per_year));
   field("price_scale", price_scale_id(map.price_scale));
   field("price_sign", sign_id(map.price_scale));
   field("vol_scale", "decimal_identity");
@@ -579,6 +693,11 @@ std::string convention_sweep_json(const ConventionSweepResult &result, std::stri
   out.append(convention_map_json(baseline_convention()));
   out.append(",\"conventions\":");
   out.append(convention_map_json(result.winner));
+  // What production actually prices with. The gate fails closed while this
+  // differs from the sweep's winner, so a committed floor can never describe a
+  // map the engine does not use.
+  out.append(",\"production_conventions\":");
+  out.append(convention_map_json(winning_convention()));
   out.append(",\"metrics\":");
   append_metric_array(out, result.metrics);
   out.append(",\"baseline_metrics\":");

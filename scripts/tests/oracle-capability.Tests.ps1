@@ -30,7 +30,7 @@ function New-TestConventionMap {
 function New-TestFloorMetrics([double]$Offset = 0.0) {
   return @($targetA | ForEach-Object {
     [ordered]@{
-      metric_id = $_; value = 1.0 + $Offset; count = 100
+      metric_id = $_; value = 1.0 + $Offset; count = 100; selection_count = 90
       unit = if ($_ -eq 'mode_a_price_mae') { 'ticks' } elseif ($_ -eq 'mode_a_vol_mae') { 'bp' } else { 'relative' }
     }
   })
