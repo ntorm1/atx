@@ -29,6 +29,7 @@ add_executable(atx-vol-tests
     prepared_fitting_test.cpp
     c8_test.cpp
     c8_calib_test.cpp
+    essvi_anchored_test.cpp
     essvi_calib_test.cpp
     essvi_deam_test.cpp
     svi_calib_test.cpp
