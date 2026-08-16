@@ -122,6 +122,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <limits>
 #include <optional>
 #include <span>
@@ -170,6 +171,31 @@ enum class VrpRetransformMode : std::uint8_t { Jensen, Smearing };
 // Default --recalib-window: trailing admitted-train calibration sessions
 // (digest suggestion 60-90; capped per fold at half the train sessions).
 inline constexpr std::size_t kVrpDefaultRecalibWindowSessions = 63;
+
+// ROUND-4 F1: the basis pred_edge_norm standardizes on. THIS IS THE HIGHEST-
+// MEASURED-VALUE SWITCH IN THE SPRINT -- audit-gross-negative S1/S4 replayed
+// the identical signal file, dates and 21d horizon through an equal-weighted
+// decile long/short book with all sizing stripped out and measured
+//   PerSymbol    (round-1..3 default): -1.63 vol pts/cycle, 29% of phases > 0
+//   CrossSection (round-4 default):    +1.74 vol pts/cycle, 76% of phases > 0
+// a ~3.4 vol pt/cycle (~$210k/cycle) swing from ONE column. The per-symbol
+// z-score (label_gbt - label_mean[sym]) / label_sd[sym] demeans away the
+// persistent cross-sectional VRP -- the exact quantity being harvested -- and
+// then divides by a label_sd spanning three orders of magnitude (long-decile
+// mean 0.0039 against short-decile 0.4551), which SWAPS which names land on
+// which side. CrossSection standardizes WITHIN each date across symbols, an
+// order-preserving affine map of pred_label, so the book ranks on the axis the
+// IC is measured on. PerSymbol stays reachable so the round-3 comparison (and
+// byte-identical round-3 artifacts) remain reproducible.
+enum class VrpEdgeNormMode : std::uint8_t { CrossSection, PerSymbol };
+
+// ROUND-4 F4: features are read from the row's own session (lag 0, the
+// round-1..3 behaviour) or from its k-th same-symbol predecessor. Lag 2 puts
+// the whole feature set at t-2 so a stale quote cannot manufacture IC.
+inline constexpr std::size_t kVrpDefaultFeatureLag = 0;
+// Bounded so a typo cannot silently blank the corpus (every lag row without a
+// k-th predecessor loses its features).
+inline constexpr std::size_t kVrpMaxFeatureLag = kVrpHorizonSessions;
 
 inline constexpr std::array<std::string_view, kVrpPanelColumnCount> kVrpPanelColumns{
     "symbol",        "date",       "entry_ts_ns", "spot",       "iv_fair_21d", "iv_fair_63d",
@@ -426,6 +452,55 @@ inline void split_tabs(std::string_view line, std::vector<std::string_view> &out
   const std::uintmax_t bytes = std::filesystem::file_size(std::filesystem::path{path}, ec);
   panel.source_file_size = ec ? 1u : static_cast<std::uint64_t>(bytes);
   return Ok(std::move(panel));
+}
+
+// ── Feature lagging (round-4 F4) ────────────────────────────────────────────
+
+// Shift every row's FEATURE VECTOR to that row's `lag`-th same-symbol
+// predecessor, i.e. score session t on the information set of session t-lag.
+// ROUND4-PLAN Phase 2: at lag 0 a feature derived from the same session's
+// quote can manufacture IC out of a stale quote that already knows part of the
+// outcome; lag 2 removes that channel. Applied ONCE, immediately after the
+// panel parse, so every downstream consumer -- per-asset standardization, the
+// baseline, the GBT, signal_vov and the hv_iv_gap benchmark -- faces the same
+// shifted information set with no further plumbing.
+//
+// The TARGET side (label, rv_fwd_21d, iv_fair_21d, spot, entry_ts_ns) is NEVER
+// shifted: iv_fair_21d at t is already known at t, and shifting the label would
+// silently change the forecasting problem.
+//
+// A row whose symbol has no `lag`-th predecessor (the per-symbol warmup) gets
+// an all-NaN feature vector and is COUNTED, not dropped: NaN features already
+// route through the documented per-asset z = 0 imputation, and the returned
+// count is published so the attrition is never invisible. lag 0 is the
+// identity and returns 0. Deterministic: rows arrive in canonical
+// (entry_ts_ns, symbol) order, so each symbol's row list is ascending in time.
+[[nodiscard]] inline std::size_t apply_vrp_feature_lag(VrpPanel &panel, std::size_t lag) {
+  if (lag == 0) {
+    return 0;
+  }
+  std::vector<std::vector<std::size_t>> by_symbol(panel.symbols.size());
+  for (std::size_t r = 0; r < panel.rows.size(); ++r) {
+    by_symbol[panel.row_symbol[r]].push_back(r);
+  }
+  std::vector<std::array<double, kVrpFeatureCount>> src(panel.rows.size());
+  for (std::size_t r = 0; r < panel.rows.size(); ++r) {
+    src[r] = panel.rows[r].f;
+  }
+  std::array<double, kVrpFeatureCount> blank{};
+  blank.fill(std::numeric_limits<double>::quiet_NaN());
+  std::size_t n_unavailable = 0;
+  for (const std::vector<std::size_t> &rows : by_symbol) {
+    for (std::size_t i = 0; i < rows.size(); ++i) {
+      if (i < lag) {
+        panel.rows[rows[i]].f = blank;
+        ++n_unavailable;
+      } else {
+        panel.rows[rows[i]].f = src[rows[i - lag]];
+      }
+    }
+  }
+  return n_unavailable;
 }
 
 // ── Per-asset standardization (train-fold rows ONLY -- digest Pitfall 6) ────
@@ -894,6 +969,334 @@ struct VrpMzFit {
   return fit;
 }
 
+// ── Round-4 honest metrics: correlations, t-stats, decile tails ─────────────
+//
+// ROUND4-PLAN Phase 2 exists because three rounds believed a +0.22 IC that was
+// an artifact. Three defects this block makes impossible:
+//   * an IC / P&L aggregate quoted with no t-stat (the whole round-1..3 gross
+//     book was t = -0.96 and nobody noticed) -- every aggregate below carries
+//     one, and a SECOND one that pays the overlap haircut;
+//   * Spearman substituted for Pearson in Grinold's alpha = IC * sigma_y * z
+//     (research digest Q6.2: that substitution is where the LEVEL error dies)
+//     -- Pearson is the SIZING IC, Spearman is reported strictly beside it and
+//     is never the sizing input;
+//   * a whole-cross-section IC quoted as if it described the TAILS the book
+//     actually trades (audit S3: pred_edge_norm scored +0.042 pooled while its
+//     decile tails were inverted by -2.5 vol pts) -- hence the decile block.
+//
+// Every statistic here is UNDEFINED-honest: fewer than 2 usable pairs, or a
+// degenerate (zero-dispersion) input, yields NaN and never 0.0. A zero
+// correlation is a measurement; an unmeasurable one must not impersonate it.
+
+enum class VrpCorrKind : std::uint8_t { Pearson, Spearman };
+
+// Bartlett bandwidth for the per-date IC series. The label spans 21 sessions
+// and is sampled daily, so consecutive dates share ~21 sessions of outcome
+// (audit S7: effective independent sample ~6-7 cycles against 111 dates). The
+// i.i.d. t over dates is inflated by construction; the NW t at this lag is the
+// textbook correction for h-period overlap.
+inline constexpr std::size_t kVrpOverlapLag = kVrpHorizonSessions - 1;
+
+inline constexpr std::size_t kVrpDecileCount = 10;
+// A date needs at least one name per decile before "top decile" means
+// anything; thinner dates contribute nothing rather than a fabricated tail.
+inline constexpr std::size_t kVrpDecileMinNames = kVrpDecileCount;
+
+// Pearson correlation over the pairs where BOTH values are finite. NaN (never
+// 0.0) below 2 such pairs or on a constant input -- the engine kernel's
+// all-zero convention is right for feature screening and wrong for a reported
+// IC, so the degenerate cases are intercepted here before delegating.
+[[nodiscard]] inline double vrp_pearson(std::span<const double> a,
+                                        std::span<const double> b) {
+  if (a.size() != b.size()) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  std::vector<double> fa;
+  std::vector<double> fb;
+  fa.reserve(a.size());
+  fb.reserve(b.size());
+  for (std::size_t i = 0; i < a.size(); ++i) {
+    if (std::isfinite(a[i]) && std::isfinite(b[i])) {
+      fa.push_back(a[i]);
+      fb.push_back(b[i]);
+    }
+  }
+  if (fa.size() < 2) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  const bool a_flat = std::adjacent_find(fa.begin(), fa.end(),
+                                         std::not_equal_to<>{}) == fa.end();
+  const bool b_flat = std::adjacent_find(fb.begin(), fb.end(),
+                                         std::not_equal_to<>{}) == fb.end();
+  if (a_flat || b_flat) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  return learn::detail::pearson(std::span<const double>{fa}, std::span<const double>{fb});
+}
+
+// Spearman rank correlation with the SAME finite-pair filter and undefined
+// contract as vrp_pearson. Ranking math is the engine's (ties averaged).
+[[nodiscard]] inline double vrp_spearman(std::span<const double> a,
+                                         std::span<const double> b) {
+  if (a.size() != b.size()) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  std::vector<double> fa;
+  std::vector<double> fb;
+  fa.reserve(a.size());
+  fb.reserve(b.size());
+  for (std::size_t i = 0; i < a.size(); ++i) {
+    if (std::isfinite(a[i]) && std::isfinite(b[i])) {
+      fa.push_back(a[i]);
+      fb.push_back(b[i]);
+    }
+  }
+  if (fa.size() < 2) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  const bool a_flat = std::adjacent_find(fa.begin(), fa.end(),
+                                         std::not_equal_to<>{}) == fa.end();
+  const bool b_flat = std::adjacent_find(fb.begin(), fb.end(),
+                                         std::not_equal_to<>{}) == fb.end();
+  if (a_flat || b_flat) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  return learn::detail::spearman(std::span<const double>{fa}, std::span<const double>{fb});
+}
+
+[[nodiscard]] inline double vrp_corr(std::span<const double> a, std::span<const double> b,
+                                     VrpCorrKind kind) {
+  return kind == VrpCorrKind::Pearson ? vrp_pearson(a, b) : vrp_spearman(a, b);
+}
+
+// Mean of a per-date statistic series with BOTH t-stats. `t_iid` treats the
+// dates as independent (it is not -- see kVrpOverlapLag); `t_nw` is the
+// Newey-West/Bartlett HAC t at `nw_lag`. Quote t_nw; t_iid is published only
+// so the size of the overlap haircut is visible rather than assumed.
+struct VrpStatAgg {
+  double mean{std::numeric_limits<double>::quiet_NaN()};
+  double t_iid{std::numeric_limits<double>::quiet_NaN()};
+  double t_nw{std::numeric_limits<double>::quiet_NaN()};
+  std::size_t n{0};
+};
+
+[[nodiscard]] inline VrpStatAgg vrp_aggregate_series(std::span<const double> values,
+                                                     std::size_t nw_lag) {
+  VrpStatAgg agg;
+  std::vector<double> x;
+  x.reserve(values.size());
+  for (const double v : values) {
+    if (std::isfinite(v)) {
+      x.push_back(v);
+    }
+  }
+  agg.n = x.size();
+  if (x.empty()) {
+    return agg;
+  }
+  double sum = 0.0;
+  for (const double v : x) {
+    sum += v;
+  }
+  const auto n = static_cast<double>(x.size());
+  agg.mean = sum / n;
+  if (x.size() < 2) {
+    return agg;
+  }
+  double g0 = 0.0;
+  for (const double v : x) {
+    const double d = v - agg.mean;
+    g0 += d * d;
+  }
+  g0 /= n;
+  if (g0 == 0.0) {
+    return agg; // a constant series has no sampling error to divide by
+  }
+  // Unbiased sample sd for the i.i.d. t: sqrt(n/(n-1)) rescales the population
+  // second moment already accumulated above.
+  const double se_iid = std::sqrt(g0 * n / (n - 1.0) / n);
+  agg.t_iid = agg.mean / se_iid;
+  const std::size_t lag = std::min(nw_lag, x.size() - 1);
+  double s = g0;
+  for (std::size_t k = 1; k <= lag; ++k) {
+    double gk = 0.0;
+    for (std::size_t t = k; t < x.size(); ++t) {
+      gk += (x[t] - agg.mean) * (x[t - k] - agg.mean);
+    }
+    gk /= n;
+    const double w = 1.0 - static_cast<double>(k) / static_cast<double>(lag + 1);
+    s += 2.0 * w * gk;
+  }
+  if (s <= 0.0) {
+    return agg; // small-sample HAC can go non-positive: undefined, not faked
+  }
+  agg.t_nw = agg.mean / std::sqrt(s / n);
+  return agg;
+}
+
+// Per-DATE decile buckets of `realized` by `score` rank -- the tail statement a
+// pooled IC cannot make. Buckets pool ACROSS dates after a WITHIN-date ranking,
+// which is exactly what a per-date long-top/short-bottom book experiences.
+struct VrpDecileStats {
+  std::array<double, kVrpDecileCount> bucket_mean{};
+  std::array<std::size_t, kVrpDecileCount> bucket_n{};
+  double spread{std::numeric_limits<double>::quiet_NaN()}; // top - bottom
+  double rho{std::numeric_limits<double>::quiet_NaN()};    // Spearman(idx, mean)
+  std::size_t n_dates{0};
+};
+
+// `ts` parallels `score`/`realized` and arrives ascending (the caller pools
+// fold test rows in canonical panel order).
+[[nodiscard]] inline VrpDecileStats vrp_decile_stats(std::span<const std::int64_t> ts,
+                                                     std::span<const double> score,
+                                                     std::span<const double> realized) {
+  VrpDecileStats out;
+  out.bucket_mean.fill(std::numeric_limits<double>::quiet_NaN());
+  if (ts.size() != score.size() || ts.size() != realized.size()) {
+    return out;
+  }
+  std::array<double, kVrpDecileCount> sums{};
+  std::size_t begin = 0;
+  while (begin < ts.size()) {
+    std::size_t end = begin;
+    while (end < ts.size() && ts[end] == ts[begin]) {
+      ++end;
+    }
+    std::vector<std::pair<double, double>> pairs; // (score, realized)
+    pairs.reserve(end - begin);
+    for (std::size_t i = begin; i < end; ++i) {
+      if (std::isfinite(score[i]) && std::isfinite(realized[i])) {
+        pairs.emplace_back(score[i], realized[i]);
+      }
+    }
+    begin = end;
+    if (pairs.size() < kVrpDecileMinNames) {
+      continue;
+    }
+    std::sort(pairs.begin(), pairs.end());
+    ++out.n_dates;
+    for (std::size_t i = 0; i < pairs.size(); ++i) {
+      const std::size_t d = i * kVrpDecileCount / pairs.size();
+      sums[d] += pairs[i].second;
+      ++out.bucket_n[d];
+    }
+  }
+  if (out.n_dates == 0) {
+    return out;
+  }
+  std::vector<double> idx;
+  std::vector<double> mean;
+  for (std::size_t d = 0; d < kVrpDecileCount; ++d) {
+    if (out.bucket_n[d] > 0) {
+      out.bucket_mean[d] = sums[d] / static_cast<double>(out.bucket_n[d]);
+      idx.push_back(static_cast<double>(d));
+      mean.push_back(out.bucket_mean[d]);
+    }
+  }
+  if (out.bucket_n[kVrpDecileCount - 1] > 0 && out.bucket_n[0] > 0) {
+    out.spread = out.bucket_mean[kVrpDecileCount - 1] - out.bucket_mean[0];
+  }
+  out.rho = vrp_spearman(std::span<const double>{idx}, std::span<const double>{mean});
+  return out;
+}
+
+// Mean squared error over finite pairs; NaN when nothing is comparable.
+[[nodiscard]] inline double vrp_mse(std::span<const double> forecast,
+                                    std::span<const double> realized) noexcept {
+  if (forecast.size() != realized.size()) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  double sum = 0.0;
+  std::size_t n = 0;
+  for (std::size_t i = 0; i < forecast.size(); ++i) {
+    if (std::isfinite(forecast[i]) && std::isfinite(realized[i])) {
+      const double d = forecast[i] - realized[i];
+      sum += d * d;
+      ++n;
+    }
+  }
+  return n == 0 ? std::numeric_limits<double>::quiet_NaN() : sum / static_cast<double>(n);
+}
+
+// Everything the round-4 gate says about ONE score column on ONE row set.
+// `ic_pearson` is THE sizing IC (Grinold alpha = IC * sigma_y * z); the
+// Spearman fields exist to be REPORTED, never to be substituted into it.
+// `mse` / `mz_*` are populated only for scores that live in LABEL units -- a
+// benchmark like -iv_fair_21d is a ranking axis with no level claim, and a
+// fabricated MSE for it would be a category error of exactly the kind QLIKE
+// on a signed spread was.
+struct VrpScoreReport {
+  std::string name;
+  double ic_pearson{std::numeric_limits<double>::quiet_NaN()};
+  double ic_pearson_t{std::numeric_limits<double>::quiet_NaN()};
+  double ic_pearson_t_nw{std::numeric_limits<double>::quiet_NaN()};
+  double ic_spearman{std::numeric_limits<double>::quiet_NaN()};
+  double ic_spearman_t{std::numeric_limits<double>::quiet_NaN()};
+  double ic_spearman_t_nw{std::numeric_limits<double>::quiet_NaN()};
+  double ic_pearson_pooled{std::numeric_limits<double>::quiet_NaN()};
+  double ic_spearman_pooled{std::numeric_limits<double>::quiet_NaN()};
+  double decile_spread{std::numeric_limits<double>::quiet_NaN()};
+  double decile_rho{std::numeric_limits<double>::quiet_NaN()};
+  double mse{std::numeric_limits<double>::quiet_NaN()};
+  double mz_slope{std::numeric_limits<double>::quiet_NaN()};
+  double mz_intercept{std::numeric_limits<double>::quiet_NaN()};
+  std::size_t n_dates{0};
+  std::size_t n_rows{0};
+};
+
+// Score one column against the realized label on one row set. `label_units`
+// gates the MSE / Mincer-Zarnowitz block (see the struct contract above).
+[[nodiscard]] inline VrpScoreReport vrp_score_report(std::string name,
+                                                     std::span<const std::int64_t> ts,
+                                                     std::span<const double> score,
+                                                     std::span<const double> realized,
+                                                     bool label_units) {
+  VrpScoreReport rep;
+  rep.name = std::move(name);
+  if (ts.size() != score.size() || ts.size() != realized.size()) {
+    return rep;
+  }
+  rep.n_rows = ts.size();
+  std::vector<double> per_date_p;
+  std::vector<double> per_date_s;
+  std::size_t begin = 0;
+  while (begin < ts.size()) {
+    std::size_t end = begin;
+    while (end < ts.size() && ts[end] == ts[begin]) {
+      ++end;
+    }
+    const auto sub = [&](std::span<const double> v) {
+      return v.subspan(begin, end - begin);
+    };
+    per_date_p.push_back(vrp_pearson(sub(score), sub(realized)));
+    per_date_s.push_back(vrp_spearman(sub(score), sub(realized)));
+    begin = end;
+  }
+  const VrpStatAgg ap = vrp_aggregate_series(std::span<const double>{per_date_p},
+                                             kVrpOverlapLag);
+  const VrpStatAgg as = vrp_aggregate_series(std::span<const double>{per_date_s},
+                                             kVrpOverlapLag);
+  rep.ic_pearson = ap.mean;
+  rep.ic_pearson_t = ap.t_iid;
+  rep.ic_pearson_t_nw = ap.t_nw;
+  rep.n_dates = ap.n;
+  rep.ic_spearman = as.mean;
+  rep.ic_spearman_t = as.t_iid;
+  rep.ic_spearman_t_nw = as.t_nw;
+  rep.ic_pearson_pooled = vrp_pearson(score, realized);
+  rep.ic_spearman_pooled = vrp_spearman(score, realized);
+  const VrpDecileStats dec = vrp_decile_stats(ts, score, realized);
+  rep.decile_spread = dec.spread;
+  rep.decile_rho = dec.rho;
+  if (label_units) {
+    rep.mse = vrp_mse(score, realized);
+    const VrpMzFit mz = vrp_mincer_zarnowitz(score, realized);
+    rep.mz_slope = mz.slope;
+    rep.mz_intercept = mz.intercept;
+  }
+  return rep;
+}
+
 // ── FeatureMatrix bridge + model predict helpers ────────────────────────────
 
 namespace detail {
@@ -1114,6 +1517,20 @@ struct VrpTrainConfig {
   // Baseline log-target retransformation (--retransform; trainer-side only,
   // the sidecar score-from-files contract stays jensen-based).
   VrpRetransformMode retransform{VrpRetransformMode::Jensen};
+  // ROUND-4 F1 (--edge-norm): the basis pred_edge_norm standardizes on.
+  // CrossSection is the DEFAULT and changes the VALUES in that column;
+  // PerSymbol reproduces the round-3 artifacts byte for byte. See
+  // VrpEdgeNormMode for the measured swing this default is worth.
+  VrpEdgeNormMode edge_norm{VrpEdgeNormMode::CrossSection};
+  // ROUND-4 F4 (--feature-lag): read features from the row's `lag`-th
+  // same-symbol predecessor. 0 = the round-1..3 behaviour (reproducible for
+  // regression); 2 is the recommended round-4 setting.
+  std::size_t feature_lag{kVrpDefaultFeatureLag};
+  // ROUND-4 F3 (--corpus): the corpus label stamped into the metrics output.
+  // Empty => derived from the panel file stem. Exists because the widely
+  // quoted +0.22 IC came from clean-25 while every traded config ran on SP100
+  // (audit S3 break 1) and nothing in the artifacts said so.
+  std::string corpus;
 };
 
 struct VrpFoldMetrics {
