@@ -125,6 +125,19 @@ enum class Event : unsigned {
   SharedRowsSkipShortT,
   SharedRowsSkipRate,
   SharedRowsSkipBox,
+  // Three-tier exercise-ladder routing (perf/exercise-ladder). One bump per
+  // de-Am row, in the tier the router assigned it, plus the reasons a row was
+  // refused the cheap tiers. `LadderRefusedDiv` is the dividend-proximity
+  // pocket and is counted separately from the ordinary budget refusal because
+  // the two have different remedies: a budget refusal is a threshold question,
+  // a dividend refusal is a data question (this seam sees no ex-div calendar).
+  LadderTier0,
+  LadderTier1,
+  LadderTier2,
+  LadderRefusedGuard,  // vega / |k| / T / anchor / method precondition
+  LadderRefusedDiv,    // call-side dividend-proximity pocket
+  LadderRefusedBudget, // estimated premium over the Tier-1 budget
+  LadderEscalatedByMargin, // cleared a budget outright but not by the margin
   Count_
 };
 

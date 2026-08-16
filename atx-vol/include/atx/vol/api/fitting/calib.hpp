@@ -277,6 +277,63 @@ struct CalibOpts {
   double min_otm_shortcut_T{7.0 / 365.25};
   double min_otm_shortcut_vega{1.0e-4};
   double max_otm_shortcut_abs_k{0.50};
+
+  // ── Three-tier exercise ladder (perf/exercise-ladder) ────────────────────
+  //
+  // The de-Am inversion's cost is dominated by the Andersen-Lake boundary
+  // solve, and for most OTM rows that boundary buys nothing: the early-exercise
+  // premium is below the noise floor of the quote it is being recovered from.
+  // The ladder prices that judgement PER QUOTE rather than from a maturity or
+  // moneyness box, using the one quantity the decision actually turns on —
+  // the early-exercise premium expressed in VOL POINTS:
+  //
+  //     eep_vol_pts = (baw_american(S,K,T,σ₀,r,q_eff,side)
+  //                    − black76(F,K,T,σ₀,df,side)) / vega
+  //
+  // with σ₀ the row's Black-76 IV of its own American mid (already computed by
+  // the filter cascade) and `vega` its Black-76 vega. This is exactly the vol
+  // error that treating the quote as European would incur, to first order, and
+  // it costs one BAW evaluation (~150 ns) — the same call the OTM shortcut
+  // already makes. Rows are then routed:
+  //
+  //   Tier 0 (European)  eep_vol_pts + margin ≤ tier0 budget
+  //                      → keep σ₀; ZERO boundary solves.
+  //   Tier 1 (Analytic)  eep_vol_pts + margin ≤ tier1 budget
+  //                      → invert against the analytic BAW map
+  //                        (`AmericanMethod::Baw`); still zero boundary solves.
+  //   Tier 2 (Full)      otherwise → the existing cold Andersen-Lake inversion.
+  //
+  // Tier 0 and Tier 1 emit PROPOSALS, never verdicts: both are routed through
+  // the same batched reference reprice + accurate-Andersen-Lake fallback that
+  // already governs the shortcut/cache/fast routes, so a misrouted quote costs
+  // time, never accuracy. `max_inversion_residual_half_spreads` remains the
+  // hard ceiling.
+  //
+  // BOTH DEFAULT 0.0 = LADDER OFF => bit-identical to the full-AL path. A
+  // budget is a VOL-POINT figure in absolute vol units (0.001 = 0.1 vol pts).
+  double deam_tier0_max_eep_vol_pts{0.0};
+  double deam_tier1_max_eep_vol_pts{0.0};
+  // Fail-safe margin. A row is admitted to a tier only if its estimated premium
+  // clears that tier's budget by this much, so a quote sitting ON a boundary
+  // escalates to the more accurate tier rather than the cheaper one. Absolute
+  // vol units, applied to both boundaries.
+  double deam_tier_escalate_margin_vol_pts{0.0};
+  // Dividend-proximity pocket. The one OTM regime where a European treatment
+  // is documented to break down badly is a cash dividend landing shortly before
+  // expiry on the CALL side. This engine carries no discrete ex-dividend
+  // calendar at this seam — dividends reach it only as the continuous
+  // `q_eff = r − ln(F/S)/T` implied by the forward — so the pocket cannot be
+  // detected by date here and is bounded conservatively instead: a call row
+  // whose implied dividend over the option's life,
+  //     div_frac = 1 − e^{−q_eff·T},
+  // exceeds `deam_tier_div_call_max_div_frac` while T is under
+  // `deam_tier_div_call_max_T` is refused Tier 0 and Tier 1 outright. Because
+  // the bound uses the TOTAL implied dividend it cannot miss a dividend the
+  // forward knows about, whatever its date. 0.0 disables each test
+  // independently (and the whole guard is inert while the ladder is off).
+  double deam_tier_div_call_max_T{0.0};
+  double deam_tier_div_call_max_div_frac{0.0};
+
   // Inversion certification tolerates DROPPED nodes (failed inversion or an
   // over-budget residual — both excluded from the fit set and counted in
   // diagnostics) up to this fraction of the rows entering the de-Am stage.
