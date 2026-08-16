@@ -19,7 +19,9 @@ Stage 1 cannot use generic patch/gate/commit tools; integration and finalization
 are sealed to the workflow-owned exact reviewed SHA/tree. Failed partial Stage 1
 lanes are quarantined without reset/clean/discard, and mismatched unified-patch
 headers cannot target ignored build files. There is no compatibility flag or
-direct-shell fallback.
+direct-shell fallback. A clean, no-op Stage 2 release may be reopened only under
+the same deterministic run/stage/base/branch identity and exact base tree; the
+broker preserves every prior release receipt and issues a new attempt capability.
 
 ### NEW — VRP ML pipeline: frozen `vrp_panel_v1`/`vrp_signal_v1` contracts, walk-forward trainer, and the VolEdge vol book
 

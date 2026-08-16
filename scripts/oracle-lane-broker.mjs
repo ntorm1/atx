@@ -505,6 +505,7 @@ export class OracleLaneBroker {
     const recoveryJournal = input.operation_id === 'bootstrap_data' ? this.#loadRecovery({ ...input, base_sha: baseSha }) : null
     if (recoveryJournal) this.#assertRecoveryJournal(recoveryJournal)
     const leaseStartSha = recoveryJournal ? recoveryJournal.result.sha : baseSha
+    const stage2Predecessors = []
     for (const entry of existsSync(this.poolRoot) ? readdirSync(this.poolRoot, { withFileTypes: true }) : []) {
       if (!entry.isDirectory() || !/^pool-[0-9]+$/.test(entry.name)) continue
       const marker = join(this.poolRoot, entry.name, '.atx-quarantine-v3')
@@ -516,23 +517,33 @@ export class OracleLaneBroker {
     }
     for (const file of existsSync(this.capDir) ? readdirSync(this.capDir) : []) {
       if (!/^[0-9a-f]{64}\.json$/.test(file)) continue
-      let existing
-      try {
-        const token = file.slice(0, -5)
-        existing = this.#loadCap(token, false)
-        if (existing.operation_id === input.operation_id && existing.stage === input.stage && existing.run_id === input.run_id && existing.branch === input.branch &&
-            existing.base_sha === baseSha && existing.heartbeat_id === input.heartbeat_id && JSON.stringify(existing.scope_paths || []) === JSON.stringify(scope)) {
-          if (existing.state === 'active') {
-            this.#revalidateLease(existing)
-            const guard = this.rootGuard()
-            const idempotent = { exit_code: 0, output: existing.acquisition_output, stdout: existing.acquisition_output, stderr: '' }
-            return this.#acquireResponse(existing, token, idempotent, guard, guard)
-          }
-          if (existing.state === 'released' && recoveryJournal && existing.released_head === recoveryJournal.result.sha && existing.released_tree === recoveryJournal.result.tree) continue
-          throw new Error(`deterministic lane capability is incompatible ${existing.state}: ${existing.lease_name}`)
+      const token = file.slice(0, -5)
+      const existing = this.#loadCap(token, false)
+      if (existing.token_hash !== sha256(token)) throw new Error('durable capability filename/token binding mismatch')
+      const exactIdentity = existing.operation_id === input.operation_id && existing.stage === input.stage && existing.run_id === input.run_id && existing.branch === input.branch &&
+        existing.base_sha === baseSha && existing.heartbeat_id === input.heartbeat_id && JSON.stringify(existing.scope_paths || []) === JSON.stringify(scope)
+      const conflictingStage2Identity = input.operation_id === 'bootstrap_mode_a' && existing.operation_id === 'bootstrap_mode_a' && existing.stage === 'bootstrap-2' &&
+        (existing.run_id === input.run_id || existing.branch === input.branch)
+      if (conflictingStage2Identity && !exactIdentity) throw new Error('deterministic Stage 2 identity conflicts with durable capability history')
+      if (exactIdentity) {
+        if (existing.state === 'active') {
+          this.#revalidateLease(existing)
+          const guard = this.rootGuard()
+          const idempotent = { exit_code: 0, output: existing.acquisition_output, stdout: existing.acquisition_output, stderr: '' }
+          return this.#acquireResponse(existing, token, idempotent, guard, guard)
         }
-      } catch (error) {
-        if (existing) throw error
+        if (existing.state === 'released' && recoveryJournal && existing.released_head === recoveryJournal.result.sha && existing.released_tree === recoveryJournal.result.tree) continue
+        if (existing.state === 'released' && input.operation_id === 'bootstrap_mode_a') {
+          const baseTree = this.#tree(baseSha)
+          const branchSha = this.#ref(`refs/heads/${input.branch}`)
+          if (existing.lease_start_sha !== baseSha || existing.released_head !== baseSha || existing.released_tree !== baseTree || existing.canonical_before !== baseSha ||
+              existing.recovery_id || existing.recovery_sha || existing.recovery_tree || existing.stage1_gate_failure || branchSha !== baseSha) {
+            throw new Error('released deterministic Stage 2 lane failed exact clean-base reopen audit')
+          }
+          stage2Predecessors.push({ capability_hash: existing.token_hash, released_head: existing.released_head, released_tree: existing.released_tree, lease_name: existing.lease_name })
+          continue
+        }
+        throw new Error(`deterministic lane capability is incompatible ${existing.state}: ${existing.lease_name}`)
       }
     }
     const before = this.rootGuard()
@@ -556,6 +567,8 @@ export class OracleLaneBroker {
       lease_name: leaseName, worktree: lane, lease_token: lease.lease_token, keeper_pid: Number(lease.keeper_pid),
       keeper_process_started_utc: lease.keeper_process_started_utc, keeper_ready_utc: lease.keeper_ready_utc,
       canonical_before: before.canonical_sha, scope_paths: scope, acquisition_output: result.output,
+      acquisition_root_guard_before: before, acquisition_root_guard_after: after,
+      ...(input.operation_id === 'bootstrap_mode_a' ? { attempt_epoch: stage2Predecessors.length + 1, reopen_predecessors: stage2Predecessors.sort((a, b) => a.capability_hash.localeCompare(b.capability_hash)) } : {}),
     }
     this.#saveCap(token, cap)
     this.#revalidateLease(cap)
