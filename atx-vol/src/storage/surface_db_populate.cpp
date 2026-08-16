@@ -453,13 +453,43 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
   std::mutex progress_mu;
   std::condition_variable progress_cv;
   bool scheduler_complete = false;
+  // ── FIX-W2: the inner slice divides the INNER POOL, not the outer budget ────
+  //
+  // The bug this replaces: the slice was `inner_budget / share`, i.e. the OUTER
+  // worker count divided among the live boards. At `--fit-workers 2` that yields
+  // `2 / 2 = 1` inner worker per outer worker, so the whole run executes on TWO
+  // threads — while `--fit-workers 1` takes the `inner_budget > 1` branch's
+  // else-arm and offers 0 = AUTO, i.e. the FULL machine width to its one board.
+  // So w=2 was measured 63% SLOWER than w=1: not a scaling curve at all, but a
+  // discontinuity where asking for one more outer worker silently traded the
+  // entire inner fan-out for it. The same arithmetic makes every 1 < w < pool
+  // width a de-optimization, and it is invisible in production only because the
+  // default w=0 resolves to the P-core count where `inner == 1` is genuinely right.
+  //
+  // The fix keeps the non-oversubscription proof above verbatim — it only changes
+  // WHICH width is divided. The inner fan-out is dispatched to the pricing
+  // executor, which is pinned to the P-cores, so the resource the k running boards
+  // actually share is that pool's width, not the outer budget. Substituting it for
+  // `inner_budget` in the proof's `width_i <= pool / min(pool, k)` leaves the sum
+  // over k running boards bounded by the pool, which is the property that matters.
+  // Monotone and continuous now: w=1 -> the whole pool (unchanged), w=2 -> half
+  // each, w >= pool -> 1 each (unchanged).
+  //
+  // `share == 1` still returns 0 (auto) rather than the resolved width, so the
+  // outer-serial mode stays byte-for-byte the call it makes today — the elastic
+  // resolver, not a number this lambda computed. Widths are a PERF knob only:
+  // every atx-vol fan-out is bit-identical for any worker count, gated by
+  // SurfaceDbPopulate.SharedWorkerBudgetKeepsOutputByteIdentical.
+  const unsigned inner_pool_width = (p_cores > 0u) ? p_cores : atx_auto_worker_count();
   const auto offer_inner_fit_workers = [&](const std::string &symbol) -> unsigned {
     const std::size_t left = boards_outstanding.load(std::memory_order_acquire);
     unsigned inner = 0u; // 0 = auto sizing, the documented outer-serial mode
     if (inner_budget > 1u && n_fit_boards > 0u) {
       const std::size_t share = std::max<std::size_t>(
           1u, std::min<std::size_t>(inner_budget, std::max<std::size_t>(1u, left)));
-      inner = std::max<unsigned>(1u, inner_budget / static_cast<unsigned>(share));
+      inner = (share <= 1u) ? 0u
+                            : std::max<unsigned>(1u, inner_pool_width /
+                                                         static_cast<unsigned>(share));
     }
     if (test_hooks != nullptr && test_hooks->on_inner_fit_workers) {
       test_hooks->on_inner_fit_workers(symbol, inner, left);

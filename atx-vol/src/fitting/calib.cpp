@@ -840,7 +840,21 @@ void prepare_shared_boundary_side(std::vector<FitObs> &observations,
   // (Sp, Kp) half that price_side/price_side_embedded already use.
   const detail::InternalPutRates rates = detail::internal_put_rates(side, r, q_eff);
   const double internal_rate = rates.rp;
+  // Reason-attributed skip accounting: the fused predicate below is unchanged, but
+  // each disjunct is metered separately because they have opposite remedies (see
+  // alprobe::Event). Evaluated in the same order and only when the fused guard
+  // fires, so it costs nothing on the engaged path.
   if (side_rows < kSharedMinSideRows || !(T >= kSharedMinT) || !(internal_rate > 0.0)) {
+    if (side_rows < kSharedMinSideRows) {
+      alprobe::bump(alprobe::Event::SharedSideSkipNarrow);
+      alprobe::bump(alprobe::Event::SharedRowsSkipNarrow, side_rows);
+    } else if (!(T >= kSharedMinT)) {
+      alprobe::bump(alprobe::Event::SharedSideSkipShortT);
+      alprobe::bump(alprobe::Event::SharedRowsSkipShortT, side_rows);
+    } else {
+      alprobe::bump(alprobe::Event::SharedSideSkipRate);
+      alprobe::bump(alprobe::Event::SharedRowsSkipRate, side_rows);
+    }
     alprobe::bump(alprobe::Event::SharedSideGuardSkip);
     alprobe::bump(alprobe::Event::SharedRowsFallback, side_rows);
     return;
@@ -848,6 +862,8 @@ void prepare_shared_boundary_side(std::vector<FitObs> &observations,
   const double sigma_lo = std::max(kSharedMinSigma, 0.35 * min_seed);
   const double sigma_hi = std::min(kObsIvMax, max_seed * (1.0 + 1.0e-12));
   if (!(sigma_hi > sigma_lo) || sigma_hi / sigma_lo > 20.0) {
+    alprobe::bump(alprobe::Event::SharedSideSkipBox);
+    alprobe::bump(alprobe::Event::SharedRowsSkipBox, side_rows);
     alprobe::bump(alprobe::Event::SharedSideGuardSkip);
     alprobe::bump(alprobe::Event::SharedRowsFallback, side_rows);
     return;
