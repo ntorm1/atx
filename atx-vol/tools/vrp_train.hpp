@@ -2621,9 +2621,9 @@ inline void append_score_meta(std::string &body, const std::string &prefix,
 
   // Gate accumulators: the OOS test rows of every fold, concatenated in fold
   // order. Anchored walk-forward with step >= test makes the test windows
-  // disjoint and increasing, so the concatenation stays ascending in
+  // disjoint and increasing, so the concatenation is already ascending in
   // entry_ts_ns -- which is what the per-date grouping in vrp_score_report
-  // requires. Asserted below before the pooled scoring runs.
+  // requires. That ordering is RE-ESTABLISHED below rather than relied on.
   std::vector<std::int64_t> pool_ts;
   std::vector<double> pool_realized;
   std::vector<double> pool_gbt;
