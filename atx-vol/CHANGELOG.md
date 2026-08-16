@@ -43,6 +43,7 @@ so both values are independently recomputed before Stage 2 accepts them.
 Stripped or synthesized legacy precheck receipts fail closed.
 There is no compatibility flag or legacy receipt shim; regenerate the bootstrap
 receipt through the fixed targeted gates.
+
 ### CHANGED (gate semantics) — VRP round 5: the gate graded the wrong target (lane vrp-gate-fix)
 
 **Every round-4 gate verdict is VOID. Do not quote a `gate_verdict=` line from a
