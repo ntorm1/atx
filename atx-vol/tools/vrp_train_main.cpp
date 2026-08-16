@@ -21,8 +21,16 @@ void print_usage() {
             "                         [--min-train-sessions <n>]\n"
             "                         [--test-sessions <n>]\n"
             "                         [--step-sessions <n>]\n"
+            "                         [--max-label-span <n>]     (default 42; >= 21)\n"
             "                         [--lambda <f>]             (default 1e-3)\n"
             "                         [--alpha <f>]              (default 0.5)\n"
+            "\n"
+            "--max-label-span caps each labeled row's label-window span in POOLED\n"
+            "sessions (decision row -> its own 21st emitted successor). Rows past\n"
+            "the cap are rejected and counted (rejected_rows_span_cap), so one\n"
+            "sparse symbol cannot stretch the global embargo and purge the corpus;\n"
+            "label_end itself stays the CONSERVATIVE emitted-axis end (never\n"
+            "understates a bar-holey symbol's true window).\n"
             "\n"
             "Walk-forward defaults AUTO-SCALE to the panel's labeled session\n"
             "depth (252/63/63 when history allows; floors 84/21/21, so fewer\n"
@@ -35,9 +43,11 @@ void print_usage() {
             "GBT over a purged/embargoed walk-forward, then writes\n"
             "vrp_signal.tsv (frozen vrp_signal_v1; vov_63d always finite --\n"
             "a NaN f9 imputes the scoring fold's per-asset train mean),\n"
-            "vrp_metrics.tsv (t+21 rejection counters as meta lines),\n"
-            "vrp_fold_stats.tsv (per-fold standardization/label/retransform\n"
-            "sidecar), and the serialized schema-2 model files into --out-dir.");
+            "vrp_metrics.tsv (meta lines: t+21 + span-cap rejection counters,\n"
+            "per-fold purge/embargo-removed train counts, per-fold GBT clip\n"
+            "count + post-clip extrema), vrp_fold_stats.tsv (per-fold\n"
+            "standardization/label/retransform sidecar), and the serialized\n"
+            "schema-2 model files into --out-dir.");
 }
 
 template <typename T>
@@ -88,6 +98,15 @@ int main(int argc, char **argv) {
     } else if (arg == "--step-sessions") {
       ok = parse_number(value, cfg.walk.step_sessions);
       any_walk_flag = true;
+    } else if (arg == "--max-label-span") {
+      ok = parse_number(value, cfg.max_label_span_sessions);
+      // Fail closed at the boundary: every label window spans >= the
+      // 21-session horizon, so a smaller cap would reject every row.
+      if (ok && cfg.max_label_span_sessions < atx::vol::vrp::kVrpHorizonSessions) {
+        std::fprintf(stderr, "error: --max-label-span %zu is below the %zu-session horizon\n",
+                     cfg.max_label_span_sessions, atx::vol::vrp::kVrpHorizonSessions);
+        return 2;
+      }
     } else if (arg == "--lambda") {
       ok = parse_number(value, cfg.en_lambda);
     } else if (arg == "--alpha") {
@@ -121,21 +140,28 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  // F1 rejection accounting -- the same counters the metrics meta lines
-  // carry, surfaced on stderr so an attrition regression is visible in logs.
+  // Rejection accounting -- the same counters the metrics meta lines carry,
+  // surfaced on stderr so an attrition regression is visible in logs.
   std::fprintf(stderr,
                "[vrp-train] labeled_rows=%zu rejected_rows_no_t21=%zu "
-               "symbols_fully_rejected=%zu\n",
+               "rejected_rows_span_cap=%zu symbols_fully_rejected=%zu\n",
                report->observations.n_labeled_rows,
                report->observations.n_rows_rejected_no_t21,
+               report->observations.n_rows_rejected_span_cap,
                report->observations.n_symbols_fully_rejected);
 
-  std::printf("fold\tn_train\tn_test\tqlike_baseline\tqlike_gbt\tqlike_mean\tic_baseline\t"
-              "ic_gbt\n");
+  // gbt_clipped + post-clip extrema and the purge/embargo losses mirror the
+  // metrics meta lines (round-2 review majors 2 + 3) -- a saturated clip or
+  // a purge-dominated fold is visible from the summary alone.
+  std::printf("fold\tn_train\tn_test\tpurged\tembargoed\tqlike_baseline\tqlike_gbt\t"
+              "qlike_mean\tic_baseline\tic_gbt\tgbt_clipped\tgbt_fcast_min\tgbt_fcast_max\n");
   for (const auto &fold : report->folds) {
-    std::printf("%u\t%zu\t%zu\t%.6g\t%.6g\t%.6g\t%.4f\t%.4f\n", fold.fold_id, fold.n_train,
-                fold.n_test, fold.qlike_baseline, fold.qlike_gbt, fold.qlike_mean_forecast,
-                fold.ic_baseline, fold.ic_gbt);
+    std::printf("%u\t%zu\t%zu\t%zu\t%zu\t%.6g\t%.6g\t%.6g\t%.4f\t%.4f\t%zu\t%.6g\t%.6g\n",
+                fold.fold_id, fold.n_train, fold.n_test, fold.n_train_purged,
+                fold.n_train_embargoed, fold.qlike_baseline, fold.qlike_gbt,
+                fold.qlike_mean_forecast, fold.ic_baseline, fold.ic_gbt,
+                fold.n_gbt_forecast_clipped, fold.gbt_test_forecast_min,
+                fold.gbt_test_forecast_max);
   }
   std::printf("signal:     %s\n", report->signal_path.string().c_str());
   std::printf("metrics:    %s\n", report->metrics_path.string().c_str());

@@ -169,18 +169,58 @@ class TestHardTierWiring(_TmpDirCase):
         out_md = self.tmp / "report.md"
         self.assertEqual(main([str(path), "--out-md", str(out_md)]), 0)
         report = out_md.read_text(encoding="utf-8")
-        self.assertIn("## 5. F1 t+21 session-coverage invariant", report)
+        self.assertIn("## 5. F1 t+21 session-coverage (report-only by default)", report)
         self.assertIn("No violations.", report)
 
-    def test_f1_violating_panel_exits_one_and_names_rows(self) -> None:
+    def test_f1_violating_panel_is_report_only_by_default(self) -> None:
+        # Round-2 fix: expected thin-history attrition (rows the trainer
+        # rejects per-row by design) must NOT fail QA by default -- exit 0,
+        # with the count and the affected labeled rows still in the report.
         rows_txt = _symbol_rows("AAA", 30, 9)[:-2]
         path = _write_panel(self.tmp, "trunc.tsv", rows_txt)
         out_md = self.tmp / "report.md"
-        self.assertEqual(main([str(path), "--out-md", str(out_md)]), 1)
+        self.assertEqual(main([str(path), "--out-md", str(out_md)]), 0)
         report = out_md.read_text(encoding="utf-8")
+        self.assertIn("report-only by default", report)
         self.assertIn("2 violation(s)", report)
         self.assertIn("AAA/2024-007", report)
         self.assertIn("AAA/2024-008", report)
+
+    def test_f1_threshold_flag_exceeded_exits_one(self) -> None:
+        # Opt-in hard gate: 2 violations > N=1 -> exit 1.
+        rows_txt = _symbol_rows("AAA", 30, 9)[:-2]
+        path = _write_panel(self.tmp, "trunc.tsv", rows_txt)
+        out_md = self.tmp / "report.md"
+        self.assertEqual(
+            main([str(path), "--out-md", str(out_md), "--max-t21-violations", "1"]), 1
+        )
+
+    def test_f1_threshold_flag_met_exactly_exits_zero(self) -> None:
+        # Exit 1 only when the count EXCEEDS N: 2 violations, N=2 -> exit 0.
+        rows_txt = _symbol_rows("AAA", 30, 9)[:-2]
+        path = _write_panel(self.tmp, "trunc.tsv", rows_txt)
+        out_md = self.tmp / "report.md"
+        self.assertEqual(
+            main([str(path), "--out-md", str(out_md), "--max-t21-violations", "2"]), 0
+        )
+
+    def test_f1_threshold_zero_on_clean_panel_exits_zero(self) -> None:
+        path = _write_panel(self.tmp, "clean.tsv", _symbol_rows("AAA", 30, 9))
+        out_md = self.tmp / "report.md"
+        self.assertEqual(
+            main([str(path), "--out-md", str(out_md), "--max-t21-violations", "0"]), 0
+        )
+
+    def test_f1_threshold_negative_is_a_usage_error(self) -> None:
+        # A sign typo must be a usage error at argparse (exit 2), never a
+        # fake gate failure: pre-fix, -1 on a ZERO-violation panel exited 1
+        # with "0 violation(s) exceed the -1 threshold" (fix-2 review minor).
+        path = _write_panel(self.tmp, "clean.tsv", _symbol_rows("AAA", 30, 9))
+        out_md = self.tmp / "report.md"
+        with self.assertRaises(SystemExit) as ctx:
+            main([str(path), "--out-md", str(out_md), "--max-t21-violations", "-1"])
+        self.assertEqual(ctx.exception.code, 2)
+        self.assertFalse(out_md.exists())  # rejected before any work
 
     def test_duplicate_keys_still_exit_one(self) -> None:
         a = _write_panel(self.tmp, "a.tsv", _symbol_rows("AAA", 30, 9))
@@ -217,10 +257,11 @@ class TestHardTierWiring(_TmpDirCase):
 
     def test_horizon_constant_matches_frozen_contract(self) -> None:
         self.assertEqual(HORIZON_SESSIONS, 21)
-        _report, hard = build_report(
+        _report, hard, n_t21 = build_report(
             [_write_panel(self.tmp, "c.tsv", _symbol_rows("AAA", 30, 9))]
         )
         self.assertFalse(hard)
+        self.assertEqual(n_t21, 0)
 
 
 if __name__ == "__main__":

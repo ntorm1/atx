@@ -15,18 +15,28 @@
 //      are KEPT (predict-time rows); NaN features (f4_term_slope from an
 //      OutOfRange iv_fair_63d) survive parsing as NaN.
 //   2. Pool across symbols; map labeled rows onto ResearchObservations
-//      (label interval [t, t+21 sessions]) and build a purged + embargoed
-//      anchored walk-forward via make_purged_walk_forward_plan
-//      (research_validation.hpp). embargo_ns is derived from the panel as
-//      the MAXIMUM observed 21-session wall-clock span, so it always covers
-//      >= 21 sessions. The t+21 same-symbol-row invariant is enforced PER
-//      ROW (round-2 F1): a labeled row whose symbol lacks an emitted row 21
-//      positions later (interior surface holes inside the final horizon) is
-//      REJECTED AND COUNTED, never fatal for the symbol or the run; an
-//      UNLABELED row that does have a t+21 successor is a panel-contract
-//      violation (a mid-sample NaN label would be scored with hindsight
-//      models) and fails closed. When cfg.walk_auto is set the fold plan is
-//      derived from the labeled decision-group depth (derive_vrp_walk_forward
+//      (label interval [t, t+21 label bars]; label_end is the EMITTED-AXIS
+//      end -- the symbol's own 21st emitted successor row's timestamp, a
+//      provable UPPER bound on the true bar-axis t+21 end, because emitted
+//      rows are a subset of the symbol's label-generation bars; the fix-2
+//      review demonstrated that a pooled-axis t+21 end UNDERSTATES bar-holey
+//      symbols' windows and admits leaking train rows) and build a purged +
+//      embargoed anchored walk-forward via make_purged_walk_forward_plan
+//      (research_validation.hpp). Trainability is recovered by a SPAN CAP
+//      instead of a shorter end: a row whose emitted-axis window spans more
+//      than cfg.max_label_span_sessions POOLED sessions (default 42 = 2x
+//      the horizon) is REJECTED AND COUNTED, so one sparse symbol can no
+//      longer stretch the global-max embargo to months and purge the whole
+//      corpus. embargo_ns is derived as the MAXIMUM ADMITTED wall-clock
+//      span -- >= 21 sessions, <= the cap (plus calendar gaps). The t+21
+//      same-symbol-row invariant is enforced PER ROW (round-2 F1): a
+//      labeled row whose symbol lacks an emitted row 21 positions later
+//      (interior surface holes inside the final horizon) is REJECTED AND
+//      COUNTED, never fatal for the symbol or the run; an UNLABELED row
+//      that does have a t+21 successor is a panel-contract violation (a
+//      mid-sample NaN label would be scored with hindsight models) and
+//      fails closed. When cfg.walk_auto is set the fold plan is derived
+//      from the labeled decision-group depth (derive_vrp_walk_forward
 //      below), so thin histories still train instead of dying on the
 //      production 252/63/63 defaults.
 //   3. Per fold, with per-asset standardization fit on TRAIN-fold rows ONLY
@@ -62,8 +72,10 @@
 //      vrp_signal_v1 loader fail-closes on non-finite vov_63d, so emitted
 //      rows NEVER carry one; the digest's per-asset train-fold imputation
 //      recipe, applied at the writer against the untouched loader). Also
-//      writes a metrics TSV (now carrying the F1 rejection counters as
-//      `# key=value` meta lines), the two serialized schema-2 model files
+//      writes a metrics TSV (carrying the F1 rejection counters plus, per
+//      fold, the purge/embargo-removed train counts and the GBT insanity-
+//      clip count and post-clip extrema as `# key=value` meta lines --
+//      round-2 review majors 2 + 3), the two serialized schema-2 model files
 //      (pricing/theo.hpp formats), and the vrp_fold_stats_v1 SIDECAR
 //      (save_vrp_fold_stats below): per fold, the per-asset feature
 //      mean/sd, per-asset label mean/sd, and the baseline retransform
@@ -121,6 +133,12 @@ inline constexpr std::string_view kVrpPanelSchemaValue = "vrp_panel_v1";
 inline constexpr std::size_t kVrpPanelColumnCount = 18;
 inline constexpr std::size_t kVrpHorizonSessions = 21;
 inline constexpr double kVrpHorizonYears = 21.0 / 252.0;
+// Default --max-label-span: reject-and-count rows whose emitted-axis label
+// window spans more than this many POOLED sessions (2x the 21-session
+// horizon). SP100 survey (fix round 2): spans p50=22 p95=35 p99=64 max=169;
+// 42 keeps 97.5% of the coverage-complete rows while capping the DUK-class
+// 100+ session spans that poisoned the global-max embargo.
+inline constexpr std::size_t kVrpDefaultMaxLabelSpanSessions = 2 * kVrpHorizonSessions;
 
 inline constexpr std::array<std::string_view, kVrpPanelColumnCount> kVrpPanelColumns{
     "symbol",        "date",       "entry_ts_ns", "spot",       "iv_fair_21d", "iv_fair_63d",
@@ -326,6 +344,15 @@ inline void split_tabs(std::string_view line, std::vector<std::string_view> &out
                        row.symbol + "' @ '" + row.date + "')");
       }
     }
+    // f9_vov_63d is a sample stdev, so a finite value must be >= 0 (round-2
+    // review minor). Validated at the boundary so neither the raw signal
+    // pass-through nor the per-asset imputation mean (signal_vov below) can
+    // ever hand the frozen vrp_signal_v1 loader a negative vov_63d.
+    if (std::isfinite(row.f[9]) && row.f[9] < 0.0) {
+      return Err(ErrorCode::ParseError,
+                 "load_vrp_panel: negative f9_vov_63d ('" + row.symbol + "' @ '" + row.date +
+                     "'); vov_63d is a sample stdev, so a finite value must be >= 0");
+    }
     panel.rows.push_back(std::move(row));
   }
   if (!header_seen) {
@@ -450,24 +477,51 @@ compute_asset_standardization(const VrpPanel &panel, std::span<const std::size_t
 struct VrpObservations {
   std::vector<ResearchObservation> obs; // canonical (decision_ts_ns, uid) order
   std::vector<std::size_t> row_of;      // obs index -> panel row index
-  // F1 accounting (surfaced in the metrics meta lines and the CLI's stderr):
+  // Rejection accounting (surfaced in the metrics meta lines + CLI stderr):
   std::size_t n_labeled_rows{0};           // labeled panel rows seen
   std::size_t n_rows_rejected_no_t21{0};   // labeled rows lacking a t+21 row
+  std::size_t n_rows_rejected_span_cap{0}; // rows whose label span exceeds the cap
   std::size_t n_symbols_fully_rejected{0}; // symbols whose EVERY labeled row was rejected
 };
 
 // One ResearchObservation per USABLE labeled panel row. decision =
-// entry_ts_ns; label interval [t, t+21 sessions]: label_end is the SAME
-// SYMBOL's entry timestamp 21 emitted rows later. The t+21 invariant is
-// PER ROW (F1): a labeled row whose symbol lacks an emitted row 21
-// positions later (interior surface holes inside the final horizon) loses
-// only itself -- rejected and counted, with fully-rejected symbols counted
-// separately -- never the symbol or the run. The mirrored check fails
-// CLOSED: an unlabeled (NaN-label) row that DOES have a t+21 successor is
-// not a tail row, and silently scoring it with the final fold's models
-// would hand it a hindsight prediction (review minor, round 1).
-// uid = symbol index + 1 (uid 0 is rejected upstream).
-[[nodiscard]] inline Result<VrpObservations> build_vrp_observations(const VrpPanel &panel) {
+// entry_ts_ns; label_end is the EMITTED-AXIS end: the symbol's own 21st
+// emitted successor row's timestamp. The panel builder labels over 21 bars
+// of the SYMBOL'S OWN bar axis, and emitted rows are a SUBSET of those bars
+// (an emitted row requires the bar to exist plus a usable surface), so the
+// 21st emitted successor is the k-th bar for some k >= 21 and this end is
+// >= the true bar-axis t+21 end BY CONSTRUCTION -- it may over-purge, it
+// can never understate. The fix-2 review demonstrated the alternative
+// (pooled-axis t+21) UNDERSTATES the window of any symbol with in-window
+// bar holes (77 of 102 SP100 names) and admitted train rows whose true
+// label windows crossed their fold's test start -- reverted here.
+//
+// Trainability under the conservative end comes from the SPAN CAP: a row
+// whose emitted-axis window spans more than max_label_span_sessions POOLED
+// sessions is rejected AND COUNTED (n_rows_rejected_span_cap), so a sparse
+// symbol's stretched windows can no longer poison make_vrp_plan's global-
+// max embargo (round-1 SP100: one 250-day span embargoed ~70% of the
+// corpus and zeroed every fold). Precondition: max_label_span_sessions >=
+// kVrpHorizonSessions (every window spans >= the horizon; fail closed).
+//
+// The t+21 invariant stays PER ROW (F1): a labeled row whose symbol lacks
+// an emitted row 21 positions later (interior surface holes inside the
+// final horizon) loses only itself -- rejected and counted, with fully-
+// rejected symbols counted separately -- never the symbol or the run. The
+// mirrored check fails CLOSED: an unlabeled (NaN-label) row that DOES have
+// a t+21 successor is not a tail row, and silently scoring it with the
+// final fold's models would hand it a hindsight prediction (review minor,
+// round 1). uid = symbol index + 1 (uid 0 is rejected upstream).
+[[nodiscard]] inline Result<VrpObservations> build_vrp_observations(
+    const VrpPanel &panel,
+    std::size_t max_label_span_sessions = kVrpDefaultMaxLabelSpanSessions) {
+  if (max_label_span_sessions < kVrpHorizonSessions) {
+    return Err(ErrorCode::InvalidArgument,
+               "build_vrp_observations: max_label_span_sessions " +
+                   std::to_string(max_label_span_sessions) + " is below the " +
+                   std::to_string(kVrpHorizonSessions) +
+                   "-session horizon (every label window spans >= the horizon)");
+  }
   const std::size_t n_sym = panel.symbols.size();
   std::vector<std::vector<std::size_t>> sym_rows(n_sym);
   for (std::size_t r = 0; r < panel.rows.size(); ++r) {
@@ -478,6 +532,19 @@ struct VrpObservations {
     for (std::size_t p = 0; p < sym_rows[s].size(); ++p) {
       pos_in_symbol[sym_rows[s][p]] = p;
     }
+  }
+  // Pooled session axis: sorted distinct entry_ts_ns over ALL symbols' rows.
+  // Rows are canonical ascending, so one linear scan builds the axis and
+  // each row's session index.
+  std::vector<std::int64_t> session_ts;
+  session_ts.reserve(panel.rows.size());
+  std::vector<std::size_t> row_session(panel.rows.size(), 0);
+  for (std::size_t r = 0; r < panel.rows.size(); ++r) {
+    const std::int64_t ts = panel.rows[r].entry_ts_ns;
+    if (session_ts.empty() || session_ts.back() != ts) {
+      session_ts.push_back(ts);
+    }
+    row_session[r] = session_ts.size() - 1;
   }
 
   VrpObservations out;
@@ -505,14 +572,28 @@ struct VrpObservations {
       ++sym_rejected[s];
       continue;
     }
-    const std::size_t end_row = sym_rows[s][p + kVrpHorizonSessions];
+    // The row's 21st same-symbol emitted successor: the label_end source.
+    const std::size_t t21_row = sym_rows[s][p + kVrpHorizonSessions];
+    // Span cap: the window's width in POOLED sessions. Within-symbol rows
+    // occupy strictly increasing pooled session indices, so the span is
+    // always >= kVrpHorizonSessions; interior emitted gaps (surface holes
+    // or partition absence) stretch it. Rows past the cap lose only
+    // themselves -- rejected and counted, never the symbol or the run.
+    const std::size_t span_sessions = row_session[t21_row] - row_session[r];
+    if (span_sessions > max_label_span_sessions) {
+      ++out.n_rows_rejected_span_cap;
+      ++sym_rejected[s];
+      continue;
+    }
     ResearchObservation ob;
     ob.uid = static_cast<std::uint32_t>(s + 1);
     ob.observed_ts_ns = row.entry_ts_ns;
     ob.available_ts_ns = row.entry_ts_ns;
     ob.decision_ts_ns = row.entry_ts_ns;
     ob.execution_ts_ns = row.entry_ts_ns + 1; // strictly after the decision
-    ob.label_end_ts_ns = panel.rows[end_row].entry_ts_ns;
+    // EMITTED-AXIS end: >= the true bar-axis t+21 end (see the contract
+    // comment above) -- conservative by construction, bounded by the cap.
+    ob.label_end_ts_ns = panel.rows[t21_row].entry_ts_ns;
     ob.signal = 0.0;
     ob.forward_pnl = row.label;
     ob.lagged_capital = 1.0;
@@ -529,7 +610,8 @@ struct VrpObservations {
     return Err(ErrorCode::InvalidArgument,
                "build_vrp_observations: no usable labeled rows (labeled=" +
                    std::to_string(out.n_labeled_rows) + ", rejected_no_t21=" +
-                   std::to_string(out.n_rows_rejected_no_t21) + ")");
+                   std::to_string(out.n_rows_rejected_no_t21) + ", rejected_span_cap=" +
+                   std::to_string(out.n_rows_rejected_span_cap) + ")");
   }
   // Panel rows are canonical (ts, symbol) and uid follows the symbol order,
   // so `obs` is already in canonical (decision_ts_ns, uid) order.
@@ -565,8 +647,11 @@ struct VrpWalkForwardCfg {
 }
 
 // Anchored purged walk-forward over decision-timestamp groups (sessions).
-// embargo_ns = max observed [t, t+21-session] wall-clock span, so the
-// embargo always covers >= 21 sessions regardless of weekends/holidays.
+// embargo_ns = max ADMITTED [t, label_end] wall-clock span, so the embargo
+// always covers >= 21 sessions regardless of weekends/holidays. The span
+// cap in build_vrp_observations bounds every admitted span at
+// max_label_span_sessions pooled sessions (plus calendar gaps), so a
+// sparse symbol can no longer stretch the embargo to months.
 [[nodiscard]] inline Result<ResearchValidationPlan>
 make_vrp_plan(const VrpObservations &observations, const VrpWalkForwardCfg &walk) {
   std::int64_t embargo_ns = 0;
@@ -809,6 +894,10 @@ struct VrpTrainConfig {
   bool walk_auto{false};
   double en_lambda{1e-3};
   double en_alpha{0.5};
+  // Reject-and-count cap on each row's label-window span in POOLED sessions
+  // (build_vrp_observations; the CLI's --max-label-span). Bounds the
+  // embargo, which bounds purge/embargo attrition.
+  std::size_t max_label_span_sessions{kVrpDefaultMaxLabelSpanSessions};
 };
 
 struct VrpFoldMetrics {
@@ -825,10 +914,16 @@ struct VrpFoldMetrics {
   double baseline_test_forecast_max{0.0}; // max clipped baseline forecast on test
   // GBT QLIKE-path insanity clip (digest [20], round-2 item 4): how many test
   // rows' implied variance forecasts left the train range, and the post-clip
-  // extrema (min must stay > 0 -- QLIKE's precondition).
+  // extrema (min must stay > 0 -- QLIKE's precondition). Persisted in the
+  // metrics meta lines (round-2 review major 3) and printed by the CLI.
   std::size_t n_gbt_forecast_clipped{0};
   double gbt_test_forecast_min{0.0};
   double gbt_test_forecast_max{0.0};
+  // Train candidates the plan removed for this fold (round-2 review major 2:
+  // surface the purge/embargo loss) -- outcome-purged and pre-test-embargoed
+  // observation counts from the fold's ResearchValidationFold.
+  std::size_t n_train_purged{0};
+  std::size_t n_train_embargoed{0};
   std::vector<std::size_t> train_rows;  // panel row indices
   std::vector<std::size_t> test_rows;   // panel row indices
 };
@@ -1295,9 +1390,13 @@ struct SignalEntry {
 
 // The vov_63d a signal row carries: raw panel f9 when finite, else the
 // per-asset train-fold mean under the fold that scored the row (z = 0
-// imputation mapped back to raw space; f9 is a sample stdev, so observed
-// values -- and hence the imputed mean -- are >= 0 on contract-conforming
-// panels).
+// imputation mapped back to raw space). Emitted values are ALWAYS >= 0
+// (round-2 review minor): load_vrp_panel rejects finite negative f9 at the
+// boundary, so both the raw pass-through and every accumulated mean are
+// >= 0. DOCUMENTED FALLBACK: an asset with ZERO finite f9 observations in
+// the scoring fold's train window imputes the default-constructed mean 0.0
+// -- finite and >= 0, accepted by the frozen vrp_signal_v1 loader, and
+// floored by vov_floor at sizing downstream.
 [[nodiscard]] inline double signal_vov(const VrpPanel &panel, const VrpStandardization &stz,
                                        std::size_t row) {
   const double raw = panel.rows[row].f[9];
@@ -1346,12 +1445,27 @@ struct SignalEntry {
                "write_metrics_file: cannot open '" + path.string() + "' for writing");
   }
   std::string body = "# schema=vrp_train_metrics_v1\n";
-  // F1 rejection accounting as meta lines (columns below stay round-1 shaped).
+  // Rejection accounting as meta lines (columns below stay round-1 shaped).
   body += "# n_labeled_rows=" + std::to_string(observations.n_labeled_rows) + "\n";
   body += "# n_rows_rejected_no_t21=" + std::to_string(observations.n_rows_rejected_no_t21) +
           "\n";
+  body += "# n_rows_rejected_span_cap=" +
+          std::to_string(observations.n_rows_rejected_span_cap) + "\n";
   body += "# n_symbols_fully_rejected=" +
           std::to_string(observations.n_symbols_fully_rejected) + "\n";
+  // Per-fold accounting meta lines (round-2 review majors 2 + 3): the
+  // purge/embargo train-row losses and the GBT QLIKE-path insanity-clip
+  // count + post-clip extrema, via the same `# key=value` mechanism as the
+  // F1 counters. Additive only -- the tabular columns below stay round-1
+  // shaped.
+  for (const VrpFoldMetrics &m : folds) {
+    const std::string p = "# fold_" + std::to_string(m.fold_id) + "_";
+    body += p + "n_train_purged=" + std::to_string(m.n_train_purged) + "\n";
+    body += p + "n_train_embargoed=" + std::to_string(m.n_train_embargoed) + "\n";
+    body += p + "n_gbt_forecast_clipped=" + std::to_string(m.n_gbt_forecast_clipped) + "\n";
+    body += p + "gbt_test_forecast_min=" + fmt_double(m.gbt_test_forecast_min) + "\n";
+    body += p + "gbt_test_forecast_max=" + fmt_double(m.gbt_test_forecast_max) + "\n";
+  }
   body += "fold_id\tmodel\tn_train\tn_test\tqlike\tspearman_ic\ttrain_var_min\ttrain_var_max\n";
   const auto row = [&](const VrpFoldMetrics &m, std::string_view model, double qlike,
                        double ic) {
@@ -1398,7 +1512,7 @@ struct SignalEntry {
   VrpTrainReport report;
   report.panel = std::move(*panel_r);
 
-  auto obs_r = build_vrp_observations(report.panel);
+  auto obs_r = build_vrp_observations(report.panel, cfg.max_label_span_sessions);
   if (!obs_r.has_value()) {
     return Err(obs_r.error());
   }
@@ -1452,6 +1566,8 @@ struct SignalEntry {
     }
     m.n_train = m.train_rows.size();
     m.n_test = m.test_rows.size();
+    m.n_train_purged = fold.purged_indices.size();
+    m.n_train_embargoed = fold.embargoed_indices.size();
 
     const VrpStandardization stz =
         compute_asset_standardization(report.panel, std::span<const std::size_t>{m.train_rows});
