@@ -16,6 +16,7 @@ const char *const kZoneNames[kZoneCount] = {
     "al_seed_baw",         "al_sweep_jn",            "al_sweep_fp",
     "al_bind_geo_static",  "al_bind_geo_sigma",      "al_seed_baw_ACC",
     "al_sweep_jn_ACC",     "al_sweep_fp_ACC",        "iv_cold_polish",
+    "carry_chain",
 };
 
 const char *const kEventNames[kEventCount] = {
@@ -26,7 +27,11 @@ const char *const kEventNames[kEventCount] = {
     "shared_rows_skip_shortT", "shared_rows_skip_rate",   "shared_rows_skip_box",
     "ladder_tier0",            "ladder_tier1",            "ladder_tier2",
     "ladder_refused_guard",    "ladder_refused_div",      "ladder_refused_budget",
-    "ladder_escalated_margin",
+    "ladder_escalated_margin", "carry_chain_solve",       "carry_chain_memo_hit",
+    "carry_chain_memo_store",  "carry_pair_solve",        "carry_pair_ok",
+    "carry_fp_iters",          "carry_fp_iter1",          "carry_fp_iter2",
+    "carry_fp_iter3",          "carry_fp_iter4",          "carry_fp_iter5to8",
+    "carry_fp_iter9plus",      "carry_fp_no_converge",
 };
 
 namespace {

@@ -1,15 +1,18 @@
 #include <gtest/gtest.h>
 
+#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <span>
 #include <string>
 #include <vector>
 
 #include "atx/vol/api/pricing/american.hpp"
 #include "atx/vol/api/pricing/american_iv.hpp"
 #include "atx/vol/api/pricing/black76.hpp"
+#include "fitting/carry_memo.hpp" // carry_memo_reset — per-expiry PCP borrow memo
 #include "fitting/counters.hpp" // counters::ledger — always-on AL boundary-solve gate
 #include "atx/vol/api/fitting/deamer.hpp"
 #include "atx/vol/api/pricing/dividend.hpp"
@@ -54,6 +57,11 @@ using atx::vol::Side;
 // Year-fraction → epoch-ns (365.25-day year, matching hybrid_forward).
 constexpr double kYearNs = 365.25 * 86400.0 * 1.0e9;
 [[nodiscard]] std::int64_t years_to_ns(double y) { return static_cast<std::int64_t>(y * kYearNs); }
+
+// Bit pattern of a double. A memo that returns "close enough" is a memo that
+// silently changes the fitted surface, so these comparisons are exact by
+// construction rather than by tolerance.
+[[nodiscard]] std::uint64_t bits(double v) noexcept { return std::bit_cast<std::uint64_t>(v); }
 
 double value_or_fail(const atx::core::Result<double> &r) {
   EXPECT_TRUE(r.has_value()) << (r ? std::string{} : r.error().to_string());
@@ -604,6 +612,197 @@ TEST(DeAmer, CarryConfidenceGateRejectsSinglePair) {
   const auto result = resolve_chain_forward(chain, sc.S, sc.r, sc.divs, sc.now_ns, opts);
   ASSERT_FALSE(result.has_value());
   EXPECT_EQ(result.error().code(), ErrorCode::Unavailable);
+}
+
+// ── PCP borrow memo (perf/pcp-borrow) ────────────────────────────────────
+//
+// The borrow fixed point is 50.8% of a populate date's board_fit CPU (alprobe
+// `carry_chain`, 612 boards, 2025-09-11) and it is a PURE function of the chain's
+// quotes, the market inputs and the carry options — yet every fallback rung, the
+// market-mark build, the curve selector and the certification pass re-solved it
+// for the same (symbol, expiry). These tests pin the two properties the memo must
+// have: it costs ZERO American boundary solves on a repeat, and it refuses to
+// answer when ANY load-bearing input moved.
+
+// The gate is the always-on solve ledger, not wall clock: a memo hit must not
+// spend a single Andersen-Lake boundary solve, and the answer must be identical
+// to the last BIT, not merely close.
+TEST(DeAmer, CarryMemoServesARepeatedResolveWithoutASingleBoundarySolve) {
+  namespace led = atx::vol::counters::ledger;
+
+  const Scenario sc;
+  const std::vector<double> strikes{92.0, 94.0, 96.0, 98.0, 100.0, 102.0, 104.0, 106.0, 108.0};
+  const Chain chain = make_synthetic_chain(sc, 0.021, strikes);
+  DeAmOptions opts;
+  opts.hyb = sc.hyb;
+
+  atx::vol::carry_memo_reset();
+  led::reset();
+  const auto cold = resolve_chain_forward(chain, sc.S, sc.r, sc.divs, sc.now_ns, opts);
+  const std::uint64_t solves_cold = led::snapshot().get(led::Solve::AlBoundarySolves);
+  led::reset();
+  const auto memo = resolve_chain_forward(chain, sc.S, sc.r, sc.divs, sc.now_ns, opts);
+  const std::uint64_t solves_memo = led::snapshot().get(led::Solve::AlBoundarySolves);
+
+  ASSERT_TRUE(cold.has_value()) << (cold ? std::string{} : cold.error().to_string());
+  ASSERT_TRUE(memo.has_value()) << (memo ? std::string{} : memo.error().to_string());
+  EXPECT_GT(solves_cold, 0u);
+  EXPECT_EQ(solves_memo, 0u) << "a memoized carry must cost no American boundary solve";
+
+  EXPECT_EQ(bits(memo->borrow), bits(cold->borrow));
+  EXPECT_EQ(bits(memo->forward), bits(cold->forward));
+  EXPECT_EQ(bits(memo->carry.dispersion), bits(cold->carry.dispersion));
+  EXPECT_EQ(bits(memo->carry.max_leave_one_out_shift), bits(cold->carry.max_leave_one_out_shift));
+  EXPECT_EQ(bits(memo->carry.confidence_half_width), bits(cold->carry.confidence_half_width));
+  EXPECT_EQ(bits(memo->carry.atm_sigma), bits(cold->carry.atm_sigma));
+  EXPECT_EQ(bits(memo->carry.effective_pair_count), bits(cold->carry.effective_pair_count));
+  EXPECT_EQ(bits(memo->carry.max_pcp_residual), bits(cold->carry.max_pcp_residual));
+  EXPECT_EQ(memo->carry.n_candidates, cold->carry.n_candidates);
+  EXPECT_EQ(memo->carry.n_attempted, cold->carry.n_attempted);
+  EXPECT_EQ(memo->carry.n_solved, cold->carry.n_solved);
+  EXPECT_EQ(memo->carry.n_retained, cold->carry.n_retained);
+  EXPECT_EQ(memo->carry.confident, cold->carry.confident);
+  ASSERT_EQ(memo->carry.pairs.size(), cold->carry.pairs.size());
+  for (std::size_t i = 0; i < memo->carry.pairs.size(); ++i) {
+    EXPECT_EQ(memo->carry.pairs[i].strike_index, cold->carry.pairs[i].strike_index);
+    EXPECT_EQ(bits(memo->carry.pairs[i].borrow), bits(cold->carry.pairs[i].borrow));
+    EXPECT_EQ(bits(memo->carry.pairs[i].robust_weight), bits(cold->carry.pairs[i].robust_weight));
+    EXPECT_EQ(memo->carry.pairs[i].retained, cold->carry.pairs[i].retained);
+  }
+}
+
+// The safety property, and the one that makes the memo admissible at all: EVERY
+// load-bearing input is part of the key. Each mutation below must force a fresh
+// solve — a memo that answered any of them would serve a carry for a market
+// state that no longer exists.
+TEST(DeAmer, CarryMemoRefusesToAnswerWhenAnyLoadBearingInputMoves) {
+  namespace led = atx::vol::counters::ledger;
+
+  const Scenario sc;
+  const std::vector<double> strikes{92.0, 94.0, 96.0, 98.0, 100.0, 102.0, 104.0, 106.0, 108.0};
+  const Chain chain = make_synthetic_chain(sc, 0.021, strikes);
+  const DeAmOptions base = [&] {
+    DeAmOptions o;
+    o.hyb = sc.hyb;
+    return o;
+  }();
+
+  // `warm` primes the memo with the reference call, then reports the boundary
+  // solves the mutated call spends. Zero means the memo answered it.
+  const auto solves_after_priming = [&](const Chain &mutated, double S, double r,
+                                        std::span<const DividendEvent> divs, std::int64_t now_ns,
+                                        const DeAmOptions &opts) {
+    atx::vol::carry_memo_reset();
+    (void)resolve_chain_forward(chain, sc.S, sc.r, sc.divs, sc.now_ns, base);
+    led::reset();
+    (void)resolve_chain_forward(mutated, S, r, divs, now_ns, opts);
+    return led::snapshot().get(led::Solve::AlBoundarySolves);
+  };
+
+  {
+    Chain moved = chain; // a SELECTED pair's mid
+    moved.mids[chain_index(4, Side::Call)] *= 1.02;
+    EXPECT_GT(solves_after_priming(moved, sc.S, sc.r, sc.divs, sc.now_ns, base), 0u) << "pair mid";
+  }
+  {
+    Chain moved = chain; // a wing quote that is not selected but IS a candidate
+    moved.asks[chain_index(0, Side::Put)] = -1.0;
+    EXPECT_GT(solves_after_priming(moved, sc.S, sc.r, sc.divs, sc.now_ns, base), 0u) << "wing ask";
+  }
+  {
+    Chain moved = chain; // quote age feeds the freshness weight
+    moved.ts_ns.assign(chain.mids.size(), 1);
+    EXPECT_GT(solves_after_priming(moved, sc.S, sc.r, sc.divs, sc.now_ns, base), 0u) << "ts_ns";
+  }
+  EXPECT_GT(solves_after_priming(chain, sc.S * 1.001, sc.r, sc.divs, sc.now_ns, base), 0u) << "S";
+  EXPECT_GT(solves_after_priming(chain, sc.S, sc.r + 1.0e-4, sc.divs, sc.now_ns, base), 0u) << "r";
+  EXPECT_GT(solves_after_priming(chain, sc.S, sc.r, sc.divs, sc.now_ns + 1000000000, base), 0u)
+      << "now_ts_ns";
+  {
+    const std::vector<DividendEvent> divs{{years_to_ns(0.5), 2.40}};
+    EXPECT_GT(solves_after_priming(chain, sc.S, sc.r, divs, sc.now_ns, base), 0u) << "dividends";
+  }
+  {
+    DeAmOptions o = base;
+    o.hyb.prop_div_yield = 0.05;
+    EXPECT_GT(solves_after_priming(chain, sc.S, sc.r, sc.divs, sc.now_ns, o), 0u) << "hyb";
+  }
+  // `n_atm`, `max_borrow_pairs` and `carry_atm_band` reach the solve ONLY through
+  // the pair cut k = min(min(max(n_atm, band), max_borrow_pairs), n_valid), so
+  // the key carries k, not the three knobs. Here the ±6% band holds {96..104}
+  // (94 and 106 sit a rounding step OUTSIDE it), so band = 5 and the default cut
+  // is k = 5.
+  {
+    DeAmOptions o = base;
+    o.n_atm = 7;
+    o.max_borrow_pairs = 9; // k: 5 -> 7, a different computation
+    EXPECT_GT(solves_after_priming(chain, sc.S, sc.r, sc.divs, sc.now_ns, o), 0u) << "cut widens";
+  }
+  {
+    DeAmOptions o = base;
+    o.n_atm = 9;
+    o.max_borrow_pairs = 9; // k: 5 -> 9
+    EXPECT_GT(solves_after_priming(chain, sc.S, sc.r, sc.divs, sc.now_ns, o), 0u) << "cut = all";
+  }
+  {
+    DeAmOptions o = base;
+    o.n_atm = 7; // still capped at max_borrow_pairs = 5: the SAME five pairs
+    EXPECT_EQ(solves_after_priming(chain, sc.S, sc.r, sc.divs, sc.now_ns, o), 0u)
+        << "an n_atm that does not move the cut is the identical solve";
+  }
+  {
+    DeAmOptions o = base;
+    o.carry_atm_band = 0.30; // band grows to 9, cut still capped at 5
+    EXPECT_EQ(solves_after_priming(chain, sc.S, sc.r, sc.divs, sc.now_ns, o), 0u)
+        << "a band that does not move the cut is the identical solve";
+  }
+  {
+    DeAmOptions o = base;
+    o.carry_al_opts = al_default_opts();
+    EXPECT_GT(solves_after_priming(chain, sc.S, sc.r, sc.divs, sc.now_ns, o), 0u) << "carry_al";
+  }
+  {
+    DeAmOptions o = base;
+    o.warm_start_carry = false;
+    EXPECT_GT(solves_after_priming(chain, sc.S, sc.r, sc.divs, sc.now_ns, o), 0u) << "warm_start";
+  }
+  {
+    DeAmOptions o = base;
+    o.imply_borrow = false;
+    o.borrow_fixed = 0.05;
+    const auto fixed = resolve_chain_forward(chain, sc.S, sc.r, sc.divs, sc.now_ns, o);
+    ASSERT_TRUE(fixed.has_value());
+    EXPECT_DOUBLE_EQ(fixed->borrow, 0.05) << "a fixed carry must never read the implied-carry memo";
+  }
+}
+
+// The confidence gate is applied by the CALLER of the memo, never memoized: the
+// same solved carry is confident-gated for a risk build and ungated for the
+// curve lane's probe, so both must keep their exact verdict off one entry.
+TEST(DeAmer, CarryMemoStillAppliesTheConfidenceGateOnAHit) {
+  const Scenario sc;
+  const Chain chain = make_synthetic_chain(sc, 0.02, {100.0});
+  DeAmOptions ungated;
+  ungated.hyb = sc.hyb;
+  ungated.n_atm = 1;
+  ungated.max_borrow_pairs = 1;
+  ungated.min_confident_borrow_pairs = 3;
+
+  atx::vol::carry_memo_reset();
+  const auto probe = resolve_chain_forward(chain, sc.S, sc.r, sc.divs, sc.now_ns, ungated);
+  ASSERT_TRUE(probe.has_value()) << (probe ? std::string{} : probe.error().to_string());
+  EXPECT_FALSE(probe->carry.confident);
+
+  DeAmOptions gated = ungated;
+  gated.require_carry_confidence = true;
+  const auto refused = resolve_chain_forward(chain, sc.S, sc.r, sc.divs, sc.now_ns, gated);
+  ASSERT_FALSE(refused.has_value()) << "the memo must not launder a non-confident carry";
+  EXPECT_EQ(refused.error().code(), ErrorCode::Unavailable);
+
+  // ... and the ungated caller still gets the same answer afterwards.
+  const auto again = resolve_chain_forward(chain, sc.S, sc.r, sc.divs, sc.now_ns, ungated);
+  ASSERT_TRUE(again.has_value());
+  EXPECT_EQ(bits(again->borrow), bits(probe->borrow));
 }
 
 TEST(DeAmer, RobustCarrySupportsHardToBorrowStrip) {

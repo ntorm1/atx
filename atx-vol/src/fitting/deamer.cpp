@@ -20,6 +20,8 @@
 #include "atx/vol/api/pricing/rates_curve.hpp"
 #include "atx/vol/api/core/types.hpp"
 #include "atx/vol/api/marketdata/universe.hpp"
+#include "fitting/carry_memo.hpp" // per-expiry PCP borrow memo
+#include "pricing/al_probe.hpp"   // env-gated PCP borrow fixed-point counters
 
 namespace atx::vol {
 
@@ -312,6 +314,23 @@ struct DeAmStep {
 
 namespace {
 
+// Record one converged pair's fixed-point iteration count in the env-gated probe.
+// The histogram (not just the mean) is what decides whether the OUTER loop or the
+// INNER American inversions own the carry's cost: a distribution concentrated at
+// 1-2 iterations says the outer loop is already cheap and only removing whole
+// carry solves can move the number.
+void note_carry_fp_iterations(int iterations) noexcept {
+  alprobe::bump(alprobe::Event::CarryPairOk);
+  alprobe::bump(alprobe::Event::CarryFpIters, static_cast<std::uint64_t>(iterations));
+  const alprobe::Event bucket = iterations <= 1   ? alprobe::Event::CarryFpIter1
+                                : iterations == 2 ? alprobe::Event::CarryFpIter2
+                                : iterations == 3 ? alprobe::Event::CarryFpIter3
+                                : iterations == 4 ? alprobe::Event::CarryFpIter4
+                                : iterations <= 8 ? alprobe::Event::CarryFpIter5to8
+                                                  : alprobe::Event::CarryFpIter9plus;
+  alprobe::bump(bucket);
+}
+
 [[nodiscard]] Result<TermBorrow> imply_term_borrow_from_base(
     double call_mid, double put_mid, double S, double K, double T, double r, double forward_base,
     AmericanMethod method, const std::optional<AlOpts> &opts,
@@ -326,15 +345,18 @@ namespace {
   // Fixed point borrow -> F -> q_eff -> vols -> European mids -> borrow. The
   // injected-borrow round-trip is an exact fixed point; the map is contractive
   // near it, so a handful of iterations converge for any sane co-terminal pair.
+  alprobe::bump(alprobe::Event::CarryPairSolve);
   double borrow = borrow_seed;
   double warm_c = sigma_c_seed; // per-leg Newton warm starts, persisted across iterations
   double warm_p = sigma_p_seed;
   bool converged = false;
+  int iterations = 0;
   DeAmStep last_step{}; // loop's final evaluation, reused by the fast path
   for (int it = 0; it < kBorrowMaxIter; ++it) {
     ATX_TRY(const DeAmStep step, deam_pcp_step(borrow, call_mid, put_mid, S, K, T, r, forward_base,
                                                method, opts, caches, warm_c, warm_p));
     last_step = step;
+    iterations = it + 1;
     const double delta = step.borrow_next - borrow;
     borrow = step.borrow_next;
     if (std::fabs(delta) < kBorrowFpTol) {
@@ -343,8 +365,10 @@ namespace {
     }
   }
   if (!converged) {
+    alprobe::bump(alprobe::Event::CarryFpNoConverge);
     return Err(ErrorCode::Unavailable, "imply_term_borrow: borrow fixed point did not converge");
   }
+  note_carry_fp_iterations(iterations);
 
   const double df = std::exp(-r * T);
   if (skip_redundant_final) {
@@ -555,30 +579,19 @@ struct CarryPairSelection {
   return sel;
 }
 
-// Resolve carry from a scored near-ATM strip. The robust center is a
-// deterministic weighted Huber location, while dispersion and leave-one-out
-// movement are retained for the independent admission layer.
-[[nodiscard]] Result<ChainForward> resolve_chain_carry(const Chain &chain, double S, double r,
-                                                       std::span<const DividendEvent> cash_divs,
-                                                       std::int64_t now_ts_ns,
-                                                       const DeAmOptions &opts) noexcept {
-  if (!opts.imply_borrow) {
-    const double F = hybrid_forward(S, r, opts.borrow_fixed, chain.T, cash_divs, chain.expiry_ns,
-                                    now_ts_ns, opts.hyb);
-    if (!(F > 0.0) || !std::isfinite(F)) {
-      return Err(ErrorCode::Internal, "resolve_chain_forward: invalid fixed-borrow forward");
-    }
-    CarryDiagnostics fixed{};
-    fixed.confident = true;
-    return Ok(ChainForward{F, opts.borrow_fixed, std::move(fixed)});
-  }
-
-  const double T = chain.T;
-  const double forward_base =
-      hybrid_forward_base(S, r, T, cash_divs, chain.expiry_ns, now_ts_ns, opts.hyb);
-  if (!(forward_base > 0.0) || !std::isfinite(forward_base)) {
-    return Err(ErrorCode::Internal, "resolve_chain_forward: invalid hybrid-forward base");
-  }
+// The PCP borrow fixed point itself, from a bound hybrid-forward base: solve
+// every selected co-terminal pair, aggregate robustly, and stop just BEFORE the
+// confidence verdict. Split out of `resolve_chain_carry` so the memo can key on
+// exactly this — a pure function of (chain quotes, S, r, forward_base, now_ts,
+// carry options) — while the confidence gate, which is a per-CALLER policy and
+// not a property of the market, stays outside it (carry_memo.hpp).
+[[nodiscard]] carry_memo::Value solve_carry_from_base(const Chain &chain, double S, double r,
+                                                      std::int64_t now_ts_ns, double T,
+                                                      double forward_base, const DeAmOptions &opts,
+                                                      const CarryPairSelection &selection) {
+  const alprobe::Scope carry_zone{alprobe::Zone::CarryChain};
+  alprobe::bump(alprobe::Event::CarryChainSolve);
+  carry_memo::Value result{};
 
   // Robust multi-strike carry solve over `select_carry_pairs`' cut (every
   // near-ATM co-terminal pair inside the band, falling back to the opts.n_atm
@@ -594,16 +607,11 @@ struct CarryPairSelection {
   //       preserve the borrow's economic accuracy without query-tier coupling.
   //   (2) many pairs, not one: a single ATM pair is quote-noise-fragile; the band
   //       average is the robust, put-call-IV-agreement-consistent forward.
-  const CarryPairSelection selection = select_carry_pairs(chain, S, opts);
   const std::vector<std::size_t> &both_valid = selection.both_valid;
   const std::size_t k = selection.k;
-  if (both_valid.empty()) {
-    return Err(ErrorCode::Unavailable,
-               "de_americanize_chain: no near-ATM co-terminal pair for borrow");
-  }
   const AmericanCorrectionCaches cold_caches{};
 
-  CarryDiagnostics diag{};
+  CarryDiagnostics &diag = result.diag;
   diag.n_candidates = both_valid.size();
   diag.n_attempted = k;
   diag.pairs.reserve(k);
@@ -656,8 +664,8 @@ struct CarryPairSelection {
   }
   diag.n_solved = diag.pairs.size();
   if (diag.pairs.empty()) {
-    return Err(ErrorCode::Unavailable,
-               "de_americanize_chain: term-borrow solve failed on all ATM pairs");
+    result.outcome = carry_memo::Outcome::AllPairsFailed;
+    return result;
   }
 
   // A displayed one-tick spread must not let one internally inconsistent pair
@@ -679,9 +687,10 @@ struct CarryPairSelection {
 
   const double borrow = robust_location(diag.pairs, diag.pairs.size(), true);
   if (!std::isfinite(borrow)) {
-    return Err(ErrorCode::Unavailable,
-               "de_americanize_chain: robust term-borrow aggregation failed");
+    result.outcome = carry_memo::Outcome::AggregationFailed;
+    return result;
   }
+  result.borrow = borrow;
   double sum_w = 0.0;
   double sum_w2 = 0.0;
   double sum_var = 0.0;
@@ -727,6 +736,104 @@ struct CarryPairSelection {
     }
     stamp_carry_moneyness(diag, T, (sigma_w > 0.0) ? (sigma_ws / sigma_w) : 0.0);
   }
+  return result;
+}
+
+// Bind the memo key for one carry solve. Everything the solve reads and nothing
+// it does not — see carry_memo.hpp for why the dividend/expiry/hybrid inputs
+// collapse into `forward_base` and why the confidence knobs are absent.
+[[nodiscard]] carry_memo::Key carry_key(const Chain &chain, double S, double r,
+                                        std::int64_t now_ts_ns, double T, double forward_base,
+                                        const DeAmOptions &opts,
+                                        std::size_t selected_pairs) noexcept {
+  carry_memo::Key key{};
+  key.T = T;
+  key.forward_base = forward_base;
+  key.S = S;
+  key.r = r;
+  key.now_ts_ns = now_ts_ns;
+  key.method = opts.method;
+  key.has_carry_al_opts = opts.carry_al_opts.has_value();
+  key.carry_al_opts = opts.carry_al_opts.value_or(AlOpts{});
+  key.selected_pairs = selected_pairs;
+  key.warm_start_carry = opts.warm_start_carry;
+  key.strikes = std::span<const double>{chain.strikes};
+  key.bids = std::span<const double>{chain.bids};
+  key.asks = std::span<const double>{chain.asks};
+  key.mids = std::span<const double>{chain.mids};
+  key.flags = std::span<const std::uint8_t>{chain.flags};
+  key.ts_ns = std::span<const std::int64_t>{chain.ts_ns};
+  return key;
+}
+
+// Resolve carry from a scored near-ATM strip. The robust center is a
+// deterministic weighted Huber location, while dispersion and leave-one-out
+// movement are retained for the independent admission layer.
+[[nodiscard]] Result<ChainForward> resolve_chain_carry(const Chain &chain, double S, double r,
+                                                       std::span<const DividendEvent> cash_divs,
+                                                       std::int64_t now_ts_ns,
+                                                       const DeAmOptions &opts) noexcept {
+  if (!opts.imply_borrow) {
+    const double F = hybrid_forward(S, r, opts.borrow_fixed, chain.T, cash_divs, chain.expiry_ns,
+                                    now_ts_ns, opts.hyb);
+    if (!(F > 0.0) || !std::isfinite(F)) {
+      return Err(ErrorCode::Internal, "resolve_chain_forward: invalid fixed-borrow forward");
+    }
+    CarryDiagnostics fixed{};
+    fixed.confident = true;
+    return Ok(ChainForward{F, opts.borrow_fixed, std::move(fixed)});
+  }
+
+  const double T = chain.T;
+  const double forward_base =
+      hybrid_forward_base(S, r, T, cash_divs, chain.expiry_ns, now_ts_ns, opts.hyb);
+  if (!(forward_base > 0.0) || !std::isfinite(forward_base)) {
+    return Err(ErrorCode::Internal, "resolve_chain_forward: invalid hybrid-forward base");
+  }
+
+  // The fixed point is 50.8% of board_fit and is re-entered by every fallback
+  // rung, the mark build, the selector and the certification pass on the SAME
+  // (symbol, expiry) state. Serve it from the memo when the market state and the
+  // carry options are bit-for-bit the ones a previous solve saw; the answer is
+  // the answer that solve produced, so the fit is unchanged to the last bit.
+  //
+  // The pair CUT is resolved before the lookup because it is what `n_atm`,
+  // `max_borrow_pairs` and `carry_atm_band` actually reduce to (carry_memo.hpp):
+  // keying on the cut lets two quality modes that pick the same pairs share one
+  // solve, and it costs one validity scan plus a partial_sort against a fixed
+  // point worth millions of cycles.
+  const CarryPairSelection selection = select_carry_pairs(chain, S, opts);
+  if (selection.both_valid.empty()) {
+    return Err(ErrorCode::Unavailable,
+               "de_americanize_chain: no near-ATM co-terminal pair for borrow");
+  }
+  const carry_memo::Key key =
+      carry_key(chain, S, r, now_ts_ns, T, forward_base, opts, selection.k);
+  carry_memo::Value solved{};
+  if (carry_memo::lookup(key, solved)) {
+    alprobe::bump(alprobe::Event::CarryChainMemoHit);
+  } else {
+    solved = solve_carry_from_base(chain, S, r, now_ts_ns, T, forward_base, opts, selection);
+    carry_memo::store(key, solved);
+    alprobe::bump(alprobe::Event::CarryChainMemoStore);
+  }
+
+  switch (solved.outcome) {
+  case carry_memo::Outcome::AllPairsFailed:
+    return Err(ErrorCode::Unavailable,
+               "de_americanize_chain: term-borrow solve failed on all ATM pairs");
+  case carry_memo::Outcome::AggregationFailed:
+    return Err(ErrorCode::Unavailable,
+               "de_americanize_chain: robust term-borrow aggregation failed");
+  case carry_memo::Outcome::Ok:
+    break;
+  }
+
+  const double borrow = solved.borrow;
+  CarryDiagnostics diag = std::move(solved.diag);
+  // The confidence verdict is a per-CALLER policy over the SAME measured carry
+  // (the curve lane probes ungated, the risk build gates), so it is stamped here
+  // and never memoized — one entry serves both without either losing its verdict.
   diag.confident = diag.n_retained >= opts.min_confident_borrow_pairs &&
                    diag.dispersion <= opts.max_carry_dispersion &&
                    diag.max_leave_one_out_shift <= opts.max_carry_leave_one_out;

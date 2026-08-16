@@ -99,6 +99,7 @@ set(ATX_VOL_FITTING_SOURCES
     src/fitting/projection.cpp
     src/fitting/fit_metrics.cpp
     src/fitting/deamer.cpp
+    src/fitting/carry_memo.cpp
     src/fitting/parity.cpp
     src/fitting/surface_parity.cpp
     src/fitting/session.cpp
