@@ -32,6 +32,30 @@ const RECOVERY_SOURCE = Object.freeze({
   }),
 })
 
+const CONVENTION_CHANGE_PATHS = Object.freeze([
+  '.claude/workflows/vol-oracle-iter.js',
+  'atx-vol/CHANGELOG.md',
+  'atx-vol/CMakeLists.txt',
+  'atx-vol/bench/oracle/CHARTER.md',
+  'atx-vol/bench/oracle/CONVENTIONS.md',
+  'atx-vol/bench/oracle/bootstrap/conventions.json',
+  'atx-vol/bench/oracle/scorecards/iter-000.json',
+  'atx-vol/tests/CMakeLists.txt',
+  'atx-vol/tests/oracle_conventions_test.cpp',
+  'atx-vol/tools/oracle_bench_main.cpp',
+  'atx-vol/tools/oracle_convention_sweep.cpp',
+  'atx-vol/tools/oracle_convention_sweep.hpp',
+  'atx-vol/tools/oracle_conventions.cpp',
+  'atx-vol/tools/oracle_conventions.hpp',
+  'scripts/oracle-capability.ps1',
+  'scripts/oracle-lane-broker.mjs',
+  'scripts/oracle-targeted-gate.ps1',
+  'scripts/tests/oracle-capability.Tests.ps1',
+  'scripts/tests/oracle-lane-broker.test.mjs',
+  'scripts/tests/oracle-targeted-gate.Tests.ps1',
+  'scripts/tests/workflow-contracts.test.mjs',
+])
+
 const OPERATION_REGISTRY = Object.freeze({
   bootstrap_data: {
     stage: 'bootstrap-1', branch: /^lane\/oracle-bootstrap-data-/, finalize: false,
@@ -44,8 +68,8 @@ const OPERATION_REGISTRY = Object.freeze({
   },
   bootstrap_conventions: {
     stage: 'bootstrap-3', branch: /^lane\/oracle-bootstrap-conventions-/, finalize: false,
-    exact: ['atx-vol/bench/oracle/bootstrap/conventions.json', 'atx-vol/bench/oracle/CONVENTIONS.md', 'atx-vol/docs/oracle/NORTHSTAR.md', 'atx-vol/docs/LEDGER.md', 'atx-vol/CHANGELOG.md'],
-    prefixes: ['atx-vol/bench/oracle/scorecards/'],
+    exact: CONVENTION_CHANGE_PATHS,
+    prefixes: [],
   },
   bootstrap_mode_b: {
     stage: 'bootstrap-4', branch: /^lane\/oracle-bootstrap-mode-b-/, finalize: false,
@@ -54,7 +78,9 @@ const OPERATION_REGISTRY = Object.freeze({
   },
   bootstrap_integration: {
     stage: 'bootstrap-prepare', branch: /^integration\/oracle-bootstrap-/, finalize: true,
-    exact: Object.keys(RECOVERY_SOURCE.files), prefixes: ['atx-vol/bench/oracle/', 'atx-vol/src/pricing/', 'atx-vol/include/atx/vol/api/pricing/', 'atx-vol/tests/'],
+    exact: [...Object.keys(RECOVERY_SOURCE.files), 'atx-vol/bench/oracle/bootstrap/mode-a.json',
+      ...CONVENTION_CHANGE_PATHS],
+    prefixes: [],
   },
   measure: {
     stage: 'measure', branch: /^lane\/oracle-measure-/, finalize: false,
@@ -87,6 +113,8 @@ const GATE_REGISTRY = Object.freeze({
   convention_tests: { display: 'powershell scripts\\oracle-targeted-gate.ps1 -Gate convention_tests', file: 'scripts/oracle-targeted-gate.ps1', args: ['-Gate', 'convention_tests'] },
   mode_a_smoke_tune: { display: 'powershell scripts\\oracle-targeted-gate.ps1 -Gate mode_a_smoke_tune', file: 'scripts/oracle-targeted-gate.ps1', args: ['-Gate', 'mode_a_smoke_tune'] },
   residual_floor: { display: 'powershell scripts\\oracle-targeted-gate.ps1 -Gate residual_floor', file: 'scripts/oracle-targeted-gate.ps1', args: ['-Gate', 'residual_floor'] },
+  convention_speed_measure: { display: 'powershell scripts\\oracle-targeted-gate.ps1 -Gate convention_speed_measure', file: 'scripts/oracle-targeted-gate.ps1', args: ['-Gate', 'convention_speed_measure'] },
+  convention_speed: { display: 'powershell scripts\\oracle-targeted-gate.ps1 -Gate convention_speed', file: 'scripts/oracle-targeted-gate.ps1', args: ['-Gate', 'convention_speed'] },
   mode_b_targeted_tests: { display: 'powershell scripts\\oracle-targeted-gate.ps1 -Gate mode_b_targeted_tests', file: 'scripts/oracle-targeted-gate.ps1', args: ['-Gate', 'mode_b_targeted_tests'] },
   mode_b_smoke_tune: { display: 'powershell scripts\\oracle-targeted-gate.ps1 -Gate mode_b_smoke_tune', file: 'scripts/oracle-targeted-gate.ps1', args: ['-Gate', 'mode_b_smoke_tune'] },
   sprint_american_greeks_delta_put: { display: 'powershell scripts\\oracle-targeted-gate.ps1 -Gate sprint_american_greeks_delta_put', file: 'scripts/oracle-targeted-gate.ps1', args: ['-Gate', 'sprint_american_greeks_delta_put'] },
@@ -124,7 +152,10 @@ const MESSAGE_REGISTRY = Object.freeze({
 const BOOTSTRAP_INTEGRATION_GATES = Object.freeze({
   bootstrap_data: Object.freeze(['aggregate_store', 'ingest_manifest', 'cohort_manifests', 'holdout_digest']),
   bootstrap_mode_a: Object.freeze(['mode_a_targeted_tests', 'mode_a_smoke']),
-  bootstrap_conventions: Object.freeze(['convention_tests', 'mode_a_smoke_tune', 'residual_floor']),
+  // Execution order, not alphabetical: residual_floor hard-requires the
+  // committed iter-000, and convention_speed_measure produces the rel-avx2
+  // number iter-000's speed floor is derived from, so it must precede it.
+  bootstrap_conventions: Object.freeze(['convention_tests', 'mode_a_smoke_tune', 'convention_speed_measure', 'residual_floor', 'convention_speed']),
   bootstrap_mode_b: Object.freeze(['mode_b_targeted_tests', 'mode_b_smoke_tune']),
 })
 
@@ -866,7 +897,14 @@ export class OracleLaneBroker {
     requireSuccess(commit, 'lane commit')
     const sha = this.#git(['rev-parse', 'HEAD'], cap.worktree).stdout.trim().toLowerCase()
     if (this.#changedPaths(cap).length) throw new Error('lane remains dirty after scoped commit')
-    return { sha, tree: this.#tree(sha, cap.worktree), files_changed: paths, broker_evidence: this.#evidence('lane_commit', cap.worktree, `git commit -- <${paths.length} validated paths>`, commit, before, after) }
+    const fileBlobOids = Object.fromEntries(paths.map(path => {
+      const blob = processResult('git', ['rev-parse', '--verify', `${sha}:${path}`], cap.worktree)
+      return [path, blob.exit_code === 0 && SHA_RE.test(blob.stdout.trim().toLowerCase())
+        ? blob.stdout.trim().toLowerCase() : null]
+    }))
+    return { sha, tree: this.#tree(sha, cap.worktree), files_changed: paths,
+      file_blob_oids: fileBlobOids,
+      broker_evidence: this.#evidence('lane_commit', cap.worktree, `git commit -- <${paths.length} validated paths>`, commit, before, after) }
   }
 
   inspectCommit(input) {

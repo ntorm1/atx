@@ -43,7 +43,8 @@ and normal ingest path; there is no flag that bypasses or selects adoption.
 ### Closed capability receipts
 
 Capability fails closed on missing, legacy, extra-key, corrupt, or unprovenanced
-receipts. All receipts are schema version 1 with full `base_sha` and `tested_sha`;
+receipts. Data and Mode receipts are schema version 1; the convention receipt is
+schema version 2. Every receipt has full `base_sha` and `tested_sha`;
 the probe requires `base_sha` to be an ancestor of `tested_sha`, `tested_sha` to be
 an ancestor of canonical, and the prior-stage receipt blob at `base_sha` to equal
 the inherited blob at canonical.
@@ -64,9 +65,25 @@ the inherited blob at canonical.
 - `bootstrap/conventions.json` has exactly the common provenance fields,
   `transition=conventions`, `command_id=oracle_conventions_smoke_tune`,
   `exit_code=0`, smoke/tune blob IDs, `CONVENTIONS.md` and iter-000 blob IDs, and
-  the closed theta/vega/rate/dividend/day-count/sign enum map. Iter-000 is itself an
-  exact versioned `residual_floor` receipt with Mode A, smoke+tune, positive count,
-  complete target IDs, and ancestor provenance.
+  positive aggregate row count, the complete eleven-target registry, baseline,
+  winning AND `production_conventions` complete convention maps, BOTH numeric
+  candidate/baseline/delta floor arrays — the standard-relative
+  `metrics`/`baseline_metrics`/`metric_deltas` and the symmetric-relative
+  `symmetric_metrics`/`baseline_symmetric_metrics`/`symmetric_metric_deltas`,
+  the latter being the ratchet baseline and the no-regression criterion (Stage 3
+  below states why) —
+  the eight-candidate price attribution, and the pinned quiet rel-avx2 speed.
+  `production_conventions` is the map `winning_convention()` actually prices
+  with; both committed artifacts carry it so the floor holds a standalone record
+  of that map rather than only of the map the sweep resolved, and the probe
+  requires the two to be equal. Iter-000 is itself an exact schema-v2
+  `residual_floor` receipt with the same
+  values plus Mode A, smoke+tune, both cohort blob IDs, empty oracle-suspect
+  candidates until an NBBO gate supplies market evidence, explicit market-evidence
+  status, and a non-citable dev diagnostic timing. The receipt and scorecard values
+  must be EQUAL FIELD BY FIELD, numbers compared as doubles — never as
+  re-serialized text, which in Windows PowerShell 5.1 compares source digits and
+  makes an authored `0.0` differ from the same number written `0`.
 - `bootstrap/mode-b.json` has exactly the common provenance fields,
   `transition=mode_b`, `command_id=oracle_mode_b_aggregate`, `exit_code=0`,
   smoke/tune blob IDs, positive row count, and the complete closed Mode B target-ID
@@ -126,13 +143,111 @@ the exact closed Mode A schema above (never rows themselves). Holdout is forbidd
 
 ## Stage 3 - conventions (`missing_conventions`)
 
-Using Mode A on smoke+tune only, resolve theta/vega scaling, rate/borrow/dividend
-treatment, day count, `vo`/`va`, signs, and share scaling. Commit the winning map to
+Using Mode A on smoke+tune only, run the closed deterministic staged sweep. Price
+input attribution first evaluates all eight bounded candidates on smoke, including
+the documented SpiderRock discrete-dividend forward
+`fUPrc = uPrc * exp(rate * T) - ddiv`, then ranks only the stable-ID-tiebroken
+top two on a deterministic tune sample ALONE — smoke decides the eight-way cut
+and its evidence is never counted a second time. The winning input treatment is evaluated
+on complete smoke+tune while bounded independent searches resolve theta/vega/rho/
+phi/volga/vanna/delta-decay scaling and sources, theta day count, signs, and share scaling.
+The scorecard's calendar DTE banding day count is a separate convention and stays
+pinned; the theta unit pick must not re-bucket it. The map publishes both: the
+`day_count` field is theta's, derived from the multiplier production applies
+rather than from a descriptive field, and `dte_banding_day_count` records the
+banding convention so a silent change to it is visible in the receipt. Each row
+is priced under BOTH
+the winner and the baseline map before anything is accumulated, so the candidate
+and baseline floors always describe one row population — the gates enforce equal
+per-metric counts. Over that one population the sweep publishes TWO eleven-metric
+floor arrays, deliberately different OBJECTIVES rather than duplicates.
+`metrics`/`baseline_metrics`/`metric_deltas` are STANDARD-RELATIVE,
+`|m - o| / max(|o|, kSelectionAbsFloor)`, kept because this charter states the
+Greek target relative to the ORACLE and the committed floor must stay directly
+comparable to that "greeks within 1% rel" target.
+`symmetric_metrics`/`baseline_symmetric_metrics`/`symmetric_metric_deltas` are
+SYMMETRIC-RELATIVE, `|m - o| / max(|m|, |o|, kSelectionAbsFloor)`, which is the
+loss the scale SELECTION minimises. `kSelectionAbsFloor` is the sweep's OWN
+constant, not the scorecard's reporting tolerance, so retuning that tolerance
+cannot silently move what selection optimised.
+
+The bounded no-regression gate AND the committed ratchet baseline are the
+SYMMETRIC array. The symmetric loss is bounded and carries no smallest-scale
+gradient, so selection runs on the FULL row population and excludes nothing —
+`selection_count` now equals `count`. The standard-relative form instead pins its
+denominator on rows whose oracle sits below the floor while its numerator keeps
+growing with `|model * scale|`, so gating IT would systematically reward the
+smaller multiplier and contradict the selector by construction rather than catch
+a real defect. The standard array is still validated in every layer for shape,
+finiteness, non-negativity, count parity and the
+`candidate - baseline == delta` arithmetic; it is simply not the criterion, and
+the two arrays must never be unified. Both counts stay published and every
+validator still requires `selection_count >= count / 10`, so an objective that
+ever narrowed the selection population again would have to move a published
+number instead of doing it silently; the weakest ratio is surfaced in the gate
+receipt's `audit_summary` as `min_selection_pct`.
+
+The criterion on that array is BOUNDED, not strict: a symmetric metric may end
+up worse than its baseline only while `candidate <= baseline * 1.01`, and a
+regression past that bound fails every layer closed. A strict
+`candidate <= baseline` rule was tried first and is not a rule this search can
+satisfy. The fit is multi-objective over ELEVEN targets that share ONE map, and
+no point in the closed candidate grid strictly dominates every other point on
+all eleven; the selected map can be better on price and on eight of the nine
+Greeks and still give up ground on the ninth. A strict per-metric rule therefore
+does not say "never get worse", it says "never pick anything", and the only ways
+past it are hand-tuning the map or a bypass flag — both strictly worse than a
+stated, published bound.
+
+The bound is `1.01` because 1% relative is this charter's OWN Mode A Greek
+tolerance: a regression that stays inside the tolerance the scorecard already
+counts as a match cannot flip a cell's verdict, and one that exceeds it can.
+That is exactly where the gate stops.
+
+Permission to regress is never permission to hide it. The sweep emits
+`accepted_regressions`, one entry per within-bound regression carrying
+`metric_id`, `candidate`, `baseline` and
+`pct_of_baseline = (candidate - baseline) / baseline` — a FRACTION and never a
+percentage, so the 1% bound reads as `0.01` — and an EMPTY array when nothing
+regressed. A regression past the bound is deliberately absent from it: no layer
+accepts that number, so an entry would read as an endorsement. Every validator
+cross-checks the array in BOTH directions: each entry must be a real within-bound
+symmetric regression carrying the symmetric arrays' own two values, and every
+within-bound symmetric regression must have an entry. A receipt that regresses
+and publishes `[]` therefore fails closed exactly like one past the bound, which
+is what stops the array from degenerating into a rubber stamp. There is still no
+bypass flag and no per-metric allowlist.
+
+The sweep also emits
+`production_conventions`, the
+map `winning_convention()` actually prices with, and the gate fails closed while
+it differs from the resolved winner. Row accounting must close as
+`smoke_rows + tune_rows == rows_priced + engine_errors`, and a metric or input
+candidate that admitted no observation at all is a hard error naming that metric
+— never an `inf` written into the receipt.
+Vol remains decimal identity. No Cartesian-product sweep is permitted. Commit the winning map to
 `atx-vol/bench/oracle/CONVENTIONS.md`, encode it only in the isolated convention
 layer, and write aggregate `scorecards/iter-000.json` with the Mode A residual
-floor plus the exact `bootstrap/conventions.json` receipt. Record that evidenced
-floor in NORTHSTAR and append LEDGER. Do not read Mode
-B or benchmark holdout.
+floor plus the exact `bootstrap/conventions.json` receipt. Run only these five
+worktree-local gates, IN THIS ORDER: `convention_tests`, `mode_a_smoke_tune`,
+`convention_speed_measure`, `residual_floor`, and `convention_speed`. The order
+is executable rather than nominal: `residual_floor` hard-requires the committed
+iter-000, and `convention_speed_measure` produces the number iter-000 needs, so
+the measure gate necessarily precedes it. The residual gate verifies the exact-SHA sweep artifact
+from the preceding smoke+tune gate against iter-000; it does not price the same
+rows twice and fails if the artifact is absent or belongs to another SHA. On a
+first-ever Stage 3 run no speed pin exists, so `convention_speed_measure` runs
+BEFORE iter-000 is committed: it builds only the rel-avx2 oracle-bench target,
+runs tune on a quiet host, and emits the measured rows_per_second with no pin
+comparison. That receipt is the only sanctioned source of iter-000's speed
+floor, and the floor is DERIVED from it rather than copied: `speed.baseline` is
+the measured rows_per_second and `speed.pin` is `floor(baseline * 0.90)`. A
+verbatim copy would leave `pin == baseline`, making the re-measurement a coin
+flip on run-to-run noise, so the validators reject any pin above
+`baseline * 0.95`. `convention_speed` then re-runs the same quiet measurement
+against the committed pin. Record that evidenced floor in NORTHSTAR and append
+LEDGER only after audited landing; the Stage 3 build lane must not edit either
+memory file. Do not read Mode B or benchmark holdout.
 
 ## Stage 4 - Mode B (`missing_mode_b`)
 

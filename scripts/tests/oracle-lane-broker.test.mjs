@@ -39,6 +39,7 @@ function fixture({ failGate = '', descendantBase = false, requireCommittedHead =
   write(root, '.gitignore', '/build/\n.atx-lease\n')
   write(root, 'atx-vol/CHANGELOG.md', '# changelog\n')
   write(root, 'atx-vol/src/pricing/american.cpp', 'int oracle_fixture() { return 1; }\n')
+  write(root, 'atx-vol/bench/oracle/bootstrap/mode-a.json', '{"schema_version":1}\n')
   write(root, 'scripts/oracle-bootstrap-preflight.ps1', [
     'param([string]$Gate)',
     ...(requireCommittedHead ? [
@@ -78,7 +79,7 @@ function fixture({ failGate = '', descendantBase = false, requireCommittedHead =
   writeFileSync(join(pool, 'build', 'build.ninja'), '# warm fixture\n', 'utf8')
 
   const gateRegistry = { ...GATE_REGISTRY }
-  for (const gateId of ['aggregate_store', 'ingest_manifest', 'cohort_manifests', 'holdout_digest', 'mode_a_targeted_tests', 'mode_a_smoke', 'convention_tests', 'mode_a_smoke_tune', 'residual_floor', 'mode_b_targeted_tests', 'mode_b_smoke_tune']) {
+  for (const gateId of ['aggregate_store', 'ingest_manifest', 'cohort_manifests', 'holdout_digest', 'mode_a_targeted_tests', 'mode_a_smoke', 'convention_tests', 'mode_a_smoke_tune', 'residual_floor', 'convention_speed', 'mode_b_targeted_tests', 'mode_b_smoke_tune']) {
     gateRegistry[gateId] = { display: `powershell scripts\\oracle-bootstrap-preflight.ps1 -Gate ${gateId}`, file: 'scripts/oracle-bootstrap-preflight.ps1', args: ['-Gate', gateId] }
   }
   const broker = new OracleLaneBroker({ root, poolRoot, testMode: true, gateRegistry, recoverySource: { commit: sourceCommit, parent: sourceParent, tree: sourceTree, files } })
@@ -95,6 +96,12 @@ test('production broker surface has fixed IDs, no raw command tool, and exact re
   assert.equal(RECOVERY_SOURCE.commit, '58a94584baabae8263d16421f633540b420de10b')
   assert.ok(OPERATION_REGISTRY.bootstrap_data)
   assert.ok(OPERATION_REGISTRY.bootstrap_integration.finalize)
+  assert.deepEqual(OPERATION_REGISTRY.bootstrap_conventions.prefixes, [])
+  assert.deepEqual(OPERATION_REGISTRY.bootstrap_integration.prefixes, [])
+  assert.ok(OPERATION_REGISTRY.bootstrap_conventions.exact.includes('atx-vol/tools/oracle_convention_sweep.cpp'))
+  assert.ok(OPERATION_REGISTRY.bootstrap_integration.exact.includes('scripts/oracle-targeted-gate.ps1'))
+  assert.equal(OPERATION_REGISTRY.bootstrap_conventions.exact.includes('atx-vol/docs/oracle/NORTHSTAR.md'), false)
+  assert.equal(OPERATION_REGISTRY.bootstrap_conventions.exact.includes('atx-vol/docs/LEDGER.md'), false)
   assert.equal(TOOL_DEFINITIONS.some(tool => /command|shell|powershell|bash/i.test(tool.name)), false)
   for (const tool of TOOL_DEFINITIONS) {
     assert.equal(tool.inputSchema.type, 'object')
@@ -288,13 +295,14 @@ test('existing canonical bootstrap finalizes one exact Stage 2 descendant with s
   try {
     git(fx.root, 'update-ref', 'refs/heads/oracle/canonical', fx.base)
     const stage2 = fx.broker.openLane(stage2Identity)
-    const stage2Patch = 'diff --git a/atx-vol/src/pricing/american.cpp b/atx-vol/src/pricing/american.cpp\n--- a/atx-vol/src/pricing/american.cpp\n+++ b/atx-vol/src/pricing/american.cpp\n@@ -1 +1 @@\n-int oracle_fixture() { return 1; }\n+int oracle_fixture() { return 2; }\n'
+    const stage2Patch = 'diff --git a/atx-vol/bench/oracle/bootstrap/mode-a.json b/atx-vol/bench/oracle/bootstrap/mode-a.json\n--- a/atx-vol/bench/oracle/bootstrap/mode-a.json\n+++ b/atx-vol/bench/oracle/bootstrap/mode-a.json\n@@ -1 +1 @@\n-{"schema_version":1}\n+{"schema_version":1,"rows_processed":1}\n'
     fx.broker.applyPatch({ capability: stage2.capability, patch: stage2Patch })
     const candidate = fx.broker.commitLane({ capability: stage2.capability, message_id: 'bootstrap_mode_a' })
+    assert.match(candidate.file_blob_oids['atx-vol/bench/oracle/bootstrap/mode-a.json'], /^[0-9a-f]{40}$/)
     assert.equal(fx.broker.releaseLane({ capability: stage2.capability }).finalize_capability, '')
 
     const wrongOperation = fx.broker.openLane({ operation_id: 'sprint_build', stage: 'improve', run_id: runId, branch: 'lane/wrong-operation-run-existing-canonical', base_sha: fx.base, heartbeat_id: 'run-existing-canonical-wrong-operation' })
-    const wrongOperationPatch = 'diff --git a/atx-vol/src/pricing/american.cpp b/atx-vol/src/pricing/american.cpp\n--- a/atx-vol/src/pricing/american.cpp\n+++ b/atx-vol/src/pricing/american.cpp\n@@ -1 +1 @@\n-int oracle_fixture() { return 1; }\n+int oracle_fixture() { return 3; }\n'
+    const wrongOperationPatch = 'diff --git a/atx-vol/CHANGELOG.md b/atx-vol/CHANGELOG.md\n--- a/atx-vol/CHANGELOG.md\n+++ b/atx-vol/CHANGELOG.md\n@@ -1 +1,2 @@\n # changelog\n+wrong operation\n'
     fx.broker.applyPatch({ capability: wrongOperation.capability, patch: wrongOperationPatch })
     const wrongOperationCommit = fx.broker.commitLane({ capability: wrongOperation.capability, message_id: 'sprint_lane' })
     fx.broker.releaseLane({ capability: wrongOperation.capability })
