@@ -115,6 +115,7 @@
 // atx-vol LIBRARY never does.
 
 #include <algorithm>
+#include <algorithm>
 #include <array>
 #include <charconv>
 #include <cmath>
@@ -2921,6 +2922,559 @@ inline constexpr std::string_view kVrpScoreContamIvSlope =
 // column set every fold and the pooled row set are graded on.
 inline constexpr std::size_t kVrpGateColumnCount = 8;
 
+// ── ROUND 7: THE DISPERSION BOOK ────────────────────────────────────────────
+//
+// Round 6 left exactly one object standing: the FREE-RULE LONG LEG. Its excess
+// over long-everything runs t_nw +4.08 / +3.68 while its ABSOLUTE return runs
+// only t_nw +1.75 / +2.07. The whole gap is VOL BETA -- the excess differences
+// it away against a book of the same names, the absolute return carries it --
+// and round 6's answer, shorting single-name vega, made the book worse because
+// short-everything lost 4.27 vol points over the same rows.
+//
+// The literature says the hedge leg is in the wrong instrument, not that the
+// hedge is wrong. Driessen-Maenhout-Vilkov (JF 2009) find the index variance
+// premium is a CORRELATION premium that does not exist at constituent level;
+// Carr-Wu (RFS 2009) find only 3 of 35 single names carry a significant
+// variance premium. So: long free-rule-selected SINGLE-NAME vega against short
+// INDEX vega. The book stays NET LONG single-name vega.
+//
+// UNITS. Every figure here is per 1 UNIT OF SINGLE-NAME LONG VEGA, never per
+// unit of gross. The structure is deliberately not vega-neutral, and a gross
+// denominator would let the hedge ratio silently rescale the reported return.
+//
+// THE ALGEBRAIC FACT THIS BLOCK EXISTS TO MAKE VISIBLE. When the hedged book
+// and its zero-selection floor carry the SAME index leg, that leg cancels
+// exactly in the paired per-date difference, so
+//
+//     hedged_book - hedged_floor  ==  long_only_book - long_only_floor
+//
+// identically. A common hedge CANNOT create or destroy selection excess. It
+// moves only the ABSOLUTE return and the BETA -- which is precisely the
+// quantity round 6 identified as binding. This is pinned by a test, and it is
+// why the dispersion structure is judged on absolute return and residual beta
+// rather than on an excess that is fixed by construction.
+
+// OLS slope of `y` on `x` with a Newey-West t on the slope. The per-date
+// series overlap (21-session holds), so the point estimate is consistent but
+// the naive standard error is not; the HAC lag is the same kVrpOverlapLag every
+// other statistic in this file uses. Fewer than 3 finite pairs, or a constant
+// regressor, identify no slope and yield NaN rather than a fabricated one.
+struct VrpSlope {
+  double beta{std::numeric_limits<double>::quiet_NaN()};
+  double t_nw{std::numeric_limits<double>::quiet_NaN()};
+  std::size_t n{0};
+};
+
+[[nodiscard]] inline VrpSlope vrp_slope_nw(std::span<const double> y,
+                                           std::span<const double> x) {
+  VrpSlope out;
+  if (y.size() != x.size()) {
+    return out;
+  }
+  std::vector<double> fy;
+  std::vector<double> fx;
+  fy.reserve(y.size());
+  fx.reserve(x.size());
+  for (std::size_t i = 0; i < y.size(); ++i) {
+    if (std::isfinite(y[i]) && std::isfinite(x[i])) {
+      fy.push_back(y[i]);
+      fx.push_back(x[i]);
+    }
+  }
+  out.n = fy.size();
+  if (fy.size() < 3) {
+    return out;
+  }
+  const auto n = static_cast<double>(fy.size());
+  double mx = 0.0;
+  double my = 0.0;
+  for (std::size_t i = 0; i < fy.size(); ++i) {
+    mx += fx[i];
+    my += fy[i];
+  }
+  mx /= n;
+  my /= n;
+  double sxx = 0.0;
+  double sxy = 0.0;
+  for (std::size_t i = 0; i < fy.size(); ++i) {
+    sxx += (fx[i] - mx) * (fx[i] - mx);
+    sxy += (fx[i] - mx) * (fy[i] - my);
+  }
+  if (!(sxx > 0.0)) {
+    return out;
+  }
+  out.beta = sxy / sxx;
+  // HAC sandwich over the score series g_t = (x_t - mx) * resid_t, Bartlett-
+  // weighted: Var(beta) = S / sxx^2, so se(beta) = sqrt(S) / sxx.
+  std::vector<double> g(fy.size(), 0.0);
+  for (std::size_t i = 0; i < fy.size(); ++i) {
+    g[i] = (fx[i] - mx) * ((fy[i] - my) - out.beta * (fx[i] - mx));
+  }
+  const std::size_t lag = std::min(kVrpOverlapLag, g.size() - 1);
+  double s = 0.0;
+  for (const double v : g) {
+    s += v * v;
+  }
+  for (std::size_t k = 1; k <= lag; ++k) {
+    double gk = 0.0;
+    for (std::size_t t = k; t < g.size(); ++t) {
+      gk += g[t] * g[t - k];
+    }
+    const double w = 1.0 - static_cast<double>(k) / static_cast<double>(lag + 1);
+    s += 2.0 * w * gk;
+  }
+  if (!(s > 0.0)) {
+    return out; // small-sample HAC can go non-positive: undefined, not faked
+  }
+  out.t_nw = out.beta / (std::sqrt(s) / sxx);
+  return out;
+}
+
+// Within-date percentile rank of `v` among its finite entries, in (0, 1), with
+// TIES AVERAGED. NaN in, NaN out. The blend rule below is built on this and on
+// nothing else: an equal weight on two percentile ranks is an OBVIOUS rule with
+// no free parameter, which is the whole point -- the brief forbids tuning a
+// weighting, so there is not one to tune.
+[[nodiscard]] inline std::vector<double>
+vrp_within_date_pctile(std::span<const std::int64_t> ts, std::span<const double> v) {
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  std::vector<double> out(v.size(), nan);
+  if (ts.size() != v.size()) {
+    return out;
+  }
+  std::size_t begin = 0;
+  while (begin < ts.size()) {
+    std::size_t end = begin;
+    while (end < ts.size() && ts[end] == ts[begin]) {
+      ++end;
+    }
+    std::vector<std::size_t> idx;
+    idx.reserve(end - begin);
+    for (std::size_t i = begin; i < end; ++i) {
+      if (std::isfinite(v[i])) {
+        idx.push_back(i);
+      }
+    }
+    std::sort(idx.begin(), idx.end(),
+              [&](std::size_t a, std::size_t b) { return v[a] < v[b]; });
+    const auto m = static_cast<double>(idx.size());
+    std::size_t i = 0;
+    // Bounded by idx.size(): every iteration advances `i` past one tie block.
+    while (i < idx.size()) {
+      std::size_t j = i;
+      while (j + 1 < idx.size() && v[idx[j + 1]] == v[idx[i]]) {
+        ++j;
+      }
+      // Mid-rank of the tie block [i, j], mapped to (0, 1) by (r + 0.5) / m.
+      const double mid = 0.5 * (static_cast<double>(i) + static_cast<double>(j));
+      const double p = (mid + 0.5) / m;
+      for (std::size_t k = i; k <= j; ++k) {
+        out[idx[k]] = p;
+      }
+      i = j + 1;
+    }
+    begin = end;
+  }
+  return out;
+}
+
+// Equal weight on the two within-date percentile ranks. NaN wherever either
+// input is NaN: a blend of one rule is a different rule, not a blend.
+[[nodiscard]] inline std::vector<double>
+vrp_equal_weight_rank_blend(std::span<const std::int64_t> ts, std::span<const double> a,
+                            std::span<const double> b) {
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  std::vector<double> out(a.size(), nan);
+  if (a.size() != b.size() || ts.size() != a.size()) {
+    return out;
+  }
+  const std::vector<double> pa = vrp_within_date_pctile(ts, a);
+  const std::vector<double> pb = vrp_within_date_pctile(ts, b);
+  for (std::size_t i = 0; i < out.size(); ++i) {
+    if (std::isfinite(pa[i]) && std::isfinite(pb[i])) {
+      out[i] = 0.5 * (pa[i] + pb[i]);
+    }
+  }
+  return out;
+}
+
+// One formation date's ingredients. Every single-name figure is per 1 unit of
+// SINGLE-NAME vega; the index figure is per 1 unit of INDEX vega and is scaled
+// by the hedge ratio only when the book is composed.
+struct VrpDispDate {
+  double sel_gross{std::numeric_limits<double>::quiet_NaN()};
+  double sel_cost{std::numeric_limits<double>::quiet_NaN()};
+  double all_gross{std::numeric_limits<double>::quiet_NaN()};
+  double all_cost{std::numeric_limits<double>::quiet_NaN()};
+  double index_gross{std::numeric_limits<double>::quiet_NaN()};
+  double index_cost{std::numeric_limits<double>::quiet_NaN()};
+  double names{std::numeric_limits<double>::quiet_NaN()};
+  double xs_iv_level{std::numeric_limits<double>::quiet_NaN()};
+  double xs_iv_chg{std::numeric_limits<double>::quiet_NaN()};
+  std::map<std::size_t, double> weights; // equal per selected name, sums to 1
+};
+
+// Build the per-date ingredients for one score column.
+//
+// THE INDEX SYMBOL IS EXCLUDED FROM THE SINGLE-NAME UNIVERSE ON BOTH SIDES --
+// selection AND the long-everything floor. SPY sits inside the fitted panel, so
+// without this it would be rankable into its own hedge, and the floor would be
+// a book that is 1/102 index. `index_cost_scale` exists because the panel
+// carries no index-specific spread measurement: the default 1.0 charges the
+// index leg the SINGLE-NAME effective spread, which OVERSTATES it (Faias-
+// Santa-Clara JFQA 2017 put the index ATM relative quoted spread at ~5% against
+// Christoffersen et al.'s 6.41% single-name effective), i.e. the default is the
+// conservative corner and the knob prices the honest one.
+[[nodiscard]] inline std::vector<VrpDispDate>
+vrp_disp_dates(std::span<const std::int64_t> ts, std::span<const double> score,
+               std::span<const double> target, std::span<const double> target_raw,
+               std::span<const double> iv, std::span<const std::size_t> sym,
+               std::size_t index_sym, double crossing, double index_cost_scale) {
+  std::vector<VrpDispDate> out;
+  if (ts.size() != score.size() || ts.size() != target.size() || ts.size() != iv.size() ||
+      ts.size() != sym.size() || ts.size() != target_raw.size()) {
+    return out;
+  }
+  std::size_t begin = 0;
+  while (begin < ts.size()) {
+    std::size_t end = begin;
+    while (end < ts.size() && ts[end] == ts[begin]) {
+      ++end;
+    }
+    VrpDispDate d;
+    // The index leg first: its own target and its own round-trip charge. A
+    // date whose index row is missing or unpriceable leaves the HEDGED book
+    // undefined; the unhedged control on that date is still perfectly defined.
+    for (std::size_t i = begin; i < end; ++i) {
+      if (sym[i] == index_sym && std::isfinite(target[i]) && std::isfinite(iv[i])) {
+        const double c = 2.0 * vrp_vega_cost_one_way(iv[i], crossing);
+        if (std::isfinite(c)) {
+          d.index_gross = target[i];
+          d.index_cost = c * index_cost_scale;
+        }
+        break;
+      }
+    }
+    // (score, target, iv, symbol) over the SINGLE NAMES only.
+    std::vector<std::array<double, 4>> rows;
+    rows.reserve(end - begin);
+    double all_pnl = 0.0;
+    double all_cost = 0.0;
+    double iv_sum = 0.0;
+    double chg_sum = 0.0;
+    std::size_t all_n = 0;
+    std::size_t chg_n = 0;
+    for (std::size_t i = begin; i < end; ++i) {
+      if (sym[i] == index_sym) {
+        continue;
+      }
+      const double rt = 2.0 * vrp_vega_cost_one_way(iv[i], crossing);
+      if (std::isfinite(target[i]) && std::isfinite(rt)) {
+        all_pnl += target[i];
+        all_cost += rt;
+        iv_sum += 100.0 * iv[i];
+        ++all_n;
+        if (std::isfinite(target_raw[i])) {
+          chg_sum += target_raw[i];
+          ++chg_n;
+        }
+        if (std::isfinite(score[i])) {
+          rows.push_back({score[i], target[i], iv[i], static_cast<double>(sym[i])});
+        }
+      }
+    }
+    begin = end;
+    if (all_n != 0) {
+      const auto an = static_cast<double>(all_n);
+      d.all_gross = all_pnl / an;
+      d.all_cost = all_cost / an;
+      d.xs_iv_level = iv_sum / an;
+    }
+    if (chg_n != 0) {
+      d.xs_iv_chg = chg_sum / static_cast<double>(chg_n);
+    }
+    if (rows.size() < kVrpDecileMinNames) {
+      out.push_back(std::move(d)); // no book on this date; floor may still exist
+      continue;
+    }
+    std::sort(rows.begin(), rows.end());
+    double top_pnl = 0.0;
+    double top_cost = 0.0;
+    std::size_t top_n = 0;
+    std::vector<std::size_t> top_sym;
+    for (std::size_t i = 0; i < rows.size(); ++i) {
+      if (i * kVrpDecileCount / rows.size() == kVrpDecileCount - 1) {
+        top_pnl += rows[i][1];
+        top_cost += 2.0 * vrp_vega_cost_one_way(rows[i][2], crossing);
+        ++top_n;
+        top_sym.push_back(static_cast<std::size_t>(rows[i][3]));
+      }
+    }
+    if (top_n != 0) {
+      const auto tn = static_cast<double>(top_n);
+      d.sel_gross = top_pnl / tn;
+      d.sel_cost = top_cost / tn;
+      d.names = tn;
+      for (const std::size_t s : top_sym) {
+        d.weights[s] += 1.0 / tn;
+      }
+    }
+    out.push_back(std::move(d));
+  }
+  return out;
+}
+
+// One book's whole statement: its net series' aggregate, its excess over the
+// floor it is judged against, the beta it still carries, and its path risk.
+struct VrpDispBookAgg {
+  VrpStatAgg net;
+  double excess{std::numeric_limits<double>::quiet_NaN()};
+  double excess_t_nw{std::numeric_limits<double>::quiet_NaN()};
+  double resid_beta{std::numeric_limits<double>::quiet_NaN()};
+  double resid_beta_t_nw{std::numeric_limits<double>::quiet_NaN()};
+  double max_drawdown{std::numeric_limits<double>::quiet_NaN()};
+};
+
+struct VrpDispReport {
+  std::string name;
+  std::size_t n_dates{0};          // dates with a formed long book
+  std::size_t n_dates_no_index{0}; // of those, dates with no usable index row
+  // THE CONTROL: long-only, unhedged, single names, index excluded.
+  VrpDispBookAgg long_only;
+  VrpStatAgg long_floor; // long-everything single names, net of the same costs
+  // THE STRUCTURE. `beta_full` is the whole-sample OLS hedge ratio and is
+  // therefore IN-SAMPLE; `beta_causal` re-estimates it at every date from
+  // fully SETTLED cohorts only and is the implementable one. Both are reported
+  // because the difference between them is the size of the hindsight.
+  double beta_full{std::numeric_limits<double>::quiet_NaN()};
+  double beta_full_t_nw{std::numeric_limits<double>::quiet_NaN()};
+  double beta_floor{std::numeric_limits<double>::quiet_NaN()}; // long-everything's own
+  VrpDispBookAgg disp_full;
+  VrpStatAgg disp_floor_full;
+  VrpStatAgg beta_causal; // the per-date causal hedge ratio's own distribution
+  VrpDispBookAgg disp_causal;
+  VrpStatAgg disp_floor_causal;
+  // The short index leg on its own terms, per 1u INDEX vega, so the structure's
+  // two halves can be read separately.
+  VrpStatAgg index_short_leg;
+  // Implementability. `per_name_vega_frac` is 1 / names: the fraction of the
+  // book's single-name vega each holding carries.
+  VrpStatAgg names_per_day;
+  VrpStatAgg turnover;
+  double per_name_vega_frac{std::numeric_limits<double>::quiet_NaN()};
+  // REGIME. Classified EX POST by the sign of the cross-sectional mean RAW iv
+  // change over each cohort's own hold: this is a diagnostic split, not a
+  // tradeable filter, and the report says so.
+  std::size_t n_rising{0};
+  std::size_t n_falling{0};
+  VrpDispBookAgg long_only_rising;
+  VrpDispBookAgg long_only_falling;
+  VrpDispBookAgg disp_full_rising;
+  VrpDispBookAgg disp_full_falling;
+  VrpStatAgg long_floor_rising;
+  VrpStatAgg long_floor_falling;
+  // Realized correlation to a simple vol series: the cross-sectional mean entry
+  // ATMF LEVEL, and the cross-sectional mean RAW vol CHANGE over the hold.
+  double corr_long_only_iv_level{std::numeric_limits<double>::quiet_NaN()};
+  double corr_long_only_iv_chg{std::numeric_limits<double>::quiet_NaN()};
+  double corr_disp_iv_level{std::numeric_limits<double>::quiet_NaN()};
+  double corr_disp_iv_chg{std::numeric_limits<double>::quiet_NaN()};
+};
+
+namespace detail {
+
+// `v` with every entry outside the mask blanked to NaN, so the same aggregator
+// prices a sub-sample without a second code path. The mask is uint8 rather
+// than bool because std::vector<bool> is not a contiguous range and so has no
+// std::span; a proxy-reference container has no business in a numeric path.
+[[nodiscard]] inline std::vector<double> mask_series(std::span<const double> v,
+                                                     std::span<const std::uint8_t> keep) {
+  std::vector<double> out(v.begin(), v.end());
+  if (v.size() != keep.size()) {
+    return out;
+  }
+  for (std::size_t i = 0; i < out.size(); ++i) {
+    if (keep[i] == 0U) {
+      out[i] = std::numeric_limits<double>::quiet_NaN();
+    }
+  }
+  return out;
+}
+
+// Aggregate `book` against `floor`, with the residual beta on `hedge_axis`.
+[[nodiscard]] inline VrpDispBookAgg disp_book_agg(std::span<const double> book,
+                                                  std::span<const double> floor,
+                                                  std::span<const double> hedge_axis) {
+  VrpDispBookAgg out;
+  out.net = vrp_aggregate_series(book, kVrpOverlapLag);
+  const VrpStatAgg ex = paired_diff(book, floor);
+  out.excess = ex.mean;
+  out.excess_t_nw = ex.t_nw;
+  const VrpSlope sl = vrp_slope_nw(book, hedge_axis);
+  out.resid_beta = sl.beta;
+  out.resid_beta_t_nw = sl.t_nw;
+  out.max_drawdown = max_drawdown(book);
+  return out;
+}
+
+} // namespace detail
+
+// Compose every book this lane reports from one column's per-date ingredients.
+//
+// `beta_min_dates` is the number of fully SETTLED cohorts the causal hedge
+// ratio requires before it will quote one; below it the causal book is
+// UNDEFINED on that date rather than unhedged, because an unhedged date silently
+// entering a hedged series is exactly how a hedge comes to look free.
+[[nodiscard]] inline VrpDispReport vrp_disp_report(std::string name,
+                                                   const std::vector<VrpDispDate> &dates,
+                                                   std::size_t beta_min_dates) {
+  VrpDispReport out;
+  out.name = std::move(name);
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const std::size_t n = dates.size();
+  std::vector<double> sel_gross(n, nan);
+  std::vector<double> long_only(n, nan);
+  std::vector<double> long_floor(n, nan);
+  std::vector<double> idx_gross(n, nan);
+  std::vector<double> idx_all(n, nan); // gross + cost: what shorting 1u pays
+  std::vector<double> names(n, nan);
+  std::vector<double> turnover(n, nan);
+  std::vector<double> iv_level(n, nan);
+  std::vector<double> iv_chg(n, nan);
+  for (std::size_t i = 0; i < n; ++i) {
+    const VrpDispDate &d = dates[i];
+    sel_gross[i] = d.sel_gross;
+    long_only[i] = d.sel_gross - d.sel_cost;
+    long_floor[i] = d.all_gross - d.all_cost;
+    idx_gross[i] = d.index_gross;
+    idx_all[i] = d.index_gross + d.index_cost;
+    names[i] = d.names;
+    iv_level[i] = d.xs_iv_level;
+    iv_chg[i] = d.xs_iv_chg;
+    if (std::isfinite(d.sel_gross)) {
+      ++out.n_dates;
+      if (!std::isfinite(d.index_gross)) {
+        ++out.n_dates_no_index;
+      }
+    }
+    if (i != 0 && !dates[i].weights.empty() && !dates[i - 1].weights.empty()) {
+      turnover[i] = detail::weight_turnover(dates[i - 1].weights, dates[i].weights);
+    }
+  }
+  out.long_floor = vrp_aggregate_series(std::span<const double>{long_floor}, kVrpOverlapLag);
+  out.long_only = detail::disp_book_agg(std::span<const double>{long_only},
+                                        std::span<const double>{long_floor},
+                                        std::span<const double>{idx_gross});
+  // THE HEDGE RATIO. Estimated on GROSS series on both sides: the cost leg is a
+  // deterministic function of the entry IV level, so leaving it in would let the
+  // charge's own IV dependence masquerade as vol beta.
+  const VrpSlope bf = vrp_slope_nw(std::span<const double>{sel_gross},
+                                   std::span<const double>{idx_gross});
+  out.beta_full = bf.beta;
+  out.beta_full_t_nw = bf.t_nw;
+  {
+    std::vector<double> all_gross(n, nan);
+    for (std::size_t i = 0; i < n; ++i) {
+      all_gross[i] = dates[i].all_gross;
+    }
+    out.beta_floor = vrp_slope_nw(std::span<const double>{all_gross},
+                                  std::span<const double>{idx_gross})
+                         .beta;
+  }
+  std::vector<double> disp_full(n, nan);
+  std::vector<double> disp_floor_full(n, nan);
+  std::vector<double> disp_causal(n, nan);
+  std::vector<double> disp_floor_causal(n, nan);
+  std::vector<double> beta_causal(n, nan);
+  std::vector<double> index_leg(n, nan);
+  for (std::size_t i = 0; i < n; ++i) {
+    if (std::isfinite(out.beta_full)) {
+      disp_full[i] = long_only[i] - out.beta_full * idx_all[i];
+      disp_floor_full[i] = long_floor[i] - out.beta_full * idx_all[i];
+    }
+    index_leg[i] = -idx_all[i];
+    // CAUSAL hedge ratio: only cohorts whose 21-session hold has fully settled
+    // by date i can have been observed at date i. Dates are pooled OOS dates,
+    // so `j + kVrpHorizonSessions <= i` is the settlement test, and the
+    // estimate uses NOTHING from date i itself.
+    if (i >= kVrpHorizonSessions) {
+      const std::size_t stop = i - kVrpHorizonSessions + 1;
+      const VrpSlope sc =
+          vrp_slope_nw(std::span<const double>{sel_gross}.first(stop),
+                       std::span<const double>{idx_gross}.first(stop));
+      if (sc.n >= beta_min_dates && std::isfinite(sc.beta)) {
+        beta_causal[i] = sc.beta;
+        disp_causal[i] = long_only[i] - sc.beta * idx_all[i];
+        disp_floor_causal[i] = long_floor[i] - sc.beta * idx_all[i];
+      }
+    }
+  }
+  out.disp_full = detail::disp_book_agg(std::span<const double>{disp_full},
+                                        std::span<const double>{disp_floor_full},
+                                        std::span<const double>{idx_gross});
+  out.disp_floor_full =
+      vrp_aggregate_series(std::span<const double>{disp_floor_full}, kVrpOverlapLag);
+  out.beta_causal = vrp_aggregate_series(std::span<const double>{beta_causal}, kVrpOverlapLag);
+  out.disp_causal = detail::disp_book_agg(std::span<const double>{disp_causal},
+                                          std::span<const double>{disp_floor_causal},
+                                          std::span<const double>{idx_gross});
+  out.disp_floor_causal =
+      vrp_aggregate_series(std::span<const double>{disp_floor_causal}, kVrpOverlapLag);
+  out.index_short_leg = vrp_aggregate_series(std::span<const double>{index_leg}, kVrpOverlapLag);
+  out.names_per_day = vrp_aggregate_series(std::span<const double>{names}, kVrpOverlapLag);
+  out.turnover = vrp_aggregate_series(std::span<const double>{turnover}, kVrpOverlapLag);
+  out.per_name_vega_frac =
+      std::isfinite(out.names_per_day.mean) && out.names_per_day.mean > 0.0
+          ? 1.0 / out.names_per_day.mean
+          : nan;
+  // REGIME. A date is RISING when the cross-sectional mean RAW iv change over
+  // its own hold is > 0. Dates with no measurable change join NEITHER side, so
+  // the two sub-samples never sum to more than the whole.
+  std::vector<std::uint8_t> rising(n, 0U);
+  std::vector<std::uint8_t> falling(n, 0U);
+  for (std::size_t i = 0; i < n; ++i) {
+    if (!std::isfinite(iv_chg[i]) || !std::isfinite(long_only[i])) {
+      continue;
+    }
+    if (iv_chg[i] > 0.0) {
+      rising[i] = 1U;
+      ++out.n_rising;
+    } else {
+      falling[i] = 1U;
+      ++out.n_falling;
+    }
+  }
+  const auto sub = [&](std::span<const double> bk, std::span<const double> fl,
+                       const std::vector<std::uint8_t> &keep) {
+    const std::span<const std::uint8_t> k{keep};
+    const std::vector<double> b = detail::mask_series(bk, k);
+    const std::vector<double> f = detail::mask_series(fl, k);
+    return detail::disp_book_agg(std::span<const double>{b}, std::span<const double>{f},
+                                 std::span<const double>{idx_gross});
+  };
+  const auto sub_floor = [&](const std::vector<std::uint8_t> &keep) {
+    const std::vector<double> f =
+        detail::mask_series(std::span<const double>{long_floor},
+                            std::span<const std::uint8_t>{keep});
+    return vrp_aggregate_series(std::span<const double>{f}, kVrpOverlapLag);
+  };
+  out.long_only_rising = sub(long_only, long_floor, rising);
+  out.long_only_falling = sub(long_only, long_floor, falling);
+  out.disp_full_rising = sub(disp_full, disp_floor_full, rising);
+  out.disp_full_falling = sub(disp_full, disp_floor_full, falling);
+  out.long_floor_rising = sub_floor(rising);
+  out.long_floor_falling = sub_floor(falling);
+  out.corr_long_only_iv_level =
+      vrp_pearson(std::span<const double>{long_only}, std::span<const double>{iv_level});
+  out.corr_long_only_iv_chg =
+      vrp_pearson(std::span<const double>{long_only}, std::span<const double>{iv_chg});
+  out.corr_disp_iv_level =
+      vrp_pearson(std::span<const double>{disp_full}, std::span<const double>{iv_level});
+  out.corr_disp_iv_chg =
+      vrp_pearson(std::span<const double>{disp_full}, std::span<const double>{iv_chg});
+  return out;
+}
+
 // The gate's whole finding for one run: every score column on every fold and
 // on the pooled OOS rows, plus the verdict, plus the corpus label. The corpus
 // is carried because the widely quoted +0.22 IC was a clean-25 number while
@@ -2959,6 +3513,12 @@ struct VrpGateReport {
   // fraction is not published is not a reproducible cost figure.
   double cost_crossing_fraction{kVrpDefaultCrossingFraction};
   std::size_t eiv_target_entry_lag{0};
+  // ROUND 7: the dispersion block. EMPTY unless --index-symbol names a symbol
+  // present in the panel, which is what keeps every round-6 artifact identical
+  // with the flag off.
+  std::string index_symbol;
+  double index_cost_scale{1.0};
+  std::vector<VrpDispReport> dispersion; // one per scored rule, pooled rows
   // The data defect the P&L block has to survive: unadjusted-split rows whose
   // raw carry runs to +16465 vol points. Published, not hidden.
   std::size_t n_ppv_rows_priced{0};
@@ -3325,6 +3885,24 @@ struct VrpTrainConfig {
   // the target is the one that scores, so a predictor whose edge is real must
   // keep it when the target's entry read moves away from the predictor's.
   std::size_t eiv_target_entry_lag{0};
+  // ROUND-7 (--index-symbol): the panel symbol used as the DISPERSION hedge
+  // leg. Empty (the default) leaves every round-6 artifact byte-identical and
+  // emits no dispersion block at all. When set, the named symbol is EXCLUDED
+  // from the single-name selection universe and from the long-everything floor
+  // -- SPY sits inside the fitted panel, so without the exclusion it would be
+  // rankable into its own hedge and the floor would be 1/102 index.
+  std::string index_symbol;
+  // ROUND-7 (--index-cost-scale): multiplies the index leg's round-trip charge.
+  // The panel carries NO index-specific spread measurement, so 1.0 charges the
+  // index the SINGLE-NAME effective spread, which OVERSTATES it; ~0.78 is the
+  // literature ratio (index ATM ~5% quoted, Faias-Santa-Clara JFQA 2017,
+  // against 6.41% single-name effective, Christoffersen et al. RFS 2018).
+  double index_cost_scale{1.0};
+  // ROUND-7 (--disp-beta-min-dates): settled cohorts the CAUSAL hedge ratio
+  // requires before it quotes one. Below it the causal book is undefined on
+  // that date rather than unhedged, because an unhedged date entering a hedged
+  // series silently is how a hedge comes to look free.
+  std::size_t disp_beta_min_dates{20};
 };
 
 struct VrpFoldMetrics {
@@ -4116,6 +4694,63 @@ inline void append_vega_floor_meta(std::string &body, const std::string &prefix,
           (f.best_is_long ? "long_everything" : "short_everything") + "\n";
 }
 
+// ROUND 7. One dispersion statement per rule: the long-only CONTROL, the
+// hedged structure at both hedge ratios, the regime split, and the realized
+// correlation to a vol series. Every book is emitted with its own floor
+// immediately beside it, for the same reason every other book in this file is.
+inline void append_disp_meta(std::string &body, const std::string &prefix,
+                             const VrpDispReport &d) {
+  const std::string stem = prefix + d.name + "_disp_";
+  const auto num = [&](std::string_view k, double v) {
+    body += stem + std::string{k} + "=" + fmt_double(v) + "\n";
+  };
+  const auto cnt = [&](std::string_view k, std::size_t v) {
+    body += stem + std::string{k} + "=" + std::to_string(v) + "\n";
+  };
+  const auto agg = [&](std::string_view k, const VrpStatAgg &s) {
+    num(k, s.mean);
+    num(std::string{k} + "_t", s.t_iid);
+    num(std::string{k} + "_t_nw", s.t_nw);
+    cnt(std::string{k} + "_n_dates", s.n);
+  };
+  const auto book = [&](std::string_view k, const VrpDispBookAgg &b) {
+    agg(std::string{k} + "_net_vol_pts", b.net);
+    num(std::string{k} + "_excess_over_floor", b.excess);
+    num(std::string{k} + "_excess_over_floor_t_nw", b.excess_t_nw);
+    num(std::string{k} + "_residual_vol_beta", b.resid_beta);
+    num(std::string{k} + "_residual_vol_beta_t_nw", b.resid_beta_t_nw);
+    num(std::string{k} + "_max_drawdown_vol_pts", b.max_drawdown);
+  };
+  cnt("n_dates_with_book", d.n_dates);
+  cnt("n_dates_no_index_leg", d.n_dates_no_index);
+  book("long_only", d.long_only);
+  agg("floor_long_everything_single_names", d.long_floor);
+  num("hedge_beta_full_sample", d.beta_full);
+  num("hedge_beta_full_sample_t_nw", d.beta_full_t_nw);
+  num("hedge_beta_of_long_everything", d.beta_floor);
+  book("hedged_beta_full", d.disp_full);
+  agg("floor_hedged_beta_full", d.disp_floor_full);
+  agg("hedge_beta_causal", d.beta_causal);
+  book("hedged_beta_causal", d.disp_causal);
+  agg("floor_hedged_beta_causal", d.disp_floor_causal);
+  agg("index_short_leg_per_1u_index_vega", d.index_short_leg);
+  agg("names_per_day", d.names_per_day);
+  agg("turnover_frac_of_book", d.turnover);
+  num("per_name_vega_frac_of_book", d.per_name_vega_frac);
+  cnt("n_dates_rising_vol", d.n_rising);
+  cnt("n_dates_falling_vol", d.n_falling);
+  book("long_only_rising_vol", d.long_only_rising);
+  book("long_only_falling_vol", d.long_only_falling);
+  book("hedged_beta_full_rising_vol", d.disp_full_rising);
+  book("hedged_beta_full_falling_vol", d.disp_full_falling);
+  agg("floor_long_everything_rising_vol", d.long_floor_rising);
+  agg("floor_long_everything_falling_vol", d.long_floor_falling);
+  num("corr_long_only_to_xs_iv_level", d.corr_long_only_iv_level);
+  num("corr_long_only_to_xs_iv_chg", d.corr_long_only_iv_chg);
+  num("corr_hedged_to_xs_iv_level", d.corr_disp_iv_level);
+  num("corr_hedged_to_xs_iv_chg", d.corr_disp_iv_chg);
+}
+
 [[nodiscard]] inline Status write_metrics_file(std::span<const VrpFoldMetrics> folds,
                                                const VrpObservations &observations,
                                                const VrpTrainConfig &cfg,
@@ -4278,6 +4913,18 @@ inline void append_vega_floor_meta(std::string &body, const std::string &prefix,
   append_vega_floor_meta(body, "# gate_pooled_", gate.pooled_vega_floor);
   for (const VrpVegaReport &v : gate.pooled_vega) {
     append_vega_meta(body, "# gate_pooled_", v);
+  }
+  // ROUND 7. Emitted ONLY when --index-symbol named one, so the flag-off
+  // artifact is byte-identical to round 6's.
+  if (!gate.index_symbol.empty()) {
+    body += "# disp_index_symbol=" + gate.index_symbol + "\n";
+    body += "# disp_index_cost_scale=" + fmt_double(gate.index_cost_scale) + "\n";
+    body += "# disp_units=vol_points_per_1u_single_name_long_vega_per_cycle\n";
+    body += "# disp_regime_rule=sign_of_cross_sectional_mean_raw_iv_chg_over_the_hold\n";
+    body += "# disp_hedge_floor=long_everything_single_names_carrying_the_same_index_leg\n";
+    for (const VrpDispReport &d : gate.dispersion) {
+      append_disp_meta(body, "# gate_pooled_", d);
+    }
   }
   for (const VrpScoreReport &s : gate.pooled) {
     append_score_meta(body, "# gate_pooled_", s);
@@ -5010,6 +5657,49 @@ inline void append_vega_floor_meta(std::string &body, const std::string &prefix,
         vrp_vega_gate_verdict(std::span<const VrpScoreReport>{report.gate.pooled},
                               std::span<const VrpVegaReport>{report.gate.pooled_vega},
                               report.gate.pooled_vega_floor);
+
+    // ── ROUND 7: the dispersion block, pooled rows only ────────────────────
+    //
+    // Additive and opt-in. With --index-symbol unset nothing below runs and
+    // every round-6 byte is unchanged; the fold-level artifacts are untouched
+    // either way, because a per-fold hedge ratio on ~22 dates is a hedge ratio
+    // estimated on nothing.
+    if (!cfg.index_symbol.empty()) {
+      const auto sym_it = std::find(report.panel.symbols.begin(), report.panel.symbols.end(),
+                                    cfg.index_symbol);
+      if (sym_it == report.panel.symbols.end()) {
+        return Err(ErrorCode::InvalidArgument,
+                   "run_vrp_train: --index-symbol '" + cfg.index_symbol +
+                       "' is not in the panel");
+      }
+      const auto index_sym =
+          static_cast<std::size_t>(std::distance(report.panel.symbols.begin(), sym_it));
+      const std::span<const std::int64_t> pts{pooled_rows.ts};
+      // The blend: equal weight on the two free rules' WITHIN-DATE percentile
+      // ranks. No weighting is tuned because there is no weight to tune.
+      const std::vector<double> pool_blend = vrp_equal_weight_rank_blend(
+          pts, std::span<const double>{pool_hv_iv}, std::span<const double>{pool_term_slope});
+      const std::array<std::pair<std::string_view, const std::vector<double> *>, 5> disp_cols{
+          std::pair{kVrpScoreBenchHvIv, &pool_hv_iv},
+          std::pair{kVrpScoreBenchTermSlope, &pool_term_slope},
+          std::pair{std::string_view{"blend_hv_iv_gap_term_slope_eqrank"}, &pool_blend},
+          std::pair{kVrpScoreBenchNegIvAtmf, &pool_neg_iv_atmf},
+          std::pair{kVrpScoreModel, &pool_model}};
+      report.gate.index_symbol = cfg.index_symbol;
+      report.gate.index_cost_scale = cfg.index_cost_scale;
+      report.gate.dispersion.reserve(disp_cols.size());
+      for (const auto &[cname, col] : disp_cols) {
+        const std::vector<VrpDispDate> dd = vrp_disp_dates(
+            pts, std::span<const double>{*col},
+            std::span<const double>{pooled_rows.iv_chg_roll},
+            std::span<const double>{pooled_rows.iv_chg_raw},
+            std::span<const double>{pooled_rows.iv_atmf},
+            std::span<const std::size_t>{pooled_rows.symbol}, index_sym,
+            cfg.cost_crossing_fraction, cfg.index_cost_scale);
+        report.gate.dispersion.push_back(
+            vrp_disp_report(std::string{cname}, dd, cfg.disp_beta_min_dates));
+      }
+    }
   }
 
   // Outputs.

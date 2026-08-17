@@ -33,6 +33,9 @@ void print_usage() {
             "                         [--short-vega-haircut <f>] (default 0.50; in [0,1])\n"
             "                         [--cost-crossing-fraction <f>] (default 0.55; (0,1])\n"
             "                         [--eiv-target-entry-lag <n>] (default 0; <= 21)\n"
+            "                         [--index-symbol <sym>]     (default: none)\n"
+            "                         [--index-cost-scale <f>]   (default 1.0; (0, 4])\n"
+            "                         [--disp-beta-min-dates <n>] (default 20; >= 3)\n"
             "                         [--corpus <label>]         (default: panel file stem)\n"
             "\n"
             "--panel accepts vrp_panel_v1 (18 columns) and vrp_panel_v2 (v1 then\n"
@@ -89,6 +92,25 @@ void print_usage() {
             "a column whose edge survives moving the target's entry read away from its\n"
             "own has a forecast, and one whose edge migrates does not. Run it against\n"
             "every column you intend to gate.\n"
+            "\n"
+            "--index-symbol turns on the ROUND-7 DISPERSION block: long free-rule-\n"
+            "selected SINGLE-NAME vega against short INDEX vega, sized to neutralise\n"
+            "the book's vol beta. The named symbol is EXCLUDED from the single-name\n"
+            "selection universe and from the long-everything floor -- SPY sits inside\n"
+            "the fitted panel, so without that it would be rankable into its own\n"
+            "hedge. Motivation: Driessen-Maenhout-Vilkov (JF 2009) find the index\n"
+            "variance premium is a CORRELATION premium absent at constituent level,\n"
+            "and Carr-Wu (RFS 2009) find only 3 of 35 single names carry a\n"
+            "significant one -- so the short leg belongs on the index. With the flag\n"
+            "unset no dispersion line is emitted and the artifact is round-6\n"
+            "byte-identical.\n"
+            "\n"
+            "--index-cost-scale multiplies the index leg's round-trip charge. The\n"
+            "panel carries NO index-specific spread measurement, so the default 1.0\n"
+            "charges the index the SINGLE-NAME effective spread, which overstates it;\n"
+            "~0.78 is the literature ratio (index ATM ~5% quoted, Faias-Santa-Clara\n"
+            "JFQA 2017, against 6.41% single-name effective, Christoffersen et al.\n"
+            "RFS 2018). The default is therefore the conservative corner.\n"
             "\n"
             "--corpus labels every gate statistic in vrp_metrics.tsv. Rounds 1-3\n"
             "quoted a clean-25 IC beside an SP100 book because no artifact recorded\n"
@@ -313,6 +335,24 @@ int main(int argc, char **argv) {
       if (ok && cfg.eiv_target_entry_lag > atx::vol::vrp::kVrpMaxFeatureLag) {
         std::fprintf(stderr, "error: --eiv-target-entry-lag %zu exceeds the %zu-session cap\n",
                      cfg.eiv_target_entry_lag, atx::vol::vrp::kVrpMaxFeatureLag);
+        return 2;
+      }
+    } else if (arg == "--index-symbol") {
+      cfg.index_symbol = std::string(value);
+    } else if (arg == "--index-cost-scale") {
+      ok = parse_number(value, cfg.index_cost_scale);
+      // Fail closed at the boundary: 0 makes the hedge leg free, and a scale
+      // past 4x is not a spread estimate, it is a typo.
+      if (ok && !(cfg.index_cost_scale > 0.0 && cfg.index_cost_scale <= 4.0)) {
+        std::fprintf(stderr, "error: --index-cost-scale must be in (0, 4]\n");
+        return 2;
+      }
+    } else if (arg == "--disp-beta-min-dates") {
+      ok = parse_number(value, cfg.disp_beta_min_dates);
+      // Fewer than 3 pairs identify no slope at all (vrp_slope_nw returns NaN),
+      // so a lower bound would only make the refusal implicit.
+      if (ok && cfg.disp_beta_min_dates < 3) {
+        std::fprintf(stderr, "error: --disp-beta-min-dates must be >= 3\n");
         return 2;
       }
     } else if (arg == "--corpus") {

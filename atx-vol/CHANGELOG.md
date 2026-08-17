@@ -5,6 +5,51 @@ that silently changes a NUMBER a caller already depends on belongs in this file.
 
 ## Unreleased
 
+### NEW — the dispersion book, and the regime split that settles the vol-beta question (round 7, lane vrp-dispersion)
+
+**What was added.** `--index-symbol <sym>` turns on an additive dispersion block
+on the pooled OOS rows of `atx-vol-vrp-train`: long free-rule-selected
+single-name vega against short index vega, plus the long-only control the
+structure has to beat. `--index-cost-scale` prices the index leg (default 1.0,
+the conservative corner — the panel carries no index-specific spread
+measurement, so the index is charged the single-name effective spread, which
+overstates it) and `--disp-beta-min-dates` sets how many settled cohorts the
+causal hedge ratio requires. **With `--index-symbol` unset nothing runs and all
+five artifacts are byte-identical to round 6** (verified by SHA-256 against
+`vrp-ml-r6-freerule/sp100-lag2`).
+
+**The finding the flag exists to produce.** Round 6 left the free-rule long leg
+standing with an excess over long-everything at t_nw +4.08/+3.68 and an absolute
+return at only t_nw +1.75/+2.07, and named the gap vol beta. Splitting the
+sample ex post by the sign of the cross-sectional mean raw iv change over each
+cohort's own hold (79 rising / 32 falling of 111): **the SELECTION excess
+survives falling vol and is if anything larger there** — `bench_hv_iv_gap`
++1.825 (t_nw +4.45), `bench_term_slope` +2.887 (+7.72), the equal-rank blend
++3.995 (+10.83), against +2.275 / +2.852 / +2.906 rising. **The ABSOLUTE return
+does not** — `hv_iv_gap` goes to −1.240 (t_nw −2.84), because the
+long-everything floor goes to −3.065 (t_nw −11.55) against +1.197 (+4.19)
+rising. Selection is alpha; the absolute return is the floor's beta.
+
+**What the index hedge buys, and what it cannot.** Shorting SPY vega at the OLS
+hedge ratio (0.328–0.416, estimated on gross series so the cost leg's own IV
+dependence cannot masquerade as beta) drives the residual vol beta to
+0.028–0.046 with |t_nw| ≤ 0.43, from an unhedged 0.359–0.450 at t_nw > 4, and
+roughly halves the drawdown. It buys **no alpha at all**: when the book and its
+zero-selection floor carry the same index leg, that leg cancels exactly in the
+paired per-date difference, so the hedged excess is identically the unhedged
+one. That identity is pinned to 1e-9 by
+`VrpTrainDispersion.ACommonIndexLegCancelsExactlyInTheSelectionExcess` rather
+than left as a remark, because it is the single fact most likely to be
+mis-reported as a dispersion overlay "improving the alpha".
+
+**Two conventions callers must not confuse.** Every dispersion figure is quoted
+**per 1 unit of single-name LONG vega**, never per unit of gross — the structure
+is deliberately not vega-neutral and a gross denominator would let the hedge
+ratio silently rescale the return. And the named index symbol is excluded from
+the ranked universe **and** from the long-everything floor: SPY sits inside the
+fitted panel, so without the exclusion it is rankable into its own hedge, and
+the floor is 1/102 index.
+
 ### FIXED — the crossing fraction is reachable, and correcting it raises costs (round 6, lane vrp-freerule-cost)
 
 **The defect.** `FrictionModel::crossing_fraction_complex = 0.53`
