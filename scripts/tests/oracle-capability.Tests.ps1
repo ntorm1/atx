@@ -160,7 +160,7 @@ Describe 'oracle capability closed aggregate receipts' {
       metrics = $metrics; baseline_metrics = $baselineMetrics
       metric_deltas = $metricDeltas
       symmetric_metrics = $symmetricMetrics; baseline_symmetric_metrics = $baselineSymmetricMetrics
-      symmetric_metric_deltas = $symmetricMetricDeltas
+      symmetric_metric_deltas = $symmetricMetricDeltas; accepted_regressions = @()
       candidate_prices = $candidatePrices; input_model_regressed_greeks = @(); oracle_suspect_candidates = @()
       market_evidence_status = 'not_evaluated_no_nbbo_gate'; diagnostic_speed = [ordered]@{ preset = 'dev'; citable = $false; wall_seconds = 1.0; rows_per_second = 100.0 }; speed = $speed
     })
@@ -174,7 +174,7 @@ Describe 'oracle capability closed aggregate receipts' {
       production_conventions = (New-TestConventionMap)
       metrics = $metrics; baseline_metrics = $baselineMetrics; metric_deltas = $metricDeltas
       symmetric_metrics = $symmetricMetrics; baseline_symmetric_metrics = $baselineSymmetricMetrics
-      symmetric_metric_deltas = $symmetricMetricDeltas; candidate_prices = $candidatePrices
+      symmetric_metric_deltas = $symmetricMetricDeltas; accepted_regressions = @(); candidate_prices = $candidatePrices
       input_model_regressed_greeks = @(); speed = $speed
     }
     Write-JsonFile (Join-Path $bootstrapRoot 'conventions.json') $conventionsReceipt
@@ -182,11 +182,31 @@ Describe 'oracle capability closed aggregate receipts' {
     $currentData = Get-CommittedJson $conventionsCommit ($oracleRoot + '/bootstrap/data.json')
     (Test-ConventionsReceipt $conventionsCommit $currentData) | Should Be $true
 
-    # Hard no-regression gate on the committed floor: equality passes (vol is
-    # structurally 0 on both arms), any worse candidate value fails closed.
-    (Test-FloorNoRegression $metrics $baselineMetrics) | Should Be $true
-    (Test-FloorNoRegression $metrics $metrics) | Should Be $true
-    (Test-FloorNoRegression $baselineMetrics $metrics) | Should Be $false
+    # Bounded no-regression gate on the committed floor: equality passes (vol is
+    # structurally 0 on both arms), and so does an improvement, both with an
+    # empty accepted_regressions.
+    (Test-FloorNoRegression $metrics $baselineMetrics @()) | Should Be $true
+    (Test-FloorNoRegression $metrics $metrics @()) | Should Be $true
+    # baselineMetrics is 2.0 against a 1.0 baseline: far past the 1% bound.
+    (Test-FloorNoRegression $baselineMetrics $metrics @()) | Should Be $false
+
+    # 0.5% of baseline is INSIDE the 1% bound, so it passes — but only while it
+    # is published. The same receipt with an empty array fails closed, which is
+    # what keeps accepted_regressions from becoming a rubber stamp.
+    $withinBound = New-TestFloorMetrics
+    foreach ($metric in $withinBound) { if ($metric.metric_id -eq 'mode_a_vega_rel') { $metric.value = 1.005 } }
+    $publishedWithin = @([ordered]@{ metric_id = 'mode_a_vega_rel'; candidate = 1.005; baseline = 1.0; pct_of_baseline = 0.005 })
+    (Test-FloorNoRegression $withinBound $metrics ([pscustomobject[]]@($publishedWithin | ForEach-Object { [pscustomobject]$_ }))) | Should Be $true
+    (Test-FloorNoRegression $withinBound $metrics @()) | Should Be $false
+    # 2% of baseline is twice the bound: fails closed however it is published.
+    $beyondBound = New-TestFloorMetrics
+    foreach ($metric in $beyondBound) { if ($metric.metric_id -eq 'mode_a_vega_rel') { $metric.value = 1.02 } }
+    (Test-FloorNoRegression $beyondBound $metrics @()) | Should Be $false
+    $publishedBeyond = @([pscustomobject]@{ metric_id = 'mode_a_vega_rel'; candidate = 1.02; baseline = 1.0; pct_of_baseline = 0.02 })
+    (Test-FloorNoRegression $beyondBound $metrics $publishedBeyond) | Should Be $false
+    # An entry for a metric that did not regress at all is equally closed.
+    $forged = @([pscustomobject]@{ metric_id = 'mode_a_vega_rel'; candidate = 1.0; baseline = 1.0; pct_of_baseline = 0.0 })
+    (Test-FloorNoRegression $metrics $metrics $forged) | Should Be $false
     (Test-InputModelRegressedGreeks @()) | Should Be $true
     (Test-InputModelRegressedGreeks @('mode_a_phi_rel', 'mode_a_delta_decay_rel')) | Should Be $true
     (Test-InputModelRegressedGreeks @('mode_a_price_mae')) | Should Be $false

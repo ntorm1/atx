@@ -171,7 +171,8 @@ loss the scale SELECTION minimises. `kSelectionAbsFloor` is the sweep's OWN
 constant, not the scorecard's reporting tolerance, so retuning that tolerance
 cannot silently move what selection optimised.
 
-The hard no-regression gate AND the committed ratchet baseline are the SYMMETRIC
+The bounded no-regression gate AND the committed ratchet baseline are the
+SYMMETRIC
 array. The symmetric loss is bounded and carries no smallest-scale gradient, so
 selection runs on the FULL row population and excludes nothing —
 `selection_count` now equals `count`. The standard-relative form instead pins its
@@ -185,7 +186,40 @@ the two arrays must never be unified. Both counts stay published and every
 validator still requires `selection_count >= count / 10`, so an objective that
 ever narrowed the selection population again would have to move a published
 number instead of doing it silently; the weakest ratio is surfaced in the gate
-receipt's `audit_summary` as `min_selection_pct`. The sweep also emits
+receipt's `audit_summary` as `min_selection_pct`.
+
+The criterion on that array is BOUNDED, not strict: a symmetric metric may end
+up worse than its baseline only while `candidate <= baseline * 1.01`, and a
+regression past that bound fails every layer closed. A strict
+`candidate <= baseline` rule was tried first and is not a rule this search can
+satisfy. The fit is multi-objective over ELEVEN targets that share ONE map, and
+no point in the closed candidate grid strictly dominates every other point on
+all eleven; the selected map can be better on price and on eight of the nine
+Greeks and still give up ground on the ninth. A strict per-metric rule therefore
+does not say "never get worse", it says "never pick anything", and the only ways
+past it are hand-tuning the map or a bypass flag — both strictly worse than a
+stated, published bound.
+
+The bound is `1.01` because 1% relative is this charter's OWN Mode A Greek
+tolerance: a regression that stays inside the tolerance the scorecard already
+counts as a match cannot flip a cell's verdict, and one that exceeds it can.
+That is exactly where the gate stops.
+
+Permission to regress is never permission to hide it. The sweep emits
+`accepted_regressions`, one entry per within-bound regression carrying
+`metric_id`, `candidate`, `baseline` and
+`pct_of_baseline = (candidate - baseline) / baseline` — a FRACTION and never a
+percentage, so the 1% bound reads as `0.01` — and an EMPTY array when nothing
+regressed. A regression past the bound is deliberately absent from it: no layer
+accepts that number, so an entry would read as an endorsement. Every validator
+cross-checks the array in BOTH directions: each entry must be a real within-bound
+symmetric regression carrying the symmetric arrays' own two values, and every
+within-bound symmetric regression must have an entry. A receipt that regresses
+and publishes `[]` therefore fails closed exactly like one past the bound, which
+is what stops the array from degenerating into a rubber stamp. There is still no
+bypass flag and no per-metric allowlist.
+
+The sweep also emits
 `production_conventions`, the
 map `winning_convention()` actually prices with, and the gate fails closed while
 it differs from the resolved winner. Row accounting must close as

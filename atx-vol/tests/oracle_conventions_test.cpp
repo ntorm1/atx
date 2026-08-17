@@ -97,7 +97,7 @@ constexpr std::string_view kResolvedWinnerJson =
     R"({"input_model":"discrete_forward_pv__rate__sdiv_yield",)"
     R"("forward_formula":"uprc_exp_rate_t_minus_ddiv","rate_model":"continuous_row_rate",)"
     R"("carry_model":"sdiv_as_yield","dividend_model":"discrete_cash_forward",)"
-    R"("day_count":"ACT_365_25","dte_banding_day_count":"ACT_365F",)"
+    R"("day_count":"BUS_252","dte_banding_day_count":"ACT_365F",)"
     R"("price_scale":"per_share","price_sign":"positive",)"
     R"("vol_scale":"decimal_identity","delta_scale":"per_unit","delta_sign":"positive",)"
     R"("gamma_scale":"per_unit","gamma_sign":"positive","theta_basis":"per_day",)"
@@ -130,10 +130,10 @@ TEST(OracleConvention, ProductionMapIsTheResolvedHardCut) {
   EXPECT_DOUBLE_EQ(map.price_scale, 1.0);
   // Never searched: the DTE-banding day count, not a unit the sweep may pick.
   EXPECT_DOUBLE_EQ(map.days_per_year, 365.0);
-  EXPECT_DOUBLE_EQ(map.theta_days_per_year, 365.25);
+  EXPECT_DOUBLE_EQ(map.theta_days_per_year, 252.0);
   EXPECT_DOUBLE_EQ(map.delta_scale, 1.0);
   EXPECT_DOUBLE_EQ(map.gamma_scale, 1.0);
-  EXPECT_DOUBLE_EQ(map.theta_scale, 1.0 / 365.25);
+  EXPECT_DOUBLE_EQ(map.theta_scale, 1.0 / 252.0);
   EXPECT_DOUBLE_EQ(map.vega_scale, 0.01);
   EXPECT_DOUBLE_EQ(map.rho_scale, 0.01);
   EXPECT_DOUBLE_EQ(map.phi_scale, 0.01);
@@ -344,8 +344,47 @@ TEST(OracleConvention, SweepIsClosedDeterministicAndCoversElevenMetrics) {
   EXPECT_NE(json.find("\"symmetric_metrics\":"), std::string::npos);
   EXPECT_NE(json.find("\"baseline_symmetric_metrics\":"), std::string::npos);
   EXPECT_NE(json.find("\"symmetric_metric_deltas\":"), std::string::npos);
+  // Always present, empty when nothing regressed: five validator layers require
+  // the key, and an absent one fails them closed after a 12-minute sweep.
+  EXPECT_NE(json.find("\"accepted_regressions\":"), std::string::npos);
   EXPECT_NE(json.find("not_evaluated_no_nbbo_gate"), std::string::npos);
   EXPECT_EQ(json.find("holdout"), std::string::npos);
+}
+
+// The bounded no-regression rule, pinned on values small enough to read. A
+// convention fit over eleven targets sharing one map has no strictly-dominating
+// point in the candidate grid, so a metric is allowed to lose ground while it
+// stays within kRegressionBoundMultiplier of its baseline — and every such loss
+// is PUBLISHED. Beyond the bound nothing is emitted: the gate layers fail closed
+// there, and an entry would read as an endorsement.
+TEST(OracleConvention, AcceptedRegressionsPublishWithinBoundAndOmitBeyondIt) {
+  const auto metric = [](std::string id, double value) {
+    return FloorMetric{.metric_id = std::move(id), .value = value, .count = 4,
+                       .selection_count = 4, .unit = "relative"};
+  };
+  const std::vector<FloorMetric> baseline = {
+      metric("mode_a_delta_rel", 1.0), metric("mode_a_gamma_rel", 1.0),
+      metric("mode_a_theta_rel", 1.0), metric("mode_a_vega_rel", 1.0),
+      metric("mode_a_rho_rel", 0.0)};
+  const std::vector<FloorMetric> candidate = {
+      // Improved, equal, within bound, beyond bound, and off a zero baseline.
+      metric("mode_a_delta_rel", 0.5),   metric("mode_a_gamma_rel", 1.0),
+      metric("mode_a_theta_rel", 1.005), metric("mode_a_vega_rel", 1.02),
+      metric("mode_a_rho_rel", 0.25)};
+  const std::vector<AcceptedRegression> published = accepted_regressions(candidate, baseline);
+  ASSERT_EQ(published.size(), 1u);
+  EXPECT_EQ(published[0].metric_id, "mode_a_theta_rel");
+  EXPECT_DOUBLE_EQ(published[0].candidate, 1.005);
+  EXPECT_DOUBLE_EQ(published[0].baseline, 1.0);
+  // A FRACTION of baseline, never a percentage: 0.5% of baseline is 0.005.
+  EXPECT_NEAR(published[0].pct_of_baseline, 0.005, 1.0e-12);
+
+  // Exactly ON the bound is inside it, so the rule has no unreachable sliver.
+  const std::vector<FloorMetric> on_bound = {metric("mode_a_delta_rel", 1.0 * 1.01)};
+  const std::vector<FloorMetric> one_baseline = {metric("mode_a_delta_rel", 1.0)};
+  ASSERT_EQ(accepted_regressions(on_bound, one_baseline).size(), 1u);
+  // A baseline of zero divides by nothing: moving off it is beyond the bound.
+  EXPECT_TRUE(accepted_regressions(baseline, baseline).empty());
 }
 
 TEST(OracleConvention, CandidateAndBaselineFloorsShareOneRowPopulation) {

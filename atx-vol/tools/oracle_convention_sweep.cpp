@@ -868,7 +868,33 @@ Result<ConventionSweepResult> run_convention_sweep(std::span<const OracleRow> sm
                  "convention sweep input candidate priced no smoke row: " + candidate.candidate_id);
     }
   }
+  // Computed only AFTER the finiteness refusals above, so the published fraction
+  // is never derived from an accumulator that admitted nothing. Stated on the
+  // SYMMETRIC arrays because that is the objective the gate rules on.
+  out.accepted_regressions =
+      accepted_regressions(out.symmetric_metrics, out.baseline_symmetric_metrics);
   return Ok(std::move(out));
+}
+
+std::vector<AcceptedRegression> accepted_regressions(std::span<const FloorMetric> metrics,
+                                                     std::span<const FloorMetric> baseline) {
+  assert(metrics.size() == baseline.size());
+  std::vector<AcceptedRegression> out;
+  for (std::size_t index = 0; index < metrics.size(); ++index) {
+    assert(metrics[index].metric_id == baseline[index].metric_id);
+    const double candidate_value = metrics[index].value;
+    const double baseline_value = baseline[index].value;
+    if (candidate_value <= baseline_value ||
+        candidate_value > baseline_value * kRegressionBoundMultiplier) {
+      continue;
+    }
+    out.push_back(AcceptedRegression{
+        .metric_id = metrics[index].metric_id,
+        .candidate = candidate_value,
+        .baseline = baseline_value,
+        .pct_of_baseline = (candidate_value - baseline_value) / baseline_value});
+  }
+  return out;
 }
 
 std::string convention_map_json(const ConventionMap &map) {
@@ -969,7 +995,30 @@ std::string convention_sweep_json(const ConventionSweepResult &result, std::stri
   append_metric_array(out, result.baseline_symmetric_metrics);
   out.append(",\"symmetric_metric_deltas\":");
   append_delta_array(out, result.symmetric_metrics, result.baseline_symmetric_metrics);
-  out.append(",\"candidate_prices\":[");
+  // Every symmetric metric the BOUNDED no-regression rule let through: worse
+  // than baseline, but within kRegressionBoundMultiplier of it. Empty when
+  // nothing regressed. The rule permits the loss; this array is what stops the
+  // permission from being silent, and five validator layers cross-check it in
+  // BOTH directions, so a receipt that regresses and publishes `[]` fails
+  // closed exactly like one that regresses past the bound.
+  out.append(",\"accepted_regressions\":[");
+  for (std::size_t index = 0; index < result.accepted_regressions.size(); ++index) {
+    if (index != 0) {
+      out.push_back(',');
+    }
+    const AcceptedRegression &accepted = result.accepted_regressions[index];
+    out.append("{\"metric_id\":");
+    append_json_string(out, accepted.metric_id);
+    out.append(",\"candidate\":");
+    append_double(out, accepted.candidate);
+    out.append(",\"baseline\":");
+    append_double(out, accepted.baseline);
+    // A FRACTION of baseline, not a percentage: the 1% bound reads as 0.01.
+    out.append(",\"pct_of_baseline\":");
+    append_double(out, accepted.pct_of_baseline);
+    out.push_back('}');
+  }
+  out.append("],\"candidate_prices\":[");
   for (std::size_t index = 0; index < result.candidate_prices.size(); ++index) {
     if (index != 0) {
       out.push_back(',');

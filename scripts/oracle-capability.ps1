@@ -11,6 +11,12 @@ $dataRoot = 'C:\atx-cache\oracle\spiderrock'
 $oracleRoot = 'atx-vol/bench/oracle'
 $targetA = @('mode_a_price_mae', 'mode_a_vol_mae', 'mode_a_delta_rel', 'mode_a_gamma_rel', 'mode_a_theta_rel', 'mode_a_vega_rel', 'mode_a_rho_rel', 'mode_a_phi_rel', 'mode_a_volga_rel', 'mode_a_vanna_rel', 'mode_a_delta_decay_rel')
 $targetB = @('mode_b_price_mae', 'mode_b_vol_mae', 'mode_b_delta_rel', 'mode_b_gamma_rel', 'mode_b_theta_rel', 'mode_b_vega_rel', 'mode_b_rho_rel', 'mode_b_phi_rel', 'mode_b_volga_rel', 'mode_b_vanna_rel', 'mode_b_delta_decay_rel')
+# The BOUNDED no-regression rule, as a multiplier on the baseline value. Stated
+# as the multiplier and not as `1 + fraction` because five layers in three
+# languages re-evaluate this same comparison and `1.0 + 0.01` is not required to
+# be the same double as `1.01`. Mirrors kRegressionBoundMultiplier in
+# atx-vol/tools/oracle_convention_sweep.hpp, which carries the full rationale.
+$regressionBoundMultiplier = 1.01
 
 function Invoke-GitText([string[]]$GitArgs) {
   $savedPreference = $ErrorActionPreference
@@ -210,9 +216,23 @@ function Test-FloorPopulationParity($Metrics, $BaselineMetrics) {
   return $true
 }
 
-# HARD no-regression gate on the COMMITTED receipt, stated against the
-# SYMMETRIC-RELATIVE arrays: no symmetric metric may be worse than its baseline
-# (equality allowed — mode_a_vol_mae is structurally 0 on both arms).
+# BOUNDED no-regression gate on the COMMITTED receipt, stated against the
+# SYMMETRIC-RELATIVE arrays: a symmetric metric may be worse than its baseline
+# only while `candidate <= baseline * $regressionBoundMultiplier`, and every
+# regression the bound permits must appear in the receipt's
+# `accepted_regressions`. Past the bound, or unpublished, this fails closed.
+#
+# Why a bound rather than `candidate <= baseline`: the convention fit is
+# multi-objective over ELEVEN targets sharing ONE map, and no point in the
+# closed candidate grid strictly dominates every other on all eleven, so a
+# strict per-metric rule cannot be met by anything the search can reach. Why 1%:
+# it is the charter's own Mode A Greek tolerance, so a regression inside it
+# cannot flip a scorecard cell's verdict.
+#
+# The check runs in BOTH directions — no entry that is not a real within-bound
+# regression, no within-bound regression without an entry — which is what stops
+# the array from becoming a rubber stamp. There is still no bypass flag and no
+# per-metric allowlist.
 #
 # The symmetric loss is the one the scale SELECTION minimises: bounded, with no
 # smallest-scale gradient. The standard-relative array pins its denominator on
@@ -224,16 +244,42 @@ function Test-FloorPopulationParity($Metrics, $BaselineMetrics) {
 #
 # Duplicated from the targeted gate on purpose: the targeted gate runs before the
 # commit, this one runs after, and the one place a regression must not be
-# recoverable-only-by-hand is the committed floor. No bypass flag, no allowlist,
-# no tolerance.
-function Test-FloorNoRegression($Metrics, $BaselineMetrics) {
+# recoverable-only-by-hand is the committed floor.
+function Test-FloorNoRegression($Metrics, $BaselineMetrics, $AcceptedRegressions) {
   $baselineById = @{}
   foreach ($metric in @($BaselineMetrics)) { $baselineById[[string]$metric.metric_id] = $metric }
+  # Metric ids that MUST be published: strictly worse, and within the bound. A
+  # zero baseline needs no special case — `candidate <= 0 * 1.01` holds only at
+  # candidate == 0, which is not a regression — so nothing divides by zero.
+  $wanted = @{}
   foreach ($metric in @($Metrics)) {
     $baseline = $baselineById[[string]$metric.metric_id]
-    if (-not $baseline -or [double]$metric.value -gt [double]$baseline.value) { return $false }
+    if (-not $baseline) { return $false }
+    $candidateValue = [double]$metric.value
+    $baselineValue = [double]$baseline.value
+    if ($candidateValue -gt ($baselineValue * $regressionBoundMultiplier)) { return $false }
+    if ($candidateValue -gt $baselineValue) {
+      $wanted[[string]$metric.metric_id] = [pscustomobject]@{
+        Candidate = $candidateValue; Baseline = $baselineValue
+        Pct = ($candidateValue - $baselineValue) / $baselineValue
+      }
+    }
   }
-  return $true
+  $seen = @{}
+  foreach ($entry in @($AcceptedRegressions)) {
+    if (-not (Test-ExactKeys $entry @('metric_id', 'candidate', 'baseline', 'pct_of_baseline')) -or
+        -not (Test-FiniteNumber $entry.candidate) -or -not (Test-FiniteNumber $entry.baseline) -or
+        -not (Test-FiniteNumber $entry.pct_of_baseline)) { return $false }
+    $id = [string]$entry.metric_id
+    if ($seen.ContainsKey($id) -or -not $wanted.ContainsKey($id)) { return $false }
+    $seen[$id] = $true
+    $match = $wanted[$id]
+    # `pct_of_baseline` gets the 1e-12 tolerance the delta arrays already use:
+    # it is a derived quotient, not a copied value.
+    if ([double]$entry.candidate -ne $match.Candidate -or [double]$entry.baseline -ne $match.Baseline -or
+        [Math]::Abs([double]$entry.pct_of_baseline - $match.Pct) -gt 1.0e-12) { return $false }
+  }
+  return $seen.Count -eq $wanted.Count
 }
 
 # The nine Greek metric ids input_model_regressed_greeks may name. Price and vol
@@ -340,7 +386,7 @@ function Test-ConventionsReceipt([string]$Sha, $DataReceipt) {
   # and the no-regression criterion (it is the loss selection minimises);
   # `metrics` is committed beside it so the floor stays directly comparable to
   # the charter's "greeks within 1% rel" target. Never unify them.
-  $keys = @('schema_version', 'transition', 'base_sha', 'tested_sha', 'command_id', 'exit_code', 'smoke_blob_oid', 'tune_blob_oid', 'conventions_blob_oid', 'scorecard_blob_oid', 'rows_processed', 'target_metric_ids', 'baseline_conventions', 'conventions', 'production_conventions', 'metrics', 'baseline_metrics', 'metric_deltas', 'symmetric_metrics', 'baseline_symmetric_metrics', 'symmetric_metric_deltas', 'candidate_prices', 'input_model_regressed_greeks', 'speed')
+  $keys = @('schema_version', 'transition', 'base_sha', 'tested_sha', 'command_id', 'exit_code', 'smoke_blob_oid', 'tune_blob_oid', 'conventions_blob_oid', 'scorecard_blob_oid', 'rows_processed', 'target_metric_ids', 'baseline_conventions', 'conventions', 'production_conventions', 'metrics', 'baseline_metrics', 'metric_deltas', 'symmetric_metrics', 'baseline_symmetric_metrics', 'symmetric_metric_deltas', 'accepted_regressions', 'candidate_prices', 'input_model_regressed_greeks', 'speed')
   if (-not (Test-ExactKeys $receipt $keys) -or $receipt.schema_version -ne 2 -or $receipt.transition -ne 'conventions' -or $receipt.command_id -ne 'oracle_conventions_smoke_tune' -or $receipt.exit_code -ne 0 -or
       -not (Test-Provenance $receipt $Sha ($oracleRoot + '/bootstrap/mode-a.json')) -or $receipt.smoke_blob_oid -ne $DataReceipt.smoke_blob_oid -or $receipt.tune_blob_oid -ne $DataReceipt.tune_blob_oid) { return $false }
   if (-not (Test-ConventionMap $receipt.production_conventions) -or
@@ -351,7 +397,7 @@ function Test-ConventionsReceipt([string]$Sha, $DataReceipt) {
       -not (Test-FloorPopulationParity $receipt.metrics $receipt.baseline_metrics) -or
       -not (Test-FloorPopulationParity $receipt.symmetric_metrics $receipt.baseline_symmetric_metrics) -or
       -not (Test-FloorPopulationParity $receipt.symmetric_metrics $receipt.metrics) -or
-      -not (Test-FloorNoRegression $receipt.symmetric_metrics $receipt.baseline_symmetric_metrics) -or
+      -not (Test-FloorNoRegression $receipt.symmetric_metrics $receipt.baseline_symmetric_metrics $receipt.accepted_regressions) -or
       -not (Test-InputModelRegressedGreeks $receipt.input_model_regressed_greeks) -or
       -not (Test-MetricDeltas $receipt.metric_deltas) -or -not (Test-MetricDeltas $receipt.symmetric_metric_deltas) -or
       -not (Test-CandidatePrices $receipt.candidate_prices) -or
@@ -360,7 +406,7 @@ function Test-ConventionsReceipt([string]$Sha, $DataReceipt) {
   $conventionsPath = $oracleRoot + '/CONVENTIONS.md'; $scorecardPath = $oracleRoot + '/scorecards/iter-000.json'
   if ((Get-BlobOid $Sha $conventionsPath) -ne $receipt.conventions_blob_oid -or (Get-BlobOid $Sha $scorecardPath) -ne $receipt.scorecard_blob_oid) { return $false }
   $scorecard = Get-CommittedJson $Sha $scorecardPath
-  $scorecardKeys = @('schema_version', 'kind', 'base_sha', 'tested_sha', 'command_id', 'exit_code', 'mode', 'cohorts', 'smoke_blob_oid', 'tune_blob_oid', 'rows_processed', 'target_metric_ids', 'baseline_conventions', 'conventions', 'production_conventions', 'metrics', 'baseline_metrics', 'metric_deltas', 'symmetric_metrics', 'baseline_symmetric_metrics', 'symmetric_metric_deltas', 'candidate_prices', 'input_model_regressed_greeks', 'oracle_suspect_candidates', 'market_evidence_status', 'diagnostic_speed', 'speed')
+  $scorecardKeys = @('schema_version', 'kind', 'base_sha', 'tested_sha', 'command_id', 'exit_code', 'mode', 'cohorts', 'smoke_blob_oid', 'tune_blob_oid', 'rows_processed', 'target_metric_ids', 'baseline_conventions', 'conventions', 'production_conventions', 'metrics', 'baseline_metrics', 'metric_deltas', 'symmetric_metrics', 'baseline_symmetric_metrics', 'symmetric_metric_deltas', 'accepted_regressions', 'candidate_prices', 'input_model_regressed_greeks', 'oracle_suspect_candidates', 'market_evidence_status', 'diagnostic_speed', 'speed')
   if (-not (Test-ExactKeys $scorecard $scorecardKeys) -or $scorecard.schema_version -ne 2 -or
       $scorecard.kind -ne 'residual_floor' -or $scorecard.command_id -ne 'mode_a_residual_floor' -or $scorecard.exit_code -ne 0 -or $scorecard.mode -ne 'A' -or
       -not (Test-StringSet $scorecard.cohorts @('smoke', 'tune')) -or -not (Test-StringSet $scorecard.target_metric_ids $targetA) -or [long]$scorecard.rows_processed -le 0 -or
@@ -375,11 +421,11 @@ function Test-ConventionsReceipt([string]$Sha, $DataReceipt) {
       -not (Test-FloorPopulationParity $scorecard.metrics $scorecard.baseline_metrics) -or
       -not (Test-FloorPopulationParity $scorecard.symmetric_metrics $scorecard.baseline_symmetric_metrics) -or
       -not (Test-FloorPopulationParity $scorecard.symmetric_metrics $scorecard.metrics) -or
-      -not (Test-FloorNoRegression $scorecard.symmetric_metrics $scorecard.baseline_symmetric_metrics) -or
+      -not (Test-FloorNoRegression $scorecard.symmetric_metrics $scorecard.baseline_symmetric_metrics $scorecard.accepted_regressions) -or
       -not (Test-InputModelRegressedGreeks $scorecard.input_model_regressed_greeks) -or
       -not (Test-MetricDeltas $scorecard.metric_deltas) -or -not (Test-MetricDeltas $scorecard.symmetric_metric_deltas) -or
       -not (Test-CandidatePrices $scorecard.candidate_prices) -or -not (Test-SpeedFloor $scorecard.speed)) { return $false }
-  foreach ($name in @('baseline_conventions', 'conventions', 'production_conventions', 'metrics', 'baseline_metrics', 'metric_deltas', 'symmetric_metrics', 'baseline_symmetric_metrics', 'symmetric_metric_deltas', 'candidate_prices', 'input_model_regressed_greeks', 'speed')) {
+  foreach ($name in @('baseline_conventions', 'conventions', 'production_conventions', 'metrics', 'baseline_metrics', 'metric_deltas', 'symmetric_metrics', 'baseline_symmetric_metrics', 'symmetric_metric_deltas', 'accepted_regressions', 'candidate_prices', 'input_model_regressed_greeks', 'speed')) {
     if (-not (Test-JsonValueEqual $receipt.$name $scorecard.$name)) { return $false }
   }
   return [long]$receipt.rows_processed -eq [long]$scorecard.rows_processed

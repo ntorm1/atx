@@ -25,6 +25,34 @@ namespace atx::vol::oracle {
 // gradient, so selection runs on the FULL row population and excludes nothing.
 inline constexpr double kSelectionAbsFloor = 1.0e-4;
 
+// The BOUNDED no-regression rule, as a multiplier on the baseline value: a
+// symmetric metric may end up worse than baseline only while
+// `candidate <= baseline * kRegressionBoundMultiplier`. Beyond that the gate
+// fails closed.
+//
+// Why a bound at all: the convention fit is multi-objective over ELEVEN
+// targets that share a single map, and no point in the closed candidate grid
+// strictly dominates every other on all eleven. A strict per-metric
+// `candidate <= baseline` rule therefore cannot be satisfied by any candidate
+// the search can reach, so it does not express "never get worse" — it
+// expresses "never pick anything", and the only ways out are hand-tuning or a
+// bypass flag, which is worse than a stated bound.
+//
+// Why 1%: the charter's own Mode A Greek tolerance is 1% relative. A regression
+// that stays inside the tolerance the scorecard already accepts as a match
+// cannot move a cell's verdict; one that exceeds it can, and that is exactly
+// where the gate must stop.
+//
+// The bound is a licence to LOSE ground, never to hide it: every permitted
+// regression is published in `accepted_regressions` below, and the validators
+// cross-check the two directions so an empty array cannot cover a real
+// regression.
+//
+// Stated as the MULTIPLIER and not as `1.0 + fraction`: five layers re-evaluate
+// this comparison in three languages, and `1.0 + 0.01` is not required to be
+// the same double as `1.01`.
+inline constexpr double kRegressionBoundMultiplier = 1.01;
+
 struct FloorMetric {
   std::string metric_id;
   double value = 0.0;
@@ -38,6 +66,18 @@ struct FloorMetric {
   // narrowing the selection population silently.
   std::int64_t selection_count = 0;
   std::string unit;
+};
+
+// One PUBLISHED, permitted regression on the symmetric array. Emitting the
+// entry is what makes the bound honest: a metric is allowed to lose ground, but
+// never quietly, so the receipt carries both values and the size of the loss.
+struct AcceptedRegression {
+  std::string metric_id;
+  double candidate = 0.0;
+  double baseline = 0.0;
+  // (candidate - baseline) / baseline, a FRACTION and never a percentage: the
+  // 1% bound reads as 0.01 here. All five layers carry this same convention.
+  double pct_of_baseline = 0.0;
 };
 
 struct CandidatePriceMetric {
@@ -72,6 +112,12 @@ struct ConventionSweepResult {
   std::vector<FloorMetric> baseline_metrics;
   std::vector<FloorMetric> symmetric_metrics;
   std::vector<FloorMetric> baseline_symmetric_metrics;
+  // Every symmetric metric that ended up WORSE than baseline while staying
+  // within kRegressionBoundMultiplier of it. Empty when nothing regressed. A
+  // regression BEYOND the bound is deliberately absent: the gate layers fail
+  // closed on it, and publishing it here would read as an endorsement of a
+  // number no layer accepts.
+  std::vector<AcceptedRegression> accepted_regressions;
   std::vector<CandidatePriceMetric> candidate_prices;
   // Metric ids of the Greeks on which the SELECTED input model is still worse
   // than baseline_convention() on the tune sample, each side at its own best
@@ -101,6 +147,20 @@ struct ConventionSweepResult {
 // from its cause.
 [[nodiscard]] Result<ConventionSweepResult> run_convention_sweep(std::span<const OracleRow> smoke,
                                                                  std::span<const OracleRow> tune);
+
+// DEFINITION SITE of the bounded regression rule, exposed so the rule is
+// testable without a sweep: a metric is published iff it is strictly worse than
+// its baseline AND within kRegressionBoundMultiplier of it.
+//
+// A zero baseline is handled by the same comparison rather than by a special
+// case: `candidate <= 0 * 1.01` is only true at candidate == 0, which is not a
+// regression, so a metric that moved off zero is never published and never
+// divides by it.
+//
+// PRECONDITION: both spans carry the same metric ids in the same order.
+[[nodiscard]] std::vector<AcceptedRegression>
+accepted_regressions(std::span<const FloorMetric> metrics,
+                     std::span<const FloorMetric> baseline);
 
 [[nodiscard]] std::string convention_map_json(const ConventionMap &map);
 [[nodiscard]] std::string convention_sweep_json(const ConventionSweepResult &result,

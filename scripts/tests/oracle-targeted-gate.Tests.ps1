@@ -30,7 +30,7 @@ function New-OracleBenchCtestLines([string[]]$TestIds) {
   return $lines
 }
 
-function New-ConventionSweepJson([string]$Sha, [string]$ProductionDayCount = '', [long]$BaselineCountOverride = 0, [string]$RegressMetric = '', [string[]]$RegressedGreeks = @(), [string]$RegressSymmetricMetric = '') {
+function New-ConventionSweepJson([string]$Sha, [string]$ProductionDayCount = '', [long]$BaselineCountOverride = 0, [string]$RegressMetric = '', [string[]]$RegressedGreeks = @(), [string]$RegressSymmetricMetric = '', [double]$SymmetricRegressionFraction = 0.0, [switch]$OmitAcceptedRegression) {
   $map = [ordered]@{
     input_model = 'discrete_forward_pv__rate__sdiv_yield'; forward_formula = 'uprc_exp_rate_t_minus_ddiv'; rate_model = 'continuous_row_rate'; carry_model = 'sdiv_as_yield'; dividend_model = 'discrete_cash_forward'; day_count = 'ACT_365_25'; dte_banding_day_count = 'ACT_365F'
     price_scale = 'per_share'; price_sign = 'positive'; vol_scale = 'decimal_identity'; delta_scale = 'per_unit'; delta_sign = 'positive'; gamma_scale = 'per_unit'; gamma_sign = 'positive'
@@ -56,10 +56,26 @@ function New-ConventionSweepJson([string]$Sha, [string]$ProductionDayCount = '',
     foreach ($metric in $metrics) { if ($metric.metric_id -eq $RegressMetric) { $metric.value = 3.0 } }
     foreach ($delta in $deltas) { if ($delta.metric_id -eq $RegressMetric) { $delta.candidate = 3.0; $delta.delta = 1.0 } }
   }
-  # A SYMMETRIC floor worse than its baseline: the hard no-regression gate.
+  # A SYMMETRIC floor worse than its baseline: the BOUNDED no-regression gate.
+  # $SymmetricRegressionFraction is the size of the regression as a FRACTION of
+  # baseline, so 0.005 is half the 1% bound and 0.02 is twice it. Zero keeps the
+  # legacy "far beyond the bound" shape (3.0 against a baseline of 2.0).
+  # Every within-bound regression is published in accepted_regressions unless
+  # -OmitAcceptedRegression asks for the receipt that hides one.
+  $accepted = @()
   if ($RegressSymmetricMetric) {
-    foreach ($metric in $symmetric) { if ($metric.metric_id -eq $RegressSymmetricMetric) { $metric.value = 3.0 } }
-    foreach ($delta in $symmetricDeltas) { if ($delta.metric_id -eq $RegressSymmetricMetric) { $delta.candidate = 3.0; $delta.delta = 1.0 } }
+    $baselineValue = 2.0
+    $candidateValue = if ($SymmetricRegressionFraction -gt 0.0) { $baselineValue * (1.0 + $SymmetricRegressionFraction) } else { 3.0 }
+    foreach ($metric in $symmetric) { if ($metric.metric_id -eq $RegressSymmetricMetric) { $metric.value = $candidateValue } }
+    foreach ($delta in $symmetricDeltas) {
+      if ($delta.metric_id -eq $RegressSymmetricMetric) { $delta.candidate = $candidateValue; $delta.delta = $candidateValue - $baselineValue }
+    }
+    if ($candidateValue -le ($baselineValue * 1.01) -and -not $OmitAcceptedRegression) {
+      $accepted = @([ordered]@{
+        metric_id = $RegressSymmetricMetric; candidate = $candidateValue; baseline = $baselineValue
+        pct_of_baseline = ($candidateValue - $baselineValue) / $baselineValue
+      })
+    }
   }
   $production = [ordered]@{}
   foreach ($property in $map.GetEnumerator()) { $production[$property.Key] = $property.Value }
@@ -69,6 +85,7 @@ function New-ConventionSweepJson([string]$Sha, [string]$ProductionDayCount = '',
     smoke_rows = 40; tune_rows = 60; rows_priced = 100; engine_errors = 0; baseline_conventions = $map; conventions = $map; production_conventions = $production
     metrics = $metrics; baseline_metrics = $baseline; metric_deltas = $deltas
     symmetric_metrics = $symmetric; baseline_symmetric_metrics = $baselineSymmetric; symmetric_metric_deltas = $symmetricDeltas
+    accepted_regressions = @($accepted)
     candidate_prices = $candidates
     input_model_regressed_greeks = @($RegressedGreeks); oracle_suspect_candidates = @(); market_evidence_status = 'not_evaluated_no_nbbo_gate'
     diagnostic_speed = [ordered]@{ preset = 'dev'; citable = $false; wall_seconds = 1.0; rows_per_second = 100.0 }
@@ -175,7 +192,7 @@ Describe 'oracle targeted gate production adapter' {
     $tests = Get-OracleTargetedGateSpec 'convention_tests' $identity
     ($tests.PrepareArguments -join ' ') | Should Match 'build atx-vol-oracle-convention-tests --parallel 2$'
     ($tests.Arguments -join ' ') | Should Match '-Ctest -R \^OracleConvention\\\. --no-tests=error'
-    $tests.ExpectedTestIds.Count | Should Be 17
+    $tests.ExpectedTestIds.Count | Should Be 18
     @($tests.ExpectedTestIds | Where-Object { $_ -notmatch '^OracleConvention\.[A-Za-z0-9_]+$' }).Count | Should Be 0
     $sweep = Get-OracleTargetedGateSpec 'mode_a_smoke_tune' $identity
     ($sweep.PrepareArguments -join ' ') | Should Match 'build atx-vol-oracle-bench --parallel 2$'
@@ -219,16 +236,64 @@ Describe 'oracle targeted gate production adapter' {
       } } | Should Throw
   }
 
-  It 'fails closed when any symmetric metric is worse than its baseline' {
+  It 'fails closed when a symmetric metric regresses past the published bound' {
     $identity = Get-OracleGitIdentity
     # Equality must still pass: mode_a_vol_mae is structurally 0 on both arms.
     @(Get-OracleMetricRegressions @([pscustomobject]@{ metric_id = 'mode_a_vol_mae'; value = 0.0 }) @([pscustomobject]@{ metric_id = 'mode_a_vol_mae'; value = 0.0 })).Count | Should Be 0
     $offenders = @(Get-OracleMetricRegressions @([pscustomobject]@{ metric_id = 'mode_a_phi_rel'; value = 2.0 }) @([pscustomobject]@{ metric_id = 'mode_a_phi_rel'; value = 1.0 }))
     $offenders.Count | Should Be 1
     $offenders[0] | Should Match 'mode_a_phi_rel candidate=2 baseline=1'
+    # Inside the bound is NOT an offender, and exactly ON the bound is inside it,
+    # so the rule leaves no unreachable sliver.
+    @(Get-OracleMetricRegressions @([pscustomobject]@{ metric_id = 'mode_a_phi_rel'; value = 1.005 }) @([pscustomobject]@{ metric_id = 'mode_a_phi_rel'; value = 1.0 })).Count | Should Be 0
+    @(Get-OracleMetricRegressions @([pscustomobject]@{ metric_id = 'mode_a_phi_rel'; value = (1.0 * 1.01) }) @([pscustomobject]@{ metric_id = 'mode_a_phi_rel'; value = 1.0 })).Count | Should Be 0
+    @(Get-OracleMetricRegressions @([pscustomobject]@{ metric_id = 'mode_a_phi_rel'; value = 1.02 }) @([pscustomobject]@{ metric_id = 'mode_a_phi_rel'; value = 1.0 })).Count | Should Be 1
     { Invoke-OracleTargetedGate 'mode_a_smoke_tune' {
         [pscustomobject]@{ ExitCode = 0; Lines = @('closed convention sweep completed'); ScorecardJson = (New-ConventionSweepJson $identity.Sha '' 0 '' @() 'mode_a_delta_decay_rel') }
       } } | Should Throw
+    # 2% of baseline is twice the bound: still fails closed.
+    { Invoke-OracleTargetedGate 'mode_a_smoke_tune' {
+        [pscustomobject]@{ ExitCode = 0; Lines = @('closed convention sweep completed'); ScorecardJson = (New-ConventionSweepJson $identity.Sha '' 0 '' @() 'mode_a_delta_decay_rel' 0.02) }
+      } } | Should Throw
+  }
+
+  It 'passes a within-bound symmetric regression and publishes it' {
+    $identity = Get-OracleGitIdentity
+    # 0.5% of baseline: inside the 1% bound, so the gate passes — and the
+    # permitted loss is published rather than silently absorbed.
+    $result = Invoke-OracleTargetedGate 'mode_a_smoke_tune' {
+      [pscustomobject]@{ ExitCode = 0; Lines = @('closed convention sweep completed'); ScorecardJson = (New-ConventionSweepJson $identity.Sha '' 0 '' @() 'mode_a_vega_rel' 0.005) }
+    }
+    @($result.accepted_regressions).Count | Should Be 1
+    $result.accepted_regressions[0].metric_id | Should Be 'mode_a_vega_rel'
+    [double]$result.accepted_regressions[0].baseline | Should Be 2.0
+    [double]$result.accepted_regressions[0].candidate | Should Be 2.01
+    # A FRACTION of baseline, never a percentage.
+    ([Math]::Abs([double]$result.accepted_regressions[0].pct_of_baseline - 0.005) -lt 1.0e-12) | Should Be $true
+    # Nothing regressing means an empty array, never an absent key.
+    $clean = Invoke-OracleTargetedGate 'mode_a_smoke_tune' {
+      [pscustomobject]@{ ExitCode = 0; Lines = @('closed convention sweep completed'); ScorecardJson = (New-ConventionSweepJson $identity.Sha) }
+    }
+    @($clean.accepted_regressions).Count | Should Be 0
+  }
+
+  It 'fails closed when a within-bound regression is not published' {
+    $identity = Get-OracleGitIdentity
+    # The rubber-stamp failure mode: regresses inside the bound, publishes [].
+    { Invoke-OracleTargetedGate 'mode_a_smoke_tune' {
+        [pscustomobject]@{ ExitCode = 0; Lines = @('closed convention sweep completed'); ScorecardJson = (New-ConventionSweepJson $identity.Sha '' 0 '' @() 'mode_a_vega_rel' 0.005 -OmitAcceptedRegression) }
+      } } | Should Throw
+    # And the other direction: an entry for a metric that did not regress.
+    $symmetric = @([pscustomobject]@{ metric_id = 'mode_a_vega_rel'; value = 1.0 })
+    $baseline = @([pscustomobject]@{ metric_id = 'mode_a_vega_rel'; value = 2.0 })
+    $forged = @([pscustomobject]@{ metric_id = 'mode_a_vega_rel'; candidate = 1.0; baseline = 2.0; pct_of_baseline = -0.5 })
+    (Test-OracleAcceptedRegressions @() $symmetric $baseline) | Should Be ''
+    (Test-OracleAcceptedRegressions $forged $symmetric $baseline) | Should Match 'not a within-bound symmetric regression'
+    # A published entry whose numbers do not match the symmetric arrays.
+    $regressed = @([pscustomobject]@{ metric_id = 'mode_a_vega_rel'; value = 2.01 })
+    $wrongPct = @([pscustomobject]@{ metric_id = 'mode_a_vega_rel'; candidate = 2.01; baseline = 2.0; pct_of_baseline = 0.5 })
+    (Test-OracleAcceptedRegressions $wrongPct $regressed $baseline) | Should Match 'pct_of_baseline'
+    (Test-OracleAcceptedRegressions @() $regressed $baseline) | Should Match 'absent from accepted_regressions'
   }
 
   It 'publishes both floor arrays and gates only on the symmetric one' {

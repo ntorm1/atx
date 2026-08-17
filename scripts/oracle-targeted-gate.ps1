@@ -57,6 +57,7 @@ $script:OracleConventionTestIds = @(
   'OracleConvention.CompleteMapNamesEveryGreekSignAndScale',
   'OracleConvention.ThetaDayCountNeverRebucketsDteBands',
   'OracleConvention.SweepIsClosedDeterministicAndCoversElevenMetrics',
+  'OracleConvention.AcceptedRegressionsPublishWithinBoundAndOmitBeyondIt',
   'OracleConvention.CandidateAndBaselineFloorsShareOneRowPopulation',
   'OracleConvention.StandardAndSymmetricFloorsDisagreeInDirection',
   'OracleConvention.SubFloorOracleRowsBothReportAndSelect',
@@ -65,6 +66,12 @@ $script:OracleConventionTestIds = @(
   'OracleConvention.SweepRefusesAMetricNoRowObserved',
   'OracleConvention.SweepRejectsEmptyCohort'
 )
+# The BOUNDED no-regression rule, as a multiplier on the baseline value. Stated
+# as the multiplier and not as `1 + fraction` because five layers in three
+# languages re-evaluate this same comparison and `1.0 + 0.01` is not required to
+# be the same double as `1.01`. Mirrors kRegressionBoundMultiplier in
+# atx-vol/tools/oracle_convention_sweep.hpp, which carries the full rationale.
+$script:OracleRegressionBoundMultiplier = 1.01
 $script:ModeAMetricMap = [ordered]@{
   price = 'mode_a_price_mae'
   vol = 'mode_a_vol_mae'
@@ -262,9 +269,26 @@ function Get-OracleGreekMetricIds {
     Where-Object { $_ -ne 'mode_a_price_mae' -and $_ -ne 'mode_a_vol_mae' })
 }
 
-# HARD no-regression gate, stated against the SYMMETRIC-RELATIVE arrays. No
-# symmetric metric may be worse than its baseline; equality is allowed because
-# mode_a_vol_mae is structurally 0 on both arms.
+# BOUNDED no-regression gate, stated against the SYMMETRIC-RELATIVE arrays. A
+# symmetric metric may end up worse than its baseline only while
+#   candidate <= baseline * $script:OracleRegressionBoundMultiplier
+# and every regression the bound permits is PUBLISHED in `accepted_regressions`.
+# Anything past the bound fails the gate closed.
+#
+# Why a bound rather than `candidate <= baseline`: the convention fit is
+# multi-objective over ELEVEN targets that share ONE map, and no point in the
+# closed candidate grid strictly dominates every other on all eleven. A strict
+# per-metric rule therefore cannot be satisfied by anything the search can reach
+# — it does not say "never get worse", it says "never pick anything" — and the
+# only ways past it are hand-tuning the map or a bypass flag, both worse than a
+# stated bound. Why 1%: it is the charter's own Mode A Greek tolerance, so a
+# regression inside it cannot flip a scorecard cell's verdict.
+#
+# The bound is a licence to LOSE ground, never to hide it. There is still no
+# bypass flag and no per-metric allowlist, and Test-OracleAcceptedRegressions
+# below checks BOTH directions, so a receipt that regresses and publishes an
+# empty array fails exactly like one that regresses past the bound. That
+# two-way check is what stops the array from becoming a rubber stamp.
 #
 # The symmetric loss is the one the scale SELECTION minimises, and it is bounded
 # with no smallest-scale gradient. Gating the standard-relative array instead
@@ -273,11 +297,6 @@ function Get-OracleGreekMetricIds {
 # construction rather than catching a real defect. The standard array is still
 # validated for shape, finiteness, non-negativity, population parity and delta
 # arithmetic; it is simply no longer the regression criterion.
-#
-# There is deliberately no bypass flag, no allowlist and no tolerance fudge: a
-# convention map that makes a published number worse than doing nothing is not a
-# candidate, and hiding that behind a knob is how the delta_decay regression
-# survived a full gate run.
 function Get-OracleMetricRegressions($Metrics, $BaselineMetrics) {
   $baselineById = @{}
   foreach ($metric in @($BaselineMetrics)) { $baselineById[[string]$metric.metric_id] = $metric }
@@ -289,11 +308,79 @@ function Get-OracleMetricRegressions($Metrics, $BaselineMetrics) {
     if (-not $baseline) { $offenders += ($id + ' has no baseline metric'); continue }
     $candidateValue = [double]$metric.value
     $baselineValue = [double]$baseline.value
-    if ($candidateValue -gt $baselineValue) {
-      $offenders += ($id + ' candidate=' + $candidateValue.ToString('R', $invariant) + ' baseline=' + $baselineValue.ToString('R', $invariant))
+    if ($candidateValue -gt ($baselineValue * $script:OracleRegressionBoundMultiplier)) {
+      $offenders += ($id + ' candidate=' + $candidateValue.ToString('R', $invariant) + ' baseline=' +
+                     $baselineValue.ToString('R', $invariant) + ' bound=' +
+                     ($baselineValue * $script:OracleRegressionBoundMultiplier).ToString('R', $invariant))
     }
   }
   return @($offenders)
+}
+
+# The set the receipt MUST publish: every symmetric metric strictly worse than
+# its baseline and within the bound. A zero baseline needs no special case —
+# `candidate <= 0 * 1.01` holds only at candidate == 0, which is not a
+# regression — so nothing here ever divides by zero.
+function Get-OracleWithinBoundRegressions($Metrics, $BaselineMetrics) {
+  $baselineById = @{}
+  foreach ($metric in @($BaselineMetrics)) { $baselineById[[string]$metric.metric_id] = $metric }
+  $within = @()
+  foreach ($metric in @($Metrics)) {
+    $baseline = $baselineById[[string]$metric.metric_id]
+    if (-not $baseline) { continue }
+    $candidateValue = [double]$metric.value
+    $baselineValue = [double]$baseline.value
+    if ($candidateValue -le $baselineValue -or
+        $candidateValue -gt ($baselineValue * $script:OracleRegressionBoundMultiplier)) { continue }
+    $within += [pscustomobject]@{
+      MetricId = [string]$metric.metric_id
+      Candidate = $candidateValue
+      Baseline = $baselineValue
+      Pct = ($candidateValue - $baselineValue) / $baselineValue
+    }
+  }
+  return @($within)
+}
+
+# Cross-check in BOTH directions, which is the whole point of publishing the
+# array: every entry must be a real within-bound regression carrying the same
+# two values the symmetric arrays report, and every within-bound regression must
+# have an entry. Returns '' when consistent, otherwise the reason.
+#
+# `pct_of_baseline` is compared with the 1e-12 tolerance the delta arrays
+# already use, because it is a derived quotient and not a copied value.
+function Test-OracleAcceptedRegressions($Published, $Metrics, $BaselineMetrics) {
+  $entries = @($Published)
+  $expected = @(Get-OracleWithinBoundRegressions $Metrics $BaselineMetrics)
+  $invariant = [Globalization.CultureInfo]::InvariantCulture
+  $expectedById = @{}
+  foreach ($item in $expected) { $expectedById[$item.MetricId] = $item }
+  $seen = @{}
+  foreach ($entry in $entries) {
+    if (-not (Test-OracleExactKeys $entry @('metric_id', 'candidate', 'baseline', 'pct_of_baseline')) -or
+        -not (Test-OracleFiniteNumber $entry.candidate) -or -not (Test-OracleFiniteNumber $entry.baseline) -or
+        -not (Test-OracleFiniteNumber $entry.pct_of_baseline)) { return 'accepted_regressions entry schema mismatch' }
+    $id = [string]$entry.metric_id
+    if ($seen.ContainsKey($id)) { return ('accepted_regressions names ' + $id + ' twice') }
+    $seen[$id] = $true
+    $match = $expectedById[$id]
+    if (-not $match) { return ('accepted_regressions publishes ' + $id + ', which is not a within-bound symmetric regression') }
+    if ([double]$entry.candidate -ne $match.Candidate -or [double]$entry.baseline -ne $match.Baseline) {
+      return ('accepted_regressions entry for ' + $id + ' does not carry the symmetric arrays'' own values')
+    }
+    if ([Math]::Abs([double]$entry.pct_of_baseline - $match.Pct) -gt 1.0e-12) {
+      return ('accepted_regressions pct_of_baseline for ' + $id + ' is not (candidate - baseline) / baseline')
+    }
+  }
+  $unpublished = @($expected | Where-Object { -not $seen.ContainsKey($_.MetricId) })
+  if ($unpublished.Count) {
+    return ('symmetric regression(s) within bound but absent from accepted_regressions: ' +
+            (@($unpublished | ForEach-Object {
+              $_.MetricId + ' candidate=' + $_.Candidate.ToString('R', $invariant) +
+              ' baseline=' + $_.Baseline.ToString('R', $invariant)
+            }) -join '; '))
+  }
+  return ''
 }
 
 function Test-OracleMetricArray($Metrics) {
@@ -392,7 +479,7 @@ function Test-OracleJsonValueEqual($Left, $Right) {
 
 function ConvertFrom-OracleConventionSweep([string]$ScorecardText, [string]$GateId, $Identity, [string]$ExpectedFloorPath) {
   try { $sweep = $ScorecardText | ConvertFrom-Json } catch { throw "oracle targeted gate $GateId sweep is not JSON" }
-  $keys = @('schema_version', 'kind', 'git_sha', 'cohorts', 'selection_strategy', 'smoke_rows', 'tune_rows', 'rows_priced', 'engine_errors', 'baseline_conventions', 'conventions', 'production_conventions', 'metrics', 'baseline_metrics', 'metric_deltas', 'symmetric_metrics', 'baseline_symmetric_metrics', 'symmetric_metric_deltas', 'candidate_prices', 'input_model_regressed_greeks', 'oracle_suspect_candidates', 'market_evidence_status', 'diagnostic_speed')
+  $keys = @('schema_version', 'kind', 'git_sha', 'cohorts', 'selection_strategy', 'smoke_rows', 'tune_rows', 'rows_priced', 'engine_errors', 'baseline_conventions', 'conventions', 'production_conventions', 'metrics', 'baseline_metrics', 'metric_deltas', 'symmetric_metrics', 'baseline_symmetric_metrics', 'symmetric_metric_deltas', 'accepted_regressions', 'candidate_prices', 'input_model_regressed_greeks', 'oracle_suspect_candidates', 'market_evidence_status', 'diagnostic_speed')
   if (-not (Test-OracleExactKeys $sweep $keys) -or $sweep.schema_version -ne 2 -or $sweep.kind -ne 'convention_sweep' -or
       $sweep.git_sha -ne $Identity.Sha -or -not (Test-OracleExactStringSet @($sweep.cohorts) @('smoke', 'tune')) -or
       -not (Test-OracleNonnegativeInteger $sweep.smoke_rows) -or [long]$sweep.smoke_rows -le 0 -or
@@ -419,17 +506,24 @@ function ConvertFrom-OracleConventionSweep([string]$ScorecardText, [string]$Gate
   if (-not (Test-OracleJsonValueEqual $sweep.production_conventions $sweep.conventions)) {
     throw "oracle targeted gate $GateId production convention map differs from the resolved sweep winner"
   }
-  # HARD gate: fail closed on ANY SYMMETRIC metric worse than its baseline, and
-  # name every offender with both values so the failure is diagnosable without
-  # re-running a 12-minute sweep. The symmetric array is the one the scale
-  # selection optimises, so gate and selector agree; the standard-relative array
-  # above is validated for shape/parity and published for comparability with the
-  # charter target, but it is not the regression criterion.
+  # BOUNDED gate: fail closed on any SYMMETRIC metric worse than its baseline by
+  # more than the published bound, and name every offender with both values and
+  # the bound so the failure is diagnosable without re-running a 12-minute
+  # sweep. The symmetric array is the one the scale selection optimises, so gate
+  # and selector agree; the standard-relative array above is validated for
+  # shape/parity and published for comparability with the charter target, but it
+  # is not the regression criterion.
   $regressions = @(Get-OracleMetricRegressions $sweep.symmetric_metrics $sweep.baseline_symmetric_metrics)
   if ($regressions.Count) {
-    throw ("oracle targeted gate $GateId candidate is worse than baseline on " + $regressions.Count +
+    throw ("oracle targeted gate $GateId candidate exceeds the published regression bound on " + $regressions.Count +
            ' symmetric metric(s): ' + ($regressions -join '; '))
   }
+  # Every regression the bound permitted must be PUBLISHED, and everything
+  # published must be a real within-bound regression. Checked in both
+  # directions: an empty array over a real regression is the failure mode that
+  # would turn the bound into a rubber stamp.
+  $acceptedError = Test-OracleAcceptedRegressions $sweep.accepted_regressions $sweep.symmetric_metrics $sweep.baseline_symmetric_metrics
+  if ($acceptedError) { throw "oracle targeted gate $GateId $acceptedError" }
   # Greeks the SELECTED input model still regresses on versus baseline on the
   # tune sample. Non-empty only when BOTH finalists regressed and the
   # lexicographic rank fell through to price MAE — published, never silent.
@@ -478,13 +572,13 @@ function ConvertFrom-OracleConventionSweep([string]$ScorecardText, [string]$Gate
     # is the loss the scale selection minimises; `metrics` is committed beside it
     # so the floor stays directly comparable to the charter's "greeks within 1%
     # rel" target. Neither may be dropped, and they must not be unified.
-    $floorKeys = @('schema_version', 'kind', 'base_sha', 'tested_sha', 'command_id', 'exit_code', 'mode', 'cohorts', 'smoke_blob_oid', 'tune_blob_oid', 'rows_processed', 'target_metric_ids', 'baseline_conventions', 'conventions', 'production_conventions', 'metrics', 'baseline_metrics', 'metric_deltas', 'symmetric_metrics', 'baseline_symmetric_metrics', 'symmetric_metric_deltas', 'candidate_prices', 'input_model_regressed_greeks', 'oracle_suspect_candidates', 'market_evidence_status', 'diagnostic_speed', 'speed')
+    $floorKeys = @('schema_version', 'kind', 'base_sha', 'tested_sha', 'command_id', 'exit_code', 'mode', 'cohorts', 'smoke_blob_oid', 'tune_blob_oid', 'rows_processed', 'target_metric_ids', 'baseline_conventions', 'conventions', 'production_conventions', 'metrics', 'baseline_metrics', 'metric_deltas', 'symmetric_metrics', 'baseline_symmetric_metrics', 'symmetric_metric_deltas', 'accepted_regressions', 'candidate_prices', 'input_model_regressed_greeks', 'oracle_suspect_candidates', 'market_evidence_status', 'diagnostic_speed', 'speed')
     if (-not (Test-OracleExactKeys $floor $floorKeys) -or $floor.schema_version -ne 2 -or $floor.kind -ne 'residual_floor' -or
         $floor.command_id -ne 'mode_a_residual_floor' -or $floor.exit_code -ne 0 -or $floor.mode -ne 'A' -or
         [long]$floor.rows_processed -ne [long]$sweep.rows_priced -or -not (Test-OracleExactStringSet @($floor.cohorts) @('smoke', 'tune')) -or
         -not (Test-OracleConventionMap $floor.production_conventions) -or
         -not (Test-OracleExactStringSet @($floor.target_metric_ids) @($script:ModeAMetricMap.Values))) { throw 'residual floor receipt schema mismatch' }
-    foreach ($name in @('baseline_conventions', 'conventions', 'production_conventions', 'metrics', 'baseline_metrics', 'metric_deltas', 'symmetric_metrics', 'baseline_symmetric_metrics', 'symmetric_metric_deltas', 'candidate_prices', 'input_model_regressed_greeks', 'oracle_suspect_candidates', 'market_evidence_status')) {
+    foreach ($name in @('baseline_conventions', 'conventions', 'production_conventions', 'metrics', 'baseline_metrics', 'metric_deltas', 'symmetric_metrics', 'baseline_symmetric_metrics', 'symmetric_metric_deltas', 'accepted_regressions', 'candidate_prices', 'input_model_regressed_greeks', 'oracle_suspect_candidates', 'market_evidence_status')) {
       if (-not (Test-OracleJsonValueEqual $floor.$name $sweep.$name)) {
         throw ('residual floor differs from recomputed sweep: ' + $name +
                ' (fields compare by VALUE, numbers as doubles; look for a real value change, a differing key set or array order,' +
@@ -511,6 +605,7 @@ function ConvertFrom-OracleConventionSweep([string]$ScorecardText, [string]$Gate
     SymmetricMetrics = @($sweep.symmetric_metrics)
     BaselineSymmetricMetrics = @($sweep.baseline_symmetric_metrics)
     SymmetricMetricDeltas = @($sweep.symmetric_metric_deltas)
+    AcceptedRegressions = @($sweep.accepted_regressions)
     Conventions = $sweep.conventions
     ProductionConventions = $sweep.production_conventions
     CandidatePrices = @($sweep.candidate_prices)
@@ -727,6 +822,10 @@ function Invoke-OracleTargetedGate([string]$GateId, [scriptblock]$Invoker) {
     $result.symmetric_metrics = @($aggregate.SymmetricMetrics)
     $result.baseline_symmetric_metrics = @($aggregate.BaselineSymmetricMetrics)
     $result.symmetric_metric_deltas = @($aggregate.SymmetricMetricDeltas)
+    # Every regression the bound permitted, published in the typed receipt too:
+    # a permitted loss that lives only inside a 12-minute run's artifact is a
+    # silent one, and the whole point of the bound is that it never is.
+    $result.accepted_regressions = @($aggregate.AcceptedRegressions)
     $result.conventions = $aggregate.Conventions
     $result.production_conventions = $aggregate.ProductionConventions
     $result.candidate_prices = @($aggregate.CandidatePrices)

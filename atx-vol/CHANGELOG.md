@@ -24,8 +24,8 @@ a caller already depends on:
   a search candidate note: it is the production map. There is no single scalar
   factor — the shift is `-ddiv*exp(-rate*T)` in spot, and each output moves by
   its own sensitivity to that shift. Rows with `ddiv == 0` are unchanged.
-- `theta_scale` `1/365` -> `1/365.25` (`ACT_365F` -> `ACT_365_25`). Every `th` is
-  now `365/365.25 = 0.99931554x` its previous value.
+- `theta_scale` `1/365` -> `1/252` (`ACT_365F` -> `BUS_252`). Every `th` is now
+  `365/252 = 1.44841270x` its previous value.
 - `volga_scale` `1e-2` -> `1e-4` (`per_point` -> `per_point_squared`). Every `vo`
   is now `0.01x` — one hundredth of — its previous value.
 - `delta_decay_scale` `1/365` -> `1/252` (`ACT_365F` -> `BUS_252`). Every
@@ -38,10 +38,22 @@ and every sign are likewise unchanged.
 
 Migration: nothing else in the tree reads these units, and no committed residual
 floor described the old ones, so there is no stored number to restate. A caller
-holding its own comparison constants must multiply `th` by 0.99931554, `vo` by
+holding its own comparison constants must multiply `th` by 1.44841270, `vo` by
 0.01 and `deDecay` by 1.44841270, and must RE-DERIVE rather than rescale
 anything computed from a `ddiv != 0` row, because the input model changed the
 priced spot itself.
+
+Theta moved a SECOND time inside this same unreleased entry, and a caller who
+already migrated against the first number must apply the difference. This entry
+previously pinned production theta at `ACT_365_25` (`1/365.25`); the resolved
+Stage 3 winner is `BUS_252` (`1/252`), and production is now pinned to it. Every
+`th` a caller reads therefore changes by a further factor of
+`365.25/252 = 1.44940476` relative to what this entry described before. A caller
+starting from the `f619d3b4` `ACT_365F` (`1/365`) units applies the single
+`365/252 = 1.44841270` above instead; the two are alternatives, never composed.
+Nothing else in the map moved with it — `theta_basis` stays `per_day`,
+`theta_sign` stays `positive`, and the scorecard's separate
+`dte_banding_day_count` stays `ACT_365F`, so no DTE band re-buckets.
 
 Nothing asserts that pin on trust; the gate re-derives it.
 `convention_sweep_json` re-emits the production map as `production_conventions`
