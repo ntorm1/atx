@@ -1106,6 +1106,68 @@ namespace {
 // violating the format's "round-trips with IDENTICAL theo values" contract
 // (SE-P1-2). scheme_from_opts honors n_quad_price>=8 on the live pricing path, so
 // the bit-identity check below is non-vacuous.
+// THE VRP LIQUIDITY FIELD'S FOUNDATION. `SliceContext::n_used` is the quoted-
+// strike count that survived board fitting, and the VRP panel's
+// `liq_strikes_fit` column is its per-surface sum. That column is only free
+// because ATXVSA2 already persists the counts (`col_nused_off` /
+// `col_ndropped_off`) — so the persistence needs a test of its own, and it had
+// none: `n_used` appeared nowhere in this file before.
+//
+// PER-SLICE DISTINCT counts on purpose. Every other fixture here stamps the
+// same n_used on every slice, which cannot distinguish "the column round-trips"
+// from "the reader broadcast slice 0 across the surface" — and a broadcast bug
+// would leave the summed panel column wrong by a factor of n_slices while every
+// existing test stayed green.
+TEST(SurfaceArchiveV2, RoundTripsPerSliceQuotedStrikeCounts) {
+  constexpr int kN = 5;
+  CurveSurface cs;
+  std::vector<SliceContext> ctx;
+  for (int i = 0; i < kN; ++i) {
+    const double T = 0.05 + 0.10 * static_cast<double>(i);
+    EssviParams e{};
+    e.theta = 0.04 + 0.005 * static_cast<double>(i);
+    e.phi = 1.5 - 0.05 * static_cast<double>(i);
+    e.rho = -0.4 + 0.02 * static_cast<double>(i);
+    e.psi = 0.5;
+    e.p = 0.5;
+    e.lambda = 0.5;
+    e.T = T;
+    e.F = kS;
+    e.expiry_id = static_cast<std::uint16_t>(i);
+    cs.push(std::make_unique<EssviCurve>(e, std::exp(-kR * T)));
+    // Distinct, non-monotone-in-neither-field, and n_used != n_dropped so the
+    // two columns cannot be swapped without failing.
+    ctx.push_back(SliceContext{T, kS, 0.0, 0.02, static_cast<std::size_t>(31 + 17 * i),
+                               static_cast<std::size_t>(9 - i)});
+  }
+  auto made = PricedSurface::create(std::move(cs), std::move(ctx), make_pricing(4242));
+  ASSERT_TRUE(made.has_value());
+  const PricedSurface orig = std::move(*made);
+
+  auto arch = SurfaceArchiveV2::open(build_v2(orig, "liq"));
+  ASSERT_TRUE(arch.has_value()) << arch.error().to_string();
+  auto rec = arch->reconstruct_symbol("liq");
+  ASSERT_TRUE(rec.has_value()) << rec.error().to_string();
+
+  const std::span<const SliceContext> got = rec->context();
+  ASSERT_EQ(got.size(), static_cast<std::size_t>(kN));
+  double sum_used = 0.0;
+  for (int i = 0; i < kN; ++i) {
+    EXPECT_EQ(got[static_cast<std::size_t>(i)].n_used, static_cast<std::size_t>(31 + 17 * i))
+        << "n_used drifted on slice " << i;
+    EXPECT_EQ(got[static_cast<std::size_t>(i)].n_dropped, static_cast<std::size_t>(9 - i))
+        << "n_dropped drifted on slice " << i;
+    sum_used += static_cast<double>(31 + 17 * i);
+  }
+  // The exact quantity the panel emits: 31+48+65+82+99.
+  EXPECT_EQ(sum_used, 325.0);
+  double round_tripped = 0.0;
+  for (const SliceContext &sc : got) {
+    round_tripped += static_cast<double>(sc.n_used);
+  }
+  EXPECT_EQ(round_tripped, sum_used);
+}
+
 TEST(SurfaceArchiveV2, RoundTripsNQuadPrice) {
   AlOpts al;
   al.n_collocation = 12;

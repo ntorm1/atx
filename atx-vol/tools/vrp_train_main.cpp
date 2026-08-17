@@ -32,6 +32,11 @@ void print_usage() {
             "                         [--feature-lag <n>]        (default 0; <= 21)\n"
             "                         [--short-vega-haircut <f>] (default 0.50; in [0,1])\n"
             "                         [--cost-crossing-fraction <f>] (default 0.55; (0,1])\n"
+            "                         [--cost-mode premium-fraction|flat-tier]\n"
+            "                         [--cost-liquid-vol-pts <f>]   (default 0.10)\n"
+            "                         [--cost-illiquid-vol-pts <f>] (default 0.25)\n"
+            "                         [--liquidity <tsv>]        (required by flat-tier)\n"
+            "                         [--liquidity-threshold-vol-pts <f>] (default 1.593)\n"
             "                         [--eiv-target-entry-lag <n>] (default 0; <= 21)\n"
             "                         [--index-symbol <sym>]     (default: none)\n"
             "                         [--index-cost-scale <f>]   (default 1.0; (0, 4])\n"
@@ -72,6 +77,23 @@ void print_usage() {
             "which a stale same-session quote can manufacture IC. 0 reproduces the\n"
             "round-1..3 behaviour. Rows without an N-th predecessor get NaN features\n"
             "and are counted in feature_lag_rows_unavailable.\n"
+            "\n"
+            "--cost-mode flat-tier replaces the premium-fraction charge with a FLAT\n"
+            "vol-point charge per liquidity tier. This is an OPERATOR EXECUTION\n"
+            "ASSUMPTION, not a calibration: --cost-liquid-vol-pts (0.10) one-way on\n"
+            "names whose MEASURED ATM half-spread is at or below\n"
+            "--liquidity-threshold-vol-pts, --cost-illiquid-vol-pts (0.25) above it.\n"
+            "Both are ONE-WAY; every book charges the round trip at 2x. It REQUIRES\n"
+            "--liquidity (measured per-symbol widths from\n"
+            "scripts/vrp_hive_liquidity.py) because without one every name would\n"
+            "classify liquid and pay the cheap tier; a name with no measurement\n"
+            "classifies ILLIQUID, since an unmeasured market is not a cheap one.\n"
+            "MEASURED CONTEXT, stated once: on this corpus's own opra-hive snapshot\n"
+            "the ATM one-way QUOTED half-spread is 0.110 vol points for SPY, 1.593\n"
+            "median across SP100 single names and 3.526 median across all 614, so\n"
+            "0.10/0.25 is roughly an order of magnitude inside the quoted market for\n"
+            "every single name. premium-fraction (the default) is byte-identical to\n"
+            "rounds 5-7.\n"
             "\n"
             "--cost-crossing-fraction is the fraction of the DERIVED QUOTED option\n"
             "spread the vega book crosses. The measured input is an EFFECTIVE spread\n"
@@ -323,6 +345,23 @@ int main(int argc, char **argv) {
         std::fprintf(stderr, "error: --short-vega-haircut must be in [0, 1]\n");
         return 2;
       }
+    } else if (arg == "--cost-mode") {
+      if (value == "premium-fraction") {
+        cfg.cost_mode = atx::vol::vrp::VrpCostMode::PremiumFraction;
+      } else if (value == "flat-tier") {
+        cfg.cost_mode = atx::vol::vrp::VrpCostMode::FlatVolPointsByClass;
+      } else {
+        std::fprintf(stderr, "error: --cost-mode must be 'premium-fraction' or 'flat-tier'\n");
+        return 2;
+      }
+    } else if (arg == "--cost-liquid-vol-pts") {
+      ok = parse_number(value, cfg.cost_liquid_vol_pts);
+    } else if (arg == "--cost-illiquid-vol-pts") {
+      ok = parse_number(value, cfg.cost_illiquid_vol_pts);
+    } else if (arg == "--liquidity") {
+      cfg.liquidity = value;
+    } else if (arg == "--liquidity-threshold-vol-pts") {
+      ok = parse_number(value, cfg.liquidity_threshold_vol_pts);
     } else if (arg == "--cost-crossing-fraction") {
       ok = parse_number(value, cfg.cost_crossing_fraction);
       // Fail closed at the boundary: 0 is not "costs off", it is a free lunch.

@@ -173,9 +173,12 @@ struct BevFactoryArgs {
   std::fprintf(stderr,
                "usage: bev_label_factory --vrp-panel --db ROOT [--db ROOT2 ...] --out FILE\n"
                "    [--uid SYMBOL ...] [--entry-start DATE] [--entry-end DATE]\n"
-               "    [--panel-schema v1|v2]  default v2; v1 is the frozen 18-column\n"
-               "                            contract and refuses --splits\n"
-               "    [--splits FILE]         v2 only: symbol/ex_date/price_factor TSV\n");
+               "    [--panel-schema v1|v2|v3] default v2; v1 is the frozen 18-column\n"
+               "                            contract and refuses --splits; v3 appends\n"
+               "                            liq_hspread_frac + liq_strikes_fit\n"
+               "    [--splits FILE]         v2 only: symbol/ex_date/price_factor TSV\n"
+               "    [--liquidity FILE]      v3 only: measured liquidity reference TSV\n"
+               "                            (scripts/vrp_hive_liquidity.py output)\n");
 }
 
 // argv -> VrpPanelConfig. Outside the NO_MAIN guard for the same reason
@@ -204,13 +207,17 @@ bool parse_vrp_panel_args(int argc, char **argv, VrpPanelConfig &cfg) {
       cfg.out = v;
     } else if (flag == "--splits" && next(v)) {
       cfg.splits = v;
+    } else if (flag == "--liquidity" && next(v)) {
+      cfg.liquidity = v;
     } else if (flag == "--panel-schema" && next(v)) {
       if (v == "v1") {
         cfg.schema = VrpPanelSchema::V1;
       } else if (v == "v2") {
         cfg.schema = VrpPanelSchema::V2;
+      } else if (v == "v3") {
+        cfg.schema = VrpPanelSchema::V3;
       } else {
-        std::fprintf(stderr, "--panel-schema must be 'v1' or 'v2' (got '%s')\n", v.c_str());
+        std::fprintf(stderr, "--panel-schema must be 'v1', 'v2' or 'v3' (got '%s')\n", v.c_str());
         return false;
       }
     } else {
@@ -231,6 +238,10 @@ bool parse_vrp_panel_args(int argc, char **argv, VrpPanelConfig &cfg) {
   // with a usage message rather than after opening every root.
   if (cfg.schema == VrpPanelSchema::V1 && !cfg.splits.empty()) {
     std::fprintf(stderr, "--splits requires --panel-schema v2\n");
+    return false;
+  }
+  if (cfg.schema != VrpPanelSchema::V3 && !cfg.liquidity.empty()) {
+    std::fprintf(stderr, "--liquidity requires --panel-schema v3\n");
     return false;
   }
   return true;

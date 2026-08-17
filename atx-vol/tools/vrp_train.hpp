@@ -2018,6 +2018,260 @@ inline constexpr double kVrpDefaultShortVegaHaircut = 0.50;
   return vrp_vega_cost_one_way(iv, kVrpDefaultCrossingFraction);
 }
 
+// ── ROUND 7: THE TWO-TIER FLAT VOL-POINT CHARGE ────────────────────────────
+//
+// Everything above charges every name the same FRACTION OF PREMIUM, which in
+// vol points means the charge SCALES WITH THE NAME'S OWN IV. That parameterisation
+// is retained and is still the default.
+//
+// The alternative below is an OPERATOR EXECUTION ASSUMPTION, not a calibration,
+// and is labelled as one so no reader mistakes it for a measurement: a flat
+// 0.10 vol points to cross a LIQUID name and 0.25 to cross an ILLIQUID one,
+// independent of the name's IV. It is the user's assumption about what their own
+// execution achieves; this code implements it faithfully and does not argue with
+// it. Two properties of it are worth stating once, because they are the reasons
+// it cannot be reached by bending `--cost-crossing-fraction`:
+//
+//   * IT IS NOT IV-SCALED. The premium-fraction charge at sigma = 30% is 0.96
+//     vol points one-way; matching 0.10 through the crossing knob would need
+//     f_cross ~ 0.057, an order of magnitude below Muravyev-Pearson's 0.38
+//     patient-algo bound, AND would still leave the charge proportional to IV.
+//     A flat charge is a structurally different model, so it gets its own mode.
+//   * IT SITS BELOW EVERY PUBLISHED MEASUREMENT. For context only, not as an
+//     objection: Christoffersen-Goyenko-Jacobs-Karoui (RFS 2018, Table OA3 /
+//     §4.5) put ATM-call EFFECTIVE relative spreads at 1.77% (most-liquid
+//     quintile) to 11.44% (least), i.e. ~0.53 to ~3.43 vol points one-way at
+//     sigma = 30%; their quoted-spread quintile ladder runs 3.20% to 12.62%,
+//     a Q5/Q1 ratio of 3.94x. Measured on THIS corpus's own opra-hive snapshot,
+//     the ATM quoted one-way relative half-spread runs 0.68% (SPY) to 60.3%
+//     (AVT), SP100 median 5.10%, 614-name median 8.55%. The user's 0.10/0.25
+//     is roughly 5-10x tighter than the tightest of those and its 2.5x tier
+//     ratio is well inside the literature's 3.4-4x. State the gap, then honour
+//     the assumption.
+//
+// ONE-WAY, like everything else in this block. The books charge `2.0 *
+// vrp_vega_cost_one_way(...)` for the round trip, so 0.10 liquid becomes 0.20
+// per entry-and-exit cycle. If the intent was 0.10 ROUND TRIP, halve the knobs.
+enum class VrpCostMode : std::uint8_t {
+  PremiumFraction = 0,   // the round-5/6 charge: frac-of-premium x sigma
+  FlatVolPointsByClass = 1, // the operator assumption: flat vol points per tier
+};
+
+inline constexpr double kVrpFlatCostLiquidVolPts = 0.10;
+inline constexpr double kVrpFlatCostIlliquidVolPts = 0.25;
+
+// The cost parameterisation, threaded where a bare `crossing` fraction used to
+// be.
+//
+// THE CONVERTING CONSTRUCTOR IS DELIBERATE AND IS THE POINT. Every existing call
+// site passes a bare double, and an implicit conversion means each one keeps
+// compiling AND keeps meaning exactly what it meant -- the compiler, not a
+// reviewer, is what guarantees the default path is byte-identical. A `explicit`
+// constructor here would have forced ~10 hand edits on the very code paths whose
+// unchanged-ness is the deliverable. Deviation from the "no implicit conversions"
+// default is recorded here rather than taken silently.
+struct VrpCostSpec {
+  // NOLINTNEXTLINE(google-explicit-constructor) -- see the paragraph above.
+  constexpr VrpCostSpec(double crossing_frac = kVrpDefaultCrossingFraction) noexcept
+      : crossing(crossing_frac) {}
+
+  double crossing{kVrpDefaultCrossingFraction};
+  VrpCostMode mode{VrpCostMode::PremiumFraction};
+  double liquid_vol_pts{kVrpFlatCostLiquidVolPts};
+  double illiquid_vol_pts{kVrpFlatCostIlliquidVolPts};
+  // Per-SYMBOL-INDEX classification, parallel to the pooled rows' `sym` column:
+  // non-zero = illiquid. A symbol index past the end, or an empty span, reads as
+  // LIQUID -- the tighter charge -- which is the flattering default, so callers
+  // must supply a full classification and the runner counts what it classified.
+  std::span<const std::uint8_t> illiquid{};
+};
+
+// One-way cost of one unit of vega on a name marked at `iv`, under `cost`.
+// `sym_idx` selects the liquidity tier and is IGNORED in PremiumFraction mode.
+//
+// NaN-hostile in BOTH modes on the same principle: a leg with no usable mark is
+// not a leg that trades free. The flat mode still requires a finite positive
+// `iv` even though it does not use its magnitude, so a row that is unpriceable
+// under one mode is unpriceable under the other and the two modes select the
+// same rows -- otherwise a cost change would silently change the UNIVERSE too,
+// and the level and selection effects could not be told apart.
+[[nodiscard]] inline double vrp_vega_cost_one_way(double iv, const VrpCostSpec &cost,
+                                                  std::size_t sym_idx) noexcept {
+  if (cost.mode == VrpCostMode::PremiumFraction) {
+    return vrp_vega_cost_one_way(iv, cost.crossing);
+  }
+  if (!std::isfinite(iv) || !(iv > 0.0)) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  if (!std::isfinite(cost.liquid_vol_pts) || cost.liquid_vol_pts < 0.0 ||
+      !std::isfinite(cost.illiquid_vol_pts) || cost.illiquid_vol_pts < 0.0) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  const bool illiq = sym_idx < cost.illiquid.size() && cost.illiquid[sym_idx] != 0u;
+  return illiq ? cost.illiquid_vol_pts : cost.liquid_vol_pts;
+}
+
+// The liquid/illiquid boundary, in the SAME UNIT the charge is stated in: a
+// name's MEASURED ATM one-way quoted half-spread expressed in vol points.
+//
+// WHY THIS AXIS AND NOT A VOLUME OR QUOTE-COUNT PROXY. Wei-Zheng (JBF 2010,
+// Table 1 Panel D) show the proportional option spread is nearly FLAT in
+// contract volume once return volatility is held fixed (0.057 -> 0.044 across
+// the whole volume range) while moving along the volatility axis at fixed
+// volume moves it 0.057 -> 0.243; Cao-Wei (JFM 2010, eq. 3.4) put the
+// conditional elasticity on ln(dollar option volume) at only -0.040 against
+// -0.428 on ln(option price). So a volume or strike-count proxy would mis-sort
+// high-vol names into the cheap tier. This code sidesteps the question by not
+// proxying at all: the width IS observed, per symbol-session, in the same
+// opra-hive snapshot the surfaces were fit from. And it is converted to VOL
+// POINTS rather than left as a fraction of premium precisely because the
+// relative spread is mechanically deflated for high-vol names -- the same
+// absolute width over a fatter premium -- which is that same mis-sort, in the
+// exact unit the charge is levied in.
+//
+// THE DEFAULT IS THE MEASURED SP100 MEDIAN (1.593 vol points; 102 names, 9
+// sessions 2025-08-11..2026-04-15). It splits the ALREADY-TRADED universe in
+// half rather than encoding an outside belief about what 'liquid' means. It is
+// deliberately NOT 0.10: measured on this corpus NO single-name equity option
+// quotes anywhere near 0.10 vol points one-way -- only SPY (0.110), QQQ (0.181)
+// and IWM (0.203) come close, and the tightest single name is NVDA at 0.450 --
+// so a 0.10 threshold would classify the whole universe illiquid and collapse
+// the two tiers into one.
+inline constexpr double kVrpDefaultLiquidityThresholdVolPts = 1.593;
+
+// Per-symbol MEASURED width in vol points, keyed by symbol. Parsed from the
+// reference TSV `atx-vol/scripts/vrp_hive_liquidity.py` emits: header located
+// by NAME (`underlying`, `atm_hspread_vol_pts`) rather than by position, one
+// row per (date, underlying), reduced to a per-symbol MEDIAN across the dates
+// present. The median rather than the mean because a single wide session (a
+// halt, an earnings gap) should not reclassify a name for the whole sample.
+//
+// `nan` cells are skipped, not rejected -- the generator emits one for a
+// session with no ATM pair quoted. A symbol with NO usable session at all is
+// simply absent from the map, and the caller decides what an unclassified name
+// costs (this trainer refuses to trade it, rather than defaulting it cheap).
+// Symbol -> measured ATM one-way half-spread in vol points.
+using VrpLiquidityWidths = std::map<std::string, double>;
+
+[[nodiscard]] inline Result<VrpLiquidityWidths>
+vrp_load_liquidity_vol_pts(const std::string &path) {
+  std::ifstream is{path, std::ios::binary};
+  if (!is) {
+    return Err(ErrorCode::IoError, "vrp_load_liquidity_vol_pts: cannot open '" + path + "'");
+  }
+  std::map<std::string, std::vector<double>> acc;
+  std::string line;
+  std::size_t sym_col = 0;
+  std::size_t vp_col = 0;
+  bool header_seen = false;
+  std::size_t line_no = 0;
+  // Bounded by the file's line count.
+  while (std::getline(is, line)) {
+    ++line_no;
+    if (!line.empty() && line.back() == '\r') {
+      line.pop_back();
+    }
+    if (line.empty() || line[0] == '#') {
+      continue;
+    }
+    std::vector<std::string> field;
+    {
+      std::size_t start = 0;
+      // Bounded by the line length.
+      while (true) {
+        const std::size_t tab = line.find('	', start);
+        field.push_back(line.substr(start, tab == std::string::npos ? tab : tab - start));
+        if (tab == std::string::npos) {
+          break;
+        }
+        start = tab + 1;
+      }
+    }
+    if (!header_seen) {
+      bool got_sym = false;
+      bool got_vp = false;
+      // Bounded by the header width.
+      for (std::size_t i = 0; i < field.size(); ++i) {
+        if (field[i] == "underlying") {
+          sym_col = i;
+          got_sym = true;
+        } else if (field[i] == "atm_hspread_vol_pts") {
+          vp_col = i;
+          got_vp = true;
+        }
+      }
+      if (!got_sym || !got_vp) {
+        return Err(ErrorCode::ParseError,
+                   "vrp_load_liquidity_vol_pts: '" + path +
+                       "' header needs both 'underlying' and 'atm_hspread_vol_pts'");
+      }
+      header_seen = true;
+      continue;
+    }
+    if (field.size() <= sym_col || field.size() <= vp_col || field[sym_col].empty()) {
+      return Err(ErrorCode::ParseError, "vrp_load_liquidity_vol_pts: '" + path + "' line " +
+                                            std::to_string(line_no) + ": short row");
+    }
+    const std::string &text = field[vp_col];
+    if (text.empty() || text == "nan" || text == "NaN") {
+      continue;
+    }
+    char *end = nullptr;
+    const double vp = std::strtod(text.c_str(), &end);
+    if (end != text.c_str() + text.size() || !std::isfinite(vp) || !(vp > 0.0)) {
+      return Err(ErrorCode::ParseError, "vrp_load_liquidity_vol_pts: '" + path + "' line " +
+                                            std::to_string(line_no) + ": atm_hspread_vol_pts '" +
+                                            text + "' is not a finite positive number");
+    }
+    acc[field[sym_col]].push_back(vp);
+  }
+  if (!header_seen) {
+    return Err(ErrorCode::ParseError,
+               "vrp_load_liquidity_vol_pts: '" + path + "' has no header line");
+  }
+  VrpLiquidityWidths out;
+  for (auto &[sym, v] : acc) {
+    std::sort(v.begin(), v.end());
+    const std::size_t m = v.size() / 2;
+    out[sym] = (v.size() % 2 == 1) ? v[m] : 0.5 * (v[m - 1] + v[m]);
+  }
+  return Ok(std::move(out));
+}
+
+// Sort a symbol table into the two tiers. Returns one byte per symbol INDEX
+// (1 = illiquid) plus the counts, so a caller can stamp what it classified
+// into the artifact instead of asserting it. A symbol absent from `widths` is
+// marked illiquid: an unmeasured market is not a cheap one.
+struct VrpLiquidityClasses {
+  std::vector<std::uint8_t> illiquid;
+  std::size_t n_liquid{0};
+  std::size_t n_illiquid{0};
+  std::size_t n_unmeasured{0};
+};
+
+[[nodiscard]] inline VrpLiquidityClasses
+vrp_classify_liquidity(std::span<const std::string> symbols,
+                       const VrpLiquidityWidths &widths, double threshold_vol_pts) {
+  VrpLiquidityClasses out;
+  out.illiquid.assign(symbols.size(), 1u);
+  // Bounded by the symbol count.
+  for (std::size_t i = 0; i < symbols.size(); ++i) {
+    const auto it = widths.find(symbols[i]);
+    if (it == widths.end()) {
+      ++out.n_unmeasured;
+      ++out.n_illiquid;
+      continue;
+    }
+    if (it->second <= threshold_vol_pts) {
+      out.illiquid[i] = 0u;
+      ++out.n_liquid;
+    } else {
+      ++out.n_illiquid;
+    }
+  }
+  return out;
+}
+
 // Per-date series of one long/short vega book, all per 1u GROSS vega except
 // the two leg series, which are per 1u of THEIR OWN vega so a leg can be read
 // on its own terms. One entry per date GROUP of `ts`, NaN where the date could
@@ -2122,7 +2376,8 @@ inline void fill_turnover(VrpVegaLegs &legs) {
 [[nodiscard]] inline VrpVegaLegs
 vrp_vega_book_per_date(std::span<const std::int64_t> ts, std::span<const double> score,
                        std::span<const double> target, std::span<const double> iv,
-                       std::span<const std::size_t> sym, double crossing, bool charge_costs) {
+                       std::span<const std::size_t> sym, const VrpCostSpec &cost,
+                          bool charge_costs) {
   VrpVegaLegs out;
   if (ts.size() != score.size() || ts.size() != target.size() || ts.size() != iv.size() ||
       ts.size() != sym.size()) {
@@ -2169,7 +2424,10 @@ vrp_vega_book_per_date(std::span<const std::int64_t> ts, std::span<const double>
     std::vector<std::size_t> bot_sym;
     for (std::size_t i = 0; i < rows.size(); ++i) {
       const std::size_t d = i * kVrpDecileCount / rows.size();
-      const double rt = charge_costs ? 2.0 * vrp_vega_cost_one_way(rows[i][2], crossing) : 0.0;
+      const double rt = charge_costs ? 2.0 * vrp_vega_cost_one_way(
+                                           rows[i][2], cost,
+                                           static_cast<std::size_t>(rows[i][3]))
+                                     : 0.0;
       if (d == 0) {
         bot_pnl += rows[i][1];
         bot_cost += rt;
@@ -2236,8 +2494,9 @@ struct VrpVegaFloor {
 
 [[nodiscard]] inline VrpVegaFloor vrp_vega_floor(std::span<const std::int64_t> ts,
                                                  std::span<const double> target,
-                                                 std::span<const double> iv, double crossing,
-                                                 bool charge_costs) {
+                                                 std::span<const double> iv,
+                                                 const VrpCostSpec &cost, bool charge_costs,
+                                                 std::span<const std::size_t> sym = {}) {
   VrpVegaFloor out;
   if (ts.size() != target.size() || ts.size() != iv.size()) {
     return out;
@@ -2250,13 +2509,18 @@ struct VrpVegaFloor {
       ++end;
     }
     double pnl = 0.0;
-    double cost = 0.0;
+    // NOT named `cost`: that would shadow the VrpCostSpec parameter, and because
+    // VrpCostSpec converts implicitly from double the shadowed call would still
+    // COMPILE while silently charging the accumulator as a crossing fraction.
+    double cost_sum = 0.0;
     std::size_t n = 0;
     for (std::size_t i = begin; i < end; ++i) {
-      const double rt = charge_costs ? 2.0 * vrp_vega_cost_one_way(iv[i], crossing) : 0.0;
+      const double rt =
+          charge_costs ? 2.0 * vrp_vega_cost_one_way(iv[i], cost, i < sym.size() ? sym[i] : 0u)
+                       : 0.0;
       if (std::isfinite(target[i]) && std::isfinite(rt)) {
         pnl += target[i];
-        cost += rt;
+        cost_sum += rt;
         ++n;
       }
     }
@@ -2267,7 +2531,7 @@ struct VrpVegaFloor {
       continue;
     }
     const double m = pnl / static_cast<double>(n);
-    const double c = cost / static_cast<double>(n);
+    const double c = cost_sum / static_cast<double>(n);
     out.per_date_long.push_back(m - c);
     out.per_date_short.push_back(-m - c);
   }
@@ -2400,7 +2664,7 @@ struct VrpVegaReport {
 vrp_vega_iv_neutral_per_date(std::span<const std::int64_t> ts, std::span<const double> score,
                              std::span<const double> target, std::span<const double> iv,
                              std::span<const double> iv_fair, std::span<const std::size_t> sym,
-                             double crossing, bool charge_costs) {
+                             const VrpCostSpec &cost, bool charge_costs) {
   VrpVegaLegs out;
   if (ts.size() != score.size() || ts.size() != target.size() || ts.size() != iv.size() ||
       ts.size() != iv_fair.size() || ts.size() != sym.size()) {
@@ -2468,8 +2732,10 @@ vrp_vega_iv_neutral_per_date(std::span<const std::int64_t> ts, std::span<const d
         bot += in_q[k][1];
         top += in_q[m - 1 - k][1];
         if (charge_costs) {
-          bot_c += 2.0 * vrp_vega_cost_one_way(in_q[k][2], crossing);
-          top_c += 2.0 * vrp_vega_cost_one_way(in_q[m - 1 - k][2], crossing);
+          bot_c += 2.0 * vrp_vega_cost_one_way(in_q[k][2], cost,
+                                             static_cast<std::size_t>(in_q[k][3]));
+          top_c += 2.0 * vrp_vega_cost_one_way(in_q[m - 1 - k][2], cost,
+                                             static_cast<std::size_t>(in_q[m - 1 - k][3]));
         }
         detail::add_weight(w, static_cast<std::size_t>(in_q[m - 1 - k][3]),
                            0.5 / static_cast<double>(side));
@@ -2511,14 +2777,14 @@ vrp_vega_report(std::string name, VrpScoreKind kind, std::span<const std::int64_
                 std::span<const double> score, std::span<const double> target,
                 std::span<const double> iv, std::span<const double> iv_fair,
                 std::span<const std::size_t> sym, const VrpVegaFloor &floor, double haircut,
-                double crossing) {
+                const VrpCostSpec &cost) {
   VrpVegaReport rep;
   rep.name = std::move(name);
   rep.kind = kind;
-  rep.decile = vrp_vega_agg(vrp_vega_book_per_date(ts, score, target, iv, sym, crossing, true),
+  rep.decile = vrp_vega_agg(vrp_vega_book_per_date(ts, score, target, iv, sym, cost, true),
                             floor, haircut);
   rep.iv_neutral = vrp_vega_agg(
-      vrp_vega_iv_neutral_per_date(ts, score, target, iv, iv_fair, sym, crossing, true), floor,
+      vrp_vega_iv_neutral_per_date(ts, score, target, iv, iv_fair, sym, cost, true), floor,
       haircut);
   return rep;
 }
@@ -3024,7 +3290,7 @@ struct VrpDispDate {
 vrp_disp_dates(std::span<const std::int64_t> ts, std::span<const double> score,
                std::span<const double> target, std::span<const double> target_raw,
                std::span<const double> iv, std::span<const std::size_t> sym,
-               std::size_t index_sym, double crossing, double index_cost_scale) {
+               std::size_t index_sym, const VrpCostSpec &cost, double index_cost_scale) {
   std::vector<VrpDispDate> out;
   if (ts.size() != score.size() || ts.size() != target.size() || ts.size() != iv.size() ||
       ts.size() != sym.size() || ts.size() != target_raw.size()) {
@@ -3042,7 +3308,7 @@ vrp_disp_dates(std::span<const std::int64_t> ts, std::span<const double> score,
     // undefined; the unhedged control on that date is still perfectly defined.
     for (std::size_t i = begin; i < end; ++i) {
       if (sym[i] == index_sym && std::isfinite(target[i]) && std::isfinite(iv[i])) {
-        const double c = 2.0 * vrp_vega_cost_one_way(iv[i], crossing);
+        const double c = 2.0 * vrp_vega_cost_one_way(iv[i], cost, sym[i]);
         if (std::isfinite(c)) {
           d.index_gross = target[i];
           d.index_cost = c * index_cost_scale;
@@ -3063,7 +3329,7 @@ vrp_disp_dates(std::span<const std::int64_t> ts, std::span<const double> score,
       if (sym[i] == index_sym) {
         continue;
       }
-      const double rt = 2.0 * vrp_vega_cost_one_way(iv[i], crossing);
+      const double rt = 2.0 * vrp_vega_cost_one_way(iv[i], cost, sym[i]);
       if (std::isfinite(target[i]) && std::isfinite(rt)) {
         all_pnl += target[i];
         all_cost += rt;
@@ -3100,7 +3366,8 @@ vrp_disp_dates(std::span<const std::int64_t> ts, std::span<const double> score,
     for (std::size_t i = 0; i < rows.size(); ++i) {
       if (i * kVrpDecileCount / rows.size() == kVrpDecileCount - 1) {
         top_pnl += rows[i][1];
-        top_cost += 2.0 * vrp_vega_cost_one_way(rows[i][2], crossing);
+        top_cost += 2.0 * vrp_vega_cost_one_way(rows[i][2], cost,
+                                                static_cast<std::size_t>(rows[i][3]));
         ++top_n;
         top_sym.push_back(static_cast<std::size_t>(rows[i][3]));
       }
@@ -3407,6 +3674,14 @@ struct VrpGateReport {
   // both stamped into the artifact because a cost figure whose crossing
   // fraction is not published is not a reproducible cost figure.
   double cost_crossing_fraction{kVrpDefaultCrossingFraction};
+  // ROUND-7 flat-tier provenance: what the run actually classified.
+  VrpCostMode cost_mode{VrpCostMode::PremiumFraction};
+  double cost_liquid_vol_pts{kVrpFlatCostLiquidVolPts};
+  double cost_illiquid_vol_pts{kVrpFlatCostIlliquidVolPts};
+  double liquidity_threshold_vol_pts{kVrpDefaultLiquidityThresholdVolPts};
+  std::size_t n_liquid_names{0};
+  std::size_t n_illiquid_names{0};
+  std::size_t n_unmeasured_names{0};
   std::size_t eiv_target_entry_lag{0};
   // ROUND 7: the dispersion block. EMPTY unless --index-symbol names a symbol
   // present in the panel, which is what keeps every round-6 artifact identical
@@ -3479,7 +3754,7 @@ inline constexpr std::array<VrpTargetAxis, 5> kVrpTargetAxes{
 [[nodiscard]] inline VrpGraded vrp_grade(const VrpGradeRows &rows,
                                          std::span<const VrpGradeColumn> cols,
                                          double short_vega_haircut = kVrpDefaultShortVegaHaircut,
-                                         double crossing = kVrpDefaultCrossingFraction) {
+                                         const VrpCostSpec &cost = VrpCostSpec{}) {
   VrpGraded out;
   const std::span<const std::int64_t> ts{rows.ts};
   const std::span<const std::size_t> sym{rows.symbol};
@@ -3491,7 +3766,8 @@ inline constexpr std::array<VrpTargetAxis, 5> kVrpTargetAxes{
   // The vega book is graded on iv_chg_roll -- the holdable axis -- because
   // iv_chg_raw's strongest free predictor is the term-structure roll itself.
   out.vega_floor = vrp_vega_floor(ts, std::span<const double>{rows.iv_chg_roll},
-                                  std::span<const double>{rows.iv_atmf}, crossing, true);
+                                  std::span<const double>{rows.iv_atmf}, cost, true,
+                                  std::span<const std::size_t>{rows.symbol});
   out.scores.reserve(cols.size() * kVrpTargetAxes.size());
   out.pnl.reserve(cols.size());
   out.vega.reserve(cols.size());
@@ -3524,7 +3800,7 @@ inline constexpr std::array<VrpTargetAxis, 5> kVrpTargetAxes{
     out.vega.push_back(vrp_vega_report(
         c.name, c.kind, ts, c.score, std::span<const double>{rows.iv_chg_roll},
         std::span<const double>{rows.iv_atmf}, std::span<const double>{rows.iv_fair}, sym,
-        out.vega_floor, short_vega_haircut, crossing));
+        out.vega_floor, short_vega_haircut, cost));
   }
   return out;
 }
@@ -3773,6 +4049,18 @@ struct VrpTrainConfig {
   // kVrpVegaEffectiveOneWayFracOfPremium for why applying the ORATS 0.53 to
   // an already-effective number would have been a free 47% cost cut.
   double cost_crossing_fraction{kVrpDefaultCrossingFraction};
+  // ROUND-7 (--cost-mode flat-tier): switch from the premium-fraction charge to
+  // the operator's flat two-tier vol-point assumption. `PremiumFraction` is the
+  // default and reproduces every round-5/6/7 artifact bit-for-bit.
+  VrpCostMode cost_mode{VrpCostMode::PremiumFraction};
+  double cost_liquid_vol_pts{kVrpFlatCostLiquidVolPts};
+  double cost_illiquid_vol_pts{kVrpFlatCostIlliquidVolPts};
+  // ROUND-7 (--liquidity / --liquidity-threshold-vol-pts): the MEASURED
+  // per-symbol ATM one-way half-spread in VOL POINTS, and the boundary that
+  // sorts it into the two tiers. Empty path = every name is classified LIQUID,
+  // which is the flattering reading, so `flat-tier` REFUSES to run without it.
+  std::string liquidity;
+  double liquidity_threshold_vol_pts{kVrpDefaultLiquidityThresholdVolPts};
   // ROUND-6 (--eiv-target-entry-lag): rebuild the iv-change TARGET with its
   // ENTRY leg read from the row's `n`-th same-symbol predecessor, exit leg
   // unmoved. 0 is the round-5 target. This is round 5's decisive
@@ -4758,6 +5046,22 @@ inline void append_disp_meta(std::string &body, const std::string &prefix,
   // Zhan-Han-Cao-Tong's realized effective/quoted, so a reader can re-cross it
   // at any fraction without double-counting the discount already inside the
   // Christoffersen measurement.
+  // ROUND-7 flat-tier provenance. The WHOLE block is conditional so a default
+  // premium-fraction run emits a BYTE-IDENTICAL vrp_metrics.tsv to round 7 --
+  // the absence of these lines IS the statement that the file was priced under
+  // the historical premium-fraction charge, and a strict regression anchor is
+  // worth more than a redundant line saying "default".
+  if (gate.cost_mode == VrpCostMode::FlatVolPointsByClass) {
+    body += "# vega_cost_mode=flat_tier\n";
+    body += "# vega_cost_liquid_vol_pts_one_way=" + fmt_double(gate.cost_liquid_vol_pts) + "\n";
+    body += "# vega_cost_illiquid_vol_pts_one_way=" + fmt_double(gate.cost_illiquid_vol_pts) +
+            "\n";
+    body += "# liquidity_threshold_vol_pts=" + fmt_double(gate.liquidity_threshold_vol_pts) +
+            "\n";
+    body += "# n_liquid_names=" + std::to_string(gate.n_liquid_names) + "\n";
+    body += "# n_illiquid_names=" + std::to_string(gate.n_illiquid_names) + "\n";
+    body += "# n_unmeasured_names=" + std::to_string(gate.n_unmeasured_names) + "\n";
+  }
   body += "# vega_cost_crossing_fraction=" + fmt_double(gate.cost_crossing_fraction) + "\n";
   body += "# vega_cost_crossing_fraction_default=" + fmt_double(kVrpDefaultCrossingFraction) +
           "\n";
@@ -4923,6 +5227,27 @@ inline void append_disp_meta(std::string &body, const std::string &prefix,
                "run_vrp_train: --cost-crossing-fraction must lie in (0, 1]; the published "
                "measurements bracket 0.38 (patient algo) to 1.00 (full quoted cross)");
   }
+  // A flat-tier run with no measurement would classify every name LIQUID and
+  // charge the whole book the cheap tier -- the most flattering outcome
+  // reachable by omission. Refuse rather than default.
+  if (cfg.cost_mode == VrpCostMode::FlatVolPointsByClass && cfg.liquidity.empty()) {
+    return Err(ErrorCode::InvalidArgument,
+               "run_vrp_train: --cost-mode flat-tier requires --liquidity (the measured "
+               "per-symbol vol-point widths); without it every name would be charged the "
+               "liquid tier");
+  }
+  if (!(cfg.cost_liquid_vol_pts >= 0.0) || !(cfg.cost_illiquid_vol_pts >= 0.0) ||
+      !std::isfinite(cfg.cost_liquid_vol_pts) || !std::isfinite(cfg.cost_illiquid_vol_pts) ||
+      !(cfg.cost_illiquid_vol_pts >= cfg.cost_liquid_vol_pts)) {
+    return Err(ErrorCode::InvalidArgument,
+               "run_vrp_train: the flat tier charges must be finite, non-negative and "
+               "ordered liquid <= illiquid");
+  }
+  if (!std::isfinite(cfg.liquidity_threshold_vol_pts) ||
+      !(cfg.liquidity_threshold_vol_pts > 0.0)) {
+    return Err(ErrorCode::InvalidArgument,
+               "run_vrp_train: --liquidity-threshold-vol-pts must be finite and > 0");
+  }
   if (cfg.eiv_target_entry_lag > kVrpMaxFeatureLag) {
     return Err(ErrorCode::InvalidArgument,
                "run_vrp_train: --eiv-target-entry-lag " +
@@ -4941,6 +5266,27 @@ inline void append_disp_meta(std::string &body, const std::string &prefix,
   // here, before the shift below can touch it. f2_log_rv21 = ln(rv_trail^2),
   // hence ln(rv_trail) = f2/2; NaN on warmup rows, which the finite-pair filter
   // then drops rather than imputing.
+  // ROUND-7: the cost parameterisation, resolved ONCE against this run's
+  // symbol table so every book, floor and dispersion leg charges the same
+  // thing. Under the default PremiumFraction mode `illiquid` stays empty and
+  // the spec is exactly the old bare crossing fraction.
+  VrpCostSpec cost_spec{cfg.cost_crossing_fraction};
+  cost_spec.mode = cfg.cost_mode;
+  cost_spec.liquid_vol_pts = cfg.cost_liquid_vol_pts;
+  cost_spec.illiquid_vol_pts = cfg.cost_illiquid_vol_pts;
+  VrpLiquidityClasses liq_classes;
+  if (!cfg.liquidity.empty()) {
+    // Spelled through the alias: ATX_TRY is a macro, and the comma inside
+    // `std::map<std::string, double>` would be read as a third argument.
+    ATX_TRY(const VrpLiquidityWidths widths, vrp_load_liquidity_vol_pts(cfg.liquidity));
+    liq_classes = vrp_classify_liquidity(std::span<const std::string>{report.panel.symbols},
+                                         widths, cfg.liquidity_threshold_vol_pts);
+    cost_spec.illiquid = std::span<const std::uint8_t>{liq_classes.illiquid};
+  }
+  report.gate.n_liquid_names = liq_classes.n_liquid;
+  report.gate.n_illiquid_names = liq_classes.n_illiquid;
+  report.gate.n_unmeasured_names = liq_classes.n_unmeasured;
+
   std::vector<double> log_rv_trail(report.panel.rows.size(),
                                    std::numeric_limits<double>::quiet_NaN());
   for (std::size_t r = 0; r < report.panel.rows.size(); ++r) {
@@ -4956,6 +5302,10 @@ inline void append_disp_meta(std::string &body, const std::string &prefix,
   report.gate.n_iv_chg_rows_roll_undefined = iv_chg.n_rows_roll_undefined;
   report.gate.short_vega_haircut = cfg.short_vega_haircut;
   report.gate.cost_crossing_fraction = cfg.cost_crossing_fraction;
+  report.gate.cost_mode = cfg.cost_mode;
+  report.gate.cost_liquid_vol_pts = cfg.cost_liquid_vol_pts;
+  report.gate.cost_illiquid_vol_pts = cfg.cost_illiquid_vol_pts;
+  report.gate.liquidity_threshold_vol_pts = cfg.liquidity_threshold_vol_pts;
   report.gate.eiv_target_entry_lag = cfg.eiv_target_entry_lag;
   // ROUND-4 F4: shift the feature vectors before ANYTHING reads them, so the
   // standardization, both models, signal_vov and the HV-IV benchmark all face
@@ -5449,7 +5799,7 @@ inline void append_disp_meta(std::string &body, const std::string &prefix,
       const std::array<VrpGradeColumn, kVrpGateColumnCount> cols =
           columns(fi, fi.pred_model, ranked);
       VrpGraded g = vrp_grade(fi.targets, std::span<const VrpGradeColumn>{cols},
-                              cfg.short_vega_haircut, cfg.cost_crossing_fraction);
+                              cfg.short_vega_haircut, cost_spec);
       report.gate.per_fold.push_back(VrpGateFold{.fold_id = fi.fold_id,
                                                  .scores = std::move(g.scores),
                                                  .pnl = std::move(g.pnl),
@@ -5590,7 +5940,7 @@ inline void append_disp_meta(std::string &body, const std::string &prefix,
             std::span<const double>{pooled_rows.iv_chg_raw},
             std::span<const double>{pooled_rows.iv_atmf},
             std::span<const std::size_t>{pooled_rows.symbol}, index_sym,
-            cfg.cost_crossing_fraction, cfg.index_cost_scale);
+            cost_spec, cfg.index_cost_scale);
         report.gate.dispersion.push_back(
             vrp_disp_report(std::string{cname}, dd, cfg.disp_beta_min_dates));
       }

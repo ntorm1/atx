@@ -3496,6 +3496,108 @@ TEST(VrpTrainCost, CrossingFractionIsReachableAndTheDefaultIsTheMeasuredEffectiv
       std::isnan(vrp::vrp_vega_cost_one_way(0.40, std::numeric_limits<double>::quiet_NaN())));
 }
 
+// ── ROUND 7: the flat two-tier vol-point cost ────────────────────────────
+
+// THE REGRESSION ANCHOR. A default-constructed VrpCostSpec, and one built by
+// implicit conversion from a bare crossing fraction, must both charge EXACTLY
+// what the two-argument premium-fraction overload charges -- bit for bit, not
+// approximately -- for every iv and every symbol index. This is what keeps the
+// round-5/6/7 artifacts reproducible while the mode exists.
+TEST(VrpTrainCost, DefaultCostSpecIsBitIdenticalToThePremiumFractionCharge) {
+  const vrp::VrpCostSpec def{};
+  EXPECT_EQ(def.mode, vrp::VrpCostMode::PremiumFraction);
+  EXPECT_EQ(def.crossing, vrp::kVrpDefaultCrossingFraction);
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  for (const double iv : {0.05, 0.10, 0.25, 0.40, 0.83, 1.75, 0.0, -0.2, nan}) {
+    for (const std::size_t sym : {std::size_t{0}, std::size_t{7}, std::size_t{9999}}) {
+      const double got = vrp::vrp_vega_cost_one_way(iv, def, sym);
+      const double want = vrp::vrp_vega_cost_one_way(iv, vrp::kVrpDefaultCrossingFraction);
+      if (std::isnan(want)) {
+        EXPECT_TRUE(std::isnan(got)) << "iv=" << iv;
+      } else {
+        EXPECT_EQ(got, want) << "iv=" << iv << " sym=" << sym;
+      }
+    }
+  }
+  // The implicit conversion is load-bearing: every pre-existing call site passes
+  // a bare double and must keep meaning the same thing.
+  const vrp::VrpCostSpec converted = 0.38;
+  EXPECT_EQ(converted.mode, vrp::VrpCostMode::PremiumFraction);
+  EXPECT_EQ(vrp::vrp_vega_cost_one_way(0.40, converted, 3),
+            vrp::vrp_vega_cost_one_way(0.40, 0.38));
+}
+
+// The flat tier charges the stated vol points, FLAT: independent of the name's
+// own IV, which is the whole structural difference from the premium-fraction
+// charge and the reason it cannot be reached through the crossing knob.
+TEST(VrpTrainCost, FlatTierChargesTheStatedVolPointsAndDoesNotScaleWithIv) {
+  const std::array<std::uint8_t, 4> cls{0u, 1u, 0u, 1u};
+  vrp::VrpCostSpec c;
+  c.mode = vrp::VrpCostMode::FlatVolPointsByClass;
+  c.illiquid = std::span<const std::uint8_t>{cls};
+  EXPECT_EQ(c.liquid_vol_pts, 0.10);
+  EXPECT_EQ(c.illiquid_vol_pts, 0.25);
+  for (const double iv : {0.08, 0.30, 0.95, 2.50}) {
+    EXPECT_EQ(vrp::vrp_vega_cost_one_way(iv, c, 0), 0.10) << "iv=" << iv;
+    EXPECT_EQ(vrp::vrp_vega_cost_one_way(iv, c, 2), 0.10) << "iv=" << iv;
+    EXPECT_EQ(vrp::vrp_vega_cost_one_way(iv, c, 1), 0.25) << "iv=" << iv;
+    EXPECT_EQ(vrp::vrp_vega_cost_one_way(iv, c, 3), 0.25) << "iv=" << iv;
+  }
+  // Monotone in liquidity: the illiquid tier is never cheaper than the liquid.
+  EXPECT_GE(vrp::vrp_vega_cost_one_way(0.30, c, 1), vrp::vrp_vega_cost_one_way(0.30, c, 0));
+  // The crossing fraction is INERT in this mode -- it scales a width this model
+  // does not have, so a caller cannot half-apply the two parameterisations.
+  vrp::VrpCostSpec c2 = c;
+  c2.crossing = 1.0;
+  EXPECT_EQ(vrp::vrp_vega_cost_one_way(0.30, c2, 0), vrp::vrp_vega_cost_one_way(0.30, c, 0));
+}
+
+// NaN-hostile in BOTH modes on the same rows. The flat charge does not USE the
+// iv magnitude but still REQUIRES a usable mark, so switching cost mode cannot
+// silently change which rows the book can trade -- otherwise the level effect
+// and the universe effect could not be told apart.
+TEST(VrpTrainCost, FlatTierRejectsTheSameUnpriceableRowsAsThePremiumCharge) {
+  const std::array<std::uint8_t, 2> cls{0u, 1u};
+  vrp::VrpCostSpec c;
+  c.mode = vrp::VrpCostMode::FlatVolPointsByClass;
+  c.illiquid = std::span<const std::uint8_t>{cls};
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  for (const double bad : {nan, 0.0, -0.3, -std::numeric_limits<double>::infinity()}) {
+    EXPECT_TRUE(std::isnan(vrp::vrp_vega_cost_one_way(bad, c, 0))) << bad;
+    EXPECT_TRUE(std::isnan(vrp::vrp_vega_cost_one_way(bad, vrp::kVrpDefaultCrossingFraction)))
+        << bad;
+  }
+  // Nonsense tier knobs never trade free either.
+  vrp::VrpCostSpec badc = c;
+  badc.liquid_vol_pts = -1.0;
+  EXPECT_TRUE(std::isnan(vrp::vrp_vega_cost_one_way(0.30, badc, 0)));
+  badc = c;
+  badc.illiquid_vol_pts = nan;
+  EXPECT_TRUE(std::isnan(vrp::vrp_vega_cost_one_way(0.30, badc, 1)));
+}
+
+// A symbol index past the end of the classification reads LIQUID, so an
+// UNDERSIZED span would silently discount the tail of the universe. The
+// classifier therefore marks anything it could not measure ILLIQUID, and this
+// pins that direction.
+TEST(VrpTrainCost, ClassifierMarksUnmeasuredNamesIlliquidAndSortsOnTheThreshold) {
+  const std::vector<std::string> syms{"AAA", "BBB", "CCC", "DDD"};
+  vrp::VrpLiquidityWidths w;
+  w["AAA"] = 0.40; // well inside
+  w["BBB"] = 1.593; // exactly ON the boundary -> liquid (inclusive)
+  w["CCC"] = 1.594; // a hair outside
+  // DDD deliberately absent: never measured.
+  const vrp::VrpLiquidityClasses cl = vrp::vrp_classify_liquidity(
+      std::span<const std::string>{syms}, w, vrp::kVrpDefaultLiquidityThresholdVolPts);
+  ASSERT_EQ(cl.illiquid.size(), 4u);
+  EXPECT_EQ(cl.illiquid[0], 0u);
+  EXPECT_EQ(cl.illiquid[1], 0u) << "the boundary itself must be inclusive";
+  EXPECT_EQ(cl.illiquid[2], 1u);
+  EXPECT_EQ(cl.illiquid[3], 1u) << "an unmeasured market is not a cheap one";
+  EXPECT_EQ(cl.n_liquid, 2u);
+  EXPECT_EQ(cl.n_illiquid, 2u);
+  EXPECT_EQ(cl.n_unmeasured, 1u);
+}
 // A book that cannot be held is not a strategy: turnover, names/day and the
 // drawdown path are hand-computed against a fixture whose membership is known.
 TEST(VrpTrainVega, VegaBookReportsTurnoverNamesPerDayAndMaxDrawdown) {
