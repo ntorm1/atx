@@ -2311,6 +2311,13 @@ struct VrpVegaAgg {
   VrpStatAgg turnover; // fraction of GROSS replaced per formation date, [0, 1]
   double max_drawdown{std::numeric_limits<double>::quiet_NaN()};
   double floor_max_drawdown{std::numeric_limits<double>::quiet_NaN()};
+  // Per-leg drawdown against the same-direction zero-selection alternative,
+  // because a long-only reading of this book is a different instrument from
+  // the paired one and must not borrow the pair's risk statistics.
+  double long_max_drawdown{std::numeric_limits<double>::quiet_NaN()};
+  double short_max_drawdown{std::numeric_limits<double>::quiet_NaN()};
+  double floor_long_max_drawdown{std::numeric_limits<double>::quiet_NaN()};
+  double floor_short_max_drawdown{std::numeric_limits<double>::quiet_NaN()};
 };
 
 namespace detail {
@@ -2366,6 +2373,12 @@ namespace detail {
   out.turnover = vrp_aggregate_series(std::span<const double>{legs.turnover}, kVrpOverlapLag);
   out.max_drawdown = detail::max_drawdown(std::span<const double>{legs.net});
   out.floor_max_drawdown = detail::max_drawdown(std::span<const double>{floor.per_date_best});
+  out.long_max_drawdown = detail::max_drawdown(std::span<const double>{legs.long_leg});
+  out.short_max_drawdown = detail::max_drawdown(std::span<const double>{legs.short_leg});
+  out.floor_long_max_drawdown =
+      detail::max_drawdown(std::span<const double>{floor.per_date_long});
+  out.floor_short_max_drawdown =
+      detail::max_drawdown(std::span<const double>{floor.per_date_short});
   return out;
 }
 
@@ -3970,6 +3983,10 @@ inline void append_vega_book_meta(std::string &body, const std::string &stem,
   agg("turnover_frac_of_gross", a.turnover);
   num("max_drawdown_vol_pts", a.max_drawdown);
   num("floor_max_drawdown_vol_pts", a.floor_max_drawdown);
+  num("long_leg_max_drawdown_vol_pts", a.long_max_drawdown);
+  num("short_leg_max_drawdown_vol_pts", a.short_max_drawdown);
+  num("floor_long_everything_max_drawdown_vol_pts", a.floor_long_max_drawdown);
+  num("floor_short_everything_max_drawdown_vol_pts", a.floor_short_max_drawdown);
   body += stem + "n_dates=" + std::to_string(a.net.n) + "\n";
 }
 

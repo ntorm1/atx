@@ -1,36 +1,9 @@
-feat(vol): reachable crossing fraction, book implementability stats, EIV guards
+feat(vol): per-leg drawdowns on the vega book
 
-Round 6, part 1. audit-cost-model.md defect #2: the ORATS
-crossing_fraction_complex = 0.53 at api/backtest/backtest.hpp was
-unreachable because vol_edge_frictions hardwires SpreadKind::VolTicks,
-whose half-spread carries no crossing factor. Fixed at the wiring rather
-than by switching to QuoteSide (which needs per-fill recorded quotes this
-book does not have) -- a constant reachable only from a path nothing
-selects is how it came to be dead.
-
-The reconciliation matters more than the flag, and it does not flatter
-the strategy:
-
-  * Christoffersen et al. (RFS 2018) 6.41% ATM relative spread is an
-    EFFECTIVE measure -- the crossing discount is already inside it, so
-    multiplying it by 0.53 would count the discount twice. The vega
-    book therefore charges the SAME number at the new default and the
-    test pins that bit-exactly.
-  * The engine width (cost_half_spread_vol_pts) had no measurement
-    behind it and was crossed at 1.00. It is now documented as a QUOTED
-    width; 0.5 vol points was already ~1.9x too cheap as an EFFECTIVE
-    charge. Applying 0.53 to 0.5 is the flattering half of the
-    correction and both doc blocks say so.
-
-Also: the vega book now reports names/day, turnover on signed per-1u-
-gross weights, and the max drawdown of its own cumulative curve beside
-the floor''s; --eiv-target-entry-lag rebuilds the iv-change target with
-its entry leg N sessions earlier (round 5''s decisive EIV swap, made
-runnable); and bench_term_slope is read from the LAGGED f4_term_slope
-feature instead of the target-side row, so its lag-2 figure finally
-means what it says. The panel builds f4 as exactly the same difference,
-so lag 0 is unchanged.
-
-7 new tests. Old behaviour reproducible: --cost-crossing-fraction 1.0.
+A long-only reading of this book is a different instrument from the
+paired one and must not borrow the pair''s risk statistics. Each leg now
+carries its own max drawdown beside the same-direction zero-selection
+alternative''s, which is what makes the free-rule long leg (the one live
+object round 6 found) readable on its own terms.
 
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>

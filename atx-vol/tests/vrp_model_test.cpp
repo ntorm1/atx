@@ -3542,6 +3542,12 @@ TEST(VrpTrainVega, VegaBookReportsTurnoverNamesPerDayAndMaxDrawdown) {
   EXPECT_NEAR(legs.net[1], -rt, 1e-12);
   // Cumulative curve: -rt then -2rt. Peak is 0 at the start, so maxDD = 2rt.
   EXPECT_NEAR(a.max_drawdown, 2.0 * rt, 1e-12);
+  // Each LEG carries its own drawdown against its own zero-selection
+  // alternative: a long-only reading of this book is a different instrument and
+  // must not borrow the pair's risk statistics.
+  EXPECT_NEAR(a.long_max_drawdown, 2.0 * rt, 1e-12);
+  EXPECT_NEAR(a.short_max_drawdown, 2.0 * rt, 1e-12);
+  EXPECT_NEAR(a.floor_long_max_drawdown, 0.0, 1e-12);
   // A monotonically rising curve has NO drawdown, and an all-NaN one has no
   // MEASURED drawdown rather than a comforting zero.
   const std::array<double, 3> up{1.0, 2.0, 3.0};
