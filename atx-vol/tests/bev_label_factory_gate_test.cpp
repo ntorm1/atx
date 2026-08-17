@@ -1240,12 +1240,33 @@ TEST(VrpPanelV2, CliParsesSchemaAndSplitsFlags) {
   EXPECT_EQ(def_cfg.schema, VrpPanelSchema::V2);
   EXPECT_TRUE(def_cfg.splits.empty());
 
+  // v3 was this assertion's known-BAD value until the liquidity columns landed.
+  // It is now a real schema, so the negative case moves to a value that is still
+  // not one -- keeping a rejection test that actually tests rejection.
+  std::vector<std::string> v3_storage = {"bev_label_factory", "--vrp-panel",    "--db", "rootA",
+                                         "--out",             "p.tsv",          "--panel-schema",
+                                         "v3"};
+  std::vector<char *> v3_argv = make_argv(v3_storage);
+  VrpPanelConfig v3_cfg;
+  ASSERT_TRUE(parse_vrp_panel_args(static_cast<int>(v3_argv.size()), v3_argv.data(), v3_cfg));
+  EXPECT_EQ(v3_cfg.schema, VrpPanelSchema::V3);
+  EXPECT_TRUE(v3_cfg.liquidity.empty());
+
   std::vector<std::string> bad_storage = {"bev_label_factory", "--vrp-panel",    "--db", "rootA",
                                           "--out",             "p.tsv",          "--panel-schema",
-                                          "v3"};
+                                          "v9"};
   std::vector<char *> bad_argv = make_argv(bad_storage);
   VrpPanelConfig bad_cfg;
   EXPECT_FALSE(parse_vrp_panel_args(static_cast<int>(bad_argv.size()), bad_argv.data(), bad_cfg));
+
+  // --liquidity is v3-only, and the CLI must refuse it at parse time rather than
+  // accept a flag it would then silently ignore.
+  std::vector<std::string> liq_storage = {"bev_label_factory", "--vrp-panel", "--db",
+                                          "rootA",             "--out",       "p.tsv",
+                                          "--liquidity",       "liq.tsv"};
+  std::vector<char *> liq_argv = make_argv(liq_storage);
+  VrpPanelConfig liq_cfg;
+  EXPECT_FALSE(parse_vrp_panel_args(static_cast<int>(liq_argv.size()), liq_argv.data(), liq_cfg));
 }
 
 // Reference-file grammar: comments and blank lines skipped, extra provenance

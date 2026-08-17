@@ -111,9 +111,9 @@ def process_date(path: str, date_str: str, dte_lo: int, dte_hi: int) -> list[dic
                 if h is not None:
                     hs_all.append(h)
                     dep_all.append(min(bs, asz))
-        atm_hs, atm_dep = float("nan"), float("nan")
+        atm_hs, atm_dep, atm_vp, atm_iv = (float("nan"),) * 4
         if best_k is not None:
-            hs, dep = [], []
+            hs, dep, absh, mids = [], [], [], []
             for r in ("C", "P"):
                 if r in strikes[best_k]:
                     bp, ap, bs, asz = strikes[best_k][r]
@@ -121,9 +121,27 @@ def process_date(path: str, date_str: str, dte_lo: int, dte_hi: int) -> list[dic
                     if h is not None:
                         hs.append(h)
                         dep.append(min(bs, asz))
+                        absh.append(0.5 * (ap - bp) / PX_SCALE)
+                        mids.append(0.5 * (ap + bp) / PX_SCALE)
             if hs:
                 atm_hs = sum(hs) / len(hs)
                 atm_dep = sum(dep) / len(dep)
+                # THE CLASSIFICATION AXIS. A flat vol-point cost assumption is
+                # stated in vol points, so the measurement must be too. Under the
+                # Brenner-Subrahmanyam ATM approximation an option's vega per ONE
+                # VOL POINT is 0.4*K*sqrt(T)/100, so the one-way half-spread in
+                # vol points is the absolute half-spread divided by that. This
+                # needs no IV input at all — which matters, because the RELATIVE
+                # half-spread is mechanically deflated for high-vol names (same
+                # absolute width over a fatter premium) and would mis-sort them
+                # as liquid on exactly the axis the cost is charged in.
+                tau = max(dte, 1) / 365.0
+                vega_pt = 0.4 * best_k * math.sqrt(tau) / 100.0
+                if vega_pt > 0.0:
+                    atm_vp = (sum(absh) / len(absh)) / vega_pt
+                    # Implied ATM vol from the same approximation, reported so a
+                    # reader can see the vol level a name's width sits on.
+                    atm_iv = (sum(mids) / len(mids)) / (0.4 * best_k * math.sqrt(tau))
         if not hs_all:
             continue
         hs_all.sort()
@@ -135,6 +153,8 @@ def process_date(path: str, date_str: str, dte_lo: int, dte_hi: int) -> list[dic
             "n_strikes_21d": len(strikes),
             "atm_strike": best_k if best_k is not None else float("nan"),
             "atm_rel_hspread": atm_hs,
+            "atm_hspread_vol_pts": atm_vp,
+            "atm_iv": atm_iv,
             "atm_depth": atm_dep,
             "med_rel_hspread_21d": hs_all[len(hs_all) // 2],
             "med_depth_21d": dep_all[len(dep_all) // 2],
@@ -144,8 +164,8 @@ def process_date(path: str, date_str: str, dte_lo: int, dte_hi: int) -> list[dic
 
 
 FIELDS = ["date", "underlying", "dte", "n_strikes_21d", "atm_strike",
-          "atm_rel_hspread", "atm_depth", "med_rel_hspread_21d",
-          "med_depth_21d", "n_contracts_total"]
+          "atm_rel_hspread", "atm_hspread_vol_pts", "atm_iv", "atm_depth",
+          "med_rel_hspread_21d", "med_depth_21d", "n_contracts_total"]
 
 
 def main(argv: list[str]) -> int:
