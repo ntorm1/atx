@@ -172,9 +172,8 @@ constant, not the scorecard's reporting tolerance, so retuning that tolerance
 cannot silently move what selection optimised.
 
 The bounded no-regression gate AND the committed ratchet baseline are the
-SYMMETRIC
-array. The symmetric loss is bounded and carries no smallest-scale gradient, so
-selection runs on the FULL row population and excludes nothing —
+SYMMETRIC array. The symmetric loss is bounded and carries no smallest-scale
+gradient, so selection runs on the FULL row population and excludes nothing —
 `selection_count` now equals `count`. The standard-relative form instead pins its
 denominator on rows whose oracle sits below the floor while its numerator keeps
 growing with `|model * scale|`, so gating IT would systematically reward the
