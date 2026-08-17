@@ -3720,5 +3720,258 @@ TEST(VrpTrainVega, VegaGateIsStrictOnTheRollAxisAndFailsClosed) {
   EXPECT_FALSE(vrp::vrp_vega_gate_verdict(wrong_axis, v, floor).pass);
 }
 
+// ── ROUND 7: the dispersion book ────────────────────────────────────────────
+
+// The index symbol used by every dispersion fixture. Deliberately NOT adjacent
+// to the single-name ids, so an off-by-one in the exclusion is visible.
+constexpr std::size_t kDispIndexSym = 99;
+
+struct DispRows {
+  std::vector<std::int64_t> ts;
+  std::vector<double> score;
+  std::vector<double> target;
+  std::vector<double> target_raw;
+  std::vector<double> iv;
+  std::vector<std::size_t> sym;
+};
+
+// Append one formation date: `n_names` single names (symbols 0..n_names-1,
+// score == id so the top decile is the highest ids) plus one index row. A
+// non-finite `index_target` means the date carries NO usable index row.
+void disp_push_date(DispRows &r, std::int64_t ts, std::size_t n_names,
+                    const std::function<double(std::size_t)> &target_of, double index_target,
+                    double iv = 0.20) {
+  for (std::size_t i = 0; i < n_names; ++i) {
+    r.ts.push_back(ts);
+    r.score.push_back(static_cast<double>(i));
+    r.target.push_back(target_of(i));
+    r.target_raw.push_back(target_of(i));
+    r.iv.push_back(iv);
+    r.sym.push_back(i);
+  }
+  if (std::isfinite(index_target)) {
+    r.ts.push_back(ts);
+    r.score.push_back(1.0e9); // top decile if it were ever rankable -- it is not
+    r.target.push_back(index_target);
+    r.target_raw.push_back(index_target);
+    r.iv.push_back(iv);
+    r.sym.push_back(kDispIndexSym);
+  }
+}
+
+std::vector<vrp::VrpDispDate> disp_dates_of(const DispRows &r, double index_cost_scale = 1.0) {
+  return vrp::vrp_disp_dates(r.ts, r.score, r.target, r.target_raw, r.iv, r.sym, kDispIndexSym,
+                             vrp::kVrpDefaultCrossingFraction, index_cost_scale);
+}
+
+// SPY sits INSIDE the fitted panel, so the index symbol must be excluded from
+// the ranked universe AND from the long-everything floor. Without that it is
+// rankable into its own hedge and the floor is 1/102 index.
+TEST(VrpTrainDispersion, TheIndexSymbolIsExcludedFromSelectionAndFromTheFloor) {
+  DispRows r;
+  disp_push_date(r, 1000, 20, [](std::size_t i) { return static_cast<double>(i); }, 5.0);
+  const std::vector<vrp::VrpDispDate> dd = disp_dates_of(r);
+  ASSERT_EQ(dd.size(), 1u);
+  // 20 single names => the top decile holds exactly ids 18 and 19.
+  const double rt = 2.0 * vrp::vrp_vega_cost_one_way(0.20);
+  EXPECT_NEAR(rt, 1.282, 1e-12);
+  EXPECT_NEAR(dd[0].names, 2.0, 1e-12);
+  EXPECT_NEAR(dd[0].sel_gross, 18.5, 1e-12);
+  EXPECT_NEAR(dd[0].sel_cost, rt, 1e-12);
+  // 9.5 is the mean over the 20 SINGLE NAMES. Had the index row entered, the
+  // floor would have been (190 + 5) / 21 = 9.2857...
+  EXPECT_NEAR(dd[0].all_gross, 9.5, 1e-12);
+  EXPECT_NEAR(dd[0].all_cost, rt, 1e-12);
+  EXPECT_NEAR(dd[0].index_gross, 5.0, 1e-12);
+  EXPECT_NEAR(dd[0].index_cost, rt, 1e-12);
+  EXPECT_NEAR(dd[0].xs_iv_level, 20.0, 1e-12); // 100 * 0.20, single names only
+  // The book holds two SINGLE names and never the index, however high it ranks.
+  ASSERT_EQ(dd[0].weights.size(), 2u);
+  EXPECT_EQ(dd[0].weights.count(kDispIndexSym), 0u);
+  EXPECT_NEAR(dd[0].weights.at(18), 0.5, 1e-12);
+  EXPECT_NEAR(dd[0].weights.at(19), 0.5, 1e-12);
+}
+
+// The hedge ratio is the OLS slope of the SELECTED book's gross series on the
+// index's, and applying it drives the residual beta to zero. Costs are held
+// constant across dates so the slope is exactly recoverable by hand.
+TEST(VrpTrainDispersion, HedgeRatioIsTheOlsSlopeAndTakesTheResidualVolBetaToZero) {
+  DispRows r;
+  for (std::size_t d = 0; d < 30; ++d) {
+    const double x = static_cast<double>(d % 7) - 3.0; // the index leg's move
+    disp_push_date(
+        r, static_cast<std::int64_t>(1000 + d), 20,
+        [x](std::size_t i) { return 2.0 * x + 1.0 + 0.01 * static_cast<double>(i); }, x);
+  }
+  const vrp::VrpDispReport rep = vrp::vrp_disp_report("t", disp_dates_of(r), 5);
+  // sel_gross = 2x + 1.185, all_gross = 2x + 1.095: both slope EXACTLY 2 on x.
+  EXPECT_NEAR(rep.beta_full, 2.0, 1e-9);
+  EXPECT_NEAR(rep.beta_floor, 2.0, 1e-9);
+  // An EXACTLY perfect fit has no sampling error to divide by, so the HAC t is
+  // UNDEFINED rather than infinite. Asserted on the estimator directly, with
+  // inputs whose residuals are exactly zero in binary floating point -- the
+  // book fixture above carries 0.01-scale offsets and so leaves rounding dust.
+  std::vector<double> x_exact;
+  std::vector<double> y_exact;
+  for (std::size_t i = 1; i <= 30; ++i) {
+    x_exact.push_back(static_cast<double>(i));
+    y_exact.push_back(2.0 * static_cast<double>(i));
+  }
+  const vrp::VrpSlope exact = vrp::vrp_slope_nw(y_exact, x_exact);
+  EXPECT_NEAR(exact.beta, 2.0, 0.0);
+  EXPECT_TRUE(std::isnan(exact.t_nw));
+  // Fewer than 3 pairs, and a constant regressor, identify no slope at all.
+  EXPECT_TRUE(std::isnan(vrp::vrp_slope_nw(std::vector<double>{1.0, 2.0},
+                                           std::vector<double>{1.0, 2.0})
+                             .beta));
+  EXPECT_TRUE(std::isnan(vrp::vrp_slope_nw(y_exact, std::vector<double>(30, 1.0)).beta));
+  // The unhedged control carries the whole beta; the hedged book carries none.
+  EXPECT_NEAR(rep.long_only.resid_beta, 2.0, 1e-9);
+  EXPECT_NEAR(rep.disp_full.resid_beta, 0.0, 1e-9);
+}
+
+// THE ALGEBRAIC FACT THE WHOLE LANE TURNS ON. When a book and its zero-
+// selection floor carry the SAME index leg, that leg cancels exactly in the
+// paired per-date difference: a common hedge can move the absolute return and
+// the beta, and it cannot create or destroy one basis point of selection edge.
+TEST(VrpTrainDispersion, ACommonIndexLegCancelsExactlyInTheSelectionExcess) {
+  DispRows r;
+  for (std::size_t d = 0; d < 30; ++d) {
+    const double x = static_cast<double>(d % 5) - 2.0;
+    disp_push_date(
+        r, static_cast<std::int64_t>(1000 + d), 20,
+        [x, d](std::size_t i) {
+          return 2.0 * x + 0.01 * static_cast<double>(i) + 0.1 * static_cast<double>(d % 3);
+        },
+        x);
+  }
+  const vrp::VrpDispReport rep = vrp::vrp_disp_report("t", disp_dates_of(r), 5);
+  ASSERT_TRUE(std::isfinite(rep.long_only.excess));
+  EXPECT_NEAR(rep.disp_full.excess, rep.long_only.excess, 1e-9);
+  EXPECT_NEAR(rep.disp_full.excess, 0.09, 1e-9); // 0.01 * (18.5 - 9.5)
+  // The hedge DOES move the level: the hedged net is not the unhedged one.
+  EXPECT_GT(std::abs(rep.disp_full.net.mean - rep.long_only.net.mean), 1e-9);
+}
+
+// A hedge ratio a trader could not have known is a hedge ratio that flatters
+// the result. The causal one is refused until enough cohorts have SETTLED, and
+// the book is UNDEFINED on the dates where it is refused -- never unhedged.
+TEST(VrpTrainDispersion, CausalHedgeRatioUsesOnlySettledCohortsAndIsUndefinedEarly) {
+  DispRows r;
+  for (std::size_t d = 0; d < 40; ++d) {
+    const double x = static_cast<double>(d % 7) - 3.0;
+    disp_push_date(
+        r, static_cast<std::int64_t>(1000 + d), 20,
+        [x](std::size_t i) { return 2.0 * x + 1.0 + 0.01 * static_cast<double>(i); }, x);
+  }
+  const vrp::VrpDispReport rep = vrp::vrp_disp_report("t", disp_dates_of(r), 5);
+  // A cohort formed at j has settled by i only when j + 21 <= i, so date i sees
+  // i - 20 pairs; 5 are required. Defined from i = 25 => 40 - 25 = 15 dates.
+  EXPECT_EQ(rep.beta_causal.n, 15u);
+  EXPECT_EQ(rep.disp_causal.net.n, 15u);
+  EXPECT_NEAR(rep.beta_causal.mean, 2.0, 1e-9);
+  // The full-sample book is defined on every date; the causal one is not, and
+  // the difference is exactly the 25 dates whose hedge could not be known.
+  EXPECT_EQ(rep.disp_full.net.n, 40u);
+}
+
+// The regime split must PARTITION the dates it prices: every date with a book
+// and a measurable vol change lands on exactly one side, and the two
+// sub-sample means recombine into the whole-sample mean.
+TEST(VrpTrainDispersion, RegimeSplitPartitionsTheDatesAndTheSubSamplesRecombine) {
+  DispRows r;
+  for (std::size_t d = 0; d < 30; ++d) {
+    const double base = (d % 3 == 0) ? -5.0 : 5.0; // 10 falling, 20 rising
+    disp_push_date(
+        r, static_cast<std::int64_t>(1000 + d), 20,
+        [base](std::size_t i) { return base + 0.01 * static_cast<double>(i); }, 1.0);
+  }
+  const vrp::VrpDispReport rep = vrp::vrp_disp_report("t", disp_dates_of(r), 5);
+  EXPECT_EQ(rep.n_rising, 20u);
+  EXPECT_EQ(rep.n_falling, 10u);
+  EXPECT_EQ(rep.n_rising + rep.n_falling, rep.n_dates);
+  ASSERT_EQ(rep.long_only_rising.net.n, 20u);
+  ASSERT_EQ(rep.long_only_falling.net.n, 10u);
+  const double recombined =
+      (20.0 * rep.long_only_rising.net.mean + 10.0 * rep.long_only_falling.net.mean) / 30.0;
+  EXPECT_NEAR(recombined, rep.long_only.net.mean, 1e-9);
+  // A long-vega book is flattered by rising vol and the split has to SHOW it.
+  EXPECT_GT(rep.long_only_rising.net.mean, rep.long_only_falling.net.mean);
+}
+
+// The blend is an equal weight on two WITHIN-DATE percentile ranks and nothing
+// else: no weighting exists to tune. Ties take the mid-rank, and a blend of one
+// rule is not a blend.
+TEST(VrpTrainDispersion, EqualWeightRankBlendIsTheMeanOfWithinDatePercentileRanks) {
+  const std::vector<std::int64_t> ts{1, 1, 1, 1};
+  const std::vector<double> a{1.0, 2.0, 3.0, 4.0};
+  const std::vector<double> b{4.0, 3.0, 2.0, 1.0};
+  const std::vector<double> pa = vrp::vrp_within_date_pctile(ts, a);
+  ASSERT_EQ(pa.size(), 4u);
+  EXPECT_NEAR(pa[0], 0.125, 1e-12);
+  EXPECT_NEAR(pa[3], 0.875, 1e-12);
+  const std::vector<double> blend = vrp::vrp_equal_weight_rank_blend(ts, a, b);
+  for (const double v : blend) {
+    EXPECT_NEAR(v, 0.5, 1e-12); // exactly opposed rules blend to the midpoint
+  }
+  // Ties take the MID-rank of their block, so a tie cannot be broken by input
+  // order (which would make the blend depend on row ordering).
+  const std::vector<double> tied{1.0, 1.0, 2.0, 3.0};
+  const std::vector<double> pt = vrp::vrp_within_date_pctile(ts, tied);
+  EXPECT_NEAR(pt[0], 0.25, 1e-12);
+  EXPECT_NEAR(pt[1], 0.25, 1e-12);
+  EXPECT_NEAR(pt[2], 0.625, 1e-12);
+  EXPECT_NEAR(pt[3], 0.875, 1e-12);
+  // Dates are independent: a second date re-ranks from scratch.
+  const std::vector<std::int64_t> ts2{1, 1, 2, 2};
+  const std::vector<double> pd = vrp::vrp_within_date_pctile(ts2, a);
+  EXPECT_NEAR(pd[0], 0.25, 1e-12);
+  EXPECT_NEAR(pd[2], 0.25, 1e-12);
+  // A missing leg makes the blend UNDEFINED, never the surviving rule alone.
+  const std::vector<double> half{1.0, std::numeric_limits<double>::quiet_NaN(), 3.0, 4.0};
+  const std::vector<double> mixed = vrp::vrp_equal_weight_rank_blend(ts, a, half);
+  EXPECT_TRUE(std::isnan(mixed[1]));
+  EXPECT_TRUE(std::isfinite(mixed[0]));
+}
+
+// A date with no index mark cannot be hedged. The unhedged control still
+// prices it; the hedged book is UNDEFINED there and never silently unhedged.
+TEST(VrpTrainDispersion, AMissingIndexRowLeavesTheHedgedBookUndefinedAndNeverUnhedged) {
+  DispRows r;
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  for (std::size_t d = 0; d < 30; ++d) {
+    const double x = static_cast<double>(d % 7) - 3.0;
+    disp_push_date(
+        r, static_cast<std::int64_t>(1000 + d), 20,
+        [x](std::size_t i) { return 2.0 * x + 1.0 + 0.01 * static_cast<double>(i); },
+        d == 3 ? nan : x);
+  }
+  const std::vector<vrp::VrpDispDate> dd = disp_dates_of(r);
+  ASSERT_EQ(dd.size(), 30u);
+  EXPECT_TRUE(std::isnan(dd[3].index_gross));
+  EXPECT_TRUE(std::isfinite(dd[3].sel_gross)); // the control is untouched
+  const vrp::VrpDispReport rep = vrp::vrp_disp_report("t", dd, 5);
+  EXPECT_EQ(rep.n_dates, 30u);
+  EXPECT_EQ(rep.n_dates_no_index, 1u);
+  EXPECT_EQ(rep.long_only.net.n, 30u);
+  EXPECT_EQ(rep.disp_full.net.n, 29u);
+}
+
+// The index leg's charge is a knob because the panel carries no index-specific
+// spread measurement. The DEFAULT is the conservative corner (the single-name
+// effective spread), and the knob is strictly multiplicative on that leg alone.
+TEST(VrpTrainDispersion, IndexCostScaleMultipliesOnlyTheIndexLegAndDefaultsToConservative) {
+  DispRows r;
+  disp_push_date(r, 1000, 20, [](std::size_t i) { return static_cast<double>(i); }, 5.0);
+  const std::vector<vrp::VrpDispDate> one = disp_dates_of(r, 1.0);
+  const std::vector<vrp::VrpDispDate> cheap = disp_dates_of(r, 0.78);
+  ASSERT_EQ(one.size(), 1u);
+  ASSERT_EQ(cheap.size(), 1u);
+  EXPECT_NEAR(cheap[0].index_cost, 0.78 * one[0].index_cost, 1e-12);
+  // The single-name legs are untouched by the index knob.
+  EXPECT_NEAR(cheap[0].sel_cost, one[0].sel_cost, 1e-12);
+  EXPECT_NEAR(cheap[0].all_cost, one[0].all_cost, 1e-12);
+}
+
 } // namespace
 } // namespace atx::vol
