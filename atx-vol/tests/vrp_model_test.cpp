@@ -3496,6 +3496,125 @@ TEST(VrpTrainCost, CrossingFractionIsReachableAndTheDefaultIsTheMeasuredEffectiv
       std::isnan(vrp::vrp_vega_cost_one_way(0.40, std::numeric_limits<double>::quiet_NaN())));
 }
 
+// ── ROUND 7: the LIQUIDITY-VARYING cost model ──────────────────────────────
+
+// THE REGRESSION ANCHOR. Off is off: the multiplier is EXACTLY 1.0 for every
+// input a caller can present -- including the ones that are NaN-hostile when
+// the model is on -- so a disabled run cannot move one ulp of any round-5/6
+// figure. This is the test that keeps the flat-cost artifacts reproducible.
+TEST(VrpTrainCost, LiquidityMultiplierIsExactlyOneWhenDisabled) {
+  const vrp::VrpLiquidityCost off{}; // default-constructed == disabled
+  EXPECT_FALSE(off.enabled);
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  for (const double h : {0.0, -1.0, 1e-9, 0.001, 0.0509, 0.5, 1e9, nan,
+                         std::numeric_limits<double>::infinity()}) {
+    EXPECT_EQ(vrp::vrp_liquidity_cost_multiplier(h, off), 1.0)
+        << "disabled multiplier moved at half-spread " << h;
+  }
+  // And the charge itself is BIT-IDENTICAL to the flat one, not merely near.
+  for (const double iv : {0.10, 0.25, 0.40, 0.83, 1.75}) {
+    for (const double h : {0.001, 0.0509, 0.42, nan}) {
+      EXPECT_EQ(vrp::vrp_vega_cost_one_way(iv, vrp::kVrpDefaultCrossingFraction, h, off),
+                vrp::vrp_vega_cost_one_way(iv, vrp::kVrpDefaultCrossingFraction))
+          << "disabled path re-priced iv=" << iv << " h=" << h;
+    }
+  }
+}
+
+// Monotone in LIQUIDITY: a wider quoted market is never cheaper. Stated on the
+// half-spread axis (which is the INVERSE of liquidity), the multiplier is
+// non-decreasing in the width and therefore non-increasing in liquidity.
+TEST(VrpTrainCost, LiquidityMultiplierIsMonotoneNonIncreasingInLiquidity) {
+  vrp::VrpLiquidityCost m;
+  m.enabled = true;
+  double prev = -1.0;
+  // Bounded sweep across four orders of magnitude of quoted width.
+  for (int i = 0; i <= 400; ++i) {
+    const double h = 1e-4 * std::pow(10.0, 3.0 * static_cast<double>(i) / 400.0);
+    const double mult = vrp::vrp_liquidity_cost_multiplier(h, m);
+    ASSERT_TRUE(std::isfinite(mult)) << "non-finite multiplier at h=" << h;
+    EXPECT_GE(mult, prev) << "multiplier fell as the quoted width widened at h=" << h;
+    prev = mult;
+  }
+  // Strictly increasing inside the unclamped band, so the model actually
+  // discriminates rather than merely failing to invert.
+  const double a = vrp::vrp_liquidity_cost_multiplier(1.2 * m.ref_half_spread_frac, m);
+  const double b = vrp::vrp_liquidity_cost_multiplier(2.4 * m.ref_half_spread_frac, m);
+  EXPECT_GT(b, a);
+  EXPECT_NEAR(b / a, 2.0, 1e-12);
+}
+
+// The anchor is a UNITS IDENTITY, not a fitted curve: a name quoting exactly
+// the reference width pays exactly the flat charge, and one quoting k times
+// that width pays k times it, until the cap.
+TEST(VrpTrainCost, LiquidityMultiplierAnchorsAtOneOnTheReferenceWidthAndClamps) {
+  vrp::VrpLiquidityCost m;
+  m.enabled = true;
+  EXPECT_EQ(m.ref_half_spread_frac, vrp::kVrpLiquidityReferenceHalfSpreadFrac);
+  EXPECT_NEAR(vrp::vrp_liquidity_cost_multiplier(m.ref_half_spread_frac, m), 1.0, 1e-12);
+  EXPECT_NEAR(vrp::vrp_liquidity_cost_multiplier(2.0 * m.ref_half_spread_frac, m), 2.0, 1e-12);
+  // FLOOR: the default deliberately refuses to claim a SAVING on names tighter
+  // than the reference. The flat charge's LEVEL is a 1996-2015 EFFECTIVE spread
+  // and this field is a 2025-26 QUOTED one -- the cross-sectional ratio is
+  // comparable, the level is not -- so the default prices illiquidity only.
+  EXPECT_EQ(m.floor_multiplier, 1.0);
+  EXPECT_EQ(vrp::vrp_liquidity_cost_multiplier(0.01 * m.ref_half_spread_frac, m), 1.0);
+  // CAP: past it the calibration is unsupported by the measurement, and the
+  // honest response is to screen the name out, not to extrapolate a charge.
+  EXPECT_EQ(m.cap_multiplier, vrp::kVrpLiquidityDefaultCapMultiplier);
+  EXPECT_EQ(vrp::vrp_liquidity_cost_multiplier(50.0 * m.ref_half_spread_frac, m),
+            m.cap_multiplier);
+  // Releasing the floor gives the symmetric two-sided reading on request.
+  m.floor_multiplier = 0.0;
+  EXPECT_NEAR(vrp::vrp_liquidity_cost_multiplier(0.5 * m.ref_half_spread_frac, m), 0.5, 1e-12);
+}
+
+// NaN-hostile when ON, exactly like the crossing fraction: a leg whose market
+// was never measured is not a leg that trades at the liquid-universe charge.
+TEST(VrpTrainCost, LiquidityCostIsNaNHostileWhenEnabled) {
+  vrp::VrpLiquidityCost m;
+  m.enabled = true;
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_TRUE(std::isnan(vrp::vrp_liquidity_cost_multiplier(nan, m)));
+  EXPECT_TRUE(std::isnan(vrp::vrp_liquidity_cost_multiplier(0.0, m)));
+  EXPECT_TRUE(std::isnan(vrp::vrp_liquidity_cost_multiplier(-0.02, m)));
+  EXPECT_TRUE(std::isnan(
+      vrp::vrp_liquidity_cost_multiplier(std::numeric_limits<double>::infinity(), m)));
+  // A nonsense knob never trades free either.
+  vrp::VrpLiquidityCost bad = m;
+  bad.ref_half_spread_frac = 0.0;
+  EXPECT_TRUE(std::isnan(vrp::vrp_liquidity_cost_multiplier(0.05, bad)));
+  bad = m;
+  bad.cap_multiplier = -1.0;
+  EXPECT_TRUE(std::isnan(vrp::vrp_liquidity_cost_multiplier(0.05, bad)));
+  bad = m;
+  bad.floor_multiplier = 5.0; // floor ABOVE the 4.0 cap is incoherent
+  EXPECT_TRUE(std::isnan(vrp::vrp_liquidity_cost_multiplier(0.05, bad)));
+  // ...but a floor merely BELOW the cap is a legitimate configuration.
+  vrp::VrpLiquidityCost banded = m;
+  banded.floor_multiplier = 3.0;
+  EXPECT_EQ(vrp::vrp_liquidity_cost_multiplier(0.05, banded), 3.0);
+  // The charge inherits it: NaN liquidity propagates to a NaN cost.
+  EXPECT_TRUE(std::isnan(
+      vrp::vrp_vega_cost_one_way(0.40, vrp::kVrpDefaultCrossingFraction, nan, m)));
+}
+
+// The two factors compose multiplicatively and independently: crossing scales
+// the width, liquidity scales the name. Neither silently absorbs the other.
+TEST(VrpTrainCost, LiquidityAndCrossingComposeMultiplicatively) {
+  vrp::VrpLiquidityCost m;
+  m.enabled = true;
+  const double h = 2.0 * m.ref_half_spread_frac;
+  const double flat = vrp::vrp_vega_cost_one_way(0.40, vrp::kVrpDefaultCrossingFraction);
+  EXPECT_NEAR(vrp::vrp_vega_cost_one_way(0.40, vrp::kVrpDefaultCrossingFraction, h, m),
+              2.0 * flat, 1e-12);
+  // Halving the crossing fraction halves the liquidity-adjusted charge too.
+  EXPECT_NEAR(vrp::vrp_vega_cost_one_way(0.40, 0.275, h, m), flat, 1e-12);
+  // And it still scales with the name's own IV.
+  EXPECT_NEAR(vrp::vrp_vega_cost_one_way(0.80, vrp::kVrpDefaultCrossingFraction, h, m),
+              4.0 * flat, 1e-12);
+}
+
 // A book that cannot be held is not a strategy: turnover, names/day and the
 // drawdown path are hand-computed against a fixture whose membership is known.
 TEST(VrpTrainVega, VegaBookReportsTurnoverNamesPerDayAndMaxDrawdown) {

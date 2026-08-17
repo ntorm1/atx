@@ -2017,6 +2017,111 @@ inline constexpr double kVrpDefaultShortVegaHaircut = 0.50;
   return vrp_vega_cost_one_way(iv, kVrpDefaultCrossingFraction);
 }
 
+// ── ROUND 7: THE LIQUIDITY-VARYING CHARGE ──────────────────────────────────
+//
+// Everything above charges every name the same FRACTION OF PREMIUM. That is
+// defensible on the 102-name SP100 corpus, whose members are all mega-cap and
+// whose measured widths cluster; it is NOT defensible on the 614-name xsec
+// corpus, where the MEASURED cross-section of ATM quoted one-way relative
+// half-spreads runs 0.68% (SPY) to 60.3% (AVT) -- an 89x range -- with a
+// corpus median of 8.55% against an SP100 median of 5.10%.
+//
+// Those are MEASUREMENTS, not estimates: `atx-vol/scripts/vrp_hive_liquidity.py`
+// reads bid_px/ask_px straight out of the same opra-hive snapshot the corpus was
+// fit from, isolates the expiry nearest 21 calendar days, locates the ATM strike
+// by put-call parity (the hive carries no spot column) and reports (ask-bid)/2/mid
+// there. Measured 2026-08-17 on 9 dates spanning 2025-08-11..2026-04-15, all 614
+// underliers quoted on every one.
+//
+// WHY THERE IS NO FITTED CURVE HERE. The literature's usual instrument is an
+// elasticity of relative spread on volume or open interest, which exists only
+// because the spread itself was unobserved. Here it IS observed, for every
+// symbol-session in the corpus, so the multiplier is a UNITS IDENTITY between
+// two quantities in the same unit rather than a regression:
+//
+//     multiplier(h) = clamp(h / h_ref, floor, cap)
+//
+// A name quoting the reference width pays exactly the flat charge; one quoting
+// twice that width pays twice. Nothing is fitted, so nothing can be overfitted.
+//
+// THE FLOOR IS 1.0 BY DEFAULT, AND THAT IS THE POINT. `h` is a 2025-26 QUOTED
+// half-spread; the flat charge's LEVEL descends from Christoffersen et al's
+// 1996-2015 EFFECTIVE spread. The cross-sectional RATIO of two quoted widths
+// measured in the same snapshot is comparable; the LEVEL across those two eras
+// and two spread conventions is not. So the default prices ILLIQUIDITY ONLY and
+// refuses to book a cost SAVING on names tighter than the reference -- which is
+// also the standing lesson of the round-6 correction (a cost restatement that
+// makes costs go DOWN is the one to distrust). `floor_multiplier = 0.0` releases
+// it for the symmetric reading.
+//
+// THE CAP IS WHERE MEASUREMENT STOPS SUPPORTING A CHARGE. Past ~4x the reference
+// the honest action is to SCREEN THE NAME OUT, not to extrapolate a charge into a
+// market no size crosses; the cap makes an un-screened run visibly conservative
+// rather than silently wrong, and `--liquidity-cap` is the sensitivity knob.
+//
+// WHAT `h` IS NOT: it is a QUOTED width, so it is an upper bound on what a
+// patient order pays -- Zhan-Han-Cao-Tong (RFS 2022) measure realized effective
+// / quoted at 0.55 on OPRA prints, and the existing `crossing` argument is
+// exactly where that discount belongs. It is also ONE daily snapshot at one
+// ATM strike, so it says nothing about intraday variation, about the wings, or
+// about SIZE: the hive's own bid_sz/ask_sz have a rank correlation of only
+// -0.073 with this width across the 614 names (R^2 0.002), i.e. quoted depth in
+// listed options is a quote-protocol artifact and NOT a liquidity signal.
+inline constexpr double kVrpLiquidityReferenceHalfSpreadFrac = 0.050993;
+inline constexpr double kVrpLiquidityDefaultCapMultiplier = 4.0;
+inline constexpr double kVrpLiquidityDefaultFloorMultiplier = 1.0;
+
+// Liquidity-varying cost knobs. DEFAULT-CONSTRUCTED IS OFF, and off is exactly
+// off: `vrp_liquidity_cost_multiplier` returns the literal 1.0 for every input,
+// so a default run reproduces the flat-cost artifacts bit-for-bit.
+struct VrpLiquidityCost {
+  bool enabled{false};
+  // The quoted width that maps to multiplier 1.0 (the flat charge's calibration
+  // point): the measured SP100 median, so the 102-name corpus's cost LEVEL is
+  // unchanged and only the added breadth pays more.
+  double ref_half_spread_frac{kVrpLiquidityReferenceHalfSpreadFrac};
+  double floor_multiplier{kVrpLiquidityDefaultFloorMultiplier};
+  double cap_multiplier{kVrpLiquidityDefaultCapMultiplier};
+};
+
+// Cost multiplier for a name whose MEASURED ATM quoted one-way relative
+// half-spread is `half_spread_frac` (a fraction of the mid, e.g. 0.0855).
+//
+// Contract: DISABLED returns the literal 1.0 for every input, NaN included.
+// ENABLED is NaN-hostile on both the datum and the configuration -- a name
+// whose market was never measured does not trade at the liquid-universe charge,
+// and an incoherent knob does not trade free.
+[[nodiscard]] inline double
+vrp_liquidity_cost_multiplier(double half_spread_frac, const VrpLiquidityCost &cfg) noexcept {
+  if (!cfg.enabled) {
+    return 1.0;
+  }
+  if (!std::isfinite(cfg.ref_half_spread_frac) || !(cfg.ref_half_spread_frac > 0.0) ||
+      !std::isfinite(cfg.floor_multiplier) || cfg.floor_multiplier < 0.0 ||
+      !std::isfinite(cfg.cap_multiplier) || !(cfg.cap_multiplier >= cfg.floor_multiplier)) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  if (!std::isfinite(half_spread_frac) || !(half_spread_frac > 0.0)) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  const double raw = half_spread_frac / cfg.ref_half_spread_frac;
+  return std::min(cfg.cap_multiplier, std::max(cfg.floor_multiplier, raw));
+}
+
+// One-way vega cost with the liquidity adjustment folded in. The two factors
+// are independent and multiplicative: `crossing` scales the WIDTH convention,
+// `cfg` scales the NAME. With `cfg` disabled this is bit-identical to the
+// two-argument overload above.
+[[nodiscard]] inline double vrp_vega_cost_one_way(double iv, double crossing,
+                                                  double half_spread_frac,
+                                                  const VrpLiquidityCost &cfg) noexcept {
+  const double flat = vrp_vega_cost_one_way(iv, crossing);
+  if (!cfg.enabled) {
+    return flat;
+  }
+  return flat * vrp_liquidity_cost_multiplier(half_spread_frac, cfg);
+}
+
 // Per-date series of one long/short vega book, all per 1u GROSS vega except
 // the two leg series, which are per 1u of THEIR OWN vega so a leg can be read
 // on its own terms. One entry per date GROUP of `ts`, NaN where the date could
